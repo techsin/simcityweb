@@ -264,27 +264,29 @@ export function canopy(b: ModelBuilder, x0: number, x1: number, z: number, y: nu
   if (edge) faceZ(b, x0, x1, y + thick * 0.3, y + thick * 0.7, z + depth + 0.03, edge);
 }
 
-// Stroke glyph templates in a unit box (x: 0..1 of glyph width, y: 0..1 of glyph height); s = stroke (relative to h).
-// Each template is a list of rects [x0, y0, x1, y1] where values < 0 mean "stroke-relative": handled in glyphRects().
-type Glyph = 'H' | 'E' | 'O' | 'T' | 'L' | 'I' | 'U' | 'C';
-const GLYPHS: Glyph[] = ['H', 'E', 'O', 'T', 'L', 'I', 'U', 'C', 'E', 'O', 'H', 'T'];
+// Stroke glyph templates (axis-aligned rects [x0, y0, x1, y1] in a w x h box, stroke s). All templates are
+// mirror-symmetric about the glyph's vertical axis so signs still read correctly on X-mirrored model twins.
+type Glyph = 'H' | 'O' | 'T' | 'I' | 'U' | 'A' | 'M' | 'W' | 'Y';
+const GLYPHS: Glyph[] = ['H', 'O', 'T', 'I', 'U', 'A', 'M', 'W', 'Y', 'O', 'H', 'A'];
 function glyphRects(g: Glyph, w: number, h: number, s: number): [number, number, number, number][] {
   const L: [number, number, number, number] = [0, 0, s, h];
   const R: [number, number, number, number] = [w - s, 0, w, h];
+  const c0 = w / 2 - s / 2, c1 = w / 2 + s / 2;
   switch (g) {
     case 'H': return [L, R, [s, h * 0.5 - s / 2, w - s, h * 0.5 + s / 2]];
-    case 'E': return [L, [s, h - s, w, h], [s, h * 0.5 - s / 2, w * 0.82, h * 0.5 + s / 2], [s, 0, w, s]];
     case 'O': return [L, R, [s, h - s, w - s, h], [s, 0, w - s, s]];
-    case 'T': return [[0, h - s, w, h], [w / 2 - s / 2, 0, w / 2 + s / 2, h - s]];
-    case 'L': return [L, [s, 0, w, s]];
-    case 'I': return [[w / 2 - s / 2, s, w / 2 + s / 2, h - s], [0, h - s, w, h], [0, 0, w, s]];
+    case 'T': return [[0, h - s, w, h], [c0, 0, c1, h - s]];
+    case 'I': return [[c0, s, c1, h - s], [0, h - s, w, h], [0, 0, w, s]];
     case 'U': return [L, R, [s, 0, w - s, s]];
-    case 'C': return [L, [s, h - s, w, h], [s, 0, w, s]];
+    case 'A': return [L, R, [s, h - s, w - s, h], [s, h * 0.45 - s / 2, w - s, h * 0.45 + s / 2]];
+    case 'M': return [L, R, [s, h - s, w - s, h], [c0, h * 0.4, c1, h - s]];
+    case 'W': return [L, R, [s, 0, w - s, s], [c0, s, c1, h * 0.6]];
+    case 'Y': return [[0, h * 0.5, s, h], [w - s, h * 0.5, w, h], [0, h * 0.5 - s, w, h * 0.5], [c0, 0, c1, h * 0.5 - s]];
   }
 }
 /**
  * Neon / channel letters on the +Z plane at z: fits a random "word" (or two) into maxW, centered at cx, baseline y0,
- * cap height h. Each glyph is 2-4 stroke quads (~6 tris) from simple templates (H E O T L I U C), stroke 0.18 h.
+ * cap height h. Each glyph is 2-4 stroke quads (~6 tris) from mirror-symmetric templates (H O T I U A M W Y), stroke 0.18 h.
  * Default surface: Emissive at neon intensity (pattern 7). Returns the actual width used.
  */
 export function letters(b: ModelBuilder, rng: RNG, cx: number, y0: number, z: number, maxW: number, h: number, color: ColorLike, opts: { n?: number; words?: number; surf?: Surf; mixed?: boolean; k?: number } = {}): number {

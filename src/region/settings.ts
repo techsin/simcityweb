@@ -4,8 +4,8 @@ import type { QualityLevel } from '../render/contracts';
 export interface AppSettings {
   /** default graphics quality */
   quality: QualityLevel;
-  /** autosave interval in minutes (0 = off) */
-  autosaveMinutes: number;
+  /** autosave interval in GAME months (0 = off) — performed by CityScene (GameSettings.autosaveMonths) */
+  autosaveMonths: number;
   /** scroll the camera when the mouse touches the screen edge */
   edgeScroll: boolean;
   /** show an FPS counter */
@@ -13,12 +13,16 @@ export interface AppSettings {
 }
 
 const KEY = 'metropolis.settings';
-export const DEFAULT_SETTINGS: AppSettings = { quality: 'high', autosaveMinutes: 5, edgeScroll: false, showFps: false };
+export const DEFAULT_SETTINGS: AppSettings = { quality: 'high', autosaveMonths: 6, edgeScroll: false, showFps: false };
 
 export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const { autosaveMinutes: _old, ...rest } = JSON.parse(raw) as Partial<AppSettings> & { autosaveMinutes?: number };
+      void _old;
+      return { ...DEFAULT_SETTINGS, ...rest };
+    }
   } catch {
     /* ignore */
   }

@@ -183,6 +183,35 @@ export function safeFileName(name: string): string {
 
 // ------------------------------------------------------------------ small prefs (localStorage)
 const LAST_KEY = 'metropolis.lastRegion';
+const SESSION_KEY = 'metropolis.lastSession';
+
+/** where the player was last: a region, and a city tile when they were inside a city (tab closed in-game) */
+export interface LastSession {
+  regionId: string;
+  tileKey?: string;
+  at: number;
+}
+export function getLastSession(): LastSession | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (raw) return JSON.parse(raw) as LastSession;
+    const id = localStorage.getItem(LAST_KEY);
+    return id ? { regionId: id, at: 0 } : null;
+  } catch {
+    return null;
+  }
+}
+export function setLastSession(s: { regionId: string; tileKey?: string } | null): void {
+  try {
+    if (!s) localStorage.removeItem(SESSION_KEY);
+    else {
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ ...s, at: Date.now() }));
+      localStorage.setItem(LAST_KEY, s.regionId);
+    }
+  } catch {
+    /* ignore */
+  }
+}
 export function getLastRegionId(): string | null {
   try {
     return localStorage.getItem(LAST_KEY);
@@ -192,8 +221,14 @@ export function getLastRegionId(): string | null {
 }
 export function setLastRegionId(id: string | null): void {
   try {
-    if (id) localStorage.setItem(LAST_KEY, id);
-    else localStorage.removeItem(LAST_KEY);
+    if (id) {
+      localStorage.setItem(LAST_KEY, id);
+      const cur = getLastSession();
+      if (!cur || cur.regionId !== id || cur.tileKey) localStorage.setItem(SESSION_KEY, JSON.stringify({ regionId: id, at: Date.now() }));
+    } else {
+      localStorage.removeItem(LAST_KEY);
+      localStorage.removeItem(SESSION_KEY);
+    }
   } catch {
     /* ignore */
   }

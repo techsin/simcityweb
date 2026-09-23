@@ -252,6 +252,9 @@ export class CityScene {
     this.root.addEventListener('pointerleave', () => (this.mouse.inside = false));
     this.offs.push(
       this.sim.events.on('month', () => this.onMonth()),
+      this.sim.events.on('disaster', (d) => {
+        if (d.active && d.kind === 'earthquake') this.quakeEventAt = performance.now();
+      }),
       this.sim.events.on('unlocked', () => this.topBar.setBadge('rewards', 1)),
       this.uiEvents.on('panel', ({ id, open }) => {
         if (id === 'rewards' && open) this.topBar.setBadge('rewards', 0);
@@ -481,6 +484,7 @@ export class CityScene {
     try {
       this.world.update(dt);
       this.objects.update(dt);
+      this.feedShake(dt);
       this.world.render();
       this.renderFailures = 0;
     } catch (e) {
@@ -518,9 +522,59 @@ export class CityScene {
       this.fps.value = this.fps.frames / this.fps.t;
       this.fps.frames = 0;
       this.fps.t = 0;
-      if (this.settings.showFps) this.fpsEl.textContent = `${Math.round(this.fps.value)} fps`;
+      if (this.settings.showFps) this.updatePerf();
     }
   };
+
+  /** QA readout: fps + frame time, world / city draw calls and triangles (world.stats, objects.stats()) */
+  private updatePerf(): void {
+    const lines: string[] = [`<b>${Math.round(this.fps.value)} fps</b> · ${(1000 / Math.max(1, this.fps.value)).toFixed(1)} ms`];
+    const k = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(Math.round(n)));
+    try {
+      const ws = (this.world as { stats?: { calls?: number; triangles?: number; trees?: number; frameMs?: number } }).stats;
+      const info = this.world.renderer?.info?.render;
+      const calls = ws?.calls ?? info?.calls, tris = ws?.triangles ?? info?.triangles;
+      if (calls !== undefined) lines.push(`world ${k(calls)} calls · ${k(tris ?? 0)} tris${ws?.trees !== undefined ? ` · ${k(ws.trees)} trees` : ''}${ws?.frameMs !== undefined ? ` · ${ws.frameMs.toFixed(1)} ms` : ''}`);
+    } catch {
+      /* ignore */
+    }
+    try {
+      const os = (this.objects as { stats?: () => Record<string, number> }).stats?.();
+      if (os) {
+        lines.push(`city ${k(os.drawCalls ?? 0)} calls · ${k(os.roadTriangles ?? 0)} road tris · ${(os.updateMs ?? 0).toFixed(1)} ms`);
+        lines.push(`${k(os.buildings ?? 0)} bldg · ${k(os.vehicles ?? 0)} veh · ${k(os.trains ?? 0)} trains · ${k(os.particles ?? 0)} fx · ${k(os.props ?? 0)} props`);
+      }
+    } catch {
+      /* ignore */
+    }
+    const st = this.sim.state;
+    lines.push(`sim day ${st.day} · ${st.buildings.size} buildings · speed ${this.sim.speed}`);
+    this.fpsEl.innerHTML = lines.join('<br>');
+  }
+
+  /**
+   * Earthquake camera shake: render-world auto-shakes for ~3 s when an earthquake starts; for longer quakes keep
+   * the camera moving from render-city's disaster intensity (objects.disasters.shake, 0..1).
+   */
+  private feedShake(dt: number): void {
+    const w = this.world as { shake?: (intensity: number, seconds: number) => void };
+    const k = (this.objects as { disasters?: { shake?: number } }).disasters?.shake ?? 0;
+    if (typeof w.shake !== 'function' || !(k > 0.05)) {
+      this.shakeWait = 0;
+      return;
+    }
+    this.shakeWait -= dt;
+    if (this.shakeWait > 0) return;
+    const sinceEvent = (performance.now() - this.quakeEventAt) / 1000;
+    if (sinceEvent < 2.4) {
+      this.shakeWait = 2.4 - sinceEvent;
+      return;
+    }
+    w.shake(0.45 + 0.55 * Math.min(1, k), 1.6);
+    this.shakeWait = 1.2;
+  }
+  private shakeWait = 0;
+  private quakeEventAt = -1e9;
 
   private edgeScroll(dt: number): void {
     if (!this.settings.edgeScroll || !this.mouse.inside || document.hidden || this.pause.isOpen) return;

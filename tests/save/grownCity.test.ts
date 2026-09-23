@@ -59,6 +59,8 @@ describe('grown city round trip', () => {
 
     // continue the original and both restored copies for 30 days
     const errors: unknown[] = [];
+    // note: system runtime caches (e.g. the traffic assignment) are rebuilt after load and re-converge, so the
+    // continuation is close but not bit-identical (~0.3% population after 30 days)
     const run = (st: CityState, sim?: Simulation) => {
       const s = sim ?? new Simulation(st, createSystems());
       try {
@@ -73,6 +75,11 @@ describe('grown city round trip', () => {
     const b = run(viaFile);
     expect(errors).toEqual([]);
     const p0 = orig.stats.population;
+    if (process.env.VERBOSE_SAVE_TEST)
+      console.log(
+        `grown: pop ${before.pop} bldg ${before.buildings} unlocked ${before.unlocked.length} econ keys ${before.economyKeys.length} systemData ${Object.keys(orig.systemData).join(',')}` +
+          ` | after 30d: orig ${p0}, clone ${a.stats.population}, file ${b.stats.population}`,
+      );
     for (const st of [a, b]) {
       expect(st.day).toBe(orig.day);
       expect(Math.abs(st.stats.population - p0) / Math.max(1, p0), `pop ${st.stats.population} vs ${p0}`).toBeLessThanOrEqual(0.01);

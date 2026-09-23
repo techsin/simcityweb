@@ -53,7 +53,7 @@ export class BudgetPanel extends Panel {
   private tabBtns: Record<string, HTMLButtonElement> = {};
   private content!: HTMLDivElement;
   private taxSliders = new Map<DevType, { s: HTMLInputElement; v: HTMLElement; m: HTMLElement }>();
-  private fundSliders = new Map<ServiceKind, { s: HTMLInputElement; v: HTMLElement; m: HTMLElement }>();
+  private fundSliders = new Map<ServiceKind, { s: HTMLInputElement; v: HTMLElement; m: HTMLElement; badge: HTMLElement; row: HTMLElement }>();
   private netEls!: { inc: HTMLElement; exp: HTMLElement; net: HTMLElement; note: HTMLElement; funds: HTMLElement };
   /** rates / funding in effect when last month's report was produced (for projections) */
   private snapTax: number[];
@@ -179,8 +179,12 @@ export class BudgetPanel extends Panel {
           this.update();
         },
       });
-      this.fundSliders.set(s.key, { s: sl, v, m });
-      grid.appendChild(h('div', { class: 'fund-row' }, h('span', { class: 'tr-l', html: icon(s.icon, 15) + `<span>${s.label}</span>` }), sl, v, m));
+      const badge = h('span', { class: 'fr-badge' });
+      const label = h('span', { class: 'tr-l', html: icon(s.icon, 15) + `<span>${s.label}</span>` });
+      label.appendChild(badge);
+      const row = h('div', { class: 'fund-row' }, label, sl, v, m);
+      this.fundSliders.set(s.key, { s: sl, v, m, badge, row });
+      grid.appendChild(row);
     }
     this.content.append(grid, h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:12px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + '<span>Under-funded services lose coverage and may strike; over-funding boosts effectiveness at extra cost.</span>' }));
   }
@@ -298,8 +302,22 @@ export class BudgetPanel extends Panel {
     }
   }
 
-  /** projected monthly income / expense from last month, scaled by tax & funding changes */
-  projection(): { inc: number; exp: number; hasData: boolean } {
+  /** sim-core's forecast at current rates / funding (null when unavailable) */
+  private forecast(): { income: Record<string, number>; expense: Record<string, number>; totalIncome: number; totalExpense: number } | null {
+    const f = this.ctx.mods.econ?.computeMonthlyBudget;
+    if (!f) return null;
+    try {
+      return f(this.ctx.state, null);
+    } catch (e) {
+      console.warn('[ui] computeMonthlyBudget failed', e);
+      return null;
+    }
+  }
+
+  /** projected monthly income / expense: sim-core forecast, else last month scaled by tax & funding changes */
+  projection(): { inc: number; exp: number; hasData: boolean; forecast: ReturnType<BudgetPanel['forecast']> } {
+    const fc = this.forecast();
+    if (fc) return { inc: fc.totalIncome, exp: fc.totalExpense, hasData: true, forecast: fc };
     const b = this.ctx.state.budget;
     const hasData = Object.keys(b.lastIncome).length + Object.keys(b.lastExpense).length > 0;
     let inc = 0, exp = 0;
@@ -327,41 +345,79 @@ export class BudgetPanel extends Panel {
       }
     }
     for (const [k, v] of Object.entries(b.lastExpense)) if (!svcHandled.has(k)) exp += v;
-    return { inc, exp, hasData };
+    return { inc, exp, hasData, forecast: null };
   }
 
   override update(): void {
     const st = this.ctx.state;
     const b = st.budget;
     const p = this.projection();
+    const fc = p.forecast;
     setText(this.netEls.funds, st.config.sandbox ? '∞' : money(st.funds));
     setText(this.netEls.inc, money(p.inc));
     setText(this.netEls.exp, money(p.exp));
     const net = p.inc - p.exp;
     setText(this.netEls.net, p.hasData ? moneySigned(net) : '—');
     this.netEls.net.className = 'nc-v ' + (p.hasData ? signClass(net) : 'dim');
+    const hasLast = Object.keys(b.lastIncome).length + Object.keys(b.lastExpense).length > 0;
     const lastNet = sumValues(b.lastIncome) - sumValues(b.lastExpense);
-    setText(this.netEls.note, p.hasData ? `Last month ${moneySigned(lastNet)}` : 'Awaiting first report');
+    setText(this.netEls.note, hasLast ? `Last month ${moneySigned(lastNet)}` : fc ? 'Forecast at current rates' : 'Awaiting first report');
     for (const [d, r] of this.taxSliders) {
       const rate = b.taxRates[d];
       setSlider(r.s, rate);
       setText(r.v, `${rate % 1 ? rate.toFixed(1) : rate}%`);
       toggleClass(r.s, 'warn', rate > 12 && rate <= 15);
       toggleClass(r.s, 'bad', rate > 15);
-      const last = lookup(b.lastIncome, taxKeys(d));
-      const old = this.snapTax[d] || 0;
-      const proj = old > 0 ? (last * rate) / old : last;
+      let proj: number;
+      if (fc) proj = lookup(fc.income, taxKeys(d));
+      else {
+        const last = lookup(b.lastIncome, taxKeys(d));
+        const old = this.snapTax[d] || 0;
+        proj = old > 0 ? (last * rate) / old : last;
+      }
       setText(r.m, p.hasData ? money(proj) : '—');
     }
+    const econ = this.ctx.mods.econ;
     for (const [s, r] of this.fundSliders) {
       const f = b.funding[s] ?? 100;
       setSlider(r.s, f);
       setText(r.v, `${f}%`);
       toggleClass(r.s, 'warn', f < 80);
       toggleClass(r.s, 'bad', f < 50);
-      const last = lookup(b.lastExpense, serviceKeys(s));
-      const old = this.snapFund[s] ?? 100;
-      setText(r.m, p.hasData ? money(old > 0 ? (last * f) / old : last) + '/mo' : '—');
+      let cost: number;
+      if (fc) cost = serviceCost(fc.expense, s);
+      else {
+        const last = lookup(b.lastExpense, serviceKeys(s));
+        const old = this.snapFund[s] ?? 100;
+        cost = old > 0 ? (last * f) / old : last;
+      }
+      setText(r.m, p.hasData ? money(cost) + '/mo' : '—');
+      // strike / effectiveness badge
+      let strike = false, eff = -1;
+      try {
+        strike = !!econ?.onStrike?.(st, s);
+        eff = econ?.serviceEffectiveness?.(st, s) ?? -1;
+      } catch {
+        /* ignore */
+      }
+      const badge = strike ? '<span class="chip bad">Strike!</span>' : eff >= 0 && eff < 0.8 ? `<span class="chip warn">${Math.round(eff * 100)}%</span>` : '';
+      if (r.badge.dataset.h !== badge) {
+        r.badge.dataset.h = badge;
+        r.badge.innerHTML = badge;
+      }
+      r.row.title = strike ? 'Workers are on strike — raise funding to end it' : eff >= 0 ? `Effectiveness ${Math.round(eff * 100)}%` : '';
     }
   }
+}
+
+/** monthly cost of a funding bucket from a budget breakdown (sim-core key scheme) */
+function serviceCost(expense: Record<string, number>, s: ServiceKind): number {
+  let sum = 0;
+  for (const [k, v] of Object.entries(expense)) {
+    if (k === 'service:' + s) sum += v;
+    else if (s === 'transit' && (k === 'transport:rail' || k === 'transport:subway')) sum += v;
+    else if (s === 'roads' && k.startsWith('transport:') && k !== 'transport:rail' && k !== 'transport:subway') sum += v;
+    else if (s === 'utilities' && k.startsWith('utilities:')) sum += v;
+  }
+  return sum;
 }

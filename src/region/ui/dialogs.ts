@@ -54,18 +54,18 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
     h(
       'div',
       { class: 'field' },
-      h('label', {}, 'Autosave'),
+      h('label', {}, 'Autosave (game time) · cities are also saved when you leave them'),
       segmented({
         chips: true,
         items: [
           { value: 0, title: 'Off' },
-          { value: 2, title: 'Every 2 min' },
-          { value: 5, title: 'Every 5 min' },
-          { value: 10, title: 'Every 10 min' },
+          { value: 3, title: 'Every 3 months' },
+          { value: 6, title: 'Every 6 months' },
+          { value: 12, title: 'Every year' },
         ],
-        value: s.autosaveMinutes,
+        value: s.autosaveMonths,
         onChange: (v) => {
-          s.autosaveMinutes = v;
+          s.autosaveMonths = v;
           commit();
         },
       }).el,

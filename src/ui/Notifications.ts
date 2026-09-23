@@ -86,8 +86,11 @@ export class NewsTicker {
 export class Toasts {
   /** multiplier for toast lifetimes (dev/screenshot tooling raises it) */
   static ttlScale = 1;
+  /** identical messages within this window are merged (×N counter) */
+  static DEDUP_MS = 20000;
+  static MAX = 4;
   readonly el: HTMLDivElement;
-  private recent = new Map<string, number>();
+  private live = new Map<string, { el: HTMLElement; count: number; at: number; badge: HTMLElement; cell?: { x: number; z: number }; restart: (ms: number) => void }>();
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'toasts' });
     parent.appendChild(this.el);
@@ -103,25 +106,49 @@ export class Toasts {
   show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string): void {
     const now = performance.now();
     const key = kind + ':' + text;
-    const last = this.recent.get(key);
-    if (last !== undefined && last > now - 2500) return;
-    this.recent.set(key, now);
     const meta = NEWS_META[kind] ?? NEWS_META.info;
     const ttl = (kind === 'error' ? 2600 : kind === 'disaster' ? 12000 : 7000) * Toasts.ttlScale;
+    // identical message within the de-dup window: bump the counter on the existing toast instead of stacking
+    const live = this.live.get(key);
+    if (live && live.el.isConnected && now - live.at < Toasts.DEDUP_MS) {
+      live.count++;
+      live.at = now;
+      live.badge.textContent = `×${live.count}`;
+      live.badge.style.display = '';
+      live.badge.animate([{ transform: 'scale(1.35)' }, { transform: 'scale(1)' }], { duration: 220, easing: 'ease-out' });
+      if (cell) live.cell = cell;
+      live.restart(ttl);
+      if (this.el.firstElementChild !== live.el) this.el.prepend(live.el);
+      return;
+    }
     const x = h('button', { class: 'icon-btn t-x', html: icon('close', 12) });
+    const badge = h('span', { class: 't-count', style: 'display:none' });
+    const timerBar = h('div', { class: 't-timer', style: { animationDuration: ttl + 'ms' } });
     const t = h('div', { class: 'toast mp-glass', style: { '--tc': meta.color } as Record<string, string> },
       h('div', { class: 't-ico', html: icon(meta.icon, 16) }),
       h('div', { class: 't-body' },
-        title || meta.title ? h('div', { class: 't-title' }, title ?? meta.title) : null,
+        h('div', { class: 't-title' }, title ?? meta.title, badge),
         h('div', { class: 't-text' }, text),
         cell ? h('div', { class: 't-go', html: icon('target', 12) + 'Click to view' }) : null,
       ),
       x,
-      h('div', { class: 't-timer', style: { animationDuration: ttl + 'ms' } }),
+      timerBar,
     );
     let timer = 0;
+    const entry = {
+      el: t, count: 1, at: now, badge, cell,
+      restart: (ms: number) => {
+        clearTimeout(timer);
+        timer = window.setTimeout(kill, ms);
+        timerBar.style.animation = 'none';
+        void timerBar.offsetWidth;
+        timerBar.style.animation = '';
+        timerBar.style.animationDuration = ms + 'ms';
+      },
+    };
     const kill = () => {
       clearTimeout(timer);
+      if (this.live.get(key) === entry) this.live.delete(key);
       t.classList.add('out');
       setTimeout(() => t.remove(), 300);
     };
@@ -130,11 +157,17 @@ export class Toasts {
       kill();
     });
     t.addEventListener('click', () => {
-      if (cell) this.ctx.focusCell(cell.x, cell.z, 420);
+      if (entry.cell) this.ctx.focusCell(entry.cell.x, entry.cell.z, 420);
       kill();
     });
     timer = window.setTimeout(kill, ttl);
+    this.live.set(key, entry);
     this.el.prepend(t);
-    while (this.el.children.length > 4) this.el.lastElementChild!.remove();
+    // at most 4 visible
+    while (this.el.children.length > Toasts.MAX) {
+      const last = this.el.lastElementChild as HTMLElement;
+      for (const [k, v] of this.live) if (v.el === last) this.live.delete(k);
+      last.remove();
+    }
   }
 }

@@ -339,7 +339,7 @@ function supermarket(b: B, v: number, rng: RNG) {
   const r1 = -0.2;
   K.stallsX(b, rng, -21, 21, r1, -1, 0.5);
   K.stallsX(b, rng, -21, 21, r1 + 5.2, 1, 0.42);
-  K.stallsX(b, rng, -21, 21, 16.9, -1, 0.28);
+  K.stallsX(b, rng, -21, 21, 16.9, -1, 0.24);
   for (const [ix0, ix1] of [[-24, -21.2], [21.2, 24]] as [number, number][]) {
     up(b, ix0, r1, ix1, r1 + 10.4, 0.1, K.foliage(C.grass));
     up(b, ix0, 16.9, ix1, 22.1, 0.1, K.foliage(C.grass));
@@ -806,7 +806,7 @@ function retailUnit(b: B, rng: RNG, a: number, e: number, h: number, wall: Paint
   up(b, a, zf - 0.25, e, zf + 0.12, h + 0.5, K.plain(trim));
   K.storefront(b, a + 0.6, e - 0.6, zf, { y0: 0.4, y1: 3.3, frame: 0x2a2a2a, doors: [mid + (rng.chance(0.5) ? 1.2 : -1.2)], pitch: 2.8 });
   K.awning(b, a + 0.4, e - 0.4, zf, 3.65, 1.4, 0.6, [awningColor], 1, 0.3);
-  K.letters(b, rng, mid, 4.25, zf + 0.03, e - a - 2.0, 0.95, neon, { n: rng.int(3, 4), words: 1, mixed: rng.chance(0.4) });
+  K.letters(b, rng, mid, 4.25, zf + 0.03, e - a - 2.0, 0.95, neon, { n: 3, words: 1, mixed: rng.chance(0.4) });
   if (upper) faceZ(b, a + 0.9, e - 0.9, 5.7, 7.5, zf + 0.03, P(0x2a3440, Surf.GlassPlain));
 }
 /** v2: open-air lifestyle centre — two L-shaped retail rows around a landscaped plaza, cinema, clock tower, parking in front. */
@@ -860,7 +860,7 @@ function mallLifestyle(b: B, rng: RNG) {
     K.planter(b, rng, tx - 1.1, tz - 1.1, tx + 1.1, tz + 1.1, 0.5, 0x9a8a72);
     K.tree(b, rng, tx, tz, 0.9);
   }
-  for (const [ux, uz, c] of [[15.5, -3, 0xc8352b], [15.5, 1.5, 0xf2efe6]] as [number, number, number][]) K.umbrella(b, ux, uz, 1.3, c, 2.5);
+  K.umbrella(b, 15.5, -1.0, 1.4, 0xc8352b, 2.5);
   const fest = K.emis(0xffc870, 3);
   for (const [ax, bx] of [[-20, 20]] as [number, number][]) {
     let prev: K.V3 = [ax, 4.2, -8];
@@ -872,7 +872,7 @@ function mallLifestyle(b: B, rng: RNG) {
   K.letters(b, rng, 0, 5.35, 7.32, 10, 0.7, 0xffc933, { n: 5, words: 1 });
   // parking in front
   K.asphalt(b, -31.5, 8.2, 31.5, 24.2);
-  for (const [rz, nose, fill] of [[8.6, -1, 0.15], [13.8, 1, 0.1]] as [number, 1 | -1, number][]) {
+  for (const [rz, nose, fill] of [[8.6, -1, 0.14], [13.8, 1, 0.0]] as [number, 1 | -1, number][]) {
     K.stallsX(b, rng, -30.5, -3.2, rz, nose, fill);
     K.stallsX(b, rng, 3.2, 30.5, rz, nose, fill);
   }

@@ -30,7 +30,10 @@ import { LoadingScreen } from './region/ui/LoadingScreen';
 import { openCredits, openLoadRegion, openNewRegion, openSettings } from './region/ui/dialogs';
 import { setUiRoot, toast } from './region/ui/modal';
 import { button, formatMoney, formatPop, h, paint, timeAgo } from './region/ui/dom';
-import { deleteCity, deleteRegion, getLastRegionId, isPersistent, loadCity, loadRegion, saveCity, saveRegion, setLastRegionId } from './save';
+import { deleteCity, deleteRegion, getLastSession, hasCity, isPersistent, loadCity, loadRegion, saveCity, saveRegion, setLastRegionId, setLastSession } from './save';
+import { regionContext, applyRegionEffects, trackRegionEffects } from './region/regionEffects';
+import { NeighborLabels } from './region/NeighborLabels';
+import type { Camera } from 'three';
 
 // ---------------------------------------------------------------------------------------------------------------
 // CityScene contract (owned by ui-game; loaded lazily so the app works before it exists)
@@ -38,7 +41,9 @@ import { deleteCity, deleteRegion, getLastRegionId, isPersistent, loadCity, load
 interface CitySceneLike {
   start?(): unknown;
   dispose(): void;
-  sim?: { state: CityState };
+  sim?: { state: CityState; events?: { on(type: 'month', fn: (m: number) => void): () => void } };
+  /** current world view (NullWorldView until the 3D views are up); used for neighbour labels + readiness */
+  worldView?: { camera?: Camera; isNull?: boolean };
   /** optional: resolves once the 3D views are up (used to delay window.__ready) */
   ready?: Promise<unknown>;
   whenReady?(): Promise<unknown>;
@@ -67,6 +72,26 @@ async function loadCitySceneCtor(): Promise<CitySceneCtor | null> {
   }
 }
 
+/** resolve when CityScene's 3D views are up: its ready promise if it has one, else poll worldView (max 90 s) */
+async function waitForScene(scene: CitySceneLike): Promise<void> {
+  const explicit = scene.ready ?? scene.whenReady?.();
+  const timeout = new Promise<void>((r) => setTimeout(r, 90_000));
+  if (explicit) {
+    await Promise.race([explicit.then(() => undefined, () => undefined), timeout]);
+    return;
+  }
+  const poll = new Promise<void>((resolve) => {
+    const t0 = performance.now();
+    const tick = () => {
+      const wv = scene.worldView;
+      if ((wv && !wv.isNull && wv.camera) || !('worldView' in scene) || performance.now() - t0 > 90_000) resolve();
+      else setTimeout(tick, 200);
+    };
+    tick();
+  });
+  await Promise.race([poll, timeout]);
+}
+
 function markReady(): void {
   requestAnimationFrame(() => requestAnimationFrame(() => ((window as unknown as { __ready: boolean }).__ready = true)));
 }
@@ -77,7 +102,17 @@ class App {
   private title: TitleScreen | null = null;
   private regionScreen: RegionScreen | null = null;
   private region: RegionModel | null = null;
-  private city: { scene: CitySceneLike | null; tile: RegionTile; state: CityState; placeholder?: HTMLElement; lastSave: number; timer?: ReturnType<typeof setInterval> } | null = null;
+  private city: {
+    scene: CitySceneLike | null;
+    tile: RegionTile;
+    state: CityState;
+    placeholder?: HTMLElement;
+    lastSave: number;
+    offRegion?: () => void;
+    labels?: NeighborLabels;
+  } | null = null;
+  /** serializes city saves (CityScene autosave, tab-hide, exit) so writes never overlap */
+  private saveChain: Promise<void> = Promise.resolve();
   private settings: AppSettings = loadSettings();
   private busy = false;
 
@@ -87,8 +122,9 @@ class App {
     setUiRoot(this.root);
     audio.attachAutoInit();
     audio.startMusic();
+    // CityScene autosaves on game time (GameSettings.autosaveMonths); we add save-on-exit and save-on-tab-hide
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden' && this.city) void this.saveCurrentCity();
+      if (document.visibilityState === 'hidden' && this.city && Date.now() - this.city.lastSave > 5000) void this.saveCurrentCity();
     });
     window.addEventListener('beforeunload', () => {
       if (this.city) void this.saveCurrentCity();
@@ -123,15 +159,22 @@ class App {
     audio.startMusic();
     let continueInfo: { title: string; sub: string } | null = null;
     let last: RegionData | null = null;
-    const lastId = getLastRegionId();
-    if (lastId) {
-      last = await loadRegion(lastId).catch(() => null);
-      if (last) continueInfo = { title: last.name, sub: `${formatPop(last.totals?.population ?? 0)} residents · ${timeAgo(last.lastPlayed)}` };
+    let lastTile: RegionTile | undefined;
+    const session = getLastSession();
+    if (session) {
+      last = await loadRegion(session.regionId).catch(() => null);
+      if (last && session.tileKey) {
+        const t = last.tiles.find((x) => x.key === session.tileKey);
+        if (t?.city && (await hasCity(last.id, t.key).catch(() => false))) lastTile = t;
+      }
+      if (last && lastTile?.city)
+        continueInfo = { title: lastTile.city.name, sub: `${last.name} · ${formatPop(lastTile.city.population)} residents · ${timeAgo(lastTile.city.lastPlayed)}` };
+      else if (last) continueInfo = { title: last.name, sub: `${formatPop(last.totals?.population ?? 0)} residents · ${timeAgo(last.lastPlayed)}` };
     }
     this.title = new TitleScreen(this.root, {
       continueInfo,
       quality: this.settings.quality,
-      onContinue: last ? () => this.openRegion(last!) : undefined,
+      onContinue: last ? () => void (lastTile ? this.continueInCity(last!, lastTile.key) : this.openRegion(last!)) : undefined,
       onNewRegion: () => void this.newRegionFlow(),
       onLoadRegion: () => openLoadRegion((r) => void this.openRegion(r)),
       onSettings: () => openSettings((s) => (this.settings = s)),
@@ -251,10 +294,28 @@ class App {
     }
   }
 
-  async playCity(tile: RegionTile): Promise<void> {
-    if (this.busy || !this.region) return;
-    this.busy = true;
+  /** Continue straight into the city the player was in when the page was closed */
+  async continueInCity(data: RegionData, tileKey: string): Promise<void> {
     const ld = new LoadingScreen(this.root);
+    ld.set('Generating terrain…', 0.15);
+    await paint();
+    const model = new RegionModel(data);
+    this.region = model;
+    const tile = model.tileByKey(tileKey);
+    if (!tile?.city) {
+      ld.remove();
+      return this.openRegion(data);
+    }
+    await this.playCity(tile, ld);
+  }
+
+  async playCity(tile: RegionTile, existing?: LoadingScreen): Promise<void> {
+    if (this.busy || !this.region) {
+      existing?.remove();
+      return;
+    }
+    this.busy = true;
+    const ld = existing ?? new LoadingScreen(this.root);
     try {
       ld.set(`Loading ${tile.city?.name ?? 'city'}…`, 0.25);
       await paint();
@@ -285,13 +346,17 @@ class App {
     const container = h('div', { class: 'meta-layer city-host' });
     this.root.prepend(container);
     this.city = { scene: null, tile, state: st, lastSave: Date.now() };
+    setLastSession({ regionId: model.data.id, tileKey: tile.key });
+    // regional play: neighbours' jobs / workers + summary for sim systems (refreshed monthly below)
+    const rctx = regionContext(model, tile);
+    applyRegionEffects(st, rctx);
     audio.startAmbience();
     audio.setAmbience({ population: st.stats.population, zoom: 0.5, night: false });
     if (Ctor) {
       const scene = new Ctor({
         container,
         state: st,
-        settings: { quality: this.settings.quality, edgeScroll: this.settings.edgeScroll, showFps: this.settings.showFps },
+        settings: { quality: this.settings.quality, edgeScroll: this.settings.edgeScroll, showFps: this.settings.showFps, autosaveMonths: this.settings.autosaveMonths },
         onExitToRegion: (thumb) => void this.exitCity(thumb),
         onSave: (s) => this.saveCityState(s),
         onSettingsChange: (gs) => {
@@ -299,23 +364,18 @@ class App {
           if (gs.quality) this.settings.quality = gs.quality;
           if (typeof gs.edgeScroll === 'boolean') this.settings.edgeScroll = gs.edgeScroll;
           if (typeof gs.showFps === 'boolean') this.settings.showFps = gs.showFps;
+          if (typeof gs.autosaveMonths === 'number') this.settings.autosaveMonths = gs.autosaveMonths;
           saveSettings(this.settings);
         },
       });
       this.city.scene = scene;
+      if (scene.sim?.events) this.city.offRegion = trackRegionEffects(scene.sim as Parameters<typeof trackRegionEffects>[0], rctx);
       await scene.start?.();
-      const ready = scene.ready ?? scene.whenReady?.();
-      await Promise.race([ready ?? new Promise((r) => setTimeout(r, 1500)), new Promise((r) => setTimeout(r, 90_000))]);
+      await waitForScene(scene);
+      if (rctx.neighbors.some((n) => n.founded)) this.city.labels = new NeighborLabels(container, () => scene.worldView?.camera, scene.sim?.state ?? st, rctx.neighbors);
     } else {
       this.city.placeholder = this.cityPlaceholder(container, st, tile);
     }
-    if (this.settings.autosaveMinutes > 0) {
-      const ms = this.settings.autosaveMinutes * 60_000;
-      this.city.timer = setInterval(() => {
-        if (this.city && Date.now() - this.city.lastSave > ms * 0.6) void this.saveCurrentCity();
-      }, ms);
-    }
-    void model;
     await ld.hide();
     markReady();
   }
@@ -330,8 +390,14 @@ class App {
     if (st) await this.saveCityState(st, thumb);
   }
 
-  /** persist a city + refresh its region tile summary (also CityScene's onSave) */
-  async saveCityState(st: CityState, thumb?: string): Promise<void> {
+  /** persist a city + refresh its region tile summary (also CityScene's onSave). Saves are queued, never overlap. */
+  saveCityState(st: CityState, thumb?: string): Promise<void> {
+    const run = this.saveChain.then(() => this.doSaveCity(st, thumb));
+    this.saveChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async doSaveCity(st: CityState, thumb?: string): Promise<void> {
     const model = this.region;
     const c = this.city;
     if (!model || !c) return;
@@ -362,7 +428,9 @@ class App {
       console.error('[main] save on exit failed', e);
       toast(`Saving failed: ${(e as Error).message}`, 'bad', 6000);
     }
-    if (c.timer) clearInterval(c.timer);
+    c.offRegion?.();
+    c.labels?.dispose();
+    setLastSession({ regionId: model.data.id });
     try {
       c.scene?.dispose();
     } catch (e) {
