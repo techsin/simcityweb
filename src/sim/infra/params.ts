@@ -113,8 +113,10 @@ export const REGION_WORKER_MIN = 1000;
 
 /** full assignment cadence (days between cycle starts) */
 export const TRAFFIC_CYCLE_DAYS = 2;
-/** per-frame time budget (ms) for time-sliced traffic phases */
+/** per-frame time budget (ms) for time-sliced traffic phases (at least one phase runs per frame while pending) */
 export const TRAFFIC_FRAME_BUDGET_MS = 5;
+/** with a live renderer, start a new assignment at most this often (real ms) */
+export const TRAFFIC_MIN_CYCLE_MS = 500;
 /** commute above this (min) counts as unreachable for employment purposes */
 export const MAX_COMMUTE = 110;
 

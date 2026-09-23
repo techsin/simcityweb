@@ -38,7 +38,7 @@ import {
   CONNECTION_JOBS, CONNECTION_WORKERS, FREIGHT_PER_JOB, MAX_COMMUTE, MODE_BETA, MSA_MIN_ALPHA, NET_CAPACITY, NET_TIME, PRICE_DOWN,
   PRICE_MAX, PRICE_UP, REGIONAL_FILL, REGIONAL_TIME, SHOP_PCU_WEIGHT, SHOP_TRIPS_PER_RES, STOP_CAP_BUS,
   STOP_CAP_SUBWAY, STOP_CAP_TRAIN, STOP_WALK_RADIUS, STOP_WALK_TIME_PER_CELL, SUBWAY_TIME, TRAFFIC_CYCLE_DAYS,
-  TRAFFIC_FRAME_BUDGET_MS, TRANSIT_BIAS, TRUCK_PCU, WAIT_BUS, WAIT_SUBWAY, WAIT_TRAIN, WALK_BIAS, WALK_MAX_CELLS,
+  TRAFFIC_FRAME_BUDGET_MS, TRAFFIC_MIN_CYCLE_MS, TRANSIT_BIAS, TRUCK_PCU, WAIT_BUS, WAIT_SUBWAY, WAIT_TRAIN, WALK_BIAS, WALK_MAX_CELLS,
   WALK_TIME_PER_CELL, WORKER_SHARE, DEST_NOISE, RESULT_SMOOTH, LOAD_SMOOTH, REGION_JOB_MIN, REGION_JOB_SHARE, REGION_WORKER_MIN,
   REGION_WORKER_SHARE,
 } from './params';
@@ -102,6 +102,7 @@ export class TrafficSystem implements SimSystem {
   private phase = -1;
   private lastCycleStart = -1e9;
   private lastFrameMs = -1e9;
+  private lastCycleMs0 = -1e9;
   /** cycles since graph rebuild (MSA) */
   private iter = 0;
   /** total completed assignments */
@@ -280,10 +281,13 @@ export class TrafficSystem implements SimSystem {
 
   daily(sim: Simulation): void {
     const st = sim.state;
-    const framesActive = nowMs() - this.lastFrameMs < 750;
-    if (this.phase < 0 && st.day - this.lastCycleStart >= TRAFFIC_CYCLE_DAYS) {
+    const now = nowMs();
+    const framesActive = now - this.lastFrameMs < 750;
+    // new cycle every TRAFFIC_CYCLE_DAYS sim days (and, with a live renderer, at most every TRAFFIC_MIN_CYCLE_MS)
+    if (this.phase < 0 && st.day - this.lastCycleStart >= TRAFFIC_CYCLE_DAYS && (!framesActive || now - this.lastCycleMs0 >= TRAFFIC_MIN_CYCLE_MS)) {
       this.phase = PH_PREP;
       this.lastCycleStart = st.day;
+      this.lastCycleMs0 = now;
     }
     if (this.phase < 0) return;
     if (!framesActive) this.step(sim);
