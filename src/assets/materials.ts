@@ -16,7 +16,8 @@
  *   (offices, tints 0-5, at night: floors lit in clusters, some floors dark, per-panel brightness; 2 bronze/gold warmer)
  * Emissive (Surf.Emissive, surf.y): 0 default intensity; 1..8 intensity x pattern/4 (4 = default, 2 = half, 8 = double);
  *   9 = ground light pool: paint it ~0.7x the surrounding ground color -> plain pavement by day (no tint),
- *       warm lamp-lit pavement at night.
+ *       warm lamp-lit pavement at night; intensity x floor/3.3 (paint `floor`, default 3.3 = 1x; use e.g. 1.5 for
+ *       a dimmer outer ring).
  *   10 / 11 = NIGHT-ONLY glow x1 / x2 (no daytime emission: stained glass, lanterns, tent canopies).
  *   12 = floodlit sports surface: like 9 (paint ~0.7x, plain by day) but cool white floodlight at night.
  * WallWindows pattern 8: arched civic windows (pattern 7 mask) with EVERY window lit warm amber at night
@@ -28,6 +29,7 @@
  *   2 pavilion glass (reflective by day, uniform warm glow ~0.6 at night: lobbies, foyers, pyramids, concourses).
  * Metal (Surf.Metal, surf.y): 0 bare metal (tanks, pipes, rails); 1 solid car paint (rough 0.40, metal 0.15);
  *   2 metallic car paint (rough 0.32, metal 0.50); 3 patina (rough 0.62, metal 0.30: copper domes, bronze statues).
+ * Corrugated (Surf.Corrugated): vertical ribs, painted sheet metal (rough 0.6, metal 0.25).
  * Foliage (Surf.Foliage): wind sway above 1.5 m; per-plant hue/value + stand-scale tint from the instance position.
  *
  * Facade coordinates: planar walls use the horizontal distance along the wall; smooth-shaded CURVED walls
@@ -310,7 +312,8 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float n = bnoise(P.xz * 0.6) * 0.5 + bnoise(P.xz * 2.7) * 0.5;
       albedo *= 0.9 + 0.18 * n;
       rough = 0.9;
-      emis += albedo * vec3(1.0, 0.8, 0.55) * night * 0.75;
+      // intensity scales with the paint's floor value (floor / 3.3; default 3.3 = 1x) for soft fall-off rings
+      emis += albedo * vec3(1.0, 0.8, 0.55) * night * 0.75 * (floorH / 3.3);
     } else if (pattern > 11.5 && pattern < 12.5) {
       // floodlit sports surface: plain by day (paint ~0.7x like pattern 9), cool white floodlight at night
       albedo = min(albedo * 1.43, vec3(1.0));
@@ -393,8 +396,9 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float w = fwidth(c) + 1e-4;
     float fade = clamp(1.0 - w * 3.0, 0.0, 1.0);
     albedo *= 1.0 - 0.18 * (0.5 + 0.5 * sin(c * 6.2831)) * fade * (vertical ? 1.0 : 0.0);
-    rough = 0.45;
-    metal = 0.55;
+    // painted sheet metal (containers, sheds): mostly paint, a little metal
+    rough = 0.6;
+    metal = 0.25;
   } else if (type < 12.5) {
     // brick courses
     float cy = v / 0.28;
