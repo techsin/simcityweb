@@ -141,9 +141,16 @@ export class HelpPanel extends Panel {
 
   protected build(): void {
     const cols = h('div', { class: 'help-cols' });
-    for (const g of SHORTCUTS) {
-      const col = h('div', null, h('div', { class: 'sec-title' }, g.title));
-      for (const [label, keys] of g.keys) col.appendChild(h('div', { class: 'hk' }, h('span', null, label), h('span', { class: 'keys' }, ...keys.map((k) => h('kbd', null, k)))));
+    // three balanced columns: [Simulation + Panels] [Tools] [While building + Camera]
+    const layout = [[0, 3], [1], [2, 4]];
+    for (const idxs of layout) {
+      const col = h('div');
+      for (const gi of idxs) {
+        const g = SHORTCUTS[gi];
+        if (!g) continue;
+        col.appendChild(h('div', { class: 'sec-title' }, g.title));
+        for (const [label, keys] of g.keys) col.appendChild(h('div', { class: 'hk' }, h('span', null, label), h('span', { class: 'keys' }, ...keys.map((k) => h('kbd', null, k)))));
+      }
       cols.appendChild(col);
     }
     const tips = h('div', { class: 'help-tips' },

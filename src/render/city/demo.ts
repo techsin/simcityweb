@@ -35,7 +35,7 @@ const num = (k: string, d: number) => (P.has(k) ? parseFloat(P.get(k)!) : d);
 registerAllModels();
 const size = num('size', 128);
 const t0 = performance.now();
-const st = buildDemoCity({ size, seed: num('seed', 7), buildings: P.get('b') !== '0', fill: num('fill', 0.8) });
+const st = buildDemoCity({ size, seed: num('seed', 7), buildings: P.get('b') !== '0', fill: num('fill', 0.8), dense: P.get('dense') === '1' });
 const tCity = performance.now() - t0;
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const hud = document.getElementById('hud')!;
@@ -186,10 +186,14 @@ for (let t = 0; t < simT; t += dtS) {
 // ?perf=1: CPU cost of update() and of incremental edits
 if (P.get('perf') === '1') {
   const N = st.size;
+  view.resetProfile();
   const t0p = performance.now();
   const frames = 120;
   for (let k = 0; k < frames; k++) { sharedUniforms.uTime.value += 1 / 60; view.update(1 / 60); }
   const upd = (performance.now() - t0p) / frames;
+  const prof: Record<string, number> = {};
+  for (const [k, v] of Object.entries(view.prof)) if (k !== 'frames') prof[k] = +(v / Math.max(1, view.prof.frames)).toFixed(2);
+  console.log('CITY_PROF ' + JSON.stringify(prof));
   // network edit: draw a new road across a block, measure until all dirty chunks are rebuilt
   const zEdit = Math.round(N * 0.55);
   const t1p = performance.now();

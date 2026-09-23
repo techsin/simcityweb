@@ -261,6 +261,7 @@ export class WorldView implements WorldViewApi {
     const q = this.q;
     const cascaded = q.shadowCascades === 2;
     const prevMap = this.sun.shadow.map;
+    const modeChanged = this.sun.cascaded !== cascaded;
     this.sun.setCascaded(cascaded);
     const sh = this.sun.shadow;
     const size = q.shadowMapSize;
@@ -273,8 +274,8 @@ export class WorldView implements WorldViewApi {
     }
     sh.radius = q.shadowRadius;
     sh.autoUpdate = true;
-    // materials must recompile for the light type change
-    this.scene.traverse((o) => {
+    // lit materials must recompile when the light type changes (three also detects this via the lights state hash)
+    if (modeChanged) this.scene.traverse((o) => {
       const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
       if (!m) return;
       if (Array.isArray(m)) m.forEach((x) => (x.needsUpdate = true));

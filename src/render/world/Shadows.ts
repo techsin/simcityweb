@@ -153,6 +153,11 @@ export class CitySun extends THREE.DirectionalLight {
   }
 }
 
+/** quantize to 1/6 octave steps so split distances (and cascade radii) only change occasionally while zooming */
+function quantizeLog(v: number): number {
+  return Math.pow(2, Math.round(Math.log2(Math.max(v, 1)) * 6) / 6);
+}
+
 const _basisX = new THREE.Vector3();
 const _basisY = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
@@ -190,10 +195,9 @@ export function fitSunShadow(sun: CitySun, camera: THREE.PerspectiveCamera, f: S
     const start = Math.max(camera.near, tDepth * 0.35 - 60);
     const end = Math.min(camera.far, Math.max(tDepth * f.rangeMul, tDepth + 600));
     const split = THREE.MathUtils.clamp(tDepth * 1.25, start + (end - start) * 0.12, start + (end - start) * 0.55);
-    const q = (v: number) => Math.pow(2, Math.round(Math.log2(Math.max(v, 1)) * 6) / 6);
-    sh.splits[0] = q(start);
-    sh.splits[1] = q(split);
-    sh.splits[2] = q(end);
+    sh.splits[0] = quantizeLog(start);
+    sh.splits[1] = quantizeLog(split);
+    sh.splits[2] = quantizeLog(end);
     sh.camera.near = 1;
     const t0 = sh.lastTexel[0];
     sh.normalBias = THREE.MathUtils.clamp(t0 * 1.2, 0.05, 1.5);

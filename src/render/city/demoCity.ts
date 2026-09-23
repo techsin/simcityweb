@@ -17,6 +17,8 @@ export interface DemoOptions {
   buildings: boolean;
   /** 0..1 density of lot filling */
   fill: number;
+  /** stress-test layout: tight road grid over the whole map (tens of thousands of buildings) */
+  dense?: boolean;
 }
 
 const R_LOW = ['res_cottage', 'res_suburban', 'res_ranch', 'res_townhouse_row', 'res_villa', 'res_shack', 'res_mansion'];
@@ -68,6 +70,22 @@ export function buildDemoCity(opt: DemoOptions): CityState {
   };
   const hline = (z: number, x0: number, x1: number, t: Network, dir = -1) => { for (let x = x0; x <= x1; x++) set(x, z, t, dir); };
   const vline = (x: number, z0: number, z1: number, t: Network, dir = -1) => { for (let z = z0; z <= z1; z++) set(x, z, t, dir); };
+
+  if (opt.dense) {
+    // stress layout: avenues every 36 cells, roads every 6, one highway, rail
+    for (let z = 3; z < N - 2; z += 6) hline(z, 1, N - 2, z % 36 === 3 ? Network.Avenue : Network.Road);
+    for (let x = 3; x < N - 2; x += 6) vline(x, 1, N - 2, x % 36 === 3 ? Network.Avenue : Network.Road);
+    vline(1, 0, N - 1, Network.Highway);
+    for (let i = 0; i < N * N; i++) {
+      const t = net[i];
+      if (!t) continue;
+      st.traffic[i] = (t === Network.Highway ? 9000 : t === Network.Avenue ? 3500 : 1200) * (0.5 + rng.next());
+      st.congestion[i] = 0.2 + rng.next() * 0.9;
+    }
+    if (opt.buildings) placeBuildings(st, rng, opt, N + 10);
+    for (let i = 0; i < N * N; i++) if (net[i] || st.building[i] >= 0 || st.water[i]) st.trees[i] = 0;
+    return st;
+  }
 
   // ---------------------------------------------------------------- road network
   const hwX = sx(6);

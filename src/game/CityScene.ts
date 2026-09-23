@@ -126,6 +126,7 @@ export class CityScene {
   private resizeObs: ResizeObserver | null = null;
   private actionsProxy: ActionsProxy;
   private simReady = false;
+  private abort = new AbortController();
 
   constructor(opts: CitySceneOptions) {
     this.opts = opts;
@@ -187,6 +188,7 @@ export class CityScene {
         self.mods = v;
       },
       ui: this.uiEvents,
+      signal: this.abort.signal,
       tools: null as unknown as ToolController,
       panels: null as unknown as PanelManager,
       tip: this.tip,
@@ -277,6 +279,7 @@ export class CityScene {
     if (this.disposed) return;
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    this.abort.abort();
     for (const f of this.offs) f();
     this.resizeObs?.disconnect();
     try {
@@ -582,6 +585,7 @@ export class CityScene {
       e.preventDefault();
       if (this.tools.cancelDrag()) return;
       if (this.toolbar.flyoutOpen) return this.toolbar.closeFlyout();
+      if (this.topBar.closePopover()) return;
       if (this.panels.closeTop()) return;
       if (this.tools.activeId) {
         this.tools.select(null);

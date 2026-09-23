@@ -94,7 +94,6 @@ interface TreeChunk {
   total: number;
 }
 
-const _m = new THREE.Matrix4();
 const _v = new THREE.Vector3();
 
 export class TreeRenderer {
@@ -486,6 +485,6 @@ export class TreeRenderer {
   dispose() {
     for (const c of this.chunks) this.disposeChunk(c);
     this.chunks = [];
-    void _m;
+
   }
 }

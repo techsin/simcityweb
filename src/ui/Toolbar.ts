@@ -58,7 +58,7 @@ export class Toolbar {
     parent.appendChild(this.tip);
     document.addEventListener('pointerdown', (e) => {
       if (this.openCat && !(e.target as HTMLElement).closest('.toolbar')) this.closeFlyout();
-    });
+    }, { signal: ctx.signal });
     ctx.ui.on('tool', () => this.syncActive());
     ctx.ui.on('panel', ({ id }) => {
       if (id === 'dataviews') this.syncActive();

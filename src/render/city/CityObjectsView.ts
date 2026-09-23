@@ -227,22 +227,32 @@ export class CityObjectsView implements CityObjectsViewApi {
   lastUpdateMs = 0;
 
   update(dt: number): void {
-    const tU = performance.now();
+    const now = () => performance.now();
+    const tU = now();
+    const P = this.prof;
+    let t = tU;
+    const lap = (k: keyof typeof P) => { const n = now(); P[k] += n - t; t = n; };
     const cam = this.ctx.camera;
     cam.updateMatrixWorld();
     this.culler.update(cam);
+    lap('cull');
     if (this.roads.hasDirty) this.roads.update(6);
     this.flushPower();
+    lap('roads');
     this.props.update();
     this.props.updateNight(sharedUniforms.uNight.value);
+    lap('props');
     this.buildings.update(dt);
+    lap('buildings');
     this.disasters.update(dt);
     this.effects.update(dt);
+    lap('effects');
     if (this.spawnTimer >= 0) {
       this.spawnTimer -= dt;
       if (this.spawnTimer < 0) this.vehicles.refreshSpawn();
     }
     this.vehicles.update(dt, cam);
+    lap('vehicles');
     this.previews.update(dt);
     // overlay fade
     const o = cityUniforms.uCityOverlay;
@@ -251,7 +261,15 @@ export class CityObjectsView implements CityObjectsViewApi {
     roadUniforms.uRoadOverlay.value = o.value * 0.6;
     this.syncTimer -= dt;
     if (this.syncTimer <= 0) { this.syncTimer = 2; syncCityMaterials(); }
-    this.lastUpdateMs = performance.now() - tU;
+    lap('misc');
+    P.frames++;
+    this.lastUpdateMs = now() - tU;
+  }
+
+  /** accumulated CPU ms per subsystem (reset with resetProfile) */
+  readonly prof = { cull: 0, roads: 0, props: 0, buildings: 0, effects: 0, vehicles: 0, misc: 0, frames: 0 };
+  resetProfile(): void {
+    for (const k of Object.keys(this.prof) as (keyof typeof this.prof)[]) this.prof[k] = 0;
   }
 
   // ------------------------------------------------------------------ previews / tools

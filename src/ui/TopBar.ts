@@ -93,7 +93,7 @@ export class TopBar {
     parent.appendChild(this.el);
     document.addEventListener('pointerdown', (e) => {
       if (this.rciOpen && !(e.target as HTMLElement).closest('.rci-seg')) this.setRci(false);
-    });
+    }, { signal: ctx.signal });
   }
 
   private buildLeft(): HTMLElement {
@@ -168,6 +168,13 @@ export class TopBar {
     );
     const foot = h('div', { class: 'rci-foot' }, h('span', { class: 'cap-key' }, 'Demand cap reached — build parks, airports, seaports or landmarks'));
     return h('div', { class: 'rci-pop mp-glass i' }, h('div', { class: 'sec-title' }, 'Demand by type'), grid, groups, foot);
+  }
+
+  /** close the RCI popover; true if it was open */
+  closePopover(): boolean {
+    if (!this.rciOpen) return false;
+    this.setRci(false);
+    return true;
   }
 
   private setRci(open: boolean): void {
