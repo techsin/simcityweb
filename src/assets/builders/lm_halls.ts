@@ -650,23 +650,24 @@ function observationWheel(b: ModelBuilder, _v: number, rng: RNG): void {
   // terminal building (curved glass, roof deck)
   const term = roundRectPath(0, -1, 34, 17, 6, 4);
   b.paint(0x7faab0, Surf.GlassCurtain, 1, 4.6);
-  b.extrude(term, 0.1, 9.4, { topPaint: P(0xcac5ba, Surf.Pavement) });
+  b.extrude(term, 0.1, 12.4, { topPaint: P(0xcac5ba, Surf.Pavement) });
   b.paint(0xe8e6e0, Surf.Metal);
-  b.extrude(offsetPoly(term, 0.35), 9.4, 0.7, { top: false });
+  b.extrude(offsetPoly(term, 0.35), 12.4, 0.7, { top: false });
   b.extrude(offsetPoly(term, 0.35), 4.6, 0.4, { top: false });
+  b.extrude(offsetPoly(term, 0.35), 8.6, 0.4, { top: false });
   b.paint(GRASS_LUSH, Surf.Foliage);
-  for (const s of [-1, 1]) b.slab(s * 11 - 3.5, -6, s * 11 + 3.5, 3, 0.35, 10.1);
+  for (const s of [-1, 1]) b.slab(s * 11 - 3.5, -6, s * 11 + 3.5, 3, 0.35, 13.1);
   // boarding platform under the wheel
-  b.paint(0x8e8b84, Surf.Pavement).box(-5, 10.1, -3.5, 5, 10.6, 3.5);
+  b.paint(0x8e8b84, Surf.Pavement).box(-5, 13.1, -3.5, 5, 13.6, 3.5);
   // wheel geometry
-  const hub = 34.2, R = 20.4, Rc = 22.2, n = 24, seg = 36, hw = 1.4;
+  const hub = 37.2, R = 20.4, Rc = 22.2, n = 24, seg = 36, hw = 1.4;
   const W = (a: number, r: number, z: number): V3 => [Math.cos(a) * r, hub + Math.sin(a) * r, z];
   // legs (A-frames front and back) + ties
   b.paint(0xeef0f2, Surf.Metal);
   for (const s of [-1, 1]) {
     b.pipe([-12.5, 0.1, s * 12.5], [0, hub, s * 3.6], 0.85, 8);
     b.pipe([12.5, 0.1, s * 12.5], [0, hub, s * 3.6], 0.85, 8);
-    b.beam([-7.2, 15, s * 8.8], [7.2, 15, s * 8.8], 0.5);
+    b.beam([-6.6, 17, s * 8.2], [6.6, 17, s * 8.2], 0.5);
   }
   // hub + spindle
   b.paint(0xb9bec3, Surf.Metal);

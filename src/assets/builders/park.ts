@@ -652,7 +652,7 @@ function parkBaseball(b: ModelBuilder, _v: number, rng: RNG): void {
     b.pop();
   }
   // lights
-  for (const [x, z] of [[-21.5, 21.0], [21.5, 21.0], [-23, -7], [23, -7], [-10, -22.5], [10, -22.5]] as P2[]) floodMast(b, x, z, 14, x * 0.3, 2, { bank: 2.0, lattice: true });
+  for (const [x, z] of [[-21.5, 21.0], [21.5, 21.0], [-23, -7], [23, -7], [-10, -22.5], [10, -22.5]] as P2[]) floodMast(b, x, z, 13.2, x * 0.3, 2, { bank: 2.0, lattice: true });
   // trees + parking strip at the front corners
   for (const [x, z] of [[-21.5, -21.5], [21.5, -21.5], [-6, -23], [6, -23]] as P2[]) tree(b, rng, x, z, 1.0, 'round');
   for (const [x, z] of [[-17, 22.8], [-13.4, 22.8], [15.5, 22.8]] as P2[]) car(b, x, z, Math.PI / 2, rng.pick([0xb8bcc2, 0x8a1c1c, 0x1f3f7a, 0xf1f1ef]), 0.08);

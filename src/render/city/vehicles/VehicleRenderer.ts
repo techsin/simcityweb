@@ -141,6 +141,9 @@ interface Train {
   vmax: number;
   alive: boolean;
   wait: number;
+  /** optional sim route (kind 'train') being followed */
+  route: TrafficRoute | null;
+  ridx: number;
 }
 
 export class VehicleRenderer {
@@ -611,21 +614,38 @@ export class VehicleRenderer {
   }
 
   // ------------------------------------------------------------------ trains
+  private dirTo(a: number, b: number): number {
+    const N = this.net.N;
+    const dx = (b % N) - (a % N), dz = ((b / N) | 0) - ((a / N) | 0);
+    for (let d = 0; d < 4; d++) if (DX[d] === dx && DZ[d] === dz) return d;
+    return -1;
+  }
+
   private spawnTrain(): Train | null {
     const net = this.net;
     const N = net.N;
-    const rails: number[] = [];
-    for (let i = 0; i < N * N; i++) if (net.railMask[i]) rails.push(i);
-    if (rails.length < 6) return null;
-    const ci = rails[(this.rand() * rails.length) | 0];
-    const m = net.railMask[ci];
-    let hi = 0, tries = 0;
-    do { hi = (this.rand() * 4) | 0; tries++; } while (!(m & (1 << hi)) && tries < 12);
-    if (!(m & (1 << hi))) return null;
+    let ci = -1, hi = 0;
+    let route: TrafficRoute | null = null;
+    if (this.trainRoutes.length) {
+      route = this.trainRoutes[this.sampleCdf(this.trainCdf)];
+      ci = route.cells[0];
+      hi = this.dirTo(ci, route.cells[1]);
+      if (hi < 0 || !net.railMask[ci]) { route = null; ci = -1; }
+    }
+    if (ci < 0) {
+      const rails: number[] = [];
+      for (let i = 0; i < N * N; i++) if (net.railMask[i]) rails.push(i);
+      if (rails.length < 6) return null;
+      ci = rails[(this.rand() * rails.length) | 0];
+      const m = net.railMask[ci];
+      let tries = 0;
+      do { hi = (this.rand() * 4) | 0; tries++; } while (!(m & (1 << hi)) && tries < 12);
+      if (!(m & (1 << hi))) return null;
+    }
     const cars = 3 + ((this.rand() * 4) | 0);
     const tr: Train = {
       inst: [], lens: [], hc: new Int32Array(24), hi: new Uint8Array(24), ho: new Uint8Array(24), hl: new Float32Array(24), hn: 0,
-      cell: ci, hin: hi, hout: hi, t: 0, len: CELL_SIZE, speed: 0, vmax: 14 + this.rand() * 6, alive: true, wait: 0,
+      cell: ci, hin: hi, hout: hi, t: 0, len: CELL_SIZE, speed: 0, vmax: 14 + this.rand() * 6, alive: true, wait: 0, route, ridx: 0,
     };
     const freight = this.rand() < 0.5;
     for (let k = 0; k < cars; k++) {
@@ -636,7 +656,7 @@ export class VehicleRenderer {
       const bb = this.batch.bounds(g);
       tr.lens.push(Math.max(8, bb.max.z - bb.min.z));
     }
-    const ho = this.trainExit(ci, hi);
+    const ho = this.trainExit(tr, ci, hi);
     if (ho < 0) { for (const id of tr.inst) this.batch.remove(id); return null; }
     tr.hout = ho;
     tr.len = this.pathLen(hi, ho, 0, 0);
@@ -648,8 +668,15 @@ export class VehicleRenderer {
     return tr;
   }
 
-  private trainExit(ci: number, hi: number): number {
+  private trainExit(tr: Train, ci: number, hi: number): number {
     const m = this.net.railMask[ci];
+    if (tr.route) {
+      const R = tr.route;
+      if (tr.ridx + 1 >= R.cells.length) return -1; // route finished
+      const d = this.dirTo(ci, R.cells[tr.ridx + 1]);
+      if (d >= 0 && m & (1 << d)) return d;
+      tr.route = null; // route no longer matches the network: continue freely
+    }
     if (m & (1 << hi) && this.rand() < 0.85) return hi;
     const opts: number[] = [];
     for (let d = 0; d < 4; d++) if (m & (1 << d) && d !== OPP[hi]) opts.push(d);
@@ -675,7 +702,8 @@ export class VehicleRenderer {
       if (nb < 0 || !(this.net.railMask[nb] & (1 << OPP[tr.hout]))) return false;
       tr.hin = tr.hout;
       tr.cell = nb;
-      const ho = this.trainExit(nb, tr.hin);
+      if (tr.route) tr.ridx++;
+      const ho = this.trainExit(tr, nb, tr.hin);
       if (ho < 0) return false;
       tr.hout = ho;
       tr.len = this.pathLen(tr.hin, ho, 0, 0);
@@ -714,6 +742,17 @@ export class VehicleRenderer {
       }
       budget = 40;
       while (this.n > this.target && budget-- > 0) this.removeSlot(this.n - 1);
+      // every active service route (fire trucks, police patrols, garbage...) gets its vehicle
+      if (this.serviceRoutes.length) {
+        const active = new Set<TrafficRoute>();
+        for (let v = 0; v < this.n; v++) { const R = this.vroute[v]; if (R) active.add(R); }
+        for (const R of this.serviceRoutes) {
+          if (active.has(R)) continue;
+          const v = this.n;
+          if (v >= this.cap) break;
+          if (this.spawn(v, true, false, R)) this.n++;
+        }
+      }
       // trains
       const wantTrains = net.railCells >= 8 ? Math.min(this.trainCap, Math.max(1, Math.round(net.railCells / 45))) : 0;
       if (this.trains.length < wantTrains) {

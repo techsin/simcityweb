@@ -46,6 +46,7 @@ varying vec3 vSurf;
 varying vec3 vObjPos;
 varying vec3 vObjNormal;
 varying float vSeed;
+varying vec2 vInstXZ;
 uniform float uTime;
 uniform float uWind;
 `;
@@ -62,6 +63,7 @@ vec3 instPos = modelMatrix[3].xyz;
   instPos += instanceMatrix[3].xyz;
 #endif
 vSeed = fract(sin(dot(instPos.xz, vec2(12.9898, 78.233)) + instPos.y * 0.37) * 43758.5453);
+vInstXZ = instPos.xz;
 if (abs(surf.x - 8.0) < 0.5) {
   float hgt = max(position.y - 1.5, 0.0);
   float ph = uTime * 1.3 + instPos.x * 0.031 + instPos.z * 0.047;
@@ -76,6 +78,7 @@ varying vec3 vSurf;
 varying vec3 vObjPos;
 varying vec3 vObjNormal;
 varying float vSeed;
+varying vec2 vInstXZ;
 uniform float uNight;
 uniform float uLitFraction;
 uniform float uTime;
@@ -241,8 +244,17 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     albedo *= 0.92 + 0.12 * bnoise(P.xz * 2.0);
     rough = 0.75;
   } else if (type < 5.5) {
-    rough = 0.32;
-    metal = 0.75;
+    // metal: pattern 0 bare metal (tanks, pipes, rails); 1 solid car paint; 2 metallic car paint
+    if (pattern > 0.5 && pattern < 1.5) {
+      rough = 0.4;
+      metal = 0.15;
+    } else if (pattern > 1.5 && pattern < 2.5) {
+      rough = 0.32;
+      metal = 0.5;
+    } else {
+      rough = 0.32;
+      metal = 0.75;
+    }
   } else if (type < 6.5) {
     if (pattern > 8.5 && pattern < 9.5) {
       // ground light pool (lit pavement under lamps): painted ~0.7x the ground color -> reads as normal pavement
@@ -274,10 +286,17 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     }
   } else if (type < 8.5) {
     // foliage
-    float n = bnoise(P.xz * 0.9 + P.y * 0.7) ;
-    float n2 = bnoise(P.xz * 4.0 + P.y * 3.0);
+    // leaf clumps (fade the noise with its screen footprint so distant canopies don't shimmer)
+    vec2 fq = P.xz * 0.9 + P.y * 0.7;
+    float fw1 = clamp(1.0 - length(fwidth(fq)) * 0.8, 0.0, 1.0);
+    float n = mix(0.5, bnoise(fq), fw1);
+    float n2 = mix(0.5, bnoise(P.xz * 4.0 + P.y * 3.0), fw1 * fw1);
     albedo *= 0.78 + 0.35 * n + 0.1 * n2;
-    albedo *= 0.8 + 0.2 * vSeed;
+    // per-plant hue + value variation, plus stand-scale patches (neighbouring trees share a tint) so forests
+    // don't read as a uniform carpet. Depends only on the instance position -> identical for the far impostors.
+    albedo *= mix(vec3(0.9, 0.98, 1.05), vec3(1.07, 1.02, 0.84), vSeed) * (0.78 + 0.3 * fract(vSeed * 7.31));
+    float stand = bnoise(vInstXZ * 0.006) * 0.7 + bnoise(vInstXZ * 0.021 + 3.1) * 0.3;
+    albedo *= (0.9 + 0.2 * stand) * mix(vec3(1.03, 1.0, 0.94), vec3(0.96, 1.0, 1.04), stand);
     // canopy self-occlusion: undersides / lower leaves darker (up-facing lawns & hedge tops unaffected)
     albedo *= 0.6 + 0.4 * smoothstep(-0.7, 0.75, nObj.y);
     rough = 0.9;
