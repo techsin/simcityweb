@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import type { ModelBuilder, Paint, ColorLike } from '../ModelBuilder';
 import { Surf } from '../../core/types';
-import { triOut, quadOut, type V3 } from './nat_geom';
+import { triOut, quadOut, polyOut, type V3 } from './nat_geom';
 
 export const P = (color: ColorLike, surf: Surf = Surf.Plain, pattern?: number, floor?: number): Paint => ({ color, surf, pattern, floor });
 
@@ -20,9 +20,12 @@ export const TIRE = 0x1d1d1f;
 export const HUB = 0xb4b8bc;
 export const TRIM = 0x26282b; // black plastic trim / bumpers
 export const CHASSIS = 0x2a2b2e;
-export const CAR_GLASS = P(0x1c2530, Surf.Metal); // dark reflective glass that does NOT light up at night
+export const CAR_GLASS = P(0x1c2530, Surf.GlassPlain, 1); // vehicle glass: reflective, never lit at night
 export const HEAD = P(0xfff2d8, Surf.Emissive);
-export const TAIL = P(0xff2a18, Surf.Emissive);
+export const TAIL = P(0xff0804, Surf.Emissive, 3);
+/** Emergency beacons: red at 0.75x, blue at 1x emissive intensity. */
+export const BEACON_RED = P(0xff0a06, Surf.Emissive, 3);
+export const BEACON_BLUE = P(0x0a30ff, Surf.Emissive, 4);
 export const AMBER = P(0xffa020, Surf.Emissive);
 
 /** Realistic car paint palette (sRGB): silver, black, white, dark red, navy, grey, green, beige, blue, burgundy, champagne, graphite. */
@@ -113,11 +116,17 @@ export function axle(b: ModelBuilder, z: number, r: number, hwOut: number, o: { 
     }
   }
   if (o.hub !== null) {
+    // octagonal hub cap (6 tris per side)
     const h = (o.hubR ?? 0.55) * r;
     b.paint(o.hub ?? HUB, Surf.Metal);
     for (const s of [1, -1]) {
       const x = s * (hwOut + 0.012);
-      quadOut(b, [x, cy - h, z], [x, cy, z + h], [x, cy + h, z], [x, cy, z - h], [s, 0, 0]);
+      const pts: V3[] = [];
+      for (let k = 0; k < 8; k++) {
+        const a = ((k + 0.5) / 8) * Math.PI * 2;
+        pts.push([x, cy + Math.sin(a) * h, z + Math.cos(a) * h]);
+      }
+      polyOut(b, pts, [s, 0, 0]);
     }
   }
 }
@@ -128,6 +137,41 @@ export function lamp(b: ModelBuilder, x0: number, x1: number, y0: number, y1: nu
   const one = (a: number, c: number) => quadOut(b, [a, y0, z], [c, y0, z], [c, y1, z], [a, y1, z], [0, 0, dir]);
   one(x0, x1);
   if (mirror) one(-x1, -x0);
+}
+
+/** Headlight pair: like lamp() with HEAD paint, 20% larger around its center. */
+export function headLamp(b: ModelBuilder, x0: number, x1: number, y0: number, y1: number, z: number, paint: Paint = HEAD): void {
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, hx = ((x1 - x0) / 2) * 1.2, hy = ((y1 - y0) / 2) * 1.2;
+  lamp(b, cx - hx, cx + hx, cy - hy, cy + hy, z, 1, paint);
+}
+
+/** Rear-most (dir -1) or front-most (dir 1) z of the given profile polygons at height y (null if none crosses y). */
+export function profileZAt(polys: PP[][], y: number, dir: 1 | -1): number | null {
+  let best: number | null = null;
+  for (const pts of polys) {
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], c = pts[(i + 1) % pts.length];
+      if ((a.y - y) * (c.y - y) > 0 || a.y === c.y) continue;
+      const z = a.z + ((y - a.y) / (c.y - a.y)) * (c.z - a.z);
+      if (best === null || z * dir > best * dir) best = z;
+    }
+  }
+  return best;
+}
+
+/**
+ * Tail-light pair that hugs a slanted rear profile, plus 0.3 m wrap-around quads on both sides (x = ±(hw + 0.012)).
+ * x0..x1 = lamp span (mirrored), y0..y1 = height. ~12 tris.
+ */
+export function tailLamps(b: ModelBuilder, polys: PP[][], hw: number, x0: number, x1: number, y0: number, y1: number, paint: Paint = TAIL): void {
+  const z0 = (profileZAt(polys, y0, -1) ?? -2) - 0.012;
+  const z1 = (profileZAt(polys, y1, -1) ?? z0) - 0.012;
+  b.paint(paint);
+  for (const s of [1, -1]) {
+    const a = s * x0, c = s * x1;
+    quadOut(b, [a, y0, z0], [c, y0, z0], [c, y1, z1], [a, y1, z1], [0, 0, -1]);
+  }
+  sideQuad(b, hw + 0.012, [[z0 + 0.02, y0], [z0 + 0.32, y0], [z1 + 0.32, y1], [z1 + 0.02, y1]], paint);
 }
 
 /** Flat quad on the side plane x = ±x (facing outward), given (z, y) corners. Both sides when side = 0. */
