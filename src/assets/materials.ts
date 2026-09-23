@@ -11,7 +11,9 @@
  *   4 sparse small high windows (industrial)      5 dense grid (office)
  *   6 shopfront ground floor + punched above       7 arched civic windows (tall, rounded look)
  * Glass curtain tints (Surf.GlassCurtain, surf.y): 0 blue, 1 teal/green, 2 bronze/gold, 3 black/dark, 4 silver, 5 sky/light blue
- *   (at night: floors lit in clusters, some floors dark, per-panel brightness; 2 bronze/gold lights warmer (hotel-like))
+ *   6 residential glass (neutral blue-grey; at night lit like homes: ~4 m apartment units, warm window colours,
+ *   ~55-75% lit in the evening, no dark floors)
+ *   (offices, tints 0-5, at night: floors lit in clusters, some floors dark, per-panel brightness; 2 bronze/gold warmer)
  * Emissive (Surf.Emissive, surf.y): 0 default intensity; 1..8 intensity x pattern/4 (4 = default, 2 = half, 8 = double);
  *   9 = ground light pool: paint it ~0.7x the surrounding ground color -> plain pavement by day (no tint),
  *       warm lamp-lit pavement at night.
@@ -197,7 +199,9 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     else if (pattern > 1.5 && pattern < 2.5) tint = vec3(0.45, 0.35, 0.2);
     else if (pattern > 2.5 && pattern < 3.5) tint = vec3(0.07, 0.08, 0.1);
     else if (pattern > 3.5 && pattern < 4.5) tint = vec3(0.55, 0.58, 0.62);
-    else if (pattern > 4.5) tint = vec3(0.45, 0.6, 0.78);
+    else if (pattern > 4.5 && pattern < 5.5) tint = vec3(0.45, 0.6, 0.78);
+    else if (pattern > 5.5) tint = vec3(0.34, 0.42, 0.48); // 6: residential glass (neutral blue-grey)
+    bool resGlass = pattern > 5.5 && pattern < 6.5;
     albedo = tint * 0.55;
     rough = 0.06;
     metal = 0.92;
@@ -212,8 +216,22 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       // per-panel subtle tint variation (reflection breakup)
       vec2 cell = vec2(floor(cu / 2.0), floor(cv));
       float h = bh31(vec3(cell, floor(vSeed * 51.0)));
-      albedo *= 0.9 + 0.2 * h;
-      rough += 0.05 * h;
+      // light tints (silver / sky / residential) show blotches easily -> gentler variation
+      float calmV = pattern > 3.5 ? 1.0 : 0.0;
+      albedo *= mix(0.9 + 0.2 * h, 0.95 + 0.1 * h, calmV);
+      rough += mix(0.05, 0.03, calmV) * h;
+      if (resGlass) {
+        // residential towers: apartments (~4 m wide units per floor) lit like homes, warm window colours,
+        // ~55-75% lit in the evening, no fully dark floors
+        vec2 unit = vec2(floor(u / 4.0), cell.y);
+        float hu = bh31(vec3(unit, floor(vSeed * 71.0)));
+        float litR = clamp(uLitFraction * 0.95 + 0.05, 0.0, 1.0) * (0.8 + 0.4 * vSeed);
+        float fadeR = clamp(1.0 - max(fwidth(u / 4.0), wv) * 1.6, 0.0, 1.0);
+        float litU = mix(clamp(litR, 0.0, 1.0), step(hu, litR), fadeR);
+        vec3 wl = mix(vec3(1.0, 0.8, 0.52), windowLight(bh11(hu * 57.3 + vSeed)), fadeR);
+        float curtain = 0.6 + 0.4 * smoothstep(0.1, 0.9, fract(u / 4.0)) * (1.0 - smoothstep(0.1, 0.9, fract(u / 4.0)) * 0.5);
+        emis += wl * litU * (1.0 - mull) * night * mix(0.8, (0.55 + 0.6 * bh11(hu * 13.1)) * curtain, fadeR) * 1.1;
+      } else {
       // offices / hotels at night: lights clustered per floor section, some floors entirely dark, per-panel
       // brightness, color temperature per floor (warm tints -> hotel-like warm light, blue tints -> office white)
       float fl = bh31(vec3(floor(cu / 6.0), cell.y, vSeed * 7.0));
@@ -231,6 +249,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float ceilG = 0.55 + 0.45 * smoothstep(0.15, 0.85, fract(cv));
       float panelB = 0.45 + 0.75 * bh31(vec3(floor(cu), cell.y, vSeed * 19.0));
       emis += officeC * lit * (1.0 - mull) * night * mix(0.75, ceilG * panelB, fadeF) * 0.95;
+      }
     }
   } else if (type < 3.5) {
     // flat roof: gravel + tar patches
@@ -277,9 +296,10 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
   } else if (type < 7.5) {
     // plain glass: pattern 0 storefront / small windows (warm lit at night), pattern 1 vehicle glass (never glows)
     float h = bh31(vec3(floor(u / 4.0), floor(v / 3.0), vSeed * 31.0));
-    albedo = mix(vec3(0.07, 0.09, 0.12), albedo * 0.3, 0.3);
-    rough = 0.08;
-    metal = 0.8;
+    // same look as the WallWindows procedural glass so modelled and procedural windows match
+    albedo = mix(vec3(0.08, 0.1, 0.13), vec3(0.2, 0.26, 0.32), 0.3) * (0.9 + 0.2 * h);
+    rough = 0.12;
+    metal = 0.55;
     if (pattern > 0.5 && pattern < 1.5) {
       albedo = vec3(0.035, 0.045, 0.055) + albedo * 0.2;
       rough = 0.05;

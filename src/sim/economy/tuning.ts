@@ -34,8 +34,12 @@ export const REGION_JOBS_FOR_RESIDENTS = 1;
  * (≈0.2–0.3 in well-connected cities) doesn't mean "can't find a job", so it only drives a per-building penalty.
  */
 export const TRAFFIC_ACCESS_WEIGHT = 0;
-/** with sim-infra traffic: job fill = (1 − w) × global fill + w × traffic job fill of the building */
-export const TRAFFIC_JOBFILL_WEIGHT = 0.5;
+/**
+ * with sim-infra traffic: job fill = (1 − w) × global fill + w × traffic job fill of the building. Kept mild: traffic's
+ * per-building jobFill is bimodal (many sites at 0.1–0.2 even with surplus workers and 6-minute commutes), and a
+ * strong weight starves cities of jobs (reported to sim-infra).
+ */
+export const TRAFFIC_JOBFILL_WEIGHT = 0.15;
 
 /** worker wealth mix per job DevType: [R$, R$$, R$$$] (who holds those jobs) */
 export const JOB_WEALTH_MIX: readonly (readonly [number, number, number])[] = [
