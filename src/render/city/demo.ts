@@ -161,6 +161,34 @@ for (let t = 0; t < simT; t += dtS) {
   view.update(dtS);
 }
 
+// ?perf=1: CPU cost of update() and of incremental edits
+if (P.get('perf') === '1') {
+  const N = st.size;
+  const t0p = performance.now();
+  const frames = 120;
+  for (let k = 0; k < frames; k++) { sharedUniforms.uTime.value += 1 / 60; view.update(1 / 60); }
+  const upd = (performance.now() - t0p) / frames;
+  // network edit: draw a new road across a block, measure until all dirty chunks are rebuilt
+  const zEdit = Math.round(N * 0.55);
+  const t1p = performance.now();
+  for (let x = Math.round(N * 0.3); x < Math.round(N * 0.45); x++) {
+    const i = zEdit * N + x;
+    if (!st.network[i] && st.building[i] < 0) st.network[i] = Network.Road;
+  }
+  events.emit('networkChanged', { x0: Math.round(N * 0.3), z0: zEdit, x1: Math.round(N * 0.45), z1: zEdit + 1 });
+  let guard = 0;
+  while (view.roads.hasDirty && guard++ < 1000) view.update(1 / 60);
+  const edit = performance.now() - t1p;
+  // building churn: remove + re-add 200 buildings
+  const t2p = performance.now();
+  const some = [...st.buildings.values()].slice(0, 200);
+  for (const b of some) events.emit('buildingRemoved', b);
+  for (const b of some) events.emit('buildingAdded', b);
+  view.update(1 / 60);
+  const churn = performance.now() - t2p;
+  console.log('CITY_PERF ' + JSON.stringify({ size: N, buildings: st.buildings.size, updateMs: +upd.toFixed(2), roadEditMs: Math.round(edit), churn200Ms: Math.round(churn), ...view.stats() }));
+}
+
 function statsLine(): string {
   const s = view.stats();
   const info = world.renderer.info.render;
