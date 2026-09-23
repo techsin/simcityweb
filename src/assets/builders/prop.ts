@@ -30,11 +30,23 @@ function signalHead(b: ModelBuilder, x: number, y: number, z: number, dir: 1 | 2
   b.paint(0x1f2124, Surf.Metal);
   if (dir === 1) b.box(x - 0.2, y - 0.55, z - 0.16, x + 0.2, y + 0.55, z + 0.16);
   else b.box(x - 0.16, y - 0.55, z - 0.2, x + 0.16, y + 0.55, z + 0.2);
-  const cols = [0xff2a1a, 0xffa31a, 0x2aff7a];
+  // 0.62 x 1.3 m backplate (double sided) behind the head
+  b.paint(0x1a1b1d, Surf.Metal, 1);
+  const bw = 0.31, bh = 0.65;
+  if (dir === 1) {
+    const zb = z - 0.17;
+    quadOut(b, [x - bw, y - bh, zb], [x + bw, y - bh, zb], [x + bw, y + bh, zb], [x - bw, y + bh, zb], [0, 0, 1]);
+    quadOut(b, [x - bw, y - bh, zb], [x + bw, y - bh, zb], [x + bw, y + bh, zb], [x - bw, y + bh, zb], [0, 0, -1]);
+  } else {
+    const xb = x - 0.17;
+    quadOut(b, [xb, y - bh, z - bw], [xb, y - bh, z + bw], [xb, y + bh, z + bw], [xb, y + bh, z - bw], [1, 0, 0]);
+    quadOut(b, [xb, y - bh, z - bw], [xb, y - bh, z + bw], [xb, y + bh, z + bw], [xb, y + bh, z - bw], [-1, 0, 0]);
+  }
+  const cols = [0xff0a06, 0xffa31a, 0x00e08a];
   const dim = [0x3a1210, 0x3a2a10, 0x103a22];
   for (let i = 0; i < 3; i++) {
     const cy = y + 0.34 - i * 0.34;
-    const paint: Paint = i === lit ? P(cols[i], Surf.Emissive) : P(dim[i], Surf.Metal);
+    const paint: Paint = i === lit ? P(cols[i], Surf.Emissive, i === 1 ? 0 : 3) : P(dim[i], Surf.Metal);
     b.paint(paint);
     const r = 0.12;
     if (dir === 1) quadOut(b, [x - r, cy - r, z + 0.17], [x + r, cy - r, z + 0.17], [x + r, cy + r, z + 0.17], [x - r, cy + r, z + 0.17], [0, 0, 1]);
@@ -45,11 +57,17 @@ function signalHead(b: ModelBuilder, x: number, y: number, z: number, dir: 1 | 2
 /** Shipping container along X (40 ft or 20 ft) with a darker door end at +X. 10 tris. */
 function box40(b: ModelBuilder, x: number, y: number, z: number, long: boolean, col: number, alongZ = false) {
   const L = long ? 12.19 : 6.06, W = 2.44, H = 2.59;
+  col = grime(col);
   const door = { color: mixHex(col, 0x202020, 0.25), surf: Surf.Corrugated };
   const top = { color: mixHex(col, 0x9a9a9a, 0.15), surf: Surf.Metal };
   b.paint(col, Surf.Corrugated);
   if (!alongZ) b.box(x - L / 2, y, z - W / 2, x + L / 2, y + H, z + W / 2, { px: door, top });
   else b.box(x - W / 2, y, z - L / 2, x + W / 2, y + H, z + L / 2, { pz: door, top });
+}
+let grimeRng: RNG | null = null;
+/** weathering: slight colour jitter + 10% toward rust-brown dirt */
+function grime(col: number): number {
+  return grimeRng ? mixHex(jitterHex(grimeRng, col, 0.08), 0x6a5a4a, 0.1) : col;
 }
 const CONTAINER_COLS = [0x2a6fa8, 0xb84a2a, 0x3e7d4a, 0xd8a23a, 0x8a8f94, 0xc9ccd0, 0x6b2f5a, 0xd06a2a, 0x2f4f7f, 0x9b2f2a, 0x4a8a8a];
 
@@ -127,24 +145,21 @@ export const models: ModelBuilders = {
     quadOut(b, [-0.55, 5.86, 0.085], [-1.85, 5.86, 0.085], [-1.85, 5.94, 0.085], [-0.55, 5.94, 0.085], [0, 0, 1]);
   },
 
-  // Park bench facing +Z: cast iron frames, 3 seat slats, 2 back slats. ~100 tris.
+  // Park bench facing +Z: two cast-iron end frames (L-shaped side profile), 3 seat slats, 2 back slats. ~66 tris.
   bench(b) {
-    b.paint(0x2a2c2e, Surf.Metal);
-    for (const x of [-0.82, 0.82]) {
-      b.beam([x, 0, 0.22], [x, 0.44, 0.18], 0.07);
-      b.beam([x, 0, -0.24], [x, 0.9, -0.34], 0.07);
-      b.beam([x, 0.42, 0.26], [x, 0.44, -0.28], 0.06);
-      b.beam([x, 0.62, 0.24], [x, 0.64, -0.3], 0.06);
-    }
+    const iron = P(0x2a2c2e, Surf.Metal, 1);
+    const frame = [
+      { z: 0.24, y: 0 }, { z: 0.24, y: 0.44 }, { z: -0.2, y: 0.44 }, { z: -0.3, y: 0.9 }, { z: -0.37, y: 0.9 }, { z: -0.3, y: 0 },
+    ];
+    for (const x of [-0.82, 0.82]) profileSolid(b, frame, 0.035, iron, { x });
     b.paint(0x8a5f38, Surf.Wood);
+    const slat = { bottom: null, nx: null, px: null };
     for (let i = 0; i < 3; i++) {
-      const z = 0.2 - i * 0.16;
-      b.box(-0.95, 0.44, z - 0.065, 0.95, 0.48, z + 0.065);
+      const z = 0.18 - i * 0.15;
+      b.box(-0.95, 0.44, z - 0.06, 0.95, 0.48, z + 0.06, slat);
     }
-    b.push().translate(0, 0, -0.3).rotateX(-0.2);
-    b.box(-0.95, 0.52, -0.02, 0.95, 0.64, 0.02);
-    b.box(-0.95, 0.72, -0.02, 0.95, 0.86, 0.02);
-    b.pop();
+    b.box(-0.95, 0.56, -0.29, 0.95, 0.68, -0.25, slat);
+    b.box(-0.95, 0.75, -0.33, 0.95, 0.87, -0.29, slat);
   },
 
   // v0 classic round two-tier stone fountain with water veil; v1 modern square basin with a jet grid. 100-150 tris.
@@ -229,18 +244,19 @@ export const models: ModelBuilders = {
 
   // Stacks of 20/40 ft containers in varied colors. v0 two tiers, v1 three tiers, v2 mixed staggered. 60-120 tris.
   container_stack(b, v, rng) {
+    grimeRng = rng;
     const col = () => rng.pick(CONTAINER_COLS);
     if (v === 0) {
       for (let i = 0; i < 3; i++) box40(b, 0, 0, -2.6 + i * 2.6, true, col());
       box40(b, -3.0, 2.6, -1.3, false, col());
       box40(b, 1.5, 2.6, 1.3, true, col());
     } else if (v === 1) {
-      for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) box40(b, -3.1 + i * 12.4 - 3.1, 0, -1.3 + j * 2.6, true, col());
-      box40(b, -6.2, 2.6, -1.3, true, col());
-      box40(b, -6.2, 2.6, 1.3, true, col());
-      box40(b, 6.2, 2.6, -1.3, true, col());
-      box40(b, -6.2, 5.2, 1.3, true, col());
-      box40(b, 3.1, 0, 4.2, false, col(), true);
+      // single 40 ft column: 3 rows x 3 tiers (a couple of top slots empty)
+      for (let r = 0; r < 3; r++) for (let t = 0; t < 3; t++) {
+        if (t === 2 && r === 0) continue;
+        box40(b, 0, t * 2.59, (r - 1) * 2.5, true, col());
+      }
+      box40(b, 3.05, 5.18, -2.5, false, col());
     } else {
       for (let i = 0; i < 3; i++) box40(b, -6.4 + i * 6.3, 0, 0, false, col());
       box40(b, -3.25, 2.6, 0, false, col());
@@ -249,14 +265,15 @@ export const models: ModelBuilders = {
       box40(b, 5.3, 0, -3.4, false, col(), true);
       box40(b, 5.3, 2.6, -3.4, false, col(), true);
     }
+    grimeRng = null;
   },
 
   // Construction site dressing filling the cell: dirt, hoarding with gate on +Z; v0 tower crane, v1 concrete frame with
   // scaffolding, v2 excavation with excavator + pile rig. <= 200 tris.
   construction_site(b, v, rng) {
     siteBase(b, rng);
-    const yel = P(0xe8b421, Surf.Metal);
-    const WARN = P(0xff3020, Surf.Emissive);
+    const yel = P(0xe0a81e, Surf.Metal, 1);
+    const WARN = P(0xff0a06, Surf.Emissive, 3);
     if (v === 0) {
       // foundation slab + column stubs
       b.paint(CONCRETE, Surf.Pavement).box(-5, 0.08, -2, 5, 0.5, 6);
@@ -264,9 +281,9 @@ export const models: ModelBuilders = {
       for (const [x, z] of [[-4.5, -1.5], [4.5, -1.5]]) b.box(x - 0.3, 0.5, z - 0.3, x + 0.3, 3.2, z + 0.3, { bottom: null });
       // tower crane at (-5,-5): mast, slewing unit, cab, jib along +X, counter-jib + counterweight, tower head, ties, hook + load
       const mx = -5.2, mz = -5.2, H = 21;
-      b.paint(yel).box(mx - 0.8, 0.08, mz - 0.8, mx + 0.8, H, mz + 0.8);
+      b.paint(yel).box(mx - 0.6, 0.08, mz - 0.6, mx + 0.6, H, mz + 0.6);
       b.paint(yel).box(mx - 1.0, H, mz - 1.0, mx + 1.0, H + 1.0, mz + 1.0, { bottom: null });
-      b.paint(0xf2f0ea, Surf.Plain).box(mx + 1.0, H - 0.6, mz - 0.1, mx + 2.4, H + 0.8, mz + 1.0, { pz: { color: 0x2a3440, surf: Surf.Metal } });
+      b.paint(0xf2f0ea, Surf.Plain).box(mx + 0.6, H - 0.6, mz - 0.1, mx + 2.0, H + 0.8, mz + 1.0, { pz: { color: 0x2a3440, surf: Surf.Metal } });
       b.paint(yel).box(mx - 0.5, H + 1.0, mz - 0.5, mx + 13.0, H + 2.0, mz + 0.5);
       b.box(mx - 7.5, H + 1.0, mz - 0.7, mx - 0.5, H + 1.7, mz + 0.7);
       b.paint(0x8a8a86, Surf.Pavement).box(mx - 7.4, H - 0.8, mz - 0.8, mx - 5.2, H + 1.0, mz + 0.8, { top: null });

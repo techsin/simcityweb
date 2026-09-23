@@ -555,6 +555,9 @@ export class CityScene {
     const z = computeUiZoom(w, hh, this.settings.uiScale);
     setUiZoom(z);
     this.uiRoot.style.setProperty('--ui-zoom', String(z));
+    const layoutW = w / z;
+    this.uiRoot.classList.toggle('narrow', layoutW < 1500);
+    this.uiRoot.classList.toggle('xnarrow', layoutW < 1380);
     this.panels?.clampAll();
   }
 

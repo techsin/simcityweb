@@ -52,8 +52,11 @@ try {
     await p.waitForFunction(() => window.__ready === true, null, { timeout: 400000, polling: 250 }).catch(() => console.log('WARN: __ready not set within timeout'));
     const extra = parseInt(process.env.SHOOT_WAIT ?? '0', 10);
     if (extra) await p.waitForTimeout(extra);
-    if (file === 'gallery.html') await p.locator('#wrap').screenshot({ path: out });
-    else await p.screenshot({ path: out });
+    if (file === 'gallery.html') {
+      const box = await p.evaluate(() => { const r = document.getElementById('wrap').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; });
+      await p.setViewportSize({ width: Math.max(vw, Math.ceil(box.x + box.width)), height: Math.max(vh, Math.ceil(box.y + box.height)) });
+      await p.screenshot({ path: out, clip: box, timeout: 300000 });
+    } else await p.screenshot({ path: out, timeout: 300000 });
     console.log(`saved ${out} (${Date.now() - t0} ms)`);
     await p.close();
   }

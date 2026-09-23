@@ -58,7 +58,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     shadowRadius: 1,
     shadowRangeMul: 2.2,
     terrainShadows: false,
-    treeShadows: false,
+    treeShadows: true,
     ao: 0,
     aoSamples: 0,
     bloom: false,

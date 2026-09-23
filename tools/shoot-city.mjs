@@ -40,7 +40,7 @@ try {
     const p = await browser.newPage({ viewport: { width: vw, height: vh } });
     p.on('console', (m) => {
       const t = m.text();
-      if (m.type() === 'error' || m.type() === 'warning' || t.startsWith('CITY_STATS') || t.startsWith('[')) console.log(`[console.${m.type()}] ${t.slice(0, 4000)}`);
+      if (m.type() === 'error' || m.type() === 'warning' || t.startsWith('CITY_') || t.startsWith('[')) console.log(`[console.${m.type()}] ${t.slice(0, 4000)}`);
     });
     p.on('pageerror', (e) => console.log(`[pageerror] ${e.message}\n${e.stack ?? ''}`));
     const t0 = Date.now();

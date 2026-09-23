@@ -577,10 +577,8 @@
 .dev-badge { position: absolute; left: 12px; top: 68px; padding: 4px 8px; font-size: 10.5px; font-weight: 700; color: var(--warn); pointer-events: auto; cursor: help; border-color: rgba(255,181,71,.35); }
 
 /* responsive */
-@media (max-width: 1400px) {
-  .tb-btn { width: 56px; }
-  .hud-seg { padding: 0 8px; }
-}
-@media (max-width: 1320px) {
-  .hud-top .hide-sm { display: none !important; }
-}
+/* responsive: CityScene sets .narrow / .xnarrow from the effective (zoomed) layout width */
+.mp-ui.narrow .tb-btn { width: 54px; }
+.mp-ui.narrow .hud-seg { padding: 0 8px; }
+.mp-ui.xnarrow .hud-top .hide-sm { display: none !important; }
+.mp-ui.xnarrow .city-name { max-width: 120px; }

@@ -193,7 +193,7 @@ export class TreeRenderer {
     this.lodDistance = opts.lodDistance;
     this.density = opts.density;
     this.castShadows = opts.castShadows;
-    for (const c of this.chunks) for (const m of c.near) if (m) m.castShadow = opts.castShadows;
+    for (const c of this.chunks) for (const m of [...c.near, ...c.far]) if (m) m.castShadow = opts.castShadows;
     if (densityChanged) this.markAll();
   }
 
@@ -409,7 +409,7 @@ export class TreeRenderer {
       mesh = new THREE.InstancedMesh(geo, this.material, cap);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       if (color) mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
-      mesh.castShadow = near ? this.castShadows : false;
+      mesh.castShadow = this.castShadows; // impostors are cheap (~20 tris) and ground the forest in the far cascade
       mesh.receiveShadow = true;
       mesh.matrixAutoUpdate = false;
       mesh.name = near ? `trees-${geo.name}` : 'trees-far';

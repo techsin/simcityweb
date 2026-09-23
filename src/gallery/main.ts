@@ -10,6 +10,8 @@
  *   view=iso|front|top|back|close   camera direction (default iso = front-right, like the game camera)
  *   cols=<n> tile=<px>      layout (default cols 4, tile 360)
  *   ctx=1                   show neighbouring road + lot outline context
+ *   fy=<0..1>               look-at height as a fraction of model height (e.g. fy=0.9 to inspect tower tops)
+ *   zoom=<x>                camera distance multiplier (e.g. zoom=0.3 for a tight close-up)
  * Sets window.__ready = true after rendering; window.__stats holds per-model tri counts + bound checks.
  */
 import * as THREE from 'three';
@@ -27,6 +29,8 @@ const view = params.get('view') ?? 'iso';
 const cols = parseInt(params.get('cols') ?? '4', 10);
 const tile = parseInt(params.get('tile') ?? '360', 10);
 const showCtx = params.get('ctx') !== '0';
+const focusY = params.get('fy') != null ? parseFloat(params.get('fy')!) : null;
+const zoomMul = parseFloat(params.get('zoom') ?? '1');
 
 interface Item { entry: ManifestEntry; variant: number; }
 const items: Item[] = [];
@@ -162,10 +166,13 @@ for (const it of items) {
   }
   dir.normalize();
   const dist = (sphere.radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * (view === 'close' ? 0.62 : 1.02);
-  camera.position.copy(sphere.center).addScaledVector(dir, dist);
-  camera.lookAt(sphere.center);
-  camera.near = Math.max(0.1, dist - sphere.radius * 3);
-  camera.far = dist + sphere.radius * 4;
+  const look = sphere.center.clone();
+  if (focusY != null) look.y = bb.max.y * focusY;
+  const d2 = dist * zoomMul;
+  camera.position.copy(look).addScaledVector(dir, d2);
+  camera.lookAt(look);
+  camera.near = Math.max(0.1, d2 - sphere.radius * 3);
+  camera.far = d2 + sphere.radius * 4;
   camera.updateProjectionMatrix();
   // sun
   const sunDir = new THREE.Vector3(0.55, 0.9, 0.35).normalize();

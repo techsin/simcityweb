@@ -10,7 +10,7 @@
 import type { ModelBuilders } from '../registry';
 import type { ModelBuilder, Paint } from '../ModelBuilder';
 import { Surf } from '../../core/types';
-import { P, profileSolid, axle, lamp, sideRect, sideQuad, topQuad, arch, CAR_PAINT, CAR_GLASS, HEAD, TAIL, AMBER, TRIM, CHASSIS, TIRE, type PP } from './veh_parts';
+import { P, profileSolid, axle, lamp, headLamp, tailLamps, sideRect, sideQuad, topQuad, arch, CAR_PAINT, CAR_GLASS, TAIL, AMBER, TRIM, CHASSIS, TIRE, BEACON_RED, BEACON_BLUE, type PP } from './veh_parts';
 import { limb, triOut, quadOut, polyOut, vnorm, type V3 } from './nat_geom';
 
 const GLASS_LIT = P(0x2a3440, Surf.GlassPlain);
@@ -18,8 +18,11 @@ const GRILLE = P(0x1a1b1d, Surf.Metal);
 const CHROME = P(0xc8ccd0, Surf.Metal);
 const WHITE = 0xeeeeea;
 
-/** body paint: metallic car paint */
-const carPaint = (c: number): Paint => P(c, Surf.Metal);
+/** car body paint: metallic flake (pattern 2) for silvers/greys/champagnes, solid paint (pattern 1) otherwise */
+const METALLIC = new Set([0xb9bec4, 0x5d646b, 0xc9b995, 0xa6977a, 0x3a3e44]);
+const carPaint = (c: number): Paint => P(c, Surf.Metal, METALLIC.has(c) ? 2 : 1);
+/** solid painted body panels of trucks, buses, trains, planes */
+const body1 = (c: number): Paint => P(c, Surf.Metal, 1);
 
 // ------------------------------------------------------------------ passenger cars
 interface CarShape {
@@ -60,7 +63,7 @@ function sedanShape(): CarShape {
       { z: -1.38, y: 0.99, w: 0.95, p: null },
     ],
     head: [0.5, 0.8, 0.64, 0.74, 2.36],
-    tail: [0.52, 0.82, 0.76, 0.9, -2.37],
+    tail: [0.42, 0.86, 0.74, 0.93, -2.37],
     grille: [-0.42, 0.42, 0.54, 0.7, 2.37],
   };
 }
@@ -88,7 +91,7 @@ function hatchShape(): CarShape {
       { z: -1.94, y: 0.99, w: 0.93, p: null },
     ],
     head: [0.45, 0.76, 0.64, 0.75, 2.03],
-    tail: [0.55, 0.8, 0.8, 0.98, -2.04],
+    tail: [0.5, 0.84, 0.78, 1.02, -2.04],
     grille: [-0.36, 0.36, 0.52, 0.66, 2.05],
   };
 }
@@ -127,9 +130,9 @@ function drawCar(b: ModelBuilder, sh: CarShape, body: Paint) {
   axle(b, sh.zf, sh.r, sh.hw - 0.08);
   axle(b, sh.zr, sh.r, sh.hw - 0.08);
   const [hx0, hx1, hy0, hy1, hz] = sh.head;
-  lamp(b, hx0, hx1, hy0, hy1, hz, 1, HEAD);
-  const [tx0, tx1, ty0, ty1, tz] = sh.tail;
-  lamp(b, tx0, tx1, ty0, ty1, tz, -1, TAIL);
+  headLamp(b, hx0, hx1, hy0, hy1, hz);
+  const [tx0, tx1, ty0, ty1] = sh.tail;
+  tailLamps(b, [sh.body, sh.green], sh.hw, tx0, tx1, ty0, ty1);
   if (sh.grille) {
     const [gx0, gx1, gy0, gy1, gz] = sh.grille;
     lamp(b, gx0, gx1, gy0, gy1, gz, 1, GRILLE, false);
@@ -208,14 +211,14 @@ export const models: ModelBuilders = {
     b.box(-hw, 1.2, -2.7, hw, 1.55, -2.6, { nx: null, px: null });
     axle(b, zf, r, hw - 0.06);
     axle(b, zr, r, hw - 0.06);
-    lamp(b, 0.55, 0.9, 0.84, 0.98, 2.68, 1, HEAD);
+    headLamp(b, 0.55, 0.9, 0.84, 0.98, 2.68);
     lamp(b, -0.5, 0.5, 0.6, 0.96, 2.69, 1, GRILLE, false);
     lamp(b, 0.72, 0.94, 1.0, 1.45, -2.71, -1, TAIL);
   },
 
   car_taxi(b) {
     const sh = sedanShape();
-    drawCar(b, sh, P(0xf0bd2a, Surf.Metal));
+    drawCar(b, sh, P(0xf2b705, Surf.Metal, 1));
     // checker stripe + roof sign
     sideRect(b, sh.hw + 0.012, -1.25, 1.1, 0.8, 0.88, P(0x1b1b1b));
     b.paint(0x222222, Surf.Plain).box(-0.36, 1.43, -0.32, 0.36, 1.47, 0.08);
@@ -226,19 +229,19 @@ export const models: ModelBuilders = {
     const sh = sedanShape();
     drawCar(b, sh, carPaint(0x15171a));
     // white doors
-    sideQuad(b, sh.hw + 0.012, [[-1.05, 0.42], [1.1, 0.42], [1.1, 0.95], [-1.05, 0.97]], P(0xf2f2ee, Surf.Metal));
+    sideQuad(b, sh.hw + 0.012, [[-1.05, 0.42], [1.1, 0.42], [1.1, 0.95], [-1.05, 0.97]], P(0xf2f2ee, Surf.Metal, 1));
     sideRect(b, sh.hw + 0.02, -0.2, 0.6, 0.62, 0.72, P(0x1a3a8a));
     // light bar
     b.paint(0x222222, Surf.Metal).box(-0.62, 1.43, -0.18, 0.62, 1.49, 0.14);
-    b.paint(0xff1a1a, Surf.Emissive).box(-0.6, 1.49, -0.15, -0.04, 1.62, 0.11, {});
-    b.paint(0x1f4dff, Surf.Emissive).box(0.04, 1.49, -0.15, 0.6, 1.62, 0.11, {});
+    b.paint(BEACON_RED).box(-0.6, 1.49, -0.15, -0.04, 1.62, 0.11, {});
+    b.paint(BEACON_BLUE).box(0.04, 1.49, -0.15, 0.6, 1.62, 0.11, {});
     // push bar
     b.paint(TRIM, Surf.Metal).box(-0.5, 0.35, 2.38, 0.5, 0.8, 2.46, { nz: null });
   },
 
   car_van(b, v) {
     const col = [WHITE, CAR_PAINT[0], 0x1f3558, 0xc6462a][v];
-    const body = P(col, Surf.Metal);
+    const body = body1(col);
     const r = 0.36, zf = 1.95, zr = -1.75, s = 0.42, hw = 1.0;
     profileSolid(b, [
       { z: -2.78, y: s },
@@ -270,7 +273,7 @@ export const models: ModelBuilders = {
       sideRect(b, x, -2.6, 0.95, 0.75, 2.05, P(0xf2f0ea));
       sideRect(b, x + 0.008, -2.2, -0.3, 1.1, 1.7, P(0xc6462a));
     }
-    lamp(b, 0.55, 0.9, 0.86, 1.0, 2.79, 1, HEAD);
+    headLamp(b, 0.55, 0.9, 0.86, 1.0, 2.79);
     lamp(b, -0.45, 0.45, 0.66, 0.92, 2.8, 1, GRILLE, false);
     lamp(b, 0.78, 0.95, 0.85, 1.45, -2.81, -1, TAIL);
   },
@@ -278,7 +281,7 @@ export const models: ModelBuilders = {
   bus(b, v) {
     const col = [0xf0f0ec, 0xb82a22][v];
     const accent = [0x1f5aa6, 0xe8e2d6][v];
-    const body = P(col, Surf.Metal);
+    const body = body1(col);
     const r = 0.5, zf = 3.55, zr = -2.55, s = 0.36, hw = 1.27;
     profileSolid(b, [
       { z: -5.95, y: s },
@@ -299,22 +302,22 @@ export const models: ModelBuilders = {
     axle(b, zr, r, hw - 0.1);
     const x = hw + 0.012;
     // livery skirt, window band, pillars, doors (doors on the curb side = -X)
-    sideRect(b, x, -5.95, 5.98, 0.5, 1.08, P(accent, Surf.Metal));
+    sideRect(b, x, -5.95, 5.98, 0.5, 1.08, body1(accent));
     sideRect(b, x, -5.4, 5.3, 1.22, 2.66, GLASS_LIT);
     for (const z of [-3.6, -1.6, 0.4, 2.4]) sideRect(b, x + 0.01, z - 0.1, z + 0.1, 1.22, 2.66, body);
     sideRect(b, x + 0.02, 4.45, 5.55, 0.42, 2.66, GLASS_LIT, -1);
     sideRect(b, x + 0.02, -0.55, 0.65, 0.42, 2.66, GLASS_LIT, -1);
     // route sign, lights
     lamp(b, -0.85, 0.85, 2.76, 2.98, 5.96, 1, AMBER, false);
-    lamp(b, 0.75, 1.1, 0.55, 0.8, 6.04, 1, HEAD);
+    headLamp(b, 0.75, 1.1, 0.55, 0.8, 6.04);
     lamp(b, 0.95, 1.18, 0.55, 1.2, -6.04, -1, TAIL);
     lamp(b, -0.6, 0.6, 2.72, 2.9, -5.93, -1, AMBER, false);
     // roof AC pod
-    b.paint(0xd8d8d4, Surf.Metal).box(-0.85, 3.12, -2.2, 0.85, 3.42, 0.8);
+    b.paint(0xd8d8d4, Surf.Metal, 1).box(-0.85, 3.12, -2.2, 0.85, 3.28, 0.8);
   },
 
   truck_box(b, v) {
-    const cab = P([WHITE, 0xb52b22, WHITE, 0x1f3f7a][v], Surf.Metal);
+    const cab = body1([WHITE, 0xb52b22, WHITE, 0x1f3f7a][v]);
     const boxCol = [0xf2f0ea, 0xefeee8, 0x2c5f9e, 0xe9c23c][v];
     const hwC = 1.14, hw = 1.25, r = 0.46;
     profileSolid(b, boxCab(2.2, 4.0, 0.95, 2.95, 1.5, 2.72), hwC, cab);
@@ -329,14 +332,14 @@ export const models: ModelBuilders = {
     if (v === 3) sideRect(b, hw + 0.012, -3.8, 1.9, 2.9, 3.2, P(0x1f3f7a));
     axle(b, 3.05, r, hwC - 0.05);
     axle(b, -2.35, r, hwC);
-    lamp(b, 0.62, 1.0, 1.02, 1.18, 4.04, 1, HEAD);
+    headLamp(b, 0.62, 1.0, 1.02, 1.18, 4.04);
     lamp(b, -0.5, 0.5, 1.02, 1.3, 4.04, 1, GRILLE, false);
     lamp(b, 0.9, 1.15, 1.12, 1.4, -4.01, -1, TAIL);
   },
 
   truck_semi(b, v) {
     const cabCol = [0xa82620, WHITE, 0x1f3f7a][v];
-    const cab = P(cabCol, Surf.Metal);
+    const cab = body1(cabCol);
     const hw = 1.25;
     // tractor chassis
     b.paint(CHASSIS, Surf.Metal).box(-0.55, 0.6, 0.8, 0.55, 1.12, 7.4, { top: null });
@@ -347,10 +350,10 @@ export const models: ModelBuilders = {
       profileSolid(b, [{ z: 2.4, y: 1.1 }, { z: 5.55, y: 1.1 }, { z: 5.55, y: 2.36, p: CAR_GLASS }, { z: 4.85, y: 3.2 }, { z: 3.95, y: 3.28 }, { z: 3.35, y: 3.95 }, { z: 2.4, y: 3.95 }], hw, cab);
       cabWindows(b, hw + 0.012, 4.3, 5.35, 2.4, 3.05, 0.5);
       lamp(b, -0.62, 0.62, 1.45, 2.05, 8.03, 1, CHROME, false);
-      lamp(b, 0.66, 0.9, 1.5, 1.64, 7.97, 1, HEAD);
+      headLamp(b, 0.66, 0.9, 1.5, 1.64, 7.97);
       // exhaust stacks + fuel tanks
       b.paint(CHROME);
-      for (const s of [1, -1]) limb(b, [[s * 1.12, 1.3, 2.35], [s * 1.12, 4.3, 2.35]], [0.1, 0.09], { seg: 4 });
+      for (const s of [1, -1]) limb(b, [[s * 1.12, 1.3, 2.35], [s * 1.12, 4.05, 2.35]], [0.1, 0.09], { seg: 4 });
       b.paint(0xc0c4c8, Surf.Metal);
       for (const s of [1, -1]) b.box(s * 0.6, 0.62, 3.3, s * 1.18, 1.12, 4.8, { bottom: null, [s > 0 ? 'nx' : 'px']: null });
     } else {
@@ -358,7 +361,7 @@ export const models: ModelBuilders = {
       profileSolid(b, boxCab(4.85, 8.05, 1.1, 3.85, 1.95, 3.15, 0.12, 0.35), hw, cab);
       cabWindows(b, hw + 0.012, 6.9, 7.9, 2.05, 3.0, 0.08);
       lamp(b, -0.8, 0.8, 1.5, 1.9, 8.1, 1, GRILLE, false);
-      lamp(b, 0.75, 1.12, 1.2, 1.36, 8.1, 1, HEAD);
+      headLamp(b, 0.75, 1.12, 1.2, 1.36, 8.1);
       b.paint(0xc0c4c8, Surf.Metal);
       for (const s of [1, -1]) b.box(s * 0.6, 0.62, 3.4, s * 1.18, 1.12, 4.7, { bottom: null, [s > 0 ? 'nx' : 'px']: null });
       // roof deflector
@@ -367,14 +370,14 @@ export const models: ModelBuilders = {
     // trailer
     if (v < 2) {
       const tcol = v === 0 ? 0xd4d7da : 0x2f5d95;
-      b.paint(tcol, v === 0 ? Surf.Corrugated : Surf.Plain).box(-1.28, 1.3, -8.05, 1.28, 4.05, 3.3);
+      b.paint(tcol, v === 0 ? Surf.Corrugated : Surf.Plain).box(-1.28, 1.3, -8.05, 1.28, 4.05, v === 0 ? 1.9 : 3.3);
       if (v === 1) sideRect(b, 1.292, -7.6, 2.8, 3.3, 3.8, P(0xf0c420));
-      if (v === 0) sideRect(b, 1.292, -7.9, 3.1, 1.36, 1.46, P(0xc8322a)); // reflective stripe
+      if (v === 0) sideRect(b, 1.292, -7.9, 1.7, 1.36, 1.46, P(0xc8322a)); // reflective stripe
     } else {
       b.paint(CHASSIS, Surf.Metal).box(-1.2, 1.1, -8.0, 1.2, 1.32, 3.1);
       b.paint(0xb84a2a, Surf.Corrugated).box(-1.22, 1.32, -7.6, 1.22, 3.92, 2.6, { px: { color: 0x8e3a22, surf: Surf.Corrugated }, nz: { color: 0x8e3a22, surf: Surf.Corrugated } });
     }
-    b.paint(CHASSIS, Surf.Metal).box(-0.9, 0.95, -7.9, 0.9, 1.3, 2.6, { top: null, pz: null });
+    b.paint(CHASSIS, Surf.Metal).box(-0.9, 0.95, -7.9, 0.9, 1.3, v === 0 ? 1.6 : 2.6, { top: null, pz: null });
     lamp(b, 0.9, 1.2, 1.4, 1.7, -8.07, -1, TAIL);
     const ax = (z: number, hwO: number) => axle(b, z, 0.52, hwO, { seg: 6, hub: null });
     ax(v === 0 ? 6.75 : 6.6, 1.12);
@@ -385,7 +388,7 @@ export const models: ModelBuilders = {
   },
 
   fire_truck(b) {
-    const red = P(0xb81d18, Surf.Metal);
+    const red = body1(0xb81d18);
     const hw = 1.25;
     profileSolid(b, boxCab(2.75, 5.05, 1.05, 2.98, 1.75, 2.75, 0.13, 0.22), hw, red);
     cabWindows(b, hw + 0.012, 3.0, 3.85, 1.85, 2.6, 0);
@@ -397,8 +400,8 @@ export const models: ModelBuilders = {
     sideRect(b, hw + 0.02, -4.7, -2.95, 1.1, 2.75, P(0xb8bcc0, Surf.Corrugated));
     sideRect(b, hw + 0.02, -2.1, 2.45, 1.1, 2.75, P(0xb8bcc0, Surf.Corrugated));
     // light bar + rear beacons
-    b.paint(0xff2020, Surf.Emissive).box(-0.75, 2.98, 3.55, 0.75, 3.14, 3.85);
-    lamp(b, 0.95, 1.2, 2.5, 2.8, -5.01, -1, P(0xff2020, Surf.Emissive));
+    b.paint(BEACON_RED).box(-0.75, 2.98, 3.55, 0.75, 3.14, 3.85);
+    lamp(b, 0.95, 1.2, 2.5, 2.8, -5.01, -1, BEACON_RED);
     // ladder: turntable, rails, rungs
     b.paint(0x9a9ea3, Surf.Metal).box(-0.65, 2.9, -4.3, 0.65, 3.22, -3.0);
     b.paint(0xd5d8dc, Surf.Metal);
@@ -406,13 +409,13 @@ export const models: ModelBuilders = {
     for (let i = 0; i < 9; i++) topQuad(b, -0.38, -4.4 + i * 1.0, 0.38, -4.25 + i * 1.0, 3.38, P(0xd5d8dc, Surf.Metal));
     axle(b, 3.9, 0.5, hw - 0.05);
     axle(b, -2.7, 0.5, hw - 0.02);
-    lamp(b, 0.7, 1.05, 1.18, 1.34, 5.09, 1, HEAD);
+    headLamp(b, 0.7, 1.05, 1.18, 1.34, 5.09);
     lamp(b, -0.55, 0.55, 1.15, 1.6, 5.09, 1, CHROME, false);
     lamp(b, 0.95, 1.2, 1.1, 1.4, -5.01, -1, TAIL);
   },
 
   ambulance(b) {
-    const white = P(0xf4f4f0, Surf.Metal);
+    const white = body1(0xf4f4f0);
     const r = 0.4, zf = 2.45;
     profileSolid(b, [
       { z: 1.2, y: 0.5 },
@@ -437,44 +440,44 @@ export const models: ModelBuilders = {
     topQuad(b, -0.18, -1.6, 0.18, -0.5, 2.87, P(0xc8201c));
     topQuad(b, -0.55, -1.23, 0.55, -0.87, 2.871, P(0xc8201c));
     // light bar + module corner lights
-    b.paint(0xff1a1a, Surf.Emissive).box(-0.6, 2.36, 1.45, -0.02, 2.5, 1.7);
-    b.paint(0x2a55ff, Surf.Emissive).box(0.02, 2.36, 1.45, 0.6, 2.5, 1.7);
-    lamp(b, 0.85, 1.15, 2.6, 2.8, 1.26, 1, P(0xff1a1a, Surf.Emissive));
-    lamp(b, 0.85, 1.15, 2.6, 2.8, -3.41, -1, P(0xff1a1a, Surf.Emissive));
+    b.paint(BEACON_RED).box(-0.6, 2.36, 1.45, -0.02, 2.5, 1.7);
+    b.paint(BEACON_BLUE).box(0.02, 2.36, 1.45, 0.6, 2.5, 1.7);
+    lamp(b, 0.85, 1.15, 2.6, 2.8, 1.26, 1, BEACON_RED);
+    lamp(b, 0.85, 1.15, 2.6, 2.8, -3.41, -1, BEACON_RED);
     lamp(b, -0.5, 0.5, 1.3, 2.4, -3.405, -1, CAR_GLASS, false);
     axle(b, zf, r, 0.98);
     axle(b, -2.0, r, 1.1);
-    lamp(b, 0.55, 0.9, 0.86, 1.0, 3.43, 1, HEAD);
+    headLamp(b, 0.55, 0.9, 0.86, 1.0, 3.43);
     lamp(b, -0.42, 0.42, 0.62, 0.92, 3.43, 1, GRILLE, false);
     lamp(b, 0.85, 1.12, 0.8, 1.2, -3.41, -1, TAIL);
   },
 
   garbage_truck(b) {
     const hw = 1.25;
-    const cab = P(0xf0f0ec, Surf.Metal);
-    const green = P(0x3c7a3a, Surf.Metal);
+    const cab = body1(0xf0f0ec);
+    const green = body1(0x3c7a3a);
     profileSolid(b, boxCab(2.15, 4.35, 1.0, 3.0, 1.75, 2.78, 0.12, 0.22), hw, cab);
     cabWindows(b, hw + 0.012, 3.2, 4.15, 1.85, 2.62, 0.08);
     b.paint(CHASSIS, Surf.Metal).box(-0.6, 0.55, -4.2, 0.6, 1.0, 4.2, { top: null });
     // compactor body + tailgate hopper
     profileSolid(b, [{ z: -3.2, y: 1.0 }, { z: 2.05, y: 1.0 }, { z: 2.05, y: 3.3 }, { z: -3.2, y: 3.42 }], hw, green);
-    profileSolid(b, [{ z: -3.22, y: 0.95 }, { z: -3.22, y: 3.42 }, { z: -4.0, y: 3.2 }, { z: -4.45, y: 2.4 }, { z: -4.5, y: 1.25 }, { z: -4.2, y: 0.95 }], hw - 0.03, P(0x2f5f2d, Surf.Metal));
+    profileSolid(b, [{ z: -3.22, y: 0.95 }, { z: -3.22, y: 3.42 }, { z: -4.0, y: 3.2 }, { z: -4.45, y: 2.4 }, { z: -4.5, y: 1.25 }, { z: -4.2, y: 0.95 }], hw - 0.03, body1(0x2f5f2d));
     lamp(b, -0.9, 0.9, 1.2, 2.1, -4.505, -1, P(0x1c1d1f), false);
     sideRect(b, hw + 0.012, -3.2, 2.05, 1.45, 1.7, P(0xf2c230));
     b.paint(0xffa020, Surf.Emissive).box(-0.2, 3.0, 2.6, 0.2, 3.22, 2.9);
     b.paint(TRIM, Surf.Metal).box(-1.1, 0.5, -4.6, 1.1, 0.72, -4.3);
     axle(b, 3.25, 0.5, hw - 0.05);
     axle(b, -1.9, 0.5, hw - 0.02);
-    lamp(b, 0.7, 1.05, 1.16, 1.32, 4.39, 1, HEAD);
+    headLamp(b, 0.7, 1.05, 1.16, 1.32, 4.39);
     lamp(b, -0.55, 0.55, 1.12, 1.6, 4.39, 1, GRILLE, false);
     lamp(b, 0.95, 1.18, 1.3, 1.9, -4.51, -1, TAIL);
   },
 
   train_loco(b, v) {
-    const bogie = (z: number) => b.paint(CHASSIS, Surf.Metal).box(-1.3, 0.25, z - 1.9, 1.3, 1.15, z + 1.9);
+    const bogie = (z: number) => b.paint(CHASSIS, Surf.Metal).box(-1.3, 0.45, z - 1.9, 1.3, 1.15, z + 1.9);
     if (v === 0) {
       // diesel road-switcher: walkway deck, short nose, cab, long hood
-      const bodyC = P(0x234a86, Surf.Metal);
+      const bodyC = body1(0x234a86);
       const yel = P(0xe8b421, Surf.Plain);
       b.paint(yel).box(-1.52, 1.15, -9.95, 1.52, 1.55, 9.95, { top: { color: 0x3a3c40, surf: Surf.Metal } });
       bogie(6.4);
@@ -486,16 +489,16 @@ export const models: ModelBuilders = {
       b.paint(bodyC).box(-1.05, 1.55, -9.8, 1.05, 3.95, 6.2);
       // nose stripes, hood louvers, radiator fans, exhaust
       lamp(b, -0.95, 0.95, 1.8, 2.1, 9.93, 1, yel, false);
-      sideRect(b, 1.062, -9.4, -5.6, 2.2, 3.5, P(0x1a2a44, Surf.Metal));
-      sideRect(b, 1.062, -2.0, 1.5, 2.6, 3.5, P(0x1a2a44, Surf.Metal));
+      sideRect(b, 1.062, -9.4, -5.6, 2.2, 3.5, body1(0x1a2a44));
+      sideRect(b, 1.062, -2.0, 1.5, 2.6, 3.5, body1(0x1a2a44));
       topQuad(b, -0.8, -9.2, 0.8, -6.0, 3.962, P(0x1c1e22, Surf.Metal));
       b.paint(0x222222, Surf.Metal).box(-0.25, 3.95, 3.2, 0.25, 4.25, 3.9);
-      lamp(b, 0.25, 0.55, 2.3, 2.5, 9.93, 1, HEAD);
-      lamp(b, 0.75, 0.92, 1.62, 1.78, 9.93, 1, HEAD);
+      headLamp(b, 0.25, 0.55, 2.3, 2.5, 9.93);
+      headLamp(b, 0.75, 0.92, 1.62, 1.78, 9.93);
       lamp(b, 0.55, 0.85, 3.5, 3.7, -9.81, -1, TAIL);
     } else {
       // electric: full-width body with raked cabs at both ends, pantograph
-      const red = P(0xb3261e, Surf.Metal);
+      const red = body1(0xb3261e);
       b.paint(CHASSIS, Surf.Metal).box(-1.35, 1.0, -9.6, 1.35, 1.3, 9.6, { top: null });
       bogie(6.0);
       bogie(-6.0);
@@ -518,21 +521,21 @@ export const models: ModelBuilders = {
       b.beam([0, 4.95, 4.9], [0, 5.35, 4.1], 0.07);
       b.beam([-0.9, 5.35, 4.1], [0.9, 5.35, 4.1], 0.07);
       b.paint(0x4a4d52, Surf.Metal).box(-0.8, 4.05, -5.5, 0.8, 4.35, -2.0);
-      lamp(b, 0.45, 0.85, 1.6, 1.8, 9.93, 1, HEAD);
+      headLamp(b, 0.45, 0.85, 1.6, 1.8, 9.93);
       lamp(b, 0.45, 0.85, 1.6, 1.8, -9.93, -1, TAIL);
     }
   },
 
   train_car(b, v) {
-    const bogie = (z: number) => b.paint(CHASSIS, Surf.Metal).box(-1.25, 0.25, z - 1.4, 1.25, 1.1, z + 1.4);
+    const bogie = (z: number) => b.paint(CHASSIS, Surf.Metal).box(-1.25, 0.45, z - 1.4, 1.25, 1.1, z + 1.4);
     bogie(7.0);
     bogie(-7.0);
     if (v === 0) {
       // passenger coach
-      const body = P(0xdfe2e4, Surf.Metal);
+      const body = body1(0xdfe2e4);
       profileSolid(b, [{ z: -9.85, y: 1.1 }, { z: 9.85, y: 1.1 }, { z: 9.85, y: 3.72 }, { z: 9.6, y: 4.12, w: 0.92 }, { z: -9.6, y: 4.12, w: 0.92 }, { z: -9.85, y: 3.72 }], 1.45, body);
       const x = 1.462;
-      sideRect(b, x, -9.85, 9.85, 1.3, 1.62, P(0x1f5aa6, Surf.Metal));
+      sideRect(b, x, -9.85, 9.85, 1.3, 1.62, body1(0x1f5aa6));
       sideRect(b, x, -8.6, 8.6, 2.15, 3.2, GLASS_LIT);
       for (const z of [-5.8, -3.0, -0.2, 2.6, 5.4]) sideRect(b, x + 0.008, z - 0.12, z + 0.12, 2.15, 3.2, body);
       for (const z of [-9.2, 9.2]) sideRect(b, x + 0.016, z - 0.55, z + 0.55, 1.2, 3.35, P(0x3a4452, Surf.Metal));
@@ -552,7 +555,7 @@ export const models: ModelBuilders = {
       // tank car
       const col = 0x1f2124;
       b.paint(CHASSIS, Surf.Metal).box(-1.3, 0.95, -9.9, 1.3, 1.25, 9.9);
-      b.paint(col, Surf.Metal);
+      b.paint(col, Surf.Metal, 1);
       limb(b, [[0, 2.65, -9.3], [0, 2.65, 9.3]], [1.42, 1.42], { seg: 10, cap: true, capStart: true, rot: Math.PI / 10 });
       b.paint(0x2c2e31, Surf.Metal);
       limb(b, [[0, 3.9, -0.6], [0, 4.25, -0.6]], [0.55, 0.5], { seg: 6, cap: true });
@@ -562,9 +565,9 @@ export const models: ModelBuilders = {
   },
 
   airplane(b, v) {
-    const white = P(0xf4f5f6, Surf.Metal);
+    const white = body1(0xf4f5f6);
     const tailC = [0x1d3f7a, 0xc0282a][v];
-    const accent = P(tailC, Surf.Metal);
+    const accent = body1(tailC);
     const cy = 4.3;
     // fuselage (8-sided, flats on the sides)
     b.paint(white);
@@ -590,7 +593,7 @@ export const models: ModelBuilders = {
     wing(-1);
     // engines
     for (const s of [1, -1]) {
-      b.paint(v === 0 ? 0xd9dcdf : tailC, Surf.Metal);
+      b.paint(v === 0 ? 0xd9dcdf : tailC, Surf.Metal, 1);
       limb(b, [[s * 5.9, 2.35, 3.0], [s * 5.9, 2.4, -1.4]], [1.05, 0.75], { seg: 8, rot: Math.PI / 8 });
       b.paint(0x202226, Surf.Metal);
       const ring: V3[] = [];
@@ -652,18 +655,18 @@ export const models: ModelBuilders = {
       b.paint(0x9a7a52, Surf.Wood).slab(-1.05, -3.6, 1.05, 0.1, 0.06, 1.0);
       b.paint(0x303236, Surf.Metal).box(-0.35, 0.2, -4.35, 0.35, 1.15, -3.95);
     } else if (v === 1) {
-      // sailboat ~7.5 m, mast 6 m
+      // sailboat ~7.5 m, mast 9 m
       hull(b, 7.6, 1.25, 0.85, -0.5, 0xf2f2ee, 0x7a1c22);
       b.paint(0xe8e4da, Surf.Plain).box(-0.75, 0.85, -0.8, 0.75, 1.35, 1.4);
       b.paint(0x1a222c, Surf.GlassPlain).box(-0.76, 1.0, -0.4, 0.76, 1.2, 1.0, { top: null, pz: null, nz: null });
       b.paint(0xc8ccd0, Surf.Metal);
-      limb(b, [[0, 0.85, 1.2], [0, 6.1, 1.2]], [0.07, 0.05], { seg: 4 });
+      limb(b, [[0, 0.85, 1.2], [0, 9.0, 1.2]], [0.08, 0.05], { seg: 4 });
       b.beam([0, 1.9, 1.15], [0, 1.9, -2.9], 0.07);
       b.paint(0xf6f4ee, Surf.Plain);
-      const main: V3[] = [[0, 2.0, 1.05], [0, 5.9, 1.1], [0, 1.95, -2.8]];
+      const main: V3[] = [[0, 2.0, 1.05], [0, 8.7, 1.1], [0, 1.95, -2.8]];
       triOut(b, main[0], main[1], main[2], [1, 0, 0]);
       triOut(b, main[0], main[1], main[2], [-1, 0, 0]);
-      const jib: V3[] = [[0, 1.0, 3.5], [0, 5.6, 1.3], [0, 1.1, 1.45]];
+      const jib: V3[] = [[0, 1.0, 3.5], [0, 8.2, 1.3], [0, 1.1, 1.45]];
       b.paint(0xe9e2d0, Surf.Plain);
       triOut(b, jib[0], jib[1], jib[2], [1, 0, 0]);
       triOut(b, jib[0], jib[1], jib[2], [-1, 0, 0]);
@@ -725,9 +728,9 @@ function hull(b: ModelBuilder, L: number, hw: number, yDeck: number, yKeel: numb
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
     const out = vnorm([deck[i][0] + deck[j][0], 0, (deck[i][2] + deck[j][2]) * 0.2 + (i === n - 1 ? -1 : 0)]);
-    b.paint(stripe, Surf.Metal);
+    b.paint(stripe, Surf.Metal, 1);
     quadOut(b, deck[i], deck[j], mid[j], mid[i], out);
-    b.paint(col, Surf.Metal);
+    b.paint(col, Surf.Metal, 1);
     quadOut(b, mid[i], mid[j], keel[j], keel[i], vnorm([out[0], -0.5, out[2]]));
   }
   b.paint(0xe9e4d6, Surf.Plain);

@@ -2,8 +2,9 @@
  * Data-view overlays: per-cell values (0..1 packed into a Uint8 DataTexture, bilinear filtered on the terrain)
  * + a color ramp (RGBA, alpha = coverage) + UI legend. Pure functions, no GPU state.
  */
-import { Overlay, Zone, isRoad, type Network } from '../../core/types';
+import { Network, Overlay, Zone, isRoad } from '../../core/types';
 import type { CityState } from '../../sim/CityState';
+import { overlayLayer } from '../../sim/infra/overlays';
 
 export interface RampStop {
   t: number;
@@ -173,6 +174,22 @@ const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 /** Fill `out` (Uint8, N*N) with the overlay value per cell (0..255). */
 export function computeOverlayValues(state: CityState, o: Overlay, out: Uint8Array): void {
   const C = state.cells;
+  // preferred data source: the simulation's overlay layer definition (data + normalisation scale)
+  if (o !== Overlay.Power && o !== Overlay.Water) {
+    const L = overlayLayer(state, o);
+    if (L && L.data && L.data.length >= C) {
+      const d = L.data, inv = 1 / (L.scale || 1);
+      if (L.roadsOnly) {
+        const net = state.network;
+        for (let i = 0; i < C; i++) out[i] = net[i] !== 0 && net[i] !== Network.Rail ? Math.round((0.05 + 0.95 * clamp01(d[i] * inv)) * 255) : 0;
+      } else if (L.palette === 'diverging') {
+        for (let i = 0; i < C; i++) out[i] = Math.round(clamp01(0.5 + 0.5 * d[i] * inv) * 255);
+      } else {
+        for (let i = 0; i < C; i++) out[i] = Math.round(clamp01(d[i] * inv) * 255);
+      }
+      return;
+    }
+  }
   const put = (arr: Float32Array) => {
     for (let i = 0; i < C; i++) out[i] = Math.round(clamp01(arr[i]) * 255);
   };

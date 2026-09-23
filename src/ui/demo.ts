@@ -137,32 +137,40 @@ function buildTown(): { cx: number; cz: number } {
   zone(x0 + W + 1, z0 + 17, x0 + W + 14, z0 + 26, Zone.IndMed);
   zone(x0 + W + 1, z0 + 6, x0 + W + 14, z0 + 16, Zone.IndAg);
   // civic plops
-  const plopNear = (defId: string, nx: number, nz: number) => {
+  const plopNear = (defId: string, nx: number, nz: number, allowWarnings = false) => {
     const def = getDef(defId);
-    if (!def) return false;
+    if (!def) return null;
     for (let r = 0; r < 12; r++)
       for (let dz = -r; dz <= r; dz++)
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
           for (const rot of [0, 1, 2, 3] as const) {
             const p = a.plop(defId, nx + dx, nz + dz, rot, true);
-            if (p.ok) {
+            if (p.ok && (allowWarnings || !p.reason)) {
               a.plop(defId, nx + dx, nz + dz, rot, false);
-              return true;
+              return st.buildingAt(nx + dx, nz + dz) ?? null;
             }
           }
         }
-    return false;
+    return null;
   };
   const pick = (cat: Parameters<typeof ploppables>[0], re?: RegExp) => {
     const list = ploppables(cat).filter((d) => !d.requires && (!re || re.test(d.id)));
     return list[0]?.id;
   };
   const power = pick('power', /coal|gas|oil/) ?? pick('power');
-  const pwX = x0 + W + 18, pwZ = z0 + 2;
-  if (power) plopNear(power, pwX, pwZ);
-  a.buildPowerLine(lpath(pwX, pwZ + 6, x0 + W + 1, z0 + 15));
-  a.buildPowerLine(lpath(x0 + W + 1, z0 + 15, x0 + 1, z0 + 15));
+  // power plant east of the industry, fed into the road grid (roads conduct power) by a short power line
+  const pwX = x0 + W + 22, pwZ = z0 + 14;
+  const plant = power ? plopNear(power, pwX, pwZ, true) : null;
+  if (plant) {
+    // road from the industrial spur to the plant's west side (plant cells + roads form one conductor component)
+    const zc = Math.max(plant.z, Math.min(plant.z + plant.d - 1, z0 + 16));
+    a.buildNetwork(lpath(x0 + W + 14, z0 + 16, plant.x - 1, z0 + 16), Network.Road);
+    if (zc !== z0 + 16) a.buildNetwork(lpath(plant.x - 1, z0 + 16, plant.x - 1, zc), Network.Road);
+    // and a power line along the north edge of the farms (visual + redundancy)
+    a.buildPowerLine(lpath(plant.x - 1, plant.z - 1, x0 + W + 1, plant.z - 1));
+  }
+  console.log('[demo] power plant', plant ? `${plant.def} at ${plant.x},${plant.z}` : 'not placed');
   const water = pick('water', /tower/) ?? pick('water');
   if (water) plopNear(water, x0 + 2, z0 + 11);
   const police = pick('police');
