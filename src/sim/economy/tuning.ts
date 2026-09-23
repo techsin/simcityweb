@@ -96,13 +96,18 @@ export const I_SHARE_MIN = 0.36;
 /** agriculture: flat regional demand + small per-resident part (farms are a niche) */
 export const IA_BASE = 250;
 export const IA_PER_RES = 0.004;
-/** EQ → industry mix. dirty share falls with EQ, high-tech rises. */
+/**
+ * EQ → industry mix: dirty share = ID_SHARE_AT_EQ0 − (EQ − ID_EQ_START) × slope (≥ min); high-tech share rises above
+ * IHT_EQ_START; manufacturing takes the rest. Gentle on purpose: EQ can rise fast, dirty industry should fade over years.
+ * EQ 50: 70/30/0 (D/M/HT) · EQ 100: 42/43/15 · EQ 130: 26/44/30 · EQ 150: 15/45/40
+ */
 export const ID_SHARE_AT_EQ0 = 0.7;
-export const ID_SHARE_EQ_SLOPE = 1 / 160; // share drops by this per EQ point
-export const ID_SHARE_MIN = 0.08;
-export const IHT_EQ_START = 65; // IHT demand starts above this EQ
-export const IHT_SHARE_PER_EQ = 1 / 150;
-export const IHT_SHARE_MAX = 0.5;
+export const ID_EQ_START = 50;
+export const ID_SHARE_EQ_SLOPE = 1 / 180; // share drops by this per EQ point above ID_EQ_START
+export const ID_SHARE_MIN = 0.12;
+export const IHT_EQ_START = 70; // IHT demand starts above this EQ
+export const IHT_SHARE_PER_EQ = 1 / 200;
+export const IHT_SHARE_MAX = 0.45;
 
 /** neighbor connection factors (demand multipliers). conn = base + Σ per-connection weights (capped) */
 export const CONN_BASE = { R: 0.85, C: 0.85, I: 0.85 };
@@ -171,7 +176,7 @@ export const GROWTH_MIN_ALLOW = { R: 25, C: 10, I: 10 };
  * rate is lower (demand, caps, zoning, stage milestones). This is the main "pace of the game" knob.
  */
 export const GROWTH_MAX_BASE = { R: 18, C: 7, I: 8 };
-export const GROWTH_MAX_FRAC = 0.0007;
+export const GROWTH_MAX_FRAC = 0.0006;
 export const GROWTH_MAX_SCALE = 25000;
 /** growth attempts (candidate lots) per day: base + per 100 candidates, capped */
 export const GROWTH_ATTEMPTS_BASE = 30;

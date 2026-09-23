@@ -23,6 +23,7 @@ export class MiniMap {
   private bg: CanvasRenderingContext2D;
   private img: ImageData;
   private dirty = true;
+  private painted = false;
   private acc = 0;
   private frAcc = 0;
   private dragging = false;
@@ -183,7 +184,8 @@ export class MiniMap {
     if (this.collapsed) return;
     this.acc += dt;
     this.frAcc += dt;
-    if (this.dirty && this.acc > 0.8) {
+    if (this.dirty && (this.acc > 0.8 || !this.painted)) {
+      this.painted = true;
       this.acc = 0;
       this.dirty = false;
       this.paintBase();

@@ -2,7 +2,8 @@
  * SIMBOT — scripted "competent mayor" for balance testing (owned by sim-core).
  *
  *   npx tsx tools/simbot.ts [--size 256] [--years 60] [--seed 7] [--difficulty medium] [--terrain plains]
- *                           [--water 0.2] [--quiet] [--no-infra]
+ *                           [--water 0.2] [--quiet] [--no-infra] [--tax 12] [--spendy]
+ *   env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1
  *
  * Plays through CityActions only (like the UI): lays out a 9-cell road grid (avenues every 4th line) with a
  * trunk line edge-to-edge (upgraded to a highway later), sectors (commercial core, industrial park east of the
@@ -34,6 +35,10 @@ export interface BotOptions {
   quiet: boolean;
   /** run without sim-infra systems (economy only) */
   noInfra: boolean;
+  /** fixed tax rate for every DevType (disables the bot's tax management) */
+  tax?: number;
+  /** careless mayor: 150% funding everywhere and builds services / parks without checking the budget */
+  spendy?: boolean;
 }
 
 export interface YearRow {
@@ -93,12 +98,15 @@ export class SimBot {
   totalTime = 0;
   /** accumulated ms per system name (daily + monthly + yearly) */
   bySystem: Record<string, number> = {};
+  /** ms per system during the current / last simulated year */
+  yearBySystem: Record<string, number> = {};
   days = 0;
   trunkZ: number;
   highway = false;
   rows: YearRow[] = [];
   private quiet: boolean;
   rt: EconRuntime | undefined;
+  opts: BotOptions;
 
   constructor(opts: BotOptions, systems: SimSystem[] = economySystems()) {
     const cfg: CityConfigData = defaultCityConfig({
@@ -106,6 +114,7 @@ export class SimBot {
       hilliness: 0.25, treeDensity: 0.35, name: 'Botville', mayor: 'Bot', disasters: false,
     });
     this.quiet = opts.quiet;
+    this.opts = opts;
     this.st = createCityState(cfg);
     void opts.noInfra;
     this.wrapTimers(systems);
@@ -151,6 +160,7 @@ export class SimBot {
           this.totalTime += dt;
           if (econ) this.econTime += dt;
           this.bySystem[s.name] = (this.bySystem[s.name] ?? 0) + dt;
+          this.yearBySystem[s.name] = (this.yearBySystem[s.name] ?? 0) + dt;
         };
       }
     }
@@ -162,7 +172,7 @@ export class SimBot {
     const far = Math.floor(this.nb / 2) - 1;
     if (dx === far && dz === 4) return 'X';
     if ((dx === 3 && (dz === 1 || dz === -1)) || (dx === -3 && dz === -3)) return 'U';
-    if ((dx === -5 || dx === -4) && dz === 5) return 'A';
+    if (dx >= -6 && dx <= -4 && dz === 5) return 'A';
     if ((bx % 3 === 1 && bz % 3 === 1)) return 'P';
     if (dx >= 4 && Math.abs(dz) <= 3) return 'I';
     if (dx >= 4 && Math.abs(dz) <= 5 && dx >= 7) return 'I';
@@ -195,6 +205,18 @@ export class SimBot {
   canSpend(cost: number): boolean {
     return this.funds - cost > this.reserve();
   }
+  /** a competent mayor only adds recurring costs the budget can carry (or when sitting on a big pile of cash) */
+  canAfford(defId: string): boolean {
+    const d = getDef(defId);
+    if (!d) return false;
+    const up = d.upkeep ?? 0;
+    const net = this.monthlyNet() + this.pendingUpkeep;
+    if (this.opts.spendy) return this.funds > (d.cost ?? 0);
+    if (!this.canSpend(d.cost ?? 0)) return false;
+    return net - up > 0 || this.funds > 60 * up + 50000;
+  }
+  /** upkeep committed this month (not yet in the last budget) */
+  pendingUpkeep = 0;
 
   road(x0: number, z0: number, x1: number, z1: number, type: Network): boolean {
     const key = `${x0},${z0},${x1},${z1}`;
@@ -309,6 +331,7 @@ export class SimBot {
             if (!b.developed) { this.buildBlockRoads(b); b.developed = true; }
             const r = this.A.plop(defId, x, z, rot);
             if (r.ok) {
+              this.pendingUpkeep -= def.upkeep ?? 0;
               this.services.push({ def: defId, x: x + (w >> 1), z: z + (d >> 1) });
               this.say(`built ${def.name} ($${r.cost})`);
               return r;
@@ -327,6 +350,7 @@ export class SimBot {
   // ------------------------------------------------------------------------------------------ setup
   setup(): void {
     const N = this.N;
+    if (this.opts.spendy) for (const k of Object.keys(this.st.budget.funding) as (keyof typeof this.st.budget.funding)[]) this.A.setFunding(k, 150);
     // trunk: avenue edge to edge through the center (highway later)
     this.A.buildNetwork(lPath({ x: 0, z: this.trunkZ }, { x: N - 1, z: this.trunkZ }), Network.Avenue);
     // initial blocks: 4 residential, 2 commercial, 2 industrial nearest to the center
@@ -339,6 +363,7 @@ export class SimBot {
 
   // ------------------------------------------------------------------------------------------ monthly brain
   monthly(): void {
+    this.pendingUpkeep = 0;
     const st = this.st, s = st.stats;
     const pop = s.population;
     this.finance();
@@ -369,6 +394,10 @@ export class SimBot {
       const amt = Math.min(maxLoanAmount(st), 100000);
       if (amt >= 5000 && this.A.takeLoan(amt).ok) this.say(`emergency loan $${amt}`);
     }
+    if (this.opts.tax !== undefined) {
+      for (let d = 0; d < 12; d++) this.A.setTax(d as DevType, this.opts.tax);
+      return;
+    }
     // taxes: 9% baseline; +1 when losing money and low on funds, −1 when rich
     const cur = st.budget.taxRates[0];
     let t = cur;
@@ -388,7 +417,18 @@ export class SimBot {
     const cost = getDef(def)?.cost ?? 0;
     if (!this.canSpend(cost) && this.funds < cost + 2000) return;
     const n = def === 'util_wind_turbine' ? 3 : 1;
-    for (let k = 0; k < n; k++) if (!this.placeNear(def, cx, cz, ['U', 'I'])) break;
+    for (let k = 0; k < n; k++) if (!this.placeUtility(def, cx, cz)) break;
+  }
+
+  /** utilities: utility blocks, then industrial / civic blocks, then a fresh utility block at the edge of town */
+  placeUtility(def: string, cx: number, cz: number): boolean {
+    if (this.placeNear(def, cx, cz, ['U', 'I', 'X'])) return true;
+    if (this.placeNear(def, cx, cz, ['P'], true, 60)) return true;
+    const b = this.blocks.filter((o) => !o.developed && (o.use === 'R' || o.use === 'I') && this.touchesDeveloped(o))
+      .sort((a, o) => Math.hypot(a.x0 - cx, a.z0 - cz) - Math.hypot(o.x0 - cx, o.z0 - cz))[0];
+    if (!b) return false;
+    b.use = 'U';
+    return !!this.placeNear(def, cx, cz, ['U']);
   }
 
   ensureWater(): void {
@@ -398,10 +438,15 @@ export class SimBot {
     const big = this.st.unlocked.has('water_treatment') && s.waterDemand > 20000;
     const def = big ? 'util_water_treatment' : 'util_water_pump';
     const cost = getDef(def)?.cost ?? 0;
-    if (!this.canSpend(cost)) return;
-    const n = big ? 1 : 2;
+    if (!this.canSpend(cost) && this.funds < cost + 5000) return;
+    // enough to cover the shortfall + 30% headroom (max 3 per month)
+    const out = getDef(def)!.waterOut!;
+    const n = Math.max(1, Math.min(3, Math.ceil((s.waterDemand * 1.3 - s.waterSupply) / out)));
     const cx = this.line(this.cbx), cz = this.line(this.cbz);
-    for (let k = 0; k < n; k++) if (!this.placeNear(def, cx, cz, big ? ['U', 'P'] : ['P', 'U'])) break;
+    for (let k = 0; k < n; k++) {
+      if (!big && this.placeNear(def, cx, cz, ['P', 'U'])) continue;
+      if (!this.placeUtility(def, cx, cz)) break;
+    }
   }
 
   ensureGarbage(): void {
@@ -434,7 +479,7 @@ export class SimBot {
       if (pop < minPop || spent >= 3) continue;
       if ((this.svcRetry.get(def) ?? -1) > this.st.day) continue;
       const cost = getDef(def)?.cost ?? 0;
-      if (!this.canSpend(cost)) continue;
+      if (!this.canAfford(def)) continue;
       const mine = this.services.filter((s) => s.def === def);
       const u = radius > 0 ? this.uncovered(def, radius) : null;
       const needCap = cap > 0 && mine.length * cap < pop * 1.02;
@@ -560,7 +605,7 @@ export class SimBot {
       const def = st.unlocked.has('zoo') && this.count('park_zoo') < 1 + Math.floor(pop / 250000) && this.canSpend(20000) ? 'park_zoo'
         : big ? 'park_large' : pop > 1500 ? 'park_plaza' : 'park_small';
       const target = this.uncoveredPark() ?? (rBinding ? center : null);
-      if (!target || !this.canSpend(getDef(def)!.cost!)) break;
+      if (!target || !this.canAfford(def)) break;
       // 1) civic/park blocks nearby, 2) empty zoned lots inside residential blocks (small parks / plazas),
       // 3) turn an adjacent undeveloped block into a park block
       let ok = this.placeNear(def, target.x, target.z, ['P'], true, 20);
@@ -576,7 +621,7 @@ export class SimBot {
     // commercial caps
     if (binding(3, 7)) {
       if (st.unlocked.has('airport_small') && this.count('tr_airport_small') === 0 && this.canSpend(30000)) this.placeAirport('tr_airport_small');
-      else if (st.unlocked.has('airport_large') && this.count('tr_airport_large') < 1 + Math.floor(pop / 500000) && this.canSpend(150000)) this.placeAirport('tr_airport_large');
+      else if (st.unlocked.has('airport_large') && this.count('tr_airport_large') < 1 && this.canSpend(150000)) this.placeAirport('tr_airport_large');
     }
     // industrial caps
     if (binding(8, 11)) {
@@ -621,23 +666,29 @@ export class SimBot {
     this.say(`extra connection ${k}: ${r.ok ? 'ok' : r.reason}`);
   }
 
+  /** airports: small one in the first airport block, the international one across the other two (interior road removed) */
   placeAirport(defId: string): void {
-    const blocks = this.blocks.filter((b) => b.use === 'A');
-    if (!blocks.length) return;
+    const all = this.blocks.filter((b) => b.use === 'A').sort((a, b) => a.bx - b.bx);
+    if (all.length < 3) return;
+    const blocks = defId === 'tr_airport_small' ? [all[0]] : all.slice(1, 3);
     const xs = Math.min(...blocks.map((b) => b.x0)), xe = Math.max(...blocks.map((b) => b.x1));
     const zs = Math.min(...blocks.map((b) => b.z0)), ze = Math.max(...blocks.map((b) => b.z1));
-    // roads around the merged area (no line in between)
     this.road(xs - 1, zs - 1, xe, zs - 1, Network.Road);
     this.road(xs - 1, ze, xe, ze, Network.Road);
     this.road(xs - 1, zs - 1, xs - 1, ze, Network.Road);
     this.road(xe, zs - 1, xe, ze, Network.Road);
+    // clear interior lines between merged blocks
+    for (let k = 1; k < blocks.length; k++) {
+      const lx = blocks[k].x0 - 1;
+      this.A.bulldoze({ x0: lx, z0: zs, x1: lx + 1, z1: ze });
+    }
     for (const b of blocks) b.developed = true;
     const def = getDef(defId)!;
     for (const rot of [0, 2, 1, 3] as const) {
       const [w, d] = rotatedFootprint(def, rot);
       for (let z = zs; z + d <= ze; z++) for (let x = xs; x + w <= xe; x++) {
         const p = this.A.plop(defId, x, z, rot, true);
-        if (p.ok && !p.reason) { this.A.plop(defId, x, z, rot); this.say(`built ${def.name}`); return; }
+        if (p.ok && !p.reason) { this.A.plop(defId, x, z, rot); this.services.push({ def: defId, x: x + (w >> 1), z: z + (d >> 1) }); this.say(`built ${def.name}`); return; }
       }
     }
     this.say(`no room for ${def.name}`);
@@ -758,6 +809,10 @@ export class SimBot {
       e0 = this.econTime; t0 = this.totalTime; d0 = this.days;
       this.rows.push(row);
       onYear?.(row);
+      if (process.env.SIMBOT_PROFILE) {
+        console.log('   ms/day:', Object.entries(this.yearBySystem).filter(([k]) => k.startsWith('economy.')).map(([k, v]) => `${k.slice(8)} ${(v / days).toFixed(3)}`).join(' | '));
+      }
+      this.yearBySystem = {};
       if (process.env.SIMBOT_BUDGET) {
         const fmt = (o: Record<string, number>) => Object.entries(o).filter(([k]) => !k.startsWith('oneoff:')).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(' ');
         console.log('   income:', fmt(st.budget.lastIncome));
@@ -797,6 +852,8 @@ function parseArgs(argv: string[]): BotOptions {
     else if (a === '--water') { o.water = +v; i++; }
     else if (a === '--quiet') o.quiet = true;
     else if (a === '--no-infra') o.noInfra = true;
+    else if (a === '--tax') { o.tax = +v; i++; }
+    else if (a === '--spendy') o.spendy = true;
   }
   return o;
 }

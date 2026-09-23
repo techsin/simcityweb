@@ -37,7 +37,7 @@ export class ToolController {
     };
     on(canvas, 'pointerdown', (e) => {
       if (e.button === 2 || e.button === 1) {
-        if (e.button === 2 && this.current.cancel()) this.ctx.sound('cancel');
+        if (e.button === 2 && this.cancelDrag()) this.ctx.sound('cancel');
         return;
       }
       if (e.button !== 0) return;
@@ -51,10 +51,18 @@ export class ToolController {
       this.safeCall(() => this.current.down(this.pointer(e)!));
     });
     on(canvas, 'pointermove', (e) => {
+      // chorded right button while dragging (pointer events report it as a move, not a pointerdown) = cancel
+      if (this.leftDown && e.buttons & 2) {
+        this.cancelDrag();
+        this.ctx.sound('cancel');
+      }
       this.inside = true;
       this.lastEvt = e;
       this.moveDirty = true;
       this.ctx.tip.move(e.clientX, e.clientY);
+    });
+    on(canvas, 'contextmenu', (e) => {
+      if (this.cancelDrag()) e.preventDefault();
     });
     on(canvas, 'pointerup', (e) => {
       if (e.button !== 0 || !this.leftDown) return;

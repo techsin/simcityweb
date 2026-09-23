@@ -15,7 +15,6 @@ import type { SimSystem, Simulation } from '../Simulation';
 import { BF, type Building, type CityState } from '../CityState';
 import { hash2 } from '../../core/rng';
 import { DevType, zoneDensity } from '../../core/types';
-import { getDef } from '../catalog';
 import {
   ABANDON_DAYS, COARSE, CONSTRUCT_DAYS_BASE, CONSTRUCT_DAYS_PER_STAGE, CONSTRUCT_RAND, FILL_RATE, HEALTH_SMOOTH, OCC_PERIOD,
   PENALTY_NO_GARBAGE, PENALTY_NO_JOB_ACCESS, PENALTY_NO_POWER, PENALTY_NO_ROAD, PENALTY_NO_WATER, RECOVER_RATE, REGION_COMMUTERS_BASE,
@@ -65,7 +64,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     const list = rt.growables;
     for (let k = 0; k < list.length; k++) {
       const b = list[k];
-      const def = getDef(b.def);
+      const def = rt.defOf(b);
       if (!def || def.devType === undefined) continue;
       const dev: number = def.devType;
       const blk = (((b.z + (b.d >> 1)) / COARSE) | 0) * cw + (((b.x + (b.w >> 1)) / COARSE) | 0);
@@ -125,8 +124,9 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     // with sim-infra traffic: poor job access (congestion, no route) raises unemployment — blended softly because
     // the traffic assignment is an equilibrium that converges over several cycles
     const traffic = infraFlags(st).traffic ? (sim.getSystem('traffic') as unknown as TrafficApi | undefined) : undefined;
-    rt.accessAvg = -1;
-    if (traffic && typeof traffic.workerAccess === 'function' && W > 0) {
+    if (!traffic || typeof traffic.workerAccess !== 'function') rt.accessAvg = -1;
+    else if (W > 0 && (st.day % OCC_PERIOD === 0 || rt.accessAvg < 0)) {
+      // pop-weighted job access (refreshed every OCC_PERIOD days — the traffic assignment changes slowly)
       let e = 0, w = 0;
       for (let k = 0; k < list.length; k++) {
         const b = list[k];
@@ -136,11 +136,9 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
         e += b.pop * Math.min(1, a);
         w += b.pop;
       }
-      if (w > 0) {
-        rt.accessAvg = e / w;
-        employed *= 1 - TRAFFIC_ACCESS_WEIGHT * (1 - rt.accessAvg);
-      }
+      rt.accessAvg = w > 0 ? e / w : -1;
     }
+    if (rt.accessAvg >= 0) employed *= 1 - TRAFFIC_ACCESS_WEIGHT * (1 - rt.accessAvg);
     rt.employedRatio = W > 0 ? employed / W : 1;
     // stats
     const s = st.stats;
@@ -158,7 +156,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     for (let k = list.length - 1; k >= 0; k--) {
       const b = list[k];
       if (!sim.state.buildings.has(b.id) || !(b.flags & BF.Constructing)) { list[k] = list[list.length - 1]; list.pop(); continue; }
-      const stage = getDef(b.def)?.stage ?? 1;
+      const stage = rt.defOf(b)?.stage ?? 1;
       const q0 = Math.floor(b.built * 4);
       b.built = Math.min(1, b.built + 1 / constructionDays(b, stage));
       if (b.built >= 0.999) {
@@ -202,7 +200,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
         continue;
       }
       if (b.flags & BF.Constructing) continue;
-      const def = getDef(b.def);
+      const def = rt.defOf(b);
       if (!def || def.devType === undefined) continue;
       const dev = def.devType;
       const isR = dev <= DevType.R3;

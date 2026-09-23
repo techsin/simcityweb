@@ -18,7 +18,7 @@ export class PauseMenu {
     if (this.back) return;
     const ctx = this.ctx;
     const st = ctx.state;
-    this.prevSpeed = ctx.sim.speed || this.prevSpeed || 1;
+    this.prevSpeed = ctx.sim.speed;
     ctx.sim.speed = 0;
     const item = (ic: string, label: string, fn: () => void, key?: string, cls = '') => {
       const b = h('button', { class: `btn block ${cls}`, html: icon(ic, 17) + `<span>${label}</span>` + (key ? `<span class="kbd" style="margin-left:auto">${key}</span>` : '') });
@@ -63,7 +63,7 @@ export class PauseMenu {
     this.back = null;
     b.classList.add('closing');
     setTimeout(() => b.remove(), 150);
-    if (resume) this.ctx.sim.speed = this.prevSpeed || 1;
+    if (resume) this.ctx.sim.speed = this.prevSpeed;
     this.ctx.sound('close');
   }
 }

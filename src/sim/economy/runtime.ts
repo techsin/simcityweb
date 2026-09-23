@@ -244,6 +244,7 @@ export class EconRuntime {
     this.terrainDirty = true;
     this.totals = emptyTotals();
     this.constructing = [];
+    this.defCache = [];
     econData(st);
     this.rebuildBuildingLists();
   }
@@ -295,7 +296,13 @@ export class EconRuntime {
     this.buildingsDirty = false;
   }
 
-  def(b: Building): BuildingDef | undefined {
-    return getDef(b.def);
+  /** def of a building, cached by building id (hot loops) */
+  defOf(b: Building): BuildingDef | undefined {
+    const c = this.defCache[b.id];
+    if (c !== undefined && c.id === b.def) return c;
+    const d = getDef(b.def);
+    if (d) this.defCache[b.id] = d;
+    return d;
   }
+  private defCache: BuildingDef[] = [];
 }

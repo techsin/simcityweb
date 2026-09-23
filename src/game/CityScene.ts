@@ -29,7 +29,6 @@ import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
 import { ToolController } from './tools/ToolController';
 import { CursorTip } from '../ui/CursorTip';
 import { h, isTyping } from '../ui/dom';
-import { icon } from '../ui/icons';
 import { MiniMap } from '../ui/MiniMap';
 import { ErrorOverlay, HelpPanel, PauseMenu, SavePill } from '../ui/Modals';
 import { NewsTicker, Toasts } from '../ui/Notifications';
@@ -859,6 +858,4 @@ export class CityScene {
   get objectsView(): CityObjectsViewApi {
     return this.objects;
   }
-  /** internal: icon helper export so meta can reuse the icon set */
-  static icon = icon;
 }

@@ -42,6 +42,8 @@ export class CursorTip implements CursorTipApi {
     const maxX = parent.width / z - w - 8, maxY = parent.height / z - hh - 8;
     if (lx > maxX) lx = (this.x - parent.left) / z - w - 14;
     if (ly > maxY) ly = (this.y - parent.top) / z - hh - 14;
+    lx = Math.max(8, Math.min(maxX, lx));
+    ly = Math.max(8, Math.min(maxY, ly));
     this.el.style.transform = `translate(${Math.round(lx)}px, ${Math.round(ly)}px)`;
   }
 }

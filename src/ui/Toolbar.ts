@@ -378,7 +378,9 @@ export class Toolbar {
     const hints = h('div', { class: 'tc-hints' });
     for (const t of tool.hints()) {
       const span = h('span');
-      span.innerHTML = escapeHtml(t).replace(/\b(Esc|Shift|R|\[ \])\b/g, (m) => `<kbd>${m === '[ ]' ? '[ ]' : m}</kbd>`);
+      span.innerHTML = escapeHtml(t)
+        .replace(/\b(Esc|Shift|R|Alt)\b/g, (m) => `<kbd>${m}</kbd>`)
+        .replace('[ ]', '<kbd>[</kbd> <kbd>]</kbd>');
       hints.appendChild(span);
     }
     const close = h('button', { class: 'icon-btn', title: 'Done (Esc)', html: icon('close', 15), style: 'width:28px;height:28px' });
