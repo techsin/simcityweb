@@ -69,7 +69,7 @@ export interface GameContext {
   applySettings(patch: Partial<GameSettings>): void;
   toast(text: string, kind?: string, cell?: { x: number; z: number }, title?: string): void;
   /** open a toolbar category flyout (e.g. 'parks') */
-  openFlyout?(categoryId: string): void;
+  openFlyout?(categoryId: string, tab?: string): void;
   save(): Promise<void>;
   exitToRegion(): Promise<void>;
   openPauseMenu(): void;

@@ -65,6 +65,11 @@ export class Toolbar {
     this.syncActive();
   }
 
+  /** onboarding coach marks: pulse these category buttons */
+  setCoach(catIds: string[]): void {
+    for (const [id, b] of this.btns) toggleClass(b, 'coach', catIds.includes(id));
+  }
+
   get flyoutOpen(): boolean {
     return this.openCat !== null;
   }
@@ -87,9 +92,17 @@ export class Toolbar {
     else this.openFlyout(c.id);
   }
 
-  openFlyout(catId: string): void {
+  openFlyout(catId: string, tab?: string): void {
     const c = CATEGORIES.find((x) => x.id === catId);
     if (!c?.groups) return;
+    if (tab) {
+      try {
+        const gi = c.groups(this.ctx).findIndex((g) => g.label.toLowerCase().startsWith(tab.toLowerCase()));
+        if (gi >= 0) this.lastTab.set(catId, gi);
+      } catch {
+        /* ignore */
+      }
+    }
     this.openCat = catId;
     for (const [id, b] of this.btns) toggleClass(b, 'open', id === catId);
     this.renderFlyout(c);

@@ -302,6 +302,11 @@ export class TopBar {
     return g;
   }
 
+  /** onboarding coach mark on the play button */
+  setCoachPlay(on: boolean): void {
+    toggleClass(this.speedBtns[1], 'coach', on);
+  }
+
   /** badge (e.g. unread advisor messages) on a panel button */
   setBadge(panel: string, n: number): void {
     const b = this.el.querySelector(`[data-panel="${panel}"]`) as HTMLElement | null;

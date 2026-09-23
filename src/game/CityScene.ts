@@ -199,7 +199,7 @@ export class CityScene {
       showQuery: (t) => this.showQuery(t),
       applySettings: (p) => this.applySettings(p),
       toast: (text, kind, cell, title) => this.toasts?.show(text, kind, cell, title),
-      openFlyout: (id) => this.toolbar?.openFlyout(id),
+      openFlyout: (id, tab) => this.toolbar?.openFlyout(id, tab),
       save: () => this.save(false),
       exitToRegion: () => this.exitToRegion(),
       openPauseMenu: () => this.pause.open(),
