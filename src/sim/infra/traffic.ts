@@ -82,7 +82,9 @@ const PH_PREP = 0, PH_PREP2 = 1, PH_TRANSIT = 2, PH_RSEARCH = 3, PH_RMATCH = 4, 
   PH_FREIGHT = 8, PH_FINAL = 9, PH_FINAL2 = 10;
 const PHASES = 11;
 /** estimated ms per phase on the reference 256² stress city (scaled by graph / building counts) */
-const PHASE_COST = [1.9, 0.9, 3.2, 2.3, 2.0, 1.5, 2.4, 2.8, 2.4, 0.4, 1.6];
+const PHASE_COST = [1.9, 0.9, 3.2, 1.2, 1.2, 1.5, 2.4, 2.8, 2.4, 0.4, 1.6];
+/** estimated ms of a road / rail / subway graph rebuild on a 256² map */
+const REBUILD_COST = 2.5;
 const MAX_ENTRIES = 12;
 const MODE_NAMES = ['none', 'car', 'transit', 'walk'];
 const IND_KEYS = ['IA', 'ID', 'IM', 'IHT'] as const;
@@ -119,6 +121,7 @@ export class TrafficSystem implements SimSystem {
 
   // scheduling
   private phase = -1;
+  private rebuiltInCycle = false;
   private lastCycleStart = -1e9;
   private lastCycleMs0 = -1e9;
   /** cycles since graph rebuild (MSA) */
@@ -339,7 +342,7 @@ export class TrafficSystem implements SimSystem {
       name: 'traffic',
       due: () => self.phase >= 0,
       urgent: () => false,
-      cost: () => self.stepCost(),
+      cost: (s) => self.stepCost(s),
       step: (s) => self.step(s),
     };
     schedulerOf(sim).register(this.task);
@@ -348,12 +351,19 @@ export class TrafficSystem implements SimSystem {
   }
 
   /** estimated cost (ms) of the next step */
-  stepCost(): number {
+  stepCost(sim: Simulation): number {
     const ph = this.phase < 0 ? PH_PREP : this.phase;
     const road = Math.max(0.05, this.road.n / 36000);
     const bld = Math.max(0.05, (this.oN + this.jN) / 20000);
     const base = PHASE_COST[ph];
-    if (ph === PH_PREP || ph === PH_RMATCH || ph === PH_COMMUTE || ph === PH_FINAL2) return base * (0.3 * road + 0.7 * bld);
+    const size = sim.state.size;
+    if (ph === PH_PREP && (this.graphDirty || this.road.N !== size)) return REBUILD_COST * (size * size / 65536);
+    if (ph === PH_TRANSIT && this.stops.n === 0) return 0.1;
+    // matching rounds / per-origin outputs: a fixed part (candidate lists, sorting) + a size-dependent part
+    if (ph === PH_RSEARCH) return 0.6 + 0.6 * (0.8 * road + 0.2 * bld);
+    if (ph === PH_RMATCH) return 0.7 + 0.5 * (0.3 * road + 0.7 * bld);
+    if (ph === PH_FINAL2) return 1.0 + 0.6 * (0.3 * road + 0.7 * bld);
+    if (ph === PH_PREP || ph === PH_COMMUTE) return base * (0.3 * road + 0.7 * bld);
     if ((ph === PH_SHOP || ph === PH_FREIGHT || ph === PH_INBOUND) && !this.sfRecompute) return 0.15;
     return base * (0.8 * road + 0.2 * bld);
   }
@@ -501,10 +511,20 @@ export class TrafficSystem implements SimSystem {
     const ph = this.phase;
     if (ph < 0) return;
     const t0 = nowMs();
-    if (ph === PH_PREP) this.phaseMs.fill(0);
+    if (ph === PH_PREP && !this.rebuiltInCycle) this.phaseMs.fill(0);
     let next = ph + 1;
     switch (ph) {
-      case PH_PREP: this.prep(sim); break;
+      case PH_PREP:
+        // a graph rebuild is its own step (the prep snapshot follows in the next step)
+        if (this.graphDirty || this.road.N !== sim.state.size) {
+          this.rebuildGraphs(sim.state);
+          this.rebuiltInCycle = true;
+          next = PH_PREP;
+        } else {
+          this.rebuiltInCycle = false;
+          this.prep(sim);
+        }
+        break;
       case PH_PREP2: this.prepTransit(sim.state); break;
       case PH_TRANSIT: this.transit(); break;
       case PH_RSEARCH: this.roundSearch(); break;

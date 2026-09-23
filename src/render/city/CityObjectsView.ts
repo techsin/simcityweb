@@ -29,6 +29,8 @@ import { PowerLines } from './props/PowerLines';
 import { BuildingRenderer } from './buildings/BuildingRenderer';
 import { Effects } from './effects/Effects';
 import { Disasters } from './effects/Disasters';
+import { Fireworks, collectLaunchSites, type LaunchSite } from './effects/Fireworks';
+import { getDef } from '../../sim/catalog';
 import { VehicleRenderer, type TrafficRoute } from './vehicles/VehicleRenderer';
 import { Previews } from './previews/Previews';
 import { Underground } from './underground/Underground';
@@ -77,6 +79,8 @@ export class CityObjectsView implements CityObjectsViewApi {
   readonly buildings: BuildingRenderer;
   readonly effects: Effects;
   readonly disasters: Disasters;
+  /** New Year fireworks show (start / stop / active); driven by src/game/NewYear.ts */
+  readonly fireworks: Fireworks;
   readonly vehicles: VehicleRenderer;
   readonly previews: Previews;
   readonly underground: Underground;
@@ -107,6 +111,15 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.effects = new Effects();
     this.effects.geometryOf = (m, v) => getModelGeometry(m, v);
     this.disasters = new Disasters(state, this.surf, this.effects);
+    this.fireworks = new Fireworks({
+      camera: ctx.camera,
+      scene: ctx.scene,
+      mapSize: state.size * CELL_SIZE,
+      quality: this.quality,
+      groundAt: (x, z) => this.surf.terrain(x, z),
+      getSites: () => this.launchSites(),
+      hasWater: () => this.state.water.includes(1),
+    });
     this.buildings = new BuildingRenderer(state, this.culler);
     this.buildings.onVisual = (v, id) => {
       this.effects.onBuilding(v, id);
@@ -120,6 +133,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.root.add(
       this.roads.group, this.props.batch.mesh, this.props.pools, this.props.glows, this.power.wires, this.buildings.batch.mesh,
       this.vehicles.batch.mesh, this.vehicles.headlights, this.effects.smoke, this.effects.flames, this.disasters.group, this.previews.group, this.underground.group,
+      this.fireworks.group,
     );
     ctx.scene.add(this.root);
     this.subscribe(events);
@@ -221,6 +235,21 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.props.lodDistance = q === 'low' ? 900 : q === 'medium' ? 1300 : q === 'high' ? 1800 : 2600;
     this.vehicles.setQuality(q);
     this.effects.maxSmoke = q === 'low' ? 2500 : 7000;
+    this.fireworks.setQuality(q);
+  }
+
+  /** fireworks launch sites: parks / plazas, landmarks, stadium, waterfront, tallest roofs, city centre */
+  private launchSites(): LaunchSite[] {
+    const st = this.state;
+    return collectLaunchSites({
+      buildings: st.buildings.values(),
+      defOf: (id) => getDef(id),
+      visualOf: (id) => this.buildings.getVisual(id),
+      size: st.size,
+      water: st.water,
+      cellSize: CELL_SIZE,
+      groundAt: (x, z) => this.surf.terrain(x, z),
+    });
   }
 
   // ------------------------------------------------------------------ frame
@@ -248,6 +277,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     lap('buildings');
     this.disasters.update(dt);
     this.effects.update(dt);
+    this.fireworks.update(dt);
     lap('effects');
     this.vehicles.update(dt, cam);
     lap('vehicles');
@@ -360,9 +390,9 @@ export class CityObjectsView implements CityObjectsViewApi {
       lightPools: this.props.poolCount,
       vehicles: this.vehicles.n,
       trains: this.vehicles.trainCount,
-      particles: this.effects.particleCount,
+      particles: this.effects.particleCount + this.fireworks.liveCount,
       pylons: this.power.pylonCount,
-      drawCalls: rd + 1 + 1 + 1 + 1 + 1 + 1 + 2,
+      drawCalls: rd + 1 + 1 + 1 + 1 + 1 + 1 + 2 + this.fireworks.drawCalls,
       updateMs: Math.round(this.lastUpdateMs * 100) / 100,
     };
   }
@@ -377,6 +407,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.buildings.dispose();
     this.effects.dispose();
     this.disasters.dispose();
+    this.fireworks.dispose();
     this.vehicles.dispose();
     this.previews.dispose();
     this.underground.dispose();

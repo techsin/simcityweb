@@ -1,6 +1,6 @@
 /**
- * Pollution system: air, water, noise and garbage. Runs every POLL_PERIOD days in two stages on consecutive days
- * (A: sources + air, B: noise + water + garbage + flags) so no single day costs more than ~5 ms on 256^2.
+ * Pollution system: air, water, noise and garbage. A pass every POLL_PERIOD days, run by the InfraScheduler in small
+ * steps (sources, air near, air far + wind, noise, water, garbage, flags; each ~1-2 ms on 256^2).
  *
  *  Source model: catalog def.pollution.{air,water,noise} = intensity on the 0..1 overlay scale at the source with a
  *  falloff radius (negative = cleaning, e.g. water treatment). Converted to a source strength S = -K ln(1 - I) /
@@ -124,7 +124,7 @@ export class PollutionSystem implements SimSystem {
     });
   }
 
-  /** pass progress: -1 idle, 0 sources, 1 air, 2 noise, 3 water, 4 garbage, 5 flags + stats */
+  /** pass progress: -1 idle, 0 sources, 1 air near, 2 air far + wind, 3 noise, 4 water, 5 garbage, 6 flags + stats */
   private stepIdx = -1;
   private firstPass = false;
   private fxB: OrdEffects | null = null;
@@ -142,12 +142,13 @@ export class PollutionSystem implements SimSystem {
   private stepCost(sim: Simulation): number {
     const { cells, bld } = sizeFactors(sim);
     switch (this.stepIdx < 0 ? 0 : this.stepIdx) {
-      case 0: return 1.2 * bld + 0.5 * cells;
-      case 1: return 1.9 * cells;
-      case 2: return 0.9 * cells;
-      case 3: return 1.1 * cells;
-      case 4: return 1.6 * bld + 0.5 * cells;
-      default: return 0.6 * bld;
+      case 0: return 2.4 * bld + 1.0 * cells;
+      case 1: return 1.4 * cells;
+      case 2: return 1.6 * cells;
+      case 3: return 1.6 * cells;
+      case 4: return 2.0 * cells;
+      case 5: return 3.4 * bld + 1.2 * cells;
+      default: return 1.0 * bld;
     }
   }
 
@@ -156,12 +157,13 @@ export class PollutionSystem implements SimSystem {
     const t0 = nowMs();
     const k = this.stepIdx < 0 ? 0 : this.stepIdx;
     if (k === 0) this.stageA(sim, this.firstPass);
-    else if (k === 1) this.stageAir(sim, this.firstPass);
-    else if (k === 2) this.stageNoise(sim, this.firstPass);
-    else if (k === 3) this.stageB(sim, this.firstPass);
-    else if (k === 4) this.stageB2(sim, this.firstPass);
+    else if (k === 1) this.stageAirNear(sim);
+    else if (k === 2) this.stageAir(sim, this.firstPass);
+    else if (k === 3) this.stageNoise(sim, this.firstPass);
+    else if (k === 4) this.stageB(sim, this.firstPass);
+    else if (k === 5) this.stageB2(sim, this.firstPass);
     else this.stageFlags(sim);
-    this.stepIdx = k >= 5 ? -1 : k + 1;
+    this.stepIdx = k >= 6 ? -1 : k + 1;
     if (this.stepIdx < 0) this.firstPass = false;
     this.lastMs = nowMs() - t0;
   }
@@ -294,23 +296,28 @@ export class PollutionSystem implements SimSystem {
   }
 
   /** stage A2: blur air per class (full / half / quarter resolution), sum with gains, wind drift, map to 0..1 */
+  /** air step 1: small / medium emitter classes (half resolution) into the air field (this.tmp2) */
+  private stageAirNear(sim: Simulation): void {
+    const N = sim.state.size, air = this.air, used = this.usedCls;
+    const field = this.tmp2;
+    field.fill(0);
+    // small emitters at half resolution (radius 1 -> sigma^2 = 4 * 2 = 8 cells^2, ~ full-res radius 2)
+    if (used[0]) blurDownAdd(air[0], field, N, 2, 1, POLL_PEAK_GAIN * 2 * Math.PI * 8, this.coarse, this.coarseTmp);
+    if (used[1]) {
+      const rr = Math.max(1, Math.round(POLL_RADII[1] / 2));
+      blurDownAdd(air[1], field, N, 2, rr, POLL_PEAK_GAIN * 2 * Math.PI * 4 * blurSigma2(rr), this.coarse, this.coarseTmp);
+    }
+  }
+
+  /** air step 2: large emitters (quarter resolution), wind drift, saturation + temporal smoothing */
   private stageAir(sim: Simulation, first: boolean): void {
     const st = sim.state;
     const N = st.size, C = st.cells;
     const air = this.air, used = this.usedCls;
-    // --- blur air per class (full / half / quarter resolution), sum with gains, wind drift
-    const tmp = this.tmp, tmp2 = this.tmp2;
-    const field = tmp2;
-    {
-      field.fill(0);
-      // small emitters at half resolution (radius 1 -> sigma^2 = 4 * 2 = 8 cells^2, ~ full-res radius 2)
-      if (used[0]) blurDownAdd(air[0], field, N, 2, 1, POLL_PEAK_GAIN * 2 * Math.PI * 8, this.coarse, this.coarseTmp);
-      for (let c = 1; c < 3; c++) {
-        if (!used[c]) continue;
-        const f = c === 1 ? 2 : 4;
-        const rr = Math.max(1, Math.round(POLL_RADII[c] / f));
-        blurDownAdd(air[c], field, N, f, rr, POLL_PEAK_GAIN * 2 * Math.PI * f * f * blurSigma2(rr), this.coarse, this.coarseTmp);
-      }
+    const tmp = this.tmp, field = this.tmp2;
+    if (used[2]) {
+      const rr = Math.max(1, Math.round(POLL_RADII[2] / 4));
+      blurDownAdd(air[2], field, N, 4, rr, POLL_PEAK_GAIN * 2 * Math.PI * 16 * blurSigma2(rr), this.coarse, this.coarseTmp);
     }
     const ang = (st.day / 360) * Math.PI * 2 * 0.7 + Math.sin(st.day * 0.05) * 1.3;
     shiftField(field, tmp, N, Math.cos(ang) * WIND_DRIFT, Math.sin(ang) * WIND_DRIFT);

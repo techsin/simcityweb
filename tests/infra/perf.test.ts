@@ -8,6 +8,7 @@ import { Network } from '../../src/core/types';
 import { RoadGraph } from '../../src/sim/infra/graph';
 import { MinHeap } from '../../src/sim/infra/heap';
 import { Search, Seeds, roadSearch } from '../../src/sim/infra/search';
+import { schedulerOf } from '../../src/sim/infra/scheduler';
 import { getTraffic } from '../../src/sim/systems/infra';
 import { newSim, newState, stressCity } from './cityGen';
 
@@ -22,7 +23,7 @@ function minOf(n: number, fn: () => void): number {
 }
 
 describe('infra perf (256x256 stress city)', () => {
-  it('per-system and per-phase timings', { timeout: 120000 }, () => {
+  it('per-system and per-phase timings', { timeout: 240000 }, () => {
     const t0 = performance.now();
     const city = stressCity(256);
     const tGen = performance.now() - t0;
@@ -33,12 +34,13 @@ describe('infra perf (256x256 stress city)', () => {
     // warm up
     for (let k = 0; k < 6; k++) { tr.invalidate(); tr.runCycleSync(sim); }
     const R = 8;
-    const phaseMin = new Float64Array(8).fill(Infinity);
+    const P = tr.phaseMs.length;
+    const phaseMin = new Float64Array(P).fill(Infinity);
     let cycleMin = Infinity;
     for (let k = 0; k < R; k++) {
       tr.invalidate();
       tr.runCycleSync(sim);
-      for (let p = 0; p < 8; p++) phaseMin[p] = Math.min(phaseMin[p], tr.phaseMs[p]);
+      for (let p = 0; p < P; p++) phaseMin[p] = Math.min(phaseMin[p], tr.phaseMs[p]);
       cycleMin = Math.min(cycleMin, tr.lastCycleMs);
     }
     const sys: Record<string, number> = {};
@@ -52,15 +54,22 @@ describe('infra perf (256x256 stress city)', () => {
     const polB = minOf(R, () => pol.stageB(sim, false));
     const fire = sim.getSystem('fire')!;
     const fireDaily = minOf(R, () => fire.daily!(sim));
-    // steady-state days (headless: 1 traffic phase per day + staggered systems)
+    // steady-state days (headless: the shared InfraScheduler spends ~INFRA_DAY_BUDGET estimated ms per day)
+    const sch = schedulerOf(sim);
+    for (let d = 0; d < 240; d++) sim.advanceDay(); // JIT warm-up of the interleaved (scheduled) code paths
+    sch.spentMs.clear();
     const dayMs: number[] = [];
-    for (let d = 0; d < 64; d++) { const a = performance.now(); sim.advanceDay(); dayMs.push(performance.now() - a); }
+    const D = 180;
+    const cyc0 = tr.cycles;
+    for (let d = 0; d < D; d++) { const a = performance.now(); sim.advanceDay(); dayMs.push(performance.now() - a); }
     dayMs.sort((a, b) => a - b);
+    const q = (f: number) => dayMs[Math.min(D - 1, Math.floor(D * f))].toFixed(2);
     const s = city.st.stats;
     console.log(`stress city: roads=${city.roadCells} buildings=${city.buildings} pop=${city.pop} jobs=${city.jobs} gen=${tGen.toFixed(0)}ms init(all systems, cold)=${tInit.toFixed(0)}ms`);
-    console.log(`traffic phases min ms [prep, commute, transit, mode, inbound, shop, freight, final]: ${Array.from(phaseMin).map((t) => t.toFixed(2)).join(' / ')}  full cycle min ${cycleMin.toFixed(1)} ms`);
+    const names = ['prep', 'prepTransit', 'transit', 'roundSearch*', 'roundMatch*', 'commute', 'inbound', 'shop', 'freight', 'final', 'final2'];
+    console.log(`traffic phases min ms (* = summed over matching rounds): ${Array.from(phaseMin).map((t, p) => `${names[p] ?? p}=${t.toFixed(2)}`).join(' ')}  full cycle min ${cycleMin.toFixed(1)} ms`);
     console.log(`systems min ms: ${Object.entries(sys).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(' ')}  pollution stageA=${polA.toFixed(2)} stageB=${polB.toFixed(2)} fire.daily=${fireDaily.toFixed(2)}`);
-    console.log(`advanceDay ms: median ${dayMs[32].toFixed(2)} p90 ${dayMs[57].toFixed(2)} max ${dayMs[63].toFixed(2)}`);
+    console.log(`advanceDay ms over ${D} days: median ${q(0.5)} p90 ${q(0.9)} p99 ${q(0.99)} max ${dayMs[D - 1].toFixed(2)}  traffic cycles ${tr.cycles - cyc0}  per task ms/day: ${[...sch.spentMs].map(([k, v]) => `${k}=${(v / D).toFixed(2)}`).join(' ')}`);
     console.log(`stats: commute=${s.avgCommute.toFixed(1)}min traffic=${s.avgTraffic.toFixed(2)} car=${s.tripsCar} transit=${s.tripsTransit} walk=${s.tripsWalk} powerDemand=${s.powerDemand.toFixed(0)}MW water=${s.waterDemand.toFixed(0)}kL garbage=${s.garbageProduced.toFixed(0)}t pollution=${s.avgPollution.toFixed(2)} crime=${s.avgCrime.toFixed(2)} eq=${s.eq.toFixed(0)} hq=${s.hq.toFixed(0)}`);
     expect(city.buildings).toBeGreaterThan(15000);
     expect(cycleMin).toBeLessThan(400); // loose: target < 30 ms on a normal machine

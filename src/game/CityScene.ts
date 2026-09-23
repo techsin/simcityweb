@@ -25,6 +25,7 @@ import { FallbackWorldView } from './fallback/FallbackWorldView';
 import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
 import { loadSettings, saveSettings, type GameSettings } from './settings';
+import { NewYearCelebration, type CelebrateOptions } from './NewYear';
 import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
 import { ToolController } from './tools/ToolController';
 import { CursorTip } from '../ui/CursorTip';
@@ -105,6 +106,7 @@ export class CityScene {
   private pause: PauseMenu;
   private savePill: SavePill;
   private info: InfoPanel;
+  private newYear: NewYearCelebration;
   private advisors: AdvisorsPanel;
   private tip: CursorTip;
   private fpsEl: HTMLDivElement;
@@ -238,6 +240,17 @@ export class CityScene {
       },
     });
     this.savePill = new SavePill(this.uiRoot);
+    // New Year fireworks (src/game/NewYear.ts): listens to the sim's 'year' event itself
+    this.newYear = new NewYearCelebration({
+      sim: this.sim,
+      world: () => this.world,
+      objects: () => this.objects,
+      settings: () => this.settings,
+      toast: (text, kind, cell, title) => this.toasts.show(text, kind, cell, title),
+      sound: (n) => this.sound(n),
+      audio: () => this.mods.audio,
+      overlayRoot: this.uiRoot,
+    });
     this.fpsEl = h('div', { class: 'fps mp-glass', style: 'display:none' });
     this.uiRoot.appendChild(this.fpsEl);
     this.info = new InfoPanel(ctx);
@@ -315,6 +328,7 @@ export class CityScene {
     } catch {
       /* ignore */
     }
+    this.newYear.dispose();
     this.tools.dispose();
     this.minimap.dispose();
     try {
@@ -508,6 +522,11 @@ export class CityScene {
       this.errors.report('Simulation error', e, { sim: true, key: 'sim.update' });
     }
     this.edgeScroll(dt);
+    try {
+      this.newYear.frame(dt);
+    } catch (e) {
+      this.errors.report('New Year celebration error', e, { key: 'newyear' });
+    }
     try {
       this.world.update(dt);
       this.objects.update(dt);
@@ -911,8 +930,10 @@ export class CityScene {
         w.setQuality(s.quality);
         (this.objects as { setQuality?: (q: string) => void }).setQuality?.(s.quality);
       }
-      w.autoTime = s.autoTime;
-      if (!s.autoTime) w.timeOfDay = s.fixedHour;
+      if (!this.newYear?.ownsTime) {
+        w.autoTime = s.autoTime;
+        if (!s.autoTime) w.timeOfDay = s.fixedHour;
+      }
       w.setGridVisible(s.showGrid && !!this.tools?.activeId && this.tools.active.wantsGrid);
       const c = w.controls as unknown as { edgeScroll?: boolean };
       if (c && 'edgeScroll' in c) c.edgeScroll = s.edgeScroll;
@@ -942,6 +963,10 @@ export class CityScene {
   }
   get worldView(): WorldViewApi {
     return this.world;
+  }
+  /** dev / meta: ring in the New Year now (toast + time-lapse + fireworks per settings.newYear) */
+  celebrateNewYear(opts?: CelebrateOptions): boolean {
+    return this.newYear.celebrate(opts);
   }
   get objectsView(): CityObjectsViewApi {
     return this.objects;

@@ -19,6 +19,10 @@
  *   cam=x,z,dist      focus the camera on a cell;   fallback=all|world|objects  force stand-in views
  *   graph=<id>        graph to show when the graphs panel is open (pop, rci, funds, cash, ...)
  *   onboard=1|0       force-show / hide the getting-started card;  fps=1 perf readout;  dupe=1 duplicate-toast test
+ *   fireworks=1       New Year fireworks right away at night (fireworks=cinematic: full time-lapse + countdown);
+ *                      fireworks_t=<s> fast-forward the show to s seconds and freeze it (deterministic screenshots;
+ *                      fireworks_freeze=0 keeps it running), fireworks_pop=<n> size the show for n residents,
+ *                      fireworks_seed=<n>, fireworks_toast=0 no toast
  * Sets window.__ready once done; window.__scene is the CityScene.
  */
 import { CityScene } from '../game/CityScene';
@@ -417,6 +421,15 @@ async function run(): Promise<void> {
   if (P.get('onboard') === '0' || (fake && P.get('onboard') !== '1')) (scene as any).onboarding?.hide(false);
   if (P.get('fps') === '1') scene.applySettings({ showFps: true });
   if (P.get('dupe') === '1') for (let k = 0; k < 5; k++) scene.ctx.toast('Traffic jams reported on the main avenue.', 'warning');
+  const fwp = P.get('fireworks');
+  if (fwp === '1' || fwp === 'cinematic') {
+    const ft = P.has('fireworks_t') ? num('fireworks_t', 0) : 0;
+    scene.celebrateNewYear({
+      instant: fwp === '1', fastForward: ft, freeze: ft > 0 && P.get('fireworks_freeze') !== '0', seed: num('fireworks_seed', 2031),
+      population: P.has('fireworks_pop') ? num('fireworks_pop', 0) : undefined, quiet: P.get('fireworks_toast') === '0', mode: 'cinematic',
+    });
+    await frames(2);
+  }
   if (P.get('pause') === '1') scene.ctx.openPauseMenu();
   (window as any).__step = "final"; await frames(num("frames", 3));
   (window as any).__ready = true;

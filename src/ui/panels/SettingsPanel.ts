@@ -1,7 +1,7 @@
 /** Settings: graphics quality, time of day, camera, interface, audio, gameplay. Persisted via ctx.applySettings. */
 import type { QualityLevel } from '../../render/contracts';
 import type { GameContext } from '../../game/context';
-import type { GameSettings } from '../../game/settings';
+import type { GameSettings, NewYearMode } from '../../game/settings';
 import { Panel } from '../Panel';
 import { h, segmented, setSlider, setToggle, slider, toggle } from '../dom';
 import { hourLabel } from '../format';
@@ -54,6 +54,7 @@ export class SettingsPanel extends Panel {
       setToggle(this.autoSw, false);
     } });
     this.hourRow = this.row('Fixed time', 'Drag to set the hour (turns off the day cycle)', h('div', { class: 'sr-c' }, this.hourSlider, this.hourVal));
+    const newYear = segmented<NewYearMode>([{ value: 'cinematic', label: 'Cinematic' }, { value: 'fireworks', label: 'Fireworks' }, { value: 'off', label: 'Off' }], s.newYear ?? 'cinematic', (v) => this.ctx.applySettings({ newYear: v }));
     const autosave = segmented<number>([{ value: 0, label: 'Off' }, { value: 3, label: '3 mo' }, { value: 6, label: '6 mo' }, { value: 12, label: '1 yr' }], s.autosaveMonths, (v) => this.ctx.applySettings({ autosaveMonths: v }));
     this.body.append(
       h('div', { class: 'sec-title' }, 'Graphics'),
@@ -75,6 +76,7 @@ export class SettingsPanel extends Panel {
       h('div', { class: 'sec-title' }, 'Gameplay'),
       this.row('Autosave', 'Saves every N game months', autosave),
       this.row('Pause when hidden', 'Pause the simulation when the tab is in the background', this.sw('pauseWhenHidden')),
+      this.row('New Year celebration', 'Fireworks every January 1st — Cinematic switches to night first', newYear),
     );
   }
 

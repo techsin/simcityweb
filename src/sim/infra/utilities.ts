@@ -197,9 +197,9 @@ export class UtilitiesSystem implements SimSystem {
     const { cells, bld } = sizeFactors(sim);
     const k = this.stepIdx < 0 ? 0 : this.stepIdx;
     const full = this.stepIdx < 0 ? this.dirtyFull : this.passFull;
-    if (k === 0) return 0.8 * bld + (full ? 0.8 * cells : 0.05);
-    if (k === 1) return 0.5 * cells + 0.3 * bld;
-    return (full && this.dirtyWater ? 0.4 * cells : 0) + 0.5 * cells + 0.4 * bld;
+    if (k === 0) return 1.6 * bld + (full ? 1.6 * cells : 0.6 * cells);
+    if (k === 1) return 1.1 * cells + 0.6 * bld;
+    return (full && this.dirtyWater ? 0.8 * cells : 0) + 1.5 * cells + 1.1 * bld;
   }
 
   /** run one step of a (full or soft) refresh pass */

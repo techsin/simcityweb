@@ -25,7 +25,11 @@ export interface GameSettings {
   pauseWhenHidden: boolean;
   /** show toast notifications */
   toasts: boolean;
+  /** New Year celebration on January 1st: fireworks after a time-lapse to midnight / fireworks only / off */
+  newYear: NewYearMode;
 }
+
+export type NewYearMode = 'cinematic' | 'fireworks' | 'off';
 
 export const DEFAULT_SETTINGS: GameSettings = {
   quality: 'high',
@@ -42,6 +46,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   autosaveMonths: 6,
   pauseWhenHidden: true,
   toasts: true,
+  newYear: 'cinematic',
 };
 
 const KEY = 'metropolis.settings.v1';

@@ -105,7 +105,27 @@ export interface StressCity {
  * crossing the map; avenues and highways reach the map edges (neighbour connections). Blocks are filled with
  * 1x1 / 2x2 residential, commercial (CBD in the centre) and industrial (east side) buildings.
  */
-export function stressCity(size = 256, seed = 7, withTransit = true): StressCity {
+export interface StressOptions {
+  /** bus stops + one subway line (default true) */
+  withTransit?: boolean;
+  /** multiply residential population / job capacity */
+  popScale?: number;
+  jobScale?: number;
+  /** avenues every 24 cells + 2 highways (default true); false = streets / roads only */
+  arterials?: boolean;
+  /** subway lines every 24 cells in both directions with stations every 8 cells (default false) */
+  subwayGrid?: boolean;
+  /** SC4-like segregated land use: residential suburbs, CBD (radius 0.3), industry in the east (default false) */
+  segregated?: boolean;
+  /** rescale job capacities so that total job slots = jobsPerWorker x workers (0 = off) */
+  jobsPerWorker?: number;
+}
+
+export function stressCity(size = 256, seed = 7, withTransitOrOpts: boolean | StressOptions = true): StressCity {
+  const o: StressOptions = typeof withTransitOrOpts === 'boolean' ? { withTransit: withTransitOrOpts } : withTransitOrOpts;
+  const withTransit = o.withTransit ?? true;
+  const popScale = o.popScale ?? 1, jobScale = o.jobScale ?? 1;
+  const arterials = o.arterials ?? true;
   registerTestDefs();
   const st = newState(size);
   let rs = seed >>> 0 || 1;
@@ -124,8 +144,8 @@ export function stressCity(size = 256, seed = 7, withTransit = true): StressCity
     const lx = isLine(x), lz = isLine(z);
     if (!lx && !lz) continue;
     const edge = x === 0 || z === 0 || x === N - 1 || z === N - 1;
-    const aveX = lx && (x - 1) % 24 === 0, aveZ = lz && (z - 1) % 24 === 0;
-    const hwy = (lx && x === hw) || (lz && z === hw);
+    const aveX = arterials && lx && (x - 1) % 24 === 0, aveZ = arterials && lz && (z - 1) % 24 === 0;
+    const hwy = arterials && ((lx && x === hw) || (lz && z === hw));
     if (edge && !aveX && !aveZ && !hwy) continue;
     let t = Network.Street;
     if ((lx && (x - 1) % 6 === 0) || (lz && (z - 1) % 6 === 0)) t = Network.Road;
@@ -144,7 +164,11 @@ export function stressCity(size = 256, seed = 7, withTransit = true): StressCity
     const r = rnd();
     if (r < 0.12) continue; // empty lot
     let kind: 'R' | 'C' | 'I';
-    if (east) kind = rnd() < 0.8 ? 'I' : 'R';
+    if (o.segregated) {
+      if (east) kind = 'I';
+      else if (dist < 0.3) kind = rnd() < 0.9 ? 'C' : 'R';
+      else kind = 'R';
+    } else if (east) kind = rnd() < 0.8 ? 'I' : 'R';
     else if (dist < 0.22) kind = rnd() < 0.7 ? 'C' : 'R';
     else kind = rnd() < 0.12 ? 'C' : 'R';
     const big = rnd() < (kind === 'C' && dist < 0.22 ? 0.5 : 0.18);
@@ -152,7 +176,7 @@ export function stressCity(size = 256, seed = 7, withTransit = true): StressCity
       const id = kind === 'R' ? 't_r3' : kind === 'C' ? 't_co' : 't_im';
       const def = getDef(id)!;
       const cap = def.capacity!;
-      const b = place(st, id, x0, z0, kind === 'R' ? { pop: Math.round(cap * (0.6 + rnd() * 0.4)), wealth: 3 } : { jobs: Math.round(cap * 0.8), wealth: 2 });
+      const b = place(st, id, x0, z0, kind === 'R' ? { pop: Math.round(cap * popScale * (0.6 + rnd() * 0.4)), capacity: Math.round(cap * popScale), wealth: 3 } : { jobs: Math.round(cap * jobScale * 0.8), capacity: Math.round(cap * jobScale), wealth: 2 });
       zoneFor(st, b, kind);
       pop += b.pop; jobs += b.capacity * (kind === 'R' ? 0 : 1); count++;
     } else {
@@ -165,9 +189,40 @@ export function stressCity(size = 256, seed = 7, withTransit = true): StressCity
         else id = rnd() < 0.7 ? 't_id' : 't_iht';
         const def = getDef(id)!;
         const cap = def.capacity!;
-        const b = place(st, id, x, z, kind === 'R' ? { pop: Math.round(cap * (0.5 + rnd() * 0.5)), wealth: id === 't_r1' ? 1 : 2 } : { jobs: Math.round(cap * 0.8) });
+        const b = place(st, id, x, z, kind === 'R' ? { pop: Math.round(cap * popScale * (0.5 + rnd() * 0.5)), capacity: Math.round(cap * popScale), wealth: id === 't_r1' ? 1 : 2 } : { jobs: Math.round(cap * jobScale * 0.8), capacity: Math.round(cap * jobScale) });
         zoneFor(st, b, kind);
         pop += b.pop; jobs += kind === 'R' ? 0 : b.capacity; count++;
+      }
+    }
+  }
+  if (o.jobsPerWorker && o.jobsPerWorker > 0) {
+    const workers = pop * 0.55;
+    const f = (o.jobsPerWorker * workers) / Math.max(1, jobs);
+    jobs = 0;
+    for (const b of st.buildings.values()) {
+      if (b.pop > 0 || b.capacity <= 0) continue;
+      b.capacity = Math.round(b.capacity * f);
+      b.jobs = Math.round(b.capacity * 0.8);
+      jobs += b.capacity;
+    }
+  }
+  // subway grid: lines under every 24th road line in both directions, stations every 8 cells next to the line
+  if (o.subwayGrid) {
+    for (let k = 1; k < N; k += 24) for (let t = 2; t < N - 2; t++) { st.subway[k * N + t] = 1; st.subway[t * N + k] = 1; }
+    for (let k = 1; k < N; k += 24) for (let t = 5; t < N - 5; t += 8) {
+      for (const [sx, sz] of [[t - (t % 3) + 2, k + 1], [k + 1, t - (t % 3) + 2]] as const) {
+        if (sx >= N || sz >= N) continue;
+        const old = st.building[sz * N + sx];
+        if (old >= 0) {
+          const ob = st.buildings.get(old)!;
+          for (let zz = ob.z; zz < ob.z + ob.d; zz++) for (let xx = ob.x; xx < ob.x + ob.w; xx++) st.building[zz * N + xx] = -1;
+          st.buildings.delete(old);
+          pop -= ob.pop;
+          count--;
+        }
+        st.subway[sz * N + sx] = 1;
+        place(st, 't_subway', sx, sz);
+        count++;
       }
     }
   }

@@ -129,8 +129,10 @@ export const TRAFFIC_CYCLE_DAYS = 2;
 export const TRAFFIC_MIN_CYCLE_MS = 1000;
 
 // ---------------------------------------------------------------------------------------------- scheduler
-/** headless: estimated ms of infra steps per sim day (at least one step always runs) */
-export const INFRA_DAY_BUDGET = 3.0;
+/** headless: estimated ms of infra steps per sim day (at least one step always runs; step estimates ~ ms on a busy 4-core CI box) */
+export const INFRA_DAY_BUDGET = 2.6;
+/** headless: unused budget (next step did not fit) carried to the next day, at most this much */
+export const INFRA_DAY_CARRY = 0.6;
 /** with a live renderer: real ms of infra steps per frame (at least one step when due) */
 export const INFRA_FRAME_BUDGET_MS = 3;
 /** commute above this (min) counts as unreachable for employment purposes */

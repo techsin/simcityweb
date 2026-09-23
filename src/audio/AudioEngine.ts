@@ -253,6 +253,13 @@ export class AudioEngine {
     void this.ctx?.resume();
   }
 
+  // ------------------------------------------------------------------ fireworks (src/audio/fireworks.ts)
+  /** raw SFX output for procedural one-shots (New Year fireworks); null before init, while suspended or muted */
+  getSfxOutput(): { ctx: AudioContext; dest: AudioNode; wet: AudioNode; noise: AudioBuffer } | null {
+    if (!this.ctx || this.ctx.state !== 'running' || this.prefs.muted || !this.env) return null;
+    return { ctx: this.ctx, dest: this.buses.sfx, wet: this.reverbIn, noise: this.env.noise };
+  }
+
   private applyVolumes(immediate = false): void {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;

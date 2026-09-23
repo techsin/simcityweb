@@ -19,7 +19,7 @@
  *    (1 - 0.35 x air pollution) with HQ_TAU_YEARS (~4 years).
  *  SCHEDULING (InfraScheduler): a pass every SERVICES_PERIOD days (within SERVICES_DIRTY_DAYS after a service
  *  building / road change): prep (resident grid, station lists) -> stations processed in bounded steps
- *  (WORK_PER_STEP cell touches, accumulated in a scratch layer, copied when a kind completes) -> finish (transit stops,
+ *   (WORK_PER_STEP cell touches, accumulated in a scratch layer, copied when a kind completes) -> transit stops -> finish (
  *  uniform footprints, EQ / HQ). Emits layerUpdated('services').
  */
 import type { Building, CityState } from '../CityState';
@@ -31,15 +31,15 @@ import { schedulerOf, sizeFactors } from './scheduler';
 import { collectStops, computeTransitCoverage, type StopList } from './transit';
 import { getDef } from '../catalog';
 
-export const SERVICES_PERIOD = 10;
+export const SERVICES_PERIOD = 15;
 /** a new / removed service building or road change is reflected within this many days */
 export const SERVICES_DIRTY_DAYS = 2;
 /** estimated cell touches processed per scheduler step (bounds step cost) */
-const WORK_PER_STEP = 350000;
+const WORK_PER_STEP = 240000;
 const KIND_SERVICE: Record<string, ServiceKind> = {
   police: 'police', fire: 'fire', health: 'health', education: 'education', park: 'parks', transit: 'transit', garbage: 'utilities',
 };
-const STEP_PREP = 0, STEP_FINISH = 7;
+const STEP_PREP = 0, STEP_FINISH = 7, STEP_FOOT = 8, STEP_FINISH2 = 9;
 
 export class ServicesSystem implements SimSystem {
   readonly name = 'services';
@@ -59,10 +59,13 @@ export class ServicesSystem implements SimSystem {
   private lastEqDay = 0;
   lastMs = 0;
 
-  // pass state: -1 idle, 0 prep, 1..6 kinds (police, fire, health, education, park, transit), 7 finish
+  // pass state: -1 idle, 0 prep, 1..6 kinds (police, fire, health, education, park, transit), 7 transit stops,
+  // 8 footprints (1st half), 9 footprints (2nd half) + EQ / HQ
   private stepIdx = -1;
   private firstPass = false;
   private cursor = 0;
+  /** estimated cell touches left in this pass (for step cost estimates) */
+  private workLeft = 0;
   private stations: Building[][] = [[], [], [], [], [], []];
   private policeMul = 1;
   private fx: OrdEffects | null = null;
@@ -106,9 +109,11 @@ export class ServicesSystem implements SimSystem {
 
   private stepCost(sim: Simulation): number {
     const { cells, bld } = sizeFactors(sim);
-    if (this.stepIdx <= STEP_PREP) return 0.5 * bld + 0.1 * cells;
-    if (this.stepIdx === STEP_FINISH) return 1.1 * bld + 0.5 * cells;
-    return 1.6;
+    if (this.stepIdx <= STEP_PREP) return 0.9 * bld + 0.3 * cells;
+    if (this.stepIdx === STEP_FINISH) return 0.6 * bld + 0.9 * cells;
+    if (this.stepIdx === STEP_FOOT || this.stepIdx === STEP_FINISH2) return 2.3 * bld + 0.2 * cells;
+    // station steps: bounded by WORK_PER_STEP, less when little work remains (estimated from station radii)
+    return 0.1 + 2.0 * Math.min(1, this.workLeft / WORK_PER_STEP);
   }
 
   /** coverage layer for a CoverageKind name */
@@ -142,6 +147,13 @@ export class ServicesSystem implements SimSystem {
       this.stepIdx = 1;
       this.cursor = 0;
     } else if (this.stepIdx === STEP_FINISH) {
+      this.finishTransit(sim);
+      this.stepIdx = STEP_FOOT;
+    } else if (this.stepIdx === STEP_FOOT) {
+      this.footprints(sim.state, 0, 0.5);
+      this.stepIdx = STEP_FINISH2;
+    } else if (this.stepIdx === STEP_FINISH2) {
+      this.footprints(sim.state, 0.5, 1);
       this.finish(sim, this.firstPass);
       this.stepIdx = -1;
       this.firstPass = false;
@@ -193,6 +205,20 @@ export class ServicesSystem implements SimSystem {
     }
     this.policeMul = st.stats.population > 25000 && !hasJail ? 0.75 : 1;
     this.fx = readEffects(st);
+    let w = 0;
+    for (let k = 0; k < 6; k++) {
+      w += C * 0.1;
+      for (const b of this.stations[k]) w += this.workOf(st, b, k);
+    }
+    this.workLeft = w;
+  }
+
+  /** estimated cell touches of one station (same units as kindWork's work counter) */
+  private workOf(st: CityState, b: Building, kind: number): number {
+    const inf = infoOf(st, b);
+    const R = inf.cov < 0 ? 3 + Math.max(b.w, b.d) : inf.covRadius;
+    const r = kind === 4 || kind === 5 ? R + Math.max(b.w, b.d) / 2 : R * ROAD_RADIUS_FACTOR * 0.8;
+    return Math.PI * r * r * 3 * (kind === 4 || kind === 5 ? 1 : 0.5) + 16;
   }
 
   /** process stations of the current kind(s) until the step's work budget is used */
@@ -212,9 +238,11 @@ export class ServicesSystem implements SimSystem {
         this.stepIdx++;
         this.cursor = 0;
         work += C * 0.1;
+        this.workLeft -= C * 0.1;
         continue;
       }
       const b = list[this.cursor++];
+      this.workLeft -= this.workOf(st, b, kind);
       if (!st.buildings.has(b.id)) continue;
       const inf = infoOf(st, b);
       let R = inf.covRadius, strength = inf.covStrength;
@@ -246,18 +274,23 @@ export class ServicesSystem implements SimSystem {
     }
   }
 
-  private finish(sim: Simulation, first: boolean): void {
+  /** finish step 1: transit stops coverage (combined with the generic transit coverage) */
+  private finishTransit(sim: Simulation): void {
     const st = sim.state;
-    const N = st.size, C = st.cells;
-    const layers = [st.policeCov, st.fireCov, st.healthCov, st.eduCov, st.parkCov, st.transitCov];
-    // transit stops coverage (combined with generic transit coverage)
+    const C = st.cells;
     this.stops = collectStops(st, this.stops);
     const tmp = this.tmpLayer;
     computeTransitCoverage(st, this.stops, tmp, Math.min(1.25, fundingFactor(st, 'transit')));
     const T = st.transitCov;
     for (let i = 0; i < C; i++) { const t = tmp[i]; if (t > 0) T[i] = 1 - (1 - T[i]) * (1 - Math.min(1, t)); }
-    // uniform coverage over building footprints
-    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+  }
+
+  /** uniform coverage over building footprints, for the building list slice [from, to) (fractions) */
+  private footprints(st: CityState, from: number, to: number): void {
+    const N = st.size;
+    const layers = [st.policeCov, st.fireCov, st.healthCov, st.eduCov, st.parkCov, st.transitCov];
+    const bL = buildingList(st);
+    for (let bI = Math.floor(bL.length * from), bE = Math.floor(bL.length * to); bI < bE; bI++) {
       const b = bL[bI];
       if (b.w * b.d <= 1) continue;
       for (const L of layers) {
@@ -266,6 +299,12 @@ export class ServicesSystem implements SimSystem {
         for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) L[z * N + x] = m;
       }
     }
+  }
+
+  /** last step: EQ / HQ, layerUpdated */
+  private finish(sim: Simulation, first: boolean): void {
+    const st = sim.state;
+    const N = st.size;
     // EQ / HQ: slow first-order lag toward the coverage targets (EQ over ~a decade, HQ over a few years)
     let popSum = 0, edu = 0, health = 0, air = 0;
     for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {

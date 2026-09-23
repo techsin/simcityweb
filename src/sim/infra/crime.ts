@@ -51,7 +51,7 @@ export class CrimeSystem implements SimSystem {
       name: 'crime',
       due: (s) => self.stepIdx >= 0 || s.state.day - self.lastRun >= CRIME_PERIOD,
       urgent: () => false,
-      cost: (s) => { const f = sizeFactors(s); return self.stepIdx <= 0 ? 1.1 * f.bld : 0.6 * f.cells + 0.5 * f.bld; },
+      cost: (s) => { const f = sizeFactors(s); return self.stepIdx <= 0 ? 0.4 * f.cells + 1.6 * f.bld : 2.2 * f.cells + 1.0 * f.bld; },
       step: (s) => self.step(s),
     });
   }
