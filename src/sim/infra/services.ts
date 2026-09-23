@@ -14,54 +14,101 @@
  *  - Police effectiveness x0.75 above 25k population without a jail.
  *  - Transit coverage: def.coverage of stops / depots (catalog) + walking radius around road-cell bus stops
  *    (netFlags bit 4) and stops without a coverage def (bus 5, subway 7, train 8 cells) x transit funding.
- *  - EQ (0..150) drifts slowly toward 25 + 125 x (population-weighted education coverage);
- *    HQ (0..150) toward (30 + 120 x health coverage) x (1 - 0.35 x air pollution).
- *  Emits layerUpdated('services').
+ *  - EQ (0..150) follows 25 + 125 x (population-weighted education coverage) as a first-order lag with time constant
+ *    EQ_TAU_YEARS (~10 years: schools shape a generation); HQ (0..150) follows (30 + 120 x health coverage) x
+ *    (1 - 0.35 x air pollution) with HQ_TAU_YEARS (~4 years).
+ *  SCHEDULING (InfraScheduler): a pass every SERVICES_PERIOD days (within SERVICES_DIRTY_DAYS after a service
+ *  building / road change): prep (resident grid, station lists) -> stations processed in bounded steps
+ *  (WORK_PER_STEP cell touches, accumulated in a scratch layer, copied when a kind completes) -> finish (transit stops,
+ *  uniform footprints, EQ / HQ). Emits layerUpdated('services').
  */
-import { Network, isRoad } from '../../core/types';
-import type { CityState } from '../CityState';
+import type { Building, CityState } from '../CityState';
 import type { ServiceKind } from '../catalogTypes';
 import type { SimSystem, Simulation } from '../Simulation';
-import { COV_KINDS, DX, DZ, Fam, fundingFactor, infoOf, isFunctional, nowMs, readEffects, buildingList } from './common';
-import { COVERAGE_DEMAND, EQ_RATE, HQ_RATE, ROAD_RADIUS_FACTOR } from './params';
+import { COV_KINDS, Fam, fundingFactor, infoOf, isFunctional, nowMs, readEffects, buildingList, type OrdEffects } from './common';
+import { COVERAGE_DEMAND, EQ_TAU_YEARS, HQ_TAU_YEARS, ROAD_RADIUS_FACTOR } from './params';
+import { schedulerOf, sizeFactors } from './scheduler';
 import { collectStops, computeTransitCoverage, type StopList } from './transit';
 import { getDef } from '../catalog';
 
 export const SERVICES_PERIOD = 8;
+/** a new / removed service building or road change is reflected within this many days */
+export const SERVICES_DIRTY_DAYS = 2;
+/** estimated cell touches processed per scheduler step (bounds step cost) */
+const WORK_PER_STEP = 350000;
 const KIND_SERVICE: Record<string, ServiceKind> = {
   police: 'police', fire: 'fire', health: 'health', education: 'education', park: 'parks', transit: 'transit', garbage: 'utilities',
 };
+const STEP_PREP = 0, STEP_FINISH = 7;
 
 export class ServicesSystem implements SimSystem {
   readonly name = 'services';
   private stamp = 0;
   private visit = new Int32Array(0);
   private best = new Float32Array(0);
-  private dist = new Int32Array(0);
+  private dstamp = new Int32Array(0);
+  private dist = new Uint16Array(0);
   private queue = new Int32Array(0);
   private touched = new Int32Array(0);
   private resCell = new Float32Array(0);
   private tmpLayer = new Float32Array(0);
+  private scratch = new Float32Array(0);
+  private fall = new Float32Array(512);
   private stops: StopList | undefined;
   private lastRun = -1e9;
+  private lastEqDay = 0;
   lastMs = 0;
+
+  // pass state: -1 idle, 0 prep, 1..6 kinds (police, fire, health, education, park, transit), 7 finish
+  private stepIdx = -1;
+  private firstPass = false;
+  private cursor = 0;
+  private stations: Building[][] = [[], [], [], [], [], []];
+  private policeMul = 1;
+  private fx: OrdEffects | null = null;
 
   private dirty = false;
   private unsub: (() => void)[] = [];
 
   init(sim: Simulation): void {
     for (const u of this.unsub) u();
-    // a new / removed service building or road change shows its coverage on the next day
-    const markB = (b: { def: string }) => { const d = getDef(b.def); if (d && (d.coverage || d.category === 'park')) this.dirty = true; };
+    // a new / removed service building or road change shows its coverage within SERVICES_DIRTY_DAYS
+    const markB = (b: { def: string }) => { const d = getDef(b.def); if (d && (d.coverage || d.category === 'park' || d.category === 'transport')) this.dirty = true; };
     this.unsub = [sim.events.on('buildingAdded', markB), sim.events.on('buildingRemoved', markB), sim.events.on('networkChanged', () => { this.dirty = true; })];
     sim.state.systemData.infraVersion = 1;
     this.lastRun = -1e9;
+    this.lastEqDay = sim.state.day;
+    this.stepIdx = -1;
     this.compute(sim, true);
+    const self = this;
+    schedulerOf(sim).register({
+      name: 'services',
+      due: (s) => self.due(s),
+      urgent: () => false,
+      cost: (s) => self.stepCost(s),
+      step: (s) => self.step(s),
+    });
   }
 
   daily(sim: Simulation): void {
-    const d = sim.state.day;
-    if (this.dirty || d % SERVICES_PERIOD === 3 || d - this.lastRun > SERVICES_PERIOD * 2) this.compute(sim, false);
+    schedulerOf(sim).tickDay(sim);
+  }
+
+  frame(sim: Simulation, _dt: number): void {
+    schedulerOf(sim).tickFrame(sim, this);
+  }
+
+  private due(sim: Simulation): boolean {
+    if (this.stepIdx >= 0) return true;
+    const d = sim.state.day - this.lastRun;
+    return d >= SERVICES_PERIOD || (this.dirty && d >= SERVICES_DIRTY_DAYS);
+  }
+
+  private stepCost(sim: Simulation): number {
+    const { cells, bld } = sizeFactors(sim);
+    if (this.stepIdx <= STEP_PREP) return 0.6 * bld + 0.2 * cells;
+    if (this.stepIdx === STEP_FINISH) return 0.8 * bld + 0.5 * cells;
+    return 2.0;
   }
 
   /** coverage layer for a CoverageKind name */
@@ -77,8 +124,34 @@ export class ServicesSystem implements SimSystem {
     }
   }
 
+  /** full synchronous update (init / tests) */
   compute(sim: Simulation, first: boolean): void {
     const t0 = nowMs();
+    this.stepIdx = -1;
+    this.firstPass = first;
+    do this.step(sim); while (this.stepIdx >= 0);
+    this.lastMs = nowMs() - t0;
+  }
+
+  /** one step of the coverage pass */
+  step(sim: Simulation): void {
+    const t0 = nowMs();
+    if (this.stepIdx < 0) this.stepIdx = STEP_PREP;
+    if (this.stepIdx === STEP_PREP) {
+      this.prep(sim);
+      this.stepIdx = 1;
+      this.cursor = 0;
+    } else if (this.stepIdx === STEP_FINISH) {
+      this.finish(sim, this.firstPass);
+      this.stepIdx = -1;
+      this.firstPass = false;
+    } else {
+      this.kindWork(sim);
+    }
+    this.lastMs = nowMs() - t0;
+  }
+
+  private prep(sim: Simulation): void {
     const st = sim.state;
     const N = st.size, C = st.cells;
     this.lastRun = st.day;
@@ -86,69 +159,103 @@ export class ServicesSystem implements SimSystem {
     if (this.visit.length !== C) {
       this.visit = new Int32Array(C);
       this.best = new Float32Array(C);
-      this.dist = new Int32Array(C);
+      this.dstamp = new Int32Array(C);
+      this.dist = new Uint16Array(C);
       this.queue = new Int32Array(C);
       this.touched = new Int32Array(C);
       this.resCell = new Float32Array(C);
       this.tmpLayer = new Float32Array(C);
+      this.scratch = new Float32Array(C);
+      this.stamp = 0;
     }
-    // residents per cell (for capacity factors)
+    // residents per cell (for capacity factors) + station lists per kind
     const res = this.resCell;
     res.fill(0);
     let hasJail = false;
+    for (const l of this.stations) l.length = 0;
     for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
       const b = bL[bI];
       const inf = infoOf(st, b);
       if (inf.isJail && isFunctional(b)) hasJail = true;
-      if (inf.fam !== Fam.R || b.pop <= 0) continue;
-      const per = b.pop / (b.w * b.d);
-      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
-        if (x >= 0 && z >= 0 && x < N && z < N) res[z * N + x] += per;
+      if (inf.fam === Fam.R) {
+        if (b.pop <= 0) continue;
+        const per = b.pop / (b.w * b.d);
+        for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
+          if (x >= 0 && z >= 0 && x < N && z < N) res[z * N + x] += per;
+        }
+        continue;
       }
-    }
-    const layers = [st.policeCov, st.fireCov, st.healthCov, st.eduCov, st.parkCov, st.transitCov];
-    for (const L of layers) L.fill(0);
-    const policeMul = st.stats.population > 25000 && !hasJail ? 0.75 : 1;
-    const fx = readEffects(st);
-    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
-      const b = bL[bI];
-      const inf = infoOf(st, b);
       let kind = inf.cov;
+      if (kind < 0 && inf.isPark) kind = 4;
+      if (kind < 0 || kind > 5 || !isFunctional(b)) continue;
+      if (inf.cov >= 0 && (inf.covRadius <= 0 || inf.covStrength <= 0)) continue;
+      this.stations[kind].push(b);
+    }
+    this.policeMul = st.stats.population > 25000 && !hasJail ? 0.75 : 1;
+    this.fx = readEffects(st);
+  }
+
+  /** process stations of the current kind(s) until the step's work budget is used */
+  private kindWork(sim: Simulation): void {
+    const st = sim.state;
+    const C = st.cells;
+    const layers = [st.policeCov, st.fireCov, st.healthCov, st.eduCov, st.parkCov, st.transitCov];
+    const scratch = this.scratch;
+    const fx = this.fx ?? readEffects(st);
+    let work = 0;
+    while (this.stepIdx >= 1 && this.stepIdx <= 6 && work < WORK_PER_STEP) {
+      const kind = this.stepIdx - 1;
+      const list = this.stations[kind];
+      if (this.cursor === 0) scratch.fill(0);
+      if (this.cursor >= list.length) {
+        layers[kind].set(scratch.subarray(0, C));
+        this.stepIdx++;
+        this.cursor = 0;
+        work += C * 0.1;
+        continue;
+      }
+      const b = list[this.cursor++];
+      if (!st.buildings.has(b.id)) continue;
+      const inf = infoOf(st, b);
       let R = inf.covRadius, strength = inf.covStrength;
-      if (kind < 0 && inf.isPark) { kind = 4; R = 3 + Math.max(b.w, b.d); strength = 0.7; }
-      if (kind < 0 || kind > 5 || R <= 0 || strength <= 0) continue;
-      if (!isFunctional(b)) continue;
+      if (inf.cov < 0) { R = 3 + Math.max(b.w, b.d); strength = 0.7; }
       const kindName = COV_KINDS[kind];
       let eff = strength * fundingFactor(st, inf.service ?? KIND_SERVICE[kindName]);
-      if (kind === 0) eff *= policeMul;
-      if (kind === 0) eff *= fx.policeEffect;
+      if (kind === 0) eff *= this.policeMul * fx.policeEffect;
       else if (kind === 2) eff *= fx.healthEffect;
       else if (kind === 3) eff *= fx.eduEffect;
       if (eff <= 0) continue;
-      const L = layers[kind];
       const euclid = kind === 4 || kind === 5;
       const nT = euclid ? this.reachEuclid(st, b.x, b.z, b.w, b.d, R) : this.reachRoad(st, b.x, b.z, b.w, b.d, R);
+      work += nT * 3 + 16;
       // capacity factor
+      const touched = this.touched, best = this.best;
       if (inf.covCapacity > 0) {
         let demand = 0;
         const ratio = COVERAGE_DEMAND[kindName] ?? 1;
-        for (let t = 0; t < nT; t++) { const i = this.touched[t]; demand += res[i] * this.best[i] * ratio; }
+        const res = this.resCell;
+        for (let t = 0; t < nT; t++) { const i = touched[t]; demand += res[i] * best[i] * ratio; }
         if (demand > inf.covCapacity) eff *= inf.covCapacity / demand;
       }
-      const touched = this.touched, best = this.best;
       for (let t = 0; t < nT; t++) {
         const i = touched[t];
         let v = best[i] * eff;
         if (v > 1) v = 1;
-        L[i] = 1 - (1 - L[i]) * (1 - v);
+        scratch[i] = 1 - (1 - scratch[i]) * (1 - v);
       }
     }
+  }
+
+  private finish(sim: Simulation, first: boolean): void {
+    const st = sim.state;
+    const N = st.size, C = st.cells;
+    const layers = [st.policeCov, st.fireCov, st.healthCov, st.eduCov, st.parkCov, st.transitCov];
     // transit stops coverage (combined with generic transit coverage)
     this.stops = collectStops(st, this.stops);
     const tmp = this.tmpLayer;
     computeTransitCoverage(st, this.stops, tmp, Math.min(1.25, fundingFactor(st, 'transit')));
     const T = st.transitCov;
-    for (let i = 0; i < C; i++) T[i] = 1 - (1 - T[i]) * (1 - Math.min(1, tmp[i]));
+    for (let i = 0; i < C; i++) { const t = tmp[i]; if (t > 0) T[i] = 1 - (1 - T[i]) * (1 - Math.min(1, t)); }
     // uniform coverage over building footprints
     for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
       const b = bL[bI];
@@ -159,7 +266,7 @@ export class ServicesSystem implements SimSystem {
         for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) L[z * N + x] = m;
       }
     }
-    // EQ / HQ
+    // EQ / HQ: slow first-order lag toward the coverage targets (EQ over ~a decade, HQ over a few years)
     let popSum = 0, edu = 0, health = 0, air = 0;
     for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
       const b = bL[bI];
@@ -173,45 +280,36 @@ export class ServicesSystem implements SimSystem {
       air += b.pop * st.airPollution[i];
     }
     const stats = st.stats;
-    if (popSum > 0) {
+    const dtDays = Math.max(0, st.day - this.lastEqDay);
+    this.lastEqDay = st.day;
+    if (popSum > 0 && !first && dtDays > 0) {
       edu /= popSum; health /= popSum; air /= popSum;
-      let eqT = 25 + 125 * edu;
-      let hqT = (30 + 120 * health) * (1 - 0.35 * air);
-      eqT = Math.min(150, eqT);
-      hqT = Math.min(150, Math.max(0, hqT));
-      const re = first ? EQ_RATE : EQ_RATE, rh = first ? HQ_RATE : HQ_RATE;
+      const eqT = Math.min(150, 25 + 125 * edu);
+      const hqT = Math.min(150, Math.max(0, (30 + 120 * health) * (1 - 0.35 * air)));
+      const re = 1 - Math.exp(-dtDays / (EQ_TAU_YEARS * 360));
+      const rh = 1 - Math.exp(-dtDays / (HQ_TAU_YEARS * 360));
       stats.eq += (eqT - stats.eq) * re;
       stats.hq += (hqT - stats.hq) * rh;
     }
     sim.events.emit('layerUpdated', 'services');
-    this.lastMs = nowMs() - t0;
-  }
-
-  private resetStamps(): void {
-    this.stamp = 0;
-    this.visit.fill(0);
-    this.dist.fill(-1);
   }
 
   /** Euclidean disk reach -> this.touched / this.best; returns count */
   private reachEuclid(st: CityState, bx: number, bz: number, bw: number, bd: number, R: number): number {
     const N = st.size;
-    if (this.stamp >= 500000) this.resetStamps();
-    const stamp = ++this.stamp;
     const cx = bx + bw / 2 - 0.5, cz = bz + bd / 2 - 0.5;
     const half = Math.max(bw, bd) / 2;
     const Rt = R + half;
     const x0 = Math.max(0, Math.floor(cx - Rt)), x1 = Math.min(N - 1, Math.ceil(cx + Rt));
     const z0 = Math.max(0, Math.floor(cz - Rt)), z1 = Math.min(N - 1, Math.ceil(cz + Rt));
     let n = 0;
-    const visit = this.visit, best = this.best, touched = this.touched;
+    const best = this.best, touched = this.touched;
     for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
       const d = Math.max(0, Math.hypot(x - cx, z - cz) - half);
       if (d > R) continue;
       const v = falloff(d, R);
       if (v <= 0) continue;
       const i = z * N + x;
-      visit[i] = stamp;
       best[i] = v;
       touched[n++] = i;
     }
@@ -222,59 +320,63 @@ export class ServicesSystem implements SimSystem {
   private reachRoad(st: CityState, bx: number, bz: number, bw: number, bd: number, R: number): number {
     const N = st.size;
     const net = st.network;
-    // distances are encoded as stamp * 4096 + d in an Int32Array: reset before the encoding overflows
-    if (this.stamp >= 500000) this.resetStamps();
+    if (this.stamp >= 0x7ffffff0) { this.stamp = 0; this.visit.fill(0); this.dstamp.fill(0); }
     const stamp = ++this.stamp;
-    const visit = this.visit, best = this.best, touched = this.touched, dist = this.dist, queue = this.queue;
+    const visit = this.visit, best = this.best, touched = this.touched, dist = this.dist, dstamp = this.dstamp, queue = this.queue;
     const roadR = R * ROAD_RADIUS_FACTOR;
+    const maxD = Math.min(510, Math.ceil(roadR) + 2);
+    const fall = this.fall;
+    for (let d = 0; d <= maxD; d++) fall[d] = falloff(d, roadR);
     let n = 0;
-    const touch = (i: number, v: number) => {
-      if (visit[i] !== stamp) { visit[i] = stamp; best[i] = v; touched[n++] = i; }
-      else if (v > best[i]) best[i] = v;
-    };
     // near field (Euclidean, up to 3 cells around the building)
     const near = Math.min(3, R);
     for (let z = Math.max(0, bz - near); z <= Math.min(N - 1, bz + bd - 1 + near); z++)
-      for (let x = Math.max(0, bx - near); x <= Math.min(N - 1, bx + bw - 1 + near); x++) touch(z * N + x, 1);
+      for (let x = Math.max(0, bx - near); x <= Math.min(N - 1, bx + bw - 1 + near); x++) {
+        const i = z * N + x;
+        if (visit[i] !== stamp) { visit[i] = stamp; touched[n++] = i; }
+        best[i] = 1;
+      }
     // BFS seeds: road cells around the footprint
     let qh = 0, qt = 0;
     for (let z = bz - 1; z <= bz + bd; z++) for (let x = bx - 1; x <= bx + bw; x++) {
       if (x < 0 || z < 0 || x >= N || z >= N) continue;
       if (x >= bx && x < bx + bw && z >= bz && z < bz + bd) continue;
       const i = z * N + x;
-      if (!isRoad(net[i] as Network)) continue;
-      if (dist[i] === stamp * 4096) continue;
-      dist[i] = stamp * 4096; // encodes distance 0 for this stamp
+      const t = net[i];
+      if (t < 1 || t > 5 || dstamp[i] === stamp) continue;
+      dstamp[i] = stamp;
+      dist[i] = 0;
       queue[qt++] = i;
     }
-    const base = stamp * 4096;
     while (qh < qt) {
       const i = queue[qh++];
-      const d = dist[i] - base;
+      const d = dist[i];
       const x = i % N, z = (i - x) / N;
-      const v = falloff(d, roadR);
+      const v = fall[d];
       if (v > 0) {
-        for (let dz = -1; dz <= 1; dz++) {
-          const zz = z + dz;
-          if (zz < 0 || zz >= N) continue;
-          for (let dx = -1; dx <= 1; dx++) {
-            const xx = x + dx;
-            if (xx < 0 || xx >= N) continue;
-            touch(zz * N + xx, dx === 0 && dz === 0 ? v : falloff(d + 1, roadR));
+        const v1 = fall[d + 1];
+        const zz0 = z > 0 ? z - 1 : 0, zz1 = z < N - 1 ? z + 1 : N - 1;
+        const xx0 = x > 0 ? x - 1 : 0, xx1 = x < N - 1 ? x + 1 : N - 1;
+        for (let zz = zz0; zz <= zz1; zz++) {
+          const row = zz * N;
+          for (let xx = xx0; xx <= xx1; xx++) {
+            const j = row + xx;
+            const w = j === i ? v : v1;
+            if (visit[j] !== stamp) { visit[j] = stamp; best[j] = w; touched[n++] = j; }
+            else if (w > best[j]) best[j] = w;
           }
         }
       }
       if (d + 1 > roadR) continue;
-      for (let k = 0; k < 4; k++) {
-        const nx = x + DX[k], nz = z + DZ[k];
-        if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
-        const j = nz * N + nx;
-        const dj = dist[j] - base;
-        if (dj >= 0 && dj < 4096) continue;
-        if (!isRoad(net[j] as Network)) continue;
-        dist[j] = base + d + 1;
-        queue[qt++] = j;
-      }
+      const d1 = d + 1;
+      let j = i - 1;
+      if (x > 0 && dstamp[j] !== stamp && net[j] >= 1 && net[j] <= 5) { dstamp[j] = stamp; dist[j] = d1; queue[qt++] = j; }
+      j = i + 1;
+      if (x < N - 1 && dstamp[j] !== stamp && net[j] >= 1 && net[j] <= 5) { dstamp[j] = stamp; dist[j] = d1; queue[qt++] = j; }
+      j = i - N;
+      if (z > 0 && dstamp[j] !== stamp && net[j] >= 1 && net[j] <= 5) { dstamp[j] = stamp; dist[j] = d1; queue[qt++] = j; }
+      j = i + N;
+      if (z < N - 1 && dstamp[j] !== stamp && net[j] >= 1 && net[j] <= 5) { dstamp[j] = stamp; dist[j] = d1; queue[qt++] = j; }
     }
     return n;
   }

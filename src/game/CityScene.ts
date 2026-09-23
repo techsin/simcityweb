@@ -116,6 +116,10 @@ export class CityScene {
   private ambAcc = 0;
   private started = false;
   private disposed = false;
+  private resolveReady!: () => void;
+  /** resolves once the views are up (real or stand-in views constructed and the first frame rendered) */
+  readonly ready: Promise<void> = new Promise<void>((res) => (this.resolveReady = res));
+  private readyPending = false;
   private offs: (() => void)[] = [];
   private monthsSinceSave = 0;
   private saving: Promise<void> | null = null;
@@ -281,6 +285,11 @@ export class CityScene {
   }
 
   // ------------------------------------------------------------------------------------------------ lifecycle
+  /** same as `ready` (for callers that prefer a method) */
+  whenReady(): Promise<void> {
+    return this.ready;
+  }
+
   start(): void {
     if (this.started || this.disposed) return;
     this.started = true;
@@ -434,6 +443,7 @@ export class CityScene {
     if (this.mods.errors.length) console.warn('[game] module load issues', this.mods.errors);
     this.showDevBadge();
     this.uiEvents.emit('viewsReady', undefined);
+    this.readyPending = true; // resolved after the next rendered frame (see loop)
     this.veil.classList.add('gone');
     setTimeout(() => this.veil.remove(), 600);
   }
@@ -502,6 +512,10 @@ export class CityScene {
     } catch (e) {
       this.renderFailures++;
       this.errors.report('Rendering error', e, { key: 'render' });
+    }
+    if (this.readyPending) {
+      this.readyPending = false;
+      this.resolveReady();
     }
     this.minimap.frame(dt);
     this.ticker.frame(dt);

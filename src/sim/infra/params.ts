@@ -203,9 +203,9 @@ export const POLLUTED_THRESHOLD = 0.45;
 export const ROAD_RADIUS_FACTOR = 1.3;
 /** people per resident counted against def.coverage.capacity (catalog: capacity = residents served) */
 export const COVERAGE_DEMAND: Record<string, number> = { education: 1, health: 1, police: 1, fire: 1, park: 1, transit: 1, garbage: 1 };
-/** EQ / HQ convergence per services update (fraction of gap) */
-export const EQ_RATE = 0.012;
-export const HQ_RATE = 0.02;
+/** EQ / HQ first-order lag time constants (years): EQ changes over a generation, HQ over a few years */
+export const EQ_TAU_YEARS = 10;
+export const HQ_TAU_YEARS = 4;
 /** transit stop walking coverage radius (cells) */
 export const TRANSIT_COV_RADIUS = { bus: 5, subway: 7, train: 8 };
 
