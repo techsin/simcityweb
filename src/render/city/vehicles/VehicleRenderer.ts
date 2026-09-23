@@ -741,7 +741,7 @@ export class VehicleRenderer {
         else fails++;
       }
       budget = 40;
-      while (this.n > this.target && budget-- > 0) this.removeSlot(this.n - 1);
+      while (this.n > this.target + this.serviceRoutes.length && budget-- > 0) this.removeSlot(this.n - 1);
       // every active service route (fire trucks, police patrols, garbage...) gets its vehicle
       if (this.serviceRoutes.length) {
         const active = new Set<TrafficRoute>();

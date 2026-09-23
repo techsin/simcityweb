@@ -282,7 +282,16 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       rough = 0.05;
       metal = 0.9;
     } else {
-      emis += vec3(1.0, 0.82, 0.55) * night * (0.7 + 0.6 * h) * step(0.15, h);
+      // homes / shops: per-window (~2.5 x 2.8 m cells) lit state follows the time-of-day lit fraction
+      // (homes a bit above offices: ~55-75% in the evening, dipping late at night)
+      vec2 wc = vec2(floor(u / 2.5), floor(v / 2.8));
+      float hw = bh31(vec3(wc, floor(vSeed * 113.0)));
+      float litP = clamp(uLitFraction * 0.95 + 0.05, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
+      float lit = step(hw, litP);
+      float fw = clamp(1.0 - length(fwidth(vec2(u / 2.5, v / 2.8))) * 2.0, 0.0, 1.0);
+      lit = mix(clamp(litP, 0.0, 1.0), lit, fw);
+      vec3 wl = mix(vec3(1.0, 0.8, 0.52), vec3(1.0, 0.88, 0.7), step(0.7, h));
+      emis += wl * night * (0.7 + 0.6 * h) * lit;
     }
   } else if (type < 8.5) {
     // foliage
