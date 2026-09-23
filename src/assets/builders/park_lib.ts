@@ -1114,11 +1114,17 @@ export function umbrella(b: ModelBuilder, x: number, z: number, color: ColorLike
   b.paint(color, Surf.Plain).cone(x, z, h - 0.35, 0.55, r, 8, false);
 }
 
-/** Small colored pavilion tent / kiosk with a striped conical roof. */
-export function stripedCone(b: ModelBuilder, x: number, z: number, y0: number, h: number, r: number, seg: number, c1: ColorLike, c2: ColorLike): void {
+/** Stripe paint: plain colour, or night-lit (Emissive 10: plain by day, glowing canvas at night). */
+function stripePaint(b: ModelBuilder, c: ColorLike, lit: boolean): void {
+  if (lit) b.paint(c, Surf.Emissive, 10);
+  else b.paint(c, Surf.Plain);
+}
+
+/** Small colored pavilion tent / kiosk with a striped conical roof. `lit2` makes the c2 stripes glow at night. */
+export function stripedCone(b: ModelBuilder, x: number, z: number, y0: number, h: number, r: number, seg: number, c1: ColorLike, c2: ColorLike, lit2 = false): void {
   for (let i = 0; i < seg; i++) {
     const a0 = (i / seg) * TAU, a1 = ((i + 1) / seg) * TAU;
-    b.paint(i % 2 ? c1 : c2, Surf.Plain);
+    stripePaint(b, i % 2 ? c1 : c2, lit2 && i % 2 === 0);
     const p0: V3 = [x + Math.cos(a0) * r, y0, z + Math.sin(a0) * r], p1: V3 = [x + Math.cos(a1) * r, y0, z + Math.sin(a1) * r];
     const top: V3 = [x, y0 + h, z];
     const am = (a0 + a1) / 2, sl = r / h;
@@ -1127,10 +1133,43 @@ export function stripedCone(b: ModelBuilder, x: number, z: number, y0: number, h
   }
 }
 
-/** Striped cylinder wall (tent sides, carousel). */
-export function stripedWall(b: ModelBuilder, x: number, z: number, y0: number, y1: number, r: number, seg: number, c1: ColorLike, c2: ColorLike): void {
+/** Striped cylinder wall (tent sides, carousel). `lit2` makes the c2 stripes glow at night. */
+export function stripedWall(b: ModelBuilder, x: number, z: number, y0: number, y1: number, r: number, seg: number, c1: ColorLike, c2: ColorLike, lit2 = false): void {
   for (let i = 0; i < seg; i++) {
-    b.paint(i % 2 ? c1 : c2, Surf.Plain);
+    stripePaint(b, i % 2 ? c1 : c2, lit2 && i % 2 === 0);
     cylWall(b, x, z, y0, y1, r, r, 1, false, (i / seg) * TAU, ((i + 1) / seg) * TAU);
+  }
+}
+
+/** Festoon string lights between poles along a polyline: 3 m poles every `span` m, 0.25 m bulbs every 4 m. */
+export function festoon(b: ModelBuilder, pts: P2[], span = 12, yBase = 0): void {
+  // resample the polyline into pole positions
+  const poles: P2[] = [pts[0]];
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const [ax, az] = pts[i - 1], [bx, bz] = pts[i];
+    const l = Math.hypot(bx - ax, bz - az);
+    let t = span - acc;
+    while (t <= l) {
+      poles.push([ax + ((bx - ax) * t) / l, az + ((bz - az) * t) / l]);
+      t += span;
+    }
+    acc = (acc + l) % span;
+  }
+  const H = 3.0;
+  for (const [x, z] of poles) b.paint(0x2e3033, Surf.Metal).cylinder(x, z, yBase, H, 0.07, 0.06, 4, { top: false });
+  for (let i = 0; i < poles.length - 1; i++) {
+    const [ax, az] = poles[i], [bx, bz] = poles[i + 1];
+    const l = Math.hypot(bx - ax, bz - az);
+    const n = Math.max(1, Math.round(l / 4));
+    const sag = (t: number) => yBase + H - 0.1 - 0.9 * 4 * t * (1 - t);
+    b.paint(0x2e3033, Surf.Metal);
+    b.beam([ax, yBase + H - 0.1, az], [(ax + bx) / 2, sag(0.5), (az + bz) / 2], 0.03).beam([(ax + bx) / 2, sag(0.5), (az + bz) / 2], [bx, yBase + H - 0.1, bz], 0.03);
+    b.paint(0xffd9a0, Surf.Emissive, 6);
+    for (let k = 1; k < n; k++) {
+      const t = k / n;
+      const x = ax + (bx - ax) * t, z = az + (bz - az) * t, y = sag(t);
+      b.box(x - 0.125, y - 0.3, z - 0.125, x + 0.125, y - 0.05, z + 0.125, { bottom: null });
+    }
   }
 }

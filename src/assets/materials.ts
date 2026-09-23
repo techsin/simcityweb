@@ -196,6 +196,9 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       rough = mix(rough, 0.12, m);
       metal = mix(metal, 0.55, m);
       float litProb = uLitFraction * (0.55 + 0.9 * vSeed);
+      // office facades (ribbon / dense grid) empty out at night more than homes
+      if ((pattern > 1.5 && pattern < 2.5) || (pattern > 4.5 && pattern < 5.5)) litProb *= 0.6;
+      litProb = min(litProb, 0.9);
       float lit = step(h, litProb);
       // curtains / variation
       float intensity = 0.6 + 0.8 * h2;
@@ -278,7 +281,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       officeC = mix(officeC, vec3(0.86, 0.95, 0.9), step(0.93, fh) * (1.0 - warmTint)); // a few greenish fluorescent floors
       // brighter toward the ceiling of each floor (ceiling lights), dimmer panels here and there
       float ceilG = 0.55 + 0.45 * smoothstep(0.15, 0.85, fract(cv));
-      float panelB = 0.45 + 0.75 * bh31(vec3(floor(cu), cell.y, vSeed * 19.0));
+      float panelB = 0.7 + 0.45 * bh31(vec3(floor(cu), cell.y, vSeed * 19.0));
       emis += officeC * lit * (1.0 - mull) * night * mix(0.75, ceilG * panelB, fadeF) * 0.55;
       }
     }
