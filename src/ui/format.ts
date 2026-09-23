@@ -4,6 +4,11 @@ const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
 export const CURRENCY = '§';
 
+/** normalize money in simulation-generated text ("$1,200" -> "§1,200"); wealth tags like R$$ are untouched */
+export function simText(s: string): string {
+  return s.replace(/\$(?=[\d.])/g, CURRENCY).replace(/-\$(?=\d)/g, '−' + CURRENCY);
+}
+
 export function num(n: number): string {
   if (!isFinite(n)) return '—';
   return nf.format(Math.round(n));

@@ -45,6 +45,8 @@ export interface ManifestEntry {
   waterfront?: boolean;
   /** triangle budget override for showpieces */
   budget?: number;
+  /** allowed horizontal overhang beyond the lot (m), e.g. wind turbine rotors */
+  overhang?: number;
 }
 
 const E = (
@@ -248,6 +250,7 @@ export const MANIFEST: ManifestEntry[] = [
 for (const e of MANIFEST) {
   if (e.id === 'tr_seaport' || e.id === 'tr_ferry_terminal' || e.id === 'park_marina') e.waterfront = true;
   if (e.id === 'tr_airport_large' || e.id === 'tr_airport_small' || e.id === 'tr_seaport') e.budget = 6000;
+  if (e.id === 'util_wind_turbine') e.overhang = 18;
 }
 
 export const MANIFEST_BY_ID: Record<string, ManifestEntry> = Object.fromEntries(MANIFEST.map((e) => [e.id, e]));

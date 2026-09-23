@@ -3,7 +3,7 @@ import type { NewsItem } from '../sim/CityState';
 import type { GameContext } from '../game/context';
 import { escapeHtml, h } from './dom';
 import { icon } from './icons';
-import { dayLabel } from './format';
+import { dayLabel, simText } from './format';
 
 export const NEWS_META: Record<string, { color: string; icon: string; title: string }> = {
   info: { color: 'var(--accent)', icon: 'news', title: 'News' },
@@ -58,7 +58,7 @@ export class NewsTicker {
       items.push(...welcome);
     }
     for (const n of items) {
-      const el = h('span', { class: `tk-item ${n.kind}` }, h('span', { class: 'tk-dot' }), h('span', { class: 'd' }, dayLabel(n.day, st.config.startYear)), h('span', { html: escapeHtml(n.text) }));
+      const el = h('span', { class: `tk-item ${n.kind}` }, h('span', { class: 'tk-dot' }), h('span', { class: 'd' }, dayLabel(n.day, st.config.startYear)), h('span', { html: escapeHtml(simText(n.text)) }));
       if (n.x !== undefined && n.z !== undefined) {
         el.dataset.x = String(n.x);
         el.dataset.z = String(n.z);
@@ -84,6 +84,8 @@ export class NewsTicker {
 }
 
 export class Toasts {
+  /** multiplier for toast lifetimes (dev/screenshot tooling raises it) */
+  static ttlScale = 1;
   readonly el: HTMLDivElement;
   private recent = new Map<string, number>();
   constructor(private ctx: GameContext, parent: HTMLElement) {
@@ -104,13 +106,13 @@ export class Toasts {
     if ((this.recent.get(key) ?? 0) > now - 2500) return;
     this.recent.set(key, now);
     const meta = NEWS_META[kind] ?? NEWS_META.info;
-    const ttl = kind === 'error' ? 2600 : kind === 'disaster' ? 12000 : 7000;
+    const ttl = (kind === 'error' ? 2600 : kind === 'disaster' ? 12000 : 7000) * Toasts.ttlScale;
     const x = h('button', { class: 'icon-btn t-x', html: icon('close', 12) });
     const t = h('div', { class: 'toast mp-glass', style: { '--tc': meta.color } as Record<string, string> },
       h('div', { class: 't-ico', html: icon(meta.icon, 16) }),
       h('div', { class: 't-body' },
         title || meta.title ? h('div', { class: 't-title' }, title ?? meta.title) : null,
-        h('div', { class: 't-text' }, text),
+        h('div', { class: 't-text' }, simText(text)),
         cell ? h('div', { class: 't-go', html: icon('target', 12) + 'Click to view' }) : null,
       ),
       x,

@@ -37,9 +37,11 @@ void main() {
   // swirl: the pattern slides around the funnel faster near the ground
   float sw = vUv.x * 7.0 + uTime * (1.6 - h * 0.9) + h * 5.0;
   float n = fn(vec2(sw, h * 9.0 - uTime * 1.3)) * 0.6 + fn(vec2(sw * 2.3, h * 21.0 - uTime * 2.1)) * 0.4;
-  float a = smoothstep(0.25, 0.8, n) * 0.55 + 0.18;
-  a *= smoothstep(0.0, 0.06, h) * (1.0 - smoothstep(0.75, 1.0, h));
-  vec3 col = mix(vec3(0.32, 0.29, 0.25), vec3(0.55, 0.55, 0.57), h) * (0.75 + 0.35 * n) * mix(1.0, 0.18, uNight);
+  // silhouette: denser toward the edges of the funnel (view-independent approximation: dense bands)
+  float bands = 0.5 + 0.5 * sin(sw * 3.14159 * 2.0 + n * 4.0);
+  float a = smoothstep(0.2, 0.75, n * 0.7 + bands * 0.45) * 0.7 + 0.22;
+  a *= smoothstep(0.0, 0.05, h) * (1.0 - smoothstep(0.8, 1.0, h));
+  vec3 col = mix(vec3(0.2, 0.18, 0.16), vec3(0.46, 0.46, 0.48), smoothstep(0.0, 0.9, h)) * (0.6 + 0.5 * n) * mix(1.0, 0.16, uNight);
   gl_FragColor = vec4(col, a * uFade);
 }`;
 
@@ -168,7 +170,7 @@ export class Disasters {
     const pts: THREE.Vector2[] = [];
     for (let k = 0; k <= 24; k++) {
       const h = k / 24;
-      pts.push(new THREE.Vector2(3.5 + Math.pow(h, 1.8) * 46 + Math.sin(h * 9) * 1.5, h * H));
+      pts.push(new THREE.Vector2(2.5 + Math.pow(h, 2.2) * 55 + Math.sin(h * 9) * 1.2, h * H));
     }
     const funnel = new THREE.Mesh(new THREE.LatheGeometry(pts, 28), this.funnelMat);
     funnel.renderOrder = 7;
@@ -213,7 +215,7 @@ export class Disasters {
     }));
     flash.frustumCulled = false;
     flash.visible = false;
-    const ringGeo = new THREE.RingGeometry(0.85, 1, 48);
+    const ringGeo = new THREE.RingGeometry(0.96, 1, 64);
     ringGeo.rotateX(-Math.PI / 2);
     const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xffd8a0, transparent: true, opacity: 0.0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
     ring.visible = false;
@@ -255,7 +257,7 @@ export class Disasters {
       this.dustTimer -= dt;
       if (this.dustTimer <= 0 && this.tornadoActive) {
         this.dustTimer = 0.5;
-        this.effects.setExtra('tornado', [{ x: p.x, y: p.y + 1, z: p.z, kind: 4, size: 22, count: 16, life: 5 }], 3);
+        this.effects.setExtra('tornado', [{ x: p.x, y: p.y + 1, z: p.z, kind: 4, size: 30, count: 24, life: 4 }], 3);
       }
       if (!this.tornadoActive && this.tornadoFade < 0.02) {
         this.group.remove(tg);
@@ -307,7 +309,7 @@ export class Disasters {
         (m.flash.material as THREE.ShaderMaterial).uniforms.uA.value = Math.max(0, 1 - ti / 1.2) * 2.5;
         const rr = 10 + ti * 140;
         m.ring.scale.set(rr, 1, rr);
-        (m.ring.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.8 - ti * 0.5);
+        (m.ring.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.7 - ti * 0.6);
         if (ti > 2) {
           this.group.remove(m.group);
           m.group.traverse((o) => {

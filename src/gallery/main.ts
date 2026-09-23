@@ -145,7 +145,7 @@ for (const it of items) {
   // stats / bounds check
   const bb = geo.boundingBox!;
   const tris = (geo.attributes.position.count / 3) | 0;
-  const tol = 0.6;
+  const tol = 0.6 + (entry.overhang ?? 0);
   const outOfBounds = entry.group !== 'vehicle' && entry.group !== 'nature' && entry.group !== 'prop' && (bb.min.x < -fw / 2 - tol || bb.max.x > fw / 2 + tol || bb.min.z < -fd / 2 - tol || bb.max.z > fd / 2 + tol);
   const height = bb.max.y;
   const heightBad = height > entry.height[1] * 1.25 || height < entry.height[0] * 0.6;

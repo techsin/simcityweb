@@ -110,6 +110,8 @@ export class PanelManager implements PanelsApi {
     const saved = loadPref<{ x: number; y: number } | null>('panel.' + id, null);
     const pos = saved ?? this.freeSpot(p);
     p.setPos(pos.x, pos.y);
+    const H = this.layer.clientHeight;
+    if (p.el.offsetTop + p.el.offsetHeight > H - 8) p.setPos(p.el.offsetLeft, Math.max(64, H - p.el.offsetHeight - 12));
     this.focus(id);
     try {
       p.onOpen();
@@ -126,6 +128,8 @@ export class PanelManager implements PanelsApi {
     const W = this.layer.clientWidth, H = this.layer.clientHeight;
     let { x, y } = p.defaultPos(W, H);
     const w = p.width, h = Math.min(p.el.offsetHeight || 400, H - 180);
+    if (p.center) y = Math.max(64, Math.round((H - h) / 2) - 20);
+    y = Math.max(64, Math.min(y, H - h - 12));
     const others = this.order.map((id) => this.panels.get(id)!).filter((o) => o && o !== p && o.isOpen);
     for (let guard = 0; guard < 8; guard++) {
       const hit = others.find((o) => {
@@ -137,7 +141,7 @@ export class PanelManager implements PanelsApi {
       if (left >= 12) x = left;
       else {
         x = Math.min(W - w - 14, x + 28);
-        y += 28;
+        y = Math.min(y + 28, H - h - 12);
       }
     }
     return { x, y };

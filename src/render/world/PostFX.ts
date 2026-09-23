@@ -92,7 +92,23 @@ uniform float uContrast;
 uniform vec3 uLift;
 uniform float uVignette;
 uniform vec2 uResolution;
+uniform sampler2D uNoise;
+uniform float uCloudShadow;
+uniform float uCloudCover;
+uniform float uCloudTime;
 varying vec2 vUv;
+
+// moving cloud shadows: world-fixed cloud field at ~2.2 km projected along the light direction
+float cloudShadow(vec2 uv, float depth) {
+  vec3 vp = fogViewPos(uv, depth);
+  vec3 wp = (uCamWorld * vec4(vp, 1.0)).xyz;
+  float t = (2200.0 - wp.y) / max(uSunDir.y, 0.08);
+  vec2 p = wp.xz + uSunDir.xz * t + vec2(uCloudTime * 9.0, uCloudTime * 4.0);
+  vec2 q = p / 24000.0;
+  float n = texture2D(uNoise, q).r * 0.55 + texture2D(uNoise, q * 2.7 + 0.31).g * 0.3 + texture2D(uNoise, q * 7.3 + 0.73).b * 0.15;
+  float cov = mix(0.72, 0.38, uCloudCover);
+  return smoothstep(cov - 0.02, cov + 0.16, n);
+}
 
 vec3 mtRRTAndODTFit(vec3 v) {
   vec3 a = v * (v + 0.0245786) - 0.000090537;
@@ -126,6 +142,7 @@ void main() {
     float fade = 1.0 - smoothstep(uAoFade * 0.5, uAoFade, length(vp));
     col *= mix(1.0, ao, uAoIntensity * fade);
   }
+  if (uCloudShadow > 0.001 && depth < 1.0) col *= 1.0 - uCloudShadow * cloudShadow(vUv, depth);
   col = applyFog(col, vUv, depth, dist);
   col *= uExposure;
   if (uBloomOn > 0.5) col += texture2D(tBloom, vUv).rgb * uBloomStrength;
@@ -274,6 +291,10 @@ export class PostFX {
     uSkyExposure: { value: 1 },
     uSkyFloor: { value: new THREE.Vector3() },
     uFogMax: { value: 0.92 },
+    uNoise: { value: null as THREE.Texture | null },
+    uCloudShadow: { value: 0 },
+    uCloudCover: { value: 0.3 },
+    uCloudTime: { value: 0 },
   };
   readonly grade: GradeParams = {
     exposure: 1,

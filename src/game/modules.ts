@@ -9,6 +9,7 @@ import type { Simulation, CityEvents } from '../sim/Simulation';
 import type { Emitter } from '../core/events';
 import type { Overlay } from '../core/types';
 import type * as THREE from 'three';
+import { simText } from '../ui/format';
 
 const LAZY = import.meta.glob([
   '../render/world/WorldView.ts',
@@ -49,6 +50,10 @@ export interface RewardInfo {
   requirement: string;
   /** building def unlocked by this reward (for "place" button) */
   defId?: string;
+  /** all building defs this reward unlocks */
+  defIds: string[];
+  /** built at least once */
+  built?: boolean;
   category?: string;
 }
 
@@ -122,7 +127,7 @@ async function load(path: string, errors: string[]): Promise<Record<string, unkn
 }
 
 function str(v: unknown, fb = ''): string {
-  return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : fb;
+  return typeof v === 'string' ? simText(v) : typeof v === 'number' ? String(v) : fb;
 }
 function numOr(v: unknown, fb = 0): number {
   return typeof v === 'number' && isFinite(v) ? v : fb;
@@ -130,22 +135,27 @@ function numOr(v: unknown, fb = 0): number {
 
 export function normalizeReward(r: any): RewardInfo {
   const progress = numOr(r?.progress, r?.unlocked ? 1 : 0);
+  const defIds: string[] = Array.isArray(r?.defIds) ? r.defIds.filter((x: unknown) => typeof x === 'string') : [];
+  const single = str(r?.defId ?? r?.def ?? r?.building ?? r?.unlocks);
+  if (single && !defIds.includes(single)) defIds.unshift(single);
   return {
     id: str(r?.id, '?'),
     name: str(r?.name ?? r?.title ?? r?.label, str(r?.id, 'Reward')),
     description: str(r?.description ?? r?.desc ?? r?.effect),
     unlocked: !!(r?.unlocked ?? r?.available ?? r?.done ?? progress >= 1),
     progress: Math.max(0, Math.min(1, progress > 1 ? progress / 100 : progress)),
-    requirement: str(r?.requirement ?? r?.condition ?? r?.requirementText ?? r?.hint ?? r?.unlockText),
-    defId: str(r?.defId ?? r?.def ?? r?.building ?? r?.unlocks) || undefined,
+    requirement: str(r?.progressText ?? r?.requirement ?? r?.condition ?? r?.requirementText ?? r?.hint ?? r?.unlockText),
+    defId: defIds[0],
+    defIds,
+    built: typeof r?.built === 'boolean' ? r.built : undefined,
     category: str(r?.category ?? r?.kind) || undefined,
   };
 }
 
 function effectList(v: unknown): string[] {
   if (!v) return [];
-  if (typeof v === 'string') return [v];
-  if (Array.isArray(v)) return v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x)));
+  if (typeof v === 'string') return v.split(/,\s*(?=[+\-−A-Za-z])/).map((x) => simText(x.trim())).filter(Boolean);
+  if (Array.isArray(v)) return v.map((x) => (typeof x === 'string' ? simText(x) : JSON.stringify(x)));
   if (typeof v === 'object') return Object.entries(v as Record<string, unknown>).map(([k, x]) => `${k}: ${typeof x === 'number' ? (x > 0 ? '+' : '') + x : String(x)}`);
   return [];
 }

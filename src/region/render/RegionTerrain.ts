@@ -372,12 +372,9 @@ export class RegionTerrain {
     }
     const n = data.length / 5;
     if (!n) return;
-    // two shapes in one geometry is awkward with instancing: use a faceted cone-ish "crown" that reads as both
+    // one faceted cone "crown" for all trees (proportions differ per instance: slim conifers, round broadleaf)
     const geo = new THREE.ConeGeometry(0.5, 1, 6, 1);
-    geo.translate(0, 0.5, 0);
-    const trunk = new THREE.CylinderGeometry(0.08, 0.1, 0.25, 5);
-    trunk.translate(0, 0.05, 0);
-    geo.translate(0, 0.15, 0);
+    geo.translate(0, 0.65, 0);
     const mat = new THREE.ShaderMaterial({
       vertexShader: TREE_VERT,
       fragmentShader: TREE_FRAG,
@@ -389,7 +386,7 @@ export class RegionTerrain {
     this.treeData = new Float32Array(data);
     this.treeColors = cols;
     this.treeConifer = new Uint8Array(con);
-    this.disposables.push(geo, trunk, mat, mesh);
+    this.disposables.push(geo, mat, mesh);
     this.layoutTrees();
     this.group.add(mesh);
   }

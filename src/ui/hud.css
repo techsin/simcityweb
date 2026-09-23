@@ -19,6 +19,8 @@
   font-family: var(--font); color: var(--text); font-size: 13px; line-height: 1.35;
 }
 .mp-ui .i { pointer-events: auto; }
+.mp-ui button:focus { outline: none; }
+.mp-ui button:focus-visible, .mp-ui input:focus-visible { outline: 2px solid rgba(124, 212, 255, 0.7); outline-offset: 2px; }
 .mp-ui .num, .mp-ui .tnum { font-variant-numeric: tabular-nums; }
 .mp-ui .ico-wrap { display: inline-flex; line-height: 0; }
 .mp-ui svg.ico { display: block; flex: none; }
@@ -361,6 +363,7 @@
   position: absolute; display: flex; flex-direction: column; pointer-events: auto; max-height: calc(100% - 330px); min-height: 0; min-width: 280px;
   animation: panelIn 0.2s var(--ease);
 }
+.panel-layer { position: absolute; inset: 0; pointer-events: none; z-index: 30; }
 .panel.closing { animation: panelOut 0.14s var(--ease) forwards; }
 .panel.center { max-height: calc(100% - 170px); }
 @keyframes panelIn { from { opacity: 0; transform: translateY(8px) scale(0.985); } }

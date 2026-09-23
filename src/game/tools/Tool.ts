@@ -4,7 +4,7 @@ import type { Overlay } from '../../core/types';
 import type { ActionResult } from '../../sim/actions';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
-import { money } from '../../ui/format';
+import { money, simText } from '../../ui/format';
 
 export interface ToolPointer {
   clientX: number;
@@ -59,7 +59,7 @@ export function resultTip(title: string, r: ActionResult | null, extra = ''): { 
   if (!r) return { html: `<b>${escapeHtml(title)}</b>`, kind: 'ok' };
   const cost = r.cost ?? 0;
   const costTxt = cost < 0 ? `<span class="tip-refund">Refund ${money(-cost)}</span>` : cost > 0 ? `<span class="tip-cost">${money(cost)}</span>` : '';
-  const reason = r.reason ? `<div class="${r.ok ? 'tip-warn' : 'tip-reason'}">${escapeHtml(r.reason)}</div>` : '';
+  const reason = r.reason ? `<div class="${r.ok ? 'tip-warn' : 'tip-reason'}">${escapeHtml(simText(r.reason))}</div>` : '';
   const head = `<div class="tip-head"><b>${escapeHtml(title)}</b>${costTxt}</div>`;
   return { html: head + (extra ? `<div class="tip-sub">${extra}</div>` : '') + reason, kind: r.ok ? 'ok' : 'bad' };
 }

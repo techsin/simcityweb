@@ -36,7 +36,7 @@ export class Underground {
   constructor(private state: CityState, private surf: RoadSurface) {
     this.group.name = 'underground';
     const q = new THREE.PlaneGeometry(2, 2);
-    this.dimMat = new THREE.ShaderMaterial({ vertexShader: DIM_VERT, fragmentShader: DIM_FRAG, uniforms: { uAlpha: { value: 0.68 } }, transparent: true, depthTest: false, depthWrite: false });
+    this.dimMat = new THREE.ShaderMaterial({ vertexShader: DIM_VERT, fragmentShader: DIM_FRAG, uniforms: { uAlpha: { value: 0.8 } }, transparent: true, depthTest: false, depthWrite: false });
     this.dim = new THREE.Mesh(q, this.dimMat);
     this.dim.frustumCulled = false;
     this.dim.renderOrder = 1000;
@@ -64,7 +64,7 @@ export class Underground {
     const sw = st.subway;
     const pos: number[] = [];
     const edge: number[] = [];
-    const hw = 3.2;
+    const hw = 5.0;
     const has = (x: number, z: number) => x >= 0 && z >= 0 && x < N && z < N && sw[z * N + x] === 1;
     const push = (x: number, z: number, e: number) => { pos.push(x, this.surf.terrain(x, z) + 0.8, z); edge.push(e); };
     const strip = (ax: number, az: number, bx: number, bz: number) => {

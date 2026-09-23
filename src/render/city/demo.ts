@@ -20,6 +20,7 @@ import { Emitter } from '../../core/events';
 import { CELL_SIZE } from '../../core/constants';
 import { Network, Overlay } from '../../core/types';
 import type { CityEvents } from '../../sim/Simulation';
+import { BF } from '../../sim/CityState';
 import { sharedUniforms } from '../../assets/materials';
 import { registerAllModels } from '../../assets/builders';
 import { buildDemoCity } from './demoCity';
@@ -91,6 +92,27 @@ function makeHost(): DemoHost {
 }
 const world = makeHost();
 world.target.set(num('cx', 46 * S) * CELL_SIZE, 0, num('cz', 50 * S) * CELL_SIZE);
+{
+  // ?focus=fire|abandoned|constructing|burnt|slope : frame the first building in that state
+  const focus = P.get('focus');
+  if (focus) {
+    const N1 = st.size + 1;
+    for (const b of st.buildings.values()) {
+      const f = b.flags;
+      let hit = false;
+      if (focus === 'fire') hit = !!(f & BF.OnFire);
+      else if (focus === 'abandoned') hit = !!(f & BF.Abandoned);
+      else if (focus === 'constructing') hit = !!(f & BF.Constructing) && b.w * b.d >= 2;
+      else if (focus === 'burnt') hit = !!(f & BF.Burnt);
+      else if (focus === 'slope') {
+        let mn = Infinity;
+        for (let z = b.z; z <= b.z + b.d; z++) for (let x = b.x; x <= b.x + b.w; x++) mn = Math.min(mn, st.heights[z * N1 + x]);
+        hit = b.baseY - mn > 1.2;
+      }
+      if (hit) { world.target.set((b.x + b.w / 2) * CELL_SIZE, 0, (b.z + b.d / 2) * CELL_SIZE); break; }
+    }
+  }
+}
 world.target.y = st.heightAt(world.target.x, world.target.z);
 world.distance = num('dist', 520);
 world.yaw = num('yaw', 45);
@@ -186,7 +208,7 @@ if (P.get('perf') === '1') {
   for (const b of some) events.emit('buildingAdded', b);
   view.update(1 / 60);
   const churn = performance.now() - t2p;
-  console.log('CITY_PERF ' + JSON.stringify({ size: N, buildings: st.buildings.size, updateMs: +upd.toFixed(2), roadEditMs: Math.round(edit), churn200Ms: Math.round(churn), ...view.stats() }));
+  console.log('CITY_PERF ' + JSON.stringify({ size: N, buildingCount: st.buildings.size, avgUpdateMs: +upd.toFixed(2), roadEditMs: Math.round(edit), churn200Ms: Math.round(churn), ...view.stats() }));
 }
 
 function statsLine(): string {

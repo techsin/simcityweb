@@ -206,7 +206,9 @@ export class CityScene {
     this.ctx = ctx;
     this.tools = new ToolController(ctx, this.canvas);
     ctx.tools = this.tools;
-    this.panels = new PanelManager(ctx, this.uiRoot);
+    const panelLayer = h('div', { class: 'panel-layer' });
+    this.uiRoot.appendChild(panelLayer);
+    this.panels = new PanelManager(ctx, panelLayer);
     ctx.panels = this.panels;
 
     // ---- HUD

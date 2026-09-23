@@ -19,6 +19,18 @@ function ordIcon(o: OrdinanceInfo): string {
   return 'ordinances';
 }
 
+/** good / bad tone of an effect string like "−10% crime" or "+1 approval" */
+function effectTone(e: string): 'good' | 'bad' | 'info' {
+  const m = e.trim().match(/^([+\-−])/);
+  if (!m) return 'info';
+  const up = m[1] === '+';
+  const badThing = /crime|pollution|fire|traffic|garbage|noise|risk|cost|expense|tax/i.test(e);
+  const goodThing = /approval|education|health|income|land value|demand|effectiveness|coverage|eq|hq|happiness|tourism/i.test(e);
+  if (badThing && !goodThing) return up ? 'bad' : 'good';
+  if (goodThing) return up ? 'good' : 'bad';
+  return 'info';
+}
+
 export class OrdinancesPanel extends Panel {
   readonly id = 'ordinances';
   readonly title = 'Ordinances';
@@ -78,10 +90,7 @@ export class OrdinancesPanel extends Panel {
       }, !o.available);
       const cost = o.monthlyCost;
       const effects = h('div', { class: 'li-e' });
-      for (const e of o.effects.slice(0, 5)) {
-        const neg = /^-|−|increase.*(crime|pollution)|less/i.test(e);
-        effects.appendChild(h('span', { class: 'chip ' + (neg ? 'bad' : 'good') }, e));
-      }
+      for (const e of o.effects.slice(0, 5)) effects.appendChild(h('span', { class: 'chip ' + effectTone(e) }, e));
       const row = h('div', { class: 'li' + (on ? ' on' : '') + (!o.available ? ' locked' : '') },
         h('div', { class: 'li-ico', html: icon(ordIcon(o), 17) }),
         h('div', null,
@@ -128,7 +137,7 @@ export class RewardsPanel extends Panel {
       if (!d.requires || seen.has(d.requires)) continue;
       seen.add(d.requires);
       const un = st.unlocked.has(d.requires) || !!st.config.sandbox;
-      out.push({ id: d.requires, name: d.name, description: d.description ?? '', unlocked: un, progress: un ? 1 : 0, requirement: titleCase(d.requires), defId: d.id });
+      out.push({ id: d.requires, name: d.name, description: d.description ?? '', unlocked: un, progress: un ? 1 : 0, requirement: titleCase(d.requires), defId: d.id, defIds: [d.id] });
     }
     return out;
   }
@@ -139,7 +148,7 @@ export class RewardsPanel extends Panel {
 
   override update(): void {
     const items = this.list();
-    const sig = items.map((r) => `${r.id}:${r.unlocked}:${Math.round(r.progress * 100)}`).join('|');
+    const sig = items.map((r) => `${r.id}:${r.unlocked}:${r.built}:${Math.round(r.progress * 100)}:${r.requirement}`).join('|');
     if (sig === this.sig) return;
     this.sig = sig;
     clear(this.listEl);
@@ -149,11 +158,17 @@ export class RewardsPanel extends Panel {
     }
     const sorted = items.slice().sort((a, b) => Number(b.unlocked) - Number(a.unlocked) || b.progress - a.progress);
     for (const r of sorted) {
-      const def = r.defId ? allDefs().find((d) => d.id === r.defId) : undefined;
-      const place = def && r.unlocked ? h('button', { class: 'btn sm primary', html: icon('plus', 13) + '<span>Place</span>' }) : null;
-      place?.addEventListener('click', () => {
-        if (this.ctx.tools.select('plop:' + def!.id)) this.ctx.panels.close(this.id);
-      });
+      const defs = r.defIds.map((id) => allDefs().find((d) => d.id === id)).filter((d): d is NonNullable<typeof d> => !!d);
+      const def = defs[0];
+      const place = def && r.unlocked ? h('div', { style: 'display:flex;flex-direction:column;gap:4px;align-items:flex-end' }) : null;
+      if (place)
+        for (const d of defs.slice(0, 3)) {
+          const b = h('button', { class: 'btn sm primary', title: `Place ${d.name}`, html: icon('plus', 13) + `<span>${defs.length > 1 ? escapeHtml(d.name) : 'Place'}</span>` });
+          b.addEventListener('click', () => {
+            if (this.ctx.tools.select('plop:' + d.id)) this.ctx.panels.close(this.id);
+          });
+          place.appendChild(b);
+        }
       const row = h('div', { class: 'li' + (r.unlocked ? ' on' : ' locked') },
         h('div', { class: 'li-ico', html: icon(def ? defIcon(def) : 'trophy', 17) }),
         h('div', null,
@@ -164,7 +179,7 @@ export class RewardsPanel extends Panel {
             : null,
           def ? h('div', { class: 'li-e' }, h('span', { class: 'chip' }, def.cost ? money(def.cost) : 'Free'), def.upkeep ? h('span', { class: 'chip' }, `${money(def.upkeep)}/mo`) : null, def.income ? h('span', { class: 'chip good' }, `+${money(def.income)}/mo`) : null) : null,
         ),
-        h('div', { class: 'li-r' }, r.unlocked ? h('span', { class: 'chip good', html: icon('check', 11) + 'Unlocked' }) : h('span', { class: 'chip warn', html: icon('lock', 11) + 'Locked' }), place),
+        h('div', { class: 'li-r' }, r.built ? h('span', { class: 'chip info', html: icon('check', 11) + 'Built' }) : r.unlocked ? h('span', { class: 'chip good', html: icon('check', 11) + 'Unlocked' }) : h('span', { class: 'chip warn', html: icon('lock', 11) + 'Locked' }), place),
       );
       this.listEl.appendChild(row);
     }

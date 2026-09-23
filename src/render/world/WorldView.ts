@@ -24,6 +24,9 @@ import { TerrainRenderer } from './TerrainRenderer';
 import { TreeRenderer } from './TreeRenderer';
 import { WaterRenderer } from './WaterRenderer';
 
+export { overlayLegend } from './overlays';
+export { QUALITY_PRESETS, detectQuality, type QualitySettings } from './quality';
+
 export interface WorldViewOptions {
   quality?: QualityLevel;
   /** initial hour (default 10.5) */
@@ -357,6 +360,12 @@ export class WorldView implements WorldViewApi {
     f.uSunGlow.value.set(_col.r, _col.g, _col.b);
     f.uSkyExposure.value = this.sky.uniforms.uSkyExposure.value;
     f.uSkyFloor.value.copy(this.sky.uniforms.uSkyFloor.value);
+    // cloud shadows only while the sun is the light (not the moon / twilight), fading in with sun elevation
+    const su = this.sky.uniforms;
+    f.uNoise.value = su.uNoise.value;
+    f.uCloudCover.value = su.uCloudCover.value;
+    f.uCloudTime.value = su.uCloudTime.value;
+    f.uCloudShadow.value = 0.32 * (1 - n) * THREE.MathUtils.smoothstep(L.sunDir.y, 0.05, 0.3) * Math.min(1, su.uCloudCover.value * 2.2);
     // grading
     g.exposure = L.exposure;
     this.renderer.toneMappingExposure = L.exposure;

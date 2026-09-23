@@ -102,7 +102,7 @@ function lockOf(ctx: GameContext, d: BuildingDef): ToolSpec['locked'] {
   let hint = titleCase(d.requires);
   let progress: number | undefined;
   try {
-    const r = ctx.mods.listRewards?.(ctx.state).find((x) => x.id === d.requires || x.defId === d.id);
+    const r = ctx.mods.listRewards?.(ctx.state).find((x) => x.id === d.requires || x.defIds.includes(d.id));
     if (r) {
       hint = r.requirement || r.description || r.name;
       progress = r.progress;
