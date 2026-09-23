@@ -8,6 +8,7 @@
  *  - power: MW, water: kL/day, garbage: tons/month
  */
 import { Network } from '../../core/types';
+import { REGION_COMMUTERS_BASE, REGION_COMMUTERS_FRAC } from '../economy/tuning';
 
 // ---------------------------------------------------------------------------------------------- traffic
 /** Capacity per cell (trips/day) indexed by Network. Rail capacity is for trains (passengers/day). */
@@ -92,7 +93,7 @@ export const CAR_OCCUPANCY = 1.15;
  * job site at its proportional share slots x min(1, MATCH_PROP_SLACK x workers / slots) (surplus jobs -> sites fill
  * proportionally), later rounds allow the full capacity.
  */
-export const MATCH_ROUNDS = 5;
+export const MATCH_ROUNDS = 4;
 export const MATCH_PROP_ROUNDS = 3;
 export const MATCH_PROP_SLACK = 1.15;
 /**
@@ -111,14 +112,16 @@ export const REGIONAL_TIME = 16;
 /** fraction of vacant jobs the region is willing to fill */
 export const REGIONAL_FILL = 0.55;
 /**
- * Global caps on regional exchange (no region data yet): total regional job slots <= REGION_JOB_SHARE x city workers
- * + REGION_JOB_MIN; inbound regional workers <= REGION_WORKER_SHARE x city job slots + REGION_WORKER_MIN.
- * The region layer can override the totals via state.systemData.regionJobs / state.systemData.regionWorkers (numbers).
+ * Default regional exchange totals (no region data): regional job slots for residents =
+ * REGION_JOB_SHARE x workers + REGION_JOB_MIN, inbound regional workers = REGION_WORKER_SHARE x city job slots +
+ * REGION_WORKER_MIN. Values follow sim-core's employment model (economy/tuning.ts REGION_COMMUTERS_FRAC / _BASE) so
+ * traffic's workerAccess / jobFill agree with stats.unemployment. The region layer (src/region/regionEffects.ts)
+ * overrides the totals via state.systemData.regionJobs / regionWorkers (numbers) using the same formulas + bonus.
  */
-export const REGION_JOB_SHARE = 0.3;
-export const REGION_JOB_MIN = 1500;
-export const REGION_WORKER_SHARE = 0.3;
-export const REGION_WORKER_MIN = 1000;
+export const REGION_JOB_SHARE = REGION_COMMUTERS_FRAC;
+export const REGION_JOB_MIN = REGION_COMMUTERS_BASE;
+export const REGION_WORKER_SHARE = REGION_COMMUTERS_FRAC;
+export const REGION_WORKER_MIN = REGION_COMMUTERS_BASE;
 
 /** full assignment cadence (days between cycle starts) */
 export const TRAFFIC_CYCLE_DAYS = 2;

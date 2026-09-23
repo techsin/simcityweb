@@ -50,10 +50,11 @@ import {
   REGIONAL_FILL, REGIONAL_TIME, SHOP_PCU_WEIGHT, SHOP_TRIPS_PER_RES, STOP_CAP_BUS,
   STOP_CAP_SUBWAY, STOP_CAP_TRAIN, STOP_WALK_RADIUS, STOP_WALK_TIME_PER_CELL, SUBWAY_TIME, TRAFFIC_CYCLE_DAYS,
   TRAFFIC_MIN_CYCLE_MS, TRANSIT_BIAS, TRUCK_PCU, WAIT_BUS, WAIT_SUBWAY, WAIT_TRAIN, WALK_BIAS, WALK_MAX_CELLS,
-  WALK_TIME_PER_CELL, WORKER_SHARE, DEST_NOISE, RESULT_SMOOTH, REGION_JOB_MIN, REGION_JOB_SHARE, REGION_WORKER_MIN,
-  REGION_WORKER_SHARE, MATCH_ROUNDS, MATCH_PROP_ROUNDS, MATCH_PROP_SLACK, MATCH_PRICE_STEP_REL, MATCH_PRICE_STEP_MIN, MATCH_PRICE_MAX,
+  WALK_TIME_PER_CELL, WORKER_SHARE, DEST_NOISE, RESULT_SMOOTH, MATCH_ROUNDS, REGION_JOB_MIN, REGION_JOB_SHARE,
+  REGION_WORKER_MIN, REGION_WORKER_SHARE, MATCH_PROP_ROUNDS, MATCH_PROP_SLACK, MATCH_PRICE_STEP_REL, MATCH_PRICE_STEP_MIN, MATCH_PRICE_MAX,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
+import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
 import { Search, Seeds, accumulate, roadSearch, transitSearch, type TransitNet } from './search';
 import { collectStops, type StopList } from './transit';
 
@@ -77,10 +78,11 @@ export interface RouteInfo {
   jobsReached: number;
 }
 
-const PH_PREP = 0, PH_TRANSIT = 1, PH_RSEARCH = 2, PH_RMATCH = 3, PH_COMMUTE = 4, PH_INBOUND = 5, PH_SHOP = 6, PH_FREIGHT = 7, PH_FINAL = 8;
-const PHASES = 9;
+const PH_PREP = 0, PH_PREP2 = 1, PH_TRANSIT = 2, PH_RSEARCH = 3, PH_RMATCH = 4, PH_COMMUTE = 5, PH_INBOUND = 6, PH_SHOP = 7,
+  PH_FREIGHT = 8, PH_FINAL = 9, PH_FINAL2 = 10;
+const PHASES = 11;
 /** estimated ms per phase on the reference 256² stress city (scaled by graph / building counts) */
-const PHASE_COST = [2.2, 2.3, 2.4, 1.6, 0.8, 2.7, 2.3, 2.1, 3.2];
+const PHASE_COST = [3.2, 2.2, 3.0, 2.5, 2.1, 1.4, 3.8, 3.2, 3.0, 2.2, 2.8];
 const MAX_ENTRIES = 12;
 const MODE_NAMES = ['none', 'car', 'transit', 'walk'];
 const IND_KEYS = ['IA', 'ID', 'IM', 'IHT'] as const;
@@ -264,6 +266,10 @@ export class TrafficSystem implements SimSystem {
   private sfVersion = -1;
   private sfRecompute = true;
   private truckRoutes: SampleRoute[] = [];
+  private patrolIds: number[] = [];
+  private stationIds: number[] = [];
+  private volInbound: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private inboundById: Float32Array<ArrayBuffer> = new Float32Array(1024);
   private task: InfraTask | null = null;
 
   // persistent by building id  /** residential: share of workers reaching a job (0..1); -1 = unknown. Index = building id. */
@@ -347,8 +353,8 @@ export class TrafficSystem implements SimSystem {
     const road = Math.max(0.05, this.road.n / 36000);
     const bld = Math.max(0.05, (this.oN + this.jN) / 20000);
     const base = PHASE_COST[ph];
-    if (ph === PH_PREP || ph === PH_RMATCH || ph === PH_COMMUTE) return base * (0.3 * road + 0.7 * bld);
-    if ((ph === PH_SHOP || ph === PH_FREIGHT) && !this.sfRecompute) return 0.1;
+    if (ph === PH_PREP || ph === PH_RMATCH || ph === PH_COMMUTE || ph === PH_FINAL2) return base * (0.3 * road + 0.7 * bld);
+    if ((ph === PH_SHOP || ph === PH_FREIGHT || ph === PH_INBOUND) && !this.sfRecompute) return 0.15;
     return base * (0.8 * road + 0.2 * bld);
   }
 
@@ -499,6 +505,7 @@ export class TrafficSystem implements SimSystem {
     let next = ph + 1;
     switch (ph) {
       case PH_PREP: this.prep(sim); break;
+      case PH_PREP2: this.prepTransit(sim.state); break;
       case PH_TRANSIT: this.transit(); break;
       case PH_RSEARCH: this.roundSearch(); break;
       case PH_RMATCH: next = this.roundMatch(); break;
@@ -507,6 +514,7 @@ export class TrafficSystem implements SimSystem {
       case PH_SHOP: this.shopping(); break;
       case PH_FREIGHT: this.freight(); break;
       case PH_FINAL: this.finalize(sim); break;
+      case PH_FINAL2: this.finalize2(sim); break;
     }
     this.phaseMs[ph] += nowMs() - t0;
     this.phase = next >= PHASES ? -1 : next;
@@ -559,6 +567,7 @@ export class TrafficSystem implements SimSystem {
     this.customersById = ensureIdFloat(this.customersById, st);
     this.commuteById = ensureIdFloat(this.commuteById, st);
     this.reachedById = ensureIdFloat(this.reachedById, st);
+    this.inboundById = ensureIdFloat(this.inboundById, st);
     this.modeById = growU8(this.modeById, st.nextBuildingId + 1);
 
     // node times from smoothed volumes (state.traffic per cell)
@@ -601,9 +610,15 @@ export class TrafficSystem implements SimSystem {
     this.kLabel = growF32(this.kLabel, cap + conns.length);
     const nodeOfCell = g.nodeOfCell;
     const jobsUnknown = this.jobsUnknown;
+    this.patrolIds.length = 0;
+    this.stationIds.length = 0;
     for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
       const b = bL[bI];
       const inf = infoOf(st, b);
+      if (inf.fam === Fam.Plop && isFunctional(b)) {
+        if (inf.cov === 0 || inf.cov === 2 || inf.garbageCap > 0) this.patrolIds.push(b.id);
+        if (inf.transit === Transit.Freight || inf.transit === Transit.Train) this.stationIds.push(b.id);
+      }
       if (inf.fam === Fam.R) {
         if (b.pop <= 0 || (b.flags & BF.Burnt) !== 0) continue;
         this.oBid[oN] = b.id;
@@ -698,8 +713,10 @@ export class TrafficSystem implements SimSystem {
     for (let o = 0; o < oN; o++) workers += this.oW[o];
     for (let j = 0; j < this.jB; j++) citySlots += this.jSlots[j];
     for (let j = this.jB; j < jN; j++) connSlots += this.jSlots[j];
+    // regional exchange sized like sim-core's employment model (params REGION_* = economy/tuning REGION_COMMUTERS_*),
+    // so workerAccess / jobFill agree with stats.unemployment; state.systemData.regionJobs / regionWorkers override
     const sd = st.systemData;
-    const regionJobs = typeof sd.regionJobs === 'number' ? (sd.regionJobs as number) : REGION_JOB_SHARE * workers + REGION_JOB_MIN;
+    const regionJobs = typeof sd.regionJobs === 'number' ? (sd.regionJobs as number) : (REGION_JOB_SHARE * workers + REGION_JOB_MIN) * REGION_JOBS_FOR_RESIDENTS;
     if (connSlots > regionJobs && connSlots > 0) {
       const f = regionJobs / connSlots;
       for (let j = this.jB; j < jN; j++) this.jSlots[j] *= f;
@@ -743,7 +760,6 @@ export class TrafficSystem implements SimSystem {
     this.sLoad = growF32(this.sLoad, sN);
     if (this.sfRecompute) this.sLoad.fill(0, 0, sN);
     this.pendingRoutes = [];
-    this.prepTransit(st);
   }
 
   private prepTransit(st: CityState): void {
@@ -1277,10 +1293,26 @@ export class TrafficSystem implements SimSystem {
 
   // ------------------------------------------------------------------------------------------ INBOUND
   private inbound(): void {
+    const g = this.road;
+    if (!this.sfRecompute) {
+      // cached: last inflows by building (capped by this cycle's vacancies) + cached volumes
+      let tot = 0;
+      for (let j = 0; j < this.jB; j++) {
+        const spare = this.jSlots[j] - Math.min(this.jSlots[j], this.jAsg[j]);
+        const v = Math.min(spare, this.inboundById[this.jBid[j]]);
+        this.jInbound[j] = v > 0 ? v : 0;
+        tot += this.jInbound[j];
+      }
+      this.tripsInbound = tot;
+      this.addCached(this.volInbound);
+      return;
+    }
+    this.volInbound = growF32(this.volInbound, g.n);
+    this.volInbound.fill(0, 0, g.n);
+    for (let j = 0; j < this.jB; j++) this.inboundById[this.jBid[j]] = 0;
     const S = this.SB;
     const seeds = this.seeds;
     seeds.clear();
-    const g = this.road;
     const conns: number[] = [];
     for (let j = this.jB; j < this.jN; j++) {
       if (this.jEntC[j] === 0) continue;
@@ -1328,12 +1360,13 @@ export class TrafficSystem implements SimSystem {
       if (bn < 0) continue;
       const inflow = desire[j] * scale[src[bn]];
       this.jInbound[j] = inflow;
+      this.inboundById[this.jBid[j]] = inflow;
       acc[bn] += inflow * carPcu;
       tot += inflow;
       if (inflow > 0) cand.push(j);
     }
     accumulate(S, acc);
-    for (let k = 0; k < S.settled; k++) { const v = S.order[k]; this.volNew[v] += acc[v]; }
+    for (let k = 0; k < S.settled; k++) { const v = S.order[k]; this.volNew[v] += acc[v]; this.volInbound[v] = acc[v]; }
     this.tripsInbound = tot;
     // sample inbound routes (connection -> job)
     const K = Math.min(12, cand.length);
@@ -1483,7 +1516,27 @@ export class TrafficSystem implements SimSystem {
     if (this.subwayRiders.length !== C) this.subwayRiders = new Float32Array(C);
     this.subwayRiders.fill(0);
     for (let v = 0; v < this.subway.n; v++) this.subwayRiders[this.subway.cellOf[v]] = this.subNew[v];
-    // commute layer, per-building outputs & flags
+    // stop loads for crowding
+    this.stLoadPrev.clear();
+    for (let s = 0; s < this.stops.n; s++) {
+      const bid = this.stops.bid[s];
+      this.stLoadPrev.set(bid >= 0 ? bid : -1 - this.stops.cell[s], this.stLoad[s]);
+    }
+    // stats
+    const stats = st.stats;
+    stats.tripsCar = Math.round(this.tripsCar);
+    stats.tripsTransit = Math.round(this.tripsTransit);
+    stats.tripsWalk = Math.round(this.tripsWalk);
+    stats.avgCommute = this.commuteW > 0 ? this.commuteSum / this.commuteW : 0;
+    stats.avgTraffic = congN > 0 ? congSum / congN : 0;
+  }
+
+  /** per-building outputs, flags, commute layer, sample routes */
+  private finalize2(sim: Simulation): void {
+    const st = sim.state;
+    const g = this.road;
+    const n = g.n;
+    const congestion = st.congestion;
     const commute = st.commute;
     commute.fill(0);
     const changed: Building[] = [];
@@ -1534,19 +1587,6 @@ export class TrafficSystem implements SimSystem {
     }
     if (this.sfRecompute) for (let s = 0; s < this.sN; s++) this.customersById[this.sBid[s]] = this.sLoad[s];
     for (const b of changed) sim.events.emit('buildingChanged', b);
-    // stop loads for crowding
-    this.stLoadPrev.clear();
-    for (let s = 0; s < this.stops.n; s++) {
-      const bid = this.stops.bid[s];
-      this.stLoadPrev.set(bid >= 0 ? bid : -1 - this.stops.cell[s], this.stLoad[s]);
-    }
-    // stats
-    const stats = st.stats;
-    stats.tripsCar = Math.round(this.tripsCar);
-    stats.tripsTransit = Math.round(this.tripsTransit);
-    stats.tripsWalk = Math.round(this.tripsWalk);
-    stats.avgCommute = this.commuteW > 0 ? this.commuteSum / this.commuteW : 0;
-    stats.avgTraffic = congN > 0 ? congSum / congN : 0;
     // sample routes
     this.buildSampleRoutes(st);
     this.serviceRoutes = this.serviceRoutes.filter((s) => s.until >= st.day);
@@ -1619,9 +1659,10 @@ export class TrafficSystem implements SimSystem {
     for (const c of this.conns) if (c.type === Network.Rail) { const rn = rail.nodeOfCell[c.cell]; if (rn >= 0) targets.add(rn); }
     const tmp = new Int32Array(4);
     let count = 0;
-    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
-      const b = bL[bI];
+    for (const id of this.stationIds) {
+      const b = st.buildings.get(id);
       if (count >= 4) break;
+      if (!b) continue;
       const inf = infoOf(st, b);
       if (inf.transit !== Transit.Freight && inf.transit !== Transit.Train) continue;
       if (!isFunctional(b)) continue;
@@ -1670,12 +1711,12 @@ export class TrafficSystem implements SimSystem {
     if (g.n === 0) return;
     const tmp = new Int32Array(4);
     let count = 0;
-    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
-      const b = bL[bI];
-      if (count >= 10) break;
-      const inf = infoOf(st, b);
-      const isService = inf.cov === 0 /* police */ || inf.garbageCap > 0 || inf.cov === 2 /* health */;
-      if (!isService || !isFunctional(b)) continue;
+    // up to 10 patrols from a rotating subset of police / health / garbage buildings
+    const ids = this.patrolIds;
+    const start = ids.length > 0 ? Math.floor(this.rand() * ids.length) : 0;
+    for (let q = 0; q < ids.length && count < 10; q++) {
+      const b = st.buildings.get(ids[(start + q) % ids.length]);
+      if (!b || !isFunctional(b)) continue;
       if (perimeterNodes(g.nodeOfCell, st.size, b, tmp, 0, 1) === 0) continue;
       let v = tmp[0];
       let prev = -1;

@@ -40,6 +40,26 @@ import {
   TREATMENT_DEFAULT_CAP, TREATMENT_RES_PER_KL, WATER_K, WATER_POLL_PER_JOB, WIND_DRIFT,
 } from './params';
 
+/** 1 - exp(-x) lookup table on [0, 16) (x beyond -> 1) */
+const SAT_N = 4096, SAT_MAX = 16;
+const SAT = new Float32Array(SAT_N + 1);
+for (let i = 0; i <= SAT_N; i++) SAT[i] = 1 - Math.exp(-(i / SAT_N) * SAT_MAX);
+/** L[i] += (sat(field[i] * invK) - L[i]) * alpha, skipping cells where mask[i] != 0 */
+function saturate(field: Float32Array, L: Float32Array, C: number, invK: number, alpha: number, mask: Uint8Array | null): void {
+  const scale = (invK * SAT_N) / SAT_MAX;
+  for (let i = 0; i < C; i++) {
+    if (mask !== null && mask[i] !== 0) continue;
+    const f = field[i];
+    let t = 0;
+    if (f > 0) {
+      const u = f * scale;
+      if (u >= SAT_N) t = 1;
+      else { const k = u | 0; const a = SAT[k]; t = a + (SAT[k + 1] - a) * (u - k); }
+    }
+    L[i] += (t - L[i]) * alpha;
+  }
+}
+
 /** source strength per unit of intensity: peak field for intensity I is -K ln(1 - I) (layer = 1 - exp(-f/K)) */
 function srcScale(K: number): number {
   return K / POLL_PEAK_GAIN;
@@ -104,7 +124,7 @@ export class PollutionSystem implements SimSystem {
     });
   }
 
-  /** pass progress: -1 idle, 0 sources, 1 air, 2 noise + water, 3 garbage + flags */
+  /** pass progress: -1 idle, 0 sources, 1 air, 2 noise, 3 water, 4 garbage, 5 flags + stats */
   private stepIdx = -1;
   private firstPass = false;
   private fxB: OrdEffects | null = null;
@@ -122,22 +142,26 @@ export class PollutionSystem implements SimSystem {
   private stepCost(sim: Simulation): number {
     const { cells, bld } = sizeFactors(sim);
     switch (this.stepIdx < 0 ? 0 : this.stepIdx) {
-      case 0: return 1.0 * bld + 0.5 * cells;
-      case 1: return 2.0 * cells;
-      case 2: return 1.6 * cells;
-      default: return 0.9 * bld + 0.6 * cells;
+      case 0: return 1.6 * bld + 0.6 * cells;
+      case 1: return 2.2 * cells;
+      case 2: return 1.2 * cells;
+      case 3: return 1.8 * cells;
+      case 4: return 1.4 * bld + 0.6 * cells;
+      default: return 1.0 * bld;
     }
   }
 
-  /** one step of the pollution pass (sources / air / noise + water / garbage + flags) */
+  /** one step of the pollution pass: sources / air / noise / water / garbage / flags */
   step(sim: Simulation): void {
     const t0 = nowMs();
     const k = this.stepIdx < 0 ? 0 : this.stepIdx;
     if (k === 0) this.stageA(sim, this.firstPass);
     else if (k === 1) this.stageAir(sim, this.firstPass);
-    else if (k === 2) this.stageB(sim, this.firstPass);
-    else this.stageB2(sim, this.firstPass);
-    this.stepIdx = k >= 3 ? -1 : k + 1;
+    else if (k === 2) this.stageNoise(sim, this.firstPass);
+    else if (k === 3) this.stageB(sim, this.firstPass);
+    else if (k === 4) this.stageB2(sim, this.firstPass);
+    else this.stageFlags(sim);
+    this.stepIdx = k >= 5 ? -1 : k + 1;
     if (this.stepIdx < 0) this.firstPass = false;
     this.lastMs = nowMs() - t0;
   }
@@ -278,13 +302,9 @@ export class PollutionSystem implements SimSystem {
     const tmp = this.tmp, tmp2 = this.tmp2;
     const field = tmp2;
     {
-      const r = POLL_RADII[0];
-      if (used[0]) {
-        blur3(air[0], tmp, N, r);
-        const gain = POLL_PEAK_GAIN * 2 * Math.PI * blurSigma2(r);
-        const A = air[0];
-        for (let i = 0; i < C; i++) field[i] = A[i] * gain;
-      } else field.fill(0);
+      field.fill(0);
+      // small emitters at half resolution (radius 1 -> sigma^2 = 4 * 2 = 8 cells^2, ~ full-res radius 2)
+      if (used[0]) blurDownAdd(air[0], field, N, 2, 1, POLL_PEAK_GAIN * 2 * Math.PI * 8, this.coarse, this.coarseTmp);
       for (let c = 1; c < 3; c++) {
         if (!used[c]) continue;
         const f = c === 1 ? 2 : 4;
@@ -296,12 +316,7 @@ export class PollutionSystem implements SimSystem {
     shiftField(field, tmp, N, Math.cos(ang) * WIND_DRIFT, Math.sin(ang) * WIND_DRIFT);
     const alpha = first ? 1 : POLL_SMOOTH;
     const airL = st.airPollution;
-    const invAK = 1 / AIR_K;
-    for (let i = 0; i < C; i++) {
-      const f = tmp[i];
-      const target = f > 0 ? 1 - Math.exp(-f * invAK) : 0;
-      airL[i] += (target - airL[i]) * alpha;
-    }
+    saturate(tmp, airL, C, 1 / AIR_K, alpha, null);
   }
 
   /** blur a 2-class (half / quarter resolution) source pair into `out` (cleared) */
@@ -313,38 +328,28 @@ export class PollutionSystem implements SimSystem {
   }
 
   /** stage B: noise, water, garbage, flags & stats (uses the sources collected by stage A) */
+  /** stage B0: noise layer */
+  private stageNoise(sim: Simulation, first: boolean): void {
+    const st = sim.state;
+    const N = st.size, C = st.cells;
+    this.blurPair(this.noiseS, 5, this.tmp, N);
+    saturate(this.tmp, st.noise, C, 1 / NOISE_K, first ? 1 : POLL_SMOOTH, null);
+  }
+
+  /** stage B1: water pollution (ground water + diffusion along water bodies) */
   private stageB(sim: Simulation, first: boolean): void {
     const st = sim.state;
     const N = st.size, C = st.cells;
     const tmp = this.tmp, tmp2 = this.tmp2;
     const alpha = first ? 1 : POLL_SMOOTH;
-    // --- noise
-    {
-      this.blurPair(this.noiseS, 5, tmp, N);
-      const L = st.noise;
-      const invK = 1 / NOISE_K;
-      for (let i = 0; i < C; i++) {
-        const f = tmp[i];
-        const target = f > 0 ? 1 - Math.exp(-f * invK) : 0;
-        L[i] += (target - L[i]) * alpha;
-      }
-    }
     // --- water: ground water blur (negative = treatment cleaning) + diffusion along water bodies
     {
       this.blurPair(this.waterS, 3, tmp, N);
       const L = st.waterPollution;
       const wm = st.water;
-      const invK = 1 / WATER_K;
-      for (let i = 0; i < C; i++) {
-        const f = tmp[i];
-        if (wm[i]) {
-          // negative sources (treatment plants) also clean nearby water bodies
-          if (f < 0) L[i] = Math.max(0, L[i] + f * 0.05);
-          continue;
-        }
-        const target = f > 0 ? 1 - Math.exp(-f * invK) : 0;
-        L[i] += (target - L[i]) * alpha;
-      }
+      // negative sources (treatment plants) also clean nearby water bodies
+      for (let i = 0; i < C; i++) if (wm[i] && tmp[i] < 0) L[i] = Math.max(0, L[i] + tmp[i] * 0.05);
+      saturate(tmp, L, C, 1 / WATER_K, alpha, wm);
       // diffusion over water cells (precomputed list + 4 neighbour slots: water idx or -(land cell)-1)
       this.ensureWaterList(st);
       const nW = this.nWater, wc = this.waterCells, wnb = this.waterNb;
@@ -379,6 +384,13 @@ export class PollutionSystem implements SimSystem {
     const jobsUnknown = this.jobsUnknownB, dtMonths = this.dtMonthsB;
     // --- garbage
     this.garbage(sim, dtMonths, fx.garbage, jobsUnknown);
+  }
+
+  /** stage B3: flags & stats */
+  private stageFlags(sim: Simulation): void {
+    const st = sim.state;
+    const N = st.size;
+    const airL = st.airPollution;
     // --- flags & stats
     const changed: Building[] = [];
     let polSum = 0, polN = 0;
