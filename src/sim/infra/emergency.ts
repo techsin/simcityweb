@@ -1702,7 +1702,8 @@ export class EmergencySystem implements SimSystem {
         const m = st.stats.emergency.month;
         m.buildingsLost++;
         const def = getDef(b.def);
-        m.damage += def && def.cost > 0 && (def.category !== 'growable') ? def.cost : Math.max(1, b.capacity) * 40;
+        const cost = def?.cost ?? 0;
+        m.damage += cost > 0 && def?.category !== 'growable' ? cost : Math.max(1, b.capacity) * 40;
         continue;
       }
       maxDays = Math.max(maxDays, f.days);

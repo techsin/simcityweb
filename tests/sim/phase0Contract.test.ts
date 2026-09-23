@@ -151,19 +151,20 @@ describe('Phase 0 contract: stubs are neutral', () => {
     expect(justiceFactors(st).policeMul).toBe(1);
   });
 
-  it('emergency stub is inert and fire keeps the legacy path', () => {
+  it('emergency system (WP8 replaced the stub) exposes the contract API', () => {
     const st = newState(32);
     const sim = newSim(st);
     const em = emergencyOf(sim)!;
     expect(em).toBeDefined();
-    expect(em.active).toBe(false);
+    expect(em.active).toBe(true);
     const b = place(st, 't_r1', 5, 5);
+    // not burning -> onFire declines (the fire system owns ignition)
     expect(em.onFire(sim, b, false)).toBe(false);
     expect(em.incidents()).toEqual([]);
     expect(em.vehicles()).toEqual([]);
-    expect(em.spawn(sim, 'medical', 5, 5)).toBe(-1);
-    expect(em.dispatch(sim, 1, b.id).ok).toBe(false);
-    expect(responseAt(sim, 0, 'fire')).toBeNull();
+    expect(em.dispatch(sim, 12345, b.id).ok).toBe(false);
+    // no station of any type: every cell is RESP_NONE, no hotspots without residents, no boosts / sources
+    expect(responseAt(sim, 0, 'fire')).toEqual({ slackMin: -99, covered: false });
     expect(uncoveredHotspots(sim, 'fire')).toEqual([]);
     expect(emergencyPollution(sim)).toEqual([]);
     expect(emergencyCrimeBoosts(sim)).toEqual([]);

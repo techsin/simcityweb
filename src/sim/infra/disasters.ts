@@ -8,14 +8,18 @@
  * position via DisastersSystem.active[]), earthquake / meteor emit active:true then active:false after a few days.
  * News via sim.notify(..., 'disaster', x, z). Destroyed buildings get BF.Burnt (rubble; sim-core decides regrowth)
  * + buildingChanged; buildings inside a meteor crater are removed (buildingRemoved).
+ * Emergency aftermath (WP8, emergency.ts): earthquake-destroyed buildings with occupants become 'collapse' rescue
+ * incidents (max EQ_COLLAPSE_MAX), tornado-destroyed homes / workplaces 'medical' calls along the path (max
+ * TORNADO_MEDICAL_MAX), a meteor strike METEOR_MEDICAL 'medical' calls around the crater; fires started here are
+ * fire incidents (fire.ts -> emergency.onFire).
  */
-import { SECONDS_PER_DAY } from '../../core/constants';
 import { RNG } from '../../core/rng';
 import { BF, type Building } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
 import { computeWater } from '../terrainGen';
 import { nowMs, removeBuilding } from './common';
 import type { FireSystem } from './fire';
+import { emergencyOf } from './emergency';
 
 export type DisasterKind = 'fire' | 'tornado' | 'earthquake' | 'meteor';
 
@@ -35,6 +39,10 @@ export interface ActiveDisaster {
 const TORNADO_CELLS_PER_DAY = 10;
 const TORNADO_DAYS = 4;
 const TORNADO_RADIUS = 1.2;
+/** emergency aftermath (WP8): rescue / medical incidents spawned per disaster */
+const EQ_COLLAPSE_MAX = 12;
+const TORNADO_MEDICAL_MAX = 6;
+const METEOR_MEDICAL = 3;
 
 export class DisastersSystem implements SimSystem {
   readonly name = 'disasters';
@@ -42,6 +50,8 @@ export class DisastersSystem implements SimSystem {
   private rng = new RNG(1);
   private lastFrameMs = -1e9;
   private lastEmitCell = new Map<ActiveDisaster, number>();
+  /** medical incidents spawned per tornado (aftermath cap) */
+  private tornadoCalls = new Map<ActiveDisaster, number>();
 
   init(sim: Simulation): void {
     sim.state.systemData.infraVersion = 1;
@@ -76,7 +86,8 @@ export class DisastersSystem implements SimSystem {
   frame(sim: Simulation, dt: number): void {
     this.lastFrameMs = nowMs();
     if (this.active.length === 0 || sim.speed === 0) return;
-    const days = Math.min(0.25, dt) / SECONDS_PER_DAY[sim.speed];
+    // real seconds per day at the current speed (includes the WP8 LIVE slow-down at 1x)
+    const days = Math.min(0.25, dt) / sim.secondsPerDay();
     for (let k = this.active.length - 1; k >= 0; k--) {
       const d = this.active[k];
       if (d.kind === 'tornado') this.advanceTornado(sim, d, days);
@@ -111,6 +122,15 @@ export class DisastersSystem implements SimSystem {
       }
     }
     return false;
+  }
+
+  /** WP8 aftermath incident at a building (no-op without the emergency system); returns the incident id or -1 */
+  private spawnIncident(sim: Simulation, kind: 'collapse' | 'medical', b: Building, major?: boolean): number {
+    const em = emergencyOf(sim);
+    if (!em || !em.active) return -1;
+    const occ = b.pop + b.jobs;
+    const opts = kind === 'medical' ? { buildingId: b.id, major: major ?? occ >= 40, severity: major || occ >= 40 ? this.rng.int(2, 6) : 1 } : { buildingId: b.id, major: true };
+    return em.spawn(sim, kind, b.x, b.z, opts);
   }
 
   private fireSys(sim: Simulation): FireSystem | undefined {
@@ -155,7 +175,13 @@ export class DisastersSystem implements SimSystem {
         if (!st.inBounds(x, z)) continue;
         if (Math.hypot(x + 0.5 - d.x, z + 0.5 - d.z) > r) continue;
         const b = st.buildingAt(x, z);
-        if (b && !(b.flags & BF.Burnt) && this.rng.next() < 0.6) this.destroy(sim, b);
+        if (b && !(b.flags & BF.Burnt) && this.rng.next() < 0.6) {
+          const occupied = b.pop + b.jobs > 0;
+          this.destroy(sim, b);
+          // WP8: people hurt in destroyed homes / workplaces call for ambulances along the path
+          const calls = this.tornadoCalls.get(d) ?? 0;
+          if (occupied && calls < TORNADO_MEDICAL_MAX && this.spawnIncident(sim, 'medical', b) >= 0) this.tornadoCalls.set(d, calls + 1);
+        }
         if (st.trees[z * N + x] > 0) st.trees[z * N + x] = Math.max(0, st.trees[z * N + x] - 2);
       }
       const cell = Math.floor(d.z) * N + Math.floor(d.x);
@@ -176,6 +202,7 @@ export class DisastersSystem implements SimSystem {
     const d = this.active[k];
     this.active.splice(k, 1);
     this.lastEmitCell.delete(d);
+    this.tornadoCalls.delete(d);
     sim.events.emit('disaster', { kind: d.kind, x: d.x, z: d.z, active: false });
   }
 
@@ -183,7 +210,7 @@ export class DisastersSystem implements SimSystem {
     const st = sim.state;
     const R = 10 + (mag - 5) * 16;
     const fire = this.fireSys(sim);
-    let destroyed = 0, fires = 0;
+    let destroyed = 0, fires = 0, rescues = 0;
     sim.events.emit('disaster', { kind: 'earthquake', x, z, active: true });
     for (const b of Array.from(st.buildings.values())) {
       const d = Math.hypot(b.x + b.w / 2 - x, b.z + b.d / 2 - z);
@@ -191,11 +218,17 @@ export class DisastersSystem implements SimSystem {
       const p = 0.55 * (1 - d / R) * ((mag - 4.5) / 3.5);
       if (this.rng.next() >= p) continue;
       const r = this.rng.next();
-      if (r < 0.4) { this.destroy(sim, b); destroyed++; }
+      if (r < 0.4) {
+        const occupied = b.pop + b.jobs > 0 && !(b.flags & BF.Burnt);
+        // WP8: people trapped in collapsed occupied buildings -> rescue incident (fire + medical), before the flag flip
+        if (occupied && rescues < EQ_COLLAPSE_MAX && this.spawnIncident(sim, 'collapse', b) >= 0) rescues++;
+        this.destroy(sim, b);
+        destroyed++;
+      }
       else if (r < 0.65 && fire) { if (fire.ignite(sim, b, true)) fires++; }
     }
     if (fire) fire.riskBoost = Math.max(fire.riskBoost, 3);
-    sim.notify(`Earthquake! Magnitude ${mag.toFixed(1)}: ${destroyed} buildings destroyed, ${fires} fires.`, 'disaster', x, z, 'disaster');
+    sim.notify(`Earthquake! Magnitude ${mag.toFixed(1)}: ${destroyed} buildings destroyed, ${fires} fires${rescues ? `, people trapped in ${rescues}` : ''}.`, 'disaster', x, z, 'disaster');
   }
 
   private meteor(sim: Simulation, x: number, z: number): void {
@@ -227,12 +260,17 @@ export class DisastersSystem implements SimSystem {
     // buildings
     const fire = this.fireSys(sim);
     let destroyed = 0;
+    const injured: { b: Building; d: number }[] = [];
     for (const b of Array.from(st.buildings.values())) {
       const d = Math.hypot(b.x + b.w / 2 - (x + 0.5), b.z + b.d / 2 - (z + 0.5)) - Math.max(b.w, b.d) / 2;
       if (d <= craterR) { removeBuilding(sim, b); destroyed++; }
       else if (d <= destroyR) { this.destroy(sim, b); destroyed++; }
       else if (d <= fireR && fire && this.rng.next() < 0.35) fire.ignite(sim, b, true);
+      if (d > craterR && d <= fireR + 4 && b.pop > 0) injured.push({ b, d });
     }
+    // WP8: the nearest inhabited buildings around the crater call for ambulances
+    injured.sort((a, c) => a.d - c.d || a.b.id - c.b.id);
+    for (let k = 0, n = 0; k < injured.length && n < METEOR_MEDICAL; k++) if (this.spawnIncident(sim, 'medical', injured[k].b, true) >= 0) n++;
     sim.events.emit('terrainChanged', rect);
     sim.events.emit('treesChanged', rect);
     if (netHit) sim.events.emit('networkChanged', rect);
