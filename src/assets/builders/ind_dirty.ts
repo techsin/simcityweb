@@ -466,8 +466,8 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x6a3226, Surf.Plain).box(-22.7, 7.2, 8.8, -7.8, 7.8, 16.2, { bottom: null });
       yardBits(b, rng, -6, 8, 5, 20);
       semi(b, -2, 14.5, Math.PI * 0.5, 0x8a2f2f, 0x8a8a84, {});
-      floodLight(b, 7.5, 6.5, 10, G, 8, clip);
-      floodLight(b, -6.5, 22.5, 9, G, 6.5, clip);
+      floodLight(b, 7.5, 6.5, 10, G, 8, clip, undefined, SODIUM);
+      floodLight(b, -6.5, 22.5, 9, G, 6.5, clip, undefined, SODIUM);
       lights(b, [[6.3, 6.2, -2], [-12, 6.8, 4.3], [9.3, 10.5, -7.3], [22.8, 10.5, -14]]);
       break;
     }
@@ -518,8 +518,8 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       heap(b, rng, 16, 11, 4.5, 3.0, 0x3a3634, Surf.Plain, 8);
       heap(b, rng, 7, 18, 3.4, 2.2, 0x6a625a, Surf.Plain, 7);
       semi(b, -12, 19.5, Math.PI * 0.5, 0x2e6fb5, 0x8a8a84, {});
-      floodLight(b, 22.5, 22.5, 10, G, 8, clip);
-      floodLight(b, 4.5, 0.5, 10, G, 7, clip);
+      floodLight(b, 22.5, 22.5, 10, G, 8, clip, undefined, SODIUM);
+      floodLight(b, 4.5, 0.5, 10, G, 7, clip, undefined, SODIUM);
       break;
     }
     case 2: {
@@ -569,8 +569,8 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x8e8b84, Surf.Plain).box(14, 0, 14, 22.5, 4, 22.5, { top: { color: 0x7a7670, surf: Surf.RoofFlat } });
       officeBlock(b, -9, 12, 7, 20, 7.2, 0xdad6cc, 2, 3.6);
       yardBits(b, rng, -22, 12, -12, 22);
-      floodLight(b, -1, -2.5, 10, G, 7, clip);
-      floodLight(b, 12, 22.5, 9, G, 6.5, clip);
+      floodLight(b, -1, -2.5, 10, G, 7, clip, undefined, SODIUM);
+      floodLight(b, 12, 22.5, 9, G, 6.5, clip, undefined, SODIUM);
       lights(b, [[1.2, 0.95, -22.8], [22.8, 0.95, -12], [-2, 5.8, 3], [-18, 5.8, 3], [5, 16.4, 11.4]]);
       break;
     }
@@ -623,8 +623,8 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       wallRow(b, 'pz', 16, -21, -6, 0.1, 4.5, 3, 3.6);
       boxTruck(b, 17, 17.5, Math.PI * 0.5, 0xe9e7e0, 0x9a968e);
       semi(b, -3, 20.5, Math.PI * 0.5, 0xc0392b, 0xd2cec6, {});
-      floodLight(b, 2, 2.5, 10, G, 7, clip);
-      floodLight(b, 23, 22.5, 9, G, 6, clip);
+      floodLight(b, 2, 2.5, 10, G, 7, clip, undefined, SODIUM);
+      floodLight(b, 23, 22.5, 9, G, 6, clip, undefined, SODIUM);
       lights(b, [[4.7, 9.9, kz + 2.3], [15.2, 7, kz + 5.3], [22.8, 7, kz - 3]]);
       // raw meal / limestone stockpiles
       heap(b, rng, 9, 10, 5.5, 3.2, 0xc8c0ae, Surf.Plain, 9, 1.2, 0.8);
