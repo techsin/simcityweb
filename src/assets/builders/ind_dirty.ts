@@ -3,14 +3,11 @@
  */
 import type { ModelBuilders } from '../registry';
 import type { ModelBuilder, ColorLike } from '../ModelBuilder';
-import { PALETTE } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { signBox } from '../kit';
 import {
-  type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor,
-  tank, sphereTank, smokestack, semi, boxTruck, carLow, forklift, pallets, drums, heap, fenceRect, wallRun,
-  floodLight, roofUnit, parapet, officeBlock, emitSmoke, emitSteam, lights, CAR_COLORS2, TRUCK_COLORS, orientedBox,
+  type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor, tank, sphereTank, smokestack, semi, boxTruck, carLow, forklift, pallets, drums, heap, fenceRect, wallRun, floodLight, roofUnit, parapet, officeBlock, emitSmoke, emitSteam, lights, CAR_COLORS2, orientedBox
 } from './ind_kit';
 
 const YARD = 0x9f9a90;
@@ -742,7 +739,6 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
   }
 }
 
-void TRUCK_COLORS; void carLow; void YARD_DARK; void PALETTE;
 
 export const dirtyModels: ModelBuilders = {
   ind_workshop: (b, v, rng) => workshop(b, v, rng),

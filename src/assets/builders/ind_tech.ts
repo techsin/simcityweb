@@ -8,8 +8,7 @@ import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { signBox, bench } from '../kit';
 import {
-  type V3, flat, ground, wallQuad, wallRow, tube, disc, strut, tank, carLow, fenceRect, floodLight, roofUnit, parking,
-  tree, solarRow, lathe, boxTruck, emitSteam, CAR_COLORS2,
+  type V3, flat, ground, wallQuad, tube, disc, strut, tank, carLow, fenceRect, floodLight, roofUnit, parking, tree, solarRow, lathe, boxTruck, emitSteam, CAR_COLORS2
 } from './ind_kit';
 
 const LAWN = 0x6f9a45;
@@ -426,7 +425,6 @@ function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
       break;
     }
   }
-  void wallRow;
 }
 
 export const techModels: ModelBuilders = {

@@ -3,13 +3,11 @@
  */
 import type { ModelBuilders } from '../registry';
 import type { ModelBuilder, ColorLike } from '../ModelBuilder';
-import { PALETTE } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { fence } from '../kit';
 import {
-  bicone, cone, dome, flat, gambrelRoof, ground, hCyl, lathe, strut, tank, tractor, tree, tube, wallQuad, wallRow,
-  disc, smokestack, boxTruck, pallets, carLow, CAR_COLORS2, lattice, barrelRoof, poplar,
+  bicone, dome, flat, gambrelRoof, ground, hCyl, lathe, strut, tank, tractor, tree, tube, wallQuad, wallRow, disc, smokestack, boxTruck, pallets, carLow, CAR_COLORS2, lattice, poplar
 } from './ind_kit';
 
 const DIRT = 0x8a6e4b;
@@ -557,7 +555,6 @@ function polytunnel(b: ModelBuilder, cx: number, z0: number, w: number, L: numbe
 }
 
 // keep unused-import linting quiet for helpers we may use later
-void cone; void barrelRoof;
 
 export const agriModels: ModelBuilders = {
   ind_farm_field: (b, v, rng) => farmField(b, v, rng),

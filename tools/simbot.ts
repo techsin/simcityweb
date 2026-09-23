@@ -678,7 +678,7 @@ export class SimBot {
       } else if (b.use === 'C' && C > 0.2) {
         if (b.zone === Zone.ComLow && pop > 3000) target = Zone.ComMed;
         else if (b.zone === Zone.ComMed && pop > 25000 && b.ring <= 2 + pop / 80000) target = Zone.ComHigh;
-      } else if (b.use === 'I' && b.zone === Zone.IndMed && s.eq > 100 && pop > 60000 && s.demand[DevType.IHT] > 0.2 && b.ring >= 6) target = Zone.IndHigh;
+      } else if (b.use === 'I' && b.zone === Zone.IndMed && s.demand[DevType.IHT] > 0.4 && s.demand[DevType.ID] < 0 && b.ring >= 5) target = Zone.IndHigh;
       if (target === b.zone) continue;
       if (!this.canSpend(1500)) break;
       const r = this.A.zone({ x0: b.x0, z0: b.z0, x1: b.x1, z1: b.z1 }, target);

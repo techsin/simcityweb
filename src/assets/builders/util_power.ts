@@ -3,13 +3,10 @@
  */
 import type { ModelBuilders } from '../registry';
 import type { ModelBuilder, ColorLike } from '../ModelBuilder';
-import { PALETTE } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import {
-  type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor,
-  orientedBox, tank, sphereTank, smokestack, semi, carLow, fenceRect, floodLight, roofUnit, officeBlock, heap, solarRow,
-  emitSteam, parking, tree, CAR_COLORS2, boxTruck, lights,
+  type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor, orientedBox, tank, sphereTank, smokestack, carLow, fenceRect, floodLight, roofUnit, officeBlock, heap, solarRow, emitSteam, parking, CAR_COLORS2, lights
 } from './ind_kit';
 
 const CONCRETE = 0xa39e94;
@@ -432,7 +429,6 @@ function solarFarm(b: ModelBuilder, rng: RNG): void {
   transformer(b, 14, 30.2, 0.7, false);
   b.paint(0xd8d8d2, Surf.Plain).box(20, 0, 29, 26, 3.2, 31.3);
   fenceRect(b, -31.6, -31.6, 31.6, 31.6, 2.0, 0x8a9096, [-3, 3], 14, 1);
-  void rng;
 }
 
 // ------------------------------------------------------------------------------------------------ util_hydro_dam
@@ -548,7 +544,6 @@ function powerPylon(b: ModelBuilder): void {
 
 export const pylonWireAttach: [number, number, number][] = PYLON_ARMS.flatMap(([s, y]) => [[-s, y, 0], [s, y, 0]] as [number, number, number][]);
 
-void cone; void semi; void boxTruck; void solarRow; void PALETTE;
 
 export const powerModels: ModelBuilders = {
   util_coal_plant: (b, _v, rng) => coalPlant(b, rng),

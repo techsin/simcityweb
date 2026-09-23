@@ -7,8 +7,7 @@ import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { signBox } from '../kit';
 import {
-  type V3, flat, ground, wallQuad, wallRow, wallDisc, tube, disc, hCyl, strut, conveyor, orientedBox, tank, smokestack,
-  carLow, forklift, fenceRect, floodLight, roofUnit, officeBlock, heap, wallRun, tree, CAR_COLORS2,
+  flat, ground, wallQuad, wallDisc, tube, disc, strut, conveyor, orientedBox, tank, smokestack, carLow, forklift, fenceRect, floodLight, roofUnit, officeBlock, heap, wallRun, tree, CAR_COLORS2
 } from './ind_kit';
 
 const CONCRETE = 0xa39e94;
@@ -241,8 +240,6 @@ function landfill(b: ModelBuilder, v: number, rng: RNG): void {
   }
 }
 
-void hCyl; void tank; void wallRow; void strut; void disc;
-const _v3: V3 = [0, 0, 0]; void _v3;
 
 export const wasteModels: ModelBuilders = {
   util_incinerator: (b, _v, rng) => incinerator(b, rng),

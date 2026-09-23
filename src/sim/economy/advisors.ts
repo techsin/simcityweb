@@ -6,7 +6,7 @@
  */
 import type { SimSystem, Simulation } from '../Simulation';
 import type { CityState } from '../CityState';
-import { DEV_TYPE_LABELS, Zone } from '../../core/types';
+import { DEV_TYPE_LABELS, DevType, Zone } from '../../core/types';
 import { type EconRuntime, econData, infraFlags } from './runtime';
 import { capHints } from './demand';
 import { residentCoverage } from './approval';
@@ -164,6 +164,16 @@ export function advisorsSystem(rt: EconRuntime): SimSystem {
     }
     if (famDemand(8, 11) > 0.5 && room([Zone.IndAg, Zone.IndMed, Zone.IndHigh]) < 8) {
       out.push({ id: 'zoneI', cooldown: 90, priority: 6, kind: 'info', advisor: 'planning', text: 'Industry wants to move in — zone industrial land, ideally near highways or rail.' });
+    }
+    // sub-type specific: strong demand for a DevType whose zones have no room at all
+    const SUBTYPE_HINT: [number, number[], string][] = [
+      [DevType.IHT, [Zone.IndHigh], 'High-tech industry wants to move in, but there is no high-density industrial zone. Zone some — clean, educated areas are best.'],
+      [DevType.IA, [Zone.IndAg], 'Farmers are looking for land. Zone agricultural land on flat ground away from pollution.'],
+      [DevType.CO3, [Zone.ComMed, Zone.ComHigh], 'Corporate offices (CO$$$) want high land value downtown — zone medium or high density commercial.'],
+      [DevType.R3, [Zone.ResLow, Zone.ResMed, Zone.ResHigh], 'Wealthy residents are looking for homes. Zone residential land near parks and water.'],
+    ];
+    for (const [dev, zs, text] of SUBTYPE_HINT) {
+      if (s.demand[dev] > 0.6 && room(zs) === 0) out.push({ id: 'zoneDev' + dev, cooldown: 150, priority: 6, kind: 'info', advisor: 'planning', text });
     }
     if (pop > 2000 && s.unemployment > 0.15) {
       out.push({ id: 'unemployment', cooldown: 120, priority: 7, kind: 'warning', advisor: 'planning',

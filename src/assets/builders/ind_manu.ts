@@ -8,9 +8,7 @@ import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { signBox } from '../kit';
 import {
-  type Face, flat, ground, wallQuad, wallRow, wallDisc, tube, disc, dome, hCyl, strut, lattice, tank, smokestack, semi, boxTruck,
-  carLow, forklift, pallets, fenceRect, floodLight, roofUnit, parapet, officeBlock, parking, containerAt, barrelRoof,
-  tree, lightDot, CAR_COLORS2, CONTAINER_COLORS, TRUCK_COLORS,
+  type Face, flat, ground, wallQuad, wallRow, wallDisc, tube, dome, hCyl, strut, lattice, tank, smokestack, semi, boxTruck, carLow, forklift, pallets, fenceRect, floodLight, roofUnit, officeBlock, parking, containerAt, barrelRoof, tree, lightDot, CAR_COLORS2, CONTAINER_COLORS, TRUCK_COLORS
 } from './ind_kit';
 
 const APRON = 0x8f8b84;
@@ -385,7 +383,6 @@ function containerStack(b: ModelBuilder, rng: RNG, x: number, z: number, rows: n
       containerAt(b, cx, 0.05 + t * 2.6, cz, long, rng.pick(CONTAINER_COLORS), alongZ);
     }
   }
-  void L;
 }
 
 /** Rubber-tyred gantry crane spanning along X over [x0,x1] at z (legs at z±d/2). */
@@ -485,7 +482,6 @@ function depot(b: ModelBuilder, v: number, rng: RNG): void {
   }
 }
 
-void disc; void lattice; void parapet; void TRUCK_COLORS;
 
 export const manuModels: ModelBuilders = {
   ind_warehouse: (b, v, rng) => warehouse(b, v, rng),
