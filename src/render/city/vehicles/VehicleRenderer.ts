@@ -302,8 +302,17 @@ export class VehicleRenderer {
     return this.rngS / 4294967296;
   }
 
+  /** mark spawn distribution + routes stale (network / traffic changed); refreshed on the next update (debounced) */
+  invalidate(): void {
+    this.spawnDirty = true;
+  }
+  private spawnDirty = false;
+  private lastRefresh = -1e9;
+
   /** recompute spawn distribution from traffic volumes (call on network / traffic changes) */
   refreshSpawn(): void {
+    this.spawnDirty = false;
+    this.lastRefresh = performance.now();
     const st = this.state;
     const N = this.net.N;
     const cells: number[] = [];
@@ -326,7 +335,7 @@ export class VehicleRenderer {
       // real flow: any used road shows some cars; ~1 car / 13 m of road at ~800 PCU/day; congested roads queue up.
       if (haveTraffic) {
         const tv = st.traffic[i];
-        d = tv > 0 ? Math.min(1.3, 0.1 + tv / 700) * (0.8 + 0.4 * Math.min(1.5, st.congestion[i])) : 0;
+        d = tv > 0 ? Math.min(1.3, 0.16 + tv / 550) * (0.8 + 0.4 * Math.min(1.5, st.congestion[i])) : 0;
       }
       else d = rt === Network.Highway ? 0.7 : rt === Network.Avenue ? 0.55 : rt === Network.Street ? 0.12 : 0.3;
       if (d <= 0.01) continue;
@@ -780,17 +789,23 @@ export class VehicleRenderer {
     const camH = camera.position.y;
     this.hidden = camH > 2600;
     this.thin = camH > 1500 ? 3 : camH > 1000 ? 2 : 1;
-    // routes
+    // spawn distribution / routes (event driven, debounced by real time so slow frames don't stall it)
+    if (this.spawnDirty && performance.now() - this.lastRefresh > 250) {
+      this.refreshSpawn();
+      this.refreshRoutes();
+      this.routeTimer = 15;
+    }
     this.routeTimer -= dt;
     if (this.routeTimer <= 0) {
       this.routeTimer = 15;
       this.refreshRoutes();
     }
-    // population control
+    // population control (fill up immediately when far below target)
     this.popTimer -= dt;
-    if (this.popTimer <= 0) {
+    const starving = this.n < this.target * 0.6;
+    if (this.popTimer <= 0 || starving) {
       this.popTimer = 0.4;
-      let budget = this.n === 0 ? this.target : 40;
+      let budget = starving ? this.target - this.n : 40;
       let fails = 0;
       while (this.n < this.target && budget-- > 0 && fails < 60) {
         const v = this.n;

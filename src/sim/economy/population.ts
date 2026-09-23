@@ -120,7 +120,11 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     const regional = Math.min(jobCap * REGION_COMMUTERS_MAX_SHARE, REGION_COMMUTERS_BASE + REGION_COMMUTERS_FRAC * W) * (connected ? 1 : REGION_COMMUTERS_ISOLATED);
     const fillable = Math.min(jobCap, W + regional);
     rt.jobFill = jobCap > 0 ? fillable / jobCap : 0;
-    let employed = Math.min(W, jobCap + regional * REGION_JOBS_FOR_RESIDENTS);
+    // employed residents: filled local jobs (civic + C/I, some held by regional commuters) + jobs in the region
+    let filled = t.civicJobs;
+    for (let d = DevType.CS1; d <= DevType.IHT; d++) filled += t.jobs[d];
+    const inbound = Math.max(0, Math.min(regional, fillable - W));
+    let employed = Math.min(W, filled - inbound + regional * REGION_JOBS_FOR_RESIDENTS);
     // with sim-infra traffic: poor job access (congestion, no route) raises unemployment — blended softly because
     // the traffic assignment is an equilibrium that converges over several cycles
     const traffic = infraFlags(st).traffic ? (sim.getSystem('traffic') as unknown as TrafficApi | undefined) : undefined;
@@ -241,7 +245,8 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       } else {
         // ---- occupancy
         const demandFactor = Math.max(VACANCY_MIN, Math.min(1, 1 + VACANCY_K * Math.min(0, dmd - VACANCY_START)));
-        let occ = demandFactor * (0.6 + 0.4 * b.health);
+        // homes: unhappy buildings have vacancies; businesses run near capacity unless they are doing badly
+        let occ = demandFactor * (isR ? 0.6 + 0.4 * b.health : 0.8 + 0.2 * b.health);
         if (!powered) occ *= 0.25;
         if (needWater && !watered) occ *= 0.5;
         if (isR) {

@@ -84,7 +84,6 @@ export class CityObjectsView implements CityObjectsViewApi {
   private unsub: (() => void)[] = [];
   private powerDirty = true;
   private subwayDirty = true;
-  private spawnTimer = -1;
   private overlayTarget = 0;
   private raycaster = new THREE.Raycaster();
   private ndc = new THREE.Vector2();
@@ -142,7 +141,7 @@ export class CityObjectsView implements CityObjectsViewApi {
       ev.on('networkChanged', (r) => {
         const d = this.net.update(r);
         this.roads.markDirty(expand(d, 1, N()));
-        this.spawnTimer = 0.5;
+        this.vehicles.invalidate();
       }),
       ev.on('terrainChanged', (r) => {
         const d = this.net.update(expand(r, 1, N()));
@@ -160,7 +159,7 @@ export class CityObjectsView implements CityObjectsViewApi {
       }),
       ev.on('buildingChanged', (b) => this.buildings.changed(b)),
       ev.on('disaster', (e) => this.disasters.onEvent(e)),
-      ev.on('layerUpdated', (l) => { if (l === 'traffic') this.spawnTimer = Math.max(this.spawnTimer, 0.2); }),
+      ev.on('layerUpdated', (l) => { if (l === 'traffic') this.vehicles.invalidate(); }),
       ev.on('reset', () => {
         const s = this.ctx.getState?.();
         if (s && s !== this.state) this.setState(s);
@@ -250,10 +249,6 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.disasters.update(dt);
     this.effects.update(dt);
     lap('effects');
-    if (this.spawnTimer >= 0) {
-      this.spawnTimer -= dt;
-      if (this.spawnTimer < 0) this.vehicles.refreshSpawn();
-    }
     this.vehicles.update(dt, cam);
     lap('vehicles');
     this.previews.update(dt);
