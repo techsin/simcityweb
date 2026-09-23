@@ -95,6 +95,13 @@ const DEMOS: Record<string, Demo> = {
 // ------------------------------------------------------------------ render helpers
 function offline(seconds: number): { ctx: OfflineAudioContext; reverbIn: AudioNode; noise: AudioBuffer } {
   const ctx = new OfflineAudioContext({ numberOfChannels: 2, length: Math.ceil(seconds * SR), sampleRate: SR });
+  // noreverb=1: replace the convolver with a plain gain (profiling only)
+  if (q.get('noreverb') === '1') {
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    g.connect(ctx.destination);
+    return { ctx, reverbIn: g, noise: makeNoiseBuffer(ctx) };
+  }
   const rv = makeReverb(ctx);
   rv.output.connect(ctx.destination);
   return { ctx, reverbIn: rv.input, noise: makeNoiseBuffer(ctx) };
@@ -106,6 +113,16 @@ function segStats(L: Float32Array, R: Float32Array, seg: Segment) {
   const ld = loudness(L, R, SR, a, b);
   // audible duration: until the last 50 ms window above -60 dBFS
   return { name: seg.name, peakDb: lv.peakDb, rmsDb: lv.rmsDb, lufs: round(ld.integrated, 1), momentaryMax: round(ld.momentaryMax, 1), audibleSec: round((b - a) / SR - lv.trailingSilenceSec - lv.leadingSilenceSec), startSilenceSec: lv.leadingSilenceSec, clipped: lv.clipped };
+}
+
+/** render with start / end markers so tools/render-audio.mjs can measure the CPU time of the render */
+async function timed(ctx: OfflineAudioContext): Promise<AudioBuffer> {
+  console.log('LAB_RENDER_START');
+  await new Promise((r) => setTimeout(r, 30));
+  const buf = await ctx.startRendering();
+  console.log('LAB_RENDER_END');
+  await new Promise((r) => setTimeout(r, 30));
+  return buf;
 }
 
 // ------------------------------------------------------------------ modes
@@ -125,12 +142,29 @@ async function renderTrack(id: string) {
   const to = secondsQ ? from + parseFloat(secondsQ) : songEnd + 0.5;
   const { ctx, reverbIn, noise } = offline(to);
   const ti = instantiateTrack(track, ctx, ctx.destination, reverbIn, noise, seed, { live: false, skipBefore: from > 0 ? from - 0.5 : undefined, stats: true });
-  const tA = performance.now();
+  // mute=ride,brush / solo=epiano,upright : drop notes of instruments (by method name) for A/B checks
+  for (const n of (q.get('mute') ?? '').split(',').filter(Boolean)) ti.inst.mute.add(n);
+  for (const n of (q.get('solo') ?? '').split(',').filter(Boolean)) ti.inst.solo.add(n);
+  // schedule like the live director: every 0.5 s of render time, schedule 1.5 s ahead (OfflineAudioContext.suspend).
+  // Scheduling everything up front would leave thousands of not-yet-started nodes in the graph, which Chrome pulls
+  // every render quantum (quadratic cost) - that is not how the game plays music.
+  let schedMs = 0;
+  const sched = (t: number) => {
+    const a = performance.now();
+    ti.player.scheduleUntil(t);
+    schedMs += performance.now() - a;
+  };
   ti.player.start(T0);
-  ti.player.scheduleUntil(to + 30);
-  const schedMs = performance.now() - tA;
+  sched(Math.max(from, 0) + 1.5);
+  for (let t = Math.max(0.5, Math.floor(from * 2) / 2); t < to - 0.01; t += 0.5) {
+    const at = t;
+    void ctx.suspend(at).then(() => {
+      sched(at + 1.5);
+      void ctx.resume();
+    });
+  }
   const tB = performance.now();
-  const buf = await ctx.startRendering();
+  const buf = await timed(ctx);
   const renderMs = performance.now() - tB;
   const sections: Marker[] = (ti.player.sections ?? []).map((s) => ({ t: s.t, name: s.name }));
   const st = ti.inst.stats;
@@ -170,6 +204,13 @@ async function renderTrack(id: string) {
   };
 }
 
+/** profiling baseline: an empty offline context (plus the reverb unless noreverb=1) */
+async function renderIdle(seconds: number) {
+  const { ctx } = offline(seconds);
+  const buf = await timed(ctx);
+  return { buf, from: 0, to: buf.duration, markers: [] as Marker[], title: `idle ${seconds}s`, extra: { mode: 'idle' } };
+}
+
 async function renderSfx(which: string) {
   const names: SoundName[] = which === 'all' ? [...SOUND_NAMES] : [which as SoundName];
   if (!names.every((n) => SOUND_NAMES.includes(n))) throw new Error(`unknown sfx "${which}" (have: ${SOUND_NAMES.join(', ')})`);
@@ -186,7 +227,7 @@ async function renderSfx(which: string) {
     });
   });
   const tB = performance.now();
-  const buf = await ctx.startRendering();
+  const buf = await timed(ctx);
   const L = buf.getChannelData(0), R = buf.getChannelData(1);
   return {
     buf,
@@ -219,7 +260,7 @@ async function renderInst(which: string) {
     DEMOS[n](inst, 0.1 + k * slot * 2 + slot, 0.35);
     perInst[n] = { notes: inst.stats.notes - n0, nodes: inst.stats.nodes - d0 };
   });
-  const buf = await ctx.startRendering();
+  const buf = await timed(ctx);
   const L = buf.getChannelData(0), R = buf.getChannelData(1);
   const table = segs.map((s) => segStats(L, R, s));
   return {
@@ -457,8 +498,8 @@ function exposeWav(buf: AudioBuffer, a: number, b: number): void {
 
 // ------------------------------------------------------------------ main
 async function main() {
-  const track = q.get('track'), sfx = q.get('sfx'), instQ = q.get('inst');
-  if (!track && !sfx && !instQ) {
+  const track = q.get('track'), sfx = q.get('sfx'), instQ = q.get('inst'), idle = q.get('idle');
+  if (!track && !sfx && !instQ && !idle) {
     const add = (label: string, href: string) => {
       const a = document.createElement('a');
       a.href = href;
@@ -479,7 +520,7 @@ async function main() {
     return;
   }
   log('rendering...');
-  const r = track ? await renderTrack(track) : sfx ? await renderSfx(sfx) : await renderInst(instQ!);
+  const r = track ? await renderTrack(track) : sfx ? await renderSfx(sfx) : idle ? await renderIdle(parseFloat(idle)) : await renderInst(instQ!);
   const tA = performance.now();
   const buf = r.buf;
   const L = buf.getChannelData(0), R = buf.getChannelData(1);
@@ -525,7 +566,7 @@ async function main() {
   if (ex.mode === 'track') lines.push(`song ${ex.songDurationSec}s  window ${JSON.stringify(ex.window)}  notes ${ex.notesPerSec}/s  nodes ${ex.nodesPerSec}/s (max ${ex.nodesPerSecMax})  schedule ${ex.scheduleMs} ms  render ${ex.renderMs} ms`);
   if (ex.mode === 'inst')
     for (const i of ex.instruments as { name: string; lufs07: number; peak07: number; lufs035: number; nodesPerNote: number }[]) void i;
-  const cv = draw({ title: r.title, from: r.from, to: r.to, markers: r.markers, sp, ld, peaks, onsetDensity, nodeCurve: ex.mode === 'track' ? (ex.nodeCurve as number[]) : undefined, lines, table: 'table' in r ? r.table : undefined });
+  const cv = draw({ title: r.title, from: r.from, to: r.to, markers: r.markers, sp, ld, peaks, onsetDensity, nodeCurve: ex.mode === 'track' ? (ex.nodeCurve as number[]) : undefined, lines, table: 'table' in r ? (r.table as ReturnType<typeof segStats>[]) : undefined });
   app.replaceChildren(cv);
   const pre = document.createElement('pre');
   pre.style.cssText = 'color:#cfd6e2;font:12px monospace;white-space:pre-wrap';

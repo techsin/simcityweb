@@ -192,6 +192,8 @@ function sincTable(phases: number, taps: number): Float64Array[] {
 
 export interface LevelStats {
   peakDb: number;
+  /** time of the sample peak (s, absolute) */
+  peakAtSec: number;
   truePeakDb: number;
   rmsDb: number;
   crestDb: number;
@@ -207,12 +209,12 @@ export interface LevelStats {
 }
 
 export function levels(L: Float32Array, R: Float32Array, sr: number, a = 0, b = L.length): LevelStats {
-  let peak = 0, sq = 0, dl = 0, dr = 0, clipped = 0, near = 0, lr = 0, ll = 0, rr = 0;
+  let peak = 0, peakAt = a, sq = 0, dl = 0, dr = 0, clipped = 0, near = 0, lr = 0, ll = 0, rr = 0;
   for (let i = a; i < b; i++) {
     const l = L[i], r = R[i];
     const al = Math.abs(l), ar = Math.abs(r);
-    if (al > peak) peak = al;
-    if (ar > peak) peak = ar;
+    if (al > peak) (peak = al), (peakAt = i);
+    if (ar > peak) (peak = ar), (peakAt = i);
     if (al >= 1 || ar >= 1) clipped++;
     else if (al >= 0.99 || ar >= 0.99) near++;
     sq += l * l + r * r;
@@ -258,6 +260,7 @@ export function levels(L: Float32Array, R: Float32Array, sr: number, a = 0, b = 
   }
   return {
     peakDb: round(db(peak)),
+    peakAtSec: round(peakAt / sr, 2),
     truePeakDb: round(db(tp)),
     rmsDb: round(db(rms)),
     crestDb: round(db(peak) - db(rms)),

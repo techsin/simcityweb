@@ -20,7 +20,7 @@
  */
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
-import { mkdirSync, writeFileSync, openSync, writeSync, closeSync } from 'node:fs';
+import { mkdirSync, writeFileSync, openSync, writeSync, closeSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,7 +35,54 @@ const server = await createServer({ root, logLevel: 'error', server: { port: 0, 
 await server.listen();
 const addr = server.httpServer.address();
 const base = `http://127.0.0.1:${addr.port}/audio-lab.html`;
-const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required', '--disable-gpu'] });
+const marker = `--audio-lab-${process.pid}-${Date.now()}`;
+const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required', '--disable-gpu', marker] });
+
+/** CPU seconds (user+sys) used so far by the launched browser and all its child processes (Linux /proc) */
+const TICK = 100; // USER_HZ
+function browserCpuSec() {
+  try {
+    const procs = new Map();
+    let rootPid = null;
+    for (const d of readdirSync('/proc')) {
+      if (!/^\d+$/.test(d)) continue;
+      try {
+        const st = readFileSync(`/proc/${d}/stat`, 'utf8');
+        const rp = st.lastIndexOf(')');
+        const f = st.slice(rp + 2).split(' ');
+        procs.set(+d, { ppid: +f[1], cpu: (+f[11] + +f[12]) / TICK });
+        if (rootPid === null && readFileSync(`/proc/${d}/cmdline`, 'utf8').includes(marker)) rootPid = +d;
+      } catch {
+        /* process vanished */
+      }
+    }
+    if (rootPid === null) return NaN;
+    const tree = new Set([rootPid]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [pid, p] of procs) if (!tree.has(pid) && tree.has(p.ppid)) (tree.add(pid), (grew = true));
+    }
+    let sum = 0;
+    const detail = [];
+    for (const pid of tree) {
+      sum += procs.get(pid)?.cpu ?? 0;
+      if (process.env.LAB_CPU_DETAIL) {
+        let type = 'browser';
+        try {
+          type = /--type=([a-z-]+)/.exec(readFileSync(`/proc/${pid}/cmdline`, 'utf8'))?.[1] ?? 'browser';
+        } catch {
+          /* ignore */
+        }
+        detail.push(`${pid}:${type}=${procs.get(pid)?.cpu}`);
+      }
+    }
+    if (detail.length) console.log('CPU ' + detail.join(' '));
+    return sum;
+  } catch {
+    return NaN;
+  }
+}
 let failed = false;
 try {
   for (let i = 0; i < rest.length; i += 2) {
@@ -43,8 +90,11 @@ try {
     const out = resolve(root, rest[i + 1]);
     mkdirSync(dirname(out), { recursive: true });
     const p = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+    let cpuA = NaN, cpuB = NaN;
     p.on('console', (m) => {
       const t = m.text();
+      if (t === 'LAB_RENDER_START') return void (cpuA = browserCpuSec());
+      if (t === 'LAB_RENDER_END') return void (cpuB = browserCpuSec());
       if (t.startsWith('LAB_RESULT')) return;
       if (m.type() === 'error' || m.type() === 'warning' || t.startsWith('[')) console.log(`[console.${m.type()}] ${t.slice(0, 2000)}`);
     });
@@ -69,6 +119,12 @@ try {
     if (canvas) await canvas.screenshot({ path: out, timeout: 300000 });
     else await p.screenshot({ path: out, fullPage: true });
     const result = await p.evaluate(() => window.__result);
+    const audioSec = result.mode === 'track' ? result.window[1] - result.window[0] : result.analyzedSec;
+    if (isFinite(cpuA) && isFinite(cpuB)) {
+      result.renderCpuSec = Math.round((cpuB - cpuA) * 100) / 100;
+      // fraction of ONE core the song needs when played in real time (offline render work / audio length)
+      result.cpuRealtimeFraction = Math.round(((cpuB - cpuA) / Math.max(0.1, audioSec)) * 1000) / 1000;
+    }
     writeFileSync(out.replace(/\.png$/i, '') + '.json', JSON.stringify(result, null, 1));
     const compact = { ...result };
     for (const k of Object.keys(compact)) if (Array.isArray(compact[k]) && compact[k].length > 24 && typeof compact[k][0] !== 'object') compact[k] = `[${compact[k].length} values]`;

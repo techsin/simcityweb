@@ -1,0 +1,927 @@
+[
+ {
+  "lens": "utilities-pollution",
+  "factors": [
+   {
+    "name": "Electricity: generation (plant types and fuel)",
+    "status": "partial",
+    "gaps": [
+     "Output ignores the site: the wind turbine says 'build on windy hills' but ignores elevation and wind, solar ignores season/latitude, hydro ignores water flow. All give a flat powerOut.",
+     "Plant pollution ignores load. Measured: a coal plant with 0 MW demand still has 0.80 air at the plant, because plopped activity is always 1 (pollution.ts:226). Upkeep scales with load, emissions do not.",
+     "The incinerator always gives 60 MW, even with 0 t of garbage (probe: powerSupply=60, garbageProduced=0).",
+     "Plants never age, wear out, break down or melt down (disasters are only fire/tornado/earthquake/meteor, disasters.ts:20).",
+     "Thermal plants have waterUse (coal 800 kL/day) but keep full output without water.",
+     "No buying or selling power with neighbour cities."
+    ]
+   },
+   {
+    "name": "Electricity: grid conduction and brownouts",
+    "status": "complete",
+    "gaps": [
+     "No load priority: hospitals, pumps and police are cut in plain distance order.",
+     "Zoned empty cells do not conduct, so a gap in a row of buildings breaks the chain unless power lines are laid.",
+     "The overlay only shows on/off. There is no grid-load or 'at-risk' view and no way to see which plant feeds which area."
+    ]
+   },
+   {
+    "name": "Electricity: consumption by building type and effects",
+    "status": "partial",
+    "gaps": [
+     "Plopped civic buildings work without power. Probe: an unpowered school still gives 1.00 eduCov. Services, recycling (powerUse 2) and incinerator capacity never check BF.Powered (services.ts:190, pollution.ts:461). Only pumps and treatment plants depend on power.",
+     "Power has no graded effect on desirability or land value. It is only a gate.",
+     "Parks with no powerUse fall back to at least 0.2 MW each (utilities.ts:64), which is odd for a small park."
+    ]
+   },
+   {
+    "name": "Water supply network (tower / pump / treatment / desalination) and shortage",
+    "status": "partial",
+    "gaps": [
+     "No pipe tool and no separate underground network. A road-less district cannot get water, and rail does not carry it.",
+     "Pumps get the +50% next to any water body, including sea water. Desalination does not require salt water.",
+     "Water shortage is never a direct 'unhappy' trigger (population.ts:234 covers only power and road). Unwatered R buildings with high desirability survive.",
+     "Firefighting does not depend on water supply (fire.ts has no watered check).",
+     "The water tower stores nothing; it is just a small producer.",
+     "Low-density stage 1-2 buildings get no benefit at all from water service."
+    ]
+   },
+   {
+    "name": "Water pollution (sources, spread, effects on pumps and health)",
+    "status": "partial",
+    "gaps": [
+     "Water only flows one way, from land into water. River pollution never feeds back to bank land or pumps, because land cells read only groundwater (saturate mask = water, pollution.ts:352). A pump drawing from a polluted river still gets its full +50%.",
+     "Drinking polluted water does not affect health: HQ uses only air (services.ts:280-288). Approval ignores water pollution (approval.ts:48).",
+     "Water spreads the same in every direction; there is no upstream or downstream.",
+     "Sewage is invisible to the player. Probe: 37k residents in apartments give 0.555 groundwater pollution (0.07 with a treatment plant), 241k in towers flag every home Polluted. Nothing explains that it is sewage, and there is no sewage outflow or pipe concept.",
+     "The building inspector does not show water pollution (only land cells do). No water-pollution advisor or news."
+    ]
+   },
+   {
+    "name": "Air / smoke pollution: sources",
+    "status": "partial",
+    "gaps": [
+     "Plopped emitters (plants, incinerator) ignore load or throughput (see generation).",
+     "Commercial buildings have almost no air emission (only the gas station). No heating or residential emission.",
+     "Construction sites and demolition give no dust or emission (non-functional buildings are skipped, pollution.ts:224).",
+     "Tunnel and bridge traffic cells emit the same as surface roads (netFlags ignored)."
+    ]
+   },
+   {
+    "name": "Air pollution: wind and diffusion",
+    "status": "partial",
+    "gaps": [
+     "There is no prevailing wind, so 'downwind' siting has no meaning and the plume is effectively round.",
+     "The UI has no wind indicator, and the rendered smoke drifts in a fixed direction unrelated to the sim.",
+     "No terrain effects: hills and valleys neither trap nor block smog."
+    ]
+   },
+   {
+    "name": "Air pollution: effects (health, desirability per wealth, land value, approval)",
+    "status": "complete",
+    "gaps": [
+     "Pollution does not affect building health directly (for example abandonment of homes that stay polluted) beyond desirability.",
+     "The Polluted flag is also set on factories and power plants, where the chip means nothing."
+    ]
+   },
+   {
+    "name": "Pollution ordinances",
+    "status": "partial",
+    "gaps": [
+     "No noise ordinance (quiet hours, truck routes, speed limits).",
+     "No water or sewage ordinance: no key reduces residential sewage and no 'sewage treatment mandate'.",
+     "No clean-power incentive (for example scrubbers or a fuel tax on coal/oil)."
+    ]
+   },
+   {
+    "name": "Noise pollution: sources (traffic by road type, rail, industry, airports, stadiums, construction)",
+    "status": "partial",
+    "gaps": [
+     "Noise per trip is the same on every road type. There is no speed factor (a highway trip is as loud as a street trip), and congestion does not change noise.",
+     "Rail noise comes only from passenger riders. Freight trains exist only as visual routes (traffic.ts:1647-1656) and make no noise. Level crossings add nothing.",
+     "No construction noise (buildings under construction emit nothing).",
+     "Tunnels and elevated sections are not muffled or amplified (netFlags ignored).",
+     "Stadium and airport noise is constant; there are no event days or flight schedules.",
+     "No nightlife or commercial-district noise beyond tiny per-building values."
+    ]
+   },
+   {
+    "name": "Noise pollution: effects, falloff, buffers and feedback",
+    "status": "partial",
+    "gaps": [
+     "No buffers: trees, parks, sound walls and terrain do not reduce noise.",
+     "Noise does not affect health/HQ, approval, sleep or crime, and there is no 'Noisy' building flag or chip.",
+     "The building inspector and land-lot inspector do not show noise (only road cells do). No noise advisor, news, stat or graph."
+    ]
+   },
+   {
+    "name": "Garbage: production and collection capacity",
+    "status": "partial",
+    "gaps": [
+     "When capacity is enough, every building is served even with no road link to any facility. Probe: a road-isolated district of 21 homes had 0 NoGarbage flags.",
+     "Capacity is a monthly flow. Landfills never fill up, age or need replacing, so there is no long-term pressure.",
+     "The 'garbage' coverage kind exists (common.ts:39) but is never processed (services.ts:190 handles kinds 0-5). There are no garbage trucks, radius or travel-time limit.",
+     "Incinerator and recycling capacity work unpowered and need no road access unless there is a shortage.",
+     "No regional garbage export deal."
+    ]
+   },
+   {
+    "name": "Garbage: uncollected accumulation and its effects",
+    "status": "partial",
+    "gaps": [
+     "Garbage never spreads: no smell or visual effect on neighbours or streets, and no air pollution from piles.",
+     "No effect on health/HQ, disease, rats, crime, fire risk or approval.",
+     "Small houses take a very long time to flag (a cottage builds about 0.01 per 12-day pass, so more than a year to reach 0.35).",
+     "The inspectors do not show the building's garbage level (only the chip)."
+    ]
+   },
+   {
+    "name": "Landfill local pollution / smell radius",
+    "status": "partial",
+    "gaps": [
+     "Emission ignores how much garbage is actually dumped, so over-zoning is punished and a busy landfill is no worse than an empty one.",
+     "Big landfills saturate far beyond the per-cell design (additive sources). A 'noise 0.78' landfill is louder than a busy avenue.",
+     "The Garbage overlay mixes landfill 'fullness' with uncollected garbage on the same 'Piling up' legend.",
+     "No distinct smell layer. The smell is folded into air pollution."
+    ]
+   },
+   {
+    "name": "Recycling / incineration",
+    "status": "partial",
+    "gaps": [
+     "Recycling does not divert a share of garbage or earn resource income, and its capacity is flat.",
+     "Incinerator emission and power are independent of garbage burned.",
+     "No composting or waste-to-landfill ratio split."
+    ]
+   },
+   {
+    "name": "Trees / forests / parks reducing pollution",
+    "status": "missing",
+    "gaps": [
+     "The tool text and two advisor lines promise pollution reduction and land value from trees that the sim never delivers. This misleads the player.",
+     "Needed: tree density as an air and noise sink (and a small LV/desirability bonus), and parks as local noise/air buffers."
+    ]
+   },
+   {
+    "name": "Soil / ground contamination (landfills, toxic dump, brownfields)",
+    "status": "missing",
+    "gaps": [
+     "No persistent soil layer: demolished refineries, landfills and the toxic dump leave no brownfield, cleanup cost or remediation mechanic.",
+     "Groundwater has no memory or accumulation (it is not a stock that builds up over years).",
+     "Farms (I-Ag) are not affected by soil contamination beyond the water term."
+    ]
+   },
+   {
+    "name": "NIMBY land-value splats for utilities (closeness to plants, landfill, dumps)",
+    "status": "complete",
+    "gaps": [
+     "The effect is identical whether a nuclear plant is running or idle. There is no per-type disgust for the working class versus the wealthy beyond the lv weighting."
+    ]
+   },
+   {
+    "name": "Player feedback for utilities and pollution (overlays, inspector, advisors, stats)",
+    "status": "partial",
+    "gaps": [
+     "The building inspector lacks noise, water pollution and garbage level. The land inspector lacks noise and garbage.",
+     "No 'why' breakdown of desirability terms (air, noise, garbage, water per wealth).",
+     "No history series for noise, water pollution, garbage or power/water margin. The single 'pollution' graph mixes air and water.",
+     "No advisor or news for noise, water pollution or sewage. Several advisor fixes (trees, parks) do nothing.",
+     "The desirability overlay shows only R$$ (overlays.ts:260), so pollution's effect on R$$$ cannot be seen.",
+     "The pollution.ts header (lines 2-3) still describes a 2-stage, 8-day pass; POLL_PERIOD is now 12 with 6 steps (stale doc)."
+    ]
+   }
+  ]
+ },
+ {
+  "lens": "landvalue-attraction",
+  "factors": [
+   {
+    "name": "Land value: waterfront (terrain)",
+    "status": "partial",
+    "gaps": [
+     "The waterfront premium ignores water quality. Water-pollution diffusion runs over water cells only (pollution.ts:353-375), and land cells get only a land-source groundwater blur, so a sewage-filled river gives the same shore bonus as a clean lake.",
+     "There is no beach, cliff or harbour distinction: sea, lake and river all count the same, and a 1-cell creek gives the full 0.26.",
+     "Waterfront gives no tourism or visitor draw (see Attraction factors).",
+     "There is no 'view of water from height' term. Distance only, so a tower 9 cells back gets nothing."
+    ]
+   },
+   {
+    "name": "Land value: view / elevation (terrain)",
+    "status": "complete",
+    "gaps": [
+     "It does not look at what is visible: no bonus for overlooking landmarks, skyline or water, and no penalty for overlooking industry.",
+     "Terraforming refreshes are throttled to 90 days, so a player terraforming for views waits up to a season to see the effect."
+    ]
+   },
+   {
+    "name": "Land value: plopped building effects (parks, landmarks, civic, nuisances)",
+    "status": "complete",
+    "gaps": [
+     "Splats ignore building state: burnt (rubble), unpowered or unfunded parks and landmarks keep their full LV bonus. computeLandValueEffects has no Burnt or funding check (landValue.ts:95-98).",
+     "Parks count twice by design (splat plus parkCov term), but only the parkCov term scales with parks funding.",
+     "The 0.6 clamp means stacking several landmarks gives no benefit beyond the cap, and the UI does not show this."
+    ]
+   },
+   {
+    "name": "Land value: service coverage",
+    "status": "partial",
+    "gaps": [
+     "The four services are weighted equally. Schools and hospitals raise land value no more than a fire station, and there is no per-service LV weight.",
+     "Garbage collection has no LV term (only uncollected-garbage buildup, via the garbage term). Power and water availability do not enter LV at all."
+    ]
+   },
+   {
+    "name": "Land value: parks coverage",
+    "status": "complete",
+    "gaps": [
+     "Parks have no capacity or crowding: one playground serves 50k residents as well as 500.",
+     "All park types feed one parkCov layer (see demographics factor)."
+    ]
+   },
+   {
+    "name": "Land value: transit access",
+    "status": "complete",
+    "gaps": [
+     "The weight is very small (0.04): a subway station barely moves land value. SC4-style transit-oriented development does not emerge."
+    ]
+   },
+   {
+    "name": "Land value: commute / accessibility (traffic access)",
+    "status": "partial",
+    "gaps": [
+     "BUG / design hole: traffic writes st.commute only on residential building footprints (traffic.ts:1579-1582). Empty zoned lots and all C/I cells fall back to the city-wide stats.avgCommute. Land value and desirability on unbuilt land therefore carry no accessibility signal: a lot at the map edge looks as well connected as one downtown. This also affects the CO$$/CO$$$ commute weights (0.6/0.7).",
+     "No road-adjacency or road-class term: fronting an avenue or highway interchange gives no access bonus."
+    ]
+   },
+   {
+    "name": "Land value: proximity to downtown / commercial / jobs",
+    "status": "missing",
+    "gaps": [
+     "Add an accessibility field, such as jobs or shops reachable within N minutes, or distance to the job-weighted centroid. It should be computed for every cell, not only R footprints.",
+     "Residents do not value nearby shops or services. Traffic computes customers per shop (traffic.ts:1411-1445), but nothing feeds that back into desirability or commercial health.",
+     "Offices have no agglomeration term (offices near offices), so downtowns form only through LV feedback."
+    ]
+   },
+   {
+    "name": "Land value: pollution (air, water, garbage)",
+    "status": "complete",
+    "gaps": [
+     "Polluted water bodies do not reduce shoreline LV (see waterfront).",
+     "Nuisance buildings count twice (splat plus layers). This is intentional but undocumented for players."
+    ]
+   },
+   {
+    "name": "Land value: crime",
+    "status": "complete",
+    "gaps": [
+     "Casinos, stadiums and nightlife have no per-building crime. The casino description says 'attracts crime' (catalog.ts:421), but crime.ts has no per-def crime field. Only the Legalized Gambling ordinance adds +15% city-wide (ordinances.ts:59-60)."
+    ]
+   },
+   {
+    "name": "Land value: noise",
+    "status": "complete",
+    "gaps": [
+     "Noise has no time-of-day or event component, and parks do not buffer it."
+    ]
+   },
+   {
+    "name": "Land value: neighbourhood wealth",
+    "status": "complete",
+    "gaps": [
+     "All growables count, so CS$, I-D and I-Ag (wealth 1) drag LV down the same as R$ homes. Retail strips lower residential LV.",
+     "The weight is small, so it will not create strong segregation or gentrification dynamics."
+    ]
+   },
+   {
+    "name": "Land value: historic districts",
+    "status": "missing",
+    "gaps": [
+     "No historic-district LV or tourism bonus. There is no preservation vs. growth trade-off beyond 'frozen building'."
+    ]
+   },
+   {
+    "name": "Land value: trees / greenery",
+    "status": "missing",
+    "gaps": [
+     "The Plant Trees tool is purely cosmetic. Add a small LV and desirability bonus plus air and noise absorption."
+    ]
+   },
+   {
+    "name": "Land value: smoothing, refresh and stats",
+    "status": "complete",
+    "gaps": [
+     "The first (init) pass skips the stats accumulation, so avgLandValue reads 0 until the first full sweep.",
+     "Without the services system the park fallback is 2 \u00d7 lvEffect (landValue.ts:167), which counts parks twice. This only matters without infra."
+    ]
+   },
+   {
+    "name": "Desirability per DevType (all terms and weights)",
+    "status": "complete",
+    "gaps": [
+     "No utility terms: power and water are hard growth gates and health penalties, not gradients (acceptable, SC4-like).",
+     "Residential has no traffic or through-road term (only noise), and no 'near shops' or 'near jobs' term for unbuilt lots (commute falls back to the city average).",
+     "CS popNear counts residents only. It ignores workers and tourists as customers.",
+     "The overlay for unzoned land can be up to 48 days stale."
+    ]
+   },
+   {
+    "name": "Closeness for demographics (e.g. students to school)",
+    "status": "partial",
+    "gaps": [
+     "No age cohorts (children, students, seniors). No school-age population or seat demand, and no 'kids must reach a school within N minutes'.",
+     "Education types are not differentiated: elementary, high school and college do not have separate catchments or separate LV and desirability effects. College gives no student housing demand near campus.",
+     "Park types are not differentiated: playground (families), golf (wealthy), sports fields (youth) all look the same in parkCov. Golf appeals to the wealthy only through its LV splat and the R$$$ cap.",
+     "No 'seniors near hospitals' or 'workers near jobs' proximity for unbuilt lots.",
+     "No per-wealth 'near transit' for car-less R$ beyond the 0.18 transit weight on coverage."
+    ]
+   },
+   {
+    "name": "LV / desirability to wealth selection (R$/R$$/R$$$)",
+    "status": "partial",
+    "gaps": [
+     "No affordability or exclusivity. R$ desirability rises with LV (lv weight +0.35) and saturates at +1 on premium land along with R$$$, so the pick falls back to sqrt(allowance). R$ demand is usually far larger (R_BASE 1400 vs 150), so poor housing keeps growing on the best waterfront and hilltops. A high-LV penalty or rent term for R$/CS$/I-D would let the rich price out the poor.",
+     "Clamping at \u00b11 destroys ranking in good areas. Consider a soft saturation (tanh)."
+    ]
+   },
+   {
+    "name": "LV / desirability to building stage (height)",
+    "status": "complete",
+    "gaps": [
+     "No explicit LV-per-lot-cost term (SC4 uses LV so that towers appear where land is expensive). This is indirect through desirability only."
+    ]
+   },
+   {
+    "name": "Redevelopment / gentrification / decline",
+    "status": "partial",
+    "gaps": [
+     "Gentrification is effectively blocked in low and medium density. R$$$ buildings have lower capacity per stage (mansion stage 3 = 12 vs R$ townhouse stage 3 = 30), so the 1.6\u00d7 gain rule and 'stage must increase' never let a rising-LV R$ block turn wealthy.",
+     "No filtering down. A R$$$ building in a declining area only abandons; it never converts to R$$ or R$ occupancy.",
+     "No same-stage wealth swap. The inspector does not show why a building will not upgrade."
+    ]
+   },
+   {
+    "name": "LV to taxes",
+    "status": "missing",
+    "gaps": [
+     "No property or land-value tax. Raising LV (parks, landmarks) gives no direct fiscal return, which weakens the SC4 core loop 'beautify, LV rises, tax base grows'. Consider multiplying tax per unit by (0.6 + 0.8 \u00d7 LV at the building)."
+    ]
+   },
+   {
+    "name": "Desirability / LV player feedback (overlays, inspector, advisors)",
+    "status": "partial",
+    "gaps": [
+     "The Desirability overlay averages R, C and I together (industry likes low LV), so it is washed out and does not tell the player where R$$$ or CO$$$ want to go. There is no per-DevType or per-wealth selector.",
+     "Inconsistent readout: the hover query tool uses sim/infra/overlays.ts, which reports R$$ desirability, while the rendered overlay shows the 12-DevType average.",
+     "No 'why' breakdown. The inspector gives a single desirability number; it should list the top positive and negative terms (e.g. '\u22120.31 air pollution, +0.22 park').",
+     "No Parks-coverage overlay (Overlay enum has no Park, core/types.ts:90-108). Noise, garbage, park and transit are not shown in the building inspector.",
+     "A plop preview of LV and desirability impact (radius ghost) is missing."
+    ]
+   },
+   {
+    "name": "Tourism score (attraction to visitors)",
+    "status": "partial",
+    "gaps": [
+     "Dead field: EconData.tourism is declared and initialized but never written. There is no tourism or visitor stat, graph, advisor or panel, so the player cannot see tourism at all.",
+     "Tourism is a side effect of commercial cap relief, not an attraction model. The largest source is the International Airport (150k C relief = 7,500 points), ahead of any attraction. Large Park, Formal Garden, Golf, Tennis and beaches give 0.",
+     "No dependence on accessibility (highway, rail, airport links), on crime, pollution or LV around the venue, or on venue power and funding. No diminishing returns, no seasonality, no competition with the region.",
+     "No hotel/lodging DevType or tourist-commercial type; tourism only inflates generic CS demand."
+    ]
+   },
+   {
+    "name": "Visitors to traffic",
+    "status": "missing",
+    "gaps": [
+     "Add a visitor trip class from connections, airports and train stations to attractions (weighted by tourism draw), with event peaks for the stadium, and local leisure trips from residents to parks. This would create congestion and transit demand near venues."
+    ]
+   },
+   {
+    "name": "Visitors to income / commercial demand",
+    "status": "partial",
+    "gaps": [
+     "Venue income does not scale with visitors, accessibility, city size or funding. An isolated stadium earns the same as one next to a rail hub.",
+     "No tourist spending near venues, and no local CS desirability bonus near attractions (CS popNear counts residents only)."
+    ]
+   },
+   {
+    "name": "Attraction venues by type (landmarks, parks, stadium, zoo, amusement, beach/waterfront, casino, museum, convention center)",
+    "status": "partial",
+    "gaps": [
+     "Beaches and waterfront are not attractions (no tourism, no leisure trips).",
+     "Casino 'attracts crime' is not implemented locally.",
+     "Stadium has no event days, crowds or traffic peaks; the zoo and amusement park draw no visitors in traffic.",
+     "Landmark effects ignore placement (no 'visible from far away' or skyline bonus) and ignore burnt or unpowered state for LV.",
+     "Parks without C relief (large park, garden, golf, sports fields) have zero tourism."
+    ]
+   },
+   {
+    "name": "Demand caps relief from parks / landmarks (SC4-style)",
+    "status": "complete",
+    "gaps": [
+     "Relief ignores power, funding and location (only Burnt is excluded).",
+     "A cap-relief number is not shown in the build tooltip (Toolbar.ts:312-338)."
+    ]
+   },
+   {
+    "name": "City attractiveness / regional migration",
+    "status": "missing",
+    "gaps": [
+     "No quality-of-life pull. R_BASE (people moving in without local jobs) is a constant and does not depend on EQ, HQ, average LV, crime, pollution, commute, landmarks or parks. The only QoL channels are approval (\u00b16%) and the cap relief from parks and landmarks.",
+     "No per-wealth attractiveness: R$$$ inflow is not pulled by prestige (opera, golf, low crime) beyond the R3 cap.",
+     "No out-migration from a bad city beyond per-building abandonment, and no region comparison with neighbours.",
+     "No 'City attractiveness' stat or advisor. Add a composite index (per wealth) that multiplies R_BASE and is shown in Stats."
+    ]
+   },
+   {
+    "name": "Mayor approval inputs",
+    "status": "partial",
+    "gaps": [
+     "Noise, water pollution, garbage piles (NoGarbage), power and water shortages, HQ/EQ, land value, landmarks and attractions (except 3 civic rewards), fires, disasters, abandonment and traffic congestion (except via commute) do not affect approval.",
+     "Approval is one city-wide value: no per-wealth or per-neighbourhood breakdown.",
+     "No UI breakdown of approval contributors; TopBar and Graphs show only the number (TopBar.ts:407-411). The resident* metrics exist in EconData but are not surfaced."
+    ]
+   },
+   {
+    "name": "Taxes and ordinances to desirability",
+    "status": "complete",
+    "gaps": [
+     "The effects are tiny (R$$$ at 12% gives \u22120.048 desirability), so tax is felt mostly through demand, not location."
+    ]
+   }
+  ]
+ },
+ {
+  "lens": "demographics-proximity",
+  "factors": [
+   {
+    "name": "Age / life-stage demographics (children, school-age, teens, students, working adults, seniors)",
+    "status": "missing",
+    "gaps": [
+     "No cohorts, so no service can be matched to the people who actually use it (kids to schools, seniors to clinics, students to college).",
+     "Workforce participation is fixed at 0.55. It does not change with the age mix, EQ, HQ or wealth, and it is defined twice (tuning.ts WORKFORCE_RATIO and params.ts WORKER_SHARE), so the two can drift apart.",
+     "No neighbourhood life cycle: suburbs never grey, no baby booms after schools open, and redevelopment never resets the mix.",
+     "No demographic stats, graphs or panel. The Stats panel shows only residents by wealth (src/ui/panels/StatsPanel.ts:119)."
+    ]
+   },
+   {
+    "name": "Household types (families, singles/young professionals, students, retirees)",
+    "status": "missing",
+    "gaps": [
+     "No family vs single vs retiree vs student split, so a low-density R$$ house and an R$$ high-rise have the same preferences.",
+     "No student-housing demand driven by university capacity, and no retiree inflow driven by HQ, parks or low taxes.",
+     "The growable catalog has no household-mix metadata, which would be the natural place for it (for example per def: family share, senior share)."
+    ]
+   },
+   {
+    "name": "Wealth segmentation as a demographic proxy (R$ / R$$ / R$$$)",
+    "status": "complete",
+    "gaps": [
+     "Wealth is the only demographic axis, so it has to stand in for age and household type as well.",
+     "The commute weight barely differs by tier (0.45 / 0.5 / 0.4), and the commute term saturates anyway (see the jobs-proximity factor).",
+     "Wealth has no link to education level: an R$$$ tower full of residents with no school coverage is fine as long as LV is high."
+    ]
+   },
+   {
+    "name": "Schools: elementary / high school / university coverage and capacity vs children and students nearby",
+    "status": "partial",
+    "gaps": [
+     "Capacity is counted against all residents, not school-age children. A tower of retirees uses up school seats, and a family suburb needs no more seats than an office-worker high-rise.",
+     "The tiers are interchangeable. Elementary, high school, university, library, museum and observatory all feed the same layer, so one university (r60, strength 1.0) fully replaces elementary schools across a whole district. There is no rule that kids need a nearby elementary school, teens a high school, and young adults a college.",
+     "Capacity dilution is weak and smooth: 4.8x the seats' worth of residents in the catchment only drops coverage by 13%. Overcrowding never produces a visible shortage.",
+     "Capacity is split by independent per-station dilution, not a proper allocation. Two overlapping schools each count the full demand, so the shared area is underestimated and then partly double-covered through the 1-(1-a)(1-b) combine.",
+     "Per-school utilization (enrolled / seats) is computed and then thrown away (services.ts:233-239), so it cannot be shown in the inspector or used by advisors.",
+     "Coverage saturates in practice. In the bot city eduCov at homes is 0.97 on average, so schools create no spatial difference once a city is established."
+    ]
+   },
+   {
+    "name": "Libraries / museums / observatory (lifelong learning, culture)",
+    "status": "partial",
+    "gaps": [
+     "They are just weak schools on the same layer. They have no separate effect for seniors or adults (literacy), no tourism, and no culture or prestige term.",
+     "Their cap relief is city-wide and does not depend on where they stand."
+    ]
+   },
+   {
+    "name": "EQ (education quotient) by cohort",
+    "status": "partial",
+    "gaps": [
+     "EQ is not a stock carried by residents or buildings. Educated adults do not stay educated when a school closes (EQ just decays toward the new coverage target), and newcomers arrive at the city average.",
+     "No per-neighbourhood education level. Offices and high-tech firms cannot look for an educated workforce nearby; they only see eduCov at their own cell.",
+     "It does not depend on who actually attends school (kids and teens) versus who does not."
+    ]
+   },
+   {
+    "name": "Health: clinics / hospitals vs seniors and everyone",
+    "status": "partial",
+    "gaps": [
+     "No link to seniors: demand per resident is the same (COVERAGE_DEMAND.health = 1), and there is no senior-weighted need or senior preference for being near a clinic.",
+     "HQ does nothing in the game except rewards, advisors and the stats meter. It has no effect on life expectancy, the senior share, workforce participation, or job productivity.",
+     "No distinction between walk-in clinics (short range) and emergency hospitals (road-time based). Ambulances do not exist in the sim."
+    ]
+   },
+   {
+    "name": "Parks / playgrounds vs families (and golf / gardens vs the wealthy)",
+    "status": "partial",
+    "gaps": [
+     "A playground, a basketball court, a formal garden and a country club are the same good (parkCov). There is no playground-for-families, sports-for-teens, or garden-for-seniors/R$$$ split, and the descriptions ('Families love it', 'Magnet for R$$$') are only partly implemented, through cap relief.",
+     "Parks have no capacity, so one small park is never crowded no matter how many towers surround it.",
+     "Cap relief is city-wide: a park placed far from any homes relieves the residential cap just as much as one in the middle of a neighbourhood.",
+     "Access is Euclidean, so parks across rivers or highways still count."
+    ]
+   },
+   {
+    "name": "Jobs proximity (commute) and job matching by wealth / skill",
+    "status": "partial",
+    "gaps": [
+     "Matching ignores wealth and skill: any resident can take any job (an R$$$ resident on a farm, an R$ resident in a CO$$$ tower). JOB_WEALTH_MIX (tuning.ts:45) is used only for aggregate R demand, never for who commutes where.",
+     "The commute score saturates. In the probe city the average commute is 7.1 min, and every home scored the maximum of 0.5 because all are under COMMUTE_GOOD (12 min). Job proximity therefore has zero spatial effect on desirability in a typical city. The thresholds should scale with the city (for example relative to the average commute) or start near 0.",
+     "No car-ownership constraint: R$ residents without transit drive at a mild -1.2 bias rather than being cut off from jobs, which weakens transit-for-poor gameplay.",
+     "Students and seniors are counted as commuters implicitly, because a flat 55% of everyone commutes."
+    ]
+   },
+   {
+    "name": "Shopping proximity (residents want commercial nearby)",
+    "status": "missing",
+    "gaps": [
+     "No residential desirability, land-value or health term for distance to shops (groceries, retail). A housing estate an hour from any store is as happy as one above a mall.",
+     "No wealth matching: R$$$ residents do not want CS$$$ boutiques nearby, and R$ residents do not need a CS$ corner store.",
+     "Seniors, and R$ households without cars, should care most about walkable shops, and nothing models that."
+    ]
+   },
+   {
+    "name": "Commercial wants customers nearby",
+    "status": "partial",
+    "gaps": [
+     "The customer term ignores wealth: CS$$$ scores just as well surrounded by R$ residents. The data for fixing this already exists (coarseWealth, CUSTOMER_MIX).",
+     "Per-building customers from traffic are computed but do not feed commercial health or occupancy (industry has jobFill; commercial has no customers-driven equivalent).",
+     "The coarse 8-cell blocks are blind to rivers and missing roads, and catchments of competing shops are not shared (two malls side by side both get the full customer score)."
+    ]
+   },
+   {
+    "name": "Industry freight / highway access",
+    "status": "partial",
+    "gaps": [
+     "It uses Euclidean block steps rather than road distance, and the traffic system's per-building freightAccess is not used by the economy.",
+     "It does not affect commercial or office access to highways."
+    ]
+   },
+   {
+    "name": "Transit proximity for low-wealth residents",
+    "status": "partial",
+    "gaps": [
+     "Coverage is Euclidean and ignores service quality (headway, whether the line actually reaches job centres), even though traffic knows each origin's transit time (oTrT). A bus stop with no route to jobs counts the same as a subway.",
+     "No car-less households, so a lack of transit does not produce job-access pain for R$.",
+     "Seniors and students (the typical transit users) do not exist as groups.",
+     "In the bot probe transitCov was 0 everywhere because the bot never builds transit, so this factor is untested at scale."
+    ]
+   },
+   {
+    "name": "Police proximity",
+    "status": "complete",
+    "gaps": [
+     "Police reduce crime only at the building's own centre cell. There is no deterrence for crime in the streets between buildings, and no response-time model.",
+     "Station capacity is ignored (no capacity in police defs apart from the jail)."
+    ]
+   },
+   {
+    "name": "Fire proximity",
+    "status": "complete",
+    "gaps": [
+     "No demographic angle (for example seniors being more at risk). Minor."
+    ]
+   },
+   {
+    "name": "Crime by demographic (youth, poverty)",
+    "status": "partial",
+    "gaps": [
+     "No youth component: teens without high-school, park or recreation access do not raise crime, and the Youth Curfew is a flat city-wide multiplier.",
+     "Unemployment is a single city-wide number, not the local job access of each home (workerAccess exists but is not used here).",
+     "No local crime around casinos, prisons or nightlife."
+    ]
+   },
+   {
+    "name": "NIMBY: power plants, landfill, incinerator, toxic dump (negative proximity)",
+    "status": "complete",
+    "gaps": [
+     "The nuisance is folded into land value and pollution, so there is no stigma term per facility type. Nuclear ('residents dislike living next to it') is expressed only as a -0.2 land-value splat, so a tiny effect radius. The Nuclear Free Zone ordinance uses a city-wide shift instead.",
+     "Negative splats use linear falloff while pollution uses Gaussian blur, which makes the two inconsistent to tune."
+    ]
+   },
+   {
+    "name": "NIMBY: prisons, military base, missile range, airports, seaport, freight rail",
+    "status": "partial",
+    "gaps": [
+     "The prison has only a land-value splat (no noise and no crime spillover), so its 'Nobody wants to live next to it' effect is about 8 cells of land value.",
+     "No wealth-specific stigma beyond what flows through land value and noise."
+    ]
+   },
+   {
+    "name": "NIMBY: highways and rail near homes",
+    "status": "partial",
+    "gaps": [
+     "An empty or new highway produces no nuisance. There is no base noise or visual blight per highway, elevated or rail cell, and no freight-train noise (rail noise counts passenger riders only).",
+     "Avenues and highways do not act as barriers for walkability or park access (parks and transit are Euclidean).",
+     "No noise buffers: trees, parks and sound walls do nothing (the trees layer is not read by any economy or pollution system)."
+    ]
+   },
+   {
+    "name": "YIMBY: landmarks, civic prestige, tourism attraction",
+    "status": "partial",
+    "gaps": [
+     "No prestige term per wealth: R$$$, CO$$$ and CS$$$ benefit only indirectly through land value.",
+     "Tourism is not spatial: visitors do not boost hotels or shops near the attraction, and there are no visitor trips.",
+     "Cap relief does not depend on location."
+    ]
+   },
+   {
+    "name": "YIMBY: water views, waterfront, elevation",
+    "status": "complete",
+    "gaps": [
+     "Polluted water still gives the full waterfront bonus. Water pollution is subtracted only at the cell itself, not from the view.",
+     "No beach or marina-specific bonus beyond the marina's land-value splat."
+    ]
+   },
+   {
+    "name": "YIMBY: universities / research for offices and high-tech (campus effect)",
+    "status": "partial",
+    "gaps": [
+     "An elementary school next door satisfies an I-HT campus as well as a university does, because it is all one eduCov layer. There is no university-proximity or 'educated workforce within commute' term.",
+     "The advertised 'High-tech industry and offices love it' works only through global caps and EQ, not location."
+    ]
+   },
+   {
+    "name": "How distances are computed (road vs Euclidean, falloff, resolution)",
+    "status": "partial",
+    "gaps": [
+     "The service BFS counts road cells, not minutes. A school at the end of a congested avenue or on a streets-only grid reaches the same distance as one on a fast road. Traffic already has nodeTime and could provide time-based catchments.",
+     "No reusable catchment API: each consumer rolls its own. Per-building outputs (utilization, served population) are not kept.",
+     "Parks, transit and shops ignore barriers such as rivers, highways and rail."
+    ]
+   },
+   {
+    "name": "Per-demographic preference weights (R$$$ vs R$ caring about different proximities)",
+    "status": "partial",
+    "gaps": [
+     "Once coverage saturates the terms become near-constant offsets (edu 0.97 and health 0.85-0.90 at homes in the probe), so they separate wealth tiers but not neighbourhoods.",
+     "No terms for shops nearby, prestige or landmarks, campus, nightlife, family amenities (playgrounds), or senior amenities.",
+     "The weights key on wealth only; there is no household or cohort dimension."
+    ]
+   },
+   {
+    "name": "Player feedback for proximity and demographics (overlays, inspector 'why', advisors)",
+    "status": "partial",
+    "gaps": [
+     "No 'why' breakdown of desirability, even though the band loop already computes every term (T[] x WT) and could return them for one cell cheaply.",
+     "The Desirability overlay shows the average of all 12 DevTypes (mixing I-D with R$$$), while the query hover for the same overlay reads the R$$ layer. The two disagree and neither lets the player choose a wealth tier.",
+     "parkCov is computed but has no overlay.",
+     "Civic buildings show only their radius: no pupils or seats, patients or beds, or served population. There are no 'school overcrowded' or 'no elementary school nearby' advisors.",
+     "No demographics panel (age pyramid, households, enrollment)."
+    ]
+   },
+   {
+    "name": "Demand and migration by demographic (students, retirees, families)",
+    "status": "partial",
+    "gaps": [
+     "Universities do not generate student demand, good HQ, parks and low taxes do not attract retirees, and schools do not attract families. No outflow when a group's needs go unmet, other than generic building health and abandonment."
+    ]
+   }
+  ]
+ },
+ {
+  "lens": "player-feedback",
+  "factors": [
+   {
+    "name": "Power (electricity)",
+    "status": "complete",
+    "gaps": [
+     "No power/water supply-vs-demand series in HistorySeries (src/sim/CityState.ts:103-120), so there is no graph.",
+     "The inspector never shows a building's own MW draw. The toolbar tooltip for plops/zones (src/ui/Toolbar.ts:312-339) also lists no powerUse.",
+     "The advisors.ts:95 'Brownouts!' message only fires when infra utilities is absent. With infra, the only advisor text for demand>supply is 'grid is at 120% capacity. Plan a new plant soon' (advisors.ts:98), which is too mild. The infra notify at utilities.ts:306 partly covers this.",
+     "No in-world 'no power' icon above buildings (no status icons anywhere in src/render/city)."
+    ]
+   },
+   {
+    "name": "Water supply",
+    "status": "partial",
+    "gaps": [
+     "The inspector shows a warning 'No water' chip (InfoPanel.ts:123) even on low-density or stage 1-2 buildings that don't need water. The player is never told when water is actually required.",
+     "The inspector doesn't show a pump's pollution-reduced output or its +50% shore bonus.",
+     "No history graph for water.",
+     "The infra utilities system sends no water-shortage news. Only the advisor at advisors.ts:105 warns."
+    ]
+   },
+   {
+    "name": "Air pollution (smoke)",
+    "status": "partial",
+    "gaps": [
+     "No source attribution: nothing tells the player which plant or industry is polluting a given cell, and emitters are not highlighted.",
+     "Wind direction/drift is invisible (no arrow or legend note).",
+     "Stats (StatsPanel.ts 'Pollution') and the graph mix air and water into one number. There is no separate air series.",
+     "The 'Polluted' chip (InfoPanel.ts:23) doesn't say whether it means air (>0.45) or water (>0.6).",
+     "The legend says Low/Medium/High with no link to the 0.45 'Polluted' threshold.",
+     "The advisor and AdvisorsPanel.ts:76 tell the player to 'plant trees', but trees have no effect in the sim (see Trees)."
+    ]
+   },
+   {
+    "name": "Water pollution",
+    "status": "partial",
+    "gaps": [
+     "Missing from the building inspector (InfoPanel.ts:142-148 shows only land value, air and crime).",
+     "No advisor message for water pollution or sewage treatment. Probe: a 79k-pop bot city had a mean ground-water pollution of 0.24, higher than air at 0.18, and got no warning.",
+     "No stat or graph of its own (it is folded into avgPollution at 25%).",
+     "Treatment capacity versus population (the 'treated' share) is never shown, even though it is the main lever."
+    ]
+   },
+   {
+    "name": "Noise pollution",
+    "status": "partial",
+    "gaps": [
+     "Not shown in the building inspector or the zoned-lot inspector, where it matters for homes.",
+     "No stat, no history graph, no advisor. Probe: city-wide mean noise was 0.31 and nothing surfaced it.",
+     "Noise per trip is the same for every road type. A highway is louder only because it carries more traffic, and no buffers exist (trees, berms, parks).",
+     "Noise is not part of approval (approval.ts:90-102), so residents never complain about it."
+    ]
+   },
+   {
+    "name": "Garbage",
+    "status": "partial",
+    "gaps": [
+     "The overlay is almost empty in a healthy city (probe: 64 cells above 0.02 on a 128\u00b2 map). It shows only uncollected piles and landfill cells, not a 'garbage/smell pollution' radius around landfills or dumps.",
+     "The inspector doesn't show a building's garbage level or tons per month, or which facility serves it.",
+     "No history graph for garbage produced vs capacity.",
+     "The PlopTool auto-overlay for garbage facilities (PlopTool.ts:28-33) never triggers, because landfill/incinerator defs have no coverage.kind 'garbage'."
+    ]
+   },
+   {
+    "name": "Land value",
+    "status": "partial",
+    "gaps": [
+     "No breakdown of the land value at a cell (waterfront +x, parks +y, pollution \u2212z, jail NIMBY \u2212w). The value is computed in one expression and the parts are never stored.",
+     "No advisor message about land value.",
+     "Legend labels ($ / $$ / $$$) are not tied to what each wealth tier needs (lvRef 0.1 / 0.25 / 0.42)."
+    ]
+   },
+   {
+    "name": "Desirability per DevType (R$/R$$/R$$$, CS/CO, I-Ag/D/M/HT)",
+    "status": "partial",
+    "gaps": [
+     "No 'why' breakdown. The inspector shows one \u2212100..+100 bar; per-term contributions are never exposed, even though desirability.ts has the T[] and WT[] data. A pure desirabilityBreakdown(st, dev, i) could reuse the same math.",
+     "The Desirability overlay shows R$$ only (sim/infra/overlays.ts:35) but the legend and hover say just 'Desirability'. There is no picker for the other 11 types, so the player can't find good land for I-HT, R$$$ or CO$$$.",
+     "Growth rules are never shown: the lot-rejection threshold (GROW_MIN_DESIR \u22120.25), the stage allowed by desirability (STAGE_DES_D0/D1), the population milestone stage cap (tuning.ts:208-221) and the zone density cap (desirMaxStage/popMaxStage are exported but unused by the UI).",
+     "No stats or graph for desirability."
+    ]
+   },
+   {
+    "name": "Crime / police coverage",
+    "status": "partial",
+    "gaps": [
+     "No breakdown of a building's crime (poverty vs density vs unemployment vs missing police).",
+     "The inspector doesn't show police coverage for buildings, only for bare cells.",
+     "The jail rule (police \u00d70.75 without a jail above 25k) is never surfaced.",
+     "A police station's load and effectiveness (funding \u00d7 capacity) is not shown in its inspector (InfoPanel.ts:202-208 shows only the radius)."
+    ]
+   },
+   {
+    "name": "Fire coverage / fire risk",
+    "status": "partial",
+    "gaps": [
+     "No fire-risk overlay.",
+     "No count or history of fires or buildings lost (FireSystem.firesThisMonth exists but no UI reads it).",
+     "The inspector doesn't show fire coverage or risk for buildings. Probe: repeated 'Fire reported in an area without fire coverage!' news, and the player can't see risk ahead of time."
+    ]
+   },
+   {
+    "name": "Health coverage / HQ",
+    "status": "partial",
+    "gaps": [
+     "HQ has no gameplay effect beyond reward unlocks and advisor text (the only readers are rewards.ts:36 and advisors.ts:147). No life expectancy, workforce or demand effect, so the meter does nothing the player can see.",
+     "Hospital capacity and overcrowding (a capacity factor that cuts effectiveness) are not shown in the inspector, and no advisor warns 'hospital overcrowded'.",
+     "No age groups (seniors), so demographic-specific health need is not modeled.",
+     "Probe: 580 of 2,147 occupied homes had health coverage below 0.2 with HQ 47. The only feedback was the generic HQ advisor."
+    ]
+   },
+   {
+    "name": "Education coverage / EQ (students to school)",
+    "status": "partial",
+    "gaps": [
+     "No students or age groups. 'Students to school' is not modeled: the catalog says 'Schools the kids of 12,000 residents' (catalog.ts:320), but capacity counts every resident.",
+     "All school levels merge into one layer and one overlay. The player can't see elementary vs high school vs college coverage, or which homes lack a school of each level.",
+     "School enrollment and overcrowding are not in the inspector or any advisor.",
+     "The inspector shows education coverage only for bare cells (InfoPanel.ts:305), not for houses."
+    ]
+   },
+   {
+    "name": "Parks / recreation",
+    "status": "partial",
+    "gaps": [
+     "No Parks data-view overlay, although parkCov is a finished layer (the Overlay enum has no Parks entry).",
+     "Parks never appear in the inspector (building or lot).",
+     "No stat, graph or advisor for park coverage. Probe: 1,775 of 2,147 homes had park coverage below 0.1 and nothing warned.",
+     "Placing a park shows no coverage preview (PlopTool's map has no 'park')."
+    ]
+   },
+   {
+    "name": "Transit (bus/subway/rail/ferry)",
+    "status": "partial",
+    "gaps": [
+     "The inspector for a station or stop doesn't show ridership, line or capacity (only the coverage radius, InfoPanel.ts:207).",
+     "No history of transit share or ridership.",
+     "No advisor that suggests where transit would help most (only the generic commute advisor)."
+    ]
+   },
+   {
+    "name": "Traffic / congestion",
+    "status": "complete",
+    "gaps": [
+     "No volume-vs-capacity per road type in the legend, and no route or 'where do these cars go' view for a selected building.",
+     "Truck (freight) traffic is not separated from cars in the overlay or stats."
+    ]
+   },
+   {
+    "name": "Commute / job access / worker supply",
+    "status": "partial",
+    "gaps": [
+     "No Commute overlay (the st.commute layer exists, but there is no Overlay enum entry).",
+     "No job-access or worker-supply overlay.",
+     "avgCommute is not in HistorySeries, so there is no graph.",
+     "Unemployment has no history graph either."
+    ]
+   },
+   {
+    "name": "Commercial customers / industrial freight access",
+    "status": "partial",
+    "gaps": [
+     "No customers/footfall overlay and no freight-access overlay. The player can't plan where to put industry or shops before zoning.",
+     "The 'road-only cities get base freight access' rule is not explained."
+    ]
+   },
+   {
+    "name": "Attraction / tourism",
+    "status": "missing",
+    "gaps": [
+     "No UI anywhere: no tourist count, overlay, stat, graph or advisor. econData.tourism is a dead field. Probe: demandContext().tourism = 1250 while econData.tourism = 0.",
+     "No per-cell attraction or visitor trips, so landmarks, parks and beaches don't draw tourists to their area, and tourism doesn't feed nearby shop desirability.",
+     "City-wide attractiveness doesn't raise regional migration (R_BASE is constant)."
+    ]
+   },
+   {
+    "name": "Demographics (wealth, age, students, seniors)",
+    "status": "missing",
+    "gaps": [
+     "No age groups (children, teens, students, adults, seniors), no student counts and no per-group needs (children\u2192elementary, teens\u2192high school, young adults\u2192college, seniors\u2192hospital/transit).",
+     "No demographics panel or overlay (for example a wealth map or density map).",
+     "Proximity for a given group ('students to school') is not modeled or shown. Coverage is generic and capacity counts all residents."
+    ]
+   },
+   {
+    "name": "Trees / green buffers",
+    "status": "missing",
+    "gaps": [
+     "The tool description and two advisor messages promise effects that don't exist.",
+     "No tree or park buffer against noise or air pollution."
+    ]
+   },
+   {
+    "name": "Mayor approval",
+    "status": "partial",
+    "gaps": [
+     "No breakdown of which factors raise or lower approval (econData.resCrime/resPollution/resParks exist and no UI reads them).",
+     "Noise, water pollution and garbage are not approval factors."
+    ]
+   },
+   {
+    "name": "Building condition / abandonment ('why is it unhappy')",
+    "status": "partial",
+    "gaps": [
+     "No per-penalty breakdown of Condition (for example 'desirability +12, no water \u221240, job access \u22128').",
+     "The unhappy-day counter and abandonment countdown (b.unhappy vs ABANDON_DAYS) are never shown.",
+     "'Negative demand for this type' as a cause of vacancy or abandonment is not surfaced.",
+     "No building-condition overlay to spot neighbourhoods about to be abandoned. The abandoned advisor (advisors.ts:190) lists possible causes but has no location."
+    ]
+   },
+   {
+    "name": "RCI demand explanation",
+    "status": "partial",
+    "gaps": [
+     "No demand drivers: the player never sees why demand is high or low (jobs vs workers, tax factor, unemployment, EQ for CO/IHT, connections, tourism). demandInfo.target and .absolute are exported but unused.",
+     "Bug: the RCI graph formats demand values (\u22121..1) with compact(). Y-axis labels and hover values show only '0', '1' or '\u22121' (verified: compact(0.35) \u2192 '0').",
+     "Cap hints don't say how far over the cap each type is (raw target vs cap)."
+    ]
+   },
+   {
+    "name": "What each building needs / provides (placement info)",
+    "status": "partial",
+    "gaps": [
+     "Zone tooltips don't list growth requirements (power always; water at stage\u22653 or density\u22652; road frontage; desirability > \u22120.25; population milestones for tall buildings).",
+     "No preview of the new building's own coverage or pollution footprint while placing it (only existing coverage is shown). Parks and polluters (a coal plant auto-shows Power, not Air) get no relevant preview.",
+     "Plops don't list powerUse or waterUse or garbage produced."
+    ]
+   },
+   {
+    "name": "In-world status indicators and graphs coverage",
+    "status": "partial",
+    "gaps": [
+     "No floating status icons above buildings for no power, no water, no road, garbage, crime or pollution.",
+     "History lacks power, water and garbage supply/demand, unemployment, commute, noise, water pollution (separate from air), residents by wealth, jobs, tourism and transit share."
+    ]
+   }
+  ]
+ }
+]

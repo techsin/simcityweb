@@ -59,8 +59,8 @@ export interface FireworksContext {
   groundAt: (x: number, z: number) => number;
   /** map extent in metres */
   mapSize: number;
-  /** does the map have water worth reflecting in? (checked on start) */
-  hasWater?: () => boolean;
+  /** water cells (1 = water) of the size x size map; reflections are drawn only over them (checked on start) */
+  water?: () => { data: Uint8Array; size: number; cellSize: number } | null;
   quality?: QualityLevel;
 }
 
@@ -79,13 +79,13 @@ const SOUND_NAMES: FireworksSoundKind[] = ['launch', 'whistle', 'burst', 'crackl
 const PALETTE: readonly (readonly [number, number, number])[] = [
   [1.0, 0.09, 0.05], // 0 red
   [1.0, 0.36, 0.05], // 1 orange
-  [1.0, 0.66, 0.22], // 2 gold
+  [1.0, 0.52, 0.12], // 2 gold
   [0.22, 1.0, 0.26], // 3 green
   [0.1, 0.8, 1.0], // 4 cyan
   [0.18, 0.32, 1.0], // 5 blue
   [0.66, 0.22, 1.0], // 6 purple
   [1.0, 0.22, 0.7], // 7 pink
-  [0.92, 0.95, 1.0], // 8 silver
+  [0.82, 0.88, 1.0], // 8 silver
   [1.0, 0.9, 0.35], // 9 lemon
 ];
 const GOLD = 2, SILVER = 8;
@@ -113,6 +113,8 @@ uniform float uGain;
 uniform float uHalo;
 uniform float uWaterY;
 uniform float uSat;
+uniform sampler2D uWaterMask;
+uniform float uMaskScale;
 varying vec3 vCol;
 varying vec2 vQ;
 varying vec4 vS;
@@ -162,6 +164,8 @@ void main() {
   vec3 mt = vec3(tail.x, 2.0 * uWaterY - max(tail.y, uWaterY + 1.0), tail.z);
   head = cameraPosition + (mh - cameraPosition) * (camH / (cameraPosition.y - mh.y));
   tail = cameraPosition + (mt - cameraPosition) * (camH / (cameraPosition.y - mt.y));
+  // only over water cells (low-lying land near sea level must not mirror)
+  if (texture2D(uWaterMask, head.xz * uMaskScale).r < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
 #endif
   vec4 vh = viewMatrix * vec4(head, 1.0);
   vec4 vt = viewMatrix * vec4(tail, 1.0);
@@ -179,11 +183,12 @@ void main() {
   bool trail = aM.y > 0.0;
   if (trail) { rH *= mix(1.0, 0.38, u0); rT *= mix(1.0, 0.38, u1); }
   // sub-pixel sparks keep a minimum footprint; their energy falls off (softly) instead
-  float energy = rH < uMinPx ? pow(rH / uMinPx, 0.9) : 1.0;
+  float energy = rH < uMinPx ? pow(rH / uMinPx, 0.45) : 1.0;
   rH = max(rH, uMinPx);
   rT = max(rT, uMinPx * 0.75);
-  float hb = trail ? pow(1.0 - u0, 1.6) : 1.0;
-  float tb = trail ? pow(1.0 - u1, 1.6) : 1.0;
+  float fo = 1.5 + 0.6 * min(aM.y, 1.5);
+  float hb = trail ? pow(1.0 - u0, fo) : 1.0;
+  float tb = trail ? pow(1.0 - u1, fo) : 1.0;
 
   // ---- colour & intensity per kind
   vec3 c = aC0.rgb;
@@ -330,6 +335,8 @@ export class Fireworks {
     uHalo: { value: 0.14 },
     uWaterY: { value: SEA_LEVEL },
     uSat: { value: 1.2 },
+    uWaterMask: { value: null as THREE.Texture | null },
+    uMaskScale: { value: 1 },
   };
   private tpl: Tpl = {
     kind: 0, px: 0, py: 0, pz: 0, t0: 0, vx: 0, vy: 0, vz: 0, life: 1, r: 1, g: 1, b: 1, sw: 0, r2: 0, g2: 0, b2: 0, tw: 0,
@@ -456,7 +463,7 @@ export class Fireworks {
     this.geo.instanceCount = this.cap;
     this.reflectOn = q !== 'low';
     this.uniforms.uHalo.value = q === 'low' ? 0.08 : 0.14;
-    this.uniforms.uMinPx.value = q === 'low' ? 0.7 : 0.8;
+    this.uniforms.uMinPx.value = q === 'low' ? 0.8 : 0.9;
   }
 
   start(opts: FireworksStartOptions = {}): void {
@@ -480,7 +487,7 @@ export class Fireworks {
       ext = Math.hypot(x1 - x0, z1 - z0);
     }
     this.heightScale = lerp(0.85, 1.1, clamp01(ext / 3000)) * lerp(0.95, 1.05, k);
-    this.hasWater = !!this.ctx.hasWater?.();
+    this.hasWater = this.reflectOn && this.updateWaterMask();
     this.running = true;
     this.opened = false;
     this.grandDone = false;
@@ -557,6 +564,7 @@ export class Fireworks {
 
   dispose(): void {
     this.restoreHemi();
+    this.maskTex?.dispose();
     this.geo.dispose();
     (this.mesh.material as THREE.Material).dispose();
     (this.reflection.material as THREE.Material).dispose();
@@ -582,6 +590,29 @@ export class Fireworks {
     this.flT.fill(-1e9);
     this.uniforms.uTime.value = 0;
   }
+
+  /** (re)build the water mask texture; false when the map has no water */
+  private updateWaterMask(): boolean {
+    const w = this.ctx.water?.();
+    if (!w || !w.data.includes(1)) return false;
+    const N = w.size;
+    let tex = this.maskTex;
+    if (!tex || tex.image.width !== N) {
+      tex?.dispose();
+      tex = new THREE.DataTexture(new Uint8Array(N * N), N, N, THREE.RedFormat, THREE.UnsignedByteType);
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestFilter;
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+      this.maskTex = tex;
+    }
+    const d = tex.image.data as Uint8Array;
+    for (let i = 0; i < N * N; i++) d[i] = w.data[i] ? 255 : 0;
+    tex.needsUpdate = true;
+    this.uniforms.uWaterMask.value = tex;
+    this.uniforms.uMaskScale.value = 1 / (N * w.cellSize);
+    return true;
+  }
+  private maskTex: THREE.DataTexture | null = null;
 
   private hide(): void {
     this.mesh.visible = false;
@@ -1108,7 +1139,7 @@ export class Fireworks {
     const pa = PALETTE[colA % PALETTE.length], pb = PALETTE[colB % PALETTE.length];
     const I = this.starGain(pa) * lerp(1.0, 1.2, c);
     const Ib = this.starGain(pb) * lerp(1.0, 1.2, c);
-    const size = (0.55 + R * 0.0085) * 1.0;
+    const size = 0.45 + R * 0.0072;
     switch (type) {
       case S_PEONY:
         this.sphere(bx, byy, bz, tb, R, Math.round((90 + 120 * c) * q), 2.4, this.rr(1.9, 2.5), pa, I, size, 0.12, 1, 0.55, null, 0, 0);
@@ -1122,13 +1153,13 @@ export class Fireworks {
         break;
       }
       case S_WILLOW:
-        this.sphere(bx, byy, bz, tb, R * 0.95, Math.round((55 + 55 * c) * q), 1.35, this.rr(4.2, 5.2), pa, I * 0.62, size * 0.8, 2.1, q < 0.6 ? 3 : 6, 0.85, null, 0, 0, 1.0, 2);
+        this.sphere(bx, byy, bz, tb, R * 0.95, Math.round((55 + 55 * c) * q), 1.35, this.rr(4.2, 5.2), pa, I * 0.5, size * 0.75, 1.5, q < 0.6 ? 3 : 5, 0.85, null, 0, 0, 1.0, 2);
         break;
       case S_BROCADE:
-        this.sphere(bx, byy, bz, tb, R, Math.round((70 + 60 * c) * q), 1.7, this.rr(2.9, 3.5), pa, I * 0.8, size * 0.9, 1.0, q < 0.6 ? 2 : 4, 0.9, null, 0, 0, 1.0, 3);
+        this.sphere(bx, byy, bz, tb, R, Math.round((70 + 60 * c) * q), 1.7, this.rr(2.9, 3.5), pa, I * 0.6, size * 0.85, 0.8, q < 0.6 ? 2 : 3, 0.9, null, 0, 0, 1.0, 3);
         break;
       case S_KAMURO:
-        this.sphere(bx, byy, bz, tb, R * 1.05, Math.round((100 + 70 * c) * q), 1.4, this.rr(4.6, 5.6), pa, I * 0.6, size * 0.8, 2.0, q < 0.6 ? 3 : 6, 0.9, null, 0, 0, 0.95, 2);
+        this.sphere(bx, byy, bz, tb, R, Math.round((90 + 60 * c) * q), 1.4, this.rr(4.6, 5.6), pa, I * 0.45, size * 0.75, 1.3, q < 0.6 ? 3 : 5, 0.9, null, 0, 0, 0.95, 2);
         break;
       case S_CROSSETTE:
         this.crossette(bx, byy, bz, tb, R, pa, I, size);
@@ -1162,8 +1193,8 @@ export class Fireworks {
     }
     // burst flash + city light + sound
     if (type !== S_SALUTE) {
-      const fl = 0.5 + 0.5 * c;
-      this.setTpl(K_FLASH, bx, byy, bz, tb, 0, 0, 0, 0.28, lerp(pa[0], 1, 0.45) * fl, lerp(pa[1], 1, 0.45) * fl, lerp(pa[2], 1, 0.45) * fl, R * 0.42, 0, 0);
+      const fl = 0.22 + 0.2 * c;
+      this.setTpl(K_FLASH, bx, byy, bz, tb, 0, 0, 0, 0.2, lerp(pa[0], 1, 0.35) * fl, lerp(pa[1], 1, 0.35) * fl, lerp(pa[2], 1, 0.35) * fl, R * 0.24, 0, 0);
       this.put();
       this.queueFlash(tb, bx, byy, bz, pa, 0.35 + 0.65 * c);
       this.queueSound(tb, 2, bx, byy, bz, R, type === S_CRACKLE || type === S_BROCADE || type === S_KAMURO ? 0.6 : type === S_WILLOW || type === S_PALM ? 0.3 : 0);

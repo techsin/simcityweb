@@ -118,7 +118,7 @@ export class CityObjectsView implements CityObjectsViewApi {
       quality: this.quality,
       groundAt: (x, z) => this.surf.terrain(x, z),
       getSites: () => this.launchSites(),
-      hasWater: () => this.state.water.includes(1),
+      water: () => ({ data: this.state.water, size: this.state.size, cellSize: CELL_SIZE }),
     });
     this.buildings = new BuildingRenderer(state, this.culler);
     this.buildings.onVisual = (v, id) => {

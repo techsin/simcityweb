@@ -342,6 +342,16 @@ export class Channel {
   }
 }
 
+function kRate(...ps: AudioParam[]): void {
+  for (const p of ps) {
+    try {
+      p.automationRate = 'k-rate';
+    } catch {
+      /* not supported / fixed rate */
+    }
+  }
+}
+
 function set(p: AudioParam, v: number, at: number | null): void {
   if (at === null) p.value = v;
   else p.setTargetAtTime(v, at, 0.06);
@@ -517,6 +527,8 @@ export class Instruments {
     filter: (type: BiquadFilterType, f: number, q = 0.707): BiquadFilterNode => {
       this.count();
       const b = this.ctx.createBiquadFilter();
+      // k-rate: coefficients are recomputed once per 128-sample block instead of per sample while automated
+      kRate(b.frequency, b.detune, b.Q, b.gain);
       b.type = type;
       b.frequency.value = Math.min(f, this.nyq);
       b.Q.value = q;
@@ -525,6 +537,7 @@ export class Instruments {
     panner: (p = 0): StereoPannerNode => {
       this.count();
       const s = this.ctx.createStereoPanner();
+      kRate(s.pan);
       s.pan.value = clamp(p, -1, 1);
       return s;
     },
@@ -538,9 +551,11 @@ export class Instruments {
     }
   }
 
-  private osc(w: OscWave, f: number, t: number, end: number): OscillatorNode {
+  /** oscillator; frequency/detune are k-rate (cheap) unless `fm` (an audio-rate modulator feeds its frequency) */
+  private osc(w: OscWave, f: number, t: number, end: number, fm = false): OscillatorNode {
     this.count();
     const o = this.ctx.createOscillator();
+    if (!fm) kRate(o.frequency, o.detune);
     if (typeof w === 'string') o.type = w as OscillatorType;
     else o.setPeriodicWave(w);
     o.frequency.value = Math.min(f, this.nyq);
@@ -570,9 +585,17 @@ export class Instruments {
     return s;
   }
 
+  /** lab / debugging: drop notes of these instruments (mute) or of all others (solo) */
+  readonly mute = new Set<string>();
+  readonly solo = new Set<string>();
+
   /** gate every note: returns false to drop it */
-  private go(t: number, len: number): boolean {
+  private go(name: string, t: number, len: number, ch?: string): boolean {
     if (this.disposed || t >= this.cutoff || !isFinite(t)) return false;
+    if (this.mute.size || this.solo.size) {
+      const key = ch ? `${name}:${ch}` : name;
+      if (this.mute.has(name) || this.mute.has(key) || (this.solo.size && !this.solo.has(name) && !this.solo.has(key))) return false;
+    }
     if (this.live && t < this.ctx.currentTime) return false;
     if (t + len < this.skipBefore) return false;
     this.nowT = t;
@@ -738,14 +761,14 @@ export class Instruments {
   /** FM electric piano (Rhodes-like): 1:1 FM body with velocity "bark", tine transient, stereo auto-pan channel */
   epiano(t: number, m: number, dur: number, vel: number, o: KeyOpts = {}): void {
     const rel = 0.3 + Math.max(0, 60 - m) * 0.008;
-    if (!this.go(t, dur + rel)) return;
+    if (!this.go('epiano', t, dur + rel, o.ch)) return;
     const f = mtof(m), v = clamp(vel, 0, 1);
     const bright = o.bright ?? 0.5;
     const t60 = clamp(8.5 - (m - 36) * 0.12, 1.6, 8.5);
     const peak = 0.3 * vc(v);
     const g = this.node.gain();
     const end = env(g.gain, t, [[0.0025 + 0.003 * (1 - v), peak], [0.3, peak * 0.55, 'exp'], [0.3 + t60, peak * 1e-3, 'exp']], t + dur, rel);
-    const car = this.osc('sine', f, t, end);
+    const car = this.osc('sine', f, t, end, true);
     const mod = this.osc('sine', f + 0.15, t, end);
     const mg = this.node.gain();
     const reg = clamp(1.25 - (m - 48) / 40, 0.4, 1.25);
@@ -770,7 +793,7 @@ export class Instruments {
   /** soft acoustic piano: band-limited string spectrum (3 velocity layers), unison detune, decaying brightness, hammer noise */
   piano(t: number, m: number, dur: number, vel: number, o: KeyOpts = {}): void {
     const rel = m < 50 ? 0.45 : 0.28;
-    if (!this.go(t, dur + rel)) return;
+    if (!this.go('piano', t, dur + rel, o.ch)) return;
     const f = mtof(m), v = clamp(vel, 0, 1);
     const bright = o.bright ?? 0.5;
     const t60 = clamp(13 - (m - 21) * 0.16, 1.2, 12);
@@ -799,7 +822,7 @@ export class Instruments {
   }
 
   private pluck(kind: InstrumentName, t: number, m: number, dur: number, vel: number, o: NoteOpts, p: KSParams & { peak: number; rel: number; lp0: number; lpv: number; q?: number; filterEnv?: number }): GainNode | null {
-    if (!this.go(t, dur + p.rel)) return null;
+    if (!this.go(kind, t, dur + p.rel)) return null;
     const v = clamp(vel, 0, 1);
     const { buf, f0 } = ksBuffer(this.ctx, kind, m, p);
     const rate = mtof(m) / f0;
@@ -843,7 +866,7 @@ export class Instruments {
   pad(t: number, midis: number | readonly number[], dur: number, vel: number, o: PadOpts = {}): void {
     const ms = typeof midis === 'number' ? [midis] : midis;
     const att = o.attack ?? 1.2, rel = o.release ?? 1.8;
-    if (!ms.length || !this.go(t, dur + rel)) return;
+    if (!ms.length || !this.go('pad', t, dur + rel)) return;
     const v = clamp(vel, 0, 1);
     const peak = (0.2 * vc(v)) / Math.sqrt(ms.length);
     const g = this.node.gain();
@@ -881,7 +904,7 @@ export class Instruments {
     const ms = typeof midis === 'number' ? [midis] : midis;
     const v = clamp(vel, 0, 1);
     const att = o.attack ?? 0.5 - 0.3 * v, rel = o.release ?? 0.9;
-    if (!ms.length || !this.go(t, dur + rel)) return;
+    if (!ms.length || !this.go('strings', t, dur + rel)) return;
     const peak = (0.2 * vc(v)) / Math.sqrt(ms.length);
     const g = this.node.gain();
     const end = env(g.gain, t, [[att, peak], [att + 1.5, peak * 0.9]], t + dur, rel);
@@ -912,7 +935,7 @@ export class Instruments {
   /** drawbar organ (one oscillator per note, leslie tremolo on the channel) */
   organ(t: number, midis: number | readonly number[], dur: number, vel: number, o: OrganOpts = {}): void {
     const ms = typeof midis === 'number' ? [midis] : midis;
-    if (!ms.length || !this.go(t, dur + 0.08)) return;
+    if (!ms.length || !this.go('organ', t, dur + 0.08)) return;
     const v = clamp(vel, 0, 1);
     const preset = o.drawbars ?? 'jazz';
     // drawbar footages relative to the 16' sub: harmonics 1(16') 3(5 1/3') 2(8') 4(4') 6(2 2/3') 8(2') 10 12 16
@@ -933,7 +956,7 @@ export class Instruments {
   // ================================================================ BASS
   /** round bass: sine + triangle through a plucky lowpass */
   bass(t: number, m: number, dur: number, vel: number, o: GlideOpts = {}): void {
-    if (!this.go(t, dur + 0.09)) return;
+    if (!this.go('bass', t, dur + 0.09)) return;
     const f = mtof(m), v = clamp(vel, 0, 1);
     const peak = 0.2 * vc(v);
     const g = this.node.gain();
@@ -978,7 +1001,7 @@ export class Instruments {
 
   /** analog-style synth bass: saw/square + sub sine, resonant lowpass with envelope, optional glide */
   synthBass(t: number, m: number, dur: number, vel: number, o: SynthBassOpts = {}): void {
-    if (!this.go(t, dur + 0.08)) return;
+    if (!this.go('synthBass', t, dur + 0.08)) return;
     const f = mtof(m), v = clamp(vel, 0, 1);
     const peak = 0.36 * vc(v);
     const g = this.node.gain();
@@ -1005,7 +1028,7 @@ export class Instruments {
   marimba(t: number, m: number, dur: number, vel: number, o: NoteOpts = {}): void {
     const f = mtof(m), v = clamp(vel, 0, 1);
     const t60 = clamp(2.2 - (m - 48) * 0.035, 0.35, 2.2);
-    if (!this.go(t, Math.min(dur, t60) + 0.1)) return;
+    if (!this.go('marimba', t, Math.min(dur, t60) + 0.1)) return;
     const peak = 0.32 * vc(v);
     const g = this.node.gain();
     const end = env(g.gain, t, [[0.0015, peak], [0.0015 + t60, peak * 1e-3, 'exp']], t + Math.min(Math.max(dur, 0.15), t60), 0.08);
@@ -1024,7 +1047,7 @@ export class Instruments {
     const f = mtof(m), v = clamp(vel, 0, 1);
     const t60 = clamp(6 - (m - 53) * 0.1, 1.5, 6);
     const hold = o.pedal ? t60 : Math.min(dur, t60);
-    if (!this.go(t, hold + 0.3)) return;
+    if (!this.go('vibes', t, hold + 0.3)) return;
     const peak = 0.24 * vc(v);
     const g = this.node.gain();
     const end = env(g.gain, t, [[0.002, peak], [0.4, peak * 0.6, 'exp'], [0.4 + t60, peak * 1e-3, 'exp']], t + hold, 0.25);
@@ -1040,12 +1063,12 @@ export class Instruments {
   /** FM bell (ratio 3.5 default): bright inharmonic strike decaying to a pure hum */
   bell(t: number, m: number, dur: number, vel: number, o: BellOpts = {}): void {
     const ring = o.ring ?? Math.max(dur, 2.5);
-    if (!this.go(t, ring)) return;
+    if (!this.go('bell', t, ring)) return;
     const f = mtof(m), v = clamp(vel, 0, 1);
     const peak = 0.25 * vc(v);
     const g = this.node.gain();
     const end = env(g.gain, t, [[0.002, peak], [ring, peak * 1e-3, 'exp']], t + ring, 0.05);
-    const car = this.osc('sine', f, t, end);
+    const car = this.osc('sine', f, t, end, true);
     const mod = this.osc('sine', f * (o.ratio ?? 3.5), t, end);
     const mg = this.node.gain();
     mg.gain.setValueAtTime(f * (1.2 + 3 * v), t);
@@ -1058,7 +1081,7 @@ export class Instruments {
   /** glass / celesta-like: sine + 2.76x inharmonic partial, soft strike */
   glass(t: number, m: number, dur: number, vel: number, o: NoteOpts = {}): void {
     const ring = Math.max(dur, 2.2);
-    if (!this.go(t, ring)) return;
+    if (!this.go('glass', t, ring)) return;
     const f = mtof(m), v = clamp(vel, 0, 1);
     const peak = 0.24 * vc(v);
     const g = this.node.gain();
@@ -1085,7 +1108,7 @@ export class Instruments {
   }
 
   private wind(kind: InstrumentName, t: number, m: number, dur: number, vel: number, o: FluteOpts, vib: number, breath: number, w: OscWave): void {
-    if (!this.go(t, dur + 0.14)) return;
+    if (!this.go(kind, t, dur + 0.14)) return;
     const f = mtof(m), v = clamp(vel, 0, 1);
     const att = 0.045 + 0.07 * (1 - v);
     const peak = 0.2 * vc(v);
@@ -1115,7 +1138,7 @@ export class Instruments {
 
   /** synth lead: unison saw/square/tri/sine, filter envelope, glide, optional delayed vibrato */
   lead(t: number, m: number, dur: number, vel: number, o: LeadOpts = {}): void {
-    if (!this.go(t, dur + 0.15)) return;
+    if (!this.go('lead', t, dur + 0.15)) return;
     const f = mtof(m), v = clamp(vel, 0, 1);
     const peak = 0.18 * vc(v);
     const g = this.node.gain();
@@ -1148,7 +1171,7 @@ export class Instruments {
   /** arpeggiator pluck: single saw/square, snappy filter + amp decay (channel has delay send) */
   arp(t: number, m: number, dur: number, vel: number, o: ArpOpts = {}): void {
     const dec = o.decay ?? 0.22;
-    if (!this.go(t, dur + 0.05)) return;
+    if (!this.go('arp', t, dur + 0.05)) return;
     const f = mtof(m), v = clamp(vel, 0, 1);
     const peak = 0.3 * vc(v);
     const g = this.node.gain();
@@ -1165,7 +1188,7 @@ export class Instruments {
   /** synth brass stab / swell: detuned saws per note, scoop-in pitch, "blat" filter envelope */
   brass(t: number, midis: number | readonly number[], dur: number, vel: number, o: NoteOpts = {}): void {
     const ms = typeof midis === 'number' ? [midis] : midis;
-    if (!ms.length || !this.go(t, dur + 0.12)) return;
+    if (!ms.length || !this.go('brass', t, dur + 0.12)) return;
     const v = clamp(vel, 0, 1);
     const peak = (0.27 * vc(v)) / Math.sqrt(ms.length);
     const g = this.node.gain();
@@ -1190,7 +1213,7 @@ export class Instruments {
   /** kick: pitch-swept sine + beater click. Jazz "feathered" kick: vel ~0.3, click 0 */
   kick(t: number, vel: number, o: KickOpts = {}): void {
     const dec = o.decay ?? 0.42;
-    if (!this.go(t, dec)) return;
+    if (!this.go('kick', t, dec)) return;
     const v = clamp(vel, 0, 1);
     const tune = o.tune ?? 52;
     const peak = 0.8 * vc(v);
@@ -1219,7 +1242,7 @@ export class Instruments {
   snare(t: number, vel: number, o: SnareOpts = {}): void {
     const v = clamp(vel, 0, 1);
     const dec = o.decay ?? 0.14 + 0.1 * v;
-    if (!this.go(t, dec)) return;
+    if (!this.go('snare', t, dec)) return;
     const tone = o.tone ?? 185;
     const peak = 0.66 * vc(v);
     const gb = this.node.gain();
@@ -1243,7 +1266,7 @@ export class Instruments {
 
   /** rim click / cross-stick */
   rim(t: number, vel: number, o: NoteOpts = {}): void {
-    if (!this.go(t, 0.05)) return;
+    if (!this.go('rim', t, 0.05)) return;
     const v = clamp(vel, 0, 1);
     const g = this.node.gain();
     const end = env(g.gain, t, [[0.0005, 0.8 * vc(v)], [0.035, 1e-5, 'exp']], t + 0.035, 0.005);
@@ -1262,7 +1285,7 @@ export class Instruments {
 
   /** hand clap: 3 fast noise bursts + tail through a band-pass */
   clap(t: number, vel: number, o: NoteOpts = {}): void {
-    if (!this.go(t, 0.25)) return;
+    if (!this.go('clap', t, 0.25)) return;
     const v = clamp(vel, 0, 1);
     const peak = 1.2 * vc(v);
     const ns = this.noiseSrc(t, t + 0.3);
@@ -1290,7 +1313,7 @@ export class Instruments {
     const v = clamp(vel, 0, 1);
     const open = o.open ?? 0;
     const dec = open > 0 ? Math.max(open, 0.05) : o.decay ?? 0.045 + 0.03 * v;
-    if (!this.go(t, dec + 0.03)) return;
+    if (!this.go('hat', t, dec + 0.03)) return;
     const peak = 0.45 * vc(v);
     const ns = this.noiseSrc(t, t + dec + 0.06);
     const g = this.node.gain();
@@ -1303,7 +1326,7 @@ export class Instruments {
   /** shaker / cabasa: swishy band-passed noise (len = swish length, default 0.09 s) */
   shaker(t: number, vel: number, o: NoteOpts & { len?: number } = {}): void {
     const len = o.len ?? 0.09;
-    if (!this.go(t, len + 0.02)) return;
+    if (!this.go('shaker', t, len + 0.02)) return;
     const v = clamp(vel, 0, 1);
     const ns = this.noiseSrc(t, t + len + 0.03);
     const g = this.node.gain();
@@ -1316,7 +1339,7 @@ export class Instruments {
   brush(t: number, vel: number, o: NoteOpts = {}): void {
     const v = clamp(vel, 0, 1);
     const dec = 0.12 + 0.1 * v;
-    if (!this.go(t, dec)) return;
+    if (!this.go('brush', t, dec)) return;
     const ns = this.noiseSrc(t, t + dec + 0.03, 0.8);
     const g = this.node.gain();
     env(g.gain, t, [[0.003, 0.4 * vc(v)], [dec, 1e-4, 'exp']], t + dec, 0.01);
@@ -1326,7 +1349,7 @@ export class Instruments {
 
   /** brush swirl: a moving band-passed noise sweep that fills `dur` seconds (one per 2 beats is typical) */
   brushSwirl(t: number, dur: number, vel: number, o: NoteOpts = {}): void {
-    if (!this.go(t, dur + 0.15)) return;
+    if (!this.go('brushSwirl', t, dur + 0.15)) return;
     const v = clamp(vel, 0, 1);
     const peak = 0.22 * vc(v);
     const ns = this.noiseSrc(t, t + dur + 0.2, 0.7);
@@ -1344,7 +1367,7 @@ export class Instruments {
 
   /** tom: pitched sine thump. pitch 'low' | 'mid' | 'high' or Hz */
   tom(t: number, vel: number, o: NoteOpts & { pitch?: 'low' | 'mid' | 'high' | number } = {}): void {
-    if (!this.go(t, 0.5)) return;
+    if (!this.go('tom', t, 0.5)) return;
     const v = clamp(vel, 0, 1);
     const p = o.pitch ?? 'mid';
     const f = typeof p === 'number' ? p : p === 'low' ? 92 : p === 'high' ? 175 : 128;
@@ -1359,7 +1382,7 @@ export class Instruments {
   /** orchestral triangle: two high inharmonic sines; open rings ~2 s, { open: false } is muted */
   triangle(t: number, vel: number, o: NoteOpts & { open?: boolean } = {}): void {
     const ring = o.open === false ? 0.12 : 2.2;
-    if (!this.go(t, ring)) return;
+    if (!this.go('triangle', t, ring)) return;
     const v = clamp(vel, 0, 1);
     const g = this.node.gain();
     const end = env(g.gain, t, [[0.001, 0.13 * vc(v)], [ring, 1e-5, 'exp']], t + ring, 0.02);
@@ -1370,7 +1393,7 @@ export class Instruments {
 
   /** ride cymbal: noise wash + stick ping; { bell: true } for the bell */
   ride(t: number, vel: number, o: NoteOpts & { bell?: boolean } = {}): void {
-    if (!this.go(t, 1.6)) return;
+    if (!this.go('ride', t, 1.6)) return;
     const v = clamp(vel, 0, 1);
     const peak = 0.25 * vc(v);
     const bp = this.shared(`rideBp:${o.ch ?? ''}`, () => {
@@ -1394,7 +1417,7 @@ export class Instruments {
     const peak = 0.26 * vc(v);
     const sw = o.swell ?? 0;
     const t0 = t - sw;
-    if (!this.go(Math.max(0, t0), sw + (o.decay ?? 2.5))) return;
+    if (!this.go('cymbal', Math.max(0, t0), sw + (o.decay ?? 2.5))) return;
     const ns = this.noiseSrc(Math.max(0, t0), t + (sw ? 0.1 : (o.decay ?? 2.5) + 0.05));
     const g = this.node.gain();
     if (sw) env(g.gain, Math.max(0, t0), [[sw * 0.7, peak * 0.25], [sw, peak]], t, 0.06);
@@ -1407,7 +1430,7 @@ export class Instruments {
   conga(t: number, vel: number, o: NoteOpts & { tone?: 'hi' | 'lo' | 'slap' | 'mute' } = {}): void {
     const tone = o.tone ?? 'hi';
     const dec = tone === 'lo' ? 0.38 : tone === 'hi' ? 0.3 : tone === 'slap' ? 0.12 : 0.07;
-    if (!this.go(t, dec)) return;
+    if (!this.go('conga', t, dec)) return;
     const v = clamp(vel, 0, 1);
     const f = tone === 'lo' ? 215 : tone === 'slap' ? 350 : 325;
     const peak = 0.5 * vc(v);
@@ -1432,7 +1455,7 @@ export class Instruments {
 
   /** noise sweep / riser for transitions: { up: true } rises into t+dur, false falls away from t */
   sweep(t: number, dur: number, vel: number, o: NoteOpts & { up?: boolean; from?: number; to?: number; q?: number } = {}): void {
-    if (!this.go(t, dur + 0.25)) return;
+    if (!this.go('sweep', t, dur + 0.25)) return;
     const up = o.up ?? true;
     const v = clamp(vel, 0, 1);
     const peak = 0.4 * vc(v);
@@ -1450,7 +1473,7 @@ export class Instruments {
 
   /** vinyl crackle + hiss bed from t0 to t1 (fades 1.5 s in / 2 s out). level 0..1 (0.5 = subtle) */
   vinyl(t0: number, t1: number, level = 0.5): void {
-    if (!this.go(t0, t1 - t0)) return;
+    if (!this.go('vinyl', t0, t1 - t0)) return;
     const buf = crackleBuffer(this.ctx);
     this.count();
     const src = this.ctx.createBufferSource();
