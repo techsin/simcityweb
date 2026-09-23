@@ -549,22 +549,30 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
     case 'maple': {
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.4 * k, 0.24 * k, 0.16 * k, 5, { top: false });
       const c = rng.pick([0xc8642c, 0xd9912f, 0xb8452f, 0x8fa33b]);
-      b.paint(c, Surf.Foliage).blob(x, 4.4 * k, z, 2.3 * k, 2.2 * k, 2.3 * k, 0, 0.14, seed);
+      const a = rng.range(0, TAU);
+      b.paint(c, Surf.Foliage).blob(x - Math.cos(a) * 0.4 * k, 4.2 * k, z - Math.sin(a) * 0.4 * k, 2.2 * k, 2.0 * k, 2.1 * k, 0, 0.2, seed);
+      b.paint(shade(c, 1.1), Surf.Foliage).blob(x + Math.cos(a) * 0.8 * k, 5.2 * k, z + Math.sin(a) * 0.8 * k, 1.5 * k, 1.4 * k, 1.5 * k, 0, 0.2, seed + 2);
       return 6.6 * k;
     }
     case 'round': {
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.2 * k, 0.22 * k, 0.15 * k, 5, { top: false });
-      b.paint(g, Surf.Foliage).blob(x, 3.9 * k, z, 2.1 * k, 1.9 * k, 2.1 * k, 0, 0.14, seed);
-      return 5.8 * k;
+      const a = rng.range(0, TAU);
+      b.paint(g, Surf.Foliage).blob(x - Math.cos(a) * 0.35 * k, 3.8 * k, z - Math.sin(a) * 0.35 * k, 2.0 * k, 1.75 * k, 1.95 * k, 0, 0.2, seed);
+      b.paint(shade(g, 1.12), Surf.Foliage).blob(x + Math.cos(a) * 0.75 * k, 4.6 * k, z + Math.sin(a) * 0.75 * k, 1.35 * k, 1.25 * k, 1.35 * k, 0, 0.2, seed + 2);
+      return 5.9 * k;
     }
     case 'cherry': {
       b.paint(0x4a3528, Surf.Wood).cylinder(x, z, 0, 2.0 * k, 0.22 * k, 0.14 * k, 5, { top: false });
-      b.paint(rng.pick([0xf0b3c8, 0xe89ab5, 0xf5c6d6]), Surf.Foliage).blob(x, 3.5 * k, z, 2.2 * k, 1.6 * k, 2.2 * k, 0, 0.18, seed);
+      const c = rng.pick([0xf0b3c8, 0xe89ab5, 0xf5c6d6]);
+      const a = rng.range(0, TAU);
+      b.paint(c, Surf.Foliage).blob(x - Math.cos(a) * 0.5 * k, 3.4 * k, z - Math.sin(a) * 0.5 * k, 2.0 * k, 1.4 * k, 1.9 * k, 0, 0.22, seed);
+      b.paint(shade(c, 1.06), Surf.Foliage).blob(x + Math.cos(a) * 0.9 * k, 3.9 * k, z + Math.sin(a) * 0.9 * k, 1.5 * k, 1.1 * k, 1.5 * k, 0, 0.22, seed + 2);
       return 5.1 * k;
     }
     case 'birch': {
       b.paint(0xe4e0d4, Surf.Plain).cylinder(x, z, 0, 3.6 * k, 0.16 * k, 0.1 * k, 5, { top: false });
-      b.paint(0x86a84a, Surf.Foliage).blob(x, 5.2 * k, z, 1.5 * k, 2.4 * k, 1.5 * k, 0, 0.18, seed);
+      b.paint(0x86a84a, Surf.Foliage).blob(x, 4.7 * k, z, 1.5 * k, 1.8 * k, 1.5 * k, 0, 0.2, seed);
+      b.paint(0x94b457, Surf.Foliage).blob(x + 0.3 * k, 6.3 * k, z - 0.2 * k, 1.05 * k, 1.3 * k, 1.05 * k, 0, 0.2, seed + 2);
       return 7.6 * k;
     }
     case 'poplar': {
@@ -751,7 +759,8 @@ export function bleachers(b: ModelBuilder, x: number, z: number, w: number, rows
     const tris = THREE.ShapeUtils.triangulateShape(contour, []);
     for (const [i, j, k] of tris) orientTri(b, [sx, poly[i][1], poly[i][0]], [sx, poly[j][1], poly[j][0]], [sx, poly[k][1], poly[k][0]], [Math.sign(sx), 0, 0]);
   }
-  b.paint(frame, Surf.Pavement).box(-w / 2, 0, zb - 0.01, w / 2, rows * rise + 1.0, zb + 0.15, { bottom: null });
+  b.paint(frame, Surf.Pavement).box(-w / 2, 0, zb - 0.01, w / 2, rows * rise + 0.5, zb + 0.15, { bottom: null });
+  b.paint(0x7a7f85, Surf.Metal).box(-w / 2, rows * rise + 0.95, zb + 0.02, w / 2, rows * rise + 1.05, zb + 0.12, { bottom: null });
   if (opts.roof) {
     const hTop = rows * rise + 3.2;
     b.paint(0x5a5f66, Surf.Metal);
