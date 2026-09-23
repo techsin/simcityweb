@@ -162,3 +162,19 @@ describe('budget', () => {
     expect(st.news.some((n) => n.advisor === 'finance')).toBe(true);
   });
 });
+
+describe('public economy API (src/sim/economy/index.ts)', () => {
+  it('demandInfo / listRewards / listOrdinances / budget forecast work on a fresh city', async () => {
+    const api = await import('../../src/sim/economy/index');
+    const { st, sim } = makeCity();
+    sim.runDays(5);
+    const di = api.demandInfo(st);
+    expect(di.demand.length).toBe(12);
+    expect(di.cap.every((c) => c > 0)).toBe(true);
+    expect(api.listRewards(st).length).toBeGreaterThan(30);
+    expect(api.listOrdinances(st).every((o) => typeof o.monthly === 'number')).toBe(true);
+    expect(api.computeMonthlyBudget(st, null).totalExpense).toBeGreaterThanOrEqual(0);
+    expect(api.loanOffer(st, 20000).ok).toBe(true);
+    expect(api.serviceEffectiveness(st, 'police')).toBeCloseTo(1);
+  });
+});
