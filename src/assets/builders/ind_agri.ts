@@ -7,7 +7,8 @@ import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { fence } from '../kit';
 import {
-  bicone, dome, flat, gambrelRoof, ground, hCyl, lathe, strut, tank, tractor, tree, tube, wallQuad, wallRow, disc, smokestack, boxTruck, pallets, carLow, CAR_COLORS2, lattice, poplar
+  bicone, dome, flat, gambrelRoof, ground, hCyl, lathe, strut, tank, tractor, tree, tube, wallQuad, wallRow, disc,
+  smokestack, boxTruck, pallets, carLow, CAR_COLORS2, lattice, poplar,
 } from './ind_kit';
 
 const DIRT = 0x8a6e4b;

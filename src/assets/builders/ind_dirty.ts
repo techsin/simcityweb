@@ -7,7 +7,9 @@ import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { signBox } from '../kit';
 import {
-  type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor, tank, sphereTank, smokestack, semi, boxTruck, carLow, forklift, pallets, drums, heap, fenceRect, wallRun, floodLight, roofUnit, parapet, officeBlock, emitSmoke, emitSteam, lights, CAR_COLORS2, orientedBox
+  type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor,
+  tank, sphereTank, smokestack, semi, boxTruck, carLow, forklift, pallets, drums, heap, fenceRect, wallRun,
+  floodLight, roofUnit, parapet, officeBlock, emitSmoke, emitSteam, lights, CAR_COLORS2, orientedBox,
 } from './ind_kit';
 
 const YARD = 0x9f9a90;

@@ -1140,9 +1140,9 @@ function cemetery(b: ModelBuilder, _v: number, rng: RNG) {
         const kind = rng.weighted([0, 1, 2, 3], [0.6, 0.18, 0.08, 0.14]);
         const gx = x + rng.range(-0.1, 0.1);
         gravestone(b, gx, z, kind, rng.pick(colors));
-        if (rng.chance(0.22)) {
+        if (rng.chance(0.1)) {
           // flowers / wreath in front of the stone
-          b.paint(rng.pick([0xc8324a, 0xe8c04a, 0xf2efe6, 0x9a4ab0]), Surf.Foliage).box(gx - 0.22, 0.06, z + 0.16, gx + 0.22, 0.28, z + 0.46, { bottom: null, nz: null });
+          b.paint(rng.pick([0xc8324a, 0xe8c04a, 0xf2efe6, 0x9a4ab0]), Surf.Foliage).box(gx - 0.24, 0.06, z + 0.16, gx + 0.24, 0.3, z + 0.48, { bottom: null, nz: null, px: null, nx: null });
         }
       }
     }

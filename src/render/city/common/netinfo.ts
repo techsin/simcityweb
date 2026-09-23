@@ -20,6 +20,8 @@ export const RZ = [1, 0, -1, 0] as const;
 export const NF_BRIDGE = 1;
 export const NF_TUNNEL = 2;
 export const NF_BUS = 16;
+/** sim-flagged rail/road level crossing (road cell; rail passes through) */
+export const NF_CROSSING = 32;
 export const oneWayDir = (flags: number) => (flags >> 2) & 3;
 
 /** asphalt half width (m) per Network type (rail: ballast half width) */
@@ -113,8 +115,21 @@ export class NetInfo {
           rt = t;
           rdA = 3;
           if (t !== Network.Highway) {
-            const railX = this.net(x - 1, z) === Network.Rail && this.net(x + 1, z) === Network.Rail;
-            const railZ = this.net(x, z - 1) === Network.Rail && this.net(x, z + 1) === Network.Rail;
+            let railX = this.net(x - 1, z) === Network.Rail && this.net(x + 1, z) === Network.Rail;
+            let railZ = this.net(x, z - 1) === Network.Rail && this.net(x, z + 1) === Network.Rail;
+            if (st.netFlags[i] & NF_CROSSING && railX === railZ) {
+              // sim-flagged crossing: rail runs along the axis that has rail neighbours
+              const rx = +(this.net(x - 1, z) === Network.Rail) + +(this.net(x + 1, z) === Network.Rail);
+              const rz = +(this.net(x, z - 1) === Network.Rail) + +(this.net(x, z + 1) === Network.Rail);
+              railX = rx > rz;
+              railZ = rz > rx;
+              if (!railX && !railZ) {
+                // no rail neighbour yet: rail axis = the axis without road connections
+                const roadX = isRoadT(this.net(x - 1, z)) || isRoadT(this.net(x + 1, z));
+                railX = !roadX;
+                railZ = roadX;
+              }
+            }
             if (railX !== railZ) {
               cr = railX ? 1 : 2;
               rdA = railX ? 2 : 1;

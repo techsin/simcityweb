@@ -8,7 +8,9 @@ import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { signBox } from '../kit';
 import {
-  type Face, flat, ground, wallQuad, wallRow, wallDisc, tube, dome, hCyl, strut, lattice, tank, smokestack, semi, boxTruck, carLow, forklift, pallets, fenceRect, floodLight, roofUnit, officeBlock, parking, containerAt, barrelRoof, tree, lightDot, CAR_COLORS2, CONTAINER_COLORS, TRUCK_COLORS
+  type Face, flat, ground, wallQuad, wallRow, wallDisc, tube, dome, hCyl, strut, lattice, tank, smokestack, semi,
+  boxTruck, carLow, forklift, pallets, fenceRect, floodLight, roofUnit, officeBlock, parking, containerAt,
+  barrelRoof, tree, lightDot, CAR_COLORS2, CONTAINER_COLORS, TRUCK_COLORS,
 } from './ind_kit';
 
 const APRON = 0x8f8b84;

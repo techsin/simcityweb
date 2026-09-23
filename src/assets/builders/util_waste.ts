@@ -7,7 +7,8 @@ import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { signBox } from '../kit';
 import {
-  flat, ground, wallQuad, wallDisc, tube, disc, strut, conveyor, orientedBox, tank, smokestack, carLow, forklift, fenceRect, floodLight, roofUnit, officeBlock, heap, wallRun, tree, CAR_COLORS2
+  flat, ground, wallQuad, wallDisc, tube, disc, strut, conveyor, orientedBox, tank, smokestack, carLow, forklift,
+  fenceRect, floodLight, roofUnit, officeBlock, heap, wallRun, tree, CAR_COLORS2,
 } from './ind_kit';
 
 const CONCRETE = 0xa39e94;

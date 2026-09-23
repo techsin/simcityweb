@@ -6,7 +6,9 @@ import type { ModelBuilder, ColorLike } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import {
-  type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor, orientedBox, tank, sphereTank, smokestack, carLow, fenceRect, floodLight, roofUnit, officeBlock, heap, solarRow, emitSteam, parking, CAR_COLORS2, lights
+  type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor,
+  orientedBox, tank, sphereTank, smokestack, carLow, fenceRect, floodLight, roofUnit, officeBlock, heap, solarRow,
+  emitSteam, parking, CAR_COLORS2, lights,
 } from './ind_kit';
 
 const CONCRETE = 0xa39e94;
