@@ -365,6 +365,18 @@ async function run(): Promise<void> {
     scene.ctx.toast('Your city reached 10,000 residents!', 'good');
   }
   const coords = (k: string) => { const v = P.get(k)?.split(',').map(Number); if (v && P.get('rel') === '1') return v.map((n, i) => n + Math.round(i % 2 ? center.cz : center.cx)); return v; };
+  if (P.get('querybld') === '1') {
+    let best: { id: number; x: number; z: number; score: number } | null = null;
+    for (const b of scene.sim.state.buildings.values()) {
+      const def = getDef(b.def);
+      const score = (def?.category === 'growable' ? 1000 : 0) + b.pop + b.jobs;
+      if (!best || score > best.score) best = { id: b.id, x: b.x, z: b.z, score };
+    }
+    if (best) {
+      scene.ctx.showQuery({ buildingId: best.id, x: best.x, z: best.z });
+      scene.ctx.focusCell(best.x, best.z, 260);
+    }
+  }
   const q = coords('query');
   if (q && q.length >= 2) {
     const b = scene.sim.state.buildingAt(q[0], q[1]);

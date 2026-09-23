@@ -393,7 +393,7 @@
 .kv { display: grid; grid-template-columns: 1fr auto; gap: 7px 14px; font-size: 12.5px; }
 .kv > :nth-child(odd) { color: var(--text-dim); display: flex; align-items: center; gap: 7px; }
 .kv > :nth-child(even) { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
-.stat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.stat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
 .stat-card { padding: 10px 11px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--hair); }
 .stat-card .sc-l { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); display: flex; align-items: center; gap: 6px; }
 .stat-card .sc-v { font-size: 18px; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
