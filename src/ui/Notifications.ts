@@ -15,6 +15,12 @@ export const NEWS_META: Record<string, { color: string; icon: string; title: str
   advisor: { color: '#b58cff', icon: 'advisors', title: 'Advisor' },
   error: { color: 'var(--bad)', icon: 'alert', title: '' },
   saved: { color: 'var(--good)', icon: 'save', title: '' },
+  music: { color: '#b58cff', icon: 'music', title: 'Now playing' },
+};
+
+/** toast kind -> sound (UI-originated toasts; sim news sounds come from src/game/GameSounds.ts) */
+const TOAST_SOUND: Record<string, string | null> = {
+  info: 'notify', good: 'good', bad: 'bad', warning: 'warning', disaster: 'alarm', reward: 'reward', advisor: 'advisor', error: 'error', saved: null, music: null,
 };
 
 export class NewsTicker {
@@ -98,16 +104,17 @@ export class Toasts {
       if (!ctx.settings.toasts) return;
       if (n.kind === 'info') return;
       if (n.kind === 'advisor' && !/!|urgent|critical|warning/i.test(n.text)) return;
-      this.show(n.text, n.kind, n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : undefined, n.advisor);
-      ctx.sound(n.kind === 'disaster' ? 'alarm' : n.kind === 'reward' ? 'reward' : n.kind === 'bad' || n.kind === 'warning' ? 'warning' : 'notify');
+      // silent: GameSounds plays the (rate-limited) news sound even when toasts are off
+      this.show(n.text, n.kind, n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : undefined, n.advisor, { silent: true });
     });
   }
 
-  show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string): void {
+  /** show a toast; plays the kind's sound (TOAST_SOUND) unless opts.silent or it merges into an identical live toast */
+  show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string, opts: { silent?: boolean; ttl?: number } = {}): void {
     const now = performance.now();
     const key = kind + ':' + text;
     const meta = NEWS_META[kind] ?? NEWS_META.info;
-    const ttl = (kind === 'error' ? 2600 : kind === 'disaster' ? 12000 : 7000) * Toasts.ttlScale;
+    const ttl = (opts.ttl ?? (kind === 'error' ? 2600 : kind === 'disaster' ? 12000 : kind === 'music' ? 4200 : 7000)) * Toasts.ttlScale;
     // identical message within the de-dup window: bump the counter on the existing toast instead of stacking
     const live = this.live.get(key);
     if (live && live.el.isConnected && now - live.at < Toasts.DEDUP_MS) {
@@ -121,6 +128,10 @@ export class Toasts {
       if (this.el.firstElementChild !== live.el) this.el.prepend(live.el);
       return;
     }
+    // no toast sound when the action that raised it just played its own (error buzz, reward fanfare...)
+    const recent = (this.ctx.mods.audio as { sinceLastPlay?: () => number } | undefined)?.sinceLastPlay?.() ?? 1e9;
+    const snd = opts.silent || recent < 150 ? null : TOAST_SOUND[kind] ?? 'notify';
+    if (snd) this.ctx.sound(snd);
     const x = h('button', { class: 'icon-btn t-x', html: icon('close', 12) });
     const badge = h('span', { class: 't-count', style: 'display:none' });
     const timerBar = h('div', { class: 't-timer', style: { animationDuration: ttl + 'ms' } });

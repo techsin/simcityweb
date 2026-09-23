@@ -17,7 +17,7 @@ import type { CityObjectsViewApi, WorldViewApi } from '../render/contracts';
 import type { CityActionsApi } from '../sim/actions';
 import type { CityState } from '../sim/CityState';
 import { Simulation, type SimSystem } from '../sim/Simulation';
-import type { GameContext, QueryTarget, UIEvents } from './context';
+import type { GameContext, QueryTarget, SoundOpts, UIEvents } from './context';
 import { ActionsProxy } from './ActionsProxy';
 import { FallbackActions } from './fallback/FallbackActions';
 import { FallbackObjectsView } from './fallback/FallbackObjectsView';
@@ -26,6 +26,7 @@ import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
 import { loadSettings, saveSettings, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
+import { GameSounds } from './GameSounds';
 import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
 import { ToolController } from './tools/ToolController';
 import { CursorTip } from '../ui/CursorTip';
@@ -46,6 +47,8 @@ import { StatsPanel } from '../ui/panels/StatsPanel';
 import { Toolbar } from '../ui/Toolbar';
 import { TopBar } from '../ui/TopBar';
 import { computeUiZoom, setUiZoom } from '../ui/zoom';
+import { installUiSounds, type UiSoundAudio } from '../ui/uiSounds';
+import { asMusicAudio, shortMood, watchTrackChanges } from '../ui/MusicPlayer';
 
 export type { GameSettings } from './settings';
 
@@ -75,11 +78,13 @@ const CAMERA_KEYS = new Set(['r', 'f']);
  */
 const SIM_MODULES = import.meta.glob(['../sim/systems/index.ts', '../sim/actions.ts']);
 
-/** UI sound names -> audio engine sound names (src/audio/sfx.ts) */
+/** UI sound aliases -> audio engine sound names (src/audio/sfx.ts; any other name is passed through) */
 const SOUND_MAP: Record<string, string> = {
-  build: 'road', powerline: 'power', subway: 'rail', select: 'click', rotate: 'click', trees: 'tree', money: 'cash', save: 'confirm',
-  warning: 'notify', disaster: 'alarm', toggleOn: 'toggle', toggleOff: 'toggle', cancel: 'cancel',
+  build: 'road', powerline: 'power', subway: 'rail', select: 'query', trees: 'tree', money: 'cash', disaster: 'alarm',
 };
+
+/** game-action sounds that follow the cursor's screen x (stereo) */
+const SPATIAL = new Set(['road', 'rail', 'power', 'pipe', 'zone', 'dezone', 'bulldoze', 'plop', 'terraform', 'tree', 'construct', 'error', 'rotate', 'query']);
 
 export class CityScene {
   readonly sim: Simulation;
@@ -107,6 +112,8 @@ export class CityScene {
   private savePill: SavePill;
   private info: InfoPanel;
   private newYear: NewYearCelebration;
+  private gameSounds: GameSounds;
+  private offUiSounds: () => void;
   private advisors: AdvisorsPanel;
   private tip: CursorTip;
   private fpsEl: HTMLDivElement;
@@ -202,7 +209,7 @@ export class CityScene {
       overlay: Overlay.None,
       degraded: this.degraded,
       setOverlay: (o) => this.setOverlay(o),
-      sound: (n) => this.sound(n),
+      sound: (n, o) => this.sound(n, o),
       focusCell: (x, z, d) => this.focusCell(x, z, d),
       showQuery: (t) => this.showQuery(t),
       applySettings: (p) => this.applySettings(p),
@@ -251,6 +258,9 @@ export class CityScene {
       audio: () => this.mods.audio,
       overlayRoot: this.uiRoot,
     });
+    // event-driven sounds (news, disasters, rewards, budget ticks, construction) + generic control feedback
+    this.gameSounds = new GameSounds({ sim: this.sim, sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox() });
+    this.offUiSounds = installUiSounds(() => this.mods.audio as unknown as UiSoundAudio | undefined);
     this.fpsEl = h('div', { class: 'fps mp-glass', style: 'display:none' });
     this.uiRoot.appendChild(this.fpsEl);
     this.info = new InfoPanel(ctx);
@@ -329,6 +339,8 @@ export class CityScene {
       /* ignore */
     }
     this.newYear.dispose();
+    this.gameSounds.dispose();
+    this.offUiSounds();
     this.tools.dispose();
     this.minimap.dispose();
     try {
@@ -395,6 +407,7 @@ export class CityScene {
     }
     if (this.disposed) return;
     this.syncVolumesFromAudio();
+    this.watchNowPlaying();
     try {
       (this.mods.audio as { startAmbience?: () => void } | undefined)?.startAmbience?.();
     } catch {
@@ -423,6 +436,7 @@ export class CityScene {
       }
     }
     this.world = world;
+    this.hookCameraSounds(world);
     // ---- objects
     const traffic = () => this.sim.getSystem<SimSystem & { getSampleRoutes?: (max: number) => unknown }>('traffic');
     const getTrafficRoutes = (max: number) => {
@@ -465,6 +479,21 @@ export class CityScene {
     this.readyPending = true; // resolved after the next rendered frame (see loop)
     this.veil.classList.add('gone');
     setTimeout(() => this.veil.remove(), 600);
+  }
+
+  /** soft whoosh on every 90° camera rotate step (Q / E, minimap buttons), panned in the turn direction */
+  private hookCameraSounds(world: WorldViewApi): void {
+    try {
+      const c = world.controls as { rotateStep?: (dir: 1 | -1) => void } | undefined;
+      if (!c || typeof c.rotateStep !== 'function') return;
+      const orig = c.rotateStep.bind(c);
+      c.rotateStep = (dir: 1 | -1) => {
+        orig(dir);
+        this.sound('camRotate', { pan: dir * 0.35 });
+      };
+    } catch {
+      /* ignore */
+    }
   }
 
   /** replace the canvas (a failed renderer may have grabbed an incompatible context) */
@@ -686,7 +715,10 @@ export class CityScene {
     if (k === 'Escape') {
       e.preventDefault();
       if (this.tools.cancelDrag()) return;
-      if (this.toolbar.flyoutOpen) return this.toolbar.closeFlyout();
+      if (this.toolbar.flyoutOpen) {
+        this.sound('flyoutClose');
+        return this.toolbar.closeFlyout();
+      }
       if (this.topBar.closePopover()) return;
       if (this.panels.closeTop()) return;
       if (this.tools.activeId) {
@@ -714,13 +746,13 @@ export class CityScene {
       if (document.activeElement instanceof HTMLButtonElement) document.activeElement.blur();
       this.sim.speed = this.sim.speed === 0 ? this.lastSpeed || 1 : 0;
       if (this.sim.speed) this.lastSpeed = this.sim.speed;
-      this.sound('click');
+      this.sound(this.sim.speed === 0 ? 'pause' : 'speed' + this.sim.speed);
       return;
     }
     if (k === '1' || k === '2' || k === '3') {
+      if (this.sim.speed !== Number(k)) this.sound('speed' + k);
       this.sim.speed = Number(k);
       this.lastSpeed = this.sim.speed;
-      this.sound('click');
       return;
     }
     if (k === 'Delete') {
@@ -733,9 +765,9 @@ export class CityScene {
       const cur = this.tools.activeId ?? 'query';
       const i = cycle.indexOf(cur);
       const next = cycle[(i + 1) % cycle.length];
+      // ToolController.select plays the tool select / put-away sound
       if (cycle.length === 1 && i === 0 && next !== 'query') this.tools.select(null);
       else this.tools.select(next);
-      this.sound('click');
       this.consume(e);
       return;
     }
@@ -782,9 +814,10 @@ export class CityScene {
         await this.opts.onSave(this.sim.state);
         this.monthsSinceSave = 0;
         this.savePill.done(true, auto ? 'Autosaved' : 'City saved');
-        if (!auto) this.sound('save');
+        this.sound(auto ? 'autosave' : 'save', auto ? { volume: 0.8 } : undefined);
       } catch (e) {
         this.savePill.done(false);
+        this.sound('error');
         this.errors.report('Saving failed', e, { key: 'save' });
       } finally {
         this.saving = null;
@@ -795,7 +828,7 @@ export class CityScene {
 
   async exitToRegion(): Promise<void> {
     this.sim.speed = 0;
-    this.tools.select(null);
+    this.tools.select(null, { silent: true });
     this.panels.closeAll();
     await this.save(false);
     let thumb: string | undefined;
@@ -846,11 +879,18 @@ export class CityScene {
     this.uiEvents.emit('query', t);
   }
 
-  private sound(name: string): void {
+  /** play a sound through the (optional) audio module; game-action sounds pan with the cursor's screen x */
+  private sound(name: string, opts?: SoundOpts): void {
     const a = this.mods.audio;
     if (!a) return;
+    const n = SOUND_MAP[name] ?? name;
+    let o: SoundOpts | undefined = opts;
+    if (SPATIAL.has(n) && opts?.pan === undefined && this.mouse.inside) {
+      const r = this.root.getBoundingClientRect();
+      if (r.width > 0) o = { ...opts, pan: Math.max(-1, Math.min(1, ((this.mouse.x - r.left) / r.width) * 2 - 1)) * 0.45 };
+    }
     try {
-      a.play(SOUND_MAP[name] ?? name);
+      a.play(n, o);
     } catch {
       /* unknown sound */
     }
@@ -889,6 +929,19 @@ export class CityScene {
     }
   }
   private musicPop = { pop: 0, t: 0, growth: 0 };
+
+  /** brief "Now playing" toast when the soundtrack changes song (audio.nowPlayingToasts, settings.toasts) */
+  private watchNowPlaying(): void {
+    const ma = asMusicAudio(this.mods.audio);
+    if (!ma) return;
+    this.offs.push(
+      watchTrackChanges(ma, (np) => {
+        const a = this.mods.audio as { nowPlayingToasts?: boolean } | undefined;
+        if (a?.nowPlayingToasts === false || !this.settings.toasts || this.disposed) return;
+        this.toasts.show(`${np.title} · ${shortMood(np.mood)}`, 'music', undefined, '♪ Now playing', { silent: true });
+      }),
+    );
+  }
 
   /** take the audio engine's volumes as the starting values (single source of truth) */
   private syncVolumesFromAudio(): void {

@@ -29,7 +29,8 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
     vol('Music', 'music', 'music'),
     vol('Sound effects', 'sfx', 'sparkles'),
     vol('City ambience', 'ambience', 'building'),
-    h('div', { style: 'display:flex; gap:24px; margin: 4px 0 18px' }, toggle('Play music', audio.musicEnabled, (v) => audio.setMusicEnabled(v)), toggle('Mute all', audio.muted, (v) => audio.setMuted(v))),
+    h('div', { style: 'display:flex; gap:24px; margin: 4px 0 10px' }, toggle('Play music', audio.musicEnabled, (v) => audio.setMusicEnabled(v)), toggle('Mute all', audio.muted, (v) => audio.setMuted(v))),
+    h('div', { style: 'display:flex; gap:24px; margin: 0 0 18px' }, toggle('Interface sounds', audio.uiSounds, (v) => audio.setUiSounds(v)), toggle('Hover sounds', audio.hoverSounds, (v) => audio.setHoverSounds(v))),
     h('div', { class: 'section-title' }, 'Graphics'),
     h(
       'div',
@@ -175,9 +176,8 @@ export function openNewRegion(): Promise<NewRegionChoice | null> {
         img,
         h('div', { class: 'pc-body' }, h('div', { class: 'pc-name' }, p.name, h('span', { class: `climate-tag ${p.id === 'random' ? '' : p.climate}` }, p.id === 'random' ? 'any' : p.climate)), h('div', { class: 'pc-blurb' }, p.blurb)),
       ) as HTMLButtonElement;
-      card.addEventListener('pointerenter', () => audio.hover());
       card.addEventListener('click', () => {
-        audio.play('click');
+        audio.play('tab');
         preset = p.id;
         cards.forEach((c) => c.classList.toggle('on', c === card));
         if (!nameTouched) nameInput.value = p.id === 'random' ? randomRegionName(new RNG(seed)) : p.name;
@@ -190,6 +190,7 @@ export function openNewRegion(): Promise<NewRegionChoice | null> {
       icon: 'dice',
       cls: 'sq-btn',
       title: 'Random seed',
+      sound: 'shuffle',
       onClick: () => {
         seed = Math.floor(Math.random() * 1e6);
         seedInput.value = String(seed);
@@ -200,7 +201,7 @@ export function openNewRegion(): Promise<NewRegionChoice | null> {
       seed = Math.max(0, Math.floor(+seedInput.value || 0));
       refreshImages();
     });
-    const nameDice = button('', { icon: 'dice', cls: 'sq-btn', title: 'Random name', onClick: () => ((nameInput.value = randomRegionName()), (nameTouched = true)) });
+    const nameDice = button('', { icon: 'dice', cls: 'sq-btn', title: 'Random name', sound: 'shuffle', onClick: () => ((nameInput.value = randomRegionName()), (nameTouched = true)) });
     const body = h(
       'div',
       {},

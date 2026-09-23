@@ -21,6 +21,12 @@
  *    'transit.ridership'      transit attractiveness               (sim-infra traffic)
  *    'tourism.draw'           venue visitor draw                   (economy tourism, WP4)
  *    'power.nuclear'          nuclear plant output (0 = shut down) (sim-infra utilities, WP3)
+ *    'pollution.air.power'    extra air multiplier for power plants (sim-infra pollution, WP3)
+ *    'pollution.sewage'       residential sewage (water pollution)  (sim-infra pollution, WP3)
+ *    'pollution.noise'        noise of commerce, industry and construction sites (sim-infra pollution, WP3)
+ *    'pollution.noise.traffic' road / rail traffic noise           (sim-infra pollution, WP3)
+ *    'soil.decay'             soil contamination decay speed       (sim-infra pollution, WP3)
+ *    'crime.youth'            youth crime component                (sim-infra crime, WP3)
  *    'demand.<Dev>'           demand target per DevType enum name: demand.R1 … demand.IHT      (economy)
  *    'demand.R' | 'demand.C' | 'demand.CS' | 'demand.CO' | 'demand.I'  family multipliers           (economy)
  *  Additive (keys starting with 'add.', sum, default 0):
@@ -57,7 +63,7 @@ export const ORDINANCES: OrdinanceDef[] = [
   { id: 'neighborhood_watch', name: 'Neighborhood Watch', description: 'Residents keep an eye out for each other.', fixed: 20, perCapita: 0.005,
     unlockPop: 1500, effects: { 'crime.rate': 0.9, 'add.approval': 1 }, effectText: '−10% crime, +1 approval' },
   { id: 'youth_curfew', name: 'Youth Curfew', description: 'Minors must be home by 10pm.', fixed: 10, perCapita: 0.005,
-    unlockPop: 2500, effects: { 'crime.rate': 0.9, 'add.approval': -1, 'add.desir.R3': -0.01 }, effectText: '−10% crime, −1 approval' },
+    unlockPop: 2500, effects: { 'crime.rate': 0.9, 'crime.youth': 0.5, 'add.approval': -1, 'add.desir.R3': -0.01 }, effectText: '−50% youth crime, −10% crime, −1 approval' },
   { id: 'legalized_gambling', name: 'Legalized Gambling', description: 'Allow casinos and betting. Brings money — and crime.', fixed: 0, perCapita: 0.03, income: true,
     unlockPop: 3000, effects: { 'crime.rate': 1.15, 'add.approval': -2 }, effectText: '+§0.03/resident income, +15% crime, unlocks casinos' },
   { id: 'pro_reading', name: 'Pro-Reading Campaign', description: 'Libraries and schools promote reading.', fixed: 30, perCapita: 0.006,
@@ -87,6 +93,15 @@ export const ORDINANCES: OrdinanceDef[] = [
     unlockPop: 15000, effects: { 'traffic.car': 0.95, 'transit.ridership': 1.1 }, effectText: '−5% car traffic, +10% transit use' },
   { id: 'clean_air_act', name: 'Clean Air Act', description: 'Strict emission limits for industry.', fixed: 200, perCapita: 0.004,
     unlockPop: 20000, effects: { 'pollution.air.industry': 0.7, 'demand.ID': 0.75, 'demand.IM': 0.95 }, effectText: '−30% industrial air pollution, −25% dirty industry demand' },
+  // ---- SIM_DEPTH_SPEC WP3 (environment)
+  { id: 'quiet_zones', name: 'Quiet Zones', description: 'Quiet hours for shops, factories and building sites; lower speed limits and truck routes.', fixed: 30, perCapita: 0.004,
+    unlockPop: 4000, effects: { 'pollution.noise': 0.85, 'pollution.noise.traffic': 0.9 }, effectText: '−15% business & construction noise, −10% traffic noise' },
+  { id: 'sewage_mandate', name: 'Sewage Treatment Mandate', description: 'Septic upgrades and sewer connections for every home.', fixed: 40, perCapita: 0.003,
+    unlockPop: 6000, effects: { 'pollution.sewage': 0.6 }, effectText: '−40% sewage water pollution (cleaner rivers and tap water)' },
+  { id: 'clean_power_act', name: 'Clean Power Act', description: 'Scrubbers and filters on every power plant. Utilities pass the cost on.', fixed: 150, perCapita: 0.004,
+    unlockPop: 8000, effects: { 'pollution.air.power': 0.6 }, effectText: '−40% power plant smoke' },
+  { id: 'brownfield_cleanup', name: 'Brownfield Cleanup', description: 'Crews excavate and treat contaminated soil at old industrial sites and landfills.', fixed: 200, perCapita: 0.002,
+    unlockPop: 10000, effects: { 'soil.decay': 5 }, effectText: 'Contaminated soil recovers 5× faster' },
 ];
 
 const BY_ID = new Map(ORDINANCES.map((o) => [o.id, o]));
@@ -184,11 +199,8 @@ export function setOrdinanceEnabled(state: CityState, id: string, enabled: boole
   if (enabled) {
     if (has) return { ok: true, monthly };
     if (!ordinanceAvailable(state, o)) return { ok: false, reason: `Needs a population of ${o.unlockPop.toLocaleString('en-US')}`, monthly };
-    if (o.blocks) {
-      for (const d of o.blocks) {
-        if ((state.milestones[d] ?? 0) > 0) return { ok: false, reason: 'Demolish the existing nuclear plant first', monthly };
-      }
-    }
+    // blocked defs cannot be built while enacted; existing ones are shut down by the ordinance's effect keys
+    // ('power.nuclear' 0 -> utilities, WP3-1), so enacting it is always allowed (the UI confirms, WP5-6)
     list.push(id);
   } else {
     if (!has) return { ok: true, monthly: 0 };

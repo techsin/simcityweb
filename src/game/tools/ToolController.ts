@@ -4,9 +4,12 @@
  */
 import type { Overlay } from '../../core/types';
 import type { GameContext } from '../context';
-import { findToolSpec } from '../toolCatalog';
+import { categoryOfTool, findToolSpec } from '../toolCatalog';
 import { QueryTool } from './QueryTool';
 import type { Tool, ToolPointer } from './Tool';
+
+/** tool-select sound transposition per toolbar category (semitones, C major pentatonic) */
+const TOOL_PITCH: Record<string, number> = { zones: 0, transport: 2, utilities: 4, civic: 7, parks: 9, landmarks: 12, terrain: -5, bulldoze: -8 };
 
 export class ToolController {
   private current: Tool;
@@ -125,8 +128,11 @@ export class ToolController {
     return this.inside || this.leftDown ? this.pointer(this.lastEvt) : null;
   }
 
-  /** select a tool by id; null = default query tool. Returns false if the tool is locked / unknown. */
-  select(id: string | null): boolean {
+  /**
+   * select a tool by id; null = default query tool. Returns false if the tool is locked / unknown.
+   * Plays the tool sound (pitched per toolbar category along the pentatonic scale) unless opts.silent.
+   */
+  select(id: string | null, opts: { silent?: boolean } = {}): boolean {
     if (id === 'query') id = null;
     let next: Tool = this.defaultTool;
     if (id) {
@@ -136,19 +142,20 @@ export class ToolController {
         return false;
       }
       if (spec.locked) {
-        this.ctx.toast(`${spec.label} is locked — ${spec.locked.hint}`, 'warning');
         this.ctx.sound('error');
+        this.ctx.toast(`${spec.label} is locked — ${spec.locked.hint}`, 'warning');
         return false;
       }
       if (spec.disabled) {
-        this.ctx.toast(`${spec.label}: ${spec.disabled}`, 'warning');
         this.ctx.sound('error');
+        this.ctx.toast(`${spec.label}: ${spec.disabled}`, 'warning');
         return false;
       }
       next = this.cache.get(id) ?? spec.create(this.ctx);
       if (!id.startsWith('plop:')) this.cache.set(id, next);
     }
     if (next === this.current) return true;
+    if (!opts.silent) this.playSelectSound(id, next === this.defaultTool);
     this.safeCall(() => this.current.deactivate());
     // restore the data view we switched on automatically (unless the player changed it meanwhile)
     if (this.autoOverlayOn !== null && this.ctx.overlay === this.autoOverlayOn && next.autoOverlay !== this.autoOverlayOn) {
@@ -171,6 +178,21 @@ export class ToolController {
     if (this.inside) this.moveDirty = true;
     this.ctx.ui.emit('tool', this.activeId);
     return true;
+  }
+
+  private playSelectSound(id: string | null, putAway: boolean): void {
+    if (putAway || !id) {
+      this.ctx.sound('toolOff');
+      return;
+    }
+    let cat = '';
+    try {
+      cat = categoryOfTool(this.ctx, id) ?? '';
+    } catch {
+      /* ignore */
+    }
+    const semis = TOOL_PITCH[cat] ?? (id.startsWith('disaster:') ? -8 : 0);
+    this.ctx.sound('toolSelect', { pitch: Math.pow(2, semis / 12) });
   }
 
   private applyCursor(): void {

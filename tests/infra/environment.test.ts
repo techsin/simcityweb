@@ -12,6 +12,7 @@ describe('pollution', () => {
     const st = newState(64);
     roadLine(st, 2, 30, 60, 30, Network.Road);
     for (let x = 10; x <= 16; x++) for (let z = 26; z <= 29; z++) place(st, 't_id', x, z, { jobs: 40 });
+    const home = place(st, 't_r2', 13, 31, { pop: 60 });
     const sim = newSim(st);
     const p = sim.getSystem<PollutionSystem>('pollution')!;
     p.compute(sim, true);
@@ -21,8 +22,10 @@ describe('pollution', () => {
     expect(near).toBeGreaterThan(0.4);
     expect(far).toBeLessThan(0.02);
     expect(st.noise[st.idx(13, 28)]).toBeGreaterThan(0.05);
+    // WP3: the Polluted chip is for homes and shops next to the smoke, not for the factories themselves
     const b = st.buildings.get(st.building[st.idx(13, 28)])!;
-    expect(b.flags & BF.Polluted).toBeTruthy();
+    expect(b.flags & BF.Polluted).toBeFalsy();
+    expect(home.flags & BF.Polluted).toBeTruthy();
     st.budget.ordinances.push('clean_air_act');
     p.compute(sim, true);
     expect(st.airPollution[st.idx(13, 28)]).toBeLessThan(near);
@@ -68,6 +71,8 @@ describe('pollution with real catalog defs', () => {
     const st = newState(64);
     roadLine(st, 2, 30, 60, 30, Network.Road);
     place(st, 'util_coal_plant', 10, 26); // 4x4
+    // WP3: plant smoke follows its load (idle plants emit 25 %) -> give it customers
+    for (let x = 2; x <= 60; x++) for (const z of [31, 32, 33]) place(st, 't_r2', x, z, { pop: 60 });
     const sim = newSim(st);
     sim.getSystem<PollutionSystem>('pollution')!.compute(sim, true);
     const near = st.airPollution[st.idx(12, 28)];

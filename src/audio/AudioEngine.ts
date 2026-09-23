@@ -3,8 +3,10 @@
  *
  *   audio.init()                         create / resume the AudioContext (call from a user gesture; safe to repeat)
  *   audio.attachAutoInit()               init on the first pointerdown / keydown (main.ts does this once)
- *   audio.play(name, opts?)              one-shot UI / game sound (see SoundName)
+ *   audio.play(name, opts?)              one-shot UI / game sound (see SoundName / SOUND_META; opts: volume, pan, pitch, intensity)
  *   audio.hover()                        throttled soft hover sound
+ *   audio.uiSounds / setUiSounds(on), hoverSounds / setHoverSounds(on), nowPlayingToasts / setNowPlayingToasts(on)
+ *   audio.playCount                      play() request counter (delegated UI sounds de-dup, src/ui/uiSounds.ts)
  *   audio.startAmbience() / stopAmbience()
  *   audio.setAmbience({ population, zoom, night, construction, water, activity })
  *   audio.setVolume(kind, v) / getVolume(kind)   kind: 'master' | 'music' | 'sfx' | 'ambience', v in 0..1
@@ -14,9 +16,10 @@
  *   audio.music                          soundtrack player: nowPlaying, list(), next(), prev(), select(id),
  *                                        shuffle (get/set), setShuffle, isEnabled / setEnabled(id, on), onChange(cb)
  *   audio.setMuted(on) / muted
- * Volumes, music toggle, shuffle and the enabled-track set persist in localStorage ('metropolis.audio').
+ * Volumes, music toggle, shuffle, the enabled-track set and the UI / hover / now-playing toggles persist in
+ * localStorage ('metropolis.audio').
  */
-import { playVoice, type PlayOptions, type SfxEnv, type SoundName } from './sfx';
+import { playVoice, SOUND_META, type PlayOptions, type SfxEnv, type SoundName } from './sfx';
 import { Ambience, type AmbienceParams } from './ambience';
 import { MusicDirector, type MusicContext, type NowPlaying, type TrackInfo } from './music/director';
 import { ALL_TRACKS } from './music/tracks';
@@ -54,10 +57,16 @@ interface Prefs {
   musicShuffle: boolean;
   /** track ids switched off in the music player */
   musicDisabled: string[];
+  /** interface sounds (buttons, panels, sliders, tools); game actions + events always play */
+  uiSounds: boolean;
+  /** soft hover blips on menus / toolbars */
+  hoverSounds: boolean;
+  /** "Now playing" pop-up when the soundtrack changes track (in the city) */
+  nowPlayingToasts: boolean;
 }
 
 const PREFS_KEY = 'metropolis.audio';
-const DEFAULT_PREFS: Prefs = { master: 0.8, music: 0.55, sfx: 0.8, ambience: 0.7, musicOn: true, muted: false, musicShuffle: true, musicDisabled: [] };
+const DEFAULT_PREFS: Prefs = { master: 0.8, music: 0.55, sfx: 0.8, ambience: 0.7, musicOn: true, muted: false, musicShuffle: true, musicDisabled: [], uiSounds: true, hoverSounds: true, nowPlayingToasts: true };
 
 function loadPrefs(): Prefs {
   try {
@@ -94,6 +103,11 @@ export class AudioEngine {
   private wantMusic = false;
   private lastHover = 0;
   private lastPlay = new Map<string, number>();
+  /** recent play times per sound (repeat attenuation: machine-gunned sounds get gently quieter) */
+  private recent = new Map<string, number[]>();
+  private lastGroup = new Map<string, number>();
+  private serial = 0;
+  private lastAnyPlay = -1e9;
   private listeners = new Set<Listener>();
   private autoInitAttached = false;
 
@@ -204,36 +218,89 @@ export class AudioEngine {
   }
 
   // ------------------------------------------------------------------ sfx
+  /**
+   * One-shot sound. Honours mute, the "UI sounds" / "Hover sounds" prefs (SOUND_META[name].cat), a per-sound
+   * minimum gap, alert de-dup (one alert-group sound per 150 ms) and a gentle repeat attenuation (a sound played
+   * many times in a few seconds gets up to ~4 dB quieter so long build sessions don't fatigue).
+   */
   play(name: SoundName, opts: PlayOptions = {}): void {
+    const meta = SOUND_META[name];
+    if (!meta) return;
+    // every request counts (even when rate-limited / muted): the delegated UI handler uses it to avoid doubling up
+    this.serial++;
     const ctx = this.ctx;
     if (!ctx || ctx.state !== 'running' || this.prefs.muted) return;
-    // avoid machine-gunning the same sound
+    if (meta.cat === 'ui' && this.prefs.uiSounds === false) return;
+    if (name === 'hover' && this.prefs.hoverSounds === false) return;
     const now = performance.now();
-    const last = this.lastPlay.get(name) ?? 0;
-    if (now - last < (name === 'construct' ? 30 : 45)) return;
-    this.lastPlay.set(name, now);
-    let dest: AudioNode = this.buses.sfx;
-    const v = opts.volume ?? 1;
-    if (v !== 1 || opts.pan) {
-      const g = ctx.createGain();
-      g.gain.value = v;
-      if (opts.pan) {
-        const p = ctx.createStereoPanner();
-        p.pan.value = Math.max(-1, Math.min(1, opts.pan));
-        g.connect(p).connect(this.buses.sfx);
-      } else g.connect(this.buses.sfx);
-      dest = g;
-      setTimeout(() => g.disconnect(), 4000);
+    const last = this.lastPlay.get(name) ?? -1e9;
+    if (now - last < (meta.gap ?? 45)) return;
+    if (meta.group) {
+      if (now - (this.lastGroup.get(meta.group) ?? -1e9) < 150) return;
+      this.lastGroup.set(meta.group, now);
     }
-    playVoice(this.env, name, dest, opts);
+    this.lastPlay.set(name, now);
+    this.lastAnyPlay = now;
+    let vol = opts.volume ?? 1;
+    if (meta.cat !== 'event') {
+      const rec = (this.recent.get(name) ?? []).filter((t) => now - t < 3000);
+      rec.push(now);
+      this.recent.set(name, rec);
+      if (rec.length > 3) vol *= Math.max(0.62, 1 - 0.06 * (rec.length - 3));
+    }
+    playVoice(this.env, name, this.buses.sfx, { ...opts, volume: vol });
+  }
+
+  /** number of play() requests so far (the delegated UI sound handler compares it to skip generic feedback) */
+  get playCount(): number {
+    return this.serial;
+  }
+
+  /** ms since the last sound actually played */
+  sinceLastPlay(): number {
+    return performance.now() - this.lastAnyPlay;
   }
 
   /** throttled soft hover blip for menus / toolbars */
   hover(): void {
+    if (this.prefs.hoverSounds === false || this.prefs.uiSounds === false) return;
     const now = performance.now();
     if (now - this.lastHover < 70) return;
     this.lastHover = now;
     this.play('hover');
+  }
+
+  /** interface sounds on / off (buttons, panels, sliders, tools; persisted) */
+  get uiSounds(): boolean {
+    return this.prefs.uiSounds !== false;
+  }
+
+  setUiSounds(on: boolean): void {
+    this.prefs.uiSounds = on;
+    this.save();
+    this.emit();
+  }
+
+  /** hover blips on menus / toolbars (persisted) */
+  get hoverSounds(): boolean {
+    return this.prefs.hoverSounds !== false;
+  }
+
+  setHoverSounds(on: boolean): void {
+    this.prefs.hoverSounds = on;
+    this.save();
+    this.emit();
+  }
+
+  /** "Now playing" pop-up on track changes (persisted) */
+  get nowPlayingToasts(): boolean {
+    return this.prefs.nowPlayingToasts !== false;
+  }
+
+  setNowPlayingToasts(on: boolean): void {
+    this.prefs.nowPlayingToasts = on;
+    this.save();
+    this.emit();
   }
 
   // ------------------------------------------------------------------ ambience

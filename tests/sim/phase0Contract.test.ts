@@ -101,8 +101,13 @@ describe('Phase 0 contract: stubs are neutral', () => {
   it('demographics', () => {
     const st = newState(32);
     const b = place(st, 't_r2', 4, 4, { pop: 40, wealth: 2 });
+    // never visited by the demographics update -> reference mix (infra-only sims stay at the calibration mix)
     expect(Array.from(cohortShares(b))).toEqual(Array.from(new Float32Array(COHORT_BASE)));
-    expect(Array.from(profileShares('tower', 3))).toEqual(Array.from(new Float32Array(COHORT_BASE)));
+    // WP1 implemented: real household profiles (normalised; R$$$ towers are old and childless)
+    const tower3 = profileShares('tower', 3);
+    expect(tower3.reduce((a, v) => a + v, 0)).toBeCloseTo(1, 5);
+    expect(tower3[4]).toBeGreaterThan(COHORT_BASE[4]);
+    expect(tower3[0]).toBeLessThan(COHORT_BASE[0]);
     expect(workerShare(b)).toBe(WORKFORCE_RATIO);
     expect(workerShare({ ...b, wf: 0.6 })).toBe(0.6);
     expect(needsOf(st, b)).toEqual([]);
@@ -121,11 +126,13 @@ describe('Phase 0 contract: stubs are neutral', () => {
     expect(tierLayer(st, 'police')).toBe(st.policeCov);
     expect(facilityLoad(sim, b.id)).toBeNull();
     expect(unservedClusters(sim, 'elementary')).toEqual([]);
-    expect(reachCells(st, 4, 4, 1, 1, 10, 'walk', newReachScratch(st.cells))).toBe(0);
+    // WP2 implemented: without roads a walk reaches only the 3-cell near field (7 x 7 around a 1x1 footprint)
+    expect(reachCells(st, 4, 4, 1, 1, 10, 'walk', newReachScratch(st.cells))).toBe(49);
     expect(facilityReport(sim, b.id)).toBeNull();
     expect(facilityOpFactor(st, b)).toBe(1);
     expect(facilityUseFactor(st, b)).toBe(1);
-    expect(Object.keys(ATTRACTIONS).length).toBe(0);
+    // WP4 implemented: the venue table is filled; without the tourism system there is no venue / breakdown data
+    expect(Object.keys(ATTRACTIONS).length).toBeGreaterThan(20);
     expect(venueVisits(st, b.id)).toBeNull();
     expect(attractivenessBreakdown(st)).toEqual([]);
     expect(tourismTrips(st)).toEqual([]);

@@ -30,6 +30,18 @@ export interface UIEvents extends Record<string, unknown> {
   uiTick: void;
 }
 
+/** options for GameContext.sound */
+export interface SoundOpts {
+  /** 0..2 gain multiplier */
+  volume?: number;
+  /** pitch multiplier */
+  pitch?: number;
+  /** -1..1 stereo position (default: game-action sounds follow the cursor's screen x) */
+  pan?: number;
+  /** 0..1 how big the action was (drag length, amount demolished) */
+  intensity?: number;
+}
+
 export interface CursorTipApi {
   show(html: string, kind?: 'ok' | 'bad' | 'info'): void;
   hide(): void;
@@ -63,7 +75,8 @@ export interface GameContext {
   /** true when using stand-in views / actions (dev) */
   degraded: { world: boolean; objects: boolean; actions: boolean };
   setOverlay(o: Overlay): void;
-  sound(name: string): void;
+  /** play a UI / game sound (src/audio/sfx.ts names; a few aliases in CityScene's SOUND_MAP). Build sounds pan from the cursor. */
+  sound(name: string, opts?: SoundOpts): void;
   focusCell(x: number, z: number, distance?: number): void;
   showQuery(t: QueryTarget | null): void;
   applySettings(patch: Partial<GameSettings>): void;

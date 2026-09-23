@@ -189,12 +189,33 @@ vec3 fetchC(vec2 uv) {
 float karis(vec3 c) { return 1.0 / (1.0 + dot(c, vec3(0.2126, 0.7152, 0.0722))); }
 void main() {
   // 4 bilinear taps (box 4x4 texels) with Karis average to suppress fireflies
-  vec3 a = fetchC(vUv + uTexel * vec2(-1.0, -1.0));
-  vec3 b = fetchC(vUv + uTexel * vec2(1.0, -1.0));
-  vec3 c = fetchC(vUv + uTexel * vec2(-1.0, 1.0));
-  vec3 d = fetchC(vUv + uTexel * vec2(1.0, 1.0));
-  float wa = karis(a), wb = karis(b), wc = karis(c), wd = karis(d);
-  vec3 col = (a * wa + b * wb + c * wc + d * wd) / (wa + wb + wc + wd);
+  vec2 ua = vUv + uTexel * vec2(-1.0, -1.0), ub = vUv + uTexel * vec2(1.0, -1.0);
+  vec2 uc = vUv + uTexel * vec2(-1.0, 1.0), ud = vUv + uTexel * vec2(1.0, 1.0);
+  float za = texture2D(tDepth, ua).x, zb = texture2D(tDepth, ub).x, zc = texture2D(tDepth, uc).x, zd = texture2D(tDepth, ud).x;
+  vec3 col;
+  float zmax = max(max(za, zb), max(zc, zd));
+  bool same = false;
+  if (zmax < 1.0) {
+    float la = length(fogViewPos(ua, za)), lb = length(fogViewPos(ub, zb)), lc = length(fogViewPos(uc, zc)), ld = length(fogViewPos(ud, zd));
+    float lmin = min(min(la, lb), min(lc, ld)), lmax = max(max(la, lb), max(lc, ld));
+    same = lmax - lmin < 0.03 * lmin + 0.5;
+  }
+  if (same) {
+    // fog is affine in the colour for a fixed distance: fog the (Karis weighted) average once instead of every tap
+    vec3 a = texture2D(tScene, ua).rgb * uExposure, b = texture2D(tScene, ub).rgb * uExposure;
+    vec3 c = texture2D(tScene, uc).rgb * uExposure, d = texture2D(tScene, ud).rgb * uExposure;
+    float wa = karis(a), wb = karis(b), wc = karis(c), wd = karis(d);
+    vec3 avg = (a * wa + b * wb + c * wc + d * wd) / (wa + wb + wc + wd);
+    float dist;
+    col = applyFog(avg / max(uExposure, 1e-4), vUv, (za + zb + zc + zd) * 0.25, dist) * uExposure;
+  } else {
+    vec3 a = fetchC(ua);
+    vec3 b = fetchC(ub);
+    vec3 c = fetchC(uc);
+    vec3 d = fetchC(ud);
+    float wa = karis(a), wb = karis(b), wc = karis(c), wd = karis(d);
+    col = (a * wa + b * wb + c * wc + d * wd) / (wa + wb + wc + wd);
+  }
   float br = max(col.r, max(col.g, col.b));
   float rq = clamp(br - uThreshold + uKnee, 0.0, 2.0 * uKnee);
   rq = (rq * rq) / (4.0 * uKnee + 1e-4);

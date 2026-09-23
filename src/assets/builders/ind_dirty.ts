@@ -10,7 +10,7 @@ import {
   type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor,
   tank, sphereTank, smokestack, semi, boxTruck, carLow, forklift, pallets, drums, heap, fenceRect, wallRun,
   floodLight, roofUnit, parapet, officeBlock, emitSmoke, emitSteam, lights, CAR_COLORS2, orientedBox,
-  pool, poolRect, lightDot, Y_OVER, Y_MARK, RESET_PAINT,
+  pool, poolRect, lightDot, Y_OVER, Y_MARK, RESET_PAINT, SODIUM, stairLights,
 } from './ind_kit';
 
 const YARD = 0x9f9a90;
@@ -539,10 +539,10 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       const tc = [0xd6d0c2, 0xd6d0c2, 0x4f6f4f, 0xd6d0c2];
       let t = 0;
       for (const [x, z] of [[6.5, -17.5], [16.5, -17.5], [6.5, -8.5], [16.5, -8.5]] as [number, number][]) {
-        tank(b, x, z, 3.6, 9 + (t % 2) * 2, tc[t], { y0: 0.5, roof: 'dome', stair: t === 1, rim: 0x9aa0a6, base: 0x6a6258 });
+        tank(b, x, z, 3.6, 9 + (t % 2) * 2, tc[t], { y0: 0.5, roof: 'dome', stair: t === 1, rim: 0x9aa0a6, base: 0x6a6258, flood: 10 });
         t++;
       }
-      sphereTank(b, -15, 6, 4.2, 0xd6d0c2, 0x6a6e72, 10, 6);
+      sphereTank(b, -15, 6, 4.2, 0xd6d0c2, 0x6a6e72, 10, 6, 10);
       // pipe rack along z=1
       b.paint(0x55595e, Surf.Metal);
       for (let x = -21; x <= 21; x += 7) {
@@ -608,7 +608,7 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       // cement silos row at the back right + roof gallery
       for (let i = 0; i < 3; i++) {
         const sx = 1.5 + i * 7.4, sz = -19.5;
-        b.paint(0xd2cec6, Surf.Plain);
+        b.paint(0xd2cec6, Surf.Plain, 1, 12);
         tube(b, sx, sz, 0, 27, 3.5, 3.5, 12);
         disc(b, sx, sz, 27, 3.5, 12);
       }
@@ -643,7 +643,7 @@ function yardBits(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number,
 // ------------------------------------------------------------------------------------------------ ind_refinery
 const RF_GROUND = 0x86827a, RF_GRAVEL = 0x77736b, RF_ROAD = 0x5a5b5e;
 
-/** Distillation column: darker base band, shell, cap, platforms, ladder, 1 light per platform + top. */
+/** Distillation column: darker base band, shell, cap, platforms, ladder with a dim sodium stair light every ~6 m + top. */
 function column(b: ModelBuilder, x: number, z: number, r: number, h: number, color: ColorLike = 0xd8d8d2, rings = 2, seg = 8): void {
   const rb = r * (1 - 0.08 * (3 / h));
   b.paint(0xa8a49a, Surf.Metal);
@@ -654,10 +654,9 @@ function column(b: ModelBuilder, x: number, z: number, r: number, h: number, col
   b.paint(0x55595e, Surf.Metal);
   for (let i = 1; i <= rings; i++) tube(b, x, z, (h * i) / (rings + 0.5), 0.3, r + 0.7, r + 0.7, seg);
   strut(b, [x + r + 0.5, 0, z], [x + r + 0.5, h, z], 0.3);
-  const lp: V3[] = [];
-  for (let i = 1; i <= rings; i++) lp.push([x + (i % 2 ? 1 : -1) * (r + 0.75), (h * i) / (rings + 0.5) + 0.7, z + 0.3]);
-  lp.push([x, h + r * 0.6 + 0.35, z]);
-  lights(b, lp);
+  stairLights(b, x + r + 0.85, z + 0.3, 0, h - 2);
+  lightDot(b, x, h + r * 0.6 + 0.35, z, 0.3, SODIUM);
+  b.paint(RESET_PAINT, Surf.Metal);
 }
 
 /** Flare stack: light lattice + riser + emissive flame; registers a smoke emitter above the flame. */
@@ -745,8 +744,8 @@ function refineryCommon(b: ModelBuilder, mirror: boolean): void {
   const lx0 = mirror ? 11 : -31, lx1 = mirror ? 31 : -11;
   flat(b, lx0, 15, lx1, 20.5, Y_OVER);
   flat(b, lx0, 29.5, lx1, 31.5, Y_OVER);
-  // gate + road lights
-  floodLight(b, (gate[0] + gate[1]) / 2 + m * 5.2, 15.2, 10, RF_ROAD, 4.4, undefined);
+  // gate + road lights (sodium)
+  floodLight(b, (gate[0] + gate[1]) / 2 + m * 5.2, 15.2, 10, RF_ROAD, 4.4, undefined, undefined, SODIUM);
 }
 
 function refinery(b: ModelBuilder, v: number, rng: RNG): void {
@@ -755,12 +754,14 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
     case 0: {
       // OIL REFINERY: floating-roof tank farm at the back, crude unit columns, box heater, 2 pipe racks, loading rack, flare
       b.paint(0x8e8a80, Surf.Pavement).box(-30.5, 0, -30.5, 30.5, 0.8, -12.5, { bottom: null, px: null, nx: null, nz: null });
-      tank(b, -21.5, -22, 6.8, 12, 0xe8e6de, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, rim: 0x9aa0a6 });
-      tank(b, -5.5, -22, 6.8, 12, 0xdedcd2, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10 });
-      tank(b, 9.5, -22, 6.0, 11, 0xe8e6de, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, rim: 0x9aa0a6 });
-      tank(b, 24, -25, 4.0, 10, 0x55654f, { y0: 0.05, roof: 'cone', seg: 8 });
-      tank(b, 24, -16, 4.0, 10, 0x55654f, { y0: 0.05, roof: 'cone', seg: 8 });
-      lights(b, [[-21.5, 12.6, -15], [-5.5, 12.6, -15], [9.5, 11.6, -15.8], [24, 11.2, -12]]);
+      // tank farm: shells floodlit warm from the bund at night, sodium lights on the rims, a lit bund floor
+      tank(b, -21.5, -22, 6.8, 12, 0xe8e6de, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, rim: 0x9aa0a6, flood: 12 });
+      tank(b, -5.5, -22, 6.8, 12, 0xdedcd2, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, flood: 12 });
+      tank(b, 9.5, -22, 6.0, 11, 0xe8e6de, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, rim: 0x9aa0a6, flood: 11 });
+      tank(b, 24, -25, 4.0, 10, 0x55654f, { y0: 0.05, roof: 'cone', seg: 8, flood: 10 });
+      tank(b, 24, -16, 4.0, 10, 0x55654f, { y0: 0.05, roof: 'cone', seg: 8, flood: 10 });
+      lights(b, [[-21.5, 12.6, -15], [-5.5, 12.6, -15], [9.5, 11.6, -15.8], [24, 11.2, -12]], 0.3, SODIUM);
+      pool(b, -13.5, -21, 8, 0x8e8a80, 0.86);
       pipeRack(b, -28, -9.7, 28, -9.7, 6, 4, rng, 18);
       pipeRack(b, -2, -8, -2, 10.5, 5, 3, rng, 9);
       column(b, 4, 2, 2.2, 42, 0xd8d6ce, 2);
@@ -773,13 +774,14 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
       hCyl(b, -11, 12.4, 2, 8, 1.4, 'x', 6);
       b.paint(0xb8bcc0, Surf.Metal);
       tube(b, -12.5, 0.5, 0, 10.6, 1.1, 1.1, 8);
-      lights(b, [[-16, 5.6, -1.5], [-6, 5.6, 5.5], [-16, 11, 5.5], [-6, 11, -1.5], [-11, 16.4, 2]]);
+      lights(b, [[-16, 5.6, -1.5], [-6, 5.6, 5.5], [-16, 11, 5.5], [-6, 11, -1.5], [-11, 16.4, 2]], 0.3, SODIUM);
       vessel(b, -19.5, 7.5, 7, 1.2, 'x');
-      // box heater + stacks
-      b.paint(0x8a4a38, Surf.Plain).box(18, 0, -4, 27, 9, 2, { top: { color: 0x55595e, surf: Surf.Metal } });
+      // box heater (floodlit brick-red casing) + stacks
+      b.paint(0x8a4a38, Surf.Plain, 1, 9).box(18, 0, -4, 27, 9, 2, { top: { color: 0x55595e, surf: Surf.Metal } });
       smokestack(b, 20.5, -1, 27, 0.9, 0.8, 'steel', 6);
       smokestack(b, 24.5, -1, 27, 0.9, 0.8, 'steel', 6);
-      lights(b, [[18, 9.4, 2.3], [27, 9.4, 2.3], [22.5, 9.4, -4.3]]);
+      lights(b, [[18, 9.4, 2.3], [27, 9.4, 2.3], [22.5, 9.4, -4.3]], 0.3, SODIUM);
+      pool(b, 7, 0.5, 6.5, RF_GRAVEL);
       b.paint(0x8e949a, Surf.Metal);
       pipeRun(b, [[4, 6.6, -9], [4, 6.6, -0.5]], 0.45, 5);
       // truck loading rack (front right)
@@ -792,24 +794,26 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
       lights(b, [[10, 6.0, 22], [16.5, 6.0, 22], [23, 6.0, 22]], 0.3, 0xfff2d8);
       tankTruck(b, 18, 21.5, 0x2e6fb5, 0xd9d9d0);
       flare(b, -26, 6, 48);
-      floodLight(b, -6, 9.5, 11, RF_GRAVEL, 8);
-      floodLight(b, 14, -7, 11, RF_GRAVEL, 7);
+      floodLight(b, -6, 9.5, 11, RF_GRAVEL, 8, undefined, undefined, SODIUM);
+      floodLight(b, 14, -7, 11, RF_GRAVEL, 7, undefined, undefined, SODIUM);
       break;
     }
     case 1: {
       // PETROCHEMICAL (mirrored lot): sphere tanks, cracking unit frame, columns, cooling cells (steam), heater + stack, flare
-      sphereTank(b, -22, -22, 5.0, 0xe8e6de, 0x6a6e72, 8, 4);
-      sphereTank(b, -9, -22, 5.0, 0xe8e6de, 0x6a6e72, 8, 4);
-      tank(b, 11, -22, 6.8, 14, 0xdedcd4, { roof: 'dome', seg: 10 });
-      lights(b, [[-22, 6.8, -16.6], [-9, 6.8, -16.6], [11, 14.8, -15]]);
+      sphereTank(b, -22, -22, 5.0, 0xe8e6de, 0x6a6e72, 8, 4, 12);
+      sphereTank(b, -9, -22, 5.0, 0xe8e6de, 0x6a6e72, 8, 4, 12);
+      tank(b, 11, -22, 6.8, 14, 0xdedcd4, { roof: 'dome', seg: 10, flood: 14 });
+      lights(b, [[-22, 6.8, -16.6], [-9, 6.8, -16.6], [11, 14.8, -15]], 0.3, SODIUM);
+      pool(b, -15.5, -17.5, 6, RF_GROUND);
       // cracking unit
       b.paint(0x6a6e72, Surf.Metal);
       lattice(b, -6, 3, 0, 24, 7, 7, 4.5, 4.5, 3, 0.34, { rings: true, diag: false });
       b.paint(0x8e9296, Surf.Metal).boxC(-6, 3, 14.6, 9.6, 8, 0.3).boxC(-6, 3, 14.6, 9.6, 16, 0.3);
-      lights(b, [[-13.2, 8.6, 7.6], [1.2, 8.6, -1.6], [-13.2, 16.6, -1.6], [1.2, 16.6, 7.6], [-6, 24.6, 3], [-13.2, 24.4, 7.6], [1.2, 24.4, -1.6]]);
+      lights(b, [[-13.2, 8.6, 7.6], [1.2, 8.6, -1.6], [-13.2, 16.6, -1.6], [1.2, 16.6, 7.6], [-6, 24.6, 3], [-13.2, 24.4, 7.6], [1.2, 24.4, -1.6]], 0.3, SODIUM);
       b.paint(0xd8d6ce, Surf.Metal);
       tube(b, -10, 3, 0, 34, 1.6, 1.4, 8);
       dome(b, -10, 3, 34, 1.4, 1.0, 8, 2);
+      stairLights(b, -8.3, 3.3, 24, 33, 4.5);
       column(b, 8, 1, 1.8, 42, 0xe8e6de, 2);
       column(b, 12.5, 6, 1.2, 30, 0xd8d6ce, 1);
       // mechanical draft cooling tower cells with steam
@@ -822,29 +826,31 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
         disc(b, cx, 5, 9.9, 2.0, 8);
         emitSteam([cx, 10.5, 5]);
       }
-      lights(b, [[16, 8.4, 9.3], [29.5, 8.4, 9.3]]);
+      lights(b, [[16, 8.4, 9.3], [29.5, 8.4, 9.3]], 0.3, SODIUM);
       pipeRack(b, -28, -11.5, 28, -11.5, 6.5, 4, rng, 18);
       pipeRack(b, 3, -10, 3, 10.5, 5.5, 3, rng, 10);
       flare(b, 26, -26, 46);
       // heater + stack on the free front-left
-      b.paint(0x8a4a38, Surf.Plain).box(-28, 0, 15, -19, 8, 22, { top: { color: 0x55595e, surf: Surf.Metal } });
+      b.paint(0x8a4a38, Surf.Plain, 1, 8).box(-28, 0, 15, -19, 8, 22, { top: { color: 0x55595e, surf: Surf.Metal } });
       smokestack(b, -21, 18.5, 32, 1.2, 1.0, 'concrete', 8);
-      lights(b, [[-28.3, 8.3, 22.3], [-19, 8.3, 22.3]]);
-      floodLight(b, 6, 9.5, 11, RF_GRAVEL, 7);
-      floodLight(b, -16, -6.5, 11, RF_GRAVEL, 6);
+      lights(b, [[-28.3, 8.3, 22.3], [-19, 8.3, 22.3]], 0.3, SODIUM);
+      floodLight(b, 6, 9.5, 11, RF_GRAVEL, 7, undefined, undefined, SODIUM);
+      floodLight(b, -16, -6.5, 11, RF_GRAVEL, 6, undefined, undefined, SODIUM);
       break;
     }
     default: {
       // GAS PROCESSING / LNG: two big double-wall tanks, columns, bullet vessels, compressor house, flare (front right)
       for (const [x, z] of [[-18, -18], [5, -20]] as [number, number][]) {
-        b.paint(0xeceae4, Surf.Plain);
+        b.paint(0xeceae4, Surf.Plain, 1, 22);
         tube(b, x, z, 0, 22, 10, 10, 14);
         b.paint(0xdedcd4, Surf.Metal);
         dome(b, x, z, 22, 10, 3.2, 14, 3);
         b.paint(0x9aa0a6, Surf.Metal).boxC(x, z, 3, 3, 25.2, 1.4);
         b.paint(0x55595e, Surf.Metal);
         strut(b, [x + 10.4, 0, z - 2], [x + 7, 22, z + 7], 0.5);
-        lights(b, [[x, 25.6, z], [x + 10.2, 22.4, z], [x - 10.2, 22.4, z]]);
+        // stair lights up the external stair (every ~6 m)
+        for (const t of [0.27, 0.54, 0.81]) lightDot(b, x + 10.4 - 3.4 * t + 0.5, 22 * t + 0.4, z - 2 + 9 * t, 0.3, SODIUM, 2);
+        lights(b, [[x, 25.6, z], [x + 10.2, 22.4, z], [x - 10.2, 22.4, z]], 0.3, SODIUM);
       }
       column(b, 22, -22, 1.6, 36, 0xd8d6ce, 2);
       column(b, 26, -15, 1.2, 28, 0xd8d6ce, 1);
@@ -859,10 +865,11 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
       smokestack(b, -15, -1, 26, 0.9, 0.8, 'steel', 8);
       pipeRack(b, -12, 2.5, 28, 2.5, 6, 4, rng);
       pipeRack(b, 16, -7, 16, 10, 5.5, 3, rng, 9);
-      lights(b, [[-2, 5.4, 12.6], [7, 5.4, 12.6], [-13, 10.6, 3], [-29, 10.6, 3], [-21, 5.5, 9.3]]);
+      lights(b, [[-2, 5.4, 12.6], [7, 5.4, 12.6], [-13, 10.6, 3], [-29, 10.6, 3], [-21, 5.5, 9.3]], 0.3, SODIUM);
       flare(b, 27, 22, 42);
-      floodLight(b, 10, 9.5, 11, RF_GRAVEL, 7);
-      floodLight(b, -12, -8, 11, RF_ROAD, 2.4);
+      floodLight(b, 10, 9.5, 11, RF_GRAVEL, 7, undefined, undefined, SODIUM);
+      floodLight(b, -12, -8, 11, RF_ROAD, 2.4, undefined, undefined, SODIUM);
+      pool(b, 23, -17.5, 6, RF_GROUND);
       tankTruck(b, 8, 24, 0x2e6fb5);
       break;
     }

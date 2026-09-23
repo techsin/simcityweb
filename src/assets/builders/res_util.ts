@@ -9,8 +9,18 @@
 import * as THREE from 'three';
 import { ModelBuilder, PALETTE, type ColorLike, type Paint } from '../ModelBuilder';
 import { Surf } from '../../core/types';
-import type { RNG } from '../../core/rng';
+import { hashString, type RNG } from '../../core/rng';
 import { CAR_COLORS, car } from '../kit';
+
+/**
+ * True when this build is the X-mirrored twin of `variant` (manifest `mirror` entries). The registry seeds `rng` with
+ * `${id}#${fullVariant}` and asks twins for the base variant, so an untouched rng whose state differs from the base
+ * seed belongs to a twin. Call it BEFORE consuming rng. Lets a builder give twins their own palette / roof / archetype
+ * (twice the distinct looks for the same manifest variant count).
+ */
+export function isMirrorTwin(id: string, variant: number, rng: RNG): boolean {
+  return rng.state !== hashString(`${id}#${variant}`);
+}
 
 export type V3 = [number, number, number];
 export type Face = 'pz' | 'nz' | 'px' | 'nx';

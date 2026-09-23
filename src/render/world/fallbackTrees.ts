@@ -125,6 +125,33 @@ export function getImpostorGeometries() {
   return _impostors;
 }
 
+let _micro: { broad: THREE.BufferGeometry; conifer: THREE.BufferGeometry } | null = null;
+/**
+ * Micro impostors for trees that project to 1-2 px (far zoom): same unit bounds as getImpostorGeometries, foliage only
+ * (white, tinted per instance). Broadleaf = 4-sided double pyramid (8 tris), conifer = 4-sided pyramid (4 tris).
+ */
+export function getMicroImpostorGeometries() {
+  if (_micro) return _micro;
+  const q = Math.SQRT1_2;
+  const ring = (r: number, y: number): [number, number, number][] => [[r * q, y, r * q], [-r * q, y, r * q], [-r * q, y, -r * q], [r * q, y, -r * q]];
+  const broad = new ModelBuilder();
+  broad.paint(0xffffff, Surf.Foliage);
+  const e = ring(0.46, 0.63);
+  for (let i = 0; i < 4; i++) {
+    const a = e[i], b = e[(i + 1) % 4];
+    broad.tri(b, a, [0, 1.0, 0]);
+    broad.tri(a, b, [0, 0.28, 0]);
+  }
+  const con = new ModelBuilder();
+  con.paint(0xffffff, Surf.Foliage);
+  const c = ring(0.4, 0.1);
+  for (let i = 0; i < 4; i++) con.tri(c[(i + 1) % 4], c[i], [0, 1.0, 0]);
+  _micro = { broad: broad.build(), conifer: con.build() };
+  _micro.broad.name = 'impostor-micro-broad';
+  _micro.conifer.name = 'impostor-micro-conifer';
+  return _micro;
+}
+
 /** Average foliage color (linear) + bounding box of a nature geometry, for impostor tinting & scaling. */
 export function natureStats(g: THREE.BufferGeometry): { color: THREE.Color; height: number; radius: number } {
   const col = g.getAttribute('color') as THREE.BufferAttribute | undefined;

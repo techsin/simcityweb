@@ -256,3 +256,54 @@ describe('save store (memory backend)', () => {
     expect(await loadCity(imported.id, tile.key)).toBeNull();
   });
 });
+
+// ------------------------------------------------------------------------------------------ WP1 demographics fields
+import { Simulation as WP1Simulation } from '../../src/sim/Simulation';
+import { createSystems as wp1Systems } from '../../src/sim/systems/index';
+import { OCC_PERIOD as WP1_OCC } from '../../src/sim/economy/tuning';
+import { newState as wp1State, place as wp1Place, roadLine as wp1Road } from '../infra/cityGen';
+
+describe('WP1 demographics building fields', () => {
+  const FIELDS = ['kids', 'teens', 'yad', 'srs', 'wf', 'edu', 'hire'] as const;
+  function town() {
+    const st = wp1State(32);
+    wp1Road(st, 1, 10, 30, 10, Network.Road);
+    for (let x = 2; x < 28; x += 2) {
+      wp1Place(st, 't_r2', x, 11, { pop: 40, wealth: 2, age: 0, rot: 2 });
+      wp1Place(st, 't_cs', x, 9, { jobs: 5, rot: 0 });
+    }
+    const sim = new WP1Simulation(st, wp1Systems());
+    sim.runDays(12);
+    return { st, sim };
+  }
+
+  it('cohorts / workforce / education / hire survive save and load exactly (+ systemData.demographics)', { timeout: 60000 }, () => {
+    const { st } = town();
+    const homes = [...st.buildings.values()].filter((b) => b.def === 't_r2');
+    const shops = [...st.buildings.values()].filter((b) => b.def === 't_cs');
+    expect(homes.every((b) => b.kids !== undefined && b.srs !== undefined && b.wf !== undefined && b.edu !== undefined)).toBe(true);
+    expect(shops.every((b) => b.hire !== undefined && b.kids === undefined)).toBe(true);
+    const back = deserializeCity(serializeCity(st));
+    for (const b of st.buildings.values()) {
+      const r = back.buildings.get(b.id)!;
+      for (const f of FIELDS) expect(r[f], `${b.def}.${f}`).toBe(b[f]);
+    }
+    expect(back.systemData.demographics).toEqual(st.systemData.demographics);
+    expect(back.stats.cohorts).toEqual(st.stats.cohorts);
+  });
+
+  it('an old save without the fields loads (reference mix) and derives them within one occupancy period', { timeout: 60000 }, () => {
+    const { st } = town();
+    const obj = serializeCity(st);
+    delete obj.buildings.opt;
+    delete (obj.data.systemData as Record<string, unknown>).demographics;
+    const old = deserializeCity(obj);
+    for (const b of old.buildings.values()) for (const f of FIELDS) expect(b[f]).toBeUndefined();
+    const sim = new WP1Simulation(old, wp1Systems());
+    sim.runDays(WP1_OCC + 1);
+    const homes = [...old.buildings.values()].filter((b) => b.def === 't_r2' && b.pop > 0);
+    expect(homes.length).toBeGreaterThan(0);
+    for (const b of homes) for (const f of ['kids', 'teens', 'yad', 'srs', 'wf', 'edu'] as const) expect(b[f], f).toBeDefined();
+    expect(old.stats.workforce).toBeGreaterThan(0);
+  });
+});

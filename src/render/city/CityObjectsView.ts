@@ -232,7 +232,11 @@ export class CityObjectsView implements CityObjectsViewApi {
 
   setQuality(q: QualityLevel): void {
     this.quality = q;
-    this.props.lodDistance = q === 'low' ? 900 : q === 'medium' ? 1300 : q === 'high' ? 1800 : 2600;
+    // small props: full model within lodFull, ~16-tri proxy up to lodDistance, hidden beyond; buildings switch to their
+    // massing proxy below lodPixels projected radius
+    this.props.lodDistance = q === 'low' ? 700 : q === 'medium' ? 1000 : q === 'high' ? 1400 : 2000;
+    this.props.lodFull = this.props.lodDistance * 0.4;
+    this.buildings.lodPixels = q === 'low' ? 11 : q === 'medium' ? 10 : q === 'high' ? 9 : 7;
     this.vehicles.setQuality(q);
     this.effects.maxSmoke = q === 'low' ? 2500 : 7000;
     this.fireworks.setQuality(q);
@@ -274,6 +278,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.props.updateNight(sharedUniforms.uNight.value);
     lap('props');
     this.buildings.update(dt);
+    this.buildings.updateLod(cam, this.ctx.renderer.domElement.height);
     lap('buildings');
     this.disasters.update(dt);
     this.effects.update(dt);

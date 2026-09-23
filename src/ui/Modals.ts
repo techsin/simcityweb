@@ -53,7 +53,7 @@ export class PauseMenu {
       if (e.target === this.back) this.close();
     });
     this.parent.appendChild(this.back);
-    ctx.sound('open');
+    ctx.sound('dialogOpen');
     (menu.querySelector('.btn.primary') as HTMLElement | null)?.focus();
   }
 
@@ -64,7 +64,7 @@ export class PauseMenu {
     b.classList.add('closing');
     setTimeout(() => b.remove(), 150);
     if (resume) this.ctx.sim.speed = this.prevSpeed;
-    this.ctx.sound('close');
+    this.ctx.sound('dialogClose');
   }
 }
 

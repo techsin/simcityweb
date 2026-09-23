@@ -84,7 +84,6 @@ function cornerConvenience(b: B, rng: RNG) {
   K.pylon(b, 6.9, 7.2, 5.2, 1.7, [{ h: 1.3, color: 0xf28c28 }, { h: 0.9, color: 0xf6f2e8, k: 5 }], { poles: 1 });
   K.pylonLetters(b, rng, 6.9, 7.2, 4.22, 0.66, 1.45, 0x1a1a1a, { both: true, n: 4 });
   K.pylonLetters(b, rng, 6.9, 7.2, 3.1, 0.44, 1.4, 0xd8262e, { both: true, n: 5 });
-  K.roofEdge(b, x0, z0, x1, z1, h + 0.4, 0x2fd07a);
   K.tree(b, rng, -6.9, 7.2, 0.55);
   // ice box + propane cage on the side
   box(b, -8, 0, -3.5, -7.4, 1.2, -1.2, K.metal(0xeeeeee), undefined, { nx: K.emis(0x4aa3ff) });
@@ -161,7 +160,14 @@ function cornerDeli(b: B, rng: RNG) {
   K.umbrella(b, -4.5, 6.3, 1.1, 0xf2efe6, 2.3);
   b.paint(0xc8202a, Surf.Metal).cylinder(7.3, 5.3, 0, 0.7, 0.16, 0.14, 6);
   K.roofJunk(b, rng, -6, -5.5, 5, 2.5, h + 0.55, 2, false);
-  K.bandPts(b, grown, h + 0.35, h + 0.55, K.emis(0xff3b30, 6), 0.03);
+  {
+    // red neon cap line along the street front + chamfer + 2 m return (not the whole perimeter)
+    const neon = K.emis(0xff3b30, 4), ya = h + 0.35, yb = h + 0.55, o = 0.03;
+    faceZ(b, -7.15 - o, 3.56, ya, yb, 4.15 + o, neon);
+    b.paint(neon).quad([3.56, ya, 4.15 + o], [6.65 + o, ya, 1.06], [6.65 + o, yb, 1.06], [3.56, yb, 4.15 + o]);
+    faceX(b, -1.0, 1.06, ya, yb, 6.65 + o, neon, 1);
+    faceX(b, 2.15, 4.15 + o, ya, yb, -7.15 - o, neon, -1);
+  }
   openSign(b, rng, 3.15, 2.1, 4.0);
   K.tree(b, rng, -6.6, 7.0, 0.58);
 }
@@ -179,7 +185,7 @@ function cornerModern(b: B, rng: RNG) {
   // thin cantilever canopy with LED edge and roof letters
   K.canopy(b, -7.2, 7.2, z1 + 0.25, 4.05, 2.6, 0.28, K.plain(0xf3f1ec), K.emis(0xfff3dc, 3));
   K.letters(b, rng, -1.5, 4.36, z1 + 2.4, 7.5, 1.2, 0x2fd6ff, { mixed: true, k: 7 });
-  K.roofEdge(b, x0, z0, x1, z1, h + 0.35, 0xff8a2a);
+  K.roofEdge(b, x0, z0, x1, z1, h + 0.35, 0xff8a2a, 0.25, 4, { ret: 2.5 });
   // planters, bench, bike rack
   K.planter(b, rng, -7.4, 4.8, -4.8, 6.0, 0.55, 0x9a958c, true);
   K.planter(b, rng, 4.8, 4.8, 7.4, 6.0, 0.55, 0x9a958c, true);
@@ -204,7 +210,6 @@ function cornerPharmacy(b: B, rng: RNG) {
   K.canopy(b, -7.4, 1.1, z1, 2.95, 0.8, 0.15, K.plain(0x1d4f91));
   // green cross blade (lit)
   const g = K.emis(0x2fe05a, 7);
-  K.roofEdge(b, x0, z0, x1, z1, h + 0.5, 0x3a8dff);
   box(b, 1.95, 3.4, 1.55, 2.25, 5.6, 2.25, g);
   box(b, 1.95, 4.15, 0.8, 2.25, 4.85, 3.0, g);
   box(b, 1.2, 4.45, 1.8, 1.95, 4.6, 2.0, K.metal(0x333333));
@@ -231,7 +236,8 @@ const GAS_BRANDS: GasBrand[] = [
 function gasCanopy(b: B, br: GasBrand, cx0: number, cz0: number, cx1: number, cz1: number, cy: number, ct: number, white: boolean) {
   up(b, cx0 + 0.2, cz0 + 0.2, cx1 - 0.2, cz1 - 0.2, 0.05, P(0x86827a, Surf.Emissive, 9));
   box(b, cx0, cy, cz0, cx1, cy + ct, cz1, K.plain(br.main), K.roofP(0xe6e6e6), { bottom: K.emis(0xd6d3cc, K.CANOPY_K) });
-  K.bandRect(b, cx0, cz0, cx1, cz1, cy + ct * 0.35, cy + ct * 0.62, K.emis(br.stripe, 8), 0.04);
+  K.bandRect(b, cx0, cz0, cx1, cz1, cy + ct * 0.35, cy + ct * 0.62, K.plain(br.stripe), 0.04);
+  K.bandFront(b, cx0, cz0, cx1, cz1, cy + ct * 0.35, cy + ct * 0.62, K.emis(br.stripe, 5), 0.06, { ret: 3 });
   if (white) K.bandRect(b, cx0, cz0, cx1, cz1, cy + ct - 0.12, cy + ct, K.plain(0xf2f2f2), 0.05);
   const yr = cy + ct + 0.01, sw = 1.0, rp = K.plain(br.main);
   up(b, cx0, cz1 - sw, cx1, cz1, yr, rp);
@@ -293,7 +299,7 @@ function gasStation(b: B, v: number, rng: RNG) {
   const sx0 = -12.8, sx1 = 3.5, sz0 = -15.2, sz1 = -7.6, sh = 4.4;
   box(b, sx0, 0, sz0, sx1, sh, sz1, br.store, K.roofP());
   K.parapet(b, sx0, sz0, sx1, sz1, sh, 0.45, 0.25, K.plain(br.trim));
-  K.roofEdge(b, sx0, sz0, sx1, sz1, sh + 0.45, br.logo);
+  if (v === 1) K.roofEdge(b, sx0, sz0, sx1, sz1, sh + 0.45, br.logo, 0.25, 4, { ret: 2 });
   K.storefront(b, -11.8, 0.6, sz1, { y1: 2.9, frame: v === 2 ? 0x2a2d33 : 0xdedede, doors: [-5.6], pitch: 1.8 });
   K.signBoard(b, rng, sx0 + 0.3, sx1 - 0.3, 3.1, 4.25, sz1, K.plain(br.main), br.stripe === 0xffffff ? 0xffffff : br.stripe, 0.2, { words: 2 });
   K.canopy(b, sx0, sx1, sz1, 2.95, 1.3, 0.15, K.plain(br.main));
@@ -321,7 +327,6 @@ function gasStation(b: B, v: number, rng: RNG) {
     const wx0 = 7.0, wx1 = 15.0, wz0 = -15.2, wz1 = -2.2;
     box(b, wx0, 0, wz0, wx1, 5.0, wz1, K.plain(0xeceeef), K.roofP());
     K.bandRect(b, wx0, wz0, wx1, wz1, 4.0, 4.6, K.plain(br.main), 0.03);
-    K.roofEdge(b, wx0, wz0, wx1, wz1, 5.0, br.stripe, 0.3);
     faceZ(b, 8.6, 13.4, 0, 3.8, wz1 + 0.03, K.plain(0x20252b));
     faceZ(b, 8.8, 13.2, 0.1, 3.6, wz1 + 0.05, P(0x2a3440, Surf.GlassPlain));
     K.letters(b, rng, 11, 4.08, wz1 + 0.07, 4.2, 0.46, br.stripe, { n: 4, words: 1 });
@@ -388,7 +393,7 @@ function dinerBurger(b: B, rng: RNG) {
   box(b, x0, 0, z0, x1, wh, z1, P(0x9b4b35, Surf.Brick), null);
   K.storefront(b, -4.4, 1.0, z1, { y0: 0.7, y1: 2.8, frame: 0x3a3a3a, doors: [-0.1], pitch: 1.6 });
   K.onSide(b, 'px', () => K.storefront(b, -0.4, 5.4, x1, { y0: 0.7, y1: 2.8, frame: 0x3a3a3a, pitch: 1.6 }));
-  K.bandRect(b, x0, z0, x1, z1, wh - 0.3, wh, K.emis(0xffc933, 7), 0.05);
+  K.bandFront(b, x0, z0, x1, z1, wh - 0.3, wh, K.emis(0xffc933, 4), 0.05, { side: 'px', ret: 2 });
   K.loft(b, K.rectPts(x0 - 0.45, z0 - 0.45, x1 + 0.45, z1 + 0.45), K.rectPts(x0 + 0.7, z0 + 0.7, x1 - 0.7, z1 - 0.7), wh, wh + 1.5, P(0xb3322a, Surf.RoofTiles), K.roofP());
   box(b, -2.8, wh + 1.5, -4.2, -0.8, wh + 2.3, -2.7, K.metal(0xa9adb1));
   // drive-thru: pick-up window on the -X side, painted lane line + arrows, menu board
@@ -487,7 +492,7 @@ function stripMall(b: B, v: number, rng: RNG) {
     if (u > 0) box(b, a - 0.25, 0, bz1, a + 0.25, h + (v === 1 ? 0.9 : 0.5), bz1 + 0.3, K.plain(trim));
   }
   K.parapet(b, bx0, bz0, bx1, bz1, h, 0.5, 0.25, K.plain(trim));
-  K.roofEdge(b, bx0, bz0, bx1, bz1, h + 0.5, [0xff8a2a, 0x2fd6ff, 0x4dff88, 0x3a8dff][v]);
+  if (v === 3) K.roofEdge(b, bx0, bz0, bx1, bz1, h + 0.5, 0x3a8dff, 0.25, 4, { ret: 2.5 });
   // walkway cover
   const wz1 = -2.7;
   if (v === 0) {
@@ -592,8 +597,8 @@ function restCafe(b: B, rng: RNG) {
   K.onSide(b, 'px', () => K.storefront(b, -0.6, 5.8, 6.0, { y0: 0.1, y1: 4.0, frame: 0x2b2b2b, pitch: 1.6, surround: 0 }));
   box(b, -9.8, 4.2, -6.8, 7.2, 4.5, 2.8, K.plain(0xf5f3ef), K.roofP(0xb9b6ae), { bottom: K.plain(0xd8d2c6) });
   // brand fascia band (teal, softly lit) along the roof slab edge + neon script on top
-  faceZ(b, -9.8, 7.2, 4.22, 4.48, 2.83, K.emis(0x1fae9a, 5));
-  faceX(b, -6.8, 2.8, 4.22, 4.48, 7.23, K.emis(0x1fae9a, 5), 1);
+  faceZ(b, -9.8, 7.2, 4.22, 4.48, 2.83, K.emis(0x1fae9a, 4));
+  faceX(b, -6.8, 2.8, 4.22, 4.48, 7.23, K.emis(0x1fae9a, 4), 1);
   K.letters(b, rng, -1.3, 4.52, 2.6, 7, 0.85, 0xff4fc3, { mixed: true, words: 1 });
   // timber pergola over the patio
   const tim = P(0x8b6a47, Surf.Wood);
@@ -746,7 +751,7 @@ function boutGranite(b: B, rng: RNG) {
   K.cornice(b, -7, -6.5, 7, z1, h - 0.4, 0.4, 0.15, K.metal(0x8a6a3a), null);
   K.cornice(b, -7, -6.5, 7, z1, h, 0.25, 0.2, K.metal(0x8a6a3a));
   up(b, -6.9, -6.4, 6.9, z1 - 0.1, h + 0.26, K.roofP());
-  K.roofEdge(b, -7.2, -6.7, 7.2, z1 + 0.2, h + 0.25, 0xffb060, 0.2);
+  K.roofEdge(b, -7.2, -6.7, 7.2, z1 + 0.2, h + 0.25, 0xffb060, 0.2, 3, { ret: 2 });
   const bronze = 0x8a6a3a;
   K.storefront(b, -6.1, -2.7, z1, { y0: 0.4, y1: 6.9, frame: bronze, pitch: 1.2, transom: 3.6 });
   K.storefront(b, 2.7, 6.1, z1, { y0: 0.4, y1: 6.9, frame: bronze, pitch: 1.2, transom: 3.6 });
@@ -802,7 +807,6 @@ function boutLoft(b: B, rng: RNG) {
   for (const tx of [-5.0, -1.2]) { box(b, tx - 0.5, 0, 4.2, tx + 0.5, 0.5, 5.0, K.metal(0x2e2f33), K.foliage(0x4d7a36)); K.shrub(b, rng, tx, 4.6, 0.55); }
   K.onSide(b, 'px', () => { for (const wz of [-3.4, 0.6]) K.storefront(b, wz - 1.2, wz + 1.2, 7, { y0: 4.6, y1: 7.6, frame: blk, pitch: 0.8, surround: 0.1 }); });
   K.roofJunk(b, rng, -6.5, -6, 0, -2, h, 2, false);
-  K.roofEdge(b, -7.05, -6.55, 7.05, z1 + 0.05, h + 0.4, 0xffb060, 0.3);
   // rooftop terrace: deck, lawn, planters, umbrella
   up(b, 0.4, -4.6, 6.5, 2.0, h + 0.02, P(0x8b6a47, Surf.Wood));
   up(b, -6.6, -1.6, 0.2, 2.0, h + 0.02, K.foliage(0x77a34f));

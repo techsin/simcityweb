@@ -55,6 +55,7 @@ import {
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
+import { workerShare } from '../economy/demographics';
 import { Search, Seeds, accumulate, roadSearch, transitSearch, type TransitNet } from './search';
 import { collectStops, type StopList } from './transit';
 
@@ -450,6 +451,10 @@ export class TrafficSystem implements SimSystem {
   get graphVersion(): number {
     return this.road.version;
   }
+  /** regional (neighbour-city) workers filling city jobs in the last assignment (WP1-1 employment ledger) */
+  get inboundTotal(): number {
+    return this.tripsInbound;
+  }
 
   /** a transient service-vehicle route (fire trucks etc.) shown for `days` sim days */
   pushServiceRoute(sim: Simulation, cells: Uint32Array, weight = 1, days = 2): void {
@@ -654,7 +659,7 @@ export class TrafficSystem implements SimSystem {
         if (b.pop <= 0 || (b.flags & BF.Burnt) !== 0) continue;
         this.oBid[oN] = b.id;
         this.oPop[oN] = b.pop;
-        this.oW[oN] = b.pop * WORKER_SHARE;
+        this.oW[oN] = b.pop * workerShare(b); // WP1: per-building workforce share (b.wf, else WORKER_SHARE)
         this.oWealth[oN] = wealthOf(inf, b);
         this.oCell[oN] = centerCell(st, b);
         this.oHalf[oN] = Math.max(b.w, b.d) >> 1;

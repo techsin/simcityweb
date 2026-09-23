@@ -2,6 +2,10 @@
  * PropRenderer — static network props in one BatchedMesh (streetlights, traffic lights, crossing gates, median trees,
  * power pylons), additive night light pools under streetlights (one InstancedMesh), grouped by key so road chunks /
  * power lines can be replaced independently.
+ *
+ * Culling / LOD: per-pass draw lists (main view + shadow cascade 0 only: props are thinner than a far-cascade texel),
+ * and a per-tile distance LOD for small props: full model within `lodFull`, a ~16-triangle proxy (propLod.ts) up to
+ * `lodDistance`, hidden beyond. Pylons always draw the full model.
  */
 import * as THREE from 'three';
 import { getModelGeometry, hasModel } from '../../../assets/registry';
@@ -12,6 +16,7 @@ import { sharedUniforms } from '../../../assets/materials';
 import { DynamicBatch, type TileCuller } from '../common/batch';
 import { getCityMaterial } from '../common/cityMaterial';
 import type { PoolItem, PropItem } from '../roads/mesher';
+import { propLodGeometry } from './propLod';
 
 interface Group {
   ids: number[];
@@ -130,9 +135,16 @@ export class PropRenderer {
   private tileIds: Set<number>[];
   /** big props (pylons) ignore the distance LOD */
   private tileBig: Set<number>[];
+  /** per tile LOD state of small props: 0 hidden, 1 proxy, 2 full */
   private near: Uint8Array;
   /** small props (street trees, lights, signals) are hidden beyond this camera distance (m) */
-  lodDistance = 1800;
+  lodDistance = 1400;
+  /** ... and drawn with their full model within this distance (proxy in between) */
+  lodFull = 560;
+  /** full geometry id -> proxy geometry id (same id when the model has no proxy) */
+  private lodMap = new Map<number, number>();
+  /** instance id -> [full geometry id, proxy geometry id] */
+  private idGeo = new Map<number, [number, number]>();
   private idTile = new Map<number, number>();
   private poolsDirty = true;
   private poolCap = 4096;
@@ -148,15 +160,11 @@ export class PropRenderer {
     this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 17, 'props');
     this.batch.mesh.castShadow = true;
     this.batch.mesh.receiveShadow = true;
+    this.batch.enablePassCulling({ culler, shadowMask: 0b01 });
     const T = culler.tiles * culler.tiles;
     this.tileIds = Array.from({ length: T }, () => new Set<number>());
     this.tileBig = Array.from({ length: T }, () => new Set<number>());
-    this.near = new Uint8Array(T).fill(1);
-    culler.onChange((tile, vis) => {
-      const small = vis && this.near[tile] === 1;
-      for (const id of this.tileIds[tile]) this.batch.setVisible(id, small);
-      for (const id of this.tileBig[tile]) this.batch.setVisible(id, vis);
-    });
+    this.near = new Uint8Array(T).fill(2);
     const pg = new THREE.PlaneGeometry(2, 2);
     pg.rotateX(-Math.PI / 2);
     this.poolMat = new THREE.ShaderMaterial({
@@ -189,25 +197,33 @@ export class PropRenderer {
     this.glows.name = 'lampGlows';
   }
 
-  /** distance LOD for small props; call once per frame with the camera position */
+  /** distance LOD for small props (per tile, with 6% hysteresis); call once per frame with the camera position */
   updateLod(cam: THREE.Vector3): void {
     const c = this.culler;
     const T = c.tiles;
-    const size = c.tileCells * 16;
-    const lim2 = this.lodDistance * this.lodDistance;
+    const size = c.tileCells * c.cellSize;
+    const hide = this.lodDistance, full = Math.min(this.lodFull, hide);
     for (let tz = 0; tz < T; tz++) {
       for (let tx = 0; tx < T; tx++) {
         const i = tz * T + tx;
         const dx = Math.max(0, Math.abs(cam.x - (tx + 0.5) * size) - size / 2);
         const dz = Math.max(0, Math.abs(cam.z - (tz + 0.5) * size) - size / 2);
-        const n = dx * dx + dz * dz + cam.y * cam.y * 0.8 < lim2 ? 1 : 0;
-        if (n !== this.near[i]) {
+        const d = Math.sqrt(dx * dx + dz * dz + cam.y * cam.y * 0.8);
+        const cur = this.near[i];
+        const h = hide * (cur >= 1 ? 1.03 : 0.97), f = full * (cur === 2 ? 1.06 : 0.94);
+        const n = d < f ? 2 : d < h ? 1 : 0;
+        if (n !== cur) {
           this.near[i] = n;
-          const v = n === 1 && c.vis[i] === 1;
-          for (const id of this.tileIds[i]) this.batch.setVisible(id, v);
+          for (const id of this.tileIds[i]) this.applyLod(id, n);
         }
       }
     }
+  }
+
+  private applyLod(id: number, state: number): void {
+    this.batch.setVisible(id, state > 0);
+    const g = this.idGeo.get(id);
+    if (g && state > 0) this.batch.setGeometry(id, state === 2 ? g[0] : g[1]);
   }
 
   /** glows are only worth drawing at night */
@@ -231,7 +247,13 @@ export class PropRenderer {
     const e = MANIFEST_BY_ID[model];
     const nv = e?.variants ?? 1;
     const v = ((variant % nv) + nv) % nv;
-    return this.batch.geometryId(`${model}#${v}`, () => propGeometry(model, v));
+    const key = `${model}#${v}`;
+    const id = this.batch.geometryId(key, () => propGeometry(model, v));
+    if (!this.lodMap.has(id)) {
+      const lod = propLodGeometry(key, model, propGeometry(model, v));
+      this.lodMap.set(id, lod ? this.batch.geometryId(key + '#lod', () => lod) : id);
+    }
+    return id;
   }
 
   setGroup(key: string, props: PropItem[], pools: PoolItem[] = []): void {
@@ -242,6 +264,7 @@ export class PropRenderer {
         const t = this.idTile.get(id);
         if (t !== undefined) { this.tileIds[t].delete(id); this.tileBig[t].delete(id); }
         this.idTile.delete(id);
+        this.idGeo.delete(id);
       }
       if (old.pools.length) this.poolsDirty = true;
     }
@@ -260,7 +283,12 @@ export class PropRenderer {
       const big = p.model === 'util_power_pylon';
       (big ? this.tileBig : this.tileIds)[tile].add(id);
       this.idTile.set(id, tile);
-      this.batch.setVisible(id, this.culler.vis[tile] === 1 && (big || this.near[tile] === 1));
+      this.batch.setTile(id, tile);
+      if (!big) {
+        const lod = this.lodMap.get(gid) ?? gid;
+        if (lod !== gid) this.idGeo.set(id, [gid, lod]);
+        this.applyLod(id, this.near[tile]);
+      }
       g.ids.push(id);
     }
     if (pools.length) this.poolsDirty = true;

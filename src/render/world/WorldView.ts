@@ -18,7 +18,7 @@ import type { CameraControllerApi, CellHit, QualityLevel, WorldViewApi } from '.
 import { CameraController } from './CameraController';
 import { PostFX } from './PostFX';
 import { QUALITY_PRESETS, type QualitySettings } from './quality';
-import { CitySun, fitSunShadow } from './Shadows';
+import { CitySun, fitSunShadow, shadowCasters } from './Shadows';
 import { SkySystem } from './Sky';
 import { TerrainRenderer } from './TerrainRenderer';
 import { TreeRenderer } from './TreeRenderer';
@@ -72,6 +72,25 @@ export class WorldView implements WorldViewApi {
   autoTime: boolean;
   /** game minutes per real second when autoTime is on (default 2 -> a day lasts 12 real minutes) */
   timeScale = 2;
+  /**
+   * Shadow-map caching: the shadow map is re-rendered only when the shadow cameras moved (camera / sun changes that
+   * survive the texel snapping), when casters changed (throttled to every `shadowInterval` frames: vehicles,
+   * pop-in animations) or after invalidateShadows(). false = render shadows every frame (three's default).
+   * Code that moves its own shadow-casting meshes (outside DynamicBatch / TreeRenderer, which report changes
+   * themselves) should bump `shadowCasters.version` (Shadows.ts) or call invalidateShadows(); as a safety net the
+   * map is refreshed at least every `shadowMaxAge` frames.
+   */
+  shadowCache = true;
+  shadowInterval = 2;
+  shadowMaxAge = 20;
+  /**
+   * Dynamic resolution: scales the internal render resolution (not the canvas) between the preset's
+   * minRenderScale and 1 to hold the preset's targetFps. Frame intervals > 250 ms (stalls, background tabs,
+   * software GL) are ignored. Defaults to the quality preset; can be toggled at runtime.
+   */
+  dynamicResolution = false;
+  /** current internal render scale (1 = full resolution) */
+  renderScale = 1;
 
   private canvas: HTMLCanvasElement;
   private state: CityState;
@@ -87,8 +106,25 @@ export class WorldView implements WorldViewApi {
   private nightFill: THREE.HemisphereLight;
   private overlay: Overlay = Overlay.None;
   private maxHeight = 100;
+  private terrainMin = 0;
   private lastFrameMs = 0;
   private _disposed = false;
+  // shadow cache state
+  private shKey = new Float64Array(64);
+  private shVersion = -1;
+  private shFrame = 0;
+  private frameNo = 0;
+  private shForce = 2;
+  private shSunVisible = false;
+  private shadowDir = new THREE.Vector3(0, 1, 0);
+  /** frames the shadow map was actually re-rendered / skipped (stats) */
+  readonly shadowStats = { rendered: 0, skipped: 0, reason: '' };
+  // dynamic resolution state
+  private drsLast = 0;
+  private drsEma = 0;
+  private drsChange = 0;
+  private drsWait = 3000;
+  private drsUpAt = -1e9;
   /** construction timings (ms, cumulative) for diagnostics */
   readonly initTimings: Record<string, number> = {};
 
@@ -98,6 +134,7 @@ export class WorldView implements WorldViewApi {
     this.state = state;
     this.events = events;
     this.q = QUALITY_PRESETS[opts.quality ?? 'high'];
+    this.dynamicResolution = this.q.dynamicResolution;
     this._time = opts.timeOfDay ?? 10.5;
     this.autoTime = opts.autoTime ?? true;
 
@@ -127,7 +164,7 @@ export class WorldView implements WorldViewApi {
     // terrain
     this.terrain = new TerrainRenderer(state, this.q.terrainDetail, this.q.terrainShadows);
     this.scene.add(this.terrain.group);
-    this.maxHeight = this.terrain.heightRange()[1];
+    [this.terrainMin, this.maxHeight] = this.terrain.heightRange();
     mark('terrain');
     // water
     this.water = new WaterRenderer(this.terrain.heightTexture, state.size, state.config.climate, (x, z) => this.terrain.worldHeight(x, z), this.q.waterDetail, this.terrain.lightTexture);
@@ -206,13 +243,16 @@ export class WorldView implements WorldViewApi {
     const cells = (r: CellRect) => {
       this.terrain.markCells(r);
       this.trees.onCellsChanged(r);
+      // road / tree / terrain chunks rebuild over the next frames (budgeted): keep the shadow map fresh meanwhile
+      this.invalidateShadows(30);
     };
     const bRect = (b: Building): CellRect => ({ x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d });
     this.unsub.push(
       ev.on('terrainChanged', (r) => {
+        this.invalidateShadows(30);
         this.terrain.onTerrainChanged(r);
         this.trees.onCellsChanged({ x0: r.x0 - 1, z0: r.z0 - 1, x1: r.x1 + 1, z1: r.z1 + 1 });
-        this.maxHeight = this.terrain.heightRange()[1];
+        [this.terrainMin, this.maxHeight] = this.terrain.heightRange();
         if (r.x0 <= 1 || r.z0 <= 1 || r.x1 >= this.state.size - 1 || r.z1 >= this.state.size - 1) this.water.updateOuter((x, z) => this.terrain.worldHeight(x, z));
       }),
       ev.on('zoneChanged', cells),
@@ -237,8 +277,14 @@ export class WorldView implements WorldViewApi {
     this.trees.reset(state);
     this.sky.setClimate(state.config.climate);
     this.water.updateOuter((x, z) => this.terrain.worldHeight(x, z));
-    this.maxHeight = this.terrain.heightRange()[1];
+    [this.terrainMin, this.maxHeight] = this.terrain.heightRange();
     this.timeForce = true;
+    this.invalidateShadows(30);
+  }
+
+  /** force the shadow map to re-render for the next `frames` frames (e.g. after external scene edits) */
+  invalidateShadows(frames = 1): void {
+    this.shForce = Math.max(this.shForce, frames);
   }
 
   // ------------------------------------------------------------------ quality
@@ -246,6 +292,8 @@ export class WorldView implements WorldViewApi {
     const q = QUALITY_PRESETS[level];
     if (!q) return;
     this.q = q;
+    this.dynamicResolution = q.dynamicResolution;
+    this.renderScale = 1;
     this.terrain.setQuality(q.terrainDetail, q.terrainShadows);
     this.water.setQuality(q.waterDetail);
     this.trees.setQuality({ lodDistance: q.treeLodDistance, density: q.treeDensity, castShadows: q.treeShadows, maxVariants: q.treeVariants });
@@ -260,20 +308,40 @@ export class WorldView implements WorldViewApi {
   private applyShadowQuality() {
     const q = this.q;
     const cascaded = q.shadowCascades === 2;
-    const prevMap = this.sun.shadow.map;
     const modeChanged = this.sun.cascaded !== cascaded;
     this.sun.setCascaded(cascaded);
     const sh = this.sun.shadow;
     const size = q.shadowMapSize;
-    if (sh.mapSize.x !== size || prevMap !== sh.map) {
+    // free the map of the inactive mode (switching low <-> cascaded used to leak it) and re-create the active one
+    const other = cascaded ? this.sun.dirShadow : this.sun.cascadeShadow;
+    if (other.map) {
+      other.map.depthTexture?.dispose();
+      other.map.dispose();
+      other.map = null;
+    }
+    const ext = sh.getFrameExtents();
+    const w = size * ext.x, h = size * ext.y;
+    if (sh.mapSize.x !== size || !sh.map || sh.map.width !== w || sh.map.height !== h) {
       sh.mapSize.set(size, size);
       if (sh.map) {
+        sh.map.depthTexture?.dispose();
         sh.map.dispose();
-        sh.map = null;
       }
+      // pre-created so the (unused) colour attachment is R8 instead of three's RGBA8: PCF only samples the depth
+      // texture. Same depth texture setup as WebGLShadowMap.
+      const rt = new THREE.WebGLRenderTarget(w, h, { format: THREE.RedFormat, type: THREE.UnsignedByteType, depthBuffer: true, stencilBuffer: false, generateMipmaps: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+      const dt = new THREE.DepthTexture(w, h, THREE.UnsignedIntType);
+      dt.format = THREE.DepthFormat;
+      dt.name = 'sun.shadowMap';
+      dt.compareFunction = THREE.LessEqualCompare;
+      dt.minFilter = dt.magFilter = THREE.LinearFilter;
+      rt.depthTexture = dt;
+      rt.texture.name = 'sun.shadowMap.color';
+      sh.map = rt;
     }
     sh.radius = q.shadowRadius;
     sh.autoUpdate = true;
+    this.invalidateShadows(2);
     // lit materials must recompile when the light type changes (three also detects this via the lights state hash)
     if (modeChanged) this.scene.traverse((o) => {
       const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
@@ -314,13 +382,19 @@ export class WorldView implements WorldViewApi {
     this.terrain.setNight(L.night);
     this.water.update(this.clock, L.night);
 
-    // shadows
+    // shadows: the light direction used for shadows (and sun shading) only follows the sky in ~0.08 deg steps so a
+    // slowly moving sun does not force a shadow-map re-render every frame
+    const vis = this.sun.visible;
+    if (vis !== this.shSunVisible) { this.shSunVisible = vis; this.invalidateShadows(1); }
+    if (this.shadowDir.angleTo(L.lightDir) > 0.0014 || !this.shadowCache) this.shadowDir.copy(L.lightDir);
     fitSunShadow(this.sun, this.camera, {
       target: this.cameraController.target,
       distance: this.cameraController.distance,
       rangeMul: this.q.shadowRangeMul,
-      lightDir: L.lightDir,
+      lightDir: this.shadowDir,
       maxHeight: this.maxHeight,
+      minHeight: this.terrainMin,
+      mapSize: this.state.size * CELL_SIZE,
     });
 
     this.updateAtmosphere();
@@ -386,7 +460,84 @@ export class WorldView implements WorldViewApi {
   render(): void {
     if (this._disposed) return;
     this.renderer.info.reset();
+    this.updateDynamicResolution();
+    this.updateShadowPolicy();
     this.post.render(this.scene, this.camera, null);
+  }
+
+  /** decide whether this frame re-renders the shadow map (see shadowCache) */
+  private updateShadowPolicy(): void {
+    const sm = this.renderer.shadowMap;
+    if (!this.shadowCache) {
+      sm.autoUpdate = true;
+      return;
+    }
+    sm.autoUpdate = false;
+    this.frameNo++;
+    const sun = this.sun;
+    if (!sun.visible || !sun.castShadow || !sm.enabled) {
+      sm.needsUpdate = false;
+      return;
+    }
+    // fit the shadow cameras now (three repeats this identically when it renders the map) and compare
+    this.camera.updateMatrixWorld();
+    sun.updateMatrixWorld();
+    sun.target.updateMatrixWorld();
+    const sh = sun.shadow;
+    (sh as unknown as { updateMatrices(l: THREE.Light, c: THREE.Camera): void }).updateMatrices(sun, this.camera);
+    const cams: THREE.Camera[] = sun.cascaded ? ((sun.cascadeShadow as any)._cameras as THREE.Camera[]) : [sh.camera];
+    const key = this.shKey;
+    let o = 0, moved = false;
+    for (const c of cams) {
+      for (const m of [c.matrixWorld.elements, c.projectionMatrix.elements]) {
+        for (let i = 0; i < 16; i++, o++) {
+          // tolerance: the damped camera jitters by float ulps even when still
+          if (Math.abs(key[o] - m[i]) > 1e-6 * Math.max(1, Math.abs(m[i]))) { key[o] = m[i]; moved = true; }
+        }
+      }
+    }
+    let need = moved || this.shForce > 0 || !sh.map || this.frameNo - this.shFrame >= this.shadowMaxAge;
+    if (!need && shadowCasters.version !== this.shVersion && this.frameNo - this.shFrame >= this.shadowInterval) need = true;
+    if (need) {
+      this.shadowStats.reason = moved ? 'moved' : this.shForce > 0 ? 'forced' : !sh.map ? 'nomap' : shadowCasters.version !== this.shVersion ? 'casters' : 'age';
+      this.shVersion = shadowCasters.version;
+      this.shFrame = this.frameNo;
+      if (this.shForce > 0) this.shForce--;
+      this.shadowStats.rendered++;
+    } else this.shadowStats.skipped++;
+    sm.needsUpdate = need;
+  }
+
+  /** adapt renderScale to the frame interval (see dynamicResolution) */
+  private updateDynamicResolution(): void {
+    const now = performance.now();
+    const dt = now - this.drsLast;
+    this.drsLast = now;
+    if (!this.dynamicResolution) {
+      if (this.renderScale !== 1) { this.renderScale = 1; this.applyRenderSize(); }
+      return;
+    }
+    if (dt <= 0 || dt > 250) return;
+    this.drsEma = this.drsEma > 0 ? this.drsEma * 0.92 + dt * 0.08 : dt;
+    const budget = 1000 / this.q.targetFps;
+    const min = this.q.minRenderScale;
+    if (this.drsEma > budget * 1.2 && now - this.drsChange > 600 && this.renderScale > min + 1e-3) {
+      // too slow: step down; a step down right after a probe up doubles the wait before the next probe
+      if (now - this.drsUpAt < 2500) this.drsWait = Math.min(30000, this.drsWait * 2);
+      this.renderScale = Math.max(min, Math.round((this.renderScale - 0.1) * 20) / 20);
+      this.drsChange = now;
+      this.drsEma = budget;
+      this.applyRenderSize();
+    } else if (this.drsEma < budget * 1.05 && this.renderScale < 1 && now - this.drsChange > this.drsWait) {
+      this.renderScale = Math.min(1, Math.round((this.renderScale + 0.1) * 20) / 20);
+      this.drsChange = this.drsUpAt = now;
+      this.applyRenderSize();
+    } else if (now - this.drsChange > 20000) this.drsWait = 3000;
+  }
+
+  private applyRenderSize(): void {
+    const s = this.renderScale;
+    this.post.setSize(Math.max(1, Math.round(this.width * this.pixelRatio * s)), Math.max(1, Math.round(this.height * this.pixelRatio * s)));
   }
 
   resize(width: number, height: number): void {
@@ -400,7 +551,9 @@ export class WorldView implements WorldViewApi {
     this.renderer.setSize(width, height, true);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.post.setSize(width * this.pixelRatio, height * this.pixelRatio);
+    this.trees.viewHeight = height * this.pixelRatio;
+    this.trees.viewFov = this.camera.fov;
+    this.applyRenderSize();
   }
 
   // ------------------------------------------------------------------ overlays & tools
@@ -524,7 +677,9 @@ export class WorldView implements WorldViewApi {
     }
     this.post.setSize(width, height);
     this.renderer.info.reset();
+    this.renderer.shadowMap.needsUpdate = true;
     this.post.render(this.scene, cam, rt);
+    this.invalidateShadows(1);
     const px = new Uint8Array(width * height * 4);
     this.renderer.readRenderTargetPixels(rt, 0, 0, width, height, px);
     rt.dispose();
@@ -556,9 +711,10 @@ export class WorldView implements WorldViewApi {
     this.trees.dispose();
     this.sky.dispose();
     this.post.dispose();
-    this.sun.shadow.map?.dispose();
-    this.sun.dirShadow.map?.dispose();
-    this.sun.cascadeShadow.map?.dispose();
+    for (const sh of [this.sun.dirShadow, this.sun.cascadeShadow]) {
+      sh.map?.depthTexture?.dispose();
+      sh.map?.dispose();
+    }
     this.renderer.dispose();
   }
 }

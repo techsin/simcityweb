@@ -101,7 +101,7 @@ export class NetworkTool extends Tool {
     this.start = null;
     if (path && path.length) {
       const r = this.run(path, false);
-      if (r.ok) this.ctx.sound(this.kind === 'power' ? 'powerline' : this.kind === 'subway' || this.kind === Network.Rail ? 'rail' : 'build');
+      if (r.ok) this.ctx.sound(this.kind === 'power' ? 'powerline' : this.kind === 'subway' || this.kind === Network.Rail ? 'rail' : 'build', { intensity: Math.min(1, path.length / 40) });
       else {
         this.ctx.sound('error');
         if (r.reason) this.ctx.toast(r.reason, 'error');

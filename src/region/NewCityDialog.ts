@@ -91,8 +91,8 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
     nameInput.addEventListener('input', () => (cfg.name = nameInput.value));
     const mayorInput = h('input', { type: 'text', value: cfg.mayor, maxlength: '32', spellcheck: 'false' }) as HTMLInputElement;
     mayorInput.addEventListener('input', () => (cfg.mayor = mayorInput.value));
-    const diceName = button('', { icon: 'dice', cls: 'sq-btn', title: 'Random name', onClick: () => ((nameInput.value = cfg.name = randomCityName()), nameInput.focus()) });
-    const diceMayor = button('', { icon: 'dice', cls: 'sq-btn', title: 'Random name', onClick: () => (mayorInput.value = cfg.mayor = randomMayorName()) });
+    const diceName = button('', { icon: 'dice', cls: 'sq-btn', title: 'Random name', sound: 'shuffle', onClick: () => ((nameInput.value = cfg.name = randomCityName()), nameInput.focus()) });
+    const diceMayor = button('', { icon: 'dice', cls: 'sq-btn', title: 'Random name', sound: 'shuffle', onClick: () => (mayorInput.value = cfg.mayor = randomMayorName()) });
 
     const diff = segmented<Difficulty>({
       cols: 4,
@@ -126,6 +126,7 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
     const randomize = button('Randomize', {
       icon: 'refresh',
       cls: '',
+      sound: 'shuffle',
       onClick: () => {
         cfg.seed = Math.floor(Math.random() * 2 ** 31);
         redraw();
@@ -197,7 +198,8 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
       onClick: () => {
         cfg.name = nameInput.value.trim() || randomCityName();
         cfg.mayor = mayorInput.value.trim() || randomMayorName();
-        audio.play('reward');
+        // city founded: short celebratory fanfare (plays over the loading screen)
+        audio.play('found');
         result = { ...cfg, size };
         m.close(true);
       },

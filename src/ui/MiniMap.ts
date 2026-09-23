@@ -42,6 +42,7 @@ export class MiniMap {
     const collapse = h('button', { class: 'icon-btn', title: 'Collapse map', html: icon('chevDown', 14) });
     collapse.addEventListener('click', () => {
       this.collapsed = !this.collapsed;
+      this.ctx.sound(this.collapsed ? 'flyoutClose' : 'flyout');
       this.el.classList.toggle('collapsed', this.collapsed);
       collapse.innerHTML = icon(this.collapsed ? 'chevUp' : 'chevDown', 14);
     });
@@ -68,6 +69,7 @@ export class MiniMap {
       if (e.button !== 0) return;
       this.dragging = true;
       this.canvas.setPointerCapture(e.pointerId);
+      this.ctx.sound('tap');
       go(e);
     });
     this.canvas.addEventListener('pointermove', (e) => this.dragging && go(e));

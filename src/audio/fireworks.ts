@@ -48,6 +48,8 @@ export interface FireworksSpatial {
 const MAX_VOICES = 22;
 const MAX_DELAY = 1.6;
 const SPEED_OF_SOUND = 340;
+/** asymptotic distance delay (s); stays below MAX_DELAY */
+const DELAY_CAP = 1.4;
 
 export function spatialize(l: FireworksListener, x: number, y: number, z: number, out?: FireworksSpatial): FireworksSpatial {
   const o = out ?? { pan: 0, gain: 1, delay: 0, lowpass: 16000, distance: 0 };
@@ -57,7 +59,8 @@ export function spatialize(l: FireworksListener, x: number, y: number, z: number
   const side = (dx * l.rx + dy * l.ry + dz * l.rz) / Math.max(d, 1);
   o.pan = Math.max(-0.9, Math.min(0.9, side * 1.15));
   o.gain = 1 / (1 + Math.pow(d / 480, 1.3));
-  o.delay = Math.min(d / SPEED_OF_SOUND, MAX_DELAY);
+  // speed of sound up close, smoothly capped far away (all bursts would otherwise share the same capped lag)
+  o.delay = DELAY_CAP * (1 - Math.exp(-d / (SPEED_OF_SOUND * DELAY_CAP)));
   o.lowpass = Math.max(650, Math.min(16000, 16000 * Math.exp(-d / 1300)));
   return o;
 }

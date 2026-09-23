@@ -3,7 +3,7 @@
  *
  *   ?track=<id>[&seed=S][&seconds=N][&from=T]   render a song (default: the whole song + tail) through the game's
  *                                                 instrument library, track trim and reverb (44.1 kHz stereo)
- *   ?sfx=<name>|all                              render UI / game one-shots (2 s apart) with per-sound stats
+ *   ?sfx=<name>[,<name>...]|all                  render UI / game one-shots (one slot each) with per-sound stats
  *   ?inst=<name>|all                             instrument demo phrases (vel 0.7 then 0.35) with per-instrument stats
  *   ?director=<seconds>[&real=1&stall=T&next=T&select=id@T]   live MusicDirector test (see directorTest.ts)
  *   no params                                    index of everything available
@@ -16,7 +16,7 @@ import { ALL_TRACKS } from '../music/tracks';
 import { instantiateTrack } from '../music/director';
 import { makeNoiseBuffer, makeReverb } from '../music/fx';
 import { Instruments, type InstrumentName } from '../music/synth';
-import { playVoice, SOUND_NAMES, type SfxEnv, type SoundName } from '../sfx';
+import { playVoice, SOUND_META, SOUND_NAMES, type SfxEnv, type SoundName } from '../sfx';
 import { levels, loudness, onsets, spectrum, round, type SpectrumStats, type LoudnessResult } from './analysis';
 import { runDirectorTest } from './directorTest';
 
@@ -214,14 +214,20 @@ async function renderIdle(seconds: number) {
 }
 
 async function renderSfx(which: string) {
-  const names: SoundName[] = which === 'all' ? [...SOUND_NAMES] : [which as SoundName];
+  // sfx=all | sfx=name | sfx=a,b,c ; each sound gets a slot of its length + 1.2 s (reverb tail), at least 1.5 s
+  const names: SoundName[] = which === 'all' ? [...SOUND_NAMES] : (which.split(',') as SoundName[]);
   if (!names.every((n) => SOUND_NAMES.includes(n))) throw new Error(`unknown sfx "${which}" (have: ${SOUND_NAMES.join(', ')})`);
-  const gap = 2;
-  const { ctx, reverbIn, noise } = offline(names.length * gap + 1);
+  const slot = (n: SoundName) => Math.max(1.5, (SOUND_META[n]?.dur ?? 1.5) + 1.2);
+  const segs: Segment[] = [];
+  let at = 0.2;
+  for (const n of names) {
+    segs.push({ name: n, t0: at, t1: at + slot(n) });
+    at += slot(n);
+  }
+  const { ctx, reverbIn, noise } = offline(at + 0.5);
   const out = ctx.createGain();
   out.connect(ctx.destination);
   const env: SfxEnv = { ctx: ctx as unknown as AudioContext, out, wet: reverbIn, noise };
-  const segs: Segment[] = names.map((n, k) => ({ name: n, t0: 0.2 + k * gap, t1: 0.2 + (k + 1) * gap }));
   segs.forEach((s) => {
     void ctx.suspend(s.t0).then(() => {
       playVoice(env, s.name as SoundName, out, { exact: true });

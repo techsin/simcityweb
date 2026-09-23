@@ -91,6 +91,9 @@ export class Onboarding {
   private visible = false;
   private doneAt = -1;
   private acc = 1;
+  /** steps already done at the last check (a newly finished step chimes); null until the first check after show() */
+  private doneSteps: Set<number> | null = null;
+  private constructed = false;
   startDay = 0;
 
   constructor(private ctx: GameContext, parent: HTMLElement, private hooks: { coach: (cats: string[], play: boolean) => void }) {
@@ -100,13 +103,16 @@ export class Onboarding {
     const pref = loadPref<{ dismissed?: boolean }>(PREF, {});
     const young = ctx.state.stats.population < 300 && ctx.state.buildings.size < 40;
     if (!pref.dismissed && young) this.show();
+    this.constructed = true;
   }
 
   /** show regardless of the stored dismissal (e.g. from Help) */
   show(): void {
+    if (this.constructed && !this.visible) this.ctx.sound('open');
     this.visible = true;
     this.startDay = this.ctx.state.day;
     this.doneAt = -1;
+    this.doneSteps = null;
     this.el.classList.add('show');
     this.acc = 1;
     this.frame(0);
@@ -169,6 +175,13 @@ export class Onboarding {
       setText(r.num, done ? '✓' : String(i + 1));
     });
     this.rows.forEach((r, i) => toggleClass(r.el, 'current', i === current));
+    // chime when a step gets done (not for steps already done when the card appeared, nor the last one: see below)
+    const nowDone = new Set(this.rows.map((r, i) => (r.el.classList.contains('done') ? i : -1)).filter((i) => i >= 0));
+    if (this.doneSteps && doneN < STEPS.length) for (const i of nowDone) if (!this.doneSteps.has(i)) {
+      this.ctx.sound('stepDone');
+      break;
+    }
+    this.doneSteps = nowDone;
     setText(this.progress, `${doneN} / ${STEPS.length}`);
     const cur = current >= 0 ? STEPS[current] : null;
     this.hooks.coach(cur ? cur.coach : [], !!cur?.coachPlay);

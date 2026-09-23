@@ -6,7 +6,10 @@
  *  income:  'tax:R$' 'tax:R$$' 'tax:R$$$' 'tax:CS$' 'tax:CS$$' 'tax:CS$$$' 'tax:CO$$' 'tax:CO$$$'
  *           'tax:I-Ag' 'tax:I-D' 'tax:I-M' 'tax:I-HT'                      (DEV_TYPE_LABELS)
  *           'deal:<defId>'      business deals / reward buildings with income (military base, casino…)
- *           'facility:<defId>'  other buildings with income (airports, stadium, zoo, seaport…)
+ *           'facility:<defId>'  other buildings with income (airports, stadium, zoo, seaport…); tourist venues earn
+ *                               × (0.35 + 0.65 × visits / draw) × (A/60)^0.3 (SIM_DEPTH_SPEC WP4) × use factor (WP7)
+ *           'tourism'           tourist spending: effective tourists × 0.25 × (avg CS tax / 9)       (WP4)
+ *           'recycling'         recycled material sales: tons recycled × 0.5                          (WP4 / WP3)
  *           'ordinance:<id>'    revenue ordinances (legalized gambling, parking fines)
  *           'oneoff:loan'       loan proceeds          'oneoff:refund'  bulldoze refunds
  *  expense: 'service:police' 'service:fire' 'service:health' 'service:education' 'service:transit'
@@ -26,11 +29,14 @@ import type { ServiceKind } from '../catalogTypes';
 import { getDef } from '../catalog';
 import {
   BANKRUPT_MONTHS, BANKRUPT_WARN_MONTHS, BRIDGE_UPKEEP_MUL, DIFFICULTY_INCOME, LANDFILL_UPKEEP, NETWORK_UPKEEP, POWERLINE_UPKEEP,
-  STRIKE_FUNDING, SUBWAY_UPKEEP, TAX_PER_JOB, TAX_PER_RES, UTIL_FIXED,
+  RECYCLING_INCOME_PER_T, STRIKE_FUNDING, SUBWAY_UPKEEP, TAX_NEUTRAL, TAX_PER_JOB, TAX_PER_RES, TOURISM, TOURISM_INCOME_PER_VISITOR,
+  UTIL_FIXED, VENUE_INCOME,
 } from './tuning';
 import { type EconRuntime, econData, infraFlags } from './runtime';
 import { ORDINANCES, ordinanceEffect, ordinanceMonthly } from './ordinances';
 import { payLoansMonthly } from './loans';
+import { ATTRACTIONS, venueVisits } from './tourism';
+import { facilityUseFactor } from '../infra/facilities';
 
 const NET_KEY: Record<number, string> = {
   [Network.Street]: 'transport:streets',
@@ -90,6 +96,21 @@ export function estimateUtilities(st: CityState, rt: EconRuntime): void {
   void rt;
 }
 
+/**
+ * Income multiplier of a tourist venue from its visits (WP4): (0.35 + 0.65 × min(1.25, visits / draw)) × (A/60)^0.3.
+ * Normalised by the venue's reference draw (visits at attractiveness 60 in a big, well connected city), so a normally
+ * visited venue earns its catalog income. 1 when the tourism system has not run (economy-less tools, old saves).
+ */
+export function venueIncomeFactor(st: CityState, buildingId: number, defId: string): number {
+  const a = ATTRACTIONS[defId];
+  if (!a) return 1;
+  const v = venueVisits(st, buildingId);
+  if (!v) return 1;
+  const A = (st.systemData.economy as { attractiveness?: number } | undefined)?.attractiveness ?? TOURISM.aRef;
+  const aF = Math.pow(Math.min(1.5, Math.max(0.5, A / TOURISM.aRef)), VENUE_INCOME.aExp);
+  return (VENUE_INCOME.base + VENUE_INCOME.use * Math.min(VENUE_INCOME.useMax, v.visits / a.draw)) * aF;
+}
+
 export interface BudgetBreakdown {
   income: Record<string, number>;
   expense: Record<string, number>;
@@ -122,8 +143,15 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
     else if (def.waterOut && def.category === 'water') up *= UTIL_FIXED + (1 - UTIL_FIXED) * waterUtil;
     if (def.service) add(expense, 'service:' + def.service, up * (funding[def.service] ?? 100) / 100);
     else add(expense, 'service:civic', up);
-    if (def.income && !(b.flags & BF.Burnt)) add(income, (def.category === 'reward' ? 'deal:' : 'facility:') + def.id, def.income);
+    if (def.income && !(b.flags & BF.Burnt)) {
+      const deal = def.category === 'reward';
+      add(income, (deal ? 'deal:' : 'facility:') + def.id, def.income * (deal ? 1 : venueIncomeFactor(st, b.id, def.id)) * facilityUseFactor(st, b));
+    }
   }
+  // ---- tourism (WP4): tourist spending taxed like shops; recycled material sales (WP3 writes stats.garbageRecycled)
+  const tourists = (st.systemData.economy as { tourists?: number } | undefined)?.tourists ?? 0;
+  if (tourists > 0) add(income, 'tourism', tourists * TOURISM_INCOME_PER_VISITOR * ((rates[3] + rates[4] + rates[5]) / 3 / TAX_NEUTRAL) * mul);
+  if (s.garbageRecycled > 0) add(income, 'recycling', s.garbageRecycled * RECYCLING_INCOME_PER_T);
   // ---- networks
   const N = st.cells;
   const counts = new Float64Array(8);

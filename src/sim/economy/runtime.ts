@@ -65,6 +65,11 @@ export interface EconData {
   migration: number[];
   /** regional demand terms of the last demand update (WP4-1; WP5 demand tooltip) */
   regionTerms?: RegionTerms;
+  /** WP4: residents per wealth that come without local jobs (retirees + university students), added to the R base */
+  migrants?: number[];
+  /** WP4: tourists per day before the hotel limit, overnight visitors (for the tourism panel / advisors) */
+  touristsGross?: number;
+  overnight?: number;
 }
 
 /** WP4-1 regional demand terms (capacity units added to the targets / caps) */
@@ -123,6 +128,9 @@ export function econData(st: CityState): EconData {
   d.attractTerms ??= {};
   d.hotelShortage ??= 0;
   d.migration ??= [1, 1, 1];
+  d.migrants ??= [0, 0, 0];
+  d.touristsGross ??= 0;
+  d.overnight ??= 0;
   return d;
 }
 
@@ -240,6 +248,9 @@ export class EconRuntime {
   coarseSkill!: Float32Array;
   /** kids per coarse block (blurred) */
   coarseKids!: Float32Array;
+  /** WP4: tourists per day per coarse block (3×3 blurred like coarsePop; monthly) — extra shop customers for CS
+   *  desirability (WP6 popNear) */
+  coarseVisitors!: Float32Array;
 
   // ---- static land value (terrain): per cell
   lvStatic!: Float32Array;
@@ -295,6 +306,7 @@ export class EconRuntime {
     this.coarsePopW = [new Float32Array(cc), new Float32Array(cc), new Float32Array(cc)];
     this.coarseSkill = new Float32Array(cc);
     this.coarseKids = new Float32Array(cc);
+    this.coarseVisitors = new Float32Array(cc);
     this.workforceRatio = WORKFORCE_RATIO;
     this.lvStatic = new Float32Array(st.cells);
     this.lvEffects = new Float32Array(st.cells);

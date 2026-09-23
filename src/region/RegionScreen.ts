@@ -11,6 +11,7 @@ import { TILE_SIZE_LABEL, type RegionData, type RegionTile } from './types';
 import { button, formatMoney, formatPop, h, icon, timeAgo, withSounds } from './ui/dom';
 import { confirmDialog, promptDialog, toast } from './ui/modal';
 import { downloadBlob, exportRegion, importRegion, safeFileName } from '../save';
+import { MusicPlayer } from '../ui/MusicPlayer';
 
 export interface RegionScreenCallbacks {
   onPlay(tile: RegionTile): void;
@@ -35,11 +36,14 @@ export class RegionScreen {
   private tileCard: HTMLElement | null = null;
   private labels = new Map<string, HTMLElement>();
   private labelLayer: HTMLElement;
-  private musicBtn!: HTMLButtonElement;
-  private offAudio: () => void;
+  private player!: MusicPlayer;
+  private hoverKey = '';
   private fileInput: HTMLInputElement;
   private onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && this.view.selectedTile && !document.querySelector('.modal-back')) this.selectTile(null);
+    if (e.key === 'Escape' && this.view.selectedTile && !document.querySelector('.modal-back')) {
+      audio.play('close');
+      this.selectTile(null);
+    }
   };
 
   constructor(root: HTMLElement, readonly model: RegionModel, private cb: RegionScreenCallbacks, opts: { quality?: QualityLevel } = {}) {
@@ -56,11 +60,19 @@ export class RegionScreen {
     this.el = h('div', { class: 'region-hud' });
     root.append(this.labelLayer, this.el, this.tip);
     this.buildHud();
-    this.offAudio = audio.onChange(() => this.syncMusic());
 
-    this.view.onHover = (tile, x, y) => this.showTip(tile, x, y);
+    this.view.onHover = (tile, x, y) => {
+      // soft tick when the pointer moves onto another tile (throttled by audio.hover)
+      const key = tile?.key ?? '';
+      if (key !== this.hoverKey) {
+        this.hoverKey = key;
+        if (tile) audio.hover();
+      }
+      this.showTip(tile, x, y);
+    };
     this.view.onClick = (tile) => {
-      if (tile) audio.play('click');
+      if (tile) audio.play(tile === this.view.selectedTile ? 'tap' : 'query');
+      else if (this.view.selectedTile) audio.play('close');
       this.selectTile(tile);
     };
     this.view.onDoubleClick = (tile) => (tile.city ? cb.onPlay(tile) : cb.onFound(tile));
@@ -74,15 +86,12 @@ export class RegionScreen {
   private buildHud(): void {
     const d = this.model.data;
     const rename = h('button', { class: 'icon-btn sq rename', title: 'Rename region', style: 'width:30px;height:30px;border:0;background:transparent' }, icon('edit', 15)) as HTMLButtonElement;
-    withSounds(rename);
     rename.addEventListener('click', () => this.rename());
     this.card = h('div', { class: 'rh-card glass' });
     this.list = h('div', { class: 'rc-list scroll' });
     const cities = h('div', { class: 'rh-cities glass' }, h('div', { class: 'rc-head' }, icon('building', 14), 'Cities'), this.list);
-    this.musicBtn = h('button', { class: 'icon-btn', title: 'Music on / off' }) as HTMLButtonElement;
-    withSounds(this.musicBtn);
-    this.musicBtn.addEventListener('click', () => audio.toggleMusic());
-    this.syncMusic();
+    // now-playing pill (replaces the old music on/off button)
+    this.player = new MusicPlayer(audio, { variant: 'pill', popover: 'down' });
     const tbtn = (ic: string, title: string, fn: () => void) => {
       const b = h('button', { class: 'icon-btn', title }, icon(ic, 17)) as HTMLButtonElement;
       withSounds(b);
@@ -92,9 +101,9 @@ export class RegionScreen {
     const top = h(
       'div',
       { class: 'rh-top-right' },
+      this.player.el,
       tbtn('download', 'Export region (.metropolis)', () => this.exportFile()),
       tbtn('upload', 'Import region file', () => this.fileInput.click()),
-      this.musicBtn,
       tbtn('settings', 'Settings', () => this.cb.onSettings()),
       tbtn('home', 'Main menu', () => this.cb.onMenu()),
     );
@@ -111,10 +120,6 @@ export class RegionScreen {
     this.renderCard(rename);
     this.renderList();
     void d;
-  }
-
-  private syncMusic(): void {
-    this.musicBtn?.replaceChildren(icon(audio.musicEnabled ? 'music' : 'musicOff', 17));
   }
 
   private renderCard(renameBtn?: HTMLButtonElement): void {
@@ -154,9 +159,8 @@ export class RegionScreen {
           c.thumbnail ? h('img', { src: c.thumbnail, alt: '' }) : h('div', { class: 'rc-ph' }),
           h('div', { style: 'min-width:0' }, h('div', { class: 'rc-n' }, c.name), h('div', { class: 'rc-p' }, `${formatPop(c.population)} · ${TILE_SIZE_LABEL[t.size]}`)),
         );
-        row.addEventListener('pointerenter', () => audio.hover());
         row.addEventListener('click', () => {
-          audio.play('click');
+          audio.play('tab');
           this.selectTile(t);
           this.view.focusTile(t);
         });
@@ -351,7 +355,7 @@ export class RegionScreen {
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKey);
-    this.offAudio();
+    this.player.dispose();
     this.view.dispose();
     this.el.remove();
     this.tip.remove();

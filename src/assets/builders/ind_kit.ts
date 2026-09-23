@@ -426,6 +426,8 @@ export interface TankOpts {
   stair?: boolean;
   /** ring stiffener color (null = none) */
   rim?: ColorLike | null;
+  /** Plain shells only: warm floodlit shell at night (lit from the yard below), light reach in m (0 = unlit) */
+  flood?: number;
 }
 /** Vertical storage tank. Returns the top center point. */
 export function tank(b: ModelBuilder, x: number, z: number, r: number, h: number, color: ColorLike, o: TankOpts = {}): V3 {
@@ -439,7 +441,8 @@ export function tank(b: ModelBuilder, x: number, z: number, r: number, h: number
     b.paint(o.base, Surf.Plain);
     disc(b, x, z, y0 + baseH, r + 0.15, seg);
   }
-  b.paint(color, surf);
+  if (o.flood && surf === Surf.Plain) b.paint(color, surf, 1, o.flood);
+  else b.paint(color, surf);
   tube(b, x, z, y0 + baseH, h - baseH, r, r, seg);
   const yt = y0 + h;
   const rc = o.roofColor ?? color;
@@ -482,9 +485,10 @@ export function tank(b: ModelBuilder, x: number, z: number, r: number, h: number
 }
 
 /** Spherical pressure tank on legs. Returns top point. */
-export function sphereTank(b: ModelBuilder, x: number, z: number, r: number, color: ColorLike, legColor: ColorLike = 0x6a6e72, seg = 12, rings = 7): V3 {
+export function sphereTank(b: ModelBuilder, x: number, z: number, r: number, color: ColorLike, legColor: ColorLike = 0x6a6e72, seg = 12, rings = 7, flood = 0): V3 {
   const cy = r * 1.1 + 0.8;
-  b.paint(color, Surf.Plain);
+  if (flood > 0) b.paint(color, Surf.Plain, 1, flood);
+  else b.paint(color, Surf.Plain);
   sphereL(b, x, cy, z, r, seg, rings);
   b.paint(legColor, Surf.Metal);
   const legs = 6;
@@ -730,10 +734,10 @@ export function wallRun(b: ModelBuilder, ax: number, az: number, bx: number, bz:
  * Yard flood light pole (emissive head), 16 tris. With `groundColor` it also lays an Emissive-9 light pool
  * (8-gon, r = 1.2 x pole height, 0.7 x ground color) that lights the pavement at night.
  */
-export function floodLight(b: ModelBuilder, x: number, z: number, h = 9, groundColor: ColorLike | null = null, poolR = h * 1.2, clip?: [number, number, number, number], poolY = Y_POOL): void {
+export function floodLight(b: ModelBuilder, x: number, z: number, h = 9, groundColor: ColorLike | null = null, poolR = h * 1.2, clip?: [number, number, number, number], poolY = Y_POOL, head: ColorLike = 0xfff2d0): void {
   b.paint(0x3a3d40, Surf.Metal);
   strut(b, [x, 0, z], [x, h, z], 0.2);
-  b.paint(0xfff2d0, Surf.Emissive, 6).boxC(x, z, 0.8, 0.4, h, 0.35, { bottom: { color: 0xfff2d0, surf: Surf.Emissive, pattern: 6 } });
+  b.paint(head, Surf.Emissive, 6).boxC(x, z, 0.8, 0.4, h, 0.35, { bottom: { color: head, surf: Surf.Emissive, pattern: 6 } });
   if (groundColor !== null) {
     // keep the pool inside the lot (clip = [x0, z0, x1, z1]) by shifting its center inward
     let px = x, pz = z;
@@ -747,8 +751,8 @@ export function floodLight(b: ModelBuilder, x: number, z: number, h = 9, groundC
 }
 
 /** Tiny omni-visible light point (tetrahedron, 4 tris): sodium / LED work lights that sparkle at night. */
-export function lightDot(b: ModelBuilder, x: number, y: number, z: number, s = 0.3, color: ColorLike = 0xffd08a): void {
-  b.paint(color, Surf.Emissive, 6);
+export function lightDot(b: ModelBuilder, x: number, y: number, z: number, s = 0.3, color: ColorLike = 0xffd08a, pattern = 6): void {
+  b.paint(color, Surf.Emissive, pattern);
   const t: V3 = [x, y + s, z];
   const p0: V3 = [x + s, y - s * 0.5, z], p1: V3 = [x - s * 0.5, y - s * 0.5, z + s * 0.87], p2: V3 = [x - s * 0.5, y - s * 0.5, z - s * 0.87];
   b.tri(t, p1, p0).tri(t, p2, p1).tri(t, p0, p2).tri(p0, p1, p2);
@@ -756,9 +760,23 @@ export function lightDot(b: ModelBuilder, x: number, y: number, z: number, s = 0
 }
 
 /** Light points spread over a set of positions. */
-export function lights(b: ModelBuilder, pts: V3[], s = 0.3, color: ColorLike = 0xffd08a): void {
-  for (const p of pts) lightDot(b, p[0], p[1], p[2], s, color);
+export function lights(b: ModelBuilder, pts: V3[], s = 0.3, color: ColorLike = 0xffd08a, pattern = 6): void {
+  for (const p of pts) lightDot(b, p[0], p[1], p[2], s, color, pattern);
   b.paint(RESET_PAINT, Surf.Metal);
+}
+
+/** High-pressure sodium lamp colour for industrial yard / platform lights. */
+export const SODIUM = 0xffb060;
+
+/**
+ * Stair / platform lights up a column or tank ladder: a small dim sodium point (4 tris, Emissive pattern 2) every
+ * `step` m from y0 + step up to y1 (a lit stair tower at night). Returns the number of lights.
+ */
+export function stairLights(b: ModelBuilder, x: number, z: number, y0: number, y1: number, step = 6, s = 0.3, color: ColorLike = SODIUM): number {
+  let n = 0;
+  for (let y = y0 + step; y <= y1 + 0.01; y += step, n++) lightDot(b, x, y, z, s, color, 2);
+  b.paint(RESET_PAINT, Surf.Metal);
+  return n;
 }
 
 /** Security light posts along a straight run every `spacing` m: pole + cool LED dot + Emissive-9 pool. */

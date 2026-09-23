@@ -83,7 +83,7 @@ describe('infra perf (256x256 stress city)', () => {
     console.log(`scheduler (P0-8/P0-15): utilisation ${(util * 100).toFixed(1)}% of INFRA_DAY_BUDGET ${INFRA_DAY_BUDGET} · max est. step ${[...maxEst].map(([k, v]) => `${k}=${v.toFixed(2)}`).join(' ')} · max measured step ms ${[...sch.maxStepMs].map(([k, v]) => `${k}=${v.toFixed(2)}`).join(' ')} · est ms/day ${[...sch.estMs].map(([k, v]) => `${k}=${(v / D).toFixed(2)}`).join(' ')}`);
     // P0-8 step budget: estimated cost <= 3.0 per step. Pre-existing oversized steps are capped at their Phase 0 values
     // (regression guard) — their owners lower the cap to 3.0 when they split the step (pollution / crime: WP3).
-    const EST_CAP: Record<string, number> = { pollution: 4.6, traffic: 3.25, crime: 3.25 };
+    const EST_CAP: Record<string, number> = { traffic: 3.25 }; // pollution / crime split into <= 3.0 steps (WP3)
     for (const [name, c] of maxEst) expect(c, `estimated step cost of ${name}`).toBeLessThanOrEqual(EST_CAP[name] ?? 3.0);
     // measured max per step <= 6 ms (CI slack); wall-clock on shared machines spikes (GC / load), so strict mode only
     if (process.env.PERF_STRICT) for (const [name, ms] of sch.maxStepMs) expect(ms, `measured step ms of ${name}`).toBeLessThanOrEqual(6);

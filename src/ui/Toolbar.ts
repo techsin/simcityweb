@@ -42,10 +42,8 @@ export class Toolbar {
         this.onCategory(c);
         b.blur();
       });
-      b.addEventListener('pointerenter', () => {
-        this.showCatTip(c, b);
-        this.ctx.sound('hover');
-      });
+      // hover blip: delegated (src/ui/uiSounds.ts, .tb-btn)
+      b.addEventListener('pointerenter', () => this.showCatTip(c, b));
       b.addEventListener('pointerleave', () => this.hideTip());
       this.btns.set(c.id, b);
       this.bar.appendChild(b);
@@ -55,7 +53,10 @@ export class Toolbar {
     parent.appendChild(this.el);
     parent.appendChild(this.tip);
     document.addEventListener('pointerdown', (e) => {
-      if (this.openCat && !(e.target as HTMLElement).closest('.toolbar')) this.closeFlyout();
+      if (this.openCat && !(e.target as HTMLElement).closest('.toolbar')) {
+        this.ctx.sound('flyoutClose');
+        this.closeFlyout();
+      }
     }, { signal: ctx.signal });
     ctx.ui.on('tool', () => this.syncActive());
     ctx.ui.on('panel', ({ id }) => {
@@ -79,8 +80,8 @@ export class Toolbar {
     if (c.toolId) {
       this.closeFlyout();
       const cur = this.ctx.tools.activeId;
+      // ToolController.select plays the tool sound
       this.ctx.tools.select(cur === c.toolId ? null : c.toolId);
-      this.ctx.sound('click');
       return;
     }
     if (c.panelId) {
@@ -88,8 +89,10 @@ export class Toolbar {
       this.ctx.panels.toggle(c.panelId);
       return;
     }
-    if (this.openCat === c.id) this.closeFlyout();
-    else this.openFlyout(c.id);
+    if (this.openCat === c.id) {
+      this.ctx.sound('flyoutClose');
+      this.closeFlyout();
+    } else this.openFlyout(c.id);
   }
 
   openFlyout(catId: string, tab?: string): void {
@@ -113,7 +116,7 @@ export class Toolbar {
       this.positionFlyout();
       this.flyout.classList.add('open');
     });
-    this.ctx.sound('open');
+    this.ctx.sound('flyout');
   }
 
   /** center over the category button (wide menus: over the toolbar), clamped to the screen */
@@ -202,7 +205,7 @@ export class Toolbar {
           this.lastTab.set(c.id, gi);
           this.renderFlyout(c);
           this.positionFlyout();
-          this.ctx.sound('click');
+          this.ctx.sound('tab');
         });
         tabs.appendChild(b);
       });
@@ -257,15 +260,10 @@ export class Toolbar {
         el.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-4px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 220 });
         return;
       }
-      if (this.ctx.tools.select(s.id)) {
-        this.ctx.sound('click');
-        this.closeFlyout();
-      }
+      // ToolController.select plays the (category-pitched) tool sound
+      if (this.ctx.tools.select(s.id)) this.closeFlyout();
     });
-    el.addEventListener('pointerenter', () => {
-      this.showSpecTip(s, el);
-      this.ctx.sound('hover');
-    });
+    el.addEventListener('pointerenter', () => this.showSpecTip(s, el));
     el.addEventListener('pointerleave', () => this.hideTip());
     return el;
   }

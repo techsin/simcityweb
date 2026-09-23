@@ -58,7 +58,7 @@ export class Modal {
     });
     uiRoot().appendChild(this.back);
     window.addEventListener('keydown', this.keyHandler, true);
-    audio.play('open');
+    audio.play('dialogOpen');
     const first = this.card.querySelector<HTMLElement>('input[type=text], .autofocus');
     if (first) setTimeout(() => first.focus(), 60);
   }
@@ -71,7 +71,7 @@ export class Modal {
     if (this.closed) return;
     this.closed = true;
     window.removeEventListener('keydown', this.keyHandler, true);
-    if (!silent) audio.play('close');
+    if (!silent) audio.play('dialogClose');
     this.back.style.transition = 'opacity 0.18s';
     this.back.style.opacity = '0';
     setTimeout(() => this.back.remove(), 180);
@@ -129,6 +129,7 @@ export function toast(text: string, kind: 'info' | 'good' | 'bad' = 'info', ms =
   const t = h('div', { class: `toast ${kind}` }, icon(kind === 'bad' ? 'x' : kind === 'good' ? 'check' : 'info', 16), text);
   toastWrap.appendChild(t);
   if (kind === 'bad') audio.play('error');
+  else if (kind === 'good') audio.play('good', { volume: 0.75 });
   setTimeout(() => {
     t.style.transition = 'opacity 0.3s, transform 0.3s';
     t.style.opacity = '0';
@@ -172,7 +173,7 @@ export function toggle(label: string, checked: boolean, onChange: (v: boolean) =
   const input = h('input', { type: 'checkbox' }) as HTMLInputElement;
   input.checked = checked;
   input.addEventListener('change', () => {
-    audio.play('toggle');
+    audio.play(input.checked ? 'toggleOn' : 'toggleOff');
     onChange(input.checked);
   });
   return h('label', { class: 'toggle' }, input, h('span', { class: 'tg' }), label);
@@ -195,9 +196,8 @@ export function segmented<T extends string | number>(o: {
     const b = o.chips
       ? h('button', { class: 'chip', type: 'button', disabled: it.disabled }, it.icon ? icon(it.icon, 14) : null, it.title)
       : h('button', { class: 'seg-item', type: 'button', disabled: it.disabled }, h('span', { class: 'si-t' }, it.icon ? icon(it.icon, 15) : null, it.title), it.sub ? h('span', { class: 'si-s' }, it.sub) : null);
-    b.addEventListener('pointerenter', () => audio.hover());
     b.addEventListener('click', () => {
-      audio.play('click');
+      audio.play('tab');
       set(it.value);
       o.onChange(it.value);
     });

@@ -8,7 +8,12 @@ import type { Building, CityState } from '../CityState';
 import { BF } from '../CityState';
 import type { Simulation } from '../Simulation';
 import { getDef } from '../catalog';
-import type { BuildingDef, ServiceKind } from '../catalogTypes';
+import type { BuildingDef, ReachMetric, ServiceKind, ServiceTier } from '../catalogTypes';
+import { COHORT_BASE } from '../economy/tuning';
+import {
+  CATCH_COLLEGE_WILL, COLLEGE_ADULT_W, GREEN_NEED_BASE, GREEN_NEED_NORM, GREEN_NEED_SENIOR, HEALTH_NEED_NORM, HEALTH_NEED_W,
+  PARK_DEFAULT_CAPACITY, PARK_DEFAULT_STRENGTH, PLAY_TEEN_W,
+} from './params';
 import { ordinanceEffect } from '../economy/ordinances';
 import { serviceEffectiveness } from '../economy/budget';
 import { removeBuilding as coreRemoveBuilding } from '../economy/buildings';
@@ -76,6 +81,72 @@ export interface DefInfo {
   isPark: boolean;
   /** passenger capacity (def.capacity) for treatment plants etc. */
   capacity: number;
+  // ---- WP2 catchments (resolved once per def by resolveTier; see infra/catchments.ts)
+  /** catchment tier: index into SERVICE_TIERS, or -1 (no tier: transit / garbage coverage, non-service) */
+  tier: number;
+  /** reach metric of the tier: index into REACH_METRICS (0 walk, 1 drive, 2 euclid), -1 without tier */
+  metric: number;
+  /** tier reach radius (cells) and strength 0..1 (coverage def, or the park default) */
+  tierRadius: number;
+  tierStrength: number;
+  /** tier capacity in tier units (pupils / patient-equivalents / visitors); Infinity = capacity-free */
+  tierCap: number;
+  /** NIMBY / YIMBY splats (amount 0..1 at the source, radius cells; 0 = none) */
+  stigmaAmt: number;
+  stigmaR: number;
+  prestigeAmt: number;
+  prestigeR: number;
+  campusAmt: number;
+  campusR: number;
+  /** def declares powerUse > 0 / waterUse > 0 (service power / water gating, WP2) */
+  usesPower: boolean;
+  usesWater: boolean;
+}
+
+// ------------------------------------------------------------------------------------------ catchment tiers (WP2)
+/** service tiers in index order (DefInfo.tier) */
+export const SERVICE_TIERS: readonly ServiceTier[] = ['elementary', 'high', 'college', 'library', 'clinic', 'hospital', 'play', 'green', 'police', 'fire'];
+/** reach metrics in index order (DefInfo.metric) */
+export const REACH_METRICS: readonly ReachMetric[] = ['walk', 'drive', 'euclid'];
+/** default metric per service tier (index order of SERVICE_TIERS) when the coverage def names none */
+const TIER_DEFAULT_METRIC: readonly number[] = [0, 1, 1, 0, 0, 1, 0, 0, 1, 1];
+/**
+ * tier units per resident at the reference cohort mix (COHORT_BASE), per SERVICE_TIERS index: converts a legacy
+ * "residents served" capacity (coverage def without `tier`) into seats / patient-equivalents / visitors
+ * (balance-neutral: seats = old residents served x reference cohort share).
+ */
+export const TIER_REF_SHARE: readonly number[] = (() => {
+  const [k, t, y, a, s] = COHORT_BASE;
+  const college = y * CATCH_COLLEGE_WILL[1] + COLLEGE_ADULT_W * a;
+  const health = (HEALTH_NEED_W[0] * k + HEALTH_NEED_W[1] * t + HEALTH_NEED_W[2] * y + HEALTH_NEED_W[3] * a + HEALTH_NEED_W[4] * s) / HEALTH_NEED_NORM;
+  const green = (GREEN_NEED_BASE + GREEN_NEED_SENIOR * s) / GREEN_NEED_NORM;
+  return [k, t, college, college, health, health, k + PLAY_TEEN_W * t, green, 1, 1];
+})();
+
+/** resolve the catchment tier of a def: explicit coverage.tier / metric, else defaults by coverage kind (tests / mods) */
+function resolveTier(def: BuildingDef): { tier: number; metric: number; radius: number; strength: number; cap: number } {
+  const cv = def.coverage;
+  if (!cv) {
+    if (def.category !== 'park') return { tier: -1, metric: -1, radius: 0, strength: 0, cap: Infinity };
+    const [w, d] = def.footprint;
+    return { tier: SERVICE_TIERS.indexOf('green'), metric: 0, radius: 3 + Math.max(w, d), strength: PARK_DEFAULT_STRENGTH, cap: PARK_DEFAULT_CAPACITY };
+  }
+  let tier = cv.tier ? SERVICE_TIERS.indexOf(cv.tier) : -1;
+  if (tier < 0) {
+    switch (cv.kind) {
+      case 'police': tier = 8; break;
+      case 'fire': tier = 9; break;
+      case 'health': tier = cv.radius <= 20 ? 4 : 5; break;
+      case 'education': tier = 0; break;
+      case 'park': tier = 7; break;
+      default: return { tier: -1, metric: -1, radius: cv.radius, strength: cv.strength, cap: Infinity };
+    }
+  }
+  const m = cv.metric ? REACH_METRICS.indexOf(cv.metric) : -1;
+  const metric = m >= 0 ? m : TIER_DEFAULT_METRIC[tier];
+  let cap = Infinity;
+  if (cv.capacity !== undefined && cv.capacity > 0) cap = cv.tier ? cv.capacity : cv.capacity * TIER_REF_SHARE[tier];
+  return { tier, metric, radius: cv.radius, strength: cv.strength, cap };
 }
 
 const infoCache = new Map<string, DefInfo>();
@@ -119,7 +190,21 @@ function buildInfo(def: BuildingDef): DefInfo {
   if (fam === Fam.None) fam = def.category === 'growable' ? Fam.None : Fam.Plop;
   const s = (def.id + ' ' + def.model).toLowerCase();
   const covIdx = def.coverage ? COV_KINDS.indexOf(def.coverage.kind as CovKindName) : -1;
+  const tr = resolveTier(def);
   return {
+    tier: tr.tier,
+    metric: tr.metric,
+    tierRadius: tr.radius,
+    tierStrength: tr.strength,
+    tierCap: tr.cap,
+    stigmaAmt: def.stigma?.amount ?? 0,
+    stigmaR: def.stigma?.radius ?? 0,
+    prestigeAmt: def.prestige?.amount ?? 0,
+    prestigeR: def.prestige?.radius ?? 0,
+    campusAmt: def.campus?.amount ?? 0,
+    campusR: def.campus?.radius ?? 0,
+    usesPower: (def.powerUse ?? 0) > 0,
+    usesWater: (def.waterUse ?? 0) > 0,
     id: def.id,
     model: def.model,
     known: true,
@@ -171,6 +256,8 @@ const unknownInfo: DefInfo = {
   air: 0, waterPoll: 0, noise: 0, garbage: 0, pollRadius: 0,
   cov: -1, covRadius: 0, covStrength: 0, covCapacity: 0, transit: Transit.None,
   isPump: false, isTreatment: false, isIncinerator: false, isRecycling: false, isJail: false, isPark: false, capacity: 0,
+  tier: -1, metric: -1, tierRadius: 0, tierStrength: 0, tierCap: Infinity,
+  stigmaAmt: 0, stigmaR: 0, prestigeAmt: 0, prestigeR: 0, campusAmt: 0, campusR: 0, usesPower: false, usesWater: false,
 };
 const guessCache = new Map<number, DefInfo>();
 
@@ -249,13 +336,13 @@ export function isFunctional(b: Building): boolean {
 }
 
 /**
- * Job slots of a job site used for commuting: growable C/I -> capacity, plopped -> def.jobs (or capacity).
- * Sim-core owns b.jobs; traffic reports reachability via TrafficSystem.jobFill().
+ * Job slots of a job site used for commuting: growable C/I -> capacity x b.hire, plopped -> def.jobs x b.hire (WP1-1:
+ * sim-core's hiring factor, 1 until set). Sim-core owns b.jobs; traffic reports reachability via TrafficSystem.jobFill().
  */
 export function jobSlots(inf: DefInfo, b: Building): number {
   if (!isFunctional(b)) return 0;
-  if (inf.fam === Fam.C || inf.fam === Fam.I) return b.capacity > 0 ? b.capacity : b.jobs;
-  if (inf.fam === Fam.Plop) return inf.civicJobs > 0 ? inf.civicJobs : 0;
+  if (inf.fam === Fam.C || inf.fam === Fam.I) return b.capacity > 0 ? b.capacity * (b.hire ?? 1) : b.jobs;
+  if (inf.fam === Fam.Plop) return inf.civicJobs > 0 ? inf.civicJobs * (b.hire ?? 1) : 0;
   return 0;
 }
 

@@ -30,13 +30,13 @@ export class DisasterTool extends Tool {
       return;
     }
     try {
+      // the alarm comes from the sim's 'disaster' event / news (src/game/GameSounds.ts)
       f(this.ctx.sim, this.kind, p.hit.x, p.hit.z);
-      this.ctx.sound('disaster');
     } catch (e) {
       console.warn('[disaster] failed', e);
       this.ctx.toast(`Could not start ${this.label}`, 'error');
     }
-    this.ctx.tools.select(null);
+    this.ctx.tools.select(null, { silent: true });
   }
   override deactivate(): void {
     this.ctx.world.setHighlight(null);

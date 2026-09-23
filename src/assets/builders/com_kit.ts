@@ -384,15 +384,42 @@ export function pylonLetters(b: ModelBuilder, rng: RNG, x: number, z: number, y0
     b.pop();
   }
 }
-/** Emissive roof-edge strip on a parapet top (outward 0.2 m band + up-facing ring of width t): 16 tris. */
-export function roofEdge(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, color: ColorLike, t = 0.25, k = 6) {
+/** Which lot sides a street-facing band covers: the +Z front always, `ret` m returns down +-X, or one full side. */
+export interface FrontOpts {
+  /** length of the returns down both X sides from the front corners (default 2.5 m; 0 = front only) */
+  ret?: number;
+  /** corner lot: this side gets the full depth instead of a return */
+  side?: 'px' | 'nx';
+}
+/**
+ * Street-facing band (outward vertical quads): the +Z front run plus short returns (or one full corner side).
+ * Use instead of bandRect for lit fascias: closed four-sided neon rings read as UI selection boxes from the
+ * default 45-60 deg camera. 2-6 tris.
+ */
+export function bandFront(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y0: number, y1: number, p: Paint, out = 0.06, o: FrontOpts = {}) {
+  faceZ(b, x0 - out, x1 + out, y0, y1, z1 + out, p);
+  for (const s of ['px', 'nx'] as const) {
+    const len = Math.min(o.side === s ? z1 - z0 + out : (o.ret ?? 2.5), z1 - z0 + out);
+    if (len <= 0) continue;
+    faceX(b, z1 + out - len, z1 + out, y0, y1, s === 'px' ? x1 + out : x0 - out, p, s === 'px' ? 1 : -1);
+  }
+}
+/**
+ * Emissive roof-edge strip on a parapet top, street side only (outward 0.2 m band + up-facing strip of width t along
+ * the front and its returns): 6-12 tris. k defaults to 4 (1x) — roof edges are accents, keep them dimmer than signs
+ * and on at most ~30% of variants.
+ */
+export function roofEdge(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, color: ColorLike, t = 0.25, k = 4, o: FrontOpts = {}) {
   const p = emis(color, k);
-  bandRect(b, x0, z0, x1, z1, y - 0.2, y, p, 0.03);
+  bandFront(b, x0, z0, x1, z1, y - 0.2, y, p, 0.03, o);
   const yy = y + 0.012;
   up(b, x0, z1 - t, x1, z1, yy, p);
-  up(b, x0, z0, x1, z0 + t, yy, p);
-  up(b, x0, z0 + t, x0 + t, z1 - t, yy, p);
-  up(b, x1 - t, z0 + t, x1, z1 - t, yy, p);
+  for (const s of ['px', 'nx'] as const) {
+    const len = Math.min(o.side === s ? z1 - z0 : (o.ret ?? 2.5), z1 - z0);
+    if (len <= t) continue;
+    if (s === 'px') up(b, x1 - t, z1 - len, x1, z1 - t, yy, p);
+    else up(b, x0, z1 - len, x0 + t, z1 - t, yy, p);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------- vehicles & parking

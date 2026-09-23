@@ -4,6 +4,7 @@ import type { GameContext } from '../../game/context';
 import type { GameSettings, NewYearMode } from '../../game/settings';
 import { Panel } from '../Panel';
 import { h, segmented, setSlider, setToggle, slider, toggle } from '../dom';
+import { asMusicAudio, MusicPlayer } from '../MusicPlayer';
 import { hourLabel } from '../format';
 
 export class SettingsPanel extends Panel {
@@ -16,6 +17,9 @@ export class SettingsPanel extends Panel {
   private hourSlider!: HTMLInputElement;
   private hourVal!: HTMLElement;
   private autoSw!: HTMLElement;
+  /** music player + sound toggles (filled once the optional audio module has loaded) */
+  private musicHost!: HTMLElement;
+  private player: MusicPlayer | null = null;
 
   override defaultPos(w: number, hh: number): { x: number; y: number } {
     return { x: Math.max(14, (w - this.width) / 2), y: Math.max(72, (hh - 620) / 2) };
@@ -73,6 +77,7 @@ export class SettingsPanel extends Panel {
       this.row('Music', null, this.range('musicVolume', 0, 1, 0.05, pctf)),
       this.row('Effects', null, this.range('sfxVolume', 0, 1, 0.05, pctf)),
       this.row('Ambience', null, this.range('ambienceVolume', 0, 1, 0.05, pctf)),
+      (this.musicHost = h('div', { class: 'set-music' })),
       h('div', { class: 'sec-title' }, 'Gameplay'),
       this.row('Autosave', 'Saves every N game months', autosave),
       this.row('Pause when hidden', 'Pause the simulation when the tab is in the background', this.sw('pauseWhenHidden')),
@@ -80,7 +85,28 @@ export class SettingsPanel extends Panel {
     );
   }
 
+  /** Music section (now-playing card + track list) and the UI / hover / now-playing sound toggles */
+  private buildAudioExtras(): void {
+    if (this.player || !this.musicHost) return;
+    const a = this.ctx.mods.audio as unknown as {
+      uiSounds?: boolean; hoverSounds?: boolean; nowPlayingToasts?: boolean;
+      setUiSounds?: (on: boolean) => void; setHoverSounds?: (on: boolean) => void; setNowPlayingToasts?: (on: boolean) => void;
+    } | undefined;
+    const ma = asMusicAudio(a);
+    if (!a || !ma) return;
+    const sw = (on: boolean | undefined, set: ((v: boolean) => void) | undefined) => toggle(on !== false, (v) => set?.call(a, v), !set);
+    this.player = new MusicPlayer(ma, { variant: 'card', tracks: true });
+    this.musicHost.append(
+      this.row('Interface sounds', 'Clicks, panels, sliders and tool feedback', sw(a.uiSounds, a.setUiSounds)),
+      this.row('Hover sounds', 'Soft ticks when pointing at menus and the toolbar', sw(a.hoverSounds, a.setHoverSounds)),
+      h('div', { class: 'sec-title' }, 'Music'),
+      this.player.el,
+      this.row('“Now playing” pop-ups', 'Show the track title when the soundtrack changes song', sw(a.nowPlayingToasts, a.setNowPlayingToasts)),
+    );
+  }
+
   override update(): void {
+    this.buildAudioExtras();
     const s = this.ctx.settings;
     setToggle(this.autoSw, s.autoTime);
     this.hourRow.style.opacity = s.autoTime ? '0.55' : '1';

@@ -11,7 +11,13 @@ import {
   type Face, flat, ground, wallQuad, wallRow, wallDisc, tube, dome, hCyl, strut, lattice, tank, smokestack, semi,
   boxTruck, carLow, forklift, pallets, fenceRect, floodLight, roofUnit, officeBlock, parking, containerAt,
   barrelRoof, tree, lightDot, CAR_COLORS2, CONTAINER_COLORS, TRUCK_COLORS, pipeRun, poolRect, lights, Y_OVER, Y_MARK,
+  SODIUM,
 } from './ind_kit';
+
+/** Sodium yard flood light: pole + amber HPS head + an Emissive-9 light pool kept inside `clip` (a uniform ground rect). */
+function yardLight(b: ModelBuilder, x: number, z: number, h: number, ground: ColorLike, r: number, clip: [number, number, number, number]): void {
+  floodLight(b, x, z, h, ground, r, clip, undefined, SODIUM);
+}
 
 const APRON = 0x8f8b84;
 const DEPOT_G = 0x8a867e;
@@ -57,8 +63,11 @@ function docks(b: ModelBuilder, face: Face, plane: number, a0: number, a1: numbe
 }
 
 /** Warehouse shell: walls with a stripe band, returns roof height. */
-function shell(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, h: number, wall: ColorLike, stripe: ColorLike | null, roof: 'flat' | 'gable' | 'barrel' | 'none', roofColor: ColorLike = 0xb9bcbf, surf = Surf.Corrugated): void {
-  b.paint(wall, surf).box(x0, 0, z0, x1, h, z1, { top: roof === 'flat' ? { color: roofColor, surf: Surf.RoofFlat } : null });
+function shell(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, h: number, wall: ColorLike, stripe: ColorLike | null, roof: 'flat' | 'gable' | 'barrel' | 'none', roofColor: ColorLike = 0xb9bcbf, surf = Surf.Corrugated, flood = 0): void {
+  // Plain walls can be floodlit (warm yard light washing up the wall at night; `flood` = reach in m)
+  if (flood > 0 && surf === Surf.Plain) b.paint(wall, surf, 1, flood);
+  else b.paint(wall, surf);
+  b.box(x0, 0, z0, x1, h, z1, { top: roof === 'flat' ? { color: roofColor, surf: Surf.RoofFlat } : null });
   if (stripe !== null) {
     b.paint(stripe, Surf.Plain);
     wallQuad(b, 'pz', z1, x0, x1, h - 1.6, h - 0.6);
@@ -139,7 +148,7 @@ function warehouse(b: ModelBuilder, v: number, rng: RNG): void {
       for (let i = 0; i < 3; i++) semi(b, x1 + 8.4, cz[i * 2], Math.PI * 0.5, rng.pick(TRUCK_COLORS), rng.pick([0xf2f2ee, 0xd8d8d0, 0x2e6fb5]), { stripe: 0x2e6fb5, tractor: i !== 1 });
       frontStrip(b, rng, x0, x1, z1 + 1.2, HZ - 0.4, 0);
       for (let i = 0; i < 4; i++) carLow(b, x0 + 13 + i * 2.7, 13.6, 0, rng.pick(CAR_COLORS2));
-      floodLight(b, HX - 1, -HZ + 1, 9);
+      yardLight(b, HX - 1, -HZ + 1, 9, ASPHALT, 7, [x1, z0, HX - 0.5, z1]);
       b.paint(0xe8e8e0, Surf.Plain);
       for (let i = 0; i < 6; i++) flat(b, x1 + 5.4, cz[0] - 2.55 + i * 4.6 - 0.06, HX - 1, cz[0] - 2.55 + i * 4.6 + 0.06, Y_MARK);
       break;
@@ -165,6 +174,9 @@ function warehouse(b: ModelBuilder, v: number, rng: RNG): void {
       fenceRect(b, -HX + 0.4, -HZ + 0.4, HX - 0.4, HZ - 0.4, 2.2, 0x8a9096, [-8, 8], 8, 1);
       b.paint(GRASS, Surf.Foliage);
       flat(b, -HX, 13.6, HX, HZ, Y_OVER);
+      // sodium-lit trailer yard
+      yardLight(b, -13, 12.8, 10, ASPHALT, 7, [x0, z1, x1, 13.2]);
+      yardLight(b, 13, 12.8, 10, ASPHALT, 7, [x0, z1, x1, 13.2]);
       break;
     }
     case 2: {
@@ -183,6 +195,7 @@ function warehouse(b: ModelBuilder, v: number, rng: RNG): void {
       semi(b, 14, 12.5, -Math.PI * 0.5, 0x2e7d4f, 0xf2f2ee, { stripe: 0x2e7d4f });
       frontStrip(b, rng, x0, x1 - 1, z1 + 1, HZ - 0.4, 3);
       for (let i = 0; i < 4; i++) pallets(b, x1 + 1.5, z0 + 1.5 + i * 1.4, rng.range(0.5, 1.5));
+      yardLight(b, HX - 1, HZ - 1.2, 10, ASPHALT, 7, [x1, z0, HX - 0.5, HZ - 0.5]);
       break;
     }
     case 3: {
@@ -206,8 +219,8 @@ function warehouse(b: ModelBuilder, v: number, rng: RNG): void {
       signBox(b, x1 - 12, 10.2, z1, x1 - 2, 12.2, z1 + 0.3, 0xe67e22, 0x2b2d31);
       b.paint(GRASS, Surf.Foliage);
       flat(b, -HX, 14.8, HX, HZ, Y_OVER);
-      floodLight(b, -8, 13.5, 9);
-      floodLight(b, 12, 13.5, 9);
+      yardLight(b, -8, 13.5, 9, ASPHALT, 6.5, [x0, z1 + 3, x1, 14.5]);
+      yardLight(b, 12, 13.5, 9, ASPHALT, 6.5, [x0, z1 + 3, x1, 14.5]);
       break;
     }
     case 4: {
@@ -246,13 +259,13 @@ function warehouse(b: ModelBuilder, v: number, rng: RNG): void {
     default: {
       // cold storage: tall white insulated box, rooftop condensers, reefers at front docks, engine room
       const x0 = -22.5, x1 = 16, z0 = -14.5, z1 = -0.6;
-      shell(b, x0, z0, x1, z1, 14, 0xf2f2ee, 0x3f7fd0, 'flat', 0xc5c9cc, Surf.Plain);
+      shell(b, x0, z0, x1, z1, 14, 0xf2f2ee, 0x3f7fd0, 'flat', 0xc5c9cc, Surf.Plain, 7);
       b.paint(0x3f7fd0, Surf.Plain);
       wallQuad(b, 'pz', z1, x0, x1, 0, 0.9);
       for (let i = 0; i < 8; i++) roofUnit(b, x0 + 3 + (i % 4) * 9, 14, -11 + Math.floor(i / 4) * 7, 3.2, 2.0, 1.4, 0xd8dadc);
       logo(b, 'pz', z1, x1 - 5, 10.5, 0x3f7fd0, 0xf2f2ee);
       const cx = docks(b, 'pz', z1, x0 + 1, x1 - 9, 5, 0x3f7fd0, 0xf2f2ee);
-      floodLight(b, HX - 1, 13, 9, ASPHALT, 5.5, [-HX, -HZ, HX, 14]);
+      yardLight(b, HX - 1, 13, 9, ASPHALT, 5.5, [x0, z1, HX - 0.5, 14]);
       // engine room + piping
       b.paint(0xb9bcbf, Surf.Corrugated).box(x1, 0, z0 + 2, 22.5, 6, z0 + 12);
       b.paint(0x9aa0a6, Surf.Metal);
@@ -306,6 +319,9 @@ function assembly(b: ModelBuilder, v: number, rng: RNG): void {
       // staff parking
       parking(b, rng, -10, 7.5, 8, 22.5, 0.7, 14);
       frontStrip(b, rng, -30.5, -12, 17, HZ - 0.5, 3);
+      // sodium lights over the finished-car lot and the staff parking
+      yardLight(b, 31, -8, 11, ASPHALT, 6.5, [18, -22.5, 31, 6]);
+      yardLight(b, 8, 15, 9, ASPHALT, 6, [-10, 7.5, 8, 22.5]);
       break;
     }
     case 1: {
@@ -328,7 +344,7 @@ function assembly(b: ModelBuilder, v: number, rng: RNG): void {
         b.box(x1, 12, z - 0.4, x1 + 15, 12.8, z + 0.4);
       }
       b.paint(0xf1c40f, Surf.Metal, 1).box(x1 + 8, 12.8, z0 + 4.2, x1 + 9.2, 14, z1 - 4.2);
-      floodLight(b, x1 + 2, z1 - 1, 11, ASPHALT, 7);
+      floodLight(b, x1 + 2, z1 - 1, 11, ASPHALT, 7, [x1, z0, HX - 0.5, z1], undefined, SODIUM);
       b.paint(0x333333, Surf.Metal).boxC(x1 + 8.6, -9, 1.6, 1.6, 11.6, 1.2);
       strut(b, [x1 + 8.6, 11.6, -9], [x1 + 8.6, 4, -9], 0.08);
       // big fabricated parts on the yard
@@ -341,13 +357,14 @@ function assembly(b: ModelBuilder, v: number, rng: RNG): void {
       semi(b, 22, 1, Math.PI * 0.5, 0x2b2d31, null, { tractor: true });
       b.paint(0x55595e, Surf.Metal).box(10, 0.05, 0, 19, 1.3, 2.2, { bottom: null });
       frontStrip(b, rng, -30.5, -12, 14, HZ - 0.5, 3);
+      yardLight(b, 30, 15, 10, ASPHALT, 6.5, [-10, 7, 30, 22.5]);
       break;
     }
     case 2: {
       // ELECTRONICS / APPLIANCES: two parallel white/blue sheds linked by a bridge, roof units, side docks
       const cols: [number, number][] = [[-22.5, -9], [-5, 8.5]];
       for (const [z0, z1] of cols) {
-        shell(b, -30.5, z0, 18, z1, 12, 0xeceeee, 0x1f5fa8, 'flat', 0xb4b8bc, Surf.Plain);
+        shell(b, -30.5, z0, 18, z1, 12, 0xeceeee, 0x1f5fa8, 'flat', 0xb4b8bc, Surf.Plain, 6);
         b.paint(0x1f5fa8, Surf.Plain);
         wallQuad(b, 'pz', z1, -30.5, 18, 0, 1.2);
         for (let i = 0; i < 4; i++) roofUnit(b, -26 + i * 11, 12, (z0 + z1) / 2, 3, 3.6, 1.8);
@@ -372,9 +389,10 @@ function assembly(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0xb8bcc0, Surf.Metal);
       pipeRun(b, [[-26, 13.2, -14.5], [-26, 13.2, -16.5], [7, 13.2, -16.5], [7, 13.2, -14.5]], 0.6, 6);
       pipeRun(b, [[-26, 13.2, 3], [-26, 13.2, 1], [7, 13.2, 1], [7, 13.2, 3]], 0.6, 6);
-      floodLight(b, 30.5, 8, 10, ASPHALT, 5.5, [-HX, -HZ, HX, 8.5]);
+      floodLight(b, 30.5, 8, 10, ASPHALT, 5.5, [18, -22.5, HX - 0.5, 8.5], undefined, SODIUM);
       parking(b, rng, -10, 10, 30, 22.5, 0.65, 16);
       frontStrip(b, rng, -30.5, -11, 13.5, HZ - 0.5, 3);
+      yardLight(b, -10, 16, 9, ASPHALT, 6, [-10, 10, 30, 22.5]);
       break;
     }
     default: {
@@ -403,7 +421,7 @@ function assembly(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x9aa0a6, Surf.Metal);
       b.pipe([8, 15.5, -17.4], [30, 15.5, -17.4], 0.3, 6);
       // malt silos
-      for (let i = 0; i < 3; i++) tank(b, 11 + i * 5.2, -5, 2.2, 16, 0xd8d8d2, { roof: 'cone', seg: 10 });
+      for (let i = 0; i < 3; i++) tank(b, 11 + i * 5.2, -5, 2.2, 16, 0xd8d8d2, { roof: 'cone', seg: 10, flood: 12 });
       b.paint(ASPHALT, Surf.Pavement);
       flat(b, 7, 0, HX - 0.5, 16, Y_OVER);
       semi(b, 22, 4, Math.PI * 0.5, 0x2e5f3a, 0xe8e2cf, { stripe: 0x2e5f3a });
@@ -411,6 +429,9 @@ function assembly(b: ModelBuilder, v: number, rng: RNG): void {
       parking(b, rng, -10, 5, 6, 22.5, 0.6, 10);
       frontStrip(b, rng, 8, 31, 17, HZ - 0.5, 4);
       frontStrip(b, rng, -30.5, -11, 16.5, HZ - 0.5, 3);
+      // sodium-lit truck yard + parking
+      yardLight(b, 31, 8, 10, ASPHALT, 7, [7, 0, HX - 0.5, 16]);
+      yardLight(b, 6, 14, 9, ASPHALT, 5.5, [-10, 5, 6, 22.5]);
       break;
     }
   }
@@ -462,9 +483,9 @@ function depot(b: ModelBuilder, v: number, rng: RNG): void {
       containerAt(b, -5.5, 1.3, 9, true, rng.pick(CONTAINER_COLORS));
       b.paint(0x2b2d31, Surf.Metal).box(-12, 0.05, 8, 1.5, 1.3, 10, { bottom: null, top: null });
       semi(b, -2, 13.5, -Math.PI * 0.5, 0xc0392b, null, { tractor: true });
-      floodLight(b, 15, -15, 13, DEPOT_G, 6, [-16, -16, 16, 16]);
-      floodLight(b, -15, 5.5, 13, DEPOT_G, 6, [-16, -16, 16, 16]);
-      floodLight(b, 4, 15.2, 10, DEPOT_G, 5, [-16, -16, 16, 16]);
+      yardLight(b, 15, -15, 13, DEPOT_G, 7.5, [-16, -16, 16, 16]);
+      yardLight(b, -15, 5.5, 13, DEPOT_G, 7.5, [-16, -16, 16, 16]);
+      yardLight(b, 4, 15.2, 10, DEPOT_G, 5.5, [-16, -16, 16, 16]);
       fenceRect(b, -15.6, -15.6, 15.6, 15.6, 2.2, 0x8a9096, [-12, 8], 6, 1);
       break;
     }
@@ -493,7 +514,8 @@ function depot(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x55595e, Surf.Metal).boxC(-8, 11.7, 1, 0.6, 0, 1.6);
       semi(b, 6, 11.5, Math.PI * 0.5, 0x2b2d31, 0xf2f2ee, { stripe: 0xd35400 });
       forklift(b, 14, -10, Math.PI * 0.5);
-      floodLight(b, 15.5, 8, 10, ASPHALT, 5, [-16, -16, 16, 16]);
+      yardLight(b, 15.5, 8, 10, ASPHALT, 5.5, [-H + 0.3, z1, H - 0.3, 15.5]);
+      yardLight(b, -15.5, -11, 10, ASPHALT, 5, [-H + 0.3, -15.7, H - 0.3, z0]);
       lights(b, [[-12, 4.1, 13.9], [-4, 4.1, 13.9]], 0.3, 0xfff2d8);
       break;
     }
@@ -524,8 +546,8 @@ function depot(b: ModelBuilder, v: number, rng: RNG): void {
       semi(b, -6, 11, Math.PI * 0.5, 0x2b2d31, null, { tractor: true });
       containerAt(b, -8.5, 1.3, 11, true, rng.pick(CONTAINER_COLORS));
       b.paint(0x2b2d31, Surf.Metal).box(-15, 0.05, 10, -1.5, 1.3, 12, { bottom: null, top: null });
-      floodLight(b, 15, -15, 12, DEPOT_G, 6, [-16, -16, 16, 16]);
-      floodLight(b, -2, 7.5, 11, DEPOT_G, 5.5, [-16, -16, 16, 16]);
+      yardLight(b, 15, -15, 12, DEPOT_G, 7, [-16, -16, 16, 16]);
+      yardLight(b, -2, 7.5, 11, DEPOT_G, 6, [-16, -16, 16, 16]);
       fenceRect(b, -15.6, -15.6, 15.6, 15.6, 2.2, 0x8a9096, [-15.6, 6], 6, 1);
       break;
     }

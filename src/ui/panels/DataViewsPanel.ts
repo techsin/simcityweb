@@ -58,8 +58,8 @@ export class DataViewsPanel extends Panel {
   }
 
   private pick(o: Overlay): void {
+    if (o !== this.ctx.overlay) this.ctx.sound(o === Overlay.None ? 'overlayOff' : 'overlay');
     this.ctx.setOverlay(o);
-    this.ctx.sound('click');
   }
 
   override update(): void {
@@ -96,7 +96,10 @@ export class LegendChip {
     }
     this.el.innerHTML = '';
     const close = h('button', { class: 'icon-btn', title: 'Hide data view', html: icon('close', 13) });
-    close.addEventListener('click', () => this.ctx.setOverlay(Overlay.None));
+    close.addEventListener('click', () => {
+      this.ctx.sound('overlayOff');
+      this.ctx.setOverlay(Overlay.None);
+    });
     const head = h('div', { class: 'lg-head' }, h('span', { class: 'ico-wrap', style: 'color:#3fd6c6', html: icon(info.icon, 16) }), h('b', null, info.label), close);
     const body = h('div', { html: legendHtml(this.ctx.overlay, this.ctx.mods.overlayLegend) });
     this.el.append(head, body);

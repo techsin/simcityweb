@@ -213,7 +213,10 @@ export class InfoPanel extends Panel {
     // actions
     const acts = h('div', { class: 'info-actions' });
     const focus = h('button', { class: 'btn sm', html: icon('target', 13) + '<span>Focus</span>' });
-    focus.addEventListener('click', () => this.ctx.focusCell(b.x + b.w / 2 - 0.5, b.z + b.d / 2 - 0.5, 360));
+    focus.addEventListener('click', () => {
+      this.ctx.sound('whoosh', { volume: 0.8 });
+      this.ctx.focusCell(b.x + b.w / 2 - 0.5, b.z + b.d / 2 - 0.5, 360);
+    });
     acts.appendChild(focus);
     if (growable) {
       const hist = !!(b.flags & BF.Historic);
@@ -224,7 +227,7 @@ export class InfoPanel extends Panel {
         } catch {
           b.flags ^= BF.Historic;
         }
-        this.ctx.sound('click');
+        this.ctx.sound(hist ? 'toggleOff' : 'toggleOn');
         this.sig = '';
         this.update();
       });

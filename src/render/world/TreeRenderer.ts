@@ -6,9 +6,15 @@
  *   - far LOD:  two InstancedMeshes (broadleaf blob / conifer cone impostors, ~20 tris) tinted per instance with
  *               the species' average foliage color; instance order is shuffled so lowering `count` thins the
  *               forest uniformly with distance (density fade).
- * Chunks switch LOD by distance (with hysteresis). Placement is deterministic per cell (hash of cell + seed), so
- * rebuilding a chunk after an edit never moves unaffected trees. Cells with network / buildings / zones / power
- * lines / water get no trees.
+ * LOD cross-fade: near models and impostors overlap in a distance band around `lodDistance`; inside it each tree
+ * fades per instance (distance + per-tree jitter) with a complementary screen-door dither (near keeps the pixels the
+ * impostor drops), so there is no chunk-sized pop. Chunks fully inside / outside the band use the plain material (no
+ * discard). In shadow passes the switch is a hard per-instance cut at lodDistance (custom depth materials).
+ * Far chunks whose trees project to ~1-2 px swap to micro impostors (4-8 tris); impostors only cast shadows into
+ * cascades with texels <= impostorShadowTexel (they are sub-texel specks in the far cascade). Every mesh gets tight
+ * bounds from its instances (shadow cascades cull by the real extent, not the 512 m chunk).
+ * Placement is deterministic per cell (hash of cell + seed), so rebuilding a chunk after an edit never moves
+ * unaffected trees. Cells with network / buildings / zones / power lines / water get no trees.
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
@@ -18,8 +24,9 @@ import type { Climate } from '../../core/types';
 import { MANIFEST_BY_ID } from '../../assets/manifest';
 import { getBuildingMaterial, patchSurfaceMaterial } from '../../assets/materials';
 import type { CityState } from '../../sim/CityState';
-import { getImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
+import { getImpostorGeometries, getMicroImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
 import { TerrainRenderer } from './TerrainRenderer';
+import { shadowCasters, receiverSweepBox, type ShadowReceiver } from './Shadows';
 
 const CHUNK = 32;
 /** instances per cell for density 0..4 */
@@ -92,9 +99,45 @@ interface TreeChunk {
   sphere: THREE.Sphere;
   isNear: boolean;
   total: number;
+  /** last applied LOD state key (skip work when unchanged) + its arguments (re-applied after a rebuild) */
+  stateKey: number;
+  state: [boolean, boolean, boolean, boolean, boolean, boolean, number, boolean] | null;
+  micro: boolean;
 }
 
 const _v = new THREE.Vector3();
+const _box = new THREE.Box3();
+
+// ---- LOD cross-fade shader snippets (near models fade out / impostors fade in over the band)
+const FADE_VERT_PARS = /* glsl */ `
+uniform vec3 uTreeCam;
+uniform vec4 uTreeFade;
+varying float vTreeFade;
+`;
+function fadeVertMain(near: boolean, depth: boolean): string {
+  return /* glsl */ `
+#ifdef USE_INSTANCING
+{
+  vec3 _ip = (modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xyz;
+  float _h = fract(sin(dot(_ip.xz, vec2(12.9898, 78.233))) * 43758.5453);
+  float _d = distance(_ip, uTreeCam) + (_h - 0.5) * uTreeFade.z;
+  vTreeFade = clamp((_d - uTreeFade.x) / max(uTreeFade.y - uTreeFade.x, 1.0), 0.0, 1.0);
+  ${depth
+    ? (near ? 'if (_d >= uTreeFade.w) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);' : 'if (_d < uTreeFade.w) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);')
+    : (near ? 'if (vTreeFade >= 1.0) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);' : 'if (vTreeFade <= 0.0) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);')}
+}
+#endif
+`;
+}
+function fadeFrag(near: boolean): string {
+  return /* glsl */ `
+  {
+    // interleaved gradient noise: a stable per-pixel threshold; near and far keep complementary pixel sets
+    float _n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    ${near ? 'if (_n < vTreeFade) discard;' : 'if (_n >= vTreeFade) discard;'}
+  }
+`;
+}
 
 export class TreeRenderer {
   readonly group = new THREE.Group();
@@ -115,6 +158,22 @@ export class TreeRenderer {
   private lodDistance = 1300;
   private density = 1;
   private castShadows = true;
+  private matNearFade: THREE.MeshStandardMaterial;
+  private matFarFade: THREE.MeshStandardMaterial;
+  private depthNear: THREE.MeshDepthMaterial;
+  private depthFar: THREE.MeshDepthMaterial;
+  private fadeU = { uTreeCam: { value: new THREE.Vector3() }, uTreeFade: { value: new THREE.Vector4(600, 800, 60, 700) } };
+  /** width of the near/impostor cross-fade band as a fraction of lodDistance (each side) */
+  fadeBand = 0.1;
+  /** impostors cast shadows only into cascades whose texel is at most this size (m); the map-clamped cascades stay
+   *  under ~3 m texels even at full zoom-out, where impostor shadows still give forests their texture */
+  impostorShadowTexel = 6;
+  /** far chunks switch to micro impostors when a typical tree projects below this radius (px; ~1 px keeps the
+   *  forest texture of the full impostors at 1080p) */
+  microPixels = 1.1;
+  /** drawing-buffer height (px) and vertical fov (deg) of the view, for the projected-size LOD (set by WorldView) */
+  viewHeight = 1080;
+  viewFov = 38;
   // scratch buffers
   private scratch: Float32Array[] = [];
   private scratchCount: number[] = [];
@@ -136,6 +195,10 @@ export class TreeRenderer {
     // clone of the shared uber material that casts shadows from both faces (thin palm fronds / leaf quads)
     this.material = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
     this.material.shadowSide = THREE.DoubleSide;
+    this.matNearFade = this.makeFadeMaterial(true);
+    this.matFarFade = this.makeFadeMaterial(false);
+    this.depthNear = this.makeDepthMaterial(true);
+    this.depthFar = this.makeDepthMaterial(false);
     this.group.name = 'trees';
     this.species = CLIMATE_SPECIES[state.config.climate] ?? CLIMATE_SPECIES.temperate;
     this.buildKinds();
@@ -144,10 +207,40 @@ export class TreeRenderer {
       for (let cx = 0; cx < this.perSide; cx++) {
         const x0 = cx * CHUNK * CELL_SIZE, z0 = cz * CHUNK * CELL_SIZE;
         const box = new THREE.Box3(new THREE.Vector3(x0, -10, z0), new THREE.Vector3(x0 + CHUNK * CELL_SIZE, 60, z0 + CHUNK * CELL_SIZE));
-        this.chunks.push({ cx, cz, near: this.kinds.map(() => null), far: [null, null], farTotal: [0, 0], box, sphere: new THREE.Sphere(), isNear: false, total: 0 });
+        this.chunks.push({ cx, cz, near: this.kinds.map(() => null), far: [null, null], farTotal: [0, 0], box, sphere: new THREE.Sphere(), isNear: false, total: 0, stateKey: -1, state: null, micro: false });
       }
     for (let i = 0; i < this.chunks.length; i++) this.dirty.add(i);
     this.setMonth(state.month);
+  }
+
+  private injectFade(shader: THREE.WebGLProgramParametersWithUniforms, near: boolean, depth: boolean) {
+    shader.uniforms.uTreeCam = this.fadeU.uTreeCam;
+    shader.uniforms.uTreeFade = this.fadeU.uTreeFade;
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n' + FADE_VERT_PARS).replace(/}\s*$/, fadeVertMain(near, depth) + '\n}');
+    if (!depth) {
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vTreeFade;')
+        .replace('void main() {', 'void main() {\n' + fadeFrag(near));
+    }
+  }
+
+  private makeFadeMaterial(near: boolean): THREE.MeshStandardMaterial {
+    const m = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
+    const base = m.onBeforeCompile;
+    m.onBeforeCompile = (shader, renderer) => {
+      base.call(m, shader, renderer);
+      this.injectFade(shader, near, false);
+    };
+    m.customProgramCacheKey = () => 'building-uber-v1|tree-fade-' + (near ? 'near' : 'far') + '-v1';
+    m.shadowSide = THREE.DoubleSide;
+    return m;
+  }
+
+  private makeDepthMaterial(near: boolean): THREE.MeshDepthMaterial {
+    const m = new THREE.MeshDepthMaterial();
+    m.onBeforeCompile = (shader) => this.injectFade(shader, near, true);
+    m.customProgramCacheKey = () => 'tree-depth-' + (near ? 'near' : 'far') + '-v1';
+    return m;
   }
 
   private buildKinds() {
@@ -390,7 +483,11 @@ export class TreeRenderer {
     ch.farTotal[1] = this.farCount[1];
     this.totalInstances += total - ch.total;
     ch.total = total;
-    this.applyLod(ch, ch.isNear, true);
+    ch.stateKey = -1;
+    // keep the chunk's current LOD state (new meshes default to visible + plain material)
+    const ls = ch.state ?? ([false, true, false, false, false, false, 1, false] as NonNullable<TreeChunk['state']>);
+    this.applyLod(ch, ls[0], ls[1], ls[2], ls[3], ls[4], ls[5], ls[6], ls[7]);
+    shadowCasters.version++;
   }
 
   private fill(mesh: THREE.InstancedMesh | null, geo: THREE.BufferGeometry, data: Float32Array, color: Float32Array | null, n: number, ch: TreeChunk, near: boolean): THREE.InstancedMesh | null {
@@ -405,14 +502,34 @@ export class TreeRenderer {
         mesh.dispose();
       }
       const cap = Math.ceil(n * 1.25) + 8;
-      mesh = new THREE.InstancedMesh(geo, this.material, cap);
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      if (color) mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
-      mesh.castShadow = this.castShadows; // impostors are cheap (~20 tris) and ground the forest in the far cascade
-      mesh.receiveShadow = true;
-      mesh.matrixAutoUpdate = false;
-      mesh.name = near ? `trees-${geo.name}` : 'trees-far';
-      this.group.add(mesh);
+      const m: THREE.InstancedMesh = new THREE.InstancedMesh(geo, this.material, cap);
+      mesh = m;
+      m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      if (color) m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+      m.castShadow = this.castShadows;
+      m.receiveShadow = true;
+      m.matrixAutoUpdate = false;
+      m.name = near ? `trees-${geo.name}` : 'trees-far';
+      m.userData.regularGeo = geo;
+      // cull by the tight instance bounds (box), not the chunk sphere
+      m.intersectsFrustum = (f: THREE.Frustum) => {
+        const b = m.boundingBox!;
+        if (!f.intersectsBox(b)) return false;
+        // shadow cascades: only if the trees' shadows can reach the visible part of the cascade
+        const recv = (f as unknown as { recv?: ShadowReceiver }).recv;
+        return !recv || receiverSweepBox(recv, b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z);
+      };
+      if (!near) {
+        // impostors: skip shadow cascades with coarse texels (count 0 for that pass only)
+        m.onBeforeShadow = (_r, _o, _c, shadowCamera) => {
+          const t = (shadowCamera.userData.texel as number | undefined) ?? 0;
+          if (t > this.impostorShadowTexel) { m.userData.savedCount = m.count; m.count = 0; }
+        };
+        m.onAfterShadow = () => {
+          if (m.userData.savedCount !== undefined) { m.count = m.userData.savedCount; m.userData.savedCount = undefined; }
+        };
+      }
+      this.group.add(m);
     }
     (mesh.instanceMatrix.array as Float32Array).set(data.subarray(0, n * 16));
     mesh.instanceMatrix.clearUpdateRanges();
@@ -425,24 +542,59 @@ export class TreeRenderer {
       mesh.instanceColor.needsUpdate = true;
     }
     mesh.count = n;
-    mesh.boundingSphere = ch.sphere.clone();
-    mesh.boundingBox = ch.box.clone();
+    // tight bounds of the instances (+ geometry extent)
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    const gb = geo.boundingBox!;
+    const gr = Math.max(Math.abs(gb.min.x), Math.abs(gb.max.x), Math.abs(gb.min.z), Math.abs(gb.max.z));
+    _box.makeEmpty();
+    for (let i = 0; i < n; i++) {
+      const o = i * 16;
+      const sxz = Math.hypot(data[o], data[o + 2]), sy = data[o + 5];
+      const x = data[o + 12], y = data[o + 13], z = data[o + 14], r = gr * sxz;
+      if (x - r < _box.min.x) _box.min.x = x - r;
+      if (x + r > _box.max.x) _box.max.x = x + r;
+      if (z - r < _box.min.z) _box.min.z = z - r;
+      if (z + r > _box.max.z) _box.max.z = z + r;
+      if (y + gb.min.y * sy < _box.min.y) _box.min.y = y + gb.min.y * sy;
+      if (y + gb.max.y * sy > _box.max.y) _box.max.y = y + gb.max.y * sy;
+    }
+    mesh.boundingBox = (mesh.boundingBox ?? new THREE.Box3()).copy(_box);
+    mesh.boundingSphere = _box.getBoundingSphere(mesh.boundingSphere ?? new THREE.Sphere());
     mesh.userData.total = n;
     return mesh;
   }
 
-  private applyLod(ch: TreeChunk, near: boolean, force = false, keep = 1) {
-    if (ch.isNear === near && !force && keep === ch.far[0]?.userData.keep) return;
+  /**
+   * Apply a chunk's LOD state. near/far: draw near models / impostors; nearFade/farFade: they straddle the fade band
+   * (dithered fade material); nearCut/farCut: they straddle the shadow switch distance (per-instance depth cut);
+   * keep: impostor density; micro: micro impostor geometry.
+   */
+  private applyLod(ch: TreeChunk, near: boolean, far: boolean, nearFade: boolean, farFade: boolean, nearCut: boolean, farCut: boolean, keep: number, micro: boolean) {
+    const key = (near ? 1 : 0) | (far ? 2 : 0) | (nearFade ? 4 : 0) | (farFade ? 8 : 0) | (nearCut ? 16 : 0) | (farCut ? 32 : 0) | (micro ? 64 : 0) | (Math.round(keep * 20) << 8);
+    if (key === ch.stateKey) return;
+    ch.stateKey = key;
+    ch.state = [near, far, nearFade, farFade, nearCut, farCut, keep, micro];
     ch.isNear = near;
-    for (const m of ch.near) if (m) m.visible = near && m.count > 0;
+    ch.micro = micro;
+    for (const m of ch.near) {
+      if (!m) continue;
+      m.visible = near && m.count > 0;
+      m.material = nearFade ? this.matNearFade : this.material;
+      m.customDepthMaterial = nearCut ? this.depthNear : undefined;
+    }
+    const mg = micro ? getMicroImpostorGeometries() : null;
     for (let i = 0; i < 2; i++) {
       const m = ch.far[i];
       if (!m) continue;
       const tot = ch.farTotal[i];
       m.count = Math.max(0, Math.min(tot, Math.ceil(tot * keep)));
       m.userData.keep = keep;
-      m.visible = !near && m.count > 0;
+      m.visible = far && m.count > 0;
+      m.material = farFade ? this.matFarFade : this.material;
+      m.customDepthMaterial = farCut ? this.depthFar : undefined;
+      m.geometry = mg ? (i === 0 ? mg.broad : mg.conifer) : (m.userData.regularGeo as THREE.BufferGeometry);
     }
+    shadowCasters.version++;
   }
 
   /** per frame: incremental rebuilds + LOD selection */
@@ -457,14 +609,29 @@ export class TreeRenderer {
     }
     const cp = camera.position;
     const lod = this.lodDistance;
+    const w = lod * this.fadeBand, jit = w * 0.8;
+    const fs = lod - w, fe = lod + w;
+    this.fadeU.uTreeCam.value.copy(cp);
+    this.fadeU.uTreeFade.value.set(fs, fe, jit, lod);
+    const lo = fs - jit * 0.5, hi = fe + jit * 0.5;
+    // projected radius of a typical (3.5 m) tree: px = r / d * H / (2 tan(fov / 2))
+    const K = (3.5 * this.viewHeight) / (2 * Math.tan((this.viewFov * Math.PI) / 360));
     for (const ch of this.chunks) {
       ch.box.clampPoint(cp, _v);
-      const d = _v.distanceTo(cp);
-      const near = ch.isNear ? d < lod * 1.06 : d < lod * 0.94;
+      const dN = _v.distanceTo(cp);
+      const b = ch.box;
+      const fx = Math.max(Math.abs(cp.x - b.min.x), Math.abs(cp.x - b.max.x));
+      const fy = Math.max(Math.abs(cp.y - b.min.y), Math.abs(cp.y - b.max.y));
+      const fz = Math.max(Math.abs(cp.z - b.min.z), Math.abs(cp.z - b.max.z));
+      const dF = Math.sqrt(fx * fx + fy * fy + fz * fz);
+      const near = dN < hi, far = dF > lo;
       // density fade for far chunks (keep a random subset)
-      const keep = near ? 1 : Math.max(0.3, Math.min(1, 1.25 - (d - lod) / 7000));
+      const keep = dN < lod ? 1 : Math.max(0.3, Math.min(1, 1.25 - (dN - lod) / 7000));
       const q = Math.round(keep * 20) / 20;
-      this.applyLod(ch, near, false, q);
+      const px = K / Math.max(dN, 1);
+      const micro = ch.micro ? px < this.microPixels * 1.15 : px < this.microPixels * 0.87;
+      const cutLo = lod - jit * 0.5, cutHi = lod + jit * 0.5;
+      this.applyLod(ch, near, far, near && dF > lo, far && dN < hi, near && dF > cutLo, far && dN < cutHi, q, micro && !near);
     }
   }
 
@@ -485,6 +652,11 @@ export class TreeRenderer {
   dispose() {
     for (const c of this.chunks) this.disposeChunk(c);
     this.chunks = [];
+    this.material.dispose();
+    this.matNearFade.dispose();
+    this.matFarFade.dispose();
+    this.depthNear.dispose();
+    this.depthFar.dispose();
 
   }
 }

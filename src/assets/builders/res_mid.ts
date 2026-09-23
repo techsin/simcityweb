@@ -12,8 +12,11 @@ import { rooftopWaterTank, acUnit } from '../kit';
 import {
   P, inFace, U, fq, win, wins, door, steps, roofGable, roofHip, roofMansard, chimney, lawnSlab, paveSlab, bush,
   bushRow, flowerBed, tree, lowWall, hedgeBox, trashCans, parkedCar, laundry, planter, parapet, flatRoof, setLot, band,
-  fireEscape, bay, capPoly, spread, bandRing, parking, lounger, ironRail, stoopRails, lightPool, pickPal, mixHex, type WinStyle, type Face,
+  fireEscape, bay, capPoly, spread, bandRing, parking, lounger, ironRail, stoopRails, lightPool, pickPal, mixHex, isMirrorTwin, LAWN,
+  FLOWERS, type WinStyle, type Face,
 } from './res_util';
+import * as K from './com_kit';
+import { faceZ } from './com_kit';
 
 // ---------------------------------------------------------------------------------------------- local helpers
 const ROOF = 0x6c6962;
@@ -192,6 +195,273 @@ function walkup(b: ModelBuilder, v: number, rng: RNG): void {
   trashCans(b, 4.4, z1 + 1.0, 2, 0x3a3d40);
   if (v % 2 === 0) streetTree(b, rng, -5.5, 6.4, 0.85);
   else bush(b, -5.0, z1 + 1.2, 0.6, 0x3f6a2d, v);
+}
+
+// ---------------------------------------------------------------------------------------------- WALK-UP twins (R$) 1x1
+/**
+ * The walk-up is the most common R-medium building, so its X-mirrored twins (manifest variants 6..11) are six
+ * further archetypes instead of flipped copies: yellow-brick corner-shop walk-up, blue clapboard triple-decker,
+ * cream stucco courtyard walk-up (tile roofs), white-painted brick loft with a roof garden, grey-stone bay-window
+ * rowhouse pair (cornice + slate mansard) and a sage clapboard Italianate flat with solar panels.
+ * 12 facade colours and 8 roof types across the 12 looks.
+ */
+function walkupTwin(b: ModelBuilder, v: number, rng: RNG): void {
+  const C = 2.2, fh = 3.2;
+  const x0 = -3 * C, x1 = 3 * C, z0 = -3 * C, z1 = 2 * C; // 13.2 x 11 like the base walk-up
+  const floorsAt = (n: number, y0 = 0, h = fh) => Array.from({ length: n - 1 }, (_, i) => y0 + (i + 1) * h);
+  paveSlab(b, -8, -8, 8, z0, 0x9a948a, 0.08);
+  const doorC = rng.pick([0x3a2a22, 0x2f4a37, 0x6b2a26, 0x2a2a2a, 0x2c3b57, 0x7a5a2a]);
+  if (v === 0) {
+    // corner-shop walk-up: yellow stock brick, painted shopfront wrapping the corner, striped awnings, own door
+    frontPave(b, -8, 8, z1, 8);
+    const floors = 4, top = floors * fh;
+    const brick = 0xc9a862, trimC = 0xf0e8d4;
+    const shopC = rng.pick([0x264d3a, 0x5a1f22, 0x1f2f4a, 0x3a2a22]);
+    const awnC = rng.pick([0xb8322a, 0x2f7d4a, 0x2e5f8a, 0xc9832a]);
+    ww(b, x0, z0, x1, z1, 0, top, brick, 1, fh, P(0xa39e94, Surf.RoofFlat));
+    // shop storey: painted surround + display glass on the front and the right side
+    faceZ(b, -6.5, 2.7, 0, 3.05, z1 + 0.01, K.plain(shopC));
+    K.storefront(b, -6.1, 2.3, z1 + 0.01, { y0: 0.55, y1: 2.7, frame: 0xe8e0cc, doors: [1.2], doorW: 1.1, transom: 2.25, pitch: 1.2, surround: 0.06 });
+    K.signBoard(b, rng, -6.5, 2.7, 3.2, 3.82, z1, K.plain(shopC), 0xf2e2b0, 0.14, { words: 1, surf: Surf.Plain });
+    K.awning(b, -6.4, 2.6, z1 + 0.12, 3.02, 1.3, 0.6, [awnC, 0xf2efe6], 0.85);
+    K.onSide(b, 'px', () => {
+      faceZ(b, -3.9, 2.5, 0, 3.05, x1 + 0.01, K.plain(shopC));
+      K.storefront(b, -3.6, 2.2, x1 + 0.01, { y0: 0.55, y1: 2.7, frame: 0xe8e0cc, pitch: 1.3, surround: 0.06 });
+      K.awning(b, -3.8, 2.4, x1 + 0.12, 3.02, 1.1, 0.55, [awnC, 0xf2efe6], 0.85);
+    });
+    K.bladeSign(b, 6.35, z1, 3.3, 1.3, 0.85, rng.pick([0xff4a3a, 0x2fd6ff, 0xffc933]), shopC);
+    // produce crates under the awning
+    b.paint(0x9a7a4e, Surf.Wood).box(-5.9, 0, z1 + 0.25, -3.1, 0.7, z1 + 0.95, { top: null });
+    for (const [a, c] of [[-5.9, 0xb8322a], [-4.97, 0xe98a2a], [-4.03, 0x7aa83a]] as [number, number][]) b.paint(c, Surf.Foliage).box(a, 0.7, z1 + 0.25, a + 0.93, 0.82, z1 + 0.95, { bottom: null });
+    // apartments door with its own lamp + step
+    inFace(b, 'pz', z1, () => {
+      door(b, 4.6, 0.3, 1.1, 2.3, doorC, { transom: true, frame: trimC, lamp: true });
+      steps(b, 4.6, 1.5, 1, 0.3, 0.35, 0xa29c90, 0, Surf.Stone);
+    });
+    lightPool(b, 3.4, z1 + 0.5, 5.8, z1 + 2.8, 0xc3beb3, 0.105);
+    sills(b, x0, z0, x1, z1, 1, floors, fh, 0.22, trimC);
+    band(b, x0, z0, x1, z1, top - 0.55, 0.3, 0.1, trimC, false);
+    // plain parapet with a stepped centre panel (no cornice)
+    parapet(b, x0, z0, x1, z1, top, 0.8, 0.3, brick, trimC);
+    b.paint(brick).box(-2.4, top + 0.8, z1 - 0.3, 2.4, top + 1.5, z1, { bottom: null, top: P(trimC) });
+    b.paint(brick).box(-1.1, top + 1.5, z1 - 0.3, 1.1, top + 2.0, z1, { bottom: null, top: P(trimC) });
+    inFace(b, 'px', x1, () => fireEscape(b, U('px', -4.4), floorsAt(floors), 3.0));
+    acWin(b, 'pz', z1, -3.3, fh * 2 + 0.7);
+    acWin(b, 'nx', x0, 1.1, fh + 0.7);
+    rooftopWaterTank(b, -3.4, top, -3.6, 0.85);
+    bulkhead(b, 3.2, -3.8, 2.6, 2.8, top, 2.6, brick);
+    acUnit(b, 3.4, top, 1.6, 0.8);
+    trashCans(b, 6.9, z1 + 1.4, 2, 0x3a3d40);
+    streetTree(b, rng, -5.6, 6.6, 0.8);
+  } else if (v === 1) {
+    // triple-decker: blue clapboard, stacked front porches, full-height bay, front-gable roof
+    const wallC = rng.pick([0x7f9cb5, 0x6f8fa8, 0x8aa6bb]), trimC = 0xf2efe6;
+    const wall = P(wallC, Surf.Wood);
+    const X0 = -5.4, X1 = 5.4, Zb = -6.6, Zf = 2.0, fl = 3.0, y0 = 0.6, top = y0 + 3 * fl;
+    frontPave(b, -8, 8, 4.4, 8);
+    lawnSlab(b, 0.3, Zf, 7.6, 5.4, LAWN, 0.12);
+    picketFence(b, 0.3, 5.4, 7.6, 5.4);
+    b.paint(P(0x8a8378, Surf.Stone)).box(X0, 0, Zb, X1, y0, Zf, { top: null });
+    b.paint(wall).box(X0, y0, Zb, X1, top, Zf, { top: null });
+    roofGable(b, 0, (Zb + Zf) / 2, X1 - X0, Zf - Zb, top, 3.0, 'z', P(0x4a4d52, Surf.RoofTiles), { gable: wall, over: 0.35, rake: 0.35, trim: trimC });
+    for (let f = 1; f < 3; f++) band(b, X0, Zb, X1, Zf, y0 + f * fl - 0.1, 0.2, 0.05, trimC, false);
+    for (const [cx, cz] of [[X0, Zf], [X1, Zf], [X0, Zb], [X1, Zb]] as [number, number][]) b.paint(trimC).box(cx - 0.12, y0, cz - 0.12, cx + 0.12, top, cz + 0.12, { bottom: null, top: null });
+    const ws: WinStyle = { frame: trimC, mull: 1 };
+    // stacked porches on the left half: slab, balustrade, continuous posts, flat porch roof
+    const PX0 = -5.5, PX1 = -0.2, PZ = 4.4;
+    for (let f = 0; f < 3; f++) {
+      const y = y0 + f * fl;
+      b.paint(f === 0 ? 0x9a8a74 : trimC).box(PX0, y - 0.2, Zf, PX1, y, PZ, { nz: null, bottom: f === 0 ? null : P(trimC) });
+      b.paint(trimC).quad2([PX0, y, PZ - 0.05], [PX1, y, PZ - 0.05], [PX1, y + 0.9, PZ - 0.05], [PX0, y + 0.9, PZ - 0.05]);
+      b.paint(trimC).quad2([PX1 - 0.05, y, Zf], [PX1 - 0.05, y, PZ], [PX1 - 0.05, y + 0.9, PZ], [PX1 - 0.05, y + 0.9, Zf]);
+      inFace(b, 'pz', Zf, () => {
+        door(b, -4.2, y, 0.95, 2.1, doorC, { lite: true, frame: trimC });
+        win(b, -1.8, y + 0.8, 0.9, 1.6, ws);
+      });
+    }
+    b.paint(trimC).box(PX0 - 0.1, top, Zf, PX1 + 0.1, top + 0.25, PZ + 0.15, { nz: null, bottom: P(trimC) });
+    for (const px of [PX0 + 0.1, (PX0 + PX1) / 2, PX1 - 0.1]) b.paint(trimC).box(px - 0.1, y0, PZ - 0.2, px + 0.1, top, PZ, { bottom: null, top: null });
+    inFace(b, 'pz', PZ, () => steps(b, -2.9, 1.3, 2, 0.3, 0.3, 0x9a8a74, 0, Surf.Wood));
+    lightPool(b, -4.0, PZ + 0.4, -1.8, PZ + 2.6, 0xc3beb3, 0.105);
+    inFace(b, 'pz', Zf, () => {
+      bay(b, 2.7, y0, top - 0.2, 3.8, 0.9, wall, { winY: [y0 + 0.8, y0 + fl + 0.8, y0 + 2 * fl + 0.8], winH: 1.6, frame: trimC, cap: trimC });
+      win(b, 0, top + 0.7, 0.9, 1.1, { frame: trimC, mull: 2 });
+    });
+    for (let f = 0; f < 3; f++) {
+      const y = y0 + f * fl + 0.8;
+      wins(b, 'px', X1, [-5.0, -2.6, -0.2], y, 0.9, 1.6, ws);
+      wins(b, 'nx', X0, [-5.0, -2.6, -0.2], y, 0.9, 1.6, ws);
+      wins(b, 'nz', Zb, [-2.6, 2.6], y, 0.9, 1.6, ws);
+    }
+    chimney(b, 3.2, -4.2, 0.7, 1.0, top + 0.8, top + 3.4, 0x8a4a38);
+    laundry(b, rng, [6.0, 2.4, -6.4], [6.0, 2.4, 0.8], 4);
+    trashCans(b, -7.0, 1.0, 2, 0x3a5a45);
+    streetTree(b, rng, 4.2, 7.0, 0.75);
+  } else if (v === 2) {
+    // stucco courtyard walk-up: two wings + back range around a small front court, terracotta hip roofs
+    frontPave(b, -8, 8, z1, 8);
+    const floors = 3, top = floors * fh;
+    const stucco = rng.pick([0xe6d8b8, 0xead9b4, 0xe2d2bc]), trimC = 0xf6eedc, tile = P(0xb5583a, Surf.RoofTiles);
+    ww(b, x0, z0, x1, -C, 0, top, stucco, 1, fh, null);
+    ww(b, x0, -C, -C, z1, 0, top, stucco, 1, fh, null, { nz: null });
+    ww(b, C, -C, x1, z1, 0, top, stucco, 1, fh, null, { nz: null });
+    roofHip(b, 0, (z0 - C) / 2, x1 - x0, -C - z0, top, 1.7, tile, { over: 0.45, trim: trimC });
+    for (const cx of [-2 * C, 2 * C]) roofHip(b, cx, (z1 - C) / 2, 2 * C, z1 + C, top, 1.7, tile, { over: 0.45, trim: trimC });
+    // court: terracotta paving, small fountain, olive tree, pots
+    paveSlab(b, -C, -C, C, z1, 0xb88a6a, 0.1);
+    b.push().translate(0, 0.1, -0.2).scale(0.5, 1, 0.5);
+    fountainTiny(b, 0, 0);
+    b.pop();
+    tree(b, rng, -1.3, 2.6, 0.45, 'round', 0x7d8f5a);
+    for (const px of [1.5, -1.6]) planter(b, px, px > 0 ? 2.8 : -1.6, 0.6, 0.6, 0.1, 0xb5583a, 0x4f7a34, px);
+    inFace(b, 'pz', -C, () => door(b, 0.9, 0.1, 1.2, 2.4, doorC, { transom: true, frame: trimC, lamp: true }));
+    // arched entrance gate between the wings
+    for (const s of [-1, 1]) b.paint(stucco).box(s > 0 ? C - 0.5 : -C, 0, z1 - 0.4, s > 0 ? C : -C + 0.5, 3.0, z1 + 0.2, { bottom: null });
+    b.paint(stucco).box(-C, 3.0, z1 - 0.4, C, 3.8, z1 + 0.2, { bottom: null, top: null });
+    b.paint(tile).box(-C - 0.15, 3.8, z1 - 0.55, C + 0.15, 4.0, z1 + 0.35, { bottom: null });
+    ironRail(b, -C + 0.5, z1 - 0.1, C - 0.5, z1 - 0.1, 2.2, 0x2a2c2e, 0.35);
+    b.paint(0xffe2a8, Surf.Emissive).box(-0.2, 2.5, z1 + 0.2, 0.2, 2.9, z1 + 0.45, { nz: null });
+    lightPool(b, -1.4, z1 + 0.4, 1.4, z1 + 2.8, 0xc3beb3, 0.105);
+    lightPool(b, -1.8, -1.8, 1.8, 1.8, 0xb88a6a, 0.11);
+    // Juliet balconies with iron rails + geraniums on the wing fronts
+    for (const x of [-5.5, -3.3, 3.3, 5.5]) for (let f = 1; f < floors; f++) {
+      const y = f * fh + 0.7;
+      b.paint(trimC).box(x - 0.65, y - 0.1, z1, x + 0.65, y, z1 + 0.4, { nz: null });
+      ironRail(b, x - 0.62, z1 + 0.38, x + 0.62, z1 + 0.38, 0.75, 0x2a2c2e, 0.4, y);
+      if ((f + Math.round(x)) % 2 === 0) b.paint(0xc4506a, Surf.Foliage).box(x - 0.55, y, z1 + 0.05, x + 0.55, y + 0.3, z1 + 0.3, { nz: null, bottom: null });
+    }
+    band(b, x0, z0, x1, z1, 0, 0.45, 0.04, mixHex(stucco, 0x6a5a40, 0.25), false);
+    chimney(b, -4.6, -4.4, 0.7, 0.7, top + 0.7, top + 2.5, stucco, Surf.Plain);
+    for (const tx of [-7.1, 7.1]) tree(b, rng, tx, 6.9, 0.7, 'column');
+    trashCans(b, 6.6, -7.3, 2, 0x3a3d40);
+  } else if (v === 3) {
+    // white-painted brick loft: black cast-iron shop storey, black cornice + fire escape, roof garden with trees
+    frontPave(b, -8, 8, z1, 8);
+    const floors = 4, top = floors * fh, yR = top + 0.35;
+    const paintC = rng.pick([0xe4dfd4, 0xe8e4dc, 0xded8cc]), iron = 0x2a2c2e;
+    b.paint(P(0x34373b)).box(x0, 0, z0, x1, fh, z1, { top: null });
+    ww(b, x0, z0, x1, z1, fh, top, paintC, 1, fh, null);
+    inFace(b, 'pz', z1, () => {
+      for (const x of [-5.0, -2.6, 2.6, 5.0]) win(b, x, 0.6, 1.7, 2.2, { frame: 0x1c1c1e, mull: 1 });
+      door(b, 0, 0.3, 1.4, 2.4, 0x1c1c1e, { transom: true, frame: 0x1c1c1e, lamp: true, lite: true });
+      steps(b, 0, 1.8, 1, 0.3, 0.4, 0x8e8a82, 0, Surf.Stone);
+    });
+    wins(b, 'px', x1, [-4.4, -1.1, 2.2], 0.9, 1.4, 1.8, { frame: 0x1c1c1e });
+    wins(b, 'nx', x0, [-4.4, -1.1, 2.2], 0.9, 1.4, 1.8, { frame: 0x1c1c1e });
+    lightPool(b, -1.3, z1 + 0.6, 1.3, z1 + 3.0, 0xc3beb3, 0.105);
+    sills(b, x0, z0, x1, z1, 1, floors, fh, 0.22, 0xc9c3b6);
+    cornice(b, x0, z0, x1, z1, top, iron, ['pz'], true, 0.5, 0x77736c);
+    parapet(b, x0, z0, x1, z1, yR, 0.9, 0.25, paintC, iron);
+    inFace(b, 'pz', z1, () => fireEscape(b, -3.3, floorsAt(floors), 4.0, iron));
+    acWin(b, 'pz', z1, 3.3, fh * 2 + 0.7);
+    // roof garden: deck + pergola with festoon lights on the front half, lawn, planters and small trees behind
+    const ix0 = x0 + 0.3, ix1 = x1 - 0.3, iz0 = z0 + 0.3, iz1 = z1 - 0.3;
+    b.paint(0x8b6a47, Surf.Wood).box(ix0, yR, 0.2, 1.4, yR + 0.12, iz1, { bottom: null });
+    b.paint(0x6f9a45, Surf.Foliage).box(1.4, yR, iz0, ix1, yR + 0.16, iz1, { bottom: null });
+    b.push().translate(0, yR, 0);
+    tree(b, rng, 4.0, -3.4, 0.42);
+    tree(b, rng, 2.8, 1.8, 0.36);
+    for (const [px, pz] of [[-5.6, 3.3], [-0.2, 3.3]] as [number, number][]) planter(b, px, pz, 0.9, 0.9, 0.12, 0x55595f, 0x4f7a34, px);
+    const tim = P(0x6b5238, Surf.Wood);
+    for (const [px, pz] of [[-5.8, 0.5], [0.6, 0.5], [-5.8, 3.7], [0.6, 3.7]] as [number, number][]) b.paint(tim).box(px - 0.08, 0.12, pz - 0.08, px + 0.08, 2.4, pz + 0.08, { bottom: null, top: null });
+    for (const pz of [0.5, 2.1, 3.7]) b.paint(tim).beam([-5.9, 2.4, pz], [0.7, 2.4, pz], 0.12);
+    for (const pz of [1.3, 2.9]) b.paint(0xffc870, Surf.Emissive, 10).beam([-5.8, 2.2, pz], [0.6, 2.2, pz], 0.04);
+    patioTable(b, -2.6, 2.1);
+    b.pop();
+    bulkhead(b, -4.4, -4.4, 2.4, 2.6, yR, 2.5, paintC);
+    acUnit(b, -1.0, yR, -4.6, 0.8);
+    trashCans(b, 4.8, z1 + 1.2, 2, 0x3a3d40);
+    streetTree(b, rng, 5.8, 6.6, 0.85);
+    bush(b, -5.6, z1 + 1.1, 0.55, 0x3f6a2d, 3);
+  } else if (v === 4) {
+    // grey-stone bay-window rowhouse pair: 4-storey unit with bracketed cornice + 3-storey unit with slate mansard
+    frontPave(b, -8, 8, z1, 8);
+    const stL = rng.pick([0xa7a49b, 0x9c9a92, 0xaeaaa0]), stR = rng.pick([0xc4b8a0, 0xbfb49e, 0xcabfa6]), trimC = 0xe8e2d4;
+    const hL = 4 * fh, hR = 3 * fh;
+    ww(b, x0, z0, 0, z1, 0, hL, stL, 1, fh, P(ROOF, Surf.RoofFlat), { px: P(stL, Surf.Stone) });
+    ww(b, 0, z0, x1, z1, 0, hR, stR, 1, fh, null, { nx: null });
+    const dc = rng.shuffle([0x3a2418, 0x2f4a37, 0x5a2a22, 0x2c3b57, 0x1c1c1c]);
+    for (const [u, y1, st, i] of [[-3.9, hL, stL, 0], [3.9, hR, stR, 1]] as [number, number, number, number][]) {
+      const du = i === 0 ? -1.1 : 1.1, n = i === 0 ? 4 : 3;
+      inFace(b, 'pz', z1, () => {
+        bay(b, u, 0, y1 - 0.25, 3.4, 0.95, P(st, Surf.Stone), { winY: Array.from({ length: n }, (_, f) => f * fh + 0.75), winH: 1.7, frame: trimC, cap: trimC });
+        door(b, du, 1.2, 1.1, 2.3, dc[i], { transom: true, frame: trimC, lamp: true });
+        steps(b, du, 1.5, 4, 0.3, 0.33, mixHex(st, 0x000000, 0.12), 0, Surf.Stone);
+        stoopRails(b, du, 1.6, 4, 0.3, 0.33, 0x1c1c1c);
+      });
+      lightPool(b, du - 1.2, z1 + 1.4, du + 1.2, z1 + 3.6, 0xc3beb3, 0.105);
+    }
+    band(b, x0, z0, x1, z1, fh - 0.15, 0.3, 0.1, trimC, false);
+    cornice(b, x0, z0, 0, z1, hL, 0x3a3530, ['pz'], true, 0.5);
+    parapet(b, x0, z0, 0, z1, hL + 0.35, 0.5, 0.25, stL, 0x6a645c);
+    band(b, 0, z0, x1, z1, hR, 0.3, 0.3, trimC);
+    roofMansard(b, x1 / 2, (z0 + z1) / 2, x1, z1 - z0, hR + 0.3, 2.8, 1.0, P(0x3e444c, Surf.RoofTiles), P(ROOF, Surf.RoofFlat), 0.25);
+    for (const x of [2.2, 4.9]) {
+      const zf = z1 - 0.45;
+      b.paint(trimC).box(x - 0.7, hR + 0.6, zf - 1.4, x + 0.7, hR + 2.5, zf, { nz: null, bottom: null, top: P(0x3e444c) });
+      inFace(b, 'pz', zf, () => win(b, x, hR + 0.85, 0.75, 1.3, { frame: trimC, mull: 2 }));
+    }
+    railing(b, x0 + 0.2, z1 + 1.6, -2.0, z1 + 1.6);
+    railing(b, 2.0, z1 + 1.6, x1 - 0.2, z1 + 1.6);
+    chimney(b, -6.0, -4.6, 0.8, 1.2, hL + 0.35, hL + 1.9, 0x6a645c, Surf.Stone);
+    chimney(b, 6.0, -4.6, 0.8, 1.2, hR + 2.6, hR + 4.0, 0x7a5444, Surf.Brick);
+    acUnit(b, -3.6, hL + 0.35, -3.2, 0.85);
+    b.paint(0x2a3440, Surf.GlassPlain, 1).box(-5.4, hL + 0.35, 0.4, -3.8, hL + 0.9, 2.2, { bottom: null });
+    inFace(b, 'px', x1, () => fireEscape(b, U('px', -3.8), floorsAt(3), 3.2));
+    trashCans(b, -6.8, z1 + 2.3, 2, 0x3a3d40);
+    streetTree(b, rng, 5.9, 6.7, 0.8);
+  } else {
+    // Italianate flat: sage clapboard on a raised stone base, full-height angled bay, deep bracketed cornice, solar
+    frontPave(b, -8, 8, z1, 8);
+    const wallC = rng.pick([0x6f8f68, 0x6a8a6e, 0x7a9266]), trimC = 0xf4f0e6;
+    const wall = P(wallC, Surf.Wood), y0 = 0.9, fl = 3.2, top = y0 + 3 * fl;
+    b.paint(P(0x8a8378, Surf.Stone)).box(x0, 0, z0, x1, y0, z1, { top: null });
+    b.paint(wall).box(x0, y0, z0, x1, top, z1, { top: null });
+    for (const [cx, cz] of [[x0, z1], [x1, z1], [x0, z0], [x1, z0]] as [number, number][]) b.paint(trimC).box(cx - 0.14, y0, cz - 0.14, cx + 0.14, top, cz + 0.14, { bottom: null, top: null });
+    const ws: WinStyle = { frame: trimC, mull: 1, head: trimC };
+    inFace(b, 'pz', z1, () => {
+      bay(b, -3.3, y0, top - 0.3, 3.8, 1.0, wall, { winY: [y0 + 0.7, y0 + fl + 0.7, y0 + 2 * fl + 0.7], winH: 1.9, frame: trimC, cap: trimC });
+      door(b, 2.2, y0, 1.1, 2.4, doorC, { transom: true, frame: trimC, lamp: true });
+      steps(b, 2.2, 1.5, 3, 0.3, 0.33, 0x9a948a, 0, Surf.Stone);
+      stoopRails(b, 2.2, 1.6, 3, 0.3, 0.33, 0x1c1c1c);
+      for (let f = 0; f < 3; f++) { win(b, 4.8, y0 + f * fl + 0.7, 0.95, 2.0, ws); if (f > 0) win(b, 2.2, y0 + f * fl + 0.7, 0.95, 2.0, ws); }
+      win(b, 4.8, 0.2, 0.8, 0.5, { frame: 0x2a2a2a });
+    });
+    lightPool(b, 1.0, z1 + 1.0, 3.4, z1 + 3.4, 0xc3beb3, 0.105);
+    for (let f = 0; f < 3; f++) {
+      const y = y0 + f * fl + 0.7;
+      wins(b, 'px', x1, [-4.4, -1.1, 2.2], y, 0.95, 1.9, { frame: trimC });
+      wins(b, 'nx', x0, [-4.4, -1.1, 2.2], y, 0.95, 1.9, { frame: trimC });
+      wins(b, 'nz', z0, [-3.3, 0, 3.3], y, 0.95, 1.8, { frame: trimC });
+    }
+    cornice(b, x0, z0, x1, z1, top, trimC, ['pz'], true, 0.75);
+    band(b, x0, z1 - 0.2, x1, z1, top - 0.95, 0.5, 0.06, mixHex(wallC, 0xffffff, 0.25), false);
+    solar(b, -5.6, -5.8, 3.4, 1.6, top + 0.35);
+    bulkhead(b, 4.6, -4.2, 2.0, 2.2, top + 0.35, 2.0, trimC);
+    b.paint(0x55585c, Surf.Metal).cylinder(4.9, 2.0, top + 0.35, 0.8, 0.08, 0.08, 5);
+    flowerBed(b, -6.2, z1 + 1.4, -0.6, z1 + 2.2, FLOWERS[(doorC >> 4) % FLOWERS.length], 0.1);
+    ironRail(b, -6.3, z1 + 2.3, -0.5, z1 + 2.3, 0.8, 0x2a2c2e, 1.0);
+    trashCans(b, 6.8, z1 + 1.3, 2, 0x3a5a45);
+    streetTree(b, rng, -5.4, 6.9, 0.8);
+  }
+}
+
+/** Short white picket run (posts + two rails as double-sided strips). */
+function picketFence(b: ModelBuilder, ax: number, az: number, bx: number, bz: number, h = 0.9): void {
+  const len = Math.hypot(bx - ax, bz - az), n = Math.max(2, Math.round(len / 0.9));
+  b.paint(0xf2efe6);
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+    b.quad2([x - 0.05, 0, z], [x + 0.05, 0, z], [x + 0.05, h, z], [x - 0.05, h, z]);
+  }
+  b.quad2([ax, h * 0.7, az], [bx, h * 0.7, bz], [bx, h * 0.78, bz], [ax, h * 0.78, az]);
+}
+
+/** Small round bistro table with two stools (rooftop terraces). */
+function patioTable(b: ModelBuilder, x: number, z: number): void {
+  b.paint(0x2a2c2e, Surf.Metal).cylinder(x, z, 0.12, 0.75, 0.06, 0.06, 5, { top: false });
+  b.paint(0xe8e2d4).cylinder(x, z, 0.87, 0.05, 0.5, 0.5, 8);
+  for (const s of [-1, 1]) b.paint(0x6b5238, Surf.Wood).cylinder(x + s * 0.75, z, 0.12, 0.45, 0.2, 0.2, 6);
 }
 
 // ---------------------------------------------------------------------------------------------- TENEMENT (R$) 2x2
@@ -1002,7 +1272,7 @@ function fountainTiny(b: ModelBuilder, x: number, z: number): void {
 }
 
 export const midModelsA = {
-  res_walkup: (b: ModelBuilder, v: number, rng: RNG) => { setLot(8, 8, 14); walkup(b, v, rng); },
+  res_walkup: (b: ModelBuilder, v: number, rng: RNG) => { setLot(8, 8, 14); if (isMirrorTwin('res_walkup', v, rng)) walkupTwin(b, v, rng); else walkup(b, v, rng); },
   res_tenement: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 20); tenement(b, v, rng); },
   res_rowhouses: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 8, 12); rowhouses(b, v, rng); },
   res_apartment: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 22); apartment(b, v, rng); },

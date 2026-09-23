@@ -4,11 +4,21 @@
  *
  * Summary:
  *  - R demand comes from jobs (jobs > workers → R up) + regional attraction; unemployment pushes R down.
- *  - CS from residents (customers by wealth) + tourism; CO from the workforce, city size, EQ and connectivity.
+ *    SIM_DEPTH_SPEC WP4: the whole R target of each wealth tier × MIGRATION (attractiveness, tourism.ts), plus retirees
+ *    and university students who come without local jobs (econData.migrants). The actual workforce ratio (WP1,
+ *    rt.workforceRatio) converts jobs into residents.
+ *  - CS from residents (customers by wealth) + TOURISM (econData.tourism = CS jobs from effective tourists, tourism.ts);
+ *    CO from the workforce, city size, EQ and connectivity.
  *  - Industry: export demand (region/world, boosted by neighbor connections, freight stations, seaport, airports)
  *    + workforce share; EQ shifts dirty → high-tech. Unemployment pushes C/I up.
+ *  - REGIONAL PLAY (WP4-1): founded neighbour cities (state.systemData.region, src/region/regionEffects.ts) change the
+ *    targets like SC4 — a neighbouring job centre raises R, a neighbouring bedroom town raises C / I, neighbouring
+ *    residents shop here, a big region widens the industrial market, and neighbours relieve the caps. Every effect is
+ *    scaled by how well the shared edge is connected (EDGE_CONN: highway 1 … street .3, none .1).
+ *    Terms → econData.regionTerms (WP5 RCI tooltip). An isolated city gets bit-identical demand.
  *  - Taxes lower targets per DevType (wealthy more sensitive), ordinances multiply them.
- *  - Caps: base + relief from parks / landmarks / airports / seaports / connections (catalog CAP_RELIEF).
+ *  - Caps: base + relief from parks / landmarks / airports / seaports / connections (catalog CAP_RELIEF). Relief only
+ *    counts while the building works (not burnt, powered when it needs power, × funding) and × its use factor (WP7).
  */
 import type { SimSystem } from '../Simulation';
 import type { CityState } from '../CityState';
@@ -19,13 +29,18 @@ import { CAP_RELIEF, devFamily } from '../catalog';
 import {
   APPROVAL_R, BASE_CAP, CAP_BINDING, CAP_POP_FRAC, CAP_SOFTMIN_K, CAP_WEIGHT, CIVIC_WEALTH_MIX, CO3_FRAC_MAX, CO3_FRAC_MIN,
   CO_SHARE_MAX, CO_SHARE_MIN, CO_SHARE_POP_FULL, CO_SHARE_POP_START, CONN_BASE, CONN_CAP_RELIEF, CONN_MAX, CONN_WEIGHT,
-  CS_BASE, CS_PER_RES, CS_SMALL_TOWN_BOOST, CS_SMALL_TOWN_POP, CUSTOMER_MIX, DEMAND_ABS_EMA, DEMAND_EMA, DEMAND_NORM_FRAC, DEMAND_NORM_MIN, FREIGHT_BOOST,
-  FREIGHT_BOOST_MAX, I_BASE, I_SHARE_MAX, I_SHARE_MIN, IA_BASE, IA_PER_RES, ID_EQ_START, ID_SHARE_AT_EQ0, ID_SHARE_EQ_SLOPE, ID_SHARE_MIN,
-  IHT_EQ_START, IHT_SHARE_MAX, IHT_SHARE_PER_EQ, JOB_SLACK, JOB_WEALTH_MIX, R_BASE, R_JOB_SLACK, TAX_FACTOR_MAX,
-  TAX_FACTOR_MIN, TAX_NEUTRAL, TAX_SENS, TOURISM_CS_PER_POINT, UNEMP_CI_BOOST, UNEMP_NEUTRAL, UNEMP_R_PENALTY, WORKFORCE_RATIO,
+  CS_BASE, CS_PER_RES, CS_SMALL_TOWN_BOOST, CS_SMALL_TOWN_POP, CUSTOMER_MIX, DEMAND_ABS_EMA, DEMAND_EMA, DEMAND_NORM_FRAC, DEMAND_NORM_MIN,
+  EDGE_CONN, EDGE_NONE, FREIGHT_BOOST, FREIGHT_BOOST_MAX, I_BASE, I_SHARE_MAX, I_SHARE_MIN, IA_BASE, IA_PER_RES, ID_EQ_START,
+  ID_SHARE_AT_EQ0, ID_SHARE_EQ_SLOPE, ID_SHARE_MIN, IHT_EQ_START, IHT_SHARE_MAX, IHT_SHARE_PER_EQ, JOB_MIX_AVG, JOB_SLACK,
+  JOB_WEALTH_MIX, R_BASE, R_JOB_SLACK, REGION_WEALTH_MIX, RG_CAP, RG_CI, RG_CI_SPLIT, RG_CS, RG_CS_MAX, RG_MARKET, RG_MARKET_POP,
+  RG_R, TAX_FACTOR_MAX, TAX_FACTOR_MIN, TAX_NEUTRAL, TAX_SENS, TOURISM_CS_PER_POINT, TOURISM_CS_SPLIT, UNEMP_CI_BOOST,
+  UNEMP_NEUTRAL, UNEMP_R_PENALTY, WORKFORCE_RATIO,
 } from './tuning';
-import { type EconRuntime, econData } from './runtime';
+import { type EconRuntime, type RegionTerms, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
+import { venueOp } from './tourism';
+import { facilityUseFactor } from '../infra/facilities';
+import type { RegionContext, RegionNeighbor } from '../../region/regionEffects';
 
 const DEV_ENUM = ['R1', 'R2', 'R3', 'CS1', 'CS2', 'CS3', 'CO2', 'CO3', 'IA', 'ID', 'IM', 'IHT'];
 
@@ -34,13 +49,16 @@ export interface DemandContext {
   connC: number;
   connI: number;
   freightBoost: number;
-  /** tourism points (≈ CS jobs from visitors) */
+  /**
+   * LEGACY tourism points (cap-relief C × 0.05 + ordinance 'add.tourism'), kept only for comparison with the new venue
+   * model (WP6 acceptance: tourism jobs within ±30 % of this). The demand model uses econData.tourism.
+   */
   tourism: number;
   /** family-level cap relief from buildings + connections */
   relief: { R: number; C: number; I: number; R3: number; IHT: number; CO3: number };
 }
 
-/** connection factors, freight boosts, tourism and cap relief from plopped buildings + neighbor connections */
+/** connection factors, freight boosts and cap relief from plopped buildings + neighbor connections */
 export function demandContext(st: CityState, rt: EconRuntime): DemandContext {
   let cR = CONN_BASE.R, cC = CONN_BASE.C, cI = CONN_BASE.I;
   const relief = { R: 0, C: 0, I: 0, R3: 0, IHT: 0, CO3: 0 };
@@ -50,17 +68,22 @@ export function demandContext(st: CityState, rt: EconRuntime): DemandContext {
     const r = CONN_CAP_RELIEF[c.type];
     if (r) { relief.R += r.R; relief.C += r.C; relief.I += r.I; }
   }
+  const inf = infraFlags(st);
   let freight = 0, tourism = 0;
   for (const b of rt.plopped) {
     if (b.flags & BF.Burnt) continue;
     const r = CAP_RELIEF[b.def];
+    const f = FREIGHT_BOOST[b.def];
+    if (!r && !f) continue;
+    const def = rt.defOf(b);
+    // relief follows use (WP4-3): a working (powered, funded) building × its use factor (WP7: airports / seaport)
+    const k = def ? venueOp(st, b, def, inf) * facilityUseFactor(st, b) : 1;
     if (r) {
-      relief.R += r.R ?? 0; relief.C += r.C ?? 0; relief.I += r.I ?? 0;
-      relief.R3 += r.R3 ?? 0; relief.IHT += r.IHT ?? 0; relief.CO3 += r.CO3 ?? 0;
+      relief.R += (r.R ?? 0) * k; relief.C += (r.C ?? 0) * k; relief.I += (r.I ?? 0) * k;
+      relief.R3 += (r.R3 ?? 0) * k; relief.IHT += (r.IHT ?? 0) * k; relief.CO3 += (r.CO3 ?? 0) * k;
       tourism += (r.C ?? 0) * 0.05;
     }
-    const f = FREIGHT_BOOST[b.def];
-    if (f) freight += f;
+    if (f) freight += f * k;
   }
   tourism += ordinanceEffect(st, 'add.tourism') * st.stats.population / 1000;
   return {
@@ -84,11 +107,80 @@ function softmin(t: number, cap: number): number {
   return (t * cap) / Math.pow(Math.pow(t, k) + Math.pow(cap, k), 1 / k);
 }
 
+// ------------------------------------------------------------------------------------------------ regional play
+/**
+ * How well this city reaches neighbour `n`: the best EDGE_CONN of our neighbour connections on the shared edge segment
+ * (the along-edge coordinate x for n / s, z for e / w inside [n.from, n.to)), EDGE_NONE without a connection.
+ */
+export function edgeFactor(st: CityState, n: Pick<RegionNeighbor, 'edge' | 'from' | 'to'>): number {
+  let f = 0;
+  for (const c of st.neighborConnections) {
+    if (c.edge !== n.edge) continue;
+    const a = n.edge === 'n' || n.edge === 's' ? c.x : c.z;
+    if (a < n.from || a >= n.to) continue;
+    const e = EDGE_CONN[c.type] ?? 0;
+    if (e > f) f = e;
+  }
+  return f > 0 ? f : EDGE_NONE;
+}
+
+/** regional inputs of the demand model (edge-weighted neighbour sums); null for an isolated city */
+export interface RegionInputs {
+  /** Σ max(0, n.jobs − n.workers) × edgeF — neighbour jobs our residents could take */
+  jobSurplus: number;
+  /** Σ max(0, n.workers − n.jobs) × edgeF — neighbour workers looking for jobs here */
+  workerSurplus: number;
+  /** Σ_r n.pop × REGION_WEALTH_MIX_r × CUSTOMER_MIX[r][w] × edgeF — neighbour shoppers per CS tier */
+  customers: [number, number, number];
+  /** Σ edgeF × n.pop */
+  reachPop: number;
+  /** industrial market multiplier (1 + RG_MARKET × min(1, region pop / RG_MARKET_POP)) */
+  market: number;
+  /** per neighbour tile: best edge factor (for the UI / advisors, e.g. "connect a highway on the north edge") */
+  neighbors: { tileKey: string; name: string | null; edge: string; edgeF: number; population: number; jobs: number; workers: number }[];
+}
+
+export function regionInputs(st: CityState): RegionInputs | null {
+  const reg = st.systemData.region as RegionContext | undefined;
+  if (!reg || !Array.isArray(reg.neighbors)) return null;
+  // one entry per shared edge segment; a tile is counted once with its best-connected segment
+  const best = new Map<string, { n: RegionNeighbor; f: number }>();
+  for (const n of reg.neighbors) {
+    if (!n.founded) continue;
+    const f = edgeFactor(st, n);
+    const cur = best.get(n.tileKey);
+    if (!cur || f > cur.f) best.set(n.tileKey, { n, f });
+  }
+  const market = 1 + RG_MARKET * Math.min(1, Math.max(0, reg.population ?? 0) / RG_MARKET_POP);
+  if (best.size === 0 && market === 1) return null;
+  let jobSurplus = 0, workerSurplus = 0, reachPop = 0;
+  const customers: [number, number, number] = [0, 0, 0];
+  const neighbors: RegionInputs['neighbors'] = [];
+  for (const { n, f } of best.values()) {
+    const jobs = Math.max(0, n.jobs || 0), workers = Math.max(0, n.workers || 0), p = Math.max(0, n.population || 0);
+    jobSurplus += Math.max(0, jobs - workers) * f;
+    workerSurplus += Math.max(0, workers - jobs) * f;
+    reachPop += p * f;
+    for (let w = 0; w < 3; w++) {
+      let c = 0;
+      for (let r = 0; r < 3; r++) c += p * REGION_WEALTH_MIX[r] * CUSTOMER_MIX[r][w];
+      customers[w] += c * f;
+    }
+    neighbors.push({ tileKey: n.tileKey, name: n.name, edge: n.edge, edgeF: f, population: p, jobs, workers });
+  }
+  return { jobSurplus, workerSurplus, customers, reachPop, market, neighbors };
+}
+
+// ------------------------------------------------------------------------------------------------ the system
 export function demandSystem(rt: EconRuntime): SimSystem {
   let ctx: DemandContext | null = null;
   const raw = new Float64Array(DEV_TYPE_COUNT);
   const cap = new Float64Array(DEV_TYPE_COUNT);
   const cur = new Float64Array(DEV_TYPE_COUNT);
+  /** regional additions per DevType before modifiers (capacity units) */
+  const reg = new Float64Array(DEV_TYPE_COUNT);
+  /** product of all multiplicative modifiers applied after the additions, per DevType */
+  const mods = new Float64Array(DEV_TYPE_COUNT);
 
   const compute = (st: CityState, first: boolean) => {
     if (!ctx || rt.capsDirty) { ctx = demandContext(st, rt); rt.capsDirty = false; }
@@ -96,20 +188,23 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     const t = rt.totals;
     const s = st.stats;
     const P = t.population;
-    const W = P * WORKFORCE_RATIO;
+    const wr = rt.workforceRatio > 0 ? rt.workforceRatio : WORKFORCE_RATIO;
+    const W = P * wr;
     const EQ = s.eq;
     const rates = st.budget.taxRates;
     const u = s.unemployment;
     const excessU = Math.max(0, u - UNEMP_NEUTRAL);
+    const rin = regionInputs(st);
+    reg.fill(0);
     // ---- job targets
     const logF = P <= CO_SHARE_POP_START ? 0 : clamp(Math.log(P / CO_SHARE_POP_START) / Math.log(CO_SHARE_POP_FULL / CO_SHARE_POP_START), 0, 1);
     const smallTown = 1 + CS_SMALL_TOWN_BOOST * (1 - smoothstep(0, CS_SMALL_TOWN_POP, P));
-    // customers per CS tier
+    // customers per CS tier + tourism (CS jobs from effective tourists, WP4)
+    const tourismJobs = Math.max(0, data.tourism || 0);
     for (let w = 0; w < 3; w++) {
       let customers = 0;
       for (let r = 0; r < 3; r++) customers += t.pop[r] * CUSTOMER_MIX[r][w];
-      const tourMix = w === 0 ? 0.35 : w === 1 ? 0.4 : 0.25;
-      raw[DevType.CS1 + w] = (CS_BASE[w] + CS_PER_RES[w] * customers) * smallTown + ctx.tourism * tourMix;
+      raw[DevType.CS1 + w] = (CS_BASE[w] + CS_PER_RES[w] * customers) * smallTown + tourismJobs * TOURISM_CS_SPLIT[w];
     }
     const eqF = 0.6 + 0.8 * smoothstep(0, 100, EQ);
     const co = W * lerp(CO_SHARE_MIN, CO_SHARE_MAX, logF) * eqF * ctx.connC;
@@ -124,29 +219,74 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     raw[DevType.IM] = iTotal * sIM;
     raw[DevType.IHT] = iTotal * sIHT;
     raw[DevType.IA] = (IA_BASE + IA_PER_RES * P) * Math.sqrt(ctx.connI);
-    for (let d = DevType.CS1; d <= DevType.IHT; d++) raw[d] *= JOB_SLACK * (1 + UNEMP_CI_BOOST * excessU);
-    // ---- residential targets from jobs (capacity, incl. under construction)
+    if (rin) {
+      // neighbour shoppers (≤ RG_CS_MAX × local CS) + neighbour workers (bedroom towns) + a bigger regional market
+      const ci = RG_CI * rin.workerSurplus;
+      let csLocal = 0;
+      for (let w = 0; w < 3; w++) csLocal += raw[DevType.CS1 + w];
+      for (let w = 0; w < 3; w++) {
+        const d = DevType.CS1 + w;
+        const shop = Math.min(RG_CS * CS_PER_RES[w] * rin.customers[w], RG_CS_MAX * raw[d]);
+        reg[d] = shop + (csLocal > 0 ? ci * RG_CI_SPLIT.CS * raw[d] / csLocal : ci * RG_CI_SPLIT.CS / 3);
+      }
+      reg[DevType.CO2] = ci * RG_CI_SPLIT.CO * (1 - f3);
+      reg[DevType.CO3] = ci * RG_CI_SPLIT.CO * f3;
+      const iAdd = iTotal * (rin.market - 1);
+      const sSum = sID + sIM + sIHT;
+      reg[DevType.ID] = iAdd * sID + ci * RG_CI_SPLIT.I * sID / sSum;
+      reg[DevType.IM] = iAdd * sIM + ci * RG_CI_SPLIT.I * sIM / sSum;
+      reg[DevType.IHT] = iAdd * sIHT + ci * RG_CI_SPLIT.I * sIHT / sSum;
+      for (let d = DevType.CS1; d <= DevType.IHT; d++) raw[d] += reg[d];
+    }
+    const jobMul = JOB_SLACK * (1 + UNEMP_CI_BOOST * excessU);
+    for (let d = DevType.CS1; d <= DevType.IHT; d++) { raw[d] *= jobMul; mods[d] = jobMul; }
+    // ---- residential targets from jobs (capacity, incl. under construction), migration, retirees / students, region
+    const mig = data.migration;
+    const migrants = data.migrants;
+    const unempF = Math.max(0.2, 1 - UNEMP_R_PENALTY * excessU);
+    const apprF = 1 + APPROVAL_R * (s.approval - 50) / 50;
     for (let w = 0; w < 3; w++) {
       let jobs = t.civicJobCap * CIVIC_WEALTH_MIX[w];
       for (let d = DevType.CS1; d <= DevType.IHT; d++) jobs += t.jobCapAll[d] * JOB_WEALTH_MIX[d][w];
-      raw[w] = (R_BASE[w] * ctx.connR + (jobs / WORKFORCE_RATIO) * R_JOB_SLACK)
-        * Math.max(0.2, 1 - UNEMP_R_PENALTY * excessU)
-        * (1 + APPROVAL_R * (s.approval - 50) / 50);
+      let base = R_BASE[w] * ctx.connR + (jobs / wr) * R_JOB_SLACK;
+      const extra = migrants ? migrants[w] || 0 : 0;
+      if (extra > 0) base += extra * ctx.connR;
+      if (rin) { reg[w] = RG_R * rin.jobSurplus * JOB_MIX_AVG[w] / wr; base += reg[w]; }
+      raw[w] = base * unempF * apprF;
+      const m = mig && mig[w] > 0 ? mig[w] : 1;
+      if (m !== 1) raw[w] *= m;
+      mods[w] = unempF * apprF * m;
     }
     // ---- modifiers + caps
     const relief = ctx.relief;
+    const rCap = rin ? { R: rin.reachPop * RG_CAP.R, C: rin.reachPop * RG_CAP.C, I: rin.reachPop * RG_CAP.I } : null;
     for (let d = 0; d < DEV_TYPE_COUNT; d++) {
       const fam = devFamily(d);
       let m = taxFactor(d, rates[d]) * ordinanceEffect(st, 'demand.' + DEV_ENUM[d]) * ordinanceEffect(st, 'demand.' + fam);
       if (d >= DevType.CS1 && d <= DevType.CS3) m *= ordinanceEffect(st, 'demand.CS');
       if (d === DevType.CO2 || d === DevType.CO3) m *= ordinanceEffect(st, 'demand.CO');
       raw[d] *= m;
+      mods[d] *= m;
       let c = BASE_CAP[d] + (relief[fam] + CAP_POP_FRAC[fam] * P) * CAP_WEIGHT[d];
+      if (rCap) c += rCap[fam] * CAP_WEIGHT[d];
       if (d === DevType.R3) c += relief.R3;
       if (d === DevType.IHT) c += relief.IHT;
       if (d === DevType.CO3) c += relief.CO3;
       cap[d] = c;
       cur[d] = d <= DevType.R3 ? t.resCapAll[d] : t.jobCapAll[d];
+    }
+    if (rin) {
+      const terms: RegionTerms = {
+        R: [reg[0] * mods[0], reg[1] * mods[1], reg[2] * mods[2]],
+        CS: [reg[3] * mods[3], reg[4] * mods[4], reg[5] * mods[5]],
+        CO: reg[DevType.CO2] * mods[DevType.CO2] + reg[DevType.CO3] * mods[DevType.CO3],
+        I: reg[DevType.ID] * mods[DevType.ID] + reg[DevType.IM] * mods[DevType.IM] + reg[DevType.IHT] * mods[DevType.IHT],
+        market: rin.market,
+        capR: rCap!.R, capC: rCap!.C, capI: rCap!.I,
+      };
+      data.regionTerms = terms;
+    } else if (data.regionTerms) {
+      delete data.regionTerms;
     }
     // ---- absolute & normalised demand
     for (let d = 0; d < DEV_TYPE_COUNT; d++) {
@@ -173,7 +313,7 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     },
     daily(sim) {
       const t0 = performance.now();
-      // refresh context monthly even without changes (population-dependent tourism)
+      // refresh context monthly even without changes (power / funding of relief buildings, use factors)
       if (sim.state.dayOfMonth === 0) rt.capsDirty = true;
       compute(sim.state, false);
       rt.timing.demand = performance.now() - t0;

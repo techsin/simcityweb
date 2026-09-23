@@ -1,5 +1,5 @@
 /** Tiny DOM helpers + inline SVG icons for the meta UI (menus, region view, dialogs). */
-import { audio } from '../../audio';
+import { audio, type SoundName } from '../../audio';
 
 type Child = Node | string | number | null | undefined | false;
 type Attrs = Record<string, unknown> & { class?: string; style?: string | Partial<CSSStyleDeclaration> };
@@ -73,19 +73,25 @@ export function icon(name: keyof typeof ICONS | string, size = 18): SVGSVGElemen
   return wrap.firstChild as SVGSVGElement;
 }
 
-/** button with icon + label + ui sounds */
-export function button(label: string | Node, opts: { icon?: string; cls?: string; title?: string; onClick?: (e: MouseEvent) => void; sound?: 'click' | 'confirm' | 'none' } = {}): HTMLButtonElement {
+/**
+ * button with icon + label + ui sounds. sound: an explicit click sound, or 'auto' (default) = the delegated generic
+ * feedback (src/ui/uiSounds.ts: 'press' for primary / warm buttons, 'tap' for icon buttons, 'click' otherwise), which
+ * stays silent when the click handler plays its own sound (dialog open, confirm, error toast...).
+ */
+export function button(label: string | Node, opts: { icon?: string; cls?: string; title?: string; onClick?: (e: MouseEvent) => void; sound?: SoundName | 'auto' | 'none' } = {}): HTMLButtonElement {
   const b = h('button', { class: `btn ${opts.cls ?? ''}`, title: opts.title, type: 'button' }, opts.icon ? icon(opts.icon) : null, typeof label === 'string' ? (label ? h('span', {}, label) : null) : label);
-  withSounds(b, opts.sound ?? 'click');
+  withSounds(b, opts.sound ?? 'auto');
   if (opts.onClick) b.addEventListener('click', (e) => opts.onClick!(e));
   return b;
 }
 
-export function withSounds<T extends HTMLElement>(el: T, sound: 'click' | 'confirm' | 'none' = 'click'): T {
-  el.addEventListener('pointerenter', () => {
-    if (!(el as unknown as HTMLButtonElement).disabled) audio.hover();
-  });
-  if (sound !== 'none') el.addEventListener('click', () => audio.play(sound));
+/**
+ * click sound for a control: a sound name plays on click, 'auto' leaves it to the delegated generic feedback,
+ * 'none' opts out (data-sfx="none"). Hover blips come from the delegated handler (primary menus / toolbars only).
+ */
+export function withSounds<T extends HTMLElement>(el: T, sound: SoundName | 'auto' | 'none' = 'auto'): T {
+  if (sound === 'none') el.dataset.sfx = 'none';
+  else if (sound !== 'auto') el.addEventListener('click', () => audio.play(sound));
   return el;
 }
 

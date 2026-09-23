@@ -6,6 +6,8 @@
  * Density ~ traffic volume, speed reduced by congestion, simple car-following (queues) and 2-phase signals at
  * signalized intersections. Trains (loco + cars) follow rail cells using a path history.
  * All state lives in typed arrays; the per-frame loop allocates nothing.
+ * Culling: tile visibility + camera-distance cull (maxDistance per quality, every 2nd vehicle beyond 70% of it),
+ * per-pass draw lists (main view + shadow cascade 0 only).
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../../core/constants';
@@ -35,6 +37,9 @@ const TRUCK_MODELS: [string, number][] = [['truck_box', 50], ['truck_semi', 30],
 const SERVICE_MODELS: [string, number][] = [['car_police', 35], ['ambulance', 20], ['fire_truck', 10], ['garbage_truck', 35]];
 const CAPS: Record<QualityLevel, number> = { low: 600, medium: 1500, high: 2500, ultra: 4000 };
 const TRAIN_CAPS: Record<QualityLevel, number> = { low: 3, medium: 6, high: 10, ultra: 16 };
+/** camera distance (m) beyond which road vehicles are not drawn (a car is ~2-3 px there at 1080p); the default
+ *  800 m game view keeps all of its near / mid traffic */
+const MAX_DIST: Record<QualityLevel, number> = { low: 900, medium: 1200, high: 1500, ultra: 2000 };
 const SPEED = [0, 7, 9.5, 12, 10, 21, 17];
 const TWO_PI = Math.PI * 2;
 
@@ -204,6 +209,8 @@ export class VehicleRenderer {
   signalized: Uint8Array | null = null;
   getRoutes: ((max: number) => TrafficRoute[]) | null = null;
   quality: QualityLevel = 'high';
+  /** road vehicles beyond this camera distance are hidden (trains: 2x) */
+  maxDistance = MAX_DIST.high;
   private headCount = 0;
 
   constructor(private state: CityState, private net: NetInfo, private surf: RoadSurface, private culler: TileCuller, quality: QualityLevel = 'high') {
@@ -213,6 +220,8 @@ export class VehicleRenderer {
     this.batch = new DynamicBatch(getCityMaterial(), this.cap + 128, 1 << 16, 'vehicles');
     this.batch.mesh.castShadow = quality === 'high' || quality === 'ultra';
     this.batch.mesh.receiveShadow = true;
+    this.batch.enablePassCulling({ culler, dynamic: true, shadowMask: 0b01 });
+    this.maxDistance = MAX_DIST[quality];
     this.alloc(this.cap);
     this.head = new Int32Array(net.N * net.N * 8).fill(-1);
     // headlight decals
@@ -282,6 +291,7 @@ export class VehicleRenderer {
     this.clear();
     this.cap = cap;
     this.trainCap = TRAIN_CAPS[q];
+    this.maxDistance = MAX_DIST[q];
     this.alloc(cap);
     this.batch.mesh.castShadow = q === 'high' || q === 'ultra';
     this.refreshSpawn();
@@ -902,6 +912,10 @@ export class VehicleRenderer {
     const hm = hl.instanceMatrix.array as Float32Array;
     const headCap = hl.instanceMatrix.count;
     let hc = 0;
+    // distance cull: hidden beyond maxDistance, every 2nd vehicle beyond 70% of it
+    const cpx = camera.position.x, cpz = camera.position.z, cpy2 = camH * camH;
+    const D2 = this.maxDistance * this.maxDistance, D2thin = D2 * 0.49;
+    let shown = 0;
     for (let v = 0; v < this.n; v++) {
       this.life[v] -= dt;
       let t = this.t[v] + this.spd[v] * dt;
@@ -923,9 +937,12 @@ export class VehicleRenderer {
       this.posX[v] = x; this.posZ[v] = z;
       const tile = this.culler.tileOfWorld(x, z);
       const tunnel = st.netFlags[ci] & NF_TUNNEL;
-      const show = !this.hidden && vis[tile] === 1 && !tunnel && (this.thin === 1 || v % this.thin === 0) ? 1 : 0;
+      const ddx = x - cpx, ddz = z - cpz, d2 = ddx * ddx + ddz * ddz + cpy2;
+      const near = d2 < D2 && (d2 < D2thin || (v & 1) === 0);
+      const show = !this.hidden && near && vis[tile] === 1 && !tunnel && (this.thin === 1 || v % this.thin === 0) ? 1 : 0;
       if (show !== this.vis[v]) { this.vis[v] = show; this.batch.setVisible(this.inst[v], show === 1); }
       if (!show) continue;
+      shown++;
       const fx = this.dx, fz = this.dz;
       const half = this.vlen[v] * 0.4;
       const yF = surf.y(x + fx * half, z + fz * half), yB = surf.y(x - fx * half, z - fz * half);
@@ -963,16 +980,19 @@ export class VehicleRenderer {
         const x = this.px, z = this.pz;
         const id = tr.inst[c];
         const tile = this.culler.tileOfWorld(x, z);
-        const show = !this.hidden && vis[tile] === 1 && !(st.netFlags[ci] & NF_TUNNEL);
+        const tdx = x - cpx, tdz = z - cpz;
+        const show = !this.hidden && vis[tile] === 1 && !(st.netFlags[ci] & NF_TUNNEL) && tdx * tdx + tdz * tdz + cpy2 < D2 * 4;
         this.batch.setVisible(id, show);
         if (!show) continue;
+        shown++;
         const fx = this.dx, fz = this.dz;
         const hh = half * 0.8;
         const yF = surf.y(x + fx * hh, z + fz * hh), yB = surf.y(x - fx * hh, z - fz * hh);
         this.writeMatrix(data, id * 16, x, (yF + yB) * 0.5 + 0.62, z, fx, (yF - yB) / (2 * hh), fz);
       }
     }
-    this.batch.markMatricesDirty();
+    // nothing visible moved -> no upload, no shadow-map invalidation
+    if (shown > 0) this.batch.markMatricesDirty();
     hl.count = night ? hc : 0;
     if (night && hc) hl.instanceMatrix.needsUpdate = true;
     this.headCount = hc;

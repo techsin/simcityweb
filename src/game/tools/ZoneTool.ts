@@ -120,7 +120,9 @@ export class RectTool extends Tool {
     this.start = null;
     if (rect) {
       const r = this.run(rect, false);
-      if (r.ok) this.ctx.sound(this.mode.kind === 'bulldoze' ? 'bulldoze' : this.mode.kind === 'dezone' ? 'dezone' : 'zone');
+      // bigger rectangles sound bigger (intensity 0..1 from the area)
+      const area = Math.max(1, (rect.x1 - rect.x0) * (rect.z1 - rect.z0));
+      if (r.ok) this.ctx.sound(this.mode.kind === 'bulldoze' ? 'bulldoze' : this.mode.kind === 'dezone' ? 'dezone' : 'zone', { intensity: Math.min(1, Math.log2(area) / 8) });
       else {
         this.ctx.sound('error');
         if (r.reason) this.ctx.toast(r.reason, 'error');

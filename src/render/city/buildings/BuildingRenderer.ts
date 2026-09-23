@@ -1,7 +1,12 @@
 /**
  * BuildingRenderer — every building in ONE BatchedMesh (plus foundation skirts / construction sites / rubble in the
  * same batch). Incremental add/remove/change via Simulation events, pop-in animation, construction rising,
- * abandoned / burning / burnt looks, selection flag, tile-based visibility.
+ * abandoned / burning / burnt looks, selection flag.
+ *
+ * Culling: per render pass (main view and each shadow cascade get their own draw list, see DynamicBatch
+ * enablePassCulling); instances are registered in map tiles.
+ * LOD: buildings whose projected radius drops below `lodPixels` swap to an auto-generated massing proxy
+ * (lodProxy.ts, 12-40 triangles, same material / windows / night lights) with hysteresis; see updateLod().
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../../core/constants';
@@ -13,6 +18,7 @@ import { ModelBuilder } from '../../../assets/ModelBuilder';
 import { Surf } from '../../../core/types';
 import { DynamicBatch, type TileCuller } from '../common/batch';
 import { getCityMaterial, flagsToAlpha, IF_FIRE, IF_SELECTED, IF_WINDOWS_OFF } from '../common/cityMaterial';
+import { lodProxyFor } from './lodProxy';
 
 export interface BuildingVisual {
   id: number;
@@ -49,9 +55,21 @@ interface BInst {
   anim: number;
   vis: BuildingVisual;
   geom: number;
+  /** proxy geometry ids (= full id when the model has no proxy) */
+  lodGeom: number;
+  siteGeom: number;
+  siteLod: number;
+  /** 1 = drawn with the proxy */
+  lod: number;
+  /** bounding radius (m) + center height for the LOD metric */
+  radius: number;
+  cy: number;
+  /** index in BuildingRenderer.list */
+  li: number;
 }
 
 const POP_TIME = 0.55;
+const _sphere = new THREE.Sphere();
 
 function easeOutBack(t: number): number {
   const c1 = 1.4, c3 = c1 + 1;
@@ -73,6 +91,16 @@ export class BuildingRenderer {
   private s = new THREE.Vector3();
   private up = new THREE.Vector3(0, 1, 0);
   private foundationGeo: THREE.BufferGeometry | null = null;
+  /** full geometry id -> proxy geometry id */
+  private lodMap = new Map<number, number>();
+  /** dense list of instances for the per-frame LOD sweep */
+  private list: BInst[] = [];
+  private lodDirty = true;
+  private lodCam = new THREE.Vector4(NaN, NaN, NaN, NaN);
+  /** projected radius (px) below which a building is drawn with its proxy (0 = LOD off); hysteresis +-12% */
+  lodPixels = 9;
+  /** buildings currently drawn with a proxy (stats) */
+  lodCount = 0;
   selected: number | null = null;
   onVisual: ((v: BuildingVisual | null, id: number) => void) | null = null;
 
@@ -80,14 +108,11 @@ export class BuildingRenderer {
     this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 18, 'buildings');
     this.batch.mesh.castShadow = true;
     this.batch.mesh.receiveShadow = true;
+    // per-pass lists: the main view and each shadow cascade only draw the buildings inside their own frustum;
+    // casters under ~1 shadow texel are skipped (far cascade at far zoom)
+    this.batch.enablePassCulling({ culler, minShadowTexels: 1.2 });
     const T = culler.tiles * culler.tiles;
     this.tiles = Array.from({ length: T }, () => new Set<number>());
-    culler.onChange((tile, visible) => {
-      for (const id of this.tiles[tile]) {
-        const bi = this.inst.get(id);
-        if (bi) this.applyVisibility(bi, visible);
-      }
-    });
   }
 
   setState(state: CityState): void {
@@ -110,7 +135,13 @@ export class BuildingRenderer {
     const e = MANIFEST_BY_ID[model];
     const nv = e?.variants ?? 1;
     const v = ((variant % nv) + nv) % nv;
-    return this.batch.geometryId(`${model}#${v}`, () => getModelGeometry(model, v));
+    const key = `${model}#${v}`;
+    const id = this.batch.geometryId(key, () => getModelGeometry(model, v));
+    if (!this.lodMap.has(id)) {
+      const proxy = lodProxyFor(key, getModelGeometry(model, v));
+      this.lodMap.set(id, proxy ? this.batch.geometryId(key + '#lod', () => proxy) : id);
+    }
+    return id;
   }
 
   private foundation(): number {
@@ -127,6 +158,7 @@ export class BuildingRenderer {
   clear(): void {
     for (const bi of this.inst.values()) this.freeInstances(bi);
     this.inst.clear();
+    this.list.length = 0;
     for (const t of this.tiles) t.clear();
     this.animating.clear();
   }
@@ -154,9 +186,10 @@ export class BuildingRenderer {
     if (this.inst.has(b.id)) this.remove(b.id);
     const bi: BInst = {
       b, main: -1, site: -1, found: -1, tile: 0, key: '', flags: 0, anim: animate ? POP_TIME : 0, geom: -1,
-      vis: null as unknown as BuildingVisual,
+      vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, li: this.list.length,
     };
     this.inst.set(b.id, bi);
+    this.list.push(bi);
     this.build(bi);
     if (animate) this.animating.add(b.id);
   }
@@ -167,6 +200,8 @@ export class BuildingRenderer {
     this.freeInstances(bi);
     this.tiles[bi.tile].delete(id);
     this.inst.delete(id);
+    const last = this.list.pop()!;
+    if (last !== bi) { this.list[bi.li] = last; last.li = bi.li; }
     this.animating.delete(id);
     this.onVisual?.(null, id);
   }
@@ -205,9 +240,16 @@ export class BuildingRenderer {
     const yaw = b.rot * (Math.PI / 2);
     const geom = burnt ? this.geomFor('rubble', b.id) : this.geomFor(model, b.variant);
     bi.geom = geom;
+    bi.lodGeom = this.lodMap.get(geom) ?? geom;
+    bi.siteGeom = bi.siteLod = -1;
     const bounds = this.batch.bounds(geom);
-    bi.main = this.batch.add(geom);
-    if (constructing) bi.site = this.batch.add(this.geomFor('construction_site', b.id));
+    // keep the current LOD state across rebuilds (state changes must not pop the detail level)
+    bi.main = this.batch.add(bi.lod ? bi.lodGeom : geom);
+    if (constructing) {
+      bi.siteGeom = this.geomFor('construction_site', b.id);
+      bi.siteLod = this.lodMap.get(bi.siteGeom) ?? bi.siteGeom;
+      bi.site = this.batch.add(bi.lod ? bi.siteLod : bi.siteGeom);
+    }
     // foundation skirt down to the lowest lot corner
     const N1 = st.size + 1;
     let minH = Infinity;
@@ -230,11 +272,16 @@ export class BuildingRenderer {
       top: b.baseY + bounds.max.y, bounds, burning, burnt, constructing, abandoned, sy: 1,
     };
     this.culler.noteHeight(bi.tile, b.baseY + bounds.max.y);
+    const sp = bounds.getBoundingSphere(_sphere);
+    bi.radius = Math.max(2, sp.radius);
+    bi.cy = b.baseY + sp.center.y;
+    (bi as any)._minH = minH;
     this.applyColor(bi);
     this.place(bi);
-    this.applyVisibility(bi, this.culler.vis[bi.tile] === 1);
+    for (const id of [bi.main, bi.site, bi.found]) if (id >= 0) this.batch.setTile(id, bi.tile);
+    this.applyVisibility(bi, true);
+    this.lodDirty = true;
     this.onVisual?.(bi.vis, b.id);
-    (bi as any)._minH = minH;
   }
 
   private applyColor(bi: BInst): void {
@@ -294,6 +341,7 @@ export class BuildingRenderer {
   setSelected(id: number | null): void {
     const prev = this.selected;
     this.selected = id;
+    this.lodDirty = true;
     for (const k of [prev, id]) {
       if (k == null) continue;
       const bi = this.inst.get(k);
@@ -301,6 +349,45 @@ export class BuildingRenderer {
       bi.flags = (bi.flags & ~IF_SELECTED) | (k === id ? IF_SELECTED : 0);
       this.applyColor(bi);
     }
+  }
+
+  /**
+   * Distance LOD: swap buildings to / from their proxy by projected radius (px) with hysteresis. Call once per frame
+   * with the view camera and the drawing-buffer height in pixels. Skips the sweep while nothing moved.
+   */
+  updateLod(camera: THREE.PerspectiveCamera, heightPx: number): void {
+    const c = camera.position;
+    const lc = this.lodCam;
+    const fovH = heightPx / Math.tan((camera.fov * Math.PI) / 360);
+    if (!this.lodDirty && Math.abs(lc.x - c.x) + Math.abs(lc.y - c.y) + Math.abs(lc.z - c.z) < 0.5 && Math.abs(lc.w - fovH) < 0.5) return;
+    lc.set(c.x, c.y, c.z, fovH);
+    this.lodDirty = false;
+    // px = radius / dist * H / (2 tan(fov/2)) ; compare squared distances: dist^2 < (r * K / px)^2
+    const K = fovH * 0.5;
+    const on = this.lodPixels * 0.88, off = this.lodPixels * 1.12;
+    const lim = this.lodPixels > 0;
+    let n = 0;
+    const list = this.list;
+    for (let i = 0; i < list.length; i++) {
+      const bi = list[i];
+      if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) { bi.lod = 0; continue; }
+      const v = bi.vis;
+      const dx = v.cx - c.x, dy = bi.cy - c.y, dz = v.cz - c.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      const rk = bi.radius * K;
+      let want = 0;
+      if (lim && bi.b.id !== this.selected) {
+        const px = bi.lod ? off : on;
+        want = d2 * px * px > rk * rk ? 1 : 0;
+      }
+      if (want !== bi.lod) {
+        bi.lod = want;
+        if (bi.main >= 0) this.batch.setGeometry(bi.main, want ? bi.lodGeom : bi.geom);
+        if (bi.site >= 0) this.batch.setGeometry(bi.site, want ? bi.siteLod : bi.siteGeom);
+      }
+      n += want;
+    }
+    this.lodCount = n;
   }
 
   update(dt: number): void {

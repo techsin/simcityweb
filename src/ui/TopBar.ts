@@ -121,8 +121,9 @@ export class TopBar {
     for (const [s, ic, t] of speeds) {
       const b = h('button', { title: t, html: icon(ic, 15) }) as HTMLButtonElement;
       b.addEventListener('click', () => {
+        // distinct sounds: pause (tape-stop), normal / fast / ultra (1-3 rising blips); re-clicking the active speed ticks
+        this.ctx.sound(this.ctx.sim.speed === s ? 'tap' : s === 0 ? 'pause' : 'speed' + s);
         this.ctx.sim.speed = s;
-        this.ctx.sound('click');
         b.blur();
       });
       this.speedBtns.push(b);
@@ -264,6 +265,7 @@ export class TopBar {
   }
 
   private setRci(open: boolean): void {
+    if (open !== this.rciOpen) this.ctx.sound(open ? 'flyout' : 'flyoutClose');
     this.rciOpen = open;
     toggleClass(this.rciPop, 'open', open);
     if (open) this.update();

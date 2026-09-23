@@ -390,7 +390,8 @@ function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
     case 0: {
       // single big windowless hall, panel strips, rooftop chiller rows, generator row, transformers
       const x0 = -22, x1 = 12, z0 = -14, z1 = 3;
-      b.paint(0xcfd2d4, Surf.Plain).box(x0, 0, z0, x1, 11, z1, { top: { color: 0x9a9ea2, surf: Surf.RoofFlat } });
+      // walls washed by the cool-white LED security lights at night (Plain pattern 2, 7 m reach)
+      b.paint(0xcfd2d4, Surf.Plain, 2, 7).box(x0, 0, z0, x1, 11, z1, { top: { color: 0x9a9ea2, surf: Surf.RoofFlat } });
       b.paint(0xb4b8bc, Surf.Plain);
       for (let x = x0 + 2; x < x1 - 1; x += 4) wallQuad(b, 'pz', z1, x, x + 0.6, 0, 11);
       b.paint(0x2e6fb5, Surf.Plain);
@@ -416,7 +417,7 @@ function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
       // three white modules with blue band, ground-level coolers between, water tanks
       for (let m = 0; m < 3; m++) {
         const x0 = -22 + m * 12.3, x1 = x0 + 10;
-        b.paint(0xf0f0ec, Surf.Plain).box(x0, 0, -14, x1, 12, 1, { top: { color: 0xa9adb0, surf: Surf.RoofFlat } });
+        b.paint(0xf0f0ec, Surf.Plain, 2, 7).box(x0, 0, -14, x1, 12, 1, { top: { color: 0xa9adb0, surf: Surf.RoofFlat } });
         b.paint(0x1f5fa8, Surf.Plain);
         wallQuad(b, 'pz', 1, x0, x1, 1.0, 1.8);
         wallQuad(b, 'pz', 1, x0 + 0.8, x0 + 1.6, 1.8, 11);
@@ -442,7 +443,7 @@ function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
     default: {
       // dark hall with teal accent, fully solar roof, round fan cooling towers (steam) on the side
       const x0 = -22, x1 = 9, z0 = -14, z1 = 3;
-      b.paint(0x3a3f45, Surf.Plain).box(x0, 0, z0, x1, 10, z1, { top: { color: 0x7a7e82, surf: Surf.RoofFlat } });
+      b.paint(0x3a3f45, Surf.Plain, 2, 7).box(x0, 0, z0, x1, 10, z1, { top: { color: 0x7a7e82, surf: Surf.RoofFlat } });
       b.paint(0x16a085, Surf.Emissive);
       wallQuad(b, 'pz', z1, x0, x1, 8.6, 9.0);
       wallQuad(b, 'px', x1, z0, z1, 8.6, 9.0);

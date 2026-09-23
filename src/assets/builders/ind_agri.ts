@@ -3,13 +3,14 @@
  */
 import type { ModelBuilders } from '../registry';
 import type { ModelBuilder, ColorLike } from '../ModelBuilder';
+import { Color } from 'three';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { fence } from '../kit';
 import {
   bicone, dome, flat, gambrelRoof, ground, hCyl, lathe, strut, tank, tractor, tree, tube, wallQuad, wallRow, disc,
   smokestack, boxTruck, pallets, carLow, CAR_COLORS2, lattice, poplar,
-  floodLight, lightDot, pool, Y_OVER,
+  floodLight, lightDot, pool, Y_OVER, dim,
 } from './ind_kit';
 
 const DIRT = 0x8a6e4b;
@@ -455,7 +456,7 @@ function lawnPatch(b: ModelBuilder, x0: number, z0: number, x1: number, z1: numb
 // ------------------------------------------------------------------------------------------------ ind_greenhouse
 /** Venlo-type multi-span glasshouse: ridges along Z, spans across X. */
 function venlo(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, h: number, span: number, frame: ColorLike = 0xf2f4f4): void {
-  b.paint(0xd8e2e0, Surf.GlassCurtain, 5, 1.2).box(x0, 0, z0, x1, h, z1, { top: null });
+  b.paint(0x2a3440, Surf.GlassPlain, 2).box(x0, 0, z0, x1, h, z1, { top: null });
   // white glazing bars every 3.2 m on the walls
   b.paint(frame, Surf.Plain);
   for (let x = x0 + 3.2; x < x1 - 0.5; x += 3.2) { wallQuad(b, 'pz', z1, x - 0.04, x + 0.04, 0, h, 0.04); wallQuad(b, 'nz', z0, x - 0.04, x + 0.04, 0, h, 0.04); }
@@ -474,13 +475,37 @@ function venlo(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1
     b.paint(frame, Surf.Metal);
     b.tri([a, h, z1], [e, h, z1], [c, h + rh, z1]);
     b.tri([e, h, z0], [a, h, z0], [c, h + rh, z0]);
-    // grow lights (night-only warm glow through the roof) on ~60% of the spans
-    if (rng.chance(0.6)) {
-      const o = 0.05, ins = 0.2;
-      b.paint(0xe8c8a2, Surf.Emissive, 10);
-      const ya = h + (ins / (sw / 2)) * rh + o, yc = h + rh + o - (ins / (sw / 2)) * rh;
-      b.quad([a + ins, ya, z1 - ins], [c - ins * 0.5, yc + nx * 0.02, z1 - ins], [c - ins * 0.5, yc + nx * 0.02, z0 + ins], [a + ins, ya, z0 + ins]);
-      b.quad([c + ins * 0.5, yc + nx * 0.02, z1 - ins], [e - ins, ya, z1 - ins], [e - ins, ya, z0 + ins], [c + ins * 0.5, yc + nx * 0.02, z0 + ins]);
+    // TEMP art test 2: grow-light rows
+    {
+      const TM = i % 6;
+      const L = Math.hypot(sw / 2, rh);
+      const row = (xa: number, ya: number, xb: number, yb: number, s0: number, s1: number, lift: number) => {
+        const dx = (xb - xa) / L, dy = (yb - ya) / L;
+        const nxv = -dy * lift, nyv = dx * lift;
+        const p0x = xa + (xb - xa) * s0 + nxv, p0y = ya + (yb - ya) * s0 + nyv;
+        const p1x = xa + (xb - xa) * s1 + nxv, p1y = ya + (yb - ya) * s1 + nyv;
+        b.quad([p0x, p0y, z1 - 0.3], [p1x, p1y, z1 - 0.3], [p1x, p1y, z0 + 0.3], [p0x, p0y, z0 + 0.3]);
+      };
+      const P9 = { color: new Color().setRGB(0.06, 0.003, 0), surf: Surf.Emissive, pattern: 9, floor: 241 };
+      const setP = (k: number) => {
+        if (TM === 0) b.paint(0x9a4a10, Surf.Emissive, 11);
+        else if (TM === 1) b.paint(0xc86018, Surf.Emissive, 11);
+        else if (TM === 2) b.paint(P9);
+        else if (TM === 3) { if (k % 2) b.paint(P9); else b.paint(0x9a4a10, Surf.Emissive, 11); }
+        else if (TM === 5) b.paint(0xa0287a, Surf.Emissive, 11);
+      };
+      if (TM === 4) {
+        b.paint(0x9a4a10, Surf.Emissive, 11);
+        row(a, h, c, h + rh, 0.08, 0.92, 0.05);
+        row(c, h + rh, e, h, 0.08, 0.92, 0.05);
+      } else {
+        const w = 0.22 / L;
+        for (let k = 0; k < 3; k++) {
+          const sc = 0.2 + k * 0.3;
+          setP(k); row(a, h, c, h + rh, sc - w / 2, sc + w / 2, 0.05);
+          setP(k + 1); row(c, h + rh, e, h, sc - w / 2, sc + w / 2, 0.05);
+        }
+      }
     }
   }
   // gutters / ridge bars
@@ -539,7 +564,8 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
       for (let i = 0; i < n; i++) {
         const cx = -20 + i * 7.2;
         b.paint(0xeef1ee, Surf.Plain);
-        polytunnel(b, cx, -14.5, 6.0, 25, 3.4);
+        if (i !== 4) b.paint(0xeef1ee, Surf.Plain, 1, 10);
+        polytunnel(b, cx, -14.5, 6.0, 25, 3.4, i);
       }
       b.paint(DIRT, Surf.Pavement);
       flat(b, -23.5, 10.5, 23.5, 13, 0.08);
@@ -598,7 +624,7 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
 }
 
 /** Hoop tunnel (half-ellipse cross-section) running along Z from z0, length L. */
-function polytunnel(b: ModelBuilder, cx: number, z0: number, w: number, L: number, h: number): void {
+function polytunnel(b: ModelBuilder, cx: number, z0: number, w: number, L: number, h: number, TM = -1): void {
   const seg = 6;
   const pts: [number, number][] = [];
   for (let i = 0; i <= seg; i++) {
@@ -610,8 +636,16 @@ function polytunnel(b: ModelBuilder, cx: number, z0: number, w: number, L: numbe
     const [xa, ya] = pts[i], [xb, yb] = pts[i + 1];
     b.quad([xa, ya, z1], [xb, yb, z1], [xb, yb, z0], [xa, ya, z0]);
   }
+  if (TM >= 0 && TM <= 3) {
+    if (TM === 0) b.paint(0x9a4a10, Surf.Emissive, 11);
+    else if (TM === 1) b.paint({ color: new Color().setRGB(0.06, 0.003, 0), surf: Surf.Emissive, pattern: 9, floor: 241 });
+    else if (TM === 2) b.paint(0xc86018, Surf.Emissive, 11);
+    else b.paint(0xffa050, Surf.Emissive, 10);
+    b.quad([cx - 0.2, h + 0.02, z1 - 0.3], [cx + 0.2, h + 0.02, z1 - 0.3], [cx + 0.2, h + 0.02, z0 + 0.3], [cx - 0.2, h + 0.02, z0 + 0.3]);
+  }
   // end walls
   b.paint(0xd6dcd8, Surf.Plain);
+
   for (let i = 0; i < seg; i++) {
     const [xa, ya] = pts[i], [xb, yb] = pts[i + 1];
     b.tri([cx, 0, z1], [xb, yb, z1], [xa, ya, z1]);

@@ -12,6 +12,7 @@
 import './ui/theme.css';
 import './region/ui/meta.css';
 import { audio } from './audio';
+import { installUiSounds } from './ui/uiSounds';
 import type { CityState } from './sim/CityState';
 import type { CityConfigData } from './sim/config';
 import { CityState as CityStateClass } from './sim/CityState';
@@ -122,6 +123,8 @@ class App {
     setUiRoot(this.root);
     audio.attachAutoInit();
     audio.startMusic();
+    // generic click / slider / tab / hover feedback for every control (src/ui/uiSounds.ts)
+    installUiSounds(() => audio);
     // CityScene autosaves on game time (GameSettings.autosaveMonths); we add save-on-exit and save-on-tab-hide
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden' && this.city && Date.now() - this.city.lastSave > 5000) void this.saveCurrentCity();
@@ -245,6 +248,8 @@ class App {
     }
     await this.regionScreen.ready;
     await ld?.hide();
+    // arriving at the region after a loading screen (new / loaded region, back from a city)
+    if (ld) audio.play('regionEnter');
     if (signalReady) markReady();
   }
 
@@ -380,6 +385,7 @@ class App {
       this.city.placeholder = this.cityPlaceholder(container, st, tile);
     }
     await ld.hide();
+    audio.play('cityReady');
     markReady();
   }
 

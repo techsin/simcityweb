@@ -40,12 +40,19 @@ export abstract class Panel {
       const sx = e.clientX, sy = e.clientY;
       const ox = this.el.offsetLeft, oy = this.el.offsetTop;
       head.setPointerCapture(e.pointerId);
+      // soft grab / drop sounds once the panel actually moves
+      let dragged = false;
       const mv = (ev: PointerEvent) => {
+        if (!dragged && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 4) {
+          dragged = true;
+          this.ctx.sound('grab');
+        }
         this.setPos(ox + (ev.clientX - sx) / z, oy + (ev.clientY - sy) / z);
       };
       const up = () => {
         head.removeEventListener('pointermove', mv);
         head.removeEventListener('pointerup', up);
+        if (dragged) this.ctx.sound('drop');
         onDragEnd();
       };
       head.addEventListener('pointermove', mv);

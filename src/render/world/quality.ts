@@ -1,6 +1,8 @@
 /**
  * Quality presets for the world renderer. `low` targets integrated GPUs (no AO, no bloom, single cheap shadow map,
- * FXAA), `ultra` targets fast discrete GPUs (2x pixel ratio, MSAA + full-res GTAO, 2 x 3072 shadow cascades).
+ * FXAA), `ultra` targets fast discrete GPUs (2x pixel ratio, MSAA + half-res 16-sample GTAO, 2 x 3072 shadow
+ * cascades). low / medium / high hold their targetFps with dynamic resolution (internal render scale down to
+ * minRenderScale; the canvas and UI stay sharp).
  */
 import type { QualityLevel } from '../contracts';
 
@@ -29,7 +31,7 @@ export interface QualitySettings {
   aoSamples: number;
   bloom: boolean;
   bloomLevels: number;
-  /** distance (m) at which trees switch from full models to cheap impostors */
+  /** distance (m) at which trees cross-fade (per tree) from full models to cheap impostors */
   treeLodDistance: number;
   /** global tree density multiplier (instances per cell) */
   treeDensity: number;
@@ -39,6 +41,10 @@ export interface QualitySettings {
   terrainDetail: 0 | 1 | 2;
   /** water shader detail: 0 low (1 normal sample), 1 (2 samples + foam), 2 (3 samples + sparkles) */
   waterDetail: 0 | 1 | 2;
+  /** scale the internal render resolution down (to minRenderScale) when frames take longer than 1/targetFps */
+  dynamicResolution: boolean;
+  minRenderScale: number;
+  targetFps: number;
   /** sky-view LUT size */
   skyLut: [number, number];
   /** environment (PMREM) refresh interval in game minutes */
@@ -63,11 +69,14 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     aoSamples: 0,
     bloom: false,
     bloomLevels: 0,
-    treeLodDistance: 420,
+    treeLodDistance: 460,
     treeDensity: 0.75,
     treeVariants: 2,
     terrainDetail: 0,
     waterDetail: 0,
+    dynamicResolution: true,
+    minRenderScale: 0.6,
+    targetFps: 30,
     skyLut: [128, 64],
     envRefreshMinutes: 20,
     envSize: 128,
@@ -87,11 +96,14 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     aoSamples: 0,
     bloom: true,
     bloomLevels: 4,
-    treeLodDistance: 520,
+    treeLodDistance: 600,
     treeDensity: 0.9,
     treeVariants: 3,
     terrainDetail: 1,
     waterDetail: 1,
+    dynamicResolution: true,
+    minRenderScale: 0.7,
+    targetFps: 45,
     skyLut: [192, 96],
     envRefreshMinutes: 10,
     envSize: 256,
@@ -111,11 +123,14 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     aoSamples: 12,
     bloom: true,
     bloomLevels: 5,
-    treeLodDistance: 700,
+    treeLodDistance: 850,
     treeDensity: 1,
     treeVariants: 3,
     terrainDetail: 2,
     waterDetail: 2,
+    dynamicResolution: true,
+    minRenderScale: 0.75,
+    targetFps: 60,
     skyLut: [256, 128],
     envRefreshMinutes: 6,
     envSize: 256,
@@ -131,15 +146,18 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     shadowRangeMul: 4,
     terrainShadows: true,
     treeShadows: true,
-    ao: 2,
+    ao: 1,
     aoSamples: 16,
     bloom: true,
     bloomLevels: 6,
-    treeLodDistance: 1000,
+    treeLodDistance: 1150,
     treeDensity: 1,
     treeVariants: 4,
     terrainDetail: 2,
     waterDetail: 2,
+    dynamicResolution: false,
+    minRenderScale: 0.85,
+    targetFps: 60,
     skyLut: [256, 128],
     envRefreshMinutes: 4,
     envSize: 512,

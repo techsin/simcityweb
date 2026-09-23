@@ -5,16 +5,24 @@
  *  - Conductors: any network cell (roads, rail, bridges), power-line cells, building-covered cells.
  *  - Each connected conductor component shares the output of the power plants it contains (def.powerOut, reduced when
  *    utilities funding < 100 %). Demand = def.powerUse (scaled by occupancy) or derived from capacity.
- *  - Brownout: when demand > supply, a multi-source BFS from the plants serves consumers in distance order; once the
- *    supply is exhausted every farther consumer loses power (farthest first).
+ *  - Plant output (SIM_DEPTH_SPEC WP3 E): thermal plants (category power + waterUse) x THERMAL_UNWATERED without water
+ *    (last pass); wind turbines x (0.6 + 0.8 smoothstep(10, 60, height above the local mean)); solar x season x
+ *    climate; nuclear x ordinanceEffect 'power.nuclear' (nuclear-free zone shuts plants down); the incinerator x its
+ *    garbage burn share (PollutionSystem.incineratorShare, previous pass). plantLoad(id) = component demand / supply.
+ *  - Brownout: when demand > supply, critical loads (health, police, fire, water producers) are served first, then a
+ *    multi-source BFS from the plants serves consumers in distance order; once the supply is exhausted every farther
+ *    consumer loses power (farthest first).
  *  - Empty zoned cells 4-adjacent to a powered conductor are marked powered (for growth).
  *  - Writes state.powered, BF.Powered (buildingChanged on flip), stats.powerSupply / powerDemand.
  * WATER
  *  - Pipes run automatically under every road cell; road-connected components form water networks.
- *  - Producers (def.waterOut) feed the road component they touch (<= 1 cell). Pumps within 2 cells of water +50 %;
- *    output drops with water pollution at the pump (less with a treatment plant in the city).
+ *  - Producers (def.waterOut) feed the road component they touch (<= 1 cell). Pumps within 2 cells of FRESH water
+ *    +50 % (sea only: brackish x 0.6, terrainMasks.seaMask); desalination away from the sea x 0.2; intakes lose
+ *    output with the intake pollution max(ground, adjacent water body) (less with a treatment plant in the city).
+ *  - Tap water quality per network = 1 - supply-weighted intake pollution x (1 - 0.7 sewageTreated) (treatment and
+ *    desalination output is clean): waterQualityAt(sim, cell); stats.tapWater = demand-weighted city mean.
  *  - Buildings 4-adjacent to a watered road get water; same brownout ordering by BFS from producers.
- *  - Writes state.watered, BF.Watered, stats.waterSupply / waterDemand.
+ *  - Writes state.watered, BF.Watered, stats.waterSupply / waterDemand / tapWater. Shortage news (30-day cooldown).
  * SCHEDULING (InfraScheduler, 3 steps per pass: uses + labels / power / water + flags):
  *  - full pass (relabel components): network / power-line / plopped-building changes (urgent, next scheduler slot)
  *    and every UTIL_FULL_DAYS days;
@@ -31,13 +39,54 @@ import {
   buildingList,
 } from './common';
 import {
-  POWER_MIN_PLOPPED, POWER_PER_CIVIC_JOB, POWER_PER_JOB_C, POWER_PER_JOB_I, POWER_PER_RES,
-  PUMP_WATER_BONUS, PUMP_WATER_DIST, UTIL_BASE_SHARE, UTIL_FULL_DAYS, UTIL_REFRESH_DAYS, UTIL_SOFT_DAYS, WATER_PER_CIVIC_JOB,
-  WATER_PER_JOB_C, WATER_PER_JOB_I, WATER_PER_RES,
+  DESAL_INLAND_OUT, POWER_MIN_PLOPPED, POWER_PER_CIVIC_JOB, POWER_PER_JOB_C, POWER_PER_JOB_I, POWER_PER_RES,
+  PUMP_POLL_LOSS, PUMP_TREATED_LOSS, PUMP_WATER_BONUS, PUMP_WATER_DIST, SEA_PUMP_OUT, SHORTAGE_NEWS_DAYS, SOLAR_CLIMATE,
+  SOLAR_SUMMER, SOLAR_WINTER, TAP_TREATMENT_CLEAN, THERMAL_UNWATERED, UTIL_BASE_SHARE, UTIL_FULL_DAYS, UTIL_REFRESH_DAYS,
+  UTIL_SOFT_DAYS, WATER_PER_CIVIC_JOB, WATER_PER_JOB_C, WATER_PER_JOB_I, WATER_PER_RES, WIND_TURBINE_BASE,
+  WIND_TURBINE_GAIN, WIND_TURBINE_H0, WIND_TURBINE_H1, WIND_TURBINE_RADIUS,
 } from './params';
 import { schedulerOf, sizeFactors } from './scheduler';
+import { ordinanceEffect } from '../economy/ordinances';
+import { seaMask, waterNear } from './terrainMasks';
+import { smoothstep } from '../../core/rng';
+import type { PollutionSystem } from './pollution';
 
 const IND_KEYS = ['IA', 'ID', 'IM', 'IHT'] as const;
+
+/** a multiplicative factor on a producer's output, for the inspector ("Flat site 60 %") */
+export interface OutputFactor {
+  label: string;
+  mul: number;
+}
+/** power plant / water producer output breakdown (last utilities pass) */
+export interface ProducerInfo {
+  kind: 'power' | 'water';
+  /** def output at 100 % (MW or kL/day) */
+  nominal: number;
+  /** output this pass */
+  output: number;
+  factors: OutputFactor[];
+  /** power: share of the plant's grid supply in use 0..1 (-1 unknown); water: intake pollution 0..1 */
+  load: number;
+}
+
+type ProducerKind = 0 | 2 | 3 | 4 | 5;
+const PK_OTHER = 0, PK_NUCLEAR = 2, PK_WIND = 3, PK_SOLAR = 4, PK_INCIN = 5;
+function powerKind(inf: DefInfo): ProducerKind {
+  if (inf.isIncinerator) return PK_INCIN;
+  const s = inf.id + ' ' + inf.model;
+  if (s.includes('nuclear')) return PK_NUCLEAR;
+  if (s.includes('wind')) return PK_WIND;
+  if (s.includes('solar')) return PK_SOLAR;
+  return PK_OTHER;
+}
+function isDesal(inf: DefInfo): boolean {
+  return (inf.id + ' ' + inf.model).includes('desal');
+}
+/** loads served first in a brownout */
+function isCritical(inf: DefInfo): boolean {
+  return inf.waterOut > 0 || inf.service === 'health' || inf.service === 'police' || inf.service === 'fire';
+}
 
 function occupancy(inf: DefInfo, b: Building, jobsUnknown: boolean): number {
   if (b.capacity <= 0) return 1;
@@ -61,8 +110,8 @@ function fullUse(inf: DefInfo, b: Building, power: boolean): number {
     default: {
       const jobs = inf.civicJobs;
       const perJob = power ? POWER_PER_CIVIC_JOB : WATER_PER_CIVIC_JOB;
-      const minUse = inf.isPark ? 0.2 : POWER_MIN_PLOPPED;
-      return Math.max(minUse, jobs * perJob);
+      // parks without an explicit powerUse / waterUse draw nothing (lawns and benches); staffed ones by their jobs
+      return Math.max(inf.isPark ? 0 : POWER_MIN_PLOPPED, jobs * perJob);
     }
   }
 }
@@ -134,8 +183,22 @@ export class UtilitiesSystem implements SimSystem {
   private nPComp = 0;
   private okComp = new Uint8Array(256);
   private nWComp = 0;
+  /** per water component: supply-weighted intake pollution sum, tap water quality 0..1 */
+  private wPoll = new Float64Array(256);
+  private wQual = new Float32Array(256);
+  /** per building id: plant load 0..1 (-1 unknown) and last water result (0 unknown, 1 watered, 2 dry) */
+  private loadById = new Float32Array(1024).fill(-1);
+  private watSeen = new Uint8Array(1024);
+  /** per producer id: output breakdown of the last pass; intake pollution per water producer id */
+  private producers = new Map<number, ProducerInfo>();
+  private intakeById = new Float32Array(1024);
   private wasShort = false;
   private lastShortNotify = -1e9;
+  private wasWaterShort = false;
+  private lastWaterNotify = -1e9;
+  /** nuclear plants shut down by the nuclear-free-zone ordinance: announced once per enactment */
+  private nuclearOffAnnounced = false;
+  private simRef: Simulation | null = null;
   /** duration (ms) of the last step / last full synchronous compute */
   lastMs = 0;
 
@@ -158,6 +221,9 @@ export class UtilitiesSystem implements SimSystem {
       ev.on('powerLinesChanged', full), ev.on('zoneChanged', () => { this.soft = true; }), ev.on('reset', net));
     sim.state.systemData.infraLayers = { utilities: true, traffic: true, pollution: true, services: true };
     sim.state.systemData.infraVersion = 1;
+    this.simRef = sim;
+    // an ordinance already in force when a city is loaded is not news
+    this.nuclearOffAnnounced = ordinanceEffect(sim.state, 'power.nuclear') < 0.5;
     this.dirtyFull = true;
     this.dirtyWater = true;
     this.added = [];
@@ -280,12 +346,53 @@ export class UtilitiesSystem implements SimSystem {
     this.bUse = ensureIdFloat(this.bUse, st);
     this.bWComp = ensureIdArray(this.bWComp, st);
     this.bWUse = ensureIdFloat(this.bWUse, st);
+    this.intakeById = ensureIdFloat(this.intakeById, st);
+    if (this.loadById.length < this.bOk.length) {
+      const l = new Float32Array(this.bOk.length).fill(-1);
+      l.set(this.loadById);
+      this.loadById = l;
+    }
     if (this.bPow.length < this.bOk.length) {
       const grow = (a: Uint8Array) => { const b = new Uint8Array(this.bOk.length); b.set(a.subarray(0, Math.min(a.length, b.length))); return b; };
       this.bPow = grow(this.bPow);
       this.bWat = grow(this.bWat);
       this.bNeedPow = grow(this.bNeedPow);
+      this.watSeen = grow(this.watSeen);
     }
+  }
+
+  /** share 0..1 of the plant's grid supply in use (last pass; -1 = unknown / not a plant) */
+  plantLoad(id: number): number {
+    return id >= 0 && id < this.loadById.length ? this.loadById[id] : -1;
+  }
+
+  /** output breakdown of a power plant / water producer (last pass), null if not a producer */
+  producerInfo(id: number): ProducerInfo | null {
+    return this.producers.get(id) ?? null;
+  }
+
+  /**
+   * tap-water quality 0..1 (1 = clean) at a cell: quality of the water network serving the road cell / building there
+   * (supply-weighted intake pollution with treatment applied). Falls back to the city mean stats.tapWater.
+   */
+  waterQualityAt(sim: Simulation, cell: number): number {
+    const st = sim.state;
+    const mean = st.stats.tapWater ?? 1;
+    if (cell < 0 || cell >= st.cells || this.wComp.length !== st.cells) return mean;
+    let c = this.wComp[cell];
+    if (c < 0) {
+      const bid = st.building[cell];
+      if (bid >= 0 && bid < this.bWComp.length) c = this.bWComp[bid] - 1;
+    }
+    if (c < 0) {
+      const N = st.size, x = cell % N;
+      if (x > 0 && this.wComp[cell - 1] >= 0) c = this.wComp[cell - 1];
+      else if (x < N - 1 && this.wComp[cell + 1] >= 0) c = this.wComp[cell + 1];
+      else if (cell >= N && this.wComp[cell - N] >= 0) c = this.wComp[cell - N];
+      else if (cell + N < st.cells && this.wComp[cell + N] >= 0) c = this.wComp[cell + N];
+    }
+    if (c < 0 || c >= this.nWComp || !(this.wSupply[c] > 0)) return mean;
+    return this.wQual[c];
   }
 
   /** apply flags, news, events */
@@ -293,25 +400,32 @@ export class UtilitiesSystem implements SimSystem {
     const st = sim.state;
     const changed: Building[] = [];
     const bPow = this.bPow, bWat = this.bWat;
+    const watSeen = this.watSeen;
     for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
       const b = bL[bI];
       const f1 = setFlagQuiet(b, BF.Powered, bPow[b.id] === 1);
       const f2 = setFlagQuiet(b, BF.Watered, bWat[b.id] === 1);
+      watSeen[b.id] = bWat[b.id] === 1 ? 1 : 2;
       if (f1 || f2) changed.push(b);
     }
     for (const b of changed) sim.events.emit('buildingChanged', b);
     const short = st.stats.powerDemand > st.stats.powerSupply * 1.0001 && st.stats.powerSupply > 0;
-    if (short && !this.wasShort && st.day - this.lastShortNotify > 30) {
+    if (short && !this.wasShort && st.day - this.lastShortNotify > SHORTAGE_NEWS_DAYS) {
       this.lastShortNotify = st.day;
       sim.notify(`Power shortage: demand ${Math.round(st.stats.powerDemand)} MW exceeds supply ${Math.round(st.stats.powerSupply)} MW. Brownouts in outlying areas.`, 'warning', undefined, undefined, 'utilities');
     }
     this.wasShort = short;
+    const wShort = st.stats.waterDemand > st.stats.waterSupply * 1.0001 && st.stats.waterSupply > 0;
+    if (wShort && !this.wasWaterShort && st.day - this.lastWaterNotify > SHORTAGE_NEWS_DAYS) {
+      this.lastWaterNotify = st.day;
+      sim.notify(`Water shortage: demand ${Math.round(st.stats.waterDemand).toLocaleString('en-US')} kL/day exceeds supply ${Math.round(st.stats.waterSupply).toLocaleString('en-US')} kL/day. Taps run dry in outlying areas.`, 'warning', undefined, undefined, 'utilities');
+    }
+    this.wasWaterShort = wShort;
     sim.events.emit('layerUpdated', 'utilities');
   }
 
   /** one pass over buildings: power use / plant output (bUse) and water use / producer output (bWUse) */
   private prepareUses(st: CityState, pMul: number, wMul: number, jobsUnknown: boolean): void {
-    const N = st.size, C = st.cells;
     const eff = plantEfficiency(st);
     const bUse = this.bUse, bWUse = this.bWUse;
     const list = buildingList(st);
@@ -321,27 +435,93 @@ export class UtilitiesSystem implements SimSystem {
       const inf = infoOf(st, b);
       if (inf.isTreatment && b.built >= 1 && (b.flags & BF.Burnt) === 0) { hasTreatment = true; break; }
     }
+    const producers = this.producers;
+    producers.clear();
+    const nuclearMul = Math.max(0, ordinanceEffect(st, 'power.nuclear'));
+    let nuclearLost = 0;
+    const pollution = this.simRef?.getSystem<PollutionSystem>('pollution');
+    let sea: Uint8Array | null = null;
+    const season = 0.5 * (SOLAR_WINTER + SOLAR_SUMMER) - 0.5 * (SOLAR_SUMMER - SOLAR_WINTER) * Math.cos((2 * Math.PI * ((st.day % 360) + 15)) / 360);
+    const climate = SOLAR_CLIMATE[st.config.climate] ?? 1;
     for (let bI = 0; bI < list.length; bI++) {
       const b = list[bI];
       const inf = infoOf(st, b);
       const ok = b.built >= 1 && (b.flags & (BF.Burnt | BF.Abandoned)) === 0;
-      if (inf.powerOut > 0) bUse[b.id] = -(ok ? inf.powerOut * eff : 0);
-      else bUse[b.id] = buildingPowerUse(inf, b, jobsUnknown) * pMul;
-      if (inf.waterOut > 0) {
+      if (inf.powerOut > 0) {
         let out = 0;
+        const factors: OutputFactor[] = [];
+        if (ok) {
+          out = inf.powerOut * eff;
+          if (eff < 1) factors.push({ label: 'Utilities funding', mul: eff });
+          // thermal plants (coal / oil / gas / nuclear: category power with a water use) need cooling water; last pass's
+          // result (unknown for a brand-new plant -> assume watered)
+          if (inf.category === 'power' && inf.waterUse > 0 && this.watSeen[b.id] === 2) {
+            out *= THERMAL_UNWATERED;
+            factors.push({ label: 'No cooling water', mul: THERMAL_UNWATERED });
+          }
+          switch (powerKind(inf)) {
+            case PK_NUCLEAR:
+              if (nuclearMul < 1) { nuclearLost += out * (1 - nuclearMul); out *= nuclearMul; factors.push({ label: 'Nuclear-free zone', mul: nuclearMul }); }
+              break;
+            case PK_WIND: {
+              const m = WIND_TURBINE_BASE + WIND_TURBINE_GAIN * smoothstep(WIND_TURBINE_H0, WIND_TURBINE_H1, relativeHeight(st, b));
+              out *= m;
+              factors.push({ label: m < 1 ? 'Sheltered site' : 'Windy hilltop', mul: m });
+              break;
+            }
+            case PK_SOLAR:
+              out *= season * climate;
+              factors.push({ label: 'Season', mul: season });
+              if (climate !== 1) factors.push({ label: 'Climate', mul: climate });
+              break;
+            case PK_INCIN: {
+              const share = pollution?.incineratorShare(b.id) ?? -1;
+              if (share >= 0) { out *= share; factors.push({ label: 'Garbage burned', mul: share }); }
+              break;
+            }
+          }
+        }
+        bUse[b.id] = -out;
+        producers.set(b.id, { kind: 'power', nominal: inf.powerOut, output: out, factors, load: this.loadById[b.id] ?? -1 });
+      } else bUse[b.id] = buildingPowerUse(inf, b, jobsUnknown) * pMul;
+      if (inf.waterOut > 0) {
+        let out = 0, intake = 0;
+        const factors: OutputFactor[] = [];
         if (ok) {
           out = inf.waterOut * eff;
-          if (inf.isPump && nearWater(st, b, PUMP_WATER_DIST)) out *= 1 + PUMP_WATER_BONUS;
-          const wp = st.waterPollution[Math.min(C - 1, (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1))] || 0;
-          out *= 1 - 0.5 * Math.min(1, wp) * (hasTreatment ? 0.35 : 1);
+          if (eff < 1) factors.push({ label: 'Utilities funding', mul: eff });
+          if (sea === null) sea = seaMask(st);
+          const near = waterNear(st, b.x, b.z, b.w, b.d, PUMP_WATER_DIST, sea);
+          if (isDesal(inf)) {
+            if (!near.sea) { out *= DESAL_INLAND_OUT; factors.push({ label: 'No sea water', mul: DESAL_INLAND_OUT }); }
+          } else {
+            if (inf.isPump) {
+              if (near.fresh) { out *= 1 + PUMP_WATER_BONUS; factors.push({ label: 'Fresh water nearby', mul: 1 + PUMP_WATER_BONUS }); }
+              else if (near.sea) { out *= SEA_PUMP_OUT; factors.push({ label: 'Brackish sea water', mul: SEA_PUMP_OUT }); }
+            }
+            // intake pollution: ground water under the intake or the adjacent water body, whichever is worse
+            intake = Math.min(1, intakePollution(st, b, PUMP_WATER_DIST));
+            if (intake > 0.001) {
+              const m = 1 - PUMP_POLL_LOSS * intake * (hasTreatment ? PUMP_TREATED_LOSS : 1);
+              out *= m;
+              factors.push({ label: 'Polluted intake', mul: m });
+            }
+          }
         }
+        // treatment plants and desalination deliver clean water; pumps / towers deliver what they draw
+        this.intakeById[b.id] = inf.isTreatment || isDesal(inf) ? 0 : intake;
         bWUse[b.id] = -out - 1e-9;
         this.bNeedPow[b.id] = inf.powerUse > 0 ? 1 : 0;
+        producers.set(b.id, { kind: 'water', nominal: inf.waterOut, output: out, factors, load: intake });
       } else {
         bWUse[b.id] = buildingWaterUse(inf, b, jobsUnknown) * wMul;
         this.bNeedPow[b.id] = 0;
       }
     }
+    if (nuclearLost > 0 && !this.nuclearOffAnnounced && this.simRef) {
+      this.simRef.notify(`Nuclear plant shut down by ordinance (−${Math.round(nuclearLost).toLocaleString('en-US')} MW)`, 'warning', undefined, undefined, 'utilities');
+    }
+    this.nuclearOffAnnounced = nuclearMul < 0.5;
   }
 
   // ------------------------------------------------------------------------------------------ power
@@ -449,10 +629,27 @@ export class UtilitiesSystem implements SimSystem {
       const c = comp[i];
       powered[i] = c >= 0 ? okComp[c] : 0;
     }
-    // brownout ordering (multi-source BFS from plants in short components)
+    // plant load (share of the component's supply in use) -> pollution activity, inspector
+    const loadById = this.loadById;
+    for (let bI = 0; bI < list.length; bI++) {
+      const b = list[bI];
+      if (bUse[b.id] >= 0) continue;
+      const c = comp[b.z * N + b.x];
+      const sup = c >= 0 ? this.cSupply[c] : 0;
+      loadById[b.id] = sup > 0 ? Math.min(1, this.cDemand[c] / sup) : 0;
+    }
+    // brownout ordering: critical loads first, then a multi-source BFS from plants in short components
     const served = this.bOk;
     const stampNo = ++this.stamp;
     if (anyShort) {
+      for (let bI = 0; bI < list.length; bI++) {
+        const b = list[bI];
+        const u = bUse[b.id];
+        if (u <= 0) continue;
+        const c = comp[b.z * N + b.x];
+        if (c < 0 || !(this.cDemand[c] > this.cSupply[c]) || !isCritical(infoOf(st, b))) continue;
+        if (this.cLeft[c] >= u) { this.cLeft[c] -= u; served[b.id] = stampNo; }
+      }
       const visit = this.visit;
       let qh = 0, qt = 0;
       for (let bI = 0; bI < list.length; bI++) {
@@ -569,6 +766,9 @@ export class UtilitiesSystem implements SimSystem {
     const nc = this.nWComp;
     this.wSupply.fill(0, 0, nc);
     this.wDemand.fill(0, 0, nc);
+    if (this.wPoll.length < nc) { this.wPoll = new Float64Array(nc * 2 + 16); this.wQual = new Float32Array(nc * 2 + 16); }
+    const wPoll = this.wPoll;
+    wPoll.fill(0, 0, nc);
     const bComp = this.bWComp; // per-building component (+1), 0 = none
     const bUse = this.bWUse;
     const list = buildingList(st);
@@ -584,6 +784,7 @@ export class UtilitiesSystem implements SimSystem {
         // pumps / treatment plants need power to run
         const out = this.bNeedPow[b.id] && !this.bPow[b.id] ? 0 : -u - 1e-9;
         this.wSupply[c] += out;
+        wPoll[c] += out * this.intakeById[b.id];
         supplyTot += out;
         if (out > 0) seeds.push(b.id);
       } else {
@@ -660,6 +861,19 @@ export class UtilitiesSystem implements SimSystem {
     }
     st.stats.waterSupply = supplyTot;
     st.stats.waterDemand = demandTot;
+    // tap water quality per network: supply-weighted intake pollution, cleaned by sewage treatment (pollution pass)
+    const treated = Math.max(0, Math.min(1, st.stats.sewageTreated || 0));
+    const clean = 1 - TAP_TREATMENT_CLEAN * treated;
+    const wQual = this.wQual;
+    let qSum = 0, qW = 0;
+    for (let c = 0; c < nc; c++) {
+      const sup = this.wSupply[c];
+      const q = sup > 0 ? Math.max(0, Math.min(1, 1 - (wPoll[c] / sup) * clean)) : 1;
+      wQual[c] = q;
+      const used = Math.min(sup, this.wDemand[c]);
+      if (used > 0) { qSum += used * q; qW += used; }
+    }
+    st.stats.tapWater = qW > 0 ? qSum / qW : 1;
   }
 }
 
@@ -692,19 +906,47 @@ function perimeterRoadCells(st: CityState, comp: Int32Array, b: Building): numbe
   return out;
 }
 
-function nearWater(st: CityState, b: Building, d: number): boolean {
-  const N = st.size;
-  for (let z = b.z - d; z < b.z + b.d + d; z++) for (let x = b.x - d; x < b.x + b.w + d; x++) {
-    if (x < 0 || z < 0 || x >= N || z >= N) continue;
-    if (st.water[z * N + x]) return true;
+/** intake pollution of a water producer: max(ground water at its centre, water bodies within d cells) */
+function intakePollution(st: CityState, b: Building, d: number): number {
+  const N = st.size, wm = st.water, L = st.waterPollution;
+  const cx = Math.min(N - 1, b.x + (b.w >> 1)), cz = Math.min(N - 1, b.z + (b.d >> 1));
+  let p = L[cz * N + cx] || 0;
+  for (let z = b.z - d; z < b.z + b.d + d; z++) {
+    if (z < 0 || z >= N) continue;
+    for (let x = b.x - d; x < b.x + b.w + d; x++) {
+      if (x < 0 || x >= N) continue;
+      const i = z * N + x;
+      if (wm[i] && L[i] > p) p = L[i];
+    }
   }
-  return false;
+  return p;
+}
+
+/** height (m) of a building's site above the mean terrain height within WIND_TURBINE_RADIUS cells */
+function relativeHeight(st: CityState, b: Building): number {
+  const N = st.size, H = st.heights, W = N + 1;
+  const cx = Math.min(N, b.x + (b.w >> 1)), cz = Math.min(N, b.z + (b.d >> 1));
+  const h = H[cz * W + cx];
+  const R = WIND_TURBINE_RADIUS;
+  let s = 0, n = 0;
+  for (let z = Math.max(0, cz - R); z <= Math.min(N, cz + R); z += 4) for (let x = Math.max(0, cx - R); x <= Math.min(N, cx + R); x += 4) {
+    s += H[z * W + x];
+    n++;
+  }
+  return n > 0 ? h - s / n : 0;
 }
 
 /**
- * Tap-water quality 0..1 (1 = clean) at a cell: supply-weighted pump quality of the water network component serving
- * it, with treatment applied (SIM_DEPTH_SPEC WP3-5; consumed by WP1-3). PHASE 0 STUB: the city mean stats.tapWater.
+ * Tap-water quality 0..1 (1 = clean) at a cell: supply-weighted intake quality of the water network component serving
+ * it, with treatment applied (SIM_DEPTH_SPEC WP3-5; consumed by WP1-3). Falls back to the city mean stats.tapWater
+ * (cells off the network, or no utilities system).
  */
-export function waterQualityAt(sim: Simulation, _cell: number): number {
-  return sim.state.stats.tapWater ?? 1;
+export function waterQualityAt(sim: Simulation, cell: number): number {
+  const u = sim.getSystem<UtilitiesSystem>('utilities');
+  return u ? u.waterQualityAt(sim, cell) : sim.state.stats.tapWater ?? 1;
+}
+
+/** plant load 0..1 of a power plant (-1 unknown / no utilities system) */
+export function plantLoadOf(sim: Simulation, id: number): number {
+  return sim.getSystem<UtilitiesSystem>('utilities')?.plantLoad(id) ?? -1;
 }

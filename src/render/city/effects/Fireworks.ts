@@ -11,9 +11,11 @@
  * Sparks are written ONCE when a shell is launched — rocket, rising glitter tail, burst stars, crossette splits and
  * crackle pops all carry future birth times — and the vertex shader evaluates their motion analytically
  * (gravity + linear drag + wind: p(t) = p0 + (v0 - vT)(1 - e^-kt)/k + vT t), so the CPU does no per-spark work per
- * frame; only freshly written ranges are uploaded. Trails are drawn as screen-space capsules between p(t) and p(t - τ),
- * split into up to 8 tapered segments for long curved (willow / palm) trails. Colours are HDR (bloom makes them glow)
- * and shift white-hot -> colour -> ember orange as the stars cool.
+ * frame; only freshly written ranges are uploaded. Launches go through a small queue that writes at most ~1400 sparks
+ * per frame (big salvos / the grand finale spread over a few frames): no hitch and no per-frame allocation.
+ * Trails are drawn as screen-space capsules between p(t) and p(t - τ), split into up to 8 tapered segments for long
+ * curved (willow / palm) trails; long trails glitter. Colours are HDR (bloom makes them glow) and shift
+ * white-hot -> colour -> ember orange as the stars cool.
  * Draw calls: 1 (sparks, additive) + 1 (water reflections, when the city has water and quality >= medium).
  * Timing is real time (independent of the simulation speed; keeps running while the game is paused).
  */
@@ -99,7 +101,7 @@ const DENSITY: Record<QualityLevel, number> = { low: 0.45, medium: 0.7, high: 1,
 const CAPACITY = 36864;
 const MAX_SITES = 48;
 /** queued shell launches (floats per entry) and the spark-writing budget per director step */
-const QUEUE = 96, QF = 13, SPARKS_PER_FRAME = 1400;
+const QUEUE = 96, QF = 14, SPARKS_PER_FRAME = 1400;
 
 // ------------------------------------------------------------------------------------------------ shaders
 const VERT = /* glsl */ `
@@ -208,10 +210,12 @@ void main() {
     // star: white-hot ignition -> colour (optionally switching) -> cooling ember
     if (aC0.w > 0.0) c = mix(aC0.rgb, aC1.rgb, smoothstep(aC0.w - 0.05, aC0.w + 0.05, f));
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    // white-hot for the first ~0.15 s (absolute, so long-lived willow stars don't stay white)
-    c = mix(c, vec3(1.0, 0.94, 0.82) * max(l, 0.3) * 1.7, (1.0 - smoothstep(0.0, min(0.15, life * 0.08), age)) * 0.8);
+    // white-hot for the first ~0.12 s (absolute, so long-lived willow stars do not stay white)
+    c = mix(c, vec3(1.0, 0.94, 0.82) * max(l, 0.3) * 1.3, (1.0 - smoothstep(0.0, min(0.12, life * 0.08), age)) * 0.75);
     c = mix(c, vec3(1.0, 0.3, 0.06) * max(l, 0.25) * 1.1, smoothstep(0.5, 1.0, f) * 0.72);
     I = 1.0 - smoothstep(0.7, 1.0, f);
+    // the freshly burst, still tightly packed shell would add up to a white blob: ease the stars in
+    I *= mix(0.45, 1.0, smoothstep(0.0, 0.12, age));
     I *= 1.0 - aC1.w * smoothstep(0.4, 0.85, f) * rnd;
   } else if (kind < 1.5) {
     // rocket head: warm glare with a slight flicker
@@ -400,6 +404,8 @@ export class Fireworks {
   private sndP = new Float32Array(256 * 5);
   // ---- burst flashes (city illumination)
   private flT = new Float64Array(48).fill(-1e9);
+  /** 1 = the burst belongs to a synchronized salvo / the opening / the finale */
+  private flS = new Uint8Array(48);
   private flP = new Float32Array(48 * 7);
   private flI = 0;
   private hemi: THREE.HemisphereLight | null = null;
@@ -483,6 +489,7 @@ export class Fireworks {
     this.quality = q;
     this.maxLive = MAX_LIVE[q] ?? 30000;
     this.density = DENSITY[q] ?? 1;
+    this.starK = Math.pow(DENSITY.low / this.density, 0.35);
     this.cap = Math.min(CAPACITY, Math.ceil(this.maxLive * 1.2));
     if (this.cursor >= this.cap) this.cursor = 0;
     this.geo.instanceCount = this.cap;
@@ -790,7 +797,9 @@ export class Fireworks {
       const flight = 2.6;
       if (u < -flight) return;
       this.opened = true;
+      this.inSalvo = true;
       this.openingSalvo(flight);
+      this.inSalvo = false;
       return;
     }
     if (u > this.duration + 0.5) {
@@ -802,18 +811,22 @@ export class Fireworks {
     const grandFlight = 2.9;
     if (!this.grandDone && u >= this.duration - grandFlight) {
       this.grandDone = true;
+      this.inSalvo = true;
       this.grandFinale(grandFlight);
+      this.inSalvo = false;
       return;
     }
     if (this.grandDone) return;
     const finale = u >= this.finaleAt;
     // synchronized salvos (not during the finale barrage)
     if (!finale && u >= this.nextSalvo) {
+      this.inSalvo = true;
       this.salvo();
+      this.inSalvo = false;
       this.nextSalvo = u + lerp(12, 6, k) * this.rr(0.75, 1.3);
     }
     // keep the sky layered: when too few shells are bursting / about to burst, fire the next one early
-    if (!finale && k > 0.12 && this.burstsAround() < lerp(0.2, 4.5, k)) this.nextShot = Math.min(this.nextShot, Math.max(u, this.lastShotU + 0.3));
+    if (!finale && k > 0.12 && this.burstsAround() < lerp(0.2, 5, k)) this.nextShot = Math.min(this.nextShot, Math.max(u, this.lastShotU + 0.3));
     let guard = 0;
     while (u >= this.nextShot && guard++ < 4) {
       this.lastShotU = u;
@@ -838,7 +851,7 @@ export class Fireworks {
     let n = 0;
     for (let i = 0; i < T.length; i++) {
       const d = T[i] - now;
-      if (d > 0.7 && d < 3.6) n++;
+      if (d > 0.7 && d < 3.6 && !this.flS[i]) n++;
     }
     return n;
   }
@@ -1176,6 +1189,7 @@ export class Fireworks {
     Q[o] = site.x; Q[o + 1] = site.y; Q[o + 2] = site.z; Q[o + 3] = tbx; Q[o + 4] = tby; Q[o + 5] = tbz;
     Q[o + 6] = type; Q[o + 7] = c; Q[o + 8] = colA; Q[o + 9] = colB; Q[o + 10] = tLaunch; Q[o + 11] = flight;
     Q[o + 12] = burstTime === undefined ? NaN : burstTime;
+    Q[o + 13] = this.inSalvo ? 1 : 0;
   }
   private queue = new Float64Array(QUEUE * QF);
   private qN = 0;
@@ -1194,10 +1208,15 @@ export class Fireworks {
       // a shell drained a few frames late leaves now (and flies a touch faster when its burst time is pinned)
       const tL = Math.max(Q[o + 10], this.clock);
       const bt = Q[o + 12];
+      this.firingSalvo = Q[o + 13] > 0;
       this.fire(Q[o], Q[o + 1], Q[o + 2], Q[o + 3], Q[o + 4], Q[o + 5], Q[o + 6], Q[o + 7], Q[o + 8], Q[o + 9], tL, isNaN(bt) ? Q[o + 11] - (tL - Q[o + 10]) : Math.max(1.2, bt - tL));
     }
+    this.firingSalvo = false;
     if (this.qHead >= this.qN) this.qHead = this.qN = 0;
   }
+  /** set while salvo / opening / finale shells are queued; those don't count toward keeping the sky filled */
+  private inSalvo = false;
+  private firingSalvo = false;
 
   private fire(siteX: number, siteY: number, siteZ: number, tbx: number, tby: number, tbz: number, type: number, c: number, colA: number, colB: number, tLaunch: number, flight: number): void {
     const avail = this.maxLive - this.countLive();
@@ -1300,7 +1319,7 @@ export class Fireworks {
     // burst flash + city light + sound
     if (type !== S_SALUTE) {
       const fl = 0.2 + 0.16 * c;
-      this.setTpl(K_FLASH, bx, byy, bz, tb, 0, 0, 0, 0.18, lerp(pa[0], 1, 0.35) * fl, lerp(pa[1], 1, 0.35) * fl, lerp(pa[2], 1, 0.35) * fl, R * 0.15, 0, 0);
+      this.setTpl(K_FLASH, bx, byy, bz, tb, 0, 0, 0, 0.18, lerp(pa[0], 1, 0.35) * fl, lerp(pa[1], 1, 0.35) * fl, lerp(pa[2], 1, 0.35) * fl, R * 0.12, 0, 0);
       this.put();
       this.queueFlash(tb, bx, byy, bz, pa, 0.35 + 0.65 * c);
       this.queueSound(tb, 2, bx, byy, bz, R, type === S_CRACKLE || type === S_BROCADE || type === S_KAMURO ? 0.6 : type === S_WILLOW || type === S_PALM ? 0.3 : 0);
@@ -1309,8 +1328,10 @@ export class Fireworks {
 
   private starGain(p: readonly [number, number, number]): number {
     const l = 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
-    return 1.7 / Math.sqrt(Math.max(0.3, l));
+    return (1.7 / Math.sqrt(Math.max(0.3, l))) * this.starK;
   }
+  /** per-star gain: denser (higher quality) shells use slightly dimmer stars so the total glow stays similar */
+  private starK = 1;
 
   private setTpl(kind: number, x: number, y: number, z: number, t0: number, vx: number, vy: number, vz: number, life: number, r: number, g: number, b: number, size: number, drag: number, grav: number): void {
     const t = this.tpl;
@@ -1582,6 +1603,7 @@ export class Fireworks {
     const i = this.flI;
     this.flI = (i + 1) % this.flT.length;
     this.flT[i] = time;
+    this.flS[i] = this.firingSalvo ? 1 : 0;
     const o = i * 7, p = this.flP;
     p[o] = x; p[o + 1] = y; p[o + 2] = z;
     p[o + 3] = lerp(col[0], 1, 0.35); p[o + 4] = lerp(col[1], 1, 0.35); p[o + 5] = lerp(col[2], 1, 0.35);

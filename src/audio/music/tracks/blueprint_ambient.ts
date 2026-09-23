@@ -5,7 +5,7 @@
  *   intro 8   pads bloom in over a tonic pedal, glass harmonics, a first fragment of the motif + pickup
  *   theme 16  piano states the motif (call), glass echoes it, piano answers (response), sequences it up, closes
  *   drift 16  aeolian turn to the relative minor: the motif in augmentation on glass, piano answers in the
- *             middle register, broken-chord left hand, a high tri-pad layer enters, riser into the next section
+ *             middle register, broken-chord left hand, the high pad layer grows, riser into the next section
  *   hush 4    (most seeds) breakdown: dark pad, sub, one slow motif fragment and a bell
  *   bloom 16  the theme in octaves over the fullest texture; the sequence climbs to the song's high point
  *   coda 8    a last soft call, glass echo, then a plagal close onto a held, rolled tonic chord with ritardando
@@ -13,6 +13,12 @@
  * appears, the motif (3 composed motifs with call + response forms), its variations (split notes, anticipations),
  * sequence intervals, left-hand patterns, pad waveform + detune, glass / bell placements and fills.
  * The whole plan is computed in create(); bar() only schedules.
+ *
+ * Layers: soft piano (left hand = spread broken chords, 'piano:lead' = melody), low saw/square pad summed to mono
+ * (warm bed), high saw pad + octave shimmer note (stereo width), glass echoes, FM bell harmonics, noise riser, plus
+ * two small LOCAL instruments built from plain nodes: a mono sine sub swell ('pad:sub') and a very quiet breathing
+ * "air" noise band (4.5-10 kHz, in 'pad:hi') - the library pad's hard-L/R detuned pair decorrelates a sustained
+ * low end, and nothing else in the palette supplies top-octave air without drums.
  */
 import type { RNG } from '../../../core/rng';
 import type { MusicEnv, MusicTrack } from '../types';
@@ -302,14 +308,14 @@ export const track: MusicTrack = {
 
     // ---------------------------------------------------------------- plan
     const plan: BarPlan[] = Array.from({ length: total }, () => ({ lh: [], mel: [], glass: [], bell: [], pads: [], sweeps: [], air: [] }));
-    const slotOf = (ab: number) => Math.min(total - 1, Math.max(0, Math.floor(ab / 4 + 1e-6)));
+    const barOf = (ab: number) => Math.min(total - 1, Math.max(0, Math.floor(ab / 4 + 1e-6)));
     const put = (list: 'lh' | 'mel' | 'glass' | 'bell', ab: number, e: Omit<Ev, 'beat'>) => {
       if (ab >= totalBeats || ab < 0) return;
-      const bar = slotOf(ab);
+      const bar = barOf(ab);
       plan[bar][list].push({ ...e, beat: ab - bar * 4 });
     };
     const putPad = (ab: number, e: Omit<PadEv, 'beat'>) => {
-      const bar = slotOf(ab);
+      const bar = barOf(ab);
       plan[bar].pads.push({ ...e, beat: ab - bar * 4 });
     };
 
@@ -377,8 +383,7 @@ export const track: MusicTrack = {
       shimmer?: boolean;
       max?: number;
     }
-    const phrase = (slot: Slot, ph: readonly MN[], o: PhraseOpts): number[] => {
-      const out: number[] = [];
+    const phrase = (slot: Slot, ph: readonly MN[], o: PhraseOpts): void => {
       const ms = ph.map(([b, d, u], i) => {
         const ab = slot.beat + (o.offset ?? 0) + b;
         let m = realize(ab, d + o.reg, b % 2 === 0 || u >= 1.5, i > 0 ? d - ph[i - 1][1] : 0);
@@ -398,9 +403,7 @@ export const track: MusicTrack = {
           if (o.oct && m - 12 >= 58) put('mel', ab + 0.03, { dur, midi: m - 12, vel: vel * 0.42 });
           if (o.shimmer && u >= 2 && m + 12 <= 93) put('glass', ab + 0.03, { dur: u, midi: m + 12, vel: vel * 0.42 });
         } else put('glass', ab, { dur: u, midi: m, vel });
-        out.push(m);
       });
-      return out;
     };
 
     // ---------------------------------------------------------------- per-seed colour
@@ -432,7 +435,7 @@ export const track: MusicTrack = {
           dur: g.beats + 0.6, notes: pv, vel: padVel, layer: 'pad', wave, detune,
           attack: k === 'intro' && s.idx === 0 ? 6 : k === 'hush' ? 3.5 : 2.2, release: isFinal ? 5 : 3.5, cutoff: 1900, toEnd: isFinal,
         });
-        // --- high tri pad (drift from slot 2, bloom, the final chord)
+        // --- high saw pad + shimmer (second half of the theme, drift from slot 2, bloom, the final chord)
         if ((k === 'theme' && s.idx >= 4) || (k === 'drift' && s.idx >= 2) || k === 'bloom' || isFinal) {
           if (gi === 0) {
             const hv = openUp(voiceLead(prevHi, c, { lo: 67, hi: 86, count: 3, rootless: true }), 67, 86);
@@ -449,7 +452,7 @@ export const track: MusicTrack = {
         // --- air (breath of the high pad): one slow swell per slot, none in the hush / opening bars
         const airLv = k === 'intro' ? (s.idx >= 2 ? 0.45 : 0) : k === 'theme' ? 0.7 : k === 'drift' ? 0.8 + 0.03 * s.idx : k === 'bloom' ? 1 : k === 'coda' ? 0.75 : 0;
         if (airLv > 0 && gi === 0) {
-          const bar = slotOf(s.beat);
+          const bar = barOf(s.beat);
           plan[bar].air.push({ beat: s.beat - bar * 4, beats: s.beats, level: airLv });
         }
         // --- sub swell (root / pedal, slow attack, long release)
@@ -546,7 +549,7 @@ export const track: MusicTrack = {
       const lb = lastBarBeat('drift');
       if (has('hush')) glassFill(lb, false, 0.22);
       else {
-        plan[slotOf(lb - 4)].sweeps.push({ beat: 0, dur: 8, vel: 0.2 });
+        plan[barOf(lb - 4)].sweeps.push({ beat: 0, dur: 8, vel: 0.2 });
         glassFill(lb, true);
         pickup(S('bloom', 0), M.call[0], regFor(M.call, 77), 0.44);
       }
@@ -555,7 +558,7 @@ export const track: MusicTrack = {
     if (has('hush')) {
       phrase(S('hush', 0), augment(M.call.slice(0, 2), 2), { voice: 'mel', reg: regTheme, vel: 0.42 });
       const lb = lastBarBeat('hush');
-      plan[slotOf(lb - 4)].sweeps.push({ beat: 0, dur: 8, vel: 0.2 });
+      plan[barOf(lb - 4)].sweeps.push({ beat: 0, dur: 8, vel: 0.2 });
       glassFill(lb, true, 0.22);
       pickup(S('bloom', 0), M.call[0], regFor(M.call, 77), 0.44);
     }
@@ -616,7 +619,7 @@ export const track: MusicTrack = {
       tempo,
       sections: form.map((f) => ({ name: f.name, bars: f.slots.reduce((a, s) => a + s.bars, 0) })),
       tail: 5,
-      setup(t0, p) {
+      setup(_t0, p) {
         player = p;
         inst.mix('piano', { level: 2.4, pan: -0.2, reverb: 0.5, delay: 0.05 });
         inst.mix('piano:lead', { level: 2, pan: 0.16, reverb: 0.55, delay: 0.15 });
@@ -632,7 +635,6 @@ export const track: MusicTrack = {
         inst.mix('bell', { level: 1.1, pan: 0.38, reverb: 0.6, delay: 0.18 });
         inst.mix('sweep', { level: 0.45, reverb: 0.55, delay: 0.1 });
         inst.setDelay({ beats: 1.5, feedback: 0.38, tone: 3600 });
-        void t0;
       },
       bar(b: BarInfo) {
         const p = plan[b.bar];
@@ -641,11 +643,19 @@ export const track: MusicTrack = {
         const endT = player ? player.barTimes[total] : b.t + b.dur * (total - b.bar);
         const sec = (beats: number) => b.beatsToSec(beats);
         inst.mix('pad', { lowpass: padCut(k, b.sectionProgress) }, b.t);
+        // live only: a sustained layer whose start already passed (main-thread stall / throttled tab) enters late
+        // with its remaining length instead of being dropped, so the bed fades back in rather than leaving a hole
+        const now = env.live ? env.ctx.currentTime + 0.03 : -Infinity;
         for (const e of p.pads) {
-          const t = b.at(e.beat);
+          let t = b.at(e.beat);
           // final chord: hold ~45% of what is left, then a long release = a natural diminuendo into the tail
           const left = endT - t;
-          const dur = e.toEnd ? Math.max(1, left * 0.45) : sec(e.dur);
+          let dur = e.toEnd ? Math.max(1, left * 0.45) : sec(e.dur);
+          if (t < now) {
+            if (t + dur < now + 1) continue;
+            dur -= now - t;
+            t = now;
+          }
           const rel = e.toEnd ? left * 0.55 + 2 : e.release;
           if (e.layer === 'sub') {
             subSwell(env, t, e.notes[0], dur, e.vel * Math.sqrt(d), e.attack, rel);
@@ -666,7 +676,8 @@ export const track: MusicTrack = {
         for (const e of p.air) {
           const len = sec(e.beats);
           const fin = b.bar >= total - 4;
-          airSwell(env, b.at(e.beat), len * 0.45, fin ? len * 0.2 : len * 0.3, fin ? Math.max(2, endT - b.at(e.beat) - len * 0.65) : len * 0.95, AIR * e.level * d);
+          const t = Math.max(b.at(e.beat), now);
+          airSwell(env, t, len * 0.45, fin ? len * 0.2 : len * 0.3, fin ? Math.max(2, endT - t - len * 0.65) : len * 0.95, AIR * e.level * d);
         }
         for (const e of p.sweeps) inst.sweep(b.at(e.beat), sec(e.dur), e.vel, { up: true, from: 380, to: 2600, q: 2.2 });
       },

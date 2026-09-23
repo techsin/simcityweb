@@ -121,7 +121,7 @@ export class PlopTool extends Tool {
       this.ctx.sound('plop');
       const def = getDef(this.def.id) ?? this.def;
       if (def.unique) {
-        this.ctx.tools.select(null);
+        this.ctx.tools.select(null, { silent: true });
         return;
       }
     } else {
