@@ -32,30 +32,36 @@ export function dim(c: ColorLike, k: number): Color {
   return out.multiplyScalar(k);
 }
 
-/** Emissive-9 ground light pool: flat 8-gon (plain pavement by day, warm lit at night). */
-export function pool(b: ModelBuilder, x: number, z: number, r: number, groundColor: ColorLike, y = Y_POOL, seg = 8, floor = 3.3): void {
-  b.paint({ color: dim(groundColor, 0.7), surf: Surf.Emissive, pattern: 9, floor });
-  for (let i = 0; i < seg; i++) {
-    const a0 = (i / seg) * Math.PI * 2 + 0.2, a1 = ((i + 1) / seg) * Math.PI * 2 + 0.2;
-    b.tri([x, y, z], [x + Math.cos(a1) * r, y, z + Math.sin(a1) * r], [x + Math.cos(a0) * r, y, z + Math.sin(a0) * r]);
-  }
+/**
+ * Emissive-9 ground light pool via ModelBuilder.lightPool (smooth radial falloff; plain ground colour by day).
+ * `y` is the final pool height (lightPool lifts by 2 cm internally); `floor` / 3.3 = intensity.
+ */
+export function pool(b: ModelBuilder, x: number, z: number, r: number, groundColor: ColorLike, y = Y_POOL, seg = 10, floor = 3.3): void {
+  b.lightPool(x, y - 0.02, z, r, groundColor, floor / 3.3, seg);
   b.paint(RESET_PAINT, Surf.Metal);
 }
 
-/** Rectangular Emissive-9 light pool (dock aprons, lit yards). */
+/** Light pool covering a rectangle (dock aprons, lit yards): a soft round pool inscribed in the rect. */
 export function poolRect(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, groundColor: ColorLike, y = Y_POOL, floor = 3.3): void {
-  b.paint({ color: dim(groundColor, 0.7), surf: Surf.Emissive, pattern: 9, floor });
-  b.quad([x0, y, z1], [x1, y, z1], [x1, y, z0], [x0, y, z0]);
-  b.paint(RESET_PAINT, Surf.Metal);
+  const r = Math.min(Math.abs(x1 - x0), Math.abs(z1 - z0)) * 0.5 * 1.15 + Math.abs(Math.abs(x1 - x0) - Math.abs(z1 - z0)) * 0.25;
+  pool(b, (x0 + x1) / 2, (z0 + z1) / 2, r, groundColor, y, 10, floor);
 }
 
-/** Emissive-9 ring (annulus) pool, e.g. lit apron around a cooling tower base. */
+/** Emissive-9 ring (annulus) pool, e.g. lit apron around a cooling tower base: bright at the inner edge, fading out. */
 export function poolRing(b: ModelBuilder, x: number, z: number, r0: number, r1: number, groundColor: ColorLike, y = Y_POOL, seg = 10, floor = 2.4): void {
   b.paint({ color: dim(groundColor, 0.7), surf: Surf.Emissive, pattern: 9, floor });
+  const start = b.triangleCount * 3;
   for (let i = 0; i < seg; i++) {
     const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
     const c0 = Math.cos(a0), s0 = Math.sin(a0), c1 = Math.cos(a1), s1 = Math.sin(a1);
     b.quad([x + c0 * r1, y, z + s0 * r1], [x + c0 * r0, y, z + s0 * r0], [x + c1 * r0, y, z + s1 * r0], [x + c1 * r1, y, z + s1 * r1]);
+  }
+  // radial falloff: outer-rim vertices get ~zero light intensity (surf.z channel)
+  const raw = b.raw();
+  const rm = (r0 + r1) / 2;
+  for (let v = start; v < raw.pos.length / 3; v++) {
+    const dx = raw.pos[v * 3] - x, dz = raw.pos[v * 3 + 2] - z;
+    if (Math.hypot(dx, dz) > rm) raw.srf[v * 3 + 2] = 0.01;
   }
   b.paint(RESET_PAINT, Surf.Metal);
 }

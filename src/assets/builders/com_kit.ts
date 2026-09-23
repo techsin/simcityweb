@@ -456,20 +456,17 @@ export function lotLamp(b: ModelBuilder, x: number, z: number, h = 7.5, dirs: nu
     b.push().translate(x, h, z).rotateY(a);
     box(b, -0.25, -0.05, 0.05, 0.25, 0.12, 1.3, metal(0x4a4d52), emis(0xfff0cc), { bottom: emis(0xfff0cc) });
     b.pop();
-    if (pool) lightPool(b, x + Math.sin(a) * 1.2, z + Math.cos(a) * 1.2, h * 0.6, 0.075 + (a > 0 ? 0.004 : 0));
+    if (pool) lightPool(b, x + Math.sin(a) * 1.2, z + Math.cos(a) * 1.2, h * 0.6, 0.06 + (a > 0 ? 0.004 : 0));
   }
 }
 /**
- * Ground light pool (12-gon, 10 tris): Emissive pattern 9 painted ~0.7x the ground colour -> plain pavement by day,
- * warm lamp-lit pavement at night. Default colour = 0.7x asphalt.
+ * Ground light pool under a lamp: ModelBuilder.lightPool (12-seg fan, Emissive 9, smooth radial falloff; plain
+ * ground by day). Pass the actual ground colour (darkened internally) and the ground top height y.
  */
-export function lightPool(b: ModelBuilder, x: number, z: number, r: number, y = 0.075, color: ColorLike = 0x292a2c, intensity = 3.3) {
-  const pts = ngonPts(x, z, r, 12, 0);
-  b.paint(color, Surf.Emissive, 9, intensity);
-  for (let i = 1; i < 11; i++) b.tri([pts[0][0], y, pts[0][1]], [pts[i + 1][0], y, pts[i + 1][1]], [pts[i][0], y, pts[i][1]]);
+export function lightPool(b: ModelBuilder, x: number, z: number, r: number, y = 0.06, ground: ColorLike = C.asphalt, intensity = 1) {
+  b.lightPool(x, y, z, r, ground, intensity, 12);
 }
 
-// ---------------------------------------------------------------------------------------------- landscaping & props
 export const TREE_GREENS = [0x4f7a32, 0x5a8a3a, 0x3f6b2e, 0x6b8f3a, 0x4a7d3f];
 /** Cheap deciduous tree (28 tris). */
 export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, color?: ColorLike) {
