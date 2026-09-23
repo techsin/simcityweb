@@ -139,10 +139,21 @@ export function countFront(st: CityState, x0: number, z0: number, w: number, d: 
   return { hit, total };
 }
 
-/** true if any road cell touches the lot's front edge (preferred) */
+/** true if any road cell touches the lot's front edge (allocation-free: used in hot loops) */
 export function frontHasRoad(st: CityState, b: Pick<Building, 'x' | 'z' | 'w' | 'd' | 'rot'>): boolean {
-  const net = st.network;
-  return countFront(st, b.x, b.z, b.w, b.d, b.rot, (i) => net[i] >= Network.Street && net[i] <= Network.Highway).hit > 0;
+  const net = st.network, N = st.size, rot = b.rot;
+  if (rot === 0 || rot === 2) {
+    const z = rot === 0 ? b.z + b.d : b.z - 1;
+    if (z < 0 || z >= N) return false;
+    const x1 = Math.min(N, b.x + b.w);
+    for (let x = Math.max(0, b.x); x < x1; x++) { const n = net[z * N + x]; if (n >= Network.Street && n <= Network.Highway) return true; }
+  } else {
+    const x = rot === 1 ? b.x + b.w : b.x - 1;
+    if (x < 0 || x >= N) return false;
+    const z1 = Math.min(N, b.z + b.d);
+    for (let z = Math.max(0, b.z); z < z1; z++) { const n = net[z * N + x]; if (n >= Network.Street && n <= Network.Highway) return true; }
+  }
+  return false;
 }
 
 /** true if any road cell is 4-adjacent to the lot on any side */

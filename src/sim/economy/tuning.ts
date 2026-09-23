@@ -352,9 +352,9 @@ export const HQ_RATE = 0.08;
 
 // ============================================================================ BUDGET
 /** monthly residential tax per resident per 1% rate */
-export const TAX_PER_RES: readonly [number, number, number] = [0.018, 0.034, 0.066];
+export const TAX_PER_RES: readonly [number, number, number] = [0.022, 0.04, 0.078];
 /** monthly tax per filled job per 1% rate (index = DevType; R entries unused) */
-export const TAX_PER_JOB: readonly number[] = [0, 0, 0, 0.022, 0.03, 0.042, 0.034, 0.05, 0.012, 0.022, 0.03, 0.05];
+export const TAX_PER_JOB: readonly number[] = [0, 0, 0, 0.025, 0.034, 0.048, 0.04, 0.058, 0.014, 0.025, 0.035, 0.058];
 /** difficulty multiplier on tax income */
 export const DIFFICULTY_INCOME: Record<string, number> = { easy: 1.2, medium: 1.0, hard: 0.85, sandbox: 1.0 };
 /** network maintenance $ per cell per month (× roads funding for road types, × transit funding for rail/subway) */

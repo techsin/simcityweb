@@ -39,10 +39,12 @@ uniform vec3 uShallow;
 uniform vec3 uDeep;
 uniform vec3 uFoamCol;
 uniform float uWNight;
+uniform sampler2D uLightTex;
 vec3 wNormalW = vec3(0.0, 1.0, 0.0);
 float wAlpha = 1.0;
 float wRough = 0.05;
 float wFoam = 0.0;
+vec3 wCityRefl = vec3(0.0);
 
 float waterGround(vec3 P) {
   float W = uN * uCell;
@@ -100,6 +102,23 @@ vec3 waterShade(vec3 P) {
   wAlpha = max(wAlpha, foam * 0.95);
   wRough = mix(0.035, 0.11, smoothstep(300.0, 4000.0, dist));
   wRough = mix(wRough, 0.6, foam);
+  // night: reflections of city lights. Lights are low compared to the camera, so their mirror images sit just
+  // beyond the fragment along the horizontal view direction; stretch them toward the viewer & ripple with waves.
+  wCityRefl = vec3(0.0);
+  if (uWNight > 0.01) {
+    float W = uN * uCell;
+    vec2 vd = normalize(P.xz - cameraPosition.xz + 1e-3);
+    vec2 wob = g * 22.0;
+    float acc = 0.0;
+    for (int k = 1; k <= 4; k++) {
+      float dk = float(k) * (5.0 + 0.004 * dist);
+      vec2 q = (P.xz + vd * dk + wob * float(k) * 0.35) / W;
+      acc += texture2D(uLightTex, q).r * (1.2 - float(k) * 0.2);
+    }
+    float inMap = step(0.0, P.x) * step(0.0, P.z) * step(P.x, W) * step(P.z, W);
+    float ripple = 0.55 + 0.45 * sin(dot(P.xz, vec2(0.9, 1.3)) * 0.6 + g.x * 40.0 + uWTime * 2.0);
+    wCityRefl = vec3(1.0, 0.72, 0.42) * acc * ripple * uWNight * inMap * 0.22 * (1.0 - foam);
+  }
   return mix(body, uFoamCol, foam);
 }
 `;
@@ -127,7 +146,7 @@ export class WaterRenderer {
   private detail: 0 | 1 | 2;
   private N: number;
 
-  constructor(heightTexture: THREE.Texture, N: number, climate: Climate, worldHeight: (x: number, z: number) => number, detail: 0 | 1 | 2 = 2) {
+  constructor(heightTexture: THREE.Texture, N: number, climate: Climate, worldHeight: (x: number, z: number) => number, detail: 0 | 1 | 2 = 2, lightTexture: THREE.Texture | null = null) {
     this.N = N;
     this.detail = detail;
     this.outerData = new Uint16Array(OUTER_RES * OUTER_RES);
@@ -150,6 +169,7 @@ export class WaterRenderer {
       uDeep: { value: pal.deep },
       uFoamCol: { value: new THREE.Color(0xf4f7f8) },
       uWNight: { value: 0 },
+      uLightTex: { value: lightTexture },
     };
     this.material = new THREE.MeshStandardMaterial({
       color: 0xffffff,
@@ -195,7 +215,7 @@ export class WaterRenderer {
         .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = waterShade(vWW);\ndiffuseColor.a = wAlpha;')
         .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = wRough;')
         .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nnormal = normalize((viewMatrix * vec4(wNormalW, 0.0)).xyz);')
-        .replace('#include <opaque_fragment>', 'gl_FragColor = vec4(totalDiffuse * wAlpha + totalSpecular * (1.0 - wFoam * 0.5) + totalEmissiveRadiance, wAlpha);');
+        .replace('#include <opaque_fragment>', 'gl_FragColor = vec4(totalDiffuse * wAlpha + totalSpecular * (1.0 - wFoam * 0.5) + totalEmissiveRadiance + wCityRefl, max(wAlpha, min(1.0, dot(wCityRefl, vec3(0.33)))));');
     };
     this.material.customProgramCacheKey = () => `water-${detail}`;
     this.material.needsUpdate = true;

@@ -128,6 +128,11 @@ export class PropRenderer {
   private glowCap = 4096;
   private groups = new Map<string, Group>();
   private tileIds: Set<number>[];
+  /** big props (pylons) ignore the distance LOD */
+  private tileBig: Set<number>[];
+  private near: Uint8Array;
+  /** small props (street trees, lights, signals) are hidden beyond this camera distance (m) */
+  lodDistance = 1800;
   private idTile = new Map<number, number>();
   private poolsDirty = true;
   private poolCap = 4096;
@@ -145,8 +150,12 @@ export class PropRenderer {
     this.batch.mesh.receiveShadow = true;
     const T = culler.tiles * culler.tiles;
     this.tileIds = Array.from({ length: T }, () => new Set<number>());
+    this.tileBig = Array.from({ length: T }, () => new Set<number>());
+    this.near = new Uint8Array(T).fill(1);
     culler.onChange((tile, vis) => {
-      for (const id of this.tileIds[tile]) this.batch.setVisible(id, vis);
+      const small = vis && this.near[tile] === 1;
+      for (const id of this.tileIds[tile]) this.batch.setVisible(id, small);
+      for (const id of this.tileBig[tile]) this.batch.setVisible(id, vis);
     });
     const pg = new THREE.PlaneGeometry(2, 2);
     pg.rotateX(-Math.PI / 2);
@@ -180,6 +189,27 @@ export class PropRenderer {
     this.glows.name = 'lampGlows';
   }
 
+  /** distance LOD for small props; call once per frame with the camera position */
+  updateLod(cam: THREE.Vector3): void {
+    const c = this.culler;
+    const T = c.tiles;
+    const size = c.tileCells * 16;
+    const lim2 = this.lodDistance * this.lodDistance;
+    for (let tz = 0; tz < T; tz++) {
+      for (let tx = 0; tx < T; tx++) {
+        const i = tz * T + tx;
+        const dx = Math.max(0, Math.abs(cam.x - (tx + 0.5) * size) - size / 2);
+        const dz = Math.max(0, Math.abs(cam.z - (tz + 0.5) * size) - size / 2);
+        const n = dx * dx + dz * dz + cam.y * cam.y * 0.8 < lim2 ? 1 : 0;
+        if (n !== this.near[i]) {
+          this.near[i] = n;
+          const v = n === 1 && c.vis[i] === 1;
+          for (const id of this.tileIds[i]) this.batch.setVisible(id, v);
+        }
+      }
+    }
+  }
+
   /** glows are only worth drawing at night */
   updateNight(night: number): void {
     this.glows.visible = night > 0.05 && this.glowGeo.instanceCount > 0;
@@ -210,7 +240,7 @@ export class PropRenderer {
       for (const id of old.ids) {
         this.batch.remove(id);
         const t = this.idTile.get(id);
-        if (t !== undefined) this.tileIds[t].delete(id);
+        if (t !== undefined) { this.tileIds[t].delete(id); this.tileBig[t].delete(id); }
         this.idTile.delete(id);
       }
       if (old.pools.length) this.poolsDirty = true;
@@ -227,9 +257,10 @@ export class PropRenderer {
       this.m4.compose(this.v.set(p.x, p.y, p.z), this.q, this.s.set(p.scale, p.scale, p.scale));
       this.batch.setMatrix(id, this.m4);
       const tile = this.culler.tileOfWorld(p.x, p.z);
-      this.tileIds[tile].add(id);
+      const big = p.model === 'util_power_pylon';
+      (big ? this.tileBig : this.tileIds)[tile].add(id);
       this.idTile.set(id, tile);
-      this.batch.setVisible(id, this.culler.vis[tile] === 1);
+      this.batch.setVisible(id, this.culler.vis[tile] === 1 && (big || this.near[tile] === 1));
       g.ids.push(id);
     }
     if (pools.length) this.poolsDirty = true;

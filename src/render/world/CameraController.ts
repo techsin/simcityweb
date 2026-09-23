@@ -3,8 +3,9 @@
  *
  * Mouse:  LEFT is reserved for tools.  MIDDLE drag or SHIFT+RIGHT drag = pan (ground anchored: the point under the
  *         cursor follows the cursor).  RIGHT drag = orbit (yaw) / tilt.  WHEEL = smooth zoom toward the cursor.
- * Keys:   WASD / arrows = pan, Q / E = rotate 90° (smoothed snaps), R / F or PageUp / PageDown = tilt,
- *         + / - zoom, Home = recenter. Keys are ignored while an input / textarea / contenteditable is focused.
+ * Keys:   WASD / arrows = pan, Q / E = rotate 90° (smoothed snaps), PageUp / PageDown = tilt,
+ *         + / - zoom, Home = recenter. Keys are ignored while an input / textarea / contenteditable is focused
+ *         and when another handler already called preventDefault() (game shortcuts win).
  * Touch:  one finger = pan, two fingers = pinch zoom + twist rotate.
  * Zoom 40 m .. 7 km, tilt 25°..85° with an automatic top-down tendency when zoomed far out.
  * Target is clamped to the map, the camera never goes below the terrain; all motion is damped.
@@ -325,9 +326,9 @@ export class CameraController implements CameraControllerApi {
       this.keys.delete(k);
       return;
     }
-    if (!this.enabled) return;
+    if (!this.enabled || e.defaultPrevented) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    const handled = ['w', 'a', 's', 'd', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'r', 'f', 'PageUp', 'PageDown', '+', '=', '-', '_'];
+    const handled = ['w', 'a', 's', 'd', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', '+', '=', '-', '_'];
     if (handled.includes(k)) {
       this.keys.add(k);
       if (k.startsWith('Arrow') || k.startsWith('Page')) e.preventDefault();
@@ -424,8 +425,8 @@ export class CameraController implements CameraControllerApi {
         this.goalTarget.z += (fwdZ * fz + rightZ * fx) * speed * dt;
         this.clampGoal();
       }
-      if (this.keys.has('r') || this.keys.has('PageUp')) this.goalTilt += 55 * DEG * dt;
-      if (this.keys.has('f') || this.keys.has('PageDown')) this.goalTilt -= 55 * DEG * dt;
+      if (this.keys.has('PageUp')) this.goalTilt += 55 * DEG * dt;
+      if (this.keys.has('PageDown')) this.goalTilt -= 55 * DEG * dt;
       this.goalTilt = THREE.MathUtils.clamp(this.goalTilt, this.minTiltRad(this.goalDistance), this.opts.maxTilt * DEG);
       if (this.keys.has('+') || this.keys.has('=')) this.zoomBy(Math.exp(-1.6 * dt));
       if (this.keys.has('-') || this.keys.has('_')) this.zoomBy(Math.exp(1.6 * dt));

@@ -16,6 +16,7 @@ import {
 } from './tuning';
 import { type EconRuntime, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
+import { lvEffectAt } from './landValue';
 
 // term indices
 const T_LV = 0, T_AIR = 1, T_WATER = 2, T_GARB = 3, T_CRIME = 4, T_NOISE = 5, T_COMMUTE = 6, T_POLICE = 7, T_FIRE = 8,
@@ -137,7 +138,7 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
           T[T_PARK] = st.parkCov[i]; T[T_TRANSIT] = st.transitCov[i];
         } else {
           T[T_POLICE] = T[T_FIRE] = T[T_HEALTH] = T[T_EDU] = COVERAGE_FALLBACK;
-          T[T_PARK] = Math.min(1, Math.max(0, rt.lvEffects[i]) * 3);
+          T[T_PARK] = Math.min(1, Math.max(0, lvEffectAt(rt, i)) * 3);
           T[T_TRANSIT] = 0;
         }
         const blk = ((z / COARSE) | 0) * cw + ((x / COARSE) | 0);

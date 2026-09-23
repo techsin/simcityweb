@@ -52,7 +52,7 @@ function patch(shader: THREE.WebGLProgramParametersWithUniforms, ghost: boolean)
       float _lum = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
       diffuseColor.rgb = mix(diffuseColor.rgb, vec3(_lum) * 0.45 + 0.42, uCityOverlay * 0.85);
       diffuseColor.rgb *= 1.0 - 0.75 * uCityDim;
-      ${ghost ? 'diffuseColor.rgb = mix(diffuseColor.rgb, uGhostTint, 0.55);' : ''}
+      ${ghost ? 'diffuseColor.rgb = mix(diffuseColor.rgb, uGhostTint, 0.6) * 1.15;' : ''}
     }`;
   if (fs.includes('#include <normal_fragment_begin>')) {
     fs = fs.replace('#include <normal_fragment_begin>', overlayCode + '\n#include <normal_fragment_begin>');
@@ -75,7 +75,12 @@ function patch(shader: THREE.WebGLProgramParametersWithUniforms, ghost: boolean)
         float _fl = 0.65 + 0.25 * sin(uTime * 11.0 + _fp.y * 0.7) + 0.15 * sin(uTime * 23.0 + _fp.x);
         totalEmissiveRadiance += vec3(1.0, 0.3, 0.04) * _patch * _fl * mix(0.35, 2.2, uNight);
       }
-      ${ghost ? 'totalEmissiveRadiance += uGhostTint * 0.35;' : ''}
+      ${ghost ? `{
+        // bright fresnel rim + gentle pulse so the ghost reads clearly on any background
+        float _fr = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 2.0);
+        float _pulse = 0.85 + 0.15 * sin(uTime * 4.0);
+        totalEmissiveRadiance += uGhostTint * (0.45 + 1.6 * _fr) * _pulse;
+      }` : ''}
     }`;
   fs = fs.replace('#include <emissivemap_fragment>', emisPre + '\n#include <emissivemap_fragment>');
   // emissive additions after the base patch's += line: insert before lights
@@ -95,7 +100,7 @@ function derive(key: string, ghost: boolean): THREE.MeshStandardMaterial {
   m.customProgramCacheKey = () => baseKey + '|' + key;
   if (ghost) {
     m.transparent = true;
-    m.opacity = 0.55;
+    m.opacity = 0.72;
     m.depthWrite = false;
   }
   return m;

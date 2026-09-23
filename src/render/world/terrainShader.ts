@@ -192,11 +192,11 @@ vec3 terrainShade(vec3 P, vec3 N) {
       float outline = max(max(eL, eR), max(eT, eB));
       float dcell = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
       float inner = (1.0 - smoothstep(0.0, fpx * 1.5 + 0.01, dcell)) * (1.0 - smoothstep(0.08, 0.25, fpx));
-      float a = uZoneMode > 0.5 ? 0.66 : 0.4;
+      float a = uZoneMode > 0.5 ? 0.66 : 0.34;
       col = mix(col, zc * 0.85 + 0.04, a);
       col = mix(col, zc * 0.5, outline * 0.8);
       col = mix(col, zc * 1.1, inner * 0.35);
-      tEmis += zc * (a * 0.015 + outline * 0.04) * (0.2 + uNightF * 1.2);
+      tEmis += zc * (a * 0.004 * (0.3 + uNightF) + outline * 0.03 * (0.25 + uNightF * 1.1));
     }
     // data overlay heatmap
     if (uOverlayOn > 0.5) {

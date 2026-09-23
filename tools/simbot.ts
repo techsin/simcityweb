@@ -385,8 +385,10 @@ export class SimBot {
   finance(): void {
     const st = this.st;
     const net = this.monthlyNet();
-    // early loan to get going
-    if (st.funds < 12000 && st.budget.loans.length === 0 && st.day < 360 * 6) {
+    // early loans to invest (competent mayors borrow while the town is small and the budget is tight)
+    let income = 0;
+    for (const k in st.budget.lastIncome) if (!k.startsWith('oneoff:')) income += st.budget.lastIncome[k];
+    if (st.budget.loans.length < 2 && st.day < 360 * 12 && st.funds < 25000 && net < income * 0.05 && st.stats.population > 1000) {
       const amt = Math.min(maxLoanAmount(st), 60000);
       if (amt >= 5000 && this.A.takeLoan(amt).ok) this.say(`took a loan of $${amt}`);
     }
@@ -481,6 +483,8 @@ export class SimBot {
       const cost = getDef(def)?.cost ?? 0;
       if (!this.canAfford(def)) continue;
       const mine = this.services.filter((s) => s.def === def);
+      // don't chase coverage of a sprawling town with more stations than its size justifies
+      if (cap === 0 && mine.length >= 1 + pop / 9000) continue;
       const u = radius > 0 ? this.uncovered(def, radius) : null;
       const needCap = cap > 0 && mine.length * cap < pop * 1.02;
       if (!u && !needCap) continue;
@@ -600,6 +604,10 @@ export class SimBot {
     // parks: coverage of residential blocks + more when the R cap binds
     const rBinding = binding(0, 2);
     let placed = 0;
+    // park upkeep budget: ≤ 8% of income unless the residential cap binds
+    let income = 0;
+    for (const k in st.budget.lastIncome) if (!k.startsWith('oneoff:')) income += st.budget.lastIncome[k];
+    if (!rBinding && (st.budget.lastExpense['service:parks'] ?? 0) > income * 0.08) return this.capsCI(binding, pop);
     for (let k = 0; k < (rBinding ? 3 : 1) && placed < 2; k++) {
       const big = pop > 4000 && this.canSpend(3000);
       const def = st.unlocked.has('zoo') && this.count('park_zoo') < 1 + Math.floor(pop / 250000) && this.canSpend(20000) ? 'park_zoo'
@@ -618,6 +626,11 @@ export class SimBot {
       if (ok) placed++;
       else break;
     }
+    this.capsCI(binding, pop);
+  }
+
+  capsCI(binding: (a: number, b: number) => boolean, pop: number): void {
+    const st = this.st;
     // commercial caps
     if (binding(3, 7)) {
       if (st.unlocked.has('airport_small') && this.count('tr_airport_small') === 0 && this.canSpend(30000)) this.placeAirport('tr_airport_small');

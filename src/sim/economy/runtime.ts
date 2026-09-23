@@ -152,8 +152,12 @@ export class EconRuntime {
   plopped: Building[] = [];
   /** def cache per building id (avoid map lookups in hot loops) */
   private buildingsDirty = true;
-  /** set when a plopped building with landValue / cap relief changes, or landfill zones change */
+  /** full rebuild of plopped land value effects needed (new game / load) */
   lvEffectsDirty = true;
+  /** landfill zones changed → landfill land value splat must be recomputed */
+  lvLandfillDirty = true;
+  /** incremental plopped land value splats: [building, sign, building, sign, …] */
+  lvQueue: (Building | number)[] = [];
   capsDirty = true;
   /** set when zones / networks / buildings change: growth candidate list must be rebuilt */
   candidatesDirty = true;
@@ -185,8 +189,10 @@ export class EconRuntime {
 
   // ---- static land value (terrain): per cell
   lvStatic!: Float32Array;
-  /** land value effects of plopped buildings / landfills (splatted) */
+  /** land value effects of plopped buildings (raw sum of splats; clamped when read) */
   lvEffects!: Float32Array;
+  /** land value effect of landfill zones */
+  lvLandfill!: Float32Array;
 
   /** growth candidate front cells (zoned, empty, next to a road) */
   candidates: Int32Array = new Int32Array(0);
@@ -209,7 +215,7 @@ export class EconRuntime {
       this.unsub = [
         ev.on('buildingAdded', (b) => this.onAdded(b)),
         ev.on('buildingRemoved', (b) => this.onRemoved(b)),
-        ev.on('zoneChanged', () => { this.candidatesDirty = true; this.lvEffectsDirty = true; }),
+        ev.on('zoneChanged', () => { this.candidatesDirty = true; this.lvLandfillDirty = true; }),
         ev.on('networkChanged', () => { this.candidatesDirty = true; this.networkDirty = true; this.capsDirty = true; }),
         ev.on('terrainChanged', () => { this.terrainDirty = true; }),
         ev.on('reset', () => this.reset()),
@@ -234,6 +240,9 @@ export class EconRuntime {
     this.coarseFreight = new Float32Array(cc);
     this.lvStatic = new Float32Array(st.cells);
     this.lvEffects = new Float32Array(st.cells);
+    this.lvLandfill = new Float32Array(st.cells);
+    this.lvQueue = [];
+    this.lvLandfillDirty = true;
     this.candidates = new Int32Array(st.cells);
     this.candidateCount = 0;
     this.buildingsDirty = true;
@@ -249,23 +258,48 @@ export class EconRuntime {
     this.rebuildBuildingLists();
   }
 
+  /** position of a building in growables / plopped (by building id), -1 = none */
+  private listIndex: Int32Array = new Int32Array(1024).fill(-1);
+
+  private setIndex(id: number, pos: number): void {
+    if (id >= this.listIndex.length) {
+      const n = new Int32Array(Math.max(id + 1, this.listIndex.length * 2)).fill(-1);
+      n.set(this.listIndex);
+      this.listIndex = n;
+    }
+    this.listIndex[id] = pos;
+  }
+
+  /** O(1) swap-remove of a building from its list */
+  private dropFromList(b: Building): void {
+    const list = b.flags & BF.Plopped ? this.plopped : this.growables;
+    const pos = b.id < this.listIndex.length ? this.listIndex[b.id] : -1;
+    if (pos < 0 || pos >= list.length || list[pos] !== b) { this.buildingsDirty = true; return; }
+    const last = list[list.length - 1];
+    list[pos] = last;
+    this.listIndex[last.id] = pos;
+    list.pop();
+    this.listIndex[b.id] = -1;
+  }
+
   private onAdded(b: Building): void {
     if (b.flags & BF.Plopped) {
+      this.setIndex(b.id, this.plopped.length);
       this.plopped.push(b);
-      this.lvEffectsDirty = true;
+      this.lvQueue.push(b, 1);
       this.capsDirty = true;
     } else {
+      this.setIndex(b.id, this.growables.length);
       this.growables.push(b);
       if (b.flags & BF.Constructing) this.constructing.push(b);
     }
-    this.candidatesDirty = true;
+    // growth re-validates candidate cells itself; the list is rebuilt on zone / network changes (and every 10 days)
   }
 
   private onRemoved(b: Building): void {
-    this.buildingsDirty = true;
-    this.candidatesDirty = true;
+    this.dropFromList(b);
     if (b.flags & BF.Plopped) {
-      this.lvEffectsDirty = true;
+      this.lvQueue.push(b, -1);
       this.capsDirty = true;
       // recount (other systems may remove buildings without touching milestones)
       const st = this.sim.state;
@@ -286,9 +320,11 @@ export class EconRuntime {
     this.growables = [];
     this.plopped = [];
     this.constructing = [];
+    this.listIndex.fill(-1);
     for (const b of st.buildings.values()) {
-      if (b.flags & BF.Plopped) this.plopped.push(b);
+      if (b.flags & BF.Plopped) { this.setIndex(b.id, this.plopped.length); this.plopped.push(b); }
       else {
+        this.setIndex(b.id, this.growables.length);
         this.growables.push(b);
         if (b.flags & BF.Constructing) this.constructing.push(b);
       }

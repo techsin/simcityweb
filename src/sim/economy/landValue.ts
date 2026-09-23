@@ -5,8 +5,7 @@
  * Time-sliced: a band of rows per day (full map every LV_REFRESH_DAYS), smoothed spatially and temporally.
  */
 import type { SimSystem } from '../Simulation';
-import type { CityState } from '../CityState';
-import { BF } from '../CityState';
+import type { Building, CityState } from '../CityState';
 import { clamp, smoothstep } from '../../core/rng';
 import { Zone } from '../../core/types';
 import { getDef } from '../catalog';
@@ -68,57 +67,84 @@ export function computeStaticLandValue(st: CityState, out: Float32Array): void {
   }
 }
 
-/** splat BuildingDef.landValue of plopped buildings + landfill cells */
+function splat(st: CityState, out: Float32Array, cx: number, cz: number, amount: number, radius: number): void {
+  const N = st.size;
+  const r = Math.ceil(radius);
+  const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(N - 1, Math.ceil(cx + r));
+  const z0 = Math.max(0, Math.floor(cz - r)), z1 = Math.min(N - 1, Math.ceil(cz + r));
+  const r2 = radius * radius;
+  for (let z = z0; z <= z1; z++) {
+    const dz = z + 0.5 - cz;
+    for (let x = x0; x <= x1; x++) {
+      const dx = x + 0.5 - cx;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= r2) continue;
+      out[z * N + x] += amount * (1 - Math.sqrt(d2) / radius);
+    }
+  }
+}
+
+/** add (sign 1) or remove (sign -1) the BuildingDef.landValue splat of a plopped building */
+export function splatBuilding(st: CityState, b: Building, sign: number, out: Float32Array): void {
+  const lv = getDef(b.def)?.landValue;
+  if (!lv) return;
+  splat(st, out, b.x + b.w / 2, b.z + b.d / 2, sign * lv.amount, lv.radius + Math.max(b.w, b.d) / 2);
+}
+
+/** full rebuild of plopped-building land value effects (raw, unclamped) */
 export function computeLandValueEffects(st: CityState, rt: EconRuntime, out: Float32Array): void {
   out.fill(0);
-  const N = st.size;
-  const splat = (cx: number, cz: number, amount: number, radius: number) => {
-    const r = Math.ceil(radius);
-    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(N - 1, Math.ceil(cx + r));
-    const z0 = Math.max(0, Math.floor(cz - r)), z1 = Math.min(N - 1, Math.ceil(cz + r));
-    for (let z = z0; z <= z1; z++) {
-      for (let x = x0; x <= x1; x++) {
-        const d = Math.hypot(x + 0.5 - cx, z + 0.5 - cz);
-        if (d >= radius) continue;
-        out[z * N + x] += amount * (1 - d / radius);
-      }
-    }
-  };
-  for (const b of rt.plopped) {
-    const def = getDef(b.def);
-    const lv = def?.landValue;
-    if (!lv || b.flags & BF.Burnt) continue;
-    splat(b.x + b.w / 2, b.z + b.d / 2, lv.amount, lv.radius + Math.max(b.w, b.d) / 2);
-  }
+  for (const b of rt.plopped) if (st.buildings.has(b.id)) splatBuilding(st, b, 1, out);
+}
+
+/** landfill zone land value (coarse 2×2 splats) */
+export function computeLandfillEffects(st: CityState, out: Float32Array): void {
+  out.fill(0);
   const lf = getDef('util_landfill_tile')?.landValue;
-  if (lf) {
-    // landfill: coarse splat per 2×2 group to keep it cheap
-    for (let z = 0; z < N; z += 2) {
-      for (let x = 0; x < N; x += 2) {
-        let c = 0;
-        for (let dz = 0; dz < 2; dz++) for (let dx = 0; dx < 2; dx++) if (x + dx < N && z + dz < N && st.zone[(z + dz) * N + x + dx] === Zone.Landfill) c++;
-        if (c) splat(x + 1, z + 1, (lf.amount * c) / 4, lf.radius);
-      }
+  if (!lf) return;
+  const N = st.size;
+  for (let z = 0; z < N; z += 2) {
+    for (let x = 0; x < N; x += 2) {
+      let c = 0;
+      for (let dz = 0; dz < 2; dz++) for (let dx = 0; dx < 2; dx++) if (x + dx < N && z + dz < N && st.zone[(z + dz) * N + x + dx] === Zone.Landfill) c++;
+      if (c) splat(st, out, x + 1, z + 1, (lf.amount * c) / 4, lf.radius);
     }
   }
-  for (let i = 0; i < out.length; i++) out[i] = clamp(out[i], -0.7, 0.6);
+}
+
+/** clamped total land value effect at cell i */
+export function lvEffectAt(rt: EconRuntime, i: number): number {
+  const v = rt.lvEffects[i] + rt.lvLandfill[i];
+  return v < -0.7 ? -0.7 : v > 0.6 ? 0.6 : v;
 }
 
 export function landValueSystem(rt: EconRuntime): SimSystem {
   let row = 0;
   let sum = 0, cnt = 0, sumAll = 0, cntAll = 0;
-  let lastStatic = -1e9, lastEffects = -1e9;
-  /** full-map passes are throttled: terrain (lot leveling, terraform) at most every LV_STATIC_MIN_DAYS, effects weekly */
+  let lastStatic = -1e9, lastLandfill = -1e9;
+  /**
+   * full-map passes are throttled: terrain (lot leveling, terraform) at most every LV_STATIC_MIN_DAYS, landfill splats
+   * every LV_EFFECTS_MIN_DAYS; plopped buildings are splatted incrementally (add / remove queue).
+   */
   const refresh = (st: CityState, force: boolean) => {
     if (rt.terrainDirty && (force || st.day - lastStatic >= LV_STATIC_MIN_DAYS)) {
       computeStaticLandValue(st, rt.lvStatic);
       rt.terrainDirty = false;
       lastStatic = st.day;
     }
-    if (rt.lvEffectsDirty && (force || st.day - lastEffects >= LV_EFFECTS_MIN_DAYS)) {
+    if (rt.lvEffectsDirty || force) {
       computeLandValueEffects(st, rt, rt.lvEffects);
       rt.lvEffectsDirty = false;
-      lastEffects = st.day;
+      rt.lvQueue.length = 0;
+    } else if (rt.lvQueue.length) {
+      const q = rt.lvQueue;
+      for (let k = 0; k < q.length; k += 2) splatBuilding(st, q[k] as Building, q[k + 1] as number, rt.lvEffects);
+      q.length = 0;
+    }
+    if (rt.lvLandfillDirty && (force || st.day - lastLandfill >= LV_EFFECTS_MIN_DAYS)) {
+      computeLandfillEffects(st, rt.lvLandfill);
+      rt.lvLandfillDirty = false;
+      lastLandfill = st.day;
     }
   };
   const band = (st: CityState, z0: number, z1: number, first: boolean) => {
@@ -138,13 +164,13 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
           transit = st.transitCov[i];
         } else {
           services = COVERAGE_FALLBACK;
-          park = Math.max(0, rt.lvEffects[i]) * 2;
+          park = Math.max(0, lvEffectAt(rt, i)) * 2;
           transit = 0;
         }
         const cm = inf.traffic && st.commute[i] > 0 ? st.commute[i] : avgCommute;
         const commuteScore = 1 - smoothstep(COMMUTE_GOOD, COMMUTE_BAD, cm);
         const wealth = rt.coarseWealth[((z / COARSE) | 0) * cw + ((x / COARSE) | 0)];
-        let v = LV.base + rt.lvStatic[i] + rt.lvEffects[i]
+        let v = LV.base + rt.lvStatic[i] + lvEffectAt(rt, i)
           + LV.services * services + LV.parks * park + LV.transit * transit + LV.commute * (commuteScore - 0.5)
           + LV.wealth * wealth
           - LV.airPollution * st.airPollution[i] - LV.waterPollution * st.waterPollution[i] - LV.garbage * st.garbage[i]

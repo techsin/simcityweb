@@ -27,6 +27,10 @@ export class Previews {
   private ribbonMat: THREE.MeshBasicMaterial;
   private pylons: THREE.InstancedMesh | null = null;
   private selBox: THREE.LineSegments;
+  /** ghost outline (feature edges, drawn through occluders) */
+  private ghostEdges: THREE.LineSegments;
+  private ghostEdgeMat: THREE.LineBasicMaterial;
+  private edgeCache = new Map<string, THREE.BufferGeometry>();
   private time = 0;
 
   constructor(private state: CityState, private surf: RoadSurface) {
@@ -34,7 +38,12 @@ export class Previews {
     this.ghost = new THREE.Mesh(new THREE.BufferGeometry(), getGhostMaterial());
     this.ghost.visible = false;
     this.ghost.renderOrder = 10;
-    this.padMat = new THREE.MeshBasicMaterial({ color: OK_COL, transparent: true, opacity: 0.28, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8 });
+    this.ghostEdgeMat = new THREE.LineBasicMaterial({ color: OK_COL, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
+    this.ghostEdges = new THREE.LineSegments(new THREE.BufferGeometry(), this.ghostEdgeMat);
+    this.ghostEdges.visible = false;
+    this.ghostEdges.renderOrder = 11;
+    this.ghostEdges.frustumCulled = false;
+    this.padMat = new THREE.MeshBasicMaterial({ color: OK_COL, transparent: true, opacity: 0.35, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8 });
     this.pad = new THREE.Mesh(new THREE.BufferGeometry(), this.padMat);
     this.pad.visible = false;
     this.pad.renderOrder = 9;
@@ -48,7 +57,7 @@ export class Previews {
     this.selBox.visible = false;
     this.selBox.renderOrder = 20;
     this.selBox.frustumCulled = false;
-    this.group.add(this.ghost, this.pad, this.ribbon, this.selBox);
+    this.group.add(this.ghost, this.ghostEdges, this.pad, this.ribbon, this.selBox);
   }
 
   setState(state: CityState, surf: RoadSurface): void {
@@ -58,7 +67,7 @@ export class Previews {
 
   // ------------------------------------------------------------------ ghost
   setGhost(defId: string | null, x = 0, z = 0, rot: 0 | 1 | 2 | 3 = 0, ok = true): void {
-    if (!defId) { this.ghost.visible = false; this.pad.visible = false; return; }
+    if (!defId) { this.ghost.visible = false; this.ghostEdges.visible = false; this.pad.visible = false; return; }
     const def = getDef(defId);
     const model = def?.model ?? defId;
     const e = MANIFEST_BY_ID[model];
@@ -79,6 +88,18 @@ export class Previews {
     this.ghost.rotation.set(0, rot * (Math.PI / 2), 0);
     this.ghost.visible = true;
     cityUniforms.uGhostTint.value.copy(ok ? OK_COL : BAD_COL);
+    // outline: feature edges of the model (cached per model)
+    const ek = model;
+    let eg = this.edgeCache.get(ek);
+    if (!eg) {
+      eg = new THREE.EdgesGeometry(geo, 35);
+      this.edgeCache.set(ek, eg);
+    }
+    this.ghostEdges.geometry = eg;
+    this.ghostEdges.position.copy(this.ghost.position);
+    this.ghostEdges.rotation.copy(this.ghost.rotation);
+    this.ghostEdgeMat.color.copy(ok ? OK_COL : BAD_COL).multiplyScalar(1.6);
+    this.ghostEdges.visible = true;
     // lot pad following terrain
     const pad = this.pad.geometry as THREE.BufferGeometry;
     const pts: number[] = [];
@@ -168,6 +189,7 @@ export class Previews {
 
   update(dt: number): void {
     this.time += dt;
+    if (this.ghostEdges.visible) this.ghostEdgeMat.opacity = 0.7 + 0.25 * Math.sin(this.time * 4);
     if (this.selBox.visible) (this.selBox.material as THREE.LineBasicMaterial).opacity = 0.65 + 0.3 * Math.sin(this.time * 4);
   }
 
@@ -176,6 +198,8 @@ export class Previews {
     this.ribbon.geometry.dispose();
     this.selBox.geometry.dispose();
     this.padMat.dispose();
+    this.ghostEdgeMat.dispose();
+    for (const g of this.edgeCache.values()) g.dispose();
     this.ribbonMat.dispose();
     if (this.pylons) this.pylons.dispose();
   }

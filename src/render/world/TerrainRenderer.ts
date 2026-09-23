@@ -62,6 +62,9 @@ export class TerrainRenderer {
   private rampTex: THREE.DataTexture;
   private hlData: Uint8Array;
   private hlTex: THREE.DataTexture;
+  private lightData: Uint8Array;
+  /** N x N city light density (R8, linear): buildings 1, roads ~0.35 — used for night reflections on water */
+  readonly lightTexture: THREE.DataTexture;
   private hlCells: number[] = [];
   private noise: Noise2D;
   private noise2: Noise2D;
@@ -105,6 +108,11 @@ export class TerrainRenderer {
     this.overlayTex.magFilter = this.overlayTex.minFilter = THREE.LinearFilter;
     this.overlayTex.generateMipmaps = false;
     this.rampTex = makeRampTexture(OVERLAYS[Overlay.None].ramp);
+
+    this.lightData = new Uint8Array(N * N);
+    this.lightTexture = new THREE.DataTexture(this.lightData, N, N, THREE.RedFormat, THREE.UnsignedByteType);
+    this.lightTexture.magFilter = this.lightTexture.minFilter = THREE.LinearFilter;
+    this.lightTexture.generateMipmaps = false;
 
     this.hlData = new Uint8Array(N * N * 4);
     this.hlTex = new THREE.DataTexture(this.hlData, N, N, THREE.RGBAFormat, THREE.UnsignedByteType);
@@ -461,8 +469,10 @@ export class TerrainRenderer {
         const i = z * N + x;
         D[i * 4] = st.zone[i];
         D[i * 4 + 1] = st.building[i] >= 0 || st.network[i] !== 0 ? 1 : 0;
+        this.lightData[i] = st.building[i] >= 0 ? 255 : st.network[i] !== 0 ? 90 : 0;
       }
     this.zoneTex.needsUpdate = true;
+    this.lightTexture.needsUpdate = true;
   }
 
   /** effective tree density for rendering: 0 on developed / zoned / water cells */
@@ -614,5 +624,6 @@ export class TerrainRenderer {
     this.overlayTex.dispose();
     this.rampTex.dispose();
     this.hlTex.dispose();
+    this.lightTexture.dispose();
   }
 }

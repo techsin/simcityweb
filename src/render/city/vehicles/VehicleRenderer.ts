@@ -175,6 +175,9 @@ export class VehicleRenderer {
   private usedK!: Int32Array;
   private posX!: Float32Array;
   private posZ!: Float32Array;
+  /** cached per-cell path parameters (8 floats / vehicle) + path type (0 straight, 1 U-turn, 2 arc) */
+  private pp!: Float32Array;
+  private ptype!: Uint8Array;
   private head: Int32Array;
   // spawn distribution
   private spawnCells = new Int32Array(0);
@@ -259,6 +262,8 @@ export class VehicleRenderer {
     this.usedK = new Int32Array(cap);
     this.posX = new Float32Array(cap);
     this.posZ = new Float32Array(cap);
+    this.pp = new Float32Array(cap * 8);
+    this.ptype = new Uint8Array(cap);
   }
 
   setState(state: CityState, net: NetInfo, surf: RoadSurface): void {
@@ -317,8 +322,12 @@ export class VehicleRenderer {
       if (!rt || !this.net.roadMask[i]) continue;
       if (st.netFlags[i] & NF_TUNNEL) continue;
       let d: number;
-      // vehicles per cell (16 m of road, all lanes): ~1 per 60 m per lane on a busy avenue
-      if (haveTraffic) d = Math.min(1.25, st.traffic[i] / 3600) * (0.8 + 0.4 * Math.min(1.5, st.congestion[i]));
+      // vehicles per cell (16 m of road, all lanes). Game time is compressed, so visible density is exaggerated vs.
+      // real flow: any used road shows some cars; ~1 car / 13 m of road at ~800 PCU/day; congested roads queue up.
+      if (haveTraffic) {
+        const tv = st.traffic[i];
+        d = tv > 0 ? Math.min(1.3, 0.1 + tv / 700) * (0.8 + 0.4 * Math.min(1.5, st.congestion[i])) : 0;
+      }
       else d = rt === Network.Highway ? 0.7 : rt === Network.Avenue ? 0.55 : rt === Network.Street ? 0.12 : 0.3;
       if (d <= 0.01) continue;
       cells.push(i);
@@ -505,7 +514,53 @@ export class VehicleRenderer {
     if (ho !== hi && laneCount(t0) > 1 && t0 !== Network.OneWay) this.lane[v] = ((ho - hi) & 3) === 1 ? 0 : 1;
     this.oout[v] = ho === OPP[hi] ? this.oin[v] : edgeOff(t0, t1, this.lane[v]);
     this.len[v] = this.pathLen(hi, ho, this.oin[v], this.oout[v]);
+    this.cachePath(v);
     return true;
+  }
+
+  /** precompute the analytic path of vehicle v through its current cell (called once per cell) */
+  private cachePath(v: number): void {
+    const N = this.net.N;
+    const H = CELL_SIZE / 2;
+    const ci = this.cell[v], hi = this.hin[v], ho = this.hout[v], oi = this.oin[v], oo = this.oout[v];
+    const ox = ((ci % N) + 0.5) * CELL_SIZE, oz = (((ci / N) | 0) + 0.5) * CELL_SIZE;
+    const p = this.pp, o = v * 8;
+    if (ho === hi) {
+      const ex = ox - DX[hi] * H + RX[hi] * oi, ez = oz - DZ[hi] * H + RZ[hi] * oi;
+      const xx = ox + DX[hi] * H + RX[hi] * oo, xz = oz + DZ[hi] * H + RZ[hi] * oo;
+      const L = this.len[v] || 1;
+      this.ptype[v] = 0;
+      p[o] = ex; p[o + 1] = ez; p[o + 2] = (xx - ex) / L; p[o + 3] = (xz - ez) / L;
+    } else if (ho === OPP[hi]) {
+      this.ptype[v] = 1;
+    } else {
+      const cx = ox - DX[hi] * H + DX[ho] * H, cz = oz - DZ[hi] * H + DZ[ho] * H;
+      const ex = ox - DX[hi] * H + RX[hi] * oi, ez = oz - DZ[hi] * H + RZ[hi] * oi;
+      const xx = ox + DX[ho] * H + RX[ho] * oo, xz = oz + DZ[ho] * H + RZ[ho] * oo;
+      const aE = Math.atan2(ez - cz, ex - cx), aX = Math.atan2(xz - cz, xx - cx);
+      this.ptype[v] = 2;
+      p[o] = cx; p[o + 1] = cz; p[o + 2] = aE; p[o + 3] = wrapPi(aX - aE);
+      p[o + 4] = Math.hypot(ex - cx, ez - cz); p[o + 5] = Math.hypot(xx - cx, xz - cz);
+    }
+  }
+
+  /** fast path evaluation from the cache (writes px/pz/dx/dz) */
+  private evalCached(v: number, s: number): void {
+    const p = this.pp, o = v * 8;
+    const ty = this.ptype[v];
+    if (ty === 0) {
+      this.px = p[o] + p[o + 2] * s; this.pz = p[o + 1] + p[o + 3] * s;
+      this.dx = p[o + 2]; this.dz = p[o + 3];
+    } else if (ty === 2) {
+      const f = Math.min(1, s / this.len[v]);
+      const da = p[o + 3];
+      const a = p[o + 2] + da * f, r = p[o + 4] + (p[o + 5] - p[o + 4]) * f;
+      const c = Math.cos(a), sn = Math.sin(a);
+      this.px = p[o] + r * c; this.pz = p[o + 1] + r * sn;
+      if (da > 0) { this.dx = -sn; this.dz = c; } else { this.dx = sn; this.dz = -c; }
+    } else {
+      this.evalPath(this.cell[v], this.hin[v], this.hout[v], this.oin[v], this.oout[v], s, this.len[v]);
+    }
   }
 
   private chooseModel(kind: number): string {
@@ -595,6 +650,8 @@ export class VehicleRenderer {
       this.spd[v] = this.spd[last]; this.vfac[v] = this.vfac[last]; this.vlen[v] = this.vlen[last]; this.kind[v] = this.kind[last];
       this.inst[v] = this.inst[last]; this.vroute[v] = this.vroute[last]; this.ridx[v] = this.ridx[last]; this.life[v] = this.life[last];
       this.next[v] = this.next[last]; this.vis[v] = this.vis[last];
+      this.ptype[v] = this.ptype[last];
+      this.pp.copyWithin(v * 8, last * 8, last * 8 + 8);
     }
     this.vroute[last] = null;
   }
@@ -846,7 +903,7 @@ export class VehicleRenderer {
       }
       this.t[v] = t;
       const ci = this.cell[v];
-      this.evalPath(ci, this.hin[v], this.hout[v], this.oin[v], this.oout[v], t, this.len[v]);
+      this.evalCached(v, t);
       const x = this.px, z = this.pz;
       this.posX[v] = x; this.posZ[v] = z;
       const tile = this.culler.tileOfWorld(x, z);

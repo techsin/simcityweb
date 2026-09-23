@@ -130,7 +130,7 @@ export class WorldView implements WorldViewApi {
     this.maxHeight = this.terrain.heightRange()[1];
     mark('terrain');
     // water
-    this.water = new WaterRenderer(this.terrain.heightTexture, state.size, state.config.climate, (x, z) => this.terrain.worldHeight(x, z), this.q.waterDetail);
+    this.water = new WaterRenderer(this.terrain.heightTexture, state.size, state.config.climate, (x, z) => this.terrain.worldHeight(x, z), this.q.waterDetail, this.terrain.lightTexture);
     this.scene.add(this.water.mesh);
     mark('water');
     // trees

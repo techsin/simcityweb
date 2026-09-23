@@ -124,6 +124,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     );
     ctx.scene.add(this.root);
     this.subscribe(events);
+    this.setQuality(this.quality);
     this.rebuildAll();
   }
 
@@ -218,6 +219,7 @@ export class CityObjectsView implements CityObjectsViewApi {
 
   setQuality(q: QualityLevel): void {
     this.quality = q;
+    this.props.lodDistance = q === 'low' ? 900 : q === 'medium' ? 1300 : q === 'high' ? 1800 : 2600;
     this.vehicles.setQuality(q);
     this.effects.maxSmoke = q === 'low' ? 2500 : 7000;
   }
@@ -240,6 +242,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.flushPower();
     lap('roads');
     this.props.update();
+    this.props.updateLod(cam.position);
     this.props.updateNight(sharedUniforms.uNight.value);
     lap('props');
     this.buildings.update(dt);
