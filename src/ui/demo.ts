@@ -30,6 +30,7 @@ import { DevType, Network, Overlay, Zone } from '../core/types';
 import type { Difficulty, TerrainPreset } from '../core/types';
 import { ploppables, getDef } from '../sim/catalog';
 import { OVERLAYS } from './overlays';
+import { Toasts } from './Notifications';
 import * as THREE from 'three';
 
 const P = new URLSearchParams(location.search);
@@ -76,6 +77,8 @@ const scene = new CityScene({
   initialSpeed: P.has('speed') ? num('speed', 1) : fake ? 0 : 1,
 });
 (window as any).__scene = scene;
+// headless screenshots render slowly: keep toasts on screen long enough to be captured
+if (navigator.webdriver) Toasts.ttlScale = 20;
 scene.start();
 // audio needs a user gesture; the meta layer normally does this once at startup
 import('../audio').then((m: any) => m.audio?.attachAutoInit?.()).catch(() => {});
