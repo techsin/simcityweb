@@ -67,7 +67,9 @@ export interface GameContext {
   focusCell(x: number, z: number, distance?: number): void;
   showQuery(t: QueryTarget | null): void;
   applySettings(patch: Partial<GameSettings>): void;
-  toast(text: string, kind?: string, cell?: { x: number; z: number }): void;
+  toast(text: string, kind?: string, cell?: { x: number; z: number }, title?: string): void;
+  /** open a toolbar category flyout (e.g. 'parks') */
+  openFlyout?(categoryId: string): void;
   save(): Promise<void>;
   exitToRegion(): Promise<void>;
   openPauseMenu(): void;

@@ -1,7 +1,7 @@
 /** Top HUD bar: city, date & speed, funds, population, RCI demand, approval, panel buttons. */
 import { DEV_TYPE_LABELS, DevType } from '../core/types';
 import type { GameContext } from '../game/context';
-import { h, setText, toggleClass } from './dom';
+import { clear, h, setText, toggleClass } from './dom';
 import { icon } from './icons';
 import { compact, dayLabel, hourLabel, money, moneySigned, num, signClass } from './format';
 
@@ -22,6 +22,14 @@ const RCI_DEFS: { key: 'R' | 'C' | 'I'; color: string; devs: DevType[] }[] = [
   { key: 'C', color: 'var(--com)', devs: [DevType.CS1, DevType.CS2, DevType.CS3, DevType.CO2, DevType.CO3] },
   { key: 'I', color: 'var(--ind)', devs: [DevType.IA, DevType.ID, DevType.IM, DevType.IHT] },
 ];
+
+const FAMILY_NAMES: Record<string, string> = { R: 'Residential', C: 'Commercial', I: 'Industrial' };
+/** where to look for cap relief (toolbar category to open) */
+const CAP_TARGET: Record<string, { category: string; label: string; icon: string }> = {
+  R: { category: 'parks', label: 'Parks', icon: 'park' },
+  C: { category: 'transport', label: 'Airports', icon: 'plane' },
+  I: { category: 'transport', label: 'Freight & ports', icon: 'train' },
+};
 
 export const DEV_NAMES = [
   'Low-wealth residents', 'Medium-wealth residents', 'High-wealth residents',
@@ -86,6 +94,10 @@ export class TopBar {
   private citySub!: HTMLElement;
   private badges: Record<string, HTMLElement> = {};
   private rciOpen = false;
+  private rciSeg!: HTMLElement;
+  private capHintsEl!: HTMLElement;
+  private capSig = '';
+  private announced = new Map<string, number>();
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'hud-top' });
@@ -138,7 +150,8 @@ export class TopBar {
       rci.appendChild(h('div', { class: 'rci-col' }, bar, h('span', { class: 'rci-l', style: { color: d.color } }, d.key)));
     }
     this.rciPop = this.buildRciPop();
-    const rciSeg = h('div', { class: 'hud-seg click rci-seg', title: 'RCI demand — click for details' }, rci, this.rciPop);
+    const rciSeg = h('div', { class: 'hud-seg click rci-seg', title: 'RCI demand — click for details' }, rci, h('span', { class: 'rci-capdot' }), this.rciPop);
+    this.rciSeg = rciSeg;
     rciSeg.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('.rci-pop')) return;
       this.setRci(!this.rciOpen);
@@ -166,8 +179,81 @@ export class TopBar {
       h('div', { style: { color: 'var(--com)', borderColor: 'var(--com)' } }, 'COMMERCIAL'),
       h('div', { style: { color: 'var(--ind)', borderColor: 'var(--ind)' } }, 'INDUSTRIAL'),
     );
-    const foot = h('div', { class: 'rci-foot' }, h('span', { class: 'cap-key' }, 'Demand cap reached — build parks, airports, seaports or landmarks'));
-    return h('div', { class: 'rci-pop mp-glass i' }, h('div', { class: 'sec-title' }, 'Demand by type'), grid, groups, foot);
+    this.capHintsEl = h('div', { class: 'rci-hints' });
+    const foot = h('div', { class: 'rci-foot' }, h('span', { class: 'cap-key' }, 'Demand cap reached'), h('span', { class: 'faint' }, 'Bars above the line = growth wanted'));
+    return h('div', { class: 'rci-pop mp-glass i' }, h('div', { class: 'sec-title' }, 'Demand by type'), grid, groups, this.capHintsEl, foot);
+  }
+
+  /** per DevType: is the demand cap limiting growth? (sim-core demandInfo, else supply/cap ratio heuristic) */
+  private cappedDevs(): boolean[] {
+    const st = this.ctx.state;
+    const di = this.ctx.mods.econ?.demandInfo;
+    if (di) {
+      try {
+        const info = di(st);
+        if (Array.isArray(info.capped)) return info.capped.map((c, d) => c && (st.stats.demand[d] ?? 0) > -0.05);
+      } catch {
+        /* fall through */
+      }
+    }
+    return Array.from({ length: 12 }, (_, d) => (st.stats.demand[d] ?? 0) > 0.05 && capRatio(this.ctx, d) >= 0.95);
+  }
+
+  private capHints(): { family: 'R' | 'C' | 'I'; devs: number[]; hint: string }[] {
+    const f = this.ctx.mods.econ?.capHints;
+    if (f) {
+      try {
+        return f(this.ctx.state);
+      } catch {
+        /* ignore */
+      }
+    }
+    const capped = this.cappedDevs();
+    const fallback: Record<string, string> = {
+      R: 'Build parks, plazas or landmarks to raise the residential cap.',
+      C: 'Build an airport, a convention center or landmarks to raise the commercial cap.',
+      I: 'Connect to neighbors (highway / rail), build freight stations or a seaport to raise the industrial cap.',
+    };
+    return RCI_DEFS.filter((fam) => fam.devs.some((d) => capped[d])).map((fam) => ({ family: fam.key, devs: fam.devs.filter((d) => capped[d]), hint: fallback[fam.key] }));
+  }
+
+  /** "what to build" cards in the RCI popover — how players discover the cap / reward loop */
+  private renderCapHints(): void {
+    const hints = this.capHints();
+    const sig = hints.map((x) => x.family + x.devs.join('.') + x.hint).join('|');
+    if (sig === this.capSig) return;
+    this.capSig = sig;
+    clear(this.capHintsEl);
+    for (const hnt of hints) {
+      const fam = RCI_DEFS.find((f) => f.key === hnt.family)!;
+      const go = h('button', { class: 'btn sm', html: icon(CAP_TARGET[hnt.family].icon, 13) + `<span>${CAP_TARGET[hnt.family].label}</span>` });
+      go.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.setRci(false);
+        this.ctx.openFlyout?.(CAP_TARGET[hnt.family].category);
+      });
+      this.capHintsEl.appendChild(h('div', { class: 'cap-hint', style: { '--fc': fam.color } as Record<string, string> },
+        h('span', { class: 'ch-ico', html: icon('alert', 14) }),
+        h('div', { class: 'ch-body' },
+          h('div', { class: 'ch-t' }, `${FAMILY_NAMES[hnt.family]} demand is capped`, h('span', { class: 'ch-devs' }, hnt.devs.map((d) => DEV_TYPE_LABELS[d]).join(' · '))),
+          h('div', { class: 'ch-d' }, hnt.hint),
+        ),
+        go,
+      ));
+    }
+  }
+
+  /** one-time (per family, per ~quarter) toast when a demand cap starts limiting growth */
+  private announceCaps(fams: string[]): void {
+    const st = this.ctx.state;
+    if (st.stats.population < 200) return;
+    for (const f of fams) {
+      const last = this.announced.get(f) ?? -1e9;
+      if (st.day - last < 90) continue;
+      this.announced.set(f, st.day);
+      const hint = this.capHints().find((x) => x.family === f)?.hint ?? '';
+      this.ctx.toast(`${FAMILY_NAMES[f]} growth is capped. ${hint}`, 'warning', undefined, 'Demand cap');
+    }
   }
 
   /** close the RCI popover; true if it was open */
@@ -283,23 +369,34 @@ export class TopBar {
       this.trendEl.innerHTML = trendHtml;
     }
 
-    // RCI
+    // RCI (cap flags from sim-core's demandInfo when available)
     const dem = st.stats.demand ?? [];
+    const cappedDev = this.cappedDevs();
+    const capFams: string[] = [];
     RCI_DEFS.forEach((fam, i) => {
       const bar = this.rciBars[i];
       paintBar(bar, familyDemand(dem, fam.devs), fam.color);
-      const capped = fam.devs.some((dv) => (dem[dv] ?? 0) > 0.05 && capRatio(ctx, dv) >= 0.95);
+      const capped = fam.devs.some((dv) => cappedDev[dv]);
       toggleClass(bar, 'capped', capped);
+      toggleClass(bar.parentElement!, 'capped', capped);
+      if (capped) capFams.push(fam.key);
     });
+    toggleClass(this.rciSeg, 'has-cap', capFams.length > 0);
+    const segTitle = capFams.length ? `RCI demand — ${capFams.map((f) => FAMILY_NAMES[f]).join(', ')} capped · click for details` : 'RCI demand — click for details';
+    if (this.rciSeg.title !== segTitle) this.rciSeg.title = segTitle;
+    this.announceCaps(capFams);
     if (this.rciOpen) {
       for (const s of this.subBars) {
         const v = dem[s.dev] ?? 0;
         paintBar(s.el, v, s.color);
         setText(s.val, (v > 0 ? '+' : '') + Math.round(v * 100));
-        const cr = capRatio(ctx, s.dev);
-        toggleClass(s.el, 'capped', cr >= 0.95);
-        s.el.title = `${DEV_NAMES[s.dev]}: demand ${Math.round(v * 100)}${cr >= 0 ? ` · cap ${Math.round(cr * 100)}% used` : ''}`;
+        const capped = cappedDev[s.dev];
+        toggleClass(s.el, 'capped', capped);
+        toggleClass(s.el.parentElement!, 'capped', capped);
+        const cap = st.stats.demandCap?.[s.dev] ?? 0;
+        s.el.title = `${DEV_NAMES[s.dev]}: demand ${Math.round(v * 100)}${cap > 0 ? ` · cap ${cap.toLocaleString('en-US')}` : ''}${capped ? ' — CAPPED' : ''}`;
       }
+      this.renderCapHints();
     }
 
     // approval
