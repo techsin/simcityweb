@@ -313,7 +313,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       albedo *= 0.9 + 0.18 * n;
       rough = 0.9;
       // intensity scales with the paint's floor value (floor / 3.3; default 3.3 = 1x) for soft fall-off rings
-      emis += albedo * vec3(1.0, 0.8, 0.55) * night * 0.75 * (floorH / 3.3);
+      emis += albedo * vec3(1.0, 0.8, 0.55) * night * 0.75 * ((vSurf.z > 0.01 ? vSurf.z : 3.3) / 3.3);
     } else if (pattern > 11.5 && pattern < 12.5) {
       // floodlit sports surface: plain by day (paint ~0.7x like pattern 9), cool white floodlight at night
       albedo = min(albedo * 1.43, vec3(1.0));
