@@ -17,7 +17,7 @@ import { hash2 } from '../../core/rng';
 import { DevType, zoneDensity } from '../../core/types';
 import {
   ABANDON_DAYS, COARSE, CONSTRUCT_DAYS_BASE, CONSTRUCT_DAYS_PER_STAGE, CONSTRUCT_RAND, FILL_RATE, HEALTH_SMOOTH, OCC_PERIOD,
-  PENALTY_NO_GARBAGE, PENALTY_NO_JOB_ACCESS, PENALTY_NO_POWER, PENALTY_NO_ROAD, PENALTY_NO_WATER, RECOVER_RATE, REGION_COMMUTERS_BASE,
+  JOB_ACCESS_MIN, PENALTY_NO_GARBAGE, PENALTY_NO_JOB_ACCESS, PENALTY_NO_POWER, PENALTY_NO_ROAD, PENALTY_NO_WATER, RECOVER_RATE, REGION_COMMUTERS_BASE,
   REGION_COMMUTERS_FRAC, REGION_COMMUTERS_ISOLATED, REGION_COMMUTERS_MAX_SHARE, REGION_JOBS_FOR_RESIDENTS, TRAFFIC_ACCESS_WEIGHT, TRAFFIC_JOBFILL_WEIGHT, RUBBLE_CLEAR_DAYS, UNHAPPY_DEMAND,
   UNHAPPY_DEMAND_HEALTH, UNHAPPY_HEALTH, VACANCY_K, VACANCY_MIN, VACANCY_START, WATER_REQUIRED_STAGE, WORKFORCE_RATIO,
 } from './tuning';
@@ -222,7 +222,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       if (needWater && !watered) target -= PENALTY_NO_WATER;
       if (!road) target -= PENALTY_NO_ROAD;
       if (b.flags & BF.NoGarbage) target -= PENALTY_NO_GARBAGE;
-      if (isR && tAccess) { const a = tAccess.workerAccess!(b.id); if (a >= 0 && a < 0.5) target -= (0.5 - a) * PENALTY_NO_JOB_ACCESS; }
+      if (isR && tAccess) { const a = tAccess.workerAccess!(b.id); if (a >= 0 && a < JOB_ACCESS_MIN) target -= (JOB_ACCESS_MIN - a) * PENALTY_NO_JOB_ACCESS; }
       target = Math.max(0, Math.min(1, target));
       b.health += (target - b.health) * HEALTH_SMOOTH;
       // complaint flags (only when sim-infra doesn't own them)

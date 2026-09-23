@@ -29,8 +29,11 @@ export const REGION_COMMUTERS_MAX_SHARE = 0.25;
 export const REGION_COMMUTERS_ISOLATED = 0.3;
 /** residents may also work in the region: employable = local jobs + this × regional commuter volume */
 export const REGION_JOBS_FOR_RESIDENTS = 1;
-/** with sim-infra traffic: employed × (1 − weight × (1 − avg worker job access)) */
-export const TRAFFIC_ACCESS_WEIGHT = 0.15;
+/**
+ * with sim-infra traffic: employed × (1 − weight × (1 − avg worker job access)). 0 = off: traffic's workerAccess
+ * (≈0.2–0.3 in well-connected cities) doesn't mean "can't find a job", so it only drives a per-building penalty.
+ */
+export const TRAFFIC_ACCESS_WEIGHT = 0;
 /** with sim-infra traffic: job fill = (1 − w) × global fill + w × traffic job fill of the building */
 export const TRAFFIC_JOBFILL_WEIGHT = 0.5;
 
@@ -233,8 +236,9 @@ export const PENALTY_NO_POWER = 0.55;
 export const PENALTY_NO_WATER = 0.4;
 export const PENALTY_NO_ROAD = 0.6;
 export const PENALTY_NO_GARBAGE = 0.12;
-/** residential: health −= (0.5 − share of workers reaching a job) × this (traffic workerAccess) */
-export const PENALTY_NO_JOB_ACCESS = 0.5;
+/** residential: health −= (JOB_ACCESS_MIN − share of workers reaching a job) × this (traffic workerAccess) */
+export const PENALTY_NO_JOB_ACCESS = 1.0;
+export const JOB_ACCESS_MIN = 0.12;
 /** unhappy (days) threshold for abandonment; health below this counts as unhappy */
 export const ABANDON_DAYS = 150;
 export const UNHAPPY_HEALTH = 0.22;
