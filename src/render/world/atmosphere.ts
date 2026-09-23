@@ -84,7 +84,7 @@ vec3 atmScatter(vec3 rd, float h0, vec3 sunDir, vec3 sunE, vec3 moonDir, vec3 mo
     vec3 sR = ATM_BR * dR;
     float sM = ATM_BMS * dM;
     vec3 Ts = atmTransmittance(p, sunDir, mie);
-    vec3 Tm = atmTransmittance(p, moonDir, mie);
+    vec3 Tm = moonE.x > 1e-7 ? atmTransmittance(p, moonDir, mie) : vec3(0.0);
     // single scattering + crude isotropic multiple scattering term
     vec3 ms = (sR + sM) * 0.05;
     vec3 S = (sR * pRs + sM * pMs + ms) * Ts * sunE + (sR * pRm + sM * pMm + ms) * Tm * moonE;

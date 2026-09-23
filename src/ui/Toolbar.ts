@@ -96,23 +96,29 @@ export class Toolbar {
     for (const [id, b] of this.btns) toggleClass(b, 'open', id === catId);
     this.renderFlyout(c);
     this.flyout.style.maxWidth = Math.min(1180, (this.el.parentElement?.clientWidth ?? 1600) - 32) + 'px';
-    // position centered over the category button, clamped to the bar
     const b = this.btns.get(catId)!;
-    const center = b.offsetLeft + b.offsetWidth / 2;
-    this.flyout.style.left = center + 'px';
+    this.flyout.style.left = b.offsetLeft + b.offsetWidth / 2 + 'px';
     requestAnimationFrame(() => {
-      const barW = this.bar.offsetWidth;
-      const fw = this.flyout.offsetWidth;
-      const vw = (this.el.parentElement?.clientWidth ?? window.innerWidth);
-      const barLeft = this.bar.getBoundingClientRect().left / uiZoom();
-      // wide menus center on the toolbar, narrow ones on their button
-      let left = fw > barW * 0.9 ? barW / 2 : center;
-      const minC = fw / 2 - barLeft + 8, maxC = vw - barLeft - fw / 2 - 8;
-      left = Math.max(minC, Math.min(maxC, left));
-      this.flyout.style.left = left + 'px';
+      this.positionFlyout();
       this.flyout.classList.add('open');
     });
     this.ctx.sound('open');
+  }
+
+  /** center over the category button (wide menus: over the toolbar), clamped to the screen */
+  private positionFlyout(): void {
+    if (!this.openCat) return;
+    const b = this.btns.get(this.openCat);
+    if (!b) return;
+    const center = b.offsetLeft + b.offsetWidth / 2;
+    const barW = this.bar.offsetWidth;
+    const fw = this.flyout.offsetWidth;
+    const vw = this.el.parentElement?.clientWidth ?? window.innerWidth;
+    const barLeft = this.bar.getBoundingClientRect().left / uiZoom();
+    let left = fw > barW * 0.9 ? barW / 2 : center;
+    const minC = fw / 2 - barLeft + 8, maxC = vw - barLeft - fw / 2 - 8;
+    left = Math.max(minC, Math.min(maxC, left));
+    this.flyout.style.left = left + 'px';
   }
 
   closeFlyout(): void {
@@ -189,14 +195,41 @@ export class Toolbar {
     const head = h('div', { class: 'fly-head' }, h('span', { class: 'ico-wrap', style: { color: c.color }, html: icon(c.icon, 18) }), h('span', { class: 'fly-title' }, c.label), c.hotkey ? h('span', { class: 'dim' }, 'Hotkeys ', ...c.hotkey.split(' ').map((k) => h('kbd', null, k))) : null);
     const wrap = h('div', { class: 'fly-groups' });
     const active = this.ctx.tools.activeId;
-    for (const g of groups) {
-      const items = h('div', { class: 'fly-items' });
+    const total = groups.reduce((s, g) => s + g.items.length, 0);
+    const tabbed = groups.length > 1 && total > 12;
+    if (tabbed) {
+      // large categories: one group at a time, chosen with tabs (remembers the last tab / the active tool's group)
+      let sel = groups.findIndex((g) => g.items.some((s) => s.id === active));
+      if (sel < 0) sel = Math.min(this.lastTab.get(c.id) ?? 0, groups.length - 1);
+      const tabs = h('div', { class: 'fly-tabs' });
+      groups.forEach((g, gi) => {
+        const b = h('button', { class: gi === sel ? 'on' : '', html: (g.icon ? icon(g.icon, 14) : '') + `<span>${escapeHtml(g.label)}</span><span class="n">${g.items.length}</span>` });
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.lastTab.set(c.id, gi);
+          this.renderFlyout(c);
+          this.positionFlyout();
+          this.ctx.sound('click');
+        });
+        tabs.appendChild(b);
+      });
+      head.appendChild(tabs);
+      const g = groups[sel];
+      const items = h('div', { class: 'fly-items wide' });
       if (!g.items.length) items.appendChild(h('div', { class: 'fly-empty' }, 'Nothing available yet'));
       for (const s of g.items) items.appendChild(this.item(s, s.id === active));
-      wrap.appendChild(h('div', { class: 'fly-group' }, h('div', { class: 'sec-title', html: (g.icon ? icon(g.icon, 13) : '') + `<span>${escapeHtml(g.label)}</span>` }), items));
+      wrap.appendChild(h('div', { class: 'fly-group' }, items));
+    } else {
+      for (const g of groups) {
+        const items = h('div', { class: 'fly-items' + (groups.length === 1 ? ' wide' : '') });
+        if (!g.items.length) items.appendChild(h('div', { class: 'fly-empty' }, 'Nothing available yet'));
+        for (const s of g.items) items.appendChild(this.item(s, s.id === active));
+        wrap.appendChild(h('div', { class: 'fly-group' }, h('div', { class: 'sec-title', html: (g.icon ? icon(g.icon, 13) : '') + `<span>${escapeHtml(g.label)}</span>` }), items));
+      }
     }
     this.flyout.append(head, wrap);
   }
+  private lastTab = new Map<string, number>();
 
   private item(s: ToolSpec, active: boolean): HTMLElement {
     const color = s.color ?? '#3fa7ff';

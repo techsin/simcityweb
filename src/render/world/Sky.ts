@@ -456,7 +456,8 @@ export class SkySystem {
     this.lutUniforms.uSunDir.value.copy(L.sunDir);
     this.lutUniforms.uSunE.value.set(E, E * 0.985, E * 0.96);
     this.lutUniforms.uMoonDir.value.copy(L.moonDir);
-    const me = E * 0.0035;
+    // moonlight only matters when the sun is down (skipped in the LUT shader otherwise)
+    const me = E * 0.0035 * (1 - THREE.MathUtils.smoothstep(sy, -0.05, 0.1));
     this.lutUniforms.uMoonE.value.set(me * 0.8, me * 0.9, me * 1.15);
     this.lutUniforms.uMie.value = mie;
 

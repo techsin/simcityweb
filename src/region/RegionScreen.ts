@@ -190,6 +190,7 @@ export class RegionScreen {
     this.tileCard?.remove();
     this.tileCard = null;
     this.renderList();
+    this.el.classList.toggle('has-selection', !!tile);
     if (!tile) return;
     const c = tile.city;
     const km = tile.size;
