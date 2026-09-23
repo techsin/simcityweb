@@ -264,29 +264,29 @@ const W = (o: Partial<DesirWeights>): DesirWeights => ({
 });
 export const DESIR_WEIGHTS: readonly DesirWeights[] = [
   // R$: tolerant of pollution, likes transit & short commutes
-  W({ bias: 0.32, lv: 0.35, lvRef: 0.1, air: -0.45, water: -0.2, garbage: -0.3, crime: -0.3, noise: -0.12, commute: 0.45, police: 0.08, fire: 0.08, health: 0.14, edu: 0.08, park: 0.12, transit: 0.18, slope: -0.3 }),
+  W({ bias: 0.1, lv: 0.35, lvRef: 0.1, air: -0.3, water: -0.2, garbage: -0.3, crime: -0.2, noise: -0.12, commute: 0.45, police: 0.08, fire: 0.08, health: 0.14, edu: 0.08, park: 0.12, transit: 0.18, slope: -0.3 }),
   // R$$
-  W({ bias: 0.22, lv: 0.7, lvRef: 0.25, air: -0.75, water: -0.3, garbage: -0.4, crime: -0.55, noise: -0.28, commute: 0.5, police: 0.16, fire: 0.12, health: 0.16, edu: 0.22, park: 0.24, transit: 0.08, slope: -0.3 }),
+  W({ bias: 0.0, lv: 0.7, lvRef: 0.25, air: -0.75, water: -0.3, garbage: -0.4, crime: -0.55, noise: -0.28, commute: 0.5, police: 0.16, fire: 0.12, health: 0.16, edu: 0.22, park: 0.24, transit: 0.08, slope: -0.3 }),
   // R$$$: needs high land value, low crime, parks, schools
-  W({ bias: 0.12, lv: 1.1, lvRef: 0.42, air: -1.1, water: -0.4, garbage: -0.6, crime: -1.0, noise: -0.45, commute: 0.4, police: 0.22, fire: 0.12, health: 0.2, edu: 0.3, park: 0.36, slope: -0.2 }),
+  W({ bias: -0.1, lv: 1.1, lvRef: 0.42, air: -1.1, water: -0.4, garbage: -0.6, crime: -1.0, noise: -0.45, commute: 0.4, police: 0.22, fire: 0.12, health: 0.2, edu: 0.3, park: 0.36, slope: -0.2 }),
   // CS$: likes traffic & customers
-  W({ bias: 0.22, lv: 0.25, lvRef: 0.1, air: -0.2, garbage: -0.2, crime: -0.3, commute: 0.2, traffic: 0.35, popNear: 0.4, police: 0.06, fire: 0.06, slope: -0.4 }),
+  W({ bias: 0.1, lv: 0.25, lvRef: 0.1, air: -0.2, garbage: -0.2, crime: -0.3, commute: 0.2, traffic: 0.35, popNear: 0.4, police: 0.06, fire: 0.06, slope: -0.4 }),
   // CS$$
-  W({ bias: 0.16, lv: 0.45, lvRef: 0.22, air: -0.3, garbage: -0.25, crime: -0.45, commute: 0.2, traffic: 0.35, popNear: 0.4, police: 0.1, fire: 0.08, park: 0.05, slope: -0.4 }),
+  W({ bias: 0.05, lv: 0.45, lvRef: 0.22, air: -0.3, garbage: -0.25, crime: -0.45, commute: 0.2, traffic: 0.35, popNear: 0.4, police: 0.1, fire: 0.08, park: 0.05, slope: -0.4 }),
   // CS$$$
-  W({ bias: 0.08, lv: 0.8, lvRef: 0.4, air: -0.5, garbage: -0.35, crime: -0.7, noise: -0.1, commute: 0.2, traffic: 0.28, popNear: 0.35, police: 0.14, fire: 0.08, park: 0.1, slope: -0.4 }),
+  W({ bias: -0.05, lv: 0.8, lvRef: 0.4, air: -0.5, garbage: -0.35, crime: -0.7, noise: -0.1, commute: 0.2, traffic: 0.28, popNear: 0.35, police: 0.14, fire: 0.08, park: 0.1, slope: -0.4 }),
   // CO$$: commute + some EQ
-  W({ bias: 0.16, lv: 0.55, lvRef: 0.25, air: -0.4, garbage: -0.25, crime: -0.5, commute: 0.6, edu: 0.2, traffic: 0.1, transit: 0.12, police: 0.1, fire: 0.1, slope: -0.4 }),
+  W({ bias: 0.05, lv: 0.55, lvRef: 0.25, air: -0.4, garbage: -0.25, crime: -0.5, commute: 0.6, edu: 0.2, traffic: 0.1, transit: 0.12, police: 0.1, fire: 0.1, slope: -0.4 }),
   // CO$$$: land value, EQ, short commute
-  W({ bias: 0.06, lv: 0.9, lvRef: 0.42, air: -0.6, garbage: -0.3, crime: -0.7, noise: -0.1, commute: 0.7, edu: 0.3, transit: 0.18, traffic: 0.08, police: 0.12, fire: 0.1, slope: -0.4 }),
+  W({ bias: -0.05, lv: 0.9, lvRef: 0.42, air: -0.6, garbage: -0.3, crime: -0.7, noise: -0.1, commute: 0.7, edu: 0.3, transit: 0.18, traffic: 0.08, police: 0.12, fire: 0.1, slope: -0.4 }),
   // I-Ag: flat cheap land, hurt by pollution
   W({ bias: 0.42, lv: -0.3, lvRef: 0.2, air: -0.6, water: -0.6, garbage: -0.3, crime: -0.1, commute: 0.1, slope: -0.9 }),
   // I-D: tolerates pollution, likes freight, cheap land
-  W({ bias: 0.36, lv: -0.15, lvRef: 0.2, crime: -0.2, commute: 0.2, freight: 0.35, fire: 0.08, slope: -0.5 }),
+  W({ bias: 0.25, lv: -0.15, lvRef: 0.2, crime: -0.2, commute: 0.2, freight: 0.35, fire: 0.08, slope: -0.5 }),
   // I-M: needs freight access
-  W({ bias: 0.26, lv: 0.05, lvRef: 0.2, air: -0.1, crime: -0.3, commute: 0.3, freight: 0.55, fire: 0.1, police: 0.06, slope: -0.5 }),
+  W({ bias: 0.15, lv: 0.05, lvRef: 0.2, air: -0.1, crime: -0.3, commute: 0.3, freight: 0.55, fire: 0.1, police: 0.06, slope: -0.5 }),
   // I-HT: EQ + clean air
-  W({ bias: 0.16, lv: 0.45, lvRef: 0.3, air: -0.8, water: -0.3, garbage: -0.3, crime: -0.4, noise: -0.1, commute: 0.4, edu: 0.4, freight: 0.15, police: 0.08, fire: 0.08, slope: -0.4 }),
+  W({ bias: 0.0, lv: 0.45, lvRef: 0.3, air: -0.8, water: -0.3, garbage: -0.3, crime: -0.4, noise: -0.1, commute: 0.4, edu: 0.4, freight: 0.15, police: 0.08, fire: 0.08, slope: -0.4 }),
 ];
 /** tax shift on desirability per point above neutral (× TAX_SENS[dev]) */
 export const DESIR_TAX = 0.02;

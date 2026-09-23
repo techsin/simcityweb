@@ -92,16 +92,16 @@ uniform float uVignette;
 uniform vec2 uResolution;
 varying vec2 vUv;
 
-vec3 RRTAndODTFit(vec3 v) {
+vec3 mtRRTAndODTFit(vec3 v) {
   vec3 a = v * (v + 0.0245786) - 0.000090537;
   vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
   return a / b;
 }
-vec3 acesFilmic(vec3 color) {
+vec3 mtAcesFilmic(vec3 color) {
   const mat3 ACESInputMat = mat3(vec3(0.59719, 0.07600, 0.02840), vec3(0.35458, 0.90834, 0.13383), vec3(0.04823, 0.01566, 0.83777));
   const mat3 ACESOutputMat = mat3(vec3(1.60475, -0.10208, -0.00327), vec3(-0.53108, 1.10813, -0.07276), vec3(-0.07367, -0.00605, 1.07602));
   color = ACESInputMat * (color / 0.6);
-  color = RRTAndODTFit(color);
+  color = mtRRTAndODTFit(color);
   color = ACESOutputMat * color;
   return clamp(color, 0.0, 1.0);
 }
@@ -132,7 +132,7 @@ void main() {
   float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
   col = max(mix(vec3(l), col, uSaturation), 0.0);
   col = pow(col / 0.18 + 1e-6, vec3(uContrast)) * 0.18;
-  col = acesFilmic(col);
+  col = mtAcesFilmic(col);
   col = col + uLift * (1.0 - col) * (1.0 - col);
   // vignette
   vec2 q = vUv - 0.5;
@@ -328,6 +328,7 @@ export class PostFX {
       fragmentShader: COMPOSITE_FRAG,
       depthTest: false,
       depthWrite: false,
+      toneMapped: false,
     });
     this.prefilterMat = new THREE.ShaderMaterial({
       uniforms: { ...this.fog, ...this.camUniforms, tScene: { value: null }, uTexel: { value: new THREE.Vector2() }, uThreshold: { value: 1 }, uKnee: { value: 0.5 }, uExposure: { value: 1 } },
@@ -335,8 +336,9 @@ export class PostFX {
       fragmentShader: PREFILTER_FRAG,
       depthTest: false,
       depthWrite: false,
+      toneMapped: false,
     });
-    this.downMat = new THREE.ShaderMaterial({ uniforms: { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } }, vertexShader: QUAD_VERT, fragmentShader: DOWN_FRAG, depthTest: false, depthWrite: false });
+    this.downMat = new THREE.ShaderMaterial({ uniforms: { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } }, vertexShader: QUAD_VERT, fragmentShader: DOWN_FRAG, depthTest: false, depthWrite: false, toneMapped: false });
     this.upMat = new THREE.ShaderMaterial({
       uniforms: { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() }, uRadius: { value: 1 } },
       vertexShader: QUAD_VERT,
@@ -347,6 +349,7 @@ export class PostFX {
       blendSrc: THREE.OneFactor,
       blendDst: THREE.OneFactor,
       blendEquation: THREE.AddEquation,
+      toneMapped: false,
     });
     this.aoNoise = generateMagicSquareNoise();
     this.aoMat = new THREE.ShaderMaterial({
@@ -356,6 +359,7 @@ export class PostFX {
       fragmentShader: GTAOShader.fragmentShader,
       depthTest: false,
       depthWrite: false,
+      toneMapped: false,
     });
     this.aoMat.uniforms.tNoise.value = this.aoNoise;
     this.aoBlurMat = new THREE.ShaderMaterial({
@@ -364,6 +368,7 @@ export class PostFX {
       fragmentShader: AO_BLUR_FRAG,
       depthTest: false,
       depthWrite: false,
+      toneMapped: false,
     });
     this.fxaaMat = new THREE.ShaderMaterial({
       uniforms: THREE.UniformsUtils.clone(FXAAShader.uniforms),
@@ -371,6 +376,7 @@ export class PostFX {
       fragmentShader: FXAAShader.fragmentShader,
       depthTest: false,
       depthWrite: false,
+      toneMapped: false,
     });
     this.allocate();
   }

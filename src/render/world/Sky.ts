@@ -293,7 +293,7 @@ export class SkySystem {
     this.climate = climateSky(climate);
     this.lutRT = this.makeLutRT(lutSize);
     this.uniforms.uSkyLut.value = this.lutRT.texture;
-    this.lutMat = new THREE.ShaderMaterial({ uniforms: this.lutUniforms, vertexShader: QUAD_VERT, fragmentShader: LUT_FRAG, depthTest: false, depthWrite: false });
+    this.lutMat = new THREE.ShaderMaterial({ uniforms: this.lutUniforms, vertexShader: QUAD_VERT, fragmentShader: LUT_FRAG, depthTest: false, depthWrite: false, toneMapped: false });
     this.lutQuad = new FullScreenQuad(this.lutMat);
 
     this.envSrcRT = this.makeEnvRT(envSize);
@@ -303,6 +303,7 @@ export class SkySystem {
       fragmentShader: ENV_FRAG,
       depthTest: false,
       depthWrite: false,
+      toneMapped: false,
     });
     this.envQuad = new FullScreenQuad(this.envMat);
     this.pmrem = new THREE.PMREMGenerator(renderer);
@@ -317,6 +318,7 @@ export class SkySystem {
       depthTest: true,
       depthFunc: THREE.LessEqualDepth,
       fog: false,
+      toneMapped: false,
     });
     this.dome = new THREE.Mesh(geo, domeMat);
     this.dome.frustumCulled = false;
