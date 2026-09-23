@@ -17,7 +17,8 @@ import type { BuildingDef } from '../catalogTypes';
 import { MANIFEST_BY_ID } from '../../assets/manifest';
 import {
   GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, GROWTH_ATTEMPTS_BASE, GROWTH_ATTEMPTS_MAX, GROWTH_ATTEMPTS_PER100,
-  GROWTH_MAX_BASE, GROWTH_MAX_FRAC, GROWTH_MIN_ALLOW, GROWTH_OVERSHOOT, GROWTH_OVERSHOOT_SLACK, GROWTH_RESPONSE,
+  GROWTH_BANK_DAYS, GROWTH_BANK_MIN_FRAC, GROWTH_MAX_BASE, GROWTH_MAX_FRAC, GROWTH_MAX_SCALE, GROWTH_MIN_ALLOW,
+  GROWTH_OVERSHOOT_SLACK, GROWTH_RESPONSE, GROWTH_SIZE_DEMAND,
   REDEVELOP_CHECKS, REDEVELOP_MIN_AGE, REDEVELOP_MIN_GAIN, STAGE_DES_D0, STAGE_DES_D1, STAGE_POP, STAGE_PREF,
   WATER_REQUIRED_STAGE, ZONE_MAX_STAGE, isGrowZone,
 } from './tuning';
@@ -40,6 +41,7 @@ export function desirMaxStage(des: number): number {
 
 export function growthSystem(rt: EconRuntime): SimSystem {
   const allow = new Float64Array(12);
+  const capLimit = new Float64Array(12);
   const devW = new Float64Array(12);
   const defPick: BuildingDef[] = [];
   const defW: number[] = [];
@@ -88,9 +90,29 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     }
     for (let d = 0; d < 12; d++) {
       const fam = devFamily(d);
-      const max = GROWTH_MAX_BASE[fam] + GROWTH_MAX_FRAC * famCap[fam];
+      const c = famCap[fam];
+      const max = GROWTH_MAX_BASE[fam] + (GROWTH_MAX_FRAC * c) / Math.sqrt(1 + c / GROWTH_MAX_SCALE);
       if (famSum[fam] > max) allow[d] *= max / famSum[fam];
     }
+    // bank the daily allowance (so big buildings become possible when throughput is capped); building size is
+    // limited by the absolute demand, and a building may start once the bank covers GROWTH_BANK_MIN_FRAC of it
+    const bank = data.carry;
+    for (let d = 0; d < 12; d++) {
+      const daily = allow[d];
+      if (daily > 0) bank[d] = Math.min(bank[d] + daily, daily * GROWTH_BANK_DAYS);
+      else bank[d] = bank[d] > 0 ? bank[d] * 0.8 : bank[d] * 0.97;
+      allow[d] = daily > 0 ? bank[d] : 0;
+      capLimit[d] = Math.max(GROWTH_OVERSHOOT_SLACK, data.demandAbs[d] * GROWTH_SIZE_DEMAND);
+    }
+  };
+
+  /** largest capacity a new building of dev may have right now */
+  const capMaxFor = (dev: number) => Math.min(capLimit[dev], allow[dev] / GROWTH_BANK_MIN_FRAC);
+
+  /** write the spent allowance back into the bank */
+  const settleBank = (st: CityState) => {
+    const bank = econData(st).carry;
+    for (let d = 0; d < 12; d++) if (allow[d] !== 0 || bank[d] > 0) bank[d] = Math.min(bank[d], allow[d]);
   };
 
   /** weighted DevType pick for cell i in zone; -1 if none */
@@ -252,7 +274,7 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     if (dev < 0) return false;
     const des = st.desirability[dev][i];
     const maxStage = Math.min(ZONE_MAX_STAGE[zoneDensity(zone as Zone)], popMaxStage(pop), desirMaxStage(des));
-    const capMax = allow[dev] * GROWTH_OVERSHOOT + GROWTH_OVERSHOOT_SLACK;
+    const capMax = capMaxFor(dev);
     if (!collectDefs(zone, dev, 1, maxStage, capMax, 0)) return false;
     // road sides (random start)
     const r0 = sim.rng.int(0, 3);
@@ -295,7 +317,7 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     const minStage = dead ? 1 : stage0 + 1;
     if (maxStage < minStage) return false;
     const oldCapAlive = dead ? 0 : b.capacity;
-    const capMax = oldCapAlive + allow[dev] * GROWTH_OVERSHOOT + GROWTH_OVERSHOOT_SLACK;
+    const capMax = oldCapAlive + capMaxFor(dev);
     if (!collectDefs(zone, dev, minStage, maxStage, capMax, dead ? 0 : b.capacity * REDEVELOP_MIN_GAIN)) return false;
     const rot = b.rot;
     for (let tries = 0; tries < 3; tries++) {
@@ -392,6 +414,7 @@ export function growthSystem(rt: EconRuntime): SimSystem {
           }
         }
       }
+      settleBank(st);
       rt.timing.growth = performance.now() - t0;
     },
   };

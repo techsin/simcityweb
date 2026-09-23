@@ -24,10 +24,10 @@ import { BF } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
 import {
   DX, DZ, Fam, type DefInfo, activeJobs, detectJobsUnknown, ensureIdArray, ensureIdFloat, fundingFactor, infoOf,
-  readOrdinances, setFlagQuiet,
+  readEffects, setFlagQuiet,
 } from './common';
 import {
-  CONSERVATION_CUT, POWER_MIN_PLOPPED, POWER_PER_CIVIC_JOB, POWER_PER_JOB_C, POWER_PER_JOB_I, POWER_PER_RES,
+  POWER_MIN_PLOPPED, POWER_PER_CIVIC_JOB, POWER_PER_JOB_C, POWER_PER_JOB_I, POWER_PER_RES,
   PUMP_WATER_BONUS, PUMP_WATER_DIST, UTIL_BASE_SHARE, UTIL_REFRESH_DAYS, WATER_PER_CIVIC_JOB, WATER_PER_JOB_C,
   WATER_PER_JOB_I, WATER_PER_RES,
 } from './params';
@@ -90,6 +90,7 @@ export interface GridInfo {
 export class UtilitiesSystem implements SimSystem {
   readonly name = 'utilities';
   private dirty = true;
+  private soft = false;
   private lastRun = -1e9;
   private unsub: (() => void)[] = [];
   private stamp = 0;
@@ -105,6 +106,8 @@ export class UtilitiesSystem implements SimSystem {
   private bWComp = new Int32Array(1024);
   /** per building id: water use (>= 0) or -(output) - tiny for producers */
   private bWUse = new Float32Array(1024);
+  /** water producers that need power to pump (def powerUse > 0) */
+  private bNeedPow = new Uint8Array(1024);
   private bPow = new Uint8Array(1024);
   private bWat = new Uint8Array(1024);
   // per component
@@ -127,15 +130,21 @@ export class UtilitiesSystem implements SimSystem {
     this.unsub = [];
     const ev = sim.events;
     const mark = () => { this.dirty = true; };
-    this.unsub.push(ev.on('networkChanged', mark), ev.on('buildingAdded', mark), ev.on('buildingRemoved', mark),
+    // growables appearing / vanishing only need a refresh soon; player actions (networks, lines, zones, plopped
+    // buildings) are applied on the next day
+    const markB = (b: Building) => { if (b.flags & BF.Plopped || infoOf(sim.state, b).fam === Fam.Plop) this.dirty = true; else this.soft = true; };
+    this.unsub.push(ev.on('networkChanged', mark), ev.on('buildingAdded', markB), ev.on('buildingRemoved', markB),
       ev.on('powerLinesChanged', mark), ev.on('zoneChanged', mark), ev.on('reset', mark));
+    sim.state.systemData.infraLayers = { utilities: true, traffic: true, pollution: true, services: true };
     sim.state.systemData.infraVersion = 1;
     this.dirty = true;
     this.compute(sim);
   }
 
   daily(sim: Simulation): void {
-    if (this.dirty || sim.state.day - this.lastRun >= UTIL_REFRESH_DAYS) this.compute(sim);
+    const d = sim.state.day;
+    // scheduled refresh on day % 4 == 0 (pollution runs on 1 / 2, services 3, crime 7 mod 8)
+    if (this.dirty || (this.soft && d - this.lastRun >= 2) || d % UTIL_REFRESH_DAYS === 0 || d - this.lastRun > UTIL_REFRESH_DAYS * 2) this.compute(sim);
   }
 
   /** mark for recompute on the next day */
@@ -182,11 +191,12 @@ export class UtilitiesSystem implements SimSystem {
     if (this.bPow.length < this.bOk.length) {
       this.bPow = new Uint8Array(this.bOk.length);
       this.bWat = new Uint8Array(this.bOk.length);
+      this.bNeedPow = new Uint8Array(this.bOk.length);
     }
-    const ords = readOrdinances(st);
+    const fx = readEffects(st);
     const jobsUnknown = detectJobsUnknown(st);
     const changed: Building[] = [];
-    this.prepareUses(st, ords.has('powerConservation'), ords.has('waterConservation'), jobsUnknown);
+    this.prepareUses(st, fx.powerDemand, fx.waterDemand, jobsUnknown);
     this.computePower(st);
     this.computeWater(st);
     // apply flags
@@ -207,17 +217,16 @@ export class UtilitiesSystem implements SimSystem {
     }
     this.wasShort = short;
     this.dirty = false;
+    this.soft = false;
     this.lastRun = st.day;
     sim.events.emit('layerUpdated', 'utilities');
     this.lastMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
   }
 
   /** one pass over buildings: power use / plant output (bUse) and water use / producer output (bWUse) */
-  private prepareUses(st: CityState, powerCons: boolean, waterCons: boolean, jobsUnknown: boolean): void {
+  private prepareUses(st: CityState, pMul: number, wMul: number, jobsUnknown: boolean): void {
     const N = st.size, C = st.cells;
     const eff = plantEfficiency(st);
-    const pMul = powerCons ? 1 - CONSERVATION_CUT : 1;
-    const wMul = waterCons ? 1 - CONSERVATION_CUT : 1;
     const bUse = this.bUse, bWUse = this.bWUse;
     let hasTreatment = false;
     for (const b of st.buildings.values()) {
@@ -238,7 +247,11 @@ export class UtilitiesSystem implements SimSystem {
           out *= 1 - 0.5 * Math.min(1, wp) * (hasTreatment ? 0.35 : 1);
         }
         bWUse[b.id] = -out - 1e-9;
-      } else bWUse[b.id] = buildingWaterUse(inf, b, jobsUnknown) * wMul;
+        this.bNeedPow[b.id] = inf.powerUse > 0 ? 1 : 0;
+      } else {
+        bWUse[b.id] = buildingWaterUse(inf, b, jobsUnknown) * wMul;
+        this.bNeedPow[b.id] = 0;
+      }
     }
   }
 
@@ -429,7 +442,9 @@ export class UtilitiesSystem implements SimSystem {
       if (c < 0) continue;
       const u = bUse[b.id];
       if (u < 0) {
-        const out = -u - 1e-9;
+        // pumps / treatment plants need power to run
+        const out = this.bNeedPow[b.id] && !this.bPow[b.id] ? 0 : -u - 1e-9;
+        if (out === 0) bUse[b.id] = -1e-9;
         this.wSupply[c] += out;
         supplyTot += out;
         if (out > 0) seeds.push(b.id);

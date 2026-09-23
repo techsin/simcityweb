@@ -11,6 +11,12 @@
  *   4 sparse small high windows (industrial)      5 dense grid (office)
  *   6 shopfront ground floor + punched above       7 arched civic windows (tall, rounded look)
  * Glass curtain tints (Surf.GlassCurtain, surf.y): 0 blue, 1 teal/green, 2 bronze/gold, 3 black/dark, 4 silver, 5 sky/light blue
+ *
+ * Facade coordinates: planar walls use the horizontal distance along the wall; smooth-shaded CURVED walls
+ * (cylinders / drums / round towers built with smooth normals) automatically switch to the arc length around the
+ * model's vertical axis (exact for shapes centred on the model origin), so they get windows / mullions too.
+ * Distant windows fade to their average coverage and average lit color (no shimmer). The render-world WorldView
+ * drives uNight, uTime and uLitFraction (time-of-day dependent: evening peak, late-night dip).
  */
 import * as THREE from 'three';
 
@@ -22,6 +28,10 @@ export const sharedUniforms = {
   uLitFraction: { value: 0.55 },
   /** wind strength for foliage */
   uWind: { value: 1 },
+  /** world direction TO the active light (sun / moon), set by WorldView (used for foliage translucency) */
+  uSunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3) },
+  /** active light color * intensity (linear), set by WorldView */
+  uSunColor: { value: new THREE.Color(3, 3, 3) },
 };
 
 const VERT_PARS = /* glsl */ `
@@ -63,6 +73,8 @@ varying float vSeed;
 uniform float uNight;
 uniform float uLitFraction;
 uniform float uTime;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
 
 float bh11(float n) { return fract(sin(n) * 43758.5453123); }
 float bh21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
@@ -121,8 +133,18 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
   bool vertical = abs(nObj.y) < 0.6;
   vec2 tang = normalize(vec2(-nObj.z, nObj.x) + 1e-5);
   float u = dot(P.xz, tang);
+  // curved facades (smooth-shaded drums, round towers, rotundas): the planar coordinate is ~constant around the
+  // curve, so use the arc length around the model's vertical axis instead. Curvature (1/m) is estimated from
+  // screen-space derivatives of the normal vs. the position; creases between flat faces fall outside the band.
+  float curvK = length(fwidth(nObj.xz)) / (length(fwidth(P.xz)) + 1e-4);
+  if (curvK > 0.0025 && curvK < 0.45) u = atan(nObj.z, nObj.x) * max(length(P.xz), 1.0);
   float v = P.y;
   float night = uNight;
+  // contact darkening + faint vertical weathering streaks near the ground on walls (grounds the buildings)
+  if (vertical && (type < 1.5 || type > 10.5)) {
+    albedo *= 0.8 + 0.2 * smoothstep(0.0, 2.2, v);
+    albedo *= 0.96 + 0.05 * bnoise(vec2(u * 0.9, v * 0.06 + vSeed * 13.0));
+  }
 
   if (type < 0.5) {
     // Plain: subtle grime toward the bottom & noise
@@ -147,7 +169,14 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float lit = step(h, litProb);
       // curtains / variation
       float intensity = 0.6 + 0.8 * h2;
-      emis += windowLight(bh11(h * 91.7 + vSeed)) * lit * m * night * intensity * 1.6;
+      vec3 wl = windowLight(bh11(h * 91.7 + vSeed));
+      // a few lit windows show a flickering TV
+      float tv = step(0.94, h2) * lit;
+      wl = mix(wl, vec3(0.5, 0.68, 1.0) * (0.75 + 0.25 * sin(uTime * 6.3 + h * 40.0) * sin(uTime * 2.7 + h2 * 17.0)), tv);
+      // far away: average lit color instead of per-window noise (no shimmering when the camera moves)
+      vec3 nearE = wl * lit * intensity;
+      vec3 farE = vec3(1.0, 0.8, 0.56) * clamp(litProb, 0.0, 1.0);
+      emis += mix(farE, nearE, fade) * m * night * 1.6;
     }
   } else if (type < 2.5) {
     // Glass curtain wall
@@ -175,8 +204,13 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       rough += 0.05 * h;
       // offices: lights on by floor, clustered
       float fl = bh31(vec3(floor(cu / 6.0), cell.y, vSeed * 7.0));
-      float lit = step(fl, uLitFraction * (0.5 + 0.8 * vSeed));
-      emis += vec3(0.78, 0.88, 1.0) * lit * (1.0 - mull) * night * (0.7 + 0.6 * h) * 1.2;
+      float litP = uLitFraction * (0.5 + 0.8 * vSeed);
+      float lit = step(fl, litP);
+      // per-floor fade: distant floors blend to the average so tall towers don't sparkle
+      float fadeF = clamp(1.0 - wv * 1.6, 0.0, 1.0);
+      lit = mix(clamp(litP, 0.0, 1.0), lit, fadeF);
+      vec3 officeC = mix(vec3(0.78, 0.88, 1.0), vec3(1.0, 0.86, 0.66), step(0.75, bh11(cell.y * 7.3 + vSeed * 31.0)));
+      emis += officeC * lit * (1.0 - mull) * night * mix(1.0, 0.7 + 0.6 * h, fadeF) * 1.2;
     }
   } else if (type < 3.5) {
     // flat roof: gravel + tar patches
@@ -211,8 +245,15 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float n = bnoise(P.xz * 0.9 + P.y * 0.7) ;
     float n2 = bnoise(P.xz * 4.0 + P.y * 3.0);
     albedo *= 0.78 + 0.35 * n + 0.1 * n2;
-    albedo *= 0.9 + 0.2 * vSeed;
+    albedo *= 0.8 + 0.2 * vSeed;
+    // canopy self-occlusion: undersides / lower leaves darker (up-facing lawns & hedge tops unaffected)
+    albedo *= 0.6 + 0.4 * smoothstep(-0.7, 0.75, nObj.y);
     rough = 0.9;
+    // leaf translucency when looking toward the light through the canopy
+    vec3 Lv = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
+    vec3 Vv = normalize(vViewPosition);
+    float back = pow(max(dot(-Vv, Lv), 0.0), 4.0);
+    emis += albedo * uSunColor * back * 0.14;
   } else if (type < 9.5) {
     // water
     float t = uTime;
@@ -297,6 +338,8 @@ export function patchSurfaceMaterial<T extends THREE.MeshStandardMaterial>(mat: 
     shader.uniforms.uNight = sharedUniforms.uNight;
     shader.uniforms.uLitFraction = sharedUniforms.uLitFraction;
     shader.uniforms.uWind = sharedUniforms.uWind;
+    shader.uniforms.uSunDir = sharedUniforms.uSunDir;
+    shader.uniforms.uSunColor = sharedUniforms.uSunColor;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + VERT_MAIN);

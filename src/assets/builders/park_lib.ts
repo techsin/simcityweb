@@ -673,10 +673,10 @@ export function lamp(b: ModelBuilder, x: number, z: number, h = 4.2, style = 0):
   b.cylinder(x, z, 0, 0.35, 0.16, 0.12, 6, { top: false });
   b.cylinder(x, z, 0.35, h - 0.35, 0.07, 0.055, 5, { top: false });
   if (style === 0) {
-    b.paint(LAMP_GLOW, Surf.Emissive).cylinder(x, z, h, 0.55, 0.16, 0.24, 4, { top: false });
-    b.paint(0x26292c, Surf.Metal).cone(x, z, h + 0.55, 0.3, 0.32, 4, false);
+    b.paint(LAMP_GLOW, Surf.Emissive).cylinder(x, z, h, 0.62, 0.2, 0.3, 4, { top: false });
+    b.paint(0x26292c, Surf.Metal).cone(x, z, h + 0.62, 0.32, 0.38, 4, false);
   } else if (style === 1) {
-    b.paint(LAMP_GLOW, Surf.Emissive).blob(x, h + 0.25, z, 0.3, 0.3, 0.3, 0, 0.0, 1);
+    b.paint(LAMP_GLOW, Surf.Emissive).blob(x, h + 0.3, z, 0.36, 0.36, 0.36, 0, 0.0, 1);
   } else {
     b.paint(0x26292c, Surf.Metal).box(x - 0.08, h, z - 0.08, x + 0.6, h + 0.12, z + 0.08);
     b.paint(0xf4f1e6, Surf.Emissive).box(x + 0.05, h - 0.03, z - 0.07, x + 0.58, h, z + 0.07, { top: null });

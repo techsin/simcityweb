@@ -9,6 +9,7 @@ import { BF } from '../CityState';
 import type { Simulation } from '../Simulation';
 import { getDef } from '../catalog';
 import type { BuildingDef, ServiceKind } from '../catalogTypes';
+import { ordinanceEffect } from '../economy/ordinances';
 
 export const DX = [1, 0, -1, 0] as const;
 export const DZ = [0, 1, 0, -1] as const;
@@ -248,6 +249,18 @@ export function activeJobs(inf: DefInfo, b: Building, jobsUnknown: boolean): num
   return inf.fam === Fam.Plop ? inf.civicJobs * 0.5 : 0;
 }
 
+/**
+ * activity 0..1 of a building (drives pollution / garbage / utility use scaling): R = pop / capacity,
+ * C / I = active jobs / capacity, plopped = 1 when functional.
+ */
+export function activity(inf: DefInfo, b: Building, jobsUnknown: boolean): number {
+  if (!isFunctional(b)) return 0;
+  if (inf.fam === Fam.Plop || inf.fam === Fam.None) return 1;
+  if (b.capacity <= 0) return 1;
+  if (inf.fam === Fam.R) return Math.min(1, b.pop / b.capacity);
+  return Math.min(1, activeJobs(inf, b, jobsUnknown) / b.capacity);
+}
+
 /** true when no job site has b.jobs > 0 although job capacity exists (sim-core not filling jobs yet) */
 export function detectJobsUnknown(state: CityState): boolean {
   let cap = 0;
@@ -259,56 +272,55 @@ export function detectJobsUnknown(state: CityState): boolean {
 }
 
 // ------------------------------------------------------------------------------------------ ordinances
-export type OrdKey =
-  | 'powerConservation'
-  | 'waterConservation'
-  | 'cleanAir'
-  | 'carpool'
-  | 'commuterShuttle'
-  | 'recycling'
-  | 'smokeDetector'
-  | 'neighborhoodWatch'
-  | 'youthCurfew'
-  | 'legalizedGambling'
-  | 'freeClinics'
-  | 'proReading'
-  | 'smokingBan'
-  | 'tireRecycling';
+/**
+ * Ordinance effects relevant to the infrastructure systems, read once per update through sim-core's
+ * ordinanceEffect(state, key) (src/sim/economy/ordinances.ts; multiplicative keys, default 1).
+ */
+export interface OrdEffects {
+  fireRisk: number;
+  fireEffect: number;
+  crimeRate: number;
+  policeEffect: number;
+  healthEffect: number;
+  eduEffect: number;
+  air: number;
+  airIndustry: number;
+  water: number;
+  waterIndustry: number;
+  garbage: number;
+  powerDemand: number;
+  waterDemand: number;
+  trafficCar: number;
+  transitRidership: number;
+}
 
-/** normalized aliases (lowercase alphanumerics) recognised in state.budget.ordinances */
-export const ORDINANCE_ALIASES: Record<OrdKey, string[]> = {
-  powerConservation: ['powerconservation', 'powersaving', 'energyconservation', 'conservepower'],
-  waterConservation: ['waterconservation', 'watersaving', 'conservewater'],
-  cleanAir: ['cleanairact', 'cleanair', 'pollutioncontrol', 'airpollutioncontrol', 'emissionscontrol'],
-  carpool: ['carpool', 'carpoolincentive', 'carpooling', 'carpoolincentives'],
-  commuterShuttle: ['commutershuttle', 'commutershuttleservice', 'shuttleservice'],
-  recycling: ['recycling', 'recyclingprogram', 'paperreduction', 'paperreductionprogram', 'trashpresort', 'wastereduction'],
-  smokeDetector: ['smokedetector', 'smokedetectors', 'smokedetectorprogram'],
-  neighborhoodWatch: ['neighborhoodwatch', 'neighbourhoodwatch', 'neighborhoodwatchprogram'],
-  youthCurfew: ['youthcurfew', 'curfew'],
-  legalizedGambling: ['legalizegambling', 'legalizedgambling', 'gambling', 'legalgambling'],
-  freeClinics: ['freeclinics', 'freeclinic', 'publichealth'],
-  proReading: ['proreading', 'proreadingcampaign', 'readingcampaign', 'literacy'],
-  smokingBan: ['smokingban', 'nosmoking', 'nosmokingban'],
-  tireRecycling: ['tirerecycling'],
-};
-
-const aliasToKey = new Map<string, OrdKey>();
-for (const k of Object.keys(ORDINANCE_ALIASES) as OrdKey[]) for (const a of ORDINANCE_ALIASES[k]) aliasToKey.set(a, k);
-
-export type OrdinanceSet = Set<OrdKey>;
-
-/** read enabled ordinances (by normalized id) once per update */
-export function readOrdinances(state: CityState): OrdinanceSet {
-  const out = new Set<OrdKey>();
-  const list = state.budget?.ordinances;
-  if (!list) return out;
-  for (const id of list) {
-    const n = String(id).toLowerCase().replace(/[^a-z0-9]/g, '');
-    const k = aliasToKey.get(n) ?? aliasToKey.get(n.replace(/ordinance$/, '')) ?? aliasToKey.get(n.replace(/^ord/, ''));
-    if (k) out.add(k);
+function eff(state: CityState, key: string): number {
+  try {
+    const v = ordinanceEffect(state, key);
+    return typeof v === 'number' && isFinite(v) && v >= 0 ? v : 1;
+  } catch {
+    return 1;
   }
-  return out;
+}
+
+export function readEffects(state: CityState): OrdEffects {
+  return {
+    fireRisk: eff(state, 'fire.risk'),
+    fireEffect: eff(state, 'fire.effect'),
+    crimeRate: eff(state, 'crime.rate'),
+    policeEffect: eff(state, 'police.effect'),
+    healthEffect: eff(state, 'health.effect'),
+    eduEffect: eff(state, 'edu.effect'),
+    air: eff(state, 'pollution.air'),
+    airIndustry: eff(state, 'pollution.air.industry'),
+    water: eff(state, 'pollution.water'),
+    waterIndustry: eff(state, 'pollution.water.industry'),
+    garbage: eff(state, 'garbage.produced'),
+    powerDemand: eff(state, 'power.demand'),
+    waterDemand: eff(state, 'water.demand'),
+    trafficCar: eff(state, 'traffic.car'),
+    transitRidership: eff(state, 'transit.ridership'),
+  };
 }
 
 // ------------------------------------------------------------------------------------------ funding

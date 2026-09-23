@@ -38,6 +38,10 @@ export interface PoolItem {
   r: number;
   /** 0 = warm street light, 1 = cool highway light */
   tint: number;
+  /** lamp head position (for the night glow sprite) */
+  hx: number;
+  hy: number;
+  hz: number;
 }
 
 export interface ChunkOutput {
@@ -763,7 +767,10 @@ export class RoadMesher {
     this.out.props.push({ model: 'streetlight', variant, x: this.ox + lx, y, z: this.oz + lz, yaw, scale: 1 });
     const reach = this.light.reach;
     const px = lx + Dx * reach, pz = lz + Dz * reach;
-    this.out.pools.push({ x: this.ox + px, y: this.Y(px, pz) + 0.04, z: this.oz + pz, r: tint === 1 ? 9 : 7.5, tint });
+    this.out.pools.push({
+      x: this.ox + px, y: this.Y(px, pz) + 0.04, z: this.oz + pz, r: tint === 1 ? 9 : 7.5, tint,
+      hx: this.ox + px, hy: y + this.light.height - 0.35, hz: this.oz + pz,
+    });
   }
 
   // ------------------------------------------------------------------ rail

@@ -44,12 +44,12 @@ try {
     const p = await browser.newPage({ viewport: { width: vw, height: vh } });
     p.on('console', (m) => {
       const t = m.text();
-      if (m.type() === 'error' || m.type() === 'warning' || t.startsWith('GALLERY_STATS') || t.startsWith('[')) console.log(`[console.${m.type()}] ${t.slice(0, 4000)}`);
+      if (m.type() === 'error' || m.type() === 'warning' || t.startsWith('GALLERY_STATS') || t.startsWith('[')) console.log(`[console.${m.type()}] ${t.startsWith('GALLERY_STATS') ? t : t.slice(0, 4000)}`);
     });
     p.on('pageerror', (e) => console.log(`[pageerror] ${e.message}\n${e.stack ?? ''}`));
     const t0 = Date.now();
-    await p.goto(`${base}?${query}`, { waitUntil: 'load', timeout: 120000 });
-    await p.waitForFunction(() => window.__ready === true, null, { timeout: 180000, polling: 250 }).catch(() => console.log('WARN: __ready not set within timeout'));
+    await p.goto(`${base}?${query}`, { waitUntil: 'load', timeout: 300000 });
+    await p.waitForFunction(() => window.__ready === true, null, { timeout: 400000, polling: 250 }).catch(() => console.log('WARN: __ready not set within timeout'));
     const extra = parseInt(process.env.SHOOT_WAIT ?? '0', 10);
     if (extra) await p.waitForTimeout(extra);
     if (file === 'gallery.html') await p.locator('#wrap').screenshot({ path: out });

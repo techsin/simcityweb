@@ -180,8 +180,9 @@ function motel(b: B, v: number, rng: RNG) {
   const H = 6.0, fh = 3.05;
   const bw = { x0: -22.5, x1: 16.5, z0: -15.5, z1: -7.8 };
   const lw = { x0: -22.5, x1: -14.6, z0: -7.8, z1: 10.8 };
-  box(b, bw.x0, 0, bw.z0, bw.x1, H, bw.z1, wall, K.roofP());
-  box(b, lw.x0, 0, lw.z0, lw.x1, H, lw.z1, wall, K.roofP(), { nz: null });
+  const backW = WW(pal.wall, 4, fh);
+  box(b, bw.x0, 0, bw.z0, bw.x1, H, bw.z1, wall, K.roofP(), { nz: backW, nx: backW });
+  box(b, lw.x0, 0, lw.z0, lw.x1, H, lw.z1, wall, K.roofP(), { nz: null, nx: backW });
   const galP = K.plain(0xd8d4cc);
   const railP = K.plain(pal.rail);
   const trimP = K.plain(pal.trim);
@@ -456,7 +457,7 @@ const hotel: ModelBuildFn = (b, v, rng) => [hotelBrick, hotelModern, hotelDeco, 
 // ============================================================================================ DEPARTMENT STORE (2x2)
 function deptBeaux(b: B, rng: RNG) {
   up(b, -16, -16, 16, 16, 0.03, K.pav(0xd9d3c7));
-  const x0 = -13.2, x1 = 13.2, z0 = -13.2, z1 = 6.6, base = 8.4, top = 21.0;
+  const x0 = -12.8, x1 = 12.8, z0 = -12.8, z1 = 6.4, base = 8.4, top = 21.0;
   const stone = P(0xe0d4bc, Surf.Stone);
   box(b, x0, 0, z0, x1, base, z1, stone, null);
   box(b, x0, base, z0, x1, top, z1, WW(0xe0d4bc, 7, 4.2), null);
@@ -464,27 +465,27 @@ function deptBeaux(b: B, rng: RNG) {
   box(b, x0 - 0.5, top, z0 - 0.5, x1 + 0.5, top + 0.7, z1 + 0.5, P(0xece2cc, Surf.Stone), null);
   box(b, x0, top + 0.7, z0, x1, top + 2.2, z1, stone, K.roofP());
   // display windows w/ awnings between piers
-  const bays = [[-12.4, -8.4], [-7.6, -3.6], [3.6, 7.6]] as [number, number][];
+  const bays = [[-12.0, -8.4], [-7.6, -3.6], [3.6, 7.6]] as [number, number][];
   for (const [a, e] of bays) {
     K.storefront(b, a, e, z1, { y0: 0.7, y1: 4.2, frame: 0x6b4a2a, pitch: 2.0, transom: 3.5 });
     K.storefront(b, a + 0.3, e - 0.3, z1, { y0: 5.4, y1: 7.4, frame: 0x6b4a2a, pitch: 1.2, surround: 0.08 });
     K.awning(b, a - 0.1, e + 0.1, z1, 4.6, 1.3, 0.6, [0x6b1f2a], 1, 0.3);
   }
-  for (const px of [-12.8, -8.0, -3.2, 3.2, 8.0]) box(b, px - 0.4, 0, z1, px + 0.4, base - 0.4, z1 + 0.35, stone);
+  for (const px of [-12.4, -8.0, -3.2, 3.2, 8.0]) box(b, px - 0.4, 0, z1, px + 0.4, base - 0.4, z1 + 0.35, stone);
   // grand entrance
   K.storefront(b, -2.6, 2.6, z1, { y0: 0.05, y1: 5.2, frame: 0xc9a24a, doors: [-1.2, 1.2], doorW: 1.6, transom: 3.4 });
   faceZ(b, -2.6, 2.6, 5.6, 7.6, z1 + 0.02, P(0x2a3440, Surf.GlassPlain));
   K.letters(b, rng, 0, 8.7, z1 + 0.05, 9, 0.9, 0xffd88a, { words: 1, n: 7 });
   for (const fx of [-3.2, 0, 3.2]) K.facadeFlag(b, fx, 11.8, z1, [0x1d3a6b, 0x6b1f2a, 0x1d3a6b][(fx / 3.2 + 1) | 0], 2.6);
   // corner rotunda with dome
-  const rc: K.V2 = [11.4, 5.2];
+  const rc: K.V2 = [11.2, 5.0];
   b.paint(0xe0d4bc, Surf.WallWindows, 7, 4.2).cylinder(rc[0], rc[1], 0, top + 0.7, 3.4, 3.4, 12, { top: false, smooth: true });
   box(b, rc[0] - 3.8, top + 0.7, rc[1] - 3.8, rc[0] + 3.8, top + 1.3, rc[1] + 3.8, P(0xece2cc, Surf.Stone));
   b.paint(0x5f8f80, Surf.Metal).sphere(rc[0], top + 1.3, rc[1], 3.2, 12, 6, { hemi: true, scaleY: 0.9 });
   b.paint(0xece2cc, Surf.Stone).cylinder(rc[0], rc[1], top + 4.0, 1.6, 0.6, 0.5, 6, {});
   // side display windows
   K.onSide(b, 'px', () => {
-    for (let x = -4.5; x + 4 <= 12.4; x += 5) {
+    for (let x = -4.3; x + 4 <= 12.2; x += 5) {
       K.storefront(b, x, x + 3.6, x1, { y0: 0.7, y1: 4.2, frame: 0x6b4a2a, pitch: 1.8, transom: 3.5 });
       K.awning(b, x - 0.1, x + 3.7, x1, 4.6, 1.2, 0.55, [0x6b1f2a], 1, 0.3);
     }
@@ -807,7 +808,7 @@ function mall(b: B, v: number, rng: RNG) {
     K.stallsZ(b, rng, dz0 + 1, dz1 - 1, dx1 - 6.0, -1, 0.5, 0.02);
     b.pop();
     for (let z = dz0 + 1.4; z < dz1 - 1; z += 2.7) faceX(b, z - 0.9, z + 0.9, 3.45, 4.6, dx1 + 0.01, K.metal(K.CAR_COLORS[(z * 7) % K.CAR_COLORS.length | 0]), 1);
-    K.lotLamp(b, -22, 16, 6.4 + 4.5, [0, Math.PI]);
+    K.lotLamp(b, -22, 16, 6.4 + 4.5, [0, Math.PI], false);
   }
   // surface parking
   const sx0 = v === 0 ? -31.5 : -11.5;
@@ -821,11 +822,11 @@ function mall(b: B, v: number, rng: RNG) {
     up(b, -3.0, rz, 3.0, rz + 10.4, 0.1, K.foliage(C.grass));
     K.tree(b, rng, 0, rz + 2.8, 0.75);
     K.tree(b, rng, 0, rz + 7.6, 0.75);
-    K.lotLamp(b, sx0 + 12, rz + 5.2, 8, [Math.PI / 2, -Math.PI / 2]);
-    K.lotLamp(b, 18, rz + 5.2, 8, [Math.PI / 2, -Math.PI / 2]);
+    K.lotLamp(b, sx0 + 12, rz + 5.2, 8, [Math.PI / 2]);
+    K.lotLamp(b, 18, rz + 5.2, 8, [-Math.PI / 2]);
   }
   up(b, -32, 30.4, 32, 32, 0.07, K.foliage(C.grass));
-  for (const tx of [-24, -12, 12, 24]) K.tree(b, rng, tx, 31.0, 0.6);
+  for (const tx of [-18, 16]) K.tree(b, rng, tx, 31.0, 0.6);
   K.pylon(b, 27, 30.8, 11, 3.6, [{ h: 2.2, color: v === 0 ? 0x7a2335 : 0x2a8f8a }, { h: 0.8, color: 0xffc933 }, { h: 0.8, color: 0x2fd6ff }, { h: 0.8, color: 0xff4fc3 }], { poles: 2, pole: 0x6a6e73, frame: 0x2a2a2a, cap: 0xdedede });
 }
 

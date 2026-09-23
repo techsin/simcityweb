@@ -7,12 +7,14 @@
  *    coverage. Parks / transit use Euclidean disks.
  *  - Falloff: full strength up to 35 % of the radius, smooth drop to 0 at the radius.
  *  - Effectiveness = strength x funding (state.budget.funding[def.service] / 100, diminishing returns above 100 %)
- *    x capacity factor (capacity / people covered, e.g. school capacity 1000 serving 3000 pupils -> 33 %).
- *    Pupils = 22 % of residents, patients = 12 % of residents (COVERAGE_DEMAND).
+ *    x capacity factor (def.coverage.capacity = residents served; e.g. a school for 10,000 residents with
+ *    30,000 residents in its area is ~33 % effective) x ordinanceEffect 'police.effect' / 'health.effect' /
+ *    'edu.effect'.
  *  - Overlapping stations combine as 1 - (1-a)(1-b). Large buildings get uniform coverage (max over footprint).
  *  - Police effectiveness x0.75 above 25k population without a jail.
- *  - Transit coverage: walking radius around bus stops (5), subway stations (7), train stations (8) x transit funding.
- *  - EQ (0..150) drifts slowly toward 25 + 125 x (population-weighted education coverage) (+ ordinances);
+ *  - Transit coverage: def.coverage of stops / depots (catalog) + walking radius around road-cell bus stops
+ *    (netFlags bit 4) and stops without a coverage def (bus 5, subway 7, train 8 cells) x transit funding.
+ *  - EQ (0..150) drifts slowly toward 25 + 125 x (population-weighted education coverage);
  *    HQ (0..150) toward (30 + 120 x health coverage) x (1 - 0.35 x air pollution).
  *  Emits layerUpdated('services').
  */
@@ -20,11 +22,12 @@ import { Network, isRoad } from '../../core/types';
 import type { CityState } from '../CityState';
 import type { ServiceKind } from '../catalogTypes';
 import type { SimSystem, Simulation } from '../Simulation';
-import { COV_KINDS, DX, DZ, Fam, fundingFactor, infoOf, isFunctional, nowMs, readOrdinances } from './common';
+import { COV_KINDS, DX, DZ, Fam, fundingFactor, infoOf, isFunctional, nowMs, readEffects } from './common';
 import { COVERAGE_DEMAND, EQ_RATE, HQ_RATE, ROAD_RADIUS_FACTOR } from './params';
 import { collectStops, computeTransitCoverage, type StopList } from './transit';
+import { getDef } from '../catalog';
 
-export const SERVICES_PERIOD = 4;
+export const SERVICES_PERIOD = 8;
 const KIND_SERVICE: Record<string, ServiceKind> = {
   police: 'police', fire: 'fire', health: 'health', education: 'education', park: 'parks', transit: 'transit', garbage: 'utilities',
 };
@@ -43,7 +46,14 @@ export class ServicesSystem implements SimSystem {
   private lastRun = -1e9;
   lastMs = 0;
 
+  private dirty = false;
+  private unsub: (() => void)[] = [];
+
   init(sim: Simulation): void {
+    for (const u of this.unsub) u();
+    // a new / removed service building or road change shows its coverage on the next day
+    const markB = (b: { def: string }) => { const d = getDef(b.def); if (d && (d.coverage || d.category === 'park')) this.dirty = true; };
+    this.unsub = [sim.events.on('buildingAdded', markB), sim.events.on('buildingRemoved', markB), sim.events.on('networkChanged', () => { this.dirty = true; })];
     sim.state.systemData.infraVersion = 1;
     this.lastRun = -1e9;
     this.compute(sim, true);
@@ -51,7 +61,7 @@ export class ServicesSystem implements SimSystem {
 
   daily(sim: Simulation): void {
     const d = sim.state.day;
-    if (d % SERVICES_PERIOD === 2 || d - this.lastRun > SERVICES_PERIOD * 2) this.compute(sim, false);
+    if (this.dirty || d % SERVICES_PERIOD === 3 || d - this.lastRun > SERVICES_PERIOD * 2) this.compute(sim, false);
   }
 
   /** coverage layer for a CoverageKind name */
@@ -72,6 +82,7 @@ export class ServicesSystem implements SimSystem {
     const st = sim.state;
     const N = st.size, C = st.cells;
     this.lastRun = st.day;
+    this.dirty = false;
     if (this.visit.length !== C) {
       this.visit = new Int32Array(C);
       this.best = new Float32Array(C);
@@ -97,7 +108,7 @@ export class ServicesSystem implements SimSystem {
     const layers = [st.policeCov, st.fireCov, st.healthCov, st.eduCov, st.parkCov, st.transitCov];
     for (const L of layers) L.fill(0);
     const policeMul = st.stats.population > 25000 && !hasJail ? 0.75 : 1;
-    const ords = readOrdinances(st);
+    const fx = readEffects(st);
     for (const b of st.buildings.values()) {
       const inf = infoOf(st, b);
       let kind = inf.cov;
@@ -108,7 +119,9 @@ export class ServicesSystem implements SimSystem {
       const kindName = COV_KINDS[kind];
       let eff = strength * fundingFactor(st, inf.service ?? KIND_SERVICE[kindName]);
       if (kind === 0) eff *= policeMul;
-      if (kind === 2 && ords.has('freeClinics')) eff *= 1.1;
+      if (kind === 0) eff *= fx.policeEffect;
+      else if (kind === 2) eff *= fx.healthEffect;
+      else if (kind === 3) eff *= fx.eduEffect;
       if (eff <= 0) continue;
       const L = layers[kind];
       const euclid = kind === 4 || kind === 5;
@@ -159,10 +172,7 @@ export class ServicesSystem implements SimSystem {
     if (popSum > 0) {
       edu /= popSum; health /= popSum; air /= popSum;
       let eqT = 25 + 125 * edu;
-      if (ords.has('proReading')) eqT += 6;
       let hqT = (30 + 120 * health) * (1 - 0.35 * air);
-      if (ords.has('freeClinics')) hqT += 5;
-      if (ords.has('smokingBan')) hqT += 4;
       eqT = Math.min(150, eqT);
       hqT = Math.min(150, Math.max(0, hqT));
       const re = first ? EQ_RATE : EQ_RATE, rh = first ? HQ_RATE : HQ_RATE;

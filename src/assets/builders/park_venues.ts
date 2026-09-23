@@ -32,10 +32,10 @@ function parkStadium(b: ModelBuilder, _v: number, rng: RNG): void {
   // --- pitch (glows under the floodlights at night)
   const PW = 50, PD = 32;
   const inner = roundRectPath(0, 0, 58, 42, 12, 7);
-  b.paint(0x3f7a2c, Surf.Emissive);
+  b.paint(0x376c27, Surf.Emissive);
   flatPoly(b, offsetPoly(inner, 0.2), 0.09);
   for (let i = 0; i < 10; i++) {
-    b.paint(i % 2 ? 0x3c7529 : 0x478a33, Surf.Emissive);
+    b.paint(i % 2 ? 0x356a25 : 0x40792d, Surf.Emissive);
     rect(b, -PW / 2 - 1.5 + ((PW + 3) * i) / 10, -PD / 2 - 1.5, -PW / 2 - 1.5 + ((PW + 3) * (i + 1)) / 10, PD / 2 + 1.5, 0.1);
   }
   b.paint(WHITE_LINE, Surf.Emissive);
@@ -249,7 +249,9 @@ function parkAmusement(b: ModelBuilder, _v: number, rng: RNG): void {
     b.paint([0xffffff, 0x3a2a1a, 0xf1c40f, 0xe8d4b8][i % 4], Surf.Plain).box(-0.25, 0, -0.8, 0.25, 0.7, 0.8, { bottom: null });
     b.pop();
   }
-  stripedWall(b, cx, cz, 5.2, 6.2, 6.5, 14, 0xd63a2f, 0xf6f1e4);
+  stripedWall(b, cx, cz, 5.4, 6.2, 6.5, 14, 0xd63a2f, 0xf6f1e4);
+  b.paint(0xffe3a3, Surf.Emissive);
+  cylWall(b, cx, cz, 5.1, 5.4, 6.5, 6.5, 14);
   stripedCone(b, cx, cz, 6.2, 3.4, 6.9, 14, 0xd63a2f, 0xf6f1e4);
   b.paint(0xffd166, Surf.Emissive).cylinder(cx, cz, 9.6, 1.2, 0.35, 0.1, 6);
 
@@ -269,7 +271,7 @@ function parkAmusement(b: ModelBuilder, _v: number, rng: RNG): void {
   b.paint(0xf1c40f, Surf.Metal).cylinder(sx, sz, 0.3, 12, 0.6, 0.45, 8);
   b.push().translate(sx, 12.3, sz).rotateZ(0.14);
   stripedCone(b, 0, 0, 0, 1.6, 4.2, 12, 0x2e86c1, 0xf6f1e4);
-  b.paint(0xd4b25a, Surf.Metal).cylinder(0, 0, -0.5, 0.5, 4.2, 4.2, 12, { top: false });
+  b.paint(0xffe3a3, Surf.Emissive).cylinder(0, 0, -0.5, 0.5, 4.2, 4.2, 12, { top: false });
   b.paint(0xc8ccd0, Surf.Metal);
   for (let i = 0; i < 9; i++) {
     const a = (i / 9) * TAU;
@@ -294,7 +296,6 @@ function parkAmusement(b: ModelBuilder, _v: number, rng: RNG): void {
   // trees + lamps
   for (const [x, z, k] of [[-46, 44, 'round'], [-46, 34, 'oak'], [46, 22, 'round'], [-46, -44, 'oak'], [-4, 22, 'cherry'], [-24, 44, 'round']] as [number, number, 'oak'][]) tree(b, rng, x, z, 1.0, k);
   for (const [x, z] of [[-4, 26], [4, 26], [11, -2], [-11, 9]] as P2[]) lamp(b, x, z, 4.4, 1);
-  for (let i = 0; i < 2; i++) person(b, rng, rng.range(-2, 2), rng.range(14, 30), 0.1, rng.range(0, TAU));
 }
 
 /** Closed Catmull-Rom spline in 3D. */

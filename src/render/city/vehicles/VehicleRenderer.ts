@@ -687,10 +687,11 @@ export class VehicleRenderer {
     if (this.popTimer <= 0) {
       this.popTimer = 0.4;
       let budget = this.n === 0 ? this.target : 40;
-      while (this.n < this.target && budget-- > 0) {
+      let fails = 0;
+      while (this.n < this.target && budget-- > 0 && fails < 60) {
         const v = this.n;
         if (this.spawn(v, true, true)) this.n++;
-        else break;
+        else fails++;
       }
       budget = 40;
       while (this.n > this.target && budget-- > 0) this.removeSlot(this.n - 1);

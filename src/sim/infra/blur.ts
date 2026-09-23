@@ -85,36 +85,61 @@ export function shiftField(src: Float32Array, dst: Float32Array, N: number, dx: 
  * resolution, upsample bilinearly and ADD gain * density into `acc`. Effective fine sigma^2 = f^2 * r(r+1).
  * `coarse` / `coarseTmp` must hold (ceil(N/f))^2 floats.
  */
+let upKey = '';
+let upI0 = new Int32Array(0), upI1 = new Int32Array(0), upT = new Float32Array(0);
+let upRow = new Float32Array(0);
+function upTables(N: number, f: number, M: number): void {
+  const key = N + ':' + f;
+  if (key === upKey) return;
+  upKey = key;
+  upI0 = new Int32Array(N); upI1 = new Int32Array(N); upT = new Float32Array(N);
+  for (let x = 0; x < N; x++) {
+    const fx = (x + 0.5) / f - 0.5;
+    let x0 = Math.floor(fx);
+    const t = fx - x0;
+    let x1 = x0 + 1;
+    if (x0 < 0) x0 = 0;
+    if (x1 >= M) x1 = M - 1;
+    upI0[x] = x0; upI1[x] = x1; upT[x] = t;
+  }
+  if (upRow.length < M) upRow = new Float32Array(M);
+}
+
 export function blurDownAdd(src: Float32Array, acc: Float32Array, N: number, f: number, r: number, gain: number, coarse: Float32Array, coarseTmp: Float32Array): void {
   const M = Math.ceil(N / f);
   coarse.fill(0, 0, M * M);
+  const sh = f === 2 ? 1 : f === 4 ? 2 : f === 8 ? 3 : -1;
   for (let z = 0; z < N; z++) {
-    const cz = (z / f) | 0;
+    const cz = sh >= 0 ? z >> sh : (z / f) | 0;
     const row = z * N, crow = cz * M;
-    for (let x = 0; x < N; x++) {
-      const v = src[row + x];
-      if (v !== 0) coarse[crow + ((x / f) | 0)] += v;
+    if (sh >= 0) {
+      for (let x = 0; x < N; x++) {
+        const v = src[row + x];
+        if (v !== 0) coarse[crow + (x >> sh)] += v;
+      }
+    } else {
+      for (let x = 0; x < N; x++) {
+        const v = src[row + x];
+        if (v !== 0) coarse[crow + ((x / f) | 0)] += v;
+      }
     }
   }
   blur3(coarse, coarseTmp, M, r);
   const g = gain / (f * f);
+  upTables(N, f, M);
+  const I0 = upI0, I1 = upI1, T = upT;
+  const R = upRow;
   for (let z = 0; z < N; z++) {
-    const fz = (z + 0.5) / f - 0.5;
-    let z0 = Math.floor(fz);
-    const tz = fz - z0;
-    let z1 = z0 + 1;
-    if (z0 < 0) z0 = 0;
-    if (z1 >= M) z1 = M - 1;
-    const r0 = z0 * M, r1 = z1 * M;
+    // vertical interpolation of the two coarse rows into R (pre-scaled by g)
+    const tz = T[z];
+    const r0 = I0[z] * M, r1 = I1[z] * M;
+    const a = (1 - tz) * g, b = tz * g;
+    for (let m = 0; m < M; m++) R[m] = coarse[r0 + m] * a + coarse[r1 + m] * b;
+    const row = z * N;
     for (let x = 0; x < N; x++) {
-      const fx = (x + 0.5) / f - 0.5;
-      let x0 = Math.floor(fx);
-      const tx = fx - x0;
-      let x1 = x0 + 1;
-      if (x0 < 0) x0 = 0;
-      if (x1 >= M) x1 = M - 1;
-      const v = (coarse[r0 + x0] * (1 - tx) + coarse[r0 + x1] * tx) * (1 - tz) + (coarse[r1 + x0] * (1 - tx) + coarse[r1 + x1] * tx) * tz;
-      acc[z * N + x] += v * g;
+      const t = T[x];
+      const v0 = R[I0[x]];
+      acc[row + x] += v0 + (R[I1[x]] - v0) * t;
     }
   }
 }

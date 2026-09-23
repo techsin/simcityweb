@@ -1,8 +1,8 @@
 /**
  * Crime system (every CRIME_PERIOD days): state.crime (0..1) per cell.
  *  Per building: density (occupants per cell) + poverty (R$ / CS$ / dirty industry) + unemployment + low land value
- *  + abandonment, x ordinances (neighbourhood watch 0.9, youth curfew 0.92, legalized gambling 1.12),
- *  x (1 - 0.85 x police coverage). Painted on the footprint, blurred slightly (spills onto streets), smoothed in time.
+ *  + abandonment, x ordinanceEffect 'crime.rate' (neighbourhood watch, curfew, gambling ...),
+ *  x (1 - 0.85 x police coverage x 'police.effect'). Painted on the footprint, blurred slightly (spills onto streets), smoothed in time.
  *  BF.Crime on buildings above CRIME_THRESHOLD. stats.avgCrime = occupant-weighted mean. Emits layerUpdated('crime').
  */
 import { DevType } from '../../core/types';
@@ -10,10 +10,10 @@ import type { Building } from '../CityState';
 import { BF } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
 import { blur3 } from './blur';
-import { Fam, infoOf, nowMs, readOrdinances, setFlagQuiet, wealthOf } from './common';
+import { Fam, infoOf, nowMs, readEffects, setFlagQuiet, wealthOf } from './common';
 import { CRIME_THRESHOLD } from './params';
 
-export const CRIME_PERIOD = 4;
+export const CRIME_PERIOD = 8;
 
 const POVERTY_BY_DEV: number[] = [];
 POVERTY_BY_DEV[DevType.R1] = 0.28;
@@ -44,7 +44,7 @@ export class CrimeSystem implements SimSystem {
 
   daily(sim: Simulation): void {
     const d = sim.state.day;
-    if (d % CRIME_PERIOD === 3 || d - this.lastRun > CRIME_PERIOD * 2) this.compute(sim, false);
+    if (d % CRIME_PERIOD === 7 || d - this.lastRun > CRIME_PERIOD * 2) this.compute(sim, false);
   }
 
   compute(sim: Simulation, first: boolean): void {
@@ -58,11 +58,9 @@ export class CrimeSystem implements SimSystem {
     }
     const raw = this.raw;
     raw.fill(0);
-    const ords = readOrdinances(st);
-    let mul = 1;
-    if (ords.has('neighborhoodWatch')) mul *= 0.9;
-    if (ords.has('youthCurfew')) mul *= 0.92;
-    if (ords.has('legalizedGambling')) mul *= 1.12;
+    const fx = readEffects(st);
+    const mul = fx.crimeRate;
+    const policeEff = fx.policeEffect;
     const unemp = Math.max(0, Math.min(1, st.stats.unemployment || 0));
     // land value may not be computed yet (all zero) -> neutral 0.5
     let lvKnown = false;
@@ -82,7 +80,7 @@ export class CrimeSystem implements SimSystem {
       c += (1 - (lvKnown ? lv[ci] : 0.5)) * 0.2;
       if (b.flags & BF.Abandoned) c += 0.35;
       if (b.flags & BF.Burnt) c += 0.1;
-      c *= mul * (1 - 0.85 * Math.min(1, police[ci]));
+      c *= mul * (1 - 0.85 * Math.min(1, police[ci] * policeEff));
       for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
         if (x < 0 || z < 0 || x >= N || z >= N) continue;
         raw[z * N + x] = c;

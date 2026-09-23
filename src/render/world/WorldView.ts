@@ -135,7 +135,7 @@ export class WorldView implements WorldViewApi {
     this.sun = new CitySun(0xffffff, 3);
     this.sun.castShadow = true;
     this.scene.add(this.sun, this.sun.target);
-    this.nightFill = new THREE.HemisphereLight(0x5a6c9a, 0x15161c, 0);
+    this.nightFill = new THREE.HemisphereLight(0x4a64a8, 0x16181f, 0);
     this.scene.add(this.nightFill);
     this.applyShadowQuality();
     // post
@@ -289,10 +289,12 @@ export class WorldView implements WorldViewApi {
     this.sun.color.copy(L.lightColor);
     this.sun.intensity = L.lightIntensity;
     this.sun.visible = L.lightIntensity > 0.002;
-    this.nightFill.intensity = 0.35 * L.night;
+    this.nightFill.intensity = 0.9 * L.night;
     sharedUniforms.uNight.value = L.night;
     sharedUniforms.uTime.value = this.clock;
     sharedUniforms.uLitFraction.value = litFractionAt(this._time);
+    sharedUniforms.uSunDir.value.copy(L.lightDir);
+    sharedUniforms.uSunColor.value.copy(L.lightColor).multiplyScalar(L.lightIntensity);
     this.terrain.setNight(L.night);
     this.water.update(this.clock, L.night);
 
@@ -341,7 +343,8 @@ export class WorldView implements WorldViewApi {
     f.uSunDir.value.copy(L.sunDir);
     _col.copy(L.lightColor).multiplyScalar(L.lightIntensity * 0.12 * (1 - n));
     f.uSunGlow.value.set(_col.r, _col.g, _col.b);
-    f.uSkyExposure.value = 1;
+    f.uSkyExposure.value = this.sky.uniforms.uSkyExposure.value;
+    f.uSkyFloor.value.copy(this.sky.uniforms.uSkyFloor.value);
     // grading
     g.exposure = L.exposure;
     this.renderer.toneMappingExposure = L.exposure;

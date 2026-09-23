@@ -67,8 +67,14 @@ export const MODE_BETA = 0.13;
 export const CAR_BIAS = [-1.2, 0, 0.9];
 export const TRANSIT_BIAS = [0.7, 0, -0.7];
 export const WALK_BIAS = -0.5;
-/** destination dispersion: random job preference (0..DEST_NOISE minutes) per job site per assignment */
-export const DEST_NOISE = 12;
+/**
+ * small random job preference (0..DEST_NOISE minutes) per job site per assignment: tie-breaking / route variety.
+ * Keep small: it is shared by all origins, so large values would herd everyone to the same site. Spatial spreading
+ * of commuters comes from the capacity shadow prices.
+ */
+export const DEST_NOISE = 2;
+/** MSA weight of the newest job loads (smoothed loads drive shadow prices, employment access and job fill) */
+export const LOAD_SMOOTH = 0.3;
 /** smoothing of per-building outputs across assignments (weight of the new value) */
 export const RESULT_SMOOTH = 0.5;
 
@@ -113,25 +119,26 @@ export const TRAFFIC_FRAME_BUDGET_MS = 5;
 export const MAX_COMMUTE = 110;
 
 // ---------------------------------------------------------------------------------------------- utilities
-/** derived power use (MW) per unit of capacity at full occupancy (when def.powerUse is missing) */
-export const POWER_PER_RES = 0.05;
-export const POWER_PER_JOB_C = 0.08;
-export const POWER_PER_JOB_I = { IA: 0.04, ID: 0.22, IM: 0.16, IHT: 0.2 };
-export const POWER_PER_CIVIC_JOB = 0.1;
-export const POWER_MIN_PLOPPED = 1;
-/** derived water use (kL/day) per unit of capacity at full occupancy */
-export const WATER_PER_RES = 0.2;
-export const WATER_PER_JOB_C = 0.12;
-export const WATER_PER_JOB_I = { IA: 0.5, ID: 0.35, IM: 0.25, IHT: 0.18 };
-export const WATER_PER_CIVIC_JOB = 0.1;
+/**
+ * FALLBACK utility use when a def has no powerUse / waterUse (the catalog normally provides them; units follow the
+ * catalog's unit system: ~1 kW and 0.25 kL/day per resident). Per unit of capacity at full occupancy.
+ */
+export const POWER_PER_RES = 0.001;
+export const POWER_PER_JOB_C = 0.0017;
+export const POWER_PER_JOB_I = { IA: 0.001, ID: 0.004, IM: 0.003, IHT: 0.0025 };
+export const POWER_PER_CIVIC_JOB = 0.005;
+export const POWER_MIN_PLOPPED = 0;
+export const WATER_PER_RES = 0.25;
+export const WATER_PER_JOB_C = 0.05;
+export const WATER_PER_JOB_I = { IA: 3, ID: 0.4, IM: 0.25, IHT: 0.15 };
+export const WATER_PER_CIVIC_JOB = 0.3;
 /** consumption at zero occupancy as share of full-occupancy use */
 export const UTIL_BASE_SHARE = 0.25;
 /** pumps within this many cells of water produce +PUMP_WATER_BONUS */
 export const PUMP_WATER_DIST = 2;
 export const PUMP_WATER_BONUS = 0.5;
-export const CONSERVATION_CUT = 0.15;
-/** recompute utilities at least every N days (demand drifts with population) */
-export const UTIL_REFRESH_DAYS = 3;
+/** recompute utilities on day % N == 0 (demand drifts with population); changes apply on the next day */
+export const UTIL_REFRESH_DAYS = 4;
 
 // ---------------------------------------------------------------------------------------------- pollution
 /** air emission per active job by industry type */
@@ -158,14 +165,15 @@ export const WIND_DRIFT = 1.2;
 /** landfill smell (air source per landfill cell) */
 export const LANDFILL_AIR = 0.25;
 export const POLL_SMOOTH = 0.35;
-/** garbage (tons / month) */
+/** FALLBACK garbage production (tons / month per unit at full occupancy) when a def has no pollution.garbage */
 export const GARBAGE_PER_RES = 0.04;
-export const GARBAGE_PER_JOB_C = 0.03;
-export const GARBAGE_PER_JOB_I = { IA: 0.02, ID: 0.06, IM: 0.045, IHT: 0.02 };
-export const GARBAGE_PER_CIVIC_JOB = 0.02;
-/** landfill zone cell throughput (tons / month) */
-export const LANDFILL_CELL_CAP = 160;
-export const RECYCLING_CUT = 0.2;
+export const GARBAGE_PER_JOB_C = 0.035;
+export const GARBAGE_PER_JOB_I = { IA: 0.03, ID: 0.12, IM: 0.08, IHT: 0.03 };
+export const GARBAGE_PER_CIVIC_JOB = 0.03;
+/** landfill zone cell throughput (tons / month) when the util_landfill_tile def is missing */
+export const LANDFILL_CELL_CAP = 300;
+/** residents whose sewage one treatment plant handles, per kL/day of its waterOut (50,000 kL -> 200k residents) */
+export const TREATMENT_RES_PER_KL = 4;
 /** uncollected garbage level added per ton per cell per update and decay when collected */
 export const GARBAGE_BUILDUP = 0.02;
 export const GARBAGE_DECAY = 0.35;
@@ -175,8 +183,8 @@ export const POLLUTED_THRESHOLD = 0.45;
 // ---------------------------------------------------------------------------------------------- services
 /** road distance is ~Manhattan: coverage radius along roads = def.radius * ROAD_RADIUS_FACTOR */
 export const ROAD_RADIUS_FACTOR = 1.3;
-/** coverage demand ratio (people per resident needing the service) used against def.coverage.capacity */
-export const COVERAGE_DEMAND: Record<string, number> = { education: 0.22, health: 0.12, police: 1, fire: 1, park: 1, transit: 1, garbage: 1 };
+/** people per resident counted against def.coverage.capacity (catalog: capacity = residents served) */
+export const COVERAGE_DEMAND: Record<string, number> = { education: 1, health: 1, police: 1, fire: 1, park: 1, transit: 1, garbage: 1 };
 /** EQ / HQ convergence per services update (fraction of gap) */
 export const EQ_RATE = 0.012;
 export const HQ_RATE = 0.02;

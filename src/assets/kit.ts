@@ -18,13 +18,14 @@ export function pavement(b: ModelBuilder, x0: number, z0: number, x1: number, z1
   b.paint(color, Surf.Pavement).slab(x0, z0, x1, z1, h);
 }
 
-/** Simple low-poly car (~26 tris) centered at (x,z), heading along +Z if rot = 0. */
+/** Simple low-poly car (~20 tris) centered at (x,z), heading along +Z if rot = 0. Glass is dark metal (no night glow). */
 export function car(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike, y = 0.1) {
   b.push().translate(x, y, z).rotateY(rot);
-  b.paint(color, Surf.Metal).box(-0.9, 0.25, -2.2, 0.9, 0.95, 2.2, { bottom: null });
-  b.paint(0x1a1f26, Surf.GlassPlain).box(-0.8, 0.95, -1.1, 0.8, 1.45, 1.0, { bottom: null });
-  b.paint(color, Surf.Metal).box(-0.78, 1.45, -1.0, 0.78, 1.5, 0.9, { bottom: null, nx: null, px: null, pz: null, nz: null });
-  b.paint(0x151515).box(-0.95, 0.0, -1.6, 0.95, 0.35, -1.0, { top: null }).box(-0.95, 0.0, 1.0, 0.95, 0.35, 1.6, { top: null });
+  // body (no bottom)
+  b.paint(color, Surf.Metal).box(-0.9, 0.15, -2.2, 0.9, 0.9, 2.2, { bottom: null });
+  // cabin: dark glass sides + roof in body color
+  b.paint(0x151a20, Surf.Metal).box(-0.8, 0.9, -1.1, 0.8, 1.42, 1.0, { bottom: null, top: null });
+  b.paint(color, Surf.Metal).quad([-0.8, 1.42, 1.0], [0.8, 1.42, 1.0], [0.8, 1.42, -1.1], [-0.8, 1.42, -1.1]);
   b.pop();
 }
 
@@ -40,7 +41,7 @@ export function parkingLot(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1
     for (const [zA, facing] of [[rz, 0], [rz + stallD + aisle, Math.PI]] as [number, number][]) {
       if (zA + stallD > z1 - 0.3) continue;
       for (let sx = x0 + 0.5; sx + stallW <= x1 - 0.4; sx += stallW) {
-        b.paint(PALETTE.parkingLine, Surf.Plain).box(sx - 0.06, 0.08, zA, sx + 0.06, 0.1, zA + stallD, { bottom: null });
+        b.paint(PALETTE.parkingLine, Surf.Plain).quad([sx - 0.06, 0.1, zA + stallD], [sx + 0.06, 0.1, zA + stallD], [sx + 0.06, 0.1, zA], [sx - 0.06, 0.1, zA]);
         if (rng.chance(fill)) car(b, sx + stallW / 2, zA + stallD / 2, facing, rng.pick(CAR_COLORS), 0.08);
       }
     }
@@ -78,10 +79,10 @@ export function lotTree(b: ModelBuilder, rng: RNG, x: number, z: number, scale =
   }
 }
 
-/** Rooftop HVAC unit (~10 tris). */
+/** Rooftop HVAC unit (~12 tris). */
 export function acUnit(b: ModelBuilder, x: number, y: number, z: number, s = 1) {
-  b.paint(0xa8acb0, Surf.Metal).box(x - 0.9 * s, y, z - 0.7 * s, x + 0.9 * s, y + 0.9 * s, z + 0.7 * s, { bottom: null });
-  b.paint(0x3a3d40, Surf.Metal).cylinder(x, z, y + 0.9 * s, 0.08, 0.5 * s, 0.5 * s, 8, { top: true });
+  b.paint(0xa8acb0, Surf.Metal).box(x - 0.9 * s, y, z - 0.7 * s, x + 0.9 * s, y + 0.9 * s, z + 0.7 * s, { bottom: null, top: null });
+  b.paint(0x3a3d40, Surf.Metal).quad([x - 0.9 * s, y + 0.9 * s, z + 0.7 * s], [x + 0.9 * s, y + 0.9 * s, z + 0.7 * s], [x + 0.9 * s, y + 0.9 * s, z - 0.7 * s], [x - 0.9 * s, y + 0.9 * s, z - 0.7 * s]);
 }
 
 /** Scatter rooftop clutter (AC units, vents, access hut) on a flat roof rect at height y. */

@@ -589,8 +589,8 @@ export function patioSet(b: ModelBuilder, x: number, z: number, color: ColorLike
 }
 
 /** Sun lounger (for pools). */
-export function lounger(b: ModelBuilder, x: number, z: number, rot = 0, color: ColorLike = 0xf2efe6): void {
-  b.push().translate(x, 0, z).rotateY(rot);
+export function lounger(b: ModelBuilder, x: number, z: number, rot = 0, color: ColorLike = 0xf2efe6, y = 0): void {
+  b.push().translate(x, y, z).rotateY(rot);
   b.paint(color).box(-0.35, 0.25, -0.9, 0.35, 0.35, 0.6, { bottom: null });
   b.quad2([-0.35, 0.35, 0.6], [0.35, 0.35, 0.6], [0.35, 0.9, 1.0], [-0.35, 0.9, 1.0]);
   b.pop();
@@ -739,4 +739,25 @@ export function bandRing(b: ModelBuilder, x0: number, z0: number, x1: number, z1
   b.quad([X1, y1, Z1], [X1, y1, Z0], [x1, y1, z0], [x1, y1, z1]);
   b.quad([X0, y1, Z0], [X0, y1, Z1], [x0, y1, z1], [x0, y1, z0]);
   if (roof !== null) b.paint(roof, Surf.RoofFlat).quad([x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]);
+}
+
+/**
+ * Cheap parking lot: asphalt slab, painted stall lines (single quads) and parked cars.
+ * Stalls are 2.6 m wide along x; rows of 5.2 m deep stalls facing an aisle. rows: 1 = one row at the -z side,
+ * 2 = two rows with an aisle between (needs ~16.4 m).
+ */
+export function parking(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, fill = 0.6, rows = 1): void {
+  b.paint(ASPHALT, Surf.Pavement).box(x0, 0, z0, x1, 0.08, z1);
+  const sw = 2.6, sd = 5.2;
+  const rowZ: [number, number][] = rows === 2 ? [[z0 + 0.3, 0], [z1 - 0.3 - sd, Math.PI]] : [[z0 + 0.3, 0]];
+  for (const [rz, rot] of rowZ) {
+    const n = Math.floor((x1 - x0 - 0.6) / sw);
+    const sx0 = (x0 + x1) / 2 - (n * sw) / 2;
+    b.paint(0xe8e8e2);
+    for (let i = 0; i <= n; i++) {
+      const x = sx0 + i * sw;
+      b.quad([x - 0.06, 0.09, rz + sd], [x + 0.06, 0.09, rz + sd], [x + 0.06, 0.09, rz], [x - 0.06, 0.09, rz]);
+    }
+    for (let i = 0; i < n; i++) if (rng.chance(fill)) car(b, sx0 + (i + 0.5) * sw, rz + sd / 2, rot + (rng.next() - 0.5) * 0.06, rng.pick(CAR_COLORS), 0.08);
+  }
 }

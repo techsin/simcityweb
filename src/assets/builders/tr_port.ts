@@ -48,7 +48,7 @@ function stsCrane(b: ModelBuilder, cx: number, zl: number, zs: number, color: nu
   const zb = zl - 11, zh = zs + 1.5;
   for (const sx of [-1, 1]) b.box(cx + sx * 2.4 - 0.6, top, zb, cx + sx * 2.4 + 0.6, top + 2.2, zh, { bottom: undefined });
   // machinery house on the backreach
-  b.paint(0xeeece6, Surf.Metal).box(cx - 3.6, top + 2.2, zb + 0.4, cx + 3.6, top + 6.0, zb + 7.5, { bottom: null });
+  b.paint(0xeeece6, Surf.WallWindows, 4, 3.6).box(cx - 3.6, top + 2.2, zb + 0.4, cx + 3.6, top + 6.0, zb + 7.5, { bottom: null, top: { color: 0xeeece6, surf: Surf.Metal } });
   b.paint(dark, Surf.Metal).box(cx - 3.7, top + 6.0, zb + 0.3, cx + 3.7, top + 6.3, zb + 7.6, { bottom: null });
   // operator cab under the girder (sea side)
   b.paint(0xeeece6, Surf.Metal).box(cx - 1.4, top - 4.2, zs - 3.6, cx + 1.4, top - 1.8, zs - 1.2, { top: null });
@@ -85,7 +85,7 @@ function stsCrane(b: ModelBuilder, cx: number, zl: number, zs: number, color: nu
 function shed(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, h: number, wall: number, roof: number, doors: number, doorSide: 1 | -1, stripeCol?: number): void {
   const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, w = x1 - x0, d = z1 - z0;
   b.paint(wall, Surf.Corrugated).box(x0, 0, z0, x1, h, z1, { top: null });
-  b.paint(roof, Surf.Metal).gableRoof(cx, cz, w, d, h, Math.min(2.2, d * 0.1), 'x', 0.4, { color: wall, surf: Surf.Corrugated });
+  b.paint(roof, Surf.RoofTiles).gableRoof(cx, cz, w, d, h, Math.min(2.2, d * 0.1), 'x', 0.4, { color: wall, surf: Surf.Corrugated });
   if (stripeCol !== undefined) b.paint(stripeCol, Surf.Plain).box(x0 - 0.05, h - 1.6, z0 - 0.05, x1 + 0.05, h - 0.8, z1 + 0.05, { top: null, bottom: null });
   const zf = doorSide > 0 ? z1 : z0;
   b.paint(0x5d646b, Surf.Metal);
@@ -119,7 +119,7 @@ function seaport(b: ModelBuilder, rng: RNG): void {
   b.paint(P.yardLine, Surf.Plain);
   dashed(b, -47, 35, 47, 35, 0.25, 0.2, 4, 3);
   // STS cranes (idle, booms raised)
-  poolRect(b, -47.5, 29, 47.5, 41, 0.175, P.quay, 0.6);
+  poolRect(b, -47.5, 29, 47.5, 41, 0.175, P.quay, 0.5);
   stsCrane(b, -30, zl, zs, 0xc0392b, 80);
   stsCrane(b, -2, zl, zs, 0x2e6fb5, 84);
   stsCrane(b, 26, zl, zs, 0xc0392b, 78);

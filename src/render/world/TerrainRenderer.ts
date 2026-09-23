@@ -28,10 +28,10 @@ interface Chunk {
 
 /** climate palettes (sRGB hex): grassA, grassB(dry), grassC(dark), forestFloor, dirt, rockA, rockB, sand, wetSand, seabed, snow, cliff */
 const PALETTES: Record<Climate, number[]> = {
-  temperate: [0x4e6a2c, 0x7a7545, 0x3b5424, 0x2b3a1c, 0x6e5a40, 0x858075, 0x67625a, 0xcfc29a, 0x9a8c72, 0x7d735a, 0xeef1f5, 0x524d46],
+  temperate: [0x4e6a2c, 0x7a7545, 0x3b5424, 0x2b3a1c, 0x6e5a40, 0x858075, 0x67625a, 0xcfc29a, 0x9a8c72, 0x7d735a, 0xdfe5ec, 0x524d46],
   desert: [0xa89262, 0xbfa477, 0x8f7a50, 0x746a45, 0xa67a4c, 0xae7350, 0x8a5a3e, 0xdcc08e, 0xae9672, 0x948666, 0xefede8, 0x734632],
   tropical: [0x4a7a2c, 0x6f8c3a, 0x305e22, 0x1f3c18, 0x735638, 0x6c6a5c, 0x545446, 0xeee2c0, 0xc0b08c, 0xcdc19c, 0xf2f2f2, 0x48463d],
-  alpine: [0x52703a, 0x767e52, 0x3b572b, 0x26361c, 0x655645, 0x8a8a86, 0x676865, 0xb3a98e, 0x8c836c, 0x6b6656, 0xf3f5f8, 0x51514f],
+  alpine: [0x52703a, 0x767e52, 0x3b572b, 0x26361c, 0x655645, 0x8a8a86, 0x676865, 0xb3a98e, 0x8c836c, 0x6b6656, 0xe2e8ef, 0x51514f],
 };
 
 export class TerrainRenderer {
@@ -405,6 +405,7 @@ export class TerrainRenderer {
     const H = this.state.heights, D = this.heightData;
     for (let i = 0; i < H.length; i++) D[i] = THREE.DataUtils.toHalfFloat(H[i]);
     this.heightTexture.needsUpdate = true;
+    this.heightVersion++;
   }
 
   private rebuildAll() {
@@ -426,6 +427,7 @@ export class TerrainRenderer {
     for (let cz = Math.floor(z0 / CH); cz <= Math.min(this.chunksPerSide - 1, Math.floor(z1 / CH)); cz++)
       for (let cx = Math.floor(x0 / CH); cx <= Math.min(this.chunksPerSide - 1, Math.floor(x1 / CH)); cx++) this.dirtyChunks.add(cz * this.chunksPerSide + cx);
     this.heightDirty = true;
+    this.heightVersion++;
     if (r.x0 <= 1 || r.z0 <= 1 || r.x1 >= this.N - 1 || r.z1 >= this.N - 1) this.outerDirty = true;
     this.markCells(r);
   }
@@ -576,14 +578,22 @@ export class TerrainRenderer {
 
   /** min / max terrain height (for camera clamping, raycasts) */
   heightRange(): [number, number] {
-    let mn = Infinity, mx = -Infinity;
-    const H = this.state.heights;
-    for (let i = 0; i < H.length; i++) {
-      if (H[i] < mn) mn = H[i];
-      if (H[i] > mx) mx = H[i];
+    if (this.rangeVersion !== this.heightVersion) {
+      let mn = Infinity, mx = -Infinity;
+      const H = this.state.heights;
+      for (let i = 0; i < H.length; i++) {
+        if (H[i] < mn) mn = H[i];
+        if (H[i] > mx) mx = H[i];
+      }
+      this.range[0] = mn;
+      this.range[1] = mx;
+      this.rangeVersion = this.heightVersion;
     }
-    return [mn, mx];
+    return this.range;
   }
+  private range: [number, number] = [0, 0];
+  private rangeVersion = -1;
+  private heightVersion = 0;
 
   dispose() {
     for (const c of this.chunks) c.mesh.geometry.dispose();

@@ -77,6 +77,7 @@ uniform vec3 uMoonDir;
 uniform vec3 uSunDisk;
 uniform vec3 uMoonDisk;
 uniform float uSkyExposure;
+uniform vec3 uSkyFloor;
 uniform float uNightSky;
 uniform float uCloudCover;
 uniform float uCloudTime;
@@ -95,7 +96,7 @@ vec2 skyLutUv(vec3 dir) {
   return vec2(u, v);
 }
 vec3 skyBase(vec3 dir) {
-  return texture2D(uSkyLut, skyLutUv(dir)).rgb * uSkyExposure;
+  return texture2D(uSkyLut, skyLutUv(dir)).rgb * uSkyExposure + uSkyFloor * (1.0 - 0.65 * sqrt(max(dir.y, 0.0)));
 }
 float starHash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
 
@@ -225,6 +226,7 @@ void main() {
 
 const _v = new THREE.Vector3();
 const _c = new THREE.Color();
+const _c2 = new THREE.Color();
 const _m4a = new THREE.Matrix4();
 const _m4b = new THREE.Matrix4();
 
@@ -236,6 +238,7 @@ export class SkySystem {
     uSunDisk: { value: new THREE.Vector3(0, 0, 0) },
     uMoonDisk: { value: new THREE.Vector3(0, 0, 0) },
     uSkyExposure: { value: 1 },
+    uSkyFloor: { value: new THREE.Vector3() },
     uNightSky: { value: 0 },
     uCloudCover: { value: 0.3 },
     uCloudTime: { value: 0 },
@@ -410,31 +413,43 @@ export class SkySystem {
     L.night = 1 - THREE.MathUtils.smoothstep(sy, -0.12, 0.07);
     L.golden = THREE.MathUtils.smoothstep(sy, 0.0, 0.08) * (1 - THREE.MathUtils.smoothstep(sy, 0.12, 0.42));
 
-    // active light: sun by day, moon at night (both fade to 0 at the switch point)
-    const sunF = THREE.MathUtils.smoothstep(sy, -0.025, 0.1);
-    const moonF = (1 - THREE.MathUtils.smoothstep(sy, -0.16, -0.025)) * THREE.MathUtils.smoothstep(L.moonDir.y, 0.0, 0.2);
-    const SUN_I = 3.4;
-    if (sy > -0.025) {
+    // active light: sun by day, then a "twilight sky light" from the sunset azimuth (warm -> blue), then the
+    // moon at night. The light only jumps direction at the switch point where its intensity is ~0.
+    const sunF = THREE.MathUtils.smoothstep(sy, -0.035, 0.07);
+    const SWITCH = -0.15;
+    const twF = (1 - THREE.MathUtils.smoothstep(sy, -0.01, 0.1)) * THREE.MathUtils.smoothstep(sy, SWITCH, -0.06);
+    const moonF = (1 - THREE.MathUtils.smoothstep(sy, -0.26, SWITCH)) * THREE.MathUtils.smoothstep(L.moonDir.y, 0.0, 0.2);
+    const SUN_I = 3.2;
+    if (sy > SWITCH) {
       L.lightDir.copy(L.sunDir);
       // keep the light a bit above the horizon so terrain doesn't go fully black, stays readable
-      if (L.lightDir.y < 0.06) {
-        L.lightDir.y = 0.06;
+      if (L.lightDir.y < 0.1) {
+        L.lightDir.y = 0.1;
         L.lightDir.normalize();
       }
-      L.lightColor.copy(this.sunT);
+      _c.copy(this.sunT);
       // normalise so intensity carries brightness, color carries hue
-      const m = Math.max(L.lightColor.r, L.lightColor.g, L.lightColor.b, 1e-4);
-      L.lightColor.multiplyScalar(1 / m);
-      L.lightIntensity = SUN_I * sunF * Math.min(1, 0.35 + m * 0.75);
+      const m = Math.max(_c.r, _c.g, _c.b, 1e-4);
+      _c.multiplyScalar(1 / m);
+      const sunI = SUN_I * sunF * Math.min(1, 0.35 + m * 0.75);
+      const twI = 0.75 * twF;
+      const blue = THREE.MathUtils.smoothstep(-sy, -0.01, 0.1);
+      _c2.setRGB(THREE.MathUtils.lerp(1.0, 0.5, blue), THREE.MathUtils.lerp(0.6, 0.6, blue), THREE.MathUtils.lerp(0.45, 1.0, blue));
+      const tot = sunI + twI;
+      const wa = sunI / Math.max(tot, 1e-4), wb = twI / Math.max(tot, 1e-4);
+      L.lightColor.setRGB(_c.r * wa + _c2.r * wb, _c.g * wa + _c2.g * wb, _c.b * wa + _c2.b * wb);
+      L.lightIntensity = tot;
     } else {
       L.lightDir.copy(L.moonDir);
-      if (L.lightDir.y < 0.12) {
-        L.lightDir.y = 0.12;
+      if (L.lightDir.y < 0.15) {
+        L.lightDir.y = 0.15;
         L.lightDir.normalize();
       }
-      L.lightColor.setRGB(0.62, 0.74, 1.0);
-      L.lightIntensity = 0.42 * moonF;
+      L.lightColor.setRGB(0.6, 0.72, 1.0);
+      L.lightIntensity = 0.5 * moonF;
     }
+    // twilight amount (sun just below the horizon): brightens the sky for a readable blue hour
+    const twilight = THREE.MathUtils.smoothstep(sy, -0.2, -0.07) * (1 - THREE.MathUtils.smoothstep(sy, -0.06, 0.0));
 
     // sky scattering sources (LUT units)
     const E = 10;
@@ -446,10 +461,13 @@ export class SkySystem {
     this.lutUniforms.uMie.value = mie;
 
     // exposure & sky brightness for readability at night
-    L.exposure = THREE.MathUtils.lerp(1.0, 2.0, L.night);
-    u.uSkyExposure.value = 1.0;
+    L.exposure = THREE.MathUtils.lerp(1.0, 2.1, L.night);
+    u.uSkyExposure.value = 1.0 + 2.5 * twilight;
     u.uNightSky.value = THREE.MathUtils.smoothstep(L.night, 0.55, 1.0) * 0.9;
-    L.envIntensity = THREE.MathUtils.lerp(1.15, 2.4, L.night);
+    L.envIntensity = THREE.MathUtils.lerp(1.0, 2.2, L.night) + 1.2 * twilight;
+    // night sky floor (deep blue, brighter toward the horizon) so the night never goes pitch black
+    const fl = THREE.MathUtils.smoothstep(L.night, 0.3, 1.0);
+    u.uSkyFloor.value.set(0.0012 * fl, 0.0022 * fl, 0.0058 * fl);
 
     // sun / moon disk radiance
     u.uSunDisk.value.set(this.sunT.r, this.sunT.g, this.sunT.b).multiplyScalar(120 * THREE.MathUtils.smoothstep(sy, -0.03, 0.01));
@@ -481,7 +499,7 @@ export class SkySystem {
     u.uStarRot.value.setFromMatrix4(_m4a);
 
     // LUT refresh when the sun moved noticeably (cheap, but no need for every frame)
-    if (force || this.lutDirty || L.sunDir.distanceToSquared(this.lastLutSun) > 1e-6 || Math.abs(L.moonDir.y - this.lastLutMoonY) > 0.002) {
+    if (force || this.lutDirty || L.sunDir.distanceToSquared(this.lastLutSun) > 1e-5 || Math.abs(L.moonDir.y - this.lastLutMoonY) > 0.002) {
       this.lutDirty = false;
       this.lastLutSun.copy(L.sunDir);
       this.lastLutMoonY = L.moonDir.y;

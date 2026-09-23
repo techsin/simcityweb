@@ -13,7 +13,9 @@ import type { Climate } from '../../core/types';
 import { getNoiseTexture, getWaveNormalTexture } from './textures';
 
 const OUTER = 32000;
-const OUTER_RES = 256;
+const OUTER_RES = 512;
+/** extent (m) of the coarse outer height texture around the map (beyond: clamped) */
+const OUTER_TEX = 12000;
 
 const WATER_VERT_PARS = /* glsl */ `
 varying vec3 vWW;
@@ -30,7 +32,7 @@ uniform sampler2D uWave;
 uniform sampler2D uNoise;
 uniform float uN;
 uniform float uCell;
-uniform float uOuter;
+uniform float uOuterExt;
 uniform float uSea;
 uniform float uWTime;
 uniform vec3 uShallow;
@@ -48,7 +50,7 @@ float waterGround(vec3 P) {
     vec2 uv = (P.xz / uCell + 0.5) / (uN + 1.0);
     return texture2D(uHeightTex, uv).r;
   }
-  vec2 uv = (P.xz + uOuter) / (W + 2.0 * uOuter);
+  vec2 uv = (P.xz + uOuterExt) / (W + 2.0 * uOuterExt);
   return texture2D(uOuterTex, uv).r;
 }
 
@@ -141,7 +143,7 @@ export class WaterRenderer {
       uNoise: { value: getNoiseTexture() as THREE.Texture },
       uN: { value: N },
       uCell: { value: CELL_SIZE },
-      uOuter: { value: OUTER },
+      uOuterExt: { value: OUTER_TEX },
       uSea: { value: SEA_LEVEL },
       uWTime: { value: 0 },
       uShallow: { value: pal.shallow },
@@ -208,11 +210,11 @@ export class WaterRenderer {
   /** (re)sample the synthetic outer landscape heights into the coarse texture */
   updateOuter(worldHeight: (x: number, z: number) => number) {
     const W = this.N * CELL_SIZE;
-    const size = W + 2 * OUTER;
+    const size = W + 2 * OUTER_TEX;
     for (let j = 0; j < OUTER_RES; j++)
       for (let i = 0; i < OUTER_RES; i++) {
-        const x = -OUTER + ((i + 0.5) / OUTER_RES) * size;
-        const z = -OUTER + ((j + 0.5) / OUTER_RES) * size;
+        const x = -OUTER_TEX + ((i + 0.5) / OUTER_RES) * size;
+        const z = -OUTER_TEX + ((j + 0.5) / OUTER_RES) * size;
         this.outerData[j * OUTER_RES + i] = THREE.DataUtils.toHalfFloat(worldHeight(x, z));
       }
     this.outerTex.needsUpdate = true;

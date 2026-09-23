@@ -12,12 +12,13 @@ import { rooftopWaterTank, acUnit } from '../kit';
 import {
   P, TRIM, inFace, U, fq, win, wins, door, steps, roofGable, roofHip, roofMansard, chimney, lawnSlab, paveSlab, bush,
   bushRow, flowerBed, tree, lowWall, hedgeBox, trashCans, parkedCar, laundry, planter, parapet, flatRoof, setLot, band,
-  fireEscape, balcony, bay, capPoly, spread, bandRing, type WinStyle, type Face,
+  fireEscape, balcony, bay, capPoly, spread, bandRing, parking, lounger, type WinStyle, type Face,
 } from './res_util';
 import { roofGambrel } from './res_houses';
 
 // ---------------------------------------------------------------------------------------------- local helpers
 const ROOF = 0x6c6962;
+const TAR = 0x4e4b47;
 
 /** WallWindows box (no bottom). top = roof paint or null. */
 export function ww(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y0: number, y1: number, color: ColorLike, pattern: number, floor: number, top: Paint | null = P(ROOF, Surf.RoofFlat), faces: { pz?: Paint | null; nz?: Paint | null; px?: Paint | null; nx?: Paint | null } = {}): void {
@@ -35,7 +36,7 @@ function bulkhead(b: ModelBuilder, x: number, z: number, w: number, d: number, y
 }
 
 /** Bracketed cornice: projecting band + fascia + row of brackets on the front face. */
-function cornice(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, color: ColorLike, front: Face[] = ['pz'], brackets = true, out = 0.55, roof: ColorLike | null = ROOF): void {
+function cornice(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, color: ColorLike, front: Face[] = ['pz'], brackets = true, out = 0.55, roof: ColorLike | null = TAR): void {
   bandRing(b, x0, z0, x1, z1, y, 0.35, out, color, roof);
   band(b, x0, z0, x1, z1, y - 0.45, 0.45, out * 0.35, color, false);
   if (!brackets) return;
@@ -51,6 +52,11 @@ function cornice(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number
       }
     });
   }
+}
+
+/** Window-sill courses: thin projecting bands at sill level of each floor f in [f0, f1). */
+function sills(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, f0: number, f1: number, fh: number, frac: number, color: ColorLike, top = true): void {
+  for (let f = f0; f < f1; f++) band(b, x0, z0, x1, z1, f * fh + frac * fh - 0.13, 0.13, 0.07, color, top);
 }
 
 /** Sidewalk-ish paved front strip. */
@@ -114,8 +120,9 @@ function walkup(b: ModelBuilder, v: number, rng: RNG): void {
     wins(b, 'nx', x0, [-5.5, -3.3, -1.1, 1.1, 3.3], 1.0, 0.9, 1.6, { frame: trimC, sill: trimC });
   }
   wins(b, 'nz', z0, [-5.5, -1.1, 3.3], 1.0, 0.9, 1.6, { frame: trimC });
-  // string course over the base
+  // string course over the base + sill courses on the upper floors
   band(b, x0, z0, x1, z1, fh - 0.15, 0.3, 0.12, trimC, false);
+  if (v !== 2 && v !== 4 && v !== 5) sills(b, x0, z0, x1, z1, 1, floors, fh, 0.22, trimC);
   // cornice / parapet variants
   if (v === 0 || v === 5) {
     cornice(b, x0, z0, x1, z1, top, 0x3a3530, ['pz']);
@@ -194,6 +201,7 @@ function tenement(b: ModelBuilder, v: number, rng: RNG): void {
       for (const x of [-8.8, 0, 8.8]) fireEscape(b, x, [fh, 2 * fh, 3 * fh, 4 * fh], 3.6);
     });
     band(b, -6 * C, C, 6 * C, 6 * C, fh - 0.15, 0.3, 0.1, trimC, false);
+    sills(b, -6 * C, C, 6 * C, 6 * C, 1, 5, fh, 0.22, trimC);
     cornice(b, -6 * C, C, 6 * C, 6 * C, top, 0x3a3530, ['pz'], true, 0.5);
     parapet(b, -6 * C, -6 * C, 6 * C, 6 * C, top + 0.35, 0.5, 0.25, brick, 0x6a645c);
     // courtyard
@@ -208,8 +216,8 @@ function tenement(b: ModelBuilder, v: number, rng: RNG): void {
     for (const x of [-12, 12]) streetTree(b, rng, x, 14.6, 0.85);
   } else if (v === 1) {
     // O plan (closed light well), grey stucco, 6 storeys, rooftop sheds
-    const st = 0xa8a49a, top = 6 * fh, R = 6 * C, r = 2 * C;
-    b.paint(P(0x8c887e)).box(-R, 0, -R, R, fh, R, { top: null });
+    const st = 0xb8aa8e, top = 6 * fh, R = 6 * C, r = 2 * C;
+    b.paint(P(0x8a7f6c)).box(-R, 0, -R, R, fh, R, { top: null });
     ww(b, -R, r, R, R, fh, top, st, 1, fh);
     ww(b, -R, -R, R, -r, fh, top, st, 1, fh);
     ww(b, -R, -r, -r, r, fh, top, st, 1, fh, P(ROOF, Surf.RoofFlat), { pz: null, nz: null });
@@ -225,6 +233,7 @@ function tenement(b: ModelBuilder, v: number, rng: RNG): void {
     });
     wins(b, 'px', R, spread(-R, R, 12), 0.8, 0.9, 1.6, { frame: 0xe0dcd2 });
     band(b, -R, -R, R, R, fh - 0.2, 0.35, 0.12, 0x8c887e, false);
+    sills(b, -R, -R, R, R, 1, 6, fh, 0.22, 0xe0d8c6, false);
     bandRing(b, -R, -R, R, R, top, 0.4, 0.3, 0xc8c4ba);
     b.paint(ROOF, Surf.RoofFlat);
     for (const [a0, c0, a1, c1] of [[-R, r, R, R], [-R, -R, R, -r], [-R, -r, -r, r], [r, -r, R, r]]) b.quad([a0, top + 0.4, c1], [a1, top + 0.4, c1], [a1, top + 0.4, c0], [a0, top + 0.4, c0]);
@@ -246,7 +255,7 @@ function tenement(b: ModelBuilder, v: number, rng: RNG): void {
     lowWall(b, -2 * C, 12.9, -1.2, 13.2, 1.1, 0x1f2224, Surf.Metal, 0x1f2224);
     lowWall(b, 1.2, 12.9, 2 * C, 13.2, 1.1, 0x1f2224, Surf.Metal, 0x1f2224);
     inFace(b, 'pz', -1 * C, () => { door(b, 0, 0.1, 1.8, 2.5, 0x2f4a37, { transom: true, frame: trimC, lamp: true }); b.paint(0x2f4a37).box(-1.6, 2.9, 0, 1.6, 3.05, 1.2, { nz: null }); });
-    for (const x of [-4 * C, 4 * C]) cornice(b, x - 2 * C, -1 * C, x + 2 * C, 6 * C, top, 0xe6dcc6, ['pz'], true, 0.45);
+    for (const x of [-4 * C, 4 * C]) { cornice(b, x - 2 * C, -1 * C, x + 2 * C, 6 * C, top, 0xe6dcc6, ['pz'], true, 0.45); sills(b, x - 2 * C, -1 * C, x + 2 * C, 6 * C, 1, 5, fh, 0.22, 0xe6dcc6); }
     bandRing(b, -6 * C, -6 * C, 6 * C, -1 * C, top, 0.35, 0.3, 0xe6dcc6, ROOF);
     inFace(b, 'px', -2 * C, () => fireEscape(b, U('px', 4 * C), [fh, 2 * fh, 3 * fh, 4 * fh], 3.4));
     inFace(b, 'nx', 2 * C, () => fireEscape(b, U('nx', 4 * C), [fh, 2 * fh, 3 * fh, 4 * fh], 3.4));
@@ -489,9 +498,438 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
   }
 }
 
+// ---------------------------------------------------------------------------------------------- balconies
+/** Individual balconies on a world face at along-face centers `at`, one per floor base in ys. ~18 tris each. */
+function balcs(b: ModelBuilder, f: Face, plane: number, at: number[], ys: number[], w: number, dp: number, slab: ColorLike, rail: ColorLike, railSurf: Surf = Surf.Plain, rh = 1.05): void {
+  inFace(b, f, plane, () => {
+    for (const a of at) for (const y of ys) {
+      const u = U(f, a), x0 = u - w / 2, x1 = u + w / 2;
+      b.paint(slab).box(x0, y - 0.2, 0, x1, y, dp, { nz: null });
+      b.paint(rail, railSurf);
+      b.quad([x0, y, dp], [x1, y, dp], [x1, y + rh, dp], [x0, y + rh, dp]);
+      b.quad2([x1, y, dp], [x1, y, 0], [x1, y + rh, 0], [x1, y + rh, dp]);
+      b.quad2([x0, y, 0], [x0, y, dp], [x0, y + rh, dp], [x0, y + rh, 0]);
+    }
+  });
+}
+
+/** Continuous balcony band along a world face [a0, a1] at floor y. rail: glass (Metal) or solid. */
+function balcBand(b: ModelBuilder, f: Face, plane: number, a0: number, a1: number, y: number, dp: number, slab: ColorLike, rail: ColorLike, railSurf: Surf = Surf.Metal, rh = 1.05, plants: ColorLike | null = null): void {
+  inFace(b, f, plane, () => {
+    const u0 = Math.min(U(f, a0), U(f, a1)), u1 = Math.max(U(f, a0), U(f, a1));
+    b.paint(slab).box(u0, y - 0.22, 0, u1, y, dp, { nz: null });
+    b.paint(rail, railSurf);
+    b.quad([u0, y, dp], [u1, y, dp], [u1, y + rh, dp], [u0, y + rh, dp]);
+    b.quad2([u1, y, dp], [u1, y, 0], [u1, y + rh, 0], [u1, y + rh, dp]);
+    b.quad2([u0, y, 0], [u0, y, dp], [u0, y + rh, dp], [u0, y + rh, 0]);
+    if (plants !== null) b.paint(plants, Surf.Foliage).box(u0 + 0.2, y, dp - 0.7, u1 - 0.2, y + 1.35, dp - 0.1, { nz: null, bottom: null });
+  });
+}
+
+/** Glass lobby front + canopy on a +z face. */
+function lobby(b: ModelBuilder, x0: number, x1: number, zf: number, h: number, canopy: ColorLike, frame: ColorLike = 0x2a2c2e, dp = 2.4): void {
+  inFace(b, 'pz', zf, () => {
+    b.paint(frame); fq(b, x0 - 0.1, 0.1, x1 + 0.1, h + 0.1, 0.04);
+    b.paint(0x2a3440, Surf.GlassPlain); fq(b, x0, 0.15, x1, h, 0.07);
+    b.paint(frame);
+    const n = Math.max(1, Math.round((x1 - x0) / 1.5));
+    for (let i = 1; i < n; i++) { const u = x0 + ((x1 - x0) * i) / n; fq(b, u - 0.04, 0.15, u + 0.04, h, 0.09); }
+  });
+  b.paint(canopy).box(x0 - 0.8, h + 0.2, zf, x1 + 0.8, h + 0.5, zf + dp, { nz: null, bottom: { color: 0xd8d4cc } });
+  b.paint(0xfff0c8, Surf.Emissive).box(x0, h + 0.15, zf + 0.4, x1, h + 0.2, zf + dp - 0.4, { top: null, nz: null, px: null, nx: null, pz: null, bottom: { color: 0xfff0c8, surf: Surf.Emissive } });
+}
+
+/** Rooftop mechanical: a few AC units + optional bulkhead. */
+function roofMech(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, y: number, n = 3, hut = true): void {
+  for (let i = 0; i < n; i++) acUnit(b, rng.range(x0 + 1.5, x1 - 1.5), y, rng.range(z0 + 1.5, z1 - 1.5), rng.range(0.8, 1.2));
+  if (hut) bulkhead(b, (x0 + x1) / 2 + rng.range(-2, 2), (z0 + z1) / 2 + rng.range(-1, 1), 3.2, 3.0, y, 2.8);
+}
+
+// ---------------------------------------------------------------------------------------------- APARTMENT (R$$) 2x2
+function apartment(b: ModelBuilder, v: number, rng: RNG): void {
+  lawnSlab(b, -16, -16, 16, 16, 0x6a9443);
+  const fh = 3.0;
+  if (v === 0 || v === 2 || v === 3) {
+    // slab: x [-12.6, 12.6] (6 cols of 4.2), z [-4.2, 8.4]
+    const C = 4.2, x0 = -3 * C, x1 = 3 * C, z0 = -C, z1 = 2 * C;
+    const floors = v === 2 ? 7 : 6, top = floors * fh;
+    const wall = [0xe8e4dc, 0, 0xd4d6d6, 0xd8c8ae][v];
+    const setback = v === 3;
+    ww(b, x0, z0, x1, z1, fh, setback ? top - fh : top, wall, 3, fh, P(0x9a968e, Surf.RoofFlat));
+    b.paint(0x9c9890).box(x0, 0, z0, x1, fh, z1, { top: null });
+    lobby(b, -4.2, 4.2, z1, 2.8, v === 0 ? 0x3a3c40 : 0xe8e8e4);
+    inFace(b, 'pz', z1, () => { for (const x of [-10.5, -6.3, 6.3, 10.5]) win(b, x, 0.9, 3.0, 1.6, { frame: 0x3a3c40, ft: 0.06 }); });
+    wins(b, 'nz', z0, [-10.5, -6.3, -2.1, 2.1, 6.3, 10.5], 0.9, 3.0, 1.6, { frame: 0x3a3c40, ft: 0.06 });
+    const ys = Array.from({ length: floors - (setback ? 2 : 1) }, (_, i) => (i + 1) * fh);
+    if (v === 0) {
+      balcs(b, 'pz', z1, [-10.5, -6.3, -2.1, 2.1, 6.3, 10.5], ys, 3.4, 1.5, 0xf2f0ea, 0xc0643e);
+      flatRoof(b, x0, z0, x1, z1, top, 0.9, 0.25, 0xe8e4dc, 0x8a867e, 0xd0ccc4);
+      roofMech(b, rng, x0, z0, x1, z1, top, 3, true);
+    } else if (v === 2) {
+      for (const y of ys) balcBand(b, 'pz', z1, x0, x1, y, 1.8, 0xf4f4f0, 0x9fb4c0, Surf.Metal);
+      for (let i = 1; i < 6; i++) b.paint(0xf4f4f0).box(x0 + i * C - 0.1, fh, z1, x0 + i * C + 0.1, top - fh + 1.1, z1 + 1.8, { bottom: null });
+      // penthouse set back
+      flatRoof(b, x0, z0, x1, z1, top, 0.3, 0.2, 0xd4d6d6, 0x8a867e);
+      ww(b, x0 + C, z0 + 1.5, x1 - C, z1 - 3.0, top, top + fh, 0x3a3d42, 3, fh);
+      band(b, x0 + C - 0.8, z0 + 0.7, x1 - C + 0.8, z1 - 2.2, top + fh, 0.3, 0, 0xf4f4f0);
+      b.paint(0x9fb4c0, Surf.Metal).quad2([x0 + 0.3, top + 0.3, z1 - 0.3], [x1 - 0.3, top + 0.3, z1 - 0.3], [x1 - 0.3, top + 1.3, z1 - 0.3], [x0 + 0.3, top + 1.3, z1 - 0.3]);
+      acUnit(b, x0 + 2, top, z0 + 2); acUnit(b, x1 - 2, top, z0 + 2);
+    } else {
+      // warm beige with wood accent strips, top floor set back with a green terrace
+      b.paint(0x9a7250, Surf.Wood);
+      for (const x of [-8.4, 0, 8.4]) b.box(x - 0.5, fh, z1, x + 0.5, top - fh, z1 + 0.25, { nz: null, bottom: null });
+      balcs(b, 'pz', z1, [-10.5, -6.3, -2.1, 2.1, 6.3, 10.5], ys.filter((_, i) => i % 2 === 0), 3.4, 1.4, 0xece8e0, 0x9fb4c0, Surf.Metal);
+      balcs(b, 'pz', z1, [-10.5, -6.3, -2.1, 2.1, 6.3, 10.5].filter((_, i) => i % 2 === 1), ys.filter((_, i) => i % 2 === 1), 3.4, 1.4, 0xece8e0, 0x9fb4c0, Surf.Metal);
+      b.paint(0x5f8a3a, Surf.Foliage).quad([x0, top - fh + 0.05, z1], [x1, top - fh + 0.05, z1], [x1, top - fh + 0.05, z0], [x0, top - fh + 0.05, z0]);
+      ww(b, x0 + C, z0, x1 - C, z1 - 2.5, top - fh, top, 0xd8c8ae, 3, fh, P(0x5f8a3a, Surf.Foliage));
+      parapet(b, x0, z0, x1, z1, top - fh, 0.4, 0.2, 0xd8c8ae);
+      b.paint(0x9fb4c0, Surf.Metal).quad2([x0 + 0.2, top - fh + 0.4, z1 - 0.2], [x1 - 0.2, top - fh + 0.4, z1 - 0.2], [x1 - 0.2, top - fh + 1.2, z1 - 0.2], [x0 + 0.2, top - fh + 1.2, z1 - 0.2]);
+      for (const x of [-11, 11]) planter(b, x, z1 - 1.4, 1.2, 1.2, top - fh, 0x8f8a80, 0x4f7a34, x);
+      solar(b, x0 + C + 1, z0 + 1, x1 - C - 1, z1 - 3.5, top);
+    }
+    // back parking + front landscaping
+    parking(b, rng, -15, -15.8, 15, -5.0, 0.55, 1);
+    paveSlab(b, -2.5, z1, 2.5, 16, 0xc8c4bc, 0.1);
+    hedgeBox(b, -15.6, 13.8, -3.2, 14.6, 0.9, 0x3f6b2e);
+    hedgeBox(b, 3.2, 13.8, 15.6, 14.6, 0.9, 0x3f6b2e);
+    for (const x of [-10, -5.5, 5.5, 10]) tree(b, rng, x, 12.0, 0.9, 'round');
+    bushRow(b, -12, 9.5, -5, 9.5, 4, 0.55, 0x4a7434, v);
+    bushRow(b, 5, 9.5, 12, 9.5, 4, 0.55, 0x4a7434, v + 7);
+  } else if (v === 1) {
+    // L-shaped brick block, punched windows, bar balconies, courtyard garden at the back
+    const C = 3.0, fh1 = 3.0, top = 5 * fh1;
+    const brick = 0x9a5a44;
+    ww(b, -4 * C, 0, 4 * C, 3 * C, 0, top, brick, 0, fh1, null);
+    ww(b, 1 * C, -4 * C, 4 * C, 0, 0, top, brick, 0, fh1, null, { pz: null });
+    cornice(b, -4 * C, 0, 4 * C, 3 * C, top, 0xd8d0c0, ['pz'], false, 0.3);
+    cornice(b, 1 * C, -4 * C, 4 * C, 0, top, 0xd8d0c0, ['pz'], false, 0.3);
+    parapet(b, -4 * C, 0, 4 * C, 3 * C, top + 0.35, 0.6, 0.25, brick, 0xd8d0c0);
+    band(b, -4 * C, 0, 4 * C, 3 * C, fh1 - 0.1, 0.25, 0.08, 0xd8d0c0, false);
+    balcs(b, 'pz', 3 * C, [-7.5, -1.5, 4.5, 10.5], [fh1, 2 * fh1, 3 * fh1, 4 * fh1], 2.2, 1.1, 0xd8d0c0, 0x2a2c2e, Surf.Metal, 1.0);
+    inFace(b, 'pz', 3 * C, () => { door(b, 1.5, 0.1, 1.8, 2.5, 0x2a2c2e, { transom: true, frame: 0xd8d0c0, lamp: true }); });
+    b.paint(0xd8d0c0).box(0, 2.8, 3 * C, 3, 2.95, 3 * C + 1.2, { nz: null });
+    balcs(b, 'nx', 1 * C, [-10.5, -4.5], [fh1, 2 * fh1, 3 * fh1, 4 * fh1], 2.2, 1.1, 0xd8d0c0, 0x2a2c2e, Surf.Metal, 1.0);
+    roofMech(b, rng, -4 * C, 0, 4 * C, 3 * C, top + 0.35, 2, true);
+    acUnit(b, 7.5, top + 0.35, -7);
+    // garden courtyard
+    lawnSlab(b, -12, -15, 3, 0, 0x5e8d3c, 0.1);
+    paveSlab(b, -12, -8, 3, -6.5, 0xc8c2b6, 0.12);
+    for (const [x, z] of [[-9, -11.5], [-4, -3.5], [-9, -3.5]] as [number, number][]) tree(b, rng, x, z, 0.9, 'round');
+    playsetMini(b, -4, -12);
+    parking(b, rng, 1.0, -15.8, 15.6, -12.4, 0.0, 1);
+    paveSlab(b, 12.4, -12.4, 15.8, 16, ASPH, 0.08);
+    parkedCar(b, rng, 14.1, 6, 0);
+    paveSlab(b, -16, 9, 16, 16, 0xc3beb3, 0.1);
+    for (const x of [-12, -4, 7]) { b.paint(0x5a4432).box(x - 0.8, 0.1, 12.2, x + 0.8, 0.13, 13.8, { bottom: null }); tree(b, rng, x, 13, 0.8, 'round'); }
+  } else if (v === 4) {
+    // white base with checkerboard of cantilevered dark boxes
+    const C = 4.2, x0 = -3 * C, x1 = 3 * C, z0 = -C, z1 = 2 * C, floors = 5, top = floors * fh;
+    ww(b, x0, z0, x1, z1, 0, top, 0xeeeeea, 0, fh);
+    b.paint(0x55585c).box(x0 - 0.02, 0, z1 - 0.1, x1 + 0.02, fh, z1 + 0.02, { top: null, nz: null, bottom: null });
+    lobby(b, -4.2, 0.0, z1, 2.8, 0x2e3033);
+    for (let f = 1; f < floors; f++) for (let c = 0; c < 6; c++) {
+      if ((f + c) % 2) continue;
+      const xa = x0 + c * C + 0.2, xb = xa + C - 0.4, y0 = f * fh + 0.1;
+      b.paint(0x3a3d42).box(xa, y0, z1, xb, y0 + fh - 0.2, z1 + 1.3, { nz: null });
+      inFace(b, 'pz', z1 + 1.3, () => { b.paint(0x2a3440, Surf.WallWindows, 3, 100); fq(b, xa + 0.3, y0 + 0.5, xb - 0.3, y0 + fh - 0.6, 0.02); });
+    }
+    flatRoof(b, x0, z0, x1, z1, top, 0.5, 0.2, 0xeeeeea, 0x8a867e);
+    roofMech(b, rng, x0, z0, x1, z1, top, 3, true);
+    balcs(b, 'nz', z0, [-8.4, 0, 8.4], [fh, 2 * fh, 3 * fh, 4 * fh], 3.4, 1.3, 0xeeeeea, 0x55585c, Surf.Metal);
+    parking(b, rng, -15, -15.8, 15, -5.0, 0.55, 1);
+    paveSlab(b, -4.5, z1, 0.5, 16, 0xc8c4bc, 0.1);
+    for (let i = 0; i < 5; i++) planter(b, 3 + i * 2.6, 10.5, 1.8, 1.0, 0, 0x55585c, 0x5a8a3a, i);
+    for (const x of [-12, -8]) tree(b, rng, x, 12, 0.9, 'column');
+    hedgeBox(b, -15.6, 14.2, -5.0, 15.0, 0.8, 0x3f6b2e);
+  } else {
+    // 1990s pastel block: salmon + cream, hipped tile roof, corner balconies
+    const C = 3.0, x0 = -4 * C, x1 = 4 * C, z0 = -2 * C, z1 = 2 * C, floors = 6, top = floors * fh;
+    ww(b, x0, z0, x1, z1, 0, top, 0xd9a08a, 0, fh, null);
+    b.paint(0xefe6d6).box(x0 - 0.05, 0, z0 - 0.05, x1 + 0.05, fh, z1 + 0.05, { top: null, bottom: null });
+    for (const x of [-3, 3]) b.paint(0xefe6d6).box(x - 1.5, fh, z1, x + 1.5, top, z1 + 0.3, { nz: null, bottom: null, top: null });
+    band(b, x0, z0, x1, z1, top - 0.3, 0.3, 0.2, 0xefe6d6, false);
+    roofHip(b, 0, 0, x1 - x0, z1 - z0, top, 3.2, P(0xa65a3c, Surf.RoofTiles), { over: 0.7, trim: 0xefe6d6 });
+    const ys = [fh, 2 * fh, 3 * fh, 4 * fh, 5 * fh];
+    balcs(b, 'pz', z1, [-10.5, 10.5], ys, 2.8, 1.4, 0xefe6d6, 0xf4f0e8, Surf.Metal, 1.0);
+    balcs(b, 'px', x1, [4.5], ys, 2.8, 1.3, 0xefe6d6, 0xf4f0e8, Surf.Metal, 1.0);
+    balcs(b, 'nx', x0, [4.5], ys, 2.8, 1.3, 0xefe6d6, 0xf4f0e8, Surf.Metal, 1.0);
+    inFace(b, 'pz', z1, () => { door(b, 0, 0.1, 2.0, 2.5, 0x55707e, { frame: 0xefe6d6, sidelights: true, lamp: true }); });
+    b.paint(0xa65a3c).box(-2.0, 2.8, z1, 2.0, 3.0, z1 + 1.8, { nz: null });
+    parking(b, rng, -15, -15.8, 15, -7.0, 0.5, 1);
+    paveSlab(b, -1.2, z1, 1.2, 16, 0xc8c4bc, 0.1);
+    for (const x of [-11, -6, 6, 11]) tree(b, rng, x, 11.5, 0.95, 'round');
+    bushRow(b, -11, 7.2, -3, 7.2, 5, 0.5, 0x4a7434, 3);
+    bushRow(b, 3, 7.2, 11, 7.2, 5, 0.5, 0x4a7434, 9);
+    flowerBed(b, -4, 9, 4, 10, 0xc4506a);
+  }
+}
+
+const ASPH = 0x404145;
+
+function playsetMini(b: ModelBuilder, x: number, z: number): void {
+  b.paint(0xd9c39a, Surf.Pavement).box(x - 2.5, 0, z - 2, x + 2.5, 0.14, z + 2, { bottom: null });
+  b.paint(0xc9483a).box(x - 1.2, 0, z - 0.6, x + 0.2, 1.4, z + 0.6, { bottom: null });
+  b.paint(0x3a7ab8).gableRoof(x - 0.5, z, 1.4, 1.2, 1.4, 0.6, 'x', 0.1);
+  b.paint(0xd9b23a, Surf.Metal).quad2([x + 0.2, 1.2, z - 0.3], [x + 0.2, 1.2, z + 0.3], [x + 2.0, 0.15, z + 0.3], [x + 2.0, 0.15, z - 0.3]);
+}
+
+function solar(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number): void {
+  b.paint(0x1d2a44, Surf.GlassCurtain, 3, 1.2);
+  for (let z = z0; z + 1.6 <= z1; z += 2.4) b.quad([x0, y + 0.3, z + 1.6], [x1, y + 0.3, z + 1.6], [x1, y + 0.9, z], [x0, y + 0.9, z]);
+}
+
+// ---------------------------------------------------------------------------------------------- CONDO (R$$$) 2x2
+function condo(b: ModelBuilder, v: number, rng: RNG): void {
+  lawnSlab(b, -16, -16, 16, 16, 0x5a8c3a);
+  const fh = 3.2;
+  const glassRail = 0xa8bcc8;
+  if (v === 0) {
+    // terraced ziggurat: setbacks toward the street, glass-railed terraces with planters
+    const C = 4.2, x0 = -3 * C, x1 = 3 * C, z0 = -2 * C;
+    const stone = 0xe6e0d4;
+    const tiers: [number, number, number][] = [[0, 5, 2 * C], [5, 7, C], [7, 9, 0]];
+    for (const [f0, f1, zf] of tiers) {
+      ww(b, x0, z0, x1, zf, f0 * fh, f1 * fh, stone, 3, fh, P(0xc8c2b4, Surf.Pavement));
+      if (f1 < 9) {
+        const y = f1 * fh;
+        b.paint(glassRail, Surf.Metal).quad2([x0 + 0.2, y, zf - 0.2], [x1 - 0.2, y, zf - 0.2], [x1 - 0.2, y + 1.1, zf - 0.2], [x0 + 0.2, y + 1.1, zf - 0.2]);
+        for (let i = 0; i < 4; i++) planter(b, x0 + 2.5 + i * 6.5, zf - 1.3, 2.4, 0.9, y, 0xb8b0a0, 0x4f7a34, i + f1);
+        b.paint(0xe8e2d4).box(x0 + 1.6, y, zf - C + 0.8, x0 + 4.4, y + 2.6, zf - C + 3.0, { bottom: null, top: { color: 0xf4f0e8 } });
+      }
+    }
+    for (let f = 1; f < 5; f++) balcBand(b, 'pz', 2 * C, x0, x1, f * fh, 1.6, 0xf2eee6, glassRail);
+    b.paint(0x2a3440, Surf.GlassPlain).box(x0 + 0.2, 0.1, 2 * C, x1 - 0.2, fh - 0.2, 2 * C + 0.02, { top: null, bottom: null, nz: null });
+    b.paint(0xd8d2c4).box(-5, fh - 0.1, 2 * C, 5, fh + 0.2, 2 * C + 3.0, { nz: null });
+    flatRoof(b, x0, z0, x1, 0, 9 * fh, 0.6, 0.2, stone, 0x8a867e);
+    roofMech(b, rng, x0, z0, x1, 0, 9 * fh, 2, true);
+    frontGarden(b, rng, 2 * C);
+  } else if (v === 1) {
+    // stepped sideways: 9-storey glass block + 6-storey block with roof terrace, white slab bands
+    const C = 1.5;
+    const xl0 = -12, xm = -1.5, xr1 = 12, z0 = -7.5, z1 = 7.5;
+    b.paint(0x2a3440, Surf.GlassCurtain, 5, fh).box(xl0, 0, z0, xm, 9 * fh, z1, { top: P(0x8a867e, Surf.RoofFlat) });
+    b.paint(0x2a3440, Surf.GlassCurtain, 0, fh).box(xm, 0, z0, xr1, 6 * fh, z1, { top: P(0xc8c2b4, Surf.Pavement), nx: null });
+    for (let f = 1; f <= 9; f++) band(b, xl0, z0, xm, z1, f * fh - 0.25, 0.3, 1.2, 0xf4f2ec, f === 9);
+    for (let f = 1; f <= 6; f++) band(b, xm, z0, xr1, z1, f * fh - 0.25, 0.3, 1.2, 0xf4f2ec, false);
+    for (let f = 1; f < 9; f++) b.paint(glassRail, Surf.Metal).quad2([xl0 - 1.2, f * fh + 0.05, z1 + 1.2], [xm, f * fh + 0.05, z1 + 1.2], [xm, f * fh + 1.1, z1 + 1.2], [xl0 - 1.2, f * fh + 1.1, z1 + 1.2]);
+    for (let f = 1; f < 6; f++) b.paint(glassRail, Surf.Metal).quad2([xm, f * fh + 0.05, z1 + 1.2], [xr1 + 1.2, f * fh + 0.05, z1 + 1.2], [xr1 + 1.2, f * fh + 1.1, z1 + 1.2], [xm, f * fh + 1.1, z1 + 1.2]);
+    // roof terrace with pergola and plants on the lower block
+    const y = 6 * fh + 0.05;
+    b.paint(glassRail, Surf.Metal).quad2([xm, y, z1 + 1.1], [xr1 + 1.1, y, z1 + 1.1], [xr1 + 1.1, y + 1.1, z1 + 1.1], [xm, y + 1.1, z1 + 1.1]);
+    b.paint(0x7a5a40, Surf.Wood);
+    for (const [px, pz] of [[2, 1], [8, 1], [2, 5], [8, 5]] as [number, number][]) b.box(px - 0.1, y, pz - 0.1, px + 0.1, y + 2.6, pz + 0.1, { bottom: null });
+    for (let i = 0; i < 6; i++) b.box(1.8 + i * 1.28, y + 2.6, 0.7, 2.0 + i * 1.28, y + 2.8, 5.3, { bottom: null });
+    for (let i = 0; i < 4; i++) planter(b, 0.5 + i * 3.3, -4.5, 2.0, 1.0, y, 0x9a948a, 0x4f7a34, i);
+    tree(b, rng, 10.5, -5.0, 0.0001);
+    b.paint(0x4f7a34, Surf.Foliage).blob(10.5, y + 2.0, -4.8, 1.4, 1.3, 1.4, 0, 0.2, 3);
+    b.paint(0x3a3d42).box(-11.8, 9 * fh, -6, -4, 9 * fh + 2.8, -1, { bottom: null, top: P(0x5e5b55, Surf.RoofFlat) });
+    lobbyFront(b, -9, -4, z1 + 1.2);
+    frontGarden(b, rng, z1 + 1.2);
+  } else if (v === 2) {
+    // rounded front corner with continuous white balcony bands, silver glass
+    const fl = 8, R = 7.0, x0 = -12, x1 = 12, z0 = -8, z1 = 7;
+    const pts: [number, number][] = [[x0, z0], [x1, z0], [x1, z1 - R]];
+    for (let k = 1; k < 6; k++) { const a = (k / 6) * (Math.PI / 2); pts.push([x1 - R + Math.cos(a) * R, z1 - R + Math.sin(a) * R]); }
+    pts.push([x1 - R, z1], [x0, z1]);
+    b.paint(0x2a3440, Surf.GlassCurtain, 4, fh).extrude(pts, 0, fl * fh, { topPaint: P(0x8a867e, Surf.RoofFlat) });
+    // balcony bands follow the outline (front + curve + right side), 1.4 m out
+    const out: [number, number][] = [[x1 + 1.4, z0 + 2], [x1 + 1.4, z1 - R]];
+    for (let k = 1; k < 6; k++) { const a = (k / 6) * (Math.PI / 2); out.push([x1 - R + Math.cos(a) * (R + 1.4), z1 - R + Math.sin(a) * (R + 1.4)]); }
+    out.push([x1 - R, z1 + 1.4], [x0 + 2, z1 + 1.4]);
+    const inn: [number, number][] = [[x1, z0 + 2], [x1, z1 - R]];
+    for (let k = 1; k < 6; k++) { const a = (k / 6) * (Math.PI / 2); inn.push([x1 - R + Math.cos(a) * R, z1 - R + Math.sin(a) * R]); }
+    inn.push([x1 - R, z1], [x0 + 2, z1]);
+    for (let f = 1; f <= fl; f++) {
+      const y = f * fh;
+      b.paint(0xf4f2ec);
+      for (let i = 0; i < out.length - 1; i++) {
+        const a = out[i], c = out[i + 1], ia = inn[i], ic = inn[i + 1];
+        b.quad([ia[0], y, ia[1]], [a[0], y, a[1]], [c[0], y, c[1]], [ic[0], y, ic[1]]);
+        b.quad([a[0], y - 0.3, a[1]], [c[0], y - 0.3, c[1]], [c[0], y, c[1]], [a[0], y, a[1]].map((q) => q) as [number, number, number]);
+        if (f < fl) { b.paint(glassRail, Surf.Metal); b.quad2([a[0], y, a[1]], [c[0], y, c[1]], [c[0], y + 1.05, c[1]], [a[0], y + 1.05, a[1]]); b.paint(0xf4f2ec); }
+      }
+    }
+    b.paint(0xf4f2ec).box(x0 - 0.2, 0, z0 - 0.2, x0 + 2, fl * fh + 0.6, z1 + 1.6, { bottom: null });
+    b.paint(0xf4f2ec).box(x1 - 2, 0, z0 - 0.2, x1 + 1.6, fl * fh + 0.6, z0 + 2, { bottom: null });
+    roofMech(b, rng, x0 + 3, z0 + 1, x1 - 6, z1 - 2, fl * fh, 2, true);
+    lobbyFront(b, -6, 0, z1 + 1.4);
+    frontGarden(b, rng, z1 + 1.4);
+  } else if (v === 3) {
+    // dark glass with vertical wood fins, cantilevered boxes, rooftop pool
+    const x0 = -12, x1 = 12, z0 = -8, z1 = 6, fl = 9;
+    b.paint(0x2a3440, Surf.GlassCurtain, 3, fh).box(x0, fh, z0, x1, fl * fh, z1, { top: P(0xc8c2b4, Surf.Pavement) });
+    b.paint(0x3a3c40).box(x0, 0, z0, x1, fh, z1, { top: null });
+    b.paint(0x9a7250, Surf.Wood);
+    for (let i = 0; i <= 12; i++) { const x = x0 + i * 2; b.box(x - 0.12, fh, z1, x + 0.12, fl * fh, z1 + 0.6, { nz: null, bottom: null }); }
+    for (const [xa, f] of [[-9, 3], [2, 5], [-4, 7]] as [number, number][]) {
+      b.paint(0xe8e6e0).box(xa, f * fh, z1 + 0.6, xa + 6, (f + 1) * fh, z1 + 3.0, { nz: null });
+      inFace(b, 'pz', z1 + 3.0, () => { b.paint(0x2a3440, Surf.GlassPlain); fq(b, xa + 0.3, f * fh + 0.3, xa + 5.7, (f + 1) * fh - 0.3, 0.02); });
+    }
+    // rooftop pool + deck
+    const y = fl * fh;
+    b.paint(0xa8bcc8, Surf.Metal).quad2([x0 + 0.1, y, z1 - 0.1], [x1 - 0.1, y, z1 - 0.1], [x1 - 0.1, y + 1.1, z1 - 0.1], [x0 + 0.1, y + 1.1, z1 - 0.1]);
+    b.paint(0x8a6a4c, Surf.Wood).box(x0 + 0.5, y, z0 + 0.5, x1 - 0.5, y + 0.15, z1 - 0.5, { bottom: null });
+    b.paint(0x3fb0d8, Surf.Water).box(x0 + 2, y + 0.15, -1, x1 - 6, y + 0.3, 4, { bottom: null });
+    for (const x of [-8, -6, -4, -2]) lounger(b, x, -4.5, 0, 0xf2f0ea, y + 0.15);
+    b.paint(0x3a3d42).box(x1 - 5, y + 0.15, z0 + 1, x1 - 1, y + 3.0, z0 + 5, { bottom: null, top: P(0x5e5b55, Surf.RoofFlat) });
+    lobbyFront(b, -3, 3, z1 + 0.6);
+    frontGarden(b, rng, z1 + 0.6);
+  } else if (v === 4) {
+    // classic limestone luxury: arched windows, balconettes, mansard penthouse w/ dormers, canopy
+    const C = 3.2, x0 = -4 * C, x1 = 4 * C, z0 = -2 * C, z1 = 2 * C, fl = 7, top = fl * fh;
+    b.paint(P(0xc8bea8, Surf.Stone)).box(x0, 0, z0, x1, fh, z1, { top: null });
+    ww(b, x0, z0, x1, z1, fh, top, 0xd6ccb6, 7, fh, null);
+    band(b, x0, z0, x1, z1, fh - 0.15, 0.35, 0.15, 0xe6decc, false);
+    band(b, x0, z0, x1, z1, 3 * fh - 0.1, 0.2, 0.1, 0xe6decc, false);
+    bandRing(b, x0, z0, x1, z1, top, 0.5, 0.45, 0xe6decc);
+    roofMansard(b, 0, 0, x1 - x0, z1 - z0, top + 0.5, 4.2, 1.6, P(0x3e444c, Surf.RoofTiles), P(0x6c6962, Surf.RoofFlat), 0.2);
+    for (const x of [-11.2, -4.8, 4.8, 11.2]) {
+      const zf = z1 - 0.5;
+      b.paint(0xe6decc).box(x - 1.0, top + 0.9, zf - 2.0, x + 1.0, top + 3.6, zf, { nz: null, bottom: null, top: P(0x3e444c) });
+      inFace(b, 'pz', zf, () => win(b, x, top + 1.2, 1.1, 1.9, { frame: 0xe6decc, mull: 2 }));
+    }
+    // balconettes (iron) on floors 2 & 5
+    for (const f of [2, 5]) inFace(b, 'pz', z1, () => {
+      for (let c = 0; c < 8; c++) {
+        const u = x0 + (c + 0.5) * C;
+        b.paint(0xe6decc).box(u - 1.0, f * fh + 0.2, 0, u + 1.0, f * fh + 0.35, 0.6, { nz: null });
+        b.paint(0x1f2224, Surf.Metal); fq(b, u - 1.0, f * fh + 0.35, u + 1.0, f * fh + 1.2, 0.58);
+      }
+    });
+    inFace(b, 'pz', z1, () => {
+      door(b, 0, 0.1, 2.2, 2.7, 0x2a2622, { transom: true, frame: 0xe6decc, sidelights: true });
+      for (const x of [-11.2, -8, -4.8, 4.8, 8, 11.2]) win(b, x, 0.8, 1.2, 1.9, { frame: 0xe6decc, mull: 2 });
+    });
+    b.paint(0x1f3a2e).box(-1.8, 2.9, z1, 1.8, 3.2, z1 + 4.0, { nz: null });
+    b.paint(0xd8d0bc, Surf.Metal).box(-1.75, 0.1, z1 + 3.85, -1.6, 2.9, z1 + 4.0).box(1.6, 0.1, z1 + 3.85, 1.75, 2.9, z1 + 4.0);
+    chimney(b, -8, -3, 1.2, 1.0, top + 4, top + 5.4, 0xd6ccb6, Surf.Stone);
+    chimney(b, 8, -3, 1.2, 1.0, top + 4, top + 5.4, 0xd6ccb6, Surf.Stone);
+    frontGarden(b, rng, z1);
+    parkedCar(b, rng, 4.5, z1 + 5.5, Math.PI / 2, 0x1c1c1c);
+  } else {
+    // vertical-garden condo: deep planted balconies wrapping front & sides, rooftop trees
+    const C = 4.2, x0 = -3 * C, x1 = 3 * C, z0 = -2 * C, z1 = C, fl = 7, top = fl * fh;
+    ww(b, x0, z0, x1, z1, 0, top, 0xece9e2, 3, fh);
+    lobby(b, -4.2, 4.2, z1, 2.9, 0xece9e2);
+    for (let f = 1; f < fl; f++) {
+      const y = f * fh, green = [0x4f7a34, 0x5a8a3a, 0x3f6b2e][f % 3];
+      balcBand(b, 'pz', z1, x0 - 1.8, x1 + 1.8, y, 2.2, 0xf4f2ec, 0xf4f2ec, Surf.Plain, 0.5, green);
+      balcBand(b, 'px', x1, z0, z1, y, 1.8, 0xf4f2ec, 0xf4f2ec, Surf.Plain, 0.5, green);
+      balcBand(b, 'nx', x0, z0, z1, y, 1.8, 0xf4f2ec, 0xf4f2ec, Surf.Plain, 0.5, green);
+    }
+    flatRoof(b, x0, z0, x1, z1, top, 0.9, 0.25, 0xece9e2, 0x5f8a3a);
+    for (const [x, z] of [[-8, -4], [0, -5], [8, -3], [-4, 0.5], [5, 0]] as [number, number][]) { b.paint(0x5b4330, Surf.Wood).cylinder(x, z, top, 1.8, 0.15, 0.12, 5, { top: false }); b.paint(0x4f7a34, Surf.Foliage).blob(x, top + 2.8, z, 1.7, 1.5, 1.7, 0, 0.2, x + z); }
+    frontGarden(b, rng, z1 + 2.2);
+  }
+}
+
+function lobbyFront(b: ModelBuilder, x0: number, x1: number, z: number): void {
+  b.paint(0xd8d2c4).box(x0 - 1, 3.0, z, x1 + 1, 3.3, z + 2.6, { nz: null, bottom: { color: 0xe8e4dc } });
+  b.paint(0xfff0c8, Surf.Emissive).box(x0, 2.95, z + 0.5, x1, 3.0, z + 2.1, { top: null, nz: null, px: null, nx: null, pz: null, bottom: { color: 0xfff0c8, surf: Surf.Emissive } });
+}
+
+/** Manicured front: paved entry court, planters, hedges and trees between building front zf and the street. */
+function frontGarden(b: ModelBuilder, rng: RNG, zf: number): void {
+  paveSlab(b, -6, zf, 6, 16, 0xd4cfc4, 0.1);
+  for (const x of [-4.5, 4.5]) planter(b, x, zf + 3, 1.6, 1.6, 0, 0x8f8a80, 0x4f7a34, x);
+  hedgeBox(b, -15.6, 14.4, -6.5, 15.2, 1.1, 0x355e28);
+  hedgeBox(b, 6.5, 14.4, 15.6, 15.2, 1.1, 0x355e28);
+  for (const x of [-12, -8.5, 8.5, 12]) tree(b, rng, x, Math.min(zf + 4, 12), 0.95, 'round');
+  bushRow(b, -14, zf + 1.0, -7, zf + 1.0, 4, 0.6, 0x4a7434, zf);
+  bushRow(b, 7, zf + 1.0, 14, zf + 1.0, 4, 0.6, 0x4a7434, zf + 3);
+  paveSlab(b, -15.8, -15.8, 15.8, -10.5, ASPH, 0.08);
+}
+
+// ---------------------------------------------------------------------------------------------- COURTYARD BLOCK (R$$) 3x3
+function courtyard(b: ModelBuilder, v: number, rng: RNG): void {
+  paveSlab(b, -24, -24, 24, 24, 0xc3beb3, 0.08);
+  const C = 3.0, fh = 3.2, R = 7 * C, r = 3 * C; // 42 m block, 18 m court
+  if (v === 0) {
+    // O-shaped perimeter block with gate passage, ochre render, mansard attic, green court
+    const col = 0xd4a070, trimC = 0xf0e8d8, fl = 6, top = fl * fh;
+    ww(b, -R, r, -1 * C, R, 0, top, col, 0, fh, null);
+    ww(b, 1 * C, r, R, R, 0, top, col, 0, fh, null);
+    ww(b, -1 * C, r, 1 * C, R, fh, top, col, 0, fh, null, { px: null, nx: null });
+    b.paint(0x3a3634).box(-1 * C, 0, r, 1 * C, fh, R, { top: { color: 0x5a5450 }, pz: null, nz: null, px: { color: 0x9a8a78 }, nx: { color: 0x9a8a78 } });
+    b.paint(0x5a5450).quad([-C, fh - 0.01, R], [C, fh - 0.01, R], [C, fh - 0.01, r], [-C, fh - 0.01, r]);
+    ww(b, -R, -R, R, -r, 0, top, col, 0, fh, null);
+    ww(b, -R, -r, -r, r, 0, top, col, 0, fh, null, { pz: null, nz: null });
+    ww(b, r, -r, R, r, 0, top, col, 0, fh, null, { pz: null, nz: null });
+    // arch frame around the gate
+    inFace(b, 'pz', R, () => { b.paint(trimC); fq(b, -C - 0.4, 0, -C, fh + 0.4, 0.06); fq(b, C, 0, C + 0.4, fh + 0.4, 0.06); fq(b, -C - 0.4, fh, C + 0.4, fh + 0.4, 0.06); });
+    for (const [a, c, d, e] of [[-R, r, R, R], [-R, -R, R, -r], [-R, -r, -r, r], [r, -r, R, r]] as [number, number, number, number][]) {
+      bandRing(b, a, c, d, e, top, 0.4, 0.35, trimC);
+      roofMansard(b, (a + d) / 2, (c + e) / 2, d - a, e - c, top + 0.4, 3.0, 1.2, P(0x8a4a38, Surf.RoofTiles), P(0x6c6962, Surf.RoofFlat), 0.1);
+    }
+    band(b, -R, -R, R, R, fh - 0.1, 0.3, 0.08, trimC, false);
+    // courtyard garden
+    lawnSlab(b, -r, -r, r, r, 0x5e8d3c, 0.12);
+    paveSlab(b, -1.2, -r, 1.2, r, 0xd8d0c0, 0.14);
+    paveSlab(b, -r, -1.2, r, 1.2, 0xd8d0c0, 0.14);
+    for (const [x, z] of [[-5, -5], [5, -5], [-5, 5], [5, 5]] as [number, number][]) tree(b, rng, x, z, 1.0, 'round');
+    fountainTiny(b, 0, 0);
+    for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; bush(b, Math.cos(a) * 7.8, Math.sin(a) * 7.8, 0.6, 0x4a7434, i); }
+    for (const x of [-15, -6, 6, 15]) { b.paint(0x5a4432).box(x - 0.8, 0.08, 22.2, x + 0.8, 0.11, 23.8, { bottom: null }); tree(b, rng, x, 23, 0.85, 'round'); }
+  } else if (v === 1) {
+    // U open to the street: garden court with fountain & gate, cream stucco, hipped tile roofs, court balconies
+    const col = 0xe8dcc0, fl = 6, top = fl * fh, roof = P(0xa65a3c, Surf.RoofTiles);
+    ww(b, -R, -R, R, -r, 0, top, col, 0, fh, null);
+    ww(b, -R, -r, -r, R, 0, top, col, 0, fh, null, { nz: null });
+    ww(b, r, -r, R, R, 0, top, col, 0, fh, null, { nz: null });
+    roofHip(b, 0, (-R - r) / 2, 2 * R, R - r, top, 3.4, roof, { over: 0.5, trim: col });
+    roofHip(b, (-R - r) / 2, (R - r) / 2, R - r, R + r, top, 3.4, roof, { over: 0.5, trim: col });
+    roofHip(b, (R + r) / 2, (R - r) / 2, R - r, R + r, top, 3.4, roof, { over: 0.5, trim: col });
+    band(b, -R, -R, R, R, fh - 0.1, 0.3, 0.08, 0xd0c4a8, false);
+    const ys = [fh, 2 * fh, 3 * fh, 4 * fh, 5 * fh];
+    balcs(b, 'px', -r, [-4.5, 4.5, 13.5], ys, 2.4, 1.2, 0xf4f0e6, 0xf4f0e6, Surf.Plain, 1.0);
+    balcs(b, 'nx', r, [-4.5, 4.5, 13.5], ys, 2.4, 1.2, 0xf4f0e6, 0xf4f0e6, Surf.Plain, 1.0);
+    balcs(b, 'pz', -r, [-4.5, 4.5], ys, 2.4, 1.2, 0xf4f0e6, 0xf4f0e6, Surf.Plain, 1.0);
+    inFace(b, 'pz', -r, () => door(b, 0, 0.1, 2.0, 2.6, 0x5a3a24, { transom: true, frame: 0xf4f0e6, lamp: true }));
+    lawnSlab(b, -r, -r, r, R, 0x5e8d3c, 0.12);
+    paveSlab(b, -1.5, -r, 1.5, 24, 0xd8ccae, 0.14);
+    paveSlab(b, -r, 4, r, 7, 0xd8ccae, 0.14);
+    fountainTiny(b, 0, 5.5);
+    for (const [x, z] of [[-5.5, -3], [5.5, -3], [-5.5, 12], [5.5, 12]] as [number, number][]) tree(b, rng, x, z, 1.0, 'round');
+    flowerBed(b, -7.5, 8.5, -2.5, 10.5, 0xc4506a); flowerBed(b, 2.5, 8.5, 7.5, 10.5, 0xd9a13c);
+    lowWall(b, -r, R - 0.4, -1.8, R, 1.0, 0xe2d4b6, Surf.Plain, 0xa65a3c);
+    lowWall(b, 1.8, R - 0.4, r, R, 1.0, 0xe2d4b6, Surf.Plain, 0xa65a3c);
+    for (const x of [-15, 15]) { b.paint(0x5a4432).box(x - 0.8, 0.08, 22.2, x + 0.8, 0.11, 23.8, { bottom: null }); tree(b, rng, x, 23, 0.85, 'round'); }
+  } else {
+    // U open to the back with stepped modern wings, roof gardens, playground court
+    const fronts: [number, number, number, number, number][] = [[-R, r, R, R, 7], [-R, -R, -r, r, 6], [r, -R, R, r, 5]];
+    const cols = [0xdedcd6, 0xcac6bc, 0xb8b4aa];
+    fronts.forEach(([a, c, d, e, n], i) => {
+      ww(b, a, c, d, e, 0, n * fh, cols[i], 3 === 3 ? 0 : 0, fh, P(0x5f8a3a, Surf.Foliage), i === 0 ? {} : { pz: null });
+      parapet(b, a, c, d, e, n * fh, 0.6, 0.25, 0x9a968e);
+    });
+    b.paint(0x3a3d42).box(-R + 0.01, 0, R - 0.1, R - 0.01, fh, R + 0.01, { top: null, bottom: null, nz: null, px: null, nx: null });
+    lobby(b, -4.5, 4.5, R, 2.9, 0xdedcd6, 0x2a2c2e, 2.0);
+    for (let f = 1; f < 7; f++) balcBand(b, 'nz', r, -r, r, f * fh, 1.6, 0xf2f2ee, 0xa8bcc8);
+    for (let f = 1; f < 6; f++) balcBand(b, 'px', -r, -R + 1, r - 0.5, f * fh, 1.6, 0xf2f2ee, 0xa8bcc8);
+    for (let f = 1; f < 5; f++) balcBand(b, 'nx', r, -R + 1, r - 0.5, f * fh, 1.6, 0xf2f2ee, 0xa8bcc8);
+    for (let f = 1; f < 7; f++) balcBand(b, 'pz', R, -R + 1.5, -6, f * fh, 1.2, 0xf2f2ee, 0xa8bcc8);
+    for (let f = 1; f < 7; f++) balcBand(b, 'pz', R, 6, R - 1.5, f * fh, 1.2, 0xf2f2ee, 0xa8bcc8);
+    lawnSlab(b, -r, -24, r, r, 0x5e8d3c, 0.12);
+    playsetMini(b, -3, -6);
+    for (const [x, z] of [[4, -2], [5, -12], [-5, -16]] as [number, number][]) tree(b, rng, x, z, 1.0, 'round');
+    paveSlab(b, -2, -24, 2, r, 0xd0cabe, 0.14);
+    for (const [x, z] of [[-15, -3], [-12, 5], [15, -6]] as [number, number][]) { b.paint(0x4f7a34, Surf.Foliage).blob(x, (x < 0 ? 6 : 5) * fh + 0.9, z, 1.4, 1.0, 1.4, 0, 0.2, x); }
+    roofMech(b, rng, -R + 2, r + 2, R - 2, R - 2, 7 * fh, 3, true);
+  }
+}
+
+function fountainTiny(b: ModelBuilder, x: number, z: number): void {
+  b.paint(0xd6cfc0).cylinder(x, z, 0, 0.6, 2.0, 2.0, 12, { top: false, smooth: false });
+  b.paint(0x4fa6c9, Surf.Water).cylinder(x, z, 0.5, 0.02, 1.85, 1.85, 12);
+  b.paint(0xd6cfc0).cylinder(x, z, 0.5, 1.3, 0.2, 0.15, 6);
+}
+
 export const midModelsA = {
   res_walkup: (b: ModelBuilder, v: number, rng: RNG) => { setLot(8, 8, 14); walkup(b, v, rng); },
   res_tenement: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 20); tenement(b, v, rng); },
   res_rowhouses: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 8, 12); rowhouses(b, v, rng); },
+  res_apartment: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 22); apartment(b, v, rng); },
+  res_condo: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 30); condo(b, v, rng); },
+  res_courtyard: (b: ModelBuilder, v: number, rng: RNG) => { setLot(24, 24, 25); courtyard(b, v, rng); },
 };
-void [TRIM, roofHip, roofGambrel, lawnSlab, bushRow, flowerBed, hedgeBox, parkedCar, planter, flatRoof, balcony, spread];
+void [TRIM, roofHip, roofGambrel, lawnSlab, bushRow, flowerBed, hedgeBox, parkedCar, planter, flatRoof, balcony, spread, capPoly, roofGable];

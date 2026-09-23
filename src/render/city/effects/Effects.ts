@@ -134,15 +134,25 @@ function parseEmitters(v: unknown, variant: number): V3[] | null {
   return out.length ? out : null;
 }
 
-function exportedEmitters(model: string, variant: number): V3[] | null {
+function exportedEmitters(model: string, variant: number, which: 'smokeEmitters' | 'steamEmitters'): V3[] | null {
   for (const mod of [industrialModule, utilityModule]) {
-    const map = (mod as unknown as Record<string, unknown>)['smokeEmitters'] as Record<string, unknown> | undefined;
+    const map = (mod as unknown as Record<string, unknown>)[which] as Record<string, unknown> | undefined;
     if (map && typeof map === 'object' && model in map) {
       const r = parseEmitters(map[model], variant);
       if (r) return r;
     }
   }
   return null;
+}
+
+function hasExported(model: string): boolean {
+  for (const mod of [industrialModule, utilityModule]) {
+    for (const k of ['smokeEmitters', 'steamEmitters']) {
+      const map = (mod as unknown as Record<string, unknown>)[k] as Record<string, unknown> | undefined;
+      if (map && typeof map === 'object' && model in map) return true;
+    }
+  }
+  return false;
 }
 
 /** find stack tops: tallest narrow vertex clusters of the model */
@@ -221,9 +231,23 @@ export class Effects {
     const c = Math.cos(v.yaw), s = Math.sin(v.yaw);
     const toWorld = (lx: number, ly: number, lz: number): [number, number, number] => [v.cx + lx * c + lz * s, v.baseY + ly * v.sy, v.cz - lx * s + lz * c];
     const operating = !v.constructing && !v.abandoned && !v.burnt;
-    if (operating && v.model in SMOKY) {
-      let pts = exportedEmitters(v.model, v.variant);
-      if (!pts && this.geometryOf) pts = findStacks(this.geometryOf(v.model, v.variant), `${v.model}#${v.variant}`);
+    if (operating && hasExported(v.model)) {
+      const smoke = exportedEmitters(v.model, v.variant, 'smokeEmitters') ?? [];
+      const steam = exportedEmitters(v.model, v.variant, 'steamEmitters') ?? [];
+      const big = v.model === 'util_nuclear_plant';
+      for (const p of steam) {
+        const [x, y, z] = toWorld(p[0], p[1], p[2]);
+        list.push({ x, y, z, kind: 1, size: big ? 24 : 9, count: big ? 26 : 14, life: big ? 16 : 9 });
+      }
+      for (const p of smoke) {
+        if (steam.some((q) => Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]) + Math.abs(q[2] - p[2]) < 0.6)) continue;
+        const [x, y, z] = toWorld(p[0], p[1], p[2]);
+        const tall = p[1] > 25;
+        list.push({ x, y, z, kind: v.model === 'util_gas_plant' ? 5 : 0, size: tall ? 8 : 4.5, count: tall ? 18 : 10, life: tall ? 13 : 8 });
+      }
+    } else if (operating && v.model in SMOKY) {
+      let pts: V3[] | null = null;
+      if (this.geometryOf) pts = findStacks(this.geometryOf(v.model, v.variant), `${v.model}#${v.variant}`);
       const kind = SMOKY[v.model];
       for (const p of pts ?? []) {
         const [x, y, z] = toWorld(p[0], p[1], p[2]);

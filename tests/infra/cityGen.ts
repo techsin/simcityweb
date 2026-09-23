@@ -13,7 +13,8 @@ import { infraSystems } from '../../src/sim/systems/infra';
 
 export const TEST_DEFS: BuildingDef[] = [
   { id: 't_r1', name: 'R$ house', model: 'res_cottage', category: 'growable', footprint: [1, 1], devType: DevType.R1, zones: [Zone.ResLow], capacity: 12 },
-  { id: 't_r2', name: 'R$$ apt', model: 'res_apartment', category: 'growable', footprint: [1, 1], devType: DevType.R2, zones: [Zone.ResMed], capacity: 60 },
+  // explicit (test-scale) utility use: 3 MW / 12 kL per day at full occupancy
+  { id: 't_r2', name: 'R$$ apt', model: 'res_apartment', category: 'growable', footprint: [1, 1], devType: DevType.R2, zones: [Zone.ResMed], capacity: 60, powerUse: 3, waterUse: 12 },
   { id: 't_r3', name: 'R$$$ tower', model: 'res_tower', category: 'growable', footprint: [2, 2], devType: DevType.R3, zones: [Zone.ResHigh], capacity: 400 },
   { id: 't_cs', name: 'shop', model: 'com_corner_store', category: 'growable', footprint: [1, 1], devType: DevType.CS2, zones: [Zone.ComLow], capacity: 20 },
   { id: 't_co', name: 'office', model: 'com_office_tower', category: 'growable', footprint: [2, 2], devType: DevType.CO3, zones: [Zone.ComHigh], capacity: 400 },

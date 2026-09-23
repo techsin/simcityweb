@@ -38,6 +38,10 @@ export interface ManifestEntry {
   /** guidance: approximate [min, max] height in meters */
   height: [number, number];
   desc: string;
+  /** +Z side of the lot faces water (seaport, ferry, marina) */
+  waterfront?: boolean;
+  /** triangle budget override for showpieces */
+  budget?: number;
 }
 
 const E = (
@@ -236,6 +240,12 @@ export const MANIFEST: ManifestEntry[] = [
   E('construction_site', 'prop', [1, 1], 3, [2, 25], 'Construction site dressing: dirt, fence, crane or scaffolding (overlay for buildings under construction; scaled to lot by renderer).'),
   E('rubble', 'prop', [1, 1], 2, [0.5, 2], 'Rubble / burnt debris pile for destroyed buildings.'),
 ];
+
+// showpiece / waterfront metadata
+for (const e of MANIFEST) {
+  if (e.id === 'tr_seaport' || e.id === 'tr_ferry_terminal' || e.id === 'park_marina') e.waterfront = true;
+  if (e.id === 'tr_airport_large' || e.id === 'tr_airport_small' || e.id === 'tr_seaport') e.budget = 6000;
+}
 
 export const MANIFEST_BY_ID: Record<string, ManifestEntry> = Object.fromEntries(MANIFEST.map((e) => [e.id, e]));
 

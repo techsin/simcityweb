@@ -194,7 +194,7 @@ vec3 terrainShade(vec3 P, vec3 N) {
       col = mix(col, zc * 0.85 + 0.04, a);
       col = mix(col, zc * 0.5, outline * 0.8);
       col = mix(col, zc * 1.1, inner * 0.35);
-      tEmis += zc * (a * 0.015 + outline * 0.04) * (0.3 + uNightF * 2.0);
+      tEmis += zc * (a * 0.015 + outline * 0.04) * (0.2 + uNightF * 1.2);
     }
     // data overlay heatmap
     if (uOverlayOn > 0.5) {

@@ -33,6 +33,7 @@ uniform float uHaze;
 uniform vec3 uSunDir;
 uniform vec3 uSunGlow;
 uniform float uSkyExposure;
+uniform vec3 uSkyFloor;
 uniform float uFogMax;
 
 vec2 fogLutUv(vec3 dir) {
@@ -64,9 +65,10 @@ vec3 applyFog(vec3 col, vec2 uv, float depth, out float dist) {
   float k = b * rd.y * d;
   float fh = abs(k) > 1e-4 ? uFogDensity * exp(-b * max(y0, -50.0)) * (1.0 - exp(-k)) / (b * rd.y) : uFogDensity * exp(-b * max(y0, -50.0)) * d;
   float T = exp(-(fh + uHaze * d));
-  T = max(T, 1.0 - uFogMax);
-  vec3 fd = normalize(vec3(rd.x, max(rd.y, 0.035), rd.z));
-  vec3 fogCol = texture2D(uSkyLut, fogLutUv(fd)).rgb * uSkyExposure;
+  // keep near/mid distances readable, but let the far horizon dissolve completely into the sky
+  T = max(T, (1.0 - uFogMax) * (1.0 - smoothstep(9000.0, 26000.0, dist)));
+  vec3 fd = normalize(vec3(rd.x, max(rd.y, 0.0), rd.z));
+  vec3 fogCol = texture2D(uSkyLut, fogLutUv(fd)).rgb * uSkyExposure + uSkyFloor;
   fogCol += uSunGlow * pow(max(dot(rd, uSunDir), 0.0), 10.0);
   return mix(fogCol, col, T);
 }
@@ -263,6 +265,7 @@ export class PostFX {
     uSunGlow: { value: new THREE.Vector3(0, 0, 0) },
     uSkyLut: { value: null as THREE.Texture | null },
     uSkyExposure: { value: 1 },
+    uSkyFloor: { value: new THREE.Vector3() },
     uFogMax: { value: 0.92 },
   };
   readonly grade: GradeParams = {

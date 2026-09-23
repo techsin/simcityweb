@@ -48,7 +48,12 @@ export const NEON = [0xff3b30, 0x2fd6ff, 0xff4fc3, 0xffc933, 0x4dff88, 0xfff1d6,
 export const CAR_COLORS = [0xb8bcc2, 0x2b2d31, 0xf1f1ef, 0x8a1c1c, 0x1f3f7a, 0x5d6b73, 0x3e5e3a, 0xc9a13b, 0x6b2f4a, 0xd96b2b, 0xe7e7e2, 0x44484e];
 
 export const pav = (c: ColorLike = C.sidewalk) => P(c, Surf.Pavement);
-export const roofP = (c: ColorLike = C.roof) => P(c, Surf.RoofFlat);
+let roofTone: ColorLike = C.roof;
+/** Pick the default flat-roof tone for the model being built (gravel grey, light concrete, white membrane, tar, beige). */
+export function setRoofTone(rng: RNG) {
+  roofTone = rng.weighted([0x8f8d89, 0xb3b0a8, 0xd2d1cc, 0x6d6f72, 0xa39a8a], [3, 2, 2, 1.5, 1.5]);
+}
+export const roofP = (c?: ColorLike) => P(c ?? roofTone, Surf.RoofFlat);
 export const emis = (c: ColorLike) => P(c, Surf.Emissive);
 export const metal = (c: ColorLike) => P(c, Surf.Metal);
 export const plain = (c: ColorLike) => P(c, Surf.Plain);
@@ -385,13 +390,20 @@ export function stallsZ(b: ModelBuilder, rng: RNG, z0: number, z1: number, x0: n
   return n;
 }
 /** Parking-lot light pole with 1-2 emissive heads (~28 tris). */
-export function lotLamp(b: ModelBuilder, x: number, z: number, h = 7.5, dirs: number[] = [0]) {
+export function lotLamp(b: ModelBuilder, x: number, z: number, h = 7.5, dirs: number[] = [0], pool = true) {
   box(b, x - 0.1, 0, z - 0.1, x + 0.1, h, z + 0.1, metal(0x4a4d52), null);
   for (const a of dirs) {
     b.push().translate(x, h, z).rotateY(a);
-    box(b, -0.25, -0.05, 0.05, 0.25, 0.12, 1.3, metal(0x4a4d52), undefined, { bottom: emis(0xfff0cc) });
+    box(b, -0.25, -0.05, 0.05, 0.25, 0.12, 1.3, metal(0x4a4d52), emis(0xfff0cc), { bottom: emis(0xfff0cc) });
     b.pop();
+    if (pool) lightPool(b, x + Math.sin(a) * 1.2, z + Math.cos(a) * 1.2, h * 0.6);
   }
+}
+/** Faint emissive light pool on the ground (octagon, 6 tris) — nearly invisible by day, glows at night. */
+export function lightPool(b: ModelBuilder, x: number, z: number, r: number, y = 0.075, color: ColorLike = 0x393a3d) {
+  const pts = ngonPts(x, z, r, 8, Math.PI / 8);
+  b.paint(color, Surf.Emissive);
+  for (let i = 1; i < 7; i++) b.tri([pts[0][0], y, pts[0][1]], [pts[i + 1][0], y, pts[i + 1][1]], [pts[i][0], y, pts[i][1]]);
 }
 
 // ---------------------------------------------------------------------------------------------- landscaping & props

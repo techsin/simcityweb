@@ -1,18 +1,25 @@
 /**
- * Pollution system: air, water, noise and garbage (every POLL_PERIOD days, cheap separable blurs).
+ * Pollution system: air, water, noise and garbage. Runs every POLL_PERIOD days in two stages on consecutive days
+ * (A: sources + air, B: noise + water + garbage + flags) so no single day costs more than ~5 ms on 256^2.
  *
- *  AIR    sources: industry by DevType (I-D heavy, I-M medium, I-A small, I-HT ~0; x0.75 with Clean Air ordinance),
- *         def.pollution.air (power plants, incinerators ...), traffic volume (x congestion), landfill smell.
- *         Emitters are bucketed into small / medium / large radius classes and blurred (3 box passes); the field
- *         drifts slightly with a slowly rotating wind; layer = 1 - exp(-field / AIR_K), smoothed over time.
- *  WATER  industry + def.pollution.water + sewage (pop, reduced by treatment plant capacity), blurred into ground
- *         water; spreads along water bodies by iterative diffusion over water cells (persistent).
- *  NOISE  traffic volume, industry, def.pollution.noise (airports, stadiums ...).
- *  GARBAGE production per resident / job (recycling ordinance -20 %); collection capacity = landfill zone cells with
- *         road access (LANDFILL_CELL_CAP t/month each) + def.garbageCapacity (incinerators, recycling) x funding.
- *         When short, buildings farthest (road BFS) from facilities are not collected: state.garbage builds up on
- *         their cells -> BF.NoGarbage. stats.garbageProduced / garbageCapacity (tons / month).
- *  Flags BF.Polluted (air or water above threshold). stats.avgPollution. Emits layerUpdated('pollution').
+ *  Source model: catalog def.pollution.{air,water,noise} = intensity on the 0..1 overlay scale at the source with a
+ *  falloff radius (negative = cleaning, e.g. water treatment). Converted to a source strength S = -K ln(1 - I) /
+ *  POLL_PEAK_GAIN so an isolated emitter peaks at ~I; emitters are bucketed by radius into blur classes
+ *  (air: full / half / quarter resolution, sigma ~2.4 / 4.9 / 9.8 cells; water & noise: half / quarter) and
+ *  sources add up (industrial districts saturate). Growables scale with activity (0.3 + 0.7 x occupancy).
+ *  Defs without explicit pollution fall back to per-job emission by industry type (AIR_PER_JOB ...).
+ *  AIR    + traffic volume (x congestion) + landfill cells (util_landfill_tile def), wind drift, x ordinanceEffect
+ *         'pollution.air' (x 'pollution.air.industry' for industry & power plants); layer = 1 - exp(-f / AIR_K).
+ *  WATER  + sewage (pop, reduced by treatment plants: def.capacity or waterOut x 4 residents per kL/day), ground
+ *         water blur; spreads along water bodies by iterative diffusion over water cells (persistent state).
+ *  NOISE  traffic volume, def.pollution.noise (airports, stadiums, industry ...).
+ *  GARBAGE production = def.pollution.garbage (t/month at full occupancy) x activity x 'garbage.produced';
+ *         collection capacity = landfill zone cells with road access (util_landfill_tile garbageCapacity per cell) +
+ *         def.garbageCapacity (incinerators, recycling) x utilities funding. When short, buildings farthest (road
+ *         BFS) from facilities are not collected: state.garbage (0..1) builds up on their cells -> BF.NoGarbage.
+ *         stats.garbageProduced / garbageCapacity (tons / month).
+ *  Flags BF.Polluted (air > 0.45 or ground water > 0.6). stats.avgPollution (occupant weighted, 0.75 air + 0.25 water).
+ *  Emits layerUpdated('pollution') after stage B.
  */
 import { Network, Zone, isRoad } from '../../core/types';
 import type { Building, CityState } from '../CityState';
@@ -21,31 +28,44 @@ import type { SimSystem, Simulation } from '../Simulation';
 import { blur3, blurDownAdd, blurSigma2, shiftField } from './blur';
 import {
   DX, DZ, Fam, activeJobs, detectJobsUnknown, ensureIdArray, ensureIdFloat, fundingFactor, infoOf, isFunctional, nowMs,
-  readOrdinances, setFlagQuiet,
+  readEffects, setFlagQuiet, activity, type OrdEffects,
 } from './common';
+import { getDef } from '../catalog';
 import {
   AIR_K, AIR_PER_JOB, AIR_PER_TRIP, GARBAGE_BUILDUP, GARBAGE_DECAY, GARBAGE_PER_CIVIC_JOB, GARBAGE_PER_JOB_C,
   GARBAGE_PER_JOB_I, GARBAGE_PER_RES, LANDFILL_AIR, LANDFILL_CELL_CAP, NOISE_K, NOISE_PER_JOB, NOISE_PER_TRIP,
-  NO_GARBAGE_THRESHOLD, POLLUTED_THRESHOLD, POLL_PEAK_GAIN, POLL_RADII, POLL_SMOOTH, RECYCLING_CUT, SEWAGE_PER_RES,
-  TREATMENT_DEFAULT_CAP, WATER_K, WATER_POLL_PER_JOB, WIND_DRIFT,
+  NO_GARBAGE_THRESHOLD, POLLUTED_THRESHOLD, POLL_PEAK_GAIN, POLL_RADII, POLL_SMOOTH, SEWAGE_PER_RES,
+  TREATMENT_DEFAULT_CAP, TREATMENT_RES_PER_KL, WATER_K, WATER_POLL_PER_JOB, WIND_DRIFT,
 } from './params';
 
+/** source strength per unit of intensity: peak field for intensity I is -K ln(1 - I) (layer = 1 - exp(-f/K)) */
+function srcScale(K: number): number {
+  return K / POLL_PEAK_GAIN;
+}
+/** catalog intensity (0..1 at the source, negative = cleaning) -> source strength for the blur model */
+function intensityToSource(I: number, scale: number): number {
+  if (I === 0) return 0;
+  const a = Math.min(0.95, Math.abs(I));
+  const v = -Math.log(1 - a) * scale;
+  return I < 0 ? -v : v;
+}
+
 const IND_KEYS = ['IA', 'ID', 'IM', 'IHT'] as const;
+/** share kept per diffusion iteration along water bodies (higher = spreads farther downstream) */
+const WATER_DIFFUSE_KEEP = 0.975;
 /** days between pollution updates */
 export const POLL_PERIOD = 4;
 
-function radiusClass(r: number): number {
-  if (r <= 0) return 1;
-  if (r <= 4) return 0;
-  if (r <= 9) return 1;
-  return 2;
-}
 
 export class PollutionSystem implements SimSystem {
   readonly name = 'pollution';
+  /** air sources by radius class (full / half / quarter resolution blur) */
   private air: Float32Array<ArrayBuffer>[] = [];
-  private water = new Float32Array(0);
-  private noise = new Float32Array(0);
+  /** water / noise sources by class (half / quarter resolution blur) */
+  private waterS: Float32Array<ArrayBuffer>[] = [];
+  private noiseS: Float32Array<ArrayBuffer>[] = [];
+  /** non-empty flags: air 0..2, water 3..4, noise 5..6 */
+  private usedCls = new Uint8Array(7);
   private tmp = new Float32Array(0);
   private tmp2 = new Float32Array(0);
   private coarse = new Float32Array(0);
@@ -73,110 +93,157 @@ export class PollutionSystem implements SimSystem {
     this.compute(sim, true);
   }
 
+  /** stage B pending (noise / water / garbage / flags run the day after the air stage) */
+  private pendingB = false;
+  private fxB: OrdEffects | null = null;
+  private jobsUnknownB = false;
+  private dtMonthsB = 0;
+
   daily(sim: Simulation): void {
-    if (sim.state.day - this.lastRun >= POLL_PERIOD) this.compute(sim, false);
+    const d = sim.state.day;
+    if (this.pendingB) {
+      const t0 = nowMs();
+      this.stageB(sim, false);
+      this.lastMs = Math.max(this.lastMs, nowMs() - t0);
+    } else if (d % POLL_PERIOD === 1 || d - this.lastRun > POLL_PERIOD * 2) this.stageA(sim, false);
   }
 
+  /** full synchronous update (init / tests) */
   compute(sim: Simulation, first: boolean): void {
+    const t0 = nowMs();
+    this.stageA(sim, first);
+    this.stageB(sim, first);
+    this.lastMs = nowMs() - t0;
+  }
+
+  /** stage A: sources for all layers + air pollution field */
+  private stageA(sim: Simulation, first: boolean): void {
     const t0 = nowMs();
     const st = sim.state;
     const N = st.size, C = st.cells;
     if (this.tmp.length !== C) {
       this.air = [new Float32Array(C), new Float32Array(C), new Float32Array(C)];
-      this.water = new Float32Array(C);
-      this.noise = new Float32Array(C);
+      this.waterS = [new Float32Array(C), new Float32Array(C)];
+      this.noiseS = [new Float32Array(C), new Float32Array(C)];
       this.tmp = new Float32Array(C);
       this.tmp2 = new Float32Array(C);
       this.queue = new Int32Array(C);
       this.visit = new Int32Array(C);
     }
+    const M2 = Math.ceil(N / 2);
+    if (this.coarse.length < M2 * M2) { this.coarse = new Float32Array(M2 * M2); this.coarseTmp = new Float32Array(M2 * M2); }
     const dtMonths = first ? 0 : Math.min(2, (st.day - this.lastRun) / 30);
     this.lastRun = st.day;
-    const ords = readOrdinances(st);
-    const cleanAir = ords.has('cleanAir') ? 0.75 : 1;
+    const fx = readEffects(st);
     const jobsUnknown = detectJobsUnknown(st);
-    const air = this.air, water = this.water, noise = this.noise;
+    const air = this.air, waterS = this.waterS, noiseS = this.noiseS;
     for (const a of air) a.fill(0);
-    water.fill(0);
-    noise.fill(0);
+    for (const a of waterS) a.fill(0);
+    for (const a of noiseS) a.fill(0);
+    const used = this.usedCls;
+    used.fill(0);
 
     // treatment capacity -> sewage reduction
     let treatCap = 0;
-    const util = fundingFactor(st, 'utilities');
+    const util = Math.min(1, fundingFactor(st, 'utilities'));
     for (const b of st.buildings.values()) {
       const inf = infoOf(st, b);
-      if (inf.isTreatment && isFunctional(b)) treatCap += (inf.capacity > 0 ? inf.capacity : TREATMENT_DEFAULT_CAP) * Math.min(1, util);
+      if (!inf.isTreatment || !isFunctional(b)) continue;
+      const cap = inf.capacity > 0 ? inf.capacity : inf.waterOut > 0 ? inf.waterOut * TREATMENT_RES_PER_KL : TREATMENT_DEFAULT_CAP;
+      treatCap += cap * util;
     }
     const pop = Math.max(1, st.stats.population || 0);
     const treated = Math.min(1, treatCap / pop);
     const sewageMul = 1 - 0.9 * treated;
+    const airK = srcScale(AIR_K), waterK = srcScale(WATER_K), noiseK = srcScale(NOISE_K);
 
     // --- sources from buildings
     for (const b of st.buildings.values()) {
       const inf = infoOf(st, b);
-      if (!isFunctional(b) && (b.flags & BF.OnFire) === 0) continue;
+      const onFire = (b.flags & BF.OnFire) !== 0;
+      if (!isFunctional(b) && !onFire) continue;
       const area = b.w * b.d;
+      const act = onFire && !isFunctional(b) ? 0 : 0.3 + 0.7 * activity(inf, b, jobsUnknown);
+      const industrial = inf.fam === Fam.I || inf.powerOut > 0;
+      const airMul = fx.air * (industrial ? fx.airIndustry : 1);
+      const waterMul = fx.water * (inf.fam === Fam.I ? fx.waterIndustry : 1);
       let a = 0, w = 0, nz = 0;
-      let cls = 1;
-      if (inf.fam === Fam.I) {
+      let ca = 1, cw = 0, cn = 0;
+      if (inf.air !== 0 || inf.waterPoll !== 0 || inf.noise !== 0) {
+        // catalog semantics: intensity (0..1 overlay scale) at the source, falling off to 0 at radius
+        const R = inf.pollRadius > 0 ? inf.pollRadius : 3;
+        ca = R <= 6 ? 0 : R <= 13 ? 1 : 2;
+        cw = cn = R <= 8 ? 0 : 1;
+        a = intensityToSource(inf.air, airK) * act * airMul;
+        w = intensityToSource(inf.waterPoll, waterK) * (inf.waterPoll > 0 ? act * waterMul : util);
+        nz = intensityToSource(inf.noise, noiseK) * act;
+      } else if (inf.fam === Fam.I) {
+        // fallback when the def carries no explicit pollution: per active job by industry type
         const k = IND_KEYS[Math.max(0, Math.min(3, inf.dev - 8))];
         const j = activeJobs(inf, b, jobsUnknown);
-        a = j * AIR_PER_JOB[k] * cleanAir;
-        w = j * WATER_POLL_PER_JOB[k];
+        a = j * AIR_PER_JOB[k] * airMul;
+        w = j * WATER_POLL_PER_JOB[k] * waterMul;
         nz = j * NOISE_PER_JOB[k];
-      } else if (inf.fam === Fam.R) {
-        w = b.pop * SEWAGE_PER_RES * sewageMul;
       }
-      if (inf.air > 0 || inf.waterPoll > 0 || inf.noise > 0) {
-        a += inf.air * (inf.fam === Fam.Plop ? 1 : cleanAir) * (inf.powerOut > 0 ? cleanAir : 1);
-        w += inf.waterPoll;
-        nz += inf.noise;
-        cls = radiusClass(inf.pollRadius);
-      }
-      if (b.flags & BF.OnFire) a += 2 * area;
+      if (inf.fam === Fam.R) w += b.pop * SEWAGE_PER_RES * sewageMul * fx.water;
+      if (onFire) { a += intensityToSource(0.5, airK) * area; ca = 0; }
       if (a === 0 && w === 0 && nz === 0) continue;
       const ia = a / area, iw = w / area, inz = nz / area;
-      const A = air[cls];
+      const A = air[ca], W = waterS[cw], Nz = noiseS[cn];
+      if (ia !== 0) used[ca] = 1;
+      if (iw !== 0) used[3 + cw] = 1;
+      if (inz !== 0) used[5 + cn] = 1;
       for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
         if (x < 0 || z < 0 || x >= N || z >= N) continue;
         const i = z * N + x;
         A[i] += ia;
-        water[i] += iw;
-        noise[i] += inz;
+        W[i] += iw;
+        Nz[i] += inz;
       }
     }
-    // --- traffic + landfill
+    // --- traffic + landfill cells (util_landfill_tile def pollution per landfill cell)
     const traffic = st.traffic, cong = st.congestion, net = st.network, zone = st.zone;
-    const A0 = air[0];
+    const A0 = air[0], W0 = waterS[0], N0 = noiseS[0];
+    const lf = getDef('util_landfill_tile')?.pollution;
+    const lfAir = lf ? intensityToSource(lf.air ?? 0, airK) * fx.air : LANDFILL_AIR;
+    const lfWater = lf ? intensityToSource(lf.water ?? 0, waterK) * fx.water : 0;
+    const lfNoise = lf ? intensityToSource(lf.noise ?? 0, noiseK) : 0;
+    const trafficAir = AIR_PER_TRIP * fx.air;
     for (let i = 0; i < C; i++) {
       const t = traffic[i];
-      if (t > 0 && net[i] !== Network.Rail && net[i] !== Network.None) {
-        const c = cong[i];
-        A0[i] += t * AIR_PER_TRIP * (1 + Math.min(2, c)) * cleanAir;
-        noise[i] += t * NOISE_PER_TRIP;
-      } else if (t > 0 && net[i] === Network.Rail) {
-        noise[i] += t * NOISE_PER_TRIP * 0.2;
+      if (t > 0) {
+        const n = net[i];
+        if (n >= 1 && n <= 5) {
+          const c = cong[i];
+          A0[i] += t * trafficAir * (1 + (c < 2 ? c : 2));
+          N0[i] += t * NOISE_PER_TRIP;
+          used[0] = 1; used[5] = 1;
+        } else if (n === Network.Rail) {
+          N0[i] += t * NOISE_PER_TRIP * 0.2;
+          used[5] = 1;
+        }
       }
-      if (zone[i] === Zone.Landfill && st.building[i] < 0) A0[i] += LANDFILL_AIR;
+      if (zone[i] === Zone.Landfill && st.building[i] < 0) {
+        A0[i] += lfAir; W0[i] += lfWater; N0[i] += lfNoise;
+        used[0] = 1; used[3] = 1; used[5] = 1;
+      }
     }
-    // --- blur air per class, sum with gains, wind drift
+    // --- blur air per class (full / half / quarter resolution), sum with gains, wind drift
     const tmp = this.tmp, tmp2 = this.tmp2;
     const field = tmp2;
     {
-      // small emitters: full resolution
       const r = POLL_RADII[0];
-      blur3(air[0], tmp, N, r);
-      const gain = POLL_PEAK_GAIN * 2 * Math.PI * blurSigma2(r);
-      const A = air[0];
-      for (let i = 0; i < C; i++) field[i] = A[i] * gain;
-      // medium / large emitters: blurred at 1/2 and 1/4 resolution (sigma ~ POLL_RADII[1], POLL_RADII[2])
-      const M2 = Math.ceil(N / 2);
-      if (this.coarse.length < M2 * M2) { this.coarse = new Float32Array(M2 * M2); this.coarseTmp = new Float32Array(M2 * M2); }
+      if (used[0]) {
+        blur3(air[0], tmp, N, r);
+        const gain = POLL_PEAK_GAIN * 2 * Math.PI * blurSigma2(r);
+        const A = air[0];
+        for (let i = 0; i < C; i++) field[i] = A[i] * gain;
+      } else field.fill(0);
       for (let c = 1; c < 3; c++) {
+        if (!used[c]) continue;
         const f = c === 1 ? 2 : 4;
         const rr = Math.max(1, Math.round(POLL_RADII[c] / f));
-        const sig2 = f * f * blurSigma2(rr);
-        blurDownAdd(air[c], field, N, f, rr, POLL_PEAK_GAIN * 2 * Math.PI * sig2, this.coarse, this.coarseTmp);
+        blurDownAdd(air[c], field, N, f, rr, POLL_PEAK_GAIN * 2 * Math.PI * f * f * blurSigma2(rr), this.coarse, this.coarseTmp);
       }
     }
     const ang = (st.day / 360) * Math.PI * 2 * 0.7 + Math.sin(st.day * 0.05) * 1.3;
@@ -185,31 +252,60 @@ export class PollutionSystem implements SimSystem {
     const airL = st.airPollution;
     const invAK = 1 / AIR_K;
     for (let i = 0; i < C; i++) {
-      const target = 1 - Math.exp(-tmp[i] * invAK);
+      const f = tmp[i];
+      const target = f > 0 ? 1 - Math.exp(-f * invAK) : 0;
       airL[i] += (target - airL[i]) * alpha;
     }
+    this.pendingB = true;
+    this.fxB = fx;
+    this.jobsUnknownB = jobsUnknown;
+    this.dtMonthsB = dtMonths;
+    this.lastMs = nowMs() - t0;
+  }
+
+  /** blur a 2-class (half / quarter resolution) source pair into `out` (cleared) */
+  private blurPair(src: Float32Array[], usedBase: number, out: Float32Array, N: number): void {
+    out.fill(0);
+    // class 0: half res r=1 (sigma^2 = 8), class 1: quarter res r=2 (sigma^2 = 96)
+    if (this.usedCls[usedBase]) blurDownAdd(src[0], out, N, 2, 1, POLL_PEAK_GAIN * 2 * Math.PI * 8, this.coarse, this.coarseTmp);
+    if (this.usedCls[usedBase + 1]) blurDownAdd(src[1], out, N, 4, 2, POLL_PEAK_GAIN * 2 * Math.PI * 96, this.coarse, this.coarseTmp);
+  }
+
+  /** stage B: noise, water, garbage, flags & stats (uses the sources collected by stage A) */
+  private stageB(sim: Simulation, first: boolean): void {
+    this.pendingB = false;
+    const st = sim.state;
+    const N = st.size, C = st.cells;
+    const tmp = this.tmp, tmp2 = this.tmp2;
+    const alpha = first ? 1 : POLL_SMOOTH;
+    const airL = st.airPollution;
+    const fx = this.fxB ?? readEffects(st);
+    const jobsUnknown = this.jobsUnknownB, dtMonths = this.dtMonthsB;
     // --- noise
     {
-      // half resolution blur (sigma^2 = 4 * 2 = 8 cells^2)
-      tmp.fill(0);
-      blurDownAdd(noise, tmp, N, 2, 1, POLL_PEAK_GAIN * 2 * Math.PI * 8, this.coarse, this.coarseTmp);
+      this.blurPair(this.noiseS, 5, tmp, N);
       const L = st.noise;
       const invK = 1 / NOISE_K;
       for (let i = 0; i < C; i++) {
-        const target = 1 - Math.exp(-tmp[i] * invK);
+        const f = tmp[i];
+        const target = f > 0 ? 1 - Math.exp(-f * invK) : 0;
         L[i] += (target - L[i]) * alpha;
       }
     }
-    // --- water: ground water blur + diffusion along water bodies
+    // --- water: ground water blur (negative = treatment cleaning) + diffusion along water bodies
     {
-      tmp.fill(0);
-      blurDownAdd(water, tmp, N, 2, 1, POLL_PEAK_GAIN * 2 * Math.PI * 8, this.coarse, this.coarseTmp);
+      this.blurPair(this.waterS, 3, tmp, N);
       const L = st.waterPollution;
       const wm = st.water;
       const invK = 1 / WATER_K;
       for (let i = 0; i < C; i++) {
-        if (wm[i]) continue;
-        const target = 1 - Math.exp(-tmp[i] * invK);
+        const f = tmp[i];
+        if (wm[i]) {
+          // negative sources (treatment plants) also clean nearby water bodies
+          if (f < 0) L[i] = Math.max(0, L[i] + f * 0.05);
+          continue;
+        }
+        const target = f > 0 ? 1 - Math.exp(-f * invK) : 0;
         L[i] += (target - L[i]) * alpha;
       }
       // diffusion over water cells (precomputed list + 4 neighbour slots: water idx or -(land cell)-1)
@@ -217,7 +313,7 @@ export class PollutionSystem implements SimSystem {
       const nW = this.nWater, wc = this.waterCells, wnb = this.waterNb;
       const cur = tmp2, nxt = tmp;
       for (let q = 0; q < nW; q++) cur[q] = L[wc[q]];
-      const iters = 6;
+      const iters = 8;
       for (let it = 0; it < iters; it++) {
         for (let q = 0; q < nW; q++) {
           let s = cur[q], n = 1, inflow = 0;
@@ -228,7 +324,7 @@ export class PollutionSystem implements SimSystem {
             if (t >= 0) { s += cur[t]; n++; }
             else { const lv = L[-t - 1]; if (lv > inflow) inflow = lv; }
           }
-          const v = (s / n) * 0.93 + inflow * 0.12;
+          const v = (s / n) * WATER_DIFFUSE_KEEP + inflow * 0.12;
           nxt[q] = v > 1 ? 1 : v;
         }
         for (let q = 0; q < nW; q++) cur[q] = nxt[q];
@@ -236,7 +332,7 @@ export class PollutionSystem implements SimSystem {
       for (let q = 0; q < nW; q++) L[wc[q]] = cur[q];
     }
     // --- garbage
-    this.garbage(sim, dtMonths, ords.has('recycling'), jobsUnknown);
+    this.garbage(sim, dtMonths, fx.garbage, jobsUnknown);
     // --- flags & stats
     const changed: Building[] = [];
     let polSum = 0, polN = 0;
@@ -252,7 +348,6 @@ export class PollutionSystem implements SimSystem {
     st.stats.avgPollution = polN > 0 ? polSum / polN : 0;
     for (const b of changed) sim.events.emit('buildingChanged', b);
     sim.events.emit('layerUpdated', 'pollution');
-    this.lastMs = nowMs() - t0;
   }
 
   /** mark water topology dirty (terrain changed) */
@@ -287,12 +382,11 @@ export class PollutionSystem implements SimSystem {
     this.waterVersion = C;
   }
 
-  private garbage(sim: Simulation, dtMonths: number, recycling: boolean, jobsUnknown: boolean): void {
+  private garbage(sim: Simulation, dtMonths: number, prodMul: number, jobsUnknown: boolean): void {
     const st = sim.state;
     const N = st.size, C = st.cells;
     const net = st.network, zone = st.zone, bld = st.building;
     const G = st.garbage;
-    const prodMul = recycling ? 1 - RECYCLING_CUT : 1;
     const funding = Math.min(1.2, fundingFactor(st, 'utilities'));
     // production per building
     let produced = 0;
@@ -311,10 +405,11 @@ export class PollutionSystem implements SimSystem {
       }
       if (!isFunctional(b)) continue;
       let p = 0;
-      if (inf.fam === Fam.R) p = b.pop * GARBAGE_PER_RES;
+      if (inf.garbage > 0) p = inf.garbage * (inf.fam === Fam.Plop ? 1 : activity(inf, b, jobsUnknown)); // catalog: t/month at full occupancy
+      else if (inf.fam === Fam.R) p = b.pop * GARBAGE_PER_RES;
       else if (inf.fam === Fam.C) p = activeJobs(inf, b, jobsUnknown) * GARBAGE_PER_JOB_C;
       else if (inf.fam === Fam.I) p = activeJobs(inf, b, jobsUnknown) * GARBAGE_PER_JOB_I[IND_KEYS[Math.max(0, Math.min(3, inf.dev - 8))]];
-      else p = activeJobs(inf, b, jobsUnknown) * GARBAGE_PER_CIVIC_JOB + inf.garbage;
+      else p = activeJobs(inf, b, jobsUnknown) * GARBAGE_PER_CIVIC_JOB;
       p *= prodMul;
       if (p > 0) { prod[b.id] = p; produced += p; }
     }
@@ -355,7 +450,8 @@ export class PollutionSystem implements SimSystem {
         }
       }
     }
-    capacity += landfillCells * LANDFILL_CELL_CAP * Math.max(0.5, Math.min(1, funding));
+    const lfCap = getDef('util_landfill_tile')?.garbageCapacity ?? LANDFILL_CELL_CAP;
+    capacity += landfillCells * lfCap * Math.max(0.5, Math.min(1, funding));
     const util = produced > 0 ? Math.min(1, produced / Math.max(1, capacity)) : 0;
     for (let i = 0; i < C; i++) if (zone[i] === Zone.Landfill && bld[i] < 0 && visit[i] === stampL) G[i] = Math.max(G[i] * 0.9, 0.45 + 0.5 * util);
     st.stats.garbageProduced = produced;

@@ -92,9 +92,39 @@ void main() {
   gl_FragColor = vec4(vCol * a * uNight * uStrength, 1.0);
 }`;
 
+const GLOW_VERT = /* glsl */ `
+attribute vec4 aGlow;
+varying vec2 vUv;
+varying float vTint;
+void main() {
+  vUv = uv * 2.0 - 1.0;
+  vTint = aGlow.w;
+  vec4 mv = modelViewMatrix * vec4(aGlow.xyz, 1.0);
+  float dist = -mv.z;
+  // grow slightly with distance so distant lamps still read as points of light
+  float sz = 1.3 + dist * 0.0025;
+  mv.xy += position.xy * sz;
+  gl_Position = projectionMatrix * mv;
+}`;
+const GLOW_FRAG = /* glsl */ `
+uniform float uNight;
+varying vec2 vUv;
+varying float vTint;
+void main() {
+  float d2 = dot(vUv, vUv);
+  if (d2 > 1.0) discard;
+  float core = exp(-d2 * 9.0);
+  float halo = pow(1.0 - d2, 3.0) * 0.35;
+  vec3 c = vTint > 0.5 ? vec3(0.85, 0.85, 0.75) : vec3(1.0, 0.72, 0.42);
+  gl_FragColor = vec4(c * (core * 2.2 + halo) * uNight, 1.0);
+}`;
+
 export class PropRenderer {
   readonly batch: DynamicBatch;
   readonly pools: THREE.InstancedMesh;
+  readonly glows: THREE.Mesh;
+  private glowGeo: THREE.InstancedBufferGeometry;
+  private glowCap = 4096;
   private groups = new Map<string, Group>();
   private tileIds: Set<number>[];
   private idTile = new Map<number, number>();
@@ -131,6 +161,28 @@ export class PropRenderer {
       polygonOffsetUnits: -8,
     });
     this.pools = this.makePools(pg, this.poolCap);
+    // lamp head glow sprites (camera-facing quads)
+    const q = new THREE.PlaneGeometry(1, 1);
+    this.glowGeo = new THREE.InstancedBufferGeometry();
+    this.glowGeo.index = q.index;
+    this.glowGeo.setAttribute('position', q.attributes.position);
+    this.glowGeo.setAttribute('uv', q.attributes.uv);
+    this.glowGeo.setAttribute('aGlow', new THREE.InstancedBufferAttribute(new Float32Array(this.glowCap * 4), 4));
+    this.glowGeo.instanceCount = 0;
+    const gm = new THREE.ShaderMaterial({
+      vertexShader: GLOW_VERT, fragmentShader: GLOW_FRAG, uniforms: { uNight: sharedUniforms.uNight },
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    this.glows = new THREE.Mesh(this.glowGeo, gm);
+    this.glows.frustumCulled = false;
+    this.glows.renderOrder = 4;
+    this.glows.name = 'lampGlows';
+  }
+
+  /** glows are only worth drawing at night */
+  updateNight(night: number): void {
+    this.glows.visible = night > 0.05 && this.glowGeo.instanceCount > 0;
+    this.pools.visible = night > 0.05 && this.pools.count > 0;
   }
 
   private makePools(geo: THREE.BufferGeometry, cap: number): THREE.InstancedMesh {
@@ -213,6 +265,22 @@ export class PropRenderer {
     this.poolCount = i;
     this.pools.instanceMatrix.needsUpdate = true;
     col.needsUpdate = true;
+    // glows
+    if (total > this.glowCap) {
+      while (this.glowCap < total) this.glowCap *= 2;
+      this.glowGeo.setAttribute('aGlow', new THREE.InstancedBufferAttribute(new Float32Array(this.glowCap * 4), 4));
+    }
+    const ga = this.glowGeo.getAttribute('aGlow') as THREE.InstancedBufferAttribute;
+    const garr = ga.array as Float32Array;
+    let k = 0;
+    for (const g of this.groups.values()) {
+      for (const p of g.pools) {
+        garr[k * 4] = p.hx; garr[k * 4 + 1] = p.hy; garr[k * 4 + 2] = p.hz; garr[k * 4 + 3] = p.tint;
+        k++;
+      }
+    }
+    ga.needsUpdate = true;
+    this.glowGeo.instanceCount = k;
   }
 
   get propCount(): number {
@@ -227,5 +295,7 @@ export class PropRenderer {
     this.batch.dispose();
     this.pools.dispose();
     this.poolMat.dispose();
+    this.glowGeo.dispose();
+    (this.glows.material as THREE.Material).dispose();
   }
 }

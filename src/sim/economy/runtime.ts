@@ -167,6 +167,8 @@ export class EconRuntime {
   jobFill = 0;
   /** employment ratio of workers */
   employedRatio = 0;
+  /** pop-weighted traffic job access (0..1), -1 when the traffic system gives none */
+  accessAvg = -1;
 
   // ---- coarse grids (COARSE × COARSE cell blocks)
   cw = 0;

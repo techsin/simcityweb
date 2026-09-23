@@ -369,7 +369,7 @@ export interface TankOpts {
 export function tank(b: ModelBuilder, x: number, z: number, r: number, h: number, color: ColorLike, o: TankOpts = {}): V3 {
   const seg = o.seg ?? 12;
   const y0 = o.y0 ?? 0;
-  const surf = o.surf ?? Surf.Metal;
+  const surf = o.surf ?? Surf.Plain;
   const baseH = o.base ? Math.min(1.2, h * 0.12) : 0;
   if (o.base) {
     b.paint(o.base, Surf.Plain);
@@ -422,7 +422,7 @@ export function tank(b: ModelBuilder, x: number, z: number, r: number, h: number
 /** Spherical pressure tank on legs. Returns top point. */
 export function sphereTank(b: ModelBuilder, x: number, z: number, r: number, color: ColorLike, legColor: ColorLike = 0x6a6e72, seg = 12, rings = 7): V3 {
   const cy = r * 1.1 + 0.8;
-  b.paint(color, Surf.Metal);
+  b.paint(color, Surf.Plain);
   sphereL(b, x, cy, z, r, seg, rings);
   b.paint(legColor, Surf.Metal);
   const legs = 6;

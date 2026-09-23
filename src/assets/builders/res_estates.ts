@@ -215,7 +215,7 @@ function ranch(b: ModelBuilder, v: number, rng: RNG): void {
     const wood = P(0x8a6448, Surf.Wood), white = P(0xebe8e0), stone = P(0x9c9486, Surf.Stone);
     body(b, -12, -5, 6, 3, 0.2, 3.2, white, 0x7e7a72);
     b.paint(wood).box(-12.02, 0.2, -5.02, -6, 3.2, 3.02, { top: null, bottom: null, px: null });
-    b.paint(stone).box(-3.2, 0, -5.4, -2.0, 4.8, 3.4, { bottom: null });
+    b.paint(stone).box(-3.0, 0, -5.4, -2.2, 4.4, 3.4, { bottom: null });
     roofGable(b, -3, -1, 18, 8, 3.2, 1.2, 'x', P(0x55504a, Surf.RoofTiles), { gable: P(0x2a2c2e, Surf.GlassPlain), over: 1.3, rake: 1.0, t: 0.25, trim: 0xe8e4da });
     inFace(b, 'pz', 3, () => {
       glassWall(b, -1.6, 5.6, 0.25, 3.0, 0x2a2c2e, 1.8);
@@ -561,7 +561,7 @@ function villa(b: ModelBuilder, v: number, rng: RNG): void {
     wins(b, 'nx', 7.5, [-13.2], 0.4, 2.0, 2.1, { mull: 1 });
     for (const z of [-13.5, -11.5]) lounger(b, 5.0, z, -Math.PI / 2);
     bushRow(b, -11, 4.2, -9.2, 4.2, 2, 0.6, 0x5a8a3a, 2);
-    for (let i = 0; i < 6; i++) bush(b, -14 + i * 1.3, 8.5, 0.7, 0xb0c0e0, i + 50, 0.9);
+    for (let i = 0; i < 6; i++) bush(b, -14 + i * 1.3, 8.5, 0.7, i % 2 ? 0x8f86c0 : 0x5a8a3a, i + 50, 0.9);
     tree(b, rng, -12.5, 11.0, 1.2, 'wide');
     tree(b, rng, 13.3, -6, 1.1, 'round');
   }

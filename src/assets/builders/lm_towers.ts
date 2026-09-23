@@ -42,7 +42,7 @@ function spireTower(b: ModelBuilder, _v: number, rng: RNG): void {
   const finPoly: P2[] = [[5.2, 0.1], [14.6, 0.1], [14.6, 3.4], [13.0, 24], [9.8, 66], [7.2, 104], [5.6, 122], [5.0, 122]];
   for (const a of fins) {
     b.push().rotateY(-a).rotateX(-Math.PI / 2);
-    b.paint(concrete).extrude(finPoly, -1.6, 3.2, { top: true });
+    b.paint(concrete).extrude(finPoly, -1.6, 3.2, { top: true, bottom: true });
     b.pop();
     const W = (r: number, y: number): V3 => [Math.cos(a) * r, y, Math.sin(a) * r];
     b.paint(0xfff3dc, Surf.Emissive);
@@ -83,12 +83,26 @@ function spireTower(b: ModelBuilder, _v: number, rng: RNG): void {
     const c = Math.cos(am), s = Math.sin(am);
     b.paint(0x8fb0c4, Surf.GlassPlain).beam([c * (rAt(8) - 0.2), 8, s * (rAt(8) - 0.2)], [c * (rAt(320) - 0.2), 320, s * (rAt(320) - 0.2)], 1.4);
   }
+  // pod: vertical mullion ribs over the glass bands + outdoor sky deck ring with railing
+  b.paint(0xe8e8e4, Surf.Metal);
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * TAU + TAU / 48;
+    const c = Math.cos(a), s = Math.sin(a);
+    b.beam([c * 13.3, 337.4, s * 13.3], [c * 13.3, 342.2, s * 13.3], 0.22);
+    b.beam([c * 13.0, 344.4, s * 13.0], [c * 13.0, 350.4, s * 13.0], 0.22);
+  }
+  lathe(b, 0, 0, [[14.6, 352.6, P(0xdedcd6, Surf.Metal)], [14.6, 353.1], [12.0, 353.1]], 24, 30);
+  b.paint(0xb9bcc0, Surf.Metal).ring(0, 354.2, 0, 14.4, 0.1, 24);
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * TAU;
+    b.beam([Math.cos(a) * 12.2, 351.3, Math.sin(a) * 12.2], [Math.cos(a) * 14.3, 352.7, Math.sin(a) * 14.3], 0.3);
+  }
   // antenna dishes on the upper shaft
   b.paint(0xf1f1ee, Surf.Metal);
   for (let i = 0; i < 3; i++) {
     const a = (i / 3) * TAU + 0.4;
-    b.push().translate(Math.cos(a) * 4.0, 372, Math.sin(a) * 4.0).rotateY(-a).rotateZ(-Math.PI / 2);
-    lathe(b, 0, 0, [[0.05, 0], [1.3, 0.4], [1.4, 0.55], [0, 0.2]], 8);
+    b.push().translate(Math.cos(a) * 3.9, 372, Math.sin(a) * 3.9).rotateY(-a).rotateZ(-Math.PI / 2);
+    lathe(b, 0, 0, [[0.2, 0], [2.3, 0.7], [2.45, 0.95], [0, 0.35]], 10);
     b.pop();
   }
   for (let i = 0; i < 5; i++) person(b, rng, rng.range(-12, 12), rng.range(11, 15), 0.1, rng.range(0, TAU));
@@ -116,12 +130,14 @@ function twinSpires(b: ModelBuilder, _v: number, rng: RNG): void {
   b.paint(0xe9e5dc, Surf.Metal).box(-8, 4.6, 12, 8, 5.2, 16.5);
   // podium roof gardens
   b.paint(GRASS_LUSH, Surf.Foliage).slab(-21, 2, 21, 11, 0.4, podH);
+  b.push().translate(0, podH + 0.4, 0);
   for (const x of [-18, -6, 6, 18]) tree(b, rng, x, 8.5, 0.7, 'round');
+  b.pop();
   // two towers
-  const towers = [-12.5, 12.5];
+  const towers = [-13.2, 13.2];
   const tz = -5;
   const sections: [number, number, number, number][] = [
-    [podH, 150, 8.6, 2.3], [151.6, 238, 7.7, 2.0], [239.6, 306, 6.7, 1.7], [307.6, 346, 5.6, 1.4],
+    [podH, 150, 8.2, 2.2], [151.6, 238, 7.4, 1.95], [239.6, 306, 6.5, 1.7], [307.6, 346, 5.5, 1.4],
   ];
   const glassA = P(0x8a98a6, Surf.GlassCurtain, 4, 3.9);
   const glassB = P(0x8aa9c8, Surf.GlassCurtain, 5, 3.9);
@@ -138,6 +154,14 @@ function twinSpires(b: ModelBuilder, _v: number, rng: RNG): void {
         const ox = px - tx, oz = pz - tz;
         const l = Math.hypot(ox, oz);
         b.beam([px + (ox / l) * 0.15, y0, pz + (oz / l) * 0.15], [px + (ox / l) * 0.15, y1, pz + (oz / l) * 0.15], 0.45);
+      }
+      // crown blades: the top section's corner fins continue up and lean in
+      if (si === sections.length - 1) {
+        b.paint(0xeef0f2, Surf.Metal);
+        for (const k of [0, 1, 3, 4, 6, 7, 9, 10]) {
+          const [px, pz] = poly[k];
+          b.beam([px, y1, pz], [tx + (px - tx) * 0.55, y1 + 14, tz + (pz - tz) * 0.55], 0.4);
+        }
       }
       // setback band + glowing ring
       const nb = notchedSquare(tx, tz, h + 0.35, n);
@@ -158,14 +182,16 @@ function twinSpires(b: ModelBuilder, _v: number, rng: RNG): void {
     beacon(b, tx, 400, tz + 0.6, 0.35);
   }
   // skybridge (double deck) with V legs
-  const by0 = 168, zb0 = tz - 2.4, zb1 = tz + 2.4;
-  b.paint(0xdfe2e4, Surf.Metal).box(-4.6, by0 - 0.6, zb0 - 0.2, 4.6, by0, zb1 + 0.2);
-  b.paint(0x33414e, Surf.GlassPlain).box(-4.4, by0, zb0, 4.4, by0 + 3.4, zb1, { top: null, bottom: null });
-  b.paint(0xdfe2e4, Surf.Metal).box(-4.6, by0 + 3.4, zb0 - 0.2, 4.6, by0 + 4.2, zb1 + 0.2, { bottom: null });
-  b.paint(0x33414e, Surf.GlassPlain).box(-4.4, by0 + 4.2, zb0, 4.4, by0 + 7.4, zb1, { top: null, bottom: null });
-  b.paint(0xdfe2e4, Surf.Metal).box(-4.6, by0 + 7.4, zb0 - 0.2, 4.6, by0 + 8.0, zb1 + 0.2, { bottom: null });
-  for (const s of [-1, 1]) for (const zz of [zb0 + 0.4, zb1 - 0.4]) b.beam([s * 0.6, by0 - 0.6, zz], [s * 3.9, 132, zz], 0.6);
-  b.box(-0.9, by0 - 1.6, zb0, 0.9, by0 - 0.6, zb1);
+  const by0 = 168, zb0 = tz - 2.8, zb1 = tz + 2.8, bx = 5.4;
+  b.paint(0xeef0f2, Surf.Metal).box(-bx, by0 - 0.8, zb0 - 0.3, bx, by0, zb1 + 0.3);
+  b.paint(0x33414e, Surf.GlassPlain).box(-bx, by0, zb0, bx, by0 + 3.6, zb1, { top: null, bottom: null });
+  b.paint(0xeef0f2, Surf.Metal).box(-bx, by0 + 3.6, zb0 - 0.3, bx, by0 + 4.4, zb1 + 0.3, { bottom: null });
+  b.paint(0x33414e, Surf.GlassPlain).box(-bx, by0 + 4.4, zb0, bx, by0 + 8.0, zb1, { top: null, bottom: null });
+  b.paint(0xeef0f2, Surf.Metal).box(-bx, by0 + 8.0, zb0 - 0.3, bx, by0 + 8.8, zb1 + 0.3, { bottom: null });
+  b.paint(0xcfe8ff, Surf.Emissive).box(-bx, by0 - 0.8, zb1 + 0.3, bx, by0 - 0.4, zb1 + 0.35, { top: null, bottom: null, nx: null, px: null, nz: null });
+  b.paint(0xeef0f2, Surf.Metal);
+  for (const s of [-1, 1]) for (const zz of [zb0 + 0.5, zb1 - 0.5]) b.beam([s * 1.0, by0 - 0.8, zz], [s * 5.1, 128, zz], 0.9);
+  b.box(-1.4, by0 - 2.4, zb0, 1.4, by0 - 0.8, zb1);
   // plaza dressing
   fountain(b, -12, 18.5, 3.0, 1, { seg: 16 });
   fountain(b, 12, 18.5, 3.0, 1, { seg: 16 });
@@ -349,40 +375,66 @@ function obelisk(b: ModelBuilder, _v: number, rng: RNG): void {
   const E = 8;
   const marble = 0xebe6da, stoneD = 0xc4bba8;
   b.paint(0xd6d0c4, Surf.Pavement).slab(-E, -E, E, E, 0.1);
-  // grass verges with low hedges along the sides
-  for (const s of [-1, 1]) {
-    b.paint(GRASS_LUSH, Surf.Foliage).box(s * 7.9, 0.1, -7.9, s * 6.9, 0.2, 7.9);
-  }
+  // paving pattern: radiating joints + a ring around the monument
   const oz = -2.4;
-  // stepped plinth with an inscription die
-  b.paint(stoneD, Surf.Stone).box(-5.3, 0.1, oz - 5.3, 5.3, 0.6, oz + 5.3);
-  b.paint(stoneD, Surf.Stone).box(-4.6, 0.6, oz - 4.6, 4.6, 1.1, oz + 4.6);
-  b.paint(marble, Surf.Stone).box(-3.9, 1.1, oz - 3.9, 3.9, 2.7, oz + 3.9);
-  b.paint(0xb8ad96, Surf.Plain).box(-2.6, 1.4, oz + 3.9, 2.6, 2.4, oz + 3.95, { top: null, bottom: null, nx: null, px: null, nz: null });
+  b.paint(0xc5beb0, Surf.Pavement);
+  annulus(b, 0, oz, 0.105, 6.0, 6.5, 24, Math.PI * 0.95, Math.PI * 2.05);
+  // grass verges with low clipped hedges along the sides
+  for (const s of [-1, 1]) {
+    b.paint(GRASS_LUSH, Surf.Foliage).box(s * 7.9, 0.1, -7.9, s * 6.7, 0.2, 7.9);
+    b.paint(0x3f6b2e, Surf.Foliage).box(s * 7.8, 0.2, -7.6, s * 7.2, 0.9, 2.6);
+  }
+  // stepped plinth with an inscription die and bronze plaques
+  b.paint(stoneD, Surf.Stone).box(-5.3, 0.1, oz - 5.3, 5.3, 0.55, oz + 5.3);
+  b.paint(stoneD, Surf.Stone).box(-4.75, 0.55, oz - 4.75, 4.75, 1.0, oz + 4.75);
+  b.paint(0xd9d1bf, Surf.Stone).box(-4.2, 1.0, oz - 4.2, 4.2, 1.45, oz + 4.2);
+  b.paint(marble, Surf.Stone).box(-3.8, 1.45, oz - 3.8, 3.8, 3.0, oz + 3.8);
+  b.paint(stoneD, Surf.Stone).box(-3.95, 2.8, oz - 3.95, 3.95, 3.15, oz + 3.95);
+  for (let k = 0; k < 4; k++) {
+    b.push().translate(0, 0, oz).rotateY((k * Math.PI) / 2);
+    b.paint(0x6a5a3a, Surf.Metal).box(-1.6, 1.7, 3.8, 1.6, 2.6, 3.86, { bottom: null });
+    b.pop();
+  }
   // tapered shaft + pyramidion (square: 4 segments rotated 45 degrees)
-  const hb = 3.0, ht = 1.95, yb = 2.7, yt = 64;
+  const hb = 3.0, ht = 1.95, yb = 3.15, yt = 64;
   const S2 = Math.SQRT2;
   lathe(b, 0, oz, [[hb * S2, yb, P(marble, Surf.Stone)], [ht * S2, yt, P(0xf1ede4, Surf.Plain)], [0, yt + 6.2]], 4, 10, Math.PI / 4, Math.PI / 4 + TAU);
   b.paint(0xd4af37, Surf.Metal).pyramid(0, oz, 0.5, 0.5, yt + 5.7, 0.8);
   beacon(b, 0, yt + 6.4, oz, 0.35);
+  // observation windows near the top (as in the classic monuments)
+  b.paint(0x2a2e33, Surf.Plain);
+  for (let k = 0; k < 4; k++) {
+    b.push().translate(0, 0, oz).rotateY((k * Math.PI) / 2);
+    for (const x of [-0.5, 0.5]) b.box(x - 0.18, yt - 3.2, ht + 0.02, x + 0.18, yt - 2.4, ht + 0.07, { bottom: null });
+    b.pop();
+  }
   // edge light strips (arrises) — crisp silhouette at night
   b.paint(0xfff4dc, Surf.Emissive);
   for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
     b.beam([sx * (hb + 0.02), yb, oz + sz * (hb + 0.02)], [sx * (ht + 0.02), yt, oz + sz * (ht + 0.02)], 0.1);
   }
-  // reflecting pool in front
+  // uplight fixtures at the plinth corners
+  b.paint(0x2e3033, Surf.Metal);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) b.box(sx * 4.95 - 0.2, 0.55, oz + sz * 4.95 - 0.2, sx * 4.95 + 0.2, 0.8, oz + sz * 4.95 + 0.2);
+  b.paint(0xfff4dc, Surf.Emissive);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) b.box(sx * 4.95 - 0.14, 0.8, oz + sz * 4.95 - 0.14, sx * 4.95 + 0.14, 0.86, oz + sz * 4.95 + 0.14, { bottom: null });
+  // reflecting pool in front with coping and two low jets at the far end
   const z0 = 3.5, z1 = 7.5;
-  b.paint(0xbdb4a2, Surf.Stone).box(-6.6, 0.1, z0, 6.6, 0.45, z1, { top: null });
+  b.paint(0xbdb4a2, Surf.Stone).box(-6.4, 0.1, z0, 6.4, 0.45, z1, { top: null });
   b.paint(0xbdb4a2, Surf.Stone);
-  rect(b, -6.6, z0, 6.6, z0 + 0.35, 0.45); rect(b, -6.6, z1 - 0.35, 6.6, z1, 0.45); rect(b, -6.6, z0 + 0.35, -6.25, z1 - 0.35, 0.45); rect(b, 6.25, z0 + 0.35, 6.6, z1 - 0.35, 0.45);
+  rect(b, -6.4, z0, 6.4, z0 + 0.35, 0.45); rect(b, -6.4, z1 - 0.35, 6.4, z1, 0.45); rect(b, -6.4, z0 + 0.35, -6.05, z1 - 0.35, 0.45); rect(b, 6.05, z0 + 0.35, 6.4, z1 - 0.35, 0.45);
   b.paint(0x2c5566, Surf.Water);
-  rect(b, -6.25, z0 + 0.35, 6.25, z1 - 0.35, 0.38);
-  // flags + lamps
-  for (const [x, z] of [[-6.3, -7.4], [6.3, -7.4], [-6.3, 1.9], [6.3, 1.9]] as P2[]) {
+  rect(b, -6.05, z0 + 0.35, 6.05, z1 - 0.35, 0.38);
+  b.paint(0xd6ecf4, Surf.Water);
+  for (const x of [-4.8, 4.8]) b.cone(x, 6.6, 0.38, 1.1, 0.14, 5, true);
+  // flags, lamps, benches, visitors
+  for (const [x, z] of [[-6.2, -7.4], [6.2, -7.4], [-6.2, 1.8], [6.2, 1.8]] as P2[]) {
     b.paint(0xdddddd, Surf.Metal).cylinder(x, z, 0.1, 9, 0.08, 0.05, 5);
     b.paint(0x2e5aa8, Surf.Plain).quad2([x, 8.9, z], [x + (x > 0 ? -1.8 : 1.8), 8.9, z], [x + (x > 0 ? -1.8 : 1.8), 7.7, z], [x, 7.7, z]);
   }
-  for (const x of [-7.3, 7.3]) lamp(b, x, 5.5, 4.0, 1);
+  for (const x of [-7.25, 7.25]) lamp(b, x, 5.5, 4.0, 1);
+  parkBench(b, -6.4, -3.2, Math.PI / 2);
+  parkBench(b, 6.4, -3.2, -Math.PI / 2);
   for (let i = 0; i < 3; i++) person(b, rng, rng.range(-5, 5), rng.range(2.4, 3.2), 0.1, rng.range(0, TAU));
   void planePoly; void disc; void cylWall; void ribbon; void PATH_PAVE;
 }

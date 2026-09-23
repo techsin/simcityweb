@@ -93,6 +93,7 @@ sharedUniforms.uNight.value = night ? 1 : 0;
 const mat = getBuildingMaterial();
 const groundMat = new THREE.MeshStandardMaterial({ color: 0x7a8f5a, roughness: 1 });
 const roadMat = new THREE.MeshStandardMaterial({ color: 0x3a3b3e, roughness: 0.9 });
+const waterMat = new THREE.MeshStandardMaterial({ color: 0x2f6f96, roughness: 0.08, metalness: 0.3 });
 const lineMat = new THREE.LineBasicMaterial({ color: 0xffee88 });
 
 const stats: any[] = [];
@@ -120,9 +121,12 @@ for (const it of items) {
   ground.receiveShadow = true;
   group.add(ground);
   if (showCtx && entry.group !== 'vehicle' && entry.group !== 'nature' && entry.group !== 'prop') {
-    const road = new THREE.Mesh(new THREE.PlaneGeometry(fw + 32, CELL_SIZE), roadMat);
+    const road = entry.waterfront
+      ? new THREE.Mesh(new THREE.PlaneGeometry(fw * 3 + 60, fd * 1.5 + 30), waterMat)
+      : new THREE.Mesh(new THREE.PlaneGeometry(fw + 32, CELL_SIZE), roadMat);
     road.rotation.x = -Math.PI / 2;
-    road.position.set(0, -0.01, fd / 2 + CELL_SIZE / 2);
+    if (entry.waterfront) road.position.set(0, 0.02, fd / 2 + (fd * 1.5 + 30) / 2);
+    else road.position.set(0, -0.01, fd / 2 + CELL_SIZE / 2);
     road.receiveShadow = true;
     group.add(road);
     const outline = new THREE.LineLoop(
@@ -141,7 +145,7 @@ for (const it of items) {
   const outOfBounds = entry.group !== 'vehicle' && entry.group !== 'nature' && entry.group !== 'prop' && (bb.min.x < -fw / 2 - tol || bb.max.x > fw / 2 + tol || bb.min.z < -fd / 2 - tol || bb.max.z > fd / 2 + tol);
   const height = bb.max.y;
   const heightBad = height > entry.height[1] * 1.25 || height < entry.height[0] * 0.6;
-  const budget = entry.group === 'nature' ? 120 : entry.group === 'vehicle' ? 250 : entry.group === 'prop' ? 200 : entry.group === 'landmark' ? 8000 : ['civic', 'utility', 'park', 'reward', 'transport'].includes(entry.group) ? 3000 : 1500;
+  const budget = entry.budget ?? (entry.group === 'nature' ? 120 : entry.group === 'vehicle' ? 250 : entry.group === 'prop' ? 200 : entry.group === 'landmark' ? 8000 : ['civic', 'utility', 'park', 'reward', 'transport'].includes(entry.group) ? 3000 : 1500);
   const overBudget = tris > budget;
   stats.push({ id: entry.id, variant, tris, budget, height: +height.toFixed(1), expected: entry.height, bbox: [bb.min.toArray().map((v) => +v.toFixed(1)), bb.max.toArray().map((v) => +v.toFixed(1))], outOfBounds, heightBad, overBudget });
 

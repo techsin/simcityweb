@@ -19,8 +19,8 @@ import { getDef } from '../catalog';
 import {
   ABANDON_DAYS, COARSE, CONSTRUCT_DAYS_BASE, CONSTRUCT_DAYS_PER_STAGE, CONSTRUCT_RAND, FILL_RATE, HEALTH_SMOOTH, OCC_PERIOD,
   PENALTY_NO_GARBAGE, PENALTY_NO_JOB_ACCESS, PENALTY_NO_POWER, PENALTY_NO_ROAD, PENALTY_NO_WATER, RECOVER_RATE, REGION_COMMUTERS_BASE,
-  REGION_COMMUTERS_FRAC, REGION_COMMUTERS_ISOLATED, REGION_COMMUTERS_MAX_SHARE, RUBBLE_CLEAR_DAYS, UNHAPPY_DEMAND,
-  UNHAPPY_HEALTH, WATER_REQUIRED_STAGE, WORKFORCE_RATIO,
+  REGION_COMMUTERS_FRAC, REGION_COMMUTERS_ISOLATED, REGION_COMMUTERS_MAX_SHARE, REGION_JOBS_FOR_RESIDENTS, TRAFFIC_ACCESS_WEIGHT, TRAFFIC_JOBFILL_WEIGHT, RUBBLE_CLEAR_DAYS, UNHAPPY_DEMAND,
+  UNHAPPY_DEMAND_HEALTH, UNHAPPY_HEALTH, VACANCY_K, VACANCY_MIN, VACANCY_START, WATER_REQUIRED_STAGE, WORKFORCE_RATIO,
 } from './tuning';
 import { type EconRuntime, infraFlags } from './runtime';
 import { frontHasRoad, removeBuilding } from './buildings';
@@ -121,7 +121,26 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     const regional = Math.min(jobCap * REGION_COMMUTERS_MAX_SHARE, REGION_COMMUTERS_BASE + REGION_COMMUTERS_FRAC * W) * (connected ? 1 : REGION_COMMUTERS_ISOLATED);
     const fillable = Math.min(jobCap, W + regional);
     rt.jobFill = jobCap > 0 ? fillable / jobCap : 0;
-    const employed = Math.min(W, jobCap);
+    let employed = Math.min(W, jobCap + regional * REGION_JOBS_FOR_RESIDENTS);
+    // with sim-infra traffic: poor job access (congestion, no route) raises unemployment — blended softly because
+    // the traffic assignment is an equilibrium that converges over several cycles
+    const traffic = infraFlags(st).traffic ? (sim.getSystem('traffic') as unknown as TrafficApi | undefined) : undefined;
+    rt.accessAvg = -1;
+    if (traffic && typeof traffic.workerAccess === 'function' && W > 0) {
+      let e = 0, w = 0;
+      for (let k = 0; k < list.length; k++) {
+        const b = list[k];
+        if (b.pop <= 0 || b.flags & (BF.Abandoned | BF.Burnt)) continue;
+        const a = traffic.workerAccess(b.id);
+        if (a < 0) continue;
+        e += b.pop * Math.min(1, a);
+        w += b.pop;
+      }
+      if (w > 0) {
+        rt.accessAvg = e / w;
+        employed *= 1 - TRAFFIC_ACCESS_WEIGHT * (1 - rt.accessAvg);
+      }
+    }
     rt.employedRatio = W > 0 ? employed / W : 1;
     // stats
     const s = st.stats;
@@ -210,7 +229,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       if (!inf.traffic) { if (isR && unemp > 0.15) b.flags |= BF.NoJobs; else b.flags &= ~BF.NoJobs; }
       // ---- unhappiness / abandonment
       const dmd = demand[dev];
-      const unhappy = b.health < UNHAPPY_HEALTH || dmd < UNHAPPY_DEMAND || !powered || !road;
+      const unhappy = b.health < UNHAPPY_HEALTH || (dmd < UNHAPPY_DEMAND && b.health < UNHAPPY_DEMAND_HEALTH) || !powered || !road;
       if (unhappy) b.unhappy += OCC_PERIOD;
       else b.unhappy = Math.max(0, b.unhappy - RECOVER_RATE * OCC_PERIOD);
       if (!(b.flags & BF.Abandoned) && b.unhappy >= ABANDON_DAYS && !(b.flags & BF.Historic)) {
@@ -223,7 +242,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
         b.pop = 0; b.jobs = 0;
       } else {
         // ---- occupancy
-        const demandFactor = Math.max(0.3, Math.min(1, 1 + 0.5 * Math.min(0, dmd)));
+        const demandFactor = Math.max(VACANCY_MIN, Math.min(1, 1 + VACANCY_K * Math.min(0, dmd - VACANCY_START)));
         let occ = demandFactor * (0.6 + 0.4 * b.health);
         if (!powered) occ *= 0.25;
         if (needWater && !watered) occ *= 0.5;
@@ -233,7 +252,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
           if (b.pop === 0 && goal > 0.5) b.pop = 1;
         } else {
           let jf = jobFill;
-          if (tJobFill) { const f = tJobFill.jobFill!(b.id); if (f >= 0) jf = Math.min(1, f); }
+          if (tJobFill) { const f = tJobFill.jobFill!(b.id); if (f >= 0) jf = (1 - TRAFFIC_JOBFILL_WEIGHT) * jobFill + TRAFFIC_JOBFILL_WEIGHT * Math.min(1, f); }
           const goal = b.capacity * occ * jf;
           b.jobs = Math.round(b.jobs + (goal - b.jobs) * fillK);
           if (b.jobs === 0 && goal > 0.5) b.jobs = 1;

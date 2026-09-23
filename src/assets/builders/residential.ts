@@ -10,9 +10,11 @@ import type { ModelBuilders } from '../registry';
 import { houseModels } from './res_houses';
 import { estateModels } from './res_estates';
 import { midModelsA } from './res_mid';
+import { highModels } from './res_high';
 
 export const models: ModelBuilders = {
   ...houseModels,
   ...estateModels,
   ...midModelsA,
+  ...highModels,
 };

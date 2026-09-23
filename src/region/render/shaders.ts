@@ -116,6 +116,16 @@ void main() {
   float n2 = vnoise(p * 0.027);
   float n3 = vnoise(p * 0.11);
   float slope = 1.0 - n.y;
+  // micro relief: bumpy canopy on forests, gentle undulation elsewhere (fades with distance)
+  float camD = length(vWorld - cameraPosition);
+  float detailFade = 1.0 - smoothstep(2500.0, 14000.0, camD);
+  if (detailFade > 0.0 && vSide < 0.5 && h > 0.5) {
+    float fk = smoothstep(0.2, 0.6, vForest);
+    vec2 q = p * mix(0.02, 0.06, fk);
+    float b0 = vnoise(q), bx = vnoise(q + vec2(0.07, 0.0)), bz = vnoise(q + vec2(0.0, 0.07));
+    vec3 bump = vec3(-(bx - b0), 0.0, -(bz - b0)) / 0.07 * mix(0.12, 0.45, fk) * detailFade;
+    n = normalize(n + bump);
+  }
 
   vec3 grass = mix(uGrassA, uGrassB, smoothstep(0.3, 0.72, n1));
   grass *= 0.88 + 0.24 * n2;
@@ -274,15 +284,21 @@ uniform vec3 uGlow;
 uniform vec3 uSunColor;
 uniform vec3 uCloudLit;
 uniform vec3 uCloudShade;
+uniform vec3 uHorizonAway;
 uniform float uTime;
 varying vec3 vDir;
 ${NOISE_GLSL}
 void main() {
   vec3 d = normalize(vDir);
   float y = d.y;
-  vec3 col = mix(uHorizon, uZenith, pow(smoothstep(-0.02, 0.75, y), 0.55));
   float s = max(dot(d, uSunDir), 0.0);
-  col += uGlow * (pow(s, 5.0) * 0.55 + pow(s, 32.0) * 0.6) * (1.0 - smoothstep(0.1, 0.6, y) * 0.5);
+  // horizon warm towards the sun, dusky away from it
+  vec2 hd = normalize(d.xz + 1e-5), hs = normalize(uSunDir.xz + 1e-5);
+  float az = dot(hd, hs) * 0.5 + 0.5;
+  vec3 horizon = mix(uHorizonAway, uHorizon, pow(az, 1.6));
+  vec3 col = mix(horizon, uZenith, pow(smoothstep(-0.02, 0.8, y), 0.5));
+  col = mix(col, horizon * 1.15, (1.0 - smoothstep(0.0, 0.07, abs(y))) * 0.5);
+  col += uGlow * (pow(s, 5.0) * 0.4 + pow(s, 48.0) * 0.35) * (1.0 - smoothstep(0.1, 0.6, y) * 0.5);
   // clouds
   if (y > 0.0) {
     vec2 uv = d.xz / (y + 0.12) * 1.4;
@@ -344,17 +360,49 @@ void main() {
     vec2 cell = floor(g);
     vec2 f = fract(g);
     float win = step(0.18, f.x) * step(f.x, 0.82) * step(0.28, f.y) * step(f.y, 0.78) * step(1.0, yy);
-    float on = step(0.5 + 0.25 * vSeed, hash12(cell + vSeed * 91.0));
-    col = mix(col, col * 0.45 + vec3(0.05, 0.07, 0.1), win * 0.8);
+    float on = step(0.35 + 0.3 * vSeed, hash12(cell + vSeed * 91.0));
+    col = mix(col, col * 0.35 + vec3(0.03, 0.04, 0.07), win * 0.85);
     emis = win * on * uNight;
   } else {
-    col *= 0.62;
+    col *= 0.5;
   }
+  col *= mix(1.0, 0.55, uNight);
   float diff = max(dot(n, uSunDir), 0.0);
   vec3 amb = mix(uGroundAmb, uSkyAmb, n.y * 0.5 + 0.5);
   vec3 lit = col * (amb + uSunColor * diff) + uWindow * emis * (0.7 + 0.6 * hash12(floor(vWorld.xz * 0.2)));
   lit = applyFog(lit, vWorld, uSunDir);
   gl_FragColor = vec4(lit, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+export const LIGHTS_VERT = /* glsl */ `
+attribute float aSize;
+attribute vec3 aColor;
+varying vec3 vColor;
+varying float vFade;
+uniform float uScale;
+uniform float uTime;
+void main() {
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  float d = -mv.z;
+  vColor = aColor * (0.85 + 0.15 * sin(uTime * 2.0 + position.x * 0.13));
+  vFade = 1.0 - smoothstep(9000.0, 26000.0, d);
+  gl_PointSize = clamp(aSize * uScale / d, 1.0, 9.0);
+  gl_Position = projectionMatrix * mv;
+}
+`;
+
+export const LIGHTS_FRAG = /* glsl */ `
+varying vec3 vColor;
+varying float vFade;
+void main() {
+  vec2 c = gl_PointCoord - 0.5;
+  float r = length(c) * 2.0;
+  float a = exp(-r * r * 4.0) * vFade;
+  if (a < 0.01) discard;
+  gl_FragColor = vec4(vColor * a, a);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }

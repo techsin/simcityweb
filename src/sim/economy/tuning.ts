@@ -22,6 +22,12 @@ export const REGION_COMMUTERS_FRAC = 0.05;
 export const REGION_COMMUTERS_MAX_SHARE = 0.25;
 /** isolated cities (no neighbor connection) get this fraction of regional commuters */
 export const REGION_COMMUTERS_ISOLATED = 0.3;
+/** residents may also work in the region: employable = local jobs + this × regional commuter volume */
+export const REGION_JOBS_FOR_RESIDENTS = 1;
+/** with sim-infra traffic: employed × (1 − weight × (1 − avg worker job access)) */
+export const TRAFFIC_ACCESS_WEIGHT = 0.15;
+/** with sim-infra traffic: job fill = (1 − w) × global fill + w × traffic job fill of the building */
+export const TRAFFIC_JOBFILL_WEIGHT = 0.5;
 
 /** worker wealth mix per job DevType: [R$, R$$, R$$$] (who holds those jobs) */
 export const JOB_WEALTH_MIX: readonly (readonly [number, number, number])[] = [
@@ -58,7 +64,7 @@ export const JOB_SLACK = 1.06;
 /** base CS jobs per wealth (a few shops even in a hamlet) */
 export const CS_BASE: readonly [number, number, number] = [60, 40, 10];
 /** CS jobs per customer (resident) of matching wealth */
-export const CS_PER_RES: readonly [number, number, number] = [0.055, 0.05, 0.045];
+export const CS_PER_RES: readonly [number, number, number] = [0.13, 0.12, 0.11];
 /** which resident wealth shops at which CS tier: CUSTOMER_MIX[residentWealth][csTier] */
 export const CUSTOMER_MIX: readonly (readonly [number, number, number])[] = [
   [0.8, 0.2, 0.0],
@@ -69,8 +75,8 @@ export const CUSTOMER_MIX: readonly (readonly [number, number, number])[] = [
 export const TOURISM_CS_PER_POINT = 1;
 
 /** office share of workforce: CO_SHARE_MIN at tiny pop → CO_SHARE_MAX at CO_SHARE_POP_FULL */
-export const CO_SHARE_MIN = 0.08;
-export const CO_SHARE_MAX = 0.32;
+export const CO_SHARE_MIN = 0.1;
+export const CO_SHARE_MAX = 0.36;
 export const CO_SHARE_POP_START = 2000;
 export const CO_SHARE_POP_FULL = 800_000;
 /** CO$$$ fraction of office demand as a function of EQ: lerp(CO3_FRAC_MIN, CO3_FRAC_MAX, smoothstep(60,130,EQ)) */
@@ -94,7 +100,7 @@ export const IHT_SHARE_PER_EQ = 1 / 150;
 export const IHT_SHARE_MAX = 0.5;
 
 /** neighbor connection factors (demand multipliers). conn = base + Σ per-connection weights (capped) */
-export const CONN_BASE = { R: 0.8, C: 0.75, I: 0.7 };
+export const CONN_BASE = { R: 0.85, C: 0.85, I: 0.85 };
 export const CONN_WEIGHT: Record<number, { R: number; C: number; I: number }> = {
   [Network.Street]: { R: 0.05, C: 0.03, I: 0.05 },
   [Network.Road]: { R: 0.12, C: 0.1, I: 0.15 },
@@ -115,7 +121,7 @@ export const TAX_FACTOR_MIN = 0.05;
 export const TAX_FACTOR_MAX = 1.5;
 
 /** unemployment above this pushes R down and C/I up */
-export const UNEMP_NEUTRAL = 0.06;
+export const UNEMP_NEUTRAL = 0.08;
 export const UNEMP_R_PENALTY = 1.2; // R target × (1 − penalty × excess)
 export const UNEMP_CI_BOOST = 0.8; // C/I target × (1 + boost × excess)
 /** approval effect on R: target × (1 + APPROVAL_R × (approval − 50)/50) */
@@ -154,9 +160,14 @@ export const CAP_BINDING = 0.92;
 export const GROWTH_RESPONSE = 0.06;
 /** always allow at least this much capacity per day when demand is positive */
 export const GROWTH_MIN_ALLOW = { R: 25, C: 10, I: 10 };
-/** hard throughput cap per family: base + frac × current family capacity (per day) */
-export const GROWTH_MAX_BASE = { R: 120, C: 50, I: 60 };
-export const GROWTH_MAX_FRAC = 0.006;
+/**
+ * hard throughput cap per family (capacity started per day): base + frac × cap / sqrt(1 + cap / scale).
+ * Growth slows relatively as the city grows (≈ 120%/yr max at 10k, 30% at 100k, 10% at 1M) — the realized
+ * rate is lower (demand, caps, zoning, stage milestones). This is the main "pace of the game" knob.
+ */
+export const GROWTH_MAX_BASE = { R: 18, C: 7, I: 8 };
+export const GROWTH_MAX_FRAC = 0.001;
+export const GROWTH_MAX_SCALE = 25000;
 /** growth attempts (candidate lots) per day: base + per 100 candidates, capped */
 export const GROWTH_ATTEMPTS_BASE = 30;
 export const GROWTH_ATTEMPTS_PER100 = 4;
@@ -167,8 +178,12 @@ export const REDEVELOP_CHECKS = 24;
 export const REDEVELOP_MIN_GAIN = 1.6;
 /** minimum age (days) before a growable may redevelop */
 export const REDEVELOP_MIN_AGE = 240;
-/** a def may be chosen only if capacity ≤ allowance × this (+ slack) — no towers on tiny demand */
-export const GROWTH_OVERSHOOT = 4;
+/** allowance is banked per DevType up to this many days of daily allowance (persisted in systemData.economy.carry) */
+export const GROWTH_BANK_DAYS = 60;
+/** a building may start when the bank covers this fraction of its capacity (the bank then goes negative) */
+export const GROWTH_BANK_MIN_FRAC = 0.3;
+/** a new building's capacity must be ≤ absolute demand × this (min GROWTH_OVERSHOOT_SLACK) — no towers on tiny demand */
+export const GROWTH_SIZE_DEMAND = 1.2;
 export const GROWTH_OVERSHOOT_SLACK = 60;
 /** stage allowed by desirability: stage = 1 + floor(7 × clamp((des − D0)/(D1 − D0))) */
 export const STAGE_DES_D0 = 0.02;
@@ -178,11 +193,11 @@ export const ZONE_MAX_STAGE: readonly number[] = [0, 3, 5, 8];
 /** population milestones → max stage (SC4: towers need a big city) */
 export const STAGE_POP: readonly { pop: number; stage: number }[] = [
   { pop: 0, stage: 3 },
-  { pop: 1500, stage: 4 },
-  { pop: 6000, stage: 5 },
-  { pop: 18000, stage: 6 },
-  { pop: 50000, stage: 7 },
-  { pop: 120000, stage: 8 },
+  { pop: 3000, stage: 4 },
+  { pop: 12000, stage: 5 },
+  { pop: 35000, stage: 6 },
+  { pop: 90000, stage: 7 },
+  { pop: 220000, stage: 8 },
 ];
 /** prefer the highest allowed stage: weight = exp(STAGE_PREF × (stage − maxStage)) */
 export const STAGE_PREF = 1.1;
@@ -213,8 +228,13 @@ export const PENALTY_NO_JOB_ACCESS = 0.5;
 /** unhappy (days) threshold for abandonment; health below this counts as unhappy */
 export const ABANDON_DAYS = 150;
 export const UNHAPPY_HEALTH = 0.22;
-/** demand below this counts as unhappy (no reason to stay) */
+/** demand below this counts as unhappy (no reason to stay) — only together with health < UNHAPPY_DEMAND_HEALTH */
 export const UNHAPPY_DEMAND = -0.55;
+export const UNHAPPY_DEMAND_HEALTH = 0.45;
+/** vacancy from negative demand: occupancy × clamp(1 + VACANCY_K × min(0, demand − VACANCY_START), VACANCY_MIN, 1) */
+export const VACANCY_START = -0.25;
+export const VACANCY_K = 0.3;
+export const VACANCY_MIN = 0.6;
 /** abandoned buildings recover when unhappy decays to 0 (decay = RECOVER_RATE × days while healthy) */
 export const RECOVER_RATE = 2;
 /** with the rubble-cleanup ordinance, burnt rubble is cleared after this many days */

@@ -327,13 +327,30 @@ export function airliner(b: ModelBuilder, x: number, z: number, rot: number, s: 
   const roll = Math.PI / 8;
   // fuselage
   b.paint(liv.body, Surf.Metal);
-  frustum(b, [0, hc, zb0], [0, hc, zb1], R, R, 8, { roll });
-  frustum(b, [0, hc, zb1], [0, hc - 0.25 * R, zb1 + 2.4 * R / 2], R, R * 0.66, 8, { roll });
+  // body is capped at both ends so the tilted nose / tail cones never leave see-through gaps at the joints
+  frustum(b, [0, hc, zb0], [0, hc, zb1], R, R, 8, { roll, top: true, bottom: true });
+  frustum(b, [0, hc, zb1 - 0.3], [0, hc - 0.25 * R, zb1 + 2.4 * R / 2], R * 0.985, R * 0.66, 8, { roll, top: true });
   frustum(b, [0, hc - 0.25 * R, zb1 + 1.2 * R], [0, hc - 0.45 * R, zb1 + 2.4 * R], R * 0.66, R * 0.18, 8, { roll, top: true });
   frustum(b, [0, hc, zb0], [0, hc + 0.55 * R, zb0 - 4.2 * R], R, R * 0.2, 8, { roll, top: true });
   // cockpit windshield + cabin windows + cheatline (on the vertical facets at x = ±R*cos(22.5°))
   const xs = R * 0.924 + 0.03;
-  b.paint(0x1a2028, Surf.Metal).box(-R * 0.55, hc + 0.2 * R, zb1 + 0.5 * R, R * 0.55, hc + 0.52 * R, zb1 + 1.1 * R, { bottom: null });
+  // cockpit windshield: dark quads on the three upper facets of the nose frustum
+  {
+    const a: V3 = [0, hc, zb1], e: V3 = [0, hc - 0.25 * R, zb1 + 1.2 * R];
+    const V = (t: number, deg: number): V3 => {
+      const phi = (deg * Math.PI) / 180;
+      const r = (R + (R * 0.66 - R) * t) * 1.012 + 0.02;
+      return [Math.cos(phi) * r, a[1] + (e[1] - a[1]) * t - Math.sin(phi) * r, a[2] + (e[2] - a[2]) * t];
+    };
+    const L = (p: V3, q: V3, f: number): V3 => [p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f, p[2] + (q[2] - p[2]) * f];
+    const F = (t: number, d0: number, d1: number, f: number) => L(V(t, d0), V(t, d1), f);
+    b.paint(0x161b22, Surf.Metal);
+    // [facet start deg, end deg, fraction range]
+    for (const [d0, d1, f0, f1] of [[202.5, 247.5, 0.45, 1], [247.5, 292.5, 0, 1], [292.5, 337.5, 0, 0.55]]) {
+      const mid = (((d0 + d1) / 2) * Math.PI) / 180;
+      quadF(b, F(0.42, d0, d1, f0), F(0.42, d0, d1, f1), F(0.9, d0, d1, f1), F(0.9, d0, d1, f0), [Math.cos(mid), -Math.sin(mid), 0.35]);
+    }
+  }
   for (const sd of [-1, 1]) {
     const dir: V3 = [sd, 0, 0];
     b.paint(0x1d242c, Surf.Metal);
@@ -383,7 +400,7 @@ export function turboprop(b: ModelBuilder, x: number, z: number, rot: number, s:
   b.push().translate(x, y, z).rotateY(rot).scale(s, s, s);
   const roll = Math.PI / 8;
   b.paint(liv.body, Surf.Metal);
-  frustum(b, [0, hc, -7], [0, hc, 8], R, R, 8, { roll });
+  frustum(b, [0, hc, -7], [0, hc, 8], R, R, 8, { roll, top: true, bottom: true });
   frustum(b, [0, hc, 8], [0, hc - 0.3, 10.6], R, R * 0.35, 8, { roll, top: true });
   frustum(b, [0, hc, -7], [0, hc + 0.9, -12.5], R, R * 0.25, 8, { roll, top: true });
   const xs = R * 0.924 + 0.03;
@@ -569,8 +586,9 @@ export function panel(b: ModelBuilder, axis: 'x' | 'z', sign: 1 | -1, w: number,
  */
 export function pool(b: ModelBuilder, x: number, z: number, r: number, y: number, ground: ColorLike, seg = 10, k = 0.7): void {
   const c = shade(ground, k);
-  c.r *= 1.05;
-  c.b *= 0.88;
+  c.r *= 1.08;
+  c.g *= 0.97;
+  c.b *= 0.8;
   b.paint(c, Surf.Emissive);
   for (let i = 0; i < seg; i++) {
     const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
@@ -580,19 +598,21 @@ export function pool(b: ModelBuilder, x: number, z: number, r: number, y: number
 /** Rectangular light pool (2 tris). */
 export function poolRect(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, ground: ColorLike, k = 0.7): void {
   const c = shade(ground, k);
-  c.r *= 1.05;
-  c.b *= 0.88;
+  c.r *= 1.08;
+  c.g *= 0.97;
+  c.b *= 0.8;
   b.paint(c, Surf.Emissive);
   flat(b, x0, z0, x1, z1, y);
 }
-/** Soft light pool for DARK ground (asphalt): brighter inner disc + dimmer outer ring (24 tris). */
+/** Soft light pool for DARK ground (asphalt): brighter inner disc + dimmer outer ring (30 tris). */
 export function poolSoft(b: ModelBuilder, x: number, z: number, r: number, y: number, ground: ColorLike): void {
-  pool(b, x, z, r * 0.55, y + 0.004, ground, 8, 1.15);
-  const c = shade(ground, 0.8);
-  c.r *= 1.05;
-  c.b *= 0.88;
+  pool(b, x, z, r * 0.55, y + 0.004, ground, 10, 1.05);
+  const c = shade(ground, 0.78);
+  c.r *= 1.08;
+  c.g *= 0.97;
+  c.b *= 0.8;
   b.paint(c, Surf.Emissive);
-  const ri = r * 0.55, seg = 8;
+  const ri = r * 0.55, seg = 10;
   for (let i = 0; i < seg; i++) {
     const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
     const P = (a: number, rr: number): V3 => [x + Math.cos(a) * rr, y, z + Math.sin(a) * rr];

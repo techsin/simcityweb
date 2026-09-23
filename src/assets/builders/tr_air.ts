@@ -8,7 +8,7 @@ import type { RNG } from '../../core/rng';
 import { lampPost } from '../kit';
 import {
   flat, stripe, dashed, runwayNumber, lightDot, floodMast, frustum, obox, vault, tree, shrub, carLite, parking,
-  serviceVehicle, airliner, turboprop, gaPlane, LIVERIES, shade, quadF, poolRect, poolSoft, type Livery,
+  serviceVehicle, airliner, turboprop, gaPlane, LIVERIES, shade, quadF, plate, poolRect, poolSoft, type Livery,
 } from './tr_kit';
 
 // ---------------------------------------------------------------------------------------------- palette
@@ -151,32 +151,45 @@ function tank(b: ModelBuilder, x: number, z: number, r: number, h: number, color
 }
 
 /**
- * Jet bridge from terminal face (at zFace, height yT) to aircraft door (dx, dz, yD). Rotunda at (rx, rz).
- * ~70 tris
+ * Jet bridge from the terminal face (zFace, floor height yT) via a rotunda at (rx, rz) to an aircraft whose fuselage
+ * side (door) is at (doorX, doorZ); the cab canopy faces -X onto the door at floor height yD. ~80 tris.
  */
-function jetBridge(b: ModelBuilder, zFace: number, yT: number, rx: number, rz: number, dx: number, dz: number, yD: number): void {
+function jetBridge(b: ModelBuilder, zFace: number, yT: number, rx: number, rz: number, doorX: number, doorZ: number, yD: number): void {
   const skin = 0xb7bcc2;
   // fixed link: terminal -> rotunda
   b.paint(skin, Surf.Corrugated).box(rx - 1.3, yT, rz, rx + 1.3, yT + 2.8, zFace, { bottom: { color: 0x6c7176, surf: Surf.Metal } });
   b.paint(0x33373b, Surf.Metal).cylinder(rx, rz, 0, yT, 0.55, 0.55, 6, { top: false });
   b.paint(0xa9aeb4, Surf.Metal).cylinder(rx, rz, yT - 0.3, 3.4, 2.0, 2.0, 8, { top: true });
+  // cab against the fuselage (canopy faces -X)
+  const cx0 = doorX + 0.45, cx1 = doorX + 3.2;
+  b.paint(0x9aa0a6, Surf.Metal).box(cx0, yD, doorZ - 1.5, cx1, yD + 3.0, doorZ + 1.5, { bottom: { color: 0x6c7176, surf: Surf.Metal } });
+  b.paint(0x2c2f33, Surf.Metal).box(doorX + 0.05, yD + 0.1, doorZ - 1.3, cx0, yD + 2.8, doorZ + 1.3, { bottom: null });
   // moving tunnel: rotunda -> cab
-  const ang = Math.atan2(dx - rx, dz - rz);
+  const ex = cx1 - 0.3, ez = doorZ;
+  const ang = Math.atan2(ex - rx, ez - rz);
   const ux = Math.sin(ang), uz = Math.cos(ang);
-  const cabX = dx - ux * 1.6, cabZ = dz - uz * 1.6;
   b.paint(skin, Surf.Corrugated);
-  obox(b, [rx + ux * 1.6, yT + 1.35, rz + uz * 1.6], [cabX, yD + 1.35, cabZ], 2.5, 2.7, { ends: false, bottom: true });
-  // window strip on the tunnel (glows at night)
+  obox(b, [rx + ux * 1.7, yT + 1.35, rz + uz * 1.7], [ex, yD + 1.4, ez], 2.5, 2.7, { ends: false, bottom: true });
   b.paint(0x2a323a, Surf.GlassPlain);
-  obox(b, [rx + ux * 2, yT + 1.75, rz + uz * 2], [cabX - ux * 0.4, yD + 1.75, cabZ - uz * 0.4], 2.56, 0.7, { ends: false });
-  // cab + canopy against the aircraft
-  b.push().translate(cabX, 0, cabZ).rotateY(ang);
-  b.paint(0x9aa0a6, Surf.Metal).box(-1.7, yD, -1.3, 1.7, yD + 3.0, 1.6, { bottom: { color: 0x6c7176, surf: Surf.Metal } });
-  b.paint(0x2c2f33, Surf.Metal).box(-1.4, yD + 0.1, 1.6, 1.4, yD + 2.8, 2.0, { bottom: null });
-  // drive column + wheel bogie
-  b.paint(0x33373b, Surf.Metal).box(-1.2, 0.5, -2.8, -0.9, yD, -2.4, { top: null, bottom: null }).box(0.9, 0.5, -2.8, 1.2, yD, -2.4, { top: null, bottom: null });
-  b.paint(0x1f2124, Surf.Metal).box(-1.6, 0.1, -3.1, 1.6, 0.8, -2.1, { bottom: null });
+  obox(b, [rx + ux * 2.1, yT + 1.75, rz + uz * 2.1], [ex - ux * 0.4, yD + 1.8, ez - uz * 0.4], 2.56, 0.7, { ends: false });
+  // drive column + wheel bogie near the cab end
+  const t = 0.72;
+  const wx = rx + (ex - rx) * t, wz = rz + (ez - rz) * t, wy = yT + (yD - yT) * t + 0.1;
+  b.push().translate(wx, 0, wz).rotateY(ang);
+  b.paint(0x33373b, Surf.Metal).box(-1.2, 0.5, -0.2, -0.9, wy, 0.2, { top: null, bottom: null }).box(0.9, 0.5, -0.2, 1.2, wy, 0.2, { top: null, bottom: null });
+  b.paint(0x1f2124, Surf.Metal).box(-1.6, 0.1, -0.5, 1.6, 0.8, 0.5, { bottom: null });
   b.pop();
+}
+
+/** Airport surveillance radar: lattice legs, platform, turning antenna reflector, beacon (~75 tris). */
+function radar(b: ModelBuilder, x: number, z: number, h: number): void {
+  b.paint(0xd9d9d4, Surf.Metal);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) obox(b, [x + sx * 1.7, 0, z + sz * 1.7], [x + sx * 0.8, h, z + sz * 0.8], 0.22, 0.22, { ends: false });
+  b.box(x - 1.3, h, z - 1.3, x + 1.3, h + 0.35, z + 1.3);
+  b.paint(0x8e949a, Surf.Metal).cylinder(x, z, h + 0.35, 0.9, 0.35, 0.3, 6);
+  b.paint(0xeeeeea, Surf.Metal);
+  plate(b, [[x - 3.4, h + 1.1, z - 0.2], [x + 3.4, h + 1.1, z - 0.2], [x + 3.4, h + 2.9, z + 0.7], [x - 3.4, h + 2.9, z + 0.7]], 0.14, [0, -0.45, 0.9]);
+  lightDot(b, x, h + 1.25, z, 0.45, C.red);
 }
 
 /** Parked GA / service apron dressing near an aircraft at (x,z) nose +Z. */
@@ -242,7 +255,7 @@ function airportSmall(b: ModelBuilder, rng: RNG): void {
   dashed(b, -46, 23.25, 14, 23.25, 0.18, 0.13, 2.5, 2.5);
   b.paint(C.road, Surf.Pavement).box(6, 0, 25.5, 14, 0.1, 48, { bottom: null });
   b.paint(C.sidewalk, Surf.Pavement).box(-48, 0, 19, 4, 0.16, 21, { bottom: null });
-  parking(b, rng, -44, 27, 4, 45, 0.4);
+  parking(b, rng, -44, 27, 4, 45, 0.36);
   carLite(b, -20, 22.2, Math.PI / 2, 0xf1c40f, 0.1);
   carLite(b, -28, 22.2, Math.PI / 2, 0xf1f1ef, 0.1);
   serviceVehicle(b, -38, 23.2, Math.PI / 2, 'bus');
@@ -273,8 +286,8 @@ function airportSmall(b: ModelBuilder, rng: RNG): void {
   frustum(b, [-50, 4.8, -29], [-47.4, 4.5, -29.6], 0.45, 0.22, 6);
   // landscaping
   for (const x of [-58, -36, -14, 24, 44, 60]) tree(b, rng, x, 45.5, rng.range(6, 7.2));
-  for (const [x, z] of [[-61, 30], [-60, 40], [58, 30]] as [number, number][]) tree(b, rng, x, z, rng.range(5.5, 7));
-  for (let x = -44; x <= 0; x += 11) shrub(b, rng, x, 20, 0.8);
+  for (const [x, z] of [[-61, 30], [-60, 40]] as [number, number][]) tree(b, rng, x, z, rng.range(5.5, 7));
+  for (let x = -40; x <= 0; x += 20) shrub(b, rng, x, 20, 0.8);
   // GA T-hangar row + flight school / FBO with a small lot
   b.paint(C.apron, Surf.Pavement).box(30, 0, 4, 62, Y.apron, 7.5, { bottom: null });
   b.paint(0xd9d4c8, Surf.Corrugated).box(31, 0, 7.5, 62, 3.6, 16, { top: null });
@@ -371,9 +384,9 @@ function airportLarge(b: ModelBuilder, rng: RNG): void {
     const zp = 8.2 - noseLocal * s;
     airliner(b, g.x, zp, 0, s, g.liv, { wide: g.wide, y: Y.apron });
     const doorZ = zp + (g.wide ? 12.5 : 8.8) * s;
-    const doorX = g.x + (R * 0.924 + 0.3) * s;
+    const doorX = g.x + R * 0.924 * s + 0.05;
     const hc = g.wide ? 4.2 : 3.2;
-    jetBridge(b, tz0, 4.4, g.x + 6.5, 9.4, doorX + 1.3, doorZ, hc * s + Y.apron - 1.0);
+    jetBridge(b, tz0, 4.4, g.x + 8, 9.6, doorX, doorZ, hc * s + Y.apron - 0.9);
     turnaround(b, rng, g.x, zp, s, 1);
   }
   // taxiing + departing aircraft
@@ -420,7 +433,8 @@ function airportLarge(b: ModelBuilder, rng: RNG): void {
   // tower-side staff parking + trees
   parking(b, rng, 62, 44, 94, 62, 0.35);
   for (const x of [-90, -78, -50, -30, -10, 10, 30, 64, 80]) tree(b, rng, x, 62, rng.range(6.5, 7.5));
-  for (const [x, z] of [[-90, 46], [-80, 53], [-90, 56], [92, 32], [64, 36]] as [number, number][]) tree(b, rng, x, z, rng.range(6, 8));
+  for (const [x, z] of [[-91, 45], [-90, 57], [92, 32], [64, 36]] as [number, number][]) tree(b, rng, x, z, rng.range(6, 8));
+  radar(b, -80, 51, 11);
   for (const x of [-52, -20, 24]) lampPost(b, x, 42.2, 6);
   // windsock by the runway
   b.paint(0xdddddd, Surf.Metal).cylinder(-70, -35.2, 0, 6, 0.08, 0.06, 5, { top: false });

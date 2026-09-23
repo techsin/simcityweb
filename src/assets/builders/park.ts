@@ -429,9 +429,9 @@ function parkBasketball(b: ModelBuilder, _v: number, rng: RNG): void {
   lawnPatchwork(b, rng, -E, -E, E, E, GRASS_LUSH, 2);
   // court: 14.4 x 14 half court, hoop at the back
   b.paint(0x3a5f7a, Surf.Pavement).slab(-7.5, -7.5, 7.5, 7.2, 0.08);
-  b.paint(0x4a7a9c, Surf.Pavement);
+  b.paint(0x3f6a88, Surf.Emissive);
   rect(b, -7.2, -7.0, 7.2, 6.9, 0.085);
-  b.paint(0xc9573a, Surf.Pavement);
+  b.paint(0xa84a32, Surf.Emissive);
   rect(b, -2.45, -7.0, 2.45, -1.2, 0.09);
   flatPoly(b, [[1.8, 6.9], ...arcPts(0, 6.9, 1.8, TAU, Math.PI, 8)], 0.09);
   b.paint(WHITE_LINE, Surf.Plain);
@@ -467,7 +467,7 @@ function parkBasketball(b: ModelBuilder, _v: number, rng: RNG): void {
 function tennisCourt(b: ModelBuilder, cx: number, color: number): void {
   const s = 0.56;
   const hl = (23.77 * s) / 2, hw = (10.97 * s) / 2, hs = (8.23 * s) / 2, sv = 6.4 * s;
-  b.paint(color, Surf.Pavement);
+  b.paint(color, Surf.Emissive);
   rect(b, cx - hw - 0.6, -hl - 0.6, cx + hw + 0.6, hl + 0.6, 0.09);
   b.paint(WHITE_LINE, Surf.Plain);
   const y = 0.095, w = 0.06;
@@ -486,8 +486,8 @@ function tennisCourt(b: ModelBuilder, cx: number, color: number): void {
 function parkTennis(b: ModelBuilder, _v: number, rng: RNG): void {
   lawnPatchwork(b, rng, -16, -8, 16, 8, GRASS_LUSH, 3);
   b.paint(0x3f7a5a, Surf.Pavement).slab(-12, -7.6, 12, 7.6, 0.08);
-  tennisCourt(b, -5.4, 0x3d6f9e);
-  tennisCourt(b, 5.4, 0x3d6f9e);
+  tennisCourt(b, -5.4, 0x355f88);
+  tennisCourt(b, 5.4, 0x355f88);
   // fence with dark-green windscreens on the ends
   const fx = 12, fz = 7.6, fh = 3.4;
   for (const [ax, az, bx2, bz] of [[-fx, -fz, fx, -fz], [-fx, fz, -1.2, fz], [1.2, fz, fx, fz], [-fx, -fz, -fx, fz], [fx, -fz, fx, fz]] as [number, number, number, number][]) railFence(b, ax, az, bx2, bz, fh, 3.0, 0x4a5258, 2);
@@ -528,7 +528,7 @@ function parkSoccer(b: ModelBuilder, _v: number, rng: RNG): void {
   lawnPatchwork(b, rng, -24, -16, 24, 16, GRASS_DARK, 3);
   // pitch 42 x 23 along X
   const x0 = -21, x1 = 21, z0 = -9.5, z1 = 13.5, zc = (z0 + z1) / 2;
-  mownPitch(b, x0 - 1.2, z0 - 1.2, x1 + 1.2, z1 + 1.2, 12, 0x3f7a2c, 0x4a8a34, 0.09, 'x', Surf.Emissive);
+  mownPitch(b, x0 - 1.2, z0 - 1.2, x1 + 1.2, z1 + 1.2, 12, 0x376c27, 0x42792e, 0.09, 'x', Surf.Emissive);
   b.paint(WHITE_LINE, Surf.Plain);
   const y = 0.1, w = 0.12;
   rectLines(b, x0, z0, x1, z1, w, y);
@@ -575,7 +575,7 @@ function parkBaseball(b: ModelBuilder, _v: number, rng: RNG): void {
   const fan = (r0: number, r1: number, n = 16): P2[] => [...arcPts(0, 0, r1, -Q, Q, n).map(([c, s]) => P(Math.atan2(s, c), r1)), ...(r0 > 0 ? arcPts(0, 0, r0, Q, -Q, n).map(([c, s]) => P(Math.atan2(s, c), r0)) : [[hx, hz] as P2])];
   const bands = [0, 8, 13, 18, 23, 28, R];
   for (let i = 0; i < bands.length - 1; i++) {
-    b.paint(i % 2 ? 0x3f7a2c : 0x4a8a34, Surf.Emissive);
+    b.paint(i % 2 ? 0x376c27 : 0x42792e, Surf.Emissive);
     flatPoly(b, fan(bands[i], bands[i + 1] - (i === bands.length - 2 ? 2.4 : 0)), 0.08);
   }
   // warning track
@@ -590,7 +590,7 @@ function parkBaseball(b: ModelBuilder, _v: number, rng: RNG): void {
   const b1 = P(Q, base), b2 = P(0, base * Math.SQRT2), b3 = P(-Q, base);
   const cxI = (b1[0] + b3[0]) / 2, czI = (hz + b2[1]) / 2;
   const shrinkP = (p: P2, k: number): P2 => [cxI + (p[0] - cxI) * k, czI + (p[1] - czI) * k];
-  b.paint(0x4a8a34, Surf.Emissive);
+  b.paint(0x42792e, Surf.Emissive);
   flatPoly(b, [shrinkP([hx, hz], 0.8), shrinkP(b1, 0.8), shrinkP(b2, 0.8), shrinkP(b3, 0.8)], 0.1);
   // pitcher's mound
   const mound = P(0, 8.6);

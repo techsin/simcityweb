@@ -48,11 +48,19 @@ export function collectStops(state: CityState, out?: StopList): StopList {
   return res;
 }
 
-/** transit walking coverage (0..1) from stops; adds into `out` (which is cleared first) */
-export function computeTransitCoverage(state: CityState, stops: StopList, out: Float32Array, funding: number): void {
+/**
+ * transit walking coverage (0..1) from stops into `out` (cleared first). Stops whose building def carries its own
+ * coverage (catalog tr_bus_stop / tr_subway_station / tr_train_station) are skipped when `skipWithCoverage` —
+ * the services system already splats their def.coverage.
+ */
+export function computeTransitCoverage(state: CityState, stops: StopList, out: Float32Array, funding: number, skipWithCoverage = true): void {
   out.fill(0);
   const N = state.size;
   for (let s = 0; s < stops.n; s++) {
+    if (skipWithCoverage && stops.bid[s] >= 0) {
+      const b = state.buildings.get(stops.bid[s]);
+      if (b && infoOf(state, b).cov >= 0) continue;
+    }
     const mode = stops.mode[s];
     const R = mode === Transit.Bus ? TRANSIT_COV_RADIUS.bus : mode === Transit.Subway ? TRANSIT_COV_RADIUS.subway : TRANSIT_COV_RADIUS.train;
     const c = stops.cell[s];

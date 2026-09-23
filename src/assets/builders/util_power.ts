@@ -32,7 +32,7 @@ function transformer(b: ModelBuilder, x: number, z: number, s = 1, rotX = false)
 /** Switchyard gantry: two lattice posts + lattice beam along X (~130 tris). */
 function gantry(b: ModelBuilder, x0: number, x1: number, z: number, h: number, color: ColorLike = 0x9aa0a6): void {
   b.paint(color, Surf.Metal);
-  for (const x of [x0, x1]) lattice(b, x, z, 0, h, 0.7, 0.45, 0.7, 0.45, 2, 0.14, { rings: false });
+  for (const x of [x0, x1]) lattice(b, x, z, 0, h, 0.7, 0.45, 0.7, 0.45, 1, 0.14, { rings: false });
   lattice(b, (x0 + x1) / 2, z, h - 1.0, h, (x1 - x0) / 2, (x1 - x0) / 2, 0.45, 0.45, 1, 0.12, { rings: false, faces: ['pz', 'nz'] });
   b.paint(0x5a5550, Surf.Plain);
   const n = 3;
@@ -91,8 +91,8 @@ function coalPlant(b: ModelBuilder, rng: RNG): void {
   smokestack(b, 26.5, -27.5, 86, 3.0, 2.2, 'concrete', 14);
   // coal piles + stacker-reclaimer on rails
   heap(b, rng, 12, 17, 8.5, 8.5, 0x252321, Surf.Plain, 10, 1.1, 1.2);
-  heap(b, rng, 26, 9, 5.8, 6.0, 0x2a2826, Surf.Plain, 9, 0.9, 1.1);
-  heap(b, rng, 26, 25, 5.4, 5.2, 0x2a2826, Surf.Plain, 9, 0.9, 1.1);
+  heap(b, rng, 24.6, 8.5, 5.4, 6.0, 0x2a2826, Surf.Plain, 9, 0.75, 1.1);
+  heap(b, rng, 24.6, 25, 5.0, 5.2, 0x2a2826, Surf.Plain, 9, 0.75, 1.1);
   b.paint(0x55595e, Surf.Metal);
   strut(b, [19.5, 0.15, 3], [19.5, 0.15, 31], 0.3);
   strut(b, [21.5, 0.15, 3], [21.5, 0.15, 31], 0.3);
@@ -114,7 +114,7 @@ function coalPlant(b: ModelBuilder, rng: RNG): void {
   b.paint(0x5a5550, Surf.Metal);
   flat(b, 28.8, -6, 31.2, 31.5, 0.09);
   for (let i = 0; i < 3; i++) {
-    const z = -3 + i * 12.4;
+    const z = -6 + i * 12.4;
     b.paint(0x4a3a2e, Surf.Metal).box(28.6, 0.9, z, 31.4, 3.6, z + 11.5, { top: { color: 0x242322, surf: Surf.Plain } });
     b.paint(0x1c1c1c, Surf.Metal).box(28.9, 0.1, z + 0.5, 31.1, 0.9, z + 11, { top: null });
   }
@@ -124,8 +124,8 @@ function coalPlant(b: ModelBuilder, rng: RNG): void {
   lattice(b, -2, 5, 0, 3, 3, 3, 3, 3, 1, 0.3, { rings: false, diag: false });
   tank(b, -12, 2, 5, 8, 0xe8e8e2, { roof: 'cone', seg: 14, rim: 0x9aa0a6 });
   switchyard(b, -31, 8, -8, 24, 3, 2);
-  officeBlock(b, -30, 25.5, -14, 31, 8, 0xdedad2, 2, 3.6);
-  for (let i = 0; i < 4; i++) carLow(b, -11 + i * 2.8, 29, 0, rng.pick(CAR_COLORS2));
+  officeBlock(b, -30, 25, -14, 29.5, 8, 0xdedad2, 2, 3.6);
+  for (let i = 0; i < 4; i++) carLow(b, -11 + i * 2.8, 28.5, 0, rng.pick(CAR_COLORS2));
   floodLight(b, 4, 30, 14);
   floodLight(b, 31, -30, 14);
 }
@@ -167,7 +167,6 @@ function gasPlant(b: ModelBuilder, rng: RNG): void {
   // switchyard
   switchyard(b, 4, 5, 23, 22.5, 2, 1);
   floodLight(b, -23, 23, 12);
-  for (let i = 0; i < 3; i++) carLow(b, -22 + i * 2.8 + 12, 22, 0, rng.pick(CAR_COLORS2));
   fenceRect(b, -23.6, -23.6, 23.6, 23.6, 2.2, 0x8a9096, [-12, 3.5], 12, 1);
 }
 
@@ -187,7 +186,11 @@ function oilPlant(b: ModelBuilder, rng: RNG): void {
   pipeRun(b, [[-15, 1.6, -15.5], [-15, 1.6, -8], [-4, 1.6, -8], [-4, 8, -6]], 0.5, 6, true);
   pipeRun(b, [[0, 1.6, -15.5], [0, 1.6, -8]], 0.5, 6);
   // boiler building + turbine hall
-  b.paint(0xc8b8a0, Surf.WallWindows, 4, 6).box(-22, 0, -6, 6, 32, 10, { top: { color: 0x7a7670, surf: Surf.RoofFlat } });
+  b.paint(0xc8b8a0, Surf.Plain).box(-22, 0, -6, 6, 32, 10, { top: { color: 0x7a7670, surf: Surf.RoofFlat } });
+  b.paint(0x9fb4c0, Surf.GlassPlain);
+  for (const y of [8, 17, 25]) { wallQuad(b, 'pz', 10, -21, 5, y, y + 2.4); wallQuad(b, 'px', 6, -5, 9, y, y + 2.4); }
+  b.paint(0xb4a48c, Surf.Plain);
+  for (let x = -18; x < 6; x += 6) wallQuad(b, 'pz', 10, x, x + 0.8, 0, 32, 0.05);
   b.paint(0x9c5a3a, Surf.Plain);
   wallQuad(b, 'pz', 10, -22, 6, 29, 31);
   wallQuad(b, 'px', 6, -6, 10, 29, 31);
@@ -214,7 +217,7 @@ function oilPlant(b: ModelBuilder, rng: RNG): void {
   pipeRun(b, [[20.4, 1.2, 6], [19, 1.2, 6]], 0.35, 6);
   // switchyard + admin + parking
   switchyard(b, 6, 11, 19.5, 27, 2, 1);
-  officeBlock(b, -22.5, 22.5, -8, 30.5, 7, 0xdedad2, 2, 3.5);
+  officeBlock(b, -22.5, 21.5, -8, 29.5, 7, 0xdedad2, 2, 3.5);
   parking(b, rng, -7, 22.5, 4.5, 31, 0.6, 5);
   floodLight(b, -23, -9, 14);
   floodLight(b, 23, 31, 12);
@@ -223,7 +226,7 @@ function oilPlant(b: ModelBuilder, rng: RNG): void {
 
 // ------------------------------------------------------------------------------------------------ util_nuclear_plant
 /** Hyperboloid natural-draft cooling tower. Registers a steam emitter at the top. */
-function coolingTower(b: ModelBuilder, x: number, z: number, H: number, R0: number, Rw: number, seg = 20): void {
+function coolingTower(b: ModelBuilder, x: number, z: number, H: number, R0: number, Rw: number, seg = 18): void {
   const yw = H * 0.78;
   const c = yw / Math.sqrt((R0 / Rw) ** 2 - 1);
   const r = (y: number) => Rw * Math.sqrt(1 + ((y - yw) / c) ** 2);
@@ -234,7 +237,7 @@ function coolingTower(b: ModelBuilder, x: number, z: number, H: number, R0: numb
   lathe(b, x, z, prof, seg);
   // inside shell (visible through the top): darker, upper part only
   b.paint(0x77746e, Surf.Plain);
-  lathe(b, x, z, prof.slice(4), seg, { outside: false, inside: true });
+  lathe(b, x, z, prof.slice(5), seg, { outside: false, inside: true });
   // weathering band near the top + lip ring
   b.paint(0xb8b4ac, Surf.Plain);
   lathe(b, x, z, [[r(H - 3) + 0.05, H - 3], [r(H) + 0.05, H]], seg);
@@ -244,16 +247,14 @@ function coolingTower(b: ModelBuilder, x: number, z: number, H: number, R0: numb
   b.paint(0x33485a, Surf.Water);
   disc(b, x, z, 0.6, r(lip) - 0.5, seg);
   b.paint(0x9a978f, Surf.Plain);
-  tube(b, x, z, 0, 0.9, r(lip) + 1.2, r(lip) + 1.2, seg);
-  b.paint(0x9a978f, Surf.Plain);
-  disc(b, x, z, 0.9, r(lip) + 1.2, seg);
+  lathe(b, x, z, [[r(lip) + 1.2, 0.05], [r(lip) + 1.0, 0.9], [r(lip) - 0.5, 0.9]], seg);
   // diagonal support columns (V pairs)
   b.paint(0xc8c4bc, Surf.Plain);
-  const nc = 18;
+  const nc = 14;
   const rb = r(lip) - 0.3;
   for (let i = 0; i < nc; i++) {
     const a = (i / nc) * Math.PI * 2, a2 = ((i + 0.5) / nc) * Math.PI * 2, a3 = ((i + 1) / nc) * Math.PI * 2;
-    const g: V3 = [x + Math.cos(a2) * rb, 0.9, z + Math.sin(a2) * rb];
+    const g: V3 = [x + Math.cos(a2) * rb, 0.6, z + Math.sin(a2) * rb];
     strut(b, g, [x + Math.cos(a) * rb, lip + 0.2, z + Math.sin(a) * rb], 0.7);
     strut(b, g, [x + Math.cos(a3) * rb, lip + 0.2, z + Math.sin(a3) * rb], 0.7);
   }
@@ -262,14 +263,13 @@ function coolingTower(b: ModelBuilder, x: number, z: number, H: number, R0: numb
 
 function containment(b: ModelBuilder, x: number, z: number, r: number, h: number, color: ColorLike = 0xe4e2dc): void {
   b.paint(0xb8b5ad, Surf.Plain);
-  tube(b, x, z, 0, 1.2, r + 0.8, r + 0.8, 18);
-  disc(b, x, z, 1.2, r + 0.8, 18);
+  lathe(b, x, z, [[r + 0.8, 0.05], [r + 0.8, 1.2], [r, 1.2]], 16);
   b.paint(color, Surf.Plain);
-  tube(b, x, z, 1.2, h - 1.2, r, r, 18);
+  tube(b, x, z, 1.2, h - 1.2, r, r, 16);
   b.paint(0xd8d6d0, Surf.Plain);
-  dome(b, x, z, h, r, r * 0.62, 18, 3);
+  dome(b, x, z, h, r, r * 0.62, 16, 3);
   b.paint(0x9aa0a6, Surf.Plain);
-  tube(b, x, z, h - 3.2, 0.9, r + 0.1, r + 0.1, 18);
+  tube(b, x, z, h - 3.2, 0.9, r + 0.1, r + 0.1, 16);
 }
 
 function nuclearPlant(b: ModelBuilder, rng: RNG): void {
@@ -297,7 +297,7 @@ function nuclearPlant(b: ModelBuilder, rng: RNG): void {
   b.paint(0xc0392b, Surf.Plain);
   tube(b, -15.5, 1.5, 62, 4, 1.15, 1.1, 10);
   b.paint(0x9aa0a6, Surf.Metal);
-  lattice(b, -15.5, 1.5, 0, 60, 3.2, 1.6, 3.2, 1.6, 5, 0.26, { rings: false });
+  lattice(b, -15.5, 1.5, 0, 60, 3.2, 1.6, 3.2, 1.6, 4, 0.26, { rings: false });
   b.paint(0xff2a1a, Surf.Emissive).boxC(-14.2, 1.5, 0.4, 0.4, 65, 0.4);
   // turbine hall (two lines)
   b.paint(0xdfe1e2, Surf.Corrugated).box(10, 0, 3, 45, 26, 21);
@@ -314,25 +314,23 @@ function nuclearPlant(b: ModelBuilder, rng: RNG): void {
   b.paint(0xd2cec6, Surf.Plain).box(5, 6, 9, 10, 12, 15, { top: { color: 0x8e8b84, surf: Surf.RoofFlat } });
   // tanks (condensate / demin water)
   tank(b, 3.5, -4, 3.6, 12, 0xe8e8e2, { roof: 'dome', seg: 12 });
-  tank(b, -36, -1, 3.2, 10, 0xe8e8e2, { roof: 'dome', seg: 12 });
   // switchyard (front right)
   b.paint(GRAVEL, Surf.Pavement);
   flat(b, 12, 26, 46.5, 46.5, 0.07);
   for (let i = 0; i < 3; i++) transformer(b, 17 + i * 6.5, 28.5, 1.1);
-  gantry(b, 14, 45, 36, 14);
-  gantry(b, 14, 45, 43.5, 14);
+  gantry(b, 14, 45, 39, 14);
   fenceRect(b, 12, 26, 46.5, 46.5, 2.2, 0x8a9096, undefined, 10, 1);
   // admin, visitor center, parking, security
   officeBlock(b, -46, 32, -26, 40, 11, 0xe6e4de, 2, 3.7);
   b.paint(0x2a3440, Surf.GlassCurtain, 5, 3.6).box(-24, 0, 36, -14, 6, 44, { top: { color: 0xd8d8d4, surf: Surf.Plain } });
-  parking(b, rng, -46, 41, -26, 46.5, 0.7, 7);
-  parking(b, rng, -12, 32, 4, 46.5, 0.6, 9);
+  parking(b, rng, -12, 32, 4, 46.5, 0.55, 7);
+  b.paint(0x6f9a45, Surf.Foliage);
+  flat(b, -46, 41, -26, 46.5, 0.07);
   b.paint(0xe6e8e8, Surf.Plain).box(6, 0, 31, 10, 3.2, 35);
   b.paint(0x2a3440, Surf.GlassPlain);
   wallRow(b, 'pz', 35, 6.3, 9.7, 1.2, 2.6, 2, 1.4);
-  fenceRect(b, -46.8, -46.8, 46.8, 30.5, 3.0, 0x8a9096, [4, 12], 16, 2, true);
-  for (const [lx, lz] of [[-46, 29], [46, 29], [0, -46], [-46, -46], [46, -46]] as [number, number][]) floodLight(b, lx, lz, 14);
-  for (let i = 0; i < 4; i++) tree(b, rng, -44 + i * 5.2, 30.8 + (i % 2) * 0.3, 7, 1.6);
+  fenceRect(b, -46.8, -46.8, 46.8, 30.5, 3.0, 0x8a9096, [4, 12], 24, 1, true);
+  for (const [lx, lz] of [[-46, 29], [46, 29], [0, -46]] as [number, number][]) floodLight(b, lx, lz, 14);
 }
 
 // ------------------------------------------------------------------------------------------------ util_wind_turbine
@@ -364,7 +362,7 @@ function windTurbine(b: ModelBuilder): void {
   const hubH = 52;
   const ax = Math.sin(yaw), az = Math.cos(yaw);
   const off = 2.6;
-  const tx = -ax * off, tz = -az * off;
+  const tx = -ax * (off + 0.9), tz = -az * (off + 0.9);
   b.paint(0xb8b5ad, Surf.Plain);
   tube(b, tx, tz, 0, 0.8, 2.8, 2.8, 12);
   disc(b, tx, tz, 0.8, 2.8, 12);
@@ -377,7 +375,7 @@ function windTurbine(b: ModelBuilder): void {
   wallQuad(b, 'pz', tz + 1.66, tx - 0.45, tx + 0.45, 0.8, 2.9, 0.03);
   b.paint(0xd8dadc, Surf.Plain).box(2.5, 0, 2.5, 4.3, 2.2, 4.0);
   // nacelle + hub + blades in rotor space
-  b.push().translate(0, hubH, 0).rotateY(yaw);
+  b.push().translate(0, hubH, 0).rotateY(yaw).translate(0, 0, -0.9);
   b.paint(0xf2f2ef, Surf.Plain).box(-1.25, -1.2, -off - 3.2, 1.25, 1.4, -off + 1.9 + 0.6);
   b.paint(0xe6e6e2, Surf.Plain);
   b.push().rotateX(Math.PI / 2);
@@ -385,7 +383,7 @@ function windTurbine(b: ModelBuilder): void {
   b.pop();
   b.paint(0xff2a1a, Surf.Emissive).boxC(0, -off - 2.6, 0.35, 0.35, 1.4, 0.35);
   b.paint(0xf6f6f3, Surf.Plain);
-  const L = 12.9;
+  const L = 12.8;
   for (let i = 0; i < 3; i++) {
     b.push().translate(0, 0, 0.9).rotateZ((i / 3) * Math.PI * 2);
     blade(b, L);
@@ -435,30 +433,49 @@ function solarFarm(b: ModelBuilder, rng: RNG): void {
 function hydroStation(b: ModelBuilder, rng: RNG): void {
   const HX = 24, HZ = 16;
   ground(b, -HX, -HZ, HX, HZ, CONCRETE, Surf.Pavement, 0.05);
-  // intake / dam block at the back (reservoir side = -Z) with spillway gates and a gantry crane
-  b.paint(0xbdb8ae, Surf.Stone).box(-23.5, 0, -16, 23.5, 24, -9, { top: { color: 0xa9a59c, surf: Surf.Pavement } });
-  b.paint(0xa9a59c, Surf.Plain);
-  for (let i = 0; i < 4; i++) b.box(-22 + i * 12.4, 24, -15.5, -19 + i * 12.4, 27.5, -9.5, { bottom: null });
-  b.paint(0x55595e, Surf.Metal);
-  wallRow(b, 'pz', -9, 10, 23, 14, 22, 2, 4.2);
-  b.paint(0xe6a817, Surf.Metal);
-  for (const x of [-12, -2]) {
-    strut(b, [x, 24, -15], [x, 31, -15], 0.6);
-    strut(b, [x, 24, -10], [x, 31, -10], 0.6);
+  // gravity dam at the back (reservoir side = -Z): vertical upstream face, sloped downstream face, spillway chute
+  const zU = -16, zC = -12, zT = -1.5, yC = 24, dx0 = -23.5, dx1 = 23.5;
+  b.paint(0xb2ada3, Surf.Stone);
+  b.quad([dx1, 0, zU], [dx0, 0, zU], [dx0, yC, zU], [dx1, yC, zU]);
+  b.quad([dx0, yC, zC], [dx1, yC, zC], [dx1, yC, zU], [dx0, yC, zU]);
+  b.paint(0xa8a398, Surf.Plain);
+  b.quad([dx0, 0, zT], [dx1, 0, zT], [dx1, yC, zC], [dx0, yC, zC]);
+  b.paint(0x9e998e, Surf.Stone);
+  for (const [xx, sgn] of [[dx0, -1], [dx1, 1]] as [number, number][]) {
+    const pts: V3[] = [[xx, 0, zU], [xx, 0, zT], [xx, yC, zC], [xx, yC, zU]];
+    if (sgn > 0) { b.tri(pts[0], pts[2], pts[1]); b.tri(pts[0], pts[3], pts[2]); }
+    else { b.tri(pts[0], pts[1], pts[2]); b.tri(pts[0], pts[2], pts[3]); }
   }
-  b.box(-12.5, 31, -15.5, -1.5, 32.2, -9.5);
-  // reservoir water at the back edge of the dam crest
+  // spillway chute with white water on the right part of the slope
+  const sp0 = 9, sp1 = 19;
+  b.paint(0xe8f0f2, Surf.Water);
+  b.quad([sp0, 0.15, zT + 0.2], [sp1, 0.15, zT + 0.2], [sp1, yC + 0.05, zC - 0.1], [sp0, yC + 0.05, zC - 0.1]);
+  b.paint(0x8e8a82, Surf.Plain);
+  for (const xx of [sp0 - 0.6, sp1]) b.box(xx, yC - 0.2, zU, xx + 0.6, yC + 3.0, zC);
+  // crest: gate piers, road railing, intake gantry crane, reservoir water edge
+  b.paint(0x9e998e, Surf.Plain);
+  for (let i = 0; i < 4; i++) b.box(sp0 + 0.4 + i * 2.5, yC, zU + 0.2, sp0 + 0.9 + i * 2.5, yC + 3.0, zC - 0.2, { bottom: null });
+  b.paint(0x55595e, Surf.Metal);
+  b.box(sp0, yC + 3.0, zU, sp1, yC + 3.5, zC, { bottom: null });
+  strut(b, [dx0, yC + 1.0, zC + 0.1], [sp0 - 0.7, yC + 1.0, zC + 0.1], 0.1);
   b.paint(0x3f7ea6, Surf.Water);
-  flat(b, -23.5, -16, 23.5, -15.4, 24.1);
-  // penstocks: three steel pipes down to the powerhouse
+  flat(b, dx0, -16, dx1, -15.4, yC - 1.0);
+  b.paint(0xe6a817, Surf.Metal);
+  for (const x of [-14, -4]) {
+    strut(b, [x, yC, -15.3], [x, yC + 7, -15.3], 0.6);
+    strut(b, [x, yC, -12.6], [x, yC + 7, -12.6], 0.6);
+  }
+  b.box(-14.5, yC + 7, -15.8, -3.5, yC + 8.2, -12.1);
+  b.paint(0x55595e, Surf.Metal);
+  for (const x of [-12, -6, 0]) b.boxC(x, -14, 3.2, 3.0, yC, 1.6);
+  // penstocks laid on the downstream face, down into the powerhouse
   b.paint(0x4f6a5a, Surf.Metal);
+  const slope = (yC - 0) / (zT - zC);
   for (const x of [-12, -6, 0]) {
-    b.pipe([x, 18, -9], [x, 7, 0.5], 1.2, 10);
-    for (const t of [0.35, 0.7]) {
-      const y = 18 - 11 * t, zz = -9 + 9.5 * t;
-      b.paint(0xa9a59c, Surf.Plain).boxC(x, zz, 3, 1.2, 0, y - 1.0);
-      b.paint(0x4f6a5a, Surf.Metal);
-    }
+    const zA = zC + 1.5, yA = yC - slope * 1.5 + 1.3;
+    b.pipe([x, yA, zA], [x, 5.5, 0.3], 1.2, 10);
+    b.paint(0x8e8a82, Surf.Plain).boxC(x, zC + 2, 3.2, 1.6, yC - slope * 2 - 0.6, 2.4);
+    b.paint(0x4f6a5a, Surf.Metal);
   }
   // powerhouse with tall windows
   b.paint(0xd8d0bc, Surf.WallWindows, 7, 9).box(-17, 0, 0, 5, 17, 11, { top: { color: 0x7a7670, surf: Surf.RoofFlat } });

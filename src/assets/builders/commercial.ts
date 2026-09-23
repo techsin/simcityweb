@@ -8,13 +8,18 @@
  *   com_mid.ts  — medium: shops+apartments, motel, supermarket, hotel, department store, offices, mall
  *   com_high.ts — high: hotel tower, office tower, skyscraper, megatower
  */
-import type { ModelBuilders } from '../registry';
+import type { ModelBuilders, ModelBuildFn } from '../registry';
 import { lowModels } from './com_low';
 import { midModels } from './com_mid';
 import { highModels } from './com_high';
+import { setRoofTone } from './com_kit';
 
-export const models: ModelBuilders = {
-  ...lowModels,
-  ...midModels,
-  ...highModels,
+/** Wrap a builder so each (id, variant) gets its own deterministic flat-roof tone (forked rng: layout unaffected). */
+const withRoofTone = (fn: ModelBuildFn): ModelBuildFn => (b, v, rng, e) => {
+  setRoofTone(rng.fork('roof'));
+  fn(b, v, rng, e);
 };
+
+export const models: ModelBuilders = Object.fromEntries(
+  Object.entries({ ...lowModels, ...midModels, ...highModels }).map(([id, fn]) => [id, withRoofTone(fn)]),
+);

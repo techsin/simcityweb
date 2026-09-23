@@ -129,6 +129,7 @@ export function buildDemoCity(opt: DemoOptions): CityState {
 
   // ---------------------------------------------------------------- zones / buildings
   if (opt.buildings) placeBuildings(st, rng, opt, riverX);
+  for (let i = 0; i < N * N; i++) if (net[i] || st.building[i] >= 0 || st.water[i]) st.trees[i] = 0;
   return st;
 }
 
@@ -156,7 +157,7 @@ function placeBuildings(st: CityState, rng: RNG, opt: DemoOptions, riverX: numbe
   rng.shuffle(cells);
   // a few plopped civic / utility buildings first
   const plops: [string, number, number, 0 | 1 | 2 | 3][] = [
-    ['util_coal_plant', Math.round(108 * N / 128), Math.round(10 * N / 128), 0],
+    ['util_coal_plant', Math.round(112 * N / 128), Math.round(10 * N / 128), 0],
     ['civ_city_hall', Math.round(42 * N / 128), Math.round(34 * N / 128), 0],
     ['park_large', Math.round(50 * N / 128), Math.round(65 * N / 128), 0],
     ['civ_hospital', Math.round(57 * N / 128), Math.round(73 * N / 128), 0],

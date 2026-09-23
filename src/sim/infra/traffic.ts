@@ -29,7 +29,7 @@ import { BF } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
 import {
   Fam, Transit, activeJobs, centerCell, detectJobsUnknown, ensureIdFloat, infoOf, isFunctional, jobSlots, nowMs,
-  readOrdinances, setFlagQuiet, wealthOf, type OrdinanceSet,
+  readEffects, setFlagQuiet, wealthOf, type OrdEffects,
 } from './common';
 import { GridGraph, RoadGraph, findNeighborConnections, perimeterNodes, type NeighborConn } from './graph';
 import { MinHeap } from './heap';
@@ -39,7 +39,7 @@ import {
   PRICE_MAX, PRICE_UP, REGIONAL_FILL, REGIONAL_TIME, SHOP_PCU_WEIGHT, SHOP_TRIPS_PER_RES, STOP_CAP_BUS,
   STOP_CAP_SUBWAY, STOP_CAP_TRAIN, STOP_WALK_RADIUS, STOP_WALK_TIME_PER_CELL, SUBWAY_TIME, TRAFFIC_CYCLE_DAYS,
   TRAFFIC_FRAME_BUDGET_MS, TRANSIT_BIAS, TRUCK_PCU, WAIT_BUS, WAIT_SUBWAY, WAIT_TRAIN, WALK_BIAS, WALK_MAX_CELLS,
-  WALK_TIME_PER_CELL, WORKER_SHARE, DEST_NOISE, RESULT_SMOOTH, REGION_JOB_MIN, REGION_JOB_SHARE, REGION_WORKER_MIN,
+  WALK_TIME_PER_CELL, WORKER_SHARE, DEST_NOISE, RESULT_SMOOTH, LOAD_SMOOTH, REGION_JOB_MIN, REGION_JOB_SHARE, REGION_WORKER_MIN,
   REGION_WORKER_SHARE,
 } from './params';
 import { Search, Seeds, accumulate, roadSearch, transitSearch, type TransitNet } from './search';
@@ -164,6 +164,8 @@ export class TrafficSystem implements SimSystem {
   private jCell: Int32Array<ArrayBuffer> = new Int32Array(0);
   private jHalf: Uint8Array<ArrayBuffer> = new Uint8Array(0);
   private jLoad: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** MSA-smoothed job loads (the all-or-nothing assignment herds whole catchments; averages represent the split) */
+  private jLoadS: Float32Array<ArrayBuffer> = new Float32Array(0);
   private jTimeSum: Float32Array<ArrayBuffer> = new Float32Array(0);
   private jInbound: Float32Array<ArrayBuffer> = new Float32Array(0);
   private jRailNode: Int32Array<ArrayBuffer> = new Int32Array(0);
@@ -203,10 +205,14 @@ export class TrafficSystem implements SimSystem {
   private nsDist: Float32Array<ArrayBuffer> = new Float32Array(64);
   private jConnType: Uint8Array<ArrayBuffer> = new Uint8Array(0);
   private growth = 1;
+  private trStartA: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private busTimeA: Float32Array<ArrayBuffer> = new Float32Array(0);
   private regionWorkerCap = 0;
 
   // persistent by building id
   private priceById: Float32Array<ArrayBuffer> = new Float32Array(1024);
+  private loadById: Float32Array<ArrayBuffer> = new Float32Array(1024).fill(-1);
+  private connLoad: Float32Array<ArrayBuffer> = new Float32Array(0);
   /** residential: share of workers reaching a job (0..1); -1 = unknown. Index = building id. */
   accessById: Float32Array<ArrayBuffer> = new Float32Array(1024).fill(-1);
   /** job sites: filled share of job slots by reachable workers (local + regional), 0..1; -1 unknown */
@@ -238,7 +244,7 @@ export class TrafficSystem implements SimSystem {
   private rngState = 12345;
 
   // cycle-level flags
-  private ords: OrdinanceSet = new Set();
+  private fx: OrdEffects | null = null;
   private jobsUnknown = false;
 
   // ------------------------------------------------------------------------------------------ SimSystem
@@ -258,6 +264,8 @@ export class TrafficSystem implements SimSystem {
     this.iter = 0;
     this.cycles = 0;
     this.priceById.fill(0);
+    this.loadById.fill(-1);
+    this.connLoad = new Float32Array(sim.state.cells).fill(-1);
     this.accessById.fill(-1);
     this.jobFillById.fill(-1);
     this.freightById.fill(-1);
@@ -458,10 +466,12 @@ export class TrafficSystem implements SimSystem {
     if (this.graphDirty || this.road.N !== st.size) this.rebuildGraphs(st);
     const g = this.road;
     const N = st.size;
-    this.ords = readOrdinances(st);
+    this.fx = readEffects(st);
     this.jobsUnknown = detectJobsUnknown(st);
     // per-id arrays
     this.priceById = ensureIdFloat(this.priceById, st);
+    this.loadById = ensureIdFloat(this.loadById, st, -1);
+    if (this.connLoad.length !== st.cells) this.connLoad = new Float32Array(st.cells).fill(-1);
     this.accessById = ensureIdFloat(this.accessById, st, -1);
     this.jobFillById = ensureIdFloat(this.jobFillById, st, -1);
     this.freightById = ensureIdFloat(this.freightById, st, -1);
@@ -621,6 +631,8 @@ export class TrafficSystem implements SimSystem {
     this.oTime = growF32(this.oTime, oN); this.oEmp = growF32(this.oEmp, oN);
     this.oJobA = growI32(this.oJobA, oN); this.oJobT = growI32(this.oJobT, oN);
     this.jLoad = growF32(this.jLoad, jN); this.jLoad.fill(0, 0, jN);
+    this.jLoadS = growF32(this.jLoadS, jN);
+    for (let j = 0; j < jN; j++) this.jLoadS[j] = this.jBid[j] >= 0 ? this.loadById[this.jBid[j]] : this.connLoad[this.jCell[j]];
     this.jTimeSum = growF32(this.jTimeSum, jN); this.jTimeSum.fill(0, 0, jN);
     this.jInbound = growF32(this.jInbound, jN); this.jInbound.fill(0, 0, jN);
     this.sLoad = growF32(this.sLoad, sN); this.sLoad.fill(0, 0, sN);
@@ -706,18 +718,24 @@ export class TrafficSystem implements SimSystem {
         trFrom.push(a, b); trTo.push(b, a); trCost.push(cost, cost);
       }
     }
-    const trStart = new Int32Array(total + 1);
+    this.trStartA = growI32(this.trStartA, total + 1);
+    const trStart = this.trStartA;
+    trStart.fill(0, 0, total + 1);
     for (const f of trFrom) trStart[f + 1]++;
     for (let i = 0; i < total; i++) trStart[i + 1] += trStart[i];
     const to = new Int32Array(trFrom.length), cost = new Float32Array(trFrom.length);
-    const fp = new Int32Array(total);
     for (let e = 0; e < trFrom.length; e++) {
+      // trStart[f+1] (= end of f's bucket) used as a decrementing cursor
       const f = trFrom[e];
-      const p = trStart[f] + fp[f]++;
+      const p = --trStart[f + 1];
       to[p] = trTo[e];
       cost[p] = trCost[e];
     }
-    const busTime = new Float32Array(nR);
+    // now trStart[k] = original start[k-1] for k >= 1: shift back
+    for (let i = 1; i < total; i++) trStart[i] = trStart[i + 1];
+    trStart[total] = trFrom.length;
+    this.busTimeA = growF32(this.busTimeA, nR);
+    const busTime = this.busTimeA;
     for (let v = 0; v < nR; v++) busTime[v] = this.nodeTime[v] * BUS_TIME_FACTOR;
     this.tnet = {
       nR, nRail, nSub, total, roadAdj: g.rev, busTime, railAdj: rail.adj, subAdj: sub.adj,
@@ -803,10 +821,11 @@ export class TrafficSystem implements SimSystem {
     const distA = SA.dist, srcA = SA.src, hopsA = SA.hops, doneA = SA.done;
     const distT = ST.dist, srcT = ST.src, doneT = ST.done;
     const N = this.road.N;
-    const ords = this.ords;
-    const carpool = ords.has('carpool'), shuttle = ords.has('commuterShuttle');
-    const carPcu = (1 / CAR_OCCUPANCY) * (carpool ? 0.88 : 1) * (shuttle ? 0.94 : 1);
-    const trBonus = shuttle ? 0.4 : 0;
+    const fx = this.fx;
+    // ordinances: 'traffic.car' scales car volumes (carpool, shuttles, parking fines), 'transit.ridership' makes
+    // transit more attractive
+    const carPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
+    const trBonus = fx ? 2.5 * Math.log(fx.transitRidership) : 0;
     const acc = this.acc, tAcc = this.tAcc;
     const nR = this.road.n;
     acc.fill(0, 0, nR);
@@ -905,18 +924,28 @@ export class TrafficSystem implements SimSystem {
       else if (v < nR + nRail) this.railNew[v - nR] += f;
       else this.subNew[v - nR - nRail] += f;
     }
-    // employment access per origin (using this cycle's loads)
+    // smoothed loads (MSA across cycles)
+    const jLoadS = this.jLoadS;
+    for (let j = 0; j < this.jN; j++) {
+      const prev = jLoadS[j];
+      const v = prev >= 0 ? prev + (jLoad[j] - prev) * LOAD_SMOOTH : jLoad[j];
+      jLoadS[j] = v;
+      const bid = this.jBid[j];
+      if (bid >= 0) this.loadById[bid] = v;
+      else this.connLoad[this.jCell[j]] = v;
+    }
+    // employment access per origin (smoothed loads of the chosen destinations)
     for (let o = 0; o < this.oN; o++) {
       let e = 0;
       const jA = this.oJobA[o], jT = this.oJobT[o];
-      if (jA >= 0) e += (this.oShC[o] + this.oShW[o]) * Math.min(1, this.jSlots[jA] / Math.max(1e-6, jLoad[jA]));
-      if (jT >= 0) e += this.oShT[o] * Math.min(1, this.jSlots[jT] / Math.max(1e-6, jLoad[jT]));
+      if (jA >= 0) e += (this.oShC[o] + this.oShW[o]) * Math.min(1, this.jSlots[jA] / Math.max(1e-6, jLoadS[jA]));
+      if (jT >= 0) e += this.oShT[o] * Math.min(1, this.jSlots[jT] / Math.max(1e-6, jLoadS[jT]));
       this.oEmp[o] = e;
     }
     // shadow prices (capacity constraint), persisted per building / connection cell
     for (let j = 0; j < this.jN; j++) {
       const slots = this.jSlots[j];
-      const ratio = jLoad[j] / Math.max(1, slots);
+      const ratio = jLoadS[j] / Math.max(1, slots);
       let p = jPrice[j];
       if (ratio > 1) p += PRICE_UP * Math.min(2, ratio - 1);
       else p -= PRICE_DOWN * (1 - ratio);
@@ -953,7 +982,7 @@ export class TrafficSystem implements SimSystem {
     const bestNode = new Int32Array(this.jB).fill(-1);
     const connSum = new Float64Array(conns.length);
     for (let j = 0; j < this.jB; j++) {
-      const spare = this.jSlots[j] - Math.min(this.jSlots[j], this.jLoad[j]);
+      const spare = this.jSlots[j] - Math.min(this.jSlots[j], this.jLoadS[j]);
       if (spare <= 0) continue;
       let bd = Infinity, bn = -1;
       for (let e = this.jEntS[j], e1 = e + this.jEntC[j]; e < e1; e++) {
@@ -1160,7 +1189,7 @@ export class TrafficSystem implements SimSystem {
       const b = st.buildings.get(bid);
       if (!b) continue;
       const slots = this.jSlots[j];
-      const local = Math.min(this.jLoad[j], slots);
+      const local = Math.min(this.jLoadS[j], slots);
       const arriving = local + this.jInbound[j];
       const fill = Math.min(1, arriving / Math.max(1, slots));
       const prevF = this.jobFillById[bid];

@@ -77,7 +77,7 @@ export class BuildingRenderer {
   onVisual: ((v: BuildingVisual | null, id: number) => void) | null = null;
 
   constructor(private state: CityState, private culler: TileCuller) {
-    this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 20, 'buildings');
+    this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 18, 'buildings');
     this.batch.mesh.castShadow = true;
     this.batch.mesh.receiveShadow = true;
     const T = culler.tiles * culler.tiles;
@@ -278,7 +278,8 @@ export class BuildingRenderer {
     }
     if (bi.site >= 0) {
       const fw = b.rot & 1 ? b.d : b.w, fd = b.rot & 1 ? b.w : b.d;
-      const ys = 1 + 0.18 * (Math.max(b.w, b.d) - 1);
+      // X/Z stretch to the lot; Y by sqrt(lot cells) so the crane keeps plausible proportions
+      const ys = Math.sqrt(b.w * b.d);
       this.m4.compose(this.v.set(v.cx, v.baseY + 0.01, v.cz), yawQ, this.s.set(fw, ys * Math.min(1, pop), fd));
       this.batch.setMatrix(bi.site, this.m4);
     }

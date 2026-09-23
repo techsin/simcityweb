@@ -1,7 +1,7 @@
 /**
  * Fire system (daily).
  *  - Random ignition per building: FIRE_BASE_P x risk; risk up with industry (I-D x4, I-M x2.5), density,
- *    abandonment; down with fire coverage ((1 - 0.85 cov)^2) and the smoke detector ordinance (x0.7).
+ *    abandonment; down with fire coverage ((1 - 0.85 cov)^2); x ordinanceEffect 'fire.risk' (smoke detectors).
  *  - Burning buildings (BF.OnFire) spread to adjacent buildings (FIRE_SPREAD_P, less where covered).
  *  - Dispatch: if the building has fire coverage, the nearest fire station sends a truck (service route for the
  *    vehicle renderer) and puts the fire out after 1-3 days (coverage >= 0.6 / >= 0.35 / otherwise).
@@ -13,7 +13,7 @@
 import { BF, type Building } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
 import { RNG } from '../../core/rng';
-import { Fam, centerCell, infoOf, readOrdinances } from './common';
+import { Fam, centerCell, infoOf, readEffects } from './common';
 import { FIRE_BASE_P, FIRE_BURN_DAYS, FIRE_SPREAD_P } from './params';
 import type { TrafficSystem } from './traffic';
 
@@ -32,6 +32,8 @@ export class FireSystem implements SimSystem {
   firesThisMonth = 0;
   /** multiplier for random ignitions (disasters temporarily raise it) */
   riskBoost = 1;
+  /** ordinance 'fire.effect' (firefighting effectiveness) */
+  private fireEffect = 1;
 
   init(sim: Simulation): void {
     const st = sim.state;
@@ -58,9 +60,9 @@ export class FireSystem implements SimSystem {
     const N = st.size;
     const rng = this.rng;
     // --- random ignition
-    const ords = readOrdinances(st);
-    const detector = ords.has('smokeDetector') ? 0.7 : 1;
-    const base = FIRE_BASE_P * detector * this.riskBoost;
+    const fx = readEffects(st);
+    this.fireEffect = fx.fireEffect;
+    const base = FIRE_BASE_P * fx.fireRisk * this.riskBoost;
     const fc = st.fireCov;
     for (const b of st.buildings.values()) {
       if (b.flags & (BF.OnFire | BF.Burnt)) continue;
@@ -122,7 +124,7 @@ export class FireSystem implements SimSystem {
     if (b.flags & (BF.OnFire | BF.Burnt)) return false;
     const st = sim.state;
     b.flags |= BF.OnFire;
-    const cov = st.fireCov[centerCell(st, b)];
+    const cov = st.fireCov[centerCell(st, b)] * this.fireEffect;
     let putOut = -1;
     if (cov >= 0.15) {
       const days = cov >= 0.6 ? 1 : cov >= 0.35 ? 2 : 3;

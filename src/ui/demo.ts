@@ -72,6 +72,7 @@ const scene = new CityScene({
     console.log('[demo] save', s.config.name, 'day', s.day);
   },
   forceFallback: (P.get('fallback') as 'all' | 'world' | 'objects' | null) ?? undefined,
+  settings: { quality: (P.get('quality') as 'low' | 'medium' | 'high' | 'ultra' | null) ?? (navigator.webdriver ? 'low' : 'high'), autosaveMonths: 0 },
   initialSpeed: P.has('speed') ? num('speed', 1) : fake ? 0 : 1,
 });
 (window as any).__scene = scene;
@@ -305,10 +306,13 @@ const OVERLAY_ALIASES: Record<string, Overlay> = Object.fromEntries(OVERLAYS.map
 
 async function run(): Promise<void> {
   await new Promise<void>((res) => scene.ctx.ui.on('viewsReady', () => res()));
+  console.log('[demo] views ready', Math.round(performance.now()));
   let center = { cx: size / 2, cz: size / 2 };
   if (P.get('town') === '1') {
     try {
+      const t0 = performance.now();
       center = buildTown();
+      console.log(`[demo] town built in ${Math.round(performance.now() - t0)} ms, buildings ${scene.sim.state.buildings.size}`);
     } catch (e) {
       console.error('[demo] town builder failed', e);
     }
@@ -327,7 +331,7 @@ async function run(): Promise<void> {
   const cam = P.get('cam')?.split(',').map(Number);
   if (cam && cam.length >= 2) scene.ctx.focusCell(cam[0], cam[1], cam[2]);
   else if (P.get('town') === '1') scene.ctx.focusCell(center.cx, center.cz, 700);
-  await frames(20);
+  (window as any).__step = "f20"; await frames(num("f1", 3)); (window as any).__step = "after-f20";
   const ov = P.get('overlay');
   if (ov) scene.ctx.setOverlay(OVERLAY_ALIASES[ov.toLowerCase()] ?? (Number(ov) as Overlay));
   const tool = P.get('tool');
@@ -354,32 +358,32 @@ async function run(): Promise<void> {
     const b = scene.sim.state.buildingAt(q[0], q[1]);
     scene.ctx.showQuery({ buildingId: b?.id ?? null, x: q[0], z: q[1] });
   }
-  await frames(10);
+  (window as any).__step = "f10"; await frames(2); (window as any).__step = "after-f10";
   const hov = P.get('hover')?.split(',').map(Number);
   if (hov && hov.length >= 2) {
     pointer('pointermove', hov[0], hov[1]);
-    await frames(6);
+    await frames(2);
   }
   const click = P.get('click')?.split(',').map(Number);
   if (click && click.length >= 2) {
     pointer('pointermove', click[0], click[1]);
-    await frames(3);
+    await frames(2);
     pointer('pointerdown', click[0], click[1], 1);
     await frames(2);
     pointer('pointerup', click[0], click[1], 0);
-    await frames(6);
+    await frames(2);
   }
   const drag = P.get('drag')?.split(',').map(Number);
   if (drag && drag.length >= 4) {
     pointer('pointermove', drag[0], drag[1]);
-    await frames(3);
+    await frames(2);
     pointer('pointerdown', drag[0], drag[1], 1);
-    await frames(3);
+    await frames(2);
     pointer('pointermove', drag[2], drag[3], 1);
-    await frames(6);
+    await frames(2);
   }
   if (P.get('pause') === '1') scene.ctx.openPauseMenu();
-  await frames(num('frames', 30));
+  (window as any).__step = "final"; await frames(num("frames", 3));
   (window as any).__ready = true;
   console.log('[demo] ready', JSON.stringify({ degraded: scene.ctx.degraded, errors: scene.modules.errors, catalog: ploppables().length, buildings: scene.sim.state.buildings.size, flagsAbandoned: BF.Abandoned }));
 }

@@ -35,4 +35,4 @@ export { getTraffic, TrafficSystem, type SampleRoute, type RouteInfo, type Route
 export { triggerDisaster, activeDisasters, type DisasterKind, type ActiveDisaster } from '../infra/disasters';
 export { overlayLayer, overlayValue, type OverlayLayer } from '../infra/overlays';
 export { UtilitiesSystem, PollutionSystem, ServicesSystem, CrimeSystem, FireSystem, DisastersSystem };
-export { removeBuilding, ORDINANCE_ALIASES } from '../infra/common';
+export { removeBuilding, readEffects, type OrdEffects } from '../infra/common';

@@ -14,20 +14,24 @@ export class RoadSurface {
     this.net = net;
   }
 
-  /** bilinear terrain height at world (x,z) */
+  /**
+   * terrain height at world (x,z), matching the rendered terrain triangulation exactly
+   * (render-world TerrainRenderer.meshHeightAt: 2 triangles per cell, diagonal from (x+1,z) to (x,z+1)).
+   */
   terrain(wx: number, wz: number): number {
     const st = this.state;
     const N = st.size;
     let fx = wx / CELL_SIZE, fz = wz / CELL_SIZE;
-    if (fx < 0) fx = 0; else if (fx > N - 1e-4) fx = N - 1e-4;
-    if (fz < 0) fz = 0; else if (fz > N - 1e-4) fz = N - 1e-4;
+    if (fx < 0) fx = 0; else if (fx > N - 1e-6) fx = N - 1e-6;
+    if (fz < 0) fz = 0; else if (fz > N - 1e-6) fz = N - 1e-6;
     const x = fx | 0, z = fz | 0;
     const tx = fx - x, tz = fz - z;
     const N1 = N + 1;
     const h = st.heights;
     const i = z * N1 + x;
     const a = h[i], b = h[i + 1], c = h[i + N1], d = h[i + N1 + 1];
-    return (a + (b - a) * tx) * (1 - tz) + (c + (d - c) * tx) * tz;
+    if (tx + tz <= 1) return a + (b - a) * tx + (c - a) * tz;
+    return d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
   }
 
   /** deck / ground height (without LIFT) at world pos, honoring bridges */

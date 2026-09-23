@@ -1,6 +1,6 @@
 /**
  * Quality presets for the world renderer. `low` targets integrated GPUs (no AO, no bloom, single cheap shadow map,
- * FXAA), `ultra` targets fast discrete GPUs (2x pixel ratio, MSAA + full-res GTAO, 2 x 4096 shadow cascades).
+ * FXAA), `ultra` targets fast discrete GPUs (2x pixel ratio, MSAA + full-res GTAO, 2 x 3072 shadow cascades).
  */
 import type { QualityLevel } from '../contracts';
 
@@ -74,7 +74,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     maxPixelRatio: 1.25,
     msaa: 0,
     fxaa: true,
-    shadowMapSize: 2048,
+    shadowMapSize: 1536,
     shadowCascades: 2,
     shadowRadius: 1.5,
     shadowRangeMul: 3,
@@ -97,7 +97,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     maxPixelRatio: 1.5,
     msaa: 4,
     fxaa: false,
-    shadowMapSize: 3072,
+    shadowMapSize: 2048,
     shadowCascades: 2,
     shadowRadius: 1.5,
     shadowRangeMul: 3.5,
@@ -120,7 +120,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     maxPixelRatio: 2,
     msaa: 4,
     fxaa: false,
-    shadowMapSize: 4096,
+    shadowMapSize: 3072,
     shadowCascades: 2,
     shadowRadius: 1.5,
     shadowRangeMul: 4,
