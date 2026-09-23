@@ -25,8 +25,12 @@ function lightArm(b: ModelBuilder, s: number, top: number) {
   b.paint(LAMP_WARM).box(x0 + s * 0.08, top - 0.16, -0.22, x1 - s * 0.1, top + 0.02, 0.22, { top: null, bottom: LAMP_WARM });
 }
 
-/** Traffic signal head facing +Z (dir = 1) or +X (dir = 2); lit: 0 red, 1 amber, 2 green. 16 tris. */
-function signalHead(b: ModelBuilder, x: number, y: number, z: number, dir: 1 | 2, lit: number) {
+/**
+ * Traffic signal head facing +Z (dir = 1) or +X (dir = 2). 16 tris. The three lamps use Emissive pattern 13
+ * (materials.ts): the shader lights red / amber / green from the head's world axis and the intersection's signal
+ * phase, in sync with the vehicles' stop logic.
+ */
+function signalHead(b: ModelBuilder, x: number, y: number, z: number, dir: 1 | 2) {
   b.paint(0x1f2124, Surf.Metal);
   if (dir === 1) b.box(x - 0.2, y - 0.55, z - 0.16, x + 0.2, y + 0.55, z + 0.16);
   else b.box(x - 0.16, y - 0.55, z - 0.2, x + 0.16, y + 0.55, z + 0.2);
@@ -43,11 +47,10 @@ function signalHead(b: ModelBuilder, x: number, y: number, z: number, dir: 1 | 2
     quadOut(b, [xb, y - bh, z - bw], [xb, y - bh, z + bw], [xb, y + bh, z + bw], [xb, y + bh, z - bw], [-1, 0, 0]);
   }
   const cols = [0xff0a06, 0xffa31a, 0x00e08a];
-  const dim = [0x3a1210, 0x3a2a10, 0x103a22];
   for (let i = 0; i < 3; i++) {
     const cy = y + 0.34 - i * 0.34;
-    const paint: Paint = i === lit ? P(cols[i], Surf.Emissive, i === 1 ? 0 : 3) : P(dim[i], Surf.Metal);
-    b.paint(paint);
+    // floor channel = lamp (0 red, 1 amber, 2 green) + 3 * head axis (0 model +Z, 1 model +X)
+    b.paint(P(cols[i], Surf.Emissive, 13, i + (dir === 2 ? 3 : 0)));
     const r = 0.12;
     if (dir === 1) quadOut(b, [x - r, cy - r, z + 0.17], [x + r, cy - r, z + 0.17], [x + r, cy + r, z + 0.17], [x - r, cy + r, z + 0.17], [0, 0, 1]);
     else quadOut(b, [x + 0.17, cy - r, z - r], [x + 0.17, cy - r, z + r], [x + 0.17, cy + r, z + r], [x + 0.17, cy + r, z - r], [1, 0, 0]);
@@ -125,18 +128,18 @@ export const models: ModelBuilders = {
     if (v === 1) lightArm(b, 1, top);
   },
 
-  // Traffic light: pole, mast arm over the road toward -X, two heads facing +Z (green), pole heads (+Z green, +X red),
-  // street name sign. ~110 tris.
+  // Traffic light: pole, mast arm over the road toward -X, two heads facing +Z, pole heads facing +Z and +X,
+  // street name sign; the lamps follow the intersection's live signal phase (Emissive pattern 13). ~130 tris.
   traffic_light(b) {
     b.paint(CONCRETE, Surf.Pavement).box(-0.3, 0, -0.3, 0.3, 0.3, 0.3);
     b.paint(GALV, Surf.Metal);
     limb(b, [[0, 0.3, 0], [0, 5.8, 0]], [0.14, 0.1], { seg: 6, cap: true });
     b.beam([0, 5.35, 0], [-5.6, 5.5, 0], 0.14);
     b.beam([0, 4.6, 0], [-1.6, 5.37, 0], 0.07);
-    signalHead(b, -2.9, 4.85, 0.1, 1, 2);
-    signalHead(b, -5.2, 4.9, 0.1, 1, 2);
-    signalHead(b, 0.0, 3.0, 0.3, 1, 2);
-    signalHead(b, 0.3, 3.0, 0.0, 2, 0);
+    signalHead(b, -2.9, 4.85, 0.1, 1);
+    signalHead(b, -5.2, 4.9, 0.1, 1);
+    signalHead(b, 0.0, 3.0, 0.3, 1);
+    signalHead(b, 0.3, 3.0, 0.0, 2);
     // street name sign (double sided)
     b.paint(0x1f6b3a, Surf.Plain);
     quadOut(b, [-0.4, 5.75, 0.08], [-2.0, 5.75, 0.08], [-2.0, 6.05, 0.08], [-0.4, 6.05, 0.08], [0, 0, 1]);

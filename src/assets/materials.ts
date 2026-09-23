@@ -20,6 +20,11 @@
  *       a dimmer outer ring).
  *   10 / 11 = NIGHT-ONLY glow x1 / x2 (no daytime emission: stained glass, lanterns, tent canopies).
  *   12 = floodlit sports surface: like 9 (paint ~0.7x, plain by day) but cool white floodlight at night.
+ *   13 = traffic-signal lamp: paint the lamp's lit colour, `floor` = lamp (0 red, 1 amber, 2 green) + 3 * head axis
+ *       (0 model +Z, 1 model +X; informational). The shader derives the served axis from the lamp's WORLD normal and
+ *       runs the same 30 s two-phase cycle per intersection cell as the vehicles (uSignalTime / uMapN, written by
+ *       VehicleRenderer): x-axis green 0-13 s, amber 13-15; z-axis green 15-28, amber 28-30; red otherwise.
+ *       Unlit lamps show albedo x0.15 without emission.
  * WallWindows pattern 8: arched civic windows (pattern 7 mask) with EVERY window lit warm amber at night
  *   (churches, keeps, clock towers).
  * Floodlit masonry: Surf.Plain and Surf.Stone pattern 1 (warm) / 2 (cool white) glow from the base up at night;
@@ -52,6 +57,9 @@ export const sharedUniforms = {
   uSunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3) },
   /** active light color * intensity (linear), set by WorldView */
   uSunColor: { value: new THREE.Color(3, 3, 3) },
+  /** traffic-signal clock (s, VehicleRenderer.time mod 30) and map size in cells, for Emissive pattern 13 */
+  uSignalTime: { value: 0 },
+  uMapN: { value: 128 },
 };
 
 const VERT_PARS = /* glsl */ `
@@ -61,6 +69,7 @@ varying vec3 vObjPos;
 varying vec3 vObjNormal;
 varying float vSeed;
 varying vec2 vInstXZ;
+varying float vWorldNX;
 uniform float uTime;
 uniform float uWind;
 `;
@@ -78,6 +87,18 @@ vec3 instPos = modelMatrix[3].xyz;
 #endif
 vSeed = fract(sin(dot(instPos.xz, vec2(12.9898, 78.233)) + instPos.y * 0.37) * 43758.5453);
 vInstXZ = instPos.xz;
+{
+  // world-space normal axis (traffic-signal lamps: 1 = faces along world X)
+  vec3 wn = objectNormal;
+  #ifdef USE_BATCHING
+    wn = mat3(batchingMatrix) * wn;
+  #endif
+  #ifdef USE_INSTANCING
+    wn = mat3(instanceMatrix) * wn;
+  #endif
+  wn = mat3(modelMatrix) * wn;
+  vWorldNX = abs(wn.x) > abs(wn.z) ? 1.0 : 0.0;
+}
 if (abs(surf.x - 8.0) < 0.5) {
   float hgt = max(position.y - 1.5, 0.0);
   float ph = uTime * 1.3 + instPos.x * 0.031 + instPos.z * 0.047;
@@ -93,6 +114,9 @@ varying vec3 vObjPos;
 varying vec3 vObjNormal;
 varying float vSeed;
 varying vec2 vInstXZ;
+varying float vWorldNX;
+uniform float uSignalTime;
+uniform float uMapN;
 uniform float uNight;
 uniform float uLitFraction;
 uniform float uTime;
@@ -327,6 +351,19 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       // light color: mostly the lamp's warm white, only lightly tinted by the ground (grass pools don't go lime)
       vec3 poolBase = mix(vec3(dot(albedo, vec3(0.3, 0.59, 0.11))), albedo, 0.35);
       emis += poolBase * vec3(1.0, 0.8, 0.55) * night * 0.75 * ((vSurf.z > 0.005 ? vSurf.z : 3.3) / 3.3);
+    } else if (pattern > 12.5 && pattern < 13.5) {
+      // traffic-signal lamp: same per-intersection 30 s cycle as the vehicles (VehicleRenderer)
+      ivec2 cell = ivec2(floor(vInstXZ / 16.0));
+      uint ci = uint(max(cell.y * int(uMapN + 0.5) + cell.x, 0));
+      float off = float((ci * 2654435761u) % 997u) * 0.03;
+      float ph = mod(uSignalTime + off, 30.0);
+      float state = 0.0; // 0 red, 1 amber, 2 green
+      if (vWorldNX > 0.5) state = ph < 13.0 ? 2.0 : (ph < 15.0 ? 1.0 : 0.0);
+      else state = ph >= 15.0 && ph < 28.0 ? 2.0 : (ph >= 28.0 ? 1.0 : 0.0);
+      float lamp = mod(floor(vSurf.z + 0.5), 3.0);
+      rough = 0.5;
+      if (abs(lamp - state) < 0.5) emis += albedo * (0.3 + 1.35 * night) * 0.8;
+      else albedo *= 0.15;
     } else if (pattern > 11.5 && pattern < 12.5) {
       // floodlit sports surface: plain by day (paint ~0.7x like pattern 9), cool white floodlight at night
       albedo = min(albedo * 1.43, vec3(1.0));
@@ -482,6 +519,8 @@ export function patchSurfaceMaterial<T extends THREE.MeshStandardMaterial>(mat: 
     shader.uniforms.uWind = sharedUniforms.uWind;
     shader.uniforms.uSunDir = sharedUniforms.uSunDir;
     shader.uniforms.uSunColor = sharedUniforms.uSunColor;
+    shader.uniforms.uSignalTime = sharedUniforms.uSignalTime;
+    shader.uniforms.uMapN = sharedUniforms.uMapN;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + VERT_MAIN);

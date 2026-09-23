@@ -12,6 +12,7 @@ import { CELL_SIZE } from '../../core/constants';
 import { Overlay } from '../../core/types';
 import { sharedUniforms } from '../../assets/materials';
 import { registerAllModels } from '../../assets/builders';
+import { setTreeSeason } from '../../assets/builders/nat_season';
 import type { CityState, Building } from '../../sim/CityState';
 import type { CityEvents } from '../../sim/Simulation';
 import type { CameraControllerApi, CellHit, QualityLevel, WorldViewApi } from '../contracts';
@@ -400,6 +401,8 @@ export class WorldView implements WorldViewApi {
 
     this.updateAtmosphere();
     this.terrain.update();
+    // publish the season for renderers without a CityState (street / median trees in PropRenderer)
+    setTreeSeason(this.state.month, this.state.config.climate);
     this.trees.update(this.camera);
     this.lastFrameMs = performance.now() - t0;
   }

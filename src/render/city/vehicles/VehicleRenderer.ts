@@ -793,6 +793,9 @@ export class VehicleRenderer {
     if (!this.enabled) return;
     dt = Math.min(dt, 0.1);
     this.time += dt;
+    // the signal-lamp shader (materials.ts Emissive pattern 13) runs the same per-intersection cycle as the cars below
+    sharedUniforms.uSignalTime.value = this.time % 30;
+    sharedUniforms.uMapN.value = this.net.N;
     const net = this.net;
     const st = this.state;
     // zoom-based thinning
