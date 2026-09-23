@@ -412,6 +412,10 @@ export class WorldView implements WorldViewApi {
   setBrush(center: { x: number; z: number } | null, radiusCells: number): void {
     this.terrain.setBrush(center, radiusCells);
   }
+  /** camera shake (earthquakes are handled automatically from the 'disaster' event) */
+  shake(intensity = 1, seconds = 2.5): void {
+    this.cameraController.shake(intensity, seconds);
+  }
 
   // ------------------------------------------------------------------ picking
   /** screen (client) position -> terrain cell. Heightfield ray march + bisection against the rendered surface. */

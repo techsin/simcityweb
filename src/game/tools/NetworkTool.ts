@@ -1,5 +1,5 @@
 /** Roads / rail / power lines / subway: drag an L-shaped path (Shift flips the L), live preview + cost. */
-import { Network } from '../../core/types';
+import { Network, Overlay } from '../../core/types';
 import type { ActionResult } from '../../sim/actions';
 import { lPath, type Cell } from '../geom';
 import type { GameContext } from '../context';
@@ -31,6 +31,7 @@ export class NetworkTool extends Tool {
     this.id = id;
     this.label = NETWORK_LABELS[String(kind)] ?? 'Network';
     this.icon = icon;
+    if (kind === 'power') this.autoOverlay = Overlay.Power;
   }
 
   private run(path: Cell[], preview: boolean): ActionResult {

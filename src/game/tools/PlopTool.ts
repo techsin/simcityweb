@@ -1,5 +1,6 @@
 /** Place a ploppable building: ghost follows the cursor, auto-faces the nearest road (R rotates manually). */
 import { CELL_SIZE } from '../../core/constants';
+import { Overlay } from '../../core/types';
 import type { ActionResult } from '../../sim/actions';
 import { getDef } from '../../sim/catalog';
 import type { BuildingDef } from '../../sim/catalogTypes';
