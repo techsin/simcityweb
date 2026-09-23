@@ -197,7 +197,8 @@ export class CityState {
   // player-built layers
   zone: Uint8Array;
   network: Uint8Array;
-  /** network flags: bit0 bridge, bit1 tunnel, bits2-3 one-way direction (0:+x 1:+z 2:-x 3:-z), bit4 has bus stop */
+  /** network flags: bit0 bridge, bit1 tunnel, bits2-3 one-way direction (0:+x 1:+z 2:-x 3:-z), bit4 has bus stop,
+   *  bit5 (0x20) rail/road level crossing (cell keeps its road type; rail passes through) */
   netFlags: Uint8Array;
   /** 1 = power line on cell */
   powerLines: Uint8Array;
