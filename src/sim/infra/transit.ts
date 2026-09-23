@@ -4,7 +4,7 @@
  * netFlags "has bus stop" bit (bit 4).
  */
 import type { CityState } from '../CityState';
-import { Transit, centerCell, infoOf, isFunctional } from './common';
+import { Transit, centerCell, infoOf, isFunctional, buildingList } from './common';
 import { TRANSIT_COV_RADIUS } from './params';
 
 export const NETFLAG_BUS_STOP = 1 << 4;
@@ -33,7 +33,8 @@ export function collectStops(state: CityState, out?: StopList): StopList {
     res.cell[n] = cell;
     n++;
   };
-  for (const b of state.buildings.values()) {
+  for (let bI = 0, bL = buildingList(state); bI < bL.length; bI++) {
+      const b = bL[bI];
     const inf = infoOf(state, b);
     if (inf.transit !== Transit.Bus && inf.transit !== Transit.Subway && inf.transit !== Transit.Train) continue;
     if (!isFunctional(b)) continue;

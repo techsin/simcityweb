@@ -86,6 +86,8 @@ export class WorldView implements WorldViewApi {
   private maxHeight = 100;
   private lastFrameMs = 0;
   private _disposed = false;
+  /** construction timings (ms, cumulative) for diagnostics */
+  readonly initTimings: Record<string, number> = {};
 
   constructor(canvas: HTMLCanvasElement, state: CityState, events: Emitter<CityEvents>, opts: WorldViewOptions = {}) {
     registerAllModels();
@@ -117,16 +119,21 @@ export class WorldView implements WorldViewApi {
     this.scene.matrixWorldAutoUpdate = true;
 
     const W = state.size * CELL_SIZE;
+    const tt = performance.now();
+    const mark = (k: string) => (this.initTimings[k] = Math.round(performance.now() - tt));
     // terrain
     this.terrain = new TerrainRenderer(state, this.q.terrainDetail, this.q.terrainShadows);
     this.scene.add(this.terrain.group);
     this.maxHeight = this.terrain.heightRange()[1];
+    mark('terrain');
     // water
     this.water = new WaterRenderer(this.terrain.heightTexture, state.size, state.config.climate, (x, z) => this.terrain.worldHeight(x, z), this.q.waterDetail);
     this.scene.add(this.water.mesh);
+    mark('water');
     // trees
     this.trees = new TreeRenderer(state, this.terrain, { lodDistance: this.q.treeLodDistance, density: this.q.treeDensity, castShadows: this.q.treeShadows });
     this.scene.add(this.trees.group);
+    mark('trees');
     // sky
     this.sky = new SkySystem(this.renderer, state.config.climate, this.q.skyLut, this.q.envSize);
     this.sky.setQuality(this.q.skyLut, this.q.envSize, this.q.envRefreshMinutes);
@@ -138,6 +145,7 @@ export class WorldView implements WorldViewApi {
     this.nightFill = new THREE.HemisphereLight(0x4a64a8, 0x16181f, 0);
     this.scene.add(this.nightFill);
     this.applyShadowQuality();
+    mark('sky+lights');
     // post
     this.post = new PostFX(this.renderer, this.q);
     this.post.fog.uSkyLut.value = this.sky.lutTexture;
@@ -149,6 +157,7 @@ export class WorldView implements WorldViewApi {
     this.controls = this.cameraController;
     this.cameraController.setView(W / 2, W / 2, Math.min(1400, W * 0.55), 50, 45);
 
+    mark('post+camera');
     this.bindEvents();
     const r = canvas.getBoundingClientRect();
     this.resize(Math.max(1, r.width || canvas.clientWidth || canvas.width), Math.max(1, r.height || canvas.clientHeight || canvas.height));
@@ -289,7 +298,7 @@ export class WorldView implements WorldViewApi {
     this.sun.color.copy(L.lightColor);
     this.sun.intensity = L.lightIntensity;
     this.sun.visible = L.lightIntensity > 0.002;
-    this.nightFill.intensity = 0.9 * L.night;
+    this.nightFill.intensity = 0.55 * L.night;
     sharedUniforms.uNight.value = L.night;
     sharedUniforms.uTime.value = this.clock;
     sharedUniforms.uLitFraction.value = litFractionAt(this._time);
@@ -335,10 +344,10 @@ export class WorldView implements WorldViewApi {
     // morning mist (5..9h), thin at noon, a bit of evening haze
     const mist = Math.max(0, 1 - Math.abs(h - 6.8) / 2.6);
     f.uFogOn.value = 1;
-    f.uFogStart.value = d * 0.65;
+    f.uFogStart.value = d * THREE.MathUtils.lerp(0.65, 0.85, THREE.MathUtils.smoothstep(d, 1500, 6000));
     f.uFogDensity.value = (0.00008 + 0.0008 * mist * mist + 0.0001 * n) * (climate === 'desert' ? 0.6 : 1);
     f.uFogFalloff.value = 1 / (60 + 90 * (1 - mist));
-    f.uHaze.value = hazeBase * (1 + 0.6 * L.golden) * (1 / (1 + d / 9000));
+    f.uHaze.value = hazeBase * (1 + 0.6 * L.golden) * (1 / (1 + d / 3500));
     f.uFogMax.value = 0.96;
     f.uSunDir.value.copy(L.sunDir);
     _col.copy(L.lightColor).multiplyScalar(L.lightIntensity * 0.12 * (1 - n));
@@ -350,7 +359,7 @@ export class WorldView implements WorldViewApi {
     this.renderer.toneMappingExposure = L.exposure;
     const golden = L.golden;
     g.tint.setRGB(1 + 0.05 * golden - 0.07 * n, 1 - 0.01 * golden - 0.03 * n, 1 - 0.06 * golden + 0.08 * n);
-    g.saturation = 1.08 + 0.06 * golden - 0.15 * n;
+    g.saturation = 1.08 + 0.06 * golden - 0.32 * n;
     g.contrast = 1.04 + 0.04 * n;
     g.lift.setRGB(0.002 * n, 0.006 * n, 0.016 * n);
     g.vignette = 0.2 + 0.1 * n;

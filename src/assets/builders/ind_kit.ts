@@ -666,6 +666,19 @@ export function floodLight(b: ModelBuilder, x: number, z: number, h = 9): void {
   b.paint(0xfff2d0, Surf.Emissive).boxC(x, z, 0.8, 0.4, h, 0.35, { bottom: { color: 0xfff2d0, surf: Surf.Emissive } });
 }
 
+/** Tiny omni-visible light point (tetrahedron, 4 tris): sodium / LED work lights that sparkle at night. */
+export function lightDot(b: ModelBuilder, x: number, y: number, z: number, s = 0.4, color: ColorLike = 0xffd08a): void {
+  b.paint(color, Surf.Emissive);
+  const t: V3 = [x, y + s, z];
+  const p0: V3 = [x + s, y - s * 0.5, z], p1: V3 = [x - s * 0.5, y - s * 0.5, z + s * 0.87], p2: V3 = [x - s * 0.5, y - s * 0.5, z - s * 0.87];
+  b.tri(t, p1, p0).tri(t, p2, p1).tri(t, p0, p2).tri(p0, p1, p2);
+}
+
+/** Light points spread over a set of positions. */
+export function lights(b: ModelBuilder, pts: V3[], s = 0.4, color: ColorLike = 0xffd08a): void {
+  for (const p of pts) lightDot(b, p[0], p[1], p[2], s, color);
+}
+
 /** Rooftop AC / condenser box (12 tris). */
 export function roofUnit(b: ModelBuilder, x: number, y: number, z: number, w: number, d: number, h: number, color: ColorLike = 0xb4b8bc): void {
   b.paint(color, Surf.Metal).box(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2);

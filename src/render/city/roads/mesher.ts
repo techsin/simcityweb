@@ -396,20 +396,42 @@ export class RoadMesher {
       wl(-mh, s0, -mh, s1, -0.02, CURB_H, -1, C(M.CURB, kind, 0));
       if (s0 > -HALF) wl(-mh, s0, mh, s0, -0.02, CURB_H, 1, C(M.CURB, kind, 0));
       if (s1 < HALF) wl(-mh, s1, mh, s1, -0.02, CURB_H, -1, C(M.CURB, kind, 0));
-      // median trees
-      for (const s of [-4, 4]) {
+      // median trees (not on bridges)
+      for (const s of bridge ? [] : [-4, 4]) {
         if (s < s0 + 1.5 || s > s1 - 1.5) continue;
-        const [lx, lz] = this.lp(h, 0, s);
-        const hsh = ((this.cx * 73856093) ^ (this.cz * 19349663) ^ (s > 0 ? 7 : 3)) >>> 0;
-        this.out.props.push({
-          model: 'tree_maple', variant: hsh % 3, x: this.ox + lx, y: this.Y(lx, lz) + CURB_H, z: this.oz + lz,
-          yaw: (hsh % 628) / 100, scale: 0.55 + ((hsh >> 8) % 20) / 100,
-        });
+        this.addTree(h, 0, s, CURB_H, 0.5, s > 0 ? 7 : 3);
+      }
+    }
+    // street trees: in the tree pits of roads (every 12 m, world aligned) and in street verges
+    if (!bridge && (t === Network.Road || t === Network.Street)) {
+      const vc = this.ox * DX[h] + this.oz * DZ[h];
+      const vA = vc - HALF, vB = vc + HALF;
+      const period = t === Network.Road ? 12 : 16;
+      const phase = t === Network.Road ? 9.6 : 0.0;
+      for (let vv = Math.ceil((vA - phase) / period) * period + phase; vv < vB; vv += period) {
+        const s = vv - vc;
+        for (const sg of [1, -1]) {
+          const hsh = ((Math.floor(vv) * 73856093) ^ ((this.cx + this.cz) * 19349663) ^ (sg > 0 ? 11 : 5)) >>> 0;
+          if (t === Network.Street && hsh % 3 === 0) continue;
+          const u = sg * (t === Network.Road ? a + 1.2 : a + 0.95);
+          // keep clear of the streetlight at s = 0
+          if (Math.abs(s) < 2.5) continue;
+          this.addTree(h, u, s, CURB_H, t === Network.Road ? 0.5 : 0.62, hsh);
+        }
       }
     }
     if (t === Network.OneWay || t === Network.Road || t === Network.Street || t === Network.Avenue || t === Network.Highway) {
       // nothing else
     }
+  }
+
+  private addTree(h: number, u: number, s: number, lift: number, scale: number, salt: number): void {
+    const [lx, lz] = this.lp(h, u, s);
+    const hsh = ((this.cx * 73856093) ^ (this.cz * 19349663) ^ (salt * 83492791)) >>> 0;
+    this.out.props.push({
+      model: 'tree_oak', variant: hsh % 4, x: this.ox + lx, y: this.Y(lx, lz) + lift, z: this.oz + lz,
+      yaw: (hsh % 628) / 100, scale: scale + ((hsh >> 8) % 16) / 100,
+    });
   }
 
   /** direction index of the right-hand vector of heading h */
@@ -573,9 +595,21 @@ export class RoadMesher {
     if (full) b = HALF;
     const signal = t !== Network.Street && t !== Network.Highway && popcount4(m) >= 3;
     if (this.signalized) this.signalized[this.ci] = signal ? 1 : 0;
-    // asphalt: box
-    this.mapNone();
-    this.squad(-b, -b, b, -b, b, b, -b, b, 0, C(M.ASPHALT, kind, F.PLAIN), 0);
+    // asphalt: box (highway ramp cells keep their through-lanes; ramp sides get a dashed merge line)
+    let boxFeat: number = F.PLAIN, boxW = 0;
+    if (t === Network.Highway && ((m & 5) === 5) !== ((m & 10) === 10)) {
+      const h = (m & 5) === 5 ? 0 : 1;
+      const rightD = (h + 1) & 3;
+      if (m & (1 << rightD)) boxW |= 4;
+      if (m & (1 << OPP[rightD])) boxW |= 8;
+      boxFeat = F.LANES;
+      this.mapStraight(h);
+    } else if (full && (m === 5 || m === 10)) {
+      // road / avenue apron leading onto a highway ramp: keep its lane markings
+      boxFeat = F.LANES;
+      this.mapStraight(m === 5 ? 0 : 1);
+    } else this.mapNone();
+    this.squad(-b, -b, b, -b, b, b, -b, b, 0, C(M.ASPHALT, kind, boxFeat), boxW);
     if (!full) {
       // arms + corner squares
       for (let d = 0; d < 4; d++) {
@@ -602,8 +636,9 @@ export class RoadMesher {
       if (this.net.bAxis[this.ci] < 0) {
         for (let d = 0; d < 4; d++) if (!(m & (1 << d)) && !this.neighborIsRoad(d)) this.edgeSkirt(d, 0, C(M.CONCRETE, kind, 0));
       }
-      // barriers along closed sides of highway cells
+      // barriers along closed sides of highway cells (+ the median on through cells)
       if (t === Network.Highway) {
+        if (boxFeat === F.LANES) this.jersey((m & 5) === 5 ? 0 : 1, 0, -HALF, HALF, 0.32);
         for (let d = 0; d < 4; d++) {
           if (m & (1 << d)) continue;
           const h = (d + 1) & 3; // heading along the edge
@@ -1045,14 +1080,76 @@ export class RoadMesher {
       const [p0x, p0z] = L(-W, s0), [p1x, p1z] = L(W, s0), [p2x, p2z] = L(W, s1), [p3x, p3z] = L(-W, s1);
       this.quad3(p0x, this.Y(p0x, p0z) - deckTh, p0z, p1x, this.Y(p1x, p1z) - deckTh, p1z, p2x, this.Y(p2x, p2z) - deckTh, p2z, p3x, this.Y(p3x, p3z) - deckTh, p3z, 0, -1, 0, code, 0);
     }
+    // long spans: steel tied arch (no intermediate piers)
+    const spanLen = net.bLen[this.ci];
+    const arched = spanLen >= 6 * CELL_SIZE;
+    if (arched) this.bridgeArch(h, W, topLift, net.bStart[this.ci], spanLen);
     // pier at cell center
     const terr = this.surf.terrain(this.ox, this.oz);
     const deckBottom = this.Y(0, 0) - deckTh;
-    if (deckBottom - terr > 1.2) {
+    if (!arched && deckBottom - terr > 1.2) {
       const pw = rail ? 2.4 : 5.2, pt = 0.9;
       const yb = terr - 1.5, yt = deckBottom - 0.8;
       this.pierBox(h, 0, pw, pt, yb, yt, code);
       this.pierBox(h, 0, W - 0.2, pt + 0.25, yt, deckBottom + 0.05, code);
+    }
+  }
+
+  /** arch ribs over the deck edges + hangers + top bracing for the part of the span inside this cell */
+  private bridgeArch(h: number, W: number, topLift: number, start: number, len: number): void {
+    const code = C(M.METAL, 0, 2);
+    const H = Math.min(26, len * 0.16);
+    const alongC = h === 0 ? this.ox : this.oz;
+    const L = (u: number, s: number): [number, number] => this.lp(h, u, s);
+    const archY = (s: number, u: number) => {
+      const [lx, lz] = L(u, s);
+      const sp = Math.min(1, Math.max(0, (alongC + s - start) / len));
+      return this.Y(lx, lz) + topLift + 1.0 + H * Math.sin(Math.PI * sp);
+    };
+    const steps = 4;
+    const rw = 0.5, rh = 1.3;
+    for (const sg of [1, -1]) {
+      const u = sg * (W - 0.2);
+      for (let k = 0; k < steps; k++) {
+        const s0 = -HALF + (2 * HALF * k) / steps, s1 = -HALF + (2 * HALF * (k + 1)) / steps;
+        const y0 = archY(s0, u), y1 = archY(s1, u);
+        const [ix0, iz0] = L(u - rw, s0), [ox0, oz0] = L(u + rw, s0), [ix1, iz1] = L(u - rw, s1), [ox1, oz1] = L(u + rw, s1);
+        const hx = RX[h], hz = RZ[h];
+        // top, bottom, both sides
+        this.quad3(ix0, y0 + rh, iz0, ox0, y0 + rh, oz0, ox1, y1 + rh, oz1, ix1, y1 + rh, iz1, 0, 1, 0, code, 0);
+        this.quad3(ix0, y0, iz0, ox0, y0, oz0, ox1, y1, oz1, ix1, y1, iz1, 0, -1, 0, code, 0);
+        this.quad3(ix0, y0, iz0, ix1, y1, iz1, ix1, y1 + rh, iz1, ix0, y0 + rh, iz0, -hx, 0, -hz, code, 0);
+        this.quad3(ox0, y0, oz0, ox1, y1, oz1, ox1, y1 + rh, oz1, ox0, y0 + rh, oz0, hx, 0, hz, code, 0);
+      }
+      // hangers every 4 m (world aligned)
+      const first = Math.ceil((alongC - HALF) / 4) * 4;
+      for (let a = first; a < alongC + HALF; a += 4) {
+        const s = a - alongC;
+        const sp = (a - start) / len;
+        if (sp < 0.04 || sp > 0.96) continue;
+        const [lx, lz] = L(u, s);
+        const yb = this.Y(lx, lz) + topLift + 1.0, yt = archY(s, u);
+        if (yt - yb < 0.8) continue;
+        const t = 0.09;
+        const [ax, az] = L(u - t, s - t), [bx, bz] = L(u + t, s - t), [cx, cz] = L(u + t, s + t), [dx, dz] = L(u - t, s + t);
+        const sides: [number, number, number, number][] = [[ax, az, bx, bz], [bx, bz, cx, cz], [cx, cz, dx, dz], [dx, dz, ax, az]];
+        for (const [x0, z0, x1, z1] of sides) this.quad3(x0, yb, z0, x1, yb, z1, x1, yt, z1, x0, yt, z0, (x0 + x1) / 2 - lx, 0, (z0 + z1) / 2 - lz, code, 0);
+      }
+    }
+    // top bracing between the ribs where there is head room
+    const firstB = Math.ceil((alongC - HALF) / 12) * 12;
+    for (let a = firstB; a < alongC + HALF; a += 12) {
+      const s = a - alongC;
+      const sp = (a - start) / len;
+      if (sp < 0.12 || sp > 0.88) continue;
+      const y = archY(s, 0);
+      const [lx, lz] = L(0, s);
+      if (y - (this.Y(lx, lz) + topLift) < 7.5) continue;
+      const [ax, az] = L(-(W - 0.2), s - 0.25), [bx, bz] = L(W - 0.2, s - 0.25), [cx, cz] = L(W - 0.2, s + 0.25), [dx, dz] = L(-(W - 0.2), s + 0.25);
+      this.quad3(ax, y + 0.9, az, bx, y + 0.9, bz, cx, y + 0.9, cz, dx, y + 0.9, dz, 0, 1, 0, code, 0);
+      this.quad3(ax, y + 0.3, az, bx, y + 0.3, bz, cx, y + 0.3, cz, dx, y + 0.3, dz, 0, -1, 0, code, 0);
+      this.quad3(ax, y + 0.3, az, bx, y + 0.3, bz, bx, y + 0.9, bz, ax, y + 0.9, az, -DX[h], 0, -DZ[h], code, 0);
+      this.quad3(dx, y + 0.3, dz, cx, y + 0.3, cz, cx, y + 0.9, cz, dx, y + 0.9, dz, DX[h], 0, DZ[h], code, 0);
     }
   }
 

@@ -461,10 +461,10 @@ export class SkySystem {
     this.lutUniforms.uMie.value = mie;
 
     // exposure & sky brightness for readability at night
-    L.exposure = THREE.MathUtils.lerp(1.0, 2.1, L.night);
+    L.exposure = THREE.MathUtils.lerp(1.0, 1.9, L.night);
     u.uSkyExposure.value = 1.0 + 2.5 * twilight;
     u.uNightSky.value = THREE.MathUtils.smoothstep(L.night, 0.55, 1.0) * 0.9;
-    L.envIntensity = THREE.MathUtils.lerp(1.0, 2.2, L.night) + 1.2 * twilight;
+    L.envIntensity = THREE.MathUtils.lerp(1.0, 1.8, L.night) + 1.2 * twilight;
     // night sky floor (deep blue, brighter toward the horizon) so the night never goes pitch black
     const fl = THREE.MathUtils.smoothstep(L.night, 0.3, 1.0);
     u.uSkyFloor.value.set(0.0012 * fl, 0.0022 * fl, 0.0058 * fl);

@@ -8,6 +8,13 @@
  */
 import * as THREE from 'three';
 
+export interface GeoSlice {
+  n: number;
+  pos: Float32Array;
+  nrm: Int8Array;
+  rd: Float32Array;
+}
+
 export class GeoBuf {
   pos: Float32Array;
   nrm: Int8Array;
@@ -39,6 +46,26 @@ export class GeoBuf {
     this.nrm[p] = Math.round(nx * 127); this.nrm[p + 1] = Math.round(ny * 127); this.nrm[p + 2] = Math.round(nz * 127);
     const q = i * 4;
     this.rd[q] = u; this.rd[q + 1] = v; this.rd[q + 2] = code; this.rd[q + 3] = w;
+  }
+
+  /** copy vertices [from, count) out (for per-cell caching) */
+  sliceFrom(from: number): GeoSlice | null {
+    const n = this.count - from;
+    if (n <= 0) return null;
+    return {
+      n,
+      pos: this.pos.slice(from * 3, this.count * 3),
+      nrm: this.nrm.slice(from * 3, this.count * 3),
+      rd: this.rd.slice(from * 4, this.count * 4),
+    };
+  }
+
+  append(s: GeoSlice): void {
+    while ((this.count + s.n) * 3 > this.pos.length) this.grow();
+    this.pos.set(s.pos, this.count * 3);
+    this.nrm.set(s.nrm, this.count * 3);
+    this.rd.set(s.rd, this.count * 4);
+    this.count += s.n;
   }
 
   /** Copy into a fresh BufferGeometry (null when empty). */

@@ -231,8 +231,9 @@ export class TerrainRenderer {
     const d = Math.sqrt(dx * dx + dz * dz);
     const e = this.state.heightAt(cx, cz, CELL_SIZE);
     const t = smoothstep(0, 3500, d);
-    const n1 = this.noise.fbm(wx / 3200, wz / 3200, 4) * this.outerAmp;
-    const n2 = this.noise2.fbm(wx / 700, wz / 700, 3) * this.outerAmp * 0.25;
+    const n1 = this.noise.fbm(wx / 3200, wz / 3200, d < 8000 ? 4 : 3) * this.outerAmp;
+    // fine detail only matters near the map (invisible in the haze further out)
+    const n2 = d < 4000 ? this.noise2.fbm(wx / 700, wz / 700, 3) * this.outerAmp * 0.25 * (1 - smoothstep(2500, 4000, d)) : 0;
     const base = Math.max(this.edgeMean, 2);
     let land = e * (1 - t) + (base + n1 + this.outerAmp * 0.25) * t + n2 * smoothstep(0, 600, d);
     // far horizon slowly flattens
@@ -345,7 +346,17 @@ export class TerrainRenderer {
       if ((off + w) % (2 * s) !== 0) w += s;
       const outer = off + w;
       const x0 = -outer, n = (W + 2 * outer) / s; // grid points 0..n
-      const map = new Map<number, number>();
+      const map = new Int32Array((n + 1) * (n + 1)).fill(-1);
+      const hcache = new Float32Array((n + 3) * (n + 3)).fill(NaN);
+      const hAt = (i: number, j: number): number => {
+        const key = (j + 1) * (n + 3) + (i + 1);
+        let h = hcache[key];
+        if (h !== h) {
+          h = this.worldHeight(x0 + i * s, x0 + j * s);
+          hcache[key] = h;
+        }
+        return h;
+      };
       const isInner = (i: number, j: number) => {
         // quad (i,j) lies inside the inner square?
         const qx0 = x0 + i * s, qz0 = x0 + j * s;
@@ -353,25 +364,23 @@ export class TerrainRenderer {
       };
       const vert = (i: number, j: number): number => {
         const key = j * (n + 1) + i;
-        let id = map.get(key);
-        if (id !== undefined) return id;
+        let id = map[key];
+        if (id >= 0) return id;
         const x = x0 + i * s, z = x0 + j * s;
         let h: number;
         const onOuterEdge = i === 0 || j === 0 || i === n || j === n;
         const odd = onOuterEdge && ((i === 0 || i === n) ? j % 2 === 1 : i % 2 === 1);
         if (odd) {
           // average of the two neighbours along the edge (matches the coarser ring's edge)
-          const [ax, az, bx, bz] = i === 0 || i === n ? [x, z - s, x, z + s] : [x - s, z, x + s, z];
-          h = (this.worldHeight(ax, az) + this.worldHeight(bx, bz)) * 0.5;
+          h = i === 0 || i === n ? (hAt(i, j - 1) + hAt(i, j + 1)) * 0.5 : (hAt(i - 1, j) + hAt(i + 1, j)) * 0.5;
         } else {
-          h = this.worldHeight(x, z);
+          h = hAt(i, j);
         }
-        const e = s;
-        nv.set(this.worldHeight(x - e, z) - this.worldHeight(x + e, z), 2 * e, this.worldHeight(x, z - e) - this.worldHeight(x, z + e)).normalize();
+        nv.set(hAt(i - 1, j) - hAt(i + 1, j), 2 * s, hAt(i, j - 1) - hAt(i, j + 1)).normalize();
         id = positions.length / 3;
         positions.push(x, h, z);
         normals.push(nv.x, nv.y, nv.z);
-        map.set(key, id);
+        map[key] = id;
         return id;
       };
       for (let j = 0; j < n; j++)

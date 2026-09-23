@@ -11,6 +11,7 @@ export class SettingsPanel extends Panel {
   readonly title = 'Settings';
   override icon = 'settings';
   override width = 460;
+  override center = true;
   private hourRow!: HTMLElement;
   private hourSlider!: HTMLInputElement;
   private hourVal!: HTMLElement;

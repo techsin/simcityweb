@@ -311,7 +311,8 @@ export class VehicleRenderer {
       if (!rt || !this.net.roadMask[i]) continue;
       if (st.netFlags[i] & NF_TUNNEL) continue;
       let d: number;
-      if (haveTraffic) d = Math.min(2.2, st.traffic[i] / 1400);
+      // vehicles per cell (16 m of road, all lanes): ~1 per 60 m per lane on a busy avenue
+      if (haveTraffic) d = Math.min(1.25, st.traffic[i] / 3600) * (0.8 + 0.4 * Math.min(1.5, st.congestion[i]));
       else d = rt === Network.Highway ? 0.7 : rt === Network.Avenue ? 0.55 : rt === Network.Street ? 0.12 : 0.3;
       if (d <= 0.01) continue;
       cells.push(i);

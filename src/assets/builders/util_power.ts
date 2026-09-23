@@ -9,7 +9,7 @@ import type { RNG } from '../../core/rng';
 import {
   type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor,
   orientedBox, tank, sphereTank, smokestack, semi, carLow, fenceRect, floodLight, roofUnit, officeBlock, heap, solarRow,
-  emitSteam, parking, tree, CAR_COLORS2, boxTruck,
+  emitSteam, parking, tree, CAR_COLORS2, boxTruck, lights,
 } from './ind_kit';
 
 const CONCRETE = 0xa39e94;
@@ -73,6 +73,7 @@ function coalPlant(b: ModelBuilder, rng: RNG): void {
   for (const y of [14, 26, 38]) wallQuad(b, 'pz', -2, -5, 11, y, y + 2.2);
   for (const y of [14, 26, 38]) wallQuad(b, 'px', 12, -21, -3, y, y + 2.2);
   roofUnit(b, 0, 46, -12, 4, 5, 2.4, 0x9aa0a6);
+  lights(b, [[12.4, 10, -2.4], [12.4, 22, -2.4], [12.4, 34, -2.4], [-6.4, 22, -2.4], [-6.4, 34, -2.4], [12.4, 46.4, -21.6], [-6.4, 46.4, -2.4], [23.9, 26.4, -8.2], [-30.3, 22.4, -3.7]]);
   // precipitator on columns + hoppers
   b.paint(0x6a6e72, Surf.Metal);
   for (const [px, pz] of [[14, -19], [23, -19], [14, -9], [23, -9]] as [number, number][]) strut(b, [px, 0, pz], [px, 10, pz], 0.8);
@@ -156,6 +157,7 @@ function gasPlant(b: ModelBuilder, rng: RNG): void {
     b.paint(0x55595e, Surf.Metal);
     for (const y of [15, 30]) tube(b, hx, -20.5, y, 0.4, 2.8, 2.8, 12);
   }
+  lights(b, [[-2.3, 17.4, 1.3], [-22.8, 17.4, 1.3], [9.3, 25.4, -2.7], [20.3, 25.4, -2.7]], 0.45);
   // spherical gas tanks
   sphereTank(b, -16, 14, 5.4, 0xeef0f0, 0x6a6e72, 12, 7);
   sphereTank(b, -4, 16, 5.4, 0xeef0f0, 0x6a6e72, 12, 7);
@@ -197,6 +199,7 @@ function oilPlant(b: ModelBuilder, rng: RNG): void {
   roofUnit(b, -10, 32, 2, 4, 4, 2.2, 0x9aa0a6);
   b.paint(0xd8ccb4, Surf.WallWindows, 7, 8).box(-22, 0, 10, 4, 16, 20);
   b.paint(0x7a4a36, Surf.Metal).gableRoof(-9, 15, 26, 10, 16, 1.6, 'x', 0.3, { color: 0xd8ccb4, surf: Surf.Plain });
+  lights(b, [[6.3, 32.4, 10.3], [-22.3, 32.4, 10.3], [6.3, 16.4, 20.3], [-22.3, 16.4, 20.3]], 0.45);
   // stacks + ducts
   smokestack(b, 12, -5, 58, 2.8, 2.0, 'redwhite', 14);
   smokestack(b, 19.5, -3, 50, 2.4, 1.8, 'concrete', 12);
@@ -258,6 +261,8 @@ function coolingTower(b: ModelBuilder, x: number, z: number, H: number, R0: numb
     strut(b, g, [x + Math.cos(a) * rb, lip + 0.2, z + Math.sin(a) * rb], 0.7);
     strut(b, g, [x + Math.cos(a3) * rb, lip + 0.2, z + Math.sin(a3) * rb], 0.7);
   }
+  const rt = r(H) + 0.25;
+  lights(b, [[x + rt, H - 0.8, z], [x - rt * 0.5, H - 0.8, z + rt * 0.87], [x - rt * 0.5, H - 0.8, z - rt * 0.87]], 0.5, 0xff2a1a);
   emitSteam([x, H + 2, z]);
 }
 
@@ -310,6 +315,7 @@ function nuclearPlant(b: ModelBuilder, rng: RNG): void {
   b.paint(0x55595e, Surf.Corrugated);
   wallQuad(b, 'px', 45, 8, 16, 0, 9);
   for (let i = 0; i < 3; i++) roofUnit(b, 16 + i * 11, 26.9, 12, 3, 4, 1.6);
+  lights(b, [[10.2, 24, 21.3], [27.5, 24, 21.3], [45.3, 24, 21.3], [45.3, 24, 3.2], [-27, 37, 12], [-4, 37, 12], [-41.3, 15.4, 27.3], [9.3, 15.4, 27.3]], 0.5);
   // connecting bridge reactors -> turbine hall
   b.paint(0xd2cec6, Surf.Plain).box(5, 6, 9, 10, 12, 15, { top: { color: 0x8e8b84, surf: Surf.RoofFlat } });
   // tanks (condensate / demin water)

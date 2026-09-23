@@ -10,6 +10,8 @@ import type { Simulation } from '../Simulation';
 import { getDef } from '../catalog';
 import type { BuildingDef, ServiceKind } from '../catalogTypes';
 import { ordinanceEffect } from '../economy/ordinances';
+import { serviceEffectiveness } from '../economy/budget';
+import { removeBuilding as coreRemoveBuilding } from '../economy/buildings';
 
 export const DX = [1, 0, -1, 0] as const;
 export const DZ = [0, 1, 0, -1] as const;
@@ -220,6 +222,26 @@ export function isDensity(z: Zone): number {
   return zoneDensity(z);
 }
 
+// ------------------------------------------------------------------------------------------ building list
+interface ListCache { arr: Building[]; size: number; nextId: number; day: number }
+const listCache = new WeakMap<CityState, ListCache>();
+/**
+ * Array snapshot of state.buildings (index loops over it are ~7x faster than Map iteration and allocation free).
+ * Rebuilt when the building count / nextBuildingId changes or once per sim day. Do not mutate.
+ */
+export function buildingList(st: CityState): Building[] {
+  let c = listCache.get(st);
+  if (c && c.size === st.buildings.size && c.nextId === st.nextBuildingId && c.day === st.day) return c.arr;
+  if (!c) listCache.set(st, (c = { arr: [], size: 0, nextId: 0, day: 0 }));
+  const arr = c.arr;
+  arr.length = 0;
+  for (const b of st.buildings.values()) arr.push(b);
+  c.size = st.buildings.size;
+  c.nextId = st.nextBuildingId;
+  c.day = st.day;
+  return arr;
+}
+
 // ------------------------------------------------------------------------------------------ occupancy
 /** building exists as a functioning structure (complete, not rubble). Abandoned buildings are inactive. */
 export function isFunctional(b: Building): boolean {
@@ -264,7 +286,9 @@ export function activity(inf: DefInfo, b: Building, jobsUnknown: boolean): numbe
 /** true when no job site has b.jobs > 0 although job capacity exists (sim-core not filling jobs yet) */
 export function detectJobsUnknown(state: CityState): boolean {
   let cap = 0;
-  for (const b of state.buildings.values()) {
+  const list = buildingList(state);
+  for (let q = 0; q < list.length; q++) {
+    const b = list[q];
     if (b.jobs > 0) return false;
     if (b.capacity > 0 && b.pop === 0) cap += b.capacity;
   }
@@ -324,9 +348,19 @@ export function readEffects(state: CityState): OrdEffects {
 }
 
 // ------------------------------------------------------------------------------------------ funding
-/** funding percent -> effectiveness: linear below 100 %, diminishing returns above (150 % -> ~1.25) */
+/**
+ * funding percent -> effectiveness. Uses sim-core's serviceEffectiveness (funding^0.7 with diminishing returns above
+ * 100 %, 0 while the service is on strike) so coverage matches the budget panel; falls back to a local curve
+ * (linear below 100 %, 150 % -> ~1.25) if the economy module is unavailable.
+ */
 export function fundingFactor(state: CityState, service: ServiceKind | undefined): number {
   if (!service) return 1;
+  try {
+    const v = serviceEffectiveness(state, service);
+    if (typeof v === 'number' && isFinite(v)) return Math.max(0, v);
+  } catch {
+    /* fall through */
+  }
   const pct = state.budget?.funding?.[service];
   if (pct === undefined || pct === null || !isFinite(pct)) return 1;
   const f = Math.max(0, pct) / 100;
@@ -369,10 +403,18 @@ export function setFlagQuiet(b: Building, flag: number, on: boolean): boolean {
 
 /**
  * Remove a building completely: clears its cells in state.building, deletes it from state.buildings and emits
- * buildingRemoved. Used by disasters (meteor crater). Zones stay.
+ * buildingRemoved. Used by disasters (meteor crater). Zones stay. Delegates to sim-core's removeBuilding
+ * (src/sim/economy/buildings.ts: also maintains milestones / buildingCount); local fallback otherwise.
  */
 export function removeBuilding(sim: Simulation, b: Building): void {
+  try {
+    coreRemoveBuilding(sim, b);
+    return;
+  } catch {
+    /* fall back below */
+  }
   const st = sim.state;
+  if (!st.buildings.has(b.id)) return;
   const N = st.size;
   for (let z = b.z; z < b.z + b.d; z++) {
     if (z < 0 || z >= N) continue;

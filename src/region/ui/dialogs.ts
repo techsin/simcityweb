@@ -121,6 +121,7 @@ export interface NewRegionChoice {
   climate?: Climate;
 }
 
+const BLANK_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 const previewCache = new Map<string, string>();
 function presetPreview(p: RegionPresetInfo, seed: number): string {
   const key = `${p.id}:${seed}`;
@@ -157,6 +158,7 @@ export function openNewRegion(): Promise<NewRegionChoice | null> {
       const next = () => {
         if (k >= REGION_PRESETS.length || !m.isOpen) return;
         const p = REGION_PRESETS[k];
+        imgs[k].classList.add('loading-img');
         imgs[k].src = presetPreview(p, seed);
         k++;
         setTimeout(next, 0);
@@ -164,7 +166,8 @@ export function openNewRegion(): Promise<NewRegionChoice | null> {
       setTimeout(next, 30);
     };
     REGION_PRESETS.forEach((p) => {
-      const img = h('img', { alt: p.name }) as HTMLImageElement;
+      const img = h('img', { alt: '', src: BLANK_IMG, class: 'loading-img' }) as HTMLImageElement;
+      img.addEventListener('load', () => img.src !== BLANK_IMG && img.classList.remove('loading-img'));
       imgs.push(img);
       const card = h(
         'button',

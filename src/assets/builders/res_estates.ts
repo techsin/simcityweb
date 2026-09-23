@@ -2,15 +2,15 @@
  * Residential low-density large lots: ranch (R$$), villa (R$$$), mansion (R$$$).
  * (owned by the residential asset agent)
  */
-import type { ModelBuilder, ColorLike, Paint } from '../ModelBuilder';
+import type { ModelBuilder, ColorLike } from '../ModelBuilder';
 import type { RNG } from '../../core/rng';
 import { Surf } from '../../core/types';
 import {
   P, TRIM, LAWN_LUSH, CONCRETE, inFace, U, fq, win, wins, door, garageDoor, steps, roofGable, roofHip, roofShed, roofMansard,
-  dormer, chimney, lawnSlab, paveSlab, bush, bushRow, flowerBed, tree, boardFence, chainFence, lowWall, hedgeBox, mailbox,
-  gardenShed, grill, patioSet, lounger, poolRect, parkedCar, planter, parapet, flatRoof, setLot, band, capPoly, type WinStyle,
+  dormer, chimney, lawnSlab, paveSlab, bush, bushRow, flowerBed, tree, boardFence, lowWall, hedgeBox, mailbox,
+  gardenShed, grill, patioSet, lounger, poolRect, parkedCar, planter, flatRoof, setLot, band, type WinStyle,
 } from './res_util';
-import { body, porch, roofGambrel } from './res_houses';
+import { body, porch } from './res_houses';
 
 // ---------------------------------------------------------------------------------------------- local helpers
 /** Classical column: plinth + round shaft + capital. */
@@ -26,8 +26,8 @@ function disc(b: ModelBuilder, x: number, z: number, r: number, h: number, color
 }
 
 function fountain(b: ModelBuilder, x: number, z: number, r = 2.2, stone: ColorLike = 0xd6cfc0): void {
-  b.paint(stone).cylinder(x, z, 0, 0.55, r, r, 14, { top: false, smooth: false });
-  b.paint(0x4fa6c9, Surf.Water).cylinder(x, z, 0.45, 0.02, r - 0.15, r - 0.15, 14, { top: true });
+  b.paint(stone).cylinder(x, z, 0, 0.55, r, r, 12, { top: false, smooth: false });
+  b.paint(0x4fa6c9, Surf.Water).cylinder(x, z, 0.45, 0.02, r - 0.15, r - 0.15, 12, { top: true });
   b.paint(stone).cylinder(x, z, 0.45, 1.2, 0.25, 0.2, 8, { top: false });
   b.paint(stone).cylinder(x, z, 1.65, 0.25, 0.9, 1.0, 10, { top: false });
   b.paint(0x6fc0dd, Surf.Water).cylinder(x, z, 1.85, 0.03, 0.85, 0.85, 10, { top: true });
@@ -284,7 +284,7 @@ function ranch(b: ModelBuilder, v: number, rng: RNG): void {
     mailbox(b, 6.8, 15.2);
   } else {
     // T-shaped ranch with 3-car garage and big backyard pool
-    const sid = P(0x7d8f9e, Surf.Wood), roof = P(0x3c3f44, Surf.RoofTiles);
+    const sid = P(0x7d8f9e, Surf.Wood), roof = P(0x5a4a3e, Surf.RoofTiles);
     body(b, -13, -3, 6, 4, 0.35, 3.1, sid);
     body(b, -5, -10, 1, -3, 0.35, 3.1, sid);
     body(b, 6, -4, 14, 5, 0.1, 3.0, sid, CONCRETE);
@@ -599,7 +599,7 @@ function mansion(b: ModelBuilder, v: number, rng: RNG): void {
       body(b, x0, -6, x1, 2, 0.8, 5.0, brick, 0xb8b0a0);
       flatRoof(b, x0, -6, x1, 2, 5.0, 0.9, 0.3, 0xe8e2d4, 0x6a6660);
       wins(b, 'pz', 2, [x0 + 2, x0 + 4.7, x1 - 1.8].map((x) => x), 1.6, 1.2, 2.2, ws);
-      wins(b, s < 0 ? 'nx' : 'px', s < 0 ? x0 : x1, [-4, -0.5], 1.6, 1.2, 2.2, { frame: stone });
+      wins(b, s < 0 ? 'nx' : 'px', s < 0 ? x0 : x1, [-2], 1.6, 1.2, 2.2, { frame: stone });
     }
     // circular drive with fountain
     disc(b, 0, 15, 8.5, 0.09, 0xd8ccb0, Surf.Pavement, 16);
@@ -618,7 +618,6 @@ function mansion(b: ModelBuilder, v: number, rng: RNG): void {
     }
     // back: pool + tennis court
     poolRect(b, -19, -20, -9, -14, 0xe8e2d4, 1.6);
-    for (const x of [-15, -13]) lounger(b, x, -11.5, Math.PI);
     tennisCourt(b, 9.5, -16.2, true);
     tree(b, rng, -21, -9.5, 1.2, 'wide');
     tree(b, rng, -6, -21, 1.1, 'round');
@@ -768,5 +767,3 @@ export const estateModels = {
   res_villa: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 12); villa(b, v, rng); },
   res_mansion: (b: ModelBuilder, v: number, rng: RNG) => { setLot(24, 24, 15); mansion(b, v, rng); },
 };
-void [roofGambrel, capPoly, parapet, flowerBed];
-type _P = Paint;

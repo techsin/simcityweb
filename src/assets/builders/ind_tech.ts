@@ -82,6 +82,8 @@ function techCampus(b: ModelBuilder, v: number, rng: RNG): void {
       for (let i = 0; i < 4; i++) tree(b, rng, -20 + i * 5.2, 12.5 + (i % 2) * 5, 8, 2.6);
       for (let i = 0; i < 3; i++) tree(b, rng, -20 + i * 7, 20.5, 7, 2.3);
       tree(b, rng, 22, -20, 8, 2.2);
+      for (let i = 0; i < 4; i++) tree(b, rng, 22.2, -12 + i * 5, 7.5, 1.7);
+      for (let i = 0; i < 3; i++) tree(b, rng, -22.3, -18 + i * 6.5, 8, 1.6);
       signBox(b, -6, 0, 21.5, 0, 1.4, 22, 0x3fb0d8, 0xe8e8e4);
       break;
     }
@@ -107,6 +109,8 @@ function techCampus(b: ModelBuilder, v: number, rng: RNG): void {
       parking(b, rng, -23, 10.5, -4, 23, 0.6, 10);
       for (let i = 0; i < 4; i++) tree(b, rng, 7 + i * 4.8, 13 + (i % 2) * 5, 7.5, 2.3);
       tree(b, rng, 21.5, -2, 8, 2.2);
+      for (let i = 0; i < 3; i++) tree(b, rng, 22.2, 1.5 + i * 3.4, 7, 1.5);
+      for (let i = 0; i < 4; i++) tree(b, rng, -22.3, -19 + i * 7.5, 8, 1.6);
       break;
     }
     case 2: {
@@ -129,6 +133,8 @@ function techCampus(b: ModelBuilder, v: number, rng: RNG): void {
       path(b, 7, -5, 10, 13);
       parking(b, rng, 10, -3.5, 23, 12.5, 0.6, 8);
       for (let i = 0; i < 5; i++) tree(b, rng, -20 + i * 9, 20.5, 8, 2.5);
+      for (let i = 0; i < 3; i++) tree(b, rng, -21.5, -20 + i * 6, 7.5, 2.0);
+      pond(b, -2, 8.5, 3.6, 2, 8);
       break;
     }
     case 3: {
@@ -150,6 +156,8 @@ function techCampus(b: ModelBuilder, v: number, rng: RNG): void {
       for (let i = 0; i < 4; i++) tree(b, rng, 5 + i * 5, 9 + (i % 2) * 7, 8, 2.5);
       tree(b, rng, 21.5, -19, 8, 2.2);
       tree(b, rng, 21.5, 20, 8, 2.2);
+      tree(b, rng, -22.2, -21.5, 7, 1.5);
+      for (let i = 0; i < 3; i++) tree(b, rng, 21.8, -3 + i * 5.5, 7.5, 1.8);
       signBox(b, 2, 0, 21.8, 8, 1.4, 22.2, 0x2e6fb5, 0xe8e8e4);
       break;
     }

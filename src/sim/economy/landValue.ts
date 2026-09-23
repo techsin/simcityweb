@@ -10,7 +10,7 @@ import { BF } from '../CityState';
 import { clamp, smoothstep } from '../../core/rng';
 import { Zone } from '../../core/types';
 import { getDef } from '../catalog';
-import { COARSE, COMMUTE_BAD, COMMUTE_FALLBACK, COMMUTE_GOOD, COVERAGE_FALLBACK, LV, LV_REFRESH_DAYS } from './tuning';
+import { COARSE, COMMUTE_BAD, COMMUTE_FALLBACK, COMMUTE_GOOD, COVERAGE_FALLBACK, LV, LV_EFFECTS_MIN_DAYS, LV_REFRESH_DAYS, LV_STATIC_MIN_DAYS } from './tuning';
 import { type EconRuntime, infraFlags } from './runtime';
 
 /** static terrain component: waterfront + view/elevation */
@@ -107,9 +107,19 @@ export function computeLandValueEffects(st: CityState, rt: EconRuntime, out: Flo
 export function landValueSystem(rt: EconRuntime): SimSystem {
   let row = 0;
   let sum = 0, cnt = 0, sumAll = 0, cntAll = 0;
-  const refresh = (st: CityState) => {
-    if (rt.terrainDirty) { computeStaticLandValue(st, rt.lvStatic); rt.terrainDirty = false; }
-    if (rt.lvEffectsDirty) { computeLandValueEffects(st, rt, rt.lvEffects); rt.lvEffectsDirty = false; }
+  let lastStatic = -1e9, lastEffects = -1e9;
+  /** full-map passes are throttled: terrain (lot leveling, terraform) at most every LV_STATIC_MIN_DAYS, effects weekly */
+  const refresh = (st: CityState, force: boolean) => {
+    if (rt.terrainDirty && (force || st.day - lastStatic >= LV_STATIC_MIN_DAYS)) {
+      computeStaticLandValue(st, rt.lvStatic);
+      rt.terrainDirty = false;
+      lastStatic = st.day;
+    }
+    if (rt.lvEffectsDirty && (force || st.day - lastEffects >= LV_EFFECTS_MIN_DAYS)) {
+      computeLandValueEffects(st, rt, rt.lvEffects);
+      rt.lvEffectsDirty = false;
+      lastEffects = st.day;
+    }
   };
   const band = (st: CityState, z0: number, z1: number, first: boolean) => {
     const N = st.size;
@@ -160,7 +170,7 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
     init(sim) {
       rt.attach(sim);
       const st = sim.state;
-      refresh(st);
+      refresh(st, true);
       band(st, 0, st.size, true);
       row = 0;
       sum = cnt = sumAll = cntAll = 0;
@@ -169,7 +179,7 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
       const t0 = performance.now();
       const st = sim.state;
       rt.attach(sim);
-      refresh(st);
+      refresh(st, false);
       const N = st.size;
       const rows = Math.ceil(N / LV_REFRESH_DAYS);
       const z1 = Math.min(N, row + rows);

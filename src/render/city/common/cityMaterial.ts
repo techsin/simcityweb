@@ -68,7 +68,13 @@ function patch(shader: THREE.WebGLProgramParametersWithUniforms, ghost: boolean)
       float _sel = mod(floor(_cityFlags / 2.0), 2.0);
       float _fire = mod(floor(_cityFlags / 4.0), 2.0);
       totalEmissiveRadiance += _sel * vec3(0.25, 0.6, 1.0) * (0.55 + 0.3 * sin(uTime * 5.0));
-      totalEmissiveRadiance += _fire * vec3(1.0, 0.32, 0.05) * (0.5 + 0.35 * sin(uTime * 11.0 + vViewPosition.y * 0.7) + 0.25 * sin(uTime * 23.0));
+      if (_fire > 0.5) {
+        // patchy flickering glow (strongest at night), like fire behind windows
+        vec3 _fp = vObjPos;
+        float _patch = smoothstep(0.35, 0.85, sin(_fp.x * 0.45 + uTime * 0.7) * sin(_fp.y * 0.35 - uTime * 0.9) * sin(_fp.z * 0.4 + 1.3) * 0.5 + 0.5);
+        float _fl = 0.65 + 0.25 * sin(uTime * 11.0 + _fp.y * 0.7) + 0.15 * sin(uTime * 23.0 + _fp.x);
+        totalEmissiveRadiance += vec3(1.0, 0.3, 0.04) * _patch * _fl * mix(0.35, 2.2, uNight);
+      }
       ${ghost ? 'totalEmissiveRadiance += uGhostTint * 0.35;' : ''}
     }`;
   fs = fs.replace('#include <emissivemap_fragment>', emisPre + '\n#include <emissivemap_fragment>');

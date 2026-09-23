@@ -9,7 +9,8 @@ import type { Climate } from '../../core/types';
 import { REGION_H, REGION_W } from '../../core/constants';
 import { UNIT_M, type RegionModel } from '../RegionModel';
 import type { RegionTile } from '../types';
-import { TERRAIN_FRAG, TERRAIN_VERT, WATER_FRAG, WATER_VERT } from './shaders';
+import { TERRAIN_FRAG, TERRAIN_VERT, TREE_FRAG, TREE_VERT, WATER_FRAG, WATER_VERT } from './shaders';
+import { RNG } from '../../core/rng';
 
 export interface Lighting {
   sunDir: THREE.Vector3;
@@ -57,22 +58,22 @@ export function makeLighting(kind: 'day' | 'sunset'): Lighting {
       exposure: 1.0,
     };
   return {
-    sunDir: sunVec(215, 42),
-    sunColor: col('#fff1dc', 2.25),
-    skyAmb: col('#a5c4ea', 0.62),
-    groundAmb: col('#6f6452', 0.38),
-    fogColor: col('#bcd2e6', 1.0),
-    fogSunColor: col('#f4e6cc', 1.05),
-    fogDensity: 1 / 70000,
-    fogHeight: 2500,
-    skyHorizon: col('#cfe2f2', 1.0),
-    skyZenith: col('#5a8fd0', 0.9),
+    sunDir: sunVec(222, 33),
+    sunColor: col('#fff0d8', 2.0),
+    skyAmb: col('#9fbde6', 0.5),
+    groundAmb: col('#6a5d4a', 0.3),
+    fogColor: col('#b3c9df', 0.95),
+    fogSunColor: col('#f1e2c6', 1.0),
+    fogDensity: 1 / 150000,
+    fogHeight: 3000,
+    skyHorizon: col('#c5dbef', 0.95),
+    skyZenith: col('#4f86c8', 0.9),
     glow: col('#fff0d0', 0.4),
     cloudLit: col('#ffffff', 1.0),
     cloudShade: col('#a0b0c8', 0.9),
     windows: col('#ffd9a0', 1.2),
     night: 0.0,
-    exposure: 1.0,
+    exposure: 0.95,
   };
 }
 
@@ -113,9 +114,9 @@ export function paletteFor(climate: Climate): Palette {
       };
     default:
       return {
-        grassA: col('#678c3c'), grassB: col('#8aa650'), forest: col('#2c5528'), rock: col('#7a7166'), rock2: col('#9a8f80'),
-        sand: col('#dccb9c'), snow: col('#f4f6fa'), wet: col('#6f8a80'), soil: col('#7a5d42'),
-        shallow: col('#3ea5ae'), deep: col('#0c3a5c'), snowLine: 215,
+        grassA: col('#58823a'), grassB: col('#7d9a47'), forest: col('#264d26'), rock: col('#756c61'), rock2: col('#948a7b'),
+        sand: col('#d8c696'), snow: col('#f4f6fa'), wet: col('#5e7f76'), soil: col('#735840'),
+        shallow: col('#2aa3b0'), deep: col('#07345e'), snowLine: 215,
       };
   }
 }
@@ -131,6 +132,8 @@ export interface RegionTerrainOptions {
   oceanMargin?: number;
   /** show tile borders / hover */
   tiles?: boolean;
+  /** number of instanced trees to scatter over forests (0 = none) */
+  trees?: number;
 }
 
 const DEPTH_SCALE = 40;
@@ -152,6 +155,10 @@ export class RegionTerrain {
   private vnz: number;
   private vspacing: number;
   private disposables: { dispose(): void }[] = [];
+  private treeMesh: THREE.InstancedMesh | null = null;
+  private treeData: Float32Array | null = null; // x, y, z, scale, rot per tree
+  private treeColors: THREE.Color[] = [];
+  private treeConifer: Uint8Array | null = null;
 
   constructor(model: RegionModel, opts: RegionTerrainOptions) {
     this.model = model;
@@ -231,7 +238,7 @@ export class RegionTerrain {
     const depth = new Uint8Array(t.resX * t.resZ * 4);
     for (let j = 0; j < t.resZ; j++)
       for (let i = 0; i < t.resX; i++) {
-        const h = model.heightAt(i * t.spacing, j * t.spacing);
+        const h = stride === 1 ? trueH[j * nx + i] : model.heightAt(i * t.spacing, j * t.spacing);
         const k = (j * t.resX + i) * 4;
         depth[k] = Math.round(THREE.MathUtils.clamp(-h / DEPTH_SCALE, 0, 1) * 255);
         depth[k + 1] = h > 0 ? 255 : 0;
@@ -333,6 +340,85 @@ export class RegionTerrain {
     this.group.add(water);
 
     if (opts.sides) this.buildSides(trueH, nx, nz, sp, exag, fogU);
+    if (opts.trees) this.buildTrees(opts.trees, L, fogU);
+  }
+
+  /** stylized low-poly trees scattered over forests (conifers in alpine / high ground, broadleaf elsewhere) */
+  private buildTrees(count: number, L: Lighting, fogU: Record<string, THREE.IUniform>): void {
+    const m = this.model;
+    const climate = m.data.climate;
+    const rng = new RNG(m.data.seed + 555);
+    const data: number[] = [];
+    const cols: THREE.Color[] = [];
+    const con: number[] = [];
+    const conifer = new THREE.Color('#2b4a2c'), broad = new THREE.Color('#3f6a2e'), broad2 = new THREE.Color('#58803a'), palm = new THREE.Color('#4f8a36'), dry = new THREE.Color('#7a7a3a');
+    let tries = 0;
+    while (data.length / 5 < count && tries < count * 12) {
+      tries++;
+      const x = rng.next() * m.sizeX, z = rng.next() * m.sizeZ;
+      const f = m.forestAt(x, z);
+      if (f < 0.12 || rng.next() > Math.pow(f, 1.3)) continue;
+      const h = m.heightAt(x, z);
+      if (h < 1.6) continue;
+      const slope = Math.abs(m.gridHeight(x + 40, z) - m.gridHeight(x - 40, z)) + Math.abs(m.gridHeight(x, z + 40) - m.gridHeight(x, z - 40));
+      if (slope > 60) continue;
+      const s = rng.range(0.8, 1.3);
+      data.push(x, this.surfaceY(x, z, false), z, s, rng.next() * Math.PI * 2);
+      const isCon = climate === 'alpine' || h > 120 || (climate === 'temperate' && rng.chance(0.25));
+      const c = (climate === 'desert' ? dry : climate === 'tropical' ? palm : isCon ? conifer : rng.chance(0.5) ? broad : broad2).clone();
+      c.offsetHSL(rng.range(-0.02, 0.02), rng.range(-0.05, 0.05), rng.range(-0.05, 0.04));
+      cols.push(c);
+      con.push(isCon ? 1 : 0);
+    }
+    const n = data.length / 5;
+    if (!n) return;
+    // two shapes in one geometry is awkward with instancing: use a faceted cone-ish "crown" that reads as both
+    const geo = new THREE.ConeGeometry(0.5, 1, 6, 1);
+    geo.translate(0, 0.5, 0);
+    const trunk = new THREE.CylinderGeometry(0.08, 0.1, 0.25, 5);
+    trunk.translate(0, 0.05, 0);
+    geo.translate(0, 0.15, 0);
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: TREE_VERT,
+      fragmentShader: TREE_FRAG,
+      uniforms: { uSunDir: { value: L.sunDir }, uSunColor: { value: L.sunColor }, uSkyAmb: { value: L.skyAmb }, uGroundAmb: { value: L.groundAmb }, ...fogU },
+    });
+    const mesh = new THREE.InstancedMesh(geo, mat, n);
+    mesh.frustumCulled = false;
+    this.treeMesh = mesh;
+    this.treeData = new Float32Array(data);
+    this.treeColors = cols;
+    this.treeConifer = new Uint8Array(con);
+    this.disposables.push(geo, trunk, mat, mesh);
+    this.layoutTrees();
+    this.group.add(mesh);
+  }
+
+  /** (re)write tree instances, hiding trees on founded city tiles (their thumbnails show the real trees) */
+  private layoutTrees(): void {
+    const mesh = this.treeMesh, d = this.treeData;
+    if (!mesh || !d) return;
+    const mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), sc = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    const exag = this.exag;
+    let k = 0;
+    for (let i = 0; i < d.length / 5; i++) {
+      const x = d[i * 5], y = d[i * 5 + 1], z = d[i * 5 + 2], s = d[i * 5 + 3], r = d[i * 5 + 4];
+      const t = this.model.tileAtUnit(x / UNIT_M, z / UNIT_M);
+      if (t?.city) continue;
+      const con = this.treeConifer![i] === 1;
+      const w = (con ? 13 : 19) * s, hh = (con ? 24 : 17) * s * Math.min(exag, 1.6);
+      p.set(x, y - 1, z);
+      q.setFromAxisAngle(up, r);
+      sc.set(w, hh, w);
+      mtx.compose(p, q, sc);
+      mesh.setMatrixAt(k, mtx);
+      mesh.setColorAt(k, this.treeColors[i]);
+      k++;
+    }
+    mesh.count = k;
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
 
   private buildSides(trueH: Float32Array, nx: number, nz: number, sp: number, exag: number, fogU: Record<string, THREE.IUniform>): void {
@@ -398,6 +484,7 @@ export class RegionTerrain {
 
   /** rebuild the tile index texture (after layout / founding changes) */
   updateTiles(): void {
+    this.layoutTrees();
     const d = this.tileTex.image.data as Uint8Array;
     d.fill(0);
     this.model.data.tiles.forEach((t, k) => {

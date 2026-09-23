@@ -29,6 +29,7 @@ import { blur3, blurDownAdd, blurSigma2, shiftField } from './blur';
 import {
   DX, DZ, Fam, activeJobs, detectJobsUnknown, ensureIdArray, ensureIdFloat, fundingFactor, infoOf, isFunctional, nowMs,
   readEffects, setFlagQuiet, activity, type OrdEffects,
+  buildingList,
 } from './common';
 import { getDef } from '../catalog';
 import {
@@ -146,7 +147,8 @@ export class PollutionSystem implements SimSystem {
     // treatment capacity -> sewage reduction
     let treatCap = 0;
     const util = Math.min(1, fundingFactor(st, 'utilities'));
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const inf = infoOf(st, b);
       if (!inf.isTreatment || !isFunctional(b)) continue;
       const cap = inf.capacity > 0 ? inf.capacity : inf.waterOut > 0 ? inf.waterOut * TREATMENT_RES_PER_KL : TREATMENT_DEFAULT_CAP;
@@ -158,7 +160,8 @@ export class PollutionSystem implements SimSystem {
     const airK = srcScale(AIR_K), waterK = srcScale(WATER_K), noiseK = srcScale(NOISE_K);
 
     // --- sources from buildings
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const inf = infoOf(st, b);
       const onFire = (b.flags & BF.OnFire) !== 0;
       if (!isFunctional(b) && !onFire) continue;
@@ -336,7 +339,8 @@ export class PollutionSystem implements SimSystem {
     // --- flags & stats
     const changed: Building[] = [];
     let polSum = 0, polN = 0;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const cx = Math.min(N - 1, b.x + (b.w >> 1)), cz = Math.min(N - 1, b.z + (b.d >> 1));
       const i = cz * N + cx;
       const a = airL[i], w = st.waterPollution[i];
@@ -395,7 +399,8 @@ export class PollutionSystem implements SimSystem {
     const prod = this.prodById;
     const seeds: number[] = [];
     let capacity = 0;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const inf = infoOf(st, b);
       prod[b.id] = 0;
       if (inf.garbageCap > 0 && isFunctional(b)) {
@@ -460,7 +465,7 @@ export class PollutionSystem implements SimSystem {
     const served = this.served;
     const sStamp = ++this.stamp;
     if (capacity >= produced) {
-      for (const b of st.buildings.values()) served[b.id] = sStamp;
+      for (const b of buildingList(st)) served[b.id] = sStamp;
     } else if (capacity > 0 && seeds.length > 0) {
       let left = capacity;
       let qh = 0, qt = 0;
@@ -485,7 +490,8 @@ export class PollutionSystem implements SimSystem {
     }
     // accumulate / decay garbage on building cells
     const changed: Building[] = [];
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const p = prod[b.id];
       const ok = p === 0 || served[b.id] === sStamp;
       const area = b.w * b.d;

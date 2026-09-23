@@ -14,12 +14,11 @@ import { Emitter } from '../core/events';
 import { CELL_SIZE } from '../core/constants';
 import { Overlay } from '../core/types';
 import type { CityObjectsViewApi, WorldViewApi } from '../render/contracts';
-import * as actionsMod from '../sim/actions';
 import type { CityActionsApi } from '../sim/actions';
 import type { CityState } from '../sim/CityState';
 import { Simulation, type SimSystem } from '../sim/Simulation';
-import { createSystems } from '../sim/systems';
 import type { GameContext, QueryTarget, UIEvents } from './context';
+import { ActionsProxy } from './ActionsProxy';
 import { FallbackActions } from './fallback/FallbackActions';
 import { FallbackObjectsView } from './fallback/FallbackObjectsView';
 import { FallbackWorldView } from './fallback/FallbackWorldView';
@@ -54,7 +53,10 @@ export interface CitySceneOptions {
   state: CityState;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
   onSave: (state: CityState) => Promise<void>;
+  /** initial settings (e.g. the app-level settings); keys given here win over the stored in-game prefs */
   settings?: Partial<GameSettings>;
+  /** called whenever the player changes a setting in-game (the passed `settings` object is also updated in place) */
+  onSettingsChange?: (settings: GameSettings) => void;
   /** dev/testing: force the stand-in views ('world' | 'objects' | 'all') */
   forceFallback?: 'world' | 'objects' | 'all';
   /** dev/testing: initial simulation speed (default 1) */
@@ -62,6 +64,15 @@ export interface CitySceneOptions {
 }
 
 type ActionsCtor = new (sim: Simulation) => CityActionsApi;
+
+/** keys the camera controller binds that we also use (we stop propagation only when we act on them) */
+const CAMERA_KEYS = new Set(['r', 'f']);
+
+/**
+ * Sim systems and CityActions are imported lazily: they are large, actively developed module graphs and a broken
+ * import there must not take down the whole city screen (the UI keeps working with stand-ins).
+ */
+const SIM_MODULES = import.meta.glob(['../sim/systems/index.ts', '../sim/actions.ts']);
 
 /** UI sound names -> audio engine sound names (src/audio/sfx.ts) */
 const SOUND_MAP: Record<string, string> = {
@@ -113,6 +124,8 @@ export class CityScene {
   private renderFailures = 0;
   private degraded = { world: false, objects: false, actions: false };
   private resizeObs: ResizeObserver | null = null;
+  private actionsProxy: ActionsProxy;
+  private simReady = false;
 
   constructor(opts: CitySceneOptions) {
     this.opts = opts;
@@ -128,39 +141,14 @@ export class CityScene {
     opts.container.appendChild(this.root);
     this.errors = new ErrorOverlay(this.uiRoot, { pause: () => (this.sim.speed = 0) });
 
-    // ---- simulation (systems are guarded so one broken system can't take the game down)
-    let systems: SimSystem[] = [];
-    try {
-      systems = createSystems();
-    } catch (e) {
-      this.errors.report('Simulation systems failed to load', e, { sim: true });
-    }
-    for (const s of systems) this.guardSystem(s);
-    let sim: Simulation;
-    try {
-      sim = new Simulation(state, systems);
-    } catch (e) {
-      this.errors.report('Simulation failed to start', e, { sim: true });
-      sim = new Simulation(state, []);
-    }
-    this.sim = sim;
+    // ---- simulation: systems are attached in loadSim() (guarded so one broken system can't take the game down)
+    this.sim = new Simulation(state, []);
     if (opts.initialSpeed !== undefined) this.sim.speed = opts.initialSpeed;
 
-    // ---- actions (sim-core's CityActions, else a stand-in)
-    const Ctor = (actionsMod as unknown as { CityActions?: ActionsCtor }).CityActions;
-    let actions: CityActionsApi | null = null;
-    if (typeof Ctor === 'function') {
-      try {
-        actions = new Ctor(this.sim);
-      } catch (e) {
-        this.errors.report('CityActions failed to construct — using stand-in actions', e);
-      }
-    }
-    if (!actions) {
-      actions = new FallbackActions(this.sim);
-      this.degraded.actions = true;
-    }
-    this.actions = actions;
+    // ---- actions: stand-in until sim-core's CityActions has loaded (see loadSim)
+    this.actionsProxy = new ActionsProxy(new FallbackActions(this.sim));
+    this.degraded.actions = true;
+    this.actions = this.actionsProxy;
 
     // ---- context
     // eslint-disable-next-line @typescript-eslint/no-this-alias
@@ -243,7 +231,10 @@ export class CityScene {
       t.addEventListener(k, f as EventListener);
       this.offs.push(() => t.removeEventListener(k, f as EventListener));
     };
-    on(window, 'keydown', (e) => this.onKey(e));
+    // capture phase: runs before the camera controller so keys we act on that it also binds (R = tilt) can be consumed
+    const kd = (e: KeyboardEvent) => this.onKey(e);
+    window.addEventListener('keydown', kd, true);
+    this.offs.push(() => window.removeEventListener('keydown', kd, true));
     on(window, 'keyup', (e) => {
       if (!isTyping(e)) this.tools.key(e);
     });
@@ -312,7 +303,44 @@ export class CityScene {
     return this.mods;
   }
 
+  /** attach sim-core / sim-infra systems and the real CityActions (lazily imported, guarded) */
+  private async loadSim(): Promise<void> {
+    const [sysMod, actMod] = await Promise.all([
+      SIM_MODULES['../sim/systems/index.ts']?.().catch((e: unknown) => {
+        this.errors.report('Simulation systems failed to load — the city will not grow', e, { sim: true });
+        return null;
+      }),
+      SIM_MODULES['../sim/actions.ts']?.().catch((e: unknown) => {
+        this.errors.report('City actions failed to load — using stand-in actions', e);
+        return null;
+      }),
+    ]) as [{ createSystems?: () => SimSystem[] } | null | undefined, { CityActions?: ActionsCtor } | null | undefined];
+    if (this.disposed) return;
+    let systems: SimSystem[] = [];
+    try {
+      systems = sysMod?.createSystems?.() ?? [];
+    } catch (e) {
+      this.errors.report('Simulation systems failed to start', e, { sim: true });
+    }
+    for (const s of systems) {
+      this.guardSystem(s);
+      this.sim.systems.push(s);
+    }
+    for (const s of systems) s.init?.(this.sim);
+    const Ctor = actMod?.CityActions;
+    if (typeof Ctor === 'function') {
+      try {
+        this.actionsProxy.target = new Ctor(this.sim);
+        this.degraded.actions = false;
+      } catch (e) {
+        this.errors.report('CityActions failed to construct — using stand-in actions', e);
+      }
+    }
+    this.simReady = true;
+  }
+
   private async initViews(): Promise<void> {
+    await this.loadSim();
     try {
       this.mods = await loadGameModules();
     } catch (e) {
@@ -361,7 +389,8 @@ export class CityScene {
     const hasScene = !(world as NullWorldView).isNull;
     if (hasScene && this.mods.CityObjectsView && force !== 'objects' && force !== 'all') {
       try {
-        objects = new this.mods.CityObjectsView(state, events, { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes });
+        const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality };
+        objects = new this.mods.CityObjectsView(state, events, octx);
       } catch (e) {
         this.errors.report('City objects view failed to start — using simplified buildings', e);
       }
@@ -440,7 +469,7 @@ export class CityScene {
       this.errors.report('Tool error', e);
     }
     try {
-      this.sim.update(dt);
+      if (this.simReady) this.sim.update(dt);
     } catch (e) {
       this.errors.report('Simulation error', e, { sim: true, key: 'sim.update' });
     }
@@ -540,7 +569,7 @@ export class CityScene {
       return;
     }
     if (this.tools.key(e)) {
-      e.preventDefault();
+      this.consume(e);
       return;
     }
     const k = e.key;
@@ -596,6 +625,7 @@ export class CityScene {
       if (cycle.length === 1 && i === 0 && next !== 'query') this.tools.select(null);
       else this.tools.select(next);
       this.sound('click');
+      this.consume(e);
       return;
     }
     const panel = PANEL_HOTKEYS[lk];
@@ -605,6 +635,12 @@ export class CityScene {
     }
   }
   private lastSpeed = 1;
+
+  /** we handled this key: keep it from the camera controller too when the camera also binds it */
+  private consume(e: KeyboardEvent): void {
+    e.preventDefault();
+    if (CAMERA_KEYS.has(e.key.toLowerCase())) e.stopImmediatePropagation();
+  }
 
   private onVisibility(): void {
     if (!this.settings.pauseWhenHidden) return;
@@ -766,14 +802,28 @@ export class CityScene {
   applySettings(patch: Partial<GameSettings>): void {
     const prev = { ...this.settings };
     Object.assign(this.settings, patch);
-    if (Object.keys(patch).length) saveSettings(this.settings);
+    if (Object.keys(patch).length) {
+      saveSettings(this.settings);
+      const shared = this.opts.settings as Record<string, unknown> | undefined;
+      if (shared) for (const k of Object.keys(patch)) if (k in shared) shared[k] = (patch as Record<string, unknown>)[k];
+      try {
+        this.opts.onSettingsChange?.(this.settings);
+      } catch (e) {
+        console.warn(e);
+      }
+    }
     const s = this.settings;
     const w = this.world;
     try {
-      if (patch.quality !== undefined && patch.quality !== prev.quality) w.setQuality(s.quality);
+      if (patch.quality !== undefined && patch.quality !== prev.quality) {
+        w.setQuality(s.quality);
+        (this.objects as { setQuality?: (q: string) => void }).setQuality?.(s.quality);
+      }
       w.autoTime = s.autoTime;
       if (!s.autoTime) w.timeOfDay = s.fixedHour;
       w.setGridVisible(s.showGrid && !!this.tools?.activeId && this.tools.active.wantsGrid);
+      const c = w.controls as unknown as { edgeScroll?: boolean };
+      if (c && 'edgeScroll' in c) c.edgeScroll = s.edgeScroll;
     } catch (e) {
       console.warn('[game] applying settings', e);
     }

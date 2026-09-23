@@ -378,7 +378,7 @@ function obelisk(b: ModelBuilder, _v: number, rng: RNG): void {
   // paving pattern: radiating joints + a ring around the monument
   const oz = -2.4;
   b.paint(0xc5beb0, Surf.Pavement);
-  annulus(b, 0, oz, 0.105, 6.0, 6.5, 24, Math.PI * 0.95, Math.PI * 2.05);
+  annulus(b, 0, oz, 0.105, 5.45, 5.8, 24, Math.PI * 0.95, Math.PI * 2.05);
   // grass verges with low clipped hedges along the sides
   for (const s of [-1, 1]) {
     b.paint(GRASS_LUSH, Surf.Foliage).box(s * 7.9, 0.1, -7.9, s * 6.7, 0.2, 7.9);

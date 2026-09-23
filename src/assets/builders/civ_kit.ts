@@ -14,6 +14,8 @@ export type Face = 'pz' | 'nz' | 'px' | 'nx';
 export const FACE_ROT: Record<Face, number> = { pz: 0, px: Math.PI / 2, nz: Math.PI, nx: -Math.PI / 2 };
 
 export const pnt = (color: ColorLike, surf: Surf = Surf.Plain, pattern = 0, floor = 3.3): Paint => ({ color, surf, pattern, floor });
+/** Dark, non-glowing vehicle glass (vehicles must not light up at night). */
+export const CAR_GLASS = 0x1c2530;
 
 /** Civic palette (sRGB). */
 export const CIV = {
@@ -32,7 +34,14 @@ export const CIV = {
   brick: 0x9a4a35,
   brickDark: 0x7a3a2a,
   hospitalWhite: 0xf1f0ec,
-  crossRed: 0xe3261f,
+  crossRed: 0xc4100c,
+  emergency: 0xc8140e,
+  bayLight: 0xd01a10,
+  signWhite: 0xdfe6f0,
+  healthTeal: 0x1f7a80,
+  schoolGreen: 0x2a6f3a,
+  maroon: 0x7a1f2b,
+  bronzeDark: 0x4a3a22,
   schoolBrick: 0xb86b45,
   schoolYellow: 0xf3b714,
   busYellow: 0xf2b300,
@@ -157,7 +166,7 @@ export function clockFace(b: ModelBuilder, cx: number, cy: number, cz: number, r
  */
 export function windowsOnFace(
   b: ModelBuilder, face: Face, planeOffset: number, uFrom: number, uTo: number, y0: number, rows: number, floorH: number,
-  cols: number, winW: number, winH: number, frame: ColorLike = CIV.trim, glass: ColorLike = 0x2a3440, sill = 0.9,
+  cols: number, winW: number, winH: number, frame: ColorLike = CIV.trim, glass: ColorLike = 0x2a3440, sill = 0.9, mullion = false,
 ) {
   b.push().rotateY(FACE_ROT[face]);
   const span = uTo - uFrom;
@@ -170,6 +179,10 @@ export function windowsOnFace(
       vrect(b, cx - winW / 2 - 0.18, wy0 - 0.22, cx + winW / 2 + 0.18, wy1 + 0.18, planeOffset + 0.04);
       b.paint(glass, Surf.GlassPlain);
       vrect(b, cx - winW / 2, wy0, cx + winW / 2, wy1, planeOffset + 0.09);
+      if (mullion) {
+        b.paint(frame, Surf.Plain);
+        vrect(b, cx - 0.05, wy0, cx + 0.05, wy1, planeOffset + 0.13);
+      }
     }
   }
   b.pop();
@@ -216,21 +229,41 @@ export function steps(b: ModelBuilder, cx: number, zFront: number, w: number, n:
   return zFront - n * run;
 }
 
+/** Warm dark emissive tones for lit porticos (subtle by day, warm glow at night). */
+export const PORTICO_GLOW = 0x6b5a44;
+export const PORTICO_WASH = 0x5e5040;
+/** Row of small warm up-light fixtures on a +Z facing podium face at height y (2 tris each). */
+export function upLights(b: ModelBuilder, x0: number, x1: number, y: number, z: number, n: number, color: ColorLike = 0xffe2a8) {
+  b.paint(color, Surf.Emissive);
+  for (let i = 0; i < n; i++) {
+    const x = n === 1 ? (x0 + x1) / 2 : x0 + ((x1 - x0) * i) / (n - 1);
+    vrect(b, x - 0.25, y - 0.28, x + 0.25, y - 0.08, z + 0.04);
+  }
+}
+
 /**
  * Classical portico on the +Z side: columns at zFront-ish, entablature and pediment (gable along Z).
  * w = width, depth = portico depth (toward -Z from zFront), y0 = floor level of the portico, colH = column height.
  */
 export function portico(
   b: ModelBuilder, cx: number, zFront: number, w: number, depth: number, y0: number, colH: number, n: number,
-  opts: { col?: ColorLike; stone?: ColorLike; roof?: ColorLike; pedH?: number; r?: number; seg?: number } = {},
+  opts: { col?: ColorLike; stone?: ColorLike; roof?: ColorLike; pedH?: number; r?: number; seg?: number; glow?: boolean } = {},
 ) {
   const col = opts.col ?? CIV.marble, stone = opts.stone ?? CIV.limestone, roof = opts.roof ?? CIV.lead;
   const r = opts.r ?? Math.min(0.55, w / n / 5);
   const zc = zFront - 0.9;
   colonnade(b, cx - w / 2 + 1.0, cx + w / 2 - 1.0, zc, y0, colH, n, r, col, opts.seg ?? 8);
-  // entablature (architrave + frieze + cornice)
+  // entablature (architrave + frieze + cornice); warm-lit soffit so the portico reads at night
   const ye = y0 + colH;
-  b.paint(stone, Surf.Plain).box(cx - w / 2 + 0.2, ye, zFront - depth, cx + w / 2 - 0.2, ye + 1.1, zFront - 0.2, { nz: null });
+  const glow = opts.glow ?? true;
+  b.paint(stone, Surf.Plain).box(cx - w / 2 + 0.2, ye, zFront - depth, cx + w / 2 - 0.2, ye + 1.1, zFront - 0.2, { nz: null, bottom: glow ? pnt(PORTICO_GLOW, Surf.Emissive) : null });
+  if (glow) {
+    // warm wash on the back wall behind the columns (doors/windows under a portico go at wall + 0.06 or more)
+    b.paint(PORTICO_WASH, Surf.Emissive);
+    vrect(b, cx - w / 2 + 0.5, y0 + 0.02, cx + w / 2 - 0.5, ye, zFront - depth + 0.03);
+    // up-light fixtures on the column plinths
+    upLights(b, cx - w / 2 + 1.0, cx + w / 2 - 1.0, y0 + 0.33, zc + r * 1.25, n);
+  }
   b.paint(CIV.trim, Surf.Plain).box(cx - w / 2, ye + 1.1, zFront - depth, cx + w / 2, ye + 1.45, zFront, { nz: null });
   // pediment (gable roof along Z)
   const pedH = opts.pedH ?? w * 0.18;
@@ -246,7 +279,7 @@ export function portico(
  */
 export function domeOnDrum(
   b: ModelBuilder, cx: number, cz: number, y0: number, r: number,
-  opts: { drumH?: number; seg?: number; dome?: ColorLike; domeSurf?: Surf; drum?: ColorLike; scaleY?: number; lantern?: boolean; colonnade?: boolean; clock?: boolean } = {},
+  opts: { drumH?: number; seg?: number; dome?: ColorLike; domeSurf?: Surf; drum?: ColorLike; scaleY?: number; lantern?: boolean; colonnade?: boolean; clock?: boolean; lanternScale?: number } = {},
 ): number {
   const seg = opts.seg ?? 16;
   const drumH = opts.drumH ?? r * 0.9;
@@ -291,7 +324,7 @@ export function domeOnDrum(
   b.paint(opts.dome ?? CIV.copper, opts.domeSurf ?? Surf.RoofTiles).sphere(cx, yd + 0.5, cz, r, seg, 10, { hemi: true, scaleY: sy });
   let top = yd + 0.5 + r * sy;
   if (opts.lantern ?? true) {
-    const lr = Math.max(0.6, r * 0.16);
+    const lr = Math.max(0.6, r * 0.16) * (opts.lanternScale ?? 1);
     b.paint(drum, Surf.Stone).cylinder(cx, cz, top - 0.3, lr * 2.2, lr, lr, 8, { smooth: false, top: false });
     b.paint(0xfff0c8, Surf.Emissive).cylinder(cx, cz, top + lr * 0.5, lr * 1.0, lr * 0.8, lr * 0.8, 8, { top: false });
     b.paint(opts.dome ?? CIV.copper, Surf.Plain).cone(cx, cz, top - 0.3 + lr * 2.2, lr * 1.4, lr * 1.25, 8);
@@ -355,16 +388,26 @@ export function redCross(b: ModelBuilder, cx: number, cy: number, cz: number, s:
 }
 
 /** Helipad at height y: dark pad, yellow ring, white H, corner lights. ~60 tris */
-export function helipad(b: ModelBuilder, cx: number, cz: number, y: number, r: number) {
+export function helipad(b: ModelBuilder, cx: number, cz: number, y: number, r: number, ring: ColorLike = 0xf2c230, medical = false) {
   b.paint(0x4a4d52, Surf.Pavement);
   b.cylinder(cx, cz, y, 0.12, r, r, 16, { smooth: false });
-  b.paint(0xf2c230, Surf.Plain);
-  annulus(b, cx, cz, r * 0.72, r * 0.82, 16, y + 0.13);
-  b.paint(0xf5f5f5, Surf.Plain);
+  b.paint(ring, Surf.Plain);
+  annulus(b, cx, cz, r * 0.72, r * 0.82, 16, y + 0.15);
   const hs = r * 0.42, hw = r * 0.12;
-  flat(b, cx - hs, cz - hs, cx - hs + hw, cz + hs, y + 0.14);
-  flat(b, cx + hs - hw, cz - hs, cx + hs, cz + hs, y + 0.14);
-  flat(b, cx - hs + hw, cz - hw / 2, cx + hs - hw, cz + hw / 2, y + 0.14);
+  let yh = y + 0.15;
+  if (medical) {
+    // red cross behind the white H
+    const a = r * 0.6, t = r * 0.2;
+    b.paint(CIV.crossRed, Surf.Plain);
+    flat(b, cx - t, cz - a, cx + t, cz + a, y + 0.15);
+    flat(b, cx - a, cz - t, cx - t, cz + t, y + 0.15);
+    flat(b, cx + t, cz - t, cx + a, cz + t, y + 0.15);
+    yh = y + 0.18;
+  }
+  b.paint(0xf5f5f5, Surf.Plain);
+  flat(b, cx - hs, cz - hs, cx - hs + hw, cz + hs, yh);
+  flat(b, cx + hs - hw, cz - hs, cx + hs, cz + hs, yh);
+  flat(b, cx - hs + hw, cz - hw / 2, cx + hs - hw, cz + hw / 2, yh);
   b.paint(0x7dff6a, Surf.Emissive);
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
@@ -399,26 +442,58 @@ export const FLAGS = {
   casino: [0xd41c8c, 0xf2c230] as ColorLike[],
 };
 
-/** Emissive sign panel on a +Z/face wall: frame + glowing face. ~12 tris */
-export function wallSign(b: ModelBuilder, cx: number, cy: number, cz: number, w: number, h: number, color: ColorLike, face: Face = 'pz', frame: ColorLike = 0x222222, band?: ColorLike) {
+/**
+ * Fake lettering: 6-10 dark bars of varying width (deterministic) centred at local (0,0) on a +Z plane at z.
+ * Reads as a word from the game camera. 2 tris per bar.
+ */
+export function glyphBars(b: ModelBuilder, w: number, h: number, z: number, color: ColorLike, surf: Surf = Surf.Plain) {
+  const n = Math.max(6, Math.min(10, Math.round(w / Math.max(0.2, h * 0.7))));
+  const usable = w * 0.84, cell = usable / n, gh = h * 0.55;
+  b.paint(color, surf);
+  for (let i = 0; i < n; i++) {
+    const hsh = Math.sin((i + 1) * 12.9898 + w * 7.233 + h * 3.7) * 43758.5453;
+    const f = 0.42 + 0.42 * (hsh - Math.floor(hsh));
+    const bw = cell * f;
+    const x = -usable / 2 + i * cell + (cell - bw) / 2;
+    vrect(b, x, -gh / 2, x + bw, gh / 2, z);
+  }
+}
+/** Inscription (glyph bars) directly on a wall face, e.g. a frieze. */
+export function inscription(b: ModelBuilder, cx: number, cy: number, cz: number, w: number, h: number, color: ColorLike, face: Face = 'pz') {
+  b.push().translate(cx, cy, cz).rotateY(FACE_ROT[face]);
+  glyphBars(b, w, h, 0.04, color);
+  b.pop();
+}
+
+/** Emissive sign panel on a +Z/face wall: frame + glowing face (+ optional band / dark lettering). ~12-30 tris */
+export function wallSign(b: ModelBuilder, cx: number, cy: number, cz: number, w: number, h: number, color: ColorLike, face: Face = 'pz', frame: ColorLike = 0x222222, band?: ColorLike, glyph?: ColorLike) {
   b.push().translate(cx, cy, cz).rotateY(FACE_ROT[face]);
   b.paint(frame, Surf.Metal).box(-w / 2 - 0.1, -h / 2 - 0.1, 0, w / 2 + 0.1, h / 2 + 0.1, 0.18);
   b.paint(color, Surf.Emissive);
   vrect(b, -w / 2, -h / 2, w / 2, h / 2, 0.2);
   if (band !== undefined) {
     b.paint(band, Surf.Emissive);
-    vrect(b, -w / 2 + 0.15, -h * 0.12, w / 2 - 0.15, h * 0.12, 0.22);
+    vrect(b, -w / 2 + 0.15, -h * 0.12, w / 2 - 0.15, h * 0.12, 0.23);
   }
+  if (glyph !== undefined) glyphBars(b, w, h, band !== undefined ? 0.26 : 0.23, glyph);
   b.pop();
 }
 
 /** Standing monument sign / pylon at the lot front with an emissive panel on both faces. */
-export function pylonSign(b: ModelBuilder, x: number, z: number, w: number, h: number, color: ColorLike, base: ColorLike = CIV.granite, top = 1.8) {
+export function pylonSign(b: ModelBuilder, x: number, z: number, w: number, h: number, color: ColorLike, base: ColorLike = CIV.granite, top = 1.8, glyph?: ColorLike) {
   b.paint(base, Surf.Stone).boxC(x, z, w + 0.4, 0.7, 0, 0.5);
   b.paint(base, Surf.Plain).boxC(x, z, w, 0.5, 0.5, h);
   b.paint(color, Surf.Emissive);
-  vrect(b, x - w / 2 + 0.2, 0.5 + h - top, x + w / 2 - 0.2, 0.5 + h - 0.25, z + 0.27);
-  b.quad([x + w / 2 - 0.2, 0.5 + h - top, z - 0.27], [x - w / 2 + 0.2, 0.5 + h - top, z - 0.27], [x - w / 2 + 0.2, 0.5 + h - 0.25, z - 0.27], [x + w / 2 - 0.2, 0.5 + h - 0.25, z - 0.27]);
+  vrect(b, x - w / 2 + 0.2, 0.5 + h - top, x + w / 2 - 0.2, 0.5 + h - 0.25, z + 0.28);
+  b.quad([x + w / 2 - 0.2, 0.5 + h - top, z - 0.28], [x - w / 2 + 0.2, 0.5 + h - top, z - 0.28], [x - w / 2 + 0.2, 0.5 + h - 0.25, z - 0.28], [x + w / 2 - 0.2, 0.5 + h - 0.25, z - 0.28]);
+  if (glyph !== undefined) {
+    const cy = 0.5 + h - (top + 0.25) / 2, gw = w - 0.4, gh = top - 0.25;
+    b.push().translate(x, cy, z);
+    glyphBars(b, gw, gh, 0.31, glyph);
+    b.rotateY(Math.PI);
+    glyphBars(b, gw, gh, 0.31, glyph);
+    b.pop();
+  }
 }
 
 // ---------------------------------------------------------------------------------------------- fences & walls
@@ -537,10 +612,10 @@ export function hedgeBox(b: ModelBuilder, x0: number, z0: number, x1: number, z1
 }
 
 // ---------------------------------------------------------------------------------------------- site furniture
-export function lamp(b: ModelBuilder, x: number, z: number, h = 4.5, color: ColorLike = 0x2a2c2e) {
+export function lamp(b: ModelBuilder, x: number, z: number, h = 4.5, color: ColorLike = 0x2a2c2e, head = 0.4) {
   b.paint(color, Surf.Metal).cylinder(x, z, 0, h, 0.09, 0.06, 5, { top: false });
-  b.paint(0xfff0c8, Surf.Emissive).boxC(x, z, 0.4, 0.4, h, 0.45);
-  b.paint(color, Surf.Metal).boxC(x, z, 0.55, 0.55, h + 0.45, 0.12, { bottom: null });
+  b.paint(0xfff0c8, Surf.Emissive).boxC(x, z, head, head, h, head * 1.1);
+  b.paint(color, Surf.Metal).boxC(x, z, head * 1.4, head * 1.4, h + head * 1.1, 0.12, { bottom: null });
 }
 export function benchAt(b: ModelBuilder, x: number, z: number, rot = 0) {
   b.push().translate(x, 0, z).rotateY(rot);
@@ -572,7 +647,7 @@ export function fountain(b: ModelBuilder, cx: number, cz: number, r: number, tie
 export function miniCar(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike, y = 0.08) {
   b.push().translate(x, y, z).rotateY(rot);
   b.paint(color, Surf.Metal).box(-0.88, 0.22, -2.2, 0.88, 0.88, 2.2);
-  b.paint(0x1a1f26, Surf.GlassPlain).box(-0.78, 0.88, -1.1, 0.78, 1.36, 0.95, { top: pnt(color, Surf.Metal) });
+  b.paint(CAR_GLASS, Surf.Metal).box(-0.78, 0.88, -1.1, 0.78, 1.36, 0.95, { top: pnt(color, Surf.Metal) });
   b.paint(0x151515, Surf.Plain).box(-0.84, 0, -1.7, 0.84, 0.3, 1.7, { top: null, pz: null, nz: null });
   b.pop();
 }
@@ -588,7 +663,7 @@ export function parking(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: n
     for (const [zA, facing] of [[rz, 0], [rz + stallD + aisle, Math.PI]] as [number, number][]) {
       if (zA + stallD > z1 - 0.3) continue;
       b.paint(0xeeeeee, Surf.Plain);
-      for (let sx = x0 + 0.5; sx <= x1 - 0.4 + 1e-6; sx += stallW) flat(b, sx - 0.07, zA, sx + 0.07, zA + stallD, 0.1);
+      for (let sx = x0 + 0.5; sx <= x1 - 0.4 + 1e-6; sx += stallW) flat(b, sx - 0.07, zA, sx + 0.07, zA + stallD, 0.11);
       for (let sx = x0 + 0.5; sx + stallW <= x1 - 0.4 + 1e-6; sx += stallW) {
         if (rng.chance(fill)) {
           miniCar(b, sx + stallW / 2, zA + stallD / 2, facing + rng.range(-0.05, 0.05), rng.pick(colors), 0.08);
@@ -608,7 +683,7 @@ export function parkingZ(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: 
     for (const [xA, facing] of [[rx, Math.PI / 2], [rx + stallD + aisle, -Math.PI / 2]] as [number, number][]) {
       if (xA + stallD > x1 - 0.3) continue;
       b.paint(0xeeeeee, Surf.Plain);
-      for (let sz = z0 + 0.5; sz <= z1 - 0.4 + 1e-6; sz += stallW) flat(b, xA, sz - 0.07, xA + stallD, sz + 0.07, 0.1);
+      for (let sz = z0 + 0.5; sz <= z1 - 0.4 + 1e-6; sz += stallW) flat(b, xA, sz - 0.07, xA + stallD, sz + 0.07, 0.11);
       for (let sz = z0 + 0.5; sz + stallW <= z1 - 0.4 + 1e-6; sz += stallW) {
         if (rng.chance(fill)) miniCar(b, xA + stallD / 2, sz + stallW / 2, facing + rng.range(-0.05, 0.05), rng.pick(colors), 0.08);
       }
@@ -621,9 +696,9 @@ export function cruiser(b: ModelBuilder, x: number, z: number, rot: number, y = 
   b.push().translate(x, y, z).rotateY(rot);
   b.paint(0xf3f3f1, Surf.Metal).box(-0.9, 0.22, -2.35, 0.9, 0.9, 2.35);
   b.paint(CIV.navy, Surf.Metal).box(-0.92, 0.32, -1.2, 0.92, 0.84, 1.1, { top: null, pz: null, nz: null });
-  b.paint(0x151a20, Surf.GlassPlain).box(-0.8, 0.9, -1.15, 0.8, 1.38, 0.95, { top: pnt(0xf3f3f1, Surf.Metal) });
-  b.paint(0xff2a2a, Surf.Emissive).box(-0.62, 1.38, -0.2, -0.02, 1.52, 0.12);
-  b.paint(0x2a5cff, Surf.Emissive).box(0.02, 1.38, -0.2, 0.62, 1.52, 0.12);
+  b.paint(CAR_GLASS, Surf.Metal).box(-0.8, 0.9, -1.15, 0.8, 1.38, 0.95, { top: pnt(0xf3f3f1, Surf.Metal) });
+  b.paint(0xd01a10, Surf.Emissive).box(-0.62, 1.38, -0.2, -0.02, 1.52, 0.12);
+  b.paint(0x1a48d0, Surf.Emissive).box(0.02, 1.38, -0.2, 0.62, 1.52, 0.12);
   b.paint(0x151515, Surf.Plain).box(-0.85, 0, -1.75, 0.85, 0.3, 1.75, { top: null, pz: null, nz: null });
   b.pop();
 }
@@ -634,7 +709,7 @@ export function fireEngine(b: ModelBuilder, x: number, z: number, rot: number, l
   const red = 0xc4211b;
   b.paint(red, Surf.Metal).box(-1.25, 0.4, -4.8, 1.25, 2.7, 2.3);
   b.paint(red, Surf.Metal).box(-1.25, 0.4, 2.3, 1.25, 2.95, 4.8);
-  b.paint(0x151a20, Surf.GlassPlain);
+  b.paint(CAR_GLASS, Surf.Metal);
   vrect(b, -1.1, 1.75, 1.1, 2.75, 4.82);
   b.push().rotateY(Math.PI / 2);
   vrect(b, -4.6, 1.75, -2.6, 2.75, 1.27);
@@ -644,7 +719,7 @@ export function fireEngine(b: ModelBuilder, x: number, z: number, rot: number, l
   b.pop();
   b.paint(0xf2f2f2, Surf.Plain).box(-1.27, 1.2, -4.82, 1.27, 1.42, 4.82, { top: null });
   b.paint(0xd8d8d8, Surf.Metal).box(-1.2, 0.35, 4.8, 1.2, 0.8, 5.0);
-  b.paint(0xff2a2a, Surf.Emissive).box(-0.9, 2.95, 3.8, 0.9, 3.15, 4.2);
+  b.paint(0xd01a10, Surf.Emissive).box(-0.9, 2.95, 3.8, 0.9, 3.15, 4.2);
   if (ladder) {
     b.paint(0xcfd3d6, Surf.Metal);
     b.box(-0.75, 2.9, -4.9, -0.55, 3.2, 3.2, { bottom: null });
@@ -665,24 +740,25 @@ export function ambulance(b: ModelBuilder, x: number, z: number, rot: number, y 
   b.push().translate(x, y, z).rotateY(rot);
   b.paint(0xf6f6f4, Surf.Metal).box(-1.1, 0.35, -3.2, 1.1, 2.8, 1.2);
   b.paint(0xf6f6f4, Surf.Metal).box(-1.0, 0.35, 1.2, 1.0, 2.0, 3.2);
-  b.paint(0x151a20, Surf.GlassPlain);
+  b.paint(CAR_GLASS, Surf.Metal);
   vrect(b, -0.9, 1.3, 0.9, 1.95, 3.22);
   b.paint(CIV.crossRed, Surf.Plain).box(-1.12, 1.25, -3.22, 1.12, 1.55, 1.22, { top: null, pz: null });
-  b.paint(0xff2020, Surf.Emissive).box(-1.0, 2.8, 0.9, -0.5, 2.98, 1.15).box(0.5, 2.8, 0.9, 1.0, 2.98, 1.15);
+  b.paint(CIV.emergency, Surf.Emissive).box(-1.0, 2.8, 0.9, -0.5, 2.98, 1.15).box(0.5, 2.8, 0.9, 1.0, 2.98, 1.15);
   b.paint(0x2a5cff, Surf.Emissive).box(-0.3, 2.8, 0.9, 0.3, 2.98, 1.15);
   b.paint(0x151515, Surf.Plain).box(-1.05, 0, -2.4, 1.05, 0.4, 2.4, { top: null, pz: null, nz: null });
   b.pop();
 }
 
 /** Bus (city or school) ~50 tris; length 11-12 along local Z. */
-export function bus(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike, school = false, y = 0.08, band: ColorLike = 0x151a20) {
+export function bus(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike, school = false, y = 0.08, band: ColorLike = CAR_GLASS, lit = false) {
   b.push().translate(x, y, z).rotateY(rot);
   const L = school ? 10.6 : 11.8;
   const zb = -L / 2, zf = L / 2 - (school ? 1.3 : 0);
+  const gs = lit ? Surf.GlassPlain : Surf.Metal;
   b.paint(color, Surf.Metal).box(-1.25, 0.4, zb, 1.25, 3.05, zf);
   if (school) b.paint(color, Surf.Metal).box(-1.15, 0.4, zf, 1.15, 1.7, L / 2);
-  b.paint(band, Surf.GlassPlain).box(-1.27, 1.75, zb + 0.6, 1.27, 2.65, zf - 0.3, { top: null });
-  b.paint(0x151a20, Surf.GlassPlain);
+  b.paint(lit ? band : CAR_GLASS, gs).box(-1.27, 1.75, zb + 0.6, 1.27, 2.65, zf - 0.3, { top: null });
+  b.paint(CAR_GLASS, gs);
   vrect(b, -1.1, 1.3, 1.1, 2.7, zf + 0.02);
   if (school) b.paint(0x1a1a1a, Surf.Plain).box(-1.27, 1.05, zb - 0.02, 1.27, 1.25, zf + 0.02, { top: null });
   else b.paint(0xe8e8e8, Surf.Metal).box(-0.9, 3.05, zb + 1.5, 0.9, 3.35, zb + 4.5, { bottom: null });
@@ -715,7 +791,7 @@ export function jet(b: ModelBuilder, x: number, z: number, rot: number, color: C
     b.quad2([s * 0.55, fy + 0.4, -4.3], [s * 0.55, fy + 0.4, -6.5], [s * 0.8, fy + 3.0, -6.8], [s * 0.8, fy + 3.0, -5.9]);
   }
   // canopy
-  b.paint(0x1c2632, Surf.GlassPlain).blob(0, fy + 0.7, 3.0, 0.5, 0.45, 1.5, 0, 0.02, 3);
+  b.paint(CAR_GLASS, Surf.Metal).blob(0, fy + 0.7, 3.0, 0.5, 0.45, 1.5, 0, 0.02, 3);
   // gear
   b.paint(0x222222, Surf.Plain).box(-1.2, 0, -1.8, 1.2, fy - 0.6, -1.2, { top: null }).box(-0.15, 0, 4.4, 0.15, fy - 0.6, 4.8, { top: null });
   b.pop();
@@ -725,7 +801,7 @@ export function jet(b: ModelBuilder, x: number, z: number, rot: number, color: C
 export function helicopter(b: ModelBuilder, x: number, y: number, z: number, rot: number, color: ColorLike, stripe?: ColorLike) {
   b.push().translate(x, y, z).rotateY(rot);
   b.paint(color, Surf.Metal).blob(0, 1.5, 0.4, 1.2, 1.1, 2.3, 0, 0.02, 5);
-  b.paint(0x1c2632, Surf.GlassPlain).blob(0, 1.7, 1.6, 0.95, 0.75, 1.1, 0, 0.02, 7);
+  b.paint(CAR_GLASS, Surf.Metal).blob(0, 1.7, 1.6, 0.95, 0.75, 1.1, 0, 0.02, 7);
   b.paint(color, Surf.Metal).beam([0, 1.7, -1.5], [0, 2.1, -6.2], 0.45);
   b.box(-0.08, 2.0, -6.6, 0.08, 3.2, -5.8);
   if (stripe !== undefined) b.paint(stripe, Surf.Plain).box(-1.1, 1.25, -1.0, 1.1, 1.5, 1.8, { top: null, bottom: null, pz: null, nz: null });
@@ -742,10 +818,11 @@ export function helicopter(b: ModelBuilder, x: number, y: number, z: number, rot
 export function basketballCourt(b: ModelBuilder, cx: number, cz: number, alongX = true, surface: ColorLike = 0x3f6f8f, key: ColorLike = 0xb5553a) {
   const L = 28, W = 15;
   const w = alongX ? L : W, d = alongX ? W : L;
-  b.paint(0x5a5f63, Surf.Pavement).boxC(cx, cz, w + 2, d + 2, 0, 0.1);
-  b.paint(surface, Surf.Plain).boxC(cx, cz, w, d, 0.1, 0.03, { pz: null, nz: null, px: null, nx: null });
+  b.paint(0x5a5f63, Surf.Pavement).boxC(cx, cz, w + 2, d + 2, 0, 0.12);
+  b.paint(surface, Surf.Plain);
+  flat(b, cx - w / 2, cz - d / 2, cx + w / 2, cz + d / 2, 0.15);
   b.paint(0xf2f2f2, Surf.Plain);
-  const y = 0.15;
+  const y = 0.21;
   const lw = 0.12;
   flat(b, cx - w / 2, cz - d / 2, cx + w / 2, cz - d / 2 + lw, y);
   flat(b, cx - w / 2, cz + d / 2 - lw, cx + w / 2, cz + d / 2, y);
@@ -757,8 +834,8 @@ export function basketballCourt(b: ModelBuilder, cx: number, cz: number, alongX 
   b.paint(key, Surf.Plain);
   for (const s of [-1, 1]) {
     const a = s < 0 ? -L / 2 : L / 2 - 5.8;
-    if (alongX) flat(b, cx + a, cz - 2.45, cx + a + 5.8, cz + 2.45, y - 0.01);
-    else flat(b, cx - 2.45, cz + a, cx + 2.45, cz + a + 5.8, y - 0.01);
+    if (alongX) flat(b, cx + a, cz - 2.45, cx + a + 5.8, cz + 2.45, y - 0.03);
+    else flat(b, cx - 2.45, cz + a, cx + 2.45, cz + a + 5.8, y - 0.03);
   }
   // hoops
   for (const s of [-1, 1]) {
@@ -775,9 +852,9 @@ export function tennisCourt(b: ModelBuilder, cx: number, cz: number, surface: Co
   const L = 23.8, W = 11;
   b.paint(outer, Surf.Pavement).boxC(cx, cz, W + 5, L + 6, 0, 0.1);
   b.paint(surface, Surf.Plain);
-  flat(b, cx - W / 2, cz - L / 2, cx + W / 2, cz + L / 2, 0.12);
+  flat(b, cx - W / 2, cz - L / 2, cx + W / 2, cz + L / 2, 0.13);
   b.paint(0xf2f2f2, Surf.Plain);
-  const y = 0.13, lw = 0.1;
+  const y = 0.16, lw = 0.1;
   flat(b, cx - W / 2, cz - L / 2, cx + W / 2, cz - L / 2 + lw, y);
   flat(b, cx - W / 2, cz + L / 2 - lw, cx + W / 2, cz + L / 2, y);
   flat(b, cx - W / 2, cz - L / 2, cx - W / 2 + lw, cz + L / 2, y);
@@ -804,8 +881,8 @@ export function runningTrack(b: ModelBuilder, cx: number, cz: number, straight: 
   b.paint(0xf0e8e0, Surf.Plain);
   for (const f of [0.33, 0.66]) {
     const rr = r + lw * f;
-    flat(b, cx - straight / 2, cz - rr - 0.06, cx + straight / 2, cz - rr + 0.06, y + 0.025);
-    flat(b, cx - straight / 2, cz + rr - 0.06, cx + straight / 2, cz + rr + 0.06, y + 0.025);
+    flat(b, cx - straight / 2, cz - rr - 0.06, cx + straight / 2, cz - rr + 0.06, y + 0.03);
+    flat(b, cx - straight / 2, cz + rr - 0.06, cx + straight / 2, cz + rr + 0.06, y + 0.03);
   }
   // infield grass
   b.paint(0x5f9a3e, Surf.Foliage);
@@ -823,7 +900,7 @@ export function runningTrack(b: ModelBuilder, cx: number, cz: number, straight: 
   const ez = L * 0.15;
   const fw = (L - ez) * 2;
   b.paint(0xf5f5f5, Surf.Plain);
-  const yl = y + 0.03;
+  const yl = y + 0.06;
   flat(b, cx - fw / 2, cz - fd / 2, cx + fw / 2, cz - fd / 2 + 0.15, yl);
   flat(b, cx - fw / 2, cz + fd / 2 - 0.15, cx + fw / 2, cz + fd / 2, yl);
   const nLines = 10;
@@ -833,9 +910,9 @@ export function runningTrack(b: ModelBuilder, cx: number, cz: number, straight: 
   }
   // end zones
   b.paint(0x2f6f9f, Surf.Plain);
-  flat(b, cx - fw / 2 - ez, cz - fd / 2, cx - fw / 2, cz + fd / 2, yl - 0.015);
+  flat(b, cx - fw / 2 - ez, cz - fd / 2, cx - fw / 2, cz + fd / 2, yl - 0.03);
   b.paint(0xb03a2e, Surf.Plain);
-  flat(b, cx + fw / 2, cz - fd / 2, cx + fw / 2 + ez, cz + fd / 2, yl - 0.015);
+  flat(b, cx + fw / 2, cz - fd / 2, cx + fw / 2 + ez, cz + fd / 2, yl - 0.03);
   // goal posts
   b.paint(0xf2d21b, Surf.Metal);
   for (const s of [-1, 1]) {

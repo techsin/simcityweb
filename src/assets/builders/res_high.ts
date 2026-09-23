@@ -5,10 +5,10 @@
 import type { ModelBuilder, ColorLike, Paint } from '../ModelBuilder';
 import type { RNG } from '../../core/rng';
 import { Surf } from '../../core/types';
-import { rooftopWaterTank, acUnit } from '../kit';
+import { rooftopWaterTank } from '../kit';
 import {
-  P, inFace, U, fq, win, door, lawnSlab, paveSlab, bush, bushRow, tree, hedgeBox, trashCans, parkedCar, planter, parapet,
-  flatRoof, setLot, band, bandRing, parking, chainFence, poolRect, lounger, beacon, capPoly, type Face,
+  P, inFace, U, fq, door, lawnSlab, paveSlab, tree, trashCans, planter, parapet,
+  flatRoof, setLot, band, bandRing, parking, chainFence, lounger, beacon, capPoly, type Face,
 } from './res_util';
 import { ww } from './res_mid';
 
@@ -299,7 +299,7 @@ function tower(b: ModelBuilder, v: number, rng: RNG): void {
     streetTrees(b, rng, 16, 14.6);
   } else if (v === 1) {
     // brick-clad wedding-cake tower with setbacks, water tank, corner balconies
-    const C = 3, fl = 28, podH = 3 * fh;
+    const C = 3, podH = 3 * fh;
     const brick = 0x8e5a44;
     podium(b, -15, -15, 15, 13, podH, 0x7a4a3a, 9, P(ROOF, Surf.RoofFlat), Surf.Brick);
     const tiers: [number, number, number][] = [[3, 20, 4 * C], [20, 25, 3 * C], [25, 28, 2 * C]];
@@ -308,9 +308,9 @@ function tower(b: ModelBuilder, v: number, rng: RNG): void {
       bandRing(b, -h, -h, h, h, f1 * fh - 0.4, 0.4, 0.25, 0xd8d0c0);
       if (f1 < 28) parapet(b, -h, -h, h, h, f1 * fh, 1.0, 0.2, brick, 0xd8d0c0);
     }
-    for (const a of [-7.5, 7.5]) balcStack(b, 'pz', 4 * C, a, 2.6, 1.2, 4 * fh, 20 * fh, fh, 0xd8d0c0, 0x2a2c2e, Surf.Metal);
-    balcStack(b, 'px', 4 * C, 7.5, 2.6, 1.2, 4 * fh, 20 * fh, fh, 0xd8d0c0, 0x2a2c2e, Surf.Metal);
-    balcStack(b, 'nx', -4 * C, -7.5, 2.6, 1.2, 4 * fh, 20 * fh, fh, 0xd8d0c0, 0x2a2c2e, Surf.Metal);
+    for (const a of [-7.5, 7.5]) balcStack(b, 'pz', 4 * C, a, 2.6, 1.2, 4 * fh, 20 * fh, fh, 0xd8d0c0, 0x7a8288, Surf.Metal);
+    balcStack(b, 'px', 4 * C, 7.5, 2.6, 1.2, 4 * fh, 20 * fh, fh, 0xd8d0c0, 0x7a8288, Surf.Metal);
+    balcStack(b, 'nx', -4 * C, -7.5, 2.6, 1.2, 4 * fh, 20 * fh, fh, 0xd8d0c0, 0x7a8288, Surf.Metal);
     rooftopWaterTank(b, 2, 28 * fh, -2, 1.3);
     roofBox(b, -4.5, -1, -0.5, 4, 28 * fh, 3.0, brick);
     b.paint(0x2e3033).box(-15, podH, 12.8, 15, podH + 0.8, 13, { bottom: null });
@@ -418,7 +418,10 @@ function twinTowers(b: ModelBuilder, v: number, rng: RNG): void {
     for (const [x0, z0, x1, z1, fl] of [A, B]) {
       const top = fl * fh;
       glassBox(b, x0, z0, x1, z1, py, top, 0, fh);
-      for (let f = 4; f < fl; f++) ringBalc(b, x0, z0, x1, z1, f * fh, 1.2, 0xf4f4f0, GLASS_RAIL, ['pz', 'px', 'nx', 'nz']);
+      for (let f = 4; f < fl; f++) {
+        if (f % 6 === 0) { band(b, x0, z0, x1, z1, f * fh - 0.9, 0.9, 0.15, 0xd8d8d4); continue; } // mechanical floor band
+        ringBalc(b, x0, z0, x1, z1, f * fh, 1.2, 0xf4f4f0, GLASS_RAIL, ['pz', 'px', 'nx', 'nz']);
+      }
       roofBox(b, x0 + 3, z0 + 3, x1 - 3, z1 - 3, top, 4.5, 0xd8d8d4);
       litRing(b, x0 + 2.98, z0 + 2.98, x1 - 2.98, z1 - 2.98, top + 3.9, 0.35, 0xbfe8ff);
       beacon(b, (x0 + x1) / 2, top + 4.5, (z0 + z1) / 2);
@@ -485,7 +488,7 @@ function luxuryTower(b: ModelBuilder, v: number, rng: RNG): void {
     spire(b, 0, 0, top + 10.5, 18, 0.5);
   } else if (v === 1) {
     // twisting tower: blocks of 3 floors rotated incrementally, white slab edges
-    const fl = 45, blocks = 15, s = 9.5;
+    const blocks = 15, s = 9.5;
     for (let i = 0; i < blocks; i++) {
       const y0 = py + i * 3 * fh, a = (i / blocks) * (Math.PI / 2);
       const pts = prismPts(0, 0, s * Math.SQRT2, 4, Math.PI / 4 + a);
@@ -496,7 +499,6 @@ function luxuryTower(b: ModelBuilder, v: number, rng: RNG): void {
     b.paint(0xf4f4f0).extrude(prismPts(0, 0, 8, 4, Math.PI / 4 + Math.PI / 2), topY, 6, { topPaint: P(0x5e5b55, Surf.RoofFlat) });
     b.paint(0xbfe8ff, Surf.Emissive).extrude(prismPts(0, 0, 8.05, 4, Math.PI / 4 + Math.PI / 2), topY + 5.2, 0.4, { top: false });
     beacon(b, 0, topY + 6, 0);
-    void fl;
   } else if (v === 2) {
     // cylindrical teal glass tower, balcony rings every 2 floors, lit crown ring
     const fl = 42, top = fl * fh, pts = prismPts(0, 0, 10.5, 12);
@@ -572,6 +574,7 @@ function supertall(b: ModelBuilder, v: number, rng: RNG): void {
   fountain(-17, 22); fountain(17, 22);
   for (const x of [-26, -9, 9, 26]) { b.paint(0x5a4432).box(x - 1, 0.1, 28.5, x + 1, 0.14, 30.5, { bottom: null }); tree(b, rng, x, 29.5, 1.0, 'round'); }
   for (const z of [-24, -10, 6]) for (const x of [-27, 27]) planter(b, x, z, 2.5, 2.5, 0.1, 0x8f8a80, 0x4f7a34, x + z);
+  if (v !== 1) for (const z of [-17, -3, 13]) for (const x of [-27, 27]) tree(b, rng, x, z, 1.0, 'round');
   if (v === 0) {
     // square dark-glass supertall with 3 setbacks, silver fins, lit crown, spire
     const tiers: [number, number, number][] = [[0, 30, 15], [30, 52, 12.5], [52, 70, 10]];
@@ -647,4 +650,3 @@ export const highModels = {
   res_luxury_tower: (b: ModelBuilder, v: number, rng: RNG) => { setLot(24, 24, 200); luxuryTower(b, v, rng); },
   res_supertall: (b: ModelBuilder, v: number, rng: RNG) => { setLot(32, 32, 300); supertall(b, v, rng); },
 };
-void [win, bush, bushRow, hedgeBox, trashCans, parkedCar, poolRect, acUnit, band];

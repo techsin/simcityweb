@@ -48,7 +48,7 @@ try {
     await p.waitForFunction(() => window.__ready === true, null, { timeout: 480000, polling: 500 }).catch(() => console.log('WARN: __ready not set within timeout'));
     const extra = parseInt(process.env.SHOOT_WAIT ?? '0', 10);
     if (extra) await p.waitForTimeout(extra);
-    await p.screenshot({ path: out });
+    await p.screenshot({ path: out, timeout: 600000 });
     console.log(`saved ${out} (${Date.now() - t0} ms)`);
     await p.close();
   }

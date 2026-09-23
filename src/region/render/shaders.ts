@@ -407,3 +407,42 @@ void main() {
   #include <colorspace_fragment>
 }
 `;
+
+export const TREE_VERT = /* glsl */ `
+// instanceMatrix / instanceColor come from three's prefix
+varying vec3 vWorld;
+varying vec3 vNormal;
+varying vec3 vColor;
+varying float vH;
+void main() {
+  vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+  vWorld = wp.xyz;
+  vNormal = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+  vColor = instanceColor;
+  vH = position.y;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`;
+
+export const TREE_FRAG = /* glsl */ `
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform vec3 uSkyAmb;
+uniform vec3 uGroundAmb;
+varying vec3 vWorld;
+varying vec3 vNormal;
+varying vec3 vColor;
+varying float vH;
+${FOG_GLSL}
+void main() {
+  vec3 n = normalize(vNormal);
+  float diff = max(dot(n, uSunDir), 0.0) * 0.85 + 0.15 * max(dot(n, uSunDir) * 0.5 + 0.5, 0.0);
+  vec3 amb = mix(uGroundAmb, uSkyAmb, n.y * 0.5 + 0.5);
+  float ao = 0.55 + 0.45 * clamp(vH, 0.0, 1.0);
+  vec3 lit = vColor * (amb * ao + uSunColor * diff * 0.9);
+  lit = applyFog(lit, vWorld, uSunDir);
+  gl_FragColor = vec4(lit, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;

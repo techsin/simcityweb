@@ -94,7 +94,9 @@ fakeLayers(state);
 
 // ---------------------------------------------------------------------------------------------- world
 const canvas = document.getElementById('c') as HTMLCanvasElement;
+const tInit = performance.now();
 const world = new WorldView(canvas, state, events, { quality, timeOfDay: num('time', 10.5), autoTime: P.get('auto') === '1' });
+console.log(`[world] WorldView constructed in ${(performance.now() - tInit).toFixed(0)} ms ${JSON.stringify(world.initTimings)}`);
 world.timeScale = num('scale', 2);
 (window as any).world = world;
 (window as any).state = state;
@@ -166,7 +168,9 @@ if (P.get('hud') === '0') hud.classList.add('hidden');
 const onResize = () => world.resize(window.innerWidth, window.innerHeight);
 window.addEventListener('resize', onResize);
 onResize();
+const tTrees = performance.now();
 world.trees.flush();
+console.log(`[world] trees built in ${(performance.now() - tTrees).toFixed(0)} ms (${world.trees.totalInstances} instances)`);
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 't') world.autoTime = !world.autoTime;
@@ -201,6 +205,14 @@ function frame() {
     hud.textContent = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}  ${world.quality}  ${fps.toFixed(0)} fps\n` +
       `calls ${s.calls}  tris ${(s.triangles / 1e6).toFixed(2)}M  trees ${s.trees}  cpu ${s.frameMs.toFixed(1)}ms\n` +
       `dist ${world.controls.distance.toFixed(0)} m${hover ? `  cell ${hover.x},${hover.z}` : ''}`;
+  }
+  if (frames === 1 && P.get('requality')) world.setQuality(P.get('requality') as QualityLevel);
+  if (frames === framesNeeded && P.get('pick') === '1') {
+    // self-test: the cell under the screen centre must be the camera target's cell
+    const r = canvas.getBoundingClientRect();
+    const hit = world.pickCell(r.left + r.width / 2, r.top + r.height / 2);
+    const t = world.controls.target;
+    console.log(`[world] pick centre -> ${hit ? `${hit.x},${hit.z} (${hit.point.x.toFixed(1)},${hit.point.y.toFixed(1)},${hit.point.z.toFixed(1)})` : 'null'}; target cell ${Math.floor(t.x / CELL_SIZE)},${Math.floor(t.z / CELL_SIZE)}`);
   }
   if (frames === framesNeeded) {
     const s = world.stats;

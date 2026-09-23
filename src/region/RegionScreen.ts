@@ -122,7 +122,7 @@ export class RegionScreen {
     const total = Math.max(1, t.r + t.c + t.i);
     this.card.replaceChildren(
       h('div', { class: 'rh-title' }, h('h1', { title: d.name }, d.name), rename),
-      h('div', { class: 'rh-tags' }, h('span', { class: `climate-tag ${d.climate}` }, d.climate), h('span', {}, preset), h('span', {}, '·'), h('span', {}, '16 × 16 km')),
+      h('div', { class: 'rh-tags' }, h('span', { class: `climate-tag ${d.climate}` }, d.climate), preset !== d.name ? h('span', {}, preset) : null, h('span', {}, '16 × 16 km')),
       h('div', { class: 'rh-pop' }, h('span', { class: 'v' }, formatPop(t.population)), h('span', { class: 'k' }, 'Region population')),
       h(
         'div',

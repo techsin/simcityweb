@@ -25,6 +25,7 @@ import type { SimSystem, Simulation } from '../Simulation';
 import {
   DX, DZ, Fam, type DefInfo, activeJobs, detectJobsUnknown, ensureIdArray, ensureIdFloat, fundingFactor, infoOf,
   readEffects, setFlagQuiet,
+  buildingList,
 } from './common';
 import {
   POWER_MIN_PLOPPED, POWER_PER_CIVIC_JOB, POWER_PER_JOB_C, POWER_PER_JOB_I, POWER_PER_RES,
@@ -201,7 +202,8 @@ export class UtilitiesSystem implements SimSystem {
     this.computeWater(st);
     // apply flags
     const bPow = this.bPow, bWat = this.bWat;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const pw = bPow[b.id] === 1;
       const wt = bWat[b.id] === 1;
       const f1 = setFlagQuiet(b, BF.Powered, pw);
@@ -229,11 +231,13 @@ export class UtilitiesSystem implements SimSystem {
     const eff = plantEfficiency(st);
     const bUse = this.bUse, bWUse = this.bWUse;
     let hasTreatment = false;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const inf = infoOf(st, b);
       if (inf.isTreatment && b.built >= 1 && (b.flags & BF.Burnt) === 0) { hasTreatment = true; break; }
     }
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const inf = infoOf(st, b);
       const ok = b.built >= 1 && (b.flags & (BF.Burnt | BF.Abandoned)) === 0;
       if (inf.powerOut > 0) bUse[b.id] = -(ok ? inf.powerOut * eff : 0);
@@ -319,7 +323,8 @@ export class UtilitiesSystem implements SimSystem {
       const visit = this.visit;
       const vstamp = stampNo;
       let qh = 0, qt = 0;
-      for (const b of st.buildings.values()) {
+      for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
         if (bStamp[b.id] !== stampNo || bUse[b.id] >= 0) continue;
         const c = comp[b.z * N + b.x];
         if (c < 0 || !(this.cDemand[c] > this.cSupply[c])) continue;
@@ -359,7 +364,8 @@ export class UtilitiesSystem implements SimSystem {
       }
     }
     // buildings
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const c = comp[b.z * N + b.x];
       let on = false;
       if (c >= 0 && this.cSupply[c] > 0) {
@@ -436,7 +442,8 @@ export class UtilitiesSystem implements SimSystem {
     const bUse = this.bWUse;
     let supplyTot = 0, demandTot = 0;
     const seeds: number[] = [];
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const c = adjacentComp(comp, N, b);
       bComp[b.id] = c + 1;
       if (c < 0) continue;
@@ -499,7 +506,8 @@ export class UtilitiesSystem implements SimSystem {
         }
       }
     }
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const c = bComp[b.id] - 1;
       let on = false;
       if (c >= 0 && this.wSupply[c] > 0) on = this.wDemand[c] <= this.wSupply[c] ? true : served[b.id] === servedStamp;

@@ -11,6 +11,12 @@
  *   4 sparse small high windows (industrial)      5 dense grid (office)
  *   6 shopfront ground floor + punched above       7 arched civic windows (tall, rounded look)
  * Glass curtain tints (Surf.GlassCurtain, surf.y): 0 blue, 1 teal/green, 2 bronze/gold, 3 black/dark, 4 silver, 5 sky/light blue
+ *   (at night: floors lit in clusters, some floors dark, per-panel brightness; 2 bronze/gold lights warmer (hotel-like))
+ * Emissive (Surf.Emissive, surf.y): 0 default intensity; 1..8 intensity x pattern/4 (4 = default, 2 = half, 8 = double);
+ *   9 = ground light pool: paint it ~0.7x the surrounding ground color -> plain pavement by day (no tint),
+ *       warm lamp-lit pavement at night.
+ * Plain glass (Surf.GlassPlain, surf.y): 0 storefront / small windows (warm lit at night); 1 vehicle glass (dark,
+ *   reflective, never glows).
  *
  * Facade coordinates: planar walls use the horizontal distance along the wall; smooth-shaded CURVED walls
  * (cylinders / drums / round towers built with smooth normals) automatically switch to the arc length around the
@@ -176,7 +182,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       // far away: average lit color instead of per-window noise (no shimmering when the camera moves)
       vec3 nearE = wl * lit * intensity;
       vec3 farE = vec3(1.0, 0.8, 0.56) * clamp(litProb, 0.0, 1.0);
-      emis += mix(farE, nearE, fade) * m * night * 1.6;
+      emis += mix(farE, nearE, fade) * m * night * 1.3;
     }
   } else if (type < 2.5) {
     // Glass curtain wall
@@ -202,15 +208,23 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float h = bh31(vec3(cell, floor(vSeed * 51.0)));
       albedo *= 0.9 + 0.2 * h;
       rough += 0.05 * h;
-      // offices: lights on by floor, clustered
+      // offices / hotels at night: lights clustered per floor section, some floors entirely dark, per-panel
+      // brightness, color temperature per floor (warm tints -> hotel-like warm light, blue tints -> office white)
       float fl = bh31(vec3(floor(cu / 6.0), cell.y, vSeed * 7.0));
-      float litP = uLitFraction * (0.5 + 0.8 * vSeed);
-      float lit = step(fl, litP);
+      float floorOn = step(0.18, bh11(cell.y * 3.7 + vSeed * 57.0));
+      float litP = uLitFraction * (0.45 + 0.8 * vSeed);
+      float lit = step(fl, litP) * floorOn;
       // per-floor fade: distant floors blend to the average so tall towers don't sparkle
       float fadeF = clamp(1.0 - wv * 1.6, 0.0, 1.0);
-      lit = mix(clamp(litP, 0.0, 1.0), lit, fadeF);
-      vec3 officeC = mix(vec3(0.78, 0.88, 1.0), vec3(1.0, 0.86, 0.66), step(0.75, bh11(cell.y * 7.3 + vSeed * 31.0)));
-      emis += officeC * lit * (1.0 - mull) * night * mix(1.0, 0.7 + 0.6 * h, fadeF) * 1.2;
+      lit = mix(clamp(litP, 0.0, 1.0) * 0.82, lit, fadeF);
+      float warmTint = step(1.5, pattern) * step(pattern, 2.5);
+      float fh = bh11(cell.y * 7.3 + vSeed * 31.0);
+      vec3 officeC = mix(vec3(0.74, 0.84, 1.0), vec3(1.0, 0.84, 0.62), clamp(step(0.72, fh) + warmTint * 0.8, 0.0, 1.0));
+      officeC = mix(officeC, vec3(0.86, 0.95, 0.9), step(0.93, fh) * (1.0 - warmTint)); // a few greenish fluorescent floors
+      // brighter toward the ceiling of each floor (ceiling lights), dimmer panels here and there
+      float ceilG = 0.55 + 0.45 * smoothstep(0.15, 0.85, fract(cv));
+      float panelB = 0.45 + 0.75 * bh31(vec3(floor(cu), cell.y, vSeed * 19.0));
+      emis += officeC * lit * (1.0 - mull) * night * mix(0.75, ceilG * panelB, fadeF) * 0.95;
     }
   } else if (type < 3.5) {
     // flat roof: gravel + tar patches
@@ -230,16 +244,34 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     rough = 0.32;
     metal = 0.75;
   } else if (type < 6.5) {
-    // emissive sign / light
-    emis += albedo * (0.35 + 3.2 * night);
-    rough = 0.5;
+    if (pattern > 8.5 && pattern < 9.5) {
+      // ground light pool (lit pavement under lamps): painted ~0.7x the ground color -> reads as normal pavement
+      // by day, warm lamp-lit pavement at night (no daytime glow / tint)
+      albedo = min(albedo * 1.43, vec3(1.0));
+      float n = bnoise(P.xz * 0.6) * 0.5 + bnoise(P.xz * 2.7) * 0.5;
+      albedo *= 0.9 + 0.18 * n;
+      rough = 0.9;
+      emis += albedo * vec3(1.0, 0.8, 0.55) * night * 0.75;
+    } else {
+      // emissive sign / light. pattern 1..8 scales intensity by pattern / 4 (pattern 0 = default 1x).
+      // The night multiplier is moderate so saturated neon keeps its hue; bloom carries the glow.
+      float k = pattern > 0.5 ? pattern * 0.25 : 1.0;
+      emis += albedo * (0.3 + 1.35 * night) * k;
+      rough = 0.5;
+    }
   } else if (type < 7.5) {
-    // plain glass (storefront / small windows)
+    // plain glass: pattern 0 storefront / small windows (warm lit at night), pattern 1 vehicle glass (never glows)
     float h = bh31(vec3(floor(u / 4.0), floor(v / 3.0), vSeed * 31.0));
     albedo = mix(vec3(0.07, 0.09, 0.12), albedo * 0.3, 0.3);
     rough = 0.08;
     metal = 0.8;
-    emis += vec3(1.0, 0.82, 0.55) * night * (0.9 + 0.8 * h) * step(0.15, h);
+    if (pattern > 0.5 && pattern < 1.5) {
+      albedo = vec3(0.035, 0.045, 0.055) + albedo * 0.2;
+      rough = 0.05;
+      metal = 0.9;
+    } else {
+      emis += vec3(1.0, 0.82, 0.55) * night * (0.7 + 0.6 * h) * step(0.15, h);
+    }
   } else if (type < 8.5) {
     // foliage
     float n = bnoise(P.xz * 0.9 + P.y * 0.7) ;

@@ -141,9 +141,10 @@ function zoneFor(st: CityState, x: number, z: number, riverX: number): { list: s
   if (x > riverX + 4 && z > 84 * S) return { list: IND, zone: Zone.IndMed };
   if (x > riverX + 4 && z < 30 * S) return { list: AGR, zone: Zone.IndAg };
   if (x < 31 * S) return { list: R_LOW, zone: Zone.ResLow };
-  if (dc < 9) return { list: C_HIGH, zone: Zone.ComHigh };
-  if (dc < 15) return { list: (x + z) & 1 ? R_HIGH : C_HIGH, zone: Zone.ComHigh };
-  if (dc < 24) return { list: (x * 3 + z) % 3 === 0 ? C_MED : R_MED, zone: Zone.ResMed };
+  const h = ((x * 73856093) ^ (z * 19349663)) >>> 0;
+  if (dc < 5) return { list: h % 3 ? C_HIGH : C_MED, zone: Zone.ComHigh };
+  if (dc < 11) return { list: h % 4 === 0 ? C_HIGH : h % 4 === 1 ? R_HIGH : C_MED, zone: Zone.ComMed };
+  if (dc < 24) return { list: h % 3 === 0 ? C_MED : R_MED, zone: Zone.ResMed };
   if (x > riverX) return { list: (x + z) % 4 === 0 ? C_LOW : R_LOW, zone: Zone.ResLow };
   return { list: (x + 2 * z) % 5 === 0 ? C_LOW : R_MED, zone: Zone.ResMed };
 }

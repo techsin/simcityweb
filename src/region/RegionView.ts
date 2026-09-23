@@ -67,7 +67,13 @@ export class RegionView {
     this.renderer.domElement.className = 'region-canvas';
     container.appendChild(this.renderer.domElement);
 
-    this.terrain = new RegionTerrain(model, { exaggeration: opts.exaggeration ?? 2.2, lighting: this.lighting, sides: true, tiles: true });
+    this.terrain = new RegionTerrain(model, {
+      exaggeration: opts.exaggeration ?? 2.2,
+      lighting: this.lighting,
+      sides: true,
+      tiles: true,
+      trees: software ? 22000 : opts.quality === 'low' ? 20000 : opts.quality === 'ultra' ? 90000 : 55000,
+    });
     this.scene.add(this.terrain.group);
 
     // soft contact shadow under the diorama

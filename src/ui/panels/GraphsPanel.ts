@@ -48,6 +48,7 @@ export class GraphsPanel extends Panel {
   readonly title = 'Graphs';
   override icon = 'graphs';
   override width = 760;
+  override center = true;
   private cur = GRAPHS[0];
   private range = 60;
   private canvas!: HTMLCanvasElement;
@@ -111,6 +112,17 @@ export class GraphsPanel extends Panel {
     this.lastLen = H.t.length;
     for (const [id, b] of this.listBtns) toggleClass(b, 'on', id === this.cur.id);
     this.titleH.textContent = this.cur.label;
+    if (this.cur.series.length === 1 && H.t.length) {
+      const arr = H[this.cur.series[0].key];
+      const lastV = arr[arr.length - 1] ?? 0;
+      const s0 = this.range && H.t.length > this.range ? H.t.length - this.range : 0;
+      const firstV = arr[s0] ?? 0;
+      const d = lastV - firstV;
+      const v = h('span', { class: 'gt-v' }, this.cur.fmt(lastV));
+      this.titleH.appendChild(v);
+      const goodUp = !['crime', 'pollution', 'traffic'].includes(this.cur.id);
+      if (H.t.length > 1 && Math.abs(d) > 1e-9) this.titleH.appendChild(h('span', { class: 'gt-d ' + ((d > 0) === goodUp ? 'pos' : 'neg') }, `${d > 0 ? '▲' : '▼'} ${this.cur.fmt(Math.abs(d))}`));
+    }
     clear(this.legend);
     if (this.cur.series.length > 1) for (const s of this.cur.series) this.legend.appendChild(h('span', null, h('i', { style: { background: s.color } }), s.label));
 

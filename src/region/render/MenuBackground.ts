@@ -68,7 +68,7 @@ export class MenuBackground {
     const terrain = generateRegionTerrain(seed, preset, { samplesPerUnit: 16, islandFalloff: true });
     const { data } = createRegionData({ seed, preset, terrain });
     this.model = new RegionModel(data, terrain);
-    this.terrain = new RegionTerrain(this.model, { exaggeration: 2.6, lighting: this.lighting, oceanMargin: 60000, tiles: false });
+    this.terrain = new RegionTerrain(this.model, { exaggeration: 2.6, lighting: this.lighting, oceanMargin: 60000, tiles: false, trees: software ? 18000 : quality === 'low' ? 15000 : 45000 });
     this.scene.add(this.terrain.group);
 
     this.skyMat = new THREE.ShaderMaterial({

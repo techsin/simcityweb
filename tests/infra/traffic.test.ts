@@ -169,6 +169,25 @@ describe('traffic assignment', () => {
     expect(tr.subwayRiders[st.idx(27, 30)]).toBeGreaterThan(50);
   });
 
+  it('passenger rail: riders between train stations, train sample routes on rail cells', () => {
+    const { st } = bottleneckCity();
+    for (let x = 17; x <= 37; x++) st.network[st.idx(x, 40)] = Network.Rail;
+    // level crossing with the east road (x=40 is road; rail continues through a crossing at x=27 on a new street)
+    roadLine(st, 27, 36, 27, 44, Network.Street);
+    st.netFlags[st.idx(27, 40)] |= 1 << 5;
+    place(st, 't_train', 15, 40); // 2x1, touches rail at x=17
+    place(st, 't_train', 38, 40);
+    const sim = newSim(st);
+    const tr = getTraffic(sim)!;
+    for (let k = 0; k < 8; k++) { tr.invalidate(); tr.runCycleSync(sim); }
+    const riders = st.traffic[st.idx(30, 40)];
+    console.log(`rail: riders=${riders.toFixed(0)} transit=${st.stats.tripsTransit}`);
+    expect(riders).toBeGreaterThan(50);
+    const trains = tr.getSampleRoutes(200).filter((r) => r.kind === 'train');
+    expect(trains.length).toBeGreaterThan(0);
+    for (const r of trains) for (const c of r.cells) expect(st.network[c] === Network.Rail || (st.netFlags[c] & (1 << 5)) !== 0).toBe(true);
+  });
+
   it('findPath returns a connected road path', () => {
     const { st } = bottleneckCity();
     const sim = newSim(st);

@@ -76,9 +76,7 @@ export class TitleScreen {
       audio.init();
       audio.toggleMusic();
     });
-    const fsBtn = h('button', { class: 'icon-btn', title: 'Fullscreen' }, icon('globe', 17)) as HTMLButtonElement;
-    fsBtn.replaceChildren(icon('keyboard', 17));
-    fsBtn.title = 'Toggle fullscreen (F11)';
+    const fsBtn = h('button', { class: 'icon-btn', title: 'Toggle fullscreen' }, icon('expand', 17)) as HTMLButtonElement;
     withSounds(fsBtn);
     fsBtn.addEventListener('click', () => {
       if (document.fullscreenElement) void document.exitFullscreen();

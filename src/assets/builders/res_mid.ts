@@ -10,11 +10,10 @@ import type { RNG } from '../../core/rng';
 import { Surf } from '../../core/types';
 import { rooftopWaterTank, acUnit } from '../kit';
 import {
-  P, TRIM, inFace, U, fq, win, wins, door, steps, roofGable, roofHip, roofMansard, chimney, lawnSlab, paveSlab, bush,
+  P, inFace, U, fq, win, wins, door, steps, roofGable, roofHip, roofMansard, chimney, lawnSlab, paveSlab, bush,
   bushRow, flowerBed, tree, lowWall, hedgeBox, trashCans, parkedCar, laundry, planter, parapet, flatRoof, setLot, band,
-  fireEscape, balcony, bay, capPoly, spread, bandRing, parking, lounger, type WinStyle, type Face,
+  fireEscape, bay, capPoly, spread, bandRing, parking, lounger, type WinStyle, type Face,
 } from './res_util';
-import { roofGambrel } from './res_houses';
 
 // ---------------------------------------------------------------------------------------------- local helpers
 const ROOF = 0x6c6962;
@@ -605,10 +604,10 @@ function apartment(b: ModelBuilder, v: number, rng: RNG): void {
     cornice(b, 1 * C, -4 * C, 4 * C, 0, top, 0xd8d0c0, ['pz'], false, 0.3);
     parapet(b, -4 * C, 0, 4 * C, 3 * C, top + 0.35, 0.6, 0.25, brick, 0xd8d0c0);
     band(b, -4 * C, 0, 4 * C, 3 * C, fh1 - 0.1, 0.25, 0.08, 0xd8d0c0, false);
-    balcs(b, 'pz', 3 * C, [-7.5, -1.5, 4.5, 10.5], [fh1, 2 * fh1, 3 * fh1, 4 * fh1], 2.2, 1.1, 0xd8d0c0, 0x2a2c2e, Surf.Metal, 1.0);
+    balcs(b, 'pz', 3 * C, [-7.5, -1.5, 4.5, 10.5], [fh1, 2 * fh1, 3 * fh1, 4 * fh1], 2.2, 1.1, 0xd8d0c0, 0x8a9096, Surf.Metal, 0.9);
     inFace(b, 'pz', 3 * C, () => { door(b, 1.5, 0.1, 1.8, 2.5, 0x2a2c2e, { transom: true, frame: 0xd8d0c0, lamp: true }); });
     b.paint(0xd8d0c0).box(0, 2.8, 3 * C, 3, 2.95, 3 * C + 1.2, { nz: null });
-    balcs(b, 'nx', 1 * C, [-10.5, -4.5], [fh1, 2 * fh1, 3 * fh1, 4 * fh1], 2.2, 1.1, 0xd8d0c0, 0x2a2c2e, Surf.Metal, 1.0);
+    balcs(b, 'nx', 1 * C, [-10.5, -4.5], [fh1, 2 * fh1, 3 * fh1, 4 * fh1], 2.2, 1.1, 0xd8d0c0, 0x8a9096, Surf.Metal, 0.9);
     roofMech(b, rng, -4 * C, 0, 4 * C, 3 * C, top + 0.35, 2, true);
     acUnit(b, 7.5, top + 0.35, -7);
     // garden courtyard
@@ -705,7 +704,6 @@ function condo(b: ModelBuilder, v: number, rng: RNG): void {
     frontGarden(b, rng, 2 * C);
   } else if (v === 1) {
     // stepped sideways: 9-storey glass block + 6-storey block with roof terrace, white slab bands
-    const C = 1.5;
     const xl0 = -12, xm = -1.5, xr1 = 12, z0 = -7.5, z1 = 7.5;
     b.paint(0x2a3440, Surf.GlassCurtain, 5, fh).box(xl0, 0, z0, xm, 9 * fh, z1, { top: P(0x8a867e, Surf.RoofFlat) });
     b.paint(0x2a3440, Surf.GlassCurtain, 0, fh).box(xm, 0, z0, xr1, 6 * fh, z1, { top: P(0xc8c2b4, Surf.Pavement), nx: null });
@@ -793,7 +791,7 @@ function condo(b: ModelBuilder, v: number, rng: RNG): void {
       for (let c = 0; c < 8; c++) {
         const u = x0 + (c + 0.5) * C;
         b.paint(0xe6decc).box(u - 1.0, f * fh + 0.2, 0, u + 1.0, f * fh + 0.35, 0.6, { nz: null });
-        b.paint(0x1f2224, Surf.Metal); fq(b, u - 1.0, f * fh + 0.35, u + 1.0, f * fh + 1.2, 0.58);
+        b.paint(0x3a3d40, Surf.Metal); fq(b, u - 1.0, f * fh + 0.35, u + 1.0, f * fh + 1.05, 0.58);
       }
     });
     inFace(b, 'pz', z1, () => {
@@ -932,4 +930,3 @@ export const midModelsA = {
   res_condo: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 30); condo(b, v, rng); },
   res_courtyard: (b: ModelBuilder, v: number, rng: RNG) => { setLot(24, 24, 25); courtyard(b, v, rng); },
 };
-void [TRIM, roofHip, roofGambrel, lawnSlab, bushRow, flowerBed, hedgeBox, parkedCar, planter, flatRoof, balcony, spread, capPoly, roofGable];

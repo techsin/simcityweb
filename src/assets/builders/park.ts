@@ -192,8 +192,8 @@ function parkPlaza(b: ModelBuilder, v: number, rng: RNG): void {
   const E = 16;
   if (v === 0) {
     // classic fountain plaza: radial paving, big tiered fountain, planters, lamps
-    b.paint(0xd2cab8, Surf.Pavement).slab(-E, -E, E, E, 0.1);
-    b.paint(0xb3a893, Surf.Pavement);
+    b.paint(0xd9ccb3, Surf.Pavement).slab(-E, -E, E, E, 0.1);
+    b.paint(0xb9a88c, Surf.Pavement);
     annulus(b, 0, 0, 0.105, 6.6, 7.4, 28);
     annulus(b, 0, 0, 0.105, 11.2, 11.8, 32);
     b.paint(0xbfb39c, Surf.Pavement);
@@ -211,10 +211,15 @@ function parkPlaza(b: ModelBuilder, v: number, rng: RNG): void {
       const a = (i / 8) * TAU;
       lamp(b, Math.cos(a) * 12.9, Math.sin(a) * 12.9, 4.4, 0);
     }
-    // corner flower beds
+    // corner lawns with low hedges, a tree and flowers each
     for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-      flowerBed(b, rng, sx > 0 ? 12.6 : -15.2, sz > 0 ? 3.0 : -6.0, sx > 0 ? 15.2 : -12.6, sz > 0 ? 6.0 : -3.0, { spacing: 0.7 });
-      flowerBed(b, rng, sx > 0 ? 3.0 : -6.0, sz > 0 ? 12.6 : -15.2, sx > 0 ? 6.0 : -3.0, sz > 0 ? 15.2 : -12.6, { spacing: 0.7 });
+      const x0 = sx > 0 ? 12.4 : -15.7, x1 = sx > 0 ? 15.7 : -12.4, z0 = sz > 0 ? 12.4 : -15.7, z1 = sz > 0 ? 15.7 : -12.4;
+      b.paint(GRASS_LUSH, Surf.Foliage).box(x0, 0.1, z0, x1, 0.22, z1, { bottom: null });
+      const ix = sx > 0 ? x0 : x1, iz = sz > 0 ? z0 : z1;
+      hedgeBox(b, Math.min(ix, ix + sx * 3.3), iz - 0.25, Math.max(ix, ix + sx * 3.3), iz + 0.25, 0.7, 0x3a6a2c);
+      hedgeBox(b, ix - 0.25, Math.min(iz, iz + sz * 3.3), ix + 0.25, Math.max(iz, iz + sz * 3.3), 0.7, 0x3a6a2c);
+      tree(b, rng, ix + sx * 2.0, iz + sz * 2.0, 0.8, 'cherry');
+      flowerBed(b, rng, sx > 0 ? 12.6 : -15.2, sz > 0 ? 4.0 : -6.0, sx > 0 ? 15.2 : -12.6, sz > 0 ? 6.0 : -4.0, { spacing: 0.75 });
     }
     // cafe corner
     for (const [x, z, c] of [[-13.2, -13.2, 0xc0392b], [-10.2, -14.3, 0xecf0f1]] as [number, number, number][]) umbrella(b, x, z, c, 1.3, 2.4);
@@ -546,9 +551,11 @@ function parkSoccer(b: ModelBuilder, _v: number, rng: RNG): void {
   // stands at the back with a roof, team shelters at the front
   bleachers(b, 0, -11.4, 24, 5, 0, { seat: 0x2d6fb5, roof: 0xd8d8d2, rise: 0.42, depth: 0.78 });
   for (const x of [-6, 6]) {
-    b.paint(0x2b2f33, Surf.Metal).box(x - 2.2, 0, 14.7, x + 2.2, 0.5, 15.4);
-    b.paint(0x9fb8c8, Surf.GlassPlain).box(x - 2.2, 0.1, 15.3, x + 2.2, 2.2, 15.4, { bottom: null });
-    b.paint(0x9fb8c8, Surf.GlassPlain).box(x - 2.2, 2.2, 14.3, x + 2.2, 2.3, 15.4, { bottom: null });
+    // team dugout shelters: white frame, curved clear roof, blue seats
+    b.paint(0xf2f2ee, Surf.Metal).box(x - 2.3, 0.1, 15.2, x + 2.3, 2.3, 15.4, { bottom: null });
+    b.box(x - 2.3, 0.1, 14.2, x - 2.15, 2.3, 15.2, { bottom: null }).box(x + 2.15, 0.1, 14.2, x + 2.3, 2.3, 15.2, { bottom: null });
+    b.paint(0xc9dde8, Surf.Metal).box(x - 2.3, 2.3, 14.0, x + 2.3, 2.4, 15.4, { bottom: null });
+    b.paint(0x2d6fb5, Surf.Plain).box(x - 2.0, 0.1, 14.6, x + 2.0, 0.55, 15.15, { bottom: null });
   }
   // clubhouse at the back corners
   b.paint(0xa35a42, Surf.Brick).box(-23.2, 0, -15.4, -14.2, 3.4, -11.6);
@@ -665,7 +672,7 @@ function parkLarge(b: ModelBuilder, v: number, rng: RNG): void {
     // meadow & pond park: pond left-back, loop path, gazebo on the right, woodland edge
     b.paint(MEADOW, Surf.Foliage);
     flatPoly(b, blobPoly(rng, 12, 12, 12, 9, 14, 0.3), 0.075);
-    const pondPoly = pond(b, rng, -11, -9, 13, 9, { reeds: 10, n: 22, rot: 0.2 });
+    const pondPoly = pond(b, rng, -11, -9, 13.5, 10, { reeds: 10, n: 22, rot: 0.2 });
     const loop = path(b, [[-26, 6], [-14, 6.5], [-1, 3], [8, -4], [14, -17], [4, -25], [-14, -23], [-26, -16], [-28, -4]], 2.4, PATH_GRAVEL, 0.09, 5, true);
     path(b, [[0, 32], [1, 22], [-2, 12], [-3, 4.5]], 3.0, PATH_GRAVEL);
     path(b, [[32, 4], [22, 2], [12, -2], [9, -5]], 2.2, PATH_GRAVEL);
@@ -753,7 +760,7 @@ function parkLarge(b: ModelBuilder, v: number, rng: RNG): void {
       if (i % 12 === 2) parkBench(b, x - (dx / l) * 2.2, z - (dz / l) * 2.2, Math.atan2(dx, dz));
       else lamp(b, x - (dx / l) * 2.1, z - (dz / l) * 2.1, 4.2, 1);
     }
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 2; i++) {
       const p = prom[rng.int(0, prom.length - 1)];
       person(b, rng, p[0], p[1], 0.09, rng.range(0, TAU));
     }

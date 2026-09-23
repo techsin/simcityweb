@@ -91,6 +91,8 @@ export class SimBot {
   services: { def: string; x: number; z: number }[] = [];
   econTime = 0;
   totalTime = 0;
+  /** accumulated ms per system name (daily + monthly + yearly) */
+  bySystem: Record<string, number> = {};
   days = 0;
   trunkZ: number;
   highway = false;
@@ -143,11 +145,12 @@ export class SimBot {
         const fn = s[k];
         if (!fn) continue;
         s[k] = (sim: Simulation) => {
-          const t0 = performance.now();
+          const t0 = cpuMs();
           fn.call(s, sim);
-          const dt = performance.now() - t0;
+          const dt = cpuMs() - t0;
           this.totalTime += dt;
           if (econ) this.econTime += dt;
+          this.bySystem[s.name] = (this.bySystem[s.name] ?? 0) + dt;
         };
       }
     }
@@ -234,7 +237,11 @@ export class SimBot {
       if (pop > 3000) return Zone.ComMed;
       return Zone.ComLow;
     }
-    if (b.use === 'I') return eq > 95 && pop > 40000 && b.ring >= 6 ? Zone.IndHigh : Zone.IndMed;
+    if (b.use === 'I') {
+      const d = this.st.stats.demand;
+      // follow sub-type demand: high-tech / manufacturing → high density, dirty / manufacturing → medium
+      return d[DevType.IHT] > 0.25 && d[DevType.IHT] >= d[DevType.ID] && (eq > 70 || pop > 20000) ? Zone.IndHigh : Zone.IndMed;
+    }
     if (b.use === 'X') return Zone.Landfill;
     return Zone.None;
   }
@@ -257,7 +264,8 @@ export class SimBot {
     for (const b of this.blocks) {
       if (b.developed || b.use !== use) continue;
       // must touch the developed area (or be adjacent to the trunk) to keep roads contiguous
-      const d = b.ring + (this.touchesDeveloped(b) ? 0 : 3);
+      // compact growth: strongly prefer blocks touching the developed area (industry may start a new cluster once)
+      const d = b.ring + (this.touchesDeveloped(b) ? 0 : use === 'I' && !this.blocks.some((o) => o.developed && o.use === 'I') ? 2 : 50);
       if (d < bd) { bd = d; best = b; }
     }
     return best;
@@ -453,7 +461,8 @@ export class SimBot {
     const mine = this.services.filter((s) => s.def === def || (def === 'civ_police_station' && s.def === 'civ_police_hq') || (def === 'civ_fire_station' && s.def === 'civ_fire_hq'));
     let best: { x: number; z: number } | null = null, bd = Infinity;
     for (const b of this.blocks) {
-      if (!b.developed || (b.use !== 'R' && b.use !== 'C' && !(b.use === 'I' && (def === 'civ_fire_station' || def === 'civ_police_station')))) continue;
+      if (!b.developed || (b.use !== 'R' && b.use !== 'C' && !(b.use === 'I' && def === 'civ_fire_station'))) continue;
+      if (b.zone === Zone.None) continue;
       const cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2;
       let ok = false;
       for (const s of mine) if (Math.hypot(s.x - cx, s.z - cz) <= radius * 0.85) { ok = true; break; }
@@ -500,6 +509,16 @@ export class SimBot {
         this.develop(b);
         this.say(`developed ${use} block (${b.bx},${b.bz}) as zone ${b.zone}`);
       }
+    }
+    // sub-type specific: high-tech industry needs IndHigh room, farms need IndAg land
+    if (d[DevType.IHT] > 0.35 && emptyOf([Zone.IndHigh]) < growthCells * 0.3 && this.canSpend(3000)) {
+      const b = this.nextBlock('I');
+      if (b) { this.develop(b, Zone.IndHigh); this.say(`developed high-tech block (${b.bx},${b.bz})`); }
+    }
+    const farms = this.blocks.filter((b) => b.zone === Zone.IndAg).length;
+    if (d[DevType.IA] > 0.4 && emptyOf([Zone.IndAg]) < 8 && farms < 1 + pop / 80000 && this.canSpend(2000)) {
+      const outer = this.blocks.filter((b) => !b.developed && b.use === 'R' && this.touchesDeveloped(b)).sort((a, b) => b.ring - a.ring)[0];
+      if (outer) { outer.use = 'I'; this.develop(outer, Zone.IndAg); this.say(`developed farm block (${outer.bx},${outer.bz})`); }
     }
   }
 
@@ -670,9 +689,9 @@ export class SimBot {
   ordinances(): void {
     const st = this.st;
     const pop = st.stats.population;
-    const want = pop > 5000 ? ['smoke_detectors', 'rubble_cleanup', 'neighborhood_watch'] : [];
-    if (pop > 20000) want.push('pro_reading', 'free_clinics', 'recycling');
-    if (pop > 60000) want.push('carpool', 'commuter_shuttle');
+    const want = pop > 25000 ? ['smoke_detectors', 'rubble_cleanup'] : [];
+    if (pop > 50000) want.push('pro_reading', 'neighborhood_watch', 'recycling');
+    if (pop > 120000) want.push('free_clinics', 'carpool', 'commuter_shuttle');
     if (this.monthlyNet() < 0) return;
     for (const id of want) if (!st.budget.ordinances.includes(id)) this.A.setOrdinance(id, true);
   }
@@ -705,6 +724,11 @@ export class SimBot {
       e0 = this.econTime; t0 = this.totalTime; d0 = this.days;
       this.rows.push(row);
       onYear?.(row);
+      if (process.env.SIMBOT_BUDGET) {
+        const fmt = (o: Record<string, number>) => Object.entries(o).filter(([k]) => !k.startsWith('oneoff:')).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(' ');
+        console.log('   income:', fmt(st.budget.lastIncome));
+        console.log('   expense:', fmt(st.budget.lastExpense));
+      }
     }
     return this.rows;
   }
@@ -753,6 +777,7 @@ if (process.argv[1]?.includes('simbot')) {
   bot.run(opts.years, (r) => console.log(formatRow(r)));
   const st = bot.st;
   console.log(`done in ${((performance.now() - t0) / 1000).toFixed(1)}s; loans ${st.budget.loans.length}; unlocked ${st.unlocked.size}; approval ${st.stats.approval.toFixed(0)}`);
+  console.log('ms/day by system (whole run):', Object.entries(bot.bySystem).map(([k, v]) => `${k} ${(v / bot.days).toFixed(3)}`).join(' | '));
   const s = st.stats;
   console.log('residents', s.residents, 'jobs', s.jobsByDev.join(','), 'caps', s.demandCap.join(','));
   console.log('last income', st.budget.lastIncome);
@@ -765,4 +790,10 @@ if (process.argv[1]?.includes('simbot')) {
 /** systems for a bot run: full (infra + economy) or economy only; infra is imported lazily */
 export async function botSystems(noInfra: boolean): Promise<SimSystem[]> {
   return noInfra ? economySystems() : (await import('../src/sim/systems/index')).createSystems();
+}
+
+/** process CPU time in ms (user + system) — robust against a loaded machine, unlike wall clock */
+function cpuMs(): number {
+  const u = process.cpuUsage();
+  return (u.user + u.system) / 1000;
 }

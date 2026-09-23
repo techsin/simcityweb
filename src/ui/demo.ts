@@ -353,18 +353,19 @@ async function run(): Promise<void> {
     scene.ctx.toast('New reward unlocked: Mayor’s House', 'reward');
     scene.ctx.toast('Your city reached 10,000 residents!', 'good');
   }
-  const q = P.get('query')?.split(',').map(Number);
+  const coords = (k: string) => { const v = P.get(k)?.split(',').map(Number); if (v && P.get('rel') === '1') return v.map((n, i) => n + Math.round(i % 2 ? center.cz : center.cx)); return v; };
+  const q = coords('query');
   if (q && q.length >= 2) {
     const b = scene.sim.state.buildingAt(q[0], q[1]);
     scene.ctx.showQuery({ buildingId: b?.id ?? null, x: q[0], z: q[1] });
   }
   (window as any).__step = "f10"; await frames(2); (window as any).__step = "after-f10";
-  const hov = P.get('hover')?.split(',').map(Number);
+  const hov = coords('hover');
   if (hov && hov.length >= 2) {
     pointer('pointermove', hov[0], hov[1]);
     await frames(2);
   }
-  const click = P.get('click')?.split(',').map(Number);
+  const click = coords('click');
   if (click && click.length >= 2) {
     pointer('pointermove', click[0], click[1]);
     await frames(2);
@@ -373,7 +374,7 @@ async function run(): Promise<void> {
     pointer('pointerup', click[0], click[1], 0);
     await frames(2);
   }
-  const drag = P.get('drag')?.split(',').map(Number);
+  const drag = coords('drag');
   if (drag && drag.length >= 4) {
     pointer('pointermove', drag[0], drag[1]);
     await frames(2);

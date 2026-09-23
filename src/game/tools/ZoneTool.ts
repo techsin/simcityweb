@@ -1,7 +1,8 @@
 /** Zoning / de-zoning / bulldozing: drag a rectangle, live cost preview, apply on release. */
 import type { CellRect } from '../../core/events';
 import { Zone } from '../../core/types';
-import { rectFrom, type ActionResult, type Cell } from '../../sim/actions';
+import type { ActionResult } from '../../sim/actions';
+import { rectFrom, type Cell } from '../geom';
 import type { GameContext } from '../context';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
 

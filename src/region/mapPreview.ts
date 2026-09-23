@@ -100,7 +100,12 @@ export function drawCityMap(canvas: HTMLCanvasElement, st: CityState, opts: City
       const slope = Math.sqrt(dx * dx + dz * dz);
       const cx = Math.min(N - 1, Math.floor(fx)), cz = Math.min(N - 1, Math.floor(fz));
       const ci = cz * N + cx;
-      const trees = st.trees[ci] / 4;
+      // bilinear tree density (cell centres) for a soft canopy
+      const gx = Math.min(Math.max(fx - 0.5, 0), N - 1.001), gz = Math.min(Math.max(fz - 0.5, 0), N - 1.001);
+      const tx0 = Math.floor(gx), tz0 = Math.floor(gz), ftx = gx - tx0, ftz = gz - tz0;
+      const ti = tz0 * N + tx0;
+      const tv = (st.trees[ti] * (1 - ftx) + st.trees[Math.min(ti + 1, st.cells - 1)] * ftx) * (1 - ftz) + (st.trees[Math.min(ti + N, st.cells - 1)] * (1 - ftx) + st.trees[Math.min(ti + N + 1, st.cells - 1)] * ftx) * ftz;
+      const trees = opts.city ? st.trees[ci] / 4 : tv / 4;
       let c = terrainColor(pal, h, slope, h > 0 ? trees * 0.85 : 0, px, py);
       // hillshade
       const nx = -dx * relief * 2.2, nz = -dz * relief * 2.2;
@@ -200,4 +205,28 @@ export function regionPreviewDataUrl(model: RegionModel, w = 320, h = 200): stri
   c.height = h;
   drawRegionMap(c, model, { tiles: true, founded: true });
   return c.toDataURL('image/jpeg', 0.82);
+}
+
+/**
+ * Resize / recompress a thumbnail data URL (e.g. a PNG from WorldViewApi.capture) to a square JPEG of `px`
+ * pixels (center-cropped), to keep region saves small. Resolves to the input if decoding fails.
+ */
+export function normalizeThumbnail(dataUrl: string, px: number): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas');
+        c.width = c.height = px;
+        const ctx = c.getContext('2d')!;
+        const s = Math.min(img.naturalWidth, img.naturalHeight);
+        ctx.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, px, px);
+        resolve(c.toDataURL('image/jpeg', 0.86));
+      } catch {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
 }

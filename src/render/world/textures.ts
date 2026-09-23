@@ -13,20 +13,27 @@ function hash3(x: number, y: number, s: number): number {
   return (h >>> 0) / 4294967296;
 }
 
+// 256 unit gradient directions (avoids cos/sin per lookup)
+const GX = new Float32Array(256), GY = new Float32Array(256);
+for (let i = 0; i < 256; i++) {
+  GX[i] = Math.cos((i / 256) * Math.PI * 2);
+  GY[i] = Math.sin((i / 256) * Math.PI * 2);
+}
+function grad(ix: number, iy: number, p: number, seed: number, dx: number, dy: number): number {
+  const k = (hash3(((ix % p) + p) % p, ((iy % p) + p) % p, seed) * 256) | 0;
+  return GX[k] * dx + GY[k] * dy;
+}
+
 /** periodic gradient (Perlin) noise, period p lattice cells, returns ~[-1,1] */
 function pnoise(x: number, y: number, p: number, seed: number): number {
   const xi = Math.floor(x), yi = Math.floor(y);
   const xf = x - xi, yf = y - yi;
   const u = xf * xf * xf * (xf * (xf * 6 - 15) + 10);
   const v = yf * yf * yf * (yf * (yf * 6 - 15) + 10);
-  const g = (ix: number, iy: number, dx: number, dy: number) => {
-    const a = hash3(((ix % p) + p) % p, ((iy % p) + p) % p, seed) * Math.PI * 2;
-    return Math.cos(a) * dx + Math.sin(a) * dy;
-  };
-  const n00 = g(xi, yi, xf, yf);
-  const n10 = g(xi + 1, yi, xf - 1, yf);
-  const n01 = g(xi, yi + 1, xf, yf - 1);
-  const n11 = g(xi + 1, yi + 1, xf - 1, yf - 1);
+  const n00 = grad(xi, yi, p, seed, xf, yf);
+  const n10 = grad(xi + 1, yi, p, seed, xf - 1, yf);
+  const n01 = grad(xi, yi + 1, p, seed, xf, yf - 1);
+  const n11 = grad(xi + 1, yi + 1, p, seed, xf - 1, yf - 1);
   const nx0 = n00 + (n10 - n00) * u;
   const nx1 = n01 + (n11 - n01) * u;
   return (nx0 + (nx1 - nx0) * v) * 1.414;
@@ -78,9 +85,9 @@ export function getNoiseTexture(size = 256): THREE.DataTexture {
   for (let j = 0; j < size; j++) {
     for (let i = 0; i < size; i++) {
       const u = i / size, v = j / size;
-      const r = pfbm(u, v, 4, 5, 11) * 0.5 + 0.5;
-      const g = pfbm(u, v, 8, 4, 23) * 0.5 + 0.5;
-      const b = pfbm(u, v, 32, 3, 37) * 0.5 + 0.5;
+      const r = pfbm(u, v, 4, 4, 11) * 0.5 + 0.5;
+      const g = pfbm(u, v, 8, 3, 23) * 0.5 + 0.5;
+      const b = pfbm(u, v, 32, 2, 37) * 0.5 + 0.5;
       const a = pcell(u, v, 16, 41);
       const k = (j * size + i) * 4;
       data[k] = Math.max(0, Math.min(255, r * 255));
@@ -106,9 +113,9 @@ export function getWaveNormalTexture(size = 256): THREE.DataTexture {
     for (let i = 0; i < size; i++) {
       const u = i / size, v = j / size;
       // sum of a few wave-ish octaves (stretched along x -> crests along y)
-      let s = pfbm(u, v, 6, 4, 101, 0.55) * 0.6;
-      s += Math.abs(pfbm(u, v, 12, 3, 131, 0.5)) * -0.35;
-      s += pfbm(u, v, 24, 2, 151) * 0.15;
+      let s = pfbm(u, v, 6, 3, 101, 0.55) * 0.6;
+      s += Math.abs(pfbm(u, v, 12, 2, 131, 0.5)) * -0.35;
+      s += pnoise(u * 24, v * 24, 24, 151) * 0.15;
       h[j * size + i] = s;
     }
   const data = new Uint8Array(size * size * 4);

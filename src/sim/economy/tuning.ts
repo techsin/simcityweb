@@ -7,9 +7,14 @@ import { Network, Zone } from '../../core/types';
 
 // ============================================================================ calendar / slicing
 /** land value: full-map refresh period (days); rows are processed in bands */
-export const LV_REFRESH_DAYS = 8;
-/** desirability: full-map refresh period (days) */
-export const DESIR_REFRESH_DAYS = 8;
+export const LV_REFRESH_DAYS = 12;
+/** full-map static land value (water distance, view) recompute after terrain changes: at most every N days */
+export const LV_STATIC_MIN_DAYS = 90;
+/** plopped-building land value splat recompute: at most every N days */
+export const LV_EFFECTS_MIN_DAYS = 7;
+/** desirability: full-map refresh period (days); unzoned land (all DevTypes, for overlays) every DESIR_ALL_SWEEPS sweeps */
+export const DESIR_REFRESH_DAYS = 12;
+export const DESIR_ALL_SWEEPS = 4;
 /** occupancy / building health update period (each growable is updated once per period) */
 export const OCC_PERIOD = 4;
 

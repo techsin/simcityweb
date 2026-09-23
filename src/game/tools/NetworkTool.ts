@@ -1,6 +1,7 @@
 /** Roads / rail / power lines / subway: drag an L-shaped path (Shift flips the L), live preview + cost. */
 import { Network } from '../../core/types';
-import { lPath, type ActionResult, type Cell } from '../../sim/actions';
+import type { ActionResult } from '../../sim/actions';
+import { lPath, type Cell } from '../geom';
 import type { GameContext } from '../context';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
 
@@ -68,7 +69,7 @@ export class NetworkTool extends Tool {
       this.ctx.world.setHighlight(this.res.cells && this.res.cells.length ? this.res.cells : path.map((q) => ({ ...q, ok })));
       this.ctx.objects.setNetworkPreview(path, this.kind, ok);
     }
-    const len = this.res?.affected ?? path.length;
+    const len = this.res?.ok && this.res.affected ? this.res.affected : path.length;
     const extra = this.start ? `${len} tile${len === 1 ? '' : 's'}${p.shift ? ' · flipped' : ''}` : 'Click and drag to build';
     const t = resultTip(this.label, this.res, extra);
     this.ctx.tip.show(t.html, t.kind);

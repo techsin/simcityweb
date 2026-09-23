@@ -182,7 +182,8 @@ export function garageDoor(b: ModelBuilder, u: number, y: number, w: number, h: 
   b.paint(color, Surf.Wood);
   fq(b, u - w / 2, y, u + w / 2, y + h, 0.07);
   if (windows) {
-    b.paint(GLASS, Surf.GlassPlain);
+    // dark garage glazing: reflective but not lit at night
+    b.paint(0x2a3038, Surf.Metal);
     fq(b, u - w / 2 + 0.2, y + h * 0.72, u + w / 2 - 0.2, y + h * 0.86, 0.09);
   }
 }

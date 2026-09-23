@@ -133,6 +133,7 @@ export class HelpPanel extends Panel {
   readonly title = 'Help & shortcuts';
   override icon = 'keyboard';
   override width = 900;
+  override center = true;
 
   override defaultPos(w: number, hh: number): { x: number; y: number } {
     return { x: Math.max(14, (w - this.width) / 2), y: Math.max(72, (hh - 600) / 2) };

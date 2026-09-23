@@ -10,7 +10,7 @@ import { signBox } from '../kit';
 import {
   type Face, flat, ground, wallQuad, wallRow, wallDisc, tube, disc, dome, hCyl, strut, lattice, tank, smokestack, semi, boxTruck,
   carLow, forklift, pallets, fenceRect, floodLight, roofUnit, parapet, officeBlock, parking, containerAt, barrelRoof,
-  tree, CAR_COLORS2, CONTAINER_COLORS, TRUCK_COLORS,
+  tree, lightDot, CAR_COLORS2, CONTAINER_COLORS, TRUCK_COLORS,
 } from './ind_kit';
 
 const APRON = 0x8f8b84;
@@ -30,6 +30,12 @@ function docks(b: ModelBuilder, face: Face, plane: number, a0: number, a1: numbe
     wallQuad(b, face, plane, c - 1.5, c + 1.5, 1.2, 4.3, 0.05);
     b.paint(0x1c1c1c, Surf.Plain);
     wallQuad(b, face, plane, c - 1.6, c + 1.6, 0.9, 1.2, 0.08);
+    // dock light above the door
+    const o = 0.35;
+    if (face === 'pz') lightDot(b, c, 5.1, plane + o, 0.28);
+    else if (face === 'nz') lightDot(b, c, 5.1, plane - o, 0.28);
+    else if (face === 'px') lightDot(b, plane + o, 5.1, c, 0.28);
+    else lightDot(b, plane - o, 5.1, c, 0.28);
   }
   return centers;
 }

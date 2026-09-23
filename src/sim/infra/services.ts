@@ -22,7 +22,7 @@ import { Network, isRoad } from '../../core/types';
 import type { CityState } from '../CityState';
 import type { ServiceKind } from '../catalogTypes';
 import type { SimSystem, Simulation } from '../Simulation';
-import { COV_KINDS, DX, DZ, Fam, fundingFactor, infoOf, isFunctional, nowMs, readEffects } from './common';
+import { COV_KINDS, DX, DZ, Fam, fundingFactor, infoOf, isFunctional, nowMs, readEffects, buildingList } from './common';
 import { COVERAGE_DEMAND, EQ_RATE, HQ_RATE, ROAD_RADIUS_FACTOR } from './params';
 import { collectStops, computeTransitCoverage, type StopList } from './transit';
 import { getDef } from '../catalog';
@@ -96,7 +96,8 @@ export class ServicesSystem implements SimSystem {
     const res = this.resCell;
     res.fill(0);
     let hasJail = false;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const inf = infoOf(st, b);
       if (inf.isJail && isFunctional(b)) hasJail = true;
       if (inf.fam !== Fam.R || b.pop <= 0) continue;
@@ -109,7 +110,8 @@ export class ServicesSystem implements SimSystem {
     for (const L of layers) L.fill(0);
     const policeMul = st.stats.population > 25000 && !hasJail ? 0.75 : 1;
     const fx = readEffects(st);
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const inf = infoOf(st, b);
       let kind = inf.cov;
       let R = inf.covRadius, strength = inf.covStrength;
@@ -148,7 +150,8 @@ export class ServicesSystem implements SimSystem {
     const T = st.transitCov;
     for (let i = 0; i < C; i++) T[i] = 1 - (1 - T[i]) * (1 - Math.min(1, tmp[i]));
     // uniform coverage over building footprints
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       if (b.w * b.d <= 1) continue;
       for (const L of layers) {
         let m = 0;
@@ -158,7 +161,8 @@ export class ServicesSystem implements SimSystem {
     }
     // EQ / HQ
     let popSum = 0, edu = 0, health = 0, air = 0;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       if (b.pop <= 0) continue;
       const inf = infoOf(st, b);
       if (inf.fam !== Fam.R) continue;
@@ -183,9 +187,16 @@ export class ServicesSystem implements SimSystem {
     this.lastMs = nowMs() - t0;
   }
 
+  private resetStamps(): void {
+    this.stamp = 0;
+    this.visit.fill(0);
+    this.dist.fill(-1);
+  }
+
   /** Euclidean disk reach -> this.touched / this.best; returns count */
   private reachEuclid(st: CityState, bx: number, bz: number, bw: number, bd: number, R: number): number {
     const N = st.size;
+    if (this.stamp >= 500000) this.resetStamps();
     const stamp = ++this.stamp;
     const cx = bx + bw / 2 - 0.5, cz = bz + bd / 2 - 0.5;
     const half = Math.max(bw, bd) / 2;
@@ -211,6 +222,8 @@ export class ServicesSystem implements SimSystem {
   private reachRoad(st: CityState, bx: number, bz: number, bw: number, bd: number, R: number): number {
     const N = st.size;
     const net = st.network;
+    // distances are encoded as stamp * 4096 + d in an Int32Array: reset before the encoding overflows
+    if (this.stamp >= 500000) this.resetStamps();
     const stamp = ++this.stamp;
     const visit = this.visit, best = this.best, touched = this.touched, dist = this.dist, queue = this.queue;
     const roadR = R * ROAD_RADIUS_FACTOR;
@@ -225,8 +238,6 @@ export class ServicesSystem implements SimSystem {
       for (let x = Math.max(0, bx - near); x <= Math.min(N - 1, bx + bw - 1 + near); x++) touch(z * N + x, 1);
     // BFS seeds: road cells around the footprint
     let qh = 0, qt = 0;
-    const qstamp = -stamp; // visited marker for road BFS uses dist array with stamp encoding
-    void qstamp;
     for (let z = bz - 1; z <= bz + bd; z++) for (let x = bx - 1; x <= bx + bw; x++) {
       if (x < 0 || z < 0 || x >= N || z >= N) continue;
       if (x >= bx && x < bx + bw && z >= bz && z < bz + bd) continue;

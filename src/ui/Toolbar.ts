@@ -44,7 +44,10 @@ export class Toolbar {
         this.onCategory(c);
         b.blur();
       });
-      b.addEventListener('pointerenter', () => this.showCatTip(c, b));
+      b.addEventListener('pointerenter', () => {
+        this.showCatTip(c, b);
+        this.ctx.sound('hover');
+      });
       b.addEventListener('pointerleave', () => this.hideTip());
       this.btns.set(c.id, b);
       this.bar.appendChild(b);
@@ -92,6 +95,7 @@ export class Toolbar {
     this.openCat = catId;
     for (const [id, b] of this.btns) toggleClass(b, 'open', id === catId);
     this.renderFlyout(c);
+    this.flyout.style.maxWidth = Math.min(1180, (this.el.parentElement?.clientWidth ?? 1600) - 32) + 'px';
     // position centered over the category button, clamped to the bar
     const b = this.btns.get(catId)!;
     const center = b.offsetLeft + b.offsetWidth / 2;
@@ -101,10 +105,10 @@ export class Toolbar {
       const fw = this.flyout.offsetWidth;
       const vw = (this.el.parentElement?.clientWidth ?? window.innerWidth);
       const barLeft = this.bar.getBoundingClientRect().left / uiZoom();
-      let left = center;
+      // wide menus center on the toolbar, narrow ones on their button
+      let left = fw > barW * 0.9 ? barW / 2 : center;
       const minC = fw / 2 - barLeft + 8, maxC = vw - barLeft - fw / 2 - 8;
       left = Math.max(minC, Math.min(maxC, left));
-      void barW;
       this.flyout.style.left = left + 'px';
       this.flyout.classList.add('open');
     });
@@ -159,18 +163,18 @@ export class Toolbar {
     return cost;
   }
 
+  /** cost line html: one-off cost + monthly upkeep (plops) or per-tile cost */
   private costLine(spec: ToolSpec): string {
     if (spec.def) {
-      const parts: string[] = [];
-      parts.push(spec.cost ? money(spec.cost) : 'Free');
-      if (spec.upkeep) parts.push(`${money(spec.upkeep)}/mo`);
-      return parts.join(' · ');
+      const cost = spec.cost ? money(spec.cost) : 'Free';
+      const up = spec.upkeep ? `${money(spec.upkeep)}/mo` : spec.income ? `+${money(spec.income)}/mo` : '&nbsp;';
+      return `<span>${cost}</span><span class="up">${up}</span>`;
     }
     if (spec.costUnit) {
       const c = this.perTileCost(spec);
-      return c ? `${money(c)}${spec.costUnit}` : '—';
+      return `<span>${c ? `${money(c)}${spec.costUnit}` : '—'}</span><span class="up">&nbsp;</span>`;
     }
-    return spec.hotkey ? '' : '';
+    return '<span>&nbsp;</span><span class="up">&nbsp;</span>';
   }
 
   // ------------------------------------------------------------------------------------------------ flyout
@@ -204,22 +208,22 @@ export class Toolbar {
       const cached = thumbs.cached(def.model);
       const put = (url: string | null) => {
         if (!url) return;
-        clear(thumb);
-        thumb.appendChild(h('img', { src: url, alt: '' }));
+        for (const ch of [...thumb.children]) if (!ch.classList.contains('prog')) ch.remove();
+        thumb.prepend(h('img', { src: url, alt: '' }));
       };
       if (cached) put(cached);
       else if (cached === undefined) thumbs.get(def.model, def.footprint).then(put);
     }
     const el = h('div', { class: 'fly-item' + (active ? ' active' : '') + (s.locked ? ' locked' : '') + (s.disabled ? ' disabled' : ''), style: { '--c': color } as Record<string, string> },
       thumb,
-      h('div', { class: 'fly-name' }, s.label),
-      h('div', { class: 'fly-cost' }, this.costLine(s)),
+      h('div', { class: 'fly-name' + (s.label.length <= 13 ? ' one' : '') }, s.label),
+      h('div', { class: 'fly-cost', html: this.costLine(s) }),
     );
     const hk = hotkeyOf(s);
     if (hk) el.appendChild(h('span', { class: 'fly-key' }, h('kbd', null, hk)));
     if (s.locked) {
       el.appendChild(h('span', { class: 'lock', html: icon('lock', 12) }));
-      if (s.locked.progress !== undefined) el.appendChild(h('span', { class: 'prog' }, h('i', { style: { width: `${Math.round(s.locked.progress * 100)}%` } })));
+      if (s.locked.progress !== undefined) thumb.appendChild(h('span', { class: 'prog' }, h('i', { style: { width: `${Math.round(s.locked.progress * 100)}%` } })));
     }
     el.addEventListener('click', () => {
       if (s.locked || s.disabled) {
@@ -232,7 +236,10 @@ export class Toolbar {
         this.closeFlyout();
       }
     });
-    el.addEventListener('pointerenter', () => this.showSpecTip(s, el));
+    el.addEventListener('pointerenter', () => {
+      this.showSpecTip(s, el);
+      this.ctx.sound('hover');
+    });
     el.addEventListener('pointerleave', () => this.hideTip());
     return el;
   }
@@ -323,7 +330,7 @@ export class Toolbar {
     for (const [cid, b] of this.btns) {
       const c = CATEGORIES.find((x) => x.id === cid)!;
       const on = cid === cat || (c.panelId !== undefined && (this.ctx.panels.isOpen(c.panelId) || (cid === 'dataviews' && this.ctx.overlay !== 0)));
-      toggleClass(b, 'active', on || (cid === 'query' && id === null && false));
+      toggleClass(b, 'active', on || (cid === 'query' && id === null));
     }
     // chip
     clear(this.chip);

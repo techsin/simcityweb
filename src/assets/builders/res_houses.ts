@@ -6,11 +6,11 @@ import type { ModelBuilder, ColorLike, Paint } from '../ModelBuilder';
 import type { RNG } from '../../core/rng';
 import { Surf } from '../../core/types';
 import {
-  P, TRIM, TRIM_CREAM, TRIM_DARK, LAWN, LAWN_LUSH, LAWN_DRY, DIRT, CONCRETE, ASPHALT, FLOWERS,
-  inFace, U, fq, win, wins, door, garageDoor, steps, roofGable, roofHip, roofShed, roofMansard, dormer, chimney,
+  P, TRIM, LAWN, LAWN_LUSH, LAWN_DRY, DIRT, CONCRETE, FLOWERS,
+  inFace, U, fq, win, wins, door, garageDoor, steps, roofGable, roofHip, roofShed, dormer, chimney,
   lawnSlab, paveSlab, bush, bushRow, flowerBed, tree, picket, boardFence, chainFence, lowWall, hedgeBox, mailbox,
   trampoline, gardenShed, playset, grill, patioSet, lounger, poolRect, acBox, trashCans, propaneTank, satDish, parkedCar,
-  laundry, planter, parapet, flatRoof, spread, bay, setLot, band, type WinStyle,
+  laundry, planter, parapet, flatRoof, setLot, band, type WinStyle,
 } from './res_util';
 
 // ---------------------------------------------------------------------------------------------- local helpers
@@ -117,6 +117,10 @@ function shack(b: ModelBuilder, v: number, rng: RNG): void {
       fq(b, U('px', -2.8) - 0.5, 1.0, U('px', -2.8) + 0.5, 2.0, 0.08);
     });
     wins(b, 'nx', -3, [-1.5], 1.1, 0.8, 0.8, { frame: 0x5a4a3a });
+    // blue tarp + mismatched patch on the roof
+    const ry = (z: number) => 2.7 + (0.5 - z) * (0.55 / 4) + 0.06;
+    b.paint(0x2a4a7a).quad([-1.4, ry(-0.4), -0.4], [1.2, ry(-0.4), -0.4], [1.3, ry(-2.9), -2.9], [-1.3, ry(-2.9), -2.9]);
+    b.paint(0x9a9a92, Surf.Corrugated).quad([1.6, ry(-1.8), -1.8], [2.9, ry(-1.8), -1.8], [2.9, ry(-3.3), -3.3], [1.6, ry(-3.3), -3.3]);
     // stovepipe
     b.paint(0x3a3a3a, Surf.Metal).cylinder(2.0, -2.6, 2.9, 1.6, 0.12, 0.12, 6);
     // yard junk + rusty car
@@ -178,6 +182,8 @@ function shack(b: ModelBuilder, v: number, rng: RNG): void {
     wins(b, 'nx', -3.8, [-0.9], 1.1, 0.8, 0.8, { frame: 0x3a3028 });
     inFace(b, 'pz', 1.2, () => steps(b, -2.4, 1.0, 1, 0.3, 0.35, 0x77716a));
     chimney(b, -3.0, -2.2, 0.6, 0.6, 2.6, 4.3, 0x8a7a6a, Surf.Stone);
+    // tar-paper patches on the roof
+    b.paint(0x55504a).quad([-3.0, 2.6 + 0.45 * (1.1 / 2.1) + 0.05, 0.75], [-1.8, 2.6 + 0.45 * (1.1 / 2.1) + 0.05, 0.75], [-1.8, 2.6 + 1.2 * (1.1 / 2.1) + 0.05, 0.0], [-3.0, 2.6 + 1.2 * (1.1 / 2.1) + 0.05, 0.0]);
     // outhouse-style shed & wood pile
     gardenShed(b, 5.6, -5.6, 1.5, 1.5, 0x7a6a56, 0x5a5a58, 0.1);
     b.paint(0x7a5a3c, Surf.Wood);
@@ -294,15 +300,15 @@ function cottage(b: ModelBuilder, v: number, rng: RNG): void {
     const x0 = -5.0, x1 = 5.0, z0 = -4.6, z1 = 2.2;
     body(b, x0, z0, x1, z1, 0.4, 3.1, wall);
     const h = 3.5, k = h / 3.4;
-    roofGable(b, 0, -1.2, 10, 6.8, 3.1, h, 'x', P(0x4d4f55, Surf.RoofTiles), { gable: P(0x9fb0b2, Surf.Wood), over: 0.35 });
-    for (const x of [-2.4, 2.4]) dormer(b, x, 1.1, z1, 3.1, k, 1.5, 1.7, P(0x9fb0b2, Surf.Wood), P(0x4d4f55, Surf.RoofTiles));
+    roofGable(b, 0, -1.2, 10, 6.8, 3.1, h, 'x', P(0x6b5a4a, Surf.RoofTiles), { gable: P(0x9fb0b2, Surf.Wood), over: 0.35 });
+    for (const x of [-2.4, 2.4]) dormer(b, x, 1.1, z1, 3.1, k, 1.5, 1.7, P(0x9fb0b2, Surf.Wood), P(0x6b5a4a, Surf.RoofTiles));
     inFace(b, 'pz', z1, () => {
       door(b, 0, 0.4, 1.0, 2.1, 0x7e2a26, { sidelights: true, lamp: false });
       for (const x of [-3.4, -1.8, 1.8, 3.4]) win(b, x, 1.15, 0.95, 1.35, shutterWin(0x2e3a4a));
     });
     // door hood (small gable canopy)
     b.paint(TRIM).box(-1.0, 2.55, z1, 1.0, 2.7, z1 + 0.9, { nz: null });
-    roofGable(b, 0, z1 + 0.45, 2.0, 1.0, 2.7, 0.6, 'z', P(0x4d4f55, Surf.RoofTiles), { over: 0.1, rake: 0.1, t: 0.08, gable: P(TRIM) });
+    roofGable(b, 0, z1 + 0.45, 2.0, 1.0, 2.7, 0.6, 'z', P(0x6b5a4a, Surf.RoofTiles), { over: 0.1, rake: 0.1, t: 0.08, gable: P(TRIM) });
     wins(b, 'px', x1, [-3.2, -0.2], 1.15, 1.0, 1.35, shutterWin(0x2e3a4a));
     wins(b, 'px', x1, [-1.2], 3.8, 0.8, 1.0, { mull: 2 });
     wins(b, 'nx', x0, [-2.8, 0.2], 1.15, 1.0, 1.35, shutterWin(0x2e3a4a));
@@ -704,12 +710,12 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     // 2-storey craftsman foursquare w/ deep porch, detached garage in back along a side drive
     const sid = P(0x5d6f7e, Surf.Wood);
     body(b, -7, -5, 2.6, 3.0, 0.6, 6.2, sid);
-    roofHip(b, -2.2, -1, 9.6, 8, 6.2, 2.6, P(0x3f4147, Surf.RoofTiles), { over: 0.7, trim: 0xece8de });
+    roofHip(b, -2.2, -1, 9.6, 8, 6.2, 2.6, P(0x4f5a48, Surf.RoofTiles), { over: 0.7, trim: 0xece8de });
     // front hip dormer
     b.paint(sid).box(-3.4, 7.2, -0.5, -1.0, 8.4, 2.4, { top: null, nz: null });
-    roofHip(b, -2.2, 0.95, 2.4, 2.9, 8.4, 0.7, P(0x3f4147, Surf.RoofTiles), { over: 0.25, trim: 0xece8de });
+    roofHip(b, -2.2, 0.95, 2.4, 2.9, 8.4, 0.7, P(0x4f5a48, Surf.RoofTiles), { over: 0.25, trim: 0xece8de });
     inFace(b, 'pz', 2.4, () => win(b, -2.2, 7.45, 1.4, 0.7, { mull: 3, frame: 0xece8de }));
-    porch(b, -7, 2.6, 3.0, 2.6, 0.6, 3.4, P(0x3f4147, Surf.RoofTiles), { posts: 3, postW: 0.3, pier: 0x9a8f80, post: 0xece8de, rail: 0xece8de, gap: [-3.3, -1.7], kind: 'shed' });
+    porch(b, -7, 2.6, 3.0, 2.6, 0.6, 3.4, P(0x4f5a48, Surf.RoofTiles), { posts: 3, postW: 0.3, pier: 0x9a8f80, post: 0xece8de, rail: 0xece8de, gap: [-3.3, -1.7], kind: 'shed' });
     const ws: WinStyle = { mull: 2, frame: 0xece8de, sill: 0xece8de };
     inFace(b, 'pz', 3.0, () => {
       door(b, -2.5, 0.6, 1.0, 2.15, 0x9a5a2a, { surf: Surf.Wood, lite: true, lamp: true, frame: 0xece8de });
@@ -728,7 +734,7 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     // side drive to detached garage
     paveSlab(b, 3.6, -12.5, 7.0, 16, 0xb7b1a5, 0.1);
     body(b, 2.2, -15.6, 7.6, -9.6, 0.1, 2.8, sid, CONCRETE);
-    roofGable(b, 4.9, -12.6, 5.4, 6.0, 2.8, 1.6, 'z', P(0x3f4147, Surf.RoofTiles), { gable: sid, trim: 0xece8de });
+    roofGable(b, 4.9, -12.6, 5.4, 6.0, 2.8, 1.6, 'z', P(0x4f5a48, Surf.RoofTiles), { gable: sid, trim: 0xece8de });
     inFace(b, 'pz', -9.6, () => garageDoor(b, 5.1, 0.1, 3.0, 2.2, 0xece8de, 0xece8de, true));
     parkedCar(b, rng, 5.3, 1.0, Math.PI);
     paveSlab(b, -3.1, 5.9, -1.9, 16, 0xc0b8aa, 0.08);
@@ -870,10 +876,10 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     // Dutch colonial (gambrel), sage siding, attached garage w/ sunroom, playset in back
     const sid = P(0x9aa88a, Surf.Wood);
     body(b, -7, -4.5, 1.6, 3.2, 0.45, 3.2, sid);
-    roofGambrel(b, -2.7, -0.65, 8.6, 7.7, 3.2, 4.4, P(0x4c4f55, Surf.RoofTiles), sid, 0.4);
+    roofGambrel(b, -2.7, -0.65, 8.6, 7.7, 3.2, 4.4, P(0x7a4536, Surf.RoofTiles), sid, 0.4);
     // long shed dormer
     b.paint(sid).box(-6.0, 3.5, -0.8, 0.6, 6.0, 2.2, { top: null, nz: null });
-    roofShed(b, -2.7, 0.7, 6.6, 3.0, 6.0, 0.4, 'nz', P(0x4c4f55, Surf.RoofTiles), { over: 0.2, rake: 0.1, t: 0.1 });
+    roofShed(b, -2.7, 0.7, 6.6, 3.0, 6.0, 0.4, 'nz', P(0x7a4536, Surf.RoofTiles), { over: 0.2, rake: 0.1, t: 0.1 });
     inFace(b, 'pz', 2.2, () => { for (const x of [-5, -2.7, -0.4]) win(b, x, 4.0, 1.0, 1.3, { mull: 2, sill: TRIM }); });
     inFace(b, 'pz', 3.2, () => {
       door(b, -2.7, 0.45, 1.0, 2.15, 0x7e2a26, { lite: true, frame: TRIM });
@@ -886,12 +892,12 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     inFace(b, 'pz', 4.3, () => steps(b, -2.7, 1.6, 2, 0.225, 0.3, 0xbdb6a8));
     // garage + sunroom
     body(b, 1.6, -4.5, 7.4, 3.8, 0.1, 3.0, sid, CONCRETE);
-    roofGable(b, 4.5, -0.35, 5.8, 8.3, 3.0, 1.7, 'z', P(0x4c4f55, Surf.RoofTiles), { gable: sid });
+    roofGable(b, 4.5, -0.35, 5.8, 8.3, 3.0, 1.7, 'z', P(0x7a4536, Surf.RoofTiles), { gable: sid });
     inFace(b, 'pz', 3.8, () => garageDoor(b, 4.5, 0.1, 4.4, 2.2, TRIM, TRIM, true));
     b.paint(TRIM).box(1.6, 0.3, -7.6, 5.4, 2.8, -4.5, { top: null, pz: null });
     wins(b, 'nz', -7.6, [2.3, 3.5, 4.7], 0.8, 1.0, 1.7, { frame: TRIM });
     wins(b, 'px', 5.4, [-6.8, -5.4], 0.8, 1.0, 1.7, { frame: TRIM });
-    roofShed(b, 3.5, -6.05, 3.8, 3.1, 2.8, 0.5, 'pz', P(0x4c4f55, Surf.RoofTiles), { over: 0.2, rake: 0.15, t: 0.1 });
+    roofShed(b, 3.5, -6.05, 3.8, 3.1, 2.8, 0.5, 'pz', P(0x7a4536, Surf.RoofTiles), { over: 0.2, rake: 0.15, t: 0.1 });
     wins(b, 'nx', -7, [-2.5, 1.0], 1.2, 1.0, 1.3, shutterWin(0x2f4a37));
     wins(b, 'nx', -7, [-0.7], 4.3, 0.9, 1.1, { mull: 2 });
     wins(b, 'nz', -4.5, [-5.5, -1.0], 1.2, 1.0, 1.3, { mull: 2 });
@@ -916,5 +922,3 @@ export const houseModels = {
   res_townhouse_row: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 8, 11); townhouseRow(b, v, rng); },
   res_suburban: (b: ModelBuilder, v: number, rng: RNG) => { setLot(8, 16, 9); suburban(b, v, rng); },
 };
-// silence unused (some helpers are used by later sections)
-void [TRIM_CREAM, TRIM_DARK, CONCRETE, ASPHALT, roofMansard, spread, bay];

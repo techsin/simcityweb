@@ -71,6 +71,13 @@ export class QueryTool extends Tool {
       const b = this.ctx.state.buildings.get(id);
       this.ctx.showQuery({ buildingId: id, x: b?.x ?? p.hit?.x ?? 0, z: b?.z ?? p.hit?.z ?? 0 });
     } else if (p.hit) {
+      const st = this.ctx.state;
+      const i = st.idx(p.hit.x, p.hit.z);
+      // bare land / water: close the inspector (Alt-click inspects anyway)
+      if (!st.network[i] && !st.zone[i] && !st.powerLines[i] && !p.alt) {
+        this.ctx.showQuery(null);
+        return;
+      }
       this.ctx.sound('select');
       this.ctx.showQuery({ buildingId: null, x: p.hit.x, z: p.hit.z });
     }
@@ -85,6 +92,6 @@ export class QueryTool extends Tool {
     this.ctx.tip.hide();
   }
   override hints(): string[] {
-    return ['Click a building, road or lot to inspect'];
+    return ['Click a building, road or zoned lot to inspect', 'Alt-click any tile'];
   }
 }

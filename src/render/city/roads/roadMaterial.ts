@@ -48,6 +48,10 @@ float range1(float x, float a, float b) {
   float fw = fwidth(x) * 0.8 + 1e-4;
   return smoothstep(a - fw, a + fw, x) * (1.0 - smoothstep(b - fw, b + fw, x));
 }
+// same with an explicit filter width (for wrapped coordinates whose fwidth jumps at the seam)
+float rangeW(float x, float a, float b, float fw) {
+  return smoothstep(a - fw, a + fw, x) * (1.0 - smoothstep(b - fw, b + fw, x));
+}
 float dashes(float v, float period, float duty) {
   float x = v / period;
   float f = fract(x);
@@ -57,11 +61,11 @@ float dashes(float v, float period, float duty) {
   float fade = clamp(1.0 - fw * 6.0, 0.0, 1.0);
   return mix(duty, m, fade);
 }
-float arrowMask(float ul, float vl) {
-  float fw = max(fwidth(ul), fwidth(vl)) * 0.8 + 1e-4;
-  float shaft = (1.0 - smoothstep(0.12 - fw, 0.12 + fw, abs(ul))) * range1(vl, -2.6, 0.7);
+float arrowMask(float ul, float vl, float fwv) {
+  float fw = max(fwidth(ul), fwv) * 0.8 + 1e-4;
+  float shaft = (1.0 - smoothstep(0.12 - fw, 0.12 + fw, abs(ul))) * rangeW(vl, -2.6, 0.7, fw);
   float hw = (2.3 - vl) * 0.45;
-  float head = (1.0 - smoothstep(hw - fw, hw + fw, abs(ul))) * range1(vl, 0.6, 2.3);
+  float head = (1.0 - smoothstep(hw - fw, hw + fw, abs(ul))) * rangeW(vl, 0.6, 2.3, fw);
   return clamp(shaft + head, 0.0, 1.0);
 }
 
@@ -93,7 +97,8 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
     float rp = rh21(cell + 3.7);
     if (rp > 0.86) {
       vec2 f = vec2(fract(pq.x / 2.9 + 17.0), fract(pq.y / 6.5));
-      float inP = range1(f.x, 0.08 + 0.1 * rh21(cell), 0.92 - 0.1 * rh21(cell + 1.3)) * range1(f.y, 0.1, 0.9 - 0.4 * rh21(cell + 2.1));
+      float fwx = fwidth(pq.x / 2.9) * 0.8 + 1e-4, fwy = fwidth(pq.y / 6.5) * 0.8 + 1e-4;
+      float inP = rangeW(f.x, 0.08 + 0.1 * rh21(cell), 0.92 - 0.1 * rh21(cell + 1.3), fwx) * rangeW(f.y, 0.1, 0.9 - 0.4 * rh21(cell + 2.1), fwy);
       c *= mix(1.0, rp > 0.95 ? 0.72 : 1.28, inP);
     }
     // tire tracks & oil drip lines on lane roads
@@ -116,11 +121,12 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
     // cracks
     float cr = abs(rnoise(wp * 0.7 + 11.0) - 0.5);
     float crw = fwidth(cr) + 0.004;
-    c *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, crw, cr - 0.006)) * distFade * step(0.55, rnoise(wp * 0.21));
+    c *= 1.0 - 0.2 * (1.0 - smoothstep(0.0, crw, cr - 0.004)) * distFade * step(0.68, rnoise(wp * 0.17 + 3.0));
 
     // ---------------------------------------------------------------- markings
     float white = 0.0, yellow = 0.0;
     float vloc = v - 16.0 * floor(v / 16.0);
+    float fwv = fwidth(v) * 0.8 + 1e-4;
     float aw = kind < 1.5 ? 3.6 : (kind < 2.5 ? 5.0 : (kind < 3.5 ? 6.8 : (kind < 4.5 ? 5.0 : 8.0)));
     float nearEnd = 0.0;
     if (feat > 0.5 && feat < 1.5) {
@@ -135,7 +141,7 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
         white += band(u, 0.0, 0.07) * dashes(v, 9.0, 0.4) * (1.0 - nearEnd);
         white += band(au, 4.62, 0.08);
         float vl = vloc - 8.0;
-        white += arrowMask(u - 2.4, vl) + arrowMask(u + 2.4, vl);
+        white += arrowMask(u - 2.4, vl, fwv) + arrowMask(u + 2.4, vl, fwv);
       } else if (kind > 2.5 && kind < 3.5) {
         yellow += band(au, 1.2, 0.075);
         white += band(au, 3.95, 0.07) * dashes(v, 9.0, 0.4) * (1.0 - nearEnd);
@@ -143,29 +149,32 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
       } else if (kind > 4.5) {
         yellow += band(au, 0.95, 0.085);
         white += band(au, 4.2, 0.08) * dashes(v, 12.0, 0.33);
-        white += band(au, 7.32, 0.09);
+        float rampSide = u > 0.0 ? mod(floor(wf / 4.0), 2.0) : mod(floor(wf / 8.0), 2.0);
+        if (rampSide > 0.5) white += band(au, 7.32, 0.16) * dashes(v, 4.0, 0.5);
+        else white += band(au, 7.32, 0.09);
       }
       // crosswalks + stop lines
       if (kind < 4.5 || (kind > 3.5 && kind < 4.5)) {
         float inW = 1.0 - smoothstep(aw - 0.5, aw - 0.3, au);
-        float zebra = range1(fract(u / 1.1 + 0.25), 0.0, 0.5) ;
-        float zfade = clamp(1.0 - fwidth(u / 1.1) * 4.0, 0.0, 1.0);
+        float zfw = fwidth(u / 1.1) * 0.8 + 1e-4;
+        float zebra = rangeW(fract(u / 1.1 + 0.25), 0.0, 0.5, zfw) + rangeW(fract(u / 1.1 + 0.25), 1.0, 1.5, zfw);
+        float zfade = clamp(1.0 - zfw * 5.0, 0.0, 1.0);
         zebra = mix(0.5, zebra, zfade);
         if (mod(wf, 2.0) > 0.5) {
-          white += range1(vloc, 0.6, 3.5) * zebra * inW;
-          if (kind > 3.5 && kind < 4.5) {} else white += range1(vloc, 3.9, 4.35) * range1(-u, 0.12, aw - 0.3);
+          white += rangeW(vloc, 0.6, 3.5, fwv) * zebra * inW;
+          if (kind > 3.5 && kind < 4.5) {} else white += rangeW(vloc, 3.9, 4.35, fwv) * range1(-u, 0.12, aw - 0.3);
         }
         if (mod(floor(wf / 2.0), 2.0) > 0.5) {
-          white += range1(16.0 - vloc, 0.6, 3.5) * zebra * inW;
-          if (kind > 3.5 && kind < 4.5) white += range1(16.0 - vloc, 3.9, 4.35) * inW;
-          else white += range1(16.0 - vloc, 3.9, 4.35) * range1(u, 0.12, aw - 0.3);
+          white += rangeW(16.0 - vloc, 0.6, 3.5, fwv) * zebra * inW;
+          if (kind > 3.5 && kind < 4.5) white += rangeW(16.0 - vloc, 3.9, 4.35, fwv) * inW;
+          else white += rangeW(16.0 - vloc, 3.9, 4.35, fwv) * range1(u, 0.12, aw - 0.3);
         }
       }
     } else if (feat > 2.5 && feat < 3.5) {
       // rail level crossing: stop lines both approaches, edge lines
-      white += range1(vloc, 3.0, 3.4) * range1(u, 0.1, aw - 0.3);
-      white += range1(16.0 - vloc, 3.0, 3.4) * range1(-u, 0.1, aw - 0.3);
-      yellow += band(u, 0.0, 0.075) * (1.0 - range1(vloc, 5.5, 10.5));
+      white += rangeW(vloc, 3.0, 3.4, fwv) * range1(u, 0.1, aw - 0.3);
+      white += rangeW(16.0 - vloc, 3.0, 3.4, fwv) * range1(-u, 0.1, aw - 0.3);
+      yellow += band(u, 0.0, 0.075) * (1.0 - rangeW(vloc, 5.5, 10.5, fwv));
     }
     float wear = 0.5 + 0.5 * smoothstep(0.2, 0.65, rnoise(wp * 1.7 + 5.0));
     white = clamp(white, 0.0, 1.0) * wear;
@@ -200,7 +209,7 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
       } else if (kind > 1.5 && kind < 2.5) {
         // road: square tree pits every 12 m
         float vp = fract((v + 3.0) / 12.0) * 12.0;
-        float pit = range1(au, aw + 0.6, aw + 1.8) * range1(vp, 0.0, 1.2);
+        float pit = range1(au, aw + 0.6, aw + 1.8) * rangeW(vp, 0.02, 1.2, fwidth(v) * 0.8 + 1e-4);
         c = mix(c, vec3(0.06, 0.045, 0.03) * (0.8 + 0.4 * rnoise(wp * 5.0)), pit);
       }
     }
@@ -241,10 +250,16 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
   } else if (mat < 8.5) {
     albedo = vec3(0.12, 0.09, 0.06) * (0.8 + 0.4 * rfbm(wp * 0.5)); rough = 1.0; metal = 0.0;
   } else if (mat < 9.5) {
-    // painted metal (buffer stops): red / white stripes
-    float s = step(0.5, fract((vWp.y + wp.x + wp.y) * 1.2));
-    albedo = mix(vec3(0.5, 0.04, 0.03), vec3(0.6), s * feat);
-    rough = 0.5; metal = 0.3;
+    if (feat > 1.5) {
+      // painted structural steel (bridge arches)
+      albedo = vec3(0.16, 0.28, 0.36) * (0.85 + 0.25 * rfbm(wp * 0.4 + vWp.y * 0.3));
+      rough = 0.45; metal = 0.55;
+    } else {
+      // painted metal (buffer stops): red / white stripes
+      float s = step(0.5, fract((vWp.y + wp.x + wp.y) * 1.2));
+      albedo = mix(vec3(0.5, 0.04, 0.03), vec3(0.6), s * feat);
+      rough = 0.5; metal = 0.3;
+    }
   } else if (mat < 10.5) {
     // crossing panels
     vec3 c = vec3(0.26, 0.255, 0.245) * (0.82 + 0.3 * rfbm(wp * 0.6));

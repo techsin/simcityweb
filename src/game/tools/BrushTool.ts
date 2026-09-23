@@ -28,10 +28,11 @@ export class BrushTool extends Tool {
 
   private apply(p: ToolPointer, previewOnly: boolean): ActionResult {
     const hit = p.hit!;
-    const cx = hit.point.x / CELL_SIZE, cz = hit.point.z / CELL_SIZE;
+    // brush is centered on the hovered cell (cx, cz are integer cell coords, like CityActions expects)
+    const cx = hit.x, cz = hit.z;
     const r = brush.radius;
     if (this.kind === 'trees') {
-      const rect = { x0: Math.floor(cx - r + 0.5), z0: Math.floor(cz - r + 0.5), x1: Math.floor(cx + r + 0.5), z1: Math.floor(cz + r + 0.5) };
+      const rect = { x0: cx - r + 1, z0: cz - r + 1, x1: cx + r, z1: cz + r };
       return safe(() => this.ctx.actions.plantTrees(rect, previewOnly), FAIL);
     }
     const k = this.kind;
@@ -43,7 +44,7 @@ export class BrushTool extends Tool {
       this.ctx.world.setBrush(null, 0);
       return;
     }
-    this.ctx.world.setBrush({ x: p.hit.point.x, z: p.hit.point.z }, brush.radius);
+    this.ctx.world.setBrush({ x: (p.hit.x + 0.5) * CELL_SIZE, z: (p.hit.z + 0.5) * CELL_SIZE }, brush.radius);
   }
 
   override move(p: ToolPointer): void {

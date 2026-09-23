@@ -10,7 +10,7 @@ import type { Building } from '../CityState';
 import { BF } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
 import { blur3 } from './blur';
-import { Fam, infoOf, nowMs, readEffects, setFlagQuiet, wealthOf } from './common';
+import { Fam, infoOf, nowMs, readEffects, setFlagQuiet, wealthOf, buildingList } from './common';
 import { CRIME_THRESHOLD } from './params';
 
 export const CRIME_PERIOD = 8;
@@ -66,7 +66,8 @@ export class CrimeSystem implements SimSystem {
     let lvKnown = false;
     for (let i = 0; i < C; i += 97) if (st.landValue[i] > 0) { lvKnown = true; break; }
     const police = st.policeCov, lv = st.landValue;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       if (b.built < 1 && (b.flags & BF.Abandoned) === 0) continue;
       const inf = infoOf(st, b);
       const area = b.w * b.d;
@@ -100,7 +101,8 @@ export class CrimeSystem implements SimSystem {
     // flags & stats
     const changed: Building[] = [];
     let sum = 0, w = 0;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const ci = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
       const c = L[ci];
       const inf = infoOf(st, b);

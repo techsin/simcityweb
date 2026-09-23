@@ -108,7 +108,7 @@ const tView = performance.now() - t1;
 (window as any).__city = { view, st, world, events };
 
 if (P.get('underground') === '1') view.setUnderground(true);
-if (P.get('overlay') === '1') view.setOverlayMode(Overlay.Traffic);
+if (P.get('overlay') === '1') { view.setOverlayMode(Overlay.Traffic); (window as any).__worldView?.setOverlay(Overlay.Traffic); }
 if (P.get('ghost')) {
   const [id, rest] = P.get('ghost')!.split('@');
   const [gx, gz, gr, gok] = (rest ?? '40,40,0,1').split(',').map(Number);
@@ -231,5 +231,5 @@ let ug = P.get('underground') === '1', ov = P.get('overlay') === '1';
 window.addEventListener('keydown', (e) => {
   if (e.key === 'n' || e.key === 'N') { hour = hour > 6 && hour < 19 ? 22 : 13; world.setHour(hour); }
   if (e.key === 'u' || e.key === 'U') { ug = !ug; view.setUnderground(ug); }
-  if (e.key === 'o' || e.key === 'O') { ov = !ov; view.setOverlayMode(ov ? Overlay.Traffic : Overlay.None); }
+  if (e.key === 'o' || e.key === 'O') { ov = !ov; view.setOverlayMode(ov ? Overlay.Traffic : Overlay.None); (window as any).__worldView?.setOverlay(ov ? Overlay.Traffic : Overlay.None); }
 });

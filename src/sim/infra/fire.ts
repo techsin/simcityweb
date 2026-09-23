@@ -13,7 +13,7 @@
 import { BF, type Building } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
 import { RNG } from '../../core/rng';
-import { Fam, centerCell, infoOf, readEffects } from './common';
+import { Fam, centerCell, infoOf, readEffects, buildingList } from './common';
 import { FIRE_BASE_P, FIRE_BURN_DAYS, FIRE_SPREAD_P } from './params';
 import type { TrafficSystem } from './traffic';
 
@@ -48,7 +48,7 @@ export class FireSystem implements SimSystem {
       }
     }
     // buildings flagged OnFire without state (e.g. set by others) join the simulation
-    for (const b of st.buildings.values()) if (b.flags & BF.OnFire && !this.fires.has(b.id)) this.fires.set(b.id, { days: 0, putOut: -1 });
+    for (const b of buildingList(st)) if (b.flags & BF.OnFire && !this.fires.has(b.id)) this.fires.set(b.id, { days: 0, putOut: -1 });
   }
 
   monthly(): void {
@@ -64,7 +64,8 @@ export class FireSystem implements SimSystem {
     this.fireEffect = fx.fireEffect;
     const base = FIRE_BASE_P * fx.fireRisk * this.riskBoost;
     const fc = st.fireCov;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       if (b.flags & (BF.OnFire | BF.Burnt)) continue;
       if (b.built < 0.3) continue;
       const inf = infoOf(st, b);
@@ -157,7 +158,8 @@ export class FireSystem implements SimSystem {
     const st = sim.state;
     let best: Building | undefined;
     let bd = Infinity;
-    for (const s of st.buildings.values()) {
+    for (let sI = 0, sL = buildingList(st); sI < sL.length; sI++) {
+      const s = sL[sI];
       const inf = infoOf(st, s);
       if (inf.cov !== 1 || s.built < 1 || s.flags & BF.Burnt) continue;
       const d = Math.abs(s.x - b.x) + Math.abs(s.z - b.z);

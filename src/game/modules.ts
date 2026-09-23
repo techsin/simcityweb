@@ -17,8 +17,18 @@ const LAZY = import.meta.glob([
   '../sim/economy/rewards.ts',
   '../sim/economy/ordinances.ts',
   '../sim/infra/disasters.ts',
+  '../sim/economy/loans.ts',
   '../audio/*.ts',
 ]);
+
+export interface LoanOfferInfo {
+  ok: boolean;
+  reason?: string;
+  rate: number;
+  monthlyPayment: number;
+  termMonths: number;
+  maxAmount: number;
+}
 
 export type WorldViewCtor = new (canvas: HTMLCanvasElement, state: CityState, events: Emitter<CityEvents>, opts: { quality: QualityLevel }) => WorldViewApi;
 export type CityObjectsViewCtor = new (
@@ -68,6 +78,8 @@ export interface GameModules {
   listOrdinances?: (state: CityState) => OrdinanceInfo[];
   triggerDisaster?: (sim: Simulation, kind: string, x: number, z: number) => unknown;
   disasterKinds?: { id: string; name: string }[];
+  /** bank terms for borrowing `amount` now (sim-core economy/loans.ts) */
+  loanOffer?: (state: CityState, amount: number) => LoanOfferInfo;
   audio?: AudioLike;
   /** module-load problems, for the dev console / error overlay */
   errors: string[];
@@ -212,6 +224,8 @@ export async function loadGameModules(): Promise<GameModules> {
       out.disasterKinds = Object.entries(kinds as Record<string, any>).map(([id, v]) => ({ id, name: str(v?.name ?? v?.label, id.replace(/^\w/, (c) => c.toUpperCase())) }));
     } else out.disasterKinds = DEFAULT_DISASTERS;
   }
+  const lo = await load('../sim/economy/loans.ts', errors);
+  if (lo && typeof lo.loanOffer === 'function') out.loanOffer = lo.loanOffer as GameModules['loanOffer'];
   // audio: prefer index.ts
   const audioPaths = Object.keys(LAZY).filter((p) => p.startsWith('../audio/')).sort((a, b) => (a.endsWith('/index.ts') ? -1 : b.endsWith('/index.ts') ? 1 : a.localeCompare(b)));
   const audioMods: Record<string, unknown>[] = [];

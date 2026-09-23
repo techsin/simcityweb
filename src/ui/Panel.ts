@@ -10,6 +10,8 @@ export abstract class Panel {
   abstract readonly title: string;
   icon = 'info';
   width = 420;
+  /** centered panels may be taller (they don't collide with the minimap) */
+  center = false;
   el!: HTMLDivElement;
   body!: HTMLDivElement;
   headExtra!: HTMLDivElement;
@@ -28,7 +30,7 @@ export abstract class Panel {
     });
     const head = h('div', { class: 'panel-head' }, h('span', { class: 'ph-ico ico-wrap', html: icon(this.icon, 18) }), this.titleEl, this.headExtra, close);
     this.body = h('div', { class: 'panel-body' });
-    this.el = h('div', { class: 'panel mp-glass i', style: { width: this.width + 'px' } }, head, this.body);
+    this.el = h('div', { class: 'panel mp-glass i' + (this.center ? ' center' : ''), style: { width: this.width + 'px' } }, head, this.body);
     this.el.addEventListener('pointerdown', onFocus);
     // drag
     head.addEventListener('pointerdown', (e) => {
@@ -106,7 +108,7 @@ export class PanelManager implements PanelsApi {
     p.el.classList.remove('closing');
     this.layer.appendChild(p.el);
     const saved = loadPref<{ x: number; y: number } | null>('panel.' + id, null);
-    const pos = saved ?? p.defaultPos(this.layer.clientWidth, this.layer.clientHeight);
+    const pos = saved ?? this.freeSpot(p);
     p.setPos(pos.x, pos.y);
     this.focus(id);
     try {
@@ -117,6 +119,28 @@ export class PanelManager implements PanelsApi {
     }
     this.ctx.sound('open');
     this.ctx.ui.emit('panel', { id, open: true });
+  }
+
+  /** default position, shifted left (or down) so it doesn't cover already-open panels */
+  private freeSpot(p: Panel): { x: number; y: number } {
+    const W = this.layer.clientWidth, H = this.layer.clientHeight;
+    let { x, y } = p.defaultPos(W, H);
+    const w = p.width, h = Math.min(p.el.offsetHeight || 400, H - 180);
+    const others = this.order.map((id) => this.panels.get(id)!).filter((o) => o && o !== p && o.isOpen);
+    for (let guard = 0; guard < 8; guard++) {
+      const hit = others.find((o) => {
+        const ox = o.el.offsetLeft, oy = o.el.offsetTop, ow = o.el.offsetWidth, oh = o.el.offsetHeight;
+        return x < ox + ow - 40 && x + w > ox + 40 && y < oy + oh - 40 && y + h > oy + 40;
+      });
+      if (!hit) break;
+      const left = hit.el.offsetLeft - w - 12;
+      if (left >= 12) x = left;
+      else {
+        x = Math.min(W - w - 14, x + 28);
+        y += 28;
+      }
+    }
+    return { x, y };
   }
 
   close(id: string): void {

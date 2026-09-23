@@ -98,7 +98,7 @@ describe('services', () => {
     expect(across).toBe(0);
     st.budget.funding.police = 50;
     s.compute(sim, false);
-    expect(st.policeCov[st.idx(21, 21)]).toBeCloseTo(near * 0.5, 1);
+    expect(st.policeCov[st.idx(21, 21)]).toBeCloseTo(near * Math.pow(0.5, 0.7), 1); // sim-core curve: funding^0.7
     // bridge the river -> coverage crosses
     roadLine(st, 29, 20, 33, 20, Network.Road);
     st.budget.funding.police = 100;

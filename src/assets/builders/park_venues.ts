@@ -27,7 +27,7 @@ function parkStadium(b: ModelBuilder, _v: number, rng: RNG): void {
   for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
     b.paint(GRASS_LUSH, Surf.Foliage);
     flatPoly(b, [[sx * 47.5, sz * 47.5], [sx * 33, sz * 47.5], [sx * 47.5, sz * 33]], 0.1);
-    for (let k = 0; k < 3; k++) tree(b, rng, sx * (44.5 - k * 3.2), sz * (41.2 + k * 1.6 - k * 0.2) + (k === 0 ? sz * 3 : 0), 0.9, 'round');
+    for (let k = 0; k < 2; k++) tree(b, rng, sx * (44.5 - k * 4.2), sz * (43.5 + k * 1.2), 0.9, 'round');
   }
   // --- pitch (glows under the floodlights at night)
   const PW = 50, PD = 32;
@@ -64,7 +64,9 @@ function parkStadium(b: ModelBuilder, _v: number, rng: RNG): void {
     [16, 0.05, concourse], [16, 5.5, facade], [16, 18, rim], [15.3, 18.6, rim], [14.6, 18, seatsUp], [7.2, 10.6, boxes], [7.2, 9.3, soffit], [8.2, 9.3, soffit],
     [8.2, 7.0, seatsLo], [1.4, 1.5, walk], [0.5, 1.5, ads], [0.5, 0.05],
   ];
-  loftRing(b, inner, prof, 30);
+  // seat blocks: alternate two blues by sector
+  const aisle: Paint = { color: 0x24508f, surf: Surf.RoofTiles };
+  loftRing(b, inner, prof, 30, (i, k) => ((k === 4 || k === 8) && i % 4 < 2 ? aisle : null));
   // facade: vertical white fins every other path point + entrance portals at the four axes
   b.paint(0xf6f5f1, Surf.Metal);
   const outer = offsetPoly(inner, 16.25);
@@ -74,19 +76,19 @@ function parkStadium(b: ModelBuilder, _v: number, rng: RNG): void {
   }
   // --- roof canopy ring with emissive floodlight edge
   const canopy: ProfPt[] = [
-    [17.2, 23.2, { color: 0xf1f0ec, surf: Surf.Metal }], [17.2, 24.2, { color: 0xf4f4f2, surf: Surf.Metal }], [6.2, 26.6, { color: 0xfafaff, surf: Surf.Emissive }],
-    [6.2, 25.9, { color: 0x6b7077, surf: Surf.Metal }], [17.2, 23.2],
+    [17.2, 23.2, { color: 0xf1f0ec, surf: Surf.Metal }], [17.2, 24.2, { color: 0xf4f4f2, surf: Surf.Metal }], [8.8, 26.1, { color: 0xfafaff, surf: Surf.Emissive }],
+    [8.8, 25.4, { color: 0x6b7077, surf: Surf.Metal }], [17.2, 23.2],
   ];
   loftRing(b, inner, canopy, 20);
   // canopy columns + radial trusses
   const colPts = offsetPoly(inner, 16.6);
-  const trussIn = offsetPoly(inner, 7.0);
+  const trussIn = offsetPoly(inner, 9.4);
   b.paint(0xdcdcd8, Surf.Metal);
   for (let i = 1; i < colPts.length; i += 3) {
     const [x, z] = colPts[i];
     b.beam([x, 18, z], [x, 23.5, z], 0.5);
     const [ix, iz] = trussIn[i];
-    b.beam([x, 24.3, z], [ix, 26.7, iz], 0.3);
+    b.beam([x, 24.3, z], [ix, 26.2, iz], 0.3);
   }
   // big screens above the ends
   for (const s of [-1, 1]) {
@@ -113,7 +115,7 @@ function parkStadium(b: ModelBuilder, _v: number, rng: RNG): void {
     b.paint([0x2c5fa8, 0xffffff, 0xc0392b][i % 3], Surf.Plain).quad2([x, 9.9, 45.5], [x + 2.4, 9.9, 45.5], [x + 2.4, 8.4, 45.5], [x, 8.4, 45.5]);
   }
   for (const x of [-38, -20, 20, 38]) lamp(b, x, 44.5, 5.5, 2);
-  for (let i = 0; i < 10; i++) person(b, rng, rng.range(-20, 20), rng.range(41, 46), 0.08, rng.range(0, TAU));
+  for (let i = 0; i < 4; i++) person(b, rng, rng.range(-20, 20), rng.range(41, 46), 0.08, rng.range(0, TAU));
 }
 
 // ================================================================================================ AMUSEMENT PARK
@@ -192,6 +194,8 @@ function parkAmusement(b: ModelBuilder, _v: number, rng: RNG): void {
   ferrisWheel(b, -27, -30, 19, 23, 12, rng);
   b.paint(0x8e8b84, Surf.Pavement).slab(-37, -36, -17, -24, 0.12);
 
+  // lake under the coaster
+  pond(b, rng, 22, -22, 9, 6.5, { n: 14, rimSides: false, rimW: 0.7, water: 0x3a7f98 });
   // --- roller coaster (right half): spline through 3D control points (x, z, y)
   const C: [number, number, number][] = [
     [8, 14, 1.6], [18, 14, 1.6], [28, 14, 1.8], [37, 11, 3], [42, 3, 6], [43, -8, 12.5], [43, -19, 19.5], [42.5, -28, 25], [39, -36, 26], [32, -41, 20],
@@ -294,8 +298,8 @@ function parkAmusement(b: ModelBuilder, _v: number, rng: RNG): void {
   }
   for (const [x, z, c] of [[-5, -12, 0xe74c3c], [9, 18, 0x2e86c1], [-9, 18, 0x27ae60]] as [number, number, number][]) umbrella(b, x, z, c, 1.5, 2.6);
   // trees + lamps
-  for (const [x, z, k] of [[-46, 44, 'round'], [-46, 34, 'oak'], [46, 22, 'round'], [-46, -44, 'oak'], [-4, 22, 'cherry'], [-24, 44, 'round']] as [number, number, 'oak'][]) tree(b, rng, x, z, 1.0, k);
-  for (const [x, z] of [[-4, 26], [4, 26], [11, -2], [-11, 9]] as P2[]) lamp(b, x, z, 4.4, 1);
+  for (const [x, z, k] of [[-46, 44, 'round'], [-46, 34, 'oak'], [46, 22, 'cone'], [-46, -44, 'oak']] as [number, number, 'oak'][]) tree(b, rng, x, z, 1.0, k);
+  for (const [x, z] of [[-4, 26], [4, 26], [11, -2]] as P2[]) lamp(b, x, z, 4.4, 1);
 }
 
 /** Closed Catmull-Rom spline in 3D. */
@@ -489,6 +493,8 @@ function parkZoo(b: ModelBuilder, _v: number, rng: RNG): void {
     const [x, z] = loop[i % loop.length];
     lamp(b, x + 2.6, z, 4.2, 1);
   }
+  // shrubs softening the paths between the enclosures
+  for (const [x, z, r] of [[-6, 22, 1.2], [6, 22, 1.1], [-7, -30, 1.2], [7, -30, 1.3], [-33, 0, 1.1]] as V3[]) shrub(b, rng, x, z, r);
   for (let i = 0; i < 4; i++) {
     const p = loop[rng.int(0, loop.length - 1)];
     person(b, rng, p[0] + rng.range(-1, 1), p[1] + rng.range(-1, 1), 0.09, rng.range(0, TAU));

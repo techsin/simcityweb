@@ -30,6 +30,7 @@ import type { SimSystem, Simulation } from '../Simulation';
 import {
   Fam, Transit, activeJobs, centerCell, detectJobsUnknown, ensureIdFloat, infoOf, isFunctional, jobSlots, nowMs,
   readEffects, setFlagQuiet, wealthOf, type OrdEffects,
+  buildingList,
 } from './common';
 import { GridGraph, RoadGraph, findNeighborConnections, perimeterNodes, type NeighborConn } from './graph';
 import { MinHeap } from './heap';
@@ -44,6 +45,9 @@ import {
 } from './params';
 import { Search, Seeds, accumulate, roadSearch, transitSearch, type TransitNet } from './search';
 import { collectStops, type StopList } from './transit';
+
+/** netFlags bit 5: rail level crossing on a road cell (see src/sim/actions.ts NET_CROSSING) */
+const NETFLAG_CROSSING = 1 << 5;
 
 export type RouteKind = 'car' | 'bus' | 'truck' | 'train' | 'service';
 export interface SampleRoute {
@@ -448,8 +452,9 @@ export class TrafficSystem implements SimSystem {
 
   private rebuildGraphs(st: CityState): void {
     this.road.build(st);
-    const net = st.network;
-    this.rail.build(st.size, (i) => net[i] === Network.Rail);
+    const net = st.network, flags = st.netFlags;
+    // level crossings keep their road type with netFlags bit 5 set; the rail passes through them
+    this.rail.build(st.size, (i) => net[i] === Network.Rail || (flags[i] & NETFLAG_CROSSING) !== 0);
     const sub = st.subway;
     this.subway.build(st.size, (i) => sub[i] !== 0);
     this.graphDirty = false;
@@ -523,7 +528,8 @@ export class TrafficSystem implements SimSystem {
     this.kLabel = growF32(this.kLabel, cap + conns.length);
     const nodeOfCell = g.nodeOfCell;
     const jobsUnknown = this.jobsUnknown;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       const inf = infoOf(st, b);
       if (inf.fam === Fam.R) {
         if (b.pop <= 0 || (b.flags & BF.Burnt) !== 0) continue;
@@ -1308,7 +1314,8 @@ export class TrafficSystem implements SimSystem {
     for (const c of this.conns) if (c.type === Network.Rail) { const rn = rail.nodeOfCell[c.cell]; if (rn >= 0) targets.add(rn); }
     const tmp = new Int32Array(4);
     let count = 0;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       if (count >= 4) break;
       const inf = infoOf(st, b);
       if (inf.transit !== Transit.Freight && inf.transit !== Transit.Train) continue;
@@ -1358,7 +1365,8 @@ export class TrafficSystem implements SimSystem {
     if (g.n === 0) return;
     const tmp = new Int32Array(4);
     let count = 0;
-    for (const b of st.buildings.values()) {
+    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+      const b = bL[bI];
       if (count >= 10) break;
       const inf = infoOf(st, b);
       const isService = inf.cov === 0 /* police */ || inf.garbageCap > 0 || inf.cov === 2 /* health */;

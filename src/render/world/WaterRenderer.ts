@@ -13,7 +13,7 @@ import type { Climate } from '../../core/types';
 import { getNoiseTexture, getWaveNormalTexture } from './textures';
 
 const OUTER = 32000;
-const OUTER_RES = 512;
+const OUTER_RES = 320;
 /** extent (m) of the coarse outer height texture around the map (beyond: clamped) */
 const OUTER_TEX = 12000;
 
@@ -211,10 +211,13 @@ export class WaterRenderer {
   updateOuter(worldHeight: (x: number, z: number) => number) {
     const W = this.N * CELL_SIZE;
     const size = W + 2 * OUTER_TEX;
+    const texel = size / OUTER_RES;
     for (let j = 0; j < OUTER_RES; j++)
       for (let i = 0; i < OUTER_RES; i++) {
         const x = -OUTER_TEX + ((i + 0.5) / OUTER_RES) * size;
         const z = -OUTER_TEX + ((j + 0.5) / OUTER_RES) * size;
+        // texels well inside the map are never sampled (the fine height texture is used there)
+        if (x > texel * 2 && z > texel * 2 && x < W - texel * 2 && z < W - texel * 2) continue;
         this.outerData[j * OUTER_RES + i] = THREE.DataUtils.toHalfFloat(worldHeight(x, z));
       }
     this.outerTex.needsUpdate = true;

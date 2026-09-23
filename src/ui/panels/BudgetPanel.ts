@@ -47,7 +47,8 @@ export class BudgetPanel extends Panel {
   readonly id = 'budget';
   readonly title = 'Budget';
   override icon = 'budget';
-  override width = 720;
+  override width = 860;
+  override center = true;
   private tab: 'taxes' | 'services' | 'ledger' | 'loans' = 'taxes';
   private tabBtns: Record<string, HTMLButtonElement> = {};
   private content!: HTMLDivElement;
@@ -124,7 +125,7 @@ export class BudgetPanel extends Panel {
 
   private renderTaxes(): void {
     const b = this.ctx.state.budget;
-    const cols = h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:6px 24px' });
+    const cols = h('div', { class: 'tax-cols' });
     TAX_GROUPS.forEach((g) => {
       const box = h('div', { class: 'tax-group' });
       const avg = () => Math.round(g.devs.reduce((s, d) => s + b.taxRates[d], 0) / g.devs.length);
@@ -154,8 +155,7 @@ export class BudgetPanel extends Panel {
         this.taxSliders.set(d, { s, v, m });
         box.appendChild(h('div', { class: 'tax-row', title: `Last month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, v, m));
       }
-      if (g.label === 'Industrial') cols.appendChild(box);
-      else cols.appendChild(box);
+      cols.appendChild(box);
     });
     const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + '<span>Taxes above ~12% slow growth and hurt approval; below ~7% attract newcomers but strain the budget.</span>' });
     this.content.append(cols, hint);
@@ -251,9 +251,32 @@ export class BudgetPanel extends Panel {
     });
     this.content.appendChild(h('div', { class: 'sec-title' }, 'Take a loan'));
     const acts = h('div', { class: 'loan-actions' });
-    const base = Math.max(10000, Math.round(this.ctx.state.stats.population * 5 / 10000) * 10000);
-    for (const amt of [base, base * 2.5, base * 5, base * 10]) {
-      const bt = h('button', { class: 'btn', html: icon('plus', 14) + `<span>${money(amt)}</span>` });
+    const offerF = this.ctx.mods.loanOffer;
+    let amounts: number[];
+    let terms: HTMLElement | null = null;
+    const offer = (amt: number) => {
+      try {
+        return offerF?.(this.ctx.state, amt) ?? null;
+      } catch {
+        return null;
+      }
+    };
+    const probe = offer(10000);
+    if (probe) {
+      const mx = probe.maxAmount;
+      const round = (v: number) => Math.max(1000, Math.floor(v / 5000) * 5000 || Math.floor(v / 1000) * 1000);
+      amounts = mx > 0 ? [...new Set([round(mx * 0.1), round(mx * 0.25), round(mx * 0.5), Math.floor(mx / 1000) * 1000])].filter((v) => v > 0 && v <= mx) : [];
+      terms = h('div', { class: 'dim', style: 'font-size:12px;margin-bottom:8px' },
+        mx > 0 ? `The bank will lend up to ${money(mx)} at ${(probe.rate * 100).toFixed(1)}% over ${Math.round(probe.termMonths / 12)} years.` : probe.reason ?? 'The bank will not lend more right now.');
+    } else {
+      const base = Math.max(10000, Math.round((this.ctx.state.stats.population * 5) / 10000) * 10000);
+      amounts = [base, base * 2.5, base * 5, base * 10];
+    }
+    if (terms) this.content.appendChild(terms);
+    for (const amt of amounts) {
+      const o = offer(amt);
+      const bt = h('button', { class: 'btn', title: o ? `${money(o.monthlyPayment)}/mo for ${o.termMonths} months` : '', html: icon('plus', 14) + `<span>${money(amt)}</span>` + (o ? `<span class="dim" style="font-weight:500">· ${money(o.monthlyPayment)}/mo</span>` : '') });
+      if (o && !o.ok) bt.setAttribute('disabled', '');
       bt.addEventListener('click', () => {
         const r = this.safeAct(() => this.ctx.actions.takeLoan(amt));
         if (r && !r.ok) this.ctx.toast(r.reason ?? 'The bank declined the loan', 'error');

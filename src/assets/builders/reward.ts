@@ -10,7 +10,7 @@ import { Surf } from '../../core/types';
 import {
   CIV, FLAGS, pnt, flat, stripe, disc, annulus, vrect, triH, quadH, vault, helipad, flag, wallSign, meshFence, tree, palm, conifer,
   lamp, miniCar, parking, cruiser, bus, jet, helicopter, guardTower, dish, radarBar, tank, antennaMast, planter, benchAt, CAR_COLS,
-  colonnade, type V3,
+  colonnade, glyphBars, CAR_GLASS, type V3,
 } from './civ_kit';
 
 // ------------------------------------------------------------------------------------------------ local helpers
@@ -27,6 +27,29 @@ function perimeter(b: ModelBuilder, x0: number, z0: number, x1: number, z1: numb
     run(x0, z1, gap[0], z1);
     run(gap[1], z1, x1, z1);
   } else run(x0, z1, x1, z1);
+}
+/**
+ * Band polygon between two concentric arcs (outer radius r0, inner radius r1) for angles a0..a1.
+ * pt(a, r) maps an angle/radius to plan (x, z). Used to build offset rings that follow curved facades exactly.
+ */
+function arcBand(pt: (a: number, r: number) => [number, number], r0: number, r1: number, a0: number, a1: number, n: number): [number, number][] {
+  const out: [number, number][] = [], inn: [number, number][] = [];
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + ((a1 - a0) * i) / n;
+    out.push(pt(a, r0));
+    inn.push(pt(a, r1));
+  }
+  return [...out, ...inn.reverse()];
+}
+/** Pool recessed in a deck: water surface below the coping ring. */
+function poolDeck(b: ModelBuilder, cx: number, cz: number, w: number, d: number, rim: number, y: number, deck: ColorLike = 0xe8dcc0) {
+  b.paint(0x3fb0d8, Surf.Water).boxC(cx, cz, w, d, y, 0.2, { bottom: null, pz: null, nz: null, px: null, nx: null });
+  b.paint(deck, Surf.Pavement);
+  const X0 = cx - w / 2, X1 = cx + w / 2, Z0 = cz - d / 2, Z1 = cz + d / 2, t = 0.32;
+  b.box(X0 - rim, y, Z1, X1 + rim, y + t, Z1 + rim, { bottom: null });
+  b.box(X0 - rim, y, Z0 - rim, X1 + rim, y + t, Z0, { bottom: null });
+  b.box(X0 - rim, y, Z0, X0, y + t, Z1, { bottom: null, pz: null, nz: null });
+  b.box(X1, y, Z0, X1 + rim, y + t, Z1, { bottom: null, pz: null, nz: null });
 }
 /** Irregular blob polygon (x,z) around a center */
 function blobPoly(rng: RNG, cx: number, cz: number, rx: number, rz: number, n = 9, jitter = 0.3): [number, number][] {
@@ -83,7 +106,7 @@ function barrel(b: ModelBuilder, x: number, z: number, color: ColorLike, tipped 
 function armyTruck(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike = 0x5a6040) {
   b.push().translate(x, 0.08, z).rotateY(rot);
   b.paint(color, Surf.Metal).box(-1.2, 0.5, 1.2, 1.2, 2.5, 3.2);
-  b.paint(0x1c2228, Surf.GlassPlain);
+  b.paint(CAR_GLASS, Surf.Metal);
   vrect(b, -1.0, 1.6, 1.0, 2.3, 3.22);
   b.paint(0x6b7050, Surf.Plain).box(-1.25, 0.6, -3.6, 1.25, 3.0, 1.1);
   b.paint(0x151515, Surf.Plain).box(-1.15, 0, -3.0, 1.15, 0.6, 2.6, { top: null, pz: null, nz: null });
@@ -93,7 +116,7 @@ function armyTruck(b: ModelBuilder, x: number, z: number, rot: number, color: Co
 function jeep(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike = 0x6b6e4a) {
   b.push().translate(x, 0.08, z).rotateY(rot);
   b.paint(color, Surf.Metal).box(-1.1, 0.35, -2.3, 1.1, 1.3, 2.3);
-  b.paint(0x1c2228, Surf.GlassPlain).box(-1.0, 1.3, -1.2, 1.0, 1.85, 0.8, { top: pnt(color, Surf.Metal) });
+  b.paint(CAR_GLASS, Surf.Metal).box(-1.0, 1.3, -1.2, 1.0, 1.85, 0.8, { top: pnt(color, Surf.Metal) });
   b.pop();
 }
 /** Hangar: walls + barrel roof (ridge along Z), door on -Z end (faces the apron). */
@@ -121,7 +144,7 @@ function militaryBase(b: ModelBuilder, _v: number, rng: RNG) {
   const rz0 = -57, rz1 = -41, rx0 = -62, rx1 = 62;
   slabC(b, rx0, rz0, rx1, rz1, 0x2e2f32, Surf.Pavement, 0.1);
   b.paint(0xf2f2f2, Surf.Plain);
-  const rc = (rz0 + rz1) / 2, yM = 0.11;
+  const rc = (rz0 + rz1) / 2, yM = 0.13;
   flat(b, rx0 + 1, rz0 + 0.6, rx1 - 1, rz0 + 0.9, yM);
   flat(b, rx0 + 1, rz1 - 0.9, rx1 - 1, rz1 - 0.6, yM);
   for (let x = rx0 + 20; x < rx1 - 20; x += 9) flat(b, x, rc - 0.3, x + 5, rc + 0.3, yM);
@@ -141,13 +164,20 @@ function militaryBase(b: ModelBuilder, _v: number, rng: RNG) {
   slabC(b, -58, -41, -52, -33, 0x3a3b3e, Surf.Pavement, 0.09);
   slabC(b, 30, -41, 36, -33, 0x3a3b3e, Surf.Pavement, 0.09);
   b.paint(0xf2c21a, Surf.Plain);
-  flat(b, -55, -35.6, 33, -35.4, 0.1);
+  flat(b, -55, -35.6, 33, -35.4, 0.12);
   slabC(b, -60, -33, 22, -15, 0xa6a499, Surf.Pavement, 0.09);
   // jets on the apron (nose toward the runway = -Z)
   const jets: [number, number][] = [[-50, -24], [-38, -24], [-26, -24], [-14, -24], [2, -26]];
   jets.forEach(([x, z], i) => jet(b, x, z, Math.PI + (i === 4 ? 0.5 : 0), i === 4 ? 0x7a8288 : CIV.jetGrey, 0.09));
   b.paint(0xf2c21a, Surf.Plain);
-  for (const [x, z] of jets.slice(0, 4)) flat(b, x - 0.15, z - 10, x + 0.15, z + 8, 0.1);
+  for (const [x, z] of jets.slice(0, 4)) flat(b, x - 0.15, z - 10, x + 0.15, z + 8, 0.12);
+  // runway edge lights
+  b.paint(0xffe6a0, Surf.Emissive);
+  for (let i = 0; i < 12; i++) {
+    const x = rx0 + 4 + i * ((rx1 - rx0 - 8) / 11);
+    flat(b, x - 0.35, rz0 + 0.1, x + 0.35, rz0 + 0.45, 0.14);
+    flat(b, x - 0.35, rz1 - 0.45, x + 0.35, rz1 - 0.1, 0.14);
+  }
   // hangars (doors face the apron)
   hangar(b, -48, -5, 17, 19, 3.5, 8, 0x6b7254, false);
   hangar(b, -28, -5, 17, 19, 3.5, 8, 0x6b7254, true);
@@ -189,13 +219,13 @@ function militaryBase(b: ModelBuilder, _v: number, rng: RNG) {
   vrect(b, -8.5, 0, -5.5, 3.2, 30.05);
   slabC(b, -22, 34, 8, 50, 0xb9b2a0, Surf.Pavement, 0.09);
   b.paint(0xf2f2f2, Surf.Plain);
-  annulus(b, -7, 42, 4.0, 4.4, 12, 0.1);
+  annulus(b, -7, 42, 4.0, 4.4, 12, 0.12);
   flag(b, -7, 42, 12, FLAGS.nation, 0, 1.2);
   flag(b, -16, 36, 9, FLAGS.military);
   flag(b, 2, 36, 9, FLAGS.military);
   // gate: road from front edge, guard booth + barrier
   slabC(b, 12, -15, 18, 64, 0x3a3b3e, Surf.Pavement, 0.09);
-  slabC(b, -22, 50, 18, 54, 0x3a3b3e, Surf.Pavement, 0.09);
+  slabC(b, -22, 50, 12, 54, 0x3a3b3e, Surf.Pavement, 0.09);
   b.paint(0xcfc6ae, Surf.Plain).boxC(20.5, 58, 3, 3, 0, 3.0, { top: pnt(0x5d6446) });
   b.paint(0x2a3440, Surf.GlassPlain).boxC(20.5, 58, 3.1, 2.4, 1.1, 1.4, { top: null });
   hazardRect(b, 12.2, 1.0, 18, 1.3, 57, 6);
@@ -214,18 +244,18 @@ function militaryBase(b: ModelBuilder, _v: number, rng: RNG) {
   helicopter(b, -46, 0.2, 55, 0.8, 0x4f5638);
   // perimeter + a few trees
   perimeter(b, -63, -63, 63, 63, 2.8, [11.5, 18.5], 21);
-  for (const x of [-58, -30, 28, 42, 58]) tree(b, rng, x, 60.5, 1.1);
+  for (const x of [-58, 28, 58]) tree(b, rng, x, 60.5, 1.1);
 }
 
 // ================================================================================================= CASINO
 function casino(b: ModelBuilder, _v: number, rng: RNG) {
   const s = 24;
   slabC(b, -s, -s, s, s, 0xd9d2c3, Surf.Pavement, 0.1);
-  const gold = 0xd9a93a, magenta = 0xff2fa8, cream = 0xefe3c4;
+  const gold = 0xd9a93a, magenta = 0xd0107a, cream = 0xefe3c4, goldGlow = 0xb88a2a;
   // podium (casino floor) with gold glass front + neon bands
   b.paint(cream, Surf.Plain).box(-22.5, 0, -23, 22.5, 9, 2, { top: pnt(0x9a9084, Surf.RoofFlat) });
   b.paint(0x8a6a2a, Surf.GlassCurtain, 2, 4.5).box(-18, 0.1, 2, 18, 8, 2.1, { top: null });
-  b.paint(magenta, Surf.Emissive).box(-22.7, 8.1, -23.2, 22.7, 8.5, 2.2, { top: null, bottom: null });
+  b.paint(magenta, Surf.Emissive).box(-22.7, 8.0, -23.2, 22.7, 8.6, 2.2, { top: null, bottom: null });
   b.paint(gold, Surf.Emissive).box(-22.7, 9.0, -23.2, 22.7, 9.35, 2.2, { top: null, bottom: null });
   b.paint(gold, Surf.Emissive);
   for (let x = -21; x <= 21; x += 3) b.boxC(x, 2.25, 0.25, 0.25, 7.2, 0.25);
@@ -240,33 +270,36 @@ function casino(b: ModelBuilder, _v: number, rng: RNG) {
   const crescent = [...outer, ...inner.slice().reverse()];
   const TH = 46;
   b.paint(0xc89a3a, Surf.GlassCurtain, 2, 3.4).extrude(crescent, 9, TH - 9, { topPaint: pnt(0x9a9084, Surf.RoofFlat) });
-  // gold spandrel bands every few floors (only the curved front face)
-  b.paint(gold, Surf.Metal);
-  for (const y of [9 + 3.4 * 3, 9 + 3.4 * 6, 9 + 3.4 * 9]) {
-    for (let i = 0; i < n; i++) {
-      const off = (x: number, z: number): [number, number] => {
-        const dx = -x, dz = czc - z, l = Math.hypot(dx, dz) || 1;
-        return [x + (dx / l) * 0.12, z + (dz / l) * 0.12];
-      };
-      const [ax, az] = off(...inner[i]), [bx2, bz2] = off(...inner[i + 1]);
-      const mx = (ax + bx2) / 2, mz = (az + bz2) / 2;
-      quadH(b, [ax, y, az], [bx2, y, bz2], [bx2, y + 0.5, bz2], [ax, y + 0.5, az], [-mx, 0, czc - mz]);
+  const cpt = (a: number, r: number): [number, number] => [Math.sin(a) * r, czc - Math.cos(a) * r];
+  // glowing gold spandrels every 2 floors on both curved faces
+  b.paint(goldGlow, Surf.Emissive);
+  for (let k = 0; k < 5; k++) {
+    const y = 9 + 3.4 + k * 6.8;
+    for (const [r, sgn] of [[R0 + 0.12, 1], [R1 - 0.12, -1]] as [number, number][]) {
+      for (let i = 0; i < n; i++) {
+        const a0 = -0.62 + (1.24 * i) / n, a1 = -0.62 + (1.24 * (i + 1)) / n;
+        const [ax, az] = cpt(a0, r), [bx2, bz2] = cpt(a1, r);
+        const mx = (ax + bx2) / 2, mz = (az + bz2) / 2;
+        quadH(b, [ax, y, az], [bx2, y, bz2], [bx2, y + 0.35, bz2], [ax, y + 0.35, az], [mx * sgn, 0, (mz - czc) * sgn]);
+      }
     }
   }
-  // crown: stacked emissive neon rings + top fin
-  b.paint(magenta, Surf.Emissive).extrude(crescent.map(([x, z]) => [x * 1.01, czc + (z - czc) * 1.01] as [number, number]), TH - 3.5, 0.5, { top: false });
-  b.paint(gold, Surf.Emissive).extrude(crescent.map(([x, z]) => [x * 1.01, czc + (z - czc) * 1.01] as [number, number]), TH, 0.6, { top: false });
-  b.paint(cream, Surf.Plain).extrude(crescent.map(([x, z]) => [x * 0.9, czc + (z - czc) * 0.99] as [number, number]), TH + 0.6, 2.2, { topPaint: pnt(0x9a9084) });
-  // vertical gold fins at the tower ends
+  // crown: neon rings built from offset radii (slightly proud of both curved faces and the ends)
+  const dA = 0.15 / R1;
+  const ringPoly = arcBand(cpt, R0 + 0.15, R1 - 0.15, -0.62 - dA, 0.62 + dA, n);
+  b.paint(magenta, Surf.Emissive).extrude(ringPoly, TH - 3.5, 0.5, { top: false });
+  b.paint(gold, Surf.Emissive).extrude(ringPoly, TH, 0.6, { top: false });
+  b.paint(cream, Surf.Plain).extrude(arcBand(cpt, R0 - 0.8, R1 + 0.8, -0.59, 0.59, n), TH + 0.6, 2.2, { topPaint: pnt(0x9a9084) });
+  // vertical glowing gold fins at the tower ends
   for (const e of [0, n]) {
     const [ox, oz] = outer[e];
-    b.paint(gold, Surf.Metal).boxC(ox * 0.93, oz + 1.4, 1.4, 5.0, 9, TH - 5.5);
+    b.paint(goldGlow, Surf.Emissive).boxC(ox * 0.93, oz + 1.4, 1.4, 5.0, 9, TH - 5.5);
   }
-  // roof sign on the tower
-  wallSign(b, 0, TH + 4.6, -18 + 0.25, 16, 2.6, 0xffe9a8, 'pz', 0x3a1030, magenta);
+  // roof sign standing on the crown
+  wallSign(b, 0, TH + 4.2, -16.8, 16, 2.6, 0xe6d6a0, 'pz', 0x3a1030, magenta, 0x3a1030);
   // porte-cochere with glowing underside
   b.paint(gold, Surf.Metal).box(-9, 6, 2, 9, 7.2, 12, { bottom: pnt(0xfff0c0, Surf.Emissive) });
-  b.paint(magenta, Surf.Emissive).box(-9.1, 6.3, 12, 9.1, 6.8, 12.1, { top: null, bottom: null });
+  b.paint(magenta, Surf.Emissive).box(-9.1, 6.25, 12, 9.1, 6.85, 12.1, { top: null, bottom: null });
   b.paint(gold, Surf.Metal);
   for (const [px, pz] of [[-8.5, 11.4], [8.5, 11.4]] as [number, number][]) b.cylinder(px, pz, 0, 6, 0.35, 0.35, 8);
   miniCar(b, -3, 8.5, Math.PI / 2, 0x141414, 0.1);
@@ -285,6 +318,17 @@ function casino(b: ModelBuilder, _v: number, rng: RNG) {
   b.paint(gold, Surf.Emissive);
   vrect(b, -2.4, 12.6, 2.4, 15.8, 0.72);
   b.pop();
+  // pylon lettering: stacked letters on the magenta panel, a word on the gold panel (both faces)
+  for (const rot of [0, Math.PI]) {
+    b.push().translate(sx, 0, sz).rotateY(rot);
+    b.push().translate(0, 19.45, 0.72).rotateZ(Math.PI / 2);
+    glyphBars(b, 5.4, 4.0, 0.03, 0xf6e6c0);
+    b.pop();
+    b.push().translate(0, 14.2, 0.72);
+    glyphBars(b, 4.4, 2.4, 0.03, 0x3a1030);
+    b.pop();
+    b.pop();
+  }
   b.paint(0xfff6d0, Surf.Emissive);
   for (let i = 0; i < 6; i++) b.boxC(sx - 2.5 + i, sz + 0.8, 0.2, 0.1, 23.1, 0.2);
   // star on top
@@ -309,11 +353,9 @@ function casino(b: ModelBuilder, _v: number, rng: RNG) {
   // palms + planters + lamps
   for (const [x, z] of [[-4, 20.5], [5, 20.5], [11, 14], [-20, 5], [20, 5], [20.3, 11]] as [number, number][]) palm(b, rng, x, z, 0.95);
   for (const x of [-12, 12]) lamp(b, x, 4.2, 5);
-  // rooftop pool deck on the podium
-  b.paint(0xe8dcc0, Surf.Pavement).boxC(-14, -3.8, 10.4, 6.4, 9, 0.18, { bottom: null });
-  b.paint(0x3fb0d8, Surf.Water).boxC(-14, -3.8, 9, 5, 9, 0.26, { bottom: null });
-  b.paint(0xe8dcc0, Surf.Pavement).boxC(13, -3.8, 8.4, 5.4, 9, 0.18, { bottom: null });
-  b.paint(0x3fb0d8, Surf.Water).boxC(13, -3.8, 7, 4, 9, 0.26, { bottom: null });
+  // rooftop pools recessed in decks on the podium
+  poolDeck(b, -14, -3.8, 9, 5, 0.7, 9);
+  poolDeck(b, 13, -3.8, 7, 4, 0.7, 9);
   b.push().translate(0, 9, 0);
   for (const x of [-19.2, -8.8, 8.2, 17.8]) planter(b, x, -1.2, 0.6);
   for (let i = 0; i < 5; i++) benchAt(b, -17 + i * 1.6, -0.2, 0);
@@ -326,34 +368,36 @@ function toxicDump(b: ModelBuilder, _v: number, rng: RNG) {
   slabC(b, -s, -s, s, s, 0x6e6347, Surf.Pavement, 0.05);
   // stains
   b.paint(0x8a8b3a, Surf.Pavement);
-  for (const [x, z, r] of [[-10, 12, 7], [12, 6, 6], [-20, -18, 6]] as [number, number, number][]) flatPoly(b, blobPoly(rng, x, z, r, r * 0.8, 9, 0.35), 0.06);
+  for (const [x, z, r] of [[-10, 12, 7], [12, 6, 6], [-20, -18, 6]] as [number, number, number][]) flatPoly(b, blobPoly(rng, x, z, r, r * 0.8, 9, 0.35), 0.08);
   // access road + gravel pad
-  slabC(b, -3, 14, 3, 32, 0x55524a, Surf.Pavement, 0.08);
-  slabC(b, -30, -30, 30, -10, 0x7d7564, Surf.Pavement, 0.07);
+  slabC(b, -3, 14, 3, 32, 0x55524a, Surf.Pavement, 0.11);
+  slabC(b, -30, -30, 30, -10, 0x7d7564, Surf.Pavement, 0.11);
   // ooze pools: dark sludge rim + emissive green
   const pools: [number, number, number, number][] = [[-12, 12, 8, 5.5], [13, 6, 6, 4.5], [11, 23.5, 3.5, 2.5]];
   for (const [x, z, rx, rz] of pools) {
     const poly = blobPoly(rng, x, z, rx, rz, 10, 0.18);
     b.paint(0x2e3320, Surf.Pavement).extrude(poly.map(([px, pz]) => [x + (px - x) * 1.18, z + (pz - z) * 1.18] as [number, number]), 0, 0.12);
-    b.paint(0x3ccf1c, Surf.Emissive).extrude(poly, 0.05, 0.14, { top: false });
-    b.paint(0x3ccf1c, Surf.Emissive);
+    b.paint(0x22a00c, Surf.Emissive).extrude(poly, 0.05, 0.14, { top: false });
+    b.paint(0x22a00c, Surf.Emissive);
     flatPoly(b, poly, 0.19);
   }
-  // barrel yard: rows on the gravel pad, some tipped over
-  const cols = [0xd8b21c, 0xd8b21c, 0xb2561f, 0x2c5e9e, 0x3f6a2e, 0x9a9a92];
+  // barrel yard: tight 2x2 blocks on pallets, one colour per pallet; a few tipped over
+  const Y = 0xd8b21c, RU = 0x8a4a22, BL = 0x2c5e9e;
+  const palletCols = [Y, Y, RU, Y, BL, RU];
   for (let r = 0; r < 3; r++) {
-    for (let i = 0; i < 11; i++) {
-      if (rng.chance(0.12)) continue;
-      const x = -28 + i * 1.5 + (r % 2) * 0.5, z = -27 + r * 5.2;
-      if (i % 4 === 0) b.paint(0x8a6a3a, Surf.Wood).boxC(x + 0.7, z + 0.7, 2.8, 2.8, 0.05, 0.15);
-      barrel(b, x, z, rng.pick(cols), false, 0, 0.2);
-      barrel(b, x, z + 1.35, rng.pick(cols), false, 0, 0.2);
+    for (let p = 0; p < 6; p++) {
+      if ((r + p) % 5 === 4) continue;
+      const x = -27.5 + p * 2.1 + (r % 2) * 0.6, z = -26.5 + r * 5.0;
+      const c = palletCols[(p + r * 2) % palletCols.length];
+      b.paint(0x8a6a3a, Surf.Wood).boxC(x, z, 1.5, 1.5, 0.11, 0.14);
+      for (const [ox, oz] of [[-0.35, -0.35], [0.35, -0.35], [-0.35, 0.35], [0.35, 0.35]]) barrel(b, x + ox, z + oz, c, false, 0, 0.25);
     }
   }
-  for (let i = 0; i < 7; i++) barrel(b, rng.range(-26, 6), rng.range(-9, 2), rng.pick(cols), true, rng.range(0, 3), 0);
-  for (let i = 0; i < 6; i++) barrel(b, rng.range(-6, 4), rng.range(4, 10), rng.pick(cols), rng.chance(0.5), rng.range(0, 3), 0);
+  const loose = [Y, RU, BL];
+  for (let i = 0; i < 6; i++) barrel(b, rng.range(-26, 4), rng.range(-9, 2), loose[i % 3], true, rng.range(0, 3), 0.11);
+  for (let i = 0; i < 4; i++) barrel(b, rng.range(-6, 4), rng.range(4, 10), loose[i % 3], i % 2 === 0, rng.range(0, 3), 0);
   // stacked barrels pyramid
-  for (let l = 0; l < 3; l++) for (let i = 0; i < 3 - l; i++) barrel(b, 20 + i * 0.62 + l * 0.31, 17, l === 1 ? 0xb2561f : 0xd8b21c, true, Math.PI / 2, l * 0.54);
+  for (let l = 0; l < 3; l++) for (let i = 0; i < 3 - l; i++) barrel(b, 20 + i * 0.62 + l * 0.31, 17, l === 1 ? RU : Y, true, Math.PI / 2, l * 0.54);
   // processing shed (rusty corrugated) with hazard-striped door
   const hx0 = 8, hx1 = 28, hz0 = -29, hz1 = -15;
   b.paint(0x8f7a5a, Surf.Corrugated).box(hx0, 0, hz0, hx1, 6.5, hz1, { top: null });
@@ -361,24 +405,24 @@ function toxicDump(b: ModelBuilder, _v: number, rng: RNG) {
   b.paint(0x202020, Surf.Plain);
   vrect(b, 12, 0, 18, 4.8, hz1 + 0.03);
   hazardRect(b, 11.6, 4.8, 18.4, 5.4, hz1 + 0.05, 8);
-  wallSign(b, 23, 4.2, hz1 + 0.05, 5, 1.4, 0xf2c21a, 'pz', 0x1a1a1a);
+  wallSign(b, 23, 4.2, hz1 + 0.05, 5, 1.4, 0xc89a10, 'pz', 0x1a1a1a, undefined, 0x1a1a1a);
   // leaking tanks with hazard bands + spill
   tank(b, 22, -5, 3.2, 7, 0xc9c6b8, 0xf2c21a);
   tank(b, 22, 4, 3.2, 7, 0x9aa08a, 0xf2c21a);
-  b.paint(0x3ccf1c, Surf.Emissive);
-  flatPoly(b, blobPoly(rng, 18.5, 1, 2.2, 1.6, 8, 0.3), 0.08);
+  b.paint(0x22a00c, Surf.Emissive);
+  flatPoly(b, blobPoly(rng, 18.5, 1, 2.2, 1.6, 8, 0.3), 0.11);
   b.paint(0x6a7a5a, Surf.Metal).pipe([22, 1.5, -1.8], [22, 1.5, 0.8], 0.35, 6);
   // excavator
   b.push().translate(-18, 0, 3).rotateY(0.6);
   b.paint(0xe0a81c, Surf.Metal).box(-1.8, 0.8, -1.6, 1.8, 2.8, 1.6);
   b.paint(0x2a2a2a, Surf.Plain).box(-2.0, 0, -2.2, -1.1, 0.9, 2.2).box(1.1, 0, -2.2, 2.0, 0.9, 2.2);
-  b.paint(0x1c2228, Surf.GlassPlain).box(-1.6, 2.8, -1.4, 0.2, 3.9, 0.4, { top: pnt(0xe0a81c, Surf.Metal) });
+  b.paint(CAR_GLASS, Surf.Metal).box(-1.6, 2.8, -1.4, 0.2, 3.9, 0.4, { top: pnt(0xe0a81c, Surf.Metal) });
   b.paint(0xe0a81c, Surf.Metal).beam([0.8, 2.6, 0.5], [1.2, 5.0, 4.0], 0.5).beam([1.2, 5.0, 4.0], [1.0, 1.2, 6.0], 0.4);
   b.paint(0x555555, Surf.Metal).box(0.4, 0.1, 5.6, 1.6, 1.2, 6.8);
   b.pop();
   // dirt mounds
   b.paint(0x5e5238, Surf.Pavement);
-  for (const [x, z, r] of [[-25, 22, 4.5], [24, 24, 5.5], [-26, 8, 3.5]] as [number, number, number][]) b.blob(x, 0, z, r, r * 0.45, r * 0.9, 0, 0.25, x);
+  for (const [x, z, r] of [[-25, 22, 4.5], [24, 24, 5.5], [-26, 8, 3.5]] as [number, number, number][]) b.sphere(x, 0, z, r, 8, 4, { hemi: true, scaleY: 0.45 });
   // dead trees
   for (const [x, z] of [[-6, 20], [5, 28], [-28, -2], [28, 13]] as [number, number][]) {
     b.paint(0x5a5044, Surf.Wood).cylinder(x, z, 0, 4.5, 0.25, 0.1, 5, { top: false });
@@ -388,10 +432,16 @@ function toxicDump(b: ModelBuilder, _v: number, rng: RNG) {
   perimeter(b, -31, -31, 31, 31, 2.6, [-3.5, 3.5], 7.5, 0xd8b21c);
   for (const [x, z, r] of [[-15, 31.2, 0], [15, 31.2, 0], [31.2, 0, Math.PI / 2], [31.2, 18, Math.PI / 2], [-31.2, 10, -Math.PI / 2]] as [number, number, number][]) warnSign(b, x, z, r, 2.4);
   hazardRect(b, -3.5, 1.0, 3.5, 1.3, 31, 7);
+  // amber gate beacons + two floodlight poles
+  b.paint(0xffa020, Surf.Emissive).boxC(-3.5, 31, 0.35, 0.35, 2.7, 0.35).boxC(3.5, 31, 0.35, 0.35, 2.7, 0.35);
+  for (const [fx, fz] of [[-29, -8.5], [29, -12]] as [number, number][]) {
+    b.paint(0x5a5f64, Surf.Metal).cylinder(fx, fz, 0, 8, 0.14, 0.1, 5, { top: false });
+    b.paint(0xfff0c8, Surf.Emissive).boxC(fx, fz, 1.3, 0.55, 8, 0.5);
+  }
   // tanker truck
   b.push().translate(0, 0.08, 20).rotateY(0.05);
   b.paint(0xe8e8e0, Surf.Metal).box(-1.2, 0.5, 3.0, 1.2, 2.8, 5.2);
-  b.paint(0x1c2228, Surf.GlassPlain);
+  b.paint(CAR_GLASS, Surf.Metal);
   vrect(b, -1.0, 1.7, 1.0, 2.6, 5.22);
   b.paint(0xc9c6b8, Surf.Metal);
   b.push().translate(0, 2.0, -2).rotateX(Math.PI / 2);
@@ -418,21 +468,22 @@ function missileRange(b: ModelBuilder, _v: number, rng: RNG) {
   slabC(b, -s, -s, s, s, 0xa8986a, Surf.Foliage, 0.05);
   // scrub patches
   b.paint(0x8a8a58, Surf.Foliage);
-  for (let i = 0; i < 6; i++) flatPoly(b, blobPoly(rng, rng.range(-40, 40), rng.range(-40, 40), rng.range(4, 8), rng.range(3, 6), 8, 0.3), 0.06);
+  for (let i = 0; i < 6; i++) flatPoly(b, blobPoly(rng, rng.range(-40, 40), rng.range(-40, 40), rng.range(4, 8), rng.range(3, 6), 8, 0.3), 0.08);
   // service roads
   const road = 0xb7b0a0;
-  slabC(b, -3, -40, 3, 48, road, Surf.Pavement, 0.08);
-  slabC(b, -40, -4, 40, 2, road, Surf.Pavement, 0.08);
-  slabC(b, 20, -30, 26, -4, road, Surf.Pavement, 0.08);
+  slabC(b, -3, -40, 3, 48, road, Surf.Pavement, 0.14);
+  slabC(b, -40, -4, -3, 2, road, Surf.Pavement, 0.14);
+  slabC(b, 3, -4, 40, 2, road, Surf.Pavement, 0.14);
+  slabC(b, 20, -30, 26, -4, road, Surf.Pavement, 0.14);
   // --- main pad with gantry + tall rocket
   const px = -22, pz = -22;
   b.paint(0x2a2622, Surf.Pavement);
-  flatPoly(b, blobPoly(rng, px, pz, 17, 15, 12, 0.25), 0.07);
+  flatPoly(b, blobPoly(rng, px, pz, 17, 15, 12, 0.25), 0.11);
   b.paint(0xc4c0b6, Surf.Pavement).boxC(px, pz, 18, 18, 0, 0.9);
   b.paint(0x1a1818, Surf.Plain);
-  flat(b, px - 2.5, pz - 8.9, px + 2.5, pz + 8.9, 0.92);
+  flat(b, px - 2.5, pz - 8.9, px + 2.5, pz + 8.9, 0.93);
   b.paint(0x3a3634, Surf.Pavement);
-  stripe(b, px, pz + 9, px, pz + 20, 6, 0.08);
+  stripe(b, px, pz + 9, px, pz + 20, 6, 0.17);
   missile(b, px, pz, 0.9, 25, 1.35);
   // gantry tower (orange lattice)
   const gx = px - 5.5, gz = pz, gw = 4, GH = 29;
@@ -447,16 +498,19 @@ function missileRange(b: ModelBuilder, _v: number, rng: RNG) {
   b.beam([gx - gw / 2, 12, gz + gw / 2 + 0.1], [gx + gw / 2, 24, gz + gw / 2 + 0.1], 0.25);
   b.paint(0xff3322, Surf.Emissive).boxC(gx, gz, 0.5, 0.5, GH, 0.5);
   // lightning masts
-  for (const [ox, oz] of [[9, 9], [-9, 9], [9, -9]]) antennaMast(b, px + ox, pz + oz, 0, 22, 0xdedede);
+  for (const [ox, oz] of [[9, 9], [-9, 9], [9, -9]]) {
+    antennaMast(b, px + ox, pz + oz, 0, 22, 0xdedede);
+    b.paint(0xfff0c8, Surf.Emissive).boxC(px + ox * 0.97, pz + oz * 0.97, 1.2, 0.5, 17.5, 0.55);
+  }
   // --- second pad: mobile launcher truck with angled missile
   const qx = 23, qz = -34;
   b.paint(0x2a2622, Surf.Pavement);
-  flatPoly(b, blobPoly(rng, qx, qz, 10, 8, 10, 0.3), 0.07);
+  flatPoly(b, blobPoly(rng, qx, qz, 10, 8, 10, 0.3), 0.11);
   b.paint(0xc4c0b6, Surf.Pavement).boxC(qx, qz, 14, 12, 0, 0.5);
   b.push().translate(qx, 0.5, qz).rotateY(0.2);
   b.paint(0x5a6040, Surf.Metal).box(-1.4, 0.4, -6, 1.4, 1.8, 6);
   b.box(-1.4, 0.4, 6, 1.4, 3.2, 8.2);
-  b.paint(0x1c2228, Surf.GlassPlain);
+  b.paint(CAR_GLASS, Surf.Metal);
   vrect(b, -1.2, 2.0, 1.2, 3.0, 8.22);
   b.paint(0x151515, Surf.Plain).box(-1.35, 0, -5, 1.35, 0.5, 7.5, { top: null, pz: null, nz: null });
   b.push().translate(0, 1.9, -4.5).rotateX(-0.85);
@@ -467,12 +521,14 @@ function missileRange(b: ModelBuilder, _v: number, rng: RNG) {
   // --- third pad: burnt empty pad with blast deflector
   const rx = 28, rz = 22;
   b.paint(0x1e1b18, Surf.Pavement);
-  flatPoly(b, blobPoly(rng, rx, rz, 13, 11, 12, 0.3), 0.07);
+  flatPoly(b, blobPoly(rng, rx, rz, 13, 11, 12, 0.3), 0.11);
   b.paint(0x8a857a, Surf.Pavement).boxC(rx, rz, 12, 12, 0, 0.6);
   b.paint(0x5a5550, Surf.Plain);
   quadH(b, [rx - 5, 0.6, rz - 4], [rx + 5, 0.6, rz - 4], [rx + 5, 4.5, rz - 7], [rx - 5, 4.5, rz - 7], [0, 0.6, 1]);
+  b.paint(0x151311, Surf.Plain);
+  flat(b, rx - 4.5, rz - 4, rx + 4.5, rz - 1.2, 0.63);
   b.paint(0x2a2622, Surf.Pavement);
-  for (let i = 0; i < 3; i++) disc(b, rx + rng.range(-10, 10), rz + rng.range(8, 16), rng.range(2, 3.5), 9, 0.09);
+  for (let i = 0; i < 3; i++) disc(b, rx + rng.range(-10, 10), rz + rng.range(8, 16), rng.range(2, 3.5), 9, 0.14);
   // bunkers: earth-covered vaults with concrete fronts
   for (const [bx, bz, rot] of [[-30, 14, 0], [-16, 16, 0], [8, -18, Math.PI / 2]] as [number, number, number][]) {
     b.push().translate(bx, 0, bz).rotateY(rot);
@@ -506,7 +562,7 @@ function missileRange(b: ModelBuilder, _v: number, rng: RNG) {
   armyTruck(b, 0, 8, 0);
   jeep(b, 6, -2, Math.PI / 2);
   jeep(b, -10, 26, 0.2);
-  bus(b, -35, 43, Math.PI / 2, 0xe8e8e4, false, 0.08, 0x2a3440);
+  bus(b, -35, 43, Math.PI / 2, 0xe8e8e4, false, 0.08);
   // perimeter with gate on the main road
   perimeter(b, -47, -47, 47, 47, 2.6, [-4, 4], 14);
   warnSign(b, -6, 47.2, 0, 2.4);
@@ -534,21 +590,25 @@ function researchCenter(b: ModelBuilder, _v: number, rng: RNG) {
   const ring = [...outer, ...inner.slice().reverse()];
   const H = 20;
   b.paint(0x7fb0d0, Surf.GlassCurtain, 5, 4).extrude(ring, 0, H, { top: false });
-  b.paint(0xf4f4f2, Surf.Plain).extrude(ring.map(([x, z]) => [x * 1.02, cz + (z - cz) * 1.02] as [number, number]), H, 1.2, { topPaint: pnt(0xe2e2de, Surf.RoofFlat) });
-  const ringOut = ring.map(([x, z]) => [x * 1.012, cz + (z - cz) * 1.012] as [number, number]);
-  for (const f of [4, 8, 12, 16]) b.paint(0xf4f4f2, Surf.Plain).extrude(ringOut, f - 0.25, 0.35, { top: false });
-  // solar panels on the roof ring
-  b.paint(0x1f3a5f, Surf.GlassCurtain, 3, 2);
+  const rpt = (a: number, r: number): [number, number] => [Math.cos(a) * r, cz + Math.sin(a) * r];
+  // roof plate and floor bands from explicit offset radii (proud of both curved faces and the ends)
+  b.paint(0xf4f4f2, Surf.Plain).extrude(arcBand(rpt, R0 + 0.4, R1 - 0.4, a0 - 0.4 / R1, a1 + 0.4 / R1, n), H, 1.2, { topPaint: pnt(0xe2e2de, Surf.RoofFlat) });
+  const bandPoly = arcBand(rpt, R0 + 0.15, R1 - 0.15, a0 - 0.15 / R1, a1 + 0.15 / R1, n);
+  for (const f of [4, 8, 12, 16]) b.paint(0xf4f4f2, Surf.Plain).extrude(bandPoly, f - 0.25, 0.35, { top: false });
+  // tilted solar panels on light frames along the roof ring
   for (let i = 1; i < n; i += 2) {
     const [ox, oz] = outer[i], [ix, iz] = inner[i];
     const mx = (ox + ix) / 2, mz = (oz + iz) / 2;
-    b.boxC(mx, mz, 2.4, 2.4, H + 1.2, 0.3, { bottom: null });
+    b.paint(0xd8d8d4, Surf.Metal).boxC(mx, mz, 1.8, 1.4, H + 1.2, 0.45, { bottom: null });
+    b.push().translate(mx, H + 1.65, mz).rotateX(-0.3);
+    b.paint(0x1f3a5f, Surf.GlassCurtain, 3, 2).box(-1.3, 0, -1.1, 1.3, 0.1, 1.1, { bottom: null });
+    b.pop();
   }
-  // central glass dome in the courtyard + slender white tower
+  // central glass dome in the courtyard + slender white tower rising from the oculus ring
   b.paint(0x9cc6e0, Surf.GlassCurtain, 5, 2.5).sphere(0, 0.1, cz, 9, 16, 10, { hemi: true, scaleY: 0.85 });
   b.paint(0xf4f4f2, Surf.Plain).cylinder(0, cz, 7.6, 0.6, 2.4, 2.4, 12);
-  const tx = -2, tz = cz - 2;
-  b.paint(0xf4f4f2, Surf.Plain).cylinder(tx, tz, 0, 33, 1.8, 1.4, 10, { smooth: false });
+  const tx = 0, tz = cz;
+  b.paint(0xf4f4f2, Surf.Plain).cylinder(tx, tz, 8.2, 24.8, 1.8, 1.4, 10, { smooth: false });
   b.paint(0x7fb0d0, Surf.GlassCurtain, 5, 3).cylinder(tx, tz, 29, 4, 3.6, 3.6, 12, { smooth: false });
   b.paint(0xf4f4f2, Surf.Plain).cylinder(tx, tz, 33, 0.6, 3.9, 3.9, 12, { smooth: false });
   antennaMast(b, tx, tz, 33.6, 6);

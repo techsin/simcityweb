@@ -10,7 +10,7 @@ import { signBox } from '../kit';
 import {
   type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor,
   tank, sphereTank, smokestack, semi, boxTruck, carLow, forklift, pallets, drums, heap, fenceRect, wallRun,
-  floodLight, roofUnit, parapet, officeBlock, emitSmoke, emitSteam, CAR_COLORS2, TRUCK_COLORS, orientedBox,
+  floodLight, roofUnit, parapet, officeBlock, emitSmoke, emitSteam, lights, CAR_COLORS2, TRUCK_COLORS, orientedBox,
 } from './ind_kit';
 
 const YARD = 0x9f9a90;
@@ -410,6 +410,7 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x55595e, Surf.Metal).boxC(fx, fz, 5, 5, 30, 3.5);
       b.paint(0x55595e, Surf.Metal);
       lattice(b, fx, fz, 7, 30, 5.6, 3.4, 5.6, 3.4, 4, 0.3, { rings: true, diag: false });
+      lights(b, [[fx + 5.4, 13, fz + 5.4], [fx - 5.4, 13, fz + 5.4], [fx + 4.4, 24, fz + 4.4], [fx - 4.4, 24, fz - 4.4], [fx, 30.8, fz + 2.5], [21.2, 22.5, -10.6]]);
       // uptakes -> downcomer -> dust catcher
       b.paint(0x6a6e72, Surf.Metal);
       pipeRun(b, [[fx, 34, fz], [fx, 36.5, fz], [fx - 6.5, 36.5, fz + 2], [fx - 8, 16, fz + 3]], 0.9, 8);
@@ -489,7 +490,7 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
     }
     default: {
       // CEMENT WORKS: preheater tower, inclined rotary kiln, clinker cooler, cement silos, steel stack
-      const px = -16, pz = -15;
+      const px = -16, pz = -16;
       b.paint(0xb8b3a8, Surf.Plain).box(px - 5.5, 0, pz - 5.5, px + 5.5, 12, pz + 5.5, { top: { color: 0x9a968e, surf: Surf.RoofFlat } });
       b.paint(0x8e8b84, Surf.Metal);
       lattice(b, px, pz, 12, 32, 5.2, 4.6, 5.2, 4.6, 4, 0.3, { rings: true, diag: true });
@@ -502,38 +503,44 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       }
       b.paint(0x9a968e, Surf.Plain).boxC(px, pz, 9.5, 9.5, 32, 0.6);
       smokestack(b, px + 3, pz - 3, 44, 1.2, 1.0, 'steel', 10);
-      // kiln on piers
-      const ka: V3 = [px + 4.5, 7.5, pz + 2], kb: V3 = [20, 4.2, pz + 2];
+      lights(b, [[px + 5.4, 18, pz + 5.4], [px - 5.4, 24, pz + 5.4], [px + 5, 30, pz - 5]]);
+      // kiln on piers (runs along X in the middle of the lot)
+      const kz = -5;
+      const ka: V3 = [px + 5, 7.5, kz], kb: V3 = [15.5, 4.2, kz];
+      b.paint(0xb8b3a8, Surf.Plain).box(px + 2, 0, pz + 5.5, px + 6, 9.5, kz + 2.5);
       b.paint(0x7a6e62, Surf.Metal);
       b.pipe(ka, kb, 2.0, 10);
       b.paint(0x4a4540, Surf.Metal);
-      for (const tt of [0.2, 0.5, 0.8]) {
-        const p: V3 = [ka[0] + (kb[0] - ka[0]) * tt, ka[1] + (kb[1] - ka[1]) * tt, ka[2]];
-        b.pipe([p[0] - 0.4, p[1] + (ka[1] - kb[1]) * 0.01, p[2]], [p[0] + 0.4, p[1], p[2]], 2.35, 10);
-        b.paint(0xa9a59c, Surf.Plain).box(p[0] - 1.2, 0, p[2] - 2.2, p[0] + 1.2, p[1] - 1.8, p[2] + 2.2);
+      for (const tt of [0.25, 0.55, 0.85]) {
+        const p: V3 = [ka[0] + (kb[0] - ka[0]) * tt, ka[1] + (kb[1] - ka[1]) * tt, kz];
+        b.pipe([p[0] - 0.4, p[1] + 0.012, kz], [p[0] + 0.4, p[1], kz], 2.35, 10);
+        b.paint(0xa9a59c, Surf.Plain).box(p[0] - 1.2, 0, kz - 2.2, p[0] + 1.2, p[1] - 1.8, kz + 2.2);
         b.paint(0x4a4540, Surf.Metal);
       }
       // clinker cooler + burner building
-      b.paint(0xb8b3a8, Surf.Corrugated).box(18, 0, pz - 4, 22.5, 8, pz + 8, { top: { color: 0x8e8b84, surf: Surf.RoofFlat } });
-      // cement silos
-      for (let i = 0; i < 4; i++) {
-        const sx = 5 + (i % 2) * 7.4, sz = 6 + Math.floor(i / 2) * 7.4;
+      b.paint(0xb8b3a8, Surf.Corrugated).box(15, 0, kz - 6, 22.5, 9, kz + 5, { top: { color: 0x8e8b84, surf: Surf.RoofFlat } });
+      // cement silos row at the back right + roof gallery
+      for (let i = 0; i < 3; i++) {
+        const sx = 1.5 + i * 7.4, sz = -19.5;
         b.paint(0xd2cec6, Surf.Plain);
-        tube(b, sx, sz, 0, 28, 3.5, 3.5, 12);
-        disc(b, sx, sz, 28, 3.5, 12);
+        tube(b, sx, sz, 0, 27, 3.5, 3.5, 12);
+        disc(b, sx, sz, 27, 3.5, 12);
       }
-      b.paint(0x8e8b84, Surf.Corrugated).box(3, 28, 4, 14.5, 31, 15.5, { bottom: { color: 0x8e8b84 } });
-      conveyor(b, [20, 7.5, pz + 7], [12, 29.5, 4.5], 2.0, 0x9a968e, 0x6a6e72, 3);
-      // packing plant + trucks
-      b.paint(0xc5c1b8, Surf.Corrugated).box(-22.5, 0, 4, -5, 9, 16);
-      b.paint(0x8e8b84, Surf.Metal).gableRoof(-13.75, 10, 17.5, 12, 9, 1.4, 'x', 0.3, { color: 0xc5c1b8, surf: Surf.Corrugated });
+      b.paint(0x8e8b84, Surf.Corrugated).box(-1.5, 27, -21.5, 19.5, 29.5, -17.5, { bottom: { color: 0x8e8b84 } });
+      conveyor(b, [19, 9, kz - 5], [16.5, 28, -17.6], 2.0, 0x9a968e, 0x6a6e72, 2);
+      // packing plant + trucks at the front
+      b.paint(0xc5c1b8, Surf.Corrugated).box(-22.5, 0, 5, -5, 9, 16);
+      b.paint(0x8e8b84, Surf.Metal).gableRoof(-13.75, 10.5, 17.5, 11, 9, 1.4, 'x', 0.3, { color: 0xc5c1b8, surf: Surf.Corrugated });
       b.paint(0x2e6fb5, Surf.Plain);
       wallQuad(b, 'pz', 16, -22.5, -5, 7.2, 8.2);
       b.paint(0x3a3d40, Surf.Metal);
       wallRow(b, 'pz', 16, -21, -6, 0.1, 4.5, 3, 3.6);
       boxTruck(b, 17, 17.5, Math.PI * 0.5, 0xe9e7e0, 0x9a968e);
-      semi(b, 1, 19.5, Math.PI * 0.5, 0xc0392b, 0xd2cec6, {});
-      heap(b, rng, 16, -22 + 6, 3.4, 2.6, 0xb8b0a0, Surf.Plain, 8);
+      semi(b, -3, 20.5, Math.PI * 0.5, 0xc0392b, 0xd2cec6, {});
+      // raw meal / limestone stockpiles
+      heap(b, rng, 9, 10, 5.5, 3.2, 0xc8c0ae, Surf.Plain, 9, 1.2, 0.8);
+      heap(b, rng, 19, 11, 3.4, 2.2, 0x8a8278, Surf.Plain, 8);
+      conveyor(b, [3, 0.5, 10], [-3.5, 8.5, kz + 3], 1.6, 0x9a968e, 0x6a6e72, 1);
       break;
     }
   }
@@ -553,6 +560,13 @@ function column(b: ModelBuilder, x: number, z: number, r: number, h: number, col
   b.paint(0x55595e, Surf.Metal);
   for (let i = 1; i <= rings; i++) tube(b, x, z, (h * i) / (rings + 0.5), 0.3, r + 0.7, r + 0.7, seg);
   strut(b, [x + r + 0.5, 0, z], [x + r + 0.5, h, z], 0.3);
+  const lp: V3[] = [];
+  for (let i = 1; i <= rings; i++) {
+    const y = (h * i) / (rings + 0.5) + 0.7;
+    lp.push([x + r + 0.75, y, z + 0.4], [x - r - 0.75, y, z - 0.3]);
+  }
+  lp.push([x, h + r * 0.6 + 0.4, z]);
+  lights(b, lp, 0.35);
 }
 
 /** Flare stack: light lattice + riser + emissive flame; registers a smoke emitter above the flame (~150 tris). */
@@ -571,7 +585,7 @@ function flare(b: ModelBuilder, x: number, z: number, h: number): void {
 }
 
 /** Pipe rack: bents every ~11 m with n parallel pipes on top. */
-function pipeRack(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, n: number, rng: RNG, spacing = 11): void {
+function pipeRack(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, n: number, rng: RNG, spacing = 14): void {
   const alongX = Math.abs(x1 - x0) > Math.abs(z1 - z0);
   const len = alongX ? x1 - x0 : z1 - z0;
   const bents = Math.max(2, Math.round(Math.abs(len) / spacing) + 1);
@@ -604,7 +618,7 @@ function tankTruck(b: ModelBuilder, x: number, z: number, cab: ColorLike, tankC:
 
 function refineryCommon(b: ModelBuilder): void {
   ground(b, -32, -32, 32, 32, 0xa39e94, Surf.Pavement, 0.05);
-  fenceRect(b, -31.5, -31.5, 31.5, 31.5, 2.2, 0x8a9096, [-10, -2], 16, 1);
+  fenceRect(b, -31.5, -31.5, 31.5, 31.5, 2.2, 0x8a9096, [-10, -2], 22, 1);
   officeBlock(b, -29, 21.5, -16, 29, 7, 0xdedad2, 2, 3.5);
   b.paint(0x5a5b5e, Surf.Pavement);
   flat(b, -10, 14, -2, 32, 0.07);
@@ -623,7 +637,7 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
     case 0: {
       // OIL REFINERY: floating-roof tank farm at the back, crude unit columns, box heater, pipe rack, loading rack, flare
       b.paint(0x9c978c, Surf.Pavement).box(-30.5, 0, -30.5, 30.5, 0.8, -12.5, { bottom: null, px: null, nx: null, nz: null });
-      tank(b, -21.5, -22, 6.8, 12, 0xe8e8e2, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, stair: true });
+      tank(b, -21.5, -22, 6.8, 12, 0xe8e8e2, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6 });
       tank(b, -5.5, -22, 6.8, 12, 0xdedcd4, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6 });
       tank(b, 9.5, -22, 6.0, 11, 0xe8e8e2, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6 });
       tank(b, 24, -25, 4.0, 10, 0x55654f, { y0: 0.05, roof: 'cone', seg: 10 });
@@ -637,6 +651,7 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
       lattice(b, -11, 2, 0, 16, 5, 5, 3.5, 3.5, 3, 0.3, { rings: true, diag: false });
       b.paint(0x8e9296, Surf.Metal).boxC(-11, 2, 10.4, 7.4, 10.6, 0.3);
       hCyl(b, -11, 12.4, 2, 8, 1.4, 'x', 8);
+      lights(b, [[-16, 5.6, -1.5], [-6, 5.6, 5.5], [-16, 11, 5.5], [-6, 11, -1.5], [-11, 16.4, 2], [22, 9.6, -4.2], [26, 9.6, 2.2]]);
       b.paint(0x9aa0a6, Surf.Metal);
       tube(b, -12.5, 0.5, 0, 10.6, 1.1, 1.1, 8);
       // box heater + stacks
@@ -666,6 +681,7 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x6a6e72, Surf.Metal);
       lattice(b, -6, 3, 0, 24, 7, 7, 4.5, 4.5, 3, 0.34, { rings: true, diag: false });
       b.paint(0x8e9296, Surf.Metal).boxC(-6, 3, 14.6, 9.6, 8, 0.3).boxC(-6, 3, 14.6, 9.6, 16, 0.3);
+      lights(b, [[-13.2, 8.6, 7.6], [1.2, 8.6, -1.6], [-13.2, 16.6, -1.6], [1.2, 16.6, 7.6], [-6, 24.6, 3], [16.5, 8.6, 11.2], [29.5, 8.6, 3]]);
       b.paint(0xd8d8d2, Surf.Metal);
       tube(b, -10, 3, 0, 34, 1.6, 1.4, 8);
       dome(b, -10, 3, 34, 1.4, 1.0, 8, 2);
@@ -715,6 +731,7 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
       wallQuad(b, 'pz', 11, -29, -13, 8.2, 9.2);
       smokestack(b, -15, -1, 26, 0.9, 0.8, 'steel', 8);
       pipeRack(b, -12, 3, 28, 3, 6, 4, rng);
+      lights(b, [[-18, 25.8, -18], [5, 25.8, -20], [-2, 5, 7], [11, 5, 7], [-13, 10.6, 4]]);
       pipeRack(b, 17, -6, 17, 18, 5.5, 3, rng, 12);
       flare(b, 27, -4, 42);
       floodLight(b, -4, 16, 11);

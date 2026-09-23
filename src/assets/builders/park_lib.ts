@@ -293,7 +293,7 @@ function computeProfileNormals(prof: ProfPt[], crease: number): [P2, P2][] {
  * Sweep a cross-section profile [d, y] along a CLOSED plan path (d = outward offset from the path).
  * Same profile conventions as lathe (outer wall upward, then inward over the top, then down the inside).
  */
-export function loftRing(b: ModelBuilder, path: P2[], prof: ProfPt[], crease = 35): void {
+export function loftRing(b: ModelBuilder, path: P2[], prof: ProfPt[], crease = 35, segPaint?: (i: number, k: number) => Paint | null): void {
   const n = path.length;
   const sgn = signedArea(path) > 0 ? 1 : -1;
   const N: P2[] = [];
@@ -306,9 +306,14 @@ export function loftRing(b: ModelBuilder, path: P2[], prof: ProfPt[], crease = 3
   for (let k = 0; k < prof.length - 1; k++) {
     const p = prof[k], q = prof[k + 1];
     if (p.length === 3) b.paint(p[2]);
+    const kp = b.getPaint();
     const [na, nb] = segN[k];
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
+      if (segPaint) {
+        const sp = segPaint(i, k);
+        b.paint(sp ?? kp);
+      }
       const P = (idx: number, pp: ProfPt): V3 => [path[idx][0] + N[idx][0] * pp[0], pp[1], path[idx][1] + N[idx][1] * pp[0]];
       const Nn = (idx: number, nn: P2): V3 => nrm([N[idx][0] * nn[0], nn[1], N[idx][1] * nn[0]]);
       const A0 = P(i, p), A1 = P(j, p), B0 = P(i, q), B1 = P(j, q);
@@ -529,7 +534,7 @@ export function lotModels(defs: Record<string, ModelBuildFn>): ModelBuilders {
 }
 
 // ---------------------------------------------------------------------------------------------- vegetation
-const CANOPY_R: Record<string, number> = { oak: 3.0, maple: 2.65, round: 2.4, cherry: 2.6, birch: 1.8, poplar: 1.35, cone: 2.15, willow: 3.3, acacia: 3.6, palm: 3.2 };
+const CANOPY_R: Record<string, number> = { oak: 3.0, maple: 2.65, round: 2.4, cherry: 2.6, birch: 1.8, poplar: 1.35, cone: 2.15, willow: 2.8, acacia: 3.6, palm: 3.2 };
 export type TreeKind = 'oak' | 'round' | 'cone' | 'poplar' | 'cherry' | 'birch' | 'willow' | 'palm' | 'maple' | 'acacia';
 
 /** Richer low-poly park tree (~30-70 tris). s=1 => ~7-9 m tall. Returns the top height. */
@@ -588,21 +593,22 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
       return 7.8 * k;
     }
     case 'willow': {
-      b.paint(0x55402e, Surf.Wood).cylinder(x, z, 0, 2.8 * k, 0.32 * k, 0.2 * k, 5, { top: false });
-      const c = 0x8aa84a;
-      b.paint(c, Surf.Foliage).blob(x, 4.3 * k, z, 2.6 * k, 1.5 * k, 2.6 * k, 0, 0.18, seed);
-      // drooping curtain: flared, jagged hem
-      b.paint(shade(c, 0.9), Surf.Foliage);
-      const n = 9;
+      b.paint(0x55402e, Surf.Wood).cylinder(x, z, 0, 3.0 * k, 0.32 * k, 0.2 * k, 5, { top: false });
+      const c = 0x7f9c45;
+      b.paint(c, Surf.Foliage).blob(x, 4.5 * k, z, 2.3 * k, 1.4 * k, 2.3 * k, 0, 0.2, seed);
+      b.paint(shade(c, 1.1), Surf.Foliage).blob(x + 0.5 * k, 5.4 * k, z - 0.3 * k, 1.4 * k, 0.9 * k, 1.4 * k, 0, 0.2, seed + 3);
+      // drooping curtain: narrow hanging fronds with a ragged hem
+      const n = 8;
       for (let i = 0; i < n; i++) {
-        const a0 = (i / n) * TAU, a1 = ((i + 1) / n) * TAU;
-        const r0 = 2.3 * k, r1 = 3.1 * k;
-        const yb = (1.1 + (i % 3) * 0.35) * k;
+        const a0 = (i / n) * TAU + 0.15, a1 = a0 + (TAU / n) * 0.7;
+        const r0 = 1.9 * k, r1 = 2.55 * k;
+        const yb = (1.3 + ((i * 7) % 3) * 0.45) * k;
+        b.paint(shade(c, 0.82 + (i % 3) * 0.06), Surf.Foliage);
         const t0: V3 = [x + Math.cos(a0) * r0, 4.3 * k, z + Math.sin(a0) * r0], t1: V3 = [x + Math.cos(a1) * r0, 4.3 * k, z + Math.sin(a1) * r0];
-        const b0: V3 = [x + Math.cos(a0) * r1, yb, z + Math.sin(a0) * r1], b1: V3 = [x + Math.cos(a1) * r1, yb + 0.3 * k, z + Math.sin(a1) * r1];
+        const b0: V3 = [x + Math.cos(a0) * r1, yb, z + Math.sin(a0) * r1], b1: V3 = [x + Math.cos(a1) * r1, yb + 0.5 * k, z + Math.sin(a1) * r1];
         b.quad2(b0, b1, t1, t0);
       }
-      return 5.9 * k;
+      return 6.3 * k;
     }
     case 'acacia': {
       b.paint(0x5b4633, Surf.Wood).cylinder(x, z, 0, 3.4 * k, 0.22 * k, 0.14 * k, 5, { top: false });
@@ -759,7 +765,14 @@ export function bleachers(b: ModelBuilder, x: number, z: number, w: number, rows
     const tris = THREE.ShapeUtils.triangulateShape(contour, []);
     for (const [i, j, k] of tris) orientTri(b, [sx, poly[i][1], poly[i][0]], [sx, poly[j][1], poly[j][0]], [sx, poly[k][1], poly[k][0]], [Math.sign(sx), 0, 0]);
   }
-  b.paint(frame, Surf.Pavement).box(-w / 2, 0, zb - 0.01, w / 2, rows * rise + 0.5, zb + 0.15, { bottom: null });
+  const yb = rows * rise * 0.45;
+  b.paint(frame, Surf.Pavement).box(-w / 2, yb, zb - 0.01, w / 2, rows * rise + 0.5, zb + 0.15);
+  b.paint(0x7a7f85, Surf.Metal);
+  const np = Math.max(2, Math.round(w / 2.5));
+  for (let i = 0; i <= np; i++) {
+    const px = -w / 2 + 0.15 + (i * (w - 0.3)) / np;
+    b.box(px - 0.08, 0, zb + 0.02, px + 0.08, yb, zb + 0.18, { top: null, bottom: null });
+  }
   b.paint(0x7a7f85, Surf.Metal).box(-w / 2, rows * rise + 0.95, zb + 0.02, w / 2, rows * rise + 1.05, zb + 0.12, { bottom: null });
   if (opts.roof) {
     const hTop = rows * rise + 3.2;

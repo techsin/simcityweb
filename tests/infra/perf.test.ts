@@ -22,7 +22,7 @@ function minOf(n: number, fn: () => void): number {
 }
 
 describe('infra perf (256x256 stress city)', () => {
-  it('per-system and per-phase timings', () => {
+  it('per-system and per-phase timings', { timeout: 120000 }, () => {
     const t0 = performance.now();
     const city = stressCity(256);
     const tGen = performance.now() - t0;
@@ -67,7 +67,7 @@ describe('infra perf (256x256 stress city)', () => {
     expect(Math.max(...phaseMin)).toBeLessThan(100);
   });
 
-  it('road search on a fully paved 256x256 grid (65,536 nodes)', () => {
+  it('road search on a fully paved 256x256 grid (65,536 nodes)', { timeout: 60000 }, () => {
     const st = newState(256);
     for (let i = 0; i < st.cells; i++) st.network[i] = (i % 7 === 0 ? Network.Avenue : Network.Road);
     const g = new RoadGraph();

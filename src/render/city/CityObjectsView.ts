@@ -56,6 +56,8 @@ export interface CityViewStats {
   pylons: number;
   /** approximate draw calls issued by this view per main pass */
   drawCalls: number;
+  /** CPU ms of the last update() */
+  updateMs: number;
 }
 
 function expand(r: CellRect, m: number, N: number): CellRect {
@@ -216,7 +218,11 @@ export class CityObjectsView implements CityObjectsViewApi {
   }
 
   // ------------------------------------------------------------------ frame
+  /** ms spent in the last update() (CPU) */
+  lastUpdateMs = 0;
+
   update(dt: number): void {
+    const tU = performance.now();
     const cam = this.ctx.camera;
     cam.updateMatrixWorld();
     this.culler.update(cam);
@@ -239,6 +245,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     roadUniforms.uRoadOverlay.value = o.value * 0.6;
     this.syncTimer -= dt;
     if (this.syncTimer <= 0) { this.syncTimer = 2; syncCityMaterials(); }
+    this.lastUpdateMs = performance.now() - tU;
   }
 
   // ------------------------------------------------------------------ previews / tools
@@ -334,6 +341,7 @@ export class CityObjectsView implements CityObjectsViewApi {
       particles: this.effects.particleCount,
       pylons: this.power.pylonCount,
       drawCalls: rd + 1 + 1 + 1 + 1 + 1 + 1 + 2,
+      updateMs: Math.round(this.lastUpdateMs * 100) / 100,
     };
   }
 

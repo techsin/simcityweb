@@ -37,7 +37,7 @@ const PRESETS: { id: Exclude<TerrainPreset, 'region'>; label: string; icon: stri
   { id: 'lakes', label: 'Lakes', icon: 'droplet' },
 ];
 
-const PREVIEW_RES = 64;
+const PREVIEW_RES = 96;
 
 /** terrain options (sampler etc.) for a config on a region tile — also used by main to generate the real city */
 export function terrainOptionsFor(cfg: CityConfigData, region?: RegionModel, tile?: RegionTile): TerrainOptions {
@@ -166,7 +166,8 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
     const yearInput = h('input', { type: 'number', value: String(cfg.startYear), min: '1800', max: '2200', step: '1' }) as HTMLInputElement;
     yearInput.addEventListener('change', () => (cfg.startYear = Math.max(1800, Math.min(2200, Math.floor(+yearInput.value || 2000)))));
 
-    const sizeLabel = `${TILE_SIZE_LABEL[(size / REGION_UNIT_CELLS) as 1 | 2 | 4] ?? 'Custom'} · ${(size * 16) / 1000} × ${(size * 16) / 1000} km`;
+    const km = Math.round((size * 16) / 100) / 10;
+    const sizeLabel = `${TILE_SIZE_LABEL[(size / REGION_UNIT_CELLS) as 1 | 2 | 4] ?? 'Custom'} tile · ${km} × ${km} km · ${size} × ${size} cells`;
     const form = h(
       'div',
       {},

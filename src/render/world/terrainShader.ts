@@ -101,7 +101,7 @@ vec3 terrainShade(vec3 P, vec3 N) {
   // outside the map: fade the (clamped) texture out and continue with noise forests
   vec2 tout = max(-tuv, tuv - 1.0);
   float outside = smoothstep(0.0, 0.03, max(tout.x, tout.y));
-  trees = mix(trees, smoothstep(0.55, 0.7, nA.g * 0.6 + nB.r * 0.5) * 0.8, outside);
+  trees = mix(trees, smoothstep(0.6, 0.74, nA.g * 0.6 + nB.r * 0.5) * 0.65, outside);
   float forest = smoothstep(0.03, 0.55, trees);
   col = mix(col, uPal[3] * (0.85 + 0.3 * m3), forest * 0.82);
 
@@ -167,12 +167,14 @@ vec3 terrainShade(vec3 P, vec3 N) {
   float fpx = max(fwc.x, fwc.y);
   bool inside = gc.x >= 0.0 && gc.y >= 0.0 && gc.x < uN && gc.y < uN;
   if (!inside) {
+    // (no border / dimming under water: it would show through the transparent sea as a seam)
+    float landF = smoothstep(-1.5, 0.5, h);
     float l = tLuma(col);
-    col = mix(col, vec3(l), 0.18) * 0.9;
+    col = mix(col, mix(col, vec3(l), 0.18) * 0.9, landF);
     vec2 dd = max(-gc, gc - uN);
     float dEdge = max(dd.x, dd.y);
     float border = 1.0 - smoothstep(0.0, max(fpx * 2.0, 0.08), dEdge);
-    col = mix(col, vec3(0.92, 0.9, 0.8), border * 0.35);
+    col = mix(col, vec3(0.92, 0.9, 0.8), border * 0.35 * landF);
   } else {
     ivec2 cell = ivec2(gc);
     vec2 f = fract(gc);

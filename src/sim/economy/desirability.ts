@@ -11,7 +11,7 @@ import { clamp, smoothstep } from '../../core/rng';
 import { DEV_TYPE_COUNT, Network, Zone } from '../../core/types';
 import { ZONE_DEVTYPES, devFamily } from '../catalog';
 import {
-  COARSE, COMMUTE_BAD, COMMUTE_FALLBACK, COMMUTE_GOOD, COVERAGE_FALLBACK, DESIR_REFRESH_DAYS, DESIR_TAX, DESIR_WEIGHTS,
+  COARSE, COMMUTE_BAD, COMMUTE_FALLBACK, COMMUTE_GOOD, COVERAGE_FALLBACK, DESIR_ALL_SWEEPS, DESIR_REFRESH_DAYS, DESIR_TAX, DESIR_WEIGHTS,
   FREIGHT_BLOCKS, POP_NEAR_FULL, SLOPE_P0, SLOPE_P1, TAX_NEUTRAL, TAX_SENS, TRAFFIC_BUSY,
 } from './tuning';
 import { type EconRuntime, infraFlags } from './runtime';
@@ -38,6 +38,12 @@ for (let d = 0; d < DEV_TYPE_COUNT; d++) {
   BIAS[d] = w.bias;
 }
 const ALL_DEVS: readonly number[] = Array.from({ length: DEV_TYPE_COUNT }, (_, i) => i);
+/** per dev: indices (1..NT-1) of non-zero weights, so the inner loop skips zero terms */
+const NZ: Int8Array[] = Array.from({ length: DEV_TYPE_COUNT }, (_, d) => {
+  const out: number[] = [];
+  for (let t = 1; t < NT; t++) if (WT[d * NT + t] !== 0) out.push(t);
+  return Int8Array.from(out);
+});
 
 /** road noise proxy used when the pollution system is absent */
 const NET_NOISE = [0, 0.03, 0.08, 0.2, 0.1, 0.45, 0.2];
@@ -102,7 +108,7 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
         const zone = st.zone[i];
         const n = net[i];
         if (st.water[i] || n !== Network.None) {
-          for (let d = 0; d < DEV_TYPE_COUNT; d++) des[d][i] = -1;
+          if (des[0][i] !== -1 || des[11][i] !== -1) for (let d = 0; d < DEV_TYPE_COUNT; d++) des[d][i] = -1;
           continue;
         }
         let devs: readonly number[];
@@ -143,7 +149,8 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
           const d = devs[k];
           const o = d * NT;
           let s = BIAS[d] + shift[d] + WT[o] * (T[T_LV] - LVREF[d]);
-          for (let t = 1; t < NT; t++) s += WT[o + t] * T[t];
+          const nz = NZ[d];
+          for (let q = 0; q < nz.length; q++) { const t = nz[q]; s += WT[o + t] * T[t]; }
           des[d][i] = clamp(s, -1, 1);
         }
       }
@@ -170,7 +177,7 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
       const N = st.size;
       const rows = Math.ceil(N / DESIR_REFRESH_DAYS);
       const z1 = Math.min(N, row + rows);
-      band(st, row, z1, sweep % 4 === 0);
+      band(st, row, z1, sweep % DESIR_ALL_SWEEPS === 0);
       row = z1;
       if (row >= N) {
         row = 0;

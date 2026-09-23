@@ -7,7 +7,7 @@
 import { Network } from '../../core/types';
 import { MinHeap } from './heap';
 import type { RoadGraph } from './graph';
-import { RAMP_PENALTY } from './params';
+import { BUS_TIME_FACTOR, NET_TIME, RAMP_PENALTY, SUBWAY_TIME } from './params';
 
 export class Search {
   n = 0;
@@ -98,11 +98,10 @@ class BucketQueue {
   }
 }
 const bq = new BucketQueue();
-/** bucket width: min free-flow edge cost on roads (highway 0.04 min) */
-let Q = 0.04 * 0.999;
-export function setRoadBucketWidth(minEdgeCost: number): void {
-  Q = minEdgeCost * 0.999;
-}
+/** min free-flow time of any road cell: every road edge costs at least this (BPR factor >= 1) */
+const MIN_ROAD_T = Math.min(NET_TIME[1], NET_TIME[2], NET_TIME[3], NET_TIME[4], NET_TIME[5]);
+/** bucket width for road searches (must be <= the minimum edge cost for exactness) */
+const Q = MIN_ROAD_T * 0.999;
 
 /**
  * Road graph search. adj = g.fwd (forward search from seeds = origins) or g.rev (reverse search: distances TO the
@@ -193,11 +192,8 @@ export interface TransitNet {
   trCost: Float32Array;
 }
 
-/** bucket width for the transit net: min in-vehicle edge cost (subway 0.03 min/cell) */
-let QT = 0.03 * 0.999;
-export function setTransitBucketWidth(minEdgeCost: number): void {
-  QT = minEdgeCost * 0.999;
-}
+/** bucket width for the transit net: min in-vehicle edge cost (subway / rail / bus-on-road; transfers cost more) */
+const QT = Math.min(SUBWAY_TIME, NET_TIME[6], MIN_ROAD_T * BUS_TIME_FACTOR) * 0.999;
 
 export function transitSearch(T: TransitNet, S: Search, _heap: MinHeap, seeds: Seeds, limit = 400): void {
   const n = T.total;
