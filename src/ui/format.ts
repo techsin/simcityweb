@@ -1,13 +1,9 @@
-/** Number / money / date formatting for the UI. Currency: Simoleons (§). */
+/** Number / money / date formatting for the UI. Money goes through sim-core's shared formatter (Simoleons, §). */
+import { CURRENCY, formatMoney } from '../sim/economy/format';
 
 const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
-export const CURRENCY = '§';
-
-/** normalize money in simulation-generated text ("$1,200" -> "§1,200"); wealth tags like R$$ are untouched */
-export function simText(s: string): string {
-  return s.replace(/\$(?=[\d.])/g, CURRENCY).replace(/-\$(?=\d)/g, '−' + CURRENCY);
-}
+export { CURRENCY };
 
 export function num(n: number): string {
   if (!isFinite(n)) return '—';
@@ -27,21 +23,18 @@ export function compact(n: number, digits = 1): string {
 
 export function money(n: number): string {
   if (!isFinite(n)) return CURRENCY + '—';
-  const s = n < 0 ? '−' : '';
-  return s + CURRENCY + nf.format(Math.round(Math.abs(n)));
+  return formatMoney(n);
 }
 
 export function moneyCompact(n: number): string {
   if (!isFinite(n)) return CURRENCY + '—';
-  const s = n < 0 ? '−' : '';
-  return s + CURRENCY + compact(Math.abs(n));
+  return formatMoney(n, true);
 }
 
 /** signed money: +§1,200 / −§300 */
 export function moneySigned(n: number, compactMode = false): string {
   const v = Math.round(n);
-  const body = compactMode ? CURRENCY + compact(Math.abs(v)) : CURRENCY + nf.format(Math.abs(v));
-  return (v > 0 ? '+' : v < 0 ? '−' : '±') + body;
+  return (v > 0 ? '+' : v < 0 ? '−' : '±') + formatMoney(Math.abs(v), compactMode);
 }
 
 export function pct(v01: number, digits = 0): string {

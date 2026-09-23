@@ -3,7 +3,7 @@ import type { NewsItem } from '../sim/CityState';
 import type { GameContext } from '../game/context';
 import { escapeHtml, h } from './dom';
 import { icon } from './icons';
-import { dayLabel, simText } from './format';
+import { dayLabel } from './format';
 
 export const NEWS_META: Record<string, { color: string; icon: string; title: string }> = {
   info: { color: 'var(--accent)', icon: 'news', title: 'News' },
@@ -58,7 +58,7 @@ export class NewsTicker {
       items.push(...welcome);
     }
     for (const n of items) {
-      const el = h('span', { class: `tk-item ${n.kind}` }, h('span', { class: 'tk-dot' }), h('span', { class: 'd' }, dayLabel(n.day, st.config.startYear)), h('span', { html: escapeHtml(simText(n.text)) }));
+      const el = h('span', { class: `tk-item ${n.kind}` }, h('span', { class: 'tk-dot' }), h('span', { class: 'd' }, dayLabel(n.day, st.config.startYear)), h('span', { html: escapeHtml(n.text) }));
       if (n.x !== undefined && n.z !== undefined) {
         el.dataset.x = String(n.x);
         el.dataset.z = String(n.z);
@@ -113,7 +113,7 @@ export class Toasts {
       h('div', { class: 't-ico', html: icon(meta.icon, 16) }),
       h('div', { class: 't-body' },
         title || meta.title ? h('div', { class: 't-title' }, title ?? meta.title) : null,
-        h('div', { class: 't-text' }, simText(text)),
+        h('div', { class: 't-text' }, text),
         cell ? h('div', { class: 't-go', html: icon('target', 12) + 'Click to view' }) : null,
       ),
       x,

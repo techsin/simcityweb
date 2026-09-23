@@ -37,7 +37,11 @@ export function dim(c: ColorLike, k: number): Color {
  * `y` is the final pool height (lightPool lifts by 2 cm internally); `floor` / 3.3 = intensity.
  */
 export function pool(b: ModelBuilder, x: number, z: number, r: number, groundColor: ColorLike, y = Y_POOL, seg = 10, floor = 3.3): void {
-  b.lightPool(x, y - 0.02, z, r, groundColor, floor / 3.3, seg);
+  // the pool's night light scales with its (ground) albedo -> boost it on dark asphalt / coal so it still reads
+  const c = dim(groundColor, 1);
+  const lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  const boost = Math.min(7, Math.max(1, 0.28 / Math.max(lum, 0.01)));
+  b.lightPool(x, y - 0.02, z, r, groundColor, (floor / 3.3) * boost, seg);
   b.paint(RESET_PAINT, Surf.Metal);
 }
 

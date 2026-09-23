@@ -321,7 +321,7 @@ function farmBarn(b: ModelBuilder, v: number, rng: RNG): void {
       fence(b, 0, 14.5, 0, 2, 1.2, 0xf2efe6, 3);
       for (let i = 0; i < 3; i++) roundBale(b, rng.range(3, 11), rng.range(5, 12), rng.chance(0.5));
       tractor(b, -3, -3.5, Math.PI * 0.35, 0x2f6b2a);
-      floodLight(b, -4.5, -7, 7, GRAVEL, 3.6, undefined, 0.14);
+      floodLight(b, -4.5, -6.5, 7, GRAVEL, 5, undefined, 0.14);
       tree(b, rng, -13, -12, 9, 2.6);
       tree(b, rng, -3.5, 12.8, 8, 2.4);
       break;
@@ -380,7 +380,7 @@ function farmBarn(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0xd8d0bc, Surf.Plain);
       tube(b, 11.6, -11.6, 10.4, 0.6, 2.42, 2.42, 12);
       tube(b, 11.6, -5.6, 9.0, 0.6, 2.12, 2.12, 12);
-      floodLight(b, 2.5, -6.5, 7, 0xa89c86, 4.2, undefined, 0.11);
+      floodLight(b, 2.5, -7, 7, 0xa89c86, 5.5, undefined, 0.11);
       // wrapped bales (white) in a row
       for (let i = 0; i < 6; i++) roundBale(b, -13 + i * 1.5, -0.2, false, 0xf2f2ee);
       // brick farmhouse

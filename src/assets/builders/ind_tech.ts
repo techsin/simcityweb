@@ -373,8 +373,8 @@ function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
   flat(b, -HX, 11, HX, HZ, Y_OVER);
   fenceRect(b, -23.3, -15.3, 23.3, 10.5, 2.6, 0x8a9096, [2, 8], 6, 2, true);
   // security lights along the fence every ~12 m (6 m posts, cool LED + light pools inside the fence)
-  securityLights(b, -22.6, 9.8, -22.6, -11, 10.4, DG, 6, [1, 0]);
-  securityLights(b, 22.6, 9.8, 22.6, -11, 10.4, DG, 6, [-1, 0]);
+  securityLights(b, -22.6, 7, -22.6, -11, 9, DG, 6, [1, 0]);
+  securityLights(b, 22.6, 7, 22.6, -11, 9, DG, 6, [-1, 0]);
   securityLights(b, -10.6, -14.6, 10.6, -14.6, 12, DG, 6, [0, 1]);
   // guard house at the gate (lit window)
   b.paint(0xe6e8e8, Surf.Plain).box(8.8, 0, 7.5, 11.5, 3.0, 10);

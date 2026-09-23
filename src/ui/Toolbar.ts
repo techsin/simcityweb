@@ -3,7 +3,7 @@ import { Network, Zone } from '../core/types';
 import type { GameContext } from '../game/context';
 import { CATEGORIES, CATEGORY_COLORS, categoryOfTool, findToolSpec, type ToolCategory, type ToolSpec } from '../game/toolCatalog';
 import type { BuildingDef } from '../sim/catalogTypes';
-import type { ActionResult } from '../sim/actions';
+import { BRIDGE_COST_MUL, NETWORK_INFO, POWERLINE_COST, SUBWAY_COST, networkCellCost, zoneCellCost } from '../sim/economy/tuning';
 import { clear, escapeHtml, h, toggleClass } from './dom';
 import { icon } from './icons';
 import { money, num, titleCase } from './format';
@@ -27,8 +27,6 @@ export class Toolbar {
   private tip: HTMLDivElement;
   private btns = new Map<string, HTMLButtonElement>();
   private openCat: string | null = null;
-  private tileCost = new Map<string, number | null>();
-  private freeCell: { x: number; z: number } | null | undefined;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'hud-bottom' });
@@ -130,43 +128,25 @@ export class Toolbar {
   }
 
   // ------------------------------------------------------------------------------------------------ per-tile costs
-  private findFreeCell(): { x: number; z: number } | null {
-    if (this.freeCell !== undefined) return this.freeCell;
-    const st = this.ctx.state;
-    const N = st.size;
-    const c = N >> 1;
-    for (let r = 0; r < N / 2; r++) {
-      for (let dz = -r; dz <= r; dz++)
-        for (let dx = -r; dx <= r; dx++) {
-          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
-          const x = c + dx, z = c + dz;
-          if (!st.inBounds(x, z)) continue;
-          const i = st.idx(x, z);
-          if (!st.water[i] && !st.network[i] && st.building[i] < 0 && !st.zone[i] && st.cellSlope(x, z) < 1.5) return (this.freeCell = { x, z });
-        }
-    }
-    return (this.freeCell = null);
+  /** § per tile on land, from sim-core's tuning (economy/tuning.ts) */
+  private perTileCost(spec: ToolSpec): number | null {
+    let c = 0;
+    if (spec.id.startsWith('zone:')) c = zoneCellCost(Number(spec.id.slice(5)) as Zone);
+    else if (spec.id.startsWith('net:')) c = networkCellCost(Number(spec.id.slice(4)) as Network);
+    else if (spec.id === 'power') c = POWERLINE_COST;
+    else if (spec.id === 'subway') c = SUBWAY_COST;
+    return c > 0 ? c : null;
   }
 
-  private perTileCost(spec: ToolSpec): number | null {
-    if (this.tileCost.has(spec.id)) return this.tileCost.get(spec.id)!;
-    const cell = this.findFreeCell();
-    let cost: number | null = null;
-    if (cell) {
-      const a = this.ctx.actions;
-      let r: ActionResult | null = null;
-      try {
-        if (spec.id.startsWith('zone:')) r = a.zone({ x0: cell.x, z0: cell.z, x1: cell.x + 1, z1: cell.z + 1 }, Number(spec.id.slice(5)) as Zone, true);
-        else if (spec.id.startsWith('net:')) r = a.buildNetwork([cell], Number(spec.id.slice(4)) as Network, true);
-        else if (spec.id === 'power') r = a.buildPowerLine([cell], true);
-        else if (spec.id === 'subway') r = a.buildSubway([cell], true);
-      } catch {
-        r = null;
-      }
-      if (r && isFinite(r.cost) && r.cost > 0) cost = r.cost;
+  /** extra cost note for networks (bridges) */
+  private bridgeNote(spec: ToolSpec): string | null {
+    if (spec.id.startsWith('net:')) {
+      const t = Number(spec.id.slice(4)) as Network;
+      const info = NETWORK_INFO[t];
+      if (!info) return null;
+      return info.bridge ? `Bridges ${money(info.cost * BRIDGE_COST_MUL)} per tile` : "Can't bridge water";
     }
-    this.tileCost.set(spec.id, cost);
-    return cost;
+    return null;
   }
 
   /** cost line html: one-off cost + monthly upkeep (plops) or per-tile cost */
@@ -347,6 +327,8 @@ export class Toolbar {
       cat = s.id.startsWith('zone:') ? 'Zone' : s.id.startsWith('net:') || s.id === 'subway' || s.id === 'power' ? 'Network' : s.id.startsWith('disaster:') ? 'Disaster' : 'Tool';
       const c = s.costUnit ? this.perTileCost(s) : null;
       if (c) rows.push(['Cost', `${money(c)} per tile`]);
+      const bn = this.bridgeNote(s);
+      if (bn) rows.push(['Over water', bn]);
     }
     const lock = s.locked ? `<div class="rt-lock">${icon('lock', 14)}<div><b>Locked</b><br>${escapeHtml(s.locked.hint)}${s.locked.progress !== undefined ? ` · ${Math.round(s.locked.progress * 100)}%` : ''}</div></div>` : '';
     const dis = s.disabled ? `<div class="rt-lock">${icon('alert', 14)}<div>${escapeHtml(s.disabled)}</div></div>` : '';

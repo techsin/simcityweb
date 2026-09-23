@@ -4,7 +4,7 @@ import type { GameContext } from '../../game/context';
 import { Panel } from '../Panel';
 import { clear, escapeHtml, h, toggleClass } from '../dom';
 import { icon } from '../icons';
-import { dayLabel, money, pct, simText } from '../format';
+import { dayLabel, money, pct } from '../format';
 import { lastNet } from '../TopBar';
 
 interface Advisor {
@@ -164,7 +164,7 @@ export class AdvisorsPanel extends Panel {
           h('div', { class: 'av', style: { background: `linear-gradient(145deg, ${a.color}, color-mix(in srgb, ${a.color} 55%, #000))`, '--st': stColor } as Record<string, string>, html: icon(a.icon, 19) }),
           h('div', null,
             h('div', { style: 'display:flex;align-items:baseline;gap:8px' }, h('span', { class: 'an' }, a.name), h('span', { class: 'ar' }, a.role)),
-            h('div', { class: 'am' }, simText(text)),
+            h('div', { class: 'am' }, text),
             recent && latest!.x !== undefined ? h('button', { class: 'btn sm ghost', style: 'margin-top:6px;padding-left:0', html: icon('target', 13) + '<span>Show me</span>', onclick: () => this.ctx.focusCell(latest!.x!, latest!.z!, 420) }) : null,
           ),
         );
@@ -176,7 +176,7 @@ export class AdvisorsPanel extends Panel {
       const items = st.news.slice().reverse();
       if (!items.length) list.appendChild(h('div', { class: 'empty', html: icon('news', 28) + '<div>No news yet. Build your city and the headlines will follow.</div>' }));
       for (const n of items.slice(0, 150)) {
-        const row = h('div', { class: `news-row ${n.kind}` }, h('span', { class: 'nd' }), h('span', { class: 'nt' }, dayLabel(n.day, st.config.startYear)), h('span', { html: escapeHtml(simText(n.text)) + (n.advisor ? ` <span class="faint">— ${escapeHtml(n.advisor)}</span>` : '') }));
+        const row = h('div', { class: `news-row ${n.kind}` }, h('span', { class: 'nd' }), h('span', { class: 'nt' }, dayLabel(n.day, st.config.startYear)), h('span', { html: escapeHtml(n.text) + (n.advisor ? ` <span class="faint">— ${escapeHtml(n.advisor)}</span>` : '') }));
         if (n.x !== undefined && n.z !== undefined) {
           const go = h('span', { class: 'go', title: 'Show on map', html: icon('target', 14) });
           row.appendChild(go);

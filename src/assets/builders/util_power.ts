@@ -149,9 +149,9 @@ function coalPlant(b: ModelBuilder, rng: RNG): void {
   floodLight(b, 4, 30, 14);
   floodLight(b, 31, -30, 14);
   // coal-yard light pools (dark ground -> stronger pool)
-  pool(b, 13, 28, 4.5, COALYARD, Y_POOL, 8, 8);
-  pool(b, 25.5, 17, 2.4, COALYARD, Y_POOL, 8, 8);
-  pool(b, 9, 5.5, 3.4, COALYARD, Y_POOL, 8, 8);
+  pool(b, 13, 28, 4.5, COALYARD);
+  pool(b, 25.5, 17, 2.4, COALYARD);
+  pool(b, 9, 5.5, 3.4, COALYARD);
   for (const [lx, lz] of [[13, 28], [25.5, 17], [9, 5.5]] as [number, number][]) lightDot(b, lx, 12.5, lz, 0.4, 0xfff0c8);
   b.paint(0x3a3d40, Surf.Metal);
   for (const [lx, lz] of [[13, 28], [25.5, 17], [9, 5.5]] as [number, number][]) strut(b, [lx + 0.6, 0, lz], [lx + 0.6, 12.2, lz], 0.2);
@@ -334,7 +334,7 @@ function coolingTower(b: ModelBuilder, x: number, z: number, H: number, R0: numb
   const ring = (y: number, rr: number, ph: number): V3[] => [0, 1, 2, 3].map((k) => [x + Math.cos(ph + (k * Math.PI) / 2) * rr, y, z + Math.sin(ph + (k * Math.PI) / 2) * rr] as V3);
   lights(b, [...ring(H - 0.8, r(H) + 0.35, 0.4), ...ring(0.55 * H, r(0.55 * H) + 0.35, 1.2)], 0.9, 0xff2a1a);
   // lit apron ring around the basin
-  poolRing(b, x, z, r(lip) + 1.3, 23, CONCRETE, Y_POOL, 10, 2.4);
+  poolRing(b, x, z, r(lip) + 1.3, 23, CONCRETE, Y_POOL, 10, 5);
   emitSteam([x, H + 2, z]);
 }
 

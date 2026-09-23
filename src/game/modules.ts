@@ -9,12 +9,12 @@ import type { Simulation, CityEvents } from '../sim/Simulation';
 import type { Emitter } from '../core/events';
 import type { Overlay } from '../core/types';
 import type * as THREE from 'three';
-import { simText } from '../ui/format';
 
 const LAZY = import.meta.glob([
   '../render/world/WorldView.ts',
   '../render/world/overlays.ts',
   '../render/city/CityObjectsView.ts',
+  '../sim/economy/index.ts',
   '../sim/economy/rewards.ts',
   '../sim/economy/ordinances.ts',
   '../sim/infra/disasters.ts',
@@ -98,8 +98,19 @@ export interface InfraApi {
   activeDisasters?: (sim: Simulation) => readonly { kind: string; x: number; z: number }[];
 }
 
+/** sim-core UI helpers (src/sim/economy/index.ts) */
+export interface EconApi {
+  demandInfo?: (s: CityState) => { demand: number[]; absolute: number[]; target: number[]; cap: number[]; capped: boolean[] };
+  capHints?: (s: CityState) => { family: 'R' | 'C' | 'I'; devs: number[]; hint: string }[];
+  computeMonthlyBudget?: (s: CityState, rt: null) => { income: Record<string, number>; expense: Record<string, number>; totalIncome: number; totalExpense: number };
+  serviceEffectiveness?: (s: CityState, service: string) => number;
+  onStrike?: (s: CityState, service: string) => boolean;
+  maxLoanAmount?: (s: CityState) => number;
+}
+
 export interface GameModules {
   infra?: InfraApi;
+  econ?: EconApi;
   WorldView?: WorldViewCtor;
   overlayLegend?: (o: Overlay) => unknown;
   CityObjectsView?: CityObjectsViewCtor;
@@ -127,7 +138,7 @@ async function load(path: string, errors: string[]): Promise<Record<string, unkn
 }
 
 function str(v: unknown, fb = ''): string {
-  return typeof v === 'string' ? simText(v) : typeof v === 'number' ? String(v) : fb;
+  return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : fb;
 }
 function numOr(v: unknown, fb = 0): number {
   return typeof v === 'number' && isFinite(v) ? v : fb;
@@ -154,8 +165,8 @@ export function normalizeReward(r: any): RewardInfo {
 
 function effectList(v: unknown): string[] {
   if (!v) return [];
-  if (typeof v === 'string') return v.split(/,\s*(?=[+\-−A-Za-z])/).map((x) => simText(x.trim())).filter(Boolean);
-  if (Array.isArray(v)) return v.map((x) => (typeof x === 'string' ? simText(x) : JSON.stringify(x)));
+  if (typeof v === 'string') return v.split(/,\s*(?=[+\-−A-Za-z])/).map((x) => x.trim()).filter(Boolean);
+  if (Array.isArray(v)) return v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x)));
   if (typeof v === 'object') return Object.entries(v as Record<string, unknown>).map(([k, x]) => `${k}: ${typeof x === 'number' ? (x > 0 ? '+' : '') + x : String(x)}`);
   return [];
 }
@@ -215,13 +226,27 @@ const DEFAULT_DISASTERS = [
 export async function loadGameModules(): Promise<GameModules> {
   const errors: string[] = [];
   const out: GameModules = { errors };
-  const [wv, ov, rw, od, ds] = await Promise.all([
+  const [wv, ov, ec, ds] = await Promise.all([
     load('../render/world/WorldView.ts', errors),
     load('../render/city/CityObjectsView.ts', errors),
-    load('../sim/economy/rewards.ts', errors),
-    load('../sim/economy/ordinances.ts', errors),
+    load('../sim/economy/index.ts', errors),
     load('../sim/infra/disasters.ts', errors),
   ]);
+  // economy helpers: prefer the public index, fall back to the individual modules
+  const rw = ec && typeof ec.listRewards === 'function' ? ec : await load('../sim/economy/rewards.ts', errors);
+  const od = ec && typeof ec.listOrdinances === 'function' ? ec : await load('../sim/economy/ordinances.ts', errors);
+  if (ec) {
+    const fn = <T>(k: string) => (typeof ec[k] === 'function' ? (ec[k] as T) : undefined);
+    out.econ = {
+      demandInfo: fn('demandInfo'),
+      capHints: fn('capHints'),
+      computeMonthlyBudget: fn('computeMonthlyBudget'),
+      serviceEffectiveness: fn('serviceEffectiveness'),
+      onStrike: fn('onStrike'),
+      maxLoanAmount: fn('maxLoanAmount'),
+    };
+    if (typeof ec.loanOffer === 'function') out.loanOffer = ec.loanOffer as GameModules['loanOffer'];
+  }
   if (wv) {
     if (typeof wv.WorldView === 'function') out.WorldView = wv.WorldView as WorldViewCtor;
     else if (typeof wv.default === 'function') out.WorldView = wv.default as WorldViewCtor;
@@ -273,8 +298,10 @@ export async function loadGameModules(): Promise<GameModules> {
       out.disasterKinds = DEFAULT_DISASTERS;
     }
   }
-  const lo = await load('../sim/economy/loans.ts', errors);
-  if (lo && typeof lo.loanOffer === 'function') out.loanOffer = lo.loanOffer as GameModules['loanOffer'];
+  if (!out.loanOffer) {
+    const lo = await load('../sim/economy/loans.ts', errors);
+    if (lo && typeof lo.loanOffer === 'function') out.loanOffer = lo.loanOffer as GameModules['loanOffer'];
+  }
   // audio: prefer index.ts
   const audioPaths = Object.keys(LAZY).filter((p) => p.startsWith('../audio/')).sort((a, b) => (a.endsWith('/index.ts') ? -1 : b.endsWith('/index.ts') ? 1 : a.localeCompare(b)));
   const audioMods: Record<string, unknown>[] = [];
