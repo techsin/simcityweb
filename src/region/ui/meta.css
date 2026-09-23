@@ -312,3 +312,13 @@
 .credits .cr-note { font-size: 12.5px; color: var(--text-dim); line-height: 1.6; }
 
 .kbd-hint { color: var(--text-faint); font-size: 12px; }
+
+/* neighbour city names at the map edges (city view overlay) */
+.neighbor-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 2; }
+.neighbor-label {
+  position: absolute; left: 0; top: 0; display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px 5px 8px; border-radius: 999px; white-space: nowrap;
+  background: rgba(10, 14, 22, 0.62); border: 1px solid rgba(255, 255, 255, 0.16); color: #fff; font: 700 12px var(--font); letter-spacing: 0.02em;
+  backdrop-filter: blur(6px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3); transition: opacity 0.25s; opacity: 0;
+}
+.neighbor-label small { font-weight: 500; color: var(--text-dim); }
+.neighbor-label .nl-arrow { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: rgba(255, 196, 120, 0.22); color: #ffd3a0; font-size: 11px; }
