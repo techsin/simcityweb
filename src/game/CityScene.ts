@@ -295,13 +295,18 @@ export class CityScene {
     this.started = true;
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.loop);
-    void this.initViews();
+    this.initViews().catch((e) => {
+      this.errors.report('Starting the city view failed', e);
+      this.veil.classList.add('gone');
+      this.resolveReady();
+    });
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    this.resolveReady(); // never leave awaiters hanging
     this.abort.abort();
     for (const f of this.offs) f();
     this.resizeObs?.disconnect();

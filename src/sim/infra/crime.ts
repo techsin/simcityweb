@@ -12,8 +12,9 @@ import type { SimSystem, Simulation } from '../Simulation';
 import { blur3 } from './blur';
 import { Fam, infoOf, nowMs, readEffects, setFlagQuiet, wealthOf, buildingList } from './common';
 import { CRIME_THRESHOLD } from './params';
+import { schedulerOf, sizeFactors } from './scheduler';
 
-export const CRIME_PERIOD = 8;
+export const CRIME_PERIOD = 16;
 
 const POVERTY_BY_DEV: number[] = [];
 POVERTY_BY_DEV[DevType.R1] = 0.28;
@@ -36,19 +37,50 @@ export class CrimeSystem implements SimSystem {
   private lastRun = -1e9;
   lastMs = 0;
 
+  /** pass progress: -1 idle, 0 raw crime per building, 1 blur + smoothing + flags */
+  private stepIdx = -1;
+  private firstPass = false;
+
   init(sim: Simulation): void {
     sim.state.systemData.infraVersion = 1;
     this.lastRun = -1e9;
+    this.stepIdx = -1;
     this.compute(sim, true);
+    const self = this;
+    schedulerOf(sim).register({
+      name: 'crime',
+      due: (s) => self.stepIdx >= 0 || s.state.day - self.lastRun >= CRIME_PERIOD,
+      urgent: () => false,
+      cost: (s) => { const f = sizeFactors(s); return self.stepIdx <= 0 ? 0.9 * f.bld : 0.6 * f.cells + 0.5 * f.bld; },
+      step: (s) => self.step(s),
+    });
   }
 
   daily(sim: Simulation): void {
-    const d = sim.state.day;
-    if (d % CRIME_PERIOD === 7 || d - this.lastRun > CRIME_PERIOD * 2) this.compute(sim, false);
+    schedulerOf(sim).tickDay(sim);
   }
 
+  frame(sim: Simulation, _dt: number): void {
+    schedulerOf(sim).tickFrame(sim, this);
+  }
+
+  /** full synchronous update (init / tests) */
   compute(sim: Simulation, first: boolean): void {
     const t0 = nowMs();
+    this.stepIdx = -1;
+    this.firstPass = first;
+    do this.step(sim); while (this.stepIdx >= 0);
+    this.lastMs = nowMs() - t0;
+  }
+
+  step(sim: Simulation): void {
+    const t0 = nowMs();
+    if (this.stepIdx <= 0) { this.rawStep(sim); this.stepIdx = 1; }
+    else { this.smoothStep(sim, this.firstPass); this.stepIdx = -1; this.firstPass = false; }
+    this.lastMs = nowMs() - t0;
+  }
+
+  private rawStep(sim: Simulation): void {
     const st = sim.state;
     const N = st.size, C = st.cells;
     this.lastRun = st.day;
@@ -87,6 +119,12 @@ export class CrimeSystem implements SimSystem {
         raw[z * N + x] = c;
       }
     }
+  }
+
+  private smoothStep(sim: Simulation, first: boolean): void {
+    const st = sim.state;
+    const N = st.size, C = st.cells;
+    const raw = this.raw;
     // spill onto neighbouring cells, keep peaks on buildings
     const tmp = this.tmp;
     tmp.set(raw);
@@ -113,7 +151,6 @@ export class CrimeSystem implements SimSystem {
     st.stats.avgCrime = w > 0 ? sum / w : 0;
     for (const b of changed) sim.events.emit('buildingChanged', b);
     sim.events.emit('layerUpdated', 'crime');
-    this.lastMs = nowMs() - t0;
   }
 
   private scratch = new Float32Array(0);

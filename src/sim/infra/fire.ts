@@ -64,7 +64,9 @@ export class FireSystem implements SimSystem {
     this.fireEffect = fx.fireEffect;
     const base = FIRE_BASE_P * fx.fireRisk * this.riskBoost;
     const fc = st.fireCov;
-    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+    // ignition checks are sliced: each day a quarter of the buildings is tested with 4x the daily probability
+    const slice = st.day & 3;
+    for (let bI = slice, bL = buildingList(st); bI < bL.length; bI += 4) {
       const b = bL[bI];
       if (b.flags & (BF.OnFire | BF.Burnt)) continue;
       if (b.built < 0.3) continue;
@@ -76,7 +78,7 @@ export class FireSystem implements SimSystem {
       if (b.flags & BF.Abandoned) risk *= 3;
       const cov = fc[centerCell(st, b)];
       const k = 1 - 0.85 * Math.min(1, cov);
-      const p = base * risk * k * k * Math.sqrt(b.w * b.d);
+      const p = 4 * base * risk * k * k * Math.sqrt(b.w * b.d);
       if (rng.next() < p) this.ignite(sim, b);
     }
     // --- burning buildings

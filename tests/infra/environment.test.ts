@@ -120,10 +120,18 @@ describe('services', () => {
     const crowded = st.eduCov[st.idx(22, 19)];
     console.log(`school coverage: normal=${small.toFixed(2)} crowded=${crowded.toFixed(2)}`);
     expect(crowded).toBeLessThan(small * 0.6);
-    const eq0 = st.stats.eq;
     for (const h of homes) h.pop = 60;
-    for (let k = 0; k < 50; k++) s.compute(sim, false);
-    expect(st.stats.eq).toBeGreaterThan(eq0);
+    // EQ follows coverage slowly (time constant ~10 years): after 1 year ~10 % of the gap, after 10 years ~63 %
+    st.stats.eq = 30;
+    s.compute(sim, false);
+    sim.runDays(360);
+    const eq1 = st.stats.eq;
+    sim.runDays(360 * 9);
+    const eq10 = st.stats.eq;
+    console.log(`EQ from 30: after 1 year ${eq1.toFixed(1)}, after 10 years ${eq10.toFixed(1)} (target ~150 at full coverage)`);
+    expect(eq1).toBeGreaterThan(30);
+    expect(eq1).toBeLessThan(30 + 0.2 * (150 - 30));
+    expect(eq10).toBeGreaterThan(30 + 0.4 * (150 - 30) * 0.8);
   });
 
   it('transit coverage around bus stops and overlay helper', () => {
