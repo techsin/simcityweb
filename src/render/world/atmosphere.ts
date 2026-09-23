@@ -119,20 +119,19 @@ const BR = [5.802e-3, 13.558e-3, 33.1e-3];
 const HR = 8, HM = 1.2, BMS = 3.996e-3, BMA = 4.4e-3;
 const BO = [0.65e-3, 1.881e-3, 0.085e-3];
 
-function raySphereFar(oy: number, dx: number, dy: number, dz: number, r: number): number {
-  // origin (0, oy, 0)
+/** far intersection of a ray from (0, oy, 0) with direction y-component dy (unit dir) and a sphere of radius r */
+function raySphereFar(oy: number, dy: number, r: number): number {
   const b = oy * dy;
   const c = oy * oy - r * r;
   const d = b * b - c;
   if (d < 0) return -1;
-  void dx; void dz;
   return -b + Math.sqrt(d);
 }
 
 /** transmittance from altitude h0 (km) toward direction dir (unit vector, y up). Writes RGB into out. */
 export function atmTransmittanceJS(dir: THREE.Vector3, h0: number, mie: number, out: THREE.Color): THREE.Color {
   const oy = RG + h0;
-  const tMax = raySphereFar(oy, dir.x, dir.y, dir.z, RT);
+  const tMax = raySphereFar(oy, dir.y, RT);
   const steps = 24;
   let odR = 0, odM = 0, odO = 0;
   let prev = 0;
