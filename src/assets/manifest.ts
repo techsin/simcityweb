@@ -166,9 +166,9 @@ export const MANIFEST: ManifestEntry[] = [
   E('park_small', 'park', [1, 1], 4, [2, 10], 'Small park: lawn, a few trees, paths, benches, maybe small fountain or flowerbed.'),
   E('park_plaza', 'park', [2, 2], 3, [2, 8], 'Paved plaza with fountain or sculpture, planters, benches, lamp posts.'),
   E('park_playground', 'park', [1, 1], 2, [2, 5], 'Playground: colorful play structure, swings, slide, sandbox, rubber surface.'),
-  E('park_basketball', 'park', [1, 1], 1, [1, 4], 'Basketball court with hoops and fence.'),
-  E('park_tennis', 'park', [2, 1], 1, [1, 4], 'Two tennis courts with nets and fences.'),
-  E('park_soccer', 'park', [3, 2], 1, [1, 6], 'Soccer field with goals, small stands, lights.'),
+  E('park_basketball', 'park', [1, 1], 1, [1, 9], 'Basketball court with hoops and fence.'),
+  E('park_tennis', 'park', [2, 1], 1, [1, 9], 'Two tennis courts with nets and fences.'),
+  E('park_soccer', 'park', [3, 2], 1, [1, 18], 'Soccer field with goals, small stands, lights.'),
   E('park_baseball', 'park', [3, 3], 1, [1, 12], 'Baseball diamond with dugouts, bleachers, lights.'),
   E('park_large', 'park', [4, 4], 2, [2, 14], 'Large park: pond, winding paths, many trees, gazebo, meadow.'),
   E('park_garden', 'park', [2, 2], 2, [1, 6], 'Formal garden: hedge maze / parterre, flower beds, pergola.'),
@@ -255,7 +255,9 @@ export const MANIFEST: ManifestEntry[] = [
 
 // showpiece / waterfront metadata
 for (const e of MANIFEST) {
-  if (e.id === 'tr_seaport' || e.id === 'tr_ferry_terminal' || e.id === 'park_marina') e.waterfront = true;
+  if (e.id === 'tr_seaport' || e.id === 'tr_ferry_terminal' || e.id === 'park_marina' || e.id === 'lm_lighthouse') e.waterfront = true;
+  if (e.id === 'park_zoo' || e.id === 'park_golf' || e.id === 'park_amusement') e.budget = 6000;
+  if (e.id === 'park_stadium' || e.id === 'park_large') e.budget = 4500;
   if (e.id === 'tr_airport_large' || e.id === 'tr_airport_small' || e.id === 'tr_seaport') e.budget = 6000;
   if (e.id === 'util_wind_turbine') e.overhang = 18;
   // growables get X-mirrored twins so streets don't look stamped (garage sides alternate, etc.)

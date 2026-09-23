@@ -17,10 +17,17 @@
  * Emissive (Surf.Emissive, surf.y): 0 default intensity; 1..8 intensity x pattern/4 (4 = default, 2 = half, 8 = double);
  *   9 = ground light pool: paint it ~0.7x the surrounding ground color -> plain pavement by day (no tint),
  *       warm lamp-lit pavement at night.
+ *   10 / 11 = NIGHT-ONLY glow x1 / x2 (no daytime emission: stained glass, lanterns, tent canopies).
+ *   12 = floodlit sports surface: like 9 (paint ~0.7x, plain by day) but cool white floodlight at night.
+ * WallWindows pattern 8: arched civic windows (pattern 7 mask) with EVERY window lit warm amber at night
+ *   (churches, keeps, clock towers).
+ * Floodlit masonry: Surf.Plain and Surf.Stone pattern 1 (warm) / 2 (cool white) glow from the base up at night;
+ *   the paint's `floor` value is the reach height H in meters (light fades 70% by H). Pattern 0 = unlit.
  * Plain glass (Surf.GlassPlain, surf.y): 0 storefront / house windows (per-window lit state follows the time-of-day
- *   lit fraction, ~2.5 x 2.8 m cells); 1 vehicle glass (dark, reflective, never glows).
+ *   lit fraction, ~2.5 x 2.8 m cells); 1 vehicle glass (dark, reflective, never glows);
+ *   2 pavilion glass (reflective by day, uniform warm glow ~0.6 at night: lobbies, foyers, pyramids, concourses).
  * Metal (Surf.Metal, surf.y): 0 bare metal (tanks, pipes, rails); 1 solid car paint (rough 0.40, metal 0.15);
- *   2 metallic car paint (rough 0.32, metal 0.50).
+ *   2 metallic car paint (rough 0.32, metal 0.50); 3 patina (rough 0.62, metal 0.30: copper domes, bronze statues).
  * Foliage (Surf.Foliage): wind sway above 1.5 m; per-plant hue/value + stand-scale tint from the instance position.
  *
  * Facade coordinates: planar walls use the horizontal distance along the wall; smooth-shaded CURVED walls
@@ -112,6 +119,12 @@ vec3 windowLight(float h) {
   return h < 0.55 ? warm : (h < 0.85 ? neutral : cool);
 }
 
+// Floodlit masonry: warm (pattern 1) / cool white (pattern 2) uplight, fading over the reach height H (paint floor value)
+vec3 floodlight(vec3 albedo, float pattern, float v, float H, bool vertical, float night) {
+  vec3 c = pattern < 1.5 ? vec3(1.0, 0.84, 0.62) : vec3(0.86, 0.92, 1.0);
+  return albedo * c * night * 0.4 * (1.0 - 0.7 * smoothstep(0.0, H, v)) * (vertical ? 1.0 : 0.35);
+}
+
 // Returns window mask (0..1) and writes cell id. u,v in meters on the facade.
 float windowMask(float pattern, float u, float v, float floorH, out vec2 cell, out float fade) {
   float colW = 3.0; float wx0 = 0.2; float wx1 = 0.8; float wy0 = 0.3; float wy1 = 0.78;
@@ -165,6 +178,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float n = bnoise(P.xz * 0.35 + P.y * 0.2);
     albedo *= 0.93 + 0.07 * n;
     rough = 0.85;
+    if (pattern > 0.5 && pattern < 2.5) emis += floodlight(albedo, pattern, v, floorH, vertical, night);
   } else if (type < 1.5) {
     // WallWindows
     rough = 0.82;
@@ -190,7 +204,14 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       // far away: average lit color instead of per-window noise (no shimmering when the camera moves)
       vec3 nearE = wl * lit * intensity;
       vec3 farE = vec3(1.0, 0.8, 0.56) * clamp(litProb, 0.0, 1.0);
-      emis += mix(farE, nearE, fade) * m * night * 1.3;
+      if (pattern > 7.5 && pattern < 8.5) {
+        // churches / keeps / clock towers: every (arched) window glows warm amber, slight per-column tint
+        float ct = bh11(cell.x * 5.3 + vSeed * 17.0);
+        vec3 amber = vec3(1.0, 0.72, 0.42) * 0.9 * mix(vec3(1.0), vec3(1.06, 0.94, 0.86), ct);
+        emis += amber * m * night * 1.3;
+      } else {
+        emis += mix(farE, nearE, fade) * m * night * 1.3;
+      }
     }
   } else if (type < 2.5) {
     // Glass curtain wall
@@ -273,6 +294,10 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     } else if (pattern > 1.5 && pattern < 2.5) {
       rough = 0.32;
       metal = 0.5;
+    } else if (pattern > 2.5 && pattern < 3.5) {
+      // patina (copper domes, bronze statues)
+      rough = 0.62;
+      metal = 0.3;
     } else {
       rough = 0.32;
       metal = 0.75;
@@ -286,6 +311,16 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       albedo *= 0.9 + 0.18 * n;
       rough = 0.9;
       emis += albedo * vec3(1.0, 0.8, 0.55) * night * 0.75;
+    } else if (pattern > 11.5 && pattern < 12.5) {
+      // floodlit sports surface: plain by day (paint ~0.7x like pattern 9), cool white floodlight at night
+      albedo = min(albedo * 1.43, vec3(1.0));
+      rough = 0.9;
+      emis += albedo * vec3(0.85, 0.92, 1.0) * night * 0.6;
+    } else if (pattern > 9.5 && pattern < 11.5) {
+      // night-only glow (stained glass, lanterns, tent canopies): no daytime emission; 10 = x1, 11 = x2
+      float k = pattern < 10.5 ? 1.0 : 2.0;
+      emis += albedo * 1.35 * night * k;
+      rough = 0.5;
     } else {
       // emissive sign / light. pattern 1..8 scales intensity by pattern / 4 (pattern 0 = default 1x).
       // The night multiplier is moderate so saturated neon keeps its hue; bloom carries the glow.
@@ -300,7 +335,10 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     albedo = mix(vec3(0.08, 0.1, 0.13), vec3(0.2, 0.26, 0.32), 0.3) * (0.9 + 0.2 * h);
     rough = 0.12;
     metal = 0.55;
-    if (pattern > 0.5 && pattern < 1.5) {
+    if (pattern > 1.5 && pattern < 2.5) {
+      // pavilion glass (lobbies, foyers, greenhouses, concourses): reflective by day, uniform warm glow at night
+      emis += vec3(1.0, 0.84, 0.62) * night * 0.6;
+    } else if (pattern > 0.5 && pattern < 1.5) {
       albedo = vec3(0.035, 0.045, 0.055) + albedo * 0.2;
       rough = 0.05;
       metal = 0.9;
@@ -387,6 +425,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float bh = bh21(vec2(floor(cx), floor(cy)));
     albedo *= mix(1.0, (0.9 + 0.16 * bh) * (1.0 - 0.25 * joint), fade * (vertical ? 1.0 : 0.3));
     rough = 0.85;
+    if (pattern > 0.5 && pattern < 2.5) emis += floodlight(albedo, pattern, v, floorH, vertical, night);
   } else {
     // crop field rows along object X
     float c = P.z / 1.6;
