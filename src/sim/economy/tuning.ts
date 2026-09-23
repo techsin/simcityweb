@@ -580,9 +580,9 @@ export const NEED_OK = 0.6;
 /** health-target penalty from unmet needs is capped here */
 export const NEEDS_PENALTY_MAX = 0.12;
 /** residents' expectations grow with the city: penalty × smoothstep(NEEDS_POP_START, NEEDS_POP_FULL, population)
- *  (a hamlet does not expect a school on every street; a 40k city does) */
-export const NEEDS_POP_START = 2000;
-export const NEEDS_POP_FULL = 40000;
+ *  (a hamlet does not expect a school on every street; a 60k city does) */
+export const NEEDS_POP_START = 5000;
+export const NEEDS_POP_FULL = 60000;
 /** share of the needs penalty that counts toward abandonment (unmet needs cause vacancies — families / seniors move
  *  away — but a street without a school is not abandoned for that reason alone) */
 export const NEEDS_ABANDON_SHARE = 0;

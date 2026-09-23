@@ -211,6 +211,31 @@ describe('demographics: needs', () => {
   });
 });
 
+describe('demographics: needs cause vacancies, not abandonment', () => {
+  it('a poor street without any services loses health (fewer residents) but is not abandoned for its needs alone', () => {
+    const st = svcState(32);
+    for (let x = 0; x < 32; x++) st.network[10 * 32 + x] = Network.Road;
+    const h = place(st, 't_r1', 5, 11, { pop: 12, wealth: 1, age: 0, rot: 2 });
+    const bad = place(st, 't_r1', 9, 11, { pop: 12, wealth: 1, age: 0, rot: 2 });
+    for (let d = 0; d <= DevType.R3; d++) st.desirability[d].fill(-0.4); // base target 0.3
+    age(st, [h, bad], OCC_PERIOD);
+    const br = conditionBreakdown(st, h);
+    const needs = br.terms.find((t) => t.id === 'needs')!;
+    expect(needs.value).toBeCloseTo(-NEEDS_PENALTY_MAX, 5);
+    expect(br.target).toBeLessThan(0.22); // below the abandonment threshold ...
+    h.health = br.target;
+    expect(conditionBreakdown(st, h).abandonInDays).toBeNull(); // ... but needs alone never make it unhappy
+    // the same health from a bad neighbourhood (no needs involved) does count
+    st.desirability[DevType.R1].fill(-0.64);
+    st.eduElemCov.fill(1); st.eduHighCov.fill(1); st.eduCollegeCov.fill(1); st.healthCov.fill(1); st.playCov.fill(1);
+    st.greenCov.fill(1); st.shopAccess.fill(1); st.transitCov.fill(1);
+    bad.health = 0.18;
+    const br2 = conditionBreakdown(st, bad);
+    expect(br2.terms.some((t) => t.id === 'needs')).toBe(false);
+    expect(br2.abandonInDays).toBe(150);
+  });
+});
+
 describe('demographics: full simulation', () => {
   /** a small serviced town: road, homes, shops, a school, clinic, plant, pump — economy + infra systems */
   function serviced(withSchool: boolean) {

@@ -11,10 +11,29 @@ export function sumValues(r: Record<string, number> | undefined): number {
   return s;
 }
 
-/** last month net (income - expense) */
+/** ledger keys paid / received immediately (construction, zoning, demolition, loan proceeds & repayments, refunds) */
+export function isOneOff(key: string): boolean {
+  return key.startsWith('oneoff:');
+}
+
+/** sum of the recurring entries only (excludes 'oneoff:*' — construction, loan principal, refunds...) */
+export function sumRecurring(r: Record<string, number> | undefined): number {
+  let s = 0;
+  if (r) for (const k in r) if (!isOneOff(k)) s += r[k] || 0;
+  return s;
+}
+
+/** sum of the one-off entries only ('oneoff:*') */
+export function sumOneOff(r: Record<string, number> | undefined): number {
+  let s = 0;
+  if (r) for (const k in r) if (isOneOff(k)) s += r[k] || 0;
+  return s;
+}
+
+/** last month's recurring net (taxes & deals - upkeep, services, loan payments); one-offs and loan money excluded */
 export function lastNet(ctx: GameContext): number {
   const b = ctx.state.budget;
-  return sumValues(b.lastIncome) - sumValues(b.lastExpense);
+  return sumRecurring(b.lastIncome) - sumRecurring(b.lastExpense);
 }
 
 const RCI_DEFS: { key: 'R' | 'C' | 'I'; color: string; devs: DevType[] }[] = [

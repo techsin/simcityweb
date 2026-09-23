@@ -134,7 +134,8 @@ export class CityScene {
   private saving: Promise<void> | null = null;
   private hiddenPausedFrom: number | null = null;
   private mouse = { x: -1, y: -1, inside: false };
-  private fps = { frames: 0, t: 0, value: 0 };
+  /** fps readout, measured with the real (unclamped) frame delta from performance.now() — the sim dt is clamped */
+  private fps = { frames: 0, t: 0, value: 0, last: 0 };
   private renderFailures = 0;
   private degraded = { world: false, objects: false, actions: false };
   private resizeObs: ResizeObserver | null = null;
@@ -595,9 +596,13 @@ export class CityScene {
       this.slowAcc = 0;
       this.topBar.setBadge('advisors', this.panels.isOpen('advisors') ? 0 : this.advisors.alertCount());
     }
-    // fps
-    this.fps.frames++;
-    this.fps.t += dt;
+    // fps (real wall-clock delta: the clamped dt above would cap the readout at >= 10 fps)
+    const tNow = performance.now();
+    if (this.fps.last > 0) {
+      this.fps.frames++;
+      this.fps.t += Math.max(0, (tNow - this.fps.last) / 1000);
+    }
+    this.fps.last = tNow;
     if (this.fps.t >= 0.5) {
       this.fps.value = this.fps.frames / this.fps.t;
       this.fps.frames = 0;

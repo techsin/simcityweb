@@ -421,7 +421,7 @@ function assembly(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x9aa0a6, Surf.Metal);
       b.pipe([8, 15.5, -17.4], [30, 15.5, -17.4], 0.3, 6);
       // malt silos
-      for (let i = 0; i < 3; i++) tank(b, 11 + i * 5.2, -5, 2.2, 16, 0xd8d8d2, { roof: 'cone', seg: 10, flood: 12 });
+      for (let i = 0; i < 3; i++) tank(b, 11 + i * 5.2, -5, 2.2, 16, 0xd8d8d2, { roof: 'cone', seg: 10, flood: 10 });
       b.paint(ASPHALT, Surf.Pavement);
       flat(b, 7, 0, HX - 0.5, 16, Y_OVER);
       semi(b, 22, 4, Math.PI * 0.5, 0x2e5f3a, 0xe8e2cf, { stripe: 0x2e5f3a });

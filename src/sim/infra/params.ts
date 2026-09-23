@@ -448,7 +448,86 @@ export const CRIME_GARBAGE = 0.08;
 // §CRIME end
 
 // ---------------------------------------------------------------------------------------------- §EMERGENCY (owner WP8)
-// WP8: EMERG_DAYS_PER_MIN, RMAX, grace / deadline table, incident rates, dispatch limits ...
+// Time model: one game-minute of siren driving takes EMERG_DAYS_PER_MIN sim days (a 4-minute run = 4 days, so a
+// covered fire is reached well before the legacy 6-day burn-down). Station auto range (minutes) =
+// coverage radius x ROAD_RADIUS_FACTOR x NET_TIME[Road] x EMERG_RANGE_K (fire station 3.9, fire HQ 6.2, clinic 2.6).
+export const EMERG_DAYS_PER_MIN = 1.0;
+export const EMERG_RANGE_K = 1.25;
+/** response-layer horizon (minutes): resp* = EMERG_RMAX - dist with station seeds at EMERG_RMAX - range */
+export const EMERG_RMAX = 12;
+/** response layers also record how far (minutes) beyond a station's range a cell is, down to -EMERG_SLOW_MARGIN */
+export const EMERG_SLOW_MARGIN = 6;
+/** a player dispatch is offered when a free unit is within this many minutes */
+export const EMERG_MANUAL_MAX = 60;
+/** siren link time = t0 x (1 + EMERG_SIREN_CONG x (bpr - 1)): sirens cut through most of the congestion */
+export const EMERG_SIREN_CONG = 0.3;
+/** dispatch road searches per sim day (the rest wait for the next day) */
+export const EMERG_SEARCHES_PER_DAY = 4;
+/** response layers: full refresh period / earliest refresh after a station or network change (days) */
+export const EMERG_RESP_PERIOD = 30;
+/** unpowered station: extra turnout time (days) */
+export const EMERG_UNPOWERED_TURNOUT = 0.5;
+/** stored route cells per vehicle (corner cells only, so real routes stay far below this) */
+export const EMERG_MAX_PATH = 400;
+/** grace (answered after it = late) and deadline (not resolved by then = failed), days after the start */
+export const EMERG_GRACE: Readonly<Record<string, number>> = { fire: 3, industrial: 3, spill: 5, crime: 5, riot: 5, medical: 5, collapse: 5, prisonRiot: 5 };
+export const EMERG_DEADLINE: Readonly<Record<string, number>> = { fire: 6, industrial: 12, spill: 30, crime: 20, riot: 30, medical: 16, collapse: 15, prisonRiot: 20 };
+/** on-scene work (unit-days per needed unit) for the non-fire kinds */
+export const EMERG_WORK_DAYS: Readonly<Record<string, number>> = { industrial: 1.5, spill: 4, crime: 1, riot: 3, medical: 1, collapse: 2, prisonRiot: 2 };
+/** fire: unit-days to put out a 1x1 building = 1.5 x sqrt(area) (x1.6 without water); crews hold 3 burning buildings each */
+export const FIRE_WORK_PER_AREA = 1.5;
+export const FIRE_DRY_WORK = 1.6;
+export const FIRE_HOLD_PER_UNIT = 3;
+/** spread x0.2 while a crew is on scene, x1.3 in buildings without water; fires within 3 cells join one incident */
+export const FIRE_SPREAD_ONSCENE = 0.2;
+export const FIRE_SPREAD_DRY = 1.3;
+export const FIRE_CLUSTER_R = 3;
+/** ignition risk x (1 + FIRE_GARBAGE_RISK x uncollected garbage level) */
+export const FIRE_GARBAGE_RISK = 1.5;
+/** incident rates (per month) */
+export const MED_RATE = 1 / 20000; // per resident, x (MED_BASE + MED_SENIOR x senior share)
+export const MED_BASE = 0.6;
+export const MED_SENIOR = 2.7;
+export const MED_MAJOR = 0.2; // share of mass-casualty calls (3-8 injured)
+export const CRIME_SPREE_RATE = 1 / 12000; // per occupant x min(1, ((crime - 0.3) / 0.4)^2)
+export const CRIME_SPREE_MIN = 0.3;
+export const CRIME_MAJOR = 0.25;
+export const IND_ACCIDENT_RATE: Readonly<Record<string, number>> = { ID: 1 / 100000, IM: 1 / 200000, IHT: 1 / 800000 }; // per job
+/** thermal power plants and incinerators: EMERG_PLANT_P per month x (1.5 - min(1.2, utilities funding)) */
+export const EMERG_PLANT_P = 0.01;
+export const SPILL_RATE_ID = 1 / 400000; // per dirty-industry job
+export const SPILL_SITE_P: Readonly<Record<string, number>> = { rw_toxic_dump: 0.03, tr_seaport: 0.01, tr_freight_station: 0.005 };
+/** congested (v/c > 1) highway cells: spills per truck-cell-day; trucks ~ EMERG_TRUCK_SHARE of the cell volume */
+export const SPILL_HWY_RATE = 2e-7;
+export const EMERG_TRUCK_SHARE = 0.05;
+/** riots (monthly, pop >= RIOT_MIN_POP): p = RIOT_P x smoothstep(RIOT_APPROVAL[0], RIOT_APPROVAL[1], approval) x
+ *  smoothstep(RIOT_CRIME[0], RIOT_CRIME[1], avgCrime) — only below 35 % approval and above 0.45 average crime */
+export const RIOT_P = 0.2;
+export const RIOT_MIN_POP = 20000;
+export const RIOT_APPROVAL: readonly [number, number] = [35, 20];
+export const RIOT_CRIME: readonly [number, number] = [0.45, 0.65];
+/** riot: radius min(RIOT_R_MAX, 2 + RIOT_R_GROW x days), health -RIOT_HEALTH per day inside, 2 % ignition (<= 2 / day) */
+export const RIOT_R_MAX = 7;
+export const RIOT_R_GROW = 0.3;
+export const RIOT_HEALTH = 0.03;
+export const RIOT_IGNITE_P = 0.02;
+/** crime boosts: riots 0.3 over r + 2 while active, then 0.15 for 60 days; failed crime sprees 0.15 radius 4 for 90 days */
+export const RIOT_CRIME_BOOST = 0.3;
+export const RIOT_AFTER_BOOST = 0.15;
+export const RIOT_AFTER_DAYS = 60;
+export const SPREE_FAIL_BOOST = 0.15;
+export const SPREE_FAIL_DAYS = 90;
+/** failed prison riot: 30 % of inmates escape, city crime +0.1 for 90 days */
+export const PRISON_ESCAPE = 0.3;
+/** spill pollution source while active (a failed spill keeps half of it for 30 days) */
+export const SPILL_POLL = { air: 0.3, water: 0.6, radius: 4 } as const;
+export const INDUSTRIAL_POLL = { air: 0.25, water: 0, radius: 3 } as const;
+/** medical survival = MED_SURVIVE - MED_DELAY_LOSS x smoothstep(5, 16, D days) (- 0.1 when the hospital is overcrowded) */
+export const MED_SURVIVE = 0.97;
+export const MED_DELAY_LOSS = 0.67;
+/** INFRA scheduler task cost (estimated ms on the 256² reference city): one responder search / the land fill */
+export const EMERG_SEARCH_COST = 1.6;
+export const EMERG_FILL_COST = 1.2;
 // §EMERGENCY end
 
 // ---------------------------------------------------------------------------------------------- §FACILITIES (owner WP7)

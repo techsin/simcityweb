@@ -852,14 +852,15 @@ function roofMech(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number,
 }
 
 // ---------------------------------------------------------------------------------------------- APARTMENT (R$$) 2x2
-function apartment(b: ModelBuilder, v: number, rng: RNG): void {
+/** tw = mirror twin: own facade palette (sand / blue-grey / terracotta / buff brick / inverted / ochre + slate). */
+function apartment(b: ModelBuilder, v: number, rng: RNG, tw = false): void {
   lawnSlab(b, -16, -16, 16, 16, 0x6a9443);
   const fh = 3.0;
   if (v === 0 || v === 2 || v === 3) {
     // slab: x [-12.6, 12.6] (6 cols of 4.2), z [-4.2, 8.4]
     const C = 4.2, x0 = -3 * C, x1 = 3 * C, z0 = -C, z1 = 2 * C;
     const floors = v === 2 ? 7 : 6, top = floors * fh;
-    const wall = [0xe8e4dc, 0, 0xcfc8bc, 0xd8c8ae][v];
+    const wall = (tw ? [0xc4a882, 0, 0x8e9aa2, 0xb87a5c] : [0xe8e4dc, 0, 0xcfc8bc, 0xd8c8ae])[v];
     const setback = v === 3;
     ww(b, x0, z0, x1, z1, fh, setback ? top - fh : top, wall, 3, fh, P(0x9a968e, Surf.RoofFlat));
     b.paint(0x9c9890).box(x0, 0, z0, x1, fh, z1, { top: null });
@@ -868,8 +869,8 @@ function apartment(b: ModelBuilder, v: number, rng: RNG): void {
     wins(b, 'nz', z0, [-10.5, -6.3, -2.1, 2.1, 6.3, 10.5], 0.9, 3.0, 1.6, { frame: 0x3a3c40, ft: 0.06 });
     const ys = Array.from({ length: floors - (setback ? 2 : 1) }, (_, i) => (i + 1) * fh);
     if (v === 0) {
-      balcs(b, 'pz', z1, [-10.5, -6.3, -2.1, 2.1, 6.3, 10.5], ys, 3.4, 1.5, 0xf2f0ea, 0xc0643e);
-      flatRoof(b, x0, z0, x1, z1, top, 0.9, 0.25, 0xe8e4dc, 0x8a867e, 0xd0ccc4);
+      balcs(b, 'pz', z1, [-10.5, -6.3, -2.1, 2.1, 6.3, 10.5], ys, 3.4, 1.5, 0xf2f0ea, tw ? 0x3e6a8a : 0xc0643e);
+      flatRoof(b, x0, z0, x1, z1, top, 0.9, 0.25, wall, 0x8a867e, 0xd0ccc4);
       roofMech(b, rng, x0, z0, x1, z1, top, 3, true);
     } else if (v === 2) {
       for (const y of ys) balcBand(b, 'pz', z1, x0, x1, y, 1.8, 0xf4f4f0, 0x9fb4c0, Surf.Metal);
@@ -878,7 +879,7 @@ function apartment(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x3e4146);
       inFace(b, 'pz', z1, () => { for (let i = 0; i <= 6; i++) fq(b, x0 + i * C - 0.22, fh, x0 + i * C + 0.22, top - fh, 0.02); });
       // penthouse set back
-      flatRoof(b, x0, z0, x1, z1, top, 0.3, 0.2, 0xcfc8bc, 0x8a867e);
+      flatRoof(b, x0, z0, x1, z1, top, 0.3, 0.2, wall, 0x8a867e);
       ww(b, x0 + C, z0 + 1.5, x1 - C, z1 - 3.0, top, top + fh, 0x3a3d42, 3, fh);
       band(b, x0 + C - 0.8, z0 + 0.7, x1 - C + 0.8, z1 - 2.2, top + fh, 0.3, 0, 0xf4f4f0);
       b.paint(0x9fb4c0, Surf.Metal).quad2([x0 + 0.3, top + 0.3, z1 - 0.3], [x1 - 0.3, top + 0.3, z1 - 0.3], [x1 - 0.3, top + 1.3, z1 - 0.3], [x0 + 0.3, top + 1.3, z1 - 0.3]);
@@ -890,8 +891,8 @@ function apartment(b: ModelBuilder, v: number, rng: RNG): void {
       balcs(b, 'pz', z1, [-10.5, -6.3, -2.1, 2.1, 6.3, 10.5], ys.filter((_, i) => i % 2 === 0), 3.4, 1.4, 0xece8e0, 0x9fb4c0, Surf.Metal);
       balcs(b, 'pz', z1, [-10.5, -6.3, -2.1, 2.1, 6.3, 10.5].filter((_, i) => i % 2 === 1), ys.filter((_, i) => i % 2 === 1), 3.4, 1.4, 0xece8e0, 0x9fb4c0, Surf.Metal);
       b.paint(0x5f8a3a, Surf.Foliage).quad([x0, top - fh + 0.05, z1], [x1, top - fh + 0.05, z1], [x1, top - fh + 0.05, z0], [x0, top - fh + 0.05, z0]);
-      ww(b, x0 + C, z0, x1 - C, z1 - 2.5, top - fh, top, 0xd8c8ae, 3, fh, P(0x5f8a3a, Surf.Foliage));
-      parapet(b, x0, z0, x1, z1, top - fh, 0.4, 0.2, 0xd8c8ae);
+      ww(b, x0 + C, z0, x1 - C, z1 - 2.5, top - fh, top, wall, 3, fh, P(0x5f8a3a, Surf.Foliage));
+      parapet(b, x0, z0, x1, z1, top - fh, 0.4, 0.2, wall);
       b.paint(0x9fb4c0, Surf.Metal).quad2([x0 + 0.2, top - fh + 0.4, z1 - 0.2], [x1 - 0.2, top - fh + 0.4, z1 - 0.2], [x1 - 0.2, top - fh + 1.2, z1 - 0.2], [x0 + 0.2, top - fh + 1.2, z1 - 0.2]);
       for (const x of [-11, 11]) planter(b, x, z1 - 1.4, 1.2, 1.2, top - fh, 0x8f8a80, 0x4f7a34, x);
       solar(b, x0 + C + 1, z0 + 1, x1 - C - 1, z1 - 3.5, top);
@@ -907,7 +908,7 @@ function apartment(b: ModelBuilder, v: number, rng: RNG): void {
   } else if (v === 1) {
     // L-shaped brick block, punched windows, bar balconies, courtyard garden at the back
     const C = 3.0, fh1 = 3.0, top = 5 * fh1;
-    const brick = 0x9a5a44;
+    const brick = tw ? 0xb89a6a : 0x9a5a44;
     ww(b, -4 * C, 0, 4 * C, 3 * C, 0, top, brick, 0, fh1, null);
     ww(b, 1 * C, -4 * C, 4 * C, 0, 0, top, brick, 0, fh1, null, { pz: null });
     cornice(b, -4 * C, 0, 4 * C, 3 * C, top, 0xd8d0c0, ['pz'], false, 0.3);
@@ -933,18 +934,19 @@ function apartment(b: ModelBuilder, v: number, rng: RNG): void {
   } else if (v === 4) {
     // white base with checkerboard of cantilevered dark boxes
     const C = 4.2, x0 = -3 * C, x1 = 3 * C, z0 = -C, z1 = 2 * C, floors = 5, top = floors * fh;
-    ww(b, x0, z0, x1, z1, 0, top, 0xeeeeea, 0, fh);
+    const light = tw ? 0x4a4d52 : 0xeeeeea, dark = tw ? 0xe2ded4 : 0x3a3d42; // twin: inverted (dark block, pale boxes)
+    ww(b, x0, z0, x1, z1, 0, top, light, 0, fh);
     b.paint(0x55585c).box(x0 - 0.02, 0, z1 - 0.1, x1 + 0.02, fh, z1 + 0.02, { top: null, nz: null, bottom: null });
     lobby(b, -4.2, 0.0, z1, 2.8, 0x2e3033);
     for (let f = 1; f < floors; f++) for (let c = 0; c < 6; c++) {
       if ((f + c) % 2) continue;
       const xa = x0 + c * C + 0.2, xb = xa + C - 0.4, y0 = f * fh + 0.1;
-      b.paint(0x3a3d42).box(xa, y0, z1, xb, y0 + fh - 0.2, z1 + 1.3, { nz: null });
+      b.paint(dark).box(xa, y0, z1, xb, y0 + fh - 0.2, z1 + 1.3, { nz: null });
       inFace(b, 'pz', z1 + 1.3, () => { b.paint(0x2a3440, Surf.WallWindows, 3, 100); fq(b, xa + 0.3, y0 + 0.5, xb - 0.3, y0 + fh - 0.6, 0.02); });
     }
-    flatRoof(b, x0, z0, x1, z1, top, 0.5, 0.2, 0xeeeeea, 0x8a867e);
+    flatRoof(b, x0, z0, x1, z1, top, 0.5, 0.2, light, 0x8a867e);
     roofMech(b, rng, x0, z0, x1, z1, top, 3, true);
-    balcs(b, 'nz', z0, [-8.4, 0, 8.4], [fh, 2 * fh, 3 * fh, 4 * fh], 3.4, 1.3, 0xeeeeea, 0x55585c, Surf.Metal);
+    balcs(b, 'nz', z0, [-8.4, 0, 8.4], [fh, 2 * fh, 3 * fh, 4 * fh], 3.4, 1.3, light, 0x55585c, Surf.Metal);
     parking(b, rng, -15, -15.8, 15, -5.0, 0.55, 1);
     paveSlab(b, -4.5, z1, 0.5, 16, 0xc8c4bc, 0.1);
     for (let i = 0; i < 5; i++) planter(b, 3 + i * 2.6, 10.5, 1.8, 1.0, 0, 0x55585c, 0x5a8a3a, i);
@@ -953,17 +955,18 @@ function apartment(b: ModelBuilder, v: number, rng: RNG): void {
   } else {
     // 1990s pastel block: salmon + cream, hipped tile roof, corner balconies
     const C = 3.0, x0 = -4 * C, x1 = 4 * C, z0 = -2 * C, z1 = 2 * C, floors = 6, top = floors * fh;
-    ww(b, x0, z0, x1, z1, 0, top, 0xd9a08a, 0, fh, null);
+    const wallC = tw ? 0xe2c98e : 0xd9a08a, tileC = tw ? 0x55606a : 0xa65a3c; // twin: ochre + slate
+    ww(b, x0, z0, x1, z1, 0, top, wallC, 0, fh, null);
     b.paint(0xefe6d6).box(x0 - 0.05, 0, z0 - 0.05, x1 + 0.05, fh, z1 + 0.05, { top: null, bottom: null });
     for (const x of [-3, 3]) b.paint(0xefe6d6).box(x - 1.5, fh, z1, x + 1.5, top, z1 + 0.3, { nz: null, bottom: null, top: null });
     band(b, x0, z0, x1, z1, top - 0.3, 0.3, 0.2, 0xefe6d6, false);
-    roofHip(b, 0, 0, x1 - x0, z1 - z0, top, 3.2, P(0xa65a3c, Surf.RoofTiles), { over: 0.7, trim: 0xefe6d6 });
+    roofHip(b, 0, 0, x1 - x0, z1 - z0, top, 3.2, P(tileC, Surf.RoofTiles), { over: 0.7, trim: 0xefe6d6 });
     const ys = [fh, 2 * fh, 3 * fh, 4 * fh, 5 * fh];
     balcs(b, 'pz', z1, [-10.5, 10.5], ys, 2.8, 1.4, 0xefe6d6, 0xf4f0e8, Surf.Metal, 1.0);
     balcs(b, 'px', x1, [4.5], ys, 2.8, 1.3, 0xefe6d6, 0xf4f0e8, Surf.Metal, 1.0);
     balcs(b, 'nx', x0, [4.5], ys, 2.8, 1.3, 0xefe6d6, 0xf4f0e8, Surf.Metal, 1.0);
     inFace(b, 'pz', z1, () => { door(b, 0, 0.1, 2.0, 2.5, 0x55707e, { frame: 0xefe6d6, sidelights: true, lamp: true }); });
-    b.paint(0xa65a3c).box(-2.0, 2.8, z1, 2.0, 3.0, z1 + 1.8, { nz: null });
+    b.paint(tileC).box(-2.0, 2.8, z1, 2.0, 3.0, z1 + 1.8, { nz: null });
     parking(b, rng, -15, -15.8, 15, -7.0, 0.5, 1);
     paveSlab(b, -1.2, z1, 1.2, 16, 0xc8c4bc, 0.1);
     for (const x of [-11, -6, 6, 11]) tree(b, rng, x, 11.5, 0.95, 'round');
@@ -988,14 +991,15 @@ function solar(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, 
 }
 
 // ---------------------------------------------------------------------------------------------- CONDO (R$$$) 2x2
-function condo(b: ModelBuilder, v: number, rng: RNG): void {
+/** tw = mirror twin: v4 in red brick, v5 in sand (glass variants already vary by rng). */
+function condo(b: ModelBuilder, v: number, rng: RNG, tw = false): void {
   lawnSlab(b, -16, -16, 16, 16, 0x5a8c3a);
   const fh = 3.2;
   const glassRail = 0xa8bcc8;
   if (v === 0) {
     // terraced ziggurat: setbacks toward the street, glass-railed terraces with planters
     const C = 3.2, x0 = -4 * C, x1 = 4 * C, z0 = -3 * C;
-    const stone = pickPal(rng, [0xe6e0d4, 0xe0d4c0, 0xd8d0c8], 0.5);
+    const stone = tw ? 0xc9ad84 : pickPal(rng, [0xe6e0d4, 0xe0d4c0, 0xd8d0c8], 0.5);
     const tiers: [number, number, number][] = [[0, 5, 3 * C], [5, 7, 1.5 * C], [7, 9, 0]];
     for (const [f0, f1, zf] of tiers) {
       ww(b, x0, z0, x1, zf, f0 * fh, f1 * fh, stone, 7, fh, P(0xc8c2b4, Surf.Pavement));
@@ -1025,8 +1029,9 @@ function condo(b: ModelBuilder, v: number, rng: RNG): void {
     for (let f = 1; f < 9; f++) for (const x of f < 6 ? [-10.4, -6.8, -3.2, 1.6, 5.4, 9.2] : [-10.4, -6.8, -3.2]) {
       b.paint(greens[((f + Math.round(x)) % 3 + 3) % 3], Surf.Foliage).box(x - 0.6, f * fh + 0.05, z1 + 0.35, x + 0.6, f * fh + 1.45, z1 + 0.9, { bottom: null, nz: null });
     }
-    for (let f = 1; f <= 9; f++) band(b, xl0, z0, xm, z1, f * fh - 0.25, 0.3, 1.2, 0xf4f2ec, f === 9);
-    for (let f = 1; f <= 6; f++) band(b, xm, z0, xr1, z1, f * fh - 0.25, 0.3, 1.2, 0xf4f2ec, false);
+    const slabC = tw ? 0xb09878 : 0xf4f2ec;
+    for (let f = 1; f <= 9; f++) band(b, xl0, z0, xm, z1, f * fh - 0.25, 0.3, 1.2, slabC, f === 9);
+    for (let f = 1; f <= 6; f++) band(b, xm, z0, xr1, z1, f * fh - 0.25, 0.3, 1.2, slabC, false);
     for (let f = 1; f < 9; f++) b.paint(glassRail, Surf.Metal).quad2([xl0 - 1.2, f * fh + 0.05, z1 + 1.2], [xm, f * fh + 0.05, z1 + 1.2], [xm, f * fh + 1.1, z1 + 1.2], [xl0 - 1.2, f * fh + 1.1, z1 + 1.2]);
     for (let f = 1; f < 6; f++) b.paint(glassRail, Surf.Metal).quad2([xm, f * fh + 0.05, z1 + 1.2], [xr1 + 1.2, f * fh + 0.05, z1 + 1.2], [xr1 + 1.2, f * fh + 1.1, z1 + 1.2], [xm, f * fh + 1.1, z1 + 1.2]);
     // roof terrace with pergola and plants on the lower block
@@ -1063,18 +1068,19 @@ function condo(b: ModelBuilder, v: number, rng: RNG): void {
     const inn: [number, number][] = [[x1, z0 + 2], [x1, z1 - R]];
     for (let k = 1; k < 6; k++) { const a = (k / 6) * (Math.PI / 2); inn.push([x1 - R + Math.cos(a) * R, z1 - R + Math.sin(a) * R]); }
     inn.push([x1 - R, z1], [x0 + 2, z1]);
+    const bandC = tw ? 0x44474c : 0xf4f2ec;
     for (let f = 1; f <= fl; f++) {
       const y = f * fh;
-      b.paint(0xf4f2ec);
+      b.paint(bandC);
       for (let i = 0; i < out.length - 1; i++) {
         const a = out[i], c = out[i + 1], ia = inn[i], ic = inn[i + 1];
         b.quad([ia[0], y, ia[1]], [a[0], y, a[1]], [c[0], y, c[1]], [ic[0], y, ic[1]]);
         b.quad([a[0], y - 0.3, a[1]], [c[0], y - 0.3, c[1]], [c[0], y, c[1]], [a[0], y, a[1]].map((q) => q) as [number, number, number]);
-        if (f < fl) { b.paint(glassRail, Surf.Metal); b.quad2([a[0], y, a[1]], [c[0], y, c[1]], [c[0], y + 1.05, c[1]], [a[0], y + 1.05, a[1]]); b.paint(0xf4f2ec); }
+        if (f < fl) { b.paint(glassRail, Surf.Metal); b.quad2([a[0], y, a[1]], [c[0], y, c[1]], [c[0], y + 1.05, c[1]], [a[0], y + 1.05, a[1]]); b.paint(bandC); }
       }
     }
-    b.paint(0xf4f2ec).box(x0 - 0.2, 0, z0 - 0.2, x0 + 2, fl * fh + 0.6, z1 + 1.6, { bottom: null });
-    b.paint(0xf4f2ec).box(x1 - 2, 0, z0 - 0.2, x1 + 1.6, fl * fh + 0.6, z0 + 2, { bottom: null });
+    b.paint(bandC).box(x0 - 0.2, 0, z0 - 0.2, x0 + 2, fl * fh + 0.6, z1 + 1.6, { bottom: null });
+    b.paint(bandC).box(x1 - 2, 0, z0 - 0.2, x1 + 1.6, fl * fh + 0.6, z0 + 2, { bottom: null });
     roofMech(b, rng, x0 + 3, z0 + 1, x1 - 6, z1 - 2, fl * fh, 2, true);
     lobbyFront(b, -6, 0, z1 + 1.4);
     frontGarden(b, rng, z1 + 1.4);
@@ -1101,8 +1107,9 @@ function condo(b: ModelBuilder, v: number, rng: RNG): void {
   } else if (v === 4) {
     // classic limestone luxury: arched windows, balconettes, mansard penthouse w/ dormers, canopy
     const C = 3.2, x0 = -4 * C, x1 = 4 * C, z0 = -2 * C, z1 = 2 * C, fl = 7, top = fl * fh;
-    b.paint(P(0xc8bea8, Surf.Stone)).box(x0, 0, z0, x1, fh, z1, { top: null });
-    ww(b, x0, z0, x1, z1, fh, top, 0xd6ccb6, 7, fh, null);
+    const wallC = tw ? 0xa86a50 : 0xd6ccb6;
+    b.paint(P(tw ? 0x8a7a68 : 0xc8bea8, Surf.Stone)).box(x0, 0, z0, x1, fh, z1, { top: null });
+    ww(b, x0, z0, x1, z1, fh, top, wallC, 7, fh, null);
     band(b, x0, z0, x1, z1, fh - 0.15, 0.35, 0.15, 0xe6decc, false);
     band(b, x0, z0, x1, z1, 3 * fh - 0.1, 0.2, 0.1, 0xe6decc, false);
     bandRing(b, x0, z0, x1, z1, top, 0.5, 0.45, 0xe6decc);
@@ -1126,22 +1133,23 @@ function condo(b: ModelBuilder, v: number, rng: RNG): void {
     });
     b.paint(0x1f3a2e).box(-1.8, 2.9, z1, 1.8, 3.2, z1 + 4.0, { nz: null });
     b.paint(0xd8d0bc, Surf.Metal).box(-1.75, 0.1, z1 + 3.85, -1.6, 2.9, z1 + 4.0).box(1.6, 0.1, z1 + 3.85, 1.75, 2.9, z1 + 4.0);
-    chimney(b, -8, -3, 1.2, 1.0, top + 4, top + 5.4, 0xd6ccb6, Surf.Stone);
-    chimney(b, 8, -3, 1.2, 1.0, top + 4, top + 5.4, 0xd6ccb6, Surf.Stone);
+    chimney(b, -8, -3, 1.2, 1.0, top + 4, top + 5.4, wallC, Surf.Stone);
+    chimney(b, 8, -3, 1.2, 1.0, top + 4, top + 5.4, wallC, Surf.Stone);
     frontGarden(b, rng, z1);
     parkedCar(b, rng, 4.5, z1 + 5.5, Math.PI / 2, 0x1c1c1c);
   } else {
     // vertical-garden condo: deep planted balconies wrapping front & sides, rooftop trees
     const C = 4.2, x0 = -3 * C, x1 = 3 * C, z0 = -2 * C, z1 = C, fl = 7, top = fl * fh;
-    ww(b, x0, z0, x1, z1, 0, top, 0xece9e2, 3, fh);
-    lobby(b, -4.2, 4.2, z1, 2.9, 0xece9e2);
+    const wallC = tw ? 0xcdb998 : 0xece9e2, slabC = tw ? 0x55585e : 0xf4f2ec; // twin: sand walls, charcoal planter slabs
+    ww(b, x0, z0, x1, z1, 0, top, wallC, 3, fh);
+    lobby(b, -4.2, 4.2, z1, 2.9, wallC);
     for (let f = 1; f < fl; f++) {
       const y = f * fh, green = [0x4f7a34, 0x5a8a3a, 0x3f6b2e][f % 3];
-      balcBand(b, 'pz', z1, x0 - 1.8, x1 + 1.8, y, 2.2, 0xf4f2ec, 0xf4f2ec, Surf.Plain, 0.5, green);
-      balcBand(b, 'px', x1, z0, z1, y, 1.8, 0xf4f2ec, 0xf4f2ec, Surf.Plain, 0.5, green);
-      balcBand(b, 'nx', x0, z0, z1, y, 1.8, 0xf4f2ec, 0xf4f2ec, Surf.Plain, 0.5, green);
+      balcBand(b, 'pz', z1, x0 - 1.8, x1 + 1.8, y, 2.2, slabC, slabC, Surf.Plain, 0.5, green);
+      balcBand(b, 'px', x1, z0, z1, y, 1.8, slabC, slabC, Surf.Plain, 0.5, green);
+      balcBand(b, 'nx', x0, z0, z1, y, 1.8, slabC, slabC, Surf.Plain, 0.5, green);
     }
-    flatRoof(b, x0, z0, x1, z1, top, 0.9, 0.25, 0xece9e2, 0x5f8a3a);
+    flatRoof(b, x0, z0, x1, z1, top, 0.9, 0.25, wallC, 0x5f8a3a);
     for (const [x, z] of [[-8, -4], [0, -5], [8, -3], [-4, 0.5], [5, 0]] as [number, number][]) { b.paint(0x5b4330, Surf.Wood).cylinder(x, z, top, 1.8, 0.15, 0.12, 5, { top: false }); b.paint(0x4f7a34, Surf.Foliage).blob(x, top + 2.8, z, 1.7, 1.5, 1.7, 0, 0.2, x + z); }
     frontGarden(b, rng, z1 + 2.2);
   }
@@ -1275,7 +1283,7 @@ export const midModelsA = {
   res_walkup: (b: ModelBuilder, v: number, rng: RNG) => { setLot(8, 8, 14); if (isMirrorTwin('res_walkup', v, rng)) walkupTwin(b, v, rng); else walkup(b, v, rng); },
   res_tenement: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 20); tenement(b, v, rng); },
   res_rowhouses: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 8, 12); rowhouses(b, v, rng); },
-  res_apartment: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 22); apartment(b, v, rng); },
-  res_condo: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 30); condo(b, v, rng); },
+  res_apartment: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 22); apartment(b, v, rng, isMirrorTwin('res_apartment', v, rng)); },
+  res_condo: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 30); condo(b, v, rng, isMirrorTwin('res_condo', v, rng)); },
   res_courtyard: (b: ModelBuilder, v: number, rng: RNG) => { setLot(24, 24, 25); courtyard(b, v, rng); },
 };

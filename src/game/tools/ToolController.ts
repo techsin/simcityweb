@@ -162,6 +162,8 @@ export class ToolController {
       this.ctx.setOverlay(0 as Overlay);
     }
     this.autoOverlayOn = null;
+    // never let the previous tool's cursor tip linger (e.g. "Lower terrain" while Level is active)
+    this.ctx.tip.hide();
     this.current = next;
     this.safeCall(() => this.current.activate());
     const ao = this.current.autoOverlay;
@@ -175,7 +177,12 @@ export class ToolController {
     } catch {
       /* ignore */
     }
-    if (this.inside) this.moveDirty = true;
+    if (this.inside && !this.leftDown && this.lastEvt) {
+      // recompute the new tool's hover preview / tip now instead of waiting for the next frame or mouse move
+      const p = this.pointer(this.lastEvt);
+      if (p) this.safeCall(() => this.current.move(p));
+      this.moveDirty = false;
+    } else if (this.inside) this.moveDirty = true;
     this.ctx.ui.emit('tool', this.activeId);
     return true;
   }

@@ -29,14 +29,28 @@ export class DisasterTool extends Tool {
       this.ctx.toast('Disasters are not available yet', 'warning');
       return;
     }
+    let started: unknown = false;
     try {
       // the alarm comes from the sim's 'disaster' event / news (src/game/GameSounds.ts)
-      f(this.ctx.sim, this.kind, p.hit.x, p.hit.z);
+      started = f(this.ctx.sim, this.kind, p.hit.x, p.hit.z);
     } catch (e) {
       console.warn('[disaster] failed', e);
-      this.ctx.toast(`Could not start ${this.label}`, 'error');
+      started = false;
+    }
+    // triggerDisaster returns false when it could not start (e.g. a fire with no building nearby): keep the tool
+    // selected so the player can pick another spot, and say why
+    if (started === false) {
+      this.ctx.sound('error');
+      const why = this.failReason();
+      this.ctx.toast(why, 'error');
+      this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(this.label)}</b></div><div class="tip-reason">${escapeHtml(why)}</div>`, 'bad');
+      return;
     }
     this.ctx.tools.select(null, { silent: true });
+  }
+  private failReason(): string {
+    if (this.kind === 'fire') return 'No building here to set on fire — click on or next to a building';
+    return `Could not start a ${this.label.toLowerCase()} here`;
   }
   override deactivate(): void {
     this.ctx.world.setHighlight(null);

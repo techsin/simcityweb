@@ -8,7 +8,7 @@ import { Surf } from '../../core/types';
 import { rooftopWaterTank } from '../kit';
 import {
   P, inFace, U, fq, door, lawnSlab, paveSlab, tree, trashCans, planter, parapet,
-  flatRoof, setLot, band, bandRing, parking, chainFence, lounger, beacon, capPoly, poolRect, poolGlow, lightPool, parkedCar, type Face,
+  flatRoof, setLot, band, bandRing, parking, chainFence, lounger, beacon, capPoly, poolRect, poolGlow, lightPool, parkedCar, type Face, isMirrorTwin,
 } from './res_util';
 import { ww } from './res_mid';
 
@@ -285,7 +285,8 @@ function playMini(b: ModelBuilder, x: number, z: number): void {
 }
 
 // ---------------------------------------------------------------------------------------------- TOWER (R$$) 2x2
-function tower(b: ModelBuilder, v: number, rng: RNG): void {
+/** tw = mirror twin: own facade palette (slate / buff brick / charcoal bands / sand / sage / cream + brick). */
+function tower(b: ModelBuilder, v: number, rng: RNG, tw = false): void {
   plaza(b, rng, 16, 16, 0xcfc9bd);
   const fh = 3.1;
   if (v === 0) {
@@ -293,7 +294,7 @@ function tower(b: ModelBuilder, v: number, rng: RNG): void {
     const C = 4.2, h = 2 * C + 1.05 * 0, fl = 30, py = 2 * fh, top = fl * fh;
     const x0 = -2.5 * C, x1 = 2.5 * C;
     podium(b, -14, -14, 14, 12, py, 0xb8ae9c, 10);
-    ww(b, x0, -h, x1, h, py, top, 0xbfae90, 3, fh, P(ROOF, Surf.RoofFlat));
+    ww(b, x0, -h, x1, h, py, top, tw ? 0x7e8a92 : 0xbfae90, 3, fh, P(ROOF, Surf.RoofFlat));
     for (let f = 3; f < fl; f++) ringBalc(b, x0, -h, x1, h, f * fh, 1.3, 0xf2eee6);
     roofBox(b, -5, -4, 5, 4, top, 4.5, 0xd8d0c0);
     b.paint(0xe2d8c6);
@@ -305,8 +306,8 @@ function tower(b: ModelBuilder, v: number, rng: RNG): void {
   } else if (v === 1) {
     // brick-clad wedding-cake tower with setbacks, water tank, corner balconies
     const C = 3, podH = 3 * fh;
-    const brick = 0x8e5a44;
-    podium(b, -15, -15, 15, 13, podH, 0x7a4a3a, 9, P(ROOF, Surf.RoofFlat), Surf.Brick);
+    const brick = tw ? 0xc0a070 : 0x8e5a44;
+    podium(b, -15, -15, 15, 13, podH, tw ? 0x9a7e58 : 0x7a4a3a, 9, P(ROOF, Surf.RoofFlat), Surf.Brick);
     const tiers: [number, number, number][] = [[3, 20, 4 * C], [20, 25, 3 * C], [25, 28, 2 * C]];
     for (const [f0, f1, h] of tiers) {
       ww(b, -h, -h, h, h, f0 * fh, f1 * fh, brick, 0, fh, P(ROOF, Surf.RoofFlat));
@@ -325,11 +326,12 @@ function tower(b: ModelBuilder, v: number, rng: RNG): void {
     const x0 = -9, x1 = 9, z0 = -9, z1 = 9, fl = 34, py = 2 * fh, top = fl * fh;
     podium(b, -14, -14, 14, 12.5, py, 0x9a9690, 10);
     glassBox(b, x0, z0, x1, z1, py, top, 6, fh);
+    const bandC = tw ? 0x3a3d42 : 0xf4f4f0;
     for (let f = 3; f < fl; f++) {
-      stripBalc(b, x0, x1, z1, 1, f * fh, 1.5, 0xf4f4f0);
-      stripBalc(b, x0, x1, z0, -1, f * fh, 1.5, 0xf4f4f0);
+      stripBalc(b, x0, x1, z1, 1, f * fh, 1.5, bandC);
+      stripBalc(b, x0, x1, z0, -1, f * fh, 1.5, bandC);
     }
-    b.paint(0xf4f4f0);
+    b.paint(bandC);
     for (const x of [x0, x1]) b.box(x - 0.3, py, z0 - 1.5, x + 0.3, top + 8, z0 - 0.9).box(x - 0.3, py, z1 + 0.9, x + 0.3, top + 8, z1 + 1.5);
     for (const y of [top + 3, top + 7.4]) { b.box(x0 - 0.3, y, z1 + 0.9, x1 + 0.3, y + 0.6, z1 + 1.5, { bottom: null }); b.box(x0 - 0.3, y, z0 - 1.5, x1 + 0.3, y + 0.6, z0 - 0.9, { bottom: null }); }
     roofBox(b, -5, -5, 5, 5, top, 4.0, 0xd8d8d4);
@@ -341,9 +343,10 @@ function tower(b: ModelBuilder, v: number, rng: RNG): void {
     const fl = 28, py = 2 * fh, top = fl * fh;
     podium(b, -14, -14, 14, 12.5, py, 0xc2bcb0, 10);
     const pts = prismPts(0, 0, 11, 8, Math.PI / 8);
-    b.paint(0xe8e6e0, Surf.WallWindows, 3, fh).extrude(pts, py, top - py, { topPaint: P(ROOF, Surf.RoofFlat) });
+    const wallC = tw ? 0xc9a27a : 0xe8e6e0;
+    b.paint(wallC, Surf.WallWindows, 3, fh).extrude(pts, py, top - py, { topPaint: P(ROOF, Surf.RoofFlat) });
     for (let f = 3; f < fl; f++) polyBalc(b, pts, f * fh, 1.3, 0xf6f4f0);
-    b.paint(0xe8e6e0).extrude(prismPts(0, 0, 6.5, 8, Math.PI / 8), top, 4.2, { topPaint: P(0x5e5b55, Surf.RoofFlat) });
+    b.paint(wallC).extrude(prismPts(0, 0, 6.5, 8, Math.PI / 8), top, 4.2, { topPaint: P(0x5e5b55, Surf.RoofFlat) });
     b.paint(0xfff0cc, Surf.Emissive).extrude(prismPts(0, 0, 6.55, 8, Math.PI / 8), top + 3.4, 0.4, { top: false });
     spire(b, 0, 0, top + 4.2, 8, 0.35);
     podiumDeck(b, rng, -14, -14, 14, 12.5, py, -12.5, -12.5, 12.5, 12.5);
@@ -352,7 +355,7 @@ function tower(b: ModelBuilder, v: number, rng: RNG): void {
     // L-shaped 22-floor tower, terracotta panels, corner balcony stacks, roof garden
     const C = 3, fl = 22, py = 2 * fh, top = fl * fh;
     podium(b, -14, -14, 14, 12.5, py, 0x8a7a6a, 10);
-    const col = 0xc07a58;
+    const col = tw ? 0x8fa3a0 : 0xc07a58;
     ww(b, -4 * C, 0, 4 * C, 3 * C, py, top, col, 0, fh, P(0x5f8a3a, Surf.Foliage));
     ww(b, -4 * C, -4 * C, -1 * C, 0, py, top, col, 0, fh, P(0x5f8a3a, Surf.Foliage), { pz: null });
     parapet(b, -4 * C, 0, 4 * C, 3 * C, top, 1.1, 0.25, 0xe8e0d0);
@@ -371,13 +374,14 @@ function tower(b: ModelBuilder, v: number, rng: RNG): void {
     const fl = 32, py = 2 * fh, top = fl * fh;
     podium(b, -14, -14, 14, 12.5, py, 0x55585c, 10);
     const C = 3;
-    ww(b, -4 * C, -3 * C, -1 * C, 3 * C, py, top, 0xecebe6, 0, fh);
-    ww(b, 1 * C, -3 * C, 4 * C, 3 * C, py, top, 0x4a4d52, 0, fh);
+    const lightC = tw ? 0xd9c9a8 : 0xecebe6, darkC = tw ? 0x7a4a3a : 0x4a4d52;
+    ww(b, -4 * C, -3 * C, -1 * C, 3 * C, py, top, lightC, 0, fh);
+    ww(b, 1 * C, -3 * C, 4 * C, 3 * C, py, top, darkC, 0, fh);
     glassBox(b, -1 * C, -1.5 * C, 1 * C, 1.5 * C, py, top + 6, 3, fh, P(ROOF, Surf.RoofFlat), {});
     b.paint(0xd8d8d4);
     for (let i = 0; i <= 3; i++) { b.box(-4 * C + i * C - 0.12, py, 3 * C, -4 * C + i * C + 0.12, top, 3 * C + 0.9, { nz: null, bottom: null }); b.box(C + i * C - 0.12, py, 3 * C, C + i * C + 0.12, top, 3 * C + 0.9, { nz: null, bottom: null }); }
-    for (let f = 4; f < fl; f += 4) { stripBalc(b, -4 * C, -1 * C, 3 * C, 1, f * fh, 1.4, 0xecebe6); stripBalc(b, 1 * C, 4 * C, 3 * C, 1, f * fh + 2 * fh, 1.4, 0xecebe6); }
-    for (const x of [-7.5, 7.5]) roofBox(b, x - 3, -4, x + 3, 4, top, 3.0, x < 0 ? 0xecebe6 : 0x4a4d52);
+    for (let f = 4; f < fl; f += 4) { stripBalc(b, -4 * C, -1 * C, 3 * C, 1, f * fh, 1.4, lightC); stripBalc(b, 1 * C, 4 * C, 3 * C, 1, f * fh + 2 * fh, 1.4, lightC); }
+    for (const x of [-7.5, 7.5]) roofBox(b, x - 3, -4, x + 3, 4, top, 3.0, x < 0 ? lightC : darkC);
     litRing(b, -1 * C - 0.02, -1.5 * C - 0.02, 1 * C + 0.02, 1.5 * C + 0.02, top + 5.4, 0.4, 0xbfe8ff);
     podiumDeck(b, rng, -14, -14, 14, 12.5, py, -12.5, -9.5, 12.5, 9.5);
     streetTrees(b, rng, 16, 14.6);
@@ -701,7 +705,7 @@ function supertall(b: ModelBuilder, v: number, rng: RNG): void {
 export const highModels = {
   res_projects: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 60); projects(b, v, rng); },
   res_highrise_slab: (b: ModelBuilder, v: number, rng: RNG) => { setLot(24, 16, 70); highriseSlab(b, v, rng); },
-  res_tower: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 110); tower(b, v, rng); },
+  res_tower: (b: ModelBuilder, v: number, rng: RNG) => { setLot(16, 16, 110); tower(b, v, rng, isMirrorTwin('res_tower', v, rng)); },
   res_twin_towers: (b: ModelBuilder, v: number, rng: RNG) => { setLot(24, 24, 120); twinTowers(b, v, rng); },
   res_luxury_tower: (b: ModelBuilder, v: number, rng: RNG) => { setLot(24, 24, 200); luxuryTower(b, v, rng); },
   res_supertall: (b: ModelBuilder, v: number, rng: RNG) => { setLot(32, 32, 300); supertall(b, v, rng); },

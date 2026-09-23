@@ -164,7 +164,7 @@ export class HelpPanel extends Panel {
       this.ctx.showOnboarding?.();
       this.ctx.panels.close(this.id);
     });
-    this.body.append(h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:12px' }, h('div', { class: 'dim', style: 'font-size:12.5px' }, 'Build the city of your dreams. The camera never loses keyboard focus to the UI unless you are typing.'), guide), cols, tips);
+    this.body.append(h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:12px' }, h('div', { class: 'dim', style: 'font-size:12.5px' }, 'Build the city of your dreams. Keyboard shortcuts and camera keys work at all times — clicking buttons or panels never takes them away; only text boxes capture keys while you type.'), guide), cols, tips);
   }
 }
 

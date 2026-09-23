@@ -27,6 +27,8 @@ export class Toolbar {
   private tip: HTMLDivElement;
   private btns = new Map<string, HTMLButtonElement>();
   private openCat: string | null = null;
+  /** pending requestAnimationFrame that reveals the flyout (cancelled by closeFlyout / a newer openFlyout) */
+  private openRaf = 0;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'hud-bottom' });
@@ -112,7 +114,12 @@ export class Toolbar {
     this.flyout.style.maxWidth = Math.min(1180, (this.el.parentElement?.clientWidth ?? 1600) - 32) + 'px';
     const b = this.btns.get(catId)!;
     this.flyout.style.left = b.offsetLeft + b.offsetWidth / 2 + 'px';
-    requestAnimationFrame(() => {
+    // reveal on the next frame (after layout) — race-free: a close (or another open) before that frame cancels it,
+    // and the callback re-checks that this category is still the open one
+    cancelAnimationFrame(this.openRaf);
+    this.openRaf = requestAnimationFrame(() => {
+      this.openRaf = 0;
+      if (this.openCat !== catId) return;
       this.positionFlyout();
       this.flyout.classList.add('open');
     });
@@ -136,7 +143,12 @@ export class Toolbar {
   }
 
   closeFlyout(): void {
-    if (!this.openCat) return;
+    cancelAnimationFrame(this.openRaf);
+    this.openRaf = 0;
+    if (!this.openCat) {
+      this.flyout.classList.remove('open');
+      return;
+    }
     this.openCat = null;
     this.flyout.classList.remove('open');
     for (const b of this.btns.values()) b.classList.remove('open');
@@ -274,10 +286,26 @@ export class Toolbar {
     const r = anchor.getBoundingClientRect();
     const pr = this.tip.parentElement!.getBoundingClientRect();
     const tw = this.tip.offsetWidth, th = this.tip.offsetHeight;
-    let x = (r.left + r.width / 2 - pr.left) / z - tw / 2;
-    let y = (r.top - pr.top) / z - th - 10;
     const maxX = pr.width / z - tw - 8;
+    let x = (r.left + r.width / 2 - pr.left) / z - tw / 2;
     x = Math.max(8, Math.min(maxX, x));
+    // flyout items: never cover the flyout itself (its tabs / header) — go above the whole flyout, else beside it
+    const fly = anchor.closest('.flyout');
+    if (fly) {
+      const fr = fly.getBoundingClientRect();
+      let y = (fr.top - pr.top) / z - th - 8;
+      if (y < 64) {
+        const right = (fr.right - pr.left) / z + 10;
+        const left = (fr.left - pr.left) / z - tw - 10;
+        x = right + tw <= pr.width / z - 8 ? right : left >= 8 ? left : x;
+        y = Math.max(64, Math.min(pr.height / z - th - 8, (r.top - pr.top) / z + r.height / z / 2 - th / 2));
+      }
+      this.tip.style.left = x + 'px';
+      this.tip.style.top = y + 'px';
+      this.tip.classList.add('show');
+      return;
+    }
+    let y = (r.top - pr.top) / z - th - 10;
     if (y < 8) y = (r.bottom - pr.top) / z + 10;
     this.tip.style.left = x + 'px';
     this.tip.style.top = y + 'px';

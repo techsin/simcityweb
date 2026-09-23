@@ -539,10 +539,10 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       const tc = [0xd6d0c2, 0xd6d0c2, 0x4f6f4f, 0xd6d0c2];
       let t = 0;
       for (const [x, z] of [[6.5, -17.5], [16.5, -17.5], [6.5, -8.5], [16.5, -8.5]] as [number, number][]) {
-        tank(b, x, z, 3.6, 9 + (t % 2) * 2, tc[t], { y0: 0.5, roof: 'dome', stair: t === 1, rim: 0x9aa0a6, base: 0x6a6258, flood: 10 });
+        tank(b, x, z, 3.6, 9 + (t % 2) * 2, tc[t], { y0: 0.5, roof: 'dome', stair: t === 1, rim: 0x9aa0a6, base: 0x6a6258, flood: 7 });
         t++;
       }
-      sphereTank(b, -15, 6, 4.2, 0xd6d0c2, 0x6a6e72, 10, 6, 10);
+      sphereTank(b, -15, 6, 4.2, 0xd6d0c2, 0x6a6e72, 10, 6, 7);
       // pipe rack along z=1
       b.paint(0x55595e, Surf.Metal);
       for (let x = -21; x <= 21; x += 7) {
@@ -621,6 +621,11 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       wallQuad(b, 'pz', 16, -22.5, -5, 7.2, 8.2);
       b.paint(0x3a3d40, Surf.Metal);
       wallRow(b, 'pz', 16, -21, -6, 0.1, 4.5, 3, 3.6);
+      // lit loading doors: lamp over each door + sodium pool on the apron
+      for (const dc of [-18.5, -13.5, -8.5]) {
+        lightDot(b, dc, 5.0, 16.35, 0.26, SODIUM);
+        poolRect(b, dc - 1.8, 16.1, dc + 1.8, 20.6, G);
+      }
       boxTruck(b, 17, 17.5, Math.PI * 0.5, 0xe9e7e0, 0x9a968e);
       semi(b, -3, 20.5, Math.PI * 0.5, 0xc0392b, 0xd2cec6, {});
       floodLight(b, 2, 2.5, 10, G, 7, clip, undefined, SODIUM);
@@ -755,11 +760,11 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
       // OIL REFINERY: floating-roof tank farm at the back, crude unit columns, box heater, 2 pipe racks, loading rack, flare
       b.paint(0x8e8a80, Surf.Pavement).box(-30.5, 0, -30.5, 30.5, 0.8, -12.5, { bottom: null, px: null, nx: null, nz: null });
       // tank farm: shells floodlit warm from the bund at night, sodium lights on the rims, a lit bund floor
-      tank(b, -21.5, -22, 6.8, 12, 0xe8e6de, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, rim: 0x9aa0a6, flood: 12 });
-      tank(b, -5.5, -22, 6.8, 12, 0xdedcd2, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, flood: 12 });
-      tank(b, 9.5, -22, 6.0, 11, 0xe8e6de, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, rim: 0x9aa0a6, flood: 11 });
-      tank(b, 24, -25, 4.0, 10, 0x55654f, { y0: 0.05, roof: 'cone', seg: 8, flood: 10 });
-      tank(b, 24, -16, 4.0, 10, 0x55654f, { y0: 0.05, roof: 'cone', seg: 8, flood: 10 });
+      tank(b, -21.5, -22, 6.8, 12, 0xe8e6de, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, rim: 0x9aa0a6, flood: 8 });
+      tank(b, -5.5, -22, 6.8, 12, 0xdedcd2, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, flood: 8 });
+      tank(b, 9.5, -22, 6.0, 11, 0xe8e6de, { y0: 0.05, roof: 'flat', roofColor: 0x9ea2a6, seg: 10, rim: 0x9aa0a6, flood: 7.5 });
+      tank(b, 24, -25, 4.0, 10, 0x55654f, { y0: 0.05, roof: 'cone', seg: 8, flood: 7 });
+      tank(b, 24, -16, 4.0, 10, 0x55654f, { y0: 0.05, roof: 'cone', seg: 8, flood: 7 });
       lights(b, [[-21.5, 12.6, -15], [-5.5, 12.6, -15], [9.5, 11.6, -15.8], [24, 11.2, -12]], 0.3, SODIUM);
       pool(b, -13.5, -21, 8, 0x8e8a80, 0.86);
       pipeRack(b, -28, -9.7, 28, -9.7, 6, 4, rng, 18);
@@ -800,9 +805,9 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
     }
     case 1: {
       // PETROCHEMICAL (mirrored lot): sphere tanks, cracking unit frame, columns, cooling cells (steam), heater + stack, flare
-      sphereTank(b, -22, -22, 5.0, 0xe8e6de, 0x6a6e72, 8, 4, 12);
-      sphereTank(b, -9, -22, 5.0, 0xe8e6de, 0x6a6e72, 8, 4, 12);
-      tank(b, 11, -22, 6.8, 14, 0xdedcd4, { roof: 'dome', seg: 10, flood: 14 });
+      sphereTank(b, -22, -22, 5.0, 0xe8e6de, 0x6a6e72, 8, 4, 8);
+      sphereTank(b, -9, -22, 5.0, 0xe8e6de, 0x6a6e72, 8, 4, 8);
+      tank(b, 11, -22, 6.8, 14, 0xdedcd4, { roof: 'dome', seg: 10, flood: 9 });
       lights(b, [[-22, 6.8, -16.6], [-9, 6.8, -16.6], [11, 14.8, -15]], 0.3, SODIUM);
       pool(b, -15.5, -17.5, 6, RF_GROUND);
       // cracking unit
@@ -841,7 +846,7 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
     default: {
       // GAS PROCESSING / LNG: two big double-wall tanks, columns, bullet vessels, compressor house, flare (front right)
       for (const [x, z] of [[-18, -18], [5, -20]] as [number, number][]) {
-        b.paint(0xeceae4, Surf.Plain, 1, 22);
+        b.paint(0xeceae4, Surf.Plain, 1, 13);
         tube(b, x, z, 0, 22, 10, 10, 14);
         b.paint(0xdedcd4, Surf.Metal);
         dome(b, x, z, 22, 10, 3.2, 14, 3);

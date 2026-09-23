@@ -3,14 +3,13 @@
  */
 import type { ModelBuilders } from '../registry';
 import type { ModelBuilder, ColorLike } from '../ModelBuilder';
-import { Color } from 'three';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { fence } from '../kit';
 import {
   bicone, dome, flat, gambrelRoof, ground, hCyl, lathe, strut, tank, tractor, tree, tube, wallQuad, wallRow, disc,
   smokestack, boxTruck, pallets, carLow, CAR_COLORS2, lattice, poplar,
-  floodLight, lightDot, pool, Y_OVER, dim,
+  floodLight, lightDot, pool, Y_OVER,
 } from './ind_kit';
 
 const DIRT = 0x8a6e4b;
@@ -454,8 +453,32 @@ function lawnPatch(b: ModelBuilder, x0: number, z0: number, x1: number, z1: numb
 }
 
 // ------------------------------------------------------------------------------------------------ ind_greenhouse
-/** Venlo-type multi-span glasshouse: ridges along Z, spans across X. */
+// Grow lights. A night-only Emissive 10/11 emitter shows its paint by day, and pale warm paints bleach to white under
+// the night exposure + bloom, so HPS (amber) / LED (magenta) light is drawn as narrow lamp rows in a DARK saturated
+// paint: thin brown / plum lines on the glass by day, saturated amber / magenta rows glowing through the roof at night.
+const GROW_HPS = 0x8a4410;
+const GROW_LED = 0x8a2870;
+
+/**
+ * Lamp rows (2 tris each) on a roof slope from (xa, ya) to (xb, yb) (xb > xa), running z0..z1: `n` rows `w` m wide,
+ * 5 cm above the glass. Uses the current paint.
+ */
+function growRows(b: ModelBuilder, xa: number, ya: number, xb: number, yb: number, z0: number, z1: number, n = 2, w = 0.3): void {
+  const L = Math.hypot(xb - xa, yb - ya);
+  const dx = (xb - xa) / L, dy = (yb - ya) / L;
+  const ox = -dy * 0.05, oy = dx * 0.05;
+  const hw = w / 2 / L;
+  for (let k = 0; k < n; k++) {
+    const sc = (k + 0.5) / n;
+    const p0x = xa + (xb - xa) * (sc - hw) + ox, p0y = ya + (yb - ya) * (sc - hw) + oy;
+    const p1x = xa + (xb - xa) * (sc + hw) + ox, p1y = ya + (yb - ya) * (sc + hw) + oy;
+    b.quad([p0x, p0y, z1], [p1x, p1y, z1], [p1x, p1y, z0], [p0x, p0y, z0]);
+  }
+}
+
+/** Venlo-type multi-span glasshouse: ridges along Z, spans across X. ~85% of the spans are lit at night. */
 function venlo(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, h: number, span: number, frame: ColorLike = 0xf2f4f4): void {
+  // pavilion glass walls: reflective by day, uniform warm glow from the lit crop at night
   b.paint(0x2a3440, Surf.GlassPlain, 2).box(x0, 0, z0, x1, h, z1, { top: null });
   // white glazing bars every 3.2 m on the walls
   b.paint(frame, Surf.Plain);
@@ -466,7 +489,6 @@ function venlo(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1
   const n = Math.max(1, Math.round((x1 - x0) / span));
   const sw = (x1 - x0) / n;
   const rh = sw * 0.24;
-  const nx = rh / Math.hypot(rh, sw / 2);
   for (let i = 0; i < n; i++) {
     const a = x0 + i * sw, c = a + sw / 2, e = a + sw;
     b.paint(0xe2eae6, Surf.GlassCurtain, 5, 1.2);
@@ -475,37 +497,11 @@ function venlo(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1
     b.paint(frame, Surf.Metal);
     b.tri([a, h, z1], [e, h, z1], [c, h + rh, z1]);
     b.tri([e, h, z0], [a, h, z0], [c, h + rh, z0]);
-    // TEMP art test 2: grow-light rows
-    {
-      const TM = i % 6;
-      const L = Math.hypot(sw / 2, rh);
-      const row = (xa: number, ya: number, xb: number, yb: number, s0: number, s1: number, lift: number) => {
-        const dx = (xb - xa) / L, dy = (yb - ya) / L;
-        const nxv = -dy * lift, nyv = dx * lift;
-        const p0x = xa + (xb - xa) * s0 + nxv, p0y = ya + (yb - ya) * s0 + nyv;
-        const p1x = xa + (xb - xa) * s1 + nxv, p1y = ya + (yb - ya) * s1 + nyv;
-        b.quad([p0x, p0y, z1 - 0.3], [p1x, p1y, z1 - 0.3], [p1x, p1y, z0 + 0.3], [p0x, p0y, z0 + 0.3]);
-      };
-      const P9 = { color: new Color().setRGB(0.06, 0.003, 0), surf: Surf.Emissive, pattern: 9, floor: 241 };
-      const setP = (k: number) => {
-        if (TM === 0) b.paint(0x9a4a10, Surf.Emissive, 11);
-        else if (TM === 1) b.paint(0xc86018, Surf.Emissive, 11);
-        else if (TM === 2) b.paint(P9);
-        else if (TM === 3) { if (k % 2) b.paint(P9); else b.paint(0x9a4a10, Surf.Emissive, 11); }
-        else if (TM === 5) b.paint(0xa0287a, Surf.Emissive, 11);
-      };
-      if (TM === 4) {
-        b.paint(0x9a4a10, Surf.Emissive, 11);
-        row(a, h, c, h + rh, 0.08, 0.92, 0.05);
-        row(c, h + rh, e, h, 0.08, 0.92, 0.05);
-      } else {
-        const w = 0.22 / L;
-        for (let k = 0; k < 3; k++) {
-          const sc = 0.2 + k * 0.3;
-          setP(k); row(a, h, c, h + rh, sc - w / 2, sc + w / 2, 0.05);
-          setP(k + 1); row(c, h + rh, e, h, sc - w / 2, sc + w / 2, 0.05);
-        }
-      }
+    // grow-light rows: HPS amber, ~15% of the lit spans LED magenta
+    if (rng.chance(0.85)) {
+      b.paint(rng.chance(0.15) ? GROW_LED : GROW_HPS, Surf.Emissive, 11);
+      growRows(b, a, h, c, h + rh, z0 + 0.3, z1 - 0.3);
+      growRows(b, c, h + rh, e, h, z0 + 0.3, z1 - 0.3);
     }
   }
   // gutters / ridge bars
@@ -561,11 +557,14 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x7d9a4a, Surf.Foliage);
       flat(b, -HX, -HZ, HX, HZ, 0.05);
       const n = 5;
+      const litOff = rng.int(0, 1);
       for (let i = 0; i < n; i++) {
         const cx = -20 + i * 7.2;
-        b.paint(0xeef1ee, Surf.Plain);
-        if (i !== 4) b.paint(0xeef1ee, Surf.Plain, 1, 10);
-        polytunnel(b, cx, -14.5, 6.0, 25, 3.4, i);
+        // every other tunnel (2-3 of 5) is lit: warm glow through the film + an HPS lamp row along the ridge
+        const lit = (i + litOff) % 2 === 0;
+        if (lit) b.paint(0xeef1ee, Surf.Plain, 1, 10);
+        else b.paint(0xeef1ee, Surf.Plain);
+        polytunnel(b, cx, -14.5, 6.0, 25, 3.4, lit);
       }
       b.paint(DIRT, Surf.Pavement);
       flat(b, -23.5, 10.5, 23.5, 13, 0.08);
@@ -594,11 +593,10 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
         b.paint(0xf0f2f2, Surf.Metal);
         strut(b, [cx, 5.25, -14.6], [cx, 5.25, 7.1], 0.18);
         if (i !== 1) {
-          // grow lights glowing through the roof at night
-          b.paint(0xe8c8a2, Surf.Emissive, 10);
-          const sl = 2.2 / 4.5;
-          b.quad([cx + 4.2, 3.0 + 0.3 * sl + 0.05, 6.6], [cx + 4.2, 3.0 + 0.3 * sl + 0.05, -14.1], [cx + 0.4, 5.2 - 0.4 * sl + 0.05, -14.1], [cx + 0.4, 5.2 - 0.4 * sl + 0.05, 6.6]);
-          b.quad([cx - 4.2, 3.0 + 0.3 * sl + 0.05, -14.1], [cx - 4.2, 3.0 + 0.3 * sl + 0.05, 6.6], [cx - 0.4, 5.2 - 0.4 * sl + 0.05, 6.6], [cx - 0.4, 5.2 - 0.4 * sl + 0.05, -14.1]);
+          // HPS grow-light rows glowing through the roof at night
+          b.paint(GROW_HPS, Surf.Emissive, 11);
+          growRows(b, cx - 4.3, 3.1, cx - 0.2, 5.1, -14.1, 6.6, 3);
+          growRows(b, cx + 0.2, 5.1, cx + 4.3, 3.1, -14.1, 6.6, 3);
         }
       }
       heatingKit(b, 13.2, 8.2, 6.5);
@@ -623,8 +621,8 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
   }
 }
 
-/** Hoop tunnel (half-ellipse cross-section) running along Z from z0, length L. */
-function polytunnel(b: ModelBuilder, cx: number, z0: number, w: number, L: number, h: number, TM = -1): void {
+/** Hoop tunnel (half-ellipse cross-section) running along Z from z0, length L. `lit`: HPS ridge lamp row (night). */
+function polytunnel(b: ModelBuilder, cx: number, z0: number, w: number, L: number, h: number, lit = false): void {
   const seg = 6;
   const pts: [number, number][] = [];
   for (let i = 0; i <= seg; i++) {
@@ -636,16 +634,13 @@ function polytunnel(b: ModelBuilder, cx: number, z0: number, w: number, L: numbe
     const [xa, ya] = pts[i], [xb, yb] = pts[i + 1];
     b.quad([xa, ya, z1], [xb, yb, z1], [xb, yb, z0], [xa, ya, z0]);
   }
-  if (TM >= 0 && TM <= 3) {
-    if (TM === 0) b.paint(0x9a4a10, Surf.Emissive, 11);
-    else if (TM === 1) b.paint({ color: new Color().setRGB(0.06, 0.003, 0), surf: Surf.Emissive, pattern: 9, floor: 241 });
-    else if (TM === 2) b.paint(0xc86018, Surf.Emissive, 11);
-    else b.paint(0xffa050, Surf.Emissive, 10);
+  if (lit) {
+    // 0.4 m lamp row along the ridge (2 cm above the opaque skin so it shows): dark brown line by day, amber at night
+    b.paint(GROW_HPS, Surf.Emissive, 11);
     b.quad([cx - 0.2, h + 0.02, z1 - 0.3], [cx + 0.2, h + 0.02, z1 - 0.3], [cx + 0.2, h + 0.02, z0 + 0.3], [cx - 0.2, h + 0.02, z0 + 0.3]);
   }
   // end walls
   b.paint(0xd6dcd8, Surf.Plain);
-
   for (let i = 0; i < seg; i++) {
     const [xa, ya] = pts[i], [xb, yb] = pts[i + 1];
     b.tri([cx, 0, z1], [xb, yb, z1], [xa, ya, z1]);

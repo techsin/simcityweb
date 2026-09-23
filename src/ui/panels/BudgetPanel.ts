@@ -7,7 +7,7 @@ import { Panel } from '../Panel';
 import { clear, h, setSlider, setText, slider, toggleClass } from '../dom';
 import { icon } from '../icons';
 import { money, moneySigned, signClass, titleCase } from '../format';
-import { sumValues } from '../TopBar';
+import { isOneOff, sumOneOff, sumRecurring } from '../TopBar';
 
 const TAX_GROUPS: { label: string; color: string; devs: DevType[] }[] = [
   { label: 'Residential', color: 'var(--res)', devs: [DevType.R1, DevType.R2, DevType.R3] },
@@ -30,6 +30,12 @@ const GROUP_LABELS: Record<string, string> = {
   tax: 'Taxes', service: 'City services', transport: 'Transportation', ordinance: 'Ordinances', loan: 'Loan payments', loans: 'Loan payments',
   deal: 'Business deals', utilities: 'Utilities', neighbor: 'Neighbor deals', construction: 'Construction', zoning: 'Zoning', bulldoze: 'Demolition',
   income: 'Income', building: 'Buildings', upkeep: 'Upkeep', terraform: 'Terraforming', trees: 'Trees',
+};
+
+/** 'oneoff:<item>' labels (paid / received immediately; not part of the monthly net) */
+const ONEOFF_LABELS: Record<string, string> = {
+  construction: 'Construction', zoning: 'Zoning', demolition: 'Demolition', terraform: 'Terraforming', trees: 'Trees',
+  loan: 'Loan proceeds', loanRepay: 'Early loan repayment', refund: 'Refunds',
 };
 
 function taxKeys(d: DevType): string[] {
@@ -202,10 +208,11 @@ export class BudgetPanel extends Panel {
     return titleCase(item);
   }
 
+  /** recurring entries of a ledger, grouped by key prefix ('oneoff:*' are listed separately, see oneOffTable) */
   private ledgerTable(rec: Record<string, number>, title: string, cls: 'pos' | 'neg'): HTMLElement {
     const groups = new Map<string, { total: number; items: [string, number][] }>();
     for (const [k, v] of Object.entries(rec)) {
-      if (!v) continue;
+      if (!v || isOneOff(k)) continue;
       const i = k.indexOf(':');
       const g = i >= 0 ? k.slice(0, i) : k;
       const item = i >= 0 ? k.slice(i + 1) : '';
@@ -222,8 +229,25 @@ export class BudgetPanel extends Panel {
       if (e.items.length > 1 || (e.items.length === 1 && e.items[0][0] !== g))
         for (const [it, v] of e.items.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))) t.appendChild(h('tr', { class: 'item' }, h('td', null, this.itemLabel(g, it)), h('td', null, money(v))));
     }
-    t.appendChild(h('tr', { class: 'total' }, h('td', null, 'Total'), h('td', { class: cls }, money(sumValues(rec)))));
+    t.appendChild(h('tr', { class: 'total' }, h('td', null, 'Total'), h('td', { class: cls }, money(sumRecurring(rec)))));
     return h('div', null, h('div', { class: 'sec-title' }, title), t);
+  }
+
+  /** one-off money (construction, zoning, loan proceeds, refunds...): shown apart from the recurring ledger */
+  private oneOffTable(inc: Record<string, number>, exp: Record<string, number>): HTMLElement | null {
+    const rows: [string, number][] = [];
+    for (const [k, v] of Object.entries(inc)) if (v && isOneOff(k)) rows.push([k.slice(7), v]);
+    for (const [k, v] of Object.entries(exp)) if (v && isOneOff(k)) rows.push([k.slice(7), -v]);
+    if (!rows.length) return null;
+    rows.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+    const t = h('table', { class: 'ledger oneoff' });
+    for (const [it, v] of rows) t.appendChild(h('tr', { class: 'item' }, h('td', null, ONEOFF_LABELS[it] ?? titleCase(it)), h('td', { class: signClass(v) }, moneySigned(v))));
+    const net = sumOneOff(inc) - sumOneOff(exp);
+    t.appendChild(h('tr', { class: 'total' }, h('td', null, 'One-off total'), h('td', { class: signClass(net) }, moneySigned(net))));
+    return h('div', { class: 'oneoff-box' },
+      h('div', { class: 'sec-title' }, 'One-off — last month'),
+      h('div', { class: 'dim', style: 'font-size:11.5px;margin:-2px 0 4px' }, 'Paid or received immediately (building, zoning, loans, refunds) — not part of the monthly net.'),
+      t);
   }
 
   private renderLedger(): void {
@@ -233,8 +257,13 @@ export class BudgetPanel extends Panel {
       this.content.appendChild(h('div', { class: 'empty', html: icon('calendar', 28) + '<div>The first monthly report arrives at the end of the month.</div>' }));
     }
     this.content.appendChild(h('div', { class: 'budget-cols' }, this.ledgerTable(b.lastIncome, 'Income — last month', 'pos'), this.ledgerTable(b.lastExpense, 'Expenses — last month', 'neg')));
-    const curI = sumValues(b.curIncome), curE = sumValues(b.curExpense);
-    if (curI || curE) this.content.appendChild(h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:12px' }, `This month so far: ${money(curI)} income · ${money(curE)} expenses`));
+    const net = sumRecurring(b.lastIncome) - sumRecurring(b.lastExpense);
+    if (!empty) this.content.appendChild(h('div', { class: 'ledger-net' }, h('span', null, 'Monthly net (recurring)'), h('b', { class: signClass(net) }, moneySigned(net))));
+    const oo = this.oneOffTable(b.lastIncome, b.lastExpense);
+    if (oo) this.content.appendChild(oo);
+    const curI = sumRecurring(b.curIncome), curE = sumRecurring(b.curExpense);
+    const curO = sumOneOff(b.curIncome) - sumOneOff(b.curExpense);
+    if (curI || curE || curO) this.content.appendChild(h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:12px' }, `This month so far: ${money(curI)} income · ${money(curE)} expenses${curO ? ` · one-off ${moneySigned(curO)}` : ''}`));
   }
 
   private renderLoans(): void {
@@ -332,7 +361,7 @@ export class BudgetPanel extends Panel {
         }
       }
     }
-    for (const [k, v] of Object.entries(b.lastIncome)) if (!taxHandled.has(k)) inc += v;
+    for (const [k, v] of Object.entries(b.lastIncome)) if (!taxHandled.has(k) && !isOneOff(k)) inc += v;
     const svcHandled = new Set<string>();
     for (const s of SERVICES) {
       for (const k of serviceKeys(s.key)) {
@@ -344,7 +373,7 @@ export class BudgetPanel extends Panel {
         }
       }
     }
-    for (const [k, v] of Object.entries(b.lastExpense)) if (!svcHandled.has(k)) exp += v;
+    for (const [k, v] of Object.entries(b.lastExpense)) if (!svcHandled.has(k) && !isOneOff(k)) exp += v;
     return { inc, exp, hasData, forecast: null };
   }
 
@@ -360,7 +389,8 @@ export class BudgetPanel extends Panel {
     setText(this.netEls.net, p.hasData ? moneySigned(net) : '—');
     this.netEls.net.className = 'nc-v ' + (p.hasData ? signClass(net) : 'dim');
     const hasLast = Object.keys(b.lastIncome).length + Object.keys(b.lastExpense).length > 0;
-    const lastNet = sumValues(b.lastIncome) - sumValues(b.lastExpense);
+    // recurring only: loan proceeds, construction and other one-offs are listed separately in the ledger
+    const lastNet = sumRecurring(b.lastIncome) - sumRecurring(b.lastExpense);
     setText(this.netEls.note, hasLast ? `Last month ${moneySigned(lastNet)}` : fc ? 'Forecast at current rates' : 'Awaiting first report');
     for (const [d, r] of this.taxSliders) {
       const rate = b.taxRates[d];
