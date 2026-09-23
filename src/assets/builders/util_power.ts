@@ -9,6 +9,7 @@ import {
   type V3, flat, ground, wallQuad, wallRow, tube, disc, cone, dome, lathe, hCyl, strut, lattice, pipeRun, conveyor,
   orientedBox, tank, sphereTank, smokestack, carLow, fenceRect, floodLight, roofUnit, officeBlock, heap, solarRow,
   emitSteam, parking, CAR_COLORS2, lights,
+  lightDot, pool, poolRect, poolRing, securityLights, Y_OVER, Y_POOL, Y_MARK, RESET_PAINT,
 } from './ind_kit';
 
 const CONCRETE = 0xa39e94;
@@ -339,15 +340,14 @@ function nuclearPlant(b: ModelBuilder, rng: RNG): void {
 }
 
 // ------------------------------------------------------------------------------------------------ util_wind_turbine
-/** Tapered, slightly twisted blade from root (at origin) along +Y in local rotor space (10 tris). */
-function blade(b: ModelBuilder, L: number): void {
-  const r0 = 0.9, c0 = 1.1, t0 = 0.35, c1 = 0.28, t1 = 0.08;
+/** Tapered, twisted blade from the hub along local +Y in rotor space (18 tris). Chord along X, thickness along Z. */
+function blade(b: ModelBuilder, L: number, rootR: number, cRoot: number, cMax: number, cTip: number): void {
   const q = (y: number, c: number, t: number, tw: number): V3[] => {
     const cs = Math.cos(tw), sn = Math.sin(tw);
-    return [[-c * 0.35 * cs, y, -c * 0.35 * sn - t / 2], [c * 0.65 * cs, y, c * 0.65 * sn - t / 2], [c * 0.65 * cs, y, c * 0.65 * sn + t / 2], [-c * 0.35 * cs, y, -c * 0.35 * sn + t / 2]]
-      .map(([x, yy, z]) => [x - sn * 0, yy, z] as V3);
+    const lead = -c * 0.3, trail = c * 0.7;
+    return [[lead * cs, y, lead * sn - t / 2], [trail * cs, y, trail * sn - t / 2], [trail * cs, y, trail * sn + t / 2], [lead * cs, y, lead * sn + t / 2]];
   };
-  const A = q(r0, c0, t0, 0.0), M = q(r0 + L * 0.25, c0 * 1.15, t0 * 0.8, 0.12), B = q(L, c1, t1, 0.3);
+  const A = q(rootR, cRoot, cRoot * 0.45, 0.0), M = q(rootR + L * 0.22, cMax, cMax * 0.28, 0.14), B = q(rootR + L, cTip, 0.12, 0.32);
   for (const [P, Q] of [[A, M], [M, B]] as [V3[], V3[]][]) {
     for (let k = 0; k < 4; k++) {
       const k2 = (k + 1) % 4;
@@ -360,41 +360,40 @@ function blade(b: ModelBuilder, L: number): void {
 function windTurbine(b: ModelBuilder): void {
   ground(b, -8, -8, 8, 8, 0x7d9a4a, Surf.Foliage, 0.04);
   b.paint(GRAVEL, Surf.Pavement);
-  flat(b, -5.5, -5.5, 5.5, 5.5, 0.07);
-  flat(b, -1.6, 5.5, 1.6, 8, 0.07);
-  // rotor axis faces the front-right diagonal; hub sits over the lot center so the blades stay inside the lot
+  flat(b, -5.5, -5.5, 5.5, 5.5, Y_OVER);
+  flat(b, -1.6, 5.5, 1.6, 8, Y_OVER);
+  // rotor axis faces the front-right diagonal (prevailing wind); the rotor may overhang neighbouring cells
   const yaw = Math.PI / 4;
-  const hubH = 52;
-  const ax = Math.sin(yaw), az = Math.cos(yaw);
-  const off = 2.6;
-  const tx = -ax * (off + 0.9), tz = -az * (off + 0.9);
+  const hubH = 58;
+  // foundation plinth + tapered tower with a green base band
   b.paint(0xb8b5ad, Surf.Plain);
-  tube(b, tx, tz, 0, 0.8, 2.8, 2.8, 12);
-  disc(b, tx, tz, 0.8, 2.8, 12);
-  b.paint(0xf2f2ef, Surf.Plain);
-  lathe(b, tx, tz, [[1.7, 0.8], [1.35, hubH * 0.5], [1.0, hubH - 1.2]], 12);
+  lathe(b, 0, 0, [[3.4, 0.05], [3.4, 0.8], [2.2, 0.8]], 14);
   b.paint(0x5a8a6a, Surf.Plain);
-  tube(b, tx, tz, 0.8, 3, 1.72, 1.66, 12);
-  // door + small transformer
+  tube(b, 0, 0, 0.8, 3, 2.1, 2.06, 14);
+  b.paint(0xf2f2ef, Surf.Plain);
+  lathe(b, 0, 0, [[2.06, 3.8], [1.62, hubH * 0.5], [1.2, hubH - 1.6]], 14);
+  // door + small transformer kiosk
   b.paint(0x8a9096, Surf.Metal);
-  wallQuad(b, 'pz', tz + 1.66, tx - 0.45, tx + 0.45, 0.8, 2.9, 0.03);
-  b.paint(0xd8dadc, Surf.Plain).box(2.5, 0, 2.5, 4.3, 2.2, 4.0);
-  // nacelle + hub + blades in rotor space
-  b.push().translate(0, hubH, 0).rotateY(yaw).translate(0, 0, -0.9);
-  b.paint(0xf2f2ef, Surf.Plain).box(-1.25, -1.2, -off - 3.2, 1.25, 1.4, -off + 1.9 + 0.6);
+  wallQuad(b, 'pz', 2.02, -0.5, 0.5, 0.8, 3.0, 0.05);
+  b.paint(0xd8dadc, Surf.Plain).box(3.6, 0, 2.8, 5.4, 2.3, 4.4);
+  lightDot(b, 0, 3.4, 2.4, 0.2, 0xe8f0ff);
+  // nacelle (3.2 x 3.4 x 9 m), spinner (r 1.4, L 2.6) and blades in rotor space
+  b.push().translate(0, hubH, 0).rotateY(yaw);
+  b.paint(0xf2f2ef, Surf.Plain).box(-1.6, -1.6, -5.6, 1.6, 1.8, 3.4);
+  b.paint(0xdcdcd8, Surf.Plain).box(-1.2, 1.8, -5.2, 1.2, 2.1, -3.0, { bottom: null });
   b.paint(0xe6e6e2, Surf.Plain);
-  b.push().rotateX(Math.PI / 2);
-  b.cylinder(0, 0, 0.3, 1.6, 1.25, 0.2, 10, { top: false });
+  b.push().translate(0, 0, 3.4).rotateX(Math.PI / 2);
+  lathe(b, 0, 0, [[1.4, 0], [1.25, 1.1], [0.7, 2.1], [0, 2.6]], 10);
   b.pop();
-  b.paint(0xff2a1a, Surf.Emissive).boxC(0, -off - 2.6, 0.35, 0.35, 1.4, 0.35);
+  b.paint(0xff2a1a, Surf.Emissive, 6).boxC(0, -4.8, 0.4, 0.4, 2.1, 0.4);
   b.paint(0xf6f6f3, Surf.Plain);
-  const L = 12.8;
   for (let i = 0; i < 3; i++) {
-    b.push().translate(0, 0, 0.9).rotateZ((i / 3) * Math.PI * 2);
-    blade(b, L);
+    b.push().translate(0, 0, 4.4).rotateZ((i / 3) * Math.PI * 2);
+    blade(b, 22, 1.1, 1.8, 2.3, 0.4);
     b.pop();
   }
   b.pop();
+  b.paint(RESET_PAINT, Surf.Metal);
 }
 
 // ------------------------------------------------------------------------------------------------ util_solar_farm

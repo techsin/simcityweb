@@ -882,9 +882,11 @@ export function lightPool(b: ModelBuilder, x: number, z: number, r: number, spec
       continue;
     }
     for (const q of sp.clip) {
-      let inRange = false;
-      for (const [qx, qz] of q) if (Math.abs(qx - x) < r * 1.6 && Math.abs(qz - z) < r * 1.6) inRange = true;
-      if (!inRange) continue;
+      let qx0 = Infinity, qz0 = Infinity, qx1 = -Infinity, qz1 = -Infinity;
+      for (const [qx, qz] of q) {
+        qx0 = Math.min(qx0, qx); qx1 = Math.max(qx1, qx); qz0 = Math.min(qz0, qz); qz1 = Math.max(qz1, qz);
+      }
+      if (qx1 < x - r || qx0 > x + r || qz1 < z - r || qz0 > z + r) continue;
       const cp = clipConvex(base, q);
       if (cp.length >= 3) flatPoly(b, cp, sp.y + (sp.dy ?? 0.015));
     }
@@ -1165,7 +1167,7 @@ export function festoon(b: ModelBuilder, pts: P2[], span = 12, yBase = 0): void 
     const sag = (t: number) => yBase + H - 0.1 - 0.9 * 4 * t * (1 - t);
     b.paint(0x2e3033, Surf.Metal);
     b.beam([ax, yBase + H - 0.1, az], [(ax + bx) / 2, sag(0.5), (az + bz) / 2], 0.03).beam([(ax + bx) / 2, sag(0.5), (az + bz) / 2], [bx, yBase + H - 0.1, bz], 0.03);
-    b.paint(0xffd9a0, Surf.Emissive, 6);
+    b.paint(0xffd9a0, Surf.Emissive, 8);
     for (let k = 1; k < n; k++) {
       const t = k / n;
       const x = ax + (bx - ax) * t, z = az + (bz - az) * t, y = sag(t);

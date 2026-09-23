@@ -43,7 +43,7 @@ function cornice(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number
   for (const f of front) {
     const plane = f === 'pz' ? z1 : f === 'nz' ? z0 : f === 'px' ? x1 : x0;
     const a0 = f === 'pz' || f === 'nz' ? x0 : z0, a1 = f === 'pz' || f === 'nz' ? x1 : z1;
-    const n = Math.max(2, Math.round((a1 - a0) / 1.6));
+    const n = Math.max(2, Math.round((a1 - a0) / 2.2));
     inFace(b, f, plane, () => {
       for (let i = 0; i <= n; i++) {
         const u = U(f, a0 + ((a1 - a0) * i) / n);
@@ -245,7 +245,7 @@ function tenement(b: ModelBuilder, v: number, rng: RNG): void {
       steps(b, 0, 2.6, 3, 0.3, 0.32, 0x8a867e, 0, Surf.Stone);
       stoopRails(b, 0, 2.6, 3, 0.3, 0.32, 0x2a2c2e);
     });
-    lightPool(b, -1.25, R + 1.06, 1.25, R + 3.56, 0xc3beb3, 0.105);
+    lightPool(b, -1.25, R + 1.06, 1.25, 15.6, 0xc3beb3, 0.105);
     wins(b, 'px', R + 0.1, spread(-R, R, 12), 0.9, 0.9, 1.5, { frame: 0xe0dcd2 });
     sills(b, -R, -R, R, R, 1, 6, fh, 0.22, 0xe0d8c6, false);
     cornice(b, -R, -R, R, R, top, 0xd8d0bf, ['pz', 'px'], true, 0.5, null);
@@ -326,11 +326,12 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(stone).box(xa, 1.8, z0, xb, 11.1, z1, { top: P(ROOF, Surf.RoofFlat), ...side });
       cornice(b, xa, z0, xb, z1, 11.1, i % 2 === 0 ? 0x2e2a28 : 0x4a3e36, ['pz'], true, 0.5);
       const ws: WinStyle = { frame: 0x3a2a22, mull: 1, sill: trimC, head: trimC };
+      const wsU: WinStyle = { frame: 0x3a2a22, mull: 1, sill: trimC };
       inFace(b, 'pz', z1, () => {
         door(b, du, 1.8, 1.2, 2.6, doorsC[i], { surf: Surf.Wood, transom: true, frame: trimC, lamp: true });
         const wx = i % 2 === 0 ? [xa + 3.9, xa + 5.7] : [xa + 1.3, xa + 3.1];
         for (const x of wx) win(b, x, 2.4, 1.0, 2.3, ws);
-        for (const x of [xa + 1.4, xa + 3.5, xa + 5.6]) { win(b, x, 5.9, 0.95, 1.9, ws); win(b, x, 8.8, 0.95, 1.7, ws); }
+        for (const x of [xa + 1.4, xa + 3.5, xa + 5.6]) { win(b, x, 5.9, 0.95, 1.9, wsU); win(b, x, 8.8, 0.95, 1.7, wsU); }
         for (const x of wx) win(b, x, 0.3, 0.9, 1.0, { frame: 0x2a2a2a });
         steps(b, du, 1.7, 6, 0.3, 0.33, mixHex(stoneC, 0x000000, 0.05), 0, Surf.Stone);
         stoopRails(b, du, 1.8, 6, 0.3, 0.33, 0x1c1c1c);
@@ -752,8 +753,7 @@ function condo(b: ModelBuilder, v: number, rng: RNG): void {
     // one planter per balcony bay
     const greens = [0x4f7a34, 0x5a8a3a, 0x3f6b2e];
     for (let f = 1; f < 9; f++) for (const x of f < 6 ? [-10.4, -6.8, -3.2, 1.6, 5.4, 9.2] : [-10.4, -6.8, -3.2]) {
-      b.paint(0x8f8a80).box(x - 0.6, f * fh + 0.05, z1 + 0.35, x + 0.6, f * fh + 0.45, z1 + 0.95, { bottom: null, nz: null });
-      b.paint(greens[(f + Math.round(x)) % 3 < 0 ? 0 : (f + Math.round(x)) % 3], Surf.Foliage).box(x - 0.55, f * fh + 0.45, z1 + 0.4, x + 0.55, f * fh + 0.95, z1 + 0.9, { bottom: null, nz: null });
+      b.paint(greens[((f + Math.round(x)) % 3 + 3) % 3], Surf.Foliage).box(x - 0.6, f * fh + 0.05, z1 + 0.35, x + 0.6, f * fh + 1.45, z1 + 0.9, { bottom: null, nz: null });
     }
     for (let f = 1; f <= 9; f++) band(b, xl0, z0, xm, z1, f * fh - 0.25, 0.3, 1.2, 0xf4f2ec, f === 9);
     for (let f = 1; f <= 6; f++) band(b, xm, z0, xr1, z1, f * fh - 0.25, 0.3, 1.2, 0xf4f2ec, false);
@@ -780,7 +780,7 @@ function condo(b: ModelBuilder, v: number, rng: RNG): void {
     b.paint(0x2a3440, Surf.GlassCurtain, 6, fh).extrude(pts, 0, fl * fh, { topPaint: P(0x8a867e, Surf.RoofFlat) });
     for (const f of [2, 4, 6]) {
       const y = f * fh;
-      const spots: [number, number][] = [[-8, z1 + 0.8], [-2, z1 + 0.8], [3.4, z1 + 0.8], [x1 + 0.8, z1 - R - 1.0], [x1 + 0.8, z0 + 4.5], [x1 - R + (R + 0.8) * 0.72, z1 - R + (R + 0.8) * 0.7]];
+      const spots: [number, number][] = [[-8, z1 + 0.8], [-2, z1 + 0.8], [3.4, z1 + 0.8], [x1 + 0.8, z0 + 4.5]];
       for (const [x, z] of spots) {
         b.paint(0x8f8a80).box(x - 0.3, y, z - 0.3, x + 0.3, y + 0.5, z + 0.3, { bottom: null });
         b.paint(0x4f7a34, Surf.Foliage).blob(x, y + 1.3, z, 0.6, 0.75, 0.6, 0, 0.2, x * z + f);

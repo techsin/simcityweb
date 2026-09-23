@@ -27,6 +27,12 @@ function fenceLine(b: B, ax: number, az: number, bx: number, bz: number, h = 1.1
   b.paint(color, Surf.Metal).beam([ax, h, az], [bx, h, bz], 0.07).beam([ax, h * 0.5, az], [bx, h * 0.5, bz], 0.05);
 }
 
+/** Vertical fins (double-sided quads) along a +Z face at z from x0..x1 every `step`. */
+function finsZ(b: B, x0: number, x1: number, step: number, y0: number, y1: number, z: number, depth: number, p: Paint) {
+  b.paint(p);
+  for (let x = x0; x <= x1 + 1e-3; x += step) b.quad2([x, y0, z], [x, y0, z + depth], [x, y1, z + depth], [x, y1, z]);
+}
+
 // ============================================================================================ SHOPS + APARTMENTS (1x1)
 interface GroundOpts { frame: number; awnings: number[][]; signBack: number; letter: number[]; wallBand?: Paint }
 /** Two shops + residential door on the +Z face (x0..x1 at z), ground floor height gh. */
@@ -41,7 +47,7 @@ function twoShops(b: B, rng: RNG, x0: number, x1: number, z: number, gh: number,
     K.awning(b, a - 0.1, e + 0.1, z, sy - 0.05, 1.3, 0.6, o.awnings[s % o.awnings.length], 0.8, 0.28);
   }
   K.door(b, mid, z, 1.1, 2.3, 0x3a2a20, 0xe8e0d0);
-  faceZ(b, mid - 0.7, mid + 0.7, 2.5, 2.9, z + 0.03, K.emis(0xffe2a8));
+  faceZ(b, mid - 0.7, mid + 0.7, 2.5, 2.9, z + 0.03, K.emis(0xffe2a8, 3));
 }
 function saBrick(b: B, rng: RNG) {
   up(b, -8, -8, 8, 8, 0.03, K.pav(C.sidewalk));
@@ -71,8 +77,8 @@ function saStucco(b: B, rng: RNG) {
   K.cornice(b, x0, z0, x1, z1, top, 0.55, 0.35, K.plain(0xf6efe0));
   up(b, x0 + 0.1, z0 + 0.1, x1 - 0.1, z1 - 0.1, top + 0.56, K.roofP());
   K.cornice(b, x0, z0, x1, z1, 3.85, 0.18, 0.1, K.plain(0xf6efe0), null);
-  twoShops(b, rng, x0, x1, z1, 4.0, { frame: 0x3a2a20, awnings: [[0x2f6b3a], [0x7a2335]], signBack: 0x3a2a20, letter: [0xfff1c9, 0xffd88a] });
-  const rail = K.metal(0x1e1e1e);
+  twoShops(b, rng, x0, x1, z1, 4.0, { frame: 0x3a2a20, awnings: [[0x2f6b3a], [0x7a2335]], signBack: 0x3a2a20, letter: [0xff4fc3, 0x4dff88] });
+  const rail = K.metal(0x5a5e63);
   for (const k of [1, 2, 3]) {
     const yb = k * 3.2 + 0.9;
     for (const cx of [-1.5, 1.5]) {
@@ -114,7 +120,7 @@ function saMansard(b: B, rng: RNG) {
     b.paint(0x4a5058, Surf.RoofTiles).gableRoof(dx, z1 - 0.35, 1.3, 0.9, top + 2.0, 0.55, 'z', 0.08, K.plain(0xf2efe6));
   }
   for (const cx of [x0 + 0.8, x1 - 0.8]) box(b, cx - 0.35, top + 1.5, -2.5, cx + 0.35, top + 3.6, -1.2, P(0x9c4a36, Surf.Brick));
-  twoShops(b, rng, x0, x1, z1, 4.0, { frame: 0xf2efe6, awnings: [[0x5a1a24, 0xefe6d2], [0x2f4a6b]], signBack: 0x2f4a6b, letter: [0xfff1c9] });
+  twoShops(b, rng, x0, x1, z1, 4.0, { frame: 0xf2efe6, awnings: [[0x5a1a24, 0xefe6d2], [0x2f4a6b]], signBack: 0x2f4a6b, letter: [0xffc933, 0x2fd6ff] });
 }
 function saModern(b: B, rng: RNG) {
   up(b, -8, -8, 8, 8, 0.03, K.pav(0xd9d6d0));
@@ -157,7 +163,7 @@ function saTurret(b: B, rng: RNG) {
   K.bandPts(b, oct, 14.3, 14.7, P(0xe0d4bc, Surf.Stone), 0.2);
   b.paint(0x4d6b60, Surf.Metal).cylinder(tc[0], tc[1], 14.7, 2.3, 2.45, 0.05, 8, { smooth: false, top: false });
   box(b, tc[0] - 0.05, 17.0, tc[1] - 0.05, tc[0] + 0.05, 17.5, tc[1] + 0.05, K.metal(0x333333), null);
-  twoShops(b, rng, x0, 3.2, z1, 4.0, { frame: 0x2a1e16, awnings: [[0x8a2a1e], [0x2f6b3a, 0xefe6d2]], signBack: 0x2a1e16, letter: [0xffd88a, 0xfff1c9] });
+  twoShops(b, rng, x0, 3.2, z1, 4.0, { frame: 0x2a1e16, awnings: [[0x8a2a1e], [0x2f6b3a, 0xefe6d2]], signBack: 0x2a1e16, letter: [0xff8a2a, 0xffd88a] });
   K.onSide(b, 'px', () => {
     K.storefront(b, -0.4, 4.6, x1, { y1: 2.8, frame: 0x2a1e16, doors: [0.6], pitch: 1.6 });
     K.awning(b, -0.5, 4.7, x1, 2.85, 1.2, 0.55, [0x8a2a1e], 1, 0.28);
@@ -173,41 +179,47 @@ function motel(b: B, v: number, rng: RNG) {
     { wall: 0xe8d8b8, door: 0xd96a1e, rail: 0x6b4a36, trim: 0x6b4a36, neonA: 0xff8a2a, neonB: 0xffd23f, mansard: true },
     { wall: 0xf0f0ec, door: 0x24406e, rail: 0x8f979e, trim: 0x24406e, neonA: 0x2fb8ff, neonB: 0xff3b30, mansard: false },
   ][v % 3];
-  up(b, -24, -16, 24, 16, 0.03, K.pav(C.sidewalk));
-  K.asphalt(b, -12.8, -6.0, 24, 14.4);
+  // v0/v1: L-shape around a parking court with the pool in the corner; v2: straight bar, parking in front, pool at the side
+  const L = v % 3 !== 2;
+  up(b, -24, -16, 24, 16, 0.03, K.pav(0xb3aea2));
   up(b, -24, 14.4, 24, 16, 0.07, K.foliage(C.grass));
   const wall = K.plain(pal.wall);
   const H = 6.0, fh = 3.05;
-  const bw = { x0: -22.5, x1: 16.5, z0: -15.5, z1: -7.8 };
+  const bw = { x0: -22.5, x1: L ? 16.5 : 13.6, z0: -15.5, z1: -7.8 };
   const lw = { x0: -22.5, x1: -14.6, z0: -7.8, z1: 10.8 };
   const backW = WW(pal.wall, 4, fh);
   box(b, bw.x0, 0, bw.z0, bw.x1, H, bw.z1, wall, K.roofP(), { nz: backW, nx: backW });
-  box(b, lw.x0, 0, lw.z0, lw.x1, H, lw.z1, wall, K.roofP(), { nz: null, nx: backW });
+  if (L) box(b, lw.x0, 0, lw.z0, lw.x1, H, lw.z1, wall, K.roofP(), { nz: null, nx: backW });
   const galP = K.plain(0xd8d4cc);
   const railP = K.plain(pal.rail);
   const trimP = K.plain(pal.trim);
+  const g0 = L ? lw.x1 : bw.x0;
   // back-wing gallery
   const gz = -5.9;
-  box(b, lw.x1, fh - 0.2, bw.z1, bw.x1, fh, gz, galP, undefined, { bottom: galP });
-  b.paint(railP).quad2([lw.x1, fh, gz], [bw.x1, fh, gz], [bw.x1, fh + 0.95, gz], [lw.x1, fh + 0.95, gz]);
-  box(b, lw.x1, H, bw.z1, bw.x1 + 0.3, H + 0.25, gz - 0.2, trimP, undefined, { bottom: trimP });
-  for (let x = lw.x1 + 0.2; x <= bw.x1; x += 4.3) box(b, x - 0.12, 0, gz - 0.12, x + 0.12, H, gz + 0.12, trimP, null);
+  box(b, g0, fh - 0.2, bw.z1, bw.x1, fh, gz, galP, undefined, { bottom: galP });
+  b.paint(railP).quad2([g0, fh, gz], [bw.x1, fh, gz], [bw.x1, fh + 0.95, gz], [g0, fh + 0.95, gz]);
+  box(b, g0 - (L ? 0 : 0.3), H, bw.z1, bw.x1 + 0.3, H + 0.25, gz - 0.2, trimP, undefined, { bottom: trimP });
+  for (let x = g0 + 0.2; x <= bw.x1; x += 4.3) box(b, x - 0.12, 0, gz - 0.12, x + 0.12, H, gz + 0.12, trimP, null);
   // left-wing gallery
   const gx = -12.7;
-  box(b, lw.x1, fh - 0.2, gz, gx, fh, lw.z1, galP, undefined, { bottom: galP });
-  b.paint(railP).quad2([gx, fh, lw.z1], [gx, fh, gz], [gx, fh + 0.95, gz], [gx, fh + 0.95, lw.z1]);
-  box(b, lw.x1, H, gz - 0.2, gx - 0.2, H + 0.25, lw.z1 + 0.3, trimP, undefined, { bottom: trimP });
-  for (let z = lw.z1 - 0.2; z >= gz; z -= 4.3) box(b, gx - 0.12, 0, z - 0.12, gx + 0.12, H, z + 0.12, trimP, null);
-  // rooms
-  const doorP = K.plain(pal.door), winP = P(0x2a3440, Surf.GlassPlain), acP = K.plain(0xcfd2d4);
+  if (L) {
+    box(b, lw.x1, fh - 0.2, gz, gx, fh, lw.z1, galP, undefined, { bottom: galP });
+    b.paint(railP).quad2([gx, fh, lw.z1], [gx, fh, gz], [gx, fh + 0.95, gz], [gx, fh + 0.95, lw.z1]);
+    box(b, lw.x1, H, gz - 0.2, gx - 0.2, H + 0.25, lw.z1 + 0.3, trimP, undefined, { bottom: trimP });
+    for (let z = lw.z1 - 0.2; z >= gz; z -= 4.3) box(b, gx - 0.12, 0, z - 0.12, gx + 0.12, H, z + 0.12, trimP, null);
+  }
+  // rooms: door + porch light + window + AC grille
+  const doorP = K.plain(pal.door), winP = P(0x2a3440, Surf.GlassPlain), acP = K.plain(0xcfd2d4), lampP = K.emis(0xffc870, 4);
   for (const y0 of [0, fh]) {
-    for (let x = lw.x1 + 0.6; x + 3.6 < bw.x1; x += 4.3) {
+    for (let x = g0 + 0.6; x + 3.6 < bw.x1; x += 4.3) {
       faceZ(b, x, x + 0.95, y0 + 0.02, y0 + 2.15, bw.z1 + 0.02, doorP);
+      faceZ(b, x + 0.28, x + 0.68, y0 + 2.3, y0 + 2.52, bw.z1 + 0.03, lampP);
       faceZ(b, x + 1.5, x + 3.2, y0 + 1.0, y0 + 2.2, bw.z1 + 0.02, winP);
       faceZ(b, x + 1.9, x + 2.8, y0 + 0.45, y0 + 0.85, bw.z1 + 0.02, acP);
     }
-    for (let z = lw.z1 - 0.6; z - 3.6 > lw.z0; z -= 4.3) {
+    if (L) for (let z = lw.z1 - 0.6; z - 3.6 > lw.z0; z -= 4.3) {
       faceX(b, z - 0.95, z, y0 + 0.02, y0 + 2.15, lw.x1 + 0.02, doorP, 1);
+      faceX(b, z - 0.68, z - 0.28, y0 + 2.3, y0 + 2.52, lw.x1 + 0.03, lampP, 1);
       faceX(b, z - 3.2, z - 1.5, y0 + 1.0, y0 + 2.2, lw.x1 + 0.02, winP, 1);
       faceX(b, z - 2.8, z - 1.9, y0 + 0.45, y0 + 0.85, lw.x1 + 0.02, acP, 1);
     }
@@ -219,20 +231,39 @@ function motel(b: B, v: number, rng: RNG) {
     K.loft(b, K.rectPts(bw.x0 - 0.3, bw.z0 - 0.3, bw.x1 + 0.3, gz + 0.1), K.rectPts(bw.x0 + 1.2, bw.z0 + 1.2, bw.x1 - 1.2, bw.z1 - 1.0), H + 0.25, H + 1.6, P(0x6b4a36, Surf.RoofTiles), K.roofP());
     K.loft(b, K.rectPts(lw.x0 - 0.3, bw.z1 - 1.0, gx + 0.1, lw.z1 + 0.4), K.rectPts(lw.x0 + 1.2, bw.z1, lw.x1 - 1.0, lw.z1 - 1.0), H + 0.25, H + 1.6, P(0x6b4a36, Surf.RoofTiles), K.roofP());
   } else {
-    for (let i = 0; i < 5; i++) K.ac(b, -18 + i * 8, H, -12.5, 0.9);
+    for (let i = 0; i < 5; i++) K.ac(b, -18 + i * 7.5, H, -12.5, 0.9);
   }
-  // parking
-  K.stallsX(b, rng, -12.4, 15.8, -5.7, -1, 0.5);
-  K.stallsZ(b, rng, -0.3, 13.8, -12.5, -1, 0.5);
-  // pool courtyard
-  up(b, -5.4, 3.2, 9.4, 12.8, 0.09, K.foliage(C.grass));
-  pool(b, 2.0, 8.0, 8.5, 4.2);
-  fenceLine(b, -5.2, 3.4, 9.2, 3.4);
-  fenceLine(b, 9.2, 3.4, 9.2, 12.6);
-  fenceLine(b, 9.2, 12.6, -5.2, 12.6);
-  fenceLine(b, -5.2, 12.6, -5.2, 3.4);
-  for (const lx of [-3.2, -1.6]) box(b, lx - 0.35, 0.1, 6.5, lx + 0.35, 0.45, 8.3, K.plain(0xf4f4f0));
-  K.umbrella(b, -2.4, 10.8, 1.1, pal.neonA, 2.3);
+  if (L) {
+    // parking court + pool courtyard in the L
+    K.asphalt(b, -12.8, -6.0, 24, 14.4);
+    K.stallsX(b, rng, -12.4, 15.8, -5.7, -1, 0.5);
+    K.stallsZ(b, rng, -0.3, 13.8, -12.5, -1, 0.5);
+    up(b, -5.4, 3.2, 9.4, 12.8, 0.09, K.foliage(C.grass));
+    pool(b, 2.0, 8.0, 8.5, 4.2);
+    fenceLine(b, -5.2, 3.4, 9.2, 3.4);
+    fenceLine(b, 9.2, 3.4, 9.2, 12.6);
+    fenceLine(b, 9.2, 12.6, -5.2, 12.6);
+    fenceLine(b, -5.2, 12.6, -5.2, 3.4);
+    for (const lx of [-3.2, -1.6]) box(b, lx - 0.35, 0.1, 6.5, lx + 0.35, 0.45, 8.3, K.plain(0xf4f4f0));
+    K.umbrella(b, -2.4, 10.8, 1.1, pal.neonA, 2.3);
+  } else {
+    // two parking rows in front of the bar, pool on the side behind the office
+    K.asphalt(b, -24, -6.0, 24, 3.4);
+    K.asphalt(b, -24, 3.4, 11.8, 14.4);
+    K.stallsX(b, rng, -22.4, 13.2, -5.7, -1, 0.55);
+    K.stallsX(b, rng, -22.4, 10.8, 6.2, 1, 0.4);
+    K.lotLamp(b, -12, 11.9, 6.5, [Math.PI]);
+    K.lotLamp(b, 3, 11.9, 6.5, [Math.PI]);
+    up(b, 15.4, -15.8, 24, -4.2, 0.08, K.foliage(C.grass));
+    pool(b, 19.6, -10.0, 4.2, 7.4);
+    fenceLine(b, 15.9, -15.3, 23.4, -15.3);
+    fenceLine(b, 23.4, -15.3, 23.4, -4.6);
+    fenceLine(b, 23.4, -4.6, 15.9, -4.6);
+    fenceLine(b, 15.9, -4.6, 15.9, -15.3);
+    for (const lz of [-13.4, -11.6]) box(b, 16.6, 0.1, lz - 0.35, 18.4, 0.45, lz + 0.35, K.plain(0xf4f4f0));
+    K.umbrella(b, 17.4, -6.4, 1.1, pal.neonA, 2.3);
+    K.palm(b, rng, 22.6, -5.4, 0.55);
+  }
   // office
   const ox0 = 12.4, ox1 = 21.2, oz0 = 3.6, oz1 = 11.0;
   box(b, ox0, 0, oz0, ox1, 4.0, oz1, wall, K.roofP());
@@ -244,12 +275,13 @@ function motel(b: B, v: number, rng: RNG) {
   // tall neon sign
   const sx = 20.2, sz = 13.4, sh = 9.6;
   K.pylon(b, sx, sz, sh, 4.4, [{ h: 3.0, color: pal.neonA }, { h: 0.85, color: pal.neonB, w: 3.4 }], { poles: 2, pole: 0x5a5e63, frame: 0x2a2a2a, cap: pal.neonB });
-  K.letters(b, rng, sx, sh - 2.35, sz + 0.28, 3.8, 1.6, 0xfff4e0, { n: 5, words: 1 });
+  K.letters(b, rng, sx, sh - 2.35, sz + 0.28, 3.8, 1.6, pal.neonB, { n: 5, words: 1, k: 8 });
+  K.pylonLetters(b, rng, sx, sz, sh - 3.0 - 0.12 - 0.72, 0.55, 3.0, 0x1a1a1a, { n: 7 });
   const ay = sh - 4.6;
-  b.paint(0xffd23f, Surf.Emissive).beam([sx - 2.0, ay + 0.5, sz], [sx - 3.6, ay - 0.6, sz], 0.3).beam([sx - 3.6, ay - 0.6, sz], [sx - 2.4, ay - 1.6, sz], 0.3);
+  b.paint(0xffd23f, Surf.Emissive, 8).beam([sx - 2.0, ay + 0.5, sz], [sx - 3.6, ay - 0.6, sz], 0.3).beam([sx - 3.6, ay - 0.6, sz], [sx - 2.4, ay - 1.6, sz], 0.3);
   // front landscaping
   for (let tx = -20; tx <= 12; tx += 8) {
-    if (v === 0) K.palm(b, rng, tx, 15.0, 0.55);
+    if (v % 3 === 0) K.palm(b, rng, tx, 15.0, 0.55);
     else K.tree(b, rng, tx, 15.0, 0.6);
   }
 }
@@ -321,7 +353,9 @@ function supermarket(b: B, v: number, rng: RNG) {
     box(b, cx - 1.1, 0.06, r1 + 6.4, cx + 1.1, 1.0, r1 + 9.2, K.metal(0xb8bcc2), null);
   }
   up(b, -24, 22.4, 24, 24, 0.08, K.foliage(C.grass));
-  K.pylon(b, -19.5, 23.0, 8.8, 3.2, [{ h: 1.6, color: cfg.brand === 0xf4f2ea ? 0x2a5ea8 : cfg.brand }, { h: 0.9, color: cfg.letter }], { poles: 0, pole: v === 1 ? 0x7a5634 : 0x8e8b84, frame: 0x2a2a2a });
+  K.pylon(b, -19.5, 23.0, 8.8, 3.2, [{ h: 1.6, color: cfg.brand === 0xf4f2ea ? 0x2a5ea8 : cfg.brand }, { h: 0.9, color: cfg.letter, k: 5 }], { poles: 0, pole: v === 1 ? 0x7a5634 : 0x8e8b84, frame: 0x2a2a2a });
+  K.pylonLetters(b, rng, -19.5, 23.0, 7.55, 0.9, 2.8, 0xffffff, { both: true, n: 6 });
+  K.pylonLetters(b, rng, -19.5, 23.0, 6.35, 0.55, 2.8, 0x1a1a1a, { both: true, n: 7 });
   if (v === 1) {
     for (let i = 0; i < 4; i++) {
       const px = ec - 9.5 - i * 1.6;
@@ -381,8 +415,8 @@ function hotelModern(b: B, rng: RNG) {
     faceZ(b, x0 - 0.2, x1 + 0.2, y + 0.18, y + 1.0, z1 + 1.19, K.metal(0x9fb3c0));
   }
   // vertical sign fin
-  box(b, x1 - 0.2, 9.5, z1 + 1.3, x1 + 0.4, top - 1.0, z1 + 2.4, K.plain(0x2b2d31), undefined, { px: K.emis(0x2fd6ff) });
-  for (let i = 0; i < 5; i++) faceZ(b, x1 - 0.1, x1 + 0.3, 12 + i * 4.3, 15.4 + i * 4.3, z1 + 2.42, K.emis(0x2fd6ff));
+  box(b, x1 - 0.2, 9.5, z1 + 1.3, x1 + 0.4, top - 1.0, z1 + 2.4, K.plain(0x2b2d31), undefined, { px: K.emis(0x2fd6ff, 7) });
+  for (let i = 0; i < 5; i++) faceZ(b, x1 - 0.1, x1 + 0.3, 12 + i * 4.3, 15.4 + i * 4.3, z1 + 2.42, K.emis(0x2fd6ff, 7));
   // pool terrace on podium
   b.push().translate(0, base, 0);
   pool(b, 0, -11.6, 14, 4.2);
@@ -391,9 +425,9 @@ function hotelModern(b: B, rng: RNG) {
   K.umbrella(b, 11.5, -12, 1.2, 0x2fb5b0, 2.4);
   b.pop();
   // porte-cochere
-  box(b, -6, 4.6, pz1, 6, 5.2, pz1 + 6.4, K.plain(0xf2f0ea), K.roofP(0xb9b6ae), { bottom: K.emis(0xe8e2d4), nz: null });
+  box(b, -6, 4.6, pz1, 6, 5.2, pz1 + 6.4, K.plain(0xf2f0ea), K.roofP(0xb9b6ae), { bottom: K.emis(0xe8e2d4, K.CANOPY_K), nz: null });
   for (const cx of [-5.4, 5.4]) box(b, cx - 0.25, 0, pz1 + 5.6, cx + 0.25, 4.6, pz1 + 6.1, K.metal(0xb8bcc2), null);
-  K.letters(b, rng, 0, 5.3, pz1 + 6.1, 8, 0.8, 0xfff1d6, { words: 1 });
+  K.letters(b, rng, 0, 5.3, pz1 + 6.1, 8, 0.8, 0x2fd6ff, { words: 1 });
   rooftopLetters(b, rng, 0, top, z1 - 1.0, 14, 2.6, 0x2fd6ff, 0x2b2d31);
   box(b, -9, top, z0 + 1, -3, top + 3, z0 + 5, K.plain(0xd8d6d0), K.roofP());
   K.car(b, 2.5, pz1 + 3.2, Math.PI / 2, 0x1e1e1e, 0.06, true);
@@ -417,7 +451,7 @@ function hotelDeco(b: B, rng: RNG) {
     K.storefront(b, x, x + 3.2, t1.z1, { y0: 0.6, y1: 4.8, frame: 0x2a2320, pitch: 1.6, transom: 3.6 });
   }
   K.storefront(b, -2.2, 2.2, t1.z1, { y0: 0.05, y1: 5.6, frame: 0xc9a24a, doors: [0], doorW: 2.2, transom: 3.4 });
-  box(b, -3.6, 3.9, t1.z1, 3.6, 4.5, t1.z1 + 3.6, K.metal(0x2a2a2a), undefined, { bottom: K.emis(0xfff0cc), nz: null });
+  box(b, -3.6, 3.9, t1.z1, 3.6, 4.5, t1.z1 + 3.6, K.metal(0x2a2a2a), undefined, { bottom: K.emis(0xfff0cc, K.CANOPY_K), nz: null });
   faceZ(b, -3.6, 3.6, 3.95, 4.45, t1.z1 + 3.62, K.emis(0xffd88a));
   K.bladeSign(b, t1.x1 - 0.8, t1.z1 + 0.35, 9, 12, 1.4, 0xff4f6a, 0x2a2a2a);
   K.facadeFlag(b, -5, 6.0, t1.z1 + 0.35, 0x1d3a6b, 2.2);
@@ -430,16 +464,16 @@ function hotelGlass(b: B, rng: RNG) {
   const stone = P(0xe8e1d2, Surf.Stone);
   box(b, x0 - 0.4, 0, z0 - 0.4, x1 + 0.4, base, z1 + 0.4, stone, null);
   K.storefront(b, x0 + 1, x1 - 1, z1 + 0.4, { y0: 0.2, y1: 4.5, frame: 0x7d5c3a, doors: [0], doorW: 2.2, pitch: 2.0, transom: 3.2 });
-  box(b, x0, base, z0, x1, top, z1, GC(2, 3.4), K.roofP());
+  box(b, x0, base, z0, x1, top, z1, GC(5, 3.4), K.roofP());
   for (const cx of [x0, x1]) for (const cz of [z0, z1]) box(b, cx - 0.6, base, cz - 0.6, cx + 0.6, top + 0.6, cz + 0.6, stone);
   K.cornice(b, x0, z0, x1, z1, top, 0.6, 0.3, stone, null);
   for (let k = 0; k < 3; k++) {
     const y = base + 3.4 * (2 + k * 2);
     box(b, -6, y, z1, 6, y + 0.15, z1 + 1.1, stone, undefined, { bottom: stone });
-    faceZ(b, -6, 6, y + 0.15, y + 1.0, z1 + 1.09, K.metal(0x3a2c20));
+    faceZ(b, -6, 6, y + 0.15, y + 1.0, z1 + 1.09, K.metal(0x8a8f94));
   }
   // rooftop bar
-  box(b, -8, top, -6, 2, top + 3.2, 0, P(0x2a3440, Surf.GlassPlain), K.roofP(0x6a6e73));
+  box(b, -8, top, -6, 2, top + 3.2, 0, P(0x2a3440, Surf.GlassPlain, 2), K.roofP(0x6a6e73));
   box(b, -8.4, top + 3.2, -6.4, 2.4, top + 3.45, 0.4, K.metal(0x7d5c3a));
   up(b, 2.4, -9, 11.2, 2.2, top + 0.02, P(0x8b6a47, Surf.Wood));
   b.push().translate(0, top, 0);
@@ -504,7 +538,7 @@ function deptDeco(b: B, rng: RNG) {
   // central tower
   box(b, -4.4, 0, z1 - 2, 4.4, 24.0, z1 + 0.8, pier, K.roofP());
   box(b, -3.3, 24.0, z1 - 1.6, 3.3, 25.4, z1 + 0.4, pier, K.roofP());
-  box(b, -1.1, 4.8, z1 + 0.8, 1.1, 22.6, z1 + 1.1, K.emis(0xffc870));
+  box(b, -1.1, 4.8, z1 + 0.8, 1.1, 22.6, z1 + 1.1, K.emis(0xffc870, 6));
   for (const sx of [-3.0, 3.0]) faceZ(b, sx - 0.5, sx + 0.5, 6.0, 21.5, z1 + 0.82, P(0x2a3440, Surf.GlassPlain));
   // ground display windows + canopy with name
   for (const [a, e] of [[-12.6, -9], [-8.6, -5], [5, 8.6], [9, 12.6]] as [number, number][]) K.storefront(b, a, e, z1, { y0: 0.6, y1: 3.8, frame: 0xc9a24a, pitch: 1.8, surround: 0.1 });
@@ -528,9 +562,10 @@ function deptModern(b: B, rng: RNG) {
   K.bandRect(b, x0, z0, x1, z1, top - 0.9, top, K.plain(0xc0392b), 0.5);
   // big logo + letters on a panel
   box(b, -9.5, 7.2, z1 + 0.45, 9.5, 13.6, z1 + 0.8, K.plain(0xf7f4ee));
-  K.discSign(b, -6.2, 10.4, z1 + 0.8, 2.4, K.emis(0xe0282e), K.metal(0xd8d8d8), 14, 0.3);
+  K.discSign(b, -6.2, 10.4, z1 + 0.8, 2.4, K.emis(0xe0282e, 7), K.metal(0xd8d8d8), 14, 0.3);
+  K.discSign(b, -6.2, 10.4, z1 + 1.1, 1.6, K.emis(0xffffff, 5), K.metal(0xffffff), 14, 0.02);
   K.letters(b, rng, 2.2, 9.1, z1 + 0.82, 11, 2.6, 0xe0282e, { n: 5, words: 1 });
-  K.canopy(b, x0, x1, z1, 4.3, 2.2, 0.3, K.plain(0xc0392b), K.emis(0xfff3dc));
+  K.canopy(b, x0, x1, z1, 4.3, 2.2, 0.3, K.plain(0xc0392b), K.emis(0xfff3dc, K.CANOPY_K));
   for (let fx = -12; fx <= 12; fx += 6) K.flag(b, fx, 7.6, 3.5, [0xc0392b, 0x2e6fb5, 0xf2f0ea, 0x2e6fb5, 0xc0392b][(fx / 6 + 2) | 0]);
   K.roofJunk(b, rng, x0 + 1, z0 + 1, x1 - 1, z1 - 1, top, 6, true);
   for (const tx of [-12, 12]) K.tree(b, rng, tx, 12.5, 0.8);
@@ -551,7 +586,7 @@ function deptChicago(b: B, rng: RNG) {
   }
   K.onSide(b, 'px', () => { for (let x = -5.2; x + 3 < 13; x += 4.5) K.storefront(b, x, x + 3.0, x1, { y0: 0.6, y1: 4.4, frame: 0x1f3a2e, pitch: 1.5, transom: 3.6 }); });
   // corner entrance canopy + clock
-  box(b, 8.5, 4.6, z1, x1 + 0.1, 5.1, z1 + 2.2, K.metal(0x1f3a2e), undefined, { bottom: K.emis(0xfff0cc), nz: null });
+  box(b, 8.5, 4.6, z1, x1 + 0.1, 5.1, z1 + 2.2, K.metal(0x1f3a2e), undefined, { bottom: K.emis(0xfff0cc, K.CANOPY_K), nz: null });
   b.paint(0x1f3a2e, Surf.Metal).beam([11.2, 5.1, z1 + 1.6], [11.2, 6.2, z1 + 1.6], 0.12);
   K.discSign(b, 11.2, 7.0, z1 + 1.35, 0.8, K.emis(0xfff6e0), K.metal(0x1f3a2e), 12, 0.35);
   K.letters(b, rng, -3, 5.8, z1 + 0.04, 13, 1.1, 0xffd88a, { words: 2, n: 10 });
@@ -590,15 +625,19 @@ function offBlueGlass(b: B, rng: RNG) {
   box(b, x0 - 0.3, 0, z0 - 0.3, x1 + 0.3, base, z1 + 0.3, K.plain(0x3a3e44), null);
   K.storefront(b, x0 + 0.6, x1 - 0.6, z1 + 0.3, { y0: 0.1, y1: 3.9, frame: 0x3a3e44, doors: [-1.5, 1.5], pitch: 3.0, surround: 0 });
   K.onSide(b, 'px', () => K.storefront(b, -2.4, 11.4, x1 + 0.3, { y0: 0.1, y1: 3.9, frame: 0x3a3e44, pitch: 3.0, surround: 0 }));
-  box(b, x0, base, z0, x1, top, z1, GC(0, 3.8), K.roofP());
-  K.bandRect(b, x0, z0, x1, z1, top - 1.2, top + 0.8, K.metal(0x9aa2aa), 0.08);
-  K.canopy(b, -4, 4, z1 + 0.3, 3.9, 3.0, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff));
+  const t2 = top - 3.8;
+  box(b, x0, base, z0, x1, t2, z1, GC(0, 3.8), K.roofP());
+  K.bandRect(b, x0, z0, x1, z1, t2 - 0.4, t2 + 0.6, K.metal(0x9aa2aa), 0.08);
+  finsZ(b, x0 + 1.5, x1 - 1.5, 3, base, t2 - 0.4, z1, 0.5, K.metal(0xc3c8cd));
+  box(b, x0 + 1.5, t2, z0 + 1.5, x1 - 1.5, top, z1 - 1.5, GC(0, 3.8), K.roofP());
+  K.bandRect(b, x0 + 1.5, z0 + 1.5, x1 - 1.5, z1 - 1.5, top - 0.6, top + 0.8, K.metal(0x9aa2aa), 0.08);
+  K.canopy(b, -4, 4, z1 + 0.3, 3.9, 3.0, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff, K.CANOPY_K));
   up(b, -16, 5, 16, 16, 0.06, K.foliage(C.grass));
   up(b, -2.5, 3.3, 2.5, 16, 0.08, K.pav(C.plaza));
   for (const tx of [-12, -7, 7, 12]) K.tree(b, rng, tx, 10, 0.9);
   K.pylon(b, 7, 14, 2.2, 5, [{ h: 1.4, color: 0x2e6fb5 }], { poles: 0, pole: 0x8e8b84, depth: 0.6 });
   K.ac(b, -6, top + 0.8, -6, 1.3);
-  K.ac(b, 5, top + 0.8, -8, 1.3);
+  K.ac(b, 5, top + 0.8, -7.5, 1.3);
 }
 function offPostmodern(b: B, rng: RNG) {
   up(b, -16, -16, 16, 16, 0.03, K.pav(0xd9d3c7));
@@ -626,9 +665,16 @@ function offPostmodern(b: B, rng: RNG) {
 function offGreenL(b: B, rng: RNG) {
   up(b, -16, -16, 16, 16, 0.03, K.foliage(C.grass));
   const top = 26.6;
-  const gc = GC(1, 3.8);
+  const gc = GC(0, 3.8);
   box(b, -13.5, 0, -13.5, 13.5, top, -3, gc, K.roofP());
   box(b, 3, 0, -3, 13.5, top, 6, gc, K.roofP(), { nz: null });
+  const par = K.metal(0xa9b0b6);
+  box(b, -13.6, top, -13.6, 13.6, top + 1.2, -13.35, par);
+  box(b, -13.6, top, -13.35, -13.35, top + 1.2, -2.9, par, undefined, { pz: par, nz: null });
+  box(b, -13.35, top, -3.15, 2.9, top + 1.2, -2.9, par, undefined, { nx: null });
+  box(b, 2.9, top, -3.15, 3.15, top + 1.2, 6.1, par, undefined, { nz: null });
+  box(b, 3.15, top, 5.85, 13.35, top + 1.2, 6.1, par, undefined, { nx: null });
+  box(b, 13.35, top, -13.35, 13.6, top + 1.2, 6.1, par, undefined, { nz: null });
   box(b, -1.5, 0, -6, 4.5, top + 3.6, -3, K.plain(0x9a9690), K.roofP());
   box(b, -1.5, 0, -3, 4.5, 4.5, 0.5, P(0x2a3440, Surf.GlassPlain), K.roofP());
   K.storefront(b, -1.3, 2.8, 0.5, { y0: 0.05, y1: 4.2, frame: 0x55595f, doors: [0.7], doorW: 2.0, surround: 0 });
@@ -639,7 +685,7 @@ function offGreenL(b: B, rng: RNG) {
   b.paint(C.water, Surf.Water).box(-8, 0, 7.5, 0, 0.12, 9.0);
   bench(b, -6, 5.8);
   K.roofJunk(b, rng, -12.5, -12.5, 12.5, -4, top, 4, false);
-  K.letters(b, rng, 8.25, top - 2.8, 6.1, 9, 1.4, 0xf2f0ea, { words: 1, n: 6 });
+  K.letters(b, rng, 8.25, top - 2.8, 6.1, 9, 1.4, 0x4dff88, { words: 1, n: 6 });
 }
 function offFins(b: B, rng: RNG) {
   up(b, -16, -16, 16, 16, 0.03, K.pav(C.plaza));
@@ -655,7 +701,7 @@ function offFins(b: B, rng: RNG) {
   for (const [px, pz] of [[-13, 9], [13, 9], [-13, -2], [13, -2]] as [number, number][]) { K.planter(b, rng, px - 1.2, pz - 1.2, px + 1.2, pz + 1.2, 0.5, 0x8e8b84); K.tree(b, rng, px, pz, 0.8); }
   K.fountain(b, 0, 10.5, 2.6);
   box(b, -5, top + 0.9, -7, 3, top + 4.0, -2, K.plain(0x8e8b84), K.roofP());
-  K.letters(b, rng, 0, 1.0, 15.2, 6, 0.7, 0xf2f0ea, { words: 1, surf: Surf.Emissive });
+  K.letters(b, rng, 0, 1.0, 15.2, 6, 0.7, 0x3a8dff, { words: 1 });
   box(b, -3.4, 0, 14.9, 3.4, 2.0, 15.4, K.plain(0x3a3e44));
 }
 function offOctBronze(b: B, rng: RNG) {
@@ -666,6 +712,7 @@ function offOctBronze(b: B, rng: RNG) {
   K.prismPts(b, pts, 4.2, 23.2, GC(2, 3.8), null);
   K.loft(b, pts, K.scalePts(pts, 0.94, 0.94, 0, -3.5), 23.2, 25.0, K.metal(0x6b5238), K.roofP());
   K.bandPts(b, grown, 3.9, 4.4, K.metal(0x6b5238), 0.05);
+  for (let y = 4.2 + 3.8; y < 23; y += 3.8) K.bandPts(b, pts, y - 0.2, y + 0.2, K.metal(0xb89a6a), 0.08);
   box(b, -3, 0, 4.4, 3, 6.5, 7.4, P(0x2a3440, Surf.GlassPlain), K.metal(0x6b5238));
   K.storefront(b, -2.6, 2.6, 7.4, { y0: 0.05, y1: 6.2, frame: 0x6b5238, doors: [0], doorW: 2.2, transom: 3.0, surround: 0 });
   up(b, -16, 8, 16, 16, 0.06, K.foliage(C.grass));
@@ -687,10 +734,12 @@ function blockMies(b: B, rng: RNG) {
   for (let x = x0 + 1.5; x < x1; x += 3) b.paint(fin).quad2([x, base, z1], [x, base, z1 + 0.45], [x, top, z1 + 0.45], [x, top, z1]);
   for (let z = z0 + 1.5; z < z1; z += 3) b.paint(fin).quad2([x1, base, z], [x1 + 0.45, base, z], [x1 + 0.45, top, z], [x1, top, z]);
   K.bandRect(b, x0, z0, x1, z1, top - 3.8, top + 0.3, K.metal(0x2e2a26), 0.02);
+  K.roofJunk(b, rng, x0 + 1.5, z0 + 1.5, x1 - 1.5, z1 - 1.5, top, 4, false);
+  K.canopy(b, -4.5, 4.5, 1.5, 3.8, 4.2, 0.3, K.metal(0x6b5238), K.emis(0xffb060, 5));
   // plaza pools
   for (const px of [-8, 8]) b.paint(0x2f5f7a, Surf.Water).box(px - 5, 0.0, 6.5, px + 5, 0.3, 12.5, { top: P(0x2f6f96, Surf.Water) });
   for (const px of [-8, 8]) K.fountain(b, px, 9.5, 1.0, 0x9a958c);
-  K.letters(b, rng, 0, 0.4, 15.5, 5, 0.6, 0xe8d8b8, { surf: Surf.Emissive, words: 1 });
+  K.letters(b, rng, 0, 0.4, 15.5, 5, 0.6, 0xffb060, { words: 1 });
   box(b, -3, 0, 15.2, 3, 1.4, 15.5, P(0x3a3a3e, Surf.Stone));
 }
 function blockConcrete(b: B, rng: RNG) {
@@ -698,9 +747,11 @@ function blockConcrete(b: B, rng: RNG) {
   const x0 = -12, x1 = 12, z0 = -12, z1 = 4.5, top = 36;
   box(b, x0 + 1, 0, z0 + 1, x1 - 1, 3.6, z1 - 1, P(0x2a3440, Surf.GlassPlain), null);
   K.storefront(b, x0 + 1.5, x1 - 1.5, z1 - 1, { y0: 0.05, y1: 3.3, frame: 0x55595f, doors: [0], doorW: 2.4, pitch: 3, surround: 0 });
-  box(b, x0, 3.6, z0, x1, top, z1, WW(0xa9a49a, 5, 3.6), K.roofP(), { bottom: K.plain(0x8e8b84) });
-  for (let y = 7.2; y < top; y += 7.2) K.bandRect(b, x0, z0, x1, z1, y - 0.3, y, K.plain(0xc4bfb4), 0.12);
+  box(b, x0, 3.6, z0, x1, top, z1, WW(0xc9bfae, 5, 3.6), K.roofP(), { bottom: K.plain(0x8e8b84) });
+  for (let y = 7.2; y < top; y += 7.2) K.bandRect(b, x0, z0, x1, z1, y - 0.3, y, K.plain(0x2e6fb5), 0.12);
   box(b, -9, top, -9, 9, top + 3.6, 1.5, GC(4, 3.6), K.roofP());
+  K.roofJunk(b, rng, -8, -8, 8, 0.5, top + 3.6, 4, false);
+  K.canopy(b, -4, 4, z1 - 1, 3.3, 3.0, 0.3, K.metal(0x2e6fb5), K.emis(0xeaf4ff, K.CANOPY_K));
   for (const cx of [-6, 0, 6]) b.paint(0x9aa0a6, Surf.Metal).cylinder(cx, -10.5, top, 2.2, 1.0, 1.0, 8, { topPaint: K.metal(0x333333) });
   officePlaza(b, rng, 5.5, 16, [-11, 11]);
   K.fountain(b, 0, 10.5, 2.2);
@@ -716,12 +767,14 @@ function blockRounded(b: B, rng: RNG) {
   K.bandPts(b, pts, 39.6, 40.4, K.plain(0xe0d6c2), 0.1);
   b.push().rotateY(Math.PI / 4);
   K.storefront(b, 4.8, 9.8, 10.9, { y0: 0.05, y1: 3.3, frame: 0xc9a24a, doors: [7.3], doorW: 2.0, pitch: 2.5 });
+  K.canopy(b, 5.0, 9.6, 10.9, 3.45, 2.2, 0.25, K.metal(0x3a3a3e), K.emis(0xffc870, 4));
   b.pop();
+  K.roofJunk(b, rng, 3, -11.5, 11.5, 2, 39.6, 4, false);
   K.storefront(b, -12, 5.2, 4.2, { y0: 0.5, y1: 3.2, frame: 0xc9a24a, pitch: 2.2 });
   K.canopy(b, -12.4, 5.5, 4.2, 3.35, 1.4, 0.2, K.metal(0x3a3a3e));
   box(b, -8, 39.6, -9, 2, 43.0, -3, K.plain(0x8a4a38), K.roofP());
   K.mast(b, -3, -6, 43.0, 6, 0.2, 0.05, K.metal(0xb0b0b0));
-  K.letters(b, rng, -4, 36.9, 4.32, 14, 1.8, 0xfff1d6, { words: 1, n: 7 });
+  K.letters(b, rng, -4, 36.9, 4.32, 14, 1.8, 0x2fd6ff, { words: 1, n: 7 });
   for (const tx of [-12, -4, 4]) K.tree(b, rng, tx, 11, 0.8);
   up(b, -16, 7, 16, 16, 0.06, K.foliage(C.grass));
 }
@@ -732,7 +785,7 @@ function blockWings(b: B, rng: RNG) {
   box(b, -4.5, 0, -13.5, 4.5, top, -4.5, ww, K.roofP(), { pz: null });
   box(b, -4.5, 0, 3, 4.5, top + 3.6, 4.8, GC(5, 3.6), K.roofP());
   K.storefront(b, -4.1, 4.1, 4.8, { y0: 0.05, y1: 4.0, frame: 0x55595f, doors: [0], doorW: 2.4, pitch: 2.7, surround: 0 });
-  K.canopy(b, -4.5, 4.5, 4.8, 4.2, 2.5, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff));
+  K.canopy(b, -4.5, 4.5, 4.8, 4.2, 2.5, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff, K.CANOPY_K));
   K.bandRect(b, -13.5, -4.5, 13.5, 3, 3.3, 3.6, K.plain(0x2e6fb5), 0.1);
   K.bandRect(b, -13.5, -4.5, 13.5, 3, top - 0.6, top, K.plain(0x2e6fb5), 0.1);
   K.roofJunk(b, rng, -12.5, -4, 12.5, 2.5, top, 4, true);
@@ -742,8 +795,99 @@ function blockWings(b: B, rng: RNG) {
 const officeBlock: ModelBuildFn = (b, v, rng) => [blockMies, blockConcrete, blockRounded, blockWings][v % 4](b, rng);
 
 // ============================================================================================ MALL (4x4)
+/**
+ * Retail unit of an open-air centre in a local frame: shop front faces +Z at z = -21, back at z = -31,
+ * spanning local x [a, e]. Callers rotate the frame so the front faces the plaza.
+ */
+function retailUnit(b: B, rng: RNG, a: number, e: number, h: number, wall: Paint, trim: number, awningColor: number, neon: number, upper: boolean) {
+  const zf = -21, mid = (a + e) / 2;
+  box(b, a, 0, -31, e, h, zf, wall, K.roofP());
+  box(b, a, h - 0.1, zf - 0.3, e, h + 0.55, zf + 0.12, K.plain(trim));
+  K.storefront(b, a + 0.6, e - 0.6, zf, { y0: 0.4, y1: 3.3, frame: 0x2a2a2a, doors: [mid + (rng.chance(0.5) ? 1.2 : -1.2)], pitch: 2.0 });
+  K.awning(b, a + 0.4, e - 0.4, zf, 3.65, 1.4, 0.6, [awningColor], 1, 0.3);
+  K.letters(b, rng, mid, 4.25, zf + 0.03, e - a - 2.0, 0.95, neon, { n: rng.int(3, 5), words: 1, mixed: rng.chance(0.4) });
+  if (upper) K.storefront(b, a + 0.9, e - 0.9, zf, { y0: 5.7, y1: 7.5, frame: 0x2a2a2a, pitch: 1.6, surround: 0.08 });
+}
+/** v2: open-air lifestyle centre — two L-shaped retail rows around a landscaped plaza, cinema, clock tower, parking in front. */
+function mallLifestyle(b: B, rng: RNG) {
+  up(b, -32, -32, 32, 32, 0.03, K.pav(0xb3aea2));
+  const walls = [K.plain(0xd89a6a), K.plain(0xe9dfc8), K.plain(0x9fb59a), K.plain(0x8c9bab), P(0x9c4a36, Surf.Brick), K.plain(0xe7c3a0), K.plain(0xc9d3c0)];
+  const awn = [0x2f6b3a, 0x7a2335, 0x24406e, 0xd9822b, 0x2a8f8a, 0x5a3a6b];
+  const neon = rng.shuffle(K.NEON.slice());
+  let k = 0;
+  const unit = (a: number, e: number, h: number, upper: boolean) => {
+    retailUnit(b, rng, a, e, h, walls[k % walls.length], 0xf2ede2, awn[k % awn.length], neon[k % neon.length], upper);
+    k++;
+  };
+  // back row, left and right of the clock tower gap (fronts face +Z)
+  unit(-15.5, -8.8, 9.5, true);
+  unit(-8.8, -2.6, 7.6, false);
+  unit(2.6, 10.2, 8.2, false);
+  unit(10.2, 18.8, 10.4, true);
+  unit(18.8, 31, 8.8, false);
+  // left wing (fronts face +X): local x = -world z
+  b.push().rotateY(Math.PI / 2);
+  unit(-6.5, 3.2, 8.4, false);
+  unit(3.2, 12.4, 10.0, true);
+  unit(12.4, 21, 7.8, false);
+  b.pop();
+  // right wing (fronts face -X): local x = world z
+  b.push().rotateY(-Math.PI / 2);
+  unit(-21, -10.5, 9.0, false);
+  unit(-10.5, 6.5, 8.0, false);
+  b.pop();
+  // cinema anchor at the back-left corner with marquee and vertical blade
+  const cx0 = -31, cx1 = -15.5;
+  box(b, cx0, 0, -31, cx1, 14.5, -21, K.plain(0x3a3e44), K.roofP());
+  box(b, cx0, 14.5, -31, cx1, 15.2, -21, K.plain(0x2a2d31), null);
+  K.storefront(b, cx0 + 3, cx1 - 2, -21, { y0: 0.2, y1: 3.8, frame: 0xc9a24a, doors: [-25, -21.5], doorW: 2.0, pitch: 2.4 });
+  K.canopy(b, cx0 + 2, cx1 - 1, -21, 4.2, 2.8, 0.9, K.plain(0x7a2335), K.emis(0xffc933, 8));
+  box(b, cx0 + 2, 6.4, -21, cx1 - 1, 9.8, -20.7, K.plain(0x1a1a1a));
+  K.letters(b, rng, (cx0 + cx1) / 2, 7.1, -20.68, 12, 2.0, 0xff4fc3, { n: 6, words: 1, k: 8 });
+  box(b, cx1 - 1.4, 5.0, -20.7, cx1 - 0.6, 13.8, -19.3, K.plain(0x7a2335), undefined, { nz: null });
+  K.verticalLetters(b, rng, cx1 - 1.0, 5.4, 13.4, -19.28, 0.7, 0xffc933, 8);
+  // clock tower in the gap between the back rows
+  box(b, -2.6, 0, -27, 2.6, 18.0, -21.8, K.plain(0xe9dfc8), null);
+  b.paint(0xb5583a, Surf.RoofTiles).pyramid(0, -24.4, 6.0, 6.0, 18.0, 3.6);
+  K.discSign(b, 0, 14.6, -21.9, 1.5, K.emis(0xfff6e0, 5), K.plain(0x3a3a3a), 12, 0.2);
+  K.storefront(b, -1.6, 1.6, -21.8, { y0: 0.05, y1: 5.0, frame: 0x2a2a2a, pitch: 1.6, transom: 3.2 });
+  // plaza
+  up(b, -21, -21, 21, 7.2, 0.06, K.pav(0xcdb99a));
+  up(b, -8, -15, 8, -9, 0.08, K.foliage(0x77a34f));
+  K.fountain(b, 0, -2.5, 3.2, 0xd4cbb8);
+  for (const [tx, tz] of [[-11, -12], [11, -12], [-11, 2.5], [11, 2.5]] as [number, number][]) {
+    K.planter(b, rng, tx - 1.1, tz - 1.1, tx + 1.1, tz + 1.1, 0.5, 0x9a8a72);
+    K.tree(b, rng, tx, tz, 0.9);
+  }
+  for (const [ux, uz, c] of [[15.5, -3, 0xc8352b], [15.5, 1.5, 0xf2efe6]] as [number, number, number][]) K.umbrella(b, ux, uz, 1.3, c, 2.5);
+  bench(b, -5, 4.5);
+  bench(b, 5, 4.5);
+  const fest = K.emis(0xffc870, 3);
+  for (const [ax, bx] of [[-20, 20]] as [number, number][]) {
+    let prev: K.V3 = [ax, 4.2, -8];
+    for (let i = 1; i <= 3; i++) { const t = i / 3; const pt: K.V3 = [ax + (bx - ax) * t, 4.2 - 1.6 * t * (1 - t), -8]; b.paint(fest).beam(prev, pt, 0.04); prev = pt; }
+  }
+  // gateway pylons at the plaza entrance
+  for (const gx of [-6, 6]) box(b, gx - 0.6, 0, 6.4, gx + 0.6, 6.5, 7.6, K.plain(0xe9dfc8), K.plain(0xb5583a));
+  box(b, -6.6, 5.2, 6.7, 6.6, 6.2, 7.3, K.plain(0x3a3e44));
+  K.letters(b, rng, 0, 5.35, 7.32, 10, 0.7, 0xffc933, { n: 7, words: 1 });
+  // parking in front
+  K.asphalt(b, -31.5, 8.2, 31.5, 30.4);
+  for (const [rz, nose, fill] of [[8.6, -1, 0.2], [13.8, 1, 0.14], [24.8, -1, 0.12]] as [number, 1 | -1, number][]) {
+    K.stallsX(b, rng, -30.5, -3.2, rz, nose, fill);
+    K.stallsX(b, rng, 3.2, 30.5, rz, nose, fill);
+  }
+  up(b, -3.0, 8.6, 3.0, 19.0, 0.1, K.foliage(C.grass));
+  K.tree(b, rng, 0, 13.8, 0.75);
+  K.lotLamp(b, -16, 19.6, 8, [0, Math.PI]);
+  K.lotLamp(b, 16, 19.6, 8, [0, Math.PI]);
+  up(b, -32, 30.4, 32, 32, 0.07, K.foliage(C.grass));
+  K.pylon(b, 27, 30.8, 11, 3.6, [{ h: 2.2, color: 0xb5583a }, { h: 0.8, color: neon[0] }, { h: 0.8, color: neon[1] }, { h: 0.8, color: neon[2] }], { poles: 2, pole: 0x6a6e73, frame: 0x2a2a2a, cap: 0xdedede });
+  K.pylonLetters(b, rng, 27, 30.8, 8.35, 1.2, 3.2, 0xfff4e0, { n: 5 });
+}
 function mall(b: B, v: number, rng: RNG) {
-  up(b, -32, -32, 32, 32, 0.03, K.pav(C.sidewalk));
+  if (v === 2) return mallLifestyle(b, rng);
+  up(b, -32, -32, 32, 32, 0.03, K.pav(0xb3aea2));
   const wall = K.plain(v === 0 ? 0xdfd3bb : 0xe4e2dc);
   if (v === 0) {
     const cz0 = -30.5, cz1 = -9.5, ch = 11;
@@ -752,7 +896,7 @@ function mall(b: B, v: number, rng: RNG) {
     b.paint(0x8899aa, Surf.GlassCurtain, 5, 3).gableRoof(0, -20, 34, 7, ch, 2.6, 'x', 0.1, K.plain(0xc9b996));
     // anchors
     const an = [
-      { x0: -31.5, x1: -20, h: 15, col: K.plain(0xc4b08c), band: 0x7a2335, lc: 0xfff1d6 },
+      { x0: -31.5, x1: -20, h: 15, col: K.plain(0xc4b08c), band: 0x7a2335, lc: 0xffc933 },
       { x0: 20, x1: 31.5, h: 13.5, col: K.plain(0xe9e6df), band: 0x1d4f91, lc: 0xff3b30 },
     ];
     for (const a of an) {
@@ -768,7 +912,7 @@ function mall(b: B, v: number, rng: RNG) {
     K.storefront(b, -7.4, 7.4, -4.5, { y0: 0.05, y1: 13.2, frame: 0xc3c8cd, doors: [-2, 2], doorW: 2.4, pitch: 1.85, transom: 4.4, surround: 0.12 });
     b.paint(0x8899aa, Surf.GlassCurtain, 5, 3).pyramid(0, -7.75, 14, 5.5, 14, 4.2);
     box(b, -9, 14, -11.5, 9, 14.6, -4.2, K.plain(0xc9b996), null);
-    K.letters(b, rng, 0, 15.0, -4.18, 12, 1.8, 0xffd88a, { words: 1, n: 6 });
+    K.letters(b, rng, 0, 15.0, -4.18, 12, 1.8, 0x2fd6ff, { words: 1, n: 6 });
     for (const [a, e] of [[-20, -9], [9, 20]] as [number, number][]) for (let x = a + 1; x + 3 < e; x += 4) K.storefront(b, x, x + 3, cz1, { y0: 0.9, y1: 3.4, frame: 0x55595f, pitch: 1.5, surround: 0.1 });
     K.roofJunk(b, rng, -20, -30, 20, -24, ch, 6, false);
     K.roofJunk(b, rng, -31, -30, -21, -8, 15, 2, false);
@@ -778,7 +922,7 @@ function mall(b: B, v: number, rng: RNG) {
     b.paint(0x8899aa, Surf.GlassCurtain, 5, 3).sphere(0, 12, -18.5, 9, 12, 6, { hemi: true, scaleY: 0.8 });
     box(b, -9.5, 12, -28, 9.5, 12.6, -9, K.plain(0x3a3e44), null);
     const an = [
-      { x0: -31.5, x1: -18, z1: -2, h: 16, band: 0x2a8f8a, lc: 0xfff1d6 },
+      { x0: -31.5, x1: -18, z1: -2, h: 16, band: 0x2a8f8a, lc: 0xffc933 },
       { x0: 18, x1: 31.5, z1: -2, h: 16, band: 0xe27d3a, lc: 0xfff1d6 },
     ];
     for (const a of an) {
@@ -813,7 +957,7 @@ function mall(b: B, v: number, rng: RNG) {
   // surface parking
   const sx0 = v === 0 ? -31.5 : -11.5;
   K.asphalt(b, sx0, -3.6, 31.5, 30.4);
-  const rows: [number, 1 | -1, number][] = [[-2.8, -1, 0.36], [2.4, 1, 0.24], [14.6, -1, 0.22], [19.8, 1, 0.18]];
+  const rows: [number, 1 | -1, number][] = [[-2.8, -1, 0.25], [2.4, 1, 0.18], [14.6, -1, 0.15], [19.8, 1, 0.12]];
   for (const [rz, nose, fill] of rows) {
     K.stallsX(b, rng, sx0 + 1, -3.2, rz, nose, fill);
     K.stallsX(b, rng, 3.2, 30.5, rz, nose, fill);

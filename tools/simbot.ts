@@ -588,6 +588,21 @@ export class SimBot {
         this.say(`developed ${use} block (${b.bx},${b.bz}) as zone ${b.zone}`);
       }
     }
+    // out of land with high unemployment: convert an outer residential block next to industry into jobs land
+    const iDem = Math.max(d[DevType.ID], d[DevType.IM], d[DevType.IHT]);
+    if (s.unemployment > 0.1 && iDem > 0.4 && !this.blocks.some((b) => !b.developed && (b.use === 'I' || b.use === 'R')) &&
+      st.day - this.lastConvert > 180 && this.canInvest(5000)) {
+      const cand = this.blocks.filter((b) => b.developed && b.use === 'R' && b.zone !== Zone.None &&
+        [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => this.byKey.get(b.bx + dx + ',' + (b.bz + dz))?.use === 'I'))
+        .sort((a, b) => b.ring - a.ring)[0];
+      if (cand) {
+        const z = d[DevType.IHT] >= Math.max(d[DevType.ID], d[DevType.IM]) ? Zone.IndHigh : Zone.IndMed;
+        if (this.A.zone({ x0: cand.x0, z0: cand.z0, x1: cand.x1, z1: cand.z1 }, z).ok) {
+          cand.use = 'I'; cand.zone = z; this.lastConvert = st.day;
+          this.say(`converted residential block (${cand.bx},${cand.bz}) to industry (unemployment ${(s.unemployment * 100).toFixed(0)}%)`);
+        }
+      }
+    }
     // sub-type specific: high-tech industry needs IndHigh room, farms need IndAg land
     if (d[DevType.IHT] > 0.35 && emptyOf([Zone.IndHigh]) < growthCells * 0.3 && this.canSpend(3000)) {
       const b = this.nextBlock('I');
@@ -651,6 +666,7 @@ export class SimBot {
   }
 
   private railBuilt = false;
+  private lastConvert = -1e9;
   freightRail(): void {
     const st = this.st;
     const N = this.N;

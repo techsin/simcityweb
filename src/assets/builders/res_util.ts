@@ -171,7 +171,6 @@ export function door(b: ModelBuilder, u: number, y: number, w: number, h: number
     fq(b, u + w / 2 + 0.06, y + 0.3, u + w / 2 + sl, y + h, 0.09);
   }
   if (s.lamp) {
-    b.paint(0x2a2a2a, Surf.Metal).box(u + w / 2 + sl + 0.2, y + h * 0.72 - 0.05, 0.03, u + w / 2 + sl + 0.5, y + h * 0.72 + 0.45, 0.08, { nz: null, bottom: null });
     b.paint(0xffe2a8, Surf.Emissive);
     b.box(u + w / 2 + sl + 0.225, y + h * 0.72, 0.06, u + w / 2 + sl + 0.475, y + h * 0.72 + 0.4, 0.3, { nz: null });
   }
@@ -210,8 +209,12 @@ export function stoopRails(b: ModelBuilder, u: number, w: number, n: number, ris
   const L = n * run;
   for (const s of [-1, 1]) {
     const x = u + s * (w / 2 - 0.06);
-    b.beam([x, y0 + rise + 0.9, L - run * 0.5], [x, y0 + n * rise + 0.9, 0.1], 0.06);
-    b.box(x - 0.04, y0, L - run * 0.6, x + 0.04, y0 + rise + 0.95, L - run * 0.5);
+    const zb = L - run * 0.5, yb = y0 + rise + 0.9, yt = y0 + n * rise + 0.9;
+    // sloped hand rail + newel post + a mid baluster (in-plane strips)
+    b.quad2([x, yb - 0.07, zb], [x, yt - 0.07, 0.1], [x, yt, 0.1], [x, yb, zb]);
+    b.quad2([x, y0, zb + 0.04], [x, y0, zb - 0.04], [x, yb + 0.05, zb - 0.04], [x, yb + 0.05, zb + 0.04]);
+    const zm = zb * 0.5, ym = y0 + rise * (n * 0.5 + 0.5);
+    b.quad2([x, ym, zm + 0.03], [x, ym, zm - 0.03], [x, (yb + yt) / 2, zm - 0.03], [x, (yb + yt) / 2, zm + 0.03]);
   }
 }
 
@@ -584,8 +587,7 @@ export function chainFence(b: ModelBuilder, ax: number, az: number, bx: number, 
   }
   b.beam([ax, h, az], [bx, h, bz], 0.05);
   b.paint(0x7d8286, Surf.Metal);
-  b.beam([ax, 0.12, az], [bx, 0.12, bz], 0.05);
-  b.beam([ax, h * 0.5, az], [bx, h * 0.5, bz], 0.05);
+  for (const y of [0.12, h * 0.5]) b.quad2([ax, y - 0.025, az], [bx, y - 0.025, bz], [bx, y + 0.025, bz], [ax, y + 0.025, az]);
 }
 
 /** See-through iron railing: thin square posts every `every` m + top rail. */
@@ -593,13 +595,15 @@ export function ironRail(b: ModelBuilder, ax: number, az: number, bx: number, bz
   const len = Math.hypot(bx - ax, bz - az);
   if (len < 0.05) return;
   const n = Math.max(1, Math.round(len / every));
+  const tx = ((bx - ax) / len) * 0.025, tz = ((bz - az) / len) * 0.025;
   b.paint(color, Surf.Metal);
+  // posts and rails as thin double-sided strips in the railing plane (cheap, see-through)
   for (let i = 0; i <= n; i++) {
     const t = i / n, x = ax + (bx - ax) * t, z = az + (bz - az) * t;
-    b.box(x - 0.025, y0 + 0.05, z - 0.025, x + 0.025, y0 + h, z + 0.025, { bottom: null, top: null });
+    b.quad2([x - tx, y0 + 0.05, z - tz], [x + tx, y0 + 0.05, z + tz], [x + tx, y0 + h, z + tz], [x - tx, y0 + h, z - tz]);
   }
-  b.beam([ax, y0 + h, az], [bx, y0 + h, bz], 0.06);
-  b.beam([ax, y0 + h * 0.2, az], [bx, y0 + h * 0.2, bz], 0.04);
+  b.quad2([ax, y0 + h - 0.06, az], [bx, y0 + h - 0.06, bz], [bx, y0 + h, bz], [ax, y0 + h, az]);
+  b.quad2([ax, y0 + h * 0.2 - 0.03, az], [bx, y0 + h * 0.2 - 0.03, bz], [bx, y0 + h * 0.2 + 0.03, bz], [ax, y0 + h * 0.2 + 0.03, az]);
 }
 
 /**

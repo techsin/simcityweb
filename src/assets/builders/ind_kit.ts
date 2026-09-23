@@ -79,9 +79,13 @@ export type EmitterMap = Record<string, (variant: number) => V3[]>;
 export function makeEmitterMaps(models: Record<string, ModelBuildFn>, ids: string[]): { smoke: EmitterMap; steam: EmitterMap } {
   const cache = new Map<string, EmitSink>();
   const get = (id: string, variant: number): EmitSink => {
+    // mirror the registry exactly: variant -> (base variant, seed key), X-mirrored twins for v >= buildVariants
     const entry = MANIFEST_BY_ID[id];
     const nv = entry?.variants ?? 1;
     const v = ((variant % nv) + nv) % nv;
+    const bv = entry?.buildVariants ?? nv;
+    const baseV = v % bv;
+    const mirrored = !!entry?.mirror && v >= bv;
     const key = `${id}#${v}`;
     let r = cache.get(key);
     if (r) return r;
@@ -89,8 +93,9 @@ export function makeEmitterMaps(models: Record<string, ModelBuildFn>, ids: strin
     sink = { smoke: [], steam: [] };
     try {
       const fn = models[id];
-      if (fn && entry) fn(new ModelBuilder(), v, new RNG(hashString(key)), entry);
+      if (fn && entry) fn(new ModelBuilder(), baseV, new RNG(hashString(key)), entry);
       r = sink;
+      if (mirrored) r = { smoke: r.smoke.map(([x, y, z]) => [-x, y, z] as V3), steam: r.steam.map(([x, y, z]) => [-x, y, z] as V3) };
     } catch {
       r = { smoke: [], steam: [] };
     } finally {
@@ -648,6 +653,10 @@ export function containerAt(b: ModelBuilder, x: number, y: number, z: number, lo
   b.paint(color, Surf.Corrugated);
   if (alongZ) b.box(x - 1.22, y, z - L / 2, x + 1.22, y + 2.6, z + L / 2);
   else b.box(x - L / 2, y, z - 1.22, x + L / 2, y + 2.6, z + 1.22);
+  // door end, 8% darker
+  b.paint(dim(color, 0.92), Surf.Plain);
+  if (alongZ) wallQuad(b, 'nz', z - L / 2, x - 1.15, x + 1.15, y + 0.05, y + 2.55, 0.02);
+  else wallQuad(b, 'nx', x - L / 2, z - 1.15, z + 1.15, y + 0.05, y + 2.55, 0.02);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

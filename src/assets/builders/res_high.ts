@@ -8,7 +8,7 @@ import { Surf } from '../../core/types';
 import { rooftopWaterTank } from '../kit';
 import {
   P, inFace, U, fq, door, lawnSlab, paveSlab, tree, trashCans, planter, parapet,
-  flatRoof, setLot, band, bandRing, parking, chainFence, lounger, beacon, capPoly, type Face,
+  flatRoof, setLot, band, bandRing, parking, chainFence, lounger, beacon, capPoly, poolRect, poolGlow, lightPool, parkedCar, type Face,
 } from './res_util';
 import { ww } from './res_mid';
 
@@ -35,11 +35,11 @@ function ringBalc(b: ModelBuilder, x0: number, z0: number, x1: number, z1: numbe
 }
 
 /** Front/back only balcony slabs (strip) on z faces. */
-function stripBalc(b: ModelBuilder, x0: number, x1: number, zFace: number, dir: 1 | -1, y: number, out: number, slab: ColorLike, rail: ColorLike = GLASS_RAIL): void {
+function stripBalc(b: ModelBuilder, x0: number, x1: number, zFace: number, dir: 1 | -1, y: number, out: number, slab: ColorLike, rail: ColorLike = GLASS_RAIL, railSurf: Surf = Surf.Metal, rh = 1.05): void {
   const za = dir > 0 ? zFace : zFace - out, zb = dir > 0 ? zFace + out : zFace;
   b.paint(slab).box(x0, y - 0.22, za, x1, y, zb, dir > 0 ? { nz: null } : { pz: null });
-  b.paint(rail, Surf.Metal);
-  const zr = dir > 0 ? zb : za, h = y + 1.05;
+  b.paint(rail, railSurf);
+  const zr = dir > 0 ? zb : za, h = y + rh;
   if (dir > 0) b.quad([x0, y, zr], [x1, y, zr], [x1, h, zr], [x0, h, zr]);
   else b.quad([x1, y, zr], [x0, y, zr], [x0, h, zr], [x1, h, zr]);
 }
@@ -188,7 +188,7 @@ function projects(b: ModelBuilder, v: number, rng: RNG): void {
     b.paint(0x9a968e).quad([-h, fh, h], [h, fh, h], [h, fh, -h], [-h, fh, -h].map((q) => q) as [number, number, number]);
     flatRoof(b, -h, -h, h, h, top, 1.0, 0.25, 0xc2beb4, 0x77736c);
     // colored panel strips between window rows (every other floor)
-    for (let f = 2; f < fl; f += 2) band(b, -h, -h, h, h, f * fh - 0.05, 0.5, 0.06, f % 4 === 0 ? 0x5a7ea0 : 0xc88a4a, false);
+    for (let f = 2; f < fl; f += 2) band(b, -h, -h, h, h, f * fh - 0.05, 0.9, 0.06, f % 4 === 0 ? 0x5a7ea0 : 0xc88a4a, false);
     for (const [f, x] of [['pz', 7.5], ['px', -7.5], ['nz', -7.5], ['nx', 7.5]] as [Face, number][]) balcStack(b, f, f === 'pz' ? h : f === 'nz' ? -h : f === 'px' ? h : -h, x, 2.4, 1.1, 2 * fh, top, fh, 0xd4d0c6, 0xd4d0c6);
     roofBox(b, -2.5, -2.5, 2.5, 2.5, top, 3.6, 0x9a968e);
     b.paint(0x777777, Surf.Metal).cylinder(1.5, 1.5, top + 3.6, 5, 0.08, 0.05, 4, { top: false });
@@ -230,10 +230,15 @@ function highriseSlab(b: ModelBuilder, v: number, rng: RNG): void {
     // brutalist: 20 floors raw concrete, egg-crate balconies with solid parapets, pilotis, back cores
     const fh = 2.8, fl = 20, top = fl * fh;
     const conc = 0x9a968e;
-    ww(b, x0, z0, x1, z1, fh, top, 0x8e8a82, 3, fh, null);
+    ww(b, x0, z0, x1, z1, fh, top, 0x5a5a58, 3, fh, null, { px: P(conc), nx: P(conc) });
     b.paint(0x3a3c40).box(x0 + 1.5, 0, z0 + 1.5, x1 - 1.5, fh, z1 - 1.5, { top: null });
     for (let i = 0; i <= 7; i++) { const x = x0 + i * 6; b.paint(conc).box(x - 0.5, 0, z0 - 0.3, x + 0.5, fh, z1 + 0.3, { bottom: null, top: null }); }
-    for (let f = 2; f <= fl; f++) stripBalc(b, x0, x1, z1, 1, f * fh - 0.9, 1.6, conc, conc);
+    for (let f = 2; f <= fl; f++) stripBalc(b, x0, x1, z1, 1, f * fh - 0.9, 1.6, conc, conc, Surf.Plain, 1.0);
+    // full-height stair-core slots (glazed)
+    for (const c of [-12, 0, 12]) {
+      b.paint(conc).box(c - 1.3, fh, z1, c + 1.3, top + 1.2, z1 + 1.8, { nz: null, bottom: null, top: P(0x5e5b55, Surf.RoofFlat) });
+      inFace(b, 'pz', z1 + 1.8, () => { b.paint(0x2a3440, Surf.GlassPlain, 2); fq(b, c - 0.5, fh + 0.4, c + 0.5, top + 0.6, 0.02); });
+    }
     for (let i = 1; i < 7; i++) { const x = x0 + i * 6; b.paint(conc).box(x - 0.18, fh, z1, x + 0.18, top, z1 + 1.6, { nz: null, bottom: null }); }
     for (const x of [-12, 12]) { b.paint(0x8a867e).box(x - 2.5, 0, z0 - 4.5, x + 2.5, top + 4, z0, { bottom: null, pz: null, top: P(0x5e5b55, Surf.RoofFlat) }); }
     flatRoof(b, x0, z0, x1, z1, top, 1.2, 0.3, conc, 0x6c6962);
@@ -288,7 +293,7 @@ function tower(b: ModelBuilder, v: number, rng: RNG): void {
     const C = 4.2, h = 2 * C + 1.05 * 0, fl = 30, py = 2 * fh, top = fl * fh;
     const x0 = -2.5 * C, x1 = 2.5 * C;
     podium(b, -14, -14, 14, 12, py, 0xb8ae9c, 10);
-    ww(b, x0, -h, x1, h, py, top, 0xcfc1a8, 3, fh, P(ROOF, Surf.RoofFlat));
+    ww(b, x0, -h, x1, h, py, top, 0xbfae90, 3, fh, P(ROOF, Surf.RoofFlat));
     for (let f = 3; f < fl; f++) ringBalc(b, x0, -h, x1, h, f * fh, 1.3, 0xf2eee6);
     roofBox(b, -5, -4, 5, 4, top, 4.5, 0xd8d0c0);
     b.paint(0xe2d8c6);
@@ -319,7 +324,7 @@ function tower(b: ModelBuilder, v: number, rng: RNG): void {
     // 34-floor teal glass tower with white slab bands on front/back, open crown frame
     const x0 = -9, x1 = 9, z0 = -9, z1 = 9, fl = 34, py = 2 * fh, top = fl * fh;
     podium(b, -14, -14, 14, 12.5, py, 0x9a9690, 10);
-    glassBox(b, x0, z0, x1, z1, py, top, 1, fh);
+    glassBox(b, x0, z0, x1, z1, py, top, 6, fh);
     for (let f = 3; f < fl; f++) {
       stripBalc(b, x0, x1, z1, 1, f * fh, 1.5, 0xf4f4f0);
       stripBalc(b, x0, x1, z0, -1, f * fh, 1.5, 0xf4f4f0);
@@ -401,23 +406,27 @@ function streetTrees(b: ModelBuilder, rng: RNG, hw: number, z: number): void {
 // ---------------------------------------------------------------------------------------------- TWIN TOWERS (R$$) 3x3
 function twinTowers(b: ModelBuilder, v: number, rng: RNG): void {
   plaza(b, rng, 24, 24, 0xcfc9bd);
-  const fh = 3.1, py = 3 * fh;
+  const fh = 3.1;
+  type T = [number, number, number, number, number]; // x0, z0, x1, z1, floors
+  // per-variant layout: v0 A back-right / B front-left, v1 side by side at the back, v2 diagonal mirrored (A front-left)
+  const L = [
+    { A: [1, -21, 19, -4, 36] as T, B: [-19, -1, -3, 15, 26] as T, pf: 2, pool: [3, 4, 17, 10], lawns: [[-21, -21, -3, -4], [2, 12, 21, 18]], trees: [[-17, -17], [-8, -17], [-17, -8], [6, 15], [17, 15]] },
+    { A: [1, -20, 19, -4, 36] as T, B: [-19, -20, -3, -4, 27] as T, pf: 3, pool: [-8, 6, 8, 12], lawns: [[-21, -1, -10, 18], [10, -1, 21, 18]], trees: [[-17, 3], [-14, 14], [14, 14], [17, 3], [-3, 16]] },
+    { A: [-19, -1, -3, 15, 38] as T, B: [1, -21, 19, -4, 26] as T, pf: 4, pool: [-19, -19, -5, -12], lawns: [[1, 0, 21, 18], [-21, -9, -3, -3]], trees: [[5, 4], [16, 4], [5, 15], [16, 15], [-16, -6]] },
+  ][v];
+  const py = L.pf * fh;
   const pod = [0x9a9690, 0xc2b8a4, 0x8a5a44][v];
   podium(b, -22, -22, 22, 19, py, pod, 12, P(0x8a867e, Surf.RoofFlat), v === 2 ? Surf.Brick : Surf.Stone);
-  // garden deck
-  b.paint(0x5f8a3a, Surf.Foliage).box(-21, py, -3, -3, py + 0.3, 18, { bottom: null });
-  b.paint(0x5f8a3a, Surf.Foliage).box(3, py, -21, 21, py + 0.3, -9, { bottom: null });
-  for (const [x, z] of [[-17, 14], [-8, 14], [-17, 2], [8, -17], [17, -13]] as [number, number][]) { b.paint(0x5b4330, Surf.Wood).cylinder(x, z, py + 0.3, 1.6, 0.16, 0.12, 5, { top: false }); b.paint(0x4f7a34, Surf.Foliage).blob(x, py + 3.0, z, 2.0, 1.7, 2.0, 0, 0.2, x * z); }
-  b.paint(0x3fb0d8, Surf.Water).box(-15, py, 5, -6, py + 0.35, 10, { bottom: null });
-  b.paint(0xe2dccd, Surf.Pavement).box(-16, py, 4, -5, py + 0.32, 11, { bottom: null });
+  // garden deck: lawns, trees, pool
+  for (const [a, c, d, e] of L.lawns) b.paint(0x5f8a3a, Surf.Foliage).box(a, py, c, d, py + 0.3, e, { bottom: null });
+  for (const [x, z] of L.trees) { b.paint(0x5b4330, Surf.Wood).cylinder(x, z, py + 0.3, 1.6, 0.16, 0.12, 5, { top: false }); b.paint(0x4f7a34, Surf.Foliage).blob(x, py + 3.0, z, 2.0, 1.7, 2.0, 0, 0.2, x * z); }
+  { const [a, c, d, e] = L.pool; poolRect(b, a, c, d, e, 0xe2dccd, 0.8, 0x3fb0d8, py); }
   b.paint(GLASS_RAIL, Surf.Metal).quad([-22, py, 19], [22, py, 19], [22, py + 1.1, 19], [-22, py + 1.1, 19]).quad([22, py, 19], [22, py, -22], [22, py + 1.1, -22], [22, py + 1.1, 19]);
-  // towers: A (tall, back-right), B (shorter, front-left)
-  const A: [number, number, number, number, number] = [1, -22 + 1, 19, -4, 36]; // x0, z0, x1, z1, floors
-  const B: [number, number, number, number, number] = [-19, -1, -3, 15, 26];
+  const A = L.A, B = L.B;
   if (v === 0) {
     for (const [x0, z0, x1, z1, fl] of [A, B]) {
       const top = fl * fh;
-      glassBox(b, x0, z0, x1, z1, py, top, 0, fh);
+      glassBox(b, x0, z0, x1, z1, py, top, 6, fh);
       for (let f = 4; f < fl; f++) {
         if (f % 6 === 0) { band(b, x0, z0, x1, z1, f * fh - 0.9, 0.9, 0.15, 0xd8d8d4); continue; } // mechanical floor band
         ringBalc(b, x0, z0, x1, z1, f * fh, 1.2, 0xf4f4f0, GLASS_RAIL, ['pz', 'px', 'nx', 'nz']);
@@ -457,19 +466,45 @@ function twinTowers(b: ModelBuilder, v: number, rng: RNG): void {
 // ---------------------------------------------------------------------------------------------- LUXURY TOWER (R$$$) 3x3
 function luxuryTower(b: ModelBuilder, v: number, rng: RNG): void {
   plaza(b, rng, 24, 24, 0xd6d0c4);
-  const fh = 3.4, py = 3 * fh;
-  // podium with pool deck
-  podium(b, -22, -22, 22, 18, py, 0xd8d2c4, 14, P(0xd8d2c4, Surf.Pavement));
-  b.paint(0x2f9fc8, Surf.Water).box(-20, py, 8, -4, py + 0.3, 14, { bottom: null });
-  for (let i = 0; i < 6; i++) lounger(b, -18.5 + i * 2.6, 16.2, Math.PI, 0xf2f0ea, py);
-  for (const [x, z] of [[14, 13], [19, 13], [19, -18], [14, -18]] as [number, number][]) { b.paint(0x5b4330, Surf.Wood).cylinder(x, z, py, 1.8, 0.15, 0.12, 5, { top: false }); b.paint(0x4f7a34, Surf.Foliage).blob(x, py + 3.0, z, 1.8, 1.6, 1.8, 0, 0.2, x + z); }
+  const fh = 3.4;
+  // per-variant podium: colour (stone / granite / bronze), height, pool position; #1 stepped, #3 L-shaped infinity pool
+  const PD = [
+    { col: 0xd8d2c4, fl: 3, pools: [[-20, 12, -6, 17]], trees: [[16, 14], [20, 10], [19, -18], [14, -19]] },
+    { col: 0x4a4a4c, fl: 2, pools: [[14.5, -12, 20.5, 12]], trees: [[-18, 14], [-12, 15], [-19, -18], [-13, -19]] },
+    { col: 0x8a6a4a, fl: 4, pools: [[-12, -20.5, 12, -14.5]], trees: [[-18, 14], [18, 14], [-19, 4], [19, 4]] },
+    { col: 0xd8d2c4, fl: 3, pools: [[-20, 13, 13.5, 17], [15, -14, 20.5, 17]], trees: [[-19, -18], [-19, -8], [8, -19]] },
+    { col: 0x4a4a4c, fl: 2, pools: [[-20.5, -12, -14.5, 12]], trees: [[16, 14], [19, 6], [19, -16], [14, -19]] },
+  ][v];
+  const py = PD.fl * fh;
+  podium(b, -22, -22, 22, 18, py, PD.col, 14, P(0xd8d2c4, Surf.Pavement));
+  let deckY = py;
+  if (v === 1) {
+    // stepped podium: an extra amenity tier (lounge floor) over the back/left part
+    deckY = py;
+    b.paint(PD.col, Surf.Stone).box(-20, py, -20, 12, py + fh, 10, { bottom: null, top: P(0xd8d2c4, Surf.Pavement) });
+    inFace(b, 'pz', 10, () => { b.paint(0x2a3440, Surf.GlassPlain, 2); fq(b, -19.5, py + 0.4, 11.5, py + fh - 0.4, 0.03); });
+    b.paint(GLASS_RAIL, Surf.Metal).quad([-20, py + fh, 10], [12, py + fh, 10], [12, py + fh + 1.1, 10], [-20, py + fh + 1.1, 10]);
+  }
+  for (const [a, c, d, e] of PD.pools) {
+    b.paint(0xe2dccd, Surf.Pavement).box(a - 0.8, deckY, c - 0.8, d + 0.8, deckY + 0.14, e + 0.8, { bottom: null });
+    b.paint(0x2f9fc8, Surf.Water).box(a, deckY, c, d, deckY + 0.3, e, { bottom: null });
+    poolGlow(b, a, c, d, e, deckY + 0.3);
+  }
+  if (v === 3) b.paint(0x2f9fc8, Surf.Water).box(20.5, deckY - 0.6, -14, 20.9, deckY + 0.3, 17, { bottom: null, nx: null }); // infinity edge spill
+  const [pa, pc, pd, pe] = PD.pools[0];
+  const alongX = pd - pa >= pe - pc;
+  for (let i = 0; i < 5; i++) {
+    if (alongX) lounger(b, pa + 1.5 + i * ((pd - pa - 3) / 4), pc > 0 ? pc - 1.6 : pe + 1.6, pc > 0 ? 0 : Math.PI, 0xf2f0ea, deckY + 0.14);
+    else lounger(b, pa > 0 ? pa - 1.6 : pd + 1.6, pc + 1.5 + i * ((pe - pc - 3) / 4), pa > 0 ? Math.PI / 2 : -Math.PI / 2, 0xf2f0ea, deckY + 0.14);
+  }
+  for (const [x, z] of PD.trees) { b.paint(0x5b4330, Surf.Wood).cylinder(x, z, py, 1.8, 0.15, 0.12, 5, { top: false }); b.paint(0x4f7a34, Surf.Foliage).blob(x, py + 3.0, z, 1.8, 1.6, 1.8, 0, 0.2, x + z); }
   b.paint(GLASS_RAIL, Surf.Metal).quad([-22, py, 18], [22, py, 18], [22, py + 1.1, 18], [-22, py + 1.1, 18]).quad([22, py, 18], [22, py, -22], [22, py + 1.1, -22], [22, py + 1.1, 18]);
   if (v === 0) {
     // chamfered square glass tower, sky gardens every 15 floors, tapered lit crown + spire
     const fl = 44, top = fl * fh;
     const pts: [number, number][] = [[-10, -6], [-6, -10], [6, -10], [10, -6], [10, 6], [6, 10], [-6, 10], [-10, 6]];
     const segs: [number, number][] = [[3, 15], [16, 30], [31, fl]];
-    for (const [f0, f1] of segs) b.paint(0x2a3440, Surf.GlassCurtain, 5, fh).extrude(pts, f0 * fh, (f1 - f0) * fh, { top: false });
+    for (const [f0, f1] of segs) b.paint(0x2a3440, Surf.GlassCurtain, 6, fh).extrude(pts, f0 * fh, (f1 - f0) * fh, { top: false });
     for (const f of [15, 30]) {
       const inset = pts.map(([x, z]) => [x * 0.8, z * 0.8] as [number, number]);
       b.paint(0x3a3c40).extrude(inset, f * fh, fh, { top: false });
@@ -492,7 +527,7 @@ function luxuryTower(b: ModelBuilder, v: number, rng: RNG): void {
     for (let i = 0; i < blocks; i++) {
       const y0 = py + i * 3 * fh, a = (i / blocks) * (Math.PI / 2);
       const pts = prismPts(0, 0, s * Math.SQRT2, 4, Math.PI / 4 + a);
-      b.paint(0x2a3440, Surf.GlassCurtain, 4, fh).extrude(pts, y0, 3 * fh - 0.25, { top: false });
+      b.paint(0x2a3440, Surf.GlassCurtain, 6, fh).extrude(pts, y0, 3 * fh - 0.25, { top: false });
       polyBalc(b, pts, y0 + 3 * fh, 0.9, 0xf4f4f0, i === blocks - 1 ? null : GLASS_RAIL);
     }
     const topY = py + blocks * 3 * fh;
@@ -502,7 +537,7 @@ function luxuryTower(b: ModelBuilder, v: number, rng: RNG): void {
   } else if (v === 2) {
     // cylindrical teal glass tower, balcony rings every 2 floors, lit crown ring
     const fl = 42, top = fl * fh, pts = prismPts(0, 0, 10.5, 12);
-    b.paint(0x2a3440, Surf.GlassCurtain, 1, fh).extrude(pts, py, top - py, { topPaint: P(ROOF, Surf.RoofFlat) });
+    b.paint(0x2a3440, Surf.GlassCurtain, 6, fh).extrude(pts, py, top - py, { topPaint: P(ROOF, Surf.RoofFlat) });
     for (let f = 4; f < fl; f += 3) polyBalc(b, pts, f * fh, 1.2, 0xf4f4f0, GLASS_RAIL);
     const cr = prismPts(0, 0, 10.6, 12);
     b.paint(0xf4f4f0);
@@ -536,10 +571,10 @@ function luxuryTower(b: ModelBuilder, v: number, rng: RNG): void {
     const pts: [number, number][] = [[-11, -8], [11, -8]];
     for (let k = 0; k <= 8; k++) { const a = (k / 8) * Math.PI; pts.push([Math.cos(a) * 11, -8 + 0.001 + Math.sin(a) * 18]); }
     const plan = pts.slice(1);
-    b.paint(0x2a3440, Surf.GlassCurtain, 0, fh).extrude(plan, py, top - py, { top: false });
+    b.paint(0x2a3440, Surf.GlassCurtain, 6, fh).extrude(plan, py, top - py, { top: false });
     // sloped crown: top rises from front (low) to back (high)
     const yTop = (z: number) => top + 4 + (10 - z) * 0.6;
-    b.paint(0x2a3440, Surf.GlassCurtain, 0, fh);
+    b.paint(0x2a3440, Surf.GlassCurtain, 5, fh);
     for (let i = 0; i < plan.length; i++) {
       const [ax, az] = plan[i], [bx, bz] = plan[(i + 1) % plan.length];
       const e1x = bx - ax, e1z = bz - az;
@@ -547,8 +582,11 @@ function luxuryTower(b: ModelBuilder, v: number, rng: RNG): void {
       const q: [[number, number, number], [number, number, number], [number, number, number], [number, number, number]] = [[ax, top, az], [bx, top, bz], [bx, yTop(bz), bz], [ax, yTop(az), az]];
       if (out) b.quad(q[0], q[1], q[2], q[3]); else b.quad(q[1], q[0], q[3], q[2]);
     }
-    b.paint(0x3a4450, Surf.Metal);
+    b.paint(0xdfe3e6);
     for (let i = 1; i < plan.length - 1; i++) b.tri([plan[0][0], yTop(plan[0][1]), plan[0][1]], [plan[i + 1][0], yTop(plan[i + 1][1]), plan[i + 1][1]], [plan[i][0], yTop(plan[i][1]), plan[i][1]]);
+    // three white fins across the sloped crown
+    b.paint(0xf4f4f0);
+    for (const x of [-5, 0, 5]) { const zf = -8 + Math.sqrt(Math.max(0, 121 - x * x)) * (18 / 11) - 0.3; b.beam([x, yTop(zf) + 0.05, zf], [x, yTop(-7.8) + 0.05, -7.8], 0.45); }
     b.paint(0xfff0cc, Surf.Emissive);
     for (let i = 0; i < plan.length; i++) {
       const [ax, az] = plan[i], [bx, bz] = plan[(i + 1) % plan.length];
@@ -566,22 +604,40 @@ function luxuryTower(b: ModelBuilder, v: number, rng: RNG): void {
 function supertall(b: ModelBuilder, v: number, rng: RNG): void {
   plaza(b, rng, 32, 32, 0xd6d0c4);
   const fh = 3.5;
-  // plaza dressing: fountains, planters, trees, lobby podium
-  const fountain = (x: number, z: number) => {
-    b.paint(0xd6cfc0).box(x - 5, 0, z - 2.5, x + 5, 0.6, z + 2.5, { bottom: null });
-    b.paint(0x3f9fc8, Surf.Water).box(x - 4.6, 0.6, z - 2.1, x + 4.6, 0.62, z + 2.1, { bottom: null, px: null, nx: null, pz: null, nz: null });
-  };
-  fountain(-17, 22); fountain(17, 22);
-  for (const x of [-26, -9, 9, 26]) { b.paint(0x5a4432).box(x - 1, 0.1, 28.5, x + 1, 0.14, 30.5, { bottom: null }); tree(b, rng, x, 29.5, 1.0, 'round'); }
-  for (const z of [-24, -10, 6]) for (const x of [-27, 27]) planter(b, x, z, 2.5, 2.5, 0.1, 0x8f8a80, 0x4f7a34, x + z);
-  if (v !== 1) for (const z of [-17, -3, 13]) for (const x of [-27, 27]) tree(b, rng, x, z, 1.0, 'round');
+  // plaza: amenity / retail wings on both sides, drop-off loop with cars, lawn quadrants
+  const wingC = [0xcfcac0, 0xd8d4ca, 0xcfc6b2][v], wingF = v === 1 ? 3 : 2;
+  for (const sx of [-1, 1]) {
+    const xa = sx < 0 ? -31 : 22, xb = sx < 0 ? -22 : 31, wh = wingF * fh;
+    b.paint(wingC, Surf.Stone).box(xa, 0, -28, xb, wh, 12, { top: P(0x8a867e, Surf.RoofFlat) });
+    b.paint(wingC).box(xa - 0.3, wh, -28.3, xb + 0.3, wh + 0.5, 12.3, { bottom: null, top: P(0x8a867e, Surf.RoofFlat) });
+    b.paint(0x2a3440, Surf.GlassPlain, 2);
+    inFace(b, sx < 0 ? 'px' : 'nx', sx < 0 ? xb : xa, () => fq(b, U(sx < 0 ? 'px' : 'nx', sx < 0 ? 10.5 : -26.5), 0.3, U(sx < 0 ? 'px' : 'nx', sx < 0 ? -26.5 : 10.5), wh - 0.8, 0.04));
+    inFace(b, 'pz', 12, () => fq(b, xa + 0.8, 0.3, xb - 0.8, wh - 0.8, 0.04));
+    b.paint(0xe8e6e0).box(xa, 3.4, 12, xb, 3.6, 14.2, { nz: null, bottom: { color: 0xd8d4cc } });
+    lawnSlab(b, sx < 0 ? -21 : 8, 14, sx < 0 ? -8 : 21, 30, 0x5e8d3c, 0.12);
+    lawnSlab(b, sx < 0 ? -21 : 2, -31, sx < 0 ? -2 : 21, -22, 0x5e8d3c, 0.12);
+  }
+  // drop-off loop
+  const loop: [number, number][] = [], inner: [number, number][] = [];
+  for (let i = 0; i < 12; i++) { const a = (i / 12) * Math.PI * 2; loop.push([Math.cos(a) * 6.8, 24 + Math.sin(a) * 6.8]); inner.push([Math.cos(a) * 3.0, 24 + Math.sin(a) * 3.0]); }
+  b.paint(0x55565a, Surf.Pavement); capPoly(b, loop, 0.12, true);
+  b.paint(0x5e8d3c, Surf.Foliage); capPoly(b, inner, 0.14, true);
+  b.paint(0xd6cfc0).cylinder(0, 24, 0.14, 0.6, 1.4, 1.4, 8, { top: false, smooth: false });
+  b.paint(0x3f9fc8, Surf.Water).cylinder(0, 24, 0.7, 0.02, 1.3, 1.3, 8);
+  paveSlab(b, -3.4, 30.5, 3.4, 32, 0x55565a, 0.12);
+  const nCars = v === 1 ? 3 : 4;
+  for (let i = 0; i < nCars; i++) { const a = Math.PI * (0.15 + i * 0.25); parkedCar(b, rng, Math.cos(a) * 4.9, 24 - Math.sin(a) * 4.9, a, undefined, 0.12); }
+  lightPool(b, -8, 20.2, 8, 21.6, 0xd6d0c4, 0.105);
+  for (const x of [-26, -9, 9, 26]) { b.paint(0x5a4432).box(x - 1, 0.1, 29.5, x + 1, 0.14, 31.5, { bottom: null }); tree(b, rng, x, 30.5, 1.0, 'round'); }
+  const lawnTrees: [number, number][] = v === 1 ? [[-15, 19], [15, 19]] : [[-15, 19], [15, 19], [-12, -26], [12, -26]];
+  for (const [x, z] of lawnTrees) tree(b, rng, x, z, 1.1, 'wide');
   if (v === 0) {
     // square dark-glass supertall with 3 setbacks, silver fins, lit crown, spire
     const tiers: [number, number, number][] = [[0, 30, 15], [30, 52, 12.5], [52, 70, 10]];
     b.paint(0xcfcac0, Surf.Stone).box(-19, 0, -19, 19, 3 * fh, 19, { top: P(0xa8a498, Surf.Pavement) });
     inFace(b, 'pz', 19, () => { b.paint(0x2a3440, Surf.GlassPlain); fq(b, -12, 0.2, 12, 9.5, 0.05); });
     for (const [f0, f1, h] of tiers) {
-      glassBox(b, -h, -h, h, h, Math.max(3, f0) * fh, f1 * fh, 3, fh, P(0x8a867e, Surf.RoofFlat));
+      glassBox(b, -h, -h, h, h, Math.max(3, f0) * fh, f1 * fh, 6, fh, P(0x8a867e, Surf.RoofFlat));
       b.paint(0xb8bcc2, Surf.Metal);
       for (let i = -3; i <= 3; i++) {
         const x = (i / 3) * (h - 0.4);
@@ -602,14 +658,14 @@ function supertall(b: ModelBuilder, v: number, rng: RNG): void {
     inFace(b, 'pz', 19.3, () => { b.paint(0x2a3440, Surf.GlassPlain); fq(b, -6, 0.2, 6, 9.0, 0.3); });
     for (const [f0, f1, r] of tiers) {
       const pts = prismPts(0, 0, r, 12, Math.PI / 12);
-      b.paint(0x2a3440, Surf.GlassCurtain, 5, fh).extrude(pts, f0 * fh, (f1 - f0) * fh, { topPaint: P(0x8a867e, Surf.RoofFlat) });
-      for (let f = f0 + 4; f < f1; f += 4) polyBalc(b, pts, f * fh, 0.9, 0xf4f4f0, null);
+      b.paint(0x2a3440, Surf.GlassCurtain, 6, fh).extrude(pts, f0 * fh, (f1 - f0) * fh, { topPaint: P(0x8a867e, Surf.RoofFlat) });
+      for (let f = f0 + 5; f < f1 - 1; f += 5) polyBalc(b, pts, f * fh, 0.9, 0xf4f4f0, null);
       b.paint(0xcfe8ff, Surf.Emissive).extrude(prismPts(0, 0, r + 0.05, 12, Math.PI / 12), f1 * fh - 0.8, 0.4, { top: false });
     }
     const top = 72 * fh;
     b.paint(0xf4f4f0);
     const cr = prismPts(0, 0, 9.5, 12, Math.PI / 12);
-    for (const [x, z] of cr) b.box(x - 0.3, top, z - 0.3, x + 0.3, top + 12, z + 0.3, { bottom: null });
+    cr.forEach(([x, z], i) => { if (i % 2 === 0) b.box(x - 0.3, top, z - 0.3, x + 0.3, top + 12, z + 0.3, { bottom: null }); });
     b.paint(0xfff0cc, Surf.Emissive).extrude(prismPts(0, 0, 6.5, 12, Math.PI / 12), top, 10, { top: true });
     b.paint(0xf4f4f0).cylinder(0, 0, top + 12, 1.0, 9.8, 7.0, 12, { top: true });
     spire(b, 0, 0, top + 13, 24, 0.7);

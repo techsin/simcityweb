@@ -10,6 +10,7 @@ import { signBox, bench } from '../kit';
 import {
   type V3, flat, ground, wallQuad, tube, disc, strut, tank, carLow, fenceRect, floodLight, roofUnit, parking, tree,
   solarRow, lathe, boxTruck, emitSteam, CAR_COLORS2,
+  lightDot, lights, securityLights, pool, Y_OVER, Y_POOL,
 } from './ind_kit';
 
 const LAWN = 0x6f9a45;
@@ -31,7 +32,7 @@ function roofSolar(b: ModelBuilder, x0: number, z0: number, x1: number, z1: numb
 
 function path(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, color: ColorLike = PATH): void {
   b.paint(color, Surf.Pavement);
-  flat(b, x0, z0, x1, z1, 0.09);
+  flat(b, x0, z0, x1, z1, Y_OVER);
 }
 
 /** Glass curtain block with a light top band and roof. */
@@ -52,14 +53,14 @@ function pond(b: ModelBuilder, x: number, z: number, rx: number, rz: number, seg
     }
     return o;
   };
-  const e = pts(1.12, 0.14), w = pts(1.0, 0.12);
+  const e = pts(1.12, 0.17), w = pts(1.0, 0.14);
   b.paint(0xc8c2b4, Surf.Stone);
   for (let i = 0; i < seg; i++) {
     const j = (i + 1) % seg;
     b.quad(w[i], e[i], e[j], w[j]);
   }
   b.paint(0x3f7ea6, Surf.Water);
-  for (let i = 0; i < seg; i++) b.tri([x, 0.12, z], w[(i + 1) % seg], w[i]);
+  for (let i = 0; i < seg; i++) b.tri([x, 0.14, z], w[(i + 1) % seg], w[i]);
 }
 
 // ------------------------------------------------------------------------------------------------ ind_tech_campus
@@ -100,7 +101,7 @@ function techCampus(b: ModelBuilder, v: number, rng: RNG): void {
       // courtyard
       path(b, -10, -11, 10, 8, 0xd0cbbd);
       b.paint(LAWN2, Surf.Foliage);
-      flat(b, -8.5, -9.5, 8.5, 5, 0.11);
+      flat(b, -8.5, -9.5, 8.5, 5, Y_POOL);
       pond(b, 0, -3, 4.5, 3);
       tree(b, rng, -6, 2.5, 8, 2.4);
       tree(b, rng, 6, -7, 8, 2.4);
@@ -139,11 +140,23 @@ function techCampus(b: ModelBuilder, v: number, rng: RNG): void {
     }
     case 3: {
       // glass office tower + low green-roofed wing, water plaza, parking
-      glassBlock(b, 4, -21, 17, -7, 24, 0, 3.6);
-      b.paint(0xd8dadc, Surf.Metal).box(6, 24.7, -19, 15, 27, -9, { bottom: null });
+      glassBlock(b, 4, -21, 17, -7, 21, 0, 3.6);
+      b.paint(0xd8dadc, Surf.Metal).box(6, 21.7, -19, 15, 24, -9, { bottom: null });
       b.paint(WHITE, Surf.WallWindows, 2, 3.5).box(-21.5, 0, -19, 4, 7, -8, { top: null });
       greenRoof(b, -21.5, -19, 4, -8, 7);
       roofSolar(b, -20.5, -18.5, -9, -8.5, 7.3);
+      // roof terrace: deck, planters, parasols, benches
+      b.paint(0xb08a62, Surf.Wood);
+      flat(b, -7.5, -17.5, 2.5, -9.5, 7.6);
+      for (let i = 0; i < 3; i++) {
+        const tx = -5.5 + i * 3.4;
+        b.paint(0xf2f2f0, Surf.Plain);
+        strut(b, [tx, 7.6, -13.5], [tx, 9.6, -13.5], 0.08);
+        b.paint(i === 1 ? 0xe67e22 : 0x2e8b8b, Surf.Plain);
+        lathe(b, tx, -13.5, [[1.2, 9.3], [0, 9.9]], 6);
+        b.paint(0x8a6a47, Surf.Wood).boxC(tx, -11.5, 1.6, 0.5, 7.6, 0.45);
+      }
+      b.paint(0x5a8a3a, Surf.Foliage).box(-7.5, 7.6, -17.5, 2.5, 8.3, -16.8, { bottom: null });
       b.paint(0x2a3440, Surf.GlassCurtain, 5, 3.5).box(-3, 0, -8, 4, 4.2, -5, { top: { color: WHITE, surf: Surf.Plain } });
       path(b, -21.5, -7, 21.5, 4);
       pond(b, 11, -2, 5, 2.4, 10);
@@ -157,6 +170,16 @@ function techCampus(b: ModelBuilder, v: number, rng: RNG): void {
       tree(b, rng, 21.5, -19, 8, 2.2);
       tree(b, rng, 21.5, 20, 8, 2.2);
       tree(b, rng, -22.2, -21.5, 7, 1.5);
+      // logo pylon + EV chargers at the parking
+      b.paint(0xf2f2f0, Surf.Plain).box(0.2, 0, 15.5, 1.2, 7.5, 17.5);
+      b.paint(0x2e6fb5, Surf.Emissive, 3);
+      wallQuad(b, 'px', 1.2, 15.8, 17.2, 4.8, 7.1);
+      wallQuad(b, 'nx', 0.2, 15.8, 17.2, 4.8, 7.1);
+      for (let i = 0; i < 4; i++) {
+        b.paint(0xe8ecee, Surf.Plain).boxC(-21.6 + i * 2.7, 6.5, 0.4, 0.3, Y_OVER, 1.5);
+        b.paint(0x3fd07f, Surf.Emissive, 4);
+        wallQuad(b, 'pz', 6.65, -21.75 + i * 2.7, -21.45 + i * 2.7, 1.05, 1.35, 0.02);
+      }
       for (let i = 0; i < 3; i++) tree(b, rng, 21.8, -3 + i * 5.5, 7.5, 1.8);
       signBox(b, 2, 0, 21.8, 8, 1.4, 22.2, 0x2e6fb5, 0xe8e8e4);
       break;
@@ -176,14 +199,14 @@ function techCampus(b: ModelBuilder, v: number, rng: RNG): void {
       // quad
       path(b, -12, -11, 12, 9, 0xd0cbbd);
       b.paint(LAWN2, Surf.Foliage);
-      flat(b, -9, -8, 9, 6.5, 0.11);
+      flat(b, -9, -8, 9, 6.5, Y_POOL);
       tree(b, rng, -5, -3, 9, 3);
       tree(b, rng, 5, 2, 9, 3);
       bench(b, 0, 5, 0);
       path(b, -2, 9, 2, H);
       // solar carport parking at the front
       b.paint(PALETTE.asphalt, Surf.Pavement);
-      flat(b, -23, 11, 23, 23, 0.07);
+      flat(b, -23, 11, 23, 23, Y_OVER);
       for (const zc of [14, 20]) {
         for (let i = 0; i < 12; i++) {
           if (Math.abs(-21 + i * 3.7 + 1.3) < 3) continue;
@@ -218,8 +241,15 @@ function lab(b: ModelBuilder, v: number, rng: RNG): void {
       const x0 = -14, x1 = 8, z0 = -14, z1 = 2;
       b.paint(WHITE, Surf.WallWindows, 2, 4.0).box(x0, 0, z0, x1, 12.4, z1, { top: { color: 0x9a9ea2, surf: Surf.RoofFlat } });
       b.paint(0xd0d4d6, Surf.Plain).box(x0 - 0.1, 12.2, z0 - 0.1, x1 + 0.1, 13, z1 + 0.1, { bottom: null });
-      b.paint(0xb8bcc0, Surf.Corrugated).box(-9, 12.4, -11, 1, 16, -5);
-      exhaustStacks(b, -7, -3, 12.4, 5, 5);
+      // louvred penthouse (vertical corrugated bands) + six 7 m exhaust stacks
+      b.paint(0xa4a8ac, Surf.Corrugated).box(-9, 12.4, -11, 1, 16, -5);
+      b.paint(0xc4c8cc, Surf.Corrugated);
+      for (let x = -8.4; x < 0.6; x += 1.5) wallQuad(b, 'pz', -5, x, x + 0.7, 12.9, 15.5, 0.05);
+      for (let z = -10.4; z < -5.4; z += 1.5) wallQuad(b, 'px', 1, z, z + 0.7, 12.9, 15.5, 0.05);
+      exhaustStacks(b, -8, -3, 12.4, 6, 7);
+      // vertical white fins on the +Z facade
+      b.paint(WHITE, Surf.Plain);
+      for (let x = x0 + 1.05; x <= x1 - 0.5; x += 2.1) if (x < -5.4 || x > 1.4) b.box(x - 0.12, 0.5, z1, x + 0.12, 12.4, z1 + 0.7, { bottom: null, nz: null });
       roofUnit(b, 4, 12.4, -10, 3, 2.4, 1.6);
       b.paint(0x2a3440, Surf.GlassCurtain, 5, 4.0).box(-5, 0, z1, 1, 8, z1 + 1.2, { top: { color: WHITE, surf: Surf.Plain } });
       b.paint(WHITE, Surf.Plain).box(-6.5, 4.2, z1, 2.5, 4.6, z1 + 4);
@@ -244,7 +274,7 @@ function lab(b: ModelBuilder, v: number, rng: RNG): void {
       path(b, -14, 5, 14, 7);
       for (let i = 0; i < 6; i++) carLow(b, -13 + i * 2.8, 11, Math.PI, rng.pick(CAR_COLORS2));
       b.paint(PALETTE.asphalt, Surf.Pavement);
-      flat(b, -14.5, 8, -0.5, 14, 0.07);
+      flat(b, -14.5, 8, -0.5, 14, Y_OVER);
       tree(b, rng, 6, 11, 7.5, 2.3);
       tree(b, rng, 11.5, 11, 7.5, 2.3);
       tree(b, rng, 13.5, -12, 7, 2.0);
@@ -263,12 +293,12 @@ function lab(b: ModelBuilder, v: number, rng: RNG): void {
       roofUnit(b, -10, 11, 4, 3, 2.4, 1.6);
       exhaustStacks(b, -2, -12, 11, 3, 4);
       b.paint(LAWN2, Surf.Foliage);
-      flat(b, 4, -4, 15.5, 15.5, 0.08);
+      flat(b, 4, -4, 15.5, 15.5, Y_OVER);
       path(b, 1, 2.5, 4, H);
       pond(b, 9.5, 5, 3.6, 2.4, 8);
       for (let i = 0; i < 4; i++) carLow(b, 7 + i * 2.8, -12, Math.PI * 0.5 * 0 + Math.PI, rng.pick(CAR_COLORS2));
       b.paint(PALETTE.asphalt, Surf.Pavement);
-      flat(b, 5, -15.5, 15.5, -8.5, 0.07);
+      flat(b, 5, -15.5, 15.5, -8.5, Y_OVER);
       tree(b, rng, -11, 13, 7, 2.2);
       tree(b, rng, 13, 12.5, 7, 2.2);
       break;
@@ -282,7 +312,7 @@ function lab(b: ModelBuilder, v: number, rng: RNG): void {
       exhaustStacks(b, -12, -10, 10.2, 3, 3.5);
       // tank yard behind a fence
       b.paint(0x9c958a, Surf.Pavement);
-      flat(b, 7, -15, 15.5, 2, 0.07);
+      flat(b, 7, -15, 15.5, 2, Y_OVER);
       for (let i = 0; i < 3; i++) tank(b, 9.5 + (i % 2) * 3.6, -12.5 + i * 4.2, 1.2, 9 + (i % 2), WHITE, { roof: 'dome', seg: 8 });
       b.paint(0x9aa0a6, Surf.Metal);
       b.pipe([9.5, 1.2, -12.5], [5, 1.2, -12.5], 0.18, 5);
@@ -309,7 +339,7 @@ function lab(b: ModelBuilder, v: number, rng: RNG): void {
       exhaustStacks(b, -12, -12, 15, 2, 3);
       path(b, -2, 4, 1, H);
       b.paint(LAWN2, Surf.Foliage);
-      flat(b, 3, 6, 15.5, 15.5, 0.08);
+      flat(b, 3, 6, 15.5, 15.5, Y_OVER);
       pond(b, 9, 10.5, 4, 2.6, 8);
       parking(b, rng, -15.5, 6, -3, 15.5, 0.6, 6);
       tree(b, rng, 14, -8, 7, 2.2);
@@ -337,17 +367,23 @@ function genset(b: ModelBuilder, x: number, z: number, color: ColorLike = 0xd8da
 
 function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
   const HX = 24, HZ = 16;
-  ground(b, -HX, -HZ, HX, HZ, 0x9c958a, Surf.Pavement, 0.05);
+  const DG = 0x9c958a;
+  ground(b, -HX, -HZ, HX, HZ, DG, Surf.Pavement, 0.05);
   b.paint(LAWN, Surf.Foliage);
-  flat(b, -HX, 11, HX, HZ, 0.07);
+  flat(b, -HX, 11, HX, HZ, Y_OVER);
   fenceRect(b, -23.3, -15.3, 23.3, 10.5, 2.6, 0x8a9096, [2, 8], 6, 2, true);
-  // guard house at the gate
+  // security lights along the fence every ~12 m (6 m posts, cool LED + light pools inside the fence)
+  securityLights(b, -22.6, 9.8, -22.6, -14.6, 12, DG, 6, [1, 0]);
+  securityLights(b, 22.6, 9.8, 22.6, -14.6, 12, DG, 6, [-1, 0]);
+  securityLights(b, -10.6, -14.6, 10.6, -14.6, 12, DG, 6, [0, 1]);
+  // guard house at the gate (lit window)
   b.paint(0xe6e8e8, Surf.Plain).box(8.8, 0, 7.5, 11.5, 3.0, 10);
-  b.paint(0x2a3440, Surf.GlassPlain);
+  b.paint(0x2a3440, Surf.GlassPlain, 2);
   wallQuad(b, 'nx', 8.8, 7.8, 9.7, 1.1, 2.6);
   wallQuad(b, 'pz', 10, 9.1, 11.2, 1.1, 2.6);
+  lightDot(b, 8.4, 3.2, 8.8, 0.26, 0xe8f0ff);
   b.paint(PALETTE.asphalt, Surf.Pavement);
-  flat(b, 2, 4, 8, HZ, 0.08);
+  flat(b, 2, 4, 8, HZ, Y_POOL);
   b.paint(0xc0392b, Surf.Plain);
   strut(b, [2.2, 1.0, 11], [7.8, 1.0, 11], 0.12);
   switch (v) {
@@ -359,8 +395,11 @@ function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
       for (let x = x0 + 2; x < x1 - 1; x += 4) wallQuad(b, 'pz', z1, x, x + 0.6, 0, 11);
       b.paint(0x2e6fb5, Surf.Plain);
       wallQuad(b, 'pz', z1, x0, x1, 9.4, 10.2);
+      b.paint(0x3fa0ff, Surf.Emissive, 3);
+      wallQuad(b, 'pz', z1, x0, x1, 8.9, 9.2, 0.05);
       b.paint(0x55595e, Surf.Corrugated);
       wallQuad(b, 'pz', z1, x1 - 6, x1 - 2, 0, 4);
+      lightDot(b, x1 - 4, 4.6, z1 + 0.35, 0.26, 0xe8f0ff);
       b.paint(0xa9adb0, Surf.Metal).box(x0 - 0.1, 11, z0 - 0.1, x1 + 0.1, 11.8, z1 + 0.1, { bottom: null, top: null });
       for (let r = 0; r < 3; r++) for (let i = 0; i < 6; i++) chiller(b, x0 + 3.5 + i * 5.4, 11, z0 + 3.6 + r * 5.2);
       for (let i = 0; i < 4; i++) genset(b, 15 + (i % 2) * 3.6, -12 + Math.floor(i / 2) * 7.2);
@@ -371,8 +410,6 @@ function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
         for (let k = 0; k < 3; k++) strut(b, [14.6 + i * 4.2 + k * 0.9, 2.8, 1.6], [14.6 + i * 4.2 + k * 0.9, 4.2, 1.6], 0.14);
       }
       for (let i = 0; i < 4; i++) carLow(b, -20 + i * 2.8, 7.6, Math.PI, rng.pick(CAR_COLORS2));
-      floodLight(b, -23, -15, 9);
-      floodLight(b, 23, -15, 9);
       break;
     }
     case 1: {
@@ -383,8 +420,15 @@ function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
         b.paint(0x1f5fa8, Surf.Plain);
         wallQuad(b, 'pz', 1, x0, x1, 1.0, 1.8);
         wallQuad(b, 'pz', 1, x0 + 0.8, x0 + 1.6, 1.8, 11);
+        b.paint(0x3fa0ff, Surf.Emissive, 3);
+        wallQuad(b, 'pz', 1, x0 + 2, x1, 1.95, 2.2, 0.05);
+        // louvre bands 8-11 m
+        b.paint(0xb8bcc0, Surf.Corrugated);
+        wallQuad(b, 'pz', 1, x0 + 2, x1 - 0.6, 8, 11, 0.04);
+        wallQuad(b, 'nz', -14, x0 + 0.6, x1 - 0.6, 8, 11, 0.04);
         b.paint(0x55595e, Surf.Metal);
         wallQuad(b, 'pz', 1, x1 - 3.5, x1 - 1, 0, 3);
+        lightDot(b, x1 - 2.25, 3.5, 1.35, 0.24, 0xe8f0ff);
         for (let i = 0; i < 2; i++) roofUnit(b, x0 + 3 + i * 4, 12, -6, 2.4, 6, 1.6, 0xc8ccd0);
       }
       for (let i = 0; i < 5; i++) chiller(b, 16.5, 0, -12.5 + i * 4.6, 3, 4, 2.2);
@@ -393,7 +437,6 @@ function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
       tank(b, 20.8, 5, 1.8, 7, 0xe8e8e2, { roof: 'dome', seg: 10 });
       for (let i = 0; i < 3; i++) genset(b, -20 + i * 3.6, 6.2, 0x55595e);
       for (let i = 0; i < 3; i++) carLow(b, -6 + i * 2.8, 7, Math.PI, rng.pick(CAR_COLORS2));
-      floodLight(b, -23, -15, 9);
       break;
     }
     default: {
@@ -422,7 +465,6 @@ function datacenter(b: ModelBuilder, v: number, rng: RNG): void {
       b.pipe([x1, 3, -3], [13.3, 3, -3], 0.35, 6);
       for (let i = 0; i < 4; i++) carLow(b, -20 + i * 2.8, 7.4, Math.PI, rng.pick(CAR_COLORS2));
       boxTruck(b, -4, 7.5, Math.PI * 0.5, 0xf2f2ee, 0x3a3f45);
-      floodLight(b, 23, 10, 9);
       break;
     }
   }

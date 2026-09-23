@@ -117,7 +117,7 @@ function shack(b: ModelBuilder, v: number, rng: RNG): void {
       fq(b, U('px', -2.8) - 0.5, 1.0, U('px', -2.8) + 0.5, 2.0, 0.08);
     });
     wins(b, 'nx', -3, [-1.5], 1.1, 0.8, 0.8, { frame: 0x5a4a3a });
-    lightPool(b, -2.3, 2.2, 0.3, 4.7, LAWN_DRY, 0.08);
+    lightPool(b, -1.8, 2.2, -0.2, 3.8, LAWN_DRY, 0.08);
     // blue tarp + mismatched patch on the roof
     const ry = (z: number) => 2.7 + (0.5 - z) * (0.55 / 4) + 0.06;
     b.paint(0x2a4a7a).quad([-1.4, ry(-0.4), -0.4], [1.2, ry(-0.4), -0.4], [1.3, ry(-2.9), -2.9], [-1.3, ry(-2.9), -2.9]);
@@ -155,7 +155,7 @@ function shack(b: ModelBuilder, v: number, rng: RNG): void {
     inFace(b, 'pz', z1 + 2.2, () => steps(b, 0.2, 1.1, 2, 0.3, 0.3, 0x8f7c66, 0, Surf.Wood));
     b.paint(0xd8d8d0, Surf.Metal).box(-1.6, 2.55, z1, 2.0, 2.62, z1 + 2.3, { nz: null });
     b.paint(0xb0b0b0, Surf.Metal).box(1.85, 0.6, z1 + 2.15, 1.95, 2.55, z1 + 2.25).box(-1.55, 0.6, z1 + 2.15, -1.45, 2.55, z1 + 2.25);
-    lightPool(b, -1.0, 2.5, 1.4, 5.0, 0x8f9656, 0.08);
+    lightPool(b, -0.6, 2.5, 1.0, 4.1, 0x8f9656, 0.08);
     propaneTank(b, -7.2, -2.0);
     satDish(b, 4.5, 3.1, -1.5, 0.8);
     // lawn chairs & grill
@@ -183,7 +183,7 @@ function shack(b: ModelBuilder, v: number, rng: RNG): void {
     wins(b, 'pz', 0.8, [3.4], 1.0, 0.7, 0.6, { frame: 0x5a4a3a });
     wins(b, 'nx', -3.8, [-0.9], 1.1, 0.8, 0.8, { frame: 0x3a3028 });
     inFace(b, 'pz', 1.2, () => steps(b, -2.4, 1.0, 1, 0.3, 0.35, 0x77716a));
-    lightPool(b, -3.4, 1.6, -1.4, 3.8, LAWN_DRY, 0.08);
+    lightPool(b, -3.2, 1.6, -1.6, 3.2, LAWN_DRY, 0.08);
     chimney(b, -3.0, -2.2, 0.6, 0.6, 2.6, 4.3, 0x8a7a6a, Surf.Stone);
     // tar-paper patches on the roof
     b.paint(0x55504a).quad([-3.0, 2.6 + 0.45 * (1.1 / 2.1) + 0.05, 0.75], [-1.8, 2.6 + 0.45 * (1.1 / 2.1) + 0.05, 0.75], [-1.8, 2.6 + 1.2 * (1.1 / 2.1) + 0.05, 0.0], [-3.0, 2.6 + 1.2 * (1.1 / 2.1) + 0.05, 0.0]);
