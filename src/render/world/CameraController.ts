@@ -145,7 +145,7 @@ export class CameraController implements CameraControllerApi {
     this._target.y = this.opts.heightAt(x, z);
     this.groundY = this._target.y;
     this.goalDistance = this._distance = THREE.MathUtils.clamp(distance, this.opts.minDistance, this.opts.maxDistance);
-    if (tiltDeg !== undefined) this.goalTilt = this.tilt = THREE.MathUtils.clamp(tiltDeg, this.opts.minTilt, this.opts.maxTilt) * DEG;
+    if (tiltDeg !== undefined) this.goalTilt = this.tilt = THREE.MathUtils.clamp(tiltDeg * DEG, this.minTiltRad(this.goalDistance), this.opts.maxTilt * DEG);
     if (yawDeg !== undefined) this.goalYaw = this.yaw = yawDeg * DEG;
     this.panVel.set(0, 0, 0);
     this.apply();
@@ -275,7 +275,7 @@ export class CameraController implements CameraControllerApi {
     } else if (this.orbiting) {
       const dx = e.clientX - this.lastX, dy = e.clientY - this.lastY;
       this.goalYaw -= dx * 0.006;
-      this.goalTilt = THREE.MathUtils.clamp(this.goalTilt + dy * 0.004, this.opts.minTilt * DEG, this.opts.maxTilt * DEG);
+      this.goalTilt = THREE.MathUtils.clamp(this.goalTilt + dy * 0.004, this.minTiltRad(this.goalDistance), this.opts.maxTilt * DEG);
     }
     this.lastX = e.clientX;
     this.lastY = e.clientY;
@@ -390,6 +390,12 @@ export class CameraController implements CameraControllerApi {
     this.clampTarget(this.goalTarget);
   }
 
+  /** minimum tilt: the configured minimum, relaxed toward 8° when zoomed in close (skyline views) */
+  private minTiltRad(d: number): number {
+    const close = 1 - THREE.MathUtils.smoothstep(d, 140, 800);
+    return THREE.MathUtils.lerp(this.opts.minTilt, Math.min(this.opts.minTilt, 8), close) * DEG;
+  }
+
   private effectiveTilt(): number {
     const far = THREE.MathUtils.smoothstep(this._distance, 1800, 7000) * this.autoTopDown;
     return THREE.MathUtils.lerp(this.tilt, Math.max(this.tilt, 80 * DEG), far);
@@ -415,7 +421,7 @@ export class CameraController implements CameraControllerApi {
       }
       if (this.keys.has('r') || this.keys.has('PageUp')) this.goalTilt += 55 * DEG * dt;
       if (this.keys.has('f') || this.keys.has('PageDown')) this.goalTilt -= 55 * DEG * dt;
-      this.goalTilt = THREE.MathUtils.clamp(this.goalTilt, this.opts.minTilt * DEG, this.opts.maxTilt * DEG);
+      this.goalTilt = THREE.MathUtils.clamp(this.goalTilt, this.minTiltRad(this.goalDistance), this.opts.maxTilt * DEG);
       if (this.keys.has('+') || this.keys.has('=')) this.zoomBy(Math.exp(-1.6 * dt));
       if (this.keys.has('-') || this.keys.has('_')) this.zoomBy(Math.exp(1.6 * dt));
     }
@@ -444,6 +450,9 @@ export class CameraController implements CameraControllerApi {
       if (this.panVel.lengthSq() < 1) this.panVel.set(0, 0, 0);
     }
 
+    // zooming out pushes the tilt up to the allowed minimum
+    const mt = this.minTiltRad(this.goalDistance);
+    if (this.goalTilt < mt) this.goalTilt = mt;
     // smoothing
     const prevDist = this._distance;
     if (!this.panning) {

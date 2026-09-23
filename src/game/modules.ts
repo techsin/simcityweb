@@ -12,6 +12,7 @@ import type * as THREE from 'three';
 
 const LAZY = import.meta.glob([
   '../render/world/WorldView.ts',
+  '../render/world/overlays.ts',
   '../render/city/CityObjectsView.ts',
   '../sim/economy/rewards.ts',
   '../sim/economy/ordinances.ts',
@@ -115,7 +116,7 @@ function effectList(v: unknown): string[] {
 
 export function normalizeOrdinance(o: any): OrdinanceInfo {
   const income = numOr(o?.income ?? o?.monthlyIncome, 0);
-  const cost = numOr(o?.monthlyCost ?? o?.cost ?? o?.costPerMonth ?? o?.upkeep, 0);
+  const cost = numOr(o?.monthlyCost ?? o?.monthly ?? o?.cost ?? o?.costPerMonth ?? o?.upkeep, 0);
   return {
     id: str(o?.id, '?'),
     name: str(o?.name ?? o?.title, str(o?.id, 'Ordinance')),
@@ -123,7 +124,7 @@ export function normalizeOrdinance(o: any): OrdinanceInfo {
     enabled: !!(o?.enabled ?? o?.active ?? o?.on),
     available: o?.available ?? o?.unlocked ?? true,
     monthlyCost: cost - income,
-    effects: effectList(o?.effects ?? o?.effect),
+    effects: effectList(o?.effects ?? o?.effect ?? o?.effectText),
     requirement: str(o?.requirement ?? o?.requires ?? o?.unlockText) || undefined,
     category: str(o?.category) || undefined,
   };
@@ -162,9 +163,7 @@ const DEFAULT_DISASTERS = [
   { id: 'fire', name: 'Fire' },
   { id: 'tornado', name: 'Tornado' },
   { id: 'earthquake', name: 'Earthquake' },
-  { id: 'meteor', name: 'Meteor' },
-  { id: 'flood', name: 'Flood' },
-  { id: 'riot', name: 'Riot' },
+  { id: 'meteor', name: 'Meteor strike' },
 ];
 
 export async function loadGameModules(): Promise<GameModules> {
@@ -181,6 +180,10 @@ export async function loadGameModules(): Promise<GameModules> {
     if (typeof wv.WorldView === 'function') out.WorldView = wv.WorldView as WorldViewCtor;
     else if (typeof wv.default === 'function') out.WorldView = wv.default as WorldViewCtor;
     if (typeof wv.overlayLegend === 'function') out.overlayLegend = wv.overlayLegend as (o: Overlay) => unknown;
+  }
+  if (!out.overlayLegend) {
+    const ol = await load('../render/world/overlays.ts', errors);
+    if (ol && typeof ol.overlayLegend === 'function') out.overlayLegend = ol.overlayLegend as (o: Overlay) => unknown;
   }
   if (ov) {
     if (typeof ov.CityObjectsView === 'function') out.CityObjectsView = ov.CityObjectsView as CityObjectsViewCtor;

@@ -79,7 +79,15 @@ function logo(b: ModelBuilder, face: Face, plane: number, a: number, y: number, 
 function frontStrip(b: ModelBuilder, rng: RNG, x0: number, x1: number, z0: number, z1: number, trees: number): void {
   b.paint(GRASS, Surf.Foliage);
   flat(b, x0, z0, x1, z1, 0.07);
-  for (let i = 0; i < trees; i++) tree(b, rng, x0 + ((x1 - x0) * (i + 0.5)) / trees, (z0 + z1) / 2, 6.5, Math.min(2.2, (z1 - z0) * 0.42));
+  if (z1 - z0 < 4) {
+    // too narrow for trees: clipped hedge segments
+    for (let i = 0; i < trees; i++) {
+      const cx = x0 + ((x1 - x0) * (i + 0.5)) / trees, hw = Math.min(3.5, (x1 - x0) / trees / 2 - 0.6);
+      b.paint(0x3f6b2e, Surf.Foliage).box(cx - hw, 0, z0 + 0.4, cx + hw, 1.1, z1 - 0.4, { bottom: null });
+    }
+    return;
+  }
+  for (let i = 0; i < trees; i++) tree(b, rng, x0 + ((x1 - x0) * (i + 0.5)) / trees, (z0 + z1) / 2, 6.5, Math.min(2.4, (z1 - z0) * 0.4));
 }
 
 // ------------------------------------------------------------------------------------------------ ind_warehouse
@@ -199,7 +207,7 @@ function warehouse(b: ModelBuilder, v: number, rng: RNG): void {
     }
     default: {
       // cold storage: tall white insulated box, rooftop condensers, reefers at front docks, engine room
-      const x0 = -22.5, x1 = 16, z0 = -14.5, z1 = 0;
+      const x0 = -22.5, x1 = 16, z0 = -14.5, z1 = -0.6;
       shell(b, x0, z0, x1, z1, 14, 0xf2f2ee, 0x3f7fd0, 'flat', 0xc5c9cc, Surf.Plain);
       b.paint(0x3f7fd0, Surf.Plain);
       wallQuad(b, 'pz', z1, x0, x1, 0, 0.9);
@@ -414,7 +422,7 @@ function depot(b: ModelBuilder, v: number, rng: RNG): void {
       // truck cross-dock terminal: long narrow shed with docks both sides + trucks + fuel island
       const x0 = -15, x1 = 15, z0 = -6, z1 = 2;
       shell(b, x0, z0, x1, z1, 7, 0xe6e8e8, 0xd35400, 'flat', 0xb4b8bc);
-      b.paint(0x2a2d30, Surf.Plain).box(x0 - 0.1, 7, z0 - 1.2, x1 + 0.1, 7.3, z1 + 1.2);
+      b.paint(0x2a2d30, Surf.Plain).box(x0 - 0.1, 6.2, z1, x1 + 0.1, 6.5, z1 + 1.4).box(x0 - 0.1, 6.2, z0 - 1.4, x1 + 0.1, 6.5, z0);
       docks(b, 'pz', z1, x0 + 1, x1 - 1, 6, 0xd35400);
       docks(b, 'nz', z0, x0 + 1, x1 - 1, 6, 0xd35400);
       b.paint(ASPHALT, Surf.Pavement);

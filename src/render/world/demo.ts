@@ -213,6 +213,7 @@ function frame() {
       img.onload = () => ((window as any).__ready = true);
       document.body.appendChild(img);
     } else (window as any).__ready = true;
+    if (P.get('still') === '1') return; // screenshot mode: stop the loop so the capture is instant
   }
   requestAnimationFrame(frame);
 }

@@ -17,7 +17,6 @@ import { OVERLAYS, ZONE_COLORS, computeOverlayValues } from './overlays';
 import { TERRAIN_FRAG_COLOR, TERRAIN_FRAG_PARS, TERRAIN_VERT_MAIN, TERRAIN_VERT_PARS } from './terrainShader';
 
 export const TERRAIN_CHUNK = 32;
-const OUTER_EXTENT = 32000;
 
 interface Chunk {
   mesh: THREE.Mesh;
@@ -29,10 +28,10 @@ interface Chunk {
 
 /** climate palettes (sRGB hex): grassA, grassB(dry), grassC(dark), forestFloor, dirt, rockA, rockB, sand, wetSand, seabed, snow, cliff */
 const PALETTES: Record<Climate, number[]> = {
-  temperate: [0x6a8f3b, 0x98a050, 0x4b6f2a, 0x34491f, 0x7a6244, 0x8c877c, 0x6c675e, 0xd9cb9c, 0xa3947a, 0x8a7e60, 0xf3f5f8, 0x57524a],
-  desert: [0xb8a06a, 0xcdb07e, 0xa08757, 0x82744a, 0xb3834f, 0xb97a4f, 0x94603f, 0xe6cb95, 0xb8a078, 0x9e8e6a, 0xf2f0ec, 0x7d4c34],
-  tropical: [0x4c8f2c, 0x78a43c, 0x2e6b21, 0x21431a, 0x7a5a3a, 0x72705f, 0x585849, 0xf2e8c6, 0xc6b792, 0xd4c9a2, 0xf4f4f4, 0x4c4a40],
-  alpine: [0x5a7f3a, 0x80905a, 0x42622c, 0x2b3d20, 0x6b5a45, 0x8e8e8a, 0x6b6c69, 0xbab092, 0x928970, 0x716c5c, 0xf5f7fa, 0x555553],
+  temperate: [0x4e6a2c, 0x7a7545, 0x3b5424, 0x2b3a1c, 0x6e5a40, 0x858075, 0x67625a, 0xcfc29a, 0x9a8c72, 0x7d735a, 0xeef1f5, 0x524d46],
+  desert: [0xa89262, 0xbfa477, 0x8f7a50, 0x746a45, 0xa67a4c, 0xae7350, 0x8a5a3e, 0xdcc08e, 0xae9672, 0x948666, 0xefede8, 0x734632],
+  tropical: [0x4a7a2c, 0x6f8c3a, 0x305e22, 0x1f3c18, 0x735638, 0x6c6a5c, 0x545446, 0xeee2c0, 0xc0b08c, 0xcdc19c, 0xf2f2f2, 0x48463d],
+  alpine: [0x52703a, 0x767e52, 0x3b572b, 0x26361c, 0x655645, 0x8a8a86, 0x676865, 0xb3a98e, 0x8c836c, 0x6b6656, 0xf3f5f8, 0x51514f],
 };
 
 export class TerrainRenderer {
@@ -325,47 +324,64 @@ export class TerrainRenderer {
     g.boundingSphere = g.boundingBox.getBoundingSphere(new THREE.Sphere());
   }
 
+  /**
+   * Outer landscape: nested square LOD rings around the map (ring k: spacing 16 * 2^k m, ~16 cells wide).
+   * The outermost vertex row of each ring interpolates odd vertices so it matches the next (coarser) ring exactly
+   * -> no cracks. Ring 0's inner edge uses the exact map edge corners.
+   */
   private buildOuter() {
     const N = this.N, W = N * CELL_SIZE;
-    const out: number[] = [];
-    let p = 0, s = CELL_SIZE;
-    while (p < OUTER_EXTENT) {
-      p += s;
-      out.push(p);
-      s *= 1.22;
-    }
-    const inner: number[] = [];
-    for (let i = 0; i <= N; i++) inner.push(i * CELL_SIZE);
-    const neg = out.map((v) => -v).reverse();
-    const pos = out.map((v) => W + v);
-    const full = [...neg, ...inner, ...pos];
     const positions: number[] = [];
     const normals: number[] = [];
     const indices: number[] = [];
-    const strip = (xs: number[], zs: number[]) => {
-      const base = positions.length / 3;
-      for (let j = 0; j < zs.length; j++)
-        for (let i = 0; i < xs.length; i++) {
-          const x = xs[i], z = zs[j];
-          const onMapEdge = x >= 0 && x <= W && z >= 0 && z <= W;
-          const h = onMapEdge ? this.meshHeightAt(x, z) : this.worldHeight(x, z);
-          positions.push(x, h, z);
-          const e = Math.max(CELL_SIZE, Math.min(400, Math.max(Math.abs(x < 0 ? x : x - W), Math.abs(z < 0 ? z : z - W)) * 0.1));
-          const hl = this.worldHeight(x - e, z), hr = this.worldHeight(x + e, z);
-          const hd = this.worldHeight(x, z - e), hu = this.worldHeight(x, z + e);
-          const nv = new THREE.Vector3(hl - hr, 2 * e, hd - hu).normalize();
-          normals.push(nv.x, nv.y, nv.z);
+    const LEVELS = 7;
+    const R = 16;
+    let off = 0; // current inner offset from the map square
+    const nv = new THREE.Vector3();
+    for (let k = 0; k < LEVELS; k++) {
+      const s = CELL_SIZE * (1 << k);
+      if (W % s !== 0) break;
+      let w = R * s;
+      if ((off + w) % (2 * s) !== 0) w += s;
+      const outer = off + w;
+      const x0 = -outer, n = (W + 2 * outer) / s; // grid points 0..n
+      const map = new Map<number, number>();
+      const isInner = (i: number, j: number) => {
+        // quad (i,j) lies inside the inner square?
+        const qx0 = x0 + i * s, qz0 = x0 + j * s;
+        return qx0 >= -off && qz0 >= -off && qx0 + s <= W + off && qz0 + s <= W + off;
+      };
+      const vert = (i: number, j: number): number => {
+        const key = j * (n + 1) + i;
+        let id = map.get(key);
+        if (id !== undefined) return id;
+        const x = x0 + i * s, z = x0 + j * s;
+        let h: number;
+        const onOuterEdge = i === 0 || j === 0 || i === n || j === n;
+        const odd = onOuterEdge && ((i === 0 || i === n) ? j % 2 === 1 : i % 2 === 1);
+        if (odd) {
+          // average of the two neighbours along the edge (matches the coarser ring's edge)
+          const [ax, az, bx, bz] = i === 0 || i === n ? [x, z - s, x, z + s] : [x - s, z, x + s, z];
+          h = (this.worldHeight(ax, az) + this.worldHeight(bx, bz)) * 0.5;
+        } else {
+          h = this.worldHeight(x, z);
         }
-      for (let j = 0; j < zs.length - 1; j++)
-        for (let i = 0; i < xs.length - 1; i++) {
-          const a = base + j * xs.length + i, b = a + 1, c = a + xs.length, d = c + 1;
+        const e = s;
+        nv.set(this.worldHeight(x - e, z) - this.worldHeight(x + e, z), 2 * e, this.worldHeight(x, z - e) - this.worldHeight(x, z + e)).normalize();
+        id = positions.length / 3;
+        positions.push(x, h, z);
+        normals.push(nv.x, nv.y, nv.z);
+        map.set(key, id);
+        return id;
+      };
+      for (let j = 0; j < n; j++)
+        for (let i = 0; i < n; i++) {
+          if (isInner(i, j)) continue;
+          const a = vert(i, j), b = vert(i + 1, j), c = vert(i, j + 1), d = vert(i + 1, j + 1);
           indices.push(a, c, b, b, c, d);
         }
-    };
-    strip(full, [...neg, 0]);
-    strip(full, [W, ...pos]);
-    strip([...neg, 0], inner);
-    strip([W, ...pos], inner);
+      off = outer;
+    }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));

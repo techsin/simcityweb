@@ -208,7 +208,7 @@ function parkAmusement(b: ModelBuilder, _v: number, rng: RNG): void {
   // supports (skip the loop section and anything low)
   b.paint(0xf2f2ee, Surf.Metal);
   const loopStart = 12 * 2, loopEnd = 19 * 2;
-  for (let i = 0; i < pts.length; i += 3) {
+  for (let i = 0; i < pts.length; i += 4) {
     const [px, py, pz] = pts[i];
     if (py < 2.5 || (i >= loopStart && i < loopEnd)) continue;
     b.beam([px, 0, pz], [px, py - 0.45, pz], 0.35);
@@ -258,7 +258,7 @@ function parkAmusement(b: ModelBuilder, _v: number, rng: RNG): void {
   stripedWall(b, tx, tz, 0, 4.5, 9.5, 14, 0x2e5aa8, 0xf6f1e4);
   stripedCone(b, tx, tz, 4.5, 7.5, 10.2, 14, 0x2e5aa8, 0xf6f1e4);
   b.paint(0xd63a2f, Surf.Plain).cylinder(tx, tz, 11.5, 2.5, 0.12, 0.08, 4).quad2([tx, 14, tz], [tx + 2, 13.5, tz], [tx, 13, tz], [tx, 13, tz]);
-  for (const [x, z, c1] of [[-40, 18, 0xf1c40f], [-43, -14, 0x27ae60], [-12, -20, 0xd63a2f]] as [number, number, number][]) {
+  for (const [x, z, c1] of [[-40, 18, 0xf1c40f], [-12, -20, 0xd63a2f]] as [number, number, number][]) {
     stripedWall(b, x, z, 0, 2.2, 3, 8, c1, 0xf6f1e4);
     stripedCone(b, x, z, 2.2, 2.6, 3.4, 8, c1, 0xf6f1e4);
   }
@@ -281,7 +281,7 @@ function parkAmusement(b: ModelBuilder, _v: number, rng: RNG): void {
   b.pop();
 
   // --- food stalls with striped awnings along the main promenade
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) {
     for (const s of [-1, 1]) {
       const zz = 34 - i * 6, xx = s * 6.6;
       const c = [0xe74c3c, 0x2e86c1, 0x27ae60, 0xf39c12][(i + (s > 0 ? 1 : 0)) % 4];
@@ -290,14 +290,11 @@ function parkAmusement(b: ModelBuilder, _v: number, rng: RNG): void {
       b.paint(0xffe3a3, Surf.Emissive).box(xx - 1.4 * s + 1.21 * -s, 1.9, zz - 1.4, xx - 1.4 * s + 1.26 * -s, 2.4, zz + 1.4, { top: null, bottom: null });
     }
   }
-  for (const [x, z, c] of [[-5, -12, 0xe74c3c], [5, -12, 0xf1c40f], [9, 18, 0x2e86c1], [-9, 18, 0x27ae60]] as [number, number, number][]) umbrella(b, x, z, c, 1.5, 2.6);
+  for (const [x, z, c] of [[-5, -12, 0xe74c3c], [9, 18, 0x2e86c1], [-9, 18, 0x27ae60]] as [number, number, number][]) umbrella(b, x, z, c, 1.5, 2.6);
   // trees + lamps
-  for (const [x, z, k] of [[-46, 44, 'round'], [-46, 34, 'oak'], [46, 22, 'round'], [-46, -44, 'oak'], [-8, -46, 'round'], [-4, 22, 'cherry'], [24, 44, 'oak'], [-24, 44, 'round']] as [number, number, 'oak'][]) tree(b, rng, x, z, 1.0, k);
-  for (const [x, z] of [[-4, 26], [4, 26], [11, -2], [-11, 9], [20, 22]] as P2[]) lamp(b, x, z, 4.4, 1);
-  for (let i = 0; i < 6; i++) {
-    const a = rng.range(0, TAU), r = rng.range(2, 12);
-    person(b, rng, Math.cos(a) * r * 0.5, 16 + Math.sin(a) * r * 1.6, 0.1, rng.range(0, TAU));
-  }
+  for (const [x, z, k] of [[-46, 44, 'round'], [-46, 34, 'oak'], [46, 22, 'round'], [-46, -44, 'oak'], [-4, 22, 'cherry'], [-24, 44, 'round']] as [number, number, 'oak'][]) tree(b, rng, x, z, 1.0, k);
+  for (const [x, z] of [[-4, 26], [4, 26], [11, -2], [-11, 9]] as P2[]) lamp(b, x, z, 4.4, 1);
+  for (let i = 0; i < 2; i++) person(b, rng, rng.range(-2, 2), rng.range(14, 30), 0.1, rng.range(0, TAU));
 }
 
 /** Closed Catmull-Rom spline in 3D. */
@@ -371,84 +368,85 @@ function lowWall(b: ModelBuilder, poly: P2[], h = 1.0, t = 0.5, color = 0xa89f8d
 
 function parkZoo(b: ModelBuilder, _v: number, rng: RNG): void {
   const E = 48;
-  lawnPatchwork(b, rng, -E, -E, E, E, GRASS_LUSH, 4);
+  lawnPatchwork(b, rng, -E, -E, E, E, GRASS_LUSH, 3);
   const pave = 0xd3c3a0;
-  // main loop path + entrance
-  const loop = path(b, [[0, 28], [22, 24], [32, 6], [28, -14], [12, -26], [-12, -26], [-30, -14], [-33, 6], [-22, 24]], 4.2, pave, 0.09, 4, true);
-  path(b, [[0, 48], [0, 28]], 6, pave);
-  path(b, [[0, 28], [0, 10]], 3.4, pave);
-  path(b, [[0, -12], [0, -26]], 3.4, pave);
+  // main loop path near the edges, entrance axis, center spur to the monkey island
+  const loop = path(b, [[0, 30], [24, 30], [38, 15], [38, -14], [26, -35], [0, -39], [-26, -35], [-38, -14], [-38, 15], [-24, 30]], 4.2, pave, 0.09, 4, true);
+  path(b, [[0, 48], [0, 30]], 6, pave);
+  b.paint(pave, Surf.Pavement);
+  disc(b, 0, 32, 0.095, 6.5, 16);
+  path(b, [[0, 30], [0, 14], [0, 7]], 3.4, pave);
+  path(b, [[0, -39], [0, -24], [0, -11]], 3.4, pave);
 
-  // enclosure helper: ground polygon + wall + contents
+  // enclosure helper: ground polygon + low stone wall
   const encl = (cx: number, cz: number, rx: number, rz: number, ground: number, rot = 0): P2[] => {
-    const poly = blobPoly(rng, cx, cz, rx, rz, 9, 0.16, rot);
+    const poly = blobPoly(rng, cx, cz, rx, rz, 9, 0.14, rot);
     b.paint(ground, Surf.Foliage);
     flatPoly(b, poly, 0.1);
     b.paint(0xa89f8d, Surf.Stone);
-    const n = poly.length;
-    for (let i = 0; i < n; i++) {
-      const a = poly[i], c = poly[(i + 1) % n];
-      orientWallSeg(b, a, c, 1.1, 0.45);
-    }
+    for (let i = 0; i < poly.length; i++) orientWallSeg(b, poly[i], poly[(i + 1) % poly.length], 1.1, 0.45);
     return poly;
   };
+  const S = 1.3; // animals slightly exaggerated so they read from the game camera
 
-  // 1) elephants (back-left)
-  encl(-26, -32, 13, 10, 0xb89a6a, 0.2);
-  pond(b, rng, -30, -36, 5, 3, { rim: 0x9a8a6a, rimW: 0.6, n: 12, rimSides: false });
-  elephant(b, -22, -30, 0.8, 1.0);
-  elephant(b, -26.5, -27.5, 2.4, 0.75);
-  tree(b, rng, -18, -38, 1.0, 'acacia');
-  for (let i = 0; i < 2; i++) boulderZ(b, rng, -34 + i * 3, -26 - i, 1.1);
+  // 1) elephants (inside loop, back-left)
+  encl(-20, -18, 12.5, 11, 0xb89a6a, 0.2);
+  pond(b, rng, -24, -22, 4.6, 3, { rim: 0x9a8a6a, rimW: 0.6, n: 12, rimSides: false });
+  elephant(b, -16, -15, 0.8, S);
+  elephant(b, -21, -12.5, 2.4, S * 0.75);
+  tree(b, rng, -13, -24, 1.0, 'acacia');
+  boulderZ(b, rng, -28, -13, 1.2);
+  boulderZ(b, rng, -25, -9.5, 0.9);
 
-  // 2) giraffes + zebras on the savanna (back-right)
-  encl(24, -33, 15, 10, 0xb7ad6a, -0.15);
-  giraffe(b, 20, -34, 0.5, 1.15);
-  giraffe(b, 27, -30, 2.6, 1.0);
-  giraffe(b, 30, -37, 4.0, 1.2);
-  zebra(b, 17, -28, 1.2);
-  zebra(b, 19, -26.5, 1.4);
-  tree(b, rng, 32, -30, 1.1, 'acacia');
-  tree(b, rng, 16, -38, 0.95, 'acacia');
+  // 2) lions on rocks (inside loop, front-left)
+  encl(-20, 13, 11.5, 9, 0xb3a869, -0.1);
+  for (const [x, z, r] of [[-22, 12, 2.6], [-19, 15.5, 1.9], [-25.5, 15, 2.0]] as V3[]) boulderZ(b, rng, x, z, r);
+  lion(b, -21.5, 12, 0.5, 1.9);
+  lion(b, -15, 9.5, 2.0, 0);
+  tree(b, rng, -13, 17, 0.9, 'acacia');
 
-  // 3) lion rocks (left)
-  encl(-40, 2, 7, 12, 0xa9a066, 0);
-  for (const [x, z, r] of [[-41, -2, 2.4], [-39, 3, 1.8], [-42, 7, 2.0]] as V3[]) boulderZ(b, rng, x, z, r);
-  lion(b, -40.5, -1.5, 0.5, 1.6);
-  lion(b, -38, 5.5, 2.0, 0);
-  tree(b, rng, -42, 11, 0.9, 'acacia');
+  // 3) savanna with giraffes and zebras (inside loop, back-right)
+  encl(20, -17, 12.5, 12, 0xbfb472, -0.15);
+  giraffe(b, 16, -18, 0.5, 1.2 * S);
+  giraffe(b, 23, -13, 2.6, 1.05 * S);
+  giraffe(b, 25, -21, 4.0, 1.2 * S);
+  zebra(b, 14, -11, 1.2);
+  zebra(b, 16.5, -9.5, 1.4);
+  tree(b, rng, 27, -12, 1.1, 'acacia');
+  tree(b, rng, 13, -24, 0.95, 'acacia');
 
-  // 4) penguin pool (right)
-  encl(40, 2, 7, 11, 0xe4e7ea, 0);
-  pond(b, rng, 40.5, 1.5, 4.5, 7.5, { rim: 0xf4f6f8, water: 0x3a88b0, rimW: 0.9, n: 14, rimSides: false });
+  // 4) penguin pool (inside loop, front-right)
+  encl(20, 13, 11, 8.5, 0xe4e7ea, 0.1);
+  pond(b, rng, 21, 13, 7, 4.8, { rim: 0xf4f6f8, water: 0x3a88b0, rimW: 0.9, n: 14, rimSides: false });
+  boulderZ(b, rng, 12.5, 14, 1.2);
   for (let i = 0; i < 6; i++) {
-    const x = 36 + rng.range(-1.2, 1.2), z = -5 + i * 2.2;
-    b.paint(0x1d1f22, Surf.Plain).cylinder(x, z, 0.1, 0.55, 0.18, 0.12, 5, { top: false });
-    b.paint(0xf4f4f0, Surf.Plain).box(x - 0.1, 0.15, z + 0.08, x + 0.1, 0.5, z + 0.19, { bottom: null });
+    const x = 13.5 + (i % 3) * 0.9 + rng.range(-0.2, 0.2), z = 9 + Math.floor(i / 3) * 1.1 + rng.range(-0.2, 0.2);
+    b.paint(0x1d1f22, Surf.Plain).cylinder(x, z, 0.1, 0.7, 0.22, 0.14, 5, { top: false });
+    b.paint(0xf4f4f0, Surf.Plain).box(x - 0.12, 0.2, z + 0.1, x + 0.12, 0.6, z + 0.23, { bottom: null });
   }
 
-  // 5) monkey island (center): moat, rocky island, climbing frame, tree
+  // 5) monkey island in the middle: moat, rocky island, climbing frame, tree
+  const mx = 0, mz = -2;
   b.paint(0x3a7a8c, Surf.Water);
-  disc(b, 0, -4, 0.1, 9.5, 18);
+  disc(b, mx, mz, 0.1, 6.6, 16);
   b.paint(0xa89f8d, Surf.Stone);
-  cylWall(b, 0, -4, 0, 0.8, 10.1, 10.1, 18);
-  annulus(b, 0, -4, 0.8, 9.5, 10.1, 18);
-  b.paint(0x7a8a4a, Surf.Foliage).cylinder(0, -4, 0, 0.6, 5.5, 5.2, 12);
-  boulderZ(b, rng, -1.5, -5, 2.2);
-  boulderZ(b, rng, 2, -2.5, 1.5);
+  cylWall(b, mx, mz, 0, 0.8, 7.1, 7.1, 16);
+  annulus(b, mx, mz, 0.8, 6.6, 7.1, 16);
+  b.paint(0x7a8a4a, Surf.Foliage).cylinder(mx, mz, 0, 0.6, 4.2, 3.9, 10);
+  boulderZ(b, rng, mx - 1.2, mz - 1.5, 1.8);
   b.paint(0x8a6440, Surf.Wood);
-  for (const [dx, dz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) b.beam([2 + dx * 1.2, 0.5, -7 + dz * 1.2], [2 + dx * 0.4, 5.5, -7 + dz * 0.4], 0.2);
-  b.box(1.2, 3.2, -7.8, 2.8, 3.4, -6.2);
-  b.beam([2, 5.2, -7], [-2, 3.5, -3], 0.08).beam([-2, 3.5, -3], [3, 2.5, 0], 0.08);
-  tree(b, rng, -2.8, -1.2, 0.9, 'oak');
+  for (const [dx, dz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) b.beam([mx + 1.6 + dx * 1.1, 0.5, mz + 0.8 + dz * 1.1], [mx + 1.6 + dx * 0.4, 5.5, mz + 0.8 + dz * 0.4], 0.2);
+  b.box(mx + 0.8, 3.2, mz, mx + 2.4, 3.4, mz + 1.6);
+  b.beam([mx + 1.6, 5.2, mz + 0.8], [mx - 2, 3.5, mz + 2.5], 0.08);
+  tree(b, rng, mx - 2.2, mz + 1.4, 0.8, 'oak');
 
-  // 6) aviary dome (front-left): lattice hemisphere with trees inside
-  const ax = -28, az = 30, R = 11;
+  // 6) aviary dome (front-left corner, outside the loop)
+  const ax = -36, az = 37, R = 9;
   b.paint(0x7aa05a, Surf.Foliage);
-  disc(b, ax, az, 0.1, R, 16);
-  tree(b, rng, ax - 3, az - 2, 0.9, 'round');
-  tree(b, rng, ax + 3.5, az + 2, 0.8, 'palm');
-  pond(b, rng, ax + 2, az - 4, 2.6, 1.8, { rimW: 0.5, n: 10, rimSides: false });
+  disc(b, ax, az, 0.1, R, 14);
+  tree(b, rng, ax - 2.5, az - 1.5, 0.85, 'round');
+  tree(b, rng, ax + 3, az + 2, 0.75, 'palm');
+  pond(b, rng, ax + 2, az - 3.5, 2.2, 1.5, { rimW: 0.5, n: 10, rimSides: false });
   b.paint(0xe8ecef, Surf.Metal);
   const sph = (a: number, t: number): V3 => [ax + Math.cos(a) * R * Math.cos(t), R * Math.sin(t), az + Math.sin(a) * R * Math.cos(t)];
   for (const t of [0.5, 0.95]) {
@@ -458,44 +456,42 @@ function parkZoo(b: ModelBuilder, _v: number, rng: RNG): void {
       b.quad2(sph(a0, t), sph(a1, t), sph(a1, t + 0.05), sph(a0, t + 0.05));
     }
   }
-  for (let i = 0; i < 10; i++) {
-    const a = (i / 10) * TAU, da = 0.035;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * TAU + 0.2, da = 0.04;
     for (let k = 0; k < 4; k++) {
       const t0 = (k / 4) * 1.45, t1 = ((k + 1) / 4) * 1.45;
       b.quad2(sph(a - da, t0), sph(a + da, t0), sph(a + da, t1), sph(a - da, t1));
     }
   }
   b.paint(0xdfe8ee, Surf.GlassPlain);
-  lathe(b, ax, az, [[R * 0.25, R * 0.99], [0, R * 1.0]], 10);
+  lathe(b, ax, az, [[R * 0.25, R * 0.99], [0, R * 1.0]], 8);
 
-  // 7) reptile / tropical house (front-right): building with glass barrel roof
-  b.paint(0x8a6a4a, Surf.Wood).box(19, 0, 26, 37, 4.2, 36);
-  b.push().translate(28, 4.2, 31).rotateZ(Math.PI / 2);
-  b.paint(0x9fc2b8, Surf.GlassPlain).cylinder(0, 0, -9, 18, 5, 5, 10, { top: true, bottom: true });
+  // 7) tropical house (front-right corner): brick hall with a glass barrel roof
+  b.paint(0x8a5a44, Surf.Brick).box(27, 0, 33, 45, 4.2, 42);
+  b.push().translate(36, 4.2, 37.5).rotateZ(Math.PI / 2);
+  b.paint(0x9fc2b8, Surf.GlassPlain).cylinder(0, 0, -9, 18, 4.5, 4.5, 10, { top: true, bottom: true });
   b.pop();
-  b.paint(0x2e3a44, Surf.GlassPlain).box(25, 0.3, 35.9, 31, 3.2, 36.05, { top: null, bottom: null, nx: null, px: null, nz: null });
+  b.paint(0x2e3a44, Surf.GlassPlain).box(33, 0.3, 41.95, 39, 3.2, 42.05, { top: null, bottom: null, nx: null, px: null, nz: null });
 
-  // entrance gate with thatched huts
+  // entrance gate with thatched huts + sign
   for (const s of [-1, 1]) {
-    b.paint(0x8a6440, Surf.Wood).cylinder(s * 6, 42, 0, 5.5, 2.0, 2.0, 8);
-    b.paint(0xc9a86a, Surf.Plain).cone(s * 6, 42, 5.3, 3.4, 3.0, 8, false);
+    b.paint(0x8a6440, Surf.Wood).cylinder(s * 6.5, 42, 0, 5.5, 2.0, 2.0, 8);
+    b.paint(0xc9a86a, Surf.Plain).cone(s * 6.5, 42, 5.3, 3.4, 3.0, 8, false);
   }
-  b.paint(0x5b4330, Surf.Wood).box(-6, 5.6, 41.4, 6, 7.0, 42.6);
+  b.paint(0x5b4330, Surf.Wood).box(-6.5, 5.6, 41.4, 6.5, 7.0, 42.6);
   b.paint(0xf5d76e, Surf.Emissive).box(-4.6, 5.8, 42.6, 4.6, 6.8, 42.65, { top: null, bottom: null, nx: null, px: null, nz: null });
-
-  // cafe with umbrellas near the entrance plaza
-  for (const [x, z, c] of [[8, 16, 0x27ae60], [11, 19, 0xf1c40f], [-9, 16, 0xe67e22]] as [number, number, number][]) umbrella(b, x, z, c, 1.4, 2.4);
-  // trees along the paths/edges + lamps + benches
-  for (const [x, z, k] of [[-45, 44, 'oak'], [45, 44, 'round'], [45, 18, 'oak'], [-45, -44, 'cone'], [0, -44, 'oak'], [-14, 40, 'round'], [13, 10, 'oak']] as [number, number, 'oak'][]) tree(b, rng, x, z, 1.0, k);
-  for (let i = 0; i < loop.length; i += 9) {
-    const [x, z] = loop[i];
+  // cafe umbrellas by the plaza
+  for (const [x, z, c] of [[10, 36, 0x27ae60], [13.5, 39, 0xf1c40f], [-10, 36, 0xe67e22]] as [number, number, number][]) umbrella(b, x, z, c, 1.4, 2.4);
+  // greenery around the loop
+  for (const [x, z, k] of [[-45, -44, 'cone'], [-44, -26, 'oak'], [45, -44, 'cone'], [44, -26, 'round'], [0, -45, 'oak'], [45, 10, 'oak'], [-45, 8, 'round'], [-16, 43, 'round']] as [number, number, 'oak'][]) tree(b, rng, x, z, 1.0, k);
+  for (const i of [5, 16, 27]) {
+    const [x, z] = loop[i % loop.length];
     lamp(b, x + 2.6, z, 4.2, 1);
   }
   for (let i = 0; i < 4; i++) {
     const p = loop[rng.int(0, loop.length - 1)];
     person(b, rng, p[0] + rng.range(-1, 1), p[1] + rng.range(-1, 1), 0.09, rng.range(0, TAU));
   }
-  void offsetPoly; void inPoly;
 }
 
 /** Low wall segment along a->c (box rotated to the segment). */
@@ -527,8 +523,8 @@ function spinePoly(spine: P2[], hw: (t: number) => number): P2[] {
 
 function parkGolf(b: ModelBuilder, _v: number, rng: RNG): void {
   const E = 48;
-  lawnPatchwork(b, rng, -E, -E, E, E, 0x5b8a38, 6);
-  const fairC = 0x7db352, greenC = 0x8fcc5e, teeC = 0x86c05a, sand = 0xe6d7a8;
+  lawnPatchwork(b, rng, -E, -E, E, E, 0x4f7d31, 5);
+  const fairC = 0x86bf57, greenC = 0x9ad866, teeC = 0x8fcc5e, sand = 0xeadcae;
   const hole = (ctrl: P2[], w0: number, w1: number, greenR: number, bunkers: P2[]) => {
     const spine = spline(ctrl, 5);
     b.paint(fairC, Surf.Foliage);
@@ -574,6 +570,8 @@ function parkGolf(b: ModelBuilder, _v: number, rng: RNG): void {
     [-45, 12, 'cone'], [-45, -4, 'oak'], [-44, -20, 'cone'], [-44, -40, 'round'], [-24, 4, 'oak'], [-22, -16, 'round'], [-12, -44, 'cone'],
     [2, -45, 'oak'], [18, -45, 'cone'], [40, -42, 'round'], [45, -30, 'cone'], [45, -8, 'oak'], [44, 12, 'round'], [18, 0, 'oak'],
     [10, 18, 'round'], [-18, 20, 'cone'], [40, 30, 'oak'], [30, 42, 'round'], [-44, 30, 'oak'], [4, -22, 'round'],
+    [-42, -30, 'cone'], [-20, -44, 'round'], [26, -45, 'round'], [46, -18, 'oak'], [8, -12, 'cone'], [-14, 0, 'round'], [-26, 24, 'round'],
+    [36, 22, 'cone'], [21, 26, 'oak'], [-8, 24, 'round'],
   ];
   for (const [x, z, k] of trees) tree(b, rng, x, z, rng.range(0.95, 1.25), k);
   // golfers + carts

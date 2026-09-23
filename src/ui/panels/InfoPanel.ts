@@ -153,10 +153,14 @@ export class InfoPanel extends Panel {
       const r = traffic?.routeInfo?.(b.id);
       if (typeof r === 'number') commute = `${Math.round(r)} min`;
       else if (r && typeof r === 'object') {
-        const m = r.minutes ?? r.time ?? r.commute ?? r.avgMinutes;
+        const m = r.commuteMin ?? r.minutes ?? r.time ?? r.commute ?? r.avgMinutes;
         const mode = r.mode ?? r.via;
         const dest = r.destination ?? r.dest ?? r.target;
-        commute = [typeof m === 'number' ? `${Math.round(m)} min` : null, mode ? String(mode) : null, typeof dest === 'string' ? dest : null, r.reachable === false || r.ok === false ? '<span class="neg">No route</span>' : null].filter(Boolean).join(' · ');
+        const none = mode === 'none' || r.reachable === false || r.ok === false;
+        commute = none
+          ? '<span class="neg">No route to work</span>'
+          : [typeof m === 'number' && m > 0 ? `${Math.round(m)} min` : null, mode ? `by ${String(mode)}` : null, typeof dest === 'string' ? dest : null].filter(Boolean).join(' · ');
+        if (typeof r.jobsReached === 'number' && b.capacity > 0) add(isRes ? 'Workers employed' : 'Workers arriving', 'briefcase', num(r.jobsReached));
       }
     } catch {
       commute = null;

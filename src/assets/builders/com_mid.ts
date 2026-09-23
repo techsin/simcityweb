@@ -524,7 +524,7 @@ function deptModern(b: B, rng: RNG) {
   K.onSide(b, 'px', () => K.storefront(b, -4.6, 12.6, x1 - 0.6, { y0: 0.2, y1: 4.2, frame: 0x222222, pitch: 2.4, surround: 0 }));
   for (let x = x0 + 2; x < x1 - 1; x += 2) box(b, x - 0.15, 5.2, z1, x + 0.15, top - 0.6, z1 + 0.45, K.plain(0xf1ece2));
   for (let z = z0 + 2; z < z1 - 1; z += 2) box(b, x1, 5.2, z - 0.15, x1 + 0.45, top - 0.6, z + 0.15, K.plain(0xf1ece2), undefined, { nx: null });
-  box(b, x0, top - 0.6, z0, x1, top, z1 + 0.5, K.plain(0xc0392b));
+  K.bandRect(b, x0, z0, x1, z1, top - 0.9, top, K.plain(0xc0392b), 0.5);
   // big logo + letters on a panel
   box(b, -9.5, 7.2, z1 + 0.45, 9.5, 13.6, z1 + 0.8, K.plain(0xf7f4ee));
   K.discSign(b, -6.2, 10.4, z1 + 0.8, 2.4, K.emis(0xe0282e), K.metal(0xd8d8d8), 14, 0.3);
@@ -812,7 +812,7 @@ function mall(b: B, v: number, rng: RNG) {
   // surface parking
   const sx0 = v === 0 ? -31.5 : -11.5;
   K.asphalt(b, sx0, -3.6, 31.5, 30.4);
-  const rows: [number, 1 | -1, number][] = [[-2.8, -1, 0.42], [2.4, 1, 0.3], [14.6, -1, 0.3], [19.8, 1, 0.26]];
+  const rows: [number, 1 | -1, number][] = [[-2.8, -1, 0.36], [2.4, 1, 0.24], [14.6, -1, 0.22], [19.8, 1, 0.18]];
   for (const [rz, nose, fill] of rows) {
     K.stallsX(b, rng, sx0 + 1, -3.2, rz, nose, fill);
     K.stallsX(b, rng, 3.2, 30.5, rz, nose, fill);

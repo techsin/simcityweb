@@ -95,6 +95,15 @@ export const CONNECTION_WORKERS: readonly number[] = [0, 300, 1500, 1500, 4000, 
 export const REGIONAL_TIME = 16;
 /** fraction of vacant jobs the region is willing to fill */
 export const REGIONAL_FILL = 0.55;
+/**
+ * Global caps on regional exchange (no region data yet): total regional job slots <= REGION_JOB_SHARE x city workers
+ * + REGION_JOB_MIN; inbound regional workers <= REGION_WORKER_SHARE x city job slots + REGION_WORKER_MIN.
+ * The region layer can override the totals via state.systemData.regionJobs / state.systemData.regionWorkers (numbers).
+ */
+export const REGION_JOB_SHARE = 0.3;
+export const REGION_JOB_MIN = 1500;
+export const REGION_WORKER_SHARE = 0.3;
+export const REGION_WORKER_MIN = 1000;
 
 /** full assignment cadence (days between cycle starts) */
 export const TRAFFIC_CYCLE_DAYS = 2;
@@ -179,8 +188,8 @@ export const CRIME_THRESHOLD = 0.55;
 
 // ---------------------------------------------------------------------------------------------- fire
 /** base daily ignition probability per building (scaled by risk) */
-export const FIRE_BASE_P = 1 / 90000;
-export const FIRE_SPREAD_P = 0.14;
+export const FIRE_BASE_P = 1 / 250000;
+export const FIRE_SPREAD_P = 0.02;
 export const FIRE_BURN_DAYS = 6;
 
 /** networks helper */

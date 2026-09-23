@@ -104,6 +104,8 @@ export class TreeRenderer {
   private terrain: TerrainRenderer;
   private kinds: Kind[] = [];
   private kindsBySpecies: number[][] = [];
+  private autumnKinds: number[][] = [];
+  private autumn = 0;
   private species: SpeciesDef[];
   private chunks: TreeChunk[] = [];
   private perSide: number;
@@ -143,21 +145,29 @@ export class TreeRenderer {
         this.chunks.push({ cx, cz, near: this.kinds.map(() => null), far: [null, null], farTotal: [0, 0], box, sphere: new THREE.Sphere(), isNear: false, total: 0 });
       }
     for (let i = 0; i < this.chunks.length; i++) this.dirty.add(i);
+    this.setMonth(state.month);
   }
 
   private buildKinds() {
     this.kinds = [];
     this.kindsBySpecies = [];
+    this.autumnKinds = [];
     this.species.forEach((sp, si) => {
-      const nv = Math.min(MAX_VARIANTS, MANIFEST_BY_ID[sp.id]?.variants ?? 1);
+      const nv = Math.min(4, MANIFEST_BY_ID[sp.id]?.variants ?? 1);
       const list: number[] = [];
+      const autumn: number[] = [];
       for (let v = 0; v < nv; v++) {
         const geo = getNatureGeometry(sp.id, v);
         const st = natureStats(geo);
-        list.push(this.kinds.length);
+        // autumn-colored variants (foliage more red than green) are only used in autumn
+        const isAutumn = st.color.r > st.color.g * 0.95 && sp.id !== 'rock' && sp.id !== 'tree_cactus';
+        if (isAutumn ? autumn.length >= 1 : list.length >= MAX_VARIANTS) continue;
+        (isAutumn ? autumn : list).push(this.kinds.length);
         this.kinds.push({ species: si, id: sp.id, variant: v, geo, conifer: !!sp.conifer, color: st.color, height: st.height, radius: st.radius });
       }
+      if (!list.length && autumn.length) list.push(autumn[0]);
       this.kindsBySpecies.push(list);
+      this.autumnKinds.push(autumn);
     });
     this.scratch = this.kinds.map(() => new Float32Array(16 * 1024));
     this.scratchCount = this.kinds.map(() => 0);
@@ -223,8 +233,19 @@ export class TreeRenderer {
       t -= weights[s];
       if (t <= 0) break;
     }
+    const au = this.autumnKinds[s];
+    if (au.length && this.autumn > 0 && hash2(x * 3 - 7, z * 5 + 2, this.seed + 97) < this.autumn) return au[0];
     const list = this.kindsBySpecies[s];
     return list[Math.floor(hash2(x * 7 + 3, z * 13 + 1, this.seed + 91) * list.length) % list.length];
+  }
+
+  /** season: month 0..11 -> fraction of deciduous trees showing autumn colors */
+  setMonth(month: number) {
+    const a = month === 8 ? 0.25 : month === 9 ? 0.65 : month === 10 ? 0.45 : 0;
+    if (a !== this.autumn) {
+      this.autumn = a;
+      this.markAll();
+    }
   }
 
   private ensureScratch(k: number, n: number) {

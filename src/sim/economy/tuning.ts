@@ -208,6 +208,8 @@ export const PENALTY_NO_POWER = 0.55;
 export const PENALTY_NO_WATER = 0.4;
 export const PENALTY_NO_ROAD = 0.6;
 export const PENALTY_NO_GARBAGE = 0.12;
+/** residential: health −= (0.5 − share of workers reaching a job) × this (traffic workerAccess) */
+export const PENALTY_NO_JOB_ACCESS = 0.5;
 /** unhappy (days) threshold for abandonment; health below this counts as unhappy */
 export const ABANDON_DAYS = 150;
 export const UNHAPPY_HEALTH = 0.22;

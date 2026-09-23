@@ -104,7 +104,7 @@ export interface StressCity {
  * crossing the map; avenues and highways reach the map edges (neighbour connections). Blocks are filled with
  * 1x1 / 2x2 residential, commercial (CBD in the centre) and industrial (east side) buildings.
  */
-export function stressCity(size = 256, seed = 7): StressCity {
+export function stressCity(size = 256, seed = 7, withTransit = true): StressCity {
   registerTestDefs();
   const st = newState(size);
   let rs = seed >>> 0 || 1;
@@ -168,6 +168,30 @@ export function stressCity(size = 256, seed = 7): StressCity {
         zoneFor(st, b, kind);
         pop += b.pop; jobs += kind === 'R' ? 0 : b.capacity; count++;
       }
+    }
+  }
+  // transit: bus stops (road netFlags bit 4) every 12 cells along roads, a subway line with stations
+  if (withTransit) {
+    for (let z = 1; z < N; z += 12) for (let x = 1; x < N; x += 12) {
+      const i = z * N + x + 1;
+      if (st.network[i] >= Network.Street && st.network[i] <= Network.Avenue) st.netFlags[i] |= 1 << 4;
+    }
+    const sz = 1 + 24 * 4; // under an avenue row
+    for (let x = 10; x < N - 10; x++) st.subway[sz * N + x] = 1;
+    for (let x = 12; x < N - 12; x += 16) {
+      // station on a block cell next to the line (replace a building if any)
+      const bz = sz + 1, bx = x - (x % 3) + 2;
+      const old = st.building[bz * N + bx];
+      if (old >= 0) {
+        const ob = st.buildings.get(old)!;
+        for (let zz = ob.z; zz < ob.z + ob.d; zz++) for (let xx = ob.x; xx < ob.x + ob.w; xx++) st.building[zz * N + xx] = -1;
+        st.buildings.delete(old);
+        pop -= ob.pop;
+        count--;
+      }
+      st.subway[bz * N + bx] = 1;
+      place(st, 't_subway', bx, bz);
+      count++;
     }
   }
   st.stats.population = pop;

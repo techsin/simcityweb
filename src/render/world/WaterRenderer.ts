@@ -81,14 +81,14 @@ vec3 waterShade(vec3 P) {
   vec3 body = mix(uShallow, uDeep, k);
   body *= 1.0 - 0.5 * smoothstep(12.0, 40.0, depth);
   // opacity: very clear at the shore, opaque when deep
-  wAlpha = clamp(1.0 - exp(-depth * 0.55), 0.0, 1.0) * 0.9 + 0.1 * smoothstep(0.0, 0.4, depth);
+  wAlpha = clamp(1.0 - exp(-depth * 0.42), 0.0, 1.0) * 0.93 + 0.07 * smoothstep(0.0, 0.4, depth);
 
   // foam: shoreline bands moving toward the beach + whitecaps offshore
   vec4 nz = texture2D(uNoise, P.xz / 90.0 + t * 0.002);
-  float band = 1.0 - smoothstep(0.0, 2.6, depth);
-  float wave = sin(depth * 3.2 - uWTime * 1.4 + nz.g * 7.0) * 0.5 + 0.5;
-  float foam = band * smoothstep(0.72, 0.98, wave) * smoothstep(0.35, 0.65, nz.b + 0.2);
-  foam += (1.0 - smoothstep(0.0, 0.3, depth)) * 0.75 * smoothstep(0.3, 0.6, nz.r + 0.1);
+  float band = 1.0 - smoothstep(0.3, 1.4, depth);
+  float wave = sin(depth * 5.0 - uWTime * 1.3 + nz.g * 9.0) * 0.5 + 0.5;
+  float foam = band * smoothstep(0.86, 0.99, wave) * smoothstep(0.4, 0.7, nz.b + 0.15) * 0.8;
+  foam += (1.0 - smoothstep(0.0, 0.45, depth)) * 0.7 * smoothstep(0.35, 0.65, nz.r + 0.08);
 #if WATER_DETAIL > 0
   float caps = smoothstep(0.78, 0.9, texture2D(uNoise, P.xz / 37.0 + t * vec2(0.004, 0.002)).b) * smoothstep(4.0, 20.0, depth);
   foam += caps * 0.35 * (1.0 - smoothstep(600.0, 2500.0, dist));
@@ -109,10 +109,10 @@ export interface WaterPalette {
 
 function palette(c: Climate): WaterPalette {
   switch (c) {
-    case 'tropical': return { shallow: new THREE.Color(0x3fd6c8), deep: new THREE.Color(0x0a4d7a) };
-    case 'desert': return { shallow: new THREE.Color(0x4fb8b0), deep: new THREE.Color(0x0e4a6a) };
-    case 'alpine': return { shallow: new THREE.Color(0x3a9a9a), deep: new THREE.Color(0x0d3550) };
-    default: return { shallow: new THREE.Color(0x3aa8a0), deep: new THREE.Color(0x0c3f62) };
+    case 'tropical': return { shallow: new THREE.Color(0x2fc0b4), deep: new THREE.Color(0x06385c) };
+    case 'desert': return { shallow: new THREE.Color(0x3a9e96), deep: new THREE.Color(0x0a3450) };
+    case 'alpine': return { shallow: new THREE.Color(0x2c7f7c), deep: new THREE.Color(0x07263a) };
+    default: return { shallow: new THREE.Color(0x2a8a80), deep: new THREE.Color(0x062a42) };
   }
 }
 

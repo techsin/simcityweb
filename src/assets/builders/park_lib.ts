@@ -371,6 +371,7 @@ export function track3D(b: ModelBuilder, pts: V3[], w: number, t: number, opts: 
     let s = cross(tg, [0, 1, 0]);
     const sl = Math.hypot(s[0], s[1], s[2]);
     if (sl < 0.15 && prevSide) s = prevSide;
+    else if (sl < 1e-6) s = [1, 0, 0];
     else s = [s[0] / sl, s[1] / sl, s[2] / sl];
     if (prevSide && dot(s, prevSide) < 0) s = [-s[0], -s[1], -s[2]];
     prevSide = s;

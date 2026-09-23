@@ -103,6 +103,8 @@ export class UtilitiesSystem implements SimSystem {
   private bUse = new Float32Array(1024);
   private bOk = new Int32Array(1024);
   private bWComp = new Int32Array(1024);
+  /** per building id: water use (>= 0) or -(output) - tiny for producers */
+  private bWUse = new Float32Array(1024);
   private bPow = new Uint8Array(1024);
   private bWat = new Uint8Array(1024);
   // per component
@@ -113,6 +115,7 @@ export class UtilitiesSystem implements SimSystem {
   private wDemand = new Float64Array(256);
   private wLeft = new Float64Array(256);
   private nPComp = 0;
+  private okComp = new Uint8Array(256);
   private nWComp = 0;
   private wasShort = false;
   private lastShortNotify = -1e9;
@@ -175,6 +178,7 @@ export class UtilitiesSystem implements SimSystem {
     this.bOk = ensureIdArray(this.bOk, st);
     this.bUse = ensureIdFloat(this.bUse, st);
     this.bWComp = ensureIdArray(this.bWComp, st);
+    this.bWUse = ensureIdFloat(this.bWUse, st);
     if (this.bPow.length < this.bOk.length) {
       this.bPow = new Uint8Array(this.bOk.length);
       this.bWat = new Uint8Array(this.bOk.length);
@@ -182,8 +186,9 @@ export class UtilitiesSystem implements SimSystem {
     const ords = readOrdinances(st);
     const jobsUnknown = detectJobsUnknown(st);
     const changed: Building[] = [];
-    this.computePower(st, ords.has('powerConservation'), jobsUnknown);
-    this.computeWater(st, ords.has('waterConservation'), jobsUnknown);
+    this.prepareUses(st, ords.has('powerConservation'), ords.has('waterConservation'), jobsUnknown);
+    this.computePower(st);
+    this.computeWater(st);
     // apply flags
     const bPow = this.bPow, bWat = this.bWat;
     for (const b of st.buildings.values()) {
@@ -207,16 +212,44 @@ export class UtilitiesSystem implements SimSystem {
     this.lastMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
   }
 
+  /** one pass over buildings: power use / plant output (bUse) and water use / producer output (bWUse) */
+  private prepareUses(st: CityState, powerCons: boolean, waterCons: boolean, jobsUnknown: boolean): void {
+    const N = st.size, C = st.cells;
+    const eff = plantEfficiency(st);
+    const pMul = powerCons ? 1 - CONSERVATION_CUT : 1;
+    const wMul = waterCons ? 1 - CONSERVATION_CUT : 1;
+    const bUse = this.bUse, bWUse = this.bWUse;
+    let hasTreatment = false;
+    for (const b of st.buildings.values()) {
+      const inf = infoOf(st, b);
+      if (inf.isTreatment && b.built >= 1 && (b.flags & BF.Burnt) === 0) { hasTreatment = true; break; }
+    }
+    for (const b of st.buildings.values()) {
+      const inf = infoOf(st, b);
+      const ok = b.built >= 1 && (b.flags & (BF.Burnt | BF.Abandoned)) === 0;
+      if (inf.powerOut > 0) bUse[b.id] = -(ok ? inf.powerOut * eff : 0);
+      else bUse[b.id] = buildingPowerUse(inf, b, jobsUnknown) * pMul;
+      if (inf.waterOut > 0) {
+        let out = 0;
+        if (ok) {
+          out = inf.waterOut * eff;
+          if (inf.isPump && nearWater(st, b, PUMP_WATER_DIST)) out *= 1 + PUMP_WATER_BONUS;
+          const wp = st.waterPollution[Math.min(C - 1, (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1))] || 0;
+          out *= 1 - 0.5 * Math.min(1, wp) * (hasTreatment ? 0.35 : 1);
+        }
+        bWUse[b.id] = -out - 1e-9;
+      } else bWUse[b.id] = buildingWaterUse(inf, b, jobsUnknown) * wMul;
+    }
+  }
+
   // ------------------------------------------------------------------------------------------ power
-  private computePower(st: CityState, conservation: boolean, jobsUnknown: boolean): void {
+  private computePower(st: CityState): void {
     const N = st.size, C = st.cells;
     const net = st.network, lines = st.powerLines, bld = st.building, zone = st.zone;
     const comp = this.pComp, queue = this.queue;
     const powered = st.powered;
     const stampNo = ++this.stamp;
     const bStamp = this.bStamp, bUse = this.bUse;
-    const eff = plantEfficiency(st);
-    const demandMul = conservation ? 1 - CONSERVATION_CUT : 1;
     comp.fill(-1);
     let nc = 0;
     let supplyTot = 0, demandTot = 0;
@@ -235,30 +268,19 @@ export class UtilitiesSystem implements SimSystem {
         const bid = bld[i];
         if (bid >= 0 && bStamp[bid] !== stampNo) {
           bStamp[bid] = stampNo;
-          const b = st.buildings.get(bid);
-          if (b) {
-            const inf = infoOf(st, b);
-            if (inf.powerOut > 0) {
-              const out = b.built >= 1 && (b.flags & (BF.Burnt | BF.Abandoned)) === 0 ? inf.powerOut * eff : 0;
-              supply += out;
-              bUse[bid] = -out; // negative marks a plant
-            } else {
-              const u = buildingPowerUse(inf, b, jobsUnknown) * demandMul;
-              bUse[bid] = u;
-              demand += u;
-            }
-          }
+          const u = bUse[bid]; // negative = plant output
+          if (u < 0) supply -= u;
+          else demand += u;
         }
-        const x = i % N, z = (i - x) / N;
-        for (let k = 0; k < 4; k++) {
-          const nx = x + DX[k], nz = z + DZ[k];
-          if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
-          const j = nz * N + nx;
-          if (comp[j] >= 0) continue;
-          if (net[j] === 0 && lines[j] === 0 && bld[j] < 0) continue;
-          comp[j] = nc;
-          queue[qt++] = j;
-        }
+        const x = i % N;
+        let j = i - 1;
+        if (x > 0 && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
+        j = i + 1;
+        if (x < N - 1 && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
+        j = i - N;
+        if (j >= 0 && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
+        j = i + N;
+        if (j < C && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
       }
       this.cSupply[nc] = supply;
       this.cDemand[nc] = demand;
@@ -269,9 +291,11 @@ export class UtilitiesSystem implements SimSystem {
     }
     this.nPComp = nc;
     // pass 2: cell power for fully supplied components
+    const okComp = this.okComp.length >= nc ? this.okComp : (this.okComp = new Uint8Array(nc * 2 + 16));
+    for (let c = 0; c < nc; c++) okComp[c] = this.cSupply[c] > 0 && this.cDemand[c] <= this.cSupply[c] ? 1 : 0;
     for (let i = 0; i < C; i++) {
       const c = comp[i];
-      powered[i] = c >= 0 && this.cSupply[c] > 0 && this.cDemand[c] <= this.cSupply[c] ? 1 : 0;
+      powered[i] = c >= 0 ? okComp[c] : 0;
     }
     // pass 3: brownout ordering (multi-source BFS from plants in short components)
     let anyShort = false;
@@ -339,15 +363,9 @@ export class UtilitiesSystem implements SimSystem {
     // empty zoned cells adjacent to a powered conductor
     for (let i = 0; i < C; i++) {
       if (zone[i] === 0 || comp[i] >= 0) continue;
-      const x = i % N, z = (i - x) / N;
-      let p = 0;
-      for (let k = 0; k < 4 && !p; k++) {
-        const nx = x + DX[k], nz = z + DZ[k];
-        if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
-        const j = nz * N + nx;
-        if (comp[j] >= 0 && powered[j]) p = 1;
-      }
-      powered[i] = p;
+      const x = i % N;
+      powered[i] = (x > 0 && powered[i - 1] === 1 && comp[i - 1] >= 0) || (x < N - 1 && powered[i + 1] === 1 && comp[i + 1] >= 0) ||
+        (i >= N && powered[i - N] === 1 && comp[i - N] >= 0) || (i + N < C && powered[i + N] === 1 && comp[i + N] >= 0) ? 1 : 0;
     }
     st.stats.powerSupply = supplyTot;
     st.stats.powerDemand = demandTot;
@@ -369,79 +387,64 @@ export class UtilitiesSystem implements SimSystem {
   }
 
   // ------------------------------------------------------------------------------------------ water
-  private computeWater(st: CityState, conservation: boolean, jobsUnknown: boolean): void {
+  private computeWater(st: CityState): void {
     const N = st.size, C = st.cells;
     const net = st.network, zone = st.zone, bld = st.building;
     const comp = this.wComp, queue = this.queue;
     const watered = st.watered;
-    const demandMul = conservation ? 1 - CONSERVATION_CUT : 1;
-    const eff = plantEfficiency(st);
     comp.fill(-1);
     // components over road cells
     let nc = 0;
     for (let s = 0; s < C; s++) {
-      if (comp[s] >= 0 || !isRoad(net[s] as Network)) continue;
+      if (comp[s] >= 0 || net[s] < 1 || net[s] > 5) continue;
       if (nc >= this.wSupply.length) this.growWater();
       let qh = 0, qt = 0;
       queue[qt++] = s;
       comp[s] = nc;
       while (qh < qt) {
         const i = queue[qh++];
-        const x = i % N, z = (i - x) / N;
-        for (let k = 0; k < 4; k++) {
-          const nx = x + DX[k], nz = z + DZ[k];
-          if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
-          const j = nz * N + nx;
-          if (comp[j] >= 0 || !isRoad(net[j] as Network)) continue;
-          comp[j] = nc;
-          queue[qt++] = j;
-        }
+        const x = i % N;
+        let j = i - 1;
+        if (x > 0 && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
+        j = i + 1;
+        if (x < N - 1 && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
+        j = i - N;
+        if (j >= 0 && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
+        j = i + N;
+        if (j < C && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
       }
       this.wSupply[nc] = 0;
       this.wDemand[nc] = 0;
       nc++;
     }
     this.nWComp = nc;
-    // any treatment plant in the city halves pollution penalty on pumps
-    let hasTreatment = false;
-    for (const b of st.buildings.values()) {
-      const inf = infoOf(st, b);
-      if (inf.isTreatment && b.built >= 1 && (b.flags & BF.Burnt) === 0) { hasTreatment = true; break; }
-    }
     // assign buildings to components
     const bComp = this.bWComp; // per-building component (+1), 0 = none
-    const bUse = this.bUse;
+    const bUse = this.bWUse;
     let supplyTot = 0, demandTot = 0;
     const seeds: number[] = [];
     for (const b of st.buildings.values()) {
       const c = adjacentComp(comp, N, b);
       bComp[b.id] = c + 1;
       if (c < 0) continue;
-      const inf = infoOf(st, b);
-      if (inf.waterOut > 0) {
-        let out = 0;
-        if (b.built >= 1 && (b.flags & (BF.Burnt | BF.Abandoned)) === 0) {
-          out = inf.waterOut * eff;
-          if (inf.isPump && nearWater(st, b, PUMP_WATER_DIST)) out *= 1 + PUMP_WATER_BONUS;
-          const wp = st.waterPollution[Math.min(C - 1, (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1))] || 0;
-          out *= 1 - 0.5 * Math.min(1, wp) * (hasTreatment ? 0.35 : 1);
-        }
-        bUse[b.id] = -out - 1e-9;
+      const u = bUse[b.id];
+      if (u < 0) {
+        const out = -u - 1e-9;
         this.wSupply[c] += out;
         supplyTot += out;
         if (out > 0) seeds.push(b.id);
       } else {
-        const u = buildingWaterUse(inf, b, jobsUnknown) * demandMul;
-        bUse[b.id] = u;
         this.wDemand[c] += u;
         demandTot += u;
       }
     }
     for (let c = 0; c < nc; c++) this.wLeft[c] = this.wSupply[c];
     // road cells watered
+    const okW = this.okComp.length >= nc ? this.okComp : (this.okComp = new Uint8Array(nc * 2 + 16));
+    for (let c = 0; c < nc; c++) okW[c] = this.wSupply[c] > 0 && this.wDemand[c] <= this.wSupply[c] ? 1 : 0;
     for (let i = 0; i < C; i++) {
       const c = comp[i];
-      watered[i] = c >= 0 && this.wSupply[c] > 0 && this.wDemand[c] <= this.wSupply[c] ? 1 : 0;
+      watered[i] = c >= 0 ? okW[c] : 0;
     }
     const result = this.bWat;
     let anyShort = false;
@@ -495,15 +498,9 @@ export class UtilitiesSystem implements SimSystem {
     // empty zoned cells within 1 cell of a watered road
     for (let i = 0; i < C; i++) {
       if (zone[i] === 0 || bld[i] >= 0 || comp[i] >= 0) continue;
-      const x = i % N, z = (i - x) / N;
-      let w = 0;
-      for (let k = 0; k < 4 && !w; k++) {
-        const nx = x + DX[k], nz = z + DZ[k];
-        if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
-        const j = nz * N + nx;
-        if (comp[j] >= 0 && watered[j]) w = 1;
-      }
-      watered[i] = w;
+      const x = i % N;
+      watered[i] = (x > 0 && comp[i - 1] >= 0 && watered[i - 1] === 1) || (x < N - 1 && comp[i + 1] >= 0 && watered[i + 1] === 1) ||
+        (i >= N && comp[i - N] >= 0 && watered[i - N] === 1) || (i + N < C && comp[i + N] >= 0 && watered[i + N] === 1) ? 1 : 0;
     }
     st.stats.waterSupply = supplyTot;
     st.stats.waterDemand = demandTot;

@@ -70,7 +70,11 @@ export function legendHtml(o: Overlay, fromRenderer?: (o: Overlay) => unknown): 
           return `<div class="lg-grad" style="background:${css}"></div><div class="lg-ends"><span>${escapeHtml(String(L.min ?? L.lo ?? info?.lo ?? ''))}</span><span>${escapeHtml(String(L.max ?? L.hi ?? info?.hi ?? ''))}</span></div>`;
         }
         if (Array.isArray(stops) && stops.length) {
-          const continuous = L.continuous ?? L.type === 'gradient';
+          const continuous = L.continuous ?? (L.type ? L.type === 'gradient' : ![Overlay.Zones, Overlay.Power, Overlay.Water, Overlay.None].includes(o) && stops.length >= 2);
+          if (continuous && stops.length > 2) {
+            const css = `linear-gradient(90deg, ${stops.map((s) => colorStr(s.color ?? s.c ?? s[1])).join(', ')})`;
+            return `<div class="lg-grad" style="background:${css}"></div><div class="lg-ends">${stops.map((s) => `<span>${escapeHtml(String(s.label ?? ''))}</span>`).join('')}</div>`;
+          }
           if (continuous) {
             const css = `linear-gradient(90deg, ${stops.map((s) => colorStr(s.color ?? s.c ?? s[1])).join(', ')})`;
             const first = stops[0], last = stops[stops.length - 1];

@@ -585,3 +585,17 @@ export function poolRect(b: ModelBuilder, x0: number, z0: number, x1: number, z1
   b.paint(c, Surf.Emissive);
   flat(b, x0, z0, x1, z1, y);
 }
+/** Soft light pool for DARK ground (asphalt): brighter inner disc + dimmer outer ring (24 tris). */
+export function poolSoft(b: ModelBuilder, x: number, z: number, r: number, y: number, ground: ColorLike): void {
+  pool(b, x, z, r * 0.55, y + 0.004, ground, 8, 1.15);
+  const c = shade(ground, 0.8);
+  c.r *= 1.05;
+  c.b *= 0.88;
+  b.paint(c, Surf.Emissive);
+  const ri = r * 0.55, seg = 8;
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+    const P = (a: number, rr: number): V3 => [x + Math.cos(a) * rr, y, z + Math.sin(a) * rr];
+    quadF(b, P(a0, ri), P(a0, r), P(a1, r), P(a1, ri), [0, 1, 0]);
+  }
+}

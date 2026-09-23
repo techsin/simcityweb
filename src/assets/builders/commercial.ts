@@ -10,7 +10,11 @@
  */
 import type { ModelBuilders } from '../registry';
 import { lowModels } from './com_low';
+import { midModels } from './com_mid';
+import { highModels } from './com_high';
 
 export const models: ModelBuilders = {
   ...lowModels,
+  ...midModels,
+  ...highModels,
 };

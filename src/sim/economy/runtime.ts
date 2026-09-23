@@ -264,6 +264,12 @@ export class EconRuntime {
     if (b.flags & BF.Plopped) {
       this.lvEffectsDirty = true;
       this.capsDirty = true;
+      // recount (other systems may remove buildings without touching milestones)
+      const st = this.sim.state;
+      let n = 0;
+      for (const o of st.buildings.values()) if (o.def === b.def && o.flags & BF.Plopped) n++;
+      if (n > 0) st.milestones[b.def] = n;
+      else delete st.milestones[b.def];
     }
   }
 

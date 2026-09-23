@@ -46,11 +46,11 @@ try {
     });
     p.on('pageerror', (e) => console.log(`[pageerror] ${e.message}\n${e.stack ?? ''}`));
     const t0 = Date.now();
-    await p.goto(`${base}?${query}`, { waitUntil: 'load', timeout: 120000 });
+    await p.goto(`${base}?still=1&hud=0&${query}`, { waitUntil: 'load', timeout: 120000 });
     await p.waitForFunction(() => window.__ready === true, null, { timeout: 180000, polling: 250 }).catch(() => console.log('WARN: __ready not set within timeout'));
     const extra = parseInt(process.env.SHOOT_WAIT ?? '0', 10);
     if (extra) await p.waitForTimeout(extra);
-    await p.screenshot({ path: out });
+    await p.screenshot({ path: out, timeout: 240000 });
     console.log(`saved ${out} (${Date.now() - t0} ms)`);
     await p.close();
   }

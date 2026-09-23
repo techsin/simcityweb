@@ -18,7 +18,7 @@ import { Network, Zone, isRoad } from '../../core/types';
 import type { Building, CityState } from '../CityState';
 import { BF } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
-import { blur3, blurSigma2, shiftField } from './blur';
+import { blur3, blurDownAdd, blurSigma2, shiftField } from './blur';
 import {
   DX, DZ, Fam, activeJobs, detectJobsUnknown, ensureIdArray, ensureIdFloat, fundingFactor, infoOf, isFunctional, nowMs,
   readOrdinances, setFlagQuiet,
@@ -48,6 +48,12 @@ export class PollutionSystem implements SimSystem {
   private noise = new Float32Array(0);
   private tmp = new Float32Array(0);
   private tmp2 = new Float32Array(0);
+  private coarse = new Float32Array(0);
+  private coarseTmp = new Float32Array(0);
+  private waterCells = new Int32Array(0);
+  private waterNb = new Int32Array(0);
+  private nWater = -1;
+  private waterVersion = -1;
   private queue = new Int32Array(0);
   private visit = new Int32Array(0);
   private served = new Int32Array(1024);
@@ -56,9 +62,14 @@ export class PollutionSystem implements SimSystem {
   private lastRun = -1e9;
   lastMs = 0;
 
+  private unsub: (() => void)[] = [];
+
   init(sim: Simulation): void {
+    for (const u of this.unsub) u();
+    this.unsub = [sim.events.on('terrainChanged', () => this.invalidateWater()), sim.events.on('reset', () => this.invalidateWater())];
     sim.state.systemData.infraVersion = 1;
     this.lastRun = -1e9;
+    this.nWater = -1;
     this.compute(sim, true);
   }
 
@@ -151,67 +162,78 @@ export class PollutionSystem implements SimSystem {
     // --- blur air per class, sum with gains, wind drift
     const tmp = this.tmp, tmp2 = this.tmp2;
     const field = tmp2;
-    field.fill(0);
-    for (let c = 0; c < 3; c++) {
-      const r = POLL_RADII[c];
-      blur3(air[c], tmp, N, r);
+    {
+      // small emitters: full resolution
+      const r = POLL_RADII[0];
+      blur3(air[0], tmp, N, r);
       const gain = POLL_PEAK_GAIN * 2 * Math.PI * blurSigma2(r);
-      const A = air[c];
-      for (let i = 0; i < C; i++) field[i] += A[i] * gain;
+      const A = air[0];
+      for (let i = 0; i < C; i++) field[i] = A[i] * gain;
+      // medium / large emitters: blurred at 1/2 and 1/4 resolution (sigma ~ POLL_RADII[1], POLL_RADII[2])
+      const M2 = Math.ceil(N / 2);
+      if (this.coarse.length < M2 * M2) { this.coarse = new Float32Array(M2 * M2); this.coarseTmp = new Float32Array(M2 * M2); }
+      for (let c = 1; c < 3; c++) {
+        const f = c === 1 ? 2 : 4;
+        const rr = Math.max(1, Math.round(POLL_RADII[c] / f));
+        const sig2 = f * f * blurSigma2(rr);
+        blurDownAdd(air[c], field, N, f, rr, POLL_PEAK_GAIN * 2 * Math.PI * sig2, this.coarse, this.coarseTmp);
+      }
     }
     const ang = (st.day / 360) * Math.PI * 2 * 0.7 + Math.sin(st.day * 0.05) * 1.3;
     shiftField(field, tmp, N, Math.cos(ang) * WIND_DRIFT, Math.sin(ang) * WIND_DRIFT);
     const alpha = first ? 1 : POLL_SMOOTH;
     const airL = st.airPollution;
+    const invAK = 1 / AIR_K;
     for (let i = 0; i < C; i++) {
-      const target = 1 - Math.exp(-tmp[i] / AIR_K);
+      const target = 1 - Math.exp(-tmp[i] * invAK);
       airL[i] += (target - airL[i]) * alpha;
     }
     // --- noise
     {
-      const r = POLL_RADII[0];
-      blur3(noise, tmp, N, r);
-      const gain = POLL_PEAK_GAIN * 2 * Math.PI * blurSigma2(r);
+      // half resolution blur (sigma^2 = 4 * 2 = 8 cells^2)
+      tmp.fill(0);
+      blurDownAdd(noise, tmp, N, 2, 1, POLL_PEAK_GAIN * 2 * Math.PI * 8, this.coarse, this.coarseTmp);
       const L = st.noise;
+      const invK = 1 / NOISE_K;
       for (let i = 0; i < C; i++) {
-        const target = 1 - Math.exp(-(noise[i] * gain) / NOISE_K);
+        const target = 1 - Math.exp(-tmp[i] * invK);
         L[i] += (target - L[i]) * alpha;
       }
     }
     // --- water: ground water blur + diffusion along water bodies
     {
-      const r = POLL_RADII[0];
-      blur3(water, tmp, N, r);
-      const gain = POLL_PEAK_GAIN * 2 * Math.PI * blurSigma2(r);
+      tmp.fill(0);
+      blurDownAdd(water, tmp, N, 2, 1, POLL_PEAK_GAIN * 2 * Math.PI * 8, this.coarse, this.coarseTmp);
       const L = st.waterPollution;
       const wm = st.water;
+      const invK = 1 / WATER_K;
       for (let i = 0; i < C; i++) {
         if (wm[i]) continue;
-        const target = 1 - Math.exp(-(water[i] * gain) / WATER_K);
+        const target = 1 - Math.exp(-tmp[i] * invK);
         L[i] += (target - L[i]) * alpha;
       }
-      // diffusion over water cells: inflow from adjacent land ground water
-      const cur = tmp2;
-      for (let i = 0; i < C; i++) cur[i] = wm[i] ? L[i] : 0;
-      const iters = 8;
+      // diffusion over water cells (precomputed list + 4 neighbour slots: water idx or -(land cell)-1)
+      this.ensureWaterList(st);
+      const nW = this.nWater, wc = this.waterCells, wnb = this.waterNb;
+      const cur = tmp2, nxt = tmp;
+      for (let q = 0; q < nW; q++) cur[q] = L[wc[q]];
+      const iters = 6;
       for (let it = 0; it < iters; it++) {
-        for (let i = 0; i < C; i++) {
-          if (!wm[i]) { tmp[i] = 0; continue; }
-          const x = i % N, z = (i - x) / N;
-          let s = cur[i], n = 1, inflow = 0;
+        for (let q = 0; q < nW; q++) {
+          let s = cur[q], n = 1, inflow = 0;
+          const b = q * 4;
           for (let k = 0; k < 4; k++) {
-            const nx = x + DX[k], nz2 = z + DZ[k];
-            if (nx < 0 || nz2 < 0 || nx >= N || nz2 >= N) continue;
-            const j = nz2 * N + nx;
-            if (wm[j]) { s += cur[j]; n++; }
-            else inflow = Math.max(inflow, L[j]);
+            const t = wnb[b + k];
+            if (t === 0x7fffffff) continue;
+            if (t >= 0) { s += cur[t]; n++; }
+            else { const lv = L[-t - 1]; if (lv > inflow) inflow = lv; }
           }
           const v = (s / n) * 0.93 + inflow * 0.12;
-          tmp[i] = v > 1 ? 1 : v;
+          nxt[q] = v > 1 ? 1 : v;
         }
-        for (let i = 0; i < C; i++) if (wm[i]) cur[i] = tmp[i];
+        for (let q = 0; q < nW; q++) cur[q] = nxt[q];
       }
-      for (let i = 0; i < C; i++) if (wm[i]) L[i] = cur[i];
+      for (let q = 0; q < nW; q++) L[wc[q]] = cur[q];
     }
     // --- garbage
     this.garbage(sim, dtMonths, ords.has('recycling'), jobsUnknown);
@@ -231,6 +253,38 @@ export class PollutionSystem implements SimSystem {
     for (const b of changed) sim.events.emit('buildingChanged', b);
     sim.events.emit('layerUpdated', 'pollution');
     this.lastMs = nowMs() - t0;
+  }
+
+  /** mark water topology dirty (terrain changed) */
+  invalidateWater(): void {
+    this.nWater = -1;
+  }
+
+  private ensureWaterList(st: CityState): void {
+    if (this.nWater >= 0 && this.waterVersion === st.cells) return;
+    const N = st.size, C = st.cells, wm = st.water;
+    let n = 0;
+    const idx = new Int32Array(C).fill(-1);
+    for (let i = 0; i < C; i++) if (wm[i]) idx[i] = n++;
+    this.waterCells = new Int32Array(n);
+    this.waterNb = new Int32Array(n * 4);
+    for (let i = 0, q = 0; i < C; i++) {
+      if (!wm[i]) continue;
+      this.waterCells[q] = i;
+      const x = i % N, z = (i - x) / N;
+      for (let k = 0; k < 4; k++) {
+        const nx = x + DX[k], nz = z + DZ[k];
+        let t = 0x7fffffff;
+        if (nx >= 0 && nz >= 0 && nx < N && nz < N) {
+          const j = nz * N + nx;
+          t = wm[j] ? idx[j] : -j - 1;
+        }
+        this.waterNb[q * 4 + k] = t;
+      }
+      q++;
+    }
+    this.nWater = n;
+    this.waterVersion = C;
   }
 
   private garbage(sim: Simulation, dtMonths: number, recycling: boolean, jobsUnknown: boolean): void {

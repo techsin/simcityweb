@@ -8,7 +8,7 @@ import type { RNG } from '../../core/rng';
 import { lampPost } from '../kit';
 import {
   flat, stripe, dashed, runwayNumber, lightDot, floodMast, frustum, obox, vault, tree, shrub, carLite, parking,
-  serviceVehicle, airliner, turboprop, gaPlane, LIVERIES, shade, quadF, type Livery,
+  serviceVehicle, airliner, turboprop, gaPlane, LIVERIES, shade, quadF, poolRect, poolSoft, type Livery,
 } from './tr_kit';
 
 // ---------------------------------------------------------------------------------------------- palette
@@ -77,8 +77,8 @@ function runway(b: ModelBuilder, x0: number, x1: number, zc: number, w: number, 
   dashed(b, cx0, zc, cx1, zc, Math.max(0.45, w * 0.028), y, o.dash[0], o.dash[1]);
   // edge lights (white), threshold (green) / end (red)
   for (let x = x0 + 3; x <= x1 - 3 + 0.01; x += o.lightPitch) {
-    lightDot(b, x, Y.grass, z0 - 0.7, 0.5, C.edgeLight);
-    lightDot(b, x, Y.grass, z1 + 0.7, 0.5, C.edgeLight);
+    lightDot(b, x, Y.grass, z0 - 0.7, 0.65, C.edgeLight);
+    lightDot(b, x, Y.grass, z1 + 0.7, 0.65, C.edgeLight);
   }
   for (let zz = z0 + 1.5; zz <= z1 - 1.5 + 0.01; zz += (w - 3) / 6) {
     lightDot(b, x0 + 0.6, Y.rwy, zz, 0.55, C.green);
@@ -91,7 +91,7 @@ function taxiway(b: ModelBuilder, x0: number, x1: number, zc: number, w: number,
   b.paint(C.taxi, Surf.Pavement).box(x0, 0, zc - w / 2, x1, Y.rwy, zc + w / 2, { bottom: null });
   b.paint(C.yellow, Surf.Plain);
   stripe(b, x0 + 2, zc, x1 - 2, zc, 0.35, Y.rwyMark);
-  if (lightsZ !== null) for (let x = x0 + 4; x < x1 - 2; x += pitch) lightDot(b, x, Y.grass, lightsZ, 0.42, C.blue);
+  if (lightsZ !== null) for (let x = x0 + 4; x < x1 - 2; x += pitch) lightDot(b, x, Y.grass, lightsZ, 0.55, C.blue);
 }
 /** Connector from taxiway (za) to runway edge (zb) at x; with hold-short bars. */
 function connector(b: ModelBuilder, x: number, za: number, zb: number, w: number): void {
@@ -216,7 +216,12 @@ function airportSmall(b: ModelBuilder, rng: RNG): void {
   hangar(b, 37, -16, 61, 3, 5.2, 5.2, 0.45);
   // terminal: glass hall under a barrel roof + office annex
   const tz0 = 7, tz1 = 19;
-  b.paint(0x6e8fa8, Surf.GlassCurtain, 5, 5.4).box(-36, 0, tz0, 2, 5.4, tz1, {
+  b.paint(0x3e4c58, Surf.GlassPlain).box(-36, 0, tz0, 2, 3.2, tz1, {
+    px: { color: 0xe8e5de, surf: Surf.Plain },
+    nx: { color: 0xe8e5de, surf: Surf.Plain },
+    top: null,
+  });
+  b.paint(0x6e8fa8, Surf.GlassCurtain, 5, 2.2).box(-36, 3.2, tz0, 2, 5.4, tz1, {
     nz: { color: 0x2a323a, surf: Surf.GlassPlain },
     px: { color: 0xe8e5de, surf: Surf.Plain },
     nx: { color: 0xe8e5de, surf: Surf.Plain },
@@ -259,6 +264,9 @@ function airportSmall(b: ModelBuilder, rng: RNG): void {
   // apron floods
   floodMast(b, -30, 3, 14, 0);
   floodMast(b, 20, 3, 14, 0);
+  poolRect(b, -44, -15.5, 30, 3.6, Y.apron + 0.025, C.apron, 0.6);
+  poolRect(b, -26, 19.1, -8, 21, 0.18, C.sidewalk, 0.5);
+  for (const x of [-2, -30]) poolSoft(b, x, 23.3, 2.2, 0.115, C.road);
   // windsock
   b.paint(0xdddddd, Surf.Metal).cylinder(-50, -29, 0, 5, 0.08, 0.06, 5, { top: false });
   b.paint(0xff7a1a, Surf.Plain);
@@ -314,7 +322,13 @@ function airportLarge(b: ModelBuilder, rng: RNG): void {
 
   // ---- terminal: glazed hall, 4 barrel-vault roof shells running front-to-back
   const tx0 = -68, tx1 = 46, tz0 = 14, tz1 = 32, th = 11;
-  b.paint(0x6f93ad, Surf.GlassCurtain, 5, 5.5).box(tx0, 0, tz0, tx1, th, tz1, {
+  // ground level: storefront glazing (glows warm at night); upper level: curtain wall
+  b.paint(0x3e4c58, Surf.GlassPlain).box(tx0, 0, tz0, tx1, 5.3, tz1, {
+    px: { color: 0xe6e4de, surf: Surf.Plain },
+    nx: { color: 0xe6e4de, surf: Surf.Plain },
+    top: null,
+  });
+  b.paint(0x6f93ad, Surf.GlassCurtain, 5, 5.5).box(tx0, 5.3, tz0, tx1, th, tz1, {
     nz: { color: 0x5d86a8, surf: Surf.GlassCurtain, pattern: 0, floor: 5.5 },
     px: { color: 0xe6e4de, surf: Surf.Plain },
     nx: { color: 0xe6e4de, surf: Surf.Plain },
@@ -396,12 +410,18 @@ function airportLarge(b: ModelBuilder, rng: RNG): void {
   for (const x of [-30, -24, -8, 0, 24, 30]) carLite(b, x + rng.range(-1, 1), 36.4, Math.PI / 2, rng.chance(0.6) ? 0xf1c40f : rng.pick([0x2b2d31, 0xf1f1ef]), 0.1);
   for (const x of [-56, -12, 40]) carLite(b, x, 40, -Math.PI / 2, rng.pick([0x2b2d31, 0x8a1c1c, 0xb8bcc2]), 0.1);
   // apron floodlight masts along the service road
-  for (const x of [-41.5, -12.5, 18, 54]) floodMast(b, x, 12.2, 20, 0);
+  for (const x of [-41.5, -12.5, 18, 54]) {
+    floodMast(b, x, 12.2, 20, 0);
+  }
+  // floodlit stand area (reads as a slightly darker concrete zone by day)
+  poolRect(b, -70, -21, 54, 12.6, Y.apron + 0.025, C.apron, 0.6);
+  poolRect(b, -62, tz1 + 0.3, 40, tz1 + 3.1, 0.2, C.sidewalk, 0.5);
+  for (const x of [-52, -20, 24]) poolSoft(b, x, 48.2, 5, 0.09, C.road);
   // tower-side staff parking + trees
   parking(b, rng, 62, 44, 94, 62, 0.35);
   for (const x of [-90, -78, -50, -30, -10, 10, 30, 64, 80]) tree(b, rng, x, 62, rng.range(6.5, 7.5));
   for (const [x, z] of [[-90, 46], [-80, 53], [-90, 56], [92, 32], [64, 36]] as [number, number][]) tree(b, rng, x, z, rng.range(6, 8));
-  for (const x of [-64, -20, 24]) lampPost(b, x, 42.2, 6);
+  for (const x of [-52, -20, 24]) lampPost(b, x, 42.2, 6);
   // windsock by the runway
   b.paint(0xdddddd, Surf.Metal).cylinder(-70, -35.2, 0, 6, 0.08, 0.06, 5, { top: false });
   b.paint(0xff7a1a, Surf.Plain);

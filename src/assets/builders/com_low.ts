@@ -339,7 +339,7 @@ function dinerGoogie(b: B, rng: RNG) {
   up(b, -8, -8, 8, 8, 0.03, K.pav(C.sidewalk));
   K.asphalt(b, -8, 2.2, 8, 7.0);
   const x0 = -6.6, x1 = 4.4, z0 = -6.2, z1 = 0.6;
-  const rz0 = z0 - 0.6, rz1 = 3.0, ry0 = 3.6, ry1 = 5.7;
+  const rz0 = z0 - 0.6, rz1 = 3.0, ry0 = 3.3, ry1 = 6.3;
   const ry = (z: number) => ry0 + ((z - rz0) * (ry1 - ry0)) / (rz1 - rz0);
   const yF = ry(z1) - 0.3, yB = ry(z0) - 0.3;
   const stone = P(0xbfa98a, Surf.Stone);
@@ -358,12 +358,12 @@ function dinerGoogie(b: B, rng: RNG) {
   for (let i = 0; i < 4; i++) { const j = (i + 1) % 4; b.quad(Bt[j], Bt[i], T[i], T[j]); }
   // googie pylon with starburst
   const gx = 6.2, gz = 5.6;
-  b.paint(0x2fb0a8, Surf.Plain).beam([gx - 0.9, 0, gz], [gx, 6.3, gz], 0.35).beam([gx + 0.9, 0, gz], [gx, 6.3, gz], 0.35);
-  box(b, gx - 1.1, 2.6, gz - 0.2, gx + 1.1, 4.0, gz + 0.2, K.metal(0xf1ebdc), undefined, { pz: K.emis(0xff8a2a), nz: K.emis(0xff8a2a) });
-  b.paint(0xffd23f, Surf.Emissive).blob(gx, 6.6, gz, 0.35, 0.35, 0.35, 0, 0);
+  b.paint(0x2fb0a8, Surf.Plain).beam([gx - 0.9, 0, gz], [gx, 5.6, gz], 0.35).beam([gx + 0.9, 0, gz], [gx, 5.6, gz], 0.35);
+  box(b, gx - 1.1, 2.3, gz - 0.2, gx + 1.1, 3.7, gz + 0.2, K.metal(0xf1ebdc), undefined, { pz: K.emis(0xff8a2a), nz: K.emis(0xff8a2a) });
+  b.paint(0xffd23f, Surf.Emissive).blob(gx, 5.9, gz, 0.35, 0.35, 0.35, 0, 0);
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2 + 0.3;
-    b.paint(0xffe27a, Surf.Emissive).beam([gx, 6.6, gz], [gx + Math.cos(a) * 1.0, 6.6 + Math.sin(a) * 0.9, gz + (i % 2 ? 0.4 : -0.4)], 0.09);
+    b.paint(0xffe27a, Surf.Emissive).beam([gx, 5.9, gz], [gx + Math.cos(a) * 1.0, 5.9 + Math.sin(a) * 0.8, gz + (i % 2 ? 0.4 : -0.4)], 0.09);
   }
   // parking, planters with palms
   K.stallsX(b, rng, -7.6, 3.2, 2.4, -1, 0.55);
@@ -426,7 +426,8 @@ function stripMall(b: B, v: number, rng: RNG) {
     for (let x = bx0 + 0.3; x <= bx1; x += uw / 2) b.paint(0xf4f1ea, Surf.Plain).cylinder(x, wz1 - 0.35, 0, 3.4, 0.22, 0.2, 6, { top: false });
     box(b, -1.4, h, -12, 1.4, h + 1.8, -9.2, K.plain(0xf4f1ea), null);
     b.paint(0x3f6b53, Surf.Metal).pyramid(0, -10.6, 3.2, 3.2, h + 1.8, 1.4);
-    b.paint(0xf4f1ea, Surf.Plain).gableRoof(0, -6.5, 9, 3.0, h, 1.8, 'z', 0.2, K.plain(0xf0ece2));
+    b.paint(0x3f6b53, Surf.Metal).gableRoof(0, -7.0, 9.4, 3.4, h, 2.0, 'z', 0.25, K.plain(0xf0ece2));
+    K.discSign(b, 0, h + 0.75, -5.28, 0.45, K.emis(0xfff1d6), K.plain(0xf0ece2), 10, 0.08);
   } else {
     K.canopy(b, bx0, bx1, bz1, 3.45, bz1 < 0 ? wz1 - bz1 : 2.9, 0.4, K.plain(v === 1 ? 0x2a2d33 : 0x2e5f8a), v === 1 ? K.emis(0xfff3dc) : undefined);
     for (let x = bx0 + 0.2; x <= bx1; x += uw) box(b, x - 0.15, 0, wz1 - 0.35, x + 0.15, 3.45, wz1 - 0.05, K.metal(0x8a9096), null);
@@ -549,10 +550,11 @@ function restAsian(b: B, rng: RNG) {
   K.storefront(b, x0 + 0.8, x1 - 0.8, z1, { y0: 0.9, y1: 3.4, frame: 0x2a1a12, doors: [-3.6], pitch: 0.8, transom: 2.6, surround: 0.1 });
   const red = K.plain(0x9e1b1b);
   for (let x = x0 + 0.2; x <= x1; x += 3.2) box(b, x - 0.18, 0.5, z1 + 1.35, x + 0.18, 4.05, z1 + 1.71, red, null);
-  b.paint(0x2f3a3a, Surf.RoofTiles).hipRoof((x0 + x1) / 2, (z0 + z1) / 2 + 0.5, x1 - x0, z1 - z0 + 1.2, 4.0, 1.6, 0.9);
-  box(b, -7.6, 4.6, -4.4, 0.4, 6.0, -0.4, P(0x4a3024, Surf.Wood), null);
-  faceZ(b, -7.0, -0.2, 4.9, 5.8, -0.37, P(0x2a3440, Surf.GlassPlain));
-  b.paint(0x2f3a3a, Surf.RoofTiles).hipRoof(-3.6, -2.4, 8.0, 4.0, 6.0, 1.3, 0.8);
+  b.paint(0x2f3a3a, Surf.RoofTiles).hipRoof((x0 + x1) / 2, (z0 + z1) / 2 + 0.5, x1 - x0, z1 - z0 + 1.2, 4.0, 1.9, 0.9);
+  box(b, -7.6, 4.6, -4.4, 0.4, 6.9, -0.4, P(0x4a3024, Surf.Wood), null);
+  faceZ(b, -7.0, -0.2, 6.0, 6.7, -0.37, P(0x2a3440, Surf.GlassPlain));
+  b.paint(0x2f3a3a, Surf.RoofTiles).hipRoof(-3.6, -2.4, 8.0, 4.0, 6.9, 1.3, 0.8);
+  box(b, -3.75, 8.1, -2.55, -3.45, 8.7, -2.25, K.metal(0xc9a24a));
   for (let x = x0 + 1.8; x < x1; x += 3.2) box(b, x - 0.22, 2.9, z1 + 1.9, x + 0.22, 3.5, z1 + 2.3, K.emis(0xff3322));
   box(b, x0 - 0.8, 1.2, z1 + 2.0, x0 - 0.1, 3.8, z1 + 2.3, K.metal(0x2a1a12), undefined, { pz: K.emis(0xff4030) });
   // torii gate

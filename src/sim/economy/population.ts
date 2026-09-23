@@ -3,9 +3,11 @@
  * employment, and the time-sliced occupancy pass (building health, fill / vacancy, abandonment, recovery,
  * rubble cleanup).
  *
- * Flag ownership for GROWABLES (sim-core): NoRoad, NoJobs, Polluted, Crime, Abandoned, Constructing.
- * Powered / Watered are owned by sim-infra's utilities system when present (read from flags OR the
- * powered/watered layers); without infra sim-core sets them on every building.
+ * Flag ownership for GROWABLES: sim-core always owns NoRoad, Abandoned, Constructing. Powered / Watered (utilities),
+ * NoJobs (traffic), Polluted (pollution), Crime (crime) and NoGarbage / Congested are owned by sim-infra when its
+ * systems are present; without infra sim-core sets Powered|Watered on every building and derives NoJobs /
+ * Polluted / Crime itself. When the traffic system exposes jobFill(id) / workerAccess(id) they drive per-building
+ * job filling and a residential "can't reach jobs" health penalty.
  * buildingChanged is emitted when flags change, construction reaches 25/50/75/100 %, or a building
  * becomes (un)occupied — not for every resident moving in.
  */
@@ -16,13 +18,19 @@ import { DevType, zoneDensity } from '../../core/types';
 import { getDef } from '../catalog';
 import {
   ABANDON_DAYS, COARSE, CONSTRUCT_DAYS_BASE, CONSTRUCT_DAYS_PER_STAGE, CONSTRUCT_RAND, FILL_RATE, HEALTH_SMOOTH, OCC_PERIOD,
-  PENALTY_NO_GARBAGE, PENALTY_NO_POWER, PENALTY_NO_ROAD, PENALTY_NO_WATER, RECOVER_RATE, REGION_COMMUTERS_BASE,
+  PENALTY_NO_GARBAGE, PENALTY_NO_JOB_ACCESS, PENALTY_NO_POWER, PENALTY_NO_ROAD, PENALTY_NO_WATER, RECOVER_RATE, REGION_COMMUTERS_BASE,
   REGION_COMMUTERS_FRAC, REGION_COMMUTERS_ISOLATED, REGION_COMMUTERS_MAX_SHARE, RUBBLE_CLEAR_DAYS, UNHAPPY_DEMAND,
   UNHAPPY_HEALTH, WATER_REQUIRED_STAGE, WORKFORCE_RATIO,
 } from './tuning';
 import { type EconRuntime, infraFlags } from './runtime';
 import { frontHasRoad, removeBuilding } from './buildings';
 import { ordinanceEffect } from './ordinances';
+
+/** duck-typed view of sim-infra's TrafficSystem (optional methods; -1 = not assessed yet) */
+interface TrafficApi {
+  jobFill?: (id: number) => number;
+  workerAccess?: (id: number) => number;
+}
 
 export function constructionDays(b: Building, stage: number): number {
   return CONSTRUCT_DAYS_BASE + CONSTRUCT_DAYS_PER_STAGE * stage + Math.floor(hash2(b.id, 17) * CONSTRUCT_RAND);
@@ -40,7 +48,7 @@ export function buildingWatered(st: CityState, b: Building, hasUtilities: boolea
   return st.watered[b.z * st.size + b.x] === 1 || st.watered[(b.z + b.d - 1) * st.size + b.x + b.w - 1] === 1;
 }
 
-export function populationSystem(rt: EconRuntime): SimSystem {
+export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } {
   let cursor = 0;
   const burntSince = new Map<number, number>();
 
@@ -59,7 +67,7 @@ export function populationSystem(rt: EconRuntime): SimSystem {
       const b = list[k];
       const def = getDef(b.def);
       if (!def || def.devType === undefined) continue;
-      const dev = def.devType;
+      const dev: number = def.devType;
       const blk = (((b.z + (b.d >> 1)) / COARSE) | 0) * cw + (((b.x + (b.w >> 1)) / COARSE) | 0);
       if (b.flags & (BF.Abandoned | BF.Burnt)) { t.abandoned++; continue; }
       t.countByDev[dev]++;
@@ -157,6 +165,9 @@ export function populationSystem(rt: EconRuntime): SimSystem {
     const fillK = Math.min(1, FILL_RATE * OCC_PERIOD);
     const jobFill = rt.jobFill;
     const unemp = st.stats.unemployment;
+    const traffic = inf.traffic ? (sim.getSystem('traffic') as unknown as TrafficApi | undefined) : undefined;
+    const tJobFill = typeof traffic?.jobFill === 'function' ? traffic : undefined;
+    const tAccess = typeof traffic?.workerAccess === 'function' ? traffic : undefined;
     for (let c = 0; c < slice; c++) {
       if (cursor >= list.length) cursor = 0;
       const b = list[cursor++];
@@ -190,12 +201,13 @@ export function populationSystem(rt: EconRuntime): SimSystem {
       if (needWater && !watered) target -= PENALTY_NO_WATER;
       if (!road) target -= PENALTY_NO_ROAD;
       if (b.flags & BF.NoGarbage) target -= PENALTY_NO_GARBAGE;
+      if (isR && tAccess) { const a = tAccess.workerAccess!(b.id); if (a >= 0 && a < 0.5) target -= (0.5 - a) * PENALTY_NO_JOB_ACCESS; }
       target = Math.max(0, Math.min(1, target));
       b.health += (target - b.health) * HEALTH_SMOOTH;
-      // complaint flags
-      if (st.airPollution[i] > 0.45 && isR) b.flags |= BF.Polluted; else b.flags &= ~BF.Polluted;
-      if (st.crime[i] > 0.5) b.flags |= BF.Crime; else b.flags &= ~BF.Crime;
-      if (isR && unemp > 0.15) b.flags |= BF.NoJobs; else b.flags &= ~BF.NoJobs;
+      // complaint flags (only when sim-infra doesn't own them)
+      if (!inf.pollution) { if (st.airPollution[i] > 0.45 && isR) b.flags |= BF.Polluted; else b.flags &= ~BF.Polluted; }
+      if (!inf.services) { if (st.crime[i] > 0.5) b.flags |= BF.Crime; else b.flags &= ~BF.Crime; }
+      if (!inf.traffic) { if (isR && unemp > 0.15) b.flags |= BF.NoJobs; else b.flags &= ~BF.NoJobs; }
       // ---- unhappiness / abandonment
       const dmd = demand[dev];
       const unhappy = b.health < UNHAPPY_HEALTH || dmd < UNHAPPY_DEMAND || !powered || !road;
@@ -220,19 +232,28 @@ export function populationSystem(rt: EconRuntime): SimSystem {
           b.pop = Math.round(b.pop + (goal - b.pop) * fillK);
           if (b.pop === 0 && goal > 0.5) b.pop = 1;
         } else {
-          const goal = b.capacity * occ * jobFill;
+          let jf = jobFill;
+          if (tJobFill) { const f = tJobFill.jobFill!(b.id); if (f >= 0) jf = Math.min(1, f); }
+          const goal = b.capacity * occ * jf;
           b.jobs = Math.round(b.jobs + (goal - b.jobs) * fillK);
           if (b.jobs === 0 && goal > 0.5) b.jobs = 1;
         }
       }
       if (b.flags !== flags0 || occupied0 !== b.pop + b.jobs > 0) sim.events.emit('buildingChanged', b);
     }
-    // civic buildings: jobs filled from the workforce
-    for (const b of rt.plopped) b.jobs = Math.round(b.capacity * jobFill);
+    // civic buildings: jobs filled from the workforce (+ utility flags without infra)
+    for (const b of rt.plopped) {
+      b.jobs = Math.round(b.capacity * jobFill);
+      if (!inf.utilities && (b.flags & (BF.Powered | BF.Watered)) !== (BF.Powered | BF.Watered)) {
+        b.flags |= BF.Powered | BF.Watered;
+        sim.events.emit('buildingChanged', b);
+      }
+    }
   };
 
   return {
     name: 'economy.population',
+    rt,
     init(sim) {
       rt.attach(sim);
       cursor = 0;

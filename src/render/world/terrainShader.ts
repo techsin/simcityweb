@@ -81,23 +81,33 @@ vec3 terrainShade(vec3 P, vec3 N) {
   float bump = 0.0;
 
   // --- grass / ground cover
-  float dry = smoothstep(0.38, 0.72, m1 + (m2 - 0.5) * 0.45 + (nC.r - 0.5) * 0.2);
+  float dry = smoothstep(0.4, 0.75, m1 + (m2 - 0.5) * 0.5 + (nC.r - 0.5) * 0.25);
   vec3 col = mix(uPal[0], uPal[1], dry);
-  col = mix(col, uPal[2], smoothstep(0.52, 0.78, nB.r) * 0.55);
-  col *= 0.84 + 0.3 * m3;
-  col *= 0.9 + 0.2 * m4;
+  // darker lush meadows / hollows
+  col = mix(col, uPal[2], smoothstep(0.5, 0.75, nB.r + (nC.g - 0.5) * 0.3) * 0.6);
+  // patchwork of slightly different meadows (cellular) - breaks the "golf course" look
+  float patchN = texture2D(uNoise, xz / 1400.0 + 0.37).a;
+  vec3 hueShift = mix(vec3(1.06, 1.0, 0.86), vec3(0.9, 1.02, 1.08), smoothstep(0.2, 0.8, nA.b));
+  col *= mix(vec3(1.0), hueShift, smoothstep(0.25, 0.65, patchN));
+  col *= 0.8 + 0.36 * m3;
+  col *= 0.88 + 0.24 * m4;
   // meadow flecks (tiny lighter / darker grass tufts)
-  col *= 0.94 + 0.12 * smoothstep(0.55, 0.8, nC.a);
-  bump += (m4 - 0.5) * 0.25 + (m3 - 0.5) * 0.6;
+  col *= 0.93 + 0.14 * smoothstep(0.5, 0.8, nC.a);
+  bump += (m4 - 0.5) * 0.3 + (m3 - 0.5) * 0.6;
 
   // forest floor under trees (keeps forests readable from far away)
-  float trees = texture2D(uTreeTex, xz / (uCell * uN)).r;
+  vec2 tuv = xz / (uCell * uN);
+  float trees = texture2D(uTreeTex, tuv).r;
+  // outside the map: fade the (clamped) texture out and continue with noise forests
+  vec2 tout = max(-tuv, tuv - 1.0);
+  float outside = smoothstep(0.0, 0.03, max(tout.x, tout.y));
+  trees = mix(trees, smoothstep(0.55, 0.7, nA.g * 0.6 + nB.r * 0.5) * 0.8, outside);
   float forest = smoothstep(0.03, 0.55, trees);
   col = mix(col, uPal[3] * (0.85 + 0.3 * m3), forest * 0.82);
 
   // dirt patches, stronger on moderate slopes and in dry areas
-  float dirtM = smoothstep(0.62, 0.82, nB.a * 0.55 + m3 * 0.35 + slope * 1.6 + dry * 0.15 - forest * 0.3);
-  col = mix(col, uPal[4] * (0.85 + 0.3 * m4), dirtM * 0.75);
+  float dirtM = smoothstep(0.66, 0.86, nB.b * 0.45 + nC.g * 0.35 + slope * 1.8 + dry * 0.12 - forest * 0.3);
+  col = mix(col, uPal[4] * (0.85 + 0.3 * m4), dirtM * 0.6);
 
   // desert: wind-rippled sand dunes across flat ground
   if (uDesert > 0.5) {
@@ -158,7 +168,7 @@ vec3 terrainShade(vec3 P, vec3 N) {
   bool inside = gc.x >= 0.0 && gc.y >= 0.0 && gc.x < uN && gc.y < uN;
   if (!inside) {
     float l = tLuma(col);
-    col = mix(col, vec3(l), 0.28) * 0.8;
+    col = mix(col, vec3(l), 0.18) * 0.9;
     vec2 dd = max(-gc, gc - uN);
     float dEdge = max(dd.x, dd.y);
     float border = 1.0 - smoothstep(0.0, max(fpx * 2.0, 0.08), dEdge);

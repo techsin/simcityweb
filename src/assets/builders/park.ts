@@ -945,9 +945,9 @@ function parkMarina(b: ModelBuilder, _v: number, rng: RNG): void {
   b.paint(0xf1efe8, Surf.Wood).box(-14.5, 0, -15, -5.5, 3.6, -9);
   b.paint(0x2f5d8a, Surf.RoofTiles).gableRoof(-10, -12, 9, 6, 3.6, 2.2, 'x', 0.4, { color: 0xf1efe8, surf: Surf.Wood });
   b.paint(0x24323d, Surf.GlassPlain).box(-13.8, 0.8, -8.98, -6.2, 2.8, -8.95, { top: null, bottom: null, nx: null, px: null, nz: null });
-  b.paint(0xf1efe8, Surf.Wood).box(-7.2, 0, -14.4, -5.6, 6.8, -12.8);
-  b.paint(0x24323d, Surf.GlassPlain).box(-7.3, 5.2, -14.5, -5.5, 6.2, -12.7, { top: null, bottom: null });
-  b.paint(0x2f5d8a, Surf.RoofTiles).pyramid(-6.4, -13.6, 2.2, 2.2, 6.8, 0.7);
+  b.paint(0xf1efe8, Surf.Wood).box(-7.2, 0, -14.4, -5.6, 5.6, -12.8);
+  b.paint(0x24323d, Surf.GlassPlain).box(-7.3, 4.2, -14.5, -5.5, 5.2, -12.7, { top: null, bottom: null });
+  b.paint(0x2f5d8a, Surf.RoofTiles).pyramid(-6.4, -13.6, 2.2, 2.2, 5.6, 0.7);
   b.paint(PALETTE.asphalt, Surf.Pavement).slab(-3, -15.5, 15, -9, 0.08);
   b.paint(0xeeeeee, Surf.Plain);
   for (let x = -2; x <= 14; x += 3) line(b, x, -15.2, x, -11.5, 0.1, 0.09);

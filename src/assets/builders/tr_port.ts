@@ -8,11 +8,11 @@ import type { RNG } from '../../core/rng';
 import { lampPost, bench } from '../kit';
 import {
   flat, stripe, dashed, lightDot, floodMast, obox, vault, tree, carLite, semi, containerBlock, trackX, freightCar,
-  gantry, bollard, quadF, shade, CONTAINER_COLS, CAR_COLS, type V3,
+  gantry, bollard, quadF, shade, poolRect, poolSoft, CONTAINER_COLS, CAR_COLS, type V3,
 } from './tr_kit';
 
 const P = {
-  quay: 0xb0aca3,
+  quay: 0x9e9a91,
   yard: 0x4c4d50,
   yardLine: 0xe8e4d8,
   yellow: 0xf0c020,
@@ -119,6 +119,7 @@ function seaport(b: ModelBuilder, rng: RNG): void {
   b.paint(P.yardLine, Surf.Plain);
   dashed(b, -47, 35, 47, 35, 0.25, 0.2, 4, 3);
   // STS cranes (idle, booms raised)
+  poolRect(b, -47.5, 29, 47.5, 41, 0.175, P.quay, 0.6);
   stsCrane(b, -30, zl, zs, 0xc0392b, 80);
   stsCrane(b, -2, zl, zs, 0x2e6fb5, 84);
   stsCrane(b, 26, zl, zs, 0xc0392b, 78);
@@ -167,6 +168,9 @@ function seaport(b: ModelBuilder, rng: RNG): void {
   // floodlight masts
   for (const [x, z] of [[-24, 23.6], [14, 23.6], [-47, -26], [47, 8]] as [number, number][]) floodMast(b, x, z, 26, Math.abs(x) > 40 ? Math.PI / 2 : 0);
   lampPost(b, 22, -44, 6);
+  poolSoft(b, -41, -26, 6.5, 0.145, P.yard);
+  poolSoft(b, 41, 8, 6.5, 0.145, P.yard);
+  poolRect(b, 23, -41, 37, -35.5, 0.17, 0x404145, 0.95);
   tree(b, rng, 21.5, -30, 6);
 }
 
@@ -245,6 +249,7 @@ function ferryTerminal(b: ModelBuilder, rng: RNG): void {
   carLite(b, 13.8, -4, 0, 0xf1f1ef, 0.1);
   b.paint(0xe8e8e4, Surf.Metal).box(4, 3.4, -14.6, 16, 3.7, -11.4, { bottom: { color: 0xc8c4bc, surf: Surf.Plain } });
   b.paint(0xfff2d8, Surf.Emissive).box(4.5, 3.25, -13.2, 15.5, 3.4, -12.8, { top: null });
+  poolRect(b, 4, -14.6, 16, -11.4, 0.115, 0x3e3f43, 0.95);
   b.paint(0xd9d4c8, Surf.WallWindows, 6, 2.8).box(8.8, 0, -13.8, 10.2, 2.5, -12.2, { top: { color: 0x9a968e, surf: Surf.RoofFlat } });
   b.paint(0x5a5f64, Surf.Metal);
   for (const x of [4.3, 15.7]) b.box(x - 0.12, 0, -13.1, x + 0.12, 3.4, -12.9, { top: null, bottom: null });

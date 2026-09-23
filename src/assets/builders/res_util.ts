@@ -726,3 +726,17 @@ export function bay(
     capPoly(b, pts, y1, true);
   }
 }
+
+/**
+ * Projecting band whose top is only a ring (outer edge -> wall line), so it does not paint over the roof.
+ * If roof is given, a flat roof quad is drawn over the wall rect at the band top. 16 (+2) tris.
+ */
+export function bandRing(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, h: number, out: number, color: ColorLike, roof: ColorLike | null = null): void {
+  const X0 = x0 - out, X1 = x1 + out, Z0 = z0 - out, Z1 = z1 + out, y1 = y + h;
+  b.paint(color).box(X0, y, Z0, X1, y1, Z1, { top: null });
+  b.quad([X0, y1, Z1], [X1, y1, Z1], [x1, y1, z1], [x0, y1, z1]);
+  b.quad([X1, y1, Z0], [X0, y1, Z0], [x0, y1, z0], [x1, y1, z0]);
+  b.quad([X1, y1, Z1], [X1, y1, Z0], [x1, y1, z0], [x1, y1, z1]);
+  b.quad([X0, y1, Z0], [X0, y1, Z1], [x0, y1, z1], [x0, y1, z0]);
+  if (roof !== null) b.paint(roof, Surf.RoofFlat).quad([x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]);
+}

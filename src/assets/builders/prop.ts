@@ -9,7 +9,7 @@ import type { ModelBuilder, Paint } from '../ModelBuilder';
 import type { RNG } from '../../core/rng';
 import { Surf } from '../../core/types';
 import { limb, lathe, leafBlob, tintSince, mark, polyOut, quadOut, jitterHex, mixHex, type V3 } from './nat_geom';
-import { P, profileSolid, lamp, sideRect } from './veh_parts';
+import { P, profileSolid, lamp } from './veh_parts';
 
 const POLE = 0x3b4046; // dark grey-green painted steel
 const GALV = 0x9aa0a6; // galvanized steel
@@ -22,7 +22,7 @@ function lightArm(b: ModelBuilder, s: number, top: number) {
   limb(b, [[0, top - 0.5, 0], [s * 0.55, top + 0.05, 0], [s * 2.2, top + 0.22, 0]], [0.07, 0.06, 0.05], { seg: 4 });
   const x0 = s * 2.05, x1 = s * 3.05;
   b.paint(0x4a5057, Surf.Metal).box(x0, top + 0.02, -0.26, x1, top + 0.3, 0.26, { bottom: { color: 0x33373c, surf: Surf.Metal } });
-  b.paint(LAMP_WARM).box(x0 + s * 0.08, top - 0.1, -0.2, x1 - s * 0.1, top + 0.02, 0.2, { top: null, bottom: LAMP_WARM });
+  b.paint(LAMP_WARM).box(x0 + s * 0.08, top - 0.16, -0.22, x1 - s * 0.1, top + 0.02, 0.22, { top: null, bottom: LAMP_WARM });
 }
 
 /** Traffic signal head facing +Z (dir = 1) or +X (dir = 2); lit: 0 red, 1 amber, 2 green. 16 tris. */
@@ -55,12 +55,13 @@ const CONTAINER_COLS = [0x2a6fa8, 0xb84a2a, 0x3e7d4a, 0xd8a23a, 0x8a8f94, 0xc9cc
 
 /** Dirt lot + plywood hoarding around the 16 x 16 cell with a gate gap on the street (+Z) side. 40 tris. */
 function siteBase(b: ModelBuilder, rng: RNG) {
-  b.paint(0x8a6e4b, Surf.Plain).box(-8, 0, -8, 8, 0.08, 8);
+  b.paint(0x8a6e4b, Surf.Plain);
+  quadOut(b, [-8, 0.08, -8], [8, 0.08, -8], [8, 0.08, 8], [-8, 0.08, 8], [0, 1, 0]);
   b.paint(0x7a5f40, Surf.Plain);
   quadOut(b, [rng.range(-6, -2), 0.085, rng.range(-6, -2)], [rng.range(2, 6), 0.085, rng.range(-7, -3)], [rng.range(3, 7), 0.085, rng.range(2, 6)], [rng.range(-7, -3), 0.085, rng.range(1, 5)], [0, 1, 0]);
   const t = 0.07, h = 2.0;
   b.paint(0xc4ab7e, Surf.Wood);
-  const nz = { nz: null, pz: null }, nx = { nx: null, px: null };
+  const nz = { nz: null, pz: null, top: null }, nx = { nx: null, px: null, top: null };
   b.box(-8, 0, -8, -8 + t, h, 8, nz);
   b.box(8 - t, 0, -8, 8, h, 8, nz);
   b.box(-8 + t, 0, -8, 8 - t, h, -8 + t, nx);
@@ -251,24 +252,24 @@ export const models: ModelBuilders = {
   },
 
   // Construction site dressing filling the cell: dirt, hoarding with gate on +Z; v0 tower crane, v1 concrete frame with
-  // scaffolding, v2 excavation with excavator + pile rig. ~150-200 tris.
+  // scaffolding, v2 excavation with excavator + pile rig. <= 200 tris.
   construction_site(b, v, rng) {
     siteBase(b, rng);
     const yel = P(0xe8b421, Surf.Metal);
+    const WARN = P(0xff3020, Surf.Emissive);
     if (v === 0) {
       // foundation slab + column stubs
       b.paint(CONCRETE, Surf.Pavement).box(-5, 0.08, -2, 5, 0.5, 6);
       b.paint(0x9d998f, Surf.Plain);
-      for (const [x, z] of [[-4.5, -1.5], [4.5, -1.5], [-4.5, 5.5]]) b.box(x - 0.3, 0.5, z - 0.3, x + 0.3, 3.2, z + 0.3, { bottom: null });
-      // tower crane at (-5,-5): mast, slewing unit/cab, jib along +X, counter-jib, tower head, ties, hook + load
+      for (const [x, z] of [[-4.5, -1.5], [4.5, -1.5]]) b.box(x - 0.3, 0.5, z - 0.3, x + 0.3, 3.2, z + 0.3, { bottom: null });
+      // tower crane at (-5,-5): mast, slewing unit, cab, jib along +X, counter-jib + counterweight, tower head, ties, hook + load
       const mx = -5.2, mz = -5.2, H = 21;
       b.paint(yel).box(mx - 0.8, 0.08, mz - 0.8, mx + 0.8, H, mz + 0.8);
-      b.paint(0x3a3d42, Surf.Metal).box(mx - 1.4, 0, mz - 1.4, mx + 1.4, 0.7, mz + 1.4, { bottom: null });
-      b.paint(yel).box(mx - 1.0, H, mz - 1.0, mx + 1.0, H + 1.0, mz + 1.0);
+      b.paint(yel).box(mx - 1.0, H, mz - 1.0, mx + 1.0, H + 1.0, mz + 1.0, { bottom: null });
       b.paint(0xf2f0ea, Surf.Plain).box(mx + 1.0, H - 0.6, mz - 0.1, mx + 2.4, H + 0.8, mz + 1.0, { pz: { color: 0x2a3440, surf: Surf.Metal } });
       b.paint(yel).box(mx - 0.5, H + 1.0, mz - 0.5, mx + 13.0, H + 2.0, mz + 0.5);
       b.box(mx - 7.5, H + 1.0, mz - 0.7, mx - 0.5, H + 1.7, mz + 0.7);
-      b.paint(0x8a8a86, Surf.Pavement).box(mx - 7.4, H - 0.8, mz - 0.8, mx - 5.2, H + 1.0, mz + 0.8);
+      b.paint(0x8a8a86, Surf.Pavement).box(mx - 7.4, H - 0.8, mz - 0.8, mx - 5.2, H + 1.0, mz + 0.8, { top: null });
       b.paint(yel);
       b.pyramid(mx, mz, 1.0, 1.0, H + 2.0, 3.8);
       b.paint(0x55585c, Surf.Metal);
@@ -276,125 +277,130 @@ export const models: ModelBuilders = {
       b.beam([mx, H + 5.7, mz], [mx - 7.2, H + 1.7, mz], 0.08);
       const hx = mx + 8.5;
       b.beam([hx, H + 1.0, mz], [hx, 7.0, mz], 0.05);
-      b.paint(yel).box(hx - 0.35, 6.4, mz - 0.35, hx + 0.35, 7.0, mz + 0.35);
+      b.paint(yel).box(hx - 0.35, 6.4, mz - 0.35, hx + 0.35, 7.0, mz + 0.35, { bottom: null });
       b.paint(0x7a5a3a, Surf.Wood).box(hx - 1.6, 5.0, mz - 0.6, hx + 1.6, 5.6, mz + 0.6);
-      b.paint(0x55585c, Surf.Metal);
-      b.beam([hx - 1.5, 5.6, mz], [hx, 6.4, mz], 0.04);
-      b.beam([hx + 1.5, 5.6, mz], [hx, 6.4, mz], 0.04);
+      // aviation warning light on the tower head
+      b.paint(WARN).box(mx - 0.12, H + 5.8, mz - 0.12, mx + 0.12, H + 6.05, mz + 0.12, { bottom: null });
       siteOffice(b, 4.5, -6.3);
       portaloo(b, 6.9, 2.5);
-      b.paint(0x6a6e73, Surf.Metal).box(1.0, 0.08, -4.2, 4.0, 0.5, -3.2);
     } else if (v === 1) {
       // 3-storey concrete frame with slabs, columns, scaffolding + netting on the street side
       const x0 = -5.5, x1 = 5.5, z0 = -5.5, z1 = 3.5, fh = 3.2;
       b.paint(CONCRETE, Surf.Pavement);
       for (let f = 0; f < 3; f++) b.box(x0, f * fh + (f === 0 ? 0.08 : 0), z0, x1, f * fh + 0.3 + (f === 0 ? 0.08 : 0), z1);
       b.paint(0x9d998f, Surf.Plain);
-      for (const [x, z] of [[x0 + 0.3, z0 + 0.3], [x1 - 0.3, z0 + 0.3], [x0 + 0.3, z1 - 0.3], [x1 - 0.3, z1 - 0.3], [0, z0 + 0.3], [0, z1 - 0.3]]) {
-        b.box(x - 0.25, 0.3, z - 0.25, x + 0.25, 2 * fh + 0.3 + (x === 0 ? 1.4 : 2.6), z + 0.25, { bottom: null });
+      for (const [x, z, h] of [[x0 + 0.3, z0 + 0.3, 2.6], [x1 - 0.3, z0 + 0.3, 1.2], [x0 + 0.3, z1 - 0.3, 2.6], [x1 - 0.3, z1 - 0.3, 2.6]]) {
+        b.box(x - 0.25, 0.3, z - 0.25, x + 0.25, 2 * fh + 0.3 + h, z + 0.25, { bottom: null });
       }
-      // partial walls on the lower floor (block masonry)
+      // block masonry wall going up on the ground floor
       b.paint(0xb9b2a4, Surf.Stone).box(x0 + 0.1, 0.38, z0 + 0.05, x1 - 0.1, fh, z0 + 0.3);
-      b.box(x0 + 0.05, 0.38, z0 + 0.3, x0 + 0.3, fh, z1 - 3, { nz: null, pz: null });
-      // scaffolding on +Z face and +X face
+      // scaffolding on the +Z face: standards, ledgers, plank decks
       b.paint(0xc8ccd0, Surf.Metal);
       const sz = z1 + 1.1;
-      for (let i = 0; i <= 4; i++) b.beam([x0 + i * (x1 - x0) / 4, 0.08, sz], [x0 + i * (x1 - x0) / 4, 3 * fh + 1.0, sz], 0.07);
+      for (let i = 0; i <= 3; i++) b.beam([x0 + i * (x1 - x0) / 3, 0.08, sz], [x0 + i * (x1 - x0) / 3, 3 * fh + 1.0, sz], 0.07);
       for (let f = 1; f <= 3; f++) b.beam([x0, f * fh + 0.2, sz], [x1, f * fh + 0.2, sz], 0.06);
-      b.beam([x0, 0.3, sz], [x1, 3 * fh, sz], 0.05);
-      b.paint(0x8a6a42, Surf.Wood);
-      for (let f = 1; f <= 3; f++) b.box(x0, f * fh + 0.14, z1 + 0.35, x1, f * fh + 0.2, sz, { bottom: null, nz: null });
+      for (let f = 1; f <= 3; f++) topQuadP(b, x0, z1 + 0.35, x1, sz, f * fh + 0.18, P(0x8a6a42, Surf.Wood));
       // green safety netting along +X side (double sided)
       b.paint(0x3f7a4a, Surf.Plain);
       const nx = x1 + 1.0;
       quadOut(b, [nx, 0.5, z0], [nx, 0.5, z1], [nx, 3 * fh + 0.6, z1], [nx, 3 * fh + 0.6, z0], [1, 0, 0]);
       quadOut(b, [nx, 0.5, z0], [nx, 0.5, z1], [nx, 3 * fh + 0.6, z1], [nx, 3 * fh + 0.6, z0], [-1, 0, 0]);
-      // pallets of blocks + rebar bundle
+      // pallets of blocks
       b.paint(0xb9b2a4, Surf.Stone).box(-7.0, 0.08, 5.2, -5.4, 1.2, 6.6);
-      b.paint(0x6e4a34, Surf.Metal).box(1.0, 0.08, 5.6, 6.5, 0.4, 6.4);
       portaloo(b, 6.8, -6.8);
     } else {
-      // excavation pit, spoil heap, excavator, bored piles and a pile rig
-      b.paint(0x6a5238, Surf.Plain).box(-6.5, 0.02, -6.5, 3.0, 0.1, 2.5);
-      b.paint(0x8e7a5a, Surf.Pavement).box(-6.0, 0.1, -6.0, 2.5, 0.12, 2.0, { nx: null, px: null, nz: null, pz: null });
+      // excavation pit, spoil heap, bored piles, pile rig, excavator
+      b.paint(0x6a5238, Surf.Plain);
+      quadOut(b, [-6.5, 0.1, -6.5], [3.0, 0.1, -6.5], [3.0, 0.1, 2.5], [-6.5, 0.1, 2.5], [0, 1, 0]);
       const m = mark(b);
       b.paint(0x7a5c3c, Surf.Plain);
       leafBlob(b, rng, [5.2, 0.3, -4.8], [2.4, 1.6, 2.2], { jitter: 0.2, soft: 0.3, floorY: 0.06 });
       tintSince(b, m, (p) => { const k = 0.8 + 0.2 * Math.min(1, p[1] / 1.6); return [k, k, k]; });
-      // piles
       b.paint(CONCRETE, Surf.Plain);
-      for (const [x, z] of [[-4.5, -4.5], [-1.5, -4.5], [1.2, -4.5], [-4.5, -1.2], [-1.5, -1.2]]) limb(b, [[x, 0.1, z], [x, 1.1, z]], [0.4, 0.4], { seg: 5, cap: true });
-      // pile rig
+      for (const [x, z] of [[-4.5, -4.5], [-1.5, -4.5], [1.2, -4.5], [-4.5, -1.2]]) limb(b, [[x, 0.1, z], [x, 1.1, z]], [0.4, 0.4], { seg: 4, cap: true, rot: 0.4 });
       b.paint(0x3a3d42, Surf.Metal).box(-5.2, 0.1, 0.4, -3.2, 0.8, 1.9);
       b.paint(yel).box(-4.7, 0.8, 0.5, -3.3, 2.4, 1.8);
       b.box(-4.65, 2.4, 0.55, -4.25, 15.5, 0.95, { bottom: null });
-      b.paint(0x55585c, Surf.Metal).beam([-4.45, 15.4, 0.75], [-4.45, 1.1, -1.0], 0.05);
-      // excavator (tracks, house, boom, stick, bucket) digging toward the pit
+      b.paint(WARN).box(-4.55, 15.5, 0.65, -4.35, 15.7, 0.85, { bottom: null });
       b.push().translate(3.8, 0.1, 3.4).rotateY(-2.3);
       b.paint(0x2a2b2e, Surf.Metal);
       b.box(-1.5, 0, -2.0, -0.9, 0.8, 2.0, { bottom: null });
       b.box(0.9, 0, -2.0, 1.5, 0.8, 2.0, { bottom: null });
-      b.paint(yel).box(-1.2, 0.8, -1.6, 1.2, 1.9, 1.2);
+      b.paint(yel).box(-1.2, 0.8, -1.6, 1.2, 1.9, 1.2, { bottom: null });
       b.paint(0x2a3440, Surf.Metal).box(-1.15, 1.9, 0.2, -0.1, 2.9, 1.2, { bottom: null });
       b.paint(yel);
       b.beam([0.4, 1.6, 1.0], [0.4, 3.8, 3.6], 0.35);
       b.beam([0.4, 3.8, 3.6], [0.4, 1.2, 5.2], 0.25);
       b.paint(0x3a3c40, Surf.Metal).box(-0.2, 0.2, 4.8, 1.0, 1.2, 5.6);
       b.pop();
-      portaloo(b, 6.9, 1.2);
     }
   },
 
-  // Burnt debris filling the cell: ash ground, charred heaps, broken scorched walls, fallen beams. v1 concrete + burnt car.
+  // Burnt-out lot filling the cell: ash ground, rounded debris heaps, scorched broken walls, fallen charred beams,
+  // tumbled blocks. v0 brick/wood fire ruin, v1 concrete ruin with rebar and a burnt car. <= 200 tris.
   rubble(b, v, rng) {
-    b.paint(0x4a4440, Surf.Plain).box(-8, 0, -8, 8, 0.06, 8);
+    b.paint(0x4a4440, Surf.Plain);
+    quadOut(b, [-8, 0.05, -8], [8, 0.05, -8], [8, 0.05, 8], [-8, 0.05, 8], [0, 1, 0]);
     b.paint(0x2c2826, Surf.Plain);
-    polyOut(b, [[rng.range(-7, -4), 0.065, rng.range(-7, -3)], [rng.range(3, 6), 0.065, rng.range(-7.5, -5)], [rng.range(5, 7.5), 0.065, rng.range(0, 4)], [rng.range(0, 3), 0.065, rng.range(5, 7.5)], [rng.range(-7, -4), 0.065, rng.range(3, 6)]], [0, 1, 0]);
-    const heapCols = v === 0 ? [0x2b2724, 0x5e3528, 0x3a3430, 0x6b3a2c] : [0x6e6a64, 0x57534e, 0x7c776f, 0x2e2a28];
+    polyOut(b, [[rng.range(-7, -4), 0.06, rng.range(-7, -3)], [rng.range(3, 6), 0.06, rng.range(-7.5, -5)], [rng.range(5, 7.5), 0.06, rng.range(0, 4)], [rng.range(0, 3), 0.06, rng.range(5, 7.5)], [rng.range(-7, -4), 0.06, rng.range(3, 6)]], [0, 1, 0]);
+    const heapCols = v === 0 ? [0x2c2724, 0x3b322d, 0x4a3a30, 0x563428, 0x34302c] : [0x625e58, 0x53504b, 0x6f6a64, 0x3a3734];
     const m = mark(b);
+    // broken walls along the old building's back (-Z) and left (-X) sides
+    const wallPaint = v === 0 ? P(0x7a4432, Surf.Brick) : P(0x7e7a72, Surf.Plain);
+    b.push().translate(-5.8, 0, -1.2);
+    brokenWall(b, rng, 8.6, 2.3, 0.18, wallPaint);
+    b.pop();
+    b.push().translate(-1.6, 0, -5.8).rotateY(Math.PI / 2);
+    brokenWall(b, rng, 7.8, 1.8, 0.18, wallPaint);
+    b.pop();
+    // soot: walls darken toward their broken tops
+    tintSince(b, m, (p) => { const k = 1 - 0.55 * Math.min(1, p[1] / 2.3); return [k, k * 0.96, k * 0.93]; });
+    const m2 = mark(b);
     const heaps: [number, number, number, number, number][] = v === 0
-      ? [[-2.5, -2.0, 3.6, 1.5, 3.0], [2.8, 0.8, 3.0, 1.2, 2.6], [-1.0, 3.8, 2.6, 0.9, 2.2], [4.6, -4.4, 2.2, 0.8, 2.0]]
-      : [[-1.5, -1.0, 4.0, 1.7, 3.2], [3.4, 2.6, 2.6, 1.0, 2.4], [-4.2, 3.6, 2.4, 0.8, 2.0]];
+      ? [[-2.4, -2.2, 3.4, 1.3, 2.8], [2.6, 1.0, 2.8, 1.0, 2.4], [-1.2, 3.6, 2.2, 0.75, 1.9]]
+      : [[-1.5, -1.4, 3.8, 1.5, 3.0], [3.2, 2.4, 2.5, 0.95, 2.2], [-4.0, 3.6, 2.2, 0.7, 1.8]];
     for (const [x, z, rx, ry, rz] of heaps) {
       b.paint(rng.pick(heapCols), Surf.Plain);
-      leafBlob(b, rng, [x, ry * 0.25, z], [rx, ry, rz], {
-        jitter: 0.3,
-        soft: 0.15,
+      leafBlob(b, rng, [x, ry * 0.2, z], [rx, ry, rz], {
+        jitter: 0.16,
+        soft: 0.55,
         floorY: 0.06,
-        faceColor: () => (rng.chance(0.55) ? jitterHex(rng, rng.pick(heapCols), 0.1) : null),
+        faceColor: () => (rng.chance(0.5) ? jitterHex(rng, rng.pick(heapCols), 0.08) : null),
       });
     }
-    // broken walls (L corner) — scorched dark toward the top
-    const wallPaint = v === 0 ? P(0x6a3a2c, Surf.Brick) : P(0x8e8a82, Surf.Plain);
-    b.push().translate(-5.6, 0, -1.0);
-    brokenWall(b, rng, 9.0, 2.2, 0.15, wallPaint);
-    b.pop();
-    b.push().translate(-1.4, 0, -5.6).rotateY(Math.PI / 2);
-    brokenWall(b, rng, 7.6, 1.9, 0.15, wallPaint);
-    b.pop();
-    if (v === 1) {
-      b.push().translate(5.6, 0, 3.2);
-      brokenWall(b, rng, 5.0, 1.4, 0.15, wallPaint);
+    tintSince(b, m2, (p) => { const k = 0.7 + 0.3 * Math.min(1, p[1] / 1.4); return [k, k, k]; });
+    // tumbled blocks / bricks chunks
+    for (let i = 0; i < 4; i++) {
+      const x = rng.range(-6, 6), z = rng.range(-6, 6);
+      b.push().translate(x, 0.05, z).rotateY(rng.range(0, Math.PI)).rotateX(rng.range(-0.4, 0.4));
+      b.paint(v === 0 ? rng.pick([0x6b3a2c, 0x3a3430, 0x7a4432]) : rng.pick([0x8e8a82, 0x6e6a64]), v === 0 ? Surf.Brick : Surf.Plain);
+      const s = rng.range(0.5, 0.9);
+      b.box(-s, -0.1, -s * 0.6, s, s * 0.7, s * 0.6);
       b.pop();
     }
-    tintSince(b, m, (p) => { const k = 0.55 + 0.45 * Math.max(0, 1 - p[1] / 2.2); return [k, k * 0.97, k * 0.95]; });
-    // fallen charred beams / rebar
+    // fallen charred beams (v0) / twisted rebar (v1)
     b.paint(v === 0 ? 0x1f1b19 : 0x5a3a2a, v === 0 ? Surf.Wood : Surf.Metal);
-    const nBeams = v === 0 ? 4 : 5;
+    const nBeams = v === 0 ? 4 : 3;
     for (let i = 0; i < nBeams; i++) {
-      const x = rng.range(-5, 5), z = rng.range(-5, 5), a = rng.range(0, Math.PI), L = rng.range(3, 5.5);
-      const dx = Math.cos(a) * L / 2, dz = Math.sin(a) * L / 2;
-      b.beam([x - dx, rng.range(0.05, 0.3), z - dz], [x + dx, rng.range(0.4, 1.3), z + dz], v === 0 ? 0.22 : 0.06);
+      const [hx, hz] = rng.pick(heaps);
+      const x = hx + rng.range(-1.5, 1.5), z = hz + rng.range(-1.5, 1.5), a = rng.range(0, Math.PI), L = rng.range(3, 5);
+      const dx = (Math.cos(a) * L) / 2, dz = (Math.sin(a) * L) / 2;
+      b.beam([x - dx, rng.range(0.1, 0.4), z - dz], [x + dx, rng.range(0.6, 1.5), z + dz], v === 0 ? 0.24 : 0.06);
     }
     if (v === 1) {
-      // burnt-out car shell
-      b.push().translate(4.2, 0.06, -4.6).rotateY(0.6);
+      b.push().translate(4.6, 0.05, -4.4).rotateY(0.6);
       b.paint(0x2a2522, Surf.Metal).box(-0.9, 0.2, -2.2, 0.9, 0.95, 2.2);
-      b.paint(0x1a1716, Surf.Metal).box(-0.8, 0.95, -1.0, 0.8, 1.35, 0.9);
+      b.paint(0x1a1716, Surf.Metal).box(-0.8, 0.95, -1.0, 0.8, 1.35, 0.9, { bottom: null });
       b.pop();
     }
   },
 };
+
+/** Up-facing quad helper. */
+function topQuadP(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, paint: Paint) {
+  b.paint(paint);
+  quadOut(b, [x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1], [0, 1, 0]);
+}
 
 /** Emissive ad background quad on the +Z panel face. */
 function ad(b: ModelBuilder, x0: number, x1: number, y0: number, y1: number, z: number, col: number) {
@@ -416,4 +422,3 @@ function adCircle(b: ModelBuilder, cx: number, cy: number, r: number, z: number,
   polyOut(b, pts, [0, 0, 1]);
 }
 
-void sideRect;

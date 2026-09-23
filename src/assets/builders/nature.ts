@@ -26,7 +26,7 @@ const PALM_BARK_DARK = 0x6f5c45;
 const LEAF_OAK = [0x4d7b2d, 0x5a8534, 0x44732b, 0x3d6828];
 const LEAF_MAPLE = [0x5f8e37, 0xd4782a, 0xb8382a];
 const LEAF_MAPLE_ALT = [0x6c9a3c, 0xe2a23a, 0xcf5a2a];
-const LEAF_BIRCH = [0x7fa848, 0x8cb04c, 0x76a043];
+const LEAF_BIRCH = [0x729c40, 0x7ea545, 0x6a963e];
 const LEAF_PINE = [0x3f6a30, 0x3a6233, 0x46713a, 0x37602f];
 const LEAF_SPRUCE = [0x2c4e2c, 0x4b6558, 0x325831];
 const LEAF_PALM = [0x4f8030, 0x5a8a36, 0x4c7a33];
@@ -120,28 +120,31 @@ export const models: ModelBuilders = {
       : [{ top: [rng.range(-0.4, 0.4), H * 0.84, rng.range(-0.4, 0.4)], r: 0.2 }];
     b.paint(BIRCH_BARK, Surf.Wood);
     for (const s of stems) {
-      const mid: V3 = [s.top[0] * 0.4 + rng.range(-0.15, 0.15), s.top[1] * 0.5, s.top[2] * 0.4 + rng.range(-0.15, 0.15)];
-      limb(b, [[s.top[0] * 0.1, -0.4, s.top[2] * 0.1], mid, s.top], [s.r, s.r * 0.75, s.r * 0.4], { seg: 4 });
+      if (stems.length > 1) limb(b, [[s.top[0] * 0.1, -0.4, s.top[2] * 0.1], s.top], [s.r, s.r * 0.45], { seg: 4 });
+      else {
+        const mid: V3 = [s.top[0] * 0.4 + rng.range(-0.15, 0.15), s.top[1] * 0.5, s.top[2] * 0.4 + rng.range(-0.15, 0.15)];
+        limb(b, [[s.top[0] * 0.1, -0.4, s.top[2] * 0.1], mid, s.top], [s.r, s.r * 0.75, s.r * 0.4], { seg: 4 });
+      }
     }
     // dark base band (birch trunks are dark & rough at the bottom)
     b.paint(0x4a4540, Surf.Wood);
     limb(b, [[stems[0].top[0] * 0.1, -0.4, stems[0].top[2] * 0.1], [stems[0].top[0] * 0.14, 0.9, stems[0].top[2] * 0.14]], [stems[0].r * 1.12, stems[0].r * 1.02], { seg: 4 });
     const m = mark(b);
-    // tall central ellipsoid + 3 offset clumps hanging off it (narrow, airy, slightly drooping silhouette)
-    const y0 = H * 0.4, y1 = H;
+    // oval main crown + 3 lower side clumps hanging off it (airy, slightly weeping silhouette)
+    const y0 = H * 0.38, y1 = H;
     const main = stems[0].top;
-    const cy = H * 0.66;
-    const nc: V3 = [main[0] * 0.8, cy, main[2] * 0.8];
+    const cy = H * 0.64;
+    const cx = (stems.length > 1 ? 0 : main[0] * 0.8), cz = (stems.length > 1 ? 0 : main[2] * 0.8);
+    const nc: V3 = [cx, cy - H * 0.05, cz];
     b.paint(jitterHex(rng, LEAF_BIRCH[v], 0.06), Surf.Foliage);
-    leafBlob(b, rng, [main[0] * 0.8, cy, main[2] * 0.8], [1.55, H * 0.3, 1.45], { jitter: 0.14, soft: 0.6, nc });
+    leafBlob(b, rng, [cx, cy, cz], [1.75, H * 0.3, 1.6], { jitter: 0.15, soft: 0.6, nc });
     const a0 = rng.range(0, Math.PI * 2);
     for (let i = 0; i < 3; i++) {
       const a = a0 + i * 2.1 + rng.range(-0.3, 0.3);
-      const s = stems[i % stems.length].top;
-      const y = H * (0.5 + 0.13 * i) + rng.range(-0.4, 0.4);
-      const d = 1.0 - 0.15 * i;
+      const y = H * (0.47 + 0.09 * i) + rng.range(-0.3, 0.3);
+      const d = 1.35 - 0.12 * i;
       b.paint(jitterHex(rng, LEAF_BIRCH[(v + i) % 3], 0.08), Surf.Foliage);
-      leafBlob(b, rng, [s[0] * (y / s[1]) + Math.cos(a) * d, y, s[2] * (y / s[1]) + Math.sin(a) * d], [1.25 - 0.15 * i, 1.7, 1.2 - 0.15 * i], { jitter: 0.18, soft: 0.6, nc });
+      leafBlob(b, rng, [cx + Math.cos(a) * d, y, cz + Math.sin(a) * d], [1.2 - 0.1 * i, 1.6, 1.15 - 0.1 * i], { jitter: 0.18, soft: 0.6, nc });
     }
     tintSince(b, m, foliageShade(y0, y1, 0.9, 0.3));
   },
@@ -354,7 +357,7 @@ export const models: ModelBuilders = {
 
   // Rocks: v0 boulder, v1 cluster of 3, v2 big boulder, v3 mossy pair. Faceted, sunk into the ground. 40-80 tris.
   rock(b, v, rng) {
-    const greys = [0x7b7973, 0x75695e, 0x817c75, 0x66645f];
+    const greys = [0x6e6c67, 0x6b6056, 0x74706a, 0x5d5b56];
     const moss = 0x56693a;
     const rockBlob = (c: V3, r: V3, detail: number, col: number, mossy: number) => {
       b.paint(jitterHex(rng, col, 0.05), Surf.Plain);

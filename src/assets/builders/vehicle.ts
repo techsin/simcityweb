@@ -9,10 +9,9 @@
  */
 import type { ModelBuilders } from '../registry';
 import type { ModelBuilder, Paint } from '../ModelBuilder';
-import type { RNG } from '../../core/rng';
 import { Surf } from '../../core/types';
 import { P, profileSolid, axle, lamp, sideRect, sideQuad, topQuad, arch, CAR_PAINT, CAR_GLASS, HEAD, TAIL, AMBER, TRIM, CHASSIS, TIRE, type PP } from './veh_parts';
-import { limb, lathe, triOut, quadOut, polyOut, vnorm, type V3 } from './nat_geom';
+import { limb, triOut, quadOut, polyOut, vnorm, type V3 } from './nat_geom';
 
 const GLASS_LIT = P(0x2a3440, Surf.GlassPlain);
 const GRILLE = P(0x1a1b1d, Surf.Metal);
@@ -373,7 +372,7 @@ export const models: ModelBuilders = {
       if (v === 0) sideRect(b, 1.292, -7.9, 3.1, 1.36, 1.46, P(0xc8322a)); // reflective stripe
     } else {
       b.paint(CHASSIS, Surf.Metal).box(-1.2, 1.1, -8.0, 1.2, 1.32, 3.1);
-      b.paint([0x2a6fa8, 0xb84a2a, 0x3e7d4a][1], Surf.Corrugated).box(-1.22, 1.32, -7.6, 1.22, 3.92, 2.6);
+      b.paint(0xb84a2a, Surf.Corrugated).box(-1.22, 1.32, -7.6, 1.22, 3.92, 2.6, { px: { color: 0x8e3a22, surf: Surf.Corrugated }, nz: { color: 0x8e3a22, surf: Surf.Corrugated } });
     }
     b.paint(CHASSIS, Surf.Metal).box(-0.9, 0.95, -7.9, 0.9, 1.3, 2.6, { top: null, pz: null });
     lamp(b, 0.9, 1.2, 1.4, 1.7, -8.07, -1, TAIL);
@@ -647,8 +646,9 @@ export const models: ModelBuilders = {
       // motorboat ~8 m
       hull(b, 8.2, 1.3, 1.0, -0.45, 0xf4f4f0, 0x1f4f8a);
       b.paint(0xf4f4f0, Surf.Plain).box(-1.0, 1.0, 0.2, 1.0, 1.55, 2.2, { top: { color: 0xe8e2d0, surf: Surf.Plain } });
-      b.paint(0x2a3440, Surf.GlassPlain);
+      b.paint(CAR_GLASS);
       quadOut(b, [-1.0, 1.55, 0.25], [1.0, 1.55, 0.25], [0.9, 2.1, -0.15], [-0.9, 2.1, -0.15], [0, 0.6, 1]);
+      quadOut(b, [-1.0, 1.55, 0.25], [1.0, 1.55, 0.25], [0.9, 2.1, -0.15], [-0.9, 2.1, -0.15], [0, -0.6, -1]);
       b.paint(0x9a7a52, Surf.Wood).slab(-1.05, -3.6, 1.05, 0.1, 0.06, 1.0);
       b.paint(0x303236, Surf.Metal).box(-0.35, 0.2, -4.35, 0.35, 1.15, -3.95);
     } else if (v === 1) {

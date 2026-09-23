@@ -363,14 +363,18 @@ export class SkySystem {
   }
 
   /** compute sun / moon directions for hour (0..24) and day of year (0..359) */
+  /**
+   * Gameplay-friendly solar model: solar noon at 12:45 (like daylight saving time), gentle seasons
+   * (sunrise ~6:10 / sunset ~19:20 in summer, ~7:10 / 18:20 in winter).
+   */
   static sunDirection(hour: number, dayOfYear: number, out: THREE.Vector3): THREE.Vector3 {
-    const decl = THREE.MathUtils.degToRad(23.44 * 0.75) * Math.sin(((2 * Math.PI) / 360) * (dayOfYear - 80));
-    const H = ((hour - 12) / 24) * Math.PI * 2;
+    const decl = THREE.MathUtils.degToRad(23.44 * 0.35) * Math.sin(((2 * Math.PI) / 360) * (dayOfYear - 80)) + THREE.MathUtils.degToRad(3);
+    const H = ((hour - 12.75) / 24) * Math.PI * 2;
     return SkySystem.celestial(H, decl, out);
   }
   static moonDirection(hour: number, dayOfYear: number, out: THREE.Vector3): THREE.Vector3 {
-    const decl = -THREE.MathUtils.degToRad(23.44 * 0.75) * Math.sin(((2 * Math.PI) / 360) * (dayOfYear - 80)) + 0.12;
-    const H = ((hour - 12) / 24) * Math.PI * 2 + Math.PI + 0.35;
+    const decl = -THREE.MathUtils.degToRad(23.44 * 0.35) * Math.sin(((2 * Math.PI) / 360) * (dayOfYear - 80)) + 0.1;
+    const H = ((hour - 12.75) / 24) * Math.PI * 2 + Math.PI + 0.35;
     return SkySystem.celestial(H, decl, out);
   }
   private static celestial(H: number, decl: number, out: THREE.Vector3): THREE.Vector3 {

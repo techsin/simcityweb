@@ -39,7 +39,8 @@ import {
   PRICE_MAX, PRICE_UP, REGIONAL_FILL, REGIONAL_TIME, SHOP_PCU_WEIGHT, SHOP_TRIPS_PER_RES, STOP_CAP_BUS,
   STOP_CAP_SUBWAY, STOP_CAP_TRAIN, STOP_WALK_RADIUS, STOP_WALK_TIME_PER_CELL, SUBWAY_TIME, TRAFFIC_CYCLE_DAYS,
   TRAFFIC_FRAME_BUDGET_MS, TRANSIT_BIAS, TRUCK_PCU, WAIT_BUS, WAIT_SUBWAY, WAIT_TRAIN, WALK_BIAS, WALK_MAX_CELLS,
-  WALK_TIME_PER_CELL, WORKER_SHARE, DEST_NOISE, RESULT_SMOOTH,
+  WALK_TIME_PER_CELL, WORKER_SHARE, DEST_NOISE, RESULT_SMOOTH, REGION_JOB_MIN, REGION_JOB_SHARE, REGION_WORKER_MIN,
+  REGION_WORKER_SHARE,
 } from './params';
 import { Search, Seeds, accumulate, roadSearch, transitSearch, type TransitNet } from './search';
 import { collectStops, type StopList } from './transit';
@@ -202,6 +203,7 @@ export class TrafficSystem implements SimSystem {
   private nsDist: Float32Array<ArrayBuffer> = new Float32Array(64);
   private jConnType: Uint8Array<ArrayBuffer> = new Uint8Array(0);
   private growth = 1;
+  private regionWorkerCap = 0;
 
   // persistent by building id
   private priceById: Float32Array<ArrayBuffer> = new Float32Array(1024);
@@ -601,6 +603,18 @@ export class TrafficSystem implements SimSystem {
       this.entN++;
     }
     this.oN = oN; this.jN = jN; this.sN = sN; this.fN = fN; this.kN = kN;
+    // global regional caps (scale connection slots)
+    let workers = 0, citySlots = 0, connSlots = 0;
+    for (let o = 0; o < oN; o++) workers += this.oW[o];
+    for (let j = 0; j < this.jB; j++) citySlots += this.jSlots[j];
+    for (let j = this.jB; j < jN; j++) connSlots += this.jSlots[j];
+    const sd = st.systemData;
+    const regionJobs = typeof sd.regionJobs === 'number' ? (sd.regionJobs as number) : REGION_JOB_SHARE * workers + REGION_JOB_MIN;
+    if (connSlots > regionJobs && connSlots > 0) {
+      const f = regionJobs / connSlots;
+      for (let j = this.jB; j < jN; j++) this.jSlots[j] *= f;
+    }
+    this.regionWorkerCap = typeof sd.regionWorkers === 'number' ? (sd.regionWorkers as number) : REGION_WORKER_SHARE * citySlots + REGION_WORKER_MIN;
     // per-cycle result arrays
     this.oCarNode = growI32(this.oCarNode, oN); this.oBoard = growI32(this.oBoard, oN);
     this.oShC = growF32(this.oShC, oN); this.oShT = growF32(this.oShT, oN); this.oShW = growF32(this.oShW, oN);
@@ -953,9 +967,12 @@ export class TrafficSystem implements SimSystem {
       connSum[src[bn]] += desire[j];
     }
     const scale = new Float32Array(conns.length);
+    let capSum = 0;
+    for (let k = 0; k < conns.length; k++) capSum += CONNECTION_WORKERS[this.jConnType[conns[k]]] * this.growth;
+    const capMul = capSum > this.regionWorkerCap ? this.regionWorkerCap / capSum : 1;
     for (let k = 0; k < conns.length; k++) {
       const j = conns[k];
-      const capW = CONNECTION_WORKERS[this.jConnType[j]] * this.growth;
+      const capW = CONNECTION_WORKERS[this.jConnType[j]] * this.growth * capMul;
       scale[k] = connSum[k] > capW ? capW / connSum[k] : 1;
     }
     const acc = this.acc;

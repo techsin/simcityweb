@@ -210,6 +210,7 @@ export class WorldView implements WorldViewApi {
       ev.on('buildingAdded', (b) => cells(bRect(b))),
       ev.on('buildingRemoved', (b) => cells(bRect(b))),
       ev.on('layerUpdated', (name) => this.terrain.onLayerUpdated(name)),
+      ev.on('month', () => this.trees.setMonth(this.state.month)),
       ev.on('reset', () => this.setState(this.state)),
     );
   }
@@ -328,13 +329,13 @@ export class WorldView implements WorldViewApi {
     const h = this._time;
     const d = this.cameraController.distance;
     const climate = this.state.config.climate;
-    const hazeBase = climate === 'desert' ? 4.2e-5 : climate === 'tropical' ? 3.6e-5 : climate === 'alpine' ? 1.4e-5 : 2.6e-5;
+    const hazeBase = climate === 'desert' ? 1.6e-4 : climate === 'tropical' ? 1.35e-4 : climate === 'alpine' ? 0.6e-4 : 1.05e-4;
     // morning mist (5..9h), thin at noon, a bit of evening haze
     const mist = Math.max(0, 1 - Math.abs(h - 6.8) / 2.6);
     f.uFogOn.value = 1;
     f.uFogStart.value = d * 0.65;
-    f.uFogDensity.value = (0.00006 + 0.0007 * mist * mist + 0.00008 * n) * (climate === 'desert' ? 0.6 : 1);
-    f.uFogFalloff.value = 1 / (70 + 60 * (1 - mist));
+    f.uFogDensity.value = (0.00008 + 0.0008 * mist * mist + 0.0001 * n) * (climate === 'desert' ? 0.6 : 1);
+    f.uFogFalloff.value = 1 / (60 + 90 * (1 - mist));
     f.uHaze.value = hazeBase * (1 + 0.6 * L.golden) * (1 / (1 + d / 9000));
     f.uFogMax.value = 0.96;
     f.uSunDir.value.copy(L.sunDir);

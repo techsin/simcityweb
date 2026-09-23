@@ -8,7 +8,7 @@ import type { RNG } from '../../core/rng';
 import { lampPost, bench } from '../kit';
 import {
   flat, stripe, dashed, lightDot, floodMast, obox, vault, tree, shrub, carLite, semi, containerBlock, trackX, freightCar,
-  gantry, quadF, disc, halfDisc, panel, CONTAINER_COLS, CAR_COLS, type V3,
+  gantry, quadF, disc, halfDisc, panel, poolRect, poolSoft, CONTAINER_COLS, CAR_COLS, type V3,
 } from './tr_kit';
 
 // ---------------------------------------------------------------------------------------------- helpers
@@ -45,6 +45,7 @@ function trainStation(b: ModelBuilder, rng: RNG): void {
   flat(b, -32, -16, 32, -15.5, 1.03);
   b.paint(0xf0c020, Surf.Plain);
   flat(b, -32, -15.1, 32, -14.85, 1.03);
+  poolRect(b, -31.5, -14.8, 31.5, -7.4, 1.015, 0xb9b5ad, 0.5);
   // canopy: curved shell on slender columns, bright soffit + light strip
   b.paint(0x55606a, Surf.Metal);
   vault(b, 0, -11.2, 8.6, 63, 5.0, 1.2, 'x', { seg: 6, ends: { color: 0x55606a, surf: Surf.Metal }, under: { color: 0xe6e0d2, surf: Surf.Plain } });
@@ -138,7 +139,10 @@ function trainStation(b: ModelBuilder, rng: RNG): void {
     b.paint(0x8f887a, Surf.Stone).cylinder(x, z, 0, 0.6, 1.3, 1.3, 8, { top: true, topPaint: { color: 0x4d3b2a, surf: Surf.Plain } });
     tree(b, rng, x, z, rng.range(6.5, 7.5));
   }
-  for (const x of [-20, -6, 6, 20]) lampPost(b, x, 11.6, 4.6);
+  for (const x of [-20, -6, 6, 20]) {
+    lampPost(b, x, 11.6, 4.6);
+  }
+  poolRect(b, -8, 8.1, 8, 11.4, 0.155, 0xb5ad9c, 0.5);
   b.paint(0x55595e, Surf.Metal);
   for (let i = 0; i < 5; i++) b.box(-24 + i * 0.9, 0, 9.2, -23.92 + i * 0.9, 0.9, 10.4, { bottom: null });
   bench(b, -8, 9.4, 0);
@@ -199,6 +203,8 @@ function freightStation(b: ModelBuilder, rng: RNG): void {
   stripe(b, 4, 12.5, 12, 12.5, 0.3, 0.14);
   // yard lights + fence along the front
   floodMast(b, -2, 9.5, 14, 0);
+  poolSoft(b, -2, 9.2, 6.2, 0.115, 0x45464a);
+  poolRect(b, sx0 + 0.5, -5.8, sx1 - 0.5, -3.9, 1.215, 0x9d9990, 0.5);
   floodMast(b, 31, -4.6, 14, Math.PI / 2);
   b.paint(0x8a9096, Surf.Metal);
   obox(b, [-31.8, 1.8, 15.6], [2.5, 1.8, 15.6], 0.06, 0.06);

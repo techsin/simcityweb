@@ -19,7 +19,7 @@ const FALLBACK: Record<string, Fn> = {
   tree_oak: (b, v, r) => {
     const h = 9 + v * 1.2;
     bark(b).cylinder(0, 0, 0, h * 0.45, 0.45, 0.32, 5, { top: false });
-    const greens = [0x4f7a2c, 0x5a8531, 0x46702a, 0x608a36];
+    const greens = [0x44692a, 0x4d722c, 0x3d6226, 0x557a30];
     leaf(b, greens[v % 4]);
     b.blob(0, h * 0.62, 0, 3.6, 2.8, 3.6, 0, 0.18, v + 1);
     b.blob(r.range(-1.5, 1.5), h * 0.8, r.range(-1.5, 1.5), 2.6, 2.1, 2.6, 0, 0.2, v + 7);
@@ -28,14 +28,14 @@ const FALLBACK: Record<string, Fn> = {
   tree_maple: (b, v) => {
     const h = 8 + v;
     bark(b).cylinder(0, 0, 0, h * 0.42, 0.35, 0.25, 5, { top: false });
-    leaf(b, [0x5e8a33, 0xc0602a, 0xa8402a][v % 3]);
+    leaf(b, [0x4f7429, 0x5f7d2c, 0xb0562a][v % 3]);
     b.blob(0, h * 0.65, 0, 3.2, 3.0, 3.2, 0, 0.14, v + 3);
     b.blob(0.8, h * 0.85, -0.5, 2.2, 1.8, 2.2, 0, 0.2, v + 5);
   },
   tree_birch: (b, v) => {
     const h = 10 + v;
     bark(b, 0xe4e0d4).cylinder(0, 0, 0, h * 0.6, 0.22, 0.15, 5, { top: false });
-    leaf(b, [0x8aaa48, 0x7fa345, 0x94b050][v % 3]);
+    leaf(b, [0x7a9a42, 0x6f9140, 0x86a04a][v % 3]);
     b.blob(0, h * 0.68, 0, 1.9, 3.0, 1.9, 0, 0.2, v + 9);
     b.blob(0.5, h * 0.88, 0.3, 1.4, 1.7, 1.4, 0, 0.2, v + 11);
   },

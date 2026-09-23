@@ -1,5 +1,5 @@
 /**
- * Label-setting shortest path searches (multi-source Dijkstra with a binary heap on typed arrays).
+ * Label-setting shortest path searches (exact multi-source Dijkstra with Dial bucket queues on typed arrays).
  * Search results are stored in a reusable Search object: dist, src (seed id), next (tree pointer toward the seed),
  * hops (cells from the seed) and order (settle order, increasing distance) so flows can be accumulated along the
  * shortest-path forest in O(n) by walking `order` backwards.
@@ -66,21 +66,42 @@ export class Seeds {
   }
 }
 
-function seed(S: Search, heap: MinHeap, seeds: Seeds): void {
-  const dist = S.dist, src = S.src, next = S.next, hops = S.hops;
-  heap.clear();
-  for (let s = 0; s < seeds.n; s++) {
-    const v = seeds.node[s];
-    const l = seeds.label[s];
-    if (v < 0 || v >= S.n) continue;
-    if (l < dist[v]) {
-      dist[v] = l;
-      src[v] = seeds.id[s];
-      next[v] = -1;
-      hops[v] = 0;
-      heap.push(v, l);
+/**
+ * Dial bucket queue for road searches. Bucket width Q <= the minimum edge cost, so every node popped from the
+ * current bucket already has its final label (relaxations always land in later buckets) -> exact Dijkstra with O(1)
+ * push / pop. Entries are linked lists in typed arrays; stale entries are skipped via the done[] flags.
+ */
+class BucketQueue {
+  head: Int32Array<ArrayBuffer> = new Int32Array(0);
+  enext: Int32Array<ArrayBuffer> = new Int32Array(0);
+  enode: Int32Array<ArrayBuffer> = new Int32Array(0);
+  en = 0;
+  reset(buckets: number, entries: number): void {
+    if (this.head.length < buckets) this.head = new Int32Array(buckets + 64);
+    this.head.fill(-1, 0, buckets);
+    if (this.enext.length < entries) {
+      this.enext = new Int32Array(entries);
+      this.enode = new Int32Array(entries);
     }
+    this.en = 0;
   }
+  push(b: number, v: number): void {
+    let e = this.en++;
+    if (e >= this.enext.length) {
+      const c = this.enext.length * 2 + 16;
+      const a = new Int32Array(c); a.set(this.enext); this.enext = a;
+      const n = new Int32Array(c); n.set(this.enode); this.enode = n;
+    }
+    this.enode[e] = v;
+    this.enext[e] = this.head[b];
+    this.head[b] = e;
+  }
+}
+const bq = new BucketQueue();
+/** bucket width: min free-flow edge cost on roads (highway 0.04 min) */
+let Q = 0.04 * 0.999;
+export function setRoadBucketWidth(minEdgeCost: number): void {
+  Q = minEdgeCost * 0.999;
 }
 
 /**
@@ -88,42 +109,63 @@ function seed(S: Search, heap: MinHeap, seeds: Seeds): void {
  * seeds = destinations). Edge a->b cost = (time[a] + time[b]) / 2 (+ ramp penalty on highway <-> road).
  * `limit` stops the search once labels exceed it (unsettled nodes are unreachable).
  */
-export function roadSearch(g: RoadGraph, adj: Int32Array, time: Float32Array, S: Search, heap: MinHeap, seeds: Seeds, limit = Infinity): void {
+export function roadSearch(g: RoadGraph, adj: Int32Array, time: Float32Array, S: Search, _heap: MinHeap, seeds: Seeds, limit = 400): void {
   const n = g.n;
   S.reset(n);
   S.graphVersion = g.version;
-  heap.reserve(n * 2 + seeds.n + 16);
-  seed(S, heap, seeds);
   const dist = S.dist, src = S.src, next = S.next, hops = S.hops, order = S.order, done = S.done;
+  if (!(limit < 2000)) limit = 2000;
+  const invQ = 1 / Q;
+  const nb = Math.ceil(limit * invQ) + 2;
+  bq.reset(nb, n * 2 + seeds.n + 16);
+  for (let s = 0; s < seeds.n; s++) {
+    const v = seeds.node[s];
+    const l = seeds.label[s];
+    if (v < 0 || v >= n || !(l <= limit)) continue;
+    if (l < dist[v]) {
+      dist[v] = l;
+      src[v] = seeds.id[s];
+      next[v] = -1;
+      hops[v] = 0;
+      bq.push((l * invQ) | 0, v);
+    }
+  }
   const type = g.type;
   const HW = Network.Highway;
+  const head = bq.head;
   let cnt = 0;
-  while (heap.size > 0) {
-    const key = heap.topKey();
-    const u = heap.pop();
-    if (done[u] === 1 || key > dist[u]) continue;
-    if (key > limit) break;
-    done[u] = 1;
-    order[cnt++] = u;
-    const tu = time[u];
-    const hu = type[u] === HW;
-    const su = src[u];
-    const hp = hops[u] + 1;
-    const base = u * 4;
-    for (let k = 0; k < 4; k++) {
-      const v = adj[base + k];
-      if (v < 0 || done[v] === 1) continue;
-      let c = 0.5 * (tu + time[v]);
-      if (hu !== (type[v] === HW)) c += RAMP_PENALTY;
-      const nd = key + c;
-      if (nd < dist[v]) {
-        dist[v] = nd;
-        src[v] = su;
-        next[v] = u;
-        hops[v] = hp > 65535 ? 65535 : hp;
-        heap.push(v, nd);
+  for (let b = 0; b < nb; b++) {
+    let e = head[b];
+    while (e >= 0) {
+      const u = bq.enode[e];
+      e = bq.enext[e];
+      if (done[u] === 1) continue;
+      done[u] = 1;
+      order[cnt++] = u;
+      const key = dist[u];
+      const tu = time[u];
+      const hu = type[u] === HW;
+      const su = src[u];
+      const hp = hops[u] + 1;
+      const base = u * 4;
+      for (let k = 0; k < 4; k++) {
+        const v = adj[base + k];
+        if (v < 0 || done[v] === 1) continue;
+        let c = 0.5 * (tu + time[v]);
+        if (hu !== (type[v] === HW)) c += RAMP_PENALTY;
+        const nd = key + c;
+        if (nd < dist[v] && nd <= limit) {
+          dist[v] = nd;
+          src[v] = su;
+          next[v] = u;
+          hops[v] = hp > 65535 ? 65535 : hp;
+          const bi = (nd * invQ) | 0;
+          // bi > b always holds (edge cost >= Q); guard against float edge cases
+          bq.push(bi > b ? bi : b + 1, v);
+        }
       }
     }
+    head[b] = -1;
   }
   S.settled = cnt;
 }
@@ -151,61 +193,86 @@ export interface TransitNet {
   trCost: Float32Array;
 }
 
-export function transitSearch(T: TransitNet, S: Search, heap: MinHeap, seeds: Seeds, limit = Infinity): void {
+/** bucket width for the transit net: min in-vehicle edge cost (subway 0.03 min/cell) */
+let QT = 0.03 * 0.999;
+export function setTransitBucketWidth(minEdgeCost: number): void {
+  QT = minEdgeCost * 0.999;
+}
+
+export function transitSearch(T: TransitNet, S: Search, _heap: MinHeap, seeds: Seeds, limit = 400): void {
   const n = T.total;
   S.reset(n);
-  heap.reserve(n * 2 + seeds.n + 16);
-  seed(S, heap, seeds);
   const dist = S.dist, src = S.src, next = S.next, hops = S.hops, order = S.order, done = S.done;
+  if (!(limit < 2000)) limit = 2000;
+  const invQ = 1 / QT;
+  const nb = Math.ceil(limit * invQ) + 2;
+  bq.reset(nb, n * 2 + seeds.n + 16);
+  for (let s = 0; s < seeds.n; s++) {
+    const v = seeds.node[s];
+    const l = seeds.label[s];
+    if (v < 0 || v >= n || !(l <= limit)) continue;
+    if (l < dist[v]) {
+      dist[v] = l;
+      src[v] = seeds.id[s];
+      next[v] = -1;
+      hops[v] = 0;
+      bq.push((l * invQ) | 0, v);
+    }
+  }
   const nR = T.nR, nRR = T.nR + T.nRail;
   const roadAdj = T.roadAdj, busTime = T.busTime, railAdj = T.railAdj, subAdj = T.subAdj;
   const trStart = T.trStart, trTo = T.trTo, trCost = T.trCost;
+  const railTime = T.railTime, subTime = T.subTime;
+  const head = bq.head;
   let cnt = 0;
-  while (heap.size > 0) {
-    const key = heap.topKey();
-    const u = heap.pop();
-    if (done[u] === 1 || key > dist[u]) continue;
-    if (key > limit) break;
-    done[u] = 1;
-    order[cnt++] = u;
-    const su = src[u];
-    const hp = Math.min(65535, hops[u] + 1);
-    if (u < nR) {
-      const tu = busTime[u];
-      const base = u * 4;
+  for (let b = 0; b < nb; b++) {
+    let e = head[b];
+    while (e >= 0) {
+      const u = bq.enode[e];
+      e = bq.enext[e];
+      if (done[u] === 1) continue;
+      done[u] = 1;
+      order[cnt++] = u;
+      const key = dist[u];
+      const su = src[u];
+      const hp = Math.min(65535, hops[u] + 1);
       for (let k = 0; k < 4; k++) {
-        const v = roadAdj[base + k];
-        if (v < 0 || done[v] === 1) continue;
-        const nd = key + 0.5 * (tu + busTime[v]);
-        if (nd < dist[v]) { dist[v] = nd; src[v] = su; next[v] = u; hops[v] = hp; heap.push(v, nd); }
-      }
-    } else if (u < nRR) {
-      const base = (u - nR) * 4;
-      for (let k = 0; k < 4; k++) {
-        const a = railAdj[base + k];
-        if (a < 0) continue;
-        const v = a + nR;
+        let v: number, c: number;
+        if (u < nR) {
+          v = roadAdj[u * 4 + k];
+          if (v < 0) continue;
+          c = 0.5 * (busTime[u] + busTime[v]);
+        } else if (u < nRR) {
+          const a = railAdj[(u - nR) * 4 + k];
+          if (a < 0) continue;
+          v = a + nR;
+          c = railTime;
+        } else {
+          const a = subAdj[(u - nRR) * 4 + k];
+          if (a < 0) continue;
+          v = a + nRR;
+          c = subTime;
+        }
         if (done[v] === 1) continue;
-        const nd = key + T.railTime;
-        if (nd < dist[v]) { dist[v] = nd; src[v] = su; next[v] = u; hops[v] = hp; heap.push(v, nd); }
+        const nd = key + c;
+        if (nd < dist[v] && nd <= limit) {
+          dist[v] = nd; src[v] = su; next[v] = u; hops[v] = hp;
+          const bi = (nd * invQ) | 0;
+          bq.push(bi > b ? bi : b + 1, v);
+        }
       }
-    } else {
-      const base = (u - nRR) * 4;
-      for (let k = 0; k < 4; k++) {
-        const a = subAdj[base + k];
-        if (a < 0) continue;
-        const v = a + nRR;
+      for (let t = trStart[u], t1 = trStart[u + 1]; t < t1; t++) {
+        const v = trTo[t];
         if (done[v] === 1) continue;
-        const nd = key + T.subTime;
-        if (nd < dist[v]) { dist[v] = nd; src[v] = su; next[v] = u; hops[v] = hp; heap.push(v, nd); }
+        const nd = key + trCost[t];
+        if (nd < dist[v] && nd <= limit) {
+          dist[v] = nd; src[v] = su; next[v] = u; hops[v] = hp;
+          const bi = (nd * invQ) | 0;
+          bq.push(bi > b ? bi : b + 1, v);
+        }
       }
     }
-    for (let e = trStart[u], e1 = trStart[u + 1]; e < e1; e++) {
-      const v = trTo[e];
-      if (done[v] === 1) continue;
-      const nd = key + trCost[e];
-      if (nd < dist[v]) { dist[v] = nd; src[v] = su; next[v] = u; hops[v] = hp; heap.push(v, nd); }
-    }
+    head[b] = -1;
   }
   S.settled = cnt;
 }

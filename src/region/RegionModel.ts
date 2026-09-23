@@ -82,12 +82,14 @@ export function resolvePreset(seed: number, preset: RegionPresetId): { preset: E
   return { preset: p, climate };
 }
 
-export function createRegionData(opts: { seed?: number; preset?: RegionPresetId; name?: string; climate?: Climate; id?: string } = {}): { data: RegionData; model: RegionModel } {
+export function createRegionData(
+  opts: { seed?: number; preset?: RegionPresetId; name?: string; climate?: Climate; id?: string; terrain?: RegionTerrain } = {},
+): { data: RegionData; model: RegionModel } {
   const seed = (opts.seed ?? Math.floor(Math.random() * 2 ** 31)) >>> 0;
   const preset = opts.preset ?? 'greenvale';
   const resolved = resolvePreset(seed, preset);
   const climate = opts.climate ?? resolved.climate;
-  const terrain = generateRegionTerrain(seed, preset, {}, climate);
+  const terrain = opts.terrain ?? generateRegionTerrain(seed, preset, {}, climate);
   const rng = new RNG(seed + 77);
   const now = Date.now();
   const data: RegionData = {

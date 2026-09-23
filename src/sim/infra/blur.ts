@@ -18,16 +18,27 @@ export function boxH(src: Float32Array, dst: Float32Array, N: number, r: number)
   }
 }
 
-/** vertical box blur src -> dst */
+/** vertical box blur src -> dst (row-wise running column sums: cache friendly) */
+let colSum = new Float64Array(0);
 export function boxV(src: Float32Array, dst: Float32Array, N: number, r: number): void {
   const inv = 1 / (2 * r + 1);
-  for (let x = 0; x < N; x++) {
-    let s = 0;
-    for (let z = 0; z < r && z < N; z++) s += src[z * N + x];
-    for (let z = 0; z < N; z++) {
-      if (z + r < N) s += src[(z + r) * N + x];
-      dst[z * N + x] = s * inv;
-      if (z - r >= 0) s -= src[(z - r) * N + x];
+  if (colSum.length < N) colSum = new Float64Array(N);
+  const cs = colSum;
+  cs.fill(0, 0, N);
+  for (let z = 0; z < r && z < N; z++) {
+    const row = z * N;
+    for (let x = 0; x < N; x++) cs[x] += src[row + x];
+  }
+  for (let z = 0; z < N; z++) {
+    const row = z * N;
+    if (z + r < N) {
+      const add = (z + r) * N;
+      for (let x = 0; x < N; x++) cs[x] += src[add + x];
+    }
+    for (let x = 0; x < N; x++) dst[row + x] = cs[x] * inv;
+    if (z - r >= 0) {
+      const sub = (z - r) * N;
+      for (let x = 0; x < N; x++) cs[x] -= src[sub + x];
     }
   }
 }
@@ -65,6 +76,45 @@ export function shiftField(src: Float32Array, dst: Float32Array, N: number, dx: 
         if (sx1 >= 0 && sx1 < N) v += w11 * src[sz1 * N + sx1];
       }
       dst[z * N + x] = v;
+    }
+  }
+}
+
+/**
+ * Blur at reduced resolution: downsample `src` (N x N) by `f` (block sums), blur3 with radius r at coarse
+ * resolution, upsample bilinearly and ADD gain * density into `acc`. Effective fine sigma^2 = f^2 * r(r+1).
+ * `coarse` / `coarseTmp` must hold (ceil(N/f))^2 floats.
+ */
+export function blurDownAdd(src: Float32Array, acc: Float32Array, N: number, f: number, r: number, gain: number, coarse: Float32Array, coarseTmp: Float32Array): void {
+  const M = Math.ceil(N / f);
+  coarse.fill(0, 0, M * M);
+  for (let z = 0; z < N; z++) {
+    const cz = (z / f) | 0;
+    const row = z * N, crow = cz * M;
+    for (let x = 0; x < N; x++) {
+      const v = src[row + x];
+      if (v !== 0) coarse[crow + ((x / f) | 0)] += v;
+    }
+  }
+  blur3(coarse, coarseTmp, M, r);
+  const g = gain / (f * f);
+  for (let z = 0; z < N; z++) {
+    const fz = (z + 0.5) / f - 0.5;
+    let z0 = Math.floor(fz);
+    const tz = fz - z0;
+    let z1 = z0 + 1;
+    if (z0 < 0) z0 = 0;
+    if (z1 >= M) z1 = M - 1;
+    const r0 = z0 * M, r1 = z1 * M;
+    for (let x = 0; x < N; x++) {
+      const fx = (x + 0.5) / f - 0.5;
+      let x0 = Math.floor(fx);
+      const tx = fx - x0;
+      let x1 = x0 + 1;
+      if (x0 < 0) x0 = 0;
+      if (x1 >= M) x1 = M - 1;
+      const v = (coarse[r0 + x0] * (1 - tx) + coarse[r0 + x1] * tx) * (1 - tz) + (coarse[r1 + x0] * (1 - tx) + coarse[r1 + x1] * tx) * tz;
+      acc[z * N + x] += v * g;
     }
   }
 }

@@ -32,25 +32,36 @@ function oilStains(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number
   }
 }
 
-/** Scrap heap: jagged mound + debris boxes and protruding beams. ~24 + 10*n + 6*sticks tris. */
+/** Surface height of heap() at normalized radius d (0..1). */
+function heapY(h: number, d: number): number {
+  return d <= 0.55 ? h * (1 - 0.509 * d) : Math.max(0, 0.72 * h * (1 - (d - 0.55) / 0.45));
+}
+
+/** Scrap heap: layered jagged mounds + debris boxes on the surface + protruding beams. */
 function scrapHeap(b: ModelBuilder, rng: RNG, x: number, z: number, r: number, h: number, base: ColorLike, n = 14, sticks = 5, sx = 1, sz = 1): void {
   heap(b, rng, x, z, r, h, base, Surf.Plain, 8, sx, sz);
-  const cols = [0x7a4f36, 0x6a4632, 0x8b5a3a, 0x5e4a3c, 0x55595e, 0x7a7f84, 0x3e4a5a, 0x8a7a5a, 0x4a3a2e, 0x9a6a3a];
+  const tints = [0x6a4a36, 0x55504a, 0x7a5a42, 0x4a4540, 0x6e6258];
+  const subs = r > 4 ? 3 : 1;
+  for (let i = 0; i < subs; i++) {
+    const a = rng.next() * Math.PI * 2, d = rng.range(0.35, 0.55);
+    heap(b, rng, x + Math.cos(a) * r * d * sx, z + Math.sin(a) * r * d * sz, r * 0.45, heapY(h, d) + h * 0.18, rng.pick(tints), Surf.Plain, 6);
+  }
+  const cols = [0x7a4f36, 0x6a4632, 0x8b5a3a, 0x5e4a3c, 0x55595e, 0x8a9096, 0x3e4a5a, 0x8a7a5a, 0x4a3a2e, 0x9a6a3a, 0x2e5f8a, 0xb0b4b8];
   for (let i = 0; i < n; i++) {
-    const a = rng.next() * Math.PI * 2, d = Math.sqrt(rng.next()) * 0.85;
+    const a = rng.next() * Math.PI * 2, d = Math.sqrt(rng.next()) * 0.9;
     const px = x + Math.cos(a) * r * d * sx, pz = z + Math.sin(a) * r * d * sz;
-    const py = h * Math.max(0, 1 - Math.pow(d, 1.3)) - 0.5;
-    b.push().translate(px, py, pz).rotateY(rng.next() * 3).rotateX(rng.range(-0.5, 0.5));
-    b.paint(rng.pick(cols), rng.chance(0.4) ? Surf.Metal : Surf.Plain);
-    const w = rng.range(0.6, 2.2), dd = rng.range(0.4, 1.4), hh = rng.range(0.3, 1.1);
+    const py = heapY(h, d) - 0.25;
+    b.push().translate(px, py, pz).rotateY(rng.next() * 3).rotateX(rng.range(-0.6, 0.6)).rotateZ(rng.range(-0.4, 0.4));
+    b.paint(rng.pick(cols), rng.chance(0.5) ? Surf.Metal : Surf.Plain);
+    const w = rng.range(0.6, 2.4), dd = rng.range(0.3, 1.3), hh = rng.range(0.25, 0.9);
     b.box(-w / 2, 0, -dd / 2, w / 2, hh, dd / 2);
     b.pop();
   }
   b.paint(0x4a4540, Surf.Metal);
   for (let i = 0; i < sticks; i++) {
-    const a = rng.next() * Math.PI * 2, d = rng.range(0.1, 0.6);
+    const a = rng.next() * Math.PI * 2, d = rng.range(0.1, 0.7);
     const px = x + Math.cos(a) * r * d * sx, pz = z + Math.sin(a) * r * d * sz;
-    const py = h * (1 - Math.pow(d, 1.3)) - 0.6;
+    const py = heapY(h, d) - 0.4;
     const a2 = rng.next() * Math.PI * 2, L = rng.range(2, 4.5);
     strut(b, [px, py, pz], [px + Math.cos(a2) * L * 0.7, py + L * 0.5, pz + Math.sin(a2) * L * 0.7], rng.range(0.12, 0.3));
   }
@@ -593,10 +604,17 @@ function tankTruck(b: ModelBuilder, x: number, z: number, cab: ColorLike, tankC:
 
 function refineryCommon(b: ModelBuilder): void {
   ground(b, -32, -32, 32, 32, 0xa39e94, Surf.Pavement, 0.05);
-  fenceRect(b, -31.5, -31.5, 31.5, 31.5, 2.2, 0x8a9096, [-10, -2], 12, 1);
+  fenceRect(b, -31.5, -31.5, 31.5, 31.5, 2.2, 0x8a9096, [-10, -2], 16, 1);
   officeBlock(b, -29, 21.5, -16, 29, 7, 0xdedad2, 2, 3.5);
-  b.paint(0x7f7a72, Surf.Pavement);
+  b.paint(0x5a5b5e, Surf.Pavement);
   flat(b, -10, 14, -2, 32, 0.07);
+  flat(b, -31, 11, 31, 14, 0.07);
+  flat(b, -31, -11, 31, -8.5, 0.071);
+  b.paint(0x8a857c, Surf.Pavement);
+  flat(b, -24, -7.5, 30, 10, 0.06);
+  b.paint(0x6f9a45, Surf.Foliage);
+  flat(b, -31, 15, -11, 20.5, 0.07);
+  flat(b, -31, 29.5, -11, 31.5, 0.07);
 }
 
 function refinery(b: ModelBuilder, v: number, rng: RNG): void {
@@ -698,7 +716,7 @@ function refinery(b: ModelBuilder, v: number, rng: RNG): void {
       smokestack(b, -15, -1, 26, 0.9, 0.8, 'steel', 8);
       pipeRack(b, -12, 3, 28, 3, 6, 4, rng);
       pipeRack(b, 17, -6, 17, 18, 5.5, 3, rng, 12);
-      flare(b, 27, 24, 42);
+      flare(b, 27, -4, 42);
       floodLight(b, -4, 16, 11);
       floodLight(b, 12, -8, 11);
       tankTruck(b, 10, 24, 0x2e6fb5);

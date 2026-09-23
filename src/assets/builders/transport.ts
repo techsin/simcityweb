@@ -14,7 +14,7 @@ import { bench, lampPost } from '../kit';
 import { airModels } from './tr_air';
 import { portModels } from './tr_port';
 import { railModels } from './tr_rail';
-import { flat, dashed, tree, shrub, carLite, vault, obox, quadF, panel, disc, lightDot, CAR_COLS, type V3 } from './tr_kit';
+import { flat, dashed, tree, shrub, carLite, vault, obox, quadF, panel, disc, lightDot, poolRect, poolSoft, shade, CAR_COLS, type V3 } from './tr_kit';
 
 // ---------------------------------------------------------------------------------------------- bus stop
 function busStop(b: ModelBuilder, rng: RNG): void {
@@ -66,6 +66,7 @@ function busStop(b: ModelBuilder, rng: RNG): void {
   b.paint(0x222222, Surf.Metal);
   for (const z of [2.55, 3.75]) for (const sg of [1, -1] as const) disc(b, [4.95 + sg * 0.03, 0.47, z], 0.33, 8, 'x', sg);
   lampPost(b, 6.8, 6.9, 4.0);
+  poolRect(b, sx0 - 0.2, sz0 - 0.2, sx1 + 0.2, sz1 + 0.3, 0.155, 0xc9c4b8, 0.4);
 }
 
 /** Inverted-U bike hoop in the YZ plane at x (24 tris). */
@@ -92,7 +93,7 @@ function subwayEntrance(b: ModelBuilder, rng: RNG): void {
     const za = zTop - ((zTop - zBot) * i) / steps, zb = zTop - ((zTop - zBot) * (i + 1)) / steps;
     const k = Math.pow(1 - t, 1.6);
     const c = Math.round(18 + 150 * k);
-    b.paint((c << 16) | (c << 8) | Math.round(c * 0.97), Surf.Plain);
+    b.paint(shade((c << 16) | (c << 8) | Math.round(c * 0.97), 0.8), Surf.Emissive);
     flat(b, w0, zb, w1, za, 0.16);
     b.paint(Math.round(c * 0.6) * 0x10101, Surf.Plain);
     flat(b, w0, za - 0.12, w1, za, 0.165);
@@ -177,7 +178,8 @@ function parkingGarage(b: ModelBuilder, rng: RNG): void {
   for (const y of decks) {
     const roof = y === roofY;
     b.paint(conc, Surf.Plain);
-    const top = { color: roof ? 0x55565a : 0x77787b, surf: Surf.Pavement };
+    // lower decks: floor painted as a baked light pool (lit by the ceiling lights at night)
+    const top = roof ? { color: 0x55565a, surf: Surf.Pavement } : { color: shade(0x77787b, 0.72), surf: Surf.Emissive };
     if (!roof) b.box(x0, y - slabT, z0, x1, y, z1, { top });
     else {
       b.box(x0, y - slabT, rampZ1, x1, y, z1, { top });
@@ -262,12 +264,14 @@ function parkingGarage(b: ModelBuilder, rng: RNG): void {
   b.paint(0xf2f2ee, Surf.Plain).box(8.4, 1.0, 10.72, 11.8, 1.1, 10.88, { bottom: null });
   b.paint(0x2bd45a, Surf.Emissive).box(4.5, 3.0 + 0.3, z1 + 0.27, 7.5, 3.0 + 0.9, z1 + 0.32, { top: null, bottom: null, nz: null, px: null, nx: null });
   b.paint(0xff4030, Surf.Emissive).box(8.5, 3.0 + 0.3, z1 + 0.27, 11.5, 3.0 + 0.9, z1 + 0.32, { top: null, bottom: null, nz: null, px: null, nx: null });
-  // roof lights + aviation-style corner lights
-  for (const [x, z] of [[-6, -7], [9, -7], [-3, 7.5], [9, 7.5]] as [number, number][]) {
+  // roof lights (+ pools) + aviation-style corner lights
+  for (const [x, z] of [[-4, -7], [9, -7], [-3, 7.5], [9, 7.5]] as [number, number][]) {
     b.push().translate(0, roofY, 0);
     lampPost(b, x, z, 4.0);
     b.pop();
+    poolSoft(b, x, z, 4.4, roofY + 0.012, 0x55565a);
   }
+  poolRect(b, x0 + 0.3, z0 + 0.3, x1 - 0.3, z1 - 0.3, 0.115, 0x404145, 0.9);
   lightDot(b, x1, roofY + 1.05, z0, 0.35, 0xff3322);
   // landscaping at the sides
   shrub(b, rng, 15.1, -8, 0.85);
