@@ -6,6 +6,7 @@
  * Face space: inFace(b, face, plane, fn) sets a transform so that inside fn local x = "u" (to the right when
  * looking at the wall from outside), y = up, local +z = outward normal and z = 0 is the wall plane.
  */
+import * as THREE from 'three';
 import { ModelBuilder, PALETTE, type ColorLike, type Paint } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
@@ -168,13 +169,18 @@ export function door(b: ModelBuilder, u: number, y: number, w: number, h: number
     fq(b, u + w / 2 + 0.06, y + 0.3, u + w / 2 + sl, y + h, 0.09);
   }
   if (s.lamp) {
+    b.paint(0x2a2a2a, Surf.Metal).box(u + w / 2 + sl + 0.2, y + h * 0.72 - 0.05, 0.03, u + w / 2 + sl + 0.5, y + h * 0.72 + 0.45, 0.08, { nz: null, bottom: null });
     b.paint(0xffe2a8, Surf.Emissive);
-    b.box(u + w / 2 + sl + 0.3, y + h * 0.8, 0.05, u + w / 2 + sl + 0.46, y + h * 0.8 + 0.3, 0.2, { nz: null });
+    b.box(u + w / 2 + sl + 0.225, y + h * 0.72, 0.06, u + w / 2 + sl + 0.475, y + h * 0.72 + 0.4, 0.3, { nz: null });
   }
 }
 
 /** Garage door (horizontal panel lines via Wood surf) in face space. */
-export function garageDoor(b: ModelBuilder, u: number, y: number, w: number, h: number, color: ColorLike = 0xe9e6de, frame: ColorLike | null = TRIM, windows = false): void {
+export function garageDoor(b: ModelBuilder, u: number, y: number, w: number, h: number, color: ColorLike = 0xe9e6de, frame: ColorLike | null = TRIM, windows = false, lamp = true): void {
+  if (lamp) {
+    b.paint(0xffe2a8, Surf.Emissive);
+    b.box(u + w / 2 + 0.3, y + h * 0.9, 0.04, u + w / 2 + 0.55, y + h * 0.9 + 0.4, 0.28, { nz: null });
+  }
   if (frame !== null) {
     b.paint(frame);
     fq(b, u - w / 2 - 0.15, y, u + w / 2 + 0.15, y + h + 0.15, 0.04);
@@ -182,8 +188,8 @@ export function garageDoor(b: ModelBuilder, u: number, y: number, w: number, h: 
   b.paint(color, Surf.Wood);
   fq(b, u - w / 2, y, u + w / 2, y + h, 0.07);
   if (windows) {
-    // dark garage glazing: reflective but not lit at night
-    b.paint(0x2a3038, Surf.Metal);
+    // dark garage glazing: reflective but never lit at night
+    b.paint(0x2a3038, Surf.GlassPlain, 1);
     fq(b, u - w / 2 + 0.2, y + h * 0.72, u + w / 2 - 0.2, y + h * 0.86, 0.09);
   }
 }
@@ -452,9 +458,42 @@ export function bushRow(b: ModelBuilder, x0: number, z0: number, x1: number, z1:
 }
 
 /** Flower bed: soil + low colored foliage. */
-export function flowerBed(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, color: ColorLike): void {
-  b.paint(0x5a4432, Surf.Plain).box(x0, 0, z0, x1, 0.12, z1);
-  b.paint(color, Surf.Foliage).box(x0 + 0.1, 0.12, z0 + 0.1, x1 - 0.1, 0.4, z1 - 0.1, { bottom: null });
+export function flowerBed(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, color: ColorLike, y = 0): void {
+  // low green base + 3-5 soft flower clumps (flower colour pulled 35% toward leaf green)
+  b.paint(0x4f7a34, Surf.Foliage).box(x0, y, z0, x1, y + 0.18, z1);
+  const w = x1 - x0, d = z1 - z0, alongX = w >= d, L = Math.max(w, d);
+  const n = Math.max(3, Math.min(5, Math.round(L / 1.1)));
+  const fc = typeof color === 'number' ? mixHex(color, 0x4f7a34, 0.35) : color;
+  b.paint(fc, Surf.Foliage);
+  for (let i = 0; i < n; i++) {
+    const t = (i + 0.5) / n, side = (i % 2 ? 1 : -1) * 0.18;
+    const r = 0.28 + 0.07 * (((i * 37 + Math.round(x0 * 13 + z0 * 7)) % 5 + 5) % 5) / 4;
+    const x = alongX ? x0 + w * t : (x0 + x1) / 2 + side * w;
+    const z = alongX ? (z0 + z1) / 2 + side * d : z0 + d * t;
+    b.blob(x, y + 0.18 + r * 0.45, z, Math.min(r, w * 0.5), r * 0.75, Math.min(r, d * 0.5), 0, 0.2, x * 3.1 + z * 1.7);
+  }
+}
+
+/**
+ * Formal boxwood parterre: clipped hedge border, inner lawn, gravel cross paths, 4 topiary cones and
+ * optional flower edge strips (0.8 m) along the outer long sides.
+ */
+export function parterre(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, flower: ColorLike | null = null): void {
+  const t = 0.45, hh = 0.55;
+  b.paint(0x5e8d3c, Surf.Foliage).box(x0, 0, z0, x1, 0.1, z1);
+  const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+  b.paint(0xd8d0c0, Surf.Pavement).box(cx - 0.6, 0.1, z0 + t, cx + 0.6, 0.13, z1 - t, { bottom: null });
+  b.paint(0xd8d0c0, Surf.Pavement).box(x0 + t, 0.1, cz - 0.6, x1 - t, 0.13, cz + 0.6, { bottom: null });
+  b.paint(0x2f5a26, Surf.Foliage);
+  b.box(x0, 0.1, z0, x1, hh, z0 + t, { bottom: null }).box(x0, 0.1, z1 - t, x1, hh, z1, { bottom: null });
+  b.box(x0, 0.1, z0 + t, x0 + t, hh, z1 - t, { bottom: null }).box(x1 - t, 0.1, z0 + t, x1, hh, z1 - t, { bottom: null });
+  const qx = (x1 - x0) / 4, qz = (z1 - z0) / 4;
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) b.paint(0x2f5a26, Surf.Foliage).cone(cx + sx * qx, cz + sz * qz, 0.1, 1.7, 0.5, 6);
+  if (flower !== null) {
+    const fc = typeof flower === 'number' ? mixHex(flower, 0x4f7a34, 0.35) : flower;
+    b.paint(fc, Surf.Foliage);
+    for (const z of [z0 + t + 0.05, z1 - t - 0.85]) b.box(x0 + t + 0.1, 0.1, z, x1 - t - 0.1, 0.42, z + 0.8, { bottom: null });
+  }
 }
 
 /** Current lot limits used to keep trees inside the lot / under the height guideline. */
@@ -523,8 +562,35 @@ export function chainFence(b: ModelBuilder, ax: number, az: number, bx: number, 
     b.cylinder(x, z, 0, h, 0.04, 0.04, 4, { top: false });
   }
   b.beam([ax, h, az], [bx, h, bz], 0.05);
-  b.paint(0x6c7176, Surf.Metal);
-  b.quad2([ax, 0.05, az], [bx, 0.05, bz], [bx, h * 0.97, bz], [ax, h * 0.97, az]);
+  b.paint(0x7d8286, Surf.Metal);
+  b.beam([ax, 0.12, az], [bx, 0.12, bz], 0.05);
+  b.beam([ax, h * 0.5, az], [bx, h * 0.5, bz], 0.05);
+}
+
+/** See-through iron railing: thin square posts every `every` m + top rail. */
+export function ironRail(b: ModelBuilder, ax: number, az: number, bx: number, bz: number, h = 0.9, color: ColorLike = 0x2a2c2e, every = 1.2): void {
+  const len = Math.hypot(bx - ax, bz - az);
+  if (len < 0.05) return;
+  const n = Math.max(1, Math.round(len / every));
+  b.paint(color, Surf.Metal);
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+    b.box(x - 0.025, 0.05, z - 0.025, x + 0.025, h, z + 0.025, { bottom: null, top: null });
+  }
+  b.beam([ax, h, az], [bx, h, bz], 0.06);
+  b.beam([ax, h * 0.2, az], [bx, h * 0.2, bz], 0.04);
+}
+
+/**
+ * Ground light pool (Surf.Emissive pattern 9): a flat patch painted 0.7x the ground colour (linear) — looks like
+ * the ground by day, warm lamp-lit ground at night. Place just above the lawn / pavement it sits on.
+ */
+export function lightPool(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, ground: ColorLike, y = 0.105): void {
+  const c = new THREE.Color();
+  if (ground instanceof THREE.Color) c.copy(ground); else if (Array.isArray(ground)) c.setRGB(ground[0], ground[1], ground[2], THREE.SRGBColorSpace); else c.set(ground as THREE.ColorRepresentation);
+  c.multiplyScalar(0.7);
+  b.paint(c, Surf.Emissive, 9);
+  b.quad([x0, y, z1], [x1, y, z1], [x1, y, z0], [x0, y, z0]);
 }
 
 /** Low stone / brick garden wall with cap. */
@@ -543,8 +609,14 @@ export function mailbox(b: ModelBuilder, x: number, z: number, color: ColorLike 
 }
 
 export function trampoline(b: ModelBuilder, x: number, z: number, r = 1.8): void {
-  b.paint(0x2e5f9a, Surf.Metal).cylinder(x, z, 0.75, 0.12, r, r, 10, { top: false });
-  b.paint(0x1c1c1e).cylinder(x, z, 0.8, 0.02, r - 0.15, r - 0.15, 10, { top: true });
+  b.paint(0x2e5f9a, Surf.Metal).cylinder(x, z, 0.68, 0.14, r, r, 10, { top: false });
+  // padded ring + mat
+  b.paint(0x2e7ab8);
+  for (let i = 0; i < 10; i++) {
+    const a0 = (i / 10) * Math.PI * 2, a1 = ((i + 1) / 10) * Math.PI * 2, ri = r - 0.25;
+    b.quad([x + Math.cos(a0) * r, 0.83, z + Math.sin(a0) * r], [x + Math.cos(a0) * ri, 0.83, z + Math.sin(a0) * ri], [x + Math.cos(a1) * ri, 0.83, z + Math.sin(a1) * ri], [x + Math.cos(a1) * r, 0.83, z + Math.sin(a1) * r]);
+  }
+  b.paint(0x30353b).cylinder(x, z, 0.78, 0.02, r - 0.25, r - 0.25, 10, { top: true });
   b.paint(0x555a60, Surf.Metal);
   for (let i = 0; i < 3; i++) {
     const a = (i / 3) * Math.PI * 2 + 0.4;
@@ -598,9 +670,17 @@ export function lounger(b: ModelBuilder, x: number, z: number, rot = 0, color: C
 }
 
 /** In-ground pool with coping + water. */
-export function poolRect(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, deck: ColorLike = 0xe2dccd, deckW = 1.2, water: ColorLike = 0x3fa9cf): void {
-  b.paint(deck, Surf.Pavement).box(x0 - deckW, 0, z0 - deckW, x1 + deckW, 0.14, z1 + deckW);
-  b.paint(water, Surf.Water).box(x0, 0, z0, x1, 0.16, z1, { bottom: null });
+export function poolRect(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, deck: ColorLike = 0xe2dccd, deckW = 1.2, water: ColorLike = 0x3fa9cf, y = 0): void {
+  b.paint(deck, Surf.Pavement).box(x0 - deckW, y, z0 - deckW, x1 + deckW, y + 0.14, z1 + deckW);
+  b.paint(water, Surf.Water).box(x0, y, z0, x1, y + 0.16, z1, { bottom: null });
+  poolGlow(b, x0, z0, x1, z1, y + 0.16);
+}
+
+/** Weak underwater light: soft cyan emissive patch in the pool centre just above the water top at yw. */
+export function poolGlow(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, yw: number): void {
+  const ix = Math.min(0.8, (x1 - x0) * 0.2), iz = Math.min(0.8, (z1 - z0) * 0.2), y = yw + 0.004;
+  b.paint(0x3fd0e8, Surf.Emissive, 1);
+  b.quad([x0 + ix, y, z1 - iz], [x1 - ix, y, z1 - iz], [x1 - ix, y, z0 + iz], [x0 + ix, y, z0 + iz]);
 }
 
 export function acBox(b: ModelBuilder, x: number, z: number, y = 0): void {
@@ -747,7 +827,8 @@ export function bandRing(b: ModelBuilder, x0: number, z0: number, x1: number, z1
  * Stalls are 2.6 m wide along x; rows of 5.2 m deep stalls facing an aisle. rows: 1 = one row at the -z side,
  * 2 = two rows with an aisle between (needs ~16.4 m).
  */
-export function parking(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, fill = 0.6, rows = 1): void {
+export function parking(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, fill = 0.6, rows = 1, maxCars = 8): void {
+  let cars = 0;
   b.paint(ASPHALT, Surf.Pavement).box(x0, 0, z0, x1, 0.08, z1);
   const sw = 2.6, sd = 5.2;
   const rowZ: [number, number][] = rows === 2 ? [[z0 + 0.3, 0], [z1 - 0.3 - sd, Math.PI]] : [[z0 + 0.3, 0]];
@@ -759,6 +840,16 @@ export function parking(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: n
       const x = sx0 + i * sw;
       b.quad([x - 0.06, 0.09, rz + sd], [x + 0.06, 0.09, rz + sd], [x + 0.06, 0.09, rz], [x - 0.06, 0.09, rz]);
     }
-    for (let i = 0; i < n; i++) if (rng.chance(fill)) car(b, sx0 + (i + 0.5) * sw, rz + sd / 2, rot + (rng.next() - 0.5) * 0.06, rng.pick(CAR_COLORS), 0.08);
+    for (let i = 0; i < n; i++) if (rng.chance(fill) && cars < maxCars) { cars++; car(b, sx0 + (i + 0.5) * sw, rz + sd / 2, rot + (rng.next() - 0.5) * 0.06, rng.pick(CAR_COLORS), 0.08); }
   }
 }
+
+// ---------------------------------------------------------------------------------------------- rng palettes
+/** Palette pick where index 0 is the hand-tuned default and alternatives come up with probability 1-keep. */
+export function pickPal<T>(rng: RNG, pal: readonly T[], keep = 0.3): T {
+  return rng.chance(keep) ? pal[0] : pal[1 + Math.floor(rng.next() * (pal.length - 1))];
+}
+export const SIDING_PAL = [0xeeebe2, 0xe6dcc2, 0x9fae94, 0x8fa3b5, 0xd2b48f, 0xc9b8a0, 0xa6b7a6, 0xb89a8c, 0xd8cfa0, 0x9aa0a8];
+export const ROOF_PAL = [0x45484d, 0x5b4a3e, 0x3d4650, 0x6b5a4a, 0x55634f, 0x7a4536, 0x5c5f63, 0x4a4540];
+export const DOOR_PAL = [0x7e2a26, 0x2c3b57, 0x2f4a37, 0x6b4a2e, 0x2a2a2a, 0xa8823a, 0x55707e, 0x5a3a4a];
+export const BRICK_PAL = [0x8f4a3a, 0x7a4636, 0xb08a60, 0x9a5a44, 0x6e3a2e, 0xa7765a, 0x8a5040, 0xc4a472];

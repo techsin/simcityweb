@@ -202,7 +202,7 @@ export const MANIFEST: ManifestEntry[] = [
   // ------------------------------------------------------------------ TRANSPORT BUILDINGS
   E('tr_bus_stop', 'transport', [1, 1], 1, [2, 4], 'Bus stop: small shelter with bench and sign near the +Z edge (sidewalk), rest of lot is plaza/grass.'),
   E('tr_subway_station', 'transport', [1, 1], 1, [3, 6], 'Subway entrance: stair canopy with sign (emissive M-like logo), small plaza.'),
-  E('tr_train_station', 'transport', [4, 2], 1, [10, 20], 'Passenger train station: station hall with clock, platforms with canopies along the back (-Z) side.'),
+  E('tr_train_station', 'transport', [4, 2], 1, [10, 25], 'Passenger train station: station hall with clock, platforms with canopies along the back (-Z) side.'),
   E('tr_freight_station', 'transport', [4, 2], 1, [8, 14], 'Freight rail yard: loading sheds, container stacks, gantry crane.'),
   E('tr_parking_garage', 'transport', [2, 2], 1, [10, 18], 'Multi-storey parking garage, open floors with cars, ramp.'),
   E('tr_airport_small', 'transport', [8, 6], 1, [8, 25], 'Small airport: runway along X, terminal, control tower, hangar, apron with planes.'),
