@@ -12,6 +12,9 @@
  *    at y in [0, 0.15]. Lawns use Surf.Foliage with a grass green; pavement uses Surf.Pavement.
  *  - `variants`: the builder receives variant index 0..variants-1 plus a seeded RNG; each variant must look clearly
  *    different (shape, color, roof, height, details) while staying in the described style.
+ *  - Procedural window grids (Surf.WallWindows / GlassCurtain) are anchored to the MODEL ORIGIN: columns repeat every
+ *    pattern column width along each wall and floors every floorHeight from y = 0. Put wall edges on multiples of the
+ *    column width and floor bases on multiples of floorHeight so windows never get cut at corners.
  *  - Triangle budgets: growables <= 1500 (typical 200-900), civic/utility <= 3000, landmarks <= 8000,
  *    nature <= 120 (they are instanced by the tens of thousands!), vehicles <= 250, props <= 200.
  */
@@ -228,7 +231,7 @@ export const MANIFEST: ManifestEntry[] = [
   E('train_car', 'vehicle', [1, 1], 3, [4, 4.3], 'Train car ~20m: passenger / freight boxcar / tanker.'),
   E('airplane', 'vehicle', [1, 1], 2, [8, 12], 'Passenger jet ~40m long (for airports).'),
   E('ship_container', 'vehicle', [1, 1], 1, [15, 30], 'Container ship ~150m along Z (for seaport ambience).'),
-  E('boat_small', 'vehicle', [1, 1], 3, [2, 5], 'Small boat / sailboat / yacht ~10m.'),
+  E('boat_small', 'vehicle', [1, 1], 3, [2, 10], 'Small boat / sailboat / yacht ~10m.'),
 
   // ------------------------------------------------------------------ PROPS
   E('streetlight', 'prop', [1, 1], 2, [8, 10], 'Street light pole with arm and emissive lamp head (arm points toward -X).'),

@@ -163,7 +163,7 @@ export class VehicleRenderer {
   private vlen!: Float32Array;
   private kind!: Uint8Array;
   private inst!: Int32Array;
-  private route!: Int32Array;
+  private vroute: (TrafficRoute | null)[] = [];
   private ridx!: Int32Array;
   private life!: Float32Array;
   private next!: Int32Array;
@@ -179,6 +179,9 @@ export class VehicleRenderer {
   private target = 0;
   private routes: TrafficRoute[] = [];
   private routeCdf = new Float32Array(0);
+  private serviceRoutes: TrafficRoute[] = [];
+  private trainRoutes: TrafficRoute[] = [];
+  private trainCdf = new Float32Array(0);
   private routeTimer = 0;
   private popTimer = 0;
   private time = 0;
@@ -244,7 +247,7 @@ export class VehicleRenderer {
     this.vlen = new Float32Array(cap);
     this.kind = new Uint8Array(cap);
     this.inst = new Int32Array(cap);
-    this.route = new Int32Array(cap);
+    this.vroute = new Array(cap).fill(null);
     this.ridx = new Int32Array(cap);
     this.life = new Float32Array(cap);
     this.next = new Int32Array(cap);
@@ -326,15 +329,30 @@ export class VehicleRenderer {
 
   private refreshRoutes(): void {
     if (!this.getRoutes) { this.routes = []; return; }
+    const road: TrafficRoute[] = [], train: TrafficRoute[] = [], service: TrafficRoute[] = [];
     try {
       const r = this.getRoutes(Math.min(1024, this.cap));
-      this.routes = (r || []).filter((q) => q && q.cells && q.cells.length >= 2 && q.kind !== 'train');
+      for (const q of r || []) {
+        if (!q || !q.cells || q.cells.length < 2) continue;
+        if (q.kind === 'train') train.push(q);
+        else if (q.kind === 'service') service.push(q);
+        else if (q.kind === 'car' || q.kind === 'bus' || q.kind === 'truck') road.push(q);
+        // unknown kinds are ignored
+      }
     } catch {
-      this.routes = [];
+      /* keep empty */
     }
-    let tot = 0;
-    this.routeCdf = new Float32Array(this.routes.length);
-    for (let i = 0; i < this.routes.length; i++) { tot += Math.max(0.001, this.routes[i].weight || 1); this.routeCdf[i] = tot; }
+    this.routes = road;
+    this.serviceRoutes = service;
+    this.trainRoutes = train;
+    const cdf = (list: TrafficRoute[]) => {
+      let tot = 0;
+      const c = new Float32Array(list.length);
+      for (let i = 0; i < list.length; i++) { tot += Math.max(0.001, list[i].weight || 1); c[i] = tot; }
+      return c;
+    };
+    this.routeCdf = cdf(road);
+    this.trainCdf = cdf(train);
   }
 
   private sampleCdf(cdf: Float32Array): number {
@@ -454,9 +472,8 @@ export class VehicleRenderer {
     const ci = this.cell[v];
     const hi = this.hin[v];
     let ho = -1;
-    const r = this.route[v];
-    if (r >= 0) {
-      const R = this.routes[r];
+    const R = this.vroute[v];
+    if (R) {
       const k = this.ridx[v];
       if (R && k + 1 < R.cells.length) {
         const nc = R.cells[k + 1];
@@ -467,7 +484,7 @@ export class VehicleRenderer {
       }
       if (ho < 0) {
         // route ends here: finish by random walk for this cell, then respawn
-        this.route[v] = -1;
+        this.vroute[v] = null;
         this.life[v] = 0;
         ho = this.chooseExit(ci, hi);
       }
@@ -504,14 +521,14 @@ export class VehicleRenderer {
   }
 
   /** (re)initialize slot v as a fresh vehicle. Returns false when nothing can spawn. */
-  private spawn(v: number, isNew: boolean, randomT: boolean): boolean {
+  private spawn(v: number, isNew: boolean, randomT: boolean, forced: TrafficRoute | null = null): boolean {
     const net = this.net;
-    let ci = -1, route = -1, ridx = 0, hi = 0;
+    let ci = -1, ridx = 0, hi = 0;
+    let R: TrafficRoute | null = null;
     let kind = K_CAR;
-    if (this.routes.length) {
-      route = this.sampleCdf(this.routeCdf);
-      const R = this.routes[route];
-      const k = randomT ? Math.floor(this.rand() * (R.cells.length - 1)) : 0;
+    if (forced || this.routes.length) {
+      R = forced ?? this.routes[this.sampleCdf(this.routeCdf)];
+      const k = randomT && !forced ? Math.floor(this.rand() * (R.cells.length - 1)) : 0;
       ci = R.cells[k];
       ridx = k;
       const nc = R.cells[k + 1];
@@ -519,7 +536,7 @@ export class VehicleRenderer {
       const dxc = (nc % N) - (ci % N), dzc = ((nc / N) | 0) - ((ci / N) | 0);
       hi = -1;
       for (let d = 0; d < 4; d++) if (DX[d] === dxc && DZ[d] === dzc) hi = d;
-      if (hi < 0 || !net.roadType[ci]) { route = -1; ci = -1; }
+      if (hi < 0 || !net.roadType[ci]) { R = null; ci = -1; }
       else {
         // enter the first cell as if coming from behind, heading toward the next cell
         kind = R.kind === 'bus' ? K_BUS : R.kind === 'truck' ? K_TRUCK : R.kind === 'service' ? K_SERVICE : K_CAR;
@@ -543,7 +560,7 @@ export class VehicleRenderer {
     const t0 = net.roadType[ci];
     this.cell[v] = ci;
     this.hin[v] = hi;
-    this.route[v] = route;
+    this.vroute[v] = R;
     this.ridx[v] = ridx;
     this.kind[v] = kind;
     this.lane[v] = (this.rand() * laneCount(t0)) | 0;
@@ -551,7 +568,7 @@ export class VehicleRenderer {
     this.oin[v] = edgeOff(prev >= 0 ? this.typeAt(prev) || t0 : t0, t0, this.lane[v]);
     this.spd[v] = SPEED[t0] * 0.6;
     this.vfac[v] = 0.82 + this.rand() * 0.3;
-    this.life[v] = route >= 0 ? 1e9 : 35 + this.rand() * 90;
+    this.life[v] = R ? 1e9 : 35 + this.rand() * 90;
     if (!this.planCell(v)) return false;
     this.t[v] = randomT ? this.rand() * this.len[v] : 0;
     const model = this.chooseModel(kind);
@@ -573,9 +590,10 @@ export class VehicleRenderer {
       this.cell[v] = this.cell[last]; this.hin[v] = this.hin[last]; this.hout[v] = this.hout[last]; this.lane[v] = this.lane[last];
       this.t[v] = this.t[last]; this.len[v] = this.len[last]; this.oin[v] = this.oin[last]; this.oout[v] = this.oout[last];
       this.spd[v] = this.spd[last]; this.vfac[v] = this.vfac[last]; this.vlen[v] = this.vlen[last]; this.kind[v] = this.kind[last];
-      this.inst[v] = this.inst[last]; this.route[v] = this.route[last]; this.ridx[v] = this.ridx[last]; this.life[v] = this.life[last];
+      this.inst[v] = this.inst[last]; this.vroute[v] = this.vroute[last]; this.ridx[v] = this.ridx[last]; this.life[v] = this.life[last];
       this.next[v] = this.next[last]; this.vis[v] = this.vis[last];
     }
+    this.vroute[last] = null;
   }
 
   /** advance vehicle v into its next cell; false = must respawn */
@@ -588,7 +606,7 @@ export class VehicleRenderer {
     this.oin[v] = this.oout[v];
     this.cell[v] = nb;
     this.hin[v] = this.hout[v];
-    if (this.route[v] >= 0) this.ridx[v]++;
+    if (this.vroute[v]) this.ridx[v]++;
     return this.planCell(v);
   }
 
