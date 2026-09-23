@@ -54,8 +54,8 @@ export function roundArch(cx: number, w: number, hs: number, seg = 8, y0 = 0): P
 }
 
 /** Dark recessed opening (door / window / louvre) on a +Z / -Z facade: shape drawn slightly proud of the wall. */
-export function openingZ(b: ModelBuilder, shape: P2[], z: number, dir: 1 | -1, color: ColorLike = 0x2a2622, surf = Surf.Plain): void {
-  b.paint(color, surf);
+export function openingZ(b: ModelBuilder, shape: P2[], z: number, dir: 1 | -1, color: ColorLike = 0x2a2622, surf = Surf.Plain, pattern = 0): void {
+  b.paint(color, surf, pattern);
   polyZ(b, shape, z + dir * 0.03, dir);
 }
 export function openingX(b: ModelBuilder, shape: P2[], x: number, dir: 1 | -1, color: ColorLike = 0x2a2622, surf = Surf.Plain): void {

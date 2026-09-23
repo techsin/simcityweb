@@ -470,7 +470,7 @@ function stripMall(b: B, v: number, rng: RNG) {
   K.stallsX(b, rng, px0 + 0.8, 23.2, 9.1, 1, 0.38);
   up(b, -24, 14.5, 24, 16, 0.07, K.foliage(C.grass));
   for (const tx of [-18, -6, 6, 17]) K.tree(b, rng, tx, 15.0, 0.62);
-  K.lotLamp(b, -12, 6.2, 7.2, [0, Math.PI]);
+  K.lotLamp(b, L ? -4 : -12, 6.2, 7.2, [0, Math.PI]);
   K.lotLamp(b, 10, 6.2, 7.2, [0, Math.PI]);
   // main row
   box(b, bx0, 0, bz0, bx1, h, bz1, walls, K.roofP());

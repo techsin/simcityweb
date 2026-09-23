@@ -8,7 +8,7 @@ import type { RNG } from '../../core/rng';
 import { signBox } from '../kit';
 import {
   type V3, flat, ground, wallQuad, wallRow, tube, disc, dome, lathe, hCyl, strut, pipeRun, tank, carLow, fenceRect,
-  floodLight, roofUnit, officeBlock, tree, parapet, boxTruck, CAR_COLORS2,
+  floodLight, roofUnit, officeBlock, tree, parapet, boxTruck, CAR_COLORS2, lights, lightDot, pool, Y_OVER, Y_POOL,
 } from './ind_kit';
 
 const CONCRETE = 0xa39e94;
@@ -63,8 +63,8 @@ function basin(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, 
 function waterPump(b: ModelBuilder, rng: RNG): void {
   ground(b, -8, -8, 8, 8, 0x6f9a45, Surf.Foliage, 0.04);
   b.paint(CONCRETE, Surf.Pavement);
-  flat(b, -7, -7, 7, 3.5, 0.07);
-  flat(b, -1.4, 3.5, 1.4, 8, 0.07);
+  flat(b, -7, -7, 7, 3.5, Y_OVER);
+  flat(b, -1.4, 3.5, 1.4, 8, Y_OVER);
   // pump house
   b.paint(0x9c5a42, Surf.Brick).box(-6.5, 0, -6.5, 1.5, 4.4, -0.5);
   b.paint(0x4a5058, Surf.RoofTiles).gableRoof(-2.5, -3.5, 8, 6, 4.4, 1.7, 'x', 0.35, { color: 0x9c5a42, surf: Surf.Brick });
@@ -103,15 +103,17 @@ function waterPump(b: ModelBuilder, rng: RNG): void {
   fenceRect(b, -7.5, -7.5, 7.5, 7.5, 1.8, 0x8a9096, [-1.6, 1.6], 3.8, 2);
   signBox(b, 2, 0.4, 7.2, 5.5, 1.4, 7.4, 0x2f6fa8, 0xe8e8e4);
   tree(b, rng, -5.5, 5.8, 6.5, 1.6);
-  floodLight(b, 7, -7, 5.5);
+  floodLight(b, 7, -7, 5.5, CONCRETE, 4.2, [-7, -7, 7, 3.5]);
+  lightDot(b, -3.9, 3.0, -0.2, 0.22);
+  pool(b, -3.9, 1.2, 1.8, CONCRETE);
 }
 
 // ------------------------------------------------------------------------------------------------ util_water_tower
 function waterTower(b: ModelBuilder): void {
   ground(b, -8, -8, 8, 8, 0x6f9a45, Surf.Foliage, 0.04);
   b.paint(0x9c958a, Surf.Pavement);
-  flat(b, -6.5, -6.5, 6.5, 6.5, 0.07);
-  flat(b, -1.3, 6.5, 1.3, 8, 0.07);
+  flat(b, -6.5, -6.5, 6.5, 6.5, Y_OVER);
+  flat(b, -1.3, 6.5, 1.3, 8, Y_OVER);
   const legs = 6, rb = 5.6, rt = 4.5, yt = 21;
   const col = 0x9cc2de;
   b.paint(0xa9a59c, Surf.Plain);
@@ -140,9 +142,9 @@ function waterTower(b: ModelBuilder): void {
   tube(b, 0, 0, 0.6, yt, 0.9, 0.9, 10);
   // tank (spheroid) with balcony
   b.paint(col, Surf.Plain);
-  lathe(b, 0, 0, [[0.9, yt - 0.2], [3.4, yt + 0.7], [5.7, yt + 2.6], [6.6, yt + 5.0], [6.6, yt + 6.6], [5.9, yt + 8.6], [3.8, yt + 10.0], [0, yt + 10.5]], 18);
+  lathe(b, 0, 0, [[0.9, yt - 0.2], [3.4, yt + 0.7], [5.7, yt + 2.6], [6.6, yt + 5.0], [6.6, yt + 6.6], [5.9, yt + 8.6], [3.8, yt + 10.0], [0, yt + 10.5]], 24);
   b.paint(0xf2f2ee, Surf.Plain);
-  lathe(b, 0, 0, [[6.62, yt + 5.3], [6.62, yt + 6.4]], 18);
+  lathe(b, 0, 0, [[6.62, yt + 5.3], [6.62, yt + 6.4]], 24);
   b.paint(0x55595e, Surf.Metal);
   tube(b, 0, 0, yt + 2.9, 0.18, 7.2, 7.2, 18);
   lathe(b, 0, 0, [[7.2, yt + 3.0], [6.2, yt + 3.0]], 18);
@@ -162,7 +164,7 @@ function waterTreatment(b: ModelBuilder, rng: RNG): void {
   const H = 24;
   ground(b, -H, -H, H, H, 0x6f9a45, Surf.Foliage, 0.04);
   b.paint(CONCRETE, Surf.Pavement);
-  flat(b, -23.5, -23.5, 23.5, 11.5, 0.06);
+  flat(b, -23.5, -23.5, 23.5, 11.5, Y_OVER);
   clarifier(b, -13.5, -13.5, 8.6, 2.8, 0.7);
   clarifier(b, 5, -14, 8.2, 2.8, 2.4, 0x4a8290);
   // digesters (domed)
@@ -197,12 +199,16 @@ function waterTreatment(b: ModelBuilder, rng: RNG): void {
   b.paint(PIPE_BLUE, Surf.Plain);
   wallQuad(b, 'pz', 21.5, -23, -8, 6.0, 6.6);
   b.paint(0x5a5b5e, Surf.Pavement);
-  flat(b, -6, 11.5, -2, 24, 0.07);
+  flat(b, -6, 11.5, -2, 24, Y_POOL);
   for (let i = 0; i < 4; i++) carLow(b, 0 + i * 2.8, 16.5, 0, rng.pick(CAR_COLORS2));
   b.paint(0x5a5b5e, Surf.Pavement);
-  flat(b, -1.5, 13.5, 11, 19.5, 0.065);
+  flat(b, -1.5, 13.5, 11, 19.5, Y_OVER);
   for (let i = 0; i < 4; i++) tree(b, rng, 5 + i * 5, 21.8, 7, 1.9);
   floodLight(b, -23, 12, 9);
+  // walkway lights along the basins and clarifiers + lit yard
+  lights(b, [[-23.2, 3.3, 0.8], [-11.5, 3.3, 10.3], [0.5, 3.3, 10.3], [12.2, 3.3, 0.8], [-13.5, 4.6, -4.6], [5, 4.6, -5.5], [-22.5, 3.6, -13.5], [13.6, 3.6, -14]], 0.3);
+  floodLight(b, 12.5, -23, 9, CONCRETE, 6.5, [-23.5, -23.5, 23.5, 11.5]);
+  floodLight(b, 13, 10.8, 9, CONCRETE, 5, [-23.5, -23.5, 23.5, 11.5]);
   fenceRect(b, -23.6, -23.6, 23.6, 23.6, 2.0, 0x8a9096, [-6.5, -1.5], 12, 1);
 }
 
@@ -240,19 +246,42 @@ function desalination(b: ModelBuilder, rng: RNG): void {
   b.paint(0x2f6fa8, Surf.Metal);
   for (const x of [-18, -14]) pipeRun(b, [[x, 1.3, 23.9], [x, 1.3, 17.6]], 1.1, 10);
   b.paint(0x4f6a5a, Surf.Metal);
-  pipeRun(b, [[6, 0.9, 23.9], [6, 0.9, 8], [11, 0.9, 3]], 0.7, 8);
+  pipeRun(b, [[12, 0.9, 23.9], [12, 0.9, 14.2], [11, 0.9, 3]], 0.7, 8);
   // intake pump house + chemical tanks + control building
   b.paint(0xd8d8d2, Surf.Plain).box(-12, 0, 18.5, -4, 5, 23);
   b.paint(0x1a8fb8, Surf.Plain);
   wallQuad(b, 'pz', 23, -12, -4, 3.8, 4.4);
-  for (let i = 0; i < 3; i++) tank(b, 9 + i * 3.4, 12, 1.4, 5.5, 0xe8e2d0, { roof: 'dome', seg: 10 });
+  for (let i = 0; i < 3; i++) tank(b, 3 + i * 3.1, 13, 1.3, 5.5, 0xe8e2d0, { roof: 'dome', seg: 10 });
   officeBlock(b, 13, 14.5, 23, 21.5, 7, 0xe6e4de, 2, 3.5);
   b.paint(0x2f6fa8, Surf.Metal);
-  pipeRun(b, [[2, 1.6, 12], [8.6, 1.6, 12]], 0.4, 6);
-  for (let i = 0; i < 3; i++) carLow(b, 15 + i * 2.8, 10.5, 0, rng.pick(CAR_COLORS2));
+  pipeRun(b, [[2, 1.6, 11.4], [9.4, 1.6, 11.4]], 0.4, 6);
+  // reverse-osmosis skid under a 14 x 9 m canopy: 3 levels x 6 pressure vessels, blue manifolds
+  b.paint(0x8a9096, Surf.Metal);
+  for (const [px, pz] of [[9.8, 2.2], [22.8, 2.2], [9.8, 10.2], [22.8, 10.2]] as [number, number][]) strut(b, [px, 0, pz], [px, 5.2, pz], 0.3);
+  b.paint(0xd8dcde, Surf.Corrugated).box(9.3, 5.2, 1.7, 23.3, 5.6, 10.7, { bottom: { color: 0xb8bcc0, surf: Surf.Metal } });
+  b.paint(0x1a8fb8, Surf.Plain);
+  wallQuad(b, 'pz', 10.7, 9.3, 23.3, 5.2, 5.6, 0.04);
+  for (let lv = 0; lv < 3; lv++)
+    for (let k = 0; k < 6; k++) {
+      b.paint(0xeef0f0, Surf.Metal);
+      hCyl(b, 16.3, 0.8 + lv * 0.95, 3.7 + k * 0.95, 7, 0.35, 'x', 5);
+    }
+  b.paint(0x2f6fa8, Surf.Metal);
+  for (const mx of [12.5, 20.1]) for (const mz of [3.2, 9.0]) strut(b, [mx, 0.2, mz], [mx, 3.2, mz], 0.3);
+  strut(b, [12.5, 3.2, 3.2], [12.5, 3.2, 9.0], 0.3);
+  strut(b, [20.1, 3.2, 3.2], [20.1, 3.2, 9.0], 0.3);
+  lights(b, [[12, 4.9, 6.2], [20.5, 4.9, 6.2]], 0.3, 0xfff2d8);
+  pool(b, 16.3, 6.2, 5.2, CONCRETE);
+  // brine pond with outfall
+  b.paint(0x9a968e, Surf.Pavement).box(3, 0, 16.5, 11, 0.6, 23.5, { bottom: null });
+  b.paint(0x5a8a8a, Surf.Water);
+  flat(b, 3.4, 16.9, 10.6, 23.1, 0.62);
+  b.paint(0x55595e, Surf.Metal);
+  pipeRun(b, [[7, 0.9, 12.2], [7, 0.9, 16.7]], 0.3, 6);
+  for (let i = 0; i < 2; i++) carLow(b, 15.5 + i * 3, 23, Math.PI * 0.5, rng.pick(CAR_COLORS2));
   boxTruck(b, -1, 21, Math.PI * 0.5, 0xf2f2ee, 0x1a8fb8);
-  floodLight(b, 23, -23, 11);
-  floodLight(b, -23, 4, 11);
+  floodLight(b, 23, -23, 11, CONCRETE, 6, [-24, -24, 24, 24]);
+  floodLight(b, -23, 4, 11, CONCRETE, 4.5, [-24, -24, 24, 5.5]);
 }
 
 

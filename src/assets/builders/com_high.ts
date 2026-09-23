@@ -111,13 +111,18 @@ function htOval(b: B, rng: RNG) {
   const cz = -9.4;
   const ell = K.ngonPts(0, cz, 13.5, 16, 0, 9.0);
   const top = 117;
-  K.prismPts(b, ell, 12.6, top, GC(2, 3.5), null);
-  for (let y = 47.6; y < top - 5; y += 35) K.bandPts(b, ell, y, y + 0.7, K.metal(0xc9a24a), 0.15);
+  K.prismPts(b, ell, 12.6, top, GC(5, 3.5), null);
+  for (let y = 12.6 + 17.5; y < top - 5; y += 17.5) K.bandPts(b, ell, y, y + 0.6, K.metal(0xc9a24a), 0.15);
+  for (let i = 1; i < 16; i += 2) {
+    const [ex, ez] = ell[i], dx = ex, dz = ez - cz, l = Math.hypot(dx, dz);
+    const fx = ex + (dx / l) * 0.3, fz = ez + (dz / l) * 0.3;
+    b.paint(0xc9a24a, Surf.Metal).beam([fx, 12.6, fz], [fx, top, fz], 0.35);
+  }
   const ell2 = K.scalePts(ell, 0.86, 0.8, 0, cz);
   K.loft(b, ell, ell2, top, top + 7, K.emis(0x7a5a24), null);
   for (let i = 0; i < 16; i += 2) b.paint(0xffe0a0, Surf.Emissive).beam([ell[i][0] * 1.01, top + 0.6, cz + (ell[i][1] - cz) * 1.01], [ell2[i][0] * 1.01, top + 7, cz + (ell2[i][1] - cz) * 1.01], 0.35);
-  K.bandPts(b, ell, top - 0.3, top + 0.6, K.emis(0xffd88a), 0.2);
-  K.bandPts(b, ell2, top + 6.2, top + 7.0, K.emis(0xffd88a), 0.15);
+  K.bandPts(b, ell, top - 0.3, top + 0.6, K.emis(0xffc870, 7), 0.2);
+  K.bandPts(b, ell2, top + 6.2, top + 7.0, K.emis(0xffc870, 7), 0.15);
   K.prismPts(b, K.scalePts(ell2, 0.97, 0.97, 0, cz), top + 7, top + 7.2, K.metal(0xc9a24a), ROOF);
   K.mast(b, 0, cz, top + 7.2, 12, 0.35, 0.08, K.metal(0xd8d8d8));
   // pool deck on podium
@@ -129,7 +134,7 @@ function htOval(b: B, rng: RNG) {
   up(b, -20, -20, -14, -4, 0.05, K.foliage(0x6f9a45));
   b.pop();
   // porte-cochere + drive loop
-  box(b, -9, 5.2, pz1, 9, 6.0, pz1 + 7.5, K.plain(0xf2eee4), ROOF, { bottom: K.emis(0xe8e0cc), nz: null });
+  box(b, -9, 5.2, pz1, 9, 6.0, pz1 + 7.5, K.plain(0xf2eee4), ROOF, { bottom: K.emis(0xe8e0cc, K.CANOPY_K), nz: null });
   K.bandRect(b, -9, pz1, 9, pz1 + 7.5, 5.35, 5.8, K.emis(0xffd88a), 0.05);
   for (const cx of [-8.4, 8.4]) box(b, cx - 0.35, 0, pz1 + 6.6, cx + 0.35, 5.2, pz1 + 7.3, K.plain(0xece2cc), null);
   K.letters(b, rng, 0, 6.05, pz1 + 7.2, 12, 1.0, 0xffe6b0, { words: 1, n: 7 });
@@ -166,9 +171,9 @@ function htDeco(b: B, rng: RNG) {
   // entrance
   K.storefront(b, -4.4, 4.4, 6.6, { y0: 0.05, y1: 5.4, frame: 0xc9a24a, doors: [-1.5, 1.5], doorW: 1.8, transom: 3.4 });
   for (let x = -19.8; x < 19; x += 4.4) if (Math.abs(x + 1.8) > 6) K.storefront(b, x, x + 3.2, 6.6, { y0: 0.6, y1: 5.0, frame: 0x2a2320, pitch: 1.6, transom: 3.6 });
-  box(b, -8, 4.6, 6.6, 8, 5.4, 13, K.metal(0x2a2a2a), ROOF, { bottom: K.emis(0xfff0cc), nz: null });
+  box(b, -8, 4.6, 6.6, 8, 5.4, 13, K.metal(0x2a2a2a), ROOF, { bottom: K.emis(0xfff0cc, K.CANOPY_K), nz: null });
   faceZ(b, -8, 8, 4.7, 5.3, 13.02, K.emis(0xffd88a));
-  K.letters(b, rng, 0, 5.45, 12.7, 11, 1.1, 0xffd88a, { words: 1, n: 6 });
+  K.letters(b, rng, 0, 5.45, 12.7, 11, 1.1, 0xff4f6a, { words: 1, n: 6 });
   for (const cx of [-7.5, 7.5]) box(b, cx - 0.2, 0, 12.3, cx + 0.2, 4.6, 12.7, K.metal(0xc9a24a), null);
   K.bladeSign(b, 15.4, 4.4, 30, 22, 1.8, 0xff4f6a, 0x2a2a2a);
   K.car(b, 2, 9.8, Math.PI / 2, 0xe0b020);
@@ -196,7 +201,7 @@ function htSail(b: B, rng: RNG) {
   for (let s = 0; s < segs; s++) {
     const t0 = s / segs, t1 = (s + 1) / segs;
     const za = bz + rz * (1 - 0.35 * t0) + 0.12, zb = bz + rz * (1 - 0.35 * t1) + 0.12;
-    b.paint(0x7fd8ff, Surf.Emissive).quad([-0.9, 9 + t0 * (H - 9), za], [0.9, 9 + t0 * (H - 9), za], [0.9, 9 + t1 * (H - 9), zb], [-0.9, 9 + t1 * (H - 9), zb]);
+    b.paint(0x6fd8ff, Surf.Emissive, 7).quad([-0.9, 9 + t0 * (H - 9), za], [0.9, 9 + t0 * (H - 9), za], [0.9, 9 + t1 * (H - 9), zb], [-0.9, 9 + t1 * (H - 9), zb]);
   }
   // back exoskeleton mast
   const mw = K.plain(0xf4f4f0);
@@ -206,8 +211,8 @@ function htSail(b: B, rng: RNG) {
   b.paint(0xf4f4f0, Surf.Plain).cylinder(0, bz + 5, H - 2, 0.6, 5.5, 5.5, 12, { smooth: false, topPaint: K.plain(0x3a7a5a), bottom: true });
   K.bandPts(b, K.ngonPts(0, bz + 5, 5.5, 12), H - 1.9, H - 1.5, K.emis(0x6fff9a), 0.05);
   // entrance canopy & water feature
-  box(b, -7, 6, 2, 7, 6.8, 9, K.plain(0xf4f4f0), ROOF, { bottom: K.emis(0xeaf4ff), nz: null });
-  K.letters(b, rng, 0, 6.9, 8.6, 10, 1.1, 0x7fd8ff, { words: 1, n: 6 });
+  box(b, -7, 6, 2, 7, 6.8, 9, K.plain(0xf4f4f0), ROOF, { bottom: K.emis(0xeaf4ff, K.CANOPY_K), nz: null });
+  K.letters(b, rng, 0, 6.9, 8.6, 10, 1.1, 0x6fd8ff, { words: 1, n: 6 });
   b.paint(0x3f8fb8, Surf.Water).box(-20, 0, 12, -6, 0.25, 21);
   b.paint(0x3f8fb8, Surf.Water).box(6, 0, 12, 20, 0.25, 21);
   for (const fx of [-16, -10, 10, 16]) b.paint(0xd8f0ff, Surf.Water).cylinder(fx, 16.5, 0.2, 2.4, 0.25, 0.05, 5, { top: false });
@@ -223,13 +228,15 @@ function otGlassBox(b: B, rng: RNG) {
   K.storefront(b, -9.9, 9.9, 6, { y0: 0.05, y1: 5.3, frame: 0x55595f, doors: [-1.5, 1.5], pitch: 3.3, transom: 3.2, surround: 0 });
   for (const [cx, cz] of [[x0 + 0.5, z1 - 0.5], [x1 - 0.5, z1 - 0.5], [0, z1 - 0.5]] as V2[]) box(b, cx - 0.5, 0, cz - 0.5, cx + 0.5, base, cz + 0.5, K.metal(0x9aa2aa), null);
   box(b, x0, base, z0, x1, top, z1, GC(0, 3.8), ROOF, { bottom: K.plain(0x55595f) });
-  K.bandRect(b, x0, z0, x1, z1, top, top + 3.8, K.metal(0x8a9096), 0.0);
-  K.bandRect(b, x0, z0, x1, z1, top + 2.4, top + 3.8, K.emis(0xdff1ff), 0.05);
-  box(b, -6, top, -8, 3, top + 3.0, -1, K.plain(0x8a8f94), ROOF);
-  K.mast(b, 4.5, -6, top, 18, 0.35, 0.08, K.metal(0xcccccc));
-  beacons4(b, x0 + 0.5, z0 + 0.5, x1 - 0.5, z1 - 0.5, top + 3.8, 0.35);
-  K.canopy(b, -4, 4, 6, 4.4, 3.2, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff));
-  K.letters(b, rng, 0, 1.0, 14.8, 5, 0.6, 0xeaf4ff, { words: 1 });
+  K.bandRect(b, x0, z0, x1, z1, top - 0.2, top + 0.6, K.metal(0x8a9096), 0.06);
+  const ct = top + 7.6;
+  box(b, x0 + 1.5, top, z0 + 1.5, x1 - 1.5, ct, z1 - 1.5, GC(0, 3.8), ROOF);
+  K.bandRect(b, x0 + 1.5, z0 + 1.5, x1 - 1.5, z1 - 1.5, ct - 1.3, ct, K.emis(0xff5a4a, 7), 0.06);
+  box(b, -5, ct, -8, 2, ct + 2.4, -1, K.plain(0x8a8f94), ROOF);
+  K.mast(b, 4.5, -6, ct, 16, 0.35, 0.08, K.metal(0xcccccc));
+  beacons4(b, x0 + 2, z0 + 2, x1 - 2, z1 - 2, ct, 0.35);
+  K.canopy(b, -4, 4, 6, 4.4, 3.2, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff, K.CANOPY_K));
+  K.letters(b, rng, 0, 1.0, 14.8, 5, 0.6, 0xff5a4a, { words: 1 });
   box(b, -3, 0, 14.5, 3, 1.8, 14.9, K.plain(0x3a3e44));
 }
 function otStone(b: B, rng: RNG) {
@@ -273,8 +280,8 @@ function otDeco(b: B, rng: RNG) {
   K.mast(b, 0, -2.2, 104.4, 20, 0.35, 0.05, K.metal(0xd0d0d0));
   K.storefront(b, -3.3, 3.3, 8.8, { y0: 0.05, y1: 6.2, frame: 0xc9a24a, doors: [-1.2, 1.2], doorW: 1.8, transom: 3.8 });
   for (const sx of [-9.9, 6.6]) K.storefront(b, sx, sx + 3.3, 8.8, { y0: 0.6, y1: 5.6, frame: 0x2a2320, pitch: 1.65, transom: 3.8 });
-  box(b, -4.4, 4.4, 8.8, 4.4, 5.0, 12, K.metal(0x2a2a2a), ROOF, { bottom: K.emis(0xfff0cc), nz: null });
-  K.letters(b, rng, 0, 5.05, 11.8, 7, 0.8, 0xffd88a, { words: 1 });
+  box(b, -4.4, 4.4, 8.8, 4.4, 5.0, 12, K.metal(0x2a2a2a), ROOF, { bottom: K.emis(0xfff0cc, K.CANOPY_K), nz: null });
+  K.letters(b, rng, 0, 5.05, 11.8, 7, 0.8, 0xffc933, { words: 1 });
   for (const tx of [-12.5, 12.5]) K.tree(b, rng, tx, 12.8, 0.8);
 }
 function otTwisted(b: B, rng: RNG) {
@@ -284,18 +291,18 @@ function otTwisted(b: B, rng: RNG) {
   const n = 30, fh = 3.8, y0 = 5;
   for (let i = 0; i < n; i++) {
     const a = (i * 2.6 * Math.PI) / 180;
-    rotSlab(b, 0, cz, 9, 9, y0 + i * fh, y0 + (i + 1) * fh, a, GC(1, fh), ROOF);
+    rotSlab(b, 0, cz, 9, 9, y0 + i * fh, y0 + (i + 1) * fh, a, GC(1, fh), i === n - 1 ? ROOF : P(0x3a3d40, Surf.Plain));
   }
   const aTop = ((n - 1) * 2.6 * Math.PI) / 180, yt = y0 + n * fh;
   b.push().translate(0, 0, cz).rotateY(aTop);
-  K.bandRect(b, -9, -9, 9, 9, yt - 0.9, yt, K.emis(0x7fffd4), 0.06);
+  K.bandRect(b, -9, -9, 9, 9, yt - 0.9, yt, K.emis(0x7fffd4, 7), 0.06);
   box(b, -9, yt, -9, 9, yt + 1.2, 9, K.plain(0xe8ecee), null);
   up(b, -8.2, -8.2, 8.2, 8.2, yt + 0.3, K.foliage(0x6f9a45));
   box(b, -4, yt, -4, 4, yt + 3.5, 4, GC(1, 3.5), ROOF);
   b.pop();
   K.mast(b, 0, cz, yt + 3.5, 8, 0.3, 0.06, K.metal(0xd0d0d0));
   b.paint(C.water, Surf.Water).box(-6, 0, 9, 6, 0.2, 13);
-  K.canopy(b, -3, 3, 6.1, 3.8, 2.4, 0.25, K.metal(0xc3c8cd), K.emis(0xeaf4ff));
+  K.canopy(b, -3, 3, 6.1, 3.8, 2.4, 0.25, K.metal(0xc3c8cd), K.emis(0xeaf4ff, K.CANOPY_K));
 }
 function otSeagram(b: B, rng: RNG) {
   up(b, -16, -16, 16, 16, 0.03, K.pav(0xc9c2b4));
@@ -309,6 +316,7 @@ function otSeagram(b: B, rng: RNG) {
   finsZ(b, x0 + 1.5, x1 - 1.5, 1.5, base, top, z1, 0.4, bronze);
   finsX(b, z0 + 1.5, z1 - 1.5, 1.5, base, top, x1, 0.4, bronze);
   K.bandRect(b, x0, z0, x1, z1, top, top + 3.8, K.metal(0x3a2c22), 0.0);
+  K.bandRect(b, x0, z0, x1, z1, top + 2.5, top + 3.6, K.emis(0xffb060, 6), 0.05);
   up(b, x0, z0, x1, z1, top + 3.8, ROOF);
   K.bandRect(b, x0, z0, x1, z1, base - 0.5, base, K.metal(0x7a5a38), 0.05);
   for (const px of [-9, 9]) {
@@ -316,7 +324,7 @@ function otSeagram(b: B, rng: RNG) {
     K.fountain(b, px, 10, 1.0, 0x7a6a5a);
   }
   for (const tx of [-14.5, 14.5]) { K.tree(b, rng, tx, -13.5, 0.8); }
-  K.letters(b, rng, 0, 0.8, 15.25, 5, 0.55, 0xe8d8b8, { words: 1 });
+  K.letters(b, rng, 0, 0.8, 15.25, 5, 0.55, 0xffb060, { words: 1 });
 }
 function otOctSloped(b: B, rng: RNG) {
   plaza(b, rng, 16, 16, 7.5, { trees: [[-12.5, 12], [12.5, 12]] });
@@ -338,23 +346,24 @@ function otOctSloped(b: B, rng: RNG) {
     b.paint(lit).beam([-hw, y, z], [hw, y, z], 0.25);
   }
   K.beacon(b, 0, yTop(0, -13.5) + 0.2, -13.2, 0.5);
-  K.canopy(b, -4, 4, 6.5, 4.4, 3.4, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff));
-  K.letters(b, rng, 0, 4.75, 9.8, 6, 0.7, 0xeaf4ff, { words: 1 });
+  K.canopy(b, -4, 4, 6.5, 4.4, 3.4, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff, K.CANOPY_K));
+  K.letters(b, rng, 0, 4.75, 9.8, 6, 0.7, 0x2fd6ff, { words: 1 });
 }
 function otPyramid(b: B, rng: RNG) {
   plaza(b, rng, 16, 16, 7.5, { color: 0xcfc6b6, trees: [[-13, 12.5], [13, 12.5]] });
   const n = 1.5;
   const pts: V2[] = [[-10.5 + n, -13.5], [10.5 - n, -13.5], [10.5 - n, -13.5 + n], [10.5, -13.5 + n], [10.5, 7.5 - n], [10.5 - n, 7.5 - n], [10.5 - n, 7.5], [-10.5 + n, 7.5], [-10.5 + n, 7.5 - n], [-10.5, 7.5 - n], [-10.5, -13.5 + n], [-10.5 + n, -13.5 + n]];
   b.paint(P(0x6a5a52, Surf.Stone)).extrude(pts, 0, 7.6, { top: false });
-  b.paint(WW(0x8a5a4e, 5, 3.8)).extrude(pts, 7.6, 98.8 - 7.6, { top: true, topPaint: ROOF });
-  K.bandPts(b, K.rectPts(-9, -12, 9, 6), 106.4 - 0.8, 106.4, K.emis(0xfff4e0), 0.02);
-  b.paint(WW(0x8a5a4e, 5, 3.8)).extrude(K.rectPts(-9, -12, 9, 6), 98.8, 7.6, { top: false });
+  b.paint(WW(0xb9a888, 5, 3.8)).extrude(pts, 7.6, 98.8 - 7.6, { top: true, topPaint: ROOF });
+  K.bandPts(b, K.rectPts(-9, -12, 9, 6), 106.4 - 0.8, 106.4, K.emis(0xffd88a, 6), 0.02);
+  b.paint(WW(0xb9a888, 5, 3.8)).extrude(K.rectPts(-9, -12, 9, 6), 98.8, 7.6, { top: false });
   b.paint(0xc0c6cc, Surf.Metal).pyramid(0, -3, 18, 18, 106.4, 15);
+  for (const [hx, hz] of [[-9, -12], [9, -12], [9, 6], [-9, 6]] as V2[]) b.paint(0xffd88a, Surf.Emissive, 7).beam([hx, 106.4, hz], [0, 121.4, -3], 0.3);
   K.beacon(b, 0, 121.4, -3, 0.6, 0xffffff);
   K.storefront(b, -4.5, 4.5, 7.5, { y0: 0.05, y1: 6.8, frame: 0x2a2a2a, doors: [-1.5, 1.5], doorW: 1.8, transom: 3.6 });
   for (const sx of [-8.5, 5.5]) K.storefront(b, sx, sx + 3, 7.5, { y0: 0.6, y1: 6.4, frame: 0x2a2a2a, pitch: 1.5, transom: 3.6 });
-  K.canopy(b, -5, 5, 7.5, 4.6, 2.8, 0.35, K.metal(0x2a2a2a), K.emis(0xfff0cc));
-  K.letters(b, rng, 0, 1.0, 14.9, 6, 0.6, 0xfff1d6, { words: 1 });
+  K.canopy(b, -5, 5, 7.5, 4.6, 2.8, 0.35, K.metal(0x2a2a2a), K.emis(0xfff0cc, K.CANOPY_K));
+  K.letters(b, rng, 0, 1.0, 14.9, 6, 0.6, 0xff8a2a, { words: 1 });
   box(b, -3.6, 0, 14.6, 3.6, 1.9, 15.0, P(0x6a5a52, Surf.Stone));
 }
 function otTapered(b: B, rng: RNG) {
@@ -363,10 +372,10 @@ function otTapered(b: B, rng: RNG) {
   const sq = (h: number) => K.rectPts(-h, cz - h, h, cz + h);
   K.prismPts(b, sq(11), 0, 5.4, P(0x2a3440, Surf.GlassPlain), null);
   const lv: [number, number, number][] = [[5.4, 12, 11], [47, 11, 9.8], [88.4, 9.8, 8.6], [129.6, 8.6, 0]];
-  for (let i = 0; i < 3; i++) K.loft(b, sq(lv[i][1]), sq(lv[i + 1][1]), lv[i][0], lv[i + 1][0], GC(2, 3.6), i === 2 ? ROOF : null);
+  for (let i = 0; i < 3; i++) K.loft(b, sq(lv[i][1]), sq(lv[i + 1][1]), lv[i][0], lv[i + 1][0], GC(0, 3.6), i === 2 ? ROOF : null);
   down(b, -12, cz - 12, 12, cz + 12, 5.4, K.plain(0x55595f));
   // open crown frame
-  const g = K.emis(0xffc870), yt = 129.6;
+  const g = K.emis(0xffc870, 7), yt = 129.6;
   const s0 = 8.2, s1 = 6.0, y1 = yt + 10;
   const corners = (s: number): V2[] => [[-s, cz - s], [s, cz - s], [s, cz + s], [-s, cz + s]];
   const c0 = corners(s0), c1 = corners(s1);
@@ -379,7 +388,7 @@ function otTapered(b: B, rng: RNG) {
   box(b, -4, yt, cz - 4, 4, yt + 4, cz + 4, K.plain(0x6b5238), ROOF);
   K.mast(b, 0, cz, yt + 4, 12, 0.3, 0.06, K.metal(0xd0d0d0));
   K.canopy(b, -4, 4, cz + 11, 4.2, 3.2, 0.3, K.metal(0x7a5a38), K.emis(0xffd88a));
-  K.letters(b, rng, 0, 4.55, cz + 14.0, 6, 0.7, 0xffe6b0, { words: 1 });
+  K.letters(b, rng, 0, 4.55, cz + 14.0, 6, 0.7, 0xffc870, { words: 1 });
 }
 const officeTower: ModelBuildFn = (b, v, rng) => [otGlassBox, otStone, otDeco, otTwisted, otSeagram, otOctSloped, otPyramid, otTapered][v % 8](b, rng);
 
@@ -399,16 +408,16 @@ function skEmpire(b: B, rng: RNG) {
   piersX(b, -15.4, 6.6, 4.4, 21.6, 87, 15.4, pier);
   piersX(b, -11, 4.4, 4.4, 86.4, 166.2, 11, pier);
   // lit crown
-  const lit = K.emis(0xfff0c0);
+  const lit = K.emis(0xffc870, 8);
   for (let x = -3.3; x <= 3.31; x += 2.2) faceZ(b, x - 0.35, x + 0.35, 187.6, 197.4, 0.02, lit);
   K.onSide(b, 'px', () => { for (let z = -5.5; z <= -1.09; z += 2.2) faceZ(b, -z - 0.35, -z + 0.35, 187.6, 197.4, 4.42, lit); });
   K.bandRect(b, -6.6, -8.8, 6.6, 2.2, 186.4, 187.2, lit, 0.1);
-  box(b, -2.4, 198, -4.7, 2.4, 203, -1.9, K.emis(0xfff4d8), ROOF);
+  box(b, -2.4, 198, -4.7, 2.4, 203, -1.9, K.emis(0xffc870, 7), ROOF);
   K.mast(b, 0, -3.3, 203, 36, 1.3, 0.12, K.metal(0xd8d8d8));
   // entrance
   K.storefront(b, -4.4, 4.4, 15.4, { y0: 0.05, y1: 6.4, frame: 0xc9a24a, doors: [-1.8, 0, 1.8], doorW: 1.6, transom: 4.0 });
   for (let x = -19.8; x < 19; x += 4.4) if (Math.abs(x + 1.8) > 6) K.storefront(b, x, x + 3.2, 15.4, { y0: 0.6, y1: 5.8, frame: 0x2a2320, pitch: 1.6, transom: 3.8 });
-  box(b, -5.5, 4.8, 15.4, 5.5, 5.6, 19.6, K.metal(0x2a2a2a), ROOF, { bottom: K.emis(0xfff0cc), nz: null });
+  box(b, -5.5, 4.8, 15.4, 5.5, 5.6, 19.6, K.metal(0x2a2a2a), ROOF, { bottom: K.emis(0xfff0cc, K.CANOPY_K), nz: null });
   faceZ(b, -5.5, 5.5, 4.9, 5.5, 19.62, K.emis(0xffd88a));
   K.facadeFlag(b, -7.5, 7.0, 15.4, 0x1d3a6b, 2.6);
   K.facadeFlag(b, 7.5, 7.0, 15.4, 0x1d3a6b, 2.6);
@@ -441,7 +450,7 @@ function skChrysler(b: B, rng: RNG) {
   }
   K.mast(b, 0, cz, y, 38, 0.9, 0.05, K.metal(0xe0e4e8));
   K.storefront(b, -4.4, 4.4, 15.4, { y0: 0.05, y1: 6.4, frame: 0xc0c6cc, doors: [-1.8, 0, 1.8], doorW: 1.6, transom: 4.2 });
-  box(b, -5.5, 5, 15.4, 5.5, 5.7, 19.4, K.metal(0x2a2a2a), ROOF, { bottom: K.emis(0xfff0cc), nz: null });
+  box(b, -5.5, 5, 15.4, 5.5, 5.7, 19.4, K.metal(0x2a2a2a), ROOF, { bottom: K.emis(0xfff0cc, K.CANOPY_K), nz: null });
   K.letters(b, rng, 0, 5.75, 19.0, 9, 1.0, 0xfff2cc, { words: 1, n: 8 });
 }
 function skCiticorp(b: B, rng: RNG) {
@@ -452,10 +461,11 @@ function skCiticorp(b: B, rng: RNG) {
   for (const [cx, czz] of [[0, z1 - 3.6], [0, z0 + 3.6], [x0 + 3.6, zc], [x1 - 3.6, zc]] as V2[]) box(b, cx - 3.6, 0, czz - 3.6, cx + 3.6, sb, czz + 3.6, col, null);
   box(b, -6.5, 0, zc - 6.5, 6.5, 10, zc + 6.5, P(0x2a3440, Surf.GlassPlain), K.roofP(0x9a9a9a));
   const pts = K.rectPts(x0, z0, x1, z1);
-  K.prismPts(b, pts, sb, top, WW(0xc5cad0, 2, 3.8), null);
+  K.prismPts(b, pts, sb, top, GC(4, 3.8), null);
+  for (let y = sb + 2.6; y < top; y += 3.8) K.bandRect(b, x0, z0, x1, z1, y, Math.min(top, y + 1.2), K.metal(0xd6dade), 0.05);
   down(b, x0, z0, x1, z1, sb, K.plain(0xb0b5ba));
   const yTop = (_x: number, z: number) => top + (z1 - z);
-  prismSloped(b, pts, top, yTop, WW(0xc5cad0, 2, 3.8), K.metal(0xd6dade));
+  prismSloped(b, pts, top, yTop, GC(4, 3.8), K.metal(0xd6dade));
   // lit bands across the slope
   const lit = K.emis(0xf4fbff);
   for (let k = 1; k < 9; k++) {
@@ -467,7 +477,7 @@ function skCiticorp(b: B, rng: RNG) {
   // sunken garden / low glass pavilion
   box(b, 14, 0, -6, 21, 7, 6, P(0x2a3440, Surf.GlassPlain), K.roofP(0x9a9a9a));
   b.paint(0xf2f0ea, Surf.Plain).shedRoof(17.5, 0, 7.4, 12.4, 7, 4, 'px');
-  K.letters(b, rng, 0, 6.5, z1 - 0.1 + 0.05, 7, 1.0, 0xf4fbff, { words: 1 });
+  K.letters(b, rng, 0, 6.5, z1 - 0.1 + 0.05, 7, 1.0, 0xff3b30, { words: 1 });
   for (const bx of [-6, 6]) bench(b, bx, 16);
 }
 function skTwisted(b: B, rng: RNG) {
@@ -488,7 +498,7 @@ function skTwisted(b: B, rng: RNG) {
   K.prismPts(b, K.scalePts(last, 0.5, 0.5, 0, cz), yt, yt + 4, K.plain(0xd8dcdf), ROOF);
   K.mast(b, 0, cz, yt + 4, 10, 0.3, 0.06, K.metal(0xd0d0d0));
   for (const fx of [-8, 8]) b.paint(C.water, Surf.Water).box(fx - 4, 0, 16, fx + 4, 0.25, 21);
-  K.canopy(b, -4, 4, 14, 5.2, 3.0, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff));
+  K.canopy(b, -4, 4, 14, 5.2, 3.0, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff, K.CANOPY_K));
 }
 function skDiagrid(b: B, rng: RNG) {
   plaza(b, rng, 24, 24, 15.4, { color: 0xd3cbbb, trees: [[-20, 20], [20, 20]] });
@@ -507,28 +517,29 @@ function skDiagrid(b: B, rng: RNG) {
   K.bandRect(b, x0, z0, x1, z1, y1 + 0.6, y1 + 2.2, K.emis(0xdff1ff), 0.05);
   box(b, -6, y1, -8, 6, y1 + 4.5, 4, K.plain(0xc9ced4), ROOF);
   beacons4(b, x0 + 0.6, z0 + 0.6, x1 - 0.6, z1 - 0.6, y1 + 2.4, 0.4);
-  K.letters(b, rng, 0, 20.5, 15.45, 12, 1.4, 0xffe6b0, { words: 1 });
+  K.letters(b, rng, 0, 20.5, 15.45, 12, 1.4, 0xffc933, { words: 1 });
 }
 function skBundled(b: B, rng: RNG) {
   plaza(b, rng, 24, 24, 10.5, { color: 0xcfc8ba, trees: [[-20, 19], [20, 19], [-20, 13], [20, 13]] });
   const xs: [number, number][] = [[-13.5, -4.5], [-4.5, 4.5], [4.5, 13.5]];
   const zs: [number, number][] = [[-16.5, -7.5], [-7.5, 1.5], [1.5, 10.5]];
   const H = [[220, 244, 164], [182, 244, 128], [110, 146, 92]];
-  const g = GC(3, 3.8), belt = K.metal(0x2a2c2e);
+  const g = GC(0, 3.8), belt = K.metal(0x6a6e73);
   for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) {
     const [a, e] = xs[i], [c, d] = zs[j], h = H[j][i];
     box(b, a, 0, c, e, h, d, g, ROOF);
     for (let y = 60.8; y < h - 8; y += 60.8) K.bandRect(b, a, c, e, d, y - 3.8, y, belt, 0.05);
     K.bandRect(b, a, c, e, d, h - 3.8, h - 1.4, belt, 0.05);
-    K.bandRect(b, a, c, e, d, h - 1.4, h, K.emis(0xeaf4ff), 0.05);
+    K.bandRect(b, a, c, e, d, h - 1.4, h, K.emis(0xeaf4ff, 5), 0.05);
     if (h < 240) box(b, a + 2, h, c + 2, e - 2, h + 2.5, d - 2, K.plain(0x55595f), ROOF);
   }
   K.mast(b, -2.6, -12, 244, 46, 0.8, 0.1, K.metal(0xe0e0e0));
   K.mast(b, 2.6, -3, 244, 40, 0.8, 0.1, K.metal(0xe0e0e0));
-  for (const [x, z] of [[-4, -16], [4, -16], [-4, 1], [4, 1]] as V2[]) K.beacon(b, x, 244, z, 0.4);
+  for (const [x, z] of [[-4, -16], [4, -16], [-4, 1], [4, 1]] as V2[]) K.beacon(b, x, 244, z, 0.4, 0xffffff);
+  for (const [x, z, y] of [[-13, -16, 220], [13, -16, 164], [-13, 10, 110], [13, 10, 92]] as V3[]) K.beacon(b, x, y, z, 0.35, 0xffffff);
   box(b, -8, 0, 10.5, 8, 6, 14.5, P(0x2a3440, Surf.GlassPlain), K.metal(0x2a2c2e));
   K.storefront(b, -7.5, 7.5, 14.5, { y0: 0.05, y1: 5.6, frame: 0x2a2c2e, doors: [-2, 2], doorW: 2.0, pitch: 2.5, surround: 0 });
-  K.letters(b, rng, 0, 6.2, 14.52, 12, 1.2, 0xeaf4ff, { words: 1 });
+  K.letters(b, rng, 0, 6.2, 14.52, 12, 1.2, 0x3a8dff, { words: 1 });
 }
 const skyscraper: ModelBuildFn = (b, v, rng) => [skEmpire, skChrysler, skCiticorp, skTwisted, skDiagrid, skBundled][v % 6](b, rng);
 
@@ -550,7 +561,7 @@ function megaPlaza(b: B, rng: RNG, water: boolean) {
 function megaBurj(b: B, rng: RNG) {
   megaPlaza(b, rng, true);
   const cz = -3;
-  const glass = GC(4, 4);
+  const glass = GC(5, 4);
   for (let w = 0; w < 3; w++) {
     const a = Math.PI / 2 + (w * 2 * Math.PI) / 3;
     b.push().translate(0, 0, cz).rotateY(Math.PI / 2 - a);
@@ -561,6 +572,7 @@ function megaBurj(b: B, rng: RNG) {
       box(b, -6.75, y, 0, 6.75, y1, L, glass, ROOF);
       if (k === 0) K.storefront(b, -5, 5, L, { y0: 0.05, y1: 7.5, frame: 0xa9b0b6, doors: [0], doorW: 2.4, pitch: 2.5, transom: 4, surround: 0 });
       box(b, -6.9, y1 - 0.5, L - 0.2, 6.9, y1, L + 0.15, K.metal(0xdfe4e8), null);
+      box(b, -0.25, y + (k === 0 ? 8 : 0), L, 0.25, y1 - 0.5, L + 0.5, K.plain(0xf4f6f8), null, { nz: null });
       y = y1;
     }
     b.pop();
@@ -569,11 +581,11 @@ function megaBurj(b: B, rng: RNG) {
   K.loft(b, hex(9.5), hex(8.5), 0, 200, glass, null);
   K.loft(b, hex(8.5), hex(6.8), 200, 330, glass, null);
   K.loft(b, hex(6.8), hex(4.5), 330, 360, glass, K.roofP(0x9a9a9a));
-  K.bandPts(b, hex(6.8), 329, 330.5, K.emis(0xdff1ff), 0.15);
+  K.bandPts(b, hex(6.8), 329, 330.5, K.emis(0x7fe0ff, 7), 0.15);
   K.loft(b, hex(4.5), hex(0.25), 360, 418, K.metal(0xd8dde2), null);
   K.beacon(b, 0, 418, cz, 0.35, 0xffffff);
-  for (const y of [368, 380, 392]) { const r = 4.5 - ((y - 360) / 58) * 4.25; K.bandPts(b, hex(r), y, y + 2, K.emis(0xdff1ff), 0.08); }
-  for (const y of [250, 300, 355]) K.bandPts(b, hex(y < 330 ? 8.5 - (y - 200) * 0.013 : 4.6), y, y + 0.8, K.emis(0xdff1ff), 0.12);
+  for (const y of [368, 380, 392]) { const r = 4.5 - ((y - 360) / 58) * 4.25; K.bandPts(b, hex(r), y, y + 2, K.emis(0x7fe0ff, 7), 0.08); }
+  for (const y of [250, 300, 355]) K.bandPts(b, hex(y < 330 ? 8.5 - (y - 200) * 0.013 : 4.6), y, y + 0.8, K.emis(0x7fe0ff, 7), 0.12);
   K.fountain(b, 0, 26, 3.5);
 }
 function megaShanghai(b: B, rng: RNG) {
@@ -621,16 +633,16 @@ function megaOpener(b: B, rng: RNG) {
   const wy = (y: number) => 21.5 - 5 * Math.pow(y / H, 1.3);
   const depth = (y: number) => 38 * Math.pow(1 - y / H, 0.85) + 8 * (y / H);
   const rect = (y: number, xa?: number, xb?: number): V2[] => { const d = depth(y) / 2; return K.rectPts(xa ?? -wy(y), cz - d, xb ?? wy(y), cz + d); };
-  const g = GC(4, 4.2);
-  const levels = [0, 60, 130, 200, 265, 330];
+  const g = GC(5, 4.2);
+  const levels = [0, 60, 130, 200, 265, 316];
   // base podium
   box(b, -26, 0, cz - 24, 26, 10, cz + 21, K.plain(0xe4e2dc), K.foliage(0x77a34f));
-  for (let i = 0; i < levels.length - 1; i++) K.loft(b, rect(levels[i]), rect(levels[i + 1]), levels[i], levels[i + 1], g, i === levels.length - 2 ? K.emis(0x6fb8ff) : null);
+  for (let i = 0; i < levels.length - 1; i++) K.loft(b, rect(levels[i]), rect(levels[i + 1]), levels[i], levels[i + 1], g, i === levels.length - 2 ? K.emis(0xa07bff, 5) : null);
   // aperture legs & bridge
-  const ya = 330, yb = 372, hx = 9;
+  const ya = 316, yb = 372, hx = 12;
   K.loft(b, rect(ya, -wy(ya), -hx), rect(yb, -wy(yb), -hx), ya, yb, g, null);
   K.loft(b, rect(ya, hx, wy(ya)), rect(yb, hx, wy(yb)), ya, yb, g, null);
-  const inner = K.emis(0x6fb8ff);
+  const inner = K.emis(0xa07bff, 6);
   // inner walls of the aperture (lit)
   const da = depth(ya) / 2, db = depth(yb) / 2;
   b.paint(inner).quad([-hx + 0.05, ya, cz - da], [-hx + 0.05, ya, cz + da], [-hx + 0.05, yb, cz + db], [-hx + 0.05, yb, cz - db]);
@@ -639,7 +651,7 @@ function megaOpener(b: B, rng: RNG) {
   const dbb = depth(yb) / 2;
   b.paint(inner).quad([-hx, yb - 0.05, cz - dbb], [hx, yb - 0.05, cz - dbb], [hx, yb - 0.05, cz + dbb], [-hx, yb - 0.05, cz + dbb]);
   // lit frame around the aperture on front and back
-  const frame = K.emis(0xdff1ff), fw = 0.8;
+  const frame = K.emis(0xa07bff, 8), fw = 0.8;
   for (const s of [1, -1]) {
     const za = cz + s * (da + 0.1), zb = cz + s * (db + 0.1);
     const Q = (x0: number, x1: number, y0: number, y1: number, z0: number, z1: number) => (s > 0 ? b.paint(frame).quad([x0, y0, z0], [x1, y0, z0], [x1, y1, z1], [x0, y1, z1]) : b.paint(frame).quad([x1, y0, z0], [x0, y0, z0], [x0, y1, z1], [x1, y1, z1]));
@@ -651,9 +663,17 @@ function megaOpener(b: B, rng: RNG) {
   const dt = depth(H) / 2;
   const wt = wy(H);
   beacons4(b, -wt + 0.6, cz - dt + 0.6, wt - 0.6, cz + dt - 0.6, H, 0.5);
-  K.bandRect(b, -wt, cz - dt, wt, cz + dt, H - 1.2, H, K.emis(0xdff1ff), 0.1);
+  K.bandRect(b, -wt, cz - dt, wt, cz + dt, H - 1.2, H, K.emis(0xdff1ff, 6), 0.1);
+  // lit vertical arrises (the four tapering corner edges)
+  const edge = K.emis(0xdff1ff, 6), ys = [10, 60, 130, 200, 265, 316, 372, H];
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as V2[]) {
+    for (let i = 0; i < ys.length - 1; i++) {
+      const ya2 = ys[i], yb2 = ys[i + 1];
+      b.paint(edge).beam([sx * (wy(ya2) + 0.15), ya2, cz + sz * (depth(ya2) / 2 + 0.15)], [sx * (wy(yb2) + 0.15), yb2, cz + sz * (depth(yb2) / 2 + 0.15)], 0.4);
+    }
+  }
   K.storefront(b, -10, 10, cz + 21, { y0: 0.1, y1: 9.2, frame: 0xa9b0b6, doors: [-3, 0, 3], doorW: 2.2, pitch: 2.5, transom: 4.5, surround: 0 });
-  K.letters(b, rng, 0, 7.4, cz + 21.05, 14, 1.2, 0xdff1ff, { words: 1 });
+  K.letters(b, rng, 0, 7.4, cz + 21.05, 14, 1.2, 0xa07bff, { words: 1 });
 }
 const megatower: ModelBuildFn = (b, v, rng) => [megaBurj, megaShanghai, megaOpener][v % 3](b, rng);
 

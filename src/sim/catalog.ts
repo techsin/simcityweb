@@ -219,17 +219,20 @@ const GROWABLES: BuildingDef[] = [
   g('ind_scrapyard', ID, 1, 18, [M], { air: 0.15, water: 0.2, noise: 0.35, radius: 4 }),
   g('ind_smokestack_factory', ID, 3, 170, [M], { air: 0.6, water: 0.35, noise: 0.45, radius: 8 }),
   g('ind_refinery', ID, 4, 340, [M], { air: 0.8, water: 0.5, noise: 0.5, radius: 11 }),
+  g('ind_refinery', ID, 5, 480, [M], { air: 0.9, water: 0.55, noise: 0.5, radius: 12, description: 'I-D stage 5: expanded petrochemical complex (late game).' }),
   // ---------------- I-M (manufacturing)
   g('ind_workshop', IM, 1, 25, [M], { air: 0.1, water: 0.05, noise: 0.25, radius: 3 }),
   g('ind_depot', IM, 2, 55, [M, H], { air: 0.08, noise: 0.35, radius: 4 }),
   g('ind_warehouse', IM, 2, 80, [M, H], { air: 0.06, noise: 0.3, radius: 4 }),
   g('ind_warehouse', IM, 3, 110, [M, H], { air: 0.08, noise: 0.3, radius: 4 }),
   g('ind_assembly_plant', IM, 4, 400, [M, H], { air: 0.2, water: 0.1, noise: 0.35, radius: 6 }),
+  g('ind_assembly_plant', IM, 5, 620, [H], { air: 0.22, water: 0.1, noise: 0.35, radius: 6, description: 'I-M stage 5: automated high-output plant (late game).' }),
   // ---------------- I-HT (clean high tech, needs EQ)
   g('ind_lab', IHT, 2, 90, [H], { noise: 0.05, radius: 2 }),
   g('ind_datacenter', IHT, 3, 110, [H], { noise: 0.15, radius: 2, powerMul: 10 }),
   g('ind_tech_campus', IHT, 4, 520, [H], { noise: 0.05, radius: 2 }),
   g('ind_tech_campus', IHT, 5, 720, [H], { noise: 0.05, radius: 2 }),
+  g('ind_tech_campus', IHT, 6, 1100, [H], { noise: 0.05, radius: 2, description: 'I-HT stage 6: flagship tech headquarters campus (late game).' }),
 ];
 
 // ----------------------------------------------------------------------------------------------------

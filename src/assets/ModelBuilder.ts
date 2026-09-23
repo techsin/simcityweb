@@ -492,6 +492,30 @@ export class ModelBuilder {
     return this;
   }
 
+  /**
+   * Soft ground light pool: a triangle fan painted Surf.Emissive pattern 9 whose night intensity falls off
+   * smoothly from the centre (floor channel = 3.3 * intensity) to the rim (~0). By day it reads as the ground
+   * colour, so pass `groundColor` = the colour of the surface underneath (it is darkened to 0.7x automatically).
+   * ~seg tris. y = height of the underlying ground surface (the pool is lifted 0.02 m above it).
+   */
+  lightPool(cx: number, y: number, cz: number, radius: number, groundColor: ColorLike, intensity = 1, seg = 12): this {
+    const c = toColor(groundColor).clone().multiplyScalar(0.7);
+    const prev = { ...this.cur };
+    this.cur = { r: c.r, g: c.g, b: c.b, s: Surf.Emissive, p: 9, f: 3.3 * intensity };
+    const yy = y + 0.02;
+    const n: V3 = [0, 1, 0];
+    for (let i = 0; i < seg; i++) {
+      const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+      this.cur.f = 3.3 * intensity;
+      this.emitVertex(cx, yy, cz, 0, 1, 0);
+      this.cur.f = 0.01;
+      this.emitVertex(cx + Math.cos(a1) * radius, yy, cz + Math.sin(a1) * radius, n[0], n[1], n[2]);
+      this.emitVertex(cx + Math.cos(a0) * radius, yy, cz + Math.sin(a0) * radius, n[0], n[1], n[2]);
+    }
+    this.cur = prev;
+    return this;
+  }
+
   /** Append another builder's triangles (already in model space) into this one, applying current transform. */
   append(other: ModelBuilder): this {
     const o = other.raw();

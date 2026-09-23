@@ -339,7 +339,7 @@ function supermarket(b: B, v: number, rng: RNG) {
   const r1 = -0.2;
   K.stallsX(b, rng, -21, 21, r1, -1, 0.5);
   K.stallsX(b, rng, -21, 21, r1 + 5.2, 1, 0.42);
-  K.stallsX(b, rng, -21, 21, 16.9, -1, 0.36);
+  K.stallsX(b, rng, -21, 21, 16.9, -1, 0.28);
   for (const [ix0, ix1] of [[-24, -21.2], [21.2, 24]] as [number, number][]) {
     up(b, ix0, r1, ix1, r1 + 10.4, 0.1, K.foliage(C.grass));
     up(b, ix0, 16.9, ix1, 22.1, 0.1, K.foliage(C.grass));
@@ -802,11 +802,12 @@ const officeBlock: ModelBuildFn = (b, v, rng) => [blockMies, blockConcrete, bloc
 function retailUnit(b: B, rng: RNG, a: number, e: number, h: number, wall: Paint, trim: number, awningColor: number, neon: number, upper: boolean) {
   const zf = -21, mid = (a + e) / 2;
   box(b, a, 0, -31, e, h, zf, wall, K.roofP());
-  box(b, a, h - 0.1, zf - 0.3, e, h + 0.55, zf + 0.12, K.plain(trim));
-  K.storefront(b, a + 0.6, e - 0.6, zf, { y0: 0.4, y1: 3.3, frame: 0x2a2a2a, doors: [mid + (rng.chance(0.5) ? 1.2 : -1.2)], pitch: 2.0 });
+  faceZ(b, a, e, h - 0.4, h + 0.5, zf + 0.12, K.plain(trim));
+  up(b, a, zf - 0.25, e, zf + 0.12, h + 0.5, K.plain(trim));
+  K.storefront(b, a + 0.6, e - 0.6, zf, { y0: 0.4, y1: 3.3, frame: 0x2a2a2a, doors: [mid + (rng.chance(0.5) ? 1.2 : -1.2)], pitch: 2.8 });
   K.awning(b, a + 0.4, e - 0.4, zf, 3.65, 1.4, 0.6, [awningColor], 1, 0.3);
-  K.letters(b, rng, mid, 4.25, zf + 0.03, e - a - 2.0, 0.95, neon, { n: rng.int(3, 5), words: 1, mixed: rng.chance(0.4) });
-  if (upper) K.storefront(b, a + 0.9, e - 0.9, zf, { y0: 5.7, y1: 7.5, frame: 0x2a2a2a, pitch: 1.6, surround: 0.08 });
+  K.letters(b, rng, mid, 4.25, zf + 0.03, e - a - 2.0, 0.95, neon, { n: rng.int(3, 4), words: 1, mixed: rng.chance(0.4) });
+  if (upper) faceZ(b, a + 0.9, e - 0.9, 5.7, 7.5, zf + 0.03, P(0x2a3440, Surf.GlassPlain));
 }
 /** v2: open-air lifestyle centre — two L-shaped retail rows around a landscaped plaza, cinema, clock tower, parking in front. */
 function mallLifestyle(b: B, rng: RNG) {
@@ -845,7 +846,7 @@ function mallLifestyle(b: B, rng: RNG) {
   box(b, cx0 + 2, 6.4, -21, cx1 - 1, 9.8, -20.7, K.plain(0x1a1a1a));
   K.letters(b, rng, (cx0 + cx1) / 2, 7.1, -20.68, 12, 2.0, 0xff4fc3, { n: 6, words: 1, k: 8 });
   box(b, cx1 - 1.4, 5.0, -20.7, cx1 - 0.6, 13.8, -19.3, K.plain(0x7a2335), undefined, { nz: null });
-  K.verticalLetters(b, rng, cx1 - 1.0, 5.4, 13.4, -19.28, 0.7, 0xffc933, 8);
+  K.verticalLetters(b, rng, cx1 - 1.0, 6.0, 12.4, -19.28, 0.7, 0xffc933, 8);
   // clock tower in the gap between the back rows
   box(b, -2.6, 0, -27, 2.6, 18.0, -21.8, K.plain(0xe9dfc8), null);
   b.paint(0xb5583a, Surf.RoofTiles).pyramid(0, -24.4, 6.0, 6.0, 18.0, 3.6);
@@ -855,13 +856,11 @@ function mallLifestyle(b: B, rng: RNG) {
   up(b, -21, -21, 21, 7.2, 0.06, K.pav(0xcdb99a));
   up(b, -8, -15, 8, -9, 0.08, K.foliage(0x77a34f));
   K.fountain(b, 0, -2.5, 3.2, 0xd4cbb8);
-  for (const [tx, tz] of [[-11, -12], [11, -12], [-11, 2.5], [11, 2.5]] as [number, number][]) {
+  for (const [tx, tz] of [[-11, -12], [11, 2.5]] as [number, number][]) {
     K.planter(b, rng, tx - 1.1, tz - 1.1, tx + 1.1, tz + 1.1, 0.5, 0x9a8a72);
     K.tree(b, rng, tx, tz, 0.9);
   }
   for (const [ux, uz, c] of [[15.5, -3, 0xc8352b], [15.5, 1.5, 0xf2efe6]] as [number, number, number][]) K.umbrella(b, ux, uz, 1.3, c, 2.5);
-  bench(b, -5, 4.5);
-  bench(b, 5, 4.5);
   const fest = K.emis(0xffc870, 3);
   for (const [ax, bx] of [[-20, 20]] as [number, number][]) {
     let prev: K.V3 = [ax, 4.2, -8];
@@ -870,20 +869,21 @@ function mallLifestyle(b: B, rng: RNG) {
   // gateway pylons at the plaza entrance
   for (const gx of [-6, 6]) box(b, gx - 0.6, 0, 6.4, gx + 0.6, 6.5, 7.6, K.plain(0xe9dfc8), K.plain(0xb5583a));
   box(b, -6.6, 5.2, 6.7, 6.6, 6.2, 7.3, K.plain(0x3a3e44));
-  K.letters(b, rng, 0, 5.35, 7.32, 10, 0.7, 0xffc933, { n: 7, words: 1 });
+  K.letters(b, rng, 0, 5.35, 7.32, 10, 0.7, 0xffc933, { n: 5, words: 1 });
   // parking in front
-  K.asphalt(b, -31.5, 8.2, 31.5, 30.4);
-  for (const [rz, nose, fill] of [[8.6, -1, 0.2], [13.8, 1, 0.14], [24.8, -1, 0.12]] as [number, 1 | -1, number][]) {
+  K.asphalt(b, -31.5, 8.2, 31.5, 24.2);
+  for (const [rz, nose, fill] of [[8.6, -1, 0.15], [13.8, 1, 0.1]] as [number, 1 | -1, number][]) {
     K.stallsX(b, rng, -30.5, -3.2, rz, nose, fill);
     K.stallsX(b, rng, 3.2, 30.5, rz, nose, fill);
   }
   up(b, -3.0, 8.6, 3.0, 19.0, 0.1, K.foliage(C.grass));
   K.tree(b, rng, 0, 13.8, 0.75);
-  K.lotLamp(b, -16, 19.6, 8, [0, Math.PI]);
-  K.lotLamp(b, 16, 19.6, 8, [0, Math.PI]);
-  up(b, -32, 30.4, 32, 32, 0.07, K.foliage(C.grass));
+  K.lotLamp(b, -16, 19.6, 8, [Math.PI]);
+  K.lotLamp(b, 16, 19.6, 8, [Math.PI]);
+  up(b, -32, 24.2, 32, 32, 0.07, K.foliage(C.grass));
+  for (const tx of [-16, 12]) K.tree(b, rng, tx, 27.5, 0.8);
   K.pylon(b, 27, 30.8, 11, 3.6, [{ h: 2.2, color: 0xb5583a }, { h: 0.8, color: neon[0] }, { h: 0.8, color: neon[1] }, { h: 0.8, color: neon[2] }], { poles: 2, pole: 0x6a6e73, frame: 0x2a2a2a, cap: 0xdedede });
-  K.pylonLetters(b, rng, 27, 30.8, 8.35, 1.2, 3.2, 0xfff4e0, { n: 5 });
+  K.pylonLetters(b, rng, 27, 30.8, 8.35, 1.2, 3.2, 0xfff4e0, { n: 4 });
 }
 function mall(b: B, v: number, rng: RNG) {
   if (v === 2) return mallLifestyle(b, rng);
@@ -948,8 +948,8 @@ function mall(b: B, v: number, rng: RNG) {
     }
     for (let z = dz0 + 0.5; z < dz1; z += 7.3) for (const x of [dx0 + 0.5, dx1 - 0.5]) box(b, x - 0.3, 0.9, z - 0.3, x + 0.3, 3.05, z + 0.3, K.plain(0x9a968e), null);
     b.push().translate(0, 6.4, 0);
-    K.stallsZ(b, rng, dz0 + 1, dz1 - 1, dx0 + 0.8, 1, 0.5, 0.02);
-    K.stallsZ(b, rng, dz0 + 1, dz1 - 1, dx1 - 6.0, -1, 0.5, 0.02);
+    K.stallsZ(b, rng, dz0 + 1, dz1 - 1, dx0 + 0.8, 1, 0.4, 0.02);
+    K.stallsZ(b, rng, dz0 + 1, dz1 - 1, dx1 - 6.0, -1, 0.35, 0.02);
     b.pop();
     for (let z = dz0 + 1.4; z < dz1 - 1; z += 2.7) faceX(b, z - 0.9, z + 0.9, 3.45, 4.6, dx1 + 0.01, K.metal(K.CAR_COLORS[(z * 7) % K.CAR_COLORS.length | 0]), 1);
     K.lotLamp(b, -22, 16, 6.4 + 4.5, [0, Math.PI], false);

@@ -4,11 +4,11 @@
 import type { ModelBuilders } from '../registry';
 import type { ModelBuilder, ColorLike } from '../ModelBuilder';
 import { Surf } from '../../core/types';
-import type { RNG } from '../../core/rng';
+import { hash2, type RNG } from '../../core/rng';
 import { signBox } from '../kit';
 import {
-  flat, ground, wallQuad, wallDisc, tube, disc, strut, conveyor, orientedBox, tank, smokestack, carLow, forklift,
-  fenceRect, floodLight, roofUnit, officeBlock, heap, wallRun, tree, CAR_COLORS2,
+  type V3, flat, ground, wallQuad, wallDisc, tube, disc, strut, conveyor, orientedBox, tank, smokestack, carLow, forklift,
+  fenceRect, floodLight, roofUnit, officeBlock, heap, wallRun, tree, CAR_COLORS2, lights, lightDot, pool, Y_OVER, Y_POOL, Y_MARK,
 } from './ind_kit';
 
 const CONCRETE = 0xa39e94;
@@ -18,13 +18,13 @@ const BAG_COLORS = [0xe8e8e2, 0x2a2a2a, 0x3a5a8a, 0x8a8a84, 0x6a5a48, 0xd8d0b0, 
 /** Garbage truck (rear loader), faces +Z locally (~40 tris). */
 function garbageTruck(b: ModelBuilder, x: number, z: number, rot: number, body: ColorLike = 0x2e7d4f, cab: ColorLike = 0xf2f2ee, tilt = 0, y = 0.05): void {
   b.push().translate(x, y, z).rotateY(rot);
-  b.paint(0x1e1e1e, Surf.Metal).box(-1.1, 0, -4.2, 1.1, 1.0, 4.0, { top: null });
-  b.paint(cab, Surf.Metal).box(-1.2, 1.0, 2.2, 1.2, 3.1, 4.1);
-  b.paint(0x1a2027, Surf.Metal);
+  b.paint(0x1e1e1e, Surf.Metal, 1).box(-1.1, 0, -4.2, 1.1, 1.0, 4.0, { top: null });
+  b.paint(cab, Surf.Metal, 1).box(-1.2, 1.0, 2.2, 1.2, 3.1, 4.1);
+  b.paint(0x1a2027, Surf.GlassPlain, 1);
   wallQuad(b, 'pz', 4.1, -1.05, 1.05, 2.1, 2.9);
   b.push().translate(0, 1.0, -4.2).rotateX(-tilt);
-  b.paint(body, Surf.Metal).box(-1.25, 0, 0.2, 1.25, 2.6, 6.2);
-  b.paint(0x55595e, Surf.Metal).box(-1.2, 0.1, -0.6, 1.2, 2.3, 0.2);
+  b.paint(body, Surf.Metal, 1).box(-1.25, 0, 0.2, 1.25, 2.6, 6.2);
+  b.paint(0x55595e, Surf.Metal, 1).box(-1.2, 0.1, -0.6, 1.2, 2.3, 0.2);
   b.pop();
   b.pop();
 }
@@ -32,12 +32,12 @@ function garbageTruck(b: ModelBuilder, x: number, z: number, rot: number, body: 
 /** Bulldozer (~60 tris). Faces +Z locally. */
 function bulldozer(b: ModelBuilder, x: number, y: number, z: number, rot: number): void {
   b.push().translate(x, y, z).rotateY(rot);
-  b.paint(0x2a2a2a, Surf.Metal).box(-1.9, 0, -2.2, -1.0, 1.0, 2.2).box(1.0, 0, -2.2, 1.9, 1.0, 2.2);
-  b.paint(0xe6a817, Surf.Metal).box(-1.0, 0.5, -1.9, 1.0, 2.1, 1.9);
-  b.paint(0xe6a817, Surf.Metal).box(-0.9, 2.1, -1.8, 0.9, 3.4, -0.2, { top: { color: 0xe6a817, surf: Surf.Metal } });
-  b.paint(0x1a2027, Surf.Metal);
+  b.paint(0x2a2a2a, Surf.Metal, 1).box(-1.9, 0, -2.2, -1.0, 1.0, 2.2).box(1.0, 0, -2.2, 1.9, 1.0, 2.2);
+  b.paint(0xe6a817, Surf.Metal, 1).box(-1.0, 0.5, -1.9, 1.0, 2.1, 1.9);
+  b.paint(0xe6a817, Surf.Metal, 1).box(-0.9, 2.1, -1.8, 0.9, 3.4, -0.2, { top: { color: 0xe6a817, surf: Surf.Metal, pattern: 1 } });
+  b.paint(0x1a2027, Surf.GlassPlain, 1);
   wallQuad(b, 'pz', -0.2, -0.8, 0.8, 2.3, 3.2);
-  b.paint(0xd9a324, Surf.Metal);
+  b.paint(0xd9a324, Surf.Metal, 1);
   b.push().translate(0, 0, 2.9).rotateX(-0.2);
   b.box(-2.2, 0, -0.2, 2.2, 1.4, 0.25);
   b.pop();
@@ -74,11 +74,11 @@ function incinerator(b: ModelBuilder, rng: RNG): void {
   const H = 24;
   ground(b, -H, -H, H, H, CONCRETE, Surf.Pavement, 0.05);
   b.paint(0x6f9a45, Surf.Foliage);
-  flat(b, -H, 19.5, H, H, 0.07);
+  flat(b, -H, 19.5, H, H, Y_OVER);
   // bunker + boiler hall (tall, dark cladding, sloping roof)
   b.paint(0x4a5560, Surf.Corrugated).box(-6, 0, -21, 14, 25, 7);
   b.paint(0x5d6873, Surf.Metal).shedRoof(4, -7, 20, 28, 25, 7, 'nz');
-  b.paint(0xe67e22, Surf.Plain);
+  b.paint(0xe67e22, Surf.Emissive, 2); // orange fins: accent glow at night
   for (let i = 0; i < 4; i++) wallQuad(b, 'pz', 7, -4 + i * 5, -2.8 + i * 5, 2, 24);
   b.paint(0x9fb4c0, Surf.GlassCurtain, 5, 3.6);
   wallQuad(b, 'px', 14, -18, 4, 17, 23);
@@ -89,8 +89,9 @@ function incinerator(b: ModelBuilder, rng: RNG): void {
   wallQuad(b, 'pz', 12, -22.5, -6, 10.4, 11.4);
   for (let i = 0; i < 3; i++) {
     const cx = -20 + i * 5.2;
-    b.paint(0x2a2d30, Surf.Plain);
+    b.paint(0x2a2d30, Surf.GlassPlain, 2); // open tipping bay, lit inside at night
     wallQuad(b, 'pz', 12, cx - 1.9, cx + 1.9, 0, 6.2);
+    lightDot(b, cx, 6.9, 12.35, 0.28);
     b.paint(0xe6a817, Surf.Plain);
     wallQuad(b, 'pz', 12, cx - 2.1, cx + 2.1, 6.2, 6.6);
   }
@@ -112,17 +113,18 @@ function incinerator(b: ModelBuilder, rng: RNG): void {
   tube(b, 18.5, 2.8, 44, 1.6, 1.87, 1.85, 14);
   // weighbridge + gatehouse + admin, parking
   b.paint(0x55595e, Surf.Metal);
-  flat(b, -3, 12, 1.5, 22, 0.1);
+  flat(b, -3, 12, 1.5, 22, Y_POOL);
   b.paint(0xe6e8e8, Surf.Plain).box(2.5, 0, 14, 5.5, 3, 17);
   b.paint(0x2a3440, Surf.GlassPlain);
   wallQuad(b, 'nx', 2.5, 14.5, 16.5, 1.1, 2.5);
   officeBlock(b, 7, 10, 23, 18.5, 7.5, 0xe6e4de, 2, 3.6);
   for (let i = 0; i < 4; i++) carLow(b, 9 + i * 2.8, 21.5, 0, rng.pick(CAR_COLORS2));
   b.paint(0x5a5b5e, Surf.Pavement);
-  flat(b, 7, 19.5, 23, 23.5, 0.08);
+  flat(b, 7, 19.5, 23, 23.5, Y_POOL);
   tank(b, -2, -15, 2.4, 9, 0xb8b4ac, { roof: 'cone', seg: 10, surf: Surf.Plain });
   floodLight(b, -23, -23, 12);
-  floodLight(b, 1, 9, 10);
+  floodLight(b, 1, 9, 10, CONCRETE, 6);
+  pool(b, -14.5, 15.5, 4.2, CONCRETE);
   for (let i = 0; i < 3; i++) tree(b, rng, -21 + i * 8, 22, 6.5, 1.6);
 }
 
@@ -139,7 +141,7 @@ function recycling(b: ModelBuilder, rng: RNG): void {
   const H = 24;
   ground(b, -H, -H, H, H, CONCRETE, Surf.Pavement, 0.05);
   b.paint(0x6f9a45, Surf.Foliage);
-  flat(b, -H, 20, H, H, 0.07);
+  flat(b, -H, 20, H, H, Y_OVER);
   // sorting hall
   b.paint(0x2e7d4f, Surf.Corrugated).box(-22.5, 0, -22.5, 5, 10, -3);
   b.paint(0xc5c9cc, Surf.Metal).gableRoof(-8.75, -12.75, 27.5, 19.5, 10, 1.6, 'x', 0.3, { color: 0x2e7d4f, surf: Surf.Corrugated });
@@ -152,9 +154,10 @@ function recycling(b: ModelBuilder, rng: RNG): void {
     const a = (i / 3) * Math.PI * 2 + 0.5;
     wallQuad(b, 'pz', -2.9, -18.5 + Math.cos(a) * 0.9 - 0.3, -18.5 + Math.cos(a) * 0.9 + 0.3, 5.2 + Math.sin(a) * 0.9 - 0.3, 5.2 + Math.sin(a) * 0.9 + 0.3, 0.1);
   }
-  b.paint(0x2a2d30, Surf.Plain);
+  b.paint(0x2a2d30, Surf.GlassPlain, 2);
   wallQuad(b, 'pz', -3, -13, -7, 0, 5.5);
   wallQuad(b, 'pz', -3, -4, 2, 0, 5.5);
+  lights(b, [[-10, 6.2, -2.65], [-1, 6.2, -2.65]], 0.28);
   roofUnit(b, -16, 11.4, -14, 3, 3, 1.6);
   // feed hopper + inclined conveyor into the hall
   b.paint(0x55595e, Surf.Metal).box(7, 0, -12, 11, 3.2, -8);
@@ -174,7 +177,7 @@ function recycling(b: ModelBuilder, rng: RNG): void {
   const binC = [0x3f7fd0, 0x2e7d4f, 0xf1c40f, 0xc0392b, 0x55595e];
   for (let i = 0; i < 5; i++) {
     const x = -21 + i * 4.3;
-    b.paint(binC[i], Surf.Metal).box(x - 1.3, 0, 1, x + 1.3, 1.8, 6.4, { top: null });
+    b.paint(binC[i], Surf.Metal, 1).box(x - 1.3, 0, 1, x + 1.3, 1.8, 6.4, { top: null });
     b.paint(0x5a5550, Surf.Plain);
     flat(b, x - 1.2, 1.1, x + 1.2, 6.3, 1.5);
   }
@@ -185,62 +188,103 @@ function recycling(b: ModelBuilder, rng: RNG): void {
   officeBlock(b, -22.5, 11, -10, 18.5, 6.5, 0xe6e4de, 2, 3.4);
   signBox(b, -8, 0.4, 19.5, -2, 2.2, 19.9, 0x2e7d4f, 0xe8e8e4);
   for (let i = 0; i < 3; i++) carLow(b, -4 + i * 2.8, 14, 0, rng.pick(CAR_COLORS2));
-  floodLight(b, 23, 0, 10);
+  floodLight(b, 23, 0, 10, CONCRETE, 6, [-24, -24, 24, 19.5]);
+  floodLight(b, 4, 11.5, 10, CONCRETE, 6.5, [-24, -24, 24, 19.5]);
+  floodLight(b, 12, -13.5, 9, CONCRETE, 4.5);
   fenceRect(b, -23.6, -23.6, 23.6, 19.5, 2.0, 0x8a9096, [-1, 13], 10, 1);
   tree(b, rng, 17, 22, 6, 1.6);
   tree(b, rng, 21.5, 22, 6, 1.6);
 }
 
 // ------------------------------------------------------------------------------------------------ util_landfill_tile
+/**
+ * Landfill cell: a continuous waste plateau heightfield. Exactly y = 1.2 along all 4 lot edges and along the
+ * fixed service track x in [-1.2, 1.2], so neighbouring tiles join seamlessly; the interior rises into 2-3
+ * off-centre mounds (a different quadrant per variant) with mottled garbage / soil-cover faces and litter.
+ */
 function landfill(b: ModelBuilder, v: number, rng: RNG): void {
-  const S = 8, Y = 0.35;
-  // seamless fill: dirt block edge to edge
-  b.paint(DIRT, Surf.Pavement).box(-S, 0, -S, S, Y, S);
-  // inner tire tracks (never touching the edges)
+  const S = 8, Y = 1.2;
+  type Mound = [number, number, number, number];
+  const all: Mound[][] = [
+    [[-4.5, -4, 3.2, 2.2], [4.6, 3.6, 1.8, 1.8], [-4.6, 4.2, 1.0, 1.6]],
+    [[4.6, -4.2, 2.6, 2.4], [-4.6, 3.2, 1.4, 2.0]],
+    [[-4.2, 4.2, 2.6, 2.6], [4.4, -4.2, 1.2, 2.0]],
+    [[4.6, 4.6, 3.0, 2.2], [-4.4, -4.2, 1.6, 1.8], [4.4, -4.6, 1.0, 1.5]],
+  ];
+  const mounds = all[v];
+  const sm = (t: number) => t * t * (3 - 2 * t);
+  const cl = (t: number) => Math.max(0, Math.min(1, t));
+  const bump = (x: number, z: number) => {
+    let m = 0.3;
+    for (const [cx, cz, a, sg] of mounds) m += a * Math.exp(-((x - cx) ** 2 + (z - cz) ** 2) / (2 * sg * sg));
+    return m;
+  };
+  const fall = (x: number, z: number) => sm(cl(Math.min(S - Math.abs(x), S - Math.abs(z)) / 2.5)) * sm(cl((Math.abs(x) - 1.2) / 1.6));
+  const xs = [-8, -6, -4, -2.4, -1.2, 1.2, 2.4, 4, 6, 8];
+  const zs = [-8, -6, -4, -2, 0, 2, 4, 6, 8];
+  const H: number[][] = xs.map((x, i) => zs.map((z, j) => Y + (bump(x, z) + (hash2(i, j, 91 + v) - 0.5) * 0.5) * fall(x, z)));
+  const surf = (x: number, z: number) => Y + bump(x, z) * fall(x, z);
+  const WASTE = [0x736c5e, 0x6c665a, 0x7b7466, 0x686256];
+  const COVER = 0x8a7a5c;
+  // side walls (visible where the landfill zone ends)
+  b.paint(0x6e6048, Surf.Pavement);
+  b.quad([-S, 0, S], [S, 0, S], [S, Y, S], [-S, Y, S]);
+  b.quad([S, 0, -S], [-S, 0, -S], [-S, Y, -S], [S, Y, -S]);
+  b.quad([S, 0, S], [S, 0, -S], [S, Y, -S], [S, Y, S]);
+  b.quad([-S, 0, -S], [-S, 0, S], [-S, Y, S], [-S, Y, -S]);
+  // heightfield (flat-shaded facets, mottled)
+  for (let i = 0; i < xs.length - 1; i++)
+    for (let j = 0; j < zs.length - 1; j++) {
+      const x0 = xs[i], x1 = xs[i + 1], z0 = zs[j], z1 = zs[j + 1];
+      const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+      const hh = hash2(i * 7 + 3, j * 5 + 1, 17 + v);
+      const cover = v === 2 ? hh < 0.75 : hh < 0.22;
+      const grass = v === 2 && hh > 0.45 && hh < 0.7 && bump(cx, cz) > 1.2;
+      const inTrack = Math.abs(cx) < 1.2;
+      if (grass) b.paint(0x7f8f4a, Surf.Foliage);
+      else b.paint(inTrack ? 0x6e6048 : cover ? COVER : WASTE[Math.floor(hh * 97) % WASTE.length], Surf.Plain);
+      b.quad([x0, H[i][j + 1], z1], [x1, H[i + 1][j + 1], z1], [x1, H[i + 1][j], z0], [x0, H[i][j], z0]);
+    }
+  // service track edge to edge (fixed x so it continues across tiles) with ruts
   b.paint(0x66583f, Surf.Pavement);
-  const ta = rng.range(-3, 3);
-  flat(b, -6.5, ta - 0.4, 6.5, ta + 0.4, Y + 0.01);
-  flat(b, -6.5, ta + 1.3, 6.5, ta + 2.1, Y + 0.01);
-  switch (v) {
-    case 0: {
-      garbageHeap(b, rng, -2.5, -2, 4.6, 3.4, Y, 30);
-      garbageHeap(b, rng, 3.6, 3.2, 3.0, 2.2, Y, 16, 0x6e6658);
-      for (let i = 0; i < 10; i++) b.paint(rng.pick(BAG_COLORS), Surf.Plain).boxC(rng.range(-6.5, 6.5), rng.range(-6.5, 6.5), 0.7, 0.6, Y, 0.45);
-      break;
-    }
-    case 1: {
-      garbageHeap(b, rng, -1.2, -3, 5.0, 2.8, Y, 24, 0x716555, 1.1, 0.8);
-      b.paint(0x6e6450, Surf.Plain);
-      heap(b, rng, 2, 3.2, 3.2, 0.9, 0x6e6450, Surf.Plain, 7, 1.4, 0.7);
-      bulldozer(b, 3.5, Y, 1.0, -Math.PI * 0.55);
-      break;
-    }
-    case 2: {
-      // capped / covered mound with methane vents
-      heap(b, rng, 0, 0, 7.0, 2.4, 0x7d7050, Surf.Plain, 10, 1.0, 1.0);
-      b.push().translate(0, Y, 0);
-      b.paint(0x7f8f4a, Surf.Foliage);
-      heap(b, rng, -1.0, -0.8, 4.6, 2.2, 0x7f8f4a, Surf.Foliage, 8);
+  flat(b, -1.2, -S, 1.2, S, Y + 0.03);
+  b.paint(0x54483a, Surf.Pavement);
+  flat(b, -0.85, -S, -0.45, S, Y + 0.06);
+  flat(b, 0.45, -S, 0.85, S, Y + 0.06);
+  // litter on the waste faces (mostly greys / off-white, ~10% faded blue / tan)
+  const lit = [0x8a867c, 0x6e6a62, 0x3a3a38, 0xd8d4c8, 0x8a867c, 0x6e6a62, 0xd8d4c8, 0x3a3a38, 0x7a8aa0, 0xa08a5a];
+  const n = [48, 36, 14, 44][v];
+  for (let k = 0; k < n; k++) {
+    let x = rng.range(-6.8, 6.8), z = rng.range(-6.8, 6.8);
+    if (Math.abs(x) < 1.8) x += x < 0 ? -1.8 : 1.8;
+    const y = surf(x, z) - 0.08;
+    const sz = rng.range(0.2, 0.45);
+    b.paint(rng.pick(lit), rng.chance(0.2) ? Surf.Metal : Surf.Plain);
+    if (rng.chance(0.6)) {
+      const t: V3 = [x, y + sz * 1.1, z];
+      const p0: V3 = [x + sz, y, z], p1: V3 = [x - sz * 0.5, y, z + sz * 0.87], p2: V3 = [x - sz * 0.5, y, z - sz * 0.87];
+      b.tri(t, p1, p0).tri(t, p2, p1).tri(t, p0, p2);
+    } else {
+      b.push().translate(x, y, z).rotateY(rng.next() * 3).rotateX(rng.range(-0.4, 0.4));
+      b.box(-sz, 0, -sz * 0.7, sz, sz * 1.1, sz * 0.7, { bottom: null });
       b.pop();
-      b.paint(0x8a9096, Surf.Metal);
-      for (const [x, z] of [[-3, 2.5], [2.5, -2.5], [2.8, 2.8]] as [number, number][]) {
-        strut(b, [x, Y + 1.2, z], [x, Y + 3.6, z], 0.3);
-        b.paint(0x55595e, Surf.Metal).boxC(x, z, 0.6, 0.6, Y + 3.6, 0.35);
-        b.paint(0x8a9096, Surf.Metal);
-      }
-      for (let i = 0; i < 6; i++) b.paint(rng.pick(BAG_COLORS), Surf.Plain).boxC(rng.range(-6.5, 6.5), rng.range(-6.5, 6.5), 0.6, 0.5, Y, 0.4);
-      break;
     }
-    default: {
-      garbageHeap(b, rng, -3, 2.5, 3.8, 2.6, Y, 22);
-      garbageHeap(b, rng, 3.5, -3.5, 3.0, 1.8, Y, 14, 0x7a7060);
-      garbageTruck(b, 1.6, 3.0, -Math.PI * 0.35, 0x2e7d4f, 0xf2f2ee, 0.3, Y);
-      for (let i = 0; i < 6; i++) b.paint(rng.pick(BAG_COLORS), Surf.Plain).boxC(rng.range(-6.5, 6.5), rng.range(-6.5, 6.5), 0.6, 0.5, Y, 0.4);
-      break;
+  }
+  if (v === 1) {
+    // bulldozer spreading waste on the lower plateau
+    const bx = -4.2, bz = -4.2;
+    bulldozer(b, bx, surf(bx, bz) - 0.05, bz, Math.PI * 0.3);
+  }
+  if (v === 2) {
+    // methane vents on the capped mound
+    for (const [x, z] of [[-4.2, 4.2], [-2.6, 2.4], [3.6, -4]] as [number, number][]) {
+      const y = surf(x, z);
+      b.paint(0x8a9096, Surf.Metal);
+      strut(b, [x, y - 0.2, z], [x, y + 2.2, z], 0.3);
+      b.paint(0x55595e, Surf.Metal).boxC(x, z, 0.6, 0.6, y + 2.2, 0.35);
     }
   }
 }
-
 
 export const wasteModels: ModelBuilders = {
   util_incinerator: (b, _v, rng) => incinerator(b, rng),
