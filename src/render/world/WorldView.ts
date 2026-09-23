@@ -376,8 +376,9 @@ export class WorldView implements WorldViewApi {
     g.contrast = 1.04 + 0.04 * n;
     g.lift.setRGB(0.002 * n, 0.006 * n, 0.016 * n);
     g.vignette = 0.2 + 0.1 * n;
-    g.bloomStrength = THREE.MathUtils.lerp(0.035, 0.5, n);
-    g.bloomThreshold = THREE.MathUtils.lerp(1.6, 0.75, n);
+    // bloom mainly catches signs, crowns, street lights and sun glints — lit windows should sparkle, not smear
+    g.bloomStrength = THREE.MathUtils.lerp(0.035, 0.36, n);
+    g.bloomThreshold = THREE.MathUtils.lerp(2.2, 1.7, n);
     const aoR = THREE.MathUtils.clamp(d * 0.022, 1.5, 22);
     this.post.setAOParams(aoR, 0.9, Math.max(1500, d * 3));
   }

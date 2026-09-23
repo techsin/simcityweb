@@ -9,6 +9,7 @@ import { fence } from '../kit';
 import {
   bicone, dome, flat, gambrelRoof, ground, hCyl, lathe, strut, tank, tractor, tree, tube, wallQuad, wallRow, disc,
   smokestack, boxTruck, pallets, carLow, CAR_COLORS2, lattice, poplar,
+  floodLight, lightDot, pool, Y_OVER,
 } from './ind_kit';
 
 const DIRT = 0x8a6e4b;
@@ -43,9 +44,15 @@ function crop(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, h
   b.paint(side, sideSurf).box(x0, 0, z0, x1, h, z1, { top: { color: top, surf: Surf.Field } });
 }
 
-function track(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, color: ColorLike = DIRT): void {
+function track(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, color: ColorLike = DIRT, y = Y_OVER): void {
   b.paint(color, Surf.Pavement);
-  flat(b, x0, z0, x1, z1, 0.08);
+  flat(b, x0, z0, x1, z1, y);
+}
+
+/** Corn block: dark foliage sides, Field canopy + a lighter tassel layer on top. */
+function cornBlock(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, h: number, top: ColorLike): void {
+  crop(b, x0, z0, x1, z1, h, top, 0x3a5a22);
+  b.paint(0x7f9a3c, Surf.Foliage).box(x0 + 0.5, h, z0 + 0.5, x1 - 0.5, h + 0.25, z1 - 0.5, { bottom: null, top: { color: 0x9aa845, surf: Surf.Field } });
 }
 
 function roundBale(b: ModelBuilder, x: number, z: number, alongX: boolean, color: ColorLike = 0xc9a954): void {
@@ -58,10 +65,10 @@ function combine(b: ModelBuilder, x: number, z: number, rot: number, color: Colo
   b.push().translate(x, 0.05, z).rotateY(rot);
   b.paint(0x1c1c1c, Surf.Plain);
   hCyl(b, 0, 0.8, 1.2, 3.2, 0.8, 'x', 6);
-  b.paint(color, Surf.Metal).box(-1.5, 0.8, -3.2, 1.5, 2.8, 2.0);
-  b.paint(0x2a3138, Surf.Metal).box(-0.9, 2.8, 0.4, 0.9, 3.65, 2.0, { top: { color: 0xe8e8e8, surf: Surf.Metal } });
-  b.paint(color, Surf.Metal).box(-4.0, 0.3, 2.4, 4.0, 1.2, 4.2); // header
-  b.paint(0xd9c24a, Surf.Metal).box(-4.0, 0.9, 3.6, 4.0, 1.4, 4.3, { bottom: null }); // reel
+  b.paint(color, Surf.Metal, 1).box(-1.5, 0.8, -3.2, 1.5, 2.8, 2.0);
+  b.paint(0x2a3138, Surf.GlassPlain, 1).box(-0.9, 2.8, 0.4, 0.9, 3.65, 2.0, { top: { color: 0xe8e8e8, surf: Surf.Metal, pattern: 1 } });
+  b.paint(color, Surf.Metal, 1).box(-4.0, 0.3, 2.4, 4.0, 1.2, 4.2); // header
+  b.paint(0xd9c24a, Surf.Metal, 1).box(-4.0, 0.9, 3.6, 4.0, 1.4, 4.3, { bottom: null }); // reel
   b.paint(color, Surf.Metal);
   strut(b, [-1.4, 2.7, -1.0], [-5.0, 3.3, -0.6], 0.45); // unloading auger
   b.pop();
@@ -109,12 +116,12 @@ function farmField(b: ModelBuilder, v: number, rng: RNG): void {
       // CORN: tall dense green canopy with a cross track
       track(b, ta, fz0, tb, H);
       track(b, fx0, -4, fx1, -0.6);
-      crop(b, fx0, fz0, ta - 0.5, -4.6, 2.4, 0x4f8228, 0x44702a);
-      crop(b, tb + 0.5, fz0, fx1, -4.6, 2.4, 0x55892a, 0x44702a);
-      crop(b, fx0, 0, ta - 0.5, fz1, 2.2, 0x5f9030, 0x4d7a2a);
-      crop(b, tb + 0.5, 0, fx1, fz1, 1.2, 0x86a53e, 0x6e8f33); // younger crop
+      cornBlock(b, fx0, fz0, ta - 0.5, -4.6, 1.9, 0x4f8228);
+      cornBlock(b, tb + 0.5, fz0, fx1, -4.6, 1.9, 0x55892a);
+      cornBlock(b, fx0, 0, ta - 0.5, fz1, 1.8, 0x5f9030);
+      crop(b, tb + 0.5, 0, fx1, fz1, 1.0, 0x86a53e, 0x55752c); // younger crop
       // grain wagon + tractor on the track
-      b.paint(0xc0392b, Surf.Metal).box(tb + 1.2, 0.8, -3.6, tb + 7.2, 2.6, -1.0);
+      b.paint(0xc0392b, Surf.Metal, 1).box(tb + 1.2, 0.8, -3.6, tb + 7.2, 2.6, -1.0);
       b.paint(0x1c1c1c, Surf.Plain);
       hCyl(b, tb + 4.2, 0.5, -2.3, 2.9, 0.5, 'z', 6);
       tractor(b, tb + 9.5, -2.3, Math.PI * 0.5, 0x2f6b2a);
@@ -136,7 +143,7 @@ function farmField(b: ModelBuilder, v: number, rng: RNG): void {
         const [c2, h2] = crops[(k + 3) % crops.length];
         crop(b, tb + 0.5, z, fx1, z + w - 0.5, h2, c2, h2 < 0.15 ? DIRT_DARK : 0x5a7a34, h2 < 0.15 ? Surf.Plain : Surf.Foliage);
         b.paint(DIRT, Surf.Pavement);
-        flat(b, fx0, z + w - 0.5, fx1, z + w, 0.06);
+        flat(b, fx0, z + w - 0.5, fx1, z + w, Y_OVER);
         z += w;
       }
       // wheel-line irrigator along X on the right half
@@ -152,6 +159,10 @@ function farmField(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x7a4a32, Surf.RoofTiles).gableRoof(tb + 4.5, fz1 - 3.25, 5, 3.5, 2.4, 1.1, 'x', 0.4, { color: 0xe9e2cf, surf: Surf.Wood });
       // produce crates
       for (let i = 0; i < 4; i++) b.paint(rng.pick([0xd07a2a, 0x7fb24a, 0xc0392b]), Surf.Wood).boxC(tb + 2.6 + i * 1.3, fz1 - 0.7, 1.1, 0.9, 0, 0.6);
+      b.paint(0x2a3440, Surf.GlassPlain, 2);
+      wallQuad(b, 'pz', fz1 - 1.5, tb + 3.2, tb + 5.8, 0.4, 2.0);
+      lightDot(b, tb + 4.5, 2.3, fz1 - 1.1, 0.25);
+      pool(b, tx, fz1 - 0.2, 2.6, DIRT);
       break;
     }
     case 3: {
@@ -179,7 +190,7 @@ function farmField(b: ModelBuilder, v: number, rng: RNG): void {
     case 4: {
       // VINEYARD: trellised rows running along Z (down-slope), grassy alleys
       track(b, ta, fz0, tb, H, 0xa89a78);
-      b.paint(0x8a8a50, Surf.Field).box(-E, 0, fz0, fx1, 0.08, fz1);
+      b.paint(0x8a8a50, Surf.Field).box(-E, 0, fz0, fx1, 0.05, fz1);
       const pitch = 2.9;
       for (let x = -E + 1.4; x < fx1 - 0.3; x += pitch) {
         if (Math.abs(x - tx) < tw / 2 + 0.8) continue;
@@ -190,6 +201,10 @@ function farmField(b: ModelBuilder, v: number, rng: RNG): void {
       // stone tool house at the front
       b.paint(0xc8b99a, Surf.Stone).box(tb + 1.5, 0, fz1 - 5.5, tb + 6.5, 2.5, fz1 - 1.8);
       b.paint(0xa4442e, Surf.RoofTiles).gableRoof(tb + 4, fz1 - 3.65, 5, 3.7, 2.5, 1.1, 'x', 0.35, { color: 0xc8b99a, surf: Surf.Stone });
+      b.paint(0x2a3440, Surf.GlassPlain, 2);
+      wallQuad(b, 'pz', fz1 - 1.8, tb + 3.2, tb + 4.6, 0.8, 1.9);
+      lightDot(b, tb + 2.4, 2.2, fz1 - 1.45, 0.25);
+      pool(b, tx, fz1 - 2.4, 2.8, 0xa89a78);
       // row of cypresses along the track
       for (let z = fz0 + 4; z < fz1 - 6; z += 9) {
         b.paint(0x2f5a2e, Surf.Foliage);
@@ -200,8 +215,16 @@ function farmField(b: ModelBuilder, v: number, rng: RNG): void {
     default: {
       // SUNFLOWERS (left) + LAVENDER rows (right)
       track(b, ta, fz0, tb, H);
-      crop(b, fx0, fz0, ta - 0.5, fz1, 1.9, 0xdcb21c, 0x5f8a2e);
-      // a few darker sunflower heads patches (flower centers) via a slightly lower inner block
+      // sunflowers: green stems canopy at 1.5 m with yellow flower-head rows (along Z) at 1.9 m
+      b.paint(0x4f7a2a, Surf.Foliage).box(fx0, 0, fz0, ta - 0.5, 1.5, fz1, { top: { color: 0x4f7a2a, surf: Surf.Foliage } });
+      b.paint(0xe0b41a, Surf.Foliage);
+      for (let x = fx0 + 0.15; x + 0.95 <= ta - 0.6; x += 1.2) {
+        const xa = x, xb = x + 0.95, ya = 1.5, yb = 1.9;
+        b.quad([xa, yb, fz1 - 0.2], [xb, yb, fz1 - 0.2], [xb, yb, fz0 + 0.2], [xa, yb, fz0 + 0.2]);
+        b.quad([xb, ya, fz1 - 0.2], [xb, ya, fz0 + 0.2], [xb, yb, fz0 + 0.2], [xb, yb, fz1 - 0.2]);
+        b.quad([xa, ya, fz0 + 0.2], [xa, ya, fz1 - 0.2], [xa, yb, fz1 - 0.2], [xa, yb, fz0 + 0.2]);
+        b.quad([xa, ya, fz1 - 0.2], [xb, ya, fz1 - 0.2], [xb, yb, fz1 - 0.2], [xa, yb, fz1 - 0.2]);
+      }
       b.paint(0x6e5238, Surf.Field).box(tb + 0.5, 0, fz0, fx1, 0.1, fz1);
       for (let z = fz0 + 1; z < fz1 - 0.6; z += 2.0) {
         b.paint(rng.pick([0x8a6fc0, 0x9170c8, 0x7f63b3]), Surf.Foliage).box(tb + 1.2, 0.1, z, fx1 - 0.6, 0.85, z + 1.05, { bottom: null });
@@ -230,7 +253,7 @@ function silo(b: ModelBuilder, x: number, z: number, r: number, h: number, body:
 
 function grainBin(b: ModelBuilder, x: number, z: number, r: number, h: number, color: ColorLike = 0xbfc4c8): void {
   b.paint(0x9a978f, Surf.Pavement);
-  disc(b, x, z, 0.12, r + 0.6, 10);
+  disc(b, x, z, 0.15, r + 0.6, 10);
   b.paint(color, Surf.Corrugated);
   tube(b, x, z, 0, h, r, r, 14);
   b.paint(0xd0d4d7, Surf.Metal);
@@ -265,8 +288,8 @@ function farmBarn(b: ModelBuilder, v: number, rng: RNG): void {
   switch (v) {
     case 0: {
       // classic red gambrel barn + concrete silos + white farmhouse
-      track(b, -10.5, -4, -7.5, H, GRAVEL);
-      track(b, -9, -11, 12, -1.5, GRAVEL);
+      track(b, -10.5, -4, -7.5, H, GRAVEL, 0.11);
+      track(b, -9, -11, 12, -1.5, GRAVEL, 0.11);
       const bx = 3.5, bz = -7.5, bw = 13, bd = 14;
       b.paint(0x9c3326, Surf.Wood).box(bx - bw / 2, 0, bz - bd / 2, bx + bw / 2, 5.2, bz + bd / 2);
       b.paint(0x5b5f63, Surf.RoofTiles);
@@ -298,14 +321,15 @@ function farmBarn(b: ModelBuilder, v: number, rng: RNG): void {
       fence(b, 0, 14.5, 0, 2, 1.2, 0xf2efe6, 3);
       for (let i = 0; i < 3; i++) roundBale(b, rng.range(3, 11), rng.range(5, 12), rng.chance(0.5));
       tractor(b, -3, -3.5, Math.PI * 0.35, 0x2f6b2a);
+      floodLight(b, -4.5, -7, 7, GRAVEL, 3.6, undefined, 0.14);
       tree(b, rng, -13, -12, 9, 2.6);
       tree(b, rng, -3.5, 12.8, 8, 2.4);
       break;
     }
     case 1: {
       // modern steel machine shed + grain bin battery + grain leg
-      track(b, -H, -2, H, 2.5, GRAVEL);
-      track(b, 2, 2.5, 6, H, GRAVEL);
+      track(b, -H, -2, H, 2.5, GRAVEL, 0.11);
+      track(b, 2, 2.5, 6, H, GRAVEL, 0.11);
       const sw = 16, sd = 11, sx = -6.5, sz = -9.5;
       b.paint(0x6f7f6a, Surf.Corrugated).box(sx - sw / 2, 0, sz - sd / 2, sx + sw / 2, 5.5, sz + sd / 2);
       b.paint(0xc9ccce, Surf.Metal).gableRoof(sx, sz, sw, sd, 5.5, 1.8, 'x', 0.4, { color: 0x6f7f6a, surf: Surf.Corrugated });
@@ -318,17 +342,18 @@ function farmBarn(b: ModelBuilder, v: number, rng: RNG): void {
       grainBin(b, 12.4, -4.6, 2.6, 6.4, 0xb3b8bc);
       // grain leg (lattice tower + spouts)
       b.paint(0x8a9096, Surf.Metal);
-      lattice(b, 9, -6.5, 0, 14.5, 0.7, 0.55, 0.7, 0.55, 5, 0.18);
-      b.paint(0xbfc4c8, Surf.Metal).boxC(9, -6.5, 1.8, 1.8, 14.5, 1.4);
-      strut(b, [9, 14.2, -6.5], [5.5, 11.6, -11], 0.35);
-      strut(b, [9, 14.2, -6.5], [12.2, 10.2, -11], 0.35);
-      strut(b, [9, 14.2, -6.5], [12.4, 9.0, -4.6], 0.35);
+      lattice(b, 9, -6.5, 0, 13, 0.7, 0.55, 0.7, 0.55, 5, 0.18);
+      b.paint(0xbfc4c8, Surf.Metal).boxC(9, -6.5, 1.8, 1.8, 13, 1.3);
+      strut(b, [9, 12.8, -6.5], [5.5, 11.2, -11], 0.35);
+      strut(b, [9, 12.8, -6.5], [12.2, 10.0, -11], 0.35);
+      strut(b, [9, 12.8, -6.5], [12.4, 8.8, -4.6], 0.35);
       // dryer
       b.paint(0x3f6f9a, Surf.Metal).box(1.5, 0, -5.5, 4.5, 6.5, -3.5);
       // farmhouse (beige)
       farmhouse(b, -8.5, 9.5, 9.5, 6.5, 0xe0d2b0, 0x6b4a36, Surf.Wood);
       lawnPatch(b, -H + 0.5, 3.2, -1.5, H - 0.5);
       tractor(b, 8, 6, -Math.PI * 0.2, 0xc0392b);
+      floodLight(b, 0.5, 0.2, 7, GRAVEL, 2.2, undefined, 0.14);
       boxTruck(b, 11.5, 9, Math.PI, 0x2e6fb5, 0xd8d8d0);
       tree(b, rng, -13, 12.8, 9, 2.6);
       tree(b, rng, 13, 12.8, 8, 2.4);
@@ -336,9 +361,9 @@ function farmBarn(b: ModelBuilder, v: number, rng: RNG): void {
     }
     case 2: {
       // dairy: long white free-stall barn, blue Harvestore silos, wrapped bales, brick farmhouse
-      track(b, 6, -2, 9, H, GRAVEL);
+      track(b, 6, -2, 9, H, GRAVEL, 0.11);
       b.paint(0xa89c86, Surf.Pavement);
-      flat(b, -H + 0.5, -14.5, H - 0.5, -2, 0.07);
+      flat(b, -H + 0.5, -14.5, H - 0.5, -2, 0.08);
       const bx = -5, bz = -8.8, bw = 20, bd = 10;
       b.paint(0xf0ede4, Surf.Plain).box(bx - bw / 2, 0, bz - bd / 2, bx + bw / 2, 3.6, bz + bd / 2);
       b.paint(0x2e2f33, Surf.Plain);
@@ -350,12 +375,12 @@ function farmBarn(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0xf0ede4, Surf.Plain).box(bx + bw / 2, 0, bz - 2.5, bx + bw / 2 + 4, 3.2, bz + 2.5);
       b.paint(0x9c3326, Surf.Metal).gableRoof(bx + bw / 2 + 2, bz, 4, 5, 3.2, 1.3, 'z', 0.3, { color: 0xf0ede4, surf: Surf.Plain });
       // Harvestore silos
-      silo(b, 11.6, -11.6, 2.4, 14.5, 0x243f63, 0x2c4d78, Surf.Metal, false);
-      silo(b, 11.6, -5.6, 2.1, 12.5, 0x243f63, 0x2c4d78, Surf.Metal, false);
+      silo(b, 11.6, -11.6, 2.4, 12.5, 0x243f63, 0x2c4d78, Surf.Metal, false);
+      silo(b, 11.6, -5.6, 2.1, 11, 0x243f63, 0x2c4d78, Surf.Metal, false);
       b.paint(0xd8d0bc, Surf.Plain);
-      for (const [x, z] of [[11.6, -11.6], [11.6, -5.6]] as [number, number][]) {
-        tube(b, x, z, 12.2, 0.6, x > 0 && z < -8 ? 2.42 : 2.12, undefined, 12);
-      }
+      tube(b, 11.6, -11.6, 10.4, 0.6, 2.42, 2.42, 12);
+      tube(b, 11.6, -5.6, 9.0, 0.6, 2.12, 2.12, 12);
+      floodLight(b, 2.5, -6.5, 7, 0xa89c86, 4.2, undefined, 0.11);
       // wrapped bales (white) in a row
       for (let i = 0; i < 6; i++) roundBale(b, -13 + i * 1.5, -0.2, false, 0xf2f2ee);
       // brick farmhouse
@@ -372,8 +397,8 @@ function farmBarn(b: ModelBuilder, v: number, rng: RNG): void {
     }
     default: {
       // old weathered wooden barn, stone farmhouse, farm windmill, haystacks, coop
-      track(b, 5, -3, 8.5, H, DIRT);
-      track(b, -12, -4.5, 8.5, -1.5, DIRT);
+      track(b, 5, -3, 8.5, H, DIRT, 0.11);
+      track(b, -12, -4.5, 8.5, -1.5, DIRT, 0.11);
       const bx = -4, bz = -9, bw = 12, bd = 10;
       b.paint(0x7a6650, Surf.Wood).box(bx - bw / 2, 0, bz - bd / 2, bx + bw / 2, 4.8, bz + bd / 2);
       b.paint(0x8b5a3a, Surf.Corrugated).gableRoof(bx, bz, bw, bd, 4.8, 3.6, 'x', 0.6, { color: 0x7a6650, surf: Surf.Wood });
@@ -413,6 +438,7 @@ function farmBarn(b: ModelBuilder, v: number, rng: RNG): void {
       fence(b, 3.5, 7.5, 14.5, 7.5, 1.1, 0x8b6a47, 3.5);
       fence(b, 14.5, 7.5, 14.5, 14.5, 1.1, 0x8b6a47, 3.5);
       tractor(b, 1.5, -1, -Math.PI * 0.3, 0x2e6fb5);
+      floodLight(b, 7.6, -3.4, 7, DIRT, 2.2, undefined, 0.14);
       tree(b, rng, -12.8, -2, 10, 2.8);
       tree(b, rng, 1, 12.8, 8, 2.5);
       poplar(b, rng, 14.5, -14.5, 12);
@@ -423,53 +449,83 @@ function farmBarn(b: ModelBuilder, v: number, rng: RNG): void {
 
 function lawnPatch(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number): void {
   b.paint(0x6f9a45, Surf.Foliage);
-  flat(b, x0, z0, x1, z1, 0.07);
+  flat(b, x0, z0, x1, z1, Y_OVER);
 }
 
 // ------------------------------------------------------------------------------------------------ ind_greenhouse
 /** Venlo-type multi-span glasshouse: ridges along Z, spans across X. */
-function venlo(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, h: number, span: number, glassPattern = 4, frame: ColorLike = 0xe8ecee): void {
-  b.paint(0xb8c4c8, Surf.GlassCurtain, glassPattern, 1.2).box(x0, 0, z0, x1, h, z1, { top: null });
+function venlo(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, h: number, span: number, frame: ColorLike = 0xf2f4f4): void {
+  b.paint(0xd8e2e0, Surf.GlassCurtain, 5, 1.2).box(x0, 0, z0, x1, h, z1, { top: null });
+  // white glazing bars every 3.2 m on the walls
+  b.paint(frame, Surf.Plain);
+  for (let x = x0 + 3.2; x < x1 - 0.5; x += 3.2) { wallQuad(b, 'pz', z1, x - 0.04, x + 0.04, 0, h, 0.04); wallQuad(b, 'nz', z0, x - 0.04, x + 0.04, 0, h, 0.04); }
+  for (let z = z0 + 3.2; z < z1 - 0.5; z += 3.2) { wallQuad(b, 'px', x1, z - 0.04, z + 0.04, 0, h, 0.04); wallQuad(b, 'nx', x0, z - 0.04, z + 0.04, 0, h, 0.04); }
+  wallQuad(b, 'pz', z1, x0, x1, h - 0.12, h, 0.04);
+  wallQuad(b, 'px', x1, z0, z1, h - 0.12, h, 0.04);
   const n = Math.max(1, Math.round((x1 - x0) / span));
   const sw = (x1 - x0) / n;
   const rh = sw * 0.24;
+  const nx = rh / Math.hypot(rh, sw / 2);
   for (let i = 0; i < n; i++) {
     const a = x0 + i * sw, c = a + sw / 2, e = a + sw;
-    b.paint(0xc8d4d8, Surf.GlassCurtain, glassPattern, 1.2);
+    b.paint(0xe2eae6, Surf.GlassCurtain, 5, 1.2);
     b.quad([a, h, z1], [c, h + rh, z1], [c, h + rh, z0], [a, h, z0]);
     b.quad([c, h + rh, z1], [e, h, z1], [e, h, z0], [c, h + rh, z0]);
     b.paint(frame, Surf.Metal);
     b.tri([a, h, z1], [e, h, z1], [c, h + rh, z1]);
     b.tri([e, h, z0], [a, h, z0], [c, h + rh, z0]);
+    // grow lights (night-only warm glow through the roof) on ~60% of the spans
+    if (rng.chance(0.6)) {
+      const o = 0.05, ins = 0.2;
+      b.paint(0xe8c8a2, Surf.Emissive, 10);
+      const ya = h + (ins / (sw / 2)) * rh + o, yc = h + rh + o - (ins / (sw / 2)) * rh;
+      b.quad([a + ins, ya, z1 - ins], [c - ins * 0.5, yc + nx * 0.02, z1 - ins], [c - ins * 0.5, yc + nx * 0.02, z0 + ins], [a + ins, ya, z0 + ins]);
+      b.quad([c + ins * 0.5, yc + nx * 0.02, z1 - ins], [e - ins, ya, z1 - ins], [e - ins, ya, z0 + ins], [c + ins * 0.5, yc + nx * 0.02, z0 + ins]);
+    }
   }
-  // gutters / frame lines
+  // gutters / ridge bars
   b.paint(frame, Surf.Metal);
   for (let i = 0; i <= n; i++) strut(b, [x0 + i * sw, h + 0.05, z0], [x0 + i * sw, h + 0.05, z1], 0.14);
 }
 
+/** Heating pipe run + CO2 tank beside a glasshouse. */
+function heatingKit(b: ModelBuilder, x: number, z: number, zTo: number): void {
+  tank(b, x, z, 1.1, 5.5, 0xeceee8, { roof: 'dome', seg: 8 });
+  b.paint(0x2e6fb5, Surf.Metal);
+  strut(b, [x + 0.9, 0.2, z - 1.4], [x + 3.4, 0.2, z - 1.4], 0.25);
+  b.paint(0x9aa0a6, Surf.Metal);
+  b.pipe([x - 1.8, 0.9, z], [x - 1.8, 0.9, zTo], 0.22, 5);
+  b.pipe([x - 2.4, 0.9, z], [x - 2.4, 0.9, zTo], 0.22, 5);
+}
+
 function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
   const HX = 24, HZ = 16;
-  ground(b, -HX, -HZ, HX, HZ, 0x9c958a, Surf.Pavement, 0.04);
+  if (v !== 1) ground(b, -HX, -HZ, HX, HZ, 0x9c958a, Surf.Pavement, 0.04);
   switch (v) {
     case 0: {
       // one large Venlo block + packing shed with docks + water tank
       b.paint(0x6f9a45, Surf.Foliage);
-      flat(b, -HX, 11.5, HX, HZ, 0.06);
-      venlo(b, -22.5, -14.5, 12, 7.5, 4.3, 4.0);
+      flat(b, -HX, 11.5, HX, HZ, Y_OVER);
+      venlo(b, rng, -22.5, -14.5, 12, 7.5, 4.3, 4.0);
       // packing shed on the right
-      b.paint(0xe6e8e8, Surf.Corrugated).box(13.5, 0, -14.5, 22.5, 6.2, 4);
-      b.paint(0xb9bec2, Surf.Metal).gableRoof(18, -5.25, 9, 18.5, 6.2, 0.9, 'z', 0.3, { color: 0xe6e8e8, surf: Surf.Corrugated });
+      b.paint(0xe6e8e8, Surf.Corrugated).box(13.5, 0, -14.5, 22.5, 5.2, 4);
+      b.paint(0xb9bec2, Surf.Metal).gableRoof(18, -5.25, 9, 18.5, 5.2, 0.9, 'z', 0.3, { color: 0xe6e8e8, surf: Surf.Corrugated });
       b.paint(0x2e7d4f, Surf.Plain);
-      wallQuad(b, 'px', 22.5, -13.5, 3, 4.6, 5.4);
+      wallQuad(b, 'px', 22.5, -13.5, 3, 3.8, 4.5);
+      // second (cold store) shed + heating kit
+      b.paint(0xd8dcde, Surf.Corrugated).box(13.5, 0, 4.8, 18.5, 3.6, 9.5);
+      b.paint(0xb9bec2, Surf.Metal).shedRoof(16, 7.15, 5, 4.7, 3.6, 0.5, 'nx');
+      heatingKit(b, 20.8, 7.6, 4.5);
+      floodLight(b, 12.8, 5.5, 7, 0x9c958a, 3.5);
       b.paint(0x6a6e72, Surf.Metal);
       wallRow(b, 'nx', 13.5, -12, 2, 0.1, 3.6, 3, 3.0);
       b.paint(0x5c6166, Surf.Metal);
-      wallQuad(b, 'pz', 4, 15, 21, 0.1, 4.2);
-      boxTruck(b, 18, 8.8, 0, 0xf2f2ee, 0x2e7d4f);
+      wallQuad(b, 'pz', 4, 19, 22, 0.1, 3.6);
+      boxTruck(b, 20.5, 12.3, Math.PI * 0.5 * 0 + Math.PI * 0.5, 0xf2f2ee, 0x2e7d4f);
       // water basin & tank
       tank(b, -18, 11.3, 2.6, 5.2, 0x3a5a3a, { roof: 'flat', roofColor: 0x2e3a2e });
       b.paint(0x4f7f9a, Surf.Water);
-      flat(b, -13, 9, -3, 11, 0.12);
+      flat(b, -13, 9, -3, 11, 0.14);
       pallets(b, 11, 10, 1.4);
       pallets(b, 9.5, 10.2, 0.9);
       for (let i = 0; i < 3; i++) carLow(b, -2 + i * 3, 13.2, 0, rng.pick(CAR_COLORS2));
@@ -486,7 +542,8 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
         polytunnel(b, cx, -14.5, 6.0, 25, 3.4);
       }
       b.paint(DIRT, Surf.Pavement);
-      flat(b, -23.5, 10.5, 23.5, 13, 0.07);
+      flat(b, -23.5, 10.5, 23.5, 13, 0.08);
+      floodLight(b, 13.2, 11.8, 7, DIRT, 2.6);
       // barn
       b.paint(0x8a4a38, Surf.Wood).box(14, 0, -14.5, 23, 5, -1);
       b.paint(0x5b5f63, Surf.Corrugated).gableRoof(18.5, -7.75, 9, 13.5, 5, 1.8, 'z', 0.4, { color: 0x8a4a38, surf: Surf.Wood });
@@ -501,7 +558,7 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
     default: {
       // three separate gable glasshouses (one whitewashed), boiler house with stack, reservoir
       b.paint(0x6f9a45, Surf.Foliage);
-      flat(b, -HX, 9, HX, HZ, 0.06);
+      flat(b, -HX, 9, HX, HZ, Y_OVER);
       for (let i = 0; i < 3; i++) {
         const cx = -17 + i * 11;
         const tint = i === 1 ? 0 : 4;
@@ -510,7 +567,15 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
           .gableRoof(cx, -3.75, 9, 21.5, 3.0, 2.2, 'z', 0.1, { color: 0xc8d4d8, surf: Surf.GlassCurtain, pattern: 4, floor: 1.2 });
         b.paint(0xf0f2f2, Surf.Metal);
         strut(b, [cx, 5.25, -14.6], [cx, 5.25, 7.1], 0.18);
+        if (i !== 1) {
+          // grow lights glowing through the roof at night
+          b.paint(0xe8c8a2, Surf.Emissive, 10);
+          const sl = 2.2 / 4.5;
+          b.quad([cx + 4.2, 3.0 + 0.3 * sl + 0.05, 6.6], [cx + 4.2, 3.0 + 0.3 * sl + 0.05, -14.1], [cx + 0.4, 5.2 - 0.4 * sl + 0.05, -14.1], [cx + 0.4, 5.2 - 0.4 * sl + 0.05, 6.6]);
+          b.quad([cx - 4.2, 3.0 + 0.3 * sl + 0.05, -14.1], [cx - 4.2, 3.0 + 0.3 * sl + 0.05, 6.6], [cx - 0.4, 5.2 - 0.4 * sl + 0.05, 6.6], [cx - 0.4, 5.2 - 0.4 * sl + 0.05, -14.1]);
+        }
       }
+      heatingKit(b, 13.2, 8.2, 6.5);
       // boiler house + small stack
       b.paint(0x9c4a36, Surf.Brick).box(15, 0, -14.5, 22.5, 4.5, -7);
       b.paint(0x5b5f63, Surf.RoofTiles).gableRoof(18.75, -10.75, 7.5, 7.5, 4.5, 1.6, 'x', 0.3, { color: 0x9c4a36, surf: Surf.Brick });
@@ -526,6 +591,7 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
       wallRow(b, 'pz', 14.5, -21, -9.5, 0.1, 3.4, 2, 3.4);
       for (let i = 0; i < 3; i++) carLow(b, -3 + i * 3, 12.8, 0, rng.pick(CAR_COLORS2));
       boxTruck(b, 9, 12.4, Math.PI * 0.5, 0xf2f2ee, 0xc0392b);
+      floodLight(b, -5.5, 11.6, 7, 0x6f9a45, 1.9);
       break;
     }
   }

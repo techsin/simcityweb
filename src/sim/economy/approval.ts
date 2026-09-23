@@ -88,12 +88,12 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     let strikes = 0;
     for (const k in data.strikes) if (data.strikes[k] > 0) strikes++;
     let raw = APPROVAL.base + taxTerm
-      + APPROVAL.services * (data.resServices - 0.4)
+      + APPROVAL.services * (data.resServices - 0.3)
       + APPROVAL.pollution * data.resPollution
       + APPROVAL.crime * data.resCrime
       + APPROVAL.commute * Math.max(0, data.resCommute - 30)
-      + APPROVAL.unemployment * Math.max(0, s.unemployment - 0.05)
-      + APPROVAL.parks * (data.resParks - 0.3)
+      + APPROVAL.unemployment * Math.max(0, s.unemployment - 0.08)
+      + APPROVAL.parks * (data.resParks - 0.2)
       + APPROVAL.strike * strikes
       + (data.monthsNegative > 0 ? APPROVAL.deficit : 0)
       + ordinanceEffect(st, 'add.approval')

@@ -12,7 +12,7 @@ import { rooftopWaterTank, acUnit } from '../kit';
 import {
   P, inFace, U, fq, win, wins, door, steps, roofGable, roofHip, roofMansard, chimney, lawnSlab, paveSlab, bush,
   bushRow, flowerBed, tree, lowWall, hedgeBox, trashCans, parkedCar, laundry, planter, parapet, flatRoof, setLot, band,
-  fireEscape, bay, capPoly, spread, bandRing, parking, lounger, type WinStyle, type Face,
+  fireEscape, bay, capPoly, spread, bandRing, parking, lounger, ironRail, stoopRails, lightPool, pickPal, mixHex, type WinStyle, type Face,
 } from './res_util';
 
 // ---------------------------------------------------------------------------------------------- local helpers
@@ -69,10 +69,9 @@ function streetTree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1): voi
   tree(b, rng, x, z, s, 'round');
 }
 
-/** Iron area railing (thin dark panel + top rail). */
-function railing(b: ModelBuilder, ax: number, az: number, bx: number, bz: number, h = 1.0, color: ColorLike = 0x1f2224): void {
-  b.paint(color, Surf.Metal);
-  b.quad2([ax, 0.1, az], [bx, 0.1, bz], [bx, h, bz], [ax, h, az]);
+/** See-through iron area railing (posts every 1.2 m + top rail). */
+function railing(b: ModelBuilder, ax: number, az: number, bx: number, bz: number, h = 1.0, color: ColorLike = 0x2a2c2e): void {
+  ironRail(b, ax, az, bx, bz, h, color, 1.2);
 }
 
 // ---------------------------------------------------------------------------------------------- WALK-UP (R$) 1x1
@@ -103,7 +102,13 @@ function walkup(b: ModelBuilder, v: number, rng: RNG): void {
   }
   if (sideBlank && v === 1) {
     // faded painted advert on the blank side wall
-    inFace(b, 'nx', x0, () => { b.paint(0xb8a47a); fq(b, U('nx', -4.5), 5.0, U('nx', 2.0), 8.2, 0.03); b.paint(0x7a3a2a); fq(b, U('nx', -3.8), 6.8, U('nx', 1.3), 7.8, 0.04); });
+    inFace(b, 'nx', x0, () => {
+      const a = U('nx', -4.2), c = U('nx', 1.8);
+      b.paint(0xd9cfb0); fq(b, a, 4.6, c, 8.6, 0.03);
+      b.paint(0x9a4a3a); fq(b, a + 0.35, 7.0, c - 0.35, 8.1, 0.04);
+      b.paint(0x3a5a7a); fq(b, a + 0.35, 5.1, c - 0.35, 5.9, 0.04);
+      b.paint(0x9a4a3a); fq(b, a + 0.9, 6.2, c - 0.9, 6.7, 0.04);
+    });
   }
   // ground floor openings: door + stoop at center, windows at pattern columns
   const ws: WinStyle = { frame: trimC, mull: 2, sill: trimC, head: trimC };
@@ -112,8 +117,8 @@ function walkup(b: ModelBuilder, v: number, rng: RNG): void {
     for (const x of [-5.5, -3.3, 3.3, 5.5]) win(b, x, 1.0, 0.9, 1.6, ws);
     steps(b, 0, 1.9, 3, 0.3, 0.3, 0xa29c90, 0, Surf.Stone);
   });
-  railing(b, -0.95, z1 + 0.9, -0.95, z1 + 0.05, 1.3);
-  railing(b, 0.95, z1 + 0.9, 0.95, z1 + 0.05, 1.3);
+  inFace(b, 'pz', z1, () => stoopRails(b, 0, 1.9, 3, 0.3, 0.3, 0x2a2c2e));
+  lightPool(b, -1.25, z1 + 0.9, 1.25, z1 + 3.4, 0xc3beb3, 0.105);
   if (!sideBlank) {
     wins(b, 'px', x1, [-5.5, -3.3, -1.1, 1.1, 3.3], 1.0, 0.9, 1.6, { frame: trimC, sill: trimC });
     wins(b, 'nx', x0, [-5.5, -3.3, -1.1, 1.1, 3.3], 1.0, 0.9, 1.6, { frame: trimC, sill: trimC });
@@ -122,6 +127,15 @@ function walkup(b: ModelBuilder, v: number, rng: RNG): void {
   // string course over the base + sill courses on the upper floors
   band(b, x0, z0, x1, z1, fh - 0.15, 0.3, 0.12, trimC, false);
   if (v !== 2 && v !== 4 && v !== 5) sills(b, x0, z0, x1, z1, 1, floors, fh, 0.22, trimC);
+  else {
+    // side-wall sill courses only (front has bays / blank party walls)
+    b.paint(trimC);
+    for (let f = 1; f < floors; f++) {
+      const y = f * fh + 0.22 * fh - 0.13;
+      if (v !== 5) b.box(x1, y, z0, x1 + 0.07, y + 0.13, z1, { nx: null, bottom: null });
+      b.box(x0 - 0.07, y, z0, x0, y + 0.13, z1, { px: null, bottom: null });
+    }
+  }
   // cornice / parapet variants
   if (v === 0 || v === 5) {
     cornice(b, x0, z0, x1, z1, top, 0x3a3530, ['pz']);
@@ -216,7 +230,7 @@ function tenement(b: ModelBuilder, v: number, rng: RNG): void {
   } else if (v === 1) {
     // O plan (closed light well), grey stucco, 6 storeys, rooftop sheds
     const st = 0xb8aa8e, top = 6 * fh, R = 6 * C, r = 2 * C;
-    b.paint(P(0x8a7f6c)).box(-R, 0, -R, R, fh, R, { top: null });
+    b.paint(P(0x9a968e, Surf.Stone)).box(-R - 0.1, 0, -R - 0.1, R + 0.1, fh, R + 0.1, { top: { color: 0x8a867e } });
     ww(b, -R, r, R, R, fh, top, st, 1, fh);
     ww(b, -R, -R, R, -r, fh, top, st, 1, fh);
     ww(b, -R, -r, -r, r, fh, top, st, 1, fh, P(ROOF, Surf.RoofFlat), { pz: null, nz: null });
@@ -225,20 +239,21 @@ function tenement(b: ModelBuilder, v: number, rng: RNG): void {
     paveSlab(b, -r, -r, r, r, 0x77736a, 0.15);
     laundry(b, rng, [-r, 10, -1], [r, 10, 1], 4);
     laundry(b, rng, [-r, 13, 2], [r, 13, 1], 4);
-    inFace(b, 'pz', R, () => {
-      door(b, 0, 0.3, 2.0, 2.5, 0x4a3a2e, { transom: true, frame: 0xe0dcd2, lamp: true });
-      for (const x of [-12.1, -9.9, -7.7, -5.5, -3.3, 3.3, 5.5, 7.7, 9.9, 12.1]) win(b, x, 0.8, 0.9, 1.6, { frame: 0xe0dcd2, sill: 0xe0dcd2 });
-      steps(b, 0, 2.6, 1, 0.3, 0.4, 0x9a968c);
+    inFace(b, 'pz', R + 0.1, () => {
+      door(b, 0, 0.9, 2.0, 2.3, 0x4a3a2e, { transom: true, frame: 0xe0dcd2, lamp: true });
+      for (const x of [-12.1, -9.9, -7.7, -5.5, -3.3, 3.3, 5.5, 7.7, 9.9, 12.1]) win(b, x, 0.9, 0.9, 1.5, { frame: 0xe0dcd2, sill: 0xe0dcd2 });
+      steps(b, 0, 2.6, 3, 0.3, 0.32, 0x8a867e, 0, Surf.Stone);
+      stoopRails(b, 0, 2.6, 3, 0.3, 0.32, 0x2a2c2e);
     });
-    wins(b, 'px', R, spread(-R, R, 12), 0.8, 0.9, 1.6, { frame: 0xe0dcd2 });
-    band(b, -R, -R, R, R, fh - 0.2, 0.35, 0.12, 0x8c887e, false);
+    lightPool(b, -1.25, R + 1.06, 1.25, R + 3.56, 0xc3beb3, 0.105);
+    wins(b, 'px', R + 0.1, spread(-R, R, 12), 0.9, 0.9, 1.5, { frame: 0xe0dcd2 });
     sills(b, -R, -R, R, R, 1, 6, fh, 0.22, 0xe0d8c6, false);
-    bandRing(b, -R, -R, R, R, top, 0.4, 0.3, 0xc8c4ba);
-    b.paint(ROOF, Surf.RoofFlat);
-    for (const [a0, c0, a1, c1] of [[-R, r, R, R], [-R, -R, R, -r], [-R, -r, -r, r], [r, -r, R, r]]) b.quad([a0, top + 0.4, c1], [a1, top + 0.4, c1], [a1, top + 0.4, c0], [a0, top + 0.4, c0]);
-    for (const [x, z, w, d] of [[-9, 9, 3, 2.5], [8, -9, 3.5, 3], [9, 8, 2.4, 2.4]] as [number, number, number, number][]) bulkhead(b, x, z, w, d, top + 0.4, 2.4, 0x8c887e);
-    rooftopWaterTank(b, -9, top + 0.4, -9, 1.0);
-    for (const [x, z] of [[-4, 10.5], [4, -10.5], [-10.5, -2]] as [number, number][]) acUnit(b, x, top + 0.4, z);
+    cornice(b, -R, -R, R, R, top, 0xd8d0bf, ['pz', 'px'], true, 0.5, null);
+    b.paint(TAR, Surf.RoofFlat);
+    for (const [a0, c0, a1, c1] of [[-R, r, R, R], [-R, -R, R, -r], [-R, -r, -r, r], [r, -r, R, r]]) b.quad([a0, top + 0.35, c1], [a1, top + 0.35, c1], [a1, top + 0.35, c0], [a0, top + 0.35, c0]);
+    for (const [x, z, w, d] of [[-9, 9, 3, 2.5], [8, -9, 3.5, 3], [9, 8, 2.4, 2.4]] as [number, number, number, number][]) bulkhead(b, x, z, w, d, top + 0.35, 2.4, 0x8c887e);
+    rooftopWaterTank(b, -9, top + 0.35, -9, 1.0);
+    for (const [x, z] of [[-4, 10.5], [4, -10.5], [-10.5, -2]] as [number, number][]) acUnit(b, x, top + 0.35, z);
     inFace(b, 'nx', -R, () => fireEscape(b, 0, [fh, 2 * fh, 3 * fh, 4 * fh, 5 * fh], 3.6));
     for (const [a, y] of [[-9.9, 2 * fh + 0.6], [5.5, 4 * fh + 0.6], [-1.1, 3 * fh + 0.6], [9.9, fh + 0.6]] as [number, number][]) acWin(b, 'pz', R, a, y);
     for (const x of [-10, 10]) streetTree(b, rng, x, 14.6, 0.85);
@@ -251,8 +266,8 @@ function tenement(b: ModelBuilder, v: number, rng: RNG): void {
     paveSlab(b, -2 * C, -1 * C, 2 * C, 6 * C, 0xb8b2a6, 0.1);
     lawnSlab(b, -3.2, 2.0, 3.2, 10.5, 0x5e8a3c, 0.12);
     tree(b, rng, -2.0, 7.0, 0.8, 'round'); tree(b, rng, 2.0, 4.5, 0.8, 'round');
-    lowWall(b, -2 * C, 12.9, -1.2, 13.2, 1.1, 0x1f2224, Surf.Metal, 0x1f2224);
-    lowWall(b, 1.2, 12.9, 2 * C, 13.2, 1.1, 0x1f2224, Surf.Metal, 0x1f2224);
+    ironRail(b, -2 * C, 13.05, -1.2, 13.05, 1.1);
+    ironRail(b, 1.2, 13.05, 2 * C, 13.05, 1.1);
     inFace(b, 'pz', -1 * C, () => { door(b, 0, 0.1, 1.8, 2.5, 0x2f4a37, { transom: true, frame: trimC, lamp: true }); b.paint(0x2f4a37).box(-1.6, 2.9, 0, 1.6, 3.05, 1.2, { nz: null }); });
     for (const x of [-4 * C, 4 * C]) { cornice(b, x - 2 * C, -1 * C, x + 2 * C, 6 * C, top, 0xe6dcc6, ['pz'], true, 0.45); sills(b, x - 2 * C, -1 * C, x + 2 * C, 6 * C, 1, 5, fh, 0.22, 0xe6dcc6); }
     bandRing(b, -6 * C, -6 * C, 6 * C, -1 * C, top, 0.35, 0.3, 0xe6dcc6, ROOF);
@@ -279,6 +294,7 @@ function tenement(b: ModelBuilder, v: number, rng: RNG): void {
       inFace(b, 'pz', 6 * C, () => {
         door(b, xm, 0.6, 1.3, 2.3, 0x3a2a22, { transom: true, frame: trimC, lamp: true });
         steps(b, xm, 2.0, 2, 0.3, 0.3, 0xa29c90, 0, Surf.Stone);
+        stoopRails(b, xm, 2.0, 2, 0.3, 0.3, 0x2a2c2e);
         fireEscape(b, xm + (n === 5 ? -3.3 : 3.3), Array.from({ length: n - 1 }, (_, i) => (i + 1) * fh), 3.4);
       });
       rooftopWaterTank(b, xm + 2, top + 0.35, -9, 1.0);
@@ -300,23 +316,26 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
   const z0 = -6.5, z1 = 3.5;
   if (v === 0) {
     // New York brownstones: high stoops, rusticated basement, tall parlor windows, bracketed cornices
-    const stone = P(0x6e4a3a, Surf.Stone), trimC = 0x8a6a58;
+    const stoneC = pickPal(rng, [0x6e4a3a, 0x7a5444, 0x5e4034, 0x6a5040, 0x80604a], 0.35);
+    const stone = P(stoneC, Surf.Stone), trimC = 0x8a6a58;
+    const doorsC = rng.shuffle([0x3a2418, 0x2a2a2a, 0x2f4a37, 0x5a2a22, 0x2c3b57]);
     for (let i = 0; i < 4; i++) {
       const xa = -14 + i * 7, xb = xa + 7, du = i % 2 === 0 ? xa + 1.6 : xb - 1.6;
       const side = { px: i === 3 ? undefined : null, nx: i === 0 ? undefined : null };
-      b.paint(P(0x5e4032, Surf.Stone)).box(xa, 0, z0, xb, 1.8, z1, { top: null, ...side });
+      b.paint(P(mixHex(stoneC, 0x000000, 0.15), Surf.Stone)).box(xa, 0, z0, xb, 1.8, z1, { top: null, ...side });
       b.paint(stone).box(xa, 1.8, z0, xb, 11.1, z1, { top: P(ROOF, Surf.RoofFlat), ...side });
       cornice(b, xa, z0, xb, z1, 11.1, i % 2 === 0 ? 0x2e2a28 : 0x4a3e36, ['pz'], true, 0.5);
       const ws: WinStyle = { frame: 0x3a2a22, mull: 1, sill: trimC, head: trimC };
       inFace(b, 'pz', z1, () => {
-        door(b, du, 1.8, 1.2, 2.6, 0x3a2418, { surf: Surf.Wood, transom: true, frame: trimC, lamp: false });
+        door(b, du, 1.8, 1.2, 2.6, doorsC[i], { surf: Surf.Wood, transom: true, frame: trimC, lamp: true });
         const wx = i % 2 === 0 ? [xa + 3.9, xa + 5.7] : [xa + 1.3, xa + 3.1];
         for (const x of wx) win(b, x, 2.4, 1.0, 2.3, ws);
         for (const x of [xa + 1.4, xa + 3.5, xa + 5.6]) { win(b, x, 5.9, 0.95, 1.9, ws); win(b, x, 8.8, 0.95, 1.7, ws); }
         for (const x of wx) win(b, x, 0.3, 0.9, 1.0, { frame: 0x2a2a2a });
-        steps(b, du, 1.7, 6, 0.3, 0.33, 0x6a4a3a, 0, Surf.Stone);
+        steps(b, du, 1.7, 6, 0.3, 0.33, mixHex(stoneC, 0x000000, 0.05), 0, Surf.Stone);
+        stoopRails(b, du, 1.8, 6, 0.3, 0.33, 0x1c1c1c);
       });
-      for (const s of [-1, 1]) railing(b, du + s * 0.9, z1 + 2.0, du + s * 0.9, z1 + 0.1, 2.4, 0x1c1c1c);
+      lightPool(b, du - 1.25, z1 + 1.98, du + 1.25, 8.0, 0xc3beb3, 0.085);
       railing(b, xa + 0.2, 6.9, du - 1.0, 6.9, 1.0);
       railing(b, du + 1.0, 6.9, xb - 0.2, 6.9, 1.0);
       wins(b, 'nz', z0, [xa + 2, xa + 5], 2.4, 1.0, 2.0, { frame: 0x3a2a22 });
@@ -327,7 +346,8 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
     for (const x of [-10.5, 3.5]) streetTree(b, rng, x, 7.2, 0.8);
   } else if (v === 1) {
     // London terrace: white stucco ground floor, stock brick above, porticos, black railings, mansard + dormers
-    const stucco = P(0xefebe2), brick = P(0xb89a6a, Surf.Brick), iron = 0x1c1c1c;
+    const stucco = P(0xefebe2), brick = P(pickPal(rng, [0xb89a6a, 0xa88a60, 0x9a6a4a, 0xc0a878], 0.4), Surf.Brick), iron = 0x1c1c1c;
+    const doorsC = rng.shuffle([0x1c1c1c, 0x2c3b57, 0x7e2a26, 0x2f4a37, 0xa8823a, 0x55707e]);
     for (let i = 0; i < 4; i++) {
       const xa = -14 + i * 7, xb = xa + 7, du = i % 2 === 0 ? xa + 1.5 : xb - 1.5;
       const side = { px: i === 3 ? undefined : null, nx: i === 0 ? undefined : null };
@@ -338,14 +358,14 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
       roofMansard(b, (xa + xb) / 2, (z0 + z1) / 2, 7, z1 - z0, 9.65, 2.4, 1.0, P(0x4a5058, Surf.RoofTiles), P(ROOF, Surf.RoofFlat), 0.02);
       const wxs = i % 2 === 0 ? [xa + 3.6, xa + 5.6] : [xa + 1.4, xa + 3.4];
       inFace(b, 'pz', z1, () => {
-        door(b, du, 0.6, 1.1, 2.4, [0x1c1c1c, 0x2c3b57, 0x7e2a26, 0x2f4a37][i], { transom: true, frame: 0xf6f2e8 });
+        door(b, du, 0.6, 1.1, 2.4, doorsC[i], { transom: true, frame: 0xf6f2e8, lamp: true });
         for (const x of wxs) win(b, x, 0.9, 1.0, 2.2, { frame: 0xf6f2e8, mull: 2 });
         for (const x of [xa + 1.5, xa + 3.5, xa + 5.5]) { win(b, x, 4.6, 1.0, 2.1, { frame: 0xf6f2e8, mull: 2, sill: 0xf6f2e8 }); win(b, x, 7.4, 0.95, 1.5, { frame: 0xf6f2e8, mull: 2, sill: 0xf6f2e8 }); }
         steps(b, du, 1.8, 2, 0.3, 0.35, 0xe0dcd2);
       });
       // balcony railing on first floor
       b.paint(0xf6f2e8).box(xa + 0.3, 4.4, z1, xb - 0.3, 4.55, z1 + 0.5, { nz: null });
-      b.paint(iron, Surf.Metal).quad2([xa + 0.3, 4.55, z1 + 0.48], [xb - 0.3, 4.55, z1 + 0.48], [xb - 0.3, 5.4, z1 + 0.48], [xa + 0.3, 5.4, z1 + 0.48]);
+      ironRail(b, xa + 0.3, z1 + 0.48, xb - 0.3, z1 + 0.48, 0.85, iron, 1.2, 4.55);
       // portico
       b.paint(0xf6f2e8).box(du - 1.0, 3.0, z1, du + 1.0, 3.3, z1 + 1.4, { nz: null });
       for (const s of [-1, 1]) b.paint(0xf6f2e8).cylinder(du + s * 0.8, z1 + 1.2, 0.6, 2.4, 0.13, 0.12, 6, { top: false });
@@ -354,6 +374,7 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
       inFace(b, 'pz', z1 - 0.6, () => win(b, dx, 10.7, 0.7, 0.9, { frame: 0xf6f2e8 }));
       railing(b, xa + 0.2, 7.0, du - 0.9, 7.0, 1.1, iron);
       railing(b, du + 0.9, 7.0, xb - 0.2, 7.0, 1.1, iron);
+      lightPool(b, du - 0.9, z1 + 0.7, du + 0.9, z1 + 3.2, 0xc3beb3, 0.085);
       wins(b, 'nz', z0, [xa + 2, xa + 5], 1.0, 1.0, 2.0, { frame: 0xf6f2e8 });
       wins(b, 'nz', z0, [xa + 2, xa + 5], 4.6, 1.0, 1.9, { frame: 0xf6f2e8 });
       if (i > 0) chimney(b, xa, -1.5, 0.9, 2.0, 11.8, 12.6, 0xb89a6a);
@@ -361,7 +382,8 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
     for (const x of [-7, 7]) streetTree(b, rng, x, 7.2, 0.8);
   } else if (v === 2) {
     // Boston bow-fronts: red brick, rounded full-height bows, black shutters, flat roofs
-    const brick = P(0x8f4a38, Surf.Brick), trimC = 0xe8e2d4;
+    const brick = P(pickPal(rng, [0x8f4a38, 0x9a5a44, 0x7a4636, 0xa0604a], 0.4), Surf.Brick), trimC = 0xe8e2d4;
+    const doorsC = rng.shuffle([0x1c1c1c, 0x2f4a37, 0x7e2a26, 0x2c3b57]);
     const W = 28 / 3;
     for (let i = 0; i < 3; i++) {
       const xa = -14 + i * W, xb = xa + W;
@@ -385,27 +407,29 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
         for (const y of [1.9, 5.0, 8.0]) win(b, 0, y, 0.8, y < 2 ? 2.0 : 1.8, { frame: trimC, mull: 2 });
         b.pop();
       }
-      bandRing(b, xa, z0, xb, z1, 10.4, 0.45, 0.35, trimC, ROOF);
+      bandRing(b, xa, z0, xb, z1, 10.4, 0.45, 0.35, trimC, TAR);
       parapet(b, xa, z0, xb, z1, 10.85, 0.5, 0.2, 0x8f4a38);
       const du = xa + 1.4;
       inFace(b, 'pz', z1, () => {
-        door(b, du, 1.2, 1.1, 2.4, 0x1c1c1c, { transom: true, frame: trimC, lamp: true });
+        door(b, du, 1.2, 1.1, 2.4, doorsC[i], { transom: true, frame: trimC, lamp: true });
         win(b, du, 5.0, 0.95, 1.8, { frame: trimC, mull: 2, shutter: 0x1c1c1c });
         win(b, du, 8.0, 0.95, 1.8, { frame: trimC, mull: 2, shutter: 0x1c1c1c });
         steps(b, du, 1.6, 4, 0.3, 0.3, 0x9a948a, 0, Surf.Stone);
+        stoopRails(b, du, 1.7, 4, 0.3, 0.3, 0x1c1c1c);
       });
-      for (const s of [-1, 1]) railing(b, du + s * 0.85, z1 + 1.2, du + s * 0.85, z1 + 0.1, 1.8);
+      lightPool(b, du - 1.25, z1 + 1.3, du + 1.25, z1 + 3.8, 0xc3beb3, 0.085);
       wins(b, 'nz', z0, [xa + 2.5, xb - 2.5], 1.9, 1.0, 1.9, { frame: trimC });
       wins(b, 'nz', z0, [xa + 2.5, xb - 2.5], 5.0, 1.0, 1.8, { frame: trimC });
       chimney(b, xb - 0.5, -3.5, 0.9, 1.4, 10.4, 12.2, 0x8f4a38);
-      lowWall(b, bx - br, z1 + 1.35, bx + br, z1 + 1.45, 0.9, 0x1c1c1c, Surf.Metal, 0x1c1c1c);
+      ironRail(b, bx - br, z1 + 1.4, bx + br, z1 + 1.4, 0.9, 0x2a2c2e);
     }
     wins(b, 'px', 14, [-4.5, -1.5], 5.0, 1.0, 1.8, { frame: trimC });
     wins(b, 'nx', -14, [-4.5, -1.5], 5.0, 1.0, 1.8, { frame: trimC });
     for (const x of [-9, 6]) streetTree(b, rng, x, 7.2, 0.8);
   } else if (v === 3) {
     // San Francisco "painted ladies": pastel Victorians, 2-storey angled bays, ornate front gables
-    const cols = [0xa9c2d4, 0xe8d49a, 0xb5d1b8, 0xe2b8b8], trims = [0xf4f0e6, 0x5a3a4a, 0xf4f0e6, 0x3e5a6a];
+    const cols = rng.chance(0.3) ? [0xa9c2d4, 0xe8d49a, 0xb5d1b8, 0xe2b8b8] : rng.shuffle([0xa9c2d4, 0xe8d49a, 0xb5d1b8, 0xe2b8b8, 0xc8b8e0, 0xf0d8b8, 0xb8d8d8, 0xe8c4a8]).slice(0, 4);
+    const trims = rng.shuffle([0xf4f0e6, 0x5a3a4a, 0xf4f0e6, 0x3e5a6a]);
     for (let i = 0; i < 4; i++) {
       const xa = -14 + i * 7, xb = xa + 7, cx = (xa + xb) / 2;
       const wall = P(cols[i], Surf.Wood), tr = trims[i];
@@ -424,29 +448,40 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
       });
       wins(b, 'nz', z0, [xa + 2, xa + 5], 2.2, 1.0, 1.8, { frame: tr });
       wins(b, 'nz', z0, [xa + 2, xa + 5], 5.3, 1.0, 1.8, { frame: tr });
-      railing(b, xb - 2.1, z1 + 1.6, xb - 2.1, z1 + 0.1, 2.2, tr);
+      b.paint(tr).quad2([xb - 2.1, 0.1, z1 + 1.6], [xb - 2.1, 0.1, z1 + 0.1], [xb - 2.1, 2.2, z1 + 0.1], [xb - 2.1, 2.2, z1 + 1.6]);
+      lightPool(b, xb - 2.0, z1 + 1.6, xb - 0.6, z1 + 3.9, 0xc3beb3, 0.085);
     }
     wins(b, 'px', 14, [-4.5, -1.5], 5.3, 0.9, 1.7, { frame: 0x3e5a6a });
     wins(b, 'nx', -14, [-4.5, -1.5], 5.3, 0.9, 1.7, { frame: 0xf4f0e6 });
     for (const x of [-7, 7]) streetTree(b, rng, x, 7.2, 0.75);
   } else if (v === 4) {
     // Bath / Georgian terrace in honey limestone: parapet, entablature, fanlit doors, area railings
-    const stone = P(0xd8c49a, Surf.Stone), trimC = 0xe8dcc0;
-    b.paint(P(0xc8b48a, Surf.Stone)).box(-14, 0, z0, 14, 1.0, z1, { top: null });
-    b.paint(stone).box(-14, 1.0, z0, 14, 10.2, z1, { top: P(ROOF, Surf.RoofFlat) });
-    band(b, -14, z0, 14, z1, 3.9, 0.3, 0.1, trimC, false);
-    bandRing(b, -14, z0, 14, z1, 9.6, 0.6, 0.35, trimC, ROOF);
-    parapet(b, -14, z0, 14, z1, 10.2, 0.9, 0.25, 0xd8c49a, trimC);
+    const stC = pickPal(rng, [0xd8c49a, 0xcfc0a0, 0xe0cfa8], 0.4);
+    const stone = P(stC, Surf.Stone), trimC = 0xe8dcc0;
+    const doorsC = rng.shuffle([0x2f4a37, 0x7e2a26, 0x2c3b57, 0xa8823a, 0x1c1c1c]);
+    // rusticated ground storey (proud, darker), plain ashlar above
+    b.paint(P(mixHex(stC, 0x6a5a40, 0.18), Surf.Stone)).box(-14.1, 0, z0, 14.1, 3.9, z1 + 0.1, { top: { color: trimC } });
+    b.paint(stone).box(-14, 3.9, z0, 14, 10.2, z1, { top: P(TAR, Surf.RoofFlat), bottom: null });
+    inFace(b, 'pz', z1 + 0.1, () => { b.paint(mixHex(stC, 0x3a3020, 0.3)); for (const y of [1.3, 2.05, 2.8]) fq(b, -14.1, y, 14.1, y + 0.05, 0.01); });
+    // 3-part entablature: architrave, frieze, projecting cornice
+    band(b, -14, z0, 14, z1, 8.75, 0.25, 0.06, trimC, false);
+    band(b, -14, z0, 14, z1, 9.0, 0.5, 0.02, mixHex(stC, 0xffffff, 0.15), false);
+    bandRing(b, -14, z0, 14, z1, 9.5, 0.3, 0.3, trimC, TAR);
+    parapet(b, -14, z0, 14, z1, 9.8, 0.9, 0.25, stC, trimC);
     for (let i = 0; i < 4; i++) {
       const xa = -14 + i * 7, du = xa + (i % 2 === 0 ? 1.5 : 5.5);
-      inFace(b, 'pz', z1, () => {
-        door(b, du, 1.0, 1.1, 2.4, [0x2f4a37, 0x7e2a26, 0x2c3b57, 0xa8823a][i], { transom: true, frame: 0xf2ead8 });
+      inFace(b, 'pz', z1 + 0.1, () => {
+        door(b, du, 1.0, 1.1, 2.4, doorsC[i], { transom: true, frame: 0xf2ead8, lamp: true });
         for (const x of (i % 2 === 0 ? [xa + 3.6, xa + 5.6] : [xa + 1.4, xa + 3.4])) win(b, x, 1.4, 1.0, 2.0, { frame: 0xf6f2e8, mull: 3 });
         for (const x of [xa + 1.5, xa + 3.5, xa + 5.5]) { win(b, x, 4.5, 1.0, 2.3, { frame: 0xf6f2e8, mull: 3, head: trimC }); win(b, x, 7.6, 1.0, 1.5, { frame: 0xf6f2e8, mull: 3 }); }
         steps(b, du, 1.6, 3, 0.33, 0.33, 0xc8b48a, 0, Surf.Stone);
       });
-      b.paint(0x1c1c1c, Surf.Metal).box(du - 0.6, 3.7, z1, du + 0.6, 3.75, z1 + 0.4, { nz: null });
-      if (i > 0) chimney(b, xa, -1.5, 1.0, 2.4, 10.2, 11.8, 0xd8c49a, Surf.Stone);
+      b.paint(0x1c1c1c, Surf.Metal).box(du - 0.6, 3.7, z1 + 0.1, du + 0.6, 3.75, z1 + 0.5, { nz: null });
+      if (i > 0) {
+        chimney(b, xa, -1.5, 1.3, 3.0, 9.8, 12.3, stC, Surf.Stone);
+        b.paint(0x9a5a44).cylinder(xa, -2.4, 12.48, 0.45, 0.14, 0.12, 5).cylinder(xa, -1.5, 12.48, 0.45, 0.14, 0.12, 5).cylinder(xa, -0.6, 12.48, 0.45, 0.14, 0.12, 5);
+      }
+      lightPool(b, du - 0.8, z1 + 1.1, du + 0.8, z1 + 2.9, 0xc3beb3, 0.085);
       wins(b, 'nz', z0, [xa + 2, xa + 5], 1.4, 1.0, 2.0, { frame: 0xf6f2e8 });
       wins(b, 'nz', z0, [xa + 2, xa + 5], 4.5, 1.0, 2.2, { frame: 0xf6f2e8 });
     }
@@ -455,7 +490,8 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
     for (const x of [-7, 7]) streetTree(b, rng, x, 7.3, 0.8);
   } else {
     // Amsterdam canal houses: 5 narrow brick houses with step / neck / bell gables and hoist beams
-    const cols = [0x5a3a2e, 0x7a4032, 0x3e3a38, 0x8a5a3e, 0x6a4a3a];
+    const cols = rng.chance(0.3) ? [0x5a3a2e, 0x7a4032, 0x3e3a38, 0x8a5a3e, 0x6a4a3a] : rng.shuffle([0x5a3a2e, 0x7a4032, 0x3e3a38, 0x8a5a3e, 0x6a4a3a, 0x4a3a34, 0x7a5a48, 0x5e4a40]).slice(0, 5);
+    const doorsC = rng.shuffle([0x2f4a37, 0x1c1c1c, 0x7e2a26, 0x2c3b57, 0x2f4a37, 0x55707e]);
     const W = 5.6;
     for (let i = 0; i < 5; i++) {
       const xa = -14 + i * W, xb = xa + W, cx = (xa + xb) / 2;
@@ -482,7 +518,7 @@ function rowhouses(b: ModelBuilder, v: number, rng: RNG): void {
       b.paint(0x2a2622, Surf.Wood).box(cx - 0.1, hgt + (g === 0 ? 2.4 : 2.2), z1, cx + 0.1, hgt + (g === 0 ? 2.6 : 2.4), z1 + 1.0, { nz: null });
       const tr = 0xf0ece2;
       inFace(b, 'pz', z1, () => {
-        door(b, xa + 1.3, 0.6, 1.0, 2.3, [0x2f4a37, 0x1c1c1c, 0x7e2a26, 0x2c3b57, 0x2f4a37][i], { transom: true, frame: tr });
+        door(b, xa + 1.3, 0.6, 1.0, 2.3, doorsC[i], { transom: true, frame: tr, lamp: i % 2 === 0 });
         win(b, xa + 3.7, 0.9, 1.6, 2.0, { frame: tr, mull: 3 });
         for (let f = 1; f * 3.0 + 2.3 < hgt; f++) { win(b, xa + 1.5, f * 3.0 + 0.6, 1.0, 1.7, { frame: tr, mull: 2 }); win(b, xa + 4.1, f * 3.0 + 0.6, 1.0, 1.7, { frame: tr, mull: 2 }); }
         win(b, cx, hgt + 0.5, 0.8, 1.1, { frame: tr, mull: 2 });

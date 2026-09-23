@@ -265,10 +265,10 @@ const PLOPPABLES: BuildingDef[] = [
     description: 'Not ploppable: placed by the power line tool (cost/upkeep are per cell).' }),
 
   // ================================================================ WATER
-  p({ id: 'util_water_tower', name: 'Water Tower', category: 'water', service: 'utilities', cost: 300, upkeep: 12, jobs: 1, waterOut: 1200, powerUse: 0.1,
-    description: '1,200 kL/day. Cheap, small, works anywhere.' }),
-  p({ id: 'util_water_pump', name: 'Water Pump', category: 'water', service: 'utilities', cost: 500, upkeep: 25, jobs: 3, waterOut: 3000, powerUse: 0.5,
-    description: '3,000 kL/day. Pumps less if the ground water is polluted; best near fresh water.' }),
+  p({ id: 'util_water_tower', name: 'Water Tower', category: 'water', service: 'utilities', cost: 300, upkeep: 12, jobs: 1, waterOut: 2500, powerUse: 0.1,
+    description: '2,500 kL/day. Cheap, small, works anywhere.' }),
+  p({ id: 'util_water_pump', name: 'Water Pump', category: 'water', service: 'utilities', cost: 500, upkeep: 25, jobs: 3, waterOut: 5000, powerUse: 0.5,
+    description: '5,000 kL/day. Pumps less if the ground water is polluted; best near fresh water.' }),
   p({ id: 'util_water_treatment', name: 'Water Treatment Plant', category: 'water', service: 'utilities', cost: 15000, upkeep: 450, jobs: 60, waterOut: 50000, powerUse: 8,
     pollution: { water: -0.5, radius: 16 }, requires: 'water_treatment',
     description: '50,000 kL/day of clean water and it cleans nearby water pollution.' }),
@@ -287,9 +287,9 @@ const PLOPPABLES: BuildingDef[] = [
     description: 'Burns 12,000 t/month of garbage and generates 60 MW. Pollutes the air.' }),
 
   // ================================================================ POLICE
-  p({ id: 'civ_police_kiosk', name: 'Police Kiosk', category: 'police', service: 'police', cost: 400, upkeep: 60, jobs: 6, powerUse: 0.05, waterUse: 2,
+  p({ id: 'civ_police_kiosk', name: 'Police Kiosk', category: 'police', service: 'police', cost: 400, upkeep: 50, jobs: 6, powerUse: 0.05, waterUse: 2,
     coverage: { kind: 'police', radius: 12, strength: 0.6 }, description: 'Small neighborhood police post.' }),
-  p({ id: 'civ_police_station', name: 'Police Station', category: 'police', service: 'police', cost: 1500, upkeep: 220, jobs: 30, powerUse: 0.2, waterUse: 8,
+  p({ id: 'civ_police_station', name: 'Police Station', category: 'police', service: 'police', cost: 1500, upkeep: 170, jobs: 30, powerUse: 0.2, waterUse: 8,
     coverage: { kind: 'police', radius: 26, strength: 0.85 }, description: 'Standard police station.' }),
   p({ id: 'civ_police_hq', name: 'Police Headquarters', category: 'police', service: 'police', cost: 8000, upkeep: 900, jobs: 120, powerUse: 0.8, waterUse: 30,
     coverage: { kind: 'police', radius: 42, strength: 1.0 }, requires: 'police_hq', description: 'Large, well equipped police HQ.' }),
@@ -298,13 +298,13 @@ const PLOPPABLES: BuildingDef[] = [
     description: 'Keeps criminals off the streets city-wide. Nobody wants to live next to it.' }),
 
   // ================================================================ FIRE
-  p({ id: 'civ_fire_station', name: 'Fire Station', category: 'fire', service: 'fire', cost: 1400, upkeep: 200, jobs: 25, powerUse: 0.15, waterUse: 20,
+  p({ id: 'civ_fire_station', name: 'Fire Station', category: 'fire', service: 'fire', cost: 1400, upkeep: 160, jobs: 25, powerUse: 0.15, waterUse: 20,
     coverage: { kind: 'fire', radius: 24, strength: 0.85 }, description: 'Standard fire station.' }),
   p({ id: 'civ_fire_hq', name: 'Fire Headquarters', category: 'fire', service: 'fire', cost: 7000, upkeep: 800, jobs: 90, powerUse: 0.5, waterUse: 60,
     coverage: { kind: 'fire', radius: 38, strength: 1.0 }, requires: 'fire_hq', description: 'Large fire HQ with training tower.' }),
 
   // ================================================================ HEALTH
-  p({ id: 'civ_clinic', name: 'Medical Clinic', category: 'health', service: 'health', cost: 1800, upkeep: 250, jobs: 30, powerUse: 0.2, waterUse: 15,
+  p({ id: 'civ_clinic', name: 'Medical Clinic', category: 'health', service: 'health', cost: 1800, upkeep: 200, jobs: 30, powerUse: 0.2, waterUse: 15,
     coverage: { kind: 'health', radius: 16, strength: 0.7, capacity: 8000 }, description: 'Neighborhood clinic (8,000 residents).' }),
   p({ id: 'civ_hospital', name: 'Hospital', category: 'health', service: 'health', cost: 9000, upkeep: 1100, jobs: 250, powerUse: 1.5, waterUse: 120,
     coverage: { kind: 'health', radius: 36, strength: 1.0, capacity: 40000 }, description: 'Full hospital (40,000 residents).' }),
@@ -313,14 +313,14 @@ const PLOPPABLES: BuildingDef[] = [
     description: 'Reward: world-class medical campus (120,000 residents). Boosts health city-wide.' }),
 
   // ================================================================ EDUCATION
-  p({ id: 'civ_elementary_school', name: 'Elementary School', category: 'education', service: 'education', cost: 2000, upkeep: 300, jobs: 40, powerUse: 0.2, waterUse: 20,
+  p({ id: 'civ_elementary_school', name: 'Elementary School', category: 'education', service: 'education', cost: 2000, upkeep: 240, jobs: 40, powerUse: 0.2, waterUse: 20,
     coverage: { kind: 'education', radius: 20, strength: 0.7, capacity: 12000 }, description: 'Schools the kids of 12,000 residents.' }),
-  p({ id: 'civ_high_school', name: 'High School', category: 'education', service: 'education', cost: 6000, upkeep: 700, jobs: 90, powerUse: 0.5, waterUse: 50,
+  p({ id: 'civ_high_school', name: 'High School', category: 'education', service: 'education', cost: 6000, upkeep: 600, jobs: 90, powerUse: 0.5, waterUse: 50,
     coverage: { kind: 'education', radius: 32, strength: 0.9, capacity: 30000 }, description: 'Serves 30,000 residents. Raises EQ.' }),
   p({ id: 'civ_college', name: 'University', category: 'education', service: 'education', cost: 25000, upkeep: 2200, jobs: 400, powerUse: 2, waterUse: 200,
     coverage: { kind: 'education', radius: 60, strength: 1.0, capacity: 80000 }, landValue: { amount: 0.15, radius: 12 }, requires: 'college',
     description: 'Big EQ boost (80,000 residents). High-tech industry and offices love it.' }),
-  p({ id: 'civ_library', name: 'Public Library', category: 'education', service: 'education', cost: 2500, upkeep: 220, jobs: 20, powerUse: 0.2, waterUse: 5,
+  p({ id: 'civ_library', name: 'Public Library', category: 'education', service: 'education', cost: 2500, upkeep: 180, jobs: 20, powerUse: 0.2, waterUse: 5,
     coverage: { kind: 'education', radius: 24, strength: 0.4, capacity: 30000 }, landValue: { amount: 0.05, radius: 6 }, description: 'Lifelong learning; mild EQ boost.' }),
   p({ id: 'civ_museum', name: 'Museum', category: 'education', service: 'education', cost: 8000, upkeep: 650, jobs: 30, powerUse: 0.4, waterUse: 10,
     coverage: { kind: 'education', radius: 40, strength: 0.35, capacity: 60000 }, landValue: { amount: 0.15, radius: 10 }, requires: 'museum',

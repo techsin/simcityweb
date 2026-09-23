@@ -206,13 +206,17 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       // far away: average lit color instead of per-window noise (no shimmering when the camera moves)
       vec3 nearE = wl * lit * intensity;
       vec3 farE = vec3(1.0, 0.8, 0.56) * clamp(litProb, 0.0, 1.0);
+      // distant facades: keep per-floor brightness variation (while floors are still resolvable) so they read as
+      // banded, not flat cream slabs
+      float fadeFl = clamp(1.0 - fwidth(v / floorH) * 1.6, 0.0, 1.0);
+      farE *= mix(1.0, 0.4 + 0.9 * bh11(cell.y * 1.73 + floor(vSeed * 23.0)), fadeFl);
       if (pattern > 7.5 && pattern < 8.5) {
         // churches / keeps / clock towers: every (arched) window glows warm amber, slight per-column tint
         float ct = bh11(cell.x * 5.3 + vSeed * 17.0);
         vec3 amber = vec3(1.0, 0.72, 0.42) * 0.9 * mix(vec3(1.0), vec3(1.06, 0.94, 0.86), ct);
-        emis += amber * m * night * 1.3;
+        emis += amber * m * night * 0.9;
       } else {
-        emis += mix(farE, nearE, fade) * m * night * 1.3;
+        emis += mix(farE, nearE, fade) * m * night * 0.9;
       }
     }
   } else if (type < 2.5) {
@@ -225,15 +229,19 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     else if (pattern > 4.5 && pattern < 5.5) tint = vec3(0.45, 0.6, 0.78);
     else if (pattern > 5.5) tint = vec3(0.34, 0.42, 0.48); // 6: residential glass (neutral blue-grey)
     bool resGlass = pattern > 5.5 && pattern < 6.5;
-    albedo = tint * 0.55;
+    // less metallic + brighter base than a pure mirror so every tint survives the 45 deg view (which mostly reflects
+    // the ground); plus an unlit sky-tint term by day (reads as clean glass from above)
+    albedo = tint * 0.75;
     rough = 0.06;
-    metal = 0.92;
+    metal = 0.7;
+    if (vertical) emis += mix(vec3(0.55, 0.65, 0.8), tint * 1.4, 0.35) * 0.08 * (1.0 - night);
     if (vertical) {
       float cu = u / 1.5; float cv = v / floorH;
       float wu = fwidth(cu) + 1e-4; float wv = fwidth(cv) + 1e-4;
       float fade = clamp(1.0 - max(wu, wv) * 2.0, 0.0, 1.0);
       float mull = 1.0 - aaBox(cu, 0.06, 0.94, wu) * aaBox(cv, 0.05, 0.93, wv);
-      mull *= fade;
+      // keep ~35% of the mullion / spandrel mask at distance so lit floors still read as bands
+      mull = mix(0.35, mull, fade);
       albedo = mix(albedo, vec3(0.28, 0.3, 0.33), mull * 0.8);
       rough = mix(rough, 0.5, mull);
       // per-panel subtle tint variation (reflection breakup)
@@ -253,12 +261,12 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
         float litU = mix(clamp(litR, 0.0, 1.0), step(hu, litR), fadeR);
         vec3 wl = mix(vec3(1.0, 0.8, 0.52), windowLight(bh11(hu * 57.3 + vSeed)), fadeR);
         float curtain = 0.6 + 0.4 * smoothstep(0.1, 0.9, fract(u / 4.0)) * (1.0 - smoothstep(0.1, 0.9, fract(u / 4.0)) * 0.5);
-        emis += wl * litU * (1.0 - mull) * night * mix(0.8, (0.55 + 0.6 * bh11(hu * 13.1)) * curtain, fadeR) * 1.1;
+        emis += wl * litU * (1.0 - mull) * night * mix(0.8, (0.55 + 0.6 * bh11(hu * 13.1)) * curtain, fadeR) * 0.65;
       } else {
       // offices / hotels at night: lights clustered per floor section, some floors entirely dark, per-panel
       // brightness, color temperature per floor (warm tints -> hotel-like warm light, blue tints -> office white)
       float fl = bh31(vec3(floor(cu / 6.0), cell.y, vSeed * 7.0));
-      float floorOn = step(0.18, bh11(cell.y * 3.7 + vSeed * 57.0));
+      float floorOn = step(0.35, bh11(cell.y * 3.7 + vSeed * 57.0));
       float litP = uLitFraction * (0.45 + 0.8 * vSeed);
       float lit = step(fl, litP) * floorOn;
       // per-floor fade: distant floors blend to the average so tall towers don't sparkle
@@ -271,7 +279,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       // brighter toward the ceiling of each floor (ceiling lights), dimmer panels here and there
       float ceilG = 0.55 + 0.45 * smoothstep(0.15, 0.85, fract(cv));
       float panelB = 0.45 + 0.75 * bh31(vec3(floor(cu), cell.y, vSeed * 19.0));
-      emis += officeC * lit * (1.0 - mull) * night * mix(0.75, ceilG * panelB, fadeF) * 0.95;
+      emis += officeC * lit * (1.0 - mull) * night * mix(0.75, ceilG * panelB, fadeF) * 0.55;
       }
     }
   } else if (type < 3.5) {
@@ -353,9 +361,12 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float litP = clamp(uLitFraction * 0.95 + 0.05, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
       float lit = step(hw, litP);
       float fw = clamp(1.0 - length(fwidth(vec2(u / 2.5, v / 2.8))) * 2.0, 0.0, 1.0);
-      lit = mix(clamp(litP, 0.0, 1.0), lit, fw);
+      // far: per-row (floor) brightness variation while rows are resolvable -> banded, not a uniform glowing slab
+      float fwRow = clamp(1.0 - fwidth(v / 2.8) * 1.6, 0.0, 1.0);
+      float litFar = clamp(litP, 0.0, 1.0) * mix(1.0, 0.4 + 0.9 * bh11(wc.y * 1.73 + floor(vSeed * 29.0)), fwRow);
+      lit = mix(litFar, lit, fw);
       vec3 wl = mix(vec3(1.0, 0.8, 0.52), vec3(1.0, 0.88, 0.7), step(0.7, h));
-      emis += wl * night * (0.7 + 0.6 * h) * lit;
+      emis += wl * night * (0.6 + 0.5 * h) * lit;
     }
   } else if (type < 8.5) {
     // foliage

@@ -175,8 +175,8 @@ function projects(b: ModelBuilder, v: number, rng: RNG): void {
     }
     b.paint(0x3a3c40).box(-2.5, 0, z1, 2.5, 2.8, z1 + 0.05, { top: null, bottom: null, nz: null });
     b.paint(0x9a968e).box(-3, 2.8, z1, 3, 3.1, z1 + 2.2, { nz: null });
-    parking(b, rng, -15.6, 8.6, 15.6, 15.8, 0.6, 1);
-    parking(b, rng, -15.6, -15.8, 15.6, -9.8, 0.5, 1);
+    parking(b, rng, -15.6, 8.6, 15.6, 15.8, 0.6, 1, 6);
+    parking(b, rng, -15.6, -15.8, 15.6, -9.8, 0.5, 1, 5);
     paveSlab(b, -1.5, z1, 1.5, 8.6, 0xb8b2a6, 0.1);
     for (const x of [-13, 13]) tree(b, rng, x, -7.8, 0.9, 'round');
   } else {

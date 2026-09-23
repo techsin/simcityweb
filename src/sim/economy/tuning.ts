@@ -83,6 +83,9 @@ export const CUSTOMER_MIX: readonly (readonly [number, number, number])[] = [
   [0.25, 0.6, 0.15],
   [0.05, 0.4, 0.55],
 ];
+/** small towns need proportionally more local shops (diners, gas stations): CS × (1 + boost × (1 − smoothstep(0, pop, P))) */
+export const CS_SMALL_TOWN_BOOST = 1.0;
+export const CS_SMALL_TOWN_POP = 30000;
 /** tourism CS jobs per unit of tourism score (landmarks, parks, airports…) */
 export const TOURISM_CS_PER_POINT = 1;
 
@@ -380,7 +383,7 @@ export const SUBWAY_UPKEEP = 1.2;
 /** landfill upkeep per cell per month */
 export const LANDFILL_UPKEEP = 1;
 /** power / water plant upkeep = upkeep × (UTIL_FIXED + (1 − UTIL_FIXED) × utilisation) — fuel scales with output */
-export const UTIL_FIXED = 0.35;
+export const UTIL_FIXED = 0.15;
 /** funding below this → strike risk (services stop working) */
 export const STRIKE_FUNDING = 50;
 /** months of negative funds before the bankruptcy warning escalates / the game-over state */
@@ -443,19 +446,19 @@ export const TERRAFORM_MAX_H = 250;
 
 // ============================================================================ APPROVAL
 export const APPROVAL = {
-  base: 55,
+  base: 58,
   /** per point of (R-weighted) tax above neutral */
   taxPerPoint: -3.5,
   /** per point below neutral */
   taxLowPerPoint: 1.5,
-  services: 22, // × (avg coverage at homes − 0.4)
-  pollution: -30,
-  crime: -35,
+  services: 18, // × (avg coverage at homes − 0.3)
+  pollution: -25,
+  crime: -30,
   commute: -0.25, // per minute above 30
-  unemployment: -70,
-  parks: 10, // × (park coverage at homes − 0.3)
+  unemployment: -50, // × (unemployment − 0.08)
+  parks: 8, // × (park coverage at homes − 0.2)
   strike: -8,
-  deficit: -6,
+  deficit: -4,
   ema: 0.3,
 };
 

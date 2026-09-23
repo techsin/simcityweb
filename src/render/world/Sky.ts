@@ -220,7 +220,11 @@ void main() {
   // soft sun glow (the actual sun is the directional light; a sharp disk here would create fireflies)
   float cs = max(dot(dir, uSunDir), 0.0);
   sky += uSunDisk * 0.0012 * pow(cs, 400.0);
-  vec3 col = mix(uGround + uCityGlow * 0.15, sky, smoothstep(-0.12, 0.02, dir.y));
+  // lower hemisphere: ground bounce, hazing into the horizon sky color toward the horizon (distant ground is seen
+  // through the atmosphere) -> glass / water reflections from the 45 deg game view don't turn olive
+  vec3 horizon = skyBase(normalize(vec3(dir.x, 0.02, dir.z)));
+  vec3 below = mix(uGround + uCityGlow * 0.15, horizon, exp(min(dir.y, 0.0) * 5.0) * 0.7);
+  vec3 col = mix(below, sky, smoothstep(-0.04, 0.02, dir.y));
   gl_FragColor = vec4(col, 1.0);
 }`;
 

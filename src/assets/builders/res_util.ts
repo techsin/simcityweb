@@ -485,20 +485,35 @@ export function flowerBed(b: ModelBuilder, x0: number, z0: number, x1: number, z
  * optional flower edge strips (0.8 m) along the outer long sides.
  */
 export function parterre(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, flower: ColorLike | null = null): void {
-  const t = 0.45, hh = 0.55;
-  b.paint(0x5e8d3c, Surf.Foliage).box(x0, 0, z0, x1, 0.1, z1);
+  const t = 0.45, hh = 0.55, y = 0.07;
   const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
-  b.paint(0xd8d0c0, Surf.Pavement).box(cx - 0.6, 0.1, z0 + t, cx + 0.6, 0.13, z1 - t, { bottom: null });
-  b.paint(0xd8d0c0, Surf.Pavement).box(x0 + t, 0.1, cz - 0.6, x1 - t, 0.13, cz + 0.6, { bottom: null });
+  const up = (a: number, c: number, d: number, e: number, yy: number) => b.quad([a, yy, e], [d, yy, e], [d, yy, c], [a, yy, c]);
+  b.paint(0x5e8d3c, Surf.Foliage); up(x0, z0, x1, z1, y);
+  b.paint(0xd8d0c0, Surf.Pavement); up(cx - 0.6, z0 + t, cx + 0.6, z1 - t, y + 0.02); up(x0 + t, cz - 0.6, x1 - t, cz + 0.6, y + 0.025);
+  // clipped boxwood border as one hollow ring
+  const X0 = x0, X1 = x1, Z0 = z0, Z1 = z1, a0 = x0 + t, a1 = x1 - t, c0 = z0 + t, c1 = z1 - t;
   b.paint(0x2f5a26, Surf.Foliage);
-  b.box(x0, 0.1, z0, x1, hh, z0 + t, { bottom: null }).box(x0, 0.1, z1 - t, x1, hh, z1, { bottom: null });
-  b.box(x0, 0.1, z0 + t, x0 + t, hh, z1 - t, { bottom: null }).box(x1 - t, 0.1, z0 + t, x1, hh, z1 - t, { bottom: null });
+  b.quad([X0, y, Z1], [X1, y, Z1], [X1, hh, Z1], [X0, hh, Z1]); b.quad([X1, y, Z0], [X0, y, Z0], [X0, hh, Z0], [X1, hh, Z0]);
+  b.quad([X1, y, Z1], [X1, y, Z0], [X1, hh, Z0], [X1, hh, Z1]); b.quad([X0, y, Z0], [X0, y, Z1], [X0, hh, Z1], [X0, hh, Z0]);
+  b.quad([a1, y, c1], [a0, y, c1], [a0, hh, c1], [a1, hh, c1]); b.quad([a0, y, c0], [a1, y, c0], [a1, hh, c0], [a0, hh, c0]);
+  b.quad([a1, y, c0], [a1, y, c1], [a1, hh, c1], [a1, hh, c0]); b.quad([a0, y, c1], [a0, y, c0], [a0, hh, c0], [a0, hh, c1]);
+  b.quad([X0, hh, Z1], [X1, hh, Z1], [a1, hh, c1], [a0, hh, c1]); b.quad([X1, hh, Z0], [X0, hh, Z0], [a0, hh, c0], [a1, hh, c0]);
+  b.quad([X1, hh, Z1], [X1, hh, Z0], [a1, hh, c0], [a1, hh, c1]); b.quad([X0, hh, Z0], [X0, hh, Z1], [a0, hh, c1], [a0, hh, c0]);
   const qx = (x1 - x0) / 4, qz = (z1 - z0) / 4;
-  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) b.paint(0x2f5a26, Surf.Foliage).cone(cx + sx * qx, cz + sz * qz, 0.1, 1.7, 0.5, 6);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) spike(b, cx + sx * qx, cz + sz * qz, y, 1.7, 0.5, 6);
   if (flower !== null) {
     const fc = typeof flower === 'number' ? mixHex(flower, 0x4f7a34, 0.35) : flower;
     b.paint(fc, Surf.Foliage);
-    for (const z of [z0 + t + 0.05, z1 - t - 0.85]) b.box(x0 + t + 0.1, 0.1, z, x1 - t - 0.1, 0.42, z + 0.8, { bottom: null });
+    for (const z of [c0 + 0.05, c1 - 0.85]) b.box(a0 + 0.1, y, z, a1 - 0.1, 0.42, z + 0.8, { bottom: null, nz: z < cz ? null : undefined, pz: z > cz ? null : undefined });
+  }
+}
+
+/** Cone without degenerate triangles (seg tris): topiary, spires. Uses the current paint. */
+export function spike(b: ModelBuilder, x: number, z: number, y: number, h: number, r: number, seg = 6): void {
+  const apex: V3 = [x, y + h, z];
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+    b.tri([x + Math.cos(a1) * r, y, z + Math.sin(a1) * r], [x + Math.cos(a0) * r, y, z + Math.sin(a0) * r], apex);
   }
 }
 
@@ -574,17 +589,17 @@ export function chainFence(b: ModelBuilder, ax: number, az: number, bx: number, 
 }
 
 /** See-through iron railing: thin square posts every `every` m + top rail. */
-export function ironRail(b: ModelBuilder, ax: number, az: number, bx: number, bz: number, h = 0.9, color: ColorLike = 0x2a2c2e, every = 1.2): void {
+export function ironRail(b: ModelBuilder, ax: number, az: number, bx: number, bz: number, h = 0.9, color: ColorLike = 0x2a2c2e, every = 1.2, y0 = 0): void {
   const len = Math.hypot(bx - ax, bz - az);
   if (len < 0.05) return;
   const n = Math.max(1, Math.round(len / every));
   b.paint(color, Surf.Metal);
   for (let i = 0; i <= n; i++) {
     const t = i / n, x = ax + (bx - ax) * t, z = az + (bz - az) * t;
-    b.box(x - 0.025, 0.05, z - 0.025, x + 0.025, h, z + 0.025, { bottom: null, top: null });
+    b.box(x - 0.025, y0 + 0.05, z - 0.025, x + 0.025, y0 + h, z + 0.025, { bottom: null, top: null });
   }
-  b.beam([ax, h, az], [bx, h, bz], 0.06);
-  b.beam([ax, h * 0.2, az], [bx, h * 0.2, bz], 0.04);
+  b.beam([ax, y0 + h, az], [bx, y0 + h, bz], 0.06);
+  b.beam([ax, y0 + h * 0.2, az], [bx, y0 + h * 0.2, bz], 0.04);
 }
 
 /**

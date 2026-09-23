@@ -178,3 +178,14 @@ describe('public economy API (src/sim/economy/index.ts)', () => {
     expect(api.serviceEffectiveness(st, 'police')).toBeCloseTo(1);
   });
 });
+
+describe('advisors', () => {
+  it('a persistent problem backs off instead of repeating every cooldown', () => {
+    const { st, sim, A } = makeCity();
+    A.zone({ x0: 5, z0: 5, x1: 30, z1: 30 }, Zone.ResLow); // zoned land but no power plant → "Nothing will grow without power!"
+    sim.runDays(360 * 3);
+    const n = st.news.filter((x) => x.text.startsWith('Nothing will grow without power')).length;
+    expect(n).toBeGreaterThanOrEqual(1);
+    expect(n).toBeLessThanOrEqual(5); // 60, 120, 240, 480 day back-off → ≤ 5 in 3 years
+  });
+});

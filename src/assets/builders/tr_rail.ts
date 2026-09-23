@@ -42,26 +42,28 @@ function trainStation(b: ModelBuilder, rng: RNG): void {
   // ---- platform along the back edge (rails run just outside the lot at -Z)
   b.paint(0xb9b5ad, Surf.Pavement).box(-32, 0, -16, 32, 1.0, -6.5, { bottom: null });
   b.paint(0xe9e7e0, Surf.Plain);
-  flat(b, -32, -16, 32, -15.5, 1.03);
+  flat(b, -32, -16, 32, -15.5, 1.06);
   b.paint(0xf0c020, Surf.Plain);
-  flat(b, -32, -15.1, 32, -14.85, 1.03);
-  poolRect(b, -31.5, -14.8, 31.5, -7.4, 1.015, 0xb9b5ad, 0.5);
+  flat(b, -32, -15.1, 32, -14.85, 1.06);
+  poolRect(b, -31.5, -14.8, 31.5, -7.4, 1.03, 0xb9b5ad, 0.5);
   // canopy: curved shell on slender columns, bright soffit + light strip
-  b.paint(0x55606a, Surf.Metal);
-  vault(b, 0, -11.2, 8.6, 63, 5.0, 1.2, 'x', { seg: 6, ends: { color: 0x55606a, surf: Surf.Metal }, under: { color: 0xe6e0d2, surf: Surf.Plain } });
-  b.paint(0x2f4f45, Surf.Metal);
+  b.paint(0x7b848c, Surf.RoofTiles);
+  vault(b, 0, -11.2, 8.6, 63, 5.0, 0.5, 'x', { seg: 6, ends: { color: 0x7b848c, surf: Surf.RoofTiles }, under: { color: 0xe6e0d2, surf: Surf.Plain } });
+  b.paint(0x8fb3c4, Surf.GlassCurtain, 4).box(-30, 5.45, -11.9, 30, 5.55, -10.5);
+  b.paint(0x2f4f45, Surf.Metal, 1);
+  for (const zf of [-15.45, -6.95]) b.box(-31.5, 4.75, zf - 0.075, 31.5, 5.1, zf + 0.075);
   for (let x = -28; x <= 28.1; x += 8) {
-    b.cylinder(x, -11.2, 1.0, 5.1, 0.17, 0.17, 6, { top: false });
-    obox(b, [x, 4.6, -11.2], [x, 5.6, -13.8], 0.14, 0.14, { ends: false });
-    obox(b, [x, 4.6, -11.2], [x, 5.6, -8.6], 0.14, 0.14, { ends: false });
+    b.cylinder(x, -11.2, 1.0, 4.4, 0.17, 0.17, 6, { top: false });
+    obox(b, [x, 4.5, -11.2], [x, 5.2, -13.8], 0.14, 0.14, { ends: false });
+    obox(b, [x, 4.5, -11.2], [x, 5.2, -8.6], 0.14, 0.14, { ends: false });
   }
-  b.paint(0xfff1d0, Surf.Emissive).box(-30, 6.0, -11.45, 30, 6.1, -10.95, { top: null });
+  b.paint(0xfff1d0, Surf.Emissive).box(-30, 5.3, -11.45, 30, 5.4, -10.95, { top: null });
   // platform furniture: benches, name signs, departure board
   b.push().translate(0, 1.0, 0);
   for (const x of [-24, -8, 8, 24]) bench(b, x, -9.4, Math.PI);
   b.pop();
   b.paint(0x2f4f45, Surf.Metal);
-  for (const x of [-1.4, 1.4]) b.box(x - 0.04, 4.4, -8.9, x + 0.04, 5.95, -8.8, { top: null, bottom: null });
+  for (const x of [-1.4, 1.4]) b.box(x - 0.04, 4.4, -8.9, x + 0.04, 5.3, -8.8, { top: null, bottom: null });
   for (const x of [-16, 16]) {
     b.paint(0x2f4f45, Surf.Metal).box(x - 1.6, 1, -11.3, x - 1.45, 3.4, -11.1, { top: null, bottom: null }).box(x + 1.45, 1, -11.3, x + 1.6, 3.4, -11.1, { top: null, bottom: null });
     b.paint(0x1f3f7a, Surf.Metal).box(x - 1.7, 2.6, -11.35, x + 1.7, 3.3, -11.05);
@@ -103,6 +105,17 @@ function trainStation(b: ModelBuilder, rng: RNG): void {
   }
   panel(b, 'z', 1, wz + 0.09, -wr, wr, wyc - 0.1, wyc + 0.1);
   panel(b, 'z', 1, wz + 0.09, -wr, wr, 6.6, 6.8);
+  // platform side (-Z): glazed lunette above the platform canopy, mirroring the street window
+  const bz = hz0 - 0.02;
+  b.paint(stoneLight, Surf.Stone);
+  panel(b, 'z', -1, bz, -wr - 0.7, wr + 0.7, 5.6, wyc);
+  halfDisc(b, [0, wyc, bz], wr + 0.7, 10, 'z', -1);
+  b.paint(0x33485a, Surf.GlassPlain);
+  panel(b, 'z', -1, bz - 0.05, -wr, wr, 6.0, wyc);
+  halfDisc(b, [0, wyc, bz - 0.05], wr, 10, 'z', -1);
+  b.paint(0x3b3f44, Surf.Metal);
+  for (const x of [-wr * 0.5, 0, wr * 0.5]) panel(b, 'z', -1, bz - 0.09, x - 0.1, x + 0.1, 6.0, wyc + Math.sqrt(wr * wr - x * x));
+  panel(b, 'z', -1, bz - 0.09, -wr, wr, wyc - 0.1, wyc + 0.1);
   // keystone + doors + entrance canopy with sign
   b.paint(stoneLight, Surf.Stone).box(-0.7, wyc + wr + 0.1, wz, 0.7, wyc + wr + 1.2, wz + 0.25, { bottom: null });
   b.paint(0x2a2f33, Surf.GlassPlain);
@@ -142,7 +155,7 @@ function trainStation(b: ModelBuilder, rng: RNG): void {
   for (const x of [-20, -6, 6, 20]) {
     lampPost(b, x, 11.6, 4.6);
   }
-  poolRect(b, -8, 8.1, 8, 11.4, 0.155, 0xb5ad9c, 0.5);
+  poolRect(b, -8, 8.1, 8, 11.4, 0.17, 0xb5ad9c, 0.5);
   b.paint(0x55595e, Surf.Metal);
   for (let i = 0; i < 5; i++) b.box(-24 + i * 0.9, 0, 9.2, -23.92 + i * 0.9, 0.9, 10.4, { bottom: null });
   bench(b, -8, 9.4, 0);
@@ -183,7 +196,7 @@ function freightStation(b: ModelBuilder, rng: RNG): void {
   b.paint(0x1f5fa0, Surf.Plain).box(sx0 - 0.03, 5.6, -3.83, sx1 + 0.03, 6.4, 5.53, { top: null, bottom: null });
   // ---- rail-mounted gantry over tracks + container stack + truck lane
   b.paint(0x77726b, Surf.Metal);
-  for (const zz of [-15.2, 9.2]) flat(b, -6, zz - 0.2, 31.5, zz + 0.2, 0.12);
+  for (const zz of [-15.2, 9.2]) flat(b, -6, zz - 0.2, 31.5, zz + 0.2, 0.17);
   containerBlock(b, rng, -5, -4.0, 2, 3, 3, { minTier: 1 });
   containerBlock(b, rng, 22, -4.0, 1, 3, 2, { long: false, minTier: 1 });
   gantry(b, 10, -15.2, 9.2, 10.8, 13, 0xe0a81c, { trolleyAt: -7.5, overhang: 0.8 });
@@ -200,12 +213,18 @@ function freightStation(b: ModelBuilder, rng: RNG): void {
   b.paint(0xd9d4c8, Surf.WallWindows, 6, 2.8).box(3, 0, 13.8, 5, 2.6, 15.4, { top: { color: 0x9a968e, surf: Surf.RoofFlat } });
   b.paint(0xc0392b, Surf.Plain).box(5, 1.0, 14.5, 10.5, 1.15, 14.65);
   b.paint(0xf2f2ee, Surf.Plain);
-  stripe(b, 4, 12.5, 12, 12.5, 0.3, 0.14);
+  stripe(b, 4, 12.5, 12, 12.5, 0.3, 0.17);
   // yard lights + fence along the front
+  // yard floodlights: front, east edge, between the tracks, west corner; soft pools clipped to their ground
   floodMast(b, -2, 9.5, 14, 0);
-  poolSoft(b, -2, 9.2, 6.2, 0.115, 0x45464a);
-  poolRect(b, sx0 + 0.5, -5.8, sx1 - 0.5, -3.9, 1.215, 0x9d9990, 0.5);
   floodMast(b, 31, -4.6, 14, Math.PI / 2);
+  floodMast(b, -16, -10, 13, 0);
+  floodMast(b, -31, 7.6, 13, Math.PI / 2);
+  poolSoft(b, -2, 6, 10, 0.13, 0x45464a);
+  poolSoft(b, 22.5, 5, 9, 0.13, 0x45464a);
+  poolSoft(b, -24.5, 10, 6, 0.13, 0x45464a);
+  poolSoft(b, -16, -10, 5.7, 0.11, 0x5f5c56);
+  poolRect(b, sx0 + 0.5, -5.8, sx1 - 0.5, -3.9, 1.23, 0x9d9990, 0.5);
   b.paint(0x8a9096, Surf.Metal);
   obox(b, [-31.8, 1.8, 15.6], [2.5, 1.8, 15.6], 0.06, 0.06);
   for (let x = -31.8; x <= 2.6; x += 3.1) b.box(x - 0.05, 0, 15.55, x + 0.05, 1.9, 15.65, { top: null, bottom: null });

@@ -8,8 +8,8 @@ import { Surf } from '../../core/types';
 import {
   P, TRIM, LAWN_LUSH, CONCRETE, inFace, U, fq, win, wins, door, garageDoor, steps, roofGable, roofHip, roofShed, roofMansard,
   dormer, chimney, lawnSlab, paveSlab, bush, bushRow, flowerBed, tree, boardFence, lowWall, hedgeBox, mailbox,
-  gardenShed, grill, patioSet, lounger, poolRect, parkedCar, planter, flatRoof, setLot, band, type WinStyle,
-  lightPool, gardenLamp, pathPts, vent, solarRoof, parterre, poolGlow, mixHex, pickPal, ironRail,
+  gardenShed, grill, patioSet, lounger, poolRect, parkedCar, planter, flatRoof, setLot, band, capPoly, type WinStyle,
+  lightPool, gardenLamp, pathPts, vent, solarRoof, parterre, poolGlow, mixHex, pickPal,
 } from './res_util';
 import { body, porch } from './res_houses';
 
@@ -23,16 +23,18 @@ function column(b: ModelBuilder, x: number, z: number, y0: number, y1: number, r
 
 /** Round paved disc (drives, terraces). */
 function disc(b: ModelBuilder, x: number, z: number, r: number, h: number, color: ColorLike, surf: Surf = Surf.Pavement, seg = 20): void {
-  b.paint(color, surf).cylinder(x, z, 0, h, r, r, seg, { top: true, smooth: false });
+  const pts: [number, number][] = [];
+  for (let i = 0; i < seg; i++) { const a = (i / seg) * Math.PI * 2; pts.push([x + Math.cos(a) * r, z + Math.sin(a) * r]); }
+  b.paint(color, surf); capPoly(b, pts, h, true);
 }
 
 function fountain(b: ModelBuilder, x: number, z: number, r = 2.2, stone: ColorLike = 0xd6cfc0): void {
   b.paint(stone).cylinder(x, z, 0, 0.55, r, r, 12, { top: false, smooth: false });
-  b.paint(0x4fa6c9, Surf.Water).cylinder(x, z, 0.45, 0.02, r - 0.15, r - 0.15, 12, { top: true });
-  b.paint(stone).cylinder(x, z, 0.45, 1.2, 0.25, 0.2, 8, { top: false });
-  b.paint(stone).cylinder(x, z, 1.65, 0.25, 0.9, 1.0, 10, { top: false });
-  b.paint(0x6fc0dd, Surf.Water).cylinder(x, z, 1.85, 0.03, 0.85, 0.85, 10, { top: true });
-  b.paint(stone).cylinder(x, z, 1.85, 0.7, 0.12, 0.08, 6, { top: true });
+  disc(b, x, z, r - 0.1, 0.47, 0x4fa6c9, Surf.Water, 12);
+  b.paint(stone).cylinder(x, z, 0.45, 1.2, 0.25, 0.2, 6, { top: false });
+  b.paint(stone).cylinder(x, z, 1.65, 0.25, 0.9, 1.0, 8, { top: false });
+  disc(b, x, z, 0.88, 1.88, 0x6fc0dd, Surf.Water, 8);
+  b.paint(0x6fc0dd, Surf.Emissive, 1).box(x - 0.12, 1.88, z - 0.12, x + 0.12, 2.5, z + 0.12, { bottom: null });
 }
 
 function tennisCourt(b: ModelBuilder, cx: number, cz: number, alongX: boolean, surface: ColorLike = 0x3f7a58): void {
@@ -58,10 +60,11 @@ function tennisCourt(b: ModelBuilder, cx: number, cz: number, alongX: boolean, s
   b.quad2([x0, 0.1, z0], [x0, 0.1, z1], [x0, 1.2, z1], [x0, 1.2, z0]);
   b.quad2([x1, 0.1, z0], [x1, 0.1, z1], [x1, 1.2, z1], [x1, 1.2, z0]);
   b.paint(0x2f3a34, Surf.Metal);
-  for (const [x, z] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1], [cx, z0], [cx - 7, z0], [cx + 7, z0], [x0, cz], [x1, cz]] as [number, number][]) b.box(x - 0.05, 0, z - 0.05, x + 0.05, 3.05, z + 0.05, { bottom: null, top: null });
+  for (const [x, z] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1], [cx - 7, z0], [cx + 7, z0]] as [number, number][]) b.box(x - 0.05, 0, z - 0.05, x + 0.05, 3.05, z + 0.05, { bottom: null, top: null });
+  const rail = (ax: number, az: number, bx: number, bz: number, y: number) => b.quad2([ax, y - 0.03, az], [bx, y - 0.03, bz], [bx, y + 0.03, bz], [ax, y + 0.03, az]);
   for (const y of [2.0, 3.0]) {
-    b.beam([x0, y, z0], [x1, y, z0], 0.06); b.beam([x0, y, z0], [x0, y, z1], 0.06); b.beam([x1, y, z0], [x1, y, z1], 0.06);
-    b.beam([x0, y, z1], [x0 + 6, y, z1], 0.06); b.beam([x1 - 6, y, z1], [x1, y, z1], 0.06);
+    rail(x0, z0, x1, z0, y); rail(x0, z0, x0, z1, y); rail(x1, z0, x1, z1, y);
+    rail(x0, z1, x0 + 6, z1, y); rail(x1 - 6, z1, x1, z1, y);
   }
 }
 
@@ -666,7 +669,7 @@ function mansion(b: ModelBuilder, v: number, rng: RNG): void {
     }
     // circular drive with fountain
     disc(b, 0, 15, 8.5, 0.09, 0xd8ccb0, Surf.Pavement, 16);
-    b.paint(0x5e9040, Surf.Foliage).cylinder(0, 15, 0, 0.12, 4.6, 4.6, 12, { top: true, smooth: false });
+    disc(b, 0, 15, 4.6, 0.12, 0x5e9040, Surf.Foliage, 12);
     fountain(b, 0, 15, 2.3);
     paveSlab(b, -2.5, 22, 2.5, 24, 0xd8ccb0, 0.09);
     paveSlab(b, -2.5, 8.2, 2.5, 9.0, 0xd8ccb0, 0.09);
@@ -684,7 +687,6 @@ function mansion(b: ModelBuilder, v: number, rng: RNG): void {
     poolRect(b, -19, -20, -9, -14, 0xe8e2d4, 1.6);
     tennisCourt(b, 9.5, -16.2, true);
     tree(b, rng, -21, -9.5, 1.2, 'wide');
-    tree(b, rng, -6, -21, 1.1, 'round');
   } else if (v === 1) {
     // French chateau: limestone, slate mansards with dormers, corner pavilions, parterre & gravel forecourt
     const lime = P(0xdad2c0, Surf.Stone), slate = P(0x444a52, Surf.RoofTiles), top = P(0x3a3f45, Surf.RoofFlat), trim = 0xf0ebe0;
@@ -749,10 +751,11 @@ function mansion(b: ModelBuilder, v: number, rng: RNG): void {
       door(b, 0, 0.9, 1.8, 2.8, 0x2f3e36, { transom: true, sidelights: true, frame: trim });
       door(b, 0, 5.1, 1.4, 2.5, 0x2f3e36, { frame: trim, lite: true });
     });
-    wins(b, 'nx', -14, [-6, -2], 1.6, 1.3, 2.4, ws);
-    wins(b, 'nx', -14, [-6, -2], 5.8, 1.3, 2.2, ws);
-    wins(b, 'px', 14, [-6, -2], 1.6, 1.3, 2.4, ws);
-    wins(b, 'px', 14, [-6, -2], 5.8, 1.3, 2.2, ws);
+    const wsS: WinStyle = { frame: trim, mull: 2 };
+    wins(b, 'nx', -14, [-6, -2], 1.6, 1.3, 2.4, wsS);
+    wins(b, 'nx', -14, [-6, -2], 5.8, 1.3, 2.2, wsS);
+    wins(b, 'px', 14, [-6, -2], 1.6, 1.3, 2.4, wsS);
+    wins(b, 'px', 14, [-6, -2], 5.8, 1.3, 2.2, wsS);
     wins(b, 'nz', -9, [-10, -5, 0, 5, 10], 1.6, 1.3, 2.4, { frame: trim });
     wins(b, 'nz', -9, [-10, -5, 0, 5, 10], 5.8, 1.3, 2.2, { frame: trim });
     for (const x of [-9, 9]) chimney(b, x, -3, 1.6, 1.0, 11.0, 14.2, 0x9a5a46);
@@ -760,14 +763,14 @@ function mansion(b: ModelBuilder, v: number, rng: RNG): void {
     // allee drive
     paveSlab(b, -2.5, 6.8, 2.5, 24, 0xd8ccae, 0.08);
     lightPool(b, -2.5, 8.2, 2.5, 10.7, 0xd8ccae, 0.085);
-    for (const z of [16, 20]) for (const x of [-3.2, 3.2]) gardenLamp(b, x, z, 0xd8ccae, 3.0, 0.085);
+    for (const x of [-3.2, 3.2]) gardenLamp(b, x, 20, 0xd8ccae, 3.0, 0.085);
     paveSlab(b, -8, 6.8, 8, 12, 0xd8ccae, 0.08);
     for (const z of [14, 18, 22]) { tree(b, rng, -5.2, z, 1.25, 'round'); tree(b, rng, 5.2, z, 1.25, 'round'); }
     parkedCar(b, rng, 5.0, 9.5, -Math.PI / 2, 0xe8e6e0);
     for (const s of [-1, 1]) {
       parterre(b, s * 16 - 6, 9, s * 16 + 6, 14.6, 0xd9a13c);
-      bushRow(b, s * 15 - 4, 16, s * 15 + 4, 16, 3, 0.8, 0x4a7434, s + 3);
-      tree(b, rng, s * 19, -19, 1.35, 'wide');
+      bushRow(b, s * 15 - 3, 16, s * 15 + 3, 16, 2, 0.8, 0x4a7434, s + 3);
+      tree(b, rng, s * 19, -19, 1.35, 'round');
     }
     poolRect(b, -7, -20, 7, -14, 0xe8e2d4, 1.6);
     for (const x of [-3, 3]) lounger(b, x, -12, Math.PI);

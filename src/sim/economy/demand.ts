@@ -19,7 +19,7 @@ import { CAP_RELIEF, devFamily } from '../catalog';
 import {
   APPROVAL_R, BASE_CAP, CAP_BINDING, CAP_POP_FRAC, CAP_SOFTMIN_K, CAP_WEIGHT, CIVIC_WEALTH_MIX, CO3_FRAC_MAX, CO3_FRAC_MIN,
   CO_SHARE_MAX, CO_SHARE_MIN, CO_SHARE_POP_FULL, CO_SHARE_POP_START, CONN_BASE, CONN_CAP_RELIEF, CONN_MAX, CONN_WEIGHT,
-  CS_BASE, CS_PER_RES, CUSTOMER_MIX, DEMAND_ABS_EMA, DEMAND_EMA, DEMAND_NORM_FRAC, DEMAND_NORM_MIN, FREIGHT_BOOST,
+  CS_BASE, CS_PER_RES, CS_SMALL_TOWN_BOOST, CS_SMALL_TOWN_POP, CUSTOMER_MIX, DEMAND_ABS_EMA, DEMAND_EMA, DEMAND_NORM_FRAC, DEMAND_NORM_MIN, FREIGHT_BOOST,
   FREIGHT_BOOST_MAX, I_BASE, I_SHARE_MAX, I_SHARE_MIN, IA_BASE, IA_PER_RES, ID_EQ_START, ID_SHARE_AT_EQ0, ID_SHARE_EQ_SLOPE, ID_SHARE_MIN,
   IHT_EQ_START, IHT_SHARE_MAX, IHT_SHARE_PER_EQ, JOB_SLACK, JOB_WEALTH_MIX, R_BASE, R_JOB_SLACK, TAX_FACTOR_MAX,
   TAX_FACTOR_MIN, TAX_NEUTRAL, TAX_SENS, TOURISM_CS_PER_POINT, UNEMP_CI_BOOST, UNEMP_NEUTRAL, UNEMP_R_PENALTY, WORKFORCE_RATIO,
@@ -103,12 +103,13 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     const excessU = Math.max(0, u - UNEMP_NEUTRAL);
     // ---- job targets
     const logF = P <= CO_SHARE_POP_START ? 0 : clamp(Math.log(P / CO_SHARE_POP_START) / Math.log(CO_SHARE_POP_FULL / CO_SHARE_POP_START), 0, 1);
+    const smallTown = 1 + CS_SMALL_TOWN_BOOST * (1 - smoothstep(0, CS_SMALL_TOWN_POP, P));
     // customers per CS tier
     for (let w = 0; w < 3; w++) {
       let customers = 0;
       for (let r = 0; r < 3; r++) customers += t.pop[r] * CUSTOMER_MIX[r][w];
       const tourMix = w === 0 ? 0.35 : w === 1 ? 0.4 : 0.25;
-      raw[DevType.CS1 + w] = CS_BASE[w] + CS_PER_RES[w] * customers + ctx.tourism * tourMix;
+      raw[DevType.CS1 + w] = (CS_BASE[w] + CS_PER_RES[w] * customers) * smallTown + ctx.tourism * tourMix;
     }
     const eqF = 0.6 + 0.8 * smoothstep(0, 100, EQ);
     const co = W * lerp(CO_SHARE_MIN, CO_SHARE_MAX, logF) * eqF * ctx.connC;

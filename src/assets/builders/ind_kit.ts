@@ -4,6 +4,7 @@
  * lattice struts, pipe runs, conveyors, trucks, low-poly cars, fences, trees, plus smoke-emitter capture.
  * All coordinates are model space (meters, lot centered, front = +Z). Never uses Math.random.
  */
+import { Color } from 'three';
 import { ModelBuilder, PALETTE, type ColorLike } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import { RNG, hashString } from '../../core/rng';
@@ -12,6 +13,52 @@ import { MANIFEST_BY_ID } from '../manifest';
 
 export type V3 = [number, number, number];
 export type Face = 'pz' | 'nz' | 'px' | 'nx';
+
+/**
+ * Stacked ground layers (keep >= 3 cm apart to avoid z-fighting at distance):
+ * lot base slab 0.05 -> overlays (asphalt, lawn, tracks, paths) 0.08 -> light pools 0.11 -> markings / stains 0.14.
+ */
+export const Y_BASE = 0.05, Y_OVER = 0.08, Y_POOL = 0.11, Y_MARK = 0.14;
+
+/** Neutral metal paint used to reset the current paint after emissive helpers. */
+export const RESET_PAINT = 0x55595e;
+
+/** Color scaled in linear space (for Emissive-9 light pools painted ~0.7x the ground under them). */
+export function dim(c: ColorLike, k: number): Color {
+  const out = new Color();
+  if (c instanceof Color) out.copy(c);
+  else if (Array.isArray(c)) out.setRGB(c[0], c[1], c[2], 'srgb');
+  else out.set(c as number | string);
+  return out.multiplyScalar(k);
+}
+
+/** Emissive-9 ground light pool: flat 8-gon (plain pavement by day, warm lit at night). */
+export function pool(b: ModelBuilder, x: number, z: number, r: number, groundColor: ColorLike, y = Y_POOL, seg = 8, floor = 3.3): void {
+  b.paint({ color: dim(groundColor, 0.7), surf: Surf.Emissive, pattern: 9, floor });
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i / seg) * Math.PI * 2 + 0.2, a1 = ((i + 1) / seg) * Math.PI * 2 + 0.2;
+    b.tri([x, y, z], [x + Math.cos(a1) * r, y, z + Math.sin(a1) * r], [x + Math.cos(a0) * r, y, z + Math.sin(a0) * r]);
+  }
+  b.paint(RESET_PAINT, Surf.Metal);
+}
+
+/** Rectangular Emissive-9 light pool (dock aprons, lit yards). */
+export function poolRect(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, groundColor: ColorLike, y = Y_POOL, floor = 3.3): void {
+  b.paint({ color: dim(groundColor, 0.7), surf: Surf.Emissive, pattern: 9, floor });
+  b.quad([x0, y, z1], [x1, y, z1], [x1, y, z0], [x0, y, z0]);
+  b.paint(RESET_PAINT, Surf.Metal);
+}
+
+/** Emissive-9 ring (annulus) pool, e.g. lit apron around a cooling tower base. */
+export function poolRing(b: ModelBuilder, x: number, z: number, r0: number, r1: number, groundColor: ColorLike, y = Y_POOL, seg = 10, floor = 2.4): void {
+  b.paint({ color: dim(groundColor, 0.7), surf: Surf.Emissive, pattern: 9, floor });
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+    const c0 = Math.cos(a0), s0 = Math.sin(a0), c1 = Math.cos(a1), s1 = Math.sin(a1);
+    b.quad([x + c0 * r1, y, z + s0 * r1], [x + c0 * r0, y, z + s0 * r0], [x + c1 * r0, y, z + s1 * r0], [x + c1 * r1, y, z + s1 * r1]);
+  }
+  b.paint(RESET_PAINT, Surf.Metal);
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Smoke / steam emitter capture. Builders call emitSmoke()/emitSteam() with MODEL-SPACE positions (never inside a
@@ -494,6 +541,7 @@ export function smokestack(b: ModelBuilder, x: number, z: number, h: number, r0:
     b.boxC(x - R(top) - 0.15, z, 0.35, 0.35, top - 0.6, 0.35);
   }
   if (!o.noSmoke) emitSmoke([x, top + 0.5, z]);
+  b.paint(RESET_PAINT, Surf.Metal);
   return [x, top, z];
 }
 
@@ -504,10 +552,10 @@ export const TRUCK_COLORS = [0xf2f2ee, 0xc0392b, 0x2e6fb5, 0x2b2d31, 0xe67e22, 0
 export const CAR_COLORS2 = [0xb8bcc2, 0x2b2d31, 0xf1f1ef, 0x8a1c1c, 0x1f3f7a, 0x5d6b73, 0x3e5e3a, 0xc9a13b, 0x6b2f4a, 0xd96b2b, 0xe0e0dc, 0x4a4f55];
 
 /** Very cheap parked car (20 tris). rot = 0 faces +Z. */
-export function carLow(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike, y = 0.06): void {
+export function carLow(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike, y = Y_OVER): void {
   b.push().translate(x, y, z).rotateY(rot);
-  b.paint(color, Surf.Metal).box(-0.9, 0.12, -2.25, 0.9, 0.85, 2.25);
-  b.paint(0x1d232a, Surf.Metal).box(-0.8, 0.85, -1.15, 0.8, 1.38, 0.95, { top: { color, surf: Surf.Metal } });
+  b.paint(color, Surf.Metal, 2).box(-0.9, 0.12, -2.25, 0.9, 0.85, 2.25);
+  b.paint(0x1d232a, Surf.GlassPlain, 1).box(-0.8, 0.85, -1.15, 0.8, 1.38, 0.95, { top: { color, surf: Surf.Metal, pattern: 2 } });
   b.pop();
 }
 
@@ -521,13 +569,13 @@ export function semi(b: ModelBuilder, x: number, z: number, rot: number, cab: Co
       wallQuad(b, 'px', 1.27, -7.6, 4.8, 2.1, 2.9);
       wallQuad(b, 'nx', -1.27, -7.6, 4.8, 2.1, 2.9);
     }
-    b.paint(0x1e1e1e, Surf.Metal).box(-1.15, 0.0, -8.0, 1.15, 1.3, -4.8, { top: null });
-    if (!(o.tractor ?? true)) b.paint(0x333333, Surf.Metal).box(-0.9, 0, 3.4, 0.9, 1.3, 3.7, { top: null, pz: null, nz: null });
+    b.paint(0x1e1e1e, Surf.Metal, 1).box(-1.15, 0.0, -8.0, 1.15, 1.3, -4.8, { top: null });
+    if (!(o.tractor ?? true)) b.paint(0x333333, Surf.Metal, 1).box(-0.9, 0, 3.4, 0.9, 1.3, 3.7, { top: null, pz: null, nz: null });
   }
   if (o.tractor ?? true) {
-    b.paint(0x202020, Surf.Metal).box(-1.15, 0.0, 4.4, 1.15, 1.25, 8.4, { top: null });
-    b.paint(cab, Surf.Metal).box(-1.25, 1.25, 6.1, 1.25, 3.7, 8.5);
-    b.paint(0x1a2027, Surf.Metal);
+    b.paint(0x202020, Surf.Metal, 1).box(-1.15, 0.0, 4.4, 1.15, 1.25, 8.4, { top: null });
+    b.paint(cab, Surf.Metal, 1).box(-1.25, 1.25, 6.1, 1.25, 3.7, 8.5);
+    b.paint(0x1a2027, Surf.GlassPlain, 1);
     wallQuad(b, 'pz', 8.5, -1.1, 1.1, 2.3, 3.4);
   }
   b.pop();
@@ -536,10 +584,10 @@ export function semi(b: ModelBuilder, x: number, z: number, rot: number, cab: Co
 /** Box truck ~8 m (~30 tris). */
 export function boxTruck(b: ModelBuilder, x: number, z: number, rot: number, cab: ColorLike, boxColor: ColorLike): void {
   b.push().translate(x, 0.05, z).rotateY(rot);
-  b.paint(0x202020, Surf.Metal).box(-1.1, 0, -4, 1.1, 0.9, 4, { top: null });
+  b.paint(0x202020, Surf.Metal, 1).box(-1.1, 0, -4, 1.1, 0.9, 4, { top: null });
   b.paint(boxColor, Surf.Plain).box(-1.25, 0.9, -4, 1.25, 3.5, 1.8);
-  b.paint(cab, Surf.Metal).box(-1.2, 0.9, 2.0, 1.2, 2.9, 4.0);
-  b.paint(0x1a2027, Surf.Metal);
+  b.paint(cab, Surf.Metal, 1).box(-1.2, 0.9, 2.0, 1.2, 2.9, 4.0);
+  b.paint(0x1a2027, Surf.GlassPlain, 1);
   wallQuad(b, 'pz', 4.0, -1.05, 1.05, 1.9, 2.7);
   b.pop();
 }
@@ -550,9 +598,9 @@ export function tractor(b: ModelBuilder, x: number, z: number, rot: number, colo
   b.paint(0x1c1c1c, Surf.Plain);
   hCyl(b, 0, 0.8, -0.9, 2.3, 0.8, 'x', 7);
   hCyl(b, 0, 0.45, 1.35, 1.7, 0.45, 'x', 6);
-  b.paint(color, Surf.Metal).box(-0.5, 0.6, -0.4, 0.5, 1.35, 2.0);
-  b.paint(color, Surf.Metal).box(-1.2, 1.55, -1.5, 1.2, 1.7, -0.3, { bottom: null });
-  b.paint(0x2a3138, Surf.Metal).box(-0.65, 1.35, -1.35, 0.65, 2.7, -0.35, { top: { color: 0xe8e8e8, surf: Surf.Metal } });
+  b.paint(color, Surf.Metal, 1).box(-0.5, 0.6, -0.4, 0.5, 1.35, 2.0);
+  b.paint(color, Surf.Metal, 1).box(-1.2, 1.55, -1.5, 1.2, 1.7, -0.3, { bottom: null });
+  b.paint(0x2a3138, Surf.GlassPlain, 1).box(-0.65, 1.35, -1.35, 0.65, 2.7, -0.35, { top: { color: 0xe8e8e8, surf: Surf.Metal, pattern: 1 } });
   b.paint(0x333333, Surf.Metal);
   strut(b, [0.3, 1.35, 1.6], [0.3, 2.5, 1.6], 0.12);
   b.pop();
@@ -561,8 +609,8 @@ export function tractor(b: ModelBuilder, x: number, z: number, rot: number, colo
 /** Forklift (~30 tris). */
 export function forklift(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike = 0xf1c40f): void {
   b.push().translate(x, 0.05, z).rotateY(rot);
-  b.paint(color, Surf.Metal).box(-0.55, 0.15, -1.0, 0.55, 1.1, 0.8);
-  b.paint(0x222222, Surf.Metal).box(-0.5, 1.1, -0.9, 0.5, 2.1, 0.3, { nz: null, px: null, nx: null, pz: null });
+  b.paint(color, Surf.Metal, 1).box(-0.55, 0.15, -1.0, 0.55, 1.1, 0.8);
+  b.paint(0x222222, Surf.Metal, 1).box(-0.5, 1.1, -0.9, 0.5, 2.1, 0.3, { nz: null, px: null, nx: null, pz: null });
   strut(b, [-0.45, 1.1, 0.3], [-0.45, 2.1, 0.3], 0.1);
   strut(b, [0.45, 1.1, 0.3], [0.45, 2.1, 0.3], 0.1);
   b.box(-0.5, 0, 0.8, 0.5, 2.3, 0.9, { top: null, nx: null, px: null });
@@ -580,7 +628,7 @@ export function drums(b: ModelBuilder, rng: RNG, x: number, z: number, nx: numbe
   for (let i = 0; i < nx; i++)
     for (let j = 0; j < nz; j++) {
       if (rng.chance(0.15)) continue;
-      b.paint(rng.pick(colors), Surf.Metal);
+      b.paint(rng.pick(colors), Surf.Metal, 1);
       const px = x + i * 0.7, pz = z + j * 0.7;
       tube(b, px, pz, 0, 0.9, 0.3, 0.3, 5);
       disc(b, px, pz, 0.9, 0.3, 5);
@@ -659,24 +707,53 @@ export function wallRun(b: ModelBuilder, ax: number, az: number, bx: number, bz:
   else b.box(ax - t / 2, 0, Math.min(az, bz), ax + t / 2, h, Math.max(az, bz));
 }
 
-/** Yard flood light pole (emissive head), 16 tris. */
-export function floodLight(b: ModelBuilder, x: number, z: number, h = 9): void {
+/**
+ * Yard flood light pole (emissive head), 16 tris. With `groundColor` it also lays an Emissive-9 light pool
+ * (8-gon, r = 1.2 x pole height, 0.7 x ground color) that lights the pavement at night.
+ */
+export function floodLight(b: ModelBuilder, x: number, z: number, h = 9, groundColor: ColorLike | null = null, poolR = h * 1.2, clip?: [number, number, number, number], poolY = Y_POOL): void {
   b.paint(0x3a3d40, Surf.Metal);
   strut(b, [x, 0, z], [x, h, z], 0.2);
-  b.paint(0xfff2d0, Surf.Emissive).boxC(x, z, 0.8, 0.4, h, 0.35, { bottom: { color: 0xfff2d0, surf: Surf.Emissive } });
+  b.paint(0xfff2d0, Surf.Emissive, 6).boxC(x, z, 0.8, 0.4, h, 0.35, { bottom: { color: 0xfff2d0, surf: Surf.Emissive, pattern: 6 } });
+  if (groundColor !== null) {
+    // keep the pool inside the lot (clip = [x0, z0, x1, z1]) by shifting its center inward
+    let px = x, pz = z;
+    if (clip) {
+      px = Math.min(Math.max(px, clip[0] + poolR), clip[2] - poolR);
+      pz = Math.min(Math.max(pz, clip[1] + poolR), clip[3] - poolR);
+    }
+    pool(b, px, pz, poolR, groundColor, poolY);
+  }
+  b.paint(RESET_PAINT, Surf.Metal);
 }
 
 /** Tiny omni-visible light point (tetrahedron, 4 tris): sodium / LED work lights that sparkle at night. */
-export function lightDot(b: ModelBuilder, x: number, y: number, z: number, s = 0.4, color: ColorLike = 0xffd08a): void {
-  b.paint(color, Surf.Emissive);
+export function lightDot(b: ModelBuilder, x: number, y: number, z: number, s = 0.3, color: ColorLike = 0xffd08a): void {
+  b.paint(color, Surf.Emissive, 6);
   const t: V3 = [x, y + s, z];
   const p0: V3 = [x + s, y - s * 0.5, z], p1: V3 = [x - s * 0.5, y - s * 0.5, z + s * 0.87], p2: V3 = [x - s * 0.5, y - s * 0.5, z - s * 0.87];
   b.tri(t, p1, p0).tri(t, p2, p1).tri(t, p0, p2).tri(p0, p1, p2);
+  b.paint(RESET_PAINT, Surf.Metal);
 }
 
 /** Light points spread over a set of positions. */
-export function lights(b: ModelBuilder, pts: V3[], s = 0.4, color: ColorLike = 0xffd08a): void {
+export function lights(b: ModelBuilder, pts: V3[], s = 0.3, color: ColorLike = 0xffd08a): void {
   for (const p of pts) lightDot(b, p[0], p[1], p[2], s, color);
+  b.paint(RESET_PAINT, Surf.Metal);
+}
+
+/** Security light posts along a straight run every `spacing` m: pole + cool LED dot + Emissive-9 pool. */
+export function securityLights(b: ModelBuilder, ax: number, az: number, bx: number, bz: number, spacing: number, groundColor: ColorLike, h = 6, inward: [number, number] = [0, 0]): void {
+  const len = Math.hypot(bx - ax, bz - az);
+  const n = Math.max(1, Math.round(len / spacing));
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+    b.paint(0x55595e, Surf.Metal);
+    strut(b, [x, 0, z], [x, h, z], 0.14);
+    lightDot(b, x + inward[0] * 0.4, h, z + inward[1] * 0.4, 0.28, 0xe8f0ff);
+    pool(b, x + inward[0] * 3.2, z + inward[1] * 3.2, 3.6, groundColor);
+  }
 }
 
 /** Rooftop AC / condenser box (12 tris). */
@@ -699,7 +776,7 @@ export function parapet(b: ModelBuilder, x0: number, z0: number, x1: number, z1:
 /** Parking lot with stall lines (2 tris per line) and cheap cars. Stalls along X; rows alternate facing. */
 export function parking(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, fill = 0.6, maxCars = 40): void {
   b.paint(PALETTE.asphalt, Surf.Pavement);
-  flat(b, x0, z0, x1, z1, 0.06);
+  flat(b, x0, z0, x1, z1, Y_OVER);
   const stallW = 2.7, stallD = 5.2, aisle = 6.0;
   let cars = 0;
   const rowPitch = stallD * 2 + aisle;
@@ -710,11 +787,11 @@ export function parking(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: n
       const nSt = Math.floor((x1 - x0 - 0.8) / stallW);
       for (let s = 0; s <= nSt; s++) {
         const sx = x0 + 0.4 + s * stallW;
-        flat(b, sx - 0.07, zA, sx + 0.07, zA + stallD, 0.08);
+        flat(b, sx - 0.07, zA, sx + 0.07, zA + stallD, Y_MARK);
       }
       for (let s = 0; s < nSt; s++) {
         if (cars < maxCars && rng.chance(fill)) {
-          carLow(b, x0 + 0.4 + s * stallW + stallW / 2, zA + stallD / 2, facing, rng.pick(CAR_COLORS2), 0.06);
+          carLow(b, x0 + 0.4 + s * stallW + stallW / 2, zA + stallD / 2, facing, rng.pick(CAR_COLORS2), Y_OVER);
           cars++;
         }
       }

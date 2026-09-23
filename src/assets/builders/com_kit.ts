@@ -44,17 +44,20 @@ export const C = {
   water: 0x3f8fb8,
 };
 
-export const NEON = [0xff3b30, 0x2fd6ff, 0xff4fc3, 0xffc933, 0x4dff88, 0xfff1d6, 0xff8a2a, 0xa07bff];
+/** Saturated neon sign colours (no cream/white: keep those to ~30% of the night palette). */
+export const NEON = [0xff3b30, 0x2fd6ff, 0xff4fc3, 0xffc933, 0x4dff88, 0x3a8dff, 0xff8a2a, 0xa07bff];
+/** Emissive intensity presets (Surf.Emissive pattern = intensity x pattern/4). */
+export const NEON_K = 7, CANOPY_K = 3;
 export const CAR_COLORS = [0xb8bcc2, 0x2b2d31, 0xf1f1ef, 0x8a1c1c, 0x1f3f7a, 0x5d6b73, 0x3e5e3a, 0xc9a13b, 0x6b2f4a, 0xd96b2b, 0xe7e7e2, 0x44484e];
 
 export const pav = (c: ColorLike = C.sidewalk) => P(c, Surf.Pavement);
 let roofTone: ColorLike = C.roof;
 /** Pick the default flat-roof tone for the model being built (gravel grey, light concrete, white membrane, tar, beige). */
 export function setRoofTone(rng: RNG) {
-  roofTone = rng.weighted([0x8f8d89, 0xb3b0a8, 0xd2d1cc, 0x6d6f72, 0xa39a8a], [3, 2, 2, 1.5, 1.5]);
+  roofTone = rng.weighted([0x8f8d89, 0xb3b0a8, 0xd2d1cc, 0x6d6f72, 0xa39a8a, 0x5b5d60], [3, 1.5, 1, 2, 1.5, 1]);
 }
 export const roofP = (c?: ColorLike) => P(c ?? roofTone, Surf.RoofFlat);
-export const emis = (c: ColorLike) => P(c, Surf.Emissive);
+export const emis = (c: ColorLike, k = 0) => P(c, Surf.Emissive, k);
 export const metal = (c: ColorLike) => P(c, Surf.Metal);
 export const plain = (c: ColorLike) => P(c, Surf.Plain);
 export const glassP = (c: ColorLike = C.glass) => P(c, Surf.GlassPlain);
@@ -261,34 +264,67 @@ export function canopy(b: ModelBuilder, x0: number, x1: number, z: number, y: nu
   if (edge) faceZ(b, x0, x1, y + thick * 0.3, y + thick * 0.7, z + depth + 0.03, edge);
 }
 
+// Stroke glyph templates in a unit box (x: 0..1 of glyph width, y: 0..1 of glyph height); s = stroke (relative to h).
+// Each template is a list of rects [x0, y0, x1, y1] where values < 0 mean "stroke-relative": handled in glyphRects().
+type Glyph = 'H' | 'E' | 'O' | 'T' | 'L' | 'I' | 'U' | 'C';
+const GLYPHS: Glyph[] = ['H', 'E', 'O', 'T', 'L', 'I', 'U', 'C', 'E', 'O', 'H', 'T'];
+function glyphRects(g: Glyph, w: number, h: number, s: number): [number, number, number, number][] {
+  const L: [number, number, number, number] = [0, 0, s, h];
+  const R: [number, number, number, number] = [w - s, 0, w, h];
+  switch (g) {
+    case 'H': return [L, R, [s, h * 0.5 - s / 2, w - s, h * 0.5 + s / 2]];
+    case 'E': return [L, [s, h - s, w, h], [s, h * 0.5 - s / 2, w * 0.82, h * 0.5 + s / 2], [s, 0, w, s]];
+    case 'O': return [L, R, [s, h - s, w - s, h], [s, 0, w - s, s]];
+    case 'T': return [[0, h - s, w, h], [w / 2 - s / 2, 0, w / 2 + s / 2, h - s]];
+    case 'L': return [L, [s, 0, w, s]];
+    case 'I': return [[w / 2 - s / 2, s, w / 2 + s / 2, h - s], [0, h - s, w, h], [0, 0, w, s]];
+    case 'U': return [L, R, [s, 0, w - s, s]];
+    case 'C': return [L, [s, h - s, w, h], [s, 0, w, s]];
+  }
+}
 /**
  * Neon / channel letters on the +Z plane at z: fits a random "word" (or two) into maxW, centered at cx, baseline y0,
- * cap height h. Each letter = 1 quad. Returns the actual width used.
+ * cap height h. Each glyph is 2-4 stroke quads (~6 tris) from simple templates (H E O T L I U C), stroke 0.18 h.
+ * Default surface: Emissive at neon intensity (pattern 7). Returns the actual width used.
  */
-export function letters(b: ModelBuilder, rng: RNG, cx: number, y0: number, z: number, maxW: number, h: number, color: ColorLike, opts: { n?: number; words?: number; surf?: Surf; mixed?: boolean } = {}): number {
+export function letters(b: ModelBuilder, rng: RNG, cx: number, y0: number, z: number, maxW: number, h: number, color: ColorLike, opts: { n?: number; words?: number; surf?: Surf; mixed?: boolean; k?: number } = {}): number {
   const words = opts.words ?? (rng.chance(0.35) ? 2 : 1);
-  const ws: { w: number; h: number; gap: number }[] = [];
   const total = opts.n ?? rng.int(4, 8);
   const split = words > 1 ? rng.int(2, Math.max(2, total - 2)) : -1;
+  const ws: { g: Glyph; w: number; h: number; gap: number }[] = [];
   for (let i = 0; i < total; i++) {
-    const lw = h * rng.range(0.48, 0.82);
+    const g = rng.pick(GLYPHS);
     const lh = opts.mixed && i > 0 && rng.chance(0.55) ? h * 0.72 : h;
-    ws.push({ w: lw, h: lh, gap: i === split - 1 ? h * 0.55 : h * 0.16 });
+    const lw = g === 'I' ? lh * 0.42 : lh * rng.range(0.56, 0.74);
+    ws.push({ g, w: lw, h: lh, gap: i === split - 1 ? h * 0.55 : h * 0.2 });
   }
   let W = 0;
   for (let i = 0; i < ws.length; i++) W += ws[i].w + (i < ws.length - 1 ? ws[i].gap : 0);
-  const s = Math.min(1, maxW / W);
-  let x = cx - (W * s) / 2;
-  const p = P(color, opts.surf ?? Surf.Emissive);
+  const sc = Math.min(1, maxW / W);
+  let x = cx - (W * sc) / 2;
+  const surf = opts.surf ?? Surf.Emissive;
+  const p = P(color, surf, surf === Surf.Emissive ? opts.k ?? NEON_K : 0);
   for (const L of ws) {
-    faceZ(b, x, x + L.w * s, y0, y0 + L.h, z, p);
-    x += (L.w + L.gap) * s;
+    const gw = L.w * sc, st = Math.min(L.h * 0.18, gw * 0.3);
+    for (const [ax, ay, bx, by] of glyphRects(L.g, gw, L.h, st)) faceZ(b, x + ax, x + bx, y0 + ay, y0 + by, z, p);
+    x += (L.w + L.gap) * sc;
   }
-  return W * s;
+  return W * sc;
 }
-
+/** Vertical sign: glyphs stacked in a column (w wide) on the +Z plane, from y0 up to y1. */
+export function verticalLetters(b: ModelBuilder, rng: RNG, cx: number, y0: number, y1: number, z: number, w: number, color: ColorLike, k = NEON_K) {
+  const lh = w * 0.95, gap = w * 0.25;
+  const n = Math.max(1, Math.floor((y1 - y0 + gap) / (lh + gap)));
+  const off = (y1 - y0 - (n * lh + (n - 1) * gap)) / 2;
+  const p = P(color, Surf.Emissive, k);
+  for (let i = 0; i < n; i++) {
+    const g = rng.pick(GLYPHS), yb = y1 - off - (i + 1) * lh - i * gap;
+    const gw = g === 'I' ? w * 0.5 : w * 0.8;
+    for (const [ax, ay, bx, by] of glyphRects(g, gw, lh, lh * 0.18)) faceZ(b, cx - gw / 2 + ax, cx - gw / 2 + bx, yb + ay, yb + by, z, p);
+  }
+}
 /** Sign panel (backing box) + letters, on the +Z plane. */
-export function signBoard(b: ModelBuilder, rng: RNG, x0: number, x1: number, y0: number, y1: number, z: number, back: Paint, letterColor: ColorLike, depth = 0.25, opts: { words?: number; n?: number; mixed?: boolean } = {}) {
+export function signBoard(b: ModelBuilder, rng: RNG, x0: number, x1: number, y0: number, y1: number, z: number, back: Paint, letterColor: ColorLike, depth = 0.25, opts: { words?: number; n?: number; mixed?: boolean; surf?: Surf; k?: number } = {}) {
   box(b, x0, y0, z, x1, y1, z + depth, back, undefined, { nz: null });
   const h = (y1 - y0) * 0.62;
   letters(b, rng, (x0 + x1) / 2, y0 + (y1 - y0 - h) / 2, z + depth + 0.02, (x1 - x0) * 0.86, h, letterColor, opts);
@@ -296,7 +332,7 @@ export function signBoard(b: ModelBuilder, rng: RNG, x0: number, x1: number, y0:
 
 /** Projecting blade sign perpendicular to the +Z facade at x (emissive both faces). */
 export function bladeSign(b: ModelBuilder, x: number, z: number, y0: number, h: number, w: number, color: ColorLike, frame: ColorLike = C.black) {
-  box(b, x - 0.13, y0, z, x + 0.13, y0 + h, z + w, metal(frame), undefined, { nz: null, px: emis(color), nx: emis(color) });
+  box(b, x - 0.13, y0, z, x + 0.13, y0 + h, z + w, metal(frame), undefined, { nz: null, px: emis(color, NEON_K), nx: emis(color, NEON_K) });
   box(b, x - 0.04, y0 + h * 0.5 - 0.05, z - 0.01, x + 0.04, y0 + h * 0.5 + 0.05, z + 0.05, metal(frame));
 }
 
@@ -307,7 +343,7 @@ export function discSign(b: ModelBuilder, x: number, y: number, z: number, r: nu
   b.pop();
 }
 
-export interface PylonPanel { h: number; color: ColorLike; surf?: Surf; w?: number }
+export interface PylonPanel { h: number; color: ColorLike; surf?: Surf; w?: number; k?: number }
 /** Free-standing pylon sign: panels stacked downward from the top. poles: 1 central / 2 legs / 0 monument base. */
 export function pylon(b: ModelBuilder, x: number, z: number, h: number, w: number, panels: PylonPanel[], o: { poles?: 0 | 1 | 2; pole?: ColorLike; depth?: number; frame?: ColorLike; rot?: number; cap?: ColorLike } = {}) {
   const d = o.depth ?? 0.5;
@@ -319,7 +355,7 @@ export function pylon(b: ModelBuilder, x: number, z: number, h: number, w: numbe
   }
   for (const pn of panels) {
     const pw = pn.w ?? w;
-    const face = P(pn.color, pn.surf ?? Surf.Emissive);
+    const face = P(pn.color, pn.surf ?? Surf.Emissive, pn.surf === undefined || pn.surf === Surf.Emissive ? pn.k ?? NEON_K : 0);
     box(b, -pw / 2, y - pn.h, -d / 2, pw / 2, y, d / 2, frame, frame, { pz: face, nz: face, bottom: frame });
     y -= pn.h + 0.12;
   }
@@ -333,13 +369,37 @@ export function pylon(b: ModelBuilder, x: number, z: number, h: number, w: numbe
   b.pop();
 }
 
+/**
+ * Letters on a pylon panel (both faces when `both`): panel centered at (x, z) with half-depth d/2, letters baseline y0.
+ * Use dark Plain letters on a lit panel (default) or Emissive letters on a dark panel.
+ */
+export function pylonLetters(b: ModelBuilder, rng: RNG, x: number, z: number, y0: number, h: number, maxW: number, color: ColorLike, o: { both?: boolean; surf?: Surf; depth?: number; n?: number; rot?: number } = {}) {
+  const d = (o.depth ?? 0.5) / 2 + 0.02;
+  const r2 = rng.fork('pl');
+  for (const side of o.both ? [0, Math.PI] : [0]) {
+    b.push().translate(x, 0, z).rotateY((o.rot ?? 0) + side);
+    letters(b, r2.fork(side ? 'b' : 'f'), 0, y0, d, maxW, h, color, { surf: o.surf ?? Surf.Plain, n: o.n ?? r2.int(3, 6), words: 1 });
+    b.pop();
+  }
+}
+/** Emissive roof-edge strip on a parapet top (outward 0.2 m band + up-facing ring of width t): 16 tris. */
+export function roofEdge(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, color: ColorLike, t = 0.25, k = 6) {
+  const p = emis(color, k);
+  bandRect(b, x0, z0, x1, z1, y - 0.2, y, p, 0.03);
+  const yy = y + 0.012;
+  up(b, x0, z1 - t, x1, z1, yy, p);
+  up(b, x0, z0, x1, z0 + t, yy, p);
+  up(b, x0, z0 + t, x0 + t, z1 - t, yy, p);
+  up(b, x1 - t, z0 + t, x1, z1 - t, yy, p);
+}
+
 // ---------------------------------------------------------------------------------------------- vehicles & parking
 /** Cheap car (20 tris) centered at (x,z), nose toward +Z rotated by rot. */
-export function car(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike, y = 0.06, big = false) {
+export function car(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike, y = 0.06, big = false, metallic = false) {
   b.push().translate(x, y, z).rotateY(rot);
   const L = big ? 2.45 : 2.25, W = big ? 0.98 : 0.9;
-  b.paint(color, Surf.Metal).box(-W, 0.12, -L, W, big ? 1.0 : 0.85, L);
-  b.paint(0x1d232b, Surf.Metal).box(-W + 0.1, big ? 1.0 : 0.85, -L * 0.52, W - 0.1, big ? 1.72 : 1.36, L * (big ? 0.62 : 0.4), { top: P(color, Surf.Metal) });
+  b.paint(color, Surf.Metal, metallic ? 2 : 1).box(-W, 0.12, -L, W, big ? 1.0 : 0.85, L);
+  b.paint(0x1d232b, Surf.GlassPlain, 1).box(-W + 0.1, big ? 1.0 : 0.85, -L * 0.52, W - 0.1, big ? 1.72 : 1.36, L * (big ? 0.62 : 0.4), { top: P(color, Surf.Metal, 1) });
   b.pop();
 }
 /** Box truck / delivery truck (~30 tris), nose +Z. */
@@ -370,7 +430,7 @@ export function stallsX(b: ModelBuilder, rng: RNG, x0: number, x1: number, z0: n
   }
   for (let i = 0; i < n; i++) {
     if (!rng.chance(fill)) continue;
-    car(b, off + (i + 0.5) * pitch + rng.range(-0.12, 0.12), z0 + depth / 2 + nose * rng.range(-0.1, 0.35), nose > 0 ? rng.range(-0.04, 0.04) : Math.PI + rng.range(-0.04, 0.04), rng.pick(CAR_COLORS), y, rng.chance(0.2));
+    car(b, off + (i + 0.5) * pitch + rng.range(-0.12, 0.12), z0 + depth / 2 + nose * rng.range(-0.1, 0.35), nose > 0 ? rng.range(-0.04, 0.04) : Math.PI + rng.range(-0.04, 0.04), rng.pick(CAR_COLORS), y, rng.chance(0.2), rng.chance(0.4));
   }
   return n;
 }
@@ -385,7 +445,7 @@ export function stallsZ(b: ModelBuilder, rng: RNG, z0: number, z1: number, x0: n
   }
   for (let i = 0; i < n; i++) {
     if (!rng.chance(fill)) continue;
-    car(b, x0 + depth / 2 + nose * rng.range(-0.1, 0.35), off + (i + 0.5) * pitch + rng.range(-0.12, 0.12), nose > 0 ? Math.PI / 2 : -Math.PI / 2, rng.pick(CAR_COLORS), y, rng.chance(0.2));
+    car(b, x0 + depth / 2 + nose * rng.range(-0.1, 0.35), off + (i + 0.5) * pitch + rng.range(-0.12, 0.12), nose > 0 ? Math.PI / 2 : -Math.PI / 2, rng.pick(CAR_COLORS), y, rng.chance(0.2), rng.chance(0.4));
   }
   return n;
 }
@@ -396,14 +456,17 @@ export function lotLamp(b: ModelBuilder, x: number, z: number, h = 7.5, dirs: nu
     b.push().translate(x, h, z).rotateY(a);
     box(b, -0.25, -0.05, 0.05, 0.25, 0.12, 1.3, metal(0x4a4d52), emis(0xfff0cc), { bottom: emis(0xfff0cc) });
     b.pop();
-    if (pool) lightPool(b, x + Math.sin(a) * 1.2, z + Math.cos(a) * 1.2, h * 0.6);
+    if (pool) lightPool(b, x + Math.sin(a) * 1.2, z + Math.cos(a) * 1.2, h * 0.6, 0.075 + (a > 0 ? 0.004 : 0));
   }
 }
-/** Faint emissive light pool on the ground (octagon, 6 tris) — nearly invisible by day, glows at night. */
-export function lightPool(b: ModelBuilder, x: number, z: number, r: number, y = 0.075, color: ColorLike = 0x393a3d) {
-  const pts = ngonPts(x, z, r, 8, Math.PI / 8);
-  b.paint(color, Surf.Emissive);
-  for (let i = 1; i < 7; i++) b.tri([pts[0][0], y, pts[0][1]], [pts[i + 1][0], y, pts[i + 1][1]], [pts[i][0], y, pts[i][1]]);
+/**
+ * Ground light pool (12-gon, 10 tris): Emissive pattern 9 painted ~0.7x the ground colour -> plain pavement by day,
+ * warm lamp-lit pavement at night. Default colour = 0.7x asphalt.
+ */
+export function lightPool(b: ModelBuilder, x: number, z: number, r: number, y = 0.075, color: ColorLike = 0x292a2c, intensity = 3.3) {
+  const pts = ngonPts(x, z, r, 12, 0);
+  b.paint(color, Surf.Emissive, 9, intensity);
+  for (let i = 1; i < 11; i++) b.tri([pts[0][0], y, pts[0][1]], [pts[i + 1][0], y, pts[i + 1][1]], [pts[i][0], y, pts[i][1]]);
 }
 
 // ---------------------------------------------------------------------------------------------- landscaping & props

@@ -278,3 +278,32 @@ describe('CityActions: budget & policy', () => {
     expect(per).toBeLessThan(40);
   });
 });
+
+describe('CityActions: lead requests', () => {
+  it('wind turbines keep ≥ 2 empty cells between them (Chebyshev ≥ 3)', () => {
+    const { A } = makeCity();
+    expect(A.plop('util_wind_turbine', 10, 10, 0).ok).toBe(true);
+    const near = A.plop('util_wind_turbine', 12, 11, 0, true);
+    expect(near.ok).toBe(false);
+    expect(near.reason).toBe('Too close to another wind turbine');
+    expect(A.plop('util_wind_turbine', 13, 12, 0, true).ok).toBe(true);
+    expect(A.plop('util_wind_turbine', 10, 13, 0, true).ok).toBe(true);
+    // other buildings may stand right next to a turbine
+    expect(A.plop('civ_police_kiosk', 11, 10, 0, true).ok).toBe(true);
+  });
+
+  it("money in reasons uses '§'; per-cell cost helpers for UI menus", async () => {
+    const { CURRENCY, formatMoney, networkCellCost, zoneCellCost } = await import('../../src/sim/actions');
+    expect(CURRENCY).toBe('§');
+    expect(formatMoney(1234)).toBe('§1,234');
+    expect(formatMoney(-50)).toBe('−§50');
+    expect(formatMoney(1_250_000, true)).toBe('§1.25M');
+    expect(networkCellCost(Network.Road)).toBe(20);
+    expect(networkCellCost(Network.Highway)).toBe(120);
+    expect(zoneCellCost(Zone.ResHigh)).toBe(20);
+    const { A } = makeCity({ difficulty: 'hard', startFunds: 100 });
+    const r = A.plop('util_coal_plant', 10, 10, 0, true);
+    expect(r.reason).toContain('§');
+    expect(r.reason).not.toContain('$');
+  });
+});
