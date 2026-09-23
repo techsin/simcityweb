@@ -154,7 +154,7 @@ export const CONN_CAP_RELIEF: Record<number, { R: number; C: number; I: number }
   [Network.Rail]: { R: 3000, C: 2000, I: 12000 },
 };
 /** caps also grow with the city itself (agglomeration): + CAP_POP_FRAC × population per family */
-export const CAP_POP_FRAC = { R: 0.12, C: 0.06, I: 0.04 };
+export const CAP_POP_FRAC = { R: 0.35, C: 0.1, I: 0.06 };
 /** softmin exponent (higher = sharper cap) */
 export const CAP_SOFTMIN_K = 4;
 /** a cap counts as "binding" (advisor + UI) when target > this × cap */
@@ -192,7 +192,7 @@ export const GROWTH_SIZE_DEMAND = 1.2;
 export const GROWTH_OVERSHOOT_SLACK = 60;
 /** stage allowed by desirability: stage = 1 + floor(7 × clamp((des − D0)/(D1 − D0))) */
 export const STAGE_DES_D0 = 0.02;
-export const STAGE_DES_D1 = 0.8;
+export const STAGE_DES_D1 = 0.72;
 /** max stage by zone density (index = density 0..3) */
 export const ZONE_MAX_STAGE: readonly number[] = [0, 3, 5, 8];
 /** population milestones → max stage (SC4: towers need a big city) */

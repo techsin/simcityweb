@@ -121,6 +121,7 @@ export const SHORTCUTS: { title: string; keys: [string, string[]][] }[] = [
     keys: [
       ['Pan', ['W', 'A', 'S', 'D']],
       ['Rotate 90°', ['Q', 'E']],
+      ['Tilt', ['PgUp', 'PgDn']],
       ['Orbit', ['Right-drag']],
       ['Pan (mouse)', ['Middle-drag']],
       ['Zoom', ['Wheel']],

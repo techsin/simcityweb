@@ -422,16 +422,16 @@ export class SimBot {
       // def, min pop, coverage radius (0 = capacity only), residents per building (capacity; 0 = coverage only)
       ['civ_fire_station', 1200, 24, 0],
       ['civ_police_station', 2000, 26, 0],
-      ['civ_elementary_school', 2500, 0, 12000],
-      ['civ_clinic', 3500, 0, 8000],
-      ['civ_high_school', 9000, 0, 30000],
+      ['civ_elementary_school', 2500, 20, 12000],
+      ['civ_clinic', 3500, 16, 8000],
+      ['civ_high_school', 9000, 32, 30000],
       ['civ_library', 12000, 0, 30000],
-      ['civ_hospital', 18000, 0, 40000],
+      ['civ_hospital', 18000, 36, 40000],
     ];
     if (this.st.unlocked.has('college')) plan.push(['civ_college', 40000, 0, 80000]);
     let spent = 0;
     for (const [def, minPop, radius, cap] of plan) {
-      if (pop < minPop || spent >= 2) continue;
+      if (pop < minPop || spent >= 3) continue;
       if ((this.svcRetry.get(def) ?? -1) > this.st.day) continue;
       const cost = getDef(def)?.cost ?? 0;
       if (!this.canSpend(cost)) continue;
@@ -447,6 +447,19 @@ export class SimBot {
       if (ok) spent++;
       else this.svcRetry.set(def, this.st.day + 180);
     }
+  }
+
+  /** center of a developed residential block with no park within 10 cells (nearest the center first) */
+  uncoveredPark(): { x: number; z: number } | null {
+    const parks = this.services.filter((s) => s.def.startsWith('park_') || s.def.startsWith('lm_'));
+    let best: { x: number; z: number } | null = null, bd = Infinity;
+    for (const b of this.blocks) {
+      if (!b.developed || b.use !== 'R' || b.zone === Zone.None) continue;
+      const cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2;
+      if (parks.some((s) => Math.hypot(s.x - cx, s.z - cz) <= 10)) continue;
+      if (b.ring < bd) { bd = b.ring; best = { x: cx, z: cz }; }
+    }
+    return best;
   }
 
   /** center of the most populated developed block with no `def` within `r` cells */
@@ -539,15 +552,26 @@ export class SimBot {
     const binding = (a: number, b: number) => { for (let k = a; k <= b; k++) if (data.capBinding[k] && st.stats.demand[k] > -0.2) return true; return false; };
     const center = { x: this.line(this.cbx), z: this.line(this.cbz) };
     const pop = st.stats.population;
-    // parks: always some, more when R capped
-    const parksWanted = 2 + pop / 6000;
-    const parks = this.services.filter((s) => s.def.startsWith('park_')).length;
-    if (binding(0, 2) || parks < parksWanted) {
-      const big = this.canSpend(3000) && pop > 4000;
-      const def = st.unlocked.has('zoo') && this.count('park_zoo') < 1 + Math.floor(pop / 300000) && this.canSpend(20000) ? 'park_zoo'
+    // parks: coverage of residential blocks + more when the R cap binds
+    const rBinding = binding(0, 2);
+    let placed = 0;
+    for (let k = 0; k < (rBinding ? 3 : 1) && placed < 2; k++) {
+      const big = pop > 4000 && this.canSpend(3000);
+      const def = st.unlocked.has('zoo') && this.count('park_zoo') < 1 + Math.floor(pop / 250000) && this.canSpend(20000) ? 'park_zoo'
         : big ? 'park_large' : pop > 1500 ? 'park_plaza' : 'park_small';
-      const target = this.uncovered('park_large', 18) ?? center;
-      if (this.canSpend(getDef(def)!.cost!)) this.placeNear(def, target.x, target.z, ['P']);
+      const target = this.uncoveredPark() ?? (rBinding ? center : null);
+      if (!target || !this.canSpend(getDef(def)!.cost!)) break;
+      // 1) civic/park blocks nearby, 2) empty zoned lots inside residential blocks (small parks / plazas),
+      // 3) turn an adjacent undeveloped block into a park block
+      let ok = this.placeNear(def, target.x, target.z, ['P'], true, 20);
+      if (!ok) ok = this.placeNear(pop > 1500 ? 'park_plaza' : 'park_small', target.x, target.z, ['R', 'C'], false, 12);
+      if (!ok) {
+        const nb = this.blocks.filter((b) => !b.developed && b.use === 'R' && this.touchesDeveloped(b))
+          .sort((a, b) => Math.hypot(a.x0 - target.x, a.z0 - target.z) - Math.hypot(b.x0 - target.x, b.z0 - target.z))[0];
+        if (nb && Math.hypot(nb.x0 - target.x, nb.z0 - target.z) < 30) { nb.use = 'P'; ok = this.placeNear(def, target.x, target.z, ['P'], true, 30); }
+      }
+      if (ok) placed++;
+      else break;
     }
     // commercial caps
     if (binding(3, 7)) {

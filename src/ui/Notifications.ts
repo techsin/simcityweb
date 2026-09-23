@@ -103,7 +103,8 @@ export class Toasts {
   show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string): void {
     const now = performance.now();
     const key = kind + ':' + text;
-    if ((this.recent.get(key) ?? 0) > now - 2500) return;
+    const last = this.recent.get(key);
+    if (last !== undefined && last > now - 2500) return;
     this.recent.set(key, now);
     const meta = NEWS_META[kind] ?? NEWS_META.info;
     const ttl = (kind === 'error' ? 2600 : kind === 'disaster' ? 12000 : 7000) * Toasts.ttlScale;
