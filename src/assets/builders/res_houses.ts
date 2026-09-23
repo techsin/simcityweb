@@ -10,7 +10,7 @@ import {
   inFace, U, fq, win, wins, door, garageDoor, steps, roofGable, roofHip, roofShed, dormer, chimney,
   lawnSlab, paveSlab, bush, bushRow, flowerBed, tree, picket, boardFence, chainFence, lowWall, hedgeBox, mailbox,
   trampoline, gardenShed, playset, grill, patioSet, lounger, poolRect, acBox, trashCans, propaneTank, satDish, parkedCar,
-  laundry, planter, parapet, flatRoof, setLot, band, type WinStyle,
+  laundry, planter, parapet, flatRoof, setLot, band, ironRail, lightPool, pickPal, SIDING_PAL, ROOF_PAL, DOOR_PAL, BRICK_PAL, type WinStyle,
 } from './res_util';
 
 // ---------------------------------------------------------------------------------------------- local helpers
@@ -434,8 +434,10 @@ function townhouseRow(b: ModelBuilder, v: number, rng: RNG): void {
   const z0 = -5, z1 = 3;
   if (v === 0 || v === 2) {
     // 4 units, wood siding in alternating muted colors; v0 shared side-gable, v2 individual front gables
-    const cols = v === 0 ? [0xe6dcc2, 0x9fae94, 0x8fa3b5, 0xd2b48f] : [0xc9b8a0, 0xe9e4d6, 0xa6b7a6, 0xb89a8c];
-    const roofC = v === 0 ? 0x4a4d52 : 0x5b4a3e;
+    const cols0 = v === 0 ? [0xe6dcc2, 0x9fae94, 0x8fa3b5, 0xd2b48f] : [0xc9b8a0, 0xe9e4d6, 0xa6b7a6, 0xb89a8c];
+    const cols = rng.chance(0.25) ? cols0 : rng.shuffle(SIDING_PAL.slice()).slice(0, 4);
+    const roofC = pickPal(rng, v === 0 ? [0x4a4d52, ...ROOF_PAL] : [0x5b4a3e, ...ROOF_PAL], 0.35);
+    const doorsC = rng.shuffle(DOOR_PAL.slice());
     for (let i = 0; i < 4; i++) {
       const x0 = -14 + i * 7, x1 = x0 + 7;
       const wall = P(cols[i], Surf.Wood);
@@ -445,7 +447,7 @@ function townhouseRow(b: ModelBuilder, v: number, rng: RNG): void {
       const flip = i % 2 === 1;
       const du = flip ? 5.2 : 1.8, wu = flip ? 1.9 : 5.1;
       inFace(b, 'pz', z1, () => {
-        door(b, x0 + du, 0.5, 0.95, 2.1, [0x7e2a26, 0x2c3b57, 0x2f4a37, 0x6b4a2e][i], { lite: true, lamp: true, transom: v === 2 });
+        door(b, x0 + du, 0.5, 0.95, 2.1, doorsC[i], { lite: true, lamp: true, transom: v === 2 });
         win(b, x0 + wu, 1.2, 1.6, 1.4, { mull: 3, sill: TRIM });
         win(b, x0 + 1.8, 3.8, 1.1, 1.3, { mull: 2, sill: TRIM });
         win(b, x0 + 5.2, 3.8, 1.1, 1.3, { mull: 2, sill: TRIM });
@@ -458,6 +460,7 @@ function townhouseRow(b: ModelBuilder, v: number, rng: RNG): void {
       wins(b, 'nz', z0, [x0 + 2, x0 + 5], 3.8, 1.1, 1.3, { mull: 2 });
       // walk + tiny front garden + divider fence
       paveSlab(b, x0 + du - 0.6, z1 + 0.64, x0 + du + 0.6, 8, 0xc2bcaf, 0.08);
+      lightPool(b, x0 + du - 0.6, z1 + 0.64, x0 + du + 0.6, z1 + 3.1, 0xc2bcaf, 0.085);
       if (i > 0) picket(b, x0, z1 + 0.1, x0, 7.0, 0.8);
       if (i % 2 === 0) flowerBed(b, x0 + wu - 1.3, z1 + 0.3, x0 + wu + 1.3, z1 + 1.1, FLOWERS[i]);
       else bushRow(b, x0 + wu - 1.2, z1 + 0.8, x0 + wu + 1.2, z1 + 0.8, 2, 0.55, 0x4a7434, i * 5);
@@ -481,8 +484,9 @@ function townhouseRow(b: ModelBuilder, v: number, rng: RNG): void {
     tree(b, rng, 15, 6.0, 0.9, 'round');
   } else if (v === 1) {
     // 3 brick units with flat roofs, stepped parapets & cornices, stoops
-    const bricks = [0x8f4a3a, 0x7a4636, 0xb08a60];
+    const bricks = rng.chance(0.3) ? [0x8f4a3a, 0x7a4636, 0xb08a60] : rng.shuffle(BRICK_PAL.slice()).slice(0, 3);
     const heights = [7.2, 7.8, 7.2];
+    const doorsC = rng.shuffle([0x2a2a2a, 0x2f4a37, 0x7e2a26, 0x2c3b57, 0x6b4a2e]);
     for (let i = 0; i < 3; i++) {
       const x0 = -14 + i * (28 / 3), x1 = x0 + 28 / 3;
       const hy = heights[i];
@@ -494,7 +498,7 @@ function townhouseRow(b: ModelBuilder, v: number, rng: RNG): void {
       band(b, x0, z1 - 0.3, x1, z1, 3.55, 0.18, 0.06, 0xd8d0bf);
       const cx = (x0 + x1) / 2;
       inFace(b, 'pz', z1, () => {
-        door(b, x0 + 2.0, 0.9, 1.0, 2.2, [0x2a2a2a, 0x2f4a37, 0x7e2a26][i], { transom: true, frame: 0xd8d0bf, lamp: true });
+        door(b, x0 + 2.0, 0.9, 1.0, 2.2, doorsC[i], { transom: true, frame: 0xd8d0bf, lamp: true });
         win(b, cx + 1.6, 1.5, 1.0, 1.6, { mull: 2, sill: 0xd8d0bf, head: 0xd8d0bf, frame: 0xe9e4d8 });
         for (const x of [x0 + 2.0, cx + 0.2, cx + 2.4]) win(b, x, 4.2, 0.95, 1.6, { mull: 2, sill: 0xd8d0bf, head: 0xd8d0bf, frame: 0xe9e4d8 });
         steps(b, x0 + 2.0, 1.4, 3, 0.3, 0.3, 0xa9a397);
@@ -504,14 +508,15 @@ function townhouseRow(b: ModelBuilder, v: number, rng: RNG): void {
       wins(b, 'nz', z0, [x0 + 2.5, x1 - 2.5], 4.2, 1.0, 1.4, { mull: 2, frame: 0xe9e4d8 });
       acBox(b, cx + 1.5, -2.0, hy - 0.3);
       paveSlab(b, x0 + 1.3, z1 + 0.9, x0 + 2.7, 8, 0xbab4a6, 0.08);
-      lowWall(b, x0 + 3.0, 6.9, x1 - 0.3, 7.2, 0.6, 0x3a3a3a, Surf.Metal, 0x2a2a2a);
+      lightPool(b, x0 + 1.3, z1 + 0.9, x0 + 2.7, z1 + 3.4, 0xbab4a6, 0.085);
+      ironRail(b, x0 + 3.0, 7.05, x1 - 0.3, 7.05, 0.9);
       bushRow(b, cx - 0.2, z1 + 1.6, x1 - 1.0, z1 + 1.6, 2, 0.6, 0x3f6a2d, i * 3 + 1);
       if (i > 0) boardFence(b, x0, z0, x0, -8, 1.7, 0x6f5a46);
     }
     b.paint(0x7c776e).box(-14 + 28 / 3 - 0.2, 7.2, z0, -14 + 28 / 3, 7.8, z1, { bottom: null });
     b.paint(0x7c776e).box(14 - 28 / 3, 7.2, z0, 14 - 28 / 3 + 0.2, 7.8, z1, { bottom: null });
-    chimney(b, -12.5, -4.0, 0.9, 0.7, 6.9, 8.6, 0x8f4a3a);
-    chimney(b, 12.5, -4.0, 0.9, 0.7, 6.9, 8.6, 0xb08a60);
+    chimney(b, -12.5, -4.0, 0.9, 0.7, 6.9, 8.6, bricks[0]);
+    chimney(b, 12.5, -4.0, 0.9, 0.7, 6.9, 8.6, bricks[2]);
     wins(b, 'px', 14, [-1.0], 4.2, 0.9, 1.4, { mull: 2, frame: 0xe9e4d8 });
     wins(b, 'nx', -14, [-1.0], 4.2, 0.9, 1.4, { mull: 2, frame: 0xe9e4d8 });
     tree(b, rng, -15.0, 6.2, 0.9, 'round');
@@ -519,24 +524,22 @@ function townhouseRow(b: ModelBuilder, v: number, rng: RNG): void {
     trashCans(b, 10.5, -7.0, 3);
   } else {
     // post-war council terrace: pebble-dash render, hipped tile roof, paired doors under shared canopies
-    const wall = P(0xc9c2b2);
+    const wall = P(pickPal(rng, [0xc9c2b2, 0xd8d0bc, 0xbfc4bf, 0xd4c4a8, 0xc4b8a8], 0.35));
+    const plinth = pickPal(rng, [0x8c5a44, 0x7a4636, 0x9a6a4a], 0.5);
     b.paint(0x8a857c).box(-14, 0, z0 - 0.06, 14, 0.35, z1 + 0.06, { top: null });
     b.paint(wall).box(-14, 0.35, z0, 14, 5.8, z1, { top: null, bottom: null });
-    // colored lower band per unit (brick plinth)
-    for (let i = 0; i < 4; i++) {
-      const x0 = -14 + i * 7;
-      b.paint(0x8c5a44, Surf.Brick).box(x0 + (i === 0 ? -0.04 : 0), 0.35, z1, x0 + 7 + (i === 3 ? 0.04 : 0), 1.1, z1 + 0.05, { top: null, bottom: null, nz: null });
-    }
-    roofHip(b, 0, (z0 + z1) / 2, 28, z1 - z0, 5.8, 2.6, P(0x8a4a36, Surf.RoofTiles), { over: 0.35, trim: 0xe9e6de });
-    for (const x of [-7, 7]) chimney(b, x, -1.0, 1.2, 0.7, 7.0, 9.4, 0x8c5a44);
-    chimney(b, 0, -1.0, 1.2, 0.7, 7.0, 9.4, 0x8c5a44);
-    const doorsC = [0x2c3b57, 0x7e2a26, 0x2f4a37, 0xa8823a];
+    // brick plinth band returning round the corners
+    band(b, -14, z0, 14, z1, 0.35, 0.75, 0.12, P(plinth, Surf.Brick));
+    roofHip(b, 0, (z0 + z1) / 2, 28, z1 - z0, 5.8, 2.6, P(pickPal(rng, [0x8a4a36, 0x5c5f63, 0x6b4a3a, 0x4a4d52], 0.4), Surf.RoofTiles), { over: 0.35, trim: 0xe9e6de });
+    for (const x of [-7, 7]) chimney(b, x, -1.0, 1.2, 0.7, 7.0, 9.4, plinth);
+    chimney(b, 0, -1.0, 1.2, 0.7, 7.0, 9.4, plinth);
+    const doorsC = rng.shuffle(DOOR_PAL.slice());
     for (let i = 0; i < 4; i++) {
       const x0 = -14 + i * 7;
       const du = i % 2 === 0 ? 6.0 : 1.0;
       const wu = i % 2 === 0 ? 2.6 : 4.4;
       inFace(b, 'pz', z1, () => {
-        door(b, x0 + du, 0.35, 0.9, 2.1, doorsC[i], { lite: true, frame: 0xe9e6de });
+        door(b, x0 + du, 0.35, 0.9, 2.1, doorsC[i], { lite: true, frame: 0xe9e6de, lamp: i % 2 === 0 });
         win(b, x0 + wu, 1.1, 2.4, 1.4, { mull: 3, frame: 0xe9e6de, sill: 0x9a948a });
         win(b, x0 + wu, 3.6, 1.8, 1.3, { mull: 2, frame: 0xe9e6de, sill: 0x9a948a });
         win(b, x0 + du, 3.8, 0.8, 1.0, { mull: 1, frame: 0xe9e6de });
@@ -544,6 +547,7 @@ function townhouseRow(b: ModelBuilder, v: number, rng: RNG): void {
       wins(b, 'nz', z0, [x0 + 2, x0 + 5], 1.1, 1.2, 1.3, { mull: 2, frame: 0xe9e6de });
       wins(b, 'nz', z0, [x0 + 2, x0 + 5], 3.6, 1.2, 1.2, { mull: 2, frame: 0xe9e6de });
       paveSlab(b, x0 + du - 0.6, z1, x0 + du + 0.6, 8, 0xb4ae9f, 0.08);
+      lightPool(b, x0 + du - 0.6, z1 + 0.12, x0 + du + 0.6, z1 + 2.6, 0xb4ae9f, 0.085);
       hedgeBox(b, x0 + (i % 2 === 0 ? 0.2 : 2.0), 6.6, x0 + (i % 2 === 0 ? 5.0 : 6.8), 7.4, 0.9, 0x456e30);
       trashCans(b, x0 + (i % 2 === 0 ? 4.4 : 1.8), z1 + 1.0, 2, [0x3d5a45, 0x3b4a5a, 0x5a4a3a, 0x3d5a45][i]);
       if (i > 0) boardFence(b, x0, z0, x0, -8, 1.6, 0x7a654e);
@@ -553,6 +557,8 @@ function townhouseRow(b: ModelBuilder, v: number, rng: RNG): void {
     wins(b, 'px', 14, [-1.0], 3.6, 0.9, 1.2, { mull: 2, frame: 0xe9e6de });
     wins(b, 'nx', -14, [-1.0], 3.6, 0.9, 1.2, { mull: 2, frame: 0xe9e6de });
     satDish(b, 4.0, 4.0, z1 + 0.05, 0.2);
+    satDish(b, -10.5, 4.4, z1 + 0.05, -0.3);
+    acBox(b, -3.0, z0 - 0.5, 0.35); acBox(b, 9.5, z0 - 0.5, 0.35);
     tree(b, rng, 15.0, -6.5, 0.8, 'round');
     tree(b, rng, -15.0, -6.5, 0.8, 'cone');
   }
@@ -614,17 +620,18 @@ function frontYard(b: ModelBuilder, rng: RNG, treeX: number, bushZ: number, x0: 
 
 function suburban(b: ModelBuilder, v: number, rng: RNG): void {
   lawnSlab(b, -8, -16, 8, 16, LAWN_LUSH);
-  const roofDark = P(0x45484d, Surf.RoofTiles);
+  const roofDark = P(pickPal(rng, [0x45484d, ...ROOF_PAL], 0.4), Surf.RoofTiles);
+  const doorC = pickPal(rng, DOOR_PAL, 0.4);
   if (v === 0) {
     // 2-storey colonial, white siding, black shutters, portico, side 2-car garage
-    const wall = P(0xeeebe2, Surf.Wood);
+    const wall = P(pickPal(rng, [0xeeebe2, 0xe6dcc2, 0xc9d3d6, 0xd8cfa0, 0xb8c4b0, 0xd9d3c3], 0.4), Surf.Wood);
     body(b, -7, -4, 1, 4, 0.45, 6.0, wall);
     roofGable(b, -3, 0, 8, 8, 6.0, 2.7, 'x', roofDark, { gable: wall });
     body(b, 1, -3, 7, 4.5, 0.1, 3.0, wall, CONCRETE);
     roofGable(b, 4, 0.75, 6, 7.5, 3.0, 1.9, 'x', roofDark, { gable: wall, rake: 0.2 });
-    const sh = shutterWin(0x24272b);
+    const sh = shutterWin(pickPal(rng, [0x24272b, 0x2f4a37, 0x2c3b57, 0x5a3a2a], 0.4));
     inFace(b, 'pz', 4, () => {
-      door(b, -3, 0.45, 1.0, 2.15, 0x7e2a26, { sidelights: true });
+      door(b, -3, 0.45, 1.0, 2.15, doorC, { sidelights: true, lamp: true });
       win(b, -5.6, 1.2, 1.05, 1.45, sh); win(b, -0.4, 1.2, 1.05, 1.45, sh);
       for (const x of [-5.6, -3, -0.4]) win(b, x, 3.9, 1.0, 1.35, sh);
     });
@@ -645,13 +652,15 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     chimney(b, -7.45, 0, 0.9, 1.2, 0, 9.4);
     paveSlab(b, 1.6, 4.5, 6.4, 16, CONCRETE, 0.1);
     paveSlab(b, -3.6, 6.2, -2.4, 16, 0xc8c2b6, 0.08);
+    lightPool(b, -3.6, 6.25, -2.4, 8.75, 0xc8c2b6, 0.085);
+    lightPool(b, 2.75, 4.5, 5.25, 7.0, CONCRETE);
     parkedCar(b, rng, 4.9, 8.6, Math.PI);
     frontYard(b, rng, -5.5, 4.8, -6.6, -4.6, 1.0);
     bushRow(b, -1.2, 4.8, 0.6, 4.8, 2, 0.5, 0x4a7434, 4);
     backyard(b, rng, -4, 0);
   } else if (v === 1) {
     // split-level: 1-storey wing + raised 2-level part with tuck-under garage; tan brick + beige siding
-    const brick = P(0xa7765a, Surf.Brick), sid = P(0xd9cdb3, Surf.Wood);
+    const brick = P(pickPal(rng, [0xa7765a, 0x9a5a44, 0x8f6a52, 0xb8906a], 0.4), Surf.Brick), sid = P(pickPal(rng, [0xd9cdb3, 0xc9d3d6, 0xd6c9a4, 0xb8c4b0], 0.4), Surf.Wood);
     body(b, -7, -4, -1, 3.5, 0.5, 3.4, sid);
     roofGable(b, -4, -0.25, 6, 7.5, 3.4, 1.7, 'x', P(0x5b4a3e, Surf.RoofTiles), { gable: sid, over: 0.6 });
     b.paint(brick).box(-1, 0, -5, 7, 2.6, 2.5, { top: null, nx: null });
@@ -664,7 +673,7 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
       win(b, 4.8, 3.3, 1.6, 1.4, { mull: 2, frame: 0xe7e1d2 });
     });
     inFace(b, 'pz', 3.5, () => {
-      door(b, -2.2, 0.5, 0.95, 2.1, 0x55707e, { lite: true, lamp: true, frame: 0xe7e1d2 });
+      door(b, -2.2, 0.5, 0.95, 2.1, pickPal(rng, [0x55707e, ...DOOR_PAL], 0.4), { lite: true, lamp: true, frame: 0xe7e1d2 });
       win(b, -5.0, 1.2, 2.4, 1.4, { mull: 3, frame: 0xe7e1d2, shutter: 0x6b4a2e });
       steps(b, -2.2, 1.4, 2, 0.25, 0.32, 0xb8b0a2);
     });
@@ -676,18 +685,21 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     chimney(b, -5.8, -1.6, 0.9, 0.9, 3.5, 6.2, 0xa7765a);
     paveSlab(b, 2.0, 2.5, 6.8, 16, CONCRETE, 0.1);
     paveSlab(b, -2.8, 4.8, -1.6, 9.5, 0xc0b8aa, 0.08);
+    lightPool(b, -2.8, 4.8, -1.6, 7.3, 0xc0b8aa, 0.085);
+    lightPool(b, 3.15, 2.5, 5.65, 5.0, CONCRETE);
     paveSlab(b, -2.8, 8.5, 2.0, 9.5, 0xc0b8aa, 0.08);
     parkedCar(b, rng, 4.4, 10.5, Math.PI);
     frontYard(b, rng, -5.0, 4.3, -6.4, -3.4, 1.6);
     backyard(b, rng, -5, 1, 0x7a6a5a);
   } else if (v === 2) {
     // single-storey L with forward "snout" garage, hip roofs, stucco + stone
-    const st = P(0xd8c7a8), stone = P(0xa39a88, Surf.Stone);
+    const st = P(pickPal(rng, [0xd8c7a8, 0xe0d4bc, 0xcfc0a4, 0xd9c9b8, 0xc8b8a8], 0.4)), stone = P(0xa39a88, Surf.Stone);
+    const roof2 = P(pickPal(rng, [0x6a5647, 0x5c5f63, 0x7a4536, 0x4a4540], 0.4), Surf.RoofTiles);
     body(b, -7, -5.5, 1.8, 3.0, 0.3, 3.2, st, 0x8f887c);
     body(b, 1.8, -3.5, 7.2, 5.8, 0.1, 3.0, st, CONCRETE);
     b.paint(stone).box(-7.04, 0.3, 2.96, -3.6, 1.2, 3.05, { top: null, bottom: null });
-    roofHip(b, -2.6, -1.25, 8.8, 8.5, 3.2, 2.2, P(0x6a5647, Surf.RoofTiles), { over: 0.5 });
-    roofHip(b, 4.5, 1.15, 5.4, 9.3, 3.0, 2.0, P(0x6a5647, Surf.RoofTiles), { over: 0.5 });
+    roofHip(b, -2.6, -1.25, 8.8, 8.5, 3.2, 2.2, roof2, { over: 0.5 });
+    roofHip(b, 4.5, 1.15, 5.4, 9.3, 3.0, 2.0, roof2, { over: 0.5 });
     inFace(b, 'pz', 5.8, () => garageDoor(b, 4.5, 0.1, 4.4, 2.1, 0xe8e2d4, 0xe8e2d4));
     inFace(b, 'pz', 3.0, () => {
       door(b, 0.4, 0.3, 1.0, 2.1, 0x6b4a2e, { surf: Surf.Wood, lite: true, lamp: true, frame: 0xe8e2d4 });
@@ -701,6 +713,8 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     b.paint(0xc0b8a8, Surf.Pavement).box(-0.6, 0, 3.0, 1.8, 0.3, 4.4, { nz: null });
     paveSlab(b, 2.3, 5.8, 6.7, 16, CONCRETE, 0.1);
     paveSlab(b, -0.4, 4.4, 0.8, 9, 0xc0b8aa, 0.08);
+    lightPool(b, -0.4, 4.4, 0.8, 6.9, 0xc0b8aa, 0.085);
+    lightPool(b, 3.25, 5.8, 5.75, 8.3, CONCRETE);
     paveSlab(b, -0.4, 8.0, 2.3, 9.0, 0xc0b8aa, 0.08);
     parkedCar(b, rng, 4.5, 12.0, Math.PI - 0.05);
     flowerBed(b, -6.8, 3.2, -3.8, 4.0, 0xd9a13c);
@@ -708,7 +722,7 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     backyard(b, rng, -5.5, 2, 0x9a8a78);
   } else if (v === 3) {
     // 2-storey craftsman foursquare w/ deep porch, detached garage in back along a side drive
-    const sid = P(0x5d6f7e, Surf.Wood);
+    const sid = P(pickPal(rng, [0x5d6f7e, 0x6a7a5e, 0x8a5a4a, 0x4e5a6a, 0x7a6e5a, 0xa89a78], 0.4), Surf.Wood);
     body(b, -7, -5, 2.6, 3.0, 0.6, 6.2, sid);
     roofHip(b, -2.2, -1, 9.6, 8, 6.2, 2.6, P(0x4f5a48, Surf.RoofTiles), { over: 0.7, trim: 0xece8de });
     // front hip dormer
@@ -738,6 +752,8 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     inFace(b, 'pz', -9.6, () => garageDoor(b, 5.1, 0.1, 3.0, 2.2, 0xece8de, 0xece8de, true));
     parkedCar(b, rng, 5.3, 1.0, Math.PI);
     paveSlab(b, -3.1, 5.9, -1.9, 16, 0xc0b8aa, 0.08);
+    lightPool(b, -3.1, 6.3, -1.9, 8.8, 0xc0b8aa, 0.085);
+    lightPool(b, 3.85, -9.6, 6.35, -7.1, 0xb7b1a5);
     frontYard(b, rng, -5.4, 6.2, -6.4, -3.8, 3.0);
     boardFence(b, -7.8, -5, -7.8, -15.8, 1.8, 0x7a6450);
     boardFence(b, -7.8, -15.8, 2.2, -15.8, 1.8, 0x7a6450);
@@ -757,10 +773,14 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     body(b, 2.2, -2.8, 7.4, 4.0, 0.1, 3.3, dark, CONCRETE);
     flatRoof(b, 2.2, -2.8, 7.4, 4.0, 3.3, 0.9, 0.12, 0x44474b, 0x77736c, 0x3a3c40);
     b.paint(0x44474b).box(-7.1, 3.3, -4.1, 2.2, 3.5, 3.1, { bottom: null });
-    inFace(b, 'pz', 4.0, () => garageDoor(b, 4.8, 0.1, 4.4, 2.3, 0x6a6e73, null));
+    inFace(b, 'pz', 4.0, () => {
+      garageDoor(b, 4.8, 0.1, 4.4, 2.3, 0x8a8e92, null);
+      b.paint(0x9a7250, Surf.Wood); fq(b, 2.4, 2.55, 7.2, 3.3, 0.05);
+      b.paint(0x7a5a40, Surf.Wood); for (let i = 0; i < 4; i++) fq(b, 2.4, 2.62 + i * 0.18, 7.2, 2.66 + i * 0.18, 0.07);
+    });
     inFace(b, 'pz', 3.0, () => {
-      door(b, 0.8, 0.15, 1.1, 2.3, 0x9a7250, { surf: Surf.Wood, frame: 0x2a2c2e, sidelights: true });
-      win(b, -4.2, 0.4, 4.6, 2.5, { frame: 0x2a2c2e, ft: 0.08, mull: 1 });
+      door(b, 0.8, 0.15, 1.1, 2.3, 0x9a7250, { surf: Surf.Wood, frame: 0x2a2c2e, sidelights: true, lamp: true });
+      win(b, -4.2, 0.4, 4.6, 2.5, { frame: 0x2a2c2e, ft: 0.08, mull: 3 });
     });
     inFace(b, 'pz', 4.4, () => { win(b, -3.8, 4.0, 3.6, 1.7, { frame: 0x2a2c2e, ft: 0.08 }); win(b, 0.2, 4.4, 1.0, 1.3, { frame: 0x2a2c2e, ft: 0.08 }); });
     wins(b, 'nx', -6.2, [-2.0, 1.8], 4.0, 1.2, 1.6, { frame: 0x2a2c2e, ft: 0.08 });
@@ -772,6 +792,8 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     planter(b, 6.4, 2.8, 1.2, 0.8, 3.4, 0x3a3c40, 0x4f7a34, 3);
     // driveway, pavers, ornamental grasses
     paveSlab(b, 2.6, 4.0, 7.0, 16, 0x9a9690, 0.1);
+    lightPool(b, -0.45, 3.0, 2.05, 5.5, LAWN_LUSH, 0.065);
+    lightPool(b, 3.55, 4.0, 6.05, 6.5, 0x9a9690);
     for (let i = 0; i < 5; i++) paveSlab(b, 0.2, 4.4 + i * 2.2, 1.4, 5.4 + i * 2.2, 0xc8c4bc, 0.09);
     parkedCar(b, rng, 4.8, 8.8, Math.PI, 0x2b2d31);
     hedgeBox(b, -7.6, 13.5, -0.6, 14.5, 0.9, 0x3f6b2e);
@@ -787,7 +809,7 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     tree(b, rng, 5.0, -12.0, 1.0, 'round');
   } else if (v === 5) {
     // brick-front 2-storey with hip roof, tall entry gable & front-gable 2-car garage
-    const brick = P(0x9a5a46, Surf.Brick), sid = P(0xd3cbbb, Surf.Wood);
+    const brick = P(pickPal(rng, [0x9a5a46, 0x8f4a3a, 0xa7765a, 0x7a4636, 0xb08a60], 0.4), Surf.Brick), sid = P(pickPal(rng, [0xd3cbbb, 0xc9d3d6, 0xd6c9a4], 0.4), Surf.Wood);
     b.paint(0x8d8880).box(-7.06, 0, -5.06, 1.06, 0.4, 3.06, { top: null });
     b.paint(sid).box(-7, 0.4, -5, 1, 6.0, 3, { top: null, bottom: null, pz: null });
     b.paint(brick).box(-7, 0.4, 2.9, 1, 6.0, 3, { top: null, bottom: null, nz: null, px: null, nx: null });
@@ -817,6 +839,8 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     inFace(b, 'pz', 4.0, () => steps(b, -3, 2.0, 2, 0.2, 0.35, 0xbab3a6));
     paveSlab(b, 1.3, 5.0, 7.0, 16, CONCRETE, 0.1);
     paveSlab(b, -3.6, 4.7, -2.4, 7.5, 0xc4bdb0, 0.08);
+    lightPool(b, -3.6, 4.7, -2.4, 7.2, 0xc4bdb0, 0.085);
+    lightPool(b, 1.4, 5.02, 3.9, 7.5, CONCRETE); lightPool(b, 4.4, 5.02, 6.9, 7.5, CONCRETE);
     paveSlab(b, -3.6, 6.5, 1.3, 7.5, 0xc4bdb0, 0.08);
     parkedCar(b, rng, 5.6, 9.5, Math.PI + 0.04);
     parkedCar(b, rng, 2.7, 11.8, Math.PI);
@@ -825,7 +849,7 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     backyard(b, rng, -5, 3);
   } else if (v === 6) {
     // Tudor revival: brick ground floor, half-timbered steep cross gable, tall front chimney
-    const brick = P(0x8a5040, Surf.Brick), stucco = P(0xe6dcc6);
+    const brick = P(pickPal(rng, [0x8a5040, 0x9a5a46, 0x7a4636], 0.5), Surf.Brick), stucco = P(pickPal(rng, [0xe6dcc6, 0xeee6d2, 0xd8ccb0], 0.5));
     body(b, -7, -5, 3, 2.6, 0.3, 3.2, brick, 0x6e6a62);
     b.paint(stucco).box(-7, 3.2, -5, 3, 5.4, 2.6, { top: null, bottom: null });
     roofGable(b, -2, -1.2, 10, 7.6, 5.4, 3.4, 'x', P(0x4a4540, Surf.RoofTiles), { gable: stucco, over: 0.35 });
@@ -863,6 +887,8 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     inFace(b, 'pz', -10.0, () => garageDoor(b, 5.5, 0.1, 3.0, 2.2, 0x5a3a26, 0xd8d0c0));
     parkedCar(b, rng, 5.5, 4.5, Math.PI);
     paveSlab(b, -1.4, 2.6, -0.2, 9.5, 0xb8aa94, 0.08);
+    lightPool(b, -1.4, 2.7, -0.2, 5.2, 0xb8aa94, 0.085);
+    lightPool(b, 4.25, -10.0, 6.75, -7.5, 0xa8a296);
     paveSlab(b, -1.4, 8.5, 3.8, 9.5, 0xb8aa94, 0.08);
     hedgeBox(b, -7.6, 14.6, 3.2, 15.4, 1.0, 0x3f6b2e);
     tree(b, rng, -5.0, 10.0, 1.2, 'wide');
@@ -874,7 +900,7 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     tree(b, rng, -3.5, -12.8, 1.0, 'round', 0x5a7a3a);
   } else {
     // Dutch colonial (gambrel), sage siding, attached garage w/ sunroom, playset in back
-    const sid = P(0x9aa88a, Surf.Wood);
+    const sid = P(pickPal(rng, [0x9aa88a, 0xc9b8a0, 0x8fa3b5, 0xe6dcc2, 0xb8a090], 0.4), Surf.Wood);
     body(b, -7, -4.5, 1.6, 3.2, 0.45, 3.2, sid);
     roofGambrel(b, -2.7, -0.65, 8.6, 7.7, 3.2, 4.4, P(0x7a4536, Surf.RoofTiles), sid, 0.4);
     // long shed dormer
@@ -882,7 +908,7 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     roofShed(b, -2.7, 0.7, 6.6, 3.0, 6.0, 0.4, 'nz', P(0x7a4536, Surf.RoofTiles), { over: 0.2, rake: 0.1, t: 0.1 });
     inFace(b, 'pz', 2.2, () => { for (const x of [-5, -2.7, -0.4]) win(b, x, 4.0, 1.0, 1.3, { mull: 2, sill: TRIM }); });
     inFace(b, 'pz', 3.2, () => {
-      door(b, -2.7, 0.45, 1.0, 2.15, 0x7e2a26, { lite: true, frame: TRIM });
+      door(b, -2.7, 0.45, 1.0, 2.15, doorC, { lite: true, frame: TRIM, lamp: true });
       win(b, -5.2, 1.2, 1.1, 1.4, shutterWin(0x2f4a37));
       win(b, -0.3, 1.2, 1.1, 1.4, shutterWin(0x2f4a37));
     });
@@ -904,6 +930,8 @@ function suburban(b: ModelBuilder, v: number, rng: RNG): void {
     chimney(b, -7.4, -0.8, 0.9, 1.1, 0, 8.6);
     paveSlab(b, 2.0, 3.8, 7.0, 16, CONCRETE, 0.1);
     paveSlab(b, -3.3, 4.9, -2.1, 16, 0xc0b8aa, 0.08);
+    lightPool(b, -3.3, 4.9, -2.1, 7.4, 0xc0b8aa, 0.085);
+    lightPool(b, 3.25, 3.8, 5.75, 6.3, CONCRETE);
     parkedCar(b, rng, 4.5, 7.8, Math.PI);
     frontYard(b, rng, -5.8, 3.9, -6.6, -4.2, 1.5);
     bushRow(b, -1.2, 3.9, 1.0, 3.9, 2, 0.5, 0x4a7434, 11);

@@ -166,6 +166,8 @@ export interface VaultOpts {
   endMask?: [boolean, boolean];
   /** paint for the underside (double-sided shell for canopies); omitted = no underside */
   under?: Paint;
+  /** glazed strip along the crown (skylight), `width` m wide, drawn 6 cm above the shell, 1 m short of each end */
+  crown?: { paint: Paint; width: number };
 }
 /**
  * Barrel vault / curved roof. The vault RUNS along `axis` (length `len`), the arc spans `span` across the other
@@ -201,6 +203,20 @@ export function vault(b: ModelBuilder, cx: number, cz: number, span: number, len
       const np = mul(p.n, -1), nq = mul(q.n, -1);
       triS(b, A, B, C, np, np, nq);
       triS(b, A, C, D, np, nq, nq);
+    }
+  }
+  if (opts.crown) {
+    b.paint(opts.crown.paint);
+    const hw = Math.min(opts.crown.width / 2, a * 0.9);
+    const cp = [-hw, 0, hw].map((zz) => {
+      const yy = yc + Math.sqrt(R * R - zz * zz) + 0.06;
+      return { z: zz, y: yy, n: [0, (yy - 0.06 - yc) / R, zz / R] as V3 };
+    });
+    for (let i = 0; i < 2; i++) {
+      const p = cp[i], q = cp[i + 1];
+      const A: V3 = [-L2 + 1, p.y, p.z], B: V3 = [L2 - 1, p.y, p.z], C: V3 = [L2 - 1, q.y, q.z], D: V3 = [-L2 + 1, q.y, q.z];
+      triS(b, A, B, C, p.n, p.n, q.n);
+      triS(b, A, C, D, p.n, q.n, q.n);
     }
   }
   if (opts.ends !== null) {
@@ -241,8 +257,8 @@ export const CAR_COLS = [0xb8bcc2, 0x2b2d31, 0xf1f1ef, 0x8a1c1c, 0x1f3f7a, 0x5d6
 /** Cheap car (20 tris), heading +Z when rot = 0. */
 export function carLite(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike, y = 0.08): void {
   b.push().translate(x, y, z).rotateY(rot);
-  b.paint(color, Surf.Metal).box(-0.88, 0.18, -2.2, 0.88, 0.85, 2.2, { bottom: null });
-  b.paint(0x262b31, Surf.Metal).box(-0.78, 0.85, -1.15, 0.78, 1.38, 0.95, { bottom: null, top: { color, surf: Surf.Metal } });
+  b.paint(color, Surf.Metal, 1).box(-0.88, 0.18, -2.2, 0.88, 0.85, 2.2, { bottom: null });
+  b.paint(0x1c2530, Surf.GlassPlain, 1).box(-0.78, 0.85, -1.15, 0.78, 1.38, 0.95, { bottom: null, top: { color, surf: Surf.Metal, pattern: 1 } });
   b.pop();
 }
 
@@ -268,9 +284,12 @@ export function parking(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: n
 /** Semi truck with a container / box trailer (≈40 tris), heading +Z when rot = 0; total length ~16.5 m. */
 export function semi(b: ModelBuilder, x: number, z: number, rot: number, cab: ColorLike, load: ColorLike | null, y = 0.08): void {
   b.push().translate(x, y, z).rotateY(rot);
-  b.paint(0x2b2d30, Surf.Metal).box(-1.1, 0.3, -8.0, 1.1, 1.15, 5.2, { bottom: null });
-  b.paint(cab, Surf.Metal).box(-1.25, 0.5, 5.2, 1.25, 3.3, 8.2, { bottom: null });
-  b.paint(0x1d2228, Surf.Metal).box(-1.1, 2.0, 8.2, 1.1, 3.0, 8.26, { bottom: null, top: null, nz: null });
+  b.paint(0x2b2d30, Surf.Metal, 1).box(-1.1, 0.3, -8.0, 1.1, 1.15, 5.2, { bottom: null });
+  // wheels / axles (read as dark blocks under chassis): steer, drive, trailer tandem
+  b.paint(0x1d1d1f, Surf.Metal, 1);
+  for (const [za, zb] of [[6.2, 7.2], [3.0, 4.6], [-7.2, -5.2]]) b.box(-1.28, 0, za, 1.28, 0.9, zb, { bottom: null });
+  b.paint(cab, Surf.Metal, 1).box(-1.25, 0.5, 5.2, 1.25, 3.3, 8.2, { bottom: null });
+  b.paint(0x1c2530, Surf.GlassPlain, 1).box(-1.1, 2.0, 8.2, 1.1, 3.0, 8.26, { bottom: null, top: null, nz: null });
   if (load !== null) b.paint(load, Surf.Corrugated).box(-1.25, 1.2, -8.0, 1.25, 3.95, 4.4, { bottom: null });
   b.pop();
 }
@@ -279,25 +298,32 @@ export function semi(b: ModelBuilder, x: number, z: number, rot: number, cab: Co
 export function serviceVehicle(b: ModelBuilder, x: number, z: number, rot: number, kind: 'tug' | 'fuel' | 'catering' | 'bus', y = 0.1): void {
   b.push().translate(x, y, z).rotateY(rot);
   if (kind === 'tug') {
-    b.paint(0xe0b020, Surf.Metal).box(-0.9, 0.2, -1.4, 0.9, 1.1, 1.4, { bottom: null });
+    b.paint(0xe0b020, Surf.Metal, 1).box(-0.9, 0.2, -1.4, 0.9, 1.1, 1.4, { bottom: null });
     // two baggage carts behind
-    b.paint(0x8a9096, Surf.Metal).box(-0.8, 0.3, -4.6, 0.8, 1.3, -2.0, { bottom: null });
-    b.paint(0x8a9096, Surf.Metal).box(-0.8, 0.3, -7.6, 0.8, 1.3, -5.0, { bottom: null });
+    b.paint(0x8a9096, Surf.Metal, 1).box(-0.8, 0.3, -4.6, 0.8, 1.3, -2.0, { bottom: null });
+    b.paint(0x8a9096, Surf.Metal, 1).box(-0.8, 0.3, -7.6, 0.8, 1.3, -5.0, { bottom: null });
   } else if (kind === 'fuel') {
-    b.paint(0xf2f0ea, Surf.Metal).box(-1.1, 0.3, 2.0, 1.1, 2.6, 3.6, { bottom: null });
-    b.paint(0xd9d6cf, Surf.Metal);
+    b.paint(0xf2f0ea, Surf.Metal, 1).box(-1.1, 0.3, 2.0, 1.1, 2.6, 3.6, { bottom: null });
+    b.paint(0xd9d6cf, Surf.Metal, 1);
     frustum(b, [0, 1.6, -3.6], [0, 1.6, 1.9], 1.15, 1.15, 8, { roll: Math.PI / 8, top: true, bottom: true });
   } else if (kind === 'catering') {
-    b.paint(0xf2f0ea, Surf.Metal).box(-1.1, 0.3, 2.2, 1.1, 2.4, 3.6, { bottom: null });
-    b.paint(0x2e6fb5, Surf.Metal).box(-1.2, 1.6, -3.0, 1.2, 4.2, 2.0, { bottom: null });
+    b.paint(0xf2f0ea, Surf.Metal, 1).box(-1.1, 0.3, 2.2, 1.1, 2.4, 3.6, { bottom: null });
+    b.paint(0x2e6fb5, Surf.Metal, 1).box(-1.2, 1.6, -3.0, 1.2, 4.2, 2.0, { bottom: null });
   } else {
-    b.paint(0xe9e6de, Surf.Metal).box(-1.3, 0.3, -6.0, 1.3, 3.0, 6.0, { bottom: null });
-    b.paint(0x1d2228, Surf.Metal).box(-1.32, 1.6, -5.5, 1.32, 2.6, 5.5, { top: null, bottom: null, nz: null, pz: null });
+    b.paint(0xe9e6de, Surf.Metal, 1).box(-1.3, 0.3, -6.0, 1.3, 3.0, 6.0, { bottom: null });
+    b.paint(0x1c2530, Surf.GlassPlain, 1).box(-1.32, 1.6, -5.5, 1.32, 2.6, 5.5, { top: null, bottom: null, nz: null, pz: null });
   }
   b.pop();
 }
 
 // ---------------------------------------------------------------------------------------------- aircraft
+/** Aircraft nav lights (12 tris): red on the port (+X) tip, green on the starboard (-X) tip, white on the fin top. */
+function navLights(b: ModelBuilder, tip: V3, fin: V3, s: number): void {
+  lightDot(b, tip[0], tip[1], tip[2], s, 0xff2a1a);
+  lightDot(b, -tip[0], tip[1], tip[2], s, 0x2aff5a);
+  lightDot(b, fin[0], fin[1], fin[2], s, 0xf4f6ff);
+}
+
 export interface Livery {
   body: ColorLike;
   tail: ColorLike;
@@ -326,7 +352,7 @@ export function airliner(b: ModelBuilder, x: number, z: number, rot: number, s: 
   b.push().translate(x, opts.y ?? 0.1, z).rotateY(rot).scale(s, s, s);
   const roll = Math.PI / 8;
   // fuselage
-  b.paint(liv.body, Surf.Metal);
+  b.paint(liv.body, Surf.Metal, 1);
   // body is capped at both ends so the tilted nose / tail cones never leave see-through gaps at the joints
   frustum(b, [0, hc, zb0], [0, hc, zb1], R, R, 8, { roll, top: true, bottom: true });
   frustum(b, [0, hc, zb1 - 0.3], [0, hc - 0.25 * R, zb1 + 2.4 * R / 2], R * 0.985, R * 0.66, 8, { roll, top: true });
@@ -344,7 +370,7 @@ export function airliner(b: ModelBuilder, x: number, z: number, rot: number, s: 
     };
     const L = (p: V3, q: V3, f: number): V3 => [p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f, p[2] + (q[2] - p[2]) * f];
     const F = (t: number, d0: number, d1: number, f: number) => L(V(t, d0), V(t, d1), f);
-    b.paint(0x161b22, Surf.Metal);
+    b.paint(0x161b22, Surf.GlassPlain, 1);
     // [facet start deg, end deg, fraction range]
     for (const [d0, d1, f0, f1] of [[202.5, 247.5, 0.45, 1], [247.5, 292.5, 0, 1], [292.5, 337.5, 0, 0.55]]) {
       const mid = (((d0 + d1) / 2) * Math.PI) / 180;
@@ -353,9 +379,9 @@ export function airliner(b: ModelBuilder, x: number, z: number, rot: number, s: 
   }
   for (const sd of [-1, 1]) {
     const dir: V3 = [sd, 0, 0];
-    b.paint(0x1d242c, Surf.Metal);
+    b.paint(0x1d242c, Surf.GlassPlain, 0);
     quadF(b, [sd * xs, hc + 0.12 * R, zb0 + 1], [sd * xs, hc + 0.12 * R, zb1 - 0.5], [sd * xs, hc + 0.3 * R, zb1 - 0.5], [sd * xs, hc + 0.3 * R, zb0 + 1], dir);
-    b.paint(liv.stripe, Surf.Metal);
+    b.paint(liv.stripe, Surf.Metal, 1);
     quadF(b, [sd * xs, hc - 0.2 * R, zb0 - 1], [sd * xs, hc - 0.2 * R, zb1 + 0.4], [sd * xs, hc - 0.05 * R, zb1 + 0.4], [sd * xs, hc - 0.05 * R, zb0 - 1], dir);
   }
   // wings (low, swept, dihedral)
@@ -365,7 +391,7 @@ export function airliner(b: ModelBuilder, x: number, z: number, rot: number, s: 
   const tipChord = wide ? 2.4 : 1.8;
   const wy = hc - R * 0.55;
   const dih = span * 0.08;
-  b.paint(shade(liv.body, 0.92), Surf.Metal);
+  b.paint(shade(liv.body, 0.92), Surf.Metal, 1);
   for (const sd of [-1, 1]) {
     plate(b, [[sd * R * 0.8, wy, rootLE], [sd * span, wy + dih, rootLE - sweep], [sd * span, wy + dih, rootLE - sweep - tipChord], [sd * R * 0.8, wy, rootTE]], 0.35, [0, 1, 0]);
   }
@@ -376,7 +402,7 @@ export function airliner(b: ModelBuilder, x: number, z: number, rot: number, s: 
     plate(b, [[sd * R * 0.3, hc + 0.3 * R, zt + 5.6], [sd * hs, hc + 0.3 * R + 1, zt + 1.6], [sd * hs, hc + 0.3 * R + 1, zt + 0.4], [sd * R * 0.3, hc + 0.3 * R, zt + 2.0]], 0.25, [0, 1, 0]);
   }
   // vertical fin (tail colour)
-  b.paint(liv.tail, Surf.Metal);
+  b.paint(liv.tail, Surf.Metal, 1);
   const finH = wide ? 10.5 : 8.2;
   plate(b, [[0, hc + 0.5 * R, zt + 8.5], [0, hc + 0.5 * R + finH, zt + 2.2], [0, hc + 0.5 * R + finH, zt + 0.3], [0, hc + 0.5 * R, zt + 1.5]], 0.35, [1, 0, 0]);
   // engines under the wings
@@ -384,9 +410,11 @@ export function airliner(b: ModelBuilder, x: number, z: number, rot: number, s: 
   const er = wide ? 1.6 : 1.0;
   const ez = rootLE - sweep * (ex / span) + (wide ? 2.4 : 1.6);
   for (const sd of [-1, 1]) {
-    b.paint(eng, Surf.Metal);
+    b.paint(eng, Surf.Metal, 1);
     frustum(b, [sd * ex, wy - er * 0.72, ez - (wide ? 5.5 : 4.2)], [sd * ex, wy - er * 0.72, ez], er * 0.8, er, 8, { top: true, topPaint: { color: 0x202326, surf: Surf.Metal } });
   }
+  // nav lights: red port (+X) / green starboard (-X) wingtips, white on the fin top
+  navLights(b, [span, wy + dih + 0.2, rootLE - sweep - tipChord * 0.5], [0, hc + 0.5 * R + finH + 0.1, zt + 1.2], 0.35 / s);
   // landing gear (dark stubs, read as a gap under the fuselage)
   b.paint(0x26282b, Surf.Metal);
   b.box(-R * 0.7, 0, -1.6, R * 0.7, hc - R * 0.8, 0.2, { bottom: null, top: null });
@@ -399,85 +427,102 @@ export function turboprop(b: ModelBuilder, x: number, z: number, rot: number, s:
   const R = 1.4, hc = 2.4;
   b.push().translate(x, y, z).rotateY(rot).scale(s, s, s);
   const roll = Math.PI / 8;
-  b.paint(liv.body, Surf.Metal);
+  b.paint(liv.body, Surf.Metal, 1);
   frustum(b, [0, hc, -7], [0, hc, 8], R, R, 8, { roll, top: true, bottom: true });
   frustum(b, [0, hc, 8], [0, hc - 0.3, 10.6], R, R * 0.35, 8, { roll, top: true });
   frustum(b, [0, hc, -7], [0, hc + 0.9, -12.5], R, R * 0.25, 8, { roll, top: true });
   const xs = R * 0.924 + 0.03;
   for (const sd of [-1, 1]) {
-    b.paint(0x1d242c, Surf.Metal);
+    b.paint(0x1d242c, Surf.GlassPlain, 0);
     quadF(b, [sd * xs, hc + 0.15, -6], [sd * xs, hc + 0.15, 7.5], [sd * xs, hc + 0.42, 7.5], [sd * xs, hc + 0.42, -6], [sd, 0, 0]);
-    b.paint(liv.stripe, Surf.Metal);
+    b.paint(liv.stripe, Surf.Metal, 1);
     quadF(b, [sd * xs, hc - 0.35, -7.5], [sd * xs, hc - 0.35, 8.5], [sd * xs, hc - 0.1, 8.5], [sd * xs, hc - 0.1, -7.5], [sd, 0, 0]);
   }
-  b.paint(0x1a2028, Surf.Metal).box(-0.75, hc + 0.3, 8.3, 0.75, hc + 0.8, 9.2, { bottom: null });
+  b.paint(0x1a2028, Surf.GlassPlain, 1).box(-0.75, hc + 0.3, 8.3, 0.75, hc + 0.8, 9.2, { bottom: null });
   // high straight wing
   const wy = hc + R * 0.95;
-  b.paint(shade(liv.body, 0.93), Surf.Metal);
+  b.paint(shade(liv.body, 0.93), Surf.Metal, 1);
   plate(b, [[-13.5, wy, 1.6], [13.5, wy, 1.6], [13.5, wy, -0.6], [-13.5, wy, -0.6]], 0.3, [0, 1, 0]);
   // T-tail
-  b.paint(liv.tail, Surf.Metal);
+  b.paint(liv.tail, Surf.Metal, 1);
   plate(b, [[0, hc + R * 0.6, -6.5], [0, hc + 6.2, -10.8], [0, hc + 6.2, -12.6], [0, hc + R * 0.6, -12.2]], 0.3, [1, 0, 0]);
   plate(b, [[-4.2, hc + 6.2, -10.8], [4.2, hc + 6.2, -10.8], [4.2, hc + 6.2, -12.5], [-4.2, hc + 6.2, -12.5]], 0.22, [0, 1, 0]);
   // nacelles + props
   for (const sd of [-1, 1]) {
-    b.paint(liv.engine ?? liv.body, Surf.Metal);
+    b.paint(liv.engine ?? liv.body, Surf.Metal, 1);
     b.box(sd * 4.1 - 0.55, wy - 1.2, -2.8, sd * 4.1 + 0.55, wy - 0.05, 2.6, { bottom: null });
     b.paint(0x202326, Surf.Metal);
     b.box(sd * 4.1 - 1.9, wy - 0.72, 2.7, sd * 4.1 + 1.9, wy - 0.52, 2.8, { bottom: null });
     b.box(sd * 4.1 - 0.1, wy - 2.5, 2.7, sd * 4.1 + 0.1, wy + 1.3, 2.8, { bottom: null });
   }
   b.paint(0x26282b, Surf.Metal).box(-1.4, 0, -0.8, 1.4, hc - R * 0.8, 0.8, { bottom: null, top: null });
+  navLights(b, [13.5, wy + 0.2, 0.5], [0, hc + 6.35, -11.7], 0.35 / s);
   b.pop();
 }
 
 /** Small single-prop GA plane (Cessna-ish, high wing). Nose +Z. ~70 tris at ~8.5 m long / 11 m span. */
 export function gaPlane(b: ModelBuilder, x: number, z: number, rot: number, body: ColorLike, trim: ColorLike, y = 0.1): void {
   b.push().translate(x, y, z).rotateY(rot);
-  b.paint(body, Surf.Metal);
+  b.paint(body, Surf.Metal, 1);
   b.box(-0.6, 0.7, -1.0, 0.6, 1.9, 2.4, { bottom: null });
   frustum(b, [0, 1.3, -1.0], [0, 1.6, -5.8], 0.62, 0.2, 6, { top: true });
   frustum(b, [0, 1.25, 2.4], [0, 1.2, 3.6], 0.6, 0.3, 6, { top: true });
-  b.paint(0x1f262e, Surf.Metal).box(-0.62, 1.4, 0.4, 0.62, 1.95, 1.9, { bottom: null, top: null });
-  b.paint(body, Surf.Metal);
+  b.paint(0x1f262e, Surf.GlassPlain, 1).box(-0.62, 1.4, 0.4, 0.62, 1.95, 1.9, { bottom: null, top: null });
+  b.paint(body, Surf.Metal, 1);
   plate(b, [[-5.5, 2.05, 1.4], [5.5, 2.05, 1.4], [5.5, 2.05, 0.0], [-5.5, 2.05, 0.0]], 0.14, [0, 1, 0]);
   plate(b, [[-1.8, 1.6, -4.9], [1.8, 1.6, -4.9], [1.8, 1.6, -5.8], [-1.8, 1.6, -5.8]], 0.1, [0, 1, 0]);
-  b.paint(trim, Surf.Metal);
+  b.paint(trim, Surf.Metal, 1);
   plate(b, [[0, 1.6, -4.4], [0, 3.1, -5.4], [0, 3.1, -6.0], [0, 1.6, -6.0]], 0.12, [1, 0, 0]);
   b.paint(0x202326, Surf.Metal).box(-0.9, 0.0, 0.6, 0.9, 0.7, 0.9, { bottom: null, top: null });
   b.pop();
 }
 
 // ---------------------------------------------------------------------------------------------- containers / rail
-export const CONTAINER_COLS = [0x3f9fcf, 0x2e7d4f, 0xc9962a, 0x1d3d7a, 0xe36a1e, 0xb03a2e, 0x8a8f94, 0x7a4a33, 0xe8e8e2, 0xa8322a, 0xb8327a, 0x557a8c, 0x6f7f3a, 0xd9c23a];
+/** Desaturated shipping-line palette (blue, green, ochre, grey, white-ish, oxide red, orange, navy). */
+export const CONTAINER_COLS = [0x4a86b0, 0x3d7a58, 0xb89a52, 0x9aa0a4, 0xc2c4c0, 0xa34a3a, 0xc07a3a, 0x2f4a72];
 
 /** Shipping container along local X (long = 40ft 12.2 m, else 20ft 6.1 m). top=false omits the lid (stacked). */
-export function ctr(b: ModelBuilder, x: number, y: number, z: number, long: boolean, color: ColorLike, top = true, rotY = 0): void {
+export function ctr(b: ModelBuilder, x: number, y: number, z: number, long: boolean, color: ColorLike, top = true, rotY = 0, sides: { pz?: boolean; nz?: boolean } = {}): void {
   const L = long ? 12.19 : 6.06;
   b.push().translate(x, y, z).rotateY(rotY);
-  b.paint(color, Surf.Corrugated).box(-L / 2, 0, -1.22, L / 2, 2.59, 1.22, { bottom: null, top: top ? undefined : null });
+  b.paint(color, Surf.Corrugated).box(-L / 2, 0, -1.22, L / 2, 2.59, 1.22, { bottom: null, top: top ? undefined : null, pz: sides.pz === false ? null : undefined, nz: sides.nz === false ? null : undefined });
   b.pop();
 }
 
 /**
  * Container yard block: `bays` columns along X (40ft each), `rows` along Z, random tier heights up to maxTier.
- * Only the topmost container of each column gets a lid. Returns number of containers.
+ * Colour runs: a stack reuses one colour for most tiers (70%) and often repeats the neighbouring row's colour (50%),
+ * so lines of one shipping line form. Only the topmost container gets a lid, and a container's long (±Z) faces are
+ * skipped where the neighbouring row has a container at the same tier (hidden in the 0.3 m gap).
+ * Returns number of containers.
  */
 export function containerBlock(b: ModelBuilder, rng: RNG, x0: number, z0: number, bays: number, rows: number, maxTier: number, opts: { minTier?: number; long?: boolean; palette?: number[] } = {}): number {
   const long = opts.long ?? true;
   const L = long ? 12.19 : 6.06;
   const pal = opts.palette ?? CONTAINER_COLS;
+  const H: number[][] = [];
+  for (let i = 0; i < bays; i++) {
+    H.push([]);
+    for (let r = 0; r < rows; r++) H[i].push(rng.int(opts.minTier ?? 0, maxTier));
+  }
   let n = 0;
-  for (let i = 0; i < bays; i++)
+  for (let i = 0; i < bays; i++) {
+    let prev = rng.pick(pal);
     for (let r = 0; r < rows; r++) {
-      const tiers = rng.int(opts.minTier ?? 0, maxTier);
+      const tiers = H[i][r];
+      const stackCol = rng.chance(0.5) ? prev : rng.pick(pal);
+      prev = stackCol;
       const x = x0 + i * (L + 0.9) + L / 2, z = z0 + r * 2.74 + 1.22;
       for (let t = 0; t < tiers; t++) {
-        const c = shade(rng.pick(pal), rng.range(0.82, 1.05));
-        ctr(b, x, t * 2.59, z, long, c, t === tiers - 1);
+        const base = rng.chance(0.7) ? stackCol : rng.pick(pal);
+        const c = shade(base, rng.range(0.86, 1.04));
+        const pz = !(r + 1 < rows && H[i][r + 1] > t);
+        const nz = !(r > 0 && H[i][r - 1] > t);
+        ctr(b, x, t * 2.59, z, long, c, t === tiers - 1, 0, { pz, nz });
         n++;
       }
     }
+  }
   return n;
 }
 
@@ -495,17 +540,20 @@ export function trackX(b: ModelBuilder, x0: number, x1: number, z: number, opts:
 /** Freight car on a track along X (centered at x,z). kind: flat w/ containers, boxcar, tanker, hopper. ~30-50 tris */
 export function freightCar(b: ModelBuilder, rng: RNG, x: number, z: number, kind: 'flat' | 'box' | 'tank' | 'hopper', color: ColorLike, y = 0.4): void {
   const L = 17;
-  b.paint(0x2c2d30, Surf.Metal).box(x - L / 2, y + 0.4, z - 1.3, x + L / 2, y + 1.2, z + 1.3, { bottom: null });
+  // two bogies sitting on the rail tops (y = rail top)
+  b.paint(0x1e1f21, Surf.Metal, 1);
+  for (const sx of [-1, 1]) b.box(x + sx * (L / 2 - 2.4) - 1.3, y, z - 1.1, x + sx * (L / 2 - 2.4) + 1.3, y + 0.45, z + 1.1, { bottom: null });
+  b.paint(0x2c2d30, Surf.Metal, 1).box(x - L / 2, y + 0.4, z - 1.3, x + L / 2, y + 1.2, z + 1.3, { bottom: null });
   if (kind === 'flat') {
     ctr(b, x - 3.1, y + 1.2, z, false, rng.pick(CONTAINER_COLS));
     if (rng.chance(0.8)) ctr(b, x + 3.1, y + 1.2, z, false, rng.pick(CONTAINER_COLS));
   } else if (kind === 'box') {
     b.paint(color, Surf.Corrugated).box(x - L / 2 + 0.3, y + 1.2, z - 1.4, x + L / 2 - 0.3, y + 4.2, z + 1.4, { bottom: null });
   } else if (kind === 'tank') {
-    b.paint(color, Surf.Metal);
+    b.paint(color, Surf.Metal, 1);
     frustum(b, [x - L / 2 + 0.6, y + 2.6, z], [x + L / 2 - 0.6, y + 2.6, z], 1.45, 1.45, 8, { roll: Math.PI / 8, top: true, bottom: true });
   } else {
-    b.paint(color, Surf.Metal).box(x - L / 2 + 0.5, y + 1.2, z - 1.45, x + L / 2 - 0.5, y + 3.9, z + 1.45, { bottom: null });
+    b.paint(color, Surf.Metal, 1).box(x - L / 2 + 0.5, y + 1.2, z - 1.45, x + L / 2 - 0.5, y + 3.9, z + 1.45, { bottom: null });
     b.paint(0x4a3f33, Surf.Plain);
     flat(b, x - L / 2 + 0.8, z - 1.2, x + L / 2 - 0.8, z + 1.2, y + 3.7);
   }
@@ -519,13 +567,13 @@ export function gantry(b: ModelBuilder, x: number, z0: number, z1: number, h: nu
   const t = 0.8;
   const ov = opts.overhang ?? 0;
   const za = Math.min(z0, z1) - ov, zb = Math.max(z0, z1) + ov;
-  b.paint(color, Surf.Metal);
+  b.paint(color, Surf.Metal, 1);
   for (const sx of [-1, 1])
     for (const zz of [z0, z1]) b.box(x + sx * wx / 2 - t / 2, 0.6, zz - t / 2, x + sx * wx / 2 + t / 2, h, zz + t / 2, { bottom: null, top: null });
   // bogies / sill beams run along the rails (X)
-  b.paint(shade(color, 0.7), Surf.Metal);
+  b.paint(shade(color, 0.7), Surf.Metal, 1);
   for (const zz of [z0, z1]) b.box(x - wx / 2 - 1.2, 0, zz - 0.6, x + wx / 2 + 1.2, 1.1, zz + 0.6, { bottom: null });
-  b.paint(color, Surf.Metal);
+  b.paint(color, Surf.Metal, 1);
   // girders along Z (two), end portal beams along X
   for (const sx of [-1, 1]) b.box(x + sx * wx / 2 - 0.55, h, za, x + sx * wx / 2 + 0.55, h + 1.6, zb);
   for (const zz of [z0, z1]) b.box(x - wx / 2, h - 1.2, zz - 0.5, x + wx / 2, h, zz + 0.5);
@@ -533,14 +581,14 @@ export function gantry(b: ModelBuilder, x: number, z0: number, z1: number, h: nu
   for (const sx of [-1, 1]) for (const zz of [z0, z1]) obox(b, [x + sx * wx / 2, h - 3.2, zz], [x + sx * (wx / 2 - 3.2), h - 1.1, zz], 0.4, 0.4, { ends: false });
   // trolley + cab
   const tz = opts.trolleyAt ?? (z0 + z1) / 2;
-  b.paint(0xd8d6d0, Surf.Metal).box(x - wx / 2 + 0.2, h + 0.3, tz - 1.6, x + wx / 2 - 0.2, h + 2.4, tz + 1.6, { bottom: null });
-  b.paint(0x33363a, Surf.Metal).box(x - 1.3, h - 2.4, tz - 1.2, x + 1.3, h - 0.2, tz + 1.2, { top: null });
+  b.paint(0xd8d6d0, Surf.Metal, 1).box(x - wx / 2 + 0.2, h + 0.3, tz - 1.6, x + wx / 2 - 0.2, h + 2.4, tz + 1.6, { bottom: null });
+  b.paint(0x33363a, Surf.Metal, 1).box(x - 1.3, h - 2.4, tz - 1.2, x + 1.3, h - 0.2, tz + 1.2, { top: null });
   b.paint(0x1d242c, Surf.GlassPlain).box(x - 1.32, h - 2.0, tz + 1.2, x + 1.32, h - 0.6, tz + 1.24, { top: null, bottom: null, nz: null });
   // hoist ropes + spreader
   b.paint(0x2a2a2a, Surf.Metal);
   b.box(x - 0.05, h * 0.45, tz - 0.9, x + 0.05, h - 2.4, tz - 0.8, { top: null, bottom: null });
   b.box(x - 0.05, h * 0.45, tz + 0.8, x + 0.05, h - 2.4, tz + 0.9, { top: null, bottom: null });
-  b.paint(0xd9a324, Surf.Metal).box(x - 6.1, h * 0.45 - 0.5, tz - 1.2, x + 6.1, h * 0.45, tz + 1.2, { bottom: null });
+  b.paint(0xd9a324, Surf.Metal, 1).box(x - 6.1, h * 0.45 - 0.5, tz - 1.2, x + 6.1, h * 0.45, tz + 1.2, { bottom: null });
   if (opts.lights ?? true) {
     lightDot(b, x - wx / 2, h + 1.6, za + 0.4, 0.45, 0xff3322);
     lightDot(b, x + wx / 2, h + 1.6, zb - 0.4, 0.45, 0xff3322);
@@ -580,42 +628,38 @@ export function panel(b: ModelBuilder, axis: 'x' | 'z', sign: 1 | -1, w: number,
 }
 
 /**
- * Baked "light pool" on the ground: an Emissive decal whose colour is ~0.7x the ground colour, so by day it matches
- * the surrounding pavement (albedo + mild emission) and at night it reads as lit ground under a lamp / floodlight.
- * Place it between the ground slab top and the markings layer. seg tris.
+ * Baked "light pool" on the ground: Emissive pattern 9 painted 0.7x the ground colour -> plain pavement by day,
+ * warm lamp-lit ground at night. `k` = night intensity (1 = default; encoded in the paint floor as 3.3 * k, min 1.0).
+ * Keep pools >= 3 cm above the ground they sit on and >= 3 cm below markings drawn on top.
  */
-export function pool(b: ModelBuilder, x: number, z: number, r: number, y: number, ground: ColorLike, seg = 10, k = 0.7): void {
-  const c = shade(ground, k);
-  c.r *= 1.08;
-  c.g *= 0.97;
-  c.b *= 0.8;
-  b.paint(c, Surf.Emissive);
+function poolPaint(b: ModelBuilder, ground: ColorLike, k: number): void {
+  b.paint(shade(ground, 0.7), Surf.Emissive, 9, Math.max(1.0, 3.3 * k));
+}
+export function pool(b: ModelBuilder, x: number, z: number, r: number, y: number, ground: ColorLike, seg = 10, k = 1): void {
+  poolPaint(b, ground, k);
   for (let i = 0; i < seg; i++) {
     const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
     triF(b, [x, y, z], [x + Math.cos(a0) * r, y, z + Math.sin(a0) * r], [x + Math.cos(a1) * r, y, z + Math.sin(a1) * r], [0, 1, 0]);
   }
 }
-/** Rectangular light pool (2 tris). */
-export function poolRect(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, ground: ColorLike, k = 0.7): void {
-  const c = shade(ground, k);
-  c.r *= 1.08;
-  c.g *= 0.97;
-  c.b *= 0.8;
-  b.paint(c, Surf.Emissive);
+/** Rectangular light pool (2 tris). k = night intensity (e.g. 0.35 for a dim base under a group of masts). */
+export function poolRect(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, y: number, ground: ColorLike, k = 1): void {
+  poolPaint(b, ground, k);
   flat(b, x0, z0, x1, z1, y);
 }
-/** Soft light pool for DARK ground (asphalt): brighter inner disc + dimmer outer ring (30 tris). */
-export function poolSoft(b: ModelBuilder, x: number, z: number, r: number, y: number, ground: ColorLike): void {
-  pool(b, x, z, r * 0.55, y + 0.004, ground, 10, 1.05);
-  const c = shade(ground, 0.78);
-  c.r *= 1.08;
-  c.g *= 0.97;
-  c.b *= 0.8;
-  b.paint(c, Surf.Emissive);
-  const ri = r * 0.55, seg = 10;
-  for (let i = 0; i < seg; i++) {
-    const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
-    const P = (a: number, rr: number): V3 => [x + Math.cos(a) * rr, y, z + Math.sin(a) * rr];
-    quadF(b, P(a0, ri), P(a0, r), P(a1, r), P(a1, ri), [0, 1, 0]);
+/**
+ * Soft light pool with fall-off: 3 concentric rings (0.35r / 0.7r / r) at night intensity 1 / 0.6 / 0.3, 12 segments
+ * (60 tris). Identical to the ground by day. `k` scales all rings.
+ */
+export function poolSoft(b: ModelBuilder, x: number, z: number, r: number, y: number, ground: ColorLike, k = 1, seg = 12): void {
+  const rings: [number, number, number][] = [[0, 0.35, 1], [0.35, 0.7, 0.6], [0.7, 1, 0.3]];
+  for (const [f0, f1, kk] of rings) {
+    poolPaint(b, ground, kk * k);
+    for (let i = 0; i < seg; i++) {
+      const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+      const P = (a: number, rr: number): V3 => [x + Math.cos(a) * rr, y, z + Math.sin(a) * rr];
+      if (f0 === 0) triF(b, [x, y, z], P(a0, r * f1), P(a1, r * f1), [0, 1, 0]);
+      else quadF(b, P(a0, r * f0), P(a0, r * f1), P(a1, r * f1), P(a1, r * f0), [0, 1, 0]);
+    }
   }
 }

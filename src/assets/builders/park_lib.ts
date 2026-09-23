@@ -13,6 +13,7 @@ import { ModelBuilder, PALETTE, type ColorLike, type Paint } from '../ModelBuild
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import type { ModelBuilders, ModelBuildFn } from '../registry';
+import { leafBlob, tintSince, foliageShade, mark } from './nat_geom';
 
 export type P2 = [number, number];
 export type V3 = [number, number, number];
@@ -211,6 +212,61 @@ export function ribbon(b: ModelBuilder, pts: P2[], w: number, y: number, opts: {
     }
   }
 }
+/** The convex quads a ribbon() of the same arguments covers (for clipping light pools to paths). */
+export function ribbonQuads(pts: P2[], w: number, closed = false): P2[][] {
+  const n = pts.length;
+  if (n < 2) return [];
+  const hw = w / 2;
+  const L: P2[] = [], R: P2[] = [];
+  for (let i = 0; i < n; i++) {
+    const prev = closed ? pts[(i - 1 + n) % n] : pts[Math.max(0, i - 1)];
+    const next = closed ? pts[(i + 1) % n] : pts[Math.min(n - 1, i + 1)];
+    const c = pts[i];
+    const d1 = dir2(prev, c, next, c), d2 = dir2(c, next, c, prev);
+    let tx = d1[0] + d2[0], tz = d1[1] + d2[1];
+    const tl = Math.hypot(tx, tz) || 1;
+    tx /= tl; tz /= tl;
+    const px = -tz, pz = tx;
+    const cos = Math.max(0.4, Math.abs(px * -d1[1] + pz * d1[0]));
+    L.push([c[0] + (px * hw) / cos, c[1] + (pz * hw) / cos]);
+    R.push([c[0] - (px * hw) / cos, c[1] - (pz * hw) / cos]);
+  }
+  const out: P2[][] = [];
+  const segs = closed ? n : n - 1;
+  for (let i = 0; i < segs; i++) {
+    const j = (i + 1) % n;
+    out.push([L[i], L[j], R[j], R[i]]);
+  }
+  return out;
+}
+
+/** Sutherland-Hodgman: clip polygon `subj` by convex polygon `clip` (any winding). */
+export function clipConvex(subj: P2[], clip: P2[]): P2[] {
+  const sg = signedArea(clip) >= 0 ? 1 : -1;
+  let out = subj;
+  for (let i = 0; i < clip.length && out.length; i++) {
+    const a = clip[i], c = clip[(i + 1) % clip.length];
+    const inside = (p: P2) => ((c[0] - a[0]) * (p[1] - a[1]) - (c[1] - a[1]) * (p[0] - a[0])) * sg >= 0;
+    const inter = (p: P2, q: P2): P2 => {
+      const dx = q[0] - p[0], dz = q[1] - p[1];
+      const ex = c[0] - a[0], ez = c[1] - a[1];
+      const den = dx * ez - dz * ex;
+      const t = Math.abs(den) < 1e-12 ? 0 : ((a[0] - p[0]) * ez - (a[1] - p[1]) * ex) / den;
+      return [p[0] + dx * t, p[1] + dz * t];
+    };
+    const inp = out;
+    out = [];
+    for (let k = 0; k < inp.length; k++) {
+      const p = inp[k], q = inp[(k + 1) % inp.length];
+      const pi = inside(p), qi = inside(q);
+      if (pi && qi) out.push(q);
+      else if (pi && !qi) out.push(inter(p, q));
+      else if (!pi && qi) out.push(inter(p, q), q);
+    }
+  }
+  return out;
+}
+
 function dir2(a: P2, c: P2, fa: P2, fc: P2): P2 {
   let dx = c[0] - a[0], dz = c[1] - a[1];
   let l = Math.hypot(dx, dz);
@@ -437,32 +493,44 @@ export const GRASS = [0x6c9a44, 0x74a24a, 0x659240, 0x7aa852, 0x5f8c3c];
 export const GRASS_LUSH = 0x6fa047;
 export const GRASS_DARK = 0x557f36;
 export const MEADOW = 0x8ea957;
-export const PATH_GRAVEL = 0xcdbf9f;
-export const PATH_PAVE = 0xc9c3b5;
-export const PATH_RED = 0xb57a5c;
+export const PATH_GRAVEL = 0xc4b494;
+export const PATH_PAVE = 0xbdb6a8;
+export const PATH_RED = 0xa8705a;
 export const SOIL = 0x5a4331;
-export const STONE_RIM = 0xb9b2a3;
-export const POND_WATER = 0x3d7384;
-export const FLOWERS = [0xe0475a, 0xf2c14e, 0xf28ab2, 0xffffff, 0x9b6ad6, 0xf07b3f, 0xd62d6a];
-export const FOLIAGE = [0x4d7a30, 0x5a8a38, 0x3f6d2c, 0x668f3a, 0x4a7f3c, 0x57843a];
+export const STONE_RIM = 0xaaa396;
+export const POND_WATER = 0x2e5c62;
+export const FLOWERS = [0xd24b5c, 0xe8b64a, 0xe28aa9, 0xf2efe6, 0x8f6ac4, 0xe07b44];
+export const FOLIAGE = [0x46692a, 0x53732f, 0x3d6127, 0x5b7a35, 0x4a6d2c];
+export const BED_GREEN = 0x46692a;
 export const LAMP_GLOW = 0xffe0a6;
 
+/**
+ * Ground layer heights (top surfaces) for park lots. Coplanar layers are kept >= 12-15 mm apart so they do not
+ * z-fight at game-camera distances.
+ */
+export const YL = { lawn: 0.06, patch: 0.075, lawnPool: 0.095, path: 0.11, pathPool: 0.125, top: 0.14 } as const;
+
 // ---------------------------------------------------------------------------------------------- ground
-/** Lawn base covering rect plus a few irregular tone patches (subtle mowing / color variation). */
+/** Lawn base covering rect plus a few irregular, non-overlapping tone patches (all at one height, h + 0.015). */
 export function lawnPatchwork(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, base: ColorLike = GRASS_LUSH, patches = 4, h = 0.06): void {
   b.paint(base, Surf.Foliage).slab(x0, z0, x1, z1, h);
   const w = x1 - x0, d = z1 - z0;
-  for (let i = 0; i < patches; i++) {
+  const placed: [number, number, number, number][] = [];
+  for (let i = 0, tries = 0; i < patches && tries < patches * 8; tries++) {
     const rx = rng.range(0.15, 0.3) * w, rz = rng.range(0.15, 0.3) * d;
     const cx = rng.range(x0 + rx * 0.7, x1 - rx * 0.7), cz = rng.range(z0 + rz * 0.7, z1 - rz * 0.7);
+    // bounding ellipses (x1.3 for the harmonic wobble) must not overlap
+    if (placed.some(([px, pz, prx, prz]) => ((cx - px) / (1.3 * (rx + prx))) ** 2 + ((cz - pz) / (1.3 * (rz + prz))) ** 2 < 1)) continue;
+    placed.push([cx, cz, rx, rz]);
+    i++;
     const poly = blobPoly(rng, cx, cz, rx, rz, 12, 0.3).map(([x, z]) => [Math.max(x0, Math.min(x1, x)), Math.max(z0, Math.min(z1, z))] as P2);
     b.paint(rng.pick(GRASS), Surf.Foliage);
-    flatPoly(b, poly, h + 0.005 + i * 0.002);
+    flatPoly(b, poly, h + 0.015);
   }
 }
 
 /** Winding path through control points (smoothed). */
-export function path(b: ModelBuilder, ctrl: P2[], w: number, color: ColorLike = PATH_GRAVEL, y = 0.09, perSeg = 5, closed = false): P2[] {
+export function path(b: ModelBuilder, ctrl: P2[], w: number, color: ColorLike = PATH_GRAVEL, y: number = YL.path, perSeg = 5, closed = false): P2[] {
   const pts = ctrl.length > 2 ? spline(ctrl, perSeg, closed) : ctrl;
   b.paint(color, Surf.Pavement);
   ribbon(b, pts, w, y, { closed });
@@ -475,7 +543,7 @@ export function pond(b: ModelBuilder, rng: RNG, cx: number, cz: number, rx: numb
   const poly = blobPoly(rng, cx, cz, rx, rz, n, 0.22, opts.rot ?? 0);
   const y = opts.y ?? 0;
   b.paint(opts.water ?? POND_WATER, Surf.Water);
-  flatPoly(b, poly, y + 0.1);
+  flatPoly(b, poly, y + 0.125);
   b.paint(opts.rim ?? STONE_RIM, Surf.Stone);
   ribbon(b, poly, opts.rimW ?? 0.8, y + 0.2, { closed: true, sides: opts.rimSides ?? true, y0: y + 0.02 });
   const reeds = opts.reeds ?? 0;
@@ -502,11 +570,15 @@ export function inPoly(pts: P2[], x: number, z: number): boolean {
 // ---------------------------------------------------------------------------------------------- lot bounds
 /** Active lot rect used to keep tree canopies (and other clamped props) inside the lot. Set per model build. */
 let BOUNDS: [number, number, number, number] | null = null;
-export function setBounds(x0: number, z0: number, x1: number, z1: number): void {
+/** Max tree top height for the active lot (from the manifest height guidance), Infinity when unset. */
+let TREE_CAP = Infinity;
+export function setBounds(x0: number, z0: number, x1: number, z1: number, treeCap = Infinity): void {
   BOUNDS = [x0, z0, x1, z1];
+  TREE_CAP = treeCap;
 }
 export function clearBounds(): void {
   BOUNDS = null;
+  TREE_CAP = Infinity;
 }
 /** Clamp a point so that a disc of radius r around it stays inside the active bounds. */
 export function clampIn(x: number, z: number, r: number): P2 {
@@ -516,13 +588,19 @@ export function clampIn(x: number, z: number, r: number): P2 {
   const cz = z1 - z0 < 2 * r ? (z0 + z1) / 2 : Math.max(z0 + r, Math.min(z1 - r, z));
   return [cx, cz];
 }
-/** Wrap builders so each build runs with the lot bounds active (trees auto-clamped inside the footprint). */
+/** Clip a ground polygon to the active lot bounds. */
+export function clipToLot(poly: P2[]): P2[] {
+  if (!BOUNDS) return poly;
+  const [x0, z0, x1, z1] = BOUNDS;
+  return clipConvex(poly, [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]);
+}
+/** Wrap builders so each build runs with the lot bounds active (trees auto-clamped inside the footprint + height cap). */
 export function lotModels(defs: Record<string, ModelBuildFn>): ModelBuilders {
   const out: ModelBuilders = {};
   for (const [id, fn] of Object.entries(defs)) {
     out[id] = (b, v, rng, entry) => {
       const hx = entry.footprint[0] * 8 - 0.15, hz = entry.footprint[1] * 8 - 0.15;
-      setBounds(-hx, -hz, hx, hz);
+      setBounds(-hx, -hz, hx, hz, entry.height[1] * 1.2);
       try {
         fn(b, v, rng, entry);
       } finally {
@@ -534,92 +612,130 @@ export function lotModels(defs: Record<string, ModelBuildFn>): ModelBuilders {
 }
 
 // ---------------------------------------------------------------------------------------------- vegetation
-const CANOPY_R: Record<string, number> = { oak: 3.0, maple: 2.65, round: 2.4, cherry: 2.6, birch: 1.8, poplar: 1.35, cone: 2.15, willow: 2.8, acacia: 3.6, palm: 3.2 };
+const CANOPY_R: Record<string, number> = { oak: 3.0, maple: 2.65, round: 2.4, cherry: 2.6, birch: 1.8, poplar: 1.35, cone: 2.15, willow: 2.9, acacia: 3.6, palm: 3.2 };
+/** natural top height per unit scale (before the x1.3 park-tree scale) */
+const TREE_TOP: Record<string, number> = { oak: 7.3, maple: 6.7, round: 6.0, cherry: 5.2, birch: 7.7, poplar: 9.3, cone: 7.8, willow: 6.0, acacia: 4.9, palm: 6.7 };
+/** Park trees are drawn 1.3x the base proportions (oak s=1 ~ 9.5 m) to match the street trees. */
+const TREE_SCALE = 1.3;
 export type TreeKind = 'oak' | 'round' | 'cone' | 'poplar' | 'cherry' | 'birch' | 'willow' | 'palm' | 'maple' | 'acacia';
 
-/** Richer low-poly park tree (~30-70 tris). s=1 => ~7-9 m tall. Returns the top height. */
+/** One soft foliage crown lobe (leafBlob, 20 tris) with normals blended toward the crown centre `nc`. */
+function lobe(b: ModelBuilder, rng: RNG, c: V3, r: V3, nc: V3, color: ColorLike): void {
+  b.paint(color, Surf.Foliage);
+  leafBlob(b, rng, c, r, { soft: 0.62, nc, jitter: 0.16 });
+}
+
+/** Richer low-poly park tree (~30-70 tris). s=1 => oak ~9.5 m. Returns the top height. */
 export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kind: TreeKind = 'oak'): number {
-  const k = s * rng.range(0.85, 1.15);
+  let k = s * TREE_SCALE * rng.range(0.85, 1.15);
+  if (TREE_TOP[kind] * k > TREE_CAP) k = TREE_CAP / TREE_TOP[kind];
   [x, z] = clampIn(x, z, CANOPY_R[kind] * k);
-  const seed = rng.next() * 10;
   const g = rng.pick(FOLIAGE);
+  let m = 0;
   switch (kind) {
     case 'oak': {
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.6 * k, 0.28 * k, 0.18 * k, 5, { top: false });
-      b.paint(g, Surf.Foliage).blob(x, 4.5 * k, z, 2.5 * k, 2.0 * k, 2.4 * k, 0, 0.16, seed);
+      m = mark(b);
+      const nc: V3 = [x, 4.9 * k, z];
       const a = rng.range(0, TAU);
-      b.paint(shade(g, 1.08), Surf.Foliage).blob(x + Math.cos(a) * 0.9 * k, 5.6 * k, z + Math.sin(a) * 0.9 * k, 1.7 * k, 1.5 * k, 1.7 * k, 0, 0.18, seed + 3);
+      lobe(b, rng, [x - Math.cos(a) * 0.4 * k, 4.5 * k, z - Math.sin(a) * 0.4 * k], [2.5 * k, 2.0 * k, 2.4 * k], nc, g);
+      lobe(b, rng, [x + Math.cos(a) * 0.9 * k, 5.6 * k, z + Math.sin(a) * 0.9 * k], [1.7 * k, 1.5 * k, 1.7 * k], nc, shade(g, 1.08));
+      tintSince(b, m, foliageShade(2.5 * k, 7.1 * k));
       return 7.1 * k;
     }
     case 'maple': {
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.4 * k, 0.24 * k, 0.16 * k, 5, { top: false });
       const c = rng.pick([0xc8642c, 0xd9912f, 0xb8452f, 0x8fa33b]);
       const a = rng.range(0, TAU);
-      b.paint(c, Surf.Foliage).blob(x - Math.cos(a) * 0.4 * k, 4.2 * k, z - Math.sin(a) * 0.4 * k, 2.2 * k, 2.0 * k, 2.1 * k, 0, 0.2, seed);
-      b.paint(shade(c, 1.1), Surf.Foliage).blob(x + Math.cos(a) * 0.8 * k, 5.2 * k, z + Math.sin(a) * 0.8 * k, 1.5 * k, 1.4 * k, 1.5 * k, 0, 0.2, seed + 2);
+      m = mark(b);
+      const nc: V3 = [x, 4.6 * k, z];
+      lobe(b, rng, [x - Math.cos(a) * 0.4 * k, 4.2 * k, z - Math.sin(a) * 0.4 * k], [2.2 * k, 2.0 * k, 2.1 * k], nc, c);
+      lobe(b, rng, [x + Math.cos(a) * 0.8 * k, 5.2 * k, z + Math.sin(a) * 0.8 * k], [1.5 * k, 1.4 * k, 1.5 * k], nc, shade(c, 1.1));
+      tintSince(b, m, foliageShade(2.2 * k, 6.6 * k));
       return 6.6 * k;
     }
     case 'round': {
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.2 * k, 0.22 * k, 0.15 * k, 5, { top: false });
       const a = rng.range(0, TAU);
-      b.paint(g, Surf.Foliage).blob(x - Math.cos(a) * 0.35 * k, 3.8 * k, z - Math.sin(a) * 0.35 * k, 2.0 * k, 1.75 * k, 1.95 * k, 0, 0.2, seed);
-      b.paint(shade(g, 1.12), Surf.Foliage).blob(x + Math.cos(a) * 0.75 * k, 4.6 * k, z + Math.sin(a) * 0.75 * k, 1.35 * k, 1.25 * k, 1.35 * k, 0, 0.2, seed + 2);
+      m = mark(b);
+      const nc: V3 = [x, 4.1 * k, z];
+      lobe(b, rng, [x - Math.cos(a) * 0.35 * k, 3.8 * k, z - Math.sin(a) * 0.35 * k], [2.0 * k, 1.75 * k, 1.95 * k], nc, g);
+      lobe(b, rng, [x + Math.cos(a) * 0.75 * k, 4.6 * k, z + Math.sin(a) * 0.75 * k], [1.35 * k, 1.25 * k, 1.35 * k], nc, shade(g, 1.12));
+      tintSince(b, m, foliageShade(2.0 * k, 5.9 * k));
       return 5.9 * k;
     }
     case 'cherry': {
       b.paint(0x4a3528, Surf.Wood).cylinder(x, z, 0, 2.0 * k, 0.22 * k, 0.14 * k, 5, { top: false });
-      const c = rng.pick([0xf0b3c8, 0xe89ab5, 0xf5c6d6]);
+      const c = rng.pick([0xe0a3b8, 0xd88aa5, 0xe5b6c6]);
       const a = rng.range(0, TAU);
-      b.paint(c, Surf.Foliage).blob(x - Math.cos(a) * 0.5 * k, 3.4 * k, z - Math.sin(a) * 0.5 * k, 2.0 * k, 1.4 * k, 1.9 * k, 0, 0.22, seed);
-      b.paint(shade(c, 1.06), Surf.Foliage).blob(x + Math.cos(a) * 0.9 * k, 3.9 * k, z + Math.sin(a) * 0.9 * k, 1.5 * k, 1.1 * k, 1.5 * k, 0, 0.22, seed + 2);
+      m = mark(b);
+      const nc: V3 = [x, 3.6 * k, z];
+      lobe(b, rng, [x - Math.cos(a) * 0.5 * k, 3.4 * k, z - Math.sin(a) * 0.5 * k], [2.0 * k, 1.4 * k, 1.9 * k], nc, c);
+      lobe(b, rng, [x + Math.cos(a) * 0.9 * k, 3.9 * k, z + Math.sin(a) * 0.9 * k], [1.5 * k, 1.1 * k, 1.5 * k], nc, shade(c, 1.06));
+      tintSince(b, m, foliageShade(2.0 * k, 5.1 * k, 0.7));
       return 5.1 * k;
     }
     case 'birch': {
-      b.paint(0xe4e0d4, Surf.Plain).cylinder(x, z, 0, 3.6 * k, 0.16 * k, 0.1 * k, 5, { top: false });
-      b.paint(0x86a84a, Surf.Foliage).blob(x, 4.7 * k, z, 1.5 * k, 1.8 * k, 1.5 * k, 0, 0.2, seed);
-      b.paint(0x94b457, Surf.Foliage).blob(x + 0.3 * k, 6.3 * k, z - 0.2 * k, 1.05 * k, 1.3 * k, 1.05 * k, 0, 0.2, seed + 2);
+      b.paint(0xd6d2c6, Surf.Plain).cylinder(x, z, 0, 3.6 * k, 0.16 * k, 0.1 * k, 5, { top: false });
+      m = mark(b);
+      const nc: V3 = [x, 5.4 * k, z];
+      lobe(b, rng, [x, 4.7 * k, z], [1.5 * k, 1.8 * k, 1.5 * k], nc, 0x6f9440);
+      lobe(b, rng, [x + 0.3 * k, 6.3 * k, z - 0.2 * k], [1.05 * k, 1.3 * k, 1.05 * k], nc, 0x7a9e47);
+      tintSince(b, m, foliageShade(2.9 * k, 7.6 * k));
       return 7.6 * k;
     }
     case 'poplar': {
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 1.4 * k, 0.2 * k, 0.15 * k, 5, { top: false });
-      b.paint(shade(g, 0.95), Surf.Foliage).blob(x, 5.0 * k, z, 1.2 * k, 4.2 * k, 1.2 * k, 0, 0.1, seed);
+      m = mark(b);
+      lobe(b, rng, [x, 5.0 * k, z], [1.2 * k, 4.2 * k, 1.2 * k], [x, 5.0 * k, z], shade(g, 0.95));
+      tintSince(b, m, foliageShade(0.8 * k, 9.2 * k));
       return 9.2 * k;
     }
     case 'cone': {
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 1.4 * k, 0.22 * k, 0.16 * k, 5, { top: false });
       const c = rng.pick([0x2f5a2e, 0x355f32, 0x2b5230]);
+      m = mark(b);
       b.paint(c, Surf.Foliage).cone(x, z, 1.0 * k, 4.8 * k, 2.1 * k, 7, false);
       b.paint(shade(c, 1.1), Surf.Foliage).cone(x, z, 3.4 * k, 4.4 * k, 1.5 * k, 7, false);
+      tintSince(b, m, foliageShade(1.0 * k, 7.8 * k));
       return 7.8 * k;
     }
     case 'willow': {
-      b.paint(0x55402e, Surf.Wood).cylinder(x, z, 0, 3.0 * k, 0.32 * k, 0.2 * k, 5, { top: false });
-      const c = 0x7f9c45;
-      b.paint(c, Surf.Foliage).blob(x, 4.5 * k, z, 2.3 * k, 1.4 * k, 2.3 * k, 0, 0.2, seed);
-      b.paint(shade(c, 1.1), Surf.Foliage).blob(x + 0.5 * k, 5.4 * k, z - 0.3 * k, 1.4 * k, 0.9 * k, 1.4 * k, 0, 0.2, seed + 3);
-      // drooping curtain: narrow hanging fronds with a ragged hem
-      const n = 8;
-      for (let i = 0; i < n; i++) {
-        const a0 = (i / n) * TAU + 0.15, a1 = a0 + (TAU / n) * 0.7;
-        const r0 = 1.9 * k, r1 = 2.55 * k;
-        const yb = (1.3 + ((i * 7) % 3) * 0.45) * k;
-        b.paint(shade(c, 0.82 + (i % 3) * 0.06), Surf.Foliage);
-        const t0: V3 = [x + Math.cos(a0) * r0, 4.3 * k, z + Math.sin(a0) * r0], t1: V3 = [x + Math.cos(a1) * r0, 4.3 * k, z + Math.sin(a1) * r0];
-        const b0: V3 = [x + Math.cos(a0) * r1, yb, z + Math.sin(a0) * r1], b1: V3 = [x + Math.cos(a1) * r1, yb + 0.5 * k, z + Math.sin(a1) * r1];
-        b.quad2(b0, b1, t1, t0);
+      b.paint(0x55402e, Surf.Wood).cylinder(x, z, 0, 2.8 * k, 0.3 * k, 0.2 * k, 5, { top: false });
+      const c = 0x6f8d3c;
+      m = mark(b);
+      const cy = 3.4 * k;
+      const nc: V3 = [x, cy, z];
+      // three elongated, drooping lobes around the crown
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * TAU + 0.4;
+        const off = i === 1 ? 0 : 1.1 * k;
+        lobe(b, rng, [x + Math.cos(a) * off, cy + (i === 1 ? 0.5 * k : 0), z + Math.sin(a) * off], i === 1 ? [2.4 * k, 1.6 * k, 2.4 * k] : [1.6 * k, 2.4 * k, 1.6 * k], nc, shade(c, 0.94 + i * 0.05));
       }
-      return 6.3 * k;
+      // four hanging fronds
+      for (let i = 0; i < 4; i++) {
+        const a0 = (i / 4) * TAU + 0.8, a1 = a0 + 0.55;
+        const r0 = 1.6 * k, r1 = 2.3 * k;
+        const t0: V3 = [x + Math.cos(a0) * r0, cy + 0.6 * k, z + Math.sin(a0) * r0], t1: V3 = [x + Math.cos(a1) * r0, cy + 0.6 * k, z + Math.sin(a1) * r0];
+        const b0: V3 = [x + Math.cos(a0) * r1, 0.9 * k, z + Math.sin(a0) * r1], b1: V3 = [x + Math.cos(a1) * r1, 1.3 * k, z + Math.sin(a1) * r1];
+        b.paint(shade(c, 0.86), Surf.Foliage).quad2(b0, b1, t1, t0);
+      }
+      tintSince(b, m, foliageShade(0.9 * k, 6.0 * k));
+      return 6.0 * k;
     }
     case 'acacia': {
       b.paint(0x5b4633, Surf.Wood).cylinder(x, z, 0, 3.4 * k, 0.22 * k, 0.14 * k, 5, { top: false });
-      b.paint(0x7c8f3e, Surf.Foliage).blob(x, 4.0 * k, z, 3.0 * k, 0.8 * k, 2.6 * k, 0, 0.2, seed);
+      m = mark(b);
+      lobe(b, rng, [x, 4.0 * k, z], [3.0 * k, 0.8 * k, 2.6 * k], [x, 3.6 * k, z], 0x6e8038);
+      tintSince(b, m, foliageShade(3.2 * k, 4.8 * k));
       return 4.8 * k;
     }
     case 'palm': {
       const lean = rng.range(-0.5, 0.5);
       b.paint(0x8a7355, Surf.Wood).beam([x, 0, z], [x + lean, 6.2 * k, z + lean * 0.5], 0.36 * k);
       const tx = x + lean, ty = 6.2 * k, tz = z + lean * 0.5;
-      b.paint(0x4f8a3a, Surf.Foliage);
+      b.paint(0x4a7a34, Surf.Foliage);
+      const seed = rng.next() * 10;
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * TAU + seed;
         const ex = tx + Math.cos(a) * 2.6 * k, ez = tz + Math.sin(a) * 2.6 * k;
@@ -631,48 +747,82 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
   }
 }
 
+/** Dense woodland clump: n overlapping crowns within radius r, trunks only under the outer crowns (~25 tris/crown). */
+export function treeClump(b: ModelBuilder, rng: RNG, cx: number, cz: number, r: number, n: number): void {
+  const crowns: [number, number, number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const a = rng.range(0, TAU), d = i === 0 ? 0 : r * Math.sqrt(rng.range(0.15, 1));
+    let cr = rng.range(2.6, 3.6);
+    let cy = rng.range(5.2, 7.2);
+    if (cy + cr * 0.8 > TREE_CAP) {
+      const f = TREE_CAP / (cy + cr * 0.8);
+      cy *= f;
+      cr *= f;
+    }
+    const [x, z] = clampIn(cx + Math.cos(a) * d, cz + Math.sin(a) * d, cr * 1.1);
+    crowns.push([x, z, cr, cy]);
+  }
+  let ymin = Infinity, ymax = 0;
+  for (const [x, z, cr, cy] of crowns) {
+    const outer = Math.hypot(x - cx, z - cz) > r * 0.45;
+    if (outer) b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, cy - cr * 0.4, 0.3, 0.2, 5, { top: false });
+    ymin = Math.min(ymin, cy - cr * 0.8);
+    ymax = Math.max(ymax, cy + cr * 0.8);
+  }
+  const m = mark(b);
+  const nc: V3 = [cx, (ymin + ymax) / 2, cz];
+  for (const [x, z, cr, cy] of crowns) lobe(b, rng, [x, cy, z], [cr, cr * 0.8, cr], nc, rng.pick(FOLIAGE));
+  tintSince(b, m, foliageShade(ymin, ymax));
+}
+
 /** Low shrub / bush clump (20 tris). */
 export function shrub(b: ModelBuilder, rng: RNG, x: number, z: number, r = 0.8, color?: ColorLike): void {
   b.paint(color ?? rng.pick(FOLIAGE), Surf.Foliage).blob(x, r * 0.55, z, r, r * 0.75, r, 0, 0.2, rng.next() * 10);
 }
 
-/** Flower bed: raised soil edge + rows of colored flower tufts. */
+/** Flower bed: raised stone edge, green bed, overlapping rotated flower tufts (bands of colour, 25% leaves). */
 export function flowerBed(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, opts: { colors?: number[]; spacing?: number; border?: ColorLike | null; tuft?: number } = {}): void {
-  const border = opts.border === undefined ? 0x9b9384 : opts.border;
+  const border = opts.border === undefined ? 0x8f887a : opts.border;
   if (border !== null) b.paint(border, Surf.Stone).box(x0 - 0.15, 0, z0 - 0.15, x1 + 0.15, 0.22, z1 + 0.15);
-  b.paint(SOIL, Surf.Plain).box(x0, 0.2, z0, x1, 0.24, z1, { nx: null, px: null, nz: null, pz: null });
+  b.paint(BED_GREEN, Surf.Foliage).box(x0, 0.2, z0, x1, 0.24, z1, { nx: null, px: null, nz: null, pz: null });
   const colors = opts.colors ?? FLOWERS;
   const sp = opts.spacing ?? 0.75;
-  const t = opts.tuft ?? 0.62;
   const nx = Math.max(1, Math.floor((x1 - x0) / sp)), nz = Math.max(1, Math.floor((z1 - z0) / sp));
   const stepX = (x1 - x0) / nx, stepZ = (z1 - z0) / nz;
-  // rows of one color each (reads as planted bands from afar)
   for (let j = 0; j < nz; j++) {
     const c = colors[(j + Math.floor(rng.next() * 2)) % colors.length];
     for (let i = 0; i < nx; i++) {
-      const x = x0 + (i + 0.5) * stepX + rng.range(-0.1, 0.1), z = z0 + (j + 0.5) * stepZ + rng.range(-0.1, 0.1);
-      b.paint(rng.chance(0.15) ? 0x5a8a38 : c, Surf.Foliage).pyramid(x, z, t * stepX * 1.2, t * stepZ * 1.2, 0.22, rng.range(0.28, 0.45));
+      const x = x0 + (i + 0.5) * stepX + rng.range(-0.12, 0.12), z = z0 + (j + 0.5) * stepZ + rng.range(-0.12, 0.12);
+      tuft(b, x, z, 0.95 * stepX, 0.95 * stepZ, rng.range(0.35, 0.55), rng.range(0, TAU), rng.chance(0.25) ? rng.pick(FOLIAGE) : c);
     }
   }
 }
 
-/** Round flower bed (circle) with concentric color rings of tufts. */
+/** One flower tuft: rotated low pyramid. */
+function tuft(b: ModelBuilder, x: number, z: number, w: number, d: number, h: number, rot: number, color: ColorLike): void {
+  b.push().translate(x, 0, z).rotateY(rot);
+  b.paint(color, Surf.Foliage).pyramid(0, 0, w, d, 0.22, h);
+  b.pop();
+}
+
+/** Round flower bed (circle) with loosely clustered, overlapping tufts on a green bed. */
 export function roundBed(b: ModelBuilder, rng: RNG, cx: number, cz: number, r: number, colors: number[] = FLOWERS): void {
-  b.paint(0x9b9384, Surf.Stone);
+  b.paint(0x8f887a, Surf.Stone);
   cylWall(b, cx, cz, 0, 0.24, r + 0.15, r + 0.15, 14);
-  b.paint(SOIL, Surf.Plain);
+  b.paint(BED_GREEN, Surf.Foliage);
   disc(b, cx, cz, 0.24, r + 0.15, 14);
-  const rings = Math.max(1, Math.round(r / 0.7));
+  const rings = Math.max(1, Math.round(r / 0.62));
   for (let k = 0; k < rings; k++) {
     const rr = (k + 0.5) * (r / rings);
     const c = colors[k % colors.length];
-    const n = Math.max(1, Math.round((TAU * rr) / 0.75));
+    const n = Math.max(1, Math.round((TAU * rr) / 0.62));
     for (let i = 0; i < n; i++) {
-      const a = (i / n) * TAU + k;
-      b.paint(c, Surf.Foliage).pyramid(cx + Math.cos(a) * rr, cz + Math.sin(a) * rr, 0.62, 0.62, 0.24, rng.range(0.28, 0.42));
+      const a = (i / n) * TAU + k + rng.range(-0.15, 0.15);
+      const col = rng.chance(0.25) ? rng.pick(FOLIAGE) : rng.chance(0.2) ? rng.pick(colors) : c;
+      tuft(b, cx + Math.cos(a) * rr, cz + Math.sin(a) * rr, 0.62, 0.62, rng.range(0.35, 0.55), rng.range(0, TAU), col);
     }
   }
-  if (rng.chance(0.5)) shrub(b, rng, cx, cz, 0.6, 0x3f6d2c);
+  if (rng.chance(0.5)) shrub(b, rng, cx, cz, 0.6, 0x3d6127);
 }
 
 /** Hedge with slightly rounded look (box). */
@@ -681,8 +831,41 @@ export function hedgeBox(b: ModelBuilder, x0: number, z0: number, x1: number, z1
 }
 
 // ---------------------------------------------------------------------------------------------- furniture
-/** Park lantern lamp post (~28 tris). style 0 = lantern, 1 = globe, 2 = modern bar */
-export function lamp(b: ModelBuilder, x: number, z: number, h = 4.2, style = 0): void {
+/**
+ * Light pool layer under a lamp: `color` = colour of that ground (painted 0.7x, Emissive pattern 9: plain by day,
+ * warm lamp-lit at night), `y` = top of that ground layer, optional convex `clip` polygons (e.g. ribbonQuads of a path)
+ * restrict the pool to that ground.
+ */
+export interface PoolSpec {
+  color: ColorLike;
+  y: number;
+  clip?: P2[][];
+}
+
+/** Octagonal light pool of radius r at (x, z) over one or more ground layers; clipped to the lot. */
+export function lightPool(b: ModelBuilder, x: number, z: number, r: number, specs: PoolSpec[]): void {
+  const oct: P2[] = [];
+  for (let i = 0; i < 8; i++) oct.push([x + Math.cos((i / 8) * TAU + TAU / 16) * r, z + Math.sin((i / 8) * TAU + TAU / 16) * r]);
+  const base = clipToLot(oct);
+  if (base.length < 3) return;
+  for (const sp of specs) {
+    b.paint(shade(sp.color, 0.7), Surf.Emissive, 9);
+    if (!sp.clip) {
+      flatPoly(b, base, sp.y + 0.02);
+      continue;
+    }
+    for (const q of sp.clip) {
+      let inRange = false;
+      for (const [qx, qz] of q) if (Math.abs(qx - x) < r * 1.6 && Math.abs(qz - z) < r * 1.6) inRange = true;
+      if (!inRange) continue;
+      const cp = clipConvex(base, q);
+      if (cp.length >= 3) flatPoly(b, cp, sp.y + 0.015);
+    }
+  }
+}
+
+/** Park lantern lamp post (~28 tris). style 0 = lantern, 1 = globe, 2 = modern bar. `pool` adds a light pool (r = 0.85 h). */
+export function lamp(b: ModelBuilder, x: number, z: number, h = 4.2, style = 0, pool?: PoolSpec | PoolSpec[]): void {
   b.paint(0x26292c, Surf.Metal);
   b.cylinder(x, z, 0, 0.35, 0.16, 0.12, 6, { top: false });
   b.cylinder(x, z, 0.35, h - 0.35, 0.07, 0.055, 5, { top: false });
@@ -695,6 +878,12 @@ export function lamp(b: ModelBuilder, x: number, z: number, h = 4.2, style = 0):
     b.paint(0x26292c, Surf.Metal).box(x - 0.08, h, z - 0.08, x + 0.6, h + 0.12, z + 0.08);
     b.paint(0xf4f1e6, Surf.Emissive).box(x + 0.05, h - 0.03, z - 0.07, x + 0.58, h, z + 0.07, { top: null });
   }
+  if (pool) lightPool(b, x, z, 0.85 * h, Array.isArray(pool) ? pool : [pool]);
+}
+
+/** Pool specs for a lamp standing on a lawn beside a path: lawn pool under the path + path pool clipped to the path. */
+export function lawnPathPool(pathQuads: P2[][], pathColor: ColorLike, lawnColor: ColorLike = GRASS_LUSH): PoolSpec[] {
+  return [{ color: lawnColor, y: YL.patch }, { color: pathColor, y: YL.path, clip: pathQuads }];
 }
 
 /** Bench facing +Z at rot=0 (~36 tris). */
@@ -712,8 +901,8 @@ export function bin(b: ModelBuilder, x: number, z: number): void {
 
 /** Fountain: stone basin, water, tiered center with jet. r = basin radius. tiers 1..3 (~120-220 tris). */
 export function fountain(b: ModelBuilder, x: number, z: number, r: number, tiers = 2, opts: { stone?: ColorLike; water?: ColorLike; seg?: number; y?: number } = {}): number {
-  const stone = opts.stone ?? 0xd8d0bf;
-  const water = opts.water ?? 0x5a9fbf;
+  const stone = opts.stone ?? 0xcac2b1;
+  const water = opts.water ?? 0x3d7a8e;
   const seg = opts.seg ?? 20;
   const y = opts.y ?? 0;
   const rimH = Math.min(0.7, 0.35 + r * 0.06);
@@ -739,7 +928,7 @@ export function fountain(b: ModelBuilder, x: number, z: number, r: number, tiers
     top = ty;
   }
   // jet + falling sheet
-  b.paint(0xcfe8f2, Surf.Water);
+  b.paint(0xc4dde6, Surf.Emissive, 10);
   b.cone(x, z, top, 0.9 + r * 0.08, 0.16, 6, true);
   return top + 0.9 + r * 0.08;
 }
