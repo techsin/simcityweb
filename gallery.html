@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Asset Gallery</title>
+<style>
+  html, body { margin: 0; background: #1b1f24; color: #eee; font: 12px/1.3 system-ui, sans-serif; }
+  #wrap { position: relative; display: inline-block; }
+  #labels { position: absolute; inset: 0; pointer-events: none; }
+  .lbl { position: absolute; padding: 3px 6px; background: rgba(0,0,0,.55); border-radius: 3px; font-weight: 600; }
+  .lbl.bad { background: rgba(170,20,20,.8); }
+  .lbl small { font-weight: 400; opacity: .8; }
+  #info { padding: 6px 8px; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c"></canvas><div id="labels"></div></div>
+<div id="info"></div>
+<script type="module" src="/src/gallery/main.ts"></script>
+</body>
+</html>
