@@ -93,11 +93,11 @@ export const REWARDS: RewardDef[] = [
     description: 'A global hub for a global city.' },
   // ---------------- business deals
   { id: 'military_base', name: 'Military Base', kind: 'deal', defIds: ['rw_military_base'], conds: [pop(15000)],
-    description: 'The army pays well — but it is noisy.', announce: 'The Defense Department offers a deal: host a Military Base for $1,500/month. Find it under Rewards & Deals.' },
+    description: 'The army pays well — but it is noisy.', announce: 'The Defense Department offers a deal: host a Military Base for §1,500/month. Find it under Rewards & Deals.' },
   { id: 'missile_range', name: 'Missile Test Range', kind: 'deal', defIds: ['rw_missile_range'], conds: [pop(35000)],
-    description: 'Big income, bad neighbour.', announce: 'An aerospace contractor offers $2,500/month for a Missile Test Range. Residents will hate it.' },
+    description: 'Big income, bad neighbour.', announce: 'An aerospace contractor offers §2,500/month for a Missile Test Range. Residents will hate it.' },
   { id: 'toxic_dump', name: 'Toxic Waste Dump', kind: 'deal', defIds: ['rw_toxic_dump'], conds: [pop(60000)],
-    description: 'Huge income, horrible pollution.', announce: 'A chemical conglomerate offers $4,000/month to dump toxic waste here. Are you that desperate?' },
+    description: 'Huge income, horrible pollution.', announce: 'A chemical conglomerate offers §4,000/month to dump toxic waste here. Are you that desperate?' },
   // ---------------- landmarks by population
   lm('lm_lighthouse', 3000), lm('lm_clock_tower', 5000), lm('lm_obelisk', 10000), lm('lm_arch', 15000), lm('lm_observatory', 25000),
   lm('lm_cathedral', 35000), lm('lm_castle', 50000), lm('lm_pyramid', 70000), lm('lm_ferris_wheel', 90000), lm('lm_opera_house', 150000),

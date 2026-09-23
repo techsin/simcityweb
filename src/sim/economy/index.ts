@@ -19,6 +19,8 @@ export { placeBuilding, removeBuilding, demolishFee, frontHasRoad } from './buil
 export { popMaxStage, desirMaxStage } from './growth';
 export { residentCoverage } from './approval';
 export { HISTORY_CAP } from './history';
+export { CURRENCY, formatMoney } from './format';
+export { networkCellCost, zoneCellCost, POWERLINE_COST, SUBWAY_COST, BRIDGE_COST_MUL, NETWORK_INFO, ZONE_COST } from './tuning';
 
 export interface DemandInfo {
   /** displayed demand per DevType, −1..1 (same as stats.demand) */

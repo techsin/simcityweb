@@ -30,13 +30,13 @@ function stsCrane(b: ModelBuilder, cx: number, zl: number, zs: number, color: nu
   const legX = 8.2, top = 29.5;
   const dark = shade(color, 0.72);
   // legs
-  b.paint(color, Surf.Metal);
+  b.paint(color, Surf.Metal, 1);
   for (const sx of [-1, 1]) for (const zz of [zl, zs]) b.box(cx + sx * legX - 0.7, 1.3, zz - 0.8, cx + sx * legX + 0.7, top, zz + 0.8, { top: null, bottom: null });
   // bogies on the rails
-  b.paint(0x3a3d41, Surf.Metal);
+  b.paint(0x3a3d41, Surf.Metal, 1);
   for (const zz of [zl, zs]) for (const sx of [-1, 1]) b.box(cx + sx * legX - 3.2, 0, zz - 0.9, cx + sx * legX + 3.2, 1.4, zz + 0.9, { bottom: null });
   // side-frame portal beams (along Z) and top cross beams (along X)
-  b.paint(color, Surf.Metal);
+  b.paint(color, Surf.Metal, 1);
   for (const sx of [-1, 1]) b.box(cx + sx * legX - 0.6, 13.5, zl, cx + sx * legX + 0.6, 15.2, zs);
   for (const zz of [zl, zs]) b.box(cx - legX - 0.7, top - 1.8, zz - 0.9, cx + legX + 0.7, top, zz + 0.9);
   // X bracing in the side frames above the portal beam
@@ -48,16 +48,16 @@ function stsCrane(b: ModelBuilder, cx: number, zl: number, zs: number, color: nu
   const zb = zl - 11, zh = zs + 1.5;
   for (const sx of [-1, 1]) b.box(cx + sx * 2.4 - 0.6, top, zb, cx + sx * 2.4 + 0.6, top + 2.2, zh, { bottom: undefined });
   // machinery house on the backreach
-  b.paint(0xeeece6, Surf.WallWindows, 4, 3.6).box(cx - 3.6, top + 2.2, zb + 0.4, cx + 3.6, top + 6.0, zb + 7.5, { bottom: null, top: { color: 0xeeece6, surf: Surf.Metal } });
-  b.paint(dark, Surf.Metal).box(cx - 3.7, top + 6.0, zb + 0.3, cx + 3.7, top + 6.3, zb + 7.6, { bottom: null });
+  b.paint(0xeeece6, Surf.WallWindows, 4, 3.6).box(cx - 3.6, top + 2.2, zb + 0.4, cx + 3.6, top + 6.0, zb + 7.5, { bottom: null, top: { color: 0xeeece6, surf: Surf.Metal, pattern: 1 } });
+  b.paint(dark, Surf.Metal, 1).box(cx - 3.7, top + 6.0, zb + 0.3, cx + 3.7, top + 6.3, zb + 7.6, { bottom: null });
   // operator cab under the girder (sea side)
-  b.paint(0xeeece6, Surf.Metal).box(cx - 1.4, top - 4.2, zs - 3.6, cx + 1.4, top - 1.8, zs - 1.2, { top: null });
+  b.paint(0xeeece6, Surf.Metal, 1).box(cx - 1.4, top - 4.2, zs - 3.6, cx + 1.4, top - 1.8, zs - 1.2, { top: null });
   b.paint(0x24303a, Surf.GlassPlain).box(cx - 1.42, top - 3.6, zs - 1.22, cx + 1.42, top - 2.3, zs - 1.18, { top: null, bottom: null, nz: null });
   // trolley
-  b.paint(0xd8d6d0, Surf.Metal).box(cx - 3.0, top + 2.2, zl + 2, cx + 3.0, top + 3.8, zl + 6, { bottom: null });
+  b.paint(0xd8d6d0, Surf.Metal, 1).box(cx - 3.0, top + 2.2, zl + 2, cx + 3.0, top + 3.8, zl + 6, { bottom: null });
   // A-frame (apex) + raised boom
   const apexY = top + 16, apexZ = zs - 5;
-  b.paint(color, Surf.Metal);
+  b.paint(color, Surf.Metal, 1);
   for (const sx of [-1, 1]) {
     obox(b, [cx + sx * 2.4, top + 2.2, zl + 1], [cx + sx * 1.6, apexY, apexZ], 0.9, 0.9, { ends: false });
     obox(b, [cx + sx * 2.4, top + 2.2, zs - 0.5], [cx + sx * 1.6, apexY, apexZ], 0.9, 0.9, { ends: false });
@@ -106,20 +106,22 @@ function seaport(b: ModelBuilder, rng: RNG): void {
   // quay wall: coping stones + face going down to the water, rubber fenders
   b.paint(P.coping, Surf.Stone).box(-48, -3, 46.8, 48, 0.35, 48, { bottom: null });
   b.paint(P.yellow, Surf.Plain);
-  flat(b, -48, 46.3, 48, 46.6, 0.2);
+  flat(b, -48, 46.3, 48, 46.6, 0.27);
   for (let x = -44; x <= 44; x += 8) {
     b.paint(P.fender, Surf.Plain).box(x - 0.9, -2.2, 48, x + 0.9, 0.2, 48.35, { bottom: null });
-    bollard(b, x + 4, 47.4, 0.35);
+    if (x <= 36) bollard(b, x + 4, 47.4, 0.35);
   }
   // crane rails
   const zl = 28, zs = 42;
   b.paint(0x77726b, Surf.Metal);
-  for (const zz of [zl, zs]) flat(b, -48, zz - 0.25, 48, zz + 0.25, 0.2);
+  for (const zz of [zl, zs]) flat(b, -48, zz - 0.25, 48, zz + 0.25, 0.27);
   // lane markings on the quay apron
   b.paint(P.yardLine, Surf.Plain);
-  dashed(b, -47, 35, 47, 35, 0.25, 0.2, 4, 3);
+  dashed(b, -47, 35, 47, 35, 0.25, 0.27, 4, 3);
   // STS cranes (idle, booms raised)
-  poolRect(b, -47.5, 29, 47.5, 41, 0.175, P.quay, 0.5);
+  // quay night lighting: dim base over the apron + a soft pool under each crane (crane floods)
+  poolRect(b, -47.5, 24.3, 47.5, 46.6, 0.18, P.quay, 0.35);
+  [-30, -2, 26].forEach((x, i) => poolSoft(b, x, 35, 10.5, i % 2 ? 0.24 : 0.21, P.quay));
   stsCrane(b, -30, zl, zs, 0xc0392b, 80);
   stsCrane(b, -2, zl, zs, 0x2e6fb5, 84);
   stsCrane(b, 26, zl, zs, 0xc0392b, 78);
@@ -129,8 +131,8 @@ function seaport(b: ModelBuilder, rng: RNG): void {
   semi(b, 38, 37.5, Math.PI / 2, 0xc0392b, null, 0.15);
   // ---- container yard blocks with RTGs
   b.paint(P.yardLine, Surf.Plain);
-  for (const zz of [-16.5, 7.5, 22.5]) dashed(b, -47, zz, 47, zz, 0.22, 0.17, 4, 3);
-  stripe(b, -2.5, -15, -2.5, 22, 0.22, 0.17);
+  for (const zz of [-16.5, 7.5, 22.5]) dashed(b, -47, zz, 47, zz, 0.22, 0.21, 4, 3);
+  stripe(b, -2.5, -15, -2.5, 22, 0.22, 0.21);
   const blocks: [number, number, number, number][] = [
     // x0, z0, bays, rows
     [-44.5, -14.5, 3, 7],
@@ -158,7 +160,7 @@ function seaport(b: ModelBuilder, rng: RNG): void {
   // truck gate: lanes in from the -Z street, canopy with booths
   b.paint(0x404145, Surf.Pavement).box(23, 0, -48, 37, 0.15, -24, { bottom: null });
   b.paint(P.yardLine, Surf.Plain);
-  for (const x of [26.5, 30, 33.5]) dashed(b, x, -47.5, x, -25, 0.2, 0.2, 2.5, 2);
+  for (const x of [26.5, 30, 33.5]) dashed(b, x, -47.5, x, -25, 0.2, 0.21, 2.5, 2);
   b.paint(0xe8e8e4, Surf.Metal).box(22.5, 5.2, -41, 37.5, 5.7, -35.5, { bottom: { color: 0xc8c4bc, surf: Surf.Plain } });
   b.paint(0xfff2d8, Surf.Emissive).box(23.5, 5.05, -38.5, 36.5, 5.2, -38, { top: null });
   for (const x of [23, 37]) b.paint(0x5a5f64, Surf.Metal).box(x - 0.25, 0, -38.5, x + 0.25, 5.2, -38, { top: null, bottom: null });
@@ -166,11 +168,15 @@ function seaport(b: ModelBuilder, rng: RNG): void {
   b.paint(0xd23a2a, Surf.Plain);
   for (const x of [24.8, 28.3, 31.8]) b.box(x - 1.5, 1.0, -36.6, x + 1.5, 1.12, -36.45, { bottom: null });
   // floodlight masts
+  // yard floodlight masts (2 in the aisle between the block rows) + soft pools clipped to the yard asphalt
   for (const [x, z] of [[-24, 23.6], [14, 23.6], [-47, -26], [47, 8]] as [number, number][]) floodMast(b, x, z, 26, Math.abs(x) > 40 ? Math.PI / 2 : 0);
+  floodMast(b, -16, 8.2, 24, 0);
+  floodMast(b, 20, 8.2, 24, 0);
+  // [x, z, r, y]: overlapping neighbours sit on different layers (0.15 / 0.18)
+  const yardPools: [number, number, number, number][] = [[-24, 13, 10.5, 0.15], [14, 13, 10.5, 0.18], [-37, -26, 10, 0.15], [37, 8, 10, 0.18], [-16, 4, 14, 0.18], [20, 4, 14, 0.15]];
+  for (const [x, z, r, y] of yardPools) poolSoft(b, x, z, r, y, P.yard);
   lampPost(b, 22, -44, 6);
-  poolSoft(b, -41, -26, 6.5, 0.145, P.yard);
-  poolSoft(b, 41, 8, 6.5, 0.145, P.yard);
-  poolRect(b, 23, -41, 37, -35.5, 0.17, 0x404145, 0.95);
+  poolRect(b, 23, -41, 37, -35.5, 0.18, 0x404145, 0.8);
   tree(b, rng, 21.5, -30, 6);
 }
 
@@ -180,11 +186,15 @@ function ferryTerminal(b: ModelBuilder, rng: RNG): void {
   b.paint(0xc6c1b6, Surf.Pavement).box(-16, 0, -16, 3.5, 0.12, 2, { bottom: null });
   b.paint(0x3e3f43, Surf.Pavement).box(3.5, 0, -16, 16, 0.1, 5, { bottom: null });
   b.paint(P.white, Surf.Plain);
-  for (const x of [7.5, 11.5]) dashed(b, x, -15, x, 3.5, 0.15, 0.14, 2, 2);
+  for (const x of [7.5, 11.5]) dashed(b, x, -15, x, 3.5, 0.15, 0.17, 2, 2);
   // quay edge (stone) between the lanes and the linkspan
   b.paint(P.coping, Surf.Stone).box(-16, -2.5, 2, 16, 0.3, 5, { bottom: null });
   b.paint(P.yellow, Surf.Plain);
   flat(b, 3.5, 4.4, 16, 4.7, 0.34);
+  // harbour basin (shore lots are raised land, so the berth is modelled as water) + dark quay face at the waterline
+  b.paint(0x1d5f6e, Surf.Water);
+  flat(b, -16, 5, 16, 15.95, 0.03);
+  b.paint(0x5f5a52, Surf.Stone).box(-16, -0.5, 4.9, 16, 0.3, 5.0, { top: null, bottom: null, nz: null });
   // pier: timber deck on piles reaching the +Z edge
   const deckY = 1.1;
   b.paint(0x8a6e52, Surf.Wood).box(-15.5, deckY - 0.35, 5, 1.5, deckY, 15.8, { bottom: { color: 0x5a4838, surf: Surf.Wood } });
@@ -227,20 +237,23 @@ function ferryTerminal(b: ModelBuilder, rng: RNG): void {
   lightDot(b, -6.9, 7.2, 14, 0.4, 0xff3322);
   // ---- vehicle linkspan: hinged steel ramp + lifting gantry
   const rx0 = 5, rx1 = 13.5;
-  b.paint(0x55595e, Surf.Metal);
-  quadF(b, [rx0, 0.32, 5], [rx1, 0.32, 5], [rx1, 1.6, 15.8], [rx0, 1.6, 15.8], [0, 1, 0]);
+  const ry0 = 0.32, ry1 = 0.55;
+  const rampY = (z: number) => ry0 + ((ry1 - ry0) * (z - 5)) / 10.8;
+  b.paint(0x55595e, Surf.Metal, 1);
+  quadF(b, [rx0, ry0, 5], [rx1, ry0, 5], [rx1, ry1, 15.8], [rx0, ry1, 15.8], [0, 1, 0]);
   b.paint(P.yellow, Surf.Plain);
-  quadF(b, [rx0 + 0.4, 0.36, 5.2], [rx0 + 0.7, 0.36, 5.2], [rx0 + 0.7, 1.64, 15.6], [rx0 + 0.4, 1.64, 15.6], [0, 1, 0]);
-  quadF(b, [rx1 - 0.7, 0.36, 5.2], [rx1 - 0.4, 0.36, 5.2], [rx1 - 0.4, 1.64, 15.6], [rx1 - 0.7, 1.64, 15.6], [0, 1, 0]);
-  b.paint(0x33373b, Surf.Metal);
-  for (const x of [rx0, rx1]) obox(b, [x, 0.9, 5], [x, 2.2, 15.8], 0.25, 1.2);
-  b.paint(0x2e6fb5, Surf.Metal);
-  for (const x of [rx0 - 0.6, rx1 + 0.6]) b.box(x - 0.5, 0, 13.3, x + 0.5, 9.2, 14.3, { bottom: null });
-  b.box(rx0 - 1.1, 8.2, 13.3, rx1 + 1.1, 9.4, 14.3);
+  quadF(b, [rx0 + 0.4, ry0 + 0.04, 5.2], [rx0 + 0.7, ry0 + 0.04, 5.2], [rx0 + 0.7, ry1 + 0.04, 15.6], [rx0 + 0.4, ry1 + 0.04, 15.6], [0, 1, 0]);
+  quadF(b, [rx1 - 0.7, ry0 + 0.04, 5.2], [rx1 - 0.4, ry0 + 0.04, 5.2], [rx1 - 0.4, ry1 + 0.04, 15.6], [rx1 - 0.7, ry1 + 0.04, 15.6], [0, 1, 0]);
+  b.paint(0x33373b, Surf.Metal, 1);
+  for (const x of [rx0, rx1]) obox(b, [x, ry0 + 0.5, 5], [x, ry1 + 0.5, 15.8], 0.25, 1.1);
+  // lifting gantry: slim steel towers, yellow cross-beam, hoist ropes down to the ramp
+  b.paint(0x5b6f82, Surf.Metal, 1);
+  for (const x of [rx0 - 0.6, rx1 + 0.6]) b.box(x - 0.3, 0, 13.5, x + 0.3, 7.0, 14.1, { bottom: null });
+  b.paint(0xd9a324, Surf.Metal, 1).box(rx0 - 0.9, 6.2, 13.5, rx1 + 0.9, 7.0, 14.1);
   b.paint(0x222222, Surf.Metal);
-  for (const x of [rx0 + 0.8, rx1 - 0.8]) b.box(x - 0.05, 1.9, 13.75, x + 0.05, 8.2, 13.85, { top: null, bottom: null });
-  lightDot(b, rx0 - 0.6, 9.4, 13.8, 0.4, 0xff3322);
-  lightDot(b, rx1 + 0.6, 9.4, 13.8, 0.4, 0xff3322);
+  for (const x of [rx0 + 0.8, rx1 - 0.8]) b.box(x - 0.05, rampY(13.8) + 0.1, 13.75, x + 0.05, 6.2, 13.85, { top: null, bottom: null });
+  lightDot(b, rx0 - 0.6, 7.0, 13.8, 0.4, 0xff3322);
+  lightDot(b, rx1 + 0.6, 7.0, 13.8, 0.4, 0xff3322);
   // queued cars + ticket booth
   for (let i = 0; i < 3; i++) {
     carLite(b, 5.5, -1 - i * 5.4, 0, rng.pick(CAR_COLS), 0.1);
@@ -249,7 +262,7 @@ function ferryTerminal(b: ModelBuilder, rng: RNG): void {
   carLite(b, 13.8, -4, 0, 0xf1f1ef, 0.1);
   b.paint(0xe8e8e4, Surf.Metal).box(4, 3.4, -14.6, 16, 3.7, -11.4, { bottom: { color: 0xc8c4bc, surf: Surf.Plain } });
   b.paint(0xfff2d8, Surf.Emissive).box(4.5, 3.25, -13.2, 15.5, 3.4, -12.8, { top: null });
-  poolRect(b, 4, -14.6, 16, -11.4, 0.115, 0x3e3f43, 0.95);
+  poolRect(b, 4, -14.6, 16, -11.4, 0.13, 0x3e3f43, 0.8);
   b.paint(0xd9d4c8, Surf.WallWindows, 6, 2.8).box(8.8, 0, -13.8, 10.2, 2.5, -12.2, { top: { color: 0x9a968e, surf: Surf.RoofFlat } });
   b.paint(0x5a5f64, Surf.Metal);
   for (const x of [4.3, 15.7]) b.box(x - 0.12, 0, -13.1, x + 0.12, 3.4, -12.9, { top: null, bottom: null });

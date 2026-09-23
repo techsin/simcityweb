@@ -4,7 +4,7 @@
  *
  * =====================================================================================================
  * UNIT SYSTEM (keep coherent — sim-infra, UI and the economy all rely on these):
- *   money        $ (simoleons). cost = one-time build cost; upkeep = $/month at 100% funding; income = $/month.
+ *   money        § (simoleons). cost = one-time build cost; upkeep = §/month at 100% funding; income = §/month.
  *   power        MW. powerOut = plant capacity at 100% funding. powerUse = average draw.
  *                resident ≈ 0.001 MW (1 kW) × wealth factor (R$ 0.8, R$$ 1.0, R$$$ 1.4);
  *                commercial job ≈ 0.0015 (CS) / 0.002 (CO) MW; industrial job 0.001 (Ag) .. 0.004 (dirty) MW;
@@ -29,7 +29,7 @@
  * LANDFILL: 'util_landfill_tile' is NOT ploppable — landfill is a Zone (Zone.Landfill). Its hidden def carries
  * per-cell stats: garbageCapacity (t/month per landfill cell), pollution, landValue and `cost` = zoning cost/cell.
  * The renderer draws the util_landfill_tile model on every landfill-zoned cell.
- * POWER PYLON: 'util_power_pylon' is NOT ploppable — placed by CityActions.buildPowerLine ($ per cell = cost).
+ * POWER PYLON: 'util_power_pylon' is NOT ploppable — placed by CityActions.buildPowerLine (§ per cell = cost).
  * =====================================================================================================
  */
 import { DevType, Zone } from '../core/types';
@@ -279,7 +279,7 @@ const PLOPPABLES: BuildingDef[] = [
   // ================================================================ GARBAGE
   p({ id: 'util_landfill_tile', name: 'Landfill', category: 'garbage', service: 'utilities', cost: 15, upkeep: 1, garbageCapacity: 300, hidden: true,
     pollution: { air: 0.15, water: 0.2, noise: 0.1, radius: 5 }, landValue: { amount: -0.3, radius: 6 },
-    description: 'Not ploppable: landfill is a zone. Per landfill cell: 300 t/month capacity, $15 zoning, $1/month upkeep.' }),
+    description: 'Not ploppable: landfill is a zone. Per landfill cell: 300 t/month capacity, §15 zoning, §1/month upkeep.' }),
   p({ id: 'util_recycling_center', name: 'Recycling Center', category: 'garbage', service: 'utilities', cost: 9000, upkeep: 260, jobs: 60, garbageCapacity: 4000, powerUse: 2,
     pollution: { noise: 0.2, radius: 4 }, requires: 'recycling_center', description: 'Processes 4,000 t/month of garbage cleanly.' }),
   p({ id: 'util_incinerator', name: 'Waste-to-Energy Incinerator', category: 'garbage', service: 'utilities', cost: 26000, upkeep: 700, jobs: 70, garbageCapacity: 12000, powerOut: 60,
@@ -406,16 +406,16 @@ const PLOPPABLES: BuildingDef[] = [
   // ================================================================ REWARDS / BUSINESS DEALS
   p({ id: 'rw_military_base', name: 'Military Base', category: 'reward', cost: 0, upkeep: 0, income: 1500, jobs: 400, powerUse: 3, waterUse: 150,
     landValue: { amount: -0.2, radius: 14 }, pollution: { noise: 0.5, air: 0.1, radius: 12 }, requires: 'military_base', unique: true,
-    description: 'Business deal: the army pays $1,500/month. Noisy, lowers land value, residents nearby hate it.' }),
+    description: 'Business deal: the army pays §1,500/month. Noisy, lowers land value, residents nearby hate it.' }),
   p({ id: 'rw_missile_range', name: 'Missile Test Range', category: 'reward', cost: 0, upkeep: 0, income: 2500, jobs: 150, powerUse: 2, waterUse: 40,
     landValue: { amount: -0.35, radius: 18 }, pollution: { noise: 0.7, air: 0.15, radius: 16 }, requires: 'missile_range', unique: true,
-    description: 'Business deal: $2,500/month. Very noisy and bad for land value.' }),
+    description: 'Business deal: §2,500/month. Very noisy and bad for land value.' }),
   p({ id: 'rw_toxic_dump', name: 'Toxic Waste Dump', category: 'reward', cost: 0, upkeep: 0, income: 4000, jobs: 60, powerUse: 0.5,
     landValue: { amount: -0.5, radius: 20 }, pollution: { air: 0.5, water: 0.8, radius: 14 }, requires: 'toxic_dump', unique: true,
-    description: 'Business deal: $4,000/month to store other cities\' toxic waste. Terrible pollution.' }),
+    description: 'Business deal: §4,000/month to store other cities\' toxic waste. Terrible pollution.' }),
   p({ id: 'rw_casino', name: 'Casino Resort', category: 'reward', cost: 25000, upkeep: 400, income: 3000, jobs: 500, powerUse: 3, waterUse: 100,
     landValue: { amount: -0.05, radius: 8 }, pollution: { noise: 0.3, radius: 6 }, requires: 'casino', unique: true,
-    description: 'Reward (needs Legalized Gambling): $3,000/month but attracts crime.' }),
+    description: 'Reward (needs Legalized Gambling): §3,000/month but attracts crime.' }),
   p({ id: 'rw_research_center', name: 'Advanced Research Center', category: 'reward', service: 'education', cost: 40000, upkeep: 1500, jobs: 600, powerUse: 5, waterUse: 60,
     coverage: { kind: 'education', radius: 50, strength: 0.35, capacity: 100000 }, landValue: { amount: 0.2, radius: 14 }, requires: 'research_center', unique: true,
     description: 'Reward (EQ milestone): boosts EQ and attracts high-tech industry.' }),

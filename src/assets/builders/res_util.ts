@@ -227,6 +227,8 @@ export interface RoofOpts {
   trim?: ColorLike;
   /** gable triangle paint (null = none) */
   gable?: Paint | null;
+  /** ridge cap colour (draws a cap along the ridge) */
+  ridge?: ColorLike;
 }
 
 /**
@@ -260,6 +262,7 @@ export function roofGable(b: ModelBuilder, cx: number, cz: number, w: number, d:
   b.quad([xb, yr - t, cz], [xb, ye - t, zb], [xb, ye, zb], [xb, yr, cz]);
   b.quad([xa, ye, zf], [xa, yr, cz], [xa, yr - t, cz], [xa, ye - t, zf]);
   b.quad([xa, yr, cz], [xa, ye, zb], [xa, ye - t, zb], [xa, yr - t, cz]);
+  if (o.ridge !== undefined) b.paint(o.ridge).box(xa, yr - 0.06, cz - 0.16, xb, yr + 0.1, cz + 0.16, { bottom: null });
   if (o.gable !== null && o.gable !== undefined) {
     b.paint(o.gable);
     const gx0 = cx - w / 2, gx1 = cx + w / 2, zF = cz + half, zB = cz - half;
@@ -296,6 +299,7 @@ export function roofHip(b: ModelBuilder, cx: number, cz: number, w: number, d: n
   b.quad([x1, yt, z0], [x0, yt, z0], [x0, ye, z0], [x1, ye, z0]);
   b.quad([x1, yt, z1], [x1, yt, z0], [x1, ye, z0], [x1, ye, z1]);
   b.quad([x0, yt, z0], [x0, yt, z1], [x0, ye, z1], [x0, ye, z0]);
+  if (o.ridge !== undefined && rx1 - rx0 > 0.3) b.paint(o.ridge).box(rx0 - 0.1, yr - 0.06, cz - 0.16, rx1 + 0.1, yr + 0.1, cz + 0.16, { bottom: null });
 }
 
 /**
@@ -855,3 +859,37 @@ export const SIDING_PAL = [0xeeebe2, 0xe6dcc2, 0x9fae94, 0x8fa3b5, 0xd2b48f, 0xc
 export const ROOF_PAL = [0x45484d, 0x5b4a3e, 0x3d4650, 0x6b5a4a, 0x55634f, 0x7a4536, 0x5c5f63, 0x4a4540];
 export const DOOR_PAL = [0x7e2a26, 0x2c3b57, 0x2f4a37, 0x6b4a2e, 0x2a2a2a, 0xa8823a, 0x55707e, 0x5a3a4a];
 export const BRICK_PAL = [0x8f4a3a, 0x7a4636, 0xb08a60, 0x9a5a44, 0x6e3a2e, 0xa7765a, 0x8a5040, 0xc4a472];
+
+/** Plumbing vent stack on a roof. */
+export function vent(b: ModelBuilder, x: number, z: number, y: number, h = 0.7): void {
+  b.paint(0x55585c, Surf.Metal).cylinder(x, z, y - 0.3, h + 0.3, 0.07, 0.07, 5, { top: true });
+}
+
+/** Paved path through points (x, z): rotated slabs with overlapping ends (approximates a curve). */
+export function pathPts(b: ModelBuilder, pts: [number, number][], w: number, color: ColorLike, h = 0.08): void {
+  b.paint(color, Surf.Pavement);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [ax, az] = pts[i], [bx, bz] = pts[i + 1];
+    const L = Math.hypot(bx - ax, bz - az), a = Math.atan2(bx - ax, bz - az);
+    b.push().translate((ax + bx) / 2, 0, (az + bz) / 2).rotateY(a);
+    b.box(-w / 2, 0, -L / 2 - (i > 0 ? w * 0.35 : 0), w / 2, h + i * 0.001, L / 2 + (i < pts.length - 2 ? w * 0.35 : 0), { bottom: null });
+    b.pop();
+  }
+}
+
+/** Garden / drive lamp post with lamp head + ground light pool. ~22 tris. */
+export function gardenLamp(b: ModelBuilder, x: number, z: number, ground: ColorLike, h = 3.2, gy = 0.1): void {
+  b.paint(0x2a2c2e, Surf.Metal).box(x - 0.06, 0, z - 0.06, x + 0.06, h, z + 0.06, { bottom: null, top: null });
+  b.paint(0xffe6b0, Surf.Emissive).box(x - 0.18, h, z - 0.18, x + 0.18, h + 0.45, z + 0.18, { bottom: null });
+  lightPool(b, x - 1.6, z - 1.6, x + 1.6, z + 1.6, ground, gy);
+}
+
+/** Row of 2 x 3 solar panels on a sloped roof plane y(z) between x0..x1, z0..z1 (dark glass, never lit). */
+export function solarRoof(b: ModelBuilder, x0: number, x1: number, z0: number, z1: number, yAt: (z: number) => number, cols = 3, rows = 2): void {
+  b.paint(0x1f2a3e, Surf.GlassPlain, 1);
+  const pw = (x1 - x0) / cols, pd = (z1 - z0) / rows;
+  for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) {
+    const a = x0 + c * pw + 0.06, bb = a + pw - 0.12, za = z0 + r * pd + 0.06, zb = za + pd - 0.12;
+    b.quad([a, yAt(zb) + 0.1, zb], [bb, yAt(zb) + 0.1, zb], [bb, yAt(za) + 0.1, za], [a, yAt(za) + 0.1, za]);
+  }
+}

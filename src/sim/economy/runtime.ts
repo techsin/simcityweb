@@ -30,6 +30,8 @@ export interface EconData {
   bankrupt: boolean;
   /** advisor cooldowns: message id → absolute day last shown */
   cooldowns: Record<string, number>;
+  /** advisor back-off: message id → consecutive repeats while the condition persisted */
+  streak?: Record<string, number>;
   /** months each service has been on strike */
   strikes: Record<string, number>;
   /** approval before smoothing */
@@ -63,6 +65,7 @@ export function econData(st: CityState): EconData {
       monthsNegative: 0,
       bankrupt: false,
       cooldowns: {},
+      streak: {},
       strikes: {},
       approvalRaw: 50,
       resCrime: 0,

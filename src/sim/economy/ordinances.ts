@@ -57,7 +57,7 @@ export const ORDINANCES: OrdinanceDef[] = [
   { id: 'youth_curfew', name: 'Youth Curfew', description: 'Minors must be home by 10pm.', fixed: 10, perCapita: 0.005,
     unlockPop: 2500, effects: { 'crime.rate': 0.9, 'add.approval': -1, 'add.desir.R3': -0.01 }, effectText: '−10% crime, −1 approval' },
   { id: 'legalized_gambling', name: 'Legalized Gambling', description: 'Allow casinos and betting. Brings money — and crime.', fixed: 0, perCapita: 0.03, income: true,
-    unlockPop: 3000, effects: { 'crime.rate': 1.15, 'add.approval': -2 }, effectText: '+$0.03/resident income, +15% crime, unlocks casinos' },
+    unlockPop: 3000, effects: { 'crime.rate': 1.15, 'add.approval': -2 }, effectText: '+§0.03/resident income, +15% crime, unlocks casinos' },
   { id: 'pro_reading', name: 'Pro-Reading Campaign', description: 'Libraries and schools promote reading.', fixed: 30, perCapita: 0.006,
     unlockPop: 3000, effects: { 'edu.effect': 1.1 }, effectText: '+10% education effectiveness' },
   { id: 'free_clinics', name: 'Free Clinics', description: 'Free medical care for low-income residents.', fixed: 50, perCapita: 0.012,
@@ -71,7 +71,7 @@ export const ORDINANCES: OrdinanceDef[] = [
   { id: 'recycling', name: 'Recycling Program', description: 'Curbside recycling for every home.', fixed: 40, perCapita: 0.01,
     unlockPop: 8000, effects: { 'garbage.produced': 0.8 }, effectText: '−20% garbage' },
   { id: 'parking_fines', name: 'Parking Fines', description: 'Aggressive enforcement of parking rules.', fixed: 0, perCapita: 0.008, income: true,
-    unlockPop: 8000, effects: { 'traffic.car': 0.97, 'add.approval': -1 }, effectText: '+$0.008/resident income, −3% car trips, −1 approval' },
+    unlockPop: 8000, effects: { 'traffic.car': 0.97, 'add.approval': -1 }, effectText: '+§0.008/resident income, −3% car trips, −1 approval' },
   { id: 'nuclear_free_zone', name: 'Nuclear Free Zone', description: 'Declare the city nuclear free. No nuclear plants allowed.', fixed: 0, perCapita: 0,
     unlockPop: 10000, effects: { 'add.desir.R': 0.02, 'add.desir.R3': 0.02, 'add.approval': 1 }, blocks: ['util_nuclear_plant'],
     effectText: 'Residents feel safer (+desirability), bans nuclear power' },
@@ -151,7 +151,7 @@ export interface OrdinanceInfo {
   /** can be enacted now (population reached) */
   available: boolean;
   unlockText: string;
-  /** monthly $ at current population; negative = income */
+  /** monthly § at current population; negative = income */
   monthly: number;
   income: boolean;
 }

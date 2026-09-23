@@ -8,7 +8,7 @@ import type { RNG } from '../../core/rng';
 import { lampPost } from '../kit';
 import {
   flat, stripe, dashed, runwayNumber, lightDot, floodMast, frustum, obox, vault, tree, shrub, carLite, parking,
-  serviceVehicle, airliner, turboprop, gaPlane, LIVERIES, shade, quadF, plate, poolRect, poolSoft, type Livery,
+  serviceVehicle, airliner, turboprop, gaPlane, LIVERIES, shade, quadF, plate, panel, poolRect, poolSoft, type Livery,
 } from './tr_kit';
 
 // ---------------------------------------------------------------------------------------------- palette
@@ -27,7 +27,14 @@ const C = {
   road: 0x3b3c40,
   sidewalk: 0xc9c4b8,
 };
-const Y = { grass: 0.04, rwy: 0.12, rwyMark: 0.17, apron: 0.14, apronMark: 0.19 };
+// decal layering (>= 3 cm apart): apron top 0.14 | dim light base 0.17 | light pools 0.20 / 0.23 | markings 0.26
+const Y = { grass: 0.04, mow: 0.07, rwy: 0.12, rwyMark: 0.17, apron: 0.14, apronBase: 0.17, pool: 0.2, pool2: 0.23, apronMark: 0.26 };
+
+/** Mowing stripes: darker 6 m bands along X over the lot's grass (2 tris per band). */
+function mowStripes(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number): void {
+  b.paint(0x74944a, Surf.Foliage);
+  for (let z = z0 + 6; z < z1 - 0.1; z += 12) flat(b, x0, z, x1, Math.min(z + 6, z1), Y.mow);
+}
 
 // ---------------------------------------------------------------------------------------------- runway / taxiways
 interface RunwayOpts {
@@ -145,8 +152,8 @@ function hangar(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number,
 
 /** Vertical fuel / storage tank with a shallow cone roof (~40 tris). */
 function tank(b: ModelBuilder, x: number, z: number, r: number, h: number, color: number): void {
-  b.paint(color, Surf.Metal).cylinder(x, z, 0, h, r, r, 12, { top: false });
-  b.paint(shade(color, 0.85), Surf.Metal).cone(x, z, h, r * 0.18, r, 12);
+  b.paint(color, Surf.Metal, 1).cylinder(x, z, 0, h, r, r, 12, { top: false });
+  b.paint(shade(color, 0.85), Surf.Metal, 1).cone(x, z, h, r * 0.18, r, 12);
   b.paint(0x7a7f85, Surf.Metal).box(x - r - 0.1, h - 0.9, z - 0.2, x - r + 0.1, h, z + 0.2, { bottom: null });
 }
 
@@ -159,10 +166,10 @@ function jetBridge(b: ModelBuilder, zFace: number, yT: number, rx: number, rz: n
   // fixed link: terminal -> rotunda
   b.paint(skin, Surf.Corrugated).box(rx - 1.3, yT, rz, rx + 1.3, yT + 2.8, zFace, { bottom: { color: 0x6c7176, surf: Surf.Metal } });
   b.paint(0x33373b, Surf.Metal).cylinder(rx, rz, 0, yT, 0.55, 0.55, 6, { top: false });
-  b.paint(0xa9aeb4, Surf.Metal).cylinder(rx, rz, yT - 0.3, 3.4, 2.0, 2.0, 8, { top: true });
+  b.paint(0xa9aeb4, Surf.Metal, 1).cylinder(rx, rz, yT - 0.3, 3.4, 2.0, 2.0, 8, { top: true });
   // cab against the fuselage (canopy faces -X)
   const cx0 = doorX + 0.45, cx1 = doorX + 3.2;
-  b.paint(0x9aa0a6, Surf.Metal).box(cx0, yD, doorZ - 1.5, cx1, yD + 3.0, doorZ + 1.5, { bottom: { color: 0x6c7176, surf: Surf.Metal } });
+  b.paint(0x9aa0a6, Surf.Metal, 1).box(cx0, yD, doorZ - 1.5, cx1, yD + 3.0, doorZ + 1.5, { bottom: { color: 0x6c7176, surf: Surf.Metal, pattern: 1 } });
   b.paint(0x2c2f33, Surf.Metal).box(doorX + 0.05, yD + 0.1, doorZ - 1.3, cx0, yD + 2.8, doorZ + 1.3, { bottom: null });
   // moving tunnel: rotunda -> cab
   const ex = cx1 - 0.3, ez = doorZ;
@@ -209,6 +216,7 @@ function flagPoleLite(b: ModelBuilder, x: number, z: number, h: number): void {
 function airportSmall(b: ModelBuilder, rng: RNG): void {
   // ground
   b.paint(C.grass, Surf.Foliage).slab(-64, -48, 64, 48, Y.grass);
+  mowStripes(b, -64, -48, 64, 48);
   // runway + taxiway
   runway(b, -62.5, 62.5, -38, 14, { keys: 3, lightPitch: 12, dash: [6, 5], numH: 5, aim: false });
   taxiway(b, -56, 56, -24, 6, -27.7, 16);
@@ -223,25 +231,33 @@ function airportSmall(b: ModelBuilder, rng: RNG): void {
   stripe(b, 8, -17.5, 8, -2, 0.3, Y.apronMark);
   flat(b, -21, -1.3, -15, -1.0, Y.apronMark);
   b.paint(C.white, Surf.Plain);
-  dashed(b, -48, 1.6, 32, 1.6, 0.25, Y.apronMark, 2, 2);
+  dashed(b, -48, 1.6, 32, 1.6, 0.25, Y.apronMark, 3, 3);
   // hangar apron + hangar
   b.paint(C.apron, Surf.Pavement).box(34, 0, -21, 62, Y.apron, 4, { bottom: null });
   hangar(b, 37, -16, 61, 3, 5.2, 5.2, 0.45);
   // terminal: glass hall under a barrel roof + office annex
   const tz0 = 7, tz1 = 19;
   b.paint(0x3e4c58, Surf.GlassPlain).box(-36, 0, tz0, 2, 3.2, tz1, {
+    nz: { color: 0x2a323a, surf: Surf.GlassCurtain, pattern: 3, floor: 3.2 },
     px: { color: 0xe8e5de, surf: Surf.Plain },
     nx: { color: 0xe8e5de, surf: Surf.Plain },
     top: null,
   });
   b.paint(0x6e8fa8, Surf.GlassCurtain, 5, 2.2).box(-36, 3.2, tz0, 2, 5.4, tz1, {
-    nz: { color: 0x2a323a, surf: Surf.GlassPlain },
+    nz: { color: 0x6e8fa8, surf: Surf.GlassCurtain, pattern: 5, floor: 2.2 },
     px: { color: 0xe8e5de, surf: Surf.Plain },
     nx: { color: 0xe8e5de, surf: Surf.Plain },
     top: { color: 0x8e8b84, surf: Surf.RoofFlat },
   });
-  b.paint(0xd8dce0, Surf.Metal);
-  vault(b, -17, 13, 16, 40, 5.4, 2.6, 'x', { seg: 8, ends: { color: 0xe8e5de, surf: Surf.Plain }, endAt: [-19, 19], under: { color: 0xc8a878, surf: Surf.Wood } });
+  b.paint(0xc8cdd2, Surf.Metal, 1);
+  vault(b, -17, 13, 16, 40, 5.4, 2.6, 'x', { seg: 8, ends: { color: 0xe8e5de, surf: Surf.Plain }, endAt: [-19, 19], under: { color: 0xc8a878, surf: Surf.Wood }, crown: { paint: { color: 0x3a4a58, surf: Surf.GlassPlain, pattern: 2 }, width: 3 } });
+  // airside canopy + two gate doors on the apron face
+  b.paint(0xe8e8e4, Surf.Metal, 1).box(-34, 3.2, 4, 0, 3.45, tz0, { bottom: { color: 0xd8d4ca, surf: Surf.Plain } });
+  for (const x of [-24, -10]) {
+    b.paint(0x5a5f64, Surf.Metal, 1).box(x - 1.2, 0, tz0 - 0.08, x + 1.2, 2.6, tz0, { bottom: null, pz: null });
+    b.paint(0x2a323a, Surf.GlassPlain, 2);
+    panel(b, 'z', -1, tz0 - 0.1, x - 1.0, x + 1.0, 0.1, 2.4);
+  }
   b.paint(0xd8d4ca, Surf.WallWindows, 2, 3.2).box(-47, 0, 8, -36, 4.6, 18, { top: { color: 0x7f7c76, surf: Surf.RoofFlat } });
   // entrance canopy + sign
   b.paint(0xe8e8e4, Surf.Metal).box(-26, 3.6, tz1, -8, 3.9, tz1 + 4, { bottom: { color: 0xcfcac0, surf: Surf.Plain } });
@@ -255,7 +271,7 @@ function airportSmall(b: ModelBuilder, rng: RNG): void {
   dashed(b, -46, 23.25, 14, 23.25, 0.18, 0.13, 2.5, 2.5);
   b.paint(C.road, Surf.Pavement).box(6, 0, 25.5, 14, 0.1, 48, { bottom: null });
   b.paint(C.sidewalk, Surf.Pavement).box(-48, 0, 19, 4, 0.16, 21, { bottom: null });
-  parking(b, rng, -44, 27, 4, 45, 0.36);
+  parking(b, rng, -44, 27, 4, 45, 0.3);
   carLite(b, -20, 22.2, Math.PI / 2, 0xf1c40f, 0.1);
   carLite(b, -28, 22.2, Math.PI / 2, 0xf1f1ef, 0.1);
   serviceVehicle(b, -38, 23.2, Math.PI / 2, 'bus');
@@ -277,15 +293,17 @@ function airportSmall(b: ModelBuilder, rng: RNG): void {
   // apron floods
   floodMast(b, -30, 3, 14, 0);
   floodMast(b, 20, 3, 14, 0);
-  poolRect(b, -44, -15.5, 30, 3.6, Y.apron + 0.025, C.apron, 0.6);
-  poolRect(b, -26, 19.1, -8, 21, 0.18, C.sidewalk, 0.5);
-  for (const x of [-2, -30]) poolSoft(b, x, 23.3, 2.2, 0.115, C.road);
+  // stand lighting: dim floodlit base + a soft pool in front of each mast
+  poolRect(b, -48, -19.5, 32, 3.5, Y.apronBase, C.apron, 0.35);
+  poolSoft(b, -30, -8.5, 12, Y.pool, C.apron, 1, 10);
+  poolSoft(b, 20, -8.5, 12, Y.pool, C.apron, 1, 10);
+  poolRect(b, -26, 19.1, -8, 21, 0.19, C.sidewalk, 0.7);
   // windsock
   b.paint(0xdddddd, Surf.Metal).cylinder(-50, -29, 0, 5, 0.08, 0.06, 5, { top: false });
   b.paint(0xff7a1a, Surf.Plain);
   frustum(b, [-50, 4.8, -29], [-47.4, 4.5, -29.6], 0.45, 0.22, 6);
   // landscaping
-  for (const x of [-58, -36, -14, 24, 44, 60]) tree(b, rng, x, 45.5, rng.range(6, 7.2));
+  for (const x of [-58, -30, -4, 30, 58]) tree(b, rng, x, 45.5, rng.range(6, 7.2));
   for (const [x, z] of [[-61, 30], [-60, 40]] as [number, number][]) tree(b, rng, x, z, rng.range(5.5, 7));
   for (let x = -40; x <= 0; x += 20) shrub(b, rng, x, 20, 0.8);
   // GA T-hangar row + flight school / FBO with a small lot
@@ -306,6 +324,7 @@ function airportSmall(b: ModelBuilder, rng: RNG): void {
 // ---------------------------------------------------------------------------------------------- large airport
 function airportLarge(b: ModelBuilder, rng: RNG): void {
   b.paint(C.grass, Surf.Foliage).slab(-96, -64, 96, 64, Y.grass);
+  mowStripes(b, -96, -64, 96, 64);
   // runway, taxiway, connectors
   const rz = -50;
   runway(b, -95, 95, rz, 25, { keys: 4, lightPitch: 11.5, dash: [8, 6], numH: 7, aim: true });
@@ -320,7 +339,7 @@ function airportLarge(b: ModelBuilder, rng: RNG): void {
     { x: -56, wide: false, liv: LIVERIES[0] },
     { x: -27, wide: false, liv: LIVERIES[1] },
     { x: 2, wide: false, liv: LIVERIES[2] },
-    { x: 37, wide: true, liv: LIVERIES[5] },
+    { x: 40, wide: true, liv: LIVERIES[5] },
   ];
   for (const g of gates) {
     stripe(b, g.x, -23, g.x, 8.5, 0.35, ym);
@@ -353,10 +372,12 @@ function airportLarge(b: ModelBuilder, rng: RNG): void {
   const nV = 4, vw = (tx1 - tx0) / nV;
   for (let i = 0; i < nV; i++) {
     const cx = tx0 + vw * (i + 0.5);
-    b.paint(0xd9dde1, Surf.Metal);
+    b.paint(0xc8cdd2, Surf.Metal, 1);
     vault(b, cx, (tz0 + tz1) / 2, vw, tz1 - tz0 + 7, th, 4.6, 'z', {
       seg: 8, ends: { color: 0x7fa2bb, surf: Surf.GlassCurtain, pattern: 5, floor: 3 }, endAt: [-(tz1 - tz0) / 2, (tz1 - tz0) / 2],
       under: { color: 0xc9a77a, surf: Surf.Wood },
+      // glazed crown skylight (pavilion glass: glows warm at night even though it is near-horizontal)
+      crown: { paint: { color: 0x3a4a58, surf: Surf.GlassPlain, pattern: 2 }, width: 3 },
     });
   }
   // valley gutters between shells
@@ -378,20 +399,20 @@ function airportLarge(b: ModelBuilder, rng: RNG): void {
 
   // ---- gates: jet bridges + aircraft + turnaround vehicles
   for (const g of gates) {
-    const s = g.wide ? 0.62 : 0.78;
+    const s = g.wide ? 0.72 : 0.78;
     const R = g.wide ? 2.9 : 2.0;
     const noseLocal = g.wide ? 16 + 2.4 * R : 11 + 2.4 * R;
-    const zp = 8.2 - noseLocal * s;
+    const zp = (g.wide ? 9.6 : 8.2) - noseLocal * s;
     airliner(b, g.x, zp, 0, s, g.liv, { wide: g.wide, y: Y.apron });
     const doorZ = zp + (g.wide ? 12.5 : 8.8) * s;
     const doorX = g.x + R * 0.924 * s + 0.05;
     const hc = g.wide ? 4.2 : 3.2;
-    jetBridge(b, tz0, 4.4, g.x + 8, 9.6, doorX, doorZ, hc * s + Y.apron - 0.9);
+    jetBridge(b, tz0, 3.4, g.x + 10.5, 10.5, doorX, doorZ, hc * s + Y.apron - 0.6);
     turnaround(b, rng, g.x, zp, s, 1);
   }
   // taxiing + departing aircraft
   airliner(b, -30, -30, -Math.PI / 2, 0.78, LIVERIES[3], { y: Y.rwy });
-  airliner(b, 55, rz, Math.PI / 2, 0.78, LIVERIES[4], { y: Y.rwy });
+  airliner(b, -62, rz, Math.PI / 2, 0.78, LIVERIES[4], { y: Y.rwy }); // lined up on runway 09
 
   // ---- maintenance hangar + GA stand
   hangar(b, 59, -5, 94, 13, 7, 8.5, 0.35);
@@ -416,23 +437,24 @@ function airportLarge(b: ModelBuilder, rng: RNG): void {
   b.paint(C.road, Surf.Pavement).box(-70, 0, 41.5, -62, 0.1, 64, { bottom: null });
   b.paint(C.white, Surf.Plain);
   dashed(b, 51, 42, 51, 63.5, 0.2, 0.14, 3, 3);
-  parking(b, rng, -60, 43, 44, 62, 0.36);
+  parking(b, rng, -60, 43, 44, 62, 0.28);
   // curbside vehicles
   serviceVehicle(b, -48, 36.4, Math.PI / 2, 'bus');
   serviceVehicle(b, 12, 36.4, Math.PI / 2, 'bus');
   for (const x of [-30, -24, -8, 0, 24, 30]) carLite(b, x + rng.range(-1, 1), 36.4, Math.PI / 2, rng.chance(0.6) ? 0xf1c40f : rng.pick([0x2b2d31, 0xf1f1ef]), 0.1);
   for (const x of [-56, -12, 40]) carLite(b, x, 40, -Math.PI / 2, rng.pick([0x2b2d31, 0x8a1c1c, 0xb8bcc2]), 0.1);
   // apron floodlight masts along the service road
-  for (const x of [-41.5, -12.5, 18, 54]) {
+  // stand lighting: dim floodlit base over the stands + a soft pool in front of each mast (alternating heights
+  // where neighbouring pools overlap)
+  poolRect(b, -72, -24, 60, 12.6, Y.apronBase, C.apron, 0.35);
+  [-41.5, -12.5, 18, 54].forEach((x, i) => {
     floodMast(b, x, 12.2, 20, 0);
-  }
-  // floodlit stand area (reads as a slightly darker concrete zone by day)
-  poolRect(b, -70, -21, 54, 12.6, Y.apron + 0.025, C.apron, 0.6);
-  poolRect(b, -62, tz1 + 0.3, 40, tz1 + 3.1, 0.2, C.sidewalk, 0.5);
-  for (const x of [-52, -20, 24]) poolSoft(b, x, 48.2, 5, 0.09, C.road);
+    poolSoft(b, x, -5, 16, i % 2 ? Y.pool2 : Y.pool, C.apron);
+  });
+  poolRect(b, -62, tz1 + 0.3, 40, tz1 + 3.1, 0.21, C.sidewalk, 0.7);
   // tower-side staff parking + trees
   parking(b, rng, 62, 44, 94, 62, 0.35);
-  for (const x of [-90, -78, -50, -30, -10, 10, 30, 64, 80]) tree(b, rng, x, 62, rng.range(6.5, 7.5));
+  for (const x of [-90, -76, -40, 0, 36, 76]) tree(b, rng, x, 62, rng.range(6.5, 7.5));
   for (const [x, z] of [[-91, 45], [-90, 57], [92, 32], [64, 36]] as [number, number][]) tree(b, rng, x, z, rng.range(6, 8));
   radar(b, -80, 51, 11);
   for (const x of [-52, -20, 24]) lampPost(b, x, 42.2, 6);

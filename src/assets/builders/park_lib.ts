@@ -508,14 +508,39 @@ export const LAMP_GLOW = 0xffe0a6;
  * Ground layer heights (top surfaces) for park lots. Coplanar layers are kept >= 12-15 mm apart so they do not
  * z-fight at game-camera distances.
  */
-export const YL = { lawn: 0.06, patch: 0.075, lawnPool: 0.095, path: 0.11, pathPool: 0.125, top: 0.14 } as const;
+export const YL = { lawn: 0.06, lawnPool: 0.075, patch: 0.09, patchPool: 0.105, path: 0.12, pathPool: 0.135, top: 0.15, topPool: 0.165 } as const;
+
+/** Lawn tone patches drawn in the current build (so light pools can be tinted per patch). Reset per build. */
+let PATCHES: { color: ColorLike; tris: P2[][] }[] = [];
+let LAWN_BASE: ColorLike = GRASS_LUSH;
+export function resetPatches(): void {
+  PATCHES = [];
+  LAWN_BASE = GRASS_LUSH;
+}
+/** Draw one lawn tone patch at the patch layer and record it for light pools. */
+export function lawnPatch(b: ModelBuilder, poly: P2[], color: ColorLike): void {
+  const contour = poly.map(([x, z]) => new THREE.Vector2(x, z));
+  const idx = THREE.ShapeUtils.triangulateShape(contour, []);
+  const tris = idx.map(([i, j, k]) => [poly[i], poly[j], poly[k]] as P2[]);
+  b.paint(color, Surf.Foliage);
+  for (const [a, c, d] of tris) upTri(b, [a[0], YL.patch, a[1]], [c[0], YL.patch, c[1]], [d[0], YL.patch, d[1]]);
+  PATCHES.push({ color, tris });
+}
+/** Light-pool specs for a lamp on the lawn: base lawn pool (under the patches) + one clipped pool per tone patch. */
+export function lawnPools(): PoolSpec[] {
+  return [{ color: LAWN_BASE, y: YL.lawn, dy: 0.015 }, ...PATCHES.map((p) => ({ color: p.color, y: YL.patch, clip: p.tris }))];
+}
 
 // ---------------------------------------------------------------------------------------------- ground
-/** Lawn base covering rect plus a few irregular, non-overlapping tone patches (all at one height, h + 0.015). */
-export function lawnPatchwork(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, base: ColorLike = GRASS_LUSH, patches = 4, h = 0.06): void {
+/**
+ * Lawn base covering rect (top at YL.lawn) plus a few irregular, non-overlapping tone patches (YL.patch).
+ * `avoid` = reserved ellipses [cx, cz, rx, rz] (e.g. a meadow drawn later with lawnPatch).
+ */
+export function lawnPatchwork(b: ModelBuilder, rng: RNG, x0: number, z0: number, x1: number, z1: number, base: ColorLike = GRASS_LUSH, patches = 4, h: number = YL.lawn, avoid: [number, number, number, number][] = []): void {
   b.paint(base, Surf.Foliage).slab(x0, z0, x1, z1, h);
+  LAWN_BASE = base;
   const w = x1 - x0, d = z1 - z0;
-  const placed: [number, number, number, number][] = [];
+  const placed: [number, number, number, number][] = [...avoid];
   for (let i = 0, tries = 0; i < patches && tries < patches * 8; tries++) {
     const rx = rng.range(0.15, 0.3) * w, rz = rng.range(0.15, 0.3) * d;
     const cx = rng.range(x0 + rx * 0.7, x1 - rx * 0.7), cz = rng.range(z0 + rz * 0.7, z1 - rz * 0.7);
@@ -524,8 +549,7 @@ export function lawnPatchwork(b: ModelBuilder, rng: RNG, x0: number, z0: number,
     placed.push([cx, cz, rx, rz]);
     i++;
     const poly = blobPoly(rng, cx, cz, rx, rz, 12, 0.3).map(([x, z]) => [Math.max(x0, Math.min(x1, x)), Math.max(z0, Math.min(z1, z))] as P2);
-    b.paint(rng.pick(GRASS), Surf.Foliage);
-    flatPoly(b, poly, h + 0.015);
+    lawnPatch(b, poly, rng.pick(GRASS));
   }
 }
 
@@ -601,6 +625,7 @@ export function lotModels(defs: Record<string, ModelBuildFn>): ModelBuilders {
     out[id] = (b, v, rng, entry) => {
       const hx = entry.footprint[0] * 8 - 0.15, hz = entry.footprint[1] * 8 - 0.15;
       setBounds(-hx, -hz, hx, hz, entry.height[1] * 1.2);
+      resetPatches();
       try {
         fn(b, v, rng, entry);
       } finally {
@@ -909,9 +934,9 @@ export function jointGrid(b: ModelBuilder, x0: number, z0: number, x1: number, z
   for (let z = z0 + step; z < z1 - 0.01; z += step) b.quad([x0, y, z + w / 2], [x1, y, z + w / 2], [x1, y, z - w / 2], [x0, y, z - w / 2]);
 }
 
-/** Pool specs for a lamp standing on a lawn beside a path: lawn pool under the path + path pool clipped to the path. */
-export function lawnPathPool(pathQuads: P2[][], pathColor: ColorLike, lawnColor: ColorLike = GRASS_LUSH): PoolSpec[] {
-  return [{ color: lawnColor, y: YL.patch }, { color: pathColor, y: YL.path, clip: pathQuads }];
+/** Pool specs for a lamp standing on a lawn beside paths: lawn + patch pools + a path pool clipped to the path quads. */
+export function lawnPathPool(pathQuads: P2[][], pathColor: ColorLike, pathY: number = YL.path): PoolSpec[] {
+  return [...lawnPools(), { color: pathColor, y: pathY, clip: pathQuads }];
 }
 
 /** Bench facing +Z at rot=0 (~36 tris). */

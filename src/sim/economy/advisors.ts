@@ -1,6 +1,7 @@
 /**
  * Advisors & news: contextual advice with per-message cooldowns (no spam: at most ADVICE_PER_MONTH per month,
- * highest priority first), population milestones, and flavor headlines.
+ * highest priority first, ≥ MIN_COOLDOWN days per message key, doubling while the condition persists), population
+ * milestones, and flavor headlines.
  * Advisors: 'finance' | 'utilities' | 'transport' | 'safety' | 'health' | 'environment' | 'planning' (+ 'news').
  * Messages go through sim.notify(text, kind, x, z, advisor).
  */
@@ -12,9 +13,12 @@ import { capHints } from './demand';
 import { residentCoverage } from './approval';
 import { maxLoanAmount, loanRate } from './loans';
 import { hash2 } from '../../core/rng';
+import { formatMoney } from './format';
 
 const ADVICE_PER_MONTH = 2;
-const money = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
+/** no advice repeats sooner than this (days) */
+const MIN_COOLDOWN = 60;
+const money = (v: number) => formatMoney(v);
 const int = (v: number) => Math.round(v).toLocaleString('en-US');
 
 interface Advice {
@@ -220,12 +224,18 @@ export function advisorsSystem(rt: EconRuntime): SimSystem {
       const st = sim.state;
       const d = econData(st);
       const list = gather(st).sort((a, b) => b.priority - a.priority);
+      // persistent conditions back off: each repeat doubles the cooldown (max ×8); cleared conditions reset
+      const streak = (d.streak ??= {});
+      const active = new Set(list.map((a) => a.id));
+      for (const id of Object.keys(streak)) if (!active.has(id)) delete streak[id];
       let shown = 0;
       for (const a of list) {
         if (shown >= ADVICE_PER_MONTH) break;
         const last = d.cooldowns[a.id];
-        if (last !== undefined && st.day - last < a.cooldown) continue;
+        const cooldown = Math.max(MIN_COOLDOWN, a.cooldown) * 2 ** Math.min(3, streak[a.id] ?? 0);
+        if (last !== undefined && st.day - last < cooldown) continue;
         d.cooldowns[a.id] = st.day;
+        streak[a.id] = (streak[a.id] ?? 0) + 1;
         sim.notify(a.text, a.kind === 'info' ? 'advisor' : a.kind, a.x, a.z, a.advisor);
         shown++;
       }

@@ -7,6 +7,7 @@ import {
   LOAN_MAX_BASE, LOAN_MAX_COUNT, LOAN_MAX_PER_CAPITA, LOAN_MIN, LOAN_RATE_MAX, LOAN_RATE_MIN, LOAN_RATE_NEG_FUNDS,
   LOAN_RATE_PER_LOAN, LOAN_TERM_MONTHS,
 } from './tuning';
+import { formatMoney } from './format';
 
 export interface LoanOffer {
   ok: boolean;
@@ -50,8 +51,8 @@ export function loanOffer(st: CityState, amount: number): LoanOffer {
   const monthlyPayment = amortizedPayment(Math.max(0, amount), rate, LOAN_TERM_MONTHS);
   const base = { rate, monthlyPayment, termMonths: LOAN_TERM_MONTHS, maxAmount };
   if (st.budget.loans.length >= LOAN_MAX_COUNT) return { ok: false, reason: `At most ${LOAN_MAX_COUNT} loans at a time`, ...base };
-  if (!(amount >= LOAN_MIN)) return { ok: false, reason: `Minimum loan is $${LOAN_MIN.toLocaleString('en-US')}`, ...base };
-  if (amount > maxAmount) return { ok: false, reason: `The bank will lend at most $${maxAmount.toLocaleString('en-US')}`, ...base };
+  if (!(amount >= LOAN_MIN)) return { ok: false, reason: `Minimum loan is ${formatMoney(LOAN_MIN)}`, ...base };
+  if (amount > maxAmount) return { ok: false, reason: `The bank will lend at most ${formatMoney(maxAmount)}`, ...base };
   return { ok: true, ...base };
 }
 

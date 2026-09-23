@@ -412,6 +412,14 @@ export const NETWORK_INFO: Record<number, NetworkInfo> = {
   [Network.Rail]: { name: 'Rail', cost: 30, maxSlope: 3, bridge: true, rank: 1 },
 };
 export const BRIDGE_COST_MUL = 10;
+/** UI helper: § per cell to build a network type on land (bridges × BRIDGE_COST_MUL) */
+export function networkCellCost(type: Network): number {
+  return NETWORK_INFO[type]?.cost ?? 0;
+}
+/** UI helper: § per cell to zone */
+export function zoneCellCost(zone: Zone): number {
+  return ZONE_COST[zone] ?? 0;
+}
 export const MAX_BRIDGE_SPAN = 12;
 export const POWERLINE_COST = 5;
 export const POWERLINE_WATER_MUL = 4;

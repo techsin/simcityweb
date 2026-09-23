@@ -7,8 +7,10 @@
  *
  * NOTE: signatures are the contract with the UI; implementation is owned by the sim-core agent.
  *
- * Costs (see economy/tuning.ts): networks per cell street $10 · road $20 · one-way $25 · avenue $40 · highway $120 ·
- * rail $30 (bridges ×10, max span 12), power line $5/cell (×4 over water), subway $100/cell, zoning $2–20/cell.
+ * Costs (see economy/tuning.ts; UI helpers networkCellCost / zoneCellCost): networks per cell street §10 · road §20 ·
+ * one-way §25 · avenue §40 · highway §120 · rail §30 (bridges ×10, max span 12), power line §5/cell (×4 over water),
+ * subway §100/cell, zoning §2–20/cell. Money in reasons is formatted with formatMoney ('§').
+ * Wind turbines must keep ≥ 2 empty cells from other turbines (Chebyshev distance ≥ 3).
  * Upgrades (road→avenue) cost the difference. Bulldozing refunds 25% of networks; growables cost a small demolition
  * fee; civic buildings are removed for free (no refund). Sandbox skips money and unlock checks.
  * One-off spending is recorded in budget.curExpense under 'oneoff:construction' | 'oneoff:zoning' |
@@ -34,6 +36,9 @@ import { countFront, demolishFee, levelLot, lotSlope, lotTouchesRoad, placeBuild
 import { updateNeighborConnections } from './economy/connections';
 import { blockedByOrdinance, getOrdinance, setOrdinanceEnabled } from './economy/ordinances';
 import { takeLoanNow } from './economy/loans';
+import { formatMoney } from './economy/format';
+export { networkCellCost, zoneCellCost, POWERLINE_COST, SUBWAY_COST, BRIDGE_COST_MUL } from './economy/tuning';
+export { CURRENCY, formatMoney } from './economy/format';
 
 export interface ActionResult {
   ok: boolean;
@@ -103,9 +108,12 @@ export const NET_ONEWAY_SHIFT = 2;
 export const NET_ONEWAY_MASK = 0b1100;
 export const NET_BUS_STOP = 1 << 4;
 export const NET_CROSSING = 1 << 5;
+const WIND_TURBINE = 'util_wind_turbine';
+/** min Chebyshev distance between wind turbine cells */
+export const WIND_SPACING = 3;
 
 const fail = (reason: string, cost = 0, cells?: ActionResult['cells']): ActionResult => ({ ok: false, cost, reason, affected: 0, cells });
-const money = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
+const money = (v: number) => formatMoney(v);
 
 function clip(rect: CellRect, N: number): CellRect | null {
   const x0 = Math.max(0, Math.min(rect.x0, rect.x1)), x1 = Math.min(N, Math.max(rect.x0, rect.x1));
@@ -526,6 +534,16 @@ export class CityActions implements CityActionsApi {
         else if (placement === 'water' ? !st.water[i] : st.water[i]) { ok = false; firstErr ??= placement === 'water' ? 'Must be placed on water' : "Can't build on water"; }
         if (ok && st.trees[i]) treeCells++;
         cells.push({ x: xx, z: zz, ok });
+      }
+    }
+    if (!firstErr && def.id === WIND_TURBINE) {
+      // realistic rotors (R ≈ 23 m) overlap unless turbines keep ≥ 2 empty cells between them (Chebyshev ≥ 3)
+      for (let zz = z - WIND_SPACING + 1; zz < z + d + WIND_SPACING - 1 && !firstErr; zz++) {
+        for (let xx = x - WIND_SPACING + 1; xx < x + w + WIND_SPACING - 1; xx++) {
+          if (!st.inBounds(xx, zz)) continue;
+          const o = st.buildingAt(xx, zz);
+          if (o && o.def === WIND_TURBINE) { firstErr = 'Too close to another wind turbine'; break; }
+        }
       }
     }
     if (firstErr) return fail(firstErr, def.cost ?? 0, cells);
