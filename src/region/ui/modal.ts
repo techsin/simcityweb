@@ -60,7 +60,8 @@ export class Modal {
     window.addEventListener('keydown', this.keyHandler, true);
     audio.play('dialogOpen');
     const first = this.card.querySelector<HTMLElement>('input[type=text], .autofocus');
-    if (first) setTimeout(() => first.focus(), 60);
+    // preventScroll: focusing a field low in a tall body must not scroll the top of the dialog out of view
+    if (first) setTimeout(() => first.focus({ preventScroll: true }), 60);
   }
 
   get isOpen(): boolean {

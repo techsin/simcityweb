@@ -200,6 +200,9 @@ export class TreeRenderer {
     this.depthNear = this.makeDepthMaterial(true);
     this.depthFar = this.makeDepthMaterial(false);
     this.group.name = 'trees';
+    // the group never moves: without this, its per-frame updateMatrix() forces a world-matrix recompute of every
+    // chunk mesh (~1300 objects) on each render
+    this.group.matrixAutoUpdate = false;
     this.species = CLIMATE_SPECIES[state.config.climate] ?? CLIMATE_SPECIES.temperate;
     this.buildKinds();
     this.perSide = Math.ceil(state.size / CHUNK);

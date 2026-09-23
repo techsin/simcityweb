@@ -5,6 +5,7 @@ import { Panel } from '../Panel';
 import { h, toggle, toggleClass } from '../dom';
 import { icon } from '../icons';
 import { OVERLAYS, legendHtml, overlayInfo } from '../overlays';
+import { uiZoom } from '../zoom';
 
 export class DataViewsPanel extends Panel {
   readonly id = 'dataviews';
@@ -15,8 +16,9 @@ export class DataViewsPanel extends Panel {
   private legend!: HTMLDivElement;
   private underground = false;
 
-  override defaultPos(w: number, hh: number): { x: number; y: number } {
-    return { x: w - this.width - 14, y: Math.max(72, hh - 640) };
+  override defaultPos(w: number, _hh: number): { x: number; y: number } {
+    // top-right under the top bar; fit() keeps the bottom above the minimap
+    return { x: w - this.width - 14, y: 72 };
   }
 
   protected build(): void {
@@ -35,15 +37,19 @@ export class DataViewsPanel extends Panel {
       this.btns.set(o.o, b);
       g.appendChild(b);
     }
+    // layout (fits 1280×720): the overlay grid scrolls inside; legend + Underground toggle stay pinned below it
+    const scroll = h('div', { class: 'dv-scroll' });
     let first = true;
     for (const [name, g] of groups) {
-      this.body.appendChild(h('div', { class: 'sec-title' }, name));
+      scroll.appendChild(h('div', { class: 'sec-title' }, name));
       if (first) {
         g.prepend(none);
         first = false;
       }
-      this.body.appendChild(g);
+      scroll.appendChild(g);
     }
+    this.body.classList.add('dv-body');
+    this.body.appendChild(scroll);
     this.legend = h('div', { class: 'dv-legend' });
     const ug = toggle(false, (v) => {
       this.underground = v;
@@ -53,8 +59,32 @@ export class DataViewsPanel extends Panel {
         /* ignore */
       }
     });
-    this.body.append(this.legend, h('div', { class: 'set-row', style: 'margin-top:8px' }, h('div', null, h('div', { class: 'sr-l' }, 'Underground view'), h('div', { class: 'sr-d' }, 'Show subway tunnels')), ug));
+    this.body.append(h('div', { class: 'dv-foot' }, this.legend, h('div', { class: 'set-row dv-ug' }, h('div', null, h('div', { class: 'sr-l' }, 'Underground view'), h('div', { class: 'sr-d' }, 'Show subway tunnels')), ug)));
     this.ctx.ui.on('overlay', () => this.update());
+  }
+
+  override onOpen(): void {
+    requestAnimationFrame(() => this.fit());
+  }
+
+  /** limit the height so the panel never covers the minimap (it sits above it in the right column) */
+  private fit(): void {
+    const el = this.el;
+    const layer = el?.parentElement;
+    if (!layer || !this.isOpen) return;
+    const z = uiZoom();
+    const lr = layer.getBoundingClientRect();
+    let bottom = layer.clientHeight - 12;
+    const mm = this.ctx.root.querySelector('.minimap') as HTMLElement | null;
+    if (mm && mm.offsetParent !== null) {
+      const r = mm.getBoundingClientRect();
+      const mmL = (r.left - lr.left) / z, mmR = (r.right - lr.left) / z, mmT = (r.top - lr.top) / z;
+      const left = el.offsetLeft, right = left + el.offsetWidth;
+      if (right > mmL && left < mmR) bottom = Math.min(bottom, mmT - 10);
+    }
+    const maxH = Math.max(240, Math.floor(bottom - el.offsetTop));
+    const v = maxH + 'px';
+    if (el.style.maxHeight !== v) el.style.maxHeight = v;
   }
 
   private pick(o: Overlay): void {
@@ -65,7 +95,12 @@ export class DataViewsPanel extends Panel {
   override update(): void {
     for (const [o, b] of this.btns) toggleClass(b, 'on', o === this.ctx.overlay);
     const info = overlayInfo(this.ctx.overlay);
-    this.legend.innerHTML = info ? `<div class="sec-title">${info.label} legend</div>${legendHtml(this.ctx.overlay, this.ctx.mods.overlayLegend)}` : '';
+    const html = info ? `<div class="sec-title">${info.label} legend</div>${legendHtml(this.ctx.overlay, this.ctx.mods.overlayLegend)}` : '<div class="dv-nolegend">Pick a data view to see its legend</div>';
+    if (this.legend.dataset.html !== html) {
+      this.legend.dataset.html = html;
+      this.legend.innerHTML = html;
+    }
+    this.fit();
   }
 
   override onClose(): void {

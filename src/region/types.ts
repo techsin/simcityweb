@@ -69,6 +69,8 @@ export interface RegionData {
   lastPlayed: number;
   /** small overview image (data URL) for the load dialog */
   preview?: string;
+  /** what `preview` was drawn from (regionPreviewKey): regenerated only when this changes */
+  previewKey?: string;
 }
 
 export const TILE_SIZE_LABEL: Record<TileSize, string> = { 1: 'Small', 2: 'Medium', 4: 'Large' };

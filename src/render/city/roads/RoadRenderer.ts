@@ -9,6 +9,7 @@ import type { RoadSurface } from '../common/surface';
 import { GeoBuf } from './geobuf';
 import { RoadMesher, type ChunkOutput, type PropItem, type PoolItem, type StreetlightInfo } from './mesher';
 import { getRoadMaterial } from './roadMaterial';
+import { shadowCasters } from '../../world/Shadows';
 
 export const CHUNK = 32;
 
@@ -104,6 +105,8 @@ export class RoadRenderer {
     this.mesher.buildChunk(x0, z0, x1, z1, this.out);
     this.replace(c, 'main', this.out.main.build(), false);
     this.replace(c, 'struct', this.out.struct.build(), true);
+    // structures (bridges, overpasses, rail) cast shadows: the cached shadow map must refresh
+    shadowCasters.version++;
     this.onChunkProps?.(i, this.out.props.slice(), this.out.pools.slice());
   }
 

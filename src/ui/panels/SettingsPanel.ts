@@ -1,7 +1,7 @@
 /** Settings: graphics quality, time of day, camera, interface, audio, gameplay. Persisted via ctx.applySettings. */
 import type { QualityLevel } from '../../render/contracts';
 import type { GameContext } from '../../game/context';
-import type { GameSettings, NewYearMode } from '../../game/settings';
+import type { EmergencyPolicy, GameSettings, NewYearMode } from '../../game/settings';
 import { Panel } from '../Panel';
 import { h, segmented, setSlider, setToggle, slider, toggle } from '../dom';
 import { asMusicAudio, MusicPlayer } from '../MusicPlayer';
@@ -60,28 +60,53 @@ export class SettingsPanel extends Panel {
     this.hourRow = this.row('Fixed time', 'Drag to set the hour (turns off the day cycle)', h('div', { class: 'sr-c' }, this.hourSlider, this.hourVal));
     const newYear = segmented<NewYearMode>([{ value: 'cinematic', label: 'Cinematic' }, { value: 'fireworks', label: 'Fireworks' }, { value: 'off', label: 'Off' }], s.newYear ?? 'cinematic', (v) => this.ctx.applySettings({ newYear: v }));
     const autosave = segmented<number>([{ value: 0, label: 'Off' }, { value: 3, label: '3 mo' }, { value: 6, label: '6 mo' }, { value: 12, label: '1 yr' }], s.autosaveMonths, (v) => this.ctx.applySettings({ autosaveMonths: v }));
+    // sections (Gameplay — autosave / New Year — sits right under Graphics so it is reachable without scrolling far;
+    // the long music player stays last). A sticky nav jumps to each section (the body scrolls at 720p).
+    const sec = (id: string, title: string) => h('div', { class: 'sec-title', dataset: { sec: id } }, title);
+    const nav = h('div', { class: 'set-nav' });
+    for (const [id, label] of [['graphics', 'Graphics'], ['gameplay', 'Gameplay'], ['controls', 'Controls'], ['interface', 'Interface'], ['audio', 'Audio & music']]) {
+      const b = h('button', { type: 'button' }, label);
+      b.addEventListener('click', () => {
+        const t = this.body.querySelector(`.sec-title[data-sec="${id}"]`) as HTMLElement | null;
+        if (t) {
+          // (instant: offsets measured against the scrolling body; zoom cancels out in the ratio)
+          const z = this.body.getBoundingClientRect().height / (this.body.clientHeight || 1) || 1;
+          const y = (t.getBoundingClientRect().top - this.body.getBoundingClientRect().top) / z + this.body.scrollTop;
+          this.body.scrollTop = Math.max(0, y - nav.offsetHeight - 6);
+        }
+        this.ctx.sound('tab');
+        b.blur();
+      });
+      nav.appendChild(b);
+    }
+    this.body.classList.add('settings-body');
     this.body.append(
-      h('div', { class: 'sec-title' }, 'Graphics'),
+      nav,
+      sec('graphics', 'Graphics'),
       this.row('Quality', 'Shadows, post effects and draw distance', quality),
       this.row('Day / night cycle', 'Time of day follows the calendar', this.autoSw),
       this.hourRow,
-      h('div', { class: 'sec-title' }, 'Camera & controls'),
+      sec('gameplay', 'Gameplay'),
+      this.row('Autosave', 'Saves every N game months', autosave),
+      this.row('New Year celebration', 'Fireworks every January 1st — Cinematic switches to night first', newYear),
+      this.row('Pause when hidden', 'Pause the simulation when the tab is in the background', this.sw('pauseWhenHidden')),
+      // WP8 emergency dispatch
+      this.row('Uncovered emergencies', 'When no station can answer an emergency: slow down to live speed, pause, or keep going', segmented<EmergencyPolicy>([{ value: 'live', label: 'Live speed' }, { value: 'pause', label: 'Pause' }, { value: 'ignore', label: 'Keep going' }], s.emergencyUncovered ?? 'live', (v) => this.ctx.applySettings({ emergencyUncovered: v }))),
+      this.row('Emergency alerts', 'Banners for major incidents only, or for every incident that needs you', segmented<'major' | 'all'>([{ value: 'major', label: 'Major' }, { value: 'all', label: 'All' }], s.emergencyAlerts ?? 'major', (v) => this.ctx.applySettings({ emergencyAlerts: v }))),
+      this.row('Live speed', 'How much 1x slows down while you handle an emergency', this.range('emergencyLiveSlowmo', 1, 5, 0.5, (v) => (v <= 1 ? 'Normal 1x' : `${v}x slower`))),
+      sec('controls', 'Camera & controls'),
       this.row('Edge scrolling', 'Move the camera when the mouse touches the screen edge', this.sw('edgeScroll')),
       this.row('Show grid while building', null, this.sw('showGrid')),
-      h('div', { class: 'sec-title' }, 'Interface'),
+      sec('interface', 'Interface'),
       this.row('UI scale', 'On top of automatic resolution scaling', this.range('uiScale', 0.7, 1.5, 0.05, pctf)),
       this.row('Notifications', 'Pop-up toasts for important events', this.sw('toasts')),
       this.row('Show FPS', null, this.sw('showFps')),
-      h('div', { class: 'sec-title' }, 'Audio'),
+      sec('audio', 'Audio & music'),
       this.row('Master volume', null, this.range('masterVolume', 0, 1, 0.05, pctf)),
       this.row('Music', null, this.range('musicVolume', 0, 1, 0.05, pctf)),
       this.row('Effects', null, this.range('sfxVolume', 0, 1, 0.05, pctf)),
       this.row('Ambience', null, this.range('ambienceVolume', 0, 1, 0.05, pctf)),
       (this.musicHost = h('div', { class: 'set-music' })),
-      h('div', { class: 'sec-title' }, 'Gameplay'),
-      this.row('Autosave', 'Saves every N game months', autosave),
-      this.row('Pause when hidden', 'Pause the simulation when the tab is in the background', this.sw('pauseWhenHidden')),
-      this.row('New Year celebration', 'Fireworks every January 1st — Cinematic switches to night first', newYear),
     );
   }
 
@@ -96,8 +121,13 @@ export class SettingsPanel extends Panel {
     if (!a || !ma) return;
     const sw = (on: boolean | undefined, set: ((v: boolean) => void) | undefined) => toggle(on !== false, (v) => set?.call(a, v), !set);
     this.player = new MusicPlayer(ma, { variant: 'card', tracks: true });
+    // switching interface sounds off still confirms with one last (explicit) switch sound before going quiet
+    const uiSw = toggle(a.uiSounds !== false, (v) => {
+      if (!v) this.ctx.sound('toggleOff');
+      a.setUiSounds?.call(a, v);
+    }, !a.setUiSounds);
     this.musicHost.append(
-      this.row('Interface sounds', 'Clicks, panels, sliders and tool feedback', sw(a.uiSounds, a.setUiSounds)),
+      this.row('Interface sounds', 'Clicks, panels, sliders and tool feedback', uiSw),
       this.row('Hover sounds', 'Soft ticks when pointing at menus and the toolbar', sw(a.hoverSounds, a.setHoverSounds)),
       h('div', { class: 'sec-title' }, 'Music'),
       this.player.el,

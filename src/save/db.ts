@@ -3,10 +3,11 @@
  * (private browsing, file://, tests). Database 'metropolis' with stores:
  *   regions  keyPath 'id'                 -> RegionData
  *   cities   out-of-line key 'regionId:tileKey' -> CityRecord
+ *   recovery out-of-line key                     -> emergency "unsaved progress" snapshot (save/recovery.ts)  [v2]
  */
 export const DB_NAME = 'metropolis';
-export const DB_VERSION = 1;
-export type StoreName = 'regions' | 'cities';
+export const DB_VERSION = 2;
+export type StoreName = 'regions' | 'cities' | 'recovery';
 
 export interface KV {
   get<T>(store: StoreName, key: string): Promise<T | undefined>;
@@ -42,6 +43,9 @@ class IdbKV implements KV {
         // structured clone happens synchronously here -> a consistent snapshot of live typed arrays
         if (key !== undefined && !os.keyPath) os.put(value, key);
         else os.put(value);
+        // explicit commit: the request + commit reach the backend right away instead of after a renderer round trip
+        // (matters when the page is being unloaded — see save/recovery.ts)
+        t.commit?.();
       } catch (e) {
         reject(e);
         return;
@@ -71,7 +75,7 @@ class IdbKV implements KV {
 /** in-memory fallback (lost on reload) */
 export class MemoryKV implements KV {
   readonly persistent = false;
-  private stores: Record<StoreName, Map<string, unknown>> = { regions: new Map(), cities: new Map() };
+  private stores: Record<StoreName, Map<string, unknown>> = { regions: new Map(), cities: new Map(), recovery: new Map() };
   private clone<T>(v: T): T {
     return typeof structuredClone === 'function' ? structuredClone(v) : v;
   }
@@ -95,6 +99,12 @@ export class MemoryKV implements KV {
 }
 
 let kvPromise: Promise<KV> | null = null;
+let kvReady: KV | null = null;
+
+/** the opened backend, synchronously (null until openKV() resolved) — for writes that must start inside an unload handler */
+export function openedKV(): KV | null {
+  return kvReady;
+}
 
 export function openKV(): Promise<KV> {
   if (kvPromise) return kvPromise;
@@ -116,6 +126,7 @@ export function openKV(): Promise<KV> {
         const db = r.result;
         if (!db.objectStoreNames.contains('regions')) db.createObjectStore('regions', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('cities')) db.createObjectStore('cities');
+        if (!db.objectStoreNames.contains('recovery')) db.createObjectStore('recovery');
       };
       r.onsuccess = () => {
         if (settled) return;
@@ -131,10 +142,12 @@ export function openKV(): Promise<KV> {
       fallback(e);
     }
   });
+  void kvPromise.then((kv) => (kvReady = kv));
   return kvPromise;
 }
 
 /** for tests: force a specific backend */
 export function setKV(kv: KV): void {
   kvPromise = Promise.resolve(kv);
+  kvReady = kv;
 }

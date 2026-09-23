@@ -17,7 +17,9 @@ const P = (color: number, surf: Surf = Surf.Plain, pattern = 0, floor = 3.3): Pa
 // ================================================================================================ OBSERVATION / TV TOWER
 function spireTower(b: ModelBuilder, _v: number, rng: RNG): void {
   const E = 16;
-  const concrete = P(0xd4d0c6, Surf.Plain, 1, 330);
+  // warm uplight washes only the lower ~70 m of shaft and fins; higher up the LED fin strips, the glazed lift strips and
+  // the pod bands carry the night silhouette (a 330 m reach made the whole shaft a flat glowing stick)
+  const concrete = P(0xd4d0c6, Surf.Plain, 1, 70);
   // plaza with three lawn wedges between the fins
   b.paint(0xc6c1b6, Surf.Pavement).slab(-E, -E, E, E, 0.1);
   b.paint(0xaea89b, Surf.Pavement);
@@ -51,14 +53,18 @@ function spireTower(b: ModelBuilder, _v: number, rng: RNG): void {
   // core shaft with entasis + ring grooves, main pod, upper shaft, sky pod (single revolved profile)
   const rAt = (y: number) => 6.3 - (y / 330) * 2.1;
   const prof: ProfPt[] = [[rAt(7.6), 7.6, concrete]];
-  for (const yb of [60, 118, 176, 234, 292]) {
-    prof.push([rAt(yb), yb], [rAt(yb) + 0.35, yb + 0.6], [rAt(yb) + 0.35, yb + 1.8], [rAt(yb + 2.4), yb + 2.4]);
-  }
+  // each pour section above a ring groove is a shade darker: a gentle tonal gradient up the shaft by day, and at
+  // night the moonlit shaft recedes toward the top instead of reading as one flat bright stick
+  const pour = [0xcdc9bf, 0xc5c1b7, 0xbdb9af, 0xb5b1a7, 0xaeaaa0];
+  [60, 118, 176, 234, 292].forEach((yb, i) => {
+    prof.push([rAt(yb), yb], [rAt(yb) + 0.35, yb + 0.6], [rAt(yb) + 0.35, yb + 1.8], [rAt(yb + 2.4), yb + 2.4, P(pour[i], Surf.Plain, 1, 70)]);
+  });
   prof.push(
     [rAt(322), 322, P(0xc8c6c0, Surf.Metal)],
-    [6.8, 328.5], [12.4, 336.4, P(0x7fa2c0, Surf.GlassCurtain, 5, 3.4)], [13.2, 337.4], [13.2, 342.2, P(0x9ee8ff, Surf.Emissive, 6)],
+    // pod soffit: warm night-only glow (reads as the pod's uplit underside from the street)
+    [6.8, 328.5, P(0xa89c84, Surf.Emissive, 10)], [12.4, 336.4, P(0x7fa2c0, Surf.GlassCurtain, 5, 3.4)], [13.2, 337.4], [13.2, 342.2, P(0x9ee8ff, Surf.Emissive, 6)],
     [13.8, 342.8], [13.8, 343.8, P(0xe8e8e4, Surf.Metal)], [12.9, 344.4, P(0x6f8fae, Surf.GlassCurtain, 5, 3.0)], [12.9, 350.4, P(0xf1f0ec, Surf.Metal)],
-    [11.9, 351.4], [8.4, 355.2], [4.2, 357.6, concrete], [3.6, 398, P(0xe8e8e4, Surf.Metal)], [5.8, 400.6, P(0x6f8fae, Surf.GlassCurtain, 5, 2.6)],
+    [11.9, 351.4], [8.4, 355.2], [4.2, 357.6, P(pour[4], Surf.Plain, 1, 70)], [3.6, 398, P(0xe8e8e4, Surf.Metal)], [5.8, 400.6, P(0x6f8fae, Surf.GlassCurtain, 5, 2.6)],
     [5.8, 405.2, P(0x9ee8ff, Surf.Emissive, 6)], [6.1, 405.6], [6.1, 406.3, P(0xe8e8e4, Surf.Metal)], [3.0, 409], [2.4, 409.5],
   );
   lathe(b, 0, 0, prof, 24, 28);
@@ -342,7 +348,8 @@ function lighthouse(b: ModelBuilder, _v: number, rng: RNG): void {
   // tower: octagonal plinth + banded tapered shaft
   const tx = 1.2, tz = 0.4;
   b.paint(0x9a958b, Surf.Stone).prism(tx, tz, 3.7, 8, 0.1, 1.5, Math.PI / 8);
-  const red = P(0xb8362a, Surf.Plain), white = P(0xdad7cf, Surf.Plain);
+  // soft warm uplight from the plinth (fades 70% over the first 10 m) so the striped tower still reads at night
+  const red = P(0xb8362a, Surf.Plain, 1, 10), white = P(0xdad7cf, Surf.Plain, 1, 10);
   const y0 = 1.5, y1 = 25.2;
   const prof: ProfPt[] = [];
   const nb = 6;
@@ -369,18 +376,16 @@ function lighthouse(b: ModelBuilder, _v: number, rng: RNG): void {
     const a = (i / 12) * TAU;
     b.box(tx + Math.cos(a) * 2.95 - 0.04, y1 + 0.75, tz + Math.sin(a) * 2.95 - 0.04, tx + Math.cos(a) * 2.95 + 0.04, y1 + 1.8, tz + Math.sin(a) * 2.95 + 0.04, { top: null, bottom: null });
   }
-  // lantern room: red base, glazing panes (dark glass) between astragals, glowing lamp inside (night-only)
+  // lantern room: red base, full-height lit glazing (warm white, 2x night-only glow: the signature light at night,
+  // plain pale glass by day) between dark astragals
   const L0 = y1 + 0.75;
   b.paint(0xb03026, Surf.Metal).cylinder(tx, tz, L0, 1.0, 1.9, 1.9, 12);
-  b.paint(0xfff1b8, Surf.Emissive, 11).cylinder(tx, tz, L0 + 1.7, 1.2, 0.7, 0.7, 10);
-  b.paint(0xd9c27a, Surf.Metal).cylinder(tx, tz, L0 + 1.0, 0.7, 0.35, 0.3, 6);
-  b.paint(0x1c2228, Surf.GlassPlain, 1);
+  b.paint(0xfff1c8, Surf.Emissive, 11);
   const RL = 1.55;
   for (let i = 0; i < 8; i++) {
-    const a0 = (i / 8) * TAU + 0.12, a1 = ((i + 1) / 8) * TAU - 0.12;
+    const a0 = (i / 8) * TAU, a1 = ((i + 1) / 8) * TAU;
     const p0: V3 = [tx + Math.cos(a0) * RL, L0 + 1.0, tz + Math.sin(a0) * RL], p1: V3 = [tx + Math.cos(a1) * RL, L0 + 1.0, tz + Math.sin(a1) * RL];
-    b.quad2(p0, p1, [p1[0], L0 + 1.6, p1[2]], [p0[0], L0 + 1.6, p0[2]]);
-    b.quad2([p0[0], L0 + 3.1, p0[2]], [p1[0], L0 + 3.1, p1[2]], [p1[0], L0 + 3.6, p1[2]], [p0[0], L0 + 3.6, p0[2]]);
+    b.quad2(p0, p1, [p1[0], L0 + 3.6, p1[2]], [p0[0], L0 + 3.6, p0[2]]);
   }
   b.paint(0x1f2226, Surf.Metal);
   for (let i = 0; i < 8; i++) {

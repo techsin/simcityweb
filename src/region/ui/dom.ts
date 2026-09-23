@@ -1,5 +1,6 @@
 /** Tiny DOM helpers + inline SVG icons for the meta UI (menus, region view, dialogs). */
 import { audio, type SoundName } from '../../audio';
+import { CURRENCY, formatMoney as formatSimMoney } from '../../sim/economy/format';
 
 type Child = Node | string | number | null | undefined | false;
 type Attrs = Record<string, unknown> & { class?: string; style?: string | Partial<CSSStyleDeclaration> };
@@ -99,10 +100,11 @@ export function formatNumber(n: number): string {
   return Math.round(n).toLocaleString('en-US');
 }
 
+/** compact money in the game's currency ('§250k', '§1.25M', '−§4,200'), same style as the in-game HUD */
 export function formatMoney(n: number): string {
   const a = Math.abs(n);
-  const s = a >= 1e9 ? (a / 1e9).toFixed(2) + 'B' : a >= 1e6 ? (a / 1e6).toFixed(2) + 'M' : a >= 1e4 ? (a / 1e3).toFixed(0) + 'k' : Math.round(a).toLocaleString('en-US');
-  return (n < 0 ? '-$' : '$') + s;
+  if (a >= 1e9) return (n < 0 ? '−' : '') + CURRENCY + (a / 1e9).toFixed(2) + 'B';
+  return formatSimMoney(n, true).replace(/\.0(?=[kM]$)/, ''); // '§40k', not '§40.0k'
 }
 
 export function formatPop(n: number): string {

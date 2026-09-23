@@ -38,6 +38,8 @@ export interface PoolItem {
   r: number;
   /** 0 = warm street light, 1 = cool highway light */
   tint: number;
+  /** road direction (rotation about +Y mapping the pool's local +X onto it); the pool is stretched along it */
+  yaw?: number;
   /** lamp head position (for the night glow sprite) */
   hx: number;
   hy: number;
@@ -844,7 +846,7 @@ export class RoadMesher {
     const reach = this.light.reach;
     const px = lx + Dx * reach, pz = lz + Dz * reach;
     this.out.pools.push({
-      x: this.ox + px, y: this.Y(px, pz) + 0.04, z: this.oz + pz, r: tint === 1 ? 9 : 7.5, tint,
+      x: this.ox + px, y: this.Y(px, pz) + 0.04, z: this.oz + pz, r: tint === 1 ? 9 : 7.5, tint, yaw: Math.atan2(-Dx, -Dz),
       hx: this.ox + px, hy: y + this.light.height - 0.35, hz: this.oz + pz,
     });
   }

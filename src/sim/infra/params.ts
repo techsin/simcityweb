@@ -459,6 +459,8 @@ export const EMERG_RMAX = 12;
 export const EMERG_SLOW_MARGIN = 6;
 /** a player dispatch is offered when a free unit is within this many minutes */
 export const EMERG_MANUAL_MAX = 60;
+/** a clinic ambulance takes its patient to a hospital within this many minutes (else treats on site) */
+export const EMERG_HOSPITAL_MAX = 25;
 /** siren link time = t0 x (1 + EMERG_SIREN_CONG x (bpr - 1)): sirens cut through most of the congestion */
 export const EMERG_SIREN_CONG = 0.3;
 /** dispatch road searches per sim day (the rest wait for the next day) */

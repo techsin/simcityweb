@@ -64,10 +64,17 @@ export interface CityMapOptions {
   relief?: number;
 }
 
+/**
+ * 2D contexts for images we encode (toDataURL): a CPU-backed canvas. A GPU-accelerated 2D canvas has to read the
+ * pixels back for the JPEG encode, which stalls behind the WebGL frame queue (measured 14-32 s under SwiftShader while
+ * the region / city renders; ~1-20 ms CPU-backed).
+ */
+const CPU_CANVAS: CanvasRenderingContext2DSettings = { willReadFrequently: true };
+
 /** Render a city's terrain (and optionally its zones / networks / buildings) into a canvas (canvas size = output). */
 export function drawCityMap(canvas: HTMLCanvasElement, st: CityState, opts: CityMapOptions = {}): void {
   const W = canvas.width, Hh = canvas.height;
-  const ctx = canvas.getContext('2d')!;
+  const ctx = canvas.getContext('2d', CPU_CANVAS)!;
   const img = ctx.createImageData(W, Hh);
   const d = img.data;
   const N = st.size, N1 = N + 1;
@@ -144,7 +151,7 @@ export function drawCityMap(canvas: HTMLCanvasElement, st: CityState, opts: City
 /** Render a region overview (square) into a canvas; optionally outline tiles. */
 export function drawRegionMap(canvas: HTMLCanvasElement, model: RegionModel, opts: { tiles?: boolean; founded?: boolean } = {}): void {
   const W = canvas.width, Hh = canvas.height;
-  const ctx = canvas.getContext('2d')!;
+  const ctx = canvas.getContext('2d', CPU_CANVAS)!;
   const img = ctx.createImageData(W, Hh);
   const d = img.data;
   const pal = PALETTES[model.data.climate] ?? PALETTES.temperate;
@@ -199,6 +206,11 @@ export function cityThumbnail(st: CityState, px = 256): string {
   return c.toDataURL('image/jpeg', 0.85);
 }
 
+/** the inputs of regionPreviewDataUrl besides the (fixed) terrain: which tiles are founded */
+export function regionPreviewKey(model: RegionModel): string {
+  return model.data.tiles.filter((t) => t.city).map((t) => t.key).sort().join(',');
+}
+
 export function regionPreviewDataUrl(model: RegionModel, w = 320, h = 200): string {
   const c = document.createElement('canvas');
   c.width = w;
@@ -218,7 +230,7 @@ export function normalizeThumbnail(dataUrl: string, px: number): Promise<string>
       try {
         const c = document.createElement('canvas');
         c.width = c.height = px;
-        const ctx = c.getContext('2d')!;
+        const ctx = c.getContext('2d', CPU_CANVAS)!;
         const s = Math.min(img.naturalWidth, img.naturalHeight);
         ctx.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, px, px);
         resolve(c.toDataURL('image/jpeg', 0.86));

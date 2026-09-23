@@ -86,9 +86,13 @@ function walkup(b: ModelBuilder, v: number, rng: RNG): void {
   paveSlab(b, -8, -8, 8, z0, 0x9a948a, 0.08);
   const floors = [4, 3, 4, 3, 3, 4][v];
   const top = floors * fh;
-  const brick = [0x8e4636, 0x9a6a4a, 0xc4a472, 0x8f9294, 0xb3aa98, 0x6e3a2e][v];
+  // red / charcoal 'blue' brick / buff / grey mansard / greystone / dark red (twins add 6 more: see walkupTwin)
+  const brick = [0x8e4636, 0x66615c, 0xc4a472, 0x8f9294, 0xb3aa98, 0x6e3a2e][v];
   const trimC = [0xd8d0c0, 0xe0d6c4, 0xefe8da, 0xe8e6e0, 0xefe9dc, 0xcfc6b4][v];
   const base = [P(0x8a8378, Surf.Stone), P(0x9a8a78, Surf.Stone), P(0xc4a472, Surf.Brick), P(0x7a7d80, Surf.Stone), P(0xa39a88, Surf.Stone), P(0x6e3a2e, Surf.Brick)][v];
+  // flat-roof membrane varies too (pale membrane / tan gravel / white / - / grey / tar): from the 45-60 deg camera
+  // the roofs are a big part of each walk-up's silhouette, one shared dark roof made whole rings read as copies
+  const roofC = [0xa8a49a, 0x958a76, 0xc4c0b6, ROOF, 0x8a8780, TAR][v], roofP = P(roofC, Surf.RoofFlat);
   const sideBlank = v === 1 || v === 5;
   // ground floor base
   b.paint(base).box(x0, 0, z0, x1, fh, z1, { top: null });
@@ -97,11 +101,11 @@ function walkup(b: ModelBuilder, v: number, rng: RNG): void {
   if (notch) {
     // L-plan with an air-shaft notch on the right side
     const blank = P(brick, Surf.Brick);
-    ww(b, x0, 0, x1, z1, fh, top, brick, 1, fh, P(ROOF, Surf.RoofFlat), { px: blank });
-    ww(b, x0, z0, x1, -C, fh, top, brick, 1, fh, P(ROOF, Surf.RoofFlat), { px: blank });
-    ww(b, x0, -C, C, 0, fh, top, brick, 1, fh, P(ROOF, Surf.RoofFlat), { pz: null, nz: null, nx: blank });
+    ww(b, x0, 0, x1, z1, fh, top, brick, 1, fh, roofP, { px: blank });
+    ww(b, x0, z0, x1, -C, fh, top, brick, 1, fh, roofP, { px: blank });
+    ww(b, x0, -C, C, 0, fh, top, brick, 1, fh, roofP, { pz: null, nz: null, nx: blank });
   } else {
-    ww(b, x0, z0, x1, z1, fh, top, brick, 1, fh, P(ROOF, Surf.RoofFlat), { px: upperSide, nx: upperSide });
+    ww(b, x0, z0, x1, z1, fh, top, brick, 1, fh, roofP, { px: upperSide, nx: upperSide });
   }
   if (sideBlank && v === 1) {
     // faded painted advert on the blank side wall
@@ -141,7 +145,7 @@ function walkup(b: ModelBuilder, v: number, rng: RNG): void {
   }
   // cornice / parapet variants
   if (v === 0 || v === 5) {
-    cornice(b, x0, z0, x1, z1, top, 0x3a3530, ['pz']);
+    cornice(b, x0, z0, x1, z1, top, 0x3a3530, ['pz'], true, 0.55, roofC);
     parapet(b, x0, z0, x1, z1, top + 0.35, 0.6, 0.25, brick, 0x6a645c);
   } else if (v === 1) {
     parapet(b, x0, z0, x1, z1, top, 1.1, 0.3, brick, 0xd8ccb8);
@@ -149,7 +153,7 @@ function walkup(b: ModelBuilder, v: number, rng: RNG): void {
     b.paint(0xd8ccb8).box(-2.3, top + 1.9, z1 - 0.35, 2.3, top + 2.05, z1 + 0.05, { bottom: null });
     band(b, x0, z1 - 0.3, x1, z1, top - 0.5, 0.35, 0.12, 0xd8ccb8, false);
   } else if (v === 2) {
-    cornice(b, x0, z0, x1, z1, top, 0xe8e0cc, ['pz'], true, 0.45);
+    cornice(b, x0, z0, x1, z1, top, 0xe8e0cc, ['pz'], true, 0.45, roofC);
     parapet(b, x0, z0, x1, z1, top + 0.35, 0.5, 0.25, brick);
     // two 3-storey angled bays
     for (const x of [-3.3, 3.3]) inFace(b, 'pz', z1, () => bay(b, x, fh, top - 0.2, 3.0, 0.9, P(brick), { winY: [fh + 0.7, 2 * fh + 0.7, 3 * fh + 0.7], winH: 1.7, frame: trimC }));
@@ -163,7 +167,7 @@ function walkup(b: ModelBuilder, v: number, rng: RNG): void {
     }
   } else {
     // v4 greystone: stone front, brick sides, full-height angled bay on the left, cornice
-    cornice(b, x0, z0, x1, z1, top, 0xb8b0a0, ['pz'], false, 0.45);
+    cornice(b, x0, z0, x1, z1, top, 0xb8b0a0, ['pz'], false, 0.45, roofC);
     parapet(b, x0, z0, x1, z1, top + 0.35, 0.5, 0.25, 0xb3aa98);
     inFace(b, 'pz', z1, () => bay(b, -3.3, fh, top - 0.2, 3.4, 1.0, P(0xb3aa98, Surf.Stone), { winY: [fh + 0.7, 2 * fh + 0.7], winH: 1.7, frame: 0xefe9dc }));
   }
@@ -991,7 +995,7 @@ function solar(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, 
 }
 
 // ---------------------------------------------------------------------------------------------- CONDO (R$$$) 2x2
-/** tw = mirror twin: v4 in red brick, v5 in sand (glass variants already vary by rng). */
+/** tw = mirror twin: own palette per variant (sand stone, sand slabs, charcoal bands, bronze glass, red brick, sand + charcoal). */
 function condo(b: ModelBuilder, v: number, rng: RNG, tw = false): void {
   lawnSlab(b, -16, -16, 16, 16, 0x5a8c3a);
   const fh = 3.2;
@@ -1085,14 +1089,14 @@ function condo(b: ModelBuilder, v: number, rng: RNG, tw = false): void {
     lobbyFront(b, -6, 0, z1 + 1.4);
     frontGarden(b, rng, z1 + 1.4);
   } else if (v === 3) {
-    // dark glass with vertical wood fins, cantilevered boxes, rooftop pool
+    // dark glass with vertical wood fins, cantilevered boxes, rooftop pool (twin: bronze glass, white fins, terracotta boxes)
     const x0 = -12, x1 = 12, z0 = -8, z1 = 6, fl = 9;
-    b.paint(0x2a3440, Surf.GlassCurtain, 3, fh).box(x0, fh, z0, x1, fl * fh, z1, { top: P(0xc8c2b4, Surf.Pavement) });
-    b.paint(0x3a3c40).box(x0, 0, z0, x1, fh, z1, { top: null });
-    b.paint(0x9a7250, Surf.Wood);
+    b.paint(0x2a3440, Surf.GlassCurtain, tw ? 2 : 3, fh).box(x0, fh, z0, x1, fl * fh, z1, { top: P(0xc8c2b4, Surf.Pavement) });
+    b.paint(tw ? 0xd8d2c4 : 0x3a3c40).box(x0, 0, z0, x1, fh, z1, { top: null });
+    b.paint(tw ? P(0xf2f0ea) : P(0x9a7250, Surf.Wood));
     for (let i = 0; i <= 12; i++) { const x = x0 + i * 2; b.box(x - 0.12, fh, z1, x + 0.12, fl * fh, z1 + 0.6, { nz: null, bottom: null }); }
     for (const [xa, f] of [[-9, 3], [2, 5], [-4, 7]] as [number, number][]) {
-      b.paint(0xe8e6e0).box(xa, f * fh, z1 + 0.6, xa + 6, (f + 1) * fh, z1 + 3.0, { nz: null });
+      b.paint(tw ? 0xb8674a : 0xe8e6e0).box(xa, f * fh, z1 + 0.6, xa + 6, (f + 1) * fh, z1 + 3.0, { nz: null });
       inFace(b, 'pz', z1 + 3.0, () => { b.paint(0x2a3440, Surf.GlassPlain); fq(b, xa + 0.3, f * fh + 0.3, xa + 5.7, (f + 1) * fh - 0.3, 0.02); });
     }
     // rooftop pool + deck

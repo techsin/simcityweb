@@ -239,7 +239,7 @@ function desalination(b: ModelBuilder, rng: RNG): void {
   b.paint(0x9aa0a6, Surf.Metal);
   b.pipe([-22, 4.35, -9.3], [11, 4.35, -9.3], 0.35, 6);
   // product water tanks
-  tank(b, 18, -16, 5.2, 12, 0xe8e8e2, { roof: 'cone', rim: 0x9aa0a6, seg: 14, stair: true });
+  tank(b, 18, -16, 5.2, 12, 0xe8e8e2, { roof: 'cone', rim: 0x9aa0a6, seg: 14, stair: true, stairLights: true });
   tank(b, 18, -3, 4.2, 10, 0xe8e8e2, { roof: 'cone', rim: 0x9aa0a6, seg: 14 });
   // pretreatment basins (front, sea side) + big intake pipes from the front edge
   basin(b, -22.5, 6, 2, 17, 2.4, 3, 0x4a8aa0, false);

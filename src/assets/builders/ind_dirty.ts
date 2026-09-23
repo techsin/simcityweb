@@ -539,7 +539,7 @@ function factory(b: ModelBuilder, v: number, rng: RNG): void {
       const tc = [0xd6d0c2, 0xd6d0c2, 0x4f6f4f, 0xd6d0c2];
       let t = 0;
       for (const [x, z] of [[6.5, -17.5], [16.5, -17.5], [6.5, -8.5], [16.5, -8.5]] as [number, number][]) {
-        tank(b, x, z, 3.6, 9 + (t % 2) * 2, tc[t], { y0: 0.5, roof: 'dome', stair: t === 1, rim: 0x9aa0a6, base: 0x6a6258, flood: 7 });
+        tank(b, x, z, 3.6, 9 + (t % 2) * 2, tc[t], { y0: 0.5, roof: 'dome', stair: t === 1, stairLights: t < 2, rim: 0x9aa0a6, base: 0x6a6258, flood: 7 });
         t++;
       }
       sphereTank(b, -15, 6, 4.2, 0xd6d0c2, 0x6a6e72, 10, 6, 7);

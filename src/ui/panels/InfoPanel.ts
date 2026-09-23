@@ -12,6 +12,9 @@ import { icon } from '../icons';
 import { money, num, pct, titleCase } from '../format';
 import { thumbs } from '../thumbs';
 import { DEV_NAMES } from '../TopBar';
+import { emptyZoneStatus, zoneStatusLine } from '../zoneStatus';
+import { demolishRisks } from '../../game/demolishRisk';
+import { confirmDialog } from '../Modals';
 
 const FLAG_CHIPS: [number, string, string][] = [
   [BF.Abandoned, 'Abandoned', 'bad'],
@@ -76,7 +79,8 @@ export class InfoPanel extends Panel {
     if (!t) return;
     const st = this.ctx.state;
     const b = t.buildingId != null ? st.buildings.get(t.buildingId) : undefined;
-    const sig = b ? `b${b.id}:${b.pop}:${b.jobs}:${b.flags}:${Math.round(b.built * 20)}:${st.monthIndex}:${Math.floor(st.day / 5)}` : `c${t.x},${t.z}:${st.network[st.idx(t.x, t.z)]}:${st.zone[st.idx(t.x, t.z)]}:${Math.floor(st.day / 5)}`;
+    const ci = st.idx(t.x, t.z);
+    const sig = b ? `b${b.id}:${b.pop}:${b.jobs}:${b.flags}:${Math.round(b.built * 20)}:${st.monthIndex}:${Math.floor(st.day / 5)}` : `c${t.x},${t.z}:${st.network[ci]}:${st.zone[ci]}:${st.building[ci]}:${st.powered[ci]}:${st.watered[ci]}:${Math.floor(st.day / 5)}`;
     if (sig === this.sig) return;
     this.sig = sig;
     clear(this.body);
@@ -241,17 +245,32 @@ export class InfoPanel extends Panel {
     }
     const demo = h('button', { class: 'btn sm danger', html: icon('bulldoze', 13) + `<span>Demolish${cost ? ` · ${cost < 0 ? '+' : ''}${money(Math.abs(cost))}` : ''}</span>` });
     demo.addEventListener('click', () => {
-      try {
-        const r = this.ctx.actions.bulldoze({ x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d }, false);
-        if (!r.ok) {
-          this.ctx.toast(r.reason ?? 'Cannot demolish', 'error');
-          return;
+      const rect = { x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d };
+      const doIt = () => {
+        try {
+          const r = this.ctx.actions.bulldoze(rect, false);
+          if (!r.ok) {
+            this.ctx.sound('error');
+            this.ctx.toast(r.reason ?? 'Cannot demolish', 'error');
+            return;
+          }
+          this.ctx.sound('bulldoze');
+          this.ctx.panels.close(this.id);
+        } catch (e) {
+          console.warn(e);
         }
-        this.ctx.sound('bulldoze');
-        this.ctx.panels.close(this.id);
-      } catch (e) {
-        console.warn(e);
+      };
+      // last power plant / water source, landmark / reward, or > §20k: confirm first
+      let risk = null;
+      try {
+        risk = demolishRisks(this.ctx.state, rect, cost, { sandbox: this.ctx.sandbox() });
+      } catch {
+        risk = null;
       }
+      if (!risk) return doIt();
+      void confirmDialog(this.ctx, { title: risk.title, message: 'This demolition has consequences:', items: risk.items, confirm: 'Demolish', danger: true }).then((yes) => {
+        if (yes && this.ctx.state.buildings.has(b.id)) doIt();
+      });
     });
     acts.appendChild(demo);
     this.body.appendChild(acts);
@@ -300,6 +319,13 @@ export class InfoPanel extends Panel {
       if (st.powerLines[i]) flags.appendChild(h('span', { class: 'chip info', html: icon('pylon', 11) + 'Power line' }));
       if (st.trees[i]) flags.appendChild(h('span', { class: 'chip good', html: icon('trees', 11) + 'Trees' }));
       if (flags.children.length) this.body.appendChild(flags);
+      // empty zoned lot: why it is (not) growing
+      const zs = emptyZoneStatus(st, x, z);
+      if (zs) {
+        const box = h('div', { class: 'zone-status ' + (zs.ready ? 'ok' : 'bad') }, h('div', { class: 'zs-h', html: icon(zs.ready ? 'check' : 'alert', 13) + `<span>${escapeHtml(zoneStatusLine(zs))}</span>` }));
+        for (const bl of zs.blockers.slice(1)) box.appendChild(h('div', { class: 'zs-r' }, bl.text));
+        this.body.appendChild(box);
+      }
       add('Land value', 'landValue', pct(st.landValue[i]));
       add('Air pollution', 'smog', pct(st.airPollution[i]));
       if (st.waterPollution[i] > 0.01) add('Water pollution', 'water', pct(st.waterPollution[i]));

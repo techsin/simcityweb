@@ -5,6 +5,8 @@
  */
 import { getDef } from '../sim/catalog';
 import { zoneFamily, type Zone } from '../core/types';
+import { isGrowZone } from '../sim/economy/tuning';
+import { infraFlags } from '../sim/economy/runtime';
 import type { GameContext } from '../game/context';
 import { loadPref, savePref } from '../game/settings';
 import { h, setText, toggleClass } from './dom';
@@ -24,6 +26,8 @@ interface Step {
   action: string;
   run: (ctx: GameContext) => void;
   done: (ctx: GameContext, o: Onboarding) => boolean;
+  /** replaces `sub` while the step is current (e.g. "the plant isn't connected to any zone yet"); null = sub */
+  hint?: (ctx: GameContext) => string | null;
 }
 
 function edgeRoad(ctx: GameContext): boolean {
@@ -41,6 +45,16 @@ function hasCategory(ctx: GameContext, cat: string): boolean {
     const d = getDef(b.def);
     if (d?.category === cat && !/pylon/.test(d.id)) return true;
   }
+  return false;
+}
+
+/** a growable zoned cell (empty lot or growable building) with the utility flag set: power / water really reaches a zone */
+function zoneServed(ctx: GameContext, arr: Uint8Array, cat: string): boolean {
+  const st = ctx.state;
+  // without the utilities layer (sim-infra not loaded) nothing is ever flagged: a plant of the category is enough
+  if (!infraFlags(st).utilities) return hasCategory(ctx, cat);
+  const zone = st.zone;
+  for (let k = 0; k < st.cells; k++) if (arr[k] && zone[k] && isGrowZone(zone[k])) return true;
   return false;
 }
 
@@ -70,12 +84,15 @@ const STEPS: Step[] = [
   {
     id: 'power', title: 'Place a power plant', sub: 'Buildings need electricity. Roads and power lines carry it.', icon: 'power',
     coach: ['utilities'], action: 'Power', run: (c) => c.openFlyout?.('utilities', 'power'),
-    done: (c) => hasCategory(c, 'power'),
+    // ticks only once electricity actually reaches a zoned lot (not merely when a plant exists)
+    done: (c) => zoneServed(c, c.state.powered, 'power'),
+    hint: (c) => (hasCategory(c, 'power') ? 'Your plant isn’t reaching any zone yet — connect it to your zones with roads or power lines.' : null),
   },
   {
     id: 'water', title: 'Add water', sub: 'A water tower or pump next to a road supplies your zones.', icon: 'waterTower',
     coach: ['utilities'], action: 'Water', run: (c) => c.openFlyout?.('utilities', 'water'),
-    done: (c) => hasCategory(c, 'water'),
+    done: (c) => zoneServed(c, c.state.watered, 'water'),
+    hint: (c) => (hasCategory(c, 'water') ? 'No zone gets water yet — the tower / pump must touch a road that runs past your zones.' : null),
   },
   {
     id: 'play', title: 'Press play', sub: 'Unpause the simulation and watch your city grow.', icon: 'play',
@@ -86,7 +103,11 @@ const STEPS: Step[] = [
 
 export class Onboarding {
   readonly el: HTMLDivElement;
-  private rows: { step: Step; el: HTMLElement; num: HTMLElement }[] = [];
+  private rows: { step: Step; el: HTMLElement; num: HTMLElement; sub: HTMLElement }[] = [];
+  /** minimised to a small pill (remembered) */
+  private minimised = false;
+  private pill!: HTMLElement;
+  private pillText!: HTMLElement;
   private progress!: HTMLElement;
   private visible = false;
   private doneAt = -1;
@@ -100,7 +121,8 @@ export class Onboarding {
     this.el = h('div', { class: 'onboard mp-glass i' });
     parent.prepend(this.el);
     this.build();
-    const pref = loadPref<{ dismissed?: boolean }>(PREF, {});
+    const pref = loadPref<{ dismissed?: boolean; min?: boolean }>(PREF, {});
+    this.setMinimised(!!pref.min, false);
     const young = ctx.state.stats.population < 300 && ctx.state.buildings.size < 40;
     if (!pref.dismissed && young) this.show();
     this.constructed = true;
@@ -122,7 +144,18 @@ export class Onboarding {
     this.visible = false;
     this.el.classList.remove('show');
     this.hooks.coach([], false);
-    if (remember) savePref(PREF, { dismissed: true });
+    if (remember) savePref(PREF, { ...loadPref<Record<string, unknown>>(PREF, {}), dismissed: true });
+  }
+
+  /** collapse the card to a small pill (keeps the map clear at 720p) / expand it again */
+  setMinimised(on: boolean, remember = true): void {
+    this.minimised = on;
+    toggleClass(this.el, 'min', on);
+    if (remember) savePref(PREF, { ...loadPref<Record<string, unknown>>(PREF, {}), min: on });
+  }
+
+  get isMinimised(): boolean {
+    return this.minimised;
   }
 
   get isVisible(): boolean {
@@ -132,6 +165,20 @@ export class Onboarding {
   private build(): void {
     const close = h('button', { class: 'icon-btn', title: 'Dismiss', html: icon('close', 14) });
     close.addEventListener('click', () => this.hide(true));
+    const min = h('button', { class: 'icon-btn ob-min', title: 'Minimise', html: icon('minus', 14) });
+    min.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setMinimised(true);
+      this.ctx.sound('close');
+    });
+    // minimised: a small pill with the progress + current step; click to expand
+    this.pillText = h('span', { class: 'obp-t' });
+    this.pill = h('button', { class: 'ob-pill', title: 'Show the getting-started guide' }, h('span', { class: 'ob-badge', html: icon('star', 13) }), this.pillText, h('span', { class: 'ico-wrap', html: icon('chevDown', 13) }));
+    this.pill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setMinimised(false);
+      this.ctx.sound('open');
+    });
     this.progress = h('span', { class: 'ob-prog' });
     const list = h('div', { class: 'ob-steps' });
     STEPS.forEach((step, i) => {
@@ -139,17 +186,19 @@ export class Onboarding {
       const btn = h('button', { class: 'btn sm', html: icon(step.icon, 13) + `<span>${step.action}</span>` });
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
+        // the step's own action sounds (tool select, flyout...); otherwise the delegated generic click plays
         step.run(this.ctx);
-        this.ctx.sound('click');
       });
-      const el = h('div', { class: 'ob-step' }, num, h('div', { class: 'ob-txt' }, h('div', { class: 'ob-t' }, step.title), h('div', { class: 'ob-s' }, step.sub)), btn);
-      this.rows.push({ step, el, num });
+      const sub = h('div', { class: 'ob-s' }, step.sub);
+      const el = h('div', { class: 'ob-step' }, num, h('div', { class: 'ob-txt' }, h('div', { class: 'ob-t' }, step.title), sub), btn);
+      this.rows.push({ step, el, num, sub });
       list.appendChild(el);
     });
     const later = h('button', { class: 'ob-link' }, "Don't show again");
     later.addEventListener('click', () => this.hide(true));
     this.el.append(
-      h('div', { class: 'ob-head' }, h('span', { class: 'ob-badge', html: icon('star', 15) }), h('div', null, h('div', { class: 'ob-title' }, 'Getting started'), h('div', { class: 'ob-sub' }, 'Five steps to a living city')), this.progress, close),
+      this.pill,
+      h('div', { class: 'ob-head' }, h('span', { class: 'ob-badge', html: icon('star', 15) }), h('div', null, h('div', { class: 'ob-title' }, 'Getting started'), h('div', { class: 'ob-sub' }, 'Five steps to a living city')), this.progress, min, close),
       list,
       h('div', { class: 'ob-foot' }, h('span', { class: 'faint' }, 'Press F1 any time for help'), later),
     );
@@ -174,7 +223,19 @@ export class Onboarding {
       toggleClass(r.el, 'done', done);
       setText(r.num, done ? '✓' : String(i + 1));
     });
-    this.rows.forEach((r, i) => toggleClass(r.el, 'current', i === current));
+    this.rows.forEach((r, i) => {
+      toggleClass(r.el, 'current', i === current);
+      let hint: string | null = null;
+      if (i === current && r.step.hint) {
+        try {
+          hint = r.step.hint(this.ctx);
+        } catch {
+          hint = null;
+        }
+      }
+      setText(r.sub, hint ?? r.step.sub);
+      toggleClass(r.el, 'hinted', !!hint);
+    });
     // chime when a step gets done (not for steps already done when the card appeared, nor the last one: see below)
     const nowDone = new Set(this.rows.map((r, i) => (r.el.classList.contains('done') ? i : -1)).filter((i) => i >= 0));
     if (this.doneSteps && doneN < STEPS.length) for (const i of nowDone) if (!this.doneSteps.has(i)) {
@@ -183,6 +244,7 @@ export class Onboarding {
     }
     this.doneSteps = nowDone;
     setText(this.progress, `${doneN} / ${STEPS.length}`);
+    setText(this.pillText, current >= 0 ? `${doneN}/${STEPS.length} · ${STEPS[current].title}` : `Getting started ${doneN}/${STEPS.length}`);
     const cur = current >= 0 ? STEPS[current] : null;
     this.hooks.coach(cur ? cur.coach : [], !!cur?.coachPlay);
     if (doneN === STEPS.length) {

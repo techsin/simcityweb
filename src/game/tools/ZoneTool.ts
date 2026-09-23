@@ -5,6 +5,8 @@ import type { ActionResult } from '../../sim/actions';
 import { rectFrom, type Cell } from '../geom';
 import type { GameContext } from '../context';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
+import { demolishRisks, type DemolishRisk } from '../demolishRisk';
+import { confirmDialog } from '../../ui/Modals';
 
 export const ZONE_LABELS: Record<number, string> = {
   [Zone.ResLow]: 'Residential · Low density',
@@ -119,17 +121,37 @@ export class RectTool extends Tool {
     }
     this.start = null;
     if (rect) {
-      const r = this.run(rect, false);
-      // bigger rectangles sound bigger (intensity 0..1 from the area)
-      const area = Math.max(1, (rect.x1 - rect.x0) * (rect.z1 - rect.z0));
-      if (r.ok) this.ctx.sound(this.mode.kind === 'bulldoze' ? 'bulldoze' : this.mode.kind === 'dezone' ? 'dezone' : 'zone', { intensity: Math.min(1, Math.log2(area) / 8) });
-      else {
-        this.ctx.sound('error');
-        if (r.reason) this.ctx.toast(r.reason, 'error');
-      }
+      // destructive bulldozing (last power plant / water source, landmarks, > §20k) asks first
+      const risk = this.mode.kind === 'bulldoze' ? this.bulldozeRisk(rect) : null;
+      if (risk) {
+        this.ctx.world.setHighlightRect(null, 0);
+        this.ctx.tip.hide();
+        void confirmDialog(this.ctx, { title: risk.title, message: 'This demolition has consequences:', items: risk.items, confirm: 'Demolish', danger: true }).then((yes) => {
+          if (yes && this.ctx.tools.active === this) this.commit(rect);
+          this.lastKey = '';
+          this.ctx.tools.refresh();
+        });
+      } else this.commit(rect);
     }
     this.lastKey = '';
     this.refresh(p);
+  }
+
+  private bulldozeRisk(rect: CellRect): DemolishRisk | null {
+    const pre = this.run(rect, true);
+    if (!pre.ok) return null;
+    return safe(() => demolishRisks(this.ctx.state, rect, pre.cost ?? 0, { sandbox: this.ctx.sandbox() }), null);
+  }
+
+  private commit(rect: CellRect): void {
+    const r = this.run(rect, false);
+    // bigger rectangles sound bigger (intensity 0..1 from the area)
+    const area = Math.max(1, (rect.x1 - rect.x0) * (rect.z1 - rect.z0));
+    if (r.ok) this.ctx.sound(this.mode.kind === 'bulldoze' ? 'bulldoze' : this.mode.kind === 'dezone' ? 'dezone' : 'zone', { intensity: Math.min(1, Math.log2(area) / 8) });
+    else {
+      this.ctx.sound('error');
+      if (r.reason) this.ctx.toast(r.reason, 'error');
+    }
   }
   override cancel(): boolean {
     if (!this.start) return false;

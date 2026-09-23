@@ -12,6 +12,7 @@ import { PlopTool } from './tools/PlopTool';
 import { QueryTool } from './tools/QueryTool';
 import { BrushTool } from './tools/BrushTool';
 import { DisasterTool } from './tools/DisasterTool';
+import { DISPATCH_SPEC } from './tools/DispatchTool';
 import type { Tool } from './tools/Tool';
 import { titleCase } from '../ui/format';
 
@@ -207,6 +208,9 @@ const T = {
   smooth: reg({ id: 'terra:smooth', label: 'Smooth', icon: 'smooth', color: '#c9a36a', hotkey: 'K', desc: 'Soften bumps and cliffs.', create: (c) => new BrushTool(c, 'smooth', 'smooth') }),
   trees: reg({ id: 'trees', label: 'Plant trees', icon: 'trees', color: '#52d273', desc: 'Trees raise land value and reduce pollution.', create: (c) => new BrushTool(c, 'trees', 'trees') }),
 };
+
+/** WP8 emergency dispatch tool (opened from the emergency banner / Emergencies panel; not on the toolbar) */
+reg(DISPATCH_SPEC);
 
 const DISASTER_ICONS: Record<string, string> = { fire: 'fire', tornado: 'tornado', earthquake: 'quake', quake: 'quake', meteor: 'meteor', flood: 'flood', riot: 'riot', ufo: 'ufo', volcano: 'terrain' };
 

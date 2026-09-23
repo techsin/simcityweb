@@ -5,8 +5,10 @@ import { getDef } from '../../sim/catalog';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
 import { num, pct } from '../../ui/format';
+import { emptyZoneStatus, zoneStatusLine } from '../../ui/zoneStatus';
 import { NETWORK_LABELS } from './NetworkTool';
 import { safe, Tool, type ToolPointer } from './Tool';
+import { ZONE_LABELS } from './ZoneTool';
 
 export class QueryTool extends Tool {
   readonly id = 'query';
@@ -36,7 +38,8 @@ export class QueryTool extends Tool {
     }
     if (!this.showTip) return;
     const st = this.ctx.state;
-    const key = `${id}:${p.hit?.x},${p.hit?.z}:${this.ctx.overlay}:${st.day >> 2}`;
+    // (1 s bucket: utilities recompute while paused, e.g. an empty lot becomes powered)
+    const key = `${id}:${p.hit?.x},${p.hit?.z}:${this.ctx.overlay}:${st.day >> 2}:${Math.floor(performance.now() / 1000)}`;
     if (key === this.lastCell) return;
     this.lastCell = key;
     // data view active: read out the overlay value under the cursor
@@ -74,6 +77,13 @@ export class QueryTool extends Tool {
       const n = st.network[i] as Network;
       if (n && isRoad(n)) {
         this.ctx.tip.show(`<div class="tip-head"><b>${NETWORK_LABELS[n]}</b></div><div class="tip-sub">${num(st.traffic[i])} trips/day · ${pct(st.congestion[i])} congestion</div>`, 'info');
+        return;
+      }
+      // empty zoned lot: why it is (not) growing — no power / road / water / demand
+      const zs = safe(() => emptyZoneStatus(st, p.hit!.x, p.hit!.z), null);
+      if (zs) {
+        const more = zs.blockers.slice(1, 3).map((b) => `<div class="tip-warn">${escapeHtml(b.text)}</div>`).join('');
+        this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(ZONE_LABELS[st.zone[i]] ?? 'Zoned lot')}</b></div><div class="${zs.ready ? 'tip-sub' : 'tip-reason'}">${escapeHtml(zoneStatusLine(zs))}</div>${more}`, zs.ready ? 'ok' : 'bad');
         return;
       }
     }

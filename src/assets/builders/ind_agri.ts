@@ -2,14 +2,14 @@
  * Industrial / AGRICULTURE models: ind_farm_field, ind_farm_barn, ind_greenhouse.
  */
 import type { ModelBuilders } from '../registry';
-import type { ModelBuilder, ColorLike } from '../ModelBuilder';
+import type { ModelBuilder, ColorLike, Paint } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import { fence } from '../kit';
 import {
   bicone, dome, flat, gambrelRoof, ground, hCyl, lathe, strut, tank, tractor, tree, tube, wallQuad, wallRow, disc,
   smokestack, boxTruck, pallets, carLow, CAR_COLORS2, lattice, poplar,
-  floodLight, lightDot, pool, Y_OVER,
+  floodLight, lightDot, pool, Y_OVER, dim,
 } from './ind_kit';
 
 const DIRT = 0x8a6e4b;
@@ -458,6 +458,13 @@ function lawnPatch(b: ModelBuilder, x0: number, z0: number, x1: number, z1: numb
 // paint: thin brown / plum lines on the glass by day, saturated amber / magenta rows glowing through the roof at night.
 const GROW_HPS = 0x8a4410;
 const GROW_LED = 0x8a2870;
+/**
+ * Lit film / whitewashed glass: Emissive-9 painted 0.7x the film colour -> plain film by day, a soft warm glow of the
+ * crop lights diffused through the skin at night (`k` = intensity).
+ */
+function filmGlow(color: number, k = 0.3): Paint {
+  return { color: dim(color, 0.7), surf: Surf.Emissive, pattern: 9, floor: 3.3 * k };
+}
 
 /**
  * Lamp rows (2 tris each) on a roof slope from (xa, ya) to (xb, yb) (xb > xa), running z0..z1: `n` rows `w` m wide,
@@ -562,7 +569,7 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
         const cx = -20 + i * 7.2;
         // every other tunnel (2-3 of 5) is lit: warm glow through the film + an HPS lamp row along the ridge
         const lit = (i + litOff) % 2 === 0;
-        if (lit) b.paint(0xeef1ee, Surf.Plain, 1, 10);
+        if (lit) b.paint(filmGlow(0xeef1ee));
         else b.paint(0xeef1ee, Surf.Plain);
         polytunnel(b, cx, -14.5, 6.0, 25, 3.4, lit);
       }
@@ -586,10 +593,12 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
       flat(b, -HX, 9, HX, HZ, Y_OVER);
       for (let i = 0; i < 3; i++) {
         const cx = -17 + i * 11;
-        const tint = i === 1 ? 0 : 4;
-        b.paint(i === 1 ? 0xdfe6e6 : 0xb8c4c8, Surf.GlassCurtain, tint, 1.2).box(cx - 4.5, 0, -14.5, cx + 4.5, 3.0, 7);
-        b.paint(i === 1 ? 0xeef1ef : 0xc8d4d8, i === 1 ? Surf.Plain : Surf.GlassCurtain, 4, 1.2)
-          .gableRoof(cx, -3.75, 9, 21.5, 3.0, 2.2, 'z', 0.1, { color: 0xc8d4d8, surf: Surf.GlassCurtain, pattern: 4, floor: 1.2 });
+        // pavilion glass walls + gable ends (uniform warm glow at night); the whitewashed house's roof glows through
+        const wall: Paint = { color: 0x2a3440, surf: Surf.GlassPlain, pattern: 2 };
+        b.paint(wall).box(cx - 4.5, 0, -14.5, cx + 4.5, 3.0, 7);
+        if (i === 1) b.paint(filmGlow(0xeef1ef, 0.2));
+        else b.paint(0xc8d4d8, Surf.GlassCurtain, 4, 1.2);
+        b.gableRoof(cx, -3.75, 9, 21.5, 3.0, 2.2, 'z', 0.1, wall);
         b.paint(0xf0f2f2, Surf.Metal);
         strut(b, [cx, 5.25, -14.6], [cx, 5.25, 7.1], 0.18);
         if (i !== 1) {
@@ -640,7 +649,8 @@ function polytunnel(b: ModelBuilder, cx: number, z0: number, w: number, L: numbe
     b.quad([cx - 0.2, h + 0.02, z1 - 0.3], [cx + 0.2, h + 0.02, z1 - 0.3], [cx + 0.2, h + 0.02, z0 + 0.3], [cx - 0.2, h + 0.02, z0 + 0.3]);
   }
   // end walls
-  b.paint(0xd6dcd8, Surf.Plain);
+  if (lit) b.paint(filmGlow(0xd6dcd8));
+  else b.paint(0xd6dcd8, Surf.Plain);
   for (let i = 0; i < seg; i++) {
     const [xa, ya] = pts[i], [xb, yb] = pts[i + 1];
     b.tri([cx, 0, z1], [xb, yb, z1], [xa, ya, z1]);

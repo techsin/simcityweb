@@ -211,9 +211,9 @@ export const MANIFEST: ManifestEntry[] = [
   E('tr_ferry_terminal', 'transport', [2, 2], 1, [6, 10], 'Ferry terminal with pier (water on +Z side).'),
 
   // ------------------------------------------------------------------ NATURE (instanced heavily: keep <= 120 tris)
-  E('tree_oak', 'nature', [1, 1], 4, [8, 14], 'Broadleaf oak-like tree: trunk + 2-3 lumpy low-poly foliage blobs.'),
-  E('tree_maple', 'nature', [1, 1], 3, [7, 12], 'Rounded maple tree, some variants autumn orange/red.'),
-  E('tree_birch', 'nature', [1, 1], 3, [8, 13], 'Slender birch, white trunk, light green narrow crown.'),
+  E('tree_oak', 'nature', [1, 1], 7, [8, 14], 'Broadleaf oak-like tree: trunk + 2-3 lumpy low-poly foliage blobs. Seasonal variants (autumn / bare): see builders/nat_season.ts.'),
+  E('tree_maple', 'nature', [1, 1], 6, [7, 12], 'Rounded maple tree, some variants autumn orange/red, bare winter, spring blossom (builders/nat_season.ts).'),
+  E('tree_birch', 'nature', [1, 1], 5, [8, 13], 'Slender birch, white trunk, light green narrow crown; autumn yellow + bare winter variants (builders/nat_season.ts).'),
   E('tree_pine', 'nature', [1, 1], 4, [10, 20], 'Pine tree: tall trunk, stacked cone foliage tiers.'),
   E('tree_spruce', 'nature', [1, 1], 3, [8, 16], 'Dense conical spruce, dark green.'),
   E('tree_palm', 'nature', [1, 1], 3, [8, 14], 'Palm tree: curved segmented trunk, drooping fronds.'),

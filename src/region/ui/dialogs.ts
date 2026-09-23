@@ -8,8 +8,8 @@ import type { RegionData, RegionPresetId } from '../types';
 import { drawRegionMap } from '../mapPreview';
 import { randomRegionName } from '../names';
 import { Modal, segmented, slider, toggle, confirmDialog, toast } from './modal';
-import { button, formatPop, h, icon, timeAgo } from './dom';
-import { deleteRegion, downloadBlob, exportRegion, importRegion, listRegions, safeFileName } from '../../save';
+import { button, formatMoney, formatPop, h, icon, timeAgo } from './dom';
+import { deleteRegion, downloadBlob, exportRegion, importRegion, listRegions, safeFileName, type RecoveryMarker } from '../../save';
 import { EMBLEM_SVG } from './emblem';
 
 // ------------------------------------------------------------------ settings
@@ -30,7 +30,11 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
     vol('Sound effects', 'sfx', 'sparkles'),
     vol('City ambience', 'ambience', 'building'),
     h('div', { style: 'display:flex; gap:24px; margin: 4px 0 10px' }, toggle('Play music', audio.musicEnabled, (v) => audio.setMusicEnabled(v)), toggle('Mute all', audio.muted, (v) => audio.setMuted(v))),
-    h('div', { style: 'display:flex; gap:24px; margin: 0 0 18px' }, toggle('Interface sounds', audio.uiSounds, (v) => audio.setUiSounds(v)), toggle('Hover sounds', audio.hoverSounds, (v) => audio.setHoverSounds(v))),
+    h('div', { style: 'display:flex; gap:24px; margin: 0 0 18px' }, toggle('Interface sounds', audio.uiSounds, (v) => {
+      audio.setUiSounds(v);
+      // the switch sound played while interface sounds were still off: confirm once they are back on
+      if (v) audio.play('toggleOn');
+    }), toggle('Hover sounds', audio.hoverSounds, (v) => audio.setHoverSounds(v))),
     h('div', { class: 'section-title' }, 'Graphics'),
     h(
       'div',
@@ -174,7 +178,7 @@ export function openNewRegion(): Promise<NewRegionChoice | null> {
         'button',
         { class: 'preset-card', type: 'button' },
         img,
-        h('div', { class: 'pc-body' }, h('div', { class: 'pc-name' }, p.name, h('span', { class: `climate-tag ${p.id === 'random' ? '' : p.climate}` }, p.id === 'random' ? 'any' : p.climate)), h('div', { class: 'pc-blurb' }, p.blurb)),
+        h('div', { class: 'pc-body' }, h('div', { class: 'pc-name' }, h('span', { class: 'pc-n', title: p.name }, p.name), h('span', { class: `climate-tag ${p.id === 'random' ? '' : p.climate}` }, p.id === 'random' ? 'any' : p.climate)), h('div', { class: 'pc-blurb' }, p.blurb)),
       ) as HTMLButtonElement;
       card.addEventListener('click', () => {
         audio.play('tab');
@@ -204,11 +208,11 @@ export function openNewRegion(): Promise<NewRegionChoice | null> {
     const nameDice = button('', { icon: 'dice', cls: 'sq-btn', title: 'Random name', sound: 'shuffle', onClick: () => ((nameInput.value = randomRegionName()), (nameTouched = true)) });
     const body = h(
       'div',
-      {},
+      { class: 'new-region' },
       h('div', { class: 'field' }, h('label', {}, 'Landscape'), grid),
       h(
         'div',
-        { style: 'display:grid; grid-template-columns: 1.4fr 0.8fr 1.2fr; gap: 14px' },
+        { class: 'nr-form' },
         h('div', { class: 'field' }, h('label', {}, 'Region name'), h('div', { class: 'input-row' }, nameInput, nameDice)),
         h('div', { class: 'field' }, h('label', {}, 'Seed'), h('div', { class: 'input-row' }, seedInput, dice)),
         h(
@@ -348,4 +352,55 @@ export function openLoadRegion(onOpen: (r: RegionData) => void): Modal {
   });
   render();
   return m;
+}
+
+// ------------------------------------------------------------------ recover unsaved progress
+/**
+ * "Recover unsaved progress?" — shown when the last session ended with changes newer than the city's last save.
+ * Resolves 'recover' / 'discard', or null when dismissed (Esc / ×: decide later, the snapshot is kept).
+ */
+export function openRecoverDialog(m: RecoveryMarker): Promise<'recover' | 'discard' | null> {
+  return new Promise((resolve) => {
+    let result: 'recover' | 'discard' | null = null;
+    const row = (k: string, v: string, sub?: string) => h('div', { class: 'rv-row' }, h('span', { class: 'rv-k' }, k), h('span', { class: 'rv-v' }, v, sub ? h('small', {}, sub) : null));
+    const body = h(
+      'div',
+      { class: 'recover-body' },
+      h('p', {}, 'Metropolis closed before ', h('b', {}, m.cityName), ' was saved. A recovery snapshot of your last session was kept on this device.'),
+      h(
+        'div',
+        { class: 'rv-grid' },
+        row('Unsaved progress', m.date ?? `Day ${m.day}`, `${timeAgo(m.at)} · ${formatPop(m.population)} residents · ${formatMoney(m.funds)}`),
+        row('Last save', m.baseDate ?? (m.baseDay !== undefined ? `Day ${m.baseDay}` : '—'), m.regionName ? m.regionName : undefined),
+      ),
+      h('p', { class: 'rv-note' }, 'Recover replaces the last save with the snapshot. Discard keeps the last save and deletes the snapshot.'),
+    );
+    const recover = button('Recover', {
+      icon: 'refresh',
+      cls: 'lg primary',
+      sound: 'confirm',
+      onClick: () => {
+        result = 'recover';
+        dlg.close(true);
+      },
+    });
+    const discard = button('Discard', {
+      icon: 'trash',
+      cls: 'lg ghost',
+      onClick: () => {
+        result = 'discard';
+        dlg.close();
+      },
+    });
+    const dlg: Modal = new Modal({
+      title: 'Recover unsaved progress?',
+      subtitle: `${m.cityName}${m.regionName ? ` · ${m.regionName}` : ''}`,
+      icon: 'refresh',
+      body,
+      footer: [h('div', { class: 'grow' }), discard, recover],
+      onEnter: () => recover.click(),
+      onClose: () => resolve(result),
+    });
+    recover.classList.add('autofocus');
+  });
 }

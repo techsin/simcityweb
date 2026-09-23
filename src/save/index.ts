@@ -6,14 +6,17 @@
  *   saveRegion(region)  loadRegion(id)  listRegions()  deleteRegion(id)
  *   exportRegion(regionId) -> Blob (.metropolis: gzip'd binary bundle of the region + all its cities)
  *   importRegion(fileOrBytes) -> RegionData (stored; gets a fresh id if that id already exists)
+ *   recovery.ts: emergency "unsaved progress" snapshots (delta vs the last full save; written on unload)
  */
 import type { CityState } from '../sim/CityState';
 import type { RegionData } from '../region/types';
 import { deserializeCity, serializeCity, migrateCity, type SerializedCity } from './serialize';
 import { openKV } from './db';
 import { packFile, unpackFile } from './bundle';
+import { setRecoveryBase } from './recovery';
 
 export * from './serialize';
+export * from './recovery';
 export { openKV, setKV, MemoryKV } from './db';
 export { encodeBundle, decodeBundle, packFile, unpackFile, gzip, gunzip } from './bundle';
 
@@ -42,17 +45,24 @@ export function cityKey(regionId: string, tileKey: string): string {
 }
 
 // ------------------------------------------------------------------ cities
-export async function saveCity(regionId: string, tileKey: string, state: CityState): Promise<void> {
+/** resolves to the record's savedAt. The serialized copy stays in memory as the base of recovery snapshots. */
+export async function saveCity(regionId: string, tileKey: string, state: CityState): Promise<number> {
   const kv = await openKV();
-  const rec: CityRecord = { key: cityKey(regionId, tileKey), regionId, tileKey, savedAt: Date.now(), city: serializeCity(state) };
+  // copy: the snapshot must not alias the live state (it is kept as the recovery base)
+  const rec: CityRecord = { key: cityKey(regionId, tileKey), regionId, tileKey, savedAt: Date.now(), city: serializeCity(state, { copy: true }) };
   await kv.put('cities', rec, rec.key);
+  setRecoveryBase(regionId, tileKey, rec.savedAt, rec.city);
+  return rec.savedAt;
 }
 
 export async function loadCity(regionId: string, tileKey: string): Promise<CityState | null> {
   const kv = await openKV();
   const rec = await kv.get<CityRecord>('cities', cityKey(regionId, tileKey));
   if (!rec) return null;
-  return deserializeCity(rec.city);
+  const st = deserializeCity(rec.city);
+  // deserializeCity copies every array, so the stored record can serve as the recovery base as-is
+  setRecoveryBase(regionId, tileKey, rec.savedAt, rec.city);
+  return st;
 }
 
 export async function loadSerializedCity(regionId: string, tileKey: string): Promise<SerializedCity | null> {

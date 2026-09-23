@@ -156,8 +156,9 @@ export class GameSounds {
     if (this.d.sandbox()) return;
     const b = this.d.sim.state.budget;
     let net = 0;
-    for (const k in b.lastIncome) net += b.lastIncome[k] || 0;
-    for (const k in b.lastExpense) net -= b.lastExpense[k] || 0;
+    // recurring net only (loan proceeds, construction and other 'oneoff:*' entries are not the month's result)
+    for (const k in b.lastIncome) if (!k.startsWith('oneoff:')) net += b.lastIncome[k] || 0;
+    for (const k in b.lastExpense) if (!k.startsWith('oneoff:')) net -= b.lastExpense[k] || 0;
     if (!net) return;
     // let the month's news (bankruptcy warnings...) speak first; never stack on top of another event sound
     setTimeout(() => {

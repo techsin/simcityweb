@@ -29,6 +29,14 @@ const LEAF_PINE = [0x36552c, 0x33502e, 0x3d5c31, 0x304c29];
 const LEAF_SPRUCE = [0x2c4e2c, 0x335a33, 0x3b584c];
 const LEAF_PALM = [0x4a7430, 0x557c35, 0x46702f];
 const LEAF_CYPRESS = [0x34542d, 0x2f4d2b];
+// seasonal crowns (variant layout: nat_season.ts)
+const OAK_ORANGE = [0xc8641e, 0xd27a2a, 0xb85a1c];
+const OAK_RED = [0xa8321e, 0xb8442a, 0x92291a];
+const BIRCH_YELLOW = [0xd9a520, 0xe2b53c, 0xc99419];
+const MAPLE_BLOSSOM = [0xf0c4d0, 0xf6dde4, 0xe6a9bc];
+/** bare-winter twig haze: warm grey-brown (oak, maple), purple-brown (birch) */
+const TWIG = 0x7a6a5c;
+const TWIG_BIRCH = 0x6e5048;
 
 // ------------------------------------------------------------------ shared tree parts
 /** Straight tapered trunk from below ground to `top`. 2*seg tris. */
@@ -84,16 +92,106 @@ function crown(b: ModelBuilder, rng: RNG, cx: number, cy: number, cz: number, rx
   });
 }
 
+/**
+ * Bare winter deciduous tree: trunk with a central leader, 3 main limbs forking into branches, and fans of thin
+ * double-sided "twig spray" blades at every branch tip (Surf.Foliage: they sway and give far impostors a grey-brown
+ * winter tint). Reads as a see-through twiggy silhouette, not a crown. ~110-120 tris.
+ */
+interface BareOpts {
+  H: number;
+  /** trunk fork height */
+  tTop: number;
+  /** horizontal reach of the limbs, in units of H */
+  spread: number;
+  rT: number;
+  bark: number;
+  twig: number;
+  /** twigs per main limb */
+  twigs?: [number, number, number];
+  /** 0 = limbs spread out wide (oak), 1 = steep and upright (birch) */
+  upright?: number;
+  /** twig sprays hang down (birch) */
+  droop?: number;
+  /** dark bark band at the base (birch) */
+  baseBand?: number;
+}
+function bareTree(b: ModelBuilder, rng: RNG, o: BareOpts) {
+  const { H, tTop, spread, rT, bark } = o;
+  const up = o.upright ?? 0;
+  const lean: V3 = [rng.range(-0.3, 0.3), tTop, rng.range(-0.3, 0.3)];
+  const leader: V3 = [lean[0] * 1.4 + rng.range(-0.2, 0.2), H * (0.74 + 0.12 * up), lean[2] * 1.4 + rng.range(-0.2, 0.2)];
+  b.paint(bark, Surf.Wood);
+  limb(b, [[0, -0.4, 0], lean, leader], [rT, rT * 0.62, rT * 0.2], { seg: 4 });
+  if (o.baseBand !== undefined) {
+    b.paint(o.baseBand, Surf.Wood);
+    limb(b, [[0, -0.4, 0], [lean[0] * 0.25, 0.9, lean[2] * 0.25]], [rT * 1.12, rT * 1.02], { seg: 3 });
+    b.paint(bark, Surf.Wood);
+  }
+  const reach = H * spread;
+  const tips: { p: V3; d: V3 }[] = [{ p: leader, d: vnorm(vsub(leader, lean)) }];
+  const a0 = rng.range(0, Math.PI * 2);
+  const twigs = o.twigs ?? [2, 2, 2];
+  for (let i = 0; i < 3; i++) {
+    const a = a0 + i * 2.09 + rng.range(-0.3, 0.3);
+    const f = rng.range(0.2, 0.7);
+    const p0: V3 = [lean[0] + (leader[0] - lean[0]) * f * 0.4, tTop + (leader[1] - tTop) * f * 0.35, lean[2] + (leader[2] - lean[2]) * f * 0.4];
+    const r1 = reach * rng.range(0.5, 0.62) * (1 - 0.35 * up);
+    const p1: V3 = [p0[0] + Math.cos(a) * r1, p0[1] + (H - p0[1]) * (0.3 + 0.25 * up) * rng.range(0.85, 1.15), p0[2] + Math.sin(a) * r1];
+    limb(b, [p0, p1], [rT * 0.5, rT * 0.3], { seg: 4 });
+    for (let k = 0; k < twigs[i]; k++) {
+      const a2 = a + (k === 0 ? -0.6 : 0.6) + rng.range(-0.25, 0.25);
+      const r2 = reach * rng.range(0.4, 0.52) * (1 - 0.3 * up);
+      const p2: V3 = [p1[0] + Math.cos(a2) * r2, p1[1] + (H - p1[1]) * rng.range(0.5, 0.82), p1[2] + Math.sin(a2) * r2];
+      limb(b, [p1, p2], [rT * 0.28, rT * 0.07], { seg: 3 });
+      tips.push({ p: p2, d: vnorm(vsub(p2, p1)) });
+    }
+    if (!twigs[i]) tips.push({ p: p1, d: vnorm(vsub(p1, p0)) });
+  }
+  // twig sprays: 3 slender double-sided blades per tip, fanned in a cone around the branch direction (a brushy fringe)
+  const m = mark(b);
+  const L = (H - tTop) * 0.2;
+  const droop = o.droop ?? 0;
+  for (const { p, d } of tips) {
+    const side0 = vcross(d, [0, 1, 0]);
+    const sa: V3 = Math.hypot(side0[0], side0[1], side0[2]) > 0.1 ? vnorm(side0) : [1, 0, 0];
+    const sb = vnorm(vcross(sa, d));
+    const ph = rng.range(0, Math.PI * 2);
+    for (let k = 0; k < 3; k++) {
+      b.paint(jitterHex(rng, k === 1 ? shadeHex(o.twig, 0.82) : o.twig, 0.07), Surf.Foliage);
+      const an = ph + (k / 3) * Math.PI * 2;
+      const cone = rng.range(0.45, 0.8);
+      const dir = vnorm(vadd(vadd(d, vadd(vscale(sa, Math.cos(an) * cone), vscale(sb, Math.sin(an) * cone))), [0, 0.25 - droop, 0]));
+      const side = vnorm(vcross(dir, Math.abs(dir[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]));
+      const len = L * rng.range(0.8, 1.2);
+      const base = vadd(p, vscale(dir, -len * 0.15));
+      const tip = vadd(p, vscale(dir, len));
+      const w = len * 0.2;
+      const q0 = vadd(tip, vscale(side, w)), q1 = vadd(tip, vscale(side, -w));
+      const n = vnorm(vcross(vsub(q0, base), vsub(q1, base)));
+      triOut(b, base, q0, q1, n);
+      triOut(b, base, q1, q0, vscale(n, -1));
+    }
+  }
+  tintSince(b, m, foliageShade(tTop, H, 0.5, 0));
+}
+
 // ------------------------------------------------------------------ builders
 export const models: ModelBuilders = {
   // Broadleaf oak: stout trunk, forked branches, wide lumpy crown. 108 tris.
+  // v0 v1 v2 v4 green, v3 autumn orange, v5 autumn red, v6 bare winter (<= 120 tris). Layout: nat_season.ts.
   tree_oak(b, v, rng) {
-    const H = [11.5, 13, 9.5, 12.5][v] * rng.range(0.95, 1.04);
-    const wide = [1.0, 0.95, 1.22, 1.05][v];
-    const tTop = H * [0.36, 0.4, 0.33, 0.37][v];
+    // crown shape per variant (the old v3 green shape moved to v4 so v3 can be TreeRenderer's autumn slot)
+    const s = [0, 1, 2, 0, 3, 2, 1][v] ?? 0;
+    const H = [11.5, 13, 9.5, 12.5][s] * rng.range(0.95, 1.04);
+    const wide = [1.0, 0.95, 1.22, 1.05][s];
+    const tTop = H * [0.36, 0.4, 0.33, 0.37][s];
+    const rT = [0.42, 0.38, 0.4, 0.5][s];
+    if (v === 6) {
+      bareTree(b, rng, { H, tTop, spread: 0.46 * wide, rT, bark: BARK, twig: TWIG });
+      return;
+    }
     const lean: V3 = [rng.range(-0.35, 0.35), tTop, rng.range(-0.35, 0.35)];
-    const rT = [0.42, 0.38, 0.4, 0.5][v];
-    trunk(b, lean, rT, rT * 0.62, v === 3 ? BARK_DARK : BARK, 6);
+    trunk(b, lean, rT, rT * 0.62, s === 3 ? BARK_DARK : BARK, 6);
     const ba = rng.range(0, Math.PI * 2);
     for (let i = 0; i < 2; i++) {
       const a = ba + i * Math.PI + rng.range(-0.4, 0.4);
@@ -105,33 +203,49 @@ export const models: ModelBuilders = {
     const rx = H * 0.42 * wide;
     const cy = H - ry * 0.95;
     const m = mark(b);
-    crown(b, rng, lean[0], cy, lean[2], rx, ry, 4, [LEAF_OAK[v], LEAF_OAK[(v + 1) % 4]], { spread: 0.55, jitter: 0.22, yLo: -0.35, yHi: 0.1, gaps: 0.25 });
-    tintSince(b, m, foliageShade(cy - ry, cy + ry));
+    const autumn = v === 3 || v === 5;
+    const cols = v === 3 ? OAK_ORANGE : v === 5 ? OAK_RED : [LEAF_OAK[s], LEAF_OAK[(s + 1) % 4]];
+    // autumn: one straggler blob (still-green on the orange tree, orange on the red one)
+    const blobColor = autumn ? (i: number) => (i === 2 ? (v === 3 ? 0x7d7a2c : 0xc8641e) : null) : undefined;
+    crown(b, rng, lean[0], cy, lean[2], rx, ry, 4, cols, { spread: 0.55, jitter: 0.22, yLo: -0.35, yHi: 0.1, gaps: 0.25, blobColor });
+    tintSince(b, m, foliageShade(cy - ry, cy + ry, 1, autumn ? 0.2 : 1));
   },
 
-  // Rounded maple: dense round crown; v1 autumn orange, v2 autumn red. 106 tris.
+  // Rounded maple: dense round crown; v0 v3 green, v1 autumn orange, v2 autumn red, v4 bare winter, v5 spring
+  // blossom. 106 tris (bare <= 120).
   tree_maple(b, v, rng) {
-    const H = [9.5, 10.5, 9][v] * rng.range(0.95, 1.05);
-    const tTop = H * 0.36;
+    const H = [9.5, 10.5, 9, 11, 10, 9.5][v] * rng.range(0.95, 1.05);
+    const tTop = H * (v === 3 ? 0.4 : 0.36);
+    if (v === 4) {
+      bareTree(b, rng, { H, tTop, spread: 0.4, rT: 0.34, bark: BARK_GREY, twig: TWIG, upright: 0.25 });
+      return;
+    }
     const lean: V3 = [rng.range(-0.25, 0.25), tTop, rng.range(-0.25, 0.25)];
-    trunk(b, lean, 0.34, 0.22, v === 0 ? BARK : BARK_GREY, 5);
+    trunk(b, lean, 0.34, 0.22, v === 0 || v === 3 ? BARK : BARK_GREY, 5);
     const a = rng.range(0, Math.PI * 2);
     branch(b, [lean[0], tTop * 0.9, lean[2]], [lean[0] + Math.cos(a) * 1.6, tTop + 1.8, lean[2] + Math.sin(a) * 1.6], 0.17, 0.07, BARK);
-    const ry = (H - tTop) * 0.62;
-    const rx = H * 0.36;
+    const ry = (H - tTop) * (v === 3 ? 0.66 : 0.62);
+    const rx = H * (v === 3 ? 0.32 : 0.36);
     const cy = H - ry * 0.95;
     const m = mark(b);
-    const cols = v === 0 ? [0x4f7a36, 0x5a8139] : v === 1 ? [0xc0601c, 0xd5842a, 0xa84a18] : [0x9e2a1a, 0xb3401e, 0x7f2217];
-    // autumn: one off-colour straggler blob; red variant has the darkest blob on top
-    const blobColor = v === 0 ? undefined : (i: number, n: number) => (i === 2 ? (v === 1 ? 0x8f8a2c : 0xc0601c) : v === 2 && i === n - 1 ? 0x7f2217 : null);
+    const cols = v === 0 ? [0x4f7a36, 0x5a8139] : v === 3 ? [0x5d7f3a, 0x4a7032, 0x55793a] : v === 5 ? MAPLE_BLOSSOM : v === 1 ? [0xc0601c, 0xd5842a, 0xa84a18] : [0x9e2a1a, 0xb3401e, 0x7f2217];
+    // autumn: one off-colour straggler blob; red variant has the darkest blob on top. Blossom: one leafy green blob.
+    const blobColor = v === 0 || v === 3 ? undefined : v === 5 ? (i: number) => (i === 2 ? 0x6f8f3e : null) : (i: number, n: number) => (i === 2 ? (v === 1 ? 0x8f8a2c : 0xc0601c) : v === 2 && i === n - 1 ? 0x7f2217 : null);
     crown(b, rng, lean[0], cy, lean[2], rx, ry, 5, cols, { spread: 0.42, topBlob: true, jitter: 0.13, blobColor });
-    tintSince(b, m, foliageShade(cy - ry, cy + ry, 1, v === 0 ? 1 : 0.2));
+    tintSince(b, m, foliageShade(cy - ry, cy + ry, v === 5 ? 0.7 : 1, v === 0 || v === 3 ? 1 : 0.2));
   },
 
-  // Slender birch: white trunk (wood lines read as bark marks), narrow airy light-green crown. v2 twin-stem. 90-100 tris.
+  // Slender birch: white trunk (wood lines read as bark marks), narrow airy light-green crown. v2 twin-stem,
+  // v3 autumn yellow, v4 bare winter. 90-100 tris (bare <= 120).
   tree_birch(b, v, rng) {
-    const H = [11.5, 12.5, 10.5][v] * rng.range(0.95, 1.05);
-    const stems: { top: V3; r: number }[] = v === 2
+    if (v === 4) {
+      const H = 12 * rng.range(0.95, 1.05);
+      bareTree(b, rng, { H, tTop: H * 0.42, spread: 0.3, rT: 0.24, bark: BIRCH_BARK, twig: TWIG_BIRCH, upright: 1, twigs: [2, 2, 1], droop: 0.55, baseBand: 0x4a4540 });
+      return;
+    }
+    const s = v === 3 ? 0 : v;
+    const H = [11.5, 12.5, 10.5][s] * rng.range(0.95, 1.05);
+    const stems: { top: V3; r: number }[] = s === 2
       ? [{ top: [0.7, H * 0.8, 0.2], r: 0.19 }, { top: [-0.6, H * 0.72, -0.25], r: 0.17 }]
       : [{ top: [rng.range(-0.4, 0.4), H * 0.84, rng.range(-0.4, 0.4)], r: 0.24 }];
     b.paint(BIRCH_BARK, Surf.Wood);
@@ -152,14 +266,16 @@ export const models: ModelBuilders = {
     const cy = H * 0.64;
     const cx = (stems.length > 1 ? 0 : main[0] * 0.8), cz = (stems.length > 1 ? 0 : main[2] * 0.8);
     const nc: V3 = [cx, cy - H * 0.05, cz];
-    b.paint(jitterHex(rng, LEAF_BIRCH[v], 0.06), Surf.Foliage);
+    const leaf = v === 3 ? BIRCH_YELLOW : LEAF_BIRCH;
+    b.paint(jitterHex(rng, leaf[s], 0.06), Surf.Foliage);
     leafBlob(b, rng, [cx, cy, cz], [2.2, H * 0.27, 2.0], { jitter: 0.24, soft: 0.6, nc });
     const a0 = rng.range(0, Math.PI * 2);
     for (let i = 0; i < 3; i++) {
       const a = a0 + i * 2.1 + rng.range(-0.3, 0.3);
       const y = H * (0.44 + 0.1 * i) + rng.range(-0.3, 0.3);
       const d = 1.9 - 0.15 * i;
-      b.paint(jitterHex(rng, LEAF_BIRCH[(v + i) % 3], 0.08), Surf.Foliage);
+      // autumn: the lowest side clump stays greenish-yellow
+      b.paint(jitterHex(rng, v === 3 && i === 0 ? 0xa9a83a : leaf[(s + i) % 3], 0.08), Surf.Foliage);
       leafBlob(b, rng, [cx + Math.cos(a) * d, y, cz + Math.sin(a) * d], [1.45 - 0.1 * i, 1.5, 1.35 - 0.1 * i], { jitter: 0.24, soft: 0.6, nc });
     }
     tintSince(b, m, foliageShade(y0, y1, 0.9, 0.3));

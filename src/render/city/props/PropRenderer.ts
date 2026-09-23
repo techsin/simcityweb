@@ -17,6 +17,15 @@ import { DynamicBatch, type TileCuller } from '../common/batch';
 import { getCityMaterial } from '../common/cityMaterial';
 import type { PoolItem, PropItem } from '../roads/mesher';
 import { propLodGeometry } from './propLod';
+import { SEASONAL_TREES, seasonalVariant, treeSeason } from '../../../assets/builders/nat_season';
+
+/** stable per-tree random in [0, 1) from its world position (season swaps) */
+function hash01(x: number, z: number): number {
+  let h = (Math.floor(x * 4) * 73856093) ^ (Math.floor(z * 4) * 19349663);
+  h = Math.imul(h ^ (h >>> 13), 0x5bd1e995);
+  h ^= h >>> 15;
+  return (h >>> 0) / 4294967296;
+}
 
 interface Group {
   ids: number[];
@@ -102,13 +111,16 @@ const GLOW_VERT = /* glsl */ `
 attribute vec4 aGlow;
 varying vec2 vUv;
 varying float vTint;
+varying float vDist;
 void main() {
   vUv = uv * 2.0 - 1.0;
   vTint = aGlow.w;
   vec4 mv = modelViewMatrix * vec4(aGlow.xyz, 1.0);
   float dist = -mv.z;
-  // grow slightly with distance so distant lamps still read as points of light
-  float sz = 1.3 + dist * 0.0025;
+  vDist = dist;
+  // grow slightly with distance so distant lamps still read as points of light, but cap it (~6.3 m at most):
+  // unclamped, far zoom turned every block outline into a lattice of 8-9 m white beads
+  float sz = 1.3 + min(dist * 0.0025, 2.5);
   mv.xy += position.xy * sz;
   gl_Position = projectionMatrix * mv;
 }`;
@@ -116,13 +128,17 @@ const GLOW_FRAG = /* glsl */ `
 uniform float uNight;
 varying vec2 vUv;
 varying float vTint;
+varying float vDist;
 void main() {
   float d2 = dot(vUv, vUv);
   if (d2 > 1.0) discard;
   float core = exp(-d2 * 9.0);
   float halo = pow(1.0 - d2, 3.0) * 0.35;
-  vec3 c = vTint > 0.5 ? vec3(0.85, 0.85, 0.75) : vec3(1.0, 0.72, 0.42);
-  gl_FragColor = vec4(c * (core * 2.2 + halo) * uNight, 1.0);
+  // sodium amber heads (matching the amber pools; a x2.2 core clipped to white); cool white for highway lights
+  vec3 c = vTint > 0.5 ? vec3(0.85, 0.85, 0.75) : vec3(1.0, 0.64, 0.32);
+  // fade toward far zoom so the lamps become a warm glow instead of a bead lattice
+  float far = mix(1.0, 0.4, smoothstep(1500.0, 4500.0, vDist));
+  gl_FragColor = vec4(c * (core * 1.4 + halo) * uNight * far, 1.0);
 }`;
 
 export class PropRenderer {
@@ -155,6 +171,9 @@ export class PropRenderer {
   private up = new THREE.Vector3(0, 1, 0);
   private poolMat: THREE.ShaderMaterial;
   poolCount = 0;
+  /** seasonal street / median trees: instance id -> model, base variant, per-tree random (see nat_season.ts) */
+  private seasonal = new Map<number, { model: string; variant: number; r: number }>();
+  private seasonVer = -1;
 
   constructor(private culler: TileCuller) {
     this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 17, 'props');
@@ -265,6 +284,7 @@ export class PropRenderer {
         if (t !== undefined) { this.tileIds[t].delete(id); this.tileBig[t].delete(id); }
         this.idTile.delete(id);
         this.idGeo.delete(id);
+        this.seasonal.delete(id);
       }
       if (old.pools.length) this.poolsDirty = true;
     }
@@ -274,8 +294,11 @@ export class PropRenderer {
     }
     const g: Group = { ids: [], tiles: [], pools };
     for (const p of props) {
-      const gid = this.geom(p.model, p.variant);
+      const seasonal = SEASONAL_TREES[p.model] !== undefined;
+      const r = seasonal ? hash01(p.x, p.z) : 0;
+      const gid = this.geom(p.model, seasonal ? seasonalVariant(p.model, p.variant, r, treeSeason.mix) : p.variant);
       const id = this.batch.add(gid);
+      if (seasonal) this.seasonal.set(id, { model: p.model, variant: p.variant, r });
       this.q.setFromAxisAngle(this.up, p.yaw);
       this.m4.compose(this.v.set(p.x, p.y, p.z), this.q, this.s.set(p.scale, p.scale, p.scale));
       this.batch.setMatrix(id, this.m4);
@@ -295,7 +318,25 @@ export class PropRenderer {
     this.groups.set(key, g);
   }
 
+  /** swap the seasonal tree instances to the current season's variants (autumn / bare / blossom / green) */
+  private applySeason(): void {
+    const mix = treeSeason.mix;
+    for (const [id, t] of this.seasonal) {
+      const gid = this.geom(t.model, seasonalVariant(t.model, t.variant, t.r, mix));
+      const lod = this.lodMap.get(gid) ?? gid;
+      if (lod !== gid) this.idGeo.set(id, [gid, lod]);
+      else this.idGeo.delete(id);
+      const tile = this.idTile.get(id);
+      const st = tile === undefined ? 2 : this.near[tile];
+      this.batch.setGeometry(id, st === 1 ? lod : gid);
+    }
+  }
+
   update(): void {
+    if (this.seasonVer !== treeSeason.version) {
+      this.seasonVer = treeSeason.version;
+      this.applySeason();
+    }
     if (!this.poolsDirty) return;
     this.poolsDirty = false;
     let total = 0;
@@ -314,7 +355,11 @@ export class PropRenderer {
     let i = 0;
     for (const g of this.groups.values()) {
       for (const p of g.pools) {
-        this.m4.makeScale(p.r, 1, p.r).setPosition(p.x, p.y, p.z);
+        if (p.yaw !== undefined) {
+          // stretched along the road (local x) so consecutive pools merge into a continuous warm ribbon
+          this.q.setFromAxisAngle(this.up, p.yaw);
+          this.m4.compose(this.v.set(p.x, p.y, p.z), this.q, this.s.set(p.r * 1.35, 1, p.r * 0.8));
+        } else this.m4.makeScale(p.r, 1, p.r).setPosition(p.x, p.y, p.z);
         this.pools.setMatrixAt(i, this.m4);
         if (p.tint === 1) { arr[i * 3] = 0.75; arr[i * 3 + 1] = 0.7; arr[i * 3 + 2] = 0.55; }
         else { arr[i * 3] = 1.0; arr[i * 3 + 1] = 0.62; arr[i * 3 + 2] = 0.3; }

@@ -869,31 +869,94 @@ export interface PoolSpec {
   dy?: number;
 }
 
-/** Octagonal light pool of radius r at (x, z) over one or more ground layers; clipped to the lot. */
+/**
+ * Light-pool fall-off: rings at these fractions of the radius, 8 sectors. Each vertex carries its own Emissive-9
+ * intensity (the paint `floor`, interpolated by the shader) following (1 - d/r)^2, so a pool is a soft lamp glow
+ * that fades out to nothing at the rim instead of a flat disc with a hard edge.
+ */
+const POOL_RINGS = [0, 0.5, 1];
+const POOL_SECTORS = 8;
+/** Pools on lawns are dimmer than on paving (grass scatters less; keeps them from reading as pale discs). */
+const POOL_GRASS_K = 0.6;
+
+function isGrassColor(c: ColorLike): boolean {
+  const col = new THREE.Color();
+  if (typeof c === 'number' || typeof c === 'string') col.set(c as any);
+  else if (Array.isArray(c)) col.setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace);
+  else col.copy(c);
+  return col.g > col.r * 1.08 && col.g > col.b * 1.15;
+}
+
+/** Up-facing pool triangle with per-vertex pool intensity (surf.z) values. */
+function poolTri(b: ModelBuilder, y: number, a: P2, c: P2, d: P2, fa: number, fc: number, fd: number): void {
+  const ny = (c[1] - a[1]) * (d[0] - a[0]) - (c[0] - a[0]) * (d[1] - a[1]);
+  if (Math.abs(ny) < 1e-6) return;
+  // raw() exposes the builder's live attribute arrays: patch the `floor` channel of the 3 vertices just emitted
+  const srf = b.raw().srf;
+  const n = srf.length;
+  if (ny >= 0) {
+    b.tri([a[0], y, a[1]], [c[0], y, c[1]], [d[0], y, d[1]]);
+    srf[n + 2] = fa; srf[n + 5] = fc; srf[n + 8] = fd;
+  } else {
+    b.tri([a[0], y, a[1]], [d[0], y, d[1]], [c[0], y, c[1]]);
+    srf[n + 2] = fa; srf[n + 5] = fd; srf[n + 8] = fc;
+  }
+}
+
+/** Soft radial light pool of radius r at (x, z) over one or more ground layers; clipped to the lot (and per-layer clip). */
 export function lightPool(b: ModelBuilder, x: number, z: number, r: number, specs: PoolSpec[]): void {
-  const oct: P2[] = [];
-  for (let i = 0; i < 8; i++) oct.push([x + Math.cos((i / 8) * TAU + TAU / 16) * r, z + Math.sin((i / 8) * TAU + TAU / 16) * r]);
-  const base = clipToLot(oct);
-  if (base.length < 3) return;
+  // cells: centre fan + ring quads, each convex so they clip cleanly against the (convex) clip polygons
+  const ring = (k: number, s: number): P2 => {
+    const a = (s / POOL_SECTORS) * TAU + TAU / (2 * POOL_SECTORS);
+    return [x + Math.cos(a) * r * POOL_RINGS[k], z + Math.sin(a) * r * POOL_RINGS[k]];
+  };
+  const cells: P2[][] = [];
+  for (let s = 0; s < POOL_SECTORS; s++) {
+    for (let k = 1; k < POOL_RINGS.length; k++) {
+      const cell: P2[] = k === 1 ? [[x, z], ring(1, s), ring(1, s + 1)] : [ring(k - 1, s), ring(k, s), ring(k, s + 1), ring(k - 1, s + 1)];
+      const cc = clipToLot(cell);
+      if (cc.length >= 3) cells.push(cc);
+    }
+  }
+  if (!cells.length) return;
+  const boxes = cells.map((c) => {
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+    for (const [px, pz] of c) { x0 = Math.min(x0, px); x1 = Math.max(x1, px); z0 = Math.min(z0, pz); z1 = Math.max(z1, pz); }
+    return [x0, z0, x1, z1];
+  });
+  const emit = (poly: P2[], y: number, peak: number) => {
+    const f = poly.map(([px, pz]) => {
+      const t = Math.min(1, Math.hypot(px - x, pz - z) / r);
+      return Math.max(0.012, peak * (1 - t) * (1 - t));
+    });
+    for (let i = 1; i + 1 < poly.length; i++) poolTri(b, y, poly[0], poly[i], poly[i + 1], f[0], f[i], f[i + 1]);
+  };
   for (const sp of specs) {
-    b.paint(shade(sp.color, 0.7), Surf.Emissive, 9);
+    const peak = 3.3 * (isGrassColor(sp.color) ? POOL_GRASS_K : 1);
+    b.paint(shade(sp.color, 0.7), Surf.Emissive, 9, peak * 0.25);
     if (!sp.clip) {
-      flatPoly(b, base, sp.y + (sp.dy ?? 0.02));
+      const y = sp.y + (sp.dy ?? 0.02);
+      for (const c of cells) emit(c, y, peak);
       continue;
     }
+    const y = sp.y + (sp.dy ?? 0.015);
     for (const q of sp.clip) {
       let qx0 = Infinity, qz0 = Infinity, qx1 = -Infinity, qz1 = -Infinity;
       for (const [qx, qz] of q) {
         qx0 = Math.min(qx0, qx); qx1 = Math.max(qx1, qx); qz0 = Math.min(qz0, qz); qz1 = Math.max(qz1, qz);
       }
       if (qx1 < x - r || qx0 > x + r || qz1 < z - r || qz0 > z + r) continue;
-      const cp = clipConvex(base, q);
-      if (cp.length >= 3) flatPoly(b, cp, sp.y + (sp.dy ?? 0.015));
+      cells.forEach((c, i) => {
+        const [cx0, cz0, cx1, cz1] = boxes[i];
+        if (cx1 < qx0 || cx0 > qx1 || cz1 < qz0 || cz0 > qz1) return;
+        const cp = clipConvex(c, q);
+        if (cp.length >= 3) emit(cp, y, peak);
+      });
     }
   }
 }
 
-/** Park lantern lamp post (~28 tris). style 0 = lantern, 1 = globe, 2 = modern bar. `pool` adds a light pool (r = 0.85 h). */
+/** Park lantern lamp post (~28 tris). style 0 = lantern, 1 = globe, 2 = modern bar. `pool` adds a soft light pool (r = 1.1 h). */
 export function lamp(b: ModelBuilder, x: number, z: number, h = 4.2, style = 0, pool?: PoolSpec | PoolSpec[]): void {
   b.paint(0x26292c, Surf.Metal);
   b.cylinder(x, z, 0, 0.35, 0.16, 0.12, 6, { top: false });
@@ -907,7 +970,7 @@ export function lamp(b: ModelBuilder, x: number, z: number, h = 4.2, style = 0, 
     b.paint(0x26292c, Surf.Metal).box(x - 0.08, h, z - 0.08, x + 0.6, h + 0.12, z + 0.08);
     b.paint(0xf4f1e6, Surf.Emissive).box(x + 0.05, h - 0.03, z - 0.07, x + 0.58, h, z + 0.07, { top: null });
   }
-  if (pool) lightPool(b, x, z, 0.85 * h, Array.isArray(pool) ? pool : [pool]);
+  if (pool) lightPool(b, x, z, 1.1 * h, Array.isArray(pool) ? pool : [pool]);
 }
 
 /** Regular polygon approximating a circle (convex; for pool clipping). */
@@ -1031,7 +1094,7 @@ export function bleachers(b: ModelBuilder, x: number, z: number, w: number, rows
 }
 
 /** Floodlight mast aimed at (tx, tz): pole + emissive light bank (~40 tris). */
-export function floodMast(b: ModelBuilder, x: number, z: number, h: number, tx: number, tz: number, opts: { bank?: number; lattice?: boolean } = {}): void {
+export function floodMast(b: ModelBuilder, x: number, z: number, h: number, tx: number, tz: number, opts: { bank?: number; lattice?: boolean; lamps?: [number, number, number, number] } = {}): void {
   const bank = opts.bank ?? Math.max(1.2, h * 0.08);
   b.paint(0x8a9096, Surf.Metal);
   if (opts.lattice) {
@@ -1046,6 +1109,19 @@ export function floodMast(b: ModelBuilder, x: number, z: number, h: number, tx: 
   }
   const a = Math.atan2(tx - x, tz - z);
   b.push().translate(x, h, z).rotateY(a).rotateX(0.35);
+  if (opts.lamps) {
+    // stadium bank: grid of cols x rows lamp heads (w x hh m each, 1.5x emissive) on a dark frame
+    const [cols, rows, w, hh] = opts.lamps;
+    const gap = 0.25, W = cols * w + (cols + 1) * gap, H = rows * hh + (rows + 1) * gap;
+    b.paint(0x3a3e44, Surf.Metal).box(-W / 2, -H / 2, -0.45, W / 2, H / 2, 0.0);
+    b.paint(0xf6f8ff, Surf.Emissive, 6);
+    for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
+      const x0 = -W / 2 + gap + i * (w + gap), y0 = -H / 2 + gap + j * (hh + gap);
+      b.quad([x0, y0, 0.05], [x0 + w, y0, 0.05], [x0 + w, y0 + hh, 0.05], [x0, y0 + hh, 0.05]);
+    }
+    b.pop();
+    return;
+  }
   b.paint(0x3a3e44, Surf.Metal).box(-bank / 2 - 0.1, -bank * 0.35 - 0.1, -0.35, bank / 2 + 0.1, bank * 0.35 + 0.1, 0.0);
   b.paint(0xf6f8ff, Surf.Emissive).box(-bank / 2, -bank * 0.35, 0.0, bank / 2, bank * 0.35, 0.06, { nx: null, px: null, top: null, bottom: null, nz: null });
   b.pop();

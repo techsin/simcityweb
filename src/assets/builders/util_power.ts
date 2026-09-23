@@ -139,7 +139,7 @@ function coalPlant(b: ModelBuilder, rng: RNG): void {
     b.paint(0x1c1c1c, Surf.Metal).box(28.9, 0.1, z + 0.5, 31.1, 0.9, z + 11, { top: null });
   }
   // ash silo + water tank + admin
-  tank(b, -2, 5, 3.6, 18, 0xc5c1b8, { roof: 'cone', seg: 12, stair: false, surf: Surf.Plain });
+  tank(b, -2, 5, 3.6, 18, 0xc5c1b8, { roof: 'cone', seg: 12, stair: false, stairLights: true, surf: Surf.Plain });
   b.paint(0x8e8b84, Surf.Metal);
   lattice(b, -2, 5, 0, 3, 3, 3, 3, 3, 1, 0.3, { rings: false, diag: false });
   tank(b, -12, 2, 5, 8, 0xe8e8e2, { roof: 'cone', seg: 14, rim: 0x9aa0a6 });
@@ -243,10 +243,13 @@ function oilPlant(b: ModelBuilder, rng: RNG): void {
   b.paint(0x9c978c, Surf.Pavement).box(-23, 0, -31, 23, 1.0, -11, { bottom: null });
   b.paint(0x8a857c, Surf.Pavement);
   flat(b, -22.5, -30.5, 22.5, -11.5, 0.6);
-  tank(b, -15, -22, 6.3, 12, 0xe8e8e2, { y0: 0.6, roof: 'cone', rim: 0x9aa0a6, stair: true, seg: 14 });
-  tank(b, 0, -22, 6.3, 12, 0xdedcd4, { y0: 0.6, roof: 'cone', rim: 0x9aa0a6, seg: 14 });
-  tank(b, 15, -24, 5.4, 11, 0xe8e8e2, { y0: 0.6, roof: 'cone', rim: 0x9aa0a6, seg: 14 });
-  tank(b, 18, -14.5, 2.6, 7, 0x4f5f4f, { y0: 0.6, roof: 'cone', seg: 10 });
+  // tank shells floodlit warm from the bund at night, sodium lights up the spiral stair
+  tank(b, -15, -22, 6.3, 12, 0xe8e8e2, { y0: 0.6, roof: 'cone', rim: 0x9aa0a6, stair: true, stairLights: true, seg: 14, flood: 8 });
+  tank(b, 0, -22, 6.3, 12, 0xdedcd4, { y0: 0.6, roof: 'cone', rim: 0x9aa0a6, seg: 14, flood: 8 });
+  tank(b, 15, -24, 5.4, 11, 0xe8e8e2, { y0: 0.6, roof: 'cone', rim: 0x9aa0a6, seg: 14, flood: 7.5 });
+  tank(b, 18, -14.5, 2.6, 7, 0x4f5f4f, { y0: 0.6, roof: 'cone', seg: 10, flood: 6 });
+  lights(b, [[-15, 12.9, -15.4], [0, 12.9, -15.4], [15, 11.9, -18.3]], 0.3, 0xffb060);
+  pool(b, -7.5, -18, 7, 0x8a857c, 0.63);
   b.paint(0x55595e, Surf.Metal);
   pipeRun(b, [[-15, 1.6, -15.5], [-15, 1.6, -8], [-4, 1.6, -8], [-4, 8, -6]], 0.5, 6, true);
   pipeRun(b, [[0, 1.6, -15.5], [0, 1.6, -8]], 0.5, 6);

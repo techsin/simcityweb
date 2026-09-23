@@ -134,7 +134,7 @@ export class TopBar {
     city.addEventListener('click', () => this.ctx.openPauseMenu());
     this.dateEl = h('div', { class: 'hud-value' });
     this.todEl = h('div', { class: 'tod hide-sm' });
-    const date = h('div', { class: 'hud-seg' }, h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Date', h('span', { class: 'paused-pill' }, 'PAUSED')), this.dateEl));
+    const date = h('div', { class: 'hud-seg' }, h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Date', h('span', { class: 'paused-pill' }, 'PAUSED'), h('span', { class: 'live-pill', title: 'An emergency needs you: the game runs at live speed until you dispatch help (Settings → Gameplay)' }, 'LIVE')), this.dateEl));
     const speeds: [number, string, string][] = [[0, 'pause', 'Pause (Space)'], [1, 'play', 'Normal speed (1)'], [2, 'fast', 'Fast (2)'], [3, 'ultra', 'Ultra (3)']];
     const sp = h('div', { class: 'speed' });
     for (const [s, ic, t] of speeds) {
@@ -298,6 +298,7 @@ export class TopBar {
       ['advisors', 'advisors', 'Advisors & news (N)', () => this.ctx.panels.toggle('advisors')],
       ['ordinances', 'ordinances', 'Ordinances (Y)', () => this.ctx.panels.toggle('ordinances')],
       ['rewards', 'trophy', 'Rewards & unlocks', () => this.ctx.panels.toggle('rewards')],
+      ['emergencies', 'siren', 'Emergencies — active incidents, fleets, statistics', () => this.ctx.panels.toggle('emergencies')],
     ];
     const g = h('div', { class: 'mp-glass', style: 'gap:2px' });
     for (const [id, ic, t, f] of btns) {
@@ -424,6 +425,9 @@ export class TopBar {
       }
       this.renderCapHints();
     }
+
+    // emergencies waiting for a player dispatch (WP8)
+    this.setBadge('emergencies', st.stats.emergency?.manualActive ?? 0);
 
     // approval
     const ap = st.stats.approval ?? 50;

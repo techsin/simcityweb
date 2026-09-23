@@ -9,7 +9,8 @@
  *   click     buttons / [role=button] / .btn / clickable rows      'click' (secondary), 'press' (primary), 'tap' (icon),
  *             tabs + segmented controls + radios                     'tab', close buttons 'close',
  *             checkboxes / switches                                  'toggleOn' / 'toggleOff'
- *   input     range sliders: soft ticks while dragging (throttled, pitch follows the value), 'sliderRelease' on release
+ *   input     range sliders: soft ticks while dragging / arrow keys (throttled, pitch follows the value),
+ *             'sliderRelease' when the pointer lets go of a slider whose value moved while held
  *   change    <select>                                               'tab'
  *   hover     primary menus / toolbars only (HOVER selector)         audio.hover() (very soft, throttled)
  *
@@ -68,6 +69,8 @@ export function installUiSounds(get: AudioGetter): () => void {
   window.addEventListener('input', onInput, true);
   window.addEventListener('change', onChange, true);
   window.addEventListener('pointerdown', onPointerDown, true);
+  window.addEventListener('pointerup', onPointerUp, true);
+  window.addEventListener('pointercancel', onPointerUp, true);
   window.addEventListener('pointerover', onPointerOver, true);
   return off;
 }
@@ -143,7 +146,9 @@ function onClick(e: MouseEvent): void {
 }
 
 // ------------------------------------------------------------------ sliders
-const sliderState = new WeakMap<HTMLInputElement, { last: number; v: number; drag: boolean }>();
+const sliderState = new WeakMap<HTMLInputElement, { last: number; v: number; drag: boolean; down: number; moved: boolean }>();
+/** the range input currently held with the pointer (released by the window pointerup, wherever it happens) */
+let held: HTMLInputElement | null = null;
 
 function rangeOf(t: EventTarget | null): HTMLInputElement | null {
   return t instanceof HTMLInputElement && t.type === 'range' && !optedOut(t) ? t : null;
@@ -152,7 +157,7 @@ function rangeOf(t: EventTarget | null): HTMLInputElement | null {
 function stateOf(el: HTMLInputElement) {
   let s = sliderState.get(el);
   if (!s) {
-    s = { last: -1e9, v: Number(el.value), drag: false };
+    s = { last: -1e9, v: Number(el.value), drag: false, down: Number(el.value), moved: false };
     sliderState.set(el, s);
   }
   return s;
@@ -160,7 +165,29 @@ function stateOf(el: HTMLInputElement) {
 
 function onPointerDown(e: PointerEvent): void {
   const el = rangeOf(e.target);
-  if (el) stateOf(el).drag = true;
+  if (!el) return;
+  const s = stateOf(el);
+  s.drag = true;
+  s.down = Number(el.value);
+  s.moved = false;
+  held = el;
+}
+
+/**
+ * Pointer released after holding a slider: settle sound when the value moved (drag or track click). Driven by
+ * pointerup rather than 'change' - 'change' is skipped when a handler re-renders / blurs the input mid-drag.
+ */
+function onPointerUp(): void {
+  const el = held;
+  held = null;
+  if (!el) return;
+  const s = stateOf(el);
+  if (!s.drag) return;
+  s.drag = false;
+  const v = Number(el.value);
+  s.v = v;
+  // moved: the value changed at some point while held (a drag can end where it started)
+  if (s.moved || v !== s.down) getAudio()?.play('sliderRelease');
 }
 
 function onInput(e: Event): void {
@@ -172,6 +199,7 @@ function onInput(e: Event): void {
   const v = Number(el.value);
   if (v === s.v) return;
   s.v = v;
+  if (s.drag) s.moved = true;
   const now = performance.now();
   if (now - s.last < 55) return;
   s.last = now;
@@ -188,14 +216,7 @@ function onChange(e: Event): void {
     if (!optedOut(t)) a.play('tab');
     return;
   }
-  const el = rangeOf(t);
-  if (!el) return;
-  const s = stateOf(el);
-  // keyboard changes only tick; a released drag / track click settles
-  if (s.drag) {
-    s.drag = false;
-    a.play('sliderRelease');
-  }
+  // range inputs: keyboard changes only tick (onInput); a released drag / track click settles (onPointerUp)
 }
 
 // ------------------------------------------------------------------ hover

@@ -33,6 +33,7 @@ import { Fireworks, collectLaunchSites, type LaunchSite } from './effects/Firewo
 import { getDef } from '../../sim/catalog';
 import { VehicleRenderer, type TrafficRoute } from './vehicles/VehicleRenderer';
 import { Previews } from './previews/Previews';
+import { EmergencyVehicles, type EmergencyFeed } from './vehicles/EmergencyVehicles';
 import { Underground } from './underground/Underground';
 
 export interface CityObjectsViewContext {
@@ -41,6 +42,8 @@ export interface CityObjectsViewContext {
   renderer: THREE.WebGLRenderer;
   canvas: HTMLCanvasElement;
   getTrafficRoutes?: (max: number) => TrafficRoute[];
+  /** WP8 emergency dispatch: vehicles, incidents and the continuous sim time (EmergencyVehicles) */
+  getEmergency?: EmergencyFeed | null;
   /** returns the current CityState (used on 'reset' when the Simulation replaced its state) */
   getState?: () => CityState;
   quality?: QualityLevel;
@@ -84,6 +87,8 @@ export class CityObjectsView implements CityObjectsViewApi {
   readonly vehicles: VehicleRenderer;
   readonly previews: Previews;
   readonly underground: Underground;
+  /** WP8: fire trucks / police cars / ambulances on their dispatch routes + incident beacons */
+  readonly emergency: EmergencyVehicles;
   private ctx: CityObjectsViewContext;
   private unsub: (() => void)[] = [];
   private powerDirty = true;
@@ -130,6 +135,8 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.vehicles.getRoutes = ctx.getTrafficRoutes ?? null;
     this.previews = new Previews(state, this.surf);
     this.underground = new Underground(state, this.surf);
+    this.emergency = new EmergencyVehicles(state, this.surf, ctx.getEmergency ?? null);
+    this.root.add(this.emergency.group);
     this.root.add(
       this.roads.group, this.props.batch.mesh, this.props.pools, this.props.glows, this.power.wires, this.buildings.batch.mesh,
       this.vehicles.batch.mesh, this.vehicles.headlights, this.effects.smoke, this.effects.flames, this.disasters.group, this.previews.group, this.underground.group,
@@ -201,6 +208,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.previews.setState(state, this.surf);
     this.underground.setState(state, this.surf);
     this.disasters.setState(state, this.surf);
+    this.emergency.setState(state, this.surf);
     this.rebuildAll();
   }
 
@@ -285,6 +293,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.fireworks.update(dt);
     lap('effects');
     this.vehicles.update(dt, cam);
+    this.emergency.update(dt);
     lap('vehicles');
     this.previews.update(dt);
     // overlay fade
@@ -416,5 +425,6 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.vehicles.dispose();
     this.previews.dispose();
     this.underground.dispose();
+    this.emergency.dispose();
   }
 }

@@ -68,6 +68,74 @@ export class PauseMenu {
   }
 }
 
+export interface ConfirmOptions {
+  title: string;
+  /** intro line under the title */
+  message?: string;
+  /** consequence bullets ("Your only power plant — 4,002 residents will lose power") */
+  items?: string[];
+  confirm?: string;
+  cancel?: string;
+  /** red confirm button (destructive actions) */
+  danger?: boolean;
+  icon?: string;
+}
+
+let confirmDepth = 0;
+/** a confirmation dialog is open (CityScene leaves Esc / hotkeys to it) */
+export function confirmOpen(): boolean {
+  return confirmDepth > 0;
+}
+
+/**
+ * Modal yes / no dialog in the pause-menu style (.modal-back). Enter confirms (unless Cancel has focus); Esc, the
+ * backdrop or Cancel dismiss.
+ * Resolves true when confirmed.
+ */
+export function confirmDialog(ctx: GameContext, opts: ConfirmOptions): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    confirmDepth++;
+    const ok = h('button', { class: 'btn ' + (opts.danger ? 'danger' : 'primary'), html: (opts.danger ? icon('bulldoze', 15) : '') + `<span>${escapeHtml(opts.confirm ?? 'OK')}</span>` });
+    const no = h('button', { class: 'btn' }, opts.cancel ?? 'Cancel');
+    const list = opts.items?.length ? h('ul', { class: 'cf-list' }, ...opts.items.map((t) => h('li', { html: icon('alert', 14) + `<span>${escapeHtml(t)}</span>` }))) : null;
+    const box = h('div', { class: 'modal mp-glass confirm-dialog', role: 'alertdialog', 'aria-modal': 'true' },
+      h('div', { class: 'cf-head' }, h('span', { class: 'cf-ico' + (opts.danger ? ' danger' : ''), html: icon(opts.icon ?? (opts.danger ? 'alert' : 'help'), 20) }), h('h2', null, opts.title)),
+      opts.message ? h('div', { class: 'cf-msg' }, opts.message) : null,
+      list,
+      h('div', { class: 'cf-actions' }, no, ok),
+    );
+    const back = h('div', { class: 'modal-back confirm' }, box);
+    let done = false;
+    const finish = (v: boolean) => {
+      if (done) return;
+      done = true;
+      confirmDepth = Math.max(0, confirmDepth - 1);
+      window.removeEventListener('keydown', onKey, true);
+      back.classList.add('closing');
+      setTimeout(() => back.remove(), 150);
+      ctx.sound(v ? 'confirm' : 'dialogClose');
+      resolve(v);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') finish(false);
+      else if (e.key === 'Enter') finish(document.activeElement !== no);
+      else return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    window.addEventListener('keydown', onKey, true);
+    ok.addEventListener('click', () => finish(true));
+    no.addEventListener('click', () => finish(false));
+    back.addEventListener('pointerdown', (e) => {
+      if (e.target === back) finish(false);
+    });
+    ctx.signal.addEventListener('abort', () => finish(false), { once: true });
+    ctx.root.appendChild(back);
+    ctx.sound('dialogOpen');
+    ok.focus();
+  });
+}
+
 export const SHORTCUTS: { title: string; keys: [string, string[]][] }[] = [
   {
     title: 'Simulation',

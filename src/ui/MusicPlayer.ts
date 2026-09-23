@@ -45,8 +45,14 @@ function fmtTime(s: number): string {
   return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 }
 
-/** stable per-track hue for the cover art */
+/** cover-art hues for the shipped soundtrack (distinct around the wheel, matched to each song's mood) */
+const TRACK_HUES: Record<string, number> = {
+  sunday_jazz: 0, avenida_bossa: 36, greenbelt_pastoral: 108, harbor_lights: 178, blueprint_ambient: 218, rush_hour_funk: 268, neon_skyline: 312,
+};
+
+/** stable per-track hue for the cover art (curated table, hash for tracks added later) */
 function hueOf(id: string): number {
+  if (id in TRACK_HUES) return TRACK_HUES[id];
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return h % 360;
@@ -260,6 +266,8 @@ export class MusicPlayer {
       sw.title = onlyOne ? 'At least one track stays in the playlist' : t.enabled ? 'In the playlist — click to skip this track' : 'Skipped — click to add back to the playlist';
       sw.addEventListener('click', (e) => {
         e.stopPropagation();
+        // explicit: the list re-renders on change, so the delegated handler would read the stale switch state
+        this.sound(t.enabled ? 'toggleOff' : 'toggleOn');
         m.setEnabled(t.id, !t.enabled);
       });
       row.append(pick, sw);

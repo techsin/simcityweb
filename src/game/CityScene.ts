@@ -32,7 +32,8 @@ import { ToolController } from './tools/ToolController';
 import { CursorTip } from '../ui/CursorTip';
 import { h, isTyping } from '../ui/dom';
 import { MiniMap } from '../ui/MiniMap';
-import { ErrorOverlay, HelpPanel, PauseMenu, SavePill } from '../ui/Modals';
+import { ErrorOverlay, HelpPanel, PauseMenu, SavePill, confirmOpen } from '../ui/Modals';
+import { applyCamera, bestBuildableCell, readCamera, validCamera } from './cameraStart';
 import { NewsTicker, Toasts } from '../ui/Notifications';
 import { Onboarding } from '../ui/Onboarding';
 import { PanelManager } from '../ui/Panel';
@@ -49,6 +50,11 @@ import { TopBar } from '../ui/TopBar';
 import { computeUiZoom, setUiZoom } from '../ui/zoom';
 import { installUiSounds, type UiSoundAudio } from '../ui/uiSounds';
 import { asMusicAudio, shortMood, watchTrackChanges } from '../ui/MusicPlayer';
+import { EmergencyBanner } from '../ui/EmergencyBanner';
+import { EmergenciesPanel } from '../ui/panels/EmergenciesPanel';
+import { Sirens, type SirenOut, type SirenSource } from '../audio/sirens';
+import type { EmergencyVehicles } from '../render/city/vehicles/EmergencyVehicles';
+import type { EmergencySystem } from '../sim/infra/emergency';
 
 export type { GameSettings } from './settings';
 
@@ -115,6 +121,10 @@ export class CityScene {
   private gameSounds: GameSounds;
   private offUiSounds: () => void;
   private advisors: AdvisorsPanel;
+  /** WP8: emergency alert banners (LIVE speed policy) and siren voices */
+  private emgBanner: EmergencyBanner;
+  private sirens: Sirens | null = null;
+  private sirenSrc: { x: number; y: number; z: number; responder: string }[] = [];
   private tip: CursorTip;
   private fpsEl: HTMLDivElement;
   private veil: HTMLDivElement;
@@ -142,6 +152,8 @@ export class CityScene {
   private actionsProxy: ActionsProxy;
   private simReady = false;
   private abort = new AbortController();
+  /** founded just now (day 0, never saved with a camera): starts paused, camera on the best buildable land */
+  private readonly newCity: boolean;
 
   constructor(opts: CitySceneOptions) {
     this.opts = opts;
@@ -159,7 +171,10 @@ export class CityScene {
 
     // ---- simulation: systems are attached in loadSim() (guarded so one broken system can't take the game down)
     this.sim = new Simulation(state, []);
+    // a brand-new city starts PAUSED (build first, then press play); saved cities keep running at normal speed
+    this.newCity = state.day === 0 && !validCamera(state.systemData.camera, state);
     if (opts.initialSpeed !== undefined) this.sim.speed = opts.initialSpeed;
+    else if (this.newCity) this.sim.speed = 0;
 
     // ---- actions: stand-in until sim-core's CityActions has loaded (see loadSim)
     this.actionsProxy = new ActionsProxy(new FallbackActions(this.sim));
@@ -267,6 +282,8 @@ export class CityScene {
     this.info = new InfoPanel(ctx);
     this.advisors = new AdvisorsPanel(ctx);
     for (const p of [new BudgetPanel(ctx), new GraphsPanel(ctx), new StatsPanel(ctx), this.advisors, new OrdinancesPanel(ctx), new RewardsPanel(ctx), new SettingsPanel(ctx), new DataViewsPanel(ctx), this.info, new HelpPanel(ctx)]) this.panels.register(p);
+    this.panels.register(new EmergenciesPanel(ctx));
+    this.emgBanner = new EmergencyBanner(ctx, this.uiRoot);
     this.pause = new PauseMenu(ctx, this.uiRoot, { onSettings: () => this.panels.open('settings'), onHelp: () => this.panels.open('help') });
 
     // ---- events
@@ -340,6 +357,8 @@ export class CityScene {
       /* ignore */
     }
     this.newYear.dispose();
+    this.sirens?.dispose();
+    this.emgBanner.dispose();
     this.gameSounds.dispose();
     this.offUiSounds();
     this.tools.dispose();
@@ -451,7 +470,9 @@ export class CityScene {
     const hasScene = !(world as NullWorldView).isNull;
     if (hasScene && this.mods.CityObjectsView && force !== 'objects' && force !== 'all') {
       try {
-        const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality };
+        const emergency = () => this.sim.getSystem<EmergencySystem>('emergency');
+        const getEmergency = { vehicles: () => emergency()?.vehicles() ?? [], incidents: () => emergency()?.incidents() ?? [], time: () => this.sim.simTime() };
+        const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality, getEmergency };
         objects = new this.mods.CityObjectsView(state, events, octx);
       } catch (e) {
         this.errors.report('City objects view failed to start — using simplified buildings', e);
@@ -468,18 +489,59 @@ export class CityScene {
     this.objects = objects ?? new NullObjectsView();
     this.resize();
     this.applySettings({});
-    try {
-      const N = state.size;
-      this.world.controls.focusOn((N / 2) * CELL_SIZE, (N / 2) * CELL_SIZE);
-    } catch {
-      /* ignore */
-    }
+    this.placeInitialCamera();
     if (this.mods.errors.length) console.warn('[game] module load issues', this.mods.errors);
     this.showDevBadge();
     this.uiEvents.emit('viewsReady', undefined);
     this.readyPending = true; // resolved after the next rendered frame (see loop)
     this.veil.classList.add('gone');
     setTimeout(() => this.veil.remove(), 600);
+  }
+
+  /**
+   * Saved city: restore the last camera (state.systemData.camera). New city (or an old save without one): look at the
+   * best buildable land — the largest flat dry area near the centre / a neighbour connection — not the map centre.
+   */
+  private placeInitialCamera(): void {
+    const st = this.sim.state;
+    const c = this.world.controls;
+    if (!c) return;
+    try {
+      const saved = validCamera(st.systemData.camera, st);
+      if (saved) {
+        applyCamera(c, saved);
+        return;
+      }
+      let cell = bestBuildableCell(st);
+      if (st.buildings.size) {
+        // an older save without a stored camera: centre on the city itself
+        let sx = 0, sz = 0, n = 0;
+        for (const b of st.buildings.values()) {
+          sx += b.x + b.w / 2;
+          sz += b.z + b.d / 2;
+          n++;
+        }
+        cell = { x: Math.floor(sx / n), z: Math.floor(sz / n) };
+      }
+      applyCamera(c, { x: (cell.x + 0.5) * CELL_SIZE, z: (cell.z + 0.5) * CELL_SIZE, distance: c.distance || 900 });
+    } catch (e) {
+      console.warn('[game] initial camera', e);
+      try {
+        c.focusOn((st.size / 2) * CELL_SIZE, (st.size / 2) * CELL_SIZE);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /** remember the view in the save (state.systemData.camera) */
+  private storeCamera(): void {
+    try {
+      const cam = readCamera(this.world.controls);
+      if (cam) this.sim.state.systemData.camera = cam;
+    } catch {
+      /* ignore */
+    }
   }
 
   /** soft whoosh on every 90° camera rotate step (Q / E, minimap buttons), panned in the turn direction */
@@ -595,6 +657,8 @@ export class CityScene {
     if (this.slowAcc > 2) {
       this.slowAcc = 0;
       this.topBar.setBadge('advisors', this.panels.isOpen('advisors') ? 0 : this.advisors.alertCount());
+      // keep the view in state.systemData.camera so every save path (autosave, tab hide, exit) restores it
+      if (!this.readyPending && this.simReady) this.storeCamera();
     }
     // fps (real wall-clock delta: the clamped dt above would cap the readout at >= 10 fps)
     const tNow = performance.now();
@@ -699,12 +763,16 @@ export class CityScene {
     const layoutW = w / z;
     this.uiRoot.classList.toggle('narrow', layoutW < 1500);
     this.uiRoot.classList.toggle('xnarrow', layoutW < 1380);
+    // short screens (e.g. 1280×720): compact toasts (max 3), onboarding / data-view layouts (hud.css .short)
+    this.uiRoot.classList.toggle('short', hh <= 800);
     this.panels?.clampAll();
   }
 
   // ------------------------------------------------------------------------------------------------ input
   private onKey(e: KeyboardEvent): void {
     if (isTyping(e) || this.disposed) return;
+    // a confirmation dialog handles Enter / Esc itself; no hotkeys underneath it
+    if (confirmOpen()) return;
     if (this.pause.isOpen) {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -814,6 +882,7 @@ export class CityScene {
   async save(auto = false): Promise<void> {
     if (this.saving) return this.saving;
     this.savePill.saving(auto);
+    this.storeCamera();
     this.saving = (async () => {
       try {
         await this.opts.onSave(this.sim.state);
@@ -903,6 +972,7 @@ export class CityScene {
 
   /** feed the audio engine's city ambience (~2 Hz) */
   private updateAmbience(): void {
+    this.feedSirens();
     const a = this.mods.audio as (GameModules['audio'] & { setAmbience?: (p: Record<string, unknown>) => void }) | undefined;
     if (!a?.setAmbience) return;
     try {
@@ -934,6 +1004,31 @@ export class CityScene {
     }
   }
   private musicPop = { pop: 0, t: 0, growth: 0 };
+
+  /** WP8: siren voices follow the nearest emergency vehicle of each kind (camera distance, screen-x pan) */
+  private feedSirens(): void {
+    const a = this.mods.audio as { getSfxOutput?: () => SirenOut | null } | undefined;
+    if (typeof a?.getSfxOutput !== 'function') return;
+    try {
+      this.sirens ??= new Sirens(() => a.getSfxOutput!.call(a));
+      const ev = (this.objects as { emergency?: EmergencyVehicles }).emergency;
+      const srcs = ev?.sirenSources(this.sirenSrc) ?? [];
+      const out: SirenSource[] = [];
+      const cam = this.world.camera;
+      if (cam && srcs.length) {
+        const e = cam.matrixWorld.elements;
+        const cx = e[12], cy = e[13], cz = e[14];
+        for (const s of srcs) {
+          const dx = s.x - cx, dy = s.y - cy, dz = s.z - cz;
+          const d = Math.hypot(dx, dy, dz);
+          out.push({ responder: s.responder, distance: d, pan: ((dx * e[0] + dy * e[1] + dz * e[2]) / Math.max(1, d)) * 1.2 });
+        }
+      }
+      this.sirens.update(out, this.sim.speed === 0);
+    } catch {
+      /* ignore */
+    }
+  }
 
   /** brief "Now playing" toast when the soundtrack changes song (audio.nowPlayingToasts, settings.toasts) */
   private watchNowPlaying(): void {

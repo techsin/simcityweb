@@ -103,8 +103,9 @@ function beacons4(b: B, x0: number, z0: number, x1: number, z1: number, y: numbe
 function htOval(b: B, rng: RNG, tw = false) {
   plaza(b, rng, 24, 24, 3.2, { color: 0xd6cfc0 });
   const px0 = -22.4, px1 = 22.4, pz0 = -22.4, pz1 = 3.2;
-  box(b, px0, 0, pz0, px1, 4, pz1, P(0xd8ccb4, Surf.Stone), null);
-  box(b, px0, 4, pz0, px1, 12, pz1, WW(0xe2d6bc, 7, 4), null);
+  // twin: black glass + gold on a dark granite podium (base: sky-blue glass on sandstone)
+  box(b, px0, 0, pz0, px1, 4, pz1, P(tw ? 0x4a4a4e : 0xd8ccb4, Surf.Stone), null);
+  box(b, px0, 4, pz0, px1, 12, pz1, WW(tw ? 0x6a6660 : 0xe2d6bc, 7, 4), null);
   K.cornice(b, px0, pz0, px1, pz1, 12, 0.6, 0.3, P(0xece2cc, Surf.Stone), ROOF);
   for (let x = px0 + 1.6; x + 4.4 < px1; x += 6.4) if (Math.abs(x + 2.2) > 8) K.storefront(b, x, x + 4.4, pz1, { y0: 0.5, y1: 3.4, frame: 0x6b4a2a, pitch: 2.2 });
   K.storefront(b, -6.4, 6.4, pz1, { y0: 0.05, y1: 3.6, frame: 0xc9a24a, doors: [-2, 2], doorW: 2, pitch: 2.1 });
@@ -112,7 +113,7 @@ function htOval(b: B, rng: RNG, tw = false) {
   const cz = -9.4;
   const ell = K.ngonPts(0, cz, 13.5, 16, 0, 9.0);
   const top = 117;
-  K.prismPts(b, ell, 12.6, top, GC(tw ? 2 : 5, 3.5), null);
+  K.prismPts(b, ell, 12.6, top, GC(tw ? 3 : 5, 3.5), null);
   for (let y = 12.6 + 17.5; y < top - 5; y += 17.5) K.bandPts(b, ell, y, y + 0.6, K.metal(0xc9a24a), 0.15);
   for (let i = 1; i < 16; i += 2) {
     const [ex, ez] = ell[i], dx = ex, dz = ez - cz, l = Math.hypot(dx, dz);
@@ -198,7 +199,7 @@ function htDeco(b: B, rng: RNG, tw = false) {
 function htSail(b: B, rng: RNG, tw = false) {
   plaza(b, rng, 24, 24, 2, { color: 0xe0d9cc });
   // low podium
-  box(b, -22, 0, -22, 22, 9, 2, K.plain(0xeeebe4), ROOF);
+  box(b, -22, 0, -22, 22, 9, 2, K.plain(tw ? 0xcdb998 : 0xeeebe4), ROOF);
   K.storefront(b, -20, 20, 2, { y0: 0.2, y1: 8.2, frame: 0xbfc5ca, doors: [-2, 2], doorW: 2.2, pitch: 2.5, transom: 4.2, surround: 0 });
   // D-shaped sail tower tapering upward
   const bz = -21, rx = 16, rz = 21;
@@ -211,7 +212,7 @@ function htSail(b: B, rng: RNG, tw = false) {
   const H = 138, segs = 6;
   for (let s = 0; s < segs; s++) {
     const t0 = s / segs, t1 = (s + 1) / segs;
-    K.loft(b, sec(t0), sec(t1), 9 + t0 * (H - 9), 9 + t1 * (H - 9), GC(tw ? 0 : 5, 3.6), s === segs - 1 ? ROOF : null);
+    K.loft(b, sec(t0), sec(t1), 9 + t0 * (H - 9), 9 + t1 * (H - 9), GC(tw ? 2 : 5, 3.6), s === segs - 1 ? ROOF : null);
   }
   for (let s = 1; s < segs; s++) { const t = s / segs; K.bandPts(b, sec(t), 9 + t * (H - 9) - 0.5, 9 + t * (H - 9) + 0.4, K.plain(0xf4f4f0), 0.12); }
   // LED strip up the sail apex (front)
@@ -488,10 +489,11 @@ function skCiticorp(b: B, rng: RNG, tw = false) {
   box(b, -6.5, 0, zc - 6.5, 6.5, 10, zc + 6.5, P(0x2a3440, Surf.GlassPlain), K.roofP(0x9a9a9a));
   const pts = K.rectPts(x0, z0, x1, z1);
   K.prismPts(b, pts, sb, top, GC(tw ? 3 : 4, 3.8), null);
-  for (let y = sb + 2.6; y < top; y += 3.8) K.bandRect(b, x0, z0, x1, z1, y, Math.min(top, y + 1.2), K.metal(0xd6dade), 0.05);
+  const bandM = K.metal(tw ? 0x8a6a42 : 0xd6dade); // twin: dark glass with bronze spandrels
+  for (let y = sb + 2.6; y < top; y += 3.8) K.bandRect(b, x0, z0, x1, z1, y, Math.min(top, y + 1.2), bandM, 0.05);
   down(b, x0, z0, x1, z1, sb, K.plain(0xb0b5ba));
   const yTop = (_x: number, z: number) => top + (z1 - z);
-  prismSloped(b, pts, top, yTop, GC(tw ? 3 : 4, 3.8), K.metal(0xd6dade));
+  prismSloped(b, pts, top, yTop, GC(tw ? 3 : 4, 3.8), bandM);
   // lit bands across the slope
   const lit = K.emis(0xf4fbff);
   for (let k = 1; k < 9; k++) {

@@ -8,6 +8,11 @@
  *   ?region=1       open the region view of a fresh default region (&preset=<id> &seed=N &demo=1 founds demo cities)
  *   ?newcity=1      like region=1, then open the New City dialog on a medium tile
  * window.__ready = true once the first screen has rendered. window.__metropolis exposes the App (debugging).
+ *
+ * Saving: CityScene autosaves on game time (AppSettings.autosaveMonths, default 3); the app saves on tab hide and
+ * on exit, tracks unsaved changes (dirty flag + SaveStatus indicator) and keeps an emergency "unsaved progress"
+ * snapshot (save/recovery.ts) — written synchronously on beforeunload / pagehide / tab hide and every 30 s while
+ * dirty — which the next start offers to recover.
  */
 import './ui/theme.css';
 import './region/ui/meta.css';
@@ -23,15 +28,37 @@ import type { RegionData, RegionPresetId, RegionTile, TileSize } from './region/
 import { RegionScreen } from './region/RegionScreen';
 import { openNewCityDialog, terrainOptionsFor } from './region/NewCityDialog';
 import { summarizeCity } from './region/citySummary';
-import { cityThumbnail, drawCityMap, normalizeThumbnail, regionPreviewDataUrl } from './region/mapPreview';
+import { cityThumbnail, drawCityMap, normalizeThumbnail, regionPreviewDataUrl, regionPreviewKey } from './region/mapPreview';
 import { randomCityName, randomMayorName } from './region/names';
 import { loadSettings, saveSettings, type AppSettings } from './region/settings';
 import { TitleScreen } from './region/ui/TitleScreen';
 import { LoadingScreen } from './region/ui/LoadingScreen';
-import { openCredits, openLoadRegion, openNewRegion, openSettings } from './region/ui/dialogs';
+import { openCredits, openLoadRegion, openNewRegion, openRecoverDialog, openSettings } from './region/ui/dialogs';
+import { SaveStatus } from './region/ui/SaveStatus';
 import { setUiRoot, toast } from './region/ui/modal';
 import { button, formatMoney, formatPop, h, paint, timeAgo } from './region/ui/dom';
-import { deleteCity, deleteRegion, getLastSession, hasCity, isPersistent, loadCity, loadRegion, saveCity, saveRegion, setLastRegionId, setLastSession } from './save';
+import {
+  clearRecoveryAfterSave,
+  clearRecoveryBase,
+  deleteCity,
+  deleteRegion,
+  discardRecoverySnapshot,
+  findRecoverySnapshot,
+  getLastSession,
+  hasCity,
+  isPersistent,
+  loadCity,
+  loadRegion,
+  peekRecoveryMarker,
+  restoreRecoverySnapshot,
+  saveCity,
+  saveRegion,
+  setLastRegionId,
+  setLastSession,
+  writeRecoverySnapshot,
+  type PendingRecovery,
+  type WriteResult,
+} from './save';
 import { regionContext, applyRegionEffects, trackRegionEffects } from './region/regionEffects';
 import { NeighborLabels } from './region/NeighborLabels';
 import type { Camera } from 'three';
@@ -42,6 +69,8 @@ import type { Camera } from 'three';
 interface CitySceneLike {
   start?(): unknown;
   dispose(): void;
+  /** save now (shows CityScene's SavePill); resolves when done */
+  save?(auto?: boolean): Promise<void>;
   sim?: { state: CityState; events?: { on(type: 'month', fn: (m: number) => void): () => void } };
   /** current world view (NullWorldView until the 3D views are up); used for neighbour labels + readiness */
   worldView?: { camera?: Camera; isNull?: boolean };
@@ -97,6 +126,21 @@ function markReady(): void {
   requestAnimationFrame(() => requestAnimationFrame(() => ((window as unknown as { __ready: boolean }).__ready = true)));
 }
 
+/**
+ * Cheap summary of what a save would change: sim time, money, buildings, budget / policies, name, unlocks. Together
+ * with the change events counted in App.city.changes it tells "unsaved changes" apart (camera moves don't count).
+ */
+function cityFingerprint(st: CityState): string {
+  const b = st.budget;
+  const budget = b ? JSON.stringify([b.taxRates, b.funding, b.ordinances, b.loans?.length ?? 0]) : '';
+  return `${st.day}|${Math.round(st.funds * 100)}|${st.buildings.size}|${st.nextBuildingId}|${st.config.name}|${st.unlocked?.size ?? 0}|${budget}`;
+}
+
+/** sim events that change saved state without necessarily moving the fingerprint (paused edits) */
+const CHANGE_EVENTS = ['networkChanged', 'zoneChanged', 'terrainChanged', 'powerLinesChanged', 'subwayChanged', 'treesChanged', 'buildingAdded', 'buildingRemoved'];
+/** wall-clock interval of background recovery snapshots while there are unsaved changes */
+const SNAPSHOT_INTERVAL_MS = 30_000;
+
 // ---------------------------------------------------------------------------------------------------------------
 class App {
   readonly root: HTMLElement;
@@ -111,11 +155,29 @@ class App {
     lastSave: number;
     offRegion?: () => void;
     labels?: NeighborLabels;
+    /** change events seen (counter) / at the last successful save / at the last recovery snapshot */
+    changes: number;
+    cleanChanges: number;
+    snapChanges: number;
+    /** fingerprint at the last successful save / at the last recovery snapshot */
+    cleanFp: string;
+    snapFp: string;
+    lastSnap: number;
+    saving: number;
+    saveFailed: boolean;
+    offChanges?: () => void;
+    status?: SaveStatus;
+    ticker?: number;
   } | null = null;
   /** serializes city saves (CityScene autosave, tab-hide, exit) so writes never overlap */
   private saveChain: Promise<void> = Promise.resolve();
   private settings: AppSettings = loadSettings();
   private busy = false;
+  /** saves survive a reload (IndexedDB available) — recovery snapshots are pointless otherwise */
+  private persistent = false;
+  private previewPending = false;
+  /** last recovery snapshot result (debugging / tests) */
+  lastSnapshot: (WriteResult & { why: string }) | null = null;
 
   constructor(host: HTMLElement) {
     this.root = h('div', { class: 'meta-root' });
@@ -125,17 +187,21 @@ class App {
     audio.startMusic();
     // generic click / slider / tab / hover feedback for every control (src/ui/uiSounds.ts)
     installUiSounds(() => audio);
-    // CityScene autosaves on game time (GameSettings.autosaveMonths); we add save-on-exit and save-on-tab-hide
+    // CityScene autosaves on game time (autosaveMonths); we add save-on-exit, save-on-tab-hide and — because an async
+    // IndexedDB save started while the page unloads does not complete — a synchronous recovery snapshot on unload
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden' && this.city && Date.now() - this.city.lastSave > 5000) void this.saveCurrentCity();
+      if (document.visibilityState !== 'hidden' || !this.city) return;
+      this.snapshotNow('hidden');
+      if (this.isDirty()) void this.saveCurrentCity().catch(() => undefined);
     });
-    window.addEventListener('beforeunload', () => {
-      if (this.city) void this.saveCurrentCity();
-    });
+    window.addEventListener('beforeunload', () => this.snapshotNow('beforeunload'));
+    window.addEventListener('pagehide', () => this.snapshotNow('pagehide'));
   }
 
   async boot(): Promise<void> {
     const q = new URLSearchParams(location.search);
+    // (the testing entry points below return early; recovery snapshots need this in every mode)
+    void isPersistent().then((p) => (this.persistent = p));
     try {
       if (q.get('quickstart') === '1') return await this.quickstart(q);
       if (q.get('region') === '1' || q.get('newcity') === '1') return await this.freshRegion(q, q.get('newcity') === '1');
@@ -145,7 +211,50 @@ class App {
       toast(`Something went wrong: ${(e as Error).message}`, 'bad', 6000);
       markReady();
     }
-    if (!(await isPersistent())) toast('Saving is unavailable in this browser mode — progress will be lost on reload.', 'bad', 6000);
+    this.persistent = await isPersistent();
+    if (!this.persistent) toast('Saving is unavailable in this browser mode — progress will be lost on reload.', 'bad', 6000);
+    // the last session ended with changes newer than the last save: offer them back (title screen only)
+    else if (this.title) void this.offerRecovery();
+  }
+
+  // ------------------------------------------------------------------ recovery of unsaved progress
+  /** at start: "Recover unsaved progress?" for a pending snapshot; Recover restores it and continues into the city */
+  private async offerRecovery(): Promise<void> {
+    const pending = await findRecoverySnapshot().catch((e) => (console.warn('[main] recovery check failed', e), null));
+    if (!pending || !this.title) return;
+    const choice = await this.askRecover(pending);
+    if (choice !== 'recovered' || !this.title) return;
+    const data = await loadRegion(pending.marker.regionId).catch(() => null);
+    if (data) await this.continueInCity(data, pending.marker.tileKey);
+  }
+
+  /** before entering a city: if a snapshot of it is pending, ask first. false = dismissed (don't enter) */
+  private async recoveryGate(regionId: string, tileKey: string): Promise<boolean> {
+    const mk = peekRecoveryMarker();
+    if (!mk || mk.regionId !== regionId || mk.tileKey !== tileKey || !(await isPersistent())) return true;
+    const pending = await findRecoverySnapshot().catch(() => null);
+    if (!pending || pending.marker.regionId !== regionId || pending.marker.tileKey !== tileKey) return true;
+    return (await this.askRecover(pending)) !== 'later';
+  }
+
+  /** dialog + restore / discard. 'later' = dismissed (snapshot kept) */
+  private async askRecover(p: PendingRecovery): Promise<'recovered' | 'discarded' | 'later' | 'failed'> {
+    const choice = await openRecoverDialog(p.marker);
+    if (choice === 'discard') {
+      await discardRecoverySnapshot();
+      return 'discarded';
+    }
+    if (choice !== 'recover') return 'later';
+    try {
+      await restoreRecoverySnapshot(p);
+      toast(`Recovered ${p.marker.cityName} (${p.marker.date ?? 'unsaved progress'})`, 'good', 3500);
+      return 'recovered';
+    } catch (e) {
+      console.error('[main] recovery failed', e);
+      toast(`The snapshot could not be recovered: ${(e as Error).message}`, 'bad', 6000);
+      await discardRecoverySnapshot();
+      return 'failed';
+    }
   }
 
   // ------------------------------------------------------------------ screens
@@ -197,7 +306,7 @@ class App {
     const { data, model } = createRegionData({ seed: choice.seed, preset: choice.preset, name: choice.name, climate: choice.climate });
     ld.set('Carving rivers and coastlines…', 0.55);
     await paint();
-    data.preview = regionPreviewDataUrl(model);
+    drawPreview(model);
     await saveRegion(data);
     setLastRegionId(data.id);
     await this.showRegion(model, ld);
@@ -257,12 +366,24 @@ class App {
     const m = this.region;
     if (!m) return;
     m.recomputeTotals();
-    try {
-      m.data.preview = regionPreviewDataUrl(m);
-    } catch {
-      /* canvas unavailable */
-    }
+    // the overview image only depends on which tiles are founded: redraw it (when idle) only when that changed
+    if (!m.data.preview || m.data.previewKey !== regionPreviewKey(m)) this.schedulePreview();
     await saveRegion(m.data);
+  }
+
+  /** lazily redraw + store the region overview image (deduplicated; runs when the main thread is idle) */
+  private schedulePreview(): void {
+    if (this.previewPending) return;
+    this.previewPending = true;
+    const run = () => {
+      this.previewPending = false;
+      const m = this.region;
+      if (!m || (m.data.preview && m.data.previewKey === regionPreviewKey(m))) return;
+      if (drawPreview(m)) void saveRegion(m.data).catch(() => undefined);
+    };
+    const ric = (window as Window & { requestIdleCallback?: (fn: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+    if (ric) ric(run, { timeout: 2500 });
+    else setTimeout(run, 600);
   }
 
   // ------------------------------------------------------------------ cities
@@ -303,6 +424,7 @@ class App {
 
   /** Continue straight into the city the player was in when the page was closed */
   async continueInCity(data: RegionData, tileKey: string): Promise<void> {
+    if (!(await this.recoveryGate(data.id, tileKey))) return;
     const ld = new LoadingScreen(this.root);
     ld.set('Generating terrain…', 0.15);
     await paint();
@@ -322,6 +444,11 @@ class App {
       return;
     }
     this.busy = true;
+    // unsaved progress of this city from an earlier session? (asked before the loading screen covers the UI)
+    if (!existing && !(await this.recoveryGate(this.region.data.id, tile.key).catch(() => true))) {
+      this.busy = false;
+      return;
+    }
     const ld = existing ?? new LoadingScreen(this.root);
     try {
       ld.set(`Loading ${tile.city?.name ?? 'city'}…`, 0.25);
@@ -352,11 +479,13 @@ class App {
     const Ctor = await loadCitySceneCtor();
     const container = h('div', { class: 'meta-layer city-host' });
     this.root.prepend(container);
-    this.city = { scene: null, tile, state: st, lastSave: Date.now() };
     setLastSession({ regionId: model.data.id, tileKey: tile.key });
     // regional play: neighbours' jobs / workers + summary for sim systems (refreshed monthly below)
     const rctx = regionContext(model, tile);
     applyRegionEffects(st, rctx);
+    // the state was just loaded / founded + saved: clean
+    const now = Date.now();
+    this.city = { scene: null, tile, state: st, lastSave: now, changes: 0, cleanChanges: 0, snapChanges: 0, cleanFp: cityFingerprint(st), snapFp: '', lastSnap: now, saving: 0, saveFailed: false };
     audio.startAmbience();
     audio.setAmbience({ population: st.stats.population, zoom: 0.5, night: false });
     audio.setMusicContext({ screen: 'city', night: false, population: st.stats.population, activity: 0.5 });
@@ -378,11 +507,26 @@ class App {
       });
       this.city.scene = scene;
       if (scene.sim?.events) this.city.offRegion = trackRegionEffects(scene.sim as Parameters<typeof trackRegionEffects>[0], rctx);
+      // edits that don't move the fingerprint (e.g. zoning while paused) still count as unsaved changes
+      const ev = scene.sim?.events as unknown as { on(type: string, fn: () => void): () => void } | undefined;
+      if (ev) {
+        const c = this.city;
+        const offs = CHANGE_EVENTS.map((t) => ev.on(t, () => void c.changes++));
+        c.offChanges = () => offs.forEach((off) => off());
+      }
       await scene.start?.();
       await waitForScene(scene);
       if (rctx.neighbors.some((n) => n.founded)) this.city.labels = new NeighborLabels(container, () => scene.worldView?.camera, scene.sim?.state ?? st, rctx.neighbors);
     } else {
       this.city.placeholder = this.cityPlaceholder(container, st, tile);
+    }
+    if (this.city) {
+      // "Unsaved changes" / "Saved" indicator (above the minimap) + dirty checks and background recovery snapshots
+      const c = this.city;
+      c.status = new SaveStatus(() => this.saveNow());
+      c.status.mount(container);
+      c.ticker = window.setInterval(() => this.tickSaveState(), 1000);
+      this.tickSaveState();
     }
     await ld.hide();
     audio.play('cityReady');
@@ -392,6 +536,63 @@ class App {
   private currentState(): CityState | null {
     if (!this.city) return null;
     return this.city.scene?.sim?.state ?? this.city.state;
+  }
+
+  /** the current city differs from its last successful save */
+  private isDirty(): boolean {
+    const c = this.city;
+    const st = this.currentState();
+    if (!c || !st) return false;
+    return c.changes !== c.cleanChanges || cityFingerprint(st) !== c.cleanFp;
+  }
+
+  /** refresh the save indicator; schedule a background recovery snapshot while dirty */
+  private tickSaveState(): void {
+    const c = this.city;
+    if (!c) return;
+    if (c.saving > 0) {
+      c.status?.set('saving');
+      return;
+    }
+    const dirty = this.isDirty();
+    c.status?.set(!dirty ? 'saved' : c.saveFailed ? 'error' : 'dirty', c.lastSave);
+    if (dirty && this.persistent && !document.hidden && Date.now() - c.lastSnap >= SNAPSHOT_INTERVAL_MS) {
+      c.lastSnap = Date.now(); // (re)armed now; the snapshot itself runs when the main thread is idle
+      const ric = (window as Window & { requestIdleCallback?: (fn: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+      if (ric) ric(() => this.snapshotNow('periodic'), { timeout: 5000 });
+      else this.snapshotNow('periodic');
+    }
+  }
+
+  /**
+   * Synchronous recovery snapshot of unsaved changes (save/recovery.ts): safe inside beforeunload / pagehide, where
+   * an IndexedDB full save would not complete. Skipped when nothing changed since the last save or snapshot.
+   */
+  private snapshotNow(why: string): void {
+    const c = this.city, model = this.region;
+    if (!c || !model || !this.persistent) return;
+    const st = this.currentState();
+    if (!st) return;
+    try {
+      const fp = cityFingerprint(st);
+      if (c.saving === 0 && fp === c.cleanFp && c.changes === c.cleanChanges) return;
+      if (fp === c.snapFp && c.changes === c.snapChanges) return;
+      const r = writeRecoverySnapshot(model.data.id, c.tile.key, st, { cityName: st.config.name, regionName: model.data.name, population: st.stats?.population ?? 0, funds: st.funds, why });
+      c.snapFp = fp;
+      c.snapChanges = c.changes;
+      c.lastSnap = Date.now();
+      this.lastSnapshot = { ...r, why };
+    } catch (e) {
+      console.warn('[main] recovery snapshot failed', e);
+    }
+  }
+
+  /** indicator click: save now (through CityScene so its SavePill / sound confirm it) */
+  private saveNow(): void {
+    const c = this.city;
+    if (!c || c.saving > 0) return;
+    const p = c.scene?.save ? c.scene.save(false) : this.saveCurrentCity();
+    void p.catch((e) => toast(`Saving failed: ${(e as Error).message}`, 'bad', 6000));
   }
 
   private async saveCurrentCity(thumb?: string): Promise<void> {
@@ -411,12 +612,29 @@ class App {
     const c = this.city;
     if (!model || !c) return;
     const tile = c.tile;
-    await saveCity(model.data.id, tile.key, st);
+    // what this save covers: saveCity serializes synchronously (no other task runs before it)
+    const fp = cityFingerprint(st), changes = c.changes;
+    c.saving++;
+    c.status?.set('saving');
+    try {
+      const savedAt = await saveCity(model.data.id, tile.key, st);
+      c.cleanFp = fp;
+      c.cleanChanges = changes;
+      c.saveFailed = false;
+      c.lastSave = Date.now();
+      // a recovery snapshot older than this save is obsolete
+      clearRecoveryAfterSave(model.data.id, tile.key, savedAt);
+    } catch (e) {
+      c.saveFailed = true;
+      throw e;
+    } finally {
+      c.saving--;
+      if (this.city === c) this.tickSaveState();
+    }
     const prevThumb = tile.city?.thumbnail;
     const newThumb = thumb ? await normalizeThumbnail(thumb, Math.min(512, tile.size * 128)) : undefined;
     tile.city = summarizeCity(st, tile.city);
     tile.city.thumbnail = newThumb ?? prevThumb ?? cityThumbnail(st, 256);
-    c.lastSave = Date.now();
     await this.persistRegion();
   }
 
@@ -428,8 +646,10 @@ class App {
     ld.set('Saving city…', 0.3);
     await paint();
     try {
-      if (Date.now() - c.lastSave < 4000) {
-        // CityScene just saved via onSave: only refresh the tile thumbnail + region summary
+      await this.saveChain; // an autosave may still be writing
+      if (!this.isDirty()) {
+        // CityScene.exitToRegion just saved (onSave) and paused the sim: trust that save and only refresh the tile
+        // thumbnail + region summary (no second city save)
         if (thumb && c.tile.city) c.tile.city.thumbnail = await normalizeThumbnail(thumb, Math.min(512, c.tile.size * 128));
         await this.persistRegion();
       } else await this.saveCurrentCity(thumb);
@@ -438,6 +658,9 @@ class App {
       toast(`Saving failed: ${(e as Error).message}`, 'bad', 6000);
     }
     c.offRegion?.();
+    c.offChanges?.();
+    clearInterval(c.ticker);
+    c.status?.dispose();
     c.labels?.dispose();
     setLastSession({ regionId: model.data.id });
     try {
@@ -447,6 +670,7 @@ class App {
     }
     this.root.querySelector('.city-host')?.remove();
     this.city = null;
+    clearRecoveryBase();
     audio.stopAmbience();
     ld.set('Returning to the region…', 0.7);
     await this.showRegion(model, ld, c.tile.key);
@@ -502,7 +726,7 @@ class App {
       const { populateDemoCities } = await import('./region/demo');
       await populateDemoCities(model, +(q.get('cities') ?? 6));
     }
-    data.preview = regionPreviewDataUrl(model);
+    drawPreview(model);
     await saveRegion(data);
     setLastRegionId(id);
     if (!openDialog) return this.showRegion(model, ld);
@@ -535,11 +759,22 @@ class App {
     const cfg = model.cityConfigFor(tile, partial);
     if (diff) cfg.startFunds = ({ easy: 250_000, medium: 100_000, hard: 40_000, sandbox: 10_000_000 } as const)[diff] ?? cfg.startFunds;
     cfg.sandbox = cfg.difficulty === 'sandbox';
-    data.preview = regionPreviewDataUrl(model);
+    drawPreview(model);
     await saveRegion(data);
     setLastRegionId(data.id);
     ld.remove();
     await this.startNewCity(model, tile, cfg);
+  }
+}
+
+/** draw + store the region overview image (false when no 2D canvas is available) */
+function drawPreview(model: RegionModel): boolean {
+  try {
+    model.data.preview = regionPreviewDataUrl(model);
+    model.data.previewKey = regionPreviewKey(model);
+    return true;
+  } catch {
+    return false;
   }
 }
 

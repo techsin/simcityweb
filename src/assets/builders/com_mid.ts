@@ -13,6 +13,7 @@ import type { RNG } from '../../core/rng';
 import { rooftopWaterTank, pool, bench } from '../kit';
 import * as K from './com_kit';
 import { P, C, box, up, faceZ, faceX } from './com_kit';
+import { isMirrorTwin } from './res_util';
 
 type B = ModelBuilder;
 const WW = (color: number, pattern: number, floor: number): Paint => P(color, Surf.WallWindows, pattern, floor);
@@ -723,14 +724,16 @@ function offOctBronze(b: B, rng: RNG) {
 }
 const officeSmall: ModelBuildFn = (b, v, rng) => [offRibbon, offBlueGlass, offPostmodern, offGreenL, offFins, offOctBronze][v % 6](b, rng);
 
-function blockMies(b: B, rng: RNG) {
+// Office blocks are the most common CO$$ mid-rise, so their mirror twins get their own palette (tw) instead of
+// flipped copies: bronze glass + dark fins / sandstone + green bands / dark granite + cream bands / granite + bronze.
+function blockMies(b: B, rng: RNG, tw = false) {
   up(b, -16, -16, 16, 16, 0.03, K.pav(0xc9c2b4));
   const x0 = -12, x1 = 12, z0 = -12, z1 = 3, base = 4.5, top = 38.7;
   box(b, -10.5, 0, -10.5, 10.5, base, 1.5, P(0x2a3440, Surf.GlassPlain), null);
   K.storefront(b, -9.9, 9.9, 1.5, { y0: 0.05, y1: 4.2, frame: 0x6b5238, doors: [-1.4, 1.4], pitch: 3.3, surround: 0 });
   for (let x = x0 + 0.3; x <= x1; x += 5.85) for (const z of [z0 + 0.3, z1 - 0.3]) box(b, x - 0.3, 0, z - 0.3, x + 0.3, base, z + 0.3, K.metal(0x3a2c22), null);
-  box(b, x0, base, z0, x1, top, z1, GC(3, 3.8), K.roofP(), { bottom: K.plain(0x3a3a3a) });
-  const fin = K.metal(0x6b5238);
+  box(b, x0, base, z0, x1, top, z1, GC(tw ? 2 : 3, 3.8), K.roofP(), { bottom: K.plain(0x3a3a3a) });
+  const fin = K.metal(tw ? 0x2e3236 : 0x6b5238);
   for (let x = x0 + 1.5; x < x1; x += 3) b.paint(fin).quad2([x, base, z1], [x, base, z1 + 0.45], [x, top, z1 + 0.45], [x, top, z1]);
   for (let z = z0 + 1.5; z < z1; z += 3) b.paint(fin).quad2([x1, base, z], [x1 + 0.45, base, z], [x1 + 0.45, top, z], [x1, top, z]);
   K.bandRect(b, x0, z0, x1, z1, top - 3.8, top + 0.3, K.metal(0x2e2a26), 0.02);
@@ -742,29 +745,31 @@ function blockMies(b: B, rng: RNG) {
   K.letters(b, rng, 0, 0.4, 15.5, 5, 0.6, 0xffb060, { words: 1 });
   box(b, -3, 0, 15.2, 3, 1.4, 15.5, P(0x3a3a3e, Surf.Stone));
 }
-function blockConcrete(b: B, rng: RNG) {
+function blockConcrete(b: B, rng: RNG, tw = false) {
   up(b, -16, -16, 16, 16, 0.03, K.pav(C.plaza));
   const x0 = -12, x1 = 12, z0 = -12, z1 = 4.5, top = 36;
   box(b, x0 + 1, 0, z0 + 1, x1 - 1, 3.6, z1 - 1, P(0x2a3440, Surf.GlassPlain), null);
   K.storefront(b, x0 + 1.5, x1 - 1.5, z1 - 1, { y0: 0.05, y1: 3.3, frame: 0x55595f, doors: [0], doorW: 2.4, pitch: 3, surround: 0 });
-  box(b, x0, 3.6, z0, x1, top, z1, WW(0xc9bfae, 5, 3.6), K.roofP(), { bottom: K.plain(0x8e8b84) });
-  for (let y = 7.2; y < top; y += 7.2) K.bandRect(b, x0, z0, x1, z1, y - 0.3, y, K.plain(0x2e6fb5), 0.12);
-  box(b, -9, top, -9, 9, top + 3.6, 1.5, GC(4, 3.6), K.roofP());
+  const accent = tw ? 0x2f5a44 : 0x2e6fb5;
+  box(b, x0, 3.6, z0, x1, top, z1, WW(tw ? 0xb89a74 : 0xc9bfae, 5, 3.6), K.roofP(), { bottom: K.plain(0x8e8b84) });
+  for (let y = 7.2; y < top; y += 7.2) K.bandRect(b, x0, z0, x1, z1, y - 0.3, y, K.plain(accent), 0.12);
+  box(b, -9, top, -9, 9, top + 3.6, 1.5, GC(tw ? 2 : 4, 3.6), K.roofP());
   K.roofJunk(b, rng, -8, -8, 8, 0.5, top + 3.6, 4, false);
-  K.canopy(b, -4, 4, z1 - 1, 3.3, 3.0, 0.3, K.metal(0x2e6fb5), K.emis(0xeaf4ff, K.CANOPY_K));
+  K.canopy(b, -4, 4, z1 - 1, 3.3, 3.0, 0.3, K.metal(accent), K.emis(0xeaf4ff, K.CANOPY_K));
   for (const cx of [-6, 0, 6]) b.paint(0x9aa0a6, Surf.Metal).cylinder(cx, -10.5, top, 2.2, 1.0, 1.0, 8, { topPaint: K.metal(0x333333) });
   officePlaza(b, rng, 5.5, 16, [-11, 11]);
   K.fountain(b, 0, 10.5, 2.2);
 }
-function blockRounded(b: B, rng: RNG) {
+function blockRounded(b: B, rng: RNG, tw = false) {
   up(b, -16, -16, 16, 16, 0.03, K.pav(C.sidewalk));
   const pts: K.V2[] = [[-12.8, -12.8], [12.8, -12.8], [12.8, -2.2]];
   for (let i = 1; i <= 5; i++) { const a = (i / 6) * (Math.PI / 2); pts.push([6.4 + Math.cos(a) * 6.4, -2.2 + Math.sin(a) * 6.4]); }
   pts.push([6.4, 4.2], [-12.8, 4.2]);
   K.prismPts(b, pts, 0, 3.6, P(0x3a3a3e, Surf.Stone), null);
-  K.prismPts(b, pts, 3.6, 39.6, WW(0x8a4a38, 2, 3.6), K.roofP());
-  for (let y = 10.8; y < 39; y += 10.8) K.bandPts(b, pts, y - 0.25, y + 0.1, K.plain(0xe0d6c2), 0.12);
-  K.bandPts(b, pts, 39.6, 40.4, K.plain(0xe0d6c2), 0.1);
+  const wallC = tw ? 0x4a4c52 : 0x8a4a38, trimC = K.plain(tw ? 0xd8c8a4 : 0xe0d6c2);
+  K.prismPts(b, pts, 3.6, 39.6, WW(wallC, 2, 3.6), K.roofP());
+  for (let y = 10.8; y < 39; y += 10.8) K.bandPts(b, pts, y - 0.25, y + 0.1, trimC, 0.12);
+  K.bandPts(b, pts, 39.6, 40.4, trimC, 0.1);
   b.push().rotateY(Math.PI / 4);
   K.storefront(b, 4.8, 9.8, 10.9, { y0: 0.05, y1: 3.3, frame: 0xc9a24a, doors: [7.3], doorW: 2.0, pitch: 2.5 });
   K.canopy(b, 5.0, 9.6, 10.9, 3.45, 2.2, 0.25, K.metal(0x3a3a3e), K.emis(0xffc870, 4));
@@ -772,27 +777,27 @@ function blockRounded(b: B, rng: RNG) {
   K.roofJunk(b, rng, 3, -11.5, 11.5, 2, 39.6, 4, false);
   K.storefront(b, -12, 5.2, 4.2, { y0: 0.5, y1: 3.2, frame: 0xc9a24a, pitch: 2.2 });
   K.canopy(b, -12.4, 5.5, 4.2, 3.35, 1.4, 0.2, K.metal(0x3a3a3e));
-  box(b, -8, 39.6, -9, 2, 43.0, -3, K.plain(0x8a4a38), K.roofP());
+  box(b, -8, 39.6, -9, 2, 43.0, -3, K.plain(wallC), K.roofP());
   K.mast(b, -3, -6, 43.0, 6, 0.2, 0.05, K.metal(0xb0b0b0));
   K.letters(b, rng, -4, 36.9, 4.32, 14, 1.8, 0x2fd6ff, { words: 1, n: 7 });
   for (const tx of [-12, -4, 4]) K.tree(b, rng, tx, 11, 0.8);
   up(b, -16, 7, 16, 16, 0.06, K.foliage(C.grass));
 }
-function blockWings(b: B, rng: RNG) {
+function blockWings(b: B, rng: RNG, tw = false) {
   up(b, -16, -16, 16, 16, 0.03, K.pav(C.plaza));
-  const top = 43.2, ww = WW(0xe8e6e0, 5, 3.6);
+  const top = 43.2, ww = WW(tw ? 0x3e4046 : 0xe8e6e0, 5, 3.6), band = K.plain(tw ? 0x8a6a42 : 0x2e6fb5);
   box(b, -13.5, 0, -4.5, 13.5, top, 3, ww, K.roofP());
   box(b, -4.5, 0, -13.5, 4.5, top, -4.5, ww, K.roofP(), { pz: null });
-  box(b, -4.5, 0, 3, 4.5, top + 3.6, 4.8, GC(5, 3.6), K.roofP());
+  box(b, -4.5, 0, 3, 4.5, top + 3.6, 4.8, GC(tw ? 2 : 5, 3.6), K.roofP());
   K.storefront(b, -4.1, 4.1, 4.8, { y0: 0.05, y1: 4.0, frame: 0x55595f, doors: [0], doorW: 2.4, pitch: 2.7, surround: 0 });
   K.canopy(b, -4.5, 4.5, 4.8, 4.2, 2.5, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff, K.CANOPY_K));
-  K.bandRect(b, -13.5, -4.5, 13.5, 3, 3.3, 3.6, K.plain(0x2e6fb5), 0.1);
-  K.bandRect(b, -13.5, -4.5, 13.5, 3, top - 0.6, top, K.plain(0x2e6fb5), 0.1);
+  K.bandRect(b, -13.5, -4.5, 13.5, 3, 3.3, 3.6, band, 0.1);
+  K.bandRect(b, -13.5, -4.5, 13.5, 3, top - 0.6, top, band, 0.1);
   K.roofJunk(b, rng, -12.5, -4, 12.5, 2.5, top, 4, true);
   officePlaza(b, rng, 7.6, 16, [-11, -6, 6, 11]);
   K.letters(b, rng, -9, top - 3.1, 3.05, 7, 1.3, 0x9fd8ff, { words: 1, n: 5 });
 }
-const officeBlock: ModelBuildFn = (b, v, rng) => [blockMies, blockConcrete, blockRounded, blockWings][v % 4](b, rng);
+const officeBlock: ModelBuildFn = (b, v, rng, e) => [blockMies, blockConcrete, blockRounded, blockWings][v % 4](b, rng, isMirrorTwin(e.id, v, rng));
 
 // ============================================================================================ MALL (4x4)
 /**

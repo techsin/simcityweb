@@ -428,6 +428,8 @@ export interface TankOpts {
   rim?: ColorLike | null;
   /** Plain shells only: warm floodlit shell at night (lit from the yard below), light reach in m (0 = unlit) */
   flood?: number;
+  /** with `stair`: dim sodium stair lights up the ladder (every ~6 m) / along the spiral stair (2), 4 tris each */
+  stairLights?: boolean;
 }
 /** Vertical storage tank. Returns the top center point. */
 export function tank(b: ModelBuilder, x: number, z: number, r: number, h: number, color: ColorLike, o: TankOpts = {}): V3 {
@@ -477,9 +479,17 @@ export function tank(b: ModelBuilder, x: number, z: number, r: number, h: number
         if (prev) strut(b, prev, p, 0.35);
         prev = p;
       }
+      if (o.stairLights) {
+        for (const i of [2, 4]) {
+          const a = a0 + (i / n) * Math.PI * 0.9;
+          lightDot(b, x + Math.cos(a) * (r + 0.75), y0 + (h * i) / n + 1.0, z + Math.sin(a) * (r + 0.75), 0.3, SODIUM, 2);
+        }
+      }
     } else {
       strut(b, [x + r + 0.25, y0, z], [x + r + 0.25, yt + 0.6, z], 0.3);
+      if (o.stairLights) stairLights(b, x + r + 0.6, z, y0, yt);
     }
+    if (o.stairLights) b.paint(0x4a4d50, Surf.Metal);
   }
   return [x, top, z];
 }

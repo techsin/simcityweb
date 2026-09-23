@@ -58,9 +58,13 @@ function parkStadium(b: ModelBuilder, _v: number, rng: RNG): void {
     goal(b, gx + s * 0.05, 0, s > 0 ? -Math.PI / 2 : Math.PI / 2, 6, 2.2);
   }
   // --- seating bowl (single loft): outer facade up, rim, upper tier down, box level, lower tier down, pitch wall
-  const facade: Paint = { color: 0xd9d7d0, surf: Surf.Plain };
-  const concourse: Paint = { color: 0x9fb6c4, surf: Surf.GlassPlain, pattern: 2 };
-  const rim: Paint = { color: 0xd9d6ce, surf: Surf.Plain };
+  // night: cool floodlit outer shell (fades up to the rim), a warm lit concourse ribbon under the rim and a
+  // ground-floor concourse of individually lit glazing bays (not one uniform glowing band)
+  const facade: Paint = { color: 0xd9d7d0, surf: Surf.Plain, pattern: 2, floor: 18 };
+  const concourse: Paint = { color: 0x9fb6c4, surf: Surf.GlassPlain, pattern: 0 };
+  const plinth: Paint = { color: 0xb9b6ae, surf: Surf.Plain, pattern: 2, floor: 18 };
+  const ribbonC: Paint = { color: 0xe0a55c, surf: Surf.Emissive, pattern: 10 };
+  const rim: Paint = { color: 0xd9d6ce, surf: Surf.Plain, pattern: 2, floor: 18 };
   const seatsUp: Paint = { color: 0x2c5fa8, surf: Surf.RoofTiles };
   const seatsLo: Paint = { color: shade(0x2f6bbd, 0.7), surf: Surf.Emissive, pattern: 12 };
   const seatsLoB: Paint = { color: shade(0x24508f, 0.7), surf: Surf.Emissive, pattern: 12 };
@@ -69,18 +73,20 @@ function parkStadium(b: ModelBuilder, _v: number, rng: RNG): void {
   const walk: Paint = { color: 0x8e8b84, surf: Surf.Pavement };
   const ads: Paint = { color: 0x2d7fd0, surf: Surf.Emissive };
   const prof: ProfPt[] = [
-    [16, 0.05, concourse], [16, 5.5, facade], [16, 18, rim], [15.3, 18.6, rim], [14.6, 18, seatsUp], [7.2, 10.6, boxes], [7.2, 9.3, soffit], [8.2, 9.3, soffit],
+    [16, 0.05, concourse], [16, 3.9, plinth], [16, 5.5, facade], [16, 15.4, ribbonC], [16, 16.6, facade], [16, 18, rim], [15.3, 18.6, rim], [14.6, 18, seatsUp], [7.2, 10.6, boxes], [7.2, 9.3, soffit], [8.2, 9.3, soffit],
     [8.2, 7.0, seatsLo], [1.4, 1.5, walk], [0.5, 1.5, ads], [0.5, 0.05],
   ];
   // seat blocks: alternate two blues by sector
   const aisle: Paint = { color: 0x24508f, surf: Surf.RoofTiles };
-  loftRing(b, inner, prof, 30, (i, k) => (i % 4 < 2 ? (k === 4 ? aisle : k === 8 ? seatsLoB : null) : null));
+  const kUp = prof.findIndex((p) => p[2] === seatsUp), kLo = prof.findIndex((p) => p[2] === seatsLo);
+  loftRing(b, inner, prof, 30, (i, k) => (i % 4 < 2 ? (k === kUp ? aisle : k === kLo ? seatsLoB : null) : null));
   // facade: vertical fins every other path point
-  b.paint(0xcfcdc6, Surf.Plain);
+  // (fins run down to the ground so the lit concourse glazing reads as bays)
+  b.paint(0xcfcdc6, Surf.Plain, 2, 18);
   const outer = offsetPoly(inner, 16.25);
   for (let i = 0; i < outer.length; i += 2) {
     const [x, z] = outer[i];
-    b.beam([x, 5.5, z], [x, 18.4, z], 0.45);
+    b.beam([x, 0.05, z], [x, 18.4, z], 0.45);
   }
   // --- roof canopy ring with emissive floodlight edge
   const canopy: ProfPt[] = [
@@ -106,11 +112,17 @@ function parkStadium(b: ModelBuilder, _v: number, rng: RNG): void {
     b.pop();
   }
   // --- 4 floodlight masts at the corners
-  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) floodMast(b, sx * 40.5, sz * 34.5, 44, 0, 0, { bank: 4.5, lattice: true });
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) floodMast(b, sx * 40.5, sz * 34.5, 44, 0, 0, { lattice: true, lamps: [3, 3, 2.5, 1.2] });
   // --- main entrance (+Z): canopy with glowing name board, flags, ticket booths
   b.paint(0xe9e7e1, Surf.Metal).box(-12, 6.5, 36.4, 12, 7.3, 41.5);
   b.paint(0x28323c, Surf.Metal).box(-9, 7.3, 38.8, 9, 10.2, 39.4);
-  b.paint(0xffffff, Surf.Emissive).box(-8.4, 7.7, 39.4, 8.4, 9.8, 39.45, { top: null, bottom: null, nx: null, px: null, nz: null });
+  // name board: blue LED screen with yellow crest + score blocks (0.75x: saturated colour, not clipped white)
+  b.paint(0x3a8fe0, Surf.Emissive, 3).box(-8.4, 7.7, 39.4, 8.4, 9.8, 39.45, { top: null, bottom: null, nx: null, px: null, nz: null });
+  b.paint(0xffd23f, Surf.Emissive, 3);
+  for (const [x0, x1, y0, y1] of [[-7.9, -6.0, 7.95, 9.55], [-4.6, 1.2, 8.55, 9.3], [2.6, 4.1, 8.0, 9.5], [4.9, 6.4, 8.0, 9.5]]) {
+    b.quad([x0, y0, 39.47], [x1, y0, 39.47], [x1, y1, 39.47], [x0, y1, 39.47]);
+  }
+  b.paint(0xeef4ff, Surf.Emissive, 2).quad([-4.6, 7.95, 39.47], [1.2, 7.95, 39.47], [1.2, 8.25, 39.47], [-4.6, 8.25, 39.47]);
   b.paint(0x7c8288, Surf.Metal);
   for (const x of [-11, -4, 4, 11]) b.box(x - 0.25, 0, 41.0, x + 0.25, 6.5, 41.5);
   for (const x of [-30, -24, 24, 30]) {

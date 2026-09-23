@@ -1,0 +1,87 @@
+/* Emergency dispatch UI (WP8): alert banners, LIVE badge, Emergencies panel. */
+
+.emg-banners {
+  position: absolute; top: 70px; left: 50%; transform: translateX(-50%); width: 440px; max-width: calc(100vw - 32px);
+  display: flex; flex-direction: column; gap: 8px; pointer-events: none; z-index: 55;
+}
+.emg-banner {
+  --kc: #e8542c;
+  pointer-events: auto; position: relative; display: flex; gap: 11px; align-items: flex-start; padding: 10px 34px 10px 10px;
+  border-left: 3px solid var(--kc); animation: emg-in 0.28s var(--ease, ease) both;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--kc) 35%, transparent), 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+.emg-banner.out { animation: emg-out 0.22s ease forwards; }
+.emg-banner.urgent { animation: emg-in 0.28s ease both, emg-glow 1.2s ease-in-out infinite; }
+.emg-banner.handled { opacity: 0.78; }
+.emg-banner.handled .emg-ico { animation: none; }
+@keyframes emg-in { from { opacity: 0; transform: translateY(-10px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes emg-out { to { opacity: 0; transform: translateY(-8px); } }
+@keyframes emg-glow { 50% { box-shadow: 0 0 0 1px var(--kc), 0 0 22px color-mix(in srgb, var(--kc) 55%, transparent), 0 12px 32px rgba(0, 0, 0, 0.35); } }
+
+.emg-ico {
+  --kc: #e8542c;
+  flex: none; width: 38px; height: 38px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--kc); background: color-mix(in srgb, var(--kc) 18%, transparent); border: 1px solid color-mix(in srgb, var(--kc) 45%, transparent);
+  animation: emg-flash 1s steps(2, jump-none) infinite;
+}
+.emg-ico.sm { width: 30px; height: 30px; border-radius: 8px; animation: none; }
+.emg-row.waiting .emg-ico.sm { animation: emg-flash 1s steps(2, jump-none) infinite; }
+@keyframes emg-flash { 50% { background: color-mix(in srgb, var(--kc) 34%, transparent); } }
+
+.emg-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.emg-head { display: flex; align-items: baseline; gap: 8px; }
+.emg-title { font-weight: 800; font-size: 13.5px; letter-spacing: 0.01em; }
+.emg-time { margin-left: auto; font-size: 11px; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.emg-banner.urgent .emg-time { color: var(--bad); font-weight: 700; }
+.emg-place { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.emg-note { font-size: 12px; color: var(--text); line-height: 1.35; }
+.emg-banner:not(.handled) .emg-note { color: #ffb4a8; }
+.emg-btns { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.emg-btns .btn .emg-eta { font-weight: 800; opacity: 0.9; margin-left: 2px; }
+.emg-x { position: absolute; top: 6px; right: 6px; width: 24px !important; height: 24px !important; }
+.emg-more {
+  pointer-events: auto; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12px;
+  color: var(--warn); font-weight: 600;
+}
+.emg-more:hover { color: var(--text); }
+
+/* LIVE badge in the speed group (TopBar), shown while an emergency holds the game at slowed 1x */
+.hud-top .live-pill {
+  display: none; margin-left: 4px; padding: 2px 7px; border-radius: 5px; background: rgba(255, 93, 93, 0.2); color: #ff8b7a;
+  font-size: 10px; font-weight: 800; letter-spacing: 0.08em; animation: pulse 1.2s ease-in-out infinite;
+}
+.mp-ui.emg-live .hud-top .live-pill { display: inline-block; }
+
+/* ---------------------------------------------------------------- Emergencies panel */
+.emg-panel { display: flex; flex-direction: column; gap: 6px; }
+.emg-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 6px; margin-bottom: 6px; }
+.emg-sum .stat-card { padding: 7px 9px; }
+.emg-sum .sc-v { font-size: 16px; }
+.emg-empty { display: flex; gap: 10px; align-items: center; padding: 14px 8px; color: var(--text-dim); line-height: 1.4; }
+.emg-empty span:first-child { color: var(--good); }
+.emg-row {
+  --kc: #888; display: flex; gap: 10px; align-items: center; padding: 7px 8px; border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035); border: 1px solid transparent;
+}
+.emg-row.waiting { border-color: color-mix(in srgb, var(--kc) 45%, transparent); background: color-mix(in srgb, var(--kc) 8%, transparent); }
+.emg-rb { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.emg-rt { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.emg-rs { font-size: 11.5px; line-height: 1.35; }
+.emg-rbtn { display: flex; gap: 4px; flex: none; }
+.emg-tag { margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 9px; font-weight: 800; letter-spacing: 0.06em; background: rgba(255, 93, 93, 0.18); color: #ff8b7a; }
+.emg-units { display: flex; gap: 3px; margin-top: 4px; }
+.emg-units i { width: 14px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.12); }
+.emg-units i.free { background: var(--good); }
+.emg-units i.out { background: var(--warn); }
+.emg-units i.off { background: transparent; border: 1px dashed rgba(255, 255, 255, 0.25); }
+.emg-panel .sec-title { display: flex; align-items: center; gap: 6px; }
+.emg-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.emg-table td { padding: 3px 4px; border-bottom: 1px solid var(--hair, rgba(255, 255, 255, 0.06)); white-space: pre; }
+.emg-table td:not(:first-child) { text-align: right; }
+.emg-table tr.hd td { color: var(--text-dim); font-weight: 700; font-size: 11px; }
+.emg-table tr.strong td { font-weight: 700; }
+.emg-table tr.neg td:not(:first-child) { color: var(--bad); }
+
+@media (max-width: 720px) {
+  .emg-banners { top: 64px; width: calc(100vw - 32px); }
+}

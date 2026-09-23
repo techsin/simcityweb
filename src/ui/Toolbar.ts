@@ -289,16 +289,28 @@ export class Toolbar {
     const maxX = pr.width / z - tw - 8;
     let x = (r.left + r.width / 2 - pr.left) / z - tw / 2;
     x = Math.max(8, Math.min(maxX, x));
-    // flyout items: never cover the flyout itself (its tabs / header) — go above the whole flyout, else beside it
+    // flyout items: never cover the flyout's own header / tabs — above the whole flyout; else beside the flyout;
+    // else (wide + tall flyout) beside the hovered item, kept below the header
     const fly = anchor.closest('.flyout');
     if (fly) {
+      const TOP = 64; // below the top bar
       const fr = fly.getBoundingClientRect();
+      const W = pr.width / z, H = pr.height / z;
       let y = (fr.top - pr.top) / z - th - 8;
-      if (y < 64) {
+      if (y < TOP) {
         const right = (fr.right - pr.left) / z + 10;
         const left = (fr.left - pr.left) / z - tw - 10;
-        x = right + tw <= pr.width / z - 8 ? right : left >= 8 ? left : x;
-        y = Math.max(64, Math.min(pr.height / z - th - 8, (r.top - pr.top) / z + r.height / z / 2 - th / 2));
+        const itemMid = (r.top - pr.top) / z + r.height / z / 2;
+        if (right + tw <= W - 8 || left >= 8) {
+          x = right + tw <= W - 8 ? right : left;
+          y = Math.max(TOP, Math.min(H - th - 8, itemMid - th / 2));
+        } else {
+          const head = fly.querySelector('.fly-head') as HTMLElement | null;
+          const headBottom = head ? (head.getBoundingClientRect().bottom - pr.top) / z + 6 : (fr.top - pr.top) / z;
+          const iR = (r.right - pr.left) / z + 8, iL = (r.left - pr.left) / z - tw - 8;
+          x = iR + tw <= W - 8 ? iR : iL >= 8 ? iL : x;
+          y = Math.max(headBottom, TOP, Math.min(H - th - 8, itemMid - th / 2));
+        }
       }
       this.tip.style.left = x + 'px';
       this.tip.style.top = y + 'px';

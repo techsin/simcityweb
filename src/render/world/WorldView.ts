@@ -243,8 +243,9 @@ export class WorldView implements WorldViewApi {
     const cells = (r: CellRect) => {
       this.terrain.markCells(r);
       this.trees.onCellsChanged(r);
-      // road / tree / terrain chunks rebuild over the next frames (budgeted): keep the shadow map fresh meanwhile
-      this.invalidateShadows(30);
+      // no forced shadow refresh: the casters that change here (buildings / props batches, tree chunks, road
+      // structure chunks) bump shadowCasters.version when they are actually rebuilt, which re-renders the shadow
+      // map at most every shadowInterval frames (a growing city emits these events many times a second)
     };
     const bRect = (b: Building): CellRect => ({ x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d });
     this.unsub.push(
@@ -518,8 +519,11 @@ export class WorldView implements WorldViewApi {
       return;
     }
     if (dt <= 0 || dt > 250) return;
-    this.drsEma = this.drsEma > 0 ? this.drsEma * 0.92 + dt * 0.08 : dt;
     const budget = 1000 / this.q.targetFps;
+    // one-off CPU spikes (sim day ticks, GC, chunk rebuilds) are not a fill-rate problem: clamp each sample so only
+    // sustained slow frames lower the resolution
+    const sample = Math.min(dt, budget * 2);
+    this.drsEma = this.drsEma > 0 ? this.drsEma * 0.92 + sample * 0.08 : sample;
     const min = this.q.minRenderScale;
     if (this.drsEma > budget * 1.2 && now - this.drsChange > 600 && this.renderScale > min + 1e-3) {
       // too slow: step down; a step down right after a probe up doubles the wait before the next probe

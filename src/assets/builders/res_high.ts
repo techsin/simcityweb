@@ -285,7 +285,7 @@ function playMini(b: ModelBuilder, x: number, z: number): void {
 }
 
 // ---------------------------------------------------------------------------------------------- TOWER (R$$) 2x2
-/** tw = mirror twin: own facade palette (slate / buff brick / charcoal bands / sand / sage / cream + brick). */
+/** tw = mirror twin: own facade palette (dark slate + sand slabs / buff brick / charcoal bands / sand / sage / cream + brick). */
 function tower(b: ModelBuilder, v: number, rng: RNG, tw = false): void {
   plaza(b, rng, 16, 16, 0xcfc9bd);
   const fh = 3.1;
@@ -294,12 +294,14 @@ function tower(b: ModelBuilder, v: number, rng: RNG, tw = false): void {
     const C = 4.2, h = 2 * C + 1.05 * 0, fl = 30, py = 2 * fh, top = fl * fh;
     const x0 = -2.5 * C, x1 = 2.5 * C;
     podium(b, -14, -14, 14, 12, py, 0xb8ae9c, 10);
-    ww(b, x0, -h, x1, h, py, top, tw ? 0x7e8a92 : 0xbfae90, 3, fh, P(ROOF, Surf.RoofFlat));
-    for (let f = 3; f < fl; f++) ringBalc(b, x0, -h, x1, h, f * fh, 1.3, 0xf2eee6);
-    roofBox(b, -5, -4, 5, 4, top, 4.5, 0xd8d0c0);
-    b.paint(0xe2d8c6);
+    // twin: dark slate walls with sand balcony slabs (the white slabs otherwise hide the wall colour)
+    const slabC = tw ? 0xd6c8a8 : 0xf2eee6, crownC = tw ? 0xcdbd9c : 0xe2d8c6;
+    ww(b, x0, -h, x1, h, py, top, tw ? 0x565c64 : 0xbfae90, 3, fh, P(ROOF, Surf.RoofFlat));
+    for (let f = 3; f < fl; f++) ringBalc(b, x0, -h, x1, h, f * fh, 1.3, slabC);
+    roofBox(b, -5, -4, 5, 4, top, 4.5, tw ? 0x6a7078 : 0xd8d0c0);
+    b.paint(crownC);
     for (const [a, c] of [[x0, -h], [x1, -h], [x0, h], [x1, h]] as [number, number][]) b.box(a - 0.3, top, c - 0.3, a + 0.3, top + 6, c + 0.3, { bottom: null });
-    bandRing(b, x0, -h, x1, h, top + 5.2, 0.8, 0.3, 0xe2d8c6);
+    bandRing(b, x0, -h, x1, h, top + 5.2, 0.8, 0.3, crownC);
     litRing(b, x0 - 0.31, -h - 0.31, x1 + 0.31, h + 0.31, top + 5.0, 0.2, 0xfff0cc);
     podiumDeck(b, rng, -14, -14, 14, 12, py, x0 - 1.4, -h - 1.4, x1 + 1.4, h + 1.4);
     streetTrees(b, rng, 16, 14.6);

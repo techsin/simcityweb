@@ -130,6 +130,8 @@ const P: Record<string, string> = {
   meh: '<circle cx="12" cy="12" r="9"/><path d="M8.5 15h7"/><path d="M9 9.5h.01M15 9.5h.01"/>',
   frown: '<circle cx="12" cy="12" r="9"/><path d="M8 16.2c.9-1.4 2.3-2.2 4-2.2s3.1.8 4 2.2"/><path d="M9 9.5h.01M15 9.5h.01"/>',
   alert: '<path d="M10.3 4.1 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 4.1a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4M12 17v.01"/>',
+  // WP8 emergency beacon
+  siren: '<path d="M6.5 17v-5a5.5 5.5 0 0 1 11 0v5"/><path d="M4 20.5h16v-3.5H4z"/><path d="M12 9.5v3.5"/><path d="M12 2.5v1.5M4.2 5.2l1.1 1.1M19.8 5.2l-1.1 1.1M2 11h1.5M20.5 11H22"/>',
   bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
   music: '<path d="M9 18V6l11-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
   prev: '<path d="M6 5v14"/><path d="M19 5.5v13L9 12z" fill="currentColor" stroke-linejoin="round"/>',

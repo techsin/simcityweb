@@ -174,8 +174,9 @@ export class Toasts {
     timer = window.setTimeout(kill, ttl);
     this.live.set(key, entry);
     this.el.prepend(t);
-    // at most 4 visible
-    while (this.el.children.length > Toasts.MAX) {
+    // at most 4 visible (3 on short screens, e.g. 1280×720: CityScene sets .short on the UI root)
+    const max = this.ctx.root.classList.contains('short') ? Math.min(3, Toasts.MAX) : Toasts.MAX;
+    while (this.el.children.length > max) {
       const last = this.el.lastElementChild as HTMLElement;
       for (const [k, v] of this.live) if (v.el === last) this.live.delete(k);
       last.remove();

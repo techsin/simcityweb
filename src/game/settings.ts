@@ -27,7 +27,16 @@ export interface GameSettings {
   toasts: boolean;
   /** New Year celebration on January 1st: fireworks after a time-lapse to midnight / fireworks only / off */
   newYear: NewYearMode;
+  /** emergency no station can answer (the player must dispatch): drop to LIVE speed / pause / keep the speed */
+  emergencyUncovered: EmergencyPolicy;
+  /** emergency banners for major incidents only, or for every incident that needs the player */
+  emergencyAlerts: 'major' | 'all';
+  /** LIVE mode slow-motion at 1x (1 = plain 1x, 3 = 1.5 s per game day) */
+  emergencyLiveSlowmo: number;
 }
+
+/** what the game does when an emergency needs a player dispatch (src/ui/EmergencyBanner.ts speedPolicy) */
+export type EmergencyPolicy = 'live' | 'pause' | 'ignore';
 
 export type NewYearMode = 'cinematic' | 'fireworks' | 'off';
 
@@ -47,6 +56,9 @@ export const DEFAULT_SETTINGS: GameSettings = {
   pauseWhenHidden: true,
   toasts: true,
   newYear: 'cinematic',
+  emergencyUncovered: 'live',
+  emergencyAlerts: 'major',
+  emergencyLiveSlowmo: 3,
 };
 
 const KEY = 'metropolis.settings.v1';
