@@ -88,7 +88,8 @@ varying vec3 vCol;
 void main() {
   float d2 = dot(vUv, vUv);
   if (d2 > 1.0) discard;
-  float a = pow(1.0 - d2, 2.2);
+  // soft gaussian pool with a faint brighter core, fading to exactly 0 at the rim
+  float a = (exp(-d2 * 3.2) * 0.8 + exp(-d2 * 12.0) * 0.35) * (1.0 - d2);
   gl_FragColor = vec4(vCol * a * uNight * uStrength, 1.0);
 }`;
 
@@ -152,7 +153,7 @@ export class PropRenderer {
     this.poolMat = new THREE.ShaderMaterial({
       vertexShader: POOL_VERT,
       fragmentShader: POOL_FRAG,
-      uniforms: { uNight: sharedUniforms.uNight, uStrength: { value: 0.55 } },
+      uniforms: { uNight: sharedUniforms.uNight, uStrength: { value: 0.16 } },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,

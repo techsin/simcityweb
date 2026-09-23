@@ -131,7 +131,7 @@ export class WorldView implements WorldViewApi {
     this.scene.add(this.water.mesh);
     mark('water');
     // trees
-    this.trees = new TreeRenderer(state, this.terrain, { lodDistance: this.q.treeLodDistance, density: this.q.treeDensity, castShadows: this.q.treeShadows });
+    this.trees = new TreeRenderer(state, this.terrain, { lodDistance: this.q.treeLodDistance, density: this.q.treeDensity, castShadows: this.q.treeShadows, maxVariants: this.q.treeVariants });
     this.scene.add(this.trees.group);
     mark('trees');
     // sky
@@ -242,7 +242,7 @@ export class WorldView implements WorldViewApi {
     this.q = q;
     this.terrain.setQuality(q.terrainDetail, q.terrainShadows);
     this.water.setQuality(q.waterDetail);
-    this.trees.setQuality({ lodDistance: q.treeLodDistance, density: q.treeDensity, castShadows: q.treeShadows });
+    this.trees.setQuality({ lodDistance: q.treeLodDistance, density: q.treeDensity, castShadows: q.treeShadows, maxVariants: q.treeVariants });
     this.sky.setQuality(q.skyLut, q.envSize, q.envRefreshMinutes);
     this.post.fog.uSkyLut.value = this.sky.lutTexture;
     this.applyShadowQuality();

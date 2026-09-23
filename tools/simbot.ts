@@ -268,6 +268,16 @@ export class SimBot {
       const d = b.ring + (this.touchesDeveloped(b) ? 0 : use === 'I' && !this.blocks.some((o) => o.developed && o.use === 'I') ? 2 : 50);
       if (d < bd) { bd = d; best = b; }
     }
+    if (best || (use !== 'I' && use !== 'C')) return best;
+    // sector full: repurpose the undeveloped residential block closest to existing blocks of that use
+    const same = this.blocks.filter((o) => o.developed && o.use === use);
+    for (const b of this.blocks) {
+      if (b.developed || b.use !== 'R' || !this.touchesDeveloped(b)) continue;
+      let dmin = Infinity;
+      for (const o of same) dmin = Math.min(dmin, Math.abs(o.bx - b.bx) + Math.abs(o.bz - b.bz));
+      if (dmin < bd) { bd = dmin; best = b; }
+    }
+    if (best) best.use = use;
     return best;
   }
   touchesDeveloped(b: Block): boolean {

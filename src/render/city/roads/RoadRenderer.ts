@@ -52,6 +52,7 @@ export class RoadRenderer {
   }
 
   markDirty(r: CellRect): void {
+    this.mesher.invalidate(r.x0, r.z0, r.x1, r.z1);
     const c0x = Math.max(0, Math.floor(r.x0 / CHUNK)), c1x = Math.min(this.nc - 1, Math.floor((r.x1 - 1) / CHUNK));
     const c0z = Math.max(0, Math.floor(r.z0 / CHUNK)), c1z = Math.min(this.nc - 1, Math.floor((r.z1 - 1) / CHUNK));
     for (let cz = c0z; cz <= c1z; cz++) {
@@ -63,6 +64,7 @@ export class RoadRenderer {
   }
 
   markAllDirty(): void {
+    this.mesher.invalidateAll();
     for (const c of this.chunks) c.dirty = true;
     this.dirtyCount = this.chunks.length;
   }
@@ -106,6 +108,13 @@ export class RoadRenderer {
   }
 
   private replace(c: Chunk, key: 'main' | 'struct', geo: THREE.BufferGeometry | null, shadows: boolean): void {
+    if (geo) {
+      // the JS copies are not needed once uploaded (geometry is replaced wholesale on rebuild)
+      for (const name of ['position', 'normal', 'rd']) {
+        const a = geo.getAttribute(name) as THREE.BufferAttribute;
+        a.onUpload(function (this: THREE.BufferAttribute) { (this as unknown as { array: ArrayLike<number> }).array = new Float32Array(0); });
+      }
+    }
     const old = c[key];
     if (old) {
       this.triangles -= (old.geometry.attributes.position.count / 3) | 0;

@@ -102,7 +102,7 @@ export class TopBar {
     const city = h('div', { class: 'hud-seg click', title: 'City menu (Esc)' }, h('div', { class: 'city-badge', html: icon('resHigh', 18) }), h('div', { class: 'hud-stack' }, this.cityName, this.citySub));
     city.addEventListener('click', () => this.ctx.openPauseMenu());
     this.dateEl = h('div', { class: 'hud-value' });
-    this.todEl = h('div', { class: 'tod' });
+    this.todEl = h('div', { class: 'tod hide-sm' });
     const date = h('div', { class: 'hud-seg' }, h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Date', h('span', { class: 'paused-pill' }, 'PAUSED')), this.dateEl));
     const speeds: [number, string, string][] = [[0, 'pause', 'Pause (Space)'], [1, 'play', 'Normal speed (1)'], [2, 'fast', 'Fast (2)'], [3, 'ultra', 'Ultra (3)']];
     const sp = h('div', { class: 'speed' });

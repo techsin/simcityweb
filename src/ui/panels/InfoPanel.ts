@@ -147,7 +147,7 @@ export class InfoPanel extends Panel {
       add(`Desirability (${DEV_TYPE_LABELS[dev]})`, 'desire', h('span', { style: 'display:flex;align-items:center;gap:8px;justify-content:flex-end' }, desirBar(dv), h('span', null, (dv > 0 ? '+' : '') + Math.round(dv * 100))));
     }
     // commute
-    const traffic = this.ctx.sim.getSystem<any>('traffic');
+    const traffic = (this.ctx.mods.infra?.getTraffic?.(this.ctx.sim) ?? this.ctx.sim.getSystem('traffic')) as any;
     let commute: string | null = null;
     try {
       const r = traffic?.routeInfo?.(b.id);
@@ -167,6 +167,38 @@ export class InfoPanel extends Panel {
     }
     if (!commute && st.commute[i] > 0) commute = `${Math.round(st.commute[i])} min`;
     if (commute) add('Commute', 'clock', commute);
+    // traffic-derived access metrics (sim-infra)
+    const lvl = (v: number) => `<span class="${v >= 0.75 ? 'pos' : v >= 0.4 ? 'warn' : 'neg'}">${pct(v)}</span>`;
+    try {
+      const fam = dev === undefined ? null : dev <= DevType.R3 ? 'R' : dev <= DevType.CO3 ? 'C' : 'I';
+      if (fam === 'R') {
+        const a = traffic?.workerAccess?.(b.id) ?? -1;
+        if (a >= 0) add('Job access', 'briefcase', lvl(a));
+      } else if (b.capacity > 0) {
+        const f = traffic?.jobFill?.(b.id) ?? -1;
+        if (f >= 0) add('Worker supply', 'people', lvl(f));
+      }
+      if (fam === 'C') {
+        const c = traffic?.customers?.(b.id) ?? 0;
+        if (c > 0) add('Customers', 'people', `${num(c)}/day`);
+      }
+      if (fam === 'I') {
+        const fr = traffic?.freightAccess?.(b.id) ?? -1;
+        if (fr >= 0) add('Freight access', 'train', lvl(fr));
+      }
+    } catch {
+      /* ignore */
+    }
+    // utility grids
+    try {
+      const util = this.ctx.mods.infra?.getUtilities?.(this.ctx.sim);
+      const g = util?.gridInfo?.(this.ctx.sim, b.x, b.z);
+      if (g) add('Power grid', 'power', `${num(g.demand)} / ${num(g.supply)} MW${g.shortage ? ' <span class="chip bad">Shortage</span>' : ''}`);
+      const w = util?.waterInfo?.(this.ctx.sim, b.x, b.z);
+      if (w) add('Water network', 'water', `${num(w.demand)} / ${num(w.supply)}${w.shortage ? ' <span class="chip bad">Shortage</span>' : ''}`);
+    } catch {
+      /* ignore */
+    }
     if (def && !growable) {
       if (def.upkeep) add('Upkeep', 'budget', `${money(def.upkeep)}/mo`);
       if (def.income) add('Income', 'budget', `<span class="pos">+${money(def.income)}/mo</span>`);
@@ -275,6 +307,15 @@ export class InfoPanel extends Panel {
         const dv = st.desirability[d]?.[i] ?? 0;
         add(`Desirability ${DEV_TYPE_LABELS[d]}`, 'desire', h('span', { style: 'display:flex;align-items:center;gap:8px;justify-content:flex-end' }, desirBar(dv), h('span', null, (dv > 0 ? '+' : '') + Math.round(dv * 100))));
       }
+    }
+    try {
+      const util = this.ctx.mods.infra?.getUtilities?.(this.ctx.sim);
+      const g = util?.gridInfo?.(this.ctx.sim, x, z);
+      if (g) add('Power grid', 'power', `${num(g.demand)} / ${num(g.supply)} MW${g.shortage ? ' <span class="chip bad">Shortage</span>' : ''}`);
+      const w = util?.waterInfo?.(this.ctx.sim, x, z);
+      if (w) add('Water network', 'water', `${num(w.demand)} / ${num(w.supply)}${w.shortage ? ' <span class="chip bad">Shortage</span>' : ''}`);
+    } catch {
+      /* ignore */
     }
     this.body.appendChild(kv);
   }

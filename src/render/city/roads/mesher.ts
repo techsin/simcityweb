@@ -13,7 +13,7 @@ import {
   NetInfo, DX, DZ, OPP, RX, RZ, HALF_W, HALF, LIFT, CURB_H, NF_TUNNEL, isRoadT, hasSidewalk, popcount4, oneWayDir,
 } from '../common/netinfo';
 import type { RoadSurface } from '../common/surface';
-import { GeoBuf } from './geobuf';
+import { GeoBuf, type GeoSlice } from './geobuf';
 
 export const M = {
   ASPHALT: 0, SIDEWALK: 1, CURB: 2, GRASS: 3, BALLAST: 4, SLEEPER: 5, RAIL: 6, CONCRETE: 7, DIRT: 8, METAL: 9,
@@ -42,6 +42,14 @@ export interface PoolItem {
   hx: number;
   hy: number;
   hz: number;
+}
+
+interface CellCache {
+  m: GeoSlice | null;
+  s: GeoSlice | null;
+  props: PropItem[];
+  pools: PoolItem[];
+  sig: number;
 }
 
 export interface ChunkOutput {
@@ -92,10 +100,29 @@ export class RoadMesher {
   private _u = 0;
   private _v = 0;
   private trackIdx = 0;
+  /** per-cell mesh cache: an edit only re-meshes the invalidated cells; chunks are re-assembled by concatenation */
+  private cache = new Map<number, CellCache>();
 
   constructor(net: NetInfo, surf: RoadSurface) {
     this.net = net;
     this.surf = surf;
+  }
+
+  invalidate(x0: number, z0: number, x1: number, z1: number): void {
+    const N = this.net.N;
+    x0 = Math.max(0, x0); z0 = Math.max(0, z0); x1 = Math.min(N, x1); z1 = Math.min(N, z1);
+    if ((x1 - x0) * (z1 - z0) > this.cache.size) {
+      for (const k of [...this.cache.keys()]) {
+        const x = k % N, z = (k / N) | 0;
+        if (x >= x0 && x < x1 && z >= z0 && z < z1) this.cache.delete(k);
+      }
+      return;
+    }
+    for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) this.cache.delete(z * N + x);
+  }
+
+  invalidateAll(): void {
+    this.cache.clear();
   }
 
   // ------------------------------------------------------------------ primitives
@@ -240,6 +267,16 @@ export class RoadMesher {
         const i = z * N + x;
         const t = st.network[i];
         if (!t) continue;
+        const hit = this.cache.get(i);
+        if (hit) {
+          if (hit.m) out.main.append(hit.m);
+          if (hit.s) out.struct.append(hit.s);
+          for (const p of hit.props) out.props.push(p);
+          for (const p of hit.pools) out.pools.push(p);
+          if (this.signalized) this.signalized[i] = hit.sig;
+          continue;
+        }
+        const m0 = out.main.count, s0 = out.struct.count, p0 = out.props.length, q0 = out.pools.length;
         this.ci = i;
         this.cx = x;
         this.cz = z;
@@ -249,21 +286,25 @@ export class RoadMesher {
         this.trackIdx = 0;
         if (st.netFlags[i] & NF_TUNNEL) {
           this.tunnelCell(t);
-          continue;
-        }
-        const cr = net.crossing[i];
-        if (cr) {
-          this.levelCrossing(cr);
-        } else if (t === Network.Rail) {
-          this.railCell(net.railMask[i]);
         } else {
-          this.roadCell(t, net.roadMask[i]);
+          const cr = net.crossing[i];
+          if (cr) {
+            this.levelCrossing(cr);
+          } else if (t === Network.Rail) {
+            this.railCell(net.railMask[i]);
+          } else {
+            this.roadCell(t, net.roadMask[i]);
+          }
+          if (net.bAxis[i] >= 0) {
+            this.g = out.struct;
+            this.bridgeStructure(t);
+            this.g = out.main;
+          }
         }
-        if (net.bAxis[i] >= 0) {
-          this.g = out.struct;
-          this.bridgeStructure(t);
-          this.g = out.main;
-        }
+        this.cache.set(i, {
+          m: out.main.sliceFrom(m0), s: out.struct.sliceFrom(s0), props: out.props.slice(p0), pools: out.pools.slice(q0),
+          sig: this.signalized ? this.signalized[i] : 0,
+        });
       }
     }
   }

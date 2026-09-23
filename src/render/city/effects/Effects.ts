@@ -181,12 +181,15 @@ function findStacks(geo: THREE.BufferGeometry, key: string): V3[] {
   return arr;
 }
 
-interface Emit { x: number; y: number; z: number; kind: number; size: number; count: number; life: number; }
+export interface Emit { x: number; y: number; z: number; kind: number; size: number; count: number; life: number; }
 
 export class Effects {
   readonly smoke: THREE.Mesh;
   readonly flames: THREE.Mesh;
   private emitters = new Map<number, Emit[]>();
+  /** keyed transient emitter groups (disasters), with expiry time (s, effect clock) */
+  private extras = new Map<string, { list: Emit[]; until: number }>();
+  private clock = 0;
   private dirty = true;
   private smokeGeo: THREE.InstancedBufferGeometry;
   private flameGeo: THREE.InstancedBufferGeometry;
@@ -282,14 +285,29 @@ export class Effects {
 
   clear(): void {
     this.emitters.clear();
+    this.extras.clear();
     this.dirty = true;
   }
 
-  update(): void {
+  /** add / replace a transient emitter group (null / empty list removes). ttl in seconds (Infinity = until removed) */
+  setExtra(key: string, list: Emit[] | null, ttl = Infinity): void {
+    if (!list || !list.length) {
+      if (this.extras.delete(key)) this.dirty = true;
+      return;
+    }
+    this.extras.set(key, { list, until: this.clock + ttl });
+    this.dirty = true;
+  }
+
+  update(dt = 0): void {
+    this.clock += dt;
+    for (const [k, e] of this.extras) if (e.until < this.clock) { this.extras.delete(k); this.dirty = true; }
     if (!this.dirty) return;
     this.dirty = false;
     let ns = 0, nf = 0;
-    for (const l of this.emitters.values()) for (const e of l) { if (e.kind === 2) nf += e.count; else ns += e.count; }
+    const groups: Emit[][] = [...this.emitters.values()];
+    for (const e of this.extras.values()) groups.push(e.list);
+    for (const l of groups) for (const e of l) { if (e.kind === 2) nf += e.count; else ns += e.count; }
     ns = Math.min(ns, this.maxSmoke);
     nf = Math.min(nf, this.maxFlame);
     const aSE = this.smokeGeo.getAttribute('aEmit') as THREE.InstancedBufferAttribute;
@@ -301,7 +319,7 @@ export class Effects {
     let is = 0, iF = 0;
     let h = 12345;
     const rnd = () => ((h = (h * 1664525 + 1013904223) >>> 0) / 4294967296);
-    for (const l of this.emitters.values()) {
+    for (const l of groups) {
       for (const e of l) {
         const flame = e.kind === 2;
         for (let k = 0; k < e.count; k++) {

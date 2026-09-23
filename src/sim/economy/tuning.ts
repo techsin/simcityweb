@@ -171,7 +171,7 @@ export const GROWTH_MIN_ALLOW = { R: 25, C: 10, I: 10 };
  * rate is lower (demand, caps, zoning, stage milestones). This is the main "pace of the game" knob.
  */
 export const GROWTH_MAX_BASE = { R: 18, C: 7, I: 8 };
-export const GROWTH_MAX_FRAC = 0.001;
+export const GROWTH_MAX_FRAC = 0.0007;
 export const GROWTH_MAX_SCALE = 25000;
 /** growth attempts (candidate lots) per day: base + per 100 candidates, capped */
 export const GROWTH_ATTEMPTS_BASE = 30;

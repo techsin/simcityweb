@@ -434,9 +434,9 @@ function parkBasketball(b: ModelBuilder, _v: number, rng: RNG): void {
   lawnPatchwork(b, rng, -E, -E, E, E, GRASS_LUSH, 2);
   // court: 14.4 x 14 half court, hoop at the back
   b.paint(0x3a5f7a, Surf.Pavement).slab(-7.5, -7.5, 7.5, 7.2, 0.08);
-  b.paint(0x3f6a88, Surf.Emissive);
+  b.paint(0x375d78, Surf.Emissive);
   rect(b, -7.2, -7.0, 7.2, 6.9, 0.085);
-  b.paint(0xa84a32, Surf.Emissive);
+  b.paint(0x94412c, Surf.Emissive);
   rect(b, -2.45, -7.0, 2.45, -1.2, 0.09);
   flatPoly(b, [[1.8, 6.9], ...arcPts(0, 6.9, 1.8, TAU, Math.PI, 8)], 0.09);
   b.paint(WHITE_LINE, Surf.Plain);
@@ -491,8 +491,8 @@ function tennisCourt(b: ModelBuilder, cx: number, color: number): void {
 function parkTennis(b: ModelBuilder, _v: number, rng: RNG): void {
   lawnPatchwork(b, rng, -16, -8, 16, 8, GRASS_LUSH, 3);
   b.paint(0x3f7a5a, Surf.Pavement).slab(-12, -7.6, 12, 7.6, 0.08);
-  tennisCourt(b, -5.4, 0x355f88);
-  tennisCourt(b, 5.4, 0x355f88);
+  tennisCourt(b, -5.4, 0x30567a);
+  tennisCourt(b, 5.4, 0x30567a);
   // fence with dark-green windscreens on the ends
   const fx = 12, fz = 7.6, fh = 3.4;
   for (const [ax, az, bx2, bz] of [[-fx, -fz, fx, -fz], [-fx, fz, -1.2, fz], [1.2, fz, fx, fz], [-fx, -fz, -fx, fz], [fx, -fz, fx, fz]] as [number, number, number, number][]) railFence(b, ax, az, bx2, bz, fh, 3.0, 0x4a5258, 2);

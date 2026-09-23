@@ -16,7 +16,7 @@ import { Noise2D, hash2 } from '../../core/rng';
 import type { CellRect } from '../../core/events';
 import type { Climate } from '../../core/types';
 import { MANIFEST_BY_ID } from '../../assets/manifest';
-import { getBuildingMaterial } from '../../assets/materials';
+import { getBuildingMaterial, patchSurfaceMaterial } from '../../assets/materials';
 import type { CityState } from '../../sim/CityState';
 import { getImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
 import { TerrainRenderer } from './TerrainRenderer';
@@ -24,7 +24,6 @@ import { TerrainRenderer } from './TerrainRenderer';
 const CHUNK = 32;
 /** instances per cell for density 0..4 */
 const DENSITY_COUNT = [0, 1.1, 2.3, 3.8, 5.6];
-const MAX_VARIANTS = 2;
 
 interface SpeciesDef {
   id: string;
@@ -106,6 +105,7 @@ export class TreeRenderer {
   private kindsBySpecies: number[][] = [];
   private autumnKinds: number[][] = [];
   private autumn = 0;
+  private maxVariants = 3;
   private species: SpeciesDef[];
   private chunks: TreeChunk[] = [];
   private perSide: number;
@@ -125,7 +125,7 @@ export class TreeRenderer {
   /** total instances currently placed (stats) */
   totalInstances = 0;
 
-  constructor(state: CityState, terrain: TerrainRenderer, opts: { lodDistance: number; density: number; castShadows: boolean }) {
+  constructor(state: CityState, terrain: TerrainRenderer, opts: { lodDistance: number; density: number; castShadows: boolean; maxVariants?: number }) {
     this.state = state;
     this.terrain = terrain;
     this.lodDistance = opts.lodDistance;
@@ -133,7 +133,10 @@ export class TreeRenderer {
     this.castShadows = opts.castShadows;
     this.seed = state.config.seed | 0;
     this.noise = new Noise2D(state.config.seed + 4242);
-    this.material = getBuildingMaterial();
+    this.maxVariants = opts.maxVariants ?? 3;
+    // clone of the shared uber material that casts shadows from both faces (thin palm fronds / leaf quads)
+    this.material = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
+    this.material.shadowSide = THREE.DoubleSide;
     this.group.name = 'trees';
     this.species = CLIMATE_SPECIES[state.config.climate] ?? CLIMATE_SPECIES.temperate;
     this.buildKinds();
@@ -161,7 +164,7 @@ export class TreeRenderer {
         const st = natureStats(geo);
         // autumn-colored variants (foliage more red than green) are only used in autumn
         const isAutumn = st.color.r > st.color.g * 0.95 && sp.id !== 'rock' && sp.id !== 'tree_cactus';
-        if (isAutumn ? autumn.length >= 1 : list.length >= MAX_VARIANTS) continue;
+        if (isAutumn ? autumn.length >= 1 : list.length >= this.maxVariants) continue;
         (isAutumn ? autumn : list).push(this.kinds.length);
         this.kinds.push({ species: si, id: sp.id, variant: v, geo, conifer: !!sp.conifer, color: st.color, height: st.height, radius: st.radius });
       }
@@ -173,7 +176,19 @@ export class TreeRenderer {
     this.scratchCount = this.kinds.map(() => 0);
   }
 
-  setQuality(opts: { lodDistance: number; density: number; castShadows: boolean }) {
+  setQuality(opts: { lodDistance: number; density: number; castShadows: boolean; maxVariants?: number }) {
+    if (opts.maxVariants !== undefined && opts.maxVariants !== this.maxVariants) {
+      this.maxVariants = opts.maxVariants;
+      for (const c of this.chunks) this.disposeChunk(c);
+      this.buildKinds();
+      for (const c of this.chunks) {
+        c.near = this.kinds.map(() => null);
+        c.far = [null, null];
+        c.total = 0;
+      }
+      this.totalInstances = 0;
+      this.markAll();
+    }
     const densityChanged = opts.density !== this.density;
     this.lodDistance = opts.lodDistance;
     this.density = opts.density;
@@ -301,7 +316,9 @@ export class TreeRenderer {
           const [s0, s1] = sp.scale ?? [0.72, 1.18];
           const s = (s0 + (s1 - s0) * hash2(x + t * 3, z - t, seed + 37)) * (dens >= 4 ? 1.05 : 1);
           const a = hash2(x - t, z + t * 5, seed + 41) * Math.PI * 2;
-          const y = this.terrain.worldHeight(px, pz) - 0.15;
+          // sink into slopes so rocks / bushes / trunks never float on the downhill side
+          const footR = sp.id === 'rock' || sp.id === 'bush' ? kind.radius * s * 0.8 : 0.5;
+          const y = this.terrain.worldHeight(px, pz) - 0.12 - Math.min(1.2, (footR * slope) / CELL_SIZE);
           const c = Math.cos(a), sn = Math.sin(a);
           // near
           const cnt = this.scratchCount[k];

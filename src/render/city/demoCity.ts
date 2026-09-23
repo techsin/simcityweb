@@ -101,12 +101,12 @@ export function buildDemoCity(opt: DemoOptions): CityState {
   const railZ = sx(104);
   for (let x = hwX + 2; x <= sx(116); x++) {
     const i = railZ * N + x;
-    if (net[i] && net[i] !== Network.Rail) continue; // road cell stays: renders as level crossing
+    if (net[i] && net[i] !== Network.Rail) { flags[i] |= 0x20; continue; } // road cell stays: level crossing (sim flag)
     set(x, railZ, Network.Rail);
   }
   for (let z = railZ - 1; z >= sx(60); z--) {
     const i = z * N + sx(116);
-    if (net[i]) continue;
+    if (net[i]) { flags[i] |= 0x20; continue; }
     set(sx(116), z, Network.Rail);
   }
   // rail cells adjacent to roads crossing: if a road runs across the rail row, the road cell becomes the crossing

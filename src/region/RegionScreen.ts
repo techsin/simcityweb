@@ -38,6 +38,9 @@ export class RegionScreen {
   private musicBtn!: HTMLButtonElement;
   private offAudio: () => void;
   private fileInput: HTMLInputElement;
+  private onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && this.view.selectedTile && !document.querySelector('.modal-back')) this.selectTile(null);
+  };
 
   constructor(root: HTMLElement, readonly model: RegionModel, private cb: RegionScreenCallbacks, opts: { quality?: QualityLevel } = {}) {
     this.host = h('div', { class: 'meta-layer region-host', style: 'background: radial-gradient(ellipse 90% 80% at 50% 38%, #2a3a52 0%, #141c2a 55%, #090d14 100%)' });
@@ -62,6 +65,7 @@ export class RegionScreen {
     };
     this.view.onDoubleClick = (tile) => (tile.city ? cb.onPlay(tile) : cb.onFound(tile));
     this.view.onFrame = () => this.updateLabels();
+    window.addEventListener('keydown', this.onKey);
     void this.view.refreshCities();
     this.view.start();
   }
@@ -345,6 +349,7 @@ export class RegionScreen {
   }
 
   dispose(): void {
+    window.removeEventListener('keydown', this.onKey);
     this.offAudio();
     this.view.dispose();
     this.el.remove();

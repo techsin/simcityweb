@@ -138,11 +138,26 @@ if (selParam) {
   if (id >= 0) view.setSelected(id);
 }
 
+// disaster demo: ?disaster=tornado|quake|meteor
+const disaster = P.get('disaster');
+let tornadoT = 0;
+const tcx = world.target.x / CELL_SIZE, tcz = world.target.z / CELL_SIZE;
+if (disaster === 'quake') events.emit('disaster', { kind: 'earthquake', x: tcx | 0, z: tcz | 0, active: true });
+if (disaster === 'meteor') events.emit('disaster', { kind: 'meteor', x: (tcx | 0) + 3, z: (tcz | 0) + 3, active: true });
+function stepDisaster(dt: number) {
+  if (disaster !== 'tornado') return;
+  tornadoT += dt;
+  if (Math.floor(tornadoT * 2) !== Math.floor((tornadoT - dt) * 2) || tornadoT === dt) {
+    events.emit('disaster', { kind: 'tornado', x: tcx - 6 + tornadoT * 0.4 + 0.01, z: tcz + Math.sin(tornadoT * 0.3) * 3 + 0.01, active: true });
+  }
+}
+
 // pre-simulate so vehicles spread out and pop-ins finish
 const simT = num('sim', 6);
 const dtS = 1 / 20;
 for (let t = 0; t < simT; t += dtS) {
   sharedUniforms.uTime.value += dtS;
+  stepDisaster(dtS);
   view.update(dtS);
 }
 
@@ -157,6 +172,7 @@ let fpsT = performance.now(), fps = 0;
 function frame(dt: number) {
   sharedUniforms.uTime.value += dt;
   world.update(dt);
+  stepDisaster(dt);
   view.update(dt);
   world.render();
   frames++;

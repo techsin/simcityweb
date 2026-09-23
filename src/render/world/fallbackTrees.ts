@@ -115,11 +115,12 @@ let _impostors: { broad: THREE.BufferGeometry; conifer: THREE.BufferGeometry } |
 export function getImpostorGeometries() {
   if (_impostors) return _impostors;
   const broad = new ModelBuilder();
-  broad.paint(0x3a2a1c, Surf.Wood).cylinder(0, 0, 0, 0.35, 0.05, 0.04, 4, { top: false });
-  broad.paint(0xffffff, Surf.Foliage).blob(0, 0.62, 0, 0.42, 0.38, 0.42, 0, 0.12, 3);
+  broad.paint(0x4a3624, Surf.Wood).cylinder(0, 0, 0, 0.42, 0.07, 0.05, 4, { top: false });
+  broad.paint(0xffffff, Surf.Foliage).blob(0, 0.63, 0, 0.44, 0.36, 0.44, 0, 0.14, 3);
   const con = new ModelBuilder();
-  con.paint(0x3a2a1c, Surf.Wood).cylinder(0, 0, 0, 0.2, 0.05, 0.04, 4, { top: false });
-  con.paint(0xffffff, Surf.Foliage).cone(0, 0, 0.12, 0.88, 0.36, 7);
+  con.paint(0x4a3624, Surf.Wood).cylinder(0, 0, 0, 0.22, 0.06, 0.05, 4, { top: false });
+  con.paint(0xffffff, Surf.Foliage).cone(0, 0, 0.1, 0.58, 0.38, 7);
+  con.cone(0, 0, 0.42, 0.58, 0.27, 6);
   _impostors = { broad: broad.build(), conifer: con.build() };
   return _impostors;
 }

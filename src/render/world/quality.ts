@@ -33,6 +33,8 @@ export interface QualitySettings {
   treeLodDistance: number;
   /** global tree density multiplier (instances per cell) */
   treeDensity: number;
+  /** model variants used per tree species (more = more variety, more draw calls) */
+  treeVariants: number;
   /** terrain shader detail: 0 low, 1 medium, 2 high (micro normals + triplanar rock) */
   terrainDetail: 0 | 1 | 2;
   /** water shader detail: 0 low (1 normal sample), 1 (2 samples + foam), 2 (3 samples + sparkles) */
@@ -61,8 +63,9 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     aoSamples: 0,
     bloom: false,
     bloomLevels: 0,
-    treeLodDistance: 320,
-    treeDensity: 0.6,
+    treeLodDistance: 420,
+    treeDensity: 0.75,
+    treeVariants: 2,
     terrainDetail: 0,
     waterDetail: 0,
     skyLut: [128, 64],
@@ -84,8 +87,9 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     aoSamples: 0,
     bloom: true,
     bloomLevels: 4,
-    treeLodDistance: 480,
-    treeDensity: 0.85,
+    treeLodDistance: 520,
+    treeDensity: 0.9,
+    treeVariants: 3,
     terrainDetail: 1,
     waterDetail: 1,
     skyLut: [192, 96],
@@ -109,6 +113,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     bloomLevels: 5,
     treeLodDistance: 700,
     treeDensity: 1,
+    treeVariants: 3,
     terrainDetail: 2,
     waterDetail: 2,
     skyLut: [256, 128],
@@ -132,6 +137,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
     bloomLevels: 6,
     treeLodDistance: 1000,
     treeDensity: 1,
+    treeVariants: 4,
     terrainDetail: 2,
     waterDetail: 2,
     skyLut: [256, 128],

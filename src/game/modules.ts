@@ -17,6 +17,7 @@ const LAZY = import.meta.glob([
   '../sim/economy/rewards.ts',
   '../sim/economy/ordinances.ts',
   '../sim/infra/disasters.ts',
+  '../sim/systems/infra.ts',
   '../sim/economy/loans.ts',
   '../audio/*.ts',
 ]);
@@ -70,7 +71,30 @@ export interface AudioLike {
   [k: string]: unknown;
 }
 
+/** sim-infra helpers (src/sim/systems/infra.ts) */
+export interface GridInfoLike {
+  supply: number;
+  demand: number;
+  shortage: boolean;
+}
+export interface TrafficLike {
+  routeInfo?(id: number): { commuteMin: number; mode: string; jobsReached: number } | null;
+  workerAccess?(id: number): number;
+  jobFill?(id: number): number;
+  freightAccess?(id: number): number;
+  customers?(id: number): number;
+  getSampleRoutes?(max: number): unknown;
+}
+export interface InfraApi {
+  getTraffic?: (sim: Simulation) => TrafficLike | undefined;
+  getUtilities?: (sim: Simulation) => { gridInfo?(sim: Simulation, x: number, z: number): GridInfoLike | null; waterInfo?(sim: Simulation, x: number, z: number): GridInfoLike | null } | undefined;
+  overlayValue?: (state: CityState, o: Overlay, x: number, z: number) => number;
+  overlayLayer?: (state: CityState, o: Overlay) => { palette?: string; label?: string; roadsOnly?: boolean } | null;
+  activeDisasters?: (sim: Simulation) => readonly { kind: string; x: number; z: number }[];
+}
+
 export interface GameModules {
+  infra?: InfraApi;
   WorldView?: WorldViewCtor;
   overlayLegend?: (o: Overlay) => unknown;
   CityObjectsView?: CityObjectsViewCtor;
@@ -223,6 +247,21 @@ export async function loadGameModules(): Promise<GameModules> {
     } else if (kinds && typeof kinds === 'object') {
       out.disasterKinds = Object.entries(kinds as Record<string, any>).map(([id, v]) => ({ id, name: str(v?.name ?? v?.label, id.replace(/^\w/, (c) => c.toUpperCase())) }));
     } else out.disasterKinds = DEFAULT_DISASTERS;
+  }
+  const inf = await load('../sim/systems/infra.ts', errors);
+  if (inf) {
+    const fn = <T>(k: string) => (typeof inf[k] === 'function' ? (inf[k] as T) : undefined);
+    out.infra = {
+      getTraffic: fn('getTraffic'),
+      getUtilities: fn('getUtilities'),
+      overlayValue: fn('overlayValue'),
+      overlayLayer: fn('overlayLayer'),
+      activeDisasters: fn('activeDisasters'),
+    };
+    if (!out.triggerDisaster && typeof inf.triggerDisaster === 'function') {
+      out.triggerDisaster = inf.triggerDisaster as GameModules['triggerDisaster'];
+      out.disasterKinds = DEFAULT_DISASTERS;
+    }
   }
   const lo = await load('../sim/economy/loans.ts', errors);
   if (lo && typeof lo.loanOffer === 'function') out.loanOffer = lo.loanOffer as GameModules['loanOffer'];

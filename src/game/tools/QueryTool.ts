@@ -1,5 +1,6 @@
 /** Query / inspect: hover highlights, click opens the info card. This is the default tool. */
-import { Network, isRoad } from '../../core/types';
+import { Network, Overlay, isRoad } from '../../core/types';
+import { overlayInfo } from '../../ui/overlays';
 import { getDef } from '../../sim/catalog';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
@@ -35,9 +36,30 @@ export class QueryTool extends Tool {
     }
     if (!this.showTip) return;
     const st = this.ctx.state;
-    const key = `${id}:${p.hit?.x},${p.hit?.z}`;
+    const key = `${id}:${p.hit?.x},${p.hit?.z}:${this.ctx.overlay}:${st.day >> 2}`;
     if (key === this.lastCell) return;
     this.lastCell = key;
+    // data view active: read out the overlay value under the cursor
+    const ov = this.ctx.overlay;
+    const ovf = this.ctx.mods.infra?.overlayValue;
+    if (ov !== Overlay.None && ov !== Overlay.Zones && p.hit && ovf) {
+      const info = overlayInfo(ov);
+      let v = 0;
+      try {
+        v = ovf(st, ov, p.hit.x, p.hit.z);
+      } catch {
+        v = 0;
+      }
+      const layer = safe(() => this.ctx.mods.infra?.overlayLayer?.(st, ov) ?? null, null);
+      const binary = layer?.palette === 'binary';
+      const txt = binary ? (v > 0.5 ? info?.hi ?? 'Yes' : info?.lo ?? 'No') : layer?.palette === 'diverging' ? `${v > 0 ? '+' : ''}${Math.round(v * 100)}` : pct(v);
+      const good = info?.goodHigh ? v : 1 - v;
+      const cls = good >= 0.66 ? 'pos' : good >= 0.33 ? 'warn' : 'neg';
+      const b = id !== null ? st.buildings.get(id) : undefined;
+      const sub = b ? escapeHtml(getDef(b.def)?.name ?? b.def) : `Tile ${p.hit.x}, ${p.hit.z}`;
+      this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(info?.label ?? layer?.label ?? 'Value')}</b><span class="${cls}" style="font-weight:800">${txt}</span></div><div class="tip-sub">${sub}</div>`, 'info');
+      return;
+    }
     if (id !== null) {
       const b = st.buildings.get(id);
       const def = b ? getDef(b.def) : undefined;

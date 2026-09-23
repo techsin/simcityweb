@@ -134,7 +134,14 @@ void main() {
   float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
   col = max(mix(vec3(l), col, uSaturation), 0.0);
   col = pow(col / 0.18 + 1e-6, vec3(uContrast)) * 0.18;
-  col = mtAcesFilmic(col);
+  // ACES filmic, but saturated highlights (neon, tail lights, signals) keep their hue: blend toward a
+  // hue-preserving curve (ACES applied to the max channel, ratios kept) by input saturation
+  vec3 acesC = mtAcesFilmic(col);
+  float mx = max(col.r, max(col.g, col.b));
+  float mn = min(col.r, min(col.g, col.b));
+  float satIn = (mx - mn) / max(mx, 1e-5);
+  vec3 hueP = col * (mtAcesFilmic(vec3(mx)).g / max(mx, 1e-5));
+  col = mix(acesC, clamp(hueP, 0.0, 1.0), smoothstep(0.45, 0.95, satIn) * smoothstep(0.5, 2.0, mx) * 0.75);
   col = col + uLift * (1.0 - col) * (1.0 - col);
   // vignette
   vec2 q = vUv - 0.5;

@@ -28,6 +28,7 @@ import { PropRenderer, propGeometry } from './props/PropRenderer';
 import { PowerLines } from './props/PowerLines';
 import { BuildingRenderer } from './buildings/BuildingRenderer';
 import { Effects } from './effects/Effects';
+import { Disasters } from './effects/Disasters';
 import { VehicleRenderer, type TrafficRoute } from './vehicles/VehicleRenderer';
 import { Previews } from './previews/Previews';
 import { Underground } from './underground/Underground';
@@ -75,6 +76,7 @@ export class CityObjectsView implements CityObjectsViewApi {
   readonly power: PowerLines;
   readonly buildings: BuildingRenderer;
   readonly effects: Effects;
+  readonly disasters: Disasters;
   readonly vehicles: VehicleRenderer;
   readonly previews: Previews;
   readonly underground: Underground;
@@ -105,6 +107,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.power = new PowerLines(state, this.surf);
     this.effects = new Effects();
     this.effects.geometryOf = (m, v) => getModelGeometry(m, v);
+    this.disasters = new Disasters(state, this.surf, this.effects);
     this.buildings = new BuildingRenderer(state, this.culler);
     this.buildings.onVisual = (v, id) => {
       this.effects.onBuilding(v, id);
@@ -117,7 +120,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.underground = new Underground(state, this.surf);
     this.root.add(
       this.roads.group, this.props.batch.mesh, this.props.pools, this.props.glows, this.power.wires, this.buildings.batch.mesh,
-      this.vehicles.batch.mesh, this.vehicles.headlights, this.effects.smoke, this.effects.flames, this.previews.group, this.underground.group,
+      this.vehicles.batch.mesh, this.vehicles.headlights, this.effects.smoke, this.effects.flames, this.disasters.group, this.previews.group, this.underground.group,
     );
     ctx.scene.add(this.root);
     this.subscribe(events);
@@ -155,6 +158,7 @@ export class CityObjectsView implements CityObjectsViewApi {
         if (this.buildings.selected === b.id) this.setSelected(null);
       }),
       ev.on('buildingChanged', (b) => this.buildings.changed(b)),
+      ev.on('disaster', (e) => this.disasters.onEvent(e)),
       ev.on('layerUpdated', (l) => { if (l === 'traffic') this.spawnTimer = Math.max(this.spawnTimer, 0.2); }),
       ev.on('reset', () => {
         const s = this.ctx.getState?.();
@@ -182,6 +186,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.vehicles.setState(state, this.net, this.surf);
     this.previews.setState(state, this.surf);
     this.underground.setState(state, this.surf);
+    this.disasters.setState(state, this.surf);
     this.rebuildAll();
   }
 
@@ -231,7 +236,8 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.props.update();
     this.props.updateNight(sharedUniforms.uNight.value);
     this.buildings.update(dt);
-    this.effects.update();
+    this.disasters.update(dt);
+    this.effects.update(dt);
     if (this.spawnTimer >= 0) {
       this.spawnTimer -= dt;
       if (this.spawnTimer < 0) this.vehicles.refreshSpawn();
@@ -354,6 +360,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.power.dispose();
     this.buildings.dispose();
     this.effects.dispose();
+    this.disasters.dispose();
     this.vehicles.dispose();
     this.previews.dispose();
     this.underground.dispose();

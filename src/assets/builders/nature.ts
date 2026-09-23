@@ -11,7 +11,7 @@ import type { ModelBuilders } from '../registry';
 import type { ModelBuilder } from '../ModelBuilder';
 import type { RNG } from '../../core/rng';
 import { Surf } from '../../core/types';
-import { leafBlob, limb, lathe, tier, tintSince, foliageShade, mark, jitterHex, mixHex, triOut, vnorm, vadd, vscale, vcross, vsub, type V3 } from './nat_geom';
+import { leafBlob, limb, lathe, tier, tintSince, foliageShade, mark, jitterHex, mixHex, shadeHex, triOut, vnorm, vadd, vscale, vcross, vsub, type V3 } from './nat_geom';
 
 // ------------------------------------------------------------------ palettes (sRGB)
 const BARK = 0x5b4532;
@@ -23,13 +23,11 @@ const PINE_UPPER = 0x9c6441;
 const PALM_BARK = 0x8c7659;
 const PALM_BARK_DARK = 0x6f5c45;
 
-const LEAF_OAK = [0x4d7b2d, 0x5a8534, 0x44732b, 0x3d6828];
-const LEAF_MAPLE = [0x5f8e37, 0xd4782a, 0xb8382a];
-const LEAF_MAPLE_ALT = [0x6c9a3c, 0xe2a23a, 0xcf5a2a];
-const LEAF_BIRCH = [0x729c40, 0x7ea545, 0x6a963e];
-const LEAF_PINE = [0x3f6a30, 0x3a6233, 0x46713a, 0x37602f];
-const LEAF_SPRUCE = [0x2c4e2c, 0x4b6558, 0x325831];
-const LEAF_PALM = [0x4f8030, 0x5a8a36, 0x4c7a33];
+const LEAF_OAK = [0x46692a, 0x53732f, 0x3d6127, 0x5b7a35];
+const LEAF_BIRCH = [0x62893b, 0x6b9040, 0x5a8138];
+const LEAF_PINE = [0x36552c, 0x33502e, 0x3d5c31, 0x304c29];
+const LEAF_SPRUCE = [0x2c4e2c, 0x335a33, 0x3b584c];
+const LEAF_PALM = [0x4a7430, 0x557c35, 0x46702f];
 const LEAF_CYPRESS = [0x34542d, 0x2f4d2b];
 
 // ------------------------------------------------------------------ shared tree parts
@@ -49,10 +47,23 @@ function branch(b: ModelBuilder, p0: V3, p1: V3, r0: number, r1: number, color: 
  * Broadleaf crown: 1 central blob + (n-1) satellite blobs around it, all shaded as one volume.
  * Returns the crown's vertical extent for tinting. 20 tris per blob.
  */
-function crown(b: ModelBuilder, rng: RNG, cx: number, cy: number, cz: number, rx: number, ry: number, n: number, colors: number[], o: { spread?: number; jitter?: number; topBlob?: boolean; flatTop?: number } = {}) {
+interface CrownOpts {
+  spread?: number;
+  jitter?: number;
+  topBlob?: boolean;
+  /** satellite blob vertical offset range, in units of ry */
+  yLo?: number;
+  yHi?: number;
+  /** fraction of faces darkened to fake canopy gaps (no extra tris) */
+  gaps?: number;
+  /** per-blob color override (blob index 0 = central, last = top blob when topBlob) */
+  blobColor?: (i: number, n: number) => number | null;
+}
+function crown(b: ModelBuilder, rng: RNG, cx: number, cy: number, cz: number, rx: number, ry: number, n: number, colors: number[], o: CrownOpts = {}) {
   const nc: V3 = [cx, cy - ry * 0.15, cz];
   const spread = o.spread ?? 0.46;
   const jitter = o.jitter ?? 0.16;
+  const yLo = o.yLo ?? -0.28, yHi = o.yHi ?? 0.08;
   const blobs: { c: V3; r: V3 }[] = [];
   blobs.push({ c: [cx, cy + ry * 0.08, cz], r: [rx * 0.7, ry * 0.8, rx * 0.7] });
   const sat = o.topBlob ? n - 2 : n - 1;
@@ -61,13 +72,16 @@ function crown(b: ModelBuilder, rng: RNG, cx: number, cy: number, cz: number, rx
     const a = a0 + (i / sat) * Math.PI * 2 + rng.range(-0.35, 0.35);
     const d = rx * spread * rng.range(0.85, 1.1);
     const s = rng.range(0.52, 0.66);
-    blobs.push({ c: [cx + Math.cos(a) * d, cy + ry * rng.range(-0.28, 0.08), cz + Math.sin(a) * d], r: [rx * s, ry * s * rng.range(0.9, 1.08), rx * s] });
+    blobs.push({ c: [cx + Math.cos(a) * d, cy + ry * rng.range(yLo, yHi), cz + Math.sin(a) * d], r: [rx * s, ry * s * rng.range(0.9, 1.08), rx * s] });
   }
   if (o.topBlob) blobs.push({ c: [cx + rng.range(-0.15, 0.15) * rx, cy + ry * 0.45, cz + rng.range(-0.15, 0.15) * rx], r: [rx * 0.5, ry * 0.5, rx * 0.5] });
-  for (const bl of blobs) {
-    b.paint(jitterHex(rng, rng.pick(colors), 0.1), Surf.Foliage);
-    leafBlob(b, rng, bl.c, bl.r, { jitter, soft: 0.62, nc });
-  }
+  blobs.forEach((bl, i) => {
+    const col = jitterHex(rng, o.blobColor?.(i, blobs.length) ?? rng.pick(colors), 0.1);
+    b.paint(col, Surf.Foliage);
+    const gaps = o.gaps ?? 0;
+    const dark = shadeHex(col, 0.8);
+    leafBlob(b, rng, bl.c, bl.r, { jitter, soft: 0.62, nc, faceColor: gaps > 0 ? () => (rng.chance(gaps) ? dark : null) : undefined });
+  });
 }
 
 // ------------------------------------------------------------------ builders
@@ -75,8 +89,8 @@ export const models: ModelBuilders = {
   // Broadleaf oak: stout trunk, forked branches, wide lumpy crown. 108 tris.
   tree_oak(b, v, rng) {
     const H = [11.5, 13, 9.5, 12.5][v] * rng.range(0.95, 1.04);
-    const wide = [1.0, 0.82, 1.22, 1.05][v];
-    const tTop = H * [0.44, 0.48, 0.4, 0.42][v];
+    const wide = [1.0, 0.95, 1.22, 1.05][v];
+    const tTop = H * [0.36, 0.4, 0.33, 0.37][v];
     const lean: V3 = [rng.range(-0.35, 0.35), tTop, rng.range(-0.35, 0.35)];
     const rT = [0.42, 0.38, 0.4, 0.5][v];
     trunk(b, lean, rT, rT * 0.62, v === 3 ? BARK_DARK : BARK, 6);
@@ -87,11 +101,11 @@ export const models: ModelBuilders = {
       const p1: V3 = [p0[0] + Math.cos(a) * H * 0.2 * wide, tTop + H * 0.16, p0[2] + Math.sin(a) * H * 0.2 * wide];
       branch(b, p0, p1, rT * 0.45, rT * 0.18, BARK);
     }
-    const ry = (H - tTop) * 0.56;
-    const rx = H * 0.36 * wide;
+    const ry = (H - tTop) * 0.5;
+    const rx = H * 0.42 * wide;
     const cy = H - ry * 0.95;
     const m = mark(b);
-    crown(b, rng, lean[0], cy, lean[2], rx, ry, 4, [LEAF_OAK[v], LEAF_OAK[(v + 1) % 4]]);
+    crown(b, rng, lean[0], cy, lean[2], rx, ry, 4, [LEAF_OAK[v], LEAF_OAK[(v + 1) % 4]], { spread: 0.55, jitter: 0.22, yLo: -0.35, yHi: 0.1, gaps: 0.25 });
     tintSince(b, m, foliageShade(cy - ry, cy + ry));
   },
 
@@ -103,21 +117,23 @@ export const models: ModelBuilders = {
     trunk(b, lean, 0.34, 0.22, v === 0 ? BARK : BARK_GREY, 5);
     const a = rng.range(0, Math.PI * 2);
     branch(b, [lean[0], tTop * 0.9, lean[2]], [lean[0] + Math.cos(a) * 1.6, tTop + 1.8, lean[2] + Math.sin(a) * 1.6], 0.17, 0.07, BARK);
-    const ry = (H - tTop) * 0.55;
-    const rx = H * 0.34;
-    const cy = H - ry;
+    const ry = (H - tTop) * 0.62;
+    const rx = H * 0.36;
+    const cy = H - ry * 0.95;
     const m = mark(b);
-    const cols = v === 0 ? [LEAF_MAPLE[0], LEAF_MAPLE_ALT[0]] : v === 1 ? [LEAF_MAPLE[1], LEAF_MAPLE_ALT[1], 0xc9642a] : [LEAF_MAPLE[2], LEAF_MAPLE_ALT[2], 0x9c2b24];
-    crown(b, rng, lean[0], cy, lean[2], rx, ry, 5, cols, { spread: 0.42, topBlob: true, jitter: 0.13 });
-    tintSince(b, m, foliageShade(cy - ry, cy + ry, 1, v === 0 ? 1 : 0.5));
+    const cols = v === 0 ? [0x4f7a36, 0x5a8139] : v === 1 ? [0xc0601c, 0xd5842a, 0xa84a18] : [0x9e2a1a, 0xb3401e, 0x7f2217];
+    // autumn: one off-colour straggler blob; red variant has the darkest blob on top
+    const blobColor = v === 0 ? undefined : (i: number, n: number) => (i === 2 ? (v === 1 ? 0x8f8a2c : 0xc0601c) : v === 2 && i === n - 1 ? 0x7f2217 : null);
+    crown(b, rng, lean[0], cy, lean[2], rx, ry, 5, cols, { spread: 0.42, topBlob: true, jitter: 0.13, blobColor });
+    tintSince(b, m, foliageShade(cy - ry, cy + ry, 1, v === 0 ? 1 : 0.2));
   },
 
   // Slender birch: white trunk (wood lines read as bark marks), narrow airy light-green crown. v2 twin-stem. 90-100 tris.
   tree_birch(b, v, rng) {
     const H = [11.5, 12.5, 10.5][v] * rng.range(0.95, 1.05);
     const stems: { top: V3; r: number }[] = v === 2
-      ? [{ top: [0.7, H * 0.8, 0.2], r: 0.16 }, { top: [-0.6, H * 0.72, -0.25], r: 0.14 }]
-      : [{ top: [rng.range(-0.4, 0.4), H * 0.84, rng.range(-0.4, 0.4)], r: 0.2 }];
+      ? [{ top: [0.7, H * 0.8, 0.2], r: 0.19 }, { top: [-0.6, H * 0.72, -0.25], r: 0.17 }]
+      : [{ top: [rng.range(-0.4, 0.4), H * 0.84, rng.range(-0.4, 0.4)], r: 0.24 }];
     b.paint(BIRCH_BARK, Surf.Wood);
     for (const s of stems) {
       if (stems.length > 1) limb(b, [[s.top[0] * 0.1, -0.4, s.top[2] * 0.1], s.top], [s.r, s.r * 0.45], { seg: 4 });
@@ -137,14 +153,14 @@ export const models: ModelBuilders = {
     const cx = (stems.length > 1 ? 0 : main[0] * 0.8), cz = (stems.length > 1 ? 0 : main[2] * 0.8);
     const nc: V3 = [cx, cy - H * 0.05, cz];
     b.paint(jitterHex(rng, LEAF_BIRCH[v], 0.06), Surf.Foliage);
-    leafBlob(b, rng, [cx, cy, cz], [1.75, H * 0.3, 1.6], { jitter: 0.15, soft: 0.6, nc });
+    leafBlob(b, rng, [cx, cy, cz], [2.2, H * 0.27, 2.0], { jitter: 0.24, soft: 0.6, nc });
     const a0 = rng.range(0, Math.PI * 2);
     for (let i = 0; i < 3; i++) {
       const a = a0 + i * 2.1 + rng.range(-0.3, 0.3);
-      const y = H * (0.47 + 0.09 * i) + rng.range(-0.3, 0.3);
-      const d = 1.35 - 0.12 * i;
+      const y = H * (0.44 + 0.1 * i) + rng.range(-0.3, 0.3);
+      const d = 1.9 - 0.15 * i;
       b.paint(jitterHex(rng, LEAF_BIRCH[(v + i) % 3], 0.08), Surf.Foliage);
-      leafBlob(b, rng, [cx + Math.cos(a) * d, y, cz + Math.sin(a) * d], [1.2 - 0.1 * i, 1.6, 1.15 - 0.1 * i], { jitter: 0.18, soft: 0.6, nc });
+      leafBlob(b, rng, [cx + Math.cos(a) * d, y, cz + Math.sin(a) * d], [1.45 - 0.1 * i, 1.5, 1.35 - 0.1 * i], { jitter: 0.24, soft: 0.6, nc });
     }
     tintSince(b, m, foliageShade(y0, y1, 0.9, 0.3));
   },
@@ -167,16 +183,24 @@ export const models: ModelBuilders = {
     for (let k = 0; k < nT; k++) {
       const t = k / nT;
       const y = yb + span * t * 0.92;
-      const r = R * (1 - 0.55 * t) * rng.range(0.9, 1.08);
-      const h = k === nT - 1 ? H - y : span / nT * 1.35;
-      const ox = lx * (y / H) + rng.range(-0.25, 0.25), oz = lz * (y / H) + rng.range(-0.25, 0.25);
+      const r = R * (1 - 0.45 * t) * rng.range(0.85, 1.12);
+      const h = k === nT - 1 ? Math.min(H - y, (span / nT) * 1.1) : (span / nT) * 1.35;
+      const ox = lx * (y / H) + rng.range(-0.6, 0.6), oz = lz * (y / H) + rng.range(-0.6, 0.6);
       b.paint(jitterHex(rng, leaf, 0.08), Surf.Foliage);
       tier(b, rng, ox, oz, y, h, r, { n: 8, droop: r * 0.28, jag: 0.62, under: mixHex(leaf, 0x1a2418, 0.45), lean: [rng.range(-0.2, 0.2), rng.range(-0.2, 0.2)] });
+    }
+    if (v === 0 || v === 2) {
+      // one offset side tier breaks the symmetric stack (+16 tris)
+      const a = rng.range(0, Math.PI * 2);
+      const y = yb + span * 0.35;
+      const r = R * 0.55;
+      b.paint(jitterHex(rng, leaf, 0.08), Surf.Foliage);
+      tier(b, rng, lx * (y / H) + Math.cos(a), lz * (y / H) + Math.sin(a), y, (span / nT) * 1.1, r, { n: 8, droop: r * 0.3, jag: 0.62, under: mixHex(leaf, 0x1a2418, 0.45) });
     }
     tintSince(b, m, foliageShade(yb - 1, H, 0.8));
   },
 
-  // Dense conical spruce, tiers from near the ground; v1 blue spruce. 90 tris.
+  // Dense conical spruce, tiers from near the ground; v1 tall green, v2 muted blue spruce. 90 tris.
   tree_spruce(b, v, rng) {
     const H = [11.5, 14, 9][v] * rng.range(0.95, 1.05);
     trunk(b, [0, 1.6, 0], 0.3, 0.22, BARK_DARK, 5);
@@ -223,10 +247,11 @@ export const models: ModelBuilders = {
       const d: V3 = [Math.cos(a), 0, Math.sin(a)];
       const s: V3 = [-Math.sin(a), 0, Math.cos(a)];
       const upper = k % 2 === 0;
+      const dead = k === 1; // one old, dry, hanging frond
       const len = L * rng.range(0.88, 1.08) * (upper ? 0.92 : 1.05);
       // spine: base -> rising -> arching -> drooping tip
       const rise = (v === 1 ? 0.5 : 0.34) * (upper ? 1.25 : 0.8);
-      const droop = (v === 1 ? 0.3 : 0.55) * (upper ? 0.8 : 1.15);
+      const droop = (v === 1 ? 0.3 : 0.55) * (upper ? 0.8 : 1.15) * (dead ? 1.6 : 1);
       const sp: V3[] = [
         vadd(top, vadd(vscale(d, 0.15), [0, 0.2, 0])),
         vadd(top, vadd(vscale(d, len * 0.36), [0, len * rise * 0.55, 0])),
@@ -234,7 +259,7 @@ export const models: ModelBuilders = {
         vadd(top, vadd(vscale(d, len), [0, len * (rise * 0.4 - droop), 0])),
       ];
       const ws = [0.14, len * 0.17, len * 0.13, 0];
-      b.paint(jitterHex(rng, leaf, 0.1), Surf.Foliage);
+      b.paint(jitterHex(rng, dead ? 0x8a7648 : leaf, 0.1), Surf.Foliage);
       for (let i = 0; i < 3; i++) {
         const up = frondUp(sp[i], sp[i + 1]);
         const Lp0 = vadd(sp[i], vadd(vscale(s, ws[i]), [0, -ws[i] * 0.45, 0])), Rp0 = vadd(sp[i], vadd(vscale(s, -ws[i]), [0, -ws[i] * 0.45, 0]));
@@ -270,11 +295,11 @@ export const models: ModelBuilders = {
     tintSince(b, m, foliageShade(0, H, 0.8));
   },
 
-  // v0/v1 saguaro with arms (flat-shaded ribs), v2 agave rosettes with a century-plant flower stalk. 80-110 tris.
+  // v0/v1 saguaro with arms (flat-shaded ribs), v2 barrel-cactus cluster in bloom. 80-112 tris.
   tree_cactus(b, v, rng) {
     if (v < 2) {
       const H = [5.2, 6.2][v] * rng.range(0.95, 1.05);
-      const col = [0x5b7c43, 0x66864a][v];
+      const col = [0x4b6a3a, 0x557241][v];
       b.paint(col, Surf.Plain);
       limb(b, [[0, -0.3, 0], [0, H - 0.4, 0]], [0.4, 0.36], { seg: 8, smooth: false });
       lathe(b, 0, 0, [[0.36, H - 0.4], [0, H]], 8, { smooth: false });
@@ -291,65 +316,45 @@ export const models: ModelBuilders = {
       }
       return;
     }
-    // agave (century plant): big blue-green rosette + a pup, tall flower stalk with golden flower clusters
-    const leafC = 0x7d9a86;
-    const rosette = (cx: number, cz: number, n: number, len: number, rng2: RNG) => {
-      const a0 = rng2.range(0, Math.PI * 2);
-      for (let k = 0; k < n; k++) {
-        const a = a0 + (k / n) * Math.PI * 2 + rng2.range(-0.2, 0.2);
-        const el = (k % 2 ? 0.95 : 0.5) + rng2.range(-0.12, 0.12);
-        const l = len * rng2.range(0.8, 1.1);
-        const d: V3 = [Math.cos(a) * Math.cos(el), Math.sin(el), Math.sin(a) * Math.cos(el)];
-        const s: V3 = [-Math.sin(a), 0, Math.cos(a)];
-        const B: V3 = [cx, 0.05, cz];
-        const T = vadd(B, vscale(d, l));
-        const M = vadd(vadd(B, vscale(d, l * 0.32)), [0, 0.06, 0]);
-        const w = l * 0.16;
-        const Lp = vadd(M, vscale(s, w)), Rp = vadd(M, vscale(s, -w));
-        b.paint(jitterHex(rng2, leafC, 0.08), Surf.Plain);
-        const nUp = vnorm(vcross(vsub(Lp, B), vsub(T, B)));
-        const n1 = nUp[1] >= 0 ? nUp : vscale(nUp, -1);
-        triOut(b, B, Lp, T, n1); triOut(b, B, T, Rp, n1);
-        triOut(b, B, Lp, T, vscale(n1, -1)); triOut(b, B, T, Rp, vscale(n1, -1));
+    // barrel-cactus cluster: 4 ribbed (flat-shaded 8-seg) barrels with domed caps, 2 golden flower crowns. 112 tris.
+    const spots: [number, number, number, number][] = [[0, 0, 0.55, 1.3], [0.95, 0.35, 0.42, 0.85], [-0.55, 0.8, 0.38, 0.7], [0.3, -0.95, 0.35, 0.6]];
+    spots.forEach(([x, z, r, h], i) => {
+      const c = jitterHex(rng, 0x5a7440, 0.07);
+      b.paint(c, Surf.Plain);
+      const rr = r * rng.range(0.95, 1.05), hh = h * rng.range(0.95, 1.05);
+      limb(b, [[x, -0.2, z], [x, hh, z]], [rr * 0.9, rr], { seg: 8, smooth: false, rot: i * 0.3 });
+      lathe(b, x, z, [[rr, hh], [0, hh + rr * 0.45]], 8, { smooth: false });
+      if (i < 2) {
+        b.paint(0xd9a030, Surf.Plain);
+        octa(b, [x, hh + rr * 0.45, z], rr * 0.4, 0.13);
       }
-    };
-    rosette(0, 0, 11, 2.1, rng);
-    rosette(1.9, 0.9, 6, 1.0, rng.fork('pup'));
-    const H = 5.6 * rng.range(0.92, 1.05);
-    b.paint(0x7c7448, Surf.Wood);
-    limb(b, [[0, 0.2, 0], [0.12, H * 0.55, 0.05], [0.25, H - 0.3, 0.1]], [0.12, 0.08, 0.04], { seg: 4 });
-    for (let i = 0; i < 4; i++) {
-      const t = 0.6 + i * 0.11;
-      const a = rng.range(0, Math.PI * 2);
-      b.paint(i % 2 ? 0xd9b440 : 0xc49e30, Surf.Foliage);
-      octa(b, [0.25 * t + Math.cos(a) * 0.4, H * t, 0.1 * t + Math.sin(a) * 0.4], 0.5 - i * 0.05, 0.28);
-    }
+    });
   },
 
-  // Shrubs: v0 green round, v1 pink azalea in bloom, v2 tall lilac, v3 low dark evergreen spread. 60-80 tris.
+  // Shrubs: v0 green round, v1 low dark evergreen spread, v2 pink azalea in bloom, v3 lilac. 4 blobs, 80 tris.
   bush(b, v, rng) {
-    const H = [1.6, 1.35, 2.2, 1.0][v] * rng.range(0.92, 1.08);
-    const base = [0x4f7d32, 0x4a7a33, 0x557f36, 0x355b2c][v];
-    const flower = [0, 0xd8709e, 0xa487c9, 0][v];
-    const n = v === 3 ? 4 : 3;
-    const W = [1.2, 1.1, 1.2, 1.5][v];
+    const H = [1.6, 1.0, 1.35, 2.2][v] * rng.range(0.92, 1.08);
+    const base = [0x4f7d32, 0x355b2c, 0x4a7a33, 0x557f36][v];
+    const flower = [0, 0, 0xc26a8e, 0x9a82b8][v];
+    const n = 4;
+    const W = [1.2, 1.5, 1.1, 1.2][v];
     const m = mark(b);
     const nc: V3 = [0, H * 0.4, 0];
     const a0 = rng.range(0, Math.PI * 2);
     for (let i = 0; i < n; i++) {
       const a = a0 + (i / n) * Math.PI * 2 + rng.range(-0.3, 0.3);
       const d = i === 0 ? 0 : W * 0.5;
-      const s = i === 0 ? 1 : rng.range(0.7, 0.85);
+      const s = i === 0 ? 1 : rng.range(0.68, 0.82);
       const ry = H * 0.55 * s;
-      const c: V3 = [Math.cos(a) * d, ry * 0.85 - 0.08, Math.sin(a) * d];
+      const c: V3 = [Math.cos(a) * d, ry * 0.85 - 0.18, Math.sin(a) * d];
       b.paint(jitterHex(rng, base, 0.1), Surf.Foliage);
       leafBlob(b, rng, c, [W * 0.75 * s, ry, W * 0.72 * s], {
-        jitter: 0.18,
+        jitter: 0.22,
         soft: 0.6,
         nc,
-        floorY: -0.05,
-        // blossoms cover the sunny upper faces; lower faces stay leafy green
-        faceColor: flower ? (_i, _cen, nrm) => (nrm[1] > 0.05 + rng.range(-0.25, 0.25) ? mixHex(jitterHex(rng, flower, 0.07), base, rng.range(0, 0.3)) : null) : undefined,
+        floorY: -0.3,
+        // blossoms only on the sunny upper faces; lower faces stay leafy green
+        faceColor: flower ? (_i, _cen, nrm) => (nrm[1] > 0.25 ? mixHex(jitterHex(rng, flower, 0.07), base, rng.range(0, 0.3)) : null) : undefined,
       });
     }
     tintSince(b, m, foliageShade(0, H, 0.9));
@@ -359,27 +364,29 @@ export const models: ModelBuilders = {
   rock(b, v, rng) {
     const greys = [0x6e6c67, 0x6b6056, 0x74706a, 0x5d5b56];
     const moss = 0x56693a;
-    const rockBlob = (c: V3, r: V3, detail: number, col: number, mossy: number) => {
+    const rockBlob = (c: V3, r: V3, detail: number, col: number, mossy: number, floorY: number) => {
       b.paint(jitterHex(rng, col, 0.05), Surf.Plain);
       leafBlob(b, rng, c, r, {
         detail,
         jitter: detail ? 0.14 : 0.22,
         soft: 0.22,
-        floorY: -0.05,
+        floorY,
         faceColor: (_i, _c, nrm) => (nrm[1] > 0.5 && rng.chance(mossy) ? mixHex(col, moss, rng.range(0.4, 0.8)) : rng.chance(0.3) ? jitterHex(rng, col, 0.12) : null),
       });
     };
-    if (v === 0) rockBlob([0, 0.35, 0], [1.3, 0.85, 1.05], 1, greys[0], 0.15);
+    // buried 30-40%: centres sunk by 0.35 ry, bottoms squashed at -0.45 ry
+    const R = (c: V3, r: V3, detail: number, col: number, mossy: number) => rockBlob([c[0], c[1] - 0.35 * r[1], c[2]], r, detail, col, mossy, -0.45 * r[1]);
+    if (v === 0) R([0, 0.35, 0], [1.3, 0.85, 1.05], 1, greys[0], 0.15);
     else if (v === 1) {
-      rockBlob([0, 0.5, 0], [1.1, 1.0, 0.95], 0, greys[1], 0.1);
-      rockBlob([1.3, 0.2, 0.5], [0.7, 0.55, 0.6], 0, greys[1], 0.1);
-      rockBlob([-0.6, 0.15, 1.1], [0.55, 0.4, 0.5], 0, greys[0], 0.1);
-    } else if (v === 2) rockBlob([0, 1.1, 0], [2.4, 2.0, 1.9], 1, greys[2], 0.12);
+      R([0, 0.5, 0], [1.1, 1.0, 0.95], 0, greys[1], 0.1);
+      R([1.3, 0.2, 0.5], [0.7, 0.55, 0.6], 0, greys[1], 0.1);
+      R([-0.6, 0.15, 1.1], [0.55, 0.4, 0.5], 0, greys[0], 0.1);
+    } else if (v === 2) R([0, 1.24, 0], [2.4, 2.4, 1.9], 1, greys[2], 0.12);
     else {
-      rockBlob([0, 0.45, 0], [1.4, 0.95, 1.1], 0, greys[3], 0.85);
-      rockBlob([1.4, 0.2, -0.7], [0.8, 0.55, 0.7], 0, greys[3], 0.85);
+      R([0, 0.45, 0], [1.4, 0.95, 1.1], 0, greys[3], 0.85);
+      R([1.4, 0.2, -0.7], [0.8, 0.55, 0.7], 0, greys[3], 0.85);
     }
-    const top = v === 2 ? 3 : 1.4;
+    const top = v === 2 ? 3.0 : 1.0;
     tintSince(b, 0, (p) => {
       const k = 0.62 + 0.38 * Math.min(1, Math.max(0, p[1] / top));
       return [k, k, k];

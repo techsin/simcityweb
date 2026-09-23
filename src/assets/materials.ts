@@ -15,8 +15,11 @@
  * Emissive (Surf.Emissive, surf.y): 0 default intensity; 1..8 intensity x pattern/4 (4 = default, 2 = half, 8 = double);
  *   9 = ground light pool: paint it ~0.7x the surrounding ground color -> plain pavement by day (no tint),
  *       warm lamp-lit pavement at night.
- * Plain glass (Surf.GlassPlain, surf.y): 0 storefront / small windows (warm lit at night); 1 vehicle glass (dark,
- *   reflective, never glows).
+ * Plain glass (Surf.GlassPlain, surf.y): 0 storefront / house windows (per-window lit state follows the time-of-day
+ *   lit fraction, ~2.5 x 2.8 m cells); 1 vehicle glass (dark, reflective, never glows).
+ * Metal (Surf.Metal, surf.y): 0 bare metal (tanks, pipes, rails); 1 solid car paint (rough 0.40, metal 0.15);
+ *   2 metallic car paint (rough 0.32, metal 0.50).
+ * Foliage (Surf.Foliage): wind sway above 1.5 m; per-plant hue/value + stand-scale tint from the instance position.
  *
  * Facade coordinates: planar walls use the horizontal distance along the wall; smooth-shaded CURVED walls
  * (cylinders / drums / round towers built with smooth normals) automatically switch to the arc length around the
