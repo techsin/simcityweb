@@ -1,24 +1,34 @@
 /**
- * Traffic & transit system — commute / shopping / freight trip generation, congestion-aware assignment, mode choice.
+ * Traffic & transit system — commute / shopping / freight trip generation, capacity-constrained job matching,
+ * congestion-aware assignment, mode choice.
  *
- * MODEL (one "cycle" = one full assignment, every TRAFFIC_CYCLE_DAYS days, time-sliced into phases):
+ * MODEL (one "cycle" = one full assignment, started every TRAFFIC_CYCLE_DAYS days, executed as small steps by the
+ * shared InfraScheduler — see scheduler.ts):
  *  PREP     rebuild graphs when the network changed; snapshot origins (R buildings: workers = pop * 0.55), job sites
  *           (C / I capacity, plopped def.jobs, + neighbour connections as regional job sources), stops, node times
  *           from the smoothed volumes (BPR: t = t0 * (1 + 0.15 (v/c)^4)).
- *  COMMUTE  reverse multi-source Dijkstra on the road graph from every job site entry node, seeded with the job's
- *           shadow price (capacity constraint) -> every road node knows its best job + generalized cost + next hop.
  *  TRANSIT  reverse multi-source Dijkstra on the multimodal transit net (bus riding on roads, rail, subway, transfers)
- *           seeded at stops within walking distance of job sites.
- *  MODE     per origin multinomial logit car / transit / walk (wealth biases, ordinances); inject car flows and riders,
- *           accumulate along the shortest-path forests in O(n); job loads -> shadow price update; employment access.
- *  INBOUND  forward Dijkstra from neighbour connections: regional workers fill vacant jobs (connection capacities).
- *  SHOP     reverse Dijkstra from commercial services; residents' shopping trips (off-peak weighted).
- *  FREIGHT  reverse Dijkstra from freight sinks (road connections, freight stations, seaports, airports); trucks.
+ *           seeded at stops within walking distance of job sites -> each origin's best transit option.
+ *  ROUNDS   capacity-constrained matching (successive filling, up to MATCH_ROUNDS rounds, 2 steps each):
+ *           search = reverse multi-source Dijkstra from every job site that still has capacity this round;
+ *           match  = every origin with unassigned workers proposes to its nearest open site; proposals are accepted
+ *           nearest-first up to the site's remaining capacity. The first MATCH_PROP_ROUNDS rounds cap each site at
+ *           its proportional share (slots x min(1, 1.15 x workers / slots)) so that with surplus jobs sites fill
+ *           proportionally instead of "nearest full, far empty"; later rounds allow full capacity.
+ *           Seeds carry a persistent shadow price per site (minutes, tatonnement on first-round excess demand), so
+ *           catchments match capacities after a few cycles and the rounds only clean up the remainder.
+ *           Each accepted piece gets a car / transit / walk split (multinomial logit on times, wealth biases,
+ *           ordinance effects); car flows are accumulated along that round's shortest-path forest in O(n).
+ *  COMMUTE  transit riders accumulated on the transit forest (bus PCU on roads, rail / subway riders); per-origin
+ *           employment access, commute times, mode shares.
+ *  INBOUND  forward Dijkstra from neighbour connections: regional workers fill still-vacant jobs (connection caps).
+ *  SHOP     reverse Dijkstra from commercial services; residents' shopping trips (off-peak weighted). \ every 2nd
+ *  FREIGHT  reverse Dijkstra from freight sinks (road connections, freight stations, seaports, airports); trucks. / cycle
  *  FINAL    MSA blend of volumes (equilibrium across cycles), write layers / flags / stats, sample routes.
  *
  * OUTPUTS: state.traffic (PCU trips/day per road cell; riders/day on rail cells), state.congestion (v/c),
  *   state.commute (minutes on residential building cells), stats.avgCommute / avgTraffic / tripsCar / tripsTransit /
- *   tripsWalk, BF.NoJobs (residential: < 35 % of workers can reach a job), BF.Congested (entry road v/c > 1).
+ *   tripsWalk, BF.NoJobs (residential: < 35 % of workers matched to a job), BF.Congested (entry road v/c > 1).
  * API (TrafficSystem, get via getTraffic(sim)):
  *   getSampleRoutes(max), routeInfo(buildingId), workerAccess(id), jobFill(id), freightAccess(id), customers(id),
  *   commuteOf(id), findPath(fromCell, toCell), pushServiceRoute(cells, weight, days), accessById / jobFillById arrays.
@@ -36,13 +46,14 @@ import { GridGraph, RoadGraph, findNeighborConnections, perimeterNodes, type Nei
 import { MinHeap } from './heap';
 import {
   BPR_ALPHA, BPR_MAX_FACTOR, BUS_PCU_PER_RIDER, BUS_TIME_FACTOR, CAR_BIAS, CAR_OCCUPANCY, CAR_OVERHEAD,
-  CONNECTION_JOBS, CONNECTION_WORKERS, FREIGHT_PER_JOB, MAX_COMMUTE, MODE_BETA, MSA_MIN_ALPHA, NET_CAPACITY, NET_TIME, PRICE_DOWN,
-  PRICE_MAX, PRICE_UP, REGIONAL_FILL, REGIONAL_TIME, SHOP_PCU_WEIGHT, SHOP_TRIPS_PER_RES, STOP_CAP_BUS,
+  CONNECTION_JOBS, CONNECTION_WORKERS, FREIGHT_PER_JOB, MAX_COMMUTE, MODE_BETA, MSA_MIN_ALPHA, NET_CAPACITY, NET_TIME,
+  REGIONAL_FILL, REGIONAL_TIME, SHOP_PCU_WEIGHT, SHOP_TRIPS_PER_RES, STOP_CAP_BUS,
   STOP_CAP_SUBWAY, STOP_CAP_TRAIN, STOP_WALK_RADIUS, STOP_WALK_TIME_PER_CELL, SUBWAY_TIME, TRAFFIC_CYCLE_DAYS,
-  TRAFFIC_FRAME_BUDGET_MS, TRAFFIC_MIN_CYCLE_MS, TRANSIT_BIAS, TRUCK_PCU, WAIT_BUS, WAIT_SUBWAY, WAIT_TRAIN, WALK_BIAS, WALK_MAX_CELLS,
-  WALK_TIME_PER_CELL, WORKER_SHARE, DEST_NOISE, RESULT_SMOOTH, LOAD_SMOOTH, REGION_JOB_MIN, REGION_JOB_SHARE, REGION_WORKER_MIN,
-  REGION_WORKER_SHARE,
+  TRAFFIC_MIN_CYCLE_MS, TRANSIT_BIAS, TRUCK_PCU, WAIT_BUS, WAIT_SUBWAY, WAIT_TRAIN, WALK_BIAS, WALK_MAX_CELLS,
+  WALK_TIME_PER_CELL, WORKER_SHARE, DEST_NOISE, RESULT_SMOOTH, REGION_JOB_MIN, REGION_JOB_SHARE, REGION_WORKER_MIN,
+  REGION_WORKER_SHARE, MATCH_ROUNDS, MATCH_PROP_ROUNDS, MATCH_PROP_SLACK, MATCH_PRICE_STEP_REL, MATCH_PRICE_STEP_MIN, MATCH_PRICE_MAX,
 } from './params';
+import { schedulerOf, type InfraTask } from './scheduler';
 import { Search, Seeds, accumulate, roadSearch, transitSearch, type TransitNet } from './search';
 import { collectStops, type StopList } from './transit';
 
@@ -66,8 +77,10 @@ export interface RouteInfo {
   jobsReached: number;
 }
 
-const PH_PREP = 0, PH_COMMUTE = 1, PH_TRANSIT = 2, PH_MODE = 3, PH_INBOUND = 4, PH_SHOP = 5, PH_FREIGHT = 6, PH_FINAL = 7;
-const PHASES = 8;
+const PH_PREP = 0, PH_TRANSIT = 1, PH_RSEARCH = 2, PH_RMATCH = 3, PH_COMMUTE = 4, PH_INBOUND = 5, PH_SHOP = 6, PH_FREIGHT = 7, PH_FINAL = 8;
+const PHASES = 9;
+/** estimated ms per phase on the reference 256² stress city (scaled by graph / building counts) */
+const PHASE_COST = [2.2, 2.3, 2.4, 1.6, 0.8, 2.7, 2.3, 2.1, 3.2];
 const MAX_ENTRIES = 12;
 const MODE_NAMES = ['none', 'car', 'transit', 'walk'];
 const IND_KEYS = ['IA', 'ID', 'IM', 'IHT'] as const;
@@ -105,7 +118,6 @@ export class TrafficSystem implements SimSystem {
   // scheduling
   private phase = -1;
   private lastCycleStart = -1e9;
-  private lastFrameMs = -1e9;
   private lastCycleMs0 = -1e9;
   /** cycles since graph rebuild (MSA) */
   private iter = 0;
@@ -153,24 +165,41 @@ export class TrafficSystem implements SimSystem {
   private oShW: Float32Array<ArrayBuffer> = new Float32Array(0);
   private oTime: Float32Array<ArrayBuffer> = new Float32Array(0);
   private oEmp: Float32Array<ArrayBuffer> = new Float32Array(0);
-  private oJobA: Int32Array<ArrayBuffer> = new Int32Array(0);
   private oJobT: Int32Array<ArrayBuffer> = new Int32Array(0);
   // job sites (buildings then connections)
   private jN = 0;
   private jB = 0; // number of building job sites (connections follow)
   private jBid: Int32Array<ArrayBuffer> = new Int32Array(0);
   private jSlots: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** small destination preference noise (minutes) of this cycle (tie breaking / route variety) */
+  private jNoise: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** workers matched this cycle (all modes) */
+  private jAsg: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** proportional-share capacity for the first matching rounds */
+  private jCapP: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** shadow price (minutes) shaping catchments across cycles; round-0 proposals (excess demand signal) */
   private jPrice: Float32Array<ArrayBuffer> = new Float32Array(0);
-  /** price + destination preference noise used for this cycle's seeds */
-  private jPen: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** job cluster of each job site (sites sharing their primary road entry node), -1 = unreachable */
+  private jQ: Int32Array<ArrayBuffer> = new Int32Array(0);
+  // job clusters: the matching works on clusters (co-located sites would otherwise shadow each other)
+  private qN = 0;
+  private qNode: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private qSlots: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private qCapP: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private qAsg: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private qPrice: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private qProp: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private qBase: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private qNoise: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private qTimeSum: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private nodeQ: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private priceById: Float32Array<ArrayBuffer> = new Float32Array(1024);
+  private connPrice: Float32Array<ArrayBuffer> = new Float32Array(0);
   private jBase: Float32Array<ArrayBuffer> = new Float32Array(0);
   private jEntS: Int32Array<ArrayBuffer> = new Int32Array(0);
   private jEntC: Uint8Array<ArrayBuffer> = new Uint8Array(0);
   private jCell: Int32Array<ArrayBuffer> = new Int32Array(0);
   private jHalf: Uint8Array<ArrayBuffer> = new Uint8Array(0);
-  private jLoad: Float32Array<ArrayBuffer> = new Float32Array(0);
-  /** MSA-smoothed job loads (the all-or-nothing assignment herds whole catchments; averages represent the split) */
-  private jLoadS: Float32Array<ArrayBuffer> = new Float32Array(0);
   private jTimeSum: Float32Array<ArrayBuffer> = new Float32Array(0);
   private jInbound: Float32Array<ArrayBuffer> = new Float32Array(0);
   private jRailNode: Int32Array<ArrayBuffer> = new Int32Array(0);
@@ -193,7 +222,6 @@ export class TrafficSystem implements SimSystem {
   private kLabel: Float32Array<ArrayBuffer> = new Float32Array(0);
   // connections
   private conns: NeighborConn[] = [];
-  private connPrice: Float32Array<ArrayBuffer> = new Float32Array(0);
   // stops
   private stops: StopList = { n: 0, bid: new Int32Array(64), mode: new Uint8Array(64), cell: new Int32Array(64) };
   private stAttS: Int32Array<ArrayBuffer> = new Int32Array(0);
@@ -214,11 +242,31 @@ export class TrafficSystem implements SimSystem {
   private busTimeA: Float32Array<ArrayBuffer> = new Float32Array(0);
   private regionWorkerCap = 0;
 
-  // persistent by building id
-  private priceById: Float32Array<ArrayBuffer> = new Float32Array(1024);
-  private loadById: Float32Array<ArrayBuffer> = new Float32Array(1024).fill(-1);
-  private connLoad: Float32Array<ArrayBuffer> = new Float32Array(0);
-  /** residential: share of workers reaching a job (0..1); -1 = unknown. Index = building id. */
+  // matching state (per origin)
+  private oU: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oAsg: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oTimeSum: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oCarW: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oTrW: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oWalkW: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oTrT: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oBoardStop: Int32Array<ArrayBuffer> = new Int32Array(0);
+  /** distance (pure minutes) to the nearest open job cluster in the last round the origin took part in */
+  private oLastD: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private candKey: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private candNode: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private round = 0;
+  private propFactor = 1;
+  private roundAccepted = 0;
+  /** shopping / freight volumes are recomputed every 2nd cycle; cached per road node in between */
+  private volShop: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private volFreight: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private sfVersion = -1;
+  private sfRecompute = true;
+  private truckRoutes: SampleRoute[] = [];
+  private task: InfraTask | null = null;
+
+  // persistent by building id  /** residential: share of workers reaching a job (0..1); -1 = unknown. Index = building id. */
   accessById: Float32Array<ArrayBuffer> = new Float32Array(1024).fill(-1);
   /** job sites: filled share of job slots by reachable workers (local + regional), 0..1; -1 unknown */
   jobFillById: Float32Array<ArrayBuffer> = new Float32Array(1024).fill(-1);
@@ -268,41 +316,62 @@ export class TrafficSystem implements SimSystem {
     this.phase = -1;
     this.iter = 0;
     this.cycles = 0;
-    this.priceById.fill(0);
-    this.loadById.fill(-1);
-    this.connLoad = new Float32Array(sim.state.cells).fill(-1);
     this.accessById.fill(-1);
+    this.priceById.fill(0);
+    this.connPrice = new Float32Array(sim.state.cells);
     this.jobFillById.fill(-1);
     this.freightById.fill(-1);
     this.stLoadPrev.clear();
     this.serviceRoutes = [];
     this.routes = [];
-    this.connPrice = new Float32Array(sim.state.cells);
+    this.sfVersion = -1;
+    this.truckRoutes = [];
     this.rngState = (sim.state.config.seed ^ 0x51ed27) >>> 0 || 1;
+    // steps are executed by the shared infra scheduler
+    const self = this;
+    this.task = {
+      name: 'traffic',
+      due: () => self.phase >= 0,
+      urgent: () => false,
+      cost: () => self.stepCost(),
+      step: (s) => self.step(s),
+    };
+    schedulerOf(sim).register(this.task);
     // warm start so layers exist right after load / new city
     if (sim.state.buildings.size > 0 || sim.state.network.some((v) => v !== 0)) this.runCycleSync(sim);
   }
 
-  daily(sim: Simulation): void {
+  /** estimated cost (ms) of the next step */
+  stepCost(): number {
+    const ph = this.phase < 0 ? PH_PREP : this.phase;
+    const road = Math.max(0.05, this.road.n / 36000);
+    const bld = Math.max(0.05, (this.oN + this.jN) / 20000);
+    const base = PHASE_COST[ph];
+    if (ph === PH_PREP || ph === PH_RMATCH || ph === PH_COMMUTE) return base * (0.3 * road + 0.7 * bld);
+    if ((ph === PH_SHOP || ph === PH_FREIGHT) && !this.sfRecompute) return 0.1;
+    return base * (0.8 * road + 0.2 * bld);
+  }
+
+  /** start a new cycle every TRAFFIC_CYCLE_DAYS sim days (with a live renderer at most every TRAFFIC_MIN_CYCLE_MS) */
+  private maybeStart(sim: Simulation): void {
+    if (this.phase >= 0) return;
     const st = sim.state;
+    if (st.day - this.lastCycleStart < TRAFFIC_CYCLE_DAYS) return;
     const now = nowMs();
-    const framesActive = now - this.lastFrameMs < 750;
-    // new cycle every TRAFFIC_CYCLE_DAYS sim days (and, with a live renderer, at most every TRAFFIC_MIN_CYCLE_MS)
-    if (this.phase < 0 && st.day - this.lastCycleStart >= TRAFFIC_CYCLE_DAYS && (!framesActive || now - this.lastCycleMs0 >= TRAFFIC_MIN_CYCLE_MS)) {
-      this.phase = PH_PREP;
-      this.lastCycleStart = st.day;
-      this.lastCycleMs0 = now;
-    }
-    if (this.phase < 0) return;
-    if (!framesActive) this.step(sim);
-    else if (st.day - this.lastCycleStart > TRAFFIC_CYCLE_DAYS * 4) while (this.phase >= 0) this.step(sim);
+    if (schedulerOf(sim).framesActive && now - this.lastCycleMs0 < TRAFFIC_MIN_CYCLE_MS) return;
+    this.phase = PH_PREP;
+    this.lastCycleStart = st.day;
+    this.lastCycleMs0 = now;
+  }
+
+  daily(sim: Simulation): void {
+    this.maybeStart(sim);
+    schedulerOf(sim).tickDay(sim);
   }
 
   frame(sim: Simulation, _dt: number): void {
-    this.lastFrameMs = nowMs();
-    if (this.phase < 0) return;
-    const t0 = this.lastFrameMs;
-    do this.step(sim); while (this.phase >= 0 && nowMs() - t0 < TRAFFIC_FRAME_BUDGET_MS * 0.5);
+    this.maybeStart(sim);
+    schedulerOf(sim).tickFrame(sim, this);
   }
 
   /** run one full assignment synchronously (tests / load) */
@@ -421,21 +490,26 @@ export class TrafficSystem implements SimSystem {
   }
 
   // ------------------------------------------------------------------------------------------ scheduling
-  private step(sim: Simulation): void {
-    const t0 = nowMs();
+  /** run one step of the current cycle (no-op when idle) */
+  step(sim: Simulation): void {
     const ph = this.phase;
+    if (ph < 0) return;
+    const t0 = nowMs();
+    if (ph === PH_PREP) this.phaseMs.fill(0);
+    let next = ph + 1;
     switch (ph) {
       case PH_PREP: this.prep(sim); break;
-      case PH_COMMUTE: this.commute(); break;
       case PH_TRANSIT: this.transit(); break;
-      case PH_MODE: this.modeChoice(); break;
+      case PH_RSEARCH: this.roundSearch(); break;
+      case PH_RMATCH: next = this.roundMatch(); break;
+      case PH_COMMUTE: this.commuteEnd(); break;
       case PH_INBOUND: this.inbound(); break;
       case PH_SHOP: this.shopping(); break;
       case PH_FREIGHT: this.freight(); break;
       case PH_FINAL: this.finalize(sim); break;
     }
-    this.phaseMs[ph] = nowMs() - t0;
-    this.phase = ph + 1 >= PHASES ? -1 : ph + 1;
+    this.phaseMs[ph] += nowMs() - t0;
+    this.phase = next >= PHASES ? -1 : next;
     if (this.phase < 0) {
       let s = 0;
       for (let i = 0; i < PHASES; i++) s += this.phaseMs[i];
@@ -459,7 +533,6 @@ export class TrafficSystem implements SimSystem {
     this.subway.build(st.size, (i) => sub[i] !== 0);
     this.graphDirty = false;
     this.iter = 0;
-    if (this.connPrice.length !== st.cells) this.connPrice = new Float32Array(st.cells);
   }
 
   private addEntries(nodeOfCell: Int32Array, N: number, b: Building): number {
@@ -479,8 +552,7 @@ export class TrafficSystem implements SimSystem {
     this.jobsUnknown = detectJobsUnknown(st);
     // per-id arrays
     this.priceById = ensureIdFloat(this.priceById, st);
-    this.loadById = ensureIdFloat(this.loadById, st, -1);
-    if (this.connLoad.length !== st.cells) this.connLoad = new Float32Array(st.cells).fill(-1);
+    if (this.connPrice.length !== st.cells) this.connPrice = new Float32Array(st.cells);
     this.accessById = ensureIdFloat(this.accessById, st, -1);
     this.jobFillById = ensureIdFloat(this.jobFillById, st, -1);
     this.freightById = ensureIdFloat(this.freightById, st, -1);
@@ -516,8 +588,9 @@ export class TrafficSystem implements SimSystem {
     this.oCell = growI32(this.oCell, cap); this.oHalf = growU8(this.oHalf, cap);
     const conns = (this.conns = findNeighborConnections(st));
     const jcap = cap + conns.length;
-    this.jBid = growI32(this.jBid, jcap); this.jSlots = growF32(this.jSlots, jcap); this.jPrice = growF32(this.jPrice, jcap);
-    this.jPen = growF32(this.jPen, jcap);
+    this.jBid = growI32(this.jBid, jcap); this.jSlots = growF32(this.jSlots, jcap);
+    this.jNoise = growF32(this.jNoise, jcap); this.jAsg = growF32(this.jAsg, jcap); this.jCapP = growF32(this.jCapP, jcap);
+    this.jPrice = growF32(this.jPrice, jcap); this.jQ = growI32(this.jQ, jcap);
     this.jBase = growF32(this.jBase, jcap); this.jEntS = growI32(this.jEntS, jcap); this.jEntC = growU8(this.jEntC, jcap);
     this.jCell = growI32(this.jCell, jcap); this.jHalf = growU8(this.jHalf, jcap); this.jRailNode = growI32(this.jRailNode, jcap);
     this.jConnType = growU8(this.jConnType, jcap);
@@ -548,7 +621,6 @@ export class TrafficSystem implements SimSystem {
       if (slots > 0) {
         this.jBid[jN] = b.id;
         this.jSlots[jN] = slots;
-        this.jPrice[jN] = this.priceById[b.id];
         this.jBase[jN] = 0;
         this.jCell[jN] = centerCell(st, b);
         this.jHalf[jN] = Math.max(b.w, b.d) >> 1;
@@ -591,7 +663,6 @@ export class TrafficSystem implements SimSystem {
         if (rn < 0) continue;
         this.jBid[jN] = -1;
         this.jSlots[jN] = CONNECTION_JOBS[c.type] * growth;
-        this.jPrice[jN] = this.connPrice[c.cell];
         this.jBase[jN] = REGIONAL_TIME;
         this.jCell[jN] = c.cell;
         this.jHalf[jN] = 0;
@@ -607,7 +678,6 @@ export class TrafficSystem implements SimSystem {
       this.ent[this.entN] = nd;
       this.jBid[jN] = -1;
       this.jSlots[jN] = CONNECTION_JOBS[c.type] * growth;
-      this.jPrice[jN] = this.connPrice[c.cell];
       this.jBase[jN] = REGIONAL_TIME;
       this.jCell[jN] = c.cell;
       this.jHalf[jN] = 0;
@@ -639,13 +709,39 @@ export class TrafficSystem implements SimSystem {
     this.oCarNode = growI32(this.oCarNode, oN); this.oBoard = growI32(this.oBoard, oN);
     this.oShC = growF32(this.oShC, oN); this.oShT = growF32(this.oShT, oN); this.oShW = growF32(this.oShW, oN);
     this.oTime = growF32(this.oTime, oN); this.oEmp = growF32(this.oEmp, oN);
-    this.oJobA = growI32(this.oJobA, oN); this.oJobT = growI32(this.oJobT, oN);
-    this.jLoad = growF32(this.jLoad, jN); this.jLoad.fill(0, 0, jN);
-    this.jLoadS = growF32(this.jLoadS, jN);
-    for (let j = 0; j < jN; j++) this.jLoadS[j] = this.jBid[j] >= 0 ? this.loadById[this.jBid[j]] : this.connLoad[this.jCell[j]];
+    this.oJobT = growI32(this.oJobT, oN);
+    this.oU = growF32(this.oU, oN); this.oAsg = growF32(this.oAsg, oN); this.oTimeSum = growF32(this.oTimeSum, oN);
+    this.oCarW = growF32(this.oCarW, oN); this.oTrW = growF32(this.oTrW, oN); this.oWalkW = growF32(this.oWalkW, oN);
+    this.oTrT = growF32(this.oTrT, oN); this.oBoardStop = growI32(this.oBoardStop, oN);
+    this.oLastD = growF32(this.oLastD, oN);
+    this.candKey = this.candKey.length >= oN ? this.candKey : new Float64Array(Math.max(oN, 64) * 2);
+    this.candNode = growI32(this.candNode, oN);
+    for (let o = 0; o < oN; o++) {
+      this.oU[o] = this.oW[o];
+      this.oAsg[o] = 0; this.oTimeSum[o] = 0; this.oCarW[o] = 0; this.oTrW[o] = 0; this.oWalkW[o] = 0;
+      this.oCarNode[o] = -1;
+      this.oLastD[o] = -1;
+    }
+    // destination noise, matching capacities (proportional share first when jobs are in surplus)
+    let slotsAll = 0;
+    for (let j = 0; j < jN; j++) {
+      this.jNoise[j] = this.rand() * (this.jBid[j] >= 0 ? DEST_NOISE : DEST_NOISE * 0.5);
+      this.jAsg[j] = 0;
+      this.jPrice[j] = this.jBid[j] >= 0 ? this.priceById[this.jBid[j]] : this.connPrice[this.jCell[j]];
+      slotsAll += this.jSlots[j];
+    }
+    this.propFactor = slotsAll > 0 ? Math.min(1, (MATCH_PROP_SLACK * workers) / slotsAll) : 1;
+    for (let j = 0; j < jN; j++) this.jCapP[j] = this.jSlots[j] * this.propFactor;
+    this.buildClusters();
+    this.round = 0;
+    this.tripsCar = this.tripsTransit = this.tripsWalk = 0;
+    this.commuteSum = this.commuteW = 0;
+    // shopping / freight: recompute every 2nd cycle or after a graph rebuild
+    this.sfRecompute = this.sfVersion !== g.version || this.cycles % 2 === 0;
     this.jTimeSum = growF32(this.jTimeSum, jN); this.jTimeSum.fill(0, 0, jN);
     this.jInbound = growF32(this.jInbound, jN); this.jInbound.fill(0, 0, jN);
-    this.sLoad = growF32(this.sLoad, sN); this.sLoad.fill(0, 0, sN);
+    this.sLoad = growF32(this.sLoad, sN);
+    if (this.sfRecompute) this.sLoad.fill(0, 0, sN);
     this.pendingRoutes = [];
     this.prepTransit(st);
   }
@@ -782,32 +878,20 @@ export class TrafficSystem implements SimSystem {
     return c;
   }
 
-  // ------------------------------------------------------------------------------------------ COMMUTE
-  private commute(): void {
-    const seeds = this.seeds;
-    seeds.clear();
-    for (let j = 0; j < this.jN; j++) {
-      // destination dispersion: idiosyncratic job preference (Monte-Carlo logit destination choice, MSA-averaged)
-      this.jPen[j] = this.jPrice[j] + (this.jBid[j] >= 0 ? this.rand() * DEST_NOISE : this.rand() * DEST_NOISE * 0.5);
-      const label = this.jBase[j] + this.jPen[j];
-      for (let e = this.jEntS[j], e1 = e + this.jEntC[j]; e < e1; e++) seeds.push(this.ent[e], label, j);
-    }
-    roadSearch(this.road, this.road.rev, this.nodeTime, this.SA, this.heap, seeds, MAX_COMMUTE + PRICE_MAX + REGIONAL_TIME);
-  }
-
   // ------------------------------------------------------------------------------------------ TRANSIT
   private transit(): void {
     const T = this.tnet!;
     const S = this.ST;
     if (this.stops.n === 0) {
       S.reset(T.total);
+      this.originTransit();
       return;
     }
     const seeds = this.seeds;
     seeds.clear();
     const N = this.road.N;
     for (let j = 0; j < this.jN; j++) {
-      const label0 = this.jBase[j] + this.jPen[j];
+      const label0 = this.jBase[j] + this.jNoise[j];
       if (this.jRailNode[j] >= 0) {
         seeds.push(T.nR + this.jRailNode[j], label0, j);
         continue;
@@ -822,110 +906,340 @@ export class TrafficSystem implements SimSystem {
         for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) seeds.push(this.stAtt[a], label0 + walk, j);
       }
     }
-    transitSearch(T, S, this.heap, seeds, MAX_COMMUTE + PRICE_MAX + REGIONAL_TIME);
+    transitSearch(T, S, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME);
+    this.originTransit();
   }
 
-  // ------------------------------------------------------------------------------------------ MODE
-  private modeChoice(): void {
-    const SA = this.SA, ST = this.ST, T = this.tnet!;
-    const distA = SA.dist, srcA = SA.src, hopsA = SA.hops, doneA = SA.done;
+  /** each origin's best transit option (board node, stop, pure minutes, destination) from the transit forest */
+  private originTransit(): void {
+    const ST = this.ST;
     const distT = ST.dist, srcT = ST.src, doneT = ST.done;
     const N = this.road.N;
-    const fx = this.fx;
-    // ordinances: 'traffic.car' scales car volumes (carpool, shuttles, parking fines), 'transit.ridership' makes
-    // transit more attractive
-    const carPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
-    const trBonus = fx ? 2.5 * Math.log(fx.transitRidership) : 0;
-    const acc = this.acc, tAcc = this.tAcc;
-    const nR = this.road.n;
-    acc.fill(0, 0, nR);
-    tAcc.fill(0, 0, T.total);
-    const jLoad = this.jLoad, jPrice = this.jPrice, jPen = this.jPen, jBase = this.jBase, jTimeSum = this.jTimeSum;
-    let tripsC = 0, tripsT = 0, tripsW = 0, cSum = 0, cW = 0;
     const hasStops = this.stops.n > 0;
     for (let o = 0; o < this.oN; o++) {
-      const W = this.oW[o];
-      // car: best entry node
+      this.oTrT[o] = Infinity;
+      this.oBoard[o] = -1;
+      this.oBoardStop[o] = -1;
+      this.oJobT[o] = -1;
+      if (!hasStops) continue;
+      const c = this.oCell[o], x = c % N, z = (c - x) / N;
+      const half = this.oHalf[o];
+      const cnt = this.nearStops(N, x, z, STOP_WALK_RADIUS + half);
+      let best = Infinity, board = -1, boardStop = -1;
+      for (let q = 0; q < cnt; q++) {
+        const s = this.nsIdx[q];
+        const walk = Math.max(0, this.nsDist[q] - half) * STOP_WALK_TIME_PER_CELL + this.stWait[s];
+        for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) {
+          const v = this.stAtt[a];
+          if (doneT[v] !== 1) continue;
+          const g = walk + distT[v];
+          if (g < best) { best = g; board = v; boardStop = s; }
+        }
+      }
+      if (board < 0) continue;
+      const jT = srcT[board];
+      const t = best - this.jNoise[jT];
+      if (t > MAX_COMMUTE) continue;
+      this.oTrT[o] = t;
+      this.oBoard[o] = board;
+      this.oBoardStop[o] = boardStop;
+      this.oJobT[o] = jT;
+    }
+    this.acc.fill(0, 0, this.road.n);
+    this.tAcc.fill(0, 0, this.tnet!.total);
+  }
+
+  // ------------------------------------------------------------------------------------------ ROUNDS
+  /**
+   * Job clusters: job sites sharing their primary road entry node (lowest entry node id) are matched as one unit with
+   * the summed capacity; results are distributed to the members by slots. Road neighbour connections are their own
+   * clusters. Cluster price = slot-weighted mean of the members' persistent prices.
+   */
+  private buildClusters(): void {
+    const g = this.road;
+    const jN = this.jN;
+    const cap = jN + 1;
+    this.qNode = growI32(this.qNode, cap); this.qSlots = growF32(this.qSlots, cap); this.qCapP = growF32(this.qCapP, cap);
+    this.qAsg = growF32(this.qAsg, cap); this.qPrice = growF32(this.qPrice, cap); this.qProp = growF32(this.qProp, cap);
+    this.qBase = growF32(this.qBase, cap); this.qNoise = growF32(this.qNoise, cap); this.qTimeSum = growF32(this.qTimeSum, cap);
+    if (this.nodeQ.length < g.n) this.nodeQ = new Int32Array(g.n + (g.n >> 3) + 16);
+    const nodeQ = this.nodeQ;
+    nodeQ.fill(-1, 0, g.n);
+    let qN = 0;
+    for (let j = 0; j < jN; j++) {
+      this.jQ[j] = -1;
+      if (this.jEntC[j] === 0) continue;
+      let node = this.ent[this.jEntS[j]];
+      for (let e = this.jEntS[j] + 1, e1 = this.jEntS[j] + this.jEntC[j]; e < e1; e++) if (this.ent[e] < node) node = this.ent[e];
+      const isConn = this.jBid[j] < 0;
+      let q = isConn ? -1 : nodeQ[node];
+      if (q < 0) {
+        q = qN++;
+        if (!isConn) nodeQ[node] = q;
+        this.qNode[q] = node;
+        this.qSlots[q] = 0; this.qCapP[q] = 0; this.qAsg[q] = 0; this.qPrice[q] = 0; this.qProp[q] = 0; this.qTimeSum[q] = 0;
+        this.qBase[q] = this.jBase[j];
+        this.qNoise[q] = this.jNoise[j];
+      }
+      this.jQ[j] = q;
+      this.qSlots[q] += this.jSlots[j];
+      this.qCapP[q] += this.jCapP[j];
+      this.qPrice[q] += this.jPrice[j] * this.jSlots[j];
+    }
+    for (let q = 0; q < qN; q++) if (this.qSlots[q] > 0) this.qPrice[q] /= this.qSlots[q];
+    this.qN = qN;
+  }
+
+  /** open capacity of job cluster q in the current round */
+  private openCap(q: number): number {
+    const cap = this.round < MATCH_PROP_ROUNDS ? this.qCapP[q] : this.qSlots[q];
+    return cap - this.qAsg[q];
+  }
+
+  /** reverse multi-source search from every job cluster with open capacity this round */
+  private roundSearch(): void {
+    const seeds = this.seeds;
+    seeds.clear();
+    for (let q = 0; q < this.qN; q++) {
+      if (this.openCap(q) < 0.5) continue;
+      // prices may be negative (subsidies for unattractive sites): shift all labels by MATCH_PRICE_MAX
+      const label = MATCH_PRICE_MAX + this.qBase[q] + this.qNoise[q] + this.qPrice[q];
+      seeds.push(this.qNode[q], label, q);
+    }
+    roadSearch(this.road, this.road.rev, this.nodeTime, this.SA, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME + 2 * MATCH_PRICE_MAX);
+  }
+
+  /** match unassigned workers to their nearest open site (nearest first, up to capacity); returns the next phase */
+  private roundMatch(): number {
+    const SA = this.SA;
+    const dist = SA.dist, src = SA.src, hops = SA.hops, done = SA.done;
+    const oN = this.oN;
+    // candidates: origins with unassigned workers -> best entry node
+    const key = this.candKey, cnode = this.candNode;
+    let nc = 0;
+    let maxD = 1;
+    for (let o = 0; o < oN; o++) {
+      if (this.oU[o] < 0.01) continue;
       let best = -1, bd = Infinity;
       for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) {
         const v = this.ent[e];
-        if (doneA[v] === 1 && distA[v] < bd) { bd = distA[v]; best = v; }
+        if (done[v] === 1 && dist[v] < bd) { bd = dist[v]; best = v; }
       }
-      let carG = Infinity, carT = Infinity, walkT = Infinity, jA = -1;
-      if (best >= 0) {
-        jA = srcA[best];
-        carT = CAR_OVERHEAD + bd - jPen[jA];
-        carG = CAR_OVERHEAD + bd;
-        if (carT > MAX_COMMUTE) { carT = Infinity; carG = Infinity; }
-        else if (jBase[jA] === 0 && hopsA[best] <= WALK_MAX_CELLS) walkT = (hopsA[best] + 1) * WALK_TIME_PER_CELL;
-      }
-      // transit
-      let trG = Infinity, trT = Infinity, board = -1, boardStop = -1, jT = -1;
-      if (hasStops) {
-        const c = this.oCell[o], x = c % N, z = (c - x) / N;
-        const half = this.oHalf[o];
-        const cnt = this.nearStops(N, x, z, STOP_WALK_RADIUS + half);
-        for (let q = 0; q < cnt; q++) {
-          const s = this.nsIdx[q];
-          const walk = Math.max(0, this.nsDist[q] - half) * STOP_WALK_TIME_PER_CELL + this.stWait[s];
-          for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) {
-            const v = this.stAtt[a];
-            if (doneT[v] !== 1) continue;
-            const gcost = walk + distT[v];
-            if (gcost < trG) { trG = gcost; board = v; boardStop = s; }
-          }
-        }
-        if (board >= 0) {
-          jT = srcT[board];
-          trT = trG - jPen[jT];
-          if (trT > MAX_COMMUTE) { trT = Infinity; trG = Infinity; board = -1; jT = -1; }
-        }
-      }
-      // logit
-      const wl = this.oWealth[o] - 1;
-      const uc = carG < Infinity ? -MODE_BETA * carG + CAR_BIAS[wl] : -Infinity;
-      const ut = trG < Infinity ? -MODE_BETA * trG + TRANSIT_BIAS[wl] + trBonus : -Infinity;
-      const uw = walkT < Infinity ? -MODE_BETA * (walkT + (jA >= 0 ? jPen[jA] : 0)) + WALK_BIAS : -Infinity;
-      const um = Math.max(uc, ut, uw);
-      let sc = 0, st = 0, sw = 0;
-      if (um > -Infinity) {
-        const ec = uc > -Infinity ? Math.exp(uc - um) : 0;
-        const et = ut > -Infinity ? Math.exp(ut - um) : 0;
-        const ew = uw > -Infinity ? Math.exp(uw - um) : 0;
-        const tot = ec + et + ew;
-        sc = ec / tot; st = et / tot; sw = ew / tot;
-      }
-      this.oShC[o] = sc; this.oShT[o] = st; this.oShW[o] = sw;
-      this.oCarNode[o] = best;
-      this.oBoard[o] = board;
-      this.oJobA[o] = jA;
-      this.oJobT[o] = jT;
-      const time = sc * (sc > 0 ? carT : 0) + st * (st > 0 ? trT : 0) + sw * (sw > 0 ? walkT : 0);
-      this.oTime[o] = sc + st + sw > 0 ? time : 0;
-      if (W <= 0) continue;
-      if (sc > 0) { acc[best] += W * sc * carPcu; tripsC += W * sc; }
-      if (sw > 0) tripsW += W * sw;
-      if (jA >= 0) {
-        jLoad[jA] += W * (sc + sw);
-        jTimeSum[jA] += W * (sc * (sc > 0 ? carT : 0) + sw * (sw > 0 ? walkT : 0));
-      }
-      if (st > 0 && board >= 0) {
-        tAcc[board] += W * st;
-        tripsT += W * st;
-        this.stLoad[boardStop] += W * st;
-        jLoad[jT] += W * st;
-        jTimeSum[jT] += W * st * trT;
-      }
-      if (sc + st + sw > 0) { cSum += W * this.oTime[o]; cW += W; }
+      if (best < 0) continue;
+      cnode[o] = best;
+      key[nc++] = o; // packed with the distance below
+      if (bd > maxD) maxD = bd;
     }
-    // accumulate car flows
-    const volNew = this.volNew;
-    accumulate(SA, acc);
-    for (let k = 0; k < SA.settled; k++) { const v = SA.order[k]; volNew[v] += acc[v]; }
-    // accumulate riders (bus PCU on roads, rail & subway riders)
+    // sort candidates by distance: pack (quantised distance, origin index) into one float64
+    let M = 1;
+    while (M < oN) M *= 2;
+    const q = Math.max(1, Math.floor(2 ** 50 / (M * (maxD + 1))));
+    for (let k = 0; k < nc; k++) {
+      const o = key[k];
+      key[k] = Math.floor(dist[cnode[o]] * q) * M + o;
+    }
+    const sorted = key.subarray(0, nc).sort();
+    // accept nearest first
+    const fx = this.fx;
+    const carPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
+    const trBonus = fx ? 2.5 * Math.log(fx.transitRidership) : 0;
+    const acc = this.acc, tAcc = this.tAcc;
+    const qAsg = this.qAsg, qBase = this.qBase, qNoise = this.qNoise, qPrice = this.qPrice, qTimeSum = this.qTimeSum;
+    if (this.round === 0) {
+      // first round: record unconstrained proposals (excess demand -> shadow prices for the next cycle)
+      for (let k = 0; k < nc; k++) {
+        const o = sorted[k] % M;
+        this.qProp[src[cnode[o]]] += this.oU[o];
+      }
+    }
+    let accepted = 0, carRound = 0;
+    const routeCand: number[] = [];
+    const routeW: number[] = [];
+    for (let k = 0; k < nc; k++) {
+      const o = sorted[k] % M;
+      const node = cnode[o];
+      const q = src[node];
+      const d = dist[node] - MATCH_PRICE_MAX - qNoise[q] - qPrice[q];
+      this.oLastD[o] = d;
+      const open = this.openCap(q);
+      if (open < 0.01) continue;
+      const take = Math.min(this.oU[o], open);
+      // mode split for this piece
+      const carT = d + CAR_OVERHEAD;
+      const carOk = d <= MAX_COMMUTE;
+      const walkT = qBase[q] === 0 && hops[node] <= WALK_MAX_CELLS ? (hops[node] + 1) * WALK_TIME_PER_CELL : Infinity;
+      const trT = this.oTrT[o];
+      const wl = this.oWealth[o] - 1;
+      const uc = carOk ? -MODE_BETA * carT + CAR_BIAS[wl] : -Infinity;
+      const ut = trT < Infinity ? -MODE_BETA * trT + TRANSIT_BIAS[wl] + trBonus : -Infinity;
+      const uw = walkT < Infinity ? -MODE_BETA * walkT + WALK_BIAS : -Infinity;
+      const um = Math.max(uc, ut, uw);
+      if (um === -Infinity) continue;
+      const ec = uc > -Infinity ? Math.exp(uc - um) : 0;
+      const et = ut > -Infinity ? Math.exp(ut - um) : 0;
+      const ew = uw > -Infinity ? Math.exp(uw - um) : 0;
+      const tot = ec + et + ew;
+      const sc = ec / tot, st = et / tot, sw = ew / tot;
+      const time = sc * (sc > 0 ? carT : 0) + st * (st > 0 ? trT : 0) + sw * (sw > 0 ? walkT : 0);
+      // commit
+      this.oU[o] -= take;
+      this.oAsg[o] += take;
+      this.oTimeSum[o] += take * time;
+      this.oCarW[o] += take * sc;
+      this.oTrW[o] += take * st;
+      this.oWalkW[o] += take * sw;
+      if (this.oCarNode[o] < 0) this.oCarNode[o] = node;
+      qAsg[q] += take;
+      qTimeSum[q] += take * time;
+      accepted += take;
+      if (sc > 0) {
+        const f = take * sc;
+        acc[node] += f * carPcu;
+        carRound += f;
+        if (routeCand.length < 256) { routeCand.push(node); routeW.push(f); }
+      }
+      if (st > 0) {
+        const board = this.oBoard[o];
+        tAcc[board] += take * st;
+        this.stLoad[this.oBoardStop[o]] += take * st;
+      }
+    }
+    // car flows of this round along its shortest-path forest
+    if (carRound > 0) {
+      accumulate(SA, acc);
+      const volNew = this.volNew, order = SA.order;
+      for (let k = 0; k < SA.settled; k++) {
+        const v = order[k];
+        const f = acc[v];
+        if (f !== 0) { volNew[v] += f; acc[v] = 0; }
+      }
+      // sample car routes of this round (weighted by car trips)
+      const K = Math.min(10, routeCand.length);
+      if (K > 0) {
+        const cum = new Float64Array(routeCand.length);
+        let sw = 0;
+        for (let q = 0; q < routeCand.length; q++) { sw += routeW[q]; cum[q] = sw; }
+        const g = this.road;
+        for (let r = 0; r < K; r++) {
+          const idx = lowerBound(cum, this.rand() * sw);
+          const path = this.tracePath(SA, routeCand[idx], (v) => g.cellOf[v], false);
+          if (path.length >= 2) this.pendingRoutes.push({ cells: path, kind: 'car', weight: carRound / K });
+        }
+      }
+    }
+    this.roundAccepted = accepted;
+    // next round?
+    let left = 0;
+    for (let o = 0; o < oN; o++) left += this.oU[o];
+    let next = this.round + 1;
+    if (next < MATCH_PROP_ROUNDS && (accepted < 0.5 || this.propFactor >= 1)) next = Math.max(next, accepted < 0.5 ? MATCH_PROP_ROUNDS : next); // proportional caps exhausted
+    if (left < 0.5 || next >= MATCH_ROUNDS || (accepted < 0.5 && this.round >= MATCH_PROP_ROUNDS)) return PH_COMMUTE;
+    let open = 0;
+    const saveRound = this.round;
+    this.round = next;
+    for (let q = 0; q < this.qN; q++) { const c = this.openCap(q); if (c > 0.5) open += c; }
+    if (open < 0.5) { this.round = saveRound; return PH_COMMUTE; }
+    return PH_RSEARCH;
+  }
+
+  /**
+   * Pooled final match: workers still unmatched after the rounds take the remaining open capacity of their road
+   * component proportionally (long commutes: 1.3 x distance to the nearest open site seen, at least the city
+   * average + 5 min). Their car trips follow the last round's forest toward the nearest open site.
+   */
+  private poolRemaining(): void {
+    const g = this.road;
+    const comp = g.comp;
+    const nc = g.nComp;
+    if (nc === 0) return;
+    const U = new Float64Array(nc), O = new Float64Array(nc);
+    let any = false;
+    for (let o = 0; o < this.oN; o++) {
+      if (this.oU[o] < 0.01 || this.oLastD[o] < 0) continue;
+      U[comp[this.ent[this.oEntS[o]]]] += this.oU[o];
+      any = true;
+    }
+    if (!any) return;
+    const full = MATCH_PROP_ROUNDS; // full-capacity rounds
+    const saveRound = this.round;
+    this.round = full;
+    for (let q = 0; q < this.qN; q++) {
+      const c = this.openCap(q);
+      if (c > 0.5) O[comp[this.qNode[q]]] += c;
+    }
+    let tw = 0, tt = 0;
+    for (let o = 0; o < this.oN; o++) { tw += this.oAsg[o]; tt += this.oTimeSum[o]; }
+    const avgT = tw > 0 ? tt / tw : 15;
+    const fx = this.fx;
+    const carPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
+    const SA = this.SA, acc = this.acc;
+    let flows = false;
+    for (let o = 0; o < this.oN; o++) {
+      const u = this.oU[o];
+      if (u < 0.01 || this.oLastD[o] < 0) continue;
+      const c = comp[this.ent[this.oEntS[o]]];
+      if (O[c] <= 0) continue;
+      const take = u * Math.min(1, O[c] / U[c]);
+      const t = Math.min(MAX_COMMUTE, Math.max(avgT + 5, 1.3 * (this.oLastD[o] + CAR_OVERHEAD)));
+      this.oU[o] -= take;
+      this.oAsg[o] += take;
+      this.oTimeSum[o] += take * t;
+      this.oCarW[o] += take;
+      const node = this.candNode[o];
+      if (node >= 0 && node < g.n && SA.done[node] === 1) { acc[node] += take * carPcu; flows = true; }
+    }
+    for (let q = 0; q < this.qN; q++) {
+      const open = this.openCap(q);
+      if (open <= 0.5) continue;
+      const c = comp[this.qNode[q]];
+      if (O[c] <= 0) continue;
+      const add = open * Math.min(1, U[c] / O[c]);
+      this.qAsg[q] += add;
+      this.qTimeSum[q] += add * Math.max(avgT + 5, 20);
+    }
+    this.round = saveRound;
+    if (flows) {
+      accumulate(SA, acc);
+      const volNew = this.volNew, order = SA.order;
+      for (let k = 0; k < SA.settled; k++) { const v = order[k]; const f = acc[v]; if (f !== 0) { volNew[v] += f; acc[v] = 0; } }
+    }
+  }
+
+  /** transit rider flows, per-origin results and stats of the commute matching */
+  private commuteEnd(): void {
+    this.poolRemaining();
+    // shadow prices: tatonnement on first-round excess demand (proposals / proportional capacity), step scaled to
+    // the city's commute time scale
+    let tw = 0, tt = 0;
+    for (let o = 0; o < this.oN; o++) { tw += this.oAsg[o]; tt += this.oTimeSum[o]; }
+    const avgT = tw > 0 ? tt / tw - CAR_OVERHEAD : 5;
+    const stepP = Math.max(MATCH_PRICE_STEP_MIN, MATCH_PRICE_STEP_REL * avgT);
+    // excess demand relative to the city-wide mean (keeps the mean price stable when workers != jobs)
+    let propSum = 0, capSum = 0;
+    for (let q = 0; q < this.qN; q++) { propSum += this.qProp[q]; capSum += Math.max(1, this.qCapP[q]); }
+    const mean = propSum > 0 && capSum > 0 ? propSum / capSum : 1;
+    for (let q = 0; q < this.qN; q++) {
+      const cap = Math.max(1, this.qCapP[q]);
+      const r = Math.max(0.25, Math.min(8, this.qProp[q] / cap / mean));
+      let p = this.qPrice[q] + stepP * Math.log(r);
+      this.qPrice[q] = p < -MATCH_PRICE_MAX ? -MATCH_PRICE_MAX : p > MATCH_PRICE_MAX ? MATCH_PRICE_MAX : p;
+    }
+    // distribute cluster results to member job sites (by slots) + persist prices
+    for (let j = 0; j < this.jN; j++) {
+      const q = this.jQ[j];
+      if (q < 0) { this.jAsg[j] = 0; this.jTimeSum[j] = 0; continue; }
+      const share = this.qSlots[q] > 0 ? this.jSlots[j] / this.qSlots[q] : 0;
+      this.jAsg[j] = this.qAsg[q] * share;
+      this.jTimeSum[j] = this.qTimeSum[q] * share;
+      if (this.jBid[j] >= 0) this.priceById[this.jBid[j]] = this.qPrice[q];
+      else this.connPrice[this.jCell[j]] = this.qPrice[q];
+    }
+    const ST = this.ST, T = this.tnet!;
+    const tAcc = this.tAcc;
+    const nR = this.road.n, nRail = T.nRail;
     const nodeStop = this.nodeStop, stLoad = this.stLoad;
     accumulate(ST, tAcc, (_j, f, node) => { const s = nodeStop[node]; if (s >= 0) stLoad[s] += f; });
-    const nRail = T.nRail;
+    const volNew = this.volNew;
     for (let k = 0; k < ST.settled; k++) {
       const v = ST.order[k];
       const f = tAcc[v];
@@ -934,35 +1248,25 @@ export class TrafficSystem implements SimSystem {
       else if (v < nR + nRail) this.railNew[v - nR] += f;
       else this.subNew[v - nR - nRail] += f;
     }
-    // smoothed loads (MSA across cycles)
-    const jLoadS = this.jLoadS;
-    for (let j = 0; j < this.jN; j++) {
-      const prev = jLoadS[j];
-      const v = prev >= 0 ? prev + (jLoad[j] - prev) * LOAD_SMOOTH : jLoad[j];
-      jLoadS[j] = v;
-      const bid = this.jBid[j];
-      if (bid >= 0) this.loadById[bid] = v;
-      else this.connLoad[this.jCell[j]] = v;
-    }
-    // employment access per origin (smoothed loads of the chosen destinations)
+    let tripsC = 0, tripsT = 0, tripsW = 0, cSum = 0, cW = 0;
     for (let o = 0; o < this.oN; o++) {
-      let e = 0;
-      const jA = this.oJobA[o], jT = this.oJobT[o];
-      if (jA >= 0) e += (this.oShC[o] + this.oShW[o]) * Math.min(1, this.jSlots[jA] / Math.max(1e-6, jLoadS[jA]));
-      if (jT >= 0) e += this.oShT[o] * Math.min(1, this.jSlots[jT] / Math.max(1e-6, jLoadS[jT]));
-      this.oEmp[o] = e;
-    }
-    // shadow prices (capacity constraint), persisted per building / connection cell
-    for (let j = 0; j < this.jN; j++) {
-      const slots = this.jSlots[j];
-      const ratio = jLoadS[j] / Math.max(1, slots);
-      let p = jPrice[j];
-      if (ratio > 1) p += PRICE_UP * Math.min(2, ratio - 1);
-      else p -= PRICE_DOWN * (1 - ratio);
-      p = p < 0 ? 0 : p > PRICE_MAX ? PRICE_MAX : p;
-      const bid = this.jBid[j];
-      if (bid >= 0) this.priceById[bid] = p;
-      else this.connPrice[this.jCell[j]] = p;
+      const a = this.oAsg[o];
+      const W = this.oW[o];
+      this.oEmp[o] = W > 0 ? Math.min(1, a / W) : 0;
+      if (a > 0) {
+        this.oTime[o] = this.oTimeSum[o] / a;
+        this.oShC[o] = this.oCarW[o] / a;
+        this.oShT[o] = this.oTrW[o] / a;
+        this.oShW[o] = this.oWalkW[o] / a;
+        cSum += this.oTimeSum[o];
+        cW += a;
+      } else {
+        this.oTime[o] = 0;
+        this.oShC[o] = this.oShT[o] = this.oShW[o] = 0;
+      }
+      tripsC += this.oCarW[o];
+      tripsT += this.oTrW[o];
+      tripsW += this.oWalkW[o];
     }
     this.tripsCar = tripsC;
     this.tripsTransit = tripsT;
@@ -992,7 +1296,7 @@ export class TrafficSystem implements SimSystem {
     const bestNode = new Int32Array(this.jB).fill(-1);
     const connSum = new Float64Array(conns.length);
     for (let j = 0; j < this.jB; j++) {
-      const spare = this.jSlots[j] - Math.min(this.jSlots[j], this.jLoadS[j]);
+      const spare = this.jSlots[j] - Math.min(this.jSlots[j], this.jAsg[j]);
       if (spare <= 0) continue;
       let bd = Infinity, bn = -1;
       for (let e = this.jEntS[j], e1 = e + this.jEntC[j]; e < e1; e++) {
@@ -1041,11 +1345,20 @@ export class TrafficSystem implements SimSystem {
   }
 
   // ------------------------------------------------------------------------------------------ SHOP
+  /** add cached per-node volumes into this cycle's volumes (shop / freight skipped this cycle) */
+  private addCached(v: Float32Array): void {
+    const n = this.road.n, volNew = this.volNew;
+    for (let i = 0; i < n; i++) volNew[i] += v[i];
+  }
+
   private shopping(): void {
+    const g = this.road;
+    if (!this.sfRecompute) { this.addCached(this.volShop); return; }
+    this.volShop = growF32(this.volShop, g.n);
+    this.volShop.fill(0, 0, g.n);
     const S = this.SB;
     const seeds = this.seeds;
     seeds.clear();
-    const g = this.road;
     for (let s = 0; s < this.sN; s++) for (let e = this.sEntS[s], e1 = e + this.sEntC[s]; e < e1; e++) seeds.push(this.ent[e], 0, s);
     this.tripsShop = 0;
     if (seeds.n === 0) return;
@@ -1070,16 +1383,21 @@ export class TrafficSystem implements SimSystem {
       tot += trips;
     }
     accumulate(S, acc);
-    for (let k = 0; k < S.settled; k++) { const v = S.order[k]; this.volNew[v] += acc[v]; }
+    for (let k = 0; k < S.settled; k++) { const v = S.order[k]; this.volNew[v] += acc[v]; this.volShop[v] = acc[v]; }
     this.tripsShop = tot;
   }
 
   // ------------------------------------------------------------------------------------------ FREIGHT
   private freight(): void {
+    const g = this.road;
+    if (!this.sfRecompute) { this.addCached(this.volFreight); return; }
+    this.volFreight = growF32(this.volFreight, g.n);
+    this.volFreight.fill(0, 0, g.n);
+    this.sfVersion = g.version;
+    this.truckRoutes = [];
     const S = this.SB;
     const seeds = this.seeds;
     seeds.clear();
-    const g = this.road;
     for (let k = 0; k < this.kN; k++) for (let e = this.kEntS[k], e1 = e + this.kEntC[k]; e < e1; e++) seeds.push(this.ent[e], this.kLabel[k], k);
     this.tripsFreight = 0;
     if (seeds.n === 0) {
@@ -1109,7 +1427,7 @@ export class TrafficSystem implements SimSystem {
       candNode.push(bn);
     }
     accumulate(S, acc);
-    for (let k = 0; k < S.settled; k++) { const v = S.order[k]; this.volNew[v] += acc[v]; }
+    for (let k = 0; k < S.settled; k++) { const v = S.order[k]; this.volNew[v] += acc[v]; this.volFreight[v] = acc[v]; }
     this.tripsFreight = tot;
     // sample truck routes weighted by trucks
     const K = Math.min(20, cand.length);
@@ -1120,7 +1438,7 @@ export class TrafficSystem implements SimSystem {
       for (let q = 0; q < K; q++) {
         const idx = lowerBound(cum, this.rand() * s);
         const path = this.tracePath(S, candNode[idx], (v) => g.cellOf[v], false);
-        if (path.length >= 2) this.pendingRoutes.push({ cells: path, kind: 'truck', weight: tot / K });
+        if (path.length >= 2) this.truckRoutes.push({ cells: path, kind: 'truck', weight: tot / K });
       }
     }
   }
@@ -1199,13 +1517,13 @@ export class TrafficSystem implements SimSystem {
       const b = st.buildings.get(bid);
       if (!b) continue;
       const slots = this.jSlots[j];
-      const local = Math.min(this.jLoadS[j], slots);
+      const local = Math.min(this.jAsg[j], slots);
       const arriving = local + this.jInbound[j];
       const fill = Math.min(1, arriving / Math.max(1, slots));
       const prevF = this.jobFillById[bid];
       this.jobFillById[bid] = prevF >= 0 && this.cycles > 0 ? prevF + (fill - prevF) * RESULT_SMOOTH : fill;
       this.reachedById[bid] = arriving;
-      this.commuteById[bid] = this.jLoad[j] > 0 ? this.jTimeSum[j] / this.jLoad[j] : this.jInbound[j] > 0 ? REGIONAL_TIME + 10 : 0;
+      this.commuteById[bid] = this.jAsg[j] > 0 ? this.jTimeSum[j] / this.jAsg[j] : this.jInbound[j] > 0 ? REGIONAL_TIME + 10 : 0;
       this.modeById[bid] = arriving > 0 ? 1 : 0;
       let cong = 0;
       for (let e = this.jEntS[j], e1 = e + this.jEntC[j]; e < e1; e++) {
@@ -1214,7 +1532,7 @@ export class TrafficSystem implements SimSystem {
       }
       if (setFlagQuiet(b, BF.Congested, cong > 1.1)) changed.push(b);
     }
-    for (let s = 0; s < this.sN; s++) this.customersById[this.sBid[s]] = this.sLoad[s];
+    if (this.sfRecompute) for (let s = 0; s < this.sN; s++) this.customersById[this.sBid[s]] = this.sLoad[s];
     for (const b of changed) sim.events.emit('buildingChanged', b);
     // stop loads for crowding
     this.stLoadPrev.clear();
@@ -1252,22 +1570,9 @@ export class TrafficSystem implements SimSystem {
   private buildSampleRoutes(st: CityState): void {
     const g = this.road;
     const routes: SampleRoute[] = [];
-    // cars: origins weighted by car trips
-    const K = 60;
-    if (this.oN > 0 && this.tripsCar > 0) {
-      const cum = new Float64Array(this.oN);
-      let s = 0;
-      for (let o = 0; o < this.oN; o++) { s += this.oW[o] * this.oShC[o]; cum[o] = s; }
-      const k = Math.min(K, this.oN);
-      for (let q = 0; q < k && s > 0; q++) {
-        const o = lowerBound(cum, this.rand() * s);
-        const start = this.oCarNode[o];
-        if (start < 0 || this.SA.done[start] !== 1) continue;
-        const path = this.tracePath(this.SA, start, (v) => g.cellOf[v], false);
-        if (path.length >= 2) routes.push({ cells: path, kind: 'car', weight: this.tripsCar / k });
-      }
-    }
+    // cars (sampled per matching round + inbound) and trucks (from the last freight pass)
     for (const r of this.pendingRoutes) routes.push(r);
+    for (const r of this.truckRoutes) routes.push(r);
     // transit: bus segments on roads, train segments on rail
     const T = this.tnet;
     if (T && this.tripsTransit > 0) {

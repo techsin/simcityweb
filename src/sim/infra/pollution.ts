@@ -32,6 +32,7 @@ import {
   buildingList,
 } from './common';
 import { getDef } from '../catalog';
+import { schedulerOf, sizeFactors } from './scheduler';
 import {
   AIR_K, AIR_PER_JOB, AIR_PER_TRIP, GARBAGE_BUILDUP, GARBAGE_DECAY, GARBAGE_PER_CIVIC_JOB, GARBAGE_PER_JOB_C,
   GARBAGE_PER_JOB_I, GARBAGE_PER_RES, LANDFILL_AIR, LANDFILL_CELL_CAP, NOISE_K, NOISE_PER_JOB, NOISE_PER_TRIP,
@@ -55,7 +56,7 @@ const IND_KEYS = ['IA', 'ID', 'IM', 'IHT'] as const;
 /** share kept per diffusion iteration along water bodies (higher = spreads farther downstream) */
 const WATER_DIFFUSE_KEEP = 0.975;
 /** days between pollution updates */
-export const POLL_PERIOD = 4;
+export const POLL_PERIOD = 8;
 
 
 export class PollutionSystem implements SimSystem {
@@ -91,35 +92,67 @@ export class PollutionSystem implements SimSystem {
     sim.state.systemData.infraVersion = 1;
     this.lastRun = -1e9;
     this.nWater = -1;
+    this.stepIdx = -1;
     this.compute(sim, true);
+    const self = this;
+    schedulerOf(sim).register({
+      name: 'pollution',
+      due: (s) => self.stepIdx >= 0 || s.state.day - self.lastRun >= POLL_PERIOD,
+      urgent: () => false,
+      cost: (s) => self.stepCost(s),
+      step: (s) => self.step(s),
+    });
   }
 
-  /** stage B pending (noise / water / garbage / flags run the day after the air stage) */
-  private pendingB = false;
+  /** pass progress: -1 idle, 0 sources, 1 air, 2 noise + water, 3 garbage + flags */
+  private stepIdx = -1;
+  private firstPass = false;
   private fxB: OrdEffects | null = null;
   private jobsUnknownB = false;
   private dtMonthsB = 0;
 
   daily(sim: Simulation): void {
-    const d = sim.state.day;
-    if (this.pendingB) {
-      const t0 = nowMs();
-      this.stageB(sim, false);
-      this.lastMs = Math.max(this.lastMs, nowMs() - t0);
-    } else if (d % POLL_PERIOD === 1 || d - this.lastRun > POLL_PERIOD * 2) this.stageA(sim, false);
+    schedulerOf(sim).tickDay(sim);
+  }
+
+  frame(sim: Simulation, _dt: number): void {
+    schedulerOf(sim).tickFrame(sim, this);
+  }
+
+  private stepCost(sim: Simulation): number {
+    const { cells, bld } = sizeFactors(sim);
+    switch (this.stepIdx < 0 ? 0 : this.stepIdx) {
+      case 0: return 1.0 * bld + 0.5 * cells;
+      case 1: return 2.0 * cells;
+      case 2: return 1.6 * cells;
+      default: return 0.9 * bld + 0.6 * cells;
+    }
+  }
+
+  /** one step of the pollution pass (sources / air / noise + water / garbage + flags) */
+  step(sim: Simulation): void {
+    const t0 = nowMs();
+    const k = this.stepIdx < 0 ? 0 : this.stepIdx;
+    if (k === 0) this.stageA(sim, this.firstPass);
+    else if (k === 1) this.stageAir(sim, this.firstPass);
+    else if (k === 2) this.stageB(sim, this.firstPass);
+    else this.stageB2(sim, this.firstPass);
+    this.stepIdx = k >= 3 ? -1 : k + 1;
+    if (this.stepIdx < 0) this.firstPass = false;
+    this.lastMs = nowMs() - t0;
   }
 
   /** full synchronous update (init / tests) */
   compute(sim: Simulation, first: boolean): void {
     const t0 = nowMs();
-    this.stageA(sim, first);
-    this.stageB(sim, first);
+    this.stepIdx = -1;
+    this.firstPass = first;
+    do this.step(sim); while (this.stepIdx >= 0);
     this.lastMs = nowMs() - t0;
   }
 
-  /** stage A: sources for all layers + air pollution field */
+  /** stage A: sources for all layers */
   private stageA(sim: Simulation, first: boolean): void {
-    const t0 = nowMs();
     const st = sim.state;
     const N = st.size, C = st.cells;
     if (this.tmp.length !== C) {
@@ -231,6 +264,16 @@ export class PollutionSystem implements SimSystem {
         used[0] = 1; used[3] = 1; used[5] = 1;
       }
     }
+    this.fxB = fx;
+    this.jobsUnknownB = jobsUnknown;
+    this.dtMonthsB = dtMonths;
+  }
+
+  /** stage A2: blur air per class (full / half / quarter resolution), sum with gains, wind drift, map to 0..1 */
+  private stageAir(sim: Simulation, first: boolean): void {
+    const st = sim.state;
+    const N = st.size, C = st.cells;
+    const air = this.air, used = this.usedCls;
     // --- blur air per class (full / half / quarter resolution), sum with gains, wind drift
     const tmp = this.tmp, tmp2 = this.tmp2;
     const field = tmp2;
@@ -259,11 +302,6 @@ export class PollutionSystem implements SimSystem {
       const target = f > 0 ? 1 - Math.exp(-f * invAK) : 0;
       airL[i] += (target - airL[i]) * alpha;
     }
-    this.pendingB = true;
-    this.fxB = fx;
-    this.jobsUnknownB = jobsUnknown;
-    this.dtMonthsB = dtMonths;
-    this.lastMs = nowMs() - t0;
   }
 
   /** blur a 2-class (half / quarter resolution) source pair into `out` (cleared) */
@@ -276,14 +314,10 @@ export class PollutionSystem implements SimSystem {
 
   /** stage B: noise, water, garbage, flags & stats (uses the sources collected by stage A) */
   private stageB(sim: Simulation, first: boolean): void {
-    this.pendingB = false;
     const st = sim.state;
     const N = st.size, C = st.cells;
     const tmp = this.tmp, tmp2 = this.tmp2;
     const alpha = first ? 1 : POLL_SMOOTH;
-    const airL = st.airPollution;
-    const fx = this.fxB ?? readEffects(st);
-    const jobsUnknown = this.jobsUnknownB, dtMonths = this.dtMonthsB;
     // --- noise
     {
       this.blurPair(this.noiseS, 5, tmp, N);
@@ -334,6 +368,15 @@ export class PollutionSystem implements SimSystem {
       }
       for (let q = 0; q < nW; q++) L[wc[q]] = cur[q];
     }
+  }
+
+  /** stage B2: garbage, flags & stats */
+  private stageB2(sim: Simulation, _first: boolean): void {
+    const st = sim.state;
+    const N = st.size;
+    const airL = st.airPollution;
+    const fx = this.fxB ?? readEffects(st);
+    const jobsUnknown = this.jobsUnknownB, dtMonths = this.dtMonthsB;
     // --- garbage
     this.garbage(sim, dtMonths, fx.garbage, jobsUnknown);
     // --- flags & stats

@@ -321,4 +321,5 @@
   backdrop-filter: blur(6px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3); transition: opacity 0.25s; opacity: 0;
 }
 .neighbor-label small { font-weight: 500; color: var(--text-dim); }
-.neighbor-label .nl-arrow { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: rgba(255, 196, 120, 0.22); color: #ffd3a0; font-size: 11px; }
+.neighbor-label .nl-arrow { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: rgba(255, 196, 120, 0.22); color: #ffd3a0; font-size: 10px; }
+.neighbor-label.offscreen { opacity: 0.8 !important; padding: 4px 10px 4px 6px; font-size: 11px; }

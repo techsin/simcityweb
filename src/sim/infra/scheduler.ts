@@ -88,10 +88,11 @@ export class InfraScheduler {
     const t0 = nowMs();
     let spent = 0;
     let ran = 0;
-    // urgent first (player edits), bounded to a few steps
-    for (let k = 0; k < n && ran < 4; k++) {
-      const t = tasks[k];
-      if (!t.urgent(sim) || !t.due(sim)) continue;
+    // urgent first (player edits: finish their passes now), bounded
+    for (let rep = 0; rep < 8; rep++) {
+      let t: InfraTask | undefined;
+      for (let k = 0; k < n; k++) if (tasks[k].urgent(sim) && tasks[k].due(sim)) { t = tasks[k]; break; }
+      if (!t) break;
       spent += t.cost(sim);
       this.exec(sim, t);
       ran++;

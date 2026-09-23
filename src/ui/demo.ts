@@ -18,6 +18,7 @@
  *   rci=1             expand the RCI popover;   pause=1  open the pause menu;   toasts=1  sample notifications
  *   cam=x,z,dist      focus the camera on a cell;   fallback=all|world|objects  force stand-in views
  *   graph=<id>        graph to show when the graphs panel is open (pop, rci, funds, cash, ...)
+ *   onboard=1|0       force-show / hide the getting-started card;  fps=1 perf readout;  dupe=1 duplicate-toast test
  * Sets window.__ready once done; window.__scene is the CityScene.
  */
 import { CityScene } from '../game/CityScene';
@@ -283,7 +284,13 @@ function fakeData(): void {
   ];
   st.news.length = 0;
   news.forEach(([text, kind, x, z, adv], i) => st.news.push({ day: st.day - (news.length - i) * 9, text, kind: kind as any, x, z, advisor: adv }));
-  // zone + place fake growables around the center for the fallback view / minimap
+  // demand caps binding for R$ R$$ and CO$$ (sim-core's persistent economy data)
+  void import('../sim/economy/index')
+    .then((m) => {
+      const d = m.econData(st);
+      d.capBinding = [1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0];
+    })
+    .catch(() => {});
   void DevType;
 }
 
@@ -406,6 +413,10 @@ async function run(): Promise<void> {
     pointer('pointermove', drag[2], drag[3], 1);
     await frames(2);
   }
+  if (P.get('onboard') === '1') scene.showOnboarding();
+  if (P.get('onboard') === '0' || (fake && P.get('onboard') !== '1')) (scene as any).onboarding?.hide(false);
+  if (P.get('fps') === '1') scene.applySettings({ showFps: true });
+  if (P.get('dupe') === '1') for (let k = 0; k < 5; k++) scene.ctx.toast('Traffic jams reported on the main avenue.', 'warning');
   if (P.get('pause') === '1') scene.ctx.openPauseMenu();
   (window as any).__step = "final"; await frames(num("frames", 3));
   (window as any).__ready = true;

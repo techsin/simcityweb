@@ -32,6 +32,7 @@ import { h, isTyping } from '../ui/dom';
 import { MiniMap } from '../ui/MiniMap';
 import { ErrorOverlay, HelpPanel, PauseMenu, SavePill } from '../ui/Modals';
 import { NewsTicker, Toasts } from '../ui/Notifications';
+import { Onboarding } from '../ui/Onboarding';
 import { PanelManager } from '../ui/Panel';
 import { AdvisorsPanel } from '../ui/panels/AdvisorsPanel';
 import { BudgetPanel } from '../ui/panels/BudgetPanel';
@@ -99,6 +100,7 @@ export class CityScene {
   private minimap: MiniMap;
   private ticker: NewsTicker;
   private toasts: Toasts;
+  private onboarding: Onboarding;
   private errors: ErrorOverlay;
   private pause: PauseMenu;
   private savePill: SavePill;
@@ -200,6 +202,7 @@ export class CityScene {
       applySettings: (p) => this.applySettings(p),
       toast: (text, kind, cell, title) => this.toasts?.show(text, kind, cell, title),
       openFlyout: (id, tab) => this.toolbar?.openFlyout(id, tab),
+      showOnboarding: () => this.onboarding?.show(),
       save: () => this.save(false),
       exitToRegion: () => this.exitToRegion(),
       openPauseMenu: () => this.pause.open(),
@@ -221,7 +224,15 @@ export class CityScene {
     this.ticker = new NewsTicker(ctx, bl);
     this.toolbar = new Toolbar(ctx, this.uiRoot);
     this.minimap = new MiniMap(ctx, this.uiRoot);
-    this.toasts = new Toasts(ctx, this.uiRoot);
+    const tl = h('div', { class: 'hud-tl' });
+    this.uiRoot.appendChild(tl);
+    this.toasts = new Toasts(ctx, tl);
+    this.onboarding = new Onboarding(ctx, tl, {
+      coach: (cats, play) => {
+        this.toolbar.setCoach(cats);
+        this.topBar.setCoachPlay(play);
+      },
+    });
     this.savePill = new SavePill(this.uiRoot);
     this.fpsEl = h('div', { class: 'fps mp-glass', style: 'display:none' });
     this.uiRoot.appendChild(this.fpsEl);
@@ -494,6 +505,7 @@ export class CityScene {
     }
     this.minimap.frame(dt);
     this.ticker.frame(dt);
+    this.onboarding.frame(dt);
     // UI ticks (~6 Hz)
     this.uiAcc += dt;
     if (this.uiAcc > 0.16) {
@@ -557,24 +569,22 @@ export class CityScene {
    * Earthquake camera shake: render-world auto-shakes for ~3 s when an earthquake starts; for longer quakes keep
    * the camera moving from render-city's disaster intensity (objects.disasters.shake, 0..1).
    */
-  private feedShake(dt: number): void {
+  private feedShake(_dt: number): void {
     const w = this.world as { shake?: (intensity: number, seconds: number) => void };
     const k = (this.objects as { disasters?: { shake?: number } }).disasters?.shake ?? 0;
-    if (typeof w.shake !== 'function' || !(k > 0.05)) {
-      this.shakeWait = 0;
-      return;
-    }
-    this.shakeWait -= dt;
-    if (this.shakeWait > 0) return;
-    const sinceEvent = (performance.now() - this.quakeEventAt) / 1000;
-    if (sinceEvent < 2.4) {
-      this.shakeWait = 2.4 - sinceEvent;
+    if (typeof w.shake !== 'function' || !(k > 0.05)) return;
+    const now = performance.now();
+    if (now < this.shakeNext) return;
+    // render-world shakes for ~3 s on its own when the earthquake starts
+    const sinceEvent = now - this.quakeEventAt;
+    if (sinceEvent < 2400) {
+      this.shakeNext = this.quakeEventAt + 2400;
       return;
     }
     w.shake(0.45 + 0.55 * Math.min(1, k), 1.6);
-    this.shakeWait = 1.2;
+    this.shakeNext = now + 1200;
   }
-  private shakeWait = 0;
+  private shakeNext = 0;
   private quakeEventAt = -1e9;
 
   private edgeScroll(dt: number): void {
@@ -904,8 +914,12 @@ export class CityScene {
   openPanel(id: string): void {
     this.panels.open(id);
   }
-  openFlyout(categoryId: string): void {
-    this.toolbar.openFlyout(categoryId);
+  openFlyout(categoryId: string, tab?: string): void {
+    this.toolbar.openFlyout(categoryId, tab);
+  }
+  /** show the "Getting started" card again (e.g. from a help menu) */
+  showOnboarding(): void {
+    this.onboarding.show();
   }
   get worldView(): WorldViewApi {
     return this.world;

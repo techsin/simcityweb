@@ -72,9 +72,7 @@ export const WALK_BIAS = -0.5;
  * Keep small: it is shared by all origins, so large values would herd everyone to the same site. Spatial spreading
  * of commuters comes from the capacity shadow prices.
  */
-export const DEST_NOISE = 2;
-/** MSA weight of the newest job loads (smoothed loads drive shadow prices, employment access and job fill) */
-export const LOAD_SMOOTH = 0.3;
+export const DEST_NOISE = 0.02;
 /** smoothing of per-building outputs across assignments (weight of the new value) */
 export const RESULT_SMOOTH = 0.5;
 
@@ -89,10 +87,21 @@ export const TRUCK_PCU = 2.5;
 /** car occupancy (people per car) -> car PCU per commuter = 1 / occupancy */
 export const CAR_OCCUPANCY = 1.15;
 
-/** job capacity shadow price update (minutes) */
-export const PRICE_UP = 5;
-export const PRICE_DOWN = 2.5;
-export const PRICE_MAX = 70;
+/**
+ * capacity-constrained job matching: up to MATCH_ROUNDS successive filling rounds; the first MATCH_PROP_ROUNDS cap each
+ * job site at its proportional share slots x min(1, MATCH_PROP_SLACK x workers / slots) (surplus jobs -> sites fill
+ * proportionally), later rounds allow the full capacity.
+ */
+export const MATCH_ROUNDS = 5;
+export const MATCH_PROP_ROUNDS = 3;
+export const MATCH_PROP_SLACK = 1.15;
+/**
+ * shadow price per job site: p += step x ln(first-round proposals / capacity) each cycle, clamped to [0, MAX] minutes;
+ * step = max(MATCH_PRICE_STEP_MIN, MATCH_PRICE_STEP_REL x average commute) so it matches the city's time scale.
+ */
+export const MATCH_PRICE_STEP_REL = 0.12;
+export const MATCH_PRICE_STEP_MIN = 0.15;
+export const MATCH_PRICE_MAX = 30;
 
 /** neighbor connection regional job / worker capacities (per connection cell), indexed by Network */
 export const CONNECTION_JOBS: readonly number[] = [0, 400, 2000, 2000, 5000, 16000, 6000];
@@ -113,10 +122,14 @@ export const REGION_WORKER_MIN = 1000;
 
 /** full assignment cadence (days between cycle starts) */
 export const TRAFFIC_CYCLE_DAYS = 2;
-/** per-frame time budget (ms) for time-sliced traffic phases (at least one phase runs per frame while pending) */
-export const TRAFFIC_FRAME_BUDGET_MS = 5;
 /** with a live renderer, start a new assignment at most this often (real ms) */
-export const TRAFFIC_MIN_CYCLE_MS = 500;
+export const TRAFFIC_MIN_CYCLE_MS = 1000;
+
+// ---------------------------------------------------------------------------------------------- scheduler
+/** headless: estimated ms of infra steps per sim day (at least one step always runs) */
+export const INFRA_DAY_BUDGET = 3.2;
+/** with a live renderer: real ms of infra steps per frame (at least one step when due) */
+export const INFRA_FRAME_BUDGET_MS = 3;
 /** commute above this (min) counts as unreachable for employment purposes */
 export const MAX_COMMUTE = 110;
 
@@ -139,8 +152,11 @@ export const UTIL_BASE_SHARE = 0.25;
 /** pumps within this many cells of water produce +PUMP_WATER_BONUS */
 export const PUMP_WATER_DIST = 2;
 export const PUMP_WATER_BONUS = 0.5;
-/** recompute utilities on day % N == 0 (demand drifts with population); changes apply on the next day */
-export const UTIL_REFRESH_DAYS = 4;
+/** utilities refresh cadence (days): soft refresh at least every UTIL_REFRESH_DAYS, within UTIL_SOFT_DAYS of growth
+ * changes; full relabel every UTIL_FULL_DAYS (player edits trigger an urgent full pass immediately) */
+export const UTIL_REFRESH_DAYS = 6;
+export const UTIL_SOFT_DAYS = 2;
+export const UTIL_FULL_DAYS = 24;
 
 // ---------------------------------------------------------------------------------------------- pollution
 /** air emission per active job by industry type */

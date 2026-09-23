@@ -12,7 +12,7 @@ const ARROW: Record<RegionNeighbor['edge'], string> = { n: '↑', s: '↓', e: '
 
 export class NeighborLabels {
   private layer: HTMLElement;
-  private items: { el: HTMLElement; p: THREE.Vector3 }[] = [];
+  private items: { el: HTMLElement; arrow: HTMLElement; p: THREE.Vector3 }[] = [];
   private raf = 0;
   private disposed = false;
   private v = new THREE.Vector3();
@@ -36,9 +36,10 @@ export class NeighborLabels {
       else if (n.edge === 'w') [x, z] = [inset, mid];
       else [x, z] = [edgeM - inset, mid];
       const y = Math.max(0, st.heightAt(x, z)) + 40;
-      const el = h('div', { class: 'neighbor-label' }, h('span', { class: 'nl-arrow' }, ARROW[n.edge]), n.name, h('small', {}, formatPop(n.population)));
+      const arrow = h('span', { class: 'nl-arrow' }, '➜');
+      const el = h('div', { class: 'neighbor-label', title: `Neighbour city (${ARROW[n.edge]})` }, arrow, n.name, h('small', {}, formatPop(n.population)));
       this.layer.appendChild(el);
-      this.items.push({ el, p: new THREE.Vector3(x, y, z) });
+      this.items.push({ el, arrow, p: new THREE.Vector3(x, y, z) });
     }
     if (this.items.length) this.loop();
   }
@@ -54,9 +55,25 @@ export class NeighborLabels {
         continue;
       }
       this.v.copy(it.p).project(cam);
-      const on = this.v.z < 1 && Math.abs(this.v.x) < 0.92 && Math.abs(this.v.y) < 0.9;
-      it.el.style.opacity = on ? '1' : '0';
-      if (on) it.el.style.transform = `translate(${(this.v.x * 0.5 + 0.5) * W}px, ${(-this.v.y * 0.5 + 0.5) * H}px) translate(-50%, -50%)`;
+      let x = this.v.x, y = this.v.y;
+      if (this.v.z > 1) {
+        // behind the camera: mirror so the indicator still points the right way
+        x = -x;
+        y = -y;
+      }
+      const inside = this.v.z <= 1 && Math.abs(x) < 0.9 && Math.abs(y) < 0.82;
+      if (!inside) {
+        // clamp to the screen border along the direction from the centre (off-screen indicator)
+        const k = Math.min(0.9 / Math.max(Math.abs(x), 1e-6), 0.82 / Math.max(Math.abs(y), 1e-6));
+        x *= k;
+        y *= k;
+      }
+      const px = (x * 0.5 + 0.5) * W, py = (-y * 0.5 + 0.5) * H;
+      const ang = Math.atan2(-y, x);
+      it.arrow.style.transform = `rotate(${ang}rad)`;
+      it.el.classList.toggle('offscreen', !inside);
+      it.el.style.opacity = '1';
+      it.el.style.transform = `translate(${px}px, ${py}px) translate(-50%, -50%)`;
     }
   };
 

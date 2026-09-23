@@ -54,7 +54,7 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
     h(
       'div',
       { class: 'field' },
-      h('label', {}, 'Autosave (game time) · cities are also saved when you leave them'),
+      h('label', {}, 'Autosave · game time'),
       segmented({
         chips: true,
         items: [

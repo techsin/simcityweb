@@ -159,7 +159,12 @@ export class HelpPanel extends Panel {
       h('div', { html: '<b>Utilities</b>Place a power plant and connect zones with power lines. Water towers and pumps keep buildings supplied.' }),
       h('div', { html: '<b>Services & money</b>Police, fire, health and schools raise land value. Balance taxes in the Budget panel — high taxes slow growth.' }),
     );
-    this.body.append(h('div', { class: 'dim', style: 'font-size:12.5px' }, 'Build the city of your dreams. The camera never loses keyboard focus to the UI unless you are typing.'), cols, tips);
+    const guide = h('button', { class: 'btn sm', html: icon('star', 13) + '<span>Show getting-started guide</span>' });
+    guide.addEventListener('click', () => {
+      this.ctx.showOnboarding?.();
+      this.ctx.panels.close(this.id);
+    });
+    this.body.append(h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:12px' }, h('div', { class: 'dim', style: 'font-size:12.5px' }, 'Build the city of your dreams. The camera never loses keyboard focus to the UI unless you are typing.'), guide), cols, tips);
   }
 }
 

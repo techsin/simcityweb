@@ -70,6 +70,8 @@ export interface GameContext {
   toast(text: string, kind?: string, cell?: { x: number; z: number }, title?: string): void;
   /** open a toolbar category flyout (e.g. 'parks') */
   openFlyout?(categoryId: string, tab?: string): void;
+  /** show the getting-started card again */
+  showOnboarding?(): void;
   save(): Promise<void>;
   exitToRegion(): Promise<void>;
   openPauseMenu(): void;
