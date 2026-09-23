@@ -107,7 +107,7 @@ function shack(b: ModelBuilder, v: number, rng: RNG): void {
     b.paint(0x5a4a3a, Surf.Wood).box(-2.3, 0.35, 2.0, -2.15, 2.2, 2.15, { bottom: null }).box(0.15, 0.35, 2.0, 0.3, 2.2, 2.15, { bottom: null });
     roofShed(b, -1, 1.35, 2.8, 1.7, 2.1, 0.35, 'nz', P(0x9a9a92, Surf.Corrugated), { over: 0.2, rake: 0.1, t: 0.05, trim: 0x707070 });
     inFace(b, 'pz', 0.5, () => {
-      door(b, -1.0, 0.35, 0.85, 1.95, 0x5c4a38, { frame: 0x4a3c2e, surf: Surf.Wood });
+      door(b, -1.0, 0.35, 0.85, 1.95, 0x5c4a38, { frame: 0x4a3c2e, surf: Surf.Wood, lamp: true });
       win(b, 1.6, 1.1, 0.9, 0.8, { frame: 0x5a4a3a });
     });
     inFace(b, 'px', 3, () => {
@@ -117,6 +117,7 @@ function shack(b: ModelBuilder, v: number, rng: RNG): void {
       fq(b, U('px', -2.8) - 0.5, 1.0, U('px', -2.8) + 0.5, 2.0, 0.08);
     });
     wins(b, 'nx', -3, [-1.5], 1.1, 0.8, 0.8, { frame: 0x5a4a3a });
+    lightPool(b, -2.3, 2.2, 0.3, 4.7, LAWN_DRY, 0.08);
     // blue tarp + mismatched patch on the roof
     const ry = (z: number) => 2.7 + (0.5 - z) * (0.55 / 4) + 0.06;
     b.paint(0x2a4a7a).quad([-1.4, ry(-0.4), -0.4], [1.2, ry(-0.4), -0.4], [1.3, ry(-2.9), -2.9], [-1.3, ry(-2.9), -2.9]);
@@ -154,6 +155,7 @@ function shack(b: ModelBuilder, v: number, rng: RNG): void {
     inFace(b, 'pz', z1 + 2.2, () => steps(b, 0.2, 1.1, 2, 0.3, 0.3, 0x8f7c66, 0, Surf.Wood));
     b.paint(0xd8d8d0, Surf.Metal).box(-1.6, 2.55, z1, 2.0, 2.62, z1 + 2.3, { nz: null });
     b.paint(0xb0b0b0, Surf.Metal).box(1.85, 0.6, z1 + 2.15, 1.95, 2.55, z1 + 2.25).box(-1.55, 0.6, z1 + 2.15, -1.45, 2.55, z1 + 2.25);
+    lightPool(b, -1.0, 2.5, 1.4, 5.0, 0x8f9656, 0.08);
     propaneTank(b, -7.2, -2.0);
     satDish(b, 4.5, 3.1, -1.5, 0.8);
     // lawn chairs & grill
@@ -175,12 +177,13 @@ function shack(b: ModelBuilder, v: number, rng: RNG): void {
     body(b, 1.8, -2.4, 4.6, 0.8, 0.0, 2.3, P(0x93846e, Surf.Wood));
     roofShed(b, 3.2, -0.8, 2.8, 3.2, 2.0, 0.45, 'nx', P(0x8f928c, Surf.Corrugated), { over: 0.25, rake: 0.2, t: 0.05, trim: 0x707070, fill: P(0x93846e, Surf.Wood) });
     inFace(b, 'pz', 1.2, () => {
-      door(b, -2.4, 0.3, 0.85, 1.95, 0x4a3c2e, { frame: 0x3a3028, surf: Surf.Wood });
+      door(b, -2.4, 0.3, 0.85, 1.95, 0x4a3c2e, { frame: 0x3a3028, surf: Surf.Wood, lamp: true });
       win(b, -0.3, 1.1, 0.9, 0.9, { frame: 0x3a3028, mull: 2 });
     });
     wins(b, 'pz', 0.8, [3.4], 1.0, 0.7, 0.6, { frame: 0x5a4a3a });
     wins(b, 'nx', -3.8, [-0.9], 1.1, 0.8, 0.8, { frame: 0x3a3028 });
     inFace(b, 'pz', 1.2, () => steps(b, -2.4, 1.0, 1, 0.3, 0.35, 0x77716a));
+    lightPool(b, -3.4, 1.6, -1.4, 3.8, LAWN_DRY, 0.08);
     chimney(b, -3.0, -2.2, 0.6, 0.6, 2.6, 4.3, 0x8a7a6a, Surf.Stone);
     // tar-paper patches on the roof
     b.paint(0x55504a).quad([-3.0, 2.6 + 0.45 * (1.1 / 2.1) + 0.05, 0.75], [-1.8, 2.6 + 0.45 * (1.1 / 2.1) + 0.05, 0.75], [-1.8, 2.6 + 1.2 * (1.1 / 2.1) + 0.05, 0.0], [-3.0, 2.6 + 1.2 * (1.1 / 2.1) + 0.05, 0.0]);
@@ -207,13 +210,14 @@ function shack(b: ModelBuilder, v: number, rng: RNG): void {
     b.paint(0x9aa0a0, Surf.Corrugated).box(-2.8, 2.35, z1, -0.2, 2.42, z1 + 1.3, { nz: null });
     b.paint(0x777777, Surf.Metal).box(-2.75, 0, z1 + 1.2, -2.65, 2.35, z1 + 1.3).box(-0.35, 0, z1 + 1.2, -0.25, 2.35, z1 + 1.3);
     paveSlab(b, -3.0, z1, 0.0, z1 + 1.6, 0x9a968c, 0.12);
+    lightPool(b, -3.0, z1, 0.0, z1 + 1.6, 0x9a968c, 0.125);
     const barred = (x: number) => {
       win(b, x, 1.0, 1.1, 1.0, { frame: 0xd8d8d0 });
       b.paint(0x2a2a2a, Surf.Metal);
       for (let i = -2; i <= 2; i++) fq(b, x + i * 0.22 - 0.025, 1.0, x + i * 0.22 + 0.025, 2.0, 0.13);
     };
     inFace(b, 'pz', z1, () => {
-      door(b, -1.5, 0.2, 0.9, 2.0, 0x8a4a3a, { frame: 0xd8d8d0 });
+      door(b, -1.5, 0.2, 0.9, 2.0, 0x8a4a3a, { frame: 0xd8d8d0, lamp: true });
       barred(1.8);
     });
     inFace(b, 'px', x1, () => { barred(U('px', -1.2)); });
@@ -255,6 +259,7 @@ function cottage(b: ModelBuilder, v: number, rng: RNG): void {
     chimney(b, 3.2, -2.6, 0.8, 0.8, 3.0, 6.4);
     inFace(b, 'pz', 3.9, () => steps(b, -1.2, 1.4, 2, 0.225, 0.3, 0x9a8670, 0, Surf.Wood));
     paveSlab(b, -1.8, 4.4, -0.6, 8.0, 0xc8c2b4, 0.08);
+    lightPool(b, -1.8, 4.5, -0.6, 7.0, 0xc8c2b4, 0.085);
     flowerBed(b, 0.9, 1.9, 4.4, 2.6, 0xc4506a);
     picket(b, -7.6, 7.0, -1.9, 7.0);
     picket(b, -0.5, 7.0, 7.6, 7.0);
@@ -283,6 +288,7 @@ function cottage(b: ModelBuilder, v: number, rng: RNG): void {
     wins(b, 'nz', -6.0, [1.2], 1.2, 0.9, 1.3, { mull: 2 });
     inFace(b, 'pz', 4.2, () => steps(b, 0, 1.4, 2, 0.3, 0.3, 0x9a8670, 0, Surf.Wood));
     paveSlab(b, -0.6, 4.8, 0.6, 8.0, 0xc8c2b4, 0.08);
+    lightPool(b, -0.6, 4.8, 0.6, 7.3, 0xc8c2b4, 0.085);
     // gravel side drive + small car
     paveSlab(b, 4.2, -5.0, 7.2, 8.0, 0xa39c90, 0.07);
     parkedCar(b, rng, 5.7, 0.8, 0, 0x2b4a6a);
@@ -303,7 +309,7 @@ function cottage(b: ModelBuilder, v: number, rng: RNG): void {
     roofGable(b, 0, -1.2, 10, 6.8, 3.1, h, 'x', P(0x6b5a4a, Surf.RoofTiles), { gable: P(0x9fb0b2, Surf.Wood), over: 0.35 });
     for (const x of [-2.4, 2.4]) dormer(b, x, 1.1, z1, 3.1, k, 1.5, 1.7, P(0x9fb0b2, Surf.Wood), P(0x6b5a4a, Surf.RoofTiles));
     inFace(b, 'pz', z1, () => {
-      door(b, 0, 0.4, 1.0, 2.1, 0x7e2a26, { sidelights: true, lamp: false });
+      door(b, 0, 0.4, 1.0, 2.1, 0x7e2a26, { sidelights: true, lamp: true });
       for (const x of [-3.4, -1.8, 1.8, 3.4]) win(b, x, 1.15, 0.95, 1.35, shutterWin(0x2e3a4a));
     });
     // door hood (small gable canopy)
@@ -317,6 +323,7 @@ function cottage(b: ModelBuilder, v: number, rng: RNG): void {
     chimney(b, x0 - 0.4, -1.2, 0.8, 1.1, 0, 7.3);
     inFace(b, 'pz', z1, () => steps(b, 0, 1.8, 2, 0.2, 0.35, 0xb5ada0));
     paveSlab(b, -0.7, z1 + 0.7, 0.7, 8.0, 0xb9b2a6, 0.08);
+    lightPool(b, -0.7, z1 + 0.7, 0.7, z1 + 3.2, 0xb9b2a6, 0.085);
     picket(b, -7.6, 7.1, -0.9, 7.1);
     picket(b, 0.9, 7.1, 7.6, 7.1);
     bushRow(b, -4.6, 2.9, -1.4, 2.9, 3, 0.55, 0x4a7a3a, 1);
@@ -353,6 +360,7 @@ function cottage(b: ModelBuilder, v: number, rng: RNG): void {
     wins(b, 'nz', -4.8, [-3.0, 0.8], 1.1, 1.0, 1.3, { mull: 2 });
     chimney(b, -3.8, -3.2, 0.9, 0.9, 3.0, 6.9, 0x8a4a38);
     paveSlab(b, -1.6, 2.0, -0.4, 8.0, 0xc2bcaf, 0.08);
+    lightPool(b, -1.6, 2.0, -0.4, 4.5, 0xc2bcaf, 0.085);
     lowWall(b, -7.6, 7.0, -2.0, 7.3, 0.7, 0x9c5a44, Surf.Brick);
     lowWall(b, 0.0, 7.0, 7.6, 7.3, 0.7, 0x9c5a44, Surf.Brick);
     bushRow(b, 0.6, 4.3, 4.4, 4.3, 3, 0.6, 0x3f6a2d, 3);
@@ -370,7 +378,7 @@ function cottage(b: ModelBuilder, v: number, rng: RNG): void {
     porch(b, -4.6, 4.6, 1.6, 2.8, 0.6, 3.35, roof, { posts: 2, postW: 0.34, pier: 0x8a8274, post: 0xd6c9a4, rail: 0xd6c9a4, gap: [-0.8, 0.8], kind: 'gable' });
     inFace(b, 'pz', 1.6, () => {
       door(b, 0, 0.6, 1.0, 2.1, 0x6b4a2e, { frame: 0xd6c9a4, surf: Surf.Wood, lite: true, lamp: true });
-      win(b, -2.6, 1.3, 1.8, 1.3, { frame: 0xd6c9a4, mull: 3, sill: 0xd6c9a4 });
+      win(b, -2.6, 1.3, 1.8, 1.3, { frame: 0xd6c9a4, mull: 3, sill: 0xd6c9a4, lit: true });
       win(b, 2.6, 1.3, 1.8, 1.3, { frame: 0xd6c9a4, mull: 3, sill: 0xd6c9a4 });
     });
     const ws: WinStyle = { frame: 0xd6c9a4, mull: 2, sill: 0xd6c9a4 };
@@ -380,6 +388,8 @@ function cottage(b: ModelBuilder, v: number, rng: RNG): void {
     chimney(b, -4.9, -3.0, 0.9, 1.0, 0, 6.2, 0x8a8274, Surf.Stone);
     inFace(b, 'pz', 4.4, () => steps(b, 0, 1.6, 2, 0.3, 0.32, 0x9a8f80));
     paveSlab(b, -0.7, 5.0, 0.7, 8.0, 0xbdb6a8, 0.08);
+    lightPool(b, -0.7, 5.0, 0.7, 7.5, 0xbdb6a8, 0.085);
+    lightPool(b, 5.25, -4.6, 7.25, -2.1, 0x9d978c, 0.075);
     // side drive to a detached garage in the back
     paveSlab(b, 5.2, -7.6, 7.8, 8.0, 0x9d978c, 0.07);
     body(b, 4.6, -7.8, 7.9, -4.6, 0, 2.6, P(0x8e9a78, Surf.Wood));
@@ -415,6 +425,7 @@ function cottage(b: ModelBuilder, v: number, rng: RNG): void {
     wins(b, 'nz', -4.6, [-2.5, 2.5], 1.1, 1.0, 1.3, { mull: 2 });
     inFace(b, 'pz', 1.6, () => steps(b, 0, 1.6, 2, 0.2, 0.35, 0xb5ada0));
     paveSlab(b, -0.7, 2.3, 0.7, 8.0, 0xbdb6a8, 0.08);
+    lightPool(b, -0.7, 2.4, 0.7, 4.9, 0xbdb6a8, 0.085);
     gardenShed(b, -5.8, -6.2, 2.2, 1.8, 0x94493c, 0x3f4145, 0);
     picket(b, -7.6, 7.2, -0.9, 7.2, 1.0);
     picket(b, 0.9, 7.2, 7.6, 7.2, 1.0);

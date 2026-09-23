@@ -78,6 +78,8 @@ export interface WinStyle {
   flower?: ColorLike | null;
   /** draw glass with WallWindows-like dark look but GlassPlain night glow (default) */
   surf?: Surf;
+  /** always lit at night (pavilion glass) — use on one living-room window so a home never looks empty */
+  lit?: boolean;
 }
 
 /** Window in face space: bottom-center at (u, y), size w x h. */
@@ -88,7 +90,7 @@ export function win(b: ModelBuilder, u: number, y: number, w: number, h: number,
     b.paint(fc);
     fq(b, u - w / 2 - ft, y - ft, u + w / 2 + ft, y + h + ft, 0.05);
   }
-  b.paint(s.glass ?? GLASS, s.surf ?? Surf.GlassPlain);
+  b.paint(s.glass ?? GLASS, s.surf ?? Surf.GlassPlain, s.lit ? 2 : 0);
   fq(b, u - w / 2, y, u + w / 2, y + h, 0.08);
   const mull = s.mull ?? 0;
   if (mull > 0 && fc !== null) {

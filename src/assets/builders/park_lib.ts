@@ -840,6 +840,8 @@ export interface PoolSpec {
   color: ColorLike;
   y: number;
   clip?: P2[][];
+  /** height of the pool above y (default 0.02 unclipped, 0.015 clipped) */
+  dy?: number;
 }
 
 /** Octagonal light pool of radius r at (x, z) over one or more ground layers; clipped to the lot. */
@@ -851,7 +853,7 @@ export function lightPool(b: ModelBuilder, x: number, z: number, r: number, spec
   for (const sp of specs) {
     b.paint(shade(sp.color, 0.7), Surf.Emissive, 9);
     if (!sp.clip) {
-      flatPoly(b, base, sp.y + 0.02);
+      flatPoly(b, base, sp.y + (sp.dy ?? 0.02));
       continue;
     }
     for (const q of sp.clip) {
@@ -859,7 +861,7 @@ export function lightPool(b: ModelBuilder, x: number, z: number, r: number, spec
       for (const [qx, qz] of q) if (Math.abs(qx - x) < r * 1.6 && Math.abs(qz - z) < r * 1.6) inRange = true;
       if (!inRange) continue;
       const cp = clipConvex(base, q);
-      if (cp.length >= 3) flatPoly(b, cp, sp.y + 0.015);
+      if (cp.length >= 3) flatPoly(b, cp, sp.y + (sp.dy ?? 0.015));
     }
   }
 }
@@ -879,6 +881,32 @@ export function lamp(b: ModelBuilder, x: number, z: number, h = 4.2, style = 0, 
     b.paint(0xf4f1e6, Surf.Emissive).box(x + 0.05, h - 0.03, z - 0.07, x + 0.58, h, z + 0.07, { top: null });
   }
   if (pool) lightPool(b, x, z, 0.85 * h, Array.isArray(pool) ? pool : [pool]);
+}
+
+/** Regular polygon approximating a circle (convex; for pool clipping). */
+export function circlePoly(cx: number, cz: number, r: number, n = 16): P2[] {
+  const out: P2[] = [];
+  for (let i = 0; i < n; i++) out.push([cx + Math.cos((i / n) * TAU) * r, cz + Math.sin((i / n) * TAU) * r]);
+  return out;
+}
+/** Convex quads of an annulus (for pool clipping), matching annulus(b, ..., seg). */
+export function annulusQuads(cx: number, cz: number, r0: number, r1: number, seg = 16): P2[][] {
+  const out: P2[][] = [];
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i / seg) * TAU, a1 = ((i + 1) / seg) * TAU;
+    out.push([[cx + Math.cos(a0) * r0, cz + Math.sin(a0) * r0], [cx + Math.cos(a0) * r1, cz + Math.sin(a0) * r1], [cx + Math.cos(a1) * r1, cz + Math.sin(a1) * r1], [cx + Math.cos(a1) * r0, cz + Math.sin(a1) * r0]]);
+  }
+  return out;
+}
+/** Rect as a convex polygon. */
+export function rectPoly(x0: number, z0: number, x1: number, z1: number): P2[] {
+  return [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
+}
+/** Paving joint grid: thin darker lines every `step` m over rect at height y. */
+export function jointGrid(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, step: number, color: ColorLike, y: number, w = 0.08): void {
+  b.paint(color, Surf.Pavement);
+  for (let x = x0 + step; x < x1 - 0.01; x += step) b.quad([x - w / 2, y, z1], [x + w / 2, y, z1], [x + w / 2, y, z0], [x - w / 2, y, z0]);
+  for (let z = z0 + step; z < z1 - 0.01; z += step) b.quad([x0, y, z + w / 2], [x1, y, z + w / 2], [x1, y, z - w / 2], [x0, y, z - w / 2]);
 }
 
 /** Pool specs for a lamp standing on a lawn beside a path: lawn pool under the path + path pool clipped to the path. */
