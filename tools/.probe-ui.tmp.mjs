@@ -10,6 +10,17 @@ p.on('pageerror', (e) => console.log('[pageerror]', e.message));
 await p.goto(`${base}?${process.argv[2]}`, { waitUntil: 'load', timeout: 240000 });
 await p.waitForFunction(() => window.__ready === true, null, { timeout: 480000, polling: 500 });
 await p.waitForTimeout(4000);
+const dbg = await p.evaluate(() => {
+  const v = window.__scene.objects; const veh = v.vehicles;
+  const out = [];
+  const res = [];
+  for (let k = 0; k < 10; k++) { const ok = veh.spawn(veh.n, true, true); res.push(ok); if (ok) veh.n++; }
+  out.push('direct spawns ' + res.join(','));
+  for (let f = 0; f < 60; f++) { v.update(0.05); if (f % 10 === 0) out.push('f' + f + ' n=' + veh.n + ' target=' + veh.target); }
+  // why do vehicles die? step one vehicle manually
+  return out.join(' | ');
+});
+console.log(dbg);
 const r = await p.evaluate(() => {
   const sc = window.__scene;
   const v = sc.objects;
