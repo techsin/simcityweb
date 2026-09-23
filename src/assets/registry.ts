@@ -7,7 +7,10 @@ import { ModelBuilder } from './ModelBuilder';
 import { RNG, hashString } from '../core/rng';
 import { MANIFEST_BY_ID, type ManifestEntry } from './manifest';
 
-/** Build function: draw the model into `b`. `variant` in [0, entry.variants). `rng` is seeded by (id, variant). */
+/**
+ * Build function: draw the model into `b`. `variant` in [0, entry.buildVariants ?? entry.variants).
+ * `rng` is seeded by (id, variant) — mirrored twins get their own seed so their rng-driven details differ.
+ */
 export type ModelBuildFn = (b: ModelBuilder, variant: number, rng: RNG, entry: ManifestEntry) => void;
 export type ModelBuilders = Record<string, ModelBuildFn>;
 
@@ -46,8 +49,11 @@ export function getModelGeometry(id: string, variant = 0): THREE.BufferGeometry 
   if (g) return g;
   const b = new ModelBuilder();
   const fn = builders.get(id);
+  const bv = entry?.buildVariants ?? nv;
+  const baseV = v % bv;
+  const mirrored = !!entry?.mirror && v >= bv;
   try {
-    if (fn && entry) fn(b, v, new RNG(hashString(key)), entry);
+    if (fn && entry) fn(b, baseV, new RNG(hashString(key)), entry);
     else placeholder(b, entry);
   } catch (e) {
     console.error(`[assets] failed to build ${key}`, e);
@@ -55,9 +61,37 @@ export function getModelGeometry(id: string, variant = 0): THREE.BufferGeometry 
   }
   if (b.triangleCount === 0) placeholder(b, entry);
   g = b.build();
+  if (mirrored) mirrorX(g);
   g.name = key;
   cache.set(key, g);
   return g;
+}
+
+/** Mirror a non-indexed geometry across X (positions + normals) and fix triangle winding. */
+function mirrorX(g: THREE.BufferGeometry): void {
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const nrm = g.attributes.normal as THREE.BufferAttribute;
+  const attrs = Object.values(g.attributes) as THREE.BufferAttribute[];
+  for (let i = 0; i < pos.count; i++) {
+    pos.setX(i, -pos.getX(i));
+    nrm.setX(i, -nrm.getX(i));
+  }
+  // swap vertices 1 and 2 of every triangle in every attribute
+  for (const a of attrs) {
+    const arr = a.array as Float32Array;
+    const n = a.itemSize;
+    for (let t = 0; t + 2 < a.count; t += 3) {
+      const o1 = (t + 1) * n, o2 = (t + 2) * n;
+      for (let k = 0; k < n; k++) {
+        const tmp = arr[o1 + k];
+        arr[o1 + k] = arr[o2 + k];
+        arr[o2 + k] = tmp;
+      }
+    }
+    a.needsUpdate = true;
+  }
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
 }
 
 export function clearModelCache(): void {

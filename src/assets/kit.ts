@@ -18,14 +18,29 @@ export function pavement(b: ModelBuilder, x0: number, z0: number, x1: number, z1
   b.paint(color, Surf.Pavement).slab(x0, z0, x1, z1, h);
 }
 
-/** Simple low-poly car (~20 tris) centered at (x,z), heading along +Z if rot = 0. Glass is dark metal (no night glow). */
+/** Low-poly car (~40 tris) centered at (x,z), heading along +Z if rot = 0. Glass is dark (no night glow). */
 export function car(b: ModelBuilder, x: number, z: number, rot: number, color: ColorLike, y = 0.1) {
   b.push().translate(x, y, z).rotateY(rot);
-  // body (no bottom)
-  b.paint(color, Surf.Metal).box(-0.9, 0.15, -2.2, 0.9, 0.9, 2.2, { bottom: null });
-  // cabin: dark glass sides + roof in body color
-  b.paint(0x151a20, Surf.Metal).box(-0.8, 0.9, -1.1, 0.8, 1.42, 1.0, { bottom: null, top: null });
-  b.paint(color, Surf.Metal).quad([-0.8, 1.42, 1.0], [0.8, 1.42, 1.0], [0.8, 1.42, -1.1], [-0.8, 1.42, -1.1]);
+  // wheels (dark blocks peeking out under the body)
+  b.paint(0x1a1a1a, Surf.Plain);
+  for (const wz of [-1.35, 1.35]) b.box(-0.93, 0, wz - 0.32, 0.93, 0.5, wz + 0.32, { top: null, bottom: null, pz: null, nz: null });
+  // lower body with hood / trunk wedges
+  b.paint(color, Surf.Metal, 1);
+  b.box(-0.9, 0.22, -2.2, 0.9, 0.78, 2.2, { top: null, bottom: null });
+  b.quad([-0.9, 0.78, 2.2], [0.9, 0.78, 2.2], [0.9, 0.9, 0.9], [-0.9, 0.9, 0.9]); // hood
+  b.quad([0.9, 0.78, -2.2], [-0.9, 0.78, -2.2], [-0.9, 0.9, -1.2], [0.9, 0.9, -1.2]); // trunk
+  b.tri([0.9, 0.78, 2.2], [0.9, 0.78, 0.9], [0.9, 0.9, 0.9]).tri([-0.9, 0.78, 0.9], [-0.9, 0.78, 2.2], [-0.9, 0.9, 0.9]);
+  b.tri([0.9, 0.78, -1.2], [0.9, 0.78, -2.2], [0.9, 0.9, -1.2]).tri([-0.9, 0.78, -2.2], [-0.9, 0.78, -1.2], [-0.9, 0.9, -1.2]);
+  b.quad([-0.9, 0.78, 0.9], [0.9, 0.78, 0.9], [0.9, 0.78, -1.2], [-0.9, 0.78, -1.2]);
+  // cabin: sloped glass front/back, dark side glass, body-colored roof
+  b.paint(0x1c2530, Surf.GlassPlain, 1);
+  b.quad([-0.8, 0.9, 0.9], [0.8, 0.9, 0.9], [0.75, 1.42, 0.2], [-0.75, 1.42, 0.2]);
+  b.quad([0.8, 0.9, -1.2], [-0.8, 0.9, -1.2], [-0.75, 1.42, -0.8], [0.75, 1.42, -0.8]);
+  b.quad([0.8, 0.9, 0.9], [0.8, 0.9, -1.2], [0.75, 1.42, -0.8], [0.75, 1.42, 0.2]);
+  b.quad([-0.8, 0.9, -1.2], [-0.8, 0.9, 0.9], [-0.75, 1.42, 0.2], [-0.75, 1.42, -0.8]);
+  b.paint(color, Surf.Metal, 1).quad([-0.75, 1.42, 0.2], [0.75, 1.42, 0.2], [0.75, 1.42, -0.8], [-0.75, 1.42, -0.8]);
+  // bumper strips
+  b.paint(0x2a2c2e, Surf.Plain).box(-0.92, 0.22, 2.2, 0.92, 0.42, 2.26, { top: null, bottom: null }).box(-0.92, 0.22, -2.26, 0.92, 0.42, -2.2, { top: null, bottom: null });
   b.pop();
 }
 

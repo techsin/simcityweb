@@ -205,6 +205,12 @@ export class SimBot {
   canSpend(cost: number): boolean {
     return this.funds - cost > this.reserve();
   }
+  /** investments that raise income (zoning / roads for new blocks) use a much smaller reserve */
+  canInvest(cost: number): boolean {
+    let e = 0;
+    for (const k in this.st.budget.lastExpense) if (!k.startsWith('oneoff:')) e += this.st.budget.lastExpense[k];
+    return this.funds - cost > 1500 + e * 0.3;
+  }
   /** a competent mayor only adds recurring costs the budget can carry (or when sitting on a big pile of cash) */
   canAfford(defId: string): boolean {
     const d = getDef(defId);
@@ -370,8 +376,8 @@ export class SimBot {
     this.ensurePower();
     this.ensureWater();
     this.ensureGarbage();
-    this.ensureServices();
     this.zoning();
+    this.ensureServices();
     this.caps();
     this.rewards();
     this.density();
@@ -577,7 +583,7 @@ export class SimBot {
       while (blocks-- > 0) {
         const b = this.nextBlock(use);
         if (!b) break;
-        if (!this.canSpend(2500)) break;
+        if (!this.canInvest(2500)) break;
         this.develop(b);
         this.say(`developed ${use} block (${b.bx},${b.bz}) as zone ${b.zone}`);
       }
@@ -607,7 +613,7 @@ export class SimBot {
     // park upkeep budget: ≤ 8% of income unless the residential cap binds
     let income = 0;
     for (const k in st.budget.lastIncome) if (!k.startsWith('oneoff:')) income += st.budget.lastIncome[k];
-    if (!rBinding && (st.budget.lastExpense['service:parks'] ?? 0) > income * 0.08) return this.capsCI(binding, pop);
+    if (!rBinding && ((st.budget.lastExpense['service:parks'] ?? 0) > income * 0.08 || !this.canSpend(8000))) return this.capsCI(binding, pop);
     for (let k = 0; k < (rBinding ? 3 : 1) && placed < 2; k++) {
       const big = pop > 4000 && this.canSpend(3000);
       const def = st.unlocked.has('zoo') && this.count('park_zoo') < 1 + Math.floor(pop / 250000) && this.canSpend(20000) ? 'park_zoo'

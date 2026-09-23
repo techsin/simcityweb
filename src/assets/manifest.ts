@@ -47,6 +47,13 @@ export interface ManifestEntry {
   budget?: number;
   /** allowed horizontal overhang beyond the lot (m), e.g. wind turbine rotors */
   overhang?: number;
+  /**
+   * Mirrored variants: when true, `variants` counts BOTH the builder's variants and their X-mirrored twins.
+   * The builder itself is only asked for variants 0..buildVariants-1 (see registry.getModelGeometry).
+   */
+  mirror?: boolean;
+  /** number of distinct variants the builder implements (defaults to `variants`) */
+  buildVariants?: number;
 }
 
 const E = (
@@ -251,6 +258,12 @@ for (const e of MANIFEST) {
   if (e.id === 'tr_seaport' || e.id === 'tr_ferry_terminal' || e.id === 'park_marina') e.waterfront = true;
   if (e.id === 'tr_airport_large' || e.id === 'tr_airport_small' || e.id === 'tr_seaport') e.budget = 6000;
   if (e.id === 'util_wind_turbine') e.overhang = 18;
+  // growables get X-mirrored twins so streets don't look stamped (garage sides alternate, etc.)
+  if (e.group === 'residential' || e.group === 'commercial' || e.group === 'industrial') {
+    e.mirror = true;
+    e.buildVariants = e.variants;
+    e.variants = e.variants * 2;
+  }
 }
 
 export const MANIFEST_BY_ID: Record<string, ManifestEntry> = Object.fromEntries(MANIFEST.map((e) => [e.id, e]));
