@@ -76,7 +76,7 @@ const IND_KEYS = ['IA', 'ID', 'IM', 'IHT'] as const;
 /** share kept per diffusion iteration along water bodies (higher = spreads farther downstream) */
 const WATER_DIFFUSE_KEEP = 0.975;
 /** days between pollution updates */
-export const POLL_PERIOD = 8;
+export const POLL_PERIOD = 12;
 
 
 export class PollutionSystem implements SimSystem {
@@ -142,12 +142,12 @@ export class PollutionSystem implements SimSystem {
   private stepCost(sim: Simulation): number {
     const { cells, bld } = sizeFactors(sim);
     switch (this.stepIdx < 0 ? 0 : this.stepIdx) {
-      case 0: return 1.6 * bld + 0.6 * cells;
-      case 1: return 2.2 * cells;
-      case 2: return 1.2 * cells;
-      case 3: return 1.8 * cells;
-      case 4: return 1.4 * bld + 0.6 * cells;
-      default: return 1.0 * bld;
+      case 0: return 1.2 * bld + 0.5 * cells;
+      case 1: return 1.9 * cells;
+      case 2: return 0.9 * cells;
+      case 3: return 1.1 * cells;
+      case 4: return 1.6 * bld + 0.5 * cells;
+      default: return 0.6 * bld;
     }
   }
 

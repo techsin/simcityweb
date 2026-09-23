@@ -14,7 +14,7 @@ import { Fam, infoOf, nowMs, readEffects, setFlagQuiet, wealthOf, buildingList }
 import { CRIME_THRESHOLD } from './params';
 import { schedulerOf, sizeFactors } from './scheduler';
 
-export const CRIME_PERIOD = 16;
+export const CRIME_PERIOD = 20;
 
 const POVERTY_BY_DEV: number[] = [];
 POVERTY_BY_DEV[DevType.R1] = 0.28;
@@ -51,7 +51,7 @@ export class CrimeSystem implements SimSystem {
       name: 'crime',
       due: (s) => self.stepIdx >= 0 || s.state.day - self.lastRun >= CRIME_PERIOD,
       urgent: () => false,
-      cost: (s) => { const f = sizeFactors(s); return self.stepIdx <= 0 ? 0.9 * f.bld : 0.6 * f.cells + 0.5 * f.bld; },
+      cost: (s) => { const f = sizeFactors(s); return self.stepIdx <= 0 ? 1.1 * f.bld : 0.6 * f.cells + 0.5 * f.bld; },
       step: (s) => self.step(s),
     });
   }

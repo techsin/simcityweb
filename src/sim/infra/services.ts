@@ -31,7 +31,7 @@ import { schedulerOf, sizeFactors } from './scheduler';
 import { collectStops, computeTransitCoverage, type StopList } from './transit';
 import { getDef } from '../catalog';
 
-export const SERVICES_PERIOD = 8;
+export const SERVICES_PERIOD = 10;
 /** a new / removed service building or road change is reflected within this many days */
 export const SERVICES_DIRTY_DAYS = 2;
 /** estimated cell touches processed per scheduler step (bounds step cost) */
@@ -106,9 +106,9 @@ export class ServicesSystem implements SimSystem {
 
   private stepCost(sim: Simulation): number {
     const { cells, bld } = sizeFactors(sim);
-    if (this.stepIdx <= STEP_PREP) return 0.6 * bld + 0.2 * cells;
-    if (this.stepIdx === STEP_FINISH) return 0.8 * bld + 0.5 * cells;
-    return 2.0;
+    if (this.stepIdx <= STEP_PREP) return 0.5 * bld + 0.1 * cells;
+    if (this.stepIdx === STEP_FINISH) return 1.1 * bld + 0.5 * cells;
+    return 1.6;
   }
 
   /** coverage layer for a CoverageKind name */

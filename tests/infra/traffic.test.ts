@@ -207,8 +207,13 @@ describe('traffic assignment', () => {
     const sim = newSim(st);
     const tr = getTraffic(sim)!;
     for (let k = 0; k < 4; k++) { tr.invalidate(); tr.runCycleSync(sim); }
-    const home = st.buildings.get(st.building[st.idx(30, 31)])!;
-    expect(tr.workerAccess(home.id)).toBeGreaterThan(0.3); // regional jobs
+    // regional jobs (sim-core model: 0.05 x workers + 300 ~ 350 slots) + 40 local jobs for ~1,020 workers
+    const homes = [...st.buildings.values()].filter((b) => b.def === 't_r2');
+    const avg = homes.reduce((a, b) => a + tr.workerAccess(b.id), 0) / homes.length;
+    expect(avg).toBeGreaterThan(0.3);
+    expect(avg).toBeLessThan(0.5);
+    const nearEdge = st.buildings.get(st.building[st.idx(5, 31)])!;
+    expect(tr.workerAccess(nearEdge.id)).toBeGreaterThan(0.9); // closest to the connection -> regional jobs
     expect(tr.freightAccess(f.id)).toBeGreaterThan(0.3);
     expect(tr.getSampleRoutes(100).some((r) => r.kind === 'truck')).toBe(true);
   });

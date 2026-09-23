@@ -82,7 +82,7 @@ const PH_PREP = 0, PH_PREP2 = 1, PH_TRANSIT = 2, PH_RSEARCH = 3, PH_RMATCH = 4, 
   PH_FREIGHT = 8, PH_FINAL = 9, PH_FINAL2 = 10;
 const PHASES = 11;
 /** estimated ms per phase on the reference 256² stress city (scaled by graph / building counts) */
-const PHASE_COST = [3.2, 2.2, 3.0, 2.5, 2.1, 1.4, 3.8, 3.2, 3.0, 2.2, 2.8];
+const PHASE_COST = [1.9, 0.9, 3.2, 2.3, 2.0, 1.5, 2.4, 2.8, 2.4, 0.4, 1.6];
 const MAX_ENTRIES = 12;
 const MODE_NAMES = ['none', 'car', 'transit', 'walk'];
 const IND_KEYS = ['IA', 'ID', 'IM', 'IHT'] as const;
@@ -1046,13 +1046,23 @@ export class TrafficSystem implements SimSystem {
       key[nc++] = o; // packed with the distance below
       if (bd > maxD) maxD = bd;
     }
-    // sort candidates by distance: pack (quantised distance, origin index) into one float64
+    // sort candidates by generalized cost (car label minus any transit time advantage: origins with a fast transit
+    // option compete on transit time) — pack (quantised cost, origin index) into one float64
     let M = 1;
     while (M < oN) M *= 2;
     const q = Math.max(1, Math.floor(2 ** 50 / (M * (maxD + 1))));
+    const qN0 = this.qNoise, qP0 = this.qPrice;
     for (let k = 0; k < nc; k++) {
       const o = key[k];
-      key[k] = Math.floor(dist[cnode[o]] * q) * M + o;
+      const node = cnode[o];
+      let g = dist[node];
+      const trT = this.oTrT[o];
+      if (trT < Infinity) {
+        const cq = src[node];
+        const carPure = g - MATCH_PRICE_MAX - qN0[cq] - qP0[cq] + CAR_OVERHEAD;
+        if (trT < carPure) g -= carPure - trT;
+      }
+      key[k] = Math.floor(Math.max(0, g) * q) * M + o;
     }
     const sorted = key.subarray(0, nc).sort();
     // accept nearest first
@@ -1196,13 +1206,27 @@ export class TrafficSystem implements SimSystem {
       const c = comp[this.ent[this.oEntS[o]]];
       if (O[c] <= 0) continue;
       const take = u * Math.min(1, O[c] / U[c]);
-      const t = Math.min(MAX_COMMUTE, Math.max(avgT + 5, 1.3 * (this.oLastD[o] + CAR_OVERHEAD)));
+      const carT = Math.min(MAX_COMMUTE, Math.max(avgT + 5, 1.3 * (this.oLastD[o] + CAR_OVERHEAD)));
+      // car / transit split (long pooled car trip vs the origin's transit option)
+      const trT = this.oTrT[o];
+      let st = 0;
+      if (trT < Infinity) {
+        const wl = this.oWealth[o] - 1;
+        const d = (-MODE_BETA * trT + TRANSIT_BIAS[wl]) - (-MODE_BETA * carT + CAR_BIAS[wl]);
+        st = 1 / (1 + Math.exp(-d));
+      }
+      const sc = 1 - st;
       this.oU[o] -= take;
       this.oAsg[o] += take;
-      this.oTimeSum[o] += take * t;
-      this.oCarW[o] += take;
+      this.oTimeSum[o] += take * (sc * carT + st * (trT < Infinity ? trT : 0));
+      this.oCarW[o] += take * sc;
+      if (st > 0) {
+        this.oTrW[o] += take * st;
+        this.tAcc[this.oBoard[o]] += take * st;
+        this.stLoad[this.oBoardStop[o]] += take * st;
+      }
       const node = this.candNode[o];
-      if (node >= 0 && node < g.n && SA.done[node] === 1) { acc[node] += take * carPcu; flows = true; }
+      if (sc > 0 && node >= 0 && node < g.n && SA.done[node] === 1) { acc[node] += take * sc * carPcu; flows = true; }
     }
     for (let q = 0; q < this.qN; q++) {
       const open = this.openCap(q);
