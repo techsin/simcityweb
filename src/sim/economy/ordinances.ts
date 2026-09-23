@@ -19,6 +19,8 @@
  *    'water.demand'           water consumption                    (sim-infra utilities)
  *    'traffic.car'            share / volume of car trips          (sim-infra traffic)
  *    'transit.ridership'      transit attractiveness               (sim-infra traffic)
+ *    'tourism.draw'           venue visitor draw                   (economy tourism, WP4)
+ *    'power.nuclear'          nuclear plant output (0 = shut down) (sim-infra utilities, WP3)
  *    'demand.<Dev>'           demand target per DevType enum name: demand.R1 … demand.IHT      (economy)
  *    'demand.R' | 'demand.C' | 'demand.CS' | 'demand.CO' | 'demand.I'  family multipliers           (economy)
  *  Additive (keys starting with 'add.', sum, default 0):
@@ -73,10 +75,10 @@ export const ORDINANCES: OrdinanceDef[] = [
   { id: 'parking_fines', name: 'Parking Fines', description: 'Aggressive enforcement of parking rules.', fixed: 0, perCapita: 0.008, income: true,
     unlockPop: 8000, effects: { 'traffic.car': 0.97, 'add.approval': -1 }, effectText: '+§0.008/resident income, −3% car trips, −1 approval' },
   { id: 'nuclear_free_zone', name: 'Nuclear Free Zone', description: 'Declare the city nuclear free. No nuclear plants allowed.', fixed: 0, perCapita: 0,
-    unlockPop: 10000, effects: { 'add.desir.R': 0.02, 'add.desir.R3': 0.02, 'add.approval': 1 }, blocks: ['util_nuclear_plant'],
-    effectText: 'Residents feel safer (+desirability), bans nuclear power' },
+    unlockPop: 10000, effects: { 'add.desir.R': 0.02, 'add.desir.R3': 0.02, 'add.approval': 1, 'power.nuclear': 0 }, blocks: ['util_nuclear_plant'],
+    effectText: 'Residents feel safer (+desirability), bans nuclear power and shuts down existing nuclear plants' },
   { id: 'tourism_promotion', name: 'Tourism Promotion', description: 'Advertise the city to visitors from around the world.', fixed: 300, perCapita: 0.004,
-    unlockPop: 10000, effects: { 'demand.CS': 1.08, 'add.tourism': 4 }, effectText: '+8% retail demand, more tourists' },
+    unlockPop: 10000, effects: { 'demand.CS': 1.08, 'add.tourism': 4, 'tourism.draw': 1.2 }, effectText: '+8% retail demand, more tourists' },
   { id: 'pollution_controls', name: 'Industrial Pollution Controls', description: 'Scrubbers and filters required on industrial sites.', fixed: 100, perCapita: 0.005,
     unlockPop: 12000, effects: { 'pollution.air.industry': 0.85, 'pollution.water.industry': 0.75, 'demand.I': 0.94 }, effectText: '−15% industrial air, −25% water pollution, −6% industrial demand' },
   { id: 'tire_recycling', name: 'Tire Recycling', description: 'Keeps old tires out of landfills and fires.', fixed: 250, perCapita: 0,

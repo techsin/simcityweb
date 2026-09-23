@@ -14,7 +14,8 @@
  */
 
 export interface FireworksAudioOut {
-  ctx: AudioContext;
+  /** a live AudioContext (sounds only while it is running) or an OfflineAudioContext (tests / level checks) */
+  ctx: BaseAudioContext;
   /** destination (the engine's SFX bus) */
   dest: AudioNode;
   /** optional shared reverb send */
@@ -65,7 +66,7 @@ export class FireworksAudio {
   /** extra gain for all fireworks sounds (0..1.5) */
   volume = 1;
   private getOut: () => FireworksAudioOut | null;
-  private ctx: AudioContext | null = null;
+  private ctx: BaseAudioContext | null = null;
   private dest: AudioNode | null = null;
   private bus: GainNode | null = null;
   private wet: AudioNode | null = null;
@@ -272,14 +273,16 @@ export class FireworksAudio {
 
   // ------------------------------------------------------------------------------------------------ internals
   /** make sure the graph exists; enforce the voice cap (priority 0 launch/crackle .. 2 bursts) */
-  private begin(prio: number, dur: number): AudioContext | null {
+  private begin(prio: number, dur: number): BaseAudioContext | null {
     let out: FireworksAudioOut | null = null;
     try {
       out = this.getOut();
     } catch {
       out = null;
     }
-    if (!out || out.ctx.state !== 'running' || this.volume <= 0) return null;
+    // a suspended live context would pile the show up and play it all at once on resume: stay silent instead
+    const offline = typeof OfflineAudioContext !== 'undefined' && out?.ctx instanceof OfflineAudioContext;
+    if (!out || (out.ctx.state !== 'running' && !offline) || this.volume <= 0) return null;
     const c = out.ctx;
     if (c !== this.ctx || out.dest !== this.dest || !this.bus) this.build(out);
     const now = c.currentTime;
@@ -354,7 +357,7 @@ export class FireworksAudio {
     return input;
   }
 
-  private noiseSrc(c: AudioContext): AudioBufferSourceNode {
+  private noiseSrc(c: BaseAudioContext): AudioBufferSourceNode {
     const s = c.createBufferSource();
     s.buffer = this.noise;
     s.loop = true;
@@ -391,7 +394,7 @@ function env(p: AudioParam, t: number, attack: number, decay: number, peak: numb
   p.exponentialRampToValueAtTime(0.0001, t + attack + decay);
 }
 
-function makeNoise(c: AudioContext, seconds: number): AudioBuffer {
+function makeNoise(c: BaseAudioContext, seconds: number): AudioBuffer {
   const b = c.createBuffer(1, Math.floor(c.sampleRate * seconds), c.sampleRate);
   const d = b.getChannelData(0);
   for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
@@ -399,7 +402,7 @@ function makeNoise(c: AudioContext, seconds: number): AudioBuffer {
 }
 
 /** a texture of random decaying noise pops (crackle: sparse & chunky; glitter: dense & tiny) */
-function makePops(c: AudioContext, seconds: number, perSecond: number, maxLen: number, minAmp: number): AudioBuffer {
+function makePops(c: BaseAudioContext, seconds: number, perSecond: number, maxLen: number, minAmp: number): AudioBuffer {
   const sr = c.sampleRate;
   const n = Math.floor(sr * seconds);
   const b = c.createBuffer(1, n, sr);

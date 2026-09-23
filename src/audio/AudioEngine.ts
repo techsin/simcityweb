@@ -9,14 +9,40 @@
  *   audio.setAmbience({ population, zoom, night, construction, water, activity })
  *   audio.setVolume(kind, v) / getVolume(kind)   kind: 'master' | 'music' | 'sfx' | 'ambience', v in 0..1
  *   audio.setMusicEnabled(on) / musicEnabled / toggleMusic()
+ *   audio.startMusic() / stopMusic()     request / release music for the current screen
+ *   audio.setMusicContext({ screen: 'menu'|'region'|'city', night, population, activity })   steers track choice
+ *   audio.music                          soundtrack player: nowPlaying, list(), next(), prev(), select(id),
+ *                                        shuffle (get/set), setShuffle, isEnabled / setEnabled(id, on), onChange(cb)
  *   audio.setMuted(on) / muted
- * Volumes + music toggle persist in localStorage ('metropolis.audio').
+ * Volumes, music toggle, shuffle and the enabled-track set persist in localStorage ('metropolis.audio').
  */
 import { playVoice, type PlayOptions, type SfxEnv, type SoundName } from './sfx';
 import { Ambience, type AmbienceParams } from './ambience';
-import { MusicGenerator } from './music';
+import { MusicDirector, type MusicContext, type NowPlaying, type TrackInfo } from './music/director';
+import { ALL_TRACKS } from './music/tracks';
+import { makeNoiseBuffer, makeReverb } from './music/fx';
 
 export type VolumeKind = 'master' | 'music' | 'sfx' | 'ambience';
+export type { MusicContext, NowPlaying, TrackInfo };
+
+/** soundtrack player facade (audio.music) for the music player UI */
+export interface MusicControls {
+  /** current song (id, title, mood, tags, bpm, enabled, elapsed / duration seconds) or null */
+  readonly nowPlaying: NowPlaying | null;
+  /** all tracks in playlist order */
+  list(): TrackInfo[];
+  next(): void;
+  prev(): void;
+  /** play this track now (turns music on if it was off) */
+  select(id: string): void;
+  shuffle: boolean;
+  setShuffle(on: boolean): void;
+  isEnabled(id: string): boolean;
+  /** include / exclude a track from the playlist (persisted) */
+  setEnabled(id: string, on: boolean): void;
+  /** fires on track change, playlist / shuffle edits and music on/off; returns unsubscribe */
+  onChange(cb: () => void): () => void;
+}
 
 interface Prefs {
   master: number;
@@ -25,10 +51,13 @@ interface Prefs {
   ambience: number;
   musicOn: boolean;
   muted: boolean;
+  musicShuffle: boolean;
+  /** track ids switched off in the music player */
+  musicDisabled: string[];
 }
 
 const PREFS_KEY = 'metropolis.audio';
-const DEFAULT_PREFS: Prefs = { master: 0.8, music: 0.55, sfx: 0.8, ambience: 0.7, musicOn: true, muted: false };
+const DEFAULT_PREFS: Prefs = { master: 0.8, music: 0.55, sfx: 0.8, ambience: 0.7, musicOn: true, muted: false, musicShuffle: true, musicDisabled: [] };
 
 function loadPrefs(): Prefs {
   try {
@@ -50,7 +79,16 @@ export class AudioEngine {
   private reverbIn!: GainNode;
   private env!: SfxEnv;
   private ambience: Ambience | null = null;
-  private music: MusicGenerator | null = null;
+  private director = new MusicDirector(ALL_TRACKS, {
+    load: () => ({ shuffle: this.prefs.musicShuffle !== false, disabled: Array.isArray(this.prefs.musicDisabled) ? this.prefs.musicDisabled : [] }),
+    save: (p) => {
+      this.prefs.musicShuffle = p.shuffle;
+      this.prefs.musicDisabled = [...p.disabled];
+      this.save();
+    },
+  });
+  /** music's reverb send (follows the music volume) */
+  private musicReverb: GainNode | null = null;
   private wantAmbience = false;
   private pendingAmbience: AmbienceParams = {};
   private wantMusic = false;
@@ -58,6 +96,42 @@ export class AudioEngine {
   private lastPlay = new Map<string, number>();
   private listeners = new Set<Listener>();
   private autoInitAttached = false;
+
+  /** soundtrack player (see MusicControls) */
+  readonly music: MusicControls = (() => {
+    const d = this.director;
+    const self = this;
+    return {
+      get nowPlaying() {
+        return d.nowPlaying;
+      },
+      list: () => d.list(),
+      next: () => d.next(),
+      prev: () => d.prev(),
+      select: (id: string) => {
+        d.select(id);
+        if (!self.prefs.musicOn) self.setMusicEnabled(true);
+        else if (!d.playing) self.startMusic();
+      },
+      get shuffle() {
+        return d.shuffle;
+      },
+      set shuffle(on: boolean) {
+        d.shuffle = on;
+      },
+      setShuffle: (on: boolean) => d.setShuffle(on),
+      isEnabled: (id: string) => d.isEnabled(id),
+      setEnabled: (id: string, on: boolean) => d.setEnabled(id, on),
+      onChange: (cb: () => void) => {
+        const a = d.onChange(cb);
+        const b = self.onChange(cb);
+        return () => {
+          a();
+          b();
+        };
+      },
+    };
+  })();
 
   /** true once the AudioContext exists and is running */
   get ready(): boolean {
@@ -94,18 +168,18 @@ export class AudioEngine {
       g.connect(this.master);
       this.buses[k] = g;
     }
-    // shared reverb
-    this.reverbIn = ctx.createGain();
-    this.reverbIn.gain.value = 0.35;
-    const conv = ctx.createConvolver();
-    conv.buffer = impulse(ctx, 2.6, 2.2);
-    const rvOut = ctx.createGain();
-    rvOut.gain.value = 0.7;
-    this.reverbIn.connect(conv).connect(rvOut).connect(this.master);
-    const noise = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
-    const d = noise.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    // shared hall reverb + noise (src/audio/music/fx.ts - the audio lab renders through the same ones)
+    const rv = makeReverb(ctx);
+    this.reverbIn = rv.input;
+    rv.output.connect(this.master);
+    const noise = makeNoiseBuffer(ctx);
     this.env = { ctx, out: this.buses.sfx, wet: this.reverbIn, noise };
+    // music reverb send: goes through the music volume (and mute) like the dry signal
+    const musicRev = ctx.createGain();
+    musicRev.gain.value = 1;
+    this.musicReverb = musicRev;
+    musicRev.connect(this.reverbIn);
+    this.director.attach(ctx, this.buses.music, musicRev, noise);
     this.applyVolumes(true);
     if (ctx.state === 'suspended') void ctx.resume();
     if (this.wantMusic && this.prefs.musicOn) this.startMusic();
@@ -190,25 +264,27 @@ export class AudioEngine {
   startMusic(): void {
     this.wantMusic = true;
     if (!this.ctx || !this.prefs.musicOn) return;
-    if (!this.music) this.music = new MusicGenerator(this.ctx, this.buses.music, this.reverbIn, this.env.noise);
-    this.music.start();
+    this.director.start();
   }
 
   stopMusic(): void {
     this.wantMusic = false;
-    this.music?.stop();
+    this.director.stop();
   }
 
   setMusicEnabled(on: boolean): void {
     this.prefs.musicOn = on;
     this.save();
     if (on) {
-      if (this.wantMusic || !this.music) {
-        this.wantMusic = true;
-        this.startMusic();
-      }
-    } else this.music?.stop();
+      this.wantMusic = true;
+      this.startMusic();
+    } else this.director.stop();
     this.emit();
+  }
+
+  /** tell the soundtrack where the player is (menu / region / city by day or night, city size, liveliness) */
+  setMusicContext(c: Partial<MusicContext>): void {
+    this.director.setContext(c);
   }
 
   toggleMusic(): boolean {
@@ -268,6 +344,7 @@ export class AudioEngine {
     const curve = (v: number) => v * v;
     set(this.master.gain, this.prefs.muted ? 0 : curve(this.prefs.master));
     set(this.buses.music.gain, curve(this.prefs.music) * 0.9);
+    if (this.musicReverb) set(this.musicReverb.gain, curve(this.prefs.music) * 0.9);
     set(this.buses.sfx.gain, curve(this.prefs.sfx));
     set(this.buses.ambience.gain, curve(this.prefs.ambience));
   }
@@ -283,20 +360,4 @@ export class AudioEngine {
   private emit(): void {
     for (const fn of this.listeners) fn();
   }
-}
-
-/** stereo decaying-noise impulse response */
-function impulse(ctx: AudioContext, seconds: number, decay: number): AudioBuffer {
-  const len = Math.floor(ctx.sampleRate * seconds);
-  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
-  for (let ch = 0; ch < 2; ch++) {
-    const d = buf.getChannelData(ch);
-    let lp = 0;
-    for (let i = 0; i < len; i++) {
-      const t = i / len;
-      lp = lp * 0.55 + (Math.random() * 2 - 1) * 0.45; // darken
-      d[i] = lp * Math.pow(1 - t, decay) * (i < 200 ? i / 200 : 1);
-    }
-  }
-  return buf;
 }

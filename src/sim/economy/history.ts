@@ -1,6 +1,6 @@
 /** Monthly history → state.history (cap HISTORY_CAP points; oldest dropped). */
 import type { SimSystem } from '../Simulation';
-import type { CityState } from '../CityState';
+import { padHistory, type CityState } from '../CityState';
 
 export const HISTORY_CAP = 600;
 
@@ -31,6 +31,8 @@ export function recordHistory(st: CityState): void {
   h.eq.push(Math.round(s.eq));
   h.hq.push(Math.round(s.hq));
   h.approval.push(Math.round(s.approval));
+  // SIM_DEPTH_SPEC series: WP5 pushes its values above this line; padHistory zero-fills series nobody wrote this month
+  padHistory(h);
   if (h.t.length > HISTORY_CAP) {
     const drop = h.t.length - HISTORY_CAP;
     for (const k of Object.keys(h) as (keyof typeof h)[]) h[k].splice(0, drop);

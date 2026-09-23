@@ -369,12 +369,12 @@ export class NewYearCelebration {
       if (n !== this.shownCount) {
         this.shownCount = n;
         this.flashText(String(n), false);
-        this.audio?.tick(false);
+        this.tick(false);
       }
     } else if (left <= 0 && !this.bannerShown) {
       this.bannerShown = true;
       this.flashText(`Happy New Year ${this.year}!`, true);
-      this.audio?.tick(true);
+      this.tick(true);
     }
   }
 
@@ -411,6 +411,14 @@ export class NewYearCelebration {
     } catch {
       /* no WAAPI: static text, hidden when the show ends */
     }
+  }
+
+  /** countdown blip: a UI sound, so it honours a "UI sounds" toggle (settings.uiSounds / audio.uiSounds) if present */
+  private tick(final: boolean): void {
+    const s = this.deps.settings() as GameSettings & { uiSounds?: boolean };
+    const a = this.deps.audio?.() as { uiSounds?: boolean } | undefined;
+    if (s.uiSounds === false || a?.uiSounds === false) return;
+    this.audio?.tick(final);
   }
 
   private hideOverlay(): void {

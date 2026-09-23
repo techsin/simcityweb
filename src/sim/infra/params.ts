@@ -225,3 +225,31 @@ export const FIRE_BURN_DAYS = 6;
 
 /** networks helper */
 export const HIGHWAY = Network.Highway;
+
+// ============================================================================================================
+// SIM_DEPTH_SPEC sections — each package appends ONLY inside its own section (between its start and end markers).
+// ============================================================================================================
+
+// ---------------------------------------------------------------------------------------------- §CATCHMENTS (owner WP2)
+// WP2: tier table defaults, WALK_COST / DRIVE_COST / RAMP_COST, ACCESS_PERIOD, RES_PER_CS_JOB, UNPOWERED_SERVICE_EFF ...
+// §CATCHMENTS end
+
+// ---------------------------------------------------------------------------------------------- §POLLUTION (owner WP3)
+// WP3: per-source smoke, wind, bank coupling, NOISE_PER_TRIP_NET / NET_BASE_NOISE, buffers, garbage range / landfill ...
+// §POLLUTION end
+
+// ---------------------------------------------------------------------------------------------- §UTILITIES (owner WP3)
+// WP3: thermal-plant water, wind / solar factors, brownout priority, water-tower storage ...
+// §UTILITIES end
+
+// ---------------------------------------------------------------------------------------------- §CRIME (owner WP3)
+// WP3: youth component, local unemployment, CRIME_SPILL ...
+// §CRIME end
+
+// ---------------------------------------------------------------------------------------------- §EMERGENCY (owner WP8)
+// WP8: EMERG_DAYS_PER_MIN, RMAX, grace / deadline table, incident rates, dispatch limits ...
+// §EMERGENCY end
+
+// ---------------------------------------------------------------------------------------------- §FACILITIES (owner WP7)
+// WP7: POLICE_CAP, justice (ARREST_K, SENTENCE_MONTHS, JAIL_BEDS), bus fleet, parking, park & ride, ferry, ramps ...
+// §FACILITIES end

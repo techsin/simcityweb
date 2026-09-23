@@ -8,7 +8,8 @@ import { Network } from '../../src/core/types';
 import { RoadGraph } from '../../src/sim/infra/graph';
 import { MinHeap } from '../../src/sim/infra/heap';
 import { Search, Seeds, roadSearch } from '../../src/sim/infra/search';
-import { schedulerOf } from '../../src/sim/infra/scheduler';
+import { resetSchedulerStats, schedulerOf, schedulerUtilisation } from '../../src/sim/infra/scheduler';
+import { INFRA_DAY_BUDGET } from '../../src/sim/infra/params';
 import { getTraffic } from '../../src/sim/systems/infra';
 import { newSim, newState, stressCity } from './cityGen';
 
@@ -58,6 +59,13 @@ describe('infra perf (256x256 stress city)', () => {
     const sch = schedulerOf(sim);
     for (let d = 0; d < 240; d++) sim.advanceDay(); // JIT warm-up of the interleaved (scheduled) code paths
     sch.spentMs.clear();
+    resetSchedulerStats(sch);
+    // P0-8: record every task's largest estimated step cost (deterministic) over the measured days
+    const maxEst = new Map<string, number>();
+    for (const t of sch.tasks) {
+      const cost = t.cost.bind(t);
+      t.cost = (s2) => { const c = cost(s2); if (c > (maxEst.get(t.name) ?? 0)) maxEst.set(t.name, c); return c; };
+    }
     const dayMs: number[] = [];
     const D = 180;
     const cyc0 = tr.cycles;
@@ -71,6 +79,14 @@ describe('infra perf (256x256 stress city)', () => {
     console.log(`systems min ms: ${Object.entries(sys).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(' ')}  pollution stageA=${polA.toFixed(2)} stageB=${polB.toFixed(2)} fire.daily=${fireDaily.toFixed(2)}`);
     console.log(`advanceDay ms over ${D} days: median ${q(0.5)} p90 ${q(0.9)} p99 ${q(0.99)} max ${dayMs[D - 1].toFixed(2)}  traffic cycles ${tr.cycles - cyc0}  per task ms/day: ${[...sch.spentMs].map(([k, v]) => `${k}=${(v / D).toFixed(2)}`).join(' ')}`);
     console.log(`stats: commute=${s.avgCommute.toFixed(1)}min traffic=${s.avgTraffic.toFixed(2)} car=${s.tripsCar} transit=${s.tripsTransit} walk=${s.tripsWalk} powerDemand=${s.powerDemand.toFixed(0)}MW water=${s.waterDemand.toFixed(0)}kL garbage=${s.garbageProduced.toFixed(0)}t pollution=${s.avgPollution.toFixed(2)} crime=${s.avgCrime.toFixed(2)} eq=${s.eq.toFixed(0)} hq=${s.hq.toFixed(0)}`);
+    const util = schedulerUtilisation(sch);
+    console.log(`scheduler (P0-8/P0-15): utilisation ${(util * 100).toFixed(1)}% of INFRA_DAY_BUDGET ${INFRA_DAY_BUDGET} · max est. step ${[...maxEst].map(([k, v]) => `${k}=${v.toFixed(2)}`).join(' ')} · max measured step ms ${[...sch.maxStepMs].map(([k, v]) => `${k}=${v.toFixed(2)}`).join(' ')} · est ms/day ${[...sch.estMs].map(([k, v]) => `${k}=${(v / D).toFixed(2)}`).join(' ')}`);
+    // P0-8 step budget: estimated cost <= 3.0 per step. Pre-existing oversized steps are capped at their Phase 0 values
+    // (regression guard) — their owners lower the cap to 3.0 when they split the step (pollution / crime: WP3).
+    const EST_CAP: Record<string, number> = { pollution: 4.6, traffic: 3.25, crime: 3.25 };
+    for (const [name, c] of maxEst) expect(c, `estimated step cost of ${name}`).toBeLessThanOrEqual(EST_CAP[name] ?? 3.0);
+    // measured max per step <= 6 ms (CI slack); wall-clock on shared machines spikes (GC / load), so strict mode only
+    if (process.env.PERF_STRICT) for (const [name, ms] of sch.maxStepMs) expect(ms, `measured step ms of ${name}`).toBeLessThanOrEqual(6);
     expect(city.buildings).toBeGreaterThan(15000);
     expect(cycleMin).toBeLessThan(400); // loose: target < 30 ms on a normal machine
     expect(Math.max(...phaseMin)).toBeLessThan(100);

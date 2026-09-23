@@ -24,7 +24,8 @@ export function placeholderSong(env: MusicEnv, o: { bpm: number; chart: string; 
     ],
     tail: 4,
     setup() {
-      inst.mix('pad', { level: 0.9 });
+      inst.mix('pad', { level: 2 });
+      inst.mix('bass', { level: 0.8 });
     },
     bar(b) {
       const i = b.bar % bars.length;

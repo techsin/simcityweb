@@ -700,3 +700,11 @@ function nearWater(st: CityState, b: Building, d: number): boolean {
   }
   return false;
 }
+
+/**
+ * Tap-water quality 0..1 (1 = clean) at a cell: supply-weighted pump quality of the water network component serving
+ * it, with treatment applied (SIM_DEPTH_SPEC WP3-5; consumed by WP1-3). PHASE 0 STUB: the city mean stats.tapWater.
+ */
+export function waterQualityAt(sim: Simulation, _cell: number): number {
+  return sim.state.stats.tapWater ?? 1;
+}

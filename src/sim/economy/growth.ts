@@ -419,3 +419,18 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     },
   };
 }
+
+/**
+ * What limits growth of DevType `dev` on cell i: max stage allowed by desirability / city population / zone density,
+ * and whether the lot is rejected (WP5 inspector; SIM_DEPTH_SPEC WP6). Legacy rules (final shape).
+ */
+export function growthLimits(st: CityState, i: number, dev: number): { desStage: number; popStage: number; zoneStage: number; rejected: boolean; reason?: string } {
+  const des = st.desirability[dev]?.[i] ?? 0;
+  const desStage = desirMaxStage(des);
+  const popStage = popMaxStage(st.stats.population);
+  const zoneStage = ZONE_MAX_STAGE[zoneDensity(st.zone[i] as Zone)] ?? 0;
+  let reason: string | undefined;
+  if (zoneStage <= 0) reason = 'Not zoned for growth';
+  else if (des <= GROW_MIN_DESIR) reason = 'Desirability too low';
+  return reason ? { desStage, popStage, zoneStage, rejected: true, reason } : { desStage, popStage, zoneStage, rejected: false };
+}

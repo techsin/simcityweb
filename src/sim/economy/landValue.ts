@@ -11,6 +11,7 @@ import { Zone } from '../../core/types';
 import { getDef } from '../catalog';
 import { COARSE, COMMUTE_BAD, COMMUTE_FALLBACK, COMMUTE_GOOD, COVERAGE_FALLBACK, LV, LV_EFFECTS_MIN_DAYS, LV_REFRESH_DAYS, LV_STATIC_MIN_DAYS } from './tuning';
 import { type EconRuntime, infraFlags } from './runtime';
+import type { FactorTerm } from '../explain';
 
 /** static terrain component: waterfront + view/elevation */
 export function computeStaticLandValue(st: CityState, out: Float32Array): void {
@@ -220,4 +221,9 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
       rt.timing.landValue = performance.now() - t0;
     },
   };
+}
+
+/** land value terms at cell i (WP5 inspector; SIM_DEPTH_SPEC WP6). PHASE 0 STUB: [] */
+export function landValueBreakdown(_st: CityState, _rt: EconRuntime, _i: number): FactorTerm[] {
+  return [];
 }

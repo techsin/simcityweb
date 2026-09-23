@@ -12,7 +12,7 @@ import type { Simulation } from '../Simulation';
 import { DEV_TYPE_COUNT } from '../../core/types';
 import { getDef } from '../catalog';
 import type { BuildingDef } from '../catalogTypes';
-import { COARSE } from './tuning';
+import { COARSE, WORKFORCE_RATIO } from './tuning';
 
 export interface EconData {
   v: number;
@@ -50,6 +50,34 @@ export interface EconData {
   popMilestone: number;
   /** last month's net income */
   lastNet: number;
+
+  // ---- SIM_DEPTH_SPEC (Phase 0; defaulted with ??= in econData() so older saves load)
+  /** tourists per day (WP4), attractiveness 0..100 overall / per wealth (WP4) */
+  tourists: number;
+  attractiveness: number;
+  attractByWealth: number[];
+  /** approval / attractiveness terms of the last monthly update, id -> points (WP4) */
+  approvalTerms: Record<string, number>;
+  attractTerms: Record<string, number>;
+  /** overnight visitors without a hotel room (WP4) */
+  hotelShortage: number;
+  /** migration multipliers per wealth (WP4; 1 = neutral) */
+  migration: number[];
+  /** regional demand terms of the last demand update (WP4-1; WP5 demand tooltip) */
+  regionTerms?: RegionTerms;
+}
+
+/** WP4-1 regional demand terms (capacity units added to the targets / caps) */
+export interface RegionTerms {
+  R: number[];
+  CS: number[];
+  CO: number;
+  I: number;
+  /** multiplier on the industrial target from the regional market */
+  market: number;
+  capR: number;
+  capC: number;
+  capI: number;
 }
 
 export function econData(st: CityState): EconData {
@@ -78,9 +106,23 @@ export function econData(st: CityState): EconData {
       tourism: 0,
       popMilestone: 0,
       lastNet: 0,
+      tourists: 0,
+      attractiveness: 0,
+      attractByWealth: [0, 0, 0],
+      approvalTerms: {},
+      attractTerms: {},
+      hotelShortage: 0,
+      migration: [1, 1, 1],
     };
     st.systemData.economy = d;
   }
+  d.tourists ??= 0;
+  d.attractiveness ??= 0;
+  d.attractByWealth ??= [0, 0, 0];
+  d.approvalTerms ??= {};
+  d.attractTerms ??= {};
+  d.hotelShortage ??= 0;
+  d.migration ??= [1, 1, 1];
   return d;
 }
 
@@ -189,6 +231,15 @@ export class EconRuntime {
   coarseCountRaw!: Float32Array;
   /** freight access 0..1 per coarse block */
   coarseFreight!: Float32Array;
+  // ---- SIM_DEPTH_SPEC (WP1 writes; zero / neutral until then)
+  /** actual workforce / population ratio (EMA, clamped [0.46, 0.62]); demand uses it instead of WORKFORCE_RATIO */
+  workforceRatio = WORKFORCE_RATIO;
+  /** residents per coarse block by wealth [R$, R$$, R$$$] (blurred like coarsePop) */
+  coarsePopW: Float32Array[] = [new Float32Array(0), new Float32Array(0), new Float32Array(0)];
+  /** population-weighted education b.edu per coarse block (blurred) */
+  coarseSkill!: Float32Array;
+  /** kids per coarse block (blurred) */
+  coarseKids!: Float32Array;
 
   // ---- static land value (terrain): per cell
   lvStatic!: Float32Array;
@@ -241,6 +292,10 @@ export class EconRuntime {
     this.coarseWealthRaw = new Float32Array(cc);
     this.coarseCountRaw = new Float32Array(cc);
     this.coarseFreight = new Float32Array(cc);
+    this.coarsePopW = [new Float32Array(cc), new Float32Array(cc), new Float32Array(cc)];
+    this.coarseSkill = new Float32Array(cc);
+    this.coarseKids = new Float32Array(cc);
+    this.workforceRatio = WORKFORCE_RATIO;
     this.lvStatic = new Float32Array(st.cells);
     this.lvEffects = new Float32Array(st.cells);
     this.lvLandfill = new Float32Array(st.cells);

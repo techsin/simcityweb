@@ -15,6 +15,8 @@ import {
 import { type EconRuntime, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
 import { serviceEffectiveness } from './budget';
+import type { FactorTerm } from '../explain';
+import type { CityState } from '../CityState';
 
 export interface ResidentCoverage {
   police: number;
@@ -116,4 +118,12 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
       update(sim, false);
     },
   };
+}
+
+/**
+ * Approval terms of the last monthly update (sum = econData.approvalRaw; WP5 TopBar tooltip; SIM_DEPTH_SPEC WP4).
+ * PHASE 0 STUB: [].
+ */
+export function approvalBreakdown(_st: CityState): FactorTerm[] {
+  return [];
 }

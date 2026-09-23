@@ -161,6 +161,16 @@ export const OVERLAYS: Record<Overlay, OverlayDef> = {
   },
   [Overlay.Noise]: BAD('Noise', ['pollution', 'traffic'], '#dbb05a', '#c2482e', '#6a1f5a', ['Quiet', 'Noisy', 'Very noisy']),
   [Overlay.Transit]: COVERAGE('Transit Coverage', '#1f9fb0', '#8fd6e0'),
+  // SIM_DEPTH_SPEC overlays: Phase 0 placeholders (WP5 owns the final ramps / legends / data wiring)
+  [Overlay.Parks]: COVERAGE('Parks & Recreation', '#3a9a3a', '#a8dca0'),
+  [Overlay.Commute]: BAD('Commute Time', ['catchments', 'traffic'], '#dbb05a', '#c2482e', '#6a1f5a', ['Short', 'Long', 'Very long']),
+  [Overlay.Shops]: COVERAGE('Shop Access', '#c07a2a', '#ecc890'),
+  [Overlay.Demographics]: COVERAGE('Demographics', '#7a5ac0', '#c8b8ec'),
+  [Overlay.Tourism]: COVERAGE('Tourism', '#d0508a', '#f0b8d0'),
+  [Overlay.Nimby]: BAD('NIMBY / YIMBY', ['catchments'], '#dbb05a', '#c2482e', '#6a1f5a', ['Mild', 'Unwanted', 'Very unwanted']),
+  [Overlay.Soil]: BAD('Soil Contamination', ['pollution'], '#c8b070', '#8a6a30', '#4a3010', ['Low', 'Medium', 'High']),
+  [Overlay.Emergency]: COVERAGE('Emergency Response', '#d83a3a', '#f0a8a8'),
+  [Overlay.Parking]: BAD('Parking Pressure', ['traffic'], '#dbb05a', '#c2482e', '#6a1f5a', ['Low', 'Medium', 'High']),
 };
 
 /** Legend for the UI (title + color stops). */

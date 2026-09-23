@@ -18,7 +18,7 @@ export const DESIR_ALL_SWEEPS = 4;
 /** occupancy / building health update period (each growable is updated once per period) */
 export const OCC_PERIOD = 4;
 
-// ============================================================================ workforce / employment
+// ============================================================================ workforce / employment  (§EMPLOYMENT — owner WP1)
 /** fraction of residents that are in the workforce */
 export const WORKFORCE_RATIO = 0.55;
 /** regional commuters that can fill jobs when connected to neighbors: base + fraction of workforce, max share of jobs */
@@ -232,6 +232,7 @@ export const CONSTRUCT_DAYS_PER_STAGE = 4;
 export const CONSTRUCT_RAND = 6;
 /** a lot requires water when stage ≥ this or zone density ≥ 2 */
 export const WATER_REQUIRED_STAGE = 3;
+// §GROWTH (owner WP6): new growth constants go below this line (pickDev exponents, gentrification, hotels) ----------
 
 // ============================================================================ OCCUPANCY / HEALTH / ABANDONMENT
 /** fraction of the gap to target occupancy closed per day */
@@ -288,6 +289,7 @@ export const LV = {
   temporal: 0.45,
   spatial: 0.35,
 };
+// §LAND VALUE (owner WP6): new land-value constants go below this line --------------------------------------------
 
 // ============================================================================ DESIRABILITY
 /**
@@ -351,6 +353,7 @@ export const SLOPE_P1 = 12;
 export const COARSE = 8;
 /** freight access falls to 0 at this many coarse blocks from a freight source (highway, rail, freight station, port, edge connection) */
 export const FREIGHT_BLOCKS = 7;
+// §DESIRABILITY (owner WP6): new desirability constants go below this line (term indices 17+, cohort weights) -------
 
 // ============================================================================ EQ / HQ
 /** EQ target = EQ_BASE + EQ_SPAN × pop-weighted education coverage × edu effect; moves EQ_RATE of the gap per month */
@@ -461,6 +464,25 @@ export const APPROVAL = {
   deficit: -4,
   ema: 0.3,
 };
+// §APPROVAL (owner WP4): new approval term constants go below this line ---------------------------------------------
+
+// ============================================================================ §DEMOGRAPHICS (owner WP1)
+/** reference cohort mix [kids 0-11, teens 12-17, young adults 18-24, adults 25-64, seniors 65+] (balance normalisation) */
+export const COHORT_BASE: readonly [number, number, number, number, number] = [0.13, 0.07, 0.1, 0.55, 0.15];
+// WP1: HOUSEHOLD_PROFILE, COHORT_WEALTH_MUL, LIFE_DAMP, PART_ADULT, COLLEGE_WILL, CARLESS, EDU_TAU_YEARS, NEED_OK, ...
+// §DEMOGRAPHICS end ----------------------------------------------------------------------------------------------
+
+// ============================================================================ §TOURISM (owner WP4)
+// WP4: CS_JOBS_PER_VISITOR, hotel / overnight shares, venue income, beach constants ...
+// §TOURISM end ---------------------------------------------------------------------------------------------------
+
+// ============================================================================ §MIGRATION (owner WP4)
+// WP4: MIG_NEUTRAL, migration clamp, retirees / students ...
+// §MIGRATION end -------------------------------------------------------------------------------------------------
+
+// ============================================================================ §REGION (owner WP4)
+// WP4-1: EDGE_CONN, RG_R, RG_CI, RG_CS, regional market / cap factors ...
+// §REGION end ----------------------------------------------------------------------------------------------------
 
 // ============================================================================ helpers
 export const ZONE_FAMILY_OF: readonly (('R' | 'C' | 'I' | null))[] = [null, 'R', 'R', 'R', 'C', 'C', 'C', 'I', 'I', 'I', null];

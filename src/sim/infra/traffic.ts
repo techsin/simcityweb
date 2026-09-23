@@ -439,6 +439,17 @@ export class TrafficSystem implements SimSystem {
   commuteOf(id: number): number {
     return id >= 0 && id < this.commuteById.length ? this.commuteById[id] : 0;
   }
+  /**
+   * congested travel minutes per road node of the current assignment (read-only view, indexed like this.road nodes;
+   * valid for searches while graphVersion is unchanged). For other systems' roadSearch (emergency dispatch, WP8).
+   */
+  get nodeTimes(): Float32Array {
+    return this.nodeTime.subarray(0, Math.min(this.nodeTime.length, this.road.n));
+  }
+  /** road graph version (incremented on every rebuild) — node ids / nodeTimes are only valid for one version */
+  get graphVersion(): number {
+    return this.road.version;
+  }
 
   /** a transient service-vehicle route (fire trucks etc.) shown for `days` sim days */
   pushServiceRoute(sim: Simulation, cells: Uint32Array, weight = 1, days = 2): void {

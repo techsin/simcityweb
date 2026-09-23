@@ -24,6 +24,7 @@ import {
 import { type EconRuntime, infraFlags } from './runtime';
 import { frontHasRoad, removeBuilding } from './buildings';
 import { ordinanceEffect } from './ordinances';
+import type { FactorTerm } from '../explain';
 
 /** duck-typed view of sim-infra's TrafficSystem (optional methods; -1 = not assessed yet) */
 interface TrafficApi {
@@ -293,4 +294,12 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       rt.timing.population = performance.now() - t0;
     },
   };
+}
+
+/**
+ * "Why?" breakdown of a building's condition (health target terms, WP5 inspector; SIM_DEPTH_SPEC WP1).
+ * PHASE 0 STUB: no terms, target = current health, no abandonment forecast.
+ */
+export function conditionBreakdown(_st: CityState, b: Building): { terms: FactorTerm[]; target: number; abandonInDays: number | null } {
+  return { terms: [], target: b.health, abandonInDays: null };
 }

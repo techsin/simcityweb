@@ -73,6 +73,8 @@ const K_STAR = 0, K_ROCKET = 1, K_EMBER = 2, K_STROBE = 3, K_CRACKLE = 4, K_FLAS
 const S_PEONY = 0, S_CHRYS = 1, S_RING = 2, S_WILLOW = 3, S_BROCADE = 4, S_CROSSETTE = 5, S_PALM = 6, S_STROBE = 7,
   S_CRACKLE = 8, S_MULTI = 9, S_PISTIL = 10, S_CHANGE = 11, S_KAMURO = 12, S_SALUTE = 13, S_HEART = 14;
 const SHELL_TYPES = 15;
+/** shells fired in synchronized salvos (the first 5 for small towns) */
+const SALVO_TYPES = [S_PEONY, S_RING, S_CHRYS, S_STROBE, S_CHANGE, S_PALM, S_CROSSETTE, S_PISTIL, S_WILLOW];
 const SOUND_NAMES: FireworksSoundKind[] = ['launch', 'whistle', 'burst', 'crackle', 'glitter', 'salute'];
 
 /** linear HDR star colours (before intensity) */
@@ -96,6 +98,8 @@ const MAX_LIVE: Record<QualityLevel, number> = { low: 8000, medium: 16000, high:
 const DENSITY: Record<QualityLevel, number> = { low: 0.45, medium: 0.7, high: 1, ultra: 1.12 };
 const CAPACITY = 36864;
 const MAX_SITES = 48;
+/** queued shell launches (floats per entry) and the spark-writing budget per director step */
+const QUEUE = 96, QF = 13, SPARKS_PER_FRAME = 1400;
 
 // ------------------------------------------------------------------------------------------------ shaders
 const VERT = /* glsl */ `
@@ -113,12 +117,14 @@ uniform float uGain;
 uniform float uHalo;
 uniform float uWaterY;
 uniform float uSat;
+uniform float uSizeK;
 uniform sampler2D uWaterMask;
 uniform float uMaskScale;
 varying vec3 vCol;
 varying vec2 vQ;
 varying vec4 vS;
 varying vec2 vH;
+varying vec3 vG;
 
 float fwHash(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
 
@@ -138,7 +144,7 @@ vec3 fwPos(float t, float kind) {
 }
 
 void main() {
-  vCol = vec3(0.0); vQ = vec2(0.0); vS = vec4(0.0, 1.0, 0.0, 0.0); vH = vec2(0.0, 1.0);
+  vCol = vec3(0.0); vQ = vec2(0.0); vS = vec4(0.0, 1.0, 0.0, 0.0); vH = vec2(0.0, 1.0); vG = vec3(0.0);
   float kp = aK.x;
   float kind = mod(kp, 8.0);
   float seg = mod(floor(kp / 8.0), 8.0);
@@ -177,11 +183,13 @@ void main() {
   vec2 sh = ch.xy / ch.w * hv;
   vec2 st = ct.xy / ct.w * hv;
   float pxm = hv.y * projectionMatrix[1][1];
-  float rH = aM.x * pxm / ch.w;
-  float rT = aM.x * pxm / ct.w;
+  float rH = aM.x * uSizeK * pxm / ch.w;
+  float rT = aM.x * uSizeK * pxm / ct.w;
   float u0 = seg / segN, u1 = (seg + 1.0) / segN;
   bool trail = aM.y > 0.0;
-  if (trail) { rH *= mix(1.0, 0.38, u0); rT *= mix(1.0, 0.38, u1); }
+  // long (willow / brocade / palm) trails taper to fine threads
+  float taper = aM.y > 0.5 ? 0.24 : 0.38;
+  if (trail) { rH *= mix(1.0, taper, u0); rT *= mix(1.0, taper, u1); }
   // sub-pixel sparks keep a minimum footprint; their energy falls off (softly) instead
   float energy = rH < uMinPx ? pow(rH / uMinPx, 0.45) : 1.0;
   rH = max(rH, uMinPx);
@@ -200,7 +208,8 @@ void main() {
     // star: white-hot ignition -> colour (optionally switching) -> cooling ember
     if (aC0.w > 0.0) c = mix(aC0.rgb, aC1.rgb, smoothstep(aC0.w - 0.05, aC0.w + 0.05, f));
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    c = mix(c, vec3(1.0, 0.94, 0.82) * max(l, 0.3) * 1.7, (1.0 - smoothstep(0.0, 0.08, f)) * 0.8);
+    // white-hot for the first ~0.15 s (absolute, so long-lived willow stars don't stay white)
+    c = mix(c, vec3(1.0, 0.94, 0.82) * max(l, 0.3) * 1.7, (1.0 - smoothstep(0.0, min(0.15, life * 0.08), age)) * 0.8);
     c = mix(c, vec3(1.0, 0.3, 0.06) * max(l, 0.25) * 1.1, smoothstep(0.5, 1.0, f) * 0.72);
     I = 1.0 - smoothstep(0.7, 1.0, f);
     I *= 1.0 - aC1.w * smoothstep(0.4, 0.85, f) * rnd;
@@ -215,7 +224,7 @@ void main() {
   } else if (kind < 3.5) {
     // strobe: dark flight, then hard blinking
     float on = step(fract(uTime * aK.w + aK.y * 7.0), 0.28);
-    I = mix(0.12, on * 2.4, smoothstep(0.1, 0.22, f)) * (1.0 - smoothstep(0.86, 1.0, f));
+    I = mix(0.05, on * 2.4, smoothstep(0.1, 0.22, f)) * (1.0 - smoothstep(0.86, 1.0, f));
     halo *= 1.5;
   } else if (kind < 4.5) {
     // crackle pop
@@ -250,6 +259,8 @@ void main() {
   vQ = vec2(a * L + (a * 2.0 - 1.0) * e * cap, s * e);
   vS = vec4(L, mix(rT, rH, a), hb, tb);
   vH = vec2(halo, sharp);
+  // long star trails glitter (broken, twinkling threads) instead of reading as solid rods
+  vG = vec3(kind < 0.5 ? smoothstep(0.35, 1.0, aM.y) : 0.0, mix(u1, u0, a), aK.y * 97.0);
   // pre-compensate the night grading's desaturation so shells keep their colour
   float lc = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c = max(vec3(lc) + (c - vec3(lc)) * uSat, vec3(0.0));
@@ -263,12 +274,20 @@ varying vec3 vCol;
 varying vec2 vQ;
 varying vec4 vS;
 varying vec2 vH;
+varying vec3 vG;
+uniform float uTime;
 void main() {
   float L = vS.x;
   float ax = clamp(vQ.x, 0.0, L);
   float d = length(vec2(vQ.x - ax, vQ.y)) / max(vS.y, 1e-3);
   float g = L > 1e-3 ? ax / L : 1.0;
   float br = mix(vS.w, vS.z, g);
+  if (vG.x > 0.0) {
+    float cell = floor(vQ.x * 0.6 + vG.z);
+    float h = fract(sin(cell * 12.9898 + floor(uTime * 14.0 + vG.z) * 78.233) * 43758.5453);
+    // mostly dim embers with a few bright twinkles (not a regular dashed line)
+    br *= mix(1.0, h * h * h * 3.6, vG.x * smoothstep(0.03, 0.25, vG.y));
+  }
   float core = exp(-d * d * vH.y);
   float halo = vH.x * exp(-d * 1.2) * (1.0 - smoothstep(2.2, 3.0, d));
   gl_FragColor = vec4(vCol * ((core + halo) * br), 1.0);
@@ -335,6 +354,7 @@ export class Fireworks {
     uHalo: { value: 0.14 },
     uWaterY: { value: SEA_LEVEL },
     uSat: { value: 1.2 },
+    uSizeK: { value: 1 },
     uWaterMask: { value: null as THREE.Texture | null },
     uMaskScale: { value: 1 },
   };
@@ -367,6 +387,11 @@ export class Fireworks {
   private windZ = 0;
   private suppressSound = false;
   private heightScale = 1;
+  /** launch-site bounds + margin (x0, x1, z0, z1) */
+  private bb = new Float64Array(4);
+  /** centre of the launch sites (camera distance -> spark size) */
+  private cx = 0;
+  private cz = 0;
   private siteScore = new Float32Array(MAX_SITES);
 
   // ---- sound events (unsorted pool)
@@ -471,7 +496,8 @@ export class Fireworks {
     const pop = Math.max(0, opts.population ?? 2000);
     this.k = clamp01(opts.intensity ?? (Math.log10(Math.max(pop, 30)) - 1.7) / 4.0);
     const k = this.k;
-    this.duration = Math.max(6, opts.duration ?? 20 + 70 * Math.pow(k, 0.85));
+    // hamlet ~20 s .. town of 5k ~45 s .. metropolis 75-90 s
+    this.duration = Math.max(6, opts.duration ?? 20 + 70 * Math.pow(k, 1.4));
     this.delay = Math.max(0, opts.delay ?? 2.8);
     this.seed = ((opts.seed ?? Math.floor(Math.random() * 2 ** 31)) | 0) || 1;
     this.sites = this.cleanSites(this.ctx.getSites());
@@ -486,10 +512,21 @@ export class Fireworks {
       for (const s of this.sites) { x0 = Math.min(x0, s.x); x1 = Math.max(x1, s.x); z0 = Math.min(z0, s.z); z1 = Math.max(z1, s.z); }
       ext = Math.hypot(x1 - x0, z1 - z0);
     }
+    this.cx = this.cz = 0;
+    for (const s of this.sites) { this.cx += s.x / this.sites.length; this.cz += s.z / this.sites.length; }
+    if (!this.sites.length) this.cx = this.cz = this.ctx.mapSize / 2;
+    // virtual launch points must stay within the city's footprint (+ margin)
+    const bb = this.bb;
+    bb[0] = bb[2] = Infinity; bb[1] = bb[3] = -Infinity;
+    for (const s of this.sites) { bb[0] = Math.min(bb[0], s.x); bb[1] = Math.max(bb[1], s.x); bb[2] = Math.min(bb[2], s.z); bb[3] = Math.max(bb[3], s.z); }
+    const mg = 350;
+    if (!this.sites.length) { bb[0] = bb[2] = this.cx - mg; bb[1] = bb[3] = this.cx + mg; }
+    bb[0] -= mg; bb[1] += mg; bb[2] -= mg; bb[3] += mg;
     this.heightScale = lerp(0.85, 1.1, clamp01(ext / 3000)) * lerp(0.95, 1.05, k);
     this.hasWater = this.reflectOn && this.updateWaterMask();
     this.running = true;
     this.opened = false;
+    this.lastShotU = -1e9;
     this.grandDone = false;
     this.lastType = -1;
     this.nextShot = lerp(1.6, 0.9, k);
@@ -513,6 +550,7 @@ export class Fireworks {
   /** stop launching; with immediate=true everything disappears at once */
   stop(immediate = false): void {
     this.running = false;
+    this.qN = this.qHead = 0;
     if (immediate) {
       this.endAt = -1;
       this.clearAll();
@@ -556,6 +594,11 @@ export class Fireworks {
     u.uGain.value = lerp(1.7, 1.0, night);
     // WorldView grades night scenes with saturation 1.08 - 0.32 * night: undo that for the fireworks (+ a bit)
     u.uSat.value = Math.min(1.5, 1.1 / Math.max(0.6, 1.08 - 0.32 * night));
+    // zoomed far out: fatter sparks so the bursts still read as crisp sparkles instead of fading to sub-pixel dust
+    const cp = this.ctx.camera.position;
+    const cd = Math.hypot(cp.x - this.cx, cp.y - 220, cp.z - this.cz);
+    const far = clamp01((cd - 1300) / 4200);
+    u.uSizeK.value = 1 + 1.7 * far * far * (3 - 2 * far);
     this.mesh.visible = true;
     this.reflection.visible = this.reflectOn && this.hasWater;
     if (!this.active) this.hide();
@@ -579,6 +622,7 @@ export class Fireworks {
       a[o + 7] = 0;
     }
     this.death.fill(-1e9);
+    this.qN = this.qHead = 0;
     this.cursor = 0;
     this.advanced = 0;
     this.dirtyFrom = 0;
@@ -731,6 +775,15 @@ export class Fireworks {
   // ------------------------------------------------------------------------------------------------ director
   private direct(): void {
     if (!this.running) return;
+    this.directShow();
+    this.drain();
+  }
+
+  private directShow(): void {
+    // zoomed far out: bigger, higher shells so the show still reads (an artistic cheat, like the spark size)
+    const cp = this.ctx.camera.position;
+    const f = clamp01((Math.hypot(cp.x - this.cx, cp.y - 220, cp.z - this.cz) - 1600) / 3800);
+    this.viewK = 1 + 1.0 * f * f * (3 - 2 * f);
     const u = this.clock - this.delay; // show time, 0 = opening salvo bursts
     const k = this.k;
     if (!this.opened) {
@@ -759,18 +812,35 @@ export class Fireworks {
       this.salvo();
       this.nextSalvo = u + lerp(12, 6, k) * this.rr(0.75, 1.3);
     }
+    // keep the sky layered: when too few shells are bursting / about to burst, fire the next one early
+    if (!finale && k > 0.12 && this.burstsAround() < lerp(0.2, 4.5, k)) this.nextShot = Math.min(this.nextShot, Math.max(u, this.lastShotU + 0.3));
     let guard = 0;
     while (u >= this.nextShot && guard++ < 4) {
+      this.lastShotU = u;
       const avail = this.maxLive - this.countLive();
       if (avail < this.maxLive * 0.12) {
         this.nextShot = u + 0.12;
         break;
       }
-      const burst = finale && this.rnd() < 0.35 + 0.35 * k ? 2 : 1;
-      for (let b = 0; b < burst; b++) this.randomShell(finale, 0, b * this.rr(0.05, 0.25));
-      const base = finale ? lerp(0.55, 0.16, k) : lerp(2.1, 0.62, k);
-      this.nextShot = u + base * this.rr(0.55, 1.45);
+      // volleys: 2..3 shells from different sites in quick succession keep the sky layered
+      const r = this.rnd();
+      const burst = finale ? (r < 0.08 + 0.47 * k ? 3 : r < 0.35 + 0.55 * k ? 2 : 1) : r < 0.08 + 0.12 * k ? 3 : r < 0.3 + 0.3 * k ? 2 : 1;
+      for (let b = 0; b < burst; b++) this.randomShell(finale, -1, b * this.rr(0.12, 0.45));
+      const base = finale ? lerp(0.9, 0.13, Math.sqrt(k)) : lerp(4.4, 0.36, Math.sqrt(k));
+      this.nextShot = u + base * burst * this.rr(0.6, 1.4) * (burst > 1 ? 0.75 : 1);
     }
+  }
+
+  private lastShotU = -1e9;
+  /** shells that will still be blooming when a shell launched now bursts (~3 s from now) */
+  private burstsAround(): number {
+    const T = this.flT, now = this.clock;
+    let n = 0;
+    for (let i = 0; i < T.length; i++) {
+      const d = T[i] - now;
+      if (d > 0.7 && d < 3.6) n++;
+    }
+    return n;
   }
 
   /** calibre 0..1 for a new shell */
@@ -822,11 +892,12 @@ export class Fireworks {
   }
 
   private heightFor(c: number): number {
-    return (120 + 230 * c) * this.heightScale;
+    return (120 + 230 * c) * this.heightScale * (1 + (this.viewK - 1) * 0.6);
   }
   private radiusFor(c: number): number {
-    return (34 + 92 * c) * lerp(0.9, 1.15, this.k);
+    return (34 + 92 * c) * lerp(0.9, 1.15, this.k) * this.viewK;
   }
+  private viewK = 1;
   private flightFor(H: number): number {
     return 1.5 + Math.max(60, H) / 165;
   }
@@ -855,7 +926,7 @@ export class Fireworks {
   private salvo(): void {
     // synchronized: several sites fire identical shells (or one site fans them out) that burst together
     const k = this.k;
-    const types = [S_PEONY, S_RING, S_CHRYS, S_STROBE, S_CHANGE, S_PALM, S_CROSSETTE, S_PISTIL, S_WILLOW];
+    const types = SALVO_TYPES;
     const type = types[Math.floor(this.rnd() * (k > 0.3 ? types.length : 5))];
     const col = this.shellColor(type);
     const col2 = PAIRS[Math.floor(this.rnd() * PAIRS.length)][1];
@@ -1030,6 +1101,8 @@ export class Fireworks {
       }
       const x = ox + dx * lo, y = oy + dy * lo, z = oz + dz * lo;
       if (x < 0 || z < 0 || x > W || z > W) continue;
+      // stay over (or next to) the developed city, never out in the wilderness
+      if (x < this.bb[0] || x > this.bb[1] || z < this.bb[2] || z > this.bb[3]) continue;
       if (this.viewScore(x, y, z, R) < 0.3) continue;
       const s = this.tmpSite;
       s.x = x; s.z = z; s.y = this.ctx.groundAt(x, z); s.kind = 'centre'; s.weight = 1;
@@ -1057,15 +1130,11 @@ export class Fireworks {
     }
     const used = this.used;
     used.fill(0);
-    const tooClose = (x: number, z: number, m: number) => {
-      for (let j = 0; j < m; j++) if (Math.hypot(F[j * 3] - x, F[j * 3 + 2] - z) < minD) return true;
-      return false;
-    };
     while (out.length < n) {
       let bi = -1, bv = 0.12;
       for (let i = 0; i < cnt; i++) {
         if (used[i] || sc[i] <= bv) continue;
-        if (tooClose(SF[i * 3], SF[i * 3 + 2], out.length)) continue;
+        if (this.tooClose(SF[i * 3], SF[i * 3 + 2], out.length, minD)) continue;
         bi = i; bv = sc[i];
       }
       if (bi < 0) break;
@@ -1078,14 +1147,22 @@ export class Fireworks {
     let guard = 0;
     while (out.length < Math.min(n, 4) && guard++ < 8) {
       const v = this.virtualSite(H, R);
-      if (!v || tooClose(this.fx, this.fz, out.length)) continue;
+      if (!v || this.tooClose(this.fx, this.fz, out.length, minD)) continue;
       const m = out.length;
       F[m * 3] = this.fx; F[m * 3 + 1] = this.fy; F[m * 3 + 2] = this.fz;
-      out.push({ ...v });
+      const vs = this.virtualPool[m % this.virtualPool.length];
+      vs.x = v.x; vs.y = v.y; vs.z = v.z; vs.kind = v.kind; vs.weight = v.weight;
+      out.push(vs);
     }
     return out.length;
   }
   private used = new Uint8Array(MAX_SITES);
+  private virtualPool: LaunchSite[] = Array.from({ length: 16 }, () => ({ x: 0, y: 0, z: 0, kind: 'centre' as LaunchSiteKind, weight: 1 }));
+  private tooClose(x: number, z: number, m: number, minD: number): boolean {
+    const F = this.spreadFit;
+    for (let j = 0; j < m; j++) if (Math.hypot(F[j * 3] - x, F[j * 3 + 2] - z) < minD) return true;
+    return false;
+  }
 
   // ------------------------------------------------------------------------------------------------ shells
   /**
@@ -1093,12 +1170,41 @@ export class Fireworks {
    * flight time; burstTime (optional) pins the burst time exactly (synchronized salvos, "midnight").
    */
   private launch(site: LaunchSite, tbx: number, tby: number, tbz: number, type: number, c: number, colA: number, colB: number, tLaunch: number, flight: number, burstTime?: number): void {
-    if (burstTime !== undefined) flight = Math.max(1.2, burstTime - tLaunch);
+    // queued: big salvos / the finale are written over a few frames (bounded CPU per frame, no hitch)
+    if (this.qN >= QUEUE) return;
+    const o = this.qN++ * QF, Q = this.queue;
+    Q[o] = site.x; Q[o + 1] = site.y; Q[o + 2] = site.z; Q[o + 3] = tbx; Q[o + 4] = tby; Q[o + 5] = tbz;
+    Q[o + 6] = type; Q[o + 7] = c; Q[o + 8] = colA; Q[o + 9] = colB; Q[o + 10] = tLaunch; Q[o + 11] = flight;
+    Q[o + 12] = burstTime === undefined ? NaN : burstTime;
+  }
+  private queue = new Float64Array(QUEUE * QF);
+  private qN = 0;
+  private qHead = 0;
+
+  /** write queued shells, oldest first, until ~SPARKS_PER_FRAME sparks were written this step (at least one shell) */
+  private drain(): void {
+    if (this.qHead >= this.qN) {
+      this.qHead = this.qN = 0;
+      return;
+    }
+    const s0 = this.spawned;
+    const Q = this.queue;
+    while (this.qHead < this.qN && (this.spawned - s0 < SPARKS_PER_FRAME * this.density || this.spawned === s0)) {
+      const o = this.qHead++ * QF;
+      // a shell drained a few frames late leaves now (and flies a touch faster when its burst time is pinned)
+      const tL = Math.max(Q[o + 10], this.clock);
+      const bt = Q[o + 12];
+      this.fire(Q[o], Q[o + 1], Q[o + 2], Q[o + 3], Q[o + 4], Q[o + 5], Q[o + 6], Q[o + 7], Q[o + 8], Q[o + 9], tL, isNaN(bt) ? Q[o + 11] - (tL - Q[o + 10]) : Math.max(1.2, bt - tL));
+    }
+    if (this.qHead >= this.qN) this.qHead = this.qN = 0;
+  }
+
+  private fire(siteX: number, siteY: number, siteZ: number, tbx: number, tby: number, tbz: number, type: number, c: number, colA: number, colB: number, tLaunch: number, flight: number): void {
     const avail = this.maxLive - this.countLive();
     if (avail < 200) return;
     this.shells++;
     const R = this.radiusFor(c) * (type === S_SALUTE ? 0.4 : 1);
-    const sx = site.x + this.rr(-6, 6), sz = site.z + this.rr(-6, 6), sy = site.y + 0.5;
+    const sx = siteX + this.rr(-6, 6), sz = siteZ + this.rr(-6, 6), sy = siteY + 0.5;
     const by = tby;
     // rocket initial velocity so that the (drag + gravity) path reaches the burst point at `flight`
     const kr = 0.45;
@@ -1142,7 +1248,7 @@ export class Fireworks {
     const size = 0.45 + R * 0.0072;
     switch (type) {
       case S_PEONY:
-        this.sphere(bx, byy, bz, tb, R, Math.round((90 + 120 * c) * q), 2.4, this.rr(1.9, 2.5), pa, I, size, 0.12, 1, 0.55, null, 0, 0);
+        this.sphere(bx, byy, bz, tb, R, Math.round((90 + 120 * c) * q), 2.4, this.rr(2.2, 2.8), pa, I, size, 0.12, 1, 0.55, null, 0, 0);
         break;
       case S_CHRYS:
         this.sphere(bx, byy, bz, tb, R, Math.round((60 + 80 * c) * q), 2.0, this.rr(2.3, 2.9), pa, I, size * 0.95, 0.55, q < 0.6 ? 2 : 3, 0.4, null, 0, 0);
@@ -1193,8 +1299,8 @@ export class Fireworks {
     }
     // burst flash + city light + sound
     if (type !== S_SALUTE) {
-      const fl = 0.22 + 0.2 * c;
-      this.setTpl(K_FLASH, bx, byy, bz, tb, 0, 0, 0, 0.2, lerp(pa[0], 1, 0.35) * fl, lerp(pa[1], 1, 0.35) * fl, lerp(pa[2], 1, 0.35) * fl, R * 0.24, 0, 0);
+      const fl = 0.2 + 0.16 * c;
+      this.setTpl(K_FLASH, bx, byy, bz, tb, 0, 0, 0, 0.18, lerp(pa[0], 1, 0.35) * fl, lerp(pa[1], 1, 0.35) * fl, lerp(pa[2], 1, 0.35) * fl, R * 0.15, 0, 0);
       this.put();
       this.queueFlash(tb, bx, byy, bz, pa, 0.35 + 0.65 * c);
       this.queueSound(tb, 2, bx, byy, bz, R, type === S_CRACKLE || type === S_BROCADE || type === S_KAMURO ? 0.6 : type === S_WILLOW || type === S_PALM ? 0.3 : 0);
@@ -1426,7 +1532,7 @@ export class Fireworks {
 
   private salute(bx: number, by: number, bz: number, tb: number, R: number): void {
     // bright white flash + tight crackle cluster and a hard bang
-    this.setTpl(K_FLASH, bx, by, bz, tb, 0, 0, 0, 0.16, 5, 5, 5.2, R * 1.1, 0, 0);
+    this.setTpl(K_FLASH, bx, by, bz, tb, 0, 0, 0, 0.09, 2.2, 2.2, 2.35, R * 0.3, 0, 0);
     this.put();
     const n = Math.round(40 * this.density);
     for (let i = 0; i < n; i++) {
@@ -1498,12 +1604,13 @@ export class Fireworks {
       r += p[o + 3] * env; g += p[o + 4] * env; b += p[o + 5] * env;
     }
     const night = sharedUniforms.uNight.value;
-    const amt = Math.min(1.6, sum) * 0.75 * night;
+    // soft: the city should flicker with the bursts, not light up like day during the finale
+    const base = h.intensity;
+    const amt = (1 - Math.exp(-sum * 1.1)) * 0.4 * night * Math.max(0.3, Math.min(1, base / 0.5));
     if (amt < 1e-3) {
       this.restoreHemi();
       return;
     }
-    const base = h.intensity;
     const tot = base + amt;
     const inv = 1 / Math.max(sum, 1e-5);
     const w0 = base / tot, w1 = amt / tot;

@@ -105,6 +105,16 @@ export enum Overlay {
   Desirability = 14,
   Noise = 15,
   Transit = 16,
+  // SIM_DEPTH_SPEC overlays (data wiring + UI by WP5; placeholders until then)
+  Parks = 17,
+  Commute = 18,
+  Shops = 19,
+  Demographics = 20,
+  Tourism = 21,
+  Nimby = 22,
+  Soil = 23,
+  Emergency = 24,
+  Parking = 25,
 }
 
 // ---------------------------------------------------------------------------

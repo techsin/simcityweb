@@ -1,6 +1,6 @@
 /**
  * Economy / growth systems (owned by the sim-core agent), in run order:
- *   land value → desirability → population (construction, occupancy, stats) → demand → growth → budget
+ *   land value → desirability → population (construction, occupancy, stats) → tourism (WP4) → demand → growth → budget
  *   → rewards / unlocks → approval (EQ/HQ) → advisors & news → history.
  * All share one EconRuntime (indices / scratch); persistent data lives in state.systemData.economy.
  */
@@ -9,6 +9,7 @@ import { EconRuntime } from '../economy/runtime';
 import { landValueSystem } from '../economy/landValue';
 import { desirabilitySystem } from '../economy/desirability';
 import { populationSystem } from '../economy/population';
+import { tourismSystem } from '../economy/tourism';
 import { demandSystem } from '../economy/demand';
 import { growthSystem } from '../economy/growth';
 import { budgetSystem } from '../economy/budget';
@@ -23,6 +24,7 @@ export function economySystems(): SimSystem[] {
     landValueSystem(rt),
     desirabilitySystem(rt),
     populationSystem(rt),
+    tourismSystem(rt),
     demandSystem(rt),
     growthSystem(rt),
     budgetSystem(rt),

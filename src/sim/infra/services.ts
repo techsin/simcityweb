@@ -34,8 +34,8 @@ import { getDef } from '../catalog';
 export const SERVICES_PERIOD = 15;
 /** a new / removed service building or road change is reflected within this many days */
 export const SERVICES_DIRTY_DAYS = 2;
-/** estimated cell touches processed per scheduler step (bounds step cost) */
-const WORK_PER_STEP = 240000;
+/** estimated cell touches processed per scheduler step (bounds step cost: ~2.35 ms on the 256² stress city) */
+const WORK_PER_STEP = 120000;
 const KIND_SERVICE: Record<string, ServiceKind> = {
   police: 'police', fire: 'fire', health: 'health', education: 'education', park: 'parks', transit: 'transit', garbage: 'utilities',
 };
@@ -113,7 +113,7 @@ export class ServicesSystem implements SimSystem {
     if (this.stepIdx === STEP_FINISH) return 0.6 * bld + 0.9 * cells;
     if (this.stepIdx === STEP_FOOT || this.stepIdx === STEP_FINISH2) return 2.3 * bld + 0.2 * cells;
     // station steps: bounded by WORK_PER_STEP, less when little work remains (estimated from station radii)
-    return 0.1 + 2.0 * Math.min(1, this.workLeft / WORK_PER_STEP);
+    return 0.1 + 2.3 * Math.min(1, this.workLeft / WORK_PER_STEP);
   }
 
   /** coverage layer for a CoverageKind name */

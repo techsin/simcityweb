@@ -156,6 +156,7 @@ class App {
   async showTitle(): Promise<void> {
     this.clearScreens();
     audio.stopAmbience();
+    audio.setMusicContext({ screen: 'menu', night: false, population: 0, activity: 0.3 });
     audio.startMusic();
     let continueInfo: { title: string; sub: string } | null = null;
     let last: RegionData | null = null;
@@ -214,6 +215,7 @@ class App {
     this.clearScreens();
     this.region = model;
     audio.stopAmbience();
+    audio.setMusicContext({ screen: 'region', night: false, population: model.data.totals?.population ?? 0, activity: 0.3 });
     audio.startMusic();
     ld?.set('Rendering the region…', 0.85);
     if (ld) await paint();
@@ -352,6 +354,7 @@ class App {
     applyRegionEffects(st, rctx);
     audio.startAmbience();
     audio.setAmbience({ population: st.stats.population, zoom: 0.5, night: false });
+    audio.setMusicContext({ screen: 'city', night: false, population: st.stats.population, activity: 0.5 });
     if (Ctor) {
       const scene = new Ctor({
         container,

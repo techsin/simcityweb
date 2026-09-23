@@ -5,7 +5,24 @@
 import { Emitter, type CellRect } from '../core/events';
 import { RNG } from '../core/rng';
 import { SECONDS_PER_DAY, DAYS_PER_MONTH, MONTHS_PER_YEAR } from '../core/constants';
-import type { Building, CityState, NewsItem } from './CityState';
+import type { Building, CityState, IncidentKind, NewsItem } from './CityState';
+
+/** emergency lifecycle event (WP8 emits; banner / panel / sirens listen) */
+export interface EmergencyEvent {
+  type: 'new' | 'queued' | 'dispatched' | 'arrived' | 'escalated' | 'resolved' | 'failed' | 'uncovered';
+  /** incident id */
+  id: number;
+  kind: IncidentKind;
+  x: number;
+  z: number;
+  major: boolean;
+  /** a player dispatch is possible (some station of the needed type has a free unit within 60 min) */
+  manualPossible: boolean;
+  /** why auto-dispatch did not happen ('uncovered') */
+  reason?: 'noStation' | 'outOfRange' | 'busy';
+  /** expected arrival in game minutes ('dispatched' / 'queued') */
+  etaMin?: number;
+}
 
 export interface CityEvents extends Record<string, unknown> {
   buildingAdded: Building;
@@ -27,6 +44,8 @@ export interface CityEvents extends Record<string, unknown> {
   disaster: { kind: string; x: number; z: number; active: boolean };
   unlocked: string;
   speedChanged: number;
+  /** emergency incident lifecycle (WP8) */
+  emergency: EmergencyEvent;
   /** full reset (after load) — renderers should rebuild everything */
   reset: void;
 }
@@ -55,6 +74,11 @@ export class Simulation {
   private acc = 0;
   /** safety cap to avoid spiral of death */
   maxDaysPerFrame = 4;
+  /**
+   * real-time slow-down factor applied at speed 1 only (>= 1; WP8 LIVE mode sets it while the player handles an
+   * uncovered emergency). Headless runs (advanceDay / runDays) are unaffected.
+   */
+  liveSlowdown = 1;
 
   constructor(state: CityState, systems: SimSystem[] = []) {
     this.state = state;
@@ -75,7 +99,7 @@ export class Simulation {
   update(dt: number): void {
     for (const s of this.systems) s.frame?.(this, dt);
     if (this._speed === 0) return;
-    const spd = SECONDS_PER_DAY[this._speed];
+    const spd = this.secondsPerDay();
     this.acc += Math.min(dt, 0.25);
     let n = 0;
     while (this.acc >= spd && n < this.maxDaysPerFrame) {
@@ -84,6 +108,25 @@ export class Simulation {
       n++;
     }
     if (n >= this.maxDaysPerFrame) this.acc = Math.min(this.acc, spd);
+  }
+
+  /** real seconds per sim day at the current speed (Infinity when paused) */
+  secondsPerDay(): number {
+    const s = this._speed;
+    return SECONDS_PER_DAY[s] * (s === 1 ? Math.max(1, this.liveSlowdown || 1) : 1);
+  }
+
+  /** progress 0..1 of the current day in real time (for smooth vehicle / effect interpolation); 0 when paused */
+  get dayFraction(): number {
+    const spd = this.secondsPerDay();
+    if (!(spd > 0) || !Number.isFinite(spd)) return 0;
+    const f = this.acc / spd;
+    return f < 0 ? 0 : f > 1 ? 1 : f;
+  }
+
+  /** continuous sim time in days: state.day + dayFraction */
+  simTime(): number {
+    return this.state.day + this.dayFraction;
   }
 
   /** advance exactly one day (also used by headless tests) */

@@ -17,6 +17,7 @@ import {
 import { type EconRuntime, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
 import { lvEffectAt } from './landValue';
+import type { FactorTerm } from '../explain';
 
 // term indices
 const T_LV = 0, T_AIR = 1, T_WATER = 2, T_GARB = 3, T_CRIME = 4, T_NOISE = 5, T_COMMUTE = 6, T_POLICE = 7, T_FIRE = 8,
@@ -188,4 +189,13 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
       rt.timing.desirability = performance.now() - t0;
     },
   };
+}
+
+/**
+ * Desirability terms of DevType `dev` at cell i (sum of terms = raw before clamp; value = stored desirability;
+ * WP5 inspector; SIM_DEPTH_SPEC WP6). PHASE 0 STUB: no terms, raw = value = stored desirability.
+ */
+export function desirabilityBreakdown(st: CityState, _rt: EconRuntime, dev: number, i: number): { terms: FactorTerm[]; raw: number; value: number } {
+  const v = st.desirability[dev]?.[i] ?? 0;
+  return { terms: [], raw: v, value: v };
 }

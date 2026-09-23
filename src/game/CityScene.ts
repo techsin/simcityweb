@@ -874,10 +874,21 @@ export class CityScene {
         constructing = Math.min(1, k / Math.max(1, n) * 5);
       }
       a.setAmbience({ population: st.stats.population, zoom: Math.max(0, Math.min(1, (dist - 60) / (st.size * CELL_SIZE))), night: hour < 6 || hour > 19.5, construction: constructing, activity: this.sim.speed / 3 });
+      // soundtrack context: night, city size, liveliness (sim speed + recent growth + construction)
+      const m = this.musicPop;
+      const now = performance.now();
+      if (now - m.t > 20000) {
+        m.growth = m.t ? Math.max(0, Math.min(1, ((st.stats.population - m.pop) / Math.max(500, m.pop)) * 20)) : 0;
+        m.pop = st.stats.population;
+        m.t = now;
+      }
+      const music = a as { setMusicContext?: (c: Record<string, unknown>) => void };
+      music.setMusicContext?.({ screen: 'city', night: hour < 6 || hour > 19.5, population: st.stats.population, activity: Math.min(1, (this.sim.speed / 3) * 0.6 + m.growth * 0.25 + constructing * 0.15) });
     } catch {
       /* ignore */
     }
   }
+  private musicPop = { pop: 0, t: 0, growth: 0 };
 
   /** take the audio engine's volumes as the starting values (single source of truth) */
   private syncVolumesFromAudio(): void {

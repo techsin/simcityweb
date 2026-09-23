@@ -45,6 +45,13 @@ export class InfraScheduler {
   private frameOwner: object | null = null;
   /** estimated cost units used per day (headless) and measured ms per task (both modes), for profiling */
   readonly spentMs = new Map<string, number>();
+  /** measured maximum ms of a single step per task (both modes; perf tests assert the per-step budget) */
+  readonly maxStepMs = new Map<string, number>();
+  /** estimated cost units per task (both modes) */
+  readonly estMs = new Map<string, number>();
+  /** headless: days ticked and estimated cost spent over them (utilisation = estSpent / (days x INFRA_DAY_BUDGET)) */
+  headlessDays = 0;
+  estSpent = 0;
   lastDayCost = 0;
 
   register(task: InfraTask): void {
@@ -71,6 +78,8 @@ export class InfraScheduler {
     const budget = INFRA_DAY_BUDGET + this.carry;
     const spent = this.run(sim, budget, false);
     this.carry = Math.max(0, Math.min(INFRA_DAY_CARRY, budget - spent));
+    this.headlessDays++;
+    this.estSpent += spent;
   }
 
   /** call from every infra system's frame(); only the first caller (per frame) does the work */
@@ -93,7 +102,9 @@ export class InfraScheduler {
   private exec(sim: Simulation, t: InfraTask): void {
     const t0 = nowMs();
     t.step(sim);
-    this.spentMs.set(t.name, (this.spentMs.get(t.name) ?? 0) + nowMs() - t0);
+    const dt = nowMs() - t0;
+    this.spentMs.set(t.name, (this.spentMs.get(t.name) ?? 0) + dt);
+    if (dt > (this.maxStepMs.get(t.name) ?? 0)) this.maxStepMs.set(t.name, dt);
   }
 
   /** run steps within `budget`; returns the estimated cost used */
@@ -112,6 +123,7 @@ export class InfraScheduler {
       if (k === n) break;
       const c = tasks[k].cost(sim);
       this.exec(sim, tasks[k]);
+      this.estMs.set(tasks[k].name, (this.estMs.get(tasks[k].name) ?? 0) + c);
       credit[k] += c;
       spent += c;
       ran++;
@@ -125,6 +137,7 @@ export class InfraScheduler {
       const used = realTime ? nowMs() - t0 : spent;
       if (ran > 0 && used + c > budget) break;
       this.exec(sim, tasks[i]);
+      this.estMs.set(tasks[i].name, (this.estMs.get(tasks[i].name) ?? 0) + c);
       credit[i] += c;
       spent += c;
       ran++;
@@ -137,6 +150,19 @@ export class InfraScheduler {
     this.lastDayCost = spent;
     return spent;
   }
+}
+
+/** headless utilisation 0..1+ of INFRA_DAY_BUDGET since the counters were last reset (P0-15 budget rule: <= 0.85) */
+export function schedulerUtilisation(s: InfraScheduler): number {
+  return s.headlessDays > 0 ? s.estSpent / (s.headlessDays * INFRA_DAY_BUDGET) : 0;
+}
+/** reset the profiling counters (spentMs, maxStepMs, estMs, utilisation) */
+export function resetSchedulerStats(s: InfraScheduler): void {
+  s.spentMs.clear();
+  s.maxStepMs.clear();
+  s.estMs.clear();
+  s.headlessDays = 0;
+  s.estSpent = 0;
 }
 
 const schedulers = new WeakMap<Simulation, InfraScheduler>();

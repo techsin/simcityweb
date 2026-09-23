@@ -23,6 +23,16 @@ export type CoverageKind = 'police' | 'fire' | 'health' | 'education' | 'park' |
 
 export type ServiceKind = 'police' | 'fire' | 'health' | 'education' | 'transit' | 'parks' | 'utilities' | 'roads';
 
+/** catchment tier of a service building (WP2 tier engine; police / fire are capacity-free tiers, WP2-1) */
+export type ServiceTier = 'elementary' | 'high' | 'college' | 'library' | 'clinic' | 'hospital' | 'play' | 'green' | 'police' | 'fire';
+/** how a catchment reaches cells: walking over streets (highways block), driving over roads, or a Euclidean disk */
+export type ReachMetric = 'walk' | 'drive' | 'euclid';
+/** NIMBY / YIMBY splat (0..1 at the source, smooth falloff to 0 at radius cells) */
+export interface AreaEffect {
+  amount: number;
+  radius: number;
+}
+
 export interface BuildingDef {
   id: string;
   name: string;
@@ -66,9 +76,18 @@ export interface BuildingDef {
 
   // ---- local effects
   pollution?: { air?: number; water?: number; garbage?: number; noise?: number; radius?: number };
-  coverage?: { kind: CoverageKind; radius: number; strength: number; capacity?: number };
+  /** capacity: legacy "residents served", or tier units (pupils / patient-equivalents / visitors) when `tier` is set */
+  coverage?: { kind: CoverageKind; radius: number; strength: number; capacity?: number; tier?: ServiceTier; metric?: ReachMetric };
   /** land value / desirability effect (+ parks & landmarks, - dumps) */
   landValue?: { amount: number; radius: number };
+  /** NIMBY: unwanted neighbour (plants, dumps, jails, airports ...) -> st.stigma (WP2) */
+  stigma?: AreaEffect;
+  /** YIMBY for the wealthy / high-end C (landmarks, city hall, golf ...) -> st.prestige (WP2) */
+  prestige?: AreaEffect;
+  /** offices / high-tech like to be near universities and research -> st.campus (WP2) */
+  campus?: AreaEffect;
+  /** residential household form override (default derived from model / stage; WP1 householdForm) */
+  household?: 'house' | 'apartment' | 'tower';
 
   // ---- placement / unlocks
   placement?: 'land' | 'shore' | 'water';

@@ -12,7 +12,7 @@
  *
  * Versioned: SerializedCity.version; older saves are upgraded by registered migrations (registerCityMigration).
  */
-import { CityState, type Building } from '../sim/CityState';
+import { CityState, HISTORY_KEYS, defaultStats, type Building, type CityStats, type HistorySeries } from '../sim/CityState';
 import type { CityConfigData } from '../sim/config';
 
 export const CITY_SAVE_FORMAT = 'metropolis-city';
@@ -45,6 +45,8 @@ export interface SerializedBuildings {
   unhappy: Float64Array;
   /** fields not covered above (added by other systems): field -> [buildingIndex, value] pairs */
   extra: Record<string, [number, unknown][]>;
+  /** OPTIONAL_BUILDING_FIELDS columns present in this save (NaN = undefined) */
+  opt?: Record<string, Float32Array>;
 }
 
 export interface SerializedCity {
@@ -68,6 +70,16 @@ export interface SerializedCity {
 
 const SKIP = new Set(['size', 'cells', 'config', 'buildings']);
 
+/**
+ * Derived per-cell layers that are NOT saved (neither written nor restored; a loaded city starts with zeros). Their
+ * owner system must recompute them synchronously in init() so the first frame / day after a load is correct.
+ * Stocks (soil, landfillFill) are state and stay persisted. Keeps a 256² save within ~1 MB of its pre-spec size.
+ */
+export const DERIVED_LAYERS: ReadonlySet<string> = new Set([
+  'eduElemCov', 'eduHighCov', 'eduCollegeCov', 'playCov', 'greenCov', 'shopAccess', 'stigma', 'prestige', 'campus',
+  'accessCommute', 'treeCover', 'visitors', 'respFire', 'respPolice', 'respMedical', 'parking',
+]);
+
 type NumCtor = { new (n: number): AnyTypedArray };
 const BUILDING_FIELDS: [keyof Building & string, NumCtor][] = [
   ['id', Int32Array],
@@ -88,7 +100,12 @@ const BUILDING_FIELDS: [keyof Building & string, NumCtor][] = [
   ['health', Float64Array],
   ['unhappy', Float64Array],
 ];
-const KNOWN_BUILDING_KEYS = new Set<string>(['def', ...BUILDING_FIELDS.map((f) => f[0])]);
+/**
+ * Optional numeric building fields (undefined = "derive"): saved as Float32 columns with NaN for undefined, and only
+ * when at least one building defines the field. Restored values are Float32 — writers should store Math.fround(v).
+ */
+export const OPTIONAL_BUILDING_FIELDS: readonly (keyof Building & string)[] = ['kids', 'teens', 'yad', 'srs', 'wf', 'edu', 'hire'];
+const KNOWN_BUILDING_KEYS = new Set<string>(['def', ...BUILDING_FIELDS.map((f) => f[0]), ...OPTIONAL_BUILDING_FIELDS]);
 
 export function isTypedArray(v: unknown): v is AnyTypedArray {
   return ArrayBuffer.isView(v) && !(v instanceof DataView);
@@ -133,6 +150,16 @@ export function serializeBuildings(map: Map<number, Building>): SerializedBuildi
       if (v === undefined) continue;
       (out.extra[key] ??= []).push([k, v]);
     }
+    for (const name of OPTIONAL_BUILDING_FIELDS) {
+      const v = rec[name];
+      if (v === undefined || v === null) continue;
+      let col = out.opt?.[name];
+      if (!col) {
+        col = new Float32Array(n).fill(NaN);
+        (out.opt ??= {})[name] = col;
+      }
+      col[k] = Number(v);
+    }
     k++;
   }
   return out;
@@ -149,6 +176,9 @@ export function deserializeBuildings(sb: SerializedBuildings, copyExtra = true):
   }
   for (const [key, pairs] of Object.entries(sb.extra ?? {})) {
     for (const [k, v] of pairs) if (list[k]) list[k][key] = copyExtra ? deepCopy(v) : v;
+  }
+  for (const [key, col] of Object.entries(sb.opt ?? {})) {
+    for (let k = 0; k < list.length && k < col.length; k++) { const v = col[k]; if (!Number.isNaN(v)) list[k][key] = v; }
   }
   for (const b of list) map.set(b.id as number, b as unknown as Building);
   return map;
@@ -174,6 +204,7 @@ export function serializeCity(state: CityState, opts: SerializeOptions = {}): Se
     if (SKIP.has(key)) continue;
     const v = rec[key];
     if (typeof v === 'function' || v === undefined) continue;
+    if (DERIVED_LAYERS.has(key)) continue;
     if (isTypedArray(v)) out.layers[key] = copy ? cloneTA(v) : v;
     else if (Array.isArray(v) && v.length > 0 && v.every(isTypedArray)) out.layers[key] = copy ? (v as AnyTypedArray[]).map(cloneTA) : (v as AnyTypedArray[]).slice();
     else if (v instanceof Set) out.sets[key] = [...v];
@@ -219,6 +250,7 @@ export function deserializeCity(input: SerializedCity): CityState {
   const rec = st as unknown as Record<string, unknown>;
 
   for (const [key, v] of Object.entries(obj.layers ?? {})) {
+    if (DERIVED_LAYERS.has(key)) continue;
     const cur = rec[key];
     if (Array.isArray(v)) {
       const arr = Array.isArray(cur) ? (cur as AnyTypedArray[]) : [];
@@ -243,6 +275,7 @@ export function deserializeCity(input: SerializedCity): CityState {
   for (const [key, v] of Object.entries(obj.sets ?? {})) rec[key] = new Set(deepCopy(v));
   for (const [key, v] of Object.entries(obj.maps ?? {})) rec[key] = new Map(deepCopy(v));
   for (const [key, v] of Object.entries(obj.data ?? {})) rec[key] = deepCopy(v);
+  upgradeStatsAndHistory(st);
 
   st.buildings = deserializeBuildings(obj.buildings);
   // guard: rebuild the cell -> building index if it is missing / inconsistent
@@ -251,6 +284,32 @@ export function deserializeCity(input: SerializedCity): CityState {
   for (const id of st.buildings.keys()) if (id > maxId) maxId = id;
   if (!(st.nextBuildingId > maxId)) st.nextBuildingId = maxId + 1;
   return st;
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) && !ArrayBuffer.isView(v) && Object.getPrototypeOf(v) === Object.prototype;
+
+/** fill keys missing in `target` from `defaults`, recursing into nested plain objects (saved values always win) */
+function fillDefaults(target: Record<string, unknown>, defaults: Record<string, unknown>): void {
+  for (const k of Object.keys(defaults)) {
+    const t = target[k], d = defaults[k];
+    if (t === undefined) target[k] = d;
+    else if (isPlainObject(t) && isPlainObject(d)) fillDefaults(t, d);
+  }
+}
+
+/**
+ * Older saves: stats fields added later get their defaults (deep fill of missing keys; saved values win), and history
+ * series added later are created and zero-padded to h.t.length (existing series are left untouched).
+ */
+export function upgradeStatsAndHistory(st: CityState): void {
+  const saved = (isPlainObject(st.stats) ? st.stats : {}) as unknown as Record<string, unknown>;
+  fillDefaults(saved, defaultStats() as unknown as Record<string, unknown>);
+  st.stats = saved as unknown as CityStats;
+  const h = (st.history ?? {}) as Partial<Record<keyof HistorySeries, number[]>>;
+  const n = Array.isArray(h.t) ? h.t.length : 0;
+  for (const k of HISTORY_KEYS) if (!Array.isArray(h[k])) h[k] = new Array(n).fill(0);
+  st.history = h as HistorySeries;
 }
 
 export function rebuildBuildingIndex(st: CityState): void {
@@ -268,5 +327,6 @@ export function estimateSize(obj: SerializedCity): number {
     else n += v.byteLength;
   }
   for (const v of Object.values(obj.buildings)) if (isTypedArray(v)) n += v.byteLength;
+  for (const v of Object.values(obj.buildings.opt ?? {})) n += v.byteLength;
   return n;
 }

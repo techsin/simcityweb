@@ -90,7 +90,7 @@ export const track: MusicTrack = {
   mood: 'Lazy Sunday Rhodes trio: brushes, upright bass, swing',
   tags: ['menu', 'region', 'day', 'calm'],
   bpm: 80,
-  gain: 1,
+  gain: 1.5,
   create(env) {
     const { inst, rng } = env;
     const bpm = rng.int(76, 84);
@@ -373,7 +373,7 @@ export const track: MusicTrack = {
     const setup = (t0: number) => {
       inst.mix('epiano', { level: 0.9, pan: -0.12, reverb: 0.25, delay: 0.05, tremolo: 0.35 });
       inst.mix('epiano:lead', { level: 1, pan: 0.12, reverb: 0.3, delay: 0.16 });
-      inst.mix('upright', { level: 1.05 });
+      inst.mix('upright', { level: 0.92 });
       inst.mix('vibes', { level: 0.9, pan: 0.3, reverb: 0.4 });
       inst.mix('pad', { level: 0.5, lowpass: 3500 });
       inst.mix('brush', { level: 0.9 });
@@ -381,6 +381,21 @@ export const track: MusicTrack = {
       inst.mix('kick', { level: 0.8 });
       inst.setDelay({ beats: 0.75, feedback: 0.3, tone: 2800 });
       inst.vinyl(t0, t0 + 400, 0.35);
+    };
+
+    /** section dynamics (velocity factor): a gentle start, the Rhodes solo builds, the vibes solo relaxes, the tag winds down */
+    const dynamics = (name: string, x: number): number => {
+      switch (name) {
+        case 'intro': return 0.92;
+        case 'head A1': return 0.9;
+        case 'head A2': return 0.95;
+        case 'bridge': return 0.93;
+        case 'rhodes solo': return 0.97 + 0.09 * Math.sin(Math.PI * Math.min(1, x * 1.2));
+        case 'vibes solo': return 0.93;
+        case 'head out': return 1.03;
+        case 'tag + ending': return 1 - 0.15 * x;
+        default: return 1;
+      }
     };
 
     const tempo = (bar: number) => {
@@ -413,18 +428,19 @@ export const track: MusicTrack = {
       bar(b: BarInfo) {
         const p = plan[b.bar];
         const k = p.sec.kind;
+        const dyn = dynamics(p.sec.name, b.sectionProgress);
         const at = (beat: number, ms = 7) => humanize(rng, b.at(beat), ms);
         const sec = (beats: number) => b.beatsToSec(beats);
         // --- Rhodes comping
         for (const c of p.comp) {
           const t = at(c.beat, 6);
-          c.notes.forEach((m, j) => inst.epiano(t + (c.roll ?? 0.008) * j, m, sec(c.dur), c.vel * (j === c.notes.length - 1 ? 1.05 : 1)));
+          c.notes.forEach((m, j) => inst.epiano(t + (c.roll ?? 0.008) * j, m, sec(c.dur), c.vel * dyn * (j === c.notes.length - 1 ? 1.05 : 1)));
         }
         // --- melody (Rhodes lead laid back a hair) + vibes
-        for (const e of p.lead) inst.epiano(at(e.beat, 8) + 0.012, e.midi, sec(e.dur), e.vel, { ch: 'lead', bright: 0.6 });
-        for (const e of p.vibes) inst.vibes(at(e.beat, 8) + 0.01, e.midi, sec(e.dur), e.vel);
+        for (const e of p.lead) inst.epiano(at(e.beat, 8) + 0.012, e.midi, sec(e.dur), e.vel * dyn, { ch: 'lead', bright: 0.6 });
+        for (const e of p.vibes) inst.vibes(at(e.beat, 8) + 0.01, e.midi, sec(e.dur), e.vel * dyn);
         // --- bass
-        for (const e of p.bass) inst.upright(at(e.beat, 6), e.midi, sec(e.dur), e.vel);
+        for (const e of p.bass) inst.upright(at(e.beat, 6), e.midi, sec(e.dur), e.vel * Math.sqrt(dyn));
         // --- pad bed (intro, bridge, tag)
         if ((k === 'intro' || k === 'tag' || (k === 'B' && b.barInSection % 2 === 0)) && b.bar < total - 2) {
           for (const s of p.slots) {
@@ -434,7 +450,7 @@ export const track: MusicTrack = {
         }
         // --- drums: brush swirls throughout, taps on 2 & 4, ride + feathered kick as the tune builds
         const inIntro = k === 'intro';
-        const soft = inIntro ? 0.7 : k === 'tag' ? 0.85 : 1;
+        const soft = (inIntro ? 0.7 : k === 'tag' ? 0.85 : 1) * dyn;
         if (b.bar <= total - 2) for (let beat = 0; beat < 4; beat += 2) inst.brushSwirl(b.at(beat), sec(2) - 0.02, humVel(rng, 0.42 * soft, 0.04));
         if (b.bar >= total - 2) {
           if (b.bar === total - 2) ending(b);

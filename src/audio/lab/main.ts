@@ -5,6 +5,7 @@
  *                                                 instrument library, track trim and reverb (44.1 kHz stereo)
  *   ?sfx=<name>|all                              render UI / game one-shots (2 s apart) with per-sound stats
  *   ?inst=<name>|all                             instrument demo phrases (vel 0.7 then 0.35) with per-instrument stats
+ *   ?director=<seconds>[&real=1&stall=T&next=T&select=id@T]   live MusicDirector test (see directorTest.ts)
  *   no params                                    index of everything available
  *
  * Results: window.__result (JSON), console line "LAB_RESULT {...}", canvas #lab (spectrogram 20 Hz-16 kHz,
@@ -17,6 +18,7 @@ import { makeNoiseBuffer, makeReverb } from '../music/fx';
 import { Instruments, type InstrumentName } from '../music/synth';
 import { playVoice, SOUND_NAMES, type SfxEnv, type SoundName } from '../sfx';
 import { levels, loudness, onsets, spectrum, round, type SpectrumStats, type LoudnessResult } from './analysis';
+import { runDirectorTest } from './directorTest';
 
 declare global {
   interface Window {
@@ -499,6 +501,42 @@ function exposeWav(buf: AudioBuffer, a: number, b: number): void {
 // ------------------------------------------------------------------ main
 async function main() {
   const track = q.get('track'), sfx = q.get('sfx'), instQ = q.get('inst'), idle = q.get('idle');
+  if (q.get('director')) {
+    const res = (await runDirectorTest(q, log)) as { levels: number[]; events: { t: number; id: string | null }[]; seconds: number };
+    const cv = document.createElement('canvas');
+    cv.id = 'lab';
+    cv.width = W;
+    cv.height = 260;
+    const g = cv.getContext('2d')!;
+    g.fillStyle = '#0b0d12';
+    g.fillRect(0, 0, W, 260);
+    const yDb = (v: number) => 20 + ((0 - Math.max(-70, Math.min(0, v))) / 70) * 220;
+    g.strokeStyle = '#5fd3ff';
+    g.beginPath();
+    res.levels.forEach((v, i) => (i ? g.lineTo((i / res.levels.length) * W, yDb(v)) : g.moveTo(0, yDb(v))));
+    g.stroke();
+    g.font = '12px monospace';
+    for (const e of res.events) {
+      const x = (e.t / res.seconds) * W;
+      g.fillStyle = 'rgba(255,255,255,0.6)';
+      g.fillRect(x, 20, 1, 220);
+      g.fillStyle = '#fff';
+      g.fillText(e.id ?? '(none)', x + 3, 34);
+    }
+    g.fillStyle = '#9aa6bb';
+    g.fillText('director test: RMS dB every 100 ms (cyan), nowPlaying changes (white)', 8, 14);
+    app.replaceChildren(cv);
+    const { levels: _l, ...rest } = res as Record<string, unknown>;
+    void _l;
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'color:#cfd6e2;font:12px monospace;white-space:pre-wrap';
+    pre.textContent = JSON.stringify(rest, null, 1);
+    app.append(pre);
+    window.__result = res;
+    console.log('LAB_RESULT ' + JSON.stringify(rest));
+    window.__ready = true;
+    return;
+  }
   if (!track && !sfx && !instQ && !idle) {
     const add = (label: string, href: string) => {
       const a = document.createElement('a');
