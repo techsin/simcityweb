@@ -2,6 +2,7 @@
  * ToolController — routes LEFT-button pointer events on the canvas to the active tool (middle/right are left to the
  * camera controller). Pointer moves are coalesced and processed once per frame.
  */
+import type { Overlay } from '../../core/types';
 import type { GameContext } from '../context';
 import { findToolSpec } from '../toolCatalog';
 import { QueryTool } from './QueryTool';
@@ -17,6 +18,7 @@ export class ToolController {
   private shift = false;
   private offs: (() => void)[] = [];
   private cache = new Map<string, Tool>();
+  private autoOverlayOn: Overlay | null = null;
 
   constructor(private ctx: GameContext, private canvas: HTMLCanvasElement) {
     this.defaultTool = new QueryTool(ctx);
@@ -140,8 +142,18 @@ export class ToolController {
     }
     if (next === this.current) return true;
     this.safeCall(() => this.current.deactivate());
+    // restore the data view we switched on automatically (unless the player changed it meanwhile)
+    if (this.autoOverlayOn !== null && this.ctx.overlay === this.autoOverlayOn && next.autoOverlay !== this.autoOverlayOn) {
+      this.ctx.setOverlay(0 as Overlay);
+    }
+    this.autoOverlayOn = null;
     this.current = next;
     this.safeCall(() => this.current.activate());
+    const ao = this.current.autoOverlay;
+    if (ao !== null && (this.ctx.overlay === 0 || this.ctx.overlay === ao)) {
+      if (this.ctx.overlay !== ao) this.ctx.setOverlay(ao);
+      this.autoOverlayOn = ao;
+    }
     this.applyCursor();
     try {
       this.ctx.world.setGridVisible(this.ctx.settings.showGrid && this.current.wantsGrid && this.current !== this.defaultTool);

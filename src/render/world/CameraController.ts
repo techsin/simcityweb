@@ -403,6 +403,11 @@ export class CameraController implements CameraControllerApi {
 
   update(dt: number): void {
     dt = Math.min(dt, 0.1);
+    if (this.shakeLeft > 0) {
+      this.shakeLeft = Math.max(0, this.shakeLeft - dt);
+      this.shakeTime += dt;
+      if (this.shakeLeft === 0) this.shakeDur = 0;
+    }
     // keyboard
     if (this.enabled && this.keys.size) {
       let fx = 0, fz = 0;
@@ -491,8 +496,36 @@ export class CameraController implements CameraControllerApi {
     cam.position.copy(this._target).add(this.offset);
     const minY = Math.max(this.opts.heightAt(cam.position.x, cam.position.z), 0) + Math.max(8, d * 0.08);
     if (cam.position.y < minY) cam.position.y = minY;
-    cam.lookAt(this._target);
+    if (this.shakeLeft > 0) {
+      // earthquake shake: smooth multi-frequency jitter of the camera and its look-at point, decaying envelope
+      const t = this.shakeTime;
+      const env = Math.min(1, this.shakeLeft / 0.6) * Math.min(1, (this.shakeDur - this.shakeLeft) / 0.15 + 0.2);
+      const a = this.shakeAmp * env * (0.5 + d * 0.004);
+      const sx = Math.sin(t * 37.1) * 0.6 + Math.sin(t * 61.7 + 1.3) * 0.4;
+      const sy = Math.sin(t * 43.3 + 2.1) * 0.6 + Math.sin(t * 71.9) * 0.4;
+      const sz = Math.sin(t * 29.7 + 0.7) * 0.6 + Math.sin(t * 53.3 + 2.9) * 0.4;
+      cam.position.x += sx * a;
+      cam.position.y += sy * a * 0.5;
+      cam.position.z += sz * a;
+      this.tmp.copy(this._target);
+      this.tmp.x += sz * a * 0.6;
+      this.tmp.z += sx * a * 0.6;
+      cam.lookAt(this.tmp);
+    } else {
+      cam.lookAt(this._target);
+    }
     cam.updateMatrixWorld();
+  }
+
+  private shakeLeft = 0;
+  private shakeDur = 0;
+  private shakeAmp = 0;
+  private shakeTime = 0;
+  /** camera shake (e.g. earthquakes): intensity ~0.3 (subtle) .. 2 (strong), duration in real seconds */
+  shake(intensity = 1, seconds = 2.5): void {
+    this.shakeAmp = Math.max(this.shakeLeft > 0 ? this.shakeAmp : 0, intensity);
+    this.shakeLeft = Math.max(this.shakeLeft, seconds);
+    this.shakeDur = Math.max(this.shakeDur, seconds);
   }
 
   dispose() {

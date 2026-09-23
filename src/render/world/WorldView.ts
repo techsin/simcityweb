@@ -220,6 +220,9 @@ export class WorldView implements WorldViewApi {
       ev.on('buildingRemoved', (b) => cells(bRect(b))),
       ev.on('layerUpdated', (name) => this.terrain.onLayerUpdated(name)),
       ev.on('month', () => this.trees.setMonth(this.state.month)),
+      ev.on('disaster', (d) => {
+        if (d.active && d.kind === 'earthquake') this.cameraController.shake(1, 3);
+      }),
       ev.on('reset', () => this.setState(this.state)),
     );
   }

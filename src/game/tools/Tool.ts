@@ -1,5 +1,6 @@
 /** Base class for all mouse tools (left button only — middle/right belong to the camera). */
 import type { CellHit } from '../../render/contracts';
+import type { Overlay } from '../../core/types';
 import type { ActionResult } from '../../sim/actions';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
@@ -23,6 +24,8 @@ export abstract class Tool {
   cursor = 'crosshair';
   /** show the cell grid while this tool is active */
   wantsGrid = true;
+  /** data view to show automatically while this tool is active (e.g. coverage for police stations) */
+  autoOverlay: Overlay | null = null;
   constructor(protected ctx: GameContext) {}
   activate(): void {}
   deactivate(): void {}

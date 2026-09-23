@@ -24,6 +24,12 @@ export class PlopTool extends Tool {
     this.id = 'plop:' + def.id;
     this.label = def.name;
     this.icon = icon;
+    const kind = def.coverage?.kind ?? (def.category === 'power' ? 'power' : def.category === 'water' ? 'water' : null);
+    const map: Record<string, Overlay> = {
+      police: Overlay.Police, fire: Overlay.Fire, health: Overlay.Health, education: Overlay.Education, transit: Overlay.Transit,
+      garbage: Overlay.Garbage, power: Overlay.Power, water: Overlay.Water,
+    };
+    this.autoOverlay = kind ? map[kind] ?? null : null;
   }
 
   private dims(rot: Rot): [number, number] {
