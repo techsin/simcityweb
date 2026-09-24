@@ -91,9 +91,9 @@ export function grip(prev: readonly number[] | null, c: Chord, o: GripOpts): num
     const v = [...cur].sort((a, b) => a - b);
     if (v[v.length - 1] - v[0] > maxSpan || rough(v, allowB9)) return;
     if (hendrix) {
-      // 3rd lowest, #9 highest
+      // #9 on top (a major 7th above the 3rd, never a semitone under it); 3-note grips also put the 3rd at the bottom
       const third = cur[iv.indexOf(4)], s9 = cur[iv.indexOf(15)];
-      if (third !== v[0] || s9 !== v[v.length - 1]) return;
+      if (s9 !== v[v.length - 1] || (o.count === 3 && third !== v[0])) return;
     }
     // soft range: below lo costs more than above hi (low grips get muddy); wide spreads and holes cost a little
     let s = 0;

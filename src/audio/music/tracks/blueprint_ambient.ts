@@ -296,7 +296,7 @@ function subVoice(env: MusicEnv, t0: number, m: number, amp: number, lv0: number
     att = Math.min(attack, 1);
   }
   const f = 440 * Math.pow(2, (m - 69) / 12);
-  const peak = 0.064 * Math.pow(Math.max(0, Math.min(1, amp)), 1.5);
+  const peak = 0.048 * Math.pow(Math.max(0, Math.min(1, amp)), 1.5);
   const g = inst.node.gain(0);
   g.gain.setValueAtTime(0, t);
   let last = t + att, lv = lv0;
@@ -687,7 +687,7 @@ export const track: MusicTrack = {
         const segEnd = g.beat + g.beats;
         const av = avoidFor(g.beat, segEnd + 0.6);
         // --- low pad (one voicing per chord change, voice-led, around the melody)
-        const pv = voiceChord(c, prevPad, { lo: 50, hi: 70, count: 4, avoid: av });
+        const pv = voiceChord(c, prevPad, { lo: 52, hi: 74, count: 4, avoid: av, centre: 63 });
         prevPad = pv;
         // pads overlap the next chord by 0.6 beat - unless that would rub against the next chord's first melody notes
         const handoff = (v: readonly number[]) => (contactCost(v, avoidFor(segEnd - 0.1, segEnd + 0.8).filter((a) => allMel.some((e) => e.midi === a.m && e.ab >= segEnd - 0.1))) >= 5 ? 0.1 : 0.6);
@@ -721,7 +721,7 @@ export const track: MusicTrack = {
         // the melody sings, more motion where it rests
         const bass = bassNote(g.pedal, 36);
         const fifth = g.pedal.bass === g.pedal.root && g.pedal.tones.includes(7);
-        const up = voiceChord(c, prevUp, { lo: 53, hi: 69, count: 3, avoid: [...av, ...pv.map((m) => ({ m, w: 0.25 }))] });
+        const up = voiceChord(c, prevUp, { lo: 55, hi: 70, count: 3, avoid: [...av, ...pv.map((m) => ({ m, w: 0.25 }))], centre: 62.5 });
         prevUp = up;
         let second: number | null = null;
         {
@@ -739,7 +739,8 @@ export const track: MusicTrack = {
           case 'theme': pat = singing ? rng.weighted(['roll', 'float', 'drone', 'sparse'], [0.3, 0.3, 0.2, 0.2]) : rng.weighted(['rise', 'p332', 'float', 'sparse'], [0.3, 0.3, 0.2, 0.2]); break;
           case 'drift': pat = singing ? rng.weighted(['drone', 'float', 'bass', 'sparse'], [0.3, 0.3, 0.15, 0.25]) : rng.weighted(['p332', 'float', 'rise', 'wave'], [0.35, 0.3, 0.2, 0.15]); break;
           case 'hush': pat = 'drone'; break;
-          case 'bloom': pat = singing ? rng.weighted(['float', 'roll', 'drone', 'sparse'], [0.35, 0.25, 0.2, 0.2]) : rng.weighted(['wave', 'p332', 'float', 'rise'], [0.25, 0.3, 0.25, 0.2]); break;
+          // (no rolled chords under the bloom's melody: five attacks piling onto a doubled melody note peak hard)
+          case 'bloom': pat = singing ? rng.weighted(['float', 'drone', 'sparse'], [0.4, 0.3, 0.3]) : rng.weighted(['wave', 'p332', 'float', 'rise'], [0.25, 0.3, 0.25, 0.2]); break;
           default: pat = s.idx === 0 ? 'float' : s.idx === 1 ? 'rise' : 'roll';
         }
         if (pat) {
@@ -750,7 +751,8 @@ export const track: MusicTrack = {
             if (pb > g.beats - 0.25) continue;
             const m = notes[Math.min(idx, notes.length - 1)];
             if (m === null) continue;
-            put('lh', g.beat + pb, { dur: g.beats - pb - 0.12, midi: m, vel: humVel(rng, lhVel * (idx === 0 ? 0.86 : idx === 1 ? 0.84 : 0.9), 0.04), dt: humanize(rng, 0, 14), toEnd: isFinal });
+            const soft = pat === 'roll' || isFinal ? 0.88 : 1; // a rolled chord is a soft spread of near-simultaneous attacks
+            put('lh', g.beat + pb, { dur: g.beats - pb - 0.12, midi: m, vel: humVel(rng, lhVel * soft * (idx === 0 ? 0.86 : idx === 1 ? 0.84 : 0.9), 0.04), dt: humanize(rng, 0, 14), toEnd: isFinal });
           }
         }
         // --- occasional high bell harmonic on a chord change
