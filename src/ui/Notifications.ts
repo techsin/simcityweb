@@ -94,8 +94,16 @@ export class Toasts {
   static ttlScale = 1;
   /** identical messages within this window are merged (×N counter) */
   static DEDUP_MS = 20000;
+  /**
+   * the same message (numbers ignored) sounds at most once per this long - GameSounds' REPEAT_MS for sim news: a toast
+   * that keeps coming back (a demand cap flickering around its threshold) shows again but doesn't re-chime. Errors
+   * (feedback for the player's own click) always sound.
+   */
+  static REPEAT_MS = 180000;
   static MAX = 4;
   readonly el: HTMLDivElement;
+  /** performance.now() a message signature last sounded */
+  private sounded = new Map<string, number>();
   private live = new Map<string, { el: HTMLElement; count: number; at: number; badge: HTMLElement; cell?: { x: number; z: number }; restart: (ms: number) => void }>();
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'toasts' });
@@ -133,7 +141,16 @@ export class Toasts {
     }
     // no toast sound when the action that raised it just played its own (error buzz, reward fanfare...)
     const recent = (this.ctx.mods.audio as { sinceLastPlay?: () => number } | undefined)?.sinceLastPlay?.() ?? 1e9;
-    const snd = opts.silent || recent < 150 ? null : TOAST_SOUND[kind] ?? 'notify';
+    // (a null TOAST_SOUND entry means silent - `??` would have turned it into 'notify')
+    let snd = opts.silent || recent < 150 ? null : kind in TOAST_SOUND ? TOAST_SOUND[kind] : 'notify';
+    if (snd && kind !== 'error') {
+      const sig = kind + ':' + text.replace(/[\d.,]+/g, '#').slice(0, 90);
+      if (now - (this.sounded.get(sig) ?? -1e9) < Toasts.REPEAT_MS) snd = null;
+      else {
+        if (this.sounded.size > 64) for (const [k, t] of this.sounded) if (now - t >= Toasts.REPEAT_MS) this.sounded.delete(k);
+        this.sounded.set(sig, now);
+      }
+    }
     if (snd) this.ctx.sound(snd);
     const x = h('button', { class: 'icon-btn t-x', html: icon('close', 12) });
     const badge = h('span', { class: 't-count', style: 'display:none' });

@@ -49,8 +49,9 @@ export interface CursorTipApi {
 }
 
 export interface PanelsApi {
-  open(id: string): void;
-  close(id: string): void;
+  /** opts.silent: no panel sound (the action that opened / closed it already made one) */
+  open(id: string, opts?: { silent?: boolean }): void;
+  close(id: string, opts?: { silent?: boolean }): void;
   toggle(id: string): void;
   isOpen(id: string): boolean;
 }
@@ -78,7 +79,8 @@ export interface GameContext {
   /** play a UI / game sound (src/audio/sfx.ts names; a few aliases in CityScene's SOUND_MAP). Build sounds pan from the cursor. */
   sound(name: string, opts?: SoundOpts): void;
   focusCell(x: number, z: number, distance?: number): void;
-  showQuery(t: QueryTarget | null): void;
+  /** open the inspector on a target (null closes it); opts.silent: the caller already played its own sound */
+  showQuery(t: QueryTarget | null, opts?: { silent?: boolean }): void;
   applySettings(patch: Partial<GameSettings>): void;
   toast(text: string, kind?: string, cell?: { x: number; z: number }, title?: string): void;
   /** open a toolbar category flyout (e.g. 'parks') */

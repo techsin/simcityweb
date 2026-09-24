@@ -66,6 +66,8 @@ const META = {
   autosave: { cat: 'ui', dur: 0.5 },
   shuffle: { cat: 'ui', dur: 0.35, gap: 120 },
   stepDone: { cat: 'ui', dur: 0.8, jitter: 0 },
+  musicPlay: { cat: 'ui', dur: 0.45, jitter: 0 },
+  musicPause: { cat: 'ui', dur: 0.35, jitter: 0 },
   whoosh: { cat: 'ui', dur: 0.45 },
   // ------------------------------------------------------------ game actions
   error: { cat: 'game', dur: 0.3, group: 'alert', jitter: 0 },
@@ -146,7 +148,7 @@ export interface SfxEnv {
   out: AudioNode;
   /** reverb send */
   wet: AudioNode;
-  /** white noise buffer (2 s) */
+  /** white noise buffer (2 s; noise() loops it) */
   noise: AudioBuffer;
 }
 
@@ -190,6 +192,9 @@ function tone(e: SfxEnv, dest: AudioNode, type: OscillatorType, f0: number, t: n
 function noise(e: SfxEnv, dest: AudioNode, t: number, dur: number, peak: number, filter: BiquadFilterType, f0: number, f1?: number, q = 1, attack = 0.004, offset = Math.random() * 1.5): AudioBufferSourceNode {
   const src = e.ctx.createBufferSource();
   src.buffer = e.noise;
+  // looped: a random start offset plus a long envelope ran past the end of the shared 2 s buffer and stopped
+  // mid-envelope (an audible cut in tornado / meteor / regionEnter / whoosh); white noise loops seamlessly
+  src.loop = true;
   const bq = e.ctx.createBiquadFilter();
   bq.type = filter;
   bq.Q.value = q;
@@ -444,6 +449,18 @@ const VOICES: Record<SoundName, Voice> = {
     [84, 88, 91].forEach((m, k) => bell(e, d, N(m) * p, t + k * 0.07, 0.45, 0.05, 2, 0.9));
     bell(e, e.wet, N(96) * p, t + 0.21, 0.7, 0.03, 2, 0.9);
   },
+  /** soundtrack play (music player): soft e-piano fifth rising G5 -> D6 (not the simulation's speed blip) */
+  musicPlay(e, t, d, { p }) {
+    bell(e, d, N(79) * p, t, 0.3, 0.06, 1, 1.1);
+    bell(e, d, N(86) * p, t + 0.07, 0.42, 0.055, 1, 1.1);
+    bell(e, e.wet, N(86) * p, t + 0.07, 0.55, 0.025, 1, 1.1);
+  },
+  /** soundtrack pause: the same fifth falling, muffled (not the simulation's tape-stop) */
+  musicPause(e, t, d, { p }) {
+    const lp = lowpass(e, d, 1700);
+    bell(e, lp, N(86) * p, t, 0.2, 0.06, 1, 0.9);
+    bell(e, lp, N(79) * p, t + 0.07, 0.3, 0.055, 1, 0.9);
+  },
   whoosh(e, t, d, { p, r }) {
     noise(e, d, t, 0.45, 0.1, 'bandpass', 300 * p, 2400 * p, 1.4, 0.2, r() * 1.5);
   },
@@ -469,10 +486,16 @@ const VOICES: Record<SoundName, Voice> = {
     noise(e, d, t, 0.15, 0.12, 'bandpass', 2400 * p * a, 800 * p * a, 2.2, 0.02, r() * 1.5);
     tone(e, d, 'sine', 900 * p * a, t, 0.07, 0.035, 600 * p * a);
   },
-  /** road / network: thud + gravel (+ roller hiss) */
+  /**
+   * road / network: thud + slab knock + gravel (+ roller hiss). The knock and its crunch (300-1500 Hz) carry the
+   * sound on laptop / phone speakers, which drop the sub-150 Hz thud
+   */
   road(e, t, d, { p, r }) {
     const a = 0.9 + r() * 0.2;
-    tone(e, d, 'sine', 115 * p * a, t, 0.16, 0.36, 46);
+    tone(e, d, 'sine', 115 * p * a, t, 0.16, 0.3, 46);
+    tone(e, d, 'sine', 230 * p * a, t, 0.1, 0.14, 110);
+    tone(e, d, 'triangle', 560 * p * a, t, 0.06, 0.26, 320, 0.001);
+    noise(e, d, t, 0.09, 0.2, 'bandpass', 1050 * a, 620, 1.1, 0.002, r() * 1.5);
     noise(e, d, t, 0.2 + r() * 0.06, 0.16, 'lowpass', 1400 * a, 300, 0.7, 0.004, r() * 1.5);
     noise(e, d, t + 0.04 + r() * 0.03, 0.1, 0.06, 'bandpass', 2600 * a, 1400, 1.5, 0.004, r() * 1.5);
     if (r() > 0.5) noise(e, d, t + 0.09, 0.14, 0.025, 'highpass', 3000, undefined, 0.7, 0.03, r() * 1.5);
@@ -511,15 +534,27 @@ const VOICES: Record<SoundName, Voice> = {
     noise(e, d, t, 0.1, 0.12, 'lowpass', 1200, 300, 0.7, 0.004, r() * 1.5);
     bell(e, e.wet, N(96 + pick(r, [0, 2, 4, 7])) * p, t + 0.06, 0.4, 0.035, 2, 1.5);
   },
-  /** terraform: earth-moving rumble (low intensity = the lighter, shorter tick played while a brush is held) */
+  /**
+   * terraform: earth-moving rumble + soil scrape + a few pebbles (low intensity = the lighter, shorter tick played
+   * while a brush is held). The scrape / pebbles (400-2000 Hz) carry it on small speakers, which drop the rumble
+   */
   terraform(e, t, d, { p, r, k }) {
-    noise(e, d, t, 0.2 + k * 0.3, 0.2, 'lowpass', 400 * p * (0.85 + r() * 0.3), 150, 0.8, 0.05, r() * 1.5);
-    tone(e, d, 'sine', 70 * p, t, 0.3, 0.2 * (0.4 + k * 1.2), 45);
+    const len = 0.2 + k * 0.3;
+    noise(e, d, t, len, 0.15, 'lowpass', 400 * p * (0.85 + r() * 0.3), 150, 0.8, 0.05, r() * 1.5);
+    tone(e, d, 'sine', 70 * p, t, 0.3, 0.16 * (0.4 + k * 1.2), 45);
+    noise(e, d, t + 0.01, len * 0.8, 0.26, 'bandpass', 750 * p * (0.85 + r() * 0.3), 420, 1.1, 0.03, r() * 1.5);
+    const n = 2 + Math.round(k * 3 + r());
+    for (let i = 0; i < n; i++) noise(e, d, t + 0.03 + r() * len * 0.8, 0.018 + r() * 0.02, 0.1 + r() * 0.07, 'bandpass', 1100 + r() * 1000, undefined, 3, 0.002, r() * 1.5);
   },
-  /** trees: leafy rustle + soft woody knock (low intensity: rustle only, while a brush is held) */
+  /**
+   * trees: leafy rustle + soft woody knock (low intensity: rustle only, while a brush is held). The rustle is band-
+   * limited to ~1.8-5 kHz: high-passed white noise put half its energy above 6 kHz, and it repeats every 0.3 s while
+   * the tree brush is held (hiss)
+   */
   tree(e, t, d, { p, r, k }) {
+    const lp = lowpass(e, d, 6800, 0.6);
     const n = 3 + Math.floor(r() * 3);
-    for (let i = 0; i < n; i++) noise(e, d, t + i * 0.05 + r() * 0.03, 0.08, 0.06, 'highpass', 3500 * p * (0.85 + r() * 0.3), undefined, 1, 0.004, r() * 1.5);
+    for (let i = 0; i < n; i++) noise(e, lp, t + i * 0.05 + r() * 0.03, 0.08, 0.07, 'bandpass', 3200 * p * (0.85 + r() * 0.3), undefined, 1, 0.004, r() * 1.5);
     if (k >= 0.3) tone(e, d, 'sine', 300 * p, t, 0.08, 0.08, 200);
   },
   /** hammer tick */
@@ -702,7 +737,7 @@ const VOICES: Record<SoundName, Voice> = {
     lp.connect(gainAt(e, e.wet, 0.35));
     noise(e, d, t, 2.4, 0.12, 'bandpass', 250, 900, 0.8, 0.9, r() * 0.5);
   },
-  /** earthquake: deep rumble + low two-tone alert */
+  /** earthquake: deep rumble + two-tone alert (A4 / E4: at A3 / E3 laptop speakers lost it with the rumble) + debris */
   quake(e, t, d, { p, r }) {
     noise(e, d, t, 2.0, 0.5, 'lowpass', 160, 70, 1.2, 0.25, r() * 0.5);
     const o = e.ctx.createOscillator();
@@ -722,12 +757,12 @@ const VOICES: Record<SoundName, Voice> = {
     lfo.start(t);
     o.stop(t + 2.3);
     lfo.stop(t + 2.3);
-    const lp = lowpass(e, d, 1100);
+    const lp = lowpass(e, d, 1800);
     [0, 0.45].forEach((dt) => {
-      tone(e, lp, 'triangle', N(57) * p, t + 0.3 + dt, 0.18, 0.1, undefined, 0.01);
-      tone(e, lp, 'triangle', N(52) * p, t + 0.52 + dt, 0.2, 0.1, undefined, 0.01);
+      tone(e, lp, 'triangle', N(69) * p, t + 0.3 + dt, 0.18, 0.16, undefined, 0.01);
+      tone(e, lp, 'triangle', N(64) * p, t + 0.52 + dt, 0.2, 0.16, undefined, 0.01);
     });
-    for (let k = 0; k < 6; k++) noise(e, d, t + 0.3 + r() * 1.4, 0.05 + r() * 0.05, 0.08, 'bandpass', 500 + r() * 1500, undefined, 3, 0.004, r() * 1.5);
+    for (let k = 0; k < 8; k++) noise(e, d, t + 0.3 + r() * 1.4, 0.05 + r() * 0.05, 0.13, 'bandpass', 500 + r() * 1500, undefined, 3, 0.004, r() * 1.5);
   },
   /** meteor: falling whistle, then a boom and debris */
   meteor(e, t, d, { p, r }) {

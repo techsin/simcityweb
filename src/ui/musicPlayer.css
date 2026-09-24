@@ -94,6 +94,7 @@
 .mpl-switch.on span { transform: translateX(13px); background: #fff; }
 .mpl-switch:disabled { opacity: 0.45; cursor: default; }
 .mpl-switch:focus { outline: none; }
+.mpl-switch:focus-visible { outline: 2px solid rgba(124, 212, 255, 0.7); outline-offset: 2px; }
 
 /* ------------------------------------------------------------------ pill (title screen / region view) */
 .mplayer-pill {
@@ -109,6 +110,7 @@
   width: 172px; padding: 0 6px 0 9px; height: 34px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; border-radius: 10px;
 }
 .mplayer-pill .mpl-meta:focus { outline: none; }
+.mplayer-pill .mpl-meta:focus-visible { outline: 2px solid rgba(124, 212, 255, 0.7); outline-offset: 1px; }
 .mplayer-pill .mpl-meta:hover .mpl-title { color: #fff; }
 .mplayer-pill .mpl-title { font-size: 12.5px; color: #f4efe8; }
 .mplayer-pill .mpl-mood { font-size: 10.5px; color: rgba(255, 236, 214, 0.62); }

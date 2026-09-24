@@ -106,7 +106,8 @@ const STEPS: Step[] = [
       if (c.sim.speed !== 1) c.sound('speed1');
       c.sim.speed = 1;
     },
-    done: (c, o) => c.sim.speed > 0 && c.state.day > o.startDay,
+    // the city ran for a day since the card appeared (steps latch once done: pausing again doesn't undo it)
+    done: (c, o) => c.state.day > o.startDay,
   },
 ];
 
@@ -123,8 +124,13 @@ export class Onboarding {
   private acc = 1;
   /** performance.now() of the last step check */
   private lastCheck = 0;
-  /** steps already done at the last check (a newly finished step chimes); null until the first check after show() */
-  private doneSteps: Set<number> | null = null;
+  /**
+   * steps completed since the card was shown: a finished step stays ticked and chimes once (pausing again used to
+   * un-tick "Press play" and chime on every resume; a lot losing power for a moment did the same to power / water)
+   */
+  private reached = new Set<number>();
+  /** the first check after show() ran: steps already done then are ticked silently */
+  private primed = false;
   private constructed = false;
   startDay = 0;
 
@@ -145,7 +151,8 @@ export class Onboarding {
     this.visible = true;
     this.startDay = this.ctx.state.day;
     this.doneAt = -1;
-    this.doneSteps = null;
+    this.reached.clear();
+    this.primed = false;
     this.el.classList.add('show');
     this.acc = 1;
     this.frame(0);
@@ -223,13 +230,19 @@ export class Onboarding {
     if (this.acc < 0.5 && now - this.lastCheck < 500) return;
     this.acc = 0;
     this.lastCheck = now;
-    let current = -1, doneN = 0;
+    let current = -1, doneN = 0, fresh = false;
     this.rows.forEach((r, i) => {
-      let done = false;
-      try {
-        done = r.step.done(this.ctx, this);
-      } catch {
-        done = false;
+      let done = this.reached.has(i);
+      if (!done) {
+        try {
+          done = r.step.done(this.ctx, this);
+        } catch {
+          done = false;
+        }
+        if (done) {
+          this.reached.add(i);
+          if (this.primed) fresh = true;
+        }
       }
       if (done) doneN++;
       else if (current < 0) current = i;
@@ -250,12 +263,8 @@ export class Onboarding {
       toggleClass(r.el, 'hinted', !!hint);
     });
     // chime when a step gets done (not for steps already done when the card appeared, nor the last one: see below)
-    const nowDone = new Set(this.rows.map((r, i) => (r.el.classList.contains('done') ? i : -1)).filter((i) => i >= 0));
-    if (this.doneSteps && doneN < STEPS.length) for (const i of nowDone) if (!this.doneSteps.has(i)) {
-      this.ctx.sound('stepDone');
-      break;
-    }
-    this.doneSteps = nowDone;
+    if (fresh && doneN < STEPS.length) this.ctx.sound('stepDone');
+    this.primed = true;
     setText(this.progress, `${doneN} / ${STEPS.length}`);
     setText(this.pillText, current >= 0 ? `${doneN}/${STEPS.length} · ${STEPS[current].title}` : `Getting started ${doneN}/${STEPS.length}`);
     const cur = current >= 0 ? STEPS[current] : null;

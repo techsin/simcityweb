@@ -6,7 +6,8 @@
  *   audio.play(name, opts?)              one-shot UI / game sound (see SoundName / SOUND_META; opts: volume, pan, pitch, intensity)
  *   audio.hover()                        throttled soft hover sound
  *   audio.uiSounds / setUiSounds(on), hoverSounds / setHoverSounds(on), nowPlayingToasts / setNowPlayingToasts(on)
- *   audio.playCount                      play() request counter (delegated UI sounds de-dup, src/ui/uiSounds.ts)
+ *   audio.playCount                      play() request counter, hover blips aside (delegated UI sounds de-dup,
+ *                                        src/ui/uiSounds.ts); audio.sinceLastPlay() ms since a sound played
  *   audio.startAmbience() / stopAmbience()
  *   audio.setAmbience({ population, zoom, night, construction, water, activity })
  *   audio.setVolume(kind, v) / getVolume(kind)   kind: 'master' | 'music' | 'sfx' | 'ambience', v in 0..1
@@ -226,8 +227,10 @@ export class AudioEngine {
   play(name: SoundName, opts: PlayOptions = {}): void {
     const meta = SOUND_META[name];
     if (!meta) return;
-    // every request counts (even when rate-limited / muted): the delegated UI handler uses it to avoid doubling up
-    this.serial++;
+    // every request counts (even when rate-limited / muted): the delegated UI handler uses it to avoid doubling up.
+    // Hover blips don't: one landing between a click and the handler's deferred check dropped the click's sound
+    const soft = name === 'hover' || name === 'tick';
+    if (name !== 'hover') this.serial++;
     const ctx = this.ctx;
     if (!ctx || ctx.state !== 'running' || this.prefs.muted) return;
     if (meta.cat === 'ui' && this.prefs.uiSounds === false) return;
@@ -240,7 +243,7 @@ export class AudioEngine {
       this.lastGroup.set(meta.group, now);
     }
     this.lastPlay.set(name, now);
-    this.lastAnyPlay = now;
+    if (!soft) this.lastAnyPlay = now;
     let vol = opts.volume ?? 1;
     if (meta.cat !== 'event') {
       const rec = (this.recent.get(name) ?? []).filter((t) => now - t < 3000);
@@ -256,7 +259,7 @@ export class AudioEngine {
     return this.serial;
   }
 
-  /** ms since the last sound actually played */
+  /** ms since the last sound actually played (hover blips and slider ticks aside: they never stand for an action) */
   sinceLastPlay(): number {
     return performance.now() - this.lastAnyPlay;
   }

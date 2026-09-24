@@ -202,8 +202,10 @@ export class NewYearCelebration {
     const s = this.deps.settings();
     if ((checkMode && s.newYear === 'off') || s.toasts === false) return;
     try {
-      this.deps.toast(this.statsLine(year), 'reward', undefined, `🎆 Happy New Year ${year}!`);
+      // fanfare first: the toast then stays quiet instead of requesting it again (and the fanfare can't be lost to the
+      // toast's "a sound just played" rule when the month's budget tick lands on the same boundary)
       this.deps.sound?.('reward');
+      this.deps.toast(this.statsLine(year), 'reward', undefined, `🎆 Happy New Year ${year}!`);
     } catch {
       /* ignore */
     }

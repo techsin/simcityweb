@@ -120,6 +120,8 @@ export class TopBar {
   private capHintsEl!: HTMLElement;
   private capSig = '';
   private announced = new Map<string, number>();
+  /** RCI families capped at the last update (announceCaps toasts on the change to capped) */
+  private cappedFams = new Set<string>();
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'hud-top' });
@@ -266,13 +268,20 @@ export class TopBar {
     }
   }
 
-  /** one-time (per family, per ~quarter) toast when a demand cap starts limiting growth */
+  /**
+   * toast when a demand cap starts limiting a family's growth: only when it newly becomes capped (not again while it
+   * stays capped) and at most every half-year per family - a cap flickering around its threshold toasted, with the
+   * full warning sound, every quarter (Toasts also keeps a repeated message quiet for REPEAT_MS)
+   */
   private announceCaps(fams: string[]): void {
     const st = this.ctx.state;
     if (st.stats.population < 200) return;
+    const was = this.cappedFams;
+    if (fams.length !== was.size || fams.some((f) => !was.has(f))) this.cappedFams = new Set(fams);
     for (const f of fams) {
+      if (was.has(f)) continue;
       const last = this.announced.get(f) ?? -1e9;
-      if (st.day - last < 90) continue;
+      if (st.day - last < 180) continue;
       this.announced.set(f, st.day);
       const hint = this.capHints().find((x) => x.family === f)?.hint ?? '';
       this.ctx.toast(`${FAMILY_NAMES[f]} growth is capped. ${hint}`, 'warning', undefined, 'Demand cap');

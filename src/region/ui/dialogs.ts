@@ -29,7 +29,11 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
     vol('Music', 'music', 'music'),
     vol('Sound effects', 'sfx', 'sparkles'),
     vol('City ambience', 'ambience', 'building'),
-    h('div', { style: 'display:flex; gap:24px; margin: 4px 0 10px' }, toggle('Play music', audio.musicEnabled, (v) => audio.setMusicEnabled(v)), toggle('Mute all', audio.muted, (v) => audio.setMuted(v))),
+    h('div', { style: 'display:flex; gap:24px; margin: 4px 0 10px' }, toggle('Play music', audio.musicEnabled, (v) => audio.setMusicEnabled(v)), toggle('Mute all', audio.muted, (v) => {
+      audio.setMuted(v);
+      // the switch sound was requested while still muted: confirm once the sound is back on
+      if (!v) audio.play('toggleOff');
+    })),
     h('div', { style: 'display:flex; gap:24px; margin: 0 0 18px' }, toggle('Interface sounds', audio.uiSounds, (v) => {
       audio.setUiSounds(v);
       // the switch sound played while interface sounds were still off: confirm once they are back on

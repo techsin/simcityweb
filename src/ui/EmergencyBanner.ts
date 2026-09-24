@@ -365,7 +365,8 @@ export class EmergencyBanner {
     const inc = emergencyOf(this.ctx.sim)?.incident(id);
     if (!inc) return;
     this.ctx.focusCell(inc.x, inc.z, 420);
-    this.ctx.showQuery({ buildingId: inc.buildingId >= 0 ? inc.buildingId : null, x: inc.x, z: inc.z });
+    // the camera whoosh is the sound (silent inspector)
+    this.ctx.showQuery({ buildingId: inc.buildingId >= 0 ? inc.buildingId : null, x: inc.x, z: inc.z }, { silent: true });
   }
 
   private sendNearest(id: number): void {

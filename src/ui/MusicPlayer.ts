@@ -93,6 +93,16 @@ export class MusicPlayer {
   private timeEl: HTMLElement | null = null;
   private list: HTMLElement | null = null;
   private pop: HTMLElement | null = null;
+  /** pill: the title button that opens the track-list popover (focus returns to it when Esc closes the popover) */
+  private metaBtn: HTMLButtonElement | null = null;
+  /** Esc closes the open popover (document capture: before the screen's own Esc handling) */
+  private popKey = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || !this.pop) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.togglePopover(false);
+    this.metaBtn?.focus({ preventScroll: true });
+  };
   private offs: (() => void)[] = [];
   private timer = 0;
   private lastId = '';
@@ -123,6 +133,9 @@ export class MusicPlayer {
       const meta = el('button', 'mpl-meta');
       meta.type = 'button';
       meta.title = 'Soundtrack — choose a track';
+      meta.setAttribute('aria-haspopup', 'true');
+      meta.setAttribute('aria-expanded', 'false');
+      this.metaBtn = meta;
       meta.append(this.titleEl, this.moodEl);
       meta.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -164,6 +177,7 @@ export class MusicPlayer {
 
   dispose(): void {
     clearInterval(this.timer);
+    document.removeEventListener('keydown', this.popKey, true);
     for (const f of this.offs) f();
     this.offs = [];
     this.el.remove();
@@ -188,7 +202,8 @@ export class MusicPlayer {
   private togglePlay(): void {
     this.ensureStarted();
     const playing = this.audio.musicEnabled;
-    this.sound(playing ? 'pause' : 'speed1');
+    // the soundtrack's own soft e-piano fifth (the game's speed sounds would sound like pausing the simulation)
+    this.sound(playing ? 'musicPause' : 'musicPlay');
     this.audio.setMusicEnabled(!playing);
     if (!playing) this.audio.startMusic?.();
     this.render();
@@ -216,11 +231,15 @@ export class MusicPlayer {
         this.pop.remove();
         this.pop = null;
         this.list = null;
+        document.removeEventListener('keydown', this.popKey, true);
+        this.metaBtn?.setAttribute('aria-expanded', 'false');
         this.sound('flyoutClose');
       }
       return;
     }
     if (this.pop) return;
+    document.addEventListener('keydown', this.popKey, true);
+    this.metaBtn?.setAttribute('aria-expanded', 'true');
     this.pop = el('div', 'mpl-pop');
     this.pop.appendChild(el('div', 'mpl-pop-h', icon('music', 13) + '<span>Soundtrack</span>'));
     this.list = el('div', 'mpl-list');

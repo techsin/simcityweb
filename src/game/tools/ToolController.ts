@@ -19,6 +19,8 @@ export class ToolController {
   /** performance.now() of the last idle hover refresh (query tool) */
   private hoverRefreshAt = 0;
   private leftDown = false;
+  /** the right button was already held during the current left drag (chorded cancel is tried once per press) */
+  private chord = false;
   private inside = false;
   private shift = false;
   private offs: (() => void)[] = [];
@@ -56,11 +58,15 @@ export class ToolController {
       this.safeCall(() => this.current.down(this.pointer(e)!));
     });
     on(canvas, 'pointermove', (e) => {
-      // chorded right button while dragging (pointer events report it as a move, not a pointerdown) = cancel
-      if (this.leftDown && e.buttons & 2) {
-        this.cancelDrag();
-        this.ctx.sound('cancel');
-      }
+      // the left button let go while the right one is still held: pointer events report that as a move, not a
+      // pointerup (which only fires once every button is up) - without this a brush kept painting until the next click
+      if (this.leftDown && (e.buttons & 1) === 0) this.endLeft(e);
+      // chorded right button while dragging (pointer events report it as a move, not a pointerdown) = cancel: tried
+      // once per right press (every later move reports the same buttons), audible only when a drag was cancelled
+      // (brush / query / plop tools have nothing to cancel and keep going)
+      const chord = this.leftDown && (e.buttons & 2) !== 0;
+      if (chord && !this.chord && this.cancelDrag()) this.ctx.sound('cancel');
+      this.chord = chord;
       this.inside = true;
       this.lastEvt = e;
       this.moveDirty = true;
@@ -71,14 +77,7 @@ export class ToolController {
     });
     on(canvas, 'pointerup', (e) => {
       if (e.button !== 0 || !this.leftDown) return;
-      this.leftDown = false;
-      this.lastEvt = e;
-      try {
-        canvas.releasePointerCapture(e.pointerId);
-      } catch {
-        /* ignore */
-      }
-      this.safeCall(() => this.current.up(this.pointer(e)!));
+      this.endLeft(e);
     });
     on(canvas, 'pointercancel', () => {
       this.leftDown = false;
@@ -97,6 +96,19 @@ export class ToolController {
       }
     });
     this.applyCursor();
+  }
+
+  /** the left button went up: finish the tool's drag */
+  private endLeft(e: PointerEvent): void {
+    this.leftDown = false;
+    this.chord = false;
+    this.lastEvt = e;
+    try {
+      this.canvas.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    this.safeCall(() => this.current.up(this.pointer(e)!));
   }
 
   get active(): Tool {

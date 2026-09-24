@@ -15,7 +15,8 @@
  *   hover     primary menus / toolbars only (HOVER selector)         audio.hover() (very soft, throttled)
  *
  * De-dup: if the element's own handler already requested a specific sound during the same event (audio.playCount
- * changed), the generic sound is skipped - so explicit sounds always win and nothing doubles up.
+ * changed; hover blips don't count), the generic sound is skipped - so explicit sounds always win and nothing doubles
+ * up.
  * Opt-out: data-sfx="none" on the element or any ancestor. Override: data-sfx="<sound name>" (plays instead of the
  * generic sound, still de-duped). data-sfx-hover="1" opts an element into hover sounds, data-sfx-hover="none" out.
  */
@@ -28,11 +29,15 @@ export interface UiSoundAudio {
 
 type AudioGetter = () => UiSoundAudio | null | undefined;
 
-/** clickable controls that get generic click feedback */
+/**
+ * clickable controls that get generic click feedback. (Rows that only sometimes have a click handler - Load Region
+ * rows never, Advisors news rows only with a map location - are left to the cursor:pointer catch-all: the rows with a
+ * handler set it.)
+ */
 const CONTROL =
   'button, [role=button], [role=tab], [role=switch], [role=menuitem], [role=option], .btn, a[href], summary, ' +
   'input[type=checkbox], input[type=radio], input[type=button], input[type=submit], ' +
-  '.fly-item, .hud-seg.click, .ticker, .toast, .rc-item, .preset-card, .region-row, .news-row, [data-sfx]';
+  '.fly-item, .hud-seg.click, .ticker, .toast, .rc-item, .preset-card, [data-sfx]';
 
 /** primary menus / toolbars that get hover blips (not every panel row) */
 const HOVER =

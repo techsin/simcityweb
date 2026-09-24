@@ -95,7 +95,8 @@ export class EmergenciesPanel extends Panel {
       const jump = h('button', { class: 'btn sm', title: 'Show on the map', html: icon('target', 13) });
       jump.addEventListener('click', () => {
         this.ctx.focusCell(inc.x, inc.z, 420);
-        this.ctx.showQuery({ buildingId: inc.buildingId >= 0 ? inc.buildingId : null, x: inc.x, z: inc.z });
+        // the camera whoosh is the sound (silent inspector)
+        this.ctx.showQuery({ buildingId: inc.buildingId >= 0 ? inc.buildingId : null, x: inc.x, z: inc.z }, { silent: true });
       });
       const disp = h('button', { class: 'btn sm' + (waiting ? ' primary' : ''), title: 'Dispatch a unit yourself' }, 'Dispatch');
       disp.addEventListener('click', () => openDispatch(this.ctx, inc.id));

@@ -274,8 +274,9 @@ export class BudgetPanel extends Panel {
       const repay = h('button', { class: 'btn sm' }, `Repay ${money(l.remaining)}`);
       repay.addEventListener('click', () => {
         const r = this.safeAct(() => this.ctx.actions.repayLoan(i));
-        if (r && !r.ok) this.ctx.toast(r.reason ?? 'Cannot repay', 'error');
-        else this.ctx.sound('money');
+        // (null: the action threw and safeAct already showed its error - no cash register on top of the buzz)
+        if (r?.ok) this.ctx.sound('money');
+        else if (r) this.ctx.toast(r.reason ?? 'Cannot repay', 'error');
         this.renderTab();
       });
       this.content.appendChild(h('div', { class: 'loan-row' },
@@ -312,8 +313,8 @@ export class BudgetPanel extends Panel {
       if (o && !o.ok) bt.setAttribute('disabled', '');
       bt.addEventListener('click', () => {
         const r = this.safeAct(() => this.ctx.actions.takeLoan(amt));
-        if (r && !r.ok) this.ctx.toast(r.reason ?? 'The bank declined the loan', 'error');
-        else this.ctx.sound('money');
+        if (r?.ok) this.ctx.sound('money');
+        else if (r) this.ctx.toast(r.reason ?? 'The bank declined the loan', 'error');
         this.renderTab();
       });
       acts.appendChild(bt);

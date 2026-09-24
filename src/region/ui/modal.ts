@@ -23,11 +23,18 @@ export interface ModalOptions {
   onEnter?: () => void;
 }
 
+/**
+ * open modals, bottom to top. Every modal listens on window, so only the top-most one may handle Esc / Enter: one Esc
+ * on a confirm stacked over Load Region closed both (stopPropagation doesn't stop other listeners on window).
+ */
+const openModals: Modal[] = [];
+
 export class Modal {
   readonly back: HTMLElement;
   readonly card: HTMLElement;
   private closed = false;
   private keyHandler = (e: KeyboardEvent) => {
+    if (openModals[openModals.length - 1] !== this) return;
     if (e.key === 'Escape' && this.opts.closable !== false) {
       e.stopPropagation();
       this.close();
@@ -57,6 +64,7 @@ export class Modal {
       if (e.target === this.back && opts.closable !== false) this.close();
     });
     uiRoot().appendChild(this.back);
+    openModals.push(this);
     window.addEventListener('keydown', this.keyHandler, true);
     audio.play('dialogOpen');
     const first = this.card.querySelector<HTMLElement>('input[type=text], .autofocus');
@@ -71,6 +79,8 @@ export class Modal {
   close(silent = false): void {
     if (this.closed) return;
     this.closed = true;
+    const i = openModals.indexOf(this);
+    if (i >= 0) openModals.splice(i, 1);
     window.removeEventListener('keydown', this.keyHandler, true);
     if (!silent) audio.play('dialogClose');
     this.back.style.transition = 'opacity 0.18s';

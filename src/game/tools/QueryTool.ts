@@ -99,9 +99,10 @@ export class QueryTool extends Tool {
     if (moved > 6) return;
     const id = this.pick(p);
     if (id !== null) {
+      // the inspect ping is the sound: the inspector opens without its panel swish
       this.ctx.sound('select');
       const b = this.ctx.state.buildings.get(id);
-      this.ctx.showQuery({ buildingId: id, x: b?.x ?? p.hit?.x ?? 0, z: b?.z ?? p.hit?.z ?? 0 });
+      this.ctx.showQuery({ buildingId: id, x: b?.x ?? p.hit?.x ?? 0, z: b?.z ?? p.hit?.z ?? 0 }, { silent: true });
     } else if (p.hit) {
       const st = this.ctx.state;
       const i = st.idx(p.hit.x, p.hit.z);
@@ -111,7 +112,7 @@ export class QueryTool extends Tool {
         return;
       }
       this.ctx.sound('select');
-      this.ctx.showQuery({ buildingId: null, x: p.hit.x, z: p.hit.z });
+      this.ctx.showQuery({ buildingId: null, x: p.hit.x, z: p.hit.z }, { silent: true });
     }
   }
   override deactivate(): void {

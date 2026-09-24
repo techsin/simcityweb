@@ -125,7 +125,8 @@ export class PanelManager implements PanelsApi {
     return !!this.panels.get(id)?.isOpen;
   }
 
-  open(id: string): void {
+  /** open (or focus) a panel; opts.silent: the action that opened it already made its sound (inspect ping, jump) */
+  open(id: string, opts: { silent?: boolean } = {}): void {
     const p = this.panels.get(id);
     if (!p) return;
     if (!p.el) p.mount(() => this.close(id), () => this.focus(id), () => savePref('panel.' + id, { x: p.el.offsetLeft, y: p.el.offsetTop }));
@@ -149,7 +150,7 @@ export class PanelManager implements PanelsApi {
       console.error('[ui] panel error', id, e);
     }
     this.keepAboveToolbar(p);
-    this.ctx.sound('open');
+    if (!opts.silent) this.ctx.sound('open');
     this.ctx.ui.emit('panel', { id, open: true });
   }
 
@@ -177,7 +178,8 @@ export class PanelManager implements PanelsApi {
     return { x, y };
   }
 
-  close(id: string): void {
+  /** close a panel; opts.silent: the action that closed it already made its sound (e.g. Demolish) */
+  close(id: string, opts: { silent?: boolean } = {}): void {
     const p = this.panels.get(id);
     if (!p || !p.isOpen) return;
     p.isOpen = false;
@@ -192,7 +194,7 @@ export class PanelManager implements PanelsApi {
     setTimeout(() => {
       if (!p.isOpen && el.parentElement) el.remove();
     }, 150);
-    this.ctx.sound('close');
+    if (!opts.silent) this.ctx.sound('close');
     this.ctx.ui.emit('panel', { id, open: false });
   }
 

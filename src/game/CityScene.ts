@@ -227,7 +227,7 @@ export class CityScene {
       setOverlay: (o) => this.setOverlay(o),
       sound: (n, o) => this.sound(n, o),
       focusCell: (x, z, d) => this.focusCell(x, z, d),
-      showQuery: (t) => this.showQuery(t),
+      showQuery: (t, o) => this.showQuery(t, o),
       applySettings: (p) => this.applySettings(p),
       toast: (text, kind, cell, title) => this.toasts?.show(text, kind, cell, title),
       openFlyout: (id, tab) => this.toolbar?.openFlyout(id, tab),
@@ -779,7 +779,8 @@ export class CityScene {
     if (this.pause.isOpen) {
       if (e.key === 'Escape') {
         e.preventDefault();
-        this.pause.close();
+        // a held Esc auto-repeats: only a fresh press closes the menu (it flipped open / closed ~15× a second)
+        if (!e.repeat) this.pause.close();
       }
       return;
     }
@@ -790,6 +791,8 @@ export class CityScene {
     const k = e.key;
     if (k === 'Escape') {
       e.preventDefault();
+      // one press = one step back (auto-repeat would close every panel, then open and close the pause menu)
+      if (e.repeat) return;
       if (this.tools.cancelDrag()) {
         this.sound('cancel');
         return;
@@ -946,12 +949,13 @@ export class CityScene {
     }
   }
 
-  private showQuery(t: QueryTarget | null): void {
+  private showQuery(t: QueryTarget | null, opts: { silent?: boolean } = {}): void {
     if (!t) {
-      this.panels.close('info');
+      this.panels.close('info', opts);
       return;
     }
-    this.panels.open('info');
+    // silent: the inspect ping / camera jump that led here is the sound (the panel's 'open' swish doubled it)
+    this.panels.open('info', opts);
     this.info.show(t);
     try {
       this.objects.setSelected(t.buildingId ?? null);
