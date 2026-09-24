@@ -7,7 +7,8 @@
  *           'tax:I-Ag' 'tax:I-D' 'tax:I-M' 'tax:I-HT'                      (DEV_TYPE_LABELS)
  *           'deal:<defId>'      business deals / reward buildings with income (military base, casino…)
  *           'facility:<defId>'  other buildings with income (airports, stadium, zoo, seaport…); tourist venues earn
- *                               × (0.35 + 0.65 × visits / draw) × (A/60)^0.3 (SIM_DEPTH_SPEC WP4) × use factor (WP7)
+ *                               × (0.35 + 0.65 × visits / draw) × (A/60)^0.3 (SIM_DEPTH_SPEC WP4) × use factor (WP7);
+ *                               nothing while the venue is closed (unpowered, no road, unfunded, on strike)
  *           'tourism'           tourist spending: effective tourists × 0.25 × (avg CS tax / 9)       (WP4)
  *           'recycling'         recycled material sales: tons recycled × 0.5                          (WP4 / WP3)
  *           'ordinance:<id>'    revenue ordinances (legalized gambling, parking fines)
@@ -99,13 +100,15 @@ export function estimateUtilities(st: CityState, rt: EconRuntime): void {
 /**
  * Income multiplier of a tourist venue from its visits (WP4): (0.35 + 0.65 × min(1.25, visits / draw)) × (A/60)^0.3.
  * Normalised by the venue's reference draw (visits at attractiveness 60 in a big, well connected city), so a normally
- * visited venue earns its catalog income. 1 when the tourism system has not run (economy-less tools, old saves).
+ * visited venue earns its catalog income; 0 while it is closed (unpowered, no road, unfunded or on strike: op 0).
+ * 1 when the tourism system has not run (economy-less tools, old saves) or the venue opened after its last update.
  */
 export function venueIncomeFactor(st: CityState, buildingId: number, defId: string): number {
   const a = ATTRACTIONS[defId];
   if (!a) return 1;
   const v = venueVisits(st, buildingId);
   if (!v) return 1;
+  if (v.op <= 0) return 0;
   const A = (st.systemData.economy as { attractiveness?: number } | undefined)?.attractiveness ?? TOURISM.aRef;
   const aF = Math.pow(Math.min(1.5, Math.max(0.5, A / TOURISM.aRef)), VENUE_INCOME.aExp);
   return (VENUE_INCOME.base + VENUE_INCOME.use * Math.min(VENUE_INCOME.useMax, v.visits / a.draw)) * aF;

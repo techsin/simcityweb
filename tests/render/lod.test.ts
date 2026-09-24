@@ -3,10 +3,12 @@
  *  - building massing proxies: generated for (nearly) every building model, much cheaper, inside the model's bounds,
  *    windowed models keep window surfaces (lit at night), deterministic
  *  - DynamicBatch per-pass draw lists: view frustum culling, per-instance shadow cascade masks, tiny-caster skipping,
- *    receiver-volume culling and list caching, disabled tiles / tile sets, front-to-back sorting
+ *    receiver-volume culling and list caching, disabled tiles / tile sets, front-to-back sorting, guard-banded list
+ *    reuse while the camera pans (exact again once it rests), LOD geometry swaps without re-culling
+ *  - building LOD scheduled by camera travel: never on the wrong side of a swap distance, no work while still
  *  - shadow receivers only bump their version when the volume really changes
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { registerAllModels } from '../../src/assets/builders';
 import { getModelGeometry, registeredModelIds } from '../../src/assets/registry';
@@ -15,6 +17,11 @@ import { Surf } from '../../src/core/types';
 import { buildLodProxy } from '../../src/render/city/buildings/lodProxy';
 import { DynamicBatch, TileCuller } from '../../src/render/city/common/batch';
 import { makeReceiver, setReceiver } from '../../src/render/world/Shadows';
+import { BuildingRenderer } from '../../src/render/city/buildings/BuildingRenderer';
+import { createCityState } from '../../src/sim/terrainGen';
+import { defaultCityConfig } from '../../src/sim/config';
+import type { Building } from '../../src/sim/CityState';
+import { CELL_SIZE } from '../../src/core/constants';
 
 registerAllModels();
 
@@ -227,6 +234,154 @@ describe('DynamicBatch per-pass culling', () => {
   });
 });
 
+describe('DynamicBatch list reuse', () => {
+  const N = 128, CELL = 16;
+  const make = () => {
+    const culler = new TileCuller(N, CELL, 16);
+    const batch = new DynamicBatch(new THREE.MeshBasicMaterial(), 64, 1 << 14, 'reuse');
+    batch.enablePassCulling({ culler });
+    return { culler, batch, build: vi.spyOn(batch as unknown as { build: () => void }, 'build') };
+  };
+  // looks from (-150, 200, -150) toward (150, 0, 150): ~470 m to the ground -> guard band ~28 m
+  const cam = new THREE.PerspectiveCamera(40, 16 / 9, 1, 1200);
+  const look = (dx: number) => {
+    cam.position.set(-150 + dx, 200, -150 - dx);
+    cam.lookAt(150 + dx, 0, 150 - dx);
+    cam.updateMatrixWorld();
+  };
+
+  it('reuses a list while the camera pans within the guard band and culls exactly once the view rests', () => {
+    const { culler, batch, build } = make();
+    const g = batch.geometryId('b', () => boxGeo(4));
+    const m = new THREE.Matrix4();
+    // an instance just outside the left edge of the view (within the band) and one well inside
+    look(0);
+    const f = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    const put = (x: number, z: number) => {
+      const id = batch.add(g);
+      batch.setMatrix(id, m.makeTranslation(x, 0, z));
+      batch.setTile(id, culler.tileOfWorld(x, z));
+      return id;
+    };
+    const inside = put(300, 300);
+    // walk from the view centre line sideways until just outside the frustum, then 12 m further (the box's culling
+    // sphere reaches ~3.5 m back toward the frustum)
+    const dir = new THREE.Vector3(1, 0, -1).normalize(), p = new THREE.Vector3(300, 0, 300);
+    while (f.containsPoint(p)) p.addScaledVector(dir, 1);
+    p.addScaledVector(dir, 12);
+    const edge = put(p.x, p.z);
+    let frame = 1;
+    expect(drawn(batch, cam, false, frame++)).toEqual([inside]); // first list: exact
+    // panning away from `edge` at ~4.2 m per frame: culled with a guard band of ~4 frames of motion (~17 m), which
+    // still covers the edge instance
+    look(-3);
+    expect(drawn(batch, cam, false, frame++)).toEqual([inside, edge]);
+    const builds = build.mock.calls.length;
+    for (const x of [-6, -9, -12]) {
+      look(x);
+      expect(drawn(batch, cam, false, frame++)).toEqual([inside, edge]);
+    }
+    expect(build.mock.calls.length).toBe(builds); // ~13 m of panning: no rebuild
+    // at rest the list is culled exactly once (no guard band drawn while nothing moves)
+    for (let i = 0; i < 12; i++) drawn(batch, cam, false, frame++);
+    expect(drawn(batch, cam, false, frame++)).toEqual([inside]);
+    expect(build.mock.calls.length).toBe(builds + 1);
+    // a jump far beyond any band: rebuilt exactly (a band the camera outruns would only enlarge the list)
+    look(-80);
+    expect(drawn(batch, cam, false, frame++)).toEqual([inside]);
+    expect(build.mock.calls.length).toBe(builds + 2);
+    expect((batch as unknown as { slots: { margin: number }[] }).slots[0].margin).toBe(0);
+  });
+
+  it('refreshes draw ranges on LOD geometry swaps without re-culling', () => {
+    const { culler, batch, build } = make();
+    const full = batch.geometryId('full', () => boxGeo(10));
+    const proxy = batch.geometryId('proxy', () => boxGeo(6));
+    const huge = batch.geometryId('huge', () => boxGeo(60));
+    batch.shareSphere(full, proxy);
+    const id = batch.add(full);
+    batch.setMatrix(id, new THREE.Matrix4().makeTranslation(300, 0, 300));
+    batch.setTile(id, culler.tileOfWorld(300, 300));
+    look(0);
+    expect(drawn(batch, cam, false, 1)).toEqual([id]);
+    const n0 = build.mock.calls.length;
+    const mm = batch.mesh as unknown as { _multiDrawStarts: Int32Array; _multiDrawCounts: Int32Array; _geometryInfo: { start: number; count: number }[] };
+    batch.setGeometry(id, proxy);
+    expect(drawn(batch, cam, false, 2)).toEqual([id]);
+    expect(build.mock.calls.length).toBe(n0);
+    expect(mm._multiDrawStarts[0]).toBe(mm._geometryInfo[proxy].start);
+    expect(mm._multiDrawCounts[0]).toBe(mm._geometryInfo[proxy].count);
+    batch.setGeometry(id, full);
+    drawn(batch, cam, false, 3);
+    expect(build.mock.calls.length).toBe(n0);
+    expect(mm._multiDrawCounts[0]).toBe(mm._geometryInfo[full].count);
+    // a geometry that outgrows the culling sphere re-culls
+    batch.setGeometry(id, huge);
+    drawn(batch, cam, false, 4);
+    expect(build.mock.calls.length).toBe(n0 + 1);
+  });
+});
+
+describe('building LOD schedule', () => {
+  it('keeps every building on the right side of its swap distance and does no work while the camera rests', () => {
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 7, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
+    st.heights.fill(0);
+    const culler = new TileCuller(64, CELL_SIZE, 16);
+    const br = new BuildingRenderer(st, culler);
+    br.lodBudgetMs = 1e9; // proxies are built on demand without a frame budget here
+    const models = ['res_cottage', 'res_ranch', 'res_apartment', 'res_tower', 'com_office_small', 'com_diner', 'com_office_tower', 'ind_warehouse'].filter((m) => MANIFEST_BY_ID[m]);
+    expect(models.length).toBeGreaterThan(3);
+    let id = 1;
+    for (let z = 0; z < 62; z += 3) for (let x = 0; x < 62; x += 3) {
+      br.add({ id: id++, def: models[(x * 7 + z * 3) % models.length], x, z, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
+    }
+    const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 8000);
+    const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
+    const on = br.lodPixels * 0.88, off = br.lodPixels * 1.12;
+    type BI = { lod: number; geom: number; lodGeom: number; siteGeom: number; siteLod: number; radius: number; cy: number; vis: { cx: number; cz: number } };
+    const list = (br as unknown as { list: BI[] }).list;
+    const evals = vi.spyOn(br as unknown as { lodEval: () => void }, 'lodEval');
+    const check = () => {
+      let bad = 0;
+      for (const bi of list) {
+        if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) continue;
+        const d = Math.hypot(bi.vis.cx - cam.position.x, bi.cy - cam.position.y, bi.vis.cz - cam.position.z);
+        const rk = bi.radius * K;
+        // allowed lag: one schedule bucket (1 m) of camera travel
+        if (bi.lod === 0 && d > rk / on + 1.001) bad++;
+        if (bi.lod === 1 && d < rk / off - 1.001) bad++;
+      }
+      return bad;
+    };
+    let seed = 99;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const p = new THREE.Vector3(512, 60, -200);
+    let slowEvals = 0, slowSteps = 0, maxProxies = 0;
+    for (let step = 0; step < 600; step++) {
+      const mode = Math.floor(step / 50) % 4; // slow pan, fast pan, zoom, jumps
+      if (mode === 0) p.x += 3;
+      else if (mode === 1) { p.x -= 45; p.z += 30; }
+      else if (mode === 2) p.y = 40 + (step % 50) * 25;
+      else if (step % 10 === 0) p.set(rnd() * 3000 - 1000, 20 + rnd() * 900, rnd() * 3000 - 1000);
+      cam.position.copy(p);
+      cam.updateMatrixWorld();
+      const e0 = evals.mock.calls.length;
+      br.updateLod(cam, H);
+      if (mode === 0 && step % 50 > 5) { slowEvals += evals.mock.calls.length - e0; slowSteps++; }
+      expect(check(), `step ${step}`).toBe(0);
+      maxProxies = Math.max(maxProxies, br.lodCount);
+    }
+    expect(br.lodCount).toBe(list.filter((b) => b.lod === 1).length);
+    expect(maxProxies).toBeGreaterThan(list.length * 0.3);
+    // a slow pan re-evaluates a small fraction of the buildings per frame
+    expect(slowEvals / slowSteps).toBeLessThan(list.length * 0.1);
+    // a resting camera costs nothing
+    const e1 = evals.mock.calls.length;
+    for (let i = 0; i < 20; i++) br.updateLod(cam, H);
+    expect(evals.mock.calls.length).toBe(e1);
+  }, 120_000);
+});
+
 describe('shadow receiver versions', () => {
   it('bump only when the volume changes', () => {
     const cam = new THREE.PerspectiveCamera(40, 1.5, 1, 5000);
@@ -243,5 +398,16 @@ describe('shadow receiver versions', () => {
     cam.updateMatrixWorld();
     setReceiver(r, cam, 1, 600, sun, -10);
     expect(r.version).toBe(v0 + 1);
+    // a pure translation changes the volume but not its shape (guard-banded caster lists stay valid)
+    const s0 = r.shape;
+    cam.position.x += 5;
+    cam.updateMatrixWorld();
+    setReceiver(r, cam, 1, 600, sun, -10);
+    expect(r.version).toBe(v0 + 2);
+    expect(r.shape).toBe(s0);
+    cam.lookAt(260, 0, 200);
+    cam.updateMatrixWorld();
+    setReceiver(r, cam, 1, 600, sun, -10);
+    expect(r.shape).toBe(s0 + 1);
   });
 });

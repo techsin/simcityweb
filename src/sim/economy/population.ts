@@ -34,7 +34,8 @@ import {
   REGION_COMMUTERS_FRAC, REGION_COMMUTERS_ISOLATED, REGION_COMMUTERS_MAX_SHARE, REGION_JOBS_FOR_RESIDENTS,
   RUBBLE_CLEAR_DAYS, TAP_PENALTY, TAP_SAFE, TRAFFIC_JOBFILL_WEIGHT, UNHAPPY_DEMAND, UNHAPPY_DEMAND_HEALTH,
   UNHAPPY_HEALTH, VACANCY_K, VACANCY_MIN, VACANCY_START, WATER_BONUS_LOW, WATER_REQUIRED_STAGE, WORKFORCE_EMA,
-  WORKFORCE_MAX, WORKFORCE_MIN, WORKFORCE_RATIO, COHORT_BASE, NEEDS_ABANDON_SHARE,
+  WORKFORCE_MAX, WORKFORCE_MIN, WORKFORCE_RATIO, COHORT_BASE, NEEDS_ABANDON_SHARE, NEEDS_PENALTY_MAX, NEEDS_UNMET_PEOPLE,
+  EQ_FLOOR, EQ_SPAN_STOCK,
 } from './tuning';
 import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
 import { frontHasRoad, removeBuilding } from './buildings';
@@ -42,8 +43,8 @@ import { ordinanceEffect } from './ordinances';
 import type { FactorTerm } from '../explain';
 import { getDef } from '../catalog';
 import {
-  type DemographicsCtx, DemographicsCache, bindDemographics, demographicsCtx, demographicsData, demographicsSim, evaluateNeeds, needsOf,
-  updateDemographics, updateEqHq,
+  type DemographicsCtx, DemographicsCache, REC_NOISE, REC_RAW, REC_UNMET, bindDemographics, demographicsCtx,
+  demographicsData, demographicsSim, evaluateNeeds, needsOf, updateDemographics, updateEqHq,
 } from './demographics';
 
 /** duck-typed view of sim-infra's TrafficSystem (optional methods; -1 = not assessed yet) */
@@ -82,10 +83,14 @@ interface CondCtx {
   tAccess?: TrafficApi;
   util?: UtilitiesApi;
   demo: DemographicsCtx;
-  /** home access records (occupancy loop); absent for UI queries */
+  /** home access records (occupancy loop); absent for UI queries (live layers) */
   cache?: DemographicsCache;
 }
-/** result of condition() (shared scratch) */
+/**
+ * result of condition() (shared scratch): the clamped health target, the flags it depends on and each of its terms
+ * (penalties as positive amounts, 0 when absent). conditionBreakdown turns the terms into FactorTerms, so the inspector
+ * explains exactly the arithmetic of the occupancy loop.
+ */
 interface Cond {
   target: number;
   powered: boolean;
@@ -95,15 +100,32 @@ interface Cond {
   needsUnmet: boolean;
   /** needs part of the health-target reduction (vacancies; only NEEDS_ABANDON_SHARE of it counts toward abandonment) */
   needsPenalty: number;
+  /** desirability at the building (target starts at 0.5 + 0.5 × des) */
+  des: number;
+  noPower: number;
+  noWater: number;
+  /** + piped water for low-density homes */
+  waterBonus: number;
+  /** unsafe tap water (per-network quality tapQ) */
+  tap: number;
+  tapQ: number;
+  noRoad: number;
+  noGarbage: number;
+  /** can't reach jobs (traffic worker access jobAccess; -1 = not assessed) */
+  jobs: number;
+  jobAccess: number;
+  /** noise at night (noise at the home) */
+  sleep: number;
+  noise: number;
 }
-const COND: Cond = { target: 0, powered: true, watered: true, needWater: false, road: true, needsUnmet: false, needsPenalty: 0 };
+const COND: Cond = {
+  target: 0, powered: true, watered: true, needWater: false, road: true, needsUnmet: false, needsPenalty: 0, des: 0,
+  noPower: 0, noWater: 0, waterBonus: 0, tap: 0, tapQ: 1, noRoad: 0, noGarbage: 0, jobs: 0, jobAccess: -1, sleep: 0, noise: 0,
+};
 
-/**
- * health target of a growable at cell i (+ the flags it depends on). With `terms` every contribution is listed
- * (conditionBreakdown); the hot occupancy loop passes null.
- */
-function condition(c: CondCtx, b: Building, def: BuildingDef, i: number, terms: FactorTerm[] | null): Cond {
-  const st = c.st, inf = c.inf;
+/** health target of a growable at cell i (+ the flags and terms it depends on, see Cond) */
+function condition(c: CondCtx, b: Building, def: BuildingDef, i: number): Cond {
+  const st = c.st, inf = c.inf, K = COND;
   const dev = def.devType!;
   const isR = dev <= DevType.R3;
   const powered = buildingPowered(st, b, inf.utilities);
@@ -111,80 +133,59 @@ function condition(c: CondCtx, b: Building, def: BuildingDef, i: number, terms: 
   const watered = buildingWatered(st, b, inf.utilities);
   const road = frontHasRoad(st, b);
   const des = st.desirability[dev][i];
-  let target = 0.5 + 0.5 * des;
-  if (terms) terms.push({ id: 'desirability', label: 'Desirability', value: target, detail: `desirability ${des.toFixed(2)}` });
-  if (!powered) {
-    target -= PENALTY_NO_POWER;
-    if (terms) terms.push({ id: 'power', label: 'No power', value: -PENALTY_NO_POWER });
-  }
-  if (needWater && !watered) {
-    target -= PENALTY_NO_WATER;
-    if (terms) terms.push({ id: 'water', label: 'No water', value: -PENALTY_NO_WATER, detail: 'this building needs piped water' });
-  } else if (isR && inf.utilities && watered) {
-    if (!needWater) {
-      target += WATER_BONUS_LOW;
-      if (terms) terms.push({ id: 'waterBonus', label: 'Piped water', value: WATER_BONUS_LOW });
-    }
-    if (c.sim && c.util && typeof c.util.waterQualityAt === 'function') {
-      const q = c.util.waterQualityAt(c.sim, i);
-      if (q < TAP_SAFE) {
-        const p = (TAP_PENALTY * (TAP_SAFE - q)) / TAP_SAFE;
-        target -= p;
-        if (terms) terms.push({ id: 'tapWater', label: 'Unsafe tap water', value: -p, detail: `water quality ${Math.round(q * 100)}%` });
-      }
+  const noPower = powered ? 0 : PENALTY_NO_POWER;
+  let noWater = 0, waterBonus = 0, tap = 0, tapQ = 1;
+  if (needWater && !watered) noWater = PENALTY_NO_WATER;
+  else if (isR && inf.utilities && watered) {
+    if (!needWater) waterBonus = WATER_BONUS_LOW;
+    // per-network tap-water quality (WP1-3; a small contaminated network is unsafe even when the city mean is fine)
+    if (c.util) {
+      tapQ = c.util.waterQualityAt!(c.sim!, i);
+      if (tapQ < TAP_SAFE) tap = (TAP_PENALTY * (TAP_SAFE - tapQ)) / TAP_SAFE;
     }
   }
-  if (!road) {
-    target -= PENALTY_NO_ROAD;
-    if (terms) terms.push({ id: 'road', label: 'No road access', value: -PENALTY_NO_ROAD });
-  }
-  if (b.flags & BF.NoGarbage) {
-    target -= PENALTY_NO_GARBAGE;
-    if (terms) terms.push({ id: 'garbage', label: 'Garbage not collected', value: -PENALTY_NO_GARBAGE });
-  }
-  let needsUnmet = false, needsPen = 0;
+  const noRoad = road ? 0 : PENALTY_NO_ROAD;
+  const noGarbage = b.flags & BF.NoGarbage ? PENALTY_NO_GARBAGE : 0;
+  let jobs = 0, jobAccess = -1, needsPen = 0, needsUnmet = false, sleep = 0, noise = 0;
   if (isR) {
     if (c.tAccess) {
-      const a = c.tAccess.workerAccess!(b.id);
-      if (a >= 0 && a < JOB_ACCESS_MIN) {
-        const p = (JOB_ACCESS_MIN - a) * PENALTY_NO_JOB_ACCESS;
-        target -= p;
-        if (terms) terms.push({ id: 'jobs', label: "Can't reach jobs", value: -p, detail: `${Math.round(a * 100)}% of workers reach a job` });
+      jobAccess = c.tAccess.workerAccess!(b.id);
+      if (jobAccess >= 0 && jobAccess < JOB_ACCESS_MIN) jobs = (JOB_ACCESS_MIN - jobAccess) * PENALTY_NO_JOB_ACCESS;
+    }
+    const cache = c.cache;
+    if (cache) {
+      // the home's access record (refilled after every services pass): needs terms folded with the cohort shares,
+      // the NeedsUnmet population threshold and the night noise
+      const o = cache.refresh(st, b, i, c.demo.svc, def);
+      const f = cache.f;
+      if (c.demo.svc) {
+        const raw = f[o + REC_RAW];
+        needsPen = (raw < NEEDS_PENALTY_MAX ? raw : NEEDS_PENALTY_MAX) * c.demo.expectation;
+        needsUnmet = b.pop * f[o + REC_UNMET] >= NEEDS_UNMET_PEOPLE;
       }
+      noise = f[o + REC_NOISE];
+    } else {
+      const nd = evaluateNeeds(st, b, i, def, c.demo);
+      needsPen = nd.penalty;
+      needsUnmet = nd.unmet;
+      noise = st.noise[i];
     }
-    if (c.cache) c.cache.refresh(st, b, i, c.demo.svc, def);
-    const nd = evaluateNeeds(st, b, i, def, c.demo, c.cache);
-    needsUnmet = nd.unmet;
-    needsPen = nd.penalty;
-    if (nd.penalty > 0) {
-      target -= nd.penalty;
-      if (terms) {
-        const miss = needsOf(st, b).filter((r) => !r.met && r.kind !== 'jobs' && r.kind !== 'water').map((r) => r.label);
-        terms.push({ id: 'needs', label: 'Unmet needs', value: -nd.penalty, detail: miss.length ? miss.join(', ') : undefined });
-      }
-    }
-    const noise = c.cache ? c.cache.noiseOf(b.id) : st.noise[i];
-    if (noise > NOISE_SLEEP_START) {
-      const p = NOISE_SLEEP * (noise - NOISE_SLEEP_START);
-      target -= p;
-      if (terms) terms.push({ id: 'noise', label: 'Noise at night', value: -p, detail: `noise ${Math.round(noise * 100)}%` });
-    }
+    if (noise > NOISE_SLEEP_START) sleep = NOISE_SLEEP * (noise - NOISE_SLEEP_START);
   }
-  COND.target = target < 0 ? 0 : target > 1 ? 1 : target;
-  COND.powered = powered;
-  COND.watered = watered;
-  COND.needWater = needWater;
-  COND.road = road;
-  COND.needsUnmet = needsUnmet;
-  COND.needsPenalty = needsPen;
-  return COND;
+  // (same order of operations as the terms list of conditionBreakdown; absent terms subtract an exact 0)
+  const target = 0.5 + 0.5 * des - noPower - noWater + waterBonus - tap - noRoad - noGarbage - jobs - needsPen - sleep;
+  K.target = target < 0 ? 0 : target > 1 ? 1 : target;
+  K.powered = powered; K.watered = watered; K.needWater = needWater; K.road = road;
+  K.needsUnmet = needsUnmet; K.needsPenalty = needsPen;
+  K.des = des; K.noPower = noPower; K.noWater = noWater; K.waterBonus = waterBonus; K.tap = tap; K.tapQ = tapQ;
+  K.noRoad = noRoad; K.noGarbage = noGarbage; K.jobs = jobs; K.jobAccess = jobAccess; K.sleep = sleep; K.noise = noise;
+  return K;
 }
 
 function condCtx(st: CityState, sim?: Simulation): CondCtx {
   const inf = infraFlags(st);
   const traffic = sim && inf.traffic ? (sim.getSystem('traffic') as unknown as TrafficApi | undefined) : undefined;
-  // per-network tap water is only worse than the (demand-weighted) city mean when the mean itself is below 1
-  const util = sim && inf.utilities && (st.stats.tapWater ?? 1) < 0.999 ? (sim.getSystem('utilities') as unknown as UtilitiesApi | undefined) : undefined;
+  const util = sim && inf.utilities ? (sim.getSystem('utilities') as unknown as UtilitiesApi | undefined) : undefined;
   return {
     st, inf, sim,
     tAccess: typeof traffic?.workerAccess === 'function' ? traffic : undefined,
@@ -212,10 +213,13 @@ function blurCoarse(raw: Float32Array, out: Float32Array, cw: number): void {
   }
 }
 
-/** homes update their cohorts / workforce / education every DEMO_UPDATE_DAYS (every 8th occupancy visit: the mix
- *  drifts ~1 % per update at the 12 %/year turnover; newcomers are counted from the population at the last update, a
- *  new home is seeded on its first visit) */
-const DEMO_UPDATE_DAYS = 8 * OCC_PERIOD;
+/** homes update their cohorts / workforce / education every DEMO_UPDATE_DAYS (every 16th occupancy visit: the mix
+ *  drifts ~2 % per update at the 12 %/year turnover, education ~3 % of its gap; newcomers are counted from the
+ *  population at the last update, a new home is seeded on its first visit, its second update comes at a per-building
+ *  phase within the period) */
+const DEMO_UPDATE_DAYS = 16 * OCC_PERIOD;
+/** the city-wide cohort / education / coarse-grid sample (aggregate) runs every DEMO_AGG_DAYS */
+const DEMO_AGG_DAYS = 8 * OCC_PERIOD;
 
 /** EMPLOYED_EMA per day compounded over one OCC_PERIOD (the traffic ledger is sampled every OCC_PERIOD days) */
 const EMPLOYED_EMA_PERIOD = 1 - Math.pow(1 - EMPLOYED_EMA, OCC_PERIOD);
@@ -223,9 +227,13 @@ const EMPLOYED_EMA_PERIOD = 1 - Math.pow(1 - EMPLOYED_EMA, OCC_PERIOD);
 export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } {
   let cursor = 0;
   const burntSince = new Map<number, number>();
-  // home access records (demographics.ts): refilled after every services pass and at least monthly
+  const defOf = (b: Building): BuildingDef | undefined => rt.defOf(b);
+  // home access records (demographics.ts): refilled after every services pass (monthly without the services system)
   let cache = new DemographicsCache();
   let unsubLayers: (() => void) | null = null;
+  /** days left in which occupancy refills today's slice of access records in a pre-pass (after an invalidation) */
+  let refillDays = 0;
+  const invalidate = () => { cache.invalidate(); refillDays = OCC_PERIOD; };
   let layersSim: Simulation | null = null;
   // demographics accumulators (per aggregation)
   const coh = new Float64Array(15);
@@ -248,10 +256,10 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     const cw = rt.cw;
     const cc = cw * cw;
     // employment sample (workforce x traffic access): every OCC_PERIOD days; cohort shares / coarse demographics
-    // grids / city mean education: every DEMO_UPDATE_DAYS (the fields change once per update period) — the cohort
-    // stats follow the daily population at the sampled shares
+    // grids / city mean education: every DEMO_AGG_DAYS (the fields change slowly) — the cohort stats follow the daily
+    // population at the sampled shares
     const sample = first || st.day % OCC_PERIOD === 0;
-    const demo = first || st.day % DEMO_UPDATE_DAYS === 0;
+    const demo = first || st.day % DEMO_AGG_DAYS === 0;
     if (sample) cache.ensure(st.nextBuildingId);
     const mWf = cache.wf;
     if (demo) {
@@ -419,6 +427,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     for (let k = list.length - 1; k >= 0; k--) {
       const b = list[k];
       if (!sim.state.buildings.has(b.id) || !(b.flags & BF.Constructing)) { list[k] = list[list.length - 1]; list.pop(); continue; }
+      cache.touch(b); // a new growable: every optional WP1 field from its first day (one hidden class)
       const stage = rt.defOf(b)?.stage ?? 1;
       const q0 = Math.floor(b.built * 4);
       b.built = Math.min(1, b.built + 1 / constructionDays(b, stage));
@@ -448,6 +457,21 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     const traffic = inf.traffic ? (sim.getSystem('traffic') as unknown as TrafficApi | undefined) : undefined;
     const tJobFill = typeof traffic?.jobFill === 'function' ? traffic : undefined;
     const slice = n ? Math.ceil(n / OCC_PERIOD) : 0;
+    // after a services pass: refill the access records of today's slice in a tight pre-pass (about half the cost of
+    // refilling them one by one inside the visit loop; a home the pre-pass misses is refilled on its visit)
+    if (refillDays > 0) {
+      refillDays--;
+      const svc = ctx.demo.svc;
+      let cur = cursor;
+      for (let c = 0; c < slice; c++) {
+        if (cur >= n) cur = 0;
+        const b = list[cur++];
+        if (b.flags & (BF.Burnt | BF.Constructing)) continue;
+        const def = rt.defOf(b);
+        if (!def || def.devType === undefined || def.devType > DevType.R3) continue;
+        cache.refresh(st, b, (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1), svc, def);
+      }
+    }
     for (let c = 0; c < slice; c++) {
       if (cursor >= list.length) cursor = 0;
       const b = list[cursor++];
@@ -457,6 +481,8 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       const occupied0 = b.pop + b.jobs > 0;
       if (b.flags & BF.Burnt) {
         b.pop = 0; b.jobs = 0;
+        // rubble has no residents: the needs chip must not outlive the fire
+        if (b.flags & BF.NeedsUnmet) { b.flags &= ~BF.NeedsUnmet; sim.events.emit('buildingChanged', b); }
         let since = burntSince.get(b.id);
         if (since === undefined) burntSince.set(b.id, (since = st.day));
         if (cleanup && st.day - since >= RUBBLE_CLEAR_DAYS) { burntSince.delete(b.id); removeBuilding(sim, b); }
@@ -470,7 +496,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       const i = (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1);
       // ---- conditions
       if (!inf.utilities) b.flags |= BF.Powered | BF.Watered;
-      const cd = condition(ctx, b, def, i, null);
+      const cd = condition(ctx, b, def, i);
       const powered = cd.powered, watered = cd.watered, needWater = cd.needWater, road = cd.road;
       if (road) b.flags &= ~BF.NoRoad; else b.flags |= BF.NoRoad;
       if (isR) { if (cd.needsUnmet) b.flags |= BF.NeedsUnmet; else b.flags &= ~BF.NeedsUnmet; }
@@ -507,12 +533,17 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
           const goal = b.capacity * occ;
           b.pop = Math.round(b.pop + (goal - b.pop) * fillK);
           if (b.pop === 0 && goal > 0.5) b.pop = 1;
-          // demographics every DEMO_UPDATE_DAYS (cohorts drift slowly); a new home is seeded on its first visit
+          // demographics every DEMO_UPDATE_DAYS (cohorts drift slowly); a new home is seeded on its first visit and then
+          // updated at a per-building phase, so a city loaded or generated at once spreads its updates over the period
           const id = b.id; // (condition() already made the cache record current)
           const last = cache.lastDay(id);
-          if (last < 0 || st.day - last >= DEMO_UPDATE_DAYS - 1 || b.kids === undefined) {
-            const dt = last < 0 ? OCC_PERIOD : Math.min(2 * DEMO_UPDATE_DAYS, st.day - last);
-            updateDemographics(st, b, def, i, dt, last < 0 ? b.pop : cache.lastPop(id), ctx.demo, cache);
+          if (last < 0 || st.day >= cache.nextDay(id)) {
+            if (last < 0 && b.kids !== undefined) cache.markUpdated(b, st.day); // loaded with its demographics
+            else {
+              const dt = last < 0 ? OCC_PERIOD : Math.min(2 * DEMO_UPDATE_DAYS, st.day - last);
+              updateDemographics(st, b, def, i, dt, last < 0 ? b.pop : cache.lastPop(id), ctx.demo, cache);
+            }
+            cache.setNextDay(id, st.day + (last < 0 ? Math.floor(hash2(id, 211) * DEMO_UPDATE_DAYS) : DEMO_UPDATE_DAYS - 1));
           }
         } else {
           // job slots posted to traffic = capacity × hire (1/256 steps: the field is only rewritten when it changes);
@@ -529,6 +560,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     }
     // civic buildings: staff hired (power / water gated when the def uses them) and filled by the workforce
     for (const b of rt.plopped) {
+      cache.touch(b);
       if (!inf.utilities && (b.flags & (BF.Powered | BF.Watered)) !== (BF.Powered | BF.Watered)) {
         b.flags |= BF.Powered | BF.Watered;
         sim.events.emit('buildingChanged', b);
@@ -554,17 +586,27 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     init(sim) {
       rt.attach(sim);
       bindDemographics(sim);
+      // a save from before WP1 (no education stock yet): the residents it already has keep the saved EQ's education
+      // level instead of the first-settler EDU_NEWCOMER (EQ, CO / I-HT demand and the EQ rewards would otherwise
+      // slide toward EQ_FLOOR + EQ_SPAN_STOCK × EDU_NEWCOMER for years)
+      const dd0 = demographicsData(sim.state);
+      if (dd0.eduMean < 0 && sim.state.stats.population > 0) {
+        let wp1 = false; // (a WP1 save from its first days: the init aggregate below takes the homes' own mean)
+        for (const b of sim.state.buildings.values()) if (b.edu !== undefined) { wp1 = true; break; }
+        if (!wp1) dd0.eduMean = Math.max(0, Math.min(1, (sim.state.stats.eq - EQ_FLOOR) / EQ_SPAN_STOCK));
+      }
       cache = new DemographicsCache();
+      refillDays = OCC_PERIOD; // every record starts stale
       cache.ensure(sim.state.nextBuildingId);
       for (const b of sim.state.buildings.values()) cache.sync(b);
       if (layersSim !== sim) {
         unsubLayers?.();
         unsubLayers = sim.events.on('layerUpdated', (name) => {
-          if (name === 'services') cache.invalidate();
+          if (name === 'services') invalidate();
         });
         layersSim = sim;
       }
-      cursor = 0;
+      cursor = Math.max(0, demographicsData(sim.state).cursor ?? 0); // a loaded city keeps its visiting order
       burntSince.clear();
       rt.ensureLists();
       aggregate(sim, true);
@@ -572,11 +614,13 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     daily(sim) {
       const t0 = performance.now();
       rt.ensureLists();
-      if (sim.state.day % DAYS_PER_MONTH === 0) cache.invalidate(); // crime / noise drift
+      // every services pass refills the access records (15 days); without the services system crime / noise still drift
+      if (!infraFlags(sim.state).services && sim.state.day % DAYS_PER_MONTH === 0) invalidate();
       construction(sim);
       occupancy(sim);
       rt.ensureLists();
       aggregate(sim, false);
+      demographicsData(sim.state).cursor = cursor;
       if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === 0) sim.events.emit('layerUpdated', 'demographics');
       rt.timing.population = performance.now() - t0;
     },
@@ -584,7 +628,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       // EQ / HQ from the residents' education stock and health access (with sim-infra services; approval keeps the
       // legacy coverage lag in sim-core-only runs)
       if (!infraFlags(sim.state).services) return;
-      updateEqHq(sim.state, rt.growables, DAYS_PER_MONTH, sim);
+      updateEqHq(sim.state, rt.growables, DAYS_PER_MONTH, sim, defOf);
     },
   };
 }
@@ -600,8 +644,22 @@ export function conditionBreakdown(st: CityState, b: Building): { terms: FactorT
   const N = st.size;
   const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
   const ctx = condCtx(st, demographicsSim(st));
-  const terms: FactorTerm[] = [];
-  const cd = condition(ctx, b, def, i, terms);
+  const cd = condition(ctx, b, def, i);
+  // terms in the order condition() sums them (they add up to the unclamped target)
+  const terms: FactorTerm[] = [{ id: 'desirability', label: 'Desirability', value: 0.5 + 0.5 * cd.des, detail: `desirability ${cd.des.toFixed(2)}` }];
+  if (!cd.powered) terms.push({ id: 'power', label: 'No power', value: -cd.noPower });
+  if (cd.noWater) terms.push({ id: 'water', label: 'No water', value: -cd.noWater, detail: 'this building needs piped water' });
+  if (cd.waterBonus) terms.push({ id: 'waterBonus', label: 'Piped water', value: cd.waterBonus });
+  if (cd.tap) terms.push({ id: 'tapWater', label: 'Unsafe tap water', value: -cd.tap, detail: `water quality ${Math.round(cd.tapQ * 100)}%` });
+  if (!cd.road) terms.push({ id: 'road', label: 'No road access', value: -cd.noRoad });
+  if (cd.noGarbage) terms.push({ id: 'garbage', label: 'Garbage not collected', value: -cd.noGarbage });
+  if (cd.jobs) terms.push({ id: 'jobs', label: "Can't reach jobs", value: -cd.jobs, detail: `${Math.round(cd.jobAccess * 100)}% of workers reach a job` });
+  if (cd.needsPenalty > 0) {
+    const pen = cd.needsPenalty;
+    const miss = needsOf(st, b).filter((r) => !r.met && r.kind !== 'jobs' && r.kind !== 'water').map((r) => r.label);
+    terms.push({ id: 'needs', label: 'Unmet needs', value: -pen, detail: miss.length ? miss.join(', ') : undefined });
+  }
+  if (cd.sleep) terms.push({ id: 'noise', label: 'Noise at night', value: -cd.sleep, detail: `noise ${Math.round(cd.noise * 100)}%` });
   const dmd = st.stats.demand[def.devType] ?? 0;
   const hA = b.health + (1 - NEEDS_ABANDON_SHARE) * cd.needsPenalty;
   const unhappy = hA < UNHAPPY_HEALTH || (dmd < UNHAPPY_DEMAND && hA < UNHAPPY_DEMAND_HEALTH) || !cd.powered || !cd.road

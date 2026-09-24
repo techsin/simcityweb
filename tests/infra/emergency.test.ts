@@ -1,6 +1,8 @@
 /**
  * WP8 emergency dispatch: auto-dispatch along real road routes when covered, 'uncovered' alerts + player dispatch when
- * not, fleets (busy stations), escalation, outcomes / stats, response layers, determinism + save / load, perf.
+ * not, fleets (busy stations), escalation, outcomes / stats, response layers, determinism + save / load, perf; the
+ * coverage promise (no covered building burns before its truck arrives), the daily search budget in road nodes
+ * (disaster aftermath the same day, 'Dispatch pending'), traffic's road graph (no graph builds of its own), medScore.
  */
 import { PerformanceObserver } from 'node:perf_hooks';
 import { describe, expect, it } from 'vitest';
@@ -8,12 +10,14 @@ import { Network } from '../../src/core/types';
 import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import type { EmergencyEvent, Simulation } from '../../src/sim/Simulation';
 import {
-  ChunkedSearch, emergencyCrimeBoosts, emergencyOf, emergencyPollution, responseAt, uncoveredHotspots, vehiclePosition,
+  ChunkedSearch, emergencyCrimeBoosts, emergencyOf, emergencyPollution, responseAt, stationRange, uncoveredHotspots, vehiclePosition,
 } from '../../src/sim/infra/emergency';
+import { CATALOG, getDef, rebuildCatalogIndex } from '../../src/sim/catalog';
+import type { BuildingDef } from '../../src/sim/catalogTypes';
 import { RoadGraph } from '../../src/sim/infra/graph';
 import { MinHeap } from '../../src/sim/infra/heap';
 import { Search, Seeds, roadSearch } from '../../src/sim/infra/search';
-import { getFire, triggerDisaster } from '../../src/sim/systems/infra';
+import { getFire, getTraffic, triggerDisaster } from '../../src/sim/systems/infra';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import { Simulation as SimulationCtor } from '../../src/sim/Simulation';
 import { FireSystem } from '../../src/sim/infra/fire';
@@ -148,6 +152,8 @@ describe('emergency dispatch: fires', () => {
     expect(res.ok).toBe(true);
     expect(res.etaMin).toBeCloseTo(3.2, 1);
     expect(third.state).toBe('dispatched');
+    // "Send nearest" once it has everything it needs: says so (no bogus "no free unit")
+    expect(em.dispatchBest(sim, third.id)).toEqual({ ok: false, reason: 'Help is already on the way' });
     expect(st.stats.emergency.manualActive).toBe(0);
     expect(st.stats.emergency.month.manual).toBe(1);
     sim.runDays(12);
@@ -439,8 +445,10 @@ describe('emergency dispatch: layers, determinism, save / load', () => {
     const l0 = log(sim);
     sim.runDays(95);
     let guard = 0;
-    while ((emergencyOf(sim)!.vehicles().length < 2 || !emergencyOf(sim)!.incidents().some((i) => i.state === 'uncovered')) && guard++ < 200) sim.runDays(1);
+    const fire = getFire(sim)!;
+    while ((emergencyOf(sim)!.vehicles().length < 2 || !emergencyOf(sim)!.incidents().some((i) => i.state === 'uncovered') || fire.fires.size === 0) && guard++ < 200) sim.runDays(1);
     expect(emergencyOf(sim)!.vehicles().length).toBeGreaterThan(1);
+    expect(fire.fires.size).toBeGreaterThan(0); // saved mid-fire: the registry must hold today's burn clock
     expect(l0.length).toBeGreaterThan(20);
     const saved = structuredClone(serializeCity(a.st, { copy: true })) as SerializedCity;
     const st2 = deserializeCity(saved);
@@ -448,6 +456,12 @@ describe('emergency dispatch: layers, determinism, save / load', () => {
     const e1 = emergencyOf(sim)!, e2 = emergencyOf(sim2)!;
     expect(e2.incidents()).toEqual(e1.incidents());
     expect(e2.vehicles()).toEqual(e1.vehicles());
+    // the (derived, recomputed) response layers keep the original's refresh schedule: same scheduler work after a load
+    const sched = (e: unknown) => {
+      const q = e as { respLast: number; respStep: number; respDirty: boolean; respNetOnly: boolean };
+      return [q.respLast, q.respStep >= 0 || (q.respDirty && !q.respNetOnly) ? 2 : q.respDirty ? 1 : 0];
+    };
+    expect(sched(e2)).toEqual(sched(e1));
     const l1 = log(sim), l2 = log(sim2);
     for (let d = 0; d < 80; d++) {
       sim.runDays(1);
@@ -465,6 +479,279 @@ describe('emergency dispatch: layers, determinism, save / load', () => {
     expect(st2.stats.emergency.month).toEqual(a.st.stats.emergency.month);
     expect(st2.stats.emergency.year).toEqual(a.st.stats.emergency.year);
     expect(e2.vehicles()).toEqual(e1.vehicles());
+  });
+});
+
+describe('emergency dispatch: coverage promise, search budget, road graph, persistence', () => {
+  /** a 1x1 fire HQ without power use (no turnout): the real HQ's model (5 trucks) and 38-tile radius (6.2-min reach) */
+  function hqDef(): string {
+    if (!getDef('t_fire_hq')) {
+      CATALOG.push({ id: 't_fire_hq', name: 'Fire HQ', model: 'civ_fire_hq', category: 'fire', footprint: [1, 1], jobs: 15, service: 'fire', coverage: { kind: 'fire', radius: 38, strength: 1 } } as BuildingDef);
+      rebuildCatalogIndex();
+    }
+    return 't_fire_hq';
+  }
+
+  it('coverage promise: a fire lit in fire.daily anywhere inside the fire HQ\'s 6.2-min reach is saved and on time (also unpowered)', { timeout: 120000 }, () => {
+    const hq = hqDef();
+    expect(stationRange(getDef(hq), 'fire')).toBeGreaterThan(6.1);
+    const real = getDef('civ_fire_hq')!;
+    const [rw, rd] = real.footprint;
+    // [station def, x of its road node nearest the site, site x]: 5.2 / 5.7 / 6.1 min by road; the real (unpowered:
+    // +0.5 day turnout) HQ at 6.0 min arrives 6.5 days after the ignition, after the 5-day burn clock
+    const cases: [string, number, number][] = [[hq, 10, 62], [hq, 10, 67], [hq, 10, 71], ['civ_fire_hq', 10 + rw - 1, 10 + rw - 1 + 60]];
+    for (const [def, nodeX, siteX] of cases) {
+      const st = newState(96);
+      roadLine(st, 2, 20, 93, 20, Network.Road);
+      place(st, def, 10, def === hq ? 19 : 20 - rd);
+      const home = place(st, 't_r2', siteX, 21, { pop: 60 });
+      const sim = newSim(st);
+      const fire = getFire(sim)!;
+      fire.riskBoost = 0;
+      // a natural ignition inside fire.daily gets its first burn step the same day: without a crew it burns on day 3 + 5
+      const orig = fire.daily.bind(fire);
+      fire.daily = (s) => { orig(s); if (s.state.day === 3) fire.ignite(s, home); };
+      const em = emergencyOf(sim)!;
+      sim.runDays(3);
+      const inc = em.incidents()[0];
+      const label = `${def} ${(siteX - nodeX) / 10} min`;
+      expect(inc.state, label).toBe('dispatched');
+      expect(inc.deadline, label).toBe(8);
+      expect(em.vehicles()[0].cover, label).toBe(true);
+      sim.runDays(14);
+      const m = st.stats.emergency.month;
+      expect(home.flags & BF.Burnt, label).toBe(0);
+      expect(m.buildingsLost, label).toBe(0);
+      expect(m.auto, label).toBe(1);
+      expect(m.late, label).toBe(0); // inside its station's own range: on time
+      expect(m.failed, label).toBe(0);
+    }
+  });
+
+  it('a disaster\'s aftermath is answered the same day: the daily search budget counts road nodes (earthquake, covered town)', { timeout: 120000 }, () => {
+    const st = newState(96);
+    for (let z = 5; z < 92; z += 3) roadLine(st, 2, z, 92, z, Network.Road);
+    for (let x = 2; x < 93; x += 10) roadLine(st, x, 5, x, 89, Network.Road);
+    for (let z = 6; z < 92; z += 12) for (let x = 5; x < 90; x += 20) {
+      if (st.building[st.idx(x, z)] < 0 && !st.network[st.idx(x, z)]) place(st, 't_fire', x, z);
+      if (st.building[st.idx(x + 3, z)] < 0 && !st.network[st.idx(x + 3, z)]) place(st, 't_clinic', x + 3, z);
+    }
+    for (let z = 6; z < 92; z += 3) for (let x = 3; x < 92; x++) if (st.building[st.idx(x, z)] < 0 && !st.network[st.idx(x, z)]) place(st, 't_r1', x, z, { pop: 10 });
+    const sim = newSim(st);
+    getFire(sim)!.riskBoost = 0;
+    const em = emergencyOf(sim)!;
+    triggerDisaster(sim, 'earthquake', 48, 48);
+    const list = [...em.incidents()];
+    expect(list.length).toBeGreaterThan(20);
+    // every incident got its dispatch decision right away (far more than 4 searches): none waits without a reason
+    for (const i of list) expect(i.state === 'queued' && i.reason === undefined, `${i.kind} #${i.id} ${i.note}`).toBe(false);
+    expect(list.filter((i) => i.state === 'dispatched').length).toBeGreaterThan(list.length * 0.8);
+    sim.runDays(25);
+    const m = st.stats.emergency.month;
+    expect(m.buildingsLost).toBe(0);
+    expect(m.failed).toBeLessThanOrEqual(1);
+  });
+
+  it('budget used up: a new incident shows "Dispatch pending" and goes first thing the next day; units already sent keep their dispatch', () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 62, 20, Network.Road);
+    place(st, 't_fire', 30, 19);
+    place(st, 't_clinic', 40, 19);
+    const home = place(st, 't_r2', 34, 21, { pop: 60 });
+    const plant = place(st, 't_id', 36, 21, { jobs: 40 });
+    const sim = newSim(st);
+    getFire(sim)!.riskBoost = 0;
+    const em = emergencyOf(sim)!;
+    const P = em as unknown as { p: { searchDay: number; searchesLeft: number; nodesLeft: number } };
+    const ev = events(sim);
+    P.p.searchDay = st.day;
+    P.p.searchesLeft = 0;
+    P.p.nodesLeft = 0;
+    triggerDisaster(sim, 'fire', home.x, home.z);
+    const f = em.incidents().find((i) => i.kind === 'fire')!;
+    expect(f.state).toBe('queued');
+    expect(f.reason).toBeUndefined();
+    expect(f.note).toBe('Dispatch pending');
+    expect(em.vehicles().length).toBe(0);
+    // one search left: the accident's fire truck goes, its ambulance waits for tomorrow — still 'dispatched'
+    P.p.searchesLeft = 1;
+    const id = em.spawn(sim, 'industrial', plant.x, plant.z, { buildingId: plant.id });
+    const ind = em.incident(id)!;
+    expect(ind.state).toBe('dispatched');
+    expect(ev.some((e) => e.id === id && e.type === 'dispatched')).toBe(true);
+    expect(em.vehicles().filter((v) => v.incidentId === id).map((v) => v.responder)).toEqual(['fire']);
+    sim.runDays(1);
+    expect(['dispatched', 'onScene']).toContain(f.state);
+    expect(f.note).toBe('');
+    expect(em.vehicles().filter((v) => v.incidentId === id).map((v) => v.responder).sort()).toEqual(['fire', 'medical']);
+    sim.runDays(10);
+    expect(home.flags & (BF.OnFire | BF.Burnt)).toBe(0);
+  });
+
+  it('runs on traffic\'s road graph: road edits never make it build a graph, a brand-new road is "pending" until traffic has it', { timeout: 120000 }, () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 40, 20, Network.Road);
+    place(st, 't_fire', 30, 19);
+    // a hamlet on its own road, not connected to the station's
+    roadLine(st, 44, 20, 62, 20, Network.Road);
+    const far = place(st, 't_r2', 50, 21, { pop: 60 });
+    const sim = newSim(st);
+    getFire(sim)!.riskBoost = 0;
+    const em = emergencyOf(sim)!;
+    const tr = getTraffic(sim)!;
+    // every RoadGraph build from here on: whose graph, and inside the emergency system's daily work / a UI call?
+    const builds: { traffic: boolean; inEm: boolean }[] = [];
+    let inEm = false;
+    const ob = RoadGraph.prototype.build;
+    RoadGraph.prototype.build = function (this: RoadGraph, s: CityState): void {
+      builds.push({ traffic: this === tr.road, inEm });
+      ob.call(this, s);
+    };
+    const od = em.dailyWork.bind(em);
+    em.dailyWork = (s: Simulation) => { inEm = true; try { od(s); } finally { inEm = false; } };
+    try {
+      triggerDisaster(sim, 'fire', far.x, far.z);
+      const a = em.incidents()[0];
+      expect(a.state).toBe('uncovered');
+      expect(a.reason).toBe('noStation'); // no fire station can reach it by road
+      sim.runDays(8); // burns down
+      expect(far.flags & BF.Burnt).toBeTruthy();
+      // connect the hamlet; a house right on the new stretch catches fire before traffic rebuilds its graph
+      roadLine(st, 40, 20, 44, 20, Network.Road);
+      const mid = place(st, 't_r2', 42, 21, { pop: 60 });
+      sim.events.emit('networkChanged', { x0: 40, z0: 20, x1: 45, z1: 21 });
+      const ev = events(sim);
+      triggerDisaster(sim, 'fire', mid.x, mid.z);
+      const b = em.incidents().find((i) => i.buildingId === mid.id)!;
+      expect(b.state).toBe('queued'); // not "no road leads to this place"
+      expect(b.note).toBe('Dispatch pending');
+      inEm = true;
+      em.dispatchOptions(sim, b.id); // a UI call on the stale graph: still no build
+      inEm = false;
+      sim.runDays(6); // traffic rebuilds its graph in its own scheduled step; the fire gets its truck
+      expect(ev.some((e) => e.id === b.id && e.type === 'uncovered')).toBe(false);
+      expect(ev.some((e) => e.id === b.id && e.type === 'dispatched')).toBe(true);
+      expect(mid.flags & BF.Burnt).toBe(0);
+      const near = place(st, 't_r2', 52, 21, { pop: 60 });
+      triggerDisaster(sim, 'fire', near.x, near.z);
+      expect(em.incidents().find((i) => i.buildingId === near.id)!.state).toBe('dispatched'); // 2.2 min over the new road
+      expect(builds.length).toBeGreaterThan(0);
+      expect(builds.every((q) => q.traffic && !q.inEm), JSON.stringify(builds)).toBe(true);
+    } finally {
+      RoadGraph.prototype.build = ob;
+    }
+  });
+
+  it('save / load while buildings burn: the loaded game burns (and fights) them on exactly the same days', () => {
+    // uncovered: the burn clock saved at the end of the day is the live one
+    const u = fireTown([]);
+    const home = place(u.st, 't_r2', 30, 21, { pop: 60 });
+    triggerDisaster(u.sim, 'fire', 30, 21);
+    u.sim.runDays(3);
+    const live = getFire(u.sim)!.fires.get(home.id)!;
+    expect((u.st.systemData.infraFires as number[][]).find((e) => e[0] === home.id)![1]).toBe(live.days);
+    const st2 = deserializeCity(structuredClone(serializeCity(u.st, { copy: true })) as SerializedCity);
+    const sim2 = newSim(st2);
+    getFire(sim2)!.riskBoost = 0;
+    let dA = -1, dB = -1;
+    for (let d = 0; d < 6; d++) {
+      u.sim.runDays(1);
+      sim2.runDays(1);
+      if (dA < 0 && home.flags & BF.Burnt) dA = u.st.day;
+      if (dB < 0 && st2.buildings.get(home.id)!.flags & BF.Burnt) dB = st2.day;
+    }
+    expect(dA).toBe(6);
+    expect(dB).toBe(dA);
+    // covered: a crew on scene of a 2x2 tower removes heat; the saved heat is the live heat
+    const c = fireTown([26]);
+    const big = place(c.st, 't_r3', 30, 21, { pop: 300 });
+    triggerDisaster(c.sim, 'fire', 30, 21);
+    c.sim.runDays(3);
+    expect(c.em.incidents()[0].state).toBe('onScene');
+    const f = getFire(c.sim)!.fires.get(big.id)!;
+    expect(f.heat).toBeLessThan(1);
+    const saved = (c.st.systemData.infraFires as number[][]).find((e) => e[0] === big.id)!;
+    expect(saved[1]).toBe(f.days);
+    expect(saved[4]).toBe(f.heat);
+  });
+
+  it('medScore: a call no ambulance reached counts as 0, so no clinic < a far clinic < a near clinic', { timeout: 120000 }, () => {
+    const score: number[] = [];
+    for (const clinicX of [null, 4, 40]) {
+      const st = newState(64);
+      roadLine(st, 2, 20, 62, 20, Network.Road);
+      if (clinicX !== null) place(st, 't_clinic', clinicX, 19);
+      for (let x = 34; x < 60; x++) place(st, 't_r2', x, 21, { pop: 3000, srs: 0.3, kids: 0.1, teens: 0.1, yad: 0.2 });
+      const sim = newSim(st);
+      getFire(sim)!.riskBoost = 0;
+      sim.runDays(360);
+      expect(st.stats.emergency.year.count.medical).toBeGreaterThan(30);
+      score.push(st.stats.emergency.medScore);
+    }
+    expect(score[0]).toBeLessThan(0.5);
+    expect(score[0]).toBeLessThan(score[1]);
+    expect(score[1]).toBeLessThan(score[2]);
+  });
+
+  it('LIVE only when a unit can still make it: beyond the time left the alert has canSend but not manualPossible', () => {
+    // one fire station 70 cells away (7 min > the 6 min a fire lit between days has) vs 50 cells (5 min)
+    for (const [sx, possible] of [[10, false], [30, true]] as const) {
+      const st = newState(96);
+      roadLine(st, 2, 20, 93, 20, Network.Road);
+      place(st, 't_fire', sx, 19);
+      place(st, 't_r2', 80, 21, { pop: 60 });
+      const sim = newSim(st);
+      getFire(sim)!.riskBoost = 0;
+      const em = emergencyOf(sim)!;
+      triggerDisaster(sim, 'fire', 80, 21);
+      const inc = em.incidents()[0];
+      expect(inc.state).toBe('uncovered');
+      expect(inc.reason).toBe('outOfRange');
+      expect(inc.canSend).toBe(true);
+      expect(inc.manualPossible).toBe(possible);
+      expect(st.stats.emergency.manualActive).toBe(possible ? 1 : 0);
+      if (!possible) expect(inc.note).toMatch(/too far to make it in time/);
+      else {
+        // nobody sent the 5-minute truck: two days later it could not make it any more -> no more LIVE mode
+        expect(inc.bestEta).toBeCloseTo(5, 5);
+        sim.runDays(2);
+        expect(inc.state).toBe('uncovered');
+        expect(inc.manualPossible).toBe(false);
+        expect(st.stats.emergency.manualActive).toBe(0);
+      }
+    }
+  });
+
+  it('minor incidents get the nearest free unit only when it can arrive before the deadline', () => {
+    // a clinic at the west end of a long street: 9 min vs 17.8 min (a minor medical call has 16)
+    for (const [hx, sent] of [[60, true], [115, false]] as const) {
+      const st = newState(128);
+      roadLine(st, 2, 20, 125, 20, Network.Street);
+      place(st, 't_clinic', 4, 19);
+      const home = place(st, 't_r2', hx, 21, { pop: 60 });
+      const sim = newSim(st);
+      getFire(sim)!.riskBoost = 0;
+      const em = emergencyOf(sim)!;
+      const inc = em.incident(em.spawn(sim, 'medical', hx, 21, { buildingId: home.id, major: false }))!;
+      expect(inc.state).toBe(sent ? 'dispatched' : 'uncovered');
+      expect(em.vehicles().length).toBe(sent ? 1 : 0);
+      if (!sent) {
+        expect(inc.canSend).toBe(true);
+        expect(inc.manualPossible).toBe(false);
+      }
+    }
+  });
+
+  it('unfunded stations: the player is told to raise the budget, not that the city has no station', () => {
+    const { st, sim, em, st0 } = fireTown([30]);
+    const home = place(st, 't_r2', 34, 21, { pop: 60 });
+    st.budget.funding.fire = 10;
+    sim.runDays(1);
+    expect(em.stationFleet(st0[0].id)!.total).toBe(0);
+    triggerDisaster(sim, 'fire', home.x, home.z);
+    const inc = em.incidents()[0];
+    expect(inc.state).toBe('uncovered');
+    expect(inc.note).toBe('All fire stations are unfunded — raise the fire budget');
   });
 });
 
@@ -498,7 +785,7 @@ describe('emergency response search', () => {
 });
 
 describe('emergency perf', () => {
-  it('stress city with real stations: dispatch + generation ~0.3 ms/day, max day <= 3 ms, response layers <= 0.3 ms/day, steps <= 3 ms', { timeout: 300000 }, async () => {
+  it('stress city with real stations and road edits: dispatch + generation ~0.3 ms/day, max day <= 3 ms, response layers <= 0.3 ms/day, steps <= 3 ms', { timeout: 300000 }, async () => {
     const city = stressCity(256);
     const st = city.st;
     // a fire station, police station and clinic (2x2, real catalog defs) every 30 cells, in the 2x2 blocks between roads
@@ -537,24 +824,47 @@ describe('emergency perf', () => {
     const obs = new PerformanceObserver((list) => { for (const e of list.getEntries()) gcs.push([e.startTime, e.startTime + e.duration]); });
     obs.observe({ entryTypes: ['gc'] });
     const spans: [number, number, number][] = [];
-    let cpu = 0, curDay = 0;
+    let cpu = 0, curDay = 0, inEm = false, emBuilds = 0, builds = 0;
     const wrap = (name: 'dailyWork' | 'monthly') => {
       const f = (em[name] as (s: Simulation) => void).bind(em);
       (em as unknown as Record<string, unknown>)[name] = (s: Simulation) => {
         const t0 = performance.now(), c0 = cpuNow();
-        f(s);
+        inEm = true;
+        try { f(s); } finally { inEm = false; }
         const t1 = performance.now();
         if (curDay >= 30) { spans.push([t0, t1, curDay]); cpu += cpuNow() - c0; }
       };
     };
     wrap('dailyWork');
     wrap('monthly');
+    // road edits (a player / the bot laying roads) every 20 days: traffic rebuilds its graph in its own scheduled
+    // step; the emergency system must never build one in its daily work (a 256² build is ~10 ms)
+    const ob = RoadGraph.prototype.build;
+    RoadGraph.prototype.build = function (this: RoadGraph, s2: CityState): void {
+      builds++;
+      if (inEm) emBuilds++;
+      ob.call(this, s2);
+    };
+    let edit = -1;
+    for (let i = st.size * 2; i < st.cells && edit < 0; i++) if (st.network[i] === 0 && st.building[i] < 0 && st.network[i - 1] !== 0) edit = i;
+    expect(edit).toBeGreaterThan(0);
     const D = 360 * 2;
-    for (let d = 0; d < D; d++) {
-      curDay = d;
-      if (d === 30) sch.spentMs.clear(); // same measuring window as the daily work
-      sim.advanceDay();
+    try {
+      for (let d = 0; d < D; d++) {
+        curDay = d;
+        if (d === 30) sch.spentMs.clear(); // same measuring window as the daily work
+        if (d % 20 === 10) {
+          st.network[edit] = st.network[edit] ? 0 : Network.Street;
+          const x = edit % st.size, z = (edit - x) / st.size;
+          sim.events.emit('networkChanged', { x0: x, z0: z, x1: x + 1, z1: z + 1 });
+        }
+        sim.advanceDay();
+      }
+    } finally {
+      RoadGraph.prototype.build = ob;
     }
+    expect(builds).toBeGreaterThan(10); // traffic did rebuild after the edits
+    expect(emBuilds).toBe(0);
     const days = D - 30;
     const layerMs = sch.spentMs.get('emergency.response') ?? 0;
     await new Promise((r) => setTimeout(r, 30)); // deliver the GC entries
@@ -580,7 +890,7 @@ describe('emergency perf', () => {
     const s = st.stats.emergency.year;
     const total = Object.values(s.count).reduce((a, b) => a + b, 0);
     const est = [...sch.estMs].find(([k]) => k === 'emergency.response')?.[1] ?? 0;
-    console.log(`emergency perf: dispatch + generation ${(tot / days).toFixed(3)} ms/day avg net of GC (${gcIn.toFixed(1)} ms GC inside; cpu ${(cpu / days).toFixed(3)}), max day ${max.toFixed(2)} ms; response layers measured ${(layerMs / days).toFixed(3)} ms/day (est ${(est / Math.max(1, sch.headlessDays)).toFixed(3)}, max step ${(sch.maxStepMs.get('emergency.response') ?? 0).toFixed(2)} ms), max est. step ${maxEst.toFixed(2)}, stations ${n}, incidents/yr ${total} (auto ${s.auto}, manual ${s.manual}, late ${s.late}, failed ${s.failed}), respMin fire ${(s.responseMin.fire / Math.max(1, s.responses.fire)).toFixed(2)} medical ${(s.responseMin.medical / Math.max(1, s.responses.medical)).toFixed(2)}`);
+    console.log(`emergency perf (${builds} graph builds by traffic, ${emBuilds} in the emergency work): dispatch + generation ${(tot / days).toFixed(3)} ms/day avg net of GC (${gcIn.toFixed(1)} ms GC inside; cpu ${(cpu / days).toFixed(3)}), max day ${max.toFixed(2)} ms; response layers measured ${(layerMs / days).toFixed(3)} ms/day (est ${(est / Math.max(1, sch.headlessDays)).toFixed(3)}, max step ${(sch.maxStepMs.get('emergency.response') ?? 0).toFixed(2)} ms), max est. step ${maxEst.toFixed(2)}, stations ${n}, incidents/yr ${total} (auto ${s.auto}, manual ${s.manual}, late ${s.late}, failed ${s.failed}), respMin fire ${(s.responseMin.fire / Math.max(1, s.responses.fire)).toFixed(2)} medical ${(s.responseMin.medical / Math.max(1, s.responses.medical)).toFixed(2)}`);
     expect(total).toBeGreaterThan(20);
     expect(s.auto / Math.max(1, total)).toBeGreaterThan(0.5);
     expect(maxEst).toBeLessThanOrEqual(3);

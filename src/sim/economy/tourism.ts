@@ -4,8 +4,10 @@
  * Monthly (and synchronously in init(), because st.visitors is a derived layer that is not saved):
  *  1. VENUES (ATTRACTIONS table, no catalog edits): visits V = min(capacity, draw × (A/60)^1.3 × access × op × sizeF ×
  *     ordinance 'tourism.draw'). access = road / freight reach of the block + transit coverage; op = functional ×
- *     powered × funding (a burnt, unpowered, unfunded or striking venue gets 0); sizeF grows with the city (nobody flies
- *     to a hamlet; parks / plazas / gardens / marinas are local leisure and exempt). BEACHES: clean, road-reachable, unbuilt shore cells of real water bodies. HISTORIC growables.
+ *     powered × road next to the lot × funding (a burnt, unpowered, unfunded, striking or road-less venue gets 0 — and
+ *     no cap relief, no income); sizeF grows with the city (nobody flies to a hamlet; parks / plazas / gardens /
+ *     marinas are walk-in local leisure: exempt from sizeF and the road rule). BEACHES: clean, road-reachable, unbuilt
+ *     shore cells of real water bodies. HISTORIC growables. A bulldozed venue leaves the totals at once.
  *  2. HOTELS: overnight visitors (30 %, +25 % with an international airport, +10 % municipal) need rooms (1.5 per hotel
  *     job of motels / hotels / hotel towers); without rooms 80 % of the overnight visitors stay away
  *     (econData.hotelShortage → WP6 grows hotels). Effective tourists → econData.tourism = CS jobs (50 per 100) that
@@ -14,8 +16,9 @@
  *  4. ATTRACTIVENESS 0..100 (city-wide and per wealth): culture (landmark visits), parks, safety, clean air, quiet,
  *     services (schools / health served), jobs, connections. It feeds visits next month and MIGRATION: the whole
  *     R target of each wealth tier × clamp(1 + .25 (A_w − neutral)/45, .88, 1.12) (attractive cities pull residents,
- *     unattractive ones lose them; neutral 48 for a town → 66 for a metropolis), R$$ / R$$$ × (1 − .08 × unreached pupil share), plus retirees and university
- *     students who come without local jobs (econData.migrants).
+ *     unattractive ones lose them; neutral 48 for a town → 66 for a metropolis; the pull fades out while unemployment
+ *     is high), R$$ / R$$$ × (1 − .08 × unreached pupil share), plus retirees and university students who come
+ *     without local jobs (econData.migrants).
  * The system is registered after population and before demand (systems/economy.ts).
  */
 import { BF, type Building, type CityState } from '../CityState';
@@ -26,12 +29,14 @@ import { Network } from '../../core/types';
 import type { BuildingDef } from '../catalogTypes';
 import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
-import { serviceEffectiveness } from './budget';
+import { onStrike, serviceEffectiveness } from './budget';
 import { residentSurvey, type ResidentSurvey } from './approval';
+import { lotTouchesRoad } from './buildings';
 import { shoreCells } from '../infra/terrainMasks';
 import {
   ATTRACT_CITY_WEIGHTS, ATTRACT_CONNECT, ATTRACT_SCALES, ATTRACT_WEIGHTS, COARSE, COVERAGE_FALLBACK, CS_JOBS_PER_VISITOR, MIG_GAIN,
-  MIG_BIG_POP, MIG_MAX, MIG_MIN, MIG_NEUTRAL, MIG_NEUTRAL_BIG, MIG_POP, MIG_SCHOOL, MIG_SPAN, RETIREE_SPLIT, RETIREES, STUDENT_SPLIT, STUDENTS_PER_SEAT, TOURISM,
+  MIG_BIG_POP, MIG_MAX, MIG_MIN, MIG_NEUTRAL, MIG_NEUTRAL_BIG, MIG_POP, MIG_SCHOOL, MIG_SPAN, MIG_UNEMP_SPAN, RETIREE_SPLIT, RETIREES,
+  STUDENT_SPLIT, STUDENTS_PER_SEAT, TOURISM, UNEMP_NEUTRAL,
 } from './tuning';
 
 export interface AttractionDef {
@@ -132,14 +137,36 @@ function powered(st: CityState, b: Building, def: BuildingDef, inf: InfraFlags):
   return st.powered[centre(st, b)] === 1;
 }
 
+/** a tourist venue (not walk-in leisure: parks, gardens, plazas, marinas) needs a road next to its lot, like the plop
+ *  tool's "no road access" warning says */
+function needsRoad(defId: string): boolean {
+  const a = ATTRACTIONS[defId];
+  return a !== undefined && a.kind !== 'nature';
+}
+
 /**
- * Operating factor of a venue / facility for tourism & demand relief: 0 when unbuilt, burnt, abandoned or without the
- * power it needs; × funding effectiveness of its service (0 on strike), at most `fundMax`.
+ * Operating factor of a venue / facility for tourism & demand relief: 0 when unbuilt, burnt, abandoned, without the
+ * power it needs or — tourist venues — without a road next to the lot; × funding effectiveness of its service (0 on
+ * strike), at most `fundMax`.
  */
 export function venueOp(st: CityState, b: Building, def: BuildingDef, inf: InfraFlags = infraFlags(st), fundMax = 1): number {
   if (!isOpen(b)) return 0;
   if (!powered(st, b, def, inf)) return 0;
+  if (needsRoad(b.def) && !lotTouchesRoad(st, b.x, b.z, b.w, b.d)) return 0;
   return def.service ? Math.min(fundMax, serviceEffectiveness(st, def.service)) : 1;
+}
+
+/** why a venue / relief building works below full strength (null = full strength); UI hints (capHints, inspector) */
+export type VenueIssue = 'closed' | 'unpowered' | 'noRoad' | 'strike' | 'funding';
+export function venueIssue(st: CityState, b: Building, def: BuildingDef, inf: InfraFlags = infraFlags(st)): VenueIssue | null {
+  if (!isOpen(b)) return 'closed';
+  if (!powered(st, b, def, inf)) return 'unpowered';
+  if (needsRoad(b.def) && !lotTouchesRoad(st, b.x, b.z, b.w, b.d)) return 'noRoad';
+  if (def.service) {
+    if (onStrike(st, def.service)) return 'strike';
+    if (serviceEffectiveness(st, def.service) < 1) return 'funding';
+  }
+  return null;
 }
 
 // ------------------------------------------------------------------------------------------------ beaches
@@ -407,7 +434,8 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
     const nd = st.stats.needs;
     const pupils = (nd?.elementary?.need ?? 0) + (nd?.high?.need ?? 0);
     const unreached = pupils > 0 ? clamp(((nd?.elementary?.unreached ?? 0) + (nd?.high?.unreached ?? 0)) / pupils, 0, 1) : 0;
-    data.migration = [0, 1, 2].map((w) => migrationFactor(aw[w], pop, w >= 1 ? unreached : 0));
+    const unemp = st.stats.unemployment;
+    data.migration = [0, 1, 2].map((w) => migrationFactor(aw[w], pop, w >= 1 ? unreached : 0, unemp));
     const green = sv.green > 0 ? sv.green : sv.park[3];
     const retirees = pop > 0 ? RETIREES * (0.5 + Math.min(1, st.stats.hq / 150)) * (0.5 + clamp(green, 0, 1)) : 0;
     const students = STUDENTS_PER_SEAT * collegeSeats;
@@ -417,12 +445,40 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
     sim.events.emit('layerUpdated', 'tourism');
   };
 
+  /** a bulldozed (or otherwise removed) venue leaves the tourism totals at once: its visits stop feeding CS demand,
+   *  approval and the tourism income line; the visitor raster refreshes with the next monthly update */
+  const onRemoved = (st: CityState, b: Building) => {
+    const ts = states.get(st);
+    const r = ts?.venues.get(b.id);
+    if (!ts || !r) return;
+    ts.venues.delete(b.id);
+    const data = econData(st);
+    data.tourists = Math.max(0, data.tourists - r.visits);
+    data.touristsGross = Math.max(0, (data.touristsGross ?? 0) - r.gross);
+    data.tourism = data.tourists * CS_JOBS_PER_VISITOR;
+    st.stats.tourists = Math.round(data.tourists);
+    if (r.kind === 'landmark' || r.kind === 'culture') ts.culture = Math.max(0, ts.culture - r.gross);
+  };
+  let subscribedTo: Simulation | null = null;
+  let unsub: (() => void) | null = null;
+
   return {
     name: 'economy.tourism',
     rt,
     init(sim) {
       rt.attach(sim);
+      if (subscribedTo !== sim) {
+        unsub?.();
+        unsub = sim.events.on('buildingRemoved', (b) => onRemoved(sim.state, b));
+        subscribedTo = sim;
+      }
+      // the visitor raster and venue records are derived (not saved): rebuild them now (WP4-5). A loaded city keeps
+      // last month's saved totals, attractiveness and migration until its next monthly update (save / load continuity).
+      const st = sim.state;
+      const d = econData(st);
+      const keep = st.day > 0 && Object.keys(d.attractTerms).length > 0 ? savedOutputs(st) : null;
       update(sim);
+      if (keep) restoreOutputs(st, keep);
     },
     monthly(sim) {
       const t0 = performance.now();
@@ -430,6 +486,24 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
       rt.timing.tourism = performance.now() - t0;
     },
   };
+}
+
+/** the monthly outputs of the tourism system as saved (econData + stats) */
+function savedOutputs(st: CityState) {
+  const d = econData(st), s = st.stats;
+  return {
+    tourists: d.tourists, touristsGross: d.touristsGross, overnight: d.overnight, hotelShortage: d.hotelShortage, tourism: d.tourism,
+    attractiveness: d.attractiveness, attractByWealth: d.attractByWealth.slice(), attractTerms: { ...d.attractTerms },
+    migration: d.migration.slice(), migrants: d.migrants?.slice(),
+    sTourists: s.tourists, sRooms: s.hotelRooms, sAttract: s.attractiveness, sAttractW: [...s.attractByWealth] as typeof s.attractByWealth,
+  };
+}
+function restoreOutputs(st: CityState, o: ReturnType<typeof savedOutputs>): void {
+  const d = econData(st), s = st.stats;
+  d.tourists = o.tourists; d.touristsGross = o.touristsGross; d.overnight = o.overnight; d.hotelShortage = o.hotelShortage; d.tourism = o.tourism;
+  d.attractiveness = o.attractiveness; d.attractByWealth = o.attractByWealth; d.attractTerms = o.attractTerms;
+  d.migration = o.migration; d.migrants = o.migrants;
+  s.tourists = o.sTourists; s.hotelRooms = o.sRooms; s.attractiveness = o.sAttract; s.attractByWealth = o.sAttractW;
 }
 
 /** attractiveness at which migration is neutral for a city of this size (UI: "cities your size average N") */
@@ -440,10 +514,13 @@ export function migrationNeutral(population: number): number {
 /**
  * Migration multiplier of a wealth tier's R target: clamp(1 + MIG_GAIN × (A − neutral(pop)) / MIG_SPAN, MIG_MIN, MIG_MAX)
  * × (1 − MIG_SCHOOL × unreached pupil share) (pass 0 for R$), faded in by smoothstep(0, MIG_POP, population).
+ * The pull of an attractive city (m > 1) fades out while unemployment is above UNEMP_NEUTRAL (gone MIG_UNEMP_SPAN above
+ * it): newcomers come for jobs too, so a city without work stops importing job seekers; losses (m < 1) are kept.
  */
-export function migrationFactor(attractiveness: number, population: number, unreachedPupilShare = 0): number {
+export function migrationFactor(attractiveness: number, population: number, unreachedPupilShare = 0, unemployment = 0): number {
   const fade = smoothstep(0, MIG_POP, population);
-  const m = clamp(1 + MIG_GAIN * (attractiveness - migrationNeutral(population)) / MIG_SPAN, MIG_MIN, MIG_MAX);
+  let m = clamp(1 + MIG_GAIN * (attractiveness - migrationNeutral(population)) / MIG_SPAN, MIG_MIN, MIG_MAX);
+  if (m > 1 && unemployment > UNEMP_NEUTRAL) m = 1 + (m - 1) * clamp(1 - (unemployment - UNEMP_NEUTRAL) / MIG_UNEMP_SPAN, 0, 1);
   let f = fade >= 1 ? m : 1 + (m - 1) * fade;
   if (unreachedPupilShare > 0) f *= 1 - MIG_SCHOOL * clamp(unreachedPupilShare, 0, 1) * fade;
   return f;
@@ -494,7 +571,12 @@ function attractScores(
  */
 export function venueVisits(st: CityState, buildingId: number): { visits: number; capacity: number; gross: number; draw: number; op: number } | null {
   const r = states.get(st)?.venues.get(buildingId);
-  return r ? { visits: r.visits, capacity: r.capacity, gross: r.gross, draw: r.draw, op: r.op } : null;
+  return r && live(st, r) ? { visits: r.visits, capacity: r.capacity, gross: r.gross, draw: r.draw, op: r.op } : null;
+}
+
+/** the venue of a record still stands (records live until the next monthly update; building ids are never reused) */
+function live(st: CityState, r: VenueRecord): boolean {
+  return st.buildings.get(r.id)?.def === r.def;
 }
 
 /** attractiveness terms (culture, parks, safety, clean, quiet, services, jobs, connect) in points; sum = attractiveness */
@@ -518,7 +600,7 @@ export function tourismTrips(st: CityState): { buildingId: number; tripsPerDay: 
   const ts = states.get(st);
   if (!ts) return [];
   const out: { buildingId: number; tripsPerDay: number }[] = [];
-  for (const r of ts.venues.values()) if (r.visits > 0) out.push({ buildingId: r.id, tripsPerDay: r.visits });
+  for (const r of ts.venues.values()) if (r.visits > 0 && live(st, r)) out.push({ buildingId: r.id, tripsPerDay: r.visits });
   return out;
 }
 
@@ -530,7 +612,7 @@ export function tourismSummary(st: CityState): {
   const ts = states.get(st);
   if (!ts) return null;
   const d = econData(st);
-  const top = [...ts.venues.values()].filter((r) => r.visits > 0).sort((a, b) => b.visits - a.visits).slice(0, 8)
+  const top = [...ts.venues.values()].filter((r) => r.visits > 0 && live(st, r)).sort((a, b) => b.visits - a.visits).slice(0, 8)
     .map((r) => ({ buildingId: r.id, def: r.def, visits: r.visits, capacity: r.capacity }));
   return {
     tourists: d.tourists, gross: d.touristsGross ?? d.tourists, overnight: d.overnight ?? 0, rooms: st.stats.hotelRooms,

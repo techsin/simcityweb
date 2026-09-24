@@ -21,7 +21,7 @@ import { CityActions, lPath, type ActionResult } from '../src/sim/actions';
 import { DevType, Network, Zone, type Difficulty, type TerrainPreset } from '../src/core/types';
 import { getDef, rotatedFootprint } from '../src/sim/catalog';
 import { econData, type EconRuntime } from '../src/sim/economy/runtime';
-import { BF, type CityState } from '../src/sim/CityState';
+import { BF, type Building, type CityState } from '../src/sim/CityState';
 import { maxLoanAmount } from '../src/sim/economy/loans';
 import { listRewards } from '../src/sim/economy/rewards';
 
@@ -382,6 +382,7 @@ export class SimBot {
     const st = this.st, s = st.stats;
     const pop = s.population;
     this.finance();
+    this.repairUtilities();
     this.ensurePower();
     this.ensureWater();
     this.ensureGarbage();
@@ -517,6 +518,27 @@ export class SimBot {
       if (m > bf) { bf = m; best = b; }
     }
     return best;
+  }
+
+  /**
+   * a competent mayor clears the rubble of a burnt utility (power plant, water producer, garbage facility) and rebuilds
+   * it in place: plopped rubble never clears by itself, and one random fire on a treatment plant otherwise leaves the
+   * city short of water for decades (256x60 seed 11, 2028)
+   */
+  repairUtilities(): void {
+    const st = this.st;
+    const burnt: Building[] = [];
+    for (const b of st.buildings.values()) if ((b.flags & BF.Burnt) !== 0 && (b.flags & BF.Plopped) !== 0) burnt.push(b);
+    for (const b of burnt) {
+      const def = getDef(b.def);
+      if (!def || (def.category !== 'power' && def.category !== 'water' && def.category !== 'garbage')) continue;
+      if (!this.canSpend((def.cost ?? 0) + 1000)) continue;
+      const { x, z, w, d } = b;
+      const rot = (b.rot ?? 0) as 0 | 1 | 2 | 3;
+      if (!this.A.bulldoze({ x0: x, z0: z, x1: x + w, z1: z + d }).ok) continue;
+      const r = this.A.plop(def.id, x, z, rot);
+      this.say(`rebuilt burnt ${def.name}${r.ok ? '' : ` — failed: ${r.reason}`}`);
+    }
   }
 
   /** pre-WP3 rule (economy-only runs without the pollution system) */

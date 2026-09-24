@@ -2,11 +2,13 @@
  * "Blueprint" - slow ambient piano over drifting detuned pads (Eno / late-night city-builder menu feel).
  *
  * Form (2-bar harmonic rhythm, ~60-66 bpm, no drums):
- *   intro 8   pads bloom in over a tonic pedal, glass harmonics, a first fragment of the motif + pickup
+ *   intro 8   pads bloom in over a tonic pedal, glass harmonics, a first fragment of the motif (piano, or glass in ~35 %
+ *             of plays so the piano's first entrance is the theme) + pickup
  *   theme 16  piano states the motif (call), glass echoes it, piano answers (response), sequences it up, and closes
  *             with a cadence variant (late arrival / ti-re-do appoggiatura)
  *   drift 16  aeolian turn to the relative minor: the motif in augmentation on glass, piano answers in the middle
- *             register (the second answer settles on la), the high pad layer grows, riser into the next section
+ *             register (the second answer settles on la) - or, in ~35 % of plays, the roles swapped (slow piano call,
+ *             glass answers); the high pad layer grows, riser into the next section
  *   hush 4    (most seeds) breakdown: the high pad dissolves, dark pad, sub, one slow motif fragment and a bell
  *   bloom 16  the theme in octaves over the fullest texture; the sequence climbs to the song's high point; the closing
  *             response stays open (ends on mi) - the tonic arrival is saved for the coda
@@ -83,7 +85,7 @@ const FINALS = ['Cmaj9', 'Cadd9', 'Cmaj7s11'];
 
 /** left-hand patterns: [beat, index into the spread chord (0 = bass, 1 = 5th / octave, 2..4 = upper voices)] per slot */
 const LH: Record<string, readonly (readonly [number, number])[]> = {
-  drone: [[0, 0], [0.12, 1], [2, 3]],
+  drone: [[0, 0], [0.25, 1], [2, 3]],
   roll: [[0, 0], [0.07, 1], [0.14, 2], [0.21, 3], [0.28, 4]],
   rise: [[0, 0], [1, 1], [2, 2], [3, 3], [5, 4]],
   p332: [[0, 0], [1.5, 1], [3, 2], [4, 3], [5.5, 2], [7, 4]],
@@ -132,6 +134,11 @@ interface SubEv {
   /** gentle internal swells: [absolute beat, level 0..1] */
   pts: [number, number][];
   toEnd?: boolean;
+}
+/** a local source and the time it is scheduled to stop */
+interface Held {
+  src: AudioScheduledSourceNode;
+  end: number;
 }
 interface BarPlan {
   lh: Ev[];
@@ -284,7 +291,7 @@ const meanDeg = (ph: readonly MN[]): number => ph.reduce((s, n) => s + n[1], 0) 
  * into the 'pad:sub' channel (envelope 0 -> 0, honours cutoff, starts late instead of vanishing after a live stall,
  * and the lab's mute / solo as 'sub').
  */
-function subVoice(env: MusicEnv, keep: AudioScheduledSourceNode[], t0: number, m: number, amp: number, lv0: number, attack: number, pts: readonly (readonly [number, number])[], tEnd: number, release: number): void {
+function subVoice(env: MusicEnv, keep: Held[], t0: number, m: number, amp: number, lv0: number, attack: number, pts: readonly (readonly [number, number])[], tEnd: number, release: number): void {
   const { ctx, inst } = env;
   if (!isFinite(t0) || t0 >= inst.cutoff) return;
   if (inst.mute.has('sub') || (inst.solo.size && !inst.solo.has('sub') && !inst.solo.has('pad:sub'))) return;
@@ -320,7 +327,7 @@ function subVoice(env: MusicEnv, keep: AudioScheduledSourceNode[], t0: number, m
   for (const o of [o1, o2]) {
     o.start(t);
     o.stop(end + 0.05);
-    keep.push(o);
+    keep.push({ src: o, end: end + 0.05 });
   }
 }
 
@@ -328,7 +335,7 @@ function subVoice(env: MusicEnv, keep: AudioScheduledSourceNode[], t0: number, m
  * Local instrument: "air" - band-limited noise (4.5-10 kHz) with a slow breathing envelope, the breath layer of the
  * high pad (routed into 'pad:hi'). Very quiet: it only adds the top-octave shimmer the dark piano / pads lack.
  */
-function airSwell(env: MusicEnv, keep: AudioScheduledSourceNode[], t: number, attack: number, hold: number, release: number, level: number, offset: number): void {
+function airSwell(env: MusicEnv, keep: Held[], t: number, attack: number, hold: number, release: number, level: number, offset: number): void {
   const { ctx, inst } = env;
   if (!isFinite(t) || t >= inst.cutoff || (env.live && t < ctx.currentTime)) return;
   if (inst.mute.has('air') || (inst.solo.size && !inst.solo.has('air'))) return;
@@ -347,7 +354,7 @@ function airSwell(env: MusicEnv, keep: AudioScheduledSourceNode[], t: number, at
   src.connect(hp).connect(lp).connect(g).connect(inst.channel('pad:hi').input);
   src.start(t, Math.min(offset, Math.max(0, env.noise.duration - 0.1)));
   src.stop(end + 0.05);
-  keep.push(src);
+  keep.push({ src, end: end + 0.05 });
 }
 
 export const track: MusicTrack = {
@@ -356,7 +363,7 @@ export const track: MusicTrack = {
   mood: 'Slow ambient piano over drifting detuned pads, glass harmonics and sub swells',
   tags: ['menu', 'region', 'calm', 'night'],
   bpm: 62,
-  gain: 1.87, // measured -23.75 LUFS mean over seeds 1-3 at gain 1 -> about -18.3
+  gain: 1.91, // at 1.87 seeds 1/2/3/5 measured -18.44 / -18.12 / -19.13 / -18.82 LUFS (mean -18.63) -> +0.18 dB
   create(env) {
     const { inst, rng } = env;
     const bpm = rng.int(60, 66);
@@ -519,9 +526,11 @@ export const track: MusicTrack = {
         while (m > (o.max ?? (glass ? 93 : 88))) m -= 12;
         return m;
       };
+      // (octave equivalents are excluded too: a note above `max` is folded down after it is placed)
+      const around = (...xs: number[]) => xs.flatMap((x) => [x - 12, x, x + 12]);
       const ms: number[] = [];
-      ph.forEach((_, i) => ms.push(fit(i, i > 0 ? [ms[i - 1]] : [])));
-      for (let i = 0; i + 1 < ms.length; i++) if (ms[i] === ms[i + 1]) ms[i] = fit(i, [ms[i + 1], ...(i > 0 ? [ms[i - 1]] : [])]);
+      ph.forEach((_, i) => ms.push(fit(i, i > 0 ? around(ms[i - 1]) : [])));
+      for (let i = 0; i + 1 < ms.length; i++) if (ms[i] === ms[i + 1]) ms[i] = fit(i, around(ms[i + 1], ...(i > 0 ? [ms[i - 1]] : [])));
       const lo = Math.min(...ms), hi = Math.max(...ms);
       const n = ph.length;
       // agogics: the phrase breathes in late, moves on through its middle and settles late onto its last note
@@ -543,7 +552,7 @@ export const track: MusicTrack = {
         // held to the next chord change (pedal), phrase-final notes a little longer
         const dur = passingNote ? u : Math.min(u * (last ? 1.45 : 1.3) + (last ? 0.6 : 0.4), Math.max(u, nextChange(ab) - ab - 0.06));
         put('mel', ab, { dur, midi: m, vel, dt });
-        if (o.oct && m - 12 >= 58) put('mel', ab + 0.03, { dur, midi: m - 12, vel: vel * 0.42, dt });
+        if (o.oct && m - 12 >= 58) put('mel', ab + 0.03, { dur, midi: m - 12, vel: vel * 0.38, dt });
         if (o.shimmer && u >= 2 && m + 12 <= 93) put('glass', ab + 0.03, { dur: u, midi: m + 12, vel: vel * 0.42, dt });
       });
     };
@@ -556,6 +565,10 @@ export const track: MusicTrack = {
     const climaxK = seqK + 1; // the bloom climbs one step past the theme's sequence
     const echoN = rng.pick([2, 3]);
     const bellRatio = rng.pick([3.5, 5]);
+    // arrangement variants: the drift can swap roles (the piano carries the slow augmented call, the glass sings the
+    // answers), and the intro can leave the motif to the glass so the piano's first entrance is the theme itself
+    const driftSwap = rng.chance(0.35);
+    const glassIntro = rng.chance(0.35);
 
     /** a high chord tone that neither clashes with the chord nor rubs against the melody around it */
     const topTone = (c: Chord, lo: number, hi: number, av: readonly Avoid[] = []): number => {
@@ -599,7 +612,8 @@ export const track: MusicTrack = {
       const s0 = S('intro', 0), s1 = S('intro', 1), s2 = S('intro', 2), s3 = S('intro', 3);
       for (const [s, beats] of [[s0, [2.5, 5.5]], [s1, [3]], [s3, [1.5, 5]]] as const)
         for (const b of beats) put('glass', s.beat + b + rng.range(-0.25, 0.25), { dur: 4, midi: topTone(s.segs[0].chord, 81, 91), vel: humVel(rng, 0.25, 0.04), dt: humanize(rng, 0, 12) });
-      phrase(s2, M.call.slice(0, 3), { voice: 'mel', reg: regTheme, vel: 0.46 });
+      if (glassIntro) phrase(s2, M.call.slice(0, 3), { voice: 'glass', reg: regTheme + 7, vel: 0.3, offset: 0.5 });
+      else phrase(s2, M.call.slice(0, 3), { voice: 'mel', reg: regTheme, vel: 0.46 });
       pickup(S('theme', 0), M.call[0], regTheme, 0.42);
     }
     // theme: call / echo / response / sequence / echo / closing response (a cadence variant, not the literal answer)
@@ -618,10 +632,19 @@ export const track: MusicTrack = {
     {
       const regG = regFor(M.call, 80);
       const inv = invert(vary(rng, M.resp, 0.5)), ans = openEnd(vary(rng, M.resp, 0.3), 5);
-      phrase(S('drift', 0), augment(M.call, 2), { voice: 'glass', reg: regG, vel: 0.34 });
-      phrase(S('drift', 2), inv, { voice: 'mel', reg: regFor(inv, 70), vel: 0.52 });
-      phrase(S('drift', 4), augment(seq(M.call, -2), 2), { voice: 'glass', reg: regG, vel: 0.34 });
-      phrase(S('drift', 6), ans, { voice: 'mel', reg: regFor(ans, 70), vel: 0.52 });
+      const slow = augment(M.call, 2), slow2 = augment(seq(M.call, -2), 2);
+      if (driftSwap) {
+        // long piano tones in the middle register, the answers high on glass
+        phrase(S('drift', 0), slow, { voice: 'mel', reg: regFor(slow, 69), vel: 0.47 });
+        phrase(S('drift', 2), inv, { voice: 'glass', reg: regFor(inv, 82), vel: 0.33, offset: 0.5 });
+        phrase(S('drift', 4), slow2, { voice: 'mel', reg: regFor(slow2, 69), vel: 0.47 });
+        phrase(S('drift', 6), ans, { voice: 'glass', reg: regFor(ans, 82), vel: 0.33, offset: 0.5 });
+      } else {
+        phrase(S('drift', 0), slow, { voice: 'glass', reg: regG, vel: 0.34 });
+        phrase(S('drift', 2), inv, { voice: 'mel', reg: regFor(inv, 70), vel: 0.52 });
+        phrase(S('drift', 4), slow2, { voice: 'glass', reg: regG, vel: 0.34 });
+        phrase(S('drift', 6), ans, { voice: 'mel', reg: regFor(ans, 70), vel: 0.52 });
+      }
       const lb = lastBarBeat('drift');
       if (has('hush')) glassFill(lb, false, 0.22);
       else {
@@ -746,7 +769,7 @@ export const track: MusicTrack = {
           default: pat = s.idx === 0 ? 'float' : s.idx === 1 ? 'rise' : 'roll';
         }
         if (pat) {
-          const lhVel = (k === 'intro' ? 0.34 : k === 'hush' ? 0.31 : k === 'bloom' ? 0.41 : 0.38) * (isFinal ? 1.12 : 1);
+          const lhVel = (k === 'intro' ? 0.34 : k === 'hush' ? 0.31 : k === 'bloom' ? 0.39 : 0.38) * (isFinal ? 1.12 : 1);
           const notes = isFinal ? [...spread.filter((m): m is number => m !== null), ...voiceChord(c, null, { lo: 64, hi: 79, count: 2, avoid: av, centre: 72 })] : spread;
           const steps = isFinal ? notes.map((_, j) => [j * 0.09, j] as const) : LH[pat];
           for (const [pb, idx] of steps) {
@@ -864,7 +887,7 @@ export const track: MusicTrack = {
     };
     const AIR = 0.015;
     /** the local sub / air sources: stopped with the song when the director cuts it short (they can be long) */
-    const custom: AudioScheduledSourceNode[] = [];
+    let custom: Held[] = [];
 
     return song(env, {
       bpm,
@@ -900,6 +923,7 @@ export const track: MusicTrack = {
         // with its remaining length instead of being dropped, so the bed fades back in rather than leaving a hole
         const now = env.live ? env.ctx.currentTime + 0.03 : -Infinity;
         const lim = b.t - 0.045;
+        if (b.bar % 8 === 0) custom = custom.filter((h) => h.end > b.t);
         for (const e of p.pads) {
           let t = tb(e.ab);
           // final chord: hold ~45% of what is left, then a long release = a natural diminuendo into the tail
@@ -923,7 +947,7 @@ export const track: MusicTrack = {
           const t = Math.max(lim, tb(e.ab) + e.dt);
           inst.piano(t, e.midi, e.toEnd ? Math.max(1, endT - t - 0.3) : len(e.ab, e.dur), e.vel * d, { bright: 0.35 });
         }
-        for (const e of p.mel) inst.piano(Math.max(lim, tb(e.ab) + e.dt) + 0.01, e.midi, len(e.ab, e.dur), Math.min(0.64, e.vel * d), { ch: 'lead', bright: 0.7 });
+        for (const e of p.mel) inst.piano(Math.max(lim, tb(e.ab) + e.dt) + 0.01, e.midi, len(e.ab, e.dur), Math.min(0.62, e.vel * d), { ch: 'lead', bright: 0.7 });
         for (const e of p.glass) inst.glass(Math.max(lim, tb(e.ab) + e.dt), e.midi, len(e.ab, e.dur), e.vel * d);
         for (const e of p.bell) inst.bell(Math.max(lim, tb(e.ab) + e.dt), e.midi, len(e.ab, e.dur), e.vel * d, { ratio: bellRatio, ring: 6 });
         for (const e of p.air) {
@@ -936,13 +960,16 @@ export const track: MusicTrack = {
       },
       onStop(t, fadeSec) {
         // the bus is faded to 0 by t + fadeSec; end the long sub / air sources right after instead of letting them run on
-        for (const src of custom.splice(0)) {
-          try {
-            src.stop(Math.max(t + fadeSec + 0.05, env.ctx.currentTime));
-          } catch {
-            /* already stopped */
+        const at = Math.max(t + fadeSec + 0.05, env.ctx.currentTime);
+        for (const h of custom)
+          if (h.end > at) {
+            try {
+              h.src.stop(at); // only ever brings a stop earlier (a later stop() call replaces the earlier one)
+            } catch {
+              /* not started / already gone */
+            }
           }
-        }
+        custom = [];
       },
     });
   },

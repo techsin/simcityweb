@@ -57,10 +57,25 @@ export interface ShadowReceiver {
   version: number;
   /** last volume (6 planes + light dir + ground) for change detection */
   snap: Float64Array;
+  /** view camera position the volume was fitted at, and a counter bumped only when the volume changes other than
+   *  by a translation (caster lists culled with a guard band stay valid while the view only moves a little) */
+  origin: THREE.Vector3;
+  shape: number;
+  shapeSnap: Float64Array;
+  /** view distance to the ground along the view axis (scale for guard bands) */
+  reach: number;
 }
 
 export function makeReceiver(): ShadowReceiver {
-  return { planes: Array.from({ length: 6 }, () => new THREE.Plane()), nl: new Float64Array(6), dir: new THREE.Vector3(0, 1, 0), ground: 0, version: 0, snap: new Float64Array(28) };
+  return { planes: Array.from({ length: 6 }, () => new THREE.Plane()), nl: new Float64Array(6), dir: new THREE.Vector3(0, 1, 0), ground: 0, version: 0, snap: new Float64Array(28), origin: new THREE.Vector3(), shape: 0, shapeSnap: new Float64Array(28), reach: 100 };
+}
+
+/** distance from a camera to the ground plane y = 0 along its view axis (clamped; grazing views count as far) */
+export function viewReach(cam: THREE.Camera): number {
+  const w = cam.matrixWorld.elements;
+  // the camera looks along -Z: w[9] / |Z| is how steeply it looks down
+  const down = w[9] / Math.max(1e-9, Math.hypot(w[8], w[9], w[10]));
+  return Math.min(5000, Math.max(10, down > 0.05 ? w[13] / down : 2000));
 }
 
 const _rf = new THREE.Frustum();
@@ -92,6 +107,23 @@ export function setReceiver(rec: ShadowReceiver, cam: THREE.Camera, dn: number, 
   for (const p of rec.planes) { note(p.normal.x); note(p.normal.y); note(p.normal.z); note(p.constant); }
   note(rec.dir.x); note(rec.dir.y); note(rec.dir.z); note(ground);
   if (changed) rec.version++;
+  // translation-invariant fingerprint: normals, plane offsets relative to the view position, light, ground
+  rec.origin.copy(_cp);
+  rec.reach = viewReach(cam);
+  const h = rec.shapeSnap;
+  let q = 0, reshaped = false;
+  const noteS = (v: number, tol: number) => {
+    if (Math.abs(h[q] - v) > tol) { h[q] = v; reshaped = true; }
+    q++;
+  };
+  for (const p of rec.planes) {
+    const n = p.normal;
+    noteS(n.x, 1e-7); noteS(n.y, 1e-7); noteS(n.z, 1e-7);
+    const c = p.constant + n.x * _cp.x + n.y * _cp.y + n.z * _cp.z;
+    noteS(c, 1e-6 * Math.max(1, Math.abs(c), Math.abs(p.constant)));
+  }
+  noteS(rec.dir.x, 1e-7); noteS(rec.dir.y, 1e-7); noteS(rec.dir.z, 1e-7); noteS(ground, 1e-6);
+  if (reshaped) rec.shape++;
 }
 
 /** can a caster sphere shadow the receiver volume? (sphere swept away from the light down to the ground) */

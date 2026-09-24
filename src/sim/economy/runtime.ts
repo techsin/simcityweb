@@ -44,7 +44,8 @@ export interface EconData {
   resParks: number;
   resEdu: number;
   resHealth: number;
-  /** tourism score (landmarks, parks, airports, ordinance) */
+  /** WP4: CS jobs from effective tourists (tourists after the hotel limit × CS_JOBS_PER_VISITOR; tourism.ts, monthly),
+   *  added to shop demand split CS$ / CS$$ / CS$$$ by TOURISM_CS_SPLIT */
   tourism: number;
   /** highest population milestone announced */
   popMilestone: number;

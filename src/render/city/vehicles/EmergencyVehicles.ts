@@ -264,7 +264,7 @@ export class EmergencyVehicles {
       this.col.set(INCIDENT_COLOR[inc.kind]).multiplyScalar(waiting ? 0.6 + 0.5 * pulse : 0.45);
       this.rings.setColorAt(nr, this.col);
       nr++;
-      if (waiting && inc.manualPossible && nb < MAX_BEACONS) {
+      if (waiting && (inc.manualPossible || inc.canSend) && nb < MAX_BEACONS) {
         this.m.compose(this.p, this.q, this.s.set(3, 90, 3));
         this.beams.setMatrixAt(nb, this.m);
         this.col.set(INCIDENT_COLOR[inc.kind]).multiplyScalar(0.35 + 0.25 * pulse);

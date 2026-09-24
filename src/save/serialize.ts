@@ -165,20 +165,53 @@ export function serializeBuildings(map: Map<number, Building>): SerializedBuildi
   return out;
 }
 
+/**
+ * A restored building: every BUILDING_FIELDS column as a named property of one object literal, in the key order of the
+ * growth / plop literals. V8 then keeps fast properties and the hidden class of new buildings; an object built from
+ * `{ def }` by ~18 keyed stores falls into dictionary mode, and every property access of every system on every loaded
+ * building becomes a hash lookup (measured on a loaded 128² bot city: the whole simulated day ~2.7x slower, the
+ * population system ~3-4x).
+ */
+function restoredBuilding(cols: Record<string, ArrayLike<number> | undefined>, k: number, def: string): Record<string, unknown> {
+  const v = (name: string): number => { const c = cols[name]; return c ? c[k] : 0; };
+  return {
+    id: v('id'), def, x: v('x'), z: v('z'), w: v('w'), d: v('d'), rot: v('rot'), variant: v('variant'), pop: v('pop'),
+    jobs: v('jobs'), capacity: v('capacity'), wealth: v('wealth'), built: v('built'), age: v('age'), flags: v('flags'),
+    baseY: v('baseY'), health: v('health'), unhappy: v('unhappy'),
+  };
+}
+
 export function deserializeBuildings(sb: SerializedBuildings, copyExtra = true): Map<number, Building> {
   const map = new Map<number, Building>();
   const cols = sb as unknown as Record<string, ArrayLike<number>>;
   const list: Record<string, unknown>[] = [];
   for (let k = 0; k < sb.count; k++) {
-    const b = { def: sb.defs[sb.def[k]] } as Record<string, unknown>;
-    for (const [name] of BUILDING_FIELDS) b[name] = cols[name] ? cols[name][k] : 0;
+    const b = restoredBuilding(cols, k, sb.defs[sb.def[k]]);
+    for (const [name] of BUILDING_FIELDS) if (!(name in b)) b[name] = cols[name] ? cols[name][k] : 0; // (a column added later)
     list.push(b);
+  }
+  // optional fields: a building with any of them set gets all of them (undefined where unset) as named stores in
+  // OPTIONAL_BUILDING_FIELDS order — the order the population system gives every building, so homes, businesses and
+  // new buildings share one hidden class; a building with none set gets none. Then any unknown optional column.
+  const opt = sb.opt ?? {};
+  const cK = opt.kids, cT = opt.teens, cY = opt.yad, cS = opt.srs, cW = opt.wf, cE = opt.edu, cH = opt.hire;
+  const val = (c: Float32Array | undefined, k: number): number | undefined => {
+    const v = c && k < c.length ? c[k] : NaN;
+    return Number.isNaN(v) ? undefined : v;
+  };
+  for (let k = 0; k < list.length; k++) {
+    const kids = val(cK, k), teens = val(cT, k), yad = val(cY, k), srs = val(cS, k), wf = val(cW, k), edu = val(cE, k), hire = val(cH, k);
+    if (kids === undefined && teens === undefined && yad === undefined && srs === undefined && wf === undefined
+      && edu === undefined && hire === undefined) continue;
+    const b = list[k] as Partial<Building>;
+    b.kids = kids; b.teens = teens; b.yad = yad; b.srs = srs; b.wf = wf; b.edu = edu; b.hire = hire;
+  }
+  for (const [key, col] of Object.entries(opt)) {
+    if ((OPTIONAL_BUILDING_FIELDS as readonly string[]).includes(key)) continue;
+    for (let k = 0; k < list.length && k < col.length; k++) { const v = col[k]; if (!Number.isNaN(v)) list[k][key] = v; }
   }
   for (const [key, pairs] of Object.entries(sb.extra ?? {})) {
     for (const [k, v] of pairs) if (list[k]) list[k][key] = copyExtra ? deepCopy(v) : v;
-  }
-  for (const [key, col] of Object.entries(sb.opt ?? {})) {
-    for (let k = 0; k < list.length && k < col.length; k++) { const v = col[k]; if (!Number.isNaN(v)) list[k][key] = v; }
   }
   for (const b of list) map.set(b.id as number, b as unknown as Building);
   return map;

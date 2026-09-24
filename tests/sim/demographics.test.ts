@@ -6,16 +6,19 @@ import { describe, expect, it } from 'vitest';
 import { DevType, Network, Zone } from '../../src/core/types';
 import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { getDef } from '../../src/sim/catalog';
-import { Simulation } from '../../src/sim/Simulation';
+import { Simulation, type SimSystem } from '../../src/sim/Simulation';
 import { createSystems } from '../../src/sim/systems/index';
 import { economyRuntime } from '../../src/sim/systems/economy';
 import {
-  COHORT_LABELS, cohortShares, carlessShare, evaluateNeeds, householdForm, hqTarget, needsExpectation, needsOf, needsPenalty,
-  profileShares,
+  COHORT_LABELS, cohortShares, carlessShare, demographicsData, evaluateNeeds, householdForm, hqTarget, needsExpectation, needsOf,
+  needsPenalty, profileShares,
   updateDemographics, updateEqHq, workerShare, workforceShare,
 } from '../../src/sim/economy/demographics';
-import { conditionBreakdown } from '../../src/sim/economy/population';
-import { COHORT_BASE, NEEDS_PENALTY_MAX, OCC_PERIOD } from '../../src/sim/economy/tuning';
+import { conditionBreakdown, populationSystem } from '../../src/sim/economy/population';
+import { EconRuntime } from '../../src/sim/economy/runtime';
+import {
+  COHORT_BASE, EDU_NEWCOMER, EQ_FLOOR, EQ_SPAN_STOCK, NEEDS_PENALTY_MAX, OCC_PERIOD, TAP_PENALTY, TAP_SAFE,
+} from '../../src/sim/economy/tuning';
 import { sumTerms } from '../../src/sim/explain';
 import { newState, place, roadLine } from '../infra/cityGen';
 
@@ -307,5 +310,89 @@ describe('demographics: full simulation', () => {
     // a 1,500-resident town does not expect schools yet: no needs penalty in the condition breakdown
     expect(needsExpectation(noSchool.st)).toBe(0);
     expect(conditionBreakdown(noSchool.st, noSchool.homes[3]).terms.some((t) => t.id === 'needs')).toBe(false);
+  });
+});
+
+describe('demographics: WP1 review fixes', () => {
+  /** a watered, powered apartment block whose water network reports quality q (fake utilities system) */
+  function tapTown(q: number) {
+    const st = newState(32);
+    roadLine(st, 1, 10, 30, 10, Network.Road);
+    const b = place(st, 't_r2', 4, 11, { pop: 50, wealth: 2, rot: 2, health: 0.7, flags: BF.Watered | BF.Powered });
+    st.zone[st.idx(4, 11)] = Zone.ResMed;
+    st.watered.fill(1); st.powered.fill(1);
+    st.systemData.infraVersion = 1;
+    st.systemData.infraLayers = { utilities: true, traffic: false, pollution: false, services: true };
+    const util = { name: 'utilities', waterQualityAt: () => q } as unknown as SimSystem;
+    const sim = new Simulation(st, [util, populationSystem(new EconRuntime())]);
+    st.stats.tapWater = 0.9995; // the demand-weighted city mean: a big clean network dominates
+    return { st, b, sim };
+  }
+
+  it('unsafe tap water on a small network is penalised even when the city mean is clean', () => {
+    const bad = tapTown(0.3), good = tapTown(1);
+    const tap = conditionBreakdown(bad.st, bad.b).terms.find((t) => t.id === 'tapWater');
+    expect(tap?.value).toBeCloseTo((-TAP_PENALTY * (TAP_SAFE - 0.3)) / TAP_SAFE, 6);
+    expect(tap?.detail).toBe('water quality 30%');
+    expect(conditionBreakdown(good.st, good.b).terms.some((t) => t.id === 'tapWater')).toBe(false);
+    expect(needsOf(bad.st, bad.b).find((n) => n.kind === 'water')?.met).toBe(false);
+    // the occupancy loop applies the same term
+    bad.sim.runDays(3 * OCC_PERIOD);
+    good.sim.runDays(3 * OCC_PERIOD);
+    expect(bad.b.health).toBeLessThan(good.b.health);
+  });
+
+  it('rubble does not keep the unmet-needs chip', () => {
+    const st = svcState(32);
+    roadLine(st, 1, 10, 30, 10, Network.Road);
+    const b = place(st, 't_r2', 4, 11, { pop: 0, wealth: 2, rot: 2, flags: BF.Burnt | BF.NeedsUnmet });
+    const changed: number[] = [];
+    const sim = new Simulation(st, [populationSystem(new EconRuntime())]);
+    sim.events.on('buildingChanged', (x) => changed.push(x.id));
+    sim.runDays(OCC_PERIOD + 1);
+    expect(b.flags & BF.Burnt).toBe(BF.Burnt);
+    expect(b.flags & BF.NeedsUnmet).toBe(0);
+    expect(changed).toContain(b.id);
+  });
+
+  it('a save made before WP1 seeds the residents\' education from its EQ; a new city starts at the first-settler level', () => {
+    const st = svcState(32);
+    place(st, 't_r2', 4, 11, { pop: 40, wealth: 2 });
+    st.stats.population = 40;
+    st.stats.eq = 85;
+    new Simulation(st, [populationSystem(new EconRuntime())]);
+    expect(demographicsData(st).eduMean).toBeCloseTo((85 - EQ_FLOOR) / EQ_SPAN_STOCK, 6);
+    const fresh = svcState(32);
+    fresh.stats.population = 0;
+    new Simulation(fresh, [populationSystem(new EconRuntime())]);
+    expect(demographicsData(fresh).eduMean).toBe(-1); // → EDU_NEWCOMER for the first settlers
+    expect(EDU_NEWCOMER).toBeGreaterThan(0);
+    // a WP1 save from its first days (homes carry b.edu, the city mean was not sampled yet): the homes' own mean wins
+    const early = svcState(32);
+    place(early, 't_r2', 4, 11, { pop: 40, wealth: 2, kids: 0.2, teens: 0.08, yad: 0.1, srs: 0.1, wf: 0.5, edu: Math.fround(0.3) });
+    early.stats.population = 40;
+    early.stats.eq = 50;
+    new Simulation(early, [populationSystem(new EconRuntime())]);
+    expect(demographicsData(early).eduMean).toBeCloseTo(0.3, 6);
+  });
+
+  it('every building the population system knows carries the optional WP1 fields in one order (one hidden class)', { timeout: 60000 }, () => {
+    const st = newState(32);
+    roadLine(st, 1, 10, 30, 10, Network.Road);
+    for (let x = 2; x < 26; x += 2) {
+      place(st, 't_r2', x, 11, { pop: 40, wealth: 2, rot: 2 });
+      place(st, 't_cs', x, 9, { jobs: 5 });
+    }
+    place(st, 't_clinic', 28, 11, { flags: BF.Plopped, rot: 2 });
+    const sim = new Simulation(st, createSystems());
+    sim.runDays(2 * OCC_PERIOD);
+    const orders = new Set([...st.buildings.values()].map((b) => Object.keys(b).join(',')));
+    expect(orders.size).toBe(1);
+    expect([...orders][0].split(',').slice(-7)).toEqual(['kids', 'teens', 'yad', 'srs', 'wf', 'edu', 'hire']);
+    // the fields keep their meaning: shops have no residents' demographics, homes no hiring factor
+    for (const b of st.buildings.values()) {
+      if (b.def === 't_cs') { expect(b.kids).toBeUndefined(); expect(b.hire).toBeDefined(); }
+      if (b.def === 't_r2' && b.pop > 0) { expect(b.kids).toBeDefined(); expect(b.hire).toBeUndefined(); }
+    }
   });
 });

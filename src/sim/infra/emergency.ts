@@ -11,9 +11,19 @@
  *            order of travel time. Auto: the nearest station of the needed type with a free unit whose travel time is
  *            within its own range (a real road route, driven by a vehicle). Otherwise the incident is 'queued' (a unit
  *            of an in-range station comes back before the grace time) or 'uncovered' (reason busy / outOfRange /
- *            noStation) and the player can dispatch any station city-wide (dispatchOptions / dispatch). Minor
- *            incidents that are not covered are sent the nearest free unit at any range (slower, no alert).
- *            At most EMERG_SEARCHES_PER_DAY auto searches per day; the rest wait for the next day.
+ *            noStation) and the player can dispatch any station city-wide (dispatchOptions / dispatch);
+ *            manualPossible = a free unit can still arrive before the deadline (LIVE mode), canSend = a free unit can
+ *            be sent at all (banner without LIVE). Minor incidents that are not covered are sent the nearest free unit
+ *            that can arrive in time (slower, no alert). Daily search budget: the first EMERG_SEARCHES_PER_DAY
+ *            searches, then up to EMERG_SEARCH_NODES_PER_DAY settled road nodes; the rest ('Dispatch pending') go the
+ *            next day, fires first, then major incidents. Coverage promise: a building never burns down while the
+ *            first truck sent from inside its station's range is on its way.
+ * GRAPH      the searches run on traffic's road graph (TrafficSystem.road, rebuilt in traffic's own scheduled step
+ *            after network edits, so road edits never cost a graph build here); a private graph only when traffic has
+ *            none for the map (no traffic system; or a new city's first day, before traffic's first build — a tiny
+ *            network). Until traffic catches up with an edit a brand-new road is unknown: such sites are 'Dispatch
+ *            pending', not "no road". Node-indexed data (station nodes, siren times, caches, layer sequence) follow the
+ *            graph epoch.
  * TIME       one game-minute of siren driving = EMERG_DAYS_PER_MIN sim days. Vehicles carry their route (corner cells)
  *            with cumulative minutes; position = interpolate(times, (simTime - legStart) / EMERG_DAYS_PER_MIN).
  * OUTCOMES   per kind (grace G / deadline): late (answered after G), failed (deadline passed), deaths / injured /
@@ -24,8 +34,8 @@
  * LAYERS     st.respFire / respPolice / respMedical: auto-dispatch slack in minutes (>= 0 reached within a station's
  *            range, < 0 minutes beyond it, RESP_NONE = no station of that type). Scheduler task 'emergency.response'
  *            (3 forward station searches in chunks of EMERG_SEARCH_CHUNK nodes, a land fill, building fills in chunks
- *            of EMERG_FILL_CHUNK), every EMERG_RESP_PERIOD days, sooner after station / network changes, and
- *            synchronously in init() (the layers are derived, not saved).
+ *            of EMERG_FILL_CHUNK), every EMERG_RESP_PERIOD days, right after station / fleet changes, within
+ *            EMERG_RESP_NET_DAYS of a road-graph change in live play, and synchronously in init() (derived, not saved).
  * EVENTS     sim.events 'emergency' (new / queued / dispatched / arrived / escalated / resolved / failed / uncovered),
  *            news via sim.notify (advisors 'safety' / 'health'), BF.Incident on the site building.
  */
@@ -45,7 +55,8 @@ import { RoadGraph, perimeterNodes } from './graph';
 import {
   BPR_ALPHA, BPR_MAX_FACTOR, CRIME_MAJOR, CRIME_SPREE_MIN, CRIME_SPREE_RATE, EMERG_DAYS_PER_MIN, EMERG_DEADLINE,
   EMERG_FILL_BLD_COST, EMERG_FILL_CELLS_COST, EMERG_FILL_CHUNK, EMERG_GRACE, EMERG_HOSPITAL_MAX, EMERG_MANUAL_MAX, EMERG_MAX_PATH, EMERG_PLANT_P, EMERG_RANGE_K, EMERG_RESP_PERIOD,
-  EMERG_RMAX, EMERG_SEARCHES_PER_DAY, EMERG_SEARCH_CHUNK, EMERG_SEARCH_COST, EMERG_SIREN_CONG, EMERG_SLOW_MARGIN, EMERG_TRUCK_SHARE,
+  EMERG_RESP_NET_DAYS, EMERG_RMAX, EMERG_SEARCHES_PER_DAY, EMERG_SEARCH_CHUNK, EMERG_SEARCH_COST, EMERG_SEARCH_FINISH_COST, EMERG_SEARCH_NODES_PER_DAY,
+  EMERG_SIREN_CONG, EMERG_SLOW_MARGIN, EMERG_TRUCK_SHARE,
   EMERG_UNPOWERED_TURNOUT, EMERG_WORK_DAYS, FIRE_BURN_DAYS, FIRE_CLUSTER_R, FIRE_DRY_WORK, FIRE_HOLD_PER_UNIT,
   FIRE_SPREAD_DRY, FIRE_SPREAD_ONSCENE, FIRE_SPREAD_P, FIRE_WORK_PER_AREA, INDUSTRIAL_POLL, IND_ACCIDENT_RATE,
   MED_BASE, MED_DELAY_LOSS, MED_MAJOR, MED_RATE, MED_SENIOR, MED_SURVIVE, NET_TIME, PRISON_ESCAPE, RAMP_PENALTY,
@@ -56,6 +67,7 @@ import {
 import { schedulerOf } from './scheduler';
 import { Seeds } from './search';
 import type { FireSystem } from './fire';
+import type { TrafficSystem } from './traffic';
 
 export type IncidentState = 'queued' | 'uncovered' | 'dispatched' | 'onScene' | 'resolved' | 'failed';
 export type UncoveredReason = 'noStation' | 'outOfRange' | 'busy';
@@ -80,7 +92,13 @@ export interface Incident {
   /** assigned vehicle ids */
   units: number[];
   reason?: UncoveredReason;
+  /** a free unit of the needed type can still arrive before the deadline (the player's dispatch matters: LIVE mode) */
   manualPossible: boolean;
+  /** a free unit of the needed type can be sent at all (by road), even if it only arrives after the deadline */
+  canSend?: boolean;
+  /** ETA (game minutes incl. turnout) of the nearest free unit the last dispatch attempt found beyond the stations'
+   *  ranges (undefined = none within the time left): manualPossible lapses once the time left drops below it */
+  bestEta?: number;
   /** expected arrival of the first unit (game minutes after dispatch) */
   etaMin?: number;
   // ---- WP8 details (all plain data, saved in systemData.emergency)
@@ -136,6 +154,9 @@ export interface EmergencyVehicle {
   workFrom: number;
   /** transport: destination hospital station id (-1 none) */
   hospital: number;
+  /** sent from inside its station's auto range (on time up to max(grace, range + turnout); a fire it drives to does
+   *  not burn down before it arrives) */
+  cover?: boolean;
 }
 
 export interface StationFleet {
@@ -219,6 +240,9 @@ export const RESPONDER_UNIT: Readonly<Record<Responder, readonly [string, string
 export const RESPONDER_MODEL: Readonly<Record<Responder, EmergencyVehicleModel>> = { fire: 'fire_truck', police: 'car_police', medical: 'ambulance' };
 const RESPONDER_SERVICE: Readonly<Record<Responder, ServiceKind>> = { fire: 'fire', police: 'police', medical: 'health' };
 const RESPONDER_STATION: Readonly<Record<Responder, string>> = { fire: 'fire station', police: 'police station', medical: 'clinic or hospital' };
+const RESPONDER_STATIONS: Readonly<Record<Responder, string>> = { fire: 'fire stations', police: 'police stations', medical: 'clinics and hospitals' };
+/** note of an incident waiting for today's (used-up) dispatch-search budget or for the road graph to catch up */
+const PENDING_NOTE = 'Dispatch pending';
 const DEFAULT_RADIUS: Readonly<Record<Responder, number>> = { fire: 24, police: 26, medical: 16 };
 /** kinds that are always major (alert the player when not covered); medical / crime are major per incident */
 const MAJOR_KINDS: ReadonlySet<IncidentKind> = new Set<IncidentKind>(['fire', 'industrial', 'spill', 'riot', 'collapse', 'prisonRiot']);
@@ -585,14 +609,20 @@ interface Persist {
   effects: Effect[];
   months: EmergencyMonth[];
   medQ: [number, number];
+  /** daily dispatch-search budget (day, searches that always run, settled road nodes left) */
   searchDay: number;
   searchesLeft: number;
+  nodesLeft?: number;
   /** generation weights per kind: [block indices, monthly rates] (built at the month start) + the plant factor */
   gen?: Partial<Record<GenKind, [number[], number[]]>> & { plantF?: number };
   /** station-set version seen by the incidents (restored so a loaded game does not retry uncovered incidents early) */
   stVer?: number;
   /** monthly weight pass in progress: next slice (of `n`), plant factor, dense per-block sums per kind */
   genBuild?: { slice: number; n?: number; plantF: number; acc: [number[], number[], number[], number[]] };
+  /** response-layer refresh schedule [last refresh day, pending: 0 none / 1 road-graph change / 2 due now]: the layers
+   *  are derived (recomputed in init), but a loaded game keeps the original's refresh days, so the shared scheduler
+   *  runs the same layer steps and the other tasks' timing (and the city) continue the same way */
+  resp?: [number, number];
 }
 
 /** generated kinds (daily Poisson draw over monthly candidate weights) */
@@ -657,8 +687,20 @@ export class EmergencySystem implements SimSystem {
   private lastFund = [NaN, NaN, NaN];
   /** incremented whenever the station set / units change (uncovered incidents retry) */
   private stVer = 0;
+  /** the road graph the searches run on: traffic's (TrafficSystem.road) or `ownG` (see ensureGraph) */
   private g = new RoadGraph();
-  private netDirty = true;
+  private ownG = new RoadGraph();
+  /** the network changed since ownG was built */
+  private ownDirty = true;
+  /** graph version the node-indexed data were derived for, and the epoch (bumped on every graph / version change) */
+  private gVer = -1;
+  private gEpoch = 0;
+  /** traffic's graph version at the last network edit: that graph misses the edit until traffic rebuilds it */
+  private staleVer = -1;
+  /** last day whose incidents were processed (a fire lit before today's processing burns a day sooner) */
+  private processedDay = -1;
+  /** inside dailyWork's generation / processing: new incidents are dispatched by the day's prioritised pass */
+  private batch = false;
   private tm: Float32Array<ArrayBuffer> = new Float32Array(0);
   /** siren link times are refreshed when the traffic layer updates (or the graph changes) */
   private tmDirty = true;
@@ -711,7 +753,10 @@ export class EmergencySystem implements SimSystem {
   lastDailyMs = 0;
 
   private static emptyPersist(): Persist {
-    return { v: 1, nextId: 1, nextVid: 1, rng: 0, incidents: [], vehicles: [], effects: [], months: [], medQ: [0, 0], searchDay: -1, searchesLeft: EMERG_SEARCHES_PER_DAY };
+    return {
+      v: 1, nextId: 1, nextVid: 1, rng: 0, incidents: [], vehicles: [], effects: [], months: [], medQ: [0, 0],
+      searchDay: -1, searchesLeft: EMERG_SEARCHES_PER_DAY, nodesLeft: EMERG_SEARCH_NODES_PER_DAY,
+    };
   }
 
   // ------------------------------------------------------------------------------------------ lifecycle
@@ -736,9 +781,14 @@ export class EmergencySystem implements SimSystem {
       }),
     ];
     this.load(st);
-    this.netDirty = true;
+    this.ownDirty = true;
+    this.gVer = -1; // re-derive the node-indexed data even when the graph object is the same
+    this.staleVer = -1;
     this.stDirty = true;
     this.tmDirty = true;
+    this.batch = false;
+    // a loaded game sits between two days: today's incidents were already processed
+    this.processedDay = st.day;
     this.lastNews.clear();
     this.optCache.clear();
     this.ensureGraph(st);
@@ -750,9 +800,17 @@ export class EmergencySystem implements SimSystem {
       this.buildWeights(sim);
     }
     // derived layers: compute synchronously
+    const rs = this.p.resp; // (read before the refresh below overwrites it)
     this.respStep = -1;
     this.respDirty = true;
     do this.respTaskStep(sim); while (this.respStep >= 0);
+    // a loaded game continues the saved refresh schedule (same scheduler work as the original from here on)
+    if (Array.isArray(rs) && Number.isFinite(rs[0]) && rs[0] <= st.day) {
+      this.respLast = rs[0];
+      this.respDirty = rs[1] > 0;
+      this.respNetOnly = rs[1] === 1;
+    }
+    this.saveResp();
     this.rebuildCaches(st);
     this.writeStats(st);
     const self = this;
@@ -769,10 +827,13 @@ export class EmergencySystem implements SimSystem {
     if (this.stById.has(b.id) || fleetOfDef(b.def)) this.stDirty = true;
   }
 
+  /** network / terrain edit: the private graph is rebuilt on its next use; traffic's graph (the usual one) is rebuilt
+   *  by traffic's own scheduled step, until then it misses the edit (graphStale) — the node-indexed data, option
+   *  cache and response layers follow when its version changes (ensureGraph) */
   private markNet(): void {
-    this.netDirty = true;
-    if (!this.respDirty) this.respNetOnly = true;
-    this.respDirty = true;
+    this.ownDirty = true;
+    const tg = this.sim ? this.trafficGraph(this.sim.state) : null;
+    this.staleVer = tg ? tg.version : -1;
     this.optCache.clear();
   }
 
@@ -790,8 +851,10 @@ export class EmergencySystem implements SimSystem {
       p.medQ = Array.isArray(raw.medQ) ? [raw.medQ[0] ?? 0, raw.medQ[1] ?? 0] : [0, 0];
       p.searchDay = raw.searchDay ?? -1;
       p.searchesLeft = raw.searchesLeft ?? EMERG_SEARCHES_PER_DAY;
+      p.nodesLeft = typeof raw.nodesLeft === 'number' ? raw.nodesLeft : EMERG_SEARCH_NODES_PER_DAY;
       if (raw.gen && typeof raw.gen === 'object') p.gen = raw.gen;
       if (typeof raw.stVer === 'number') p.stVer = raw.stVer;
+      if (Array.isArray(raw.resp) && raw.resp.length === 2) p.resp = [Number(raw.resp[0]), Number(raw.resp[1]) | 0];
       const gb = raw.genBuild;
       // a pass saved with another slice count is dropped (the saved weights of the last complete pass stay in use)
       if (gb && typeof gb === 'object' && gb.n === GEN_SLICES && Array.isArray(gb.acc) && gb.acc.length === 4 && gb.acc.every((a) => Array.isArray(a))) p.genBuild = gb;
@@ -816,6 +879,13 @@ export class EmergencySystem implements SimSystem {
     st.systemData.emergency = p;
   }
 
+  private saveResp(): void {
+    const pending = this.respStep >= 0 || (this.respDirty && !this.respNetOnly) ? 2 : this.respDirty ? 1 : 0;
+    const r = this.p.resp;
+    if (r && r[0] === this.respLast && r[1] === pending) return;
+    this.p.resp = [this.respLast, pending];
+  }
+
   private recountOut(): void {
     this.out.clear();
     for (const v of this.vlist) this.out.set(v.stationId, (this.out.get(v.stationId) ?? 0) + 1);
@@ -824,6 +894,7 @@ export class EmergencySystem implements SimSystem {
   private persist(): void {
     this.p.rng = this.rng.state;
     this.p.stVer = this.stVer;
+    this.saveResp();
     const sd = this.sim?.state.systemData;
     if (sd && sd.emergency !== this.p) sd.emergency = this.p;
   }
@@ -834,22 +905,54 @@ export class EmergencySystem implements SimSystem {
   }
 
   // ------------------------------------------------------------------------------------------ graph / stations
+  /** traffic's road graph when it covers this map, else null */
+  private trafficGraph(st: CityState): RoadGraph | null {
+    const tg = this.sim?.getSystem<TrafficSystem>('traffic')?.road;
+    return tg && tg.N === st.size ? tg : null;
+  }
+
+  /**
+   * Point the searches at the current road graph and re-derive the node-indexed data when it changed. Traffic's graph
+   * is only read here, never built (traffic rebuilds it in its own scheduled step, so road edits never put a graph
+   * build into this system's daily work or a UI call); the private graph is built on demand only while traffic has
+   * none for this map (no traffic system, or a new city before traffic's first build — a tiny network). True when
+   * the graph changed.
+   */
   private ensureGraph(st: CityState): boolean {
-    if (!this.netDirty && this.g.N === st.size) return false;
-    this.g.build(st);
-    this.netDirty = false;
-    this.tmVer = -1;
+    let g = this.trafficGraph(st);
+    if (g) {
+      if (this.ownG.N > 0) this.ownG = new RoadGraph(); // no longer needed: free it
+    } else {
+      g = this.ownG;
+      if (this.ownDirty || g.N !== st.size) {
+        g.build(st);
+        this.ownDirty = false;
+      }
+    }
+    if (g === this.g && g.version === this.gVer) return false;
+    this.g = g;
+    this.gVer = g.version;
+    this.gEpoch++;
+    this.stVer++; // uncovered incidents retry on the new graph
     this.optCache.clear();
     this.stationNodes(st);
+    // the response layers follow the new graph (a network-only change is throttled headless, see respDue)
+    if (!this.respDirty) this.respNetOnly = true;
+    this.respDirty = true;
     return true;
+  }
+
+  /** the network changed after the graph the searches use was built (traffic catches up within a few days) */
+  private graphStale(): boolean {
+    return this.g !== this.ownG && this.g.version === this.staleVer;
   }
 
   /** siren link times t0 x (1 + EMERG_SIREN_CONG x (bpr - 1)) from the traffic layer (same BPR as traffic.ts) */
   private ensureTimes(st: CityState): void {
     const g = this.g;
-    if (!this.tmDirty && this.tmVer === g.version) return;
+    if (!this.tmDirty && this.tmVer === this.gEpoch) return;
     this.tmDirty = false;
-    this.tmVer = g.version;
+    this.tmVer = this.gEpoch;
     const n = g.n;
     if (this.tm.length < n) this.tm = new Float32Array(n + (n >> 3) + 16);
     const traffic = st.traffic, cellOf = g.cellOf, cap = g.cap, t0 = g.t0, tm = this.tm;
@@ -991,7 +1094,7 @@ export class EmergencySystem implements SimSystem {
     if (!inc) return [];
     const st = sim.state;
     this.syncStations(sim);
-    const ver = this.g.version;
+    const ver = this.gEpoch;
     let c = this.optCache.get(incidentId);
     if (!c || st.day - c.day > 3 || c.ver !== ver || c.stVer !== this.stVer) {
       const eta = new Map<number, number>();
@@ -1084,6 +1187,10 @@ export class EmergencySystem implements SimSystem {
   dispatchBest(sim: Simulation, incidentId: number): DispatchResult {
     const inc = this.byId.get(incidentId);
     if (!inc) return { ok: false, reason: 'This emergency is already over' };
+    if (!this.missingAny(inc)) {
+      // everything it needs is assigned (e.g. a unit came back and was sent automatically a moment ago)
+      return { ok: false, reason: this.onSceneAny(inc) ? 'Responders are already on scene' : 'Help is already on the way' };
+    }
     const opts = this.dispatchOptions(sim, incidentId).filter((o) => o.free > 0 && Number.isFinite(o.etaMin));
     if (!opts.length) return { ok: false, reason: `No free ${RESPONDER_UNIT[INCIDENT_RESPONDERS[inc.kind][0]][0]} can reach this place` };
     let res: DispatchResult = { ok: false, reason: 'No free unit' };
@@ -1210,7 +1317,7 @@ export class EmergencySystem implements SimSystem {
     const major = opts.major ?? (MAJOR_KINDS.has(kind) || (kind === 'medical' ? rng.next() < MED_MAJOR : kind === 'crime' ? rng.next() < CRIME_MAJOR : false));
     const inc: Incident = {
       id: this.p.nextId++, kind, x, z, buildingId: b ? b.id : -1, major, state: 'queued', start: now,
-      deadline: now + EMERG_DEADLINE[kind], severity: 1, need: {}, units: [], manualPossible: false,
+      deadline: kind === 'fire' ? this.fireDeadline(st) : now + EMERG_DEADLINE[kind], severity: 1, need: {}, units: [], manualPossible: false,
       place: def?.name ?? placeName(st, x, z), note: '', grace: EMERG_GRACE[kind], arrived: -1, firstAt: {}, answered: 0, work: 0,
       injured: 0, deaths: 0, radius: 0, fires: [], lost: 0, saved: 0, retry: Math.floor(now), stVer: -1,
     };
@@ -1257,10 +1364,19 @@ export class EmergencySystem implements SimSystem {
     m.injured += inc.injured;
     if (b) this.setIncidentFlag(sim, b, true);
     this.emit(sim, inc, 'new');
-    this.tryDispatch(sim, inc);
+    // inside the daily generation / processing the day's prioritised dispatch pass sends it (fires first); anything
+    // else (ignitions in fire.daily, disasters, the player, monthly riots) is dispatched right away
+    if (!this.batch) this.tryDispatch(sim, inc);
     this.rebuildCaches(st); // crime boosts / pollution sources of the new incident right away
     this.persist();
     return inc;
+  }
+
+  /** the day a new fire burns down without a crew: FIRE_BURN_DAYS burn steps, the first one at the next incident
+   *  processing — today's if it has not run yet (ignitions in fire.daily, riots), else tomorrow's (disasters, UI) */
+  private fireDeadline(st: CityState): number {
+    const first = this.processedDay < st.day ? st.day : st.day + 1;
+    return first + FIRE_BURN_DAYS - 1;
   }
 
   private setIncidentFlag(sim: Simulation, b: Building, on: boolean): void {
@@ -1340,7 +1456,7 @@ export class EmergencySystem implements SimSystem {
     const v: EmergencyVehicle = {
       id: this.p.nextVid++, responder: s.responder, model: RESPONDER_MODEL[s.responder], stationId: s.id, incidentId: inc.id,
       state: 'outbound', path: route.cells.slice(), times: route.times.slice(), legStart, m0: 0, m1: T,
-      arrive: legStart + T * EMERG_DAYS_PER_MIN, workFrom: 0, hospital: -1,
+      arrive: legStart + T * EMERG_DAYS_PER_MIN, workFrom: 0, hospital: -1, cover: t <= s.range + EPS,
     };
     this.vlist.push(v);
     this.vById.set(v.id, v);
@@ -1365,12 +1481,22 @@ export class EmergencySystem implements SimSystem {
     inc.reason = undefined;
     inc.note = '';
     inc.manualPossible = false;
+    inc.canSend = false;
     if (wasWaiting || inc.units.length > 0) this.emit(sim, inc, 'dispatched');
     this.writeStats(sim.state);
   }
 
   private onSceneAny(inc: Incident): boolean {
     for (const id of inc.units) if (this.vById.get(id)?.state === 'onScene') return true;
+    return false;
+  }
+
+  /** a fire truck sent from inside its station's auto range is driving to the incident */
+  private coverEnRoute(inc: Incident): boolean {
+    for (const id of inc.units) {
+      const v = this.vById.get(id);
+      if (v && v.responder === 'fire' && v.state === 'outbound' && v.cover) return true;
+    }
     return false;
   }
 
@@ -1437,16 +1563,34 @@ export class EmergencySystem implements SimSystem {
     return best;
   }
 
-  /** automatic dispatch attempt (auto range, queue / uncovered handling). Uses the daily search budget. */
+  /** today's dispatch-search budget (reset on a new day) */
+  private budgetDay(day: number): void {
+    if (this.p.searchDay === day) return;
+    this.p.searchDay = day;
+    this.p.searchesLeft = EMERG_SEARCHES_PER_DAY;
+    this.p.nodesLeft = EMERG_SEARCH_NODES_PER_DAY;
+  }
+  /** the first EMERG_SEARCHES_PER_DAY searches of a day always run, then while settled road nodes are left */
+  private budgetLeft(): boolean {
+    return this.p.searchesLeft > 0 || (this.p.nodesLeft ?? 0) > 0;
+  }
+  private charge(settled: number): void {
+    if (this.p.searchesLeft > 0) this.p.searchesLeft--;
+    this.p.nodesLeft = (this.p.nodesLeft ?? 0) - settled;
+  }
+  /** a fresh incident that could not be searched for yet shows 'Dispatch pending' (not "waiting for a unit") */
+  private markPending(inc: Incident): void {
+    if (inc.state === 'queued' && inc.reason === undefined) inc.note = PENDING_NOTE;
+  }
+
+  /** automatic dispatch attempt (auto range, queue / uncovered handling), within the daily search budget */
   private tryDispatch(sim: Simulation, inc: Incident): void {
     const st = sim.state;
     if (inc.state === 'resolved' || inc.state === 'failed') return;
     this.syncStations(sim);
     const day = st.day;
-    if (this.p.searchDay !== day) {
-      this.p.searchDay = day;
-      this.p.searchesLeft = EMERG_SEARCHES_PER_DAY;
-    }
+    this.budgetDay(day);
+    const now = this.now(sim);
     const resp = INCIDENT_RESPONDERS[inc.kind];
     let sentAny = false;
     for (let ri = 0; ri < resp.length; ri++) {
@@ -1456,66 +1600,90 @@ export class EmergencySystem implements SimSystem {
       const primary = ri === 0;
       const anyStation = this.stations.some((s) => s.responder === r && s.units > 0);
       const ns = this.siteSeeds(st, inc);
-      if (!anyStation || ns === 0) {
-        if (primary && this.assigned(inc, r) === 0) this.setUncovered(sim, inc, 'noStation', false, anyStation ? 'No road leads to this place' : `The city has no ${RESPONDER_STATION[r]}`);
+      if (ns === 0 && anyStation && this.graphStale()) {
+        // a road built moments ago that the road graph does not have yet (traffic rebuilds it within a few days)
+        inc.retry = day + 1;
+        if (primary) this.markPending(inc);
         continue;
       }
-      if (this.p.searchesLeft <= 0) {
-        inc.retry = day + 1;
-        return;
+      if (!anyStation || ns === 0) {
+        if (primary && this.assigned(inc, r) === 0) {
+          const unfunded = !anyStation && this.stations.some((s) => s.responder === r);
+          const note = anyStation ? 'No road leads to this place'
+            : unfunded ? `All ${RESPONDER_STATIONS[r]} are unfunded — raise the ${RESPONDER_SERVICE[r]} budget`
+              : `The city has no ${RESPONDER_STATION[r]}`;
+          this.setUncovered(sim, inc, 'noStation', false, false, note);
+        }
+        continue;
       }
-      this.p.searchesLeft--;
+      if (!this.budgetLeft()) {
+        // today's dispatch searches are used up (a disaster's aftermath): first thing tomorrow (fires, then majors)
+        inc.retry = day + 1;
+        if (primary) this.markPending(inc);
+        break; // units already sent to this incident still get afterDispatch
+      }
       this.ensureTimes(st);
-      const now = this.now(sim);
       const minor = !inc.major || !primary;
       const freeAny = this.freeReachable(r, ns);
-      // major incidents need an in-range unit (anything else is the player's call); minor ones take the nearest free
-      // unit at any range. With no free unit on this road network only the in-range (queue) check is left.
       let maxRange = 0;
       for (const s of this.stations) if (s.responder === r && s.units > 0 && s.range > maxRange) maxRange = s.range;
-      const limit = minor && freeAny ? EMERG_MANUAL_MAX : Math.min(EMERG_MANUAL_MAX, maxRange + EPS);
+      // minutes left before the deadline: a unit that cannot arrive by then does not help
+      const tLeft = Math.max(0, (inc.deadline - now) / EMERG_DAYS_PER_MIN);
+      // in-range units; with a free unit on this road network also the nearest one that can still make it in time
+      const limit = Math.min(EMERG_MANUAL_MAX, freeAny ? Math.max(maxRange, tLeft) : maxRange) + EPS;
       const res = this.searchUnits(st, r, ns, missing, true, limit);
+      this.charge(this.ds.settled);
       for (const pk of res.picks) {
         for (let q = 0; q < pk.n; q++) this.sendUnit(sim, inc, pk.s, pk.route!, pk.t, now, false);
         sentAny = true;
       }
       if (res.picks.length) continue;
       if (this.assigned(inc, r) > 0) continue; // units already on the way / on scene (need grew)
-      if (minor && res.manual) {
-        // minor incidents (and supporting responders) get the nearest free unit at any range, without an alert
-        this.sendUnit(sim, inc, res.manual.s, res.manual.route!, res.manual.t, now, false);
+      const mu = res.manual;
+      const muEta = mu ? mu.t + mu.s.turnout / EMERG_DAYS_PER_MIN : Infinity;
+      const inTime = muEta <= tLeft + EPS;
+      if (minor && inTime) {
+        // minor incidents (and supporting responders) get the nearest free unit that can still make it, no alert
+        this.sendUnit(sim, inc, mu!.s, mu!.route!, mu!.t, now, false);
         sentAny = true;
         continue;
       }
       if (!primary) continue;
-      const manualPossible = !!freeAny;
+      // the player's call: LIVE mode only when a unit can still arrive before the deadline
+      const manualPossible = inTime;
+      const canSend = !!freeAny;
+      inc.bestEta = Number.isFinite(muEta) ? r2(muEta) : undefined;
+      const unit = RESPONDER_UNIT[r];
       if (res.inRangeBusy.length) {
         // queued: a unit of an in-range station is back before the grace time ends
         let best = Infinity;
         for (const b of res.inRangeBusy) best = Math.min(best, this.nextFreeAt(b.s) + b.t * EMERG_DAYS_PER_MIN);
         const s0 = res.inRangeBusy[0].s;
+        const busyNote = `All ${s0.units} ${unit[s0.units === 1 ? 0 : 1]} of ${s0.name} are busy`;
         if (best <= inc.start + inc.grace) {
           const was = inc.state;
           inc.state = 'queued';
           inc.reason = 'busy';
           inc.manualPossible = manualPossible;
-          inc.note = `All ${s0.units} ${RESPONDER_UNIT[r][s0.units === 1 ? 0 : 1]} of ${s0.name} are busy — one is on its way back`;
+          inc.canSend = canSend;
+          inc.note = `${busyNote} — one is on its way back`;
           inc.retry = day + 1;
           if (was !== 'queued') this.emit(sim, inc, 'queued');
           continue;
         }
-        this.setUncovered(sim, inc, 'busy', manualPossible, `All ${s0.units} ${RESPONDER_UNIT[r][s0.units === 1 ? 0 : 1]} of ${s0.name} are busy`);
+        this.setUncovered(sim, inc, 'busy', manualPossible, canSend, busyNote + (canSend && !manualPossible ? ' — the nearest free one is too far to make it in time' : ''));
         inc.retry = day + 2;
       } else if (freeAny) {
-        const near = this.nearestFree(r, inc.x, inc.z) ?? freeAny;
-        this.setUncovered(sim, inc, 'outOfRange', true, `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage — nearest free ${RESPONDER_UNIT[r][0]}: ${near.name}`);
+        const near = mu?.s ?? this.nearestFree(r, inc.x, inc.z) ?? freeAny;
+        this.setUncovered(sim, inc, 'outOfRange', manualPossible, true,
+          `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage — nearest free ${unit[0]}: ${near.name}${manualPossible ? '' : ' (too far to make it in time)'}`);
         inc.retry = day + 5;
       } else if (this.stations.some((s) => s.responder === r && s.units > 0 && s.nodes.length && this.freeOf(s) <= 0)) {
         const s0 = res.busy ?? this.stations.find((s) => s.responder === r && s.units > 0 && this.freeOf(s) <= 0)!;
-        this.setUncovered(sim, inc, 'busy', false, `All ${RESPONDER_UNIT[r][1]} are busy (${s0.name} and others)`);
+        this.setUncovered(sim, inc, 'busy', false, false, `All ${unit[1]} are busy (${s0.name} and others)`);
         inc.retry = day + 2;
       } else {
-        this.setUncovered(sim, inc, 'noStation', false, `No ${RESPONDER_STATION[r]} can reach this place by road`);
+        this.setUncovered(sim, inc, 'noStation', false, false, `No ${RESPONDER_STATION[r]} can reach this place by road`);
         inc.retry = day + 5;
       }
     }
@@ -1534,11 +1702,12 @@ export class EmergencySystem implements SimSystem {
     return best;
   }
 
-  private setUncovered(sim: Simulation, inc: Incident, reason: UncoveredReason, manualPossible: boolean, note: string): void {
-    const changed = inc.state !== 'uncovered' || inc.reason !== reason || inc.manualPossible !== manualPossible;
+  private setUncovered(sim: Simulation, inc: Incident, reason: UncoveredReason, manualPossible: boolean, canSend: boolean, note: string): void {
+    const changed = inc.state !== 'uncovered' || inc.reason !== reason || inc.manualPossible !== manualPossible || !!inc.canSend !== canSend;
     inc.state = 'uncovered';
     inc.reason = reason;
     inc.manualPossible = manualPossible;
+    inc.canSend = canSend;
     inc.note = note;
     inc.etaMin = undefined;
     if (!changed) return;
@@ -1565,10 +1734,8 @@ export class EmergencySystem implements SimSystem {
   }
 
   private syncStations(sim: Simulation): void {
-    const st = sim.state;
-    const rebuilt = this.ensureGraph(st);
+    this.ensureGraph(sim.state);
     if (this.stDirty) this.refreshStations(sim);
-    else if (rebuilt) this.stVer++;
   }
 
   // ------------------------------------------------------------------------------------------ daily
@@ -1587,29 +1754,40 @@ export class EmergencySystem implements SimSystem {
     try {
       this.syncStations(sim);
       if (this.updateUnits(st)) this.stVer++;
-      if (this.p.searchDay !== st.day) {
-        this.p.searchDay = st.day;
-        this.p.searchesLeft = EMERG_SEARCHES_PER_DAY;
-      }
+      this.budgetDay(st.day);
       if (this.p.genBuild) this.weightSlice(sim);
+      // new incidents of the generation / processing below are dispatched by the prioritised pass after them
+      this.batch = true;
       this.generate(sim);
       this.advanceVehicles(sim);
       this.processIncidents(sim);
-      // automatic dispatch: incidents still missing units (oldest first, within the daily search budget)
-      for (let k = 0; k < this.list.length; k++) {
-        const inc = this.list[k];
-        if (inc.state === 'resolved' || inc.state === 'failed') continue;
-        if (!this.missingAny(inc)) continue;
-        const due = inc.retry <= st.day || (inc.state === 'uncovered' && inc.stVer !== this.stVer);
-        if (due) this.tryDispatch(sim, inc);
+      this.batch = false;
+      this.processedDay = st.day;
+      // automatic dispatch of incidents still missing units, within the daily search budget: fires first, then the
+      // other major incidents, then minor ones (oldest first in each class)
+      for (let pass = 0; pass < 3; pass++) {
+        for (let k = 0; k < this.list.length; k++) {
+          const inc = this.list[k];
+          if ((inc.kind === 'fire' ? 0 : inc.major ? 1 : 2) !== pass) continue;
+          if (inc.state === 'resolved' || inc.state === 'failed' || !this.missingAny(inc)) continue;
+          if (inc.retry <= st.day || (inc.state === 'uncovered' && inc.stVer !== this.stVer)) this.tryDispatch(sim, inc);
+        }
+      }
+      // a player dispatch stops mattering (LIVE mode ends) once even the nearest free unit cannot make it any more
+      for (const inc of this.list) {
+        if (!inc.manualPossible || inc.bestEta === undefined || !(inc.state === 'uncovered' || inc.state === 'queued')) continue;
+        if (inc.bestEta > (inc.deadline - st.day) / EMERG_DAYS_PER_MIN + EPS) inc.manualPossible = false;
       }
       // expire effects
       if (this.p.effects.length) this.p.effects = this.p.effects.filter((e) => e.until > st.day);
       this.rebuildCaches(st);
       this.writeStats(st);
       this.persist();
+      // the fire steps above changed burn days / heat after fire.daily saved them: save the registry again
+      sim.getSystem<FireSystem>('fire')?.persist(sim);
     } finally {
       this.inDaily = false;
+      this.batch = false;
     }
     if (t0) this.lastDailyMs = performance.now() - t0;
   }
@@ -1958,7 +2136,12 @@ export class EmergencySystem implements SimSystem {
     const primary = INCIDENT_RESPONDERS[inc.kind][0];
     const first = inc.arrived < 0;
     if (first) inc.arrived = v.arrive;
-    if (r === primary && firstOfR && v.arrive > inc.start + inc.grace) m.late++;
+    if (r === primary && firstOfR) {
+      // late = after the grace; a unit sent from inside its station's own range is on time up to that range (+ turnout)
+      const home = v.cover ? this.stById.get(v.stationId) : undefined;
+      const lim = home ? Math.max(inc.grace, home.range * EMERG_DAYS_PER_MIN + home.turnout) : inc.grace;
+      if (v.arrive > inc.start + lim + EPS) m.late++;
+    }
     if (inc.state !== 'resolved' && inc.state !== 'failed') inc.state = 'onScene';
     if (first) this.emit(sim, inc, 'arrived');
     // medical: patient outcome at the first ambulance
@@ -2078,15 +2261,21 @@ export class EmergencySystem implements SimSystem {
     const crews = this.onSceneCount(inc, 'fire');
     const nb = cl.length;
     const held = crews > 0 ? Math.min(1, (crews * FIRE_HOLD_PER_UNIT) / nb) : 0;
+    // the coverage promise: while the first truck sent from inside its station's auto range is still on its way,
+    // nothing burns down before it gets there (turnout, a swamped dispatch day or the fire HQ's 6.2-minute reach
+    // never cost a covered building); spread goes on
+    const hold = crews === 0 && this.coverEnRoute(inc);
     const share = unitDays / nb;
     let maxDays = 0;
     const toSpread: Building[] = [];
     for (const b of cl) {
       const f = fire.fires.get(b.id)!;
-      f.days += 1 - held;
+      const nd = f.days + 1 - held;
+      f.days = hold && nd >= FIRE_BURN_DAYS ? Math.max(f.days, FIRE_BURN_DAYS - 0.5) : nd;
       if (share > 0) {
         const watered = (b.flags & BF.Watered) !== 0;
-        f.heat = (f.heat ?? 1) - share / (FIRE_WORK_PER_AREA * Math.sqrt(Math.max(1, b.w * b.d)) * (watered ? 1 : FIRE_DRY_WORK));
+        // rounded like the save (fire.ts persist), so a loaded game continues with exactly the same heat
+        f.heat = Math.round(((f.heat ?? 1) - share / (FIRE_WORK_PER_AREA * Math.sqrt(Math.max(1, b.w * b.d)) * (watered ? 1 : FIRE_DRY_WORK))) * 1e6) / 1e6;
       }
       if ((f.heat ?? 1) <= 0) {
         fire.putOut(sim, b);
@@ -2215,6 +2404,9 @@ export class EmergencySystem implements SimSystem {
       case 'industrial':
       case 'collapse':
         this.casualties(sim, inc, 0.3);
+        // a medical call no ambulance reached in time scores 0 in the medical-response EMA (medScore): a city
+        // without clinics must not score better than one with a slow clinic
+        if (inc.kind === 'medical') this.p.medQ[1] += 1;
         break;
       case 'crime':
         this.p.effects.push({ kind: 'crime', x: inc.x, z: inc.z, radius: 4, a: SPREE_FAIL_BOOST, b: 0, until: now + SPREE_FAIL_DAYS });
@@ -2399,8 +2591,9 @@ export class EmergencySystem implements SimSystem {
     if (!this.respDirty && this.respComputed && this.stations.length === 0) return false;
     if (day - this.respLast >= EMERG_RESP_PERIOD) return true;
     if (!this.respDirty) return false;
-    // network edits: at most every 10 days headless (bots edit roads constantly); stations / live play: right away
-    if (this.respNetOnly && !schedulerOf(sim).framesActive) return day - this.respLast >= 10;
+    // station / fleet changes: right away. Network-only edits (a new road graph): within EMERG_RESP_NET_DAYS with a
+    // live renderer (the coverage overlay); headless (bots edit roads constantly) they wait for the periodic refresh
+    if (this.respNetOnly) return schedulerOf(sim).framesActive && day - this.respLast >= EMERG_RESP_NET_DAYS;
     return true;
   }
 
@@ -2416,7 +2609,9 @@ export class EmergencySystem implements SimSystem {
       // no station of this responder: the step only fills the node slack
       if (this.respStep >= 0 && !this.csActive && !this.stations.some((s) => s.responder === r && s.units > 0)) return 0.1 + 0.1 * Math.max(0.05, n / 36000);
       const left = this.csActive ? Math.max(0, n - this.cs.settled) : n;
-      return 0.1 + (EMERG_SEARCH_COST * Math.min(EMERG_SEARCH_CHUNK, Math.max(1000, left))) / 36000;
+      // + the O(n) slack pass of the step that finishes the search
+      const fin = left <= EMERG_SEARCH_CHUNK ? EMERG_SEARCH_FINISH_COST * Math.max(0.05, n / 36000) : 0;
+      return 0.1 + (EMERG_SEARCH_COST * Math.min(EMERG_SEARCH_CHUNK, Math.max(1000, left))) / 36000 + fin;
     }
     if (this.respStep === 3) return 0.1 + EMERG_FILL_CELLS_COST * Math.max(0.05, this.g.C / 65536);
     const nbld = this.sim?.state.buildings.size ?? 0;
@@ -2425,12 +2620,16 @@ export class EmergencySystem implements SimSystem {
 
   private respTaskStep(sim: Simulation): void {
     const st = sim.state;
-    if (this.respStep >= 0 && this.g.version !== this.respVer) this.respStep = -1; // graph rebuilt mid-sequence: restart
+    if (this.respStep >= 0) {
+      // traffic may have rebuilt the graph since the last step: node ids changed, restart the sequence
+      this.ensureGraph(st);
+      if (this.gEpoch !== this.respVer) this.respStep = -1;
+    }
     if (this.respStep < 0) {
       this.syncStations(sim);
       this.ensureTimes(st);
       this.respStep = 0;
-      this.respVer = this.g.version;
+      this.respVer = this.gEpoch;
       this.respDirty = false;
       this.respNetOnly = false;
       this.csActive = false;
@@ -2444,7 +2643,10 @@ export class EmergencySystem implements SimSystem {
     if (this.respStep < 3) next = this.respSearch(RESPONDERS[this.respStep]);
     else if (this.respStep === 3) this.respFillCells(st);
     else next = this.respFillBuildings(st);
-    if (!next) return; // the same phase continues next step
+    if (!next) { // the same phase continues next step
+      this.saveResp();
+      return;
+    }
     this.respStep++;
     if (this.respStep >= 5) {
       this.respStep = -1;
@@ -2452,6 +2654,7 @@ export class EmergencySystem implements SimSystem {
       this.respComputed = true;
       sim.events.emit('layerUpdated', 'emergency');
     }
+    this.saveResp();
   }
 
   /** one chunk of responder r's station search; true when its node slack is complete */

@@ -286,7 +286,10 @@ export class PropRenderer {
     const id = this.batch.geometryId(key, () => propGeometry(model, v));
     if (!this.lodMap.has(id)) {
       const lod = propLodGeometry(key, model, propGeometry(model, v));
-      this.lodMap.set(id, lod ? this.batch.geometryId(key + '#lod', () => lod) : id);
+      const lid = lod ? this.batch.geometryId(key + '#lod', () => lod) : id;
+      // one culling sphere for model and proxy: LOD swaps only refresh the cached draw lists' ranges
+      this.batch.shareSphere(id, lid);
+      this.lodMap.set(id, lid);
     }
     return id;
   }

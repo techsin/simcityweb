@@ -9,7 +9,8 @@
  * ordinances, civic buildings) residents now judge: noise at home, tap water, garbage pickup, power / water outages,
  * unmet needs (pupils without a school in reach, seniors without a clinic), tourism, HQ, emergencies (WP8; legacy fire
  * count while the emergency system is inactive), jail overflow (WP7) and disasters. All terms are resident-weighted
- * (read at the centre cell of every occupied home) and computed once a month.
+ * (read at the centre cell of every occupied home) and computed once a month. The service gaps (garbage, unmet needs,
+ * tap water) are bounded: each saturates softly and together they cost at most APPROVAL_TERMS.gapMax (serviceGaps).
  *
  * residentSurvey(st, rt) is the shared monthly resident experience (per wealth and city-wide); the tourism system
  * (attractiveness, WP4) reads it on the same day, so the survey is cached per day.
@@ -19,7 +20,8 @@ import { BF, type Building } from '../CityState';
 import { clamp, smoothstep } from '../../core/rng';
 import { DevType } from '../../core/types';
 import {
-  APPROVAL, APPROVAL_TERMS as AT, COMMUTE_FALLBACK, COVERAGE_FALLBACK, EQ_BASE, EQ_RATE, EQ_SPAN, HQ_BASE, HQ_RATE, HQ_SPAN, TAX_NEUTRAL,
+  APPROVAL, APPROVAL_TERMS as AT, COMMUTE_FALLBACK, COVERAGE_FALLBACK, EQ_BASE, EQ_RATE, EQ_SPAN, HQ_BASE, HQ_RATE, HQ_SPAN,
+  NEEDS_POP_FULL, NEEDS_POP_START, TAX_NEUTRAL,
 } from './tuning';
 import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
@@ -162,6 +164,56 @@ export const APPROVAL_LABELS: Record<string, string> = {
   clamp: 'Limit (0–100)',
 };
 
+/** soft saturation of a negative term: ≈ raw while small (slope 1 at 0), never below −sat */
+function saturate(raw: number, sat: number): number {
+  if (raw === 0) return 0; // no −0 in the breakdown
+  return raw < 0 && sat > 0 ? -sat * (1 - Math.exp(raw / sat)) : raw;
+}
+
+interface NeedLike { need: number; unreached: number }
+export interface ServiceGaps {
+  garbage: number;
+  needs: number;
+  tapWater: number;
+  /** sum of the three terms before the APPROVAL_TERMS.gapMax limit */
+  sum: number;
+  /** true when the gapMax limit scaled the three terms down */
+  limited: boolean;
+}
+
+/**
+ * SERVICE-GAP approval terms (WP4): uncollected garbage, unmet needs (pupils without a school in reach, patients
+ * without a clinic) and tap water. Each is the spec formula × its population fade (garbage 2k..20k residents, needs
+ * WP1's NEEDS_POP_START..NEEDS_POP_FULL), saturating softly at APPROVAL_TERMS.gapSat; their sum is limited to
+ * APPROVAL_TERMS.gapMax (all three scaled by the same factor, so the breakdown still sums to approvalRaw).
+ * Pure (tests, UI): residents = resident population of the survey, shares 0..1, tapWater 0..1 (1 = clean / n.a.).
+ */
+export function serviceGaps(
+  residents: number, noGarbageShare: number, tapWater: number,
+  nd: { elementary?: NeedLike; high?: NeedLike; health?: NeedLike } | undefined,
+): ServiceGaps {
+  const fadeG = residents > 0 ? smoothstep(AT.needsPop0, AT.garbagePop1, residents) : 0;
+  const fadeN = residents > 0 ? smoothstep(NEEDS_POP_START, NEEDS_POP_FULL, residents) : 0;
+  let needsRaw = 0;
+  if (nd && fadeN > 0) {
+    const pupils = (nd.elementary?.need ?? 0) + (nd.high?.need ?? 0);
+    if (pupils > 0) needsRaw += AT.kidsUnreached * clamp(((nd.elementary?.unreached ?? 0) + (nd.high?.unreached ?? 0)) / pupils, 0, 1);
+    const patients = nd.health?.need ?? 0;
+    if (patients > 0) needsRaw += AT.seniorsHealth * clamp((nd.health?.unreached ?? 0) / patients, 0, 1);
+  }
+  const S = AT.gapSat;
+  let garbage = saturate(fadeG * AT.garbage * clamp(noGarbageShare, 0, 1), S.garbage);
+  let needs = saturate(fadeN * needsRaw, S.needs);
+  let tap = saturate(AT.tapWater * clamp(1 - tapWater, 0, 1), S.tapWater);
+  const sum = garbage + needs + tap;
+  const limited = sum < AT.gapMax;
+  if (limited) {
+    const k = AT.gapMax / sum;
+    garbage *= k; needs *= k; tap *= k;
+  }
+  return { garbage, needs, tapWater: tap, sum, limited };
+}
+
 /** duck-typed optional systems (emergency WP8 / disasters) — no hard imports of sim-infra */
 interface EmergencyApi { active?: boolean }
 interface DisastersApi { active?: readonly unknown[] }
@@ -175,6 +227,9 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
   const update = (sim: Simulation, first: boolean) => {
     const st = sim.state;
     const data = econData(st);
+    // init of a loaded city (terms from an earlier month): keep the saved, smoothed approval instead of snapping it
+    // to this month's raw value (save / load continuity)
+    const resumed = first && st.day > 0 && Object.keys(data.approvalTerms).length > 0;
     const inf = infraFlags(st);
     const sv = residentSurvey(st, rt, inf);
     const w = sv.pop[3];
@@ -227,22 +282,16 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     T.ordinances = ordinanceEffect(st, 'add.approval');
     T.civic = ((st.milestones.civ_mayor_house ?? 0) > 0 ? 2 : 0) + ((st.milestones.civ_statue ?? 0) > 0 ? 3 : 0)
       + ((st.milestones.civ_city_hall ?? 0) > 0 ? 2 : 0);
-    // WP4 resident-weighted terms. Garbage / needs / outages / poor HQ fade in over the first residents (a hamlet's first
-    // homes wait for the first landfill, power plant, school and clinic without the mayor being blamed).
+    // WP4 resident-weighted terms. Outages / poor HQ fade in over the first residents (a hamlet's first homes wait for
+    // the first power plant and clinic without the mayor being blamed); garbage fades in more slowly and unmet needs
+    // follow WP1's expectation curve (tuning APPROVAL_TERMS / NEEDS_POP_*).
     const fadeIn = w > 0 ? smoothstep(AT.needsPop0, AT.needsPop1, w) : 0;
     T.noise = w > 0 ? AT.noise * sv.noise[3] : 0;
-    T.tapWater = w > 0 && inf.utilities ? AT.tapWater * clamp(1 - (s.tapWater ?? 1), 0, 1) : 0;
-    T.garbage = fadeIn * AT.garbage * sv.noGarbage[3];
     T.outages = fadeIn * (AT.unpowered * sv.unpowered[3] + AT.unwatered * sv.unwatered[3]);
-    const nd = s.needs;
-    let needs = 0;
-    if (nd) {
-      const pupils = (nd.elementary?.need ?? 0) + (nd.high?.need ?? 0);
-      if (pupils > 0) needs += AT.kidsUnreached * clamp(((nd.elementary?.unreached ?? 0) + (nd.high?.unreached ?? 0)) / pupils, 0, 1);
-      const patients = nd.health?.need ?? 0;
-      if (patients > 0) needs += AT.seniorsHealth * clamp((nd.health?.unreached ?? 0) / patients, 0, 1);
-    }
-    T.needs = fadeIn * needs;
+    const g = serviceGaps(w, sv.noGarbage[3], w > 0 && inf.utilities ? s.tapWater ?? 1 : 1, s.needs);
+    T.garbage = g.garbage;
+    T.needs = g.needs;
+    T.tapWater = g.tapWater;
     T.tourism = Math.min(AT.tourismMax, (data.tourists ?? 0) / AT.tourismPerPoint);
     // HQ: a bonus for good health care; the penalty fades in with the city (no hamlet has a hospital)
     const hq = w > 0 ? clamp(AT.hq * (s.hq - AT.hqRef) / AT.hqSpan, -AT.hq, AT.hq) : 0;
@@ -269,7 +318,7 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     raw = clamped;
     data.approvalTerms = T;
     data.approvalRaw = raw;
-    s.approval = first ? raw : clamp(s.approval + (raw - s.approval) * APPROVAL.ema, 0, 100);
+    if (!resumed) s.approval = first ? raw : clamp(s.approval + (raw - s.approval) * APPROVAL.ema, 0, 100);
     if (!inf.pollution) s.avgPollution = data.resPollution;
     if (!inf.services) s.avgCrime = data.resCrime;
   };
@@ -308,27 +357,39 @@ export function approvalBreakdown(st: CityState): FactorTerm[] {
   for (const id in T) {
     const v = T[id];
     if (!v && id !== 'base') continue;
-    out.push({ id, label: APPROVAL_LABELS[id] ?? id, value: v, detail: approvalDetail(st, id) });
+    out.push({ id, label: APPROVAL_LABELS[id] ?? id, value: v, detail: approvalDetail(st, id, T) });
   }
   out.sort((a, b) => (a.id === 'base' ? -1 : b.id === 'base' ? 1 : Math.abs(b.value) - Math.abs(a.value)));
   return out;
 }
 
-function approvalDetail(st: CityState, id: string): string | undefined {
+function approvalDetail(st: CityState, id: string, T: Record<string, number>): string | undefined {
   const s = st.stats;
   const pct = (v: number) => `${Math.round(v * 100)}%`;
+  const n0 = (v: number) => Math.round(v).toLocaleString('en-US');
   const d = st.systemData.economy as { tourists?: number } | undefined;
+  const sv = surveys.get(st);
+  // the three service gaps hit their common limit: say so
+  const gapSum = (T.garbage ?? 0) + (T.needs ?? 0) + (T.tapWater ?? 0);
+  const limit = gapSum < 0 && Math.abs(gapSum - AT.gapMax) < 1e-6 ? ` (garbage, schools / clinics and tap water together cost at most ${-AT.gapMax})` : '';
   switch (id) {
-    case 'tapWater': return `tap water ${pct(s.tapWater ?? 1)} clean`;
+    case 'tapWater': return `tap water ${pct(s.tapWater ?? 1)} clean${limit}`;
     case 'hq': return `HQ ${Math.round(s.hq)}`;
-    case 'tourism': return `${Math.round(d?.tourists ?? 0).toLocaleString('en-US')} tourists / day`;
+    case 'tourism': return `${n0(d?.tourists ?? 0)} tourists / day`;
     case 'unemployment': return `${pct(s.unemployment)} unemployed`;
     case 'justice': return `jail overflow ${pct(s.justice?.overflow ?? 0)}`;
+    case 'noise': return sv ? `average noise at homes ${pct(sv.noise[3])}` : undefined;
+    case 'garbage': return sv ? `${pct(sv.noGarbage[3])} of residents without garbage pickup${limit}` : undefined;
+    case 'outages': return sv ? `${pct(sv.unpowered[3])} of residents without power, ${pct(sv.unwatered[3])} without water` : undefined;
     case 'needs': {
       const n = s.needs;
       if (!n) return undefined;
-      const u = Math.round((n.elementary?.unreached ?? 0) + (n.high?.unreached ?? 0));
-      return u > 0 ? `${u.toLocaleString('en-US')} pupils without a school in reach` : undefined;
+      const u = (n.elementary?.unreached ?? 0) + (n.high?.unreached ?? 0);
+      const p = n.health?.unreached ?? 0;
+      const parts: string[] = [];
+      if (u >= 1) parts.push(`${n0(u)} pupils without a school in reach`);
+      if (p >= 1) parts.push(`${n0(p)} patients without a clinic in reach`);
+      return parts.length ? parts.join(', ') + limit : undefined;
     }
     default: return undefined;
   }

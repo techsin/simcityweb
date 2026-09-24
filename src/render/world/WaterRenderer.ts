@@ -112,24 +112,31 @@ vec3 waterShade(vec3 P) {
     float W = uN * uCell;
     vec2 vd = normalize(P.xz - cameraPosition.xz + 1e-3);
     vec2 wob = g * 22.0;
+    // individual light streaks: narrow bands running toward the viewer under the lit shore (sparse ~6 m lateral
+    // stripes of varying length), broken along their length by the wave crests (slow dashes). Both masks fade to their
+    // average once they get too small on screen: a pixel-sized pattern read as a glitter band of foam / wet sand.
+    float lat = dot(P.xz, vec2(-vd.y, vd.x)) / 26.0;
+    float along = dot(P.xz, vd) / 22.0;
+    float sfw = clamp(fwidth(lat) * 5.0, 0.0, 1.0);
+    float streak = mix(smoothstep(0.55, 0.75, texture2D(uNoise, vec2(lat + g.x * 0.02, 0.37)).r), 0.25, sfw);
+    // per-streak reach 35-100% (brighter / higher lights throw longer streaks)
+    float reach = mix(0.35, 1.0, smoothstep(0.3, 0.7, texture2D(uNoise, vec2(lat * 0.5 + 0.13, 0.71)).g));
+    reach = mix(reach, 0.7, sfw);
     float acc = 0.0;
     // longer reach toward the viewer (reflections of lights stretch into streaks on rippled water)
     for (int k = 1; k <= 6; k++) {
+      float kk = float(k) / 6.0;
       float dk = float(k) * (9.0 + 0.012 * dist);
       vec2 q = (P.xz + vd * dk + wob * float(k) * 0.3) / W;
-      acc += texture2D(uLightTex, q).r * (1.0 - float(k) * 0.12);
+      acc += texture2D(uLightTex, q).r * (1.0 - kk * 0.72) * (1.0 - smoothstep(reach - 0.2, reach + 0.05, kk));
     }
     float inMap = step(0.0, P.x) * step(0.0, P.z) * step(P.x, W) * step(P.z, W);
-    // individual streaks: lateral stripes across the view direction (one per light cluster), broken up along their
-    // length by slow ripples instead of a fine sparkle that read as foam / wet sand hugging the shore
-    float lat = dot(P.xz, vec2(-vd.y, vd.x));
-    float streak = smoothstep(0.3, 0.75, texture2D(uNoise, vec2(lat / 11.0, 0.37)).r);
-    float ripple = 0.55 + 0.45 * sin(dot(P.xz, vec2(0.9, 1.3)) * 0.18 + g.x * 40.0 + uWTime * 2.0);
-    ripple = smoothstep(0.35, 0.9, ripple);
+    float dfw = clamp(fwidth(along) * 3.0, 0.0, 1.0);
+    float dash = mix(smoothstep(0.2, 0.8, 0.5 + 0.5 * sin(along * 6.2832 + g.y * 3.0 + uWTime * 1.4)), 0.5, dfw);
     // fresnel: strong at low viewing angles, faint seen from above
     float ndv = max(dot(wNormalW, normalize(cameraPosition - P)), 0.0);
     float fres = 0.25 + 0.75 * (1.0 - ndv) * (1.0 - ndv);
-    wCityRefl = vec3(1.0, 0.72, 0.42) * acc * mix(0.3, 1.0, streak) * ripple * fres * uWNight * inMap * 0.4 * (1.0 - foam);
+    wCityRefl = vec3(1.0, 0.72, 0.42) * acc * mix(0.04, 1.0, streak) * mix(0.4, 1.0, dash) * fres * uWNight * inMap * 0.5 * (1.0 - foam);
   }
   // New Year fireworks (waterFlash.ts): fresh bursts light the ripples below them, a coloured glitter path toward
   // the viewer (independent of where the burst's mirror image lands)

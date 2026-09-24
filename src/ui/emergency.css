@@ -54,6 +54,8 @@
   font-size: 10px; font-weight: 800; letter-spacing: 0.08em; animation: pulse 1.2s ease-in-out infinite;
 }
 .mp-ui.emg-live .hud-top .live-pill { display: inline-block; }
+/* paused by the player during LIVE mode: only the PAUSED pill */
+.mp-ui.emg-live .hud-top .is-paused .live-pill { display: none; }
 
 /* ---------------------------------------------------------------- Emergencies panel */
 .emg-panel { display: flex; flex-direction: column; gap: 6px; }

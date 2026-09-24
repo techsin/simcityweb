@@ -6,9 +6,11 @@
  * #9 directly under the 3rd). grip() instead searches every octave placement of the chosen chord tones and rejects:
  *   - a minor 2nd between neighbouring voices and a minor 9th between any two voices (except on 7b9 / alt chords),
  *   - intervals smaller than a minor 3rd low in the register (mud),
- *   - for 7#9 anything but the "Hendrix" order: 3rd at the bottom, #9 on top (e.g. E4-Bb4-Eb5 for C7#9),
- * then picks the survivor with the least movement from the previous voicing, near the middle of [lo, hi]. The range is
- * soft (a few semitones of slack at a penalty) so a spread grip is always reachable in any key.
+ *   - for 7#9 anything but the "Hendrix" order: #9 on top, a major 7th above the 3rd (3-note grips: 3rd at the
+ *     bottom, e.g. E4-Bb4-Eb5 for C7#9),
+ * then picks the survivor with the least movement from the previous voicing, near the middle of [lo, hi], with a
+ * penalty for a semitone / minor 9th against notes another part plays on the same chord (`against`). The range is
+ * soft (a few semitones of slack at a penalty, more below than above) so a spread grip is reachable in any key.
  */
 import { pc, voiceLead, type Chord } from '../theory';
 
@@ -47,6 +49,8 @@ export interface GripOpts {
   slack?: number;
   /** widest allowed voicing (default 16 for 3 notes, 19 for 4) */
   maxSpan?: number;
+  /** notes other parts play on the same chord: a semitone / minor 9th against one of them is penalised */
+  against?: readonly number[];
 }
 
 /** true if two voices of v (sorted) form a minor 2nd / minor 9th, or a low narrow interval */
@@ -60,16 +64,24 @@ export function rough(v: readonly number[], allowB9 = false): boolean {
   return false;
 }
 
+/** memo for grip(): a vamp asks for the same chord from the same previous voicing over and over */
+const memo = new Map<string, number[]>();
+
 /**
  * Voice-led, cluster-free rootless voicing of c (sorted midi). prev = the part's previous voicing (null at the start).
  */
 export function grip(prev: readonly number[] | null, c: Chord, o: GripOpts): number[] {
+  const key = `${c.name}|${o.lo},${o.hi},${o.count},${o.slack ?? ''},${o.maxSpan ?? ''}|${prev?.join(',') ?? ''}|${o.against?.join(',') ?? ''}`;
+  const hit = memo.get(key);
+  if (hit) return [...hit];
   const iv = gripIntervals(c, o.count);
+  const n = iv.length;
   const slack = o.slack ?? 5;
   const lo = o.lo - slack, hi = o.hi + slack;
   const maxSpan = o.maxSpan ?? (o.count === 3 ? 16 : 19);
   const allowB9 = c.quality === '7b9' || c.quality === '7alt';
   const hendrix = c.quality === '7s9';
+  const i3 = iv.indexOf(4), i9 = iv.indexOf(15);
   const places = iv.map((x) => {
     const p = pc(c.root + x);
     const out: number[] = [];
@@ -78,36 +90,52 @@ export function grip(prev: readonly number[] | null, c: Chord, o: GripOpts): num
   });
   const centre = (o.lo + o.hi) / 2;
   const ps = prev ? [...prev].sort((a, b) => a - b) : null;
+  const against = o.against ?? [];
   let best: number[] | null = null, bs = Infinity;
-  const cur: number[] = [];
-  const rec = (i: number): void => {
-    if (i < iv.length) {
-      for (const m of places[i]) {
-        cur[i] = m;
-        rec(i + 1);
-      }
-      return;
+  const cur = new Array<number>(n).fill(0);
+  const v = new Array<number>(n).fill(0);
+  const score = (): void => {
+    for (let i = 0; i < n; i++) {
+      const x = cur[i];
+      let j = i - 1;
+      while (j >= 0 && v[j] > x) (v[j + 1] = v[j]), j--;
+      v[j + 1] = x;
     }
-    const v = [...cur].sort((a, b) => a - b);
-    if (v[v.length - 1] - v[0] > maxSpan || rough(v, allowB9)) return;
-    if (hendrix) {
-      // #9 on top (a major 7th above the 3rd, never a semitone under it); 3-note grips also put the 3rd at the bottom
-      const third = cur[iv.indexOf(4)], s9 = cur[iv.indexOf(15)];
-      if (s9 !== v[v.length - 1] || (o.count === 3 && third !== v[0])) return;
-    }
+    const span = v[n - 1] - v[0];
+    if (span > maxSpan || rough(v, allowB9)) return;
+    // 7#9: #9 on top (a major 7th above the 3rd, never a semitone under it); 3-note grips also put the 3rd at the bottom
+    if (hendrix && (cur[i9] !== v[n - 1] || (n === 3 && cur[i3] !== v[0]))) return;
     // soft range: below lo costs more than above hi (low grips get muddy); wide spreads and holes cost a little
-    let s = 0;
-    for (const m of v) s += m < o.lo ? 2.5 * (o.lo - m) : m > o.hi ? 1.5 * (m - o.hi) : 0;
-    for (let k = 1; k < v.length; k++) if (v[k] - v[k - 1] > 9) s += 1.5;
-    if (v[v.length - 1] - v[0] > 12) s += 0.4 * (v[v.length - 1] - v[0] - 12);
-    const mean = v.reduce((a, b) => a + b, 0) / v.length;
-    if (ps) {
-      if (ps.length === v.length) for (let k = 0; k < v.length; k++) s += Math.abs(v[k] - ps[k]);
-      else for (const m of v) s += Math.min(...ps.map((p) => Math.abs(p - m)));
-      s += Math.abs(mean - centre) * 0.15;
-    } else s += Math.abs(mean - centre) * 0.5;
-    if (s < bs) (bs = s), (best = v);
+    let s = span > 12 ? 0.4 * (span - 12) : 0, sum = 0;
+    for (let k = 0; k < n; k++) {
+      const m = v[k];
+      sum += m;
+      if (m < o.lo) s += 2.5 * (o.lo - m);
+      else if (m > o.hi) s += 1.5 * (m - o.hi);
+      if (k > 0 && m - v[k - 1] > 9) s += 1.5;
+      for (const x of against) if (Math.abs(m - x) === 1 || Math.abs(m - x) === 13) s += 5;
+      if (ps) {
+        if (ps.length === n) s += Math.abs(m - ps[k]);
+        else {
+          let d = Infinity;
+          for (const q of ps) d = Math.min(d, Math.abs(q - m));
+          s += d;
+        }
+      }
+    }
+    s += Math.abs(sum / n - centre) * (ps ? 0.15 : 0.5);
+    if (s < bs) (bs = s), (best = v.slice());
+  };
+  const rec = (i: number): void => {
+    if (i === n) return score();
+    for (const m of places[i]) {
+      cur[i] = m;
+      rec(i + 1);
+    }
   };
   rec(0);
-  return best ?? voiceLead(prev, c, { lo: o.lo, hi: o.hi, count: o.count, rootless: true });
+  const out = best ?? voiceLead(prev, c, { lo: o.lo, hi: o.hi, count: o.count, rootless: true });
+  if (memo.size > 4000) memo.clear();
+  memo.set(key, out);
+  return [...out];
 }

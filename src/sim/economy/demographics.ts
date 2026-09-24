@@ -19,9 +19,10 @@
  * NEEDS (needsOf / needsPenalty / evaluateNeeds): per cohort access 0..1 from the WP2 catchment layers (elementary →
  *   kids, high school → teens, college → young adults, clinics / hospitals → seniors, playgrounds → kids + teens, green,
  *   shops, transit for the car-less, quiet for seniors, jobs from traffic, tap water from utilities). Unmet needs lower
- *   the building's health target (capped NEEDS_PENALTY_MAX, scaled by needsExpectation: hamlets expect little, a
- *   40k city a school on every street → vacancies, abandonment) and set BF.NeedsUnmet when children / teens / seniors
- *   lack a school / clinic (gap >= 0.5, >= 3 people).
+ *   the building's health target (capped NEEDS_PENALTY_MAX, scaled by needsExpectation: a town below NEEDS_POP_START
+ *   expects little, a NEEDS_POP_FULL city a school on every street → vacancies; on their own never abandonment,
+ *   NEEDS_ABANDON_SHARE) and set BF.NeedsUnmet when children / teens / seniors lack a school / clinic (gap >= 0.5,
+ *   >= 3 people; also below NEEDS_POP_START, where it is information only: needsExpectation(st) === 0).
  * Without the services system (sim-core-only runs) coverage is COVERAGE_FALLBACK everywhere and there is no needs
  * penalty; buildings the demographics update never visited use the reference mix COHORT_BASE (cohortShares) so
  * infra-only simulations stay at the calibration mix.
@@ -59,6 +60,8 @@ export interface DemographicsData {
   empRatio: number;
   /** workforce / population at the last OCC_PERIOD aggregation (daily workforce in between) */
   wfNow?: number;
+  /** occupancy slice cursor: a loaded city continues the same visiting order (save / load continuity) */
+  cursor?: number;
 }
 export function demographicsData(st: CityState): DemographicsData {
   let d = st.systemData.demographics as DemographicsData | undefined;
@@ -132,9 +135,22 @@ export function workerShare(b: Building): number {
 
 /** WP1-4: share of residents without a car (poorer, young adults and seniors); WP7 charges them extra on car trips */
 export function carlessShare(b: Building): number {
-  const w = Math.max(1, Math.min(3, b.wealth || 1));
-  const yad = b.yad ?? COHORT_BASE[2], srs = b.srs ?? COHORT_BASE[4];
+  return carlessOf(b.wealth, b.yad ?? COHORT_BASE[2], b.srs ?? COHORT_BASE[4]);
+}
+function carlessOf(wealth: number, yad: number, srs: number): number {
+  const w = Math.max(1, Math.min(3, wealth || 1));
   return CARLESS_EFF[w - 1] * (0.5 + yad + srs);
+}
+
+/**
+ * Give a building every optional WP1 field (undefined until written) in one fixed order. V8 gives objects one hidden
+ * class per property set and order: if WP1 added kids..edu to homes and hire to businesses as it first writes them,
+ * every creation site would split into three classes and every loop over buildings (all systems) would turn
+ * polymorphic / megamorphic (on the 256² stress city that cost the population system alone 0.2-0.4 ms/day). A
+ * self-assignment adds a missing field (value undefined: "derive from the profile") and is a no-op for present ones.
+ */
+export function ensureDemographicsFields(b: Building): void {
+  b.kids = b.kids; b.teens = b.teens; b.yad = b.yad; b.srs = b.srs; b.wf = b.wf; b.edu = b.edu; b.hire = b.hire;
 }
 
 /** true when the building needs piped water (growables at stage >= WATER_REQUIRED_STAGE or zone density >= 2;
@@ -224,11 +240,14 @@ const REF_PLAY = COHORT_BASE[0] + PLAY_TEEN * COHORT_BASE[1];
 const REF_GREEN = 0.8 + 1.2 * COHORT_BASE[4];
 const REF_CARLESS = COHORT_BASE[2] + COHORT_BASE[4];
 
+// (reciprocals: the access records are refilled for every home after each services pass, divisions dominated them)
+const INV_NEED_OK = 1 / NEED_OK;
+const INV_QUIET_SPAN = 1 / QUIET_SPAN;
 function gap(a: number): number {
-  return a >= NEED_OK ? 0 : (NEED_OK - a) / NEED_OK;
+  return a >= NEED_OK ? 0 : (NEED_OK - a) * INV_NEED_OK;
 }
 function quietGap(noise: number): number {
-  return clamp01((noise - QUIET_NOISE) / QUIET_SPAN);
+  return clamp01((noise - QUIET_NOISE) * INV_QUIET_SPAN);
 }
 
 /** how much residents expect their needs to be met 0..1 (grows with the city: smoothstep over population) */
@@ -308,28 +327,35 @@ function needsRaw(r: AccessRec, w: number, k0: number, k1: number, k2: number, k
     + NW_PLAY[w] * (k0 + PLAY_TEEN * k1) * r.gP + NW_GREEN[w] * (0.8 + 1.2 * k4) * r.gG + NW_SHOPS[w] * r.gSh
     + NW_TRANSIT[w] * (k2 + k4) * r.gT + NW_QUIET[w] * k4 * r.gQ;
 }
-/** smallest population at which a kids / teens / seniors gap >= NEEDS_UNMET_GAP affects >= NEEDS_UNMET_PEOPLE people */
-function unmetMinPop(r: AccessRec, k0: number, k1: number, k4: number): number {
-  let m = Infinity;
-  if (r.gE >= NEEDS_UNMET_GAP && k0 > 0) m = Math.min(m, NEEDS_UNMET_PEOPLE / k0);
-  if (r.gH >= NEEDS_UNMET_GAP && k1 > 0) m = Math.min(m, NEEDS_UNMET_PEOPLE / k1);
-  if (r.gS >= NEEDS_UNMET_GAP && k4 > 0) m = Math.min(m, NEEDS_UNMET_PEOPLE / k4);
+/** largest cohort share among the kids / teens / seniors needs with a gap >= NEEDS_UNMET_GAP (0 = none): BF.NeedsUnmet
+ *  when pop × this >= NEEDS_UNMET_PEOPLE */
+function unmetShare(r: AccessRec, k0: number, k1: number, k4: number): number {
+  let m = 0;
+  if (r.gE >= NEEDS_UNMET_GAP && k0 > m) m = k0;
+  if (r.gH >= NEEDS_UNMET_GAP && k1 > m) m = k1;
+  if (r.gS >= NEEDS_UNMET_GAP && k4 > m) m = k4;
   return m;
 }
 
 /** DemographicsCache record layout (16 × 32 bit per building id = one 64-byte cache line) */
 const C_STRIDE = 16;
-const C_VER = 0, C_RAW = 1, C_MINPOP = 2, C_NOISE = 3, C_LASTDAY = 4, C_LASTPOP = 5, C_HIRE = 6, C_FAM = 7, C_STUD = 8,
-  C_SEN = 9, C_EDUT = 10, C_COL = 11;
+const C_VER = 0, C_RAW = 1, C_UNMET = 2, C_NOISE = 3, C_LASTDAY = 4, C_LASTPOP = 5, C_HIRE = 6, C_FAM = 7, C_STUD = 8,
+  C_SEN = 9, C_EDUT = 10, C_COL = 11, C_SEEN = 12, C_NEXT = 13;
+/** record fields the population system reads after DemographicsCache.refresh (offset + REC_*): the raw needs penalty
+ *  (folded with the cohort shares; × needsExpectation, capped), the unmet-needs share (BF.NeedsUnmet when
+ *  pop × share >= NEEDS_UNMET_PEOPLE) and the night noise at the home */
+export const REC_RAW = C_RAW, REC_UNMET = C_UNMET, REC_NOISE = C_NOISE;
 
 /**
  * Per-simulation cache of the population system (never saved; rebuilt lazily):
  *  - one record per building id: needs penalty terms folded with the cohort shares at fill time, NeedsUnmet population
  *    threshold, night noise, amenity scores / education target / college coverage for the cohort targets — refilled
- *    after every services pass (invalidate) and at least monthly (crime / noise drift), so the ~11 coverage layers are
- *    read about once per fortnight per home instead of on every occupancy visit;
+ *    after every services pass (invalidate; monthly without the services system: crime / noise drift), so the ~11
+ *    coverage layers are read about once per fortnight per home instead of on every occupancy visit;
  *  - last demographics update day / population (update cadence, newcomer share) and the last written b.hire (the
  *    building's property store is only touched when the hiring factor changes);
+ *  - a seen marker: the first time the population system meets a building it gets every optional WP1 field
+ *    (ensureDemographicsFields: one hidden class per creation site);
  *  - wf: compact mirror of b.wf by id for the employment sampling (NaN = not set).
  */
 export class DemographicsCache {
@@ -356,13 +382,20 @@ export class DemographicsCache {
     w.set(this.wf);
     this.wf = w;
   }
-  /** seed the per-building bookkeeping from a (loaded) building */
+  /** seed the per-building bookkeeping from a (loaded) building and give it every optional WP1 field */
   sync(b: Building): void {
     this.ensure(b.id);
     const o = b.id * C_STRIDE;
+    ensureDemographicsFields(b);
+    this.i32[o + C_SEEN] = 1;
     this.f[o + C_LASTPOP] = b.pop;
     this.f[o + C_HIRE] = b.hire ?? NaN;
     this.wf[b.id] = b.wf ?? NaN;
+  }
+  /** first sight of a building (new since the cache was built): sync it; a no-op afterwards */
+  touch(b: Building): void {
+    const id = b.id;
+    if (id >= this.wf.length || this.i32[id * C_STRIDE + C_SEEN] === 0) this.sync(b);
   }
   /** make building b's access record current (cell i; def: wealth for the needs weights); returns the record offset */
   refresh(st: CityState, b: Building, i: number, svc: boolean, def: BuildingDef): number {
@@ -376,29 +409,46 @@ export class DemographicsCache {
     const k0 = b.kids ?? COHORT_BASE[0], k1 = b.teens ?? COHORT_BASE[1], k2 = b.yad ?? COHORT_BASE[2], k4 = b.srs ?? COHORT_BASE[4];
     const f = this.f;
     f[o + C_RAW] = needsRaw(r, wi, k0, k1, k2, k4);
-    f[o + C_MINPOP] = unmetMinPop(r, k0, k1, k4);
+    f[o + C_UNMET] = unmetShare(r, k0, k1, k4);
     f[o + C_NOISE] = r.noise;
     f[o + C_FAM] = r.fam; f[o + C_STUD] = r.stud; f[o + C_SEN] = r.sen; f[o + C_EDUT] = r.eduT; f[o + C_COL] = r.col;
     this.i32[o + C_VER] = this.version;
     return o;
   }
-  /** night noise at a home (after refresh) */
-  noiseOf(id: number): number {
-    return this.f[id * C_STRIDE + C_NOISE];
-  }
-  /** last demographics update day (-1 = none since this cache was built) and the population then */
+  /** last demographics update day (-1 = none since this cache was built), the population then, and the day the next
+   *  update is due (population system schedule) */
   lastDay(id: number): number {
     return id < this.wf.length ? this.i32[id * C_STRIDE + C_LASTDAY] : -1;
   }
   lastPop(id: number): number {
     return this.f[id * C_STRIDE + C_LASTPOP];
   }
+  nextDay(id: number): number {
+    return this.i32[id * C_STRIDE + C_NEXT];
+  }
+  /** a home that already carries its demographics (loaded save): start the update bookkeeping without an update */
+  markUpdated(b: Building, day: number): void {
+    this.touch(b);
+    const o = b.id * C_STRIDE;
+    this.i32[o + C_LASTDAY] = day;
+    this.f[o + C_LASTPOP] = b.pop;
+    this.wf[b.id] = b.wf ?? NaN;
+  }
+  setNextDay(id: number, day: number): void {
+    this.ensure(id);
+    this.i32[id * C_STRIDE + C_NEXT] = day;
+  }
   /** write b.hire (1/256 steps) only when it changed; returns the hiring factor */
   setHire(b: Building, occ: number): number {
     const q = Math.fround(Math.round(Math.max(0, Math.min(1, occ)) * 256) / 256);
-    this.ensure(b.id);
-    const o = b.id * C_STRIDE + C_HIRE;
-    if (this.f[o] !== q) { b.hire = q; this.f[o] = q; }
+    const id = b.id;
+    this.ensure(id);
+    const o = id * C_STRIDE;
+    if (this.f[o + C_HIRE] !== q) {
+      if (this.i32[o + C_SEEN] === 0) this.sync(b); // first WP1 write: every optional field first (one hidden class)
+      b.hire = q;
+      this.f[o + C_HIRE] = q;
+    }
     return q;
   }
 }
@@ -424,21 +474,22 @@ export function evaluateNeeds(st: CityState, b: Building, i: number, def: Buildi
   if (!def || def.devType === undefined || def.devType > DevType.R3) return EVAL;
   const c = ctx ?? demographicsCtx(st, CTX_TMP);
   if (!c.svc) return EVAL;
-  let raw: number, minPop: number;
+  let raw: number, share: number;
   if (cache) {
-    // cached: needs terms folded with the cohort shares at fill time (refilled at least monthly; shares drift ~1 %)
+    // cached: needs terms folded with the cohort shares at fill time (refilled after every services pass and after
+    // the home's own demographics update)
     const o = cache.refresh(st, b, i, true, def);
     raw = cache.f[o + C_RAW];
-    minPop = cache.f[o + C_MINPOP];
+    share = cache.f[o + C_UNMET];
   } else {
     const r = accessRecord(st, i, true);
     const k0 = b.kids ?? COHORT_BASE[0], k1 = b.teens ?? COHORT_BASE[1], k2 = b.yad ?? COHORT_BASE[2], k4 = b.srs ?? COHORT_BASE[4];
     raw = needsRaw(r, def.devType, k0, k1, k2, k4);
-    minPop = unmetMinPop(r, k0, k1, k4);
+    share = unmetShare(r, k0, k1, k4);
   }
   EVAL.raw = raw;
   EVAL.penalty = (raw < NEEDS_PENALTY_MAX ? raw : NEEDS_PENALTY_MAX) * c.expectation;
-  EVAL.unmet = b.pop >= minPop;
+  EVAL.unmet = b.pop * share >= NEEDS_UNMET_PEOPLE;
   return EVAL;
 }
 /** NEED_W folded with the reference-share normalisation (weight / reference share of the cohort) */
@@ -501,7 +552,7 @@ export function needsOf(st: CityState, b: Building): NeedReport[] {
   add(0, 'play', 'Playground / sports', p * (s[0] + s[1]), a.play);
   add(-1, 'green', 'Parks & gardens', p, a.green);
   add(-1, 'shops', 'Shops within reach', p, a.shop);
-  const carless = p * carlessShare({ ...b, yad: s[2], srs: s[4] });
+  const carless = p * carlessOf(b.wealth, s[2], s[4]);
   add(-1, 'transit', 'Transit (car-less residents)', carless, a.transit);
   const qg = quietGap(a.noise);
   add(4, 'quiet', qg > 0 ? 'Quiet streets (too noisy)' : 'Quiet streets', p * s[4], 1 - qg, qg < NEEDS_UNMET_GAP);
@@ -522,6 +573,7 @@ export function needsOf(st: CityState, b: Building): NeedReport[] {
 }
 
 // ------------------------------------------------------------------------------------------------ per-building update
+const INV_EDU_TAU_DAYS = 1 / (360 * EDU_TAU_YEARS);
 const T = new Float32Array(5);
 const LIFE = new Float32Array(5);
 
@@ -529,10 +581,16 @@ const LIFE = new Float32Array(5);
 export function lifeCycle(form: HouseholdForm, ageYears: number, out: Float32Array = new Float32Array(5)): Float32Array {
   return lifeInto(LIFE_DAMP[form], ageYears, out);
 }
+/** smoothstep(a, a + 1 / inv, x) with a precomputed reciprocal span */
+function ssInv(a: number, inv: number, x: number): number {
+  const t = clamp01((x - a) * inv);
+  return t * t * (3 - 2 * t);
+}
 function lifeInto(damp: number, A: number, out: Float32Array): Float32Array {
-  const k = 1.35 - 0.7 * smoothstep(8, 30, A) + 0.3 * smoothstep(35, 55, A);
-  const t = 1.1 - 0.4 * smoothstep(15, 35, A) + 0.2 * smoothstep(40, 60, A);
-  const s = 0.55 + 0.95 * smoothstep(10, 35, A) - 0.3 * smoothstep(40, 60, A);
+  const late = ssInv(40, 1 / 20, A); // smoothstep(40, 60, A)
+  const k = 1.35 - 0.7 * ssInv(8, 1 / 22, A) + 0.3 * ssInv(35, 1 / 20, A);
+  const t = 1.1 - 0.4 * ssInv(15, 1 / 20, A) + 0.2 * late;
+  const s = 0.55 + 0.95 * ssInv(10, 1 / 25, A) - 0.3 * late;
   out[0] = 1 + (k - 1) * damp;
   out[1] = 1 + (t - 1) * damp;
   out[2] = 1;
@@ -596,6 +654,7 @@ export function updateDemographics(st: CityState, b: Building, def: BuildingDef,
   const id = b.id;
   let fam: number, stud: number, sen: number, eduT: number, col: number;
   if (cache) {
+    cache.touch(b); // (first write: every optional WP1 field first, one hidden class)
     const o = cache.refresh(st, b, i, c.svc, def);
     const f = cache.f;
     fam = f[o + C_FAM]; stud = f[o + C_STUD]; sen = f[o + C_SEN]; eduT = f[o + C_EDUT]; col = f[o + C_COL];
@@ -623,7 +682,7 @@ export function updateDemographics(st: CityState, b: Building, def: BuildingDef,
   let edu: number;
   if (b.edu === undefined) edu = mean;
   else {
-    edu = b.edu + (eduT - b.edu) * Math.min(1, dtDays / (360 * EDU_TAU_YEARS));
+    edu = b.edu + (eduT - b.edu) * Math.min(1, dtDays * INV_EDU_TAU_DAYS);
     if (pop1 > pop0 && pop1 > 0) edu = (edu * Math.max(0, pop0) + mean * (pop1 - pop0)) / pop1;
   }
   b.edu = Math.fround(clamp01(edu));
@@ -632,6 +691,7 @@ export function updateDemographics(st: CityState, b: Building, def: BuildingDef,
     cache.i32[o + C_LASTDAY] = st.day;
     cache.f[o + C_LASTPOP] = pop1;
     cache.wf[id] = wf;
+    cache.i32[o + C_VER] = 0; // the needs terms are folded with the shares: refill on the next visit
   }
 }
 
@@ -651,23 +711,26 @@ export function hqTarget(h: HqInputs): number {
 }
 
 const HQ_IN: HqInputs = { patientAccess: 0, air: 0, noise: 0, tapWater: 1, medScore: 1 };
+const defByName = (b: Building): BuildingDef | undefined => getDef(b.def);
 
 /**
  * EQ / HQ step over dtDays (population system, monthly; only with the services system): EQ follows the residents'
  * education stock, HQ the patient-weighted health coverage at homes × air / noise / tap water × emergency medicine.
  * Returns false (nothing written) while no resident carries b.edu yet (services' legacy fallback keeps EQ / HQ).
+ * defOf: def lookup (the population system passes its per-id cache; default getDef).
  */
-export function updateEqHq(st: CityState, list: readonly Building[], dtDays: number, sim?: Simulation): boolean {
+export function updateEqHq(st: CityState, list: readonly Building[], dtDays: number, sim?: Simulation, defOf: (b: Building) => BuildingDef | undefined = defByName): boolean {
   const N = st.size;
   let pop = 0, edu = 0, patients = 0, pAcc = 0, air = 0, noise = 0, tapW = 0, tap = 0;
   const hasUtil = st.systemData.infraVersion !== undefined && ((st.systemData.infraLayers as { utilities?: boolean } | undefined)?.utilities ?? true);
   const util = sim?.getSystem('utilities') as unknown as UtilitiesQ | undefined;
   const wq = sim && util && typeof util.waterQualityAt === 'function' ? util : undefined;
   const meanTap = st.stats.tapWater ?? 1;
+  const wat = st.watered;
   for (let k = 0; k < list.length; k++) {
     const b = list[k];
     if (b.pop <= 0 || b.edu === undefined || b.flags & (BF.Abandoned | BF.Burnt)) continue;
-    const def = getDef(b.def);
+    const def = defOf(b);
     if (!def || def.devType === undefined || def.devType > DevType.R3) continue;
     const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
     const p = b.pop;
@@ -679,7 +742,11 @@ export function updateEqHq(st: CityState, list: readonly Building[], dtDays: num
     pAcc += pw * Math.min(1, st.healthCov[i]);
     air += p * st.airPollution[i];
     noise += p * st.noise[i];
-    if (hasUtil && buildingHasWater(st, b)) { tap += p * (wq ? wq.waterQualityAt!(sim!, i) : meanTap); tapW += p; }
+    // piped water (as buildingHasWater, with the infra checks hoisted out of the loop)
+    if (hasUtil && (b.flags & BF.Watered || wat[b.z * N + b.x] === 1 || wat[(b.z + b.d - 1) * N + b.x + b.w - 1] === 1)) {
+      tap += p * (wq ? wq.waterQualityAt!(sim!, i) : meanTap);
+      tapW += p;
+    }
   }
   if (pop <= 0) return false;
   const s = st.stats;

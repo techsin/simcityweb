@@ -18,7 +18,8 @@
  *    Terms → econData.regionTerms (WP5 RCI tooltip). An isolated city gets bit-identical demand.
  *  - Taxes lower targets per DevType (wealthy more sensitive), ordinances multiply them.
  *  - Caps: base + relief from parks / landmarks / airports / seaports / connections (catalog CAP_RELIEF). Relief only
- *    counts while the building works (not burnt, powered when it needs power, × funding) and × its use factor (WP7).
+ *    counts while the building works (not burnt, powered when it needs power, a road next to tourist venues, × funding)
+ *    and × its use factor (WP7); the withheld relief and why (DemandContext.reliefLost / reliefIssues) feed capHints.
  */
 import type { SimSystem } from '../Simulation';
 import type { CityState } from '../CityState';
@@ -38,7 +39,7 @@ import {
 } from './tuning';
 import { type EconRuntime, type RegionTerms, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
-import { venueOp } from './tourism';
+import { venueIssue, venueOp } from './tourism';
 import { facilityUseFactor } from '../infra/facilities';
 import type { RegionContext, RegionNeighbor } from '../../region/regionEffects';
 
@@ -56,12 +57,24 @@ export interface DemandContext {
   tourism: number;
   /** family-level cap relief from buildings + connections */
   relief: { R: number; C: number; I: number; R3: number; IHT: number; CO3: number };
+  /**
+   * cap relief withheld because relief buildings work below full strength (burnt / closed, unpowered, no road,
+   * underfunded, on strike, little used), per family (R3 / IHT / CO3 relief counted in R / I / C), and why:
+   * issue -> number of buildings (capHints tells the player)
+   */
+  reliefLost: { R: number; C: number; I: number };
+  reliefIssues: { R: Record<string, number>; C: Record<string, number>; I: Record<string, number> };
 }
+
+/** the last demand context per state (capHints reads the withheld relief; derived, not saved) */
+const contexts = new WeakMap<CityState, DemandContext>();
 
 /** connection factors, freight boosts and cap relief from plopped buildings + neighbor connections */
 export function demandContext(st: CityState, rt: EconRuntime): DemandContext {
   let cR = CONN_BASE.R, cC = CONN_BASE.C, cI = CONN_BASE.I;
   const relief = { R: 0, C: 0, I: 0, R3: 0, IHT: 0, CO3: 0 };
+  const lost = { R: 0, C: 0, I: 0 };
+  const issues: DemandContext['reliefIssues'] = { R: {}, C: {}, I: {} };
   for (const c of st.neighborConnections) {
     const w = CONN_WEIGHT[c.type];
     if (w) { cR += w.R; cC += w.C; cI += w.I; }
@@ -71,29 +84,43 @@ export function demandContext(st: CityState, rt: EconRuntime): DemandContext {
   const inf = infraFlags(st);
   let freight = 0, tourism = 0;
   for (const b of rt.plopped) {
-    if (b.flags & BF.Burnt) continue;
     const r = CAP_RELIEF[b.def];
     const f = FREIGHT_BOOST[b.def];
     if (!r && !f) continue;
     const def = rt.defOf(b);
-    // relief follows use (WP4-3): a working (powered, funded) building × its use factor (WP7: airports / seaport)
-    const k = def ? venueOp(st, b, def, inf) * facilityUseFactor(st, b) : 1;
+    // relief follows use (WP4-3): a working (powered, road-connected, funded) building × its use factor (WP7)
+    const k = b.flags & BF.Burnt ? 0 : def ? venueOp(st, b, def, inf) * facilityUseFactor(st, b) : 1;
     if (r) {
       relief.R += (r.R ?? 0) * k; relief.C += (r.C ?? 0) * k; relief.I += (r.I ?? 0) * k;
       relief.R3 += (r.R3 ?? 0) * k; relief.IHT += (r.IHT ?? 0) * k; relief.CO3 += (r.CO3 ?? 0) * k;
-      tourism += (r.C ?? 0) * 0.05;
+      if (!(b.flags & BF.Burnt)) tourism += (r.C ?? 0) * 0.05; // legacy comparison number: unchanged formula
+      if (k < 0.999) {
+        const why = (b.flags & BF.Burnt) || !def ? 'closed' : venueIssue(st, b, def, inf) ?? 'use';
+        const add = (fam: 'R' | 'C' | 'I', v: number) => {
+          if (!(v > 0)) return;
+          lost[fam] += v * (1 - k);
+          issues[fam][why] = (issues[fam][why] ?? 0) + 1;
+        };
+        add('R', (r.R ?? 0) + (r.R3 ?? 0));
+        add('C', (r.C ?? 0) + (r.CO3 ?? 0));
+        add('I', (r.I ?? 0) + (r.IHT ?? 0));
+      }
     }
     if (f) freight += f * k;
   }
   tourism += ordinanceEffect(st, 'add.tourism') * st.stats.population / 1000;
-  return {
+  const ctx: DemandContext = {
     connR: Math.min(CONN_MAX.R, cR),
     connC: Math.min(CONN_MAX.C, cC),
     connI: Math.min(CONN_MAX.I, cI),
     freightBoost: Math.min(FREIGHT_BOOST_MAX, freight),
     tourism: tourism * TOURISM_CS_PER_POINT,
     relief,
+    reliefLost: lost,
+    reliefIssues: issues,
   };
+  contexts.set(st, ctx);
+  return ctx;
 }
 
 export function taxFactor(dev: number, rate: number): number {
@@ -309,7 +336,16 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     init(sim) {
       rt.attach(sim);
       ctx = null;
-      compute(sim.state, true);
+      const st = sim.state;
+      // a loaded city keeps its smoothed demand (growth reads demandAbs, the UI stats.demand): only the derived context
+      // is rebuilt and the next daily update continues the EMA, so a save / load does not jolt growth. A new city
+      // starts from its instantaneous demand.
+      if (st.day > 0 && econData(st).demandAbs.some((v) => v !== 0)) {
+        ctx = demandContext(st, rt);
+        rt.capsDirty = false;
+      } else {
+        compute(st, true);
+      }
     },
     daily(sim) {
       const t0 = performance.now();
@@ -321,9 +357,18 @@ export function demandSystem(rt: EconRuntime): SimSystem {
   };
 }
 
-/** UI helper: which families are cap-limited and a hint what relieves them */
+const ISSUE_TEXT: Record<string, string> = {
+  closed: 'burnt or closed', unpowered: 'without power', noRoad: 'without road access', strike: 'on strike', funding: 'underfunded',
+  use: 'little used',
+};
+
+/**
+ * UI helper: which families are cap-limited and a hint what relieves them. When relief buildings of a capped family
+ * work below full strength (≥ 10 % of its relief withheld), the hint says so first — fixing them is the cheap way out.
+ */
 export function capHints(st: CityState): { family: 'R' | 'C' | 'I'; devs: number[]; hint: string }[] {
   const d = econData(st);
+  const ctx = contexts.get(st);
   const out: { family: 'R' | 'C' | 'I'; devs: number[]; hint: string }[] = [];
   const fams: ['R' | 'C' | 'I', number, number, string][] = [
     ['R', 0, 2, 'Build parks, plazas, a zoo or landmarks to raise the residential cap.'],
@@ -333,7 +378,17 @@ export function capHints(st: CityState): { family: 'R' | 'C' | 'I'; devs: number
   for (const [family, a, b, hint] of fams) {
     const devs: number[] = [];
     for (let k = a; k <= b; k++) if (d.capBinding[k] && st.stats.demand[k] > -0.05) devs.push(k);
-    if (devs.length) out.push({ family, devs, hint });
+    if (!devs.length) continue;
+    let text = hint;
+    const lost = ctx ? ctx.reliefLost[family] : 0;
+    const total = ctx ? lost + ctx.relief[family] + (family === 'R' ? ctx.relief.R3 : family === 'C' ? ctx.relief.CO3 : ctx.relief.IHT) : 0;
+    if (ctx && lost > 0 && lost >= 0.1 * total) {
+      const why = Object.entries(ctx.reliefIssues[family]).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${n} ${ISSUE_TEXT[k] ?? k}`);
+      const n = Object.values(ctx.reliefIssues[family]).reduce((s, v) => s + v, 0);
+      text = `${n === 1 ? 'A building that raises' : `${n} buildings that raise`} this cap ${n === 1 ? 'works' : 'work'} below strength (${why.join(', ')}): `
+        + `fix ${n === 1 ? 'it' : 'them'} to win back ${Math.round(lost).toLocaleString('en-US')} of the cap. ${hint}`;
+    }
+    out.push({ family, devs, hint: text });
   }
   return out;
 }

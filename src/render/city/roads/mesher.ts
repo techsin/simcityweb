@@ -160,18 +160,19 @@ export class RoadMesher {
   private mapStraight(h: number) { this.mT = 1; this.mH = h; }
   private mapNone() { this.mT = 0; }
 
+  // (heights of the cell being meshed use ITS span: see RoadSurface.baseIn, cell-edge vertices)
   private Y(lx: number, lz: number): number {
-    return this.surf.base(this.ox + lx, this.oz + lz) + LIFT;
+    return this.surf.baseIn(this.ci, this.ox + lx, this.oz + lz) + LIFT;
   }
 
   /** emit one surface vertex (terrain-following normal) */
   private sv(lx: number, lz: number, lift: number, code: number, w: number): void {
     const wx = this.ox + lx, wz = this.oz + lz;
-    const s = this.surf;
-    const y = s.base(wx, wz) + LIFT + lift;
+    const s = this.surf, i = this.ci;
+    const y = s.baseIn(i, wx, wz) + LIFT + lift;
     const e = 0.7;
-    const gx = (s.base(wx + e, wz) - s.base(wx - e, wz)) / (2 * e);
-    const gz = (s.base(wx, wz + e) - s.base(wx, wz - e)) / (2 * e);
+    const gx = (s.baseIn(i, wx + e, wz) - s.baseIn(i, wx - e, wz)) / (2 * e);
+    const gz = (s.baseIn(i, wx, wz + e) - s.baseIn(i, wx, wz - e)) / (2 * e);
     const il = 1 / Math.sqrt(gx * gx + 1 + gz * gz);
     this.mapUV(lx, lz);
     this.g.push(wx, y, wz, -gx * il, il, -gz * il, this._u, this._v, code, w);
@@ -1132,6 +1133,7 @@ export class RoadMesher {
       const s = this.surf;
       const g = Object.create(s) as RoadSurface;
       g.base = (x: number, z: number) => s.terrain(x, z);
+      g.baseIn = (_i: number, x: number, z: number) => s.terrain(x, z);
       this.groundSurf = g;
       this.groundOf = s;
     }
@@ -1174,7 +1176,7 @@ export class RoadMesher {
     const cx = x * CELL_SIZE + HALF, cz = z * CELL_SIZE + HALF;
     for (const e of [-1, 1]) {
       const wx = cx + DX[h] * e * HALF, wz = cz + DZ[h] * e * HALF;
-      if (this.surf.base(wx, wz) - OVERPASS_DECK - this.surf.terrain(wx, wz) < 3.2) return false;
+      if (this.surf.baseIn(j, wx, wz) - OVERPASS_DECK - this.surf.terrain(wx, wz) < 3.2) return false;
     }
     return true;
   }

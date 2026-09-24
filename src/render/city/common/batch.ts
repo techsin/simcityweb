@@ -23,7 +23,7 @@
  * matrix + colour textures. Many changes in one frame fall back to one full upload.
  */
 import * as THREE from 'three';
-import { shadowCasters, receiverContainsBox, receiverSweepBox, receiverSweepSphere, type ShadowReceiver } from '../../world/Shadows';
+import { shadowCasters, viewReach, type ShadowReceiver } from '../../world/Shadows';
 
 export interface PassCullOptions {
   /** tile geometry (tile size, per-tile height range); instances are assigned to tiles with setTile() */
@@ -53,13 +53,43 @@ interface PassSlot {
   cap: number;
   count: number;
   version: number;
+  /** geometry-swap counter the list's draw ranges were written for (see setGeometry) */
+  geoVersion: number;
   key: Float64Array;
   used: number;
+  /** camera position the list was culled at and the guard band (world units) its planes were widened by: the list
+   *  stays valid while the camera only translates, by less than the band */
+  px: number;
+  py: number;
+  pz: number;
+  margin: number;
+  /** receiver shape / origin the list was culled for (shadow passes; shape -1 = none) */
+  rshape: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  /** consecutive frames the camera stood still (a guard-banded list is re-culled exactly once the view rests) */
+  still: number;
+  /** frames the current list has served; rebuilds left without a guard band (a band that was outrun or whose list
+   *  was invalidated by content changes right away only cost triangles) */
+  uses: number;
+  noBand: number;
+  lx: number;
+  ly: number;
+  lz: number;
 }
 
 const _frustum = new THREE.Frustum();
 const _pm = new THREE.Matrix4();
 const _m4 = new THREE.Matrix4();
+/** scratch world sphere (x, y, z, r) of sphereOf() */
+const _sp = new Float64Array(4);
+/** receiver planes (nx, ny, nz, constant) x 6 and their normal . light terms, flattened for the list build's hot loops
+ *  (the tests are inlined there: calls with many double arguments box numbers whenever V8 does not inline them) */
+const _rp = new Float64Array(24);
+const _rnl = new Float64Array(6);
+/** frames a camera must rest before a guard-banded list is re-culled exactly */
+const SETTLE_FRAMES = 8;
 /** max recorded texture update ranges per frame before falling back to one full upload */
 const MAX_RANGES = 96;
 let _frame = 0;
@@ -74,8 +104,14 @@ export class DynamicBatch {
   // ---- per-pass culling state
   private pc: PassCullOptions | null = null;
   private slots: PassSlot[] = [];
-  /** bumped whenever the draw lists could change (instances, visibility, geometry, tiles, bounds) */
+  /** bumped whenever the draw lists could change (instances, visibility, tiles, bounds) */
   private version = 1;
+  /** bumped by geometry swaps that keep the culling bounds (LOD): cached lists only refresh their draw ranges */
+  private geoVersion = 0;
+  /** guard band of the per-pass lists, as a fraction of the view distance: a list culled with planes widened by it
+   *  is reused while the camera only pans / slides by less (0 = exact lists, rebuilt on any camera move). Main
+   *  passes use the view camera's distance to the ground, shadow passes the receiver's. */
+  guard = 0.06;
   private instTile = new Int32Array(0);
   private instSlot = new Int32Array(0);
   private sph = new Float32Array(0);
@@ -208,15 +244,51 @@ export class DynamicBatch {
     const m = this.mesh as any;
     if (m._instanceInfo[id].geometryIndex === geomId) return;
     this.mesh.setGeometryIdAt(id, geomId);
-    if (this.pc) {
-      this.instGeo[id] = geomId;
-      this.bumpTile(id);
-      if (!this.pc.dynamic) {
-        this.mesh.getMatrixAt(id, _m4);
-        this.writeSphere(id, _m4, true);
+    if (!this.pc) { this.touch(); return; }
+    this.instGeo[id] = geomId;
+    this.bumpTile(id);
+    // cached draw lists stay valid while the instance's culling sphere still bounds the new geometry (LOD swaps, see
+    // shareSphere): they only refresh their draw ranges (no re-cull, no indirect texture upload). Otherwise the
+    // sphere is rewritten exactly and the lists are rebuilt.
+    if (!this.pc.dynamic) {
+      this.mesh.getMatrixAt(id, _m4);
+      const p = this.sph, o = id * 4;
+      if (!this.sphereOf(geomId, _m4) || p[o + 3] < 0) this.writeSphere(id, _m4, true);
+      else {
+        const dx = _sp[0] - p[o], dy = _sp[1] - p[o + 1], dz = _sp[2] - p[o + 2];
+        const contained = Math.sqrt(dx * dx + dy * dy + dz * dz) + _sp[3] <= p[o + 3] * 1.001 + 0.01;
+        // much smaller new geometry (model replaced): tighten the bounds
+        if (!contained || _sp[3] < p[o + 3] * 0.6) this.writeSphere(id, _m4, true);
       }
     }
-    this.touch();
+    this.geoVersion++;
+    if (this.mesh.castShadow) shadowCasters.version++;
+  }
+
+  /** grow a geometry's culling sphere so it also bounds anything within `pad` of its bounding box (call before
+   *  instances use it) */
+  padSphere(id: number, pad: number): void {
+    const S = this.geoSphere[id];
+    if (S) S.radius += pad * Math.sqrt(3); // the padded box's corners
+  }
+
+  /** give two geometries (e.g. a model and its LOD proxy) the same culling sphere, so swapping an instance between
+   *  them never changes its bounds (no draw-list rebuild): a's (padded) sphere when b's bounds lie within a's bounds
+   *  + pad, else the union of both spheres */
+  shareSphere(a: number, b: number, pad = 0): void {
+    const A = this.geoSphere[a], B = this.geoSphere[b];
+    if (!A || !B || a === b) return;
+    if (pad > 0 && this.geoBounds[a].clone().expandByScalar(pad).containsBox(this.geoBounds[b])) { this.geoSphere[b] = A.clone(); return; }
+    const d = A.center.distanceTo(B.center);
+    let u: THREE.Sphere;
+    if (d + B.radius <= A.radius) u = A.clone();
+    else if (d + A.radius <= B.radius) u = B.clone();
+    else {
+      const r = (d + A.radius + B.radius) / 2;
+      u = new THREE.Sphere(A.center.clone().lerp(B.center, (r - A.radius) / d), r);
+    }
+    this.geoSphere[a] = u;
+    this.geoSphere[b] = u.clone();
   }
 
   setMatrix(id: number, m: THREE.Matrix4): void {
@@ -410,19 +482,8 @@ export class DynamicBatch {
    *  changes the bounds (no list rebuilds while buildings animate). */
   private writeSphere(id: number, m: THREE.Matrix4, force: boolean): void {
     const gid = (this.mesh as any)._instanceInfo[id].geometryIndex as number;
-    const gs = this.geoSphere[gid];
-    if (!gs) return;
-    const e = m.elements;
-    const sx = Math.hypot(e[0], e[1], e[2]), sy = Math.max(1, Math.hypot(e[4], e[5], e[6])), sz = Math.hypot(e[8], e[9], e[10]);
-    const c = gs.center;
-    // center = T + R * (S' * c) with S' = diag(sx, sy, sz) (use the unit axes of the matrix)
-    const ix = sx > 0 ? 1 / sx : 0, iz = sz > 0 ? 1 / sz : 0;
-    const iy = 1 / Math.max(1e-6, Math.hypot(e[4], e[5], e[6]));
-    const lx = c.x * sx, ly = c.y * sy, lz = c.z * sz;
-    const cx = e[12] + e[0] * ix * lx + e[4] * iy * ly + e[8] * iz * lz;
-    const cy = e[13] + e[1] * ix * lx + e[5] * iy * ly + e[9] * iz * lz;
-    const cz = e[14] + e[2] * ix * lx + e[6] * iy * ly + e[10] * iz * lz;
-    const r = gs.radius * Math.max(sx, sy, sz);
+    if (!this.sphereOf(gid, m)) return;
+    const cx = _sp[0], cy = _sp[1], cz = _sp[2], r = _sp[3];
     const o = id * 4;
     const p = this.sph;
     if (!force && p[o + 3] >= 0) {
@@ -435,6 +496,24 @@ export class DynamicBatch {
     this.version++;
   }
 
+  /** world bounding sphere of geometry gid under matrix m -> _sp; false if the geometry is unknown */
+  private sphereOf(gid: number, m: THREE.Matrix4): boolean {
+    const gs = this.geoSphere[gid];
+    if (!gs) return false;
+    const e = m.elements;
+    const sx = Math.hypot(e[0], e[1], e[2]), sy = Math.max(1, Math.hypot(e[4], e[5], e[6])), sz = Math.hypot(e[8], e[9], e[10]);
+    const c = gs.center;
+    // center = T + R * (S' * c) with S' = diag(sx, sy, sz) (use the unit axes of the matrix)
+    const ix = sx > 0 ? 1 / sx : 0, iz = sz > 0 ? 1 / sz : 0;
+    const iy = 1 / Math.max(1e-6, Math.hypot(e[4], e[5], e[6]));
+    const lx = c.x * sx, ly = c.y * sy, lz = c.z * sz;
+    const cx = e[12] + e[0] * ix * lx + e[4] * iy * ly + e[8] * iz * lz;
+    const cy = e[13] + e[1] * ix * lx + e[5] * iy * ly + e[9] * iz * lz;
+    const cz = e[14] + e[2] * ix * lx + e[6] * iy * ly + e[10] * iz * lz;
+    _sp[0] = cx; _sp[1] = cy; _sp[2] = cz; _sp[3] = gs.radius * Math.max(sx, sy, sz);
+    return true;
+  }
+
   private slotFor(camera: THREE.Camera): PassSlot {
     const m = this.mesh as any;
     let s = this.slots.find((x) => x.camera === camera);
@@ -445,7 +524,10 @@ export class DynamicBatch {
         const old = this.slots.shift()!;
         old.tex?.dispose();
       }
-      s = { camera, starts: new Int32Array(0), counts: new Int32Array(0), ids: new Uint32Array(0), tex: null as unknown as THREE.DataTexture, texCap: 0, cap: -1, count: 0, version: -1, key: new Float64Array(18), used: 0 };
+      s = {
+        camera, starts: new Int32Array(0), counts: new Int32Array(0), ids: new Uint32Array(0), tex: null as unknown as THREE.DataTexture, texCap: 0, cap: -1, count: 0,
+        version: -1, geoVersion: -1, key: new Float64Array(17), used: 0, px: 0, py: 0, pz: 0, margin: 0, rshape: -1, rx: 0, ry: 0, rz: 0, still: 0, lx: NaN, ly: NaN, lz: NaN, uses: 0, noBand: 0,
+      };
       this.slots.push(s);
     }
     const cap = m._maxInstanceCount as number;
@@ -477,22 +559,59 @@ export class DynamicBatch {
     }
     const s = this.slotFor(camera);
     _pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    const e = _pm.elements;
+    const e = _pm.elements, w = camera.matrixWorld.elements;
     const k = s.key;
-    let same = s.version === this.version;
-    // small tolerance: a still (damped) camera jitters by float ulps; that never changes the culling result
-    for (let i = 0; i < 16 && same; i++) if (Math.abs(k[i] - e[i]) > 1e-7 * Math.max(1, Math.abs(e[i]))) same = false;
     const texel = shadow ? ((camera.userData.texel as number | undefined) ?? 0) : 0;
     const recv = shadow ? ((camera.userData.recv as ShadowReceiver | undefined) ?? null) : null;
-    // the receiver (visible slice) can change while the shadow camera stays put (single map, rotating view)
-    const rv = recv ? recv.version : -1;
-    if (same && (k[16] !== texel || k[17] !== rv)) same = false;
+    // a list stays valid while the content, the camera's rotation / projection (columns 0-2 of proj * view; a
+    // translation only changes column 3) and the receiver's shape are unchanged and the camera (and the receiver)
+    // moved by less than the guard band the list was culled with. Small tolerance: a still, damped camera jitters by
+    // float ulps.
+    let turned = k[16] !== texel || (recv ? recv.shape : -1) !== s.rshape;
+    for (let i = 0; i < 12 && !turned; i++) if (Math.abs(k[i] - e[i]) > 1e-7 * Math.max(1, Math.abs(e[i]))) turned = true;
+    let same = s.version === this.version && !turned;
+    // camera speed (world units per pass of this slot, ~per frame); a damped camera settling by less than a
+    // millimetre counts as still
+    const step = s.lx === s.lx ? Math.hypot(w[12] - s.lx, w[13] - s.ly, w[14] - s.lz) : Infinity;
+    s.lx = w[12]; s.ly = w[13]; s.lz = w[14];
+    s.still = step > 1e-3 ? 0 : s.still + 1;
+    if (same) {
+      const tol = s.margin + 1e-6 * (1 + Math.abs(w[12]) + Math.abs(w[13]) + Math.abs(w[14]));
+      const dx = w[12] - s.px, dy = w[13] - s.py, dz = w[14] - s.pz;
+      if (dx * dx + dy * dy + dz * dz > tol * tol) same = false;
+      else if (recv) {
+        const o = recv.origin, ex = o.x - s.rx, ey = o.y - s.ry, ez = o.z - s.rz;
+        if (ex * ex + ey * ey + ez * ez > tol * tol) same = false;
+      }
+      // the view came to rest: cull exactly once (no guard band drawn while nothing moves)
+      if (same && s.margin > 0 && s.still === SETTLE_FRAMES) same = false;
+    }
     if (!same) {
+      // a banded list that served a single frame bought nothing: build the next few lists exactly
+      if (s.margin > 0 && s.uses < 2) s.noBand = 8;
+      else if (s.noBand > 0) s.noBand--;
+      s.uses = 1;
       for (let i = 0; i < 16; i++) k[i] = e[i];
       k[16] = texel;
-      k[17] = rv;
       s.version = this.version;
+      s.geoVersion = this.geoVersion;
+      s.px = w[12]; s.py = w[13]; s.pz = w[14];
+      s.rshape = recv ? recv.shape : -1;
+      if (recv) { s.rx = recv.origin.x; s.ry = recv.origin.y; s.rz = recv.origin.z; }
+      // guard band: ~4 frames of the current camera speed, at most `guard` x the view distance (capped: far views
+      // are GPU-bound and their pans fast, a wide band would mostly add triangles); none for a resting view, while
+      // the view turns / zooms (a rotated frustum invalidates the list anyway) or when the camera moves too fast for
+      // the band to outlast a frame or so (it would only enlarge every list)
+      const reach = recv ? recv.reach : shadow ? 0 : viewReach(camera);
+      const cap = this.guard * Math.min(reach, 1500);
+      s.margin = cap > 0 && !turned && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0 && step < cap * 0.75 ? Math.min(cap, 4 * step) : 0;
       this.build(s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, recv);
+    } else {
+      s.uses++;
+      if (s.geoVersion !== this.geoVersion) {
+        s.geoVersion = this.geoVersion;
+        this.refreshRanges(s, geometry);
+      }
     }
     m._multiDrawStarts = s.starts;
     m._multiDrawCounts = s.counts;
@@ -508,13 +627,11 @@ export class DynamicBatch {
     if (cascade < 0 || (pc.shadowMask! >> cascade) & 1) {
       _frustum.setFromProjectionMatrix(_pm, s.camera.coordinateSystem, (s.camera as any).reversedDepth);
       const planes = _frustum.planes;
-      const gInfo = m._geometryInfo as { start: number; count: number }[];
-      const index = geometry.getIndex();
-      const bpe = index === null ? 1 : index.array.BYTES_PER_ELEMENT;
-      // draw range per geometry id (typed, read by the hot loop below)
-      if (this.gStart.length < gInfo.length) { this.gStart = new Int32Array(gInfo.length * 2); this.gCount = new Int32Array(gInfo.length * 2); }
+      // guard band: widen every plane (and the receiver tests) so the list also covers the camera translated by it
+      const mr = s.margin;
+      if (mr > 0) for (let p = 0; p < 6; p++) planes[p].constant += mr;
+      this.drawRanges(geometry);
       const gS = this.gStart, gC = this.gCount;
-      for (let g = 0; g < gInfo.length; g++) { const gi = gInfo[g]; gS[g] = gi ? gi.start * bpe : 0; gC[g] = gi ? gi.count : 0; }
       const starts = s.starts, counts = s.counts, ind = s.ids;
       const minR = cascade >= 0 ? pc.minShadowTexels! * texel * 0.5 : 0;
       const sph = this.sph;
@@ -523,6 +640,17 @@ export class DynamicBatch {
       const cbit = cascade >= 0 ? 1 << cascade : 0;
       const imask = this.instMask, vis = this.instVis, geo = this.instGeo, gsph = this.geoSphere;
       const coarse = pc.coarse === true, cls = cascade < 0 ? 0 : Math.min(2, cascade + 1);
+      const rp = _rp, rnl = _rnl;
+      let rGround = 0, rInv = 0;
+      if (recv) {
+        for (let i = 0; i < 6; i++) {
+          const pl = recv.planes[i], nn = pl.normal;
+          rp[i * 4] = nn.x; rp[i * 4 + 1] = nn.y; rp[i * 4 + 2] = nn.z; rp[i * 4 + 3] = pl.constant;
+          rnl[i] = recv.nl[i];
+        }
+        rGround = recv.ground;
+        rInv = 1 / Math.max(recv.dir.y, 0.05);
+      }
       // test: per-instance frustum test; size / rcv: per-instance caster size / receiver tests (shadow passes)
       const pushList = (list: number[], test: boolean, size: boolean, rcv: boolean) => {
         for (let j = 0; j < list.length; j++) {
@@ -542,8 +670,19 @@ export class DynamicBatch {
               cx = sph[o]; cy = sph[o + 1]; cz = sph[o + 2]; r = sph[o + 3];
             }
             if (size && r < minR) continue;
-            // shadow passes: only casters whose shadow can reach the visible part of this cascade
-            if (rcv && !receiverSweepSphere(recv!, cx, cy, cz, r)) continue;
+            // shadow passes: only casters whose shadow (the sphere swept away from the light down to the ground) can
+            // reach the visible part of this cascade (receiverSweepSphere, band-widened)
+            if (rcv) {
+              const rr = r + mr;
+              const T = Math.min(6000, Math.max(0, (cy + rr - rGround) * rInv));
+              let hit = true;
+              for (let i = 0; i < 6; i++) {
+                const o = i * 4;
+                const d0 = rp[o] * cx + rp[o + 1] * cy + rp[o + 2] * cz + rp[o + 3];
+                if (d0 < -rr && d0 - T * rnl[i] < -rr) { hit = false; break; }
+              }
+              if (!hit) continue;
+            }
             if (test) {
               let out = false;
               for (let p = 0; p < 6; p++) {
@@ -579,10 +718,24 @@ export class DynamicBatch {
             if (nn.x * qx + nn.y * qy + nn.z * qz + pl.constant < 0) inside = false;
           }
           if (outside) continue;
-          // receiver: skip the tile if no caster in it can shadow the visible slice; no per-instance test if the whole
-          // tile lies inside the slice
-          if (recv && !receiverSweepBox(recv, x0, y0, z0, x1, y1, z1)) continue;
-          const rcv = recv !== null && !receiverContainsBox(recv, x0, y0, z0, x1, y1, z1);
+          // receiver: skip the tile if no caster in it can shadow the visible slice (receiverSweepBox of the band-widened
+          // box); no per-instance test if the whole tile lies inside the slice (receiverContainsBox)
+          let rcv = false;
+          if (recv) {
+            const bx0 = x0 - mr, by0 = y0 - mr, bz0 = z0 - mr, bx1 = x1 + mr, by1 = y1 + mr, bz1 = z1 + mr;
+            const T = Math.min(6000, Math.max(0, (by1 - rGround) * rInv));
+            let hit = true;
+            for (let i = 0; i < 6; i++) {
+              const o = i * 4, nx = rp[o], ny = rp[o + 1], nz = rp[o + 2];
+              const d = nx * (nx > 0 ? bx1 : bx0) + ny * (ny > 0 ? by1 : by0) + nz * (nz > 0 ? bz1 : bz0) + rp[o + 3];
+              if (d < 0 && d - T * rnl[i] < 0) { hit = false; break; }
+            }
+            if (!hit) continue;
+            for (let i = 0; i < 6; i++) {
+              const o = i * 4, nx = rp[o], ny = rp[o + 1], nz = rp[o + 2];
+              if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + rp[o + 3] < 0) { rcv = true; break; }
+            }
+          }
           const test = !inside && !(coarse && cascade < 0), size = minR > 0 && tminR[ti] < minR;
           if (test || size || rcv) { pushList(list, test, size, rcv); continue; }
           // every visible instance of the tile (with the cascade bit) is drawn: copy its cached block
@@ -600,12 +753,10 @@ export class DynamicBatch {
             cc.n = m2;
             cc.ver = this.tileVer[ti];
           }
-          if (cc.n) {
-            starts.set(cc.s.subarray(0, cc.n), n);
-            counts.set(cc.c.subarray(0, cc.n), n);
-            ind.set(cc.i.subarray(0, cc.n), n);
-            n += cc.n;
-          }
+          // (element loop: subarray() views would allocate three objects per tile)
+          const cs = cc.s, ccn = cc.c, ci = cc.i, cn = cc.n;
+          for (let j = 0; j < cn; j++) { starts[n + j] = cs[j]; counts[n + j] = ccn[j]; ind[n + j] = ci[j]; }
+          n += cn;
         }
       }
       pushList(this.untiled, true, minR > 0, recv !== null);
@@ -622,6 +773,23 @@ export class DynamicBatch {
     }
     (s.tex.image.data as unknown as Uint32Array).set(s.ids.subarray(0, n));
     s.tex.needsUpdate = true;
+  }
+
+  /** draw range (index start in bytes, count) per geometry id -> gStart / gCount */
+  private drawRanges(geometry: THREE.BufferGeometry): void {
+    const gInfo = (this.mesh as any)._geometryInfo as { start: number; count: number }[];
+    const index = geometry.getIndex();
+    const bpe = index === null ? 1 : index.array.BYTES_PER_ELEMENT;
+    if (this.gStart.length < gInfo.length) { this.gStart = new Int32Array(gInfo.length * 2); this.gCount = new Int32Array(gInfo.length * 2); }
+    const gS = this.gStart, gC = this.gCount;
+    for (let g = 0; g < gInfo.length; g++) { const gi = gInfo[g]; gS[g] = gi ? gi.start * bpe : 0; gC[g] = gi ? gi.count : 0; }
+  }
+
+  /** geometry swaps only: rewrite the draw ranges of a cached list in place (same instances, same order) */
+  private refreshRanges(s: PassSlot, geometry: THREE.BufferGeometry): void {
+    this.drawRanges(geometry);
+    const gS = this.gStart, gC = this.gCount, geo = this.instGeo, ids = s.ids, starts = s.starts, counts = s.counts;
+    for (let j = 0; j < s.count; j++) { const g = geo[ids[j]]; starts[j] = gS[g]; counts[j] = gC[g]; }
   }
 
   /** counting sort of the first n list entries by distance from the camera (sqrt-spaced buckets: fine up close) */

@@ -1,10 +1,12 @@
 /**
  * Emergency alert banners (WP8) + the LIVE speed policy.
  *
- * An incident no station can auto-answer ('uncovered' with a possible player dispatch) raises a banner at the top of
- * the screen: kind colour + icon, title, place, why nobody is coming ("All 2 fire trucks of Fire Station #3 are
+ * An incident no station can auto-answer ('uncovered' with a free unit the player can send) raises a banner at the top
+ * of the screen: kind colour + icon, title, place, why nobody is coming ("All 2 fire trucks of Fire Station #3 are
  * busy"), the time since it started and the time left before it fails, and buttons: Jump · Send nearest (ETA) ·
- * Choose station… (DispatchTool) · dismiss. At most MAX_BANNERS banners; major incidents only unless
+ * Choose station… (DispatchTool) · dismiss. When even the nearest free unit cannot arrive before the deadline
+ * (canSend without manualPossible) the banner still shows ("too far?") but the speed is left alone. At most
+ * MAX_BANNERS banners; major incidents only unless
  * settings.emergencyAlerts = 'all'; KIND_COOLDOWN days between banners of the same kind (fires always alert); no
  * alerts below ALERT_MIN_POP residents except fires. Covered incidents never alert — they only become statistics.
  *
@@ -16,6 +18,9 @@
  *            (unless the player changed the speed meanwhile) with a toast.
  *   'pause'  an alert pauses the game; the previous speed comes back as soon as help is dispatched.
  *   'ignore' no speed change.
+ * The setting is re-read every tick: changing it during an alert ends the current slow-down / pause (the speed it set
+ * goes back) and the new setting applies to the incidents still waiting. The restore toast is neutral ("Emergency
+ * over") when an alerted incident failed, lost buildings / lives or was dismissed.
  *
  * Emergency times are shown in "emergency minutes": one game-minute of siren driving takes EMERG_DAYS_PER_MIN sim
  * days, so ETAs, "time since" and "time left" all use the same unit ("Send nearest 4.7 min" vs "4.0 min left").
@@ -65,33 +70,43 @@ const SPEED_NAME = ['paused', 'normal', 'fast', 'ultra'];
 
 /**
  * One UI tick of the emergency speed policy.
+ * @param policy the current setting (re-read every tick)
  * @param trigger a new alert was raised since the last tick
  * @param pending alerted incidents that still need a player dispatch
+ * @param neutral the episode did not end well (a failure, losses, a dismissed alert): neutral restore toast
  */
-export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, speed: number, trigger: boolean, pending: number, slowmo: number): PolicyStep {
+export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, speed: number, trigger: boolean, pending: number, slowmo: number, neutral = false): PolicyStep {
   let s: LiveState = { ...st };
-  const out: PolicyStep = { liveSlowdown: 1, state: s };
+  let cur = speed;
+  let toast: string | undefined;
+  // the setting changed during an episode: end it (the speed it set goes back) and let the new setting take over
+  if (s.active && s.policy !== policy) {
+    if (s.prevSpeed !== null && cur === s.setSpeed) cur = s.prevSpeed;
+    s = { ...LIVE_IDLE };
+    if (pending > 0) trigger = true;
+  }
   if (trigger && pending > 0 && !s.active && policy !== 'ignore') {
     if (policy === 'live') {
-      const ns = speed > 1 ? 1 : speed;
-      s = { active: true, policy, prevSpeed: speed > 1 ? speed : null, setSpeed: ns };
-      if (ns !== speed) out.speed = ns;
+      const ns = cur > 1 ? 1 : cur;
+      s = { active: true, policy, prevSpeed: cur > 1 ? cur : null, setSpeed: ns };
+      cur = ns;
     } else {
-      s = { active: true, policy, prevSpeed: speed > 0 ? speed : null, setSpeed: 0 };
-      if (speed !== 0) out.speed = 0;
+      s = { active: true, policy, prevSpeed: cur > 0 ? cur : null, setSpeed: 0 };
+      cur = 0;
     }
   }
   if (s.active && pending <= 0) {
     // every alerted emergency is handled: restore the speed the player had, unless they changed it meanwhile
-    if (s.prevSpeed !== null && speed === s.setSpeed) {
-      out.speed = s.prevSpeed;
-      out.toast = `Emergencies handled — back to ${SPEED_NAME[s.prevSpeed] ?? 'normal'} speed`;
-    } else out.toast = 'Emergencies handled';
+    const head = neutral ? 'Emergency over' : 'Emergencies handled';
+    if (s.prevSpeed !== null && cur === s.setSpeed) {
+      cur = s.prevSpeed;
+      toast = `${head} — back to ${SPEED_NAME[s.prevSpeed] ?? 'normal'} speed`;
+    } else toast = head;
     s = { ...LIVE_IDLE };
   }
-  out.state = s;
-  const eff = out.speed ?? speed;
-  out.liveSlowdown = s.active && s.policy === 'live' && eff === 1 ? Math.max(1, slowmo || 1) : 1;
+  const out: PolicyStep = { liveSlowdown: s.active && s.policy === 'live' && cur === 1 ? Math.max(1, slowmo || 1) : 1, state: s };
+  if (cur !== speed) out.speed = cur;
+  if (toast) out.toast = toast;
   return out;
 }
 
@@ -153,8 +168,8 @@ export function stateText(inc: Incident, now: number, em?: EmergencySystem): str
   const unit = RESPONDER_UNIT[INCIDENT_RESPONDERS[inc.kind][0]];
   const Unit = unit[0][0].toUpperCase() + unit[0].slice(1);
   switch (inc.state) {
-    case 'queued': return 'Waiting for a unit to come back';
-    case 'uncovered': return inc.manualPossible ? 'Nobody is coming — dispatch a unit' : 'Nobody can reach it';
+    case 'queued': return inc.reason === 'busy' ? 'Waiting for a unit to come back' : 'Dispatch pending';
+    case 'uncovered': return inc.manualPossible ? 'Nobody is coming — dispatch a unit' : inc.canSend ? 'Nobody nearby — the nearest free unit is too far to make it in time' : 'Nobody can reach it';
     case 'dispatched': {
       const a = nextArrival(em, inc, now);
       // the unit is at the site between two sim days (the day tick registers the arrival): no "arrives in 0.0 min"
@@ -166,6 +181,13 @@ export function stateText(inc: Incident, now: number, em?: EmergencySystem): str
     case 'failed': return 'Failed';
   }
   return '';
+}
+/** what an incident cost ("2 buildings lost · 1 dead"; '' when nothing) */
+export function lossText(inc: Pick<Incident, 'lost' | 'deaths'>): string {
+  const parts: string[] = [];
+  if (inc.lost > 0) parts.push(`${inc.lost} building${inc.lost === 1 ? '' : 's'} lost`);
+  if (inc.deaths > 0) parts.push(`${inc.deaths} dead`);
+  return parts.join(' · ');
 }
 /** "Elementary School · (27, 45)" (sites without a building already carry their cell: "the highway (12, 40)") */
 export function placeText(inc: Incident, sep = ' '): string {
@@ -182,6 +204,8 @@ export function followingDispatch(inc: Incident, now: number): boolean {
 // ------------------------------------------------------------------------------------------------ banners
 interface BannerEl {
   id: number;
+  /** the incident (its final lost / deaths are read when it ends) */
+  inc: Incident;
   el: HTMLDivElement;
   title: HTMLElement;
   place: HTMLElement;
@@ -193,6 +217,8 @@ interface BannerEl {
   optsDay: number;
   /** outcome line once the incident is over */
   outcome?: string;
+  /** a unit could make it in time at some point (the alert held the speed policy) */
+  wasPossible?: boolean;
 }
 
 export class EmergencyBanner {
@@ -204,6 +230,8 @@ export class EmergencyBanner {
   private trigger = false;
   private dismissed = new Set<number>();
   private lastState: unknown = null;
+  /** an alerted incident of the current LIVE / pause episode failed, lost buildings or lives, or was dismissed */
+  private episodeBad = false;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'emg-banners' });
@@ -231,27 +259,42 @@ export class EmergencyBanner {
     this.ctx.sim.liveSlowdown = 1;
     // a loaded game: incidents that were already waiting for the player get their banners back
     const em = emergencyOf(this.ctx.sim);
-    if (em) for (const inc of em.incidents()) if (inc.state === 'uncovered' && inc.manualPossible) this.onEvent({ type: 'uncovered', id: inc.id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: true });
+    this.episodeBad = false;
+    if (em) for (const inc of em.incidents()) if (inc.state === 'uncovered' && (inc.manualPossible || inc.canSend)) this.onEvent({ type: 'uncovered', id: inc.id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible });
   }
 
   private onEvent(e: EmergencyEvent): void {
     if (e.type === 'resolved' || e.type === 'failed') {
       const b = this.banners.get(e.id);
-      if (b) b.outcome = e.type === 'resolved' ? `${INCIDENT_LABEL[e.kind]} under control` : 'Help came too late';
+      if (b) {
+        const losses = lossText(b.inc);
+        b.outcome = e.type === 'failed' ? 'Help came too late' + (losses ? ` — ${losses}` : '') : `${INCIDENT_LABEL[e.kind]} under control` + (losses ? ` — ${losses}` : '');
+        if (e.type === 'failed' || losses) this.episodeBad = true;
+      }
       return;
     }
-    if (e.type !== 'uncovered' || !e.manualPossible) return;
-    if (this.dismissed.has(e.id)) return;
+    if (e.type !== 'uncovered' || this.dismissed.has(e.id)) return;
+    const inc = emergencyOf(this.ctx.sim)?.incident(e.id);
+    // a banner when the player can send a unit; LIVE / pause only when it can still arrive in time (manualPossible)
+    if (!inc || !(inc.manualPossible || inc.canSend)) return;
+    const shown = this.banners.get(e.id);
+    if (shown) {
+      // already on screen (e.g. first as "too far"): the speed policy starts once a unit can make it in time
+      if (inc.manualPossible) {
+        shown.wasPossible = true;
+        this.trigger = true;
+        this.applyPolicy();
+      }
+      return;
+    }
     const st = this.ctx.state;
     const mode = this.ctx.settings.emergencyAlerts ?? 'major';
     if (!this.queue.offer(e, st.day, st.stats.population, mode)) return;
-    const inc = emergencyOf(this.ctx.sim)?.incident(e.id);
-    if (!inc) {
-      this.queue.remove(e.id);
-      return;
-    }
     this.addBanner(inc);
-    this.trigger = true;
+    if (inc.manualPossible) {
+      this.trigger = true;
+      this.banners.get(inc.id)!.wasPossible = true;
+    }
     this.ctx.sound('warning');
     // apply the speed policy right away: at ultra speed a UI tick (~0.16 s) would already be 3 game days
     this.applyPolicy();
@@ -263,11 +306,14 @@ export class EmergencyBanner {
     const em = emergencyOf(this.ctx.sim);
     const now = this.ctx.sim.simTime();
     let n = 0;
-    for (const id of this.banners.keys()) {
+    for (const [id, b] of this.banners) {
       const inc = em?.incident(id);
       if (!inc) continue;
-      if ((inc.state === 'uncovered' || inc.state === 'queued') && inc.manualPossible) n++;
+      const waiting = inc.state === 'uncovered' || inc.state === 'queued';
+      if (waiting && inc.manualPossible) n++;
       else if (policy === 'live' && followingDispatch(inc, now)) n++;
+      // nobody was sent while a unit could still make it: whatever ends this episode, it did not end well
+      else if (waiting && b.wasPossible) this.episodeBad = true;
     }
     return n;
   }
@@ -275,12 +321,15 @@ export class EmergencyBanner {
   private applyPolicy(): void {
     const sim = this.ctx.sim;
     const policy = this.ctx.settings.emergencyUncovered ?? 'live';
-    const step = speedPolicy(policy, this.live, sim.speed, this.trigger, this.pendingCount(policy), this.ctx.settings.emergencyLiveSlowmo ?? 3);
+    const was = this.live.active;
+    const step = speedPolicy(policy, this.live, sim.speed, this.trigger, this.pendingCount(policy), this.ctx.settings.emergencyLiveSlowmo ?? 3, this.episodeBad);
     this.trigger = false;
     this.live = step.state;
+    // outcomes count per episode: from the alert that starts it to the restore toast that ends it
+    if (was !== this.live.active || step.toast) this.episodeBad = false;
     if (step.speed !== undefined && step.speed !== sim.speed) sim.speed = step.speed;
     if (sim.liveSlowdown !== step.liveSlowdown) sim.liveSlowdown = step.liveSlowdown;
-    if (step.toast) this.ctx.toast(step.toast, 'good', undefined, 'Emergency');
+    if (step.toast) this.ctx.toast(step.toast, step.toast.startsWith('Emergencies handled') ? 'good' : 'info', undefined, 'Emergency');
     if (this.live.active !== this.lastState) {
       this.lastState = this.live.active;
       toggleClass(this.ctx.root, 'emg-live', this.liveActive);
@@ -307,7 +356,7 @@ export class EmergencyBanner {
     choose.addEventListener('click', () => openDispatch(this.ctx, inc.id));
     close.addEventListener('click', () => this.dismiss(inc.id));
     this.el.insertBefore(el, this.more);
-    const b: BannerEl = { id: inc.id, el, title, place, note, time, send, closeAt: 0, optsDay: -1 };
+    const b: BannerEl = { id: inc.id, inc, el, title, place, note, time, send, closeAt: 0, optsDay: -1 };
     this.banners.set(inc.id, b);
     this.refresh(b, inc);
   }
@@ -334,6 +383,8 @@ export class EmergencyBanner {
 
   private dismiss(id: number): void {
     this.dismissed.add(id);
+    const inc = emergencyOf(this.ctx.sim)?.incident(id);
+    if (inc && (inc.state === 'uncovered' || inc.state === 'queued')) this.episodeBad = true; // left unanswered
     this.removeBanner(id);
   }
 

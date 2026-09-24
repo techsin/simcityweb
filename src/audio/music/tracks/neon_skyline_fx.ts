@@ -86,8 +86,13 @@ export interface MonoBassOpts {
   /** filter-envelope amount 0..1 (default 0.55) and decay (s, default 0.16) */
   envAmt?: number;
   decay?: number;
-  /** sub-octave sine level (default 0.55, like synthBass) */
+  /**
+   * sub-octave sine level (default 0.55, like synthBass). It fades out for notes below E2 so the sub never drops
+   * under ~41 Hz (B1's sub would be 31 Hz: inaudible on most speakers, under the 52 Hz kick, and it only eats headroom)
+   */
   sub?: number;
+  /** release seconds (default 0.035; a long release for a held final note) */
+  release?: number;
 }
 
 /** a bar (or phrase) of re-triggered mono synth-bass notes; notes must be sorted by time */
@@ -104,16 +109,17 @@ export function monoBass(env: MusicEnv, notes: readonly MonoNote[], o: MonoBassO
   const lp = ctx.createBiquadFilter();
   lp.type = 'lowpass';
   lp.Q.value = o.reso ?? 4.5;
+  const subLevel = o.sub ?? 0.55;
   const sg = ctx.createGain();
-  sg.gain.value = o.sub ?? 0.55;
+  sg.gain.value = subLevel;
   const amp = ctx.createGain();
   amp.gain.value = 0;
-  kRate(saw.frequency, saw.detune, sub.frequency, sub.detune, lp.frequency, lp.detune, lp.Q, lp.gain);
+  kRate(saw.frequency, saw.detune, sub.frequency, sub.detune, lp.frequency, lp.detune, lp.Q, lp.gain, sg.gain);
   saw.connect(lp).connect(amp);
   sub.connect(sg).connect(amp);
   amp.connect(inst.channel('synthBass').input);
   const g = amp.gain;
-  const rel = 0.035;
+  const rel = Math.max(0.01, o.release ?? 0.035);
   const t0 = ns[0].t;
   g.setValueAtTime(0, t0);
   lp.frequency.setValueAtTime(base, t0);
@@ -125,9 +131,10 @@ export function monoBass(env: MusicEnv, notes: readonly MonoNote[], o: MonoBassO
     const peak = 0.36 * vc(v);
     const tc = Math.max(t + 0.02, Math.min(t + n.len, next - rel - 0.004));
     const f = mtof(n.midi);
-    // pitch changes while the amp is at 0 (previous note fully released)
+    // pitch and sub level change while the amp is at 0 (previous note fully released)
     saw.frequency.setValueAtTime(f, t);
     sub.frequency.setValueAtTime(f / 2, t);
+    sg.gain.setValueAtTime(subLevel * clamp01((n.midi - 34) / 6), t);
     // amp: 4 ms attack, exponential sag to 0.8 over 0.3 s (synthBass shape), linear release
     g.setValueAtTime(0, t);
     g.linearRampToValueAtTime(peak, t + 0.004);
@@ -173,6 +180,9 @@ export function monoArp(env: MusicEnv, notes: readonly MonoNote[], o: MonoArpOpt
   kRate(x.frequency, x.detune, lp.frequency, lp.detune, lp.Q, lp.gain);
   x.connect(lp).connect(amp).connect(inst.channel('arp').input);
   const envAmt = o.envAmt ?? 3;
+  // a square carries 4.7 dB more energy than a saw of the same peak (its fundamental is twice the saw's), whatever
+  // the note or cutoff: level-match it so the arp sits the same in the mix whichever wave the seed rolls
+  const waveGain = o.wave === 'square' ? 0.58 : 1;
   const g = amp.gain;
   const rel = 0.012;
   const t0 = ns[0].t;
@@ -182,7 +192,7 @@ export function monoArp(env: MusicEnv, notes: readonly MonoNote[], o: MonoArpOpt
     const t = n.t;
     const next = i + 1 < ns.length ? ns[i + 1].t : Infinity;
     const v = clamp01(n.vel);
-    const peak = 0.3 * vc(v);
+    const peak = 0.3 * vc(v) * waveGain;
     const tc = Math.max(t + 0.012, Math.min(t + n.len, next - rel - 0.003));
     x.frequency.setValueAtTime(mtof(n.midi), t);
     const ta = t + 0.003;

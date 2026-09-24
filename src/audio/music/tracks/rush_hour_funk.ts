@@ -25,14 +25,14 @@
  * scoops), clav / bass / kick / ghost-note patterns, brass figures, fills, intro type, interlude, pre-chorus stop.
  * Everything is planned in create(); bar() only schedules.
  *
- * CPU: the 16th hats, the tambourine and the clav ghost scratches are persistent NoiseVoice envelopes
- * (rush_hour_funk_perc.ts) instead of a node graph per hit.
+ * CPU: the 16th hats, the tambourine, the clav ghost scratches and the bass dead notes are persistent NoiseVoice
+ * envelopes (rush_hour_funk_perc.ts) instead of a node graph per hit; voicings are memoised (vamps repeat).
  */
 import type { MusicTrack } from '../types';
 import { song, type BarInfo } from '../song';
 import { parseChart, chordTones, chordScale, scaleFor, scale, humanize, humVel, snap, stepInPool, bassNote, pc, degree, pattern, type Chord, type ScaleName } from '../theory';
 import { NoiseVoice } from './rush_hour_funk_perc';
-import { grip } from './rush_hour_funk_voice';
+import { grip, rough } from './rush_hour_funk_voice';
 
 type Kind = 'intro' | 'verse' | 'pre' | 'chorus' | 'inter' | 'bridge' | 'build' | 'final' | 'outro';
 interface Sec {
@@ -57,6 +57,8 @@ interface Ev {
   pop?: boolean;
   /** bass: dead (fretting-hand muted) note */
   dead?: boolean;
+  /** bass: approach note into this root (midi) */
+  app?: number;
 }
 interface Hit {
   step: number;
@@ -109,8 +111,9 @@ interface BarPlan {
   final: boolean;
 }
 
-/** highest tune note (A5); the last chorus may reach one semitone more */
+/** highest planned tune note (A5); the last chorus may reach one semitone more, and no repair ever goes past CEIL */
 const TOP = 81;
+const CEIL = TOP + 1;
 
 // ------------------------------------------------------------------ composed material
 // verse vamps (written in E dorian, transposed to the verse key)
@@ -161,7 +164,7 @@ const LICKS: Tpl[] = [[[10, 1, 7], [11, 1, 5], [12, 1, 4], [13, 3, 2]], [[11, 1,
 const BRASS_FIGS: (readonly [number, number])[][] = [[[10, 1], [12, 2]], [[11, 1], [12, 1], [14, 2]], [[10, 2], [13, 1], [14, 2]], [[12, 1], [14, 1], [15, 1]]];
 // clav: X triad stab, x dyad, o ghost scratch
 const CLAV_V = ['-oX----x--X--ox-', 'x--X-ox---X--o-x', 'X--o-x--X-o--x--'];
-const CLAV_C = ['x--x--X---x--x--', '--x--x-x--X---x-'];
+const CLAV_C = ['x--o--X---x--o--', '--x--o-x--X---o-'];
 const CLAV_SPARSE = '--X---x---X-----';
 const CLAV_PRE = '--x---x---x---x-';
 const CLAV_BUILD = 'x---x-o-x---x-ox';
@@ -198,7 +201,7 @@ export const track: MusicTrack = {
   mood: 'Downtown funk: clav stabs, slap bass, synth brass, tight 16th groove',
   tags: ['day', 'busy'],
   bpm: 104,
-  gain: 0.98, // measured -18.2 LUFS avg (seeds 1-3) at gain 1
+  gain: 1.16, // measured -18.2..-18.6 LUFS (avg -18.4) over seeds 1-6
   create(env) {
     const { inst, rng } = env;
     const bpm = rng.int(101, 107);
@@ -282,15 +285,16 @@ export const track: MusicTrack = {
       }
     }
     const total = plan.length;
-    // voicings: one voice-led chain per part through the whole song; spread grips, never a semitone cluster
+    // voicings: one voice-led chain per part through the whole song; spread grips, never a semitone cluster, and
+    // (softly) no semitone / minor 9th against the other parts' notes on the same chord (strings first: the bed)
     {
       let pc3: number[] | null = null, pb: number[] | null = null, ps: number[] | null = null, pe: number[] | null = null;
       for (const p of plan)
         for (const s of p.slots) {
-          s.clav = pc3 = grip(pc3, s.chord, { lo: 55, hi: 72, count: 3, maxSpan: 12 });
-          s.brass = pb = grip(pb, s.chord, { lo: 60, hi: 79, count: 3, maxSpan: 14 });
           s.str = ps = grip(ps, s.chord, { lo: 62, hi: 81, count: 4 });
-          s.ep = pe = grip(pe, s.chord, { lo: 55, hi: 72, count: 4, maxSpan: 17 });
+          s.brass = pb = grip(pb, s.chord, { lo: 60, hi: 79, count: 3, maxSpan: 14, against: s.str });
+          s.clav = pc3 = grip(pc3, s.chord, { lo: 55, hi: 72, count: 3, maxSpan: 12, against: [...s.str, ...s.brass] });
+          s.ep = pe = grip(pe, s.chord, { lo: 55, hi: 72, count: 3, maxSpan: 14, against: [...s.str, ...s.brass] });
         }
     }
     const slotAt = (bi: number, step: number): Slot => {
@@ -300,7 +304,8 @@ export const track: MusicTrack = {
       return s;
     };
     const chordAt = (bi: number, step: number): Chord => slotAt(bi, step).chord;
-    const nextChordAfter = (bi: number, step: number): Chord => (step + 1 < 16 ? chordAt(bi, step + 1) : chordAt(bi + 1, 0));
+    /** the chord that follows the one sounding at (bi, step): the next slot of the bar, else the next bar's first */
+    const nextChordAfter = (bi: number, step: number): Chord => plan[Math.max(0, Math.min(total - 1, bi))].slots.find((x) => x.step > step + 1e-6)?.chord ?? chordAt(bi + 1, 0);
     /** chord at an absolute 16th (bar * 16 + step) */
     const chordAbs = (a: number): Chord => {
       const bi = Math.floor(a / 16);
@@ -336,7 +341,7 @@ export const track: MusicTrack = {
       let best = m, bs = Infinity;
       for (let d = -4; d <= 4; d++) {
         const x = m + d;
-        if (!d || isAvoid(x, c)) continue;
+        if (!d || x > CEIL || isAvoid(x, c)) continue;
         const tone = isTone(x, c);
         if (tonesOnly && !tone) continue;
         const inPool = pool.includes(x);
@@ -372,10 +377,10 @@ export const track: MusicTrack = {
     /** a held note that would turn into an avoid note over the next chord moves to its nearest chord tone, a step down
      *  preferred (sus4 -> 3, tonic over V -> its 3rd) */
     const resolveInto = (m: number, c: Chord): number => {
-      let best = snap(m, chordTones(c, m - 7, m + 7)), bs = Infinity;
+      let best = snap(m, chordTones(c, m - 7, Math.min(CEIL, m + 7))), bs = Infinity;
       for (let d = -3; d <= 3; d++) {
         const x = m + d;
-        if (!d || !isTone(x, c)) continue;
+        if (!d || x > CEIL || !isTone(x, c)) continue;
         const s = Math.abs(d) + (d > 0 ? 0.6 : 0);
         if (s < bs) (bs = s), (best = x);
       }
@@ -402,9 +407,10 @@ export const track: MusicTrack = {
         const c = chordAbs(antic ? ch[0] : a);
         const pool = poolFor(c, keyPcs, tonic, mode, raw);
         let m = snap(raw, pool);
+        if (m > CEIL) m = pool.filter((x) => x <= CEIL).pop() ?? m - 12;
         const dir = next !== null ? Math.sign(next - raw) : prevM !== null ? Math.sign(raw - prevM) : -1;
         const strong = (antic ? ch[0] : a) % 4 === 0;
-        if (len >= 6 && !isTone(m, c)) m = repair(m, c, pool, dir, prevM, next, true);
+        if (len >= 6 && (isAvoid(m, c) || !inChordScale(m, c))) m = repair(m, c, pool, dir, prevM, next, true);
         else if ((len >= 2 || strong) && isAvoid(m, c)) m = repair(m, c, pool, dir, prevM, next, false);
         const segs: [number, number, number][] = [];
         let sa = a, sm = m, e = end;
@@ -428,8 +434,14 @@ export const track: MusicTrack = {
           if (to === 'lead') {
             const glide = j ? segs[j - 1][2] : fl?.includes('g') ? stepInPool(sm2, -1, pool) : undefined;
             plan[bi].lead.push({ step: st, len: sl, midi: sm2, vel: v, glide });
-          } else if (to === 'brass') plan[bi].brass.push({ step: st, len: sl, notes: [below(sm2, chordAbs(s0), pool), sm2], vel: v * 0.95, line: true });
-          else plan[bi].clav.push({ step: st, len: Math.min(sl, 3), notes: [sm2], vel: v * 0.9, line: true });
+          } else if (to === 'brass') {
+            // section line: the tune with a 3rd under it (16th passing notes in unison)
+            const notes = sl >= 2 ? [below(sm2, chordAbs(s0), pool), sm2] : [sm2];
+            plan[bi].brass.push({ step: st, len: sl, notes, vel: v * (sl >= 2 ? 0.95 : 0.85), line: true });
+          } else {
+            // clav riff in octaves
+            plan[bi].clav.push({ step: st, len: Math.min(sl, 3), notes: sm2 + 12 <= 79 ? [sm2, sm2 + 12] : [sm2 - 12, sm2], vel: v, line: true });
+          }
         });
         prevM = segs[segs.length - 1][2];
       });
@@ -554,16 +566,16 @@ export const track: MusicTrack = {
       for (const [st0, len, sym, kind] of pat) {
         const st = st0 + offset;
         const slot = slotAt(bi, st);
-        let m: number;
+        let m: number, app: number | undefined;
         if (sym === 'A') {
-          const nr = bassNote(nextChordAfter(bi, st), 31);
-          m = rng.weighted([nr - 1, nr + 1, nr - 5 >= 31 ? nr - 5 : nr + 7], [5, 3, 2]);
+          app = bassNote(nextChordAfter(bi, st), 31);
+          m = rng.weighted([app - 1, app + 1, app - 5 >= 31 ? app - 5 : app + 7], [5, 3, 2]);
           if (m < 31) m += 12;
         } else if (sym === 'x') m = prev;
         else m = toneOf(sym, slot.chord, slot.root);
         prev = m;
         const v = kind === 'T' ? 0.72 : kind === 'P' ? 0.66 : 0.34;
-        p.bass.push({ step: st, len: kind === 'x' ? 0.3 : len, midi: m, vel: humVel(rng, v * vel, 0.05), pop: kind === 'P', dead: kind === 'x' });
+        p.bass.push({ step: st, len: kind === 'x' ? 0.3 : len, midi: m, vel: humVel(rng, v * vel, 0.05), pop: kind === 'P', dead: kind === 'x', app });
       }
     };
     const bassBar = (bi: number, pat: readonly BN[], vel = 1, fill?: readonly BN[]) => {
@@ -674,10 +686,17 @@ export const track: MusicTrack = {
         case 'verse': {
           const amt = s.n === 0 ? 0.55 : 1;
           const kick = s.n === 0 ? kickV1 : kickV2;
+          const open0 = (ph: number) => ((ph + s.n) % 2 === 0 ? tailOpen : TAIL_LOW);
           // verse 1's first phrase: the clav plays the call as a riff (the lead takes it over from bar 5); verse 2's
           // second phrase goes to the brass section when there was no interlude, with lead licks in the gaps
           const riff = s.n === 0;
           const brassPh = s.n === 1 && !interlude ? 1 : -1;
+          // the riff sits in the clav's middle register: of the two octaves, the one that keeps it nearest G3-D5
+          const riffOut = (t: number) => {
+            const ms = [[call, 0], [open0(0), 0], [call, seq], [endB, 0]].flatMap(([tp, sh]) => (tp as Tpl).map((n) => degree(t, 'dorian', n[2] + (sh as number))));
+            return 2 * Math.max(0, 55 - Math.min(...ms)) + Math.max(0, Math.max(...ms) - 74);
+          };
+          const riffT = riffOut(vt - 12) < riffOut(vt) ? vt - 12 : vt;
           for (let i = 0; i < 16; i++) {
             const bi = b0 + i;
             const drop = s.n === 1 && verse2Drop && i < 4;
@@ -696,13 +715,13 @@ export const track: MusicTrack = {
           for (let ph = 0; ph < 4; ph++) {
             const pb = b0 + ph * 4;
             const up = ph === 2 ? dev : 0;
-            const open = (ph + s.n) % 2 === 0;
             const to: To = riff && ph === 0 ? 'clav' : ph === brassPh ? 'brass' : 'lead';
-            const v0 = to === 'clav' ? 0.62 : to === 'brass' ? 0.58 : 0.66;
-            place(ph === 0 && s.n === 0 ? call : vary(call, amt), pb, vt, 'dorian', v0, up, to);
-            place(open ? tailOpen : TAIL_LOW, pb + 1, vt, 'dorian', v0 - 0.02, 0, to);
-            place(ph === 3 ? frag(call) : vary(call, amt), pb + 2, vt, 'dorian', v0, seq + up, to);
-            place(ph === 3 ? END_LEADIN : ph % 2 === 0 ? endB : endA, pb + 3, vt, 'dorian', v0 - 0.02, 0, to);
+            const v0 = to === 'clav' ? 0.7 : to === 'brass' ? 0.58 : 0.66;
+            const t0 = to === 'clav' ? riffT : vt;
+            place(ph === 0 && s.n === 0 ? call : vary(call, amt), pb, t0, 'dorian', v0, up, to);
+            place(open0(ph), pb + 1, t0, 'dorian', v0 - 0.02, 0, to);
+            place(ph === 3 ? frag(call) : vary(call, amt), pb + 2, t0, 'dorian', v0, seq + up, to);
+            place(ph === 3 ? END_LEADIN : ph % 2 === 0 ? endB : endA, pb + 3, t0, 'dorian', v0 - 0.02, 0, to);
             if (to === 'brass') {
               place(fit(rng.pick(LICKS), vt, 'dorian'), pb + 1, vt, 'dorian', 0.54);
               place(fit(rng.pick(LICKS), vt, 'dorian'), pb + 3, vt, 'dorian', 0.54);
@@ -730,7 +749,7 @@ export const track: MusicTrack = {
             clavBar(bi, CLAV_PRE, 0.95, false);
             bassBar(bi, BASS_PUMP, 0.92 + 0.03 * i);
             drums(bi, { kick: pattern('X---X---X---X---'), snare: true, ghosts: [], hat: 'disco', clap: false, tamb: 'none', rim: false }, 0.92 + 0.03 * i);
-            for (const sl of p.slots) p.strings.push({ step: sl.step, len: 16 / p.slots.length + 1, notes: sl.str, vel: 0.24 + 0.05 * i, att: 0.5 });
+            for (const sl of p.slots) p.strings.push({ step: sl.step, len: 16 / p.slots.length, notes: sl.str, vel: 0.24 + 0.05 * i, att: 0.5 });
             place(preMel[i], bi, ct, 'major', 0.58 + 0.015 * i);
           }
           plan[b0 + 2].sweep = [8, 0.3];
@@ -768,7 +787,7 @@ export const track: MusicTrack = {
             clavBar(bi, clavC, 0.95);
             bassBar(bi, bassC, 1, i % 8 === 7 ? rng.pick(BASS_FILLS) : undefined);
             drums(bi, G_CHORUS, fin ? 1.03 : 1);
-            for (const sl of p.slots) p.strings.push({ step: sl.step, len: 16 / p.slots.length + 0.5, notes: sl.str, vel: fin ? 0.4 : 0.37 });
+            for (const sl of p.slots) p.strings.push({ step: sl.step, len: 16 / p.slots.length, notes: sl.str, vel: fin ? 0.4 : 0.37 });
             if (i % 8 === 7) fill(bi, pickFill());
             else if (i % 4 === 3 && rng.chance(0.5)) fill(bi, 'short', 0.85);
           }
@@ -829,8 +848,8 @@ export const track: MusicTrack = {
             else drums(bi, { ...G_VERSE(kickV1), ghosts: ghostsV.slice(0, 1), hat: 'eighth' }, 0.92);
             for (const sl of p.slots) {
               p.epiano.push({ step: sl.step, len: 6, notes: sl.ep, vel: 0.4 });
-              if (p.slots.length === 1) p.epiano.push({ step: rng.pick([6, 10]), len: 4, notes: sl.ep, vel: 0.34 });
-              if (i >= 4) p.strings.push({ step: sl.step, len: 16 / p.slots.length + 0.5, notes: sl.str, vel: 0.27, att: 0.8 });
+              if (p.slots.length === 1 && i % 2 === 1) p.epiano.push({ step: rng.pick([6, 10]), len: 4, notes: sl.ep, vel: 0.34 });
+              if (i >= 4) p.strings.push({ step: sl.step, len: 16 / p.slots.length, notes: sl.str, vel: 0.27, att: 0.8 });
             }
           }
           // the call in augmentation over the new changes
@@ -852,7 +871,13 @@ export const track: MusicTrack = {
             p.brass.push({ step: 0, len: 10, notes: p.slots[0].brass, vel: 0.36 + 0.05 * i });
             place([[0, 14, [1, 3, 4, 5][i], 'g']], bi, ft, 'major', 0.52 + 0.03 * i);
           }
-          plan[b0].strings.push({ step: 0, len: 64, notes: plan[b0].slots[0].str, vel: 0.42, att: 6 });
+          // string swell: held while the harmony stays, re-voiced (and a little louder) when it moves
+          for (let i = 0; i < 4; ) {
+            let j = i + 1;
+            while (j < 4 && plan[b0 + j].slots[0].chord.name === plan[b0 + i].slots[0].chord.name) j++;
+            plan[b0 + i].strings.push({ step: 0, len: 16 * (j - i), notes: plan[b0 + i].slots[0].str, vel: 0.34 + 0.03 * j, att: i ? 0.6 : Math.min(6, 2 * (j - i)) });
+            i = j;
+          }
           fill(last, 'roll', 1.05);
           plan[b0].sweep = [16, 0.34];
           plan[last].swell = 0.3;
@@ -865,7 +890,7 @@ export const track: MusicTrack = {
             clavBar(bi, clavC, 0.95 - 0.04 * i);
             bassBar(bi, bassC, 1 - 0.03 * i);
             drums(bi, { ...G_CHORUS, tamb: i < 2 ? 'sixteenth' : 'eighth' }, 1 - 0.04 * i);
-            if (i < 2) for (const sl of p.slots) p.strings.push({ step: sl.step, len: 16 / p.slots.length + 0.5, notes: sl.str, vel: 0.27 });
+            if (i < 2) for (const sl of p.slots) p.strings.push({ step: sl.step, len: 16 / p.slots.length, notes: sl.str, vel: 0.27 });
           }
           place(vary(hook, 0.5), b0, ft, 'major', 0.6);
           place(hookClose, b0 + 1, ft, 'major', 0.58);
@@ -891,38 +916,67 @@ export const track: MusicTrack = {
       }
     }
 
-    // ---------------------------------------------------------------- comping under held tune notes
-    // a comping note a semitone / minor 9th from a tune note that sounds for an 8th or more is dropped from that chord
-    // (root over maj7, b3 over 9, b7 over 13...); a 3rd is kept but moved to the far side of the tune note instead
+    // ---------------------------------------------------------------- nothing rubs a semitone / minor 9th
+    // Parts yield in order tune > strings > Rhodes > brass stabs > clav: a note a semitone / minor 9th from a note of a
+    // higher part that overlaps it for a 16th or more (a tune note of an 8th or more) is dropped from its chord (root
+    // over maj7, b3 over 9, b7 over 13...); a 3rd is kept but moved to the far side of that note instead.
     {
-      const tune: { a: number; b: number; m: number }[] = [];
+      interface Ref { a: number; b: number; m: number; q: number }
+      const refs: Ref[][] = Array.from({ length: total }, () => []);
+      const addRef = (a: number, b: number, m: number) => {
+        const r = { a, b, m, q: 0 };
+        for (let bi = Math.max(0, Math.floor(a / 16)); bi < total && bi * 16 < b; bi++) refs[bi].push(r);
+      };
+      let query = 0;
+      const refsIn = (a: number, b: number, minOv: number): Ref[] => {
+        const out: Ref[] = [];
+        query++;
+        for (let bi = Math.max(0, Math.floor(a / 16)); bi < total && bi * 16 < b; bi++)
+          for (const r of refs[bi]) if (r.q !== query && Math.min(b, r.b) - Math.max(a, r.a) >= minOv) (r.q = query), out.push(r);
+        return out;
+      };
       plan.forEach((p, bi) => {
-        for (const e of p.lead) if (e.len >= 2) tune.push({ a: bi * 16 + e.step, b: bi * 16 + e.step + e.len, m: e.midi });
-        for (const h of [...p.brass, ...p.clav]) if (h.line && h.len >= 2) for (const m of h.notes) tune.push({ a: bi * 16 + h.step, b: bi * 16 + h.step + h.len, m });
+        for (const e of p.lead) if (e.len >= 2) addRef(bi * 16 + e.step, bi * 16 + e.step + e.len, e.midi);
+        for (const h of [...p.brass, ...p.clav]) if (h.line && h.len >= 2) for (const m of h.notes) addRef(bi * 16 + h.step, bi * 16 + h.step + h.len, m);
       });
       const rub = (x: number, n: number) => Math.abs(x - n) % 12 === 1;
-      const thin = (bi: number, h: Hit, keep: number, tail: number) => {
+      const thin = (bi: number, h: Hit, keep: number, tail: number, lo: number, hi: number) => {
         if (h.line || h.notes.length < 2) return;
         const a = bi * 16 + h.step, b = a + Math.max(1, h.len) + tail;
-        const over = tune.filter((x) => Math.min(b, x.b) - Math.max(a, x.a) >= 1);
+        const over = refsIn(a, b, 1);
         if (!over.length) return;
         const c = chordAbs(a);
+        const third = c.tones.includes(4) ? 4 : c.tones.includes(3) ? 3 : -1;
         let notes = [...h.notes];
         for (const x of over)
           for (const n of [...notes]) {
             if (!rub(x.m, n)) continue;
-            const rel = pc(n - c.root);
             const moved = pc(n - x.m) === 11 ? x.m + 11 : x.m - 11;
-            if ((rel === 3 || rel === 4) && !over.some((y) => rub(y.m, moved))) notes = notes.map((q) => (q === n ? moved : q));
+            const alt = notes.map((q) => (q === n ? moved : q)).sort((p, q) => p - q);
+            if (pc(n - c.root) === third && moved >= lo && moved <= hi && !over.some((y) => rub(y.m, moved)) && !rough(alt)) notes = alt;
             else if (notes.length > keep) notes = notes.filter((q) => q !== n);
           }
         h.notes = [...new Set(notes)].sort((p, q) => p - q);
       };
+      // [part, notes kept at least, 16ths of release counted, register a moved 3rd must stay in]
+      const parts: [keyof Pick<BarPlan, 'strings' | 'epiano' | 'brass' | 'clav'>, number, number, number, number][] = [
+        ['strings', 2, 1, 57, 84], ['epiano', 2, 1, 52, 76], ['brass', 2, 0, 55, 82], ['clav', 1, 0, 52, 76],
+      ];
+      for (const [part, keep, tail, lo, hi] of parts) {
+        plan.forEach((p, bi) => p[part].forEach((h) => thin(bi, h, keep, tail, lo, hi)));
+        plan.forEach((p, bi) => p[part].forEach((h) => h.line || h.notes.forEach((m) => addRef(bi * 16 + h.step, bi * 16 + h.step + Math.max(1, h.len), m))));
+      }
+      // a chromatic bass approach under a held tune note a semitone away takes another approach (above, the 5th, or
+      // the root itself)
       plan.forEach((p, bi) => {
-        for (const h of p.strings) thin(bi, h, 2, 1);
-        for (const h of p.epiano) thin(bi, h, 2, 1);
-        for (const h of p.brass) thin(bi, h, 2, 0);
-        for (const h of p.clav) thin(bi, h, 1, 0);
+        for (const e of p.bass) {
+          if (e.app === undefined) continue;
+          const a = bi * 16 + e.step;
+          const over = refsIn(a, a + Math.max(1, e.len), 0.5);
+          if (!over.some((x) => rub(x.m, e.midi))) continue;
+          const r = e.app;
+          e.midi = [r - 1, r + 1, r - 5 >= 31 ? r - 5 : r + 7, r].find((q) => !over.some((x) => rub(x.m, q))) ?? r;
+        }
       });
     }
 
@@ -944,9 +998,9 @@ export const track: MusicTrack = {
       const r = bar - (total - 3);
       return r < 0 ? bpm : bpm * [0.97, 0.93, 0.9][r];
     };
-    let hatV: NoiseVoice | null = null, tambV: NoiseVoice | null = null, scratchV: NoiseVoice | null = null;
+    let hatV: NoiseVoice | null = null, tambV: NoiseVoice | null = null, scratchV: NoiseVoice | null = null, deadV: NoiseVoice | null = null;
     const setup = (t0: number, player: { endTime: number }) => {
-      inst.mix('kick', { level: 0.5, highpass: 32 });
+      inst.mix('kick', { level: 0.42, highpass: 32 });
       inst.mix('snare', { level: 0.76, reverb: 0.17 });
       inst.mix('clap', { level: 0.72, reverb: 0.24 });
       inst.mix('rim', { level: 0.7 });
@@ -955,9 +1009,9 @@ export const track: MusicTrack = {
       inst.mix('shaker:tamb', { level: 0.42, pan: -0.4, lowpass: 11000 });
       inst.mix('cymbal', { level: 0.5 });
       inst.mix('sweep', { level: 0.45 });
-      inst.mix('bass', { level: 0.78, highpass: 38, reverb: 0.02 });
-      inst.mix('slap', { level: 0.75, lowpass: 4200, reverb: 0.04 });
-      inst.mix('clav', { level: 1.05, pan: 0.36, highpass: 180, lowpass: introType === 'clav' ? 1600 : 2400, reverb: 0.12, delay: 0.06 });
+      inst.mix('bass', { level: 0.66, highpass: 38, reverb: 0.02 });
+      inst.mix('slap', { level: 0.66, lowpass: 4200, reverb: 0.04 });
+      inst.mix('clav', { level: 0.95, pan: 0.36, highpass: 180, lowpass: introType === 'clav' ? 1600 : 2400, reverb: 0.12, delay: 0.06 });
       inst.mix('lead', { level: leadLevel, pan: 0.03, reverb: 0.22, delay: 0.12 });
       inst.mix('brass', { level: 1.1, pan: -0.3, reverb: 0.24 });
       inst.mix('strings', { level: 1.5, highpass: 280, lowpass: 5000, reverb: 0.4 });
@@ -972,7 +1026,14 @@ export const track: MusicTrack = {
       bp.frequency.value = 1500;
       bp.Q.value = 1.3;
       bp.connect(inst.channel('clav').input);
-      scratchV = new NoiseVoice(env, 'clav', bp, t0, end, 1.2, 0.6);
+      scratchV = new NoiseVoice(env, 'clav', bp, t0, end, 1.8, 0.6);
+      // slap dead notes: a muted thump (band-passed noise) through the slap channel
+      const dp = env.ctx.createBiquadFilter();
+      dp.type = 'bandpass';
+      dp.frequency.value = 330;
+      dp.Q.value = 0.9;
+      dp.connect(inst.channel('slap').input);
+      deadV = new NoiseVoice(env, 'slap', dp, t0, end, 7.5, 1.5);
     };
 
     // final chord: I 6/9 on the band, strings + Rhodes ring out
@@ -983,7 +1044,7 @@ export const track: MusicTrack = {
       const sec = (beats: number) => b.beatsToSec(beats);
       inst.brass(t + 0.005, grip(sl.brass, c, { lo: 60, hi: 79, count: 4 }), 0.9, 0.56);
       inst.strings(t, sl.str, sec(8), 0.36, { attack: 0.25, release: 2.6, cutoff: 3200 });
-      sl.ep.forEach((m, j) => inst.epiano(t + 0.03 + j * 0.035, m, sec(8), 0.42 + j * 0.015));
+      grip(sl.ep, c, { lo: 55, hi: 74, count: 4 }).forEach((m, j) => inst.epiano(t + 0.03 + j * 0.035, m, sec(8), 0.42 + j * 0.015));
       inst.clav(t, sl.clav[sl.clav.length - 1], 0.2, 0.5, { bright: 0.35 });
       inst.slap(t, sl.root, sec(5), 0.72);
       inst.kick(t, 0.72, { tune: kickTune, decay: 0.45, click: 0.3 });
@@ -1004,6 +1065,7 @@ export const track: MusicTrack = {
         hatV?.stop(t + fade);
         tambV?.stop(t + fade);
         scratchV?.stop(t + fade);
+        deadV?.stop(t + fade);
       },
       bar(b: BarInfo) {
         const p = plan[b.bar];
@@ -1035,7 +1097,7 @@ export const track: MusicTrack = {
         // --- bass
         for (const e of p.bass) {
           const t = humanize(rng, S(e.step), 4), d = Math.max(0.06, L(e.len) * 0.92), v = e.vel * Math.sqrt(dyn);
-          if (e.dead) inst.slap(t, e.midi, 0.035, v);
+          if (e.dead) deadV?.hit(t, v, 0.001, 0.028, 0, L(1));
           else if (e.pop) inst.slap(t, e.midi, d, v);
           else inst.bass(t, e.midi, d, v);
         }

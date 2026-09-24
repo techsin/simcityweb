@@ -473,7 +473,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       rough = 0.1;
       metal = 0.45;
       float bay = bh31(vec3(floor(u / 4.0 + 1e-3), floor(v / 6.0 + 1e-3), floor(vSeed * 61.0)));
-      emis += vec3(0.95, 0.38, 0.075) * night * (0.42 + 0.22 * bay);
+      emis += vec3(0.95, 0.34, 0.05) * night * (0.26 + 0.14 * bay);
     } else if (pattern > 0.5 && pattern < 1.5) {
       albedo = vec3(0.035, 0.045, 0.055) + albedo * 0.2;
       rough = 0.05;

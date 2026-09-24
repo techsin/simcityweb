@@ -468,8 +468,9 @@ export const APPROVAL = {
 // §APPROVAL (owner WP4): new approval term constants go below this line ---------------------------------------------
 /**
  * SIM_DEPTH_SPEC WP4 resident-weighted approval terms (points; monthly; all terms land in econData.approvalTerms and
- * approvalBreakdown()). The legacy terms above keep their formulas; APPROVAL.base is re-fitted so the balance bot stays
- * within ±3 points of its baseline with the new (mostly negative) terms.
+ * approvalBreakdown()). The legacy terms above keep their formulas; APPROVAL.base was re-fitted (58 → 61) on the phase-0
+ * stubs so the balance bot stayed within ±3 points of its baseline with the new (mostly negative) terms; the final fit
+ * with real garbage / needs inputs and the adapted bot belongs to WP6's balance pass.
  */
 export const APPROVAL_TERMS = {
   /** −12 × resident noise 0..1 */
@@ -504,9 +505,21 @@ export const APPROVAL_TERMS = {
   justice: -3,
   /** a tornado / earthquake / meteor struck last month */
   disaster: -5,
-  /** garbage, unmet-needs, outage and poor-HQ terms fade in over the first residents (a hamlet has no school yet) */
+  /** outage and poor-HQ terms fade in over needsPop0..needsPop1 residents (a hamlet waits for its first power plant /
+   *  clinic without blaming the mayor); garbage over needsPop0..garbagePop1; unmet needs follow WP1's expectation curve
+   *  (NEEDS_POP_START..NEEDS_POP_FULL: a town does not expect a school on every street, a 60k city does) */
   needsPop0: 2000,
   needsPop1: 8000,
+  garbagePop1: 20000,
+  /**
+   * SERVICE GAPS (garbage, unmet needs, tap water): each term saturates softly at gapSat points
+   * (t = −sat × (1 − exp(raw / sat)): the spec formula while small, never below −sat), and together they cost at most
+   * |gapMax| (all three scaled by one factor when their sum is lower). A city that neglects everything at once stays
+   * out of the riot band, and — because any two saturations stay within |gapMax| — fixing any one gap still shows up
+   * in approval.
+   */
+  gapSat: { garbage: 5, needs: 5, tapWater: 3 },
+  gapMax: -10,
 };
 
 // ============================================================================ §DEMOGRAPHICS (owner WP1)
@@ -627,7 +640,9 @@ export const DEMOGRAPHICS_EVENT_DAYS = 30;
  * Tourism (economy/tourism.ts, monthly + init). Venue table ATTRACTIONS and HOTEL_ROOMS_PER_JOB live in tourism.ts.
  *  visits V_f = min(cap_f, draw_f × (A/A_REF)^A_EXP × access_f × op_f × sizeF × ordinance 'tourism.draw')
  *  access_f = min(ACCESS_MAX, ACCESS_BASE + ACCESS_FREIGHT × coarse freight access + ACCESS_TRANSIT × transit coverage)
- *  op_f = functional × (powered or no power use) × min(OP_FUNDING_MAX, service effectiveness) × facility use factor
+ *  op_f = functional × (powered or no power use) × (road next to the lot; not for 'nature' venues)
+ *         × min(OP_FUNDING_MAX, service effectiveness)   (tourism.ts venueOp; 0 on strike; linked stops, WP7)
+ *         (the WP7 facility use factor scales cap relief, freight boost and venue income, not visits)
  *  sizeF = SIZE_MIN + (1 − SIZE_MIN) × smoothstep(0, SIZE_POP, population)  (1 for 'nature' venues: local leisure)
  *  tourists T = Σ V; overnight = T × (OVERNIGHT_BASE + large airport + small airport); rooms = Σ hotel jobs × 1.5;
  *  T_eff = T − HOTEL_LOSS × max(0, overnight − rooms); tourism CS jobs = T_eff × CS_JOBS_PER_VISITOR.
@@ -665,8 +680,6 @@ export const TOURISM = {
   splatRMax: 32,
   /** culture score: 1 − exp(−(landmark + culture visits) / CULTURE_REF) */
   cultureRef: 4000,
-  /** monthly EMA of attractiveness (keeps the migration signal calm) */
-  attractEma: 0.35,
 };
 /** CS jobs per effective tourist per day (shops, restaurants, hotels) — calibrated to the old cap-relief tourism */
 export const CS_JOBS_PER_VISITOR = 0.5;
@@ -704,6 +717,8 @@ export const ATTRACT_CONNECT = { perConnection: 0.1, airportLarge: 0.3, airportS
  *  other metropolises: a town is judged against towns, a big city needs more to stand out)
  *  × (1 − MIG_SCHOOL × unreached pupil share) for R$$ / R$$$ (families avoid areas without schools),
  * faded in by smoothstep(0, MIG_POP, population) (a hamlet has no reputation yet).
+ * The pull (m_w > 1) fades out between UNEMP_NEUTRAL and UNEMP_NEUTRAL + MIG_UNEMP_SPAN unemployment (a city without
+ * work stops importing job seekers once its land for jobs runs out); the push (m_w < 1) is kept.
  * Retirees (+RETIREES × (.5 + HQ/150) × (.5 + green)) and students (+STUDENTS_PER_SEAT × university seats) come
  * without local jobs: they are added to the R base (× connection factor like R_BASE).
  */
@@ -716,6 +731,7 @@ export const MIG_MIN = 0.88;
 export const MIG_MAX = 1.12;
 export const MIG_POP = 3000;
 export const MIG_SCHOOL = 0.08;
+export const MIG_UNEMP_SPAN = 0.07;
 export const RETIREES = 250;
 export const RETIREE_SPLIT: readonly [number, number, number] = [0, 0.6, 0.4];
 export const STUDENTS_PER_SEAT = 0.5;

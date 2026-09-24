@@ -12,7 +12,8 @@
  *  - Emits buildingChanged on flag flips, 'disaster' {kind:'fire', x, z, active} when a fire starts / ends,
  *    news via sim.notify(..., 'disaster') (legacy path; the emergency system writes its own news).
  *  Burning state persists in state.systemData.infraFires = [buildingId, daysBurning, putOutDay, incidentId, heat][]
- *  (+ infraFireRng / infraFireBoost so a loaded game continues the same ignition sequence).
+ *  (+ infraFireRng / infraFireBoost so a loaded game continues the same ignition sequence) — written by persist() at
+ *  the end of fire.daily, on every ignition, and again by the emergency system after its daily fire steps.
  */
 import { BF, type Building } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
@@ -111,12 +112,12 @@ export class FireSystem implements SimSystem {
     if (this.emergencyActive(sim)) {
       // WP8: burning, spread and extinguishing are driven by the fire incidents (emergency.ts)
       this.adoptOrphans(sim);
-      this.save(sim);
+      this.persist(sim);
       return;
     }
     // --- burning buildings (legacy path)
     if (this.fires.size === 0) {
-      this.save(sim);
+      this.persist(sim);
       return;
     }
     const toSpread: Building[] = [];
@@ -146,7 +147,7 @@ export class FireSystem implements SimSystem {
         if (rng.next() < (FIRE_SPREAD_P * (1 - 0.8 * Math.min(1, cov))) / Math.max(1, (b.w + b.d) / 2)) this.ignite(sim, nb, true);
       }
     }
-    this.save(sim);
+    this.persist(sim);
   }
 
   /** emergency path: fires without an incident (loaded legacy saves, flags set by others) join the dispatch system */
@@ -177,7 +178,7 @@ export class FireSystem implements SimSystem {
     // WP8: the emergency system dispatches trucks along real routes
     const em = emergencyOf(sim);
     if (em && em.active === true && em.onFire(sim, b, spread)) {
-      this.save(sim);
+      this.persist(sim);
       return true;
     }
     // legacy: coverage decides when it is put out
@@ -191,7 +192,7 @@ export class FireSystem implements SimSystem {
       this.lastNews = st.day;
       sim.notify(f.putOut >= 0 ? 'Fire reported! Firefighters are on their way.' : 'Fire reported in an area without fire coverage!', 'disaster', b.x, b.z, 'fire');
     }
-    this.save(sim);
+    this.persist(sim);
     return true;
   }
 
@@ -216,7 +217,7 @@ export class FireSystem implements SimSystem {
   extinguish(sim: Simulation, b: Building): void {
     if (!(b.flags & BF.OnFire)) return;
     this.putOut(sim, b);
-    this.save(sim);
+    this.persist(sim);
   }
 
   /** legacy path: a service vehicle route from the nearest fire station (vehicle renderer) */
@@ -238,7 +239,9 @@ export class FireSystem implements SimSystem {
     if (path && path.length >= 2) tr.pushServiceRoute(sim, path, 1, 2);
   }
 
-  private save(sim: Simulation): void {
+  /** write the burning state to state.systemData (the emergency system calls this after its daily fire steps, which
+   *  change days / heat after fire.daily ran, so a save always holds the current burn clock) */
+  persist(sim: Simulation): void {
     const arr: number[][] = [];
     for (const [id, f] of this.fires) arr.push([id, f.days, f.putOut, f.incidentId, Math.round(f.heat * 1e6) / 1e6]);
     const sd = sim.state.systemData;

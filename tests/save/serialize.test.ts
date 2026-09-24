@@ -306,4 +306,30 @@ describe('WP1 demographics building fields', () => {
     for (const b of homes) for (const f of ['kids', 'teens', 'yad', 'srs', 'wf', 'edu'] as const) expect(b[f], f).toBeDefined();
     expect(old.stats.workforce).toBeGreaterThan(0);
   });
+
+  it('restored buildings share one property order (V8 fast properties / one hidden class for homes and businesses)', { timeout: 60000 }, () => {
+    const { st } = town();
+    const back = deserializeCity(serializeCity(st));
+    const orders = new Set<string>();
+    for (const b of back.buildings.values()) {
+      const keys = Object.keys(b);
+      expect(keys.slice(0, 3)).toEqual(['id', 'def', 'x']);
+      if (b.kids !== undefined || b.hire !== undefined) orders.add(keys.join(','));
+    }
+    expect(orders.size).toBe(1);
+    expect([...orders][0].split(',').slice(-7)).toEqual([...FIELDS]);
+  });
+
+  it('an old save keeps its EQ: its residents start from the saved education level, not the first-settler one', { timeout: 300000 }, () => {
+    const { st } = town();
+    const obj = serializeCity(st);
+    delete obj.buildings.opt;
+    delete (obj.data.systemData as Record<string, unknown>).demographics;
+    const old = deserializeCity(obj);
+    expect(old.stats.population).toBeGreaterThan(0);
+    old.stats.eq = 90; // (the pre-WP1 coverage model) — EDU_NEWCOMER would pull it toward 46
+    new WP1Simulation(old, wp1Systems()).runDays(360);
+    console.log(`old save EQ 90 -> ${old.stats.eq.toFixed(1)} after 360 days`);
+    expect(old.stats.eq).toBeGreaterThan(75);
+  });
 });

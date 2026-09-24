@@ -40,7 +40,16 @@ export class RoadSurface {
     let cx = Math.floor(wx / CELL_SIZE), cz = Math.floor(wz / CELL_SIZE);
     if (cx < 0) cx = 0; else if (cx >= N) cx = N - 1;
     if (cz < 0) cz = 0; else if (cz >= N) cz = N - 1;
-    const i = cz * N + cx;
+    return this.baseIn(cz * N + cx, wx, wz);
+  }
+
+  /**
+   * base() evaluated with cell i's span (bridge / overpass deck profile, or the terrain when i has none). The road
+   * mesher evaluates each cell's own vertices with it: a vertex on the edge between a deck cell and a neighbour off the
+   * deck belongs to the cell being meshed (floor() alone hands the deck's far lateral edge to the neighbour's ground,
+   * dropping that edge to the terrain, and lifts the edge of a road beside the deck up onto it).
+   */
+  baseIn(i: number, wx: number, wz: number): number {
     const net = this.net;
     const ax = net.bAxis[i];
     if (ax < 0) return this.terrain(wx, wz);

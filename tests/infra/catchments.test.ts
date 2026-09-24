@@ -1,7 +1,9 @@
 /**
- * WP2 catchments & proximity engine (docs/SIM_DEPTH_SPEC.md §B): reach kernels (walk / drive / euclid), capacity
- * sharing (seats conserved, crowding), tier separation, power gating, facilityLoad, unservedClusters, access fields
- * (accessCommute, shopAccess), NIMBY / YIMBY rasters, the reach cache and the step budget.
+ * WP2 catchments & proximity engine (docs/SIM_DEPTH_SPEC.md §B): reach kernels (walk / drive / euclid, near-field
+ * barriers), capacity sharing (seats conserved, crowding), monotonicity (building a facility never lowers any cell's
+ * coverage), tier separation, power gating, facilityLoad, unservedClusters, access fields (accessCommute, shopAccess),
+ * NIMBY / YIMBY rasters (landfill fill), the reach cache, transit reset, bulldozing, map edges, an empty city and the
+ * step budget.
  */
 import { describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
@@ -9,7 +11,7 @@ import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { CATALOG, getDef, rebuildCatalogIndex } from '../../src/sim/catalog';
 import type { BuildingDef } from '../../src/sim/catalogTypes';
 import { clearInfoCache, infoOf, removeBuilding } from '../../src/sim/infra/common';
-import { facilityLoad, newReachScratch, reachCells, unservedClusters } from '../../src/sim/infra/catchments';
+import { facilityLoad, newReachScratch, reachCells, registerTierProvider, unservedClusters } from '../../src/sim/infra/catchments';
 import { SERVICES_DIRTY_DAYS, type ServicesSystem } from '../../src/sim/infra/services';
 import { schedulerOf } from '../../src/sim/infra/scheduler';
 import { NETFLAG_BUS_STOP } from '../../src/sim/infra/transit';
@@ -212,9 +214,35 @@ describe('catchments: monotonicity (building a facility never lowers coverage)',
       const { drop, at } = maxDrop(before, after);
       console.log(`${order}: X ${before[st.idx(13, 31)].toFixed(3)} -> ${after[st.idx(13, 31)].toFixed(3)}, Y ${before[st.idx(45, 31)].toFixed(3)} -> ${after[st.idx(45, 31)].toFixed(3)}, max drop ${drop.toExponential(1)} at ${at}`);
       expect(drop).toBeLessThan(1e-5);
-      expect(after[st.idx(13, 31)]).toBeGreaterThan(0.95); // X stays served (a proportional split gave ~0.6)
+      expect(after[st.idx(13, 31)]).toBeGreaterThan(0.95); // X stays served (the old proportional split: 0.82, split by capacity: 0.65)
       expect(after[st.idx(45, 31)]).toBeGreaterThan(0.3); // Y gets the big school's seats
       void first; void second;
+    }
+  });
+
+  it('more seats at one school (tier provider capacity) never lower any cell; the provider hook is used', () => {
+    registerWp2();
+    const st = newState(64);
+    roadLine(st, 2, 30, 62, 30, Network.Road);
+    homes(st, 10, 50, 31, 1200);
+    const a = place(st, 'wp2_elem', 20, 29), b = place(st, 'wp2_elem', 36, 29);
+    let seatsB = 600;
+    registerTierProvider('elementary', { shared: true, capacityOf: (_s, f) => (f.id === b.id ? seatsB : 1500) });
+    try {
+      const sim = newSim(st);
+      expect(facilityLoad(sim, b.id)!.capacity).toBe(600);
+      let prev = Float32Array.from(st.eduElemCov);
+      for (const seats of [900, 1500, 3000]) {
+        seatsB = seats;
+        svc(sim).compute(sim, false);
+        expect(facilityLoad(sim, b.id)!.capacity).toBe(seats);
+        const cur = Float32Array.from(st.eduElemCov);
+        expect(maxDrop(prev, cur).drop).toBeLessThan(1e-5);
+        prev = cur;
+      }
+      expect(facilityLoad(sim, a.id)!.seated).toBeLessThanOrEqual(1500 + 1e-3);
+    } finally {
+      registerTierProvider('elementary', null);
     }
   });
 
@@ -421,6 +449,27 @@ describe('catchments: clusters, access fields, NIMBY', () => {
     sim.events.emit('buildingChanged', plant);
     svc(sim).compute(sim, false);
     expect(st.stigma[st.idx(22, 26)]).toBe(0);
+  });
+
+  it('landfill stigma follows how full that landfill is, not the city-wide garbage balance', () => {
+    const st = newState(64);
+    roadLine(st, 2, 30, 60, 30, Network.Road);
+    const zoneBlock = (x0: number, fill: number) => { for (let z = 10; z < 16; z++) for (let x = x0; x < x0 + 6; x++) { st.zone[st.idx(x, z)] = Zone.Landfill; st.landfillFill[st.idx(x, z)] = fill; } };
+    zoneBlock(10, 0); // empty landfill
+    zoneBlock(40, 1); // full landfill
+    // a big incinerator elsewhere would have made the old city-wide "use" tiny for both
+    st.stats.garbageCapacity = 1e6; st.stats.garbageProduced = 10;
+    const sim = newSim(st);
+    const s: { nimbyDirty: boolean } = svc(sim) as unknown as { nimbyDirty: boolean };
+    // pin the fills (the pollution system's landfill model would refill / drain them) and rebuild the rasters
+    zoneBlock(10, 0); zoneBlock(40, 1); s.nimbyDirty = true;
+    svc(sim).compute(sim, false);
+    // 4 cells outside each landfill (inside a big one the summed blocks saturate either way)
+    const empty = st.stigma[st.idx(12, 19)], full = st.stigma[st.idx(42, 19)];
+    console.log(`landfill stigma 4 cells out: empty ${empty.toFixed(3)} full ${full.toFixed(3)} (inside: ${st.stigma[st.idx(12, 12)].toFixed(3)} / ${st.stigma[st.idx(42, 12)].toFixed(3)})`);
+    expect(empty).toBeGreaterThan(0);
+    expect(full).toBeGreaterThan(empty * 1.5);
+    expect(st.stigma[st.idx(42, 12)]).toBeGreaterThan(st.stigma[st.idx(12, 12)]);
   });
 
   it('prestige near a landmark, campus near a university; highway corridor stigma (tunnels none)', () => {

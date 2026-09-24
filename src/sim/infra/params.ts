@@ -469,23 +469,32 @@ export const EMERG_RANGE_K = 1.25;
 export const EMERG_RMAX = 12;
 /** response layers also record how far (minutes) beyond a station's range a cell is, down to -EMERG_SLOW_MARGIN */
 export const EMERG_SLOW_MARGIN = 6;
-/** a player dispatch is offered when a free unit is within this many minutes */
+/** automatic dispatch looks for a unit beyond the stations' ranges (minor incidents, "can the player still make it")
+ *  at most this many minutes out, and never farther than the incident's time left */
 export const EMERG_MANUAL_MAX = 60;
 /** a clinic ambulance takes its patient to a hospital within this many minutes (else treats on site) */
 export const EMERG_HOSPITAL_MAX = 25;
 /** siren link time = t0 x (1 + EMERG_SIREN_CONG x (bpr - 1)): sirens cut through most of the congestion */
 export const EMERG_SIREN_CONG = 0.3;
-/** dispatch road searches per sim day (the rest wait for the next day) */
+/** daily automatic-dispatch search budget: the first EMERG_SEARCHES_PER_DAY searches always run, further ones while
+ *  fewer than EMERG_SEARCH_NODES_PER_DAY road nodes were settled that day (~2 ms), so a disaster's aftermath is
+ *  answered the same day; what is left waits for the next day (fires first, then major incidents) */
 export const EMERG_SEARCHES_PER_DAY = 4;
-/** response layers: full refresh period / earliest refresh after a station or network change (days) */
-export const EMERG_RESP_PERIOD = 30;
+export const EMERG_SEARCH_NODES_PER_DAY = 40000;
+/** response layers: full refresh period (days; ~10 estimated ms per refresh on a 256² city, so ~0.11 ms/day of
+ *  WP8's 0.15 scheduler share); station / fleet changes refresh right away, road-graph changes within
+ *  EMERG_RESP_NET_DAYS days with a live renderer (headless they wait for the periodic refresh) */
+export const EMERG_RESP_PERIOD = 90;
+export const EMERG_RESP_NET_DAYS = 3;
 /** unpowered station: extra turnout time (days) */
 export const EMERG_UNPOWERED_TURNOUT = 0.5;
 /** stored route cells per vehicle (corner cells only, so real routes stay far below this) */
 export const EMERG_MAX_PATH = 400;
 /** grace (first unit on scene after it = late) and deadline (not resolved by then = failed), days after the start.
- *  Fire grace 4 >= a fire station's auto range (3.9 min): trucks inside a station's normal reach are on time; the
- *  industrial grace is also when an accident nobody was sent to ignites the plant. */
+ *  Fire grace 4 >= a fire station's auto range (3.9 min); a unit sent from inside its station's range is never late
+ *  while it arrives within max(grace, range + turnout) (fire HQ 6.2, medical center 9.1 min). The industrial grace
+ *  is also when an accident nobody was sent to ignites the plant. Coverage promise: a burning building never burns
+ *  down while the first truck sent from inside its station's range is still on its way. */
 export const EMERG_GRACE: Readonly<Record<string, number>> = { fire: 4, industrial: 3, spill: 5, crime: 5, riot: 5, medical: 5, collapse: 5, prisonRiot: 5 };
 export const EMERG_DEADLINE: Readonly<Record<string, number>> = { fire: 6, industrial: 12, spill: 30, crime: 20, riot: 30, medical: 16, collapse: 15, prisonRiot: 20 };
 /** on-scene work (unit-days per needed unit) for the non-fire kinds */
@@ -544,10 +553,12 @@ export const MED_DELAY_LOSS = 0.67;
 /** response-layer task (scheduler 'emergency.response'): station searches settle at most EMERG_SEARCH_CHUNK road
  *  nodes per step and the building fill covers EMERG_FILL_CHUNK buildings per step, so every step stays bounded on
  *  any map. Estimated ms (measured on the 256² stress city): EMERG_SEARCH_COST per 36k settled nodes,
- *  EMERG_FILL_CELLS_COST per 65k cells (the land fill of all three layers), EMERG_FILL_BLD_COST per 20k buildings */
+ *  EMERG_FILL_CELLS_COST per 65k cells (the land fill of all three layers), EMERG_FILL_BLD_COST per 20k buildings,
+ *  EMERG_SEARCH_FINISH_COST per 36k nodes for the O(n) slack pass of the step that finishes a search */
 export const EMERG_SEARCH_CHUNK = 24000;
 export const EMERG_FILL_CHUNK = 12000;
 export const EMERG_SEARCH_COST = 1.6;
+export const EMERG_SEARCH_FINISH_COST = 0.4;
 export const EMERG_FILL_CELLS_COST = 1.5;
 export const EMERG_FILL_BLD_COST = 1.5;
 // §EMERGENCY end

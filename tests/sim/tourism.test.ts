@@ -11,14 +11,15 @@ import type { Simulation, SimSystem } from '../../src/sim/Simulation';
 import { getDef } from '../../src/sim/catalog';
 import { econData } from '../../src/sim/economy/runtime';
 import { economyRuntime, economySystems } from '../../src/sim/systems/economy';
-import { placeBuilding } from '../../src/sim/economy/buildings';
-import { demandContext } from '../../src/sim/economy/demand';
+import { lotTouchesRoad, placeBuilding } from '../../src/sim/economy/buildings';
+import { capHints, demandContext } from '../../src/sim/economy/demand';
 import { computeMonthlyBudget, venueIncomeFactor } from '../../src/sim/economy/budget';
 import {
   ATTRACTIONS, attractivenessBreakdown, migrationFactor, tourismSummary, tourismTrips, venueVisits,
 } from '../../src/sim/economy/tourism';
 import { sumTerms } from '../../src/sim/explain';
-import { MIG_MAX, MIG_MIN } from '../../src/sim/economy/tuning';
+import { CS_JOBS_PER_VISITOR, MIG_MAX, MIG_MIN, MIG_UNEMP_SPAN, UNEMP_NEUTRAL } from '../../src/sim/economy/tuning';
+import { CAP_RELIEF } from '../../src/sim/catalog';
 import { Simulation as Sim } from '../../src/sim/Simulation';
 import { stressCity } from '../infra/cityGen';
 
@@ -37,12 +38,31 @@ function city(size = 96) {
   return c;
 }
 
-function plop(c: ReturnType<typeof city>, id: string, x: number, z: number): Building {
+/** plop a venue; unless `withRoad` is false, lay a road along a free side of the lot so it has road access */
+function plop(c: ReturnType<typeof city>, id: string, x: number, z: number, withRoad = true): Building {
   const def = getDef(id)!;
   if (def.requires) c.st.unlocked.add(def.requires);
   const r = c.A.plop(id, x, z, 0);
   expect(r.ok, `${id}: ${r.reason}`).toBe(true);
-  return c.st.buildingAt(x, z)!;
+  const b = c.st.buildingAt(x, z)!;
+  if (withRoad && !lotTouchesRoad(c.st, b.x, b.z, b.w, b.d)) {
+    const free = (x0: number, z0: number, x1: number, z1: number) => {
+      for (let zz = z0; zz <= z1; zz++) for (let xx = x0; xx <= x1; xx++) {
+        if (!c.st.inBounds(xx, zz) || c.st.building[c.st.idx(xx, zz)] >= 0 || c.st.water[c.st.idx(xx, zz)]) return false;
+      }
+      return true;
+    };
+    const sides: [number, number, number, number][] = [
+      [b.x, b.z - 1, b.x + b.w - 1, b.z - 1], [b.x, b.z + b.d, b.x + b.w - 1, b.z + b.d],
+      [b.x - 1, b.z, b.x - 1, b.z + b.d - 1], [b.x + b.w, b.z, b.x + b.w, b.z + b.d - 1],
+    ];
+    const s = sides.find((q) => free(...q));
+    expect(s, `${id}: no free side for a road`).toBeDefined();
+    const rr = road(c.A, s![0], s![1], s![2], s![3], Network.Road);
+    expect(rr.ok, `${id}: road ${s!.join(',')}: ${rr.reason}`).toBe(true);
+    expect(lotTouchesRoad(c.st, b.x, b.z, b.w, b.d)).toBe(true);
+  }
+  return b;
 }
 
 let nextId = 1_000_000;
@@ -125,6 +145,66 @@ describe('tourism: venues and visits', () => {
     zoo.flags |= BF.Burnt;
     tourismMonth(c.sim);
     expect(venueVisits(c.st, zoo.id)!.visits).toBe(0);
+  });
+
+  it('a tourist venue needs a road next to its lot: no visits, cap relief or income without one (parks exempt)', () => {
+    const c = city();
+    const rt = economyRuntime(c.sim.systems)!;
+    const castle = plop(c, 'lm_castle', 20, 60, false); // 10 cells south of the z = 50 road
+    expect(lotTouchesRoad(c.st, castle.x, castle.z, castle.w, castle.d)).toBe(false);
+    c.st.stats.population = 100000;
+    econData(c.st).attractiveness = 60;
+    tourismMonth(c.sim);
+    expect(venueVisits(c.st, castle.id)!.visits).toBe(0);
+    expect(venueVisits(c.st, castle.id)!.op).toBe(0);
+    expect(econData(c.st).tourists).toBe(0);
+    expect(venueIncomeFactor(c.st, castle.id, 'lm_castle')).toBe(0);
+    const ctx0 = demandContext(c.st, rt);
+    expect(ctx0.reliefLost.R).toBeCloseTo(CAP_RELIEF.lm_castle.R!, 6);
+    expect(ctx0.reliefLost.C).toBeCloseTo(CAP_RELIEF.lm_castle.C!, 6);
+    expect(ctx0.reliefIssues.R).toEqual({ noRoad: 1 });
+    // a capped family names the cause first
+    const d = econData(c.st);
+    d.capBinding[0] = 1;
+    c.st.stats.demand[0] = 0.5;
+    const hint = capHints(c.st).find((h) => h.family === 'R')!.hint;
+    expect(hint).toMatch(/without road access/);
+    expect(hint).toMatch(/15,000/);
+    // a street next to the lot opens it
+    expect(road(c.A, castle.x, castle.z - 1, castle.x + castle.w - 1, castle.z - 1, Network.Street).ok).toBe(true);
+    econData(c.st).attractiveness = 60;
+    tourismMonth(c.sim);
+    expect(venueVisits(c.st, castle.id)!.visits).toBeGreaterThan(50);
+    const ctx1 = demandContext(c.st, rt);
+    expect(ctx1.reliefLost.R).toBe(0);
+    expect(ctx1.relief.R - ctx0.relief.R).toBeCloseTo(CAP_RELIEF.lm_castle.R!, 6);
+    expect(capHints(c.st).find((h) => h.family === 'R')!.hint).not.toMatch(/below strength/);
+    // plazas / parks are walk-in leisure: no road needed
+    const plaza = plop(c, 'park_plaza', 70, 64, false);
+    expect(lotTouchesRoad(c.st, plaza.x, plaza.z, plaza.w, plaza.d)).toBe(false);
+    tourismMonth(c.sim);
+    expect(venueVisits(c.st, plaza.id)!.visits).toBeGreaterThan(0);
+  });
+
+  it('a bulldozed venue leaves the tourism totals and the venue lists at once', () => {
+    const c = city();
+    const castle = plop(c, 'lm_castle', 20, 34);
+    const cathedral = plop(c, 'lm_cathedral', 56, 34);
+    c.st.stats.population = 100000;
+    econData(c.st).attractiveness = 60;
+    tourismMonth(c.sim);
+    const d = econData(c.st);
+    const t0 = d.tourists;
+    const v = venueVisits(c.st, castle.id)!.visits;
+    expect(v).toBeGreaterThan(0);
+    expect(c.A.bulldoze({ x0: castle.x, z0: castle.z, x1: castle.x + castle.w, z1: castle.z + castle.d }).ok).toBe(true);
+    expect(c.st.buildings.has(castle.id)).toBe(false);
+    expect(venueVisits(c.st, castle.id)).toBeNull();
+    expect(tourismTrips(c.st).map((t) => t.buildingId)).toEqual([cathedral.id]);
+    expect(tourismSummary(c.st)!.topVenues.map((t) => t.buildingId)).toEqual([cathedral.id]);
+    expect(d.tourists).toBeCloseTo(t0 - v, 6);
+    expect(d.tourism).toBeCloseTo(d.tourists * CS_JOBS_PER_VISITOR, 6);
+    expect(c.st.stats.tourists).toBe(Math.round(d.tourists));
   });
 
   it('hotels: overnight visitors without rooms stay away (more with an international airport)', () => {
@@ -248,7 +328,16 @@ describe('tourism: income', () => {
     // recycled material sales (WP3 writes stats.garbageRecycled, t / month)
     c.st.stats.garbageRecycled = 1000;
     expect(computeMonthlyBudget(c.st, rt).income.recycling).toBe(500);
-    // closed venue: base share only
+    // a closed venue (parks on strike: op 0) earns nothing, not even the base share
+    econData(c.st).strikes.parks = 2;
+    tourismMonth(c.sim);
+    expect(venueVisits(c.st, zoo.id)!.op).toBe(0);
+    expect(venueIncomeFactor(c.st, zoo.id, 'park_zoo')).toBe(0);
+    expect(computeMonthlyBudget(c.st, rt).income['facility:park_zoo'] ?? 0).toBe(0);
+    econData(c.st).strikes.parks = 0;
+    tourismMonth(c.sim);
+    expect(computeMonthlyBudget(c.st, rt).income['facility:park_zoo'] ?? 0).toBeGreaterThan(0);
+    // burnt: nothing
     zoo.flags |= BF.Burnt;
     expect(computeMonthlyBudget(c.st, rt).income['facility:park_zoo'] ?? 0).toBe(0);
   });
@@ -307,6 +396,17 @@ describe('attractiveness and migration', () => {
     expect(migrationFactor(0, 100000)).toBe(MIG_MIN);
     // a hamlet has no reputation yet
     expect(migrationFactor(100, 0)).toBe(1);
+    // no work, no pull: the gain fades out above UNEMP_NEUTRAL; the loss of an unattractive city stays
+    expect(migrationFactor(100, 100000, 0, UNEMP_NEUTRAL)).toBe(MIG_MAX);
+    expect(migrationFactor(100, 100000, 0, UNEMP_NEUTRAL + MIG_UNEMP_SPAN / 2)).toBeCloseTo(1 + (MIG_MAX - 1) / 2, 9);
+    expect(migrationFactor(100, 100000, 0, 0.2)).toBe(1);
+    expect(migrationFactor(0, 100000, 0, 0.2)).toBe(MIG_MIN);
+    let prevU = Infinity;
+    for (let u = 0; u <= 0.3; u += 0.01) {
+      const m = migrationFactor(80, 200000, 0, u);
+      expect(m).toBeLessThanOrEqual(prevU);
+      prevU = m;
+    }
     // the R target follows the multiplier exactly
     const c = city();
     c.sim.runDays(3);
@@ -380,7 +480,8 @@ describe('tourism: cost', () => {
     console.log(`tourism monthly (incl. resident survey): ${best.toFixed(2)} ms · ${rt.growables.length} growables, ${s.beachCells} beach cells, `
       + `${Math.round(s.tourists)} tourists ≈ ${(best / 30).toFixed(3)} ms/day`);
     expect(s.beachCells).toBeGreaterThan(100);
-    // measured times spike 10–200 ms on the shared CI box: strict budget only with PERF_STRICT=1 (≈ 3 ms/month unloaded)
-    expect(best).toBeLessThan(process.env.PERF_STRICT ? 6 : 80);
+    // wall-clock budgets only with PERF_STRICT=1 (like tests/infra/perf.test.ts): the shared CI box spikes 10–200 ms
+    // under load, while an unloaded run measures ≈ 1.5–3 ms per month
+    if (process.env.PERF_STRICT) expect(best).toBeLessThan(6);
   });
 });

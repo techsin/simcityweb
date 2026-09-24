@@ -4,6 +4,7 @@ import type { GameContext } from '../game/context';
 import { clear, h, setText, toggleClass } from './dom';
 import { icon } from './icons';
 import { compact, dayLabel, hourLabel, money, moneySigned, num, signClass } from './format';
+import { approvalBreakdown } from '../sim/economy/approval';
 
 export function sumValues(r: Record<string, number> | undefined): number {
   let s = 0;
@@ -108,6 +109,8 @@ export class TopBar {
   private subBars: { el: HTMLElement; val: HTMLElement; dev: DevType; color: string }[] = [];
   private apprEl!: HTMLElement;
   private apprSeg!: HTMLElement;
+  /** approval terms object the tooltip was built from (a new object each month) */
+  private apprTerms: unknown = null;
   private leftGlass!: HTMLElement;
   private cityName!: HTMLElement;
   private citySub!: HTMLElement;
@@ -437,6 +440,22 @@ export class TopBar {
     if (this.apprSeg.className !== want) {
       this.apprSeg.className = want;
       (this.apprSeg.firstElementChild as HTMLElement).innerHTML = icon(ap >= 60 ? 'smile' : ap >= 40 ? 'meh' : 'frown', 20);
+    }
+    // why: the biggest approval terms of the last monthly update (sim-core approvalBreakdown, WP4), rebuilt monthly
+    const eco = st.systemData.economy as { approvalTerms?: object; approvalRaw?: number } | undefined;
+    if (eco?.approvalTerms !== this.apprTerms) {
+      this.apprTerms = eco?.approvalTerms;
+      let tip = 'Mayor approval — advisors (N)';
+      try {
+        const br = approvalBreakdown(st).filter((t) => t.id !== 'clamp');
+        if (br.length > 1) {
+          const line = (t: (typeof br)[number]) => `${t.value >= 0 ? '+' : '−'}${Math.abs(t.value).toFixed(1)}  ${t.label}${t.detail ? ` (${t.detail})` : ''}`;
+          tip = `Mayor approval ${Math.round(ap)}%, heading for ${Math.round(eco?.approvalRaw ?? ap)}%\n${br.slice(0, 10).map(line).join('\n')}\nClick for advisors (N)`;
+        }
+      } catch {
+        /* keep the plain title */
+      }
+      this.apprSeg.title = tip;
     }
   }
 }

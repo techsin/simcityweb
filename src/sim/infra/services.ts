@@ -50,10 +50,11 @@
  * SCHEDULING (InfraScheduler): a pass every SERVICES_PERIOD days (within SERVICES_DIRTY_DAYS after a service /
  * NIMBY building change, power flip or road change):
  *   prep (need rasters, facility lists, op factors) -> tiers police .. green + transit (bounded steps of
- *   WORK_PER_STEP work units: reach (cached / searched), allocate, finalize) -> transit stops -> NIMBY (every 2nd pass
- *   unless a NIMBY source / road changed) -> access commute (seeds, search, land; every ACCESS_PERIOD days or after a
- *   network change) -> access shops (search, land) -> footprints (uniform coverage over large buildings) -> finish
- *   (legacy combos, stats.needs, EQ / HQ fallback). Unserved clusters are computed on demand (unservedClusters).
+ *   WORK_PER_STEP work units: reach (cached / searched), seat allocation in seat order, crowded-facility demand,
+ *   finalize) -> transit stops -> NIMBY (every 2nd pass unless a NIMBY source building or a highway / rail cell
+ *   changed) -> access commute (seeds, search, land; every ACCESS_PERIOD days or after a network change) -> access
+ *   shops (search, land) -> footprints (uniform coverage over large buildings; layers of empty slots skipped) ->
+ *   finish (legacy combos, stats.needs, EQ / HQ fallback). Unserved clusters are computed on demand.
  *   Emits layerUpdated('services') and layerUpdated('catchments').
  */
 import type { Building, CityState, NeedStat, NeedTier } from '../CityState';
@@ -61,7 +62,7 @@ import { BF } from '../CityState';
 import type { ServiceKind } from '../catalogTypes';
 import type { SimSystem, Simulation } from '../Simulation';
 import type { CellRect } from '../../core/events';
-import { DevType } from '../../core/types';
+import { DevType, Network } from '../../core/types';
 import {
   COV_KINDS, Fam, REACH_METRICS, SERVICE_TIERS, buildingList, ensureIdFloat, fundingFactor, infoOf, isFunctional, jobSlots,
   nowMs, readEffects, wealthOf, type DefInfo, type OrdEffects,
@@ -156,6 +157,8 @@ export class ServicesSystem implements SimSystem {
   private doAccess = false;
   private nimbyDirty = true;
   private nimbyAge = 99;
+  /** hash of the highway / rail cells (+ bridge / tunnel bits): the NIMBY corridor sources */
+  private corridorH = 0;
   private doNimby = true;
   private dirty = false;
   private unsub: (() => void)[] = [];
@@ -250,8 +253,9 @@ export class ServicesSystem implements SimSystem {
       sim.events.on('buildingAdded', markB),
       sim.events.on('buildingRemoved', markB),
       sim.events.on('buildingChanged', markC),
+      // NIMBY only depends on highway / rail cells of the network: prep compares their hash (corridorHash)
       sim.events.on('networkChanged', (r) => {
-        this.dirty = true; this.accessDirty = true; this.nimbyDirty = true;
+        this.dirty = true; this.accessDirty = true;
         this.invalidateReach(r);
       }),
     ];
@@ -304,7 +308,11 @@ export class ServicesSystem implements SimSystem {
       case S_ACC_LAND: return 0.2 + 0.6 * bld + 1.6 * cells;
       case S_SHOP_A: return 0.2 + 0.3 * bld + 1.3 * roads;
       case S_SHOP_B: return 0.2 + 0.4 * bld + 1.7 * cells;
-      case S_FOOT: return 0.1 + 0.3 * bld + 0.9 * (this.multi.length / 2000);
+      case S_FOOT: {
+        let L = this.hadFac[SLOT_TRANSIT] || (this.stops?.n ?? 0) > 0 ? 1 : 0;
+        for (let k = 0; k < NT; k++) if (this.hadFac[k]) L++;
+        return 0.1 + 0.3 * bld + 0.9 * (this.multi.length / 2000) * (L / 9);
+      }
       default: return 0.2 + 0.5 * bld + 0.6 * cells;
     }
   }
@@ -432,6 +440,8 @@ export class ServicesSystem implements SimSystem {
     this.doAccess = this.firstPass || this.accessDirty || st.day - this.lastAccess >= ACCESS_PERIOD;
     if (this.doAccess) { this.lastAccess = st.day; this.accessDirty = false; }
     this.nimbyAge++;
+    const ch = corridorHash(st);
+    if (ch !== this.corridorH) { this.corridorH = ch; this.nimbyDirty = true; }
     this.doNimby = this.firstPass || this.nimbyDirty || this.nimbyAge >= 2;
     if (this.doNimby) { this.nimbyAge = 0; this.nimbyDirty = false; }
     this.ensure(C);
@@ -1023,10 +1033,13 @@ export class ServicesSystem implements SimSystem {
   }
 
   // ------------------------------------------------------------------------------------------------ footprints / finish
-  /** uniform coverage over building footprints (max over the footprint) */
+  /** uniform coverage over building footprints (max over the footprint); layers of empty slots are all 0 (skipped) */
   private footprints(st: CityState): void {
     const N = st.size;
-    const layers = [st.policeCov, st.fireCov, st.healthCov, st.eduElemCov, st.eduHighCov, st.eduCollegeCov, st.playCov, st.greenCov, st.transitCov];
+    const layers: Float32Array[] = [];
+    for (let k = 0; k < NT; k++) if (this.hadFac[k]) layers.push(tierLayer(st, NEED_ORDER[k]));
+    if (this.hadFac[SLOT_TRANSIT] || (this.stops?.n ?? 0) > 0) layers.push(st.transitCov);
+    if (layers.length === 0) return;
     const list = this.multi;
     for (let q = 0; q < list.length; q++) {
       const b = list[q];
@@ -1168,6 +1181,18 @@ export class ServicesSystem implements SimSystem {
     if (k < 0 || this.need.length === 0) return null;
     return this.provNeed[k] ?? this.need[NEED_RASTER[k]];
   }
+}
+
+/** hash of the highway / rail cells with their bridge / tunnel bits (NIMBY corridor stigma sources) */
+function corridorHash(st: CityState): number {
+  const net = st.network, fl = st.netFlags;
+  let h = 0x2545f491;
+  for (let i = 0; i < net.length; i++) {
+    const t = net[i];
+    if (t !== Network.Highway && t !== Network.Rail) continue;
+    h = Math.imul(h ^ (i * 16 + t * 4 + (fl[i] & 3)), 16777619) ^ (h >>> 15);
+  }
+  return h;
 }
 
 /** FNV-style hash of a byte layer (4 bytes per round) */

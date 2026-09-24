@@ -6,13 +6,15 @@
  * The incident's site is marked; every station of a type the incident needs is highlighted (green: free units,
  * red: all busy / unfunded) and the camera frames the site with the fastest free stations. Hovering a station
  * previews its road route and shows its free units and ETA; click sends one unit, Shift-click every free unit.
- * Clicking another incident switches to it. When the incident gets all the help it needs (from here, the banner or
- * automatically) the tool moves on to the next incident waiting for the player, else closes. Esc / right click cancels.
+ * Clicking another incident switches to it; a station of the wrong type says why it can't help. When the incident gets
+ * all the help it needs (from here, the banner or automatically) the tool moves on to the next incident waiting for
+ * the player, else closes. Esc / right click cancels.
  */
 import { CELL_SIZE } from '../../core/constants';
 import type { GameContext } from '../context';
 import type { ToolSpec } from '../toolCatalog';
 import { INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, emergencyOf, type DispatchOption, type EmergencySystem, type Incident } from '../../sim/infra/emergency';
+import { getDef } from '../../sim/catalog';
 import { escapeHtml } from '../../ui/dom';
 import { Tool, type ToolPointer } from './Tool';
 
@@ -141,14 +143,16 @@ export class DispatchTool extends Tool {
     this.ctx.focusCell((x0 + x1) / 2 - 0.5, (z0 + z1) / 2 - 0.5, Math.max(380, Math.min(4500, ext * 1.4 + 260)));
   }
 
-  /** the incident that waits longest for a player dispatch (majors first); waitingOnly = null when none waits */
+  /** the incident that waits longest for a player dispatch (majors first, then those a unit can still reach in time);
+   *  waitingOnly = null when none waits */
   private oldestWaiting(waitingOnly = false, except: number | null = null): number | null {
     const em = emergencyOf(this.ctx.sim);
     if (!em) return null;
     let best: Incident | null = null;
+    const rank = (i: Incident) => (i.major ? 0 : 2) + (i.manualPossible ? 0 : 1);
     for (const i of em.incidents()) {
-      if (i.id === except || !(i.state === 'uncovered' || i.state === 'queued') || !i.manualPossible) continue;
-      if (!best || (i.major && !best.major) || (i.major === best.major && i.start < best.start)) best = i;
+      if (i.id === except || !(i.state === 'uncovered' || i.state === 'queued') || !(i.manualPossible || i.canSend)) continue;
+      if (!best || rank(i) < rank(best) || (rank(i) === rank(best) && i.start < best.start)) best = i;
     }
     if (best || waitingOnly) return best?.id ?? null;
     return em.incidents()[0]?.id ?? null;
@@ -166,6 +170,24 @@ export class DispatchTool extends Tool {
     if (!force && key === this.optsKey) return;
     this.optsKey = key;
     this.opts = em.dispatchOptions(this.ctx.sim, inc.id);
+  }
+
+  /** "Police Station #1 can't help with a fire — it needs fire trucks" when the building under the cursor is an
+   *  emergency station of a type the incident does not need (null otherwise) */
+  private wrongStationAt(p: ToolPointer, inc: Incident): string | null {
+    if (!p.hit) return null;
+    const st = this.ctx.state;
+    if (!st.inBounds(p.hit.x, p.hit.z)) return null;
+    const bid = st.building[st.idx(p.hit.x, p.hit.z)];
+    const em = emergencyOf(this.ctx.sim);
+    if (bid < 0 || !em) return null;
+    const f = em.stationFleet(bid);
+    const need = INCIDENT_RESPONDERS[inc.kind];
+    if (!f || need.includes(f.type)) return null;
+    const label = INCIDENT_LABEL[inc.kind].toLowerCase();
+    const sn = em.stationName(bid); // 'Station' when it is not a working station (e.g. without power / staff)
+    const name = sn !== 'Station' ? sn : getDef(st.buildings.get(bid)?.def ?? '')?.name ?? 'This station';
+    return `${name} can't help with ${/^[aeiou]/.test(label) ? 'an' : 'a'} ${label} — it needs ${need.map((r) => RESPONDER_UNIT[r][1]).join(' and ')}`;
   }
 
   /** station option under the cursor (the hovered building is a station of a needed type) */
@@ -222,6 +244,11 @@ export class DispatchTool extends Tool {
     this.setRoute(o);
     const need = INCIDENT_RESPONDERS[inc.kind];
     const title = `${INCIDENT_LABEL[inc.kind]} · ${escapeHtml(inc.place)}`;
+    const wrong = o ? null : this.wrongStationAt(p, inc);
+    if (wrong) {
+      this.ctx.tip.show(`<div class="tip-head"><b class="emg-wrap">${title}</b></div><div class="tip-reason emg-wrap">${escapeHtml(wrong)}</div>`, 'bad');
+      return;
+    }
     if (o) {
       const unit = RESPONDER_UNIT[o.responder];
       const ok = o.free > 0 && Number.isFinite(o.etaMin);
@@ -264,6 +291,13 @@ export class DispatchTool extends Tool {
       if (other && other.id !== this.inc) {
         this.target(other.id);
         this.ctx.sound('select');
+        return;
+      }
+      // a station of the wrong type: say why nothing happens
+      const wrong = inc ? this.wrongStationAt(p, inc) : null;
+      if (wrong) {
+        this.ctx.sound('error');
+        this.ctx.toast(wrong, 'warning');
       }
       return;
     }

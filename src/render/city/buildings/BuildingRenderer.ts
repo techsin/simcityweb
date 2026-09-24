@@ -8,6 +8,8 @@
  * LOD: buildings whose projected radius drops below `lodPixels` swap to an auto-generated massing proxy
  * (lodProxy.ts, 12-40 triangles, same material / windows / night lights) with hysteresis; see updateLod(). A model's
  * proxy is generated the first time a building needs it, within `lodBudgetMs` per frame (flushLod() for captures).
+ * Each building is re-evaluated only when the camera has travelled far enough to possibly carry it across its swap
+ * distance, so a panning camera costs a few evaluations per frame and a still one none.
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../../core/constants';
@@ -20,6 +22,9 @@ import { Surf } from '../../../core/types';
 import { DynamicBatch, type TileCuller } from '../common/batch';
 import { getCityMaterial, flagsToAlpha, IF_FIRE, IF_SELECTED, IF_WINDOWS_OFF } from '../common/cityMaterial';
 import { lodProxyFor } from './lodProxy';
+
+/** LOD proxies stay within their model's bounds + this (m; see tests/render/lod.test.ts) */
+const PROXY_PAD = 0.6;
 
 export interface BuildingVisual {
   id: number;
@@ -67,9 +72,14 @@ interface BInst {
   cy: number;
   /** index in BuildingRenderer.list */
   li: number;
-  /** index in its tile's list (-1 = not in a tile) */
-  tp: number;
+  /** LOD schedule: absolute travel bucket of its live queue entry (-1 = none, -2 = removed); queued in lodNow */
+  due: number;
+  now: boolean;
 }
+
+/** LOD schedule: camera travel (m) per bucket, and ring size (travel horizon; longer slack is re-checked then) */
+const LOD_BUCKET = 1;
+const LOD_BUCKETS = 4096;
 
 const POP_TIME = 0.55;
 const _sphere = new THREE.Sphere();
@@ -86,22 +96,22 @@ export function modelIdOf(b: Building): string {
 export class BuildingRenderer {
   readonly batch: DynamicBatch;
   private inst = new Map<number, BInst>();
-  /** per culler tile: its buildings (swap-remove via BInst.tp) */
-  private tiles: BInst[][];
-  /** per tile LOD bookkeeping: 0 / 1 = every building drawn full / as proxy (skipped while that stays true),
-   *  2 = mixed or unknown (evaluated per building); stats: centre bounds + radius range, recomputed when dirty */
-  private tileLod: Uint8Array;
-  private tileLodN: Int32Array;
-  private tileStatDirty: Uint8Array;
-  private tileStat: Float32Array;
   private lastLodPixels = -1;
-  /** time-sliced sweep: tiles are visited round-robin, at most lodSlice per-building evaluations per frame; a cycle
-   *  (all tiles) restarts whenever the camera moves, so a moving camera costs a bounded amount per frame and LOD
-   *  switches lag by a few frames at most (invisible at ~9 px, and the +-12% hysteresis absorbs it) */
+  /** LOD schedule by camera travel: after an evaluation a building's slack (distance to its swap distance) says how
+   *  far the camera can travel before the building could need the other level (|distance change| <= path length);
+   *  it is queued in the ring bucket of travel (lodTravel + slack) and re-evaluated when the travel gets there.
+   *  New / rebuilt / (de)selected buildings and a new metric (quality, FOV, resize) are evaluated at once (lodNow). */
+  private lodTravel = 0;
+  private lodPos = new THREE.Vector3(NaN, NaN, NaN);
+  private lodK = NaN;
+  private lodBuckets: BInst[][] = Array.from({ length: LOD_BUCKETS }, () => []);
+  private lodSpare: BInst[] = [];
+  /** next bucket (absolute index) to evaluate */
+  private lodAt = 0;
+  private lodNow: BInst[] = [];
+  /** at most this many building evaluations per frame (a big jump / new metric spreads over a few frames) */
   lodSlice = 3000;
-  private lodCursor = 0;
-  private lodLeft = 0;
-  /** next sweep ignores lodSlice (flushLod: captures / benchmarks want the settled state now) */
+  /** next update ignores lodSlice (flushLod: captures / benchmarks want the settled state now) */
   private lodFull = false;
   private animating = new Set<number>();
   private m4 = new THREE.Matrix4();
@@ -121,8 +131,8 @@ export class BuildingRenderer {
   lodBudgetMs = 3;
   /** dense list of instances for the per-frame LOD sweep */
   private list: BInst[] = [];
+  /** every building is due (flushLod) */
   private lodDirty = true;
-  private lodCam = new THREE.Vector4(NaN, NaN, NaN, NaN);
   /** projected radius (px) below which a building is drawn with its proxy (0 = LOD off); hysteresis +-12% */
   lodPixels = 9;
   /** buildings currently drawn with a proxy (stats) */
@@ -139,12 +149,6 @@ export class BuildingRenderer {
     this.batch.enablePassCulling({ culler, minShadowTexels: 1.2 });
     // nearest buildings first: occluded facades / lots behind them fail the depth test before the (heavy) uber shader
     this.batch.sortFront = true;
-    const T = culler.tiles * culler.tiles;
-    this.tiles = Array.from({ length: T }, () => []);
-    this.tileLod = new Uint8Array(T).fill(2);
-    this.tileLodN = new Int32Array(T);
-    this.tileStatDirty = new Uint8Array(T).fill(1);
-    this.tileStat = new Float32Array(T * 8);
   }
 
   setState(state: CityState): void {
@@ -168,7 +172,11 @@ export class BuildingRenderer {
     const nv = e?.variants ?? 1;
     const v = ((variant % nv) + nv) % nv;
     const key = `${model}#${v}`;
+    const fresh = !this.batch.hasGeometry(key);
     const id = this.batch.geometryId(key, () => getModelGeometry(model, v));
+    // culling sphere with room for the LOD proxy (built later, within the model bounds + 0.6 m): model and proxy then
+    // share one sphere and LOD swaps never force a draw-list rebuild
+    if (fresh) this.batch.padSphere(id, PROXY_PAD);
     if (!this.lodMap.has(id) && !this.lodPending.has(id)) this.lodPending.set(id, [model, v]);
     return id;
   }
@@ -184,6 +192,7 @@ export class BuildingRenderer {
     const key = `${pend[0]}#${pend[1]}`;
     const proxy = lodProxyFor(key, getModelGeometry(pend[0], pend[1]));
     const id = proxy ? this.batch.geometryId(key + '#lod', () => proxy) : geom;
+    this.batch.shareSphere(geom, id, PROXY_PAD);
     this.lodMap.set(geom, id);
     return id;
   }
@@ -208,12 +217,12 @@ export class BuildingRenderer {
   }
 
   clear(): void {
-    for (const bi of this.inst.values()) this.freeInstances(bi);
+    for (const bi of this.inst.values()) { this.freeInstances(bi); bi.due = -2; }
     this.inst.clear();
     this.list.length = 0;
-    for (const t of this.tiles) t.length = 0;
-    this.tileLod.fill(2);
-    this.tileStatDirty.fill(1);
+    for (const q of this.lodBuckets) q.length = 0;
+    this.lodNow.length = 0;
+    this.lodCount = 0;
     this.animating.clear();
   }
 
@@ -240,7 +249,7 @@ export class BuildingRenderer {
     if (this.inst.has(b.id)) this.remove(b.id);
     const bi: BInst = {
       b, main: -1, site: -1, found: -1, tile: 0, key: '', flags: 0, anim: animate ? POP_TIME : 0, geom: -1,
-      vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, li: this.list.length, tp: -1,
+      vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, li: this.list.length, due: -1, now: false,
     };
     this.inst.set(b.id, bi);
     this.list.push(bi);
@@ -252,8 +261,9 @@ export class BuildingRenderer {
     const bi = this.inst.get(id);
     if (!bi) return;
     this.freeInstances(bi);
-    this.tileRemove(bi);
     this.inst.delete(id);
+    if (bi.lod) this.lodCount--;
+    bi.due = -2;
     const last = this.list.pop()!;
     if (last !== bi) { this.list[bi.li] = last; last.li = bi.li; }
     this.animating.delete(id);
@@ -268,7 +278,6 @@ export class BuildingRenderer {
     if (key !== bi.key) {
       const wasCons = bi.key.split('|')[3] === '1';
       this.freeInstances(bi);
-      this.tileRemove(bi);
       this.build(bi);
       if (wasCons && !bi.vis.constructing && !bi.vis.burnt) {
         bi.anim = POP_TIME * 0.7;
@@ -334,9 +343,8 @@ export class BuildingRenderer {
     this.applyColor(bi);
     this.place(bi);
     for (const id of [bi.main, bi.site, bi.found]) if (id >= 0) this.batch.setTile(id, bi.tile);
-    this.tileAdd(bi);
     this.applyVisibility(bi, true);
-    this.lodDirty = true;
+    this.lodQueue(bi);
     this.onVisual?.(bi.vis, b.id);
   }
 
@@ -397,12 +405,11 @@ export class BuildingRenderer {
   setSelected(id: number | null): void {
     const prev = this.selected;
     this.selected = id;
-    this.lodDirty = true;
     for (const k of [prev, id]) {
       if (k == null) continue;
       const bi = this.inst.get(k);
       if (!bi) continue;
-      this.tileLod[bi.tile] = 2;
+      this.lodQueue(bi);
       bi.flags = (bi.flags & ~IF_SELECTED) | (k === id ? IF_SELECTED : 0);
       this.applyColor(bi);
     }
@@ -410,85 +417,109 @@ export class BuildingRenderer {
 
   /**
    * Distance LOD: swap buildings to / from their proxy by projected radius (px) with hysteresis. Call once per frame
-   * with the view camera and the drawing-buffer height in pixels. Skips the sweep while nothing moved.
+   * with the view camera and the drawing-buffer height in pixels. Only buildings the camera travel could have carried
+   * across their swap distance are evaluated (none while the camera stands still or only turns).
    */
   updateLod(camera: THREE.PerspectiveCamera, heightPx: number): void {
     const c = camera.position;
-    const lc = this.lodCam;
-    const fovH = heightPx / Math.tan((camera.fov * Math.PI) / 360);
-    if (this.lodPixels !== this.lastLodPixels) { this.lastLodPixels = this.lodPixels; this.lodDirty = true; this.tileLod.fill(2); }
-    const T = this.tiles.length;
-    if (this.lodDirty || Math.abs(lc.x - c.x) + Math.abs(lc.y - c.y) + Math.abs(lc.z - c.z) >= 0.5 || Math.abs(lc.w - fovH) >= 0.5) {
-      // (re)start a sweep cycle over every tile from the current cursor
-      lc.set(c.x, c.y, c.z, fovH);
+    // px = radius / dist * H / (2 tan(fov/2)): swap to the proxy beyond dist = radius * K / on, back within radius * K / off
+    const K = (heightPx / Math.tan((camera.fov * Math.PI) / 360)) * 0.5;
+    if (this.lodDirty || this.lodPixels !== this.lastLodPixels || !(Math.abs(K - this.lodK) < 0.25)) {
+      // new metric (quality preset, FOV, resize) or a flush: every building is due now
       this.lodDirty = false;
-      this.lodLeft = T;
+      this.lastLodPixels = this.lodPixels;
+      this.lodK = K;
+      for (const bi of this.list) this.lodQueue(bi);
     }
-    if (this.lodLeft <= 0) return;
-    // px = radius / dist * H / (2 tan(fov/2)) ; compare squared distances: dist^2 < (r * K / px)^2
-    const K = fovH * 0.5;
+    const p = this.lodPos;
+    if (p.x === p.x) this.lodTravel += Math.hypot(c.x - p.x, c.y - p.y, c.z - p.z);
+    p.copy(c);
+    const cur = Math.floor(this.lodTravel / LOD_BUCKET);
+    if (cur - this.lodAt >= LOD_BUCKETS - 2) {
+      // a jump beyond the schedule horizon: everything is due
+      for (const q of this.lodBuckets) q.length = 0;
+      for (const bi of this.list) this.lodQueue(bi);
+      this.lodAt = cur + 1;
+    }
+    if (!this.lodNow.length && this.lodAt > cur) return;
     const on = this.lodPixels * 0.88, off = this.lodPixels * 1.12;
-    const lim = this.lodPixels > 0;
     this.lodDeadline = performance.now() + this.lodBudgetMs;
-    let waiting = false, budget = this.lodFull ? Infinity : this.lodSlice;
+    let budget = this.lodFull ? Infinity : this.lodSlice;
     this.lodFull = false;
-    const st = this.tileStat;
-    const selTile = this.selected != null ? (this.inst.get(this.selected)?.tile ?? -1) : -1;
-    while (this.lodLeft > 0 && budget > 0) {
-      const t = this.lodCursor;
-      this.lodCursor = (t + 1) % T;
-      this.lodLeft--;
-      const list = this.tiles[t];
-      if (!list.length) { this.lodCount -= this.tileLodN[t]; this.tileLodN[t] = 0; continue; }
-      if (this.tileStatDirty[t]) this.tileStats(t);
-      // whole-tile decision from the distance range of its building centres and its radius range: every building
-      // wants its full model (dmax * off <= rmin * K) or every one its proxy (dmin * on > rmax * K), for either
-      // hysteresis state; such a tile is skipped while its applied state already matches
-      const o = t * 8;
-      const ex = Math.max(st[o] - c.x, 0, c.x - st[o + 3]), ey = Math.max(st[o + 1] - c.y, 0, c.y - st[o + 4]), ez = Math.max(st[o + 2] - c.z, 0, c.z - st[o + 5]);
-      const fx = Math.max(Math.abs(c.x - st[o]), Math.abs(c.x - st[o + 3])), fy = Math.max(Math.abs(c.y - st[o + 1]), Math.abs(c.y - st[o + 4])), fz = Math.max(Math.abs(c.z - st[o + 2]), Math.abs(c.z - st[o + 5]));
-      const dmin2 = ex * ex + ey * ey + ez * ez, dmax2 = fx * fx + fy * fy + fz * fz;
-      let uni = 2;
-      if (!lim || dmax2 * off * off <= st[o + 6] * st[o + 6] * K * K) uni = 0;
-      else if (dmin2 * on * on > st[o + 7] * st[o + 7] * K * K) uni = 1;
-      if (uni !== 2 && t !== selTile && this.tileLod[t] === uni) continue;
-      budget -= list.length;
-      let cnt = 0, same = true;
-      for (let i = 0; i < list.length; i++) {
-        const bi = list[i];
-        if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) { bi.lod = 0; continue; }
-        const v = bi.vis;
-        const dx = v.cx - c.x, dy = bi.cy - c.y, dz = v.cz - c.z;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        const rk = bi.radius * K;
-        let want = 0;
-        if (lim && bi.b.id !== this.selected) {
-          const px = bi.lod ? off : on;
-          want = d2 * px * px > rk * rk ? 1 : 0;
-        }
-        if (want && bi.lodGeom < 0) {
-          // first time this model is needed as a proxy: build it within the frame budget, else retry next frame
-          const p = this.proxyOf(bi.geom);
-          if (p < 0) { want = 0; waiting = true; same = false; }
-          else {
-            bi.lodGeom = p;
-            if (p === bi.geom && bi.siteLod === bi.siteGeom) { bi.lod = 0; continue; }
-          }
-        }
-        if (want !== bi.lod) {
-          bi.lod = want;
-          if (bi.main >= 0) this.batch.setGeometry(bi.main, want ? bi.lodGeom : bi.geom);
-          if (bi.site >= 0) this.batch.setGeometry(bi.site, want ? bi.siteLod : bi.siteGeom);
-        }
-        if (want !== uni) same = false;
-        cnt += want;
+    if (this.lodNow.length) {
+      const q = this.lodNow;
+      this.lodNow = [];
+      let i = 0;
+      for (; i < q.length && budget > 0; i++) {
+        const bi = q[i];
+        bi.now = false;
+        if (bi.due === -2) continue;
+        this.lodEval(bi, c, K, on, off, cur);
+        budget--;
       }
-      this.tileLod[t] = uni !== 2 && same && t !== selTile ? uni : 2;
-      this.lodCount += cnt - this.tileLodN[t];
-      this.tileLodN[t] = cnt;
+      // over the frame budget: the rest stays due
+      for (; i < q.length; i++) this.lodNow.push(q[i]);
     }
-    // proxies still to build for buildings that want them: sweep again next frame even if the camera stays put
-    if (waiting) this.lodDirty = true;
+    while (this.lodAt <= cur && budget > 0) {
+      const slot = this.lodAt % LOD_BUCKETS;
+      const q = this.lodBuckets[slot];
+      // re-scheduled entries may land in this ring slot again (one lap ahead): collect them in a fresh array
+      this.lodBuckets[slot] = this.lodSpare;
+      for (let i = 0; i < q.length; i++) {
+        const bi = q[i];
+        // stale entry (re-queued / removed since)
+        if (bi.due !== this.lodAt) continue;
+        this.lodEval(bi, c, K, on, off, cur);
+        budget--;
+      }
+      q.length = 0;
+      this.lodSpare = q;
+      this.lodAt++;
+    }
+  }
+
+  /** evaluate a building's LOD at the next update */
+  private lodQueue(bi: BInst): void {
+    if (bi.due === -2) return;
+    bi.due = -1;
+    if (!bi.now) { bi.now = true; this.lodNow.push(bi); }
+  }
+
+  /** evaluate a building's LOD now (swap if needed) and schedule its next evaluation */
+  private lodEval(bi: BInst, c: THREE.Vector3, K: number, on: number, off: number, cur: number): void {
+    bi.due = -1;
+    // no proxy: always full, nothing to schedule (a rebuild re-queues it)
+    if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) { this.lodSet(bi, 0); return; }
+    const v = bi.vis;
+    const dx = v.cx - c.x, dy = bi.cy - c.y, dz = v.cz - c.z;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const rk = bi.radius * K;
+    const lim = this.lodPixels > 0 && bi.b.id !== this.selected;
+    const want = lim && d * (bi.lod ? off : on) > rk ? 1 : 0;
+    if (want && bi.lodGeom < 0) {
+      // first time this model is needed as a proxy: build it within the frame budget, else retry next frame
+      const pg = this.proxyOf(bi.geom);
+      if (pg < 0) { this.lodQueue(bi); return; }
+      bi.lodGeom = pg;
+      if (pg === bi.geom && bi.siteLod === bi.siteGeom) { this.lodSet(bi, 0); return; }
+    }
+    this.lodSet(bi, want);
+    // LOD off / selected: stays full until the metric or the selection changes (both re-queue)
+    if (!lim) return;
+    // camera travel before the swap distance can be reached; the bucket at or before that travel (at least the next)
+    const slack = want ? d - rk / off : rk / on - d;
+    // (capped one ring lap past the oldest unprocessed bucket, so no live entry shares a slot that is still pending)
+    const b = Math.min(this.lodAt + LOD_BUCKETS - 1, Math.max(cur + 1, Math.floor((this.lodTravel + Math.max(0, slack)) / LOD_BUCKET)));
+    bi.due = b;
+    this.lodBuckets[b % LOD_BUCKETS].push(bi);
+  }
+
+  private lodSet(bi: BInst, want: number): void {
+    if (want === bi.lod) return;
+    bi.lod = want;
+    this.lodCount += want ? 1 : -1;
+    if (bi.main >= 0) this.batch.setGeometry(bi.main, want ? bi.lodGeom : bi.geom);
+    if (bi.site >= 0) this.batch.setGeometry(bi.site, want ? bi.siteLod : bi.siteGeom);
   }
 
   update(dt: number): void {
@@ -508,42 +539,8 @@ export class BuildingRenderer {
       const b = bi.b;
       if (b.x + b.w < x0 || b.x > x1 || b.z + b.d < z0 || b.z > z1) continue;
       this.freeInstances(bi);
-      this.tileRemove(bi);
       this.build(bi);
     }
-  }
-
-  private tileAdd(bi: BInst): void {
-    const l = this.tiles[bi.tile];
-    bi.tp = l.length;
-    l.push(bi);
-    this.tileLod[bi.tile] = 2;
-    this.tileStatDirty[bi.tile] = 1;
-  }
-
-  private tileRemove(bi: BInst): void {
-    if (bi.tp < 0) return;
-    const l = this.tiles[bi.tile];
-    const last = l.pop()!;
-    if (last !== bi) { l[bi.tp] = last; last.tp = bi.tp; }
-    bi.tp = -1;
-    this.tileLod[bi.tile] = 2;
-    this.tileStatDirty[bi.tile] = 1;
-  }
-
-  /** centre bounds [x0, y0, z0, x1, y1, z1] and radius range [rmin, rmax] of a tile's buildings */
-  private tileStats(t: number): void {
-    this.tileStatDirty[t] = 0;
-    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity, r0 = Infinity, r1 = 0;
-    for (const bi of this.tiles[t]) {
-      const v = bi.vis;
-      if (v.cx < x0) x0 = v.cx; if (v.cx > x1) x1 = v.cx;
-      if (bi.cy < y0) y0 = bi.cy; if (bi.cy > y1) y1 = bi.cy;
-      if (v.cz < z0) z0 = v.cz; if (v.cz > z1) z1 = v.cz;
-      if (bi.radius < r0) r0 = bi.radius; if (bi.radius > r1) r1 = bi.radius;
-    }
-    const o = t * 8, st = this.tileStat;
-    st[o] = x0; st[o + 1] = y0; st[o + 2] = z0; st[o + 3] = x1; st[o + 4] = y1; st[o + 5] = z1; st[o + 6] = r0; st[o + 7] = r1;
   }
 
   dispose(): void {
