@@ -12,12 +12,14 @@
  *    Seeds are the road cells around the footprint; every reached road cell splats its 3x3 neighbourhood (land cells
  *    next to the road); the CATCH_NEAR_FIELD cells around the footprint are always reached. Bridges / tunnels pass,
  *    unbridged water blocks. The circular 8-bucket queue makes a search O(cells reached).
- *  - Tier engine (run by the services system, services.ts): facilities of a need tier share one demand field. Each
- *    cell's need (pupils, patient-equivalents, visitors: from the residents' cohort shares) is split among the
- *    facilities reaching it in proportion to their reach x strength; a facility serves r = op x min(1, capacity /
- *    demand) of its share, so seats are conserved (served <= capacity, two schools next to each other each count half
- *    the children) and a crowded school visibly teaches everyone less. Police / fire are capacity-free tiers
- *    (legacy 1 - (1-a)(1-b) combination); WP7 can plug capacities / need rasters in via registerTierProvider.
+ *  - Tier engine (run by the services system, services.ts): facilities of a need tier share one demand field (pupils,
+ *    patient-equivalents, visitors per cell, from the residents' cohort shares). Facilities fill their seats one
+ *    after another, best-run first (operating factor, then building id): each claims the still-unseated share of the
+ *    cells it reaches (up to its reach x strength) and seats min(1, capacity / claims) of it at its quality (op).
+ *    Seats are conserved (a school never seats more than its capacity, two schools next to each other share the
+ *    children), a crowded school visibly teaches its whole catchment less, and building a facility never lowers
+ *    anyone's coverage. Police / fire are capacity-free tiers (legacy 1 - (1-a)(1-b) combination); WP7 can plug
+ *    capacities / need rasters in via registerTierProvider.
  *  - Access fields (accessCommute, shopAccess) and NIMBY / YIMBY rasters (nimby.ts) are services steps too.
  * Public API for the inspector (WP5), the bot (WP6) and facilities (WP7): tierLayer, facilityLoad, unservedClusters,
  * reachCells, registerTierProvider.
@@ -60,12 +62,18 @@ export interface FacilityLoad {
   needTier: NeedTier;
   /** seats / patient-equivalents / visitors (Infinity for capacity-free tiers) */
   capacity: number;
-  /** competition-weighted demand reaching the facility */
+  /**
+   * people who want a seat here: shared tiers = seats taken + (when full) the need its reach leaves unseated, by reach
+   * share; capacity-free tiers = the need in reach
+   */
   demand: number;
-  /** demand / (capacity x operating) */
+  /** demand / capacity (0 for capacity-free tiers); > OVERCROWDED_UTIL (1.15) = overcrowded */
   utilization: number;
+  /** coverage delivered = seated x operating (need x coverage units; sums to stats.needs[tier].served) */
   served: number;
-  /** operating factor 0..1+ (funding x ordinance x power x water x staffing) */
+  /** seats taken (pupils / patient-equivalents / visitors; "Pupils 1,234 / 1,500") */
+  seated: number;
+  /** operating factor 0..1+ (funding x ordinance x power x water x staffing) = quality of the service */
   operating: number;
   powered: boolean;
   /** reach radius (cells) and metric */
@@ -223,6 +231,54 @@ function reachEuclid(st: CityState, bx: number, bz: number, bw: number, bd: numb
   return n;
 }
 
+let nfSeen = new Uint8Array(256);
+let nfQueue = new Int32Array(256);
+/**
+ * near field of a footprint: the cells within `near` (Chebyshev) of it that are 4-connected to it without crossing a
+ * barrier — a network cell the metric cannot enter (cost 0: highway / rail for walking, rail for driving) or a water
+ * cell without a passable road (bridge). Writes best = 1 and the touched list (from 0); returns the count.
+ */
+function nearField(st: CityState, bx: number, bz: number, bw: number, bd: number, near: number, cost: readonly number[], stamp: number): number {
+  const N = st.size;
+  const net = st.network, water = st.water;
+  const visit = eng.visit, best = eng.best, touched = eng.touched;
+  const x0 = Math.max(0, bx - near), x1 = Math.min(N - 1, bx + bw - 1 + near);
+  const z0 = Math.max(0, bz - near), z1 = Math.min(N - 1, bz + bd - 1 + near);
+  if (x1 < x0 || z1 < z0) return 0;
+  const W = x1 - x0 + 1, H = z1 - z0 + 1;
+  if (nfSeen.length < W * H) { nfSeen = new Uint8Array(W * H * 2); nfQueue = new Int32Array(W * H * 2); }
+  const seen = nfSeen, queue = nfQueue;
+  seen.fill(0, 0, W * H);
+  let qt = 0;
+  for (let z = Math.max(bz, z0); z <= Math.min(bz + bd - 1, z1); z++)
+    for (let x = Math.max(bx, x0); x <= Math.min(bx + bw - 1, x1); x++) {
+      const l = (z - z0) * W + (x - x0);
+      seen[l] = 1;
+      queue[qt++] = l;
+    }
+  let n = 0;
+  for (let qh = 0; qh < qt; qh++) {
+    const l = queue[qh];
+    const lx = l % W, lz = (l - lx) / W;
+    const i = (z0 + lz) * N + x0 + lx;
+    if (visit[i] !== stamp) { visit[i] = stamp; touched[n++] = i; }
+    best[i] = 1;
+    for (let k = 0; k < 4; k++) {
+      let m: number, j: number;
+      if (k === 0) { if (lx === 0) continue; m = l - 1; j = i - 1; }
+      else if (k === 1) { if (lx === W - 1) continue; m = l + 1; j = i + 1; }
+      else if (k === 2) { if (lz === 0) continue; m = l - W; j = i - N; }
+      else { if (lz === H - 1) continue; m = l + W; j = i + N; }
+      if (seen[m]) continue;
+      seen[m] = 1;
+      const t = net[j];
+      if (cost[t] === 0 && (t !== Network.None || water[j] !== 0)) continue; // barrier
+      queue[qt++] = m;
+    }
+  }
+  return n;
+}
+
 function reachRoad(st: CityState, bx: number, bz: number, bw: number, bd: number, radius: number, metric: number): number {
   const N = st.size;
   const net = st.network;
@@ -235,15 +291,9 @@ function reachRoad(st: CityState, bx: number, bz: number, bw: number, bd: number
   if (eng.fall.length < maxQ + 16) eng.fall = new Float32Array(maxQ + 64);
   const fall = eng.fall;
   for (let q = 0; q <= maxQ + 8; q++) fall[q] = falloff(q / 4, roadR);
-  let n = 0;
-  // near field: always reached
-  const near = Math.min(CATCH_NEAR_FIELD, Math.floor(radius));
-  for (let z = Math.max(0, bz - near), z1 = Math.min(N - 1, bz + bd - 1 + near); z <= z1; z++)
-    for (let x = Math.max(0, bx - near), x1 = Math.min(N - 1, bx + bw - 1 + near); x <= x1; x++) {
-      const i = z * N + x;
-      if (visit[i] !== stamp) { visit[i] = stamp; touched[n++] = i; }
-      best[i] = 1;
-    }
+  // near field: always reached, but not across a barrier of the metric (walk: highways, rail, unbridged water; drive:
+  // rail, unbridged water) — flood-filled from the footprint inside the near box
+  let n = nearField(st, bx, bz, bw, bd, Math.min(CATCH_NEAR_FIELD, Math.floor(radius)), cost, stamp);
   // seeds: passable road cells around the footprint (corners included)
   const head = eng.head;
   head.fill(-1);

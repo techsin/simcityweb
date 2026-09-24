@@ -504,6 +504,27 @@ describe('WP3 utilities', () => {
     expect(houses[houses.length - 1].flags & BF.Powered).toBeFalsy();
   });
 
+  it('a short grid runs the brownout search in its own scheduler step (<= 3 ms); a supplied grid skips it', () => {
+    const steps = (houses: number) => {
+      const st = newState(64);
+      roadLine(st, 2, 5, 60, 5, Network.Road);
+      place(st, 't_small_plant', 1, 5); // 10 MW
+      for (let x = 3; x < 3 + houses; x++) place(st, 't_r2', x, 6, { pop: 60 }); // 3 MW each
+      const sim = newSim(st);
+      const u = getUtilities(sim)! as unknown as { stepIdx: number; dirtyFull: boolean; step(s: unknown): void };
+      u.stepIdx = -1;
+      u.dirtyFull = false;
+      const seen: number[] = [];
+      do { seen.push(u.stepIdx < 0 ? 0 : u.stepIdx); u.step(sim); } while (u.stepIdx >= 0);
+      return { seen, powered: [...st.buildings.values()].filter((b) => b.flags & BF.Powered).length };
+    };
+    const ok = steps(2), short = steps(30);
+    expect(ok.seen).not.toContain(3); // uses, power (+ results), water
+    expect(short.seen).toContain(3); // ... power sums, brownout BFS, water
+    expect(short.powered).toBeGreaterThan(1);
+    expect(short.powered).toBeLessThan(31);
+  });
+
   it('wind turbines on a hilltop beat turbines on flat land; parks draw no power', () => {
     const st = newState(64);
     const W = st.size + 1;
@@ -619,5 +640,29 @@ describe('WP3 plumes and caches', () => {
     sim.replaceState(b);
     expect(pol(sim).emissionOf(home.id)).toBeLessThan(0.1 * eCoal); // a home (heating), not the old coal plant
     expect(sim.getSystem<CrimeSystem>('crime')!.termsOf(home.id)!.poverty).toBeCloseTo(0.12, 5); // R$$ home
+  });
+
+  it('buildings that appear between the steps of a pass (ids beyond the per-building arrays) never produce NaN', () => {
+    const st = newState(64);
+    roadLine(st, 2, 30, 60, 30, Network.Road);
+    for (let x = 2; x <= 7; x++) for (let z = 26; z <= 29; z++) st.zone[st.idx(x, z)] = Zone.Landfill;
+    place(st, 't_small_plant', 1, 30);
+    place(st, 'util_recycling_center', 50, 27);
+    for (let x = 10; x <= 20; x++) place(st, 't_r2', x, 31, { pop: 60 });
+    const sim = newSim(st);
+    const p = pol(sim) as unknown as { stepIdx: number; step(s: unknown): void; prodById: Float32Array };
+    const u = getUtilities(sim)! as unknown as { stepIdx: number; step(s: unknown): void; compute(s: unknown): void };
+    for (const sys of [p, u]) {
+      sys.stepIdx = -1;
+      sys.step(sim); // first step sizes the per-id arrays
+      st.nextBuildingId = Math.max(st.nextBuildingId, p.prodById.length + 64);
+      place(st, 't_r2', 30 + (sys === p ? 0 : 2), 31, { pop: 60 }); // an id past every array
+      let guard = 0;
+      while (sys.stepIdx >= 0 && guard++ < 20) sys.step(sim);
+    }
+    for (const k of ['garbageProduced', 'garbageCapacity', 'garbageRecycled', 'powerSupply', 'powerDemand', 'waterSupply', 'waterDemand', 'avgNoise', 'avgAir'] as const) {
+      expect(Number.isFinite(st.stats[k] as number), k).toBe(true);
+    }
+    for (let i = 0; i < st.cells; i++) if (!Number.isFinite(st.garbage[i]) || !Number.isFinite(st.airPollution[i])) throw new Error(`NaN layer at ${i}`);
   });
 });

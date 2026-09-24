@@ -229,7 +229,8 @@ export class TerrainRenderer {
    * Seasonal snow line. Alpine: relative to the map's own height range (a 4-49 m hill map never gets June snow, a
    * mountain map keeps snow on its peaks), dropping by half the range in Dec-Feb and rising by 30% in Jun-Aug.
    * Temperate: only high mountains (unchanged base), with a gentler seasonal swing. The shader additionally keeps
-   * zoned / developed cells free of terrain snow outside Dec-Feb (uWinter).
+   * zoned / developed cells (and a 1-cell ring around lots and roads) free of terrain snow (uWinter = 0), and winter
+   * turns the grass dormant (uDormant).
    */
   private applySnowLine() {
     const cfg = this.state.config;
@@ -251,7 +252,9 @@ export class TerrainRenderer {
     this.uniforms.uSnowLine.value = snow;
     this.uniforms.uSnowNoise.value = Math.min(45, Math.max(8, R * 0.5));
     const winter = m === 11 || m <= 1;
-    this.uniforms.uWinter.value = winter ? 1 : 0;
+    // the town itself stays cleared of terrain snow all year (winter snow between the lots read as random stains,
+    // and lot lawns / roads carry no snow); winter reads through dormant grass + snow on the surrounding high ground
+    this.uniforms.uWinter.value = 0;
     // dormant grass (temperate / alpine): winter, a little in Nov / Mar, a hint in Oct
     const seasonal = cfg.climate === 'temperate' || cfg.climate === 'alpine';
     this.uniforms.uDormant.value = !seasonal ? 0 : winter ? 0.45 : m === 10 || m === 2 ? 0.24 : m === 9 ? 0.08 : 0;

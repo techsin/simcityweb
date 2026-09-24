@@ -73,11 +73,11 @@ function patch(shader: THREE.WebGLProgramParametersWithUniforms, ghost: boolean)
         // (roofs less), none on the lot's ground (lawns / pavement washed salmon-pink), moderate at night so the glow
         // stays orange under the night exposure + bloom instead of blowing out
         vec3 _fp = vObjPos;
-        float _patch = smoothstep(0.2, 0.95, sin(_fp.x * 0.45 + uTime * 0.7) * sin(_fp.y * 0.35 - uTime * 0.9) * sin(_fp.z * 0.4 + 1.3) * 0.5 + 0.5);
+        float _patch = smoothstep(0.32, 0.95, sin(_fp.x * 0.45 + uTime * 0.7) * sin(_fp.y * 0.35 - uTime * 0.9) * sin(_fp.z * 0.4 + 1.3) * 0.5 + 0.5);
         float _fl = 0.65 + 0.25 * sin(uTime * 11.0 + _fp.y * 0.7) + 0.15 * sin(uTime * 23.0 + _fp.x);
         float _wall = mix(0.35, 1.0, 1.0 - smoothstep(0.5, 0.9, abs(normalize(vObjNormal).y)));
         float _above = smoothstep(0.6, 2.4, _fp.y);
-        totalEmissiveRadiance += vec3(1.0, 0.36, 0.06) * _patch * _fl * _wall * _above * mix(0.35, 0.9, uNight);
+        totalEmissiveRadiance += vec3(1.0, 0.34, 0.05) * _patch * _fl * _wall * _above * mix(0.35, 0.65, uNight);
       }
       ${ghost ? `{
         // bright fresnel rim + gentle pulse so the ghost reads clearly on any background

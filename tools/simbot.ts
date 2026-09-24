@@ -342,7 +342,7 @@ export class SimBot {
           for (const x of xs) {
             if (edgeOnly && x === xs[2] && z === zs[2] && x !== b.x0 && x !== b.x1 - w && z !== b.z0 && z !== b.z1 - d) continue;
             const p = this.A.plop(defId, x, z, rot, true);
-            if (!p.ok) continue;
+            if (!p.ok || (edgeOnly && p.reason)) continue; // edgeOnly: the lot must touch a road (no access warning)
             if (!b.developed) { this.buildBlockRoads(b); b.developed = true; }
             const r = this.A.plop(defId, x, z, rot);
             if (r.ok) {
@@ -481,18 +481,42 @@ export class SimBot {
     if (!pol || !g) return this.ensureGarbageLegacy();
     if (s.population < 1200) return;
     this.garbageStreak = g.producedT > 0 && g.outOfRangeT > 0.03 * g.producedT ? this.garbageStreak + 1 : 0;
+    // live (not yet full) landfill stays under ~3x production: 300 t/month per cell (one block of slack for reach)
     const live = this.liveLandfillCells();
-    const lfRoom = live < Math.max(64, (3 * s.garbageProduced) / 300);
+    const lfCap = Math.max(64, (3 * s.garbageProduced) / 300);
     if (this.garbageStreak >= 2) {
       const t = this.outOfRangeCenter(pol);
-      if (t && this.garbageFacilityNear(t.x, t.z, lfRoom)) { this.garbageStreak = 0; return; }
+      if (t && this.garbageFacilityNear(t.x, t.z, live < lfCap + 64)) { this.garbageStreak = 0; return; }
     }
     // capacity: collected garbage near the capacity, or the landfills filling up
     if (s.garbageProduced < s.garbageCapacity * 0.8 && (s.landfillFill ?? 0) < 0.7) return;
     const cx = this.line(this.cbx), cz = this.line(this.cbz);
-    if (lfRoom && this.canSpend(2000) && this.zoneLandfillNear(cx, cz, Infinity)) return;
-    const def = st.unlocked.has('incinerator') ? 'util_incinerator' : st.unlocked.has('recycling_center') ? 'util_recycling_center' : null;
-    if (def && this.canAfford(def)) this.placeNear(def, cx + 4 * GRID, this.trunkZ, ['U', 'I', 'X'], true, Infinity, true);
+    if (live < lfCap && this.canSpend(2000) && this.zoneLandfillNear(cx, cz, Infinity)) return;
+    // no land left for landfill (or enough of it): burn / recycle, on the fullest old landfill block first (full cells
+    // are dead land), else in utility / industrial blocks
+    for (const def of ['util_incinerator', 'util_recycling_center']) {
+      if (!st.unlocked.has(def === 'util_incinerator' ? 'incinerator' : 'recycling_center') || !this.canAfford(def)) continue;
+      const lf = this.fullestLandfillBlock();
+      if ((lf && this.placeNear(def, (lf.x0 + lf.x1) / 2, (lf.z0 + lf.z1) / 2, ['L'], false, 2, true)) ||
+        this.placeNear(def, cx + 4 * GRID, this.trunkZ, ['U', 'I', 'X'], true, Infinity, true)) {
+        this.say(`${def === 'util_incinerator' ? 'incinerator' : 'recycling center'} for garbage capacity`);
+        return;
+      }
+    }
+  }
+
+  /** the bot-zoned landfill block with the highest mean fill (null if none) */
+  private fullestLandfillBlock(): Block | null {
+    const st = this.st, N = this.N, f = st.landfillFill;
+    let best: Block | null = null, bf = -1;
+    for (const b of this.blocks) {
+      if (b.use !== 'L') continue;
+      let s = 0, n = 0;
+      for (let z = b.z0; z < b.z1; z++) for (let x = b.x0; x < b.x1; x++) { s += f[z * N + x]; n++; }
+      const m = n > 0 ? s / n : 0;
+      if (m > bf) { bf = m; best = b; }
+    }
+    return best;
   }
 
   /** pre-WP3 rule (economy-only runs without the pollution system) */
@@ -514,15 +538,41 @@ export class SimBot {
     return n;
   }
 
-  /** garbage-weighted centre of the buildings beyond truck range (null if none) */
+  /**
+   * garbage-weighted centre of the LARGEST cluster of buildings beyond truck range (null if none): districts beyond
+   * range usually ring the city, so their overall centroid would sit in the (served) middle
+   */
   private outOfRangeCenter(pol: GarbageApi): { x: number; z: number } | null {
-    let sx = 0, sz = 0, w = 0;
+    const B = 3 * GRID, nb = Math.ceil(this.N / B);
+    const w = new Float64Array(nb * nb), wx = new Float64Array(nb * nb), wz = new Float64Array(nb * nb);
     for (const b of this.st.buildings.values()) {
       const gi = pol.garbageInfo(b.id);
       if (!gi || gi.collected || gi.reason !== 'range' || !(gi.producedT > 0)) continue;
-      sx += (b.x + b.w / 2) * gi.producedT; sz += (b.z + b.d / 2) * gi.producedT; w += gi.producedT;
+      const x = b.x + b.w / 2, z = b.z + b.d / 2;
+      const k = Math.min(nb - 1, Math.floor(z / B)) * nb + Math.min(nb - 1, Math.floor(x / B));
+      w[k] += gi.producedT; wx[k] += x * gi.producedT; wz[k] += z * gi.producedT;
     }
-    return w > 0 ? { x: sx / w, z: sz / w } : null;
+    let best = -1, bw = 0;
+    for (let k = 0; k < nb * nb; k++) {
+      if (w[k] === 0) continue;
+      const kx = k % nb, kz = (k - kx) / nb;
+      let s = 0;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const x = kx + dx, z = kz + dz;
+        if (x >= 0 && z >= 0 && x < nb && z < nb) s += w[z * nb + x];
+      }
+      if (s > bw) { bw = s; best = k; }
+    }
+    if (best < 0) return null;
+    const kx = best % nb, kz = (best - kx) / nb;
+    let sx = 0, sz = 0, sw = 0;
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const x = kx + dx, z = kz + dz;
+      if (x < 0 || z < 0 || x >= nb || z >= nb) continue;
+      const k = z * nb + x;
+      sx += wx[k]; sz += wz[k]; sw += w[k];
+    }
+    return sw > 0 ? { x: sx / sw, z: sz / sw } : null;
   }
 
   /** a garbage facility for the district around (x, z): recycling center, landfill block (if room), incinerator */

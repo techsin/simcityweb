@@ -5,8 +5,8 @@
  *  - catalog fields def.stigma / def.prestige / def.campus {amount at the source, radius} (plants, dumps, jails,
  *    airports ... / landmarks, city hall, golf ... / universities, research),
  *  - non-catalog sources: I-D / I-M growables (NIMBY_ID / NIMBY_IM), high-end commercial growables at stage >= 6
- *    (PRESTIGE_HIGH_C), landfill zones per 2x2 block x (idle + use), highway cells (bridges / elevated more, tunnels
- *    none) and rail cells.
+ *    (PRESTIGE_HIGH_C), landfill zones per 2x2 block x (idle + (1 - idle) x the block's mean st.landfillFill),
+ *    highway cells (bridges / elevated more, tunnels none) and rail cells.
  * Every source splats amount x falloff (full to 35 % of the radius, smoothstep to 0 at the radius, measured from the
  * footprint edge); building sources are summed and saturated with 1 - exp(-x); network cells combine by max (a
  * highway corridor is one source, not hundreds). Only functional buildings count (burnt / abandoned ones don't).
@@ -111,17 +111,22 @@ export function rebuildNimby(sim: Simulation): void {
     if (pA > 0) touches += splatAdd(pres, N, b.x, b.z, b.w, b.d, pA, pR);
     if (inf.campusAmt > 0) touches += splatAdd(camp, N, b.x, b.z, b.w, b.d, inf.campusAmt, inf.campusR);
   }
-  // landfill zones: per 2x2 block, scaled by how much garbage the city dumps
+  // landfill zones: per 2x2 block, scaled by how full the block's own landfill cells are (WP3's landfillFill stock:
+  // an empty landfill is only mildly stigmatised, a mountain of garbage fully — incinerators / recycling elsewhere
+  // in the city do not count)
   const lfDef = getDef('util_landfill_tile');
   const lfA = lfDef?.stigma?.amount ?? 0.35, lfR = lfDef?.stigma?.radius ?? 6;
-  const s = st.stats;
-  const use = s.garbageCapacity > 0 ? Math.min(1, s.garbageProduced / s.garbageCapacity) : 1;
-  const lfAmt = lfA * (NIMBY_LANDFILL_IDLE + (1 - NIMBY_LANDFILL_IDLE) * use);
-  const zone = st.zone, net = st.network, flags = st.netFlags;
+  const zone = st.zone, net = st.network, flags = st.netFlags, lfFill = st.landfillFill;
   for (let z = 0; z < N; z += 2) for (let x = 0; x < N; x += 2) {
-    let cnt = 0;
-    for (let dz = 0; dz < 2 && z + dz < N; dz++) for (let dx = 0; dx < 2 && x + dx < N; dx++) if (zone[(z + dz) * N + x + dx] === Zone.Landfill) cnt++;
-    if (cnt > 0) touches += splatAdd(stig, N, x, z, 2, 2, lfAmt * cnt / 4, lfR);
+    let cnt = 0, fill = 0;
+    for (let dz = 0; dz < 2 && z + dz < N; dz++) for (let dx = 0; dx < 2 && x + dx < N; dx++) {
+      const i = (z + dz) * N + x + dx;
+      if (zone[i] !== Zone.Landfill) continue;
+      cnt++;
+      const f = lfFill ? lfFill[i] : 0;
+      fill += f > 0 ? (f < 1 ? f : 1) : 0;
+    }
+    if (cnt > 0) touches += splatAdd(stig, N, x, z, 2, 2, lfA * (NIMBY_LANDFILL_IDLE + (1 - NIMBY_LANDFILL_IDLE) * (fill / cnt)) * cnt / 4, lfR);
   }
   // network corridors (max-combined)
   for (let i = 0; i < C; i++) {

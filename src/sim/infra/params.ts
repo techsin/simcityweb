@@ -8,7 +8,7 @@
  *  - power: MW, water: kL/day, garbage: tons/month
  */
 import { Network } from '../../core/types';
-import { REGION_COMMUTERS_BASE, REGION_COMMUTERS_FRAC, WORKFORCE_RATIO } from '../economy/tuning';
+import { COLLEGE_WILL, REGION_COMMUTERS_BASE, REGION_COMMUTERS_FRAC, WORKFORCE_RATIO } from '../economy/tuning';
 
 // ---------------------------------------------------------------------------------------------- traffic
 /** Capacity per cell (trips/day) indexed by Network. Rail capacity is for trains (passengers/day). */
@@ -261,8 +261,9 @@ export const GREEN_NEED_SENIOR = 1.2;
 export const GREEN_NEED_NORM = 0.98;
 /** play need = kids + PLAY_TEEN_W x teens */
 export const PLAY_TEEN_W = 0.7;
-/** college need = young adults x CATCH_COLLEGE_WILL[wealth-1] + COLLEGE_ADULT_W x adults (mirrors WP1 COLLEGE_WILL) */
-export const CATCH_COLLEGE_WILL: readonly number[] = [0.35, 0.55, 0.75];
+/** college need = young adults x CATCH_COLLEGE_WILL[wealth-1] + COLLEGE_ADULT_W x adults (one source of truth: WP1's
+ *  economy/tuning.ts COLLEGE_WILL) */
+export const CATCH_COLLEGE_WILL: readonly number[] = COLLEGE_WILL;
 export const COLLEGE_ADULT_W = 0.05;
 /** legacy st.eduCov = clamp(EDU_LEGACY_W . [elementary, high, college]) (no longer saturates) */
 export const EDU_LEGACY_W: readonly number[] = [0.45, 0.35, 0.2];
@@ -295,7 +296,8 @@ export const NIMBY_HIGHWAY = { amount: 0.18, radius: 3 };
 /** highway bridges / elevated sections (netFlags bit 0); tunnels (bit 1) give no stigma */
 export const NIMBY_HIGHWAY_BRIDGE = 0.25;
 export const NIMBY_RAIL = { amount: 0.06, radius: 2 };
-/** landfill: per 2x2 block of landfill cells, x (NIMBY_LANDFILL_IDLE + (1 - IDLE) x use); use = garbage load / capacity */
+/** landfill: per 2x2 block of landfill cells, x (NIMBY_LANDFILL_IDLE + (1 - IDLE) x fill); fill = the block's mean
+ *  st.landfillFill (WP3 stock: how full its own landfill cells are) */
 export const NIMBY_LANDFILL_IDLE = 0.4;
 /** power plant stigma x (NIMBY_PLANT_IDLE + (1 - IDLE) x plant load) when utilities reports plantLoad (WP3) */
 export const NIMBY_PLANT_IDLE = 0.5;

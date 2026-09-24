@@ -10,6 +10,8 @@
  * Costs (see economy/tuning.ts; UI helpers networkCellCost / zoneCellCost): networks per cell street §10 · road §20 ·
  * one-way §25 · avenue §40 · highway §120 · rail §30 (bridges ×10, max span 12), power line §5/cell (×4 over water),
  * subway §100/cell, zoning §2–20/cell. Money in reasons is formatted with formatMoney ('§').
+ * Slopes: max rise per tile NETWORK_INFO.maxSlope (street 7 m … rail 3 m); bridge approaches (land within
+ * BRIDGE_APPROACH steps of the bridge's water) allow at least the road limit, so rail bridges work where road bridges do.
  * Wind turbines must keep ≥ 2 empty cells from other turbines (Chebyshev distance ≥ 3).
  * Upgrades (road→avenue) cost the difference. Bulldozing refunds 25% of networks; growables cost a small demolition
  * fee; civic buildings are removed for free (no refund). Sandbox skips money and unlock checks.
@@ -111,6 +113,8 @@ export const NET_CROSSING = 1 << 5;
 const WIND_TURBINE = 'util_wind_turbine';
 /** min Chebyshev distance between wind turbine cells */
 export const WIND_SPACING = 3;
+/** land tiles within this many path steps of a bridge's water tiles are its approach (slope ≥ the road limit) */
+export const BRIDGE_APPROACH = 2;
 
 const fail = (reason: string, cost = 0, cells?: ActionResult['cells']): ActionResult => ({ ok: false, cost, reason, affected: 0, cells });
 const money = (v: number) => formatMoney(v);
@@ -247,6 +251,16 @@ export class CityActions implements CityActionsApi {
     let waterRun = 0, runDir = -1;
     const err = (x: number, z: number, why: string) => { firstErr ??= why; cells.push({ x, z, ok: false }); };
     const roadAt = (i: number) => isRoad(st.network[i] as Network);
+    // slope rule: max rise per tile info.maxSlope (and a cell's own corner spread ≤ 1.6×). Bridge approaches — land within
+    // BRIDGE_APPROACH path steps of a water tile of this path — take at least the road limit: river banks are steep and
+    // the abutment / embankment takes the grade, so rail (3 m) bridges wherever road bridges can.
+    const wetAt = (k: number) => k >= 0 && k < n && st.water[path[k].z * N + path[k].x] === 1;
+    const approachSlope = Math.max(info.maxSlope, NETWORK_INFO[Network.Road].maxSlope);
+    const steep = (approach: boolean, lim: number) => approach
+      ? `Bridge approach too steep (max ${lim} m rise per tile) — level the bank with the terrain tool`
+      : isRail
+        ? `Too steep for rail: rail needs gentler slopes (max ${lim} m rise per tile) — level the route with the terrain tool`
+        : `Too steep for ${/^[aeiou]/i.test(info.name) ? 'an' : 'a'} ${info.name.toLowerCase()} (max ${lim} m rise per tile) — level the ground with the terrain tool`;
     for (let k = 0; k < n; k++) {
       const { x, z } = path[k];
       const i = z * N + x;
@@ -266,12 +280,14 @@ export class CityActions implements CityActionsApi {
         runDir = -1;
       }
       // ---- slope
-      if (!wet) {
+      if (!wet && st.network[i] === Network.None) {
+        const approach = info.bridge && (wetAt(k - 1) || wetAt(k + 1) || wetAt(k - BRIDGE_APPROACH) || wetAt(k + BRIDGE_APPROACH));
+        const lim = approach ? approachSlope : info.maxSlope;
         if (prev && !st.water[prev.z * N + prev.x]) {
           const dh = Math.abs(st.cellHeight(x, z) - st.cellHeight(prev.x, prev.z));
-          if (dh > info.maxSlope && st.network[i] === Network.None) { err(x, z, 'Too steep'); continue; }
+          if (dh > lim) { err(x, z, steep(approach, lim)); continue; }
         }
-        if (st.cellSlope(x, z) > info.maxSlope * 1.6 && st.network[i] === Network.None) { err(x, z, 'Too steep'); continue; }
+        if (st.cellSlope(x, z) > lim * 1.6) { err(x, z, steep(approach, lim)); continue; }
       }
       // ---- buildings
       const bid = st.building[i];

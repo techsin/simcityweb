@@ -325,14 +325,14 @@ const PLOPPABLES: BuildingDef[] = [
   // ================================================================ HEALTH
   p({ id: 'civ_clinic', name: 'Medical Clinic', category: 'health', service: 'health', cost: 1800, upkeep: 200, jobs: 30, powerUse: 0.2, waterUse: 15,
     coverage: { kind: 'health', radius: 16, strength: 0.85, capacity: 8000, tier: 'clinic', metric: 'walk' },
-    description: 'Walk-in clinic: 8,000 patient-equivalents within a ~16-tile walk (seniors need 3.5x the care of adults). A crowded clinic treats everyone less; needs power and water.' }),
+    description: 'Walk-in clinic: 8,000 patient-equivalents within a ~16-tile walk (seniors need about 4x the care of adults). A crowded clinic treats everyone less; needs power and water.' }),
   p({ id: 'civ_hospital', name: 'Hospital', category: 'health', service: 'health', cost: 9000, upkeep: 1100, jobs: 250, powerUse: 1.5, waterUse: 120,
     coverage: { kind: 'health', radius: 36, strength: 1.0, capacity: 40000, tier: 'hospital', metric: 'drive' },
     description: 'Full hospital: 40,000 patient-equivalents within ~36 tiles by road. A crowded hospital treats everyone less; needs power and water.' }),
   p({ id: 'civ_medical_center', name: 'Medical Research Center', category: 'health', service: 'health', cost: 30000, upkeep: 3500, jobs: 800, powerUse: 4, waterUse: 300,
     coverage: { kind: 'health', radius: 56, strength: 1.0, capacity: 120000, tier: 'hospital', metric: 'drive' }, landValue: { amount: 0.1, radius: 10 },
     requires: 'medical_center', unique: true, prestige: { amount: 0.15, radius: 10 }, campus: { amount: 0.5, radius: 14 },
-    description: 'Reward: world-class medical campus — 120,000 patient-equivalents within ~56 tiles by road. Offices and high-tech firms like to be near it. Needs power.' }),
+    description: 'Reward: world-class medical campus — 120,000 patient-equivalents within ~56 tiles by road. Offices and high-tech firms like to be near it. Needs power and water.' }),
 
   // ================================================================ EDUCATION
   p({ id: 'civ_elementary_school', name: 'Elementary School', category: 'education', service: 'education', cost: 2000, upkeep: 240, jobs: 40, powerUse: 0.2, waterUse: 20,

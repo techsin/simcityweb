@@ -38,7 +38,7 @@ uniform float uRectOn;
 uniform vec4 uBrush;
 uniform float uNightF;
 uniform float uDesert;
-/** 1 in Dec-Feb: terrain snow may cover zoned / developed cells (cleared outside winter) */
+/** 0..1: how much terrain snow may cover zoned / developed cells and their 1-cell ring (TerrainRenderer keeps 0) */
 uniform float uWinter;
 /** snow line noise amplitude (m) */
 uniform float uSnowNoise;

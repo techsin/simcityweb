@@ -7,7 +7,9 @@
  *         + / - zoom, Home = recenter. Keys are ignored while an input / textarea / contenteditable is focused
  *         and when another handler already called preventDefault() (game shortcuts win).
  * Touch:  one finger = pan, two fingers = pinch zoom + twist rotate.
- * Zoom 40 m .. 7 km, tilt 25°..85° with an automatic top-down tendency when zoomed far out.
+ * Zoom 40 m .. maxDistance (default defaultMaxDistance(mapSize): ~2.2 × the map extent, 1.5 km .. 7 km, so a 1 km map
+ * can't be zoomed out into the void while 4 km region-size maps keep the full 7 km), tilt 25°..85° with an automatic
+ * top-down tendency when zoomed far out.
  * Target is clamped to the map, the camera never goes below the terrain; all motion is damped.
  */
 import * as THREE from 'three';
@@ -28,6 +30,12 @@ export interface CameraControllerOptions {
 
 const DEG = Math.PI / 180;
 const SNAP0 = Math.PI / 4; // default diagonal view (SC4-like)
+
+/** zoom-out limit for a map of `mapSize` m: ~2.2 × its extent (whole map in view at any yaw with a margin), never below
+ *  1.5 km (tiny maps) nor above 7 km (the previous global limit, reached by 4 km maps) */
+export function defaultMaxDistance(mapSize: number): number {
+  return THREE.MathUtils.clamp(mapSize * 2.2, 1500, 7000);
+}
 
 function damp(current: number, target: number, lambda: number, dt: number) {
   return target + (current - target) * Math.exp(-lambda * dt);
@@ -95,11 +103,12 @@ export class CameraController implements CameraControllerApi {
     this.dom = dom;
     this.opts = {
       minDistance: 40,
-      maxDistance: 7000,
       minTilt: 25,
       maxTilt: 85,
       edgeScroll: false,
       ...opts,
+      // (an explicit `maxDistance: undefined` must not wipe the default)
+      maxDistance: opts.maxDistance ?? defaultMaxDistance(opts.mapSize),
     };
     this.edgeScroll = this.opts.edgeScroll;
     const c = opts.mapSize / 2;

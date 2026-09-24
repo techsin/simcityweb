@@ -8,10 +8,11 @@ import { Network, Zone } from '../../src/core/types';
 import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { CATALOG, getDef, rebuildCatalogIndex } from '../../src/sim/catalog';
 import type { BuildingDef } from '../../src/sim/catalogTypes';
-import { clearInfoCache, infoOf } from '../../src/sim/infra/common';
+import { clearInfoCache, infoOf, removeBuilding } from '../../src/sim/infra/common';
 import { facilityLoad, newReachScratch, reachCells, unservedClusters } from '../../src/sim/infra/catchments';
-import type { ServicesSystem } from '../../src/sim/infra/services';
+import { SERVICES_DIRTY_DAYS, type ServicesSystem } from '../../src/sim/infra/services';
 import { schedulerOf } from '../../src/sim/infra/scheduler';
+import { NETFLAG_BUS_STOP } from '../../src/sim/infra/transit';
 import { serializeCity, deserializeCity } from '../../src/save/serialize';
 import { newSim, newState, place, roadLine, stressCity } from './cityGen';
 
@@ -29,11 +30,30 @@ const WP2_DEFS: BuildingDef[] = [
     coverage: { kind: 'health', radius: 20, strength: 1, capacity: 40000, tier: 'hospital', metric: 'drive' } },
   { id: 'wp2_house', name: 'House', model: 'res_tower', category: 'growable', footprint: [1, 1], devType: 1, zones: [Zone.ResMed], capacity: 100000 },
 ];
+/** 1x1 copy of a catalog def without power / water use (`_np`), or with power use (`_pw`: unpowered in these tests) */
+function derived(id: string, suffix: '_np' | '_pw'): BuildingDef {
+  const d = getDef(id)!;
+  return { ...d, id: id + suffix, footprint: [1, 1], powerUse: suffix === '_pw' ? 0.2 : 0, waterUse: 0, requires: undefined, unique: false };
+}
 function registerWp2(): void {
   let added = false;
   for (const d of WP2_DEFS) if (!getDef(d.id)) { CATALOG.push(d); added = true; }
+  const more: BuildingDef[] = [derived('civ_hospital', '_np'), derived('civ_clinic', '_np'), derived('civ_clinic', '_pw'),
+    derived('park_large', '_np'), derived('park_small', '_np'), derived('civ_elementary_school', '_pw')];
+  for (const d of more) if (!getDef(d.id)) { CATALOG.push(d); added = true; }
   if (added) rebuildCatalogIndex();
   clearInfoCache();
+}
+/** every finite and within [lo, hi] */
+function inRange(a: Float32Array, lo = 0, hi = 1): boolean {
+  for (let i = 0; i < a.length; i++) { const v = a[i]; if (!Number.isFinite(v) || v < lo - 1e-6 || v > hi + 1e-6) return false; }
+  return true;
+}
+/** largest drop (before - after) over all cells */
+function maxDrop(before: Float32Array, after: Float32Array): { drop: number; at: number } {
+  let drop = 0, at = -1;
+  for (let i = 0; i < before.length; i++) { const d = before[i] - after[i]; if (d > drop) { drop = d; at = i; } }
+  return { drop, at };
 }
 function svc(sim: ReturnType<typeof newSim>): ServicesSystem {
   return sim.getSystem<ServicesSystem>('services')!;
@@ -119,6 +139,141 @@ describe('catchments: capacity sharing', () => {
     expect(st.stats.needs.elementary.unreached).toBeCloseTo(st.stats.needs.elementary.need, 0);
     // legacy eduCov = .2 x college here (no longer saturates)
     expect(st.eduCov[st.idx(30, 31)]).toBeCloseTo(0.2 * st.eduCollegeCov[st.idx(30, 31)], 4);
+  });
+});
+
+describe('catchments: monotonicity (building a facility never lowers coverage)', () => {
+  type LayerKey = 'eduElemCov' | 'healthCov' | 'greenCov';
+  /** 7 homes next to the facilities (x 27..33 on z 31, road on z 30), `total` residents in all */
+  function colocated(total: number, base: [string, number][], add: [string, number][], layer: LayerKey) {
+    registerWp2();
+    const st = newState(64);
+    roadLine(st, 2, 30, 60, 30, Network.Road);
+    for (let x = 27; x <= 33; x++) place(st, 'wp2_house', x, 31, { pop: total / 7, capacity: 100000, wealth: 2 });
+    for (const [d, x] of base) place(st, d, x, 29);
+    const sim = newSim(st);
+    const before = Float32Array.from(st[layer]);
+    const added = add.map(([d, x]) => place(st, d, x, 29));
+    svc(sim).compute(sim, false);
+    const after = Float32Array.from(st[layer]);
+    return { st, sim, before, after, added, at: st.idx(30, 31) };
+  }
+
+  it('co-located: hospital + clinic, large + small park, 1,500 + 300 seats, working + unpowered school', () => {
+    // hospital alone serves 30k patient-equivalents fully; a clinic next door must not lower that (was 0.807)
+    const h = colocated(30000, [['civ_hospital_np', 30]], [['civ_clinic_np', 31]], 'healthCov');
+    console.log(`hospital ${h.before[h.at].toFixed(3)} -> + clinic ${h.after[h.at].toFixed(3)}`);
+    expect(h.before[h.at]).toBeGreaterThan(0.99);
+    expect(h.after[h.at]).toBeGreaterThan(0.99);
+    expect(maxDrop(h.before, h.after).drop).toBeLessThan(1e-5);
+    // large park alone for 15k; a small park next door (was 0.755)
+    const p = colocated(15000, [['park_large_np', 30]], [['park_small_np', 31]], 'greenCov');
+    console.log(`large park ${p.before[p.at].toFixed(3)} -> + small park ${p.after[p.at].toFixed(3)}`);
+    expect(p.after[p.at]).toBeGreaterThan(0.99);
+    expect(maxDrop(p.before, p.after).drop).toBeLessThan(1e-5);
+    // 1,800 kids: 1,500 seats give 0.833, + 300 seats must give ~1 (was 0.667)
+    const k = colocated(1800 / 0.13, [['wp2_elem', 30]], [['wp2_elem_small', 31]], 'eduElemCov');
+    console.log(`1,500 seats ${k.before[k.at].toFixed(3)} -> + 300 seats ${k.after[k.at].toFixed(3)}`);
+    expect(k.before[k.at]).toBeCloseTo(1500 / 1800, 2);
+    expect(k.after[k.at]).toBeGreaterThan(0.99);
+    expect(maxDrop(k.before, k.after).drop).toBeLessThan(1e-5);
+    // served <= seats of each school, and the small one only took the overflow
+    const big = facilityLoad(k.sim, k.st.building[k.st.idx(30, 29)])!, small = facilityLoad(k.sim, k.added[0].id)!;
+    expect(big.seated).toBeLessThanOrEqual(1500 + 1e-3);
+    expect(small.seated).toBeLessThanOrEqual(300 + 1e-3);
+    expect(big.seated + small.seated).toBeGreaterThan(1795);
+    // 1,170 kids at a working school; an unpowered school next door only takes the overflow (was 0.650)
+    const u = colocated(1170 / 0.13, [['wp2_elem', 30]], [['civ_elementary_school_pw', 31]], 'eduElemCov');
+    console.log(`working school ${u.before[u.at].toFixed(3)} -> + unpowered school ${u.after[u.at].toFixed(3)}`);
+    expect(u.added[0].flags & BF.Powered).toBe(0);
+    expect(u.after[u.at]).toBeGreaterThan(0.99);
+    expect(maxDrop(u.before, u.after).drop).toBeLessThan(1e-5);
+    expect(facilityLoad(u.sim, u.added[0].id)!.seated).toBeLessThan(1);
+    // 3,000 kids: the unpowered school's seats still help (0.5 -> 0.5 + 0.5 x 0.3)
+    const c = colocated(3000 / 0.13, [['wp2_elem', 30]], [['civ_elementary_school_pw', 31]], 'eduElemCov');
+    console.log(`crowded working school ${c.before[c.at].toFixed(3)} -> + unpowered school ${c.after[c.at].toFixed(3)}`);
+    expect(c.after[c.at]).toBeCloseTo(0.65, 2);
+  });
+
+  it('a new school at the edge of a served neighbourhood keeps it served (either build order)', () => {
+    registerWp2();
+    for (const order of ['small first', 'big first'] as const) {
+      const st = newState(64);
+      roadLine(st, 2, 30, 62, 30, Network.Road);
+      homes(st, 10, 16, 31, 1500 / 0.13 / 7 * 0.15); // X: ~225 kids next to the 300-seat school
+      homes(st, 40, 50, 31, 4000 / 0.13 / 11); // Y: 4,000 kids, far from it
+      const sim = newSim(st);
+      const first = order === 'small first' ? place(st, 'wp2_elem_small', 13, 29) : place(st, 'wp2_elem', 28, 29);
+      svc(sim).compute(sim, false);
+      const before = Float32Array.from(st.eduElemCov);
+      const second = order === 'small first' ? place(st, 'wp2_elem', 28, 29) : place(st, 'wp2_elem_small', 13, 29);
+      svc(sim).compute(sim, false);
+      const after = Float32Array.from(st.eduElemCov);
+      const { drop, at } = maxDrop(before, after);
+      console.log(`${order}: X ${before[st.idx(13, 31)].toFixed(3)} -> ${after[st.idx(13, 31)].toFixed(3)}, Y ${before[st.idx(45, 31)].toFixed(3)} -> ${after[st.idx(45, 31)].toFixed(3)}, max drop ${drop.toExponential(1)} at ${at}`);
+      expect(drop).toBeLessThan(1e-5);
+      expect(after[st.idx(13, 31)]).toBeGreaterThan(0.95); // X stays served (a proportional split gave ~0.6)
+      expect(after[st.idx(45, 31)]).toBeGreaterThan(0.3); // Y gets the big school's seats
+      void first; void second;
+    }
+  });
+
+  it('randomised layouts: adding a facility never lowers any cell, removing one never raises any; seats conserved', () => {
+    registerWp2();
+    let rs = 777;
+    const rnd = () => { rs = (rs * 1103515245 + 12345) & 0x7fffffff; return rs / 0x7fffffff; };
+    const pools: { layer: LayerKey; tier: 'elementary' | 'health'; defs: string[] }[] = [
+      { layer: 'eduElemCov', tier: 'elementary', defs: ['wp2_elem', 'wp2_elem_small', 'civ_elementary_school_pw'] },
+      { layer: 'healthCov', tier: 'health', defs: ['wp2_hosp', 'civ_clinic_np', 'civ_clinic_pw', 'civ_hospital_np'] },
+    ];
+    let worst = 0, checks = 0;
+    for (let trial = 0; trial < 12; trial++) {
+      const pool = pools[trial % 2];
+      const st = newState(48);
+      for (let k = 2; k < 48; k += 6) { roadLine(st, 0, k, 47, k, Network.Street); roadLine(st, k, 0, k, 47, k % 12 === 2 ? Network.Avenue : Network.Road); }
+      for (let q = 0; q < 160; q++) {
+        const x = Math.floor(rnd() * 48), z = Math.floor(rnd() * 48);
+        if (st.network[st.idx(x, z)] || st.building[st.idx(x, z)] >= 0) continue;
+        place(st, 'wp2_house', x, z, { pop: Math.round(100 + rnd() * (pool.tier === 'health' ? 9000 : 3000)), capacity: 100000, wealth: 1 + Math.floor(rnd() * 3) });
+      }
+      const free = () => {
+        for (;;) {
+          const x = Math.floor(rnd() * 48), z = Math.floor(rnd() * 48);
+          if (!st.network[st.idx(x, z)] && st.building[st.idx(x, z)] < 0) return [x, z] as const;
+        }
+      };
+      for (let q = 0, n = 2 + Math.floor(rnd() * 5); q < n; q++) { const [x, z] = free(); place(st, pool.defs[Math.floor(rnd() * pool.defs.length)], x, z); }
+      const sim = newSim(st);
+      const before = Float32Array.from(st[pool.layer]);
+      const [x, z] = free();
+      const b = place(st, pool.defs[Math.floor(rnd() * pool.defs.length)], x, z);
+      svc(sim).compute(sim, false);
+      const after = Float32Array.from(st[pool.layer]);
+      const d1 = maxDrop(before, after).drop;
+      // conservation: every facility seats <= its capacity; served <= sum seats x op
+      let cap = 0;
+      for (const f of st.buildings.values()) {
+        const L = facilityLoad(sim, f.id);
+        if (!L) continue;
+        expect(L.seated).toBeLessThanOrEqual(L.capacity * (1 + 1e-5) + 1e-3);
+        cap += L.capacity * L.operating;
+      }
+      const n = st.stats.needs[pool.tier];
+      expect(n.served).toBeLessThanOrEqual(cap * (1 + 1e-4) + 1);
+      expect(n.served).toBeLessThanOrEqual(n.need + 1);
+      // and the reverse: bulldozing it again never raises any cell (back to the first result)
+      removeBuilding(sim, b);
+      svc(sim).compute(sim, false);
+      const again = Float32Array.from(st[pool.layer]);
+      const d2 = maxDrop(again, after).drop; // after >= again
+      let back = 0;
+      for (let i = 0; i < again.length; i++) back = Math.max(back, Math.abs(again[i] - before[i]));
+      expect(back).toBeLessThan(1e-5);
+      worst = Math.max(worst, d1, d2);
+      checks++;
+    }
+    console.log(`randomised monotonicity: ${checks} layouts, worst drop ${worst.toExponential(2)}`);
+    expect(worst).toBeLessThan(1e-5);
   });
 });
 
@@ -396,5 +551,133 @@ describe('catchments: cache, save / load, budget', () => {
     // needs are filled for every tier
     for (const t of ['elementary', 'high', 'college', 'health', 'play', 'green', 'police', 'fire'] as const) expect(st.stats.needs[t].need).toBeGreaterThan(0);
     expect(infoOf(st, st.buildings.values().next().value!)).toBeDefined();
+  });
+});
+
+describe('catchments: transit reset, bulldozing, edges, empty city', () => {
+  it('road-flag bus stops without a transit building: transitCov is rewritten every pass and clears when the stop goes', () => {
+    const st = newState(48);
+    roadLine(st, 2, 20, 45, 20, Network.Road);
+    st.netFlags[st.idx(20, 20)] |= NETFLAG_BUS_STOP;
+    for (let x = 10; x < 30; x++) place(st, 't_r2', x, 21, { pop: 50 });
+    const sim = newSim(st);
+    const probe = st.idx(24, 21);
+    const v0 = st.transitCov[probe];
+    const seen: string[] = [v0.toFixed(3)];
+    expect(v0).toBeGreaterThan(0.2);
+    for (let p = 0; p < 5; p++) { svc(sim).compute(sim, false); seen.push(st.transitCov[probe].toFixed(3)); expect(st.transitCov[probe]).toBeCloseTo(v0, 5); }
+    console.log(`transitCov over passes (road-flag stop only): ${seen.join(' -> ')}`);
+    st.netFlags[st.idx(20, 20)] &= ~NETFLAG_BUS_STOP;
+    svc(sim).compute(sim, false);
+    expect(st.transitCov[probe]).toBe(0);
+  });
+
+  it('a facility bulldozed mid-pass: coverage 0 and facilityLoad null by the end of that pass; right after a pass: within SERVICES_DIRTY_DAYS + 1 day', () => {
+    registerWp2();
+    const st = newState(64);
+    roadLine(st, 2, 30, 60, 30, Network.Road);
+    homes(st, 20, 40, 31, 400);
+    const school = place(st, 'wp2_elem', 30, 29);
+    const sim = newSim(st);
+    const at = st.idx(30, 31);
+    expect(st.eduElemCov[at]).toBeGreaterThan(0.9);
+    const s = svc(sim) as unknown as { stepIdx: number; lastRun: number };
+    const task = schedulerOf(sim).tasks.find((t) => t.name === 'services')!;
+    // start a pass, bulldoze after its prep step (the school is in this pass's facility list), finish the pass
+    s.lastRun = -1e9;
+    task.step(sim);
+    expect(s.stepIdx).toBeGreaterThan(0);
+    removeBuilding(sim, school);
+    while (s.stepIdx >= 0) task.step(sim);
+    expect(st.eduElemCov[at]).toBe(0);
+    expect(facilityLoad(sim, school.id)).toBeNull();
+    // a second school, bulldozed right after a finished pass: the dirty flag brings the next pass within the window
+    const school2 = place(st, 'wp2_elem', 31, 29);
+    sim.events.emit('buildingAdded', school2);
+    svc(sim).compute(sim, false);
+    expect(st.eduElemCov[at]).toBeGreaterThan(0.9);
+    removeBuilding(sim, school2);
+    let days = 0;
+    while (st.eduElemCov[at] > 0 && days < 30) { sim.runDays(1); days++; }
+    console.log(`bulldozed school: coverage gone after ${days} day(s)`);
+    expect(days).toBeLessThanOrEqual(SERVICES_DIRTY_DAYS + 1);
+    expect(facilityLoad(sim, school2.id)).toBeNull();
+  });
+
+  it('facilities and NIMBY sources at the map corners give finite, in-range layers', () => {
+    registerWp2();
+    const st = newState(48);
+    roadLine(st, 0, 0, 47, 0, Network.Road);
+    roadLine(st, 0, 47, 47, 47, Network.Highway);
+    roadLine(st, 0, 1, 0, 46, Network.Street);
+    roadLine(st, 47, 1, 47, 46, Network.Rail);
+    for (const [x, z] of [[1, 1], [46, 1], [1, 46], [46, 46], [2, 1], [1, 2]] as const) if (st.building[st.idx(x, z)] < 0) place(st, 'wp2_house', x, z, { pop: 3000, capacity: 100000, wealth: 3 });
+    place(st, 'wp2_elem', 3, 1);
+    place(st, 'wp2_hosp', 45, 1);
+    place(st, 'wp2_college', 1, 45);
+    place(st, 'wp2_play', 45, 46);
+    place(st, 'util_coal_plant', 42, 42);
+    place(st, 'lm_cathedral', 1, 40);
+    for (let z = 44; z < 48; z++) for (let x = 40; x < 44; x++) { const i = st.idx(x, z); if (st.network[i] || st.building[i] >= 0) continue; st.zone[i] = Zone.Landfill; st.landfillFill[i] = 0.8; }
+    const sim = newSim(st);
+    sim.runDays(3);
+    const layers = { policeCov: st.policeCov, fireCov: st.fireCov, healthCov: st.healthCov, eduElemCov: st.eduElemCov, eduHighCov: st.eduHighCov,
+      eduCollegeCov: st.eduCollegeCov, playCov: st.playCov, greenCov: st.greenCov, parkCov: st.parkCov, eduCov: st.eduCov, transitCov: st.transitCov,
+      stigma: st.stigma, prestige: st.prestige, campus: st.campus, shopAccess: st.shopAccess };
+    for (const [k, a] of Object.entries(layers)) expect(inRange(a), k).toBe(true);
+    expect(inRange(st.accessCommute, 0, 1e6)).toBe(true);
+    expect(st.eduElemCov[st.idx(1, 1)]).toBeGreaterThan(0.5);
+    expect(st.stigma[st.idx(41, 45)]).toBeGreaterThan(0); // landfill corner + coal plant
+    expect(st.campus[st.idx(0, 47)]).toBeGreaterThan(0.3);
+    for (const t of ['elementary', 'health', 'college', 'play'] as const) {
+      const n = st.stats.needs[t];
+      for (const v of [n.need, n.served, n.capacity, n.unreached]) expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+
+  it('a city without residents: zero needs, no clusters, idle facilities', () => {
+    registerWp2();
+    const st = newState(48);
+    roadLine(st, 2, 20, 45, 20, Network.Road);
+    const school = place(st, 'wp2_elem', 20, 21);
+    place(st, 'wp2_hosp', 30, 21);
+    place(st, 'wp2_play', 10, 21);
+    const sim = newSim(st);
+    for (const t of ['elementary', 'high', 'college', 'health', 'play', 'green', 'police', 'fire'] as const) {
+      const n = st.stats.needs[t];
+      expect(n.need, t).toBe(0);
+      expect(n.served, t).toBe(0);
+      expect(n.unreached, t).toBe(0);
+      expect(n.overcrowded, t).toBe(0);
+      expect(unservedClusters(sim, t)).toEqual([]);
+    }
+    const L = facilityLoad(sim, school.id)!;
+    expect(L.demand).toBe(0);
+    expect(L.utilization).toBe(0);
+    expect(L.seated).toBe(0);
+    expect(st.eduElemCov[st.idx(20, 22)]).toBeGreaterThan(0.9); // an empty lot next to the school is covered
+  });
+
+  it('walk near field stops at a highway / rail line / unbridged water; a street does not block it', () => {
+    registerWp2();
+    for (const barrier of ['street', 'highway', 'rail', 'water'] as const) {
+      const st = newState(64);
+      roadLine(st, 2, 30, 24, 30, Network.Road);
+      roadLine(st, 26, 30, 40, 30, Network.Road); // the east side's road is not connected for walkers (x = 25 is the barrier)
+      for (let z = 0; z < 64; z++) {
+        const i = st.idx(25, z);
+        if (barrier === 'street') st.network[i] = Network.Street;
+        else if (barrier === 'highway') st.network[i] = Network.Highway;
+        else if (barrier === 'rail') st.network[i] = Network.Rail;
+        else st.water[i] = 1;
+      }
+      homes(st, 26, 27, 31, 100);
+      place(st, 'wp2_elem', 23, 31);
+      newSim(st);
+      const across = st.eduElemCov[st.idx(26, 31)];
+      console.log(`near field across a ${barrier}: ${across.toFixed(2)}`);
+      if (barrier === 'street') expect(across).toBeGreaterThan(0.9);
+      else expect(across).toBe(0);
+    }
   });
 });

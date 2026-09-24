@@ -27,13 +27,15 @@
  *  'pollution.water' (x '.industry'), 'pollution.sewage', 'pollution.noise' (C / I / construction),
  *  'pollution.noise.traffic', 'garbage.produced', 'soil.decay'.
  *  GARBAGE: production = def.pollution.garbage (t/month at full occupancy) x activity x 'garbage.produced'. A building
- *  is collected only if road-reachable within GARBAGE_TRUCK_RANGE of a facility and capacity remains (nearest first).
+ *  is collected only if road-reachable within GARBAGE_TRUCK_RANGE of a facility and capacity remains (nearest first);
+ *  garbageInfo says why not ('capacity', 'range', or 'noRoad' when no road touches the building at all).
  *  Recycling diverts up to RECYCLE_MAX_SHARE, incinerators burn (power output = def MW x burn share, read by utilities),
  *  landfills take the rest and FILL UP (state.landfillFill, LANDFILL_CELL_STOCK t per cell, cells fill in order; a
  *  full cell has no capacity). Unpowered facilities work at GARBAGE_UNPOWERED. state.garbage = uncollected piles on
  *  building cells (smell + crime) and, on landfill cells, a display level (0.35 + 0.3 use + 0.35 fill).
  *  SOIL (stock, saved): industry / landfill / toxic sources contaminate, slow decay; leaches into ground water. A closed
- *  landfill leaves brownfield soil.
+ *  landfill leaves brownfield soil (once, when the cell stops being landfill); its fill stays with the land, so zoning
+ *  it again gives no fresh capacity, until a building occupies the cell.
  *  Emits layerUpdated('pollution') after the flags step.
  */
 import { DevType, Network, Zone, isRoad } from '../../core/types';
@@ -595,6 +597,9 @@ export class PollutionSystem implements SimSystem {
   private garbageRoutes(sim: Simulation): void {
     const st = sim.state;
     const N = st.size, C = st.cells;
+    // buildings may have appeared since the sources step (a later scheduler slot): per-id arrays must cover their ids
+    // (a read past the end gives undefined -> NaN production / recycling -> NaN funds)
+    this.ensureIds(st);
     const prod = this.prodById, served = this.served, reach = this.reach, reason = this.reasonById;
     const stamp = ++this.stamp;
     const sStamp = ++this.stamp;
@@ -695,6 +700,7 @@ export class PollutionSystem implements SimSystem {
     const bld = st.building, zone = st.zone;
     const G = st.garbage, fill = st.landfillFill;
     const dtMonths = this.dtMonthsB;
+    this.ensureIds(st);
     const prod = this.prodById, served = this.served, reach = this.reach, reason = this.reasonById;
     const sStamp = this.servedStamp, rStamp = sStamp - 1;
     const changed: Building[] = [];

@@ -386,7 +386,7 @@ export class WorldView implements WorldViewApi {
     // light is weak: the sun-twilight -> moon handover (~19:10-19:35 / ~06:00-06:25) and moonless pre-dawn hours would
     // otherwise be the darkest minutes of the night
     const gap = L.night * (1 - THREE.MathUtils.clamp(L.lightIntensity / 0.28, 0, 1));
-    this.nightFill.intensity = 0.3 * L.night + 0.28 * gap;
+    this.nightFill.intensity = 0.34 * L.night + 0.28 * gap;
     sharedUniforms.uNight.value = L.night;
     sharedUniforms.uTime.value = this.clock;
     sharedUniforms.uLitFraction.value = litFractionAt(this._time);

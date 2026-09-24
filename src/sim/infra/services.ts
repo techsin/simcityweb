@@ -13,15 +13,26 @@
  *
  * Tier engine (per need tier; facilities of the tier in DefInfo.tier / catalog coverage.tier):
  *   reach(f)   walk / drive road-network kernels or a Euclidean disk (catchments.reachRaw), radius x 1.3 road cells,
- *              falloff w: full to 35 % R, smoothstep to 0 at R. a_fi = w_fi x strength_f.
+ *              falloff w: full to 35 % R, smoothstep to 0 at R. a_fi = w_fi x strength_f = the share of a cell's
+ *              need that can use f.
  *   op_f       funding factor x ordinance (edu / health / police effect; police x justiceFactors().policeMul) x
  *              (def uses power & unpowered ? UNPOWERED_SERVICE_EFF : 1) x (health & uses water & dry ?
- *              UNWATERED_HEALTH_EFF : 1) x facilityOpFactor (WP7 staffing)
- *   shared tiers (capacity: schools, health, parks) — conserving capacity sharing: A_i = sum_f a_fi, c_i = min(1, A_i)
- *              D_f = sum_i need_i c_i a_fi / A_i  (each cell's need split among the facilities reaching it)
- *              r_f = op_f min(1, S_f / D_f);  cov_i = min(1, c_i / A_i sum_f a_fi r_f)
- *              -> served = sum need x cov <= sum S x op; one school uncrowded = strength x op (legacy), 1,500 seats
- *              for 3,000 kids = 0.5, two overlapping schools = 1.0 (each counts half the children).
+ *              UNWATERED_HEALTH_EFF : 1) x facilityOpFactor (WP7 staffing) = the quality of the service.
+ *   shared tiers (capacity: schools, health, parks) — sequential seat filling. Every cell keeps an unseated share u_i
+ *              (1 at the start). Facilities take seats best first (op_f descending, then building id):
+ *                e_fi = min(u_i, a_fi)  (claim),  D_f = sum_i need_i e_fi,  sigma_f = min(1, S_f / D_f)
+ *                u_i -= e_fi sigma_f,  cov_i += e_fi sigma_f op_f
+ *              -> seats are conserved (f seats sigma_f D_f <= S_f; served = sum need x cov <= sum S x op); one school
+ *              uncrowded = strength x op (legacy), 1,500 seats for 3,000 kids = 0.5, two overlapping schools = 1.0.
+ *              MONOTONE: building a facility (or raising a facility's capacity, or its op while the seat order stays)
+ *              never lowers any cell's coverage — later claims only shrink where earlier facilities seated people,
+ *              and better-run facilities go first, so an unpowered school next to a working one only takes its
+ *              overflow and a clinic inside a hospital catchment only adds seats (the proportional split this
+ *              replaces could lower coverage there). Proof sketch: seated shares only grow when a facility is added
+ *              (min(u, a) sigma is monotone in u and sigma), and cov = sum over the seat order of seated x op with op
+ *              non-increasing (Abel summation).
+ *              facilityLoad: seated = sigma_f D_f; demand = seated + (crowded facilities) the need left unseated in
+ *              its reach, by reach share a_fi / sum_g a_gi; utilization = demand / S_f.
  *   union tiers (police, fire; transit) — legacy: cov = 1 - prod(1 - min(1, w s r_f)), r_f = op_f min(1, S / D_f)
  *              with D_f = sum need w (S = Infinity unless a def / WP7 provider gives one).
  *   need rasters from the residents' cohort shares (economy/demographics cohortShares; reference mix until WP1):
@@ -99,8 +110,8 @@ const N_RASTERS = 7;
 // steps
 const S_PREP = 0, S_TIERS = 1, S_STOPS = 2, S_NIMBY = 3, S_ACC_SEED = 4, S_ACC_SEARCH = 5, S_ACC_LAND = 6, S_SHOP_A = 7,
   S_SHOP_B = 8, S_FOOT = 9, S_FINISH = 10;
-// tier phases
-const P_INIT = 0, P_SEARCH = 1, P_PREALLOC = 2, P_ALLOC = 3, P_FINAL = 4;
+// tier phases (shared tiers: init -> search -> alloc (in seat order) -> report -> final; union: init -> search -> final)
+const P_INIT = 0, P_SEARCH = 1, P_ALLOC = 2, P_REPORT = 3, P_FINAL = 4;
 
 /** road-cell free-flow minutes (TIME_Q units) per Network for accessCommute (roads only) */
 const NET_TIME_Q: readonly number[] = NET_TIME.map((t, k) => (k >= 1 && k <= 5 ? Math.max(1, Math.round(t / TIME_Q)) : 0));
@@ -128,6 +139,8 @@ export class ServicesSystem implements SimSystem {
   lastMs = 0;
   /** justice police multiplier folded into policeCov this pass (crime.ts divides it out so it counts once, WP3-3) */
   policeMul = 1;
+  /** 'police.effect' ordinance factor folded into policeCov this pass (crime.ts applies only fx / policeFx, WP3-3) */
+  policeFx = 1;
 
   private stepIdx = -1;
   private firstPass = false;
@@ -153,6 +166,11 @@ export class ServicesSystem implements SimSystem {
   private facCap: number[][] = Array.from({ length: NT + 1 }, () => [] as number[]);
   private facStart: number[] = [];
   private facEnd: number[] = [];
+  /** current shared slot, per facility: seated fraction of its claims, seats taken */
+  private facSig: number[] = [];
+  private facSeat: number[] = [];
+  /** seat order of the current shared slot (facility indices, best op first, then building id) */
+  private order = new Int32Array(0);
   private shared: boolean[] = new Array(NT + 1).fill(false);
   /** slot had facilities in the previous pass (an empty slot's layer is already 0) */
   private hadFac: boolean[] = new Array(NT + 1).fill(true);
@@ -168,9 +186,11 @@ export class ServicesSystem implements SimSystem {
   private need: Float32Array[] = [];
   private provNeed: (Float32Array | null)[] = new Array(NT).fill(null);
   private provSum = new Float64Array(NT);
+  /** reach sum per cell (sum_f a_fi) of the current slot */
   private A = new Float32Array(0);
-  private acc = new Float32Array(0);
-  private g = new Float32Array(0);
+  /** shared tiers: unseated share per cell (1 = nobody seated yet) */
+  private seat = new Float32Array(0);
+  /** coverage accumulator of the current slot */
   private cov = new Float32Array(0);
   private tmp = new Float32Array(0);
   private idist = new Int32Array(0);
@@ -187,6 +207,7 @@ export class ServicesSystem implements SimSystem {
   private curEnt = new Map<number, CacheEnt>();
   private cache: (SlotCache | null)[] = new Array(NT + 1).fill(null);
   private netHash = 0;
+  private waterHash = 0;
   private netEvents = false;
   private stops: StopList | undefined;
 
@@ -195,6 +216,7 @@ export class ServicesSystem implements SimSystem {
   private capById = new Float32Array(0);
   private demById = new Float32Array(0);
   private servById = new Float32Array(0);
+  private seatById = new Float32Array(0);
   private opById = new Float32Array(0);
   private utilById = new Float32Array(0);
   private powById = new Float32Array(0);
@@ -373,18 +395,15 @@ export class ServicesSystem implements SimSystem {
     for (const e of this.curEnt.values()) if (e.road && e.valid && hit(e)) e.valid = false;
   }
 
-  /** network hash: detects edits that bypass networkChanged (tests, tools) -> drop every road reach */
+  /**
+   * network hash: detects edits that bypass networkChanged (tests, tools) -> drop every road reach; water hash:
+   * terraforming moves shores (the walk / drive near field stops at unbridged water) -> drop every road reach
+   */
   private checkNetwork(st: CityState): void {
-    const net = st.network;
-    let h = 0x811c9dc5 ^ st.cells;
-    const n4 = net.length & ~3;
-    for (let i = 0; i < n4; i += 4) {
-      const v = net[i] | (net[i + 1] << 8) | (net[i + 2] << 16) | (net[i + 3] << 24);
-      h = Math.imul(h ^ v, 16777619) ^ (h >>> 13);
-    }
-    for (let i = n4; i < net.length; i++) h = Math.imul(h ^ net[i], 16777619);
-    if (h !== this.netHash && !this.netEvents) this.invalidateReach(undefined);
+    const h = hashBytes(st.network, st.cells), wh = hashBytes(st.water, st.cells);
+    if ((h !== this.netHash && !this.netEvents) || wh !== this.waterHash) this.invalidateReach(undefined);
     this.netHash = h;
+    this.waterHash = wh;
     this.netEvents = false;
   }
 
@@ -395,8 +414,7 @@ export class ServicesSystem implements SimSystem {
     this.need = Array.from({ length: N_RASTERS }, () => new Float32Array(C));
     this.provNeed = new Array(NT).fill(null);
     this.A = new Float32Array(C);
-    this.acc = new Float32Array(C);
-    this.g = new Float32Array(C);
+    this.seat = new Float32Array(C);
     this.cov = new Float32Array(C);
     this.tmp = new Float32Array(C);
     this.idist = new Int32Array(C);
@@ -429,6 +447,7 @@ export class ServicesSystem implements SimSystem {
     this.fx = readEffects(st);
     const policeMul = justiceFactors(st).policeMul;
     this.policeMul = policeMul;
+    this.policeFx = this.fx.policeEffect;
     const sh = this.shares;
     let nCs = 0;
     const bL = buildingList(st);
@@ -436,6 +455,7 @@ export class ServicesSystem implements SimSystem {
     this.capById = ensureIdFloat(this.capById as Float32Array<ArrayBuffer>, st);
     this.demById = ensureIdFloat(this.demById as Float32Array<ArrayBuffer>, st);
     this.servById = ensureIdFloat(this.servById as Float32Array<ArrayBuffer>, st);
+    this.seatById = ensureIdFloat(this.seatById as Float32Array<ArrayBuffer>, st);
     this.opById = ensureIdFloat(this.opById as Float32Array<ArrayBuffer>, st);
     this.utilById = ensureIdFloat(this.utilById as Float32Array<ArrayBuffer>, st);
     this.powById = ensureIdFloat(this.powById as Float32Array<ArrayBuffer>, st);
@@ -505,8 +525,8 @@ export class ServicesSystem implements SimSystem {
     // work estimate of the tier steps (same units as tierWork's counter; cached reaches are cheap)
     let w = 0;
     for (let k = 0; k <= NT; k++) {
-      if (this.fac[k].length === 0) { if (this.hadFac[k]) w += C * 0.05; continue; }
-      w += C * (this.shared[k] ? 0.5 : 0.3);
+      if (this.fac[k].length === 0) { if (this.hadFac[k] || k === SLOT_TRANSIT) w += C * 0.05; continue; }
+      w += C * (this.shared[k] ? 0.45 : 0.3);
       const cache = this.cache[k];
       const perEntry = U_ENTRY * (this.shared[k] ? 3 : 2);
       for (const b of this.fac[k]) {
@@ -583,8 +603,9 @@ export class ServicesSystem implements SimSystem {
       switch (this.tierPhase) {
         case P_INIT: {
           if (list.length === 0) {
-            // empty slot: zero layer (once), stats without a cell loop
-            if (this.hadFac[k]) {
+            // empty slot: zero the layer (once; the transit layer every pass, finishTransit composes the stop
+            // coverage onto it), stats without a cell loop
+            if (this.hadFac[k] || k === SLOT_TRANSIT) {
               (k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k])).fill(0);
               work += C * 0.05; this.workLeft -= C * 0.05;
             }
@@ -600,10 +621,12 @@ export class ServicesSystem implements SimSystem {
           }
           this.hadFac[k] = true;
           this.A.fill(0);
-          if (shared) this.acc.fill(0); else this.cov.fill(0);
+          this.cov.fill(0);
+          if (shared) this.seat.fill(1);
           this.poolN = 0;
           this.curEnt = new Map();
           this.facStart.length = 0; this.facEnd.length = 0;
+          this.facSig.length = 0; this.facSeat.length = 0;
           this.cursor = 0;
           this.tierPhase = P_SEARCH;
           const w = C * 0.1;
@@ -611,28 +634,31 @@ export class ServicesSystem implements SimSystem {
           break;
         }
         case P_SEARCH: {
-          if (this.cursor >= list.length) { this.tierPhase = shared ? P_PREALLOC : P_FINAL; this.cursor = 0; break; }
+          if (this.cursor >= list.length) {
+            if (shared) { this.seatOrder(k); this.tierPhase = P_ALLOC; } else this.tierPhase = P_FINAL;
+            this.cursor = 0;
+            break;
+          }
           const c = this.cursor++;
           const b = list[c];
           if (!st.buildings.has(b.id)) { this.facStart[c] = this.facEnd[c] = this.poolN; continue; }
-          const u = this.reachOf(st, b, k, c) + (shared ? this.accumShared(st, b, c) : this.splatUnion(st, b, k, c, needL));
+          const u = this.reachOf(st, b, k, c) + (shared ? 0 : this.splatUnion(st, b, k, c, needL));
           work += u; this.workLeft -= u;
           break;
         }
-        case P_PREALLOC: {
-          // g_i = min(1, A_i) / A_i
-          const A = this.A, g = this.g;
-          for (let i = 0; i < C; i++) { const a = A[i]; g[i] = a > 0 ? (a < 1 ? 1 : 1 / a) : 0; }
-          this.tierPhase = P_ALLOC;
-          this.cursor = 0;
-          const w = C * 0.1;
-          work += w; this.workLeft -= w;
+        case P_ALLOC: {
+          // shared tiers: facilities take seats in seat order (best op first, then building id)
+          if (this.cursor >= list.length) { this.tierPhase = P_REPORT; this.cursor = 0; break; }
+          const c = this.order[this.cursor++];
+          const u = this.allocSeats(st, list[c], k, c, needL);
+          work += u; this.workLeft -= u;
           break;
         }
-        case P_ALLOC: {
+        case P_REPORT: {
+          // shared tiers: demand / utilization of crowded facilities from the need left unseated in their reach
           if (this.cursor >= list.length) { this.tierPhase = P_FINAL; break; }
           const c = this.cursor++;
-          const u = this.allocShared(st, list[c], k, c, needL);
+          const u = this.reportDemand(st, list[c], k, c, needL);
           work += u; this.workLeft -= u;
           break;
         }
@@ -651,6 +677,16 @@ export class ServicesSystem implements SimSystem {
         }
       }
     }
+  }
+
+  /** seat order of shared slot k: operating factor descending (better-run facilities fill first), then building id */
+  private seatOrder(k: number): void {
+    const list = this.fac[k], ops = this.facOp[k];
+    const n = list.length;
+    if (this.order.length < n) this.order = new Int32Array(Math.max(n, this.order.length * 2, 64));
+    const ord = this.order.subarray(0, n);
+    for (let c = 0; c < n; c++) ord[c] = c;
+    ord.sort((a, b) => ops[b] - ops[a] || list[a].id - list[b].id);
   }
 
   /** reach of facility c of slot k into the pool (cached copy or fresh search); returns work units */
@@ -725,38 +761,83 @@ export class ServicesSystem implements SimSystem {
         cov[i] = 1 - (1 - cov[i]) * (1 - v);
       }
     }
-    if (!transit) this.record(b, inf, S, D, served, op);
+    if (!transit) this.record(b, inf, S, D, served, op, S < Infinity && D > S ? S : D);
     return (s1 - s0) * U_ENTRY * 2 + 8;
   }
 
-  /** shared tier, phase 1: A += w s; returns work units */
-  private accumShared(st: CityState, b: Building, c: number): number {
-    const s = infoOf(st, b).tierStrength;
+  /**
+   * shared tier: facility c of slot k takes seats from the unseated share of every cell it reaches (claims
+   * e = min(u, a), seats sigma = min(1, S / sum need x e) of them at quality op); returns work units
+   */
+  private allocSeats(st: CityState, b: Building, k: number, c: number, needL: Float32Array): number {
     const s0 = this.facStart[c], s1 = this.facEnd[c];
-    const pIdx = this.pIdx, pW = this.pW, A = this.A;
-    for (let q = s0; q < s1; q++) A[pIdx[q]] += pW[q] * s;
-    return (s1 - s0) * U_ENTRY + 4;
-  }
-
-  /** shared tier, phase 2: demand share, service ratio, acc += a r; returns work units */
-  private allocShared(st: CityState, b: Building, k: number, c: number, needL: Float32Array): number {
-    const s0 = this.facStart[c], s1 = this.facEnd[c];
+    this.facSig[c] = 1; this.facSeat[c] = 0;
     if (s1 <= s0) return 4;
     const inf = infoOf(st, b);
     const s = inf.tierStrength;
-    const pIdx = this.pIdx, pW = this.pW, g = this.g, acc = this.acc;
+    const pIdx = this.pIdx, pW = this.pW, u = this.seat, A = this.A, cov = this.cov;
     let D = 0;
-    for (let q = s0; q < s1; q++) { const i = pIdx[q]; D += needL[i] * g[i] * pW[q]; }
-    D *= s;
+    for (let q = s0; q < s1; q++) {
+      const i = pIdx[q];
+      const a = pW[q] * s;
+      A[i] += a;
+      const ui = u[i];
+      D += needL[i] * (ui < a ? ui : a);
+    }
     const op = this.facOp[k][c], S = this.facCap[k][c];
-    const r = S < Infinity && D > S ? op * (S / D) : op;
-    const sr = s * r;
-    if (sr > 0) for (let q = s0; q < s1; q++) acc[pIdx[q]] += pW[q] * sr;
-    this.record(b, inf, S, D, Math.min(D * Math.min(1, r), S < Infinity ? S * op : Infinity), op);
+    const sig = S < Infinity && D > S ? S / D : 1;
+    const rho = sig * op;
+    if (sig > 0) {
+      for (let q = s0; q < s1; q++) {
+        const i = pIdx[q];
+        const a = pW[q] * s;
+        const ui = u[i];
+        const e = ui < a ? ui : a;
+        if (!(e > 0)) continue;
+        const left = ui - e * sig;
+        u[i] = left > 0 ? left : 0;
+        cov[i] += e * rho;
+      }
+    }
+    const seated = D * sig;
+    this.facSig[c] = sig;
+    this.facSeat[c] = seated;
+    // demand of an uncrowded facility = its claims; crowded ones are re-measured in reportDemand
+    this.record(b, inf, S, D, D * rho, op, seated);
     return 2 * (s1 - s0) * U_ENTRY + 8;
   }
 
-  private record(b: Building, inf: DefInfo, S: number, D: number, served: number, op: number): void {
+  /**
+   * shared tier, after every facility of the slot took its seats: a crowded facility's demand = seats taken + the
+   * need its reach leaves unseated (min(u, a) per cell, by reach share a / sum a); returns work units
+   */
+  private reportDemand(st: CityState, b: Building, k: number, c: number, needL: Float32Array): number {
+    const s0 = this.facStart[c], s1 = this.facEnd[c];
+    if (s1 <= s0 || !(this.facSig[c] < 1)) return 2;
+    const s = infoOf(st, b).tierStrength;
+    const pIdx = this.pIdx, pW = this.pW, u = this.seat, A = this.A;
+    let left = 0;
+    for (let q = s0; q < s1; q++) {
+      const i = pIdx[q];
+      const n = needL[i];
+      if (!(n > 0)) continue;
+      const ui = u[i];
+      if (!(ui > 0)) continue;
+      const a = pW[q] * s;
+      const Ai = A[i];
+      left += n * (ui < a ? ui : a) * (Ai > a ? a / Ai : 1);
+    }
+    const id = b.id;
+    if (id < this.demById.length) {
+      const S = this.facCap[k][c];
+      const dem = this.facSeat[c] + left;
+      this.demById[id] = dem;
+      this.utilById[id] = S < Infinity && S > 0 ? dem / S : 0;
+    }
+    return (s1 - s0) * U_ENTRY + 8;
+  }
+
+  private record(b: Building, inf: DefInfo, S: number, D: number, served: number, op: number, seated: number): void {
     const id = b.id;
     if (id >= this.tierById.length) return;
     this.tierById[id] = inf.tier + 1;
@@ -764,9 +845,9 @@ export class ServicesSystem implements SimSystem {
     this.capById[id] = S;
     this.demById[id] = D;
     this.servById[id] = served;
+    this.seatById[id] = seated;
     this.opById[id] = op;
-    const eff = S * op;
-    this.utilById[id] = S < Infinity ? (eff > 0 ? D / eff : D > 0 ? 99 : 0) : 0;
+    this.utilById[id] = S < Infinity && S > 0 ? D / S : 0;
     this.powById[id] = !inf.usesPower || (b.flags & BF.Powered) !== 0 ? 1 : 0;
   }
 
@@ -775,11 +856,8 @@ export class ServicesSystem implements SimSystem {
     const C = st.cells;
     const shared = this.shared[k];
     const layer = k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k]);
-    const A = this.A;
-    if (shared) {
-      const acc = this.acc, g = this.g;
-      for (let i = 0; i < C; i++) { const v = acc[i] * g[i]; layer[i] = v < 1 ? v : 1; }
-    } else layer.set(this.cov.subarray(0, C));
+    const A = this.A, cov = this.cov;
+    for (let i = 0; i < C; i++) { const v = cov[i]; layer[i] = v < 1 ? v : 1; }
     if (k === SLOT_TRANSIT) return;
     let need = 0, served = 0, unreached = 0;
     for (let i = 0; i < C; i++) {
@@ -1068,8 +1146,8 @@ export class ServicesSystem implements SimSystem {
     const tier = SERVICE_TIERS[t];
     return {
       tier, needTier: TIER_NEED[tier], capacity: this.capById[id], demand: this.demById[id], utilization: this.utilById[id],
-      served: this.servById[id], operating: this.opById[id], powered: this.powById[id] === 1, radius: inf.tierRadius,
-      metric: REACH_METRICS[inf.metric] ?? 'walk',
+      served: this.servById[id], seated: this.seatById[id], operating: this.opById[id], powered: this.powById[id] === 1,
+      radius: inf.tierRadius, metric: REACH_METRICS[inf.metric] ?? 'walk',
     };
   }
 
@@ -1090,6 +1168,18 @@ export class ServicesSystem implements SimSystem {
     if (k < 0 || this.need.length === 0) return null;
     return this.provNeed[k] ?? this.need[NEED_RASTER[k]];
   }
+}
+
+/** FNV-style hash of a byte layer (4 bytes per round) */
+function hashBytes(a: Uint8Array, seed: number): number {
+  let h = 0x811c9dc5 ^ seed;
+  const n4 = a.length & ~3;
+  for (let i = 0; i < n4; i += 4) {
+    const v = a[i] | (a[i + 1] << 8) | (a[i + 2] << 16) | (a[i + 3] << 24);
+    h = Math.imul(h ^ v, 16777619) ^ (h >>> 13);
+  }
+  for (let i = n4; i < a.length; i++) h = Math.imul(h ^ a[i], 16777619);
+  return h;
 }
 
 function smoothstep(a: number, b: number, x: number): number {
