@@ -677,7 +677,9 @@ export class CityScene {
 
   /** QA readout: fps + frame time, world / city draw calls and triangles (world.stats, objects.stats()) */
   private updatePerf(): void {
-    const lines: string[] = [`<b>${Math.round(this.fps.value)} fps</b> · ${(1000 / Math.max(1, this.fps.value)).toFixed(1)} ms`];
+    // (no clamping: below 10 fps show a decimal, and the real mean frame time — seconds once it passes 1 s)
+    const f = this.fps.value, frameMs = f > 0 ? 1000 / f : 0;
+    const lines: string[] = [`<b>${f >= 10 ? Math.round(f) : f.toFixed(1)} fps</b> · ${frameMs >= 1000 ? (frameMs / 1000).toFixed(1) + ' s' : frameMs.toFixed(1) + ' ms'}`];
     const k = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(Math.round(n)));
     try {
       const ws = (this.world as { stats?: { calls?: number; triangles?: number; trees?: number; frameMs?: number } }).stats;
@@ -763,8 +765,9 @@ export class CityScene {
     const layoutW = w / z;
     this.uiRoot.classList.toggle('narrow', layoutW < 1500);
     this.uiRoot.classList.toggle('xnarrow', layoutW < 1380);
-    // short screens (e.g. 1280×720): compact toasts (max 3), onboarding / data-view layouts (hud.css .short)
-    this.uiRoot.classList.toggle('short', hh <= 800);
+    // short screens (1280×720, 1366×768 laptops, or a big UI scale leaving < 920 css px of height): compact toasts
+    // (max 3), onboarding / data-view layouts (hud.css .short)
+    this.uiRoot.classList.toggle('short', hh <= 800 || hh / z <= 920);
     this.panels?.clampAll();
   }
 
@@ -787,7 +790,10 @@ export class CityScene {
     const k = e.key;
     if (k === 'Escape') {
       e.preventDefault();
-      if (this.tools.cancelDrag()) return;
+      if (this.tools.cancelDrag()) {
+        this.sound('cancel');
+        return;
+      }
       if (this.toolbar.flyoutOpen) {
         this.sound('flyoutClose');
         return this.toolbar.closeFlyout();
@@ -931,6 +937,8 @@ export class CityScene {
   }
 
   private focusCell(x: number, z: number, distance?: number): void {
+    // camera flight (toast / news / advisor / emergency "jump"): a very soft whoosh
+    this.sound('whoosh', { volume: 0.7 });
     try {
       this.world.controls.focusOn(x * CELL_SIZE + CELL_SIZE / 2, z * CELL_SIZE + CELL_SIZE / 2, distance);
     } catch (e) {
@@ -1038,7 +1046,12 @@ export class CityScene {
       watchTrackChanges(ma, (np) => {
         const a = this.mods.audio as { nowPlayingToasts?: boolean } | undefined;
         if (a?.nowPlayingToasts === false || !this.settings.toasts || this.disposed) return;
-        this.toasts.show(`${np.title} · ${shortMood(np.mood)}`, 'music', undefined, '♪ Now playing', { silent: true });
+        // click: the music player (Settings → Music: skip, pause, shuffle, pick tracks)
+        const openPlayer = () => {
+          this.panels.open('settings');
+          (this.panels.get('settings') as SettingsPanel | undefined)?.showSection?.('music');
+        };
+        this.toasts.show(`${np.title} · ${shortMood(np.mood)}`, 'music', undefined, '♪ Now playing', { silent: true, action: { hint: 'Music player', icon: 'music', run: openPlayer } });
       }),
     );
   }

@@ -109,8 +109,11 @@ export class Toasts {
     });
   }
 
-  /** show a toast; plays the kind's sound (TOAST_SOUND) unless opts.silent or it merges into an identical live toast */
-  show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string, opts: { silent?: boolean; ttl?: number } = {}): void {
+  /**
+   * show a toast; plays the kind's sound (TOAST_SOUND) unless opts.silent or it merges into an identical live toast.
+   * opts.action: a click runs it (instead of jumping to `cell`), with a small hint line under the text.
+   */
+  show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string, opts: { silent?: boolean; ttl?: number; action?: { hint: string; icon?: string; run: () => void } } = {}): void {
     const now = performance.now();
     const key = kind + ':' + text;
     const meta = NEWS_META[kind] ?? NEWS_META.info;
@@ -140,7 +143,7 @@ export class Toasts {
       h('div', { class: 't-body' },
         h('div', { class: 't-title' }, title ?? meta.title, badge),
         h('div', { class: 't-text' }, text),
-        cell ? h('div', { class: 't-go', html: icon('target', 12) + 'Click to view' }) : null,
+        opts.action ? h('div', { class: 't-go', html: icon(opts.action.icon ?? 'target', 12) + escapeHtml(opts.action.hint) }) : cell ? h('div', { class: 't-go', html: icon('target', 12) + 'Click to view' }) : null,
       ),
       x,
       timerBar,
@@ -168,7 +171,8 @@ export class Toasts {
       kill();
     });
     t.addEventListener('click', () => {
-      if (entry.cell) this.ctx.focusCell(entry.cell.x, entry.cell.z, 420);
+      if (opts.action) opts.action.run();
+      else if (entry.cell) this.ctx.focusCell(entry.cell.x, entry.cell.z, 420);
       kill();
     });
     timer = window.setTimeout(kill, ttl);

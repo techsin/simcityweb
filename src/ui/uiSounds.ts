@@ -37,7 +37,7 @@ const CONTROL =
 /** primary menus / toolbars that get hover blips (not every panel row) */
 const HOVER =
   '.menu-item, .tb-btn, .fly-item, .fly-tabs button, .hud-top .icon-btn, .hud-top .speed button, .hud-top .hud-seg.click, ' +
-  '.title-footer button, .rh-top-right button, .tile-card .btn, .preset-card, .mplayer-pill button, [data-sfx-hover]';
+  '.title-footer .tf-right > button, .rh-top-right > button, .tile-card .btn, .preset-card, .mplayer-pill > button, [data-sfx-hover]';
 
 /** tab-like controls */
 const TABS = '[role=tab], .tabs > button, .fly-tabs button, .ui-seg button, .seg-item, .chips .chip, .graph-list button, .mpl-tabs button, input[type=radio]';
@@ -86,7 +86,8 @@ function isDisabled(el: Element): boolean {
 /** gentle stereo placement from the pointer's screen x (UI sounds stay near the center) */
 function panOf(e: MouseEvent): number {
   const w = window.innerWidth || 1;
-  if (!(e.clientX >= 0)) return 0;
+  // keyboard-activated / synthetic clicks (detail 0) carry clientX 0: keep those centered
+  if (!(e.clientX >= 0) || e.detail === 0) return 0;
   return Math.max(-1, Math.min(1, (e.clientX / w) * 2 - 1)) * 0.22;
 }
 

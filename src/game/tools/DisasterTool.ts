@@ -7,6 +7,8 @@ export class DisasterTool extends Tool {
   readonly id: string;
   readonly label: string;
   override wantsGrid = false;
+  /** last refused cell + reason: the tip keeps explaining while the cursor stays there */
+  private refused: { x: number; z: number; why: string } | null = null;
   constructor(ctx: GameContext, private kind: string, name: string, icon: string) {
     super(ctx);
     this.id = 'disaster:' + kind;
@@ -20,7 +22,9 @@ export class DisasterTool extends Tool {
       return;
     }
     this.ctx.world.setHighlight([{ x: p.hit.x, z: p.hit.z, ok: false }]);
-    this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(this.label)}</b></div><div class="tip-sub">Click to unleash</div>`, 'bad');
+    const r = this.refused;
+    if (r && (r.x !== p.hit.x || r.z !== p.hit.z)) this.refused = null;
+    this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(this.label)}</b></div>` + (this.refused ? `<div class="tip-reason">${escapeHtml(this.refused.why)}</div>` : '<div class="tip-sub">Click to unleash</div>'), 'bad');
   }
   override down(p: ToolPointer): void {
     if (!p.hit) return;
@@ -41,18 +45,30 @@ export class DisasterTool extends Tool {
     // selected so the player can pick another spot, and say why
     if (started === false) {
       this.ctx.sound('error');
-      const why = this.failReason();
+      const why = this.failReason(p.hit.x, p.hit.z);
       this.ctx.toast(why, 'error');
-      this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(this.label)}</b></div><div class="tip-reason">${escapeHtml(why)}</div>`, 'bad');
+      this.refused = { x: p.hit.x, z: p.hit.z, why };
+      this.move(p);
       return;
     }
     this.ctx.tools.select(null, { silent: true });
   }
-  private failReason(): string {
-    if (this.kind === 'fire') return 'No building here to set on fire — click on or next to a building';
+  /** why triggerDisaster refused (a fire needs a building within 3 tiles that is not already burning / burnt out) */
+  private failReason(x: number, z: number): string {
+    if (this.kind === 'fire') {
+      let near = false;
+      for (let dz = -3; dz <= 3 && !near; dz++) for (let dx = -3; dx <= 3; dx++) {
+        if (this.ctx.state.buildingAt(x + dx, z + dz)) {
+          near = true;
+          break;
+        }
+      }
+      return near ? 'Everything here is already burning or burnt out — pick another building' : 'No building here to set on fire — click on or next to a building';
+    }
     return `Could not start a ${this.label.toLowerCase()} here`;
   }
   override deactivate(): void {
+    this.refused = null;
     this.ctx.world.setHighlight(null);
     this.ctx.tip.hide();
   }

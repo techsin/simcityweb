@@ -66,6 +66,14 @@ export interface CityViewStats {
   updateMs: number;
 }
 
+function findHemisphereLight(scene: THREE.Object3D): THREE.HemisphereLight | null {
+  let found: THREE.HemisphereLight | null = null;
+  scene.traverse((o) => {
+    if (!found && (o as THREE.HemisphereLight).isHemisphereLight) found = o as THREE.HemisphereLight;
+  });
+  return found;
+}
+
 function expand(r: CellRect, m: number, N: number): CellRect {
   return { x0: Math.max(0, r.x0 - m), z0: Math.max(0, r.z0 - m), x1: Math.min(N, r.x1 + m), z1: Math.min(N, r.z1 + m) };
 }
@@ -116,6 +124,8 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.effects = new Effects();
     this.effects.geometryOf = (m, v) => getModelGeometry(m, v);
     this.disasters = new Disasters(state, this.surf, this.effects);
+    // the world's fill light (WorldView's night fill), found once while the scene is still small
+    const fill = findHemisphereLight(ctx.scene);
     this.fireworks = new Fireworks({
       camera: ctx.camera,
       scene: ctx.scene,
@@ -124,6 +134,7 @@ export class CityObjectsView implements CityObjectsViewApi {
       groundAt: (x, z) => this.surf.terrain(x, z),
       getSites: () => this.launchSites(),
       water: () => ({ data: this.state.water, size: this.state.size, cellSize: CELL_SIZE }),
+      fill: () => fill,
     });
     this.buildings = new BuildingRenderer(state, this.culler);
     this.buildings.onVisual = (v, id) => {
@@ -261,6 +272,8 @@ export class CityObjectsView implements CityObjectsViewApi {
       water: st.water,
       cellSize: CELL_SIZE,
       groundAt: (x, z) => this.surf.terrain(x, z),
+      network: st.network,
+      building: st.building,
     });
   }
 

@@ -542,6 +542,9 @@ export class EmergencySystem implements SimSystem {
   private stById = new Map<number, Station>();
   private out = new Map<number, number>();
   private stDirty = true;
+  /** station power / funding may have changed (updateUnits re-reads them; otherwise it skips the station loop) */
+  private unitsDirty = true;
+  private lastFund = [NaN, NaN, NaN];
   /** incremented whenever the station set / units change (uncovered incidents retry) */
   private stVer = 0;
   private g = new RoadGraph();
@@ -609,7 +612,11 @@ export class EmergencySystem implements SimSystem {
       sim.events.on('buildingAdded', (b) => this.onBuildingEvent(b)),
       sim.events.on('buildingRemoved', (b) => this.onBuildingEvent(b)),
       sim.events.on('buildingChanged', (b) => {
-        if (this.stById.has(b.id) || (b.built >= 1 && fleetOfDef(b.def))) this.onBuildingEvent(b);
+        // a known station: rebuild the list only when it stops working, else just re-read power / funding
+        if (this.stById.has(b.id)) {
+          if (isFunctional(b)) this.unitsDirty = true;
+          else this.stDirty = true;
+        } else if (b.built >= 1 && fleetOfDef(b.def) && isFunctional(b)) this.stDirty = true;
       }),
     ];
     this.load(st);
@@ -803,6 +810,10 @@ export class EmergencySystem implements SimSystem {
   private updateUnits(st: CityState, force = false): boolean {
     let changed = false;
     const fund = [fundingFactor(st, RESPONDER_SERVICE.fire), fundingFactor(st, RESPONDER_SERVICE.police), fundingFactor(st, RESPONDER_SERVICE.medical)];
+    const lf = this.lastFund;
+    if (!force && !this.unitsDirty && fund[0] === lf[0] && fund[1] === lf[1] && fund[2] === lf[2]) return false;
+    this.unitsDirty = false;
+    lf[0] = fund[0]; lf[1] = fund[1]; lf[2] = fund[2];
     for (const s of this.stations) {
       const b = st.buildings.get(s.id);
       if (!b) continue;
@@ -2029,8 +2040,8 @@ export class EmergencySystem implements SimSystem {
       }
       inc.severity = Math.round(inc.radius * 10) / 10;
     }
-    if (kind === 'industrial' && inc.firstAt.fire === undefined && now - inc.start >= EMERG_GRACE.industrial && b && !(b.flags & (BF.OnFire | BF.Burnt))) {
-      // unanswered accident: the plant catches fire (its own fire incident) and the accident counts as failed
+    if (kind === 'industrial' && inc.firstAt.fire === undefined && this.assigned(inc, 'fire') === 0 && now - inc.start >= EMERG_GRACE.industrial && b && !(b.flags & (BF.OnFire | BF.Burnt))) {
+      // unanswered accident (no fire truck on the way): the plant catches fire (its own fire incident), the accident fails
       this.emit(sim, inc, 'escalated');
       sim.getSystem<FireSystem>('fire')?.ignite(sim, b, false);
       this.casualties(sim, inc, MED_SURVIVE - MED_DELAY_LOSS * smoothstep(5, 16, now - inc.start + 6));

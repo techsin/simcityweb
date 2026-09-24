@@ -3,7 +3,8 @@
  * per-kind cooldown, small-town filter).
  */
 import { describe, expect, it } from 'vitest';
-import { AlertQueue, LIVE_IDLE, speedPolicy, type LiveState } from '../../src/ui/EmergencyBanner';
+import { AlertQueue, FOLLOW_GRACE, FOLLOW_MAX_MIN, LIVE_IDLE, emgTime, followingDispatch, speedPolicy, type LiveState } from '../../src/ui/EmergencyBanner';
+import type { Incident } from '../../src/sim/infra/emergency';
 
 describe('speedPolicy', () => {
   it("'live': an alert drops fast / ultra to slowed 1x and restores the speed when handled", () => {
@@ -95,5 +96,24 @@ describe('AlertQueue', () => {
     const q = new AlertQueue();
     expect(q.offer({ id: 1, kind: 'crime', major: true }, 0, 400, 'major')).toBe(false);
     expect(q.offer({ id: 2, kind: 'fire', major: true }, 0, 400, 'major')).toBe(true);
+  });
+});
+
+describe('LIVE follow of a player dispatch', () => {
+  const inc = (o: Partial<Incident>): Incident => ({ answered: 2, state: 'dispatched', arrived: -1, etaMin: 4.7, ...o }) as Incident;
+  it('holds while the unit the player sent drives there, then for FOLLOW_GRACE days on scene', () => {
+    expect(followingDispatch(inc({}), 100)).toBe(true);
+    expect(followingDispatch(inc({ state: 'onScene', arrived: 104.7 }), 104.9)).toBe(true);
+    expect(followingDispatch(inc({ state: 'onScene', arrived: 104.7 }), 104.7 + FOLLOW_GRACE + 0.01)).toBe(false);
+  });
+  it('not for auto-dispatched incidents, long drives or waiting incidents', () => {
+    expect(followingDispatch(inc({ answered: 1 }), 100)).toBe(false);
+    expect(followingDispatch(inc({ etaMin: FOLLOW_MAX_MIN + 1 }), 100)).toBe(false);
+    expect(followingDispatch(inc({ state: 'uncovered' }), 100)).toBe(false);
+  });
+  it('emergency times read in minutes (1 game-minute of driving = 1 day)', () => {
+    expect(emgTime(4)).toBe('4.0 min');
+    expect(emgTime(0.25)).toBe('0.3 min');
+    expect(emgTime(16)).toBe('16 min');
   });
 });

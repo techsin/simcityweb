@@ -15,6 +15,9 @@ export class BrushTool extends Tool {
   readonly label: string;
   private acc = 0;
   private spent = 0;
+  /** hold-to-apply feedback: seconds since the last soft brush sound; an application failed during this hold */
+  private sndAcc = 0;
+  private failed = false;
   private preview: ActionResult | null = null;
   private lastKey = '';
 
@@ -63,21 +66,33 @@ export class BrushTool extends Tool {
   }
   override down(p: ToolPointer): void {
     this.spent = 0;
+    this.sndAcc = 0;
+    this.failed = false;
     this.acc = 1; // apply immediately
     this.frame(0, p);
   }
   override up(): void {
     this.lastKey = '';
     if (this.spent > 0) this.ctx.sound(this.kind === 'trees' ? 'trees' : 'terraform');
+    // nothing could be applied during the whole hold (no money, under roads / buildings, no room for trees)
+    else if (this.failed) this.ctx.sound('error');
   }
   override frame(dt: number, p: ToolPointer | null): void {
     if (!p || !p.down || !p.hit) return;
     this.acc += dt;
+    this.sndAcc += dt;
     const interval = this.kind === 'trees' ? 0.12 : 0.07;
     if (this.acc < interval) return;
     this.acc = 0;
     const r = this.apply(p, false);
-    if (r.ok) this.spent += r.cost;
+    if (r.ok) {
+      this.spent += r.cost;
+      // while held: soft rustles / earth-moving rumbles (low intensity = lighter voice); the full sound plays on release
+      if (this.sndAcc >= 0.3) {
+        this.sndAcc = 0;
+        this.ctx.sound(this.kind === 'trees' ? 'trees' : 'terraform', { volume: 0.5, intensity: 0.2 });
+      }
+    } else this.failed = true;
     this.showBrush(p);
   }
   override deactivate(): void {
@@ -91,7 +106,11 @@ export class BrushTool extends Tool {
   override key(e: KeyboardEvent, p: ToolPointer | null): boolean {
     if (e.type !== 'keydown') return false;
     if (e.key === '[' || e.key === ']') {
+      const before = brush.radius;
       brush.radius = Math.max(1, Math.min(10, brush.radius + (e.key === ']' ? 1 : -1)));
+      // detent tick pitched like the size slider (bigger = higher); a dull tap at the limits
+      if (brush.radius !== before) this.ctx.sound('tick', { pitch: 0.84 + 0.42 * ((brush.radius - 1) / 9) });
+      else if (!e.repeat) this.ctx.sound('tap', { pitch: 0.6 });
       this.lastKey = '';
       if (p) this.move(p);
       this.syncOptions();

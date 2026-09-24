@@ -36,6 +36,13 @@
  *   2 metallic car paint (rough 0.32, metal 0.50); 3 patina (rough 0.62, metal 0.30: copper domes, bronze statues).
  * Corrugated (Surf.Corrugated): vertical ribs, painted sheet metal (rough 0.6, metal 0.25).
  * Foliage (Surf.Foliage): wind sway above 1.5 m; per-plant hue/value + stand-scale tint from the instance position.
+ *   Pattern 0 = evergreen / always as painted (the nature-group trees swap seasonal model VARIANTS instead).
+ *   Pattern 1 = seasonal deciduous crown baked into a lot model: follows uSeason (month mix from nat_season.ts) -
+ *       that fraction of trees turns orange / red / yellow in autumn and grey-brown (bare twigs) in winter.
+ *   Pattern 2 = spring-blossom tree (cherry, magnolia): paint the BLOSSOM colour; shown only in Apr-May, a leaf
+ *       green of the same brightness otherwise, plus the pattern-1 autumn / winter behaviour.
+ *   For patterns 1-2 paint `floor` = a per-tree random in [0, 1) (all lobes of one crown share it) so each tree
+ *   changes as a whole; the instance seed is mixed in.
  *
  * Facade coordinates: planar walls use the horizontal distance along the wall; smooth-shaded CURVED walls
  * (cylinders / drums / round towers built with smooth normals) automatically switch to the arc length around the
@@ -60,6 +67,8 @@ export const sharedUniforms = {
   /** traffic-signal clock (s, VehicleRenderer.time mod 30) and map size in cells, for Emissive pattern 13 */
   uSignalTime: { value: 0 },
   uMapN: { value: 128 },
+  /** season for Foliage patterns 1-2: x autumn fraction, y bare fraction, z blossom (1 in Apr-May); set by setTreeSeason */
+  uSeason: { value: new THREE.Vector4(0, 0, 0, 0) },
 };
 
 const VERT_PARS = /* glsl */ `
@@ -87,8 +96,9 @@ vec3 instPos = modelMatrix[3].xyz;
 #endif
 vSeed = fract(sin(dot(instPos.xz, vec2(12.9898, 78.233)) + instPos.y * 0.37) * 43758.5453);
 vInstXZ = instPos.xz;
-{
-  // world-space normal axis (traffic-signal lamps: 1 = faces along world X)
+vWorldNX = 0.0;
+if (abs(surf.x - 6.0) < 0.5 && abs(surf.y - 13.0) < 0.5) {
+  // world-space normal axis of traffic-signal lamps (Emissive pattern 13): 1 = faces along world X
   vec3 wn = objectNormal;
   #ifdef USE_BATCHING
     wn = mat3(batchingMatrix) * wn;
@@ -117,6 +127,7 @@ varying vec2 vInstXZ;
 varying float vWorldNX;
 uniform float uSignalTime;
 uniform float uMapN;
+uniform vec4 uSeason;
 uniform float uNight;
 uniform float uLitFraction;
 uniform float uTime;
@@ -412,6 +423,19 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     }
   } else if (type < 8.5) {
     // foliage
+    if (pattern > 0.5 && pattern < 2.5) {
+      // seasonal crowns baked into lot models (1 deciduous, 2 spring blossom): per-tree random from the paint's
+      // floor channel + instance seed; recolour at the painted brightness so the baked crown shading survives
+      float pr = fract(vSurf.z * 7.13 + vSeed * 3.71);
+      float lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+      if (pattern > 1.5 && uSeason.z < 0.5) albedo = lum * vec3(0.3, 0.62, 0.11);
+      lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+      if (pr < uSeason.y) albedo = lum * vec3(1.3, 0.93, 0.72);
+      else if (pr < uSeason.y + uSeason.x) {
+        float ak = fract(pr * 13.7);
+        albedo = lum * (ak < 0.45 ? vec3(2.55, 0.62, 0.08) : (ak < 0.75 ? vec3(3.3, 0.34, 0.12) : vec3(2.5, 1.7, 0.1)));
+      }
+    }
     // leaf clumps (fade the noise with its screen footprint so distant canopies don't shimmer)
     vec2 fq = P.xz * 0.9 + P.y * 0.7;
     float fw1 = clamp(1.0 - length(fwidth(fq)) * 0.8, 0.0, 1.0);
@@ -521,6 +545,7 @@ export function patchSurfaceMaterial<T extends THREE.MeshStandardMaterial>(mat: 
     shader.uniforms.uSunColor = sharedUniforms.uSunColor;
     shader.uniforms.uSignalTime = sharedUniforms.uSignalTime;
     shader.uniforms.uMapN = sharedUniforms.uMapN;
+    shader.uniforms.uSeason = sharedUniforms.uSeason;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + VERT_MAIN);

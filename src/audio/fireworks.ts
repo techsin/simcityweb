@@ -6,11 +6,14 @@
  *   salute  hard bang;   tick  soft countdown blip
  *
  *   const fa = new FireworksAudio(() => audio.getSfxOutput());     // null while muted / before init -> silent
+ *   fa.warm();   // optional, from idle time: pre-render the textures + reverb impulse (else done on first use)
  *   spatialize(listener, x, y, z, sp);  fa.burst(sp, size01, crackle01);
  *
  * Every sound is spatialized from the source's camera-relative position: stereo pan, distance gain, a
- * speed-of-sound delay (340 m/s, capped) and a lowpass that darkens far bursts. Voices are capped and everything
- * runs through a limiter into the engine's SFX bus (so SFX volume / mute apply and the finale never clips).
+ * speed-of-sound delay (340 m/s, capped) and a lowpass that darkens far bursts. Voices are capped and everything —
+ * dry sound and the fireworks' own hall reverb — runs through one bus and a limiter into the engine's SFX bus, so
+ * the SFX volume / mute apply to all of it and the finale never clips. (The engine's shared reverb send is not
+ * used: it feeds the master directly and would bypass the SFX volume.)
  */
 
 export interface FireworksAudioOut {
@@ -18,7 +21,7 @@ export interface FireworksAudioOut {
   ctx: BaseAudioContext;
   /** destination (the engine's SFX bus) */
   dest: AudioNode;
-  /** optional shared reverb send */
+  /** the engine's shared reverb send (ignored: the fireworks carry their own reverb inside the SFX path) */
   wet?: AudioNode | null;
   /** optional 1..2 s white-noise buffer */
   noise?: AudioBuffer | null;
@@ -72,10 +75,13 @@ export class FireworksAudio {
   private ctx: BaseAudioContext | null = null;
   private dest: AudioNode | null = null;
   private bus: GainNode | null = null;
+  /** reverb send input: -> convolver -> bus (so the wet signal follows the SFX volume like the dry one) */
   private wet: AudioNode | null = null;
+  private wetNodes: AudioNode[] = [];
   private noise: AudioBuffer | null = null;
   private crackleBuf: AudioBuffer | null = null;
   private glitterBuf: AudioBuffer | null = null;
+  private irBuf: AudioBuffer | null = null;
   private voiceEnds: number[] = [];
 
   constructor(getOut: () => FireworksAudioOut | null) {
@@ -261,13 +267,46 @@ export class FireworksAudio {
     setTimeout(() => g.disconnect(), 2500);
   }
 
+  /**
+   * Pre-render the crackle / glitter textures and the reverb impulse (a few ms of CPU): call from idle time before
+   * the first sound. Uses the engine's context when there is one, else context-free AudioBuffers. Safe to repeat.
+   */
+  warm(): void {
+    if (this.crackleBuf && this.glitterBuf && this.irBuf) return;
+    let out: FireworksAudioOut | null = null;
+    try {
+      out = this.getOut();
+    } catch {
+      out = null;
+    }
+    const rate = out?.ctx.sampleRate ?? 48000;
+    let mk: BufferMaker | null = null;
+    if (out) {
+      const c = out.ctx;
+      mk = (ch, len, sr) => c.createBuffer(ch, len, sr);
+    } else if (typeof AudioBuffer === 'function') {
+      mk = (ch, len, sr) => new AudioBuffer({ numberOfChannels: ch, length: len, sampleRate: sr });
+    }
+    if (!mk) return;
+    try {
+      this.crackleBuf ??= makePops(mk, rate, 3, 70, 0.012, 0.25);
+      this.glitterBuf ??= makePops(mk, rate, 3, 260, 0.004, 0.6);
+      this.irBuf ??= makeImpulse(mk, rate, 2.4, 3.4);
+    } catch {
+      /* no WebAudio buffers here: build() makes them on first use */
+    }
+  }
+
   /** drop the output graph (e.g. when leaving the city) */
   dispose(): void {
     try {
       this.bus?.disconnect();
+      for (const n of this.wetNodes) n.disconnect();
     } catch {
       /* ignore */
     }
+    this.wetNodes.length = 0;
+    this.wet = null;
     this.bus = null;
     this.ctx = null;
     this.dest = null;
@@ -305,13 +344,14 @@ export class FireworksAudio {
   private build(out: FireworksAudioOut): void {
     try {
       this.bus?.disconnect();
+      for (const n of this.wetNodes) n.disconnect();
     } catch {
       /* ignore */
     }
+    this.wetNodes.length = 0;
     const c = out.ctx;
     this.ctx = c;
     this.dest = out.dest;
-    this.wet = out.wet ?? null;
     const bus = c.createGain();
     bus.gain.value = this.volume * 0.9;
     const lim = c.createDynamicsCompressor();
@@ -323,8 +363,20 @@ export class FireworksAudio {
     bus.connect(lim).connect(out.dest);
     this.bus = bus;
     this.noise = out.noise ?? makeNoise(c, 2);
-    this.crackleBuf = makePops(c, 3, 70, 0.012, 0.25);
-    this.glitterBuf = makePops(c, 3, 260, 0.004, 0.6);
+    this.warm();
+    const mk: BufferMaker = (ch, len, sr) => c.createBuffer(ch, len, sr);
+    this.crackleBuf ??= makePops(mk, c.sampleRate, 3, 70, 0.012, 0.25);
+    this.glitterBuf ??= makePops(mk, c.sampleRate, 3, 260, 0.004, 0.6);
+    this.irBuf ??= makeImpulse(mk, c.sampleRate, 2.4, 3.4);
+    // the fireworks' own hall: send -> convolver -> bus (-> limiter -> SFX bus), never straight to the master
+    const wetIn = c.createGain();
+    const conv = c.createConvolver();
+    conv.buffer = this.irBuf;
+    const wetOut = c.createGain();
+    wetOut.gain.value = 0.7;
+    wetIn.connect(conv).connect(wetOut).connect(bus);
+    this.wet = wetIn;
+    this.wetNodes.push(wetIn, conv, wetOut);
     this.voiceEnds.length = 0;
   }
 
@@ -405,10 +457,25 @@ function makeNoise(c: BaseAudioContext, seconds: number): AudioBuffer {
 }
 
 /** a texture of random decaying noise pops (crackle: sparse & chunky; glitter: dense & tiny) */
-function makePops(c: BaseAudioContext, seconds: number, perSecond: number, maxLen: number, minAmp: number): AudioBuffer {
-  const sr = c.sampleRate;
+type BufferMaker = (channels: number, length: number, sampleRate: number) => AudioBuffer;
+
+/** stereo hall impulse: decorrelated noise with an exponential decay (RT60 ~ `seconds`), soft attack */
+function makeImpulse(mk: BufferMaker, sr: number, seconds: number, decay: number): AudioBuffer {
   const n = Math.floor(sr * seconds);
-  const b = c.createBuffer(1, n, sr);
+  const b = mk(2, n, sr);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = b.getChannelData(ch);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      d[i] = (Math.random() * 2 - 1) * Math.exp(-t * decay) * Math.min(1, t / 0.012);
+    }
+  }
+  return b;
+}
+
+function makePops(mk: BufferMaker, sr: number, seconds: number, perSecond: number, maxLen: number, minAmp: number): AudioBuffer {
+  const n = Math.floor(sr * seconds);
+  const b = mk(1, n, sr);
   const d = b.getChannelData(0);
   const pops = Math.floor(seconds * perSecond);
   for (let p = 0; p < pops; p++) {

@@ -10,7 +10,7 @@
  * Loudness: TRIM[name] (dB) normalizes each voice to its role's target (measured with the audio lab,
  * `node tools/render-audio.mjs "sfx=all" shots/audio/sfx_all.png`, momentary-max LUFS):
  *   hover / tick ~ -46 · icon taps ~ -38 · buttons / tabs / toggles / panels ~ -34..-37 · game actions ~ -28..-31
- *   notifications ~ -29..-33 · rewards / milestones / fanfares ~ -24 · disaster alarms ~ -23..-25
+ *   notifications ~ -29..-35 (routine fire bell -34) · rewards / milestones / fanfares ~ -24 · disaster alarms ~ -23..-25
  */
 
 export type SoundCategory = 'ui' | 'game' | 'event';
@@ -98,7 +98,9 @@ const META = {
   cityReady: { cat: 'event', dur: 1.6, jitter: 0 },
   regionEnter: { cat: 'event', dur: 1.2, jitter: 0 },
   alarm: { cat: 'event', dur: 2.8, gap: 1500 },
-  fire: { cat: 'event', dur: 1.8, gap: 1500 },
+  // (alert group: an unanswered fire's bell and the emergency banner's warning never stack)
+  fire: { cat: 'event', dur: 1.8, gap: 1500, group: 'alert' },
+  fireBell: { cat: 'event', dur: 0.7, gap: 1500 },
   tornado: { cat: 'event', dur: 2.8, gap: 1500 },
   quake: { cat: 'event', dur: 2.4, gap: 1500 },
   meteor: { cat: 'event', dur: 2.0, gap: 400 },
@@ -121,7 +123,7 @@ const TRIM: Partial<Record<SoundName, number>> = {
   error: -4.6, zone: 10.8, dezone: 11, road: -2.2, rail: -0.5, power: 3.8, pipe: 0.3, bulldoze: 3.3, plop: -1.6,
   terraform: -0.3, tree: 1.4, construct: 1.7, built: -3.1, cash: -6.9, notify: -5.7, news: -2.8, good: -5.9,
   warning: 0.3, bad: -1.9, advisor: -5.2, coin: -4.8, cashLow: -9.6, bankrupt: 6.3, reward: -1.5, milestone: -1,
-  found: -1.7, cityReady: -4.6, regionEnter: -1.1, alarm: -4.6, fire: 1.6, tornado: 0.4, quake: -6.3,
+  found: -1.7, cityReady: -4.6, regionEnter: -1.1, alarm: -4.6, fire: 1.6, fireBell: -2.5, tornado: 0.4, quake: -6.3,
   meteor: -6.8,
 };
 
@@ -509,15 +511,16 @@ const VOICES: Record<SoundName, Voice> = {
     noise(e, d, t, 0.1, 0.12, 'lowpass', 1200, 300, 0.7, 0.004, r() * 1.5);
     bell(e, e.wet, N(96 + pick(r, [0, 2, 4, 7])) * p, t + 0.06, 0.4, 0.035, 2, 1.5);
   },
-  terraform(e, t, d, { p, r }) {
-    noise(e, d, t, 0.35, 0.2, 'lowpass', 400 * p * (0.85 + r() * 0.3), 150, 0.8, 0.05, r() * 1.5);
-    tone(e, d, 'sine', 70 * p, t, 0.3, 0.2, 45);
+  /** terraform: earth-moving rumble (low intensity = the lighter, shorter tick played while a brush is held) */
+  terraform(e, t, d, { p, r, k }) {
+    noise(e, d, t, 0.2 + k * 0.3, 0.2, 'lowpass', 400 * p * (0.85 + r() * 0.3), 150, 0.8, 0.05, r() * 1.5);
+    tone(e, d, 'sine', 70 * p, t, 0.3, 0.2 * (0.4 + k * 1.2), 45);
   },
-  /** trees: leafy rustle */
-  tree(e, t, d, { p, r }) {
+  /** trees: leafy rustle + soft woody knock (low intensity: rustle only, while a brush is held) */
+  tree(e, t, d, { p, r, k }) {
     const n = 3 + Math.floor(r() * 3);
     for (let i = 0; i < n; i++) noise(e, d, t + i * 0.05 + r() * 0.03, 0.08, 0.06, 'highpass', 3500 * p * (0.85 + r() * 0.3), undefined, 1, 0.004, r() * 1.5);
-    tone(e, d, 'sine', 300 * p, t, 0.08, 0.08, 200);
+    if (k >= 0.3) tone(e, d, 'sine', 300 * p, t, 0.08, 0.08, 200);
   },
   /** hammer tick */
   construct(e, t, d, { p, r }) {
@@ -670,6 +673,11 @@ const VOICES: Record<SoundName, Voice> = {
     bell(e, d, 1480 * p, t + strokes * 0.075, 0.6, 0.05, 1.47, 2.2);
     bell(e, e.wet, 1480 * p, t, 1.4, 0.03, 1.47, 2.2);
     noise(e, d, t, 0.06, 0.05, 'bandpass', 3000, undefined, 3, 0.002, r() * 1.5);
+  },
+  /** routine fire the fire service already answers: three soft strokes of the same station bell */
+  fireBell(e, t, d, { p, r }) {
+    for (let k = 0; k < 3; k++) bell(e, d, 1480 * p * (1 + (r() - 0.5) * 0.01), t + k * 0.09, k === 2 ? 0.45 : 0.25, 0.06 * (1 - k * 0.12), 1.47, 2.2);
+    bell(e, e.wet, 1480 * p, t, 0.8, 0.02, 1.47, 2.2);
   },
   /** tornado: air-raid wail + wind */
   tornado(e, t, d, { p, r }) {

@@ -366,7 +366,9 @@ export function openRecoverDialog(m: RecoveryMarker): Promise<'recover' | 'disca
     const body = h(
       'div',
       { class: 'recover-body' },
-      h('p', {}, 'Metropolis closed before ', h('b', {}, m.cityName), ' was saved. A recovery snapshot of your last session was kept on this device.'),
+      m.why === 'exit'
+        ? h('p', {}, 'Saving ', h('b', {}, m.cityName), ' failed when you left it. A recovery snapshot of your progress was kept on this device.')
+        : h('p', {}, 'Metropolis closed before ', h('b', {}, m.cityName), ' was saved. A recovery snapshot of your last session was kept on this device.'),
       h(
         'div',
         { class: 'rv-grid' },

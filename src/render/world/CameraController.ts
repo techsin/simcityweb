@@ -125,6 +125,10 @@ export class CameraController implements CameraControllerApi {
   get tiltAngle(): number {
     return this.effectiveTilt();
   }
+  /** the player's tilt before the far-zoom top-down blend (radians; what setView() takes back, in degrees) */
+  get baseTilt(): number {
+    return this.tilt;
+  }
 
   focusOn(worldX: number, worldZ: number, distance?: number): void {
     this.goalTarget.set(worldX, 0, worldZ);

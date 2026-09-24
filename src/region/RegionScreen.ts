@@ -207,7 +207,8 @@ export class RegionScreen {
         button('Delete city', { icon: 'trash', cls: 'lg danger', onClick: () => this.deleteCity(tile) }),
       );
     } else {
-      actions.append(button('Found New City', { icon: 'plus', cls: 'lg warm', sound: 'confirm', onClick: () => this.cb.onFound(tile) }));
+      // (auto: the New City dialog's own open sound is the feedback — no confirm chime stacked on top)
+      actions.append(button('Found New City', { icon: 'plus', cls: 'lg warm', onClick: () => this.cb.onFound(tile) }));
     }
     const stats = c
       ? [

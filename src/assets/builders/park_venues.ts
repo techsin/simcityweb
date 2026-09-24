@@ -59,9 +59,10 @@ function parkStadium(b: ModelBuilder, _v: number, rng: RNG): void {
   }
   // --- seating bowl (single loft): outer facade up, rim, upper tier down, box level, lower tier down, pitch wall
   // night: cool floodlit outer shell (fades up to the rim), a warm lit concourse ribbon under the rim and a
-  // ground-floor concourse of individually lit glazing bays (not one uniform glowing band)
+  // dim warm ground-floor concourse (smoked glazing, night-only glow ~1/3 of the old pavilion glass) that the
+  // darker fins divide into bays -- no clipped white base band, no per-window checkerboard
   const facade: Paint = { color: 0xd9d7d0, surf: Surf.Plain, pattern: 2, floor: 18 };
-  const concourse: Paint = { color: 0x9fb6c4, surf: Surf.GlassPlain, pattern: 0 };
+  const concourse: Paint = { color: 0x6f6150, surf: Surf.Emissive, pattern: 10 };
   const plinth: Paint = { color: 0xb9b6ae, surf: Surf.Plain, pattern: 2, floor: 18 };
   const ribbonC: Paint = { color: 0xe0a55c, surf: Surf.Emissive, pattern: 10 };
   const rim: Paint = { color: 0xd9d6ce, surf: Surf.Plain, pattern: 2, floor: 18 };
@@ -81,8 +82,9 @@ function parkStadium(b: ModelBuilder, _v: number, rng: RNG): void {
   const kUp = prof.findIndex((p) => p[2] === seatsUp), kLo = prof.findIndex((p) => p[2] === seatsLo);
   loftRing(b, inner, prof, 30, (i, k) => (i % 4 < 2 ? (k === kUp ? aisle : k === kLo ? seatsLoB : null) : null));
   // facade: vertical fins every other path point
-  // (fins run down to the ground so the lit concourse glazing reads as bays)
-  b.paint(0xcfcdc6, Surf.Plain, 2, 18);
+  // (fins run down to the ground so the lit concourse glazing reads as bays; a shade darker than the shell so they
+  // give the floodlit drum a vertical rhythm by day and night)
+  b.paint(0xb8b5ad, Surf.Plain, 2, 18);
   const outer = offsetPoly(inner, 16.25);
   for (let i = 0; i < outer.length; i += 2) {
     const [x, z] = outer[i];

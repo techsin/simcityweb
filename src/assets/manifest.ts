@@ -211,7 +211,7 @@ export const MANIFEST: ManifestEntry[] = [
   E('tr_ferry_terminal', 'transport', [2, 2], 1, [6, 10], 'Ferry terminal with pier (water on +Z side).'),
 
   // ------------------------------------------------------------------ NATURE (instanced heavily: keep <= 120 tris)
-  E('tree_oak', 'nature', [1, 1], 7, [8, 14], 'Broadleaf oak-like tree: trunk + 2-3 lumpy low-poly foliage blobs. Seasonal variants (autumn / bare): see builders/nat_season.ts.'),
+  E('tree_oak', 'nature', [1, 1], 8, [8, 14], 'Broadleaf oak-like tree: trunk + 2-3 lumpy low-poly foliage blobs. Seasonal variants (autumn / bare / blossom): see builders/nat_season.ts.'),
   E('tree_maple', 'nature', [1, 1], 6, [7, 12], 'Rounded maple tree, some variants autumn orange/red, bare winter, spring blossom (builders/nat_season.ts).'),
   E('tree_birch', 'nature', [1, 1], 5, [8, 13], 'Slender birch, white trunk, light green narrow crown; autumn yellow + bare winter variants (builders/nat_season.ts).'),
   E('tree_pine', 'nature', [1, 1], 4, [10, 20], 'Pine tree: tall trunk, stacked cone foliage tiers.'),
@@ -250,7 +250,7 @@ export const MANIFEST: ManifestEntry[] = [
   E('billboard', 'prop', [1, 1], 2, [8, 12], 'Roadside billboard on pole, emissive panel.'),
   E('container_stack', 'prop', [1, 1], 3, [2.6, 8], 'Stack of shipping containers, varied colors.'),
   E('construction_site', 'prop', [1, 1], 3, [2, 25], 'Construction site dressing: dirt, fence, crane or scaffolding (overlay for buildings under construction; scaled to lot by renderer).'),
-  E('rubble', 'prop', [1, 1], 2, [0.5, 2], 'Rubble / burnt debris pile for destroyed buildings.'),
+  E('rubble', 'prop', [1, 1], 4, [0.5, 3.5], 'Rubble / burnt debris of destroyed buildings, one 16 m cell (tile it over bigger lots): v0 charred brick, v1 concrete, v2 concrete + burnt car, v3 low debris field with a standing wall corner.'),
 ];
 
 // showpiece / waterfront metadata

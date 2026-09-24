@@ -7,7 +7,8 @@ import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import {
   type P2, type V3, type ProfPt, lathe, tree, lamp, parkBench, flowerBed, roundBed, shrub, fountain, disc, annulus, rect, ribbon, cylWall, flatPoly,
-  path, person, lawnPatchwork, lawnPools, rectPoly, roundRectPath, offsetPoly, track3D, orientQuad, orientTri, hedgeBox, umbrella, GRASS_LUSH, PATH_GRAVEL, PATH_PAVE,
+  path, person, lawnPatchwork, lawnPools, rectPoly, ribbonQuads, roundRectPath, offsetPoly, track3D, orientQuad, orientTri, hedgeBox, umbrella, GRASS_LUSH, PATH_GRAVEL, PATH_PAVE,
+  type PoolSpec,
 } from './park_lib';
 import { polyZ, polyX, gothicArch, roundArch, openingZ, archFrameZ, prismEdges, merlons, merlonRing, surface, beacon } from './lm_lib';
 
@@ -188,7 +189,9 @@ function cathedral(b: ModelBuilder, _v: number, rng: RNG): void {
   }
   // ---- grounds
   for (const [x, z] of [[-21, 28.5], [21, 28.5], [-21.5, 10], [21.5, 10], [-21, -12], [21, -12], [-16, -29], [16, -29]] as P2[]) tree(b, rng, x, z, 0.95, rng.chance(0.5) ? 'oak' : 'round');
-  for (const x of [-15, -7, 7, 15]) lamp(b, x, 30.8, 4.4, 0, [{ color: 0xc4bcaa, y: 0.1, dy: 0.03 }]);
+  // parvis pool + pools on the darker paving bands (bands stay continuous by day and read through the light at night)
+  const bandPool: PoolSpec = { color: 0xaea591, y: 0.115, dy: 0.03, clip: Array.from({ length: 11 }, (_, k) => rectPoly((k - 5) * 4.2 - 0.25, 25.5, (k - 5) * 4.2 + 0.25, EZ)) };
+  for (const x of [-15, -7, 7, 15]) lamp(b, x, 30.8, 4.4, 0, [{ color: 0xc4bcaa, y: 0.1, dy: 0.03 }, bandPool]);
   for (const x of [-11, 11]) parkBench(b, x, 30.5, Math.PI);
   roundBed(b, rng, -14.5, 27.4, 1.1);
   roundBed(b, rng, 14.5, 27.4, 1.1);
@@ -278,7 +281,9 @@ function operaHouse(b: ModelBuilder, _v: number, rng: RNG): void {
   for (let x = -28; x <= 28; x += 8) lamp(b, x, -30.6, 4.2, 1, [{ color: 0x8e8b84, y: 0.6, dy: 0.02, clip: [rectPoly(-32, -32, 32, -29.5)] }]);
   for (const z of [-20, -8, 4]) tree(b, rng, -30, z, 0.95, 'round');
   for (const z of [-20, -8, 4]) tree(b, rng, 30, z, 0.95, 'round');
-  for (const x of [-27, -12, 8, 28]) lamp(b, x, 29, 4.4, 2, [{ color: 0xc7bfb0, y: 0.1, dy: 0.03 }]);
+  // plaza pool + pools on the darker paving bands
+  const bandPool: PoolSpec = { color: 0xb2a998, y: 0.115, dy: 0.03, clip: Array.from({ length: 15 }, (_, k) => rectPoly((k - 7) * 4.3 - 0.3, 16, (k - 7) * 4.3 + 0.3, E)) };
+  for (const x of [-27, -12, 8, 28]) lamp(b, x, 29, 4.4, 2, [{ color: 0xc7bfb0, y: 0.1, dy: 0.03 }, bandPool]);
   for (const [x, z, c] of [[25, 28, 0xf4f2ea], [28, 25, 0xf4f2ea], [15.5, 27.5, 0xf4f2ea]] as [number, number, number][]) umbrella(b, x, z, c, 1.5, 2.5);
   for (let i = 0; i < 10; i++) person(b, rng, rng.range(-24, 10), rng.range(20, 31), 0.1, rng.range(0, TAU));
 }
@@ -485,7 +490,10 @@ function pyramidPlaza(b: ModelBuilder, _v: number, rng: RNG): void {
   // benches, lamps, trees, visitors
   for (const s of [-1, 1]) {
     for (const z of [-10, 8]) parkBench(b, s * 17.4, z, s > 0 ? -Math.PI / 2 : Math.PI / 2);
-    const pp = [{ color: 0xc9c4b8, y: 0.1, dy: 0.03 }];
+    // plaza pool + pools on the two darker paving frames
+    const frames: P2[][] = [];
+    for (const r of [17.4, 21.5]) frames.push(rectPoly(-r, -r, r, -r + 0.6), rectPoly(-r, r - 0.6, r, r), rectPoly(-r, -r + 0.6, -r + 0.6, r - 0.6), rectPoly(r - 0.6, -r + 0.6, r, r - 0.6));
+    const pp: PoolSpec[] = [{ color: 0xc9c4b8, y: 0.1, dy: 0.03 }, { color: 0xb3ad9f, y: 0.115, dy: 0.03, clip: frames }];
     lamp(b, s * 6, 18.5, 4.8, 2, pp);
     lamp(b, s * 21.5, -12, 4.8, 2, pp);
     lamp(b, s * 21.5, 11, 4.8, 2, pp);
@@ -503,7 +511,7 @@ function observatory(b: ModelBuilder, _v: number, rng: RNG): void {
   // terrace + steps
   b.paint(stoneD, Surf.Stone).box(-15.2, 0, -13.5, 15.2, 1.2, 8.4, { top: P(0xc9c2b3, Surf.Pavement) });
   for (let i = 0; i < 4; i++) b.paint(0xc6bead, Surf.Stone).box(-4.5, 0, 8.4, 4.5, 1.2 - i * 0.3, 8.4 + (i + 1) * 0.7, { nz: null });
-  path(b, [[0, 16], [0.3, 13], [0, 11.2]], 3.0, PATH_GRAVEL, 0.12);
+  const walk = path(b, [[0, 16], [0.3, 13], [0, 11.2]], 3.0, PATH_GRAVEL, 0.12);
   // main drum with arched windows + cornice
   const cx = 0, cz = -3, R = 7.2;
   lathe(b, cx, cz, [[R, 1.2, P(stone, Surf.WallWindows, 7, 4.4)], [R, 9.4, P(stoneD, Surf.Stone)], [R + 0.5, 9.9], [R + 0.5, 10.5], [R - 0.1, 10.5]], 24, 30);
@@ -558,7 +566,8 @@ function observatory(b: ModelBuilder, _v: number, rng: RNG): void {
   b.push().translate(8.5, 2.3, 12.5).rotateX(Math.PI / 2);
   b.ring(0, 0, 0, 1.0, 0.07, 12);
   b.pop();
-  for (const x of [-3.4, 3.4]) lamp(b, x, 13.8, 3.8, 1, [...lawnPools(), { color: PATH_GRAVEL, y: 0.12, clip: [rectPoly(-1.8, 11, 1.8, 16)] }]);
+  // (path pool clipped to the actual gravel ribbon, not a wider rect that spilled gravel colour onto the lawn by day)
+  for (const x of [-3.4, 3.4]) lamp(b, x, 13.8, 3.8, 1, [...lawnPools(), { color: PATH_GRAVEL, y: 0.12, clip: ribbonQuads(walk, 3.0) }]);
   parkBench(b, -10, 11, 0.2);
   for (let i = 0; i < 4; i++) person(b, rng, rng.range(-5, 5), rng.range(9, 14), 0.1, rng.range(0, TAU));
 }

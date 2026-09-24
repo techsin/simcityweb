@@ -2,7 +2,8 @@
  * Procedural models for the 'prop' group: street furniture, billboards, container stacks, construction sites, rubble.
  * Budget <= 200 tris. Origin at the base center; props with a direction (streetlight arm, traffic light arm) point
  * their arm toward -X; signal faces / billboard faces / bench fronts face +Z.
- * construction_site and rubble fill a whole 16 x 16 m cell edge to edge (the renderer stretches them to the lot).
+ * construction_site and rubble fill a whole 16 x 16 m cell edge to edge (the renderer stretches construction_site to
+ * the lot; rubble is designed to be tiled, one instance per footprint cell).
  */
 import type { ModelBuilders } from '../registry';
 import type { ModelBuilder, Paint } from '../ModelBuilder';
@@ -356,63 +357,108 @@ export const models: ModelBuilders = {
     }
   },
 
-  // Burnt-out lot filling the cell: ash ground, rounded debris heaps, scorched broken walls, fallen charred beams,
-  // tumbled blocks. v0 brick/wood fire ruin, v1 concrete ruin with rebar and a burnt car. <= 200 tris.
+  // Rubble of a burnt-out building, sized for ONE 16 m cell (big burnt lots should get one instance per cell, each
+  // variant = hash(cell), random 90 deg turn). v0 charred brick heaps + scorched beams, v1 grey concrete heaps +
+  // rebar, v2 = v1 with a burnt-out car, v3 low debris field (brick-dust drifts, scattered blocks, a sooty wall
+  // corner) so tiled lots vary in height and only some cells carry a car. Warm brick-dust tones (0x7a5a48 /
+  // 0x8c7a66) keep big lots from reading as one uniform charcoal slab. The debris sits on a raised bed (top 0.4 m,
+  // closed sides down to -0.5 m) so sloped lots (terrain up to ~0.4 m above the lot base) don't poke grass through
+  // the floor. <= 200 tris.
   rubble(b, v, rng) {
-    b.paint(0x4a4440, Surf.Plain);
-    quadOut(b, [-8, 0.05, -8], [8, 0.05, -8], [8, 0.05, 8], [-8, 0.05, 8], [0, 1, 0]);
+    const brick = v === 0 || v === 3;
+    const LIFT = 0.35;
+    // lot floor: warm ash grey bed, a black scorch mark, pale brick-dust drifts
+    b.paint(0x55493f, Surf.Plain);
+    const T = LIFT + 0.05, B = -0.5;
+    quadOut(b, [-8, T, -8], [8, T, -8], [8, T, 8], [-8, T, 8], [0, 1, 0]);
+    b.paint(0x3f3630, Surf.Plain);
+    quadOut(b, [-8, B, 8], [8, B, 8], [8, T, 8], [-8, T, 8], [0, 0, 1]);
+    quadOut(b, [8, B, -8], [-8, B, -8], [-8, T, -8], [8, T, -8], [0, 0, -1]);
+    quadOut(b, [8, B, 8], [8, B, -8], [8, T, -8], [8, T, 8], [1, 0, 0]);
+    quadOut(b, [-8, B, -8], [-8, B, 8], [-8, T, 8], [-8, T, -8], [-1, 0, 0]);
+    b.push().translate(0, LIFT, 0);
+    const blot = (cx: number, cz: number, r: number, y: number) => {
+      const a0 = rng.range(0, Math.PI * 2);
+      const pts: V3[] = [];
+      for (let k = 0; k < 5; k++) {
+        const a = a0 + (k / 5) * Math.PI * 2, rr = r * rng.range(0.65, 1.1);
+        pts.push([Math.max(-7.8, Math.min(7.8, cx + Math.cos(a) * rr)), y, Math.max(-7.8, Math.min(7.8, cz - Math.sin(a) * rr))]);
+      }
+      polyOut(b, pts, [0, 1, 0]);
+    };
     b.paint(0x2c2826, Surf.Plain);
-    polyOut(b, [[rng.range(-7, -4), 0.06, rng.range(-7, -3)], [rng.range(3, 6), 0.06, rng.range(-7.5, -5)], [rng.range(5, 7.5), 0.06, rng.range(0, 4)], [rng.range(0, 3), 0.06, rng.range(5, 7.5)], [rng.range(-7, -4), 0.06, rng.range(3, 6)]], [0, 1, 0]);
-    const heapCols = v === 0 ? [0x2c2724, 0x3b322d, 0x4a3a30, 0x563428, 0x34302c] : [0x625e58, 0x53504b, 0x6f6a64, 0x3a3734];
+    blot(rng.range(-1, 1), rng.range(-1, 1), v === 3 ? 4.2 : 6.2, 0.06);
+    for (let i = 0; i < (v === 3 ? 3 : 2); i++) {
+      b.paint(jitterHex(rng, i % 2 ? 0x8c7a66 : 0x7a5a48, 0.06), Surf.Plain);
+      blot(rng.range(-5, 5), rng.range(-5, 5), rng.range(2.2, 3.4), 0.07 + i * 0.006);
+    }
+    const heapCols = brick ? [0x2c2724, 0x3b322d, 0x4a3a30, 0x563428, 0x7a5a48, 0x8c7a66] : [0x625e58, 0x53504b, 0x6f6a64, 0x3a3734, 0x8c7a66, 0x7a5a48];
     const m = mark(b);
-    // broken walls along the old building's back (-Z) and left (-X) sides
-    const wallPaint = v === 0 ? P(0x7a4432, Surf.Brick) : P(0x7e7a72, Surf.Plain);
-    b.push().translate(-5.8, 0, -1.2);
-    brokenWall(b, rng, 8.6, 2.3, 0.18, wallPaint);
-    b.pop();
-    b.push().translate(-1.6, 0, -5.8).rotateY(Math.PI / 2);
-    brokenWall(b, rng, 7.8, 1.8, 0.18, wallPaint);
-    b.pop();
+    const wallPaint = brick ? P(0x7a4432, Surf.Brick) : P(0x7e7a72, Surf.Plain);
+    if (v === 3) {
+      // one standing sooty wall corner (the rest of the building has collapsed flat)
+      b.push().translate(-4.6, 0, 1.4);
+      brokenWall(b, rng, 7.6, 3.4, 0.2, wallPaint);
+      b.pop();
+      b.push().translate(-1.0, 0, -2.4).rotateY(Math.PI / 2);
+      brokenWall(b, rng, 7.0, 3.0, 0.2, wallPaint);
+      b.pop();
+    } else {
+      // broken walls along the old building's back (-Z) and left (-X) sides
+      b.push().translate(-5.8, 0, -1.2);
+      brokenWall(b, rng, 8.6, 2.3, 0.18, wallPaint);
+      b.pop();
+      b.push().translate(-1.6, 0, -5.8).rotateY(Math.PI / 2);
+      brokenWall(b, rng, 7.8, 1.8, 0.18, wallPaint);
+      b.pop();
+    }
     // soot: walls darken toward their broken tops
-    tintSince(b, m, (p) => { const k = 1 - 0.55 * Math.min(1, p[1] / 2.3); return [k, k * 0.96, k * 0.93]; });
+    const wallH = v === 3 ? 3.4 : 2.3;
+    tintSince(b, m, (p) => { const k = 1 - 0.55 * Math.min(1, Math.max(0, p[1] - LIFT) / wallH); return [k, k * 0.96, k * 0.93]; });
     const m2 = mark(b);
     const heaps: [number, number, number, number, number][] = v === 0
       ? [[-2.4, -2.2, 3.4, 1.3, 2.8], [2.6, 1.0, 2.8, 1.0, 2.4], [-1.2, 3.6, 2.2, 0.75, 1.9]]
-      : [[-1.5, -1.4, 3.8, 1.5, 3.0], [3.2, 2.4, 2.5, 0.95, 2.2], [-4.0, 3.6, 2.2, 0.7, 1.8]];
+      : v === 3
+        ? [[2.2, -2.6, 3.0, 0.62, 2.4], [1.4, 3.8, 2.4, 0.5, 2.0]]
+        : [[-1.5, -1.4, 3.8, 1.5, 3.0], [3.2, 2.4, 2.5, 0.95, 2.2], [-4.0, 3.6, 2.2, 0.7, 1.8]];
     for (const [x, z, rx, ry, rz] of heaps) {
       b.paint(rng.pick(heapCols), Surf.Plain);
       leafBlob(b, rng, [x, ry * 0.2, z], [rx, ry, rz], {
         jitter: 0.16,
-        soft: 0.55,
+        soft: 0.45,
         floorY: 0.06,
-        faceColor: () => (rng.chance(0.5) ? jitterHex(rng, rng.pick(heapCols), 0.08) : null),
+        faceColor: () => (rng.chance(0.55) ? jitterHex(rng, rng.pick(heapCols), 0.08) : null),
       });
     }
-    tintSince(b, m2, (p) => { const k = 0.7 + 0.3 * Math.min(1, p[1] / 1.4); return [k, k, k]; });
-    // tumbled blocks / bricks chunks
-    for (let i = 0; i < 4; i++) {
-      const x = rng.range(-6, 6), z = rng.range(-6, 6);
+    tintSince(b, m2, (p) => { const k = 0.72 + 0.28 * Math.min(1, Math.max(0, p[1] - LIFT) / 1.4); return [k, k, k]; });
+    // tumbled blocks / brick chunks (the debris field scatters more, smaller ones)
+    const nBlocks = v === 3 ? 7 : v === 2 ? 3 : 4;
+    for (let i = 0; i < nBlocks; i++) {
+      const x = rng.range(-6.5, 6.5), z = rng.range(-6.5, 6.5);
       b.push().translate(x, 0.05, z).rotateY(rng.range(0, Math.PI)).rotateX(rng.range(-0.4, 0.4));
-      b.paint(v === 0 ? rng.pick([0x6b3a2c, 0x3a3430, 0x7a4432]) : rng.pick([0x8e8a82, 0x6e6a64]), v === 0 ? Surf.Brick : Surf.Plain);
-      const s = rng.range(0.5, 0.9);
-      b.box(-s, -0.1, -s * 0.6, s, s * 0.7, s * 0.6);
+      b.paint(brick ? rng.pick([0x6b3a2c, 0x3a3430, 0x7a4432, 0x7a5a48]) : rng.pick([0x8e8a82, 0x6e6a64, 0x8c7a66]), brick ? Surf.Brick : Surf.Plain);
+      const s = v === 3 ? rng.range(0.3, 0.6) : rng.range(0.5, 0.9);
+      b.box(-s, -0.1, -s * 0.6, s, s * 0.7, s * 0.6, { bottom: null });
       b.pop();
     }
-    // fallen charred beams (v0) / twisted rebar (v1)
-    b.paint(v === 0 ? 0x1f1b19 : 0x5a3a2a, v === 0 ? Surf.Wood : Surf.Metal);
-    const nBeams = v === 0 ? 4 : 3;
+    // fallen charred beams (brick) / twisted rebar (concrete)
+    b.paint(brick ? 0x1f1b19 : 0x5a3a2a, brick ? Surf.Wood : Surf.Metal);
+    const nBeams = v === 0 ? 4 : v === 3 ? 2 : 3;
     for (let i = 0; i < nBeams; i++) {
       const [hx, hz] = rng.pick(heaps);
       const x = hx + rng.range(-1.5, 1.5), z = hz + rng.range(-1.5, 1.5), a = rng.range(0, Math.PI), L = rng.range(3, 5);
       const dx = (Math.cos(a) * L) / 2, dz = (Math.sin(a) * L) / 2;
-      b.beam([x - dx, rng.range(0.1, 0.4), z - dz], [x + dx, rng.range(0.6, 1.5), z + dz], v === 0 ? 0.24 : 0.06);
+      b.beam([x - dx, rng.range(0.1, 0.4), z - dz], [x + dx, rng.range(0.6, v === 3 ? 1.0 : 1.5), z + dz], brick ? 0.24 : 0.06);
     }
-    if (v === 1) {
+    if (v === 2) {
+      // burnt-out car (only this variant, so a tiled lot shows one here and there, not one per cell)
       b.push().translate(4.6, 0.05, -4.4).rotateY(0.6);
-      b.paint(0x2a2522, Surf.Metal).box(-0.9, 0.2, -2.2, 0.9, 0.95, 2.2);
-      b.paint(0x1a1716, Surf.Metal).box(-0.8, 0.95, -1.0, 0.8, 1.35, 0.9, { bottom: null });
+      // rust-charred shell (not a black monolith), sooty cabin
+      b.paint(0x4d3a2e, Surf.Metal).box(-0.9, 0.2, -2.2, 0.9, 0.95, 2.2);
+      b.paint(0x2b2320, Surf.Metal).box(-0.8, 0.95, -1.0, 0.8, 1.35, 0.9, { bottom: null });
       b.pop();
     }
+    b.pop();
   },
 };
 

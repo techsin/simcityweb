@@ -112,6 +112,7 @@ export class WorldView implements WorldViewApi {
   private _disposed = false;
   // shadow cache state
   private shKey = new Float64Array(64);
+  private shRecv = -1;
   private shVersion = -1;
   private shFrame = 0;
   private frameNo = 0;
@@ -500,6 +501,12 @@ export class WorldView implements WorldViewApi {
         }
       }
     }
+    // casters are culled against the visible slice (receiver), which also changes when the view only rotates / zooms
+    // while the (texel-snapped, target-centred) single map stays put
+    const recvs = sun.cascaded ? sun.cascadeShadow.receivers : [sun.dirReceiver];
+    let rv = 0;
+    for (const r of recvs) rv += r.version;
+    if (rv !== this.shRecv) { this.shRecv = rv; moved = true; }
     let need = moved || this.shForce > 0 || !sh.map || this.frameNo - this.shFrame >= this.shadowMaxAge;
     if (!need && shadowCasters.version !== this.shVersion && this.frameNo - this.shFrame >= this.shadowInterval) need = true;
     if (need) {
@@ -677,6 +684,9 @@ export class WorldView implements WorldViewApi {
       this.sun.cascadeShadow.splits[2] = this.maxHeight + 3000;
       if (!this.sun.cascaded) {
         fitSunShadow(this.sun, this.camera, { target: _v.set(W / 2, 0, W / 2), distance: W, rangeMul: 1.2, lightDir: this.sky.lighting.lightDir, maxHeight: this.maxHeight });
+        // the whole map is in view: no caster culling against the (perspective) game view's receiver volume
+        this.sun.dirShadow.camera.userData.recv = undefined;
+        (this.sun.dirShadow as unknown as { _frustum: { recv?: unknown } })._frustum.recv = undefined;
       }
     } else {
       this.camera.aspect = width / height;
@@ -695,6 +705,8 @@ export class WorldView implements WorldViewApi {
     this.camera.aspect = this.width / this.height;
     this.camera.updateProjectionMatrix();
     for (let i = 0; i < 3; i++) this.sun.cascadeShadow.splits[i] = saveSplits[i];
+    this.sun.dirShadow.camera.userData.recv = this.sun.dirReceiver;
+    (this.sun.dirShadow as unknown as { _frustum: { recv?: unknown } })._frustum.recv = this.sun.dirReceiver;
     // to canvas (flip Y)
     const c2 = document.createElement('canvas');
     c2.width = width;

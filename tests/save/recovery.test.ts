@@ -12,10 +12,12 @@ import { decodeBundle, encodeBundle } from '../../src/save/bundle';
 import {
   MemoryKV,
   applyCityDelta,
+  clearRecoveryAfterSave,
   clearRecoveryBase,
   discardRecoverySnapshot,
   encodeCityDelta,
   findRecoverySnapshot,
+  hasRecoverySnapshot,
   loadCity,
   packBytes,
   peekRecoveryMarker,
@@ -268,6 +270,86 @@ describe('write -> find -> restore', { timeout: 60_000 }, () => {
     writeRecoverySnapshot('rtest', tileKey, st, { cityName: 'x', population: 0, funds: 0 });
     await discardRecoverySnapshot();
     expect(peekRecoveryMarker()).toBeNull();
+    expect(await findRecoverySnapshot()).toBeNull();
+  });
+
+  /** a second city of the same region (tile 1), saved */
+  async function secondCity() {
+    const { data } = createRegionData({ seed: 5, preset: 'greenvale', id: 'rtest', name: 'Test Region' });
+    const tileKey = data.tiles[1].key;
+    const st = city();
+    st.config.name = 'Second';
+    await saveCity('rtest', tileKey, st);
+    return { tileKey, st };
+  }
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it('keeps one snapshot per city: a later snapshot of another city does not overwrite a pending one', async () => {
+    const a = await setup();
+    a.st.day += 20;
+    writeRecoverySnapshot('rtest', a.tileKey, a.st, { cityName: 'Deltaville', population: 0, funds: 0 });
+    // next start: the player dismisses the offer ("later") -> the localStorage copy moves into IndexedDB
+    expect((await findRecoverySnapshot())?.marker.tileKey).toBe(a.tileKey);
+    expect(peekRecoveryMarker()).toBeNull();
+    // ... then plays another city, whose snapshot takes the localStorage slot
+    const b = await secondCity();
+    b.st.day += 5;
+    await new Promise((r) => setTimeout(r, 5));
+    writeRecoverySnapshot('rtest', b.tileKey, b.st, { cityName: 'Second', population: 0, funds: 0 });
+    expect(peekRecoveryMarker()?.tileKey).toBe(b.tileKey);
+    expect(await hasRecoverySnapshot({ regionId: 'rtest', tileKey: a.tileKey })).toBe(true);
+    expect(await hasRecoverySnapshot({ regionId: 'rtest', tileKey: b.tileKey })).toBe(true);
+    // newest first; per-city lookups find each
+    expect((await findRecoverySnapshot())?.marker.tileKey).toBe(b.tileKey);
+    const pa = await findRecoverySnapshot({ regionId: 'rtest', tileKey: a.tileKey });
+    expect(pa?.marker.day).toBe(a.st.day);
+    const pb = await findRecoverySnapshot({ regionId: 'rtest', tileKey: b.tileKey });
+    expect(pb?.marker.day).toBe(b.st.day);
+    // restoring one leaves the other pending
+    await restoreRecoverySnapshot(pa!);
+    expect((await loadCity('rtest', a.tileKey))!.day).toBe(a.st.day);
+    expect(await hasRecoverySnapshot({ regionId: 'rtest', tileKey: a.tileKey })).toBe(false);
+    expect((await findRecoverySnapshot())?.marker.tileKey).toBe(b.tileKey);
+  });
+
+  it('a completed full save drops that city\'s snapshots (and reports one taken while it was written)', async () => {
+    const a = await setup();
+    a.st.day += 20;
+    writeRecoverySnapshot('rtest', a.tileKey, a.st, { cityName: 'Deltaville', population: 0, funds: 0 });
+    await findRecoverySnapshot(); // adopted into IndexedDB
+    const b = await secondCity();
+    b.st.day += 5;
+    writeRecoverySnapshot('rtest', b.tileKey, b.st, { cityName: 'Second', population: 0, funds: 0 });
+    const m = peekRecoveryMarker()!;
+    // a save of B that started before B's snapshot (savedAt older): the snapshot is newer -> reported
+    expect(clearRecoveryAfterSave('rtest', b.tileKey, m.at - 1)).toBe(true);
+    await tick();
+    expect(peekRecoveryMarker()).toBeNull();
+    expect(await hasRecoverySnapshot({ regionId: 'rtest', tileKey: b.tileKey })).toBe(false);
+    // A is untouched; a save of A newer than its snapshot is not reported, but still drops it
+    expect(await hasRecoverySnapshot({ regionId: 'rtest', tileKey: a.tileKey })).toBe(true);
+    expect(clearRecoveryAfterSave('rtest', a.tileKey, Date.now() + 1)).toBe(false);
+    await tick();
+    expect(await findRecoverySnapshot()).toBeNull();
+  });
+
+  it('is not offered when the stored save is not its base, or the city is gone', async () => {
+    const { tileKey, st } = await setup();
+    st.day += 20;
+    writeRecoverySnapshot('rtest', tileKey, st, { cityName: 'x', population: 0, funds: 0 });
+    const m = peekRecoveryMarker()!;
+    // the stored save was replaced by a different one that is still older than the snapshot (e.g. imported)
+    const kv = (await import('../../src/save/db')).openedKV()!;
+    const key = `rtest:${tileKey}`;
+    const other = serializeCity(createCityState(defaultCityConfig({ name: 'Other', size: 64, seed: 7, terrain: 'hills' })), { copy: true });
+    await kv.put('cities', { key, regionId: 'rtest', tileKey, savedAt: m.baseSavedAt + 1, city: other }, key);
+    expect(await findRecoverySnapshot()).toBeNull();
+    expect(await hasRecoverySnapshot({ regionId: 'rtest', tileKey })).toBe(false);
+    // city deleted
+    const b = await secondCity();
+    b.st.day += 3;
+    writeRecoverySnapshot('rtest', b.tileKey, b.st, { cityName: 'Second', population: 0, funds: 0 });
+    await kv.delete('cities', `rtest:${b.tileKey}`);
     expect(await findRecoverySnapshot()).toBeNull();
   });
 });

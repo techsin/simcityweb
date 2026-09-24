@@ -27,6 +27,8 @@ export interface GameSettings {
   toasts: boolean;
   /** New Year celebration on January 1st: fireworks after a time-lapse to midnight / fireworks only / off */
   newYear: NewYearMode;
+  /** Cinematic New Year: the camera eases to a skyline view of the show and back (any camera input takes over) */
+  newYearCamera: boolean;
   /** emergency no station can answer (the player must dispatch): drop to LIVE speed / pause / keep the speed */
   emergencyUncovered: EmergencyPolicy;
   /** emergency banners for major incidents only, or for every incident that needs the player */
@@ -56,6 +58,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   pauseWhenHidden: true,
   toasts: true,
   newYear: 'cinematic',
+  newYearCamera: true,
   emergencyUncovered: 'live',
   emergencyAlerts: 'major',
   emergencyLiveSlowmo: 3,

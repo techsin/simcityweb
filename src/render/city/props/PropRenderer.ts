@@ -3,7 +3,8 @@
  * power pylons), additive night light pools under streetlights (one InstancedMesh), grouped by key so road chunks /
  * power lines can be replaced independently.
  *
- * Culling / LOD: per-pass draw lists (main view + shadow cascade 0 only: props are thinner than a far-cascade texel),
+ * Culling / LOD: per-pass draw lists (main view + shadow cascade 0; street / median trees also cascade 1, everything
+ * else is thinner than a far-cascade texel),
  * and a per-tile distance LOD for small props: full model within `lodFull`, a ~16-triangle proxy (propLod.ts) up to
  * `lodDistance`, hidden beyond. Pylons always draw the full model.
  */
@@ -179,7 +180,8 @@ export class PropRenderer {
     this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 17, 'props');
     this.batch.mesh.castShadow = true;
     this.batch.mesh.receiveShadow = true;
-    this.batch.enablePassCulling({ culler, shadowMask: 0b01 });
+    // cascades per instance (setShadowCascades): trees into both, thin hardware into cascade 0 only
+    this.batch.enablePassCulling({ culler, shadowMask: 0b11 });
     const T = culler.tiles * culler.tiles;
     this.tileIds = Array.from({ length: T }, () => new Set<number>());
     this.tileBig = Array.from({ length: T }, () => new Set<number>());
@@ -307,6 +309,9 @@ export class PropRenderer {
       (big ? this.tileBig : this.tileIds)[tile].add(id);
       this.idTile.set(id, tile);
       this.batch.setTile(id, tile);
+      // street / median trees are big enough to shadow the far cascade too; poles, lamps, signals, gates and the
+      // pylon lattice are thinner than a far-cascade texel and cast into cascade 0 (or the single map) only
+      this.batch.setShadowCascades(id, p.model.startsWith('tree_') || p.model === 'bush' ? 0b11 : 0b01);
       if (!big) {
         const lod = this.lodMap.get(gid) ?? gid;
         if (lod !== gid) this.idGeo.set(id, [gid, lod]);

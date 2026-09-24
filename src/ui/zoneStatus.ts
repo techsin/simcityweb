@@ -1,10 +1,11 @@
 /**
  * "Why isn't this lot growing?" for EMPTY zoned cells (hover tip of the query tool + inspector). Mirrors the growth
  * rules in src/sim/economy/growth.ts cheaply from state arrays only: road access (lots must touch a road), power
- * (state.powered on the lot or its road front), water (medium / high density zones), and RCI demand.
- * Power / water are only required when the utilities layer runs (infraFlags(st).utilities), like growth.
+ * (state.powered on the lot or a served neighbouring conductor, see utilityReaches), water (medium / high density
+ * zones), and RCI demand. Power / water are only required when the utilities layer runs (infraFlags(st).utilities),
+ * like growth. Also used by the onboarding card (power / water steps) and the inspector's lot chips.
  */
-import { DEV_TYPE_LABELS, Network, zoneDensity, zoneFamily, type Zone } from '../core/types';
+import { DEV_TYPE_LABELS, Network, isRoad, zoneDensity, zoneFamily, type Zone } from '../core/types';
 import type { CityState } from '../sim/CityState';
 import { ZONE_DEVTYPES } from '../sim/catalog';
 import { infraFlags } from '../sim/economy/runtime';
@@ -22,35 +23,60 @@ export interface ZoneStatus {
   blockers: ZoneBlocker[];
 }
 
-const isRoadN = (n: number) => n >= Network.Street && n <= Network.Highway;
-/** growth carves lots up to this deep from the road front */
-const LOT_DEPTH = 3;
+/** growth builds lots up to this deep from their road front (the largest growables are 4×4) */
+const LOT_DEPTH = 4;
 /** nearest-powered-cell search radius (Chebyshev tiles) */
 const SEARCH_R = 40;
 
 const FAMILY_NAME: Record<string, string> = { R: 'residential', C: 'commercial', I: 'industrial' };
 
-/** road within LOT_DEPTH tiles in a straight line (lots are carved perpendicular to the road front) */
-function roadAccess(st: CityState, x: number, z: number): boolean {
-  const N = st.size;
-  for (let d = 1; d <= LOT_DEPTH; d++) {
-    if (x - d >= 0 && isRoadN(st.network[z * N + x - d])) return true;
-    if (x + d < N && isRoadN(st.network[z * N + x + d])) return true;
-    if (z - d >= 0 && isRoadN(st.network[(z - d) * N + x])) return true;
-    if (z + d < N && isRoadN(st.network[(z + d) * N + x])) return true;
+const DIRS: readonly (readonly [number, number])[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+/**
+ * Walk from zoned cell (x, z) straight toward a road, over cells one lot could cover together with it (same zone,
+ * empty, dry, no power line), up to LOT_DEPTH. Without `flag`: true when a road front is reached. With `flag`: true
+ * when one of those lot cells or the road front reached has the flag set.
+ */
+function walkToRoad(st: CityState, x: number, z: number, flag: Uint8Array | null): boolean {
+  const N = st.size, zn = st.zone[z * N + x];
+  for (const [dx, dz] of DIRS) {
+    for (let d = 1; d <= LOT_DEPTH; d++) {
+      const xx = x + dx * d, zz = z + dz * d;
+      if (xx < 0 || zz < 0 || xx >= N || zz >= N) break;
+      const j = zz * N + xx;
+      const n = st.network[j];
+      if (isRoad(n)) {
+        if (!flag || flag[j] === 1) return true;
+        break;
+      }
+      if (n !== Network.None || st.zone[j] !== zn || st.building[j] >= 0 || st.water[j] || st.powerLines[j]) break;
+      if (flag && flag[j] === 1) return true;
+    }
   }
   return false;
 }
 
-/** the utility flag on the cell or a 4-neighbour (a lot is served when any of its cells / front cells is) */
-function servedNear(arr: Uint8Array, N: number, x: number, z: number): boolean {
-  const i = z * N + x;
+/** a lot through this cell can front a road: a road within LOT_DEPTH in a straight line, only open same-zone lot between */
+export function roadAccess(st: CityState, x: number, z: number): boolean {
+  return walkToRoad(st, x, z, null);
+}
+
+/**
+ * The utility reaches zoned cell i: its own flag (state.powered / state.watered); a served 4-neighbour that feeds empty
+ * lots the way src/sim/infra/utilities.ts does (power through any network / power-line / building cell, water only
+ * through road pipes); or, for cells deeper in the block, a flagged cell / road front of a lot that would include it
+ * (growth serves a lot through any of its cells or its road front). The neighbour rule also keeps the answer right for
+ * lots zoned while PAUSED: the utilities system flags those on its next soft refresh, which waits for game days.
+ */
+export function utilityReaches(st: CityState, arr: Uint8Array, i: number, kind: 'power' | 'water'): boolean {
   if (arr[i]) return true;
-  if (x > 0 && arr[i - 1]) return true;
-  if (x < N - 1 && arr[i + 1]) return true;
-  if (z > 0 && arr[i - N]) return true;
-  if (z < N - 1 && arr[i + N]) return true;
-  return false;
+  const N = st.size, x = i % N, z = (i - x) / N, p = kind === 'power';
+  if ((x > 0 && feeds(st, arr, i - 1, p)) || (x < N - 1 && feeds(st, arr, i + 1, p)) || (i >= N && feeds(st, arr, i - N, p)) || (i + N < st.cells && feeds(st, arr, i + N, p))) return true;
+  return st.zone[i] !== 0 && walkToRoad(st, x, z, arr);
+}
+
+function feeds(st: CityState, arr: Uint8Array, j: number, power: boolean): boolean {
+  return arr[j] === 1 && (power ? st.network[j] !== Network.None || st.powerLines[j] !== 0 || st.building[j] >= 0 : isRoad(st.network[j]));
 }
 
 /** Chebyshev distance to the nearest cell with arr[i] set (ring scan), or -1 beyond SEARCH_R */
@@ -79,11 +105,11 @@ export function emptyZoneStatus(st: CityState, x: number, z: number): ZoneStatus
   const blockers: ZoneBlocker[] = [];
   if (!roadAccess(st, x, z)) blockers.push({ id: 'road', text: 'No road access — lots must touch a road' });
   const util = infraFlags(st).utilities;
-  if (util && !servedNear(st.powered, N, x, z)) {
+  if (util && !utilityReaches(st, st.powered, i, 'power')) {
     const d = nearestSet(st.powered, N, x, z);
     blockers.push({ id: 'power', text: d > 0 ? `No power (nearest powered cell ${d} tile${d === 1 ? '' : 's'})` : 'No power — no power plant reaches this area' });
   }
-  if (util && zoneDensity(zn as Zone) >= 2 && !servedNear(st.watered, N, x, z)) {
+  if (util && zoneDensity(zn as Zone) >= 2 && !utilityReaches(st, st.watered, i, 'water')) {
     blockers.push({ id: 'water', text: 'No water (needed for medium / high density)' });
   }
   const devs = ZONE_DEVTYPES[zn] ?? [];

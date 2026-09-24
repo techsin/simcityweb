@@ -15,6 +15,7 @@ import type { CityState } from '../../sim/CityState';
 import { getNoiseTexture, makeRampTexture } from './textures';
 import { OVERLAYS, ZONE_COLORS, computeOverlayValues } from './overlays';
 import { TERRAIN_FRAG_COLOR, TERRAIN_FRAG_PARS, TERRAIN_VERT_MAIN, TERRAIN_VERT_PARS } from './terrainShader';
+import { receiverSweepBox, type ShadowReceiver } from './Shadows';
 
 export const TERRAIN_CHUNK = 32;
 
@@ -285,6 +286,15 @@ export class TerrainRenderer {
     mesh.receiveShadow = true;
     mesh.castShadow = this.castShadows;
     mesh.matrixAutoUpdate = false;
+    // shadow passes: a chunk only casts if its shadow (swept away from the sun down to the lowest ground) can reach
+    // the part of the view the cascade shades (flat chunks outside the view slice never can)
+    mesh.intersectsFrustum = (f: THREE.Frustum) => {
+      const b = geo.boundingBox;
+      if (!b) return f.intersectsObject(mesh);
+      if (!f.intersectsBox(b)) return false;
+      const recv = (f as unknown as { recv?: ShadowReceiver }).recv;
+      return !recv || receiverSweepBox(recv, b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z);
+    };
     // chunks beyond the map (non multiple sizes) are clipped by the index count
     const N = this.N;
     const w = Math.min(CH, N - cx * CH), d = Math.min(CH, N - cz * CH);

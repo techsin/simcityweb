@@ -6,7 +6,8 @@
  * Culling: per render pass (main view and each shadow cascade get their own draw list, see DynamicBatch
  * enablePassCulling); instances are registered in map tiles.
  * LOD: buildings whose projected radius drops below `lodPixels` swap to an auto-generated massing proxy
- * (lodProxy.ts, 12-40 triangles, same material / windows / night lights) with hysteresis; see updateLod().
+ * (lodProxy.ts, 12-40 triangles, same material / windows / night lights) with hysteresis; see updateLod(). A model's
+ * proxy is generated the first time a building needs it, within `lodBudgetMs` per frame (flushLod() for captures).
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../../core/constants';
@@ -91,8 +92,15 @@ export class BuildingRenderer {
   private s = new THREE.Vector3();
   private up = new THREE.Vector3(0, 1, 0);
   private foundationGeo: THREE.BufferGeometry | null = null;
-  /** full geometry id -> proxy geometry id */
+  /** full geometry id -> proxy geometry id (itself when the model has no useful proxy) */
   private lodMap = new Map<number, number>();
+  /** full geometry ids whose proxy is not built yet -> [model, variant]: built on demand, when a building first
+   *  needs it, within lodBudgetMs per frame (a proxy costs ~1-30 ms; building them all up front would add ~2 s to a
+   *  city load and a hitch whenever a new variant appears) */
+  private lodPending = new Map<number, [string, number]>();
+  private lodDeadline = 0;
+  /** CPU budget (ms per frame) for building LOD proxies on demand; flushLod() builds all pending ones at once */
+  lodBudgetMs = 3;
   /** dense list of instances for the per-frame LOD sweep */
   private list: BInst[] = [];
   private lodDirty = true;
@@ -137,11 +145,30 @@ export class BuildingRenderer {
     const v = ((variant % nv) + nv) % nv;
     const key = `${model}#${v}`;
     const id = this.batch.geometryId(key, () => getModelGeometry(model, v));
-    if (!this.lodMap.has(id)) {
-      const proxy = lodProxyFor(key, getModelGeometry(model, v));
-      this.lodMap.set(id, proxy ? this.batch.geometryId(key + '#lod', () => proxy) : id);
-    }
+    if (!this.lodMap.has(id) && !this.lodPending.has(id)) this.lodPending.set(id, [model, v]);
     return id;
+  }
+
+  /** proxy geometry id of a full geometry (itself when the model has none); -1 = not built yet and no budget left */
+  private proxyOf(geom: number, force = false): number {
+    const p = this.lodMap.get(geom);
+    if (p !== undefined) return p;
+    const pend = this.lodPending.get(geom);
+    if (!pend) return geom;
+    if (!force && performance.now() > this.lodDeadline) return -1;
+    this.lodPending.delete(geom);
+    const key = `${pend[0]}#${pend[1]}`;
+    const proxy = lodProxyFor(key, getModelGeometry(pend[0], pend[1]));
+    const id = proxy ? this.batch.geometryId(key + '#lod', () => proxy) : geom;
+    this.lodMap.set(geom, id);
+    return id;
+  }
+
+  /** build every pending LOD proxy now (captures, benchmarks) */
+  flushLod(): void {
+    for (const g of [...this.lodPending.keys()]) this.proxyOf(g, true);
+    for (const bi of this.list) if (bi.lodGeom < 0) bi.lodGeom = this.proxyOf(bi.geom, true);
+    this.lodDirty = true;
   }
 
   private foundation(): number {
@@ -240,14 +267,16 @@ export class BuildingRenderer {
     const yaw = b.rot * (Math.PI / 2);
     const geom = burnt ? this.geomFor('rubble', b.id) : this.geomFor(model, b.variant);
     bi.geom = geom;
-    bi.lodGeom = this.lodMap.get(geom) ?? geom;
+    // a building currently drawn as a proxy gets its new model's proxy right away (no detail pop); for the others it
+    // is built on demand by updateLod (-1 until then)
+    bi.lodGeom = this.proxyOf(geom, bi.lod === 1);
     bi.siteGeom = bi.siteLod = -1;
     const bounds = this.batch.bounds(geom);
     // keep the current LOD state across rebuilds (state changes must not pop the detail level)
     bi.main = this.batch.add(bi.lod ? bi.lodGeom : geom);
     if (constructing) {
       bi.siteGeom = this.geomFor('construction_site', b.id);
-      bi.siteLod = this.lodMap.get(bi.siteGeom) ?? bi.siteGeom;
+      bi.siteLod = this.proxyOf(bi.siteGeom, true);
       bi.site = this.batch.add(bi.lod ? bi.siteLod : bi.siteGeom);
     }
     // foundation skirt down to the lowest lot corner
@@ -366,7 +395,8 @@ export class BuildingRenderer {
     const K = fovH * 0.5;
     const on = this.lodPixels * 0.88, off = this.lodPixels * 1.12;
     const lim = this.lodPixels > 0;
-    let n = 0;
+    this.lodDeadline = performance.now() + this.lodBudgetMs;
+    let n = 0, waiting = false;
     const list = this.list;
     for (let i = 0; i < list.length; i++) {
       const bi = list[i];
@@ -380,6 +410,15 @@ export class BuildingRenderer {
         const px = bi.lod ? off : on;
         want = d2 * px * px > rk * rk ? 1 : 0;
       }
+      if (want && bi.lodGeom < 0) {
+        // first time this model is needed as a proxy: build it within the frame budget, else retry next frame
+        const p = this.proxyOf(bi.geom);
+        if (p < 0) { want = 0; waiting = true; }
+        else {
+          bi.lodGeom = p;
+          if (p === bi.geom && bi.siteLod === bi.siteGeom) { bi.lod = 0; continue; }
+        }
+      }
       if (want !== bi.lod) {
         bi.lod = want;
         if (bi.main >= 0) this.batch.setGeometry(bi.main, want ? bi.lodGeom : bi.geom);
@@ -388,6 +427,8 @@ export class BuildingRenderer {
       n += want;
     }
     this.lodCount = n;
+    // proxies still to build for buildings that want them: sweep again next frame even if the camera stays put
+    if (waiting) this.lodDirty = true;
   }
 
   update(dt: number): void {

@@ -63,6 +63,8 @@ export class DynamicBatch {
   private instTile = new Int32Array(0);
   private instSlot = new Int32Array(0);
   private sph = new Float32Array(0);
+  /** per-instance shadow cascade mask (bit i = casts into cascade i), ANDed with the batch-wide shadowMask */
+  private instMask = new Uint8Array(0);
   private tileLists: number[][] = [];
   /** per-tile bounds of the instance spheres [x0, y0, z0, x1, y1, z1] (grow only) */
   private tileBox = new Float32Array(0);
@@ -139,6 +141,7 @@ export class DynamicBatch {
       this.instTile[id] = -1;
       this.instSlot[id] = -1;
       this.sph[id * 4 + 3] = -1;
+      this.instMask[id] = 0xff;
       if (this.pc.dynamic) { this.instSlot[id] = this.untiled.length; this.untiled.push(id); }
     }
     this.touch();
@@ -238,6 +241,13 @@ export class DynamicBatch {
     if (this.pc && this.pc.shadowMask !== mask) { this.pc.shadowMask = mask; this.touch(); }
   }
 
+  /** restrict one instance to some shadow cascades (bit i = cascade i; default all); per-pass culling only */
+  setShadowCascades(id: number, mask: number): void {
+    if (!this.pc || id >= this.instMask.length || this.instMask[id] === mask) return;
+    this.instMask[id] = mask;
+    this.touch();
+  }
+
   /** assign an instance to a culling tile (-1 = untiled: always tested per instance) */
   setTile(id: number, tile: number): void {
     if (!this.pc || this.pc.dynamic) return;
@@ -281,6 +291,7 @@ export class DynamicBatch {
     const t = new Int32Array(cap).fill(-1); t.set(this.instTile); this.instTile = t;
     const s = new Int32Array(cap).fill(-1); s.set(this.instSlot); this.instSlot = s;
     const p = new Float32Array(cap * 4); p.set(this.sph); this.sph = p;
+    const mk = new Uint8Array(cap).fill(0xff); mk.set(this.instMask); this.instMask = mk;
   }
 
   /** world bounding sphere for culling. Y scale is clamped to >= 1 so pop-in / construction growth (sy < 1) never
@@ -322,7 +333,7 @@ export class DynamicBatch {
         const old = this.slots.shift()!;
         old.tex.dispose();
       }
-      s = { camera, starts: new Int32Array(0), counts: new Int32Array(0), tex: null as unknown as THREE.DataTexture, cap: -1, count: 0, version: -1, key: new Float64Array(17), used: 0 };
+      s = { camera, starts: new Int32Array(0), counts: new Int32Array(0), tex: null as unknown as THREE.DataTexture, cap: -1, count: 0, version: -1, key: new Float64Array(18), used: 0 };
       this.slots.push(s);
     }
     const cap = m._maxInstanceCount as number;
@@ -362,12 +373,16 @@ export class DynamicBatch {
     // small tolerance: a still (damped) camera jitters by float ulps; that never changes the culling result
     for (let i = 0; i < 16 && same; i++) if (Math.abs(k[i] - e[i]) > 1e-7 * Math.max(1, Math.abs(e[i]))) same = false;
     const texel = shadow ? ((camera.userData.texel as number | undefined) ?? 0) : 0;
-    if (same && k[16] !== texel) same = false;
+    const recv = shadow ? ((camera.userData.recv as ShadowReceiver | undefined) ?? null) : null;
+    // the receiver (visible slice) can change while the shadow camera stays put (single map, rotating view)
+    const rv = recv ? recv.version : -1;
+    if (same && (k[16] !== texel || k[17] !== rv)) same = false;
     if (!same) {
       for (let i = 0; i < 16; i++) k[i] = e[i];
       k[16] = texel;
+      k[17] = rv;
       s.version = this.version;
-      this.build(s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, shadow ? ((camera.userData.recv as ShadowReceiver | undefined) ?? null) : null);
+      this.build(s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, recv);
     }
     m._multiDrawStarts = s.starts;
     m._multiDrawCounts = s.counts;
@@ -392,11 +407,14 @@ export class DynamicBatch {
       const sph = this.sph;
       const dyn = pc.dynamic;
       const mat = dyn ? (m._matricesTexture.image.data as Float32Array) : null;
+      const cbit = cascade >= 0 ? 1 << cascade : 0;
+      const imask = this.instMask;
       const pushList = (list: number[], test: boolean) => {
         for (let j = 0; j < list.length; j++) {
           const id = list[j];
           const it = info[id];
           if (!it.visible || !it.active) continue;
+          if (cbit && !(imask[id] & cbit)) continue;
           if (test || minR > 0 || recv) {
             let cx: number, cy: number, cz: number, r: number;
             if (mat) {

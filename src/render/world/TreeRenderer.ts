@@ -9,7 +9,9 @@
  * LOD cross-fade: near models and impostors overlap in a distance band around `lodDistance`; inside it each tree
  * fades per instance (distance + per-tree jitter) with a complementary screen-door dither (near keeps the pixels the
  * impostor drops), so there is no chunk-sized pop. Chunks fully inside / outside the band use the plain material (no
- * discard). In shadow passes the switch is a hard per-instance cut at lodDistance (custom depth materials).
+ * discard). In shadow passes the switch is a hard per-instance cut (custom depth materials) at shadowLodFrac x
+ * lodDistance: beyond it trees cast impostor shadows, also where the view still shows near models (shadow-only
+ * impostor meshes).
  * Far chunks whose trees project to ~1-2 px swap to micro impostors (4-8 tris); impostors only cast shadows into
  * cascades with texels <= impostorShadowTexel (they are sub-texel specks in the far cascade). Every mesh gets tight
  * bounds from its instances (shadow cascades cull by the real extent, not the 512 m chunk).
@@ -101,9 +103,22 @@ interface TreeChunk {
   total: number;
   /** last applied LOD state key (skip work when unchanged) + its arguments (re-applied after a rebuild) */
   stateKey: number;
-  state: [boolean, boolean, boolean, boolean, boolean, boolean, number, boolean] | null;
+  state: LodState | null;
   micro: boolean;
 }
+
+/**
+ * Per-chunk LOD state. near / far: near models / impostors drawn in the view; nearFade / farFade: they straddle the
+ * fade band (dithered material); nearCast / farCast: they cast shadows (impostors can be shadow-only: drawn in the
+ * shadow passes but skipped in the view); nearCut / farCut: they straddle the shadow switch distance (per-instance
+ * depth cut); keep: impostor density; micro: micro impostor geometry.
+ */
+interface LodState {
+  near: boolean; far: boolean; nearFade: boolean; farFade: boolean;
+  nearCast: boolean; farCast: boolean; nearCut: boolean; farCut: boolean;
+  keep: number; micro: boolean;
+}
+const FRESH_STATE: LodState = { near: false, far: true, nearFade: false, farFade: false, nearCast: false, farCast: true, nearCut: false, farCut: false, keep: 1, micro: false };
 
 const _v = new THREE.Vector3();
 const _box = new THREE.Box3();
@@ -165,6 +180,9 @@ export class TreeRenderer {
   private fadeU = { uTreeCam: { value: new THREE.Vector3() }, uTreeFade: { value: new THREE.Vector4(600, 800, 60, 700) } };
   /** width of the near/impostor cross-fade band as a fraction of lodDistance (each side) */
   fadeBand = 0.1;
+  /** near models cast shadows only up to this fraction of lodDistance, impostor shadows beyond (a tree there is
+   *  ~10 px tall at 1080p and its shadow a soft blob either way); 1 = switch shadows together with the models */
+  shadowLodFrac = 0.6;
   /** impostors cast shadows only into cascades whose texel is at most this size (m); the map-clamped cascades stay
    *  under ~3 m texels even at full zoom-out, where impostor shadows still give forests their texture */
   impostorShadowTexel = 6;
@@ -182,6 +200,7 @@ export class TreeRenderer {
   private farCount = [0, 0];
   /** total instances currently placed (stats) */
   totalInstances = 0;
+  private lodScratch: LodState = { ...FRESH_STATE };
 
   constructor(state: CityState, terrain: TerrainRenderer, opts: { lodDistance: number; density: number; castShadows: boolean; maxVariants?: number }) {
     this.state = state;
@@ -288,7 +307,11 @@ export class TreeRenderer {
     this.lodDistance = opts.lodDistance;
     this.density = opts.density;
     this.castShadows = opts.castShadows;
-    for (const c of this.chunks) for (const m of [...c.near, ...c.far]) if (m) m.castShadow = opts.castShadows;
+    // per-chunk castShadow / shadow-only flags are re-derived by the next update()
+    for (const c of this.chunks) {
+      c.stateKey = -1;
+      for (const m of [...c.near, ...c.far]) if (m) m.castShadow = opts.castShadows;
+    }
     if (densityChanged) this.markAll();
   }
 
@@ -488,8 +511,7 @@ export class TreeRenderer {
     ch.total = total;
     ch.stateKey = -1;
     // keep the chunk's current LOD state (new meshes default to visible + plain material)
-    const ls = ch.state ?? ([false, true, false, false, false, false, 1, false] as NonNullable<TreeChunk['state']>);
-    this.applyLod(ch, ls[0], ls[1], ls[2], ls[3], ls[4], ls[5], ls[6], ls[7]);
+    this.applyLod(ch, ch.state ?? FRESH_STATE);
     shadowCasters.version++;
   }
 
@@ -531,6 +553,14 @@ export class TreeRenderer {
         m.onAfterShadow = () => {
           if (m.userData.savedCount !== undefined) { m.count = m.userData.savedCount; m.userData.savedCount = undefined; }
         };
+        // shadow-only impostors (chunk still drawn with near models, but past the shadow switch distance): skip every
+        // view pass (count 0 for that draw only)
+        m.onBeforeRender = () => {
+          if (m.userData.shadowOnly) { m.userData.savedView = m.count; m.count = 0; }
+        };
+        m.onAfterRender = () => {
+          if (m.userData.savedView !== undefined) { m.count = m.userData.savedView; m.userData.savedView = undefined; }
+        };
       }
       this.group.add(m);
     }
@@ -567,34 +597,37 @@ export class TreeRenderer {
     return mesh;
   }
 
-  /**
-   * Apply a chunk's LOD state. near/far: draw near models / impostors; nearFade/farFade: they straddle the fade band
-   * (dithered fade material); nearCut/farCut: they straddle the shadow switch distance (per-instance depth cut);
-   * keep: impostor density; micro: micro impostor geometry.
-   */
-  private applyLod(ch: TreeChunk, near: boolean, far: boolean, nearFade: boolean, farFade: boolean, nearCut: boolean, farCut: boolean, keep: number, micro: boolean) {
-    const key = (near ? 1 : 0) | (far ? 2 : 0) | (nearFade ? 4 : 0) | (farFade ? 8 : 0) | (nearCut ? 16 : 0) | (farCut ? 32 : 0) | (micro ? 64 : 0) | (Math.round(keep * 20) << 8);
+  /** Apply a chunk's LOD state (see LodState). */
+  private applyLod(ch: TreeChunk, s: LodState) {
+    const key = (s.near ? 1 : 0) | (s.far ? 2 : 0) | (s.nearFade ? 4 : 0) | (s.farFade ? 8 : 0) | (s.nearCut ? 16 : 0) | (s.farCut ? 32 : 0) |
+      (s.micro ? 64 : 0) | (s.nearCast ? 128 : 0) | (s.farCast ? 256 : 0) | (Math.round(s.keep * 20) << 10);
     if (key === ch.stateKey) return;
     ch.stateKey = key;
-    ch.state = [near, far, nearFade, farFade, nearCut, farCut, keep, micro];
-    ch.isNear = near;
-    ch.micro = micro;
+    ch.state = s === FRESH_STATE ? FRESH_STATE : { ...s };
+    ch.isNear = s.near;
+    ch.micro = s.micro;
+    const cast = this.castShadows;
     for (const m of ch.near) {
       if (!m) continue;
-      m.visible = near && m.count > 0;
-      m.material = nearFade ? this.matNearFade : this.material;
-      m.customDepthMaterial = nearCut ? this.depthNear : undefined;
+      m.visible = s.near && m.count > 0;
+      m.castShadow = cast && s.nearCast;
+      m.material = s.nearFade ? this.matNearFade : this.material;
+      m.customDepthMaterial = s.nearCut ? this.depthNear : undefined;
     }
-    const mg = micro ? getMicroImpostorGeometries() : null;
+    const mg = s.micro ? getMicroImpostorGeometries() : null;
+    // impostors past the shadow switch distance cast shadows even where the view still shows near models
+    const shadowOnly = !s.far && cast && s.farCast;
     for (let i = 0; i < 2; i++) {
       const m = ch.far[i];
       if (!m) continue;
       const tot = ch.farTotal[i];
-      m.count = Math.max(0, Math.min(tot, Math.ceil(tot * keep)));
-      m.userData.keep = keep;
-      m.visible = far && m.count > 0;
-      m.material = farFade ? this.matFarFade : this.material;
-      m.customDepthMaterial = farCut ? this.depthFar : undefined;
+      m.count = Math.max(0, Math.min(tot, Math.ceil(tot * s.keep)));
+      m.userData.keep = s.keep;
+      m.userData.shadowOnly = shadowOnly;
+      m.visible = (s.far || shadowOnly) && m.count > 0;
+      m.castShadow = cast && s.farCast;
+      m.material = s.farFade ? this.matFarFade : this.material;
+      m.customDepthMaterial = s.farCut ? this.depthFar : undefined;
       m.geometry = mg ? (i === 0 ? mg.broad : mg.conifer) : (m.userData.regularGeo as THREE.BufferGeometry);
     }
     shadowCasters.version++;
@@ -614,9 +647,13 @@ export class TreeRenderer {
     const lod = this.lodDistance;
     const w = lod * this.fadeBand, jit = w * 0.8;
     const fs = lod - w, fe = lod + w;
+    // shadow switch distance: near models cast up to sc, impostors from sc on (per instance, same jitter as the fade)
+    const sc = lod * THREE.MathUtils.clamp(this.shadowLodFrac, 0.2, 1);
     this.fadeU.uTreeCam.value.copy(cp);
-    this.fadeU.uTreeFade.value.set(fs, fe, jit, lod);
+    this.fadeU.uTreeFade.value.set(fs, fe, jit, sc);
     const lo = fs - jit * 0.5, hi = fe + jit * 0.5;
+    const cutLo = sc - jit * 0.5, cutHi = sc + jit * 0.5;
+    const st = this.lodScratch;
     // projected radius of a typical (3.5 m) tree: px = r / d * H / (2 tan(fov / 2))
     const K = (3.5 * this.viewHeight) / (2 * Math.tan((this.viewFov * Math.PI) / 360));
     for (const ch of this.chunks) {
@@ -633,8 +670,18 @@ export class TreeRenderer {
       const q = Math.round(keep * 20) / 20;
       const px = K / Math.max(dN, 1);
       const micro = ch.micro ? px < this.microPixels * 1.15 : px < this.microPixels * 0.87;
-      const cutLo = lod - jit * 0.5, cutHi = lod + jit * 0.5;
-      this.applyLod(ch, near, far, near && dF > lo, far && dN < hi, near && dF > cutLo, far && dN < cutHi, q, micro && !near);
+      st.near = near;
+      st.far = far;
+      st.nearFade = near && dF > lo;
+      st.farFade = far && dN < hi;
+      // shadows: a near model casts while its (jittered) distance < sc, an impostor from sc on
+      st.nearCast = near && dN < cutHi;
+      st.farCast = dF > cutLo;
+      st.nearCut = st.nearCast && dF > cutLo;
+      st.farCut = st.farCast && dN < cutHi;
+      st.keep = q;
+      st.micro = micro && !near;
+      this.applyLod(ch, st);
     }
   }
 

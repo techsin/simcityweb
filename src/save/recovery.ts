@@ -7,17 +7,20 @@
  * Chromium: 0-4 of 4 survived a reload / tab close). A synchronous localStorage write, and a SMALL IndexedDB write
  * with an explicit commit(), do survive (48/48). So the snapshot is kept small: a DELTA against the last full save of
  * the city (every typed array XOR'ed with the base and zero-run-length coded, so unchanged data costs ~nothing) plus
- * the plain data. It is written synchronously to localStorage (when it fits) and, best effort, to IndexedDB.
+ * the plain data. It is written synchronously to localStorage (one slot: the latest snapshot, when it fits) and, best
+ * effort, to IndexedDB (store 'recovery', one record per city key 'regionId:tileKey').
  *
  * The base is the SerializedCity of the last completed full save / load of the city (kept in memory: saveCity and
- * loadCity call setRecoveryBase). On the next start findRecoverySnapshot() validates a snapshot against the stored
- * full save (same base, older than the snapshot) and restoreRecoverySnapshot() rebuilds the city and makes it the save.
+ * loadCity call setRecoveryBase). On the next start findRecoverySnapshot() first moves the localStorage copy into
+ * IndexedDB (so a later snapshot of another city cannot overwrite it), then validates snapshots against the stored
+ * full save (a delta of exactly that save, and newer than it); restoreRecoverySnapshot() rebuilds the city and makes
+ * it the save. A completed full save deletes its city's snapshots (clearRecoveryAfterSave).
  *
  * Pure codec (encodeCityDelta / applyCityDelta / packBytes / unpackBytes) is headless and unit-tested.
  */
 import { CITY_SAVE_FORMAT, deserializeCity, isTypedArray, serializeCity, type AnyTypedArray, type SerializedBuildings, type SerializedCity } from './serialize';
 import { decodeBundle, encodeBundle } from './bundle';
-import { openedKV, openKV } from './db';
+import { openedKV, openKV, type KV } from './db';
 import { MONTH_NAMES, type CityState } from '../sim/CityState';
 import type { CityRecord } from './index';
 
@@ -25,7 +28,6 @@ export const DELTA_KIND = 'metropolis-city-delta';
 export const DELTA_VERSION = 1;
 const LS_MARKER = 'metropolis.recovery';
 const LS_DATA = 'metropolis.recovery.data';
-const IDB_KEY = 'current';
 /** max payload kept in localStorage (packed 15 bits / char → ~1.15 M chars ≈ 2.3 MB of UTF-16, well inside every browser's quota) */
 export const LS_BUDGET_BYTES = 2_150_000;
 
@@ -416,9 +418,18 @@ export interface WriteResult {
   dropped: string[];
 }
 
+/** a city (region id + tile key) */
+export interface RecoveryCity {
+  regionId: string;
+  tileKey: string;
+}
+const recKey = (c: RecoveryCity) => keyOf(c.regionId, c.tileKey);
+const sameCity = (a: RecoveryCity, b: RecoveryCity) => a.regionId === b.regionId && a.tileKey === b.tileKey;
+
 /**
  * Synchronously snapshot a city (safe inside beforeunload / pagehide / visibilitychange): serialize, delta against
- * the tracked base, write localStorage (if it fits) and start an IndexedDB write with an explicit commit.
+ * the tracked base, write localStorage (if it fits) and start an IndexedDB write (keyed by city) with an explicit
+ * commit. localStorage holds one snapshot (the latest); IndexedDB one per city.
  */
 export function writeRecoverySnapshot(regionId: string, tileKey: string, state: CityState, info: Omit<RecoveryInfo, 'day' | 'baseDay' | 'date' | 'baseDate'> & { why?: string }): WriteResult {
   const t0 = performance.now();
@@ -454,19 +465,9 @@ export function writeRecoverySnapshot(regionId: string, tileKey: string, state: 
       localStorage.setItem(LS_DATA, packBytes(payload));
       ls = true;
     } catch {
-      try {
-        localStorage.removeItem(LS_DATA);
-      } catch {
-        /* storage unavailable */
-      }
+      removeLs(LS_DATA);
     }
-  } else {
-    try {
-      localStorage.removeItem(LS_DATA);
-    } catch {
-      /* storage unavailable */
-    }
-  }
+  } else removeLs(LS_DATA);
   marker.ls = ls;
   try {
     localStorage.setItem(LS_MARKER, JSON.stringify(marker));
@@ -479,13 +480,21 @@ export function writeRecoverySnapshot(regionId: string, tileKey: string, state: 
     try {
       const rec: IdbRecoveryRecord = { marker, payload };
       // put() issues the request + commit synchronously; the returned promise is irrelevant during unload
-      kv.put('recovery', rec, IDB_KEY).catch(() => undefined);
+      kv.put('recovery', rec, key).catch(() => undefined);
       idb = true;
     } catch {
       /* e.g. DataCloneError */
     }
   }
   return { ok: ls || idb, bytes: payload.length, ls, idb, ms: performance.now() - t0, dropped: delta.dropped };
+}
+
+function removeLs(k: string): void {
+  try {
+    localStorage.removeItem(k);
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 export interface PendingRecovery {
@@ -500,7 +509,7 @@ function readLsSnapshot(): { marker: RecoveryMarker; payload: Uint8Array | null 
     const raw = localStorage.getItem(LS_MARKER);
     if (!raw) return null;
     const marker = JSON.parse(raw) as RecoveryMarker;
-    if (!marker || typeof marker.at !== 'number' || !marker.regionId) return null;
+    if (!marker || typeof marker.at !== 'number' || !marker.regionId || typeof marker.tileKey !== 'string') return null;
     let payload: Uint8Array | null = null;
     if (marker.ls) {
       const s = localStorage.getItem(LS_DATA);
@@ -518,46 +527,81 @@ function readLsSnapshot(): { marker: RecoveryMarker; payload: Uint8Array | null 
   }
 }
 
-/** a quick synchronous "is there a pending snapshot?" (localStorage marker only) */
+/** a quick synchronous look at the localStorage snapshot's marker (the latest snapshot written on this device) */
 export function peekRecoveryMarker(): RecoveryMarker | null {
   return readLsSnapshot()?.marker ?? null;
 }
 
 /**
- * The pending snapshot, if it is newer than the stored full save it was made against. Stale / orphaned / mismatched
- * snapshots are discarded here.
+ * Move the localStorage snapshot (the copy that reliably survives an unload) into IndexedDB under its city's key,
+ * so that a later snapshot of another city cannot overwrite it; then free the localStorage slot.
  */
-export async function findRecoverySnapshot(): Promise<PendingRecovery | null> {
+async function adoptLsSnapshot(kv: KV): Promise<void> {
+  const ls = readLsSnapshot();
+  if (!ls) return;
+  const m = ls.marker;
+  if (ls.payload) {
+    try {
+      const cur = await kv.get<IdbRecoveryRecord>('recovery', recKey(m));
+      if (!cur?.marker || cur.marker.at < m.at) await kv.put('recovery', { marker: m, payload: ls.payload } satisfies IdbRecoveryRecord, recKey(m));
+    } catch {
+      return; // keep the localStorage copy
+    }
+  }
+  // (unless a newer snapshot was written meanwhile)
+  if (peekRecoveryMarker()?.at === m.at) {
+    removeLs(LS_MARKER);
+    removeLs(LS_DATA);
+  }
+}
+
+/** is a snapshot of this city pending? (cheap: reads no payloads; not validated) */
+export async function hasRecoverySnapshot(city: RecoveryCity): Promise<boolean> {
+  const m = peekRecoveryMarker();
+  if (m && sameCity(m, city)) return true;
+  try {
+    const kv = await openKV();
+    if (!kv.persistent) return false;
+    const k = recKey(city);
+    return (await kv.keys('recovery', k, k)).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The newest pending snapshot (of `city`, or of any city) that can be restored: newer than the stored full save of
+ * its city and a delta of exactly that save. Stale / orphaned / mismatched snapshots met on the way are deleted.
+ */
+export async function findRecoverySnapshot(city?: RecoveryCity): Promise<PendingRecovery | null> {
   const kv = await openKV();
   if (!kv.persistent) return null;
-  const fromLs = readLsSnapshot();
-  let fromIdb: IdbRecoveryRecord | undefined;
+  await adoptLsSnapshot(kv);
+  const cands: { key: string; rec: IdbRecoveryRecord }[] = [];
   try {
-    fromIdb = await kv.get<IdbRecoveryRecord>('recovery', IDB_KEY);
+    for (const key of await kv.keys('recovery')) {
+      const rec = await kv.get<IdbRecoveryRecord>('recovery', key);
+      if (rec?.marker && rec.payload && typeof rec.marker.at === 'number' && (!city || sameCity(rec.marker, city))) cands.push({ key, rec });
+      else if (!rec?.marker || !rec.payload) await kv.delete('recovery', key);
+    }
   } catch {
-    fromIdb = undefined;
-  }
-  const cands: { marker: RecoveryMarker; payload: Uint8Array }[] = [];
-  if (fromLs?.payload) cands.push({ marker: fromLs.marker, payload: fromLs.payload });
-  if (fromIdb?.marker && fromIdb.payload) cands.push(fromIdb);
-  if (!cands.length) {
-    if (fromLs) await discardRecoverySnapshot();
     return null;
   }
-  cands.sort((a, b) => b.marker.at - a.marker.at);
-  const snap = cands[0];
-  const m = snap.marker;
-  const record = (await kv.get<CityRecord>('cities', keyOf(m.regionId, m.tileKey))) ?? null;
-  const region = await kv.get<{ id: string; name: string }>('regions', m.regionId);
-  // valid only if the stored full save is the snapshot's base (or, without a base, older than the snapshot)
-  let stale = !region || (!!record && record.savedAt >= m.at);
-  if (m.baseSavedAt && (!record || record.savedAt !== m.baseSavedAt)) stale = true;
-  if (stale) {
-    await discardRecoverySnapshot();
-    return null;
+  cands.sort((a, b) => b.rec.marker.at - a.rec.marker.at);
+  for (const { key, rec } of cands) {
+    const m = rec.marker;
+    const record = (await kv.get<CityRecord>('cities', recKey(m))) ?? null;
+    const region = await kv.get<{ id: string; name: string }>('regions', m.regionId);
+    // restorable only onto the full save it is a delta of (and only while that save is older than the snapshot)
+    const stale = !region || !record || record.savedAt >= m.at || (m.baseSavedAt !== 0 && record.savedAt !== m.baseSavedAt);
+    if (stale) {
+      await kv.delete('recovery', key).catch(() => undefined);
+      continue;
+    }
+    if (!m.regionName) m.regionName = region.name;
+    return { marker: m, payload: rec.payload, record };
   }
-  if (!m.regionName) m.regionName = region!.name;
-  return { marker: m, payload: snap.payload, record };
+  return null;
 }
 
 /** rebuild the snapshot's city (validated by a full deserialize) — throws when it cannot be restored */
@@ -573,31 +617,39 @@ export function rebuildRecoveredCity(p: PendingRecovery): SerializedCity {
 export async function restoreRecoverySnapshot(p: PendingRecovery): Promise<void> {
   const city = rebuildRecoveredCity(p);
   const kv = await openKV();
-  const key = keyOf(p.marker.regionId, p.marker.tileKey);
+  const key = recKey(p.marker);
   city.savedAt = Date.now();
   const rec: CityRecord = { key, regionId: p.marker.regionId, tileKey: p.marker.tileKey, savedAt: city.savedAt, city };
   await kv.put('cities', rec, key);
-  await discardRecoverySnapshot();
+  await discardRecoverySnapshot(p.marker);
 }
 
-export async function discardRecoverySnapshot(): Promise<void> {
-  try {
-    localStorage.removeItem(LS_MARKER);
-    localStorage.removeItem(LS_DATA);
-  } catch {
-    /* storage unavailable */
+/** delete the snapshots of `city` (localStorage + IndexedDB), or every snapshot when `city` is omitted */
+export async function discardRecoverySnapshot(city?: RecoveryCity): Promise<void> {
+  const m = peekRecoveryMarker();
+  if (!city || !m || sameCity(m, city)) {
+    removeLs(LS_MARKER);
+    removeLs(LS_DATA);
   }
   try {
+    // (the delete transaction starts synchronously when the backend is open: later snapshot writes queue after it)
     const kv = openedKV() ?? (await openKV());
-    await kv.delete('recovery', IDB_KEY);
+    if (city) await kv.delete('recovery', recKey(city));
+    else for (const k of await kv.keys('recovery')) await kv.delete('recovery', k);
   } catch {
     /* ignore */
   }
 }
 
-/** drop a snapshot once a full save of the same city made it obsolete (cheap, synchronous localStorage part) */
-export function clearRecoveryAfterSave(regionId: string, tileKey: string, savedAt: number): void {
+/**
+ * A completed full save of a city makes its snapshots obsolete: older ones are covered by it, newer ones (taken
+ * while it was being written) are deltas of the save it replaced and can no longer be applied. Deletes them;
+ * returns true when a snapshot newer than the save was dropped — the caller should take a fresh one.
+ */
+export function clearRecoveryAfterSave(regionId: string, tileKey: string, savedAt: number): boolean {
+  const city = { regionId, tileKey };
   const m = peekRecoveryMarker();
-  if (m && (m.regionId !== regionId || m.tileKey !== tileKey || m.at > savedAt)) return;
-  void discardRecoverySnapshot();
+  const newer = !!m && sameCity(m, city) && m.at > savedAt;
+  void discardRecoverySnapshot(city);
+  return newer;
 }

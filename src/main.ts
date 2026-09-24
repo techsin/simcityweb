@@ -20,7 +20,7 @@ import { audio } from './audio';
 import { installUiSounds } from './ui/uiSounds';
 import type { CityState } from './sim/CityState';
 import type { CityConfigData } from './sim/config';
-import { CityState as CityStateClass } from './sim/CityState';
+import { BF, CityState as CityStateClass } from './sim/CityState';
 import { generateTerrain, scatterTrees } from './sim/terrainGen';
 import type { TerrainPreset, Difficulty, Climate } from './core/types';
 import { RegionModel, createRegionData, PRESET_BY_ID } from './region/RegionModel';
@@ -46,10 +46,10 @@ import {
   findRecoverySnapshot,
   getLastSession,
   hasCity,
+  hasRecoverySnapshot,
   isPersistent,
   loadCity,
   loadRegion,
-  peekRecoveryMarker,
   restoreRecoverySnapshot,
   saveCity,
   saveRegion,
@@ -133,13 +133,25 @@ function markReady(): void {
 function cityFingerprint(st: CityState): string {
   const b = st.budget;
   const budget = b ? JSON.stringify([b.taxRates, b.funding, b.ordinances, b.loans?.length ?? 0]) : '';
-  return `${st.day}|${Math.round(st.funds * 100)}|${st.buildings.size}|${st.nextBuildingId}|${st.config.name}|${st.unlocked?.size ?? 0}|${budget}`;
+  // player-set "historic" marks (toggling one emits only buildingChanged, which derived recomputes emit too)
+  let hist = 0;
+  for (const x of st.buildings.values()) if (x.flags & BF.Historic) hist = (hist + Math.imul(x.id, 2654435761)) | 0;
+  return `${st.day}|${Math.round(st.funds * 100)}|${st.buildings.size}|${st.nextBuildingId}|${st.config.name}|${st.unlocked?.size ?? 0}|${hist}|${budget}`;
 }
 
-/** sim events that change saved state without necessarily moving the fingerprint (paused edits) */
-const CHANGE_EVENTS = ['networkChanged', 'zoneChanged', 'terrainChanged', 'powerLinesChanged', 'subwayChanged', 'treesChanged', 'buildingAdded', 'buildingRemoved'];
+/**
+ * sim events that change saved state without necessarily moving the fingerprint (paused edits: tools, dispatches,
+ * disasters, unlocks). Not counted: derived recomputes (layerUpdated, and buildingChanged, which traffic / utilities /
+ * pollution passes emit for flag updates after an edit — counting those would flag a just-saved city as unsaved).
+ */
+const CHANGE_EVENTS = [
+  'networkChanged', 'zoneChanged', 'terrainChanged', 'powerLinesChanged', 'subwayChanged', 'treesChanged',
+  'buildingAdded', 'buildingRemoved', 'disaster', 'emergency', 'unlocked',
+];
 /** wall-clock interval of background recovery snapshots while there are unsaved changes */
 const SNAPSHOT_INTERVAL_MS = 30_000;
+/** outcome of a "Recover unsaved progress?" prompt ('later' = dismissed, snapshot kept; 'none' = nothing to offer) */
+type RecoverChoice = 'recovered' | 'discarded' | 'later' | 'failed' | 'none';
 
 // ---------------------------------------------------------------------------------------------------------------
 class App {
@@ -176,6 +188,10 @@ class App {
   /** saves survive a reload (IndexedDB available) — recovery snapshots are pointless otherwise */
   private persistent = false;
   private previewPending = false;
+  /** the page is being unloaded (pagehide seen): a full save would not complete, only snapshots are taken */
+  private unloading = false;
+  /** the start-up "Recover unsaved progress?" offer while it is in progress (see recoveryGate) */
+  private offerPending: Promise<RecoverChoice> | null = null;
   /** last recovery snapshot result (debugging / tests) */
   lastSnapshot: (WriteResult & { why: string }) | null = null;
 
@@ -192,10 +208,16 @@ class App {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'hidden' || !this.city) return;
       this.snapshotNow('hidden');
-      if (this.isDirty()) void this.saveCurrentCity().catch(() => undefined);
+      // + a full save when the tab is merely hidden (on unload it would not finish; the snapshot covers that)
+      if (!this.unloading && this.isDirty()) void this.saveCurrentCity().catch(() => undefined);
     });
     window.addEventListener('beforeunload', () => this.snapshotNow('beforeunload'));
-    window.addEventListener('pagehide', () => this.snapshotNow('pagehide'));
+    window.addEventListener('pagehide', () => {
+      this.unloading = true;
+      this.snapshotNow('pagehide');
+    });
+    // back from the back/forward cache
+    window.addEventListener('pageshow', () => (this.unloading = false));
   }
 
   async boot(): Promise<void> {
@@ -220,28 +242,45 @@ class App {
   // ------------------------------------------------------------------ recovery of unsaved progress
   /** at start: "Recover unsaved progress?" for a pending snapshot; Recover restores it and continues into the city */
   private async offerRecovery(): Promise<void> {
-    const pending = await findRecoverySnapshot().catch((e) => (console.warn('[main] recovery check failed', e), null));
-    if (!pending || !this.title) return;
-    const choice = await this.askRecover(pending);
-    if (choice !== 'recovered' || !this.title) return;
-    const data = await loadRegion(pending.marker.regionId).catch(() => null);
-    if (data) await this.continueInCity(data, pending.marker.tileKey);
+    const found: { p: PendingRecovery | null } = { p: null };
+    const run = (async (): Promise<RecoverChoice> => {
+      found.p = await findRecoverySnapshot().catch((e) => (console.warn('[main] recovery check failed', e), null));
+      if (!found.p || !this.title) return 'none';
+      return this.askRecover(found.p);
+    })();
+    this.offerPending = run;
+    let choice: RecoverChoice = 'none';
+    try {
+      choice = await run;
+    } finally {
+      this.offerPending = null;
+    }
+    const p = found.p;
+    if (choice !== 'recovered' || !p || !this.title) return;
+    const data = await loadRegion(p.marker.regionId).catch(() => null);
+    if (data) await this.continueInCity(data, p.marker.tileKey);
   }
 
-  /** before entering a city: if a snapshot of it is pending, ask first. false = dismissed (don't enter) */
+  /** before entering a city: if a snapshot of it is pending, ask first. false = don't enter (dismissed / superseded) */
   private async recoveryGate(regionId: string, tileKey: string): Promise<boolean> {
-    const mk = peekRecoveryMarker();
-    if (!mk || mk.regionId !== regionId || mk.tileKey !== tileKey || !(await isPersistent())) return true;
-    const pending = await findRecoverySnapshot().catch(() => null);
-    if (!pending || pending.marker.regionId !== regionId || pending.marker.tileKey !== tileKey) return true;
+    // the player clicked before the start-up offer opened: let it decide first (on Recover it enters that city itself)
+    const offer = this.offerPending;
+    if (offer) {
+      const r = await offer;
+      if (r === 'recovered' || r === 'later') return false;
+    }
+    const city = { regionId, tileKey };
+    if (!(await hasRecoverySnapshot(city)) || !(await isPersistent())) return true;
+    const pending = await findRecoverySnapshot(city).catch(() => null);
+    if (!pending) return true;
     return (await this.askRecover(pending)) !== 'later';
   }
 
   /** dialog + restore / discard. 'later' = dismissed (snapshot kept) */
-  private async askRecover(p: PendingRecovery): Promise<'recovered' | 'discarded' | 'later' | 'failed'> {
+  private async askRecover(p: PendingRecovery): Promise<RecoverChoice> {
     const choice = await openRecoverDialog(p.marker);
     if (choice === 'discard') {
-      await discardRecoverySnapshot();
+      await discardRecoverySnapshot(p.marker);
       return 'discarded';
     }
     if (choice !== 'recover') return 'later';
@@ -252,7 +291,7 @@ class App {
     } catch (e) {
       console.error('[main] recovery failed', e);
       toast(`The snapshot could not be recovered: ${(e as Error).message}`, 'bad', 6000);
-      await discardRecoverySnapshot();
+      await discardRecoverySnapshot(p.marker);
       return 'failed';
     }
   }
@@ -333,6 +372,8 @@ class App {
     if (ld) await paint();
     model.data.lastPlayed = Date.now();
     void saveRegion(model.data);
+    // an overview image left stale while a city was open (founded tiles changed) is redrawn here, when idle
+    if (!model.data.preview || model.data.previewKey !== regionPreviewKey(model)) this.schedulePreview();
     this.regionScreen = new RegionScreen(
       this.root,
       model,
@@ -371,14 +412,17 @@ class App {
     await saveRegion(m.data);
   }
 
-  /** lazily redraw + store the region overview image (deduplicated; runs when the main thread is idle) */
+  /**
+   * Lazily redraw + store the region overview image (deduplicated; runs when the main thread is idle, and never
+   * while a city is open — showRegion schedules it again).
+   */
   private schedulePreview(): void {
     if (this.previewPending) return;
     this.previewPending = true;
     const run = () => {
       this.previewPending = false;
       const m = this.region;
-      if (!m || (m.data.preview && m.data.previewKey === regionPreviewKey(m))) return;
+      if (!m || this.city || (m.data.preview && m.data.previewKey === regionPreviewKey(m))) return;
       if (drawPreview(m)) void saveRegion(m.data).catch(() => undefined);
     };
     const ric = (window as Window & { requestIdleCallback?: (fn: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
@@ -622,8 +666,11 @@ class App {
       c.cleanChanges = changes;
       c.saveFailed = false;
       c.lastSave = Date.now();
-      // a recovery snapshot older than this save is obsolete
-      clearRecoveryAfterSave(model.data.id, tile.key, savedAt);
+      // this save made the city's recovery snapshots obsolete; the next one is a delta of it. A snapshot taken while
+      // it was being written (newer, but a delta of the replaced save) is dropped too: take a fresh one soon.
+      if (clearRecoveryAfterSave(model.data.id, tile.key, savedAt)) c.lastSnap = 0;
+      c.snapFp = '';
+      c.snapChanges = -1;
     } catch (e) {
       c.saveFailed = true;
       throw e;
@@ -657,6 +704,8 @@ class App {
       console.error('[main] save on exit failed', e);
       toast(`Saving failed: ${(e as Error).message}`, 'bad', 6000);
     }
+    // the save failed: keep the progress as a recovery snapshot (offered when the city is opened again)
+    if (this.isDirty()) this.snapshotNow('exit');
     c.offRegion?.();
     c.offChanges?.();
     clearInterval(c.ticker);

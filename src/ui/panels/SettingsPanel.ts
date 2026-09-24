@@ -67,13 +67,7 @@ export class SettingsPanel extends Panel {
     for (const [id, label] of [['graphics', 'Graphics'], ['gameplay', 'Gameplay'], ['controls', 'Controls'], ['interface', 'Interface'], ['audio', 'Audio & music']]) {
       const b = h('button', { type: 'button' }, label);
       b.addEventListener('click', () => {
-        const t = this.body.querySelector(`.sec-title[data-sec="${id}"]`) as HTMLElement | null;
-        if (t) {
-          // (instant: offsets measured against the scrolling body; zoom cancels out in the ratio)
-          const z = this.body.getBoundingClientRect().height / (this.body.clientHeight || 1) || 1;
-          const y = (t.getBoundingClientRect().top - this.body.getBoundingClientRect().top) / z + this.body.scrollTop;
-          this.body.scrollTop = Math.max(0, y - nav.offsetHeight - 6);
-        }
+        this.showSection(id);
         this.ctx.sound('tab');
         b.blur();
       });
@@ -89,6 +83,7 @@ export class SettingsPanel extends Panel {
       sec('gameplay', 'Gameplay'),
       this.row('Autosave', 'Saves every N game months', autosave),
       this.row('New Year celebration', 'Fireworks every January 1st — Cinematic switches to night first', newYear),
+      this.row('New Year show camera', 'Cinematic: frame the show from the skyline, then return (any camera move takes over)', this.sw('newYearCamera')),
       this.row('Pause when hidden', 'Pause the simulation when the tab is in the background', this.sw('pauseWhenHidden')),
       // WP8 emergency dispatch
       this.row('Uncovered emergencies', 'When no station can answer an emergency: slow down to live speed, pause, or keep going', segmented<EmergencyPolicy>([{ value: 'live', label: 'Live speed' }, { value: 'pause', label: 'Pause' }, { value: 'ignore', label: 'Keep going' }], s.emergencyUncovered ?? 'live', (v) => this.ctx.applySettings({ emergencyUncovered: v }))),
@@ -110,6 +105,18 @@ export class SettingsPanel extends Panel {
     );
   }
 
+  /** scroll the body to a section ('graphics' | 'gameplay' | 'controls' | 'interface' | 'audio' | 'music') */
+  showSection(id: string): void {
+    this.buildAudioExtras();
+    const t = this.body.querySelector(`.sec-title[data-sec="${id}"]`) as HTMLElement | null;
+    if (!t) return;
+    // (instant: offsets measured against the scrolling body; zoom cancels out in the ratio)
+    const nav = this.body.querySelector('.set-nav') as HTMLElement | null;
+    const z = this.body.getBoundingClientRect().height / (this.body.clientHeight || 1) || 1;
+    const y = (t.getBoundingClientRect().top - this.body.getBoundingClientRect().top) / z + this.body.scrollTop;
+    this.body.scrollTop = Math.max(0, y - (nav?.offsetHeight ?? 0) - 6);
+  }
+
   /** Music section (now-playing card + track list) and the UI / hover / now-playing sound toggles */
   private buildAudioExtras(): void {
     if (this.player || !this.musicHost) return;
@@ -121,6 +128,8 @@ export class SettingsPanel extends Panel {
     if (!a || !ma) return;
     const sw = (on: boolean | undefined, set: ((v: boolean) => void) | undefined) => toggle(on !== false, (v) => set?.call(a, v), !set);
     this.player = new MusicPlayer(ma, { variant: 'card', tracks: true });
+    // the audio engine outlives the city: release the player's change listener + refresh timer with the scene
+    this.ctx.signal.addEventListener('abort', () => this.player?.dispose(), { once: true });
     // switching interface sounds off still confirms with one last (explicit) switch sound before going quiet
     const uiSw = toggle(a.uiSounds !== false, (v) => {
       if (!v) this.ctx.sound('toggleOff');
@@ -129,7 +138,7 @@ export class SettingsPanel extends Panel {
     this.musicHost.append(
       this.row('Interface sounds', 'Clicks, panels, sliders and tool feedback', uiSw),
       this.row('Hover sounds', 'Soft ticks when pointing at menus and the toolbar', sw(a.hoverSounds, a.setHoverSounds)),
-      h('div', { class: 'sec-title' }, 'Music'),
+      h('div', { class: 'sec-title', dataset: { sec: 'music' } }, 'Music'),
       this.player.el,
       this.row('“Now playing” pop-ups', 'Show the track title when the soundtrack changes song', sw(a.nowPlayingToasts, a.setNowPlayingToasts)),
     );

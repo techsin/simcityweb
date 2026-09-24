@@ -78,19 +78,32 @@ type ViewControls = CameraControllerApi & {
   yawAngle?: number;
   tiltAngle?: number;
   tilt?: number;
+  // the controller's smoothing goals (src/render/world/CameraController.ts; read when present)
+  goalTarget?: { x: number; z: number };
+  goalDistance?: number;
+  goalYaw?: number;
+  goalTilt?: number;
 };
 
-/** current view of the camera controller (null when the controller exposes nothing usable) */
+const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+/**
+ * Current view of the camera controller (null when it exposes nothing usable). Prefers the controller's goal (resting)
+ * view, so a save taken mid-glide / mid-rotation restores where the camera was heading.
+ */
 export function readCamera(c: CameraControllerApi | undefined | null): SavedCamera | null {
   if (!c?.target) return null;
   const v = c as ViewControls;
-  const t = c.target;
-  if (!Number.isFinite(t.x) || !Number.isFinite(t.z) || !Number.isFinite(c.distance)) return null;
-  const out: SavedCamera = { x: Math.round(t.x * 10) / 10, z: Math.round(t.z * 10) / 10, distance: Math.round(c.distance) };
-  if (typeof v.yawAngle === 'number' && Number.isFinite(v.yawAngle)) out.yaw = Math.round((v.yawAngle * 180) / Math.PI * 100) / 100;
+  const g = v.goalTarget;
+  const t = g && num(g.x) && num(g.z) ? g : c.target;
+  const dist = num(v.goalDistance) ? v.goalDistance : c.distance;
+  if (!num(t.x) || !num(t.z) || !num(dist)) return null;
+  const out: SavedCamera = { x: Math.round(t.x * 10) / 10, z: Math.round(t.z * 10) / 10, distance: Math.round(dist) };
+  const yaw = num(v.goalYaw) ? v.goalYaw : v.yawAngle;
+  if (num(yaw)) out.yaw = Math.round((yaw * 180) / Math.PI * 100) / 100;
   // raw tilt (before the zoomed-out auto top-down blend) when available, else the effective one
-  const tilt = typeof v.tilt === 'number' ? v.tilt : v.tiltAngle;
-  if (typeof tilt === 'number' && Number.isFinite(tilt)) out.tilt = Math.round((tilt * 180) / Math.PI * 100) / 100;
+  const tilt = num(v.goalTilt) ? v.goalTilt : num(v.tilt) ? v.tilt : v.tiltAngle;
+  if (num(tilt)) out.tilt = Math.round((tilt * 180) / Math.PI * 100) / 100;
   return out;
 }
 

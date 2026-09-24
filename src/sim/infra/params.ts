@@ -131,7 +131,7 @@ export const TRAFFIC_MIN_CYCLE_MS = 1000;
 
 // ---------------------------------------------------------------------------------------------- scheduler
 /** headless: estimated ms of infra steps per sim day (at least one step always runs; step estimates ~ ms on a busy 4-core CI box) */
-export const INFRA_DAY_BUDGET = 2.6 + 0.15 /* WP3 share (P0-15) */ + 0.25 /* WP2 share (P0-15) */;
+export const INFRA_DAY_BUDGET = 2.6 + 0.15 /* WP3 share (P0-15) */ + 0.25 /* WP2 share (P0-15) */ + 0.15 /* WP8 share (P0-15) */;
 /** headless: unused budget (next step did not fit) carried to the next day, at most this much */
 export const INFRA_DAY_CARRY = 0.6;
 /** with a live renderer: real ms of infra steps per frame (at least one step when due) */
@@ -471,8 +471,10 @@ export const EMERG_RESP_PERIOD = 30;
 export const EMERG_UNPOWERED_TURNOUT = 0.5;
 /** stored route cells per vehicle (corner cells only, so real routes stay far below this) */
 export const EMERG_MAX_PATH = 400;
-/** grace (answered after it = late) and deadline (not resolved by then = failed), days after the start */
-export const EMERG_GRACE: Readonly<Record<string, number>> = { fire: 3, industrial: 3, spill: 5, crime: 5, riot: 5, medical: 5, collapse: 5, prisonRiot: 5 };
+/** grace (first unit on scene after it = late) and deadline (not resolved by then = failed), days after the start.
+ *  Fire grace 4 >= a fire station's auto range (3.9 min): trucks inside a station's normal reach are on time; the
+ *  industrial grace is also when an accident nobody was sent to ignites the plant. */
+export const EMERG_GRACE: Readonly<Record<string, number>> = { fire: 4, industrial: 3, spill: 5, crime: 5, riot: 5, medical: 5, collapse: 5, prisonRiot: 5 };
 export const EMERG_DEADLINE: Readonly<Record<string, number>> = { fire: 6, industrial: 12, spill: 30, crime: 20, riot: 30, medical: 16, collapse: 15, prisonRiot: 20 };
 /** on-scene work (unit-days per needed unit) for the non-fire kinds */
 export const EMERG_WORK_DAYS: Readonly<Record<string, number>> = { industrial: 1.5, spill: 4, crime: 1, riot: 3, medical: 1, collapse: 2, prisonRiot: 2 };

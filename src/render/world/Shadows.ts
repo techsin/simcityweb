@@ -52,10 +52,15 @@ export interface ShadowReceiver {
   dir: THREE.Vector3;
   /** lowest ground height: shadows end there */
   ground: number;
+  /** bumped whenever the volume changes: caster lists cached for a shadow camera that did not move (single map
+   *  while the view only rotates) must still be rebuilt */
+  version: number;
+  /** last volume (6 planes + light dir + ground) for change detection */
+  snap: Float64Array;
 }
 
 export function makeReceiver(): ShadowReceiver {
-  return { planes: Array.from({ length: 6 }, () => new THREE.Plane()), nl: new Float64Array(6), dir: new THREE.Vector3(0, 1, 0), ground: 0 };
+  return { planes: Array.from({ length: 6 }, () => new THREE.Plane()), nl: new Float64Array(6), dir: new THREE.Vector3(0, 1, 0), ground: 0, version: 0, snap: new Float64Array(28) };
 }
 
 const _rf = new THREE.Frustum();
@@ -77,6 +82,16 @@ export function setReceiver(rec: ShadowReceiver, cam: THREE.Camera, dn: number, 
   rec.dir.copy(dirToLight).normalize();
   for (let i = 0; i < 6; i++) rec.nl[i] = rec.planes[i].normal.dot(rec.dir);
   rec.ground = ground;
+  // change detection (tolerant: a still, damped camera jitters by float ulps)
+  const s = rec.snap;
+  let o = 0, changed = false;
+  const note = (v: number) => {
+    if (Math.abs(s[o] - v) > 1e-7 * Math.max(1, Math.abs(v))) { s[o] = v; changed = true; }
+    o++;
+  };
+  for (const p of rec.planes) { note(p.normal.x); note(p.normal.y); note(p.normal.z); note(p.constant); }
+  note(rec.dir.x); note(rec.dir.y); note(rec.dir.z); note(ground);
+  if (changed) rec.version++;
 }
 
 /** can a caster sphere shadow the receiver volume? (sphere swept away from the light down to the ground) */

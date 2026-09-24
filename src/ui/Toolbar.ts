@@ -27,8 +27,6 @@ export class Toolbar {
   private tip: HTMLDivElement;
   private btns = new Map<string, HTMLButtonElement>();
   private openCat: string | null = null;
-  /** pending requestAnimationFrame that reveals the flyout (cancelled by closeFlyout / a newer openFlyout) */
-  private openRaf = 0;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'hud-bottom' });
@@ -110,19 +108,18 @@ export class Toolbar {
     }
     this.openCat = catId;
     for (const [id, b] of this.btns) toggleClass(b, 'open', id === catId);
-    this.renderFlyout(c);
+    try {
+      this.renderFlyout(c);
+    } catch (e) {
+      // keep button + flyout consistent (open) even if one item fails to render
+      console.error('[toolbar] flyout render failed', catId, e);
+    }
     this.flyout.style.maxWidth = Math.min(1180, (this.el.parentElement?.clientWidth ?? 1600) - 32) + 'px';
-    const b = this.btns.get(catId)!;
-    this.flyout.style.left = b.offsetLeft + b.offsetWidth / 2 + 'px';
-    // reveal on the next frame (after layout) — race-free: a close (or another open) before that frame cancels it,
-    // and the callback re-checks that this category is still the open one
-    cancelAnimationFrame(this.openRaf);
-    this.openRaf = requestAnimationFrame(() => {
-      this.openRaf = 0;
-      if (this.openCat !== catId) return;
-      this.positionFlyout();
-      this.flyout.classList.add('open');
-    });
+    // reveal right away (positionFlyout's offsetWidth read lays the new items out first; the CSS transition still
+    // plays from the closed style). No "next frame" step: nothing can race it (QA #8: a close landing before a
+    // deferred reveal left it stuck open) and a slow first thumbnail render can't hold the flyout back.
+    this.positionFlyout();
+    this.flyout.classList.add('open');
     this.ctx.sound('flyout');
   }
 
@@ -143,8 +140,6 @@ export class Toolbar {
   }
 
   closeFlyout(): void {
-    cancelAnimationFrame(this.openRaf);
-    this.openRaf = 0;
     if (!this.openCat) {
       this.flyout.classList.remove('open');
       return;

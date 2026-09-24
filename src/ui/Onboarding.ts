@@ -11,6 +11,7 @@ import type { GameContext } from '../game/context';
 import { loadPref, savePref } from '../game/settings';
 import { h, setText, toggleClass } from './dom';
 import { icon } from './icons';
+import { utilityReaches } from './zoneStatus';
 
 const PREF = 'onboarding';
 
@@ -48,13 +49,16 @@ function hasCategory(ctx: GameContext, cat: string): boolean {
   return false;
 }
 
-/** a growable zoned cell (empty lot or growable building) with the utility flag set: power / water really reaches a zone */
-function zoneServed(ctx: GameContext, arr: Uint8Array, cat: string): boolean {
+/**
+ * Power / water really reaches a zone: a growable zoned cell (empty lot or growable building) whose utility flag is set,
+ * or that touches a served conductor (utilityReaches: lots zoned while paused are flagged only on the next refresh).
+ */
+function zoneServed(ctx: GameContext, arr: Uint8Array, cat: 'power' | 'water'): boolean {
   const st = ctx.state;
   // without the utilities layer (sim-infra not loaded) nothing is ever flagged: a plant of the category is enough
   if (!infraFlags(st).utilities) return hasCategory(ctx, cat);
   const zone = st.zone;
-  for (let k = 0; k < st.cells; k++) if (arr[k] && zone[k] && isGrowZone(zone[k])) return true;
+  for (let k = 0; k < st.cells; k++) if (zone[k] && isGrowZone(zone[k]) && utilityReaches(st, arr, k, cat)) return true;
   return false;
 }
 
@@ -96,7 +100,12 @@ const STEPS: Step[] = [
   },
   {
     id: 'play', title: 'Press play', sub: 'Unpause the simulation and watch your city grow.', icon: 'play',
-    coach: [], coachPlay: true, action: 'Play', run: (c) => (c.sim.speed = 1),
+    coach: [], coachPlay: true, action: 'Play',
+    run: (c) => {
+      // same resume blip as the top-bar play button (already at 1x: the generic click plays)
+      if (c.sim.speed !== 1) c.sound('speed1');
+      c.sim.speed = 1;
+    },
     done: (c, o) => c.sim.speed > 0 && c.state.day > o.startDay,
   },
 ];
@@ -112,6 +121,8 @@ export class Onboarding {
   private visible = false;
   private doneAt = -1;
   private acc = 1;
+  /** performance.now() of the last step check */
+  private lastCheck = 0;
   /** steps already done at the last check (a newly finished step chimes); null until the first check after show() */
   private doneSteps: Set<number> | null = null;
   private constructed = false;
@@ -194,7 +205,7 @@ export class Onboarding {
       this.rows.push({ step, el, num, sub });
       list.appendChild(el);
     });
-    const later = h('button', { class: 'ob-link' }, "Don't show again");
+    const later = h('button', { class: 'ob-link', 'data-sfx': 'close' }, "Don't show again");
     later.addEventListener('click', () => this.hide(true));
     this.el.append(
       this.pill,
@@ -204,12 +215,14 @@ export class Onboarding {
     );
   }
 
-  /** called every frame (cheap: checks run ~2×/s) */
+  /** called every frame (cheap: checks run ~2×/s of wall-clock time — the loop's dt is clamped on slow frames) */
   frame(dt: number): void {
     if (!this.visible) return;
     this.acc += dt;
-    if (this.acc < 0.5) return;
+    const now = performance.now();
+    if (this.acc < 0.5 && now - this.lastCheck < 500) return;
     this.acc = 0;
+    this.lastCheck = now;
     let current = -1, doneN = 0;
     this.rows.forEach((r, i) => {
       let done = false;

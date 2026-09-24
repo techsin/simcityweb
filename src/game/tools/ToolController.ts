@@ -16,6 +16,8 @@ export class ToolController {
   private readonly defaultTool: Tool;
   private lastEvt: PointerEvent | null = null;
   private moveDirty = false;
+  /** performance.now() of the last idle hover refresh (query tool) */
+  private hoverRefreshAt = 0;
   private leftDown = false;
   private inside = false;
   private shift = false;
@@ -225,6 +227,15 @@ export class ToolController {
   }
 
   frame(dt: number): void {
+    // the query tool's hover tip shows live state (an empty lot gets power, a building grows...): re-read it about
+    // once a second while the cursor rests on the map
+    if (!this.moveDirty && !this.leftDown && this.inside && this.lastEvt && this.current === this.defaultTool) {
+      const now = performance.now();
+      if (now - this.hoverRefreshAt >= 1000) {
+        this.hoverRefreshAt = now;
+        this.moveDirty = true;
+      }
+    }
     if (this.moveDirty && this.lastEvt && (this.inside || this.leftDown)) {
       this.moveDirty = false;
       const p = this.pointer(this.lastEvt);

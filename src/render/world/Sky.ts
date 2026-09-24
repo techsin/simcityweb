@@ -359,6 +359,11 @@ export class SkySystem {
     if (this.envSrcRT.width !== envSize) {
       this.envSrcRT.dispose();
       this.envSrcRT = this.makeEnvRT(envSize);
+      // the PMREM target (and PMREMGenerator's ping-pong / blur resources, only re-allocated when no target is
+      // passed) are sized for the old source: reusing it after a quality change with another envSize produced a
+      // corrupt, much too dark environment map. The next update() allocates a matching one.
+      this.envRT?.dispose();
+      this.envRT = null;
     }
     this.lastEnvHour = -999;
   }

@@ -7,7 +7,7 @@ import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import {
   type P2, type V3, type ProfPt, lathe, tree, lamp, parkBench, flowerBed, shrub, fountain, disc, annulus, rect, ribbon, cylWall, flatPoly, blobPoly,
-  path, person, ribbonQuads, GRASS_LUSH, PATH_PAVE,
+  path, person, ribbonQuads, annulusQuads, rectPoly, polyTris, GRASS_LUSH, PATH_PAVE, type PoolSpec,
 } from './park_lib';
 import { prismEdges, polyZ, gothicArch, roundArch, openingZ, beacon, planePoly } from './lm_lib';
 
@@ -47,8 +47,9 @@ function spireTower(b: ModelBuilder, _v: number, rng: RNG): void {
     b.paint(concrete).extrude(finPoly, -1.6, 3.2, { top: true, bottom: true });
     b.pop();
     const W = (r: number, y: number): V3 => [Math.cos(a) * r, y, Math.sin(a) * r];
+    // (0.5 m wide so the strips still resolve from the default city zoom instead of aliasing away)
     b.paint(0xfff3dc, Surf.Emissive);
-    for (let k = 2; k < finPoly.length - 2; k++) b.beam(W(finPoly[k][0] + 0.05, finPoly[k][1]), W(finPoly[k + 1][0] + 0.05, finPoly[k + 1][1]), 0.32);
+    for (let k = 2; k < finPoly.length - 2; k++) b.beam(W(finPoly[k][0] + 0.1, finPoly[k][1]), W(finPoly[k + 1][0] + 0.1, finPoly[k + 1][1]), 0.5);
   }
   // core shaft with entasis + ring grooves, main pod, upper shaft, sky pod (single revolved profile)
   const rAt = (y: number) => 6.3 - (y / 330) * 2.1;
@@ -56,8 +57,11 @@ function spireTower(b: ModelBuilder, _v: number, rng: RNG): void {
   // each pour section above a ring groove is a shade darker: a gentle tonal gradient up the shaft by day, and at
   // night the moonlit shaft recedes toward the top instead of reading as one flat bright stick
   const pour = [0xcdc9bf, 0xc5c1b7, 0xbdb9af, 0xb5b1a7, 0xaeaaa0];
+  // the collar at each pour joint carries a night-only cool LED ring (steel-grey band by day): a lit rhythm up the
+  // dim upper shaft toward the pod bands
+  const collarLed = P(0x8a9aa6, Surf.Emissive, 10);
   [60, 118, 176, 234, 292].forEach((yb, i) => {
-    prof.push([rAt(yb), yb], [rAt(yb) + 0.35, yb + 0.6], [rAt(yb) + 0.35, yb + 1.8], [rAt(yb + 2.4), yb + 2.4, P(pour[i], Surf.Plain, 1, 70)]);
+    prof.push([rAt(yb), yb], [rAt(yb) + 0.35, yb + 0.6, collarLed], [rAt(yb) + 0.35, yb + 1.8, P(pour[i], Surf.Plain, 1, 70)], [rAt(yb + 2.4), yb + 2.4]);
   });
   prof.push(
     [rAt(322), 322, P(0xc8c6c0, Surf.Metal)],
@@ -83,11 +87,17 @@ function spireTower(b: ModelBuilder, _v: number, rng: RNG): void {
     beacon(b, r + 0.1, y, 0, 0.5);
     beacon(b, -r - 0.1, y, 0, 0.5);
   }
-  // glazed elevator strips on the core between the fins (glow at night)
+  // glazed elevator strips on the core between the fins: dark glass with two lit lift cabs each at night (a strip
+  // that glowed along its full 312 m outlined the shaft as one bright stick)
   for (const a of fins) {
     const am = a + Math.PI / 3;
     const c = Math.cos(am), s = Math.sin(am);
-    b.paint(0x8fb0c4, Surf.GlassPlain).beam([c * (rAt(8) - 0.2), 8, s * (rAt(8) - 0.2)], [c * (rAt(320) - 0.2), 320, s * (rAt(320) - 0.2)], 1.4);
+    const lift = (y: number): V3 => [c * (rAt(y) - 0.2), y, s * (rAt(y) - 0.2)];
+    b.paint(0x8fb0c4, Surf.GlassPlain, 1).beam(lift(8), lift(320), 1.4);
+    // lift cabs: short lit sleeves around the glazed strip (same axis as the strip, 6 cm proud of its glass); muted
+    // beige by day, warm 2x night-only glow
+    b.paint(0x9a8466, Surf.Emissive, 11);
+    for (const y of [rng.range(30, 150), rng.range(170, 300)]) b.beam(lift(y), lift(y + 2.6), 1.52);
   }
   // pod: vertical mullion ribs over the glass bands + outdoor sky deck ring with railing
   b.paint(0xe8e8e4, Surf.Metal);
@@ -112,7 +122,9 @@ function spireTower(b: ModelBuilder, _v: number, rng: RNG): void {
     b.pop();
   }
   for (let i = 0; i < 5; i++) person(b, rng, rng.range(-12, 12), rng.range(11, 15), 0.1, rng.range(0, TAU));
-  for (const [x, z] of [[-11, 13], [11, 13], [0, -14.5]] as P2[]) lamp(b, x, z, 4.5, 2, [{ color: 0xc6c1b6, y: 0.1, dy: 0.03 }]);
+  // plaza pool + a pool on the darker paving ring (so the ring stays unbroken by day where a pool reaches it)
+  const ringPool: PoolSpec = { color: 0xaea89b, y: 0.115, dy: 0.03, clip: annulusQuads(0, 0, 9.2, 10.2, 30) };
+  for (const [x, z] of [[-11, 13], [11, 13], [0, -14.5]] as P2[]) lamp(b, x, z, 4.5, 2, [{ color: 0xc6c1b6, y: 0.1, dy: 0.03 }, ringPool]);
 }
 
 // ================================================================================================ TWIN SPIRES
@@ -214,7 +226,9 @@ function twinSpires(b: ModelBuilder, _v: number, rng: RNG): void {
     b.paint(0xcfcfcf, Surf.Metal).cylinder(x, 15.5, 0.1, 10, 0.1, 0.06, 5);
     b.paint([0xc0392b, 0x2e6fb5, 0xf1c40f][Math.round((x - 15.5) / 3)], Surf.Plain).quad2([x, 9.9, 15.5], [x - 2.2, 9.9, 15.5], [x - 2.2, 8.5, 15.5], [x, 8.5, 15.5]);
   }
-  for (const [x, z] of [[6, 16], [20, 23], [6, 23]] as P2[]) lamp(b, x, z, 5.5, 2, [{ color: plazaC, y: 0.1, dy: 0.03 }]);
+  // plaza pool + pools on the darker paving bands (bands stay continuous by day, and read through the light at night)
+  const bandPool: PoolSpec = { color: 0xaba496, y: 0.115, dy: 0.03, clip: [0, 1, 2, 3, 4, 5].map((i) => rectPoly(2 + i * 4 - 0.4, 14.5, 2 + i * 4 + 0.4, 23.6)) };
+  for (const [x, z] of [[6, 16], [20, 23], [6, 23]] as P2[]) lamp(b, x, z, 5.5, 2, [{ color: plazaC, y: 0.1, dy: 0.03 }, bandPool]);
   for (let i = 0; i < 6; i++) person(b, rng, rng.range(3, 21), rng.range(15, 23), 0.1, rng.range(0, TAU));
 }
 
@@ -314,8 +328,12 @@ function clockTower(b: ModelBuilder, _v: number, rng: RNG): void {
   b.paint(0xd4af37, Surf.Metal).blob(0, S0 + 2.2, 0, 0.4, 0.4, 0.4, 0, 0, 1);
   b.paint(0xd4af37, Surf.Metal).cylinder(0, 0, S0 + 4, 1.4, 0.06, 0.02, 4);
   // dressing
+  // plaza pool + pools on the two darker paving frames
+  const frames: P2[][] = [];
+  for (const r of [5.6, 6.6]) frames.push(rectPoly(-r, -r, r, -r + 0.3), rectPoly(-r, r - 0.3, r, r), rectPoly(-r, -r + 0.3, -r + 0.3, r - 0.3), rectPoly(r - 0.3, -r + 0.3, r, r - 0.3));
+  const framePool: PoolSpec = { color: 0xaba28e, y: 0.115, dy: 0.03, clip: frames };
   for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-    lamp(b, sx * 7.0, sz * 7.0, 3.8, 0, [{ color: 0xc4bca9, y: 0.1, dy: 0.03 }]);
+    lamp(b, sx * 7.0, sz * 7.0, 3.8, 0, [{ color: 0xc4bca9, y: 0.1, dy: 0.03 }, framePool]);
     if (sz < 0) tree(b, rng, sx * 6.3, -6.3, 0.55, 'round');
   }
   flowerBed(b, rng, -4.8, 5.4, -2.9, 7.3, { spacing: 0.7 });
@@ -334,7 +352,8 @@ function lighthouse(b: ModelBuilder, _v: number, rng: RNG): void {
   b.paint(0x9a8a6c, Surf.Pavement);
   flatPoly(b, [[-E, 4.6], [E, 3.8], [E, E], [-E, E]], 0.075);
   b.paint(0x7d9a52, Surf.Foliage);
-  flatPoly(b, blobPoly(rng, -1.0, -2.2, 6.6, 5.4, 14, 0.2).map(([x, z]) => [Math.max(-7.9, Math.min(7.9, x)), Math.max(-7.9, Math.min(3.2, z))] as P2), 0.09);
+  const lawn = blobPoly(rng, -1.0, -2.2, 6.6, 5.4, 14, 0.2).map(([x, z]) => [Math.max(-7.9, Math.min(7.9, x)), Math.max(-7.9, Math.min(3.2, z))] as P2);
+  flatPoly(b, lawn, 0.09);
   const rockC = [0x8d8a84, 0x7b7872, 0x9a968e];
   const rocks: [number, number, number][] = [[6.2, 6.4, 1.5], [3.2, 7.0, 1.2], [-1.2, 7.1, 1.0], [-4.6, 6.6, 1.4], [-6.9, 5.2, 1.1], [6.8, 3.2, 1.0], [0.9, 6.0, 0.7], [-6.8, 0.8, 0.9]];
   rocks.forEach(([x, z, r], i) => b.paint(rockC[i % 3], Surf.Stone).blob(x, r * 0.35, z, r, r * 0.7, r * 0.9, 0, 0.25, x + z));
@@ -400,7 +419,11 @@ function lighthouse(b: ModelBuilder, _v: number, rng: RNG): void {
   b.cylinder(tx, tz, L0 + 6.3, 1.8, 0.05, 0.02, 4);
   // dressing
   parkBench(b, 5.0, -2.6, -Math.PI / 2 - 0.4);
-  lamp(b, 2.6, -5.8, 3.4, 0, [{ color: 0x7d9a52, y: 0.09, dy: 0.02 }, { color: 0xb8ab8e, y: 0.12, clip: ribbonQuads(pth, 1.1) }]);
+  // pools: headland paving (under the lawn), the lawn (clipped to its outline, so no lawn-coloured patch spills onto
+  // the paving by day) and the path
+  lamp(b, 2.6, -5.8, 3.4, 0, [
+    { color: 0xcdbd98, y: 0.06, dy: 0.012 }, { color: 0x7d9a52, y: 0.09, clip: polyTris(lawn) }, { color: 0xb8ab8e, y: 0.12, clip: ribbonQuads(pth, 1.1) },
+  ]);
   shrub(b, rng, -1.4, -6.6, 0.8);
   shrub(b, rng, -6.8, -1.6, 0.7);
   person(b, rng, 3.8, 3.6, 0.1, 0.4);

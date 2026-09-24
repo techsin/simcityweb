@@ -14,7 +14,7 @@ import { Panel } from '../Panel';
 import { clear, h, setText } from '../dom';
 import { icon } from '../icons';
 import { money, num, pct } from '../format';
-import { daysText, kindIcon, minText, stateText } from '../EmergencyBanner';
+import { emgTime, kindIcon, minText, placeText, stateText } from '../EmergencyBanner';
 
 type Tab = 'active' | 'fleet' | 'stats';
 const RESP_ICON: Record<Responder, string> = { fire: 'fire', police: 'police', medical: 'health' };
@@ -103,9 +103,9 @@ export class EmergenciesPanel extends Panel {
       this.content.appendChild(h('div', { class: 'emg-row' + (waiting ? ' waiting' : ''), style: { '--kc': INCIDENT_COLOR[inc.kind] } as Record<string, string> },
         h('div', { class: 'emg-ico sm', html: kindIcon(inc.kind, 16) }),
         h('div', { class: 'emg-rb' },
-          h('div', { class: 'emg-rt' }, h('b', null, INCIDENT_LABEL[inc.kind]), inc.major ? h('span', { class: 'emg-tag' }, 'MAJOR') : null, h('span', { class: 'faint' }, ` · ${inc.place} (${inc.x}, ${inc.z})`)),
-          h('div', { class: 'emg-rs' + (waiting ? ' neg' : '') }, waiting && inc.note ? inc.note : stateText(inc, now)),
-          h('div', { class: 'emg-rs faint' }, `Needs ${need} · ${units} assigned${sev ? ' · ' + sev : ''} · ${daysText(now - inc.start)} ago${waiting && left > 0 ? ` · ${daysText(left)} left` : ''}`),
+          h('div', { class: 'emg-rt' }, h('b', null, INCIDENT_LABEL[inc.kind]), inc.major ? h('span', { class: 'emg-tag' }, 'MAJOR') : null, h('span', { class: 'faint' }, ` · ${placeText(inc)}`)),
+          h('div', { class: 'emg-rs' + (waiting ? ' neg' : '') }, waiting && inc.note ? inc.note : stateText(inc, now, em)),
+          h('div', { class: 'emg-rs faint' }, `Needs ${need} · ${units} assigned${sev ? ' · ' + sev : ''} · ${emgTime(now - inc.start)} ago${waiting && left > 0 ? ` · ${emgTime(left)} left` : ''}`),
         ),
         h('div', { class: 'emg-rbtn' }, jump, disp),
       ));
@@ -185,7 +185,7 @@ export class EmergenciesPanel extends Panel {
         chip('Medical response', pct(e.medScore), e.medScore < 0.8 ? 'bad' : ''),
       ),
       table,
-      h('div', { class: 'emg-rs faint', style: 'padding:8px 2px 0' }, 'Incidents inside a station’s coverage are answered automatically along real roads. Build stations where the Emergency data view shows gaps, keep their budgets funded, and add more when all units are often busy.'),
+      h('div', { class: 'emg-rs faint', style: 'padding:8px 2px 0' }, 'Incidents within a station’s reach (Fleet tab: “auto-dispatch within … min” of driving) are answered automatically along real roads and only show up here. Anything farther needs you to dispatch a unit. Build stations near the gaps (Fire / Police / Health data views), keep their budgets funded, and add more when all units are often busy.'),
     );
   }
 }

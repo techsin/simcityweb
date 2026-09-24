@@ -41,11 +41,12 @@ interface Group { area: number; r: number; g: number; b: number; floor: number; 
 
 /** area-weighted dominant surface of a set of triangles (grouped by surface type + pattern) */
 function dominant(tris: Tri[], filter: (t: Tri) => boolean): { paint: Paint; area: number; win: number } | null {
-  const groups = new Map<string, Group>();
+  const groups = new Map<number, Group>();
   let total = 0, win = 0;
   for (const t of tris) {
     if (!filter(t)) continue;
-    const k = t.type + '|' + t.pattern;
+    // numeric key (surface type, pattern): no per-triangle string garbage
+    const k = t.type * 65536 + t.pattern;
     let g = groups.get(k);
     if (!g) groups.set(k, (g = { area: 0, r: 0, g: 0, b: 0, floor: 0, type: t.type, pattern: t.pattern }));
     g.area += t.area; g.r += t.r * t.area; g.g += t.g * t.area; g.b += t.b * t.area; g.floor += t.floor * t.area;
@@ -166,10 +167,15 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
       const x0 = Math.min(t.ax, t.bx, t.cx), x1 = Math.max(t.ax, t.bx, t.cx), z0 = Math.min(t.az, t.bz, t.cz), z1 = Math.max(t.az, t.bz, t.cz);
       const len = Math.hypot(x1 - x0, z1 - z0);
       const steps = Math.max(1, Math.ceil(len / (cs * 0.5)));
-      // the footprint segment runs between the two extreme vertices along the wall tangent
+      // the footprint segment runs between the two extreme vertices along the wall tangent (first minimum, last
+      // maximum in a, b, c order: same picks as a stable sort)
       const tx = -t.nz, tz = t.nx;
-      const pr = [[t.ax, t.az], [t.bx, t.bz], [t.cx, t.cz]].map(([x, z]) => [x * tx + z * tz, x, z]).sort((a, b) => a[0] - b[0]);
-      const [, sx, sz] = pr[0], [, ex, ez] = pr[2];
+      const pa = t.ax * tx + t.az * tz, pb = t.bx * tx + t.bz * tz, pc = t.cx * tx + t.cz * tz;
+      let sx = t.ax, sz = t.az, lo = pa, ex = t.ax, ez = t.az, hi = pa;
+      if (pb < lo) { lo = pb; sx = t.bx; sz = t.bz; }
+      if (pc < lo) { sx = t.cx; sz = t.cz; }
+      if (pb >= hi) { hi = pb; ex = t.bx; ez = t.bz; }
+      if (pc >= hi) { ex = t.cx; ez = t.cz; }
       for (let k = 0; k <= steps; k++) {
         const f = k / steps;
         put(Math.floor((sx + (ex - sx) * f - ox) / cs), Math.floor((sz + (ez - sz) * f - oz) / cs), t.maxY, ti);
@@ -193,7 +199,11 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
     if (hf[k] > -Infinity || reach[k]) continue;
     const i = k % nx, j = (k / nx) | 0;
     let m = -Infinity, tt = -1;
-    for (const q of [i > 0 ? k - 1 : -1, i < nx - 1 ? k + 1 : -1, j > 0 ? k - nx : -1, j < nz - 1 ? k + nx : -1]) if (q >= 0 && hf[q] > m) { m = hf[q]; tt = top[q]; }
+    // highest of the 4 neighbours (left, right, up, down; first wins on ties)
+    if (i > 0 && hf[k - 1] > m) { m = hf[k - 1]; tt = top[k - 1]; }
+    if (i < nx - 1 && hf[k + 1] > m) { m = hf[k + 1]; tt = top[k + 1]; }
+    if (j > 0 && hf[k - nx] > m) { m = hf[k - nx]; tt = top[k - nx]; }
+    if (j < nz - 1 && hf[k + nx] > m) { m = hf[k + nx]; tt = top[k + nx]; }
     if (m > -Infinity) { hf[k] = m; top[k] = tt; }
   }
   // pitched roof analysis (sloped, up-facing faces in the upper part)
@@ -201,13 +211,14 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
   let slopedProj = 0;
   const sb: Rect = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity };
   let ye = Infinity, yr = -Infinity;
+  const slopeVert = (x: number, y: number, z: number) => {
+    if (x < sb.x0) sb.x0 = x; if (x > sb.x1) sb.x1 = x;
+    if (z < sb.z0) sb.z0 = z; if (z > sb.z1) sb.z1 = z;
+    if (y > yr) yr = y;
+  };
   for (const t of sloped) {
     slopedProj += t.area * t.ny;
-    for (const [x, y, z] of [[t.ax, t.ay, t.az], [t.bx, t.by, t.bz], [t.cx, t.cy, t.cz]]) {
-      if (x < sb.x0) sb.x0 = x; if (x > sb.x1) sb.x1 = x;
-      if (z < sb.z0) sb.z0 = z; if (z > sb.z1) sb.z1 = z;
-      if (y > yr) yr = y;
-    }
+    slopeVert(t.ax, t.ay, t.az); slopeVert(t.bx, t.by, t.bz); slopeVert(t.cx, t.cy, t.cz);
   }
   if (sloped.length) {
     // eave: area-weighted low quantile of the sloped faces' bottoms (ignores small dormers / lower porch roofs)
@@ -380,11 +391,12 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
       // ridge: the highest sloped vertices
       const lim = yr - Math.max(0.15, (yr - ye) * 0.12);
       let rx0 = Infinity, rx1 = -Infinity, rz0 = Infinity, rz1 = -Infinity;
-      for (const t of sloped) for (const [x, y, z] of [[t.ax, t.ay, t.az], [t.bx, t.by, t.bz], [t.cx, t.cy, t.cz]]) {
-        if (y < lim) continue;
+      const ridgeVert = (x: number, y: number, z: number) => {
+        if (y < lim) return;
         if (x < rx0) rx0 = x; if (x > rx1) rx1 = x;
         if (z < rz0) rz0 = z; if (z > rz1) rz1 = z;
-      }
+      };
+      for (const t of sloped) { ridgeVert(t.ax, t.ay, t.az); ridgeVert(t.bx, t.by, t.bz); ridgeVert(t.cx, t.cy, t.cz); }
       const alongX = rx1 - rx0 >= rz1 - rz0;
       const roofP = dominant(sloped, () => true)?.paint ?? fallbackRoof;
       const wallP = dominant(mass, (q) => Math.abs(q.ny) < 0.3 && q.midY > ye - 0.5 && inRect(q, base))?.paint ?? fallbackWall;

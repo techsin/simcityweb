@@ -39,12 +39,13 @@ export class PauseMenu {
         await ctx.exitToRegion();
       }),
       h('div', { class: 'pm-sep' }),
+      // (silent close: the panel that replaces the menu plays its own open sound)
       item('settings', 'Settings', () => {
-        this.close();
+        this.close(true, true);
         this.hooks.onSettings();
       }),
       item('keyboard', 'Help & shortcuts', () => {
-        this.close();
+        this.close(true, true);
         this.hooks.onHelp();
       }, 'F1'),
     );
@@ -57,14 +58,14 @@ export class PauseMenu {
     (menu.querySelector('.btn.primary') as HTMLElement | null)?.focus();
   }
 
-  close(resume = true): void {
+  close(resume = true, silent = false): void {
     const b = this.back;
     if (!b) return;
     this.back = null;
     b.classList.add('closing');
     setTimeout(() => b.remove(), 150);
     if (resume) this.ctx.sim.speed = this.prevSpeed;
-    this.ctx.sound('dialogClose');
+    if (!silent) this.ctx.sound('dialogClose');
   }
 }
 
@@ -89,7 +90,7 @@ export function confirmOpen(): boolean {
 
 /**
  * Modal yes / no dialog in the pause-menu style (.modal-back). Enter confirms (unless Cancel has focus); Esc, the
- * backdrop or Cancel dismiss.
+ * backdrop or Cancel dismiss; Space (the pause key) never confirms.
  * Resolves true when confirmed.
  */
 export function confirmDialog(ctx: GameContext, opts: ConfirmOptions): Promise<boolean> {
@@ -111,25 +112,35 @@ export function confirmDialog(ctx: GameContext, opts: ConfirmOptions): Promise<b
       done = true;
       confirmDepth = Math.max(0, confirmDepth - 1);
       window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('keyup', onKey, true);
       back.classList.add('closing');
       setTimeout(() => back.remove(), 150);
       ctx.sound(v ? 'confirm' : 'dialogClose');
       resolve(v);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') finish(false);
-      else if (e.key === 'Enter') finish(document.activeElement !== no);
-      else return;
+      const down = e.type === 'keydown';
+      if (e.key === 'Escape') {
+        if (down) finish(false);
+      } else if (e.key === 'Enter') {
+        if (down) finish(document.activeElement !== no);
+      } else if (e.key === ' ' || e.code === 'Space') {
+        // Space is the pause key: it must never "click" the focused Demolish button by accident (on Cancel it cancels)
+        if (down && document.activeElement === no) finish(false);
+      } else return;
       e.preventDefault();
       e.stopImmediatePropagation();
     };
     window.addEventListener('keydown', onKey, true);
+    window.addEventListener('keyup', onKey, true);
     ok.addEventListener('click', () => finish(true));
     no.addEventListener('click', () => finish(false));
     back.addEventListener('pointerdown', (e) => {
       if (e.target === back) finish(false);
     });
     ctx.signal.addEventListener('abort', () => finish(false), { once: true });
+    // modal: no tool tooltip floats over it (the cursor tip sits above modals)
+    ctx.tip?.hide();
     ctx.root.appendChild(back);
     ctx.sound('dialogOpen');
     ok.focus();
@@ -224,7 +235,7 @@ export class HelpPanel extends Panel {
     }
     const tips = h('div', { class: 'help-tips' },
       h('div', { html: '<b>Getting started</b>Zone residential, commercial and industrial land next to roads. Buildings grow where there is demand (watch the RCI meter).' }),
-      h('div', { html: '<b>Utilities</b>Place a power plant and connect zones with power lines. Water towers and pumps keep buildings supplied.' }),
+      h('div', { html: '<b>Utilities</b>Place a power plant: roads and power lines carry electricity to your zones. A water tower or pump next to a road supplies them with water.' }),
       h('div', { html: '<b>Services & money</b>Police, fire, health and schools raise land value. Balance taxes in the Budget panel — high taxes slow growth.' }),
     );
     const guide = h('button', { class: 'btn sm', html: icon('star', 13) + '<span>Show getting-started guide</span>' });
@@ -232,7 +243,7 @@ export class HelpPanel extends Panel {
       this.ctx.showOnboarding?.();
       this.ctx.panels.close(this.id);
     });
-    this.body.append(h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:12px' }, h('div', { class: 'dim', style: 'font-size:12.5px' }, 'Build the city of your dreams. Keyboard shortcuts and camera keys work at all times — clicking buttons or panels never takes them away; only text boxes capture keys while you type.'), guide), cols, tips);
+    this.body.append(h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:12px' }, h('div', { class: 'dim', style: 'font-size:12.5px' }, 'Build the city of your dreams. Shortcuts and camera keys work even while panels are open; when you type in a text box (such as a city name), your keys go to that box instead.'), guide), cols, tips);
   }
 }
 

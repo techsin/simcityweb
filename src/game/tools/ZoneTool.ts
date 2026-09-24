@@ -126,12 +126,16 @@ export class RectTool extends Tool {
       if (risk) {
         this.ctx.world.setHighlightRect(null, 0);
         this.ctx.tip.hide();
+        this.lastKey = '';
         void confirmDialog(this.ctx, { title: risk.title, message: 'This demolition has consequences:', items: risk.items, confirm: 'Demolish', danger: true }).then((yes) => {
           if (yes && this.ctx.tools.active === this) this.commit(rect);
           this.lastKey = '';
           this.ctx.tools.refresh();
         });
-      } else this.commit(rect);
+        // the dialog is modal: no hover preview / tip underneath it (the next frame after it closes refreshes them)
+        return;
+      }
+      this.commit(rect);
     }
     this.lastKey = '';
     this.refresh(p);

@@ -11,6 +11,7 @@ import * as THREE from 'three';
 import { CELL_SIZE, SEA_LEVEL } from '../../core/constants';
 import type { Climate } from '../../core/types';
 import { getNoiseTexture, getWaveNormalTexture } from './textures';
+import { WATER_FLASHES, waterFlashUniforms } from './waterFlash';
 
 const OUTER = 32000;
 const OUTER_RES = 320;
@@ -40,6 +41,8 @@ uniform vec3 uDeep;
 uniform vec3 uFoamCol;
 uniform float uWNight;
 uniform sampler2D uLightTex;
+uniform vec4 uFlashPos[${WATER_FLASHES}];
+uniform vec3 uFlashCol[${WATER_FLASHES}];
 vec3 wNormalW = vec3(0.0, 1.0, 0.0);
 float wAlpha = 1.0;
 float wRough = 0.05;
@@ -118,6 +121,18 @@ vec3 waterShade(vec3 P) {
     float inMap = step(0.0, P.x) * step(0.0, P.z) * step(P.x, W) * step(P.z, W);
     float ripple = 0.55 + 0.45 * sin(dot(P.xz, vec2(0.9, 1.3)) * 0.6 + g.x * 40.0 + uWTime * 2.0);
     wCityRefl = vec3(1.0, 0.72, 0.42) * acc * ripple * uWNight * inMap * 0.22 * (1.0 - foam);
+  }
+  // New Year fireworks (waterFlash.ts): fresh bursts light the ripples below them, a coloured glitter path toward
+  // the viewer (independent of where the burst's mirror image lands)
+  for (int i = 0; i < ${WATER_FLASHES}; i++) {
+    vec3 fc = uFlashCol[i];
+    if (fc.r + fc.g + fc.b < 1e-4) continue;
+    vec3 L = uFlashPos[i].xyz - P;
+    float dl = max(length(L), 1.0);
+    vec3 Hv = normalize(L / dl + normalize(cameraPosition - P));
+    float glint = pow(max(dot(wNormalW, Hv), 0.0), 48.0);
+    float R0 = uFlashPos[i].w * 2.0;
+    wCityRefl += fc * (glint * 2.5 + 0.04) * (R0 * R0 / (R0 * R0 + dl * dl)) * (1.0 - foam);
   }
   return mix(body, uFoamCol, foam);
 }
@@ -205,7 +220,7 @@ export class WaterRenderer {
     const u = () => this.uniforms;
     const detail = this.detail;
     this.material.onBeforeCompile = (shader) => {
-      Object.assign(shader.uniforms, u());
+      Object.assign(shader.uniforms, u(), waterFlashUniforms);
       shader.defines = { ...(shader.defines ?? {}), WATER_DETAIL: detail };
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\n' + WATER_VERT_PARS)

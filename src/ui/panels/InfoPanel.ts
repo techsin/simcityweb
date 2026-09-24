@@ -1,5 +1,5 @@
 /** Query info card: building / road / lot details, flags, desirability, commute, "Make historic". */
-import { DEV_TYPE_LABELS, DevType, Network, Zone, isRoad, zoneFamily } from '../../core/types';
+import { DEV_TYPE_LABELS, DevType, Network, Zone, isRoad, zoneDensity, zoneFamily } from '../../core/types';
 import { BF, type Building } from '../../sim/CityState';
 import { getDef } from '../../sim/catalog';
 import type { GameContext, QueryTarget } from '../../game/context';
@@ -12,7 +12,7 @@ import { icon } from '../icons';
 import { money, num, pct, titleCase } from '../format';
 import { thumbs } from '../thumbs';
 import { DEV_NAMES } from '../TopBar';
-import { emptyZoneStatus, zoneStatusLine } from '../zoneStatus';
+import { emptyZoneStatus, roadAccess, utilityReaches, zoneStatusLine } from '../zoneStatus';
 import { demolishRisks } from '../../game/demolishRisk';
 import { confirmDialog } from '../Modals';
 
@@ -80,7 +80,17 @@ export class InfoPanel extends Panel {
     const st = this.ctx.state;
     const b = t.buildingId != null ? st.buildings.get(t.buildingId) : undefined;
     const ci = st.idx(t.x, t.z);
-    const sig = b ? `b${b.id}:${b.pop}:${b.jobs}:${b.flags}:${Math.round(b.built * 20)}:${st.monthIndex}:${Math.floor(st.day / 5)}` : `c${t.x},${t.z}:${st.network[ci]}:${st.zone[ci]}:${st.building[ci]}:${st.powered[ci]}:${st.watered[ci]}:${Math.floor(st.day / 5)}`;
+    // (empty lot: its growth status too — a neighbouring road can become powered while the game is paused)
+    let zsig = '';
+    if (!b) {
+      try {
+        const zs = emptyZoneStatus(st, t.x, t.z);
+        zsig = zs ? zs.blockers.map((x) => x.text).join('|') || 'ready' : '';
+      } catch {
+        zsig = '';
+      }
+    }
+    const sig = b ? `b${b.id}:${b.pop}:${b.jobs}:${b.flags}:${Math.round(b.built * 20)}:${st.monthIndex}:${Math.floor(st.day / 5)}` : `c${t.x},${t.z}:${st.network[ci]}:${st.zone[ci]}:${st.building[ci]}:${st.powered[ci]}:${st.watered[ci]}:${Math.floor(st.day / 5)}:${zsig}`;
     if (sig === this.sig) return;
     this.sig = sig;
     clear(this.body);
@@ -310,10 +320,13 @@ export class InfoPanel extends Panel {
       this.body.appendChild(this.hero(label, `<span>Tile ${x}, ${z} · elevation ${Math.round(st.cellHeight(x, z))} m</span>`, ic, color));
       const flags = h('div', { class: 'flags' });
       if (zone) {
-        flags.appendChild(h('span', { class: 'chip ' + (st.powered[i] ? 'good' : 'bad'), html: icon('power', 11) + (st.powered[i] ? 'Powered' : 'No power') }));
-        flags.appendChild(h('span', { class: 'chip ' + (st.watered[i] ? 'good' : 'warn'), html: icon('water', 11) + (st.watered[i] ? 'Water' : 'No water') }));
-        let road = false;
-        for (let dz = -1; dz <= 1 && !road; dz++) for (let dx = -1; dx <= 1; dx++) if ((dx === 0) !== (dz === 0) && st.isRoadAt(x + dx, z + dz)) road = true;
+        // same rules as the growth status below (zoneStatus.ts): utility through the lot or a served neighbour,
+        // water only matters for medium / high density, road within a lot's depth
+        const pw = utilityReaches(st, st.powered, i, 'power'), wt = utilityReaches(st, st.watered, i, 'water');
+        const needWater = zoneDensity(zone) >= 2;
+        flags.appendChild(h('span', { class: 'chip ' + (pw ? 'good' : 'bad'), html: icon('power', 11) + (pw ? 'Powered' : 'No power') }));
+        flags.appendChild(h('span', { class: 'chip ' + (wt ? 'good' : needWater ? 'warn' : 'info'), title: wt || needWater ? undefined : 'Low-density lots grow without water; bigger buildings need it later', html: icon('water', 11) + (wt ? 'Water' : needWater ? 'No water' : 'No water yet') }));
+        const road = roadAccess(st, x, z);
         flags.appendChild(h('span', { class: 'chip ' + (road ? 'good' : 'bad'), html: icon('road', 11) + (road ? 'Road access' : 'No road access') }));
       }
       if (st.powerLines[i]) flags.appendChild(h('span', { class: 'chip info', html: icon('pylon', 11) + 'Power line' }));

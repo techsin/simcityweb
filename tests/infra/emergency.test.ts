@@ -151,7 +151,7 @@ describe('emergency dispatch: fires', () => {
     const m = st.stats.emergency.month;
     expect(m.auto).toBe(2);
     expect(m.manual).toBe(1);
-    expect(m.late).toBe(1); // 3.2 days > the 3-day fire grace
+    expect(m.late).toBe(0); // 3.2 min < the 4-min fire grace (a fire station's own reach is 3.9 min)
     expect(m.failed).toBe(0);
     expect(em.vehicles().length).toBe(0);
   });
@@ -316,6 +316,28 @@ describe('emergency dispatch: other incidents', () => {
     sim.runDays(4);
     expect(f.flags & (BF.OnFire | BF.Burnt)).toBeTruthy();
     expect(em.incidents().some((i) => i.kind === 'fire')).toBe(true);
+  });
+
+  it('a covered industrial accident does not ignite while its truck is on the way (it only becomes statistics)', () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 62, 20, Network.Road);
+    place(st, 'civ_fire_station', 4, 18); // real def: 3.9 min reach; unpowered here -> +0.5 day turnout
+    const f = place(st, 't_id', 40, 21, { jobs: 40 });
+    const sim = newSim(st);
+    getFire(sim)!.riskBoost = 0;
+    const em = emergencyOf(sim)!;
+    const id = em.spawn(sim, 'industrial', 40, 21, { buildingId: f.id });
+    const inc = em.incident(id)!;
+    expect(inc.state).toBe('dispatched');
+    expect(inc.etaMin!).toBeGreaterThan(3); // arrives after the 3-day ignition grace
+    sim.runDays(10);
+    expect(f.flags & (BF.OnFire | BF.Burnt)).toBe(0);
+    expect(em.incident(id)).toBeUndefined();
+    const m = st.stats.emergency.month;
+    expect(m.count.industrial).toBe(1);
+    expect(m.auto).toBe(1);
+    expect(m.failed).toBe(0);
+    expect(m.count.fire).toBe(0);
   });
 
   it('earthquake aftermath: occupied collapsed buildings become rescue incidents', () => {

@@ -1,9 +1,10 @@
 /**
  * Seasonal variants of the deciduous tree models (nature.ts) and the month -> season mix used by every renderer that
- * draws them (forest TreeRenderer, street / median trees in PropRenderer). Pure data + tiny helpers, no three.js.
+ * draws them (forest TreeRenderer, street / median trees in PropRenderer). Pure data + tiny helpers; setTreeSeason()
+ * also feeds the shared material's uSeason (Foliage patterns 1-2: seasonal crowns baked into lot models).
  *
  * Variant layout (manifest `variants` counts all of them):
- *   tree_oak   0 1 2 green | 3 autumn orange | 4 green | 5 autumn red | 6 bare winter
+ *   tree_oak   0 1 2 green | 3 autumn orange | 4 green | 5 autumn red | 6 bare winter | 7 spring blossom
  *   tree_maple 0 green | 1 autumn orange | 2 autumn red | 3 green | 4 bare winter | 5 spring blossom
  *   tree_birch 0 1 2 green | 3 autumn yellow | 4 bare winter
  * The first four variants keep the old contract of TreeRenderer (green ones + at most one autumn-coloured one that it
@@ -12,8 +13,9 @@
  * Month mix (temperate / alpine; tropical and desert never change):
  *   autumn  Sep 0.3, Oct 0.8, Nov 0.55
  *   bare    Nov 0.2, Dec-Feb 0.85, Mar 0.4
- *   blossom Apr 0.15 (maple only)
+ *   blossom Apr 0.15 (oak: white street-tree blossom, maple: pink)
  */
+import { sharedUniforms } from '../materials';
 
 export interface SeasonSet {
   green: readonly number[];
@@ -23,7 +25,7 @@ export interface SeasonSet {
 }
 
 export const SEASONAL_TREES: Readonly<Record<string, SeasonSet>> = {
-  tree_oak: { green: [0, 1, 2, 4], autumn: [3, 5], bare: [6], blossom: [] },
+  tree_oak: { green: [0, 1, 2, 4], autumn: [3, 5], bare: [6], blossom: [7] },
   tree_maple: { green: [0, 3], autumn: [1, 2], bare: [4], blossom: [5] },
   tree_birch: { green: [0, 1, 2], autumn: [3], bare: [4], blossom: [] },
 };
@@ -67,7 +69,8 @@ export function seasonalVariant(id: string, variant: number, r: number, mix: Sea
 
 /**
  * Current season, published by the world view (month + climate) for renderers that have no CityState of their own
- * (PropRenderer's street trees). `version` bumps whenever the resulting mix changes.
+ * (PropRenderer's street trees). `version` bumps whenever the resulting mix changes. Also sets
+ * sharedUniforms.uSeason = (autumn, bare, blossom Apr-May ? 1 : 0, 0) for baked seasonal foliage (materials.ts).
  */
 export const treeSeason = { month: 5, climate: 'temperate', mix: NONE as SeasonMix, version: 0 };
 
@@ -76,6 +79,8 @@ export function setTreeSeason(month: number, climate: string): void {
   treeSeason.month = month;
   treeSeason.climate = climate;
   const m = seasonMix(month, climate);
+  const mo = ((Math.floor(month) % 12) + 12) % 12;
+  sharedUniforms.uSeason.value.set(m.autumn, m.bare, mo === 3 || mo === 4 ? 1 : 0, 0);
   const o = treeSeason.mix;
   if (m.autumn !== o.autumn || m.bare !== o.bare || m.blossom !== o.blossom) {
     treeSeason.mix = m;

@@ -188,15 +188,19 @@ try {
       return `.toolbar .tb-btn[data-qa-cat="${i}"]`;
     }, c.i);
     await clickSel(btnSel);
-    // the click opens a flyout (button gets .open at once, the flyout .open on the next frame), selects a tool
+    // the click opens a flyout (button + flyout get .open as soon as the click is handled), selects a tool
     // (tool chip) or toggles a panel — frames can take seconds under SwiftShader, so wait generously
     await waitFor((s) => document.querySelector(s)?.classList.contains('open') || !!document.querySelector('.tool-chip.show') || !!document.querySelector('.panel-layer .panel:not(.closing)'), btnSel);
-    const isFly = await page.evaluate((s) => !!document.querySelector(s)?.classList.contains('open'), btnSel);
-    // (first open of a category renders its building thumbnails: that frame can take minutes under a loaded
-    // SwiftShader; the button's .open proves the click registered — a slow reveal is only a warning here, the
-    // close + sweep below still run)
-    const opened = isFly && (await waitFor(() => !!document.querySelector('.flyout.open'), null, 180000));
-    if (isFly && !opened) log(`WARN  flyout "${c.label}": not revealed within 180 s (slow frames) — checking the close anyway`);
+    // the flyout is revealed in the same click handler as its button (no deferred frame), so one read sees both: a
+    // button marked open with no visible flyout is a regression. (A single evaluate, not a timed poll: thumbnail
+    // renders of the previous category can hold the page's main thread for long stretches under SwiftShader.)
+    const st0 = await page.evaluate((s) => ({ btn: !!document.querySelector(s)?.classList.contains('open'), fly: !!document.querySelector('.flyout.open') }), btnSel);
+    const isFly = st0.btn;
+    const opened = isFly && st0.fly;
+    if (isFly && !opened) {
+      failures.push({ label: `flyout "${c.label}"`, hits: { error: 'category button open but the flyout was not revealed' } });
+      log(`FAIL  flyout "${c.label}": button open but the flyout was not revealed`);
+    }
     if (isFly) {
       // hover the first item (rich tooltip), then close by clicking the category again
       const item = await center('.flyout.open .fly-item');
@@ -227,7 +231,7 @@ try {
     }
   }
 
-  // ---- open/close race: a close before the flyout's reveal frame (QA #8) must not leave it stuck open
+  // ---- open/close race: opening and closing within one frame (QA #8) must not leave the flyout stuck open
   const stuck = await page.evaluate(async () => {
     const sc = window.__metropolis.city.scene;
     const out = [];

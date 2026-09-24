@@ -871,10 +871,16 @@ export interface PoolSpec {
 
 /**
  * Light-pool fall-off: rings at these fractions of the radius, 8 sectors. Each vertex carries its own Emissive-9
- * intensity (the paint `floor`, interpolated by the shader) following (1 - d/r)^2, so a pool is a soft lamp glow
- * that fades out to nothing at the rim instead of a flat disc with a hard edge.
+ * intensity (the paint `floor`, interpolated by the shader) from the piecewise-linear profile POOL_FALL (~(1 - d/r)^2
+ * with a faint tail), so a pool is a soft lamp glow instead of a flat disc with a hard edge.
+ * The tail never reaches 0: with MSAA the shader evaluates the interpolated floor at pixel centres just OUTSIDE a
+ * triangle's edge, and Emissive 9 treats floor <= 0.005 as "unset" (full 1x), so a profile running down to ~0 at the
+ * rim extrapolated below that on edge pixels and sparkled white. The rim keeps ~3% of the peak (>= POOL_MIN) and the
+ * outer ring's slope stays shallow enough that a 0.4 m extrapolation (~0.7 px at the default city zoom) stays above it.
  */
-const POOL_RINGS = [0, 0.5, 1];
+const POOL_RINGS = [0, 0.6, 1];
+const POOL_FALL = [1, 0.16, 0.03];
+const POOL_MIN = 0.05;
 const POOL_SECTORS = 8;
 /** Pools on lawns are dimmer than on paving (grass scatters less; keeps them from reading as pale discs). */
 const POOL_GRASS_K = 0.6;
@@ -927,7 +933,10 @@ export function lightPool(b: ModelBuilder, x: number, z: number, r: number, spec
   const emit = (poly: P2[], y: number, peak: number) => {
     const f = poly.map(([px, pz]) => {
       const t = Math.min(1, Math.hypot(px - x, pz - z) / r);
-      return Math.max(0.012, peak * (1 - t) * (1 - t));
+      let k = 1;
+      while (k < POOL_RINGS.length - 1 && t > POOL_RINGS[k]) k++;
+      const u = (t - POOL_RINGS[k - 1]) / (POOL_RINGS[k] - POOL_RINGS[k - 1]);
+      return Math.max(POOL_MIN, peak * (POOL_FALL[k - 1] + (POOL_FALL[k] - POOL_FALL[k - 1]) * u));
     });
     for (let i = 1; i + 1 < poly.length; i++) poolTri(b, y, poly[0], poly[i], poly[i + 1], f[0], f[i], f[i + 1]);
   };
@@ -991,6 +1000,11 @@ export function annulusQuads(cx: number, cz: number, r0: number, r1: number, seg
 /** Rect as a convex polygon. */
 export function rectPoly(x0: number, z0: number, x1: number, z1: number): P2[] {
   return [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
+}
+/** Any simple (possibly concave) polygon as convex triangles, for clipping a light pool to that ground shape. */
+export function polyTris(poly: P2[]): P2[][] {
+  const idx = THREE.ShapeUtils.triangulateShape(poly.map(([x, z]) => new THREE.Vector2(x, z)), []);
+  return idx.map(([i, j, k]) => [poly[i], poly[j], poly[k]]);
 }
 /** Paving joint grid: thin darker lines every `step` m over rect at height y. */
 export function jointGrid(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, step: number, color: ColorLike, y: number, w = 0.08): void {
