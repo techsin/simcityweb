@@ -381,7 +381,8 @@ export class RoadMesher {
       const nx = this.cx + DX[d], nz = this.cz + DZ[d];
       if (nx < 0 || nz < 0 || nx >= N || nz >= N) return false;
       const j = nz * N + nx;
-      return popcount4(this.net.roadMask[j]) >= 3 && this.net.roadType[j] !== Network.Highway;
+      // (no crosswalk toward an overpass crossing: the road passes under the highway there)
+      return popcount4(this.net.roadMask[j]) >= 3 && this.net.roadType[j] !== Network.Highway && !this.net.bCross[j];
     };
     if (test(OPP[h])) f |= 1;
     if (test(h)) f |= 2;

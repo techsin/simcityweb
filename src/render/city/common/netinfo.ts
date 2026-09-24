@@ -305,7 +305,11 @@ export class NetInfo {
         const crossing = (a: number) => {
           if (a <= 0 || a >= N - 1) return false;
           const i = at(a);
-          if (!plain(i) || this.roadMask[i] !== 15) return false;
+          // the crossing cell is a highway cell, or (when the sim wrote the crossing road into the highway line) a
+          // cell of the minor road's type between two highway cells
+          const t = net[i];
+          const own = t === HW ? plain(i) : isMinor(t) && !this.crossing[i] && !(flags[i] & (NF_TUNNEL | NF_BRIDGE)) && !water[i] && !waterBridge(i);
+          if (!own || this.roadMask[i] !== 15) return false;
           if (net[at(a - 1)] !== HW || net[at(a + 1)] !== HW) return false;
           const lx = axis === 0 ? a : line, lz = axis === 0 ? line : a;
           const o1 = axis === 0 ? this.net(lx, lz - 1) : this.net(lx - 1, lz);
@@ -318,26 +322,35 @@ export class NetInfo {
           // cluster: crossings closer than two full ramps plus a short plateau share one elevated span (a viaduct
           // over a street grid instead of a roller coaster of humps)
           const MERGE = 2 * RAMP_MAX + 4;
-          const c0 = a;
-          let c1 = a;
+          const list = [a];
           for (;;) {
-            let b = c1 + 1;
-            while (b < N && straight(b) && b - c1 - 1 < MERGE) b++;
-            if (b < N && crossing(b) && b - c1 - 1 < MERGE) c1 = b;
+            const last = list[list.length - 1];
+            let b = last + 1;
+            while (b < N && straight(b) && b - last - 1 < MERGE) b++;
+            if (b < N && crossing(b) && b - last - 1 < MERGE) list.push(b);
             else break;
           }
-          a = c1 + 1;
+          a = list[list.length - 1] + 1;
+          // end crossings without room for a ramp (map edge, a junction right next to them) stay at grade
           let left = 0, right = 0;
-          while (left < RAMP_MAX && straight(c0 - left - 1)) left++;
-          while (right < RAMP_MAX && straight(c1 + right + 1)) right++;
+          while (list.length) {
+            left = 0; right = 0;
+            while (left < RAMP_MAX && straight(list[0] - left - 1)) left++;
+            while (right < RAMP_MAX && straight(list[list.length - 1] + right + 1)) right++;
+            if (left >= RAMP_MIN && right >= RAMP_MIN) break;
+            if (left < RAMP_MIN) list.shift();
+            else list.pop();
+          }
+          if (!list.length) continue;
+          const c0 = list[0], c1 = list[list.length - 1];
           const ramp = Math.min(left, right);
-          if (ramp < RAMP_MIN) continue;
           const s0 = c0 - ramp, s1 = c1 + ramp;
           const start = s0 * CELL_SIZE, len = (s1 - s0 + 1) * CELL_SIZE;
           const lat = line * CELL_SIZE + HALF;
           const h0 = axis === 0 ? st.heightAt(start, lat) : st.heightAt(lat, start);
           const h1 = axis === 0 ? st.heightAt(start + len, lat) : st.heightAt(lat, start + len);
-          let rise = CLEAR;
+          // deck = straight grade between the ramp feet + rise: just enough for CLEAR over the highest crossing
+          let rise = 0;
           for (let c = c0; c <= c1; c++) {
             if (!crossing(c)) continue;
             const lx = axis === 0 ? c : line, lz = axis === 0 ? line : c;
@@ -346,7 +359,7 @@ export class NetInfo {
             const s = ((c + 0.5) * CELL_SIZE - start) / len;
             rise = Math.max(rise, tm + CLEAR - (h0 + (h1 - h0) * s));
           }
-          rise = Math.min(rise, 14);
+          rise = Math.min(Math.max(rise, 4.5), 14);
           for (let c = s0; c <= s1; c++) {
             const j = at(c);
             nAxis[j] = axis; nStart[j] = start; nLen[j] = len; nRise[j] = rise; nRamp[j] = ramp * CELL_SIZE;
