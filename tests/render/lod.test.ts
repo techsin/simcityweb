@@ -3,7 +3,7 @@
  *  - building massing proxies: generated for (nearly) every building model, much cheaper, inside the model's bounds,
  *    windowed models keep window surfaces (lit at night), deterministic
  *  - DynamicBatch per-pass draw lists: view frustum culling, per-instance shadow cascade masks, tiny-caster skipping,
- *    receiver-volume culling and list caching
+ *    receiver-volume culling and list caching, disabled tiles / tile sets, front-to-back sorting
  *  - shadow receivers only bump their version when the volume really changes
  */
 import { describe, expect, it } from 'vitest';
@@ -177,6 +177,53 @@ describe('DynamicBatch per-pass culling', () => {
     view.updateMatrixWorld();
     setReceiver(recv, view, 1, 800, sun, 0);
     expect(drawn(batch, cam, true, 2)).toEqual([b]);
+  });
+
+  it('skips disabled tiles and tile sets without casters for the cascade', () => {
+    const culler = new TileCuller(N, CELL, 16);
+    const T = culler.tiles * culler.tiles;
+    const batch = new DynamicBatch(new THREE.MeshBasicMaterial(), 64, 1 << 14, 'sets');
+    batch.mesh.castShadow = true;
+    batch.enablePassCulling({ culler, tileSets: 2 });
+    const g = batch.geometryId('big', () => boxGeo(20));
+    const m = new THREE.Matrix4();
+    const tile = culler.tileOfWorld(100, 100);
+    const a = batch.add(g);
+    batch.setMatrix(a, m.makeTranslation(100, 0, 100));
+    batch.setTile(a, tile);
+    // second set of the same map tile: casts into cascade 0 only
+    const d = batch.add(g);
+    batch.setMatrix(d, m.makeTranslation(140, 0, 100));
+    batch.setShadowCascades(d, 0b01);
+    batch.setTile(d, tile + T);
+    expect(drawn(batch, viewCam())).toEqual([a, d]);
+    expect(drawn(batch, shadowCam(1, 0.5), true, 2)).toEqual([a]);
+    batch.setTileEnabled(tile, false);
+    expect(drawn(batch, viewCam(), false, 3)).toEqual([d]);
+    batch.setTileEnabled(tile, true);
+    expect(drawn(batch, viewCam(), false, 4)).toEqual([a, d]);
+  });
+
+  it('sorts main-pass lists nearest first when sortFront is set', () => {
+    const culler = new TileCuller(N, CELL, 16);
+    const batch = new DynamicBatch(new THREE.MeshBasicMaterial(), 64, 1 << 14, 'sorted');
+    batch.enablePassCulling({ culler });
+    batch.sortFront = true;
+    const g = batch.geometryId('big', () => boxGeo(8));
+    const m = new THREE.Matrix4();
+    // added far to near along the view direction
+    const ids = [560, 420, 300, 200, 120, 60].map((d) => {
+      const id = batch.add(g);
+      batch.setMatrix(id, m.makeTranslation(d, 0, d));
+      batch.setTile(id, culler.tileOfWorld(d, d));
+      return id;
+    });
+    const cam = viewCam();
+    cam.updateMatrixWorld();
+    drawn(batch, cam);
+    const mm = batch.mesh as unknown as { _multiDrawCount: number; _indirectTexture: THREE.DataTexture };
+    const order = Array.from((mm._indirectTexture.image.data as unknown as Uint32Array).subarray(0, mm._multiDrawCount));
+    expect(order).toEqual([...ids].reverse());
   });
 });
 

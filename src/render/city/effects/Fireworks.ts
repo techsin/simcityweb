@@ -4,7 +4,7 @@
  *   view.fireworks.start({ population, delay, duration?, seed? })   // first (opening) salvo bursts at `delay` s
  *   view.fireworks.stop()        // no new launches; sparks in flight fade out naturally (stop(true) clears at once)
  *   view.fireworks.active        // true while anything is scheduled, alive or still smoking
- *   view.fireworks.running       // the show is still launching;  .settled: the last shells have bloomed
+ *   view.fireworks.isRunning     // the show is still launching;  .settled: the last shells have bloomed
  *   view.fireworks.centre        // centre of the launch sites (null until the show's sites are collected)
  *   view.fireworks.fastForward(s)  // deterministic jump (screenshots / tests); timeScale = 0 freezes the clock
  *   view.fireworks.onSound = (kind, x, y, z, size, extra) => ...   // launch / burst / crackle events (world pos)
@@ -129,6 +129,9 @@ const TRIADS: readonly (readonly number[])[] = [[GOLD, RED, SILVER], [BLUE, SILV
 const DAY_TRIADS: readonly (readonly number[])[] = [[RED, ORANGE, MAGENTA], [BLUE, CYAN, PURPLE], [GREEN, CYAN, BLUE], [MAGENTA, PURPLE, BLUE], [RED, GREEN, ORANGE]];
 const DAY_COLS = [RED, ORANGE, GREEN, CYAN, BLUE, PURPLE, MAGENTA];
 const MORTAR: readonly [number, number, number] = [1.0, 0.62, 0.3];
+/** charcoal gold of willow / kamuro / brocade / palm stars: deeper and more orange than GOLD, so dense curtains stay
+ * golden after tone mapping instead of washing out to pale peach */
+const CHARCOAL: readonly [number, number, number] = [1.0, 0.4, 0.07];
 
 // show segments
 const TH_MIXED = 0, TH_GOLD = 1, TH_PAIR = 2, TH_PATTERN = 3, TH_GLITTER = 4;
@@ -166,6 +169,7 @@ uniform vec3 uWind;
 uniform vec2 uViewport;
 uniform float uMinPx;
 uniform float uGain;
+uniform float uBreakK;
 uniform float uHalo;
 uniform float uWaterY;
 uniform float uSat;
@@ -219,8 +223,9 @@ void main() {
   float hb = 1.0, tb = 1.0;
   if (trail) {
     if (hang) {
-      // hanging (willow / kamuro / brocade / palm) trails: crisp comets while fast, long drooping curtains later
-      float kk = mix(0.3, 1.2, smoothstep(0.6, 2.2, age));
+      // hanging (willow / kamuro / brocade / palm) trails: short crisp comets while the stars are fast (a long
+      // time constant then smears every trail back to the break: a spiky "sea urchin"), long drooping curtains later
+      float kk = mix(0.12, 1.2, smoothstep(0.5, 2.2, age));
       hb = exp(-u0 * aM.y / kk);
       tb = exp(-u1 * aM.y / kk);
     } else {
@@ -276,6 +281,12 @@ void main() {
     rH *= mix(1.0, taper, u0);
     rT *= mix(1.0, taper, u1);
   }
+  // stars bursting close to the camera stay points of light (no fat blobs / "tadpoles"); flashes stay soft and big
+  if (kind < 4.5) {
+    float rCap = uViewport.y * 0.0036 * uSizeK;
+    rH = min(rH, rCap);
+    rT = min(rT, rCap);
+  }
   // sub-pixel sparks keep a minimum footprint; their energy falls off (softly) instead
   float energy = rH < uMinPx ? pow(rH / uMinPx, 0.45) : 1.0;
   rH = max(rH, uMinPx);
@@ -290,10 +301,11 @@ void main() {
   if (kind < 0.5) {
     // star: brief white-hot ignition -> colour (optionally switching) -> warm stars cool to embers
     if (aC0.w > 0.0) c = mix(aC0.rgb, aC1.rgb, smoothstep(aC0.w - 0.05, aC0.w + 0.05, f));
+    // only warm (charcoal / gold / orange / red) stars turn ember orange; blue / green / purple die in their own hue
+    // (judged on the current colour, so a gold star that changed to blue stays blue)
+    float warm = smoothstep(0.2, 0.6, (c.r - c.b) / max(c.r + c.g + c.b, 1e-3));
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
     c = mix(c, vec3(1.0, 0.94, 0.82) * max(l, 0.3) * 1.3, (1.0 - smoothstep(0.0, min(0.15, life * 0.08), age)) * 0.4);
-    // only warm (charcoal / gold / orange / red) stars turn ember orange; blue / green / purple die in their own hue
-    float warm = smoothstep(0.2, 0.6, (aC0.r - aC0.b) / max(aC0.r + aC0.g + aC0.b, 1e-3));
     c = mix(c, vec3(1.0, 0.3, 0.06) * max(l, 0.25) * 1.1, smoothstep(0.5, 1.0, f) * 0.72 * warm);
     I = 1.0 - smoothstep(0.7, 1.0, f);
     // the freshly burst shell is still one tight knot: its stars fade in from zero (the flash sprite is the break)
@@ -314,12 +326,12 @@ void main() {
     float on = step(fract(uTime * aK.w + aK.y * 7.0), 0.3);
     I = mix(0.05, on * 2.4, smoothstep(0.1, 0.22, f)) * (1.0 - smoothstep(0.86, 1.0, f));
   } else if (kind < 4.5) {
-    // crackle pop
+    // crackle pop (a modest halo: a frozen frame of pops must not read as snow / extra street lamps)
     I = (1.0 - f) * (1.0 - f) * 3.0;
-    halo *= 2.0;
+    halo *= 1.4;
   } else {
-    // flash (the break of a shell / mortar flash): large soft glow
-    I = exp(-f * 4.5) * smoothstep(0.0, 0.05, f);
+    // flash (the break of a shell / mortar flash): large soft glow (faint by day: no flat glowing discs in daylight)
+    I = exp(-f * 4.5) * smoothstep(0.0, 0.05, f) * uBreakK;
     halo = 0.0;
     sharp = 1.3;
   }
@@ -420,7 +432,8 @@ void main() {
     float R0 = uFlashPos[i].w * 1.5;
     lit += uFlashCol[i] * (uFlashK * R0 * R0 / (R0 * R0 + dot(L, L)));
   }
-  float al = aB.w * smoothstep(0.0, 0.06, f) * pow(1.0 - f, 1.4);
+  // (builds up over the first ~second: a fresh burst is stars and light, the cloud comes after)
+  float al = aB.w * smoothstep(0.0, 0.15, f) * pow(1.0 - f, 1.4);
   vCol = vec4(lit * al, al);
   vec4 mv = viewMatrix * vec4(p, 1.0);
   float ang = aB.z * 6.2831 + age * 0.05;
@@ -547,6 +560,7 @@ export class Fireworks {
     uViewport: { value: new THREE.Vector2(1920, 1080) },
     uMinPx: { value: 0.8 },
     uGain: { value: 1 },
+    uBreakK: { value: 1 },
     uHalo: { value: 0.14 },
     uWaterY: { value: SEA_LEVEL },
     uSat: { value: 1.2 },
@@ -573,7 +587,8 @@ export class Fireworks {
   private smokeEnd = -1e9;
   private smokeDirty = false;
   private smokeN = 2;
-  private smokeU = { uAmb: { value: new THREE.Vector3() }, uGlow: { value: 0.6 }, uFlashK: { value: 1.2 } };
+  /** smoke light: ambient, own-burst glow, nearby flashes (kept low: brightly lit puffs read as white cotton balls) */
+  private smokeU = { uAmb: { value: new THREE.Vector3() }, uGlow: { value: 0.2 }, uFlashK: { value: 0.4 } };
 
   // ---- ground light pools
   private poolGeo: THREE.BufferGeometry;
@@ -795,9 +810,9 @@ export class Fireworks {
   get isRunning(): boolean {
     return this.running;
   }
-  /** the show has stopped launching and its last shells bloomed a while ago (only fading embers / smoke remain) */
+  /** the show has stopped launching and its last shells bloomed a while ago (the grand finale's curtain is fading) */
   get settled(): boolean {
-    return !this.active || (!this.running && this.qN === 0 && this.clock >= this.lastBurstAt + 2.2);
+    return !this.active || (!this.running && this.qN === 0 && this.clock >= this.lastBurstAt + 3.2);
   }
   /** seconds since start() (show clock) */
   get time(): number {
@@ -935,6 +950,7 @@ export class Fireworks {
     // brighter by day so a daytime show still reads (it looks pale, as real ones do)
     const night = sharedUniforms.uNight.value;
     u.uGain.value = lerp(2.2, 1.0, night);
+    u.uBreakK.value = lerp(0.25, 1.0, smoothstep(0.1, 0.5, night));
     // WorldView grades night scenes with saturation 1.08 - 0.32 * night: undo that for the fireworks (+ a bit)
     u.uSat.value = Math.min(1.5, 1.1 / Math.max(0.6, 1.08 - 0.32 * night));
     // zoomed far out: fatter sparks so the bursts still read as crisp sparkles instead of fading to sub-pixel dust
@@ -944,7 +960,7 @@ export class Fireworks {
     u.uSizeK.value = 1 + 1.7 * far * far * (3 - 2 * far);
     // smoke light: faint sky / city glow at night, daylight grey by day
     this.smokeU.uAmb.value.set(lerp(0.62, 0.03, night), lerp(0.62, 0.027, night), lerp(0.66, 0.031, night));
-    this.smokeU.uGlow.value = lerp(0.12, 0.55, night);
+    this.smokeU.uGlow.value = lerp(0.1, 0.22, night);
     const vis = this.clock < this.lastDeath;
     this.mesh.visible = vis;
     this.reflection.visible = vis && this.reflectOn && this.hasWater;
@@ -1171,8 +1187,8 @@ export class Fireworks {
     const day = this.dayShow;
     const n = this.smokeN + (day ? 1 : 0);
     for (let i = 0; i < n; i++) {
-      this.puff(x + this.rr(-0.3, 0.3) * R, y + this.rr(-0.3, 0.1) * R, z + this.rr(-0.3, 0.3) * R, tb + this.rr(0.05, 0.3),
-        R * this.rr(0.3, 0.45), day ? this.rr(6, 8) : this.rr(7, 10), day ? 0.3 : 0.2, col, day ? 0.6 : 0);
+      this.puff(x + this.rr(-0.3, 0.3) * R, y + this.rr(-0.3, 0.1) * R, z + this.rr(-0.3, 0.3) * R, tb + this.rr(0.3, 0.8),
+        R * this.rr(0.3, 0.45), day ? this.rr(6, 8) : this.rr(7, 10), day ? 0.3 : 0.15, col, day ? 0.6 : 0);
     }
   }
 
@@ -1897,6 +1913,9 @@ export class Fireworks {
     const pa = PALETTE[colA % PALETTE.length], pb = PALETTE[colB % PALETTE.length];
     const I = this.starGain(pa) * lerp(1.0, 1.2, c);
     const Ib = this.starGain(pb) * lerp(1.0, 1.2, c);
+    // willow / kamuro / brocade / palm burn charcoal gold
+    const ph = colA === GOLD ? CHARCOAL : pa;
+    const Ih = this.starGain(ph) * lerp(1.0, 1.2, c);
     const size = 0.45 + R * 0.0072;
     const hangSeg = q < 0.6 ? 4 : q < 0.85 ? 6 : 8;
     switch (type) {
@@ -1913,19 +1932,19 @@ export class Fireworks {
       }
       case S_WILLOW:
         // slow, heavy stars: gold comets first, then long drooping curtains (terminal fall ~16 m/s)
-        this.sphere(bx, byy, bz, tb, R * 0.95, Math.round((55 + 55 * c) * q), 1.15, this.rr(4.4, 5.4), pa, I * 0.55, size * 0.75, 2.4, hangSeg, 0.85, null, 0, 0, 1.9, 2, K_STAR, false, F_HANG);
+        this.sphere(bx, byy, bz, tb, R * 0.95, Math.round((55 + 55 * c) * q), 1.15, this.rr(4.4, 5.4), ph, Ih * 0.55, size * 0.62, 2.4, hangSeg, 0.85, null, 0, 0, 1.9, 2, K_STAR, false, F_HANG);
         break;
       case S_BROCADE:
-        this.sphere(bx, byy, bz, tb, R, Math.round((70 + 60 * c) * q), 1.25, this.rr(3.4, 4.2), pa, I * 0.65, size * 0.85, 1.8, Math.min(6, hangSeg), 0.9, null, 0, 0, 1.7, 3, K_STAR, false, F_HANG);
+        this.sphere(bx, byy, bz, tb, R, Math.round((70 + 60 * c) * q), 1.25, this.rr(3.4, 4.2), ph, Ih * 0.65, size * 0.75, 1.8, Math.min(6, hangSeg), 0.9, null, 0, 0, 1.7, 3, K_STAR, false, F_HANG);
         break;
       case S_KAMURO:
-        this.sphere(bx, byy, bz, tb, R, Math.round((90 + 60 * c) * q), 1.2, this.rr(5.0, 6.0), pa, I * 0.7, size * 0.75, 2.2, Math.min(7, hangSeg), 0.9, null, 0, 0, 1.8, 2, K_STAR, false, F_HANG);
+        this.sphere(bx, byy, bz, tb, R, Math.round((90 + 60 * c) * q), 1.2, this.rr(5.0, 6.0), ph, Ih * 0.7, size * 0.62, 2.2, Math.min(7, hangSeg), 0.9, null, 0, 0, 1.8, 2, K_STAR, false, F_HANG);
         break;
       case S_CROSSETTE:
         this.crossette(bx, byy, bz, tb, R, pa, I, size);
         break;
       case S_PALM:
-        this.palm(bx, byy, bz, tb, R, pa, I, size);
+        this.palm(bx, byy, bz, tb, R, ph, Ih, size);
         break;
       case S_STROBE:
         this.sphere(bx, byy, bz, tb, R * 0.9, Math.round((90 + 70 * c) * q), 2.3, this.rr(2.8, 3.4), pa, I * 0.9, size * 0.51, 0, 1, 0, null, 0, 0, 0.6, 0, K_STROBE);

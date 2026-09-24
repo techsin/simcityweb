@@ -214,7 +214,7 @@ export class DispatchTool extends Tool {
   override move(p: ToolPointer): void {
     const inc = this.incident();
     if (!inc) {
-      this.ctx.tip.show('<div class="tip-head"><b>Dispatch</b></div><div class="tip-sub">No emergency selected — click a burning / flashing site</div>', 'info');
+      this.ctx.tip.show('<div class="tip-head"><b>Dispatch</b></div><div class="tip-sub emg-wrap">No emergency selected — click a burning / flashing site</div>', 'info');
       return;
     }
     this.refreshOptions();
@@ -231,8 +231,10 @@ export class DispatchTool extends Tool {
           ? `<div class="tip-reason">All ${o.total} ${unit[o.total === 1 ? 0 : 1]} are busy</div>`
           : !Number.isFinite(o.etaMin)
             ? '<div class="tip-reason">No road route to the emergency</div>'
-            : `<div class="tip-sub">${o.free} of ${o.total} ${unit[1]} free · ETA <b>${fmtMin(o.etaMin)}</b>${o.inRange ? '' : ' (outside its coverage)'}</div><div class="tip-sub faint">Click: send 1 · Shift-click: send ${o.free}</div>`;
-      this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(o.name)}</b></div><div class="tip-sub">${title}</div>${body}`, ok ? 'ok' : 'bad');
+            : `<div class="tip-sub">${o.free} of ${o.total} ${unit[1]} free · ETA <b>${fmtMin(o.etaMin)}</b></div>` +
+              (o.inRange ? '' : '<div class="tip-sub emg-wrap faint">Outside its coverage: it would not answer on its own</div>') +
+              `<div class="tip-sub faint">Click: send 1 · Shift-click: send ${o.free}</div>`;
+      this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(o.name)}</b></div><div class="tip-sub emg-wrap">${title}</div>${body}`, ok ? 'ok' : 'bad');
       return;
     }
     const free = this.opts.filter((q) => q.free > 0 && Number.isFinite(q.etaMin));
@@ -241,11 +243,11 @@ export class DispatchTool extends Tool {
     const em = emergencyOf(this.ctx.sim);
     const covered = !!em && !missingUnits(em, inc);
     this.ctx.tip.show(
-      `<div class="tip-head"><b>${title}</b></div><div class="tip-sub">Needs ${needs}${inc.units.length ? ` · ${inc.units.length} assigned` : ''}</div>` +
+      `<div class="tip-head"><b class="emg-wrap">${title}</b></div><div class="tip-sub emg-wrap">Needs ${needs}${inc.units.length ? ` · ${inc.units.length} assigned` : ''}</div>` +
         (covered
-          ? '<div class="tip-sub">Help is on the way — click a station to send more</div>'
+          ? '<div class="tip-sub emg-wrap">Help is on the way — click a station to send more</div>'
           : best
-            ? `<div class="tip-sub">Click a <span class="pos">green</span> station — fastest: ${escapeHtml(best.name)} (${fmtMin(best.etaMin)})</div>`
+            ? `<div class="tip-sub emg-wrap">Click a <span class="pos">green</span> station — fastest: ${escapeHtml(best.name)} (${fmtMin(best.etaMin)})</div>`
             : '<div class="tip-reason">No station with a free unit can reach it</div>'),
       covered || best ? 'info' : 'bad',
     );

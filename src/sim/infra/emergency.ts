@@ -23,8 +23,9 @@
  *            industrial accidents ignite, spills pollute, medical calls lose patients.
  * LAYERS     st.respFire / respPolice / respMedical: auto-dispatch slack in minutes (>= 0 reached within a station's
  *            range, < 0 minutes beyond it, RESP_NONE = no station of that type). Scheduler task 'emergency.response'
- *            (3 forward station searches + 3 land fills), every EMERG_RESP_PERIOD days, sooner after station / network
- *            changes, and synchronously in init() (the layers are derived, not saved).
+ *            (3 forward station searches in chunks of EMERG_SEARCH_CHUNK nodes, a land fill, building fills in chunks
+ *            of EMERG_FILL_CHUNK), every EMERG_RESP_PERIOD days, sooner after station / network changes, and
+ *            synchronously in init() (the layers are derived, not saved).
  * EVENTS     sim.events 'emergency' (new / queued / dispatched / arrived / escalated / resolved / failed / uncovered),
  *            news via sim.notify (advisors 'safety' / 'health'), BF.Incident on the site building.
  */
@@ -41,11 +42,10 @@ import { cohortShares } from '../economy/demographics';
 import { facilityLoad } from './catchments';
 import { Fam, buildingList, centerCell, fundingFactor, infoOf, isFunctional } from './common';
 import { RoadGraph, perimeterNodes } from './graph';
-import { MinHeap } from './heap';
 import {
   BPR_ALPHA, BPR_MAX_FACTOR, CRIME_MAJOR, CRIME_SPREE_MIN, CRIME_SPREE_RATE, EMERG_DAYS_PER_MIN, EMERG_DEADLINE,
-  EMERG_FILL_COST, EMERG_GRACE, EMERG_HOSPITAL_MAX, EMERG_MANUAL_MAX, EMERG_MAX_PATH, EMERG_PLANT_P, EMERG_RANGE_K, EMERG_RESP_PERIOD,
-  EMERG_RMAX, EMERG_SEARCHES_PER_DAY, EMERG_SEARCH_COST, EMERG_SIREN_CONG, EMERG_SLOW_MARGIN, EMERG_TRUCK_SHARE,
+  EMERG_FILL_BLD_COST, EMERG_FILL_CELLS_COST, EMERG_FILL_CHUNK, EMERG_GRACE, EMERG_HOSPITAL_MAX, EMERG_MANUAL_MAX, EMERG_MAX_PATH, EMERG_PLANT_P, EMERG_RANGE_K, EMERG_RESP_PERIOD,
+  EMERG_RMAX, EMERG_SEARCHES_PER_DAY, EMERG_SEARCH_CHUNK, EMERG_SEARCH_COST, EMERG_SIREN_CONG, EMERG_SLOW_MARGIN, EMERG_TRUCK_SHARE,
   EMERG_UNPOWERED_TURNOUT, EMERG_WORK_DAYS, FIRE_BURN_DAYS, FIRE_CLUSTER_R, FIRE_DRY_WORK, FIRE_HOLD_PER_UNIT,
   FIRE_SPREAD_DRY, FIRE_SPREAD_ONSCENE, FIRE_SPREAD_P, FIRE_WORK_PER_AREA, INDUSTRIAL_POLL, IND_ACCIDENT_RATE,
   MED_BASE, MED_DELAY_LOSS, MED_MAJOR, MED_RATE, MED_SENIOR, MED_SURVIVE, NET_TIME, PRISON_ESCAPE, RAMP_PENALTY,
@@ -54,7 +54,7 @@ import {
   SPILL_SITE_P, SPREE_FAIL_BOOST, SPREE_FAIL_DAYS,
 } from './params';
 import { schedulerOf } from './scheduler';
-import { Search, Seeds, roadSearch } from './search';
+import { Seeds } from './search';
 import type { FireSystem } from './fire';
 
 export type IncidentState = 'queued' | 'uncovered' | 'dispatched' | 'onScene' | 'resolved' | 'failed';
@@ -333,9 +333,10 @@ class DispatchSearch {
   private done: Uint32Array<ArrayBuffer> = new Uint32Array(0);
   private stampV = 0;
   private head: Int32Array<ArrayBuffer> = new Int32Array(0);
+  /** bucket entries (singly linked per bucket). A run pushes at most ns + 4 x settled entries (seeds + one per
+   *  improving relaxation, 4 out-edges per settled node), so 4n + ns never overflows: no growth checks in the loop */
   private enext: Int32Array<ArrayBuffer> = new Int32Array(0);
   private enode: Int32Array<ArrayBuffer> = new Int32Array(0);
-  private en = 0;
   stop = Infinity;
   settled = 0;
 
@@ -346,18 +347,6 @@ class DispatchSearch {
   /** next node towards the seeds (-1 = seed / not reached) */
   nx(v: number): number {
     return this.mark[v] === this.stampV ? this.next[v] : -1;
-  }
-
-  private push(b: number, v: number): void {
-    const e = this.en++;
-    if (e >= this.enext.length) {
-      const c = this.enext.length * 2 + 64;
-      const a = new Int32Array(c); a.set(this.enext); this.enext = a;
-      const n = new Int32Array(c); n.set(this.enode); this.enode = n;
-    }
-    this.enode[e] = v;
-    this.enext[e] = this.head[b];
-    this.head[b] = e;
   }
 
   run(g: RoadGraph, tm: Float32Array, seeds: Int32Array, ns: number, limit: number, stHead: Int32Array | null, visit: ((u: number, d: number) => boolean) | null): void {
@@ -383,7 +372,14 @@ class DispatchSearch {
     const nb = Math.ceil(limit * invQ) + 2;
     if (this.head.length < nb) this.head = new Int32Array(nb + 64).fill(-1);
     const head = this.head;
-    this.en = 0;
+    const cap = 4 * n + ns + 64;
+    if (this.enext.length < cap) {
+      const c = cap + (cap >> 2);
+      this.enext = new Int32Array(c);
+      this.enode = new Int32Array(c);
+    }
+    const enext = this.enext, enode = this.enode;
+    let en = 0;
     let maxB = 0;
     for (let s = 0; s < ns; s++) {
       const v = seeds[s];
@@ -391,7 +387,9 @@ class DispatchSearch {
       mark[v] = S;
       dist[v] = 0;
       next[v] = -1;
-      this.push(0, v);
+      enode[en] = v;
+      enext[en] = head[0];
+      head[0] = en++;
     }
     const adj = g.rev, type = g.type;
     const HW = Network.Highway, RP = RAMP_PENALTY;
@@ -400,8 +398,8 @@ class DispatchSearch {
     outer: for (; b < nb; b++) {
       let e = head[b];
       while (e >= 0) {
-        const u = this.enode[e];
-        e = this.enext[e];
+        const u = enode[e];
+        e = enext[e];
         if (done[u] === S) continue;
         const key = dist[u];
         if (key > this.stop) break outer;
@@ -424,7 +422,9 @@ class DispatchSearch {
             const bi = (nd * invQ) | 0;
             const bb = bi > b ? bi : b + 1;
             if (bb > maxB) maxB = bb;
-            this.push(bb, v);
+            enode[en] = v;
+            enext[en] = head[bb];
+            head[bb] = en++;
           }
         }
       }
@@ -433,6 +433,115 @@ class DispatchSearch {
     // clear the buckets that still hold entries (early exit)
     for (let q = b; q <= maxB && q < nb; q++) head[q] = -1;
     this.settled = cnt;
+  }
+}
+
+/**
+ * Resumable forward multi-source road search for the response layers: exactly roadSearch's model (search.ts: Dial
+ * buckets of width QB, edge a->b = (t[a] + t[b]) / 2 + RAMP_PENALTY on highway <-> road, seed labels, `limit`) and
+ * therefore the same labels, but settled in chunks of at most `maxSettle` nodes, so one scheduler step stays bounded
+ * on any graph size (a fully paved 256² map has 65k road nodes).
+ */
+export class ChunkedSearch {
+  dist: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private done: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  private head: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private enext: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private enode: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private en = 0;
+  private b = 0;
+  private nb = 0;
+  private limit = 0;
+  private n = 0;
+  /** nodes settled so far by this search */
+  settled = 0;
+
+  start(n: number, seeds: Seeds, limit: number): void {
+    this.n = n;
+    if (this.dist.length < n) {
+      const c = n + (n >> 3) + 16;
+      this.dist = new Float64Array(c);
+      this.done = new Uint8Array(c);
+    }
+    this.dist.fill(Infinity, 0, n);
+    this.done.fill(0, 0, n);
+    if (!(limit < 2000)) limit = 2000;
+    this.limit = limit;
+    const invQ = 1 / QB;
+    this.nb = Math.ceil(limit * invQ) + 2;
+    if (this.head.length < this.nb) this.head = new Int32Array(this.nb + 64);
+    this.head.fill(-1, 0, this.nb);
+    // entries: seeds + one per improving relaxation (<= 4 per settled node)
+    const cap = 4 * n + seeds.n + 64;
+    if (this.enext.length < cap) {
+      const c = cap + (cap >> 2);
+      this.enext = new Int32Array(c);
+      this.enode = new Int32Array(c);
+    }
+    this.en = 0;
+    this.b = 0;
+    this.settled = 0;
+    const dist = this.dist, head = this.head, enext = this.enext, enode = this.enode;
+    for (let s = 0; s < seeds.n; s++) {
+      const v = seeds.node[s];
+      const l = seeds.label[s];
+      if (v < 0 || v >= n || !(l <= limit)) continue;
+      if (l < dist[v]) {
+        dist[v] = l;
+        const bi = (l * invQ) | 0;
+        enode[this.en] = v;
+        enext[this.en] = head[bi];
+        head[bi] = this.en++;
+      }
+    }
+  }
+
+  /** settle up to `maxSettle` more nodes; true when the search is complete */
+  step(g: RoadGraph, adj: Int32Array, time: Float32Array, maxSettle: number): boolean {
+    const nb = this.nb, limit = this.limit, n = this.n;
+    const dist = this.dist, done = this.done, head = this.head, enext = this.enext, enode = this.enode;
+    const invQ = 1 / QB;
+    const type = g.type;
+    const HW = Network.Highway, RP = RAMP_PENALTY;
+    let en = this.en;
+    let cnt = this.settled;
+    const stopAt = cnt + maxSettle;
+    let b = this.b;
+    outer: for (; b < nb; b++) {
+      let e = head[b];
+      while (e >= 0) {
+        if (cnt >= stopAt) { head[b] = e; break outer; } // resume here (pushes never land in the current bucket)
+        const u = enode[e];
+        e = enext[e];
+        if (u >= n || done[u] === 1) continue;
+        done[u] = 1;
+        cnt++;
+        const key = dist[u];
+        const tu = time[u];
+        const hu = type[u] === HW;
+        const base = u * 4;
+        for (let k = 0; k < 4; k++) {
+          const v = adj[base + k];
+          if (v < 0 || done[v] === 1) continue;
+          let c = 0.5 * (tu + time[v]);
+          if (hu !== (type[v] === HW)) c += RP;
+          const nd = key + c;
+          if (nd < dist[v] && nd <= limit) {
+            dist[v] = nd;
+            const bi = (nd * invQ) | 0;
+            const bb = bi > b ? bi : b + 1;
+            enode[en] = v;
+            enext[en] = head[bb];
+            head[bb] = en++;
+          }
+        }
+      }
+      head[b] = -1;
+    }
+    this.b = b;
+    this.en = en;
+    this.settled = cnt;
+    return b >= nb;
   }
 }
 
@@ -482,8 +591,8 @@ interface Persist {
   gen?: Partial<Record<GenKind, [number[], number[]]>> & { plantF?: number };
   /** station-set version seen by the incidents (restored so a loaded game does not retry uncovered incidents early) */
   stVer?: number;
-  /** monthly weight pass in progress: next row band, plant factor, dense per-block sums per kind */
-  genBuild?: { slice: number; plantF: number; acc: [number[], number[], number[], number[]] };
+  /** monthly weight pass in progress: next slice (of `n`), plant factor, dense per-block sums per kind */
+  genBuild?: { slice: number; n?: number; plantF: number; acc: [number[], number[], number[], number[]] };
 }
 
 /** generated kinds (daily Poisson draw over monthly candidate weights) */
@@ -492,8 +601,9 @@ type GenKind = (typeof GEN_KINDS)[number];
 /** generation blocks (cells): monthly weights are summed per block (saved, so a loaded game draws the same incidents);
  *  the building inside the drawn block is picked from its current weights */
 const GEN_B = 16;
-/** the monthly weight pass is spread over this many days (row bands) */
-const GEN_SLICES = 3;
+/** the monthly weight pass is spread over this many days (building-list ranges + highway row bands): ~2.5k
+ *  buildings a day on a 20k-building city, so no single day carries the whole pass */
+const GEN_SLICES = 8;
 
 /** per-block monthly incident rates of one kind (sparse, block index ascending); saved as [blocks[], weights[]] */
 class BlockWeights {
@@ -582,15 +692,21 @@ export class EmergencySystem implements SimSystem {
   private nodeSlack: Float32Array<ArrayBuffer>[] = [new Float32Array(0), new Float32Array(0), new Float32Array(0)];
   private hasStation = [false, false, false];
   private respComputed = false;
-  private S = new Search();
+  /** response refresh: siren link times frozen for the whole sequence, the chunked station search of the current
+   *  responder (started or not), the building-fill cursor */
+  private respTm: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private cs = new ChunkedSearch();
+  private csActive = false;
+  private respBCur = 0;
   private seeds = new Seeds();
-  private heap = new MinHeap(64);
   // caches
   private boosts: CrimeBoost[] = [];
   /** state the boosts / pollution caches were built for */
   private cacheState: CityState | null = null;
   private polls: EmergencyPollutionSource[] = [];
   private optCache = new Map<number, { day: number; ver: number; stVer: number; eta: Map<number, number> }>();
+  /** per-responder on-scene unit-days of the incident being processed (scratch) */
+  private udBuf = new Float64Array(3);
   /** profiling: ms spent in daily() (last / total) */
   lastDailyMs = 0;
 
@@ -677,7 +793,8 @@ export class EmergencySystem implements SimSystem {
       if (raw.gen && typeof raw.gen === 'object') p.gen = raw.gen;
       if (typeof raw.stVer === 'number') p.stVer = raw.stVer;
       const gb = raw.genBuild;
-      if (gb && typeof gb === 'object' && Array.isArray(gb.acc) && gb.acc.length === 4 && gb.acc.every((a) => Array.isArray(a))) p.genBuild = gb;
+      // a pass saved with another slice count is dropped (the saved weights of the last complete pass stay in use)
+      if (gb && typeof gb === 'object' && gb.n === GEN_SLICES && Array.isArray(gb.acc) && gb.acc.length === 4 && gb.acc.every((a) => Array.isArray(a))) p.genBuild = gb;
     }
     this.p = p;
     this.rng = new RNG(((st.config.seed ^ 0x3e41c) >>> 0) || 1);
@@ -1599,6 +1716,7 @@ export class EmergencySystem implements SimSystem {
     const zero = () => new Array<number>(nb * nb).fill(0);
     this.p.genBuild = {
       slice: 0,
+      n: GEN_SLICES,
       plantF: Math.fround(EMERG_PLANT_P * (1.5 - Math.min(1.2, fundingFactor(st, 'utilities')))),
       acc: [zero(), zero(), zero(), zero()],
     };
@@ -1696,10 +1814,13 @@ export class EmergencySystem implements SimSystem {
     ids.length = 0;
     ws.length = 0;
     let t = 0;
+    const bld = st.building;
     for (let z = bz; z < Math.min(N, bz + GEN_B); z++) for (let x = bx; x < Math.min(N, bx + GEN_B); x++) {
       const i = z * N + x;
-      const id = st.building[i];
+      const id = bld[i];
       if (id >= 0) {
+        // footprint cells right of / below the anchor (top-left) cell belong to the same building: skip them cheaply
+        if ((x > 0 && bld[i - 1] === id) || (z > 0 && bld[i - N] === id)) continue;
         const b = st.buildings.get(id);
         if (!b || b.x !== x || b.z !== z) continue; // anchor cell only
         const w = this.rateOf(st, k, b);
@@ -1920,7 +2041,8 @@ export class EmergencySystem implements SimSystem {
     for (let k = 0; k < this.list.length; k++) {
       const inc = this.list[k];
       // on-scene work credit per responder since the last processing
-      let ud = [0, 0, 0];
+      const ud = this.udBuf;
+      ud[0] = 0; ud[1] = 0; ud[2] = 0;
       for (const id of inc.units) {
         const v = this.vById.get(id);
         if (!v || v.state !== 'onScene') continue;
@@ -2014,7 +2136,7 @@ export class EmergencySystem implements SimSystem {
     if (inc.need.fire > this.assigned(inc, 'fire')) inc.retry = Math.min(inc.retry, st.day);
   }
 
-  private workStep(sim: Simulation, inc: Incident, ud: number[]): void {
+  private workStep(sim: Simulation, inc: Incident, ud: ArrayLike<number>): void {
     const st = sim.state;
     const now = st.day;
     const kind = inc.kind;
@@ -2245,10 +2367,16 @@ export class EmergencySystem implements SimSystem {
   }
 
   private rebuildCaches(st: CityState): void {
+    this.cacheState = st;
+    if (this.p.effects.length === 0 && !this.list.some(hasEffect)) {
+      // nothing splats crime / pollution (the common case): keep (or reset to) empty caches without allocating
+      if (this.boosts.length) this.boosts = [];
+      if (this.polls.length) this.polls = [];
+      return;
+    }
     const c = effectsOf(this.list, this.p.effects, st.day);
     this.boosts = c.boosts;
     this.polls = c.polls;
-    this.cacheState = st;
   }
 
   /** crime boosts of active riots / failed incidents (crime.ts). Before init() on a (re)loaded state — systems that
@@ -2276,18 +2404,23 @@ export class EmergencySystem implements SimSystem {
     return true;
   }
 
-  /** estimated ms of the next step (reference: 256² stress city, 36k road nodes, 20k buildings) */
+  /**
+   * estimated ms of the next step (calibrated on the 256² stress city: 36k road nodes, 20k buildings). The sequence is
+   * 3 station searches (one per responder, EMERG_SEARCH_CHUNK settled nodes per step), 1 land fill, building fills of
+   * EMERG_FILL_CHUNK buildings per step — every step stays bounded on any map.
+   */
   private respCost(): number {
-    const nf = Math.max(0.05, this.g.n / 36000);
-    if (this.respStep < 0) return 0.1 + EMERG_SEARCH_COST * Math.min(1.6, nf);
-    if (this.respStep < 3) {
-      // no station of this responder: the search step only fills the node slack
-      const r = RESPONDERS[this.respStep];
-      if (!this.stations.some((s) => s.responder === r && s.units > 0)) return 0.1 + 0.1 * Math.min(1.6, nf);
-      return 0.1 + EMERG_SEARCH_COST * Math.min(1.6, nf);
+    const n = this.g.n;
+    if (this.respStep < 0 || this.respStep < 3) {
+      const r = RESPONDERS[Math.max(0, this.respStep)];
+      // no station of this responder: the step only fills the node slack
+      if (this.respStep >= 0 && !this.csActive && !this.stations.some((s) => s.responder === r && s.units > 0)) return 0.1 + 0.1 * Math.max(0.05, n / 36000);
+      const left = this.csActive ? Math.max(0, n - this.cs.settled) : n;
+      return 0.1 + (EMERG_SEARCH_COST * Math.min(EMERG_SEARCH_CHUNK, Math.max(1000, left))) / 36000;
     }
-    if (this.respStep === 3) return 0.1 + EMERG_FILL_COST * Math.max(0.05, this.g.C / 65536);
-    return 0.1 + EMERG_FILL_COST * Math.max(0.05, (this.sim?.state.buildings.size ?? 0) / 20000);
+    if (this.respStep === 3) return 0.1 + EMERG_FILL_CELLS_COST * Math.max(0.05, this.g.C / 65536);
+    const nbld = this.sim?.state.buildings.size ?? 0;
+    return 0.1 + (EMERG_FILL_BLD_COST * Math.max(500, Math.min(EMERG_FILL_CHUNK, nbld - this.respBCur))) / 20000;
   }
 
   private respTaskStep(sim: Simulation): void {
@@ -2300,10 +2433,18 @@ export class EmergencySystem implements SimSystem {
       this.respVer = this.g.version;
       this.respDirty = false;
       this.respNetOnly = false;
+      this.csActive = false;
+      this.respBCur = 0;
+      // freeze the siren times for the whole sequence (dispatch searches may refresh this.tm in between)
+      const n = this.g.n;
+      if (this.respTm.length < n) this.respTm = new Float32Array(n + (n >> 3) + 16);
+      this.respTm.set(this.tm.subarray(0, n));
     }
-    if (this.respStep < 3) this.respSearch(st, RESPONDERS[this.respStep]);
+    let next = true;
+    if (this.respStep < 3) next = this.respSearch(RESPONDERS[this.respStep]);
     else if (this.respStep === 3) this.respFillCells(st);
-    else this.respFillBuildings(st);
+    else next = this.respFillBuildings(st);
+    if (!next) return; // the same phase continues next step
     this.respStep++;
     if (this.respStep >= 5) {
       this.respStep = -1;
@@ -2313,33 +2454,40 @@ export class EmergencySystem implements SimSystem {
     }
   }
 
-  private respSearch(st: CityState, r: Responder): void {
+  /** one chunk of responder r's station search; true when its node slack is complete */
+  private respSearch(r: Responder): boolean {
     const g = this.g;
     const ri = R_INDEX[r];
     const n = g.n;
     if (this.nodeSlack[ri].length < n) this.nodeSlack[ri] = new Float32Array(n + (n >> 3) + 16);
     const slack = this.nodeSlack[ri];
-    const seeds = this.seeds;
-    seeds.clear();
-    let any = false;
-    for (let k = 0; k < this.stations.length; k++) {
-      const s = this.stations[k];
-      if (s.responder !== r || s.units <= 0) continue;
-      any = true;
-      const label = Math.max(0, EMERG_RMAX - s.range);
-      for (const v of s.nodes) seeds.push(v, label, k);
+    const cs = this.cs;
+    if (!this.csActive) {
+      const seeds = this.seeds;
+      seeds.clear();
+      let any = false;
+      for (let k = 0; k < this.stations.length; k++) {
+        const s = this.stations[k];
+        if (s.responder !== r || s.units <= 0) continue;
+        any = true;
+        const label = Math.max(0, EMERG_RMAX - s.range);
+        for (const v of s.nodes) seeds.push(v, label, k);
+      }
+      this.hasStation[ri] = any;
+      if (!any || n === 0) { slack.fill(-EMERG_RMAX, 0, n); return true; }
+      cs.start(n, seeds, EMERG_RMAX + EMERG_SLOW_MARGIN);
+      this.csActive = true;
     }
-    this.hasStation[ri] = any;
-    if (!any || n === 0) { slack.fill(-EMERG_RMAX, 0, n); return; }
-    const S = this.S;
-    roadSearch(g, g.fwd, this.tm, S, this.heap, seeds, EMERG_RMAX + EMERG_SLOW_MARGIN);
-    const dist = S.dist;
+    if (!cs.step(g, g.fwd, this.respTm, EMERG_SEARCH_CHUNK)) return false;
+    this.csActive = false;
+    const dist = cs.dist;
     for (let v = 0; v < n; v++) {
       const d = dist[v];
       if (d === Infinity) { slack[v] = -EMERG_RMAX; continue; }
-      const s = EMERG_RMAX - d;
-      slack[v] = s > -EPS && s < 0 ? 0 : s;
+      const sl = EMERG_RMAX - d;
+      slack[v] = sl > -EPS && sl < 0 ? 0 : sl;
     }
+    return true;
   }
 
   private respLayers(st: CityState): [Float32Array, Float32Array, Float32Array] {
@@ -2351,36 +2499,65 @@ export class EmergencySystem implements SimSystem {
     const L = this.respLayers(st);
     const noc = this.g.nodeOfCell;
     if (noc.length !== st.cells) { for (const l of L) l.fill(RESP_NONE); return; }
+    const has = this.hasStation;
+    const h0 = has[0], h1 = has[1], h2 = has[2];
+    // no station of a type: the whole layer (buildings included) is RESP_NONE
+    for (let ri = 0; ri < 3; ri++) if (!has[ri]) L[ri].fill(RESP_NONE);
+    if (!h0 && !h1 && !h2) return;
     const N = st.size;
     const bld = st.building;
     const NONE = -EMERG_RMAX;
-    for (let ri = 0; ri < 3; ri++) {
-      const layer = L[ri];
-      if (!this.hasStation[ri]) { layer.fill(RESP_NONE); continue; }
-      const slack = this.nodeSlack[ri];
-      for (let z = 0; z < N; z++) {
-        const row = z * N;
-        for (let x = 0; x < N; x++) {
-          const i = row + x;
-          if (bld[i] >= 0) continue; // buildings: respFillBuildings
-          let best = NONE;
-          const own = noc[i];
-          if (own >= 0 && slack[own] > best) best = slack[own];
-          if (x > 0) { const v = noc[i - 1]; if (v >= 0 && slack[v] > best) best = slack[v]; }
-          if (x < N - 1) { const v = noc[i + 1]; if (v >= 0 && slack[v] > best) best = slack[v]; }
-          if (z > 0) { const v = noc[i - N]; if (v >= 0 && slack[v] > best) best = slack[v]; }
-          if (z < N - 1) { const v = noc[i + N]; if (v >= 0 && slack[v] > best) best = slack[v]; }
-          layer[i] = best;
+    const s0 = this.nodeSlack[0], s1 = this.nodeSlack[1], s2 = this.nodeSlack[2];
+    const l0 = L[0], l1 = L[1], l2 = L[2];
+    for (let z = 0; z < N; z++) {
+      const row = z * N;
+      for (let x = 0; x < N; x++) {
+        const i = row + x;
+        if (bld[i] >= 0) continue; // buildings: respFillBuildings
+        let b0 = NONE, b1 = NONE, b2 = NONE;
+        let v = noc[i];
+        if (v >= 0) {
+          if (s0[v] > b0) b0 = s0[v];
+          if (s1[v] > b1) b1 = s1[v];
+          if (s2[v] > b2) b2 = s2[v];
         }
+        if (x > 0 && (v = noc[i - 1]) >= 0) {
+          if (s0[v] > b0) b0 = s0[v];
+          if (s1[v] > b1) b1 = s1[v];
+          if (s2[v] > b2) b2 = s2[v];
+        }
+        if (x < N - 1 && (v = noc[i + 1]) >= 0) {
+          if (s0[v] > b0) b0 = s0[v];
+          if (s1[v] > b1) b1 = s1[v];
+          if (s2[v] > b2) b2 = s2[v];
+        }
+        if (z > 0 && (v = noc[i - N]) >= 0) {
+          if (s0[v] > b0) b0 = s0[v];
+          if (s1[v] > b1) b1 = s1[v];
+          if (s2[v] > b2) b2 = s2[v];
+        }
+        if (z < N - 1 && (v = noc[i + N]) >= 0) {
+          if (s0[v] > b0) b0 = s0[v];
+          if (s1[v] > b1) b1 = s1[v];
+          if (s2[v] > b2) b2 = s2[v];
+        }
+        if (h0) l0[i] = b0;
+        if (h1) l1[i] = b1;
+        if (h2) l2[i] = b2;
       }
     }
   }
 
-  /** building footprints: best slack over the perimeter road nodes (= the dispatch search seeds), all three layers */
-  private respFillBuildings(st: CityState): void {
+  /** building footprints: best slack over the perimeter road nodes (= the dispatch search seeds), all three layers;
+   *  EMERG_FILL_CHUNK buildings of the building list per step. Returns true when every building is done. */
+  private respFillBuildings(st: CityState): boolean {
     const L = this.respLayers(st);
     const noc = this.g.nodeOfCell;
-    if (noc.length !== st.cells) return;
+    if (noc.length !== st.cells) return true;
+    const list = buildingList(st);
+    const q0 = Math.min(this.respBCur, list.length);
+    const q1 = Math.min(list.length, q0 + EMERG_FILL_CHUNK);
+    this.respBCur = q1;
     const N = st.size;
     const bld = st.building;
     const NONE = -EMERG_RMAX;
@@ -2388,7 +2565,8 @@ export class EmergencySystem implements SimSystem {
     const s0 = this.nodeSlack[0], s1 = this.nodeSlack[1], s2 = this.nodeSlack[2];
     const l0 = L[0], l1 = L[1], l2 = L[2];
     let tmp = this.tmpNodes;
-    for (const b of buildingList(st)) {
+    for (let q = q0; q < q1; q++) {
+      const b = list[q];
       const need = 2 * (b.w + b.d) + 4;
       if (tmp.length < need) tmp = this.tmpNodes = new Int32Array(need + 16);
       const c = perimeterNodes(noc, N, b, tmp, 0, tmp.length);
@@ -2409,6 +2587,7 @@ export class EmergencySystem implements SimSystem {
         l0[i] = b0; l1[i] = b1; l2[i] = b2;
       }
     }
+    return q1 >= list.length;
   }
 
   /** response layers computed at least once (init) */
@@ -2417,7 +2596,12 @@ export class EmergencySystem implements SimSystem {
   }
 }
 
-/** road nodes around a cell without a building: its own node (road cell) + 4-neighbour road nodes */
+/** an active incident with a crime boost / pollution source (effectsOf) */
+function hasEffect(inc: Incident): boolean {
+  const k = inc.kind;
+  return (k === 'riot' || k === 'prisonRiot' || k === 'spill' || k === 'industrial') && inc.state !== 'resolved' && inc.state !== 'failed';
+}
+
 /** crime boosts / pollution sources of active incidents and lasting after-effects */
 function effectsOf(list: readonly Incident[], effects: readonly Effect[], day: number): { boosts: CrimeBoost[]; polls: EmergencyPollutionSource[] } {
   const boosts: CrimeBoost[] = [];
@@ -2444,6 +2628,7 @@ function savedEffects(st: CityState): { boosts: CrimeBoost[]; polls: EmergencyPo
   return effectsOf(Array.isArray(raw.incidents) ? raw.incidents : [], Array.isArray(raw.effects) ? raw.effects : [], st.day);
 }
 
+/** road nodes around a cell without a building: its own node (road cell) + 4-neighbour road nodes */
 function cellSeeds(g: RoadGraph, N: number, x: number, z: number, out: Int32Array): number {
   let c = 0;
   const noc = g.nodeOfCell;

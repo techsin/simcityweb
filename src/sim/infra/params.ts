@@ -415,9 +415,13 @@ export const SOLAR_CLIMATE: Readonly<Record<string, number>> = { temperate: 1, d
 /** pumps: output x (1 - PUMP_POLL_LOSS x intake pollution x (treatment plant in city ? PUMP_TREATED_LOSS : 1)) */
 export const PUMP_POLL_LOSS = 0.6;
 export const PUMP_TREATED_LOSS = 0.35;
-/** sea = water component touching the map edge, > SEA_MIN_SHARE of the map, with a cell >= SEA_MIN_DEPTH from land */
+/**
+ * sea = water component > SEA_MIN_SHARE of the map, with a cell >= SEA_MIN_DEPTH from land, running along at least
+ * SEA_MIN_EDGE_SHARE of one map side (generated coasts >= ~79 %, islands 100 %; river mouths <= ~12 %: rivers stay fresh)
+ */
 export const SEA_MIN_SHARE = 0.02;
 export const SEA_MIN_DEPTH = 6;
+export const SEA_MIN_EDGE_SHARE = 0.25;
 /** pumps drawing only sea water are brackish (no fresh-water bonus); desalination away from the sea barely works */
 export const SEA_PUMP_OUT = 0.6;
 export const DESAL_INLAND_OUT = 0.2;
@@ -432,6 +436,12 @@ export const YOUTH_CRIME = 0.08;
 export const YOUTH_CRIME_MAX = 0.15;
 export const YOUTH_REF_TEENS = 0.07;
 export const YOUTH_PLAY = 0.6;
+/**
+ * youth crime grows with the town (balance-neutral rule §0: a mature city with typical high-school coverage sits at ~0;
+ * villages that cannot afford a high school yet are spared): x 0 below YOUTH_POP_START residents, x 1 from YOUTH_POP_FULL
+ */
+export const YOUTH_POP_START = 2000;
+export const YOUTH_POP_FULL = 10000;
 /** R unemployment term: LOCAL_UNEMP_R x (0.5 city unemployment + 0.5 (1 - worker access)); C / I: LOCAL_UNEMP_CI x city */
 export const LOCAL_UNEMP_R = 0.5;
 export const LOCAL_UNEMP_CI = 0.2;
@@ -529,9 +539,15 @@ export const INDUSTRIAL_POLL = { air: 0.25, water: 0, radius: 3 } as const;
 /** medical survival = MED_SURVIVE - MED_DELAY_LOSS x smoothstep(5, 16, D days) (- 0.1 when the hospital is overcrowded) */
 export const MED_SURVIVE = 0.97;
 export const MED_DELAY_LOSS = 0.67;
-/** INFRA scheduler task cost (estimated ms on the 256² reference city): one responder search / the land fill */
+/** response-layer task (scheduler 'emergency.response'): station searches settle at most EMERG_SEARCH_CHUNK road
+ *  nodes per step and the building fill covers EMERG_FILL_CHUNK buildings per step, so every step stays bounded on
+ *  any map. Estimated ms (measured on the 256² stress city): EMERG_SEARCH_COST per 36k settled nodes,
+ *  EMERG_FILL_CELLS_COST per 65k cells (the land fill of all three layers), EMERG_FILL_BLD_COST per 20k buildings */
+export const EMERG_SEARCH_CHUNK = 24000;
+export const EMERG_FILL_CHUNK = 12000;
 export const EMERG_SEARCH_COST = 1.6;
-export const EMERG_FILL_COST = 1.2;
+export const EMERG_FILL_CELLS_COST = 1.5;
+export const EMERG_FILL_BLD_COST = 1.5;
 // §EMERGENCY end
 
 // ---------------------------------------------------------------------------------------------- §FACILITIES (owner WP7)

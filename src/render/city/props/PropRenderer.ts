@@ -4,9 +4,10 @@
  * power lines can be replaced independently.
  *
  * Culling / LOD: per-pass draw lists (main view + shadow cascade 0; street / median trees also cascade 1, everything
- * else is thinner than a far-cascade texel),
- * and a per-tile distance LOD for small props: full model within `lodFull`, a ~16-triangle proxy (propLod.ts) up to
- * `lodDistance`, hidden beyond. Pylons always draw the full model.
+ * else is thinner than a far-cascade texel). Instances sit in one of three tile sets per map tile (small hardware /
+ * trees / pylons) so the batch skips whole classes per tile: hardware in the far cascade, small props of tiles beyond
+ * `lodDistance` (disabled tiles, no per-instance work). Small props use a per-tile distance LOD: full model within
+ * `lodFull`, a ~16-triangle proxy (propLod.ts) up to `lodDistance`, hidden beyond. Pylons always draw the full model.
  */
 import * as THREE from 'three';
 import { getModelGeometry, hasModel } from '../../../assets/registry';
@@ -154,6 +155,10 @@ export class PropRenderer {
   private tileBig: Set<number>[];
   /** per tile LOD state of small props: 0 hidden, 1 proxy, 2 full */
   private near: Uint8Array;
+  /** geometry state (1 proxy, 2 full) last applied to a tile's small props (a hidden tile keeps its geometries) */
+  private applied: Uint8Array;
+  /** map tiles (culler.tiles^2); batch tile id = tile + T * class (0 hardware, 1 trees, 2 pylons) */
+  private T: number;
   /** small props (street trees, lights, signals) are hidden beyond this camera distance (m) */
   lodDistance = 1400;
   /** ... and drawn with their full model within this distance (proxy in between) */
@@ -180,12 +185,14 @@ export class PropRenderer {
     this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 17, 'props');
     this.batch.mesh.castShadow = true;
     this.batch.mesh.receiveShadow = true;
-    // cascades per instance (setShadowCascades): trees into both, thin hardware into cascade 0 only
-    this.batch.enablePassCulling({ culler, shadowMask: 0b11 });
+    // cascades per instance (setShadowCascades): trees into both, thin hardware into cascade 0 only; 3 tile sets
     const T = culler.tiles * culler.tiles;
+    this.T = T;
+    this.batch.enablePassCulling({ culler, shadowMask: 0b11, tileSets: 3, coarse: true });
     this.tileIds = Array.from({ length: T }, () => new Set<number>());
     this.tileBig = Array.from({ length: T }, () => new Set<number>());
     this.near = new Uint8Array(T).fill(2);
+    this.applied = new Uint8Array(T).fill(2);
     const pg = new THREE.PlaneGeometry(2, 2);
     pg.rotateX(-Math.PI / 2);
     this.poolMat = new THREE.ShaderMaterial({
@@ -235,16 +242,23 @@ export class PropRenderer {
         const n = d < f ? 2 : d < h ? 1 : 0;
         if (n !== cur) {
           this.near[i] = n;
-          for (const id of this.tileIds[i]) this.applyLod(id, n);
+          this.applyTile(i, n);
         }
       }
     }
   }
 
-  private applyLod(id: number, state: number): void {
-    this.batch.setVisible(id, state > 0);
-    const g = this.idGeo.get(id);
-    if (g && state > 0) this.batch.setGeometry(id, state === 2 ? g[0] : g[1]);
+  /** hide / show a tile's small props (whole tile sets, no per-instance work) and swap proxy <-> full geometry */
+  private applyTile(i: number, state: number): void {
+    const T = this.T;
+    this.batch.setTileEnabled(i, state > 0);
+    this.batch.setTileEnabled(i + T, state > 0);
+    if (state === 0 || this.applied[i] === state) return;
+    this.applied[i] = state;
+    for (const id of this.tileIds[i]) {
+      const g = this.idGeo.get(id);
+      if (g) this.batch.setGeometry(id, state === 2 ? g[0] : g[1]);
+    }
   }
 
   /** glows are only worth drawing at night */
@@ -306,16 +320,19 @@ export class PropRenderer {
       this.batch.setMatrix(id, this.m4);
       const tile = this.culler.tileOfWorld(p.x, p.z);
       const big = p.model === 'util_power_pylon';
+      const tree = p.model.startsWith('tree_') || p.model === 'bush';
       (big ? this.tileBig : this.tileIds)[tile].add(id);
       this.idTile.set(id, tile);
-      this.batch.setTile(id, tile);
       // street / median trees are big enough to shadow the far cascade too; poles, lamps, signals, gates and the
       // pylon lattice are thinner than a far-cascade texel and cast into cascade 0 (or the single map) only
-      this.batch.setShadowCascades(id, p.model.startsWith('tree_') || p.model === 'bush' ? 0b11 : 0b01);
+      this.batch.setShadowCascades(id, tree ? 0b11 : 0b01);
+      this.batch.setTile(id, tile + this.T * (big ? 2 : tree ? 1 : 0));
       if (!big) {
         const lod = this.lodMap.get(gid) ?? gid;
-        if (lod !== gid) this.idGeo.set(id, [gid, lod]);
-        this.applyLod(id, this.near[tile]);
+        if (lod !== gid) {
+          this.idGeo.set(id, [gid, lod]);
+          if (this.applied[tile] === 1) this.batch.setGeometry(id, lod);
+        }
       }
       g.ids.push(id);
     }
@@ -332,7 +349,7 @@ export class PropRenderer {
       if (lod !== gid) this.idGeo.set(id, [gid, lod]);
       else this.idGeo.delete(id);
       const tile = this.idTile.get(id);
-      const st = tile === undefined ? 2 : this.near[tile];
+      const st = tile === undefined ? 2 : this.applied[tile];
       this.batch.setGeometry(id, st === 1 ? lod : gid);
     }
   }

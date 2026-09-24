@@ -948,7 +948,8 @@ export class VehicleRenderer {
       shown++;
       const fx = this.dx, fz = this.dz;
       const half = this.vlen[v] * 0.4;
-      const yF = surf.y(x + fx * half, z + fz * half), yB = surf.y(x - fx * half, z - fz * half);
+      // (heading-aware: cars crossing under a highway overpass stay on the ground, highway traffic rides the deck)
+      const yF = surf.y(x + fx * half, z + fz * half, fx, fz), yB = surf.y(x - fx * half, z - fz * half, fx, fz);
       const y = (yF + yB) * 0.5;
       this.writeMatrix(data, this.inst[v] * 16, x, y, z, fx, (yF - yB) / (2 * half), fz);
       if (night && hc < headCap) {

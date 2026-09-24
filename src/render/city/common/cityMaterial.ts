@@ -69,11 +69,15 @@ function patch(shader: THREE.WebGLProgramParametersWithUniforms, ghost: boolean)
       float _fire = mod(floor(_cityFlags / 4.0), 2.0);
       totalEmissiveRadiance += _sel * vec3(0.25, 0.6, 1.0) * (0.55 + 0.3 * sin(uTime * 5.0));
       if (_fire > 0.5) {
-        // patchy flickering glow (strongest at night), like fire behind windows
+        // patchy flickering glow (strongest at night), like fire behind windows: soft patches on the building's walls
+        // (roofs less), none on the lot's ground (lawns / pavement washed salmon-pink), moderate at night so the glow
+        // stays orange under the night exposure + bloom instead of blowing out
         vec3 _fp = vObjPos;
-        float _patch = smoothstep(0.35, 0.85, sin(_fp.x * 0.45 + uTime * 0.7) * sin(_fp.y * 0.35 - uTime * 0.9) * sin(_fp.z * 0.4 + 1.3) * 0.5 + 0.5);
+        float _patch = smoothstep(0.2, 0.95, sin(_fp.x * 0.45 + uTime * 0.7) * sin(_fp.y * 0.35 - uTime * 0.9) * sin(_fp.z * 0.4 + 1.3) * 0.5 + 0.5);
         float _fl = 0.65 + 0.25 * sin(uTime * 11.0 + _fp.y * 0.7) + 0.15 * sin(uTime * 23.0 + _fp.x);
-        totalEmissiveRadiance += vec3(1.0, 0.3, 0.04) * _patch * _fl * mix(0.35, 2.2, uNight);
+        float _wall = mix(0.35, 1.0, 1.0 - smoothstep(0.5, 0.9, abs(normalize(vObjNormal).y)));
+        float _above = smoothstep(0.6, 2.4, _fp.y);
+        totalEmissiveRadiance += vec3(1.0, 0.36, 0.06) * _patch * _fl * _wall * _above * mix(0.35, 0.9, uNight);
       }
       ${ghost ? `{
         // bright fresnel rim + gentle pulse so the ghost reads clearly on any background

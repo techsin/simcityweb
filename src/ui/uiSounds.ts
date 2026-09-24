@@ -196,7 +196,11 @@ function onInput(e: Event): void {
   if (!el) return;
   const a = getAudio();
   if (!a) return;
+  // first event on a slider never pressed with the pointer (keyboard steps): the value before it is unknown - it
+  // already holds the new value here, so a state created now must not swallow this first step
+  const fresh = !sliderState.has(el);
   const s = stateOf(el);
+  if (fresh) s.v = NaN;
   const v = Number(el.value);
   if (v === s.v) return;
   s.v = v;

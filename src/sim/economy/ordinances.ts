@@ -36,7 +36,8 @@
  *    'add.rubble.cleanup'     > 0 → burnt rubble is auto-cleared   (economy growth)
  *  'blocks' (definition field): def ids that cannot be built while the ordinance is on (nuclear-free zone).
  */
-import type { CityState } from '../CityState';
+import { BF, type CityState } from '../CityState';
+import { getDef } from '../catalog';
 
 export interface OrdinanceDef {
   id: string;
@@ -189,8 +190,27 @@ export function listOrdinances(state: CityState): OrdinanceInfo[] {
   }));
 }
 
-/** Enable / disable. Returns a reason when refused. (CityActions.setOrdinance wraps this.) */
-export function setOrdinanceEnabled(state: CityState, id: string, enabled: boolean): { ok: boolean; reason?: string; monthly: number } {
+/** operating buildings of defs the ordinance blocks (burnt ones do not count): count, total MW, a display name */
+function standingBlocked(state: CityState, o: OrdinanceDef): { count: number; mw: number; name: string } {
+  let count = 0, mw = 0, name = '';
+  if (!o.blocks?.length) return { count, mw, name };
+  for (const b of state.buildings.values()) {
+    if (!o.blocks.includes(b.def) || (b.flags & BF.Burnt) !== 0) continue;
+    const d = getDef(b.def);
+    count++;
+    mw += d?.powerOut ?? 0;
+    if (!name) name = d?.name ?? b.def;
+  }
+  return { count, mw, name };
+}
+
+/**
+ * Enable / disable. Returns a reason when refused. (CityActions.setOrdinance wraps this.)
+ * An ordinance whose effect keys shut existing buildings down (nuclear-free zone: 'power.nuclear' 0 -> utilities,
+ * WP3-1) is refused while such a building still operates, unless `opts.confirm` is set: the UI asks first (WP5-6) and
+ * enacts again with confirm; `needsConfirm` marks that refusal.
+ */
+export function setOrdinanceEnabled(state: CityState, id: string, enabled: boolean, opts: { confirm?: boolean } = {}): { ok: boolean; reason?: string; monthly: number; needsConfirm?: boolean } {
   const o = BY_ID.get(id);
   if (!o) return { ok: false, reason: `Unknown ordinance "${id}"`, monthly: 0 };
   const list = state.budget.ordinances;
@@ -199,8 +219,14 @@ export function setOrdinanceEnabled(state: CityState, id: string, enabled: boole
   if (enabled) {
     if (has) return { ok: true, monthly };
     if (!ordinanceAvailable(state, o)) return { ok: false, reason: `Needs a population of ${o.unlockPop.toLocaleString('en-US')}`, monthly };
-    // blocked defs cannot be built while enacted; existing ones are shut down by the ordinance's effect keys
-    // ('power.nuclear' 0 -> utilities, WP3-1), so enacting it is always allowed (the UI confirms, WP5-6)
+    if (!opts.confirm) {
+      const s = standingBlocked(state, o);
+      if (s.count > 0) {
+        const what = s.count > 1 ? `${s.count} ${s.name}s` : `the ${s.name}`;
+        const mw = s.mw > 0 ? ` (−${Math.round(s.mw).toLocaleString('en-US')} MW)` : '';
+        return { ok: false, reason: `Demolish ${what} first: this ordinance would shut ${s.count > 1 ? 'them' : 'it'} down${mw}`, monthly, needsConfirm: true };
+      }
+    }
     list.push(id);
   } else {
     if (!has) return { ok: true, monthly: 0 };

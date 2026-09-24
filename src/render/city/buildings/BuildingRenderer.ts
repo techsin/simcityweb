@@ -67,6 +67,8 @@ interface BInst {
   cy: number;
   /** index in BuildingRenderer.list */
   li: number;
+  /** index in its tile's list (-1 = not in a tile) */
+  tp: number;
 }
 
 const POP_TIME = 0.55;
@@ -84,7 +86,23 @@ export function modelIdOf(b: Building): string {
 export class BuildingRenderer {
   readonly batch: DynamicBatch;
   private inst = new Map<number, BInst>();
-  private tiles: Set<number>[];
+  /** per culler tile: its buildings (swap-remove via BInst.tp) */
+  private tiles: BInst[][];
+  /** per tile LOD bookkeeping: 0 / 1 = every building drawn full / as proxy (skipped while that stays true),
+   *  2 = mixed or unknown (evaluated per building); stats: centre bounds + radius range, recomputed when dirty */
+  private tileLod: Uint8Array;
+  private tileLodN: Int32Array;
+  private tileStatDirty: Uint8Array;
+  private tileStat: Float32Array;
+  private lastLodPixels = -1;
+  /** time-sliced sweep: tiles are visited round-robin, at most lodSlice per-building evaluations per frame; a cycle
+   *  (all tiles) restarts whenever the camera moves, so a moving camera costs a bounded amount per frame and LOD
+   *  switches lag by a few frames at most (invisible at ~9 px, and the +-12% hysteresis absorbs it) */
+  lodSlice = 3000;
+  private lodCursor = 0;
+  private lodLeft = 0;
+  /** next sweep ignores lodSlice (flushLod: captures / benchmarks want the settled state now) */
+  private lodFull = false;
   private animating = new Set<number>();
   private m4 = new THREE.Matrix4();
   private q = new THREE.Quaternion();
@@ -119,8 +137,14 @@ export class BuildingRenderer {
     // per-pass lists: the main view and each shadow cascade only draw the buildings inside their own frustum;
     // casters under ~1 shadow texel are skipped (far cascade at far zoom)
     this.batch.enablePassCulling({ culler, minShadowTexels: 1.2 });
+    // nearest buildings first: occluded facades / lots behind them fail the depth test before the (heavy) uber shader
+    this.batch.sortFront = true;
     const T = culler.tiles * culler.tiles;
-    this.tiles = Array.from({ length: T }, () => new Set<number>());
+    this.tiles = Array.from({ length: T }, () => []);
+    this.tileLod = new Uint8Array(T).fill(2);
+    this.tileLodN = new Int32Array(T);
+    this.tileStatDirty = new Uint8Array(T).fill(1);
+    this.tileStat = new Float32Array(T * 8);
   }
 
   setState(state: CityState): void {
@@ -169,6 +193,7 @@ export class BuildingRenderer {
     for (const g of [...this.lodPending.keys()]) this.proxyOf(g, true);
     for (const bi of this.list) if (bi.lodGeom < 0) bi.lodGeom = this.proxyOf(bi.geom, true);
     this.lodDirty = true;
+    this.lodFull = true;
   }
 
   private foundation(): number {
@@ -186,7 +211,9 @@ export class BuildingRenderer {
     for (const bi of this.inst.values()) this.freeInstances(bi);
     this.inst.clear();
     this.list.length = 0;
-    for (const t of this.tiles) t.clear();
+    for (const t of this.tiles) t.length = 0;
+    this.tileLod.fill(2);
+    this.tileStatDirty.fill(1);
     this.animating.clear();
   }
 
@@ -213,7 +240,7 @@ export class BuildingRenderer {
     if (this.inst.has(b.id)) this.remove(b.id);
     const bi: BInst = {
       b, main: -1, site: -1, found: -1, tile: 0, key: '', flags: 0, anim: animate ? POP_TIME : 0, geom: -1,
-      vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, li: this.list.length,
+      vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, li: this.list.length, tp: -1,
     };
     this.inst.set(b.id, bi);
     this.list.push(bi);
@@ -225,7 +252,7 @@ export class BuildingRenderer {
     const bi = this.inst.get(id);
     if (!bi) return;
     this.freeInstances(bi);
-    this.tiles[bi.tile].delete(id);
+    this.tileRemove(bi);
     this.inst.delete(id);
     const last = this.list.pop()!;
     if (last !== bi) { this.list[bi.li] = last; last.li = bi.li; }
@@ -241,7 +268,7 @@ export class BuildingRenderer {
     if (key !== bi.key) {
       const wasCons = bi.key.split('|')[3] === '1';
       this.freeInstances(bi);
-      this.tiles[bi.tile].delete(b.id);
+      this.tileRemove(bi);
       this.build(bi);
       if (wasCons && !bi.vis.constructing && !bi.vis.burnt) {
         bi.anim = POP_TIME * 0.7;
@@ -289,7 +316,6 @@ export class BuildingRenderer {
     const depth = b.baseY - minH;
     if (depth > 0.08) bi.found = this.batch.add(this.foundation());
     bi.tile = this.culler.tileOf(b.x + (b.w >> 1), b.z + (b.d >> 1));
-    this.tiles[bi.tile].add(b.id);
     // flags / tint
     let flags = 0;
     if (abandoned) flags |= IF_WINDOWS_OFF;
@@ -308,6 +334,7 @@ export class BuildingRenderer {
     this.applyColor(bi);
     this.place(bi);
     for (const id of [bi.main, bi.site, bi.found]) if (id >= 0) this.batch.setTile(id, bi.tile);
+    this.tileAdd(bi);
     this.applyVisibility(bi, true);
     this.lodDirty = true;
     this.onVisual?.(bi.vis, b.id);
@@ -375,6 +402,7 @@ export class BuildingRenderer {
       if (k == null) continue;
       const bi = this.inst.get(k);
       if (!bi) continue;
+      this.tileLod[bi.tile] = 2;
       bi.flags = (bi.flags & ~IF_SELECTED) | (k === id ? IF_SELECTED : 0);
       this.applyColor(bi);
     }
@@ -388,45 +416,77 @@ export class BuildingRenderer {
     const c = camera.position;
     const lc = this.lodCam;
     const fovH = heightPx / Math.tan((camera.fov * Math.PI) / 360);
-    if (!this.lodDirty && Math.abs(lc.x - c.x) + Math.abs(lc.y - c.y) + Math.abs(lc.z - c.z) < 0.5 && Math.abs(lc.w - fovH) < 0.5) return;
-    lc.set(c.x, c.y, c.z, fovH);
-    this.lodDirty = false;
+    if (this.lodPixels !== this.lastLodPixels) { this.lastLodPixels = this.lodPixels; this.lodDirty = true; this.tileLod.fill(2); }
+    const T = this.tiles.length;
+    if (this.lodDirty || Math.abs(lc.x - c.x) + Math.abs(lc.y - c.y) + Math.abs(lc.z - c.z) >= 0.5 || Math.abs(lc.w - fovH) >= 0.5) {
+      // (re)start a sweep cycle over every tile from the current cursor
+      lc.set(c.x, c.y, c.z, fovH);
+      this.lodDirty = false;
+      this.lodLeft = T;
+    }
+    if (this.lodLeft <= 0) return;
     // px = radius / dist * H / (2 tan(fov/2)) ; compare squared distances: dist^2 < (r * K / px)^2
     const K = fovH * 0.5;
     const on = this.lodPixels * 0.88, off = this.lodPixels * 1.12;
     const lim = this.lodPixels > 0;
     this.lodDeadline = performance.now() + this.lodBudgetMs;
-    let n = 0, waiting = false;
-    const list = this.list;
-    for (let i = 0; i < list.length; i++) {
-      const bi = list[i];
-      if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) { bi.lod = 0; continue; }
-      const v = bi.vis;
-      const dx = v.cx - c.x, dy = bi.cy - c.y, dz = v.cz - c.z;
-      const d2 = dx * dx + dy * dy + dz * dz;
-      const rk = bi.radius * K;
-      let want = 0;
-      if (lim && bi.b.id !== this.selected) {
-        const px = bi.lod ? off : on;
-        want = d2 * px * px > rk * rk ? 1 : 0;
-      }
-      if (want && bi.lodGeom < 0) {
-        // first time this model is needed as a proxy: build it within the frame budget, else retry next frame
-        const p = this.proxyOf(bi.geom);
-        if (p < 0) { want = 0; waiting = true; }
-        else {
-          bi.lodGeom = p;
-          if (p === bi.geom && bi.siteLod === bi.siteGeom) { bi.lod = 0; continue; }
+    let waiting = false, budget = this.lodFull ? Infinity : this.lodSlice;
+    this.lodFull = false;
+    const st = this.tileStat;
+    const selTile = this.selected != null ? (this.inst.get(this.selected)?.tile ?? -1) : -1;
+    while (this.lodLeft > 0 && budget > 0) {
+      const t = this.lodCursor;
+      this.lodCursor = (t + 1) % T;
+      this.lodLeft--;
+      const list = this.tiles[t];
+      if (!list.length) { this.lodCount -= this.tileLodN[t]; this.tileLodN[t] = 0; continue; }
+      if (this.tileStatDirty[t]) this.tileStats(t);
+      // whole-tile decision from the distance range of its building centres and its radius range: every building
+      // wants its full model (dmax * off <= rmin * K) or every one its proxy (dmin * on > rmax * K), for either
+      // hysteresis state; such a tile is skipped while its applied state already matches
+      const o = t * 8;
+      const ex = Math.max(st[o] - c.x, 0, c.x - st[o + 3]), ey = Math.max(st[o + 1] - c.y, 0, c.y - st[o + 4]), ez = Math.max(st[o + 2] - c.z, 0, c.z - st[o + 5]);
+      const fx = Math.max(Math.abs(c.x - st[o]), Math.abs(c.x - st[o + 3])), fy = Math.max(Math.abs(c.y - st[o + 1]), Math.abs(c.y - st[o + 4])), fz = Math.max(Math.abs(c.z - st[o + 2]), Math.abs(c.z - st[o + 5]));
+      const dmin2 = ex * ex + ey * ey + ez * ez, dmax2 = fx * fx + fy * fy + fz * fz;
+      let uni = 2;
+      if (!lim || dmax2 * off * off <= st[o + 6] * st[o + 6] * K * K) uni = 0;
+      else if (dmin2 * on * on > st[o + 7] * st[o + 7] * K * K) uni = 1;
+      if (uni !== 2 && t !== selTile && this.tileLod[t] === uni) continue;
+      budget -= list.length;
+      let cnt = 0, same = true;
+      for (let i = 0; i < list.length; i++) {
+        const bi = list[i];
+        if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) { bi.lod = 0; continue; }
+        const v = bi.vis;
+        const dx = v.cx - c.x, dy = bi.cy - c.y, dz = v.cz - c.z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        const rk = bi.radius * K;
+        let want = 0;
+        if (lim && bi.b.id !== this.selected) {
+          const px = bi.lod ? off : on;
+          want = d2 * px * px > rk * rk ? 1 : 0;
         }
+        if (want && bi.lodGeom < 0) {
+          // first time this model is needed as a proxy: build it within the frame budget, else retry next frame
+          const p = this.proxyOf(bi.geom);
+          if (p < 0) { want = 0; waiting = true; same = false; }
+          else {
+            bi.lodGeom = p;
+            if (p === bi.geom && bi.siteLod === bi.siteGeom) { bi.lod = 0; continue; }
+          }
+        }
+        if (want !== bi.lod) {
+          bi.lod = want;
+          if (bi.main >= 0) this.batch.setGeometry(bi.main, want ? bi.lodGeom : bi.geom);
+          if (bi.site >= 0) this.batch.setGeometry(bi.site, want ? bi.siteLod : bi.siteGeom);
+        }
+        if (want !== uni) same = false;
+        cnt += want;
       }
-      if (want !== bi.lod) {
-        bi.lod = want;
-        if (bi.main >= 0) this.batch.setGeometry(bi.main, want ? bi.lodGeom : bi.geom);
-        if (bi.site >= 0) this.batch.setGeometry(bi.site, want ? bi.siteLod : bi.siteGeom);
-      }
-      n += want;
+      this.tileLod[t] = uni !== 2 && same && t !== selTile ? uni : 2;
+      this.lodCount += cnt - this.tileLodN[t];
+      this.tileLodN[t] = cnt;
     }
-    this.lodCount = n;
     // proxies still to build for buildings that want them: sweep again next frame even if the camera stays put
     if (waiting) this.lodDirty = true;
   }
@@ -448,9 +508,42 @@ export class BuildingRenderer {
       const b = bi.b;
       if (b.x + b.w < x0 || b.x > x1 || b.z + b.d < z0 || b.z > z1) continue;
       this.freeInstances(bi);
-      this.tiles[bi.tile].delete(b.id);
+      this.tileRemove(bi);
       this.build(bi);
     }
+  }
+
+  private tileAdd(bi: BInst): void {
+    const l = this.tiles[bi.tile];
+    bi.tp = l.length;
+    l.push(bi);
+    this.tileLod[bi.tile] = 2;
+    this.tileStatDirty[bi.tile] = 1;
+  }
+
+  private tileRemove(bi: BInst): void {
+    if (bi.tp < 0) return;
+    const l = this.tiles[bi.tile];
+    const last = l.pop()!;
+    if (last !== bi) { l[bi.tp] = last; last.tp = bi.tp; }
+    bi.tp = -1;
+    this.tileLod[bi.tile] = 2;
+    this.tileStatDirty[bi.tile] = 1;
+  }
+
+  /** centre bounds [x0, y0, z0, x1, y1, z1] and radius range [rmin, rmax] of a tile's buildings */
+  private tileStats(t: number): void {
+    this.tileStatDirty[t] = 0;
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity, r0 = Infinity, r1 = 0;
+    for (const bi of this.tiles[t]) {
+      const v = bi.vis;
+      if (v.cx < x0) x0 = v.cx; if (v.cx > x1) x1 = v.cx;
+      if (bi.cy < y0) y0 = bi.cy; if (bi.cy > y1) y1 = bi.cy;
+      if (v.cz < z0) z0 = v.cz; if (v.cz > z1) z1 = v.cz;
+      if (bi.radius < r0) r0 = bi.radius; if (bi.radius > r1) r1 = bi.radius;
+    }
+    const o = t * 8, st = this.tileStat;
+    st[o] = x0; st[o + 1] = y0; st[o + 2] = z0; st[o + 3] = x1; st[o + 4] = y1; st[o + 5] = z1; st[o + 6] = r0; st[o + 7] = r1;
   }
 
   dispose(): void {

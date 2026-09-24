@@ -119,13 +119,20 @@ export function boxAverage(src: Float32Array, dst: Float32Array, tmp: Float32Arr
  * `coarse` / `coarseTmp` must hold (ceil(N/f))^2 floats.
  */
 let upKey = '';
-let upI0 = new Int32Array(0), upI1 = new Int32Array(0), upT = new Float32Array(0);
-let upZ0 = new Int32Array(0), upZ1 = new Int32Array(0), upTZ = new Float32Array(0);
+let upI0 = new Int32Array(0), upI1 = new Int32Array(0), upT = new Float32Array(0), upW = new Float32Array(0);
+let upZ0 = new Int32Array(0), upZ1 = new Int32Array(0), upTZ = new Float32Array(0), upWZ = new Float32Array(0);
 let upRow = new Float32Array(0);
-/** bilinear upsampling tables for fine x -> coarse (x0, x1, t), shifted by `off` fine cells (sample at x - off) */
-function axisTable(N: number, f: number, M: number, off: number, I0: Int32Array, I1: Int32Array, T: Float32Array): void {
+/**
+ * bilinear upsampling tables for fine x -> coarse (x0, x1, t), shifted by `off` fine cells (sample at x - off).
+ * W = weight of the sample: 1 inside the map, fading to 0 over one cell beyond it — a shifted plume brings no field in
+ * from outside the map (clean air blows in over the upwind edge) instead of repeating the edge values.
+ */
+function axisTable(N: number, f: number, M: number, off: number, I0: Int32Array, I1: Int32Array, T: Float32Array, W: Float32Array): void {
   for (let x = 0; x < N; x++) {
-    const fx = (x - off + 0.5) / f - 0.5;
+    const s = x - off;
+    const out = s < 0 ? -s : s > N - 1 ? s - (N - 1) : 0;
+    W[x] = out >= 1 ? 0 : 1 - out;
+    const fx = (s + 0.5) / f - 0.5;
     let x0 = Math.floor(fx);
     const t = fx - x0;
     let x1 = x0 + 1;
@@ -141,11 +148,11 @@ function upTables(N: number, f: number, M: number, dx: number, dz: number): void
   if (key === upKey) return;
   upKey = key;
   if (upI0.length !== N) {
-    upI0 = new Int32Array(N); upI1 = new Int32Array(N); upT = new Float32Array(N);
-    upZ0 = new Int32Array(N); upZ1 = new Int32Array(N); upTZ = new Float32Array(N);
+    upI0 = new Int32Array(N); upI1 = new Int32Array(N); upT = new Float32Array(N); upW = new Float32Array(N);
+    upZ0 = new Int32Array(N); upZ1 = new Int32Array(N); upTZ = new Float32Array(N); upWZ = new Float32Array(N);
   }
-  axisTable(N, f, M, dx, upI0, upI1, upT);
-  axisTable(N, f, M, dz, upZ0, upZ1, upTZ);
+  axisTable(N, f, M, dx, upI0, upI1, upT, upW);
+  axisTable(N, f, M, dz, upZ0, upZ1, upTZ, upWZ);
   if (upRow.length < M) upRow = new Float32Array(M);
 }
 
@@ -175,25 +182,37 @@ export function blurDown(src: Float32Array, N: number, f: number, r: number, coa
 
 /**
  * upsample a coarse field (from blurDown) bilinearly and ADD gain * density into `acc`, shifted by (dx, dz) fine cells
- * (acc(x, z) += up(x - dx, z - dz): a drifting plume at no extra cost). Values beyond the coarse edge clamp to it.
+ * (acc(x, z) += up(x - dx, z - dz): a drifting plume at no extra cost). Within the map, values beyond the coarse
+ * edge clamp to it; samples from outside the map (a shift over the upwind edge) fade to 0 within one cell.
  */
 export function upsampleAdd(coarse: Float32Array, acc: Float32Array, N: number, f: number, gain: number, dx = 0, dz = 0): void {
   const M = Math.ceil(N / f);
   const g = gain / (f * f);
   upTables(N, f, M, dx, dz);
-  const I0 = upI0, I1 = upI1, T = upT, Z0 = upZ0, Z1 = upZ1, TZ = upTZ;
+  const I0 = upI0, I1 = upI1, T = upT, WX = upW, Z0 = upZ0, Z1 = upZ1, TZ = upTZ, WZ = upWZ;
   const R = upRow;
+  const shiftX = dx !== 0;
   for (let z = 0; z < N; z++) {
-    // vertical interpolation of the two coarse rows into R (pre-scaled by g)
+    const wz = WZ[z];
+    if (wz === 0) continue;
+    // vertical interpolation of the two coarse rows into R (pre-scaled by g and the edge weight)
     const tz = TZ[z];
     const r0 = Z0[z] * M, r1 = Z1[z] * M;
-    const a = (1 - tz) * g, b = tz * g;
+    const a = (1 - tz) * g * wz, b = tz * g * wz;
     for (let m = 0; m < M; m++) R[m] = coarse[r0 + m] * a + coarse[r1 + m] * b;
     const row = z * N;
-    for (let x = 0; x < N; x++) {
-      const t = T[x];
-      const v0 = R[I0[x]];
-      acc[row + x] += v0 + (R[I1[x]] - v0) * t;
+    if (shiftX) {
+      for (let x = 0; x < N; x++) {
+        const t = T[x];
+        const v0 = R[I0[x]];
+        acc[row + x] += (v0 + (R[I1[x]] - v0) * t) * WX[x];
+      }
+    } else {
+      for (let x = 0; x < N; x++) {
+        const t = T[x];
+        const v0 = R[I0[x]];
+        acc[row + x] += v0 + (R[I1[x]] - v0) * t;
+      }
     }
   }
 }

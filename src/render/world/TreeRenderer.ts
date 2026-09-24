@@ -170,6 +170,11 @@ export class TreeRenderer {
   private noise: Noise2D;
   private seed: number;
   private material: THREE.MeshStandardMaterial;
+  /** impostors (per-instance colour) get their own material and depth materials: sharing one material object between
+   *  meshes with and without instanceColor makes three re-derive the program on every switch between them */
+  private materialFar: THREE.MeshStandardMaterial;
+  private depthNearPlain = new THREE.MeshDepthMaterial();
+  private depthFarPlain = new THREE.MeshDepthMaterial();
   private lodDistance = 1300;
   private density = 1;
   private castShadows = true;
@@ -214,6 +219,8 @@ export class TreeRenderer {
     // clone of the shared uber material that casts shadows from both faces (thin palm fronds / leaf quads)
     this.material = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
     this.material.shadowSide = THREE.DoubleSide;
+    this.materialFar = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
+    this.materialFar.shadowSide = THREE.DoubleSide;
     this.matNearFade = this.makeFadeMaterial(true);
     this.matFarFade = this.makeFadeMaterial(false);
     this.depthNear = this.makeDepthMaterial(true);
@@ -527,7 +534,7 @@ export class TreeRenderer {
         mesh.dispose();
       }
       const cap = Math.ceil(n * 1.25) + 8;
-      const m: THREE.InstancedMesh = new THREE.InstancedMesh(geo, this.material, cap);
+      const m: THREE.InstancedMesh = new THREE.InstancedMesh(geo, near ? this.material : this.materialFar, cap);
       mesh = m;
       m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       if (color) m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
@@ -612,7 +619,7 @@ export class TreeRenderer {
       m.visible = s.near && m.count > 0;
       m.castShadow = cast && s.nearCast;
       m.material = s.nearFade ? this.matNearFade : this.material;
-      m.customDepthMaterial = s.nearCut ? this.depthNear : undefined;
+      m.customDepthMaterial = s.nearCut ? this.depthNear : this.depthNearPlain;
     }
     const mg = s.micro ? getMicroImpostorGeometries() : null;
     // impostors past the shadow switch distance cast shadows even where the view still shows near models
@@ -626,8 +633,8 @@ export class TreeRenderer {
       m.userData.shadowOnly = shadowOnly;
       m.visible = (s.far || shadowOnly) && m.count > 0;
       m.castShadow = cast && s.farCast;
-      m.material = s.farFade ? this.matFarFade : this.material;
-      m.customDepthMaterial = s.farCut ? this.depthFar : undefined;
+      m.material = s.farFade ? this.matFarFade : this.materialFar;
+      m.customDepthMaterial = s.farCut ? this.depthFar : this.depthFarPlain;
       m.geometry = mg ? (i === 0 ? mg.broad : mg.conifer) : (m.userData.regularGeo as THREE.BufferGeometry);
     }
     shadowCasters.version++;
@@ -703,6 +710,9 @@ export class TreeRenderer {
     for (const c of this.chunks) this.disposeChunk(c);
     this.chunks = [];
     this.material.dispose();
+    this.materialFar.dispose();
+    this.depthNearPlain.dispose();
+    this.depthFarPlain.dispose();
     this.matNearFade.dispose();
     this.matFarFade.dispose();
     this.depthNear.dispose();

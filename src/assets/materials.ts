@@ -31,7 +31,12 @@
  *   the paint's `floor` value is the reach height H in meters (light fades 70% by H). Pattern 0 = unlit.
  * Plain glass (Surf.GlassPlain, surf.y): 0 storefront / house windows (per-window lit state follows the time-of-day
  *   lit fraction, ~2.5 x 2.8 m cells); 1 vehicle glass (dark, reflective, never glows);
- *   2 pavilion glass (reflective by day, uniform warm glow ~0.6 at night: lobbies, foyers, pyramids, concourses).
+ *   2 pavilion glass (reflective by day, uniform warm glow ~0.6 at night: lobbies, foyers, pyramids, concourses);
+ *   3 grow-light glass (greenhouse walls / roofs: clear greenish glass by day with no tint or glow, saturated sodium
+ *     amber at night with a little per-4 m-bay variation; stays orange under bloom).
+ * Water (Surf.Water): dielectric with a view-dependent depth tint (pale floor from above, deeper at grazing angles),
+ *   drifting caustics by day, sun glints; bright pool / fountain paints (linear blue > ~0.3) glow softly from
+ *   underwater lights at night, dark pond paints stay dark.
  * Metal (Surf.Metal, surf.y): 0 bare metal (tanks, pipes, rails); 1 solid car paint (rough 0.40, metal 0.15);
  *   2 metallic car paint (rough 0.32, metal 0.50); 3 patina (rough 0.62, metal 0.30: copper domes, bronze statues).
  * Corrugated (Surf.Corrugated): vertical ribs, painted sheet metal (rough 0.6, metal 0.25).
@@ -43,12 +48,15 @@
  *       green of the same brightness otherwise, plus the pattern-1 autumn / winter behaviour.
  *   For patterns 1-2 paint `floor` = a per-tree random in [0, 1) (all lobes of one crown share it) so each tree
  *   changes as a whole; the instance seed is mixed in.
+ *   All foliage follows the climate / season uniforms uFoliageDry / uFoliageTint (setFoliageSeason): low foliage
+ *   (lawns, hedges, shrubs below ~2.5 m model height) turns straw-dry in deserts / dormant in winter.
  *
  * Facade coordinates: planar walls use the horizontal distance along the wall; smooth-shaded CURVED walls
  * (cylinders / drums / round towers built with smooth normals) automatically switch to the arc length around the
  * model's vertical axis (exact for shapes centred on the model origin), so they get windows / mullions too.
- * Distant windows fade to their average coverage and average lit color (no shimmer). The render-world WorldView
- * drives uNight, uTime and uLitFraction (time-of-day dependent: evening peak, late-night dip).
+ * Distant windows fade to their average coverage and average lit color (no shimmer), per axis: window columns first,
+ * floor rows (and curtain-wall floor lines) much later, so facades keep horizontal window bands at the default camera.
+ * The render-world WorldView drives uNight, uTime and uLitFraction (time-of-day dependent: evening peak, late-night dip).
  */
 import * as THREE from 'three';
 
@@ -69,16 +77,40 @@ export const sharedUniforms = {
   uMapN: { value: 128 },
   /** season for Foliage patterns 1-2: x autumn fraction, y bare fraction, z blossom (1 in Apr-May); set by setTreeSeason */
   uSeason: { value: new THREE.Vector4(0, 0, 0, 0) },
+  /** 0..1 how dry / dormant low foliage (lot lawns, hedges, shrubs) looks: climate + season, see setFoliageSeason */
+  uFoliageDry: { value: 0 },
+  /** multiplier on all foliage (climate tint, e.g. lusher in the tropics) */
+  uFoliageTint: { value: new THREE.Color(1, 1, 1) },
 };
 
+/**
+ * Climate / season look of lot foliage (render-world WorldView calls this every frame; cheap, idempotent).
+ * Lawns / hedges / shrubs baked into lot models turn straw-dry in the desert and dormant in winter so lots harmonise
+ * with the terrain palette; tree crowns are mostly left alone (forest and street trees swap seasonal variants).
+ */
+export function setFoliageSeason(month: number, climate: string): void {
+  const m = ((Math.floor(month) % 12) + 12) % 12;
+  const winter = m === 11 || m <= 1;
+  let dry = 0;
+  const tint = sharedUniforms.uFoliageTint.value;
+  tint.setRGB(1, 1, 1);
+  if (climate === 'desert') dry = 0.45;
+  else if (climate === 'tropical') tint.setRGB(1.02, 1.06, 0.97);
+  else if (climate === 'alpine') dry = winter ? 0.35 : m === 2 || m === 10 ? 0.15 : 0;
+  else dry = winter ? 0.4 : m === 9 ? 0.15 : m === 10 || m === 2 ? 0.25 : 0;
+  sharedUniforms.uFoliageDry.value = dry;
+}
+
+// Per-instance values are FLAT varyings: interpolating a constant is not bit-exact (perspective correction), and the
+// sin-hashes below amplify a 1-ulp difference into a different cell / lit state -> per-pixel stipple on facades.
 const VERT_PARS = /* glsl */ `
 attribute vec3 surf;
 varying vec3 vSurf;
 varying vec3 vObjPos;
 varying vec3 vObjNormal;
-varying float vSeed;
-varying vec2 vInstXZ;
-varying float vWorldNX;
+flat varying float vSeed;
+flat varying vec2 vInstXZ;
+flat varying float vWorldNX;
 uniform float uTime;
 uniform float uWind;
 `;
@@ -122,12 +154,14 @@ const FRAG_PARS = /* glsl */ `
 varying vec3 vSurf;
 varying vec3 vObjPos;
 varying vec3 vObjNormal;
-varying float vSeed;
-varying vec2 vInstXZ;
-varying float vWorldNX;
+flat varying float vSeed;
+flat varying vec2 vInstXZ;
+flat varying float vWorldNX;
 uniform float uSignalTime;
 uniform float uMapN;
 uniform vec4 uSeason;
+uniform float uFoliageDry;
+uniform vec3 uFoliageTint;
 uniform float uNight;
 uniform float uLitFraction;
 uniform float uTime;
@@ -175,18 +209,29 @@ float windowMask(float pattern, float u, float v, float floorH, out vec2 cell, o
   else { colW = 3.2; wx0 = 0.28; wx1 = 0.72; wy0 = 0.15; wy1 = 0.9; }
   float cu = u / colW;
   float cv = v / floorH;
-  cell = vec2(floor(cu), floor(cv));
+  // (+1e-3: faces starting exactly on a cell boundary must not alternate between two cells per pixel)
+  cell = floor(vec2(cu, cv) + 1e-3);
   float wu = fwidth(cu) * 1.2 + 1e-4;
   float wv = fwidth(cv) * 1.2 + 1e-4;
-  fade = clamp(1.0 - max(wu, wv) * 2.5, 0.0, 1.0);
-  float m = aaBox(cu, wx0, wx1, wu) * aaBox(cv, wy0, wy1, wv);
+  // the fade is split by axis: window columns (~3 m) blur out first, while the floor rows (3 m tall, ~4 px at the
+  // default 700 m camera) stay readable as horizontal window bands much longer -> no flat plastic slabs at game zoom
+  float fadeU = clamp(1.0 - wu * 2.5, 0.0, 1.0);
+  float fadeV = clamp(1.0 - wv * 1.4, 0.0, 1.0);
+  fade = fadeU;
+  float rowM = aaBox(cv, wy0, wy1, wv);
+  float m = aaBox(cu, wx0, wx1, wu) * rowM;
+  float colCov = wx1 - wx0;
   // shopfront ground floor for pattern 6
   if (pattern > 5.5 && pattern < 6.5 && v < floorH * 1.15) {
-    m = aaBox(u / 5.0, 0.06, 0.94, fwidth(u / 5.0) + 1e-4) * smoothstep(0.1, 0.12, v / floorH) * (1.0 - smoothstep(0.82, 0.86, v / floorH));
+    rowM = smoothstep(0.1, 0.12, v / floorH) * (1.0 - smoothstep(0.82, 0.86, v / floorH));
+    m = aaBox(u / 5.0, 0.06, 0.94, fwidth(u / 5.0) + 1e-4) * rowM;
+    colCov = 0.88;
   }
-  // average coverage for distance fade
+  // average coverage for distance fade: first per floor row (band), then of the whole facade
   float avg = (wx1 - wx0) * (wy1 - wy0);
-  return mix(avg, m, fade);
+  float band = rowM * colCov;
+  float mFar = mix(avg, band, fadeV);
+  return mix(mFar, m, fadeU);
 }
 
 void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout vec3 emis, vec3 nObj) {
@@ -200,8 +245,9 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
   // curved facades (smooth-shaded drums, round towers, rotundas): the planar coordinate is ~constant around the
   // curve, so use the arc length around the model's vertical axis instead. Curvature (1/m) is estimated from
   // screen-space derivatives of the normal vs. the position; creases between flat faces fall outside the band.
+  // (band kept clear of both ends: a whole panel must not flip between planar and arc-length u per 2x2 pixel quad)
   float curvK = length(fwidth(nObj.xz)) / (length(fwidth(P.xz)) + 1e-4);
-  if (curvK > 0.0025 && curvK < 0.45) u = atan(nObj.z, nObj.x) * max(length(P.xz), 1.0);
+  if (curvK > 0.004 && curvK < 0.4) u = atan(nObj.z, nObj.x) * max(length(P.xz), 1.0);
   float v = P.y;
   float night = uNight;
   // contact darkening + faint vertical weathering streaks near the ground on walls (grounds the buildings)
@@ -225,6 +271,8 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float h = bh31(vec3(cell, floor(vSeed * 97.0)));
       float h2 = bh31(vec3(cell.yx + 3.1, vSeed * 13.0));
       vec3 glass = mix(vec3(0.08, 0.1, 0.13), vec3(0.2, 0.26, 0.32), h2 * 0.6);
+      // distant windows a bit darker so the (averaged) window rows still contrast with the wall
+      glass *= mix(0.8, 1.0, fade);
       // slight wall weathering per floor
       albedo *= 0.95 + 0.05 * bh11(cell.y + vSeed * 10.0);
       albedo = mix(albedo, glass, m);
@@ -248,6 +296,8 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       // banded, not flat cream slabs
       float fadeFl = clamp(1.0 - fwidth(v / floorH) * 1.6, 0.0, 1.0);
       farE *= mix(1.0, 0.4 + 0.9 * bh11(cell.y * 1.73 + floor(vSeed * 23.0)), fadeFl);
+      // the averaged far glow is capped so mid-distance towers don't read as glowing cream slabs
+      farE *= 0.7;
       if (pattern > 7.5 && pattern < 8.5) {
         // churches / keeps / clock towers: every (arched) window glows warm amber, slight per-column tint
         float ct = bh11(cell.x * 5.3 + vSeed * 17.0);
@@ -272,18 +322,28 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     albedo = tint * 0.75;
     rough = 0.06;
     metal = 0.7;
-    if (vertical) emis += mix(vec3(0.55, 0.65, 0.8), tint * 1.4, 0.35) * 0.08 * (1.0 - night);
     if (vertical) {
       float cu = u / 1.5; float cv = v / floorH;
       float wu = fwidth(cu) + 1e-4; float wv = fwidth(cv) + 1e-4;
-      float fade = clamp(1.0 - max(wu, wv) * 2.0, 0.0, 1.0);
-      float mull = 1.0 - aaBox(cu, 0.06, 0.94, wu) * aaBox(cv, 0.05, 0.93, wv);
-      // keep ~35% of the mullion / spandrel mask at distance so lit floors still read as bands
-      mull = mix(0.35, mull, fade);
+      // mullions (1.5 m) fade first; the floor lines (spandrel per floor) stay readable until floors are ~2 px, then
+      // everything blends to a flat average (~35% frame; residential glass 50% so lit units keep dark floor slabs)
+      float fadeU = clamp(1.0 - wu * 2.0, 0.0, 1.0);
+      float fadeV = clamp(1.0 - wv * 1.6, 0.0, 1.0);
+      // unlit sky-tint term by day (reads as clean glass from above), weaker at distance where it turned whole
+      // towers into smooth white plastic
+      emis += mix(vec3(0.55, 0.65, 0.8), tint * 1.4, 0.35) * 0.08 * (1.0 - night) * mix(0.55, 1.0, fadeU);
+      float boxV = aaBox(cv, 0.05, 0.93, wv);
+      float mullNear = 1.0 - aaBox(cu, 0.06, 0.94, wu) * boxV;
+      float farLvl = resGlass ? 0.5 : 0.35;
+      // u-averaged mask (1 - 0.88 * boxV averages 0.226), re-centred on the far level so the tone stays constant
+      float mullRow = clamp(1.0 - 0.88 * boxV + (farLvl - 0.226), 0.0, 1.0);
+      float mull = mix(mix(farLvl, mullRow, fadeV), mullNear, fadeU);
+      // distant curtain glass slightly darker (panels read as glass, not white plastic, at the default camera)
+      albedo *= mix(0.82, 1.0, fadeU);
       albedo = mix(albedo, vec3(0.28, 0.3, 0.33), mull * 0.8);
       rough = mix(rough, 0.5, mull);
       // per-panel subtle tint variation (reflection breakup)
-      vec2 cell = vec2(floor(cu / 2.0), floor(cv));
+      vec2 cell = floor(vec2(cu / 2.0, cv) + 1e-3);
       float h = bh31(vec3(cell, floor(vSeed * 51.0)));
       // light tints (silver / sky / residential) show blotches easily -> gentler variation
       float calmV = pattern > 3.5 ? 1.0 : 0.0;
@@ -292,14 +352,17 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       if (resGlass) {
         // residential towers: apartments (~4 m wide units per floor) lit like homes, warm window colours,
         // ~55-75% lit in the evening, no fully dark floors
-        vec2 unit = vec2(floor(u / 4.0), cell.y);
+        vec2 unit = vec2(floor(u / 4.0 + 1e-3), cell.y);
         float hu = bh31(vec3(unit, floor(vSeed * 71.0)));
-        float litR = clamp(uLitFraction * 0.95 + 0.05, 0.0, 1.0) * (0.8 + 0.4 * vSeed);
-        float fadeR = clamp(1.0 - max(fwidth(u / 4.0), wv) * 1.6, 0.0, 1.0);
-        float litU = mix(clamp(litR, 0.0, 1.0), step(hu, litR), fadeR);
+        float litR = clamp(uLitFraction * 0.7 + 0.05, 0.0, 1.0) * (0.8 + 0.4 * vSeed);
+        // units only resolve while the mullions do (a resolved unit hash over a faded mullion mask read as a beige /
+        // grey camouflage of 4 m blocks at 300-700 m)
+        float fadeR = clamp(1.0 - max(fwidth(u / 1.5), wv) * 1.6, 0.0, 1.0);
+        // unlit units keep a faint residual (curtains / a lamp further inside), so the pattern is not binary
+        float litU = max(mix(clamp(litR, 0.0, 1.0), step(hu, litR), fadeR), 0.12);
         vec3 wl = mix(vec3(1.0, 0.8, 0.52), windowLight(bh11(hu * 57.3 + vSeed)), fadeR);
         float curtain = 0.6 + 0.4 * smoothstep(0.1, 0.9, fract(u / 4.0)) * (1.0 - smoothstep(0.1, 0.9, fract(u / 4.0)) * 0.5);
-        emis += wl * litU * (1.0 - mull) * night * mix(0.8, (0.55 + 0.6 * bh11(hu * 13.1)) * curtain, fadeR) * 0.65;
+        emis += wl * litU * (1.0 - mull) * night * mix(0.8, (0.55 + 0.6 * bh11(hu * 13.1)) * curtain, fadeR) * 0.45;
       } else {
       // offices / hotels at night: lights clustered per floor section, some floors entirely dark, per-panel
       // brightness, color temperature per floor (warm tints -> hotel-like warm light, blue tints -> office white)
@@ -402,6 +465,15 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     if (pattern > 1.5 && pattern < 2.5) {
       // pavilion glass (lobbies, foyers, greenhouses, concourses): reflective by day, uniform warm glow at night
       emis += vec3(1.0, 0.84, 0.62) * night * 0.6;
+    } else if (pattern > 2.5 && pattern < 3.5) {
+      // grow-light glass (greenhouse walls / roofs): clear, slightly greenish glass by day with NO tint or glow; at
+      // night the HPS lamps inside shine through as a saturated sodium amber (kept below the bloom threshold so it
+      // stays orange instead of bleaching to white), a little brightness variation per 4 m bay
+      albedo = mix(albedo, vec3(0.16, 0.2, 0.19), 0.35);
+      rough = 0.1;
+      metal = 0.45;
+      float bay = bh31(vec3(floor(u / 4.0 + 1e-3), floor(v / 6.0 + 1e-3), floor(vSeed * 61.0)));
+      emis += vec3(0.95, 0.38, 0.075) * night * (0.42 + 0.22 * bay);
     } else if (pattern > 0.5 && pattern < 1.5) {
       albedo = vec3(0.035, 0.045, 0.055) + albedo * 0.2;
       rough = 0.05;
@@ -436,6 +508,14 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
         albedo = lum * (ak < 0.45 ? vec3(2.55, 0.62, 0.08) : (ak < 0.75 ? vec3(3.3, 0.34, 0.12) : vec3(2.5, 1.7, 0.1)));
       }
     }
+    // climate / season (uFoliageDry, uFoliageTint): low foliage (lot lawns, hedges, shrubs below ~2.5 m model height)
+    // turns straw-dry in deserts and dormant in winter so lots match the terrain; crowns higher up get a quarter of it
+    {
+      float lowF = 1.0 - smoothstep(0.4, 2.6, P.y);
+      float dryK = uFoliageDry * mix(0.25, 1.0, lowF);
+      float fl = dot(albedo, vec3(0.3, 0.59, 0.11));
+      albedo = mix(albedo, vec3(fl) * vec3(1.18, 1.02, 0.68), dryK) * uFoliageTint;
+    }
     // leaf clumps (fade the noise with its screen footprint so distant canopies don't shimmer)
     vec2 fq = P.xz * 0.9 + P.y * 0.7;
     float fw1 = clamp(1.0 - length(fwidth(fq)) * 0.8, 0.0, 1.0);
@@ -456,12 +536,28 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float back = pow(max(dot(-Vv, Lv), 0.0), 4.0);
     emis += albedo * uSunColor * back * 0.14;
   } else if (type < 9.5) {
-    // water
+    // water (pools, fountains, reflecting pools, ponds): a dielectric (no metallic env mirror -> no flat opaque cyan),
+    // pale lit floor seen from above and deeper colour toward grazing angles, drifting caustics by day, sun glints from
+    // the low roughness; bright (pool / fountain) water glows softly from underwater lights at night, dark ponds don't
     float t = uTime;
+    vec3 paint = albedo;
     float r = sin(P.x * 1.7 + t * 1.9) * sin(P.z * 1.3 - t * 1.5);
-    albedo = mix(albedo, albedo * 1.3, 0.5 + 0.5 * r);
-    rough = 0.04;
-    metal = 0.35;
+    albedo = mix(albedo, albedo * 1.18, 0.5 + 0.5 * r);
+    rough = 0.06;
+    metal = 0.0;
+    // (face normal from derivatives: vNormal is declared after this function in the standard shader)
+    float ndv = abs(dot(normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition))), normalize(vViewPosition)));
+    // deeper, saturated body; the pool paint's lighter centre patch (poolGlow) then reads as the shallow lit floor
+    albedo = mix(albedo * 0.5, albedo * 0.9 + 0.02, ndv);
+    // caustic web: thin bright ridges drifting over the floor (fades to its average when too small on screen)
+    vec2 cq = P.xz * 1.1;
+    float cfw = clamp(1.0 - length(fwidth(cq)) * 0.6, 0.0, 1.0);
+    float c1 = 1.0 - abs(2.0 * bnoise(cq + vec2(t * 0.4, t * 0.23)) - 1.0);
+    float c2 = 1.0 - abs(2.0 * bnoise(cq * 1.7 - vec2(t * 0.31, t * 0.5) + 3.7) - 1.0);
+    float caus = mix(0.12, pow(c1, 6.0) * 0.65 + pow(c2, 6.0) * 0.45, cfw);
+    emis += (albedo * 0.5 + vec3(0.03, 0.05, 0.05)) * caus * (1.0 - night);
+    float poolK = smoothstep(0.22, 0.5, paint.b) * smoothstep(0.12, 0.3, paint.g);
+    emis += paint * vec3(0.8, 1.0, 1.05) * night * 0.3 * poolK * (0.85 + 0.3 * caus);
   } else if (type < 10.5) {
     // pavement
     float n = bnoise(P.xz * 0.6) * 0.5 + bnoise(P.xz * 2.7) * 0.5;
@@ -546,6 +642,8 @@ export function patchSurfaceMaterial<T extends THREE.MeshStandardMaterial>(mat: 
     shader.uniforms.uSignalTime = sharedUniforms.uSignalTime;
     shader.uniforms.uMapN = sharedUniforms.uMapN;
     shader.uniforms.uSeason = sharedUniforms.uSeason;
+    shader.uniforms.uFoliageDry = sharedUniforms.uFoliageDry;
+    shader.uniforms.uFoliageTint = sharedUniforms.uFoliageTint;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + VERT_MAIN);

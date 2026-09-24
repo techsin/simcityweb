@@ -65,6 +65,11 @@ void main() {
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   float ang = seed * 6.2831 + T * 0.15 * (fract(seed * 3.1) - 0.5);
   vec2 c = position.xy;
+  if (kind > 1.5 && kind < 2.5) {
+    // flames: upright, narrower tongues (a random spin made them read as round orbs)
+    ang = (fract(seed * 3.1) - 0.5) * 0.5;
+    c.x *= 0.62;
+  }
   vec2 r = vec2(c.x * cos(ang) - c.y * sin(ang), c.x * sin(ang) + c.y * cos(ang));
   mv.xy += r * sz;
   gl_Position = projectionMatrix * mv;
@@ -91,8 +96,14 @@ void main() {
   vec3 col;
   float lit = mix(1.0, 0.12, uNight);
   if (vKind > 1.5 && vKind < 2.5) {
-    col = mix(vec3(1.0, 0.85, 0.35), vec3(1.0, 0.28, 0.04), smoothstep(0.1, 0.8, vAge)) * 2.2;
-    gl_FragColor = vec4(col * a, 1.0);
+    // flame tongue: wide at the base, pointed at the top, flicker noise scrolling upward; yellow core -> deep orange
+    // with age. Dimmer at night (exposure is higher and additive quads stacked past the bloom threshold into white orbs)
+    float wy = mix(1.0, 0.3, clamp(q.y * 0.5 + 0.5, 0.0, 1.0));
+    float fd = length(vec2(q.x / wy, q.y));
+    float fn = pn(vec2(q.x * 2.4, q.y * 1.6 - vAge * 5.0) + vSeed * 13.0);
+    float fm = smoothstep(1.0, 0.2, fd + (fn - 0.5) * 0.7) * vAlpha;
+    col = mix(vec3(1.0, 0.72, 0.25), vec3(0.95, 0.22, 0.03), smoothstep(0.05, 0.7, vAge)) * mix(2.2, 0.9, uNight);
+    gl_FragColor = vec4(col * fm * mix(1.0, 0.8, uNight), 1.0);
     return;
   } else if (vKind > 0.5 && vKind < 1.5) {
     col = vec3(0.92, 0.93, 0.95) * lit;

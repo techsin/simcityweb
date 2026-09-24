@@ -52,7 +52,9 @@
 .mplayer-card .mpl-title { font-size: 15px; }
 .mplayer-card .mpl-prog { display: flex; align-items: center; gap: 10px; margin: 11px 0 4px; }
 .mplayer-card .mpl-bar { position: relative; flex: 1; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
-.mplayer-card .mpl-bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: linear-gradient(90deg, hsl(var(--h) 80% 62%), var(--accent-2)); transition: width 0.5s linear; }
+/* (no width transition: the bar is re-set every 500 ms, and a transition restarted that often never catches up when
+   frames are slow - the fill stayed stuck near 0 on a loaded machine) */
+.mplayer-card .mpl-bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: linear-gradient(90deg, hsl(var(--h) 80% 62%), var(--accent-2)); }
 .mplayer-card .mpl-time { flex: none; min-width: 74px; text-align: right; font-size: 11px; font-weight: 600; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .mplayer-card .mpl-ctrls { display: flex; align-items: center; justify-content: center; gap: 6px; position: relative; }
 .mplayer-card .mpl-btn.play { width: 40px; height: 40px; margin: 0 4px; }

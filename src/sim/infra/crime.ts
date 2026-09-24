@@ -3,7 +3,8 @@
  *  Per building (raw step):
  *    density (occupants per cell) + poverty (R$ / CS$ / dirty industry) + unemployment (R: half city-wide, half the
  *    building's own job access from traffic) + low land value + abandonment + uncollected garbage
- *    + youth (R: teens from cohortShares, damped by high-school and playground / sports coverage, x 'crime.youth')
+ *    + youth (R: teens from cohortShares, damped by high-school and playground / sports coverage, x 'crime.youth',
+ *      phased in with town size YOUTH_POP_START .. YOUTH_POP_FULL residents)
  *    + nightlife (CS$$$ in high-density commercial),
  *    x ordinanceEffect 'crime.rate' (neighbourhood watch, gambling ...) x justice crimeMul (jail overflow, WP7),
  *    x (1 - 0.85 x police coverage x 'police.effect' x justice policeMul (unless services already applied it)).
@@ -21,7 +22,7 @@ import { blur3 } from './blur';
 import { Fam, infoOf, isFunctional, nowMs, readEffects, setFlagQuiet, wealthOf, buildingList, type DefInfo } from './common';
 import {
   CRIME_GARBAGE, CRIME_NIGHTLIFE, CRIME_SPILL, CRIME_THRESHOLD, LOCAL_UNEMP_CI, LOCAL_UNEMP_R, YOUTH_CRIME,
-  YOUTH_CRIME_MAX, YOUTH_PLAY, YOUTH_REF_TEENS,
+  YOUTH_CRIME_MAX, YOUTH_PLAY, YOUTH_POP_FULL, YOUTH_POP_START, YOUTH_REF_TEENS,
 } from './params';
 import { schedulerOf, sizeFactors } from './scheduler';
 import { ordinanceEffect } from '../economy/ordinances';
@@ -45,12 +46,6 @@ POVERTY_BY_DEV[DevType.IA] = 0.04;
 POVERTY_BY_DEV[DevType.ID] = 0.16;
 POVERTY_BY_DEV[DevType.IM] = 0.1;
 POVERTY_BY_DEV[DevType.IHT] = 0.03;
-
-/** true when a (derived) layer has been written by its owner (sampled) */
-function layerKnown(a: Float32Array): boolean {
-  for (let i = 0; i < a.length; i += 61) if (a[i] !== 0) return true;
-  return false;
-}
 
 function ordEffect(st: CityState, key: string): number {
   try {
@@ -95,6 +90,8 @@ export class CrimeSystem implements SimSystem {
   init(sim: Simulation): void {
     sim.state.systemData.infraVersion = 1;
     this.simRef = sim;
+    // per-id DefInfo cache does not survive a new city (replaceState: building ids start again from 1)
+    this.infos = [];
     this.lastRun = -1e9;
     this.stepIdx = -1;
     this.compute(sim, true);
@@ -150,21 +147,25 @@ export class CrimeSystem implements SimSystem {
     const C = st.cells;
     const fx = readEffects(st);
     const jf = justiceFactors(st);
-    // services folds the legacy jail rule into policeCov (its private policeMul): apply only the difference here, so
-    // the justice multiplier counts once whether or not services keeps applying it (WP2-3 / WP3-3)
-    const svc = sim.getSystem('services') as unknown as { policeMul?: number } | undefined;
-    const applied = typeof svc?.policeMul === 'number' && svc.policeMul > 0 ? svc.policeMul : 1;
+    // services (WP2) folds the police effect (ordinance 'police.effect' x justice policeMul) into policeCov: apply only
+    // the justice difference since its last pass here, so both count once (WP2-3 / WP3-3); without it, apply both
+    const svc = sim.getSystem('services') as unknown as { policeMul?: number; facilityLoadOf?: unknown } | undefined;
+    const svcPolice = typeof svc?.policeMul === 'number' && svc.policeMul > 0;
+    const applied = svcPolice ? (svc!.policeMul as number) : 1;
+    // WP2 writes the catchment layers (high-school seats, play coverage), possibly all 0 in a young city; the legacy
+    // education / park coverage is only a fallback without WP2 (never switch layers when the first school opens)
+    const wp2 = typeof svc?.facilityLoadOf === 'function';
     let lvKnown = false;
     for (let i = 0; i < C; i += 97) if (st.landValue[i] > 0) { lvKnown = true; break; }
     return {
       mul: fx.crimeRate * jf.crimeMul,
-      policeEff: fx.policeEffect * (jf.policeMul / applied),
-      youthMul: ordEffect(st, 'crime.youth'),
+      policeEff: (svcPolice ? 1 : fx.policeEffect) * (jf.policeMul / applied),
+      // x 'crime.youth' (youth curfew) x town size (no youth gangs in a village; full from YOUTH_POP_FULL)
+      youthMul: ordEffect(st, 'crime.youth') * Math.max(0, Math.min(1, ((st.stats.population || 0) - YOUTH_POP_START) / (YOUTH_POP_FULL - YOUTH_POP_START))),
       unemp: Math.max(0, Math.min(1, st.stats.unemployment || 0)),
       lvKnown,
-      // WP2 catchment layers once written; until then the legacy education / park coverage
-      high: layerKnown(st.eduHighCov) ? st.eduHighCov : st.eduCov,
-      play: layerKnown(st.playCov) ? st.playCov : st.parkCov,
+      high: wp2 ? st.eduHighCov : st.eduCov,
+      play: wp2 ? st.playCov : st.parkCov,
       traffic: sim.getSystem<TrafficSystem>('traffic') ?? null,
     };
   }

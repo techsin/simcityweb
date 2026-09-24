@@ -2,6 +2,7 @@
  * Landmark towers: observation/TV tower, twin-spire megatower, clock tower, lighthouse, obelisk.
  * (park/landmark asset agent) Budget <= 8000 tris each.
  */
+import * as THREE from 'three';
 import { ModelBuilder, type Paint } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
@@ -13,6 +14,24 @@ import { prismEdges, polyZ, gothicArch, roundArch, openingZ, beacon, planePoly }
 
 const TAU = Math.PI * 2;
 const P = (color: number, surf: Surf = Surf.Plain, pattern = 0, floor = 3.3): Paint => ({ color, surf, pattern, floor });
+
+/**
+ * Blend the vertex colours of the night-only glow (Emissive 10) emitted since float index `v0` between heights y0 and
+ * y1 from colour c0 (at y0) to c1 (at y1). Emissive 10 glows with its albedo, so this gives a smooth uplight fall-off
+ * across one surface instead of flat painted rings. (Patches the builder's live arrays, like park_lib's poolTri.)
+ */
+function glowGradient(b: ModelBuilder, v0: number, y0: number, y1: number, c0: number, c1: number): void {
+  const { pos, col, srf } = b.raw();
+  const a = new THREE.Color(c0), z = new THREE.Color(c1);
+  for (let i = v0; i < pos.length; i += 3) {
+    const y = pos[i + 1];
+    if (srf[i] !== Surf.Emissive || Math.abs(srf[i + 1] - 10) > 0.5 || y < y0 - 0.01 || y > y1 + 0.01) continue;
+    const t = Math.min(1, Math.max(0, (y - y0) / (y1 - y0)));
+    col[i] = a.r + (z.r - a.r) * t;
+    col[i + 1] = a.g + (z.g - a.g) * t;
+    col[i + 2] = a.b + (z.b - a.b) * t;
+  }
+}
 
 // ================================================================================================ OBSERVATION / TV TOWER
 function spireTower(b: ModelBuilder, _v: number, rng: RNG): void {
@@ -65,13 +84,17 @@ function spireTower(b: ModelBuilder, _v: number, rng: RNG): void {
   });
   prof.push(
     [rAt(322), 322, P(0xc8c6c0, Surf.Metal)],
-    // pod soffit: warm night-only glow (reads as the pod's uplit underside from the street)
-    [6.8, 328.5, P(0xa89c84, Surf.Emissive, 10)], [12.4, 336.4, P(0x7fa2c0, Surf.GlassCurtain, 5, 3.4)], [13.2, 337.4], [13.2, 342.2, P(0x9ee8ff, Surf.Emissive, 6)],
+    // pod soffit: warm night-only uplight (its colour is blended from the shaft edge to the rim below)
+    [6.8, 328.5, P(0xa58c68, Surf.Emissive, 10)], [12.4, 336.4, P(0x7fa2c0, Surf.GlassCurtain, 5, 3.4)], [13.2, 337.4], [13.2, 342.2, P(0x9ee8ff, Surf.Emissive, 6)],
     [13.8, 342.8], [13.8, 343.8, P(0xe8e8e4, Surf.Metal)], [12.9, 344.4, P(0x6f8fae, Surf.GlassCurtain, 5, 3.0)], [12.9, 350.4, P(0xf1f0ec, Surf.Metal)],
     [11.9, 351.4], [8.4, 355.2], [4.2, 357.6, P(pour[4], Surf.Plain, 1, 70)], [3.6, 398, P(0xe8e8e4, Surf.Metal)], [5.8, 400.6, P(0x6f8fae, Surf.GlassCurtain, 5, 2.6)],
     [5.8, 405.2, P(0x9ee8ff, Surf.Emissive, 6)], [6.1, 405.6], [6.1, 406.3, P(0xe8e8e4, Surf.Metal)], [3.0, 409], [2.4, 409.5],
   );
+  const v0 = b.raw().pos.length;
   lathe(b, 0, 0, prof, 24, 28);
+  // the soffit fades from bright by the shaft to dim at the rim, so the underside reads as lit from below instead of
+  // one flat glowing cup (bronze-toned underside by day)
+  glowGradient(b, v0, 328.5, 336.4, 0xa58c68, 0x6a5a45);
   // antenna mast with aviation paint bands
   const ant: ProfPt[] = [];
   const bands = 8;

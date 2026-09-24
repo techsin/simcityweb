@@ -106,6 +106,17 @@ export function receiverSweepSphere(rec: ShadowReceiver, cx: number, cy: number,
   return true;
 }
 
+/** is the box entirely inside the receiver volume? (then every caster in it certainly shadows it: no per-caster test) */
+export function receiverContainsBox(rec: ShadowReceiver, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): boolean {
+  const P = rec.planes;
+  for (let i = 0; i < 6; i++) {
+    const n = P[i].normal;
+    // n-vertex: the corner with the smallest signed distance
+    if (n.x * (n.x > 0 ? x0 : x1) + n.y * (n.y > 0 ? y0 : y1) + n.z * (n.z > 0 ? z0 : z1) + P[i].constant < 0) return false;
+  }
+  return true;
+}
+
 /** can a caster box shadow the receiver volume? */
 export function receiverSweepBox(rec: ShadowReceiver, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): boolean {
   const T = Math.min(6000, Math.max(0, (y1 - rec.ground) / Math.max(rec.dir.y, 0.05)));

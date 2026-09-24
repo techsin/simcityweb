@@ -87,7 +87,8 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
     float n2 = rnoise(wp * 0.55);
     float grain = rnoise(wp * 6.0) * 0.6 + rnoise(wp * 17.0) * 0.4;
     vec3 base = vec3(0.052, 0.054, 0.058);
-    if (kind > 4.5 && kind < 5.5) base = vec3(0.06, 0.061, 0.064);
+    // highways: slightly darker, smoother asphalt than city streets
+    if (kind > 4.5 && kind < 5.5) base = vec3(0.044, 0.046, 0.05);
     vec3 c = base * (0.78 + 0.42 * n1) * (0.93 + 0.14 * n2);
     c *= mix(1.0, 0.82 + 0.36 * grain, distFade);
     rough = 0.9;
@@ -147,11 +148,16 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
         white += band(au, 3.95, 0.07) * dashes(v, 9.0, 0.4) * (1.0 - nearEnd);
         white += band(au, 6.45, 0.08);
       } else if (kind > 4.5) {
-        yellow += band(au, 0.95, 0.085);
-        white += band(au, 4.2, 0.08) * dashes(v, 12.0, 0.33);
+        // highway: white solid inner and outer edge lines, long white lane dashes (3 m on / 9 m off), lighter
+        // shoulder strips outside the edge lines with rumble grooves (no yellow: it read as an avenue)
+        white += band(au, 0.95, 0.1);
+        white += band(au, 4.15, 0.08) * dashes(v, 12.0, 0.25);
         float rampSide = u > 0.0 ? mod(floor(wf / 4.0), 2.0) : mod(floor(wf / 8.0), 2.0);
         if (rampSide > 0.5) white += band(au, 7.32, 0.16) * dashes(v, 4.0, 0.5);
-        else white += band(au, 7.32, 0.09);
+        else white += band(au, 7.32, 0.1);
+        float sh = range1(au, 0.3, 0.84) + range1(au, 7.44, 7.72);
+        float rumble = 1.0 - 0.18 * rangeW(fract(v / 0.55), 0.0, 0.4, fwidth(v / 0.55) * 0.8 + 1e-4) * distFade;
+        c = mix(c, c * 1.35 * rumble + 0.004, clamp(sh, 0.0, 1.0));
       }
       // crosswalks + stop lines
       if (kind < 4.5 || (kind > 3.5 && kind < 4.5)) {
@@ -276,6 +282,49 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
     float j = abs(fract((wp.x + wp.y) / 6.0) - 0.5);
     c *= 1.0 - 0.35 * smoothstep(0.485, 0.495, j) * distFade;
     albedo = c; rough = 0.85; metal = 0.0;
+  } else if (mat < 13.5) {
+    // tunnel opening
+    albedo = vec3(0.004); rough = 1.0; metal = 0.0;
+  } else if (mat < 14.5) {
+    // highway gantry sign: green retroreflective panel, white border, a route shield and two rows of "legend"
+    // blocks (words with letter gaps at close range); feat 1 = galvanized back / edges
+    if (feat > 0.5) {
+      albedo = vec3(0.3, 0.31, 0.32) * (0.85 + 0.2 * rfbm(wp * 0.9 + vWp.y));
+      rough = 0.45; metal = 0.6;
+    } else {
+      float W = max(mod(wf, 1000.0) / 10.0, 1.0), H = 2.2;
+      float px = u, py = v;
+      float fw = max(fwidth(px), fwidth(py)) * 0.8 + 1e-4;
+      float seed = rh21(floor(wp / 16.0) + floor(wf / 1000.0) * 7.3);
+      vec3 green = vec3(0.012, 0.085, 0.032);
+      float ring = rangeW(px, 0.07, W - 0.07, fw) * rangeW(py, 0.07, H - 0.07, fw) * (1.0 - rangeW(px, 0.13, W - 0.13, fw) * rangeW(py, 0.13, H - 0.13, fw));
+      // route shield (white square with a dark numeral block)
+      float shield = rangeW(px, 0.35, 1.05, fw) * rangeW(py, 0.75, 1.5, fw);
+      float numeral = rangeW(px, 0.52, 0.88, fw) * rangeW(py, 0.92, 1.33, fw);
+      // legend rows: words of random length, letter gaps every 0.13 m when resolvable
+      float legend = 0.0;
+      for (int r = 0; r < 2; r++) {
+        float y0 = r == 0 ? 1.28 : 0.62;
+        float inRow = rangeW(py, y0, y0 + 0.32, fw);
+        float wx = (px - 1.35) / 1.25;
+        float wi = floor(wx);
+        float wh = rh21(vec2(wi, float(r) * 3.1 + seed * 17.0));
+        float len = 0.45 + 0.45 * wh;
+        float word = rangeW(fract(wx), 0.0, len, fwidth(wx) * 0.8 + 1e-4) * step(0.0, wx) * step(px, W - 0.3) * step(0.15, wh);
+        float lf = fwidth(px / 0.13) * 0.8 + 1e-4;
+        float letters = mix(0.7, rangeW(fract(px / 0.13), 0.12, 0.88, lf), clamp(1.0 - lf * 4.0, 0.0, 1.0));
+        legend += inRow * word * letters;
+      }
+      float white = clamp(ring + shield * (1.0 - numeral) + legend, 0.0, 1.0);
+      albedo = mix(green, vec3(0.7, 0.72, 0.7), white);
+      rough = 0.55; metal = 0.0;
+      // sign lighting at night (retroreflective legend + gantry lamps)
+      emis += (green * 0.6 + vec3(0.55, 0.58, 0.55) * white) * uNight * 0.35;
+    }
+  } else if (mat < 15.5) {
+    // galvanized steel (gantry posts / beams)
+    albedo = vec3(0.4, 0.41, 0.42) * (0.82 + 0.25 * rfbm(wp * 0.6 + vWp.y * 0.4));
+    rough = 0.42; metal = 0.75;
   } else {
     albedo = vec3(0.004); rough = 1.0; metal = 0.0;
   }
@@ -308,12 +357,15 @@ export function getRoadMaterial(): THREE.MeshStandardMaterial {
       .replace(
         '#include <metalnessmap_fragment>',
         `#include <metalnessmap_fragment>
+        vec3 _roadEmis = vec3(0.0);
         {
           vec3 _a = diffuseColor.rgb; float _r = roughnessFactor; float _m = metalnessFactor; vec3 _e = vec3(0.0);
           roadSurface(_a, _r, _m, _e, vec3(0.0, 1.0, 0.0));
           diffuseColor.rgb = _a; roughnessFactor = _r; metalnessFactor = _m;
+          _roadEmis = _e * (1.0 - 0.6 * uRoadDim);
         }`,
-      );
+      )
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += _roadEmis;');
   };
   m.customProgramCacheKey = () => 'city-road-v1';
   _mat = m;

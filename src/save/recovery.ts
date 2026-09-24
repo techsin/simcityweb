@@ -33,8 +33,9 @@ export const LS_BUDGET_BYTES = 2_150_000;
 
 /**
  * Layers the simulation recomputes from the primary data (traffic, pollution, coverage, land value, desirability,
- * utilities). When a snapshot would not fit the localStorage budget these are left out (largest first) and restored
- * from the base save — an earlier, consistent value that the next monthly pass overwrites.
+ * utilities). Periodic background snapshots always leave them out (`lean`); an unload snapshot only when it would not
+ * fit the localStorage budget (largest first). A left-out layer is restored from the base save — an earlier,
+ * consistent value that the next monthly pass overwrites.
  */
 export const RECOMPUTED_LAYERS: readonly string[] = [
   'desirability', 'traffic', 'congestion', 'commute', 'airPollution', 'waterPollution', 'noise', 'crime', 'landValue',
@@ -228,14 +229,26 @@ function applyArrayDelta(d: ArrayDelta, base: AnyTypedArray | undefined | null, 
 
 const deltaBytes = (d: ArrayDelta | ArrayDelta[]): number => (Array.isArray(d) ? d.reduce((a, x) => a + x.x.length, 0) : d.x.length);
 
+type Layer = SerializedCity['layers'][string];
+/** a base layer can stand in for the current one on restore (same shape) */
+const sameShape = (cv: Layer, bv: Layer | undefined): boolean =>
+  !!bv && (Array.isArray(cv) ? Array.isArray(bv) && bv.length === cv.length && bv.every((a, i) => a.length === cv[i].length) : !Array.isArray(bv) && bv.length === cv.length);
+const RECOMPUTED = new Set(RECOMPUTED_LAYERS);
+
 /**
  * Delta of `cur` against `base` (null = no base). With `budget` (bytes), recomputed layers are dropped largest-first
- * until the typed-array payload fits (primary data is never dropped).
+ * until the typed-array payload fits (primary data is never dropped). `lean`: every recomputed layer is left out up
+ * front, not even encoded (periodic background snapshots: far cheaper on a big city; restored from the base).
  */
-export function encodeCityDelta(cur: SerializedCity, base: SerializedCity | null, baseSavedAt: number, opts: { budget?: number } = {}): CityDelta {
+export function encodeCityDelta(cur: SerializedCity, base: SerializedCity | null, baseSavedAt: number, opts: { budget?: number; lean?: boolean } = {}): CityDelta {
   const layers: Record<string, ArrayDelta | ArrayDelta[]> = {};
+  const dropped: string[] = [];
   for (const [k, v] of Object.entries(cur.layers)) {
     const bv = base?.layers[k];
+    if (opts.lean && RECOMPUTED.has(k) && sameShape(v, bv)) {
+      dropped.push(k);
+      continue;
+    }
     if (Array.isArray(v)) layers[k] = v.map((a, i) => arrayDelta(a, Array.isArray(bv) ? bv[i] : null));
     else layers[k] = arrayDelta(v, bv && !Array.isArray(bv) ? bv : null);
   }
@@ -248,17 +261,13 @@ export function encodeCityDelta(cur: SerializedCity, base: SerializedCity | null
   }
   let opt: Record<string, ArrayDelta> | undefined;
   for (const [k, v] of Object.entries(cur.buildings.opt ?? {})) (opt ??= {})[k] = arrayDelta(v, base?.buildings.opt?.[k] ?? null);
-  const dropped: string[] = [];
   if (opts.budget !== undefined && base) {
     let total = Object.values(layers).reduce((a, d) => a + deltaBytes(d), 0) + Object.values(cols).reduce((a, d) => a + d.x.length, 0);
     const cands = RECOMPUTED_LAYERS.filter((k) => layers[k] && base.layers[k]).sort((a, b) => deltaBytes(layers[b]) - deltaBytes(layers[a]));
     for (const k of cands) {
       if (total <= opts.budget) break;
-      const bv = base.layers[k];
-      const cv = cur.layers[k];
       // only when the base layer has the same shape (it replaces the current one on restore)
-      const shapeOk = Array.isArray(cv) ? Array.isArray(bv) && bv.length === cv.length && bv.every((a, i) => a.length === cv[i].length) : !Array.isArray(bv) && bv.length === (cv as AnyTypedArray).length;
-      if (!shapeOk) continue;
+      if (!sameShape(cur.layers[k], base.layers[k])) continue;
       total -= deltaBytes(layers[k]);
       delete layers[k];
       dropped.push(k);
@@ -429,14 +438,14 @@ const sameCity = (a: RecoveryCity, b: RecoveryCity) => a.regionId === b.regionId
 /**
  * Synchronously snapshot a city (safe inside beforeunload / pagehide / visibilitychange): serialize, delta against
  * the tracked base, write localStorage (if it fits) and start an IndexedDB write (keyed by city) with an explicit
- * commit. localStorage holds one snapshot (the latest); IndexedDB one per city.
+ * commit. localStorage holds one snapshot (the latest); IndexedDB one per city. `lean`: see encodeCityDelta.
  */
-export function writeRecoverySnapshot(regionId: string, tileKey: string, state: CityState, info: Omit<RecoveryInfo, 'day' | 'baseDay' | 'date' | 'baseDate'> & { why?: string }): WriteResult {
+export function writeRecoverySnapshot(regionId: string, tileKey: string, state: CityState, info: Omit<RecoveryInfo, 'day' | 'baseDay' | 'date' | 'baseDate'> & { why?: string; lean?: boolean }): WriteResult {
   const t0 = performance.now();
   const key = keyOf(regionId, tileKey);
   const b = base && base.key === key ? base : null;
   const cur = serializeCity(state);
-  const delta = encodeCityDelta(cur, b?.city ?? null, b?.savedAt ?? 0, { budget: LS_BUDGET_BYTES });
+  const delta = encodeCityDelta(cur, b?.city ?? null, b?.savedAt ?? 0, { budget: LS_BUDGET_BYTES, lean: info.lean });
   const payload = encodeBundle(delta);
   const baseDay = b ? Number(b.city.scalars.day ?? 0) : undefined;
   const startYear = Number(state.config.startYear ?? 2000);

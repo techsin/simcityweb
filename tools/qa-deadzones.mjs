@@ -33,7 +33,9 @@ const STEP_TIMEOUT_MS = 25000;
 const log = (...a) => console.log('[deadzones]', ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const server = await createServer({ root, logLevel: 'error', server: { port: 0, host: '127.0.0.1', hmr: false, watch: null } });
+// (own dependency cache: a dev server running at the same time re-optimising node_modules/.vite can make the page's
+// dynamic imports fail, which would put the game on stand-in views)
+const server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-qa-deadzones'), logLevel: 'error', server: { port: 0, host: '127.0.0.1', hmr: false, watch: null } });
 await server.listen();
 const base = `http://127.0.0.1:${server.httpServer.address().port}`;
 const browser = await chromium.launch({
@@ -69,6 +71,13 @@ try {
     return !!sc && sc.worldView && !sc.worldView.isNull && !document.querySelector('.loading-veil');
   }, null, { timeout: 400000, polling: 500 });
   log(`city ready in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  // the sweep is about the DOM overlays, so stand-in 3D views don't fail it — but say so (a module failed to load)
+  const env = await page.evaluate(() => {
+    const sc = window.__metropolis?.city?.scene;
+    const d = sc?.degraded ?? {};
+    return { standIns: Object.keys(d).filter((k) => d[k]), modErrors: (sc?.mods?.errors ?? []).map(String).slice(0, 4) };
+  });
+  if (env.standIns.length) log(`WARN  stand-in views active (${env.standIns.join(', ')}): ${env.modErrors.join(' | ').slice(0, 600)}`);
 
   /** grid sweep over the canvas area; returns { root-class: {n, box} } of invisible hits */
   const sweep = () =>

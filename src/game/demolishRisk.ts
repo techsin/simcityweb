@@ -1,13 +1,14 @@
 /**
  * Consequences of a demolition that deserve a confirmation (QA #11): removing the LAST power plant / water source,
- * a landmark or reward building, or anything costing more than CONFIRM_COST. Pure state reads (no side effects).
+ * a landmark or reward building, or anything costing more than CONFIRM_COST — player-placed buildings worth more than
+ * that (they are removed for free but nothing is refunded) or a demolition fee above it. Pure state reads.
  */
 import type { CellRect } from '../core/events';
 import { BF, type Building, type CityState } from '../sim/CityState';
 import { getDef } from '../sim/catalog';
 import { money, num } from '../ui/format';
 
-/** demolitions costing more than this ask first */
+/** demolishing buildings worth more than this (build cost), or paying a fee above it, asks first */
 export const CONFIRM_COST = 20_000;
 
 export interface DemolishRisk {
@@ -57,25 +58,40 @@ export function demolishRisks(st: CityState, rect: CellRect, cost: number, opts:
   const items: string[] = [];
   const names: string[] = [];
   let powerHit = 0, waterHit = 0;
+  // build value of the player-placed buildings in the area (demolishing them is free but refunds nothing)
+  let value = 0;
+  const valued: string[] = [];
   for (const b of hit) {
     const d = getDef(b.def);
     if (!d) continue;
-    if (d.powerOut && d.powerOut > 0) powerHit++;
-    if (d.waterOut && d.waterOut > 0) waterHit++;
+    // rubble (burnt out) produces nothing and is worth nothing
+    const live = !(b.flags & BF.Burnt);
+    if (live && d.powerOut && d.powerOut > 0) powerHit++;
+    if (live && d.waterOut && d.waterOut > 0) waterHit++;
     if (d.category === 'landmark') items.push(`${d.name} is a landmark — its tourism and land-value bonuses will be lost`);
     else if (d.category === 'reward') items.push(`${d.name} is a reward building — its bonuses will be lost`);
-    if (d.category !== 'growable') names.push(d.name);
+    if (d.category !== 'growable') {
+      names.push(d.name);
+      if (live && d.cost && d.cost > 0) {
+        value += d.cost;
+        valued.push(d.name);
+      }
+    }
   }
   if (powerHit || waterHit) {
     let powerAll = 0, waterAll = 0;
     for (const b of st.buildings.values()) {
       const d = getDef(b.def);
-      if (!d) continue;
+      if (!d || b.flags & BF.Burnt) continue;
       if (d.powerOut && d.powerOut > 0) powerAll++;
       if (d.waterOut && d.waterOut > 0) waterAll++;
     }
     if (powerHit && powerHit >= powerAll) items.unshift(lossLine('power plant', powerAll, served(st, BF.Powered), 'power'));
     if (waterHit && waterHit >= waterAll) items.unshift(lossLine('water source', waterAll, served(st, BF.Watered), 'water'));
+  }
+  // "anything costing > §20k": what is being destroyed (build cost) and what the demolition itself costs
+  if (value > CONFIRM_COST && !opts.sandbox) {
+    items.push(valued.length === 1 ? `${valued[0]} cost ${money(value)} to build` : `${valued.length} buildings worth ${money(value)} (${valued.slice(0, 3).join(', ')}${valued.length > 3 ? '…' : ''})`);
   }
   if (cost > CONFIRM_COST && !opts.sandbox) items.push(`Demolition costs ${money(cost)}`);
   if (!items.length) return null;

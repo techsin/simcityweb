@@ -10,8 +10,9 @@ import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
 import { Noise2D, clamp, smoothstep } from '../../core/rng';
 import type { CellRect } from '../../core/events';
-import { Overlay, type Climate, type TerrainPreset } from '../../core/types';
+import { Network, Overlay, type Climate, type TerrainPreset } from '../../core/types';
 import type { CityState } from '../../sim/CityState';
+import { sharedUniforms } from '../../assets/materials';
 import { getNoiseTexture, makeRampTexture } from './textures';
 import { OVERLAYS, ZONE_COLORS, computeOverlayValues } from './overlays';
 import { TERRAIN_FRAG_COLOR, TERRAIN_FRAG_PARS, TERRAIN_VERT_MAIN, TERRAIN_VERT_PARS } from './terrainShader';
@@ -63,6 +64,11 @@ export class TerrainRenderer {
   private rampTex: THREE.DataTexture;
   private hlData: Uint8Array;
   private hlTex: THREE.DataTexture;
+  /** N x 4 network type of edge cells whose road / rail runs off the map (rows: -x, +x, -z, +z edge) */
+  private exitData: Uint8Array;
+  private exitTex: THREE.DataTexture;
+  /** month (0 = Jan) for the seasonal snow line */
+  private month = 5;
   private lightData: Uint8Array;
   /** N x N city light density (R8, linear): buildings 1, roads ~0.35 — used for night reflections on water */
   readonly lightTexture: THREE.DataTexture;
@@ -120,6 +126,12 @@ export class TerrainRenderer {
     this.hlTex.magFilter = this.hlTex.minFilter = THREE.NearestFilter;
     this.hlTex.generateMipmaps = false;
 
+    this.exitData = new Uint8Array(N * 4);
+    this.exitTex = new THREE.DataTexture(this.exitData, N, 4, THREE.RedFormat, THREE.UnsignedByteType);
+    this.exitTex.magFilter = this.exitTex.minFilter = THREE.NearestFilter;
+    this.exitTex.generateMipmaps = false;
+    this.month = ((Math.floor(state.month ?? 5) % 12) + 12) % 12;
+
     const zoneCols: THREE.Color[] = [];
     for (let z = 0; z < 11; z++) zoneCols.push(new THREE.Color(ZONE_COLORS[z] ?? 0));
 
@@ -145,6 +157,12 @@ export class TerrainRenderer {
       uBrush: { value: new THREE.Vector4() },
       uNightF: { value: 0 },
       uDesert: { value: 0 },
+      uWinter: { value: 0 },
+      uSnowNoise: { value: 45 },
+      uDormant: { value: 0 },
+      // (same object as the building material's: WorldView updates it every frame)
+      uTSunDir: sharedUniforms.uSunDir,
+      uExitTex: { value: this.exitTex as THREE.Texture },
     };
     this.applyClimate();
 
@@ -203,13 +221,48 @@ export class TerrainRenderer {
     const cfg = this.state.config;
     const pal = PALETTES[cfg.climate] ?? PALETTES.temperate;
     this.uniforms.uPal.value = pal.map((h) => new THREE.Color(h));
-    let maxH = 0;
-    for (let i = 0; i < this.state.heights.length; i++) maxH = Math.max(maxH, this.state.heights[i]);
-    let snow = 9999;
-    if (cfg.climate === 'alpine') snow = Math.max(35, maxH * 0.5);
-    else if (cfg.climate === 'temperate') snow = Math.max(165, maxH * 0.78);
-    this.uniforms.uSnowLine.value = snow;
     this.uniforms.uDesert.value = cfg.climate === 'desert' ? 1 : 0;
+    this.applySnowLine();
+  }
+
+  /**
+   * Seasonal snow line. Alpine: relative to the map's own height range (a 4-49 m hill map never gets June snow, a
+   * mountain map keeps snow on its peaks), dropping by half the range in Dec-Feb and rising by 30% in Jun-Aug.
+   * Temperate: only high mountains (unchanged base), with a gentler seasonal swing. The shader additionally keeps
+   * zoned / developed cells free of terrain snow outside Dec-Feb (uWinter).
+   */
+  private applySnowLine() {
+    const cfg = this.state.config;
+    const H = this.state.heights;
+    let minH = Infinity, maxH = -Infinity;
+    for (let i = 0; i < H.length; i++) {
+      if (H[i] < minH) minH = H[i];
+      if (H[i] > maxH) maxH = H[i];
+    }
+    if (!(maxH >= minH)) { minH = 0; maxH = 0; }
+    minH = Math.max(minH, 0);
+    const R = Math.max(1, maxH - minH);
+    // per-month shift in units of the height range (Jan..Dec)
+    const SHIFT = [-0.5, -0.5, -0.25, -0.05, 0.12, 0.3, 0.3, 0.3, 0.12, -0.05, -0.25, -0.5];
+    const m = this.month;
+    let snow = 9999;
+    if (cfg.climate === 'alpine') snow = Math.max(minH + 0.8 * R, minH + 60) + SHIFT[m] * R;
+    else if (cfg.climate === 'temperate') snow = Math.max(165, maxH * 0.78) + SHIFT[m] * 0.6 * R;
+    this.uniforms.uSnowLine.value = snow;
+    this.uniforms.uSnowNoise.value = Math.min(45, Math.max(8, R * 0.5));
+    const winter = m === 11 || m <= 1;
+    this.uniforms.uWinter.value = winter ? 1 : 0;
+    // dormant grass (temperate / alpine): winter, a little in Nov / Mar, a hint in Oct
+    const seasonal = cfg.climate === 'temperate' || cfg.climate === 'alpine';
+    this.uniforms.uDormant.value = !seasonal ? 0 : winter ? 0.45 : m === 10 || m === 2 ? 0.24 : m === 9 ? 0.08 : 0;
+  }
+
+  /** season for the snow line (WorldView calls this on the sim's 'month' event) */
+  setMonth(month: number) {
+    const m = ((Math.floor(month) % 12) + 12) % 12;
+    if (m === this.month) return;
+    this.month = m;
+    this.applySnowLine();
   }
 
   // ------------------------------------------------------------------ heights
@@ -483,6 +536,33 @@ export class TerrainRenderer {
       }
     this.zoneTex.needsUpdate = true;
     this.lightTexture.needsUpdate = true;
+    this.updateExits();
+  }
+
+  /** edge cells whose road / highway / rail line runs off the map (continued as ribbons in the landscape shader) */
+  private updateExits() {
+    const st = this.state, N = this.N, E = this.exitData, net = st.network;
+    const isRoad = (t: number) => t >= Network.Street && t <= Network.Highway;
+    const connects = (a: number, b: number) => {
+      if (a === Network.Rail || b === Network.Rail) return a === b;
+      if (!isRoad(a) || !isRoad(b)) return false;
+      if (a === Network.Highway || b === Network.Highway) return (a === Network.Highway ? b : a) !== Network.Street;
+      return true;
+    };
+    const TUNNEL = 2;
+    E.fill(0);
+    for (let k = 1; k < N - 1; k++) {
+      // [edge row, cell, inward neighbour]
+      const cells: [number, number, number][] = [
+        [0, k * N, k * N + 1], [1, k * N + N - 1, k * N + N - 2], [2, k, N + k], [3, (N - 1) * N + k, (N - 2) * N + k],
+      ];
+      for (const [row, i, j] of cells) {
+        const t = net[i];
+        if (!t || st.netFlags[i] & TUNNEL || !connects(t, net[j])) continue;
+        E[row * N + k] = t;
+      }
+    }
+    this.exitTex.needsUpdate = true;
   }
 
   /** effective tree density for rendering: 0 on developed / zoned / water cells */
@@ -634,6 +714,7 @@ export class TerrainRenderer {
     this.overlayTex.dispose();
     this.rampTex.dispose();
     this.hlTex.dispose();
+    this.exitTex.dispose();
     this.lightTexture.dispose();
   }
 }

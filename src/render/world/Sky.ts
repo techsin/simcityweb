@@ -455,7 +455,9 @@ export class SkySystem {
         L.lightDir.normalize();
       }
       L.lightColor.setRGB(0.6, 0.72, 1.0);
-      L.lightIntensity = 0.5 * moonF;
+      // moderate moonlight: unlit walls / grass stay readable but night no longer looks like a blue-tinted day
+      // (WorldView adds a hemisphere fill, with an extra gap term while this light is weak)
+      L.lightIntensity = 0.28 * moonF;
     }
     // twilight amount (sun just below the horizon): brightens the sky for a readable blue hour
     const twilight = THREE.MathUtils.smoothstep(sy, -0.2, -0.07) * (1 - THREE.MathUtils.smoothstep(sy, -0.06, 0.0));
@@ -474,7 +476,9 @@ export class SkySystem {
     L.exposure = THREE.MathUtils.lerp(1.0, 1.9, L.night);
     u.uSkyExposure.value = 1.0 + 2.5 * twilight;
     u.uNightSky.value = THREE.MathUtils.smoothstep(L.night, 0.55, 1.0) * 0.9;
-    L.envIntensity = THREE.MathUtils.lerp(1.0, 1.8, L.night) + 1.2 * twilight;
+    // night reflections stay weak (glass / metal were picking up a strong grey env reflection that flattened lit
+    // windows); the blue hour keeps its brighter sky
+    L.envIntensity = THREE.MathUtils.lerp(1.0, 0.9, L.night) + 1.2 * twilight;
     // night sky floor (deep blue, brighter toward the horizon) so the night never goes pitch black
     const fl = THREE.MathUtils.smoothstep(L.night, 0.3, 1.0);
     u.uSkyFloor.value.set(0.0012 * fl, 0.0022 * fl, 0.0058 * fl);
@@ -499,9 +503,10 @@ export class SkySystem {
       u.uCloudAmb.value.z += g * 0.3 * this.sunT.b;
     }
 
-    // city glow (orange light pollution)
-    const glow = this.cityLights * L.night * 0.05;
-    u.uCityGlow.value.set(glow * 1.0, glow * 0.55, glow * 0.28);
+    // city glow (light pollution): a soft warm-grey haze near the horizon (a saturated orange mixed with the blue
+    // night sky into a muddy maroon band)
+    const glow = this.cityLights * L.night * 0.035;
+    u.uCityGlow.value.set(glow * 0.85, glow * 0.6, glow * 0.5);
 
     // star rotation (earth rotation around the celestial pole)
     const rot = (hour / 24) * Math.PI * 2;

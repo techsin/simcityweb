@@ -11,7 +11,7 @@ import type { ModelBuilders } from '../registry';
 import type { ModelBuilder } from '../ModelBuilder';
 import type { RNG } from '../../core/rng';
 import { Surf } from '../../core/types';
-import { leafBlob, limb, lathe, tier, tintSince, foliageShade, mark, jitterHex, mixHex, shadeHex, triOut, vnorm, vadd, vscale, vcross, vsub, type V3 } from './nat_geom';
+import { leafBlob, limb, lathe, tier, tintSince, foliageShade, mark, jitterHex, mixHex, shadeHex, triOut, triOutN, vnorm, vadd, vscale, vcross, vsub, type V3 } from './nat_geom';
 
 // ------------------------------------------------------------------ palettes (sRGB)
 const BARK = 0x5b4532;
@@ -160,7 +160,7 @@ function bareTree(b: ModelBuilder, rng: RNG, o: BareOpts) {
     const sb = vnorm(vcross(sa, d));
     const ph = rng.range(0, Math.PI * 2);
     for (let k = 0; k < 3; k++) {
-      b.paint(jitterHex(rng, k === 1 ? shadeHex(o.twig, 0.82) : o.twig, 0.07), Surf.Foliage);
+      b.paint(jitterHex(rng, k === 1 ? shadeHex(o.twig, 0.9) : o.twig, 0.07), Surf.Foliage);
       const an = ph + (k / 3) * Math.PI * 2;
       const cone = rng.range(0.45, 0.8);
       const dir = vnorm(vadd(vadd(d, vadd(vscale(sa, Math.cos(an) * cone), vscale(sb, Math.sin(an) * cone))), [0, 0.25 - droop, 0]));
@@ -168,11 +168,14 @@ function bareTree(b: ModelBuilder, rng: RNG, o: BareOpts) {
       const len = L * rng.range(0.8, 1.2);
       const base = vadd(p, vscale(dir, -len * 0.1));
       const tip = vadd(p, vscale(dir, len));
-      const w = len * 0.11;
+      const w = len * 0.09;
       const q0 = vadd(base, vscale(side, w)), q1 = vadd(base, vscale(side, -w));
       const n = vnorm(vcross(vsub(q1, tip), vsub(q0, tip)));
-      triOut(b, tip, q1, q0, n);
-      triOut(b, tip, q0, q1, vscale(n, -1));
+      // both faces share one soft up / outward normal, so the sprays light like a twig haze from every side (flat
+      // blade normals left the sun-averted faces near-black: dark thorns at street zoom)
+      const ns = vnorm(vadd(vscale(dir, 0.45), [0, 0.9, 0]));
+      triOutN(b, tip, q1, q0, ns, ns, ns, n);
+      triOutN(b, tip, q0, q1, ns, ns, ns, vscale(n, -1));
     }
   }
   tintSince(b, m, foliageShade(tTop, H, 0.5, 0));

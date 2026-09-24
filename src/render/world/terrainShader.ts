@@ -38,6 +38,16 @@ uniform float uRectOn;
 uniform vec4 uBrush;
 uniform float uNightF;
 uniform float uDesert;
+/** 1 in Dec-Feb: terrain snow may cover zoned / developed cells (cleared outside winter) */
+uniform float uWinter;
+/** snow line noise amplitude (m) */
+uniform float uSnowNoise;
+/** direction to the active light (shared with the building material) */
+uniform vec3 uTSunDir;
+/** 0..1 dormant (straw) grass: winter in temperate / alpine climates, a little in late autumn / early spring */
+uniform float uDormant;
+/** neighbour connections: N x 4 (row = map edge -x, +x, -z, +z), texel = network type of the edge cell whose line runs off-map */
+uniform sampler2D uExitTex;
 
 vec3 tEmis = vec3(0.0);
 float tRough = 0.92;
@@ -56,6 +66,10 @@ vec3 tPerturb(vec3 pos, vec3 n, float hgt) {
 }
 
 float tLuma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+// anti-aliased line |x| < hw with a filter width fw (fades to its coverage when thinner than a pixel)
+float tLine(float x, float hw, float fw) {
+  return (1.0 - smoothstep(hw - fw * 0.5, hw + fw * 0.5, abs(x))) * min(1.0, 2.0 * hw / max(fw, 1e-4));
+}
 
 int tZoneAt(ivec2 c) {
   ivec2 cc = clamp(c, ivec2(0), ivec2(int(uN) - 1));
@@ -93,6 +107,8 @@ vec3 terrainShade(vec3 P, vec3 N) {
   col *= 0.88 + 0.24 * m4;
   // meadow flecks (tiny lighter / darker grass tufts)
   col *= 0.93 + 0.14 * smoothstep(0.5, 0.8, nC.a);
+  // season: dormant straw-coloured grass in winter (patchy: some meadows stay greener)
+  col = mix(col, vec3(tLuma(col)) * vec3(1.32, 1.08, 0.68), uDormant * (0.75 + 0.5 * smoothstep(0.3, 0.7, patchN)));
   bump += (m4 - 0.5) * 0.3 + (m3 - 0.5) * 0.6;
 
   // forest floor under trees (keeps forests readable from far away)
@@ -104,6 +120,28 @@ vec3 terrainShade(vec3 P, vec3 N) {
   trees = mix(trees, smoothstep(0.6, 0.74, nA.g * 0.6 + nB.r * 0.5) * 0.65, outside);
   float forest = smoothstep(0.03, 0.55, trees);
   col = mix(col, uPal[3] * (0.85 + 0.3 * m3), forest * 0.82);
+  if (outside > 0.001) {
+    // landscape beyond the map has no tree instances: its noise forests get a canopy look (crown clumps with dark
+    // gaps as fake AO) plus a fake sun shadow on the meadow beside them and a lit crown edge toward the sun, so from
+    // far away they read as raised woods instead of flat stains
+    float sy = clamp(uTSunDir.y, 0.15, 1.0);
+    vec2 so = normalize(uTSunDir.xz + vec2(1e-4)) * min(60.0, 13.0 * sqrt(1.0 - sy * sy) / sy);
+    vec2 sq = xz + so;
+    float fs = smoothstep(0.6, 0.74, texture2D(uNoise, sq / 3100.0).g * 0.6 + texture2D(uNoise, sq / 520.0).r * 0.5);
+    float fo = smoothstep(0.6, 0.74, nA.g * 0.6 + nB.r * 0.5);
+    float shadowM = fs * (1.0 - fo) * outside;
+    float litRim = fo * (1.0 - fs) * outside;
+    col *= 1.0 - 0.42 * shadowM * (1.0 - 0.7 * uNightF);
+    if (forest > 0.001) {
+      vec4 nF = texture2D(uNoise, xz / 27.0 + 0.61);
+      float crowns = smoothstep(0.3, 0.72, nF.r * 0.55 + nC.g * 0.3 + nF.b * 0.15);
+      float gaps = 1.0 - smoothstep(0.05, 0.3, nF.a * 0.6 + crowns * 0.5);
+      vec3 canopy = mix(uPal[3] * 0.6, uPal[2] * 1.05, crowns) * (0.88 + 0.24 * nB.g) * (1.0 - 0.35 * gaps);
+      canopy *= 1.0 + 0.45 * litRim * (1.0 - 0.7 * uNightF);
+      col = mix(col, canopy, outside * smoothstep(0.02, 0.25, forest) * 0.94);
+      bump += (crowns * 2.2 - gaps * 1.2) * outside * forest;
+    }
+  }
 
   // dirt patches, stronger on moderate slopes and in dry areas
   float dirtM = smoothstep(0.66, 0.86, nB.b * 0.45 + nC.g * 0.35 + slope * 1.8 + dry * 0.12 - forest * 0.3);
@@ -156,8 +194,30 @@ vec3 terrainShade(vec3 P, vec3 N) {
   bump *= 1.0 - sandM * 0.7;
 
   // --- snow
-  float snowL = uSnowLine + (m2 - 0.5) * 45.0 + (m3 - 0.5) * 14.0;
+  // (noise amplitude scales with the map's height range: on a 45 m hill map the line follows the contours instead of
+  // scattering random patches)
+  float snowL = uSnowLine + (m2 - 0.5) * uSnowNoise + (m3 - 0.5) * uSnowNoise * 0.31;
   float snowM = smoothstep(snowL - 5.0, snowL + 5.0, h) * (1.0 - smoothstep(0.3, 0.55, slope));
+  if (snowM > 0.001 && uWinter < 0.999) {
+    // the city (zoned / developed cells, fading out over a 1-cell ring around lots and roads) keeps no terrain snow
+    // outside winter: lawns, yards and empty lots must not show white blotches in June
+    vec2 sg = xz / uCell;
+    if (sg.x >= 0.0 && sg.y >= 0.0 && sg.x < uN && sg.y < uN) {
+      ivec2 c0 = ivec2(sg);
+      vec2 fr = fract(sg);
+      uvec4 zc0 = texelFetch(uZoneTexU, c0, 0);
+      float cm = (zc0.r > 0u || zc0.g > 0u) ? 1.0 : 0.0;
+      ivec2 hiC = ivec2(int(uN) - 1);
+      if (cm < 0.5) {
+        // distance (cells) to each 4-neighbour: developed neighbours clear the snow toward their edge
+        if (texelFetch(uZoneTexU, clamp(c0 + ivec2(1, 0), ivec2(0), hiC), 0).g > 0u) cm = max(cm, smoothstep(0.1, 1.0, fr.x));
+        if (texelFetch(uZoneTexU, clamp(c0 + ivec2(-1, 0), ivec2(0), hiC), 0).g > 0u) cm = max(cm, smoothstep(0.1, 1.0, 1.0 - fr.x));
+        if (texelFetch(uZoneTexU, clamp(c0 + ivec2(0, 1), ivec2(0), hiC), 0).g > 0u) cm = max(cm, smoothstep(0.1, 1.0, fr.y));
+        if (texelFetch(uZoneTexU, clamp(c0 + ivec2(0, -1), ivec2(0), hiC), 0).g > 0u) cm = max(cm, smoothstep(0.1, 1.0, 1.0 - fr.y));
+      }
+      snowM *= 1.0 - cm * (1.0 - uWinter);
+    }
+  }
   col = mix(col, uPal[10] * (0.95 + 0.06 * m4), snowM);
   rough = mix(rough, 0.55, snowM);
 
@@ -173,8 +233,44 @@ vec3 terrainShade(vec3 P, vec3 N) {
     col = mix(col, mix(col, vec3(l), 0.18) * 0.9, landF);
     vec2 dd = max(-gc, gc - uN);
     float dEdge = max(dd.x, dd.y);
+    // thin, faint map border (a bright line read as a "board game" plate from far away and as a laser fence at night)
     float border = 1.0 - smoothstep(0.0, max(fpx * 2.0, 0.08), dEdge);
-    col = mix(col, vec3(0.92, 0.9, 0.8), border * 0.35 * landF);
+    col = mix(col, vec3(0.92, 0.9, 0.8), border * 0.12 * (1.0 - 0.6 * uNightF) * landF);
+    // neighbour connections: roads / highways / rails that run into the map edge continue ~400 m into the landscape
+    // as painted ribbons (straight out of the edge they leave), fading into the haze
+    {
+      float side = -1.0, kk = 0.0, lat = 0.0, dOut = 0.0;
+      if (dd.y <= 0.0 && dd.x > 0.0) { side = gc.x < 0.0 ? 0.0 : 1.0; kk = floor(gc.y); lat = fract(gc.y) - 0.5; dOut = dd.x; }
+      else if (dd.x <= 0.0 && dd.y > 0.0) { side = gc.y < 0.0 ? 2.0 : 3.0; kk = floor(gc.x); lat = fract(gc.x) - 0.5; dOut = dd.y; }
+      if (side >= 0.0 && dOut < 27.0) {
+        float et = floor(texelFetch(uExitTex, ivec2(int(clamp(kk, 0.0, uN - 1.0)), int(side)), 0).r * 255.0 + 0.5);
+        if (et > 0.5) {
+          float lm = abs(lat) * uCell;
+          float fwm = fpx * uCell * 1.2 + 0.05;
+          float rail = et > 5.5 ? 1.0 : 0.0;
+          float major = (et > 2.5 && et < 3.5) || et > 4.5 ? 1.0 : 0.0;
+          float hw = et < 1.5 ? 3.6 : (et < 2.5 ? 5.0 : (et < 3.5 ? 6.8 : (et < 4.5 ? 5.0 : (et < 5.5 ? 7.6 : 2.9))));
+          // highways / avenues / rail run on ~400 m, local roads ~200 m before they vanish into the landscape
+          float fade = major > 0.5 ? 1.0 - smoothstep(15.0, 25.0, dOut) : 1.0 - smoothstep(7.0, 13.0, dOut);
+          float rib = (1.0 - smoothstep(hw - fwm, hw + fwm, lm)) * fade * landF;
+          vec3 rc = rail > 0.5 ? vec3(0.15, 0.14, 0.13) : vec3(0.05, 0.052, 0.056) * (1.0 + 0.2 * (m3 - 0.5));
+          if (rail > 0.5) {
+            rc = mix(rc, vec3(0.05, 0.035, 0.03), tLine(abs(lm - 0.72), 0.08, fwm));
+          } else if (et > 4.5) {
+            // highway: concrete median + white edge lines
+            rc = mix(rc, vec3(0.34, 0.335, 0.32), tLine(lm, 0.32, fwm));
+            rc = mix(rc, vec3(0.55, 0.55, 0.53), tLine(abs(lm - 7.1), 0.1, fwm) * 0.8);
+          } else if (et > 2.5 && et < 3.5) {
+            // avenue: planted median
+            rc = mix(rc, vec3(0.07, 0.11, 0.035), tLine(lm, 1.0, fwm));
+          } else {
+            rc = mix(rc, vec3(0.5, 0.36, 0.06), tLine(lm, 0.08, fwm) * 0.7);
+          }
+          col = mix(col, rc * 0.92, rib);
+          bump *= 1.0 - rib;
+        }
+      }
+    }
   } else {
     ivec2 cell = ivec2(gc);
     vec2 f = fract(gc);
@@ -192,11 +288,24 @@ vec3 terrainShade(vec3 P, vec3 N) {
       float outline = max(max(eL, eR), max(eT, eB));
       float dcell = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
       float inner = (1.0 - smoothstep(0.0, fpx * 1.5 + 0.01, dcell)) * (1.0 - smoothstep(0.08, 0.25, fpx));
-      float a = uZoneMode > 0.5 ? 0.66 : 0.34;
-      col = mix(col, zc * 0.85 + 0.04, a);
-      col = mix(col, zc * 0.5, outline * 0.8);
-      col = mix(col, zc * 1.1, inner * 0.35);
-      tEmis += zc * (a * 0.004 * (0.3 + uNightF) + outline * 0.03 * (0.25 + uNightF * 1.1));
+      if (uZoneMode > 0.5) {
+        // zone tool / zones overlay: strong, readable paint with the per-cell grid
+        float a = 0.66;
+        col = mix(col, zc * 0.85 + 0.04, a);
+        col = mix(col, zc * 0.5, outline * 0.8);
+        col = mix(col, zc * 1.1, inner * 0.35);
+        tEmis += zc * (a * 0.004 * (0.3 + uNightF) + outline * 0.03 * (0.25 + uNightF * 1.1));
+      } else {
+        // normal view: zoned but empty land reads as a graded vacant lot waiting to grow (dirt / stubble) with a light,
+        // desaturated zone tint and a thin outline (no per-cell grid), fainter still at night
+        float stub = 0.9 + 0.2 * m4 + 0.1 * (m3 - 0.5);
+        col = mix(col, uPal[4] * 0.95 * stub, 0.2);
+        vec3 zd = mix(vec3(tLuma(zc)), zc, 0.6);
+        float a = 0.14 * mix(1.0, 0.45, uNightF);
+        col = mix(col, zd * 0.85 + 0.04, a);
+        col = mix(col, zd * 0.5, outline * 0.5);
+        tEmis += zd * outline * 0.03 * (0.25 + uNightF * 1.1);
+      }
     }
     // data overlay heatmap
     if (uOverlayOn > 0.5) {

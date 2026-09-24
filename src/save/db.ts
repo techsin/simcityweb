@@ -137,7 +137,9 @@ export function openKV(): Promise<KV> {
       };
       r.onerror = () => fallback(r.error);
       r.onblocked = () => fallback('blocked');
-      setTimeout(() => fallback('timeout'), 4000);
+      // only for a browser whose open() never answers: a slow open (cold start, busy machine — seen at 4 s under
+      // load) must not silently fall back to memory, where every save of the session is lost on reload
+      setTimeout(() => fallback('timeout'), 15000);
     } catch (e) {
       fallback(e);
     }

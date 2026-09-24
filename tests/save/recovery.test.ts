@@ -10,7 +10,9 @@ import { Network, Zone } from '../../src/core/types';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import { decodeBundle, encodeBundle } from '../../src/save/bundle';
 import {
+  LS_BUDGET_BYTES,
   MemoryKV,
+  RECOMPUTED_LAYERS,
   applyCityDelta,
   clearRecoveryAfterSave,
   clearRecoveryBase,
@@ -110,10 +112,13 @@ describe('string packing', () => {
       for (let i = 0; i < n; i++) b[i] = (i * 131 + 7) & 255;
       const s = packBytes(b);
       expect(s.length).toBe(Math.ceil((n * 8) / 15));
-      for (let i = 0; i < s.length; i++) {
+      // (one assertion per string, not per char: 35k expect() calls made this test take minutes on a loaded machine)
+      let bad = -1;
+      for (let i = 0; i < s.length && bad < 0; i++) {
         const c = s.charCodeAt(i);
-        expect(c >= 0x1000 && c <= 0x8fff).toBe(true);
+        if (c < 0x1000 || c > 0x8fff) bad = i;
       }
+      expect(bad).toBe(-1);
       expect(firstDiff(unpackBytes(s, n), b)).toBeNull();
     }
   });
@@ -178,6 +183,35 @@ describe('city delta', () => {
     expect(firstDiff(back.layers.zone, cur.layers.zone)).toBeNull();
   });
 
+  it('lean (periodic) snapshots leave every recomputed layer to the base, keep all primary data', () => {
+    const st = city();
+    const base = serializeCity(st, { copy: true });
+    for (let i = 0; i < st.cells; i += 5) {
+      st.traffic[i] += 1;
+      st.landValue[i] += 0.25;
+      st.desirability[1][i] -= 0.5;
+    }
+    st.zone[st.idx(1, 1)] = Zone.IndMed;
+    st.network[st.idx(2, 1)] = Network.Road;
+    st.garbage[77] = 0.5; // a saved layer outside RECOMPUTED_LAYERS: always kept
+    st.day += 12;
+    const cur = serializeCity(st, { copy: true });
+    const lean = encodeCityDelta(cur, base, 1, { budget: LS_BUDGET_BYTES, lean: true });
+    const full = encodeCityDelta(cur, base, 1, { budget: LS_BUDGET_BYTES });
+    const leanRecomputed = RECOMPUTED_LAYERS.filter((k) => k in cur.layers);
+    expect([...lean.dropped].sort()).toEqual([...leanRecomputed].sort());
+    for (const k of leanRecomputed) expect(lean.layers[k]).toBeUndefined();
+    expect(full.dropped).toEqual([]);
+    expect(encodeBundle(lean).length).toBeLessThan(encodeBundle(full).length);
+    const back = applyCityDelta(decodeBundle(encodeBundle(lean)) as CityDelta, base);
+    for (const k of leanRecomputed) expect(firstDiff(back.layers[k], base.layers[k])).toBeNull();
+    for (const k of Object.keys(cur.layers).filter((k) => !RECOMPUTED_LAYERS.includes(k))) expect(firstDiff(back.layers[k], cur.layers[k])).toBeNull();
+    expect(firstDiff(strip({ ...back, layers: {} }), strip({ ...cur, layers: {} }))).toBeNull();
+    expect(deserializeCity(back).day).toBe(st.day);
+    // without a base there is nothing to take them from: a lean delta is then a full one
+    expect(encodeCityDelta(cur, null, 0, { lean: true }).dropped).toEqual([]);
+  });
+
   it('refuses a different base', () => {
     const st = city();
     const base = serializeCity(st, { copy: true });
@@ -190,7 +224,8 @@ describe('city delta', () => {
   });
 });
 
-describe('write -> find -> restore', { timeout: 60_000 }, () => {
+// (generous: on a loaded machine one of these took 140 s, and a timed-out test keeps running into the next one)
+describe('write -> find -> restore', { timeout: 300_000 }, () => {
   let ls: MemStorage;
   beforeEach(async () => {
     ls = new MemStorage();

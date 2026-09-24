@@ -50,12 +50,43 @@ export class RoadSurface {
     if (s < 0) s = 0; else if (s > 1) s = 1;
     const h0 = ax === 0 ? this.terrain(start, wz) : this.terrain(wx, start);
     const h1 = ax === 0 ? this.terrain(start + len, wz) : this.terrain(wx, start + len);
+    const ramp = net.bRamp[i];
+    if (ramp > 0) {
+      // highway overpass: straight grade between the span ends + a plateau rise reached over the ramp length
+      let t = Math.min(along - start, start + len - along) / ramp;
+      if (t < 0) t = 0; else if (t > 1) t = 1;
+      const deck = h0 + (h1 - h0) * s + net.bRise[i] * t * t * (3 - 2 * t);
+      const g = this.terrain(wx, wz);
+      return deck > g ? deck : g;
+    }
     return h0 + (h1 - h0) * s + net.bRise[i] * Math.sin(Math.PI * s);
   }
 
-  /** road surface (asphalt) height */
-  y(wx: number, wz: number): number {
+  /**
+   * road surface (asphalt) height. With a heading (fx, fz): traffic crossing UNDER a highway overpass (heading across
+   * the deck axis) stays on the ground; traffic along the deck (and callers without a heading) gets the deck.
+   */
+  y(wx: number, wz: number, fx = 0, fz = 0): number {
+    if (fx !== 0 || fz !== 0) {
+      const N = this.state.size;
+      const cx = Math.floor(wx / CELL_SIZE), cz = Math.floor(wz / CELL_SIZE);
+      if (cx >= 0 && cz >= 0 && cx < N && cz < N) {
+        const i = cz * N + cx;
+        if (this.net.bCross[i]) {
+          const along = Math.abs(this.net.bAxis[i] === 0 ? fx : fz) / (Math.hypot(fx, fz) || 1);
+          const deck = this.base(wx, wz), ground = this.terrain(wx, wz);
+          // blend over the diagonal headings so a car turning at the crossing doesn't jump
+          const k = along <= 0.35 ? 0 : along >= 0.85 ? 1 : (along - 0.35) / 0.5;
+          return ground + (deck - ground) * k * k * (3 - 2 * k) + LIFT;
+        }
+      }
+    }
     return this.base(wx, wz) + LIFT;
+  }
+
+  /** ground (terrain) height under an overpass / bridge, plus the asphalt lift */
+  groundY(wx: number, wz: number): number {
+    return this.terrain(wx, wz) + LIFT;
   }
 
   /** is the cell containing (wx,wz) a bridge deck */

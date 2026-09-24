@@ -6,6 +6,9 @@
  * Pieces per cell (by 4-neighbour road mask): straight, arc corner, general junction (box + tapered arms + filleted
  * sidewalk corners), dead end with cul-de-sac bulb, isolated plaza, level crossing. Everything follows RoadSurface.y
  * (terrain or bridge deck). Markings are drawn procedurally in the road shader from the `rd` attribute.
+ * Highways: overpasses where roads cross them (NetInfo spans with bRamp > 0: deck on retaining-wall embankments, the
+ * minor road at grade between abutments under the deck), sign gantries every 8 cells and next to on / off ramps.
+ * Street / median trees follow the climate (streetTree).
  */
 import { Network } from '../../../core/types';
 import { CELL_SIZE } from '../../../core/constants';
@@ -18,6 +21,10 @@ import { GeoBuf, type GeoSlice } from './geobuf';
 export const M = {
   ASPHALT: 0, SIDEWALK: 1, CURB: 2, GRASS: 3, BALLAST: 4, SLEEPER: 5, RAIL: 6, CONCRETE: 7, DIRT: 8, METAL: 9,
   PANEL: 10, VERGE: 11, BARRIER: 12, TUNNEL: 13,
+  /** highway gantry sign face (u, v = panel metres, w = width * 10 (+1000 second panel); feat 1 = galvanized back) */
+  SIGN: 14,
+  /** galvanized steel (gantry posts / beams) */
+  GALV: 15,
 } as const;
 export const F = { PLAIN: 0, LANES: 1, RAMP: 2, CROSSING: 3 } as const;
 const C = (mat: number, kind: number, feat: number) => mat * 64 + kind * 8 + feat;
@@ -69,6 +76,8 @@ export interface StreetlightInfo {
 
 const MAXE2 = 12 * 12;
 const TWO_PI = Math.PI * 2;
+/** highway overpass deck slab thickness (m) */
+const OVERPASS_DECK = 1.3;
 
 function wrapPi(a: number): number {
   while (a > Math.PI) a -= TWO_PI;
@@ -102,6 +111,10 @@ export class RoadMesher {
   private _u = 0;
   private _v = 0;
   private trackIdx = 0;
+  /** set while meshing the minor road under a highway overpass (no streetlights / trees, deck soffit lights instead) */
+  private underDeck = false;
+  private groundSurf: RoadSurface | null = null;
+  private groundOf: RoadSurface | null = null;
   /** per-cell mesh cache: an edit only re-meshes the invalidated cells; chunks are re-assembled by concatenation */
   private cache = new Map<number, CellCache>();
 
@@ -290,7 +303,10 @@ export class RoadMesher {
           this.tunnelCell(t);
         } else {
           const cr = net.crossing[i];
-          if (cr) {
+          const overpass = net.bAxis[i] >= 0 && net.bRamp[i] > 0;
+          if (overpass && net.bCross[i]) {
+            this.overpassCell();
+          } else if (cr) {
             this.levelCrossing(cr);
           } else if (t === Network.Rail) {
             this.railCell(net.railMask[i]);
@@ -299,7 +315,8 @@ export class RoadMesher {
           }
           if (net.bAxis[i] >= 0) {
             this.g = out.struct;
-            this.bridgeStructure(t);
+            if (overpass) this.overpassStructure(net.bCross[i] === 1);
+            else this.bridgeStructure(t);
             this.g = out.main;
           }
         }
@@ -401,10 +418,10 @@ export class RoadMesher {
         const sideDir = sg > 0 ? this.dirOfRight(h) : OPP[this.dirOfRight(h)];
         if (!bridge && !this.neighborIsRoad(sideDir)) wl(sg * HALF, -HALF, sg * HALF, HALF, -1.0, CURB_H, sg, C(M.CURB, kind, 0));
       }
-      // streetlight: one per cell alternating sides
+      // streetlight: one per cell alternating sides (under an overpass deck: soffit lights, see overpassStructure)
       const side = (this.cx + this.cz) & 1 ? 1 : -1;
       const off = t === Network.Street ? a + 1.0 : a + 0.55;
-      this.addStreetlight(h, side * off, 0, -side, CURB_H, 0);
+      if (!this.underDeck) this.addStreetlight(h, side * off, 0, -side, CURB_H, 0);
     } else if (t === Network.Highway) {
       // jersey barriers: median + outer edges
       const N = this.net.N;
@@ -424,9 +441,15 @@ export class RoadMesher {
           if (!this.neighborIsRoad(sideDir)) wl(sg * HALF, -HALF, sg * HALF, HALF, -1.0, 0.0, sg, C(M.CONCRETE, kind, 0));
         }
       }
-      if (((this.cx + this.cz) & 1) === 0) {
+      const gantry = this.gantryHere(h);
+      if (((this.cx + this.cz) & 1) === 0 && !gantry) {
         this.addStreetlight(h, 0.0, 0, 1, 0.9, 1);
         this.addStreetlight(h, 0.0, 0, -1, 0.9, 1);
+      }
+      if (gantry) {
+        this.g = this.out.struct;
+        this.gantry(h);
+        this.g = this.out.main;
       }
     }
     if (t === Network.Avenue) {
@@ -471,10 +494,25 @@ export class RoadMesher {
   private addTree(h: number, u: number, s: number, lift: number, scale: number, salt: number): void {
     const [lx, lz] = this.lp(h, u, s);
     const hsh = ((this.cx * 73856093) ^ (this.cz * 19349663) ^ (salt * 83492791)) >>> 0;
+    const [model, variants, sk] = this.streetTree(hsh);
     this.out.props.push({
-      model: 'tree_oak', variant: hsh % 4, x: this.ox + lx, y: this.Y(lx, lz) + lift, z: this.oz + lz,
-      yaw: (hsh % 628) / 100, scale: scale + ((hsh >> 8) % 16) / 100,
+      model, variant: hsh % variants, x: this.ox + lx, y: this.Y(lx, lz) + lift, z: this.oz + lz,
+      yaw: (hsh % 628) / 100, scale: (scale + ((hsh >> 8) % 16) / 100) * sk,
     });
+  }
+
+  /**
+   * Street / median tree species by climate: [model, base variants, scale factor]. Oak / maple / birch are seasonal
+   * (PropRenderer swaps autumn / bare / blossom variants, nat_season.ts); palms stand taller than the broadleaf trees.
+   */
+  private streetTree(hsh: number): [string, number, number] {
+    const r = ((hsh >>> 11) % 1000) / 1000;
+    switch (this.net.state.config.climate) {
+      case 'tropical': return ['tree_palm', 3, 1.45];
+      case 'desert': return r < 0.6 ? ['tree_palm', 3, 1.45] : ['tree_cypress', 2, 1.15];
+      case 'alpine': return r < 0.5 ? ['tree_birch', 3, 1.0] : ['tree_spruce', 3, 0.95];
+      default: return r < 0.7 ? ['tree_oak', 4, 1.0] : ['tree_maple', 2, 1.05];
+    }
   }
 
   /** direction index of the right-hand vector of heading h */
@@ -1082,6 +1120,205 @@ export class RoadMesher {
       if (t !== Network.Rail) {
         const [p0x, p0z] = P(-w, HALF), [p1x, p1z] = P(w, HALF), [p2x, p2z] = P(w, s - 0.3), [p3x, p3z] = P(-w, s - 0.3);
         this.squad(p0x, p0z, p1x, p1z, p2x, p2z, p3x, p3z, 0, C(M.ASPHALT, t, F.LANES), 0);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ highway overpasses & gantries
+  /** the bare terrain as a road surface (the minor road under an overpass stays at grade) */
+  private ground(): RoadSurface {
+    if (this.groundOf !== this.surf || !this.groundSurf) {
+      const s = this.surf;
+      const g = Object.create(s) as RoadSurface;
+      g.base = (x: number, z: number) => s.terrain(x, z);
+      this.groundSurf = g;
+      this.groundOf = s;
+    }
+    return this.groundSurf;
+  }
+
+  /** crossing cell of a highway overpass (NetInfo.bCross): the minor road at grade, the highway deck above it */
+  private overpassCell(): void {
+    const net = this.net, N = net.N;
+    const A = net.bAxis[this.ci];
+    let tm = 0, hm = A === 0 ? 1 : 0, from = -1;
+    for (const d of A === 0 ? [1, 3] : [0, 2]) {
+      const nx = this.cx + DX[d], nz = this.cz + DZ[d];
+      if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
+      const j = nz * N + nx;
+      const t = net.roadType[j];
+      if (isRoadT(t) && t !== Network.Highway && HALF_W[t] >= HALF_W[tm]) { tm = t; from = j; }
+    }
+    if (!tm) tm = Network.Road;
+    if (tm === Network.OneWay && from >= 0) {
+      const od = oneWayDir(net.state.netFlags[from]);
+      if ((od & 1) === (hm & 1)) hm = od;
+    }
+    const surf = this.surf;
+    this.surf = this.ground();
+    this.underDeck = true;
+    this.straight(tm, hm);
+    this.underDeck = false;
+    this.surf = surf;
+    this.straight(Network.Highway, A);
+  }
+
+  /** overpass cell j (NetInfo span with bRamp > 0) carried on an open deck (viaduct) rather than an embankment */
+  private overpassRaised(j: number): boolean {
+    const net = this.net;
+    if (!(net.bAxis[j] >= 0 && net.bRamp[j] > 0)) return false;
+    if (net.bCross[j]) return true;
+    const N = net.N, h = net.bAxis[j];
+    const x = j % N, z = (j / N) | 0;
+    const cx = x * CELL_SIZE + HALF, cz = z * CELL_SIZE + HALF;
+    for (const e of [-1, 1]) {
+      const wx = cx + DX[h] * e * HALF, wz = cz + DZ[h] * e * HALF;
+      if (this.surf.base(wx, wz) - OVERPASS_DECK - this.surf.terrain(wx, wz) < 3.2) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Overpass structure (struct buffer, casts shadows). Low ramp cells: a solid embankment (retaining walls from the
+   * ground up to the deck on both sides, an end wall where the deck continues as a viaduct). Raised cells: an open
+   * deck (fascia with a lighter coping + soffit) on a hammerhead pier at the cell centre; crossing cells span over the
+   * minor road without a pier and carry soffit lights for the road below.
+   */
+  private overpassStructure(cross: boolean): void {
+    const net = this.net, N = net.N;
+    const h = net.bAxis[this.ci];
+    this.mapStraight(h);
+    const code = C(M.CONCRETE, Network.Highway, 0);
+    const L = (u: number, s: number): [number, number] => this.lp(h, u, s);
+    const G = (lx: number, lz: number) => this.surf.terrain(this.ox + lx, this.oz + lz);
+    const steps = 4;
+    const DECK = OVERPASS_DECK;
+    const raised = this.overpassRaised(this.ci);
+    for (let k = 0; k < steps; k++) {
+      const s0 = -HALF + (2 * HALF * k) / steps, s1 = -HALF + (2 * HALF * (k + 1)) / steps;
+      for (const sg of [1, -1]) {
+        const [ax, az] = L(sg * HALF, s0), [bx, bz] = L(sg * HALF, s1);
+        const ya = this.Y(ax, az) + 0.02, yb = this.Y(bx, bz) + 0.02;
+        const hx = RX[h] * sg, hz = RZ[h] * sg;
+        // deck edge / wall top: lighter coping band
+        this.quad3(ax, ya - 0.3, az, bx, yb - 0.3, bz, bx, yb, bz, ax, ya, az, hx, 0, hz, code, 1);
+        if (raised) {
+          this.quad3(ax, ya - DECK, az, bx, yb - DECK, bz, bx, yb - 0.3, bz, ax, ya - 0.3, az, hx, 0, hz, code, 0);
+        } else {
+          // retaining wall (at the ramp foot this is just the usual skirt)
+          this.quad3(ax, G(ax, az) - 0.6, az, bx, G(bx, bz) - 0.6, bz, bx, yb - 0.3, bz, ax, ya - 0.3, az, hx, 0, hz, code, 0);
+        }
+      }
+      if (raised) {
+        const [p0x, p0z] = L(-HALF, s0), [p1x, p1z] = L(HALF, s0), [p2x, p2z] = L(HALF, s1), [p3x, p3z] = L(-HALF, s1);
+        this.quad3(p0x, this.Y(p0x, p0z) - DECK, p0z, p1x, this.Y(p1x, p1z) - DECK, p1z, p2x, this.Y(p2x, p2z) - DECK, p2z, p3x, this.Y(p3x, p3z) - DECK, p3z, 0, -1, 0, code, 0);
+      }
+    }
+    if (!raised) {
+      // end walls (abutments) where the deck continues as a viaduct / over a crossing
+      for (const e of [-1, 1]) {
+        const d = e > 0 ? h : OPP[h];
+        const nx = this.cx + DX[d], nz = this.cz + DZ[d];
+        if (nx < 0 || nz < 0 || nx >= N || nz >= N || !this.overpassRaised(nz * N + nx)) continue;
+        const s = e * HALF;
+        for (let k = 0; k < 4; k++) {
+          const u0 = -HALF + k * 4, u1 = u0 + 4;
+          const [ax, az] = L(u0, s), [bx, bz] = L(u1, s);
+          this.quad3(ax, G(ax, az) - 0.6, az, bx, G(bx, bz) - 0.6, bz, bx, this.Y(bx, bz) - DECK, bz, ax, this.Y(ax, az) - DECK, az, e * DX[h], 0, e * DZ[h], code, 0);
+        }
+      }
+      return;
+    }
+    if (!cross) {
+      // hammerhead pier: column + cap beam under the soffit
+      const soffit = this.Y(0, 0) - DECK;
+      const g0 = G(0, 0);
+      this.boxRS(h, 0, 0, HALF - 1.0, 0.85, soffit - 1.1, soffit - 0.02, code);
+      this.pierBox(h, 0, 1.25, 0.75, g0 - 1.0, soffit - 1.1, code);
+      return;
+    }
+    // soffit lights over the minor road below (warm pools on the road, the lamp head under the deck)
+    const B = h === 0 ? 1 : 0;
+    for (const sB of [-4.5, 4.5]) {
+      const px = DX[B] * sB, pz = DZ[B] * sB;
+      const gy = G(px, pz) + LIFT;
+      this.out.pools.push({
+        x: this.ox + px, y: gy + 0.04, z: this.oz + pz, r: 6.5, tint: 0, yaw: Math.atan2(-DZ[B], DX[B]),
+        hx: this.ox + px, hy: this.Y(px, pz) - DECK - 0.25, hz: this.oz + pz,
+      });
+    }
+  }
+
+  /** gantry sign over a highway straight: every 8 cells (world aligned) and on the cells next to on / off ramps */
+  private gantryHere(h: number): boolean {
+    const net = this.net, N = net.N, i = this.ci;
+    if (net.bCross[i] || (net.bAxis[i] >= 0 && net.bRamp[i] === 0)) return false;
+    const along = h & 1 ? this.cz : this.cx, lat = h & 1 ? this.cx : this.cz;
+    if ((along + lat * 3) % 8 === 3) return true;
+    for (const d of [h, OPP[h]]) {
+      const nx = this.cx + DX[d], nz = this.cz + DZ[d];
+      if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
+      const j = nz * N + nx;
+      if (net.roadType[j] === Network.Highway && popcount4(net.roadMask[j]) === 3) return true;
+    }
+    return false;
+  }
+
+  /** axis-aligned box in the road frame of heading h (centre u/s, half sizes), absolute y range, 6 faces */
+  private boxRS(h: number, uC: number, sC: number, hu: number, hs: number, y0: number, y1: number, code: number): void {
+    const L = (u: number, s: number): [number, number] => this.lp(h, u, s);
+    const c = [L(uC - hu, sC - hs), L(uC + hu, sC - hs), L(uC + hu, sC + hs), L(uC - hu, sC + hs)];
+    const [mx, mz] = L(uC, sC);
+    for (let k = 0; k < 4; k++) {
+      const [ax, az] = c[k], [bx, bz] = c[(k + 1) & 3];
+      this.quad3(ax, y0, az, bx, y0, bz, bx, y1, bz, ax, y1, az, (ax + bx) / 2 - mx, 0, (az + bz) / 2 - mz, code, 0);
+    }
+    this.quad3(c[0][0], y1, c[0][1], c[1][0], y1, c[1][1], c[2][0], y1, c[2][1], c[3][0], y1, c[3][1], 0, 1, 0, code, 0);
+    this.quad3(c[0][0], y0, c[0][1], c[1][0], y0, c[1][1], c[2][0], y0, c[2][1], c[3][0], y0, c[3][1], 0, -1, 0, code, 0);
+  }
+
+  /** flat quad with explicit (u, v) per vertex (sign faces): p = local x, absolute y, local z */
+  private uvQuad(p: [number, number, number][], uv: [number, number][], n: [number, number, number], code: number, w: number): void {
+    const g = this.g, ox = this.ox, oz = this.oz;
+    const [a, b, c] = p;
+    const cx = (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]);
+    const cy = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+    const cz = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    const order = cx * n[0] + cy * n[1] + cz * n[2] >= 0 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2];
+    for (const k of order) g.push(ox + p[k][0], p[k][1], oz + p[k][2], n[0], n[1], n[2], uv[k][0], uv[k][1], code, w);
+  }
+
+  /** highway sign gantry: galvanized posts on the outer barriers, a box beam, one green sign per carriageway */
+  private gantry(h: number): void {
+    const galv = C(M.GALV, Network.Highway, 0);
+    const U = HALF - 0.28;
+    const [lx0, lz0] = this.lp(h, -U, 0), [lx1, lz1] = this.lp(h, U, 0);
+    const y0 = this.Y(lx0, lz0), y1 = this.Y(lx1, lz1);
+    const top = Math.max(y0, y1) + 7.3;
+    this.boxRS(h, -U, 0, 0.17, 0.17, y0 - 0.2, top, galv);
+    this.boxRS(h, U, 0, 0.17, 0.17, y1 - 0.2, top, galv);
+    this.boxRS(h, 0, 0, HALF - 0.05, 0.24, top - 0.62, top - 0.08, galv);
+    const H = 2.2, u0 = 0.6, u1 = HALF - 0.8, W = u1 - u0;
+    const yT = top - 0.22, yB = yT - H;
+    for (const side of [1, -1]) {
+      // side +1: carriageway u > 0 (traffic heading +h) -> sign faces -h, in front of the beam (s < 0)
+      const sf = -side * 0.34, sb = -side * 0.26;
+      const nF: [number, number, number] = [-side * DX[h], 0, -side * DZ[h]];
+      const nBk: [number, number, number] = [side * DX[h], 0, side * DZ[h]];
+      const ua = side * u0, ub = side * u1;
+      const P = (u: number, s: number, y: number): [number, number, number] => { const [x, z] = this.lp(h, u, s); return [x, y, z]; };
+      const wv = Math.round(W * 10) + (side > 0 ? 0 : 1000);
+      // front (x = 0 at the driver's left edge; the driver's right is +u for side +1, -u for side -1)
+      this.uvQuad([P(ua, sf, yB), P(ub, sf, yB), P(ub, sf, yT), P(ua, sf, yT)], [[0, 0], [W, 0], [W, H], [0, H]], nF, C(M.SIGN, Network.Highway, 0), wv);
+      this.uvQuad([P(ua, sb, yB), P(ub, sb, yB), P(ub, sb, yT), P(ua, sb, yT)], [[0, 0], [W, 0], [W, H], [0, H]], nBk, C(M.SIGN, Network.Highway, 1), 0);
+      // panel edges
+      const mapE = (a: [number, number, number], b: [number, number, number], c2: [number, number, number], d: [number, number, number], n: [number, number, number]) =>
+        this.uvQuad([a, b, c2, d], [[0, 0], [1, 0], [1, 1], [0, 1]], n, C(M.SIGN, Network.Highway, 1), 0);
+      mapE(P(ua, sf, yT), P(ub, sf, yT), P(ub, sb, yT), P(ua, sb, yT), [0, 1, 0]);
+      mapE(P(ua, sf, yB), P(ub, sf, yB), P(ub, sb, yB), P(ua, sb, yB), [0, -1, 0]);
+      for (const ue of [ua, ub]) {
+        const o = Math.sign(ue - (ua + ub) / 2);
+        mapE(P(ue, sf, yB), P(ue, sb, yB), P(ue, sb, yT), P(ue, sf, yT), [o * RX[h], 0, o * RZ[h]]);
       }
     }
   }

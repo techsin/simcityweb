@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import type { CellRect, Emitter } from '../../core/events';
 import { CELL_SIZE } from '../../core/constants';
 import { Overlay } from '../../core/types';
-import { sharedUniforms } from '../../assets/materials';
+import { setFoliageSeason, sharedUniforms } from '../../assets/materials';
 import { registerAllModels } from '../../assets/builders';
 import { setTreeSeason } from '../../assets/builders/nat_season';
 import type { CityState, Building } from '../../sim/CityState';
@@ -48,9 +48,12 @@ const _ndc = new THREE.Vector2();
 const _ray = new THREE.Ray();
 const _col = new THREE.Color();
 
-/** fraction of windows lit by hour (evening peak, late night dip) */
+/**
+ * fraction of windows lit by hour (evening peak, late night dip). The evening peak stays below ~0.6 so skylines
+ * read as dark towers with lights (sparkle), not as glowing cream pillars; 02:00 (0.28) is the sparse reference.
+ */
 function litFractionAt(h: number): number {
-  const k = [0.5, 0.36, 0.28, 0.24, 0.24, 0.3, 0.45, 0.5, 0.45, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.45, 0.55, 0.66, 0.72, 0.72, 0.7, 0.64, 0.57];
+  const k = [0.4, 0.34, 0.28, 0.24, 0.24, 0.3, 0.45, 0.5, 0.45, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.45, 0.5, 0.55, 0.58, 0.58, 0.56, 0.52, 0.46];
   const i = Math.floor(h) % 24, f = h - Math.floor(h);
   return k[i] + (k[(i + 1) % 24] - k[i]) * f;
 }
@@ -265,7 +268,10 @@ export class WorldView implements WorldViewApi {
       ev.on('buildingAdded', (b) => cells(bRect(b))),
       ev.on('buildingRemoved', (b) => cells(bRect(b))),
       ev.on('layerUpdated', (name) => this.terrain.onLayerUpdated(name)),
-      ev.on('month', () => this.trees.setMonth(this.state.month)),
+      ev.on('month', () => {
+        this.trees.setMonth(this.state.month);
+        this.terrain.setMonth(this.state.month);
+      }),
       ev.on('disaster', (d) => {
         if (d.active && d.kind === 'earthquake') this.cameraController.shake(1, 3);
       }),
@@ -376,7 +382,11 @@ export class WorldView implements WorldViewApi {
     this.sun.color.copy(L.lightColor);
     this.sun.intensity = L.lightIntensity;
     this.sun.visible = L.lightIntensity > 0.002;
-    this.nightFill.intensity = 0.55 * L.night;
+    // hemisphere night fill (kept low so night reads as night, not a blue-tinted day), plus a gap term while the direct
+    // light is weak: the sun-twilight -> moon handover (~19:10-19:35 / ~06:00-06:25) and moonless pre-dawn hours would
+    // otherwise be the darkest minutes of the night
+    const gap = L.night * (1 - THREE.MathUtils.clamp(L.lightIntensity / 0.28, 0, 1));
+    this.nightFill.intensity = 0.3 * L.night + 0.28 * gap;
     sharedUniforms.uNight.value = L.night;
     sharedUniforms.uTime.value = this.clock;
     sharedUniforms.uLitFraction.value = litFractionAt(this._time);
@@ -404,6 +414,8 @@ export class WorldView implements WorldViewApi {
     this.terrain.update();
     // publish the season for renderers without a CityState (street / median trees in PropRenderer)
     setTreeSeason(this.state.month, this.state.config.climate);
+    // lot lawns / hedges follow the climate & season (materials.ts uFoliageDry / uFoliageTint)
+    setFoliageSeason(this.state.month, this.state.config.climate);
     this.trees.update(this.camera);
     this.lastFrameMs = performance.now() - t0;
   }
@@ -431,7 +443,8 @@ export class WorldView implements WorldViewApi {
     const mist = Math.max(0, 1 - Math.abs(h - 6.8) / 2.6);
     f.uFogOn.value = 1;
     f.uFogStart.value = d * THREE.MathUtils.lerp(0.65, 0.85, THREE.MathUtils.smoothstep(d, 1500, 6000));
-    f.uFogDensity.value = (0.00008 + 0.0008 * mist * mist + 0.0001 * n) * (climate === 'desert' ? 0.6 : 1);
+    // (+ night haze: the flat landscape skirt fades into the sky-LUT horizon instead of a hard black band)
+    f.uFogDensity.value = (0.00008 + 0.0008 * mist * mist + 0.00022 * n) * (climate === 'desert' ? 0.6 : 1);
     f.uFogFalloff.value = 1 / (60 + 90 * (1 - mist));
     f.uHaze.value = hazeBase * (1 + 0.6 * L.golden) * (1 / (1 + d / 3500));
     f.uFogMax.value = 0.96;

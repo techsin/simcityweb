@@ -63,7 +63,8 @@ export interface YearRow {
   access: number;
 }
 
-type Use = 'R' | 'C' | 'I' | 'P' | 'U' | 'X' | 'A';
+/** block use: ... 'X' planned landfill block, 'L' landfill zoned by ensureGarbage (utilities never go there) */
+type Use = 'R' | 'C' | 'I' | 'P' | 'U' | 'X' | 'A' | 'L';
 interface Block {
   bx: number;
   bz: number;
@@ -76,6 +77,12 @@ interface Block {
   developed: boolean;
   zone: Zone;
   ring: number;
+}
+
+/** duck-typed view of sim-infra's PollutionSystem garbage queries (WP3) */
+interface GarbageApi {
+  garbageSummary(): { producedT: number; outOfRangeT: number };
+  garbageInfo(id: number): { producedT: number; collected: boolean; reason?: string } | null;
 }
 
 const GRID = 9;
@@ -270,7 +277,7 @@ export class SimBot {
       // follow sub-type demand: high-tech / manufacturing → high density, dirty / manufacturing → medium
       return d[DevType.IHT] > 0.25 && d[DevType.IHT] >= d[DevType.ID] && (eq > 70 || pop > 20000) ? Zone.IndHigh : Zone.IndMed;
     }
-    if (b.use === 'X') return Zone.Landfill;
+    if (b.use === 'X' || b.use === 'L') return Zone.Landfill;
     return Zone.None;
   }
 
@@ -317,7 +324,7 @@ export class SimBot {
   }
 
   /** find a spot for a ploppable inside blocks of the given uses near (nx,nz). Returns result or null. */
-  placeNear(defId: string, nx: number, nz: number, uses: Use[], developOk = true, maxDist = Infinity): ActionResult | null {
+  placeNear(defId: string, nx: number, nz: number, uses: Use[], developOk = true, maxDist = Infinity, edgeOnly = false): ActionResult | null {
     const def = getDef(defId);
     if (!def) return null;
     const dist = (b: Block) => Math.hypot((b.x0 + b.x1) / 2 - nx, (b.z0 + b.z1) / 2 - nz);
@@ -327,11 +334,13 @@ export class SimBot {
       for (const rot of [0, 1, 2, 3] as const) {
         const [w, d] = rotatedFootprint(def, rot);
         if (w > b.x1 - b.x0 || d > b.z1 - b.z0) continue;
-        // candidate origins: edges of the block so the lot touches a road
+        // candidate origins: edges of the block so the lot touches a road (edgeOnly: never the block centre, e.g. for
+        // garbage facilities, which need a road on their edge for the trucks)
         const xs = [b.x0, b.x1 - w, b.x0 + ((b.x1 - b.x0 - w) >> 1)];
         const zs = [b.z0, b.z1 - d, b.z0 + ((b.z1 - b.z0 - d) >> 1)];
         for (const z of zs) {
           for (const x of xs) {
+            if (edgeOnly && x === xs[2] && z === zs[2] && x !== b.x0 && x !== b.x1 - w && z !== b.z0 && z !== b.z1 - d) continue;
             const p = this.A.plop(defId, x, z, rot, true);
             if (!p.ok) continue;
             if (!b.developed) { this.buildBlockRoads(b); b.developed = true; }
@@ -457,7 +466,37 @@ export class SimBot {
     }
   }
 
+  /**
+   * Garbage (SIM_DEPTH_SPEC WP3 C5: trucks collect only within 90 road tiles of a landfill / incinerator / recycling
+   * center; landfill cells fill up over ~10 years). Districts beyond truck range for two months running get a
+   * facility near them: a recycling center once unlocked (compact transfer point), else a landfill block within ~60
+   * cells, else an incinerator. Capacity: landfill blocks nearest the town (never on R / C blocks) while the live
+   * (not yet full) landfill stays under ~3x production; incinerator / recycling beyond that.
+   */
+  private garbageStreak = 0;
   ensureGarbage(): void {
+    const st = this.st, s = st.stats;
+    const pol = this.sim.getSystem('pollution') as unknown as GarbageApi | undefined;
+    const g = typeof pol?.garbageSummary === 'function' ? pol.garbageSummary() : null;
+    if (!pol || !g) return this.ensureGarbageLegacy();
+    if (s.population < 1200) return;
+    this.garbageStreak = g.producedT > 0 && g.outOfRangeT > 0.03 * g.producedT ? this.garbageStreak + 1 : 0;
+    const live = this.liveLandfillCells();
+    const lfRoom = live < Math.max(64, (3 * s.garbageProduced) / 300);
+    if (this.garbageStreak >= 2) {
+      const t = this.outOfRangeCenter(pol);
+      if (t && this.garbageFacilityNear(t.x, t.z, lfRoom)) { this.garbageStreak = 0; return; }
+    }
+    // capacity: collected garbage near the capacity, or the landfills filling up
+    if (s.garbageProduced < s.garbageCapacity * 0.8 && (s.landfillFill ?? 0) < 0.7) return;
+    const cx = this.line(this.cbx), cz = this.line(this.cbz);
+    if (lfRoom && this.canSpend(2000) && this.zoneLandfillNear(cx, cz, Infinity)) return;
+    const def = st.unlocked.has('incinerator') ? 'util_incinerator' : st.unlocked.has('recycling_center') ? 'util_recycling_center' : null;
+    if (def && this.canAfford(def)) this.placeNear(def, cx + 4 * GRID, this.trunkZ, ['U', 'I', 'X'], true, Infinity, true);
+  }
+
+  /** pre-WP3 rule (economy-only runs without the pollution system) */
+  private ensureGarbageLegacy(): void {
     const s = this.st.stats;
     if (s.population < 2500) return;
     if (s.garbageProduced < s.garbageCapacity * 0.8) return;
@@ -465,6 +504,65 @@ export class SimBot {
     if (x && this.canSpend(2000)) { this.develop(x, Zone.Landfill); this.say('zoned landfill'); return; }
     const def = this.st.unlocked.has('incinerator') ? 'util_incinerator' : this.st.unlocked.has('recycling_center') ? 'util_recycling_center' : null;
     if (def && this.canSpend(getDef(def)!.cost!)) this.placeNear(def, this.line(this.cbx) + 4 * GRID, this.trunkZ, ['U', 'I']);
+  }
+
+  /** landfill cells that still take garbage (zoned, not full) */
+  private liveLandfillCells(): number {
+    const st = this.st, z = st.zone, f = st.landfillFill;
+    let n = 0;
+    for (let i = 0; i < st.cells; i++) if (z[i] === Zone.Landfill && f[i] < 1) n++;
+    return n;
+  }
+
+  /** garbage-weighted centre of the buildings beyond truck range (null if none) */
+  private outOfRangeCenter(pol: GarbageApi): { x: number; z: number } | null {
+    let sx = 0, sz = 0, w = 0;
+    for (const b of this.st.buildings.values()) {
+      const gi = pol.garbageInfo(b.id);
+      if (!gi || gi.collected || gi.reason !== 'range' || !(gi.producedT > 0)) continue;
+      sx += (b.x + b.w / 2) * gi.producedT; sz += (b.z + b.d / 2) * gi.producedT; w += gi.producedT;
+    }
+    return w > 0 ? { x: sx / w, z: sz / w } : null;
+  }
+
+  /** a garbage facility for the district around (x, z): recycling center, landfill block (if room), incinerator */
+  private garbageFacilityNear(x: number, z: number, landfillOk: boolean): boolean {
+    const st = this.st;
+    if (st.unlocked.has('recycling_center') && this.canAfford('util_recycling_center') &&
+      (this.placeNear('util_recycling_center', x, z, ['P', 'U', 'I', 'X'], true, 45, true) || this.placeNear('util_recycling_center', x, z, ['R', 'C', 'I'], false, 30, true))) {
+      this.say(`recycling center for a district beyond truck range near ${Math.round(x)},${Math.round(z)}`);
+      return true;
+    }
+    if (landfillOk && this.canSpend(2000) && this.zoneLandfillNear(x, z, 60)) return true;
+    if (st.unlocked.has('incinerator') && this.canAfford('util_incinerator') && this.placeNear('util_incinerator', x, z, ['U', 'I', 'X'], true, 60, true)) {
+      this.say(`incinerator for a district beyond truck range near ${Math.round(x)},${Math.round(z)}`);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * zone the undeveloped block nearest (x, z) (within maxDist, grid distance ~ road distance) as landfill: the planned
+   * landfill block, utility or industrial blocks first, a civic block last; never residential, commercial or airport
+   * land. It must touch the developed area so its roads join the town's network.
+   */
+  private zoneLandfillNear(x: number, z: number, maxDist: number): boolean {
+    const penalty: Partial<Record<Use, number>> = { X: 0, U: 6, I: 10, P: 40 };
+    let best: Block | undefined, bs = Infinity;
+    for (const b of this.blocks) {
+      const pen = penalty[b.use];
+      if (b.developed || pen === undefined || !this.touchesDeveloped(b)) continue;
+      const d = Math.abs((b.x0 + b.x1) / 2 - x) + Math.abs((b.z0 + b.z1) / 2 - z);
+      if (d > maxDist || d + pen >= bs) continue;
+      bs = d + pen;
+      best = b;
+    }
+    if (!best) return false;
+    const was = best.use;
+    best.use = 'L';
+    if (!this.develop(best, Zone.Landfill)) { best.use = was; return false; }
+    this.say(`zoned landfill block (${best.bx},${best.bz}) near ${Math.round(x)},${Math.round(z)}`);
+    return true;
   }
 
   /** coverage-driven services (coverage of R/C blocks + capacity), with a retry cooldown per def */

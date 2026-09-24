@@ -157,7 +157,8 @@ export function stateText(inc: Incident, now: number, em?: EmergencySystem): str
     case 'uncovered': return inc.manualPossible ? 'Nobody is coming — dispatch a unit' : 'Nobody can reach it';
     case 'dispatched': {
       const a = nextArrival(em, inc, now);
-      if (a) return `${Unit} from ${a.station} on the way — arrives in ${emgTime(a.days)}`;
+      // the unit is at the site between two sim days (the day tick registers the arrival): no "arrives in 0.0 min"
+      if (a) return a.days < 0.05 ? `${Unit} from ${a.station} arriving now` : `${Unit} from ${a.station} on the way — arrives in ${emgTime(a.days)}`;
       return inc.etaMin !== undefined ? `${Unit} on the way (ETA ${minText(inc.etaMin)})` : 'Help on the way';
     }
     case 'onScene': return inc.kind === 'fire' ? `Firefighters on scene (${inc.fires.length} burning)` : inc.kind === 'medical' ? 'Paramedics on scene' : 'Responders on scene';

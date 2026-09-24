@@ -22,6 +22,37 @@ export interface RegionViewOptions {
 
 const MAX_SKYLINE = 24000;
 
+/**
+ * window key events for OrbitControls.listenToKeyEvents, minus the ones meant for a focused form control or an open
+ * dialog: the controls pan on arrow keys and preventDefault() them, which would otherwise block caret moves in text
+ * fields and keyboard steps (+ their tick sounds) on the New City / Settings dialog sliders.
+ */
+function formSafeKeyTarget(win: Window): Window {
+  const wrapped = new Map<EventListenerOrEventListenerObject, EventListener>();
+  const skip = (e: Event): boolean => {
+    const t = e.target instanceof Element ? e.target : null;
+    if (t?.closest('input, select, textarea, [contenteditable]:not([contenteditable="false"])')) return true;
+    return !!document.querySelector('.modal-back');
+  };
+  return {
+    addEventListener(type: string, fn: EventListenerOrEventListenerObject) {
+      const w: EventListener = (e) => {
+        if (skip(e)) return;
+        if (typeof fn === 'function') fn(e);
+        else fn.handleEvent(e);
+      };
+      wrapped.set(fn, w);
+      win.addEventListener(type, w);
+    },
+    removeEventListener(type: string, fn: EventListenerOrEventListenerObject) {
+      const w = wrapped.get(fn);
+      if (!w) return;
+      wrapped.delete(fn);
+      win.removeEventListener(type, w);
+    },
+  } as unknown as Window;
+}
+
 export class RegionView {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
@@ -136,7 +167,7 @@ export class RegionView {
     this.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
     this.controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
     this.controls.keyPanSpeed = 40;
-    this.controls.listenToKeyEvents(window);
+    this.controls.listenToKeyEvents(formSafeKeyTarget(window));
     this.resetCamera();
 
     const el = this.renderer.domElement;

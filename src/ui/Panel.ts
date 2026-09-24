@@ -89,7 +89,29 @@ export class PanelManager implements PanelsApi {
   private panels = new Map<string, Panel>();
   private order: string[] = [];
   private z = 10;
+  /** last measured height of each open panel (content growth re-checks the toolbar clearance) */
+  private lastH = new Map<string, number>();
   constructor(private ctx: GameContext, private layer: HTMLElement) {}
+
+  /**
+   * Keep a panel's bottom above the bottom toolbar where they overlap horizontally: on short screens (1280×720) a
+   * centered panel whose content grows after it opened (e.g. the budget ledger tab) would otherwise slide under it.
+   * Moves the panel up (never above the top bar); a drag that doesn't change the height is left alone.
+   */
+  private keepAboveToolbar(p: Panel): void {
+    const el = p.el;
+    const bar = this.ctx.root.querySelector('.hud-bottom .toolbar') as HTMLElement | null;
+    if (!el || !bar || !p.isOpen || el.classList.contains('closing')) return;
+    this.lastH.set(p.id, el.offsetHeight);
+    const z = uiZoom();
+    const lr = this.layer.getBoundingClientRect(), br = bar.getBoundingClientRect();
+    if (!br.height) return;
+    const barL = (br.left - lr.left) / z, barR = (br.right - lr.left) / z, limit = (br.top - lr.top) / z - 8;
+    const left = el.offsetLeft, top = el.offsetTop, hgt = el.offsetHeight;
+    if (left + el.offsetWidth <= barL || left >= barR || top + hgt <= limit) return;
+    const y = Math.max(64, Math.floor(limit - hgt));
+    if (y < top) p.setPos(left, y);
+  }
 
   register(p: Panel): void {
     this.panels.set(p.id, p);
@@ -126,6 +148,7 @@ export class PanelManager implements PanelsApi {
     } catch (e) {
       console.error('[ui] panel error', id, e);
     }
+    this.keepAboveToolbar(p);
     this.ctx.sound('open');
     this.ctx.ui.emit('panel', { id, open: true });
   }
@@ -208,6 +231,8 @@ export class PanelManager implements PanelsApi {
       } catch (e) {
         console.error('[ui] panel update error', id, e);
       }
+      // content grew (tab switch, new rows): keep it clear of the toolbar
+      if (p.el.offsetHeight !== this.lastH.get(id)) this.keepAboveToolbar(p);
     }
   }
 
@@ -215,7 +240,9 @@ export class PanelManager implements PanelsApi {
   clampAll(): void {
     for (const id of this.order) {
       const p = this.panels.get(id);
-      if (p?.isOpen) p.setPos(p.el.offsetLeft, p.el.offsetTop);
+      if (!p?.isOpen) continue;
+      p.setPos(p.el.offsetLeft, p.el.offsetTop);
+      this.keepAboveToolbar(p);
     }
   }
 }

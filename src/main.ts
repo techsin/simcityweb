@@ -174,6 +174,8 @@ class App {
     /** fingerprint at the last successful save / at the last recovery snapshot */
     cleanFp: string;
     snapFp: string;
+    /** the last recovery snapshot was a lean (periodic) one */
+    snapLean?: boolean;
     lastSnap: number;
     saving: number;
     saveFailed: boolean;
@@ -611,6 +613,8 @@ class App {
   /**
    * Synchronous recovery snapshot of unsaved changes (save/recovery.ts): safe inside beforeunload / pagehide, where
    * an IndexedDB full save would not complete. Skipped when nothing changed since the last save or snapshot.
+   * Periodic ones are lean (sim-recomputed layers left out: cheaper on the main thread); an unload snapshot after a
+   * lean one is written in full even when nothing else changed.
    */
   private snapshotNow(why: string): void {
     const c = this.city, model = this.region;
@@ -619,11 +623,13 @@ class App {
     if (!st) return;
     try {
       const fp = cityFingerprint(st);
+      const lean = why === 'periodic';
       if (c.saving === 0 && fp === c.cleanFp && c.changes === c.cleanChanges) return;
-      if (fp === c.snapFp && c.changes === c.snapChanges) return;
-      const r = writeRecoverySnapshot(model.data.id, c.tile.key, st, { cityName: st.config.name, regionName: model.data.name, population: st.stats?.population ?? 0, funds: st.funds, why });
+      if (fp === c.snapFp && c.changes === c.snapChanges && (lean || !c.snapLean)) return;
+      const r = writeRecoverySnapshot(model.data.id, c.tile.key, st, { cityName: st.config.name, regionName: model.data.name, population: st.stats?.population ?? 0, funds: st.funds, why, lean });
       c.snapFp = fp;
       c.snapChanges = c.changes;
+      c.snapLean = lean;
       c.lastSnap = Date.now();
       this.lastSnapshot = { ...r, why };
     } catch (e) {

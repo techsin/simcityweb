@@ -250,6 +250,8 @@ export class NewYearCelebration {
     if (fast && yearSec < 45) countdown = false;
     this.countdownOn = countdown;
     this.timeControlled = mode === 'cinematic' && this.hasClock(world);
+    // show camera (cinematic only; dev shows keep the camera unless asked)
+    const wantCam = this.timeControlled && (opts.camera ?? (!dev && s.newYearCamera !== false));
     this.lapseDur = 0;
     let delay = countdown ? COUNTDOWN : 2.8;
     this.startHour = this.hasClock(world) ? world.timeOfDay : 12;
@@ -268,11 +270,12 @@ export class NewYearCelebration {
         this.lapseDur = Math.max(1.2, Math.min(3.2, 1.1 + (EVE - h) * 0.16));
         delay = this.lapseDur + COUNTDOWN;
       } else {
-        // already (late) night: count down with the clock running
+        // already (late) night: count down with the clock running (a little longer when the show camera has to
+        // travel first: it arrives before the opening salvo launches, ~2.9 s before midnight)
         const hu = h < 12 ? h + 24 : h;
         this.lapseFrom = this.lapseTo = hu;
         this.lapseDur = 0;
-        delay = COUNTDOWN;
+        delay = wantCam && countdown ? COUNTDOWN + 1.8 : COUNTDOWN;
       }
     }
     if (fast) duration = Math.min(duration, Math.max(6, 0.6 * yearSec - delay));
@@ -299,9 +302,7 @@ export class NewYearCelebration {
       // fast-forwarded: put the clock where it would be
       world.timeOfDay = this.targetHour(this.t) % 24;
     }
-    // show camera (cinematic only; dev shows keep the camera unless asked)
-    const wantCam = opts.camera ?? (!dev && s.newYearCamera !== false);
-    if (this.timeControlled && wantCam && this.fw) this.camStart(!!opts.instant || !!opts.fastForward);
+    if (wantCam && this.fw) this.camStart(!!opts.instant || !!opts.fastForward);
     this.loadAudio();
     return true;
   }

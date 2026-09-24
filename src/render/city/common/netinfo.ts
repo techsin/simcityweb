@@ -66,6 +66,14 @@ export class NetInfo {
   bStart: Float32Array;
   bLen: Float32Array;
   bRise: Float32Array;
+  /**
+   * highway overpasses (visual grade separation where a road / avenue crosses a highway): spans share the b* arrays
+   * with bRamp = ramp length (m, > 0; 0 = water bridge) and a plateau profile (RoadSurface.base); bCross = 1 on the
+   * crossing cells, where the minor road stays at grade under the deck.
+   */
+  bRamp: Float32Array;
+  bCross: Uint8Array;
+  private opScratch?: { axis: Int8Array; start: Float32Array; len: Float32Array; rise: Float32Array; ramp: Float32Array; cross: Uint8Array };
   /** number of road cells (for density heuristics) */
   roadCells = 0;
   railCells = 0;
@@ -84,6 +92,8 @@ export class NetInfo {
     this.bStart = new Float32Array(C);
     this.bLen = new Float32Array(C);
     this.bRise = new Float32Array(C);
+    this.bRamp = new Float32Array(C);
+    this.bCross = new Uint8Array(C);
     this.update();
   }
 
@@ -195,13 +205,14 @@ export class NetInfo {
       const m = net[i] === Network.Rail ? this.railMask[i] : this.roadMask[i];
       return axis === 0 ? m === 5 : m === 10;
     };
-    // reset old spans touching the rect (whole old spans, which may extend outside the rect)
+    // reset old spans touching the rect (whole old spans, which may extend outside the rect); overpass spans are
+    // recomputed separately (pass 4)
     const todo: number[] = [];
     for (let z = rb.z0; z < rb.z1; z++) {
       for (let x = rb.x0; x < rb.x1; x++) {
         const i = z * N + x;
         const ax = this.bAxis[i];
-        if (ax >= 0) {
+        if (ax >= 0 && this.bRamp[i] === 0) {
           const c0 = Math.round(this.bStart[i] / CELL_SIZE), c1 = c0 + Math.round(this.bLen[i] / CELL_SIZE);
           for (let c = c0; c < c1; c++) {
             const j = ax === 0 ? z * N + c : c * N + x;
@@ -249,6 +260,8 @@ export class NetInfo {
         else { out.z0 = Math.min(out.z0, a0); out.z1 = Math.max(out.z1, a1 + 1); }
       }
     }
+    // pass 4: highway overpasses (whole map, cheap; only changed cells extend the dirty rect)
+    this.overpasses(out);
     if (!rect) {
       let rc = 0, lc = 0;
       for (let i = 0; i < N * N; i++) {
@@ -261,6 +274,102 @@ export class NetInfo {
       this.recount();
     }
     return out;
+  }
+
+  /**
+   * Visual grade separation: where a road / one-way / avenue crosses a highway (highway cell with a 4-way mask, the
+   * highway along one axis, non-highway roads on both sides of the other) the highway deck rises ~6.5 m over the
+   * crossing on 2-4 cell ramps; crossings less than 12 cells apart share one elevated span (viaduct). Needs plain
+   * straight highway cells for the ramps (no junctions, ramps, bridges, tunnels); otherwise the crossing stays at grade.
+   * Vehicles on the highway follow the deck (RoadSurface), crossing traffic stays on the ground (RoadSurface.y heading).
+   */
+  private overpasses(out: CellRect): void {
+    const N = this.N, st = this.state, net = st.network, flags = st.netFlags, water = st.water;
+    const HW = Network.Highway;
+    const RAMP_MAX = 4, RAMP_MIN = 2, CLEAR = 6.5;
+    const C = N * N;
+    const sc = (this.opScratch ??= {
+      axis: new Int8Array(C), start: new Float32Array(C), len: new Float32Array(C), rise: new Float32Array(C),
+      ramp: new Float32Array(C), cross: new Uint8Array(C),
+    });
+    const nAxis = sc.axis.fill(-1), nStart = sc.start.fill(0), nLen = sc.len.fill(0), nRise = sc.rise.fill(0);
+    const nRamp = sc.ramp.fill(0), nCross = sc.cross.fill(0);
+    const waterBridge = (i: number) => this.bAxis[i] >= 0 && this.bRamp[i] === 0;
+    const plain = (i: number) => net[i] === HW && !(flags[i] & (NF_TUNNEL | NF_BRIDGE)) && !water[i] && !waterBridge(i);
+    const isMinor = (t: number) => isRoadT(t) && t !== HW;
+    for (let axis = 0; axis < 2; axis++) {
+      const straightM = axis === 0 ? 5 : 10;
+      for (let line = 0; line < N; line++) {
+        const at = (a: number) => (axis === 0 ? line * N + a : a * N + line);
+        const straight = (a: number) => a >= 0 && a < N && plain(at(a)) && this.roadMask[at(a)] === straightM;
+        const crossing = (a: number) => {
+          if (a <= 0 || a >= N - 1) return false;
+          const i = at(a);
+          if (!plain(i) || this.roadMask[i] !== 15) return false;
+          if (net[at(a - 1)] !== HW || net[at(a + 1)] !== HW) return false;
+          const lx = axis === 0 ? a : line, lz = axis === 0 ? line : a;
+          const o1 = axis === 0 ? this.net(lx, lz - 1) : this.net(lx - 1, lz);
+          const o2 = axis === 0 ? this.net(lx, lz + 1) : this.net(lx + 1, lz);
+          return isMinor(o1) && isMinor(o2);
+        };
+        let a = 0;
+        while (a < N) {
+          if (!crossing(a)) { a++; continue; }
+          // cluster: crossings closer than two full ramps plus a short plateau share one elevated span (a viaduct
+          // over a street grid instead of a roller coaster of humps)
+          const MERGE = 2 * RAMP_MAX + 4;
+          const c0 = a;
+          let c1 = a;
+          for (;;) {
+            let b = c1 + 1;
+            while (b < N && straight(b) && b - c1 - 1 < MERGE) b++;
+            if (b < N && crossing(b) && b - c1 - 1 < MERGE) c1 = b;
+            else break;
+          }
+          a = c1 + 1;
+          let left = 0, right = 0;
+          while (left < RAMP_MAX && straight(c0 - left - 1)) left++;
+          while (right < RAMP_MAX && straight(c1 + right + 1)) right++;
+          const ramp = Math.min(left, right);
+          if (ramp < RAMP_MIN) continue;
+          const s0 = c0 - ramp, s1 = c1 + ramp;
+          const start = s0 * CELL_SIZE, len = (s1 - s0 + 1) * CELL_SIZE;
+          const lat = line * CELL_SIZE + HALF;
+          const h0 = axis === 0 ? st.heightAt(start, lat) : st.heightAt(lat, start);
+          const h1 = axis === 0 ? st.heightAt(start + len, lat) : st.heightAt(lat, start + len);
+          let rise = CLEAR;
+          for (let c = c0; c <= c1; c++) {
+            if (!crossing(c)) continue;
+            const lx = axis === 0 ? c : line, lz = axis === 0 ? line : c;
+            const H = st.heights, N1 = N + 1;
+            const tm = Math.max(H[lz * N1 + lx], H[lz * N1 + lx + 1], H[(lz + 1) * N1 + lx], H[(lz + 1) * N1 + lx + 1]);
+            const s = ((c + 0.5) * CELL_SIZE - start) / len;
+            rise = Math.max(rise, tm + CLEAR - (h0 + (h1 - h0) * s));
+          }
+          rise = Math.min(rise, 14);
+          for (let c = s0; c <= s1; c++) {
+            const j = at(c);
+            nAxis[j] = axis; nStart[j] = start; nLen[j] = len; nRise[j] = rise; nRamp[j] = ramp * CELL_SIZE;
+            nCross[j] = crossing(c) ? 1 : 0;
+          }
+        }
+      }
+    }
+    // apply the diff (only overpass cells; water bridges are untouched)
+    for (let i = 0; i < C; i++) {
+      const was = this.bRamp[i] > 0, now = nAxis[i] >= 0;
+      if (!was && !now) continue;
+      if (was && now && this.bAxis[i] === nAxis[i] && this.bStart[i] === nStart[i] && this.bLen[i] === nLen[i] &&
+        this.bRise[i] === nRise[i] && this.bRamp[i] === nRamp[i] && this.bCross[i] === nCross[i]) continue;
+      if (now && waterBridge(i)) continue;
+      this.bAxis[i] = now ? nAxis[i] : -1;
+      this.bStart[i] = nStart[i]; this.bLen[i] = nLen[i]; this.bRise[i] = nRise[i]; this.bRamp[i] = nRamp[i];
+      this.bCross[i] = nCross[i];
+      const x = i % N, z = (i / N) | 0;
+      // the minor roads beside a crossing are re-meshed too (their sidewalks meet the abutments)
+      out.x0 = Math.min(out.x0, Math.max(0, x - 1)); out.x1 = Math.max(out.x1, Math.min(N, x + 2));
+      out.z0 = Math.min(out.z0, Math.max(0, z - 1)); out.z1 = Math.max(out.z1, Math.min(N, z + 2));
+    }
   }
 
   private recount() {

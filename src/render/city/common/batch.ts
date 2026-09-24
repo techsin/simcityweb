@@ -8,15 +8,22 @@
  * cached draw list (starts / counts / indirect texture), built from per-tile instance lists tested against THAT
  * camera's frustum (tile AABB first, per-instance bounding spheres only in partially visible tiles). A list is
  * rebuilt only when the camera matrices or the batch content changed, so a still camera costs nothing.
- * Shadow passes can additionally be restricted to some cascades (shadowMask) and skip casters smaller than a few
- * shadow texels (minShadowTexels) — shadow cameras carry `userData.cascade` / `userData.texel` (see Shadows.ts).
+ * Shadow passes can additionally be restricted to some cascades (shadowMask, per instance setShadowCascades) and skip
+ * casters smaller than a few shadow texels (minShadowTexels) — shadow cameras carry `userData.cascade` /
+ * `userData.texel` (see Shadows.ts) — and casters whose shadow cannot reach the visible slice (receiver volume).
+ * Whole tiles are skipped when disabled by the owner (setTileEnabled: e.g. props beyond their LOD distance), when
+ * none of their instances casts into the cascade, or when their swept box misses the receiver; tiles fully inside the
+ * frustum / receiver skip the per-instance tests. Per-tile bounds / masks are recomputed lazily (exact, also after
+ * removals). The build loop reads typed per-instance mirrors (visibility, geometry) instead of three's objects.
+ * Optionally (sortFront) main-pass lists are sorted nearest first so the depth test rejects occluded fragments
+ * before shading.
  *
  * Partial uploads: setMatrix / setColor record per-instance texture update ranges (three r186 honours
  * Texture.updateRanges for RGBA data textures), so animating a few buildings uploads a few rows instead of the whole
  * matrix + colour textures. Many changes in one frame fall back to one full upload.
  */
 import * as THREE from 'three';
-import { shadowCasters, receiverSweepBox, receiverSweepSphere, type ShadowReceiver } from '../../world/Shadows';
+import { shadowCasters, receiverContainsBox, receiverSweepBox, receiverSweepSphere, type ShadowReceiver } from '../../world/Shadows';
 
 export interface PassCullOptions {
   /** tile geometry (tile size, per-tile height range); instances are assigned to tiles with setTile() */
@@ -27,13 +34,22 @@ export interface PassCullOptions {
   minShadowTexels?: number;
   /** instance positions change every frame (vehicles): bounds come from the live matrix, no tile lists */
   dynamic?: boolean;
+  /** number of tile index sets (default 1): tile ids run over [0, culler tiles^2 * tileSets), e.g. one set per
+   *  instance class so whole classes can be skipped per tile (tile bounds come from the instances, not the culler) */
+  tileSets?: number;
+  /** main pass: cull per tile only (no per-instance frustum tests in partly visible tiles; for many small
+   *  instances such as props the per-instance tests cost more CPU than the few extra clipped vertices) */
+  coarse?: boolean;
 }
 
 interface PassSlot {
   camera: THREE.Camera;
   starts: Int32Array;
   counts: Int32Array;
+  /** instance ids of the list (copied into the indirect texture, which is sized to the list, not the capacity) */
+  ids: Uint32Array;
   tex: THREE.DataTexture;
+  texCap: number;
   cap: number;
   count: number;
   version: number;
@@ -65,10 +81,33 @@ export class DynamicBatch {
   private sph = new Float32Array(0);
   /** per-instance shadow cascade mask (bit i = casts into cascade i), ANDed with the batch-wide shadowMask */
   private instMask = new Uint8Array(0);
+  /** typed mirrors of three's per-instance state for the list build: 1 = active and visible; geometry id */
+  private instVis = new Uint8Array(0);
+  private instGeo = new Int32Array(0);
   private tileLists: number[][] = [];
-  /** per-tile bounds of the instance spheres [x0, y0, z0, x1, y1, z1] (grow only) */
+  /** per-tile bounds of the instance spheres [x0, y0, z0, x1, y1, z1] */
   private tileBox = new Float32Array(0);
+  /** per-tile smallest instance radius (tiles whose casters are all above the shadow size cutoff skip the
+   *  per-instance size test) and OR of the instance cascade masks */
+  private tileMinR = new Float32Array(0);
+  private tileMask = new Uint8Array(0);
+  /** tile stats (box / min radius / mask) need a recompute from the tile's list (lazy, at the next list build) */
+  private tileDirty = new Uint8Array(0);
+  /** tiles disabled by the owner (skipped in every pass) */
+  private tileOff = new Uint8Array(0);
+  /** per-tile content version (visibility / geometry / masks / membership) and cached packed draw ranges per pass
+   *  class (0 main, 1 cascade 0, 2 cascade 1): tiles that need no per-instance test are copied in one block */
+  private tileVer = new Uint32Array(0);
+  private tileCache: ({ ver: number; n: number; s: Int32Array; c: Int32Array; i: Uint32Array } | null)[] = [];
   private untiled: number[] = [];
+  /** main-pass draw lists are sorted front to back (nearest first): opaque overdraw is rejected by the depth test
+   *  before shading (big occluders such as buildings; cheap counting sort, only when a list is rebuilt) */
+  sortFront = false;
+  private sortKey = new Uint8Array(0);
+  private sortTmp = new Int32Array(0);
+  private sortCnt = new Int32Array(257);
+  private gStart = new Int32Array(0);
+  private gCount = new Int32Array(0);
   // ---- partial texture uploads
   private matFull = true;
   private colFull = true;
@@ -83,6 +122,10 @@ export class DynamicBatch {
     this.mesh.onBeforeRender = (renderer, _scene, camera, geometry, material) => this.beforePass(renderer, camera, geometry, material, false);
     this.mesh.onBeforeShadow = (renderer, _object, _camera, shadowCamera, geometry, depthMaterial) =>
       this.beforePass(renderer, shadowCamera, geometry, depthMaterial, true);
+    // own depth material: three's shared shadow depth material would switch programs (batched / instanced / plain,
+    // with / without colour texture) between consecutive casters, re-deriving program parameters every time
+    this.mesh.customDepthMaterial = new THREE.MeshDepthMaterial();
+    this.mesh.customDepthMaterial.name = name + '-depth';
   }
 
   get instanceCount(): number {
@@ -142,6 +185,8 @@ export class DynamicBatch {
       this.instSlot[id] = -1;
       this.sph[id * 4 + 3] = -1;
       this.instMask[id] = 0xff;
+      this.instVis[id] = 1;
+      this.instGeo[id] = geomId;
       if (this.pc.dynamic) { this.instSlot[id] = this.untiled.length; this.untiled.push(id); }
     }
     this.touch();
@@ -150,7 +195,11 @@ export class DynamicBatch {
 
   remove(id: number): void {
     this.live--;
-    if (this.pc) this.unlink(id);
+    if (this.pc) {
+      this.unlink(id);
+      this.instVis[id] = 0;
+      this.instGeo[id] = -1;
+    }
     this.mesh.deleteInstance(id);
     this.touch();
   }
@@ -159,9 +208,13 @@ export class DynamicBatch {
     const m = this.mesh as any;
     if (m._instanceInfo[id].geometryIndex === geomId) return;
     this.mesh.setGeometryIdAt(id, geomId);
-    if (this.pc && !this.pc.dynamic) {
-      this.mesh.getMatrixAt(id, _m4);
-      this.writeSphere(id, _m4, true);
+    if (this.pc) {
+      this.instGeo[id] = geomId;
+      this.bumpTile(id);
+      if (!this.pc.dynamic) {
+        this.mesh.getMatrixAt(id, _m4);
+        this.writeSphere(id, _m4, true);
+      }
     }
     this.touch();
   }
@@ -186,6 +239,7 @@ export class DynamicBatch {
     const info = (this.mesh as any)._instanceInfo[id];
     if (info && info.visible === v) return;
     this.mesh.setVisibleAt(id, v);
+    if (this.pc && info) { this.instVis[id] = v && info.active ? 1 : 0; this.bumpTile(id); }
     this.touch();
   }
 
@@ -222,14 +276,25 @@ export class DynamicBatch {
   // ------------------------------------------------------------------ per-pass culling
   /** switch to per-pass draw lists (instances must then be assigned to tiles with setTile, unless dynamic) */
   enablePassCulling(opts: PassCullOptions): void {
-    this.pc = { shadowMask: 0xff, minShadowTexels: 0, dynamic: false, ...opts };
-    const T = opts.culler.tiles * opts.culler.tiles;
+    this.pc = { shadowMask: 0xff, minShadowTexels: 0, dynamic: false, tileSets: 1, ...opts };
+    const T = opts.culler.tiles * opts.culler.tiles * (this.pc.tileSets ?? 1);
     this.tileLists = Array.from({ length: T }, () => []);
     this.tileBox = new Float32Array(T * 6);
-    for (let t = 0; t < T; t++) this.tileBox.set([Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity], t * 6);
+    this.tileMinR = new Float32Array(T);
+    this.tileMask = new Uint8Array(T);
+    this.tileDirty = new Uint8Array(T).fill(1);
+    this.tileOff = new Uint8Array(T);
+    this.tileVer = new Uint32Array(T);
+    this.tileCache = new Array(T * 3).fill(null);
     this.ensureCap(this.mesh.maxInstanceCount);
     this.instTile.fill(-1);
     this.instSlot.fill(-1);
+    // mirror instances that already exist
+    const info = (this.mesh as any)._instanceInfo as { active: boolean; visible: boolean; geometryIndex: number }[];
+    for (let i = 0; i < info.length; i++) {
+      this.instVis[i] = info[i].active && info[i].visible ? 1 : 0;
+      this.instGeo[i] = info[i].active ? info[i].geometryIndex : -1;
+    }
     this.touch();
   }
 
@@ -245,6 +310,22 @@ export class DynamicBatch {
   setShadowCascades(id: number, mask: number): void {
     if (!this.pc || id >= this.instMask.length || this.instMask[id] === mask) return;
     this.instMask[id] = mask;
+    const t = this.instTile[id];
+    if (t >= 0) { this.tileDirty[t] = 1; this.tileVer[t]++; }
+    this.touch();
+  }
+
+  private bumpTile(id: number): void {
+    const t = id < this.instTile.length ? this.instTile[id] : -1;
+    if (t >= 0) this.tileVer[t]++;
+  }
+
+  /** enable / disable a whole tile (all its instances, every pass) without touching the instances */
+  setTileEnabled(tile: number, on: boolean): void {
+    if (!this.pc || tile < 0 || tile >= this.tileOff.length) return;
+    const off = on ? 0 : 1;
+    if (this.tileOff[tile] === off) return;
+    this.tileOff[tile] = off;
     this.touch();
   }
 
@@ -257,14 +338,19 @@ export class DynamicBatch {
     const list = tile >= 0 ? this.tileLists[tile] : this.untiled;
     this.instSlot[id] = list.length;
     list.push(id);
-    if (tile >= 0) this.growTile(tile, id);
+    if (tile >= 0) { this.growTile(tile, id); this.tileVer[tile]++; }
     this.touch();
   }
 
-  private growTile(tile: number, id: number): void {
+  /** grow a tile's stats by one instance (bounds / min radius / mask only widen: conservative until the next exact
+   *  recompute, which happens after removals) */
+  private growTile(t: number, id: number): void {
+    this.tileMask[t] |= this.instMask[id];
+    if (this.tileDirty[t]) return;
     const p = this.sph, o = id * 4, r = p[o + 3];
-    if (r < 0) return;
-    const b = this.tileBox, k = tile * 6;
+    const b = this.tileBox, k = t * 6;
+    if (r < 0) { this.tileMinR[t] = 0; b[k] = b[k + 1] = b[k + 2] = -Infinity; b[k + 3] = b[k + 4] = b[k + 5] = Infinity; return; }
+    if (r < this.tileMinR[t]) this.tileMinR[t] = r;
     if (p[o] - r < b[k]) b[k] = p[o] - r;
     if (p[o + 1] - r < b[k + 1]) b[k + 1] = p[o + 1] - r;
     if (p[o + 2] - r < b[k + 2]) b[k + 2] = p[o + 2] - r;
@@ -283,6 +369,30 @@ export class DynamicBatch {
     if (last !== id) { list[s] = last; this.instSlot[last] = s; }
     this.instSlot[id] = -1;
     this.instTile[id] = -1;
+    if (t >= 0) { this.tileDirty[t] = 1; this.tileVer[t]++; }
+  }
+
+  /** recompute a tile's bounds / smallest radius / cascade mask from its instances */
+  private tileStats(t: number): void {
+    this.tileDirty[t] = 0;
+    const list = this.tileLists[t], p = this.sph, mk = this.instMask;
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity, minR = Infinity, mask = 0;
+    for (let j = 0; j < list.length; j++) {
+      const id = list[j], o = id * 4, r = p[o + 3];
+      mask |= mk[id];
+      if (r < 0) { minR = 0; x0 = y0 = z0 = -Infinity; x1 = y1 = z1 = Infinity; continue; } // no bounds yet: always test
+      if (r < minR) minR = r;
+      if (p[o] - r < x0) x0 = p[o] - r;
+      if (p[o + 1] - r < y0) y0 = p[o + 1] - r;
+      if (p[o + 2] - r < z0) z0 = p[o + 2] - r;
+      if (p[o] + r > x1) x1 = p[o] + r;
+      if (p[o + 1] + r > y1) y1 = p[o + 1] + r;
+      if (p[o + 2] + r > z1) z1 = p[o + 2] + r;
+    }
+    const b = this.tileBox, k = t * 6;
+    b[k] = x0; b[k + 1] = y0; b[k + 2] = z0; b[k + 3] = x1; b[k + 4] = y1; b[k + 5] = z1;
+    this.tileMinR[t] = minR;
+    this.tileMask[t] = mask;
   }
 
   private ensureCap(n: number): void {
@@ -292,6 +402,8 @@ export class DynamicBatch {
     const s = new Int32Array(cap).fill(-1); s.set(this.instSlot); this.instSlot = s;
     const p = new Float32Array(cap * 4); p.set(this.sph); this.sph = p;
     const mk = new Uint8Array(cap).fill(0xff); mk.set(this.instMask); this.instMask = mk;
+    const v = new Uint8Array(cap); v.set(this.instVis); this.instVis = v;
+    const g = new Int32Array(cap).fill(-1); g.set(this.instGeo); this.instGeo = g;
   }
 
   /** world bounding sphere for culling. Y scale is clamped to >= 1 so pop-in / construction growth (sy < 1) never
@@ -331,18 +443,16 @@ export class DynamicBatch {
         // evict the least recently used slot (e.g. one-off capture cameras)
         this.slots.sort((a, b) => a.used - b.used);
         const old = this.slots.shift()!;
-        old.tex.dispose();
+        old.tex?.dispose();
       }
-      s = { camera, starts: new Int32Array(0), counts: new Int32Array(0), tex: null as unknown as THREE.DataTexture, cap: -1, count: 0, version: -1, key: new Float64Array(18), used: 0 };
+      s = { camera, starts: new Int32Array(0), counts: new Int32Array(0), ids: new Uint32Array(0), tex: null as unknown as THREE.DataTexture, texCap: 0, cap: -1, count: 0, version: -1, key: new Float64Array(18), used: 0 };
       this.slots.push(s);
     }
     const cap = m._maxInstanceCount as number;
     if (s.cap !== cap) {
-      s.tex?.dispose();
-      const size = Math.ceil(Math.sqrt(cap));
-      s.tex = new THREE.DataTexture(new Uint32Array(size * size), size, size, THREE.RedIntegerFormat, THREE.UnsignedIntType);
       s.starts = new Int32Array(cap);
       s.counts = new Int32Array(cap);
+      s.ids = new Uint32Array(cap);
       s.cap = cap;
       s.version = -1;
     }
@@ -398,27 +508,32 @@ export class DynamicBatch {
     if (cascade < 0 || (pc.shadowMask! >> cascade) & 1) {
       _frustum.setFromProjectionMatrix(_pm, s.camera.coordinateSystem, (s.camera as any).reversedDepth);
       const planes = _frustum.planes;
-      const info = m._instanceInfo as { active: boolean; visible: boolean; geometryIndex: number }[];
       const gInfo = m._geometryInfo as { start: number; count: number }[];
       const index = geometry.getIndex();
       const bpe = index === null ? 1 : index.array.BYTES_PER_ELEMENT;
-      const starts = s.starts, counts = s.counts, ind = s.tex.image.data as unknown as Uint32Array;
+      // draw range per geometry id (typed, read by the hot loop below)
+      if (this.gStart.length < gInfo.length) { this.gStart = new Int32Array(gInfo.length * 2); this.gCount = new Int32Array(gInfo.length * 2); }
+      const gS = this.gStart, gC = this.gCount;
+      for (let g = 0; g < gInfo.length; g++) { const gi = gInfo[g]; gS[g] = gi ? gi.start * bpe : 0; gC[g] = gi ? gi.count : 0; }
+      const starts = s.starts, counts = s.counts, ind = s.ids;
       const minR = cascade >= 0 ? pc.minShadowTexels! * texel * 0.5 : 0;
       const sph = this.sph;
       const dyn = pc.dynamic;
       const mat = dyn ? (m._matricesTexture.image.data as Float32Array) : null;
       const cbit = cascade >= 0 ? 1 << cascade : 0;
-      const imask = this.instMask;
-      const pushList = (list: number[], test: boolean) => {
+      const imask = this.instMask, vis = this.instVis, geo = this.instGeo, gsph = this.geoSphere;
+      const coarse = pc.coarse === true, cls = cascade < 0 ? 0 : Math.min(2, cascade + 1);
+      // test: per-instance frustum test; size / rcv: per-instance caster size / receiver tests (shadow passes)
+      const pushList = (list: number[], test: boolean, size: boolean, rcv: boolean) => {
         for (let j = 0; j < list.length; j++) {
           const id = list[j];
-          const it = info[id];
-          if (!it.visible || !it.active) continue;
+          if (!vis[id]) continue;
           if (cbit && !(imask[id] & cbit)) continue;
-          if (test || minR > 0 || recv) {
+          const gid = geo[id];
+          if (test || size || rcv) {
             let cx: number, cy: number, cz: number, r: number;
             if (mat) {
-              const gs = this.geoSphere[it.geometryIndex];
+              const gs = gsph[gid];
               const o = id * 16;
               cx = mat[o + 12]; cy = mat[o + 13]; cz = mat[o + 14];
               r = gs.radius + gs.center.length();
@@ -426,9 +541,9 @@ export class DynamicBatch {
               const o = id * 4;
               cx = sph[o]; cy = sph[o + 1]; cz = sph[o + 2]; r = sph[o + 3];
             }
-            if (r < minR) continue;
+            if (size && r < minR) continue;
             // shadow passes: only casters whose shadow can reach the visible part of this cascade
-            if (recv && !receiverSweepSphere(recv, cx, cy, cz, r)) continue;
+            if (rcv && !receiverSweepSphere(recv!, cx, cy, cz, r)) continue;
             if (test) {
               let out = false;
               for (let p = 0; p < 6; p++) {
@@ -438,21 +553,22 @@ export class DynamicBatch {
               if (out) continue;
             }
           }
-          const g = gInfo[it.geometryIndex];
-          starts[n] = g.start * bpe;
-          counts[n] = g.count;
+          starts[n] = gS[gid];
+          counts[n] = gC[gid];
           ind[n] = id;
           n++;
         }
       };
       if (!dyn) {
-        const tb = this.tileBox;
+        const tb = this.tileBox, off = this.tileOff, dirty = this.tileDirty, tmask = this.tileMask, tminR = this.tileMinR;
         for (let ti = 0; ti < this.tileLists.length; ti++) {
           const list = this.tileLists[ti];
-          if (!list.length) continue;
+          if (!list.length || off[ti]) continue;
+          if (dirty[ti]) this.tileStats(ti);
+          if (cbit && !(tmask[ti] & cbit)) continue;
           const k = ti * 6;
           const x0 = tb[k], y0 = tb[k + 1], z0 = tb[k + 2], x1 = tb[k + 3], y1 = tb[k + 4], z1 = tb[k + 5];
-          if (!(x1 >= x0)) { pushList(list, true); continue; }
+          if (!(x1 >= x0) || !Number.isFinite(x0 + x1)) { pushList(list, true, minR > 0, recv !== null); continue; }
           let inside = true, outside = false;
           for (let p = 0; p < 6; p++) {
             const pl = planes[p], nn = pl.normal;
@@ -463,21 +579,84 @@ export class DynamicBatch {
             if (nn.x * qx + nn.y * qy + nn.z * qz + pl.constant < 0) inside = false;
           }
           if (outside) continue;
+          // receiver: skip the tile if no caster in it can shadow the visible slice; no per-instance test if the whole
+          // tile lies inside the slice
           if (recv && !receiverSweepBox(recv, x0, y0, z0, x1, y1, z1)) continue;
-          pushList(list, !inside);
+          const rcv = recv !== null && !receiverContainsBox(recv, x0, y0, z0, x1, y1, z1);
+          const test = !inside && !(coarse && cascade < 0), size = minR > 0 && tminR[ti] < minR;
+          if (test || size || rcv) { pushList(list, test, size, rcv); continue; }
+          // every visible instance of the tile (with the cascade bit) is drawn: copy its cached block
+          const ck = ti * 3 + cls;
+          let cc = this.tileCache[ck];
+          if (!cc || cc.ver !== this.tileVer[ti]) {
+            if (!cc || cc.s.length < list.length) cc = this.tileCache[ck] = { ver: 0, n: 0, s: new Int32Array(list.length + 16), c: new Int32Array(list.length + 16), i: new Uint32Array(list.length + 16) };
+            let m2 = 0;
+            for (let j = 0; j < list.length; j++) {
+              const id = list[j];
+              if (!vis[id] || (cbit && !(imask[id] & cbit))) continue;
+              const gid = geo[id];
+              cc.s[m2] = gS[gid]; cc.c[m2] = gC[gid]; cc.i[m2] = id; m2++;
+            }
+            cc.n = m2;
+            cc.ver = this.tileVer[ti];
+          }
+          if (cc.n) {
+            starts.set(cc.s.subarray(0, cc.n), n);
+            counts.set(cc.c.subarray(0, cc.n), n);
+            ind.set(cc.i.subarray(0, cc.n), n);
+            n += cc.n;
+          }
         }
       }
-      pushList(this.untiled, true);
+      pushList(this.untiled, true, minR > 0, recv !== null);
+      if (cascade < 0 && this.sortFront && !dyn && n > 1) this.sortList(s, n, ind);
     }
     s.count = n;
+    // indirect (instance id) texture sized to the list (power-of-two side, grown / shrunk with slack): a rebuild uploads
+    // the list, not the batch's whole instance capacity
+    if (!s.tex || s.texCap < n || (s.texCap > 4096 && n * 8 < s.texCap)) {
+      s.tex?.dispose();
+      const side = Math.max(16, 1 << Math.ceil(Math.log2(Math.ceil(Math.sqrt(Math.max(1, n) * 1.25)))));
+      s.tex = new THREE.DataTexture(new Uint32Array(side * side), side, side, THREE.RedIntegerFormat, THREE.UnsignedIntType);
+      s.texCap = side * side;
+    }
+    (s.tex.image.data as unknown as Uint32Array).set(s.ids.subarray(0, n));
     s.tex.needsUpdate = true;
+  }
+
+  /** counting sort of the first n list entries by distance from the camera (sqrt-spaced buckets: fine up close) */
+  private sortList(s: PassSlot, n: number, ind: Uint32Array): void {
+    const e = s.camera.matrixWorld.elements;
+    const px = e[12], py = e[13], pz = e[14];
+    if (this.sortKey.length < n) { this.sortKey = new Uint8Array(s.cap); this.sortTmp = new Int32Array(s.cap * 3); }
+    const key = this.sortKey, tmp = this.sortTmp, cnt = this.sortCnt, sph = this.sph;
+    const starts = s.starts, counts = s.counts;
+    cnt.fill(0);
+    for (let i = 0; i < n; i++) {
+      const o = ind[i] * 4;
+      const dx = sph[o] - px, dy = sph[o + 1] - py, dz = sph[o + 2] - pz;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - sph[o + 3];
+      const k = d <= 0 ? 0 : Math.min(255, (Math.sqrt(d) * 4) | 0);
+      key[i] = k;
+      cnt[k + 1]++;
+    }
+    for (let b = 1; b < 257; b++) cnt[b] += cnt[b - 1];
+    const T1 = n, T2 = n * 2;
+    for (let i = 0; i < n; i++) {
+      const j = cnt[key[i]]++;
+      tmp[j] = starts[i]; tmp[T1 + j] = counts[i]; tmp[T2 + j] = ind[i];
+    }
+    starts.set(tmp.subarray(0, n));
+    counts.set(tmp.subarray(T1, T2));
+    for (let i = 0; i < n; i++) ind[i] = tmp[T2 + i];
   }
 
   dispose(): void {
     // the mesh disposes whichever indirect texture it currently holds; dispose the others
     const cur = (this.mesh as any)._indirectTexture;
-    for (const s of this.slots) if (s.tex !== cur) s.tex.dispose();
+    for (const s of this.slots) if (s.tex && s.tex !== cur) s.tex.dispose();
     this.slots.length = 0;
+    this.mesh.customDepthMaterial?.dispose();
     this.mesh.dispose();
   }
 }

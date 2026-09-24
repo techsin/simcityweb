@@ -151,8 +151,11 @@ export interface GarbageInfo {
   collected: boolean;
   /** uncollected pile level 0..1 (max over the footprint) */
   level: number;
-  /** why not collected: no capacity left, or beyond garbage-truck range of every facility */
-  reason?: 'capacity' | 'range';
+  /**
+   * why not collected: no capacity left, beyond garbage-truck range of every facility (or on a road network without
+   * one), or no road on the building's edge at all (trucks cannot stop there)
+   */
+  reason?: 'capacity' | 'range' | 'noRoad';
 }
 export interface LandfillInfo {
   /** landfill cells in this connected landfill */
@@ -175,6 +178,9 @@ export interface GarbageSummary {
   outOfRangeT: number;
   overCapacityT: number;
   outOfRangeBuildings: number;
+  /** buildings (and their t / month) with no road on their edge: trucks cannot collect whatever the range */
+  noRoadBuildings: number;
+  noRoadT: number;
   /** mean landfill fill 0..1 and landfill capacity (t / month) */
   landfillFill: number;
   landfillCapT: number;
@@ -193,6 +199,8 @@ export class PollutionSystem implements SimSystem {
   private tmp2 = new Float32Array(0);
   private coarse = new Float32Array(0);
   private coarseTmp = new Float32Array(0);
+  /** half-resolution accumulator of the near air classes (plume step) */
+  private coarseAcc = new Float32Array(0);
   /** ground-water level of land cells before bank coupling (persistent; water cells unused) */
   private ground = new Float32Array(0);
   /** park footprint mask and its blurred buffer; soil source per cell (this pass) */
@@ -241,9 +249,14 @@ export class PollutionSystem implements SimSystem {
   private regCap: number[] = [];
   private regUsed: number[] = [];
   private nReg = 0;
+  /** landfill cells of the last pass (closing a landfill leaves brownfield soil once); invalid until the first pass */
+  private lfPrev = new Uint8Array(0);
+  private lfPrevValid = false;
+  /** incinerator ids of the last pass (their burn share is cleared when they disappear) */
+  private incIds: number[] = [];
   private summary: GarbageSummary = {
     producedT: 0, collectedT: 0, recycledT: 0, burnedT: 0, landfilledT: 0, outOfRangeT: 0, overCapacityT: 0,
-    outOfRangeBuildings: 0, landfillFill: 0, landfillCapT: 0,
+    outOfRangeBuildings: 0, noRoadBuildings: 0, noRoadT: 0, landfillFill: 0, landfillCapT: 0,
   };
   private capRec = 0;
   private capInc = 0;
@@ -267,6 +280,11 @@ export class PollutionSystem implements SimSystem {
   init(sim: Simulation): void {
     for (const u of this.unsub) u();
     this.simRef = sim;
+    // per-id caches do not survive a new city (replaceState: building ids start again from 1)
+    this.infos = [];
+    this.incShare.fill(-1);
+    this.incIds = [];
+    this.lfPrevValid = false;
     this.unsub = [
       sim.events.on('terrainChanged', () => this.invalidateWater()),
       sim.events.on('reset', () => { this.invalidateWater(); this.routeDirty = true; }),
@@ -374,7 +392,7 @@ export class PollutionSystem implements SimSystem {
       if (v > level) level = v;
     }
     const r = this.reasonById[id];
-    return { producedT, collected, level, reason: collected ? undefined : r === 2 ? 'range' : r === 1 ? 'capacity' : undefined };
+    return { producedT, collected, level, reason: collected ? undefined : r === 3 ? 'noRoad' : r === 2 ? 'range' : r === 1 ? 'capacity' : undefined };
   }
 
   /** landfill at a landfill-zoned cell (last pass), null if the cell is not landfill */
@@ -428,6 +446,8 @@ export class PollutionSystem implements SimSystem {
       this.soilSrc = new Float32Array(C);
       this.queue = new Int32Array(C);
       this.lfRegion = new Int32Array(C).fill(-1);
+      this.lfPrev = new Uint8Array(C);
+      this.lfPrevValid = false;
       this.seeds = new Int32Array(Math.max(1024, C >> 2));
       this.nWater = -1;
       // ground water of land cells starts from the saved layer
@@ -515,20 +535,25 @@ export class PollutionSystem implements SimSystem {
     }
     // landfill regions (flood fill of empty landfill-zoned cells; usable if a road touches the region)
     const zone = st.zone, bld = st.building, net = st.network, fill = st.landfillFill;
-    const lab = this.lfRegion, order = this.queue;
+    const lab = this.lfRegion, order = this.queue, lfPrev = this.lfPrev;
     lab.fill(-1);
     this.regStart.length = 0; this.regCount.length = 0; this.regRoad.length = 0; this.regCap.length = 0; this.regUsed.length = 0;
     const lfCellCap = (getDef('util_landfill_tile')?.garbageCapacity ?? LANDFILL_CELL_CAP) * Math.max(0.5, Math.min(1, funding));
     let nReg = 0, qt = 0, capLf = 0;
+    const track = this.lfPrevValid;
     for (let s = 0; s < C; s++) {
       if (zone[s] !== Zone.Landfill || bld[s] >= 0) {
-        // a landfill that was closed (rezoned / built over) leaves contaminated brownfield soil
-        if (fill[s] > 0) {
-          if (fill[s] > 0.05) st.soil[s] = Math.max(st.soil[s], Math.min(1, BROWNFIELD_BASE + BROWNFIELD_FILL * fill[s]));
-          fill[s] = 0;
+        // a landfill cell closed since the last pass (dezoned / rezoned / built over) leaves contaminated brownfield
+        // soil, once. Its fill stays (zoning it as landfill again carries on from there, no free capacity) until a
+        // building occupies the cell.
+        if (lfPrev[s] !== 0) {
+          lfPrev[s] = 0;
+          if (track && fill[s] > 0.05) st.soil[s] = Math.max(st.soil[s], Math.min(1, BROWNFIELD_BASE + BROWNFIELD_FILL * fill[s]));
         }
+        if (bld[s] >= 0 && fill[s] !== 0) fill[s] = 0;
         continue;
       }
+      lfPrev[s] = 1;
       if (lab[s] >= 0) continue;
       const r = nReg++;
       const start = qt;
@@ -557,6 +582,7 @@ export class PollutionSystem implements SimSystem {
     if (this.lfOrder.length < qt) this.lfOrder = new Int32Array(Math.max(qt, 256) * 2);
     this.lfOrder.set(order.subarray(0, qt));
     this.nReg = nReg;
+    this.lfPrevValid = true;
     // other disposal facilities (mods / test defs without a kind) count as landfill capacity
     this.capRec = capRec;
     this.capInc = capInc;
@@ -636,14 +662,17 @@ export class PollutionSystem implements SimSystem {
     const recycled = Math.min(this.capRec, RECYCLE_MAX_SHARE * handled);
     const burned = Math.min(this.capInc, handled - recycled);
     const landfilled = Math.max(0, Math.min(this.capLf, handled - recycled - burned));
-    // per facility use
+    // per facility use (incinerators that disappeared since the last pass lose their share)
     const incShare = this.incShare;
+    for (const id of this.incIds) if (id < incShare.length) incShare[id] = -1;
+    this.incIds.length = 0;
     for (let f = 0; f < this.facIds.length; f++) {
       const id = this.facIds[f];
       if (this.facKind[f] !== FK_INCIN) continue;
       const b = st.buildings.get(id);
       const nominal = b ? infoOf(st, b).garbageCap : 0;
       incShare[id] = nominal > 0 && this.capInc > 0 ? Math.min(1, (burned * this.facCap[f]) / this.capInc / nominal) : 0;
+      this.incIds.push(id);
     }
     const lfTotal = this.capLf;
     for (let r = 0; r < this.nReg; r++) this.regUsed[r] = lfTotal > 0 ? (landfilled * this.regCap[r]) / lfTotal : 0;
@@ -669,14 +698,16 @@ export class PollutionSystem implements SimSystem {
     const prod = this.prodById, served = this.served, reach = this.reach, reason = this.reasonById;
     const sStamp = this.servedStamp, rStamp = sStamp - 1;
     const changed: Building[] = [];
-    let outRange = 0, outRangeN = 0, outRangeX = -1, outRangeZ = -1;
+    let outRange = 0, outRangeN = 0, outRangeX = -1, outRangeZ = -1, noRoad = 0, noRoadN = 0;
     for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
       const b = bL[bI];
       const p = prod[b.id];
       const ok = p === 0 || served[b.id] === sStamp;
       if (!ok && reach[b.id] !== rStamp) {
-        reason[b.id] = 2; outRange += p;
-        if (outRangeN++ === 0) { outRangeX = b.x; outRangeZ = b.z; }
+        if (roadOnEdge(st, b)) {
+          reason[b.id] = 2; outRange += p;
+          if (outRangeN++ === 0) { outRangeX = b.x; outRangeZ = b.z; }
+        } else { reason[b.id] = 3; noRoad += p; noRoadN++; }
       }
       const area = b.w * b.d;
       const rate = GARBAGE_BUILDUP_RATE * dtMonths * (0.6 + 0.4 * Math.min(1, p / area / 0.3));
@@ -720,6 +751,8 @@ export class PollutionSystem implements SimSystem {
     const sm = this.summary;
     sm.outOfRangeT = outRange;
     sm.outOfRangeBuildings = outRangeN;
+    sm.noRoadT = noRoad;
+    sm.noRoadBuildings = noRoadN;
     sm.landfillFill = lfCells > 0 ? fillSum / lfCells : 0;
     st.stats.landfillFill = sm.landfillFill;
     for (const b of changed) sim.events.emit('buildingChanged', b);
@@ -736,7 +769,8 @@ export class PollutionSystem implements SimSystem {
       const why = this.capInc + this.capRec + this.capLf > 0
         ? `are more than ${GARBAGE_TRUCK_RANGE} road tiles from a landfill, incinerator or recycling center (or not connected to one)`
         : 'have no landfill, incinerator or recycling center to take their garbage';
-      sim.notify(`Garbage is piling up: trucks can't reach ${outRangeN.toLocaleString('en-US')} buildings — they ${why}.`, 'warning', x, z, 'utilities');
+      const nr = sm.noRoadBuildings > 0 ? ` ${sm.noRoadBuildings.toLocaleString('en-US')} more have no road for the trucks at all.` : '';
+      sim.notify(`Garbage is piling up: trucks can't reach ${outRangeN.toLocaleString('en-US')} buildings — they ${why}.${nr}`, 'warning', x, z, 'utilities');
     }
     if (sm.landfillCapT > 0 && sm.landfillFill >= LANDFILL_WARN_FILL && st.day - this.lastFillNews >= GARBAGE_NEWS_DAYS * 2) {
       this.lastFillNews = st.day;
@@ -845,6 +879,8 @@ export class PollutionSystem implements SimSystem {
         if (inf.powerOut > 0 && !inf.isIncinerator) {
           const load = utilities ? utilities.plantLoad(b.id) : -1;
           if (load >= 0) act = PLANT_IDLE_ACT + (1 - PLANT_IDLE_ACT) * load;
+          // a plant delivering nothing (shut down by the nuclear-free zone) neither smokes nor hums
+          if (utilities && utilities.producerInfo(b.id)?.output === 0) act = 0;
         } else if (inf.isIncinerator) {
           const s = incShare[b.id];
           if (s >= 0) act = INCIN_IDLE_ACT + (1 - INCIN_IDLE_ACT) * s;
@@ -1027,15 +1063,27 @@ export class PollutionSystem implements SimSystem {
     const N = st.size, air = this.air, used = this.usedCls;
     const field = this.tmp2;
     field.fill(0);
-    const w = windVector(st);
-    // small emitters at half resolution (radius 1 -> sigma^2 = 4 * 2 = 8 cells^2, ~ full-res radius 2)
-    // (short plumes: one copy at the mean drift 0.75 d — the two copies d/2 and d are within a sigma of each other)
-    const dx = w.x * 0.75 * WIND_DRIFT_PREVAIL, dz = w.z * 0.75 * WIND_DRIFT_PREVAIL;
-    if (used[0]) blurDownAdd(air[0], field, N, 2, 1, POLL_PEAK_GAIN * 2 * Math.PI * 8, this.coarse, this.coarseTmp, dx, dz);
+    if (!used[0] && !used[1]) return;
+    // both classes blur at half resolution into one coarse field (class 0: radius 1 -> sigma^2 = 4 * 2 = 8 cells^2,
+    // ~ full-res radius 2), then the plume: the average of two copies drifted d/2 and d downwind (as for the far class)
+    const M = Math.ceil(N / 2), MM = M * M;
+    if (this.coarseAcc.length < MM) this.coarseAcc = new Float32Array(MM);
+    const acc = this.coarseAcc, coarse = this.coarse;
+    acc.fill(0, 0, MM);
+    if (used[0]) {
+      blurDown(air[0], N, 2, 1, coarse, this.coarseTmp);
+      const g = POLL_PEAK_GAIN * 2 * Math.PI * 8;
+      for (let m = 0; m < MM; m++) acc[m] += coarse[m] * g;
+    }
     if (used[1]) {
       const rr = Math.max(1, Math.round(POLL_RADII[1] / 2));
-      blurDownAdd(air[1], field, N, 2, rr, POLL_PEAK_GAIN * 2 * Math.PI * 4 * blurSigma2(rr), this.coarse, this.coarseTmp, dx, dz);
+      blurDown(air[1], N, 2, rr, coarse, this.coarseTmp);
+      const g = POLL_PEAK_GAIN * 2 * Math.PI * 4 * blurSigma2(rr);
+      for (let m = 0; m < MM; m++) acc[m] += coarse[m] * g;
     }
+    const w = windVector(st), d = WIND_DRIFT_PREVAIL;
+    upsampleAdd(acc, field, N, 2, 0.5, w.x * d * 0.5, w.z * d * 0.5);
+    upsampleAdd(acc, field, N, 2, 0.5, w.x * d, w.z * d);
   }
 
   /** step 6: large emitters (quarter resolution, long plumes), saturation + tree absorption + smoothing */
@@ -1215,6 +1263,23 @@ export class PollutionSystem implements SimSystem {
     this.bankCells = Int32Array.from(bank);
     this.bankSrc = Int32Array.from(bankSrc);
   }
+}
+
+/** true when a road cell (street .. highway) touches the building's edge (corners excluded): trucks can stop there */
+function roadOnEdge(st: CityState, b: Building): boolean {
+  const N = st.size, net = st.network;
+  const x0 = b.x, z0 = b.z, x1 = b.x + b.w, z1 = b.z + b.d;
+  for (let x = x0; x < x1; x++) {
+    if (x < 0 || x >= N) continue;
+    if (z0 > 0 && isRoad(net[(z0 - 1) * N + x] as Network)) return true;
+    if (z1 < N && isRoad(net[z1 * N + x] as Network)) return true;
+  }
+  for (let z = z0; z < z1; z++) {
+    if (z < 0 || z >= N) continue;
+    if (x0 > 0 && isRoad(net[z * N + x0 - 1] as Network)) return true;
+    if (x1 < N && isRoad(net[z * N + x1] as Network)) return true;
+  }
+  return false;
 }
 
 let baseSrcKey = -1;

@@ -9,8 +9,12 @@ import { BF } from '../../src/sim/CityState';
 import { getUtilities, type CrimeSystem, type PollutionSystem, type ServicesSystem } from '../../src/sim/systems/infra';
 import { waterQualityAt } from '../../src/sim/infra/utilities';
 import { windVector } from '../../src/sim/infra/wind';
-import { seaMask, shoreCells } from '../../src/sim/infra/terrainMasks';
+import { seaCellCount, seaMask, shoreCells } from '../../src/sim/infra/terrainMasks';
 import { setOrdinanceEnabled } from '../../src/sim/economy/ordinances';
+import { createCityState } from '../../src/sim/terrainGen';
+import { defaultCityConfig } from '../../src/sim/config';
+import { upsampleAdd } from '../../src/sim/infra/blur';
+import { deserializeCity, serializeCity } from '../../src/save/serialize';
 import { newSim, newState, place, roadLine } from './cityGen';
 
 const pol = (sim: ReturnType<typeof newSim>) => sim.getSystem<PollutionSystem>('pollution')!;
@@ -264,6 +268,21 @@ describe('WP3 garbage', () => {
     expect(st.stats.garbageRecycled).toBeLessThanOrEqual(0.35 * g.collectedT + 1e-6);
     expect(pol(sim).landfillInfo(6, 21)!.road).toBe(false);
   });
+
+  it('a building with no road on its edge reads "noRoad" (trucks cannot stop there), not "out of range"', () => {
+    const st = newState(64);
+    roadLine(st, 2, 30, 60, 30, Network.Road);
+    for (let x = 2; x <= 7; x++) for (let z = 26; z <= 29; z++) st.zone[st.idx(x, z)] = Zone.Landfill;
+    const served = place(st, 't_r2', 20, 31, { pop: 60 });
+    const lonely = place(st, 't_r2', 20, 45, { pop: 60 }); // no road anywhere near
+    const sim = newSim(st);
+    sim.runDays(60);
+    const p = pol(sim);
+    expect(p.garbageInfo(served.id)).toMatchObject({ collected: true });
+    expect(p.garbageInfo(lonely.id)).toMatchObject({ collected: false, reason: 'noRoad' });
+    expect(p.garbageSummary().noRoadBuildings).toBe(1);
+    expect(p.garbageSummary().outOfRangeBuildings).toBe(0);
+  });
 });
 
 describe('WP3 water', () => {
@@ -318,6 +337,18 @@ describe('WP3 water', () => {
     expect(out(desalInland.id)).toBeLessThanOrEqual(0.2 * 80000 + 1e-6);
   });
 
+  it('generated maps: rivers are fresh water however wide, coasts are sea (edge-share rule)', () => {
+    const water = (st: ReturnType<typeof createCityState>) => { let n = 0; for (let i = 0; i < st.cells; i++) if (st.water[i]) n++; return n; };
+    for (const seed of [7, 11]) {
+      const river = createCityState(defaultCityConfig({ size: 128, seed, terrain: 'river', waterAmount: 0.3 }));
+      const coast = createCityState(defaultCityConfig({ size: 128, seed, terrain: 'coast', waterAmount: 0.3 }));
+      console.log(`seed ${seed}: river water ${water(river)} sea ${seaCellCount(river)} | coast water ${water(coast)} sea ${seaCellCount(coast)}`);
+      expect(water(river)).toBeGreaterThan(500);
+      expect(seaCellCount(river)).toBe(0);
+      expect(seaCellCount(coast)).toBeGreaterThan(0.9 * water(coast));
+    }
+  });
+
   it('tap water quality per network: a polluted intake network is worse than a clean one; treatment cleans it', () => {
     const st = newState(64);
     for (let z = 0; z < 64; z++) for (let x = 30; x < 34; x++) st.water[st.idx(x, z)] = 1;
@@ -364,12 +395,28 @@ describe('WP3 soil', () => {
     st.buildings.delete(f.id);
     sim.runDays(120);
     expect(st.soil[st.idx(20, 29)]).toBeGreaterThan(0.9 * s3);
-    // close the landfill: brownfield soil
-    const fill = st.landfillFill[st.idx(40, 29)];
+    // close the landfill: brownfield soil (once); the fill stays with the land
+    expect(st.landfillFill[st.idx(40, 29)]).toBeGreaterThan(0);
+    const fill = 0.6;
+    st.landfillFill[st.idx(40, 29)] = fill; // an old, well-used landfill cell
     for (let x = 40; x <= 43; x++) st.zone[st.idx(x, 29)] = Zone.None;
     sim.runDays(30);
+    expect(st.landfillFill[st.idx(40, 29)]).toBeCloseTo(fill, 5);
+    expect(st.soil[st.idx(40, 29)]).toBeGreaterThan(0.3 + 0.5 * fill - 0.01);
+    const soilClosed = st.soil[st.idx(40, 29)];
+    sim.runDays(60);
+    expect(st.soil[st.idx(40, 29)]).toBeLessThanOrEqual(soilClosed + 1e-6); // written once, then it decays
+    // zoning it as landfill again carries on from the old fill (no free capacity from dezoning)
+    for (let x = 40; x <= 43; x++) st.zone[st.idx(x, 29)] = Zone.Landfill;
+    sim.runDays(30);
+    expect(st.landfillFill[st.idx(40, 29)]).toBeGreaterThanOrEqual(fill - 1e-6);
+    // building over the old landfill clears the fill (the soil stays contaminated)
+    for (let x = 40; x <= 43; x++) st.zone[st.idx(x, 29)] = Zone.None;
+    sim.runDays(30);
+    place(st, 't_r2', 40, 29, { pop: 60 });
+    sim.runDays(30);
     expect(st.landfillFill[st.idx(40, 29)]).toBe(0);
-    if (fill > 0.05) expect(st.soil[st.idx(40, 29)]).toBeGreaterThan(0.3);
+    expect(st.soil[st.idx(40, 29)]).toBeGreaterThan(0.5);
     // contaminated soil leaches into ground water
     expect(st.waterPollution[st.idx(20, 29)]).toBeGreaterThan(0);
   });
@@ -395,12 +442,53 @@ describe('WP3 utilities', () => {
     expect(u.producerInfo(coal.id)!.output).toBeCloseTo(400, 3);
     expect(u.producerInfo(nuke.id)!.output).toBeCloseTo(1600, 3);
     st.stats.population = 20000;
-    expect(setOrdinanceEnabled(st, 'nuclear_free_zone', true).ok).toBe(true);
+    // refused while the plant runs, unless the player confirms (WP5-6 dialog); the reason says what would happen
+    const refused = setOrdinanceEnabled(st, 'nuclear_free_zone', true);
+    expect(refused.ok).toBe(false);
+    expect(refused.needsConfirm).toBe(true);
+    expect(refused.reason).toMatch(/shut it down \(−1,600 MW\)/);
+    expect(st.budget.ordinances).not.toContain('nuclear_free_zone');
+    expect(setOrdinanceEnabled(st, 'nuclear_free_zone', true, { confirm: true }).ok).toBe(true);
     u.compute(sim);
     expect(u.producerInfo(nuke.id)!.output).toBe(0);
     expect(st.news.filter((n) => n.text.startsWith('Nuclear plant shut down by ordinance')).length).toBe(1);
     u.compute(sim);
     expect(st.news.filter((n) => n.text.startsWith('Nuclear plant shut down by ordinance')).length).toBe(1);
+    // a plant that delivers nothing has load 0: no smoke, no hum
+    expect(u.plantLoad(nuke.id)).toBe(0);
+    pol(sim).compute(sim, false);
+    expect(pol(sim).emissionOf(nuke.id)).toBe(0);
+  });
+
+  it('after a load, an unwatered thermal plant keeps its reduced output (no full-output blip, no repeated news)', () => {
+    const st = newState(64);
+    roadLine(st, 2, 30, 60, 30, Network.Road);
+    const coal = place(st, 'util_coal_plant', 10, 26);
+    for (let x = 20; x <= 30; x++) place(st, 't_r2', x, 31, { pop: 60 });
+    const sim = newSim(st);
+    getUtilities(sim)!.compute(sim);
+    expect(getUtilities(sim)!.producerInfo(coal.id)!.output).toBeCloseTo(200, 3);
+    const loaded = deserializeCity(structuredClone(serializeCity(st)));
+    sim.replaceState(loaded);
+    expect(getUtilities(sim)!.producerInfo(coal.id)!.output).toBeCloseTo(200, 3);
+    expect(loaded.stats.powerSupply).toBeCloseTo(200, 3);
+  });
+
+  it('a grid that loses its last plant gets a blackout warning (once per cooldown)', () => {
+    const st = newState(64);
+    roadLine(st, 2, 30, 60, 30, Network.Road);
+    const plant = place(st, 't_small_plant', 1, 30);
+    place(st, 't_r2', 10, 31, { pop: 60 });
+    place(st, 't_r2', 11, 31, { pop: 60 });
+    const sim = newSim(st);
+    const u = getUtilities(sim)!;
+    expect(st.stats.powerSupply).toBeGreaterThan(0);
+    expect(st.stats.powerDemand).toBeLessThan(st.stats.powerSupply);
+    plant.flags |= BF.Burnt;
+    u.compute(sim);
+    u.compute(sim);
+    expect(st.stats.powerSupply).toBe(0);
+    expect(st.news.filter((n) => n.text.startsWith('Blackout')).length).toBe(1);
   });
 
   it('brownout priority: critical services keep power while nearer homes go dark', () => {
@@ -446,6 +534,7 @@ describe('WP3 crime', () => {
     place(st, 't_coal', 2, 18); // schools need power
     const sim = newSim(st);
     const c = sim.getSystem<CrimeSystem>('crime')!;
+    st.stats.population = 20000; // (no economy in this test) youth crime is a town-sized problem
     const y0 = c.termsOf(home.id)!.youth;
     st.budget.ordinances.push('youth_curfew');
     const yCurfew = c.termsOf(home.id)!.youth;
@@ -458,6 +547,30 @@ describe('WP3 crime', () => {
     expect(y0).toBeGreaterThan(0.05);
     expect(yCurfew).toBeCloseTo(y0 * 0.5, 5);
     expect(y1).toBeLessThan(y0 * 0.5);
+  });
+
+  it('youth crime phases in with town size, and does not jump when a far-away first high school opens', () => {
+    const st = newState(128);
+    roadLine(st, 2, 20, 125, 20, Network.Road);
+    const home = place(st, 't_r2', 10, 21, { pop: 60 });
+    place(st, 't_coal', 2, 18);
+    place(st, 'civ_elementary_school', 12, 21); // next door: elementary coverage, but no high school
+    const sim = newSim(st);
+    const c = sim.getSystem<CrimeSystem>('crime')!;
+    st.stats.population = 1500;
+    expect(c.termsOf(home.id)!.youth).toBe(0); // a village
+    st.stats.population = 6000;
+    const yMid = c.termsOf(home.id)!.youth;
+    st.stats.population = 20000;
+    const y0 = c.termsOf(home.id)!.youth;
+    expect(yMid).toBeCloseTo(y0 * 0.5, 5);
+    place(st, 'civ_high_school', 115, 21); // ~100 road tiles away: beyond its catchment
+    getUtilities(sim)!.compute(sim);
+    sim.getSystem<ServicesSystem>('services')!.compute(sim, false);
+    const y1 = c.termsOf(home.id)!.youth;
+    console.log(`youth crime at 6k ${yMid.toFixed(3)} 20k ${y0.toFixed(3)}; after a far high school opens ${y1.toFixed(3)}`);
+    expect(y0).toBeGreaterThan(0.05);
+    expect(y1).toBeLessThanOrEqual(y0 + 1e-6);
   });
 
   it('a casino spills crime around it; uncollected garbage raises crime', () => {
@@ -475,5 +588,36 @@ describe('WP3 crime', () => {
     const g0 = c.termsOf(a.home.id)!;
     a.st.garbage[a.st.idx(30, 21)] = 1;
     expect(c.termsOf(a.home.id)!.total).toBeGreaterThan(g0.total + 0.05);
+  });
+});
+
+describe('WP3 plumes and caches', () => {
+  it('a plume shifted over the upwind map edge brings no pollution in from outside the map', () => {
+    const N = 16, f = 2, M = N / f;
+    const coarse = new Float32Array(M * M).fill(1);
+    const acc = new Float32Array(N * N);
+    upsampleAdd(coarse, acc, N, f, f * f, 4, 0); // wind blowing towards +x: 4 cells of drift
+    expect(acc[3 * N + 2]).toBe(0); // samples beyond the west edge: clean air
+    expect(acc[3 * N + 4]).toBeCloseTo(1, 5); // first sample inside the map
+    expect(acc[3 * N + 15]).toBeCloseTo(1, 5);
+    const acc0 = new Float32Array(N * N);
+    upsampleAdd(coarse, acc0, N, f, f * f); // unshifted: unchanged everywhere
+    expect(Math.min(...acc0)).toBeCloseTo(1, 5);
+  });
+
+  it('a new city (replaceState, building ids restart) does not reuse the old city\'s per-id caches', () => {
+    const a = newState(64);
+    roadLine(a, 2, 30, 60, 30, Network.Road);
+    const coal = place(a, 't_coal', 10, 27);
+    const sim = newSim(a);
+    const eCoal = pol(sim).emissionOf(coal.id);
+    expect(eCoal).toBeGreaterThan(0);
+    const b = newState(64);
+    roadLine(b, 2, 30, 60, 30, Network.Road);
+    const home = place(b, 't_r2', 10, 31, { pop: 60 });
+    expect(home.id).toBe(coal.id);
+    sim.replaceState(b);
+    expect(pol(sim).emissionOf(home.id)).toBeLessThan(0.1 * eCoal); // a home (heating), not the old coal plant
+    expect(sim.getSystem<CrimeSystem>('crime')!.termsOf(home.id)!.poverty).toBeCloseTo(0.12, 5); // R$$ home
   });
 });
