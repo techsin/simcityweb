@@ -1,10 +1,10 @@
 /**
  * "Rush Hour" - upbeat downtown funk / pop for a busy, fast-growing city by day (Metropolis soundtrack).
  *
- * Band: clavinet 16th stabs (dyads / triads with ghost scratches), slap bass (thumb, octave pops, dead notes,
- * chromatic approaches), a tight kit (punchy kick, crisp snare with ghost notes, 16th hats with open-hat lifts, claps
- * on 2 & 4 in the choruses, tambourine), synth-brass stabs / answers / fills, a warm synth lead for the tunes, a
- * string bed in the choruses and a Rhodes in the bridge.
+ * Band: clavinet 16th stabs (spread dyads / triads, band-passed noise "chk" ghost scratches), slap bass (thumb, octave
+ * pops, dead-note plucks, chromatic approaches), a tight kit (punchy kick, crisp snare with ghost notes, 16th hats with
+ * open-hat lifts, claps on 2 & 4 in the choruses, tambourine), synth-brass stabs / answers / fills, a warm synth lead
+ * for the tunes, a string bed in the choruses and a Rhodes in the bridge.
  *
  * Form (~98-102 bars at 101-107 bpm, ~3:40-4:05):
  *   intro 8 | verse 1 16 | pre-chorus 4 | chorus 1 8 | [interlude 4] | verse 2 16 | pre-chorus 4 | chorus 2 8 |
@@ -12,22 +12,27 @@
  * Harmony: the verse vamps in a dorian minor key; the pre-chorus pivots into a major chorus key (up a 4th, a minor
  * 3rd or a whole step), the chorus's last bar is the verse key's V7#9 to fall back home, and the last chorus lifts
  * again (+1 / +2 semitones) after a dominant-pedal build.
+ * Voicing (rush_hour_funk_voice.ts): rootless grips with no semitone clusters or minor 9ths (Fm9 = Ab3-Eb4-G4, 7#9 in
+ * Hendrix order); any comping note a semitone / minor 9th from a held tune note is dropped from that chord.
  * Tunes: the verse is a 1-bar call + tail, answered by the call sequenced a step away, with brass answers in the gaps;
- * phrase 3 develops it higher, phrase 4 liquidates it into a rising lead-in. The chorus hook works the same way
- * (statement, answer, restatement, cadence). The interlude gives the verse call to the brass, the bridge plays it in
- * augmentation, and in the last chorus the brass takes the hook while the lead answers.
+ * the clav states it first as a riff, then the lead takes it; phrase 3 develops it higher, phrase 4 liquidates it into
+ * a rising lead-in. The chorus hook works the same way (statement, answer, restatement, cadence). The brass takes the
+ * call once (interlude, or verse 2's second phrase), the bridge plays it in augmentation, and in the last chorus the
+ * brass takes the hook while the lead answers. Exposed notes avoid avoid-notes; a note held into a new chord resolves
+ * into it (sus4 -> 3, tonic -> 3rd of V) instead of clashing. The tunes never climb past A5 (Bb5 in the last chorus).
  * Every play re-rolls: key, tempo, 16th lilt, chorus key and final lift, verse vamp, pre-chorus / chorus / bridge /
  * build charts, the call, tails, hook and their sequences, all melodic variation (anticipations, stutters, drops,
  * scoops), clav / bass / kick / ghost-note patterns, brass figures, fills, intro type, interlude, pre-chorus stop.
  * Everything is planned in create(); bar() only schedules.
  *
- * CPU: the 16th hats and the tambourine are two persistent NoiseVoice envelopes (rush_hour_funk_perc.ts) instead of
- * a node graph per hit.
+ * CPU: the 16th hats, the tambourine and the clav ghost scratches are persistent NoiseVoice envelopes
+ * (rush_hour_funk_perc.ts) instead of a node graph per hit.
  */
 import type { MusicTrack } from '../types';
 import { song, type BarInfo } from '../song';
-import { parseChart, voiceLead, voicing, chordTones, scaleFor, scale, humanize, humVel, snap, stepInPool, bassNote, pc, degree, pattern, type Chord, type ScaleName } from '../theory';
+import { parseChart, chordTones, chordScale, scaleFor, scale, humanize, humVel, snap, stepInPool, bassNote, pc, degree, pattern, type Chord, type ScaleName } from '../theory';
 import { NoiseVoice } from './rush_hour_funk_perc';
+import { grip } from './rush_hour_funk_voice';
 
 type Kind = 'intro' | 'verse' | 'pre' | 'chorus' | 'inter' | 'bridge' | 'build' | 'final' | 'outro';
 interface Sec {
@@ -50,6 +55,8 @@ interface Ev {
   glide?: number;
   /** bass: slap pop (else a round finger / thumb note) */
   pop?: boolean;
+  /** bass: dead (fretting-hand muted) note */
+  dead?: boolean;
 }
 interface Hit {
   step: number;
@@ -57,6 +64,8 @@ interface Hit {
   notes: number[];
   vel: number;
   att?: number;
+  /** a tune line (brass section line, clav riff), not comping */
+  line?: boolean;
 }
 interface Slot {
   step: number;
@@ -80,6 +89,8 @@ interface BarPlan {
   lead: Ev[];
   bass: Ev[];
   clav: Hit[];
+  /** clav ghost scratches (muted "chk") */
+  scratch: Drum[];
   brass: Hit[];
   strings: Hit[];
   epiano: Hit[];
@@ -97,6 +108,9 @@ interface BarPlan {
   sweep: [number, number] | null;
   final: boolean;
 }
+
+/** highest tune note (A5); the last chorus may reach one semitone more */
+const TOP = 81;
 
 // ------------------------------------------------------------------ composed material
 // verse vamps (written in E dorian, transposed to the verse key)
@@ -191,12 +205,16 @@ export const track: MusicTrack = {
     inst.bpm = bpm;
     const swing = rng.range(0.515, 0.55);
     // ---------------------------------------------------------------- keys
+    // the chorus key goes up a 4th / minor 3rd only when the hook's octave still fits under TOP; the last lift only as
+    // far as TOP + 1
     const kv = rng.weighted([4, 2, 5, 7, 0], [3, 2, 2, 1.5, 1]); // verse tonic (dorian): E D F G C
-    const off = rng.weighted([5, 3, 2], [4, 3, 3]); // chorus key: up a 4th / minor 3rd / whole step
-    const lift = rng.weighted([2, 1], [6, 4]); // last chorus lift
+    const vt = 60 + kv; // verse melody tonic (midi)
+    const offs = [5, 3, 2].filter((o) => vt + o + 12 <= TOP);
+    const off = rng.weighted(offs, offs.map((o) => (o === 5 ? 4 : 3))); // chorus key: up a 4th / minor 3rd / whole step
+    const lifts = [2, 1].filter((l) => vt + off + l + 12 <= TOP + 1);
+    const lift = lifts.length ? rng.weighted(lifts, lifts.map((l) => (l === 2 ? 6 : 4))) : 1; // last chorus lift
     const k2 = (kv + off) % 12, k3 = (k2 + lift) % 12;
     const Tv = kv - 4;
-    const vt = 60 + kv; // verse melody tonic (midi)
     const ct = vt + off; // chorus melody tonic
     const ft = ct + lift; // final chorus tonic
 
@@ -257,22 +275,22 @@ export const track: MusicTrack = {
         plan.push({
           sec: s, inSec: i,
           slots: cs.map((c, k) => ({ step: (k * 16) / cs.length, chord: c, root: bassNote(c, 31), clav: [], brass: [], str: [], ep: [] })),
-          lead: [], bass: [], clav: [], brass: [], strings: [], epiano: [],
+          lead: [], bass: [], clav: [], scratch: [], brass: [], strings: [], epiano: [],
           kick: [], snare: [], clap: [], hat: [], tamb: [], rim: [], tom: [],
           crash: 0, swell: 0, sweep: null, final: false,
         });
       }
     }
     const total = plan.length;
-    // voicings: one voice-led chain per part through the whole song
+    // voicings: one voice-led chain per part through the whole song; spread grips, never a semitone cluster
     {
       let pc3: number[] | null = null, pb: number[] | null = null, ps: number[] | null = null, pe: number[] | null = null;
       for (const p of plan)
         for (const s of p.slots) {
-          s.clav = pc3 = voiceLead(pc3, s.chord, { lo: 57, hi: 72, count: 3, rootless: true });
-          s.brass = pb = voiceLead(pb, s.chord, { lo: 60, hi: 77, count: 3, rootless: true });
-          s.str = ps = voiceLead(ps, s.chord, { lo: 55, hi: 76, count: 4, rootless: true });
-          s.ep = pe = voiceLead(pe, s.chord, { lo: 52, hi: 71, count: 4, rootless: true });
+          s.clav = pc3 = grip(pc3, s.chord, { lo: 55, hi: 72, count: 3, maxSpan: 12 });
+          s.brass = pb = grip(pb, s.chord, { lo: 60, hi: 79, count: 3, maxSpan: 14 });
+          s.str = ps = grip(ps, s.chord, { lo: 62, hi: 81, count: 4 });
+          s.ep = pe = grip(pe, s.chord, { lo: 55, hi: 72, count: 4, maxSpan: 17 });
         }
     }
     const slotAt = (bi: number, step: number): Slot => {
@@ -283,8 +301,25 @@ export const track: MusicTrack = {
     };
     const chordAt = (bi: number, step: number): Chord => slotAt(bi, step).chord;
     const nextChordAfter = (bi: number, step: number): Chord => (step + 1 < 16 ? chordAt(bi, step + 1) : chordAt(bi + 1, 0));
+    /** chord at an absolute 16th (bar * 16 + step) */
+    const chordAbs = (a: number): Chord => {
+      const bi = Math.floor(a / 16);
+      return chordAt(bi, a - bi * 16);
+    };
+    /** absolute 16ths inside (a, b) where the harmony changes */
+    const changesIn = (a: number, b: number): number[] => {
+      const out: number[] = [];
+      for (let bi = Math.max(0, Math.floor(a / 16)); bi * 16 < b && bi < total; bi++)
+        for (const s of plan[bi].slots) {
+          const x = bi * 16 + s.step;
+          if (x > a && x < b && chordAbs(x - 1).name !== s.chord.name) out.push(x);
+        }
+      return out;
+    };
 
     // ---------------------------------------------------------------- melody helpers
+    const isTone = (m: number, c: Chord): boolean => c.tones.some((t) => pc(c.root + t) === pc(m));
+    /** avoid note: a semitone above a chord tone, or the 3rd over a sus chord */
     const isAvoid = (m: number, c: Chord): boolean => {
       const rel = pc(m - c.root);
       const base = c.tones.map((t) => t % 12);
@@ -292,34 +327,112 @@ export const track: MusicTrack = {
       if (c.quality.includes('sus') && rel === 4) return true;
       return base.some((t) => pc(rel - t) === 1);
     };
-    /** realize a template at bar0: degrees in the key's scale, snapped to the chord scale, strong notes off avoid notes */
-    const place = (tpl: Tpl, bar0: number, tonic: number, mode: ScaleName, vel: number, shift = 0, to: 'lead' | 'brass' = 'lead') => {
-      const keyPcs = new Set(scale(tonic, mode, tonic, tonic + 11).map(pc));
-      for (const [step, len, deg, fl] of tpl) {
-        const bi = bar0 + Math.floor(step / 16), st = step % 16;
-        if (bi < 0 || bi >= total) continue;
-        const c = chordAt(bi, st);
-        const raw = degree(tonic, mode, deg + shift);
-        // diatonic chords keep the tune in the key; chromatic ones get their own colour: the V7#9 pivot a bluesy
-        // dominant pool (root, #9, 3, 5, 13, b7), borrowed maj7 chords lydian, others their chord scale
-        const inKey = c.tones.every((t) => keyPcs.has(pc(c.root + t)));
-        const pool = inKey
-          ? scale(tonic, mode, raw - 8, raw + 8)
-          : c.quality === '7s9'
-            ? scale(c.root, [0, 3, 4, 7, 9, 10], raw - 8, raw + 8)
-            : c.quality === 'maj7' || c.quality === 'maj9'
-              ? scale(c.root, 'lydian', raw - 8, raw + 8)
-              : scaleFor(c, raw - 8, raw + 8);
-        let m = snap(raw, pool);
-        if (len >= 6 || ((st % 4 === 0 || len >= 3) && isAvoid(m, c))) m = snap(m, chordTones(c, m - 4, m + 4));
-        const v = humVel(rng, vel + (st % 2 ? 0.03 : 0) + (len >= 4 ? 0.02 : 0), 0.04);
-        if (to === 'lead') plan[bi].lead.push({ step: st, len, midi: m, vel: v, glide: fl?.includes('g') ? stepInPool(m, -1, pool) : undefined });
-        else {
-          // brass section line: melody on top, a diatonic 3rd below
-          const lo = snap(stepInPool(m, -2, pool), pool);
-          plan[bi].brass.push({ step: st, len, notes: [lo, m], vel: v * 0.95 });
-        }
+    const inChordScale = (m: number, c: Chord): boolean => chordScale(c).includes(pc(m - c.root));
+    /**
+     * Move an exposed avoid note (or a long note off the chord) to the nearest chord tone / tension: in the direction
+     * the line moves, in the key, not repeating a neighbour; a chromatic chord-scale note only as a passing tone.
+     */
+    const repair = (m: number, c: Chord, pool: readonly number[], dir: number, prev: number | null, next: number | null, tonesOnly: boolean): number => {
+      let best = m, bs = Infinity;
+      for (let d = -4; d <= 4; d++) {
+        const x = m + d;
+        if (!d || isAvoid(x, c)) continue;
+        const tone = isTone(x, c);
+        if (tonesOnly && !tone) continue;
+        const inPool = pool.includes(x);
+        if (!inPool && !inChordScale(x, c)) continue;
+        let s = Math.abs(d);
+        if (!inPool) s += prev !== null && next !== null && (x - prev) * (next - x) > 0 ? 0.7 : 1.7;
+        if (Math.sign(d) === dir) s -= 0.8;
+        if (tone) s -= 0.3;
+        if (x === prev || x === next) s += 0.8;
+        if (s < bs) (bs = s), (best = x);
       }
+      return best;
+    };
+    /** melody pool: diatonic chords keep the tune in the key; the V7#9 pivot gets a bluesy dominant pool (root, 9, #9,
+     *  3, 5, 13, b7), borrowed maj7 chords lydian, others their chord scale */
+    const poolFor = (c: Chord, keyPcs: ReadonlySet<number>, tonic: number, mode: ScaleName, raw: number): number[] => {
+      if (c.tones.every((t) => keyPcs.has(pc(c.root + t)))) return scale(tonic, mode, raw - 8, raw + 8);
+      if (c.quality === '7s9') return scale(c.root, [0, 2, 3, 4, 7, 9, 10], raw - 8, raw + 8);
+      if (c.quality === 'maj7' || c.quality === 'maj9') return scale(c.root, 'lydian', raw - 8, raw + 8);
+      return scaleFor(c, raw - 8, raw + 8);
+    };
+    /** second voice of the brass section line: a 3rd (else a 4th) under the tune note, never an avoid note */
+    const below = (m: number, c: Chord, pool: readonly number[]): number => {
+      let best = m - 5, bs = Infinity;
+      for (const d of [3, 4, 5]) {
+        const x = m - d;
+        if (isAvoid(x, c)) continue;
+        const s = (d === 5 ? 1 : 0) + (isTone(x, c) ? 0 : 0.6) + (pool.includes(x) ? 0 : 1.5);
+        if (s < bs) (bs = s), (best = x);
+      }
+      return best;
+    };
+    /** a held note that would turn into an avoid note over the next chord moves to its nearest chord tone, a step down
+     *  preferred (sus4 -> 3, tonic over V -> its 3rd) */
+    const resolveInto = (m: number, c: Chord): number => {
+      let best = snap(m, chordTones(c, m - 7, m + 7)), bs = Infinity;
+      for (let d = -3; d <= 3; d++) {
+        const x = m + d;
+        if (!d || !isTone(x, c)) continue;
+        const s = Math.abs(d) + (d > 0 ? 0.6 : 0);
+        if (s < bs) (bs = s), (best = x);
+      }
+      return best;
+    };
+    type To = 'lead' | 'brass' | 'clav';
+    /**
+     * Realize a template at bar0: degrees in the key's scale, snapped to the chord's pool. Exposed notes (an 8th or
+     * longer, or on a beat) never sit on an avoid note, long ones sit on a chord tone; a note struck a 16th before a
+     * change belongs to the new chord; a note held into a chord it would clash with resolves into it at the change
+     * (split), or ends there if little of it is left.
+     */
+    const place = (tpl: Tpl, bar0: number, tonic: number, mode: ScaleName, vel: number, shift = 0, to: To = 'lead') => {
+      const keyPcs = new Set(scale(tonic, mode, tonic, tonic + 11).map(pc));
+      const raws = tpl.map((n) => degree(tonic, mode, n[2] + shift));
+      let prevM: number | null = null;
+      tpl.forEach(([step, len, , fl], k) => {
+        const a = bar0 * 16 + step, end = a + len;
+        if (a < 0 || a >= total * 16) return;
+        const raw = raws[k];
+        const next = k + 1 < raws.length ? raws[k + 1] : null;
+        const ch = changesIn(a, end);
+        const antic = ch.length > 0 && ch[0] - a <= 1 && end - ch[0] >= 2;
+        const c = chordAbs(antic ? ch[0] : a);
+        const pool = poolFor(c, keyPcs, tonic, mode, raw);
+        let m = snap(raw, pool);
+        const dir = next !== null ? Math.sign(next - raw) : prevM !== null ? Math.sign(raw - prevM) : -1;
+        const strong = (antic ? ch[0] : a) % 4 === 0;
+        if (len >= 6 && !isTone(m, c)) m = repair(m, c, pool, dir, prevM, next, true);
+        else if ((len >= 2 || strong) && isAvoid(m, c)) m = repair(m, c, pool, dir, prevM, next, false);
+        const segs: [number, number, number][] = [];
+        let sa = a, sm = m, e = end;
+        for (const b of antic ? ch.slice(1) : ch) {
+          const c2 = chordAbs(b);
+          if (!isAvoid(sm, c2)) continue;
+          if (e - b >= 2) {
+            segs.push([sa, b - sa, sm]);
+            sa = b;
+            sm = resolveInto(sm, c2);
+          } else {
+            e = b;
+            break;
+          }
+        }
+        segs.push([sa, e - sa, sm]);
+        segs.forEach(([s0, sl, sm2], j) => {
+          const bi = Math.floor(s0 / 16), st = s0 - bi * 16;
+          if (bi >= total) return;
+          const v = humVel(rng, vel + (st % 2 ? 0.03 : 0) + (sl >= 4 ? 0.02 : 0) - (j ? 0.04 : 0), 0.04);
+          if (to === 'lead') {
+            const glide = j ? segs[j - 1][2] : fl?.includes('g') ? stepInPool(sm2, -1, pool) : undefined;
+            plan[bi].lead.push({ step: st, len: sl, midi: sm2, vel: v, glide });
+          } else if (to === 'brass') plan[bi].brass.push({ step: st, len: sl, notes: [below(sm2, chordAbs(s0), pool), sm2], vel: v * 0.95, line: true });
+          else plan[bi].clav.push({ step: st, len: Math.min(sl, 3), notes: [sm2], vel: v * 0.9, line: true });
+        });
+        prevM = segs[segs.length - 1][2];
+      });
     };
     const shiftT = (tpl: Tpl, k: number): Tpl => tpl.map((n) => [n[0], n[1], n[2] + k, n[3]] as TN);
     const frag = (tpl: Tpl): Tpl => {
@@ -340,6 +453,14 @@ export const track: MusicTrack = {
       }
       for (let i = 0; i < out.length - 1; i++) out[i][1] = Math.max(1, Math.min(out[i][1], out[i + 1][0] - out[i][0]));
       return out;
+    };
+    /** highest raw pitch of a template */
+    const topOf = (tpl: Tpl, tonic: number, mode: ScaleName, shift: number): number => Math.max(...tpl.map((n) => degree(tonic, mode, n[2] + shift)));
+    /** a lick moved down by scale steps until it fits under cap */
+    const fit = (tpl: Tpl, tonic: number, mode: ScaleName, cap = TOP): Tpl => {
+      let s = 0;
+      while (s > -7 && topOf(tpl, tonic, mode, s) > cap) s--;
+      return s ? shiftT(tpl, s) : tpl;
     };
     const brassFig = (bi: number, fig: readonly (readonly [number, number])[], vel: number) => {
       if (bi < 0 || bi >= total) return;
@@ -362,13 +483,19 @@ export const track: MusicTrack = {
     const call = rng.pick(CALLS);
     const tailOpen = rng.pick(TAIL_OPEN);
     const [endA, endB] = rng.chance(0.5) ? [END_TAILS[0], END_TAILS[1]] : [END_TAILS[1], END_TAILS[0]];
-    const seq = rng.weighted([1, -1, 2], [4, 3, 2]);
-    const dev = rng.pick([2, 3]);
+    let seq = rng.weighted([1, -1, 2], [4, 3, 2]);
+    let dev = rng.pick([2, 3]);
     const hook = rng.pick(HOOKS);
     const hookTail = rng.pick(HOOK_TAILS);
     const hookTail2 = rng.chance(0.6) ? hookTail : HOOK_TAILS[1 - HOOK_TAILS.indexOf(hookTail)];
     const hookClose = rng.pick(HOOK_CLOSE);
-    const hSeq = rng.weighted([1, -1, 2], [5, 3, 2]);
+    let hSeq = rng.weighted([1, -1, 2], [5, 3, 2]);
+    // tessitura: sequences and the phrase-3 development never push a tune past TOP (TOP + 1 in the last chorus)
+    while (seq > 0 && topOf(call, vt, 'dorian', seq) > TOP) seq = seq === 2 ? 1 : -1;
+    while (dev > 0 && topOf(call, vt, 'dorian', dev + Math.max(0, seq)) > TOP) dev--;
+    while (hSeq > 0 && topOf(hook, ct, 'major', hSeq) > TOP) hSeq = hSeq === 2 ? 1 : -1;
+    let hSeqF = hSeq;
+    while (hSeqF > 0 && topOf(hook, ft, 'major', hSeqF) > TOP + 1) hSeqF = hSeqF === 2 ? 1 : -1;
     const preMel = rng.pick(PRE_MEL);
     const figA = rng.pick(BRASS_FIGS), figB = rng.pick(BRASS_FIGS), figC = rng.pick(BRASS_FIGS);
     const clavV = rng.pick(CLAV_V), clavC = rng.pick(CLAV_C);
@@ -380,7 +507,7 @@ export const track: MusicTrack = {
     const verse2Drop = rng.chance(0.75);
     const leadWave = rng.chance(0.55) ? 'square' : 'saw';
     const leadCut = leadWave === 'square' ? 1700 : 1500;
-    const leadLevel = leadWave === 'square' ? 1.2 : 2; // the filtered saw measures ~4.5 dB softer than the square
+    const leadLevel = leadWave === 'square' ? 0.9 : 1.5; // the filtered saw measures ~4.5 dB softer than the square
     const kickTune = rng.range(54, 60);
     const snareTone = rng.range(185, 200);
 
@@ -400,9 +527,14 @@ export const track: MusicTrack = {
       for (let st = 0; st < 16; st++) {
         const ch = s[st];
         if (ch === '-' || ch === undefined) continue;
+        if (ch === 'o') {
+          p.scratch.push({ step: st, vel: humVel(rng, 0.3 * vel, 0.04) });
+          continue;
+        }
         const v = slotAt(bi, st).clav;
-        const notes = ch === 'X' ? v : ch === 'x' ? v.slice(1) : [v[1]];
-        p.clav.push({ step: st, len: ch === 'o' ? 0.35 : ch === 'X' ? 1.1 : 0.85, notes, vel: humVel(rng, (ch === 'X' ? 0.62 : ch === 'x' ? 0.54 : 0.3) * vel, 0.04) });
+        // the dyad: the top two voices, or the outer ones when the top two are only a step apart
+        const notes = ch === 'X' ? v : v[2] - v[1] < 3 ? [v[0], v[2]] : v.slice(1);
+        p.clav.push({ step: st, len: ch === 'X' ? 1.1 : 0.85, notes, vel: humVel(rng, (ch === 'X' ? 0.62 : 0.54) * vel, 0.04) });
       }
     };
     const toneOf = (sym: string, c: Chord, root: number): number => {
@@ -430,8 +562,8 @@ export const track: MusicTrack = {
         } else if (sym === 'x') m = prev;
         else m = toneOf(sym, slot.chord, slot.root);
         prev = m;
-        const v = kind === 'T' ? 0.72 : kind === 'P' ? 0.66 : 0.3;
-        p.bass.push({ step: st, len: kind === 'x' ? 0.45 : len, midi: m, vel: humVel(rng, v * vel, 0.05), pop: kind === 'P' });
+        const v = kind === 'T' ? 0.72 : kind === 'P' ? 0.66 : 0.34;
+        p.bass.push({ step: st, len: kind === 'x' ? 0.3 : len, midi: m, vel: humVel(rng, v * vel, 0.05), pop: kind === 'P', dead: kind === 'x' });
       }
     };
     const bassBar = (bi: number, pat: readonly BN[], vel = 1, fill?: readonly BN[]) => {
@@ -468,8 +600,8 @@ export const track: MusicTrack = {
           case 'eighth': v = eighth ? (beat ? 0.3 : 0.25) : 0; break;
           case 'soft8': v = eighth ? (beat ? 0.22 : 0.18) : 0; break;
           case 'sixteenth':
-            v = beat ? 0.32 : eighth ? 0.27 : 0.15;
-            if (st === 14 && p.inSec % 2 === 1) (x = 0.11), (v = 0.28);
+            v = beat ? 0.34 : eighth ? 0.29 : 0.18;
+            if (st === 14 && p.inSec % 2 === 1) (x = 0.11), (v = 0.3);
             break;
           case 'chorus':
             v = beat ? 0.32 : eighth ? 0.27 : 0.15;
@@ -542,17 +674,21 @@ export const track: MusicTrack = {
         case 'verse': {
           const amt = s.n === 0 ? 0.55 : 1;
           const kick = s.n === 0 ? kickV1 : kickV2;
+          // verse 1's first phrase: the clav plays the call as a riff (the lead takes it over from bar 5); verse 2's
+          // second phrase goes to the brass section when there was no interlude, with lead licks in the gaps
+          const riff = s.n === 0;
+          const brassPh = s.n === 1 && !interlude ? 1 : -1;
           for (let i = 0; i < 16; i++) {
             const bi = b0 + i;
             const drop = s.n === 1 && verse2Drop && i < 4;
-            if (!drop) clavBar(bi, clavV, 1);
+            if (!drop && !(riff && i < 4)) clavBar(bi, clavV, 1);
             bassBar(bi, bassV, 1, i % 4 === 3 && i < 15 && rng.chance(0.45) ? rng.pick(BASS_FILLS) : undefined);
             drums(bi, { ...G_VERSE(kick), ghosts: drop ? [] : ghostsV, tamb: s.n === 1 && i >= 8 ? 'eighth' : 'none' });
             // second half of verse 2: a soft Rhodes bed joins
             if (s.n === 1 && i >= 8) {
               const p = plan[bi];
               for (const sl of p.slots) p.epiano.push({ step: sl.step, len: p.slots.length > 1 ? 7 : 10, notes: sl.ep, vel: 0.3 });
-              if (p.slots.length === 1) p.epiano.push({ step: 10, len: 5, notes: p.slots[0].ep, vel: 0.24 });
+              if (p.slots.length === 1 && i % 2 === 1) p.epiano.push({ step: 10, len: 5, notes: p.slots[0].ep, vel: 0.24 });
             }
             if (i % 4 === 3 && i < 15 && rng.chance(0.35)) fill(bi, 'short', 0.8);
           }
@@ -561,13 +697,28 @@ export const track: MusicTrack = {
             const pb = b0 + ph * 4;
             const up = ph === 2 ? dev : 0;
             const open = (ph + s.n) % 2 === 0;
-            place(ph === 0 && s.n === 0 ? call : vary(call, amt), pb, vt, 'dorian', 0.66, up);
-            place(open ? tailOpen : TAIL_LOW, pb + 1, vt, 'dorian', 0.64);
-            place(ph === 3 ? frag(call) : vary(call, amt), pb + 2, vt, 'dorian', 0.66, seq + up);
-            place(ph === 3 ? END_LEADIN : ph % 2 === 0 ? endB : endA, pb + 3, vt, 'dorian', 0.64);
-            if (s.n > 0 || ph > 0) brassFig(pb + 1, s.n > 0 && ph % 2 ? figC : figA, 0.54);
+            const to: To = riff && ph === 0 ? 'clav' : ph === brassPh ? 'brass' : 'lead';
+            const v0 = to === 'clav' ? 0.62 : to === 'brass' ? 0.58 : 0.66;
+            place(ph === 0 && s.n === 0 ? call : vary(call, amt), pb, vt, 'dorian', v0, up, to);
+            place(open ? tailOpen : TAIL_LOW, pb + 1, vt, 'dorian', v0 - 0.02, 0, to);
+            place(ph === 3 ? frag(call) : vary(call, amt), pb + 2, vt, 'dorian', v0, seq + up, to);
+            place(ph === 3 ? END_LEADIN : ph % 2 === 0 ? endB : endA, pb + 3, vt, 'dorian', v0 - 0.02, 0, to);
+            if (to === 'brass') {
+              place(fit(rng.pick(LICKS), vt, 'dorian'), pb + 1, vt, 'dorian', 0.54);
+              place(fit(rng.pick(LICKS), vt, 'dorian'), pb + 3, vt, 'dorian', 0.54);
+              continue;
+            }
+            if (s.n > 0 || ph > 0 || to === 'clav') brassFig(pb + 1, s.n > 0 && ph % 2 ? figC : figA, 0.54);
             if (ph < 3) brassFig(pb + 3, figB, 0.56);
           }
+          if (riff)
+            for (let i = 0; i < 4; i++) {
+              // ghost scratches around the riff keep the 16th motor going
+              const p = plan[b0 + i];
+              const busy = p.clav.filter((h) => h.line).map((h) => h.step);
+              for (const st of [1, 3, 6, 7, 9, 11, 13, 15])
+                if (!busy.some((x) => Math.abs(x - st) < 1.5) && rng.chance(0.4)) p.scratch.push({ step: st, vel: humVel(rng, 0.28, 0.04) });
+            }
           brassRun(last, 0.46);
           fill(last, pickFill());
           break;
@@ -593,6 +744,7 @@ export const track: MusicTrack = {
             p.kick = p.kick.filter((x) => x.step < 12);
             p.hat = p.hat.filter((x) => x.step < 12);
             p.clav = p.clav.filter((x) => x.step < 12);
+            p.scratch = p.scratch.filter((x) => x.step < 12);
             p.bass = p.bass.filter((x) => x.step < 12);
             p.snare.push({ step: 12, vel: 0.55 });
             p.kick.push({ step: 12, vel: 0.7 });
@@ -609,6 +761,7 @@ export const track: MusicTrack = {
         case 'final': {
           const fin = s.kind === 'final';
           const tonic = fin ? ft : ct;
+          const hs = fin ? hSeqF : hSeq;
           for (let i = 0; i < s.bars; i++) {
             const bi = b0 + i;
             const p = plan[bi];
@@ -628,17 +781,17 @@ export const track: MusicTrack = {
             const hv = brassLead ? 0.6 : 0.62;
             place(half === 0 && s.n === 0 && !fin ? hook : vary(hook, amt), hb, tonic, 'major', hv, 0, to);
             place(hookTail, hb + 1, tonic, 'major', hv - 0.02, 0, to);
-            place(vary(hook, amt), hb + 2, tonic, 'major', hv, hSeq, to);
+            place(vary(hook, amt), hb + 2, tonic, 'major', hv, hs, to);
             place(HOOK_UP, hb + 3, tonic, 'major', hv, 0, to);
             place(vary(hook, amt), hb + 4, tonic, 'major', hv, 0, to);
             place(hookTail2, hb + 5, tonic, 'major', hv - 0.02, 0, to);
-            place(vary(hook, amt), hb + 6, tonic, 'major', hv, hSeq, to);
+            place(vary(hook, amt), hb + 6, tonic, 'major', hv, hs, to);
             place(hookClose, hb + 7, tonic, 'major', hv, 0, to);
             plan[hb].crash = fin ? 0.3 : 0.28;
             if (!brassLead) plan[hb].brass.push({ step: 0, len: 2, notes: slotAt(hb, 0).brass, vel: 0.56 });
             if (brassLead) {
               // lead answers the brass
-              for (const k of [1, 3, 5]) place(rng.pick(LICKS), hb + k, tonic, 'major', 0.56);
+              for (const k of [1, 3, 5]) place(fit(rng.pick(LICKS), tonic, 'major'), hb + k, tonic, 'major', 0.56);
             } else {
               for (const k of [1, 3, 5]) brassFig(hb + k, k === 3 ? figB : figC, 0.55);
               brassFig(hb + 7, [[10, 1], [12, 2]], 0.57);
@@ -661,8 +814,8 @@ export const track: MusicTrack = {
           place(tailOpen, b0 + 1, vt, 'dorian', 0.56, 0, 'brass');
           place(vary(call, 0.6), b0 + 2, vt, 'dorian', 0.58, seq, 'brass');
           place(endA, b0 + 3, vt, 'dorian', 0.56, 0, 'brass');
-          place(rng.pick(LICKS), b0 + 1, vt, 'dorian', 0.54);
-          place(rng.pick(LICKS), b0 + 3, vt, 'dorian', 0.54);
+          place(fit(rng.pick(LICKS), vt, 'dorian'), b0 + 1, vt, 'dorian', 0.54);
+          place(fit(rng.pick(LICKS), vt, 'dorian'), b0 + 3, vt, 'dorian', 0.54);
           fill(last, pickFill());
           break;
         }
@@ -738,6 +891,41 @@ export const track: MusicTrack = {
       }
     }
 
+    // ---------------------------------------------------------------- comping under held tune notes
+    // a comping note a semitone / minor 9th from a tune note that sounds for an 8th or more is dropped from that chord
+    // (root over maj7, b3 over 9, b7 over 13...); a 3rd is kept but moved to the far side of the tune note instead
+    {
+      const tune: { a: number; b: number; m: number }[] = [];
+      plan.forEach((p, bi) => {
+        for (const e of p.lead) if (e.len >= 2) tune.push({ a: bi * 16 + e.step, b: bi * 16 + e.step + e.len, m: e.midi });
+        for (const h of [...p.brass, ...p.clav]) if (h.line && h.len >= 2) for (const m of h.notes) tune.push({ a: bi * 16 + h.step, b: bi * 16 + h.step + h.len, m });
+      });
+      const rub = (x: number, n: number) => Math.abs(x - n) % 12 === 1;
+      const thin = (bi: number, h: Hit, keep: number, tail: number) => {
+        if (h.line || h.notes.length < 2) return;
+        const a = bi * 16 + h.step, b = a + Math.max(1, h.len) + tail;
+        const over = tune.filter((x) => Math.min(b, x.b) - Math.max(a, x.a) >= 1);
+        if (!over.length) return;
+        const c = chordAbs(a);
+        let notes = [...h.notes];
+        for (const x of over)
+          for (const n of [...notes]) {
+            if (!rub(x.m, n)) continue;
+            const rel = pc(n - c.root);
+            const moved = pc(n - x.m) === 11 ? x.m + 11 : x.m - 11;
+            if ((rel === 3 || rel === 4) && !over.some((y) => rub(y.m, moved))) notes = notes.map((q) => (q === n ? moved : q));
+            else if (notes.length > keep) notes = notes.filter((q) => q !== n);
+          }
+        h.notes = [...new Set(notes)].sort((p, q) => p - q);
+      };
+      plan.forEach((p, bi) => {
+        for (const h of p.strings) thin(bi, h, 2, 1);
+        for (const h of p.epiano) thin(bi, h, 2, 1);
+        for (const h of p.brass) thin(bi, h, 2, 0);
+        for (const h of p.clav) thin(bi, h, 1, 0);
+      });
+    }
+
     // ---------------------------------------------------------------- dynamics, tempo, mix
     const dynamics = (s: Sec, x: number): number => {
       switch (s.kind) {
@@ -756,7 +944,7 @@ export const track: MusicTrack = {
       const r = bar - (total - 3);
       return r < 0 ? bpm : bpm * [0.97, 0.93, 0.9][r];
     };
-    let hatV: NoiseVoice | null = null, tambV: NoiseVoice | null = null;
+    let hatV: NoiseVoice | null = null, tambV: NoiseVoice | null = null, scratchV: NoiseVoice | null = null;
     const setup = (t0: number, player: { endTime: number }) => {
       inst.mix('kick', { level: 0.5, highpass: 32 });
       inst.mix('snare', { level: 0.76, reverb: 0.17 });
@@ -769,15 +957,22 @@ export const track: MusicTrack = {
       inst.mix('sweep', { level: 0.45 });
       inst.mix('bass', { level: 0.78, highpass: 38, reverb: 0.02 });
       inst.mix('slap', { level: 0.75, lowpass: 4200, reverb: 0.04 });
-      inst.mix('clav', { level: 1.05, pan: 0.36, lowpass: introType === 'clav' ? 1600 : 2400, reverb: 0.12, delay: 0.06 });
+      inst.mix('clav', { level: 1.05, pan: 0.36, highpass: 180, lowpass: introType === 'clav' ? 1600 : 2400, reverb: 0.12, delay: 0.06 });
       inst.mix('lead', { level: leadLevel, pan: 0.03, reverb: 0.22, delay: 0.12 });
       inst.mix('brass', { level: 1.1, pan: -0.3, reverb: 0.24 });
-      inst.mix('strings', { level: 1.5, lowpass: 5000, reverb: 0.4 });
-      inst.mix('epiano', { level: 0.8, pan: -0.3, reverb: 0.24, tremolo: 0.35 });
+      inst.mix('strings', { level: 1.5, highpass: 280, lowpass: 5000, reverb: 0.4 });
+      inst.mix('epiano', { level: 0.8, pan: -0.3, highpass: 200, reverb: 0.24, tremolo: 0.35 });
       inst.setDelay({ beats: 0.75, feedback: 0.24, tone: 2600 });
       const end = player.endTime;
-      hatV = new NoiseVoice(env, 'hat', inst.channel('hat').input, t0, end, 0.45, 0.3);
+      hatV = new NoiseVoice(env, 'hat', inst.channel('hat').input, t0, end, 0.7, 0.3);
       tambV = new NoiseVoice(env, 'shaker', inst.channel('shaker:tamb').input, t0, end, 0.3, 1.1);
+      // clav ghost scratches: a band-passed noise "chk" through the clav channel
+      const bp = env.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 1500;
+      bp.Q.value = 1.3;
+      bp.connect(inst.channel('clav').input);
+      scratchV = new NoiseVoice(env, 'clav', bp, t0, end, 1.2, 0.6);
     };
 
     // final chord: I 6/9 on the band, strings + Rhodes ring out
@@ -786,15 +981,15 @@ export const track: MusicTrack = {
       const sl = plan[b.bar].slots[0];
       const c = sl.chord;
       const sec = (beats: number) => b.beatsToSec(beats);
-      inst.brass(t + 0.005, voicing(c, { lo: 60, hi: 79, count: 4 }), 0.9, 0.56);
-      inst.strings(t, voicing(c, { lo: 55, hi: 79, count: 4 }), sec(8), 0.36, { attack: 0.25, release: 2.6, cutoff: 3200 });
-      voicing(c, { lo: 52, hi: 76, count: 5, rootless: false }).forEach((m, j) => inst.epiano(t + 0.03 + j * 0.035, m, sec(8), 0.42 + j * 0.015));
+      inst.brass(t + 0.005, grip(sl.brass, c, { lo: 60, hi: 79, count: 4 }), 0.9, 0.56);
+      inst.strings(t, sl.str, sec(8), 0.36, { attack: 0.25, release: 2.6, cutoff: 3200 });
+      sl.ep.forEach((m, j) => inst.epiano(t + 0.03 + j * 0.035, m, sec(8), 0.42 + j * 0.015));
       inst.clav(t, sl.clav[sl.clav.length - 1], 0.2, 0.5, { bright: 0.35 });
       inst.slap(t, sl.root, sec(5), 0.72);
       inst.kick(t, 0.72, { tune: kickTune, decay: 0.45, click: 0.3 });
       inst.cymbal(t + 0.01, 0.28, { decay: 3.5 });
-      const top = chordTones(c, 76, 88);
-      inst.lead(t + sec(1), top[Math.min(1, top.length - 1)] ?? ft + 14, sec(5), 0.44, { wave: leadWave, cutoff: leadCut, reso: 1.2, detune: 6, vibrato: 13 });
+      const top = chordTones(c, 76, TOP);
+      inst.lead(t + sec(1), top[Math.min(1, top.length - 1)] ?? ft + 12, sec(5), 0.44, { wave: leadWave, cutoff: leadCut, reso: 1.2, detune: 6, vibrato: 13 });
     };
 
     return song(env, {
@@ -808,6 +1003,7 @@ export const track: MusicTrack = {
       onStop(t, fade) {
         hatV?.stop(t + fade);
         tambV?.stop(t + fade);
+        scratchV?.stop(t + fade);
       },
       bar(b: BarInfo) {
         const p = plan[b.bar];
@@ -830,15 +1026,17 @@ export const track: MusicTrack = {
         }
         // --- brass
         for (const h of p.brass) inst.brass(humanize(rng, S(h.step), 5), h.notes, Math.max(0.12, L(h.len) * 0.8), h.vel * dyn);
-        // --- clav
+        // --- clav (+ ghost scratches)
         for (const h of p.clav) {
           const t = humanize(rng, S(h.step), 4);
           h.notes.forEach((m, j) => inst.clav(t + j * 0.004, m, Math.max(0.05, L(h.len)), h.vel * dyn * (j === h.notes.length - 1 ? 1.05 : 1), { bright: 0.35 }));
         }
+        for (const h of p.scratch) scratchV?.hit(humanize(rng, S(h.step), 4), h.vel * dyn, 0.0015, 0.03, 0, L(1));
         // --- bass
         for (const e of p.bass) {
           const t = humanize(rng, S(e.step), 4), d = Math.max(0.06, L(e.len) * 0.92), v = e.vel * Math.sqrt(dyn);
-          if (e.pop) inst.slap(t, e.midi, d, v);
+          if (e.dead) inst.slap(t, e.midi, 0.035, v);
+          else if (e.pop) inst.slap(t, e.midi, d, v);
           else inst.bass(t, e.midi, d, v);
         }
         // --- strings / Rhodes

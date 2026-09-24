@@ -284,7 +284,7 @@ const meanDeg = (ph: readonly MN[]): number => ph.reduce((s, n) => s + n[1], 0) 
  * into the 'pad:sub' channel (envelope 0 -> 0, honours cutoff, starts late instead of vanishing after a live stall,
  * and the lab's mute / solo as 'sub').
  */
-function subVoice(env: MusicEnv, t0: number, m: number, amp: number, lv0: number, attack: number, pts: readonly (readonly [number, number])[], tEnd: number, release: number): void {
+function subVoice(env: MusicEnv, keep: AudioScheduledSourceNode[], t0: number, m: number, amp: number, lv0: number, attack: number, pts: readonly (readonly [number, number])[], tEnd: number, release: number): void {
   const { ctx, inst } = env;
   if (!isFinite(t0) || t0 >= inst.cutoff) return;
   if (inst.mute.has('sub') || (inst.solo.size && !inst.solo.has('sub') && !inst.solo.has('pad:sub'))) return;
@@ -320,6 +320,7 @@ function subVoice(env: MusicEnv, t0: number, m: number, amp: number, lv0: number
   for (const o of [o1, o2]) {
     o.start(t);
     o.stop(end + 0.05);
+    keep.push(o);
   }
 }
 
@@ -327,7 +328,7 @@ function subVoice(env: MusicEnv, t0: number, m: number, amp: number, lv0: number
  * Local instrument: "air" - band-limited noise (4.5-10 kHz) with a slow breathing envelope, the breath layer of the
  * high pad (routed into 'pad:hi'). Very quiet: it only adds the top-octave shimmer the dark piano / pads lack.
  */
-function airSwell(env: MusicEnv, t: number, attack: number, hold: number, release: number, level: number, offset: number): void {
+function airSwell(env: MusicEnv, keep: AudioScheduledSourceNode[], t: number, attack: number, hold: number, release: number, level: number, offset: number): void {
   const { ctx, inst } = env;
   if (!isFinite(t) || t >= inst.cutoff || (env.live && t < ctx.currentTime)) return;
   if (inst.mute.has('air') || (inst.solo.size && !inst.solo.has('air'))) return;
@@ -346,6 +347,7 @@ function airSwell(env: MusicEnv, t: number, attack: number, hold: number, releas
   src.connect(hp).connect(lp).connect(g).connect(inst.channel('pad:hi').input);
   src.start(t, Math.min(offset, Math.max(0, env.noise.duration - 0.1)));
   src.stop(end + 0.05);
+  keep.push(src);
 }
 
 export const track: MusicTrack = {
@@ -861,6 +863,8 @@ export const track: MusicTrack = {
       return bt[i] + ((ab - i * 4) / 4) * (bt[i + 1] - bt[i]);
     };
     const AIR = 0.015;
+    /** the local sub / air sources: stopped with the song when the director cuts it short (they can be long) */
+    const custom: AudioScheduledSourceNode[] = [];
 
     return song(env, {
       bpm,
@@ -913,7 +917,7 @@ export const track: MusicTrack = {
           const t = tb(e.ab);
           const left = endT - t;
           const tEnd = e.toEnd ? t + Math.max(1, left * 0.45) : tb(e.end + 0.35);
-          subVoice(env, t, e.midi, e.vel * Math.sqrt(d), e.lv0, e.attack, e.pts.map(([ab, lv]) => [tb(ab), lv] as const), tEnd, e.toEnd ? left * 0.55 + 2 : e.release);
+          subVoice(env, custom, t, e.midi, e.vel * Math.sqrt(d), e.lv0, e.attack, e.pts.map(([ab, lv]) => [tb(ab), lv] as const), tEnd, e.toEnd ? left * 0.55 + 2 : e.release);
         }
         for (const e of p.lh) {
           const t = Math.max(lim, tb(e.ab) + e.dt);
@@ -926,9 +930,19 @@ export const track: MusicTrack = {
           const l = len(e.ab, e.beats);
           const fin = b.bar >= total - 4;
           const t = Math.max(tb(e.ab), now);
-          airSwell(env, t, l * 0.45, fin ? l * 0.2 : l * 0.3, fin ? Math.max(2, endT - t - l * 0.65) : l * 0.95, AIR * e.level * d, e.off);
+          airSwell(env, custom, t, l * 0.45, fin ? l * 0.2 : l * 0.3, fin ? Math.max(2, endT - t - l * 0.65) : l * 0.95, AIR * e.level * d, e.off);
         }
         for (const e of p.sweeps) inst.sweep(tb(e.ab), len(e.ab, e.dur), e.vel, { up: true, from: 380, to: 2600, q: 2.2 });
+      },
+      onStop(t, fadeSec) {
+        // the bus is faded to 0 by t + fadeSec; end the long sub / air sources right after instead of letting them run on
+        for (const src of custom.splice(0)) {
+          try {
+            src.stop(Math.max(t + fadeSec + 0.05, env.ctx.currentTime));
+          } catch {
+            /* already stopped */
+          }
+        }
       },
     });
   },
