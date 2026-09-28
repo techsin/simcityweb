@@ -121,9 +121,10 @@ const TRIM: Partial<Record<SoundName, number>> = {
   toggleOn: -1.8, toggleOff: -2.5, open: 0.3, close: 2.7, dialogOpen: 1, dialogClose: 3.3, flyout: -1.5,
   flyoutClose: -0.2, grab: -2.4, drop: -4.4, confirm: -4.1, cancel: -1.6, toolSelect: 0.4, toolOff: -0.3,
   rotate: 5.6, camRotate: 0.9, overlay: -1.9, overlayOff: -2.5, query: -1.9, pause: -2.4, speed1: 2.8,
-  speed2: 0.4, speed3: -0.5, speed: 0.4, save: -2.7, autosave: -3.1, shuffle: 3.3, stepDone: -1.7, whoosh: -0.1,
-  error: -4.6, zone: 10.8, dezone: 11, road: -2.2, rail: -0.5, power: 3.8, pipe: 0.3, bulldoze: 3.3, plop: -1.6,
-  terraform: -0.3, tree: 1.4, construct: 1.7, built: -3.1, cash: -6.9, notify: -5.7, news: -2.8, good: -5.9,
+  speed2: 0.4, speed3: -0.5, speed: 0.4, save: -2.7, autosave: -3.1, shuffle: 3.3, stepDone: -1.7, musicPlay: -2.5,
+  musicPause: -2.8, whoosh: -0.1,
+  error: -4.6, zone: 10.8, dezone: 11, road: -2, rail: -0.5, power: 3.8, pipe: 0.3, bulldoze: 3.3, plop: -1.6,
+  terraform: 0.7, tree: 4.6, construct: 1.7, built: -3.1, cash: -6.9, notify: -5.7, news: -2.8, good: -5.9,
   warning: 0.3, bad: -1.9, advisor: -5.2, coin: -4.8, cashLow: -9.6, bankrupt: 6.3, reward: -1.5, milestone: -1,
   found: -1.7, cityReady: -4.6, regionEnter: -1.1, alarm: -4.6, fire: 1.6, fireBell: -2.5, tornado: 0.4, quake: -6.3,
   meteor: -6.8,
@@ -494,8 +495,8 @@ const VOICES: Record<SoundName, Voice> = {
     const a = 0.9 + r() * 0.2;
     tone(e, d, 'sine', 115 * p * a, t, 0.16, 0.3, 46);
     tone(e, d, 'sine', 230 * p * a, t, 0.1, 0.14, 110);
-    tone(e, d, 'triangle', 560 * p * a, t, 0.06, 0.26, 320, 0.001);
-    noise(e, d, t, 0.09, 0.2, 'bandpass', 1050 * a, 620, 1.1, 0.002, r() * 1.5);
+    tone(e, d, 'triangle', 560 * p * a, t, 0.06, 0.22, 320, 0.001);
+    noise(e, d, t + 0.004, 0.09, 0.2, 'bandpass', 1050 * a, 620, 1.1, 0.002, r() * 1.5);
     noise(e, d, t, 0.2 + r() * 0.06, 0.16, 'lowpass', 1400 * a, 300, 0.7, 0.004, r() * 1.5);
     noise(e, d, t + 0.04 + r() * 0.03, 0.1, 0.06, 'bandpass', 2600 * a, 1400, 1.5, 0.004, r() * 1.5);
     if (r() > 0.5) noise(e, d, t + 0.09, 0.14, 0.025, 'highpass', 3000, undefined, 0.7, 0.03, r() * 1.5);
