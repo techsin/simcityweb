@@ -142,13 +142,25 @@ function onClick(e: MouseEvent): void {
   if (!el || optedOut(el) || isDisabled(el)) return;
   const before = a.playCount;
   const pan = panOf(e);
-  // decide after every handler of this click ran (and after checkbox 'change'): explicit sounds win
-  setTimeout(() => {
+  let decided = false;
+  const decide = () => {
+    if (decided) return;
+    decided = true;
+    window.removeEventListener('click', atEnd);
     const au = getAudio();
     if (!au || au.playCount !== before) return;
     const name = genericSound(el);
     if (name) au.play(name, { pan });
-  }, 0);
+  };
+  const atEnd = (ev: Event) => {
+    if (ev === e) decide();
+  };
+  // decide once every handler of this click ran: explicit sounds win. Buttons & co decide at the end of the click's
+  // own dispatch (window bubble phase), so a timer-driven sound (a sim event) landing before a deferred check can't
+  // swallow the click; inputs (a checkbox's 'change' handlers run after the click) and clicks whose propagation was
+  // stopped fall back to the next task
+  if (!(el instanceof HTMLInputElement)) window.addEventListener('click', atEnd);
+  setTimeout(decide, 0);
 }
 
 // ------------------------------------------------------------------ sliders

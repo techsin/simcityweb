@@ -40,7 +40,8 @@ export class RegionScreen {
   private hoverKey = '';
   private fileInput: HTMLInputElement;
   private onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && this.view.selectedTile && !document.querySelector('.modal-back')) {
+    // (!repeat: a held Esc that just closed a dialog must not also deselect the tile once the dialog is gone)
+    if (e.key === 'Escape' && !e.repeat && this.view.selectedTile && !document.querySelector('.modal-back')) {
       audio.play('close');
       this.selectTile(null);
     }

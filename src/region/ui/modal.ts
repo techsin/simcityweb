@@ -35,12 +35,13 @@ export class Modal {
   private closed = false;
   private keyHandler = (e: KeyboardEvent) => {
     if (openModals[openModals.length - 1] !== this) return;
+    // one press = one dialog: a held key auto-repeats, and the repeats would close / confirm the dialogs below too
     if (e.key === 'Escape' && this.opts.closable !== false) {
       e.stopPropagation();
-      this.close();
+      if (!e.repeat) this.close();
     } else if (e.key === 'Enter' && this.opts.onEnter && !(e.target instanceof HTMLTextAreaElement)) {
       e.preventDefault();
-      this.opts.onEnter();
+      if (!e.repeat) this.opts.onEnter();
     }
   };
 

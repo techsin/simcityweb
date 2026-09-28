@@ -131,7 +131,8 @@ export const TRAFFIC_MIN_CYCLE_MS = 1000;
 
 // ---------------------------------------------------------------------------------------------- scheduler
 /** headless: estimated ms of infra steps per sim day (at least one step always runs; step estimates ~ ms on a busy 4-core CI box) */
-export const INFRA_DAY_BUDGET = 2.6 + 0.15 /* WP3 share (P0-15) */ + 0.25 /* WP2 share (P0-15) */ + 0.15 /* WP8 share (P0-15) */;
+export const INFRA_DAY_BUDGET = 2.6 + 0.15 /* WP3 share (P0-15) */ + 0.25 /* WP2 share (P0-15) */ + 0.15 /* WP8 share (P0-15) */
+  + 0 /* WP7a share (PART B, max 0.1) */ + 0 /* WP7b share (PART B, max 0.2) */;
 /** headless: unused budget (next step did not fit) carried to the next day, at most this much */
 export const INFRA_DAY_CARRY = 0.6;
 /** with a live renderer: real ms of infra steps per frame (at least one step when due) */
@@ -563,6 +564,10 @@ export const EMERG_FILL_CELLS_COST = 1.5;
 export const EMERG_FILL_BLD_COST = 1.5;
 // §EMERGENCY end
 
-// ---------------------------------------------------------------------------------------------- §FACILITIES (owner WP7)
-// WP7: POLICE_CAP, justice (ARREST_K, SENTENCE_MONTHS, JAIL_BEDS), bus fleet, parking, park & ride, ferry, ramps ...
+// ---------------------------------------------------------------------------------------------- §FACILITIES (owner WP7a, docs/SIM_DEPTH_PART_B.md)
+// WP7a: POLICE_CAP, police need, justice (ARREST_K, SENTENCE_MONTHS, JAIL_BEDS, holding), staffing, airport / seaport use ...
 // §FACILITIES end
+
+// ---------------------------------------------------------------------------------------------- §TRANSPORT (owner WP7b, docs/SIM_DEPTH_PART_B.md)
+// WP7b: bus fleet / depots, parking, park & ride, ferries, ramps, trucks ...
+// §TRANSPORT end

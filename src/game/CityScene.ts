@@ -812,13 +812,14 @@ export class CityScene {
     }
     if (k === 'F1' || k === '?') {
       e.preventDefault();
-      this.panels.toggle('help');
+      // (a held F1 auto-repeats: it flipped the help panel open / closed with a sound each time)
+      if (!e.repeat) this.panels.toggle('help');
       return;
     }
     if (e.ctrlKey || e.metaKey) {
       if (k.toLowerCase() === 's') {
         e.preventDefault();
-        void this.save(false);
+        if (!e.repeat) void this.save(false);
       }
       return;
     }

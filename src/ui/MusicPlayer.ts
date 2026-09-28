@@ -154,6 +154,12 @@ export class MusicPlayer {
       meta.append(this.titleEl, this.moodEl);
       head.append(this.art, meta);
       this.bar = el('div', 'mpl-bar');
+      // a progress read-out, not a scrubber (the generative soundtrack can't seek)
+      this.bar.setAttribute('role', 'progressbar');
+      this.bar.setAttribute('aria-label', 'Track progress');
+      this.bar.setAttribute('aria-valuemin', '0');
+      this.bar.setAttribute('aria-valuemax', '100');
+      this.bar.title = 'Track progress';
       this.fill = el('i');
       this.bar.appendChild(this.fill);
       this.timeEl = el('div', 'mpl-time');
@@ -164,7 +170,8 @@ export class MusicPlayer {
       this.el.append(head, prog, ctrls);
       if (o.tracks) {
         this.list = el('div', 'mpl-list');
-        this.el.appendChild(this.list);
+        // column label: what the per-track switches mean (was only in their tooltips)
+        this.el.append(el('div', 'mpl-list-h', '<span>Tracks</span><span>In playlist</span>'), this.list);
       }
     }
     this.offs.push(this.audio.onChange(() => this.render()));
@@ -241,7 +248,7 @@ export class MusicPlayer {
     document.addEventListener('keydown', this.popKey, true);
     this.metaBtn?.setAttribute('aria-expanded', 'true');
     this.pop = el('div', 'mpl-pop');
-    this.pop.appendChild(el('div', 'mpl-pop-h', icon('music', 13) + '<span>Soundtrack</span>'));
+    this.pop.appendChild(el('div', 'mpl-pop-h', icon('music', 13) + '<span>Soundtrack</span><span class="mpl-pop-k">In playlist</span>'));
     this.list = el('div', 'mpl-list');
     this.pop.appendChild(this.list);
     this.el.appendChild(this.pop);
@@ -337,6 +344,7 @@ export class MusicPlayer {
     if (this.fill && this.timeEl) {
       const f = np && np.duration > 0 ? Math.min(1, np.elapsed / np.duration) : 0;
       this.fill.style.width = `${(f * 100).toFixed(2)}%`;
+      this.bar?.setAttribute('aria-valuenow', String(Math.round(f * 100)));
       const t = np ? `${fmtTime(np.elapsed)} / ${fmtTime(np.duration)}` : on ? '–:–– / –:––' : 'Paused';
       if (this.timeEl.textContent !== t) this.timeEl.textContent = t;
       const cnt = this.el.querySelector('.mpl-count');
