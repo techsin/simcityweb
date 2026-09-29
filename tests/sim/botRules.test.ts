@@ -114,6 +114,10 @@ describe('bot: facilities', () => {
     const u = b.blocks.find((o) => o.use === 'U' && !o.developed)!;
     expect(u).toBeTruthy();
     const ux = (u.x0 + u.x1) / 2, uz = (u.z0 + u.z1) / 2;
+    // the other planned utility blocks are taken: u is the whole reserve (1 + pop / 150k blocks)
+    for (const o of b.blocks) if (o.use === 'U' && o !== u) { b.buildBlockRoads(o); o.developed = true; }
+    expect(b.utilityReserve()).toBe(1);
+    expect(b.spareUtilityBlocks()).toBe(0);
     // a prison (or anything but power / water) never takes the land kept for utilities
     expect(b.placeNear('civ_jail', ux, uz, ['U'], true, 1, true)).toBeNull();
     expect(u.developed).toBe(false);
@@ -121,15 +125,18 @@ describe('bot: facilities', () => {
     // try only the 14 nearest, full or not — the reserved blocks of a grown city were never reached)
     const cx = b.line(b.cbx), cz = b.line(b.cbz);
     const dist = (o: typeof u) => Math.hypot((o.x0 + o.x1) / 2 - cx, (o.z0 + o.z1) / 2 - cz);
-    const cand = b.blocks.filter((o) => o.use === 'I' || o.use === 'X' || (o.use === 'U' && o !== u)).sort((p, q) => dist(p) - dist(q));
+    const cand = b.blocks.filter((o) => o.use === 'I' || o.use === 'X').sort((p, q) => dist(p) - dist(q));
     expect(cand.length).toBeGreaterThan(15);
     for (const o of cand.slice(0, 15)) {
       b.buildBlockRoads(o);
       o.developed = true;
       for (let z = o.z0; z < o.z1; z++) for (let x = o.x0; x < o.x1; x++) if (st.network[z * N + x] === Network.None) st.building[z * N + x] = 0x7fffff;
     }
-    const r = b.placeNear('util_water_treatment', cx, cz, ['U', 'I', 'X'], true, Infinity, true);
+    const r = b.placeNear('util_water_treatment', cx, cz, ['I', 'X'], true, Infinity, true);
     expect(r?.ok).toBe(true);
+    // and the reserve itself serves power / water (a reserved block touches the town: roads on its sides)
+    b.buildBlockRoads(u);
+    expect(b.placeNear('util_water_pump', ux, uz, ['U'], true, 1, true)?.ok).toBe(true);
     const plant = [...st.buildings.values()].find((o) => o.def === 'util_water_treatment')!;
     expect(lotTouchesRoad(st, plant.x, plant.z, plant.w, plant.d)).toBe(true);
   });

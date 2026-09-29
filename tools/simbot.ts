@@ -359,8 +359,9 @@ export class SimBot {
     const def = getDef(defId);
     if (!def) return null;
     const dist = (b: Block) => Math.hypot((b.x0 + b.x1) / 2 - nx, (b.z0 + b.z1) / 2 - nz);
-    // undeveloped utility blocks are the land reserveUtilityLand keeps for power and water: nothing else takes them
-    const utility = def.category === 'power' || def.category === 'water';
+    // undeveloped utility blocks are the land reserveUtilityLand keeps for power and water: anything else takes one
+    // only while more are left than the reserve
+    const utility = def.category === 'power' || def.category === 'water' || this.spareUtilityBlocks() > 0;
     const area = def.footprint[0] * def.footprint[1];
     // (only blocks with room for the lot count toward the 14 tried: in a grown city the nearest blocks are full, and a
     // window of full blocks left the reserved utility land unused for decades — 256×60 s7 ran dry from 2040)
@@ -677,10 +678,21 @@ export class SimBot {
    * blocks while undeveloped land remains (a treatment plant serves ~130k residents), taken from the undeveloped blocks
    * next to the town nearest the utility area; only power and water may use them (placeNear)
    */
+  /** undeveloped utility blocks the utility reserve can do without (non-utility placements may use those) */
+  spareUtilityBlocks(): number {
+    let n = 0;
+    for (const b of this.blocks) if (b.use === 'U' && !b.developed) n++;
+    return n - this.utilityReserve();
+  }
+  /** undeveloped utility blocks kept for power and water: 1 + pop / 150k (a treatment plant serves ~130k residents) */
+  utilityReserve(): number {
+    return 1 + Math.floor(this.st.stats.population / 150000);
+  }
+
   reserveUtilityLand(): void {
     const free = this.blocks.filter((b) => !b.developed);
     if (free.length > this.blocks.length * 0.3) return;
-    const want = 1 + Math.floor(this.st.stats.population / 150000);
+    const want = this.utilityReserve();
     let have = free.filter((b) => b.use === 'U').length;
     const cx = this.line(this.cbx) + 3 * GRID, cz = this.trunkZ;
     while (have < want) {
@@ -948,8 +960,10 @@ export class SimBot {
    * land. It must touch the developed area so its roads join the town's network.
    */
   private zoneLandfillNear(x: number, z: number, maxDist: number): boolean {
-    // (undeveloped utility blocks are reserved for power and water: reserveUtilityLand)
+    // (undeveloped utility blocks beyond the ones reserveUtilityLand keeps for power and water, before civic / park
+    // blocks, which sit among the homes)
     const penalty: Partial<Record<Use, number>> = { X: 0, I: 10, P: 40 };
+    if (this.spareUtilityBlocks() > 0) penalty.U = 6;
     let best: Block | undefined, bs = Infinity;
     for (const b of this.blocks) {
       const pen = penalty[b.use];
