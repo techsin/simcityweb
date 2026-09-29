@@ -128,7 +128,12 @@ describe('Phase 0 contract: stubs are neutral', () => {
     expect(unservedClusters(sim, 'elementary')).toEqual([]);
     // WP2 implemented: without roads a walk reaches only the 3-cell near field (7 x 7 around a 1x1 footprint)
     expect(reachCells(st, 4, 4, 1, 1, 10, 'walk', newReachScratch(st.cells))).toBe(49);
-    expect(facilityReport(sim, b.id)).toBeNull();
+    // WP7a implemented: every plopped facility reports (title, role, >= 1 line); staffing unknown (the population system
+    // never staffed it: b.hire undefined) counts as full; no use-factor entry = 1
+    const rep = facilityReport(sim, b.id)!;
+    expect(rep.title).toBe('School');
+    expect(rep.lines.length).toBeGreaterThan(0);
+    expect(facilityReport(sim, 99999)).toBeNull();
     expect(facilityOpFactor(st, b)).toBe(1);
     expect(facilityUseFactor(st, b)).toBe(1);
     // WP4 implemented: the venue table is filled; without the tourism system there is no venue / breakdown data
@@ -141,13 +146,14 @@ describe('Phase 0 contract: stubs are neutral', () => {
     expect(waterQualityAt(sim, 0)).toBe(1);
   });
 
-  it('justiceFactors reproduces the legacy jail rule', () => {
+  it('justiceFactors is a pure read of the persisted stats.justice (neutral by default; WP7a replaced the legacy jail rule)', () => {
     const st = newState(32);
-    st.stats.population = 20000;
-    expect(justiceFactors(st)).toEqual({ policeMul: 1, crimeMul: 1 });
     st.stats.population = 30000;
-    expect(justiceFactors(st).policeMul).toBe(0.75);
-    place(st, 'civ_jail', 10, 10);
+    expect(justiceFactors(st)).toEqual({ policeMul: 1, crimeMul: 1 });
+    st.stats.justice.policeMul = 0.79;
+    st.stats.justice.crimeMul = 1.1;
+    expect(justiceFactors(st)).toEqual({ policeMul: 0.79, crimeMul: 1.1 });
+    st.stats.justice.policeMul = NaN;
     expect(justiceFactors(st).policeMul).toBe(1);
   });
 

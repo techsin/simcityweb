@@ -8,10 +8,14 @@
  * pitched roof, plus the model's largest ground-level faces (lawns, parking, plazas, pools) copied verbatim so lots
  * keep their colour layout from above. Walls keep the model's dominant
  * surface (window pattern / glass tint / floor height), so the shared uber material still draws windows by day and
- * lit windows at night; walls without a window surface get a lit-window band (house windows) when the model has
- * windows, so night skylines keep sparkling. Trees / hedges on the lot become up to 4 foliage clusters (8-tri
- * diamonds sized and tinted like the foliage they replace), so parks and gardens stay green-textured from afar.
- * Typically 12-50 triangles instead of 300-6000.
+ * lit windows at night; walls without a window surface get a lit-window band (house windows; its area matches the
+ * model's window area) when the model has windows, so night skylines keep sparkling. Flat tops take the paint seen
+ * from above (the topmost up-facing surface of any kind: roof decks, gravel, roof gardens), not just the massing's.
+ * Trees / hedges on the lot become up to 4 foliage clusters (8-tri diamonds sized and tinted like the foliage they
+ * replace), so parks and gardens stay green-textured from afar. Low lots without a massing (rubble, yards) keep their
+ * top-view colour pattern as a coarse grid of flat tiles. The biggest emissive faces (signs, lamps, lit ground pools)
+ * and raised pools are copied verbatim, so the night city keeps its coloured specks.
+ * Typically 12-80 triangles instead of 300-6000.
  */
 import * as THREE from 'three';
 import { ModelBuilder, type Paint } from '../../../assets/ModelBuilder';
@@ -127,7 +131,68 @@ function hipRoof(mb: ModelBuilder, r: Rect, ye: number, yr: number, alongX: bool
  * towers, house + garage) becomes up to 3 stacked boxes fitted to its cross-sections, with a pitched roof on the
  * component that carries the model's sloped roof faces.
  */
-function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
+/** max emissive / water triangles copied into a proxy */
+const EMIS_MAX = 24;
+
+/**
+ * Top-view colour grid of a low lot (rubble, yards, depots without a building massing): the topmost up-facing face
+ * per grid cell, rows of similar cells merged into flat tiles at their height.
+ */
+function lotGrid(mb: ModelBuilder, up: Tri[]): void {
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const t of up) {
+    x0 = Math.min(x0, t.ax, t.bx, t.cx); x1 = Math.max(x1, t.ax, t.bx, t.cx);
+    z0 = Math.min(z0, t.az, t.bz, t.cz); z1 = Math.max(z1, t.az, t.bz, t.cz);
+  }
+  if (!(x1 > x0 && z1 > z0)) return;
+  const n = 6;
+  const cx = (x1 - x0) / n, cz = (z1 - z0) / n;
+  const hy = new Float32Array(n * n).fill(-Infinity);
+  const ti = new Int32Array(n * n).fill(-1);
+  // topmost face per cell, sampled at 3 x 3 points per cell (barycentric plane height)
+  for (let k = 0; k < up.length; k++) {
+    const t = up[k];
+    const d = (t.bz - t.cz) * (t.ax - t.cx) + (t.cx - t.bx) * (t.az - t.cz);
+    if (Math.abs(d) < 1e-9) continue;
+    const i0 = Math.max(0, Math.floor((Math.min(t.ax, t.bx, t.cx) - x0) / cx * 3)), i1 = Math.min(n * 3 - 1, Math.floor((Math.max(t.ax, t.bx, t.cx) - x0) / cx * 3));
+    const j0 = Math.max(0, Math.floor((Math.min(t.az, t.bz, t.cz) - z0) / cz * 3)), j1 = Math.min(n * 3 - 1, Math.floor((Math.max(t.az, t.bz, t.cz) - z0) / cz * 3));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const px = x0 + (i + 0.5) * cx / 3, pz = z0 + (j + 0.5) * cz / 3;
+      const w0 = ((t.bz - t.cz) * (px - t.cx) + (t.cx - t.bx) * (pz - t.cz)) / d;
+      const w1 = ((t.cz - t.az) * (px - t.cx) + (t.ax - t.cx) * (pz - t.cz)) / d;
+      const w2 = 1 - w0 - w1;
+      if (w0 < -0.02 || w1 < -0.02 || w2 < -0.02) continue;
+      const y = w0 * t.ay + w1 * t.by + w2 * t.cy;
+      const c = ((j / 3) | 0) * n + ((i / 3) | 0);
+      if (y > hy[c]) { hy[c] = y; ti[c] = k; }
+    }
+  }
+  for (let j = 0; j < n; j++) {
+    let i = 0;
+    while (i < n) {
+      const c = j * n + i;
+      if (ti[c] < 0) { i++; continue; }
+      const t = up[ti[c]];
+      let e = i + 1;
+      while (e < n) {
+        const c2 = j * n + e;
+        if (ti[c2] < 0) break;
+        const u = up[ti[c2]];
+        if (Math.abs(u.r - t.r) + Math.abs(u.g - t.g) + Math.abs(u.b - t.b) > 0.08 || Math.abs(hy[c2] - hy[c]) > 0.35 || u.type !== t.type) break;
+        e++;
+      }
+      let y = 0;
+      for (let q = i; q < e; q++) y = Math.max(y, hy[j * n + q]);
+      mb.paint({ color: new THREE.Color(t.r, t.g, t.b), surf: t.type, pattern: t.pattern, floor: t.floor });
+      const ax = x0 + i * cx, bx = x0 + e * cx, az = z0 + j * cz, bz = z0 + (j + 1) * cz;
+      mb.quad([ax, y + 0.02, bz], [bx, y + 0.02, bz], [bx, y + 0.02, az], [ax, y + 0.02, az]);
+      i = e;
+    }
+  }
+}
+
+/** @returns false when nothing solid was found (scattered low clutter only) */
+function buildMassing(mb: ModelBuilder, mass: Tri[], H: number, up: Tri[]): boolean {
   let bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity, yMin = 0;
   for (const t of mass) {
     bx0 = Math.min(bx0, t.ax, t.bx, t.cx); bx1 = Math.max(bx1, t.ax, t.bx, t.cx);
@@ -195,6 +260,7 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
     if (i > 0) stack.push(k - 1); if (i < nx - 1) stack.push(k + 1);
     if (j > 0) stack.push(k - nx); if (j < nz - 1) stack.push(k + nx);
   }
+  const filled = new Uint8Array(N);
   for (let pass = 0; pass < 2; pass++) for (let k = 0; k < N; k++) {
     if (hf[k] > -Infinity || reach[k]) continue;
     const i = k % nx, j = (k / nx) | 0;
@@ -204,7 +270,27 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
     if (i < nx - 1 && hf[k + 1] > m) { m = hf[k + 1]; tt = top[k + 1]; }
     if (j > 0 && hf[k - nx] > m) { m = hf[k - nx]; tt = top[k - nx]; }
     if (j < nz - 1 && hf[k + nx] > m) { m = hf[k + nx]; tt = top[k + nx]; }
-    if (m > -Infinity) { hf[k] = m; top[k] = tt; }
+    if (m > -Infinity) { hf[k] = m; top[k] = tt; filled[k] = 1; }
+  }
+  // top view of every up-facing surface (roof decks, gravel, roof gardens, skylights...): the flat tops' paint
+  const hfA = new Float32Array(N).fill(-Infinity);
+  const topA = new Int32Array(N).fill(-1);
+  for (let ti = 0; ti < up.length; ti++) {
+    const t = up[ti];
+    const i0 = Math.floor((Math.min(t.ax, t.bx, t.cx) - ox) / cs), i1 = Math.floor((Math.max(t.ax, t.bx, t.cx) - ox) / cs);
+    const j0 = Math.floor((Math.min(t.az, t.bz, t.cz) - oz) / cs), j1 = Math.floor((Math.max(t.az, t.bz, t.cz) - oz) / cs);
+    const d = (t.bz - t.cz) * (t.ax - t.cx) + (t.cx - t.bx) * (t.az - t.cz);
+    if (Math.abs(d) < 1e-9) continue;
+    for (let j = Math.max(0, j0); j <= Math.min(nz - 1, j1); j++) for (let i = Math.max(0, i0); i <= Math.min(nx - 1, i1); i++) {
+      const px = ox + (i + 0.5) * cs, pz = oz + (j + 0.5) * cs;
+      const w0 = ((t.bz - t.cz) * (px - t.cx) + (t.cx - t.bx) * (pz - t.cz)) / d;
+      const w1 = ((t.cz - t.az) * (px - t.cx) + (t.ax - t.cx) * (pz - t.cz)) / d;
+      const w2 = 1 - w0 - w1;
+      if (w0 < -0.02 || w1 < -0.02 || w2 < -0.02) continue;
+      const y = w0 * t.ay + w1 * t.by + w2 * t.cy;
+      const k = j * nx + i;
+      if (y > hfA[k]) { hfA[k] = y; topA[k] = ti; }
+    }
   }
   // pitched roof analysis (sloped, up-facing faces in the upper part)
   const sloped = mass.filter((t) => t.ny > 0.2 && t.ny < 0.97 && t.midY > H * 0.3);
@@ -228,8 +314,13 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
     for (const [y, a] of sl) { acc += a; if (acc >= tot * 0.15) { ye = y; break; } }
   }
   const sbArea = (sb.x1 - sb.x0) * (sb.z1 - sb.z0);
+  // footprint of everything at or above the eave: a small sloped feature on a big flat roof (a patina cap, a skylight
+  // ridge, a canopy) is not the roof (a hip roof over the whole top would repaint it in the feature's colour)
+  let upper = 0;
+  if (Number.isFinite(ye)) for (let k = 0; k < N; k++) if (hf[k] >= ye - 0.25) upper++;
+  const upperArea = upper * cs * cs;
   // the pitched roof must be the top of the massing (chimneys / vents / antennas may stick out a little)
-  const pitched = sloped.length > 0 && yr - ye > 0.5 && sbArea > 0 && slopedProj > sbArea * 0.45 && yr >= H - Math.max(1.5, 0.35 * (H - ye));
+  const pitched = sloped.length > 0 && yr - ye > 0.5 && sbArea > 0 && slopedProj > sbArea * 0.45 && yr >= H - Math.max(1.5, 0.35 * (H - ye)) && sbArea >= upperArea * 0.5;
   const y0 = Math.min(1.5, (pitched ? ye : H) * 0.4);
   // built cells + opening (erode, then dilate) to drop 1-2 cell wide structures
   const built = new Uint8Array(N);
@@ -278,10 +369,20 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
   }
   comps.sort((a, b) => b.length - a.length);
   const compTop = (c: number[]) => c.reduce((m, k) => Math.max(m, hf[k]), -Infinity);
+  // a LOW footprint that is mostly enclosed gaps (hole-filled cells) is a field of scattered clutter (rubble, debris
+  // piles, low wall rings): its boxes would turn the lot into a solid slab at the clutter's top, so the ground layer
+  // shows it instead (rubble: 5-37 % real cover; low buildings and hollow tall stacks are unaffected)
+  const solid = comps.filter((c) => {
+    if (compTop(c) >= 4) return true;
+    let real = 0;
+    for (const k of c) if (!filled[k]) real++;
+    return real >= c.length * 0.45;
+  });
   // up to 3 big footprints + up to 2 tall slender ones (smokestacks, bell towers, masts)
-  const big = comps.filter((c, i) => i < 3 && c.length >= Math.max(2, comps[0].length * 0.08));
-  const tall = comps.filter((c) => !big.includes(c) && compTop(c) >= Math.max(8, H * 0.45)).sort((a, b) => compTop(b) - compTop(a)).slice(0, 2);
+  const big = solid.filter((c, i) => i < 3 && c.length >= Math.max(2, solid[0].length * 0.08));
+  const tall = solid.filter((c) => !big.includes(c) && compTop(c) >= Math.max(8, H * 0.45)).sort((a, b) => compTop(b) - compTop(a)).slice(0, 2);
   const keep = [...big, ...tall];
+  if (!keep.length) return false;
   const allWalls = dominant(mass, (t) => Math.abs(t.ny) < 0.3);
   const fallbackWall: Paint = allWalls?.paint ?? { color: new THREE.Color(0.6, 0.6, 0.6), surf: Surf.Plain };
   const fallbackRoof: Paint = dominant(mass, (t) => t.ny > 0.9)?.paint ?? fallbackWall;
@@ -359,7 +460,8 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
       const isWin = wp.surf === Surf.WallWindows || wp.surf === Surf.GlassCurtain;
       const band = !isWin && w && w.win > 0.04 ? windowPaint(mass, inTier) : null;
       if (band && h > 1.2) {
-        const bh = THREE.MathUtils.clamp(w!.win * h * 1.6, 0.5, h * 0.45);
+        // band area = the model's window area (a taller band reads as a solid lit bar from afar at night)
+        const bh = THREE.MathUtils.clamp(w!.win * h, 0.4, h * 0.35);
         const bc = t.y0 + (h < 5 ? Math.min(h * 0.5, 1.7) : h * 0.5);
         const b0 = Math.max(t.y0 + 0.2, bc - bh / 2), b1 = Math.min(t.y1 - 0.2, bc + bh / 2);
         walls(mb, t, t.y0, b0, wp);
@@ -369,18 +471,19 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
         walls(mb, t, t.y0, t.y1, wp);
       }
       if (hasRoof && i === tiers.length - 1) continue;
-      // flat top: the paint seen from above on this tier's top (top-most triangles of its cells)
+      // flat top: the paint seen from above on this tier's top (the topmost up-facing surface of any kind in its cells:
+      // a roof deck or gravel between skylights must not turn the roof into glass)
       const counts = new Map<number, number>();
       for (const k of cells) {
-        if (top[k] < 0 || Math.abs(hf[k] - t.y1) > Math.max(1.5, h * 0.25)) continue;
+        if (topA[k] < 0 || Math.abs(hfA[k] - t.y1) > Math.max(1.5, h * 0.25)) continue;
         const ii = k % nx, jj = (k / nx) | 0;
         const cx = ox + (ii + 0.5) * cs, cz = oz + (jj + 0.5) * cs;
         if (cx < t.x0 || cx > t.x1 || cz < t.z0 || cz > t.z1) continue;
-        counts.set(top[k], (counts.get(top[k]) ?? 0) + 1);
+        counts.set(topA[k], (counts.get(topA[k]) ?? 0) + 1);
       }
       let rp: Paint | null = null;
       if (counts.size) {
-        const byPaint = dominant([...counts.keys()].map((ti) => ({ ...mass[ti], area: counts.get(ti)! })), (q) => q.ny > 0.02);
+        const byPaint = dominant([...counts.keys()].map((ti) => ({ ...up[ti], area: counts.get(ti)! })), () => true);
         rp = byPaint?.paint ?? null;
       }
       topFace(mb, t, t.y1, rp ?? fallbackRoof);
@@ -405,6 +508,7 @@ function buildMassing(mb: ModelBuilder, mass: Tri[], H: number): void {
       else hipRoof(mb, base, ye, yr, false, Math.max(base.z0, rz0), Math.min(base.z1, rz1), THREE.MathUtils.clamp((rx0 + rx1) / 2, base.x0, base.x1), roofP, wallP);
     }
   }
+  return true;
 }
 
 /** Build the proxy for a model geometry (non-indexed, attributes position / normal / color / surf). */
@@ -453,7 +557,15 @@ export function buildLodProxy(g: THREE.BufferGeometry): THREE.BufferGeometry | n
   const mass = tris.filter((t) => MASS.has(t.type) && t.area >= minA && !(t.ny > 0.9 && t.maxY < 0.45));
   let H = 0;
   for (const t of mass) if (t.maxY > H) H = t.maxY;
-  if (H > 0.6 && mass.length) buildMassing(mb, mass, H);
+  // every up-facing surface except lights and foliage (top views; trees on roofs / lots become foliage clusters)
+  const up = tris.filter((t) => t.ny > 0.3 && t.type !== Surf.Emissive && t.type !== Surf.Foliage);
+  if (!(H > 0.6 && mass.length && buildMassing(mb, mass, H, up))) {
+    // no massing (rubble, yards, depots): keep the lot's top-view colour pattern when the ground layer misses it
+    let upA = 0, kA = 0;
+    for (const t of up) upA += t.area * t.ny;
+    for (const t of ground.slice(0, kept)) kA += t.area;
+    if (up.length && kA < upA * 0.8) lotGrid(mb, up);
+  }
   // ---- foliage clusters (trees, hedges): grid-cluster the foliage triangles, keep the biggest few as diamonds
   let fArea = 0, tArea = 0;
   for (const t of tris) { tArea += t.area; if (t.type === Surf.Foliage && t.maxY > 0.5) fArea += t.area; }
@@ -490,17 +602,33 @@ export function buildLodProxy(g: THREE.BufferGeometry): THREE.BufferGeometry | n
       }
     }
   }
+  // ---- lights and raised water copied verbatim (signs, lamps, lit ground pools, rooftop pools): night specks
+  const glow = tris.filter((t) => t.type === Surf.Emissive || (t.type === Surf.Water && t.ny > 0.5 && t.maxY >= 0.45));
+  if (glow.length) {
+    glow.sort((a, b) => b.area - a.area);
+    for (let i = 0; i < Math.min(EMIS_MAX, glow.length); i++) {
+      const t = glow[i];
+      // (proxies stay small: at most ~180 triangles in all)
+      if (t.area < 0.02 || mb.triangleCount >= 180) break;
+      mb.paint({ color: new THREE.Color(t.r, t.g, t.b), surf: t.type, pattern: t.pattern, floor: t.floor });
+      mb.tri([t.ax, t.ay, t.az], [t.bx, t.by, t.bz], [t.cx, t.cy, t.cz]);
+    }
+  }
   if (mb.triangleCount === 0) return null;
   const out = mb.build();
   out.name = (g.name || 'model') + '#lod';
   return out;
 }
 
-/** cached proxy for a model geometry (null = no useful proxy: keep the full model) */
-export function lodProxyFor(key: string, g: THREE.BufferGeometry): THREE.BufferGeometry | null {
-  if (cache.has(key)) return cache.get(key)!;
-  // construction sites are mostly thin lattice (crane, scaffolding): a massing proxy would read as a solid block
-  if (key.startsWith('construction_site')) { cache.set(key, null); return null; }
+/** models that never get a proxy (construction sites are mostly thin lattice — crane, scaffolding — that a massing
+ *  proxy would turn into a solid block) */
+export function lodProxyExcluded(key: string): boolean {
+  return key.startsWith('construction_site');
+}
+
+/** proxy for a model geometry, or null when it is not worth one (build failed or not much cheaper than the model) */
+export function makeLodProxy(key: string, g: THREE.BufferGeometry): THREE.BufferGeometry | null {
+  if (lodProxyExcluded(key)) return null;
   let p: THREE.BufferGeometry | null = null;
   try {
     p = buildLodProxy(g);
@@ -510,6 +638,25 @@ export function lodProxyFor(key: string, g: THREE.BufferGeometry): THREE.BufferG
   }
   const full = g.getAttribute('position').count / 3;
   if (p && p.getAttribute('position').count / 3 > full * 0.5) p = null;
+  return p;
+}
+
+/** cached proxy for a model geometry (null = no useful proxy: keep the full model); built synchronously if needed */
+export function lodProxyFor(key: string, g: THREE.BufferGeometry): THREE.BufferGeometry | null {
+  if (cache.has(key)) return cache.get(key)!;
+  const p = makeLodProxy(key, g);
   cache.set(key, p);
   return p;
+}
+
+/** a cached proxy (undefined = not built yet) */
+export function cachedLodProxy(key: string): THREE.BufferGeometry | null | undefined {
+  return cache.get(key);
+}
+
+/** store a proxy built elsewhere (the LOD worker); the first one stored wins (builds are deterministic) */
+export function setCachedLodProxy(key: string, g: THREE.BufferGeometry | null): THREE.BufferGeometry | null {
+  if (cache.has(key)) return cache.get(key)!;
+  cache.set(key, g);
+  return g;
 }

@@ -7,19 +7,23 @@
  *
  * "Why doesn't it grow?" (with the sim-infra utilities layer): a monthly scan of the zoned tiles buildings can use
  * (growable lots + empty tiles facing a road) and of the plopped utilities explains power plants that are not wired to
- * the zones ('gridGap'), isolated plants, burnt plants ('plantBurnt'), thermal plants without cooling water when the
+ * the zones ('gridGap'), isolated plants, burnt plants ('plantBurnt' when no plant stands any more — judged from the
+ * plants, not the lagging supply stat — else 'plantBurntPart'), thermal plants without cooling water when the
  * capacity gets tight ('plantDry'), water facilities without a road / power
  * ('waterNoRoad' / 'waterNoPower'), dense zones off the pipe network ('waterGap'), zones without road access
- * ('noRoadAccess') and a city where nothing grows although zones are ready ('noDemand' / 'growthStalled').
+ * ('noRoadAccess'; zoneR / zoneC / zoneI name a family's roadless land instead of asking for more zones) and a city
+ * where nothing grows although zones are ready ('noDemand' / 'growthStalled'). Safety: fuel-burning plants (industrial
+ * accidents, WP8) in a city without a fire station ('plantNoFire') or beyond every station's reach ('plantFireReach').
  * Rules marked `confirm` read utilities results (which lag an edit by a few days) and only speak when the condition
  * already held at the previous monthly check.
+ * openAdvice(sim): the advice that holds right now (Advisors panel: open issues per advisor, highest priority first).
  *
  * Flavour headlines: a shuffle bag over HEADLINES (each line once per cycle; lines that don't fit the city's size,
  * season, climate or buildings wait in the bag), and no line again within HEADLINE_REPEAT_DAYS (2 in-game years).
  * Bag / schedule persist in state.systemData.advisors; they use one sim.rng draw per headline like the former pick.
  */
 import type { SimSystem, Simulation } from '../Simulation';
-import { BF, type Building, type CityState } from '../CityState';
+import { BF, RESP_NONE, type Building, type CityState } from '../CityState';
 import { DEV_TYPE_LABELS, DevType, Network, Zone, zoneDensity } from '../../core/types';
 import { type EconRuntime, econData, infraFlags } from './runtime';
 import { capHints } from './demand';
@@ -113,6 +117,9 @@ interface ZoneScan {
   /** zoned tiles in zone blocks without a single road-facing tile, first one */
   noAccess: number;
   noAccessAt: number;
+  /** the same per family (0 R, 1 C, 2 I) and the first tile of each (-1 = none) */
+  noAccessFam: [number, number, number];
+  noAccessFamAt: [number, number, number];
 }
 
 /** one pass over the zoned tiles (4-connected blocks flood-filled for road access) */
@@ -121,12 +128,17 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
   const zone = st.zone, net = st.network, bld = st.building, powered = st.powered, watered = st.watered;
   const r: ZoneScan = {
     zoned: 0, front: 0, unpowered: 0, unpoweredAt: -1, needWater: 0, unwatered: 0, unwateredAt: -1, ready: 0, readyZones: 0, readyAt: -1, noAccess: 0, noAccessAt: -1,
+    noAccessFam: [0, 0, 0], noAccessFamAt: [-1, -1, -1],
   };
   const isZ = (i: number) => zone[i] >= Zone.ResLow && zone[i] <= Zone.IndHigh;
+  // per block: tiles per family (0 R, 1 C, 2 I) and the first tile of each
+  const fam = [0, 0, 0], famAt = [-1, -1, -1];
   visited.fill(0);
   for (let s = 0; s < C; s++) {
     if (visited[s] || !isZ(s)) continue;
     let sp = 0, cells = 0, access = false;
+    fam[0] = fam[1] = fam[2] = 0;
+    famAt[0] = famAt[1] = famAt[2] = -1;
     stack[sp++] = s;
     visited[s] = 1;
     while (sp > 0) {
@@ -134,6 +146,9 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
       const x = i % N;
       cells++;
       const zn = zone[i];
+      const f = (1 << zn) & R_ZONES ? 0 : (1 << zn) & C_ZONES ? 1 : 2;
+      fam[f]++;
+      if (famAt[f] < 0) famAt[f] = i;
       const road = (x > 0 && isRoadN(net[i - 1])) || (x < N - 1 && isRoadN(net[i + 1])) || (i >= N && isRoadN(net[i - N])) || (i + N < C && isRoadN(net[i + N]));
       if (road) access = true;
       if (road || bld[i] >= 0) {
@@ -154,7 +169,14 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
       if (i + N < C && !visited[i + N] && isZ(i + N)) { visited[i + N] = 1; stack[sp++] = i + N; }
     }
     r.zoned += cells;
-    if (!access) { r.noAccess += cells; if (r.noAccessAt < 0) r.noAccessAt = s; }
+    if (!access) {
+      r.noAccess += cells;
+      if (r.noAccessAt < 0) r.noAccessAt = s;
+      for (let f = 0; f < 3; f++) {
+        r.noAccessFam[f] += fam[f];
+        if (r.noAccessFamAt[f] < 0) r.noAccessFamAt[f] = famAt[f];
+      }
+    }
   }
   return r;
 }
@@ -191,21 +213,30 @@ interface FacilityScan {
   /** other plopped buildings that use power but have none (and the first of them) */
   civicUnpowered: number;
   civicFirst: Building | null;
+  /** nominal MW of the standing plants (the utilities stats lag a fire / the bulldozer by up to a pass) */
+  liveMW: number;
+  /** standing plants that burn fuel or garbage (air pollution): industrial accidents can set them on fire (WP8) */
+  plantsRisky: Building[];
+  /** standing fire stations */
+  fireStations: number;
 }
 
 function scanFacilities(st: CityState, rt: EconRuntime): FacilityScan {
   const f: FacilityScan = {
     plants: [], plantsBurnt: [], plantsIsolated: [], burntMW: 0, plantsDry: [], waterOk: [], waterBurnt: [], waterNoRoad: [], waterNoPower: [],
-    civicUnpowered: 0, civicFirst: null,
+    civicUnpowered: 0, civicFirst: null, liveMW: 0, plantsRisky: [], fireStations: 0,
   };
   rt.ensureLists();
   for (const b of rt.plopped) {
     const def = rt.defOf(b);
     if (!def) continue;
     const burnt = (b.flags & BF.Burnt) !== 0;
+    if (!burnt && def.category === 'fire') f.fireStations++;
     if ((def.powerOut ?? 0) > 0) {
       if (burnt) { f.plantsBurnt.push(b); f.burntMW += def.powerOut!; continue; }
       f.plants.push(b);
+      f.liveMW += def.powerOut!;
+      if ((def.pollution?.air ?? 0) > 0) f.plantsRisky.push(b);
       const conducts = (i: number) => st.network[i] !== Network.None || st.powerLines[i] !== 0 || (st.building[i] >= 0 && st.building[i] !== b.id);
       if (!perimeterAny(st, b, conducts)) f.plantsIsolated.push(b);
       if (def.category === 'power' && (def.waterUse ?? 0) > 0 && !(b.flags & BF.Watered)) f.plantsDry.push(b);
@@ -372,7 +403,30 @@ function drawHeadline(a: AdvisorData, c: HeadlineCtx, day: number, seed: number)
   return null;
 }
 
-export function advisorsSystem(rt: EconRuntime): SimSystem {
+/** a piece of advice whose condition holds right now (Advisors panel) */
+export interface OpenAdvice {
+  id: string;
+  advisor: string;
+  text: string;
+  kind: Advice['kind'];
+  priority: number;
+  x?: number;
+  z?: number;
+}
+
+export interface AdvisorsSystem extends SimSystem {
+  /** advice whose condition holds right now, highest priority first (confirm rules once the monthly pass confirmed
+   *  them). Evaluated on demand between the monthly passes; reads the city only (no rng, no state writes) */
+  openAdvice(st: CityState): OpenAdvice[];
+}
+
+/** the open advice of `sim` (see AdvisorsSystem.openAdvice); [] without the advisors system */
+export function openAdvice(sim: Simulation): OpenAdvice[] {
+  const sys = sim.getSystem<AdvisorsSystem>('economy.advisors');
+  return typeof sys?.openAdvice === 'function' ? sys.openAdvice(sim.state) : [];
+}
+
+export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
   /** flood-fill scratch for the monthly zone scan (re-sized with the map) */
   let scratch = { visited: new Uint8Array(0), stack: new Int32Array(0) };
 
@@ -437,10 +491,13 @@ export function advisorsSystem(rt: EconRuntime): SimSystem {
     const cellAt = (i: number): { x?: number; z?: number } => (i >= 0 ? { x: i % N, z: (i / N) | 0 } : {});
     const burntWhat = (list: Building[], many: string) => (list.length > 1 ? `${list.length} ${many}` : `The ${nameOf(list[0])}`);
     const needPower = zoned > 30 || rt.totals.growables > 0;
-    if (s.powerSupply <= 0 && fac.plantsBurnt.length && (needPower || s.powerDemand > 0)) {
+    // the grid is dark: no plant delivers, or none stands any more (a fire or the bulldozer took the last one after the
+    // utilities' last pass, whose supply stat still counts it)
+    const dark = s.powerSupply <= 0 || fac.plants.length === 0;
+    if (dark && fac.plantsBurnt.length && (needPower || s.powerDemand > 0)) {
       out.push({ id: 'plantBurnt', cooldown: 60, priority: 10, kind: 'bad', advisor: 'utilities', ...at(fac.plantsBurnt[0]),
         text: `${burntWhat(fac.plantsBurnt, 'power plants')} burned down — the city has no power! Bulldoze the rubble and build a new power plant.` });
-    } else if (s.powerSupply <= 0 && needPower) {
+    } else if (dark && needPower) {
       if (util && fac.plants.length) {
         // plants stand but deliver nothing (ordinance shutdown, idle incinerator, …)
         out.push({ id: 'noPower', cooldown: 45, priority: 10, kind: 'bad', advisor: 'utilities', confirm: true, ...at(fac.plants[0]),
@@ -456,9 +513,10 @@ export function advisorsSystem(rt: EconRuntime): SimSystem {
       out.push({ id: 'powerTight', cooldown: 180, priority: 4, kind: 'warning', advisor: 'utilities',
         text: `The power grid is at ${Math.round((100 * s.powerDemand) / s.powerSupply)}% capacity. Plan a new plant soon.` });
     }
-    // a plant burned down while others still run (worth a word when it was ≥ 10 % of the capacity)
-    if (s.powerSupply > 0 && fac.burntMW > 0 && fac.burntMW >= 0.1 * (s.powerSupply + fac.burntMW)) {
-      out.push({ id: 'plantBurnt', cooldown: 90, priority: 7, kind: 'warning', advisor: 'utilities', ...at(fac.plantsBurnt[0]),
+    // a plant burned down while others still stand (worth a word when it was ≥ 10 % of the nominal capacity). Its own id:
+    // the back-off of this note must not hold back the "no power" alarm above once the last plant goes too
+    if (!dark && fac.burntMW > 0 && fac.burntMW >= 0.1 * (fac.liveMW + fac.burntMW)) {
+      out.push({ id: 'plantBurntPart', cooldown: 90, priority: 7, kind: 'warning', advisor: 'utilities', ...at(fac.plantsBurnt[0]),
         text: `${burntWhat(fac.plantsBurnt, 'power plants')} burned down (−${int(fac.burntMW)} MW). Bulldoze the rubble and replace it before the grid runs short.` });
     }
     // thermal plants without cooling water run at reduced output — only worth a word once the capacity gets tight
@@ -469,7 +527,7 @@ export function advisorsSystem(rt: EconRuntime): SimSystem {
     }
     // power exists but does not reach the zones (skipped in a brownout: then the farthest consumers are cut on purpose)
     const powerShort = s.powerDemand > s.powerSupply * 1.0001;
-    if (util && s.powerSupply > 0 && !powerShort && (scan.unpowered >= GAP_MIN_TILES || fac.civicUnpowered > 0)) {
+    if (util && !dark && !powerShort && (scan.unpowered >= GAP_MIN_TILES || fac.civicUnpowered > 0)) {
       const parts: string[] = [];
       if (scan.unpowered) parts.push(count(scan.unpowered, 'zoned tile'));
       if (fac.civicUnpowered) parts.push(count(fac.civicUnpowered, 'city building'));
@@ -551,6 +609,31 @@ export function advisorsSystem(rt: EconRuntime): SimSystem {
     if (pop > 3000 && inf.services && cov.fire < 0.2) {
       out.push({ id: 'noFire', cooldown: 180, priority: 5, kind: 'warning', advisor: 'safety', text: 'Most homes are outside fire station coverage. One spark and we lose whole blocks!' });
     }
+    // thermal plants and incinerators can have industrial accidents: unanswered, one sets the plant on fire, and a young
+    // city can lose its only plant. A fire station in reach answers it (WP8 auto-dispatch; st.respFire < 0 = beyond
+    // every station's reach, RESP_NONE while the layer knows no station — all 0 without the emergency system)
+    if (fac.plantsRisky.length) {
+      // fire trucks drive: a plant wired by power lines alone (no road beside it) can't be reached at all
+      const noRoad = (b: Building) => !perimeterAny(st, b, (i) => isRoadN(st.network[i]));
+      if (fac.fireStations === 0) {
+        const b = fac.plantsRisky[0], n = fac.plantsRisky.length;
+        const fix = n > 1 ? 'build a Fire Station within reach of them' : noRoad(b) ? 'build a Fire Station and a road to the plant' : 'build a Fire Station within reach of it';
+        out.push({ id: 'plantNoFire', cooldown: 120, priority: 7, kind: 'warning', advisor: 'safety', ...at(b),
+          text: `The city has no fire station. An industrial accident at ${n > 1 ? `one of your ${n} power plants` : `your ${nameOf(b)}`} would go unanswered and could burn it down — ${fix}.` });
+      } else {
+        const far = fac.plantsRisky.filter((b) => {
+          const v = st.respFire[(b.z + (b.d >> 1)) * N + b.x + (b.w >> 1)];
+          return v < 0 && v > RESP_NONE;
+        });
+        if (far.length) {
+          const b = far[0], n = far.length;
+          out.push({ id: 'plantFireReach', cooldown: 150, priority: 5, kind: 'warning', advisor: 'safety', confirm: true, ...at(b),
+            text: n === 1 && noRoad(b)
+              ? `Fire trucks can't reach your ${nameOf(b)}: no road runs beside it. An industrial accident there could burn it down — build a road to the plant.`
+              : `${n > 1 ? `${n} of your power plants are` : `Your ${nameOf(b)} is`} out of reach of your fire stations: an industrial accident there could burn ${n > 1 ? 'them' : 'it'} down. Build a Fire Station closer (see the Fire data view).` });
+        }
+      }
+    }
     if (pop > 3000 && inf.services && cov.police < 0.2) {
       out.push({ id: 'noPolice', cooldown: 180, priority: 4, kind: 'warning', advisor: 'safety', text: 'Most neighborhoods have no police coverage.' });
     }
@@ -574,14 +657,25 @@ export function advisorsSystem(rt: EconRuntime): SimSystem {
     }
     const famDemand = (a: number, b: number) => { let m = -1; for (let k = a; k <= b; k++) m = Math.max(m, s.demand[k]); return m; };
     const room = (zs: number[]) => zs.reduce((t, z) => t + rt.emptyFront[z], 0);
+    // no room to grow although the family has zoned land that no road reaches: say that, not "zone more land"
+    // ('noRoadAccess', a confirm rule, only speaks a month later)
+    const roadless = (f: 0 | 1 | 2, what: string, lead: string) => {
+      const n = scan.noAccessFam[f];
+      return n >= NO_ACCESS_MIN_TILES
+        ? { ...cellAt(scan.noAccessFamAt[f]), text: `${lead}, but ${count(n, `${what} tile`)} ${n === 1 ? 'has' : 'have'} no road access, so nothing can be built there — run roads into those zones.` }
+        : null;
+    };
     if (famDemand(0, 2) > 0.5 && room([Zone.ResLow, Zone.ResMed, Zone.ResHigh]) < 12) {
-      out.push({ id: 'zoneR', cooldown: 90, priority: 6, kind: 'info', advisor: 'planning', text: 'Residential demand is strong but there is no room to grow — zone more residential land along roads.' });
+      out.push({ id: 'zoneR', cooldown: 90, priority: 6, kind: 'info', advisor: 'planning',
+        ...(roadless(0, 'residential', 'Residential demand is strong') ?? { text: 'Residential demand is strong but there is no room to grow — zone more residential land along roads.' }) });
     }
     if (famDemand(3, 7) > 0.5 && room([Zone.ComLow, Zone.ComMed, Zone.ComHigh]) < 8) {
-      out.push({ id: 'zoneC', cooldown: 90, priority: 6, kind: 'info', advisor: 'planning', text: 'Businesses want to open shops and offices — zone more commercial land.' });
+      out.push({ id: 'zoneC', cooldown: 90, priority: 6, kind: 'info', advisor: 'planning',
+        ...(roadless(1, 'commercial', 'Businesses want to open shops and offices') ?? { text: 'Businesses want to open shops and offices — zone more commercial land.' }) });
     }
     if (famDemand(8, 11) > 0.5 && room([Zone.IndAg, Zone.IndMed, Zone.IndHigh]) < 8) {
-      out.push({ id: 'zoneI', cooldown: 90, priority: 6, kind: 'info', advisor: 'planning', text: 'Industry wants to move in — zone industrial land, ideally near highways or rail.' });
+      out.push({ id: 'zoneI', cooldown: 90, priority: 6, kind: 'info', advisor: 'planning',
+        ...(roadless(2, 'industrial', 'Industry wants to move in') ?? { text: 'Industry wants to move in — zone industrial land, ideally near highways or rail.' }) });
     }
     // sub-type specific: strong demand for a DevType whose zones have no room at all
     const SUBTYPE_HINT: [number, number[], string][] = [
@@ -640,6 +734,15 @@ export function advisorsSystem(rt: EconRuntime): SimSystem {
       rt.attach(sim);
       const d = econData(sim.state);
       if (!d.popMilestone) d.popMilestone = POP_MILESTONES.filter((m) => m <= sim.state.stats.population).pop() ?? 0;
+    },
+    openAdvice(st) {
+      if (!rt.sim || rt.sim.state !== st) return [];
+      // read-only: the confirm sightings of the last monthly pass (no advisorData() — it would create the record)
+      const seen = (st.systemData.advisors as AdvisorData | undefined)?.seen ?? {};
+      return gather(st)
+        .filter((a) => !a.confirm || (seen[a.id] !== undefined && st.day - seen[a.id] >= CONFIRM_DAYS))
+        .sort((a, b) => b.priority - a.priority)
+        .map(({ id, advisor, text, kind, priority, x, z }) => ({ id, advisor, text, kind, priority, x, z }));
     },
     daily(sim) {
       const st = sim.state;

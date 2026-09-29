@@ -3,8 +3,11 @@
  *
  * Band: clavinet 16th stabs (spread dyads / triads, band-passed noise "chk" ghost scratches), slap bass (thumb, octave
  * pops, dead-note plucks, chromatic approaches), a tight kit (punchy kick, crisp snare with ghost notes, 16th hats with
- * open-hat lifts, claps on 2 & 4 in the choruses, tambourine), synth-brass stabs / answers / fills, a warm synth lead
- * for the tunes, a string bed in the choruses and a Rhodes in the bridge.
+ * open-hat lifts, claps on 2 & 4 in the choruses, tambourine), synth-brass stabs / answers / fills, a funk "Moog
+ * whistle" lead for the tunes (a single triangle or sine voice: no unison, a wide late vibrato, slow portamento on the
+ * scoops), a string bed in the choruses and a gospel drawbar organ on a Leslie (the channel tremolo) for the colour
+ * sections: a slow-rotor bed in verse 2, fast-rotor stabs in the interlude, a bridge that spins the rotor up at its
+ * midpoint, and a final chord that brakes it while the swell pedal closes.
  *
  * Form (~98-102 bars at 101-107 bpm, ~3:40-4:05):
  *   intro 8 | verse 1 16 | pre-chorus 4 | chorus 1 8 | [interlude 4] | verse 2 16 | pre-chorus 4 | chorus 2 8 |
@@ -22,7 +25,8 @@
  * into it (sus4 -> 3, tonic -> 3rd of V) instead of clashing. The tunes never climb past A5 (Bb5 in the last chorus).
  * Every play re-rolls: key, tempo, 16th lilt, chorus key and final lift, verse vamp, pre-chorus / chorus / bridge /
  * build charts, the call, tails, hook and their sequences, all melodic variation (anticipations, stutters, drops,
- * scoops), clav / bass / kick / ghost-note patterns, brass figures, fills, intro type, interlude, pre-chorus stop.
+ * scoops), clav / bass / kick / ghost-note patterns, brass figures, fills, intro type, interlude, pre-chorus stop,
+ * the lead's voice (triangle / sine).
  * Everything is planned in create(); bar() only schedules.
  *
  * CPU: the 16th hats, the tambourine, the clav ghost scratches and the bass dead notes are persistent NoiseVoice
@@ -76,7 +80,7 @@ interface Slot {
   clav: number[];
   brass: number[];
   str: number[];
-  ep: number[];
+  org: number[];
 }
 interface Drum {
   step: number;
@@ -95,7 +99,13 @@ interface BarPlan {
   scratch: Drum[];
   brass: Hit[];
   strings: Hit[];
-  epiano: Hit[];
+  organ: Hit[];
+  /**
+   * organ bars: swell pedal (x the channel level; 0 = no organ in this bar) and Leslie rotor ('up' spins it up over the
+   * bar's last two beats); set on every organ bar so a bar the director skipped cannot leave a stale setting
+   */
+  pedal: number;
+  leslie: 'slow' | 'fast' | 'up' | null;
   kick: Drum[];
   snare: Drum[];
   clap: Drum[];
@@ -201,7 +211,7 @@ export const track: MusicTrack = {
   mood: 'Downtown funk: clav stabs, slap bass, synth brass, tight 16th groove',
   tags: ['day', 'busy'],
   bpm: 104,
-  gain: 1.16, // measured -18.2..-18.6 LUFS (avg -18.4) over seeds 1-6
+  gain: 1.212, // measured -18.15..-18.46 LUFS (mean -18.30) over seeds 1-3, true peak -1.4..-2.3 dBFS
   create(env) {
     const { inst, rng } = env;
     const bpm = rng.int(101, 107);
@@ -277,8 +287,8 @@ export const track: MusicTrack = {
         const cs = bars[i % bars.length];
         plan.push({
           sec: s, inSec: i,
-          slots: cs.map((c, k) => ({ step: (k * 16) / cs.length, chord: c, root: bassNote(c, 31), clav: [], brass: [], str: [], ep: [] })),
-          lead: [], bass: [], clav: [], scratch: [], brass: [], strings: [], epiano: [],
+          slots: cs.map((c, k) => ({ step: (k * 16) / cs.length, chord: c, root: bassNote(c, 31), clav: [], brass: [], str: [], org: [] })),
+          lead: [], bass: [], clav: [], scratch: [], brass: [], strings: [], organ: [], pedal: 0, leslie: null,
           kick: [], snare: [], clap: [], hat: [], tamb: [], rim: [], tom: [],
           crash: 0, swell: 0, sweep: null, final: false,
         });
@@ -288,13 +298,13 @@ export const track: MusicTrack = {
     // voicings: one voice-led chain per part through the whole song; spread grips, never a semitone cluster, and
     // (softly) no semitone / minor 9th against the other parts' notes on the same chord (strings first: the bed)
     {
-      let pc3: number[] | null = null, pb: number[] | null = null, ps: number[] | null = null, pe: number[] | null = null;
+      let pc3: number[] | null = null, pb: number[] | null = null, ps: number[] | null = null, po: number[] | null = null;
       for (const p of plan)
         for (const s of p.slots) {
           s.str = ps = grip(ps, s.chord, { lo: 62, hi: 81, count: 4 });
           s.brass = pb = grip(pb, s.chord, { lo: 60, hi: 79, count: 3, maxSpan: 14, against: s.str });
           s.clav = pc3 = grip(pc3, s.chord, { lo: 55, hi: 72, count: 3, maxSpan: 12, against: [...s.str, ...s.brass] });
-          s.ep = pe = grip(pe, s.chord, { lo: 55, hi: 72, count: 3, maxSpan: 14, against: [...s.str, ...s.brass] });
+          s.org = po = grip(po, s.chord, { lo: 55, hi: 72, count: 3, maxSpan: 14, against: [...s.str, ...s.brass] });
         }
     }
     const slotAt = (bi: number, step: number): Slot => {
@@ -517,9 +527,18 @@ export const track: MusicTrack = {
     const introType = rng.chance(0.5) ? 'clav' : 'drums';
     const preStop = rng.chance(0.5);
     const verse2Drop = rng.chance(0.75);
-    const leadWave = rng.chance(0.55) ? 'square' : 'saw';
-    const leadCut = leadWave === 'square' ? 1700 : 1500;
-    const leadLevel = leadWave === 'square' ? 0.9 : 1.5; // the filtered saw measures ~4.5 dB softer than the square
+    // the "Moog whistle": a triangle, or on some plays a pure sine (square / saw leads are neon_skyline's colour); one
+    // oscillator, the filter only softens the triangle's odd harmonics, a wide vibrato, 0.11 s portamento on the scoops.
+    // Levels match the old square / saw lead's stem (-21.8 LUFS, seed 1 chorus 1); the sine is 1.7 dB louder per level.
+    const leadWave = rng.chance(0.6) ? 'tri' : 'sine';
+    const WHISTLE = { wave: leadWave, cutoff: 3500, reso: 1, detune: 0 } as const;
+    const leadLevel = leadWave === 'tri' ? 1.68 : 1.38;
+    // organ: gospel drawbars (16' 5 1/3' 8' 4' 1'); the swell pedal scales the channel level per section; the Leslie is
+    // the channel tremolo (amplitude + pan) at one depth, its rotor rate in Hz for the slow (chorale) / fast speeds
+    const ORGAN_LEVEL = 0.6;
+    const PEDAL_BED = 0.6, PEDAL_INTER = 0.88, PEDAL_BRIDGE = 0.92, PEDAL_END = 1.25;
+    const LESLIE = 0.32;
+    const ROTOR = { slow: 0.8, fast: 6.3 } as const;
     const kickTune = rng.range(54, 60);
     const snareTone = rng.range(185, 200);
 
@@ -703,11 +722,12 @@ export const track: MusicTrack = {
             if (!drop && !(riff && i < 4)) clavBar(bi, clavV, 1);
             bassBar(bi, bassV, 1, i % 4 === 3 && i < 15 && rng.chance(0.45) ? rng.pick(BASS_FILLS) : undefined);
             drums(bi, { ...G_VERSE(kick), ghosts: drop ? [] : ghostsV, tamb: s.n === 1 && i >= 8 ? 'eighth' : 'none' });
-            // second half of verse 2: a soft Rhodes bed joins
+            // second half of verse 2: a soft organ bed joins (slow rotor, swell pedal half closed)
             if (s.n === 1 && i >= 8) {
               const p = plan[bi];
-              for (const sl of p.slots) p.epiano.push({ step: sl.step, len: p.slots.length > 1 ? 7 : 10, notes: sl.ep, vel: 0.3 });
-              if (p.slots.length === 1 && i % 2 === 1) p.epiano.push({ step: 10, len: 5, notes: p.slots[0].ep, vel: 0.24 });
+              (p.pedal = PEDAL_BED), (p.leslie = 'slow');
+              for (const sl of p.slots) p.organ.push({ step: sl.step, len: p.slots.length > 1 ? 7 : 10, notes: sl.org, vel: 0.3 });
+              if (p.slots.length === 1 && i % 2 === 1) p.organ.push({ step: 10, len: 5, notes: p.slots[0].org, vel: 0.24 });
             }
             if (i % 4 === 3 && i < 15 && rng.chance(0.35)) fill(bi, 'short', 0.8);
           }
@@ -826,7 +846,9 @@ export const track: MusicTrack = {
             bassBar(bi, bassV);
             drums(bi, { ...G_VERSE(kickV1), tamb: 'eighth' });
             const p = plan[bi];
-            if (i % 2 === 0) for (const sl of p.slots) p.epiano.push({ step: sl.step, len: 6, notes: sl.ep, vel: 0.38 });
+            // organ stabs on the fast rotor under the brass call
+            (p.pedal = PEDAL_INTER), (p.leslie = 'fast');
+            if (i % 2 === 0) for (const sl of p.slots) p.organ.push({ step: sl.step, len: 6, notes: sl.org, vel: 0.38 });
           }
           // the verse call goes to the brass, the lead answers
           place(call, b0, vt, 'dorian', 0.58, 0, 'brass');
@@ -846,9 +868,11 @@ export const track: MusicTrack = {
             bassBar(bi, i < 4 ? bassC : bassV, 0.95);
             if (i < 4) drums(bi, { kick: pattern('X-----x---x-----'), snare: false, ghosts: [], hat: 'soft8', clap: false, tamb: 'none', rim: true });
             else drums(bi, { ...G_VERSE(kickV1), ghosts: ghostsV.slice(0, 1), hat: 'eighth' }, 0.92);
+            // organ comping: slow rotor, spun up over the last two beats of bar 4 as the band and the strings come in
+            (p.pedal = PEDAL_BRIDGE), (p.leslie = i < 3 ? 'slow' : i === 3 ? 'up' : 'fast');
             for (const sl of p.slots) {
-              p.epiano.push({ step: sl.step, len: 6, notes: sl.ep, vel: 0.4 });
-              if (p.slots.length === 1 && i % 2 === 1) p.epiano.push({ step: rng.pick([6, 10]), len: 4, notes: sl.ep, vel: 0.34 });
+              p.organ.push({ step: sl.step, len: 6, notes: sl.org, vel: 0.4 });
+              if (p.slots.length === 1 && i % 2 === 1) p.organ.push({ step: rng.pick([6, 10]), len: 4, notes: sl.org, vel: 0.34 });
               if (i >= 4) p.strings.push({ step: sl.step, len: 16 / p.slots.length, notes: sl.str, vel: 0.27, att: 0.8 });
             }
           }
@@ -917,7 +941,7 @@ export const track: MusicTrack = {
     }
 
     // ---------------------------------------------------------------- nothing rubs a semitone / minor 9th
-    // Parts yield in order tune > strings > Rhodes > brass stabs > clav: a note a semitone / minor 9th from a note of a
+    // Parts yield in order tune > strings > organ > brass stabs > clav: a note a semitone / minor 9th from a note of a
     // higher part that overlaps it for a 16th or more (a tune note of an 8th or more) is dropped from its chord (root
     // over maj7, b3 over 9, b7 over 13...); a 3rd is kept but moved to the far side of that note instead.
     {
@@ -959,8 +983,8 @@ export const track: MusicTrack = {
         h.notes = [...new Set(notes)].sort((p, q) => p - q);
       };
       // [part, notes kept at least, 16ths of release counted, register a moved 3rd must stay in]
-      const parts: [keyof Pick<BarPlan, 'strings' | 'epiano' | 'brass' | 'clav'>, number, number, number, number][] = [
-        ['strings', 2, 1, 57, 84], ['epiano', 2, 1, 52, 76], ['brass', 2, 0, 55, 82], ['clav', 1, 0, 52, 76],
+      const parts: [keyof Pick<BarPlan, 'strings' | 'organ' | 'brass' | 'clav'>, number, number, number, number][] = [
+        ['strings', 2, 1, 57, 84], ['organ', 2, 1, 52, 76], ['brass', 2, 0, 55, 82], ['clav', 1, 0, 52, 76],
       ];
       for (const [part, keep, tail, lo, hi] of parts) {
         plan.forEach((p, bi) => p[part].forEach((h) => thin(bi, h, keep, tail, lo, hi)));
@@ -999,6 +1023,8 @@ export const track: MusicTrack = {
       return r < 0 ? bpm : bpm * [0.97, 0.93, 0.9][r];
     };
     let hatV: NoiseVoice | null = null, tambV: NoiseVoice | null = null, scratchV: NoiseVoice | null = null, deadV: NoiseVoice | null = null;
+    // organ swell pedal / rotor currently applied on the channel (setup: pedal 1, slow rotor)
+    let pedalNow = 1, rotorNow: 'slow' | 'fast' = 'slow';
     const setup = (t0: number, player: { endTime: number }) => {
       inst.mix('kick', { level: 0.42, highpass: 32 });
       inst.mix('snare', { level: 0.76, reverb: 0.17 });
@@ -1009,13 +1035,13 @@ export const track: MusicTrack = {
       inst.mix('shaker:tamb', { level: 0.42, pan: -0.4, lowpass: 11000 });
       inst.mix('cymbal', { level: 0.5 });
       inst.mix('sweep', { level: 0.45 });
-      inst.mix('bass', { level: 0.66, highpass: 38, reverb: 0.02 });
+      inst.mix('bass', { level: 0.56, highpass: 38, reverb: 0.02 });
       inst.mix('slap', { level: 0.66, lowpass: 4200, reverb: 0.04 });
       inst.mix('clav', { level: 0.95, pan: 0.36, highpass: 180, lowpass: introType === 'clav' ? 1600 : 2400, reverb: 0.12, delay: 0.06 });
       inst.mix('lead', { level: leadLevel, pan: 0.03, reverb: 0.22, delay: 0.12 });
       inst.mix('brass', { level: 1.1, pan: -0.3, reverb: 0.24 });
       inst.mix('strings', { level: 1.5, highpass: 280, lowpass: 5000, reverb: 0.4 });
-      inst.mix('epiano', { level: 0.8, pan: -0.3, highpass: 200, reverb: 0.24, tremolo: 0.35 });
+      inst.mix('organ', { level: ORGAN_LEVEL, pan: -0.25, highpass: 140, lowpass: 6500, reverb: 0.26, tremolo: LESLIE, tremoloRate: ROTOR.slow });
       inst.setDelay({ beats: 0.75, feedback: 0.24, tone: 2600 });
       const end = player.endTime;
       hatV = new NoiseVoice(env, 'hat', inst.channel('hat').input, t0, end, 0.7, 0.3);
@@ -1036,7 +1062,22 @@ export const track: MusicTrack = {
       deadV = new NoiseVoice(env, 'slap', dp, t0, end, 7.5, 1.5);
     };
 
-    // final chord: I 6/9 on the band, strings + Rhodes ring out
+    /**
+     * Leslie rotor: 'slow' / 'fast' switch it at t (the organ is silent there); 'up' / 'down' ramp the speed over `span`
+     * seconds in small steps (a real horn takes about a second to spin up or brake). Only the rate is automated (never
+     * the depth, which would re-set the channel level under a swell-pedal fade).
+     */
+    const rotor = (mode: 'slow' | 'fast' | 'up' | 'down', t: number, span = 0) => {
+      if (mode === 'slow' || mode === 'fast') {
+        inst.mix('organ', { tremoloRate: ROTOR[mode] }, t);
+        return;
+      }
+      const r0 = mode === 'up' ? ROTOR.slow : ROTOR.fast, r1 = mode === 'up' ? ROTOR.fast : ROTOR.slow;
+      for (let k = 1; k <= 8; k++) inst.mix('organ', { tremoloRate: r0 * Math.pow(r1 / r0, k / 8) }, t + (span * (k - 1)) / 8);
+    };
+
+    // final chord: I 6/9 on the band; the organ holds it on the fast rotor, then brakes the Leslie and closes the swell
+    // pedal (about -24 dB) while the strings ring out
     const ending = (b: BarInfo) => {
       const t = b.t;
       const sl = plan[b.bar].slots[0];
@@ -1044,13 +1085,16 @@ export const track: MusicTrack = {
       const sec = (beats: number) => b.beatsToSec(beats);
       inst.brass(t + 0.005, grip(sl.brass, c, { lo: 60, hi: 79, count: 4 }), 0.9, 0.56);
       inst.strings(t, sl.str, sec(8), 0.36, { attack: 0.25, release: 2.6, cutoff: 3200 });
-      grip(sl.ep, c, { lo: 55, hi: 74, count: 4 }).forEach((m, j) => inst.epiano(t + 0.03 + j * 0.035, m, sec(8), 0.42 + j * 0.015));
+      inst.mix('organ', { level: ORGAN_LEVEL * PEDAL_END, tremoloRate: ROTOR.fast }, t - sec(1));
+      inst.organ(t + 0.02, grip(sl.org, c, { lo: 55, hi: 74, count: 4 }), sec(7), 0.5, { drawbars: 'gospel' });
+      rotor('down', t + sec(1.5), sec(3));
+      for (let k = 1; k <= 20; k++) inst.mix('organ', { level: ORGAN_LEVEL * PEDAL_END * Math.pow(10, (-1.2 * k) / 20) }, t + sec(2) + (sec(5) * (k - 1)) / 20);
       inst.clav(t, sl.clav[sl.clav.length - 1], 0.2, 0.5, { bright: 0.35 });
       inst.slap(t, sl.root, sec(5), 0.72);
       inst.kick(t, 0.72, { tune: kickTune, decay: 0.45, click: 0.3 });
       inst.cymbal(t + 0.01, 0.28, { decay: 3.5 });
       const top = chordTones(c, 76, TOP);
-      inst.lead(t + sec(1), top[Math.min(1, top.length - 1)] ?? ft + 12, sec(5), 0.44, { wave: leadWave, cutoff: leadCut, reso: 1.2, detune: 6, vibrato: 13 });
+      inst.lead(t + sec(1), top[Math.min(1, top.length - 1)] ?? ft + 12, sec(5), 0.44, { ...WHISTLE, vibrato: 22 });
     };
 
     return song(env, {
@@ -1084,7 +1128,7 @@ export const track: MusicTrack = {
         // --- lead
         for (const e of p.lead) {
           const d = Math.max(0.1, L(e.len) * 0.9);
-          inst.lead(humanize(rng, S(e.step), 6) + 0.004, e.midi, d, e.vel * dyn, { wave: leadWave, cutoff: leadCut, reso: 1.3, detune: d > 0.4 ? 6 : 0, vibrato: d > 0.45 ? 11 : 0, glideFrom: e.glide, glideTime: 0.07 });
+          inst.lead(humanize(rng, S(e.step), 6) + 0.004, e.midi, d, e.vel * dyn, { ...WHISTLE, vibrato: d > 0.45 ? (d > 0.9 ? 22 : 19) : 0, glideFrom: e.glide, glideTime: 0.11 });
         }
         // --- brass
         for (const h of p.brass) inst.brass(humanize(rng, S(h.step), 5), h.notes, Math.max(0.12, L(h.len) * 0.8), h.vel * dyn);
@@ -1101,12 +1145,16 @@ export const track: MusicTrack = {
           else if (e.pop) inst.slap(t, e.midi, d, v);
           else inst.bass(t, e.midi, d, v);
         }
-        // --- strings / Rhodes
+        // --- strings / organ (a new swell-pedal / rotor setting lands a beat ahead, while the organ is still silent; the
+        // spin-up rides the last two beats of its bar)
         for (const h of p.strings) inst.strings(S(h.step), h.notes, L(h.len), h.vel * dyn, { attack: h.att ?? 0.35, release: 0.9, cutoff: 3600 });
-        for (const h of p.epiano) {
-          const t = humanize(rng, S(h.step), 6);
-          h.notes.forEach((m, j) => inst.epiano(t + j * 0.012, m, L(h.len), h.vel * dyn));
+        if (p.pedal > 0) {
+          if (p.pedal !== pedalNow) inst.mix('organ', { level: ORGAN_LEVEL * (pedalNow = p.pedal) }, b.t - b.beatSec);
+          if (p.leslie === 'up') {
+            if (rotorNow !== 'fast') rotor('up', b.at(2), b.beatsToSec(2)), (rotorNow = 'fast');
+          } else if (p.leslie && p.leslie !== rotorNow) rotor((rotorNow = p.leslie), b.t - b.beatSec);
         }
+        for (const h of p.organ) inst.organ(humanize(rng, S(h.step), 6), h.notes, L(h.len), h.vel * dyn, { drawbars: 'gospel' });
         // --- drums
         const dd = Math.sqrt(dyn);
         for (const d of p.kick) inst.kick(humanize(rng, S(d.step), 3), d.vel * dd, { tune: kickTune, decay: 0.3, click: d.vel >= 0.7 ? 0.4 : 0 });

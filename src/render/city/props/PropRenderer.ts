@@ -6,8 +6,14 @@
  * Culling / LOD: per-pass draw lists (main view + shadow cascade 0; street / median trees also cascade 1, everything
  * else is thinner than a far-cascade texel). Instances sit in one of three tile sets per map tile (small hardware /
  * trees / pylons) so the batch skips whole classes per tile: hardware in the far cascade, small props of tiles beyond
- * `lodDistance` (disabled tiles, no per-instance work). Small props use a per-tile distance LOD: full model within
- * `lodFull`, a ~16-triangle proxy (propLod.ts) up to `lodDistance`, hidden beyond. Pylons always draw the full model.
+ * `lodDistance` (disabled tiles, no per-instance work). Small props switch per instance: full model within `lodFull`,
+ * a ~16-triangle proxy (propLod.ts) beyond (6% hysteresis; each prop is re-evaluated only when the camera travelled
+ * far enough to carry it across the switch distance), and around `lodDistance` they thin out one by one (each prop
+ * vanishes at its own hashed distance in 100-135% of lodDistance (whole tiles used to switch at
+ * lodDistance from their nearest point: props up to a tile beyond it stayed), in the vertex shader, shadows alike), so a tile is
+ * only disabled once all of its props are gone: no tile-sized bursts. Distances use the classic prop metric
+ * sqrt(dx^2 + dz^2 + 0.8 camY^2) (camera height weighted down), per prop instead of per tile. Pylons (own batch, a child of the props batch mesh)
+ * always draw the full model.
  */
 import * as THREE from 'three';
 import { getModelGeometry, hasModel } from '../../../assets/registry';
@@ -31,6 +37,8 @@ function hash01(x: number, z: number): number {
 
 interface Group {
   ids: number[];
+  /** pylon instances (in PropRenderer.pylons) */
+  big: number[];
   tiles: number[];
   pools: PoolItem[];
 }
@@ -86,6 +94,33 @@ export function propGeometry(id: string, variant: number): THREE.BufferGeometry 
   }
   return getModelGeometry(id, variant);
 }
+
+/** per-instance distance thinning of small props (vertex shader, main + depth): each prop vanishes at its own hashed
+ *  distance in [uPropFade.x, uPropFade.y] (prop metric, see the file comment; pylons live in their own batch and never
+ *  thin) */
+const propFadeU = { uPropCam: { value: new THREE.Vector3() }, uPropFade: { value: new THREE.Vector2(1e9, 1e9) } };
+function injectPropFade(shader: THREE.WebGLProgramParametersWithUniforms): void {
+  shader.uniforms.uPropCam = propFadeU.uPropCam;
+  shader.uniforms.uPropFade = propFadeU.uPropFade;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nuniform vec3 uPropCam;\nuniform vec2 uPropFade;')
+    .replace('#include <project_vertex>', `#include <project_vertex>
+#ifdef USE_BATCHING
+  {
+    vec3 _pp = (modelMatrix * vec4(batchingMatrix[3].xyz, 1.0)).xyz;
+    // stable per-prop random from its (cell-scale) position
+    vec2 _pc = floor(_pp.xz * 4.0);
+    float _ph = fract(sin(dot(mod(_pc, 4099.0), vec2(12.9898, 78.233))) * 43758.5453);
+    vec3 _pd = vec3(_pp.x - uPropCam.x, uPropCam.y * 0.894427, _pp.z - uPropCam.z);
+    if (length(_pd) > mix(uPropFade.x, uPropFade.y, _ph)) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+  }
+#endif`);
+}
+
+/** LOD schedule of the per-instance proxy switch: camera travel (m) per bucket and ring size (see BuildingRenderer) */
+const PLOD_BUCKETS = 4096;
+/** camera travel in one frame that counts as a jump (every due prop is evaluated at once then) */
+const PLOD_SLICE = 6000;
 
 const POOL_VERT = /* glsl */ `
 attribute vec3 poolColor;
@@ -145,18 +180,32 @@ void main() {
 
 export class PropRenderer {
   readonly batch: DynamicBatch;
+  /** power pylons: plain city material, no distance LOD / thinning (child of batch.mesh) */
+  readonly pylons: DynamicBatch;
   readonly pools: THREE.InstancedMesh;
   readonly glows: THREE.Mesh;
   private glowGeo: THREE.InstancedBufferGeometry;
   private glowCap = 4096;
   private groups = new Map<string, Group>();
-  private tileIds: Set<number>[];
-  /** big props (pylons) ignore the distance LOD */
-  private tileBig: Set<number>[];
-  /** per tile LOD state of small props: 0 hidden, 1 proxy, 2 full */
+
+  /** per tile state of small props: 1 drawn (per-instance LOD / thinning), 0 disabled (all beyond lodDistance) */
   private near: Uint8Array;
-  /** geometry state (1 proxy, 2 full) last applied to a tile's small props (a hidden tile keeps its geometries) */
-  private applied: Uint8Array;
+  /** per instance (batch id): proxy-switch state (2 full, 1 proxy, 0 none: no proxy / pylon / removed), position,
+   *  full / proxy geometry ids and LOD schedule bucket (-1 queued now, -2 removed) */
+  private ist = new Uint8Array(0);
+  private ipos = new Float32Array(0);
+  private igeo = new Int32Array(0);
+  private idue = new Int32Array(0);
+  private lodTravel = 0;
+  private lodPos = new THREE.Vector3(NaN, NaN, NaN);
+  private lodAt = 0;
+  private lodBuckets: number[][] = Array.from({ length: PLOD_BUCKETS }, () => []);
+  private lodSpare: number[] = [];
+  private lodNow: number[] = [];
+  private lodNowSpare: number[] = [];
+  private lodFullAt = -1;
+  /** props evaluated by the proxy schedule (stats) */
+  lodEvals = 0;
   /** map tiles (culler.tiles^2); batch tile id = tile + T * class (0 hardware, 1 trees, 2 pylons) */
   private T: number;
   /** small props (street trees, lights, signals) are hidden beyond this camera distance (m) */
@@ -166,8 +215,6 @@ export class PropRenderer {
   /** full geometry id -> proxy geometry id (same id when the model has no proxy) */
   private lodMap = new Map<number, number>();
   /** instance id -> [full geometry id, proxy geometry id] */
-  private idGeo = new Map<number, [number, number]>();
-  private idTile = new Map<number, number>();
   private poolsDirty = true;
   private poolCap = 4096;
   private m4 = new THREE.Matrix4();
@@ -176,23 +223,37 @@ export class PropRenderer {
   private s = new THREE.Vector3();
   private up = new THREE.Vector3(0, 1, 0);
   private poolMat: THREE.ShaderMaterial;
+  private propMat: THREE.MeshStandardMaterial;
   poolCount = 0;
   /** seasonal street / median trees: instance id -> model, base variant, per-tree random (see nat_season.ts) */
   private seasonal = new Map<number, { model: string; variant: number; r: number }>();
   private seasonVer = -1;
 
   constructor(private culler: TileCuller) {
-    this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 17, 'props');
+    // the city material + per-instance distance thinning (own program; main and shadow depth)
+    const city = getCityMaterial();
+    const mat = city.clone();
+    const cityCompile = city.onBeforeCompile;
+    mat.onBeforeCompile = (shader, renderer) => { cityCompile.call(city, shader, renderer); injectPropFade(shader); };
+    mat.customProgramCacheKey = () => city.customProgramCacheKey() + '|prop-fade-v1';
+    this.propMat = mat;
+    this.batch = new DynamicBatch(mat, 4096, 1 << 17, 'props');
+    const depth = this.batch.mesh.customDepthMaterial!;
+    depth.onBeforeCompile = (shader) => injectPropFade(shader);
+    depth.customProgramCacheKey = () => 'prop-depth-fade-v1';
     this.batch.mesh.castShadow = true;
     this.batch.mesh.receiveShadow = true;
     // cascades per instance (setShadowCascades): trees into both, thin hardware into cascade 0 only; 3 tile sets
     const T = culler.tiles * culler.tiles;
     this.T = T;
-    this.batch.enablePassCulling({ culler, shadowMask: 0b11, tileSets: 3, coarse: true });
-    this.tileIds = Array.from({ length: T }, () => new Set<number>());
-    this.tileBig = Array.from({ length: T }, () => new Set<number>());
-    this.near = new Uint8Array(T).fill(2);
-    this.applied = new Uint8Array(T).fill(2);
+    this.batch.enablePassCulling({ culler, shadowMask: 0b11, tileSets: 2, coarse: true });
+    // pylons: the lattice is thinner than a far-cascade texel (cascade 0 / the single map only)
+    this.pylons = new DynamicBatch(city, 256, 1 << 14, 'pylons');
+    this.pylons.mesh.castShadow = true;
+    this.pylons.mesh.receiveShadow = true;
+    this.pylons.enablePassCulling({ culler, shadowMask: 0b01, coarse: true });
+    this.batch.mesh.add(this.pylons.mesh);
+    this.near = new Uint8Array(T).fill(1);
     const pg = new THREE.PlaneGeometry(2, 2);
     pg.rotateX(-Math.PI / 2);
     this.poolMat = new THREE.ShaderMaterial({
@@ -225,12 +286,16 @@ export class PropRenderer {
     this.glows.name = 'lampGlows';
   }
 
-  /** distance LOD for small props (per tile, with 6% hysteresis); call once per frame with the camera position */
+  /** distance LOD for small props; call once per frame with the camera position (see the file comment) */
   updateLod(cam: THREE.Vector3): void {
     const c = this.culler;
     const T = c.tiles;
     const size = c.tileCells * c.cellSize;
     const hide = this.lodDistance, full = Math.min(this.lodFull, hide);
+    // per-instance thinning band (shader); a tile is disabled only beyond it (its nearest point past the band's end),
+    // i.e. once none of its props is left
+    propFadeU.uPropCam.value.copy(cam);
+    propFadeU.uPropFade.value.set(hide, hide * 1.35);
     for (let tz = 0; tz < T; tz++) {
       for (let tx = 0; tx < T; tx++) {
         const i = tz * T + tx;
@@ -238,27 +303,105 @@ export class PropRenderer {
         const dz = Math.max(0, Math.abs(cam.z - (tz + 0.5) * size) - size / 2);
         const d = Math.sqrt(dx * dx + dz * dz + cam.y * cam.y * 0.8);
         const cur = this.near[i];
-        const h = hide * (cur >= 1 ? 1.03 : 0.97), f = full * (cur === 2 ? 1.06 : 0.94);
-        const n = d < f ? 2 : d < h ? 1 : 0;
+        const n = d < hide * (cur ? 1.4 : 1.37) ? 1 : 0;
         if (n !== cur) {
           this.near[i] = n;
-          this.applyTile(i, n);
+          this.batch.setTileEnabled(i, n > 0);
+          this.batch.setTileEnabled(i + this.T, n > 0);
         }
       }
     }
+    this.updateProxyLod(cam, full);
+    const m = this.propMat, city = getCityMaterial();
+    m.envMapIntensity = city.envMapIntensity; m.roughness = city.roughness; m.metalness = city.metalness;
   }
 
-  /** hide / show a tile's small props (whole tile sets, no per-instance work) and swap proxy <-> full geometry */
-  private applyTile(i: number, state: number): void {
-    const T = this.T;
-    this.batch.setTileEnabled(i, state > 0);
-    this.batch.setTileEnabled(i + T, state > 0);
-    if (state === 0 || this.applied[i] === state) return;
-    this.applied[i] = state;
-    for (const id of this.tileIds[i]) {
-      const g = this.idGeo.get(id);
-      if (g) this.batch.setGeometry(id, state === 2 ? g[0] : g[1]);
+  /** per-instance proxy <-> full switch at `full` m (+-6%), scheduled by camera travel like the building LOD */
+  private updateProxyLod(cam: THREE.Vector3, full: number): void {
+    if (full !== this.lodFullAt) {
+      // new switch distance: every prop with a proxy is due now
+      this.lodFullAt = full;
+      this.queueAllProxies();
     }
+    const p = this.lodPos;
+    const hop = p.x === p.x ? Math.hypot(cam.x - p.x, cam.y - p.y, cam.z - p.z) : 0;
+    this.lodTravel += hop;
+    p.copy(cam);
+    const cur = Math.floor(this.lodTravel);
+    if (cur - this.lodAt >= PLOD_BUCKETS - 2) {
+      for (const q of this.lodBuckets) q.length = 0;
+      this.queueAllProxies();
+      this.lodAt = cur + 1;
+    }
+    if (!this.lodNow.length && this.lodAt > cur) return;
+    // smooth motion: bounded work per frame; a jump evaluates everything due at once
+    let budget = hop > Math.max(150, cam.y * 0.5) ? Infinity : PLOD_SLICE;
+    if (this.lodNow.length) {
+      const q = this.lodNow;
+      this.lodNow = this.lodNowSpare;
+      this.lodNowSpare = q;
+      let i = 0;
+      for (; i < q.length && budget > 0; i++) {
+        const id = q[i];
+        if (this.idue[id] !== -1) continue;
+        this.evalProxy(id, cam, full, cur);
+        budget--;
+      }
+      for (; i < q.length; i++) this.lodNow.push(q[i]);
+      q.length = 0;
+    }
+    while (this.lodAt <= cur && budget > 0) {
+      const slot = this.lodAt % PLOD_BUCKETS;
+      const q = this.lodBuckets[slot];
+      this.lodBuckets[slot] = this.lodSpare;
+      for (let i = 0; i < q.length; i++) {
+        const id = q[i];
+        if (this.idue[id] !== this.lodAt) continue;
+        this.evalProxy(id, cam, full, cur);
+        budget--;
+      }
+      q.length = 0;
+      this.lodSpare = q;
+      this.lodAt++;
+    }
+  }
+
+  /** every prop with a proxy is due now */
+  private queueAllProxies(): void {
+    const st = this.ist;
+    for (let id = 0; id < st.length; id++) if (st[id]) this.queueProxy(id);
+  }
+
+  private queueProxy(id: number): void {
+    if (id >= this.idue.length || this.idue[id] === -2 || !this.ist[id]) return;
+    if (this.idue[id] !== -1) { this.idue[id] = -1; this.lodNow.push(id); }
+  }
+
+  private evalProxy(id: number, cam: THREE.Vector3, full: number, cur: number): void {
+    this.lodEvals++;
+    // prop metric (changes by at most the camera travel: the schedule's slack stays valid)
+    const o = id * 3, dx = this.ipos[o] - cam.x, dz = this.ipos[o + 2] - cam.z;
+    const d = Math.sqrt(dx * dx + dz * dz + cam.y * cam.y * 0.8);
+    const st = this.ist[id];
+    const want = d < full * (st === 2 ? 1.06 : 0.94) ? 2 : 1;
+    if (want !== st) {
+      this.ist[id] = want;
+      this.batch.setGeometry(id, this.igeo[id * 2 + (want === 2 ? 0 : 1)]);
+    }
+    const slack = want === 2 ? full * 1.06 - d : d - full * 0.94;
+    const b = Math.min(this.lodAt + PLOD_BUCKETS - 1, Math.max(cur + 1, Math.floor(this.lodTravel + Math.max(0, slack))));
+    this.idue[id] = b;
+    this.lodBuckets[b % PLOD_BUCKETS].push(id);
+  }
+
+  /** grow the per-instance LOD arrays to hold batch id `id` */
+  private ensureInst(id: number): void {
+    if (id < this.ist.length) return;
+    const cap = Math.max(id + 1, this.ist.length * 2, 1024);
+    const st = new Uint8Array(cap); st.set(this.ist); this.ist = st;
+    const ps = new Float32Array(cap * 3); ps.set(this.ipos); this.ipos = ps;
+    const gg = new Int32Array(cap * 2).fill(-1); gg.set(this.igeo); this.igeo = gg;
+    const du = new Int32Array(cap).fill(-2); du.set(this.idue); this.idue = du;
   }
 
   /** glows are only worth drawing at night */
@@ -283,6 +426,7 @@ export class PropRenderer {
     const nv = e?.variants ?? 1;
     const v = ((variant % nv) + nv) % nv;
     const key = `${model}#${v}`;
+    if (model === 'util_power_pylon') return this.pylons.geometryId(key, () => propGeometry(model, v));
     const id = this.batch.geometryId(key, () => propGeometry(model, v));
     if (!this.lodMap.has(id)) {
       const lod = propLodGeometry(key, model, propGeometry(model, v));
@@ -297,13 +441,11 @@ export class PropRenderer {
   setGroup(key: string, props: PropItem[], pools: PoolItem[] = []): void {
     const old = this.groups.get(key);
     if (old) {
+      for (const id of old.big) this.pylons.remove(id);
       for (const id of old.ids) {
         this.batch.remove(id);
-        const t = this.idTile.get(id);
-        if (t !== undefined) { this.tileIds[t].delete(id); this.tileBig[t].delete(id); }
-        this.idTile.delete(id);
-        this.idGeo.delete(id);
         this.seasonal.delete(id);
+        if (id < this.ist.length) { this.ist[id] = 0; this.idue[id] = -2; }
       }
       if (old.pools.length) this.poolsDirty = true;
     }
@@ -311,30 +453,39 @@ export class PropRenderer {
       this.groups.delete(key);
       return;
     }
-    const g: Group = { ids: [], tiles: [], pools };
+    const g: Group = { ids: [], big: [], tiles: [], pools };
     for (const p of props) {
       const seasonal = SEASONAL_TREES[p.model] !== undefined;
       const r = seasonal ? hash01(p.x, p.z) : 0;
       const gid = this.geom(p.model, seasonal ? seasonalVariant(p.model, p.variant, r, treeSeason.mix) : p.variant);
-      const id = this.batch.add(gid);
-      if (seasonal) this.seasonal.set(id, { model: p.model, variant: p.variant, r });
       this.q.setFromAxisAngle(this.up, p.yaw);
       this.m4.compose(this.v.set(p.x, p.y, p.z), this.q, this.s.set(p.scale, p.scale, p.scale));
-      this.batch.setMatrix(id, this.m4);
       const tile = this.culler.tileOfWorld(p.x, p.z);
-      const big = p.model === 'util_power_pylon';
+      if (p.model === 'util_power_pylon') {
+        const pid = this.pylons.add(gid);
+        this.pylons.setMatrix(pid, this.m4);
+        this.pylons.setTile(pid, tile);
+        g.big.push(pid);
+        continue;
+      }
+      const id = this.batch.add(gid);
+      if (seasonal) this.seasonal.set(id, { model: p.model, variant: p.variant, r });
+      this.batch.setMatrix(id, this.m4);
       const tree = p.model.startsWith('tree_') || p.model === 'bush';
-      (big ? this.tileBig : this.tileIds)[tile].add(id);
-      this.idTile.set(id, tile);
-      // street / median trees are big enough to shadow the far cascade too; poles, lamps, signals, gates and the
-      // pylon lattice are thinner than a far-cascade texel and cast into cascade 0 (or the single map) only
+      // street / median trees are big enough to shadow the far cascade too; poles, lamps, signals and gates are
+      // thinner than a far-cascade texel and cast into cascade 0 (or the single map) only
       this.batch.setShadowCascades(id, tree ? 0b11 : 0b01);
-      this.batch.setTile(id, tile + this.T * (big ? 2 : tree ? 1 : 0));
-      if (!big) {
+      this.batch.setTile(id, tile + this.T * (tree ? 1 : 0));
+      {
         const lod = this.lodMap.get(gid) ?? gid;
         if (lod !== gid) {
-          this.idGeo.set(id, [gid, lod]);
-          if (this.applied[tile] === 1) this.batch.setGeometry(id, lod);
+          // full model until the next updateLod evaluates it
+          this.ensureInst(id);
+          this.ist[id] = 2;
+          this.ipos[id * 3] = p.x; this.ipos[id * 3 + 1] = p.y; this.ipos[id * 3 + 2] = p.z;
+          this.igeo[id * 2] = gid; this.igeo[id * 2 + 1] = lod;
+          this.idue[id] = -3;
+          this.queueProxy(id);
         }
       }
       g.ids.push(id);
@@ -349,11 +500,13 @@ export class PropRenderer {
     for (const [id, t] of this.seasonal) {
       const gid = this.geom(t.model, seasonalVariant(t.model, t.variant, t.r, mix));
       const lod = this.lodMap.get(gid) ?? gid;
-      if (lod !== gid) this.idGeo.set(id, [gid, lod]);
-      else this.idGeo.delete(id);
-      const tile = this.idTile.get(id);
-      const st = tile === undefined ? 2 : this.applied[tile];
-      this.batch.setGeometry(id, st === 1 ? lod : gid);
+      this.ensureInst(id);
+      const st = this.ist[id];
+      if (lod !== gid) {
+        this.igeo[id * 2] = gid; this.igeo[id * 2 + 1] = lod;
+        if (!st) { this.ist[id] = 2; this.idue[id] = -3; this.queueProxy(id); }
+      } else this.ist[id] = 0;
+      this.batch.setGeometry(id, st === 1 && lod !== gid ? lod : gid);
     }
   }
 
@@ -414,7 +567,7 @@ export class PropRenderer {
   }
 
   get propCount(): number {
-    return this.batch.instanceCount;
+    return this.batch.instanceCount + this.pylons.instanceCount;
   }
 
   clear(): void {
@@ -423,6 +576,8 @@ export class PropRenderer {
 
   dispose(): void {
     this.batch.dispose();
+    this.pylons.dispose();
+    this.propMat.dispose();
     this.pools.dispose();
     this.poolMat.dispose();
     this.glowGeo.dispose();

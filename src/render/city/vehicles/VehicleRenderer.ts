@@ -6,8 +6,12 @@
  * Density ~ traffic volume, speed reduced by congestion, simple car-following (queues) and 2-phase signals at
  * signalized intersections. Trains (loco + cars) follow rail cells using a path history.
  * All state lives in typed arrays; the per-frame loop allocates nothing.
- * Culling: tile visibility + camera-distance cull (maxDistance per quality, every 2nd vehicle beyond 70% of it),
- * per-pass draw lists (main view + shadow cascade 0 only).
+ * Culling: tile visibility + zoom thinning, never stricter than the classic rule (by camera height: 1/2 of the vehicles
+ * above 1000 m, 1/3 above 1500 m, none above 2600 m). The kept fraction eases between those levels over 200-300 m of
+ * camera height and each vehicle slot has a fixed rank, so vehicles drop out one by one while zooming (no burst at the
+ * thresholds); a vehicle the thinning drops is still drawn while its length projects to at least `thinPx` pixels
+ * (every 2nd one down to `hidePx`), so high oblique views keep their near traffic;
+ * per-pass draw lists (main view + both shadow cascades; casters under ~1 far-cascade texel are skipped).
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../../core/constants';
@@ -37,9 +41,6 @@ const TRUCK_MODELS: [string, number][] = [['truck_box', 50], ['truck_semi', 30],
 const SERVICE_MODELS: [string, number][] = [['car_police', 35], ['ambulance', 20], ['fire_truck', 10], ['garbage_truck', 35]];
 const CAPS: Record<QualityLevel, number> = { low: 600, medium: 1500, high: 2500, ultra: 4000 };
 const TRAIN_CAPS: Record<QualityLevel, number> = { low: 3, medium: 6, high: 10, ultra: 16 };
-/** camera distance (m) beyond which road vehicles are not drawn (a car is ~2-3 px there at 1080p); the default
- *  800 m game view keeps all of its near / mid traffic */
-const MAX_DIST: Record<QualityLevel, number> = { low: 900, medium: 1200, high: 1500, ultra: 2000 };
 const SPEED = [0, 7, 9.5, 12, 10, 21, 17];
 const TWO_PI = Math.PI * 2;
 
@@ -202,15 +203,18 @@ export class VehicleRenderer {
   private dx = 1;
   private dz = 0;
   private trains: Train[] = [];
-  private hidden = false;
-  private thin = 1;
+  /** fraction of vehicle slots the zoom thinning keeps (by camera height, see the file comment) */
+  private keep = 1;
   enabled = true;
   /** optional signal state: 1 = signalized intersection */
   signalized: Uint8Array | null = null;
   getRoutes: ((max: number) => TrafficRoute[]) | null = null;
   quality: QualityLevel = 'high';
-  /** road vehicles beyond this camera distance are hidden (trains: 2x) */
-  maxDistance = MAX_DIST.high;
+  /** projected length (px of the drawing buffer) below which a vehicle is hidden / only every 2nd one is drawn */
+  hidePx = 2;
+  thinPx = 3;
+  /** optional hard distance cap (m; trains 2x) */
+  maxDistance = Infinity;
   private headCount = 0;
 
   constructor(private state: CityState, private net: NetInfo, private surf: RoadSurface, private culler: TileCuller, quality: QualityLevel = 'high') {
@@ -220,8 +224,11 @@ export class VehicleRenderer {
     this.batch = new DynamicBatch(getCityMaterial(), this.cap + 128, 1 << 16, 'vehicles');
     this.batch.mesh.castShadow = quality === 'high' || quality === 'ultra';
     this.batch.mesh.receiveShadow = true;
-    this.batch.enablePassCulling({ culler, dynamic: true, shadowMask: 0b01 });
-    this.maxDistance = MAX_DIST[quality];
+    // both cascades (the far one only where a vehicle spans > ~1 shadow texel)
+    this.batch.enablePassCulling({ culler, dynamic: true, minShadowTexels: 1.2 });
+    // register the most common model now: the batch geometry gets its attribute layout before the first frame, so its
+    // program compiles with the others instead of when the first car appears
+    this.geomFor(CAR_MODELS[0][0], 0);
     this.alloc(this.cap);
     this.head = new Int32Array(net.N * net.N * 8).fill(-1);
     // headlight decals
@@ -291,7 +298,6 @@ export class VehicleRenderer {
     this.clear();
     this.cap = cap;
     this.trainCap = TRAIN_CAPS[q];
-    this.maxDistance = MAX_DIST[q];
     this.alloc(cap);
     this.batch.mesh.castShadow = q === 'high' || q === 'ultra';
     this.refreshSpawn();
@@ -648,7 +654,7 @@ export class VehicleRenderer {
     this.life[v] = R ? 1e9 : 35 + this.rand() * 90;
     if (!this.planCell(v)) return false;
     this.t[v] = randomT ? this.rand() * this.len[v] : 0;
-    const model = this.chooseModel(kind);
+    const model = (R as { model?: string } | null)?.model || this.chooseModel(kind); // WP7-12 patrol model hint
     const geom = this.geomFor(model, (this.rand() * 8) | 0);
     if (isNew) {
       this.inst[v] = this.batch.add(geom);
@@ -789,7 +795,8 @@ export class VehicleRenderer {
   }
 
   // ------------------------------------------------------------------ frame
-  update(dt: number, camera: THREE.Camera): void {
+  /** heightPx: drawing-buffer height (projected-size culling; default 1080) */
+  update(dt: number, camera: THREE.Camera, heightPx = 1080): void {
     if (!this.enabled) return;
     dt = Math.min(dt, 0.1);
     this.time += dt;
@@ -798,10 +805,10 @@ export class VehicleRenderer {
     sharedUniforms.uMapN.value = this.net.N;
     const net = this.net;
     const st = this.state;
-    // zoom-based thinning
+    // zoom-based thinning: kept fraction by camera height, eased after each classic threshold (never below it)
     const camH = camera.position.y;
-    this.hidden = camH > 2600;
-    this.thin = camH > 1500 ? 3 : camH > 1000 ? 2 : 1;
+    const ease = (h: number, h0: number, w: number, a: number, b: number) => (h <= h0 ? a : h >= h0 + w ? b : a + (b - a) * ((h - h0) / w));
+    this.keep = camH <= 1500 ? ease(camH, 1000, 200, 1, 0.5) : camH <= 2600 ? ease(camH, 1500, 200, 0.5, 1 / 3) : ease(camH, 2600, 300, 1 / 3, 0);
     // spawn distribution / routes (event driven, debounced by real time so slow frames don't stall it)
     if (this.spawnDirty && performance.now() - this.lastRefresh > 250) {
       this.refreshSpawn();
@@ -915,9 +922,14 @@ export class VehicleRenderer {
     const hm = hl.instanceMatrix.array as Float32Array;
     const headCap = hl.instanceMatrix.count;
     let hc = 0;
-    // distance cull: hidden beyond maxDistance, every 2nd vehicle beyond 70% of it
+    // zoom thinning by camera height (classic rule), relaxed by projected size: a vehicle of length L at distance d
+    // spans L * K / d px (K = H / (2 tan(fov / 2))); one the classic rule drops is still drawn while it spans >= thinPx
+    // (every 2nd one >= hidePx)
     const cpx = camera.position.x, cpz = camera.position.z, cpy2 = camH * camH;
-    const D2 = this.maxDistance * this.maxDistance, D2thin = D2 * 0.49;
+    const fov = (camera as THREE.PerspectiveCamera).isPerspectiveCamera ? (camera as THREE.PerspectiveCamera).fov : 38;
+    const K = heightPx / (2 * Math.tan((fov * Math.PI) / 360));
+    const kh = K / Math.max(0.5, this.hidePx), kt = K / Math.max(0.5, this.thinPx);
+    const D2 = this.maxDistance * this.maxDistance;
     let shown = 0;
     for (let v = 0; v < this.n; v++) {
       this.life[v] -= dt;
@@ -941,8 +953,11 @@ export class VehicleRenderer {
       const tile = this.culler.tileOfWorld(x, z);
       const tunnel = st.netFlags[ci] & NF_TUNNEL;
       const ddx = x - cpx, ddz = z - cpz, d2 = ddx * ddx + ddz * ddz + cpy2;
-      const near = d2 < D2 && (d2 < D2thin || (v & 1) === 0);
-      const show = !this.hidden && near && vis[tile] === 1 && !tunnel && (this.thin === 1 || v % this.thin === 0) ? 1 : 0;
+      const L = this.vlen[v], lh = L * kh, lt = L * kt;
+      // (slot rank: golden-ratio sequence, evenly spread for any prefix of slots)
+      const classic = (v * 0.6180339887) % 1 < this.keep;
+      const sized = d2 < lh * lh && (d2 < lt * lt || (v & 1) === 0);
+      const show = d2 < D2 && (classic || sized) && vis[tile] === 1 && !tunnel ? 1 : 0;
       if (show !== this.vis[v]) { this.vis[v] = show; this.batch.setVisible(this.inst[v], show === 1); }
       if (!show) continue;
       shown++;
@@ -984,8 +999,8 @@ export class VehicleRenderer {
         const x = this.px, z = this.pz;
         const id = tr.inst[c];
         const tile = this.culler.tileOfWorld(x, z);
-        const tdx = x - cpx, tdz = z - cpz;
-        const show = !this.hidden && vis[tile] === 1 && !(st.netFlags[ci] & NF_TUNNEL) && tdx * tdx + tdz * tdz + cpy2 < D2 * 4;
+        const tdx = x - cpx, tdz = z - cpz, td2 = tdx * tdx + tdz * tdz + cpy2, tl = tr.lens[c] * kh;
+        const show = vis[tile] === 1 && !(st.netFlags[ci] & NF_TUNNEL) && td2 < D2 * 4 && (this.keep > 0 || td2 < tl * tl);
         this.batch.setVisible(id, show);
         if (!show) continue;
         shown++;

@@ -253,7 +253,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.quality = q;
     // small props: full model within lodFull, ~16-tri proxy up to lodDistance, hidden beyond; buildings switch to their
     // massing proxy below lodPixels projected radius
-    this.props.lodDistance = q === 'low' ? 700 : q === 'medium' ? 1000 : q === 'high' ? 1400 : 2000;
+    this.props.lodDistance = q === 'low' ? 900 : q === 'medium' ? 1300 : q === 'high' ? 1800 : 2600;
     this.props.lodFull = this.props.lodDistance * 0.4;
     this.buildings.lodPixels = q === 'low' ? 11 : q === 'medium' ? 10 : q === 'high' ? 9 : 7;
     this.vehicles.setQuality(q);
@@ -305,7 +305,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.effects.update(dt);
     this.fireworks.update(dt);
     lap('effects');
-    this.vehicles.update(dt, cam);
+    this.vehicles.update(dt, cam, this.ctx.renderer.domElement.height);
     this.emergency.update(dt);
     lap('vehicles');
     this.previews.update(dt);

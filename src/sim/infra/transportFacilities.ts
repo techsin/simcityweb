@@ -1,15 +1,31 @@
 /**
- * Transport-facility hook (docs/SIM_DEPTH_PART_B.md, owner WP7b) — PART-B STUB with the final signatures.
+ * Transport-facility hook (docs/SIM_DEPTH_PART_B.md §4, owner WP7b). Headless: no DOM / three.js.
  *
  * WP7a's facilityReport (facilities.ts) calls transportFacilityReport(sim, b) for every building and merges the part it
- * returns (lines and warnings appended, role used when WP7a has none), so WP7a and WP7b never edit the same hunk.
- * WP7b fills it in for tr_bus_stop, civ_bus_depot, tr_subway_station, tr_train_station, tr_freight_station,
- * tr_parking_garage and tr_ferry_terminal (the airport / seaport "use" lines are WP7a's), plus the getters below.
- * Headless: no DOM / three.js.
+ * returns (lines and warnings appended, role used for the transit defs), so WP7a and WP7b never edit the same hunk.
+ * Covered defs: tr_bus_stop, civ_bus_depot, tr_subway_station, tr_train_station, tr_freight_station, tr_parking_garage,
+ * tr_ferry_terminal (airport / seaport "use" lines are WP7a's; the seaport's throughput comes from freightSinkTrucks).
+ *
+ * Also the read-only views WP5 renders (critic items 22 / 23): roadCellReport (interchange load, trucks, bus riders on
+ * a road cell), stopsNear (garage preview), ferryPartnersFor (ferry preview), ferryLinks (render team: ferry boats),
+ * truckVolumeOf (Traffic overlay "Trucks"), transportUseFactor (WP7a's facilityUseFactor: 0 = not connected), and
+ * TRANSPORT_EFFECT_METRICS (facilities matrix test). Road-flag bus stops (netFlags bit 4) are legacy: no report.
+ * Every function accepts a sim without the traffic system (infra-less tests) and returns the documented stub value.
  */
 import type { Building, CityState } from '../CityState';
 import type { Simulation } from '../Simulation';
+import { BF } from '../CityState';
+import { Network } from '../../core/types';
+import { getDef } from '../catalog';
 import type { FacilityLine } from './facilities';
+import { Fam, Transit, centerCell, infoOf, isFunctional } from './common';
+import { TRAFFIC_OF_STATE } from './transit';
+import type { TrafficSystem } from './traffic';
+import {
+  BUS_RHO_MAX, DEPOT_BUSES, DEPOT_RANGE, FERRY_MAX_CELLS, FERRY_PARTNERS, FREIGHT_SINK_MIN, GARAGE_SPACES, GARAGE_WALK_RADIUS,
+  MINIBUS_FLEET, PR_STOP_RADIUS, RIDERS_PER_BUS, STOP_CAP_BUS, STOP_CAP_FERRY, STOP_CAP_SUBWAY, STOP_CAP_TRAIN,
+  STOP_WALK_RADIUS, WAIT_BUS, WAIT_FERRY, WAIT_SUBWAY, WAIT_TRAIN,
+} from './params';
 
 export interface TransportFacilityPart {
   /** one-line role when the transport part defines it ("Bus depot: runs the buses of stops within 90 road tiles") */
@@ -18,24 +34,374 @@ export interface TransportFacilityPart {
   warnings: string[];
 }
 
-/** transport part of a facility's inspector report; null = not a transport facility. STUB: null */
-export function transportFacilityReport(_sim: Simulation, _b: Building): TransportFacilityPart | null {
-  return null;
+/** the 7 transit defs of WP7b (by def id; a mod def with one of these models counts too) */
+const TRANSPORT_DEFS = ['tr_bus_stop', 'civ_bus_depot', 'tr_subway_station', 'tr_train_station', 'tr_freight_station', 'tr_parking_garage', 'tr_ferry_terminal'] as const;
+type TransportDef = (typeof TRANSPORT_DEFS)[number];
+function kindOf(defId: string): TransportDef | null {
+  if ((TRANSPORT_DEFS as readonly string[]).includes(defId)) return defId as TransportDef;
+  const m = getDef(defId)?.model;
+  return m && (TRANSPORT_DEFS as readonly string[]).includes(m) ? (m as TransportDef) : null;
 }
 
-/** trucks per day reaching a freight sink building (seaport, freight station); -1 = unknown (no traffic data). STUB: -1 */
-export function freightSinkTrucks(_sim: Simulation, _buildingId: number): number {
-  return -1;
+function trafficOf(sim: Simulation | null | undefined): TrafficSystem | undefined {
+  return (sim?.getSystem('traffic') as unknown as TrafficSystem | undefined) ?? undefined;
+}
+function trafficOfSt(st: CityState): TrafficSystem | undefined {
+  return TRAFFIC_OF_STATE.get(st) as TrafficSystem | undefined;
 }
 
-/** trucks per day per road cell of the last traffic cycle (Traffic overlay "Trucks" variant, WP5); null = no data. STUB */
-export function truckVolumeOf(_st: CityState): Float32Array | null {
-  return null;
+/** integer with thousands separators (locale independent) */
+function fmt(v: number): string {
+  if (!Number.isFinite(v)) return '—';
+  const n = Math.round(v);
+  const s = Math.abs(n).toString();
+  let out = '';
+  for (let k = 0; k < s.length; k++) {
+    if (k > 0 && (s.length - k) % 3 === 0) out += ',';
+    out += s[k];
+  }
+  return n < 0 ? '-' + out : out;
+}
+const min1 = (v: number) => (Number.isFinite(v) ? (Math.round(v * 10) / 10).toString() : '—');
+const pct = (v: number) => `${Math.round(v * 100)}%`;
+function dist(st: CityState, a: Building, b: Building): number {
+  const ca = centerCell(st, a), cb = centerCell(st, b), N = st.size;
+  return Math.round(Math.hypot((ca % N) - (cb % N), Math.floor(ca / N) - Math.floor(cb / N)));
+}
+function nameOf(st: CityState, id: number): string {
+  const b = st.buildings.get(id);
+  return (b && getDef(b.def)?.name) || 'building';
+}
+function crowdStatus(riders: number, cap: number): 'ok' | 'warn' | 'bad' {
+  return riders > 1.5 * cap ? 'bad' : riders > cap ? 'warn' : 'ok';
+}
+
+/** transport part of a facility's inspector report; null = not a transport facility */
+export function transportFacilityReport(sim: Simulation, b: Building): TransportFacilityPart | null {
+  const kind = kindOf(b.def);
+  if (!kind) return null;
+  const st = sim.state;
+  const tr = trafficOf(sim);
+  const lines: FacilityLine[] = [];
+  const warnings: string[] = [];
+  const functional = isFunctional(b);
+  const part = (role: string): TransportFacilityPart => ({ role, lines, warnings });
+  if (!tr) {
+    lines.push({ key: 'status', label: 'Status', value: functional ? 'no traffic data' : 'closed' });
+    return part(ROLE[kind]);
+  }
+  const load = tr.stopLoad(b.id);
+  const riders = load?.riders ?? 0;
+  switch (kind) {
+    case 'tr_bus_stop': {
+      if (!tr.stopAttached(b.id)) {
+        warnings.push('Not next to a road — buses can\'t stop here');
+        lines.push({ key: 'riders', label: 'Riders', value: '0/day', status: 'bad', hint: 'Move it next to a road' });
+        break;
+      }
+      lines.push({ key: 'riders', label: 'Riders', value: `${fmt(riders)}/day`, ratio: riders / STOP_CAP_BUS, status: crowdStatus(riders, STOP_CAP_BUS) });
+      const wait = load?.waitMin ?? WAIT_BUS;
+      lines.push({ key: 'wait', label: 'Wait', value: `${min1(wait)} min`, status: wait > 1.7 * WAIT_BUS ? 'bad' : wait > 1.25 * WAIT_BUS ? 'warn' : 'ok',
+        hint: wait > 1.25 * WAIT_BUS ? 'Not enough buses — build a Bus Depot nearby or raise transit funding' : undefined });
+      const depotId = load?.depotId ?? -1;
+      const depot = depotId >= 0 ? st.buildings.get(depotId) : undefined;
+      if (depot) lines.push({ key: 'depot', label: 'Buses from', value: `${nameOf(st, depotId)} · ${dist(st, b, depot)} tiles` });
+      else {
+        const mb = tr.minibusInfo;
+        lines.push({ key: 'depot', label: 'Buses from', value: `Minibus service only (${MINIBUS_FLEET} buses)`, status: mb.rho < 1 ? 'warn' : 'ok',
+          hint: `A Bus Depot within ${DEPOT_RANGE} road tiles runs ${DEPOT_BUSES} buses` });
+      }
+      break;
+    }
+    case 'civ_bus_depot': {
+      const d = tr.depotInfo(b.id);
+      if (!d) { lines.push({ key: 'buses', label: 'Buses', value: functional ? '—' : 'closed' }); break; }
+      // (whole buses: any riders keep at least one bus running)
+      const inService = Math.min(d.fleet, d.riders > 0 ? Math.max(1, Math.ceil(d.need)) : 0);
+      lines.push({ key: 'buses', label: 'Buses in service', value: `${fmt(inService)} / ${fmt(d.fleet)}`, ratio: d.fleet > 0 ? d.need / d.fleet : 0,
+        status: d.need > 1.1 * d.fleet ? 'bad' : d.need > d.fleet ? 'warn' : 'ok' });
+      lines.push({ key: 'stops', label: 'Stops served', value: `${fmt(d.stops)} within ${DEPOT_RANGE} road tiles` });
+      lines.push({ key: 'riders', label: 'Riders', value: `${fmt(d.riders)}/day` });
+      if (d.stops === 0) warnings.push(`No bus stops within ${DEPOT_RANGE} road tiles — place stops next to roads nearby`);
+      if (d.need > 1.1 * d.fleet) warnings.push(`Its stops need ${fmt(d.need)} buses — build another depot or raise transit funding`);
+      if (infoOf(st, b).usesPower && (b.flags & BF.Powered) === 0) warnings.push('No power: half the buses stay in the garage');
+      break;
+    }
+    case 'tr_subway_station':
+    case 'tr_train_station': {
+      const sub = kind === 'tr_subway_station';
+      const line = tr.stationLine(b.id);
+      if (!tr.stopAttached(b.id)) {
+        warnings.push(sub ? 'Not connected — tunnel it to another subway station' : 'Not connected — its tracks must reach another train station or the map edge');
+        lines.push({ key: 'riders', label: 'Riders', value: '0/day', status: 'bad', hint: sub ? 'Build a subway tunnel to a second station' : 'Extend the rail line' });
+        break;
+      }
+      const cap = sub ? STOP_CAP_SUBWAY : STOP_CAP_TRAIN;
+      lines.push({ key: 'riders', label: 'Riders', value: `${fmt(riders)}/day`, ratio: riders / cap, status: crowdStatus(riders, cap) });
+      lines.push({ key: 'wait', label: 'Wait', value: `${min1(load?.waitMin ?? (sub ? WAIT_SUBWAY : WAIT_TRAIN))} min` });
+      if (line) lines.push({ key: 'line', label: 'Line', value: `${fmt(line.stations)} station${line.stations === 1 ? '' : 's'}${line.edge ? ' · to the region' : ''}` });
+      break;
+    }
+    case 'tr_freight_station': {
+      if (!tr.freightLinked(b.id)) {
+        warnings.push('No rail link to the region — connect its tracks to the map edge or a seaport');
+        lines.push({ key: 'rail', label: 'Rail link', value: 'none', status: 'bad', hint: 'Extend the tracks to the map edge' });
+        break;
+      }
+      lines.push({ key: 'rail', label: 'Rail link', value: 'to the region', status: 'ok' });
+      if (!roadNext(st, b)) warnings.push('No road access — trucks can\'t reach it; build a road beside it');
+      const t = tr.sinkTrucks(b.id);
+      lines.push({ key: 'trucks', label: 'Freight', value: t >= 0 ? `${fmt(t)} trucks/day within ${FREIGHT_SINK_MIN} min` : '—' });
+      break;
+    }
+    case 'tr_parking_garage': {
+      const g = tr.garageInfo(b.id);
+      const spaces = g?.spaces ?? GARAGE_SPACES;
+      const businesses = businessesNear(st, b, GARAGE_WALK_RADIUS);
+      // (the crowding penalty holds the smoothed load near the spaces; shown capped: a garage can't hold more cars)
+      const used = g ? Math.min(g.parkRide, spaces) : 0;
+      const full = used > 0.9 * spaces;
+      if (g && g.stopId >= 0 && g.ride) {
+        lines.push({ key: 'parkRide', label: 'Park & ride', value: `${fmt(used)} / ${fmt(spaces)} cars`, ratio: used / spaces,
+          status: full ? 'warn' : 'ok', hint: full ? 'Full — build another garage by a stop' : undefined });
+        lines.push({ key: 'switched', label: 'Commuters switched', value: `${fmt(used * 1.15)}/day to ${nameOf(st, g.stopId)}` });
+      } else if (g && g.stopId >= 0) {
+        // the stop's jobs are a walk away (downtown): commuters park here and walk — parking, not park & ride
+        lines.push({ key: 'parked', label: 'Parked here', value: `${fmt(used)} / ${fmt(spaces)} cars`, ratio: used / spaces,
+          status: full ? 'warn' : 'ok', hint: `Commuters walk to jobs near ${nameOf(st, g.stopId)} — for park & ride, build garages by suburban stops` });
+      } else warnings.push(`No transit stop within ${PR_STOP_RADIUS} tiles — parking only, no park & ride`);
+      // commuters parked here for their walk to work are relief too (they left their cars off the blocks' lots)
+      const free = Math.max(0, spaces - (g && g.stopId >= 0 && g.ride ? used : 0));
+      lines.push({ key: 'parking', label: 'Parking relief', value: `${fmt(free)} spaces for ${fmt(businesses)} businesses within ${GARAGE_WALK_RADIUS} tiles` });
+      const p = parkingAt(st, b);
+      lines.push({ key: 'pressure', label: 'Parking pressure here', value: pct(p), ratio: p, status: p > 0.6 ? 'bad' : p > 0.3 ? 'warn' : 'ok' });
+      break;
+    }
+    case 'tr_ferry_terminal': {
+      const partners = tr.ferryPartners(b.id);
+      if (partners.length === 0) {
+        warnings.push(`No partner terminal on this water within ${FERRY_MAX_CELLS} tiles — build a second terminal across the water`);
+        lines.push({ key: 'routes', label: 'Routes', value: 'none', status: 'bad' });
+        break;
+      }
+      lines.push({ key: 'routes', label: 'Routes', value: partners.map((q) => `${nameOf(st, q.id)} (${Math.max(1, Math.round(q.minutes))} min)`).join(' · ') });
+      const fr = tr.ferryRidersAt(b.id);
+      lines.push({ key: 'riders', label: 'Riders', value: `${fmt(fr)}/day`, ratio: fr / STOP_CAP_FERRY, status: crowdStatus(fr, STOP_CAP_FERRY) });
+      lines.push({ key: 'wait', label: 'Wait', value: `${min1(load?.waitMin ?? WAIT_FERRY)} min` });
+      break;
+    }
+  }
+  if (!functional) warnings.push('Closed (not running)');
+  return part(ROLE[kind]);
+}
+
+const ROLE: Record<TransportDef, string> = {
+  tr_bus_stop: `Bus stop: residents within ${STOP_WALK_RADIUS} tiles ride buses from the nearest depot`,
+  civ_bus_depot: `Bus depot: runs ${DEPOT_BUSES} buses for the stops within ${DEPOT_RANGE} road tiles`,
+  tr_subway_station: 'Subway station: fast commutes along its tunnels',
+  tr_train_station: 'Train station: commuters and visitors along the rail line',
+  tr_freight_station: 'Freight station: ships the goods of nearby industry by rail',
+  tr_parking_garage: `Parking garage: ${GARAGE_SPACES} spaces, park & ride next to a stop`,
+  tr_ferry_terminal: 'Ferry terminal: commuters and visitors cross the water',
+};
+
+/** a road cell 4-adjacent to the footprint */
+function roadNext(st: CityState, b: Building): boolean {
+  const N = st.size, net = st.network;
+  const ok = (x: number, z: number) => x >= 0 && z >= 0 && x < N && z < N && net[z * N + x] >= Network.Street && net[z * N + x] <= Network.Highway;
+  for (let x = b.x; x < b.x + b.w; x++) if (ok(x, b.z - 1) || ok(x, b.z + b.d)) return true;
+  for (let z = b.z; z < b.z + b.d; z++) if (ok(b.x - 1, z) || ok(b.x + b.w, z)) return true;
+  return false;
+}
+
+/** job buildings (C / I / civic with jobs) within r cells of a building (garage report) */
+function businessesNear(st: CityState, b: Building, r: number): number {
+  const N = st.size, R = r + (Math.max(b.w, b.d) >> 1);
+  const c = centerCell(st, b), cx = c % N, cz = (c - cx) / N;
+  const seen = new Set<number>();
+  for (let z = Math.max(0, cz - R); z <= Math.min(N - 1, cz + R); z++) for (let x = Math.max(0, cx - R); x <= Math.min(N - 1, cx + R); x++) {
+    const id = st.building[z * N + x];
+    if (id < 0 || id === b.id || seen.has(id)) continue;
+    const o = st.buildings.get(id);
+    if (!o) continue;
+    const inf = infoOf(st, o);
+    if (inf.fam === Fam.C || inf.fam === Fam.I || (inf.fam === Fam.Plop && inf.civicJobs > 0)) seen.add(id);
+  }
+  return seen.size;
+}
+
+/** mean parking pressure around a building (its footprint + 1 ring) */
+function parkingAt(st: CityState, b: Building): number {
+  const N = st.size, p = st.parking;
+  let s = 0, n = 0;
+  for (let z = Math.max(0, b.z - 1); z < Math.min(N, b.z + b.d + 1); z++) for (let x = Math.max(0, b.x - 1); x < Math.min(N, b.x + b.w + 1); x++) { s += p[z * N + x]; n++; }
+  return n > 0 ? s / n : 0;
+}
+
+/** static tooltip facts of a transit def (buses, spaces, routes ...), appended by WP7a's facilityDefFacts */
+export function transportDefFacts(defId: string): FacilityLine[] {
+  switch (kindOf(defId)) {
+    case 'tr_bus_stop': return [
+      { key: 'walk', label: 'Walk radius', value: `${STOP_WALK_RADIUS} tiles` },
+      { key: 'wait', label: 'Wait', value: `${WAIT_BUS} min with enough buses` },
+      { key: 'buses', label: 'Buses', value: `from a depot within ${DEPOT_RANGE} road tiles (else ${MINIBUS_FLEET} minibuses city-wide)` },
+    ];
+    case 'civ_bus_depot': return [
+      { key: 'buses', label: 'Buses', value: `${DEPOT_BUSES} (x funding, half without power)` },
+      { key: 'range', label: 'Serves stops within', value: `${DEPOT_RANGE} road tiles` },
+      { key: 'riders', label: 'Carries', value: `~${fmt(DEPOT_BUSES * RIDERS_PER_BUS)} riders/day at best (${BUS_RHO_MAX}x service)` },
+    ];
+    case 'tr_subway_station': return [
+      { key: 'wait', label: 'Wait', value: `${WAIT_SUBWAY} min` },
+      { key: 'capacity', label: 'Crowded above', value: `${fmt(STOP_CAP_SUBWAY)} riders/day` },
+      { key: 'needs', label: 'Needs', value: 'a tunnel to another subway station' },
+    ];
+    case 'tr_train_station': return [
+      { key: 'wait', label: 'Wait', value: `${WAIT_TRAIN} min` },
+      { key: 'capacity', label: 'Crowded above', value: `${fmt(STOP_CAP_TRAIN)} riders/day` },
+      { key: 'needs', label: 'Needs', value: 'rails to another train station or the map edge' },
+    ];
+    case 'tr_freight_station': return [
+      { key: 'reach', label: 'Serves industry within', value: `${FREIGHT_SINK_MIN} min by truck` },
+      { key: 'needs', label: 'Needs', value: 'rails to the map edge or a seaport' },
+    ];
+    case 'tr_parking_garage': return [
+      { key: 'spaces', label: 'Spaces', value: fmt(GARAGE_SPACES) },
+      { key: 'relief', label: 'Parking relief', value: `within ${GARAGE_WALK_RADIUS} tiles` },
+      { key: 'parkRide', label: 'Park & ride', value: `with a transit stop within ${PR_STOP_RADIUS} tiles` },
+    ];
+    case 'tr_ferry_terminal': return [
+      { key: 'routes', label: 'Routes', value: `up to ${FERRY_PARTNERS} terminals within ${FERRY_MAX_CELLS} tiles on the same water` },
+      { key: 'wait', label: 'Wait', value: `${WAIT_FERRY} min` },
+      { key: 'capacity', label: 'Crowded above', value: `${fmt(STOP_CAP_FERRY)} riders/day` },
+    ];
+    default: return [];
+  }
+}
+
+/** trucks per day reaching a freight sink building (seaport, freight station); -1 = unknown (no traffic data) */
+export function freightSinkTrucks(sim: Simulation, buildingId: number): number {
+  const tr = trafficOf(sim);
+  if (!tr) return -1;
+  const b = sim.state.buildings.get(buildingId);
+  if (!b) return -1;
+  const t = infoOf(sim.state, b).transit;
+  if (t === Transit.Freight && !tr.freightLinked(buildingId)) return 0;
+  return tr.sinkTrucks(buildingId);
+}
+
+/** trucks per day per road cell of the last traffic cycle (Traffic overlay "Trucks" variant, WP5); null = no data */
+export function truckVolumeOf(st: CityState): Float32Array | null {
+  return trafficOfSt(st)?.truckVolume() ?? null;
 }
 
 /**
- * City-level effect metric per transport def for the facilities matrix test (tests/infra/facilities.test.ts, WP7a): the
- * test compares the value after 60 days with and without the facility and asserts that it changes. STUB: {} (until WP7b
- * fills it, the matrix checks the report lines of transport defs only)
+ * use factor of a transit def (critic item 12; WP7a's facilityUseFactor multiplies cap relief, freight boost and income
+ * by it): -1 = not a transport def, 0 = not connected / not running (lone station, unlinked ferry, freight station
+ * without a rail link, off-road stop, depot without stops), 1 = connected. 1 while traffic is not running (unknown).
  */
-export const TRANSPORT_EFFECT_METRICS: Readonly<Record<string, (sim: Simulation) => number>> = {};
+export function transportUseFactor(st: CityState, b: Building): number {
+  const kind = kindOf(b.def);
+  if (!kind) return -1;
+  if (!isFunctional(b)) return 0;
+  const tr = trafficOfSt(st);
+  if (!tr) return 1;
+  switch (kind) {
+    case 'tr_bus_stop': case 'tr_subway_station': case 'tr_train_station': case 'tr_ferry_terminal':
+      return tr.stopAttached(b.id) ? 1 : 0;
+    case 'tr_freight_station': return tr.freightLinked(b.id) ? 1 : 0;
+    case 'civ_bus_depot': { const d = tr.depotInfo(b.id); return d === null ? 1 : d.stops > 0 ? 1 : 0; }
+    default: return 1;
+  }
+}
+
+/** inspector lines of a road / rail cell: traffic, trucks, bus riders, interchange load (WP7-10) */
+export function roadCellReport(sim: Simulation, cell: number): FacilityLine[] {
+  const st = sim.state;
+  if (cell < 0 || cell >= st.cells) return [];
+  const t = st.network[cell];
+  if (t === Network.None) return [];
+  const tr = trafficOf(sim);
+  const out: FacilityLine[] = [];
+  if (t === Network.Rail) {
+    out.push({ key: 'riders', label: 'Train riders', value: `${fmt(st.traffic[cell])}/day` });
+    if (tr) {
+      const fr = tr.freightRailCells();
+      let freight = false;
+      for (let k = 0; k < fr.length; k++) if (fr[k] === cell) { freight = true; break; }
+      if (freight) out.push({ key: 'freight', label: 'Freight trains', value: 'yes (noisy)' });
+    }
+    return out;
+  }
+  const v = st.traffic[cell], c = st.congestion[cell];
+  out.push({ key: 'traffic', label: 'Traffic', value: `${fmt(v)} trips/day (${pct(Math.min(9.99, c))} of capacity)`, ratio: c, status: c > 1.2 ? 'bad' : c > 0.9 ? 'warn' : 'ok' });
+  if (!tr) return out;
+  const trucks = tr.truckVolume();
+  if (trucks && trucks[cell] > 0.5) out.push({ key: 'trucks', label: 'Trucks', value: `${fmt(trucks[cell])}/day` });
+  const bus = tr.cellBusRiders(cell);
+  if (bus > 0.5) out.push({ key: 'bus', label: 'Bus riders', value: `${fmt(bus)}/day` });
+  const ramp = tr.rampLoad(cell);
+  if (ramp >= 0) {
+    out.push({ key: 'interchange', label: 'Interchange load', value: `${pct(ramp)} · ramp ${min1(tr.rampMinutes(cell))} min`, ratio: ramp,
+      status: ramp > 1.2 ? 'bad' : ramp > 0.9 ? 'warn' : 'ok',
+      hint: ramp > 0.9 ? 'Jammed ramp — add another interchange, or ramp from an avenue' : undefined });
+  }
+  return out;
+}
+
+/** attached stops within r cells (+ half the footprint) of a footprint, nearest first (garage plop preview) */
+export function stopsNear(sim: Simulation, x: number, z: number, w: number, d: number, r = PR_STOP_RADIUS): { id: number; name: string; mode: string; dist: number }[] {
+  const tr = trafficOf(sim);
+  if (!tr) return [];
+  const MODE: Record<number, string> = { [Transit.Bus]: 'bus', [Transit.Subway]: 'subway', [Transit.Train]: 'train', [Transit.Ferry]: 'ferry' };
+  return tr.stopsNear(sim.state, x, z, w, d, r).map((s) => ({ id: s.id, name: nameOf(sim.state, s.id), mode: MODE[s.mode] ?? 'transit', dist: Math.round(s.dist * 10) / 10 }));
+}
+
+/** partners (and crossing minutes) a ferry terminal placed at (x, z, w, d, rot) would link to (ferry plop preview) */
+export function ferryPartnersFor(sim: Simulation, x: number, z: number, w: number, d: number, rot: number): { id: number; name: string; minutes: number }[] {
+  const tr = trafficOf(sim);
+  if (!tr) return [];
+  return tr.ferryPartnersFor(sim.state, x, z, w, d, rot).map((p) => ({ id: p.id, name: nameOf(sim.state, p.id), minutes: Math.round(p.minutes * 10) / 10 }));
+}
+
+/** ferry links (terminal ids a < b, water path cells a -> b, crossing minutes) — "[render] ferry boats on ferry links" */
+export function ferryLinks(sim: Simulation): { a: number; b: number; cells: Uint32Array; minutes: number }[] {
+  const tr = trafficOf(sim);
+  if (!tr) return [];
+  return tr.ferryLinks().map((l) => ({ a: l.a, b: l.b, cells: l.cells, minutes: l.minutes }));
+}
+
+function transitCovSum(sim: Simulation): number {
+  const T = sim.state.transitCov;
+  let s = 0;
+  for (let i = 0; i < T.length; i++) s += T[i];
+  return s;
+}
+function attachedCount(sim: Simulation, t: Transit): number {
+  const tr = trafficOf(sim);
+  if (!tr) return 0;
+  let n = 0;
+  for (const b of sim.state.buildings.values()) if (infoOf(sim.state, b).transit === t && tr.stopAttached(b.id)) n++;
+  return n;
+}
+
+/**
+ * Effect metric per transport def for the facilities matrix test (tests/infra/facilities.test.ts, WP7a): the value
+ * after 60 days with the facility must differ from the same city without it. Each reads the facility's own effect:
+ *  bus stop            transit coverage (sum of transitCov)
+ *  depot               buses of the city (stats.transitFleet.buses)
+ *  subway / train      attached stations of the mode (a station needs a partner station or rail to the edge: place
+ *                      two / extend the rails — a lone station genuinely does nothing)
+ *  freight station     freight rail cells (needs rails to the map edge or a seaport)
+ *  parking garage      total parking supply (parkingSummary.supply, cars / day)
+ *  ferry terminal      ferry links (needs a partner terminal on the same water)
+ */
+export const TRANSPORT_EFFECT_METRICS: Readonly<Record<string, (sim: Simulation) => number>> = {
+  tr_bus_stop: (sim) => transitCovSum(sim),
+  civ_bus_depot: (sim) => sim.state.stats.transitFleet.buses,
+  tr_subway_station: (sim) => attachedCount(sim, Transit.Subway),
+  tr_train_station: (sim) => attachedCount(sim, Transit.Train),
+  tr_freight_station: (sim) => trafficOf(sim)?.freightRailCells().length ?? 0,
+  tr_parking_garage: (sim) => trafficOf(sim)?.parkingSummary.supply ?? 0,
+  tr_ferry_terminal: (sim) => sim.state.stats.transitFleet.ferryLinks,
+};

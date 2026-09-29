@@ -1,8 +1,11 @@
 /**
  * "Sunday Jazz" - reference track #1 (port + upgrade of the original chill jazz-lite generator).
  *
- * Rhodes trio with brushes at a lazy ~80 bpm swing, AABA head on ii-V-I colours, Rhodes solo over two A's, vibes solo
- * over the bridge, head out and a three-times iii-VI-ii-V tag that slows into a rolled maj9 ending.
+ * Rhodes trio with brushes at a relaxed medium swing (~88-94 bpm), AABA head on ii-V-I colours, Rhodes solo over two
+ * A's, an upright bass solo over the bridge changes (walking bass out, Rhodes thins to guide-tone shells, brushes
+ * only), head out and a three-times iii-VI-ii-V tag that slows into a rolled maj9 ending. A dry, wide, daylight mix
+ * (no vinyl bed): Rhodes comp left, Rhodes lead right, ride left, brushes right, bass centre. Vibes only colour the
+ * bridge answers, the last A (octave doubling) and the ending shimmer - the vibes solo is Harbor Lights' signature.
  * Every play re-rolls: key, tempo, swing, chord substitutions (tritone subs, secondary dominants), the head melody,
  * comping rhythms, the walking bass line and both solos. The plan (chords + all melodic lines) is computed up front
  * in create(); bar() only schedules what belongs to that bar.
@@ -28,9 +31,9 @@ const FORM: Sec[] = [
   { name: 'bridge', bars: 8, kind: 'B', lead: 'turn' },
   { name: 'head A3', bars: 8, kind: 'A', lead: 'turn' },
   { name: 'rhodes solo', bars: 16, kind: 'soloA', lead: 'bridge' },
-  { name: 'vibes solo', bars: 8, kind: 'soloB', lead: 'turn' },
+  { name: 'bass solo', bars: 8, kind: 'soloB', lead: 'turn' },
   { name: 'head out', bars: 8, kind: 'A', lead: 'tag' },
-  { name: 'tag + ending', bars: 6, kind: 'tag', lead: 'end' },
+  { name: 'tag + ending', bars: 8, kind: 'tag', lead: 'end' },
 ];
 
 interface Slot {
@@ -52,6 +55,8 @@ interface BarPlan {
   bass: Ev[];
   lead: Ev[];
   vibes: Ev[];
+  /** upright bass solo (own channel 'upright:solo') */
+  solo: Ev[];
 }
 
 // rhythm cells for the head: [beat, dur] in a 4/4 bar
@@ -87,13 +92,14 @@ function contour(rng: RNG, n: number, bias = 0): number[] {
 export const track: MusicTrack = {
   id: 'sunday_jazz',
   title: 'Sunday Jazz',
-  mood: 'Lazy Sunday Rhodes trio: brushes, upright bass, swing',
+  mood: 'Sunday-afternoon Rhodes trio: brushes, upright bass, medium swing',
   tags: ['menu', 'region', 'day', 'calm'],
-  bpm: 80,
-  gain: 1.5,
+  bpm: 91,
+  // re-trimmed after the cohesion fix: seeds 1-3 measured -18.29 / -18.37 / -18.30 LUFS at gain 1.5 -> x10^((-18.3 - -18.32)/20)
+  gain: 1.503,
   create(env) {
     const { inst, rng } = env;
-    const bpm = rng.int(76, 84);
+    const bpm = rng.int(88, 94);
     inst.bpm = bpm;
     const swing = rng.range(0.6, 0.645);
     const key = rng.pick([5, 3, 10, 0, 7, 8, 2]); // F Eb Bb C G Ab D
@@ -106,20 +112,22 @@ export const track: MusicTrack = {
       turn: rng.pick(['Dm9 G13', 'Dm9 Db9', 'Dm9 G7alt']),
     };
     const bridge = `${rng.chance(0.25) ? 'Ebmaj9' : 'Fmaj9'} | Fm9 Bb13 | Em9 | A7alt | Dm9 | G13 | Em7 A7b9 | Dm9 G13`;
+    const tagSub = rng.chance(0.5) ? 'Eb9' : 'A7b9';
     const charts: Record<Kind, (s: Sec) => string> = {
       intro: () => 'Dm9 | G13 | Em9 A7b9 | Dm9 G13',
       A: (s) => aChart(rng, s.lead, subs),
       soloA: () => `${aChart(rng, 'turn', subs)} | ${aChart(rng, 'bridge', subs)}`,
       B: () => bridge,
       soloB: () => bridge,
-      tag: () => 'Em7 A7b9 | Dm9 G13 | Em7 A7b9 | Dm9 Db9 | Cmaj9 | Cmaj9',
+      // three-times tag: the second time may take a tritone sub (Eb9 for A7b9), the third slides in through Db9
+      tag: () => `Em7 A7b9 | Dm9 G13 | Em7 ${tagSub} | Dm9 G13 | Em7 A7b9 | Dm9 Db9 | Cmaj9 | Cmaj9`,
     };
     const plan: BarPlan[] = [];
     for (const s of FORM) {
       const bars = parseChart(charts[s.kind](s), T);
       for (let i = 0; i < s.bars; i++) {
         const cs = bars[i % bars.length];
-        plan.push({ sec: s, slots: cs.map((c, k) => ({ beat: (k * 4) / cs.length, dur: 4 / cs.length, chord: c })), comp: [], bass: [], lead: [], vibes: [] });
+        plan.push({ sec: s, slots: cs.map((c, k) => ({ beat: (k * 4) / cs.length, dur: 4 / cs.length, chord: c })), comp: [], bass: [], lead: [], vibes: [], solo: [] });
       }
     }
     const total = plan.length;
@@ -140,12 +148,14 @@ export const track: MusicTrack = {
     let prevV: number[] | null = null;
     plan.forEach((p, bi) => {
       const k = p.sec.kind;
-      const shells = k === 'soloA';
-      const lo = shells ? 50 : 52, hi = shells ? 66 : 72;
-      const vBase = k === 'intro' ? 0.42 : k === 'soloB' ? 0.42 : k === 'B' ? 0.4 : k === 'tag' ? 0.42 : 0.36;
+      // behind the Rhodes solo: 3-note rootless shells; behind the bass solo: 2-note guide-tone shells (3rd + 7th)
+      // voiced above the bass line
+      const shells = k === 'soloA', guide = k === 'soloB';
+      const lo = guide ? 55 : shells ? 50 : 52, hi = guide ? 70 : shells ? 66 : 72;
+      const vBase = k === 'intro' ? 0.42 : guide ? 0.34 : k === 'B' ? 0.4 : k === 'tag' ? 0.42 : 0.36;
       const inBar = bi - barStart[FORM.indexOf(p.sec)];
       p.slots.forEach((s, si) => {
-        const v: number[] = voiceLead(prevV, s.chord, { lo, hi, count: shells ? 3 : 4, rootless: true });
+        const v: number[] = voiceLead(prevV, s.chord, { lo, hi, count: guide ? 2 : shells ? 3 : 4, rootless: true });
         prevV = v;
         const two = p.slots.length > 1;
         if (k === 'intro' && inBar < 2) {
@@ -154,7 +164,15 @@ export const track: MusicTrack = {
         }
         if (k === 'tag' && bi >= total - 2) return; // ending handled separately
         const r = rng.next();
-        if (two) {
+        if (guide) {
+          // sparse, short stabs that leave the space to the bass
+          if (two) {
+            if (si === 0 || r < 0.7) p.comp.push({ beat: si === 1 && r < 0.3 ? s.beat - 0.5 : s.beat, dur: 1.1, notes: v, vel: humVel(rng, vBase, 0.04) });
+          } else {
+            const pats: [number, number][][] = [[[0, 1.6]], [[0.5, 1.2]], [[1.5, 1]], [[0, 1], [2.5, 0.7]], [[2.5, 1.2]]];
+            for (const [b, d] of rng.pick(pats)) p.comp.push({ beat: b, dur: d, notes: v, vel: humVel(rng, vBase - (b % 1 ? 0.02 : 0), 0.04) });
+          }
+        } else if (two) {
           // one hit per chord: on the beat, or pushed an 8th early
           const beat = si === 1 && r < 0.35 ? s.beat - 0.5 : s.beat + (r > 0.85 ? 0.5 : 0);
           p.comp.push({ beat, dur: s.dur - 0.3, notes: v, vel: humVel(rng, vBase, 0.05) });
@@ -178,6 +196,7 @@ export const track: MusicTrack = {
       const k = p.sec.kind;
       const inBar = bi - barStart[FORM.indexOf(p.sec)];
       if (k === 'intro' && inBar < 2) return;
+      if (k === 'soloB') return; // the walking line stops: the bass solos over the bridge (planned with the solos)
       if (bi >= total - 2) return; // the ending plays its own bass note
       const twoFeel = k === 'intro' || p.sec.name === 'head A1' || (k === 'tag' && bi >= total - 4);
       p.slots.forEach((s, si) => {
@@ -258,15 +277,23 @@ export const track: MusicTrack = {
     };
 
     // ---------------------------------------------------------------- solos
-    const soloLine = (b0: number, bars: number, lo: number, hi: number, dens: (x: number) => number, vib: boolean): Ev[][] => {
+    /**
+     * Improvised line over the planned chords. vib = lyrical phrasing (quarters and swung 8ths, long phrase ends, no
+     * chromatic passing tones or triplet flourishes: the bass solo); otherwise bebop-ish 8th lines (the Rhodes solo).
+     * arc (optional register target over the solo, 0..1 of lo..hi) sets the direction each phrase sets off in, so the
+     * line climbs to a peak and comes home instead of random-walking around its first note.
+     */
+    const soloLine = (b0: number, bars: number, lo: number, hi: number, dens: (x: number) => number, vib: boolean, arc?: (x: number) => number): Ev[][] => {
       const out: Ev[][] = Array.from({ length: bars }, () => []);
       let cur = rng.int(lo + 6, hi - 8);
       let dir = 1;
       let pos = rng.pick([0.5, 1, 1.5]);
       const end = bars * 4 - 1;
+      const target = (p: number) => (arc ? lo + (hi - lo) * arc(p / (bars * 4)) : 0);
       while (pos < end) {
-        const phraseLen = vib ? rng.int(3, 6) : rng.int(4, 11);
+        const phraseLen = vib ? rng.int(4, 7) : rng.int(4, 11);
         const d = dens(pos / (bars * 4));
+        if (arc) dir = cur < target(pos) ? 1 : -1;
         let k = 0;
         while (k < phraseLen * 2 && pos < end) {
           const bar = Math.floor(pos / 4), beat = pos - bar * 4;
@@ -301,7 +328,8 @@ export const track: MusicTrack = {
             }
             if (cur >= hi - 1) dir = -1;
             else if (cur <= lo + 1) dir = 1;
-            else if (rng.chance(vib ? 0.35 : 0.2)) dir = -dir;
+            // turn around now and then; with an arc, mostly when heading away from the register target
+            else if (rng.chance(arc ? ((cur < target(pos)) === dir > 0 ? 0.12 : 0.5) : vib ? 0.3 : 0.2)) dir = -dir;
             const long = k >= phraseLen * 2 - 1;
             const dur = long ? rng.pick([1, 1.5]) : vib ? rng.pick([0.5, 1]) : 0.5;
             const vel = humVel(rng, (vib ? 0.58 : 0.54) + (onBeat ? 0 : 0.06), 0.06);
@@ -315,7 +343,7 @@ export const track: MusicTrack = {
           pos += vib ? rng.pick([0.5, 1]) : 0.5;
           k++;
         }
-        pos += rng.pick(vib ? [1, 1.5, 2, 2.5] : [1, 1.5, 2]); // breath
+        pos += rng.pick([1, 1.5, 2]); // breath
       }
       return out;
     };
@@ -328,7 +356,7 @@ export const track: MusicTrack = {
     // place lines into the plan
     FORM.forEach((s, si) => {
       const b0 = barStart[si];
-      let lines: Ev[][] | null = null, vibes: Ev[][] | null = null;
+      let lines: Ev[][] | null = null, vibes: Ev[][] | null = null, solo: Ev[][] | null = null;
       if (s.kind === 'A') {
         const variant = s.name === 'head A1' ? 0 : 1;
         lines = realizeHead(b0, variant);
@@ -348,7 +376,9 @@ export const track: MusicTrack = {
           });
         });
       } else if (s.kind === 'soloA') lines = soloLine(b0, s.bars, 60, 84, (x) => 0.45 + 0.4 * Math.sin(Math.PI * Math.min(1, x * 1.15)), false);
-      else if (s.kind === 'soloB') vibes = soloLine(b0, s.bars, 65, 89, (x) => 0.55 + 0.25 * Math.sin(Math.PI * x), true);
+      // upright bass solo over the bridge changes: lyrical phrases (quarters / swung 8ths, long phrase ends) in E2-D4,
+      // starting around A2, climbing to ~Bb3 halfway through and coming back down into the head out
+      else if (s.kind === 'soloB') solo = soloLine(b0, s.bars, 40, 62, (x) => 0.7 + 0.2 * Math.sin(Math.PI * x), true, (x) => 0.25 + 0.55 * Math.sin(Math.PI * x));
       else if (s.kind === 'intro') {
         // pickup into the head on bar 4
         const c = chordAt(b0 + 3, 2);
@@ -362,6 +392,7 @@ export const track: MusicTrack = {
       }
       lines?.forEach((l, i) => plan[b0 + i].lead.push(...l));
       vibes?.forEach((l, i) => plan[b0 + i].vibes.push(...l));
+      solo?.forEach((l, i) => plan[b0 + i].solo.push(...l));
     });
 
     // ---------------------------------------------------------------- ending
@@ -370,20 +401,22 @@ export const track: MusicTrack = {
     const endVoicing = voicing(endChord, { lo: 52, hi: 81, count: 5, rootless: false });
 
     // ---------------------------------------------------------------- mix
-    const setup = (t0: number) => {
-      inst.mix('epiano', { level: 0.9, pan: -0.12, reverb: 0.25, delay: 0.05, tremolo: 0.35 });
-      inst.mix('epiano:lead', { level: 1, pan: 0.12, reverb: 0.3, delay: 0.16 });
+    // a wide, dry trio picture (no vinyl bed - crackle is Harbor Lights' lo-fi signature): Rhodes comp left, Rhodes
+    // lead right, ride left, brushes right, bass (walking and solo) and kick in the centre
+    const setup = () => {
+      inst.mix('epiano', { level: 0.9, pan: -0.32, reverb: 0.25, delay: 0.05, tremolo: 0.35 });
+      inst.mix('epiano:lead', { level: 1, pan: 0.28, reverb: 0.3, delay: 0.16 });
       inst.mix('upright', { level: 0.92 });
-      inst.mix('vibes', { level: 0.9, pan: 0.3, reverb: 0.4 });
+      inst.mix('upright:solo', { level: 1.25, reverb: 0.1, highpass: 45 });
+      inst.mix('vibes', { level: 0.9, pan: 0.45, reverb: 0.4 });
       inst.mix('pad', { level: 0.5, lowpass: 3500 });
-      inst.mix('brush', { level: 0.9 });
-      inst.mix('ride', { level: 0.75 });
+      inst.mix('brush', { level: 0.9, pan: 0.22 });
+      inst.mix('ride', { level: 0.75, pan: -0.42 });
       inst.mix('kick', { level: 0.8 });
       inst.setDelay({ beats: 0.75, feedback: 0.3, tone: 2800 });
-      inst.vinyl(t0, t0 + 400, 0.35);
     };
 
-    /** section dynamics (velocity factor): a gentle start, the Rhodes solo builds, the vibes solo relaxes, the tag winds down */
+    /** section dynamics (velocity factor): a gentle start, the Rhodes solo builds, the bass solo relaxes, the tag winds down */
     const dynamics = (name: string, x: number): number => {
       switch (name) {
         case 'intro': return 0.92;
@@ -391,7 +424,7 @@ export const track: MusicTrack = {
         case 'head A2': return 0.95;
         case 'bridge': return 0.93;
         case 'rhodes solo': return 0.97 + 0.09 * Math.sin(Math.PI * Math.min(1, x * 1.2));
-        case 'vibes solo': return 0.93;
+        case 'bass solo': return 0.9;
         case 'head out': return 1.03;
         case 'tag + ending': return 1 - 0.15 * x;
         default: return 1;
@@ -439,10 +472,11 @@ export const track: MusicTrack = {
         // --- melody (Rhodes lead laid back a hair) + vibes
         for (const e of p.lead) inst.epiano(at(e.beat, 8) + 0.012, e.midi, sec(e.dur), e.vel * dyn, { ch: 'lead', bright: 0.6 });
         for (const e of p.vibes) inst.vibes(at(e.beat, 8) + 0.01, e.midi, sec(e.dur), e.vel * dyn);
-        // --- bass
+        // --- bass (walking line) + bass solo on its own channel (not scaled by the section dynamics)
         for (const e of p.bass) inst.upright(at(e.beat, 6), e.midi, sec(e.dur), e.vel * Math.sqrt(dyn));
-        // --- pad bed (intro, bridge, tag)
-        if ((k === 'intro' || k === 'tag' || (k === 'B' && b.barInSection % 2 === 0)) && b.bar < total - 2) {
+        for (const e of p.solo) inst.upright(at(e.beat, 8), e.midi, sec(e.dur), e.vel, { ch: 'solo' });
+        // --- pad bed (intro, bridge, and the last time round the tag as the tempo slows; the first two are trio only)
+        if ((k === 'intro' || (k === 'tag' && b.bar >= total - 4) || (k === 'B' && b.barInSection % 2 === 0)) && b.bar < total - 2) {
           for (const s of p.slots) {
             const pv = voicing(s.chord, { lo: 55, hi: 76, count: 4 });
             inst.pad(b.at(s.beat), pv, sec(k === 'B' ? 8 : s.dur) + 0.3, k === 'B' ? 0.3 : 0.4, { attack: 1.4, release: 2, cutoff: 1800 });
@@ -461,13 +495,14 @@ export const track: MusicTrack = {
           inst.brush(at(3, 5), humVel(rng, 0.52 * soft, 0.05));
           if (rng.chance(0.25)) inst.brush(at(2.5, 5), humVel(rng, 0.22, 0.04));
         }
-        const rideOn = k === 'soloA' || k === 'soloB' || p.sec.name === 'head out' || p.sec.name === 'head A3';
+        // (the bass solo gets brushes only: no ride, hats or kick)
+        const rideOn = k === 'soloA' || p.sec.name === 'head out' || p.sec.name === 'head A3';
         if (rideOn) {
           for (const [beat, v] of [[0, 0.4], [1, 0.46], [1.5, 0.28], [2, 0.4], [3, 0.46], [3.5, 0.28]] as const) inst.ride(at(beat, 4), humVel(rng, v * soft, 0.04));
           inst.hat(at(1, 3), 0.2, { decay: 0.05 });
           inst.hat(at(3, 3), 0.2, { decay: 0.05 });
         }
-        if (!inIntro && p.sec.name !== 'head A1') for (const beat of [0, 2]) inst.kick(at(beat, 4), humVel(rng, 0.3, 0.04), { click: 0, tune: 50, decay: 0.32 });
+        if (!inIntro && p.sec.name !== 'head A1' && k !== 'soloB') for (const beat of [0, 2]) inst.kick(at(beat, 4), humVel(rng, 0.3, 0.04), { click: 0, tune: 50, decay: 0.32 });
         // brush fill at the end of a section
         if (b.last && !inIntro && rng.chance(0.6)) for (let q = 0; q < 3; q++) inst.snare(at(3 + q / 3, 3), 0.16 + q * 0.07, { snappy: 0.5, tone: 200 });
       },

@@ -11,23 +11,26 @@ import { Network } from '../../core/types';
 import { COLLEGE_WILL, REGION_COMMUTERS_BASE, REGION_COMMUTERS_FRAC, WORKFORCE_RATIO } from '../economy/tuning';
 
 // ---------------------------------------------------------------------------------------------- traffic
-/** Capacity per cell (trips/day) indexed by Network. Rail capacity is for trains (passengers/day). */
+/**
+ * Capacity per cell (trips/day) indexed by Network (core/types.ts order: None, Street, Road, Avenue = 3, OneWay = 4,
+ * Highway, Rail — WP7b F1 / P0b-1 fixed the swapped Avenue / OneWay entries). Rail capacity is for trains (passengers/day).
+ */
 export const NET_CAPACITY: readonly number[] = [
   0, // None
   350, // Street
   1200, // Road
-  1600, // OneWay
   2600, // Avenue
+  1600, // OneWay
   7000, // Highway
   12000, // Rail (passengers/day)
 ];
-/** Free-flow time to traverse one cell (minutes) indexed by Network. */
+/** Free-flow time to traverse one cell (minutes) indexed by Network (same order as NET_CAPACITY). */
 export const NET_TIME: readonly number[] = [
   0,
   0.16, // Street  (~slow residential)
   0.1, // Road
-  0.085, // OneWay
   0.075, // Avenue
+  0.085, // OneWay
   0.04, // Highway
   0.035, // Rail (train in-vehicle)
 ];
@@ -105,9 +108,10 @@ export const MATCH_PRICE_STEP_REL = 0.12;
 export const MATCH_PRICE_STEP_MIN = 0.15;
 export const MATCH_PRICE_MAX = 30;
 
-/** neighbor connection regional job / worker capacities (per connection cell), indexed by Network */
-export const CONNECTION_JOBS: readonly number[] = [0, 400, 2000, 2000, 5000, 16000, 6000];
-export const CONNECTION_WORKERS: readonly number[] = [0, 300, 1500, 1500, 4000, 12000, 5000];
+/** neighbor connection regional job / worker capacities (per connection cell), indexed by Network
+ *  [None, Street, Road, Avenue, OneWay, Highway, Rail] */
+export const CONNECTION_JOBS: readonly number[] = [0, 400, 2000, 5000, 2000, 16000, 6000];
+export const CONNECTION_WORKERS: readonly number[] = [0, 300, 1500, 4000, 1500, 12000, 5000];
 /** regional travel time (minutes) added when commuting to / from a neighbor city */
 export const REGIONAL_TIME = 16;
 /** fraction of vacant jobs the region is willing to fill */
@@ -132,7 +136,7 @@ export const TRAFFIC_MIN_CYCLE_MS = 1000;
 // ---------------------------------------------------------------------------------------------- scheduler
 /** headless: estimated ms of infra steps per sim day (at least one step always runs; step estimates ~ ms on a busy 4-core CI box) */
 export const INFRA_DAY_BUDGET = 2.6 + 0.15 /* WP3 share (P0-15) */ + 0.25 /* WP2 share (P0-15) */ + 0.15 /* WP8 share (P0-15) */
-  + 0 /* WP7a share (PART B, max 0.1) */ + 0 /* WP7b share (PART B, max 0.2) */;
+  + 0 /* WP7a share (PART B, max 0.1) */ + 0.05 /* WP7b share (PART B, max 0.2): parking raster, P&R, sinks, fleet (~0.05 est. ms / day on the stress city) */;
 /** headless: unused budget (next step did not fit) carried to the next day, at most this much */
 export const INFRA_DAY_CARRY = 0.6;
 /** with a live renderer: real ms of infra steps per frame (at least one step when due) */
@@ -566,8 +570,143 @@ export const EMERG_FILL_BLD_COST = 1.5;
 
 // ---------------------------------------------------------------------------------------------- §FACILITIES (owner WP7a, docs/SIM_DEPTH_PART_B.md)
 // WP7a: POLICE_CAP, police need, justice (ARREST_K, SENTENCE_MONTHS, JAIL_BEDS, holding), staffing, airport / seaport use ...
+/**
+ * police patrol capacity (WP7-1) in crime-weighted people per def id (test / mod defs: by model id). The police tier
+ * shares capacity like schools do: an overloaded station patrols its whole area less; two stations split the load.
+ */
+export const POLICE_CAP: Readonly<Record<string, number>> = { civ_police_kiosk: 6000, civ_police_station: 30000, civ_police_hq: 110000 };
+/** police need per cell (crime-weighted people) = (residents + POLICE_JOB_W x jobs) x (POLICE_CRIME_BASE + crime) */
+export const POLICE_JOB_W = 0.5;
+export const POLICE_CRIME_BASE = 0.5;
+/**
+ * justice (WP7-2, monthly): arrests = ARREST_K x arrest potential (crime.ts, sum of crime x occupants x police reach of
+ * the latest crime pass) + emergency arrests; sentenced = arrests x smoothstep(SENTENCE_POP[0], SENTENCE_POP[1], pop);
+ * inmates += sentenced - inmates / SENTENCE_MONTHS (at most INMATE_CAP x (beds + holding cells)).
+ */
+export const ARREST_K = 0.004;
+export const SENTENCE_POP: readonly [number, number] = [5000, 40000];
+export const SENTENCE_MONTHS = 12;
+export const INMATE_CAP = 1.3;
+/** prison beds per def (x police funding) and police-station holding cells (beds, x police funding) */
+export const JAIL_BEDS: Readonly<Record<string, number>> = { civ_jail: 2500 };
+export const HOLDING_CELLS: Readonly<Record<string, number>> = { civ_police_kiosk: 5, civ_police_station: 25, civ_police_hq: 100 };
+/** overflow = max(0, 12 sentenced - beds - holding) / (12 sentenced): policeMul = (1 - JUSTICE_POLICE_K overflow) x
+ *  (courthouse ? COURTHOUSE_POLICE_MUL : 1), crimeMul = 1 + JUSTICE_CRIME_K overflow */
+export const JUSTICE_POLICE_K = 0.3;
+export const JUSTICE_CRIME_K = 0.15;
+export const COURTHOUSE_POLICE_MUL = 1.08;
+/** prison riot: occupancy above PRISON_RIOT_OCC for PRISON_RIOT_MONTHS months -> hash(jail, month) < PRISON_RIOT_P */
+export const PRISON_RIOT_OCC = 1.2;
+export const PRISON_RIOT_MONTHS = 3;
+export const PRISON_RIOT_P = 0.25;
+/**
+ * staffing (WP7-3, critic item 7): staff = b.jobs / (def.jobs x b.hire) (the reachable share of the posted jobs; power /
+ * water shortages are already in hire and in the service's power / water factors), relative to the city's job fill:
+ * staffRel = min(1, staff / max(STAFF_CITY_MIN, cityFill)) in STAFF_STEP steps; op = STAFF_OP_MIN + (1 - MIN) x
+ * staffRel; BF.Understaffed below STAFF_FLAG (tier facilities only)
+ */
+export const STAFF_OP_MIN = 0.6;
+export const STAFF_STEP = 0.05;
+export const STAFF_FLAG = 0.6;
+export const STAFF_CITY_MIN = 0.5;
+/** "All employers are x % staffed" info line below this city job fill */
+export const STAFF_CITY_INFO = 0.9;
+/**
+ * airports / seaport use (WP7-11): passengers / day = AIRPORT_PAX_K x pop^AIRPORT_PAX_EXP + overnight visitors, shared by
+ * all airports by capacity (passengers / day); seaport use = trucks / day within reach / SEAPORT_TRUCKS. Use factor =
+ * USE_FACTOR_MIN + (1 - MIN) x smoothstep(0, USE_FULL, use) on cap relief, freight boost and income
+ */
+export const AIRPORT_PAX_K = 0.012;
+export const AIRPORT_PAX_EXP = 0.95;
+export const AIRPORT_CAP: Readonly<Record<string, number>> = { tr_airport_small: 3000, tr_airport_large: 25000 };
+export const SEAPORT_TRUCKS = 3000;
+export const USE_FACTOR_MIN = 0.6;
+export const USE_FULL = 0.5;
+/** hospital "beds": patient-equivalents per bed (WP7-4) */
+export const PATIENTS_PER_BED = 200;
 // §FACILITIES end
 
 // ---------------------------------------------------------------------------------------------- §TRANSPORT (owner WP7b, docs/SIM_DEPTH_PART_B.md)
-// WP7b: bus fleet / depots, parking, park & ride, ferries, ramps, trucks ...
+// WP7b: bus fleet / depots, parking, park & ride, ferries, ramps, trucks (traffic.ts, parking.ts, ferry.ts, transit.ts,
+// transportFacilities.ts). Road-flag bus stops (netFlags bit 4) are legacy (no tool creates them): they keep the plain
+// WAIT_BUS service, are not part of the fleet model and get no report.
+/**
+ * WP7-5 bus fleet: every tr_bus_stop is run by the nearest depot within DEPOT_RANGE road tiles (multi-source road BFS
+ * from the depots, rerun on road / depot changes); a depot runs DEPOT_BUSES x min(DEPOT_FUNDING_MAX, transit funding)
+ * buses (x DEPOT_UNPOWERED without power); stops no depot reaches share MINIBUS_FLEET minibuses. Needed buses =
+ * riders (boardings + alightings / day) / RIDERS_PER_BUS, smoothed across assignments (BUS_NEED_SMOOTH = weight of the
+ * new value); service ratio rho = fleet / needed clamped to [BUS_RHO_MIN, BUS_RHO_MAX]; the base wait is WAIT_BUS / rho.
+ */
+export const MINIBUS_FLEET = 8;
+export const DEPOT_BUSES = 40;
+export const DEPOT_FUNDING_MAX = 1.25;
+export const DEPOT_UNPOWERED = 0.5;
+export const DEPOT_RANGE = 90;
+export const RIDERS_PER_BUS = 500;
+export const BUS_RHO_MIN = 0.35;
+export const BUS_RHO_MAX = 1.25;
+export const BUS_NEED_SMOOTH = 0.5;
+/**
+ * WP7-7 parking pressure (parking.ts, every 2nd assignment): demand = cars arriving per day on the footprints of job sites
+ * (car commuters + regional commuters) + PARKING_SHOP_W x car shopping trips; supply per cell by zone density
+ * [low, medium, high] (PARKING_SUPPLY_ZONE; R zones PARKING_SUPPLY_R), plopped civic lots PARKING_SUPPLY_CIVIC, road cells
+ * (street parking, by Network) PARKING_SUPPLY_ROAD, + GARAGE_SPACES per garage (minus its park & ride cars) spread over
+ * GARAGE_WALK_RADIUS with a normalised kernel. parking = smoothstep(PARKING_RATIO[0], PARKING_RATIO[1], box(D) / box(S))
+ * with box = (2 PARKING_BOX_R + 1)^2 average; car commuters to a site pay PARKING_MIN x parking(site) extra minutes.
+ */
+export const PARKING_SHOP_W = 0.5;
+export const PARKING_SUPPLY_ZONE: readonly number[] = [90, 45, 15];
+export const PARKING_SUPPLY_R: readonly number[] = [18, 9, 3];
+export const PARKING_SUPPLY_CIVIC = 30;
+/** street parking per road cell [None, Street, Road, Avenue, OneWay, Highway, Rail] */
+export const PARKING_SUPPLY_ROAD: readonly number[] = [0, 18, 18, 9, 15, 0, 0];
+export const GARAGE_SPACES = 900;
+export const GARAGE_WALK_RADIUS = 6;
+export const PARKING_RATIO: readonly [number, number] = [1.0, 2.5];
+export const PARKING_BOX_R = 3;
+export const PARKING_MIN = 5;
+/**
+ * WP7-8 park & ride: a garage within PR_STOP_RADIUS (+ half its footprint) of an attached transit stop is a park & ride:
+ * a reverse road search (every 2nd assignment, only with such garages) seeded at its road entries with label
+ * PR_PARK_MIN + walk + wait + transit time from its best stop (+ crowding GARAGE_CROWD_K x max(0, load / spaces -
+ * GARAGE_CROWD_FROM) of the last assignment), limit PR_LIMIT; an origin's option = PR_HOME_MIN + label if the car leg is
+ * <= PR_CAR_LEG_MAX. Car-less residents (demographics carlessShare) pay CARLESS_EXTRA_MIN more on car and park & ride trips
+ * (taxi / lift), with or without garages.
+ */
+export const PR_STOP_RADIUS = 5;
+export const PR_PARK_MIN = 1.5;
+export const PR_HOME_MIN = 1;
+export const PR_LIMIT = 40;
+export const PR_CAR_LEG_MAX = 12;
+export const GARAGE_CROWD_K = 60;
+export const GARAGE_CROWD_FROM = 0.9;
+/** garage load (park & ride cars) smoothing across assignments (weight of the new value) */
+export const GARAGE_LOAD_SMOOTH = 0.25;
+export const CARLESS_EXTRA_MIN = 12;
+/**
+ * WP7-9 ferries (ferry.ts): links = water BFS (4-neighbour water cells) from each terminal's front water cells, at most
+ * FERRY_MAX_CELLS steps, to its FERRY_PARTNERS nearest terminals on the same water body (links are symmetric); crossing
+ * = steps x FERRY_TIME_PER_CELL minutes; wait WAIT_FERRY, crowding above STOP_CAP_FERRY riders / day; walking coverage
+ * radius of a terminal def without its own coverage (tests / mods) FERRY_COV_RADIUS
+ */
+export const FERRY_MAX_CELLS = 140;
+export const FERRY_PARTNERS = 3;
+export const FERRY_TIME_PER_CELL = 0.05;
+export const WAIT_FERRY = 6;
+export const STOP_CAP_FERRY = 3000;
+export const FERRY_COV_RADIUS = 8;
+/**
+ * WP7-10 interchanges: in traffic's own searches a highway <-> non-highway move costs RAMP_BY_NET[type of the
+ * non-highway cell] x min(RAMP_MAX_FACTOR, 1 + RAMP_ALPHA (ramp flow / RAMP_CAP)^4) (the flat RAMP_PENALTY stays for
+ * services / emergency / accessCommute); ramp flow = PCU / day crossing between that cell and the highway (MSA smoothed)
+ */
+export const RAMP_BY_NET: readonly number[] = [0, 0.45, 0.45, 0.25, 0.35, 0, 0];
+export const RAMP_CAP = 2400;
+export const RAMP_ALPHA = 0.15;
+export const RAMP_MAX_FACTOR = 8;
+/** trucks: time x TRUCK_LOCAL_FACTOR on non-highway cells in the freight searches (trucks prefer highways) */
+export const TRUCK_LOCAL_FACTOR = 1.15;
+/** freight sinks (seaports, rail-linked freight stations): industry trucks within FREIGHT_SINK_MIN minutes (truck time)
+ *  count as the sink's throughput (every 2nd assignment; road neighbour connections do not shadow them) */
+export const FREIGHT_SINK_MIN = 30;
 // §TRANSPORT end

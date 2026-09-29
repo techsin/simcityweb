@@ -5,8 +5,8 @@
  * the bar line, 3-note colour voicings voice-led away from low semitone clusters and from minor 9ths under the tune, a
  * colour change on the second bar of a held chord), breathy flute theme, upright bass on roots / fifths with surdo
  * pickups and tied anticipations, shaker 8ths, cross-stick clave, feathered kick, hi-hat foot, congas, a soft string
- * bed in the bridge / interlude / out chorus, vibes answers, and a solo (nylon guitar or vibes, per play) over the A
- * changes.
+ * bed in the bridge / interlude / out chorus, vibes answers, and a solo (nylon guitar in most plays, now and then vibes)
+ * over the A changes.
  *
  * Form (one of three per seed, 104-120 bars, ~3:20-3:50):
  *   intro 8 | theme A 16 | theme A2 16 | bridge 16 | theme A3 16 | solo 16 | interlude 8 | theme out 16 | tag 8
@@ -19,9 +19,9 @@
  * approach that resolves on the tonic. Later choruses re-realize it over re-harmonized changes (tritone subs) with
  * anticipations, scoops, vibes answers and harmony. The solo is four 4-bar ideas: the motif inverted or displaced, an
  * 8th-note line landing on guide tones, double-stops on the clave (6ths on guitar, 3rds / 4ths on vibes), and a climb
- * that turns and resolves on the tonic. The tag repeats the cadence twice (deceptive, then final) under a ritardando
- * into a rolled maj9 chord. Fills and answers re-read the harmony on every note and never ring into a chord they
- * clash with.
+ * that turns and resolves on the tonic. The tag repeats the cadence twice (deceptive, then final) under a ritardando,
+ * and a soft shaker roll leads into a rolled maj9 chord with two guitar harmonics over it while the flute dies away.
+ * Fills and answers re-read the harmony on every note and never ring into a chord they clash with.
  * Every play re-rolls key, tempo, lilt, form, intro type, solo instrument, A / B / intro charts, subs, the whole theme,
  * comping patterns, bass figures, breaks and fills, the solo and the answers. All of it is planned in create(); bar()
  * only schedules.
@@ -285,7 +285,7 @@ export const track: MusicTrack = {
     const swing = rng.range(0.505, 0.53); // a hint of lilt on the 8ths
     const key = rng.pick([5, 7, 2, 0, 10, 3, 8]); // F G D C Bb Eb Ab
     const T = ((key - 5 + 18) % 12) - 6;
-    const soloWho: 'gtr' | 'vib' = rng.chance(0.55) ? 'gtr' : 'vib';
+    const soloWho: 'gtr' | 'vib' = rng.chance(0.15) ? 'vib' : 'gtr'; // mostly the guitar: the vibes are harbor's lead voice
     const rubato = rng.chance(0.4);
 
     // ---------------------------------------------------------------- form
@@ -1049,6 +1049,12 @@ export const track: MusicTrack = {
       const low = nearestPc(endChord.bass, 41, 40, 51);
       const roll = [low, low + 7, ...top, top[top.length - 1] + (pc(top[top.length - 1] - endChord.root) === 2 ? 5 : 3)];
       roll.forEach((m, j) => inst.guitar(t + 0.03 + j * 0.075, m, sec(8), 0.5 - j * 0.025));
+      // two soft artificial harmonics over the roll: the octave and the 12th of its top voice (touched 12 and 19 frets up
+      // the string), or of the next voice down when that 12th would ring too high or off the chord
+      const sweet = (m: number) => m <= 93 && [0, 2, 4, 7, 9, endChord.tones.includes(11) ? 11 : 0].includes(pc(m - endChord.root));
+      const hv = roll.slice(2).reverse().find((m) => sweet(m + 19)) ?? roll[roll.length - 1];
+      inst.guitar(t + sec(1.5), hv + 12, sec(5), 0.2, { ch: 'lead' });
+      inst.guitar(t + sec(1.5) + 0.14, hv + 19, sec(5), 0.18, { ch: 'lead' });
       inst.guitar(t + sec(2.5), top[1] + 12, sec(5), 0.28, { ch: 'lead' });
       // the last bass note speaks, then its channel tapers so the body fades out instead of stopping with the pluck
       inst.upright(t, nearestPc(endChord.bass, 36, 33, 44), 2.45, 0.64);
@@ -1056,11 +1062,7 @@ export const track: MusicTrack = {
       // ... and the flute's held last note dies away (diminuendo) instead of stopping on its release
       for (let k = 1; k <= 10; k++) inst.mix('flute', { level: FLUTE * Math.pow(0.7, k) }, t + 1.5 + k * 0.18);
       inst.strings(t, voicing(endChord, { lo: 53, hi: 74, count: 4 }), sec(7), 0.26, { attack: 1.1, release: 2.6, cutoff: 2000 });
-      const hi = chordTones(endChord, 79, 91);
-      inst.vibes(t + sec(1.5), hi[hi.length - 1] ?? 84, sec(5), 0.26, { pedal: true });
-      inst.vibes(t + sec(1.5) + 0.14, hi[Math.max(0, hi.length - 3)] ?? 79, sec(5), 0.22, { pedal: true });
-      inst.cymbal(t, 0.14, { swell: sec(2) });
-      inst.shaker(t, 0.22, { len: 0.35 });
+      inst.shaker(t, 0.22, { len: 0.35 }); // lands the shaker roll of the bar before
     };
 
     // ---------------------------------------------------------------- mix
@@ -1142,6 +1144,8 @@ export const track: MusicTrack = {
             case 'swell': inst.cymbal(b.at(4), p.vel, { swell: sec(3) }); break;
           }
         }
+        // a short soft shaker roll (32nds under the ritardando, after the last 8th) leads into the final chord
+        if (i === endBar - 1) for (let k = 1; k <= 3; k++) inst.shaker(b.at(3.5 + k * 0.125), 0.11 + k * 0.03, { len: 0.05 });
         if (i === endBar) ending(b);
       },
     });

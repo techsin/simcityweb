@@ -2,6 +2,8 @@
  * Consequences of a demolition that deserve a confirmation (QA #11): removing the LAST power plant / water source,
  * a landmark or reward building, or anything costing more than CONFIRM_COST — player-placed buildings worth more than
  * that (they are removed for free but nothing is refunded) or a demolition fee above it. Pure state reads.
+ * Road / rail drags and rezoning demolish growables on the way (plopped buildings block them; the tip only warns):
+ * sideDemolishRisks asks first when their fees pass CONFIRM_COST or the buildings hold DISPLACE_CONFIRM residents + jobs.
  */
 import type { CellRect } from '../core/events';
 import { BF, type Building, type CityState } from '../sim/CityState';
@@ -10,6 +12,8 @@ import { money, num } from '../ui/format';
 
 /** demolishing buildings worth more than this (build cost), or paying a fee above it, asks first */
 export const CONFIRM_COST = 20_000;
+/** a road / rail drag or a rezoning whose side demolitions hold at least this many residents + jobs asks first */
+export const DISPLACE_CONFIRM = 1_000;
 
 export interface DemolishRisk {
   title: string;
@@ -97,4 +101,27 @@ export function demolishRisks(st: CityState, rect: CellRect, cost: number, opts:
   if (!items.length) return null;
   const title = names.length === 1 ? `Demolish ${names[0]}?` : names.length > 1 ? `Demolish ${names.length} buildings?` : 'Demolish this area?';
   return { title, items };
+}
+
+/**
+ * Side demolitions of a road / rail drag or a rezoning (ActionResult.demolished / demolishFee of its preview): null
+ * unless the fees pass CONFIRM_COST (not in sandbox) or the buildings hold DISPLACE_CONFIRM residents + jobs.
+ */
+export function sideDemolishRisks(st: CityState, ids: readonly number[] | undefined, fee: number, opts: { sandbox?: boolean } = {}): DemolishRisk | null {
+  if (!ids?.length) return null;
+  let n = 0, res = 0, jobs = 0;
+  for (const id of ids) {
+    const b = st.buildings.get(id);
+    if (!b) continue;
+    n++;
+    res += b.pop || 0;
+    jobs += b.jobs || 0;
+  }
+  const costly = fee > CONFIRM_COST && !opts.sandbox;
+  if (!n || (!costly && res + jobs < DISPLACE_CONFIRM)) return null;
+  const what = n === 1 ? '1 building' : `${num(n)} buildings`;
+  const people = [res ? `${num(res)} residents` : '', jobs ? `${num(jobs)} jobs` : ''].filter(Boolean).join(' and ');
+  const items = [`${what} will be demolished${people ? ` — ${people} will be lost` : ''}`];
+  if (costly) items.push(`Demolition costs ${money(fee)}`);
+  return { title: `Demolish ${what}?`, items };
 }

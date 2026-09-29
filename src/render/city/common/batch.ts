@@ -11,6 +11,9 @@
  * Shadow passes can additionally be restricted to some cascades (shadowMask, per instance setShadowCascades) and skip
  * casters smaller than a few shadow texels (minShadowTexels) — shadow cameras carry `userData.cascade` /
  * `userData.texel` (see Shadows.ts) — and casters whose shadow cannot reach the visible slice (receiver volume).
+ * Guard bands: while the camera moves, a list is culled with its planes widened (translation band ~4 frames of the
+ * camera speed; perspective views also turned outward by an angular band, receivers likewise) and reused until the
+ * camera leaves the band; once the view rests it is culled exactly again.
  * Whole tiles are skipped when disabled by the owner (setTileEnabled: e.g. props beyond their LOD distance), when
  * none of their instances casts into the cascade, or when their swept box misses the receiver; tiles fully inside the
  * frustum / receiver skip the per-instance tests. Per-tile bounds / masks are recomputed lazily (exact, also after
@@ -37,46 +40,66 @@ export interface PassCullOptions {
   /** number of tile index sets (default 1): tile ids run over [0, culler tiles^2 * tileSets), e.g. one set per
    *  instance class so whole classes can be skipped per tile (tile bounds come from the instances, not the culler) */
   tileSets?: number;
-  /** main pass: cull per tile only (no per-instance frustum tests in partly visible tiles; for many small
-   *  instances such as props the per-instance tests cost more CPU than the few extra clipped vertices) */
+  /** cull per tile only, in every pass (no per-instance frustum / receiver tests in partly visible tiles; for many
+   *  small instances such as props the per-instance tests cost more CPU than the few extra clipped vertices) */
   coarse?: boolean;
 }
 
 interface PassSlot {
   camera: THREE.Camera;
+  /** draw list (grown on demand: sized to the lists, not the batch capacity) */
   starts: Int32Array;
   counts: Int32Array;
   /** instance ids of the list (copied into the indirect texture, which is sized to the list, not the capacity) */
   ids: Uint32Array;
   tex: THREE.DataTexture;
   texCap: number;
-  cap: number;
   count: number;
   version: number;
   /** geometry-swap counter the list's draw ranges were written for (see setGeometry) */
   geoVersion: number;
-  key: Float64Array;
   used: number;
-  /** camera position the list was culled at and the guard band (world units) its planes were widened by: the list
-   *  stays valid while the camera only translates, by less than the band */
+  // ---- what the list was culled for (see beforePass)
+  /** projection shape (elements 0, 5, 8, 9, 12, 13: fov / aspect / ortho extent; near / far are checked separately) */
+  shape: Float64Array;
+  /** camera orientation (unit axes) and the rotation (rad) the list tolerates (its angular band) */
+  rot: Float64Array;
+  tiltOk: number;
+  /** depth range [nearB, farB] the list covers (near / far may move inside it) */
+  nearB: number;
+  farB: number;
+  texel: number;
+  /** camera position the list was culled at and the translation band (world units) its planes were widened by */
   px: number;
   py: number;
   pz: number;
   margin: number;
-  /** receiver shape / origin the list was culled for (shadow passes; shape -1 = none) */
-  rshape: number;
+  /** list was culled with any band (re-culled exactly once the view rests) */
+  banded: boolean;
+  /** receiver (shadow passes): form counter, view orientation + tolerated rotation, origin, covered slice [rdn, rdf] */
+  rform: number;
+  rrot: Float64Array;
+  rtiltOk: number;
   rx: number;
   ry: number;
   rz: number;
-  /** consecutive frames the camera stood still (a guard-banded list is re-culled exactly once the view rests) */
+  rdn: number;
+  rdf: number;
+  // ---- motion tracking
+  /** consecutive frames the camera (and the receiver) stood still */
   still: number;
-  /** frames the current list has served; rebuilds left without a guard band (a band that was outrun or whose list
-   *  was invalidated by content changes right away only cost triangles) */
+  /** frames the current list has served; rebuilds left without a band (a band that was outrun or whose list was
+   *  invalidated by content changes right away only costs triangles) */
   uses: number;
   noBand: number;
   lx: number;
   ly: number;
   lz: number;
+  lrot: Float64Array;
+  lrrot: Float64Array;
+  lrx: number;
+  lry: number;
+  lrz: number;
 }
 
 const _frustum = new THREE.Frustum();
@@ -84,15 +107,76 @@ const _pm = new THREE.Matrix4();
 const _m4 = new THREE.Matrix4();
 /** scratch world sphere (x, y, z, r) of sphereOf() */
 const _sp = new Float64Array(4);
-/** receiver planes (nx, ny, nz, constant) x 6 and their normal . light terms, flattened for the list build's hot loops
- *  (the tests are inlined there: calls with many double arguments box numbers whenever V8 does not inline them) */
+/** frustum planes (nx, ny, nz, constant) x 6 and receiver planes x 6 + their normal . light terms, flattened for the
+ *  list build's hot loops (the tests are inlined there: calls with many double arguments box numbers whenever V8
+ *  does not inline them) */
+const _fp = new Float64Array(24);
 const _rp = new Float64Array(24);
 const _rnl = new Float64Array(6);
+/** list-build doubles handed to pushList (guard band, min caster radius, receiver ground, 1 / light dir y) */
+const _plf = new Float64Array(4);
+/** current camera orientation */
+const _rot = new Float64Array(9);
 /** frames a camera must rest before a guard-banded list is re-culled exactly */
 const SETTLE_FRAMES = 8;
+/** angular band cap (rad): wider bands keep lists through faster turns but draw more of the periphery */
+const TILT_CAP = (3 * Math.PI) / 180;
+/** rotation below this counts as none (a still, damped camera jitters by float ulps) */
+const TURN_EPS = 2e-6;
 /** max recorded texture update ranges per frame before falling back to one full upload */
 const MAX_RANGES = 96;
 let _frame = 0;
+
+/** unit axes (columns 0-2) of a world matrix -> out[9] */
+function orient(w: ArrayLike<number>, out: Float64Array): void {
+  for (let c = 0; c < 3; c++) {
+    const o = c * 4;
+    const l = Math.hypot(w[o], w[o + 1], w[o + 2]) || 1;
+    out[c * 3] = w[o] / l; out[c * 3 + 1] = w[o + 1] / l; out[c * 3 + 2] = w[o + 2] / l;
+  }
+}
+
+/** rotation angle (rad) between two orientations (unit axes) */
+function turnAngle(a: Float64Array, b: Float64Array): number {
+  let t = 0;
+  for (let i = 0; i < 9; i++) t += a[i] * b[i];
+  const c = (t - 1) / 2;
+  return c >= 1 ? 0 : c <= -1 ? Math.PI : Math.acos(c);
+}
+
+/** rotation (rad) a view cone of half-diagonal phi stays inside once its side planes are turned outward by A (the
+ *  outward turn about a plane's hinge shrinks toward the cone's corners; 10% safety) */
+function tiltHold(A: number, phi: number): number {
+  return A > 0 ? 0.9 * Math.atan(Math.cos(Math.min(1.5, phi + 2 * A)) * Math.tan(A)) : 0;
+}
+
+/** angular band for a camera turning by `turn` rad per frame: ~4 frames of the turn, capped; 0 = not worth one */
+function tiltFor(turn: number, phi: number): number {
+  if (!(turn > TURN_EPS)) return 0;
+  const hold = tiltHold(TILT_CAP, phi);
+  if (turn * 1.3 > hold) return 0;
+  const want = Math.min(hold, 4 * turn);
+  // tiltHold is ~linear in A: scale the cap down to the wanted hold (then re-check)
+  let A = TILT_CAP * (want / hold);
+  if (tiltHold(A, phi) < want) A = Math.min(TILT_CAP, A * 1.1);
+  return A;
+}
+
+/** turn the 4 side planes (through apex a) outward by A: each normal rotates toward the view direction f */
+function tiltPlanes(pl: Float64Array, fx: number, fy: number, fz: number, ax: number, ay: number, az: number, A: number): void {
+  const cA = Math.cos(A), sA = Math.sin(A);
+  for (let i = 0; i < 4; i++) {
+    const o = i * 4;
+    const nx = pl[o], ny = pl[o + 1], nz = pl[o + 2];
+    const fn = fx * nx + fy * ny + fz * nz;
+    let ux = fx - fn * nx, uy = fy - fn * ny, uz = fz - fn * nz;
+    const ul = Math.hypot(ux, uy, uz);
+    if (ul < 1e-9) continue;
+    ux /= ul; uy /= ul; uz /= ul;
+    const mx = nx * cA + ux * sA, my = ny * cA + uy * sA, mz = nz * cA + uz * sA;
+    pl[o] = mx; pl[o + 1] = my; pl[o + 2] = mz; pl[o + 3] = -(mx * ax + my * ay + mz * az);
+  }
+}
 
 export class DynamicBatch {
   mesh: THREE.BatchedMesh;
@@ -112,6 +196,10 @@ export class DynamicBatch {
    *  is reused while the camera only pans / slides by less (0 = exact lists, rebuilt on any camera move). Main
    *  passes use the view camera's distance to the ground, shadow passes the receiver's. */
   guard = 0.06;
+  /** views farther out than this (m to the ground along the view axis; shadow passes: their slice) cull per tile only
+   *  and skip the front-to-back sort: at that range instances are small (LOD proxies), overdraw is low and the lists
+   *  change every frame while zooming, so per-instance work costs more CPU than it saves GPU */
+  farReach = 2000;
   private instTile = new Int32Array(0);
   private instSlot = new Int32Array(0);
   private sph = new Float32Array(0);
@@ -192,6 +280,15 @@ export class DynamicBatch {
     return id;
   }
 
+  /** make room for `vertices` more vertices now (one reallocation, e.g. at load, instead of one while playing) */
+  reserveVertices(vertices: number): void {
+    const m = this.mesh;
+    if (m.unusedVertexCount >= vertices) return;
+    const cur = (m as any)._maxVertexCount as number;
+    const next = cur - m.unusedVertexCount + Math.ceil(vertices * 1.25);
+    m.setGeometrySize(next, next * 2);
+  }
+
   bounds(geomId: number): THREE.Box3 {
     return this.geoBounds[geomId];
   }
@@ -242,15 +339,19 @@ export class DynamicBatch {
 
   setGeometry(id: number, geomId: number): void {
     const m = this.mesh as any;
-    if (m._instanceInfo[id].geometryIndex === geomId) return;
+    const prevGeom = m._instanceInfo[id].geometryIndex as number;
+    if (prevGeom === geomId) return;
     this.mesh.setGeometryIdAt(id, geomId);
     if (!this.pc) { this.touch(); return; }
     this.instGeo[id] = geomId;
     this.bumpTile(id);
     // cached draw lists stay valid while the instance's culling sphere still bounds the new geometry (LOD swaps, see
     // shareSphere): they only refresh their draw ranges (no re-cull, no indirect texture upload). Otherwise the
-    // sphere is rewritten exactly and the lists are rebuilt.
-    if (!this.pc.dynamic) {
+    // sphere is rewritten exactly and the lists are rebuilt. Geometries sharing one culling sphere (model + proxy)
+    // skip the check.
+    const ga = this.geoSphere[prevGeom], gb = this.geoSphere[geomId];
+    const shared = ga && gb && ga.radius === gb.radius && ga.center.equals(gb.center) && this.sph[id * 4 + 3] >= 0;
+    if (!this.pc.dynamic && !shared) {
       this.mesh.getMatrixAt(id, _m4);
       const p = this.sph, o = id * 4;
       if (!this.sphereOf(geomId, _m4) || p[o + 3] < 0) this.writeSphere(id, _m4, true);
@@ -326,7 +427,10 @@ export class DynamicBatch {
     this.matFull = true;
     tex.needsUpdate = true;
     if (this.pc?.dynamic) this.version++;
-    if (this.mesh.castShadow) shadowCasters.version++;
+    if (this.mesh.castShadow) {
+      shadowCasters.version++;
+      if (this.pc?.dynamic) shadowCasters.dynamic++;
+    }
   }
 
   private noteRange(tex: THREE.DataTexture, start: number, count: number, mat: boolean): void {
@@ -515,7 +619,6 @@ export class DynamicBatch {
   }
 
   private slotFor(camera: THREE.Camera): PassSlot {
-    const m = this.mesh as any;
     let s = this.slots.find((x) => x.camera === camera);
     if (!s) {
       if (this.slots.length >= 6) {
@@ -525,21 +628,25 @@ export class DynamicBatch {
         old.tex?.dispose();
       }
       s = {
-        camera, starts: new Int32Array(0), counts: new Int32Array(0), ids: new Uint32Array(0), tex: null as unknown as THREE.DataTexture, texCap: 0, cap: -1, count: 0,
-        version: -1, geoVersion: -1, key: new Float64Array(17), used: 0, px: 0, py: 0, pz: 0, margin: 0, rshape: -1, rx: 0, ry: 0, rz: 0, still: 0, lx: NaN, ly: NaN, lz: NaN, uses: 0, noBand: 0,
+        camera, starts: new Int32Array(64), counts: new Int32Array(64), ids: new Uint32Array(64), tex: null as unknown as THREE.DataTexture, texCap: 0, count: 0,
+        version: -1, geoVersion: -1, used: 0,
+        shape: new Float64Array(6), rot: new Float64Array(9), tiltOk: 0, nearB: 0, farB: 0, texel: -1, px: 0, py: 0, pz: 0, margin: 0, banded: false,
+        rform: -1, rrot: new Float64Array(9), rtiltOk: 0, rx: 0, ry: 0, rz: 0, rdn: 0, rdf: 0,
+        still: 0, uses: 0, noBand: 0, lx: NaN, ly: NaN, lz: NaN, lrot: new Float64Array(9), lrrot: new Float64Array(9), lrx: NaN, lry: NaN, lrz: NaN,
       };
       this.slots.push(s);
     }
-    const cap = m._maxInstanceCount as number;
-    if (s.cap !== cap) {
-      s.starts = new Int32Array(cap);
-      s.counts = new Int32Array(cap);
-      s.ids = new Uint32Array(cap);
-      s.cap = cap;
-      s.version = -1;
-    }
     s.used = _frame;
     return s;
+  }
+
+  /** grow a slot's list arrays to hold `need` entries (keeps the first n) */
+  private ensureList(s: PassSlot, need: number, n: number): void {
+    if (s.starts.length >= need) return;
+    const cap = Math.max(need, Math.ceil(s.starts.length * 1.5), 64);
+    const st = new Int32Array(cap), ct = new Int32Array(cap), id = new Uint32Array(cap);
+    st.set(s.starts.subarray(0, n)); ct.set(s.counts.subarray(0, n)); id.set(s.ids.subarray(0, n));
+    s.starts = st; s.counts = ct; s.ids = id;
   }
 
   private beforePass(renderer: THREE.WebGLRenderer, camera: THREE.Camera, geometry: THREE.BufferGeometry, material: THREE.Material, shadow: boolean): void {
@@ -558,23 +665,37 @@ export class DynamicBatch {
       return;
     }
     const s = this.slotFor(camera);
-    _pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    const e = _pm.elements, w = camera.matrixWorld.elements;
-    const k = s.key;
+    const w = camera.matrixWorld.elements, P = camera.projectionMatrix.elements;
     const texel = shadow ? ((camera.userData.texel as number | undefined) ?? 0) : 0;
     const recv = shadow ? ((camera.userData.recv as ShadowReceiver | undefined) ?? null) : null;
-    // a list stays valid while the content, the camera's rotation / projection (columns 0-2 of proj * view; a
-    // translation only changes column 3) and the receiver's shape are unchanged and the camera (and the receiver)
-    // moved by less than the guard band the list was culled with. Small tolerance: a still, damped camera jitters by
-    // float ulps.
-    let turned = k[16] !== texel || (recv ? recv.shape : -1) !== s.rshape;
-    for (let i = 0; i < 12 && !turned; i++) if (Math.abs(k[i] - e[i]) > 1e-7 * Math.max(1, Math.abs(e[i]))) turned = true;
-    let same = s.version === this.version && !turned;
-    // camera speed (world units per pass of this slot, ~per frame); a damped camera settling by less than a
-    // millimetre counts as still
+    const cam = camera as THREE.PerspectiveCamera;
+    const persp = cam.isPerspectiveCamera === true;
+    const near = typeof cam.near === 'number' ? cam.near : 0, far = typeof cam.far === 'number' ? cam.far : Infinity;
+    orient(w, _rot);
+    // motion since this slot's previous pass (~per frame): camera translation / rotation, receiver (view) likewise;
+    // a damped camera settling by less than a millimetre counts as still
     const step = s.lx === s.lx ? Math.hypot(w[12] - s.lx, w[13] - s.ly, w[14] - s.lz) : Infinity;
+    const turn = s.lx === s.lx ? turnAngle(_rot, s.lrot) : Infinity;
     s.lx = w[12]; s.ly = w[13]; s.lz = w[14];
-    s.still = step > 1e-3 ? 0 : s.still + 1;
+    s.lrot.set(_rot);
+    let rstep = 0, rturn = 0;
+    if (recv) {
+      const o = recv.origin;
+      rstep = s.lrx === s.lrx ? Math.hypot(o.x - s.lrx, o.y - s.lry, o.z - s.lrz) : Infinity;
+      rturn = s.lrx === s.lrx ? turnAngle(recv.rot, s.lrrot) : Infinity;
+      s.lrx = o.x; s.lry = o.y; s.lrz = o.z;
+      s.lrrot.set(recv.rot);
+    }
+    s.still = step > 1e-3 || turn > TURN_EPS || rstep > 1e-3 || rturn > TURN_EPS ? 0 : s.still + 1;
+    // a list stays valid while the content, the projection shape and the texel are unchanged, near / far stay within
+    // the depth range it was culled for, and the camera turned / moved by less than its bands (receiver likewise)
+    let same = s.version === this.version && s.texel === texel && near >= s.nearB && far <= s.farB;
+    if (same) {
+      const sh = s.shape;
+      const tol = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a));
+      if (!tol(P[0], sh[0]) || !tol(P[5], sh[1]) || !tol(P[8], sh[2]) || !tol(P[9], sh[3]) || !tol(P[12], sh[4]) || !tol(P[13], sh[5])) same = false;
+    }
+    if (same && turnAngle(_rot, s.rot) > Math.max(TURN_EPS, s.tiltOk)) same = false;
     if (same) {
       const tol = s.margin + 1e-6 * (1 + Math.abs(w[12]) + Math.abs(w[13]) + Math.abs(w[14]));
       const dx = w[12] - s.px, dy = w[13] - s.py, dz = w[14] - s.pz;
@@ -582,30 +703,50 @@ export class DynamicBatch {
       else if (recv) {
         const o = recv.origin, ex = o.x - s.rx, ey = o.y - s.ry, ez = o.z - s.rz;
         if (ex * ex + ey * ey + ez * ez > tol * tol) same = false;
+        else if (recv.form !== s.rform || recv.dn < s.rdn * (1 - 1e-9) - 1e-6 || recv.df > s.rdf * (1 + 1e-9) + 1e-6) same = false;
+        else if (turnAngle(recv.rot, s.rrot) > Math.max(TURN_EPS, s.rtiltOk)) same = false;
       }
-      // the view came to rest: cull exactly once (no guard band drawn while nothing moves)
-      if (same && s.margin > 0 && s.still === SETTLE_FRAMES) same = false;
+      // the view came to rest: cull exactly once (no band drawn while nothing moves)
+      if (same && s.banded && s.still === SETTLE_FRAMES) same = false;
     }
     if (!same) {
       // a banded list that served a single frame bought nothing: build the next few lists exactly
-      if (s.margin > 0 && s.uses < 2) s.noBand = 8;
+      if (s.banded && s.uses < 2) s.noBand = 8;
       else if (s.noBand > 0) s.noBand--;
       s.uses = 1;
-      for (let i = 0; i < 16; i++) k[i] = e[i];
-      k[16] = texel;
       s.version = this.version;
       s.geoVersion = this.geoVersion;
+      s.texel = texel;
+      s.shape[0] = P[0]; s.shape[1] = P[5]; s.shape[2] = P[8]; s.shape[3] = P[9]; s.shape[4] = P[12]; s.shape[5] = P[13];
+      s.rot.set(_rot);
       s.px = w[12]; s.py = w[13]; s.pz = w[14];
-      s.rshape = recv ? recv.shape : -1;
-      if (recv) { s.rx = recv.origin.x; s.ry = recv.origin.y; s.rz = recv.origin.z; }
-      // guard band: ~4 frames of the current camera speed, at most `guard` x the view distance (capped: far views
-      // are GPU-bound and their pans fast, a wide band would mostly add triangles); none for a resting view, while
-      // the view turns / zooms (a rotated frustum invalidates the list anyway) or when the camera moves too fast for
-      // the band to outlast a frame or so (it would only enlarge every list)
+      // bands: translation ~4 frames of the camera speed, at most `guard` x the view distance (capped: far views are
+      // GPU-bound and their pans fast, a wide band would mostly add triangles); perspective views turning add an
+      // angular band (~4 frames of the turn, <= TILT_CAP), receivers one for the view's turn. None for a resting
+      // view, for dynamic batches, or when the camera moves too fast for a band to outlast a frame or so.
       const reach = recv ? recv.reach : shadow ? 0 : viewReach(camera);
-      const cap = this.guard * Math.min(reach, 1500);
-      s.margin = cap > 0 && !turned && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0 && step < cap * 0.75 ? Math.min(cap, 4 * step) : 0;
-      this.build(s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, recv);
+      const cap = this.guard * Math.min(reach, 3000);
+      const bandOk = cap > 0 && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0;
+      // (shadow passes: the band must also cover the receiver, which moves with the view, not the shadow camera)
+      const move = Math.max(step, rstep);
+      s.margin = bandOk && move < cap * 0.75 ? Math.min(cap, 4 * move) : 0;
+      const phi = persp ? Math.atan(Math.hypot(1 / P[0], 1 / P[5]) + Math.hypot(P[8] / P[0], P[9] / P[5])) : 0;
+      const tilt = bandOk && persp ? tiltFor(turn, phi) : 0;
+      s.tiltOk = tiltHold(tilt, phi);
+      const rtilt = bandOk && recv && recv.phi > 0 ? tiltFor(rturn, recv.phi) : 0;
+      s.rtiltOk = tiltHold(rtilt, recv ? recv.phi : 0);
+      s.banded = s.margin > 0 || tilt > 0 || rtilt > 0;
+      // depth range: exact, or with slack while banded (near / far follow the zoom every frame)
+      s.nearB = s.banded ? near * 0.5 : near;
+      s.farB = s.banded ? far * 1.25 : far;
+      if (recv) {
+        s.rform = recv.form;
+        s.rrot.set(recv.rot);
+        s.rx = recv.origin.x; s.ry = recv.origin.y; s.rz = recv.origin.z;
+        s.rdn = s.banded ? recv.dn * 0.5 : recv.dn;
+        s.rdf = s.banded ? recv.df * 1.1 : recv.df;
+      }
+      this.build(s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, recv, tilt, phi, rtilt, reach > this.farReach);
     } else {
       s.uses++;
       if (s.geoVersion !== this.geoVersion) {
@@ -620,84 +761,70 @@ export class DynamicBatch {
     m._visibilityChanged = false;
   }
 
-  private build(s: PassSlot, cascade: number, texel: number, geometry: THREE.BufferGeometry, recv: ShadowReceiver | null): void {
+  /** planes of the list build -> _fp (view / shadow camera) and _rp / _rnl (receiver), widened by the slot's bands */
+  private cullPlanes(s: PassSlot, recv: ShadowReceiver | null, tilt: number, phi: number, rtilt: number): void {
+    const cam = s.camera;
+    _frustum.setFromProjectionMatrix(_pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse), cam.coordinateSystem, (cam as any).reversedDepth);
+    const fp = _fp, mr = s.margin;
+    for (let i = 0; i < 6; i++) {
+      const pl = _frustum.planes[i], n = pl.normal, o = i * 4;
+      fp[o] = n.x; fp[o + 1] = n.y; fp[o + 2] = n.z; fp[o + 3] = pl.constant;
+    }
+    if (s.banded) {
+      const w = cam.matrixWorld.elements;
+      const ax = w[12], ay = w[13], az = w[14];
+      // view direction (-Z axis)
+      const fx = -s.rot[6], fy = -s.rot[7], fz = -s.rot[8];
+      if (tilt > 0) tiltPlanes(fp, fx, fy, fz, ax, ay, az, tilt);
+      for (let i = 0; i < 4; i++) fp[i * 4 + 3] += mr;
+      // depth planes rebuilt for the covered range [nearB, farB] (turning moves a cone's depth by up to cos(phi -+ t))
+      const t = s.tiltOk, kn = tilt > 0 ? Math.cos(Math.min(1.5, phi + t)) / Math.cos(phi) : 1, kf = tilt > 0 ? Math.cos(Math.max(0, phi - t)) / Math.cos(phi) : 1;
+      const fa = fx * ax + fy * ay + fz * az;
+      const nd = s.nearB * kn - mr, fd = s.farB * kf + mr;
+      fp[16] = -fx; fp[17] = -fy; fp[18] = -fz; fp[19] = fa + fd; // far
+      fp[20] = fx; fp[21] = fy; fp[22] = fz; fp[23] = -fa - nd; // near
+    }
+    if (!recv) return;
+    const rp = _rp, rnl = _rnl, d = recv.dir;
+    for (let i = 0; i < 6; i++) {
+      const pl = recv.planes[i], n = pl.normal, o = i * 4;
+      rp[o] = n.x; rp[o + 1] = n.y; rp[o + 2] = n.z; rp[o + 3] = pl.constant;
+    }
+    if (s.banded) {
+      const o = recv.origin, f = recv.fwd, rph = recv.phi;
+      if (rtilt > 0) tiltPlanes(rp, f.x, f.y, f.z, o.x, o.y, o.z, rtilt);
+      for (let i = 0; i < 4; i++) rp[i * 4 + 3] += mr;
+      const t = s.rtiltOk, kn = rtilt > 0 ? Math.cos(Math.min(1.5, rph + t)) / Math.cos(rph) : 1, kf = rtilt > 0 ? Math.cos(Math.max(0, rph - t)) / Math.cos(rph) : 1;
+      const fo = f.x * o.x + f.y * o.y + f.z * o.z;
+      const nd = s.rdn * kn - mr, fd = s.rdf * kf + mr;
+      rp[16] = -f.x; rp[17] = -f.y; rp[18] = -f.z; rp[19] = fo + fd; // far
+      rp[20] = f.x; rp[21] = f.y; rp[22] = f.z; rp[23] = -fo - nd; // near
+    }
+    for (let i = 0; i < 6; i++) rnl[i] = rp[i * 4] * d.x + rp[i * 4 + 1] * d.y + rp[i * 4 + 2] * d.z;
+  }
+
+  /** build a pass list; far: the view is far out (tile-level culling only, no front-to-back sort) */
+  private build(s: PassSlot, cascade: number, texel: number, geometry: THREE.BufferGeometry, recv: ShadowReceiver | null, tilt: number, phi: number, rtilt: number, far = false): void {
     const pc = this.pc!;
     const m = this.mesh as any;
     let n = 0;
     if (cascade < 0 || (pc.shadowMask! >> cascade) & 1) {
-      _frustum.setFromProjectionMatrix(_pm, s.camera.coordinateSystem, (s.camera as any).reversedDepth);
-      const planes = _frustum.planes;
-      // guard band: widen every plane (and the receiver tests) so the list also covers the camera translated by it
-      const mr = s.margin;
-      if (mr > 0) for (let p = 0; p < 6; p++) planes[p].constant += mr;
+      this.cullPlanes(s, recv, tilt, phi, rtilt);
+      const fp = _fp, rp = _rp, rnl = _rnl;
       this.drawRanges(geometry);
       const gS = this.gStart, gC = this.gCount;
-      const starts = s.starts, counts = s.counts, ind = s.ids;
       const minR = cascade >= 0 ? pc.minShadowTexels! * texel * 0.5 : 0;
-      const sph = this.sph;
       const dyn = pc.dynamic;
       const mat = dyn ? (m._matricesTexture.image.data as Float32Array) : null;
       const cbit = cascade >= 0 ? 1 << cascade : 0;
-      const imask = this.instMask, vis = this.instVis, geo = this.instGeo, gsph = this.geoSphere;
-      const coarse = pc.coarse === true, cls = cascade < 0 ? 0 : Math.min(2, cascade + 1);
-      const rp = _rp, rnl = _rnl;
+      const imask = this.instMask, vis = this.instVis, geo = this.instGeo;
+      const coarse = pc.coarse === true || far, cls = cascade < 0 ? 0 : Math.min(2, cascade + 1);
       let rGround = 0, rInv = 0;
       if (recv) {
-        for (let i = 0; i < 6; i++) {
-          const pl = recv.planes[i], nn = pl.normal;
-          rp[i * 4] = nn.x; rp[i * 4 + 1] = nn.y; rp[i * 4 + 2] = nn.z; rp[i * 4 + 3] = pl.constant;
-          rnl[i] = recv.nl[i];
-        }
         rGround = recv.ground;
         rInv = 1 / Math.max(recv.dir.y, 0.05);
       }
-      // test: per-instance frustum test; size / rcv: per-instance caster size / receiver tests (shadow passes)
-      const pushList = (list: number[], test: boolean, size: boolean, rcv: boolean) => {
-        for (let j = 0; j < list.length; j++) {
-          const id = list[j];
-          if (!vis[id]) continue;
-          if (cbit && !(imask[id] & cbit)) continue;
-          const gid = geo[id];
-          if (test || size || rcv) {
-            let cx: number, cy: number, cz: number, r: number;
-            if (mat) {
-              const gs = gsph[gid];
-              const o = id * 16;
-              cx = mat[o + 12]; cy = mat[o + 13]; cz = mat[o + 14];
-              r = gs.radius + gs.center.length();
-            } else {
-              const o = id * 4;
-              cx = sph[o]; cy = sph[o + 1]; cz = sph[o + 2]; r = sph[o + 3];
-            }
-            if (size && r < minR) continue;
-            // shadow passes: only casters whose shadow (the sphere swept away from the light down to the ground) can
-            // reach the visible part of this cascade (receiverSweepSphere, band-widened)
-            if (rcv) {
-              const rr = r + mr;
-              const T = Math.min(6000, Math.max(0, (cy + rr - rGround) * rInv));
-              let hit = true;
-              for (let i = 0; i < 6; i++) {
-                const o = i * 4;
-                const d0 = rp[o] * cx + rp[o + 1] * cy + rp[o + 2] * cz + rp[o + 3];
-                if (d0 < -rr && d0 - T * rnl[i] < -rr) { hit = false; break; }
-              }
-              if (!hit) continue;
-            }
-            if (test) {
-              let out = false;
-              for (let p = 0; p < 6; p++) {
-                const pl = planes[p], nn = pl.normal;
-                if (nn.x * cx + nn.y * cy + nn.z * cz + pl.constant < -r) { out = true; break; }
-              }
-              if (out) continue;
-            }
-          }
-          starts[n] = gS[gid];
-          counts[n] = gC[gid];
-          ind[n] = id;
-          n++;
-        }
-      };
+      _plf[0] = s.margin; _plf[1] = minR; _plf[2] = rGround; _plf[3] = rInv;
       if (!dyn) {
         const tb = this.tileBox, off = this.tileOff, dirty = this.tileDirty, tmask = this.tileMask, tminR = this.tileMinR;
         for (let ti = 0; ti < this.tileLists.length; ti++) {
@@ -705,29 +832,27 @@ export class DynamicBatch {
           if (!list.length || off[ti]) continue;
           if (dirty[ti]) this.tileStats(ti);
           if (cbit && !(tmask[ti] & cbit)) continue;
+          if (s.starts.length < n + list.length) this.ensureList(s, n + list.length, n);
           const k = ti * 6;
           const x0 = tb[k], y0 = tb[k + 1], z0 = tb[k + 2], x1 = tb[k + 3], y1 = tb[k + 4], z1 = tb[k + 5];
-          if (!(x1 >= x0) || !Number.isFinite(x0 + x1)) { pushList(list, true, minR > 0, recv !== null); continue; }
+          if (!(x1 >= x0) || !Number.isFinite(x0 + x1)) { n = this.pushList(s, list, true, minR > 0, recv !== null, n, cbit, mat); continue; }
           let inside = true, outside = false;
           for (let p = 0; p < 6; p++) {
-            const pl = planes[p], nn = pl.normal;
+            const o = p * 4, nx = fp[o], ny = fp[o + 1], nz = fp[o + 2], c = fp[o + 3];
             // p-vertex (farthest along the normal) and n-vertex
-            const px = nn.x > 0 ? x1 : x0, py = nn.y > 0 ? y1 : y0, pz = nn.z > 0 ? z1 : z0;
-            if (nn.x * px + nn.y * py + nn.z * pz + pl.constant < 0) { outside = true; break; }
-            const qx = nn.x > 0 ? x0 : x1, qy = nn.y > 0 ? y0 : y1, qz = nn.z > 0 ? z0 : z1;
-            if (nn.x * qx + nn.y * qy + nn.z * qz + pl.constant < 0) inside = false;
+            if (nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + c < 0) { outside = true; break; }
+            if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + c < 0) inside = false;
           }
           if (outside) continue;
-          // receiver: skip the tile if no caster in it can shadow the visible slice (receiverSweepBox of the band-widened
-          // box); no per-instance test if the whole tile lies inside the slice (receiverContainsBox)
+          // receiver: skip the tile if no caster in it can shadow the visible slice (receiverSweepBox; the band is in
+          // the planes); no per-instance test if the whole tile lies inside the slice (receiverContainsBox)
           let rcv = false;
           if (recv) {
-            const bx0 = x0 - mr, by0 = y0 - mr, bz0 = z0 - mr, bx1 = x1 + mr, by1 = y1 + mr, bz1 = z1 + mr;
-            const T = Math.min(6000, Math.max(0, (by1 - rGround) * rInv));
+            const T = Math.min(6000, Math.max(0, (y1 - rGround) * rInv));
             let hit = true;
             for (let i = 0; i < 6; i++) {
               const o = i * 4, nx = rp[o], ny = rp[o + 1], nz = rp[o + 2];
-              const d = nx * (nx > 0 ? bx1 : bx0) + ny * (ny > 0 ? by1 : by0) + nz * (nz > 0 ? bz1 : bz0) + rp[o + 3];
+              const d = nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + rp[o + 3];
               if (d < 0 && d - T * rnl[i] < 0) { hit = false; break; }
             }
             if (!hit) continue;
@@ -736,8 +861,9 @@ export class DynamicBatch {
               if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + rp[o + 3] < 0) { rcv = true; break; }
             }
           }
-          const test = !inside && !(coarse && cascade < 0), size = minR > 0 && tminR[ti] < minR;
-          if (test || size || rcv) { pushList(list, test, size, rcv); continue; }
+          const test = !inside && !coarse, size = minR > 0 && tminR[ti] < minR;
+          if (coarse) rcv = false;
+          if (test || size || rcv) { n = this.pushList(s, list, test, size, rcv, n, cbit, mat); continue; }
           // every visible instance of the tile (with the cascade bit) is drawn: copy its cached block
           const ck = ti * 3 + cls;
           let cc = this.tileCache[ck];
@@ -754,13 +880,15 @@ export class DynamicBatch {
             cc.ver = this.tileVer[ti];
           }
           // (element loop: subarray() views would allocate three objects per tile)
+          const starts = s.starts, counts = s.counts, ind = s.ids;
           const cs = cc.s, ccn = cc.c, ci = cc.i, cn = cc.n;
           for (let j = 0; j < cn; j++) { starts[n + j] = cs[j]; counts[n + j] = ccn[j]; ind[n + j] = ci[j]; }
           n += cn;
         }
       }
-      pushList(this.untiled, true, minR > 0, recv !== null);
-      if (cascade < 0 && this.sortFront && !dyn && n > 1) this.sortList(s, n, ind);
+      if (s.starts.length < n + this.untiled.length) this.ensureList(s, n + this.untiled.length, n);
+      n = this.pushList(s, this.untiled, true, minR > 0, recv !== null, n, cbit, mat);
+      if (cascade < 0 && this.sortFront && !dyn && !far && n > 1) this.sortList(s, n);
     }
     s.count = n;
     // indirect (instance id) texture sized to the list (power-of-two side, grown / shrunk with slack): a rebuild uploads
@@ -773,6 +901,62 @@ export class DynamicBatch {
     }
     (s.tex.image.data as unknown as Uint32Array).set(s.ids.subarray(0, n));
     s.tex.needsUpdate = true;
+  }
+
+  /**
+   * List-build inner loop over one instance list (a method, not a per-build closure: no allocation, stable JIT
+   * feedback). test: per-instance frustum test; size / rcv: per-instance caster size / receiver tests (shadow
+   * passes). Planes in _fp / _rp, doubles in _plf. The caller made room for list.length more entries. Returns n.
+   */
+  private pushList(s: PassSlot, list: number[], test: boolean, size: boolean, rcv: boolean, n: number, cbit: number, mat: Float32Array | null): number {
+    const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3];
+    const vis = this.instVis, imask = this.instMask, geo = this.instGeo, gsph = this.geoSphere, sph = this.sph, gS = this.gStart, gC = this.gCount;
+    const fp = _fp, rp = _rp, rnl = _rnl;
+    const starts = s.starts, counts = s.counts, ind = s.ids;
+    for (let j = 0; j < list.length; j++) {
+      const id = list[j];
+      if (!vis[id]) continue;
+      if (cbit && !(imask[id] & cbit)) continue;
+      const gid = geo[id];
+      if (test || size || rcv) {
+        let cx: number, cy: number, cz: number, r: number;
+        if (mat) {
+          const gs = gsph[gid];
+          const o = id * 16;
+          cx = mat[o + 12]; cy = mat[o + 13]; cz = mat[o + 14];
+          r = gs.radius + gs.center.length();
+        } else {
+          const o = id * 4;
+          cx = sph[o]; cy = sph[o + 1]; cz = sph[o + 2]; r = sph[o + 3];
+        }
+        if (size && r < minR) continue;
+        // shadow passes: only casters whose shadow (the sphere swept away from the light down to the ground) can reach
+        // the visible part of this cascade (receiverSweepSphere; the band is in the planes)
+        if (rcv) {
+          const T = Math.min(6000, Math.max(0, (cy + r + mr - rGround) * rInv));
+          let hit = true;
+          for (let i = 0; i < 6; i++) {
+            const o = i * 4;
+            const d0 = rp[o] * cx + rp[o + 1] * cy + rp[o + 2] * cz + rp[o + 3];
+            if (d0 < -r && d0 - T * rnl[i] < -r) { hit = false; break; }
+          }
+          if (!hit) continue;
+        }
+        if (test) {
+          let out = false;
+          for (let p = 0; p < 6; p++) {
+            const o = p * 4;
+            if (fp[o] * cx + fp[o + 1] * cy + fp[o + 2] * cz + fp[o + 3] < -r) { out = true; break; }
+          }
+          if (out) continue;
+        }
+      }
+      starts[n] = gS[gid];
+      counts[n] = gC[gid];
+      ind[n] = id;
+      n++;
+    }
+    return n;
   }
 
   /** draw range (index start in bytes, count) per geometry id -> gStart / gCount */
@@ -793,12 +977,12 @@ export class DynamicBatch {
   }
 
   /** counting sort of the first n list entries by distance from the camera (sqrt-spaced buckets: fine up close) */
-  private sortList(s: PassSlot, n: number, ind: Uint32Array): void {
+  private sortList(s: PassSlot, n: number): void {
     const e = s.camera.matrixWorld.elements;
     const px = e[12], py = e[13], pz = e[14];
-    if (this.sortKey.length < n) { this.sortKey = new Uint8Array(s.cap); this.sortTmp = new Int32Array(s.cap * 3); }
+    if (this.sortKey.length < n) { const c = Math.ceil(n * 1.25); this.sortKey = new Uint8Array(c); this.sortTmp = new Int32Array(c * 3); }
     const key = this.sortKey, tmp = this.sortTmp, cnt = this.sortCnt, sph = this.sph;
-    const starts = s.starts, counts = s.counts;
+    const starts = s.starts, counts = s.counts, ind = s.ids;
     cnt.fill(0);
     for (let i = 0; i < n; i++) {
       const o = ind[i] * 4;
@@ -814,9 +998,7 @@ export class DynamicBatch {
       const j = cnt[key[i]]++;
       tmp[j] = starts[i]; tmp[T1 + j] = counts[i]; tmp[T2 + j] = ind[i];
     }
-    starts.set(tmp.subarray(0, n));
-    counts.set(tmp.subarray(T1, T2));
-    for (let i = 0; i < n; i++) ind[i] = tmp[T2 + i];
+    for (let i = 0; i < n; i++) { starts[i] = tmp[i]; counts[i] = tmp[T1 + i]; ind[i] = tmp[T2 + i]; }
   }
 
   dispose(): void {

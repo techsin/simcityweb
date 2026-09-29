@@ -83,6 +83,8 @@ uniform sampler2D tBloom;
 uniform float uAoOn;
 uniform float uAoIntensity;
 uniform float uAoFade;
+/** AO target size (px); < the scene size: joint bilateral upsample (depth-weighted 2x2), not plain bilinear */
+uniform vec2 uAoSize;
 uniform float uBloomOn;
 uniform float uBloomStrength;
 uniform float uExposure;
@@ -137,8 +139,25 @@ void main() {
   float depth = texture2D(tDepth, vUv).x;
   float dist;
   if (uAoOn > 0.5 && depth < 1.0) {
-    float ao = texture2D(tAO, vUv).r;
     vec3 vp = fogViewPos(vUv, depth);
+    float ao;
+    if (uAoSize.x < uResolution.x * 0.9) {
+      // half-res AO: bilinear weights x depth similarity of the 4 AO texels' own depths, so occlusion does not bleed
+      // across silhouettes (a dark halo of the building behind on the facade in front, or the reverse)
+      vec2 at = 1.0 / uAoSize;
+      vec2 pp = vUv * uAoSize - 0.5;
+      vec2 fr = fract(pp), b0 = (floor(pp) + 0.5) * at;
+      float zc = -vp.z, sw = 0.0, sa = 0.0;
+      for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++) {
+        vec2 uv = b0 + vec2(float(i), float(j)) * at;
+        float zi = -fogViewPos(uv, texture2D(tDepth, uv).x).z;
+        float wb = (i == 0 ? 1.0 - fr.x : fr.x) * (j == 0 ? 1.0 - fr.y : fr.y);
+        float wd = 1.0 / (1e-3 + abs(zi - zc) / max(zc, 1.0) * 40.0);
+        sw += wb * wd;
+        sa += texture2D(tAO, uv).r * wb * wd;
+      }
+      ao = sw > 0.0 ? sa / sw : texture2D(tAO, vUv).r;
+    } else ao = texture2D(tAO, vUv).r;
     float fade = 1.0 - smoothstep(uAoFade * 0.5, uAoFade, length(vp));
     col *= mix(1.0, ao, uAoIntensity * fade);
   }
@@ -364,6 +383,7 @@ export class PostFX {
         tAO: { value: null },
         tBloom: { value: null },
         uAoOn: { value: 0 },
+        uAoSize: { value: new THREE.Vector2(1, 1) },
         uAoIntensity: { value: 0.85 },
         uAoFade: { value: 3000 },
         uBloomOn: { value: 0 },
@@ -504,6 +524,16 @@ export class PostFX {
     this.compositeMat.uniforms.uResolution.value.set(w, h);
   }
 
+  /** compile the programs of every object in `scene` for the scene pass (same render target -> same tone mapping /
+   *  colour space variant as render()) */
+  compileScene(scene: THREE.Scene, camera: THREE.Camera): void {
+    const r = this.renderer;
+    const prev = r.getRenderTarget();
+    r.setRenderTarget(this.sceneRT);
+    r.compile(scene, camera);
+    r.setRenderTarget(prev);
+  }
+
   /** Render the full frame. target = null -> canvas. `camera` may be perspective or orthographic. */
   render(scene: THREE.Scene, camera: THREE.Camera, target: THREE.WebGLRenderTarget | null = null) {
     const r = this.renderer;
@@ -552,6 +582,7 @@ export class PostFX {
       r.setRenderTarget(this.aoRT);
       this.quad.render(r);
       cm.tAO.value = this.aoRT.texture;
+      cm.uAoSize.value.set(this.aoRT.width, this.aoRT.height);
     }
     cm.uAoOn.value = useAO ? 1 : 0;
 

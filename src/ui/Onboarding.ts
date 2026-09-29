@@ -1,10 +1,12 @@
 /**
  * "Getting started" card for a player's first city: five steps that tick themselves off from the city state, with
  * buttons that open the right tool and pulsing coach marks on the matching toolbar / top-bar buttons.
- * Dismissal is remembered in localStorage (per browser, not per city).
+ * Dismissal is remembered in localStorage (per browser, not per city). The "all set" toast adds a fire-station tip when
+ * a fuel-burning plant stands without one (an early plant accident could burn the city's only plant down).
  */
 import { getDef } from '../sim/catalog';
-import { zoneFamily, type Zone } from '../core/types';
+import { BF, type Building } from '../sim/CityState';
+import { isRoad, zoneFamily, type Network, type Zone } from '../core/types';
 import { isGrowZone } from '../sim/economy/tuning';
 import { infraFlags } from '../sim/economy/runtime';
 import type { GameContext } from '../game/context';
@@ -46,6 +48,24 @@ function hasCategory(ctx: GameContext, cat: string): boolean {
     const d = getDef(b.def);
     if (d?.category === cat && !/pylon/.test(d.id)) return true;
   }
+  return false;
+}
+
+/** a standing plant that burns fuel / garbage (industrial accidents can set it on fire; advisors 'plantNoFire') */
+function riskyPlant(ctx: GameContext): Building | null {
+  for (const b of ctx.state.buildings.values()) {
+    const d = getDef(b.def);
+    if (d && (d.powerOut ?? 0) > 0 && (d.pollution?.air ?? 0) > 0 && !(b.flags & BF.Burnt)) return b;
+  }
+  return null;
+}
+
+/** a road cell 4-adjacent to the footprint (fire trucks can reach the building) */
+function besideRoad(ctx: GameContext, b: Building): boolean {
+  const st = ctx.state, N = st.size;
+  const road = (x: number, z: number) => x >= 0 && z >= 0 && x < N && z < N && isRoad(st.network[z * N + x] as Network);
+  for (let x = b.x; x < b.x + b.w; x++) if (road(x, b.z - 1) || road(x, b.z + b.d)) return true;
+  for (let z = b.z; z < b.z + b.d; z++) if (road(b.x - 1, z) || road(b.x + b.w, z)) return true;
   return false;
 }
 
@@ -274,7 +294,13 @@ export class Onboarding {
         this.doneAt = performance.now();
         this.el.classList.add('complete');
         this.ctx.sound('reward');
-        this.ctx.toast("You're all set, Mayor! Watch the RCI meter to see what your city needs next.", 'good', undefined, 'Getting started');
+        // a fuel-burning plant and no fire station: one industrial accident can burn a young city's only plant down
+        const plant = hasCategory(this.ctx, 'fire') ? null : riskyPlant(this.ctx);
+        const name = plant ? getDef(plant.def)?.name ?? 'power plant' : '';
+        const tip = !plant ? '' : besideRoad(this.ctx, plant)
+          ? ` Next, build a Fire Station near your ${name} — an accident there could burn it down.`
+          : ` Next, build a Fire Station and a road to your ${name} (fire trucks need one) — an accident there could burn it down.`;
+        this.ctx.toast(`You're all set, Mayor!${tip} Watch the RCI meter to see what your city needs next.`, 'good', plant ? { x: plant.x + (plant.w >> 1), z: plant.z + (plant.d >> 1) } : undefined, 'Getting started');
       } else if (performance.now() - this.doneAt > 6000) this.hide(true);
     }
   }

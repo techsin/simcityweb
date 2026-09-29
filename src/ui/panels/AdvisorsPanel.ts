@@ -1,5 +1,10 @@
-/** Advisors (status + latest advice) and the full news feed. */
+/**
+ * Advisors (status + advice) and the full news feed. Each advisor card shows its open issues (advice whose condition
+ * still holds, highest priority first: sim/economy/advisors openAdvice) — else its latest message of the last 90 days,
+ * else its own assessment. An open 'bad' / 'warning' issue also colours the status dot (and 'bad' counts for the badge).
+ */
 import type { NewsItem } from '../../sim/CityState';
+import { openAdvice, type OpenAdvice } from '../../sim/economy/advisors';
 import type { GameContext } from '../../game/context';
 import { Panel } from '../Panel';
 import { clear, escapeHtml, h, toggleClass } from '../dom';
@@ -135,6 +140,27 @@ export class AdvisorsPanel extends Panel {
     return undefined;
   }
 
+  /** open advice of the whole city, re-evaluated at most once a second of wall-clock time (a few ms on a big map) */
+  private open: OpenAdvice[] = [];
+  private openAt = -Infinity;
+  private openState: unknown = null;
+  private refreshOpen(): void {
+    const now = performance.now();
+    if (this.openState === this.ctx.state && now - this.openAt < 1000) return;
+    this.openAt = now;
+    this.openState = this.ctx.state;
+    try {
+      this.open = openAdvice(this.ctx.sim);
+    } catch {
+      this.open = [];
+    }
+  }
+
+  /** this advisor's open issues, highest priority first */
+  private openFor(a: Advisor): OpenAdvice[] {
+    return this.open.filter((o) => o.advisor === a.id);
+  }
+
   override onOpen(): void {
     this.seenNews = this.ctx.state.news.length;
   }
@@ -143,7 +169,12 @@ export class AdvisorsPanel extends Panel {
     const st = this.ctx.state;
     for (const [id, b] of Object.entries(this.tabBtns)) toggleClass(b, 'on', id === this.tab);
     this.seenNews = st.news.length;
-    const sig = `${this.tab}:${st.news.length}:${st.monthIndex}:${Math.round(st.stats.population / 50)}`;
+    let openSig = '';
+    if (this.tab === 'advisors') {
+      this.refreshOpen();
+      openSig = this.open.map((o) => `${o.id}|${o.text}`).join('\n');
+    }
+    const sig = `${this.tab}:${st.news.length}:${st.monthIndex}:${Math.round(st.stats.population / 50)}:${openSig}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
     clear(this.content);
@@ -156,16 +187,25 @@ export class AdvisorsPanel extends Panel {
         } catch {
           res = { level: 'good', text: '…' };
         }
-        const latest = this.latestFor(a);
-        const recent = latest && st.day - latest.day < 90;
-        const stColor = res.level === 'bad' ? 'var(--bad)' : res.level === 'warn' ? 'var(--warn)' : 'var(--good)';
-        const text = recent ? latest!.text : res.text;
+        // open issues first (they still hold, however old the message); else the latest message of the last 90 days
+        const open = this.openFor(a);
+        const top = open[0];
+        const latest = top ? undefined : this.latestFor(a);
+        const recent = !!latest && st.day - latest.day < 90;
+        const level = worse(res.level, top ? LEVEL_OF[top.kind] : 'good');
+        const stColor = level === 'bad' ? 'var(--bad)' : level === 'warn' ? 'var(--warn)' : 'var(--good)';
+        const text = top ? top.text : recent ? latest!.text : res.text;
+        const src = top ?? (recent ? latest! : null);
+        const at = src && src.x !== undefined && src.z !== undefined ? { x: src.x, z: src.z } : null;
+        const more = open.slice(1, 1 + MORE_MAX);
         const card = h('div', { class: 'adv' },
           h('div', { class: 'av', style: { background: `linear-gradient(145deg, ${a.color}, color-mix(in srgb, ${a.color} 55%, #000))`, '--st': stColor } as Record<string, string>, html: icon(a.icon, 19) }),
-          h('div', null,
+          h('div', { class: 'ab' },
             h('div', { style: 'display:flex;align-items:baseline;gap:8px' }, h('span', { class: 'an' }, a.name), h('span', { class: 'ar' }, a.role)),
             h('div', { class: 'am' }, text),
-            recent && latest!.x !== undefined ? h('button', { class: 'btn sm ghost', style: 'margin-top:6px;padding-left:0', html: icon('target', 13) + '<span>Show me</span>', onclick: () => this.ctx.focusCell(latest!.x!, latest!.z!, 420) }) : null,
+            at ? h('button', { class: 'btn sm ghost', style: 'margin-top:6px;padding-left:0', html: icon('target', 13) + '<span>Show me</span>', onclick: () => this.ctx.focusCell(at.x, at.z, 420) }) : null,
+            more.length ? h('ul', { class: 'am-more' }, ...more.map((o) => this.moreRow(o))) : null,
+            open.length > 1 + MORE_MAX ? h('div', { class: 'am-extra', title: open.slice(1 + MORE_MAX).map((o) => o.text).join('\n') }, `+ ${open.length - 1 - MORE_MAX} more`) : null,
           ),
         );
         grid.appendChild(card);
@@ -189,16 +229,34 @@ export class AdvisorsPanel extends Panel {
     }
   }
 
-  /** advisor warnings count for the top-bar badge */
+  /** a further open issue: one line (full text on hover), click shows it on the map */
+  private moreRow(o: OpenAdvice): HTMLElement {
+    const go = o.x !== undefined && o.z !== undefined;
+    return h('li', { class: o.kind + (go ? ' go' : ''), title: o.text, onclick: go ? () => this.ctx.focusCell(o.x!, o.z!, 420) : undefined },
+      h('i', { class: 'md' }), h('span', { class: 'mt' }, o.text), go ? h('span', { class: 'mg', html: icon('target', 12) }) : null);
+  }
+
+  /** advisor warnings count for the top-bar badge (a 'bad' assessment or a 'bad' open issue) */
   alertCount(): number {
+    this.refreshOpen();
     let n = 0;
     for (const a of ADVISORS) {
-      try {
-        if (a.assess(this.ctx).level === 'bad') n++;
-      } catch {
-        /* ignore */
+      let bad = this.open.some((o) => o.advisor === a.id && o.kind === 'bad');
+      if (!bad) {
+        try {
+          bad = a.assess(this.ctx).level === 'bad';
+        } catch {
+          /* ignore */
+        }
       }
+      if (bad) n++;
     }
     return n;
   }
 }
+
+/** further open issues listed under the top one */
+const MORE_MAX = 2;
+const LEVEL_OF: Record<OpenAdvice['kind'], 'good' | 'warn' | 'bad'> = { bad: 'bad', warning: 'warn', info: 'good', good: 'good' };
+const RANK = { good: 0, warn: 1, bad: 2 } as const;
+const worse = (a: 'good' | 'warn' | 'bad', b: 'good' | 'warn' | 'bad') => (RANK[b] > RANK[a] ? b : a);

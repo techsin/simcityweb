@@ -36,7 +36,12 @@ const _world = new THREE.Vector3();
  * (batched instances added / moved / hidden, tree chunks rebuilt...). WorldView re-renders the shadow map only
  * when the shadow cameras or the sun moved, or this counter changed (throttled), instead of every frame.
  */
-export const shadowCasters = { version: 0 };
+export const shadowCasters = {
+  version: 0,
+  /** bumped by casters that move every frame (vehicles): WorldView re-renders the map for them every frame while the
+   *  view is close enough for a one-frame shadow lag to show */
+  dynamic: 0,
+};
 
 /**
  * Receiver volume of a shadow pass: the part of the VIEW frustum a cascade shades (its depth slice). A caster only
@@ -64,10 +69,24 @@ export interface ShadowReceiver {
   shapeSnap: Float64Array;
   /** view distance to the ground along the view axis (scale for guard bands) */
   reach: number;
+  /** view camera orientation (unit world axes x, y, z: 9 numbers), view direction, depth slice [dn, df] and the view
+   *  cone's half-diagonal (rad): caster lists culled against a widened receiver stay valid while the view turns /
+   *  moves / narrows its slice by less than the widening (DynamicBatch) */
+  rot: Float64Array;
+  fwd: THREE.Vector3;
+  dn: number;
+  df: number;
+  phi: number;
+  /** bumped when the light direction, ground or view projection change (a widened receiver cannot cover that) */
+  form: number;
+  formSnap: Float64Array;
 }
 
 export function makeReceiver(): ShadowReceiver {
-  return { planes: Array.from({ length: 6 }, () => new THREE.Plane()), nl: new Float64Array(6), dir: new THREE.Vector3(0, 1, 0), ground: 0, version: 0, snap: new Float64Array(28), origin: new THREE.Vector3(), shape: 0, shapeSnap: new Float64Array(28), reach: 100 };
+  return {
+    planes: Array.from({ length: 6 }, () => new THREE.Plane()), nl: new Float64Array(6), dir: new THREE.Vector3(0, 1, 0), ground: 0, version: 0, snap: new Float64Array(28), origin: new THREE.Vector3(), shape: 0, shapeSnap: new Float64Array(28), reach: 100,
+    rot: new Float64Array(9), fwd: new THREE.Vector3(0, 0, -1), dn: 0, df: 0, phi: 0.6, form: 0, formSnap: new Float64Array(10),
+  };
 }
 
 /** distance from a camera to the ground plane y = 0 along its view axis (clamped; grazing views count as far) */
@@ -124,6 +143,27 @@ export function setReceiver(rec: ShadowReceiver, cam: THREE.Camera, dn: number, 
   }
   noteS(rec.dir.x, 1e-7); noteS(rec.dir.y, 1e-7); noteS(rec.dir.z, 1e-7); noteS(ground, 1e-6);
   if (reshaped) rec.shape++;
+  // view orientation / slice / cone for widened-receiver caster lists
+  const w = cam.matrixWorld.elements;
+  for (let c = 0; c < 3; c++) {
+    const l = Math.hypot(w[c * 4], w[c * 4 + 1], w[c * 4 + 2]) || 1;
+    rec.rot[c * 3] = w[c * 4] / l; rec.rot[c * 3 + 1] = w[c * 4 + 1] / l; rec.rot[c * 3 + 2] = w[c * 4 + 2] / l;
+  }
+  rec.fwd.copy(_fwd);
+  rec.dn = dn;
+  rec.df = df;
+  const P = cam.projectionMatrix.elements;
+  const persp = (cam as THREE.PerspectiveCamera).isPerspectiveCamera === true;
+  rec.phi = persp ? Math.atan(Math.hypot(1 / P[0], 1 / P[5]) + Math.hypot(P[8] / P[0], P[9] / P[5])) : 0;
+  const fs = rec.formSnap;
+  let fo = 0, reformed = false;
+  const noteF = (v: number, tol: number) => {
+    if (Math.abs(fs[fo] - v) > tol) { fs[fo] = v; reformed = true; }
+    fo++;
+  };
+  noteF(rec.dir.x, 1e-7); noteF(rec.dir.y, 1e-7); noteF(rec.dir.z, 1e-7); noteF(ground, 1e-6);
+  noteF(P[0], 1e-9 * Math.abs(P[0])); noteF(P[5], 1e-9 * Math.abs(P[5])); noteF(P[8], 1e-9); noteF(P[9], 1e-9); noteF(persp ? 1 : 0, 0.5);
+  if (reformed) rec.form++;
 }
 
 /** can a caster sphere shadow the receiver volume? (sphere swept away from the light down to the ground) */
@@ -229,7 +269,8 @@ export class CityCascadeShadow extends SunLightShadow {
     // sun for a caster of height casterTop standing anywhere sunward of the slice (low sun -> long reach)
     const upY = Math.max(0.08, -_lightDirection.y);
     const reach = Number.isFinite(this.casterTop) ? Math.max(50, (this.casterTop - Math.max(minWorldY, -200)) / upY) : Infinity;
-    maxZ += Math.min(s2, 2500, reach);
+    // (up to 6 km: a low sun casts tall buildings' shadows kilometres across the map)
+    maxZ += Math.min(Math.max(s2, 2500), 6000, reach);
     const shadowNear = this.camera.near;
     const toLight = _world.copy(_lightDirection).negate();
     for (let i = 0; i < CASCADES; i++) {

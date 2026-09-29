@@ -16,7 +16,7 @@ import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { Surf } from '../../src/core/types';
 import { buildLodProxy } from '../../src/render/city/buildings/lodProxy';
 import { DynamicBatch, TileCuller } from '../../src/render/city/common/batch';
-import { makeReceiver, setReceiver } from '../../src/render/world/Shadows';
+import { makeReceiver, receiverSweepSphere, setReceiver } from '../../src/render/world/Shadows';
 import { BuildingRenderer } from '../../src/render/city/buildings/BuildingRenderer';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
@@ -320,6 +320,72 @@ describe('DynamicBatch list reuse', () => {
     drawn(batch, cam, false, 4);
     expect(build.mock.calls.length).toBe(n0 + 1);
   });
+
+  it('never misses an instance while the view turns, orbits, zooms and pans (angular + translation bands)', () => {
+    const { culler, batch, build } = make();
+    batch.mesh.castShadow = true;
+    const geos = [2, 6, 14, 30].map((sz) => batch.geometryId('g' + sz, () => boxGeo(sz)));
+    const m = new THREE.Matrix4();
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let i = 0; i < 700; i++) {
+      const x = rnd() * 2048, z = rnd() * 2048;
+      const id = batch.add(geos[i % 4]);
+      batch.setMatrix(id, m.makeTranslation(x, 0, z));
+      batch.setTile(id, culler.tileOfWorld(x, z));
+    }
+    const sph = (batch as unknown as { sph: Float32Array }).sph;
+    const view = new THREE.PerspectiveCamera(38, 16 / 9, 1, 9000);
+    const sunCam = shadowCam(0, 0.5);
+    sunCam.left = sunCam.bottom = -1600; sunCam.right = sunCam.top = 1600;
+    sunCam.position.set(1024, 2500, 1024); sunCam.lookAt(1024, 0, 1024); sunCam.updateProjectionMatrix();
+    const recv = makeReceiver();
+    sunCam.userData.recv = recv;
+    const sun = new THREE.Vector3(0.35, 1, 0.25).normalize();
+    const f = new THREE.Frustum(), pm = new THREE.Matrix4(), S = new THREE.Sphere();
+    /** instances in the exact pass volume that the list lacks */
+    const misses = (cam: THREE.Camera, list: Set<number>, withRecv: boolean) => {
+      f.setFromProjectionMatrix(pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+      const out: number[] = [];
+      for (let id = 0; id < 700; id++) {
+        const x = sph[id * 4], y = sph[id * 4 + 1], z = sph[id * 4 + 2], r = sph[id * 4 + 3];
+        S.center.set(x, y, z); S.radius = r;
+        if (f.intersectsSphere(S) && (!withRecv || receiverSweepSphere(recv, x, y, z, r)) && !list.has(id)) out.push(id);
+      }
+      return out;
+    };
+    // target / distance / yaw / pitch camera like the game's; segments: slow turn, fast orbit, zoom out + in, pan, rest
+    const tgt = new THREE.Vector3(1024, 0, 1024);
+    let dist = 700, yaw = 0.4, pitch = 0.75, frame = 1, builds0 = 0, slowFrames = 0, slowBuilds = 0;
+    for (let step = 0; step < 480; step++) {
+      const seg = Math.floor(step / 60);
+      if (seg === 0) yaw += 0.004; // ~0.23 deg / frame
+      else if (seg === 1) yaw += 0.03;
+      else if (seg === 2) dist *= 1.012;
+      else if (seg === 3) { dist /= 1.012; pitch -= 0.002; }
+      else if (seg === 4) { tgt.x += 3; tgt.z -= 2; yaw += 0.002; }
+      else if (seg === 5) { yaw += 0.001 * Math.sin(step); pitch += 0.0008; }
+      else if (seg === 6) { yaw += 0.012; dist *= 0.997; }
+      view.position.set(tgt.x + Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist, tgt.z + Math.cos(yaw) * Math.cos(pitch) * dist);
+      view.near = THREE.MathUtils.clamp(dist * 0.01, 0.5, 60);
+      view.far = dist * 6 + 3000;
+      view.updateProjectionMatrix();
+      view.lookAt(tgt);
+      view.updateMatrixWorld();
+      setReceiver(recv, view, view.near, Math.min(view.far, dist * 2.5), sun, 0);
+      const b0 = build.mock.calls.length;
+      const main = new Set(drawn(batch, view, false, frame));
+      const shadow = new Set(drawn(batch, sunCam, true, frame));
+      frame++;
+      expect(misses(view, main, false), `step ${step}: view`).toEqual([]);
+      expect(misses(sunCam, shadow, true), `step ${step}: shadow`).toEqual([]);
+      if (seg === 0 && step > 5) { slowFrames++; slowBuilds += build.mock.calls.length - b0; }
+      if (step === 0) builds0 = build.mock.calls.length;
+    }
+    // a slow turn reuses its lists over several frames (both passes)
+    expect(slowBuilds / slowFrames).toBeLessThan(1);
+    expect(build.mock.calls.length).toBeGreaterThan(builds0);
+  }, 60_000);
 });
 
 describe('building LOD schedule', () => {
@@ -329,6 +395,9 @@ describe('building LOD schedule', () => {
     const culler = new TileCuller(64, CELL_SIZE, 16);
     const br = new BuildingRenderer(st, culler);
     br.lodBudgetMs = 1e9; // proxies are built on demand without a frame budget here
+    // a small per-frame evaluation slice (the city has fewer buildings than the default 3000): smooth motion stays
+    // within it, camera jumps must evaluate everything at once (no big building left on its proxy after a cut)
+    br.lodSlice = 100;
     const models = ['res_cottage', 'res_ranch', 'res_apartment', 'res_tower', 'com_office_small', 'com_diner', 'com_office_tower', 'ind_warehouse'].filter((m) => MANIFEST_BY_ID[m]);
     expect(models.length).toBeGreaterThan(3);
     let id = 1;
@@ -356,7 +425,7 @@ describe('building LOD schedule', () => {
     let seed = 99;
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
     const p = new THREE.Vector3(512, 60, -200);
-    let slowEvals = 0, slowSteps = 0, maxProxies = 0;
+    let slowEvals = 0, slowSteps = 0, maxProxies = 0, maxEvals = 0;
     for (let step = 0; step < 600; step++) {
       const mode = Math.floor(step / 50) % 4; // slow pan, fast pan, zoom, jumps
       if (mode === 0) p.x += 3;
@@ -368,11 +437,14 @@ describe('building LOD schedule', () => {
       const e0 = evals.mock.calls.length;
       br.updateLod(cam, H);
       if (mode === 0 && step % 50 > 5) { slowEvals += evals.mock.calls.length - e0; slowSteps++; }
+      maxEvals = Math.max(maxEvals, evals.mock.calls.length - e0);
       expect(check(), `step ${step}`).toBe(0);
       maxProxies = Math.max(maxProxies, br.lodCount);
     }
     expect(br.lodCount).toBe(list.filter((b) => b.lod === 1).length);
     expect(maxProxies).toBeGreaterThan(list.length * 0.3);
+    // jump frames evaluated more buildings than the slice allows for smooth motion
+    expect(maxEvals).toBeGreaterThan(br.lodSlice);
     // a slow pan re-evaluates a small fraction of the buildings per frame
     expect(slowEvals / slowSteps).toBeLessThan(list.length * 0.1);
     // a resting camera costs nothing
@@ -410,4 +482,68 @@ describe('shadow receiver versions', () => {
     setReceiver(r, cam, 1, 600, sun, -10);
     expect(r.shape).toBe(s0 + 1);
   });
+});
+
+describe('street prop LOD', () => {
+  it('switches proxies per prop at the right distance, disables tiles only once all their props are thinned out', async () => {
+    const { PropRenderer } = await import('../../src/render/city/props/PropRenderer');
+    const culler = new TileCuller(128, CELL_SIZE, 16);
+    const pr = new PropRenderer(culler);
+    pr.lodDistance = 1300;
+    pr.lodFull = 520;
+    let seed = 11;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const models = ['streetlight', 'traffic_light', 'tree_oak', 'tree_maple'];
+    const items = Array.from({ length: 2400 }, (_, i) => ({ model: i % 97 === 0 ? 'util_power_pylon' : models[i % 4], variant: i % 3, x: rnd() * 2040 + 4, y: 0, z: rnd() * 2040 + 4, yaw: rnd() * 6, scale: 1 }));
+    pr.setGroup('t', items);
+    type P = { ist: Uint8Array; ipos: Float32Array; igeo: Int32Array; near: Uint8Array; T: number };
+    const pp = pr as unknown as P;
+    const withProxy = () => { const out: number[] = []; for (let id = 0; id < pp.ist.length; id++) if (pp.ist[id]) out.push(id); return out; };
+    const tileOf = (pr.batch as unknown as { instTile: Int32Array }).instTile;
+    expect(withProxy().length).toBeGreaterThan(1500);
+    expect(pr.pylons.instanceCount).toBe(items.filter((p) => p.model === 'util_power_pylon').length);
+    const info = (pr.batch.mesh as unknown as { _instanceInfo: { geometryIndex: number }[] })._instanceInfo;
+    const cam = new THREE.Vector3(1024, 300, -400);
+    const full = 520, hide = 1300;
+    let maxChanges = 0, slowChanges = 0, sawProxy = 0, sawOff = 0;
+    const prev = new Map<number, number>();
+    for (let step = 0; step < 400; step++) {
+      const mode = Math.floor(step / 50) % 4;
+      if (mode === 0) cam.x += 3;
+      else if (mode === 1) { cam.z += 40; cam.x -= 25; }
+      else if (mode === 2) cam.y = 60 + (step % 50) * 30;
+      else if (step % 10 === 0) cam.set(rnd() * 3000 - 500, 40 + rnd() * 1200, rnd() * 3000 - 500);
+      pr.updateLod(cam);
+      let bad = 0, changes = 0;
+      const ids = withProxy();
+      // prop metric: horizontal distance with the camera height weighted by 0.8 (squared)
+      const metric = (id: number) => Math.sqrt((pp.ipos[id * 3] - cam.x) ** 2 + (pp.ipos[id * 3 + 2] - cam.z) ** 2 + 0.8 * cam.y * cam.y);
+      for (const id of ids) {
+        const g0 = pp.igeo[id * 2], g1 = pp.igeo[id * 2 + 1];
+        const d = metric(id);
+        const st = pp.ist[id];
+        // one schedule bucket (1 m) of lag allowed
+        if (st === 2 && d > full * 1.06 + 1.001) bad++;
+        if (st === 1 && d < full * 0.94 - 1.001) bad++;
+        if (info[id].geometryIndex !== (st === 2 ? g0 : g1)) bad++;
+        if (prev.get(id) !== undefined && prev.get(id) !== st) changes++;
+        prev.set(id, st);
+      }
+      expect(bad, `step ${step}`).toBe(0);
+      if (mode === 0 && step % 50 > 2) { maxChanges = Math.max(maxChanges, changes); slowChanges += changes; }
+      for (const id of ids) if (pp.ist[id] === 1) { sawProxy++; break; }
+      if (pp.near.includes(0)) sawOff++;
+      // a disabled tile holds no prop the thinning band would still show
+      for (const id of ids) {
+        const t = tileOf[id] % pp.T;
+        if (pp.near[t]) continue;
+        expect(metric(id), `step ${step}: tile ${t}`).toBeGreaterThan(hide * 1.35);
+      }
+    }
+    // a slow pan switches a handful of props per frame, never a tile-sized burst
+    expect(slowChanges).toBeGreaterThan(0);
+    expect(maxChanges).toBeLessThan(40);
+    expect(sawProxy).toBeGreaterThan(100);
+    expect(sawOff).toBeGreaterThan(50);
+  }, 120_000);
 });

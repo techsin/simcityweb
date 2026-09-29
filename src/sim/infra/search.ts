@@ -107,8 +107,11 @@ const Q = MIN_ROAD_T * 0.999;
  * Road graph search. adj = g.fwd (forward search from seeds = origins) or g.rev (reverse search: distances TO the
  * seeds = destinations). Edge a->b cost = (time[a] + time[b]) / 2 (+ ramp penalty on highway <-> road).
  * `limit` stops the search once labels exceed it (unsettled nodes are unreachable).
+ * `ramp` (WP7-10, traffic's own searches): per-node interchange minutes; a highway <-> non-highway move then costs
+ * ramp[non-highway node] (its ramp class x congestion) instead of the flat RAMP_PENALTY (other systems' searches).
  */
-export function roadSearch(g: RoadGraph, adj: Int32Array, time: Float32Array, S: Search, _heap: MinHeap, seeds: Seeds, limit = 400): void {
+export function roadSearch(g: RoadGraph, adj: Int32Array, time: Float32Array, S: Search, _heap: MinHeap, seeds: Seeds, limit = 400,
+  ramp: Float32Array | null = null): void {
   const n = g.n;
   S.reset(n);
   S.graphVersion = g.version;
@@ -151,7 +154,7 @@ export function roadSearch(g: RoadGraph, adj: Int32Array, time: Float32Array, S:
         const v = adj[base + k];
         if (v < 0 || done[v] === 1) continue;
         let c = 0.5 * (tu + time[v]);
-        if (hu !== (type[v] === HW)) c += RAMP_PENALTY;
+        if (hu !== (type[v] === HW)) c += ramp === null ? RAMP_PENALTY : ramp[hu ? v : u];
         const nd = key + c;
         if (nd < dist[v] && nd <= limit) {
           dist[v] = nd;
@@ -171,13 +174,16 @@ export function roadSearch(g: RoadGraph, adj: Int32Array, time: Float32Array, S:
 
 /**
  * Multimodal transit network (reverse search from destination stops):
- *  node ids [0,nR) road nodes (bus riding), [nR,nR+nRail) rail nodes, [nR+nRail,total) subway nodes,
- *  plus transfer edges (CSR) between stops of different modes.
+ *  node ids [0,nR) road nodes (bus riding), [nR,nR+nRail) rail nodes, [nR+nRail,nR+nRail+nSub) subway nodes,
+ *  [nR+nRail+nSub,total) ferry nodes (one per linked ferry terminal, WP7-9: no grid adjacency, only transfers),
+ *  plus transfer edges (CSR) between stops of different modes and the ferry links (ferry node <-> ferry node).
  */
 export interface TransitNet {
   nR: number;
   nRail: number;
   nSub: number;
+  /** ferry nodes (linked terminals) */
+  nFerry: number;
   total: number;
   /** reverse road adjacency (g.rev) */
   roadAdj: Int32Array;
@@ -215,7 +221,7 @@ export function transitSearch(T: TransitNet, S: Search, _heap: MinHeap, seeds: S
       bq.push((l * invQ) | 0, v);
     }
   }
-  const nR = T.nR, nRR = T.nR + T.nRail;
+  const nR = T.nR, nRR = T.nR + T.nRail, nGrid = nRR + T.nSub;
   const roadAdj = T.roadAdj, busTime = T.busTime, railAdj = T.railAdj, subAdj = T.subAdj;
   const trStart = T.trStart, trTo = T.trTo, trCost = T.trCost;
   const railTime = T.railTime, subTime = T.subTime;
@@ -232,7 +238,8 @@ export function transitSearch(T: TransitNet, S: Search, _heap: MinHeap, seeds: S
       const key = dist[u];
       const su = src[u];
       const hp = Math.min(65535, hops[u] + 1);
-      for (let k = 0; k < 4; k++) {
+      // ferry nodes (>= nGrid) have no grid adjacency: only transfers / ferry links below
+      for (let k = u < nGrid ? 0 : 4; k < 4; k++) {
         let v: number, c: number;
         if (u < nR) {
           v = roadAdj[u * 4 + k];

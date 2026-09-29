@@ -3,17 +3,18 @@
  *
  * 6/8 at a dotted-quarter pulse of 68-74 (one song beat = one eighth note, 6 per bar). A marimba broken-chord ostinato,
  * pizzicato strings on the after-beats, a pizz upright on the dotted quarters, a warm voice-led string bed (common tones
- * held across the chords, moving voices re-bowed, swells on entries), and a flute theme: a 16-bar period (motif,
+ * held across the chords, moving voices re-bowed, swells on entries), and a theme: a 16-bar period (motif,
  * sequence a third lower, a climb, a 4-3 half cadence |
- * motif again, a climb to the peak, then an authentic cadence). Soft piano answers echo the motif head while the
- * theme holds its long notes; in the piano statement the two swap roles (piano tune, flute answers underneath).
+ * motif again, a climb to the peak, then an authentic cadence). A straight, orchestral flute (narrow vibrato, little
+ * breath) states it first and leads the out chorus; the violins take the ornamented statement, with soft piano answers
+ * echoing the motif head while they hold their long notes; in the piano statement the flute answers underneath.
  * A clarinet-like reed (a square-wave voice built on the pad) carries the contrasting "meadow" section, which later
  * returns on violins with the reed in thirds below. Harp fills mark the section ends, with vibes, shaker, triangle and
  * a cymbal swell into the big arrivals.
  *
  * Form (one of two per seed, 119 bars, about 3:20-3:30):
- *   intro 8 | theme 16 | theme II 16 | meadow 16 | theme III (piano) 16 | interlude 8 | meadow II 16 | theme out 16 | coda 7
- *   intro 8 | theme 16 | meadow 16 | theme II (piano) 16 | interlude 8 | theme III 16 | meadow II 16 | theme out 16 | coda 7
+ *   intro 8 | theme 16 | theme II (violins) 16 | meadow 16 | theme III (piano) 16 | interlude 8 | meadow II 16 | theme out 16 | coda 7
+ *   intro 8 | theme 16 | meadow 16 | theme II (piano) 16 | interlude 8 | theme III (violins) 16 | meadow II 16 | theme out 16 | coda 7
  * The coda echoes the motif (flute, then the reed over a borrowed iv), makes a ritardando cadence, and strikes a rolled
  * add9 / 6-9 / maj9 chord two bars before the end.
  *
@@ -39,7 +40,7 @@ interface Sec {
   name: string;
   bars: number;
   kind: Kind;
-  /** orchestration variant. A: 0 flute plain, 1 flute ornamented + piano answers, 2 piano theme + flute answers,
+  /** orchestration variant. A: 0 flute plain, 1 violins ornamented + piano answers, 2 piano theme + flute answers,
    *  3 out chorus (flute + strings octave, harp, glass). B: 0 reed + vibes + flute answers, 1 violins + reed thirds */
   v: number;
   start: number;
@@ -116,8 +117,8 @@ interface Theme {
 }
 
 const FORMS: readonly (readonly [string, number, Kind, number])[][] = [
-  [['intro', 8, 'intro', 0], ['theme', 16, 'A', 0], ['theme II', 16, 'A', 1], ['meadow', 16, 'B', 0], ['theme III (piano)', 16, 'A', 2], ['interlude', 8, 'inter', 0], ['meadow II', 16, 'B', 1], ['theme out', 16, 'A', 3], ['coda', 7, 'coda', 0]],
-  [['intro', 8, 'intro', 0], ['theme', 16, 'A', 0], ['meadow', 16, 'B', 0], ['theme II (piano)', 16, 'A', 2], ['interlude', 8, 'inter', 0], ['theme III', 16, 'A', 1], ['meadow II', 16, 'B', 1], ['theme out', 16, 'A', 3], ['coda', 7, 'coda', 0]],
+  [['intro', 8, 'intro', 0], ['theme', 16, 'A', 0], ['theme II (violins)', 16, 'A', 1], ['meadow', 16, 'B', 0], ['theme III (piano)', 16, 'A', 2], ['interlude', 8, 'inter', 0], ['meadow II', 16, 'B', 1], ['theme out', 16, 'A', 3], ['coda', 7, 'coda', 0]],
+  [['intro', 8, 'intro', 0], ['theme', 16, 'A', 0], ['meadow', 16, 'B', 0], ['theme II (piano)', 16, 'A', 2], ['interlude', 8, 'inter', 0], ['theme III (violins)', 16, 'A', 1], ['meadow II', 16, 'B', 1], ['theme out', 16, 'A', 3], ['coda', 7, 'coda', 0]],
 ];
 
 // ------------------------------------------------------------------ charts (written in C, transposed per play)
@@ -264,7 +265,7 @@ export const track: MusicTrack = {
   mood: 'Pastoral 6/8: marimba ostinato, flute and reed, pizzicato and warm strings, harp',
   tags: ['day', 'calm', 'region'],
   bpm: 72,
-  gain: 1.5,
+  gain: 1.51, // at 1.5 seeds 1/2/3 measured -18.34 / -18.28 / -18.44 LUFS (mean -18.35) -> +0.06 dB
   create(env) {
     const { inst, rng } = env;
     const dq = rng.int(68, 74); // dotted-quarter pulse
@@ -387,8 +388,10 @@ export const track: MusicTrack = {
     const addLine = (k: K, line: readonly Note[], vel: number, shift = 0, tn = false): void => {
       for (const n of line) add(k, n.at, n.dur, n.m + shift, vel * (1 + n.acc), tn);
     };
-    /** tune velocities (the piano tune plays in the flute's octave, one velocity layer up from its answers) */
-    const BASE: Record<string, number> = { flute: 0.62, piano: 0.66, reed: 0.52, vln: 0.46 };
+    /** tune velocities (the piano tune plays in the flute's octave, one velocity layer up from its answers).
+     *  vln is the violins' theme statement; the meadow II violins stay at MEADOW_VLN, the step below the out chorus. */
+    const BASE: Record<string, number> = { flute: 0.62, piano: 0.66, reed: 0.52, vln: 0.55 };
+    const MEADOW_VLN = 0.46;
 
     /** realise composed theme bars (degrees) over the chords, starting at bar b0 */
     const realize = (b0: number, bars: readonly (readonly N[])[], degShift = 0, arch = true): Note[] => {
@@ -611,13 +614,14 @@ export const track: MusicTrack = {
         if (s.v === 1 || s.v === 3) bars = ornament(bars, s.v === 3 ? 0.5 : 0.4);
         let line = realize(b0, bars);
         if (s.v === 1 || s.v === 3) line = graces(line, s.v === 3 ? 0.35 : 0.28);
-        const melK: K = s.v === 2 ? 'piano' : 'flute';
+        // v1 goes to the violins (the flute keeps the first statement and the out chorus), v2 to the piano
+        const melK: K = s.v === 2 ? 'piano' : s.v === 1 ? 'vln' : 'flute';
         // pickup into the section (in the previous section's last bar)
         if (b0 > 0) addLine(melK, realize(b0 - 1, [theme.pickup], 0, false), BASE[melK] * 0.9, 0, true);
         addLine(melK, line, BASE[melK], 0, true);
         const hw = holds(line, b0, 15);
         if (s.v === 1) {
-          // piano answers below the held flute notes
+          // piano answers below the held violin notes
           for (const [at, len] of hw) if (rng.chance(0.8)) addLine('piano', answer(at, len, tonicM - 8, rng.chance(0.3)), 0.33);
         } else if (s.v === 2) {
           // roles swapped: the flute answers the piano tune from below, softly
@@ -638,7 +642,7 @@ export const track: MusicTrack = {
           for (const [at, len] of holds(line, b0, 15)) if ((at / 6 - b0) % 4 >= 3 - 1e-6 || rng.chance(0.25)) addLine('flute', answer(at, len, meadowC + 7 + rng.pick([-2, 0, 3]), rng.chance(0.35)), 0.46);
         } else {
           const hiM = Math.max(...line.map((n) => n.m));
-          addLine('vln', line, BASE.vln, hiM + 12 <= 94 ? 12 : 0, true);
+          addLine('vln', line, MEADOW_VLN, hiM + 12 <= 94 ? 12 : 0, true);
           addLine('reed', thirdsBelow(line), BASE.reed * 0.84);
           for (const [at] of holds(line, b0, 15)) if (rng.chance(0.75)) harpRoll(at, tonicM - 17, 4, 0.14, 0.3, 4);
         }
@@ -1173,7 +1177,8 @@ export const track: MusicTrack = {
           const du = sec(e.dur);
           const v = e.vel * d;
           switch (e.k) {
-            case 'flute': inst.flute(t, e.m, du * 0.95, v, { breath: du > 0.35 ? 0.55 : 0, vibrato: 12 }); break;
+            // a straight, orchestral flute: narrow vibrato and little breath (avenida's bossa flute is the breathy one)
+            case 'flute': inst.flute(t, e.m, du * 0.95, v, { breath: du > 0.35 ? 0.3 : 0, vibrato: 7 }); break;
             // the filter follows the pitch so the reed keeps its hollow odd harmonics in the upper register
             case 'reed': inst.pad(t, e.m, du * 0.95, v, { ch: 'reed', attack: 0.07, release: 0.28, cutoff: Math.max(1500, mtof(e.m) * 3.4), wave: 'square', detune: 1 }); break;
             case 'piano': inst.piano(t, e.m, du, v, { bright: 0.35 }); break;

@@ -75,7 +75,7 @@ import {
   UNWATERED_HEALTH_EFF,
 } from './params';
 import { schedulerOf, sizeFactors } from './scheduler';
-import { collectStops, computeTransitCoverage, type StopList } from './transit';
+import { collectStops, computeTransitCoverage, stopServes, transitCoverageActive, type StopList } from './transit';
 import { getDef } from '../catalog';
 import {
   NEED_ORDER, TIER_NEED, TIME_Q, reachRaw, reachResult, roadDistMulti, roadTimeMulti, tierLayer, tierProvider,
@@ -258,6 +258,8 @@ export class ServicesSystem implements SimSystem {
         this.dirty = true; this.accessDirty = true;
         this.invalidateReach(r);
       }),
+      // WP7b (critic item 1 / 17): a new / removed tunnel connects or cuts subway stations -> transitCov
+      sim.events.on('subwayChanged', () => { this.dirty = true; }),
     ];
     sim.state.systemData.infraVersion = 1;
     this.lastRun = -1e9;
@@ -500,7 +502,9 @@ export class ServicesSystem implements SimSystem {
       if (inf.fam === Fam.C && inf.dev >= DevType.CS1 && inf.dev <= DevType.CS3 && b.capacity > 0) nCs = this.pushFrontage(st, b, nCs);
       let slot = -1, R = 0, s = 0;
       if (inf.tier >= 0) { slot = SLOT_OF_TIER[inf.tier]; R = inf.tierRadius; s = inf.tierStrength; }
-      else if (inf.cov === 5) { slot = SLOT_TRANSIT; R = inf.covRadius; s = inf.covStrength; }
+      // WP7b (WP7-6 / F2): only serving stops splat their transit coverage (no depot / garage, no off-road bus stop,
+      // lone station or unlinked ferry)
+      else if (inf.cov === 5 && transitCoverageActive(sim, b, inf)) { slot = SLOT_TRANSIT; R = inf.covRadius; s = inf.covStrength; }
       if (slot < 0 || !(R > 0) || !(s > 0)) continue;
       const op = this.opOf(st, b, inf, slot, policeMul);
       const prov = slot < NT ? tierProvider(NEED_ORDER[slot]) : undefined;
@@ -898,7 +902,9 @@ export class ServicesSystem implements SimSystem {
     const C = st.cells;
     this.stops = collectStops(st, this.stops);
     const tmp = this.tmp;
-    computeTransitCoverage(st, this.stops, tmp, Math.min(1.25, fundingFactor(st, 'transit')));
+    const stops = this.stops;
+    // WP7b: unattached stops (traffic.stopAttached) give no walking coverage; road-flag stops sit on a road
+    computeTransitCoverage(st, stops, tmp, Math.min(1.25, fundingFactor(st, 'transit')), true, (s) => stops.bid[s] < 0 || stopServes(sim, stops.bid[s]));
     const T = st.transitCov;
     for (let i = 0; i < C; i++) { const t = tmp[i]; if (t > 0) T[i] = 1 - (1 - T[i]) * (1 - Math.min(1, t)); }
   }

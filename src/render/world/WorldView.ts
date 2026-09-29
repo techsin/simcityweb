@@ -87,10 +87,15 @@ export class WorldView implements WorldViewApi {
   shadowCache = true;
   shadowInterval = 2;
   shadowMaxAge = 20;
+  /** moving vehicles re-render the map every frame (no throttle) while the camera is closer than this (m): beyond it
+   *  a one-frame shadow lag is under a pixel */
+  dynamicShadowDistance = 600;
   /**
    * Dynamic resolution: scales the internal render resolution (not the canvas) between the preset's
-   * minRenderScale and 1 to hold the preset's targetFps. Frame intervals > 250 ms (stalls, background tabs,
-   * software GL) are ignored. Defaults to the quality preset; can be toggled at runtime.
+   * minRenderScale and 1 to hold the preset's targetFps. Only frames bound by the GPU count against the budget: when
+   * the main thread was busy for most of the frame interval (sim ticks, city edits, a slow CPU) the resolution is not
+   * the bottleneck and the frame counts as on budget. Frame intervals > 250 ms (stalls, background tabs, software GL)
+   * are ignored. Defaults to the quality preset; can be toggled at runtime.
    */
   dynamicResolution = false;
   /** current internal render scale (1 = full resolution) */
@@ -120,18 +125,23 @@ export class WorldView implements WorldViewApi {
   private shFrame = 0;
   private frameNo = 0;
   private shForce = 2;
+  private shDynamic = -1;
   private shSunVisible = false;
   private shadowDir = new THREE.Vector3(0, 1, 0);
   /** frames the shadow map was actually re-rendered / skipped (stats) */
   readonly shadowStats = { rendered: 0, skipped: 0, reason: '' };
   // dynamic resolution state
   private drsLast = 0;
+  /** start (rAF time) of the frame being rendered and main-thread busy time of the previous frame (ms) */
+  private drsStart = NaN;
+  private drsBusy = NaN;
   private drsEma = 0;
   private drsChange = 0;
   private drsWait = 3000;
   private drsUpAt = -1e9;
   /** construction timings (ms, cumulative) for diagnostics */
   readonly initTimings: Record<string, number> = {};
+  private precompiled = false;
 
   constructor(canvas: HTMLCanvasElement, state: CityState, events: Emitter<CityEvents>, opts: WorldViewOptions = {}) {
     registerAllModels();
@@ -176,7 +186,7 @@ export class WorldView implements WorldViewApi {
     this.scene.add(this.water.mesh);
     mark('water');
     // trees
-    this.trees = new TreeRenderer(state, this.terrain, { lodDistance: this.q.treeLodDistance, density: this.q.treeDensity, castShadows: this.q.treeShadows, maxVariants: this.q.treeVariants });
+    this.trees = new TreeRenderer(state, this.terrain, { lodDistance: this.q.treeLodDistance, density: this.q.treeDensity, castShadows: this.q.treeShadows, maxVariants: this.q.treeVariants, msaa: this.q.msaa > 0 });
     this.scene.add(this.trees.group);
     mark('trees');
     // sky
@@ -305,7 +315,8 @@ export class WorldView implements WorldViewApi {
     this.renderScale = 1;
     this.terrain.setQuality(q.terrainDetail, q.terrainShadows);
     this.water.setQuality(q.waterDetail);
-    this.trees.setQuality({ lodDistance: q.treeLodDistance, density: q.treeDensity, castShadows: q.treeShadows, maxVariants: q.treeVariants });
+    this.trees.setQuality({ lodDistance: q.treeLodDistance, density: q.treeDensity, castShadows: q.treeShadows, maxVariants: q.treeVariants, msaa: q.msaa > 0 });
+    this.precompiled = false;
     this.sky.setQuality(q.skyLut, q.envSize, q.envRefreshMinutes);
     this.post.fog.uSkyLut.value = this.sky.lutTexture;
     this.applyShadowQuality();
@@ -395,11 +406,13 @@ export class WorldView implements WorldViewApi {
     this.terrain.setNight(L.night);
     this.water.update(this.clock, L.night);
 
-    // shadows: the light direction used for shadows (and sun shading) only follows the sky in ~0.08 deg steps so a
-    // slowly moving sun does not force a shadow-map re-render every frame
+    // shadows: the light direction used for shadows (and sun shading) only follows the sky in steps so a slowly
+    // moving sun does not force a shadow-map re-render every frame: ~0.08 deg while the light is high, finer toward
+    // the horizon (a shadow's length goes with 1 / tan(elevation): at dusk the same step would make long shadows jump)
     const vis = this.sun.visible;
     if (vis !== this.shSunVisible) { this.shSunVisible = vis; this.invalidateShadows(1); }
-    if (this.shadowDir.angleTo(L.lightDir) > 0.0014 || !this.shadowCache) this.shadowDir.copy(L.lightDir);
+    const lowSun = THREE.MathUtils.clamp(L.lightDir.y / 0.5, 0.05, 1);
+    if (this.shadowDir.angleTo(L.lightDir) > 0.0014 * lowSun * lowSun || !this.shadowCache) this.shadowDir.copy(L.lightDir);
     fitSunShadow(this.sun, this.camera, {
       target: this.cameraController.target,
       distance: this.cameraController.distance,
@@ -478,9 +491,24 @@ export class WorldView implements WorldViewApi {
   render(): void {
     if (this._disposed) return;
     this.renderer.info.reset();
+    // first frame (and after a quality change): compile every object's program now, including objects that draw
+    // nothing yet (batches whose lists are still empty), so they do not compile when they first appear
+    if (!this.precompiled) {
+      this.precompiled = true;
+      this.post.compileScene(this.scene, this.camera);
+    }
     this.updateDynamicResolution();
     this.updateShadowPolicy();
     this.post.render(this.scene, this.camera, null);
+    // main-thread busy time of this frame: from the frame's start (rAF time) to the end of the render submission
+    if (this.drsStart === this.drsStart) this.drsBusy = performance.now() - this.drsStart;
+  }
+
+  /** start time of the current animation frame (document timeline = the rAF timestamp), else NaN */
+  private frameStart(): number {
+    const tl = typeof document !== 'undefined' ? (document as Document & { timeline?: { currentTime: unknown } }).timeline : undefined;
+    const t = tl ? Number(tl.currentTime) : NaN;
+    return Number.isFinite(t) ? t : NaN;
   }
 
   /** decide whether this frame re-renders the shadow map (see shadowCache) */
@@ -521,10 +549,13 @@ export class WorldView implements WorldViewApi {
     for (const r of recvs) rv += r.version;
     if (rv !== this.shRecv) { this.shRecv = rv; moved = true; }
     let need = moved || this.shForce > 0 || !sh.map || this.frameNo - this.shFrame >= this.shadowMaxAge;
-    if (!need && shadowCasters.version !== this.shVersion && this.frameNo - this.shFrame >= this.shadowInterval) need = true;
+    // moving vehicles near the camera: every frame (their shadows would trail them by a frame)
+    const dyn = shadowCasters.dynamic !== this.shDynamic && this.cameraController.distance < this.dynamicShadowDistance;
+    if (!need && (dyn || (shadowCasters.version !== this.shVersion && this.frameNo - this.shFrame >= this.shadowInterval))) need = true;
     if (need) {
-      this.shadowStats.reason = moved ? 'moved' : this.shForce > 0 ? 'forced' : !sh.map ? 'nomap' : shadowCasters.version !== this.shVersion ? 'casters' : 'age';
+      this.shadowStats.reason = moved ? 'moved' : this.shForce > 0 ? 'forced' : !sh.map ? 'nomap' : dyn ? 'vehicles' : shadowCasters.version !== this.shVersion ? 'casters' : 'age';
       this.shVersion = shadowCasters.version;
+      this.shDynamic = shadowCasters.dynamic;
       this.shFrame = this.frameNo;
       if (this.shForce > 0) this.shForce--;
       this.shadowStats.rendered++;
@@ -534,18 +565,25 @@ export class WorldView implements WorldViewApi {
 
   /** adapt renderScale to the frame interval (see dynamicResolution) */
   private updateDynamicResolution(): void {
-    const now = performance.now();
+    // frame interval between animation-frame starts (falls back to render-to-render); the previous frame's busy time
+    const start = this.frameStart();
+    const now = start === start ? start : performance.now();
     const dt = now - this.drsLast;
     this.drsLast = now;
+    const busy = this.drsBusy;
+    this.drsStart = start;
+    this.drsBusy = NaN;
     if (!this.dynamicResolution) {
       if (this.renderScale !== 1) { this.renderScale = 1; this.applyRenderSize(); }
       return;
     }
     if (dt <= 0 || dt > 250) return;
     const budget = 1000 / this.q.targetFps;
-    // one-off CPU spikes (sim day ticks, GC, chunk rebuilds) are not a fill-rate problem: clamp each sample so only
+    // a frame whose main thread was busy for most of the interval is CPU bound (sim ticks, GC, city edits): a lower
+    // resolution would not make it faster, so it counts as on budget; one-off GPU spikes are clamped so only
     // sustained slow frames lower the resolution
-    const sample = Math.min(dt, budget * 2);
+    const cpuBound = busy === busy && busy > dt * 0.75;
+    const sample = cpuBound ? Math.min(dt, budget) : Math.min(dt, budget * 2);
     this.drsEma = this.drsEma > 0 ? this.drsEma * 0.92 + sample * 0.08 : sample;
     const min = this.q.minRenderScale;
     if (this.drsEma > budget * 1.2 && now - this.drsChange > 600 && this.renderScale > min + 1e-3) {
@@ -564,7 +602,9 @@ export class WorldView implements WorldViewApi {
 
   private applyRenderSize(): void {
     const s = this.renderScale;
-    this.post.setSize(Math.max(1, Math.round(this.width * this.pixelRatio * s)), Math.max(1, Math.round(this.height * this.pixelRatio * s)));
+    const w = Math.max(1, Math.round(this.width * this.pixelRatio * s)), h = Math.max(1, Math.round(this.height * this.pixelRatio * s));
+    this.post.setSize(w, h);
+    this.trees.setRenderSize(w, h);
   }
 
   resize(width: number, height: number): void {

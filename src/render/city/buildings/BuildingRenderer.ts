@@ -6,10 +6,14 @@
  * Culling: per render pass (main view and each shadow cascade get their own draw list, see DynamicBatch
  * enablePassCulling); instances are registered in map tiles.
  * LOD: buildings whose projected radius drops below `lodPixels` swap to an auto-generated massing proxy
- * (lodProxy.ts, 12-40 triangles, same material / windows / night lights) with hysteresis; see updateLod(). A model's
- * proxy is generated the first time a building needs it, within `lodBudgetMs` per frame (flushLod() for captures).
+ * (lodProxy.ts, 12-40 triangles, same material / windows / night lights) with hysteresis; see updateLod(). Proxies
+ * are built off the main thread (lodBuilder.ts worker): every model is queued for its proxy when it first appears
+ * (background prefetch), a building that needs a proxy not built yet stays on its full model and swaps when it
+ * arrives, so proxy generation never costs frame time (flushLod() builds everything synchronously for captures).
+ * Without worker support (Node tests) proxies are built on demand within `lodBudgetMs` per frame.
  * Each building is re-evaluated only when the camera has travelled far enough to possibly carry it across its swap
- * distance, so a panning camera costs a few evaluations per frame and a still one none.
+ * distance, so a panning camera costs a few evaluations per frame and a still one none; a camera jump re-evaluates
+ * every building in that frame.
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../../core/constants';
@@ -22,6 +26,7 @@ import { Surf } from '../../../core/types';
 import { DynamicBatch, type TileCuller } from '../common/batch';
 import { getCityMaterial, flagsToAlpha, IF_FIRE, IF_SELECTED, IF_WINDOWS_OFF } from '../common/cityMaterial';
 import { lodProxyFor } from './lodProxy';
+import { lodProxyBuilder, type LodProxyBuilder } from './lodBuilder';
 
 /** LOD proxies stay within their model's bounds + this (m; see tests/render/lod.test.ts) */
 const PROXY_PAD = 0.6;
@@ -75,11 +80,17 @@ interface BInst {
   /** LOD schedule: absolute travel bucket of its live queue entry (-1 = none, -2 = removed); queued in lodNow */
   due: number;
   now: boolean;
+  /** full geometry id whose proxy (being built) this building waits for, -1 none */
+  waiting: number;
 }
 
 /** LOD schedule: camera travel (m) per bucket, and ring size (travel horizon; longer slack is re-checked then) */
 const LOD_BUCKET = 1;
 const LOD_BUCKETS = 4096;
+/** camera travel in one frame that counts as a jump (view change / cut): every due building is evaluated then, no
+ *  lodSlice (no frame with big buildings still on their proxies). At least LOD_JUMP m and half the camera height
+ *  (a fast zoom at a far view moves the camera 100-300 m per frame: smooth motion, sliced) */
+const LOD_JUMP = 150;
 
 const POP_TIME = 0.55;
 const _sphere = new THREE.Sphere();
@@ -109,7 +120,9 @@ export class BuildingRenderer {
   /** next bucket (absolute index) to evaluate */
   private lodAt = 0;
   private lodNow: BInst[] = [];
-  /** at most this many building evaluations per frame (a big jump / new metric spreads over a few frames) */
+  private lodNowSpare: BInst[] = [];
+  /** at most this many building evaluations per frame while the camera moves smoothly (a new metric spreads over a
+   *  few frames; camera jumps evaluate everything at once) */
   lodSlice = 3000;
   /** next update ignores lodSlice (flushLod: captures / benchmarks want the settled state now) */
   private lodFull = false;
@@ -127,8 +140,16 @@ export class BuildingRenderer {
    *  city load and a hitch whenever a new variant appears) */
   private lodPending = new Map<number, [string, number]>();
   private lodDeadline = 0;
-  /** CPU budget (ms per frame) for building LOD proxies on demand; flushLod() builds all pending ones at once */
+  /** CPU budget (ms per frame) for building LOD proxies on demand without a worker; flushLod() builds all pending
+   *  ones at once */
   lodBudgetMs = 3;
+  /** off-main-thread proxy builder (null: build synchronously) */
+  private proxies: LodProxyBuilder | null;
+  /** full geometry ids requested from the worker, and buildings waiting for their proxy */
+  private lodAsked = new Set<number>();
+  private lodUrgent = new Set<number>();
+  private lodWaiting = new Map<number, BInst[]>();
+  private disposed = false;
   /** dense list of instances for the per-frame LOD sweep */
   private list: BInst[] = [];
   /** every building is due (flushLod) */
@@ -141,6 +162,8 @@ export class BuildingRenderer {
   onVisual: ((v: BuildingVisual | null, id: number) => void) | null = null;
 
   constructor(private state: CityState, private culler: TileCuller) {
+    const pb = lodProxyBuilder();
+    this.proxies = pb.available ? pb : null;
     this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 18, 'buildings');
     this.batch.mesh.castShadow = true;
     this.batch.mesh.receiveShadow = true;
@@ -177,24 +200,73 @@ export class BuildingRenderer {
     // culling sphere with room for the LOD proxy (built later, within the model bounds + 0.6 m): model and proxy then
     // share one sphere and LOD swaps never force a draw-list rebuild
     if (fresh) this.batch.padSphere(id, PROXY_PAD);
-    if (!this.lodMap.has(id) && !this.lodPending.has(id)) this.lodPending.set(id, [model, v]);
+    if (!this.lodMap.has(id) && !this.lodPending.has(id)) {
+      this.lodPending.set(id, [model, v]);
+      // background prefetch: most proxies exist before any building needs them
+      this.askProxy(id, false);
+    }
     return id;
   }
 
-  /** proxy geometry id of a full geometry (itself when the model has none); -1 = not built yet and no budget left */
+  /** queue a geometry's proxy on the worker (urgent: a building wants it now) */
+  private askProxy(geom: number, urgent: boolean): void {
+    const pb = this.proxies;
+    const pend = this.lodPending.get(geom);
+    if (!pb || !pend) return;
+    if (this.lodAsked.has(geom) && (!urgent || this.lodUrgent.has(geom))) return;
+    this.lodAsked.add(geom);
+    if (urgent) this.lodUrgent.add(geom);
+    const key = `${pend[0]}#${pend[1]}`;
+    pb.request(key, getModelGeometry(pend[0], pend[1]), (g) => { if (!this.disposed) this.installProxy(geom, g); }, urgent);
+  }
+
+  /** register a built proxy (null = none) for a full geometry; wakes the buildings waiting for it */
+  private installProxy(geom: number, proxy: THREE.BufferGeometry | null): number {
+    const done = this.lodMap.get(geom);
+    if (done !== undefined) return done;
+    const pend = this.lodPending.get(geom);
+    if (!pend) return geom;
+    this.lodPending.delete(geom);
+    this.lodAsked.delete(geom);
+    this.lodUrgent.delete(geom);
+    const key = `${pend[0]}#${pend[1]}`;
+    const id = proxy ? this.batch.geometryId(key + '#lod', () => proxy) : geom;
+    this.batch.shareSphere(geom, id, PROXY_PAD);
+    this.lodMap.set(geom, id);
+    const w = this.lodWaiting.get(geom);
+    if (w) {
+      this.lodWaiting.delete(geom);
+      for (const bi of w) {
+        if (bi.waiting !== geom) continue;
+        bi.waiting = -1;
+        if (bi.due !== -2 && bi.geom === geom) this.lodQueue(bi);
+      }
+    }
+    return id;
+  }
+
+  /** a building needs geom's proxy, which the worker is still building: evaluate it again once it arrives */
+  private waitFor(bi: BInst, geom: number): void {
+    if (bi.waiting === geom) return;
+    bi.waiting = geom;
+    let w = this.lodWaiting.get(geom);
+    if (!w) this.lodWaiting.set(geom, (w = []));
+    w.push(bi);
+    this.askProxy(geom, true);
+  }
+
+  /** proxy geometry id of a full geometry (itself when the model has none); -1 = not built yet (worker: requested;
+   *  synchronous mode: no budget left this frame). force: build it synchronously now. */
   private proxyOf(geom: number, force = false): number {
     const p = this.lodMap.get(geom);
     if (p !== undefined) return p;
     const pend = this.lodPending.get(geom);
     if (!pend) return geom;
-    if (!force && performance.now() > this.lodDeadline) return -1;
-    this.lodPending.delete(geom);
-    const key = `${pend[0]}#${pend[1]}`;
-    const proxy = lodProxyFor(key, getModelGeometry(pend[0], pend[1]));
-    const id = proxy ? this.batch.geometryId(key + '#lod', () => proxy) : geom;
-    this.batch.shareSphere(geom, id, PROXY_PAD);
-    this.lodMap.set(geom, id);
-    return id;
+    if (!force) {
+      if (this.proxies) { this.askProxy(geom, true); return -1; }
+      if (performance.now() > this.lodDeadline) return -1;
+    }
+    return this.installProxy(geom, lodProxyFor(`${pend[0]}#${pend[1]}`, getModelGeometry(pend[0], pend[1])));
   }
 
   /** build every pending LOD proxy now (captures, benchmarks) */
@@ -229,6 +301,9 @@ export class BuildingRenderer {
   rebuildAll(): void {
     this.clear();
     for (const b of this.state.buildings.values()) this.add(b, false);
+    // room for the proxies the worker is about to deliver (<= ~180 triangles each): growing the batch's vertex buffer
+    // later would re-upload all of it in some frame
+    this.batch.reserveVertices(this.lodPending.size * 200);
   }
 
   private freeInstances(bi: BInst): void {
@@ -249,7 +324,7 @@ export class BuildingRenderer {
     if (this.inst.has(b.id)) this.remove(b.id);
     const bi: BInst = {
       b, main: -1, site: -1, found: -1, tile: 0, key: '', flags: 0, anim: animate ? POP_TIME : 0, geom: -1,
-      vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, li: this.list.length, due: -1, now: false,
+      vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, li: this.list.length, due: -1, now: false, waiting: -1,
     };
     this.inst.set(b.id, bi);
     this.list.push(bi);
@@ -303,9 +378,15 @@ export class BuildingRenderer {
     const yaw = b.rot * (Math.PI / 2);
     const geom = burnt ? this.geomFor('rubble', b.id) : this.geomFor(model, b.variant);
     bi.geom = geom;
-    // a building currently drawn as a proxy gets its new model's proxy right away (no detail pop); for the others it
-    // is built on demand by updateLod (-1 until then)
-    bi.lodGeom = this.proxyOf(geom, bi.lod === 1);
+    // a building currently drawn as a proxy gets its new model's proxy right away if it exists (no detail pop; without
+    // a worker it is built now), else it shows the full model until the worker delivers; for the others the proxy is
+    // looked up by updateLod (-1 until then)
+    bi.lodGeom = this.proxyOf(geom, bi.lod === 1 && !this.proxies);
+    if (bi.lod === 1 && bi.lodGeom < 0) {
+      bi.lod = 0;
+      this.lodCount--;
+      this.waitFor(bi, geom);
+    }
     bi.siteGeom = bi.siteLod = -1;
     const bounds = this.batch.bounds(geom);
     // keep the current LOD state across rebuilds (state changes must not pop the detail level)
@@ -432,7 +513,8 @@ export class BuildingRenderer {
       for (const bi of this.list) this.lodQueue(bi);
     }
     const p = this.lodPos;
-    if (p.x === p.x) this.lodTravel += Math.hypot(c.x - p.x, c.y - p.y, c.z - p.z);
+    const hop = p.x === p.x ? Math.hypot(c.x - p.x, c.y - p.y, c.z - p.z) : 0;
+    this.lodTravel += hop;
     p.copy(c);
     const cur = Math.floor(this.lodTravel / LOD_BUCKET);
     if (cur - this.lodAt >= LOD_BUCKETS - 2) {
@@ -444,11 +526,15 @@ export class BuildingRenderer {
     if (!this.lodNow.length && this.lodAt > cur) return;
     const on = this.lodPixels * 0.88, off = this.lodPixels * 1.12;
     this.lodDeadline = performance.now() + this.lodBudgetMs;
-    let budget = this.lodFull ? Infinity : this.lodSlice;
+    // a jump (view change, camera cut) evaluates every due building now: a slice would leave big buildings in view on
+    // their proxies for a frame or two
+    let budget = this.lodFull || hop > Math.max(LOD_JUMP, c.y * 0.5) ? Infinity : this.lodSlice;
     this.lodFull = false;
     if (this.lodNow.length) {
+      // (two alternating arrays: no garbage per frame)
       const q = this.lodNow;
-      this.lodNow = [];
+      this.lodNow = this.lodNowSpare;
+      this.lodNowSpare = q;
       let i = 0;
       for (; i < q.length && budget > 0; i++) {
         const bi = q[i];
@@ -459,6 +545,7 @@ export class BuildingRenderer {
       }
       // over the frame budget: the rest stays due
       for (; i < q.length; i++) this.lodNow.push(q[i]);
+      q.length = 0;
     }
     while (this.lodAt <= cur && budget > 0) {
       const slot = this.lodAt % LOD_BUCKETS;
@@ -497,9 +584,14 @@ export class BuildingRenderer {
     const lim = this.lodPixels > 0 && bi.b.id !== this.selected;
     const want = lim && d * (bi.lod ? off : on) > rk ? 1 : 0;
     if (want && bi.lodGeom < 0) {
-      // first time this model is needed as a proxy: build it within the frame budget, else retry next frame
+      // first time this model is needed as a proxy: the worker builds it (the building stays full and is evaluated again
+      // when it arrives); without a worker it is built within the frame budget, else retried next frame
       const pg = this.proxyOf(bi.geom);
-      if (pg < 0) { this.lodQueue(bi); return; }
+      if (pg < 0) {
+        if (this.proxies) this.waitFor(bi, bi.geom);
+        else this.lodQueue(bi);
+        return;
+      }
       bi.lodGeom = pg;
       if (pg === bi.geom && bi.siteLod === bi.siteGeom) { this.lodSet(bi, 0); return; }
     }
@@ -544,6 +636,7 @@ export class BuildingRenderer {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.batch.dispose();
   }
 }

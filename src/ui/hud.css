@@ -571,6 +571,20 @@
 .adv .an { font-weight: 700; font-size: 12.5px; }
 .adv .ar { font-size: 10.5px; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .adv .am { font-size: 12px; color: var(--text-dim); margin-top: 5px; line-height: 1.45; }
+/* further open issues under the top one (AdvisorsPanel): one line each, click = show on the map */
+.adv .ab { min-width: 0; }
+.adv .am-more { list-style: none; margin: 7px 0 0; padding: 6px 0 0; border-top: 1px solid var(--hair); display: flex; flex-direction: column; gap: 3px; }
+.adv .am-more li { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11.5px; line-height: 1.4; color: var(--text-faint); border-radius: 5px; }
+.adv .am-more li .mt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adv .am-more li .md { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #b58cff; }
+.adv .am-more li.bad .md { background: var(--bad); }
+.adv .am-more li.warning .md { background: var(--warn); }
+.adv .am-more li.good .md { background: var(--good); }
+.adv .am-more li .mg { display: inline-flex; flex: none; opacity: 0.7; }
+.adv .am-more li.go { cursor: pointer; }
+.adv .am-more li.go:hover { color: var(--text); }
+.adv .am-more li.go:hover .mg { opacity: 1; }
+.adv .am-extra { margin-top: 3px; font-size: 11px; color: var(--text-faint); }
 .news-list { display: flex; flex-direction: column; gap: 1px; }
 .news-row { display: grid; grid-template-columns: 8px 64px 1fr auto; gap: 10px; align-items: baseline; padding: 7px 8px; border-radius: 7px; font-size: 12.5px; }
 .news-row:hover { background: var(--hover); }
@@ -680,7 +694,8 @@
 .save-pill .ok { display: none; color: var(--good); }
 .save-pill.done .ok { display: inline-flex; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.fps { position: absolute; right: 12px; bottom: 244px; z-index: 20; font: 500 10.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-dim); padding: 7px 10px; pointer-events: none; white-space: nowrap; border-radius: 9px; }
+/* above the minimap AND the save indicator mounted on top of it (region/ui/meta.css .save-status: 8px gap + 24px) */
+.fps { position: absolute; right: 12px; bottom: 296px; z-index: 20; font: 500 10.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-dim); padding: 7px 10px; pointer-events: none; white-space: nowrap; border-radius: 9px; }
 .fps b { color: var(--text); font-weight: 700; }
 .loading-veil { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; background: #0b1016; color: var(--text-dim); font-size: 13px; z-index: 50; transition: opacity 0.5s; pointer-events: none; }
 .loading-veil.gone { opacity: 0; }

@@ -52,6 +52,10 @@ export interface ActionResult {
   affected?: number;
   /** cells that would be affected (for preview highlighting) */
   cells?: { x: number; z: number; ok: boolean }[];
+  /** growable buildings a road / rail drag or a rezoning demolishes on the way (ids, set when any) and their
+   *  demolition fees (part of `cost`) — the tools confirm big side demolitions (game/demolishRisk.ts) */
+  demolished?: number[];
+  demolishFee?: number;
 }
 
 export interface Cell {
@@ -201,13 +205,14 @@ export class CityActions implements CityActionsApi {
     if (count === 0) return fail(reason ?? 'Nothing to zone here', 0, cells);
     if (!this.affordable(total)) return fail(`Not enough money (${money(total)})`, total, cells);
     const warn = demolish.length ? `Rezoning demolishes ${demolish.length} building${demolish.length > 1 ? 's' : ''}` : undefined;
-    if (preview) return { ok: true, cost: total, affected: count, cells, reason: warn };
+    const side = demolish.length ? { demolished: demolish.map((b) => b.id), demolishFee: fee } : null;
+    if (preview) return { ok: true, cost: total, affected: count, cells, reason: warn, ...side };
     for (const b of demolish) removeBuilding(this.sim, b);
     for (let k = 0; k < count; k++) st.zone[okIdx![k]] = zone;
     this.spend(cost, 'oneoff:zoning');
     if (fee) this.spend(fee, 'oneoff:demolition');
     this.sim.events.emit('zoneChanged', r);
-    return { ok: true, cost: total, affected: count, cells, reason: warn };
+    return { ok: true, cost: total, affected: count, cells, reason: warn, ...side };
   }
 
   dezone(rect: CellRect, preview = false): ActionResult {
@@ -343,7 +348,8 @@ export class CityActions implements CityActionsApi {
     if (count === 0 && total === 0) return { ok: true, cost: 0, affected: 0, cells, reason: 'Already built' };
     if (!this.affordable(total)) return fail(`Not enough money (${money(total)})`, total, cells);
     const warn = demolish.length ? `Demolishes ${demolish.length} building${demolish.length > 1 ? 's' : ''}` : undefined;
-    if (preview) return { ok: true, cost: total, affected: count, cells, reason: warn };
+    const side = demolish.length ? { demolished: demolish.map((b) => b.id), demolishFee: fee } : null;
+    if (preview) return { ok: true, cost: total, affected: count, cells, reason: warn, ...side };
 
     // ---- apply
     for (const b of demolish) removeBuilding(this.sim, b);
@@ -380,7 +386,7 @@ export class CityActions implements CityActionsApi {
     if (zoneCleared) this.sim.events.emit('zoneChanged', bb);
     if (treesCleared) this.sim.events.emit('treesChanged', bb);
     this.afterNetworkChange();
-    return { ok: true, cost: total, affected: count, cells, reason: warn };
+    return { ok: true, cost: total, affected: count, cells, reason: warn, ...side };
   }
 
   private afterNetworkChange(): void {

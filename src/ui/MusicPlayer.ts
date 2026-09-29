@@ -140,6 +140,10 @@ export class MusicPlayer {
       meta.addEventListener('click', (e) => {
         e.stopPropagation();
         this.togglePopover();
+        // opened from the keyboard (Enter / Space: detail 0): focus the playing (else first) track, so Tab / Esc work
+        // inside the list instead of walking through the pill buttons first
+        const pop = this.pop;
+        if (pop && e.detail === 0) (pop.querySelector<HTMLElement>('.mpl-row.on .mpl-pick') ?? pop.querySelector<HTMLElement>('.mpl-pick'))?.focus({ preventScroll: true });
       });
       this.el.append(this.art, meta, el('span', 'mpl-sep'), prev, this.playBtn, next, this.shuffleBtn);
       this.el.classList.add(o.popover === 'down' ? 'pop-down' : 'pop-up');

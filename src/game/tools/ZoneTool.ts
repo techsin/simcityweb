@@ -5,7 +5,7 @@ import type { ActionResult } from '../../sim/actions';
 import { rectFrom, type Cell } from '../geom';
 import type { GameContext } from '../context';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
-import { demolishRisks, type DemolishRisk } from '../demolishRisk';
+import { demolishRisks, sideDemolishRisks, type DemolishRisk } from '../demolishRisk';
 import { confirmDialog } from '../../ui/Modals';
 
 export const ZONE_LABELS: Record<number, string> = {
@@ -121,13 +121,16 @@ export class RectTool extends Tool {
     }
     this.start = null;
     if (rect) {
-      // destructive bulldozing (last power plant / water source, landmarks, > §20k) asks first
-      const risk = this.mode.kind === 'bulldoze' ? this.bulldozeRisk(rect) : null;
+      // destructive bulldozing (last power plant / water source, landmarks, > §20k) and rezoning that demolishes a lot
+      // (> §20k of fees, or DISPLACE_CONFIRM residents + jobs) ask first
+      const bull = this.mode.kind === 'bulldoze';
+      const risk = bull ? this.bulldozeRisk(rect) : this.mode.kind === 'zone' ? this.rezoneRisk(rect) : null;
       if (risk) {
         this.ctx.world.setHighlightRect(null, 0);
         this.ctx.tip.hide();
         this.lastKey = '';
-        void confirmDialog(this.ctx, { title: risk.title, message: 'This demolition has consequences:', items: risk.items, confirm: 'Demolish', danger: true }).then((yes) => {
+        const msg = bull ? 'This demolition has consequences:' : 'Rezoning demolishes the buildings on these lots:';
+        void confirmDialog(this.ctx, { title: risk.title, message: msg, items: risk.items, confirm: bull ? 'Demolish' : 'Rezone & demolish', danger: true }).then((yes) => {
           if (yes && this.ctx.tools.active === this) this.commit(rect);
           this.lastKey = '';
           this.ctx.tools.refresh();
@@ -145,6 +148,13 @@ export class RectTool extends Tool {
     const pre = this.run(rect, true);
     if (!pre.ok) return null;
     return safe(() => demolishRisks(this.ctx.state, rect, pre.cost ?? 0, { sandbox: this.ctx.sandbox() }), null);
+  }
+
+  /** zoning over growables of another family demolishes them (ActionResult.demolished) */
+  private rezoneRisk(rect: CellRect): DemolishRisk | null {
+    const pre = this.run(rect, true);
+    if (!pre.ok || !pre.demolished?.length) return null;
+    return safe(() => sideDemolishRisks(this.ctx.state, pre.demolished, pre.demolishFee ?? 0, { sandbox: this.ctx.sandbox() }), null);
   }
 
   private commit(rect: CellRect): void {

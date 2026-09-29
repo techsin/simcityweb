@@ -4,6 +4,8 @@ import type { ActionResult } from '../../sim/actions';
 import { lPath, type Cell } from '../geom';
 import type { GameContext } from '../context';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
+import { sideDemolishRisks, type DemolishRisk } from '../demolishRisk';
+import { confirmDialog } from '../../ui/Modals';
 
 export type NetKind = Network | 'power' | 'subway';
 
@@ -100,15 +102,39 @@ export class NetworkTool extends Tool {
     const path = this.path;
     this.start = null;
     if (path && path.length) {
-      const r = this.run(path, false);
-      if (r.ok) this.ctx.sound(this.kind === 'power' ? 'powerline' : this.kind === 'subway' || this.kind === Network.Rail ? 'rail' : 'build', { intensity: Math.min(1, path.length / 40) });
-      else {
-        this.ctx.sound('error');
-        if (r.reason) this.ctx.toast(r.reason, 'error');
+      // a route through developed lots that demolishes a lot (> §20k of fees, or DISPLACE_CONFIRM residents + jobs) asks first
+      const risk = this.sideRisk(path);
+      if (risk) {
+        this.clearPreview();
+        this.ctx.tip.hide();
+        this.lastKey = '';
+        void confirmDialog(this.ctx, { title: risk.title, message: 'This route runs through developed lots:', items: risk.items, confirm: 'Build & demolish', danger: true }).then((yes) => {
+          if (yes && this.ctx.tools.active === this) this.commit(path);
+          this.lastKey = '';
+          this.ctx.tools.refresh();
+        });
+        // the dialog is modal: no preview / tip underneath it (the next frame after it closes refreshes them)
+        return;
       }
+      this.commit(path);
     }
     this.lastKey = '';
     this.refresh(p, true);
+  }
+
+  private sideRisk(path: Cell[]): DemolishRisk | null {
+    const pre = this.run(path, true);
+    if (!pre.ok || !pre.demolished?.length) return null;
+    return safe(() => sideDemolishRisks(this.ctx.state, pre.demolished, pre.demolishFee ?? 0, { sandbox: this.ctx.sandbox() }), null);
+  }
+
+  private commit(path: Cell[]): void {
+    const r = this.run(path, false);
+    if (r.ok) this.ctx.sound(this.kind === 'power' ? 'powerline' : this.kind === 'subway' || this.kind === Network.Rail ? 'rail' : 'build', { intensity: Math.min(1, path.length / 40) });
+    else {
+      this.ctx.sound('error');
+      if (r.reason) this.ctx.toast(r.reason, 'error');
+    }
   }
   override cancel(): boolean {
     if (!this.start) return false;
