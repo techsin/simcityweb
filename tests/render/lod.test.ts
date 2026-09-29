@@ -731,6 +731,67 @@ describe('building LOD cross-fade', () => {
     expect(frames).toBeGreaterThan(ideal * 0.8);
     expect(frames).toBeLessThan(ideal * 1.2);
   });
+
+  it('wakes the buildings waiting for an arriving proxy a few per frame, each dissolving (no swap spike), none in a cut frame', () => {
+    const run = (opts: { slice: number; fadeMax?: number; cut?: boolean }) => {
+      const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
+      st.heights.fill(0);
+      const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
+      // worker stand-in: proxies arrive only when the test delivers them
+      const asked: { geo: THREE.BufferGeometry; done: (g: THREE.BufferGeometry | null) => void }[] = [];
+      (br as unknown as { proxies: unknown }).proxies = { available: true, request: (_k: string, geo: THREE.BufferGeometry, done: (g: THREE.BufferGeometry | null) => void) => asked.push({ geo, done }) };
+      br.lodWakeSlice = opts.slice;
+      if (opts.fadeMax) br.fadeMax = opts.fadeMax;
+      // 150 buildings sharing one model
+      let id = 1;
+      for (let j = 0; j < 10; j++) for (let i = 0; i < 15; i++) br.add({ id: id++, def: 'res_apartment', x: 8 + i * 3, z: 12 + j * 3, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
+      type L = { lod: number; waiting: number; radius: number };
+      const all = (br as unknown as { list: L[] }).list;
+      const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 30000);
+      const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
+      const r = all[0].radius, dOn = (r * K) / (br.lodPixels * 0.88);
+      // far enough for every building to want its proxy, near enough for the swaps to fade (> fadeMinFrac x lodPixels)
+      const centre = new THREE.Vector3(30 * CELL_SIZE, 0, 27 * CELL_SIZE), dir = new THREE.Vector3(0.3, 1, 0.5).normalize();
+      let d = dOn * 1.3;
+      const at = (dd: number) => { cam.position.copy(centre).addScaledVector(dir, dd); cam.lookAt(centre); cam.updateMatrixWorld(); br.update(1 / 60); br.updateLod(cam, H); };
+      at(d);
+      // nothing built yet: every building waits on its full model
+      expect(all.every((b) => b.lod === 0 && b.waiting >= 0)).toBe(true);
+      expect(br.lodCount).toBe(0);
+      for (const a of asked) a.done(buildLodProxy(a.geo));
+      let maxStep = 0, maxFades = 0, frames = 0, prev = br.lodCount;
+      if (opts.cut) {
+        // a camera cut right after the arrival: the cut frame wakes nobody, the catch-up frames wake them without fades
+        d *= 1.6;
+        at(d);
+        expect(br.lodCount).toBe(0);
+      }
+      while (br.lodCount < all.length && frames < 400) {
+        d += 1; // smooth creep
+        at(d);
+        frames++;
+        maxStep = Math.max(maxStep, br.lodCount - prev);
+        maxFades = Math.max(maxFades, br.fading);
+        prev = br.lodCount;
+      }
+      expect(br.lodCount).toBe(all.length);
+      return { maxStep, maxFades, frames };
+    };
+    // paced by the slice, every wake dissolves
+    const a = run({ slice: 16 });
+    expect(a.maxStep).toBeLessThanOrEqual(16);
+    expect(a.frames).toBeGreaterThanOrEqual(Math.ceil(150 / 16));
+    expect(a.maxFades).toBeGreaterThan(16);
+    // ... and by the running fades: at most fadeMax / 2 of them from wakes
+    const b = run({ slice: 64, fadeMax: 24 });
+    expect(b.maxFades).toBeLessThanOrEqual(12);
+    expect(b.maxFades).toBeGreaterThan(0);
+    expect(b.frames).toBeGreaterThan(40);
+    // a cut: instant catch-up (x4 slice per frame, no fades)
+    const c = run({ slice: 16, cut: true });
+    expect(c.maxFades).toBe(0);
+    expect(c.maxStep).toBeLessThanOrEqual(64);
+  });
 });
 
 describe('burnt lots and foundations', () => {
