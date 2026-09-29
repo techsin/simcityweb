@@ -674,6 +674,8 @@ describe('WP7b reports, facts and effect metrics of the 7 transit defs', () => {
       cycles(sim, 4);
       services(sim).compute(sim, false);
       const metric = defId ? TRANSPORT_EFFECT_METRICS[defId](sim) : 0;
+      // (the depot's service: both bus stops of the town are in its range)
+      if (defId === 'civ_bus_depot') expect(getTraffic(sim)!.depotStopsServed).toBe(2);
       return { sim, st, id, metric };
     };
     const base = measure(null);

@@ -732,6 +732,31 @@ describe('building LOD cross-fade', () => {
     expect(frames).toBeLessThan(ideal * 1.2);
   });
 
+  it('swaps at once when the motion would finish the dissolve within a frame or two (fast fly-by), dissolves otherwise', () => {
+    const { br, bi, dOn, at, glide } = setup();
+    // (the camera is ~0.45 dOn high here: every step below is far under the cut distance, i.e. smooth motion)
+    const flyBy = () => {
+      at(dOn * 0.5);
+      glide(dOn * 0.94);
+      // one frame carrying the building 12% farther (fadeTravel x 1): the dissolve would be over at once
+      at(dOn * 1.06);
+      expect(bi.lod).toBe(1);
+    };
+    flyBy();
+    expect(br.fading).toBe(0);
+    // the same crossing at 2% per frame dissolves
+    at(dOn * 0.5);
+    glide(dOn * 0.97);
+    for (const f of [0.99, 1.01, 1.03]) at(dOn * f);
+    expect(bi.lod).toBe(1);
+    expect(br.fading).toBe(1);
+    br.flushLod();
+    // fadeFast 0: even the fast crossing dissolves (over the travel-driven frames)
+    br.fadeFast = 0;
+    flyBy();
+    expect(br.fading).toBe(1);
+  });
+
   it('wakes the buildings waiting for an arriving proxy a few per frame, each dissolving (no swap spike), none in a cut frame', () => {
     const run = (opts: { slice: number; fadeMax?: number; cut?: boolean }) => {
       const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));

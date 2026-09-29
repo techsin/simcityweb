@@ -40,7 +40,7 @@ import {
 import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
 import { frontHasRoad, removeBuilding } from './buildings';
 import { ordinanceEffect } from './ordinances';
-import { conditionDesirability, garbageFade } from './factors';
+import { conditionDesirability, garbageFade, lotCell } from './factors';
 import type { FactorTerm } from '../explain';
 import { getDef } from '../catalog';
 import {
@@ -231,6 +231,9 @@ function blurCoarse(raw: Float32Array, out: Float32Array, cw: number): void {
 const DEMO_UPDATE_DAYS = 16 * OCC_PERIOD;
 /** the city-wide cohort / education / coarse-grid sample (aggregate) runs every DEMO_AGG_DAYS */
 const DEMO_AGG_DAYS = 8 * OCC_PERIOD;
+
+/** day of the month of the EQ / HQ update (off the month tick; the commercial core runs on day 20, freight on 15) */
+const EQHQ_DAY = 25;
 
 /** EMPLOYED_EMA per day compounded over one OCC_PERIOD (the traffic ledger is sampled every OCC_PERIOD days) */
 const EMPLOYED_EMA_PERIOD = 1 - Math.pow(1 - EMPLOYED_EMA, OCC_PERIOD);
@@ -480,7 +483,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
         if (b.flags & (BF.Burnt | BF.Constructing)) continue;
         const def = rt.defOf(b);
         if (!def || def.devType === undefined || def.devType > DevType.R3) continue;
-        cache.refresh(st, b, (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1), svc, def);
+        cache.refresh(st, b, lotCell(b, N), svc, def);
       }
     }
     for (let c = 0; c < slice; c++) {
@@ -504,7 +507,8 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       if (!def || def.devType === undefined) continue;
       const dev = def.devType;
       const isR = dev <= DevType.R3;
-      const i = (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1);
+      // (the lot's front row: a deep-infill lot's centre is a yard cell whose coverage dips during a services pass)
+      const i = lotCell(b, N);
       // ---- conditions
       if (!inf.utilities) b.flags |= BF.Powered | BF.Watered;
       const cd = condition(ctx, b, def, i);
@@ -634,14 +638,13 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       aggregate(sim, false);
       demographicsData(sim.state).cursor = cursor;
       if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === 0) sim.events.emit('layerUpdated', 'demographics');
+      // EQ / HQ from the residents' education stock and health access, once a month (with sim-infra services; approval
+      // keeps the legacy coverage lag in sim-core-only runs) — on day EQHQ_DAY of the month, not on the month tick,
+      // which already carries every system's monthly work (a loop over all homes: ~16 ms at 300k residents)
+      if (sim.state.day % DAYS_PER_MONTH === EQHQ_DAY && infraFlags(sim.state).services) updateEqHq(sim.state, rt.growables, DAYS_PER_MONTH, sim, defOf);
       rt.timing.population = performance.now() - t0;
     },
-    monthly(sim) {
-      // EQ / HQ from the residents' education stock and health access (with sim-infra services; approval keeps the
-      // legacy coverage lag in sim-core-only runs)
-      if (!infraFlags(sim.state).services) return;
-      updateEqHq(sim.state, rt.growables, DAYS_PER_MONTH, sim, defOf);
-    },
+
   };
 }
 
@@ -654,14 +657,16 @@ export function conditionBreakdown(st: CityState, b: Building): { terms: FactorT
   const def = getDef(b.def);
   if (!def || def.devType === undefined || b.flags & BF.Plopped) return { terms: [], target: b.health, abandonInDays: null };
   const N = st.size;
-  const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+  const i = lotCell(b, N); // (where the occupancy loop evaluates it)
   const ctx = condCtx(st, demographicsSim(st));
   const cd = condition(ctx, b, def, i);
-  // terms in the order condition() sums them (they add up to the unclamped target)
+  // terms in the order condition() sums them (they add up to the unclamped target); desirability in the inspector's
+  // points (+39), like the desirability section
+  const pts = (v: number) => `${v >= 0 ? '+' : '−'}${Math.abs(Math.round(v * 100))}`;
   const rentCapped = Math.abs(cd.des - cd.desStored) > 1e-6;
   const terms: FactorTerm[] = [{
     id: 'desirability', label: 'Desirability', value: 0.5 + 0.5 * cd.des,
-    detail: rentCapped ? `desirability ${cd.desStored.toFixed(2)} (rent counts at most ${RENT_CONDITION_MIN} for residents already here: ${cd.des.toFixed(2)})` : `desirability ${cd.des.toFixed(2)}`,
+    detail: rentCapped ? `desirability ${pts(cd.desStored)} (rent counts at most ${pts(RENT_CONDITION_MIN)} for tenants already here: ${pts(cd.des)})` : `desirability ${pts(cd.des)}`,
   }];
   if (!cd.powered) terms.push({ id: 'power', label: 'No power', value: -cd.noPower });
   if (cd.noWater) terms.push({ id: 'water', label: 'No water', value: -cd.noWater, detail: 'this building needs piped water' });

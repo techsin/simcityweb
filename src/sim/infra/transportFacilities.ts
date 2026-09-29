@@ -213,8 +213,12 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
       else if (!g || g.state === 'noRoad') {
         // placed since the last traffic update (or its road is newer than the road graph): what the preview promised
         const near = tr.stopsNear(st, b.x, b.z, b.w, b.d);
-        if (near.length > 0) lines.push({ key: 'parkRide', label: 'Park & ride', value: `next to ${nameOf(st, near[0].id)} — starts with the next traffic update` });
-        else warnings.push(`No transit stop within ${PR_STOP_RADIUS} tiles — parking only, no park & ride`);
+        const rider = near.find((s) => s.ride !== false);
+        if (rider) lines.push({ key: 'parkRide', label: 'Park & ride', value: `next to ${nameOf(st, rider.id)} — starts with the next traffic update` });
+        else if (near.length > 0) {
+          lines.push({ key: 'parkRide', label: 'Park & ride', value: `none — ${nameOf(st, near[0].id)} is downtown (its riders walk to jobs beside it)`,
+            hint: 'Parking for the businesses around it; for park & ride, build garages by stops in residential areas' });
+        } else warnings.push(`No transit stop within ${PR_STOP_RADIUS} tiles — parking only, no park & ride`);
       } else if (g.state === 'noStop') warnings.push(`No transit stop within ${PR_STOP_RADIUS} tiles — parking only, no park & ride`);
       else if (g.state === 'noTransit') {
         lines.push({ key: 'parkRide', label: 'Park & ride', value: `none — transit from ${stopName} reaches no jobs yet`, status: 'warn',
@@ -484,8 +488,10 @@ function attachedCount(sim: Simulation, t: Transit): number {
  * Effect metric per transport def for the facilities matrix test (tests/infra/facilities.test.ts, WP7a): the value
  * after 60 days with the facility must differ from the same city without it. Each reads the facility's own effect:
  *  bus stop            transit coverage (sum of transitCov)
- *  depot               bus stops run by a depot (a depot out of range of every stop runs nothing; the stops' waits only
- *                      differ from the minibus pool's under load, which the matrix town does not have)
+ *  depot               buses in the city's depots (x funding, half without power; burnt: none) — its own product. The
+ *                      service they give needs stops in range: stats.transitFleet counts only fleets that serve stops,
+ *                      busesShort / the stop waits show it (tests/infra/transitFacilities.test.ts); WP7a's matrix town
+ *                      has no bus stops, so a service metric could not change there
  *  subway / train      attached stations of the mode (a station needs a partner station or rail to the edge: place
  *                      two / extend the rails — a lone station genuinely does nothing)
  *  freight station     freight rail cells (needs rails to the map edge or a seaport)
@@ -494,7 +500,7 @@ function attachedCount(sim: Simulation, t: Transit): number {
  */
 export const TRANSPORT_EFFECT_METRICS: Readonly<Record<string, (sim: Simulation) => number>> = {
   tr_bus_stop: (sim) => transitCovSum(sim),
-  civ_bus_depot: (sim) => trafficOf(sim)?.depotStopsServed ?? 0,
+  civ_bus_depot: (sim) => trafficOf(sim)?.depotFleet ?? 0,
   tr_subway_station: (sim) => attachedCount(sim, Transit.Subway),
   tr_train_station: (sim) => attachedCount(sim, Transit.Train),
   tr_freight_station: (sim) => trafficOf(sim)?.freightRailCells().length ?? 0,

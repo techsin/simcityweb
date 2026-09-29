@@ -8,8 +8,11 @@ import { Network, Zone } from '../../core/types';
 // ============================================================================ calendar / slicing
 /** land value: full-map refresh period (days); rows are processed in bands */
 export const LV_REFRESH_DAYS = 12;
-/** full-map static land value (water distance, view) recompute after terrain changes: at most every N days */
+/** full-map static land value (water distance, view) recompute after terrain changes: once per LV_STATIC_MIN_DAYS, on
+ *  the absolute days ≡ LV_STATIC_PHASE (mod LV_STATIC_MIN_DAYS) — day 11 of a month, never a month tick (the pass is the
+ *  biggest single piece of economy work of a day; a loaded city keeps the same schedule) */
 export const LV_STATIC_MIN_DAYS = 90;
+export const LV_STATIC_PHASE = 41;
 /** plopped-building land value splat recompute: at most every N days */
 export const LV_EFFECTS_MIN_DAYS = 7;
 /** desirability: full-map refresh period (days); unzoned land (all DevTypes, for overlays) every DESIR_ALL_SWEEPS sweeps */
@@ -244,9 +247,12 @@ export const HOTEL_PREF_MAX = 3;
 /**
  * SAME-STAGE WEALTH SWAP (gentrification): a live growable is replaced by a def of a richer DevType of its zone at the
  * same stage when des_new − des_old ≥ SWAP_MIN_GAIN, the new DevType's demand > SWAP_MIN_DEMAND (and allowance left),
- * the new capacity ≥ SWAP_MIN_CAP × the old one and the building is ≥ SWAP_MIN_AGE days old. A swapped building cannot
- * swap again for SWAP_LOCK_DAYS (anti-oscillation). FILTERING DOWN: an R$$$ home whose desirability stays below
- * FILTER_DES for FILTER_DAYS becomes R$$ of the same stage. Timers: systemData.growth (by building id, pruned).
+ * the new capacity ≥ SWAP_MIN_CAP × the old one and the building is ≥ SWAP_MIN_AGE days old; the richer DevTypes are
+ * tried best gain first (the first with a same-stage model that fits wins). A swapped building cannot swap again for
+ * SWAP_LOCK_DAYS (anti-oscillation). FILTERING DOWN: an R$$$ home at least SWAP_MIN_AGE days old whose desirability
+ * stays below FILTER_DES for FILTER_DAYS becomes R$$ of the same stage (the age gate: R$$$ may grow down to
+ * GROW_MIN_DESIR, and its block filling in used to push nearly every filter-down onto homes under a year old).
+ * Timers: systemData.growth (by building id, pruned).
  */
 export const SWAP_MIN_GAIN = 0.25;
 export const SWAP_MIN_DEMAND = 0.1;
@@ -258,8 +264,9 @@ export const SWAP_MIN_AGE = 240;
 export const SWAP_LOCK_DAYS = 5 * 360;
 export const FILTER_DES = -0.1;
 export const FILTER_DAYS = 180;
-/** buildings checked for swaps / filtering per day: every growable once per SWAP_SCAN_DAYS */
-export const SWAP_SCAN_DAYS = 30;
+/** buildings checked for swaps / filtering per day: every growable once per SWAP_SCAN_DAYS (60: the scan's cost halved;
+ *  a swap the inspector announces happens within this many days) */
+export const SWAP_SCAN_DAYS = 60;
 /**
  * DOWNTOWN (skyline): stage ≥ DOWNTOWN_STAGE growth is weighted by the distance to the commercial core (job-weighted
  * centroid of CS / CO jobs, monthly): weight = max(DOWNTOWN_MIN, 1 − smoothstep(DOWNTOWN_R0, DOWNTOWN_R1, d / map size));
@@ -271,7 +278,8 @@ export const SWAP_SCAN_DAYS = 30;
 export const DOWNTOWN_STAGE = 6;
 export const DOWNTOWN_R0 = 0.1;
 export const DOWNTOWN_R1 = 0.3;
-export const DOWNTOWN_MIN = 0.3;
+/** (0.3 left one far high-density lot in three a tower site: at 256×40 the far towers outnumbered the downtown ones) */
+export const DOWNTOWN_MIN = 0.12;
 /** at least this many CS / CO jobs before a commercial core exists (smaller towns: no downtown weighting) */
 export const DOWNTOWN_MIN_JOBS = 2000;
 /**

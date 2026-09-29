@@ -45,8 +45,10 @@
  *             stop whose path rides) labelled with the stop's transit time + the garage's price; the origin's transit
  *             option is min(walk to a stop, park & ride); car legs flow on the P&R forest, riders join the transit forest
  *             at the garage's stop. A garage holds at most its spaces per assignment (the rest re-splits without park &
- *             ride); its price follows the demand across assignments (tatonnement), so the load settles at the spaces
- *             and a second garage takes the rest. A garage by a downtown stop (riders walk to jobs nearby) is parking
+ *             ride); its price (a choice weight, not travel time) follows the demand across assignments (tatonnement),
+ *             so the load settles at the spaces and a second garage takes the rest; garages within GARAGE_GROUP_CELLS
+ *             pool their spaces and price (one forest gives each origin one garage). The car leg must be <=
+ *             PR_CAR_LEG_MAX free-flow minutes. A garage by a downtown stop (riders walk to jobs nearby) is parking
  *             only: its spaces ease the blocks around it (parking.ts).
  *  car-less   carlessShare(b) of each origin pays CARLESS_EXTRA_MIN more by car and park & ride (taxi / lift);
  *             routeInfo().carless / carlessMin show it.
@@ -845,10 +847,16 @@ export class TrafficSystem implements SimSystem {
     const d = this.depots.find((x) => x.id === id);
     return d ? { fleet: d.fleet, need: d.need, stops: d.stops, riders: d.riders, rho: d.rho } : null;
   }
-  /** bus stops run by depots (sum over the depots of the stops within their range; TRANSPORT_EFFECT_METRICS) */
+  /** bus stops run by depots (sum over the depots of the stops within their range) */
   get depotStopsServed(): number {
     let n = 0;
     for (const d of this.depots) n += d.stops;
+    return n;
+  }
+  /** buses in the city's depots, serving stops or idle (TRANSPORT_EFFECT_METRICS; stats.transitFleet counts serving ones) */
+  get depotFleet(): number {
+    let n = 0;
+    for (const d of this.depots) n += d.fleet;
     return n;
   }
   /** stops without a depot in range: minibus pool (MINIBUS_FLEET) */

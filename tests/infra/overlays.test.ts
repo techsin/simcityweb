@@ -272,7 +272,7 @@ describe('overlays: review round 1 (emergency floor, back lots, stale rasters, m
     place(st2, 't_fire', 20, 11);
     const off = attachOverlays(sim2);
     sim2.runDays(2);
-    expect(sim2.getSystem<{ layersReady: boolean }>('emergency')?.layersReady).toBe(true);
+    expect((sim2.getSystem('emergency') as unknown as { layersReady: boolean } | undefined)?.layersReady).toBe(true);
     const N = st2.size, L = st2.respFire;
     L.fill(-12);
     L[11 * N + 10] = 2.5; // the front cell only

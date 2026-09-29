@@ -23,7 +23,7 @@ import type { CityState } from '../CityState';
 import type { CellRect } from '../../core/events';
 import { BF } from '../CityState';
 import { smoothstep } from '../../core/rng';
-import { DEV_TYPE_COUNT, DevType, Network, Zone, ZONE_COUNT, zoneDensity } from '../../core/types';
+import { DEV_TYPE_COUNT, DEV_TYPE_LABELS, DevType, Network, Zone, ZONE_COUNT, zoneDensity } from '../../core/types';
 import { DEV_WEALTH, ZONE_DEVTYPES, devFamily } from '../catalog';
 import {
   COARSE, COHORT_BASE, COHORT_TERM_MUL, COVERAGE_FALLBACK, CUSTOMER_MIX, DESIR_ALL_SWEEPS, DESIR_REFRESH_DAYS, DESIR_TAX,
@@ -246,7 +246,7 @@ function termCtx(st: CityState, rt: EconRuntime, out?: TermCtx): TermCtx {
   const tr = inf.traffic ? (rt.sim?.getSystem('traffic') as unknown as FreightApi | undefined) : undefined;
   const cc = rt.cw * rt.cw;
   const c = out ?? {
-    st, rt, inf, ramp: { avg: 0, good: 0, bad: 0 }, gFade: 0, traffic: undefined, slope: null, frCell: null,
+    st, rt, inf, ramp: { avg: 0, good: 0, bad: 0, unreached: 0 }, gFade: 0, traffic: undefined, slope: null, frCell: null,
     popCSB: new Float64Array(0), popAllB: new Float64Array(0),
   };
   c.st = st; c.rt = rt; c.inf = inf;
@@ -293,7 +293,7 @@ function fillRow(c: TermCtx, z: number, xa: number, xb: number, TT: Float64Array
   const soil = st.soil, parking = st.parking;
   const skill = rt.coarseSkill, wealth = rt.coarseWealth, cFreight = rt.coarseFreight;
   const popAllB = c.popAllB, popCSB = c.popCSB, slope = c.slope, frCell = c.frCell;
-  const gFade = c.gFade, rGood = c.ramp.good, rBad = c.ramp.bad, rAvg = c.ramp.avg;
+  const gFade = c.gFade, rGood = c.ramp.good, rBad = c.ramp.bad, rAvg = c.ramp.avg, rUnr = c.ramp.unreached;
   const hasPoll = inf.pollution, hasTraffic = inf.traffic, hasServices = inf.services;
   const bz = ((z / COARSE) | 0) * rt.cw, row = z * N;
   for (let x = xa; x < xb; x++) {
@@ -317,7 +317,7 @@ function fillRow(c: TermCtx, z: number, xa: number, xb: number, TT: Float64Array
       if (wNoise) TT[o + T_NOISE] = hasPoll ? noise[i] : nNoise;
       TT[o + T_TRAFFIC] = hasTraffic ? Math.min(1, trafficVol / TRAFFIC_BUSY) : nTraffic;
     } else if (wNoise) TT[o + T_NOISE] = noise[i];
-    if (need[T_COMMUTE]) TT[o + T_COMMUTE] = 0.5 - smoothstep(rGood, rBad, commuteMinutes(st, hasTraffic, i, rAvg));
+    if (need[T_COMMUTE]) TT[o + T_COMMUTE] = 0.5 - smoothstep(rGood, rBad, commuteMinutes(st, hasTraffic, i, rAvg, rUnr));
     if (hasServices) {
       if (need[T_POLICE]) TT[o + T_POLICE] = pol[i];
       if (need[T_FIRE]) TT[o + T_FIRE] = fire[i];
@@ -473,6 +473,12 @@ function runProg(P: ZoneProg, TT: Float64Array, o: number, shift: Float64Array, 
   }
 }
 
+/** true when the state carries a computed desirability layer (a loaded / continued city; a fresh map is all 0) */
+function hasStoredDesirability(st: CityState): boolean {
+  for (const layer of st.desirability) for (let i = 0; i < layer.length; i++) if (layer[i] !== 0) return true;
+  return false;
+}
+
 /** tax / ordinance shift of DevType d */
 function shiftOf(st: CityState, d: number): number {
   const fam = devFamily(d);
@@ -558,7 +564,10 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
       desExtras.delete(rt);
       prepCaches(st, true);
       prepShift(st);
-      band(st, 0, st.size, true);
+      // a loaded city keeps its saved desirability (the layer is saved): population.init, which fills the EconRuntime's
+      // coarse customers / wealth / skills, runs after this system, so a full band here would read them as 0 and every
+      // shop and office would show "Updating" for a refresh cycle after each load. A new city gets its first full band.
+      if (!(st.day > 0 && hasStoredDesirability(st))) band(st, 0, st.size, true);
       // the rolling band continues on the rows of its day (the schedule of an uninterrupted game: day d refreshes rows
       // from ((d − 1) mod cycle) × rows): a loaded city refreshes the same rows on the same days as the saved one
       const N = st.size, rows = Math.ceil(N / DESIR_REFRESH_DAYS), cycle = Math.ceil(N / rows);
@@ -599,19 +608,60 @@ const BT = new Float64Array(NTX);
 const B_NEED: readonly (Uint8Array | null)[] = [NEED_FULL];
 let bctx: TermCtx | undefined;
 
-/** detail line of a term's input value */
-function termDetail(t: number, v: number, c: TermCtx, i: number): string | undefined {
+/** shoppers of each CS tier (T_POP detail) */
+const CS_SHOPPERS = ['mostly $ and $$ residents', 'mostly $$ residents', 'mostly $$$ residents'];
+
+/**
+ * detail line of a term's input value (the inspector's bar tooltip; it also serves as the main-problem hint): what the
+ * input is and where the player sees or changes it. `w` = the term's weight for this DevType (sign: wanted / unwanted).
+ */
+function termDetail(t: number, v: number, c: TermCtx, i: number, dev: number, w: number): string | undefined {
   const pct = (x: number) => `${Math.round(x * 100)}%`;
+  const st = c.st;
   switch (t) {
-    case T_LV: return `land value ${pct(v)}`;
+    case T_LV: {
+      const ref = pct(LVREF[dev]), who = DEV_TYPE_LABELS[dev] ?? '';
+      return w >= 0 ? `land value ${pct(v)} — ${who} want ${ref}+` : `land value ${pct(v)} — ${who} prefer cheap land (below ${ref})`;
+    }
     case T_COMMUTE: {
-      const m = commuteMinutes(c.st, c.inf.traffic, i, c.ramp.avg);
+      const m = commuteMinutes(st, c.inf.traffic, i, c.ramp.avg, c.ramp.unreached);
       return `${m.toFixed(0)} min (city average ${c.ramp.avg.toFixed(0)}; good ≤ ${c.ramp.good.toFixed(0)}, bad ≥ ${c.ramp.bad.toFixed(0)})`;
     }
     case T_GARB: return c.gFade < 1 ? `uncollected pile ${pct(c.gFade > 0 ? v / c.gFade : 0)} · counts ${pct(c.gFade)} (fades in from 2k to 20k residents)` : `uncollected pile ${pct(v)}`;
     case T_RENT: return `rent pressure ${pct(v)} (land value above 45%)`;
-    case T_WEALTHY: return v >= 0 ? 'richer neighbours' : 'poorer neighbours';
-    case T_FREIGHT: return `freight access ${pct(v)}`;
+    case T_WEALTHY: {
+      // coarse mean of (building wealth − 2): −1 = all $, +1 = all $$$
+      const avg = Math.max(1, Math.min(3, v + 2));
+      return `neighbours mostly ${'$'.repeat(Math.round(avg))} (average wealth ${avg.toFixed(1)} of 3)`;
+    }
+    case T_FREIGHT: return `freight access ${pct(v)} (highway, freight rail or seaport)`;
+    case T_POP: return dev >= DevType.CS1 && dev <= DevType.CS3
+      ? `${dev === DevType.CS3 ? 'rich customers' : 'customers'} nearby: ${pct(v)} of a full trade area (${CS_SHOPPERS[dev - DevType.CS1]})`
+      : `residents nearby: ${pct(v)} of a full neighbourhood`;
+    case T_CRIME: return `crime ${pct(v)} · police coverage ${pct(st.policeCov[i])}`;
+    case T_STIGMA: return `unwanted neighbours nearby (prison, dump, incinerator …) ${pct(v)} — see the Prestige view`;
+    case T_PRESTIGE: return `prestigious neighbours nearby (landmarks, big parks) ${pct(v)} — see the Prestige view`;
+    case T_AIR: return `air pollution ${pct(v)}`;
+    case T_WATER: return `water pollution ${pct(v)}`;
+    case T_NOISE: return `noise ${pct(v)}`;
+    case T_POLICE: return `police coverage ${pct(v)}`;
+    case T_FIRE: return `fire coverage ${pct(v)}`;
+    case T_HEALTH: return `health care coverage ${pct(v)}`;
+    case T_ELEM: return `elementary school coverage ${pct(v)}`;
+    case T_HIGH: return `high school coverage ${pct(v)}`;
+    case T_COLLEGE: return `college / library coverage ${pct(v)}`;
+    case T_PLAY: return `playground coverage ${pct(v)}`;
+    case T_GREEN: return `green space coverage ${pct(v)}`;
+    case T_TRANSIT: return `transit coverage ${pct(v)}`;
+    case T_SHOPS: return `shops in reach ${pct(v)}`;
+    case T_TRAFFIC: return `passing traffic ${pct(v)} of a busy street`;
+    case T_TREES: return `tree cover ${pct(v)}`;
+    case T_SOIL: return `contaminated soil ${pct(v)} (it fades once the polluter is gone)`;
+    case T_SLOPE: return `slope ${pct(v)} of too steep`;
+    case T_SKILL: return `workforce education ${pct(v)}`;
+    case T_CAMPUS: return `college campus nearby ${pct(v)}`;
+    case T_VISITORS: return `visitors ${pct(v)}`;
+    case T_PARKING: return `parking pressure ${pct(v)}`;
     default: return pct(v);
   }
 }
@@ -639,13 +689,13 @@ export function desirabilityBreakdown(st: CityState, rt: EconRuntime | null, dev
   if (sh !== 0) terms.push({ id: 'tax', label: 'Taxes & ordinances', value: sh, detail: `tax ${st.budget.taxRates[dev]}%` });
   let raw = BIAS[dev] + sh;
   const lvT = WTZ[o] * (BT[T_LV] - LVREF[dev]);
-  if (WTZ[o] !== 0) { terms.push({ id: 'lv', label: DESIR_TERM_LABELS[T_LV], value: lvT, detail: termDetail(T_LV, BT[T_LV], c, i) }); raw += lvT; }
+  if (WTZ[o] !== 0) { terms.push({ id: 'lv', label: DESIR_TERM_LABELS[T_LV], value: lvT, detail: termDetail(T_LV, BT[T_LV], c, i, dev, WTZ[o]) }); raw += lvT; }
   const nz = NZ[slot * DEV_TYPE_COUNT + dev];
   for (let q = 0; q < nz.length; q++) {
     const t = nz[q];
     const val = WTZ[o + t] * BT[t];
     raw += val;
-    terms.push({ id: DESIR_TERM_IDS[t], label: DESIR_TERM_LABELS[t], value: val, detail: termDetail(t, BT[t], c, i) });
+    terms.push({ id: DESIR_TERM_IDS[t], label: t === T_POP && dev === DevType.CS3 ? 'Rich customers nearby' : DESIR_TERM_LABELS[t], value: val, detail: termDetail(t, BT[t], c, i, dev, WTZ[o + t]) });
   }
   return { terms, raw, value: v };
 }

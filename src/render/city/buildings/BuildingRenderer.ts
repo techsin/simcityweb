@@ -28,11 +28,12 @@
  * early-z) while the building's own instance draws a 3-vertex empty stand-in with the same culling sphere (no
  * draw-list rebuild). A level change back mid-fade runs the fade backwards. A fade completes after fadeTime or, when
  * the camera moves fast, once its distance to the building changed by `fadeTravel` (a fast zoom dissolves each swap
- * over a few frames instead of drawing both levels of ~1000 buildings for fadeTime). New / rebuilt buildings, camera
- * cuts, the catch-up frames after a cut (running fades are settled at the cut) and captures (flushLod) swap at once;
- * beyond `fadeMax` concurrent fades swaps are instant too. The shadow switches half way through a fade (the level
- * covering most pixels casts: the other level's shadow would streak the visible one, e.g. a proxy's coarser roof
- * shadowing the full model's roof in the first frames).
+ * over a few frames instead of drawing both levels of ~1000 buildings for fadeTime); a swap the motion would dissolve
+ * within a frame or two anyway (`fadeFast`: fast pans / fly-bys, where the view changes wholesale) is instant. New /
+ * rebuilt buildings, camera cuts, the catch-up frames after a cut (running fades are settled at the cut) and captures
+ * (flushLod) swap at once; beyond `fadeMax` concurrent fades swaps are instant too. The shadow switches half way
+ * through a fade (the level covering most pixels casts: the other level's shadow would streak the visible one, e.g. a
+ * proxy's coarser roof shadowing the full model's roof in the first frames).
  * Burnt lots: one rubble tile (16 m, designed to tile) per footprint cell, variant + quarter turn from a per-cell
  * hash, instead of one model stretched over the lot. Hill lots: real-size stone retaining-wall skirts under lots that
  * sit above the terrain (see foundation()).
@@ -498,6 +499,8 @@ export class BuildingRenderer {
    *  New / rebuilt / (de)selected buildings and a new metric (quality, FOV, resize) are evaluated at once (lodNow). */
   private lodTravel = 0;
   private lodPos = new THREE.Vector3(NaN, NaN, NaN);
+  /** the camera position of the previous updateLod (how fast each building's distance changes, see fadeFast) */
+  private lodPrev = new THREE.Vector3(NaN, NaN, NaN);
   private lodK = NaN;
   private lodBuckets: BInst[][] = Array.from({ length: LOD_BUCKETS }, () => []);
   private lodSpare: BInst[] = [];
@@ -570,6 +573,10 @@ export class BuildingRenderer {
   fadeMax = 1024;
   /** buildings fading in / out now smaller than lodPixels x this swap instantly (sub-threshold specks) */
   fadeMinFrac = 0.4;
+  /** swaps the camera motion would dissolve within 1 / fadeFast frames (the building's camera distance changed by more
+   *  than fadeTravel x fadeFast in log this frame: fast pans / fly-bys) are instant: the view changes wholesale there, a
+   *  1-2 frame dissolve is invisible and only churns the fade layer (0 = off) */
+  fadeFast = 0.5;
   private fades: Fade[] = [];
   private fadeLayer: LodFadeLayer;
   /** full geometry id -> its 3-vertex empty stand-in (drawn by the building's instance while it fades) */
@@ -1100,6 +1107,7 @@ export class BuildingRenderer {
     const p = this.lodPos;
     const hop = p.x === p.x ? Math.hypot(c.x - p.x, c.y - p.y, c.z - p.z) : 0;
     this.lodTravel += hop;
+    this.lodPrev.copy(p);
     p.copy(c);
     const cur = Math.floor(this.lodTravel / LOD_BUCKET);
     if (cur - this.lodAt >= LOD_BUCKETS - 2) {
@@ -1276,8 +1284,14 @@ export class BuildingRenderer {
   /** fade this swap? (smooth camera motion, not the building's first level, in the view, not a sub-threshold speck) */
   private canFade(bi: BInst): boolean {
     if (!this.fadeNow || this.evalFresh || this.fades.length >= this.fadeMax || bi.cells.length || !this.lodCamera) return false;
+    const d = this.camDist(bi);
     // projected radius (px) = radius * K / d
-    if (bi.radius * this.lodKNow < this.camDist(bi) * this.lodPixels * this.fadeMinFrac) return false;
+    if (bi.radius * this.lodKNow < d * this.lodPixels * this.fadeMinFrac) return false;
+    // fast relative motion: the travel-driven dissolve (see update) would be over in a frame or two
+    if (this.fadeFast > 0 && this.fadeTravel > 0) {
+      const q = this.lodPrev, dx = bi.vis.cx - q.x, dy = bi.cy - q.y, dz = bi.vis.cz - q.z;
+      if (Math.abs(Math.log(d / Math.sqrt(dx * dx + dy * dy + dz * dz))) > this.fadeTravel * this.fadeFast) return false;
+    }
     _sphere.center.set(bi.vis.cx, bi.cy, bi.vis.cz);
     _sphere.radius = bi.radius;
     return this.viewFrustum()!.intersectsSphere(_sphere);

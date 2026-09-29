@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { BF, type Building, type NeedTier } from '../../src/sim/CityState';
+import { Zone } from '../../src/core/types';
 import { Simulation, type SimSystem } from '../../src/sim/Simulation';
 import { EconRuntime } from '../../src/sim/economy/runtime';
 import { MONTH_SCAN_DAYS, advisorData, advisorIssues, advisorsSystem, type AdvisorsSystem } from '../../src/sim/economy/advisors';
@@ -49,7 +50,11 @@ const newsOf = (sim: Simulation, re: RegExp) => sim.state.news.filter((n) => re.
 const homes = (st: ReturnType<typeof newState>, n: number, opts: Partial<Building> = {}) => {
   roadLine(st, 2, 20, 60, 20);
   const out: Building[] = [];
-  for (let k = 0; k < n; k++) out.push(place(st, 't_r2', 3 + (k % 50), 21 + Math.floor(k / 50), { pop: 50, ...opts }));
+  for (let k = 0; k < n; k++) {
+    const x = 3 + (k % 50), z = 21 + Math.floor(k / 50);
+    st.zone[st.idx(x, z)] = Zone.ResMed;
+    out.push(place(st, 't_r2', x, z, { pop: 50, ...opts }));
+  }
   return out;
 };
 
@@ -228,11 +233,12 @@ describe('advisors: review round 1 (one fire advisor, Prison wording, shared sta
     c.st.stats.population = 3000;
     const { sim, adv } = start(c);
     (c.rt.totals.countByDev as number[])[1] = hs.length; // (the population system counts the homes)
-    for (const b of hs.slice(0, 8)) { b.flags |= BF.Noisy; sim.events.emit('buildingChanged', b); }
+    for (const b of hs.slice(0, 8)) { b.flags |= BF.Noisy; c.st.noise[c.st.idx(b.x, b.z)] = 0.6; sim.events.emit('buildingChanged', b); }
+    c.st.noise[c.st.idx(hs[5].x, hs[5].z)] = 0.8;
     monthTick(sim, adv, 30);
     const n = (advisorIssues(c.st).environment ?? []).find((a) => a.id === 'noise')!;
     expect(n.text).toMatch(/^20% of homes are too noisy/);
-    expect(n.x).toBeDefined();
+    expect([n.x, n.z]).toEqual([hs[5].x, hs[5].z]); // the noisiest home
     // quiet again: the rule clears
     for (const b of hs.slice(0, 8)) { b.flags &= ~BF.Noisy; sim.events.emit('buildingChanged', b); }
     monthTick(sim, adv, 60);

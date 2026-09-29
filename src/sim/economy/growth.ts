@@ -22,7 +22,7 @@ import type { SimSystem, Simulation } from '../Simulation';
 import { BF, type Building, type CityState } from '../CityState';
 import { hash2, smoothstep } from '../../core/rng';
 import { DevType, Network, Zone, zoneDensity } from '../../core/types';
-import { DEV_WEALTH, ZONE_DEVTYPES, devFamily, getDef, growablesForZone, rotatedFootprint } from '../catalog';
+import { CATALOG, DEV_WEALTH, ZONE_DEVTYPES, devFamily, getDef, growablesForZone, rotatedFootprint } from '../catalog';
 import type { BuildingDef } from '../catalogTypes';
 import { MANIFEST_BY_ID } from '../../assets/manifest';
 import {
@@ -37,6 +37,7 @@ import {
 import { type EconRuntime, econData, infraFlags } from './runtime';
 import { levelLot, lotAverageHeight, lotSlope, placeBuilding, removeBuilding } from './buildings';
 import { HOTEL_ROOMS_PER_JOB } from './tourism';
+import { lotCell } from './factors';
 
 const isRoadN = (n: number) => n >= Network.Street && n <= Network.Highway;
 const DX = [0, 1, 0, -1];
@@ -63,7 +64,8 @@ export interface GrowthData {
   /** gentrification swaps / filter-downs so far (stats, tests) */
   swaps: number;
   filtered: number;
-  /** position of the swap scan in the growables list (a loaded city continues where it stopped) */
+  /** id of the last building the swap scan checked (it walks the buildings in id order: a loaded city continues with
+   *  the next one; -1 = start of a cycle) */
   cursor: number;
   /** commercial core of the last monthly update (null: none yet) */
   core: { x: number; z: number; jobs: number } | null;
@@ -71,10 +73,10 @@ export interface GrowthData {
 export function growthData(st: CityState): GrowthData {
   let d = st.systemData.growth as GrowthData | undefined;
   if (!d || d.v !== 1) {
-    d = { v: 1, lock: {}, low: {}, swaps: 0, filtered: 0, cursor: 0, core: null };
+    d = { v: 1, lock: {}, low: {}, swaps: 0, filtered: 0, cursor: -1, core: null };
     st.systemData.growth = d;
   }
-  d.lock ??= {}; d.low ??= {}; d.swaps ??= 0; d.filtered ??= 0; d.cursor ??= 0; d.core ??= null;
+  d.lock ??= {}; d.low ??= {}; d.swaps ??= 0; d.filtered ??= 0; d.cursor ??= -1; d.core ??= null;
   return d;
 }
 
@@ -145,42 +147,117 @@ function downtownCap(st: CityState, i: number, maxStage: number): number {
  */
 export function spreadVariant(st: CityState, defId: string, x0: number, z0: number, w: number, d: number, v0: number, variants: number): number {
   if (variants <= 1) return 0;
+  VIDS[0] = defId;
+  variantScan(st, VIDS, 1, x0, z0, w, d);
+  return bestVariant(0, v0, variants);
+}
+/** nearest same-def building per (def k of the scan, variant v): VNEAR[k * 32 + v] (Chebyshev distance lot to lot) */
+const VNEAR = new Float64Array(4 * 32);
+const VIDS: string[] = ['', '', '', ''];
+/** building-id stamps of the current scan (a building spanning several rows is looked up once) */
+let vStamp = new Int32Array(0);
+let vGen = 0;
+/**
+ * one pass over the buildings within VARIANT_SPREAD of the lot: for each of the first n def ids in `ids`, the nearest
+ * building of that def per variant (manifests have < 32 variants) into VNEAR
+ */
+function variantScan(st: CityState, ids: readonly string[], n: number, x0: number, z0: number, w: number, d: number): void {
   const N = st.size, R = VARIANT_SPREAD;
   const xa = Math.max(0, x0 - R), xb = Math.min(N - 1, x0 + w - 1 + R);
   const za = Math.max(0, z0 - R), zb = Math.min(N - 1, z0 + d - 1 + R);
-  // nearest same-def building per variant (Chebyshev distance lot to lot; manifests have < 32 variants)
-  const near = VNEAR;
-  for (let v = 0; v < variants && v < 32; v++) near[v] = Infinity;
-  let last = -1;
+  VNEAR.fill(Infinity, 0, n * 32);
+  if (vStamp.length < st.nextBuildingId) vStamp = new Int32Array(Math.max(st.nextBuildingId + 1024, vStamp.length * 2));
+  if (++vGen > 0x3fffffff) { vGen = 1; vStamp.fill(0); }
+  const gen = vGen, bld = st.building;
   for (let z = za; z <= zb; z++) {
+    const row = z * N;
     for (let x = xa; x <= xb; x++) {
-      const id = st.building[z * N + x];
-      if (id < 0 || id === last) continue;
-      last = id;
+      const id = bld[row + x];
+      if (id < 0 || vStamp[id] === gen) continue;
+      vStamp[id] = gen;
       const o = st.buildings.get(id);
-      if (!o || o.def !== defId || o.variant >= 32 || o.variant < 0) continue;
-      const dx = x < x0 ? x0 - x : x > x0 + w - 1 ? x - (x0 + w - 1) : 0;
-      const dz = z < z0 ? z0 - z : z > z0 + d - 1 ? z - (z0 + d - 1) : 0;
+      if (!o || o.variant >= 32 || o.variant < 0) continue;
+      let k = 0;
+      while (k < n && ids[k] !== o.def) k++;
+      if (k === n) continue;
+      // (lot-to-lot distance from the other building's rectangle)
+      const dx = o.x + o.w - 1 < x0 ? x0 - (o.x + o.w - 1) : o.x > x0 + w - 1 ? o.x - (x0 + w - 1) : 0;
+      const dz = o.z + o.d - 1 < z0 ? z0 - (o.z + o.d - 1) : o.z > z0 + d - 1 ? o.z - (z0 + d - 1) : 0;
       const dist = dx > dz ? dx : dz;
-      if (dist < near[o.variant]) near[o.variant] = dist;
+      const q = k * 32 + o.variant;
+      if (dist < VNEAR[q]) VNEAR[q] = dist;
     }
   }
+}
+/** variant of def k of the last scan: step from v0 to the first variant with no same-def building nearby, else the one
+ *  whose nearest twin is farthest (ties: the first in stepping order); VBEST_D = its nearest twin (Infinity: none) */
+let VBEST_D = Infinity;
+function bestVariant(k: number, v0: number, variants: number): number {
   const start = ((v0 % variants) + variants) % variants;
   let best = start, bd = -1;
-  for (let k = 0; k < variants; k++) {
-    const v = (start + k) % variants;
-    const dv = v < 32 ? near[v] : Infinity;
-    if (dv === Infinity) return v;
+  for (let j = 0; j < variants; j++) {
+    const v = (start + j) % variants;
+    const dv = v < 32 ? VNEAR[k * 32 + v] : Infinity;
+    if (dv === Infinity) { VBEST_D = Infinity; return v; }
     if (dv > bd) { bd = dv; best = v; }
   }
+  VBEST_D = bd;
   return best;
 }
-const VNEAR = new Float64Array(32);
 
 /** deterministic start variant of a plopped building: ((x·73856093) ^ (z·19349663)) >>> 0 mod variants */
 export function positionVariant(x: number, z: number, variants: number): number {
   if (variants <= 1) return 0;
   return ((Math.imul(x, 73856093) ^ Math.imul(z, 19349663)) >>> 0) % variants;
+}
+
+// ------------------------------------------------------------------------------------------------ wealth swaps
+/** kind of a DevType for wealth swaps: 0 = R, 1 = CS, 2 = CO, -1 = none (industry) */
+function swapKind(d: number): number {
+  return d <= DevType.R3 ? 0 : d <= DevType.CS3 ? 1 : d <= DevType.CO3 ? 2 : -1;
+}
+
+/** same-stage def of DevType dev whose model fits lot b (same rotation) with capacity ≥ capMin; the closest footprint
+ *  to the lot first, then the larger capacity (deterministic: no rng draw) */
+function sameStageDef(zone: number, dev: number, stage: number, b: Building, capMin: number): BuildingDef | null {
+  let best: BuildingDef | null = null, bScore = Infinity;
+  for (const d of growablesForZone(zone as Zone)) {
+    if (d.devType !== dev || (d.stage ?? 1) !== stage || (d.capacity ?? 0) < capMin) continue;
+    const [W, D] = rotatedFootprint(d, b.rot);
+    if (W > b.w || D > b.d) continue;
+    const score = (b.w * b.d - W * D) * 10000 - (d.capacity ?? 0);
+    if (score < bScore) { bScore = score; best = d; }
+  }
+  return best;
+}
+
+/**
+ * The wealth swap growth makes for building b (DevType dev, evaluated at cell ci of `zone`, desirability desOld): the
+ * richer DevTypes of its kind that `ok` allows (demand > SWAP_MIN_DEMAND and allowance left), desirability ≥ SWAP_MIN_DES
+ * and a gain ≥ SWAP_MIN_GAIN, best gain first — the first with a same-stage def that fits the lot and keeps
+ * SWAP_MIN_CAP of its capacity (an R$ townhouse row with no R$$$ model of its size can still go R$$). Shared by the
+ * growth system and growthLimits: the inspector says "gentrifying" exactly when the scan will swap.
+ */
+function swapTarget(st: CityState, b: Building, dev: number, zone: number, ci: number, stage: number, desOld: number,
+  ok: (d: number) => boolean): { dev: number; def: BuildingDef; gain: number } | null {
+  const kind = swapKind(dev);
+  if (kind < 0) return null;
+  const devs = ZONE_DEVTYPES[zone];
+  let c0 = -1, g0 = 0, c1 = -1, g1 = 0;
+  for (let k = 0; k < devs.length; k++) {
+    const d2 = devs[k];
+    if (swapKind(d2) !== kind || DEV_WEALTH[d2] <= DEV_WEALTH[dev] || !ok(d2)) continue;
+    const desNew = st.desirability[d2][ci];
+    if (!(desNew >= SWAP_MIN_DES)) continue;
+    const gain = desNew - desOld;
+    if (!(gain >= SWAP_MIN_GAIN)) continue;
+    if (c0 < 0 || gain > g0) { c1 = c0; g1 = g0; c0 = d2; g0 = gain; } else if (c1 < 0 || gain > g1) { c1 = d2; g1 = gain; }
+  }
+  if (c0 < 0) return null;
+  const def0 = sameStageDef(zone, c0, stage, b, b.capacity * SWAP_MIN_CAP);
+  if (def0) return { dev: c0, def: def0, gain: g0 };
+  const def1 = c1 >= 0 ? sameStageDef(zone, c1, stage, b, b.capacity * SWAP_MIN_CAP) : null;
+  return def1 ? { dev: c1, def: def1, gain: g1 } : null;
 }
 
 // ------------------------------------------------------------------------------------------------ system
@@ -190,6 +267,8 @@ export function growthSystem(rt: EconRuntime): SimSystem {
   const devW = new Float64Array(12);
   const defPick: BuildingDef[] = [];
   const defW: number[] = [];
+  /** defW as collectDefs computed it (takeDef zeroes the defs it took) */
+  const defW0: number[] = [];
   const replaced: Building[] = [];
   let lastRebuildDay = -1;
   let sub: Simulation | null = null;
@@ -322,7 +401,35 @@ export function growthSystem(rt: EconRuntime): SimSystem {
       }
       defW.push(w);
     }
+    defW0.length = 0;
+    for (let k = 0; k < defW.length; k++) defW0.push(defW[k]);
     return defPick.length;
+  };
+
+  /**
+   * TWINS: substitutes for the def just taken — the other candidates of the same pick with its stage and its footprint
+   * for rot (they fit the same lot), capacity ≥ minCap, best original weight first (≤ 3). create() builds the first
+   * whose variants are not all taken within VARIANT_SPREAD of the lot when the taken def's are (no rng draw).
+   */
+  const alts: BuildingDef[] = [];
+  const altsFor = (def: BuildingDef, rot: number, minCap: number): BuildingDef[] => {
+    alts.length = 0;
+    if (defPick.length < 2) return alts;
+    const [W, D] = rotatedFootprint(def, rot);
+    const s = def.stage ?? 1;
+    while (alts.length < 3) {
+      let bi = -1, bw = -1;
+      for (let k = 0; k < defPick.length; k++) {
+        const d = defPick[k];
+        if (d === def || (d.stage ?? 1) !== s || (d.capacity ?? 0) < minCap || alts.includes(d) || !(defW0[k] > bw)) continue;
+        const [w2, d2] = rotatedFootprint(d, rot);
+        if (w2 !== W || d2 !== D) continue;
+        bw = defW0[k]; bi = k;
+      }
+      if (bi < 0) break;
+      alts.push(defPick[bi]);
+    }
+    return alts;
   };
 
   /** pop a weighted random def from defPick */
@@ -417,8 +524,10 @@ export function growthSystem(rt: EconRuntime): SimSystem {
   };
 
   /** a new growable; `hashVariant` (new code paths: wealth swaps) starts from a position hash instead of the one rng
-   *  draw of the phase-0 growth paths, so the rng stream of those paths is unchanged */
-  const create = (sim: Simulation, def: BuildingDef, x0: number, z0: number, W: number, D: number, rot: number, hasUtil: boolean, hashVariant = false): Building => {
+   *  draw of the phase-0 growth paths, so the rng stream of those paths is unchanged. TWINS: when every variant of `def`
+   *  stands within VARIANT_SPREAD of the lot, the first of `subs` (same stage and footprint, see altsFor) with a free
+   *  variant is built instead (same scan, no rng draw) */
+  const create = (sim: Simulation, def: BuildingDef, x0: number, z0: number, W: number, D: number, rot: number, hasUtil: boolean, hashVariant = false, subs?: readonly BuildingDef[]): Building => {
     const st = sim.state;
     const N = st.size;
     let trees = false;
@@ -433,9 +542,25 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     } else baseY = Math.max(0.3, lotAverageHeight(st, x0, z0, W, D));
     const variants = MANIFEST_BY_ID[def.model]?.variants ?? 1;
     const v0 = hashVariant ? positionVariant(x0, z0, variants) : sim.rng.int(0, variants - 1);
+    let use = def, variant = 0;
+    const ns = subs ? Math.min(3, subs.length) : 0;
+    if (variants > 1 || ns > 0) {
+      VIDS[0] = def.id;
+      for (let k = 0; k < ns; k++) VIDS[k + 1] = subs![k].id;
+      variantScan(st, VIDS, 1 + ns, x0, z0, W, D);
+      variant = variants > 1 ? bestVariant(0, v0, variants) : 0;
+      const twin = variants > 1 ? VBEST_D !== Infinity : VNEAR[0] !== Infinity;
+      if (twin) {
+        for (let k = 0; k < ns; k++) {
+          const a = subs![k], av = MANIFEST_BY_ID[a.model]?.variants ?? 1;
+          const v = av > 1 ? bestVariant(k + 1, v0, av) : 0;
+          if ((av > 1 ? VBEST_D : VNEAR[(k + 1) * 32]) === Infinity) { use = a; variant = v; break; }
+        }
+      }
+    }
     const b: Building = {
-      id, def: def.id, x: x0, z: z0, w: W, d: D, rot: rot as 0 | 1 | 2 | 3, variant: spreadVariant(st, def.id, x0, z0, W, D, v0, variants),
-      pop: 0, jobs: 0, capacity: def.capacity ?? 0, wealth: DEV_WEALTH[def.devType ?? 0], built: 0, age: 0,
+      id, def: use.id, x: x0, z: z0, w: W, d: D, rot: rot as 0 | 1 | 2 | 3, variant,
+      pop: 0, jobs: 0, capacity: use.capacity ?? 0, wealth: DEV_WEALTH[use.devType ?? 0], built: 0, age: 0,
       flags: BF.Constructing | (hasUtil ? 0 : BF.Powered | BF.Watered), baseY, health: 0.6, unhappy: 0,
       // WP1 fields in their fixed order (one hidden class for every building; demographics ensureDemographicsFields)
       kids: undefined, teens: undefined, yad: undefined, srs: undefined, wf: undefined, edu: undefined, hire: undefined,
@@ -501,8 +626,8 @@ export function growthSystem(rt: EconRuntime): SimSystem {
         if (nx < 0 || nz < 0 || nx >= N || nz >= N || !isRoadN(st.network[nz * N + nx])) continue;
         const pos = fitNew(st, def, rot, x, z, zone, hasUtil, sim.rng);
         if (!pos) continue;
-        create(sim, def, pos[0], pos[1], pos[2], pos[3], rot, hasUtil);
-        allow[dev] -= def.capacity ?? 0;
+        const nb = create(sim, def, pos[0], pos[1], pos[2], pos[3], rot, hasUtil, false, altsFor(def, rot, 0));
+        allow[dev] -= nb.capacity;
         return true;
       }
     }
@@ -519,7 +644,7 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     if (b.flags & BF.Burnt) return false; // rubble must be bulldozed (or auto-cleared by ordinance)
     if (!dead && b.age < REDEVELOP_MIN_AGE) return false;
     const N = st.size;
-    const ci = (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1);
+    const ci = lotCell(b, N);
     const zone = st.zone[ci];
     if (!isGrowZone(zone)) return false;
     const dev = pickDev(st, ci, zone, sim.rng);
@@ -581,8 +706,8 @@ export function growthSystem(rt: EconRuntime): SimSystem {
         for (const o of replaced) removeBuilding(sim, o);
         // (the yards of the replaced lots stay with the new building: deep blocks keep their interior filled)
         const lot = extendInward(st, x0, z0, W, D, rot, zone, maxSlope + GROW_MAX_SLOPE_PER_CELL * INFILL_MAX_EXTRA);
-        create(sim, def, lot[0], lot[1], lot[2], lot[3], rot, hasUtil);
-        allow[dev] -= (def.capacity ?? 0) - oldCap;
+        const nb = create(sim, def, lot[0], lot[1], lot[2], lot[3], rot, hasUtil, false, altsFor(def, rot, oldCap * REDEVELOP_MIN_GAIN));
+        allow[dev] -= nb.capacity - oldCap;
         return true;
       }
     }
@@ -590,24 +715,10 @@ export function growthSystem(rt: EconRuntime): SimSystem {
   };
 
   // ---------------------------------------------------------------------------------------------- wealth swaps
-  /** same-stage def of DevType dev whose model fits lot b (same rotation) with capacity ≥ capMin; the closest footprint
-   *  to the lot first, then the larger capacity (deterministic: no rng draw) */
-  const sameStageDef = (zone: number, dev: number, stage: number, b: Building, capMin: number): BuildingDef | null => {
-    let best: BuildingDef | null = null, bScore = Infinity;
-    for (const d of growablesForZone(zone as Zone)) {
-      if (d.devType !== dev || (d.stage ?? 1) !== stage || (d.capacity ?? 0) < capMin) continue;
-      const [W, D] = rotatedFootprint(d, b.rot);
-      if (W > b.w || D > b.d) continue;
-      const score = (b.w * b.d - W * D) * 10000 - (d.capacity ?? 0);
-      if (score < bScore) { bScore = score; best = d; }
-    }
-    return best;
-  };
-
   /** replace b by `def` on the same lot (a renovation: construction starts again) */
   const swapTo = (sim: Simulation, b: Building, def: BuildingDef, hasUtil: boolean): Building | null => {
     const st = sim.state;
-    const zone = st.zone[(b.z + (b.d >> 1)) * st.size + b.x + (b.w >> 1)];
+    const zone = st.zone[lotCell(b, st.size)];
     const needWater = (def.stage ?? 1) >= WATER_REQUIRED_STAGE || zoneDensity(zone as Zone) >= 2;
     if (!utilitiesOk(st, b.x, b.z, b.w, b.d, b.rot, needWater, hasUtil)) return null;
     const { x, z, w, d, rot } = b;
@@ -615,15 +726,34 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     return create(sim, def, x, z, w, d, rot, hasUtil, true);
   };
 
-  /** gentrification / filtering down for one building (called for every growable once per SWAP_SCAN_DAYS) */
+  /** DevTypes that may receive a wealth swap now (demand > SWAP_MIN_DEMAND, allowance left) and per DevType whether a
+   *  richer one of its kind may (the scan skips buildings nothing can outbid today) — refreshed per scan and per swap */
+  const swapOk = new Uint8Array(12);
+  const richerOk = new Uint8Array(12);
+  const prepSwaps = (st: CityState) => {
+    for (let d = 0; d < 12; d++) swapOk[d] = st.stats.demand[d] > SWAP_MIN_DEMAND && allow[d] > 0 ? 1 : 0;
+    for (let d = 0; d < 12; d++) {
+      const k = swapKind(d);
+      let ok = 0;
+      if (k >= 0) for (let d2 = 0; d2 < 12; d2++) if (swapOk[d2] && swapKind(d2) === k && DEV_WEALTH[d2] > DEV_WEALTH[d]) ok = 1;
+      richerOk[d] = ok;
+    }
+  };
+  const swapAllowed = (d: number) => swapOk[d] === 1;
+
+  /** gentrification / filtering down for one building (every growable is checked once per SWAP_SCAN_DAYS) */
   const checkSwap = (sim: Simulation, b: Building, hasUtil: boolean, gd: GrowthData): void => {
     const st = sim.state;
     if (b.flags & (BF.Plopped | BF.Historic | BF.Constructing | BF.OnFire | BF.Burnt | BF.Abandoned)) return;
+    // both need an established building: a new one gets SWAP_MIN_AGE days to settle (an R$$$ home that grew on a
+    // marginal lot is not demolished again half a year later while its block fills)
+    if (b.age < SWAP_MIN_AGE) return;
     const def0 = rt.defOf(b);
     const dev = def0?.devType;
-    if (!def0 || dev === undefined || dev >= DevType.IA) return;
+    if (!def0 || dev === undefined || dev > DevType.CO3) return;
+    if (dev !== DevType.R3 && !richerOk[dev]) return; // (nothing richer can outbid it today)
     const N = st.size;
-    const ci = (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1);
+    const ci = lotCell(b, N);
     const zone = st.zone[ci];
     if (!isGrowZone(zone)) return;
     const key = b.id; // (integer keys: no string per building)
@@ -640,45 +770,66 @@ export function growthSystem(rt: EconRuntime): SimSystem {
         }
         gd.low[key] = days;
       } else if (gd.low[key] !== undefined) delete gd.low[key];
+      return; // (nothing richer than R$$$)
     }
-    // gentrification: a richer DevType of the same family and kind (R / CS / CO) outbids the current one
-    if (dev === DevType.R3 || dev === DevType.CS3 || dev === DevType.CO3) return; // (nothing richer of its kind)
-    if (b.age < SWAP_MIN_AGE || (gd.lock[key] ?? -1) > st.day) return;
-    const devs = ZONE_DEVTYPES[zone];
-    const kind = dev <= DevType.R3 ? 0 : dev <= DevType.CS3 ? 1 : 2;
-    let best = -1, bGain = SWAP_MIN_GAIN;
-    for (let k = 0; k < devs.length; k++) {
-      const d2 = devs[k];
-      const k2 = d2 <= DevType.R3 ? 0 : d2 <= DevType.CS3 ? 1 : d2 <= DevType.CO3 ? 2 : 3;
-      if (k2 !== kind || DEV_WEALTH[d2] <= DEV_WEALTH[dev]) continue;
-      if (!(st.stats.demand[d2] > SWAP_MIN_DEMAND) || allow[d2] <= 0) continue;
-      const desNew = st.desirability[d2][ci];
-      if (!(desNew >= SWAP_MIN_DES)) continue;
-      const gain = desNew - desOld;
-      if (gain >= bGain) { bGain = gain; best = d2; }
-    }
-    if (best < 0) return;
-    const def = sameStageDef(zone, best, stage, b, b.capacity * SWAP_MIN_CAP);
-    if (!def) return;
-    const nb = swapTo(sim, b, def, hasUtil);
+    // gentrification: a richer DevType of the same kind (R / CS / CO) outbids the current one
+    if ((gd.lock[key] ?? -1) > st.day) return;
+    const t = swapTarget(st, b, dev, zone, ci, stage, desOld, swapAllowed);
+    if (!t) return;
+    const nb = swapTo(sim, b, t.def, hasUtil);
     if (!nb) return;
     delete gd.low[key];
     gd.lock[nb.id] = st.day + SWAP_LOCK_DAYS;
     gd.swaps++;
-    allow[best] -= def.capacity ?? 0;
+    allow[t.dev] -= t.def.capacity ?? 0;
+    prepSwaps(st);
   };
 
+  /**
+   * The swap scan walks st.buildings in id order — Map insertion order: ids only grow and a save keeps the order — with
+   * a live iterator (buildings added during a cycle are met later in it), ceil(growables / SWAP_SCAN_DAYS) growables a
+   * day; GrowthData.cursor = the id of the last one checked, so a loaded city goes on with the same building on the same
+   * day (the growables list is swap-removed while the game runs and rebuilt in Map order on load)
+   */
+  let swapIt: Iterator<Building> | null = null;
+  let swapPending: Building | null = null;
+  let swapState: CityState | null = null;
+  const resumeSwaps = (st: CityState, cursor: number) => {
+    swapIt = st.buildings.values();
+    swapPending = null;
+    swapState = st;
+    if (cursor < 0) return;
+    for (;;) {
+      const r = swapIt.next();
+      if (r.done) { swapIt = st.buildings.values(); return; } // (the cycle ended there: a new one starts)
+      if (r.value.id > cursor) { swapPending = r.value; return; }
+    }
+  };
   const swapScan = (sim: Simulation, hasUtil: boolean) => {
-    const list = rt.growables;
-    const n = list.length;
+    const st = sim.state;
+    const n = rt.growables.length;
     if (!n) return;
-    const gd = growthData(sim.state);
+    const gd = growthData(st);
+    if (swapState !== st || !swapIt) resumeSwaps(st, gd.cursor);
+    prepSwaps(st);
     const slice = Math.ceil(n / SWAP_SCAN_DAYS);
-    for (let c = 0; c < slice; c++) {
-      if (gd.cursor >= list.length || gd.cursor < 0) gd.cursor = 0;
-      if (!list.length) break;
-      const b = list[gd.cursor++];
-      if (sim.state.building[b.z * sim.state.size + b.x] !== b.id) continue; // (removed: its cells are cleared)
+    let seen = 0, restarts = 0;
+    while (seen < slice) {
+      let b = swapPending;
+      swapPending = null;
+      if (!b) {
+        const r = swapIt!.next();
+        if (r.done) {
+          if (++restarts > 1) break; // (fewer buildings than a slice)
+          swapIt = st.buildings.values();
+          gd.cursor = -1;
+          continue;
+        }
+        b = r.value;
+      }
+      if (b.flags & BF.Plopped) continue;
+      seen++;
+      gd.cursor = b.id;
       checkSwap(sim, b, hasUtil, gd);
     }
   };
@@ -702,6 +853,7 @@ export function growthSystem(rt: EconRuntime): SimSystem {
       const st = sim.state;
       const gd = growthData(st);
       rt.ensureLists();
+      swapState = null; // (the swap scan resumes after gd.cursor on its next day)
       // (a loaded city keeps the core of its last monthly update: the downtown weights continue unchanged)
       if (!gd.core && st.day > 0) gd.core = computeCore(st, rt.growables, (b) => rt.defOf(b));
       cores.set(st, gd.core ? { ...gd.core, day: st.day } : null);
@@ -741,7 +893,7 @@ export function growthSystem(rt: EconRuntime): SimSystem {
           }
         }
       }
-      // gentrification / filtering down (no rng: the order of the growables list and the desirability layers decide)
+      // gentrification / filtering down (no rng: the id order of the buildings and the desirability layers decide)
       rt.ensureLists();
       swapScan(sim, hasUtil);
       // the commercial core, once a month (mid-month: away from the month-tick spike)
@@ -757,47 +909,115 @@ export function growthSystem(rt: EconRuntime): SimSystem {
   };
 }
 
+/** deepest growable lot (footprint cells; manifests' largest models) — lots reach this + INFILL_MAX_EXTRA in from a road */
+let maxLotDepth = 0;
+function lotDepthMax(): number {
+  if (!maxLotDepth) {
+    for (const d of CATALOG) if (d.category === 'growable') maxLotDepth = Math.max(maxLotDepth, d.footprint[0], d.footprint[1]);
+    if (!maxLotDepth) maxLotDepth = 4;
+  }
+  return maxLotDepth;
+}
+
+/**
+ * a lot on a road can take in empty zoned cell (x, z): a road within lotDepthMax() + INFILL_MAX_EXTRA cells in a straight
+ * line over cells one lot, its extendInward yard rows or a rebuilt lot in front could cover (same zone, dry, no power
+ * line, no plopped building) — the reach of the growth rules (WP5's zoneStatus 'none' is the same test)
+ */
+function lotReachable(st: CityState, x: number, z: number): boolean {
+  const N = st.size, i0 = z * N + x, zn = st.zone[i0], R = lotDepthMax() + INFILL_MAX_EXTRA;
+  for (let k = 0; k < 4; k++) {
+    const dx = DX[k], dz = DZ[k];
+    for (let d = 1; d <= R; d++) {
+      const xx = x + dx * d, zz = z + dz * d;
+      if (xx < 0 || zz < 0 || xx >= N || zz >= N) break;
+      const j = zz * N + xx, n = st.network[j];
+      if (isRoadN(n)) return true;
+      if (n !== Network.None || st.zone[j] !== zn || st.water[j] || st.powerLines[j]) break;
+      const bid = st.building[j];
+      if (bid >= 0 && st.buildings.get(bid)!.flags & BF.Plopped) break;
+    }
+  }
+  return false;
+}
+
+/** desirability in the inspector's points ("+39", "−10") */
+const pts = (v: number) => `${v >= 0 ? '+' : '−'}${Math.abs(Math.round(v * 100))}`;
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+
+/** (a type alias, not an interface: consumers take it as a `{ [k: string]: unknown }` record of optional fields) */
+export type GrowthLimits = {
+  desStage: number;
+  popStage: number;
+  zoneStage: number;
+  rejected: boolean;
+  reason?: string;
+  /** stage ≥ DOWNTOWN_STAGE is allowed here only on tower lots near the commercial core (see towerLot) */
+  downtown?: string;
+  /** gentrification / filtering down: why the building may change hands (only when the swap will happen) */
+  wealth?: string;
+  /**
+   * the downtown cap (DOWNTOWN_STAGE − 1) when it binds: this lot is no tower site and every other limit allows a tower.
+   * NON-ENUMERABLE (a consumer that lists the optional fields generically shows the `downtown` line, not a bare number);
+   * growthRows should take min(desStage, popStage, zoneStage, downtownStage) as the stage the lot can grow to
+   */
+  downtownStage?: number;
+};
+
 /**
  * What limits growth of DevType `dev` on cell i: max stage allowed by desirability / city population / zone density,
- * and whether the lot is rejected (WP5 inspector; SIM_DEPTH_SPEC WP6). Optional fields: `downtown` (how likely a tower
- * lot here is built at full height, by distance to the commercial core) when towers are otherwise allowed.
+ * and whether the lot is rejected (WP5 inspector; SIM_DEPTH_SPEC WP6). A growable of `dev` standing on i is judged
+ * where the growth rules judge it (its front row, lotCell). Optional fields: `downtown`, `wealth`, `downtownStage`
+ * (see GrowthLimits).
  */
-export function growthLimits(st: CityState, i: number, dev: number): { desStage: number; popStage: number; zoneStage: number; rejected: boolean; reason?: string; downtown?: string; wealth?: string } {
-  const des = st.desirability[dev]?.[i] ?? 0;
+export function growthLimits(st: CityState, i: number, dev: number): GrowthLimits {
+  const N = st.size;
+  const bid = i >= 0 && i < st.cells ? st.building[i] : -1;
+  const b0 = bid >= 0 ? st.buildings.get(bid) : undefined;
+  const b = b0 && !(b0.flags & BF.Plopped) && getDef(b0.def)?.devType === dev ? b0 : undefined;
+  const ci = b ? lotCell(b, N) : i;
+  const des = st.desirability[dev]?.[ci] ?? 0;
   const desStage = desirMaxStage(des);
   const popStage = popMaxStage(st.stats.population);
-  const zoneStage = ZONE_MAX_STAGE[zoneDensity(st.zone[i] as Zone)] ?? 0;
+  const zone = st.zone[ci];
+  const zoneStage = ZONE_MAX_STAGE[zoneDensity(zone as Zone)] ?? 0;
   let reason: string | undefined;
   if (zoneStage <= 0) reason = 'Not zoned for growth';
-  else if (des <= GROW_MIN_DESIR) reason = 'Desirability too low';
-  const out: { desStage: number; popStage: number; zoneStage: number; rejected: boolean; reason?: string; downtown?: string; wealth?: string } =
-    reason ? { desStage, popStage, zoneStage, rejected: true, reason } : { desStage, popStage, zoneStage, rejected: false };
-  // gentrification / filtering down (same-stage wealth swaps) — why a building may change hands
-  const zone = st.zone[i];
-  if (dev >= 0 && dev <= DevType.CO3 && isGrowZone(zone)) {
-    const kind = dev <= DevType.R3 ? 0 : dev <= DevType.CS3 ? 1 : 2;
-    let best = -1, gain = SWAP_MIN_GAIN;
-    for (const d2 of ZONE_DEVTYPES[zone]) {
-      const k2 = d2 <= DevType.R3 ? 0 : d2 <= DevType.CS3 ? 1 : d2 <= DevType.CO3 ? 2 : 3;
-      if (k2 !== kind || DEV_WEALTH[d2] <= DEV_WEALTH[dev]) continue;
-      const dn = st.desirability[d2]?.[i] ?? 0;
-      if (!(dn >= SWAP_MIN_DES)) continue;
-      const g = dn - des;
-      if (g >= gain) { gain = g; best = d2; }
-    }
+  else if (!b && bid < 0 && !lotReachable(st, i % N, (i / N) | 0)) reason = `No road access: lots reach at most ${lotDepthMax() + INFILL_MAX_EXTRA} tiles in from a road`;
+  else if (des <= GROW_MIN_DESIR) reason = `Desirability too low (${pts(des)}; growth needs above ${pts(GROW_MIN_DESIR)})`;
+  const out: GrowthLimits = reason ? { desStage, popStage, zoneStage, rejected: true, reason } : { desStage, popStage, zoneStage, rejected: false };
+  // gentrification / filtering down (same-stage wealth swaps): what the swap scan will do with this building
+  if (b && dev >= 0 && dev <= DevType.CO3 && isGrowZone(zone) && !(b.flags & (BF.Historic | BF.Constructing | BF.OnFire | BF.Burnt | BF.Abandoned))) {
+    const gd = st.systemData.growth as GrowthData | undefined;
+    const stage = getDef(b.def)?.stage ?? 1;
     const tier = (d: number) => '$'.repeat(DEV_WEALTH[d]);
-    if (best >= 0) out.wealth = `gentrifying: ${tier(best)} outbids ${tier(dev)} here (+${gain.toFixed(2)}): renovated for richer tenants`;
-    else if (dev === DevType.R3 && des < FILTER_DES) out.wealth = `declining: wealthy residents leave after ${FILTER_DAYS} days below ${FILTER_DES} desirability`;
+    if (dev === DevType.R3) {
+      if (des < FILTER_DES && sameStageDef(zone, DevType.R2, stage, b, 0)) {
+        const left = Math.max(0, SWAP_MIN_AGE - b.age) + Math.max(0, FILTER_DAYS - (gd?.low?.[b.id] ?? 0));
+        out.wealth = `declining: the wealthy leave in ~${Math.round(left)} days unless desirability tops ${pts(FILTER_DES)}`;
+      }
+    } else if (b.age >= SWAP_MIN_AGE && !((gd?.lock?.[b.id] ?? -1) > st.day)) {
+      // (the system's allowance: what it left in the bank at the end of the day)
+      const carry = econData(st).carry;
+      const t = swapTarget(st, b, dev, zone, ci, stage, des, (d) => st.stats.demand[d] > SWAP_MIN_DEMAND && carry[d] > 0);
+      if (t) out.wealth = `gentrifying: ${tier(t.dev)} outbid ${tier(dev)} here (${pts(t.gain)}): renovated within ${SWAP_SCAN_DAYS} days`;
+    }
   }
   if (Math.min(desStage, popStage, zoneStage) >= DOWNTOWN_STAGE) {
-    const N = st.size, x = i % N, z = (i / N) | 0;
+    const x = i % N, z = (i / N) | 0;
     const c = commercialCore(st);
     const w = downtownWeight(st, x, z);
     if (c) {
-      const d = Math.round(Math.hypot(x + 0.5 - c.x, z + 0.5 - c.z));
-      out.downtown = w >= 0.999 ? `downtown (${d} tiles from the core): towers welcome`
-        : towerLot(st, x, z) ? `${d} tiles from downtown: a tower may still rise here (${Math.round(w * 100)}% of lots this far)`
-          : `${d} tiles from downtown: too far for a tower (stage 5 at most here)`;
+      const dx = c.x - (x + 0.5), dz = c.z - (z + 0.5);
+      const d = Math.round(Math.hypot(dx, dz));
+      const dir = d > 0 ? ' ' + COMPASS[Math.round(((Math.atan2(dx, -dz) * 180) / Math.PI + 360) % 360 / 45) % 8] : '';
+      const share = Math.round(Math.min(1, w) * 100);
+      if (w >= 0.999) out.downtown = `downtown (${d} tiles from the core): towers welcome`;
+      else if (towerLot(st, x, z)) out.downtown = `a tower site: downtown is ${d} tiles${dir} (${share}% of lots this far are)`;
+      else {
+        out.downtown = `not a tower site (${share}% of lots this far are) — stage ${DOWNTOWN_STAGE - 1} max; downtown ${d} tiles${dir}`;
+        Object.defineProperty(out, 'downtownStage', { value: DOWNTOWN_STAGE - 1, enumerable: false, configurable: true, writable: true });
+      }
     }
   }
   return out;

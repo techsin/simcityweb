@@ -20,8 +20,10 @@ import { clamp, smoothstep } from '../../core/rng';
 import { Zone } from '../../core/types';
 import { getDef } from '../catalog';
 import {
-  COARSE, COVERAGE_FALLBACK, LV, LV_EFFECTS_MIN_DAYS, LV_REFRESH_DAYS, LV_STATIC_MIN_DAYS, LV_TERMS, PARK_LV_FUNDING_MAX,
+  COARSE, COVERAGE_FALLBACK, LV, LV_EFFECTS_MIN_DAYS, LV_REFRESH_DAYS, LV_STATIC_MIN_DAYS, LV_STATIC_PHASE, LV_TERMS,
+  PARK_LV_FUNDING_MAX,
 } from './tuning';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
 import { commuteMinutes, commuteRamp, garbageFade, type CommuteRamp } from './factors';
 import { serviceEffectiveness } from './budget';
@@ -221,7 +223,7 @@ export const LV_TERM_LABELS: readonly string[] = [
 
 interface LvCtx { st: CityState; rt: EconRuntime; ex: LvExtra; inf: InfraFlags; ramp: CommuteRamp; gFade: number }
 function lvCtx(st: CityState, rt: EconRuntime, out?: LvCtx): LvCtx {
-  const c = out ?? { st, rt, ex: extraOf(rt, st), inf: infraFlags(st), ramp: { avg: 0, good: 0, bad: 0 }, gFade: 0 };
+  const c = out ?? { st, rt, ex: extraOf(rt, st), inf: infraFlags(st), ramp: { avg: 0, good: 0, bad: 0, unreached: 0 }, gFade: 0 };
   c.st = st; c.rt = rt; c.ex = extraOf(rt, st); c.inf = infraFlags(st);
   commuteRamp(st, c.ramp);
   c.gFade = garbageFade(st);
@@ -239,7 +241,7 @@ function lvRow(c: LvCtx, z: number, xa: number, xb: number, raw: Float64Array, L
   const kHigh = K.high, kCollege = K.college, kPlay = K.play, kGreen = K.green, kTransit = K.transit, kCommute = K.commute;
   const kWealth = K.wealth, kPrestige = K.prestige, kStigma = K.stigma, kTrees = K.trees, kSoil = K.soil, kHist = K.historic;
   const kAir = LV.airPollution, kWater = LV.waterPollution, kGarb = K.garbage, kCrime = LV.crime, kNoise = LV.noise;
-  const fb = COVERAGE_FALLBACK, gFade = c.gFade, rGood = c.ramp.good, rBad = c.ramp.bad, rAvg = c.ramp.avg;
+  const fb = COVERAGE_FALLBACK, gFade = c.gFade, rGood = c.ramp.good, rBad = c.ramp.bad, rAvg = c.ramp.avg, rUnr = c.ramp.unreached;
   const services = c.inf.services, traffic = c.inf.traffic;
   const water = st.water, lvS = rt.lvStatic, wf = c.ex.wf, hist = c.ex.hist, eff = rt.lvEffects, lf = rt.lvLandfill;
   const pol = st.policeCov, fire = st.fireCov, health = st.healthCov, elem = st.eduElemCov, high = st.eduHighCov;
@@ -267,7 +269,7 @@ function lvRow(c: LvCtx, z: number, xa: number, xb: number, raw: Float64Array, L
       tElem = kElem * fb; tHigh = kHigh * fb; tCol = kCollege * fb;
       tPlay = kPlay * park; tGreen = kGreen * park; tTransit = 0;
     }
-    const tCommute = kCommute * (1 - smoothstep(rGood, rBad, commuteMinutes(st, traffic, i, rAvg)) - 0.5);
+    const tCommute = kCommute * (1 - smoothstep(rGood, rBad, commuteMinutes(st, traffic, i, rAvg, rUnr)) - 0.5);
     const tWealth = kWealth * wealth[bz + ((x / COARSE) | 0)];
     const tPrestige = kPrestige * prestige[i];
     const tStigma = -kStigma * stigma[i];
@@ -300,7 +302,7 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
   let row = 0;
   /** average accumulators: zoned / built sum, count; all land sum, count (band locals, written back once per band) */
   const acc = new Float64Array(4);
-  let lastStatic = -1e9, lastLandfill = -1e9;
+  let lastLandfill = -1e9;
   let rawRow = new Float64Array(0);
   let ctx: LvCtx | undefined;
   /** plopped buildings whose flags changed since the last refresh (Burnt / Abandoned flips re-splat) */
@@ -315,10 +317,11 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
    */
   const refresh = (st: CityState, force: boolean) => {
     const ex = extraOf(rt, st);
-    if (rt.terrainDirty && (force || st.day - lastStatic >= LV_STATIC_MIN_DAYS)) {
+    // (the full-map terrain pass runs on absolute days LV_STATIC_PHASE mod LV_STATIC_MIN_DAYS, which are never month
+    // ticks: it used to run every 90 days from day 0, i.e. on a month tick — the largest month-tick hitch of big cities)
+    if (rt.terrainDirty && (force || st.day % LV_STATIC_MIN_DAYS === LV_STATIC_PHASE)) {
       computeStaticLandValue(st, rt.lvStatic, ex.wf);
       rt.terrainDirty = false;
-      lastStatic = st.day;
     }
     if (rt.lvEffectsDirty || force) {
       computeLandValueEffects(st, rt, rt.lvEffects);
@@ -359,7 +362,7 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
         changed.length = 0;
       }
     }
-    if (rt.lvLandfillDirty && (force || st.day - lastLandfill >= LV_EFFECTS_MIN_DAYS)) {
+    if (rt.lvLandfillDirty && (force || (st.day - lastLandfill >= LV_EFFECTS_MIN_DAYS && st.day % DAYS_PER_MONTH !== 0))) {
       computeLandfillEffects(st, rt.lvLandfill);
       rt.lvLandfillDirty = false;
       lastLandfill = st.day;
@@ -498,7 +501,9 @@ export function landValueBreakdown(st: CityState, rt: EconRuntime | null, i: num
   for (let k = 0; k < NLV; k++) {
     const v = BL[k];
     if (v === 0 && k !== LV_BASE) continue;
-    out.push({ id: LV_TERM_IDS[k], label: LV_TERM_LABELS[k], value: v, detail: lvDetail(k, st, c, i) });
+    // (the plopped-building splats read by their sign: what lifts or what drags this cell)
+    const label = k === LV_BUILDINGS ? (v >= 0 ? 'Parks & landmarks nearby' : 'Dumps & heavy utilities nearby') : LV_TERM_LABELS[k];
+    out.push({ id: LV_TERM_IDS[k], label, value: v, detail: lvDetail(k, st, c, i, v) });
   }
   const cl = raw < 0 ? 0 : raw > 1 ? 1 : raw;
   if (cl !== raw) out.push({ id: 'clamp', label: raw > 1 ? 'Capped at 100%' : 'Floored at 0%', value: cl - raw });
@@ -507,13 +512,19 @@ export function landValueBreakdown(st: CityState, rt: EconRuntime | null, i: num
   return out;
 }
 
-function lvDetail(k: number, st: CityState, c: LvCtx, i: number): string | undefined {
-  const pct = (v: number) => `${Math.round(v * 100)}%`;
+function lvDetail(k: number, st: CityState, c: LvCtx, i: number, v: number): string | undefined {
+  const pct = (x: number) => `${Math.round(x * 100)}%`;
   switch (k) {
     case LV_WATERFRONT: return st.waterPollution[i] > 0.05 ? `polluted water −${pct(LV_TERMS.waterfrontPollution * st.waterPollution[i])} of the bonus` : undefined;
-    case LV_COMMUTE: return `${commuteMinutes(st, c.inf.traffic, i, c.ramp.avg).toFixed(0)} min (city average ${c.ramp.avg.toFixed(0)})`;
+    case LV_COMMUTE: return `${commuteMinutes(st, c.inf.traffic, i, c.ramp.avg, c.ramp.unreached).toFixed(0)} min (city average ${c.ramp.avg.toFixed(0)})`;
     case LV_GARBAGE: return c.gFade < 1 ? `counts ${pct(c.gFade)} (fades in from 2k to 20k residents)` : undefined;
-    case LV_BUILDINGS: return 'parks and landmarks raise it, dumps and heavy utilities lower it';
+    case LV_BUILDINGS: {
+      // parks lift land value by their funding (funding^0.7, 0 on strike, at most PARK_LV_FUNDING_MAX): say so when it
+      // is not the full effect — the splats themselves are cached, the funding factor is the live one
+      const pe = c.ex.parksEff;
+      const parks = Math.abs(pe - 1) > 0.005 ? ` · parks count ${pct(pe)} (parks funding ${Math.round(st.budget.funding.parks ?? 100)}%)` : '';
+      return (v >= 0 ? 'parks, plazas and landmarks nearby' : 'a landfill, dump, prison or heavy utility nearby') + parks;
+    }
     default: return undefined;
   }
 }
