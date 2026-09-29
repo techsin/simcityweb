@@ -751,7 +751,8 @@ describe('building LOD cross-fade', () => {
       const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
       const r = all[0].radius, dOn = (r * K) / (br.lodPixels * 0.88);
       // far enough for every building to want its proxy, near enough for the swaps to fade (> fadeMinFrac x lodPixels)
-      const centre = new THREE.Vector3(30 * CELL_SIZE, 0, 27 * CELL_SIZE), dir = new THREE.Vector3(0.3, 1, 0.5).normalize();
+      const centre = new THREE.Vector3(30 * CELL_SIZE, 0, 27 * CELL_SIZE);
+      let dir = new THREE.Vector3(0.3, 1, 0.5).normalize();
       let d = dOn * 1.3;
       const at = (dd: number) => { cam.position.copy(centre).addScaledVector(dir, dd); cam.lookAt(centre); cam.updateMatrixWorld(); br.update(1 / 60); br.updateLod(cam, H); };
       at(d);
@@ -761,8 +762,8 @@ describe('building LOD cross-fade', () => {
       for (const a of asked) a.done(buildLodProxy(a.geo));
       let maxStep = 0, maxFades = 0, frames = 0, prev = br.lodCount;
       if (opts.cut) {
-        // a camera cut right after the arrival: the cut frame wakes nobody, the catch-up frames wake them without fades
-        d *= 1.6;
+        // a camera cut (~2 km sideways, same distance) right after the arrival: the cut frame wakes nobody
+        dir = new THREE.Vector3(-dir.z, dir.y, dir.x);
         at(d);
         expect(br.lodCount).toBe(0);
       }
@@ -787,10 +788,10 @@ describe('building LOD cross-fade', () => {
     expect(b.maxFades).toBeLessThanOrEqual(12);
     expect(b.maxFades).toBeGreaterThan(0);
     expect(b.frames).toBeGreaterThan(40);
-    // a cut: instant catch-up (x4 slice per frame, no fades)
+    // a cut right after the arrival: nobody woken in the cut frame, paced wakes after it
     const c = run({ slice: 16, cut: true });
-    expect(c.maxFades).toBe(0);
-    expect(c.maxStep).toBeLessThanOrEqual(64);
+    expect(c.maxStep).toBeLessThanOrEqual(16);
+    expect(c.frames).toBeGreaterThanOrEqual(Math.ceil(150 / 16));
   });
 });
 
