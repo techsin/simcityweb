@@ -41,7 +41,7 @@ import { cohortShares, needsExpectation, needsOf, tapWaterAt, waterRequired } fr
 import { TAP_SAFE } from '../../sim/economy/tuning';
 import { facilityReport } from '../../sim/infra/facilities';
 import { roadCellReport } from '../../sim/infra/transportFacilities';
-import { responseAt } from '../../sim/infra/emergency';
+import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, emergencyReachAt } from '../../sim/infra/overlays';
 import type { PollutionSystem } from '../../sim/infra/pollution';
 import type { CrimeSystem } from '../../sim/infra/crime';
 import { NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
@@ -489,11 +489,13 @@ export class InfoPanel extends Panel {
       const q = safeCall(() => tapWaterAt(sim, st, ci), 1);
       kv.add('Tap water', 'water', q >= TAP_SAFE ? `<span class="${q >= 0.85 ? 'pos' : 'warn'}">${pct(q)} · safe</span>` : `<span class="neg">${pct(q)} · unsafe tap water</span>`);
     }
-    // emergency response (auto-dispatch reach)
-    const resp: [string, 'fire' | 'police' | 'medical', string, string][] = [['Fire response', 'fire', 'fire', 'no fire station'], ['Police response', 'police', 'police', 'no police station'], ['Ambulance', 'medical', 'health', 'no clinic or hospital']];
-    for (const [label, r, ic, none] of resp) {
-      const t = responseText(safeCall(() => responseAt(sim, ci, r), null), none);
-      if (t) kv.add(label, ic, `<span class="${t.tone}">${escapeHtml(t.text)}</span>`, 'Auto-dispatch reach: covered incidents become statistics; beyond it you dispatch yourself (live speed)');
+    // emergency response (auto-dispatch reach): the Emergency data view's value — a building's best footprint cell and
+    // road access, empty land the nearest road / lot's reach
+    const resp: [string, number, string, string][] = [['Fire response', EMG_FIRE, 'fire', 'no fire station'], ['Police response', EMG_POLICE, 'police', 'no police station'], ['Ambulance', EMG_MEDICAL, 'health', 'no clinic or hospital']];
+    for (const [label, v, ic, none] of resp) {
+      const r = safeCall(() => emergencyReachAt(st, ci, v), null);
+      const t = responseText(r ? { slackMin: r.slack, covered: r.slack >= 0, hasRoad: r.why !== 'noRoad', land: r.why === 'land' } : null, none);
+      if (t) kv.add(label, ic, `<span class="${t.tone}">${escapeHtml(t.text)}</span>`, 'Auto-dispatch reach: covered incidents become statistics; beyond it major emergencies wait for your dispatch');
     }
     const out: (HTMLElement | null)[] = [kv.el];
     // coverages

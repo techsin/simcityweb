@@ -430,8 +430,8 @@ export class DynamicBatch {
     if (tile >= 0) this.tileSwap[tile]++;
     // cached draw lists stay valid while the instance's culling sphere still bounds the new geometry (LOD swaps, see
     // shareSphere): they only patch this instance's draw range (swap log; no re-cull, no indirect texture upload; the
-    // per-tile blocks hold instance ids, so they stay valid too). Otherwise the sphere is rewritten exactly and the
-    // lists are rebuilt. Geometries sharing one culling sphere (model + proxy) skip the check.
+    // tile's cached blocks keep their ids and only refresh their ranges, see tileSwap). Otherwise the sphere is
+    // rewritten exactly and the lists are rebuilt. Geometries sharing one culling sphere (model + proxy) skip the check.
     const ga = this.geoSphere[prevGeom], gb = this.geoSphere[geomId];
     const shared = ga && gb && ga.radius === gb.radius && ga.center.equals(gb.center) && this.sph[id * 4 + 3] >= 0;
     if (!this.pc.dynamic && !shared) {

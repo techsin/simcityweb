@@ -700,6 +700,9 @@ export const CARLESS_EXTRA_MIN = 12;
 /** stop load (riders / day) smoothing across assignments (weight of the new value): the crowding wait of the next
  *  assignment reads it, so an undamped value alternates (full stop -> long wait -> empty stop -> short wait) */
 export const STOP_LOAD_SMOOTH = 0.3;
+/** weight of a job site's matching price (minutes) in its transit-search seed: the transit option then leads to jobs
+ *  with room (0 = nearest transit job, the pre-r1 behaviour) */
+export const TRANSIT_SEED_PRICE = 1;
 /**
  * WP7-9 ferries (ferry.ts): links = water BFS (4-neighbour water cells) from each terminal's front water cells, at most
  * FERRY_MAX_CELLS steps, to its FERRY_PARTNERS nearest terminals on the same water body (links are symmetric); crossing

@@ -14,7 +14,7 @@
  *  - overlayValue(st, o, x, z, variant): the normalised value the renderer draws at a cell; overlayReadout(...): the
  *    player-facing text for the hover tip ("Auto-dispatch · 2.1 min to spare", "Children 18% of 240 residents").
  */
-import { DEV_TYPE_COUNT, DEV_TYPE_LABELS, DevType, Network, Overlay, Zone } from '../../core/types';
+import { DEV_TYPE_COUNT, DEV_TYPE_LABELS, DevType, Network, Overlay, Zone, isRoad } from '../../core/types';
 import { RESP_NONE, type Building, type CityState } from '../CityState';
 import type { Simulation } from '../Simulation';
 import { getDef } from '../catalog';
@@ -23,7 +23,8 @@ import { cohortShares, demographicsSim } from '../economy/demographics';
 import { truckVolumeOf } from './transportFacilities';
 import { waterQualityAt } from './utilities';
 import { emergencyOf } from './emergency';
-import { EMERG_RMAX } from './params';
+import { EMERG_RMAX, EMERG_SLOW_MARGIN } from './params';
+import { buildingList } from './common';
 
 export type OverlayPalette = 'bad' | 'good' | 'binary' | 'diverging';
 
@@ -287,46 +288,148 @@ function emgEmpty(st: CityState, L: Float32Array, i: number): boolean {
   const s = L[i];
   return s <= -EMERG_RMAX && s > RESP_NONE + 0.5 && st.building[i] < 0 && st.network[i] === Network.None;
 }
+/** a 4-neighbour tile around the footprint (no corners) is a road: emergency vehicles stop there */
+export function roadBeside(st: CityState, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>): boolean {
+  const N = st.size, net = st.network;
+  for (let x = Math.max(0, b.x); x < Math.min(N, b.x + b.w); x++) {
+    if (b.z > 0 && isRoad(net[(b.z - 1) * N + x])) return true;
+    if (b.z + b.d < N && isRoad(net[(b.z + b.d) * N + x])) return true;
+  }
+  for (let z = Math.max(0, b.z); z < Math.min(N, b.z + b.d); z++) {
+    if (b.x > 0 && isRoad(net[z * N + b.x - 1])) return true;
+    if (b.x + b.w < N && isRoad(net[z * N + b.x + b.w])) return true;
+  }
+  return false;
+}
+/**
+ * best response slack over a building's footprint: the emergency pass writes one value per building, but a building
+ * that grew since the last pass (EMERG_RESP_PERIOD) still holds the land fill of its cells (inner cells: the floor)
+ */
+function footprintSlack(st: CityState, L: Float32Array, b: Building): number {
+  const N = st.size, bld = st.building;
+  let best = -Infinity;
+  for (let z = Math.max(0, b.z); z < Math.min(N, b.z + b.d); z++) {
+    for (let x = Math.max(0, b.x); x < Math.min(N, b.x + b.w); x++) {
+      const i = z * N + x;
+      if (bld[i] === b.id && L[i] > best) best = L[i];
+    }
+  }
+  return best;
+}
+/** a road tile within EMG_DILATE (Chebyshev) of (x, z) */
+function roadNear(st: CityState, x: number, z: number): boolean {
+  const N = st.size, R = EMG_DILATE;
+  for (let zz = Math.max(0, z - R); zz <= Math.min(N - 1, z + R); zz++) {
+    for (let xx = Math.max(0, x - R); xx <= Math.min(N - 1, x + R); xx++) if (isRoad(st.network[zz * N + xx])) return true;
+  }
+  return false;
+}
+
+/** auto-dispatch reach of one responder at a cell (the Emergency view's value there, and the inspector's) */
+export interface EmergencyReach {
+  /** minutes to spare: >= 0 a unit is sent automatically in time, < 0 beyond reach (the player dispatches),
+   *  RESP_NONE no station of the type; -EMERG_RMAX = the layers' floor (see why) */
+  slack: number;
+  /**
+   * '' as computed · 'noStation' no station of the type · 'noRoad' a building with no road beside it (empty land: no
+   * road within EMG_DILATE) · 'far' more than EMERG_SLOW_MARGIN minutes beyond every station's reach (the floor) ·
+   * 'land' empty land: the reach of the nearest road / lot (EMG_DILATE)
+   */
+  why: '' | 'noStation' | 'noRoad' | 'far' | 'land';
+}
+
+/**
+ * Emergency response at cell i for an Emergency variant (EMG_FIRE / EMG_POLICE / EMG_MEDICAL): buildings read the best
+ * slack over their footprint, empty land the nearest road / lot's (the raster's EMG_DILATE fill), and the layers' floor
+ * is told apart (no road beside the building vs 6+ min beyond every station). null while the layers are not computed.
+ * overlayReadout and the inspector both read it, so hover and inspector never disagree.
+ */
+export function emergencyReachAt(st: CityState, i: number, variant = -1): EmergencyReach | null {
+  if (i < 0 || i >= st.cells || !respReady(st)) return null;
+  const v = resolveVariant(Overlay.Emergency, variant);
+  const L = respLayer(st, v);
+  const bid = st.building[i];
+  const b = bid >= 0 ? st.buildings.get(bid) : undefined;
+  const s = b ? footprintSlack(st, L, b) : L[i];
+  if (s <= RESP_NONE + 0.5) return { slack: RESP_NONE, why: 'noStation' };
+  const floor = -EMERG_RMAX + 1e-3;
+  if (b) return s <= floor ? { slack: -EMERG_RMAX, why: roadBeside(st, b) ? 'far' : 'noRoad' } : { slack: s, why: '' };
+  if (emgEmpty(st, L, i)) {
+    const raw = overlayLayer(st, Overlay.Emergency, v)!.data[i];
+    const d = decodeSlack(raw);
+    if (raw > EMG_NONE_T + 0.01 && d > floor) return { slack: d, why: 'land' };
+    const N = st.size;
+    return { slack: -EMERG_RMAX, why: roadNear(st, i % N, (i / N) | 0) ? 'far' : 'noRoad' };
+  }
+  return s <= floor ? { slack: -EMERG_RMAX, why: 'far' } : { slack: s, why: '' };
+}
+
 let emgQueue = new Int32Array(0);
 let emgDepth = new Uint8Array(0);
+let emgOpen = new Int32Array(0);
+/**
+ * PERF (one pass per 'emergency' event while shown): building footprints first (their best slack, see footprintSlack),
+ * then one pass over the cells that also queues the dilation sources (known cells beside empty land), a BFS of at most
+ * EMG_DILATE steps, and the leftover empty cells (out of reach) from a list
+ */
 function buildEmergency(st: CityState, variant: number, out: Float32Array): void {
   if (!respReady(st)) return;
   const L = respLayer(st, variant);
-  const C = st.cells, N = st.size;
-  if (emgQueue.length < C) { emgQueue = new Int32Array(C); emgDepth = new Uint8Array(C); }
-  const q = emgQueue, dep = emgDepth;
-  let open = 0;
-  for (let i = 0; i < C; i++) {
-    if (emgEmpty(st, L, i)) { out[i] = -1; open++; }
-    else out[i] = encodeSlack(L[i]);
+  const C = st.cells, N = st.size, bld = st.building, net = st.network;
+  if (emgQueue.length < C) { emgQueue = new Int32Array(C); emgDepth = new Uint8Array(C); emgOpen = new Int32Array(C); }
+  const q = emgQueue, dep = emgDepth, openList = emgOpen;
+  // buildings: one value per footprint (1x1 lots read their cell)
+  const list = buildingList(st);
+  for (let k = 0; k < list.length; k++) {
+    const b = list[k];
+    if (b.w === 1 && b.d === 1) {
+      const i = b.z * N + b.x;
+      if (i >= 0 && i < C && bld[i] === b.id) out[i] = encodeSlack(L[i]);
+      continue;
+    }
+    const t = encodeSlack(footprintSlack(st, L, b));
+    for (let z = Math.max(0, b.z); z < Math.min(N, b.z + b.d); z++) {
+      for (let x = Math.max(0, b.x); x < Math.min(N, b.x + b.w); x++) { const i = z * N + x; if (bld[i] === b.id) out[i] = t; }
+    }
   }
-  if (open > 0) {
-    // multi-source 4-neighbour BFS from the known cells beside empty land (index order: deterministic ties)
-    let head = 0, tail = 0;
-    for (let z = 0; z < N; z++) {
-      const row = z * N;
-      for (let x = 0; x < N; x++) {
-        const i = row + x;
-        if (out[i] < 0) continue;
-        if ((x > 0 && out[i - 1] < 0) || (x < N - 1 && out[i + 1] < 0) || (z > 0 && out[i - N] < 0) || (z < N - 1 && out[i + N] < 0)) {
-          q[tail++] = i;
-          dep[i] = 0;
-        }
+  // cells: land / roads as computed, empty land beside no road = -1 (open); queue the known cells beside open ones
+  // (each adjacent pair is seen from its later cell in index order)
+  const floor = -EMERG_RMAX, none = RESP_NONE + 0.5;
+  let open = 0, tail = 0;
+  dep.fill(255, 0, C);
+  for (let z = 0; z < N; z++) {
+    const row = z * N;
+    for (let x = 0; x < N; x++) {
+      const i = row + x;
+      let known = true;
+      if (bld[i] < 0) {
+        const s = L[i];
+        if (s <= floor && s > none && net[i] === Network.None) { out[i] = -1; openList[open++] = i; known = false; }
+        else out[i] = encodeSlack(s);
+      } else if (bld[i] >= 0 && out[i] === 0) out[i] = encodeSlack(L[i]); // (a building missing from the list)
+      if (known) {
+        if ((x > 0 && out[i - 1] < 0) || (z > 0 && out[i - N] < 0)) { if (dep[i] === 255) { dep[i] = 0; q[tail++] = i; } }
+      } else {
+        if (x > 0 && out[i - 1] >= 0 && dep[i - 1] === 255) { dep[i - 1] = 0; q[tail++] = i - 1; }
+        if (z > 0 && out[i - N] >= 0 && dep[i - N] === 255) { dep[i - N] = 0; q[tail++] = i - N; }
       }
     }
-    while (head < tail) {
-      const i = q[head++];
-      const d = dep[i] + 1;
-      if (d > EMG_DILATE) continue;
-      const v = out[i], x = i % N;
-      if (x > 0 && out[i - 1] < 0) { out[i - 1] = v; dep[i - 1] = d; q[tail++] = i - 1; }
-      if (x < N - 1 && out[i + 1] < 0) { out[i + 1] = v; dep[i + 1] = d; q[tail++] = i + 1; }
-      if (i >= N && out[i - N] < 0) { out[i - N] = v; dep[i - N] = d; q[tail++] = i - N; }
-      if (i + N < C && out[i + N] < 0) { out[i + N] = v; dep[i + N] = d; q[tail++] = i + N; }
-    }
-    // beyond EMG_DILATE of any road or building: as computed (out of reach)
-    for (let i = 0; i < C; i++) if (out[i] < 0) out[i] = encodeSlack(L[i]);
   }
+  if (open === 0) return;
+  // multi-source 4-neighbour BFS (queue order: deterministic ties)
+  let head = 0;
+  while (head < tail) {
+    const i = q[head++];
+    const d = dep[i] + 1;
+    if (d > EMG_DILATE) continue;
+    const v = out[i], x = i % N;
+    if (x > 0 && out[i - 1] < 0) { out[i - 1] = v; dep[i - 1] = d; q[tail++] = i - 1; }
+    if (x < N - 1 && out[i + 1] < 0) { out[i + 1] = v; dep[i + 1] = d; q[tail++] = i + 1; }
+    if (i >= N && out[i - N] < 0) { out[i - N] = v; dep[i - N] = d; q[tail++] = i - N; }
+    if (i + N < C && out[i + N] < 0) { out[i + N] = v; dep[i + N] = d; q[tail++] = i + N; }
+  }
+  // beyond EMG_DILATE of any road or building: as computed (out of reach)
+  for (let k = 0; k < open; k++) { const i = openList[k]; if (out[i] < 0) out[i] = encodeSlack(L[i]); }
 }
 
 function servicesOn(st: CityState): boolean {
@@ -582,16 +685,21 @@ export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, 
   const raw = Lr.data[i];
   switch (o) {
     case Overlay.Emergency: {
-      if (!respReady(st)) return { text: 'Not computed yet', tone: '' };
-      const Lr2 = respLayer(st, v);
-      let s = Lr2[i];
-      if (s <= RESP_NONE + 0.5) return { text: `No ${RESPONDER_NOUN[v]}`, tone: 'bad', sub: 'Build one: nothing is sent automatically' };
-      // empty land beside no road: the drawn value is the nearest road's reach (EMG_DILATE), say so
-      const empty = emgEmpty(st, Lr2, i) && raw > EMG_NONE_T + 0.01;
-      if (empty) s = decodeSlack(raw);
+      const r = emergencyReachAt(st, i, v);
+      if (!r) return { text: 'Not computed yet', tone: '' };
+      if (r.why === 'noStation') return { text: `No ${RESPONDER_NOUN[v]}`, tone: 'bad', sub: 'Build one: nothing is sent automatically' };
+      if (r.why === 'noRoad') {
+        return st.building[i] >= 0
+          ? { text: 'Unreachable — no road beside it', tone: 'bad', sub: 'Trucks drive on roads: build a road next to it' }
+          : { text: 'No road nearby', tone: 'bad', sub: 'Empty land: lots here need a road first' };
+      }
+      // empty land beside no road: the drawn value is the nearest road / lot's reach (EMG_DILATE), say so
+      const empty = r.why === 'land';
       const land = empty ? 'Empty land — a lot here: ' : '';
+      const s = r.slack;
       if (s >= 0) return { text: `Auto-dispatch · ${s.toFixed(1)} min to spare`, tone: 'good', sub: `${land}${empty ? 'incidents' : 'Incidents'} here become statistics` };
-      if (s >= -EMG_NEAR) return { text: `Just out of reach by ${(-s).toFixed(1)} min`, tone: 'warn', sub: `${land}${empty ? 'you' : 'You'} dispatch: the game drops to live speed` };
+      if (r.why === 'far') return { text: `Out of reach by ${EMERG_SLOW_MARGIN}+ min`, tone: 'bad', sub: 'Major emergencies here wait for you to dispatch — build a station closer' };
+      if (s >= -EMG_NEAR) return { text: `Just out of reach by ${(-s).toFixed(1)} min`, tone: 'warn', sub: `${land}${empty ? 'major' : 'Major'} emergencies wait for your dispatch; minor ones get a slower unit` };
       return { text: `Out of reach by ${(-s).toFixed(1)} min`, tone: 'bad', sub: `${land}${empty ? 'you' : 'You'} dispatch — build a station closer` };
     }
     case Overlay.Demographics: {

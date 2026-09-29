@@ -4,7 +4,7 @@
  * slack, crime terms) into display rows, bars and chips. No DOM: InfoPanel renders them; tests pin them with stub
  * outputs (null / [] / -1) and with full outputs.
  */
-import { EMERG_RMAX } from '../sim/infra/params';
+import { EMERG_RMAX, EMERG_SLOW_MARGIN } from '../sim/infra/params';
 import type { FactorTerm } from '../sim/explain';
 import type { FacilityLine, FacilityReport } from '../sim/infra/facilities';
 import type { NeedReport } from '../sim/economy/demographics';
@@ -257,14 +257,21 @@ export function pyramid(shares: ArrayLike<number> | null | undefined, pop: numbe
 }
 
 // ------------------------------------------------------------------------------------------------ emergency response
-/** "auto, 2.1 min to spare" / "manual only (1.4 min out of reach)" / "no station"; null = unknown (no data yet) */
-export function responseText(r: { slackMin: number; covered: boolean } | null | undefined, noStation = 'no station'): { text: string; tone: Tone } | null {
+/**
+ * "auto, 2.1 min to spare" / "manual only (1.4 min out of reach)" / "no station"; null = unknown (no data yet).
+ * The response layers' floor (-EMERG_RMAX) means either no road beside the building (hasRoad false) or more than
+ * EMERG_SLOW_MARGIN minutes beyond every station's reach (hasRoad true, the default). land: empty land that reads the
+ * nearest road / lot's reach ("a lot here: auto, 1.6 min to spare", like the Emergency data view).
+ */
+export function responseText(r: { slackMin: number; covered: boolean; hasRoad?: boolean; land?: boolean } | null | undefined, noStation = 'no station'): { text: string; tone: Tone } | null {
   if (!r || !Number.isFinite(r.slackMin)) return null;
   if (r.slackMin <= -98.5) return { text: noStation, tone: 'neg' };
-  // the response layers' floor (-EMERG_RMAX): no road reaches the lot at all
-  if (r.slackMin <= -EMERG_RMAX + 1e-6) return { text: 'unreachable — no road to it', tone: 'neg' };
-  if (r.covered || r.slackMin >= 0) return { text: `auto, ${r.slackMin.toFixed(1)} min to spare`, tone: 'pos' };
-  return { text: `manual only (${(-r.slackMin).toFixed(1)} min out of reach)`, tone: r.slackMin >= -3 ? 'warn' : 'neg' };
+  if (r.slackMin <= -EMERG_RMAX + 1e-3) {
+    return r.hasRoad === false ? { text: r.land ? 'no road nearby' : 'unreachable — no road to it', tone: 'neg' } : { text: `manual only — ${EMERG_SLOW_MARGIN}+ min beyond every station`, tone: 'neg' };
+  }
+  const lot = r.land ? 'a lot here: ' : '';
+  if (r.covered || r.slackMin >= 0) return { text: `${lot}auto, ${Math.max(0, r.slackMin).toFixed(1)} min to spare`, tone: 'pos' };
+  return { text: `${lot}manual only (${(-r.slackMin).toFixed(1)} min out of reach)`, tone: r.slackMin >= -3 ? 'warn' : 'neg' };
 }
 
 // ------------------------------------------------------------------------------------------------ crime

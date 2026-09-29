@@ -95,7 +95,7 @@ import {
   DEPOT_UNPOWERED, FERRY_TIME_PER_CELL, FREIGHT_SINK_MIN, GARAGE_SPACES, MINIBUS_FLEET,
   PARKING_BLEND, PARKING_MIN, PARKING_SHOP_W, PR_CAR_LEG_MAX, PR_HOME_MIN, PR_LEG_SEARCH, PR_LIMIT, PR_PARK_MIN, PR_PRICE_MAX,
   PR_PRICE_STEP, PR_STOP_RADIUS, RAMP_ALPHA, RAMP_BY_NET, RAMP_CAP, RAMP_MAX_FACTOR, RAMP_MSA_MIN, RIDERS_PER_BUS,
-  STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRUCK_LOCAL_FACTOR, WAIT_FERRY,
+  STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRANSIT_SEED_PRICE, TRUCK_LOCAL_FACTOR, WAIT_FERRY,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
@@ -1627,7 +1627,9 @@ export class TrafficSystem implements SimSystem {
     seeds.clear();
     const N = this.road.N;
     for (let j = 0; j < this.jN; j++) {
-      const label0 = this.jBase[j] + this.jNoise[j];
+      // (+ the site's matching price, shifted by MATCH_PRICE_MAX like the rounds' seeds: the transit option leads to a
+      // job with room, not to the nearest handful of jobs thousands can't all take — see transitLabel0)
+      const label0 = this.transitLabel0(j);
       if (this.jRailNode[j] >= 0) {
         seeds.push(T.nR + this.jRailNode[j], label0, j);
         continue;
@@ -1645,8 +1647,23 @@ export class TrafficSystem implements SimSystem {
         for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) seeds.push(this.stAtt[a], label0 + walk, j);
       }
     }
-    transitSearch(T, S, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME);
+    transitSearch(T, S, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME + 2 * MATCH_PRICE_MAX);
     // the per-origin options follow in their own step (PH_TRANSIT2)
+  }
+
+  /**
+   * seed label of job site j in the transit search: base (regional time) + noise + TRANSIT_SEED_PRICE x its matching
+   * price (minutes, persistent tatonnement on excess demand) + MATCH_PRICE_MAX (labels stay >= 0). The transit forest
+   * thus shapes catchments like the road rounds do: a small job site beside a stop no longer draws every rider of the
+   * line (the option's time was the ride to it, the flows went there, while the matching sent them elsewhere).
+   * transitPure(v) = the option's minutes without the shift / price / noise.
+   */
+  private transitLabel0(j: number): number {
+    return MATCH_PRICE_MAX + this.jBase[j] + this.jNoise[j] + TRANSIT_SEED_PRICE * Math.max(0, this.jPrice[j]);
+  }
+  /** pure transit minutes of the transit-forest label d reaching job site j (d minus the seed's shift / price / noise) */
+  private transitPure(d: number, j: number): number {
+    return j >= 0 && j < this.jN ? d - MATCH_PRICE_MAX - this.jNoise[j] - TRANSIT_SEED_PRICE * Math.max(0, this.jPrice[j]) : d - MATCH_PRICE_MAX;
   }
 
   /**
@@ -1694,7 +1711,7 @@ export class TrafficSystem implements SimSystem {
       if (walkStop >= 0 && bestWalkOnly < best) this.stWalk[walkStop] += this.oW[o];
       if (board < 0) continue;
       const jT = srcT[board];
-      const t = best - this.jNoise[jT];
+      const t = this.transitPure(best, jT);
       if (t > MAX_COMMUTE) continue;
       this.oTrT[o] = t;
       this.oBoard[o] = board;
@@ -1733,8 +1750,7 @@ export class TrafficSystem implements SimSystem {
         for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) {
           const v = this.stAtt[a];
           if (doneT[v] !== 1) continue;
-          const jT = srcT[v];
-          const t = walk + this.stWait[s] + distT[v] - (jT >= 0 ? this.jNoise[jT] : 0);
+          const t = walk + this.stWait[s] + this.transitPure(distT[v], srcT[v]);
           if (this.rides(v)) { if (t < best) { best = t; board = v; bs = s; bw = walk; } }
           else if (t < woBest) { woBest = t; wo = s; woWalk = walk; }
         }
