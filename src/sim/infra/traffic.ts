@@ -1699,40 +1699,48 @@ export class TrafficSystem implements SimSystem {
 
   // ------------------------------------------------------------------------------------------ PARK & RIDE (WP7-8)
   /**
-   * P&R garages: label = PR_PARK_MIN + walk to the stop + its wait + transit minutes from the stop (this cycle's transit
-   * forest) + crowding of the last assignment. Every 2nd cycle (or when the graph / garages changed) a reverse road
-   * search from the garages' road entries gives the car legs; in between the forest is reused (same graph and garages:
-   * car legs keep their minutes, the transit part is this cycle's). Origin option = PR_HOME_MIN + car leg + label if
-   * the car leg is <= PR_CAR_LEG_MAX. A garage whose stop's best path rides no vehicle (its jobs are a walk away: a
-   * downtown garage) is plain parking: its users park and walk (car trips with the car overhead instead of park + wait,
-   * no stop riders), so it draws drivers only where the jobs' parking pressure costs more than the walk.
+   * P&R garages: among the attached stops within reach, the one whose transit path rides a vehicle with the least walk
+   * + wait + transit minutes (this cycle's transit forest); label = PR_PARK_MIN + that + the garage's price (rationing,
+   * see commuteEnd). A garage whose stops' paths all ride nothing (jobs a walk away: downtown) is parking only (its
+   * spaces ease the blocks around it, parking.ts). Every 2nd cycle (or when the graph / garages / candidate stops
+   * changed) a reverse road search from the garages' road entries gives the car legs; in between the forest is reused
+   * (car legs keep their minutes, the transit part and the price are this cycle's). Origin option = PR_HOME_MIN +
+   * congested car leg + label if the car leg is <= PR_CAR_LEG_MAX free-flow minutes.
    */
   private parkRide(): void {
     const ST = this.ST, distT = ST.dist, doneT = ST.done, srcT = ST.src;
-    const gN = this.gN;
-    const st = this.lastState;
+    const gN = this.gN, N = this.road.N;
     for (let q = 0; q < gN; q++) {
       this.gLabel[q] = Infinity;
       this.gBoard[q] = -1;
       this.gRide[q] = 0;
-      const s = this.gStop[q];
-      if (s < 0) continue;
-      let best = Infinity, board = -1;
-      for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) {
-        const v = this.stAtt[a];
-        if (doneT[v] === 1 && distT[v] < best) { best = distT[v]; board = v; }
+      if (this.gState[q] < GARAGE_NO_TRANSIT) continue; // no road entry / no stop within reach
+      const c = this.gCell[q], x = c % N, z = (c - x) / N, half = this.gHalf[q];
+      const cnt = this.nearStops(N, x, z, PR_STOP_RADIUS + half);
+      let best = Infinity, board = -1, bs = -1, bw = 0, wo = -1, woBest = Infinity, woWalk = 0;
+      for (let k = 0; k < cnt; k++) {
+        const s = this.nsIdx[k];
+        if (this.stAttC[s] === 0) continue;
+        const walk = Math.max(0, this.nsDist[k] - half) * STOP_WALK_TIME_PER_CELL;
+        for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) {
+          const v = this.stAtt[a];
+          if (doneT[v] !== 1) continue;
+          const jT = srcT[v];
+          const t = walk + this.stWait[s] + distT[v] - (jT >= 0 ? this.jNoise[jT] : 0);
+          if (this.rides(v)) { if (t < best) { best = t; board = v; bs = s; bw = walk; } }
+          else if (t < woBest) { woBest = t; wo = s; woWalk = walk; }
+        }
       }
-      if (board < 0) continue;
-      const spaces = GARAGE_DEFS[st?.buildings.get(this.gBid[q])?.def ?? ''] ?? GARAGE_SPACES;
-      const load = this.garageLoad.get(this.gBid[q]) ?? 0;
-      const crowd = GARAGE_CROWD_K * Math.max(0, load / spaces - GARAGE_CROWD_FROM);
-      const jT = srcT[board];
-      const ride = this.ridesFrom(board);
-      this.gRide[q] = ride ? 1 : 0;
-      // park & walk (no ride): the car trip's own overhead instead of parking + wait — the garage beats driving to the
-      // job only where the job's parking pressure costs more than the walk (PARKING_MIN x parking)
-      const park = ride ? PR_PARK_MIN + this.stWait[s] : CAR_OVERHEAD - PR_HOME_MIN;
-      this.gLabel[q] = park + this.gWalk[q] + best - (jT >= 0 ? this.jNoise[jT] : 0) + crowd;
+      if (board < 0) {
+        // downtown: the stop's riders walk to jobs beside it (no park & ride); else its transit reaches no job
+        if (wo >= 0) { this.gState[q] = GARAGE_DOWNTOWN; this.gStop[q] = wo; this.gWalk[q] = woWalk; }
+        continue;
+      }
+      this.gState[q] = GARAGE_PR;
+      this.gRide[q] = 1;
+      this.gStop[q] = bs;
+      this.gWalk[q] = bw;
+      this.gLabel[q] = PR_PARK_MIN + best + this.gPrice[q];
       this.gBoard[q] = board;
     }
     const g = this.road, SP = this.SP;
@@ -1747,11 +1755,22 @@ export class TrafficSystem implements SimSystem {
         for (let e = this.gEntS[q], e1 = e + this.gEntC[q]; e < e1; e++) seeds.push(this.ent[e], L, q);
         if (L > maxL) maxL = L;
       }
-      roadSearch(g, g.rev, this.nodeTime, SP, this.heap, seeds, Math.min(PR_LIMIT, maxL + PR_CAR_LEG_MAX), this.rampT);
+      // (congested car legs up to PR_LEG_SEARCH x the free-flow reach: a jam slows park & ride, it does not remove it)
+      roadSearch(g, g.rev, this.nodeTime, SP, this.heap, seeds, Math.min(MAX_COMMUTE, maxL + PR_LEG_SEARCH * PR_CAR_LEG_MAX), this.rampT);
+      // free-flow minutes of each settled node's car leg to its garage (along the congested forest; parents settle first)
+      this.prFF = growF32(this.prFF, g.n);
+      const ff = this.prFF, order = SP.order, next = SP.next, t0 = g.t0, type = g.type, HW = Network.Highway;
+      for (let k = 0; k < SP.settled; k++) {
+        const v = order[k], nx = next[v];
+        if (nx < 0) { ff[v] = 0; continue; }
+        let cst = 0.5 * (t0[v] + t0[nx]);
+        if ((type[v] === HW) !== (type[nx] === HW)) cst += RAMP_BY_NET[type[v] === HW ? type[nx] : type[v]] ?? RAMP_PENALTY;
+        ff[v] = ff[nx] + cst;
+      }
       this.prKey = this.prKeyNow;
     }
-    const dist = SP.dist, src = SP.src, done = SP.done;
-    const n = Math.min(g.n, SP.n);
+    const dist = SP.dist, src = SP.src, done = SP.done, ff = this.prFF;
+    const n = Math.min(g.n, SP.n, ff.length);
     for (let o = 0; o < this.oN; o++) {
       this.oPrT[o] = Infinity;
       this.oPrG[o] = -1;
@@ -1764,15 +1783,15 @@ export class TrafficSystem implements SimSystem {
         if (q < 0 || q >= gN) continue;
         const seed = this.gSeed[q], lab = this.gLabel[q];
         if (!(lab < Infinity) || !(seed < Infinity)) continue;
-        const car = dist[v] - seed;
-        if (car > PR_CAR_LEG_MAX) continue;
-        const t = PR_HOME_MIN + car + lab;
+        if (ff[v] > PR_CAR_LEG_MAX) continue;
+        const t = PR_HOME_MIN + (dist[v] - seed) + lab;
         if (t < best) { best = t; node = v; gq = q; }
       }
       if (gq < 0 || best > MAX_COMMUTE) continue;
       this.oPrT[o] = best;
       this.oPrG[o] = gq;
       this.oPrNode[o] = node;
+      this.gCatch[gq] += this.oW[o];
     }
   }
 
@@ -1905,56 +1924,37 @@ export class TrafficSystem implements SimSystem {
       this.oLastD[o] = d;
       const open = this.openCap(q);
       if (open < 0.01) continue;
-      const take = Math.min(this.oU[o], open);
+      let take = Math.min(this.oU[o], open);
       // mode split for this piece. WP7b: car commuters pay the site's parking (PARKING_MIN x parking), the transit
       // option is the better of walking to a stop and park & ride, car-less residents pay CARLESS_EXTRA_MIN by car / P&R
       const carT = d + CAR_OVERHEAD + PARKING_MIN * qPark[q];
       const carOk = d <= MAX_COMMUTE;
       const walkT = qBase[q] === 0 && hops[node] <= WALK_MAX_CELLS ? (hops[node] + 1) * WALK_TIME_PER_CELL : Infinity;
-      const trT = this.oTrT[o];
-      // park & walk (walk-only garage) only for pieces whose job cluster lies within the garage's walk reach
-      const prT = this.oPrT[o] < Infinity && !this.prServes(this.oPrG[o], this.qNode[q]) ? Infinity : this.oPrT[o];
-      const usePr = prT < trT;
-      const tOwn = usePr ? prT : trT;
-      const wl = this.oWealth[o] - 1;
-      const uc = carOk ? -MODE_BETA * carT + CAR_BIAS[wl] : -Infinity;
-      const ut = tOwn < Infinity ? -MODE_BETA * tOwn + TRANSIT_BIAS[wl] + trBonus : -Infinity;
-      const uw = walkT < Infinity ? -MODE_BETA * walkT + WALK_BIAS : -Infinity;
-      const um = Math.max(uc, ut, uw);
-      if (um === -Infinity) continue;
-      const ec = uc > -Infinity ? Math.exp(uc - um) : 0;
-      const et = ut > -Infinity ? Math.exp(ut - um) : 0;
-      const ew = uw > -Infinity ? Math.exp(uw - um) : 0;
-      const tot = ec + et + ew;
-      let sc = ec / tot, stt = et / tot, sw = ew / tot;
-      let time = sc * (sc > 0 ? carT : 0) + stt * (stt > 0 ? tOwn : 0) + sw * (sw > 0 ? walkT : 0);
-      // walk-to-stop transit / park & ride shares
-      let stW = usePr ? 0 : stt, stP = usePr ? stt : 0;
-      const cl = this.oCl[o];
-      if (cl > 0) {
-        // car-less residents (taxi / lift): car and park & ride cost CARLESS_EXTRA_MIN more
-        const ecL = ec * CARLESS_K;
-        let etL = et, tL = tOwn, prL = usePr;
-        if (usePr) {
-          const p2 = prT + CARLESS_EXTRA_MIN;
-          if (trT <= p2) { prL = false; tL = trT; etL = Math.exp(-MODE_BETA * trT + TRANSIT_BIAS[wl] + trBonus - um); }
-          else { tL = p2; etL = et * CARLESS_K; }
+      const trT = this.oTrT[o], prT = this.oPrT[o];
+      if (!this.split(o, carT, carOk, walkT, trT, prT, trBonus)) continue;
+      let sc = this.mC, stW = this.mTW, stP = this.mTP, sw = this.mW, time = this.mT, ext = this.mX;
+      if (stP > 0) {
+        // park & ride capacity: the garage takes at most its free spaces this assignment; the rest of the piece
+        // re-splits without park & ride (the demand, incl. the part turned away, drives the garage's price)
+        const gq = this.oPrG[o];
+        const want = take * stP;
+        this.gWant[gq] += want;
+        const room = this.prRoom(gq);
+        if (want > room) {
+          const f = room / want, f2 = 1 - f;
+          if (this.split(o, carT, carOk, walkT, trT, Infinity, trBonus)) {
+            sc = f * sc + f2 * this.mC; stW = f * stW + f2 * this.mTW; sw = f * sw + f2 * this.mW;
+            time = f * time + f2 * this.mT; ext = f * ext + f2 * this.mX; stP *= f;
+          } else take *= f; // no other mode: only the part that fits is matched
+          if (!(take > 1e-9)) continue;
         }
-        const totL = ecL + etL + ew;
-        const scL = ecL / totL, stL = etL / totL, swL = ew / totL;
-        const timeL = scL * (scL > 0 ? carT + CARLESS_EXTRA_MIN : 0) + stL * (stL > 0 ? tL : 0) + swL * (swL > 0 ? walkT : 0);
-        const co = 1 - cl;
-        stW = co * stW + cl * (prL ? 0 : stL);
-        stP = co * stP + cl * (prL ? stL : 0);
-        sc = co * sc + cl * scL;
-        sw = co * sw + cl * swL;
-        stt = stW + stP;
-        time = co * time + cl * timeL;
       }
+      const stt = stW + stP;
       // commit
       this.oU[o] -= take;
       this.oAsg[o] += take;
       this.oTimeSum[o] += take * time;
+      this.oClX[o] += take * ext;
       this.oCarW[o] += take * sc;
       this.oTrW[o] += take * stt;
       this.oWalkW[o] += take * sw;
@@ -1974,8 +1974,7 @@ export class TrafficSystem implements SimSystem {
         tAcc[board] += take * stW;
         this.stLoad[this.oBoardStop[o]] += take * stW;
       }
-      // (park & walk at a walk-only garage: car trips)
-      if (stP > 0 && !this.addParkRide(o, take * stP, carPcu)) { this.oTrW[o] -= take * stP; this.oCarW[o] += take * stP; }
+      if (stP > 0) this.addParkRide(o, take * stP, carPcu);
     }
     // WP7b: transit-only commuters (no road route to any open job — an island reached by ferry or subway) take the job
     // their transit option reaches, while it has room this round
@@ -2047,7 +2046,6 @@ export class TrafficSystem implements SimSystem {
     let flows = false;
     // pooled car commuters per component (parking demand of the sites that take them)
     const tk = new Float64Array(nc), carTk = new Float64Array(nc);
-    const logit = (x: number) => 1 / (1 + Math.exp(-x));
     for (let o = 0; o < this.oN; o++) {
       const u = this.oU[o];
       if (u < 0.01 || this.oLastD[o] < 0) continue;
@@ -2057,33 +2055,27 @@ export class TrafficSystem implements SimSystem {
       const carT = Math.min(MAX_COMMUTE, Math.max(avgT + 5, 1.3 * (this.oLastD[o] + CAR_OVERHEAD)));
       // car / transit split (long pooled car trip vs the origin's transit option: walk to a stop or park & ride;
       // car-less residents pay CARLESS_EXTRA_MIN on car and park & ride)
-      const trT = this.oTrT[o];
-      // (pooled long commutes go to far jobs: no park & walk)
-      const prT = this.oPrG[o] >= 0 && this.gRide[this.oPrG[o]] === 0 ? Infinity : this.oPrT[o];
-      const wl = this.oWealth[o] - 1;
-      const usePr = prT < trT, tOwn = usePr ? prT : trT;
-      const cl = this.oCl[o];
-      const uCar = -MODE_BETA * carT + CAR_BIAS[wl];
-      let stO = 0, stW = 0, stP = 0, time: number;
-      if (tOwn < Infinity) {
-        stO = logit(-MODE_BETA * tOwn + TRANSIT_BIAS[wl] - uCar);
-        if (usePr) stP = stO; else stW = stO;
-      }
-      time = (1 - stO) * carT + stO * (tOwn < Infinity ? tOwn : 0);
-      if (cl > 0) {
-        const tL = Math.min(trT, prT + CARLESS_EXTRA_MIN), prL = prT + CARLESS_EXTRA_MIN < trT;
-        const stL = tL < Infinity ? logit(-MODE_BETA * tL + TRANSIT_BIAS[wl] - (uCar - MODE_BETA * CARLESS_EXTRA_MIN)) : 0;
-        const timeL = (1 - stL) * (carT + CARLESS_EXTRA_MIN) + stL * (tL < Infinity ? tL : 0);
-        const co = 1 - cl;
-        stW = co * stW + cl * (prL ? 0 : stL);
-        stP = co * stP + cl * (prL ? stL : 0);
-        time = co * time + cl * timeL;
+      const trT = this.oTrT[o], prT = this.oPrT[o];
+      this.splitPool(o, carT, trT, prT);
+      let stW = this.mTW, stP = this.mTP, time = this.mT, ext = this.mX;
+      if (stP > 0) {
+        // park & ride capacity (as in roundMatch): the part beyond the garage's free spaces re-splits without it
+        const gq = this.oPrG[o];
+        const want = take * stP;
+        this.gWant[gq] += want;
+        const room = this.prRoom(gq);
+        if (want > room) {
+          const f = room / want, f2 = 1 - f;
+          this.splitPool(o, carT, trT, Infinity);
+          stW = f * stW + f2 * this.mTW; time = f * time + f2 * this.mT; ext = f * ext + f2 * this.mX; stP *= f;
+        }
       }
       const st = stW + stP;
       const sc = 1 - st;
       this.oU[o] -= take;
       this.oAsg[o] += take;
       this.oTimeSum[o] += take * time;
+      this.oClX[o] += take * ext;
       this.oCarW[o] += take * sc;
       tk[c] += take;
       carTk[c] += take * sc;
@@ -2093,7 +2085,7 @@ export class TrafficSystem implements SimSystem {
           this.tAcc[this.oBoard[o]] += take * stW;
           this.stLoad[this.oBoardStop[o]] += take * stW;
         }
-        if (stP > 0 && !this.addParkRide(o, take * stP, carPcu)) { this.oTrW[o] -= take * stP; this.oCarW[o] += take * stP; }
+        if (stP > 0) this.addParkRide(o, take * stP, carPcu);
       }
       const node = this.candNode[o];
       if (sc > 0 && node >= 0 && node < g.n && SA.done[node] === 1) { acc[node] += take * sc * carPcu; flows = true; }
@@ -2115,30 +2107,39 @@ export class TrafficSystem implements SimSystem {
     }
   }
 
-  /** roundMatch: origins without a road candidate but with a transit / P&R option -> the job that option reaches */
+  /**
+   * roundMatch: origins without a road candidate but with a transit / P&R option -> the job that option reaches (park &
+   * ride only while its garage has room: the rest waits for the walk-to-stop option or stays unmatched)
+   */
   private transitOnly(carPcu: number): number {
     const srcT = this.ST.src;
     let accepted = 0;
     for (let o = 0; o < this.oN; o++) {
       if (this.oU[o] < 0.01 || this.candNode[o] >= 0) continue;
-      const trT = this.oTrT[o], prT = this.oPrT[o];
+      const gq = this.oPrG[o];
+      const trT = this.oTrT[o], prT = gq >= 0 && this.prRoom(gq) > 0.01 ? this.oPrT[o] : Infinity;
       const viaPr = prT < trT;
       const t = viaPr ? prT : trT;
       if (!(t <= MAX_COMMUTE)) continue;
-      const jT = viaPr ? srcT[this.gBoard[this.oPrG[o]]] : this.oJobT[o];
+      const jT = viaPr ? srcT[this.gBoard[gq]] : this.oJobT[o];
       if (jT < 0 || jT >= this.jN) continue;
       const q = this.jQ[jT];
       if (q < 0) continue;
       const open = this.openCap(q);
       if (open < 0.01) continue;
-      const take = Math.min(this.oU[o], open);
+      let take = Math.min(this.oU[o], open);
+      if (viaPr) {
+        this.gWant[gq] += take;
+        take = Math.min(take, this.prRoom(gq));
+      }
       this.oU[o] -= take;
       this.oAsg[o] += take;
       this.oTimeSum[o] += take * t;
       this.oTrW[o] += take;
       this.qAsg[q] += take;
       this.qTimeSum[q] += take * t;
-      if (viaPr) { if (!this.addParkRide(o, take, carPcu)) { this.oTrW[o] -= take; this.oCarW[o] += take; } } else {
+      if (viaPr) this.addParkRide(o, take, carPcu);
+      else {
         this.tAcc[this.oBoard[o]] += take;
         this.stLoad[this.oBoardStop[o]] += take;
       }
@@ -2148,33 +2149,113 @@ export class TrafficSystem implements SimSystem {
   }
 
   /**
-   * park & ride piece of origin o: car leg on the P&R forest, riders join the transit forest at the garage's stop.
-   * Returns false for a walk-only garage (park and walk): the caller books the piece as car trips.
+   * park & ride piece of origin o (y riders, within the garage's free spaces — the callers cap it): car leg on the P&R
+   * forest, riders join the transit forest at the garage's stop
    */
-  private addParkRide(o: number, y: number, carPcu: number): boolean {
+  private addParkRide(o: number, y: number, carPcu: number): void {
     const gq = this.oPrG[o];
-    if (gq < 0 || gq >= this.gN) return true;
+    if (!(y > 0) || gq < 0 || gq >= this.gN) return;
     const board = this.gBoard[gq], s = this.gStop[gq], node = this.oPrNode[o];
-    if (board < 0 || s < 0 || node < 0) return true;
+    if (board < 0 || s < 0 || node < 0) return;
     this.prAcc[node] += y * carPcu;
     this.gLoad[gq] += y / CAR_OCCUPANCY;
-    if (this.gRide[gq] === 0) return false; // park & walk: a car trip, no riders
+    this.gRiders[gq] += y;
     this.tAcc[board] += y;
     this.stLoad[s] += y;
     this.prRiders += y;
+  }
+
+  /** free park & ride room of garage gq this assignment (riders: spaces left x CAR_OCCUPANCY) */
+  private prRoom(gq: number): number {
+    const r = (this.gSpaces[gq] - this.gLoad[gq]) * CAR_OCCUPANCY;
+    return r > 1e-6 ? r : 0;
+  }
+
+  /**
+   * mode split of one matched piece of origin o (shares sum to 1; written to mC / mTW / mTP / mW, time mT, car-less
+   * extra minutes x share mX): car (carT, when carOk), transit = the faster of walk to a stop (trT) and park & ride (prT),
+   * walk (walkT); car-less residents (share oCl) pay CARLESS_EXTRA_MIN by car / park & ride (taxi, lift). false = no mode
+   */
+  private split(o: number, carT: number, carOk: boolean, walkT: number, trT: number, prT: number, trBonus: number): boolean {
+    const usePr = prT < trT;
+    const tOwn = usePr ? prT : trT;
+    const wl = this.oWealth[o] - 1;
+    const uc = carOk ? -MODE_BETA * carT + CAR_BIAS[wl] : -Infinity;
+    const ut = tOwn < Infinity ? -MODE_BETA * tOwn + TRANSIT_BIAS[wl] + trBonus : -Infinity;
+    const uw = walkT < Infinity ? -MODE_BETA * walkT + WALK_BIAS : -Infinity;
+    const um = Math.max(uc, ut, uw);
+    if (um === -Infinity) return false;
+    const ec = uc > -Infinity ? Math.exp(uc - um) : 0;
+    const et = ut > -Infinity ? Math.exp(ut - um) : 0;
+    const ew = uw > -Infinity ? Math.exp(uw - um) : 0;
+    const tot = ec + et + ew;
+    let sc = ec / tot, stt = et / tot, sw = ew / tot;
+    let time = sc * (sc > 0 ? carT : 0) + stt * (stt > 0 ? tOwn : 0) + sw * (sw > 0 ? walkT : 0);
+    // walk-to-stop transit / park & ride shares
+    let stW = usePr ? 0 : stt, stP = usePr ? stt : 0;
+    let extra = 0;
+    const cl = this.oCl[o];
+    if (cl > 0) {
+      // car-less residents (taxi / lift): car and park & ride cost CARLESS_EXTRA_MIN more
+      const ecL = ec * CARLESS_K;
+      let etL = et, tL = tOwn, prL = usePr;
+      if (usePr) {
+        const p2 = prT + CARLESS_EXTRA_MIN;
+        if (trT <= p2) { prL = false; tL = trT; etL = Math.exp(-MODE_BETA * trT + TRANSIT_BIAS[wl] + trBonus - um); }
+        else { tL = p2; etL = et * CARLESS_K; }
+      }
+      const totL = ecL + etL + ew;
+      const scL = ecL / totL, stL = etL / totL, swL = ew / totL;
+      const timeL = scL * (scL > 0 ? carT + CARLESS_EXTRA_MIN : 0) + stL * (stL > 0 ? tL : 0) + swL * (swL > 0 ? walkT : 0);
+      const co = 1 - cl;
+      stW = co * stW + cl * (prL ? 0 : stL);
+      stP = co * stP + cl * (prL ? stL : 0);
+      sc = co * sc + cl * scL;
+      sw = co * sw + cl * swL;
+      extra = cl * (timeL - time);
+      time = co * time + cl * timeL;
+    }
+    this.mC = sc; this.mTW = stW; this.mTP = stP; this.mW = sw; this.mT = time; this.mX = extra;
     return true;
   }
 
   /**
-   * is the park & ride option of garage gq usable for a job cluster at road node `node`? Riding garages: always (the
-   * transit option is not destination-specific); a park & walk garage: only for jobs within its walk reach
+   * pooled long commute (poolRemaining): binary car / transit split (walk to a stop or park & ride: the faster) with the
+   * car-less adjustment -> mC / mTW / mTP / mW (= 0) / mT / mX
    */
-  private prServes(gq: number, node: number): boolean {
-    if (gq < 0 || gq >= this.gN || this.gRide[gq] === 1) return true;
-    if (node < 0 || node >= this.road.n) return false;
-    const N = this.road.N, c = this.road.cellOf[node], g = this.gCell[gq], r = this.gReach[gq];
-    const dx = (c % N) - (g % N), dz = ((c - (c % N)) - (g - (g % N))) / N;
-    return dx * dx + dz * dz <= r * r;
+  private splitPool(o: number, carT: number, trT: number, prT: number): void {
+    const logit = (x: number) => 1 / (1 + Math.exp(-x));
+    const wl = this.oWealth[o] - 1;
+    const usePr = prT < trT, tOwn = usePr ? prT : trT;
+    const cl = this.oCl[o];
+    const uCar = -MODE_BETA * carT + CAR_BIAS[wl];
+    let stO = 0, stW = 0, stP = 0, time: number;
+    if (tOwn < Infinity) {
+      stO = logit(-MODE_BETA * tOwn + TRANSIT_BIAS[wl] - uCar);
+      if (usePr) stP = stO; else stW = stO;
+    }
+    time = (1 - stO) * carT + stO * (tOwn < Infinity ? tOwn : 0);
+    let extra = 0;
+    if (cl > 0) {
+      const tL = Math.min(trT, prT + CARLESS_EXTRA_MIN), prL = prT + CARLESS_EXTRA_MIN < trT;
+      const stL = tL < Infinity ? logit(-MODE_BETA * tL + TRANSIT_BIAS[wl] - (uCar - MODE_BETA * CARLESS_EXTRA_MIN)) : 0;
+      const timeL = (1 - stL) * (carT + CARLESS_EXTRA_MIN) + stL * (tL < Infinity ? tL : 0);
+      const co = 1 - cl;
+      stW = co * stW + cl * (prL ? 0 : stL);
+      stP = co * stP + cl * (prL ? stL : 0);
+      extra = cl * (timeL - time);
+      time = co * time + cl * timeL;
+    }
+    this.mTW = stW; this.mTP = stP; this.mW = 0; this.mC = 1 - stW - stP; this.mT = time; this.mX = extra;
+  }
+
+  /** memoised ridesFrom (per transit-forest node, reset every cycle in originTransit) */
+  private rides(v: number): boolean {
+    const m = this.rideMemo[v];
+    if (m !== 0) return m > 0;
+    const r = this.ridesFrom(v);
+    this.rideMemo[v] = r ? 1 : -1;
+    return r;
   }
 
   /** does the transit forest path from node v ride a vehicle (bus on roads, rail, subway, ferry) before its job? */
@@ -2247,22 +2328,29 @@ export class TrafficSystem implements SimSystem {
       if (this.jBid[j] >= 0) this.priceById[this.jBid[j]] = this.qPrice[q];
       else this.connPrice[this.jCell[j]] = this.qPrice[q];
     }
-    // WP7-8 park & ride: car legs along the P&R forest, garage loads (cars) for the next cycle's crowding / reports
+    // WP7-8 park & ride: car legs along the P&R forest; per garage the cars / riders / demand of this assignment (the
+    // reports and stats.transitFleet.parkRide read the same numbers) and the rationing price for the next one:
+    // tatonnement on wanted / spaces (demand beyond the spaces raises it, idle spaces lower it to 0)
     if (this.gPrN > 0 && this.prRiders > 0 && this.SP.graphVersion === this.road.version) {
       accumulate(this.SP, this.prAcc);
       this.commit(this.SP, this.prAcc, null, null);
     } else if (this.prAcc.length > 0) this.prAcc.fill(0, 0, Math.min(this.prAcc.length, this.road.n));
-    // smoothed across assignments (the crowding penalty reacts to it: damped, no cobweb oscillation)
-    const prevLoad = new Map(this.garageLoad);
     this.garageLoad.clear();
-    this.garageRide.clear();
+    this.garageLast.clear();
     for (let q = 0; q < this.gN; q++) {
-      if (this.gStop[q] < 0) continue;
-      const id = this.gBid[q], prev = prevLoad.get(id);
-      // a new garage starts at most full (no penalty spike from the unpenalised first assignment)
-      const spaces = GARAGE_DEFS[this.lastState?.buildings.get(id)?.def ?? ''] ?? GARAGE_SPACES;
-      this.garageLoad.set(id, prev === undefined ? Math.min(this.gLoad[q], spaces) : prev + GARAGE_LOAD_SMOOTH * (this.gLoad[q] - prev));
-      if (this.gBoard[q] >= 0) this.garageRide.set(id, this.gRide[q] === 1);
+      const id = this.gBid[q];
+      this.garageLast.set(id, { riders: this.gRiders[q], want: this.gWant[q], catchment: this.gCatch[q], state: this.gState[q] });
+      if (this.gState[q] !== GARAGE_PR) { this.garagePrice.delete(id); continue; }
+      this.garageLoad.set(id, this.gLoad[q]);
+      const r = this.gWant[q] / CAR_OCCUPANCY / Math.max(1, this.gSpaces[q]);
+      const p = this.gPrice[q] + PR_PRICE_STEP * Math.log(r < 0.25 ? 0.25 : r > 4 ? 4 : r);
+      const pc = p < 0.01 ? 0 : p > PR_PRICE_MAX ? PR_PRICE_MAX : p;
+      if (pc > 0) this.garagePrice.set(id, pc); else this.garagePrice.delete(id);
+    }
+    if (this.garagePrice.size > this.gN) {
+      const live = new Set<number>();
+      for (let q = 0; q < this.gN; q++) live.add(this.gBid[q]);
+      for (const id of [...this.garagePrice.keys()]) if (!live.has(id)) this.garagePrice.delete(id);
     }
     const ST = this.ST, T = this.tnet!;
     const tAcc = this.tAcc;
