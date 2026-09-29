@@ -1015,19 +1015,29 @@ export class DynamicBatch {
       if (sorted && n > 1) this.sortList(s, n);
     } else s.selValid = false;
     if (keep && s.tex && n === s.count) return;
+    const prevN = s.count;
     s.count = n;
     // indirect (instance id) texture: rows of ID_ROW ids, as many as the list needs plus slack (grown / shrunk with
     // hysteresis). A rebuild uploads only the rows the list uses (texture update ranges; three reads ranges in units of
-    // 4 components, one texel here), not the whole texture, let alone the batch's instance capacity.
+    // 4 components, one texel here), not the whole texture, let alone the batch's instance capacity; a rebuild that
+    // produced the same ids (vehicles: the visible set rarely changes between frames) uploads nothing.
     const rows = Math.max(1, Math.ceil(n / ID_ROW));
+    let fresh = false;
     if (!s.tex || s.texCap < rows * ID_ROW || (s.texCap > ID_ROW * 8 && rows * ID_ROW * 4 < s.texCap)) {
       s.tex?.dispose();
       const h = Math.ceil(rows * 1.25);
       s.tex = new THREE.DataTexture(new Uint32Array(ID_ROW * h), ID_ROW, h, THREE.RedIntegerFormat, THREE.UnsignedIntType);
       s.texCap = ID_ROW * h;
+      fresh = true;
     }
     const tex = s.tex;
-    (tex.image.data as unknown as Uint32Array).set(s.ids.subarray(0, n));
+    const data = tex.image.data as unknown as Uint32Array, ids = s.ids;
+    if (!fresh && n === prevN) {
+      let j = 0;
+      while (j < n && data[j] === ids[j]) j++;
+      if (j === n) return;
+    }
+    data.set(ids.subarray(0, n));
     if (n > 0) {
       tex.clearUpdateRanges();
       for (let r = 0; r * ID_ROW < n; r++) tex.addUpdateRange(r * ID_ROW * 4, Math.min(ID_ROW, n - r * ID_ROW) * 4);

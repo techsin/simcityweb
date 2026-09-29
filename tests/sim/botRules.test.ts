@@ -3,7 +3,7 @@
  * §5 WP6a + item 38): an attentive mayor dispatches to uncovered major emergencies (--neglect never does), a prison
  * goes into an industrial / utility block away from wealthy homes when the jail overflows, pumps are upgraded to a
  * treatment plant in place when no land is left, and a short run serves the catchment needs with every service and
- * utility on a lot that touches a road.
+ * utility on a lot that touches a road. With BALANCE=1 also the slow 128 x 15 balance gate (bottom of the file).
  */
 import { describe, expect, it } from 'vitest';
 import { JAIL_GAP, SimBot, botSystems } from '../../tools/simbot';
@@ -13,6 +13,7 @@ import { lPath } from '../../src/sim/actions';
 import { emergencyOf } from '../../src/sim/infra/emergency';
 import { CATALOG, getDef } from '../../src/sim/catalog';
 import { lotTouchesRoad, placeBuilding } from '../../src/sim/economy/buildings';
+import baseline from './fixtures/balance-baseline.json';
 
 async function bot(size: number, neglect = false) {
   return new SimBot({ size, years: 1, seed: 7, difficulty: 'medium', terrain: 'plains', water: 0, quiet: true, noInfra: false, neglect }, await botSystems(false));
@@ -123,5 +124,42 @@ describe('bot: facilities', () => {
     const row = b.rows[b.rows.length - 1];
     expect(row.kidsPct).toBeGreaterThan(0);
     expect(row.enrolE).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * SLOW balance gate (SIM_DEPTH_SPEC WP6 "Slow balance test" + docs/SIM_DEPTH_PART_B.md item 39), only with BALANCE=1:
+ *   BALANCE=1 npx vitest run tests/sim/botRules.test.ts -t balance
+ * The bot on a 128 map for 15 years (seed 7): population >= 0.9 x the phase-0 baseline; from year 10 the elementary need
+ * is >= 85 % served with < 5 % of the kids unreached, counted per home (SimBot.homeNeed: a deep lot whose front door is
+ * in a school's catchment is served — services.ts stats.needs still counts the back rows of deep lots as unreached,
+ * see the WP6a report); <= 3 % of the growables abandoned in any year; a prison once the jail overflows (overflow <= 0.2
+ * from year 8). WP6b moves / extends this gate in tests/sim/balance.test.ts (256 x 60, the partB baseline set).
+ */
+describe.skipIf(process.env.BALANCE !== '1')('balance (slow, BALANCE=1)', () => {
+  it('128 x 15 seed 7: population, elementary schools per home, abandonment, justice', { timeout: 7_200_000 }, async () => {
+    const b = new SimBot({ size: 128, years: 15, seed: 7, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false }, await botSystems(false));
+    const yearly: { year: number; pop: number; served: number; unreached: number; abandoned: number; overflow: number }[] = [];
+    b.run(15, (r) => {
+      const n = b.homeNeed('elementary');
+      let grow = 0, ab = 0;
+      for (const o of b.st.buildings.values()) {
+        if (o.flags & BF.Plopped) continue;
+        grow++;
+        if (o.flags & BF.Abandoned) ab++;
+      }
+      yearly.push({
+        year: r.year, pop: r.pop, served: n.need > 0 ? n.served / n.need : 1, unreached: n.need > 0 ? n.unreached / n.need : 0,
+        abandoned: grow ? ab / grow : 0, overflow: b.st.stats.justice?.overflow ?? 0,
+      });
+    });
+    const phase0 = (baseline.runs['128x15_seed7'].phase0 as number[][]).at(-1)!;
+    expect(yearly.at(-1)!.pop).toBeGreaterThanOrEqual(0.9 * phase0[1]);
+    for (const y of yearly.slice(9)) {
+      expect(y.served, `elementary served per home ${y.year}`).toBeGreaterThanOrEqual(0.85);
+      expect(y.unreached, `kids unreached per home ${y.year}`).toBeLessThan(0.05);
+    }
+    for (const y of yearly) expect(y.abandoned, `abandoned ${y.year}`).toBeLessThanOrEqual(0.03);
+    for (const y of yearly.slice(7)) expect(y.overflow, `justice overflow ${y.year}`).toBeLessThanOrEqual(0.2);
   });
 });

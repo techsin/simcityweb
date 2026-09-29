@@ -199,7 +199,8 @@ export class PropRenderer {
   /** per tile state of small props: 1 drawn (per-instance LOD / thinning), 0 disabled (all beyond lodDistance) */
   private near: Uint8Array;
   /** per instance (batch id): proxy-switch state (2 full, 1 proxy, 0 none: no proxy / pylon / removed), position,
-   *  full / proxy geometry ids and LOD schedule bucket (-1 queued now, -2 removed) */
+   *  full / proxy geometry ids and LOD schedule bucket (>= 0 linked in that bucket, -1 queued now, -2 removed,
+   *  -3 new, -4 unscheduled) */
   private ist = new Uint8Array(0);
   private ipos = new Float32Array(0);
   private igeo = new Int32Array(0);
@@ -207,8 +208,12 @@ export class PropRenderer {
   private lodTravel = 0;
   private lodPos = new THREE.Vector3(NaN, NaN, NaN);
   private lodAt = 0;
-  private lodBuckets: number[][] = Array.from({ length: PLOD_BUCKETS }, () => []);
-  private lodSpare: number[] = [];
+  /** the schedule's ring of travel buckets as intrusive doubly linked lists (head id per ring slot, next / prev per
+   *  instance): scheduling an evaluated prop costs a few typed-array writes (a fast pan evaluates thousands per frame;
+   *  pushing into per-bucket JS arrays grew and copied their stores) */
+  private lodHead = new Int32Array(PLOD_BUCKETS).fill(-1);
+  private lnext = new Int32Array(0);
+  private lprev = new Int32Array(0);
   private lodNow: number[] = [];
   private lodNowSpare: number[] = [];
   private lodFullAt = -1;
@@ -337,8 +342,9 @@ export class PropRenderer {
     p.copy(cam);
     const cur = Math.floor(this.lodTravel);
     if (cur - this.lodAt >= PLOD_BUCKETS - 2) {
-      for (const q of this.lodBuckets) q.length = 0;
+      // a jump beyond the schedule horizon: everything is due (queueAllProxies unlinks every scheduled prop)
       this.queueAllProxies();
+      this.lodHead.fill(-1);
       this.lodAt = cur + 1;
     }
     if (!this.lodNow.length && this.lodAt > cur) return;
@@ -358,20 +364,45 @@ export class PropRenderer {
       for (; i < q.length; i++) this.lodNow.push(q[i]);
       q.length = 0;
     }
+    const head = this.lodHead, next = this.lnext, due = this.idue;
     while (this.lodAt <= cur && budget > 0) {
+      // detach the bucket's list, then evaluate it (evaluated props are linked into later buckets: never this slot
+      // again, the schedule is capped one ring lap ahead)
       const slot = this.lodAt % PLOD_BUCKETS;
-      const q = this.lodBuckets[slot];
-      this.lodBuckets[slot] = this.lodSpare;
-      for (let i = 0; i < q.length; i++) {
-        const id = q[i];
-        if (this.idue[id] !== this.lodAt) continue;
-        this.evalProxy(id, cam, cur);
-        budget--;
+      let id = head[slot];
+      head[slot] = -1;
+      while (id >= 0) {
+        const nx = next[id];
+        if (due[id] === this.lodAt) {
+          due[id] = -4;
+          this.evalProxy(id, cam, cur);
+          budget--;
+        } else if (due[id] >= 0) this.linkProxy(id, due[id]); // (not expected: every entry of a ring slot is due)
+        id = nx;
       }
-      q.length = 0;
-      this.lodSpare = q;
       this.lodAt++;
     }
+  }
+
+  /** link a prop into the list of travel bucket b */
+  private linkProxy(id: number, b: number): void {
+    const head = this.lodHead, slot = b % PLOD_BUCKETS, h = head[slot];
+    this.lprev[id] = -1;
+    this.lnext[id] = h;
+    if (h >= 0) this.lprev[h] = id;
+    head[slot] = id;
+    this.idue[id] = b;
+  }
+
+  /** take a scheduled prop out of its bucket list (-> -4 unscheduled) */
+  private unlinkProxy(id: number): void {
+    const b = this.idue[id];
+    if (b < 0) return;
+    const p = this.lprev[id], nx = this.lnext[id];
+    if (p >= 0) this.lnext[p] = nx;
+    else if (this.lodHead[b % PLOD_BUCKETS] === id) this.lodHead[b % PLOD_BUCKETS] = nx;
+    if (nx >= 0) this.lprev[nx] = p;
+    this.idue[id] = -4;
   }
 
   /** every prop with a proxy is due now */
@@ -382,7 +413,7 @@ export class PropRenderer {
 
   private queueProxy(id: number): void {
     if (id >= this.idue.length || this.idue[id] === -2 || !this.ist[id]) return;
-    if (this.idue[id] !== -1) { this.idue[id] = -1; this.lodNow.push(id); }
+    if (this.idue[id] !== -1) { this.unlinkProxy(id); this.idue[id] = -1; this.lodNow.push(id); }
   }
 
   /** (the switch distance comes from lodFullAt, not an argument: a double argument is boxed when V8 does not inline
@@ -401,8 +432,7 @@ export class PropRenderer {
     }
     const slack = want === 2 ? full * 1.06 - d : d - full * 0.94;
     const b = Math.min(this.lodAt + PLOD_BUCKETS - 1, Math.max(cur + 1, Math.floor(this.lodTravel + Math.max(0, slack))));
-    this.idue[id] = b;
-    this.lodBuckets[b % PLOD_BUCKETS].push(id);
+    this.linkProxy(id, b);
   }
 
   /** grow the per-instance LOD arrays to hold batch id `id` */
@@ -413,6 +443,8 @@ export class PropRenderer {
     const ps = new Float32Array(cap * 3); ps.set(this.ipos); this.ipos = ps;
     const gg = new Int32Array(cap * 2).fill(-1); gg.set(this.igeo); this.igeo = gg;
     const du = new Int32Array(cap).fill(-2); du.set(this.idue); this.idue = du;
+    const ln = new Int32Array(cap).fill(-1); ln.set(this.lnext); this.lnext = ln;
+    const lp = new Int32Array(cap).fill(-1); lp.set(this.lprev); this.lprev = lp;
   }
 
   /** glows are only worth drawing at night */
@@ -456,7 +488,7 @@ export class PropRenderer {
       for (const id of old.ids) {
         this.batch.remove(id);
         this.seasonal.delete(id);
-        if (id < this.ist.length) { this.ist[id] = 0; this.idue[id] = -2; }
+        if (id < this.ist.length) { this.unlinkProxy(id); this.ist[id] = 0; this.idue[id] = -2; }
       }
       if (old.pools.length) this.poolsDirty = true;
     }
@@ -516,7 +548,12 @@ export class PropRenderer {
       if (lod !== gid) {
         this.igeo[id * 2] = gid; this.igeo[id * 2 + 1] = lod;
         if (!st) { this.ist[id] = 2; this.idue[id] = -3; this.queueProxy(id); }
-      } else this.ist[id] = 0;
+      } else {
+        // variant without a proxy: out of the schedule (a stale evaluation would swap in the old variant's geometry)
+        this.unlinkProxy(id);
+        this.ist[id] = 0;
+        if (this.idue[id] === -1) this.idue[id] = -4;
+      }
       this.batch.setGeometry(id, st === 1 && lod !== gid ? lod : gid);
     }
   }

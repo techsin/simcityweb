@@ -200,7 +200,10 @@ export class VehicleRenderer {
   /** cached per-cell path parameters (8 floats / vehicle) + path type (0 straight, 1 U-turn, 2 arc) */
   private pp!: Float32Array;
   private ptype!: Uint8Array;
-  private head: Int32Array;
+  /** car-following buckets: hash table (power of two, ~3x the vehicle cap: stays in cache) of chains through nextB,
+   *  keyed by cell * 8 + heading * 2 + lane (entries of other keys sharing a slot are skipped by their usedK key) */
+  private head = new Int32Array(0);
+  private headShift = 32;
   // spawn distribution
   private spawnCells = new Int32Array(0);
   private spawnCdf = new Float32Array(0);
@@ -242,7 +245,6 @@ export class VehicleRenderer {
     // program compiles with the others instead of when the first car appears
     this.geomFor(CAR_MODELS[0][0], 0);
     this.alloc(this.cap);
-    this.head = new Int32Array(net.N * net.N * 8).fill(-1);
     // headlight decals
     const hg = new THREE.PlaneGeometry(1, 1, 1, 1);
     hg.rotateX(-Math.PI / 2);
@@ -292,6 +294,9 @@ export class VehicleRenderer {
     this.posZ = new Float32Array(cap);
     this.pp = new Float32Array(cap * 8);
     this.ptype = new Uint8Array(cap);
+    const bits = Math.max(8, Math.ceil(Math.log2(cap * 3)));
+    this.head = new Int32Array(1 << bits).fill(-1);
+    this.headShift = 32 - bits;
   }
 
   setState(state: CityState, net: NetInfo, surf: RoadSurface): void {
@@ -299,7 +304,6 @@ export class VehicleRenderer {
     this.state = state;
     this.net = net;
     this.surf = surf;
-    if (this.head.length !== net.N * net.N * 8) this.head = new Int32Array(net.N * net.N * 8).fill(-1);
     this.refreshSpawn();
   }
 
@@ -901,13 +905,14 @@ export class VehicleRenderer {
   /** car following (queues per cell / heading / lane bucket), 2-phase signals, congestion: target speeds -> spd */
   private follow(dt: number): void {
     const n = this.n;
-    const head = this.head, nextB = this.nextB, used = this.usedK;
+    const head = this.head, nextB = this.nextB, used = this.usedK, sh = this.headShift;
     const cell = this.cell, hin = this.hin, hout = this.hout, lane = this.lane, tt = this.t, vlen = this.vlen, next = this.next, len = this.len;
-    // buckets
+    // buckets (multiplicative hash of the key)
     for (let v = 0; v < n; v++) {
       const key = cell[v] * 8 + hin[v] * 2 + (lane[v] & 1);
-      nextB[v] = head[key];
-      head[key] = v;
+      const hk = Math.imul(key, 0x9e3779b1) >>> sh;
+      nextB[v] = head[hk];
+      head[hk] = v;
       used[v] = key;
     }
     const roadType = this.net.roadType, cong = this.state.congestion;
@@ -919,8 +924,9 @@ export class VehicleRenderer {
       const tv = tt[v];
       const lv = vlen[v] * 0.5;
       let gap = 1e9;
-      for (let j = head[used[v]]; j >= 0; j = nextB[j]) {
-        if (j === v) continue;
+      const key = used[v];
+      for (let j = head[Math.imul(key, 0x9e3779b1) >>> sh]; j >= 0; j = nextB[j]) {
+        if (j === v || used[j] !== key) continue;
         const tj = tt[j];
         if (tj > tv || (tj === tv && j > v)) {
           const g = tj - tv - lv - vlen[j] * 0.5;
@@ -931,7 +937,8 @@ export class VehicleRenderer {
       if (gap > 30 && nc >= 0) {
         const key2 = nc * 8 + hout[v] * 2 + (lane[v] & 1);
         const rem = len[v] - tv;
-        for (let j = head[key2]; j >= 0; j = nextB[j]) {
+        for (let j = head[Math.imul(key2, 0x9e3779b1) >>> sh]; j >= 0; j = nextB[j]) {
+          if (used[j] !== key2) continue;
           const g = rem + tt[j] - lv - vlen[j] * 0.5;
           if (g < gap) gap = g;
         }
@@ -956,7 +963,7 @@ export class VehicleRenderer {
       else sp = Math.max(tgt, sp - 9 * dt);
       spd[v] = sp;
     }
-    for (let v = 0; v < n; v++) head[used[v]] = -1;
+    for (let v = 0; v < n; v++) head[Math.imul(used[v], 0x9e3779b1) >>> sh] = -1;
   }
 
   /**
