@@ -520,7 +520,7 @@ describe('building LOD schedule', () => {
 });
 
 describe('building LOD cross-fade', () => {
-  type Slots = { n: number; geo: Int32Array; fadingIn: Uint8Array; mesh: THREE.BatchedMesh };
+  type Slots = { n: number; geo: Int32Array; casts: Uint8Array; mesh: THREE.BatchedMesh };
   type BI = { lod: number; main: number; geom: number; lodGeom: number; radius: number; cy: number; vis: { cx: number; cz: number } };
   const setup = () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
@@ -578,9 +578,9 @@ describe('building LOD cross-fade', () => {
     const old = slots.find((s) => !code(s)[0])!, neu = slots.find((s) => code(s)[0])!;
     expect(layer.geo[old]).toBe(bi.geom);
     expect(layer.geo[neu]).toBe(bi.lodGeom);
-    // only the level fading in casts shadows
-    expect(layer.fadingIn[neu]).toBe(1);
-    expect(layer.fadingIn[old]).toBe(0);
+    // one level casts the shadow: the old one until half way (the proxy's coarser roof must not streak the model's)
+    expect(layer.casts[old]).toBe(1);
+    expect(layer.casts[neu]).toBe(0);
     // the fade material takes the city material's scalars right before it draws (no stale sky light in a first frame)
     const city = getCityMaterial(), fm = layer.mesh.material as THREE.MeshStandardMaterial, e0 = city.envMapIntensity;
     city.envMapIntensity = e0 + 0.37;
@@ -592,6 +592,9 @@ describe('building LOD cross-fade', () => {
     br.update(br.fadeTime / 2);
     expect(code(old)[1]).toBeCloseTo(0.5, 3);
     expect(code(neu)[1]).toBeCloseTo(0.5, 3);
+    // ... from there on the new level casts
+    expect(layer.casts[neu]).toBe(1);
+    expect(layer.casts[old]).toBe(0);
     // zoom back in across the upgrade distance: the fade reverses (the old level fades back in) from where it is
     glide(dOff - 20);
     expect(bi.lod).toBe(0);

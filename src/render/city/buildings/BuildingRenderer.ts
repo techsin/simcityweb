@@ -27,8 +27,9 @@
  * the camera moves fast, once its distance to the building changed by `fadeTravel` (a fast zoom dissolves each swap
  * over a few frames instead of drawing both levels of ~1000 buildings for fadeTime). New / rebuilt buildings, camera
  * cuts, the catch-up frames after a cut (running fades are settled at the cut) and captures (flushLod) swap at once;
- * beyond `fadeMax` concurrent fades swaps are instant too. The shadow switches at the start of a fade (only the level
- * fading in casts).
+ * beyond `fadeMax` concurrent fades swaps are instant too. The shadow switches half way through a fade (the level
+ * covering most pixels casts: the other level's shadow would streak the visible one, e.g. a proxy's coarser roof
+ * shadowing the full model's roof in the first frames).
  * Burnt lots: one rubble tile (16 m, designed to tile) per footprint cell, variant + quarter turn from a per-cell
  * hash, instead of one model stretched over the lot. Hill lots: real-size stone retaining-wall skirts under lots that
  * sit above the terrain (see foundation()).
@@ -290,7 +291,7 @@ function getFadeMaterial(): THREE.MeshStandardMaterial {
  * LOD cross-fade. It shares the building batch's vertex buffer and geometry table (no model is uploaded twice) and
  * keeps its own compact instance slots [0, n) (matrix + colour texture rows = slot index). Draw lists are written
  * directly (no three.js per-instance culling: the few fading buildings are in view): the main pass draws every slot,
- * shadow passes only the levels fading in (own indirect texture). With no slot it is frustum-culled away (it stays
+ * shadow passes only the level of each fade that casts (own indirect texture). With no slot it is frustum-culled away (it stays
  * `visible`, so the precompile still builds its program).
  */
 class LodFadeLayer {
@@ -298,7 +299,8 @@ class LodFadeLayer {
   n = 0;
   private cap = 0;
   private geo = new Int32Array(0);
-  private fadingIn = new Uint8Array(0);
+  /** per slot: its level casts the building's shadow now (one level per fade, see BuildingRenderer.fadeColors) */
+  private casts = new Uint8Array(0);
   private owner: (Fade | null)[] = [];
   private starts = new Int32Array(0);
   private counts = new Int32Array(0);
@@ -364,7 +366,7 @@ class LodFadeLayer {
         m.setInstanceCount(cap);
       }
       const g = new Int32Array(cap); g.set(this.geo); this.geo = g;
-      const f = new Uint8Array(cap); f.set(this.fadingIn); this.fadingIn = f;
+      const f = new Uint8Array(cap); f.set(this.casts); this.casts = f;
       this.starts = new Int32Array(cap); this.counts = new Int32Array(cap);
       this.shStarts = new Int32Array(cap); this.shCounts = new Int32Array(cap);
       this.cap = cap;
@@ -386,11 +388,11 @@ class LodFadeLayer {
     if (this.mesh.geometry !== this.src.geometry) this.mesh.geometry = this.src.geometry;
   }
 
-  alloc(owner: Fade, geom: number, fadingIn: boolean): number {
+  alloc(owner: Fade, geom: number, casts: boolean): number {
     if (this.n >= this.cap) this.fit(this.cap * 2);
     const s = this.n++;
     this.geo[s] = geom;
-    this.fadingIn[s] = fadingIn ? 1 : 0;
+    this.casts[s] = casts ? 1 : 0;
     this.owner[s] = owner;
     this.listDirty = true;
     return s;
@@ -405,7 +407,7 @@ class LodFadeLayer {
       mat.copyWithin(s * 16, last * 16, last * 16 + 16);
       col.copyWithin(s * 4, last * 4, last * 4 + 4);
       this.geo[s] = this.geo[last];
-      this.fadingIn[s] = this.fadingIn[last];
+      this.casts[s] = this.casts[last];
       const o = this.owner[last]!;
       this.owner[s] = o;
       if (o.sOld === last) o.sOld = s;
@@ -416,9 +418,9 @@ class LodFadeLayer {
     this.listDirty = true;
   }
 
-  setFadingIn(s: number, on: boolean): void {
+  setCasts(s: number, on: boolean): void {
     const v = on ? 1 : 0;
-    if (this.fadingIn[s] !== v) { this.fadingIn[s] = v; this.listDirty = true; }
+    if (this.casts[s] !== v) { this.casts[s] = v; this.listDirty = true; }
   }
 
   setMatrix(s: number, m: THREE.Matrix4): void {
@@ -450,7 +452,7 @@ class LodFadeLayer {
         const gi = info[this.geo[s]];
         const st = gi.start * bpe, ct = gi.count;
         this.starts[s] = st; this.counts[s] = ct;
-        if (this.fadingIn[s]) { this.shStarts[k] = st; this.shCounts[k] = ct; sh[k] = s; k++; }
+        if (this.casts[s]) { this.shStarts[k] = st; this.shCounts[k] = ct; sh[k] = s; k++; }
       }
       this.nMain = this.n;
       this.nShadow = k;
@@ -1275,8 +1277,9 @@ export class BuildingRenderer {
   private startFade(bi: BInst, from: number, to: number): void {
     const L = this.fadeLayer;
     const f: Fade = { bi, p: 0, sOld: -1, sNew: -1, i: this.fades.length, d: this.camDist(bi) };
-    f.sOld = L.alloc(f, from, false);
-    f.sNew = L.alloc(f, to, true);
+    // (the old level keeps casting the shadow until half way, see fadeColors)
+    f.sOld = L.alloc(f, from, true);
+    f.sNew = L.alloc(f, to, false);
     this.fades.push(f);
     bi.fade = f;
     this.batch.mesh.getMatrixAt(bi.main, this.m4);
@@ -1290,17 +1293,18 @@ export class BuildingRenderer {
     const s = f.sOld;
     f.sOld = f.sNew;
     f.sNew = s;
-    this.fadeLayer.setFadingIn(f.sOld, false);
-    this.fadeLayer.setFadingIn(f.sNew, true);
     f.p = 1 - f.p;
     this.fadeColors(f);
   }
 
-  /** write both levels' fade codes (smoothstep of the progress) */
+  /** write both levels' fade codes (smoothstep of the progress) and which one casts the shadow: the level covering
+   *  more pixels (the old one until half way) */
   private fadeColors(f: Fade): void {
-    const bi = f.bi, p = f.p, t = p * p * (3 - 2 * p);
-    this.fadeLayer.setColor(f.sNew, bi.cr, bi.cg, bi.cb, fadeAlpha(bi.flags, true, t));
-    this.fadeLayer.setColor(f.sOld, bi.cr, bi.cg, bi.cb, fadeAlpha(bi.flags, false, t));
+    const bi = f.bi, p = f.p, t = p * p * (3 - 2 * p), L = this.fadeLayer;
+    L.setColor(f.sNew, bi.cr, bi.cg, bi.cb, fadeAlpha(bi.flags, true, t));
+    L.setColor(f.sOld, bi.cr, bi.cg, bi.cb, fadeAlpha(bi.flags, false, t));
+    L.setCasts(f.sNew, p >= 0.5);
+    L.setCasts(f.sOld, p < 0.5);
   }
 
   /** remove a fade's slots (the building's instance keeps whatever it draws) */

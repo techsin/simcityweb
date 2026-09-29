@@ -195,8 +195,6 @@ export class VehicleRenderer {
   private vis!: Uint8Array;
   private nextB!: Int32Array;
   private usedK!: Int32Array;
-  private posX!: Float32Array;
-  private posZ!: Float32Array;
   /** cached per-cell path parameters (8 floats / vehicle) + path type (0 straight, 1 U-turn, 2 arc) */
   private pp!: Float32Array;
   private rank!: Float64Array;
@@ -232,6 +230,8 @@ export class VehicleRenderer {
   /** optional hard distance cap (m; trains 2x) */
   maxDistance = Infinity;
   private headCount = 0;
+  /** culler tile of every map cell (a road vehicle's pose stays inside its cell: its tile is its cell's tile) */
+  private cellTile = new Int32Array(0);
 
   constructor(private state: CityState, private net: NetInfo, private surf: RoadSurface, private culler: TileCuller, quality: QualityLevel = 'high') {
     this.quality = quality;
@@ -291,8 +291,6 @@ export class VehicleRenderer {
     this.vis = new Uint8Array(cap);
     this.nextB = new Int32Array(cap);
     this.usedK = new Int32Array(cap);
-    this.posX = new Float32Array(cap);
-    this.posZ = new Float32Array(cap);
     this.pp = new Float32Array(cap * 8);
     this.ptype = new Uint8Array(cap);
     // zoom-thinning rank per slot: golden-ratio sequence, evenly spread for any prefix of slots (v * phi mod 1)
@@ -974,9 +972,24 @@ export class VehicleRenderer {
     for (let v = 0; v < n; v++) head[Math.imul(used[v], 0x9e3779b1) >>> sh] = -1;
   }
 
+  /** culler tile per map cell (rebuilt when the map size changes) */
+  private tilesOfCells(): Int32Array {
+    const N = this.net.N;
+    if (this.cellTile.length !== N * N) {
+      const c = this.culler, tc = c.tileCells, tmax = c.tiles - 1, ct = new Int32Array(N * N);
+      for (let z = 0; z < N; z++) {
+        const tz = Math.min(tmax, (z / tc) | 0);
+        for (let x = 0; x < N; x++) ct[z * N + x] = tz * c.tiles + Math.min(tmax, (x / tc) | 0);
+      }
+      this.cellTile = ct;
+    }
+    return this.cellTile;
+  }
+
   /**
    * Move every road vehicle along its path (cell transitions, respawns), cull (tile visibility, tunnels, zoom thinning
-   * relaxed by projected size) and write the visible ones' matrices / headlights. Returns the number drawn.
+   * relaxed by projected size) and write the visible ones' matrices / headlights. Returns the number drawn. A vehicle
+   * in a hidden tile (or a tunnel) only advances: its pose is evaluated only where it can be drawn.
    * Zoom thinning by camera height (classic rule), relaxed by projected size: a vehicle of length L at distance d spans
    * L * K / d px (K = H / (2 tan(fov / 2))); one the classic rule drops is still drawn while it spans >= thinPx (every
    * 2nd one >= hidePx).
@@ -985,8 +998,7 @@ export class VehicleRenderer {
     const net = this.net;
     const st = this.state;
     const data = this.batch.matrixData();
-    const cul = this.culler, tileVis = cul.vis;
-    const cellSize = cul.cellSize, tileCells = cul.tileCells, tiles = cul.tiles, tmax = tiles - 1;
+    const tileVis = this.culler.vis;
     const hm = this.headlights.instanceMatrix.array as Float32Array;
     const headCap = this.headlights.instanceMatrix.count;
     let hc = 0;
@@ -997,7 +1009,9 @@ export class VehicleRenderer {
     const kh = K / Math.max(0.5, this.hidePx), kt = K / Math.max(0.5, this.thinPx);
     const D2 = this.maxDistance * this.maxDistance;
     const keep = this.keep;
-    const flags = st.netFlags, roadType = net.roadType;
+    // (classic rule keeps every vehicle and no distance cap: no distance needed)
+    const all = keep >= 1 && D2 === Infinity;
+    const flags = st.netFlags, roadType = net.roadType, cellTile = this.tilesOfCells();
     const life = this.life, tt = this.t, spd = this.spd, len = this.len, vlen = this.vlen, inst = this.inst, vis = this.vis, rank = this.rank;
     let shown = 0;
     for (let v = 0; v < this.n; v++) {
@@ -1016,23 +1030,21 @@ export class VehicleRenderer {
       }
       tt[v] = t;
       const ci = this.cell[v];
-      _p[4] = t;
-      this.evalCached(v);
-      const x = _p[0], z = _p[1];
-      this.posX[v] = x; this.posZ[v] = z;
-      // culler tile (TileCuller.tileOfWorld)
-      const gx = Math.floor(Math.floor(x / cellSize) / tileCells), gz = Math.floor(Math.floor(z / cellSize) / tileCells);
-      const tile = (gz < 0 ? 0 : gz > tmax ? tmax : gz) * tiles + (gx < 0 ? 0 : gx > tmax ? tmax : gx);
-      const tunnel = flags[ci] & NF_TUNNEL;
-      const ddx = x - cpx, ddz = z - cpz, d2 = ddx * ddx + ddz * ddz + cpy2;
-      const L = vlen[v], lh = L * kh, lt = L * kt;
-      const classic = rank[v] < keep;
-      const sized = d2 < lh * lh && (d2 < lt * lt || (v & 1) === 0);
-      const show = d2 < D2 && (classic || sized) && tileVis[tile] === 1 && !tunnel ? 1 : 0;
+      let show = 0;
+      if (tileVis[cellTile[ci]] === 1 && !(flags[ci] & NF_TUNNEL)) {
+        _p[4] = t;
+        this.evalCached(v);
+        if (all) show = 1;
+        else {
+          const ddx = _p[0] - cpx, ddz = _p[1] - cpz, d2 = ddx * ddx + ddz * ddz + cpy2;
+          const L = vlen[v], lh = L * kh, lt = L * kt;
+          show = d2 < D2 && (rank[v] < keep || (d2 < lh * lh && (d2 < lt * lt || (v & 1) === 0))) ? 1 : 0;
+        }
+      }
       if (show !== vis[v]) { vis[v] = show; this.batch.setVisible(inst[v], show === 1); }
       if (!show) continue;
       shown++;
-      const fx = _p[2], fz = _p[3];
+      const x = _p[0], z = _p[1], fx = _p[2], fz = _p[3];
       const half = vlen[v] * 0.4;
       // (heading-aware: cars crossing under a highway overpass stay on the ground, highway traffic rides the deck)
       _p[4] = half;
