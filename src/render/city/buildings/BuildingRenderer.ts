@@ -76,9 +76,12 @@ interface BInst {
   main: number;
   site: number;
   found: number;
-  /** burnt multi-cell lots: rubble tiles of the cells after the first (`main` = cell 0) and their quarter turns */
+  /** burnt multi-cell lots: rubble tiles of the cells after the first (`main` = cell 0), and the quarter turns of all
+   *  cells (cellYaw[0] = main's) */
   cells: number[];
   cellYaw: number[];
+  /** burnt lots: per rubble cell (cell 0 first) [rise per m along world x, along world z, lift m] (rubbleSlopes) */
+  shear: number[];
   tile: number;
   key: string;
   flags: number;
@@ -149,6 +152,42 @@ function cellHash(x: number, z: number, id: number): number {
   h ^= h >>> 13;
   return h >>> 0;
 }
+
+/** quarter turn (radians) of the rubble tile at cell (i, j) of a w x d burnt lot. A tile's broken walls stand along its
+ *  -X and -Z sides: on the lot's edge cells they face outward, so the lot reads as ONE burnt-out building (outer walls
+ *  standing, the inside collapsed into heaps) rather than a grid of small ruins; inside the lot (and across a side
+ *  that is one cell wide) the side comes from the cell hash */
+function rubbleTurn(i: number, j: number, w: number, d: number, h: number): number {
+  const sx = w > 1 && i === 0 ? -1 : w > 1 && i === w - 1 ? 1 : (h >>> 9) & 1 ? 1 : -1;
+  const sz = d > 1 && j === 0 ? -1 : d > 1 && j === d - 1 ? 1 : (h >>> 10) & 1 ? 1 : -1;
+  // a turn by k quarters takes the local wall corner (-X, -Z) to (-,-), (-,+), (+,+), (+,-) for k = 0..3
+  return (sx < 0 ? (sz < 0 ? 0 : 1) : sz > 0 ? 2 : 3) * (Math.PI / 2);
+}
+
+/**
+ * Rubble tile variant of cell (x, z) of a burnt multi-cell lot (prop.ts rubble: v0 charred brick heaps, v1 concrete
+ * heaps, v2 concrete heaps + a burnt-out car, v3 low debris field with a standing wall corner). The lot's interior gets
+ * the heavy heaps (v0 / v1), half of its border cells the low field with standing wall corners (the collapsed
+ * building's perimeter), and at most ONE border cell of every other lot with 3+ cells the car (hashing all four
+ * variants put a burnt car in every 4th cell: a scrapyard, not a burnt building).
+ */
+function rubbleVariant(b: Building, x: number, z: number): number {
+  const n = b.w * b.d;
+  const h = cellHash(x, z, b.id) >>> 11;
+  const border = x === b.x || z === b.z || x === b.x + b.w - 1 || z === b.z + b.d - 1;
+  const lot = cellHash(b.x, b.z, b.id ^ 0x2c1b3c6d);
+  if (n >= 3 && lot & 1 && border) {
+    const kc = (lot >>> 1) % n;
+    if (x === b.x + (kc % b.w) && z === b.z + Math.floor(kc / b.w)) return 2;
+  }
+  if (border && (h & 1) === 0) return 3;
+  return (h >>> 1) & 1;
+}
+
+/** rubble bed top above the tile origin is 0.4 m (prop.ts): ground up to this much above the bed plane stays hidden */
+const RUBBLE_BED = 0.35;
+/** steepest vertical shear (rise per m) a rubble tile follows the ground with */
+const RUBBLE_SLOPE = 0.5;
 
 export function modelIdOf(b: Building): string {
   return getDef(b.def)?.model ?? b.def;
@@ -642,6 +681,41 @@ export class BuildingRenderer {
     });
   }
 
+  /**
+   * Burnt lots: per rubble cell (cell 0 first, row-major like bi.cells) a vertical shear + lift into bi.shear so the
+   * tile's bed lies on the ground where the ground rises above the lot base. Lots are levelled to their base only where
+   * the sim could (edge corners at roads / neighbours stay put), so on hills the up-slope side of a lot keeps its
+   * slope: a flat bed there had grass poking through the debris. The bed follows the plane through the cell's corner
+   * rises (world-vertical shear: walls stay upright), lifted so it clears the highest corner; where the ground is at
+   * or below the base (the retaining wall's side) the tile stays flat on the base. Returns the highest bed rise (m).
+   */
+  private rubbleSlopes(bi: BInst): number {
+    const b = bi.b, st = this.state, N = st.size, N1 = N + 1, H = st.heights, base = b.baseY;
+    const sh = bi.shear;
+    sh.length = 0;
+    const rise = (x: number, z: number) => Math.max(0, H[Math.min(N, z) * N1 + Math.min(N, x)] - base);
+    const half = CELL_SIZE / 2;
+    let top = 0;
+    for (let k = 0, n = b.w * b.d; k < n; k++) {
+      const x = b.x + (k % b.w), z = b.z + Math.floor(k / b.w);
+      const r00 = rise(x, z), r10 = rise(x + 1, z), r01 = rise(x, z + 1), r11 = rise(x + 1, z + 1);
+      if (Math.max(r00, r10, r01, r11) <= RUBBLE_BED) { sh.push(0, 0, 0); continue; }
+      const ax = Math.max(-RUBBLE_SLOPE, Math.min(RUBBLE_SLOPE, (r10 + r11 - r00 - r01) / (2 * CELL_SIZE)));
+      const az = Math.max(-RUBBLE_SLOPE, Math.min(RUBBLE_SLOPE, (r01 + r11 - r00 - r10) / (2 * CELL_SIZE)));
+      // plane through the corner mean, then lifted until the bed clears every corner (the bilinear ground rises above
+      // the plane at two opposite corners; a clamped slope leaves more)
+      let lift = (r00 + r10 + r01 + r11) / 4;
+      let need = 0;
+      for (const [r, sx, sz] of [[r00, -1, -1], [r10, 1, -1], [r01, -1, 1], [r11, 1, 1]]) {
+        need = Math.max(need, r - RUBBLE_BED - (lift + (ax * sx + az * sz) * half));
+      }
+      lift += need;
+      sh.push(ax, az, lift);
+      top = Math.max(top, lift + (Math.abs(ax) + Math.abs(az)) * half);
+    }
+    return top;
+  }
+
   clear(): void {
     for (const bi of this.inst.values()) { this.freeInstances(bi); bi.due = -2; }
     this.inst.clear();
@@ -670,6 +744,7 @@ export class BuildingRenderer {
     for (const id of bi.cells) this.batch.remove(id);
     bi.cells.length = 0;
     bi.cellYaw.length = 0;
+    bi.shear.length = 0;
     bi.main = bi.site = bi.found = -1;
   }
 
@@ -692,7 +767,7 @@ export class BuildingRenderer {
   add(b: Building, animate = true): void {
     if (this.inst.has(b.id)) this.remove(b.id);
     const bi: BInst = {
-      b, main: -1, site: -1, found: -1, cells: [], cellYaw: [], tile: 0, key: '', flags: 0, cr: 1, cg: 1, cb: 1, anim: animate ? POP_TIME : 0, geom: -1,
+      b, main: -1, site: -1, found: -1, cells: [], cellYaw: [], shear: [], tile: 0, key: '', flags: 0, cr: 1, cg: 1, cb: 1, anim: animate ? POP_TIME : 0, geom: -1,
       vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, minH: 0, li: this.list.length,
       due: -1, now: false, waiting: -1, fresh: true, fade: null,
     };
@@ -754,11 +829,12 @@ export class BuildingRenderer {
     bi.fresh = true;
     const cx = (b.x + b.w / 2) * CELL_SIZE, cz = (b.z + b.d / 2) * CELL_SIZE;
     const yaw = b.rot * (Math.PI / 2);
-    // burnt: the rubble model covers ONE 16 m cell (designed to tile) -> one tile per footprint cell, variant + quarter
-    // turn from a per-cell hash, at scale 1, instead of one heap stretched over the lot. Tiled rubble has no LOD
-    // (<= 200 triangles a cell, and the cells must not switch one by one)
+    // burnt: the rubble model covers ONE 16 m cell (designed to tile) -> one tile per footprint cell, variant from the
+    // cell's place in the lot (rubbleVariant) + quarter turn from a per-cell hash, at scale 1, instead of one heap
+    // stretched over the lot; every tile follows the ground where it rises above the lot base (rubbleSlopes). Tiled
+    // rubble has no LOD (<= 200 triangles a cell, and the cells must not switch one by one)
     const tiled = burnt && b.w * b.d > 1;
-    const geom = burnt ? this.geomFor('rubble', tiled ? cellHash(b.x, b.z, b.id) : b.id) : this.geomFor(model, b.variant);
+    const geom = burnt ? this.geomFor('rubble', tiled ? rubbleVariant(b, b.x, b.z) : b.id) : this.geomFor(model, b.variant);
     bi.geom = geom;
     // a building currently drawn as a proxy gets its new model's proxy right away if it exists (no detail pop; without
     // a worker it is built now), else it shows the full model until the worker delivers; for the others the proxy is
@@ -773,11 +849,18 @@ export class BuildingRenderer {
     const bounds = this.batch.bounds(geom);
     // keep the current LOD state across rebuilds (state changes must not pop the detail level)
     bi.main = this.batch.add(bi.lod ? bi.lodGeom : geom);
+    // (tallest model on the lot: the rubble tiles differ)
+    let modelTop = bounds.max.y;
     if (tiled) {
+      // quarter turns of all cells, cell 0 (= main) first (rubbleTurn: walls on the lot's edge face outward)
+      bi.cellYaw.push(rubbleTurn(0, 0, b.w, b.d, cellHash(b.x, b.z, b.id)));
       for (let k = 1; k < b.w * b.d; k++) {
-        const h = cellHash(b.x + (k % b.w), b.z + Math.floor(k / b.w), b.id);
-        bi.cells.push(this.batch.add(this.geomFor('rubble', h)));
-        bi.cellYaw.push(((h >>> 7) & 3) * (Math.PI / 2));
+        const x = b.x + (k % b.w), z = b.z + Math.floor(k / b.w);
+        const h = cellHash(x, z, b.id);
+        const g = this.geomFor('rubble', rubbleVariant(b, x, z));
+        modelTop = Math.max(modelTop, this.batch.bounds(g).max.y);
+        bi.cells.push(this.batch.add(g));
+        bi.cellYaw.push(rubbleTurn(k % b.w, Math.floor(k / b.w), b.w, b.d, h));
       }
     }
     if (constructing) {
@@ -802,14 +885,16 @@ export class BuildingRenderer {
     if (burning) flags |= IF_FIRE;
     if (this.selected === b.id) flags |= IF_SELECTED;
     bi.flags = flags;
+    // rubble on a slope rises with the ground (rubbleSlopes): its top / LOD centre follow
+    const rise = burnt ? this.rubbleSlopes(bi) : 0;
     bi.vis = {
       id: b.id, model: burnt ? 'rubble' : model, variant: b.variant, cx, cz, baseY: b.baseY, yaw, sw: b.w * CELL_SIZE, sd: b.d * CELL_SIZE,
-      top: b.baseY + bounds.max.y, bounds, burning, burnt, constructing, abandoned, sy: 1,
+      top: b.baseY + modelTop + rise, bounds, burning, burnt, constructing, abandoned, sy: 1,
     };
-    this.culler.noteHeight(bi.tile, b.baseY + bounds.max.y);
+    this.culler.noteHeight(bi.tile, bi.vis.top);
     const sp = bounds.getBoundingSphere(_sphere);
     bi.radius = Math.max(2, sp.radius);
-    bi.cy = b.baseY + sp.center.y;
+    bi.cy = b.baseY + sp.center.y + (bi.shear.length ? bi.shear[2] : 0);
     const li = bi.li;
     this.lx[li] = cx; this.ly[li] = bi.cy; this.lz[li] = cz; this.lr[li] = bi.radius; this.ls[li] = bi.lod;
     this.applyColor(bi);
@@ -857,15 +942,14 @@ export class BuildingRenderer {
     const sxz = bi.anim > 0 ? 0.85 + 0.15 * Math.min(1, pop) : 1;
     if (bi.main >= 0) {
       if (v.burnt && b.w * b.d > 1) {
-        // one rubble tile per cell (cell 0 = main, the rest in bi.cells), each at its own quarter turn, scale 1
-        for (let k = 1; k <= bi.cells.length; k++) {
+        // one rubble tile per cell (cell 0 = main, the rest in bi.cells), each at its own quarter turn, scale 1 (cell 0
+        // last: its matrix is main's below)
+        for (let k = bi.cells.length; k >= 0; k--) {
           const x = b.x + (k % b.w), z = b.z + Math.floor(k / b.w);
-          _q.setFromAxisAngle(this.up, bi.cellYaw[k - 1]);
+          _q.setFromAxisAngle(this.up, bi.cellYaw[k]);
           this.m4.compose(this.v.set((x + 0.5) * CELL_SIZE, v.baseY, (z + 0.5) * CELL_SIZE), _q, this.s.set(1, 1, 1));
-          this.batch.setMatrix(bi.cells[k - 1], this.m4);
+          if (k > 0) this.batch.setMatrix(bi.cells[k - 1], this.m4);
         }
-        _q.setFromAxisAngle(this.up, ((cellHash(b.x, b.z, b.id) >>> 7) & 3) * (Math.PI / 2));
-        this.m4.compose(this.v.set((b.x + 0.5) * CELL_SIZE, v.baseY, (b.z + 0.5) * CELL_SIZE), _q, this.s.set(1, 1, 1));
       } else if (v.burnt) {
         const fw = b.rot & 1 ? b.d : b.w, fd = b.rot & 1 ? b.w : b.d;
         this.m4.compose(this.v.set(v.cx, v.baseY, v.cz), yawQ, this.s.set(fw * 0.9, 1, fd * 0.9));

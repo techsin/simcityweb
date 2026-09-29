@@ -677,6 +677,12 @@ describe('burnt lots and foundations', () => {
       cells.add(`${cx},${cz}`);
       e.setFromQuaternion(q, 'YXZ');
       turns.add(((Math.round(e.y / (Math.PI / 2)) % 4) + 4) % 4);
+      // a tile's broken walls (its -X / -Z sides) face the outside on the lot's edge cells
+      const wall = new THREE.Vector3(-1, 0, -1).applyQuaternion(q), i = cx - 10, j = cz - 12;
+      if (i === 0) expect(wall.x).toBeLessThan(0);
+      if (i === 2) expect(wall.x).toBeGreaterThan(0);
+      if (j === 0) expect(wall.z).toBeLessThan(0);
+      if (j === 2) expect(wall.z).toBeGreaterThan(0);
     }
     // every footprint cell exactly once, not all alike
     expect(cells.size).toBe(9);
