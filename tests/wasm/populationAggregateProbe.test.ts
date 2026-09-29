@@ -21,7 +21,7 @@
  *     `node tools/bench/populationAggregateProbe.bench.mjs capture`, skipped when absent);
  *  5. a live city (stressCity, the live systems) — the arms on Building objects as the current sim makes them.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { setSimWasmPreference, simWasmInstance, simWasmStatus } from '../../src/wasm/simWasm';
@@ -39,6 +39,10 @@ import {
 import { ORIGINAL_CONSTANTS, makeOriginalAggregate, type OrigBuilding, type OrigCache, type OrigRuntime } from './populationAggregateOriginal';
 
 const ROOT = resolve(__dirname, '..', '..');
+
+// the random-world cases run up to 10 arms x 6 days x 3 seeds (~2 s alone): the 5 s default is too tight when the whole
+// suite runs in parallel on a loaded machine (seen at load 26: 6.6 s)
+vi.setConfig({ testTimeout: 120_000 });
 
 let reserved = false;
 function loaderWasm(): PopAggWasm {

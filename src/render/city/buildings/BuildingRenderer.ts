@@ -13,10 +13,11 @@
  * Without worker support (Node tests) proxies are built on demand within `lodBudgetMs` per frame.
  * Each building is re-evaluated only when the camera has travelled far enough to possibly carry it across its swap
  * distance, so a panning camera costs a few evaluations per frame and a still one none.
- * Camera cuts (jumps): the cut frame only upgrades — a scan of flat per-building arrays finds the proxies that are now
- * close enough to need their full model — and the rest of the re-evaluation (mostly downgrades to proxies, which only
- * cost GPU while they wait) is spread over the next frames at `lodCatch` evaluations per frame, so a cut costs about
- * what a normal frame does instead of thousands of evaluations + swaps at once.
+ * Camera cuts (jumps): the cut frame only upgrades what is in view — a scan of flat per-building arrays finds the
+ * proxies that are now close enough to need their full model; those in the view frustum swap at once, the others are
+ * queued first — and the rest of the re-evaluation (mostly downgrades to proxies, which only cost GPU while they wait)
+ * is spread over the next frames at `lodCatch` evaluations per frame, so a cut costs about what a normal frame does
+ * instead of thousands of evaluations + swaps at once.
  * LOD cross-fade: a building that changes level while it is in view and not tiny on screen dissolves from one level
  * into the other over `fadeTime` s (screen-door dither with complementary pixel sets anchored to the building's
  * screen position, the tree LOD fade's dither): both levels are drawn by a small side batch (LodFadeLayer: same
@@ -566,6 +567,9 @@ export class BuildingRenderer {
     const id = proxy ? this.batch.geometryId(key + '#lod', () => proxy) : geom;
     this.batch.shareSphere(geom, id, PROXY_PAD);
     this.lodMap.set(geom, id);
+    // the model's empty cross-fade stand-in comes with its proxy (3 vertices in the space reserved at load: creating it
+    // at the first fade could grow the batch's whole vertex buffer in the middle of a zoom)
+    if (id !== geom) this.emptyOf(geom);
     const w = this.lodWaiting.get(geom);
     if (w) {
       this.lodWaiting.delete(geom);
@@ -653,9 +657,9 @@ export class BuildingRenderer {
   rebuildAll(): void {
     this.clear();
     for (const b of this.state.buildings.values()) this.add(b, false);
-    // room for the proxies the worker is about to deliver (<= ~180 triangles each): growing the batch's vertex buffer
-    // later would re-upload all of it in some frame
-    this.batch.reserveVertices(this.lodPending.size * 200);
+    // room for the proxies the worker is about to deliver (<= ~180 triangles each) and their 3-vertex cross-fade
+    // stand-ins: growing the batch's vertex buffer later would re-upload all of it in some frame
+    this.batch.reserveVertices(this.lodPending.size * 203);
   }
 
   private freeInstances(bi: BInst): void {
@@ -979,16 +983,22 @@ export class BuildingRenderer {
     this.fadeLayer.sync();
   }
 
-  /** every building drawn as a proxy that is now within its upgrade distance gets its full model (evaluated now);
-   *  a flat pass over typed arrays: ~10k buildings in well under a millisecond */
+  /** every building drawn as a proxy that is now within its upgrade distance gets its full model: evaluated now when it
+   *  is in the view, else queued first for the catch-up frames (out of view it only draws into shadows). A flat pass
+   *  over typed arrays: ~10k buildings in well under a millisecond */
   private upgradeScan(c: THREE.Vector3, K: number, on: number, off: number, cur: number): void {
     const lx = this.lx, ly = this.ly, lz = this.lz, lr = this.lr, ls = this.ls, list = this.list;
     const px = c.x, py = c.y, pz = c.z, off2 = off * off, K2 = K * K;
+    const fr = this.viewFrustum();
     for (let i = 0, n = list.length; i < n; i++) {
       if (ls[i] !== 1) continue;
       const dx = lx[i] - px, dy = ly[i] - py, dz = lz[i] - pz;
       const r = lr[i];
-      if ((dx * dx + dy * dy + dz * dz) * off2 < r * r * K2) this.lodEval(list[i], c, K, on, off, cur);
+      if ((dx * dx + dy * dy + dz * dz) * off2 >= r * r * K2) continue;
+      _sphere.center.set(lx[i], ly[i], lz[i]);
+      _sphere.radius = r;
+      if (!fr || fr.intersectsSphere(_sphere)) this.lodEval(list[i], c, K, on, off, cur);
+      else this.lodQueue(list[i]);
     }
     // the selected building is always drawn full
     if (this.selected != null) {
@@ -1069,13 +1079,20 @@ export class BuildingRenderer {
     const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
     // projected radius (px) = radius * K / d
     if (bi.radius * this.lodKNow < d * this.lodPixels * this.fadeMinFrac) return false;
+    _sphere.center.set(v.cx, bi.cy, v.cz);
+    _sphere.radius = bi.radius;
+    return this.viewFrustum()!.intersectsSphere(_sphere);
+  }
+
+  /** the LOD camera's view frustum (built once per updateLod, when first needed) */
+  private viewFrustum(): THREE.Frustum | null {
+    const cam = this.lodCamera;
+    if (!cam) return null;
     if (!this.frOk) {
       this.fr.setFromProjectionMatrix(_pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
       this.frOk = true;
     }
-    _sphere.center.set(v.cx, bi.cy, v.cz);
-    _sphere.radius = bi.radius;
-    return this.fr.intersectsSphere(_sphere);
+    return this.fr;
   }
 
   /** the building's 3-vertex empty stand-in for model geometry `geom` (same culling sphere: swapping to it and back

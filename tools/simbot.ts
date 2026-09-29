@@ -105,6 +105,8 @@ interface GarbageApi {
 }
 
 const GRID = 9;
+/** a prison keeps at least this many cells from R$$$ homes (bot rule; PART_B item 38 d) */
+export const JAIL_GAP = 12;
 
 export class SimBot {
   sim: Simulation;
@@ -231,12 +233,16 @@ export class SimBot {
   canSpend(cost: number): boolean {
     return this.funds - cost > this.reserve();
   }
-  /** investments that raise income (zoning / roads for new blocks) use a much smaller reserve */
+  /** investments that raise income (zoning / roads for new blocks) use a much smaller reserve; the price of a needed
+   *  prison the bot is saving for (jailHold) is not theirs */
   canInvest(cost: number): boolean {
     let e = 0;
     for (const k in this.st.budget.lastExpense) if (!k.startsWith('oneoff:')) e += this.st.budget.lastExpense[k];
-    return this.funds - cost > 1500 + e * 0.3;
+    return this.funds - cost - this.jailHold > 1500 + e * 0.3;
   }
+  /** money held back from zoning for a needed prison (ensureJustice sets it every month, before zoning runs) */
+  jailHold = 0;
+  private jailSaving = false;
   /** a competent mayor only adds recurring costs the budget can carry (or when sitting on a big pile of cash) */
   canAfford(defId: string): boolean {
     const d = getDef(defId);
@@ -501,11 +507,11 @@ export class SimBot {
     this.ensureWater();
     this.ensureSewage();
     this.ensureGarbage();
+    this.ensureJustice();
     this.zoning();
     this.ensureServices();
     this.ensureNeeds();
     this.ensureResponse();
-    this.ensureJustice();
     this.ensureTransit();
     this.treeBuffers();
     this.caps();
@@ -1143,28 +1149,37 @@ export class SimBot {
 
   // ------------------------------------------------------------------------------------------ justice
   /** WP6-3: a prison when more than 25 % of sentenced offenders find no bed — in an industrial / utility block, never
-   *  within 12 cells of wealthy (R$$$) homes (stigma, crime spill) */
+   *  within 12 cells of wealthy (R$$$) homes (stigma, crime spill). It runs before zoning: a prison is lumpy ($12k) and
+   *  a growing town's income goes to new blocks, so it may use the investment reserve, and while it is short its price
+   *  is held back from zoning (an overflowing justice system costs every police station up to 30 % of its effect). */
   ensureJustice(): void {
     const st = this.st, j = st.stats.justice;
-    if (!j || !(j.overflow > 0.25) || !st.unlocked.has('jail')) return;
-    if ((this.svcRetry.get('jail') ?? -1) > st.day || !this.canAfford('civ_jail')) return;
+    this.jailHold = 0;
+    if (!j || !(j.overflow > 0.25) || !st.unlocked.has('jail') || (this.svcRetry.get('jail') ?? -1) > st.day) {
+      this.jailSaving = false;
+      return;
+    }
+    const jd = getDef('civ_jail'), cost = jd?.cost ?? 0, up = jd?.upkeep ?? 0;
+    const carry = this.monthlyNet() + this.pendingUpkeep - up > 0 || this.funds > 60 * up + 50000;
+    if (!this.canAfford('civ_jail') && !(carry && this.canInvest(cost))) {
+      if (carry && !this.jailSaving) this.say(`saving for a prison ($${cost}): ${Math.round(j.overflow * 100)} % of the sentenced have no bed`);
+      if (carry) this.jailHold = cost;
+      this.jailSaving = carry;
+      return;
+    }
+    this.jailSaving = false;
     const rich: { x: number; z: number }[] = [];
     for (const b of st.buildings.values()) if (!(b.flags & BF.Plopped) && b.wealth === 3 && getDef(b.def)?.devType === DevType.R3) rich.push({ x: b.x, z: b.z });
     const cx = this.line(this.cbx) + 5 * GRID, cz = this.trunkZ;
-    // as far from R$$$ homes as the map allows: 12 cells, else 8 (a dense small map may have no I / U lot 12 away)
-    let ok = false, gap = 12, cleared = false;
-    for (const g of [12, 8]) {
-      const far = (x: number, z: number, w: number, d: number) => !rich.some((r) => r.x >= x - g && r.x < x + w + g && r.z >= z - g && r.z < z + d + g);
-      if ((ok = !!this.placeNear('civ_jail', cx, cz, ['I', 'U'], true, Infinity, true, far))) { gap = g; break; }
-    }
-    if (!ok) {
-      // a full map: bulldoze a few small factories / sheds in an industrial block for the prison (12+ cells from R$$$)
-      const far = (x: number, z: number, w: number, d: number) => !rich.some((r) => r.x >= x - 12 && r.x < x + w + 12 && r.z >= z - 12 && r.z < z + d + 12);
-      ok = cleared = !!this.placeByClearing('civ_jail', cx, cz, Infinity, ['I', 'U'], far);
-    }
+    // never within JAIL_GAP cells of R$$$ homes (PART_B item 38 d: the prison's stigma reaches 10 cells, crime spills)
+    const G = JAIL_GAP;
+    const far = (x: number, z: number, w: number, d: number) => !rich.some((r) => r.x >= x - G && r.x < x + w + G && r.z >= z - G && r.z < z + d + G);
+    let ok = !!this.placeNear('civ_jail', cx, cz, ['I', 'U'], true, Infinity, true, far), cleared = false;
+    // a full map: bulldoze a few small factories / sheds in an industrial / utility block for the prison
+    if (!ok) ok = cleared = !!this.placeByClearing('civ_jail', cx, cz, Infinity, ['I', 'U'], far);
     this.svcRetry.set('jail', st.day + (ok ? 240 : 120));
-    if (ok) this.say(`prison: ${Math.round(j.overflow * 100)} % of the sentenced had no bed (${cleared ? 'small industrial lots cleared, ' : ''}${gap}+ cells from R$$$ homes)`);
-    else this.say(`prison: no industrial / utility lot 8+ cells from R$$$ homes (${Math.round(j.overflow * 100)} % without a bed)`);
+    if (ok) this.say(`prison: ${Math.round(j.overflow * 100)} % of the sentenced had no bed (${cleared ? 'small industrial lots cleared, ' : ''}${G}+ cells from R$$$ homes)`);
+    else this.say(`prison: no industrial / utility lot ${G}+ cells from R$$$ homes (${Math.round(j.overflow * 100)} % without a bed)`);
   }
 
   // ------------------------------------------------------------------------------------------ transit (item 38c)

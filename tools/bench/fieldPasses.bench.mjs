@@ -253,10 +253,15 @@ async function runBrowserCpu(scalar) {
           const cpu = (await threadMs()) - w0;
           const per = (cpu / wu.calls) * (Math.max(wu.wa, wu.wb) / Math.max(1e-9, wu.wa + wu.wb));
           const inner = Math.max(1, Math.ceil(minSampleMs / Math.max(per, 1e-6)));
+          // one CDP read between consecutive samples (it ends one and starts the next: 2 round trips per sample; the
+          // constant per-sample overhead of the evaluate / getMetrics handling lands in A and B samples alike)
+          let tPrev = await threadMs();
           const sample = async (arm, k) => {
-            const t0 = await threadMs();
             await page.evaluate(([x, y, n]) => globalThis.__fp.run(x, y, n), [arm, k, inner]);
-            return ((await threadMs()) - t0) / inner;
+            const t = await threadMs();
+            const d = (t - tPrev) / inner;
+            tPrev = t;
+            return d;
           };
           const A = [], B = [];
           for (let r = 0; r < reps; r++) {

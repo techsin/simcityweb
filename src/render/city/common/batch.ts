@@ -144,6 +144,8 @@ const MAX_RANGES = 96;
  *  more than 1 / SWAP_FULL of its length, rewrites all its draw ranges instead of patching the swapped entries */
 const SWAP_RING = 4096;
 const SWAP_FULL = 4;
+/** width (ids per row) of the per-pass indirect textures (WebGL2 guarantees 2048 texels) */
+const ID_ROW = 2048;
 let _frame = 0;
 
 /** unit axes (columns 0-2) of a world matrix -> out[9] */
@@ -259,6 +261,9 @@ export class DynamicBatch {
   private tileVer = new Uint32Array(0);
   private tileCache: ({ ver: number; n: number; i: Uint32Array } | null)[] = [];
   private untiled: number[] = [];
+  /** dynamic batches keep their visible instances at the front of `untiled` ([0, untiledVis), see partSet): list
+   *  builds walk only those (a zoomed-out view hides most vehicles) */
+  private untiledVis = 0;
   /** main-pass draw lists are sorted front to back (nearest first): opaque overdraw is rejected by the depth test
    *  before shading (big occluders such as buildings; cheap counting sort, only when a list is rebuilt) */
   sortFront = false;
@@ -366,7 +371,7 @@ export class DynamicBatch {
       this.instMask[id] = 0xff;
       this.instVis[id] = 1;
       this.instGeo[id] = geomId;
-      if (this.pc.dynamic) { this.instSlot[id] = this.untiled.length; this.untiled.push(id); }
+      if (this.pc.dynamic) { this.instSlot[id] = this.untiled.length; this.untiled.push(id); this.partSet(id, true); }
     }
     this.touch();
     return id;
@@ -375,6 +380,7 @@ export class DynamicBatch {
   remove(id: number): void {
     this.live--;
     if (this.pc) {
+      if (this.pc.dynamic) this.partSet(id, false);
       this.unlink(id);
       this.instVis[id] = 0;
       this.instGeo[id] = -1;
@@ -461,8 +467,30 @@ export class DynamicBatch {
     const info = (this.mesh as any)._instanceInfo[id];
     if (info && info.visible === v) return;
     this.mesh.setVisibleAt(id, v);
-    if (this.pc && info) { this.instVis[id] = v && info.active ? 1 : 0; this.bumpTile(id); }
+    if (this.pc && info) {
+      this.instVis[id] = v && info.active ? 1 : 0;
+      this.bumpTile(id);
+      if (this.pc.dynamic) this.partSet(id, this.instVis[id] === 1);
+    }
     this.touch();
+  }
+
+  /** move a dynamic batch's instance into / out of the visible front part of `untiled` */
+  private partSet(id: number, visible: boolean): void {
+    const u = this.untiled, slot = this.instSlot;
+    const at = slot[id];
+    if (at < 0 || u[at] !== id) return;
+    let b: number;
+    if (visible) {
+      if (at < this.untiledVis) return;
+      b = this.untiledVis++;
+    } else {
+      if (at >= this.untiledVis) return;
+      b = --this.untiledVis;
+    }
+    const o = u[b];
+    u[b] = id; u[at] = o;
+    slot[id] = b; slot[o] = at;
   }
 
   /** direct access to the matrix texture data (16 floats per instance) for hot per-frame writes */
@@ -949,7 +977,7 @@ export class DynamicBatch {
             k++;
           }
           if (s.starts.length < n + list.length) this.ensureList(s, n + list.length, n);
-          if (kind !== 0) { n = this.pushList(s, list, test, size, rcv, n, cbit, mat); continue; }
+          if (kind !== 0) { n = this.pushList(s, list, list.length, test, size, rcv, n, cbit, mat); continue; }
           // every visible instance of the tile (with the cascade bit) is drawn: copy its cached block
           const ck = ti * 3 + cls;
           let cc = this.tileCache[ck];
@@ -979,24 +1007,32 @@ export class DynamicBatch {
         n = k < s.selN ? s.selO[k] : s.selEnd;
       }
       if (reuse) { s.selN = k; s.selEnd = n; s.selMinR = minR; s.selValid = true; } else s.selValid = false;
-      if (this.untiled.length) {
-        if (s.starts.length < n + this.untiled.length) this.ensureList(s, n + this.untiled.length, n);
-        n = this.pushList(s, this.untiled, true, minR > 0, recv !== null, n, cbit, mat);
+      const un = dyn ? this.untiledVis : this.untiled.length;
+      if (un) {
+        if (s.starts.length < n + un) this.ensureList(s, n + un, n);
+        n = this.pushList(s, this.untiled, un, true, minR > 0, recv !== null, n, cbit, mat);
       }
       if (sorted && n > 1) this.sortList(s, n);
     } else s.selValid = false;
     if (keep && s.tex && n === s.count) return;
     s.count = n;
-    // indirect (instance id) texture sized to the list (power-of-two side, grown / shrunk with slack): a rebuild uploads
-    // the list, not the batch's whole instance capacity
-    if (!s.tex || s.texCap < n || (s.texCap > 4096 && n * 8 < s.texCap)) {
+    // indirect (instance id) texture: rows of ID_ROW ids, as many as the list needs plus slack (grown / shrunk with
+    // hysteresis). A rebuild uploads only the rows the list uses (texture update ranges; three reads ranges in units of
+    // 4 components, one texel here), not the whole texture, let alone the batch's instance capacity.
+    const rows = Math.max(1, Math.ceil(n / ID_ROW));
+    if (!s.tex || s.texCap < rows * ID_ROW || (s.texCap > ID_ROW * 8 && rows * ID_ROW * 4 < s.texCap)) {
       s.tex?.dispose();
-      const side = Math.max(16, 1 << Math.ceil(Math.log2(Math.ceil(Math.sqrt(Math.max(1, n) * 1.25)))));
-      s.tex = new THREE.DataTexture(new Uint32Array(side * side), side, side, THREE.RedIntegerFormat, THREE.UnsignedIntType);
-      s.texCap = side * side;
+      const h = Math.ceil(rows * 1.25);
+      s.tex = new THREE.DataTexture(new Uint32Array(ID_ROW * h), ID_ROW, h, THREE.RedIntegerFormat, THREE.UnsignedIntType);
+      s.texCap = ID_ROW * h;
     }
-    (s.tex.image.data as unknown as Uint32Array).set(s.ids.subarray(0, n));
-    s.tex.needsUpdate = true;
+    const tex = s.tex;
+    (tex.image.data as unknown as Uint32Array).set(s.ids.subarray(0, n));
+    if (n > 0) {
+      tex.clearUpdateRanges();
+      for (let r = 0; r * ID_ROW < n; r++) tex.addUpdateRange(r * ID_ROW * 4, Math.min(ID_ROW, n - r * ID_ROW) * 4);
+      tex.needsUpdate = true;
+    }
   }
 
   /** grow a slot's stored tile selection to hold `need` entries */
@@ -1008,16 +1044,16 @@ export class DynamicBatch {
   }
 
   /**
-   * List-build inner loop over one instance list (a method, not a per-build closure: no allocation, stable JIT
-   * feedback). test: per-instance frustum test; size / rcv: per-instance caster size / receiver tests (shadow
-   * passes). Planes in _fp / _rp, doubles in _plf. The caller made room for list.length more entries. Returns n.
+   * List-build inner loop over the first len entries of an instance list (a method, not a per-build closure: no
+   * allocation, stable JIT feedback). test: per-instance frustum test; size / rcv: per-instance caster size / receiver
+   * tests (shadow passes). Planes in _fp / _rp, doubles in _plf. The caller made room for len more entries. Returns n.
    */
-  private pushList(s: PassSlot, list: number[], test: boolean, size: boolean, rcv: boolean, n: number, cbit: number, mat: Float32Array | null): number {
+  private pushList(s: PassSlot, list: number[], len: number, test: boolean, size: boolean, rcv: boolean, n: number, cbit: number, mat: Float32Array | null): number {
     const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3];
     const vis = this.instVis, imask = this.instMask, geo = this.instGeo, grad = this.geoRad, sph = this.sph, gS = this.gStart, gC = this.gCount;
     const fp = _fp, rp = _rp, rnl = _rnl;
     const starts = s.starts, counts = s.counts, ind = s.ids;
-    for (let j = 0; j < list.length; j++) {
+    for (let j = 0; j < len; j++) {
       const id = list[j];
       if (!vis[id]) continue;
       if (cbit && !(imask[id] & cbit)) continue;
@@ -1157,6 +1193,10 @@ export class TileCuller {
   private box = new THREE.Box3();
   private listeners: ((tile: number, visible: boolean) => void)[] = [];
   private first = true;
+  /** camera (projection + view matrix) of the last update and whether a tile height grew since: an unchanged camera
+   *  keeps every tile's visibility */
+  private camKey = new Float64Array(32);
+  private stale = true;
 
   constructor(private N: number, private cell: number, tileCells = 16) {
     this.tileCells = tileCells;
@@ -1188,10 +1228,18 @@ export class TileCuller {
   }
 
   noteHeight(tile: number, y: number): void {
-    if (y > this.maxY[tile]) this.maxY[tile] = y;
+    if (y > this.maxY[tile]) { this.maxY[tile] = y; this.stale = true; }
   }
 
   update(camera: THREE.Camera): void {
+    const a = camera.projectionMatrix.elements, b = camera.matrixWorldInverse.elements, k = this.camKey;
+    let same = !this.stale && !this.first;
+    for (let i = 0; i < 16; i++) {
+      if (k[i] !== a[i]) { k[i] = a[i]; same = false; }
+      if (k[16 + i] !== b[i]) { k[16 + i] = b[i]; same = false; }
+    }
+    if (same) return;
+    this.stale = false;
     this.mat.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.mat);
     const T = this.tiles;
@@ -1213,8 +1261,9 @@ export class TileCuller {
     this.first = false;
   }
 
-  /** force every tile visible (e.g. for captures) */
+  /** force every tile visible (e.g. for captures; the next update re-tests every tile) */
   showAll(): void {
+    this.stale = true;
     for (let i = 0; i < this.vis.length; i++) {
       if (!this.vis[i]) {
         this.vis[i] = 1;

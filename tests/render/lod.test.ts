@@ -85,6 +85,30 @@ describe('building LOD proxies', () => {
     expect(windowedKept / windowed).toBeGreaterThan(0.95);
   }, 180_000); // builds every building model + proxy (~5 s of CPU)
 
+  it('keeps the foliage season patterns of lot trees (blossom / seasonal / evergreen) in the foliage clusters', () => {
+    const seen = new Set<number>();
+    for (const id of buildingIds.filter((m) => m.startsWith('park_') || m.startsWith('res_'))) {
+      const nv = MANIFEST_BY_ID[id].variants ?? 1;
+      for (let v = 0; v < nv; v++) {
+        const g = getModelGeometry(id, v);
+        const p = buildLodProxy(g);
+        if (!p) continue;
+        const pats = (geo: THREE.BufferGeometry) => {
+          const s = geo.getAttribute('surf') as THREE.BufferAttribute, out = new Set<number>();
+          for (let i = 0; i < s.count; i++) if (Math.round(s.getX(i)) === Surf.Foliage) out.add(Math.round(s.getY(i)));
+          return out;
+        };
+        const model = pats(g);
+        for (const pt of pats(p)) {
+          expect(model.has(pt), `${id}#${v}: proxy foliage pattern ${pt} not in the model`).toBe(true);
+          seen.add(pt);
+        }
+      }
+    }
+    // cherry (2), deciduous (1) and evergreen (4) crowns all survive in some proxy
+    for (const pt of [1, 2, 4]) expect(seen.has(pt), `pattern ${pt}`).toBe(true);
+  }, 120_000);
+
   it('is deterministic', () => {
     for (const id of buildingIds.slice(0, 25)) {
       const g = getModelGeometry(id, 0);
@@ -417,17 +441,21 @@ describe('building LOD schedule', () => {
     const evals = vi.spyOn(br as unknown as { lodEval: () => void }, 'lodEval');
     const dist = (bi: BI) => Math.hypot(bi.vis.cx - cam.position.x, bi.cy - cam.position.y, bi.vis.cz - cam.position.z);
     const hasProxy = (bi: BI) => !(bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom);
-    // allowed lag: one schedule bucket (1 m) of camera travel. up: a proxy that must be full (never allowed);
-    // down: a full model that may be a proxy (allowed while the renderer catches up after a cut)
+    const fr = new THREE.Frustum(), pm = new THREE.Matrix4(), sph = new THREE.Sphere();
+    const inView = (bi: BI) => { sph.center.set(bi.vis.cx, bi.cy, bi.vis.cz); sph.radius = bi.radius; return fr.intersectsSphere(sph); };
+    // allowed lag: one schedule bucket (1 m) of camera travel. up: a proxy in view that must be full (never allowed);
+    // upOut: the same out of view, down: a full model that may be a proxy (both allowed while the renderer catches up
+    // after a cut)
     const check = () => {
-      let up = 0, down = 0;
+      fr.setFromProjectionMatrix(pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+      let up = 0, upOut = 0, down = 0;
       for (const bi of list) {
         if (!hasProxy(bi)) continue;
         const d = dist(bi), rk = bi.radius * K;
         if (bi.lod === 0 && d > rk / on + 1.001) down++;
-        if (bi.lod === 1 && d < rk / off - 1.001) up++;
+        if (bi.lod === 1 && d < rk / off - 1.001) { if (inView(bi)) up++; else upOut++; }
       }
-      return { up, down };
+      return { up, upOut, down };
     };
     let seed = 99;
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
@@ -441,17 +469,25 @@ describe('building LOD schedule', () => {
       else if (mode === 2) p.y = 40 + (step % 50) * 25;
       else if (cut) p.set(rnd() * 3000 - 1000, 20 + rnd() * 900, rnd() * 3000 - 1000);
       cam.position.copy(p);
+      // (looking at the map centre from wherever the camera is: every mode sees part of the city)
+      cam.lookAt(512, 0, 512);
       cam.updateMatrixWorld();
-      // proxies the cut must upgrade in its own frame
+      // proxies the cut must upgrade in its own frame (the ones in view)
       let need = 0;
-      if (cut) for (const bi of list) if (bi.lod === 1 && hasProxy(bi) && dist(bi) < (bi.radius * K) / off) need++;
+      if (cut) {
+        fr.setFromProjectionMatrix(pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+        for (const bi of list) if (bi.lod === 1 && hasProxy(bi) && dist(bi) < (bi.radius * K) / off && inView(bi)) need++;
+      }
       const e0 = evals.mock.calls.length;
       br.updateLod(cam, H);
       const n = evals.mock.calls.length - e0;
       if (mode === 0 && step % 50 > 5) { slowEvals += n; slowSteps++; }
-      const { up, down } = check();
-      expect(up, `step ${step}: proxy left inside its upgrade distance`).toBe(0);
-      if (!br.lodBehind) expect(down, `step ${step}: full model beyond its downgrade distance`).toBe(0);
+      const { up, upOut, down } = check();
+      expect(up, `step ${step}: proxy in view left inside its upgrade distance`).toBe(0);
+      if (!br.lodBehind) {
+        expect(upOut, `step ${step}: proxy out of view left inside its upgrade distance`).toBe(0);
+        expect(down, `step ${step}: full model beyond its downgrade distance`).toBe(0);
+      }
       if (cut && step > 0) {
         cuts++;
         // the cut frame evaluates its upgrades + a quarter catch-up slice, not the whole city
@@ -474,7 +510,7 @@ describe('building LOD schedule', () => {
     let frames = 0;
     while (br.lodBehind && frames < 100) { br.updateLod(cam, H); frames++; }
     expect(frames).toBeLessThanOrEqual(Math.ceil(list.length / br.lodCatch) + 2);
-    expect(check()).toEqual({ up: 0, down: 0 });
+    expect(check()).toEqual({ up: 0, upOut: 0, down: 0 });
     // a resting camera costs nothing
     const e1 = evals.mock.calls.length;
     for (let i = 0; i < 20; i++) br.updateLod(cam, H);

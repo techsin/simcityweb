@@ -6,13 +6,13 @@
  * utility on a lot that touches a road.
  */
 import { describe, expect, it } from 'vitest';
-import { SimBot, botSystems } from '../../tools/simbot';
-import { Network } from '../../src/core/types';
+import { JAIL_GAP, SimBot, botSystems } from '../../tools/simbot';
+import { DevType, Network } from '../../src/core/types';
 import { BF, type Building } from '../../src/sim/CityState';
 import { lPath } from '../../src/sim/actions';
 import { emergencyOf } from '../../src/sim/infra/emergency';
-import { getDef } from '../../src/sim/catalog';
-import { lotTouchesRoad } from '../../src/sim/economy/buildings';
+import { CATALOG, getDef } from '../../src/sim/catalog';
+import { lotTouchesRoad, placeBuilding } from '../../src/sim/economy/buildings';
 
 async function bot(size: number, neglect = false) {
   return new SimBot({ size, years: 1, seed: 7, difficulty: 'medium', terrain: 'plains', water: 0, quiet: true, noInfra: false, neglect }, await botSystems(false));
@@ -51,13 +51,39 @@ describe('bot: facilities', () => {
     b.st.funds = 5e6;
     b.st.unlocked.add('jail');
     b.st.stats.justice.overflow = 0.5;
+    // an R$$$ home in the middle of the industrial / utility block nearest the prison's target: that block is out
+    const st = b.st, N = st.size;
+    const cx = b.line(b.cbx) + 5 * 9, cz = b.trunkZ;
+    const near = b.blocks.filter((o) => o.use === 'I' || o.use === 'U')
+      .sort((p, q) => Math.hypot((p.x0 + p.x1) / 2 - cx, (p.z0 + p.z1) / 2 - cz) - Math.hypot((q.x0 + q.x1) / 2 - cx, (q.z0 + q.z1) / 2 - cz))[0];
+    const r3 = CATALOG.find((d) => d.devType === DevType.R3 && d.footprint[0] === 1 && d.footprint[1] === 1)
+      ?? CATALOG.find((d) => d.devType === DevType.R3)!;
+    const [hw, hd] = r3.footprint;
+    // the free lot nearest the block's centre
+    let hx = -1, hz = -1, hb = Infinity;
+    const mx = (near.x0 + near.x1) / 2, mz = (near.z0 + near.z1) / 2;
+    for (let z = near.z0; z + hd <= near.z1; z++) for (let x = near.x0; x + hw <= near.x1; x++) {
+      let free = true;
+      for (let zz = z; zz < z + hd && free; zz++) for (let xx = x; xx < x + hw; xx++) if (st.building[zz * N + xx] >= 0 || st.network[zz * N + xx]) { free = false; break; }
+      const dd = Math.hypot(x - mx, z - mz);
+      if (free && dd < hb) { hb = dd; hx = x; hz = z; }
+    }
+    expect(hx).toBeGreaterThanOrEqual(0);
+    placeBuilding(b.sim, {
+      id: st.nextBuildingId++, def: r3.id, x: hx, z: hz, w: hw, d: hd, rot: 0, variant: 0, pop: 8, jobs: 0,
+      capacity: r3.capacity ?? 8, wealth: 3, built: 1, age: 0, flags: BF.Powered | BF.Watered, baseY: 1, health: 1, unhappy: 0,
+    });
     b.ensureJustice();
-    const jails = [...b.st.buildings.values()].filter((o) => o.def === 'civ_jail');
+    const jails = [...st.buildings.values()].filter((o) => o.def === 'civ_jail');
     expect(jails.length).toBe(1);
     const j = jails[0];
-    expect(lotTouchesRoad(b.st, j.x, j.z, j.w, j.d)).toBe(true);
+    expect(lotTouchesRoad(st, j.x, j.z, j.w, j.d)).toBe(true);
     const blk = b.blocks.find((o) => j.x >= o.x0 && j.x < o.x1 && j.z >= o.z0 && j.z < o.z1);
     expect(['I', 'U']).toContain(blk?.use);
+    const G = JAIL_GAP;
+    expect(G).toBe(12);
+    const within = hx >= j.x - G && hx < j.x + j.w + G && hz >= j.z - G && hz < j.z + j.d + G;
+    expect(within).toBe(false);
   });
 
   it('replaces pumps by a treatment plant in place when no land is left', { timeout: 600000 }, async () => {
