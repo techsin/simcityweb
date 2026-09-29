@@ -228,19 +228,37 @@ function demoShare(b: Building, variant: number): { share: number; ref: number }
   return { share: s[c], ref: COHORT_BASE[c] };
 }
 
-/** PERF (256²: one pass per 'demographics' event, every DEMOGRAPHICS_EVENT_DAYS while shown): the class array is read
- *  directly and the cohort share inlined (cohortShares: the profile shares when any cohort field is unset) */
+/** per state: the residential buildings (the demographics rasters), rebuilt when buildings come or go */
+const homesCache = new WeakMap<CityState, { size: number; nextId: number; list: Building[]; val: Float32Array }>();
+function homesOf(st: CityState): { list: Building[]; val: Float32Array } {
+  let c = homesCache.get(st);
+  if (c && c.size === st.buildings.size && c.nextId === st.nextBuildingId) return c;
+  const cls = homeClassOf(st);
+  const list: Building[] = [];
+  const all = buildingList(st);
+  for (let k = 0; k < all.length; k++) {
+    const b = all[k];
+    const kk = cls[b.id];
+    if ((kk === 0 ? classify(cls, b) : kk) === 1) list.push(b);
+  }
+  // per building id: the value of its home in the last raster (0 = not a home / nobody lives there)
+  const val = c && c.val.length >= st.nextBuildingId ? c.val : new Float32Array(Math.max(1024, st.nextBuildingId * 2));
+  homesCache.set(st, (c = { size: st.buildings.size, nextId: st.nextBuildingId, list, val }));
+  return c;
+}
+
+/** PERF (256²: one pass per 'demographics' event and at most once a sim day after buildings change, while shown): the
+ *  cached homes list gives one value per home (cohort share inlined: cohortShares reads the profile shares when a
+ *  cohort field is unset), then one typed-array pass over the cells paints the footprints (st.building) */
 function buildDemographics(st: CityState, variant: number, out: Float32Array): void {
-  const N = st.size;
+  const C = st.cells, bld = st.building;
   const c = variant === DEMO_KIDS ? 0 : variant === DEMO_TEENS ? 1 : variant === DEMO_YAD ? 2 : 4;
   const inv = 1 / (2 * (variant === DEMO_WORKFORCE ? WORKFORCE_RATIO : COHORT_BASE[c]));
   const base = COHORT_BASE[c];
-  const cls = homeClassOf(st);
-  for (const b of st.buildings.values()) {
-    if (b.pop <= 0) continue;
-    const id = b.id;
-    const k = id < cls.length ? cls[id] : 0;
-    if ((k === 0 ? (id < cls.length ? classify(cls, b) : isResidential(st, b) ? 1 : 2) : k) !== 1) continue;
+  const { list, val } = homesOf(st);
+  for (let k = 0; k < list.length; k++) {
+    const b = list[k];
+    if (b.pop <= 0) { val[b.id] = 0; continue; }
     let t: number;
     if (variant === DEMO_WEALTH) t = (b.wealth < 1 ? 1 : b.wealth > 3 ? 3 : b.wealth) / 3;
     else {
@@ -253,9 +271,12 @@ function buildDemographics(st: CityState, variant: number, out: Float32Array): v
       const r = share * inv;
       t = DEMO_T0 + (1 - DEMO_T0) * (r < 0 ? 0 : r > 1 ? 1 : r);
     }
-    if (b.w === 1 && b.d === 1) {
-      if (b.x >= 0 && b.z >= 0 && b.x < N && b.z < N) out[b.z * N + b.x] = t;
-    } else fillFootprint(st, b, t, out);
+    val[b.id] = t;
+  }
+  const n = val.length;
+  for (let i = 0; i < C; i++) {
+    const id = bld[i];
+    if (id >= 0 && id < n) { const t = val[id]; if (t > 0) out[i] = t; }
   }
 }
 

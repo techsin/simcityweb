@@ -684,7 +684,8 @@ export const PARKING_BLEND = 0.5;
  * <= PR_CAR_LEG_MAX free-flow minutes (a jam does not move the garage out of reach; the logit sees the jam).
  * Capacity: a garage takes at most its spaces per assignment (pieces beyond it re-split without park & ride); its
  * price (minutes, persisted) follows the demand: price += PR_PRICE_STEP x ln(clamp(wanted / spaces, 0.25, 4)) per
- * assignment, clamped to [0, PR_PRICE_MAX], so demand settles at the spaces and a second garage takes the rest.
+ * assignment, clamped to [0, PR_PRICE_MAX] (a choice weight, not travel time: commutes exclude it), so demand settles
+ * at the spaces; garages within GARAGE_GROUP_CELLS pool their spaces (one price) so co-located garages fill together.
  * Car-less residents (demographics carlessShare) pay CARLESS_EXTRA_MIN more on car and park & ride trips (taxi / lift),
  * with or without garages.
  */
@@ -696,6 +697,8 @@ export const PR_CAR_LEG_MAX = 12;
 export const PR_LEG_SEARCH = 2.5;
 export const PR_PRICE_STEP = 0.75;
 export const PR_PRICE_MAX = 30;
+/** park & ride garages within this many cells of each other pool their spaces and share one price */
+export const GARAGE_GROUP_CELLS = 10;
 export const CARLESS_EXTRA_MIN = 12;
 /** stop load (riders / day) smoothing across assignments (weight of the new value): the crowding wait of the next
  *  assignment reads it, so an undamped value alternates (full stop -> long wait -> empty stop -> short wait) */

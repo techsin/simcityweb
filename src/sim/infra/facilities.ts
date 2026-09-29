@@ -496,8 +496,8 @@ const popSystems = new WeakMap<Simulation, boolean>();
 
 /**
  * JusticeSystem.init: police provider, city fill, per-state lists on placement / removal (use factors, justice refresh
- * when a prison / station / courthouse appears or goes) and the end-of-day bookkeeping (after every system's day:
- * staffing flags from the day's final jobs, the justice numbers from the day's buildings)
+ * when a prison / station / courthouse appears, goes, gains or loses power or burns) and the end-of-day bookkeeping
+ * (after every system's day: staffing flags from the day's final jobs, the justice numbers from the day's buildings)
  */
 export function facilityInit(sim: Simulation): void {
   try { if (!tierProvider('police')) ensurePoliceProvider(); providerOk = true; } catch { /* not ready */ }
@@ -528,9 +528,14 @@ export function facilityInit(sim: Simulation): void {
     useChanged(sim, b, true);
     if (classOf(st, cacheOf(st), b) & CLS_JUSTICE) justiceRefresh(sim);
   };
+  // a prison / station / courthouse gaining or losing power or burning down (utilities / fire emit buildingChanged)
+  const onChange = (b: Building) => {
+    if (classOf(st, cacheOf(st), b) & CLS_JUSTICE) justiceRefresh(sim);
+  };
   hooks.set(sim, [
     sim.events.on('buildingAdded', onAdd),
     sim.events.on('buildingRemoved', onRemove),
+    sim.events.on('buildingChanged', onChange),
     sim.events.on('day', () => facilityEndOfDay(sim)),
   ]);
 }

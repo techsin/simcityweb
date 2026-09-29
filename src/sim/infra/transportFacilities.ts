@@ -213,8 +213,10 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
         const ridersG = g.riders ?? prCars * CAR_OCCUPANCY;
         const wantedCars = (g.wanted ?? 0) / CAR_OCCUPANCY;
         const full = prCars >= 0.97 * spaces;
-        lines.push({ key: 'parkRide', label: 'Park & ride', value: `${fmt(prCars)} / ${fmt(spaces)} cars`, ratio: prCars / spaces,
-          status: full ? 'warn' : 'ok', hint: full ? `Full — ${fmt(wantedCars)} cars wanted: build another garage by a stop` : undefined });
+        const pooled = g.pooled ?? 0;
+        lines.push({ key: 'parkRide', label: 'Park & ride', value: `${fmt(prCars)} / ${fmt(spaces)} cars${pooled > 0 ? ` (shared with ${plural(pooled, 'garage', 'garages')} nearby)` : ''}`,
+          ratio: prCars / spaces, status: full ? 'warn' : 'ok',
+          hint: full ? `Full — ${fmt(wantedCars)} cars wanted: build another garage by a stop` : undefined });
         let hint: string | undefined;
         if (ridersG < 1) {
           hint = (g.catchment ?? 0) < 1

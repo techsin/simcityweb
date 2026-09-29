@@ -94,7 +94,7 @@ import {
   RAMP_PENALTY, BUS_NEED_SMOOTH, BUS_RHO_MAX, BUS_RHO_MIN, CARLESS_EXTRA_MIN, DEPOT_BUSES, DEPOT_FUNDING_MAX, DEPOT_RANGE,
   DEPOT_UNPOWERED, FERRY_TIME_PER_CELL, FREIGHT_SINK_MIN, GARAGE_SPACES, MINIBUS_FLEET,
   PARKING_BLEND, PARKING_MIN, PARKING_SHOP_W, PR_CAR_LEG_MAX, PR_HOME_MIN, PR_LEG_SEARCH, PR_LIMIT, PR_PARK_MIN, PR_PRICE_MAX,
-  PR_PRICE_STEP, PR_STOP_RADIUS, RAMP_ALPHA, RAMP_BY_NET, RAMP_CAP, RAMP_MAX_FACTOR, RAMP_MSA_MIN, RIDERS_PER_BUS,
+  PR_PRICE_STEP, PR_STOP_RADIUS, GARAGE_GROUP_CELLS, RAMP_ALPHA, RAMP_BY_NET, RAMP_CAP, RAMP_MAX_FACTOR, RAMP_MSA_MIN, RIDERS_PER_BUS,
   STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRUCK_LOCAL_FACTOR, WAIT_FERRY,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
@@ -857,12 +857,13 @@ export class TrafficSystem implements SimSystem {
    * riders walk to jobs nearby, or no stop — the garage is parking only). riders = commuters who switched (the same
    * number stats.transitFleet.parkRide sums), wanted = park & ride demand incl. commuters turned away when full,
    * catchment = workers within a PR_CAR_LEG_MAX free-flow drive for whom it is the park & ride option, price = its
-   * rationing price (minutes), state = GARAGE_STATE ('noRoad' | 'noStop' | 'noTransit' | 'downtown' | 'parkRide');
-   * null = not seen by an assignment yet
+   * rationing price (minutes), state = GARAGE_STATE ('noRoad' | 'noStop' | 'noTransit' | 'downtown' | 'parkRide'),
+   * pooled = other park & ride garages within GARAGE_GROUP_CELLS sharing its spaces (cars / riders / wanted are its
+   * share of the group's); null = not seen by an assignment yet
    */
   garageInfo(id: number): {
     stopId: number; parkRide: number; spaces: number; walkMin: number; ride: boolean;
-    riders?: number; wanted?: number; catchment?: number; price?: number; state?: string;
+    riders?: number; wanted?: number; catchment?: number; price?: number; state?: string; pooled?: number;
   } | null {
     for (let g = 0; g < this.gN; g++) {
       if (this.gBid[g] !== id) continue;
@@ -872,7 +873,7 @@ export class TrafficSystem implements SimSystem {
       return {
         stopId: s >= 0 ? this.stops.bid[s] : -1, parkRide: this.garageLoad.get(id) ?? 0, spaces: this.gSpaces[g], walkMin: this.gWalk[g],
         ride: state === GARAGE_PR, riders: last?.riders ?? 0, wanted: last?.want ?? 0, catchment: last?.catchment ?? 0,
-        price: this.garagePrice.get(id) ?? 0, state: GARAGE_STATE[state] ?? 'noStop',
+        price: this.garagePrice.get(id) ?? 0, state: GARAGE_STATE[state] ?? 'noStop', pooled: last?.pooled ?? 0,
       };
     }
     return null;
@@ -2165,7 +2166,7 @@ export class TrafficSystem implements SimSystem {
       if (this.oU[o] < 0.01 || this.candNode[o] >= 0) continue;
       const gq = this.oPrG[o];
       const trT = this.oTrT[o], prT = gq >= 0 && this.prRoom(gq) > 0.01 ? this.oPrT[o] : Infinity;
-      const viaPr = prT < trT;
+      const viaPr = prT + (gq >= 0 ? this.gPrice[gq] : 0) < trT;
       const t = viaPr ? prT : trT;
       if (!(t <= MAX_COMMUTE)) continue;
       const jT = viaPr ? srcT[this.gBoard[gq]] : this.oJobT[o];
@@ -2389,13 +2390,19 @@ export class TrafficSystem implements SimSystem {
     } else if (this.prAcc.length > 0) this.prAcc.fill(0, 0, Math.min(this.prAcc.length, this.road.n));
     this.garageLoad.clear();
     this.garageLast.clear();
+    const members = new Int32Array(this.gN + 1);
+    for (let q = 0; q < this.gN; q++) members[this.gGrp[q]]++;
     for (let q = 0; q < this.gN; q++) {
-      const id = this.gBid[q];
-      this.garageLast.set(id, { riders: this.gRiders[q], want: this.gWant[q], catchment: this.gCatch[q], state: this.gState[q] });
+      const id = this.gBid[q], r = this.gGrp[q];
+      // the group's cars / riders / demand shared out by spaces (a pooled garage shows its share)
+      const share = this.gGSp[r] > 0 ? this.gSpaces[q] / this.gGSp[r] : 0;
+      this.gCars[q] = this.gLoad[r] * share;
+      this.gRidersM[q] = this.gRiders[r] * share;
+      this.garageLast.set(id, { riders: this.gRidersM[q], want: this.gWant[r] * share, catchment: this.gCatch[q], state: this.gState[q], pooled: members[r] - 1 });
       if (this.gState[q] !== GARAGE_PR) { this.garagePrice.delete(id); continue; }
-      this.garageLoad.set(id, this.gLoad[q]);
-      const r = this.gWant[q] / CAR_OCCUPANCY / Math.max(1, this.gSpaces[q]);
-      const p = this.gPrice[q] + PR_PRICE_STEP * Math.log(r < 0.25 ? 0.25 : r > 4 ? 4 : r);
+      this.garageLoad.set(id, this.gCars[q]);
+      const x = this.gWant[r] / CAR_OCCUPANCY / Math.max(1, this.gGSp[r]);
+      const p = this.gPrice[q] + PR_PRICE_STEP * Math.log(x < 0.25 ? 0.25 : x > 4 ? 4 : x);
       const pc = p < 0.01 ? 0 : p > PR_PRICE_MAX ? PR_PRICE_MAX : p;
       if (pc > 0) this.garagePrice.set(id, pc); else this.garagePrice.delete(id);
     }
@@ -2719,7 +2726,7 @@ export class TrafficSystem implements SimSystem {
       const b = st.buildings.get(this.gBid[q]);
       if (!b) continue;
       const spaces = this.gSpaces[q];
-      addGarageSupply(N, b, spaces - Math.min(spaces, this.gState[q] === GARAGE_PR ? this.gLoad[q] : 0), S);
+      addGarageSupply(N, b, spaces - Math.min(spaces, this.gState[q] === GARAGE_PR ? this.gCars[q] : 0), S);
     }
     // blended with the previous raster (one assignment's arrivals are noisy); a fresh city / old save starts unblended
     let prev: Float32Array | null = null;

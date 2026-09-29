@@ -212,7 +212,12 @@ const RUBBLE_TILTS = [1, 0.75, 0.5, 0.25, 0];
 /** rubble culling spheres are padded by this (m, instead of PROXY_PAD): DynamicBatch scales a sphere by the matrix's
  *  longest column, which under-reads a shear's stretch (up to x1.27 at RUBBLE_SLOPE on both axes) */
 const RUBBLE_PAD = 1.8;
+/** horizontal scale of tiled rubble: neighbouring tiles overlap by ~1.6 cm, since coplanar beds of separately transformed
+ *  tiles leave pixel cracks along the seams (a dotted dark line through the lot); the overlap is the plain bed colour
+ *  on both tiles (prop.ts keeps the scorch marks 0.2 m inside the tile), so where they coincide nothing changes */
+const RUBBLE_TILE_S = 1.002;
 const _sh = new THREE.Matrix4();
+const _ts = new THREE.Vector3(RUBBLE_TILE_S, 1, RUBBLE_TILE_S);
 
 /** m = T(x, y + lift, z) · vertical shear (y += ax·dx + az·dz along the WORLD axes: walls stay upright) · m, with
  *  cell k's [ax, az, lift] from rubbleSlopes (none: plain translation) */
@@ -917,7 +922,7 @@ export class BuildingRenderer {
     const cx = (b.x + b.w / 2) * CELL_SIZE, cz = (b.z + b.d / 2) * CELL_SIZE;
     const yaw = b.rot * (Math.PI / 2);
     // burnt: the rubble model covers ONE 16 m cell (designed to tile) -> one tile per footprint cell, variant from the
-    // cell's place in the lot (rubbleVariant) + quarter turn from a per-cell hash, at scale 1, instead of one heap
+    // cell's place in the lot (rubbleVariant) + quarter turn from a per-cell hash, unscaled, instead of one heap
     // stretched over the lot; every tile follows the ground where it rises above the lot base (rubbleSlopes). Tiled
     // rubble has no LOD (<= 200 triangles a cell, and the cells must not switch one by one)
     const tiled = burnt && b.w * b.d > 1;
@@ -1029,11 +1034,12 @@ export class BuildingRenderer {
     const sxz = bi.anim > 0 ? 0.85 + 0.15 * Math.min(1, pop) : 1;
     if (bi.main >= 0) {
       if (v.burnt && b.w * b.d > 1) {
-        // one rubble tile per cell (cell 0 = main, the rest in bi.cells), each at its own quarter turn, scale 1, sheared
-        // onto the ground where it rises above the lot base (cell 0 last: its matrix is main's below)
+        // one rubble tile per cell (cell 0 = main, the rest in bi.cells), each at its own quarter turn, unscaled (bar the
+        // seam overlap, RUBBLE_TILE_S), sheared onto the ground where it rises above the lot base (cell 0 last: its matrix
+        // is main's below)
         for (let k = bi.cells.length; k >= 0; k--) {
           const x = b.x + (k % b.w), z = b.z + Math.floor(k / b.w);
-          shearOnto(this.m4.makeRotationY(bi.cellYaw[k]), (x + 0.5) * CELL_SIZE, v.baseY, (z + 0.5) * CELL_SIZE, bi.shear, k);
+          shearOnto(this.m4.makeRotationY(bi.cellYaw[k]).scale(_ts), (x + 0.5) * CELL_SIZE, v.baseY, (z + 0.5) * CELL_SIZE, bi.shear, k);
           if (k > 0) this.batch.setMatrix(bi.cells[k - 1], this.m4);
         }
       } else if (v.burnt) {
