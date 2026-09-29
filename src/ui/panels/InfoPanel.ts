@@ -37,7 +37,8 @@ import { desirabilityBreakdown } from '../../sim/economy/desirability';
 import { landValueBreakdown } from '../../sim/economy/landValue';
 import { growthLimits } from '../../sim/economy/growth';
 import { conditionBreakdown } from '../../sim/economy/population';
-import { cohortShares, needsExpectation, needsOf, tapWaterAt, waterRequired } from '../../sim/economy/demographics';
+import { type NeedReport, cohortShares, needsExpectation, needsOf, tapWaterAt, waterRequired } from '../../sim/economy/demographics';
+import { facilityLoad } from '../../sim/infra/catchments';
 import { TAP_SAFE } from '../../sim/economy/tuning';
 import { facilityReport } from '../../sim/infra/facilities';
 import { roadCellReport } from '../../sim/infra/transportFacilities';
@@ -47,7 +48,7 @@ import type { CrimeSystem } from '../../sim/infra/crime';
 import { NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
 import {
   type Bar, type Chip, type ModelRow, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView, growthRows, mainProblem,
-  needRows, pyramid, responseText, termBars,
+  landValueView, needRows, pyramid, responseText,
 } from '../inspectorModel';
 
 const FLAG_CHIPS: [number, string, Chip['cls'], Chip['topic']?][] = [
@@ -67,6 +68,11 @@ const FLAG_CHIPS: [number, string, Chip['cls'], Chip['topic']?][] = [
 ];
 
 const DIRS = ['east', 'south', 'west', 'north'];
+
+/** coverage tiers of the facilities that serve a resident need (the residents list names the nearest one) */
+const NEED_TIERS: Record<string, string[]> = {
+  elementary: ['elementary'], high: ['high'], college: ['college', 'library'], health: ['clinic', 'hospital'], play: ['play'], green: ['green'],
+};
 
 function devsForZone(z: Zone): DevType[] {
   const f = zoneFamily(z);
@@ -335,7 +341,11 @@ export class InfoPanel extends Panel {
     const rt = this.rt();
     const cond = growable ? conditionView(safeCall(() => conditionBreakdown(st, b), null)) : null;
     const des = growable && dev !== undefined ? desirabilityView(safeCall(() => desirabilityBreakdown(st, rt as EconRuntime, dev, ci), null)) : null;
-    this.body.appendChild(this.problem(mainProblem({ warnings, condition: cond, desirability: des, abandoned: !!(b.flags & BF.Abandoned) })) ?? h('span'));
+    // desirability is what limits the building's stage (the Why? section's growth rows say the same)
+    const gl = growable && dev !== undefined ? safeCall(() => growthLimits(st, ci, dev), null) : null;
+    const stage = def?.stage ?? 1;
+    const desLimited = !!gl && !gl.rejected && gl.desStage <= stage && gl.desStage < Math.min(gl.popStage, gl.zoneStage);
+    this.body.appendChild(this.problem(mainProblem({ warnings, condition: cond, desirability: des, abandoned: !!(b.flags & BF.Abandoned), desLimited })) ?? h('span'));
 
     // ---- key rows (at most 6)
     const kv = this.kv();
@@ -434,23 +444,60 @@ export class InfoPanel extends Panel {
       const def = getDef(b.def);
       out.push(this.rows(growthRows(gl, def?.stage)));
     }
-    const lv = termBars(safeCall(() => landValueBreakdown(st, rt as EconRuntime, ci), []));
-    if (lv.length) out.push(this.bars(`Land value ${pct(st.landValue[ci])} — factors`, lv, 'pts'));
+    const lv = landValueView(safeCall(() => landValueBreakdown(st, rt as EconRuntime, ci), []));
+    if (lv.bars.length) out.push(this.bars(`Land value ${pct(st.landValue[ci])} — factors`, lv.bars, 'pts', lv.note));
     const cr = crimeBars(safeCall(() => this.ctx.sim.getSystem<CrimeSystem>('crime')?.termsOf?.(b.id) ?? null, null));
     if (cr && cr.total > 0.02) out.push(this.bars(`Crime ${pct(cr.total)} — causes (police removes ${pct(cr.police)})`, cr.bars, 'pts', cr.multiplier > 1.01 ? `×${cr.multiplier.toFixed(2)} from ordinances and the justice system` : undefined, true));
     return out;
   }
 
+  /**
+   * the facility serving a need: NeedReport.providerId when set, else the nearest standing facility of the need's tier
+   * whose reach covers the home ("Elementary School · 92% full")
+   */
+  private providerFor(b: Building): (n: NeedReport) => string | undefined {
+    const rt = this.rt();
+    const sim = this.ctx.sim;
+    const cache = new Map<string, string | undefined>();
+    const cx = b.x + b.w / 2, cz = b.z + b.d / 2;
+    const label = (f: Building) => {
+      const name = getDef(f.def)?.name ?? titleCase(f.def);
+      const L = safeCall(() => facilityLoad(sim, f.id), null);
+      return L && L.capacity > 0 && Number.isFinite(L.capacity) ? `${name} · ${pct(L.utilization)} full` : name;
+    };
+    return (n) => {
+      if (n.providerId !== undefined) {
+        const f = this.ctx.state.buildings.get(n.providerId);
+        return f ? label(f) : undefined;
+      }
+      const tiers = NEED_TIERS[n.kind];
+      if (!tiers || !rt) return undefined;
+      if (cache.has(n.kind)) return cache.get(n.kind);
+      rt.ensureLists();
+      let best: Building | null = null, bd = Infinity;
+      for (const f of rt.plopped) {
+        if (f.flags & BF.Burnt || f.built < 1) continue;
+        const cov = getDef(f.def)?.coverage;
+        if (!cov?.tier || !tiers.includes(cov.tier)) continue;
+        const d = Math.hypot(f.x + f.w / 2 - cx, f.z + f.d / 2 - cz);
+        if (d <= cov.radius && d < bd) { bd = d; best = f; }
+      }
+      const t = best ? label(best) : undefined;
+      cache.set(n.kind, t);
+      return t;
+    };
+  }
+
   private residents(b: Building, needs: ReturnType<typeof needsOf>): (HTMLElement | null)[] {
     const out: (HTMLElement | null)[] = [];
-    const rows = needRows(needs);
+    const rows = needRows(needs, this.providerFor(b));
     if (rows.length) {
       const list = h('div', { class: 'ins-needs' });
       for (const r of rows.slice(0, 10)) {
-        list.appendChild(h('div', { class: 'ins-need ' + (r.met ? 'met' : 'unmet') },
+        list.appendChild(h('div', { class: 'ins-need ' + (r.met ? 'met' : 'unmet'), title: r.provider ? `${r.label}: ${r.provider}` : r.label },
           h('span', { class: 'nm', html: icon(r.met ? 'check' : 'alert', 12) }),
           h('span', { class: 'nw' }, `${r.who} ${num(r.people)}`),
-          h('span', { class: 'nl' }, r.label),
+          h('span', { class: 'nl' }, r.label, r.provider ? h('small', { class: 'np' }, r.provider) : null),
           h('span', { class: 'na' }, pct(r.access)),
         ));
       }
@@ -682,8 +729,8 @@ export class InfoPanel extends Panel {
         const out: (HTMLElement | null)[] = [];
         if (des) out.push(this.bars(`Desirability ${DEV_TYPE_LABELS[best]} — what drives it`, des.bars, 'pts', des.note));
         out.push(this.rows(growthRows(safeCall(() => growthLimits(st, i, best), null))));
-        const lv = termBars(safeCall(() => landValueBreakdown(st, rt as EconRuntime, i), []));
-        if (lv.length) out.push(this.bars('Land value — factors', lv, 'pts'));
+        const lv = landValueView(safeCall(() => landValueBreakdown(st, rt as EconRuntime, i), []));
+        if (lv.bars.length) out.push(this.bars('Land value — factors', lv.bars, 'pts', lv.note));
         return out;
       }));
     }

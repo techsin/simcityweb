@@ -339,7 +339,7 @@ export class TopBar {
       ['budget', 'budget', 'Budget (M)', () => this.ctx.panels.toggle('budget')],
       ['graphs', 'graphs', 'Graphs (G)', () => this.ctx.panels.toggle('graphs')],
       ['stats', 'stats', 'City statistics (J)', () => this.ctx.panels.toggle('stats')],
-      ['demographics', 'people', 'Demographics — ages, schools, services, tourism (P)', () => this.ctx.panels.toggle('demographics')],
+      ['demographics', 'demographics', 'Demographics — ages, schools, services, tourism (P)', () => this.ctx.panels.toggle('demographics')],
       ['advisors', 'advisors', 'Advisors & news (N)', () => this.ctx.panels.toggle('advisors')],
       ['ordinances', 'ordinances', 'Ordinances (Y)', () => this.ctx.panels.toggle('ordinances')],
       ['rewards', 'trophy', 'Rewards & unlocks', () => this.ctx.panels.toggle('rewards')],

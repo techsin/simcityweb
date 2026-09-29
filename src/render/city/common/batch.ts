@@ -17,7 +17,8 @@
  * Whole tiles are skipped when disabled by the owner (setTileEnabled: e.g. props beyond their LOD distance), when
  * none of their instances casts into the cascade, or when their swept box misses the receiver; tiles fully inside the
  * frustum / receiver skip the per-instance tests. Per-tile bounds / masks are recomputed lazily (exact, also after
- * removals). The build loop reads typed per-instance mirrors (visibility, geometry) instead of three's objects.
+ * removals). The build loop reads typed per-instance mirrors (visibility, geometry) instead of three's objects, and the
+ * per-instance tests read packed per-tile copies of the instances' spheres / masks (InstPack) in list order.
  * Optionally (sortFront) main-pass lists are sorted nearest first so the depth test rejects occluded fragments
  * before shading.
  *
@@ -117,6 +118,19 @@ interface PassSlot {
   lrz: number;
 }
 
+/** instances for the per-instance tests, packed in list order with their culling spheres and cascade masks: a tile's
+ *  visible instances (static batches, refreshed when the tile's content changes) or a dynamic batch's visible instances
+ *  (once per content version, i.e. per frame while they move, shared by all passes). The tests then read memory
+ *  sequentially instead of four scattered per-instance arrays. */
+interface InstPack {
+  ver: number;
+  n: number;
+  ids: Uint32Array;
+  /** x, y, z, radius per instance */
+  sph: Float32Array;
+  mk: Uint8Array;
+}
+
 /** a tile's cached block for one pass class (see DynamicBatch.tileCache) */
 interface TileBlock {
   /** tile content version the ids were collected for */
@@ -142,7 +156,7 @@ const _sp = new Float64Array(4);
 const _fp = new Float64Array(24);
 const _rp = new Float64Array(24);
 const _rnl = new Float64Array(6);
-/** the planes an instance list is actually tested against, compacted (pushList): a partly visible tile only needs the
+/** the planes an instance list is actually tested against, compacted (pushPack): a partly visible tile only needs the
  *  planes its box straddles (the others hold for every instance in it), typically 1-2 of the 6 */
 const _fq = new Float64Array(24);
 const _rq = new Float64Array(24);
@@ -155,7 +169,7 @@ let _cpCam: THREE.Camera | null = null;
 let _cpFrame = -1;
 /** render() call of the pass being prepared (beforePass) */
 let _renderFrame = -1;
-/** list-build doubles handed to pushList (guard band, min caster radius, receiver ground, 1 / light dir y) */
+/** list-build doubles handed to pushPack / pushList (guard band, min caster radius, receiver ground, 1 / light dir y) */
 const _plf = new Float64Array(4);
 /** current camera orientation */
 const _rot = new Float64Array(9);
@@ -296,6 +310,9 @@ export class DynamicBatch {
   private tileVer = new Uint32Array(0);
   private tileSwap = new Uint32Array(0);
   private tileCache: (TileBlock | null)[] = [];
+  /** per tile: its instance pack (see InstPack); dynamic batches: the visible instances' pack */
+  private tilePack: (InstPack | null)[] = [];
+  private dynPack: InstPack | null = null;
   /** bumped whenever drawRanges() recomputed the per-geometry ranges */
   private rangesGen = 0;
   private untiled: number[] = [];
@@ -580,6 +597,7 @@ export class DynamicBatch {
     this.tileVer = new Uint32Array(T);
     this.tileSwap = new Uint32Array(T);
     this.tileCache = new Array(T * 3).fill(null);
+    this.tilePack = new Array(T).fill(null);
     this.ensureCap(this.mesh.maxInstanceCount);
     this.instTile.fill(-1);
     this.instSlot.fill(-1);
@@ -916,10 +934,7 @@ export class DynamicBatch {
     }
     if (!recv) return;
     const rp = _rp, rnl = _rnl, d = recv.dir;
-    for (let i = 0; i < 6; i++) {
-      const pl = recv.planes[i], n = pl.normal, o = i * 4;
-      rp[o] = n.x; rp[o + 1] = n.y; rp[o + 2] = n.z; rp[o + 3] = pl.constant;
-    }
+    rp.set(recv.pl);
     if (s.banded) {
       const o = recv.origin, f = recv.fwd, rph = recv.phi;
       if (rtilt > 0) tiltPlanes(rp, f.x, f.y, f.z, o.x, o.y, o.z, rtilt);
@@ -1038,7 +1053,7 @@ export class DynamicBatch {
             k++;
           }
           if (s.starts.length < n + list.length) this.ensureList(s, n + list.length, n);
-          if (kind !== 0) { n = this.pushList(s, list, list.length, np, size, nr, n, cbit, mat); continue; }
+          if (kind !== 0) { n = this.pushPack(s, this.packOf(ti), np, size, nr, n, cbit); continue; }
           // every visible instance of the tile (with the cascade bit) is drawn: copy its cached block
           const ck = ti * 3 + cls;
           let cc = this.tileCache[ck];
@@ -1062,7 +1077,7 @@ export class DynamicBatch {
       if (un) {
         if (s.starts.length < n + un) this.ensureList(s, n + un, n);
         allPlanes();
-        n = this.pushList(s, this.untiled, un, 6, minR > 0, recv ? 6 : 0, n, cbit, mat);
+        n = mat ? this.pushPack(s, this.packDyn(mat), 6, minR > 0, recv ? 6 : 0, n, cbit) : this.pushList(s, this.untiled, un, minR > 0, recv ? 6 : 0, n, cbit);
       }
       if (sorted && n > 1) this.sortList(s, n);
     } else s.selValid = false;
@@ -1131,55 +1146,129 @@ export class DynamicBatch {
     s.selT = t; s.selV = v; s.selO = o;
   }
 
-  /**
-   * List-build inner loop over the first len entries of an instance list (a method, not a per-build closure: no
-   * allocation, stable JIT feedback). Per-instance tests: the first np frustum planes of _fq, the first nr receiver
-   * planes of _rq / _rnq (shadow passes: only casters whose shadow can reach the visible slice), and the caster size
-   * (size). Doubles in _plf. The caller made room for len more entries. Returns n.
-   */
-  private pushList(s: PassSlot, list: number[], len: number, np: number, size: boolean, nr: number, n: number, cbit: number, mat: Float32Array | null): number {
+  /** tile ti's instance pack, refreshed when the tile's content changed (tileVer: visibility, masks, membership and
+   *  culling spheres all bump it; geometry swaps do not, the draw ranges are looked up per build) */
+  private packOf(ti: number): InstPack {
+    const ver = this.tileVer[ti];
+    let pk = this.tilePack[ti];
+    if (pk !== null && pk.ver === ver) return pk;
+    const list = this.tileLists[ti];
+    if (pk === null || pk.ids.length < list.length) pk = this.tilePack[ti] = this.newPack(list.length + 16);
+    const vis = this.instVis, imask = this.instMask, sph = this.sph, ids = pk.ids, ps = pk.sph, mk = pk.mk;
+    let n = 0;
+    for (let j = 0; j < list.length; j++) {
+      const id = list[j];
+      if (!vis[id]) continue;
+      const o = id * 4, q = n * 4;
+      ids[n] = id;
+      mk[n] = imask[id];
+      ps[q] = sph[o]; ps[q + 1] = sph[o + 1]; ps[q + 2] = sph[o + 2]; ps[q + 3] = sph[o + 3];
+      n++;
+    }
+    pk.n = n;
+    pk.ver = ver;
+    return pk;
+  }
+
+  /** a dynamic batch's pack of its visible instances (the front of `untiled`), positions from the live matrices: built
+   *  by the first pass after a content change (vehicles: once per frame) and shared by the others */
+  private packDyn(mat: Float32Array): InstPack {
+    const un = this.untiledVis;
+    let pk = this.dynPack;
+    if (pk !== null && pk.ver === this.version && pk.n === un) return pk;
+    if (pk === null || pk.ids.length < un) pk = this.dynPack = this.newPack(Math.ceil(un * 1.25) + 16);
+    const u = this.untiled, imask = this.instMask, geo = this.instGeo, grad = this.geoRad, ids = pk.ids, ps = pk.sph, mk = pk.mk;
+    for (let j = 0; j < un; j++) {
+      const id = u[j], o = id * 16, q = j * 4;
+      ids[j] = id;
+      mk[j] = imask[id];
+      ps[q] = mat[o + 12]; ps[q + 1] = mat[o + 13]; ps[q + 2] = mat[o + 14]; ps[q + 3] = grad[geo[id]];
+    }
+    pk.n = un;
+    pk.ver = this.version;
+    return pk;
+  }
+
+  private newPack(cap: number): InstPack {
+    return { ver: -1, n: 0, ids: new Uint32Array(cap), sph: new Float32Array(cap * 4), mk: new Uint8Array(cap) };
+  }
+
+  /** pushList over an instance pack (always with some per-instance test: tile kinds 1 / 2, dynamic lists) */
+  private pushPack(s: PassSlot, pk: InstPack, np: number, size: boolean, nr: number, n: number, cbit: number): number {
     const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3];
-    const vis = this.instVis, imask = this.instMask, geo = this.instGeo, grad = this.geoRad, sph = this.sph, gS = this.gStart, gC = this.gCount;
+    const geo = this.instGeo, gS = this.gStart, gC = this.gCount;
     const fq = _fq, rq = _rq, rnq = _rnq;
     const starts = s.starts, counts = s.counts, ind = s.ids;
-    const tests = np > 0 || nr > 0 || size;
+    const ids = pk.ids, ps = pk.sph, mk = pk.mk, pn = pk.n;
+    for (let j = 0; j < pn; j++) {
+      if (cbit && !(mk[j] & cbit)) continue;
+      const o = j * 4;
+      const cx = ps[o], cy = ps[o + 1], cz = ps[o + 2], r = ps[o + 3];
+      if (size && r < minR) continue;
+      // the sphere swept away from the light down to the ground must reach the slice (receiverSweepSphere; the band is
+      // in the planes)
+      if (nr > 0) {
+        const T = Math.min(6000, Math.max(0, (cy + r + mr - rGround) * rInv));
+        let hit = true;
+        for (let i = 0; i < nr; i++) {
+          const k = i * 4;
+          const d0 = rq[k] * cx + rq[k + 1] * cy + rq[k + 2] * cz + rq[k + 3];
+          if (d0 < -r && d0 - T * rnq[i] < -r) { hit = false; break; }
+        }
+        if (!hit) continue;
+      }
+      if (np > 0) {
+        let out = false;
+        for (let p = 0; p < np; p++) {
+          const k = p * 4;
+          if (fq[k] * cx + fq[k + 1] * cy + fq[k + 2] * cz + fq[k + 3] < -r) { out = true; break; }
+        }
+        if (out) continue;
+      }
+      const id = ids[j], gid = geo[id];
+      starts[n] = gS[gid];
+      counts[n] = gC[gid];
+      ind[n] = id;
+      n++;
+    }
+    return n;
+  }
+
+  /**
+   * List-build inner loop over the first len entries of a static batch's untiled instances (a method, not a per-build
+   * closure: no allocation, stable JIT feedback): the 6 frustum planes of _fq, the first nr receiver planes of _rq /
+   * _rnq (shadow passes: only casters whose shadow can reach the visible slice), and the caster size (size). Doubles in
+   * _plf. The caller made room for len more entries. Returns n.
+   */
+  private pushList(s: PassSlot, list: number[], len: number, size: boolean, nr: number, n: number, cbit: number): number {
+    const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3];
+    const vis = this.instVis, imask = this.instMask, geo = this.instGeo, sph = this.sph, gS = this.gStart, gC = this.gCount;
+    const fq = _fq, rq = _rq, rnq = _rnq;
+    const starts = s.starts, counts = s.counts, ind = s.ids;
     for (let j = 0; j < len; j++) {
       const id = list[j];
       if (!vis[id]) continue;
       if (cbit && !(imask[id] & cbit)) continue;
-      const gid = geo[id];
-      if (tests) {
-        let cx: number, cy: number, cz: number, r: number;
-        if (mat) {
-          const o = id * 16;
-          cx = mat[o + 12]; cy = mat[o + 13]; cz = mat[o + 14];
-          r = grad[gid];
-        } else {
-          const o = id * 4;
-          cx = sph[o]; cy = sph[o + 1]; cz = sph[o + 2]; r = sph[o + 3];
+      const o = id * 4;
+      const cx = sph[o], cy = sph[o + 1], cz = sph[o + 2], r = sph[o + 3];
+      if (size && r < minR) continue;
+      if (nr > 0) {
+        const T = Math.min(6000, Math.max(0, (cy + r + mr - rGround) * rInv));
+        let hit = true;
+        for (let i = 0; i < nr; i++) {
+          const k = i * 4;
+          const d0 = rq[k] * cx + rq[k + 1] * cy + rq[k + 2] * cz + rq[k + 3];
+          if (d0 < -r && d0 - T * rnq[i] < -r) { hit = false; break; }
         }
-        if (size && r < minR) continue;
-        // the sphere swept away from the light down to the ground must reach the slice (receiverSweepSphere; the band
-        // is in the planes)
-        if (nr > 0) {
-          const T = Math.min(6000, Math.max(0, (cy + r + mr - rGround) * rInv));
-          let hit = true;
-          for (let i = 0; i < nr; i++) {
-            const o = i * 4;
-            const d0 = rq[o] * cx + rq[o + 1] * cy + rq[o + 2] * cz + rq[o + 3];
-            if (d0 < -r && d0 - T * rnq[i] < -r) { hit = false; break; }
-          }
-          if (!hit) continue;
-        }
-        if (np > 0) {
-          let out = false;
-          for (let p = 0; p < np; p++) {
-            const o = p * 4;
-            if (fq[o] * cx + fq[o + 1] * cy + fq[o + 2] * cz + fq[o + 3] < -r) { out = true; break; }
-          }
-          if (out) continue;
-        }
+        if (!hit) continue;
       }
+      let out = false;
+      for (let p = 0; p < 6; p++) {
+        const k = p * 4;
+        if (fq[k] * cx + fq[k + 1] * cy + fq[k + 2] * cz + fq[k + 3] < -r) { out = true; break; }
+      }
+      if (out) continue;
+      const gid = geo[id];
       starts[n] = gS[gid];
       counts[n] = gC[gid];
       ind[n] = id;

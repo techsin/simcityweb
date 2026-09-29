@@ -304,7 +304,7 @@ const PLOPPABLES: BuildingDef[] = [
     coverage: { kind: 'police', radius: 12, strength: 0.6, tier: 'police', metric: 'drive' },
     description: 'Neighbourhood post: patrols about 12 tiles by road for up to 6,000 crime-weighted people, 1 patrol car, 5 holding cells. Needs power.' }),
   p({ id: 'civ_police_station', name: 'Police Station', category: 'police', service: 'police', cost: 1500, upkeep: 170, jobs: 30, powerUse: 0.2, waterUse: 8,
-    coverage: { kind: 'police', radius: 26, strength: 0.74, tier: 'police', metric: 'drive' },
+    coverage: { kind: 'police', radius: 26, strength: 0.85, tier: 'police', metric: 'drive' },
     description: 'Patrols about 26 tiles by road (avenues and highways reach farther, streets less) for up to 30,000 crime-weighted people — an overloaded station patrols its whole area less. 2 patrol cars answer crime calls; 25 holding cells. Needs power.' }),
   p({ id: 'civ_police_hq', name: 'Police Headquarters', category: 'police', service: 'police', cost: 8000, upkeep: 900, jobs: 120, powerUse: 0.8, waterUse: 30,
     coverage: { kind: 'police', radius: 42, strength: 1.0, tier: 'police', metric: 'drive' }, requires: 'police_hq',

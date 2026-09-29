@@ -119,36 +119,103 @@ export const CONDITION_HINTS: Readonly<Record<string, string>> = {
   noise: 'Too noisy to sleep: plant trees, keep homes away from highways and industry',
 };
 
+/**
+ * fix hints of desirability terms (desirability.ts DESIR_TERM_IDS). Only these terms can lead the main problem: the
+ * base appeal, rent, wealthy neighbours and prestige are no problem a player fixes.
+ */
+export const DESIRABILITY_HINTS: Readonly<Record<string, string>> = {
+  air: 'Keep industry and power plants downwind, plant trees, or pass the Clean Air Act',
+  noise: 'Plant trees; keep homes away from highways and industry',
+  crime: 'Build a police station nearby',
+  water: 'Treat the water, or move the pumps away from pollution',
+  garbage: 'A landfill or incinerator within truck range',
+  lv: 'Parks, services and landmarks raise land value',
+  commute: 'Avenues, highways and transit shorten commutes',
+  traffic: 'Calmer streets: route through traffic onto avenues, or add transit',
+  stigma: 'Move or buffer the unwanted neighbour (parks, trees)',
+  soil: 'It fades once the polluter is gone',
+  slope: 'Level the ground (Terrain tool)',
+  parking: 'A parking garage next to a transit stop',
+  tax: 'Lower this tax',
+  police: 'A police station nearby',
+  fire: 'A fire station nearby',
+  health: 'A clinic or hospital nearby',
+  edu: 'Schools nearby',
+  elem: 'An elementary school within walking distance',
+  high: 'A high school nearby',
+  college: 'A university or library nearby',
+  park: 'Parks and playgrounds nearby',
+  play: 'Playgrounds or sports fields nearby',
+  green: 'Parks and gardens nearby',
+  transit: 'Bus stops or a subway station nearby',
+  shops: 'Zone shops nearby',
+  freight: 'Highway or freight rail access',
+  popNear: 'More homes nearby bring customers',
+  skill: 'Schools raise the workforce’s education',
+  campus: 'A university nearby',
+  visitors: 'Landmarks and parks bring visitors',
+  trees: 'Plant trees',
+};
+
 export interface MainProblem {
   text: string;
   hint?: string;
   tone: 'bad' | 'warn';
 }
 
+/** a building whose condition heads below this struggles (the main problem box shows its worst penalty) */
+export const STRUGGLE_TARGET = 0.6;
+/** a condition penalty this large is a problem even for a building that copes */
+export const PENALTY_PROBLEM = 0.1;
+/** desirability below this is low enough to name what holds it back (growth stops at GROW_MIN_DESIR = -0.25) */
+export const DESIRABILITY_LOW = 0;
+
 /**
- * The one line the default inspector view leads with (critic item 30): a facility warning (they carry their fix), else
- * the largest negative condition penalty with its fix, else the largest negative desirability factor.
+ * The one line the default inspector view leads with (critic item 30) — only when the building actually struggles,
+ * always with its fix: a facility warning (they carry their fix); else, while it is abandoned / counting down /
+ * heading below STRUGGLE_TARGET or one penalty reaches PENALTY_PROBLEM, the worst condition penalty with its hint;
+ * else, while its desirability is low (< DESIRABILITY_LOW) or is what limits its stage (desLimited), the worst
+ * desirability factor that has a hint (DESIRABILITY_HINTS). A healthy building shows nothing.
  */
 export function mainProblem(input: {
   warnings?: readonly string[];
   condition?: ConditionView | null;
   desirability?: DesirabilityView | null;
   abandoned?: boolean;
+  /** desirability is the binding growth limit of the building (growthLimits: desStage ≤ its stage < pop / zone stage) */
+  desLimited?: boolean;
 }): MainProblem | null {
   const w = input.warnings?.find((x) => !/^Under construction/.test(x));
   if (w) {
     const i = w.indexOf(' — ');
     return i > 0 ? { text: w.slice(0, i), hint: w.slice(i + 3), tone: 'bad' } : { text: w, tone: 'warn' };
   }
-  const neg = input.condition?.bars.filter((b) => b.id !== 'desirability' && b.value < -0.02).sort((a, b) => a.value - b.value)[0];
-  if (neg) {
+  const c = input.condition;
+  const countdown = (c?.abandon ?? null) !== null;
+  const struggling = !!input.abandoned || countdown || (!!c && c.target < STRUGGLE_TARGET);
+  const neg = c?.bars.filter((b) => b.id !== 'desirability' && b.value < -0.02).sort((a, b) => a.value - b.value)[0];
+  if (neg && (struggling || neg.value <= -PENALTY_PROBLEM)) {
     const hint = CONDITION_HINTS[neg.id] || neg.detail;
-    const tone = input.abandoned || (input.condition?.abandon ?? null) !== null || neg.value <= -0.2 ? 'bad' : 'warn';
+    const tone = input.abandoned || countdown || neg.value <= -0.2 ? 'bad' : 'warn';
     return { text: neg.detail && neg.id === 'needs' ? `${neg.label}: ${neg.detail}` : neg.label, hint: neg.id === 'needs' ? CONDITION_HINTS.needs : hint, tone };
   }
-  const d = input.desirability?.bars.filter((b) => b.value < -0.05).sort((a, b) => a.value - b.value)[0];
-  if (d) return { text: `Held back by ${d.label.toLowerCase()}`, hint: d.detail, tone: 'warn' };
+  const des = input.desirability;
+  if (des && (des.value < DESIRABILITY_LOW || struggling || input.desLimited)) {
+    const d = des.bars.filter((b) => b.value < -0.05 && DESIRABILITY_HINTS[b.id]).sort((a, b) => a.value - b.value)[0];
+    if (d) return { text: `Held back by ${d.label.toLowerCase()}`, hint: DESIRABILITY_HINTS[d.id], tone: 'warn' };
+  }
   return null;
+}
+
+// ------------------------------------------------------------------------------------------------ land value
+/** landValueBreakdown → bars; the clamp term ("Floored at 0%" / "Capped at 100%") becomes a note, not a bar */
+export function landValueView(terms: readonly FactorTerm[] | null | undefined): { bars: Bar[]; note?: string } {
+  if (!terms || !terms.length) return { bars: [] };
+  const clamp = terms.find((t) => t.id === 'clamp');
+  const bars = termBars(terms.filter((t) => t.id !== 'clamp'));
+  if (!clamp || !Number.isFinite(clamp.value) || Math.abs(clamp.value) < 1e-3) return { bars };
+  const raw = terms.filter((t) => t.id !== 'clamp' && t.id !== 'smoothing').reduce((a, t) => a + (Number.isFinite(t.value) ? t.value : 0), 0);
+  return { bars, note: `${clamp.label}: the factors add up to ${raw >= 0 ? '+' : '−'}${Math.abs(Math.round(raw * 100))}%` };
 }
 
 // ------------------------------------------------------------------------------------------------ growth limits
@@ -228,15 +295,28 @@ export interface NeedRow {
   label: string;
   met: boolean;
   access: number;
+  /** the facility serving the need ("Elementary School · 92% full"), when known */
+  provider?: string;
+  kind: string;
 }
 
-/** needsOf → rows ("Children 34 · Elementary school ✓ 92%"), unmet first, jobs / water at the end */
-export function needRows(needs: readonly NeedReport[] | null | undefined): NeedRow[] {
+/**
+ * needsOf → rows ("Children 34 · Elementary school ✓ 92%"), unmet first; whole-household needs read "Everyone". A met
+ * quiet-streets need drops the "(too noisy)" note (it is only a little noisy). `provider(n)` names the serving
+ * facility (NeedReport.providerId, or the UI's nearest facility of the tier).
+ */
+export function needRows(needs: readonly NeedReport[] | null | undefined, provider?: (n: NeedReport) => string | undefined): NeedRow[] {
   if (!needs || !needs.length) return [];
   const order = (n: NeedReport) => (n.met ? 1 : 0);
   return [...needs]
     .sort((a, b) => order(a) - order(b) || b.people - a.people)
-    .map((n) => ({ who: n.cohort >= 0 ? COHORT_NAME[n.cohort] : 'Household', people: n.people, label: n.label, met: n.met, access: n.access }));
+    .map((n) => {
+      const label = n.kind === 'quiet' && n.met ? n.label.replace(/\s*\(too noisy\)/, '') : n.label;
+      const r: NeedRow = { who: n.cohort >= 0 ? COHORT_NAME[n.cohort] : 'Everyone', people: n.people, label, met: n.met, access: n.access, kind: n.kind };
+      const pv = provider?.(n);
+      if (pv) r.provider = pv;
+      return r;
+    });
 }
 
 export interface PyramidBar {

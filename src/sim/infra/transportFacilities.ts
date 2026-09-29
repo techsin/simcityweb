@@ -7,9 +7,15 @@
  * tr_ferry_terminal (airport / seaport "use" lines are WP7a's; the seaport's throughput comes from freightSinkTrucks).
  *
  * Also the read-only views WP5 renders (critic items 22 / 23): roadCellReport (interchange load, trucks, bus riders on
- * a road cell), stopsNear (garage preview), ferryPartnersFor (ferry preview), ferryLinks (render team: ferry boats),
- * truckVolumeOf (Traffic overlay "Trucks"), transportUseFactor (WP7a's facilityUseFactor: 0 = not connected), and
- * TRANSPORT_EFFECT_METRICS (facilities matrix test). Road-flag bus stops (netFlags bit 4) are legacy: no report.
+ * a road cell), stopsNear (garage preview; ride = false marks a downtown stop — a garage there is parking, not park &
+ * ride), ferryPartnersFor (ferry preview), ferryLinks (render team: ferry boats), truckVolumeOf (Traffic overlay
+ * "Trucks"), transportUseFactor (WP7a's facilityUseFactor: 0 = not connected), and TRANSPORT_EFFECT_METRICS (facilities
+ * matrix test). Road-flag bus stops (netFlags bit 4) are legacy: no report.
+ * Report rules (r1): a closed (burnt / abandoned) facility says so first; riders are rides (walkers who would board and
+ * alight at the same stop are counted apart, with a hint); a long bus wait blames the fleet only when its pool is short
+ * (rho < 1), else the stop's crowding; crowded stops / stations / terminals name the fix; a garage names its real state
+ * (no road, no stop, a stop without transit, a downtown stop, park & ride with cars / riders / demand of the last
+ * assignment — the numbers stats.transitFleet sums).
  * Every function accepts a sim without the traffic system (infra-less tests) and returns the documented stub value.
  */
 import type { Building, CityState } from '../CityState';
@@ -88,9 +94,17 @@ function compass(st: CityState, a: Building, b: Building): string {
   const deg = (Math.atan2(dx, -dz) * 180 / Math.PI + 360) % 360;
   return ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(deg / 45) % 8];
 }
-/** hint for a stop / station / terminal without riders whose nearby residents walk to jobs beside it */
-function walkersHint(walkers: number, kind: 'stop' | 'station' | 'terminal'): string | undefined {
-  if (!(walkers >= 1)) return undefined;
+/**
+ * hint for a stop / station / terminal without riders: its nearby residents walk to jobs beside it, or no job is
+ * reachable by transit from it at all (reach = false: nothing to ride to)
+ */
+function walkersHint(walkers: number, kind: 'stop' | 'station' | 'terminal', reach?: boolean): string | undefined {
+  if (!(walkers >= 1)) {
+    if (reach !== false) return undefined;
+    return kind === 'stop' ? 'No jobs reachable by bus from here — buses run between stops: put a stop near the jobs too'
+      : kind === 'station' ? 'No jobs within walking distance of any station on its line — add a station near the jobs'
+        : 'No jobs within walking distance of the other terminals — add stops or jobs near them';
+  }
   return kind === 'stop'
     ? `${plural(walkers, 'worker', 'workers')} nearby walk to jobs beside this stop — riders come from stops near homes farther away`
     : kind === 'station'
@@ -121,6 +135,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
   const load = tr.stopLoad(b.id);
   const riders = load?.riders ?? 0;
   const walkers = load?.walkers ?? 0;
+  const reach = load?.reach;
   switch (kind) {
     case 'tr_bus_stop': {
       if (!tr.stopAttached(b.id)) {
@@ -129,7 +144,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
         break;
       }
       lines.push({ key: 'riders', label: 'Riders', value: `${fmt(riders)}/day`, ratio: riders / STOP_CAP_BUS, status: crowdStatus(riders, STOP_CAP_BUS),
-        hint: riders > STOP_CAP_BUS ? 'Crowded — add stops nearby or a second route' : riders < 1 ? walkersHint(walkers, 'stop') : undefined });
+        hint: riders > STOP_CAP_BUS ? 'Crowded — add stops nearby or a second route' : riders < 1 ? walkersHint(walkers, 'stop', reach) : undefined });
       const wait = load?.waitMin ?? WAIT_BUS;
       // a long wait: too few buses in the stop's pool (rho < 1), else its own crowding
       const short = (load?.rho ?? BUS_RHO_MAX) < 1;
@@ -170,7 +185,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
       }
       const cap = sub ? STOP_CAP_SUBWAY : STOP_CAP_TRAIN;
       lines.push({ key: 'riders', label: 'Riders', value: `${fmt(riders)}/day`, ratio: riders / cap, status: crowdStatus(riders, cap),
-        hint: riders > cap ? 'Crowded — add a parallel line or another station within walking distance' : riders < 1 ? walkersHint(walkers, 'station') : undefined });
+        hint: riders > cap ? 'Crowded — add a parallel line or another station within walking distance' : riders < 1 ? walkersHint(walkers, 'station', reach) : undefined });
       lines.push({ key: 'wait', label: 'Wait', value: `${min1(load?.waitMin ?? (sub ? WAIT_SUBWAY : WAIT_TRAIN))} min` });
       if (line) lines.push({ key: 'line', label: 'Line', value: `${fmt(line.stations)} station${line.stations === 1 ? '' : 's'}${line.edge ? ' · to the region' : ''}` });
       break;
@@ -228,9 +243,9 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
       // free spaces (minus the park & ride cars) ease the blocks around it
       const free = Math.max(0, spaces - prCars);
       lines.push({ key: 'parking', label: 'Parking relief', value: `${plural(free, 'space', 'spaces')} for ${plural(businesses, 'business', 'businesses')} within ${GARAGE_WALK_RADIUS} tiles` });
-      const p = parkingAt(st, b);
-      lines.push({ key: 'pressure', label: 'Parking pressure here', value: p < 0.005 ? 'none' : pct(p), ratio: p, status: p > 0.6 ? 'bad' : p > 0.3 ? 'warn' : 'ok',
-        hint: p < 0.05 ? 'No parking shortage here yet — it appears in dense downtowns' : undefined });
+      const p = parkingNear(st, b, GARAGE_WALK_RADIUS);
+      lines.push({ key: 'pressure', label: 'Parking pressure around it', value: p < 0.005 ? 'none' : pct(p), ratio: p, status: p > 0.6 ? 'bad' : p > 0.3 ? 'warn' : 'ok',
+        hint: businesses > 0 && p < 0.05 ? 'No parking shortage around it — shortages appear in dense downtowns' : p > 0.6 ? 'Still short of parking: add another garage, or transit to these jobs' : undefined });
       break;
     }
     case 'tr_ferry_terminal': {
@@ -247,7 +262,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
       }).join(' · ') });
       const fr = tr.ferryRidersAt(b.id);
       lines.push({ key: 'riders', label: 'Riders', value: `${fmt(fr)}/day`, ratio: fr / STOP_CAP_FERRY, status: crowdStatus(fr, STOP_CAP_FERRY),
-        hint: fr > STOP_CAP_FERRY ? 'Crowded — add another terminal pair' : fr < 1 ? walkersHint(walkers, 'terminal') : undefined });
+        hint: fr > STOP_CAP_FERRY ? 'Crowded — add another terminal pair' : fr < 1 ? walkersHint(walkers, 'terminal', reach) : undefined });
       lines.push({ key: 'wait', label: 'Wait', value: `${min1(load?.waitMin ?? WAIT_FERRY)} min` });
       break;
     }
@@ -290,11 +305,22 @@ function businessesNear(st: CityState, b: Building, r: number): number {
   return seen.size;
 }
 
-/** mean parking pressure around a building (its footprint + 1 ring) */
-function parkingAt(st: CityState, b: Building): number {
-  const N = st.size, p = st.parking;
+/** mean parking pressure on the lots of the businesses within r cells (+ half the footprint) of a building (what its
+ *  spaces relieve; the garage's own cells hold its supply) — 0 when there are none */
+function parkingNear(st: CityState, b: Building, r: number): number {
+  const N = st.size, p = st.parking, R = r + (Math.max(b.w, b.d) >> 1);
+  const c = centerCell(st, b), cx = c % N, cz = (c - cx) / N;
   let s = 0, n = 0;
-  for (let z = Math.max(0, b.z - 1); z < Math.min(N, b.z + b.d + 1); z++) for (let x = Math.max(0, b.x - 1); x < Math.min(N, b.x + b.w + 1); x++) { s += p[z * N + x]; n++; }
+  for (let z = Math.max(0, cz - R); z <= Math.min(N - 1, cz + R); z++) for (let x = Math.max(0, cx - R); x <= Math.min(N - 1, cx + R); x++) {
+    if ((x - cx) * (x - cx) + (z - cz) * (z - cz) > (R + 0.5) * (R + 0.5)) continue;
+    const id = st.building[z * N + x];
+    if (id < 0 || id === b.id) continue;
+    const o = st.buildings.get(id);
+    if (!o) continue;
+    const inf = infoOf(st, o);
+    if (!(inf.fam === Fam.C || inf.fam === Fam.I || (inf.fam === Fam.Plop && inf.civicJobs > 0))) continue;
+    s += p[z * N + x]; n++;
+  }
   return n > 0 ? s / n : 0;
 }
 

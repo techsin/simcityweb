@@ -7,7 +7,7 @@
  *   sentenced  = arrests x smoothstep(5k, 40k, population) (a village's petty offenders are not jailed); persisted as the
  *                monthly rate the overflow projects over a year
  *   inmates   += sentenced - inmates / SENTENCE_MONTHS, capped at INMATE_CAP x (beds + holding)
- *   beds       = sum of prison beds (civ_jail 6,000; an unpowered prison UNPOWERED_SERVICE_EFF of them) x police funding;
+ *   beds       = sum of prison beds (civ_jail 8,000; an unpowered prison UNPOWERED_SERVICE_EFF of them) x police funding;
  *                holding = police-station holding cells (kiosk 5, station 25, HQ 100) x police funding — so a town with a
  *                police station jails its few offenders without a prison (overflow 0 below the prison's 15k unlock)
  *   occupancy  = inmates / max(1, beds + holding); overflow = max(0, 12 sentenced - beds - holding) / max(1, 12 sentenced)

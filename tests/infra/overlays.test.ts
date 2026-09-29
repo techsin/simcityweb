@@ -9,8 +9,9 @@ import { describe, expect, it } from 'vitest';
 import { DevType, Network, Overlay } from '../../src/core/types';
 import { RESP_NONE } from '../../src/sim/CityState';
 import {
-  DEMO_KIDS, DEMO_WEALTH, DESIR_FAMILIES, DESIR_SENIORS, DESIR_STUDENTS, EMG_FIRE, EMG_NONE_T, OVERLAY_VARIANTS, attachOverlays, encodeSlack,
-  markOverlaysDirty, overlayDeps, overlayLayer, overlayReadout, overlayValue, overlayVariantCount, resolveVariant,
+  DEMO_KIDS, DEMO_WEALTH, DESIR_FAMILIES, DESIR_SENIORS, DESIR_STUDENTS, EMG_FIRE, EMG_NONE_T, OVERLAY_VARIANTS, attachOverlays, educationScale,
+  emergencyReachAt, encodeSlack, markOverlaysDirty, overlayDeps, overlayLayer, overlayReadout, overlayStale, overlayValue, overlayVariantCount,
+  resolveVariant,
 } from '../../src/sim/infra/overlays';
 import { computeOverlayValues, overlayDef, overlayLegend } from '../../src/render/world/overlays';
 import { familyScoreAt, seniorScoreAt, studentScoreAt } from '../../src/sim/economy/demographics';
@@ -234,5 +235,112 @@ describe('overlays: every Overlay × variant', () => {
     expect(overlayLayer(st2, Overlay.Demographics, DEMO_KIDS)!.data[st2.idx(5, 5)]).toBe(v1);
     off();
     void sim;
+  });
+});
+
+describe('overlays: review round 1 (emergency floor, back lots, stale rasters, masks, scales)', () => {
+  const { st, sim } = town();
+
+  it('emergency floor: a building with no road beside it says so; a road-connected one is 6+ min out of reach', () => {
+    const N = st.size, L = st.respFire;
+    const keep = Float32Array.from(L);
+    const b = [...st.buildings.values()].find((x) => x.def === 't_r1' && x.z === 9)!;
+    const i = b.z * N + b.x;
+    L[i] = -12;
+    markOverlaysDirty(st, 'emergency');
+    // (the lots of the town front the road at z = 8)
+    expect(emergencyReachAt(st, i, EMG_FIRE)).toEqual({ slack: -12, why: 'far' });
+    expect(overlayReadout(st, Overlay.Emergency, b.x, b.z, EMG_FIRE)!.text).toBe('Out of reach by 6+ min');
+    // cut the road beside it: unreachable, not "build a station closer"
+    const road = st.network[(b.z - 1) * N + b.x];
+    st.network[(b.z - 1) * N + b.x] = Network.None;
+    const r = overlayReadout(st, Overlay.Emergency, b.x, b.z, EMG_FIRE)!;
+    expect(r.text).toBe('Unreachable — no road beside it');
+    expect(r.sub).toMatch(/build a road next to it/);
+    expect(emergencyReachAt(st, i, EMG_FIRE)!.why).toBe('noRoad');
+    st.network[(b.z - 1) * N + b.x] = road;
+    L.set(keep);
+    markOverlaysDirty(st, 'emergency');
+    void sim;
+  });
+
+  it('emergency: a multi-cell building reads its best footprint cell (inner cells of a new building keep the land floor)', () => {
+    const st2 = newState(32);
+    roadLine(st2, 2, 10, 30, 10);
+    const b = place(st2, 't_r3', 10, 11, { pop: 100 }); // 2x2 below the road
+    const sim2 = newSim(st2);
+    place(st2, 't_fire', 20, 11);
+    const off = attachOverlays(sim2);
+    sim2.runDays(2);
+    expect(sim2.getSystem<{ layersReady: boolean }>('emergency')?.layersReady).toBe(true);
+    const N = st2.size, L = st2.respFire;
+    L.fill(-12);
+    L[11 * N + 10] = 2.5; // the front cell only
+    markOverlaysDirty(st2, 'emergency');
+    expect(emergencyReachAt(st2, 12 * N + 11, EMG_FIRE)).toEqual({ slack: 2.5, why: '' });
+    expect(overlayReadout(st2, Overlay.Emergency, 11, 12, EMG_FIRE)!.text).toBe('Auto-dispatch · 2.5 min to spare');
+    off();
+    void b;
+  });
+
+  it('the inspector and the Emergency view agree on empty land (both read emergencyReachAt)', () => {
+    const N = st.size, L = st.respFire;
+    const keep = Float32Array.from(L);
+    for (let z = 8; z <= 16; z++) for (let x = 3; x <= 11; x++) { const k = z * N + x; L[k] = z >= 10 && z <= 14 && st.building[k] < 0 && st.network[k] === Network.None ? -12 : 1.6; }
+    markOverlaysDirty(st, 'emergency');
+    const r = emergencyReachAt(st, 12 * N + 7, EMG_FIRE)!;
+    expect(r.why).toBe('land');
+    expect(r.slack).toBeCloseTo(1.6, 3);
+    expect(overlayReadout(st, Overlay.Emergency, 7, 12, EMG_FIRE)!.text).toBe('Auto-dispatch · 1.6 min to spare');
+    L.set(keep);
+    markOverlaysDirty(st, 'emergency');
+  });
+
+  it('Demographics follows the buildings: a bulldozed home leaves the raster the next sim day (not 30 days later)', () => {
+    const st2 = newState(32);
+    roadLine(st2, 2, 10, 30, 10);
+    const b = place(st2, 't_r2', 5, 11, { pop: 40, kids: 0.2, teens: 0.07, yad: 0.1, srs: 0.1 });
+    const sim2 = newSim(st2);
+    const off = attachOverlays(sim2);
+    const i = st2.idx(5, 11);
+    expect(overlayLayer(st2, Overlay.Demographics, DEMO_KIDS)!.data[i]).toBeGreaterThan(0.03);
+    expect(overlayStale(st2, Overlay.Demographics, DEMO_KIDS)).toBe(false);
+    st2.buildings.delete(b.id);
+    st2.building[i] = -1;
+    sim2.events.emit('buildingRemoved', b);
+    // same day: the raster stays (at most one rebuild a day); the next day it is stale and rebuilt without the home
+    expect(overlayStale(st2, Overlay.Demographics, DEMO_KIDS)).toBe(false);
+    st2.day += 1;
+    expect(overlayStale(st2, Overlay.Demographics, DEMO_KIDS)).toBe(true);
+    expect(overlayLayer(st2, Overlay.Demographics, DEMO_KIDS)!.data[i]).toBe(0);
+    expect(overlayStale(st2, Overlay.Demographics, DEMO_KIDS)).toBe(false);
+    off();
+  });
+
+  it('Desirability: roads and water read neutral (no red rim along every street), hover = render', () => {
+    const out = new Uint8Array(st.cells);
+    computeOverlayValues(st, Overlay.Desirability, out, DevType.R1);
+    const road = st.idx(10, 8);
+    expect(st.network[road]).not.toBe(Network.None);
+    expect(overlayValue(st, Overlay.Desirability, 10, 8, DevType.R1)).toBe(0);
+    expect(out[road]).toBe(128);
+    expect(overlayReadout(st, Overlay.Desirability, 10, 8, DevType.R1)!.sub).toMatch(/Road/);
+  });
+
+  it("Education 'All' is scaled to the tiers the city can build (a town without a university reaches full colour)", () => {
+    const L = overlayLayer(st, Overlay.Education, 0)!;
+    expect(L.data).toBe(st.eduCov);
+    expect(L.scale).toBeCloseTo(educationScale(st), 6);
+    expect(educationScale(st)).toBeLessThanOrEqual(1);
+    expect(educationScale(st)).toBeGreaterThanOrEqual(0.8 - 1e-6);
+    expect(overlayLayer(st, Overlay.Education, 1)!.scale).toBe(1);
+  });
+
+  it('Trucks: without freight data one cached zero raster (no allocation per hover)', () => {
+    const st2 = newState(16);
+    const a = overlayLayer(st2, Overlay.Traffic, 1)!.data;
+    const b = overlayLayer(st2, Overlay.Traffic, 1)!.data;
+    expect(a).toBe(b);
+    expect(overlayValue(st2, Overlay.Traffic, 3, 3, 1)).toBe(0);
   });
 });

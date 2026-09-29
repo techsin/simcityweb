@@ -53,6 +53,9 @@ export const shadowCasters = {
  */
 export interface ShadowReceiver {
   planes: THREE.Plane[];
+  /** the same 6 planes flattened (nx, ny, nz, constant each) for the per-caster tests (receiverSweep*: tree / terrain
+   *  chunks every shadow pass) */
+  pl: Float64Array;
   /** normal . dirToLight per plane */
   nl: Float64Array;
   /** unit direction TO the light */
@@ -86,7 +89,7 @@ export interface ShadowReceiver {
 
 export function makeReceiver(): ShadowReceiver {
   return {
-    planes: Array.from({ length: 6 }, () => new THREE.Plane()), nl: new Float64Array(6), dir: new THREE.Vector3(0, 1, 0), ground: 0, version: 0, snap: new Float64Array(28), origin: new THREE.Vector3(), shape: 0, shapeSnap: new Float64Array(28), reach: 100,
+    planes: Array.from({ length: 6 }, () => new THREE.Plane()), pl: new Float64Array(24), nl: new Float64Array(6), dir: new THREE.Vector3(0, 1, 0), ground: 0, version: 0, snap: new Float64Array(28), origin: new THREE.Vector3(), shape: 0, shapeSnap: new Float64Array(28), reach: 100,
     rot: new Float64Array(9), fwd: new THREE.Vector3(0, 0, -1), dn: 0, df: 0, phi: 0.6, form: 0, formSnap: new Float64Array(10),
   };
 }
@@ -126,8 +129,11 @@ export function setReceiver(rec: ShadowReceiver, cam: THREE.Camera, dn: number, 
   for (let i = 0; i < 6; i++) rec.nl[i] = planes[i].normal.dot(rec.dir);
   rec.ground = ground;
   // change detection (tolerant: a still, damped camera jitters by float ulps)
-  const v = _snapV;
-  for (let i = 0; i < 6; i++) { const p = planes[i], n = p.normal, o = i * 4; v[o] = n.x; v[o + 1] = n.y; v[o + 2] = n.z; v[o + 3] = p.constant; }
+  const v = _snapV, pl = rec.pl;
+  for (let i = 0; i < 6; i++) {
+    const p = planes[i], n = p.normal, o = i * 4;
+    v[o] = pl[o] = n.x; v[o + 1] = pl[o + 1] = n.y; v[o + 2] = pl[o + 2] = n.z; v[o + 3] = pl[o + 3] = p.constant;
+  }
   v[24] = dx; v[25] = dy; v[26] = dz; v[27] = ground;
   const s = rec.snap;
   let changed = false;
@@ -180,10 +186,10 @@ export function setReceiver(rec: ShadowReceiver, cam: THREE.Camera, dn: number, 
 /** can a caster sphere shadow the receiver volume? (sphere swept away from the light down to the ground) */
 export function receiverSweepSphere(rec: ShadowReceiver, cx: number, cy: number, cz: number, r: number): boolean {
   const T = Math.min(6000, Math.max(0, (cy + r - rec.ground) / Math.max(rec.dir.y, 0.05)));
-  const P = rec.planes, nl = rec.nl;
+  const pl = rec.pl, nl = rec.nl;
   for (let i = 0; i < 6; i++) {
-    const n = P[i].normal;
-    const d0 = n.x * cx + n.y * cy + n.z * cz + P[i].constant;
+    const o = i * 4;
+    const d0 = pl[o] * cx + pl[o + 1] * cy + pl[o + 2] * cz + pl[o + 3];
     if (d0 < -r && d0 - T * nl[i] < -r) return false;
   }
   return true;
@@ -191,11 +197,11 @@ export function receiverSweepSphere(rec: ShadowReceiver, cx: number, cy: number,
 
 /** is the box entirely inside the receiver volume? (then every caster in it certainly shadows it: no per-caster test) */
 export function receiverContainsBox(rec: ShadowReceiver, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): boolean {
-  const P = rec.planes;
+  const pl = rec.pl;
   for (let i = 0; i < 6; i++) {
-    const n = P[i].normal;
+    const o = i * 4, nx = pl[o], ny = pl[o + 1], nz = pl[o + 2];
     // n-vertex: the corner with the smallest signed distance
-    if (n.x * (n.x > 0 ? x0 : x1) + n.y * (n.y > 0 ? y0 : y1) + n.z * (n.z > 0 ? z0 : z1) + P[i].constant < 0) return false;
+    if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + pl[o + 3] < 0) return false;
   }
   return true;
 }
@@ -203,10 +209,10 @@ export function receiverContainsBox(rec: ShadowReceiver, x0: number, y0: number,
 /** can a caster box shadow the receiver volume? */
 export function receiverSweepBox(rec: ShadowReceiver, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): boolean {
   const T = Math.min(6000, Math.max(0, (y1 - rec.ground) / Math.max(rec.dir.y, 0.05)));
-  const P = rec.planes, nl = rec.nl;
+  const pl = rec.pl, nl = rec.nl;
   for (let i = 0; i < 6; i++) {
-    const n = P[i].normal;
-    const d = n.x * (n.x > 0 ? x1 : x0) + n.y * (n.y > 0 ? y1 : y0) + n.z * (n.z > 0 ? z1 : z0) + P[i].constant;
+    const o = i * 4, nx = pl[o], ny = pl[o + 1], nz = pl[o + 2];
+    const d = nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + pl[o + 3];
     if (d < 0 && d - T * nl[i] < 0) return false;
   }
   return true;

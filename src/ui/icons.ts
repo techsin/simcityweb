@@ -125,6 +125,8 @@ const P: Record<string, string> = {
 
   // ---------------------------------------------------------------- stats
   people: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20.5v-1.5a5 5 0 0 1 5-5h3a5 5 0 0 1 5 5v1.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.2a5 5 0 0 1 3 4.8v1.5"/>',
+  // age pyramid (Demographics panel: distinct from the advisors' people glyph beside it in the top bar)
+  demographics: '<rect x="3.5" y="15.5" width="17" height="4.5" rx="1.2"/><rect x="6.5" y="9.75" width="11" height="4.5" rx="1.2"/><rect x="9.25" y="4" width="5.5" height="4.5" rx="1.2"/>',
   money: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.8"/><path d="M6 9.5v5M18 9.5v5"/>',
   smile: '<circle cx="12" cy="12" r="9"/><path d="M8 14c.9 1.4 2.3 2.2 4 2.2s3.1-.8 4-2.2"/><path d="M9 9.5h.01M15 9.5h.01"/>',
   meh: '<circle cx="12" cy="12" r="9"/><path d="M8.5 15h7"/><path d="M9 9.5h.01M15 9.5h.01"/>',

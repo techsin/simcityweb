@@ -136,7 +136,7 @@ export const TRAFFIC_MIN_CYCLE_MS = 1000;
 // ---------------------------------------------------------------------------------------------- scheduler
 /** headless: estimated ms of infra steps per sim day (at least one step always runs; step estimates ~ ms on a busy 4-core CI box) */
 export const INFRA_DAY_BUDGET = 2.6 + 0.15 /* WP3 share (P0-15) */ + 0.25 /* WP2 share (P0-15) */ + 0.15 /* WP8 share (P0-15) */
-  + 0 /* WP7a share (PART B, max 0.1) */ + 0.05 /* WP7b share (PART B, max 0.2): parking raster, P&R, sinks, fleet (~0.05 est. ms / day on the stress city) */;
+  + 0 /* WP7a share (PART B, max 0.1) */ + 0.1 /* WP7b share (PART B, max 0.2): parking raster, P&R, sinks, fleet (r1: +0.1 est. ms / day measured on the stress city) */;
 /** headless: unused budget (next step did not fit) carried to the next day, at most this much */
 export const INFRA_DAY_CARRY = 0.6;
 /** with a live renderer: real ms of infra steps per frame (at least one step when due) */
@@ -657,16 +657,17 @@ export const BUS_NEED_SMOOTH = 0.5;
  * (street parking, by Network) PARKING_SUPPLY_ROAD, + GARAGE_SPACES per garage (minus its park & ride cars) spread over
  * GARAGE_WALK_RADIUS with a normalised kernel. parking = smoothstep(PARKING_RATIO[0], PARKING_RATIO[1], box(D) / box(S))
  * with box = (2 PARKING_BOX_R + 1)^2 average; car commuters to a site pay PARKING_MIN x parking(site) extra minutes.
- * Calibrated (critic item 19) on the bot without garages: zone supply 2.5 x the spec's 60 / 30 / 10 keeps the C
- * job-weighted pressure <= 0.3 through 256x40 (0.22 in 2040; 0.50 at 1.5 x) with <= 15 % of C cells above 0.6 (3 %);
- * dense cores still saturate (stress metro downtown 0.66, -72 % with the subway grid).
+ * Calibrated (critic item 19, r1) on saved bot cities (seed 7, no garages): the C job-weighted pressure stays <= 0.3
+ * with <= 15 % of built C lots above 0.6 (128 city 135k: 0.06 / 1.6 %; 256 at 540k: 0.02 / 0.2 %; 836k: 0.12 / 3.5 %)
+ * while the densest cores are felt (best 12 x 12 C window 0.40 at 135k, 0.45 at 540k, 0.81 at 836k): high-density
+ * lots 15 (r0: 25, the spec 10), medium 60, avenue street parking 6 (r0: 9). Low density keeps 2.5 x the spec.
  */
 export const PARKING_SHOP_W = 0.5;
-export const PARKING_SUPPLY_ZONE: readonly number[] = [150, 75, 25];
+export const PARKING_SUPPLY_ZONE: readonly number[] = [150, 60, 15];
 export const PARKING_SUPPLY_R: readonly number[] = [18, 9, 3];
 export const PARKING_SUPPLY_CIVIC = 30;
 /** street parking per road cell [None, Street, Road, Avenue, OneWay, Highway, Rail] */
-export const PARKING_SUPPLY_ROAD: readonly number[] = [0, 18, 18, 9, 15, 0, 0];
+export const PARKING_SUPPLY_ROAD: readonly number[] = [0, 18, 18, 6, 15, 0, 0];
 export const GARAGE_SPACES = 900;
 export const GARAGE_WALK_RADIUS = 6;
 export const PARKING_RATIO: readonly [number, number] = [1.0, 2.5];

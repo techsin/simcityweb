@@ -35,7 +35,7 @@ const TIERS: TierRow[] = [
   { tier: 'elementary', label: 'Elementary', unit: 'pupils', icon: 'education', hint: 'Children 0–11 and elementary school seats within walking distance' },
   { tier: 'high', label: 'High school', unit: 'students', icon: 'education', hint: 'Teens 12–17 and high school seats within reach' },
   { tier: 'college', label: 'University', unit: 'students', icon: 'education', hint: 'Young adults (and adult learners) and college / library places' },
-  { tier: 'health', label: 'Health care', unit: 'patients', icon: 'health', hint: 'Patient-equivalents (seniors need ~4× the care) and clinic / hospital places' },
+  { tier: 'health', label: 'Health care', unit: 'care units', icon: 'health', hint: 'Care need in patient-equivalents (a senior needs about 4× the care of an adult) and clinic / hospital places' },
   { tier: 'play', label: 'Play & sports', unit: 'kids', icon: 'park', hint: 'Children and teens and the playground / sports capacity within reach' },
   { tier: 'green', label: 'Parks & gardens', unit: 'visitors', icon: 'trees', hint: 'Residents and the park space within a walk' },
   { tier: 'police', label: 'Police', unit: 'patrol load', icon: 'police', hint: 'Patrol load (crime-weighted residents and jobs) and the stations’ patrol capacity' },
@@ -70,7 +70,7 @@ function spark(values: number[], color: string, w = 96, hgt = 26): SVGSVGElement
 export class DemographicsPanel extends Panel {
   readonly id = 'demographics';
   readonly title = 'Demographics';
-  override icon = 'people';
+  override icon = 'demographics';
   override width = 560;
   override center = true;
   private tab: Tab = 'people';
@@ -220,7 +220,7 @@ export class DemographicsPanel extends Panel {
     }
     const unit = t.tier === 'police' ? t.unit : t.unit;
     const nums = need > 0
-      ? `${compact(served)} of ${compact(need)} ${unit}${capFree ? '' : ` · capacity ${compact(n.capacity)}`}`
+      ? `${compact(served)} of ${compact(need)} ${unit}${t.tier === 'health' ? ' (seniors count ×4)' : ''}${capFree ? '' : ` · capacity ${compact(n.capacity)}`}`
       : `No ${unit} yet`;
     const show = unreached >= Math.max(10, 0.02 * need)
       ? h('button', { class: 'btn sm ghost dtier-go', title: 'Show the biggest unserved area on the map', html: icon('target', 13) + '<span>Show me</span>' })
@@ -281,7 +281,7 @@ export class DemographicsPanel extends Panel {
       const row = h('div', { class: 'dv-row' + (b ? ' go' : '') },
         h('span', { class: 'dvn' }, def?.name ?? v.def),
         h('span', { class: 'bar ' + (u > 0.95 ? 'warn' : 'good') }, h('span', { class: 'fill', style: { width: `${Math.min(100, u * 100)}%` } })),
-        h('span', { class: 'dvv' }, `${compact(v.visits)} / ${compact(v.capacity)}`),
+        h('span', { class: 'dvv', title: 'Visitors a day / what the venue can take' }, `${compact(v.visits)} / ${compact(v.capacity)} a day`),
       );
       if (b) row.addEventListener('click', () => this.ctx.focusCell(b.x + (b.w >> 1), b.z + (b.d >> 1), 420));
       list.appendChild(row);

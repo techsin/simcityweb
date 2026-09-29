@@ -107,18 +107,28 @@ interface Entry {
   day: number;
   dirty: boolean;
   deps: readonly string[];
+  /** painted per building (Demographics): buildings added / removed / changed since the build (Cache.bver) make it
+   *  stale on the next sim day — at most one rebuild a day, however fast the city grows */
+  perBuilding: boolean;
+  bver: number;
 }
 interface Cache {
   sim?: Simulation;
   /** a simulation's layerUpdated events invalidate the entries (else: valid for one sim day) */
   subscribed: boolean;
   entries: Map<number, Entry>;
+  /** bumped by every buildingAdded / buildingRemoved / buildingChanged event (see Entry.perBuilding) */
+  bver: number;
 }
 const caches = new WeakMap<CityState, Cache>();
 function cacheOf(st: CityState): Cache {
   let c = caches.get(st);
-  if (!c) caches.set(st, (c = { subscribed: false, entries: new Map() }));
+  if (!c) caches.set(st, (c = { subscribed: false, entries: new Map(), bver: 0 }));
   return c;
+}
+/** the cached raster must be rebuilt before it is read (see derived) */
+function entryStale(c: Cache, e: Entry, st: CityState): boolean {
+  return e.dirty || (!c.subscribed && e.day !== st.day) || (e.perBuilding && e.bver !== c.bver && e.day !== st.day);
 }
 const keyOf = (o: Overlay, v: number) => o * 64 + v;
 
@@ -131,6 +141,9 @@ export function attachOverlays(sim: Simulation): () => void {
   c.sim = sim;
   c.subscribed = true;
   const off = sim.events.on('layerUpdated', (name) => markOverlaysDirty(sim.state, name));
+  // per-building rasters (Demographics) follow the buildings, not only their 30-day 'demographics' event
+  const bump = () => { const cc = caches.get(sim.state); if (cc) cc.bver++; };
+  const offB = [sim.events.on('buildingAdded', bump), sim.events.on('buildingRemoved', bump), sim.events.on('buildingChanged', bump)];
   const offReset = sim.events.on('reset', () => {
     const cc = cacheOf(sim.state);
     cc.sim = sim;
@@ -139,6 +152,7 @@ export function attachOverlays(sim: Simulation): () => void {
   });
   return () => {
     off();
+    for (const f of offB) f();
     offReset();
     const cc = caches.get(sim.state);
     if (cc && cc.sim === sim) cc.subscribed = false;
@@ -163,23 +177,35 @@ const NO_RASTER = new Float32Array(0);
  * a cached derived raster of (o, v), (re)built by `build` when missing / invalidated. raster = false: only the value
  * `build` returns is cached (e.g. the truck overlay's scale), no raster is allocated
  */
-function derived(st: CityState, o: Overlay, v: number, deps: readonly string[], build: (out: Float32Array) => number | void, raster = true): Entry {
+function derived(st: CityState, o: Overlay, v: number, deps: readonly string[], build: (out: Float32Array) => number | void, raster = true, perBuilding = false): Entry {
   const c = cacheOf(st);
   const k = keyOf(o, v);
   let e = c.entries.get(k);
   const size = raster ? st.cells : 0;
-  const stale = !e || e.dirty || e.data.length !== size || (!c.subscribed && e.day !== st.day);
+  const stale = !e || e.data.length !== size || entryStale(c, e, st);
   if (stale) {
     let data: Float32Array = NO_RASTER;
     if (raster) {
       data = e && e.data.length === size ? e.data : new Float32Array(size);
       data.fill(0);
     }
+    const bver = c.bver;
     const s = build(data);
-    e = { data, scale: typeof s === 'number' && s > 0 ? s : 1, day: st.day, dirty: false, deps };
+    e = { data, scale: typeof s === 'number' && s > 0 ? s : 1, day: st.day, dirty: false, deps, perBuilding, bver };
     c.entries.set(k, e);
   }
   return e!;
+}
+
+/**
+ * The derived raster of an overlay + variant was invalidated since it was last built (its layer was recomputed, or —
+ * per-building views — buildings changed and a sim day passed): the renderer refreshes its texture. false for direct
+ * layers (they refresh on their layerUpdated event) and rasters not built yet.
+ */
+export function overlayStale(st: CityState, o: Overlay, variant = -1): boolean {
+  const c = caches.get(st);
+  const e = c?.entries.get(keyOf(o, resolveVariant(o, variant)));
+  return !!c && !!e && e.data.length === st.cells && entryStale(c, e, st);
 }
 
 // ================================================================================================ raster builders
@@ -210,12 +236,6 @@ function isResidential(st: CityState, b: Building): boolean {
 /** residential buildings with residents (the demographics rasters) */
 function isHome(st: CityState, b: Building): boolean {
   return b.pop > 0 && isResidential(st, b);
-}
-
-function fillFootprint(st: CityState, b: Building, v: number, out: Float32Array): void {
-  const N = st.size;
-  const x0 = Math.max(0, b.x), z0 = Math.max(0, b.z), x1 = Math.min(N, b.x + b.w), z1 = Math.min(N, b.z + b.d);
-  for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) out[z * N + x] = v;
 }
 
 const SHARE = new Float32Array(5);
@@ -551,6 +571,17 @@ function truckScale(st: CityState, T: Float32Array): number {
   return Math.max(50, ((b + 1) / 64) * mx);
 }
 
+/** Trucks raster: sqrt(trucks / scale) clamped to 0..1 (scale = truckScale) */
+function buildTrucks(st: CityState, T: Float32Array, out: Float32Array): number {
+  const sc = truckScale(st, T);
+  const inv = 1 / sc, n = Math.min(T.length, out.length);
+  for (let i = 0; i < n; i++) {
+    const v = T[i];
+    if (v > 0) { const r = v * inv; out[i] = r >= 1 ? 1 : Math.sqrt(r); }
+  }
+  return sc;
+}
+
 // ================================================================================================ the layers
 const L = (data: ArrayLike<number>, scale: number, palette: OverlayPalette, label: string, variant: number, deps: readonly string[], extra: Partial<OverlayLayer> = {}): OverlayLayer =>
   ({ data, scale, palette, label, variant, deps, ...extra });
@@ -602,8 +633,9 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
         const T = truckVolumeOf(st);
         // (no freight data yet: one cached zero raster — overlayValue runs on every hover move)
         if (!T || T.length !== st.cells) return L(derived(st, o, 63, deps, () => undefined).data, 1, 'bad', 'Trucks per day (no freight data yet)', v, deps, { roadsOnly: true });
-        const e = derived(st, o, v, deps, () => truckScale(st, T), false);
-        return L(T, e.scale, 'bad', 'Trucks per day', v, deps, { roadsOnly: true });
+        // sqrt of volume / the busy roads' ~98th percentile: mid-volume freight shows, not only the trunk routes
+        const e = derived(st, o, v, deps, (out) => buildTrucks(st, T, out));
+        return L(e.data, 1, 'bad', 'Trucks per day', v, deps, { roadsOnly: true });
       }
       return L(st.congestion, 1.2, 'bad', 'Traffic (volume / capacity)', v, deps, { roadsOnly: true });
     }
@@ -648,7 +680,7 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
     case Overlay.Commute: return L(st.accessCommute, commuteScale(st), 'bad', 'Commute time (minutes)', v, deps, { floor: 0.06 });
     case Overlay.Shops: return L(st.shopAccess, 1, 'good', 'Shops within reach', v, deps);
     case Overlay.Demographics: {
-      const e = derived(st, o, v, deps, (out) => buildDemographics(st, v, out));
+      const e = derived(st, o, v, deps, (out) => buildDemographics(st, v, out), true, true);
       return L(e.data, 1, 'good', DEMO_LABELS[v], v, deps);
     }
     case Overlay.Tourism: return L(st.visitors, 1, 'good', 'Tourist visitors', v, deps);
@@ -772,7 +804,12 @@ export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, 
     case Overlay.Commute:
       return raw > 0 ? { text: `${Math.round(raw)} min`, tone: raw <= 20 ? 'good' : raw <= 40 ? 'warn' : 'bad', sub: 'to jobs' } : { text: 'No route', tone: '' };
     case Overlay.Traffic:
-      if (v === 1) return { text: `${Math.round(raw).toLocaleString('en-US')} trucks/day`, tone: raw > Lr.scale * 0.6 ? 'bad' : raw > Lr.scale * 0.25 ? 'warn' : '' };
+      if (v === 1) {
+        // (the raster is sqrt(volume / scale): read the volume itself)
+        const T = truckVolumeOf(st);
+        const n = T && T.length === st.cells ? T[i] : 0;
+        return { text: `${Math.round(n).toLocaleString('en-US')} trucks/day`, tone: raw > 0.77 ? 'bad' : raw > 0.5 ? 'warn' : '', sub: `${pctS(raw * raw)} of a busy freight route` };
+      }
       return { text: pctS(raw), tone: raw > 1 ? 'bad' : raw > 0.7 ? 'warn' : 'good', sub: `${Math.round(st.traffic[i]).toLocaleString('en-US')} trips/day` };
     case Overlay.Nimby: {
       const p = st.prestige[i], s = st.stigma[i];

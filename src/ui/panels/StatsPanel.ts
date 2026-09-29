@@ -54,7 +54,7 @@ export class StatsPanel extends Panel {
       h('div', { class: 'sec-title' }, 'Environment at homes'),
       meter('air', 'Air pollution', 'smog'), meter('waterp', 'Water pollution', 'water'), meter('noise', 'Noise', 'noise'),
       h('div', { class: 'sec-title' }, 'Safety & transit'),
-      h('div', { class: 'stat-cards', style: 'margin-bottom:6px' }, card('incidents', 'Incidents', 'siren'), card('jail', 'Jail', 'police'), card('buses', 'Bus fleet', 'bus'), card('pr', 'Park & ride', 'parking')),
+      h('div', { class: 'stat-cards', style: 'margin-bottom:6px' }, card('incidents', 'Incidents', 'siren'), card('jail', 'Prison & cells', 'police'), card('buses', 'Bus fleet', 'bus'), card('pr', 'Park & ride', 'parking')),
       h('div', { class: 'sec-title' }, 'Visitors'),
       h('div', { class: 'stat-cards' }, card('tourists', 'Tourists', 'star'), card('attract', 'Attractiveness', 'smile')),
       h('div', { class: 'sec-title' }, 'Commute'),
@@ -124,11 +124,12 @@ export class StatsPanel extends Panel {
     c.incidents.v.className = 'sc-v ' + (em && em.failed > 0 ? 'neg' : '');
     const j = s.justice;
     setText(c.jail.v, j && j.beds + j.holding > 0 ? pct(j.occupancy) : '—');
-    setText(c.jail.s, j ? `${num(j.inmates)} inmates · ${num(j.beds)} beds${j.overflow > 0.01 ? ` · ${pct(j.overflow)} released early` : ''}` : '');
+    // beds = Prison beds + the police stations' holding cells (the facility report counts both)
+    setText(c.jail.s, j ? `${num(j.inmates)} inmates · ${num(j.beds + (j.holding ?? 0))} beds${j.holding ? ` (${num(j.holding)} in cells)` : ''}${j.overflow > 0.01 ? ` · ${pct(j.overflow)} released early` : ''}` : '');
     c.jail.v.className = 'sc-v ' + (j && j.overflow > 0.2 ? 'neg' : j && j.occupancy > 0.9 ? 'warn' : '');
     const tf = s.transitFleet;
     setText(c.buses.v, tf ? `${num(tf.buses)}` : '—');
-    setText(c.buses.s, tf && tf.busesNeeded > 0 ? `of ${num(tf.busesNeeded)} needed` : 'no bus routes yet');
+    setText(c.buses.s, tf && tf.busesNeeded > 0 ? `buses · ${num(tf.busesNeeded)} needed` : 'no bus routes yet');
     c.buses.v.className = 'sc-v ' + (tf && tf.busesNeeded > 1.15 * tf.buses ? 'warn' : '');
     setText(c.pr.v, tf ? compact(tf.parkRide) : '—');
     setText(c.pr.s, tf && tf.parkRideSpaces > 0 ? `a day · ${compact(tf.parkRideSpaces)} spaces` : 'no garages by a stop');

@@ -822,9 +822,12 @@ describe('burnt lots and foundations', () => {
       variants.add(g);
       br.batch.mesh.getMatrixAt(id, m);
       m.decompose(pos, q, sc);
-      expect(sc.x).toBeCloseTo(1, 5);
+      // unstretched: only a hair wider than the cell, so neighbouring tiles overlap instead of leaving pixel cracks
       expect(sc.y).toBeCloseTo(1, 5);
-      expect(sc.z).toBeCloseTo(1, 5);
+      for (const s of [sc.x, sc.z]) {
+        expect(s).toBeGreaterThan(1);
+        expect(s).toBeLessThan(1.005);
+      }
       const cx = Math.floor(pos.x / CELL_SIZE), cz = Math.floor(pos.z / CELL_SIZE);
       expect(pos.x).toBeCloseTo((cx + 0.5) * CELL_SIZE, 4);
       expect(pos.z).toBeCloseTo((cz + 0.5) * CELL_SIZE, 4);

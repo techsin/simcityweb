@@ -6,8 +6,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_BARS, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView, growthRows, mainProblem, needRows, pyramid,
-  responseText, termBars, warningTopic,
+  DESIRABILITY_HINTS, MAX_BARS, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView, growthRows, landValueView, mainProblem,
+  needRows, pyramid, responseText, termBars, warningTopic,
 } from '../../src/ui/inspectorModel';
 import type { FactorTerm } from '../../src/sim/explain';
 
@@ -93,7 +93,7 @@ describe('inspector model: full outputs', () => {
       { cohort: -1, kind: 'water', label: 'Unsafe tap water', people: 120, access: 0.4, met: false },
     ]);
     expect(rows.map((r) => r.label)).toEqual(['Unsafe tap water', 'High school', 'Elementary school']);
-    expect(rows[0].who).toBe('Household');
+    expect(rows[0].who).toBe('Everyone');
     expect(rows[1].who).toBe('Teens');
     const p = pyramid([0.2, 0.1, 0.1, 0.45, 0.15], 200);
     expect(p.map((b) => b.people)).toEqual([40, 20, 20, 90, 30]);
@@ -101,11 +101,72 @@ describe('inspector model: full outputs', () => {
     expect(responseText({ slackMin: -1.4, covered: false })).toEqual({ text: 'manual only (1.4 min out of reach)', tone: 'warn' });
     expect(responseText({ slackMin: -8, covered: false })!.tone).toBe('neg');
     expect(responseText({ slackMin: -99, covered: false }, 'no fire station')).toEqual({ text: 'no fire station', tone: 'neg' });
-    // the layers' floor (-EMERG_RMAX): no road reaches the lot
-    expect(responseText({ slackMin: -12, covered: false })).toEqual({ text: 'unreachable — no road to it', tone: 'neg' });
+    // the layers' floor (-EMERG_RMAX): no road beside the building, or 6+ min beyond every station's reach
+    expect(responseText({ slackMin: -12, covered: false, hasRoad: false })).toEqual({ text: 'unreachable — no road to it', tone: 'neg' });
+    expect(responseText({ slackMin: -12, covered: false, hasRoad: true })).toEqual({ text: 'manual only — 6+ min beyond every station', tone: 'neg' });
+    expect(responseText({ slackMin: -12, covered: false })!.text).toMatch(/6\+ min beyond every station/);
+    // empty land reads the nearest road / lot's reach, like the Emergency data view
+    expect(responseText({ slackMin: 1.6, covered: true, land: true })).toEqual({ text: 'a lot here: auto, 1.6 min to spare', tone: 'pos' });
+    expect(responseText({ slackMin: -12, covered: false, hasRoad: false, land: true })!.text).toBe('no road nearby');
     const cr = crimeBars({ density: 0.1, poverty: 0.2, unemployment: 0, landValue: 0.05, abandoned: 0, garbage: 0.03, youth: 0.01, nightlife: 0, multiplier: 1.1, police: 0.4, total: 0.25 })!;
     expect(cr.bars[0].label).toBe('Poverty');
     expect(cr.bars.every((b) => b.value > 0)).toBe(true);
     expect(cr.police).toBe(0.4);
+  });
+});
+
+describe('inspector model: the main problem only for a struggling building, always with a fix', () => {
+  const cond = (target: number, terms: FactorTerm[], abandonInDays: number | null = null) =>
+    conditionView({ terms: [{ id: 'desirability', label: 'Desirability', value: 0.7 }, ...terms], target, abandonInDays })!;
+  const des = (value: number, terms: FactorTerm[]) => desirabilityView({ terms, raw: value, value })!;
+
+  it('a healthy building shows nothing (small penalties, desirability terms without a fix)', () => {
+    const c = cond(0.9, [{ id: 'garbage', label: 'Garbage not collected', value: -0.05 }]);
+    const d = des(0.6, [{ id: 'base', label: 'Base appeal', value: 0.3 }, { id: 'rent', label: 'Rent', value: -0.2 }, { id: 'noise', label: 'Noise', value: -0.08 }]);
+    expect(mainProblem({ condition: c, desirability: d })).toBeNull();
+    // rent / base / wealthy / prestige never lead, even when desirability is low
+    const low = des(-0.1, [{ id: 'rent', label: 'Rent', value: -0.4 }, { id: 'wealthy', label: 'Wealthy neighbours', value: -0.2 }]);
+    expect(mainProblem({ condition: c, desirability: low })).toBeNull();
+    for (const id of ['base', 'rent', 'wealthy', 'prestige']) expect(DESIRABILITY_HINTS[id]).toBeUndefined();
+  });
+
+  it('a big penalty, a low target or a countdown names the penalty with its fix', () => {
+    const big = mainProblem({ condition: cond(0.85, [{ id: 'noise', label: 'Noise at night', value: -0.12 }]) })!;
+    expect(big).toMatchObject({ text: 'Noise at night', tone: 'warn' });
+    expect(big.hint).toMatch(/trees/);
+    const low = mainProblem({ condition: cond(0.5, [{ id: 'garbage', label: 'Garbage not collected', value: -0.05 }]) })!;
+    expect(low.text).toBe('Garbage not collected');
+    expect(low.hint).toMatch(/landfill/);
+    expect(mainProblem({ condition: cond(0.7, [{ id: 'garbage', label: 'Garbage not collected', value: -0.05 }], 40) })!.tone).toBe('bad');
+  });
+
+  it('low desirability (or desirability limiting the stage) names the worst factor that has a fix', () => {
+    const c = cond(0.9, []);
+    const d = des(-0.1, [{ id: 'base', label: 'Base appeal', value: -0.3 }, { id: 'air', label: 'Air pollution', value: -0.2 }, { id: 'crime', label: 'Crime', value: -0.1 }]);
+    const p = mainProblem({ condition: c, desirability: d })!;
+    expect(p.text).toBe('Held back by air pollution');
+    expect(p.hint).toBe(DESIRABILITY_HINTS.air);
+    // a well-liked building is only "held back" when desirability is what caps its stage
+    const ok = des(0.4, [{ id: 'noise', label: 'Noise', value: -0.1 }]);
+    expect(mainProblem({ condition: c, desirability: ok })).toBeNull();
+    expect(mainProblem({ condition: c, desirability: ok, desLimited: true })!.hint).toBe(DESIRABILITY_HINTS.noise);
+  });
+
+  it('land value: the floor / cap is a note, not a bar', () => {
+    const v = landValueView([{ id: 'base', label: 'Base', value: 0.1 }, { id: 'ind', label: 'Industry nearby', value: -0.77 }, { id: 'clamp', label: 'Floored at 0%', value: 0.67 }, { id: 'smoothing', label: 'Neighbourhood blend & lag', value: 0 }]);
+    expect(v.bars.map((b) => b.id)).toEqual(['ind', 'base']);
+    expect(v.note).toBe('Floored at 0%: the factors add up to −67%');
+    expect(landValueView([{ id: 'base', label: 'Base', value: 0.3 }]).note).toBeUndefined();
+    expect(landValueView(null).bars).toEqual([]);
+  });
+
+  it('residents: a met quiet-streets need drops "(too noisy)"; the serving facility is named', () => {
+    const rows = needRows([
+      { cohort: 4, kind: 'quiet', label: 'Quiet streets (too noisy)', people: 4, access: 0.83, met: true },
+      { cohort: 0, kind: 'elementary', label: 'Elementary school', people: 30, access: 0.9, met: true },
+    ], (n) => (n.kind === 'elementary' ? 'Elementary School · 92% full' : undefined));
+    expect(rows.find((r) => r.kind === 'quiet')!.label).toBe('Quiet streets');
+    expect(rows.find((r) => r.kind === 'elementary')!.provider).toBe('Elementary School · 92% full');
+    expect(needRows([{ cohort: 4, kind: 'quiet', label: 'Quiet streets (too noisy)', people: 4, access: 0.3, met: false }])[0].label).toBe('Quiet streets (too noisy)');
   });
 });

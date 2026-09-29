@@ -155,7 +155,7 @@ describe('advisors: WP5 rules with locations', () => {
     monthTick(sim, adv, 30);
     const g = (advisorIssues(c.st).utilities ?? []).filter((a) => a.id === 'garbage');
     expect(g.length).toBe(1);
-    expect(g[0].text).toMatch(/Garbage is piling up at 30% of homes/);
+    expect(g[0].text).toMatch(/Garbage is piling up at the homes of 30% of residents/);
     expect(g[0].text).toMatch(/from 2,000 residents/);
     expect([g[0].x, g[0].z]).toEqual([hs[3].x, hs[3].z]);
     // a hamlet below 300 residents is left alone

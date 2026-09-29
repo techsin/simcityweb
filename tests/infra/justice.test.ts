@@ -251,14 +251,21 @@ describe('justice: the numbers follow the buildings at once (refresh on placemen
     expect(inm.hint).toBeUndefined();
     expect(rep.lines.some((l) => l.key === 'overflow')).toBe(false);
     expect(facilityReport(sim, station.id)!.lines.some((l) => l.key === 'overflow')).toBe(false);
-    // an unpowered prison holds only 30 % of its beds (and says so); power back -> full again, at the end of the day
+    // an unpowered prison holds only 30 % of its beds (and says so); power back (utilities emits buildingChanged) -> full
+    // again at once; the end-of-day refresh catches any change without an event
     jail.flags &= ~BF.Powered;
-    justiceRefresh(sim);
+    sim.events.emit('buildingChanged', jail);
     expect(st.stats.justice.beds).toBe(Math.round(JAIL_BEDS.civ_jail * 0.3));
     expect(facilityReport(sim, jail.id)!.warnings.some((w) => /^No power — holds only 30% of its beds/.test(w))).toBe(true);
+    expect(facilityReport(sim, jail.id)!.lines.find((l) => l.key === 'inmates')!.value).toMatch(new RegExp(`/ ${Math.round(JAIL_BEDS.civ_jail * 0.3).toLocaleString('en-US')} \\(`));
     jail.flags |= BF.Powered;
-    sim.events.emit('day', st.day);
+    sim.events.emit('buildingChanged', jail);
     expect(st.stats.justice.beds).toBe(JAIL_BEDS.civ_jail);
+    st.budget.funding.police = 50;
+    sim.events.emit('day', st.day);
+    expect(st.stats.justice.beds).toBe(Math.round(JAIL_BEDS.civ_jail * Math.pow(0.5, 0.7)));
+    st.budget.funding.police = 100;
+    justiceRefresh(sim);
     // bulldoze it: the overflow comes back right away
     removeBuilding(sim, jail);
     expect(st.stats.justice.beds).toBe(0);

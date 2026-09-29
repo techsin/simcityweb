@@ -54,13 +54,18 @@ export const GRAPHS: GraphDef[] = [
   { id: 'enrol', group: 'Services', label: 'Enrolment', icon: 'education', fmt: pct01, range: [0, 1], series: [
     { key: 'enrolElem', label: 'Elementary', color: PURPLE }, { key: 'enrolHigh', label: 'High school', color: BLUE }, { key: 'enrolCollege', label: 'University', color: AQUA },
     { key: 'healthServed', label: 'Health care', color: ROSE }] },
+  // (counts and minutes on separate axes: a ~1 min response and 0-2 deaths flattened against 5-15 incidents)
   { id: 'emergencies', group: 'Services', label: 'Emergencies', icon: 'siren', fmt: (v) => num(v), goodUp: false, series: [
-    { key: 'incidents', label: 'Incidents / month', color: ORANGE, fmt: (v) => num(v) }, { key: 'responseMin', label: 'Avg. response (min)', color: BLUE, fmt: mins },
-    { key: 'emergencyDeaths', label: 'Deaths / month', color: ROSE, fmt: (v) => num(v) }] },
-  { id: 'crime', group: 'Services', label: 'Crime & jail', icon: 'crime', fmt: pct01, range: [0, 1.5], goodUp: false, series: [
-    { key: 'crime', label: 'Avg. crime', color: BLUE }, { key: 'jailOccupancy', label: 'Jail occupancy', color: ORANGE }] },
-  { id: 'transit', group: 'Services', label: 'Transit', icon: 'bus', fmt: (v) => compact(v), series: [
-    { key: 'busLoad', label: 'Bus load (need / fleet)', color: ORANGE, fmt: pct01 }, { key: 'parkRide', label: 'Park & ride / day', color: AQUA, fmt: (v) => compact(v) }] },
+    { key: 'incidents', label: 'Incidents / month', color: ORANGE, fmt: (v) => num(v) }, { key: 'emergencyDeaths', label: 'Deaths / month', color: ROSE, fmt: (v) => num(v) }] },
+  { id: 'response', group: 'Services', label: 'Response time', icon: 'clock', fmt: mins, goodUp: false, series: [
+    { key: 'responseMin', label: 'Avg. response (min)', color: BLUE, fmt: mins }] },
+  { id: 'crime', group: 'Services', label: 'Crime & prison', icon: 'crime', fmt: pct01, range: [0, 1.5], goodUp: false, series: [
+    { key: 'crime', label: 'Avg. crime', color: BLUE }, { key: 'jailOccupancy', label: 'Prison occupancy', color: ORANGE }] },
+  // (a 0-1 load and a count on one axis read "0" at every tick): one graph each
+  { id: 'busLoad', group: 'Services', label: 'Bus load', icon: 'bus', fmt: pct01, goodUp: false, series: [
+    { key: 'busLoad', label: 'Buses needed / buses running', color: ORANGE, fmt: pct01 }] },
+  { id: 'parkRide', group: 'Services', label: 'Park & ride', icon: 'parking', fmt: (v) => compact(v), series: [
+    { key: 'parkRide', label: 'Park & ride trips / day', color: AQUA, fmt: (v) => compact(v) }] },
   { id: 'traffic', group: 'Services', label: 'Traffic', icon: 'car', series: [{ key: 'traffic', label: 'Avg. congestion', color: BLUE }], fmt: pct01, range: [0, 1], goodUp: false },
   { id: 'margins', group: 'Utilities', label: 'Power & water margin', icon: 'power', fmt: (v) => signedPct(v), range: [-1, 1], series: [
     { key: 'powerMargin', label: 'Power spare', color: SAND }, { key: 'waterMargin', label: 'Water spare', color: BLUE }] },

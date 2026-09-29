@@ -189,6 +189,7 @@ export const SHORTCUTS: { title: string; keys: [string, string[]][] }[] = [
       ['Budget', ['M']],
       ['Graphs', ['G']],
       ['City statistics', ['J']],
+      ['Demographics', ['P']],
       ['Advisors & news', ['N']],
       ['Data views', ['O']],
       ['Ordinances', ['Y']],

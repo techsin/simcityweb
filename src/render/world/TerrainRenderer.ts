@@ -15,6 +15,7 @@ import type { CityState } from '../../sim/CityState';
 import { sharedUniforms } from '../../assets/materials';
 import { getNoiseTexture, makeRampTexture } from './textures';
 import { OVERLAYS, ZONE_COLORS, computeOverlayValues, overlayDef } from './overlays';
+import { overlayStale } from '../../sim/infra/overlays';
 import { TERRAIN_FRAG_COLOR, TERRAIN_FRAG_PARS, TERRAIN_VERT_MAIN, TERRAIN_VERT_PARS } from './terrainShader';
 import { receiverSweepBox, type ShadowReceiver } from './Shadows';
 
@@ -684,6 +685,8 @@ export class TerrainRenderer {
       this.treeDirty = false;
       this.updateTrees(0, 0, this.N, this.N);
     }
+    // a derived raster that follows the buildings (Demographics) went stale: refresh (at most once a sim day)
+    if (!this.overlayDirty && this.uniforms.uOverlayOn.value > 0 && overlayStale(this.state, this.overlay, this.overlayVariant)) this.overlayDirty = true;
     if (this.overlayDirty) {
       this.overlayDirty = false;
       computeOverlayValues(this.state, this.overlay, this.overlayData, this.overlayVariant);

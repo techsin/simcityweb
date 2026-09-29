@@ -84,6 +84,8 @@ export class DataViewsPanel extends Panel {
     // layout (fits 1280×720): the overlay grid (and the Underground toggle under it) scrolls inside; variants + legend
     // stay pinned below (Desirability's 15 variants + a legend left the grid one row tall with the toggle pinned too)
     const scroll = h('div', { class: 'dv-scroll' });
+    this.scroll = scroll;
+    scroll.addEventListener('scroll', () => this.cue(), { passive: true });
     let first = true;
     for (const [name, g] of groups) {
       scroll.appendChild(h('div', { class: 'sec-title' }, name));
@@ -114,7 +116,10 @@ export class DataViewsPanel extends Panel {
     requestAnimationFrame(() => this.fit());
   }
 
-  /** limit the height so the panel never covers the minimap (it sits above it in the right column) */
+  /**
+   * limit the height so the panel never covers the minimap or the bottom toolbar (it moves left when the inspector
+   * takes the right column), and cue the overlay list's hidden rows (fades at the edges that scroll)
+   */
   private fit(): void {
     const el = this.el;
     const layer = el?.parentElement;
@@ -122,17 +127,29 @@ export class DataViewsPanel extends Panel {
     const z = uiZoom();
     const lr = layer.getBoundingClientRect();
     let bottom = layer.clientHeight - 12;
-    const mm = this.ctx.root.querySelector('.minimap') as HTMLElement | null;
-    if (mm && mm.offsetParent !== null) {
-      const r = mm.getBoundingClientRect();
-      const mmL = (r.left - lr.left) / z, mmR = (r.right - lr.left) / z, mmT = (r.top - lr.top) / z;
-      const left = el.offsetLeft, right = left + el.offsetWidth;
-      if (right > mmL && left < mmR) bottom = Math.min(bottom, mmT - 10);
+    const left = el.offsetLeft, right = left + el.offsetWidth;
+    for (const sel of ['.minimap', '.hud-bottom .toolbar']) {
+      const o = this.ctx.root.querySelector(sel) as HTMLElement | null;
+      if (!o || o.offsetParent === null) continue;
+      const r = o.getBoundingClientRect();
+      const oL = (r.left - lr.left) / z, oR = (r.right - lr.left) / z, oT = (r.top - lr.top) / z;
+      if (r.width > 0 && right > oL && left < oR) bottom = Math.min(bottom, oT - 10);
     }
     const maxH = Math.max(240, Math.floor(bottom - el.offsetTop));
     const v = maxH + 'px';
     if (el.style.maxHeight !== v) el.style.maxHeight = v;
+    this.cue();
   }
+
+  /** fade the overlay list where more buttons are hidden (above / below) */
+  private cue(): void {
+    const sc = this.scroll;
+    if (!sc) return;
+    const more = sc.scrollHeight - sc.clientHeight > 4;
+    toggleClass(sc, 'more-below', more && sc.scrollTop + sc.clientHeight < sc.scrollHeight - 4);
+    toggleClass(sc, 'more-above', more && sc.scrollTop > 4);
+  }
+  private scroll: HTMLElement | null = null;
 
   private pick(o: Overlay): void {
     if (o !== this.ctx.overlay) this.ctx.sound(o === Overlay.None ? 'overlayOff' : 'overlay');

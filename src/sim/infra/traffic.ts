@@ -481,6 +481,8 @@ export class TrafficSystem implements SimSystem {
   /** last completed assignment per stop building id: walkers (see stWalk), a path from the stop rides (stopsNear) */
   private stopWalkers = new Map<number, number>();
   private stopRide = new Map<number, boolean>();
+  /** stop building id -> the transit search reached it (a job is reachable by transit from it) in the last assignment */
+  private stopReach = new Map<number, boolean>();
   /** mode-split result of the last split() call (shares car / walk to a stop / park & ride / walk, minutes, car-less
    *  extra minutes x share) */
   private mC = 0; private mTW = 0; private mTP = 0; private mW = 0; private mT = 0; private mX = 0;
@@ -599,6 +601,7 @@ export class TrafficSystem implements SimSystem {
     this.garageLast.clear();
     this.stopWalkers.clear();
     this.stopRide.clear();
+    this.stopReach.clear();
     this.carlessById.fill(0);
     this.carlessMinById.fill(0);
     this.restoreTransport(sim.state);
@@ -770,16 +773,17 @@ export class TrafficSystem implements SimSystem {
   /**
    * riders (boardings + alightings / day, smoothed across assignments), current wait (min), the depot (building id, -1 =
    * none / minibuses) of a stop building, walkers = residents within walking distance whose nearest jobs are a walk from
-   * this stop (they don't ride: last assignment) and rho = the service ratio of its bus pool (buses / buses needed; bus
-   * stops only); null = not a stop (or not seen by an assignment yet)
+   * this stop (they don't ride: last assignment), rho = the service ratio of its bus pool (buses / buses needed; bus
+   * stops only) and reach = some job is reachable by transit from it (false: no stop / station near any job on its
+   * network); null = not a stop (or not seen by an assignment yet)
    */
-  stopLoad(id: number): { riders: number; waitMin: number; depotId: number; walkers?: number; rho?: number } | null {
+  stopLoad(id: number): { riders: number; waitMin: number; depotId: number; walkers?: number; rho?: number; reach?: boolean } | null {
     const s = this.stIdxById.get(id);
     if (s === undefined || s >= this.stops.n || this.stops.bid[s] !== id) return null;
     const d = this.stDepot[s];
-    const out: { riders: number; waitMin: number; depotId: number; walkers?: number; rho?: number } = {
+    const out: { riders: number; waitMin: number; depotId: number; walkers?: number; rho?: number; reach?: boolean } = {
       riders: this.stLoadPrev.get(id) ?? 0, waitMin: this.stWait[s], depotId: d >= 0 && d < this.depots.length ? this.depots[d].id : -1,
-      walkers: this.stopWalkers.get(id) ?? 0,
+      walkers: this.stopWalkers.get(id) ?? 0, reach: this.stopReach.get(id),
     };
     if (this.stops.mode[s] === Transit.Bus && this.stRho[s] > 0) out.rho = this.stRho[s];
     return out;
@@ -1798,10 +1802,12 @@ export class TrafficSystem implements SimSystem {
       seeds.clear();
       let maxL = 0;
       for (let q = 0; q < gN; q++) {
-        // seed = minutes + the group's price: the price moves the catchment boundary between garages
+        // seed = minutes + the group's price: the price moves the catchment boundary between garages (PR_LIMIT applies
+        // to the minutes: a high price must not drop the garage from the search — its catchment would vanish, its
+        // demand with it, and the price would collapse)
         const L = this.gLabel[q] + this.gPrice[q];
         this.gSeed[q] = L;
-        if (!(L < PR_LIMIT)) continue;
+        if (!(this.gLabel[q] < PR_LIMIT)) continue;
         for (let e = this.gEntS[q], e1 = e + this.gEntC[q]; e < e1; e++) seeds.push(this.ent[e], L, q);
         if (L > maxL) maxL = L;
       }
@@ -2390,15 +2396,15 @@ export class TrafficSystem implements SimSystem {
     } else if (this.prAcc.length > 0) this.prAcc.fill(0, 0, Math.min(this.prAcc.length, this.road.n));
     this.garageLoad.clear();
     this.garageLast.clear();
-    const members = new Int32Array(this.gN + 1);
-    for (let q = 0; q < this.gN; q++) members[this.gGrp[q]]++;
+    const members = new Int32Array(this.gN + 1), catchG = new Float32Array(this.gN + 1);
+    for (let q = 0; q < this.gN; q++) { members[this.gGrp[q]]++; catchG[this.gGrp[q]] += this.gCatch[q]; }
     for (let q = 0; q < this.gN; q++) {
       const id = this.gBid[q], r = this.gGrp[q];
       // the group's cars / riders / demand shared out by spaces (a pooled garage shows its share)
       const share = this.gGSp[r] > 0 ? this.gSpaces[q] / this.gGSp[r] : 0;
       this.gCars[q] = this.gLoad[r] * share;
       this.gRidersM[q] = this.gRiders[r] * share;
-      this.garageLast.set(id, { riders: this.gRidersM[q], want: this.gWant[r] * share, catchment: this.gCatch[q], state: this.gState[q], pooled: members[r] - 1 });
+      this.garageLast.set(id, { riders: this.gRidersM[q], want: this.gWant[r] * share, catchment: catchG[r], state: this.gState[q], pooled: members[r] - 1 });
       if (this.gState[q] !== GARAGE_PR) { this.garagePrice.delete(id); continue; }
       this.garageLoad.set(id, this.gCars[q]);
       const x = this.gWant[r] / CAR_OCCUPANCY / Math.max(1, this.gGSp[r]);
@@ -2968,6 +2974,7 @@ export class TrafficSystem implements SimSystem {
       const next = new Map<number, number>();
       this.stopWalkers.clear();
       this.stopRide.clear();
+      this.stopReach.clear();
       const doneT = this.ST.done;
       for (let s = 0; s < this.stops.n; s++) {
         const bid = this.stops.bid[s];
@@ -2976,9 +2983,15 @@ export class TrafficSystem implements SimSystem {
         next.set(key, o === undefined ? this.stLoad[s] : o + STOP_LOAD_SMOOTH * (this.stLoad[s] - o));
         if (bid < 0) continue;
         if (this.stWalk[s] > 0) this.stopWalkers.set(bid, this.stWalk[s]);
-        let ride = false;
-        for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1 && !ride; a++) { const v = this.stAtt[a]; if (doneT[v] === 1 && this.rides(v)) ride = true; }
+        let ride = false, reach = false;
+        for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1 && !ride; a++) {
+          const v = this.stAtt[a];
+          if (doneT[v] !== 1) continue;
+          reach = true;
+          if (this.rides(v)) ride = true;
+        }
         this.stopRide.set(bid, ride);
+        this.stopReach.set(bid, reach);
       }
       this.stLoadPrev = next;
     }

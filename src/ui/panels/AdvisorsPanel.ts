@@ -1,11 +1,14 @@
 /**
- * Advisors (status + advice) and the full news feed. Each advisor card shows its open issues (advice whose condition
- * still holds, highest priority first: sim/economy/advisors openAdvice) — else another system's news of the last
- * RECENT_DAYS (advice posts never linger once resolved: adviceIdOf), else its own assessment. An open 'bad' /
- * 'warning' issue also colours the status dot. The top-bar badge stays on the (cheap) assessments.
+ * Advisors (status + advice) and the full news feed. Each advisor card shows its open issues (highest priority
+ * first) — else another system's news of the last RECENT_DAYS (advice posts never linger once resolved: adviceIdOf),
+ * else its own assessment. An open 'bad' / 'warning' issue also colours the status dot. The top-bar badge stays on the
+ * (cheap) assessments.
+ * PERF: while the game runs the cards read advisorIssues (the month tick's full list — no scan of the city); a fresh
+ * openAdvice scan (several ms on a big map) runs only while paused, or once after the player built something, so a
+ * school placed while paused shows at once.
  */
 import type { NewsItem } from '../../sim/CityState';
-import { adviceIdOf, openAdvice, type OpenAdvice } from '../../sim/economy/advisors';
+import { adviceIdOf, advisorIssues, advisorIssuesReady, openAdvice, type OpenAdvice } from '../../sim/economy/advisors';
 import type { GameContext } from '../../game/context';
 import { Panel } from '../Panel';
 import { clear, escapeHtml, h, toggleClass } from '../dom';
@@ -150,26 +153,61 @@ export class AdvisorsPanel extends Panel {
   }
 
   /**
-   * open advice of the whole city (a full advisor scan: tens of ms on a big map), evaluated when the Advisors tab is
-   * shown, then again only when the city moved on (a new game day or building) and OPEN_REFRESH_MS of wall-clock time
-   * passed since the last
+   * open advice of the whole city. Running game: the month tick's list (advisorIssues, re-read each new month).
+   * Paused, or the player built something since the last look: a fresh openAdvice scan (several ms on a big map),
+   * throttled to OPEN_REFRESH_MS of wall-clock time.
    */
   private open: OpenAdvice[] = [];
   private openAt = -Infinity;
   private openDay = -1;
   private openBld = -1;
+  private openNext = -1;
+  private openMonth = -1;
   private openState: unknown = null;
   private refreshOpen(force = false): void {
     const st = this.ctx.state, now = performance.now();
-    // (a new building counts like a new day: a fire station / plant placed while paused shows at once, throttled)
-    const moved = st.day !== this.openDay || st.buildings.size !== this.openBld;
-    if (!force && this.openState === st && (!moved || now - this.openAt < OPEN_REFRESH_MS)) return;
+    const paused = this.ctx.sim.speed === 0;
+    const built = st.nextBuildingId !== this.openNext || st.buildings.size !== this.openBld;
+    if (!force && this.openState === st) {
+      if (paused || built) {
+        // the city changed while paused, or the player built something: a fresh look, throttled
+        if ((st.day === this.openDay && !built) || now - this.openAt < OPEN_REFRESH_MS) return;
+        this.scanFresh(st, now);
+        return;
+      }
+      // running: the month tick's list, re-read once a month
+      if (st.monthIndex !== this.openMonth) this.readIssues(st, now);
+      return;
+    }
+    if (paused) this.scanFresh(st, now);
+    else this.readIssues(st, now);
+  }
+  private mark(st: typeof this.ctx.state, now: number): void {
     this.openAt = now;
     this.openDay = st.day;
     this.openBld = st.buildings.size;
+    this.openNext = st.nextBuildingId;
+    this.openMonth = st.monthIndex;
     this.openState = st;
+  }
+  private scanFresh(st: typeof this.ctx.state, now: number): void {
+    this.mark(st, now);
     try {
       this.open = openAdvice(this.ctx.sim);
+    } catch {
+      this.open = [];
+    }
+  }
+  /** the month tick's full issue list (places looked up on the first read), highest priority first; before the first
+   *  month tick of this session (e.g. right after loading) one fresh scan */
+  private readIssues(st: typeof this.ctx.state, now: number): void {
+    if (!advisorIssuesReady(st)) {
+      this.scanFresh(st, now);
+      return;
+    }
+    this.mark(st, now);
+    try {
+      this.open = Object.values(advisorIssues(st)).flat().sort((a, b) => b.priority - a.priority);
     } catch {
       this.open = [];
     }

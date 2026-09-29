@@ -1199,10 +1199,12 @@ export function facilityReport(sim: Simulation, buildingId: number): FacilityRep
   }
   const svc = def.service as ServiceKind | undefined;
   if (svc && onStrike(st, svc)) c.warnings.push('Staff on strike — raise the budget');
-  if (inf.tier >= 0 && def.category !== 'power' && def.category !== 'water' && !touchesRoad(st, b)) c.warnings.push('No road access — build a road beside it');
-  if (understaffed(st, b)) {
+  const road = touchesRoad(st, b);
+  if (inf.tier >= 0 && def.category !== 'power' && def.category !== 'water' && !road) c.warnings.push('No road access — build a road beside it');
+  // (without a road the no-road warning above already says why nobody works there)
+  if (road && understaffed(st, b)) {
     const s = staffingOf(st, b);
-    c.warnings.push(s && s.road ? `Understaffed: ${(staffHint(st, s) ?? "workers can't reach it").replace(/^\w/, (ch) => ch.toLowerCase())}` : 'Understaffed: no road access — build a road beside it');
+    c.warnings.push(`Understaffed: ${((s && staffHint(st, s)) ?? "workers can't reach it").replace(/^\w/, (ch) => ch.toLowerCase())}`);
   }
   // ---- per kind
   const tier = inf.tier >= 0 ? SERVICE_TIERS[inf.tier] : undefined;

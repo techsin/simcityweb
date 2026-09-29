@@ -69,7 +69,8 @@ export class PlopTool extends Tool {
     const ao = autoOverlayOf(def);
     this.autoOverlay = ao?.o ?? null;
     this.autoVariant = ao?.v ?? -1;
-    const f = safe(() => facilityDefFacts(def.id), []);
+    // (the tip's header already shows the cost; upkeep, jobs and size repeat the toolbar card: left out)
+    const f = safe(() => facilityDefFacts(def.id), []).filter((l) => !/^(upkeep|jobs|size|staff|cost)$/i.test(l.label) && !/^(upkeep|jobs|staff)$/i.test(l.key ?? ''));
     this.facts = f.slice(0, 2).map((l) => `${escapeHtml(l.label)} ${escapeHtml(l.value)}`).join(' · ');
   }
 
