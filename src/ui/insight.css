@@ -126,7 +126,8 @@
 .dtier-bar .cap { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: #fff; opacity: 0.8; }
 .dtier-n { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .demo-venues { display: flex; flex-direction: column; gap: 4px; }
-.demo-venues .dv-row { display: grid; grid-template-columns: minmax(0, 1fr) 110px 112px; gap: 10px; align-items: center; font-size: 12px; padding: 4px 6px; border-radius: 7px; }
+.demo-venues .dv-row { display: grid; grid-template-columns: minmax(0, 1fr) 96px 140px; gap: 10px; align-items: center; font-size: 12px; padding: 4px 6px; border-radius: 7px; }
+.demo-venues .dvv { white-space: nowrap; }
 .demo-venues .dv-row.go { cursor: pointer; }
 .demo-venues .dv-row.go:hover { background: var(--hover); }
 .demo-venues .dvn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

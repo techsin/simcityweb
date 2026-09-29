@@ -1,7 +1,7 @@
 /** Query / inspect: hover highlights, click opens the info card. This is the default tool. */
 import { Network, Overlay, isRoad } from '../../core/types';
 import { overlayInfo, overlayTitle } from '../../ui/overlays';
-import { overlayReadout } from '../../sim/infra/overlays';
+import { overlayLayer, overlayReadout } from '../../sim/infra/overlays';
 import { getDef } from '../../sim/catalog';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
@@ -47,11 +47,16 @@ export class QueryTool extends Tool {
     const ov = this.ctx.overlay;
     if (ov !== Overlay.None && ov !== Overlay.Zones && p.hit) {
       const info = overlayInfo(ov);
-      const r = safe(() => overlayReadout(st, ov, p.hit!.x, p.hit!.z, this.ctx.overlayVariant), null);
+      // the value and the name come from the same place: the highlighted building (its centre cell) — except on
+      // road-only views, which read the road under the cursor — else the tile under the cursor
+      const b = id !== null ? st.buildings.get(id) : undefined;
+      const roadsOnly = !!safe(() => overlayLayer(st, ov, this.ctx.overlayVariant)?.roadsOnly, false);
+      const useB = !!b && !roadsOnly;
+      const cx = useB ? Math.min(st.size - 1, b!.x + (b!.w >> 1)) : p.hit.x, cz = useB ? Math.min(st.size - 1, b!.z + (b!.d >> 1)) : p.hit.z;
+      const r = safe(() => overlayReadout(st, ov, cx, cz, this.ctx.overlayVariant), null);
       if (r) {
         const cls = r.tone === 'good' ? 'pos' : r.tone === 'warn' ? 'warn' : r.tone === 'bad' ? 'neg' : '';
-        // name what stands on the tile the value is read from (the pick ray may hit a tall building in front of it)
-        const where = escapeHtml(this.tileName(p.hit.x, p.hit.z));
+        const where = escapeHtml(useB ? getDef(b!.def)?.name ?? b!.def : this.tileName(p.hit.x, p.hit.z));
         const sub = r.sub ? `${escapeHtml(r.sub)} · ${where}` : where;
         this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(overlayTitle(ov, this.ctx.overlayVariant) || info?.label || 'Value')}</b><span class="${cls}" style="font-weight:800">${escapeHtml(r.text)}</span></div><div class="tip-sub">${sub}</div>`, 'info');
         return;

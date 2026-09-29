@@ -403,7 +403,7 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
     const rep2 = transportFacilityReport(sim, off)!;
     expect(rep2.warnings.join()).toMatch(/No road access/);
     expect(rep2.warnings.join()).not.toMatch(/No transit stop/);
-    // ... and it eases no parking (drivers can't reach it): no relief line, no supply in the parking raster
+    // ... and it eases no parking (drivers can't reach it): relief 'none', no supply in the parking raster
     expect(rep2.lines.find((l) => l.key === 'parking')!.value).toBe('none — no road access');
     const supplyWith = () => { cycles(sim, 2); return tr.parkingSummary.supply; };
     const s1 = supplyWith();

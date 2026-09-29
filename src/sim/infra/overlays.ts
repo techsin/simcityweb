@@ -817,6 +817,7 @@ export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, 
         // (the raster is sqrt(volume / scale): read the volume itself)
         const T = truckVolumeOf(st);
         const n = T && T.length === st.cells ? T[i] : 0;
+        if (n < 0.5) return { text: 'No trucks', tone: '' };
         return { text: `${Math.round(n).toLocaleString('en-US')} trucks/day`, tone: raw > 0.77 ? 'bad' : raw > 0.5 ? 'warn' : '', sub: `${pctS(raw * raw)} of a busy freight route` };
       }
       return { text: pctS(raw), tone: raw > 1 ? 'bad' : raw > 0.7 ? 'warn' : 'good', sub: `${Math.round(st.traffic[i]).toLocaleString('en-US')} trips/day` };
