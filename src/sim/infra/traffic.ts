@@ -398,6 +398,7 @@ export class TrafficSystem implements SimSystem {
   /** bumped on road / tunnel / terrain edits: the tunnel / rail component rasters and the ferry links are recomputed
    *  only then (a transport building change re-reads the stops only) */
   private netVer = 0;
+  private subVer = 0;
   private terrainVer = 0;
   /** transit buildings (stops, stations, terminals, seaports) by id: rebuilt by prep's building scan every cycle, kept
    *  current in between by the building events, so an attachment refresh does not walk every building */
@@ -558,10 +559,11 @@ export class TrafficSystem implements SimSystem {
     };
     const dropT = (b: Building) => { if (this.transportB.delete(b.id) || getDef(b.def)?.category === 'transport') this.attachDirty = true; };
     this.unsub.push(
+      // (a road / rail edit re-labels the rail components only, a tunnel edit the subway ones, terrain / reset all)
       ev.on('networkChanged', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; }),
-      ev.on('subwayChanged', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; }),
-      ev.on('terrainChanged', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; this.terrainVer++; }),
-      ev.on('reset', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; this.terrainVer++; }),
+      ev.on('subwayChanged', () => { this.graphDirty = true; this.attachDirty = true; this.subVer++; }),
+      ev.on('terrainChanged', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; this.subVer++; this.terrainVer++; }),
+      ev.on('reset', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; this.subVer++; this.terrainVer++; }),
       ev.on('buildingAdded', markT),
       ev.on('buildingRemoved', dropT),
       ev.on('buildingChanged', markT),
@@ -830,6 +832,12 @@ export class TrafficSystem implements SimSystem {
   depotInfo(id: number): { fleet: number; need: number; stops: number; riders: number; rho: number } | null {
     const d = this.depots.find((x) => x.id === id);
     return d ? { fleet: d.fleet, need: d.need, stops: d.stops, riders: d.riders, rho: d.rho } : null;
+  }
+  /** bus stops run by depots (sum over the depots of the stops within their range; TRANSPORT_EFFECT_METRICS) */
+  get depotStopsServed(): number {
+    let n = 0;
+    for (const d of this.depots) n += d.stops;
+    return n;
   }
   /** stops without a depot in range: minibus pool (MINIBUS_FLEET) */
   get minibusInfo(): { stops: number; riders: number; need: number; rho: number } {
@@ -2614,33 +2622,37 @@ export class TrafficSystem implements SimSystem {
 
   // ------------------------------------------------------------------------------------------ FREIGHT SINKS
   /**
-   * critic item 18: throughput of each seaport / rail-linked freight station = trucks of the industries within
-   * FREIGHT_SINK_MIN (truck time) of it — its own reverse search, so road neighbour connections do not shadow it; an
-   * industry counts for its nearest such sink. Every 2nd cycle (with the freight pass).
+   * critic item 18: throughput of a seaport / rail-linked freight station = trucks of all industries within
+   * FREIGHT_SINK_MIN (truck time) of it — its own reverse search seeded at that sink only, so neither road neighbour
+   * connections nor a second sink nearby shadow it. One sink per 2nd cycle (with the freight pass): sinks without a
+   * value first, then round-robin in building order; the others keep their last value.
    */
   private freightSinks(): void {
     const g = this.road, S = this.SB, seeds = this.seeds;
-    seeds.clear();
     const K = this.sinkK.length;
-    for (let q = 0; q < K; q++) {
-      const k = this.sinkK[q];
-      for (let e = this.kEntS[k], e1 = e + this.kEntC[k]; e < e1; e++) seeds.push(this.ent[e], 0, q);
+    if (K === 0 || this.truckTime.length < g.n) { this.sinksDone = true; return; }
+    // pick: the first sink without a value, else the one after the last searched (round-robin)
+    let pick = -1;
+    for (let q = 0; q < K; q++) { const id = this.sinkIds[q]; if (!(id < this.sinkTrucksById.length) || this.sinkTrucksById[id] < 0) { pick = q; break; } }
+    if (pick < 0) {
+      const last = this.sinkIds.indexOf(this.sinkLast);
+      pick = last >= 0 ? (last + 1) % K : 0;
     }
-    const tot = new Float64Array(K);
-    if (seeds.n > 0 && this.truckTime.length >= g.n) {
+    seeds.clear();
+    const k = this.sinkK[pick];
+    for (let e = this.kEntS[k], e1 = e + this.kEntC[k]; e < e1; e++) seeds.push(this.ent[e], 0, 0);
+    let tot = 0;
+    if (seeds.n > 0) {
       roadSearch(g, g.rev, this.truckTime, S, this.heap, seeds, FREIGHT_SINK_MIN, this.rampT);
-      const dist = S.dist, done = S.done, src = S.src;
+      const done = S.done;
       for (let f = 0; f < this.fN; f++) {
-        let bd = Infinity, bn = -1;
-        for (let e = this.fEntS[f], e1 = e + this.fEntC[f]; e < e1; e++) {
-          const v = this.ent[e];
-          if (done[v] === 1 && dist[v] < bd) { bd = dist[v]; bn = v; }
-        }
-        if (bn >= 0) tot[src[bn]] += this.fTrucks[f];
+        for (let e = this.fEntS[f], e1 = e + this.fEntC[f]; e < e1; e++) if (done[this.ent[e]] === 1) { tot += this.fTrucks[f]; break; }
       }
       S.settled = 0; // scratch
     }
-    for (let q = 0; q < K; q++) { const id = this.sinkIds[q]; if (id < this.sinkTrucksById.length) this.sinkTrucksById[id] = tot[q]; }
+    const id = this.sinkIds[pick];
+    if (id < this.sinkTrucksById.length) this.sinkTrucksById[id] = tot;
+    this.sinkLast = id;
     this.sinksDone = true;
   }
 
@@ -2658,13 +2670,22 @@ export class TrafficSystem implements SimSystem {
     for (let j = 0; j < this.jB; j++) { const b = this.jObj[j]; if (b) addFootprint(N, b, this.jCar[j] * inv, D); }
     for (let s = 0; s < this.sN; s++) { const b = this.sObj[s]; if (b) addFootprint(N, b, PARKING_SHOP_W * this.sCar[s] * inv, D); }
     baseSupply(st, S);
+    // garages: their free spaces (spaces minus this assignment's park & ride cars) ease the blocks around them
     for (let q = 0; q < this.gN; q++) {
       const b = st.buildings.get(this.gBid[q]);
       if (!b) continue;
-      const spaces = GARAGE_DEFS[b.def] ?? GARAGE_SPACES;
-      addGarageSupply(N, b, spaces - Math.min(spaces, this.gStop[q] >= 0 ? this.gLoad[q] : 0), S);
+      const spaces = this.gSpaces[q];
+      addGarageSupply(N, b, spaces - Math.min(spaces, this.gState[q] === GARAGE_PR ? this.gLoad[q] : 0), S);
     }
-    this.parkingSummary = computeParking(N, D, S, st.parking, this.parkTmpA, this.parkTmpB);
+    // blended with the previous raster (one assignment's arrivals are noisy); a fresh city / old save starts unblended
+    let prev: Float32Array | null = null;
+    if (this.parkHas) {
+      if (this.parkPrev.length !== C) this.parkPrev = new Float32Array(C);
+      this.parkPrev.set(st.parking);
+      prev = this.parkPrev;
+    }
+    this.parkingSummary = computeParking(N, D, S, st.parking, this.parkTmpA, this.parkTmpB, prev, PARKING_BLEND);
+    this.parkHas = true;
     sim.events.emit('layerUpdated', 'parking');
   }
 
@@ -2710,9 +2731,9 @@ export class TrafficSystem implements SimSystem {
     for (const b of bus) this.attach.set(b.id, touches(N, b, isRoad, false) >= 0 ? 1 : 0);
     // subway lines
     if (subs.length > 0) {
-      if (this.attachSubVer !== this.netVer || this.attachSubwayComp.length !== C) {
-        this.attachSubwayComp = labelCells(C, N, (i) => sub[i] !== 0, this.attachSubwayComp);
-        this.attachSubVer = this.netVer;
+      if (this.attachSubVer !== this.subVer || this.attachSubwayComp.length !== C) {
+        this.attachSubwayComp = labelCells(C, N, sub, null, this.attachSubwayComp);
+        this.attachSubVer = this.subVer;
       }
       const comp = this.attachSubwayComp;
       const cnt = new Map<number, number>();
@@ -2726,17 +2747,16 @@ export class TrafficSystem implements SimSystem {
     }
     // rail lines (level crossings are rail too); border rail cells lead to the region; rail next to a seaport
     if (trains.length + freights.length > 0) {
-      const isRail = (i: number) => net[i] === Network.Rail || (flags[i] & NETFLAG_CROSSING) !== 0;
       if (this.attachRailVer !== this.netVer || this.attachRailComp.length !== C) {
-        this.attachRailComp = labelCells(C, N, isRail, this.attachRailComp);
+        this.attachRailComp = labelCells(C, N, net, flags, this.attachRailComp);
         this.attachRailVer = this.netVer;
       }
       const comp = this.attachRailComp;
-      const target = new Uint8Array(C);
+      if (railTarget.length !== C) railTarget = new Uint8Array(C); else railTarget.fill(0);
+      const target = railTarget;
       const border = new Set<number>(), port = new Set<number>();
-      for (let t = 0; t < N; t++) {
-        for (const i of [t, (N - 1) * N + t, t * N, t * N + N - 1]) if (comp[i] >= 0) { border.add(comp[i]); target[i] = 1; }
-      }
+      const edge = (i: number) => { if (comp[i] >= 0) { border.add(comp[i]); target[i] = 1; } };
+      for (let t = 0; t < N; t++) { edge(t); edge((N - 1) * N + t); edge(t * N); edge(t * N + N - 1); }
       for (const c of st.neighborConnections ?? []) {
         if (c.x < 0 || c.z < 0 || c.x >= N || c.z >= N) continue;
         const i = c.z * N + c.x;
@@ -2779,7 +2799,9 @@ export class TrafficSystem implements SimSystem {
   private restoreTransport(st: CityState): void {
     this.busNeed.clear();
     this.garageLoad.clear();
+    this.garagePrice.clear();
     this.stLoadPrev.clear();
+    this.parkHas = false;
     this.rampVolCell = new Float32Array(st.cells);
     const d = st.systemData.infraTransport as TransportSave | undefined;
     if (!d || typeof d !== 'object') return;
@@ -2789,11 +2811,19 @@ export class TrafficSystem implements SimSystem {
     };
     pairs(d.busNeed, this.busNeed);
     pairs(d.garageLoad, this.garageLoad);
+    pairs(d.garagePrice, this.garagePrice);
     pairs(d.stopLoad, this.stLoadPrev);
+    const sinks = new Map<number, number>();
+    pairs(d.sinkTrucks, sinks);
+    if (sinks.size > 0) {
+      this.sinkTrucksById = ensureIdFloat(this.sinkTrucksById, st, -1);
+      for (const [id, v] of sinks) if (id >= 0 && id < this.sinkTrucksById.length) this.sinkTrucksById[id] = v;
+    }
+    if (typeof d.sinkLast === 'number') this.sinkLast = d.sinkLast;
     const rc = d.rampCells, rv = d.rampVol;
     if (rc && rv && rc.length === rv.length) for (let k = 0; k < rc.length; k++) { const c = rc[k]; if (c >= 0 && c < st.cells) this.rampVolCell[c] = rv[k]; }
     const pq = d.parkingQ;
-    if (pq && pq.length === st.cells) for (let i = 0; i < st.cells; i++) st.parking[i] = pq[i] / 255;
+    if (pq && pq.length === st.cells) { for (let i = 0; i < st.cells; i++) st.parking[i] = pq[i] / 255; this.parkHas = true; }
   }
 
   private saveTransport(st: CityState): void {
@@ -2810,11 +2840,16 @@ export class TrafficSystem implements SimSystem {
       const P = st.parking;
       for (let i = 0; i < st.cells; i++) pq[i] = Math.round(Math.max(0, Math.min(1, P[i])) * 255);
     }
+    const sinks: [number, number][] = [];
+    for (const id of this.sinkIds) if (id < this.sinkTrucksById.length && this.sinkTrucksById[id] >= 0) sinks.push([id, f(this.sinkTrucksById[id])]);
     const save: TransportSave = {
       v: 1,
       busNeed: [...this.busNeed].map(([k, v]) => [k, f(v)]),
       garageLoad: [...this.garageLoad].map(([k, v]) => [k, f(v)]),
+      garagePrice: [...this.garagePrice].map(([k, v]) => [k, f(v)]),
       stopLoad: [...this.stLoadPrev].map(([k, v]) => [k, f(v)]),
+      sinkTrucks: sinks,
+      sinkLast: this.sinkLast,
       rampCells: Int32Array.from(rc),
       rampVol: Float32Array.from(rv),
       parkingQ: pq,
@@ -2840,13 +2875,15 @@ export class TrafficSystem implements SimSystem {
     }
     const railN = this.rail.n;
     for (let v = 0; v < railN; v++) this.railNew[v] = traffic[this.rail.cellOf[v]] * (1 - alpha) + this.railNew[v] * alpha;
-    // interchange (ramp) flows: MSA per cell like the volumes (WP7-10)
+    // interchange (ramp) flows: MSA per cell like the volumes (WP7-10), with a lower floor (RAMP_MSA_MIN): each commuter
+    // picks one ramp, so two interchanges would otherwise trade the load every cycle
     {
       const rv = this.rampVolCell, rn = this.rampNew, cellOf = g.cellOf, type = g.type;
+      const ra = Math.max(RAMP_MSA_MIN, 1 / this.iter);
       for (let v = 0; v < n; v++) {
         if (type[v] === Network.Highway) continue;
         const c = cellOf[v];
-        const x = rv[c] * (1 - alpha) + rn[v] * alpha;
+        const x = rv[c] * (1 - ra) + rn[v] * ra;
         rv[c] = x > 1e-3 ? x : 0;
       }
     }
@@ -2872,11 +2909,27 @@ export class TrafficSystem implements SimSystem {
     if (this.subwayRiders.length !== C) this.subwayRiders = new Float32Array(C);
     this.subwayRiders.fill(0);
     for (let v = 0; v < this.subway.n; v++) this.subwayRiders[this.subway.cellOf[v]] = this.subNew[v];
-    // stop loads for crowding
-    this.stLoadPrev.clear();
-    for (let s = 0; s < this.stops.n; s++) {
-      const bid = this.stops.bid[s];
-      this.stLoadPrev.set(bid >= 0 ? bid : -1 - this.stops.cell[s], this.stLoad[s]);
+    // stop loads for crowding / bus need: smoothed across assignments (STOP_LOAD_SMOOTH; a new stop starts at its load)
+    // — the next assignment's crowding wait reads them, and an undamped load would alternate full / empty; walkers and
+    // whether a path from the stop rides (reports, garage preview) of this assignment
+    {
+      const old = this.stLoadPrev;
+      const next = new Map<number, number>();
+      this.stopWalkers.clear();
+      this.stopRide.clear();
+      const doneT = this.ST.done;
+      for (let s = 0; s < this.stops.n; s++) {
+        const bid = this.stops.bid[s];
+        const key = bid >= 0 ? bid : -1 - this.stops.cell[s];
+        const o = old.get(key);
+        next.set(key, o === undefined ? this.stLoad[s] : o + STOP_LOAD_SMOOTH * (this.stLoad[s] - o));
+        if (bid < 0) continue;
+        if (this.stWalk[s] > 0) this.stopWalkers.set(bid, this.stWalk[s]);
+        let ride = false;
+        for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1 && !ride; a++) { const v = this.stAtt[a]; if (doneT[v] === 1 && this.rides(v)) ride = true; }
+        this.stopRide.set(bid, ride);
+      }
+      this.stLoadPrev = next;
     }
     // stats
     const stats = st.stats;
@@ -2885,16 +2938,23 @@ export class TrafficSystem implements SimSystem {
     stats.tripsWalk = Math.round(this.tripsWalk);
     stats.avgCommute = this.commuteW > 0 ? this.commuteSum / this.commuteW : 0;
     stats.avgTraffic = congN > 0 ? congSum / congN : 0;
-    // WP7b fleet / park & ride / ferries
-    const tf = stats.transitFleet;
-    let buses = 0, need = 0;
-    for (const d of this.depots) { buses += d.fleet; need += d.need; }
-    if (this.minibus.stops > 0) { buses += MINIBUS_FLEET; need += this.minibus.need; }
+    // WP7b fleet / park & ride / ferries: only fleets that serve stops count (a depot out of range of every stop runs
+    // no route), and busesShort sums the shortfall per pool so one depot's spare buses do not hide another's stops
+    const tf = stats.transitFleet as TransitFleetStatsX;
+    let buses = 0, need = 0, short = 0;
+    for (const d of this.depots) {
+      need += d.need;
+      if (d.stops <= 0) continue;
+      buses += d.fleet;
+      short += Math.max(0, d.need - d.fleet);
+    }
+    if (this.minibus.stops > 0) { buses += MINIBUS_FLEET; need += this.minibus.need; short += Math.max(0, this.minibus.need - MINIBUS_FLEET); }
     tf.buses = Math.round(buses);
     tf.busesNeeded = Math.round(need * 10) / 10;
+    tf.busesShort = Math.round(short * 10) / 10;
     let spaces = 0;
-    // (park & ride spaces: garages whose stop's riders ride; walk-only garages are plain parking)
-    for (let q = 0; q < this.gN; q++) if (this.gStop[q] >= 0 && this.gRide[q] === 1) spaces += GARAGE_DEFS[st.buildings.get(this.gBid[q])?.def ?? ''] ?? GARAGE_SPACES;
+    // (park & ride spaces: garages whose stop's riders ride; downtown garages are plain parking)
+    for (let q = 0; q < this.gN; q++) if (this.gState[q] === GARAGE_PR) spaces += this.gSpaces[q];
     tf.parkRide = Math.round(this.prRiders);
     tf.parkRideSpaces = spaces;
     tf.ferryRiders = Math.round(this.ferryRiders);
@@ -2922,6 +2982,14 @@ export class TrafficSystem implements SimSystem {
       this.accessById[bid] = emp;
       this.commuteById[bid] = t;
       this.reachedById[bid] = this.oW[o] * emp;
+      // car-less workers: share and their mean extra minutes (taxi / lift) vs car owners (routeInfo, WP5's inspector)
+      {
+        const cl = this.oCl[o], a = this.oAsg[o];
+        const x = a > 0 && cl > 0 ? Math.max(0, this.oClX[o] / (a * cl)) : 0;
+        const px = this.carlessMinById[bid];
+        this.carlessById[bid] = cl;
+        this.carlessMinById[bid] = px > 0 && this.cycles > 0 ? px + (x - px) * RESULT_SMOOTH : x;
+      }
       const sc = this.oShC[o], stt = this.oShT[o], sw = this.oShW[o];
       this.modeById[bid] = sc + stt + sw <= 0 ? 0 : sc >= stt && sc >= sw ? 1 : stt >= sw ? 2 : 3;
       for (let z: number = b.z; z < b.z + b.d; z++) for (let x: number = b.x; x < b.x + b.w; x++) {
@@ -3133,10 +3201,15 @@ interface TransportSave {
   v: number;
   /** smoothed needed buses per depot id (-1 = minibus pool) */
   busNeed: [number, number][];
-  /** park & ride cars per garage id */
+  /** park & ride cars per garage id (last assignment) */
   garageLoad: [number, number][];
-  /** riders per stop key (building id, -1 - cell for road-flag stops) */
+  /** park & ride rationing price (minutes) per garage id (optional: saves before r1 have none) */
+  garagePrice?: [number, number][];
+  /** riders per stop key (building id, -1 - cell for road-flag stops), smoothed */
   stopLoad: [number, number][];
+  /** trucks within FREIGHT_SINK_MIN per sink id and the sink searched last (round-robin; optional) */
+  sinkTrucks?: [number, number][];
+  sinkLast?: number;
   /** smoothed ramp flow per ramp cell */
   rampCells: Int32Array;
   rampVol: Float32Array;
@@ -3193,39 +3266,48 @@ function touchedComps(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>, comp:
   return out;
 }
 
-/** 4-connected components of the cells matching pred: out[i] = component id, -1 elsewhere */
-function labelCells(C: number, N: number, pred: (i: number) => boolean, out: Int32Array<ArrayBuffer>): Int32Array<ArrayBuffer> {
+let labelStack: Int32Array<ArrayBuffer> = new Int32Array(0);
+/**
+ * 4-connected components: out[i] = component id, -1 elsewhere. Cells: layer[i] !== 0 (subway tunnels) when `flags` is
+ * null, else rail cells (layer[i] === Network.Rail or a level crossing in flags). No closures, reused stack (the lazy
+ * attachment refresh runs in whichever system asks first)
+ */
+function labelCells(C: number, N: number, layer: Uint8Array, flags: Uint8Array | null, out: Int32Array<ArrayBuffer>): Int32Array<ArrayBuffer> {
   const comp = out.length === C ? out : new Int32Array(C);
-  comp.fill(-2);
-  const stack = new Int32Array(C);
+  const RAIL = Network.Rail;
+  if (flags) for (let i = 0; i < C; i++) comp[i] = layer[i] === RAIL || (flags[i] & NETFLAG_CROSSING) !== 0 ? -2 : -1;
+  else for (let i = 0; i < C; i++) comp[i] = layer[i] !== 0 ? -2 : -1;
+  if (labelStack.length < C) labelStack = new Int32Array(C);
+  const stack = labelStack;
   let nc = 0;
   for (let s = 0; s < C; s++) {
     if (comp[s] !== -2) continue;
-    if (!pred(s)) { comp[s] = -1; continue; }
     let sp = 0;
     stack[sp++] = s;
     comp[s] = nc;
     while (sp > 0) {
       const u = stack[--sp];
       const x = u % N;
-      for (let k = 0; k < 4; k++) {
-        const v = k === 0 ? (x > 0 ? u - 1 : -1) : k === 1 ? (x < N - 1 ? u + 1 : -1) : k === 2 ? u - N : u + N;
-        if (v < 0 || v >= C || comp[v] !== -2) continue;
-        if (!pred(v)) { comp[v] = -1; continue; }
-        comp[v] = nc;
-        stack[sp++] = v;
-      }
+      if (x > 0 && comp[u - 1] === -2) { comp[u - 1] = nc; stack[sp++] = u - 1; }
+      if (x < N - 1 && comp[u + 1] === -2) { comp[u + 1] = nc; stack[sp++] = u + 1; }
+      if (u >= N && comp[u - N] === -2) { comp[u - N] = nc; stack[sp++] = u - N; }
+      if (u + N < C && comp[u + N] === -2) { comp[u + N] = nc; stack[sp++] = u + N; }
     }
     nc++;
   }
   return comp;
 }
 
+/** freight rail target raster (map edge / neighbour connection / seaport rail cells) and railPath's BFS scratch */
+let railTarget: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+let railPar: Int32Array<ArrayBuffer> = new Int32Array(0);
+let railQ: Int32Array<ArrayBuffer> = new Int32Array(0);
 /** BFS over rail cells (comp >= 0) from a station's perimeter rail cells to the nearest target cell: path cells */
 function railPath(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>, comp: Int32Array, target: Uint8Array): Uint32Array | null {
   const C = N * N;
-  const par = new Int32Array(C).fill(-2);
-  const q = new Int32Array(C);
+  if (railPar.length !== C) { railPar = new Int32Array(C); railQ = new Int32Array(C); }
+  const par = railPar.fill(-2);
+  const q = railQ;
   let qh = 0, qt = 0;
   forPerimeter(N, b, (i) => { if (comp[i] >= 0 && par[i] === -2) { par[i] = -1; q[qt++] = i; } });
   let hit = -1;

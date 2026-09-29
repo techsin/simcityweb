@@ -9,7 +9,8 @@
  *             garage's free spaces (GARAGE_SPACES minus the cars its commuters park there) spread over
  *             GARAGE_WALK_RADIUS with a normalised kernel (1 - d / (R + 1), sums to the spaces)
  *  parking    smoothstep(PARKING_RATIO[0], PARKING_RATIO[1], box(D) / box(S)); box = (2 PARKING_BOX_R + 1)^2 mean, so
- *             a block borrows spaces from its neighbours but a dense core runs out.
+ *             a block borrows spaces from its neighbours but a dense core runs out; blended with the previous raster
+ *             (traffic passes it, PARKING_BLEND) so one noisy assignment does not flip a block.
  * Effects (readers): car commuters to a site pay PARKING_MIN x parking extra minutes (traffic); WP6a desirability
  * PARKING terms; the Parking overlay (WP5) and the inspector (roadCellReport / facility report of garages).
  */
@@ -105,25 +106,28 @@ export interface ParkingSummary {
 }
 
 /**
- * parking = smoothstep(r0, r1, box(D) / box(S)) into `out` (0 where there is no demand nearby). `tmpA` / `tmpB` are
- * scratch rasters of st.cells. D and S are left unchanged.
+ * parking = smoothstep(r0, r1, box(D) / box(S)) into `out` (0 where there is no demand nearby); with `prev` (the
+ * previous raster, not aliasing `out`) out = blend x prev + (1 - blend) x fresh. `tmpA` / `tmpB` are scratch rasters of
+ * st.cells. D and S are left unchanged. The summary describes the (blended) result.
  */
-export function computeParking(N: number, D: Float32Array, S: Float32Array, out: Float32Array, tmpA: Float32Array, tmpB: Float32Array): ParkingSummary {
+export function computeParking(N: number, D: Float32Array, S: Float32Array, out: Float32Array, tmpA: Float32Array, tmpB: Float32Array,
+  prev: Float32Array | null = null, blend = 0): ParkingSummary {
   const C = N * N, R = PARKING_BOX_R;
   boxH(D, tmpA, N, R);
   boxV(tmpA, out, N, R); // out = box(D)
   boxH(S, tmpA, N, R);
   boxV(tmpA, tmpB, N, R); // tmpB = box(S)
   const r0 = PARKING_RATIO[0], r1 = PARKING_RATIO[1];
+  const bl = prev && prev.length === C ? Math.max(0, Math.min(1, blend)) : 0;
   let wSum = 0, pSum = 0, dCells = 0, high = 0, sTot = 0, dTot = 0;
   for (let i = 0; i < C; i++) {
     const d = out[i];
     sTot += S[i];
     const di = D[i];
     dTot += di;
-    if (!(d > 1e-6)) { out[i] = 0; continue; }
     const s = tmpB[i];
-    const p = s > 1e-6 ? sstep(r0, r1, d / s) : 1;
+    let p = !(d > 1e-6) ? 0 : s > 1e-6 ? sstep(r0, r1, d / s) : 1;
+    if (bl > 0) p = bl * prev![i] + (1 - bl) * p;
     out[i] = p;
     if (di > 0) {
       wSum += di; pSum += di * p; dCells++;

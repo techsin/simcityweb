@@ -6,7 +6,7 @@ import { getDef } from '../../sim/catalog';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
 import { num, pct } from '../../ui/format';
-import { emptyZoneStatus, zoneStatusLine } from '../../ui/zoneStatus';
+import { emptyZoneStatus, zoneStatusLine, zoneStatusTone } from '../../ui/zoneStatus';
 import { NETWORK_LABELS } from './NetworkTool';
 import { safe, Tool, type ToolPointer } from './Tool';
 import { ZONE_LABELS } from './ZoneTool';
@@ -50,8 +50,8 @@ export class QueryTool extends Tool {
       const r = safe(() => overlayReadout(st, ov, p.hit!.x, p.hit!.z, this.ctx.overlayVariant), null);
       if (r) {
         const cls = r.tone === 'good' ? 'pos' : r.tone === 'warn' ? 'warn' : r.tone === 'bad' ? 'neg' : '';
-        const b = id !== null ? st.buildings.get(id) : undefined;
-        const where = b ? escapeHtml(getDef(b.def)?.name ?? b.def) : `Tile ${p.hit.x}, ${p.hit.z}`;
+        // name what stands on the tile the value is read from (the pick ray may hit a tall building in front of it)
+        const where = escapeHtml(this.tileName(p.hit.x, p.hit.z));
         const sub = r.sub ? `${escapeHtml(r.sub)} · ${where}` : where;
         this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(overlayTitle(ov, this.ctx.overlayVariant) || info?.label || 'Value')}</b><span class="${cls}" style="font-weight:800">${escapeHtml(r.text)}</span></div><div class="tip-sub">${sub}</div>`, 'info');
         return;
@@ -77,11 +77,25 @@ export class QueryTool extends Tool {
       const zs = safe(() => emptyZoneStatus(st, p.hit!.x, p.hit!.z), null);
       if (zs) {
         const more = zs.blockers.slice(1, 3).map((b) => `<div class="tip-warn">${escapeHtml(b.text)}</div>`).join('');
-        this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(ZONE_LABELS[st.zone[i]] ?? 'Zoned lot')}</b></div><div class="${zs.ready ? 'tip-sub' : 'tip-reason'}">${escapeHtml(zoneStatusLine(zs))}</div>${more}`, zs.ready ? 'ok' : 'bad');
+        // (a lot behind the buildings on the road waits for the lot in front: a warning, not a red blocker)
+        const tone = zoneStatusTone(zs);
+        this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(ZONE_LABELS[st.zone[i]] ?? 'Zoned lot')}</b></div><div class="${tone === 'ok' ? 'tip-sub' : tone === 'warn' ? 'tip-warn' : 'tip-reason'}">${escapeHtml(zoneStatusLine(zs))}</div>${more}`, tone === 'bad' ? 'bad' : tone === 'ok' ? 'ok' : 'info');
         return;
       }
     }
     this.ctx.tip.hide();
+  }
+  /** what stands on a tile: its building, road, empty lot or bare land (the hover readout names it) */
+  private tileName(x: number, z: number): string {
+    const st = this.ctx.state;
+    const i = st.idx(x, z);
+    const bid = st.building[i];
+    const b = bid >= 0 ? st.buildings.get(bid) : undefined;
+    if (b) return getDef(b.def)?.name ?? b.def;
+    const n = st.network[i] as Network;
+    if (n) return NETWORK_LABELS[n] ?? 'Road';
+    if (st.zone[i]) return `${ZONE_LABELS[st.zone[i]] ?? 'Zoned'} lot`;
+    return st.water[i] ? 'Water' : `Tile ${x}, ${z}`;
   }
   override down(p: ToolPointer): void {
     this.downAt = { x: p.clientX, y: p.clientY };

@@ -546,7 +546,7 @@ export function facilityEndOfDay(sim: Simulation): void {
   if (!(d.cityFill > 0) && popSystems.get(sim) && (st.buildings.size <= 4000 || st.day % 5 === 0)) {
     const cf = monthlyScan(st).cityFill;
     if (cf > 0) d.cityFill = Math.round(cf * 1e4) / 1e4;
-  }
+  } else if (cacheOf(st).jobNext !== st.nextBuildingId) monthlyScan(st); // a building placed without buildingAdded
   staffFlags(sim);
   justiceRefresh(sim);
 }
@@ -809,6 +809,8 @@ function seatLines(c: Ctx): void {
           : `The ${fmt(inReach)} ${unit[1]} in its reach have places elsewhere — it would serve more people in another spot`,
       });
     }
+  } else if (L.metric === 'walk' && isFunctional(b) && frontage(st, b) === 2) {
+    add(c, 'reach', 'Reach', 'only its next-door neighbours', { status: 'warn', hint: 'It faces only a highway, which pedestrians cannot use — give it a street entrance' });
   }
   const need = st.stats.needs?.[L.needTier];
   if (need && need.unreached > 0.5 && L.needTier !== 'police') {
@@ -940,7 +942,7 @@ function reliefIncomeLines(c: Ctx): void {
     if (parts.length) {
       const full = parts.join(', ');
       const value = k <= 0.001 ? `none while ${why ?? 'it is closed'} (${full} when working)` : k < 0.995 ? `${full} (×${k.toFixed(2)})` : full;
-      const hint = op < 0.999 ? `Works at ${pct(op)} while ${why ?? 'it is closed'}` : use < 0.999 ? `Scales with use (${pct(use)})` : 'Lets the city grow past its demand caps';
+      const hint = k <= 0.001 ? undefined : op < 0.999 ? `Works at ${pct(op)} while ${why ?? 'it is closed'}` : use < 0.999 ? `Grows with use (${pct(use)} at today's traffic)` : 'Lets the city grow past its demand caps';
       add(c, 'relief', 'Demand cap', value, { status: k <= 0.001 ? 'bad' : op < 0.999 ? 'warn' : 'ok', hint });
     }
   }
@@ -1104,7 +1106,12 @@ function roleOf(c: Ctx): string {
   const r = cv ? Math.round(cv.radius) : 0;
   const how = cv?.metric === 'walk' ? `a ~${r}-tile walk` : cv?.metric === 'euclid' ? `${r} tiles` : `~${r} tiles by road`;
   const tier = inf.tier >= 0 ? SERVICE_TIERS[inf.tier] : undefined;
-  if (def.category === 'power') return `Power plant: up to ${fmt(def.powerOut ?? 0)} MW for every building on its grid (power lines and roads conduct)`;
+  if (def.category === 'power') {
+    const k = `${def.id} ${def.model}`, pw = def.powerOut ?? 0;
+    const mw = k.includes('wind') ? `${fmt(pw * WIND_TURBINE_BASE)}–${fmt(pw * (WIND_TURBINE_BASE + WIND_TURBINE_GAIN))} MW (by height)`
+      : k.includes('solar') ? `${fmt(pw * SOLAR_WINTER)}–${fmt(pw * SOLAR_SUMMER)} MW (by season)` : `up to ${fmt(pw)} MW`;
+    return `Power plant: ${mw} for every building on its grid (power lines and roads conduct)`;
+  }
   if (def.category === 'water') return `Water supply: ${fmt(def.waterOut ?? 0)} kL/day into the pipes under the roads it touches`;
   if (inf.isIncinerator) return `Incinerator: burns up to ${fmt(def.garbageCapacity ?? 0)} t/month of garbage and makes up to ${fmt(def.powerOut ?? 0)} MW, by tons burned`;
   if (inf.isRecycling) return `Recycling center: recycles up to ${fmt(def.garbageCapacity ?? 0)} t/month (at most ${pct(RECYCLE_MAX_SHARE)} of the collected garbage) and sells the material`;
@@ -1158,7 +1165,7 @@ function useLines(c: Ctx): void {
   }
   add(c, 'use', 'Benefit', k <= 0.001 ? `none while ${why ?? 'it is closed'}` : `${pct(k)} of its full demand-cap boost and income`, {
     ratio: k, status: k <= 0.001 ? 'bad' : k < 0.8 ? 'warn' : 'ok',
-    hint: op < 0.999 && k > 0.001 ? `Works at ${pct(op)} while ${why}` : use < 0.999 ? `Grows with use: ${pct(use)} at its current traffic (60 % while idle)` : undefined,
+    hint: k <= 0.001 ? undefined : op < 0.999 ? `Works at ${pct(op)} while ${why}` : use < 0.999 ? `Grows with use: ${pct(USE_FACTOR_MIN)} while idle, full at half its rating` : undefined,
   });
 }
 

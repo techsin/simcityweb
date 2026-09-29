@@ -117,6 +117,20 @@ interface PassSlot {
   lrz: number;
 }
 
+/** a tile's cached block for one pass class (see DynamicBatch.tileCache) */
+interface TileBlock {
+  /** tile content version the ids were collected for */
+  ver: number;
+  n: number;
+  /** instance ids and their draw ranges (index start in bytes, count) */
+  i: Uint32Array;
+  s: Int32Array;
+  c: Int32Array;
+  /** tileSwap / rangesGen the ranges were computed for */
+  rs: number;
+  rg: number;
+}
+
 const _frustum = new THREE.Frustum();
 const _pm = new THREE.Matrix4();
 const _m4 = new THREE.Matrix4();
@@ -267,11 +281,15 @@ export class DynamicBatch {
   private tileDirty = new Uint8Array(0);
   /** tiles disabled by the owner (skipped in every pass) */
   private tileOff = new Uint8Array(0);
-  /** per-tile content version (visibility / masks / membership; not geometry swaps) and cached instance ids per pass
-   *  class (0 main, 1 cascade 0, 2 cascade 1): tiles that need no per-instance test are copied in one block (draw ranges
-   *  looked up from the current geometry, so LOD swaps never invalidate a block) */
+  /** per-tile content version (visibility / masks / membership; not geometry swaps) and cached blocks per pass class
+   *  (0 main, 1 cascade 0, 2 cascade 1): tiles that need no per-instance test are copied as one block (instance ids and
+   *  their draw ranges, read sequentially). A block's ranges are refreshed when an instance of its tile swapped geometry
+   *  (tileSwap, LOD) or the draw ranges moved (rangesGen); its ids only when the tile's content changed (tileVer). */
   private tileVer = new Uint32Array(0);
-  private tileCache: ({ ver: number; n: number; i: Uint32Array } | null)[] = [];
+  private tileSwap = new Uint32Array(0);
+  private tileCache: (TileBlock | null)[] = [];
+  /** bumped whenever drawRanges() recomputed the per-geometry ranges */
+  private rangesGen = 0;
   private untiled: number[] = [];
   /** dynamic batches keep their visible instances at the front of `untiled` ([0, untiledVis), see partSet): list
    *  builds walk only those (a zoomed-out view hides most vehicles) */
@@ -408,6 +426,8 @@ export class DynamicBatch {
     this.mesh.setGeometryIdAt(id, geomId);
     if (!this.pc) { this.touch(); return; }
     this.instGeo[id] = geomId;
+    const tile = this.instTile[id];
+    if (tile >= 0) this.tileSwap[tile]++;
     // cached draw lists stay valid while the instance's culling sphere still bounds the new geometry (LOD swaps, see
     // shareSphere): they only patch this instance's draw range (swap log; no re-cull, no indirect texture upload; the
     // per-tile blocks hold instance ids, so they stay valid too). Otherwise the sphere is rewritten exactly and the
@@ -550,6 +570,7 @@ export class DynamicBatch {
     this.tileDirty = new Uint8Array(T).fill(1);
     this.tileOff = new Uint8Array(T);
     this.tileVer = new Uint32Array(T);
+    this.tileSwap = new Uint32Array(T);
     this.tileCache = new Array(T * 3).fill(null);
     this.ensureCap(this.mesh.maxInstanceCount);
     this.instTile.fill(-1);
@@ -761,7 +782,9 @@ export class DynamicBatch {
     }
     const s = this.slotFor(camera);
     const w = camera.matrixWorld.elements, P = camera.projectionMatrix.elements;
-    const texel = shadow ? ((camera.userData.texel as number | undefined) ?? 0) : 0;
+    // (the shadow texel only matters to batches with a caster size cutoff: a cascade re-fit while zooming must not
+    // rebuild the lists of the others)
+    const texel = shadow && this.pc.minShadowTexels! > 0 ? ((camera.userData.texel as number | undefined) ?? 0) : 0;
     const recv = shadow ? ((camera.userData.recv as ShadowReceiver | undefined) ?? null) : null;
     const cam = camera as THREE.PerspectiveCamera;
     const persp = cam.isPerspectiveCamera === true;
@@ -920,11 +943,9 @@ export class DynamicBatch {
       this.cullPlanes(s, recv, tilt, phi, rtilt);
       const fp = _fp, rp = _rp, rnl = _rnl, fq = _fq, rq = _rq, rnq = _rnq;
       this.drawRanges(geometry);
-      const gS = this.gStart, gC = this.gCount;
       const minR = cascade >= 0 ? pc.minShadowTexels! * texel * 0.5 : 0;
       const mat = dyn ? (m._matricesTexture.image.data as Float32Array) : null;
       const cbit = cascade >= 0 ? 1 << cascade : 0;
-      const imask = this.instMask, vis = this.instVis, geo = this.instGeo;
       const cls = cascade < 0 ? 0 : Math.min(2, cascade + 1);
       let rGround = 0, rInv = 0;
       if (recv) {
@@ -937,7 +958,7 @@ export class DynamicBatch {
       let match = reuse && s.selValid && s.selMinR === minR;
       let k = 0;
       if (!dyn) {
-        const tb = this.tileBox, off = this.tileOff, dirty = this.tileDirty, tmask = this.tileMask, tminR = this.tileMinR, tver = this.tileVer;
+        const tb = this.tileBox, off = this.tileOff, dirty = this.tileDirty, tmask = this.tileMask, tminR = this.tileMinR, tver = this.tileVer, tswap = this.tileSwap;
         for (let ti = 0; ti < this.tileLists.length; ti++) {
           const list = this.tileLists[ti];
           if (!list.length || off[ti]) continue;
@@ -1006,22 +1027,12 @@ export class DynamicBatch {
           // every visible instance of the tile (with the cascade bit) is drawn: copy its cached block
           const ck = ti * 3 + cls;
           let cc = this.tileCache[ck];
-          if (!cc || cc.ver !== ver) {
-            if (!cc || cc.i.length < list.length) cc = this.tileCache[ck] = { ver: 0, n: 0, i: new Uint32Array(list.length + 16) };
-            let m2 = 0;
-            const ci = cc.i;
-            for (let j = 0; j < list.length; j++) {
-              const id = list[j];
-              if (!vis[id] || (cbit && !(imask[id] & cbit))) continue;
-              ci[m2++] = id;
-            }
-            cc.n = m2;
-            cc.ver = ver;
-          }
+          if (cc === null || cc.ver !== ver) cc = this.fillBlock(ck, ti, cbit);
+          else if (cc.rs !== tswap[ti] || cc.rg !== this.rangesGen) this.blockRanges(cc, ti);
           // (element loop: subarray() views would allocate three objects per tile)
           const starts = s.starts, counts = s.counts, ind = s.ids;
-          const ci = cc.i, cn = cc.n;
-          for (let j = 0; j < cn; j++) { const id = ci[j], gid = geo[id]; starts[n + j] = gS[gid]; counts[n + j] = gC[gid]; ind[n + j] = id; }
+          const ci = cc.i, cs = cc.s, cq = cc.c, cn = cc.n;
+          for (let j = 0; j < cn; j++) { starts[n + j] = cs[j]; counts[n + j] = cq[j]; ind[n + j] = ci[j]; }
           n += cn;
         }
       }
@@ -1065,6 +1076,36 @@ export class DynamicBatch {
     }
     data.set(ids.subarray(0, n));
     if (n > 0 || fresh) tex.needsUpdate = true;
+  }
+
+  /** (re)fill tile ti's block for pass class ck % 3: its visible instances with the cascade bit, and their ranges */
+  private fillBlock(ck: number, ti: number, cbit: number): TileBlock {
+    const list = this.tileLists[ti], vis = this.instVis, imask = this.instMask;
+    let cc = this.tileCache[ck];
+    if (cc === null || cc.i.length < list.length) {
+      const cap = list.length + 16;
+      cc = this.tileCache[ck] = { ver: 0, n: 0, i: new Uint32Array(cap), s: new Int32Array(cap), c: new Int32Array(cap), rs: 0, rg: -1 };
+    }
+    let m2 = 0;
+    const ci = cc.i;
+    for (let j = 0; j < list.length; j++) {
+      const id = list[j];
+      if (!vis[id] || (cbit && !(imask[id] & cbit))) continue;
+      ci[m2++] = id;
+    }
+    cc.n = m2;
+    cc.ver = this.tileVer[ti];
+    this.blockRanges(cc, ti);
+    return cc;
+  }
+
+  /** a block's draw ranges from its instances' current geometries (after a fill, a geometry swap in its tile or a
+   *  draw-range change; drawRanges() ran for this build) */
+  private blockRanges(cc: TileBlock, ti: number): void {
+    const geo = this.instGeo, gS = this.gStart, gC = this.gCount, ci = cc.i, cs = cc.s, cq = cc.c;
+    for (let j = 0; j < cc.n; j++) { const g = geo[ci[j]]; cs[j] = gS[g]; cq[j] = gC[g]; }
+    cc.rs = this.tileSwap[ti];
+    cc.rg = this.rangesGen;
   }
 
   /** grow a slot's stored tile selection to hold `need` entries */
@@ -1140,6 +1181,7 @@ export class DynamicBatch {
     const bpe = index === null ? 1 : index.array.BYTES_PER_ELEMENT;
     if (this.rangesAt === this.geoEpoch && this.rangesLen === gInfo.length && this.rangesBpe === bpe) return;
     this.rangesAt = this.geoEpoch; this.rangesLen = gInfo.length; this.rangesBpe = bpe;
+    this.rangesGen++;
     if (this.gStart.length < gInfo.length) { this.gStart = new Int32Array(gInfo.length * 2); this.gCount = new Int32Array(gInfo.length * 2); }
     const gS = this.gStart, gC = this.gCount;
     for (let g = 0; g < gInfo.length; g++) { const gi = gInfo[g]; gS[g] = gi ? gi.start * bpe : 0; gC[g] = gi ? gi.count : 0; }

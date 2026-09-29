@@ -183,3 +183,8 @@
 
 /* plop cursor tip: facility facts and the placement preview wrap inside the tip (it is nowrap for the one-liners) */
 .cursor-tip .tip-facts { white-space: normal; }
+
+/* empty lot behind the buildings on the road: it waits for the lot in front (a warning, not a red blocker) */
+.zone-status.warn { background: rgba(255, 181, 71, 0.08); border-color: rgba(255, 181, 71, 0.32); }
+.zone-status.warn .zs-h { color: var(--warn); align-items: flex-start; }
+.zone-status.warn .zs-h svg { flex: none; margin-top: 2px; }

@@ -344,6 +344,10 @@ describe('facilities: staffing (WP7-3, critic items 7 / 8)', () => {
     b.jobs = 20;
     expect(facilityOpFactor(st, b)).toBe(1);
     b.jobs = 10;
+    // the city's job fill is not known yet (no filled C / I job: a young town) -> counts as full, like unknown staffing
+    expect(facilityOpFactor(st, b)).toBe(1);
+    expect(understaffed(st, b)).toBe(false);
+    justiceData(st).cityFill = 1;
     expect(facilityOpFactor(st, b)).toBeCloseTo(0.8, 6);
     // jobs = 2 x workers: every employer fills ~half; a reachable facility at the city's fill is fully effective
     justiceData(st).cityFill = 0.5;

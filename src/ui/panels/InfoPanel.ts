@@ -27,7 +27,7 @@ import { icon } from '../icons';
 import { money, num, pct, titleCase } from '../format';
 import { thumbs } from '../thumbs';
 import { DEV_NAMES } from '../TopBar';
-import { emptyZoneStatus, roadAccess, utilityReaches, zoneStatusLine } from '../zoneStatus';
+import { ACCESS_TEXT, emptyZoneStatus, lotAccess, utilityReaches, zoneStatusLine, zoneStatusTone } from '../zoneStatus';
 import { demolishRisks } from '../../game/demolishRisk';
 import { confirmDialog } from '../Modals';
 import { loadPref, savePref } from '../../game/settings';
@@ -637,8 +637,11 @@ export class InfoPanel extends Panel {
       const needWater = zoneDensity(zone) >= 2;
       flags.appendChild(h('span', { class: 'chip ' + (pw ? 'good' : 'bad'), html: icon('power', 11) + (pw ? 'Powered' : 'No power') }));
       flags.appendChild(h('span', { class: 'chip ' + (wt ? 'good' : needWater ? 'warn' : 'info'), title: wt || needWater ? undefined : 'Low-density lots grow without water; bigger buildings need it later', html: icon('water', 11) + (wt ? 'Water' : needWater ? 'No water' : 'No water yet') }));
-      const road = roadAccess(st, x, z);
-      flags.appendChild(h('span', { class: 'chip ' + (road ? 'good' : 'bad'), html: icon('road', 11) + (road ? 'Road access' : 'No road access') }));
+      // deep blocks: back cells fill as the yard of a lot on the road, or when the lot in front is rebuilt
+      const acc = lotAccess(st, x, z);
+      const [cls, text, tip] = acc === 'front' ? ['good', 'Road access', undefined] : acc === 'yard' ? ['info', 'Back lot', ACCESS_TEXT.yard]
+        : acc === 'behind' ? ['warn', 'Behind buildings', ACCESS_TEXT.behind] : ['bad', 'No road access', ACCESS_TEXT.none];
+      flags.appendChild(h('span', { class: 'chip ' + cls, title: tip, html: icon('road', 11) + text }));
     }
     if (st.powerLines[i]) flags.appendChild(h('span', { class: 'chip info', html: icon('pylon', 11) + 'Power line' }));
     if (st.trees[i]) flags.appendChild(h('span', { class: 'chip good', html: icon('trees', 11) + 'Trees' }));
@@ -646,7 +649,8 @@ export class InfoPanel extends Panel {
     // empty zoned lot: why it is (not) growing
     const zs = emptyZoneStatus(st, x, z);
     if (zs) {
-      const box = h('div', { class: 'zone-status ' + (zs.ready ? 'ok' : 'bad') }, h('div', { class: 'zs-h', html: icon(zs.ready ? 'check' : 'alert', 13) + `<span>${escapeHtml(zoneStatusLine(zs))}</span>` }));
+      const tone = zoneStatusTone(zs);
+      const box = h('div', { class: 'zone-status ' + tone }, h('div', { class: 'zs-h', html: icon(zs.ready ? 'check' : 'alert', 13) + `<span>${escapeHtml(zoneStatusLine(zs))}</span>` }));
       for (const bl of zs.blockers.slice(1)) box.appendChild(h('div', { class: 'zs-r' }, bl.text));
       this.body.appendChild(box);
     }
