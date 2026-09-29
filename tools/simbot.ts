@@ -100,13 +100,15 @@ interface Block {
 
 /** duck-typed view of sim-infra's PollutionSystem garbage queries (WP3) */
 interface GarbageApi {
-  garbageSummary(): { producedT: number; outOfRangeT: number };
+  garbageSummary(): { producedT: number; outOfRangeT: number; overCapacityT?: number };
   garbageInfo(id: number): { producedT: number; collected: boolean; reason?: string } | null;
 }
 
 const GRID = 9;
 /** a prison keeps at least this many cells from R$$$ homes (bot rule; PART_B item 38 d) */
 export const JAIL_GAP = 12;
+/** a cluster of buildings beyond garbage-truck range producing this much (t / month) gets a facility (ensureGarbage) */
+const GARB_RANGE_MIN_T = 10;
 
 export class SimBot {
   sim: Simulation;
@@ -710,30 +712,40 @@ export class SimBot {
 
   /**
    * Garbage (SIM_DEPTH_SPEC WP3 C5: trucks collect only within 90 road tiles of a landfill / incinerator / recycling
-   * center; landfill cells fill up over ~10 years). Districts beyond truck range for two months running get a
-   * facility near them: a recycling center once unlocked (compact transfer point), else a landfill block within ~60
-   * cells, else an incinerator. Capacity: landfill blocks nearest the town (never on R / C blocks) while the live
-   * (not yet full) landfill stays under ~3x production; incinerator / recycling beyond that.
+   * center; landfill cells fill up over ~10 years). A district beyond truck range gets a facility as soon as its cluster
+   * produces GARB_RANGE_MIN_T (or 0.3 % of the city's garbage; or 1 % of the city's garbage lies beyond range): a few
+   * new shop blocks at the edge are far below any city-wide share, yet their own piles abandon luxury shops within ~4
+   * months (WP6a diag, 256 s7: every CS$$$ abandoned in 2007-10 was 'uncollected: range', pile ~0.9). A recycling
+   * center once unlocked (compact transfer point), else a landfill block within ~60 cells, else an incinerator; a
+   * cluster within 30 cells of a range facility of the last 120 days waits (the garbage pass must see it first).
+   * Capacity: collected garbage near the capacity, the landfills filling up, or > 2 % of the garbage turned away for lack
+   * of capacity (homes, shops, offices and industry alike): landfill blocks nearest the town (never on R / C blocks)
+   * while the live (not yet full) landfill stays under ~3x production; incinerator / recycling beyond that.
    */
-  private garbageStreak = 0;
+  private garbageRange: { x: number; z: number; day: number }[] = [];
   ensureGarbage(): void {
     const st = this.st, s = st.stats;
     const pol = this.sim.getSystem('pollution') as unknown as GarbageApi | undefined;
     const g = typeof pol?.garbageSummary === 'function' ? pol.garbageSummary() : null;
     if (!pol || !g) return this.ensureGarbageLegacy();
     if (s.population < 1200) return;
-    this.garbageStreak = g.producedT > 0 && g.outOfRangeT > 0.03 * g.producedT ? this.garbageStreak + 1 : 0;
     // live (not yet full) landfill stays under ~3x production: 300 t/month per cell (one block of slack for reach)
     const live = this.liveLandfillCells();
     const lfCap = Math.max(64, (3 * s.garbageProduced) / 300);
-    if (this.garbageStreak >= 2) {
+    // beyond truck range: the largest cluster of out-of-range buildings
+    if (g.outOfRangeT > 0 && (this.svcRetry.get('garbage:range') ?? -1) <= st.day) {
+      this.garbageRange = this.garbageRange.filter((p) => st.day - p.day < 120);
       const t = this.outOfRangeCenter(pol);
-      if (t && this.garbageFacilityNear(t.x, t.z, live < lfCap + 64)) { this.garbageStreak = 0; return; }
+      if (t && !this.garbageRange.some((p) => Math.hypot(p.x - t.x, p.z - t.z) < 30) &&
+        (t.tons >= Math.max(GARB_RANGE_MIN_T, 0.003 * g.producedT) || g.outOfRangeT > 0.01 * g.producedT)) {
+        const ok = this.garbageFacilityNear(t.x, t.z, live < lfCap + 64);
+        this.svcRetry.set('garbage:range', st.day + (ok ? 30 : 60));
+        if (ok) { this.garbageRange.push({ x: t.x, z: t.z, day: st.day }); return; }
+      }
     }
-    // capacity: collected garbage near the capacity, the landfills filling up, or > 2 % of homes without pickup
-    let homes = 0, noG = 0;
-    for (const b of st.buildings.values()) { if (b.pop <= 0 || b.flags & BF.Plopped) continue; homes++; if (b.flags & BF.NoGarbage) noG++; }
-    if (s.garbageProduced < s.garbageCapacity * 0.8 && (s.landfillFill ?? 0) < 0.7 && (homes === 0 || noG / homes <= 0.02)) return;
+    // capacity: collected garbage near the capacity, the landfills filling up, or garbage turned away for lack of capacity
+    const over = g.producedT > 0 && (g.overCapacityT ?? 0) > 0.02 * g.producedT;
+    if (s.garbageProduced < s.garbageCapacity * 0.8 && (s.landfillFill ?? 0) < 0.7 && !over) return;
     const cx = this.line(this.cbx), cz = this.line(this.cbz);
     if (live < lfCap && this.canSpend(2000) && this.zoneLandfillNear(cx, cz, Infinity)) return;
     // no land left for landfill (or enough of it): burn / recycle, on the fullest old landfill block first (full cells
@@ -804,10 +816,10 @@ export class SimBot {
   }
 
   /**
-   * garbage-weighted centre of the LARGEST cluster of buildings beyond truck range (null if none): districts beyond
-   * range usually ring the city, so their overall centroid would sit in the (served) middle
+   * garbage-weighted centre of the LARGEST cluster of buildings beyond truck range and its garbage (t / month; null if
+   * none): districts beyond range usually ring the city, so their overall centroid would sit in the (served) middle
    */
-  private outOfRangeCenter(pol: GarbageApi): { x: number; z: number } | null {
+  private outOfRangeCenter(pol: GarbageApi): { x: number; z: number; tons: number } | null {
     const B = 3 * GRID, nb = Math.ceil(this.N / B);
     const w = new Float64Array(nb * nb), wx = new Float64Array(nb * nb), wz = new Float64Array(nb * nb);
     for (const b of this.st.buildings.values()) {
@@ -837,7 +849,7 @@ export class SimBot {
       const k = z * nb + x;
       sx += wx[k]; sz += wz[k]; sw += w[k];
     }
-    return sw > 0 ? { x: sx / sw, z: sz / sw } : null;
+    return sw > 0 ? { x: sx / sw, z: sz / sw, tons: sw } : null;
   }
 
   /** a garbage facility for the district around (x, z): recycling center, landfill block (if room), incinerator */
