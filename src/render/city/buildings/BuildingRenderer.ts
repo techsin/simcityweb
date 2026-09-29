@@ -199,9 +199,14 @@ function rubbleVariant(b: Building, x: number, z: number): number {
 const RUBBLE_BED = 0.35;
 /** steepest vertical shear (rise per m) a rubble tile follows the ground with */
 const RUBBLE_SLOPE = 0.5;
-/** a rubble bed's underside never hangs above the ground under its cell (no slab floating over a lawn) and sinks at
- *  most this far (m) below the lot base (no tile tilting into level ground) */
+/** a rubble tile's origin plane sinks at most this far (m) below the lot base (no tile tilting into level ground) */
 const RUBBLE_SINK = 0.2;
+/** ... and floats at most this far (m) over the ground under its cell: the bed's closed sides reach 0.5 m below the
+ *  origin (prop.ts), so nothing shows under the bed, only a low charred plinth edge (no slab hanging over a lawn) */
+const RUBBLE_HANG = 0.45;
+/** cost weight of the bed floating over the ground (taller plinth edges / steps between cells) against ground poking
+ *  through the debris floor (both squared m, see rubbleSlopes) */
+const RUBBLE_FLOAT_W = 0.3;
 /** tilts tried per cell, as fractions of the corner plane's slope (see rubbleSlopes) */
 const RUBBLE_TILTS = [1, 0.75, 0.5, 0.25, 0];
 /** rubble culling spheres are padded by this (m, instead of PROXY_PAD): DynamicBatch scales a sphere by the matrix's
@@ -735,12 +740,15 @@ export class BuildingRenderer {
    * the sim could (edge corners at roads / neighbours stay put), so on hills the up-slope side of a lot keeps its
    * slope: a flat bed there had grass poking through the debris. A tile is rigid (one matrix, world-vertical shear:
    * walls stay upright) while the ground under a cell is two triangles (TerrainRenderer.meshHeightAt), so the bed
-   * rests on the best plane that neither hangs over the ground nor tilts into the level base (RUBBLE_SINK):
-   * candidates are the corner plane at a few tilts (RUBBLE_TILTS) and the four planes through three corners (one
-   * terrain triangle each), each raised until its underside touches the ground; the one leaving the least ground above
-   * the bed wins (sum of squares over 5 x 5 samples). A uniform slope is followed exactly; a cell with one raised corner
-   * (twisted: no plane fits) keeps a level bed and the hill rises over that corner, like any lot cut into a slope.
-   * Returns the highest bed rise (m).
+   * rests on the best plane that neither floats more than RUBBLE_HANG over the ground (the bed's skirt still reaches
+   * into it) nor tilts into the level base (RUBBLE_SINK): candidates are the corner plane at a few tilts (RUBBLE_TILTS)
+   * and the four planes through three corners (one terrain triangle each), each at a few lifts between resting on the
+   * ground and RUBBLE_HANG above it; the one with the least ground above the debris floor plus RUBBLE_FLOAT_W x bed
+   * above the ground wins (sums of squares over 5 x 5 samples). A uniform slope is followed exactly; a cell with one
+   * raised corner (twisted: no plane fits) tilts / lifts part of the way (a low plinth edge on the down-slope side)
+   * and the hill rises over the rest of that corner, like any lot cut into a slope. On the alpine hills city (every lot
+   * burnt, lots with ground > 0.35 m over their base) this leaves grass over the debris floor on 3-4% of the rubble
+   * (resting-only planes: 10-15%). Returns the highest bed rise (m).
    */
   private rubbleSlopes(bi: BInst): number {
     const b = bi.b, st = this.state, N = st.size, N1 = N + 1, H = st.heights, base = b.baseY;
@@ -763,23 +771,29 @@ export class BuildingRenderer {
       for (const [cx0, cz0] of cand) {
         const ax = clampS(cx0), az = clampS(cz0);
         // the ground is linear on each triangle and so is the plane: the extremes of ground - plane lie at the corners.
-        // hi: the lift where the underside touches the ground (never above it); lo: the lowest lift keeping the
-        // underside within RUBBLE_SINK of the base
-        let hi = Infinity, lo = -Infinity;
+        // rest: the lift where the plane touches the ground (under it everywhere else); lo: the lowest lift keeping the
+        // plane within RUBBLE_SINK of the base
+        let rest = Infinity, lo = -Infinity;
         for (const [r, sx, sz] of [[r00, -1, -1], [r10, 1, -1], [r01, -1, 1], [r11, 1, 1]]) {
           const s = (ax * sx + az * sz) * half;
-          hi = Math.min(hi, r - s);
+          rest = Math.min(rest, r - s);
           lo = Math.max(lo, -RUBBLE_SINK - s);
         }
-        if (lo > hi + 1e-9) continue;
-        let cost = 0;
-        for (let i = 0; i <= 4; i++) for (let j = 0; j <= 4; j++) {
-          const tx = i / 4, tz = j / 4;
-          const over = ground(tx, tz) - (hi + (ax * (tx - 0.5) + az * (tz - 0.5)) * C) - RUBBLE_BED;
-          if (over > 0) cost += over * over;
+        const hi = rest + RUBBLE_HANG, l0 = Math.max(lo, rest);
+        if (l0 > hi + 1e-9) continue;
+        // lifts from resting on the ground up to RUBBLE_HANG over it (the cost is convex in the lift: 5 samples)
+        for (let li = 0; li <= 4; li++) {
+          const lift = l0 + ((hi - l0) * li) / 4;
+          let cost = 0;
+          for (let i = 0; i <= 4; i++) for (let j = 0; j <= 4; j++) {
+            const tx = i / 4, tz = j / 4, g = ground(tx, tz), o = lift + (ax * (tx - 0.5) + az * (tz - 0.5)) * C;
+            const over = g - o - RUBBLE_BED;
+            if (over > 0) cost += over * over;
+            else if (o > g) cost += RUBBLE_FLOAT_W * (o - g) * (o - g);
+          }
+          // (ties: the earlier candidate, i.e. the steeper corner plane, and the lower lift)
+          if (cost < best - 1e-9) { best = cost; bx = ax; bz = az; bl = lift; }
         }
-        // (ties: the earlier candidate, i.e. the steeper corner plane)
-        if (cost < best - 1e-9) { best = cost; bx = ax; bz = az; bl = hi; }
       }
       sh.push(bx, bz, bl);
       top = Math.max(top, bl + (Math.abs(bx) + Math.abs(bz)) * half);

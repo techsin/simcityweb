@@ -587,8 +587,12 @@ export const ARREST_K = 0.004;
 export const SENTENCE_POP: readonly [number, number] = [5000, 40000];
 export const SENTENCE_MONTHS = 12;
 export const INMATE_CAP = 1.3;
-/** prison beds per def (x police funding) and police-station holding cells (beds, x police funding) */
-export const JAIL_BEDS: Readonly<Record<string, number>> = { civ_jail: 2500 };
+/**
+ * prison beds per def (x police funding; an unpowered prison UNPOWERED_SERVICE_EFF of them) and police-station holding
+ * cells (beds, x police funding). A prison holds 6,000: arrests run ~1.6-2.5 % of residents a year at 500k, so a 1M city
+ * needs about 3-4 prisons (2,500 beds needed 8-10)
+ */
+export const JAIL_BEDS: Readonly<Record<string, number>> = { civ_jail: 6000 };
 export const HOLDING_CELLS: Readonly<Record<string, number>> = { civ_police_kiosk: 5, civ_police_station: 25, civ_police_hq: 100 };
 /** overflow = max(0, 12 sentenced - beds - holding) / (12 sentenced): policeMul = (1 - JUSTICE_POLICE_K overflow) x
  *  (courthouse ? COURTHOUSE_POLICE_MUL : 1), crimeMul = 1 + JUSTICE_CRIME_K overflow */

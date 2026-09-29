@@ -923,7 +923,7 @@ describe('burnt lots and foundations', () => {
     expect(bi.vis.top).toBeGreaterThanOrEqual(topMax - 0.5);
   });
 
-  it('keeps a rubble bed level where one lot corner is raised (no plane fits: no slab hanging over the lawn)', () => {
+  it('keeps a rubble bed within its skirt of the ground where one lot corner is raised (no plane fits: no gap under the bed, less grass than a level bed)', () => {
     const { st, br } = setup();
     const N1 = st.size + 1;
     // level ground at 0 with ONE vertex raised 3.9 m: cell (30, 20) gets it as its (+x, +z) corner (a triangle apex),
@@ -947,18 +947,35 @@ describe('burnt lots and foundations', () => {
       br.batch.mesh.getMatrixAt(id, m);
       return [[-8, -8], [8, -8], [-8, 8], [8, 8]].map(([lx, lz]) => { p.set(lx, 0, lz).applyMatrix4(m); return [p.y, hAt(p.x, p.z)]; });
     };
-    // both cells of the twisted lot stay level on the base: nothing hangs over the ground, nothing sinks into it
+    // the twisted lot's tiles float at most 0.45 m over the ground at any corner (the bed's closed sides reach 0.5 m
+    // under the tile origin, prop.ts: nothing shows under the bed) and never sink more than 0.2 m under the base
     expect(twisted.shear.length).toBe(6);
-    for (let k = 0; k < 2; k++) {
-      expect(Math.abs(twisted.shear[k * 3])).toBeLessThan(1e-9);
-      expect(Math.abs(twisted.shear[k * 3 + 1])).toBeLessThan(1e-9);
-    }
     for (const id of [twisted.main, ...twisted.cells]) {
       for (const [y, g] of underside(id)) {
-        expect(y).toBeLessThanOrEqual(g + 1e-6);
+        expect(y).toBeLessThanOrEqual(g + 0.45 + 1e-6);
         expect(y).toBeGreaterThan(-0.2 - 1e-6);
       }
     }
+    // ... and leave less of the hill over the debris floor (0.4 m over the tile origin) than a level bed on the base
+    const poke = (floor: (wx: number, wz: number) => number, cx: number, cz: number) => {
+      let n = 0;
+      for (let i = 0; i <= 8; i++) for (let j = 0; j <= 8; j++) {
+        const wx = (cx + i / 8) * CELL_SIZE, wz = (cz + j / 8) * CELL_SIZE;
+        if (hAt(wx, wz) > floor(wx, wz) + 0.05) n++;
+      }
+      return n;
+    };
+    let pokeNow = 0, pokeLevel = 0;
+    for (const [k, id] of [twisted.main, ...twisted.cells].entries()) {
+      br.batch.mesh.getMatrixAt(id, m);
+      const e = m.elements, cx = 30, cz = 20 + k;
+      // floor height at (wx, wz): the matrix's world-vertical shear (e[1], e[9] of the sheared upright tile) + origin
+      const floor = (wx: number, wz: number) => e[13] + e[1] * 0 + (wx - e[12]) * twisted.shear[k * 3] + (wz - e[14]) * twisted.shear[k * 3 + 1] + 0.4;
+      pokeNow += poke(floor, cx, cz);
+      pokeLevel += poke(() => 0.4, cx, cz);
+    }
+    expect(pokeLevel).toBeGreaterThan(0);
+    expect(pokeNow).toBeLessThan(pokeLevel);
     // the sloped lot's tiles lie on the slope: underside on the ground at every corner
     for (const id of [sloped.main, ...sloped.cells]) {
       for (const [y, g] of underside(id)) expect(Math.abs(y - g)).toBeLessThan(1e-4);

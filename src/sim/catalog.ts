@@ -312,7 +312,7 @@ const PLOPPABLES: BuildingDef[] = [
   p({ id: 'civ_jail', name: 'Prison', category: 'police', service: 'police', cost: 12000, upkeep: 900, jobs: 150, powerUse: 1, waterUse: 120,
     landValue: { amount: -0.3, radius: 8 }, requires: 'jail',
     stigma: { amount: 0.55, radius: 10 },
-    description: '2,500 prison beds for the whole city (no patrols of its own). Without enough beds offenders are released early: more crime and weaker police. An overcrowded prison riots. Nobody wants to live next to it; a little crime spills around it.' }),
+    description: '6,000 prison beds for the whole city (no patrols of its own; without power it holds only 30 %). Without enough beds offenders are released early: more crime and weaker police. An overcrowded prison riots. Nobody wants to live next to it; a little crime spills around it.' }),
 
   // ================================================================ FIRE
   p({ id: 'civ_fire_station', name: 'Fire Station', category: 'fire', service: 'fire', cost: 1400, upkeep: 160, jobs: 25, powerUse: 0.15, waterUse: 20,
@@ -478,13 +478,13 @@ const PLOPPABLES: BuildingDef[] = [
     description: 'Front faces water. Links to up to 3 other ferry terminals on the same water within 140 tiles: commuters and visitors cross without a bridge. A terminal without a partner does nothing.' }),
   p({ id: 'tr_airport_small', name: 'Municipal Airport', category: 'transport', service: 'transit', cost: 30000, upkeep: 800, income: 600, jobs: 250, powerUse: 2, waterUse: 50,
     pollution: { noise: 0.8, air: 0.1, radius: 16 }, landValue: { amount: -0.1, radius: 12 }, requires: 'airport_small', stigma: { amount: 0.25, radius: 12 },
-    description: 'Up to 3,000 passengers a day (residents flying and overnight tourists). Its commercial / industrial demand-cap boost and income grow with use (60 % while idle). Very noisy.' }),
+    description: 'Rated for 3,000 passengers a day (residents flying and overnight tourists). Its commercial / industrial demand-cap boost and income grow with use: 60 % while idle, full from 1,500 passengers a day. Very noisy.' }),
   p({ id: 'tr_airport_large', name: 'International Airport', category: 'transport', service: 'transit', cost: 150000, upkeep: 3500, income: 3000, jobs: 1500, powerUse: 8, waterUse: 300,
     pollution: { noise: 1.0, air: 0.2, radius: 24 }, landValue: { amount: -0.15, radius: 16 }, requires: 'airport_large', stigma: { amount: 0.3, radius: 16 },
-    description: 'Reward: a global hub for up to 25,000 passengers a day; brings more overnight tourists. Huge commercial and industrial demand-cap boost and income that grow with use (60 % while idle). Very noisy.' }),
+    description: 'Reward: a global hub rated for 25,000 passengers a day; brings more overnight tourists. Huge commercial and industrial demand-cap boost and income that grow with use: 60 % while idle, full from 12,500 passengers a day. Very noisy.' }),
   p({ id: 'tr_seaport', name: 'Container Seaport', category: 'transport', service: 'transit', cost: 60000, upkeep: 1800, income: 1500, jobs: 600, placement: 'shore', powerUse: 4, waterUse: 60,
     pollution: { noise: 0.5, air: 0.2, water: 0.3, radius: 12 }, landValue: { amount: -0.1, radius: 10 }, requires: 'seaport', stigma: { amount: 0.2, radius: 10 },
-    description: 'Reward: ships up to 3,000 trucks a day of freight from industry within reach by road. Massive industrial demand-cap boost, freight access and income that grow with use (60 % while idle). Front faces water.' }),
+    description: 'Reward: rated for 3,000 trucks a day of freight from industry within reach by road. Massive industrial demand-cap boost, freight access and income that grow with use: 60 % while idle, full from 1,500 trucks a day. Front faces water.' }),
 ];
 
 export const CATALOG: BuildingDef[] = [...GROWABLES, ...PLOPPABLES];
