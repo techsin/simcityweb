@@ -63,6 +63,16 @@ interface PassSlot {
   posGen: number;
   /** instance id -> list index, valid where ids[pos[id]] === id (built on the first patch of a list) */
   pos: Int32Array;
+  /** tile-level (coarse) lists: the selected tiles of the last build in list order (tile * 4 + kind, kind 1 = caster
+   *  size test), their content versions and block offsets, the list length after them and the size cutoff they were
+   *  filtered with; a rebuild keeps the longest unchanged prefix of blocks in place (selValid) */
+  selT: Int32Array;
+  selV: Uint32Array;
+  selO: Int32Array;
+  selN: number;
+  selEnd: number;
+  selMinR: number;
+  selValid: boolean;
   used: number;
   // ---- what the list was culled for (see beforePass)
   /** projection shape (elements 0, 5, 8, 9, 12, 13: fov / aspect / ortho extent; near / far are checked separately) */
@@ -671,7 +681,8 @@ export class DynamicBatch {
       }
       s = {
         camera, starts: new Int32Array(64), counts: new Int32Array(64), ids: new Uint32Array(64), tex: null as unknown as THREE.DataTexture, texCap: 0, count: 0,
-        version: -1, swapAt: 0, gen: 0, posGen: -1, pos: new Int32Array(0), used: 0,
+        version: -1, swapAt: 0, gen: 0, posGen: -1, pos: new Int32Array(0),
+        selT: new Int32Array(64), selV: new Uint32Array(64), selO: new Int32Array(64), selN: 0, selEnd: 0, selMinR: 0, selValid: false, used: 0,
         shape: new Float64Array(6), rot: new Float64Array(9), tiltOk: 0, nearB: 0, farB: 0, texel: -1, px: 0, py: 0, pz: 0, margin: 0, banded: false,
         rform: -1, rrot: new Float64Array(9), rtiltOk: 0, rx: 0, ry: 0, rz: 0, rdn: 0, rdf: 0,
         still: 0, uses: 0, noBand: 0, lx: NaN, ly: NaN, lz: NaN, lrot: new Float64Array(9), lrrot: new Float64Array(9), lrx: NaN, lry: NaN, lrz: NaN,
@@ -756,8 +767,6 @@ export class DynamicBatch {
       else if (s.noBand > 0) s.noBand--;
       s.uses = 1;
       s.version = this.version;
-      s.swapAt = this.swapSeq;
-      s.gen++;
       s.texel = texel;
       s.shape[0] = P[0]; s.shape[1] = P[5]; s.shape[2] = P[8]; s.shape[3] = P[9]; s.shape[4] = P[12]; s.shape[5] = P[13];
       s.rot.set(_rot);
@@ -842,71 +851,109 @@ export class DynamicBatch {
     for (let i = 0; i < 6; i++) rnl[i] = rp[i * 4] * d.x + rp[i * 4 + 1] * d.y + rp[i * 4 + 2] * d.z;
   }
 
-  /** build a pass list; far: the view is far out (tile-level culling only, no front-to-back sort) */
+  /**
+   * Build a pass list; far: the view is far out (tile-level culling only, no front-to-back sort).
+   * Tile-level (coarse, unsorted) lists are the selected tiles' blocks in tile order: a rebuild keeps the blocks of the
+   * longest unchanged prefix of the previous selection in place and only rewrites the rest; an unchanged selection
+   * keeps the whole list and skips the upload (a view that pans / turns / zooms without moving a tile boundary across
+   * the frustum rebuilds nothing).
+   */
   private build(s: PassSlot, cascade: number, texel: number, geometry: THREE.BufferGeometry, recv: ShadowReceiver | null, tilt: number, phi: number, rtilt: number, far = false): void {
     const pc = this.pc!;
     const m = this.mesh as any;
+    // the list about to be rebuilt may keep a prefix: bring its draw ranges up to date first
+    if (s.swapAt !== this.swapSeq) {
+      if (s.selValid) this.patchRanges(s, geometry);
+      else s.swapAt = this.swapSeq;
+    }
+    s.gen++;
     let n = 0;
+    let keep = false;
+    const dyn = pc.dynamic;
+    const sorted = cascade < 0 && this.sortFront && !dyn && !far;
+    const coarse = pc.coarse === true || far;
     if (cascade < 0 || (pc.shadowMask! >> cascade) & 1) {
       this.cullPlanes(s, recv, tilt, phi, rtilt);
       const fp = _fp, rp = _rp, rnl = _rnl;
       this.drawRanges(geometry);
       const gS = this.gStart, gC = this.gCount;
       const minR = cascade >= 0 ? pc.minShadowTexels! * texel * 0.5 : 0;
-      const dyn = pc.dynamic;
       const mat = dyn ? (m._matricesTexture.image.data as Float32Array) : null;
       const cbit = cascade >= 0 ? 1 << cascade : 0;
       const imask = this.instMask, vis = this.instVis, geo = this.instGeo;
-      const coarse = pc.coarse === true || far, cls = cascade < 0 ? 0 : Math.min(2, cascade + 1);
+      const cls = cascade < 0 ? 0 : Math.min(2, cascade + 1);
       let rGround = 0, rInv = 0;
       if (recv) {
         rGround = recv.ground;
         rInv = 1 / Math.max(recv.dir.y, 0.05);
       }
       _plf[0] = s.margin; _plf[1] = minR; _plf[2] = rGround; _plf[3] = rInv;
+      // prefix reuse: tile-level lists only (fine lists hold per-instance results, sorted lists a camera order)
+      const reuse = coarse && !sorted && !dyn;
+      let match = reuse && s.selValid && s.selMinR === minR;
+      let k = 0;
       if (!dyn) {
-        const tb = this.tileBox, off = this.tileOff, dirty = this.tileDirty, tmask = this.tileMask, tminR = this.tileMinR;
+        const tb = this.tileBox, off = this.tileOff, dirty = this.tileDirty, tmask = this.tileMask, tminR = this.tileMinR, tver = this.tileVer;
         for (let ti = 0; ti < this.tileLists.length; ti++) {
           const list = this.tileLists[ti];
           if (!list.length || off[ti]) continue;
           if (dirty[ti]) this.tileStats(ti);
           if (cbit && !(tmask[ti] & cbit)) continue;
+          const kb = ti * 6;
+          const x0 = tb[kb], y0 = tb[kb + 1], z0 = tb[kb + 2], x1 = tb[kb + 3], y1 = tb[kb + 4], z1 = tb[kb + 5];
+          // kind: 0 block copy, 1 per-instance caster size test, 2 per-instance tests (fine list / tile without bounds)
+          let kind = 0;
+          let test = false, size = false, rcv = false;
+          if (!(x1 >= x0) || !Number.isFinite(x0 + x1)) { kind = 2; test = true; size = minR > 0; rcv = recv !== null; }
+          else {
+            let inside = true, outside = false;
+            for (let p = 0; p < 6; p++) {
+              const o = p * 4, nx = fp[o], ny = fp[o + 1], nz = fp[o + 2], c = fp[o + 3];
+              // p-vertex (farthest along the normal) and n-vertex
+              if (nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + c < 0) { outside = true; break; }
+              if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + c < 0) inside = false;
+            }
+            if (outside) continue;
+            // receiver: skip the tile if no caster in it can shadow the visible slice (receiverSweepBox; the band is in
+            // the planes); no per-instance test if the whole tile lies inside the slice (receiverContainsBox)
+            if (recv) {
+              const T = Math.min(6000, Math.max(0, (y1 - rGround) * rInv));
+              let hit = true;
+              for (let i = 0; i < 6; i++) {
+                const o = i * 4, nx = rp[o], ny = rp[o + 1], nz = rp[o + 2];
+                const d = nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + rp[o + 3];
+                if (d < 0 && d - T * rnl[i] < 0) { hit = false; break; }
+              }
+              if (!hit) continue;
+              if (!coarse) {
+                for (let i = 0; i < 6; i++) {
+                  const o = i * 4, nx = rp[o], ny = rp[o + 1], nz = rp[o + 2];
+                  if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + rp[o + 3] < 0) { rcv = true; break; }
+                }
+              }
+            }
+            test = !inside && !coarse;
+            size = minR > 0 && tminR[ti] < minR;
+            kind = test || rcv ? 2 : size ? 1 : 0;
+          }
+          const tag = ti * 4 + kind, ver = tver[ti];
+          if (match) {
+            // unchanged block of the previous selection, still in place
+            if (kind !== 2 && k < s.selN && s.selT[k] === tag && s.selV[k] === ver) { k++; continue; }
+            match = false;
+            n = k < s.selN ? s.selO[k] : s.selEnd;
+          }
+          if (reuse) {
+            if (k >= s.selT.length) this.growSel(s, k + 1);
+            s.selT[k] = tag; s.selV[k] = ver; s.selO[k] = n;
+            k++;
+          }
           if (s.starts.length < n + list.length) this.ensureList(s, n + list.length, n);
-          const k = ti * 6;
-          const x0 = tb[k], y0 = tb[k + 1], z0 = tb[k + 2], x1 = tb[k + 3], y1 = tb[k + 4], z1 = tb[k + 5];
-          if (!(x1 >= x0) || !Number.isFinite(x0 + x1)) { n = this.pushList(s, list, true, minR > 0, recv !== null, n, cbit, mat); continue; }
-          let inside = true, outside = false;
-          for (let p = 0; p < 6; p++) {
-            const o = p * 4, nx = fp[o], ny = fp[o + 1], nz = fp[o + 2], c = fp[o + 3];
-            // p-vertex (farthest along the normal) and n-vertex
-            if (nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + c < 0) { outside = true; break; }
-            if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + c < 0) inside = false;
-          }
-          if (outside) continue;
-          // receiver: skip the tile if no caster in it can shadow the visible slice (receiverSweepBox; the band is in
-          // the planes); no per-instance test if the whole tile lies inside the slice (receiverContainsBox)
-          let rcv = false;
-          if (recv) {
-            const T = Math.min(6000, Math.max(0, (y1 - rGround) * rInv));
-            let hit = true;
-            for (let i = 0; i < 6; i++) {
-              const o = i * 4, nx = rp[o], ny = rp[o + 1], nz = rp[o + 2];
-              const d = nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + rp[o + 3];
-              if (d < 0 && d - T * rnl[i] < 0) { hit = false; break; }
-            }
-            if (!hit) continue;
-            for (let i = 0; i < 6; i++) {
-              const o = i * 4, nx = rp[o], ny = rp[o + 1], nz = rp[o + 2];
-              if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + rp[o + 3] < 0) { rcv = true; break; }
-            }
-          }
-          const test = !inside && !coarse, size = minR > 0 && tminR[ti] < minR;
-          if (coarse) rcv = false;
-          if (test || size || rcv) { n = this.pushList(s, list, test, size, rcv, n, cbit, mat); continue; }
+          if (kind !== 0) { n = this.pushList(s, list, test, size, rcv, n, cbit, mat); continue; }
           // every visible instance of the tile (with the cascade bit) is drawn: copy its cached block
           const ck = ti * 3 + cls;
           let cc = this.tileCache[ck];
-          if (!cc || cc.ver !== this.tileVer[ti]) {
+          if (!cc || cc.ver !== ver) {
             if (!cc || cc.i.length < list.length) cc = this.tileCache[ck] = { ver: 0, n: 0, i: new Uint32Array(list.length + 16) };
             let m2 = 0;
             const ci = cc.i;
@@ -916,7 +963,7 @@ export class DynamicBatch {
               ci[m2++] = id;
             }
             cc.n = m2;
-            cc.ver = this.tileVer[ti];
+            cc.ver = ver;
           }
           // (element loop: subarray() views would allocate three objects per tile)
           const starts = s.starts, counts = s.counts, ind = s.ids;
@@ -925,10 +972,20 @@ export class DynamicBatch {
           n += cn;
         }
       }
-      if (s.starts.length < n + this.untiled.length) this.ensureList(s, n + this.untiled.length, n);
-      n = this.pushList(s, this.untiled, true, minR > 0, recv !== null, n, cbit, mat);
-      if (cascade < 0 && this.sortFront && !dyn && !far && n > 1) this.sortList(s, n);
-    }
+      if (match) {
+        // every selected tile matched the previous selection: the same blocks (all of them: nothing to upload, or a
+        // shorter prefix: the list is cut)
+        keep = k === s.selN && this.untiled.length === 0;
+        n = k < s.selN ? s.selO[k] : s.selEnd;
+      }
+      if (reuse) { s.selN = k; s.selEnd = n; s.selMinR = minR; s.selValid = true; } else s.selValid = false;
+      if (this.untiled.length) {
+        if (s.starts.length < n + this.untiled.length) this.ensureList(s, n + this.untiled.length, n);
+        n = this.pushList(s, this.untiled, true, minR > 0, recv !== null, n, cbit, mat);
+      }
+      if (sorted && n > 1) this.sortList(s, n);
+    } else s.selValid = false;
+    if (keep && s.tex && n === s.count) return;
     s.count = n;
     // indirect (instance id) texture sized to the list (power-of-two side, grown / shrunk with slack): a rebuild uploads
     // the list, not the batch's whole instance capacity
@@ -940,6 +997,14 @@ export class DynamicBatch {
     }
     (s.tex.image.data as unknown as Uint32Array).set(s.ids.subarray(0, n));
     s.tex.needsUpdate = true;
+  }
+
+  /** grow a slot's stored tile selection to hold `need` entries */
+  private growSel(s: PassSlot, need: number): void {
+    const cap = Math.max(need, s.selT.length * 2);
+    const t = new Int32Array(cap), v = new Uint32Array(cap), o = new Int32Array(cap);
+    t.set(s.selT); v.set(s.selV); o.set(s.selO);
+    s.selT = t; s.selV = v; s.selO = o;
   }
 
   /**

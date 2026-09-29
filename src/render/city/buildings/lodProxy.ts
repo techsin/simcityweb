@@ -12,7 +12,8 @@
  * model's window area) when the model has windows, so night skylines keep sparkling. Flat tops take the paint seen
  * from above (the topmost up-facing surface of any kind: roof decks, gravel, roof gardens), not just the massing's.
  * Trees / hedges on the lot become up to 4 foliage clusters (8-tri diamonds sized and tinted like the foliage they
- * replace), so parks and gardens stay green-textured from afar. Low lots without a massing (rubble, yards) keep their
+ * replace, with the cluster's dominant foliage pattern: blossom / seasonal / evergreen crowns keep their seasons), so
+ * parks and gardens stay green-textured from afar. Low lots without a massing (rubble, yards) keep their
  * top-view colour pattern as a coarse grid of flat tiles. The biggest emissive faces (signs, lamps, lit ground pools)
  * and raised pools are copied verbatim, so the night city keeps its coloured specks.
  * Typically 12-80 triangles instead of 300-6000.

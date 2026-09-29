@@ -410,28 +410,34 @@ export class SimBot {
     }
     const r3 = this.placeNear(defId, x, z, ['R', 'C', 'I'], false, reach * 0.7, true, accept);
     if (r3 || !clearLots) return r3;
-    return this.placeByClearing(defId, x, z, reach * 0.7);
+    return this.placeByClearing(defId, x, z, reach * 0.7, ['R', 'C'], accept);
   }
 
   /**
-   * like a player who bulldozes a few small houses for a school: the lot (touching a road) inside a developed R / C
-   * block within `reach` whose cells are empty or hold only small growables (stage ≤ 2, not historic; a deep lot that
-   * reaches past the new lot at most twice its size), fewest residents / jobs displaced first; they are bulldozed and the
-   * facility is built there
+   * like a player who bulldozes a few small houses for a school: the lot (touching a road) inside a developed block of
+   * `uses` (R / C by default; a prison clears industrial lots) within `reach` of the target (to the block's nearest cell)
+   * whose cells are empty or hold only small growables (stage ≤ 2, not historic; a deep lot that reaches past the new lot
+   * at most max(6 cells, twice its size)) and that `accept` allows, fewest residents / jobs displaced first; they are
+   * bulldozed and the facility is built there
    */
-  placeByClearing(defId: string, x: number, z: number, reach: number): ActionResult | null {
+  placeByClearing(defId: string, x: number, z: number, reach: number, uses: readonly Use[] = ['R', 'C'],
+    accept?: (x: number, z: number, w: number, d: number) => boolean): ActionResult | null {
     const def = getDef(defId);
     if (!def) return null;
     const st = this.st, N = this.N;
     let best: { x: number; z: number; rot: 0 | 1 | 2 | 3; cost: number; olds: Building[] } | null = null;
     for (const b of this.blocks) {
-      if (!b.developed || (b.use !== 'R' && b.use !== 'C') || Math.hypot((b.x0 + b.x1) / 2 - x, (b.z0 + b.z1) / 2 - z) > reach) continue;
+      if (!b.developed || !uses.includes(b.use)) continue;
+      // distance to the block's nearest cell (not its centre: a target near a block corner reaches the next blocks)
+      const bdx = x < b.x0 ? b.x0 - x : x > b.x1 ? x - b.x1 : 0, bdz = z < b.z0 ? b.z0 - z : z > b.z1 ? z - b.z1 : 0;
+      if (Math.hypot(bdx, bdz) > reach) continue;
       if (this.highway && ((b.z0 + b.z1) / 2 < this.trunkZ) !== (z < this.trunkZ)) continue;
       for (const rot of [0, 1] as const) {
         const [w, d] = rotatedFootprint(def, rot);
         // lots on the block edge (they touch the road)
         for (const [lx, lz] of [[b.x0, b.z0], [b.x1 - w, b.z0], [b.x0, b.z1 - d], [b.x1 - w, b.z1 - d], [(b.x0 + b.x1 - w) >> 1, b.z0], [(b.x0 + b.x1 - w) >> 1, b.z1 - d], [b.x0, (b.z0 + b.z1 - d) >> 1], [b.x1 - w, (b.z0 + b.z1 - d) >> 1]]) {
           if (lx < b.x0 || lz < b.z0 || lx + w > b.x1 || lz + d > b.z1) continue;
+          if (accept && !accept(lx, lz, w, d)) continue;
           const olds: Building[] = [];
           let ok = true, cost = 0;
           for (let zz = lz; zz < lz + d && ok; zz++) for (let xx = lx; xx < lx + w && ok; xx++) {
@@ -441,8 +447,9 @@ export class SimBot {
             if (!o) continue;
             if (olds.includes(o)) continue;
             const od = getDef(o.def);
-            // small homes / shops only; a deep lot reaching past the new lot goes too (at most twice the new lot's size)
-            if (o.flags & (BF.Plopped | BF.Historic | BF.OnFire) || (od?.stage ?? 9) > 2 || o.w * o.d > 2 * w * d) { ok = false; break; }
+            // small homes / shops only; a deep lot reaching past the new lot goes too (a cottage with its yards, or at most
+            // twice the new lot's size)
+            if (o.flags & (BF.Plopped | BF.Historic | BF.OnFire) || (od?.stage ?? 9) > 2 || o.w * o.d > Math.max(6, 2 * w * d)) { ok = false; break; }
             olds.push(o);
             cost += o.pop + o.jobs + 1;
           }
@@ -1145,13 +1152,18 @@ export class SimBot {
     for (const b of st.buildings.values()) if (!(b.flags & BF.Plopped) && b.wealth === 3 && getDef(b.def)?.devType === DevType.R3) rich.push({ x: b.x, z: b.z });
     const cx = this.line(this.cbx) + 5 * GRID, cz = this.trunkZ;
     // as far from R$$$ homes as the map allows: 12 cells, else 8 (a dense small map may have no I / U lot 12 away)
-    let ok = false, gap = 12;
+    let ok = false, gap = 12, cleared = false;
     for (const g of [12, 8]) {
       const far = (x: number, z: number, w: number, d: number) => !rich.some((r) => r.x >= x - g && r.x < x + w + g && r.z >= z - g && r.z < z + d + g);
       if ((ok = !!this.placeNear('civ_jail', cx, cz, ['I', 'U'], true, Infinity, true, far))) { gap = g; break; }
     }
+    if (!ok) {
+      // a full map: bulldoze a few small factories / sheds in an industrial block for the prison (12+ cells from R$$$)
+      const far = (x: number, z: number, w: number, d: number) => !rich.some((r) => r.x >= x - 12 && r.x < x + w + 12 && r.z >= z - 12 && r.z < z + d + 12);
+      ok = cleared = !!this.placeByClearing('civ_jail', cx, cz, Infinity, ['I', 'U'], far);
+    }
     this.svcRetry.set('jail', st.day + (ok ? 240 : 120));
-    if (ok) this.say(`prison: ${Math.round(j.overflow * 100)} % of the sentenced had no bed (${gap}+ cells from R$$$ homes)`);
+    if (ok) this.say(`prison: ${Math.round(j.overflow * 100)} % of the sentenced had no bed (${cleared ? 'small industrial lots cleared, ' : ''}${gap}+ cells from R$$$ homes)`);
     else this.say(`prison: no industrial / utility lot 8+ cells from R$$$ homes (${Math.round(j.overflow * 100)} % without a bed)`);
   }
 
