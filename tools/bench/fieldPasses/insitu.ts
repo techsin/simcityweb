@@ -133,6 +133,25 @@ benchMain(async ({ args, log }) => {
     const m = med(xs);
     return { n: xs.length, ratio: m, speedup: 1 / m, lo: 1 / ci.hi, hi: 1 / ci.lo };
   };
+  /**
+   * speedup = sum(A) / sum(B) over paired units (chunks / rounds) with a 95 % bootstrap CI (resampling the units): the
+   * robust statistic for rare heavy events (a pollution pass lands in few chunks, so a median of chunk ratios mostly
+   * measures the chunks without one)
+   */
+  const totalsOf = (a: number[], b: number[]) => {
+    let s = 0x9e3779b9;
+    const r = () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; };
+    const n = a.length;
+    const sum = (x: number[], idx?: number[]) => (idx ? idx.reduce((p, i) => p + x[i], 0) : x.reduce((p, q) => p + q, 0));
+    const sp: number[] = [];
+    for (let k = 0; k < 2000; k++) {
+      const idx = Array.from({ length: n }, () => (r() * n) | 0);
+      const sb = sum(b, idx);
+      if (sb > 0) sp.push(sum(a, idx) / sb);
+    }
+    sp.sort((p, q) => p - q);
+    return { n, speedup: sum(a) / Math.max(1e-12, sum(b)), lo: sp[Math.floor(0.025 * sp.length)], hi: sp[Math.min(sp.length - 1, Math.ceil(0.975 * sp.length))] };
+  };
   const out: Record<string, unknown> = { fixture, water, mode, warm, arms: armNames };
 
   if (mode === 'cycles') {
@@ -170,8 +189,9 @@ benchMain(async ({ args, log }) => {
       for (const k of ['pass', 'fields', 'nimby'] as const) {
         const A = S.get(base)!, B = S.get(a.name)!;
         const r = ratioOf(A.map((x, i) => B[i][k] / Math.max(1e-9, x[k])));
-        ratios[`${LABEL[base]} -> ${LABEL[a.name]} ${k}`] = r;
-        log(`${`${LABEL[base]} -> ${LABEL[a.name]}`.padEnd(30)} ${k.padEnd(6)} speedup ${r.speedup.toFixed(2)}x [${r.lo.toFixed(2)}, ${r.hi.toFixed(2)}] (n=${r.n})`);
+        const t = totalsOf(A.map((x) => x[k]), B.map((x) => x[k]));
+        ratios[`${LABEL[base]} -> ${LABEL[a.name]} ${k}`] = { ...r, totals: t };
+        log(`${`${LABEL[base]} -> ${LABEL[a.name]}`.padEnd(30)} ${k.padEnd(6)} speedup ${r.speedup.toFixed(2)}x [${r.lo.toFixed(2)}, ${r.hi.toFixed(2)}] (n=${r.n}); totals ${t.speedup.toFixed(2)}x [${t.lo.toFixed(2)}, ${t.hi.toFixed(2)}]`);
       }
     }
     if (arms.some((a) => a.name === 'fair')) {
@@ -180,12 +200,13 @@ benchMain(async ({ args, log }) => {
         for (const k of ['pass', 'fields', 'nimby'] as const) {
           const B = S.get(a.name)!;
           const r = ratioOf(A.map((x, i) => B[i][k] / Math.max(1e-9, x[k])));
-          ratios[`fair JS -> ${LABEL[a.name]} ${k}`] = r;
-          log(`${`fair JS -> ${LABEL[a.name]}`.padEnd(30)} ${k.padEnd(6)} speedup ${r.speedup.toFixed(2)}x [${r.lo.toFixed(2)}, ${r.hi.toFixed(2)}] (n=${r.n})`);
+          const t = totalsOf(A.map((x) => x[k]), B.map((x) => x[k]));
+          ratios[`fair JS -> ${LABEL[a.name]} ${k}`] = { ...r, totals: t };
+          log(`${`fair JS -> ${LABEL[a.name]}`.padEnd(30)} ${k.padEnd(6)} speedup ${r.speedup.toFixed(2)}x [${r.lo.toFixed(2)}, ${r.hi.toFixed(2)}] (n=${r.n}); totals ${t.speedup.toFixed(2)}x [${t.lo.toFixed(2)}, ${t.hi.toFixed(2)}]`);
         }
       }
     }
-    Object.assign(out, { reps, perArm, ratios });
+    Object.assign(out, { reps, perArm, ratios, samples: Object.fromEntries([...S].map(([k, v]) => [k, v])) });
   } else {
     // ------------------------------------------------------------------------------------------- design cadence days
     const rounds = Math.ceil(days / chunk);
@@ -227,14 +248,24 @@ benchMain(async ({ args, log }) => {
     for (const [x, y] of [['asis', 'fair'], ['fair', 'wasmRes'], ['fair', 'wasmStaged'], ['asis', 'wasmRes'], ['wasmStaged', 'wasmRes']] as [ArmName, ArmName][]) {
       if (byName.has(x) && byName.has(y)) pairs.push([byName.get(x)!, byName.get(y)!]);
     }
+    const chunkSums = (X: Arm, f: (x: Rec) => number) => {
+      const out: number[] = [];
+      for (let c0 = 0; c0 < X.recs.length; c0 += chunk) {
+        let s = 0;
+        for (let d = c0; d < c0 + chunk && d < X.recs.length; d++) s += f(X.recs[d]);
+        out.push(s);
+      }
+      return out;
+    };
     for (const [A, B] of pairs) {
       for (const [k, f] of metrics) {
         const r = chunkRatios(A, B, f);
-        ratios[`${LABEL[A.name]} -> ${LABEL[B.name]} ${k}`] = r;
-        log(`${`${LABEL[A.name]} -> ${LABEL[B.name]}`.padEnd(30)} ${k.padEnd(18)} speedup ${r.speedup.toFixed(2)}x [${r.lo.toFixed(2)}, ${r.hi.toFixed(2)}] (n=${r.n} chunks)`);
+        const t = totalsOf(chunkSums(A, f), chunkSums(B, f));
+        ratios[`${LABEL[A.name]} -> ${LABEL[B.name]} ${k}`] = { ...r, totals: t };
+        log(`${`${LABEL[A.name]} -> ${LABEL[B.name]}`.padEnd(30)} ${k.padEnd(18)} speedup ${r.speedup.toFixed(2)}x [${r.lo.toFixed(2)}, ${r.hi.toFixed(2)}] (n=${r.n} chunks); totals ${t.speedup.toFixed(2)}x [${t.lo.toFixed(2)}, ${t.hi.toFixed(2)}]`);
       }
     }
-    Object.assign(out, { days, chunk, perArm, ratios });
+    Object.assign(out, { days, chunk, perArm, ratios, recs: Object.fromEntries(arms.map((a) => [a.name, a.recs])) });
   }
 
   // ---------------------------------------------------------------------------------------------- identical cities

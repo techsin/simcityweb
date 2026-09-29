@@ -148,9 +148,10 @@ export interface OriginalAggregate {
   readonly skillBlur: Float32Array;
 }
 
-/** populationSystem's closure around aggregate() (rt and the DemographicsCache as the system holds them) */
-export function makeOriginalAggregate(rt: OrigRuntime, cache: OrigCache): OriginalAggregate {
-  const coh = new Float64Array(15);
+/** populationSystem's closure around aggregate() (rt and the DemographicsCache as the system holds them; `cohArr` =
+ *  the system's own coh when the lines run inside a copy of the system) */
+export function makeOriginalAggregate(rt: OrigRuntime, cache: OrigCache, cohArr?: Float64Array): OriginalAggregate {
+  const coh = cohArr ?? new Float64Array(15);
   let popWRaw: Float32Array[] = [];
   let skillRaw = new Float32Array(0), kidsRaw = new Float32Array(0), skillBlur = new Float32Array(0);
   const res: OrigResult = { sample: false, demo: false, W: 0, eduSum: 0, eduPop: 0, accE: 0, accW: 0, unW: 0 };
