@@ -957,22 +957,15 @@ describe('burnt lots and foundations', () => {
       }
     }
     // ... and leave less of the hill over the debris floor (0.4 m over the tile origin) than a level bed on the base
-    const poke = (floor: (wx: number, wz: number) => number, cx: number, cz: number) => {
-      let n = 0;
-      for (let i = 0; i <= 8; i++) for (let j = 0; j <= 8; j++) {
-        const wx = (cx + i / 8) * CELL_SIZE, wz = (cz + j / 8) * CELL_SIZE;
-        if (hAt(wx, wz) > floor(wx, wz) + 0.05) n++;
-      }
-      return n;
-    };
     let pokeNow = 0, pokeLevel = 0;
-    for (const [k, id] of [twisted.main, ...twisted.cells].entries()) {
+    for (const id of [twisted.main, ...twisted.cells]) {
       br.batch.mesh.getMatrixAt(id, m);
-      const e = m.elements, cx = 30, cz = 20 + k;
-      // floor height at (wx, wz): the matrix's world-vertical shear (e[1], e[9] of the sheared upright tile) + origin
-      const floor = (wx: number, wz: number) => e[13] + e[1] * 0 + (wx - e[12]) * twisted.shear[k * 3] + (wz - e[14]) * twisted.shear[k * 3 + 1] + 0.4;
-      pokeNow += poke(floor, cx, cz);
-      pokeLevel += poke(() => 0.4, cx, cz);
+      for (let i = 0; i <= 8; i++) for (let j = 0; j <= 8; j++) {
+        p.set(-8 + 2 * i, 0.4, -8 + 2 * j).applyMatrix4(m);
+        const g = hAt(p.x, p.z);
+        if (g > p.y + 0.05) pokeNow++;
+        if (g > 0.4 + 0.05) pokeLevel++;
+      }
     }
     expect(pokeLevel).toBeGreaterThan(0);
     expect(pokeNow).toBeLessThan(pokeLevel);

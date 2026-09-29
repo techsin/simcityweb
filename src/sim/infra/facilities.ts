@@ -700,7 +700,7 @@ function catchmentPeople(sim: Simulation, st: CityState, b: Building, need: Need
   const metric = inf.metric === 0 ? 'walk' : inf.metric === 1 ? 'drive' : 'euclid';
   const n = reachCells(st, b.x, b.z, b.w, b.d, inf.tierRadius, metric, reachScratch);
   const idx = reachScratch.idx, w = reachScratch.w;
-  const svc = sim.getSystem<{ needRaster?: (t: NeedTier) => Float32Array | null }>('services');
+  const svc = sim.getSystem('services') as unknown as { needRaster?: (t: NeedTier) => Float32Array | null } | undefined;
   const nr = need && typeof svc?.needRaster === 'function' ? svc.needRaster(need) : null;
   const sh = new Float32Array(5);
   let seniors = 0, residents = 0, needSum = 0;
