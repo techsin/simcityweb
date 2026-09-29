@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
 import { BF } from '../../src/sim/CityState';
-import { BACK_LOT_DEPTH, emptyZoneStatus, lotAccess, roadAccess, utilityReaches, zoneStatusLine, zoneStatusTone } from '../../src/ui/zoneStatus';
+import { BACK_LOT_DEPTH, emptyZoneStatus, frontCellOf, lotAccess, roadAccess, utilityReaches, zoneStatusLine, zoneStatusTone } from '../../src/ui/zoneStatus';
 import { newState, place, roadLine } from '../infra/cityGen';
 
 /** a residential strip x = 5 .. 5 + depth - 1 (rows z = 10 .. 14) with a street along x = 4 */
@@ -66,6 +66,17 @@ describe('lot status: deep blocks (routed item 3)', () => {
     // an unserved road: the back lot has no power either
     st.powered.fill(0);
     expect(emptyZoneStatus(st, 7, 12)!.blockers.map((b) => b.id)).toContain('power');
+  });
+
+  it('frontCellOf: a back lot reads its coverages at the lot cell on the road it fills from', () => {
+    const st = strip(3);
+    place(st, 't_r1', 5, 12, { pop: 10 });
+    expect(frontCellOf(st, 7, 12)).toBe(st.idx(5, 12)); // behind the home: the home's cell on the road
+    expect(frontCellOf(st, 5, 11)).toBe(st.idx(5, 11)); // fronts the road itself
+    const deep = strip(BACK_LOT_DEPTH + 2);
+    expect(frontCellOf(deep, 9, 12)).toBe(deep.idx(5, 12)); // a yard cell: the road-front cell of its row
+    const far = 5 + BACK_LOT_DEPTH;
+    expect(frontCellOf(deep, far, 12)).toBe(deep.idx(far, 12)); // no access: the cell itself
   });
 
   it('a different zone or a plopped building in between blocks the walk', () => {

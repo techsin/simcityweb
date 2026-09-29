@@ -342,5 +342,6 @@ describe('overlays: review round 1 (emergency floor, back lots, stale rasters, m
     const b = overlayLayer(st2, Overlay.Traffic, 1)!.data;
     expect(a).toBe(b);
     expect(overlayValue(st2, Overlay.Traffic, 3, 3, 1)).toBe(0);
+    expect(overlayReadout(st2, Overlay.Traffic, 3, 3, 1)!.text).toBe('No trucks'); // not "0 trucks/day"
   });
 });
