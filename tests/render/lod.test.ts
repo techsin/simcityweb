@@ -559,6 +559,8 @@ describe('building LOD cross-fade', () => {
 
   it('dissolves a swap in view over fadeTime with complementary levels, and runs back when the level flips mid-fade', () => {
     const { br, bi, layer, info, dOn, dOff, at, glide, code } = setup();
+    // time-driven progress only (the glides below move the camera between the explicit update() steps)
+    br.fadeTravel = 0;
     expect(bi.lodGeom).toBeGreaterThanOrEqual(-1);
     at(dOn * 0.5);
     br.update(1);
@@ -683,6 +685,48 @@ describe('building LOD cross-fade', () => {
     // caught up: the next smooth swap fades again
     glide(dOff * 0.9);
     expect(br.fading).toBeGreaterThan(0);
+  });
+
+  it('completes a fade with the camera travel in fast motion, over fadeTime in slow motion', () => {
+    const { br, bi, dOn, dOff, at, glide } = setup();
+    type F = { p: number } | null;
+    const fadeP = () => ((bi as unknown as { fade: F }).fade?.p ?? -1);
+    at(dOn * 0.5);
+    br.update(1);
+    glide(dOn * 0.9);
+    // fast zoom out, 4% farther per frame (street -> far in ~90 frames), frame loop order: camera, update, LOD
+    let d = dOn * 0.9, started = -1, done = -1;
+    const ps: number[] = [];
+    for (let k = 0; k < 60 && done < 0; k++) {
+      d *= 1.04;
+      at(d);
+      br.update(1 / 60);
+      if (started < 0 && bi.lod === 1) started = k;
+      if (started >= 0) {
+        if (br.fading === 0) done = k;
+        else ps.push(fadeP());
+      }
+    }
+    expect(started).toBeGreaterThanOrEqual(0);
+    // ~fadeTravel / ln(1.04) = 3 frames (fadeTime alone: 21 frames at 60 fps), still a dissolve, not a pop
+    expect(done - started).toBeGreaterThanOrEqual(2);
+    expect(done - started).toBeLessThanOrEqual(5);
+    expect(ps.some((p) => p > 0.2 && p < 0.8)).toBe(true);
+    // slow zoom back in (0.2% per frame) across the upgrade distance: the dissolve takes ~fadeTime
+    glide(dOff * 1.03);
+    d = dOff * 1.03;
+    started = done = -1;
+    for (let k = 0; k < 200 && done < 0; k++) {
+      d = Math.max(dOff * 0.5, d / 1.002);
+      at(d);
+      br.update(1 / 60);
+      if (started < 0 && bi.lod === 0) started = k;
+      if (started >= 0 && br.fading === 0) done = k;
+    }
+    expect(started).toBeGreaterThanOrEqual(0);
+    const frames = done - started, ideal = br.fadeTime * 60;
+    expect(frames).toBeGreaterThan(ideal * 0.8);
+    expect(frames).toBeLessThan(ideal * 1.2);
   });
 });
 

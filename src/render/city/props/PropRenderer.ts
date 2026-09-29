@@ -7,8 +7,9 @@
  * else is thinner than a far-cascade texel). Instances sit in one of three tile sets per map tile (small hardware /
  * trees / pylons) so the batch skips whole classes per tile: hardware in the far cascade, small props of tiles beyond
  * `lodDistance` (disabled tiles, no per-instance work). Small props switch per instance: full model within `lodFull`,
- * a ~16-triangle proxy (propLod.ts) beyond (6% hysteresis; each prop is re-evaluated only when the camera travelled
- * far enough to carry it across the switch distance), and around `lodDistance` they thin out one by one (each prop
+ * a ~16-triangle proxy (propLod.ts) beyond (6% hysteresis; evaluated per map tile from the bounds of its props: a tile
+ * entirely inside / outside the switch band flips as a whole when that changes, only the tiles the band crosses are
+ * evaluated prop by prop, and only while the camera moves), and around `lodDistance` they thin out one by one (each prop
  * vanishes at its own hashed distance in 100-135% of lodDistance (whole tiles used to switch at
  * lodDistance from their nearest point: props up to a tile beyond it stayed), in the vertex shader, shadows alike), so a tile is
  * only disabled once all of its props are gone: no tile-sized bursts. Distances use the classic prop metric
@@ -118,11 +119,6 @@ function injectPropFade(shader: THREE.WebGLProgramParametersWithUniforms): void 
 #endif`);
 }
 
-/** LOD schedule of the per-instance proxy switch: camera travel (m) per bucket and ring size (see BuildingRenderer) */
-const PLOD_BUCKETS = 4096;
-/** camera travel in one frame that counts as a jump (every due prop is evaluated at once then) */
-const PLOD_SLICE = 6000;
-
 const POOL_VERT = /* glsl */ `
 attribute vec3 poolColor;
 varying vec2 vUv;
@@ -198,26 +194,32 @@ export class PropRenderer {
 
   /** per tile state of small props: 1 drawn (per-instance LOD / thinning), 0 disabled (all beyond lodDistance) */
   private near: Uint8Array;
-  /** per instance (batch id): proxy-switch state (2 full, 1 proxy, 0 none: no proxy / pylon / removed), position,
-   *  full / proxy geometry ids and LOD schedule bucket (>= 0 linked in that bucket, -1 queued now, -2 removed,
-   *  -3 new, -4 unscheduled) */
+  /** camera position + lodDistance of the last tile pass (x, y, z, hide): an unchanged camera skips it */
+  private nearAt = new Float64Array(4).fill(NaN);
+  /** per instance (batch id): proxy-switch state (2 full, 1 proxy, 0 none: no proxy / pylon / removed), position
+   *  (every small prop), full / proxy geometry ids, and LOD tile / slot in that tile's lists (-1: in none) */
   private ist = new Uint8Array(0);
   private ipos = new Float32Array(0);
   private igeo = new Int32Array(0);
-  private idue = new Int32Array(0);
-  private lodTravel = 0;
-  private lodPos = new THREE.Vector3(NaN, NaN, NaN);
-  private lodAt = 0;
-  /** the schedule's ring of travel buckets as intrusive doubly linked lists (head id per ring slot, next / prev per
-   *  instance): scheduling an evaluated prop costs a few typed-array writes (a fast pan evaluates thousands per frame;
-   *  pushing into per-bucket JS arrays grew and copied their stores) */
-  private lodHead = new Int32Array(PLOD_BUCKETS).fill(-1);
-  private lnext = new Int32Array(0);
-  private lprev = new Int32Array(0);
-  private lodNow: number[] = [];
-  private lodNowSpare: number[] = [];
+  private itile = new Int32Array(0);
+  private islot = new Int32Array(0);
+  /** the proxy switch per map tile: its props with a proxy as contiguous lists (batch id, x / z, state; a tile the
+   *  switch band crosses is scanned in order, no per-prop bookkeeping), the bounds of those props (x0, z0, x1, z1; after
+   *  removals possibly larger than needed until re-tightened) and the tile's mode: 0 all proxy, 1 all full, 2 mixed
+   *  (the band crosses it: evaluated per prop whenever the camera moves), 3 due (new props / new switch distance) */
+  private lodN!: Int32Array;
+  private lodIds: Int32Array[] = [];
+  private lodXZ: Float32Array[] = [];
+  private lodSt: Uint8Array[] = [];
+  private lodBox!: Float32Array;
+  private lodMode!: Uint8Array;
+  private lodLoose!: Uint8Array;
+  private lodLooseAny = false;
+  private lodDue = false;
+  /** camera position of the last proxy pass and the switch distance it used */
+  private lodAt = new Float64Array(3).fill(NaN);
   private lodFullAt = -1;
-  /** props evaluated by the proxy schedule (stats) */
+  /** props evaluated by the proxy switch (stats) */
   lodEvals = 0;
   /** map tiles (culler.tiles^2); batch tile id = tile + T * class (0 hardware, 1 trees, 2 pylons) */
   private T: number;
@@ -267,6 +269,15 @@ export class PropRenderer {
     this.pylons.enablePassCulling({ culler, shadowMask: 0b01, coarse: true });
     this.batch.mesh.add(this.pylons.mesh);
     this.near = new Uint8Array(T).fill(1);
+    this.lodN = new Int32Array(T);
+    this.lodBox = new Float32Array(T * 4);
+    this.lodMode = new Uint8Array(T);
+    this.lodLoose = new Uint8Array(T);
+    for (let t = 0; t < T; t++) {
+      this.lodIds.push(new Int32Array(0));
+      this.lodXZ.push(new Float32Array(0));
+      this.lodSt.push(new Uint8Array(0));
+    }
     const pg = new THREE.PlaneGeometry(2, 2);
     pg.rotateX(-Math.PI / 2);
     this.poolMat = new THREE.ShaderMaterial({
@@ -301,26 +312,30 @@ export class PropRenderer {
 
   /** distance LOD for small props; call once per frame with the camera position (see the file comment) */
   updateLod(cam: THREE.Vector3): void {
-    const c = this.culler;
-    const T = c.tiles;
-    const size = c.tileCells * c.cellSize;
     const hide = this.lodDistance, full = Math.min(this.lodFull, hide);
     // per-instance thinning band (shader); a tile is disabled only beyond it (its nearest point past the band's end),
     // i.e. once none of its props is left
     propFadeU.uPropCam.value.copy(cam);
     propFadeU.uPropFade.value.set(hide, hide * 1.35);
-    for (let tz = 0; tz < T; tz++) {
-      for (let tx = 0; tx < T; tx++) {
-        const i = tz * T + tx;
-        const dx = Math.max(0, Math.abs(cam.x - (tx + 0.5) * size) - size / 2);
-        const dz = Math.max(0, Math.abs(cam.z - (tz + 0.5) * size) - size / 2);
-        const d = Math.sqrt(dx * dx + dz * dz + cam.y * cam.y * 0.8);
-        const cur = this.near[i];
-        const n = d < hide * (cur ? 1.4 : 1.37) ? 1 : 0;
-        if (n !== cur) {
-          this.near[i] = n;
-          this.batch.setTileEnabled(i, n > 0);
-          this.batch.setTileEnabled(i + this.T, n > 0);
+    const at = this.nearAt;
+    if (cam.x !== at[0] || cam.y !== at[1] || cam.z !== at[2] || hide !== at[3]) {
+      at[0] = cam.x; at[1] = cam.y; at[2] = cam.z; at[3] = hide;
+      const c = this.culler;
+      const T = c.tiles;
+      const size = c.tileCells * c.cellSize;
+      for (let tz = 0; tz < T; tz++) {
+        for (let tx = 0; tx < T; tx++) {
+          const i = tz * T + tx;
+          const dx = Math.max(0, Math.abs(cam.x - (tx + 0.5) * size) - size / 2);
+          const dz = Math.max(0, Math.abs(cam.z - (tz + 0.5) * size) - size / 2);
+          const d = Math.sqrt(dx * dx + dz * dz + cam.y * cam.y * 0.8);
+          const cur = this.near[i];
+          const n = d < hide * (cur ? 1.4 : 1.37) ? 1 : 0;
+          if (n !== cur) {
+            this.near[i] = n;
+            this.batch.setTileEnabled(i, n > 0);
+            this.batch.setTileEnabled(i + this.T, n > 0);
+          }
         }
       }
     }
@@ -329,110 +344,138 @@ export class PropRenderer {
     m.envMapIntensity = city.envMapIntensity; m.roughness = city.roughness; m.metalness = city.metalness;
   }
 
-  /** per-instance proxy <-> full switch at `full` m (+-6%), scheduled by camera travel like the building LOD */
+  /** per-instance proxy <-> full switch at `full` m (+-6%), per map tile (see lodMode): the per-prop rule
+   *  (d < full * (full model now ? 1.06 : 0.94)) holds for every prop after each call, without lag */
   private updateProxyLod(cam: THREE.Vector3, full: number): void {
+    const cx = cam.x, cy = cam.y, cz = cam.z;
     if (full !== this.lodFullAt) {
-      // new switch distance: every prop with a proxy is due now
       this.lodFullAt = full;
-      this.queueAllProxies();
+      this.lodMode.fill(3);
+      this.lodDue = true;
     }
-    const p = this.lodPos;
-    const hop = p.x === p.x ? Math.hypot(cam.x - p.x, cam.y - p.y, cam.z - p.z) : 0;
-    this.lodTravel += hop;
-    p.copy(cam);
-    const cur = Math.floor(this.lodTravel);
-    if (cur - this.lodAt >= PLOD_BUCKETS - 2) {
-      // a jump beyond the schedule horizon: everything is due (queueAllProxies unlinks every scheduled prop)
-      this.queueAllProxies();
-      this.lodHead.fill(-1);
-      this.lodAt = cur + 1;
-    }
-    if (!this.lodNow.length && this.lodAt > cur) return;
-    // smooth motion: bounded work per frame; a jump evaluates everything due at once
-    let budget = hop > Math.max(150, cam.y * 0.5) ? Infinity : PLOD_SLICE;
-    if (this.lodNow.length) {
-      const q = this.lodNow;
-      this.lodNow = this.lodNowSpare;
-      this.lodNowSpare = q;
-      let i = 0;
-      for (; i < q.length && budget > 0; i++) {
-        const id = q[i];
-        if (this.idue[id] !== -1) continue;
-        this.evalProxy(id, cam, cur);
-        budget--;
+    const at = this.lodAt;
+    const moved = cx !== at[0] || cy !== at[1] || cz !== at[2];
+    if (!moved && !this.lodDue) return;
+    at[0] = cx; at[1] = cy; at[2] = cz;
+    this.lodDue = false;
+    if (this.lodLooseAny) this.tightenLodBoxes();
+    // squared prop metric (dx^2 + dz^2 + 0.8 camY^2) against the squared switch distances; a tile's bounds give the
+    // nearest / farthest of its props (rounding is monotonic: consistent with the per-prop test below)
+    const lo = full * 0.94, hi = full * 1.06, lo2 = lo * lo, hi2 = hi * hi, cy2 = cy * cy * 0.8;
+    const N = this.lodN, box = this.lodBox, mode = this.lodMode, T = this.T;
+    const ist = this.ist, igeo = this.igeo, batch = this.batch;
+    for (let t = 0; t < T; t++) {
+      const n = N[t];
+      if (n === 0) continue;
+      const m = mode[t];
+      if (!moved && m !== 3) continue;
+      const b = t * 4;
+      const x0 = box[b] - cx, z0 = box[b + 1] - cz, x1 = box[b + 2] - cx, z1 = box[b + 3] - cz;
+      const ex = x0 > 0 ? x0 : x1 < 0 ? -x1 : 0, ez = z0 > 0 ? z0 : z1 < 0 ? -z1 : 0;
+      const fx = -x0 > x1 ? -x0 : x1, fz = -z0 > z1 ? -z0 : z1;
+      const cls = fx * fx + fz * fz + cy2 < lo2 ? 1 : ex * ex + ez * ez + cy2 >= hi2 ? 0 : 2;
+      if (cls === m && cls !== 2) continue;
+      mode[t] = cls;
+      this.lodEvals += n;
+      const ids = this.lodIds[t], xz = this.lodXZ[t], st = this.lodSt[t];
+      if (cls !== 2) {
+        // the whole tile on one side of the band
+        const want = cls === 1 ? 2 : 1;
+        for (let k = 0; k < n; k++) {
+          if (st[k] === want) continue;
+          const id = ids[k];
+          st[k] = want;
+          ist[id] = want;
+          batch.setGeometry(id, igeo[id * 2 + 2 - want]);
+        }
+        continue;
       }
-      for (; i < q.length; i++) this.lodNow.push(q[i]);
-      q.length = 0;
-    }
-    const head = this.lodHead, next = this.lnext, due = this.idue;
-    while (this.lodAt <= cur && budget > 0) {
-      // detach the bucket's list, then evaluate it (evaluated props are linked into later buckets: never this slot
-      // again, the schedule is capped one ring lap ahead)
-      const slot = this.lodAt % PLOD_BUCKETS;
-      let id = head[slot];
-      head[slot] = -1;
-      while (id >= 0) {
-        const nx = next[id];
-        if (due[id] === this.lodAt) {
-          due[id] = -4;
-          this.evalProxy(id, cam, cur);
-          budget--;
-        } else if (due[id] >= 0) this.linkProxy(id, due[id]); // (not expected: every entry of a ring slot is due)
-        id = nx;
+      for (let k = 0; k < n; k++) {
+        const dx = xz[k * 2] - cx, dz = xz[k * 2 + 1] - cz;
+        const s = st[k];
+        const want = dx * dx + dz * dz + cy2 < (s === 2 ? hi2 : lo2) ? 2 : 1;
+        if (want === s) continue;
+        const id = ids[k];
+        st[k] = want;
+        ist[id] = want;
+        batch.setGeometry(id, igeo[id * 2 + 2 - want]);
       }
-      this.lodAt++;
     }
   }
 
-  /** link a prop into the list of travel bucket b */
-  private linkProxy(id: number, b: number): void {
-    const head = this.lodHead, slot = b % PLOD_BUCKETS, h = head[slot];
-    this.lprev[id] = -1;
-    this.lnext[id] = h;
-    if (h >= 0) this.lprev[h] = id;
-    head[slot] = id;
-    this.idue[id] = b;
-  }
-
-  /** take a scheduled prop out of its bucket list (-> -4 unscheduled) */
-  private unlinkProxy(id: number): void {
-    const b = this.idue[id];
-    if (b < 0) return;
-    const p = this.lprev[id], nx = this.lnext[id];
-    if (p >= 0) this.lnext[p] = nx;
-    else if (this.lodHead[b % PLOD_BUCKETS] === id) this.lodHead[b % PLOD_BUCKETS] = nx;
-    if (nx >= 0) this.lprev[nx] = p;
-    this.idue[id] = -4;
-  }
-
-  /** every prop with a proxy is due now */
-  private queueAllProxies(): void {
-    const st = this.ist;
-    for (let id = 0; id < st.length; id++) if (st[id]) this.queueProxy(id);
-  }
-
-  private queueProxy(id: number): void {
-    if (id >= this.idue.length || this.idue[id] === -2 || !this.ist[id]) return;
-    if (this.idue[id] !== -1) { this.unlinkProxy(id); this.idue[id] = -1; this.lodNow.push(id); }
-  }
-
-  /** (the switch distance comes from lodFullAt, not an argument: a double argument is boxed when V8 does not inline
-   *  the call, once per evaluated prop) */
-  private evalProxy(id: number, cam: THREE.Vector3, cur: number): void {
-    this.lodEvals++;
-    const full = this.lodFullAt;
-    // prop metric (changes by at most the camera travel: the schedule's slack stays valid)
-    const o = id * 3, dx = this.ipos[o] - cam.x, dz = this.ipos[o + 2] - cam.z;
-    const d = Math.sqrt(dx * dx + dz * dz + cam.y * cam.y * 0.8);
-    const st = this.ist[id];
-    const want = d < full * (st === 2 ? 1.06 : 0.94) ? 2 : 1;
-    if (want !== st) {
-      this.ist[id] = want;
-      this.batch.setGeometry(id, this.igeo[id * 2 + (want === 2 ? 0 : 1)]);
+  /** put a prop with a proxy into its LOD tile's lists: full model until its (now due) tile is evaluated */
+  private lodAdd(id: number): void {
+    const x = this.ipos[id * 3], z = this.ipos[id * 3 + 2];
+    const t = this.culler.tileOfWorld(x, z);
+    const n = this.lodN[t];
+    if (n === this.lodIds[t].length) {
+      const cap = Math.max(16, n * 2);
+      const ids = new Int32Array(cap); ids.set(this.lodIds[t]); this.lodIds[t] = ids;
+      const xz = new Float32Array(cap * 2); xz.set(this.lodXZ[t]); this.lodXZ[t] = xz;
+      const st = new Uint8Array(cap); st.set(this.lodSt[t]); this.lodSt[t] = st;
     }
-    const slack = want === 2 ? full * 1.06 - d : d - full * 0.94;
-    const b = Math.min(this.lodAt + PLOD_BUCKETS - 1, Math.max(cur + 1, Math.floor(this.lodTravel + Math.max(0, slack))));
-    this.linkProxy(id, b);
+    this.lodIds[t][n] = id;
+    this.lodXZ[t][n * 2] = x;
+    this.lodXZ[t][n * 2 + 1] = z;
+    this.lodSt[t][n] = 2;
+    const b = t * 4, box = this.lodBox;
+    if (n === 0) { box[b] = x; box[b + 1] = z; box[b + 2] = x; box[b + 3] = z; }
+    else {
+      if (x < box[b]) box[b] = x;
+      if (z < box[b + 1]) box[b + 1] = z;
+      if (x > box[b + 2]) box[b + 2] = x;
+      if (z > box[b + 3]) box[b + 3] = z;
+    }
+    this.lodN[t] = n + 1;
+    this.ist[id] = 2;
+    this.itile[id] = t;
+    this.islot[id] = n;
+    this.lodMode[t] = 3;
+    this.lodDue = true;
+  }
+
+  /** take a prop out of the proxy switch (swap-remove from its tile's lists; the bounds are re-tightened later) */
+  private lodRemove(id: number): void {
+    const t = this.itile[id];
+    this.ist[id] = 0;
+    if (t < 0) return;
+    const k = this.islot[id], n = this.lodN[t] - 1;
+    if (k !== n) {
+      const ids = this.lodIds[t], xz = this.lodXZ[t], st = this.lodSt[t];
+      const last = ids[n];
+      ids[k] = last;
+      xz[k * 2] = xz[n * 2];
+      xz[k * 2 + 1] = xz[n * 2 + 1];
+      st[k] = st[n];
+      this.islot[last] = k;
+    }
+    this.lodN[t] = n;
+    this.itile[id] = -1;
+    this.lodLoose[t] = 1;
+    this.lodLooseAny = true;
+  }
+
+  /** recompute the bounds of tiles that lost props (larger bounds are only conservative: more per-prop scans) */
+  private tightenLodBoxes(): void {
+    this.lodLooseAny = false;
+    const loose = this.lodLoose, box = this.lodBox;
+    for (let t = 0; t < this.T; t++) {
+      if (!loose[t]) continue;
+      loose[t] = 0;
+      const n = this.lodN[t];
+      if (!n) continue;
+      const xz = this.lodXZ[t];
+      let x0 = xz[0], z0 = xz[1], x1 = x0, z1 = z0;
+      for (let k = 1; k < n; k++) {
+        const x = xz[k * 2], z = xz[k * 2 + 1];
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (z < z0) z0 = z;
+        if (z > z1) z1 = z;
+      }
+      const b = t * 4;
+      box[b] = x0; box[b + 1] = z0; box[b + 2] = x1; box[b + 3] = z1;
+    }
   }
 
   /** grow the per-instance LOD arrays to hold batch id `id` */
@@ -442,9 +485,8 @@ export class PropRenderer {
     const st = new Uint8Array(cap); st.set(this.ist); this.ist = st;
     const ps = new Float32Array(cap * 3); ps.set(this.ipos); this.ipos = ps;
     const gg = new Int32Array(cap * 2).fill(-1); gg.set(this.igeo); this.igeo = gg;
-    const du = new Int32Array(cap).fill(-2); du.set(this.idue); this.idue = du;
-    const ln = new Int32Array(cap).fill(-1); ln.set(this.lnext); this.lnext = ln;
-    const lp = new Int32Array(cap).fill(-1); lp.set(this.lprev); this.lprev = lp;
+    const tl = new Int32Array(cap).fill(-1); tl.set(this.itile); this.itile = tl;
+    const sl = new Int32Array(cap); sl.set(this.islot); this.islot = sl;
   }
 
   /** glows are only worth drawing at night */
@@ -488,7 +530,7 @@ export class PropRenderer {
       for (const id of old.ids) {
         this.batch.remove(id);
         this.seasonal.delete(id);
-        if (id < this.ist.length) { this.unlinkProxy(id); this.ist[id] = 0; this.idue[id] = -2; }
+        if (id < this.ist.length) this.lodRemove(id);
       }
       if (old.pools.length) this.poolsDirty = true;
     }
@@ -519,17 +561,13 @@ export class PropRenderer {
       // thinner than a far-cascade texel and cast into cascade 0 (or the single map) only
       this.batch.setShadowCascades(id, tree ? 0b11 : 0b01);
       this.batch.setTile(id, tile + this.T * (tree ? 1 : 0));
-      {
-        const lod = this.lodMap.get(gid) ?? gid;
-        if (lod !== gid) {
-          // full model until the next updateLod evaluates it
-          this.ensureInst(id);
-          this.ist[id] = 2;
-          this.ipos[id * 3] = p.x; this.ipos[id * 3 + 1] = p.y; this.ipos[id * 3 + 2] = p.z;
-          this.igeo[id * 2] = gid; this.igeo[id * 2 + 1] = lod;
-          this.idue[id] = -3;
-          this.queueProxy(id);
-        }
+      // (the position of every small prop: a seasonal variant may gain a proxy later)
+      this.ensureInst(id);
+      this.ipos[id * 3] = p.x; this.ipos[id * 3 + 1] = p.y; this.ipos[id * 3 + 2] = p.z;
+      const lod = this.lodMap.get(gid) ?? gid;
+      if (lod !== gid) {
+        this.igeo[id * 2] = gid; this.igeo[id * 2 + 1] = lod;
+        this.lodAdd(id);
       }
       g.ids.push(id);
     }
@@ -547,12 +585,10 @@ export class PropRenderer {
       const st = this.ist[id];
       if (lod !== gid) {
         this.igeo[id * 2] = gid; this.igeo[id * 2 + 1] = lod;
-        if (!st) { this.ist[id] = 2; this.idue[id] = -3; this.queueProxy(id); }
-      } else {
-        // variant without a proxy: out of the schedule (a stale evaluation would swap in the old variant's geometry)
-        this.unlinkProxy(id);
-        this.ist[id] = 0;
-        if (this.idue[id] === -1) this.idue[id] = -4;
+        if (!st) this.lodAdd(id);
+      } else if (st) {
+        // variant without a proxy: out of the switch (an evaluation would swap in the old variant's geometry)
+        this.lodRemove(id);
       }
       this.batch.setGeometry(id, st === 1 && lod !== gid ? lod : gid);
     }

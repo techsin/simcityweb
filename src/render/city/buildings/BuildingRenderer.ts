@@ -49,6 +49,9 @@ import { lodProxyBuilder, type LodProxyBuilder } from './lodBuilder';
 
 /** LOD proxies stay within their model's bounds + this (m; see tests/render/lod.test.ts) */
 const PROXY_PAD = 0.6;
+/** vertices reserved per model for its LOD proxy (non-indexed; over all 535 building variants: mean 237, median 222,
+ *  p90 372, max 570, <= 200 triangles by tests/render/lod.test.ts) */
+const PROXY_VERTS = 256;
 
 export interface BuildingVisual {
   id: number;
@@ -758,9 +761,9 @@ export class BuildingRenderer {
   rebuildAll(): void {
     this.clear();
     for (const b of this.state.buildings.values()) this.add(b, false);
-    // room for the proxies the worker is about to deliver (<= ~180 triangles each) and their 3-vertex cross-fade
-    // stand-ins: growing the batch's vertex buffer later would re-upload all of it in some frame
-    this.batch.reserveVertices(this.lodPending.size * 203);
+    // room for the proxies the worker is about to deliver and their 3-vertex cross-fade stand-ins: growing the batch's
+    // vertex buffer later would re-upload all of it in some frame (reserveVertices adds 25%)
+    this.batch.reserveVertices(this.lodPending.size * (PROXY_VERTS + 3));
   }
 
   private freeInstances(bi: BInst): void {
