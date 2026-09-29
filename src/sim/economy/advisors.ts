@@ -26,7 +26,8 @@
  * risk, an overcrowded jail, noise, sewage, tap water, landfills filling up, ONE garbage rule (homes without pickup from
  * 300 residents, with the reason: capacity / truck range / no road), hotels, tourism, attractiveness, the bus fleet,
  * parking and regional job markets. PERF: the map scans (zoned blocks, homes, facilities) run on the last days of the
- * month (MONTH_SCAN_DAYS, deterministic day offsets) and the month tick reuses them.
+ * month (MONTH_SCAN_DAYS, deterministic day offsets) and the month tick reuses them; the places of the rules
+ * (unservedClusters / uncoveredHotspots) are looked up only for advice that is announced or listed (Advice.where).
  *
  * Flavour headlines: a shuffle bag over HEADLINES (each line once per cycle; lines that don't fit the city's size,
  * season, climate or buildings wait in the bag), and no line again within HEADLINE_REPEAT_DAYS (2 in-game years).
@@ -71,6 +72,18 @@ interface Advice {
   /** stay quiet in the news feed while a news item matching this was posted within QUIET_DAYS (another system's news
    *  said the same; the issue still shows in the Advisors panel) */
   quietIf?: RegExp;
+  /** the place to act, found only when needed (x / z unset): the rule is announced, or the Advisors panel lists it.
+   *  unservedClusters / uncoveredHotspots cost O(cells) / O(buildings) each — most months every open rule is still in
+   *  its cooldown and nobody asks (PERF) */
+  where?: () => { x?: number; z?: number };
+}
+/** fill in a lazily located advice's place (see Advice.where); returns the advice */
+function placed<T extends { x?: number; z?: number }>(a: T, where: (() => { x?: number; z?: number }) | undefined): T {
+  if (where && a.x === undefined) {
+    const p = where();
+    if (p.x !== undefined && p.z !== undefined) { a.x = p.x; a.z = p.z; }
+  }
+  return a;
 }
 /** see Advice.quietIf */
 const QUIET_DAYS = 90;
@@ -535,8 +548,8 @@ interface Scans {
   zone: ZoneScan;
   fac: FacilityScan;
   homes: HomeScan;
-  /** memoised map locations (unservedClusters / uncoveredHotspots: O(cells) / O(buildings) each; warmed before the
-   *  month tick on LOCATE_DAYS so the tick itself only evaluates rules) */
+  /** memoised map locations (unservedClusters / uncoveredHotspots: O(cells) / O(buildings) each, looked up lazily
+   *  through Advice.where; the memo serves the month tick and the Advisors panel for LOCATE_TTL days) */
   locate?: (key: string, f: () => { x: number; z: number } | undefined) => { x?: number; z?: number };
 }
 const pctS = (v: number) => `${Math.round(v * 100)}%`;
@@ -574,25 +587,25 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
   if (svc) {
     const el = nd.elementary;
     if (el && el.need > 0 && el.unreached >= Math.max(300, 0.05 * el.need)) {
-      out.push({ id: 'noElementary', cooldown: 120, priority: 6, kind: 'warning', advisor: 'health', ...cluster('elementary'),
+      out.push({ id: 'noElementary', cooldown: 120, priority: 6, kind: 'warning', advisor: 'health', where: () => cluster('elementary'),
         text: `${int(el.unreached)} children have no elementary school within walking distance — build one near here.` });
     }
     const hi = nd.high;
     if (hi && hi.need > 0 && hi.unreached >= Math.max(200, 0.05 * hi.need)) {
-      out.push({ id: 'noHigh', cooldown: 150, priority: 5, kind: 'warning', advisor: 'health', ...cluster('high'),
+      out.push({ id: 'noHigh', cooldown: 150, priority: 5, kind: 'warning', advisor: 'health', where: () => cluster('high'),
         text: `${int(hi.unreached)} teenagers have no high school within reach — build one near here, or they drop out and leave.` });
     }
     const co = nd.college;
     if (co && co.need > 0 && pop > 20000 && co.served / co.need < 0.3 && collegeAvailable(st)) {
-      out.push({ id: 'noCollege', cooldown: 240, priority: 3, kind: 'info', advisor: 'health', ...cluster('college'),
+      out.push({ id: 'noCollege', cooldown: 240, priority: 3, kind: 'info', advisor: 'health', where: () => cluster('college'),
         text: `Only ${pctS(co.served / co.need)} of our young adults can study here — they move away. A college or library raises EQ and attracts offices.` });
     }
     if (H.seniorsOut >= 500) {
-      out.push({ id: 'seniorsHealth', cooldown: 150, priority: 5, kind: 'warning', advisor: 'health', ...cluster('health'),
+      out.push({ id: 'seniorsHealth', cooldown: 150, priority: 5, kind: 'warning', advisor: 'health', where: () => cluster('health'),
         text: `${int(H.seniorsOut)} seniors have no clinic or hospital in reach — build a clinic near here.` });
     }
     if (pop > 5000 && H.kids > 100 && H.kidsNoPlay >= 0.3 * H.kids) {
-      out.push({ id: 'playgrounds', cooldown: 240, priority: 3, kind: 'info', advisor: 'health', ...cluster('play'),
+      out.push({ id: 'playgrounds', cooldown: 240, priority: 3, kind: 'info', advisor: 'health', where: () => cluster('play'),
         text: `${pctS(H.kidsNoPlay / H.kids)} of our children have no playground or sports field nearby. Families want them — build playgrounds in residential blocks.` });
     }
     // overcrowded facilities: the worst school / hospital (utilisation of its seats)
@@ -626,7 +639,7 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
       // police: unreached neighbourhoods vs overloaded stations (critic item 31)
       const pn = nd.police;
       if (pop > 3000 && (unreachedShare(pn) >= 0.25 || cov.police < 0.2)) {
-        out.push({ id: 'noPolice', cooldown: 180, priority: 4, kind: 'warning', advisor: 'safety', ...cluster('police'),
+        out.push({ id: 'noPolice', cooldown: 180, priority: 4, kind: 'warning', advisor: 'safety', where: () => cluster('police'),
           text: `${pn && pn.need > 0 ? `${pctS(unreachedShare(pn))} of the city` : 'Most neighborhoods'} ${pn && pn.need > 0 ? 'has' : 'have'} no police patrols. Build a police station near here.` });
       } else if (pop > 3000 && police) {
         out.push({ id: 'policeOverloaded', cooldown: 180, priority: 4, kind: 'warning', advisor: 'safety', ...at(police.b),
@@ -639,7 +652,7 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
   const fireShare = H.fireOut >= 0 && H.residents > 0 ? H.fireOut / H.residents : 0;
   if (pop > 1500 && H.fireOut >= 0 && fireShare >= 0.15) {
     const noStation = sc.fac.fireStations === 0;
-    out.push({ id: 'noFireResponse', cooldown: 150, priority: 6, kind: 'warning', advisor: 'safety', ...hotspot('fire'),
+    out.push({ id: 'noFireResponse', cooldown: 150, priority: 6, kind: 'warning', advisor: 'safety', where: () => hotspot('fire'),
       text: noStation
         ? `The city has no fire station: every fire waits for you to act and can spread. Build a Fire Station near here.`
         : `${pctS(fireShare)} of residents live beyond the reach of a fire station — fires there wait for you to dispatch a truck. Build a Fire Station near here${inf.services && cov.fire < 0.2 ? ' (it also lowers the fire risk)' : ''}.` });
@@ -649,7 +662,7 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
   // ambulances: medical calls answered late (12-month quality)
   const med = s.emergency?.medScore ?? 1;
   if (pop > 2000 && med < 0.8) {
-    out.push({ id: 'slowAmbulances', cooldown: 150, priority: 5, kind: 'warning', advisor: 'health', ...hotspot('medical'),
+    out.push({ id: 'slowAmbulances', cooldown: 150, priority: 5, kind: 'warning', advisor: 'health', where: () => hotspot('medical'),
       text: `Ambulances are too slow: only ${pctS(med)} of medical emergencies were answered in time this year. Build a clinic or hospital near here.` });
   }
   // riots: unhappy, lawless districts
@@ -689,10 +702,14 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
   }
   // landfills filling up (preventive; WP3's own fill news said the same: stay quiet in the feed while it is recent)
   if (s.landfillFill > 0.8 && pop > 300) {
-    let bi = -1, bv = -1;
-    const F = st.landfillFill;
-    for (let i = 0; i < F.length; i++) if (F[i] > bv && st.zone[i] === Zone.Landfill) { bv = F[i]; bi = i; }
-    out.push({ id: 'landfillFull', cooldown: 180, priority: 5, kind: 'warning', advisor: 'utilities', ...cellAt(bi), quietIf: /^Landfills are/,
+    // the fullest landfill cell (O(cells): only when announced / listed)
+    const fullest = () => {
+      let bi = -1, bv = -1;
+      const F = st.landfillFill;
+      for (let i = 0; i < F.length; i++) if (F[i] > bv && st.zone[i] === Zone.Landfill) { bv = F[i]; bi = i; }
+      return cellAt(bi);
+    };
+    out.push({ id: 'landfillFull', cooldown: 180, priority: 5, kind: 'warning', advisor: 'utilities', where: fullest, quietIf: /^Landfills are/,
       text: `Landfills are ${pctS(s.landfillFill)} full — once full they take no more garbage. Zone more landfill, or build an incinerator or recycling center.` });
   }
   // garbage: ONE rule (critic item 31) — homes without pickup, with the reason and where; from 300 residents (QA)
@@ -791,6 +808,8 @@ export function openAdvice(sim: Simulation): OpenAdvice[] {
 
 /** last monthly pass: every issue (unthrottled), per state (derived, not saved: recomputed at the next month tick) */
 const lastIssues = new WeakMap<CityState, OpenAdvice[]>();
+/** issues of lastIssues whose place is still to be found (Advice.where: looked up on the first read) */
+const pendingWhere = new WeakMap<OpenAdvice, () => { x?: number; z?: number }>();
 
 /**
  * The full, unthrottled list of issues of the last monthly pass, grouped by advisor id (highest priority first).
@@ -798,7 +817,11 @@ const lastIssues = new WeakMap<CityState, OpenAdvice[]>();
  */
 export function advisorIssues(st: CityState): Record<string, OpenAdvice[]> {
   const out: Record<string, OpenAdvice[]> = {};
-  for (const a of lastIssues.get(st) ?? []) (out[a.advisor] ??= []).push(a);
+  for (const a of lastIssues.get(st) ?? []) {
+    const w = pendingWhere.get(a);
+    if (w) { pendingWhere.delete(a); placed(a, w); }
+    (out[a.advisor] ??= []).push(a);
+  }
   return out;
 }
 
@@ -813,8 +836,8 @@ export function adviceIdOf(st: CityState, n: { day: number; text: string }): str
 /** days of the month on which the month tick's map scans are taken (homes, zoned blocks, facilities: spread so the
  *  month tick itself only evaluates rules; deterministic, stale by at most 3 days) */
 export const MONTH_SCAN_DAYS = [27, 28, 29] as const;
-/** a found rule place (unservedClusters / uncoveredHotspots, looked up on the last scan day) is reused this many days
- *  (the month tick and the Advisors panel read the memo) */
+/** a found rule place (unservedClusters / uncoveredHotspots, looked up when a rule is announced or listed: Advice.where)
+ *  is reused this many days (the month tick, advisorIssues and the Advisors panel read the memo) */
 const LOCATE_TTL = 8;
 
 export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
@@ -1147,7 +1170,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       return gather(st)
         .filter((a) => !a.confirm || (seen[a.id] !== undefined && st.day - seen[a.id] >= CONFIRM_DAYS))
         .sort((a, b) => b.priority - a.priority)
-        .map(({ id, advisor, text, kind, priority, x, z }) => ({ id, advisor, text, kind, priority, x, z }));
+        .map((a) => placed({ id: a.id, advisor: a.advisor, text: a.text, kind: a.kind, priority: a.priority, x: a.x, z: a.z }, a.where));
     },
     daily(sim) {
       const st = sim.state;
@@ -1158,12 +1181,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         if (!monthScans || monthScans.st !== st || monthScans.month !== st.monthIndex) monthScans = { st, month: st.monthIndex, locate: locate(st) };
         if (dom === MONTH_SCAN_DAYS[0] && !monthScans.homes) monthScans.homes = scanHomes(st, rt, respReady(st));
         else if (dom === MONTH_SCAN_DAYS[1] && !monthScans.zone) monthScans.zone = zoneScan(st, infraFlags(st).utilities);
-        else if (dom === MONTH_SCAN_DAYS[2]) {
-          if (!monthScans.fac) monthScans.fac = scanFacilities(st, rt);
-          // the places of the rules that fire (unservedClusters / uncoveredHotspots) are found now, from the scans
-          // above: the month tick reuses scans and places and only evaluates the rules
-          gather(st, monthScans);
-        }
+        else if (dom === MONTH_SCAN_DAYS[2] && !monthScans.fac) monthScans.fac = scanFacilities(st, rt);
       }
       // population milestones
       const pop = st.stats.population;
@@ -1199,8 +1217,6 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       const seen = advisorData(st).seen;
       for (const id of Object.keys(seen)) if (!active.has(id)) delete seen[id];
       for (const a of list) if (a.confirm) seen[a.id] ??= st.day;
-      lastIssues.set(st, list.filter((a) => !a.confirm || st.day - seen[a.id] >= CONFIRM_DAYS)
-        .map(({ id, advisor, text, kind, priority, x, z }) => ({ id, advisor, text, kind, priority, x, z })));
       let shown = 0;
       for (const a of list) {
         if (shown >= ADVICE_PER_MONTH) break;
@@ -1211,12 +1227,22 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         if (a.quietIf && recentNews(st, a.quietIf)) continue;
         d.cooldowns[a.id] = st.day;
         streak[a.id] = (streak[a.id] ?? 0) + 1;
+        placed(a, a.where);
         sim.notify(a.text, a.kind === 'info' ? 'advisor' : a.kind, a.x, a.z, a.advisor);
         const posts = (advisorData(st).posts ??= []);
         posts.push({ day: st.day, id: a.id, text: a.text });
         if (posts.length > POSTS_KEPT) posts.splice(0, posts.length - POSTS_KEPT);
         shown++;
       }
+      // every open issue for advisorIssues (the announced ones already know their place; the others look it up when read)
+      const issues: OpenAdvice[] = [];
+      for (const a of list) {
+        if (a.confirm && st.day - seen[a.id] < CONFIRM_DAYS) continue;
+        const o: OpenAdvice = { id: a.id, advisor: a.advisor, text: a.text, kind: a.kind, priority: a.priority, x: a.x, z: a.z };
+        if (a.where && a.x === undefined) pendingWhere.set(o, a.where);
+        issues.push(o);
+      }
+      lastIssues.set(st, issues);
     },
   };
 }

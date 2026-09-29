@@ -6,11 +6,12 @@
  *        + neighbourhood wealth + prestige − stigma + tree cover − soil contamination + historic building
  *        − air / water / garbage (pile, faded in with town size) / crime / noise           (LV_TERMS, LV in tuning.ts)
  *  stored = temporal smoothing of the spatial 4-neighbour blend of clamp(raw, 0, 1).
- * lvTerms() is the one formula: the band sums it, landValueBreakdown lists it (+ clamp and smoothing terms, so the list
- * sums to the stored value). Time-sliced: a band of rows per day (full map every LV_REFRESH_DAYS).
+ * lvRow() is the one formula: the band runs it a row at a time, landValueBreakdown lists its terms for one cell (+ clamp and
+ * smoothing terms, so the list sums to the stored value). Time-sliced: a band of rows per day (full map every LV_REFRESH_DAYS).
  * Plopped splats are applied incrementally (EconRuntime's add / remove queue) with the factor each building had when it
  * was splatted; a Burnt / Abandoned flip (buildingChanged) or a parks-funding change re-splats the difference, so a
  * burnt landmark stops lifting its neighbourhood and an unfunded park lifts it less.
+ * Historic buildings are read from a per-cell mask (rebuilt when a historic building changes and once per sweep).
  */
 import type { SimSystem, Simulation } from '../Simulation';
 import { BF, type Building, type CityState } from '../CityState';
@@ -35,15 +36,33 @@ interface LvExtra {
   applied: Map<number, number>;
   /** parks effectiveness the park splats were applied with */
   parksEff: number;
+  /** 1 on the cells of standing historic buildings (perf: no building lookup per cell); the cells marked */
+  hist: Uint8Array;
+  histCells: number[];
+  /** a historic building changed (flag toggled, burnt / abandoned / repaired, removed): rebuild before the next band */
+  histDirty: boolean;
 }
 const extras = new WeakMap<EconRuntime, LvExtra>();
 function extraOf(rt: EconRuntime, st: CityState): LvExtra {
   let e = extras.get(rt);
   if (!e || e.wf.length !== st.cells) {
-    e = { wf: new Float32Array(st.cells), applied: new Map(), parksEff: 1 };
+    e = { wf: new Float32Array(st.cells), applied: new Map(), parksEff: 1, hist: new Uint8Array(st.cells), histCells: [], histDirty: true };
     extras.set(rt, e);
   }
   return e;
+}
+/** historic mask: the cells of every historic building that is not burnt / abandoned */
+function rebuildHistoric(st: CityState, e: LvExtra): void {
+  const N = st.size, hist = e.hist, cells = e.histCells;
+  for (let k = 0; k < cells.length; k++) hist[cells[k]] = 0;
+  cells.length = 0;
+  for (const b of st.buildings.values()) {
+    if (!(b.flags & BF.Historic) || b.flags & (BF.Burnt | BF.Abandoned)) continue;
+    for (let z = Math.max(0, b.z); z < Math.min(N, b.z + b.d); z++) {
+      for (let x = Math.max(0, b.x); x < Math.min(N, b.x + b.w); x++) { const i = z * N + x; hist[i] = 1; cells.push(i); }
+    }
+  }
+  e.histDirty = false;
 }
 
 // ------------------------------------------------------------------------------------------------ static terrain part
@@ -201,57 +220,80 @@ function lvCtx(st: CityState, rt: EconRuntime, out?: LvCtx): LvCtx {
   return c;
 }
 
-/** fill L[0..NLV) with the land value terms of cell i (x, z) — their sum is the raw (unclamped) land value */
-function lvTerms(c: LvCtx, i: number, x: number, z: number, L: Float64Array): void {
-  const st = c.st, rt = c.rt, K = LV_TERMS;
-  L[LV_BASE] = LV.base;
-  L[LV_VIEW] = rt.lvStatic[i];
-  L[LV_WATERFRONT] = c.ex.wf[i] * (1 - K.waterfrontPollution * st.waterPollution[i]);
-  const eff = lvEffectAt(rt, i);
-  L[LV_BUILDINGS] = eff;
-  if (c.inf.services) {
-    L[LV_POLICE] = K.police * st.policeCov[i]; L[LV_FIRE] = K.fire * st.fireCov[i]; L[LV_HEALTH] = K.health * st.healthCov[i];
-    L[LV_ELEM] = K.elem * st.eduElemCov[i]; L[LV_HIGH] = K.high * st.eduHighCov[i]; L[LV_COLLEGE] = K.college * st.eduCollegeCov[i];
-    L[LV_PLAY] = K.play * st.playCov[i]; L[LV_GREEN] = K.green * st.greenCov[i];
-    L[LV_TRANSIT] = K.transit * st.transitCov[i];
-  } else {
-    const f = COVERAGE_FALLBACK, park = Math.max(0, eff) * 2;
-    L[LV_POLICE] = K.police * f; L[LV_FIRE] = K.fire * f; L[LV_HEALTH] = K.health * f;
-    L[LV_ELEM] = K.elem * f; L[LV_HIGH] = K.high * f; L[LV_COLLEGE] = K.college * f;
-    L[LV_PLAY] = K.play * park; L[LV_GREEN] = K.green * park;
-    L[LV_TRANSIT] = 0;
+/**
+ * Raw (unclamped) land value of the cells xa..xb-1 of row z into raw[x - xa] (water: 0) — the one formula: the band runs
+ * it a row at a time (layers and constants hoisted), the breakdown for one cell with L, which then receives every term
+ * (index LV_*; their sum in term order is the raw value up to float rounding: the row sums three partial sums).
+ */
+function lvRow(c: LvCtx, z: number, xa: number, xb: number, raw: Float64Array, L: Float64Array | null): void {
+  const st = c.st, rt = c.rt, K = LV_TERMS, N = st.size;
+  const kBase = LV.base, kWfp = K.waterfrontPollution, kPol = K.police, kFire = K.fire, kHealth = K.health, kElem = K.elem;
+  const kHigh = K.high, kCollege = K.college, kPlay = K.play, kGreen = K.green, kTransit = K.transit, kCommute = K.commute;
+  const kWealth = K.wealth, kPrestige = K.prestige, kStigma = K.stigma, kTrees = K.trees, kSoil = K.soil, kHist = K.historic;
+  const kAir = LV.airPollution, kWater = LV.waterPollution, kGarb = K.garbage, kCrime = LV.crime, kNoise = LV.noise;
+  const fb = COVERAGE_FALLBACK, gFade = c.gFade, rGood = c.ramp.good, rBad = c.ramp.bad, rAvg = c.ramp.avg;
+  const services = c.inf.services, traffic = c.inf.traffic;
+  const water = st.water, lvS = rt.lvStatic, wf = c.ex.wf, hist = c.ex.hist, eff = rt.lvEffects, lf = rt.lvLandfill;
+  const pol = st.policeCov, fire = st.fireCov, health = st.healthCov, elem = st.eduElemCov, high = st.eduHighCov;
+  const college = st.eduCollegeCov, play = st.playCov, green = st.greenCov, transit = st.transitCov;
+  const prestige = st.prestige, stigma = st.stigma, trees = st.treeCover, soil = st.soil;
+  const air = st.airPollution, wp = st.waterPollution, garb = st.garbage, crime = st.crime, noise = st.noise;
+  const wealth = rt.coarseWealth, bz = ((z / COARSE) | 0) * rt.cw;
+  const row = z * N;
+  for (let x = xa; x < xb; x++) {
+    const i = row + x;
+    if (water[i]) { raw[x - xa] = 0; continue; }
+    const tView = lvS[i];
+    const tWf = wf[i] * (1 - kWfp * wp[i]);
+    // plopped buildings and landfill splats, clamped (= lvEffectAt)
+    let e = eff[i] + lf[i];
+    e = e < -0.7 ? -0.7 : e > 0.6 ? 0.6 : e;
+    let tPol: number, tFire: number, tHealth: number, tElem: number, tHigh: number, tCol: number, tPlay: number, tGreen: number, tTransit: number;
+    if (services) {
+      tPol = kPol * pol[i]; tFire = kFire * fire[i]; tHealth = kHealth * health[i];
+      tElem = kElem * elem[i]; tHigh = kHigh * high[i]; tCol = kCollege * college[i];
+      tPlay = kPlay * play[i]; tGreen = kGreen * green[i]; tTransit = kTransit * transit[i];
+    } else {
+      const park = Math.max(0, e) * 2;
+      tPol = kPol * fb; tFire = kFire * fb; tHealth = kHealth * fb;
+      tElem = kElem * fb; tHigh = kHigh * fb; tCol = kCollege * fb;
+      tPlay = kPlay * park; tGreen = kGreen * park; tTransit = 0;
+    }
+    const tCommute = kCommute * (1 - smoothstep(rGood, rBad, commuteMinutes(st, traffic, i, rAvg)) - 0.5);
+    const tWealth = kWealth * wealth[bz + ((x / COARSE) | 0)];
+    const tPrestige = kPrestige * prestige[i];
+    const tStigma = -kStigma * stigma[i];
+    const tTrees = kTrees * trees[i];
+    const tSoil = -kSoil * soil[i];
+    const tHist = hist[i] ? kHist : 0;
+    const tAir = -kAir * air[i];
+    const tWp = -kWater * wp[i];
+    const tGarb = -kGarb * garb[i] * gFade;
+    const tCrime = -kCrime * crime[i];
+    const tNoise = -kNoise * noise[i];
+    // three independent partial sums (term order within each)
+    const s1 = kBase + tView + tWf + e + tPol + tFire + tHealth + tElem;
+    const s2 = tHigh + tCol + tPlay + tGreen + tTransit + tCommute + tWealth + tPrestige + tStigma;
+    const s3 = tTrees + tSoil + tHist + tAir + tWp + tGarb + tCrime + tNoise;
+    raw[x - xa] = s1 + s2 + s3;
+    if (L) {
+      L[LV_BASE] = kBase; L[LV_VIEW] = tView; L[LV_WATERFRONT] = tWf; L[LV_BUILDINGS] = e;
+      L[LV_POLICE] = tPol; L[LV_FIRE] = tFire; L[LV_HEALTH] = tHealth; L[LV_ELEM] = tElem; L[LV_HIGH] = tHigh;
+      L[LV_COLLEGE] = tCol; L[LV_PLAY] = tPlay; L[LV_GREEN] = tGreen; L[LV_TRANSIT] = tTransit; L[LV_COMMUTE] = tCommute;
+      L[LV_WEALTH] = tWealth; L[LV_PRESTIGE] = tPrestige; L[LV_STIGMA] = tStigma; L[LV_TREES] = tTrees; L[LV_SOIL] = tSoil;
+      L[LV_HISTORIC] = tHist; L[LV_AIR] = tAir; L[LV_WATERPOLL] = tWp; L[LV_GARBAGE] = tGarb; L[LV_CRIME] = tCrime;
+      L[LV_NOISE] = tNoise;
+    }
   }
-  const r = c.ramp;
-  const score = 1 - smoothstep(r.good, r.bad, commuteMinutes(st, c.inf.traffic, i, r.avg));
-  L[LV_COMMUTE] = K.commute * (score - 0.5);
-  L[LV_WEALTH] = K.wealth * rt.coarseWealth[((z / COARSE) | 0) * rt.cw + ((x / COARSE) | 0)];
-  L[LV_PRESTIGE] = K.prestige * st.prestige[i];
-  L[LV_STIGMA] = -K.stigma * st.stigma[i];
-  L[LV_TREES] = K.trees * st.treeCover[i];
-  L[LV_SOIL] = -K.soil * st.soil[i];
-  let hist = 0;
-  const bid = st.building[i];
-  if (bid >= 0) { const b = st.buildings.get(bid); if (b && b.flags & BF.Historic && !(b.flags & (BF.Burnt | BF.Abandoned))) hist = K.historic; }
-  L[LV_HISTORIC] = hist;
-  L[LV_AIR] = -LV.airPollution * st.airPollution[i];
-  L[LV_WATERPOLL] = -LV.waterPollution * st.waterPollution[i];
-  L[LV_GARBAGE] = -K.garbage * st.garbage[i] * c.gFade;
-  L[LV_CRIME] = -LV.crime * st.crime[i];
-  L[LV_NOISE] = -LV.noise * st.noise[i];
-}
-
-function sumTerms(L: Float64Array): number {
-  let v = 0;
-  for (let k = 0; k < NLV; k++) v += L[k];
-  return v;
 }
 
 // ------------------------------------------------------------------------------------------------ system
 export function landValueSystem(rt: EconRuntime): SimSystem {
   let row = 0;
-  let sum = 0, cnt = 0, sumAll = 0, cntAll = 0;
+  /** average accumulators: zoned / built sum, count; all land sum, count (band locals, written back once per band) */
+  const acc = new Float64Array(4);
   let lastStatic = -1e9, lastLandfill = -1e9;
-  const L = new Float64Array(NLV);
+  let rawRow = new Float64Array(0);
   let ctx: LvCtx | undefined;
   /** plopped buildings whose flags changed since the last refresh (Burnt / Abandoned flips re-splat) */
   const changed: Building[] = [];
@@ -314,17 +356,22 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
       rt.lvLandfillDirty = false;
       lastLandfill = st.day;
     }
+    // historic mask: on a historic building's change, and once per sweep
+    if (ex.histDirty || force || row === 0) rebuildHistoric(st, ex);
   };
   const band = (st: CityState, z0: number, z1: number, first: boolean) => {
     const N = st.size;
-    const lvArr = st.landValue;
+    const lvArr = st.landValue, water = st.water, zone = st.zone, bld = st.building;
     const c = (ctx = lvCtx(st, rt, ctx));
+    if (rawRow.length < N) rawRow = new Float64Array(N);
+    const raw = rawRow;
+    let sum = 0, cnt = 0, sumAll = 0, cntAll = 0;
     for (let z = z0; z < z1; z++) {
+      lvRow(c, z, 0, N, raw, null);
       for (let x = 0; x < N; x++) {
         const i = z * N + x;
-        if (st.water[i]) { lvArr[i] = 0; continue; }
-        lvTerms(c, i, x, z, L);
-        let v = sumTerms(L);
+        if (water[i]) { lvArr[i] = 0; continue; }
+        let v = raw[x];
         v = v < 0 ? 0 : v > 1 ? 1 : v;
         let nv = v;
         if (!first) {
@@ -339,13 +386,14 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
         }
         lvArr[i] = nv;
         sumAll += nv; cntAll++;
-        if (st.zone[i] !== Zone.None || st.building[i] >= 0) { sum += nv; cnt++; }
+        if (zone[i] !== Zone.None || bld[i] >= 0) { sum += nv; cnt++; }
       }
     }
+    acc[0] += sum; acc[1] += cnt; acc[2] += sumAll; acc[3] += cntAll;
   };
   const publish = (st: CityState) => {
-    st.stats.avgLandValue = cnt > 0 ? sum / cnt : cntAll > 0 ? sumAll / cntAll : 0;
-    sum = cnt = sumAll = cntAll = 0;
+    st.stats.avgLandValue = acc[1] > 0 ? acc[0] / acc[1] : acc[3] > 0 ? acc[2] / acc[3] : 0;
+    acc.fill(0);
   };
   return {
     name: 'economy.landValue',
@@ -353,13 +401,25 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
       rt.attach(sim);
       if (sub !== sim) {
         unsub?.();
-        unsub = sim.events.on('buildingChanged', (b) => { if (b.flags & BF.Plopped && getDef(b.def)?.landValue) changed.push(b); });
+        const histFlip = (b: Building) => {
+          const ex = extras.get(rt);
+          if (!ex || ex.histDirty) return;
+          const N = sim.state.size, i = b.z * N + b.x;
+          if (b.flags & BF.Historic || (i >= 0 && i < ex.hist.length && ex.hist[i])) ex.histDirty = true;
+        };
+        const u1 = sim.events.on('buildingChanged', (b) => {
+          if (b.flags & BF.Plopped && getDef(b.def)?.landValue) changed.push(b);
+          histFlip(b);
+        });
+        const u2 = sim.events.on('buildingRemoved', histFlip);
+        unsub = () => { u1(); u2(); };
         sub = sim;
       }
       const st = sim.state;
       rt.terrainDirty = true;
+      row = 0;
       refresh(st, true);
-      sum = cnt = sumAll = cntAll = 0;
+      acc.fill(0);
       band(st, 0, st.size, true);
       // (stats from the first pass too: a new or loaded city shows its average at once)
       publish(st);
@@ -387,6 +447,7 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
 
 // ------------------------------------------------------------------------------------------------ breakdown
 const BL = new Float64Array(NLV);
+const BR = new Float64Array(1);
 let bctx: LvCtx | undefined;
 
 /**
@@ -399,12 +460,12 @@ export function landValueBreakdown(st: CityState, rt: EconRuntime | null, i: num
   if (st.water[i]) return [{ id: 'water', label: 'Water', value: st.landValue[i] }];
   const N = st.size, x = i % N, z = (i / N) | 0;
   const c = (bctx = lvCtx(st, rt, bctx));
-  lvTerms(c, i, x, z, BL);
+  if (c.ex.histDirty) rebuildHistoric(st, c.ex);
+  lvRow(c, z, x, x + 1, BR, BL);
+  const raw = BR[0];
   const out: FactorTerm[] = [];
-  let raw = 0;
   for (let k = 0; k < NLV; k++) {
     const v = BL[k];
-    raw += v;
     if (v === 0 && k !== LV_BASE) continue;
     out.push({ id: LV_TERM_IDS[k], label: LV_TERM_LABELS[k], value: v, detail: lvDetail(k, st, c, i) });
   }

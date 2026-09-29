@@ -162,7 +162,9 @@ export class InfoPanel extends Panel {
       console.error('[ui] inspector failed', e);
       this.body.appendChild(h('div', { class: 'empty' }, 'Nothing to show here right now.'));
     }
-    if (sameTarget) this.body.scrollTop = scroll;
+    // same target: keep the reader's place; another building / cell starts at the top (no layout ran between the
+    // clear and the rebuild, so the old offset would otherwise carry over)
+    this.body.scrollTop = sameTarget ? scroll : 0;
   }
 
   // ------------------------------------------------------------------------------------------------ helpers
@@ -224,19 +226,20 @@ export class InfoPanel extends Panel {
     return box;
   }
 
-  /** signed bars (factor lists) */
-  private bars(title: string | null, bars: Bar[], unit: 'pts' | 'raw' = 'raw', note?: string): HTMLElement | null {
+  /** signed bars (factor lists); worse = a positive term is bad news (crime causes: red, not green) */
+  private bars(title: string | null, bars: Bar[], unit: 'pts' | 'raw' = 'raw', note?: string, worse = false): HTMLElement | null {
     if (!bars.length) return null;
     const max = Math.max(0.05, ...bars.map((b) => Math.abs(b.value)));
     const box = h('div', { class: 'ins-bars' });
     if (title) box.appendChild(h('div', { class: 'ins-sub' }, title));
     for (const b of bars) {
       const a = Math.min(1, Math.abs(b.value) / max);
-      const fill = h('i', { style: { width: `${a * 50}%`, left: b.value >= 0 ? '50%' : `${50 - a * 50}%` }, class: b.value >= 0 ? 'p' : 'n' });
+      const good = (b.value >= 0) !== worse;
+      const fill = h('i', { style: { width: `${a * 50}%`, left: b.value >= 0 ? '50%' : `${50 - a * 50}%` }, class: good ? 'p' : 'n' });
       box.appendChild(h('div', { class: 'ins-bar', title: b.detail ?? '' },
         h('span', { class: 'l' }, b.label),
         h('span', { class: 't' }, fill, h('b')),
-        h('span', { class: 'v ' + (b.value >= 0 ? 'pos' : 'neg') }, unit === 'pts' ? `${b.value >= 0 ? '+' : '−'}${Math.abs(Math.round(b.value * 100))}` : b.text),
+        h('span', { class: 'v ' + (good ? 'pos' : 'neg') }, unit === 'pts' ? `${b.value >= 0 ? '+' : '−'}${Math.abs(Math.round(b.value * 100))}` : b.text),
       ));
       if (b.detail && bars.length <= 4) box.appendChild(h('div', { class: 'ins-bar-d' }, b.detail));
     }
@@ -375,10 +378,14 @@ export class InfoPanel extends Panel {
 
     // ---- sections
     if (rep) {
-      this.body.appendChild(this.section('facility', 'Facility', 'info', rep.rows.length ? `${rep.rows.length} facts` : '', () => [
+      // the header above already shows the jobs bar and the upkeep: plain repeats of those lines are left out (a line
+      // with a warning or a hint says more and stays)
+      const header = new Set(['jobs filled', 'upkeep']);
+      const rows = rep.rows.filter((r) => !(header.has(r.label.toLowerCase()) && !r.hint && (r.status ?? 'ok') === 'ok'));
+      this.body.appendChild(this.section('facility', 'Facility', 'info', rows.length ? `${rows.length} facts` : '', () => [
         rep.role ? h('div', { class: 'ins-role' }, rep.role) : null,
         warnings.length ? h('ul', { class: 'ins-warn' }, ...warnings.map((w) => h('li', { html: icon('alert', 12) + `<span>${escapeHtml(w)}</span>` }))) : null,
-        this.rows(rep.rows),
+        this.rows(rows),
       ]));
     }
     if (growable) {
@@ -430,7 +437,7 @@ export class InfoPanel extends Panel {
     const lv = termBars(safeCall(() => landValueBreakdown(st, rt as EconRuntime, ci), []));
     if (lv.length) out.push(this.bars(`Land value ${pct(st.landValue[ci])} — factors`, lv, 'pts'));
     const cr = crimeBars(safeCall(() => this.ctx.sim.getSystem<CrimeSystem>('crime')?.termsOf?.(b.id) ?? null, null));
-    if (cr && cr.total > 0.02) out.push(this.bars(`Crime ${pct(cr.total)} — causes (police removes ${pct(cr.police)})`, cr.bars, 'pts', cr.multiplier > 1.01 ? `×${cr.multiplier.toFixed(2)} from ordinances and the justice system` : undefined));
+    if (cr && cr.total > 0.02) out.push(this.bars(`Crime ${pct(cr.total)} — causes (police removes ${pct(cr.police)})`, cr.bars, 'pts', cr.multiplier > 1.01 ? `×${cr.multiplier.toFixed(2)} from ordinances and the justice system` : undefined, true));
     return out;
   }
 

@@ -616,7 +616,7 @@
 .dv-body .dv-btn { padding: 7px 3px 6px; gap: 4px; font-size: 10.5px; }
 .dv-foot { flex: none; border-top: 1px solid var(--hair); margin-top: 8px; padding-top: 6px; }
 .dv-foot .sec-title { margin: 2px 0 6px; }
-.dv-foot .dv-ug { padding: 6px 0 0; border-bottom: 0; }
+.dv-foot .dv-ug, .dv-scroll .dv-ug { padding: 6px 0 2px; border-bottom: 0; }
 .dv-nolegend { font-size: 11px; color: var(--text-faint); padding: 2px 0 4px; }
 
 /* info card (query) */

@@ -94,14 +94,14 @@ export class PlopTool extends Tool {
       const stops = safe(() => stopsNear(this.ctx.sim, x, z, w, dd), []);
       this.targets = stops.map((s) => s.id);
       html = stops.length
-        ? `<div class="tip-ok">Park &amp; ride: ${stops.length} stop${stops.length > 1 ? 's' : ''} in reach — ${stops.slice(0, 3).map((s) => `${escapeHtml(s.name)} (${s.dist} tiles)`).join(', ')}</div>`
-        : '<div class="tip-warn">No transit stop within 5 tiles: drivers park but can\'t switch to transit here</div>';
+        ? `<div class="tip-ok tip-facts">Park &amp; ride: ${stops.length} stop${stops.length > 1 ? 's' : ''} in reach — ${stops.slice(0, 3).map((s) => `${escapeHtml(s.name)} (${s.dist} tiles)`).join(', ')}</div>`
+        : '<div class="tip-warn tip-facts">No transit stop within 5 tiles: drivers park but can\'t switch to transit here</div>';
     } else if (is('tr_ferry_terminal')) {
       const ps = safe(() => ferryPartnersFor(this.ctx.sim, x, z, w, dd, rot), []);
       this.targets = ps.map((p) => p.id);
       html = ps.length
-        ? `<div class="tip-ok">Ferry links: ${ps.slice(0, 3).map((p) => `${escapeHtml(p.name)} (${p.minutes} min)`).join(', ')}</div>`
-        : '<div class="tip-warn">No partner terminal on this water yet — a ferry needs a second terminal to link to</div>';
+        ? `<div class="tip-ok tip-facts">Ferry links: ${ps.slice(0, 3).map((p) => `${escapeHtml(p.name)} (${p.minutes} min)`).join(', ')}</div>`
+        : '<div class="tip-warn tip-facts">No partner terminal on this water yet — a ferry needs a second terminal to link to</div>';
     }
     this.preview = html;
     return html;
@@ -177,7 +177,7 @@ export class PlopTool extends Tool {
     const up = this.def.upkeep ? `Upkeep ${money(this.def.upkeep)}/mo` : '';
     const t = resultTip(this.def.name, this.res, [up, this.manual ? 'R rotate' : 'Auto-facing road · R rotate'].filter(Boolean).map(escapeHtml).join(' · '));
     const pv = this.place ? this.placementPreview(this.place.x, this.place.z, this.place.rot) : '';
-    this.ctx.tip.show(t.html + (this.facts ? `<div class="tip-sub">${this.facts}</div>` : '') + pv, t.kind);
+    this.ctx.tip.show(t.html + (this.facts ? `<div class="tip-sub tip-facts">${this.facts}</div>` : '') + pv, t.kind);
   }
 
   override activate(): void {

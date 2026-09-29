@@ -67,11 +67,11 @@ export function overlayTitle(o: Overlay, variant = -1): string {
 }
 
 /** Desirability variant rows (short chips): residential / commercial / industrial / appeal groups */
-export const DESIR_GROUPS: { label: string; from: number; to: number }[] = [
-  { label: 'Residential', from: 0, to: 2 },
-  { label: 'Commercial', from: 3, to: 7 },
-  { label: 'Industrial', from: 8, to: 11 },
-  { label: 'Appeal', from: 12, to: 14 },
+export const DESIR_GROUPS: { label: string; short: string; from: number; to: number }[] = [
+  { label: 'Residential', short: 'Res', from: 0, to: 2 },
+  { label: 'Commercial', short: 'Com', from: 3, to: 7 },
+  { label: 'Industrial', short: 'Ind', from: 8, to: 11 },
+  { label: 'Appeal', short: 'Appeal', from: 12, to: 14 },
 ];
 
 const GOOD_BAD = 'linear-gradient(90deg, #3cbe5a, #f0c83c, #dc3c3c)';

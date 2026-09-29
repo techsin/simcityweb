@@ -47,6 +47,9 @@ export function garbageFade(st: CityState): number {
   return p > 0 ? smoothstep(GARBAGE_FADE_POP0, GARBAGE_FADE_POP1, p) : 0;
 }
 
+/** RENT weight per DevType (DESIR_WEIGHTS[d].rent; condition's per-building fast path) */
+const RENT_W = Float64Array.from(DESIR_WEIGHTS, (w) => w.rent ?? 0);
+
 /** RENT input 0..1 at a land value */
 export function rentLevel(landValue: number): number {
   return smoothstep(RENT_LV0, RENT_LV1, landValue);
@@ -58,9 +61,11 @@ export function rentLevel(landValue: number): number {
  * rises; PART_B item 36). Returns the input when the DevType ignores rent.
  */
 export function conditionDesirability(st: CityState, dev: number, i: number, des: number): number {
-  const w = DESIR_WEIGHTS[dev]?.rent ?? 0;
+  const w = dev >= 0 && dev < RENT_W.length ? RENT_W[dev] : 0;
   if (w >= 0) return des;
-  const c = w * rentLevel(st.landValue[i]);
+  const lv = st.landValue[i];
+  if (lv <= RENT_LV0) return des; // (no rent pressure: the common case, one read per building and day)
+  const c = w * rentLevel(lv);
   if (c >= RENT_CONDITION_MIN) return des;
   const v = des - c + RENT_CONDITION_MIN;
   return v < -1 ? -1 : v > 1 ? 1 : v;

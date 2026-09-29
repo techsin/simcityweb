@@ -151,17 +151,22 @@ export class AdvisorsPanel extends Panel {
 
   /**
    * open advice of the whole city (a full advisor scan: tens of ms on a big map), evaluated when the Advisors tab is
-   * shown, then again only while the game runs: a new game day and OPEN_REFRESH_MS of wall-clock time since the last
+   * shown, then again only when the city moved on (a new game day or building) and OPEN_REFRESH_MS of wall-clock time
+   * passed since the last
    */
   private open: OpenAdvice[] = [];
   private openAt = -Infinity;
   private openDay = -1;
+  private openBld = -1;
   private openState: unknown = null;
   private refreshOpen(force = false): void {
     const st = this.ctx.state, now = performance.now();
-    if (!force && this.openState === st && (st.day === this.openDay || now - this.openAt < OPEN_REFRESH_MS)) return;
+    // (a new building counts like a new day: a fire station / plant placed while paused shows at once, throttled)
+    const moved = st.day !== this.openDay || st.buildings.size !== this.openBld;
+    if (!force && this.openState === st && (!moved || now - this.openAt < OPEN_REFRESH_MS)) return;
     this.openAt = now;
     this.openDay = st.day;
+    this.openBld = st.buildings.size;
     this.openState = st;
     try {
       this.open = openAdvice(this.ctx.sim);
@@ -271,7 +276,7 @@ export class AdvisorsPanel extends Panel {
 const MORE_MAX = 2;
 /** other systems' news older than this (days) no longer speaks for an advisor */
 const RECENT_DAYS = 30;
-/** while the panel stays open, open issues are re-evaluated at most this often (ms), and only on a new game day */
+/** while the panel stays open, open issues are re-evaluated at most this often (ms), and only when the city moved on */
 const OPEN_REFRESH_MS = 3000;
 const LEVEL_OF: Record<OpenAdvice['kind'], 'good' | 'warn' | 'bad'> = { bad: 'bad', warning: 'warn', info: 'good', good: 'good' };
 const RANK = { good: 0, warn: 1, bad: 2 } as const;

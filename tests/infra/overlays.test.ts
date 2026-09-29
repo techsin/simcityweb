@@ -79,6 +79,14 @@ describe('overlays: every Overlay × variant', () => {
     expect(overlayLegend(Overlay.Emergency, EMG_FIRE).stops.map((s) => s.label)).toEqual(['Auto-dispatch', 'Just out of reach', 'You must dispatch', 'No fire station']);
     expect(overlayDef(Overlay.Desirability, DevType.CO3).title).toContain('CO$$$');
     expect(overlayDef(Overlay.Desirability, DESIR_FAMILIES).title).toContain('families');
+    // appeal (0..1, unsigned): a sequential ramp — poor places nearly clear, not the diverging red of desirability
+    expect(overlayLegend(Overlay.Desirability, DESIR_FAMILIES).stops.map((s) => s.label)).toEqual(['Poor', 'Fair', 'Great']);
+    expect(overlayDef(Overlay.Desirability, DESIR_SENIORS).ramp[0].a).toBeLessThan(0.25);
+    // per-building / per-served-cell views draw whole cells (no halo over the streets, no "unsafe" rim)
+    expect(overlayDef(Overlay.Demographics, DEMO_KIDS).crisp).toBe(true);
+    expect(overlayDef(Overlay.Water, 1).crisp).toBe(true);
+    expect(overlayDef(Overlay.Water, 0).crisp).toBeFalsy();
+    expect(overlayDef(Overlay.AirPollution).crisp).toBeFalsy();
   });
 
   it('the hover value is the rendered raster at 100 random cells (every variant) and always has a readout', () => {
@@ -176,6 +184,35 @@ describe('overlays: every Overlay × variant', () => {
     expect(text(-7)).toBe('Out of reach by 7.0 min');
     expect(text(RESP_NONE)).toBe('No fire station');
     st.respFire[i] = keep;
+    markOverlaysDirty(st, 'emergency');
+  });
+
+  it('emergency: empty land beside no road shows its nearest road / lot (block interiors do not read "You must dispatch")', () => {
+    const N = st.size, L = st.respFire;
+    const keep = Float32Array.from(L);
+    // a block (roads x = 4 / z = 8 / z = 16, lots on z = 9 and 15): the land fill leaves rows 10..14 at its floor
+    for (let z = 8; z <= 16; z++) {
+      for (let x = 3; x <= 11; x++) {
+        const k = z * N + x;
+        const empty = z >= 10 && z <= 14 && st.building[k] < 0 && st.network[k] === Network.None;
+        L[k] = empty ? -12 : 3;
+      }
+    }
+    markOverlaysDirty(st, 'emergency');
+    const i = 12 * N + 7;
+    expect(st.building[i]).toBeLessThan(0);
+    const raw = overlayLayer(st, Overlay.Emergency, EMG_FIRE)!.data[i];
+    expect(raw).toBeCloseTo(encodeSlack(3), 5);
+    expect(overlayValue(st, Overlay.Emergency, 7, 12, EMG_FIRE)).toBeCloseTo(raw, 5);
+    const r = overlayReadout(st, Overlay.Emergency, 7, 12, EMG_FIRE)!;
+    expect(r.text).toBe('Auto-dispatch · 3.0 min to spare');
+    expect(r.sub).toMatch(/^Empty land/);
+    // a lot keeps its own reach
+    const lot = [...st.buildings.values()].find((b) => b.z === 9 && b.x >= 5 && b.x <= 10)!;
+    L[lot.z * N + lot.x] = -7;
+    markOverlaysDirty(st, 'emergency');
+    expect(overlayReadout(st, Overlay.Emergency, lot.x, lot.z, EMG_FIRE)!.text).toBe('Out of reach by 7.0 min');
+    L.set(keep);
     markOverlaysDirty(st, 'emergency');
   });
 

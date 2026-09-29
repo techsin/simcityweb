@@ -23,6 +23,7 @@ import { cohortShares, demographicsSim } from '../economy/demographics';
 import { truckVolumeOf } from './transportFacilities';
 import { waterQualityAt } from './utilities';
 import { emergencyOf } from './emergency';
+import { EMERG_RMAX } from './params';
 
 export type OverlayPalette = 'bad' | 'good' | 'binary' | 'diverging';
 
@@ -181,20 +182,26 @@ function derived(st: CityState, o: Overlay, v: number, deps: readonly string[], 
 /** per state: residential class per building id (0 unknown, 1 residential, 2 other) — ids are never reused and a
  *  building never changes its def, so the raster loop reads a typed array instead of a catalog lookup */
 const homeClass = new WeakMap<CityState, Uint8Array>();
-function isResidential(st: CityState, b: Building): boolean {
+/** the class array of a state, sized for every building id handed out so far */
+function homeClassOf(st: CityState, id = 0): Uint8Array {
   let a = homeClass.get(st);
-  if (!a || b.id >= a.length) {
-    const n = new Uint8Array(Math.max(1024, b.id + 1, st.nextBuildingId + 1, (a?.length ?? 0) * 2));
+  if (!a || id >= a.length || st.nextBuildingId >= a.length) {
+    const n = new Uint8Array(Math.max(1024, id + 1, st.nextBuildingId + 1, (a?.length ?? 0) * 2));
     if (a) n.set(a);
     homeClass.set(st, (a = n));
   }
-  let k = a[b.id];
-  if (k === 0) {
-    const def = getDef(b.def);
-    if (!def) return false; // (catalog not loaded yet: do not cache)
-    k = a[b.id] = def.devType !== undefined && def.devType <= DevType.R3 ? 1 : 2;
-  }
-  return k === 1;
+  return a;
+}
+/** class of b (see homeClass), looked up and cached in `a` (a from homeClassOf) */
+function classify(a: Uint8Array, b: Building): number {
+  const def = getDef(b.def);
+  if (!def) return 0; // (catalog not loaded yet: do not cache)
+  return (a[b.id] = def.devType !== undefined && def.devType <= DevType.R3 ? 1 : 2);
+}
+function isResidential(st: CityState, b: Building): boolean {
+  const a = homeClassOf(st, b.id);
+  const k = a[b.id];
+  return (k === 0 ? classify(a, b) : k) === 1;
 }
 /** residential buildings with residents (the demographics rasters) */
 function isHome(st: CityState, b: Building): boolean {
@@ -217,17 +224,30 @@ function demoShare(b: Building, variant: number): { share: number; ref: number }
   return { share: s[c], ref: COHORT_BASE[c] };
 }
 
+/** PERF (256²: one pass per 'demographics' event, every DEMOGRAPHICS_EVENT_DAYS while shown): the class array is read
+ *  directly and the cohort share inlined (cohortShares: the profile shares when any cohort field is unset) */
 function buildDemographics(st: CityState, variant: number, out: Float32Array): void {
   const N = st.size;
   const c = variant === DEMO_KIDS ? 0 : variant === DEMO_TEENS ? 1 : variant === DEMO_YAD ? 2 : 4;
   const inv = 1 / (2 * (variant === DEMO_WORKFORCE ? WORKFORCE_RATIO : COHORT_BASE[c]));
+  const base = COHORT_BASE[c];
+  const cls = homeClassOf(st);
   for (const b of st.buildings.values()) {
-    if (!isHome(st, b)) continue;
+    if (b.pop <= 0) continue;
+    const id = b.id;
+    const k = id < cls.length ? cls[id] : 0;
+    if ((k === 0 ? (id < cls.length ? classify(cls, b) : isResidential(st, b) ? 1 : 2) : k) !== 1) continue;
     let t: number;
     if (variant === DEMO_WEALTH) t = (b.wealth < 1 ? 1 : b.wealth > 3 ? 3 : b.wealth) / 3;
     else {
-      const share = variant === DEMO_WORKFORCE ? b.wf ?? WORKFORCE_RATIO : cohortShares(b, SHARE)[c];
-      t = DEMO_T0 + (1 - DEMO_T0) * clamp01(share * inv);
+      let share: number;
+      if (variant === DEMO_WORKFORCE) share = b.wf ?? WORKFORCE_RATIO;
+      else {
+        const kd = b.kids, tn = b.teens, ya = b.yad, sr = b.srs;
+        share = kd === undefined || tn === undefined || ya === undefined || sr === undefined ? base : c === 0 ? kd : c === 1 ? tn : c === 2 ? ya : sr;
+      }
+      const r = share * inv;
+      t = DEMO_T0 + (1 - DEMO_T0) * (r < 0 ? 0 : r > 1 ? 1 : r);
     }
     if (b.w === 1 && b.d === 1) {
       if (b.x >= 0 && b.z >= 0 && b.x < N && b.z < N) out[b.z * N + b.x] = t;
@@ -254,10 +274,59 @@ function respReady(st: CityState): boolean {
   return !em || !em.active ? false : em.layersReady;
 }
 
+/** slack of an encoded Emergency value (encodeSlack's inverse on -EMG_SPAN .. +EMG_SPAN) */
+export function decodeSlack(t: number): number {
+  return ((t - 0.08) / 0.92) * 2 * EMG_SPAN - EMG_SPAN;
+}
+/** empty land beside no road reads the emergency land fill's floor (-EMERG_RMAX): nothing there calls for help until a
+ *  lot is built, and a lot faces its nearest road — such cells show the nearest road / building cell's reach within
+ *  EMG_DILATE cells (block interiors no longer read "You must dispatch") */
+export const EMG_DILATE = 4;
+/** the cell is empty land with no road node beside it (the land fill's -EMERG_RMAX floor), see EMG_DILATE */
+function emgEmpty(st: CityState, L: Float32Array, i: number): boolean {
+  const s = L[i];
+  return s <= -EMERG_RMAX && s > RESP_NONE + 0.5 && st.building[i] < 0 && st.network[i] === Network.None;
+}
+let emgQueue = new Int32Array(0);
+let emgDepth = new Uint8Array(0);
 function buildEmergency(st: CityState, variant: number, out: Float32Array): void {
   if (!respReady(st)) return;
   const L = respLayer(st, variant);
-  for (let i = 0; i < st.cells; i++) out[i] = encodeSlack(L[i]);
+  const C = st.cells, N = st.size;
+  if (emgQueue.length < C) { emgQueue = new Int32Array(C); emgDepth = new Uint8Array(C); }
+  const q = emgQueue, dep = emgDepth;
+  let open = 0;
+  for (let i = 0; i < C; i++) {
+    if (emgEmpty(st, L, i)) { out[i] = -1; open++; }
+    else out[i] = encodeSlack(L[i]);
+  }
+  if (open > 0) {
+    // multi-source 4-neighbour BFS from the known cells beside empty land (index order: deterministic ties)
+    let head = 0, tail = 0;
+    for (let z = 0; z < N; z++) {
+      const row = z * N;
+      for (let x = 0; x < N; x++) {
+        const i = row + x;
+        if (out[i] < 0) continue;
+        if ((x > 0 && out[i - 1] < 0) || (x < N - 1 && out[i + 1] < 0) || (z > 0 && out[i - N] < 0) || (z < N - 1 && out[i + N] < 0)) {
+          q[tail++] = i;
+          dep[i] = 0;
+        }
+      }
+    }
+    while (head < tail) {
+      const i = q[head++];
+      const d = dep[i] + 1;
+      if (d > EMG_DILATE) continue;
+      const v = out[i], x = i % N;
+      if (x > 0 && out[i - 1] < 0) { out[i - 1] = v; dep[i - 1] = d; q[tail++] = i - 1; }
+      if (x < N - 1 && out[i + 1] < 0) { out[i + 1] = v; dep[i + 1] = d; q[tail++] = i + 1; }
+      if (i >= N && out[i - N] < 0) { out[i - N] = v; dep[i - N] = d; q[tail++] = i - N; }
+      if (i + N < C && out[i + N] < 0) { out[i + N] = v; dep[i + N] = d; q[tail++] = i + N; }
+    }
+    // beyond EMG_DILATE of any road or building: as computed (out of reach)
+    for (let i = 0; i < C; i++) if (out[i] < 0) out[i] = encodeSlack(L[i]);
+  }
 }
 
 function servicesOn(st: CityState): boolean {
@@ -514,11 +583,16 @@ export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, 
   switch (o) {
     case Overlay.Emergency: {
       if (!respReady(st)) return { text: 'Not computed yet', tone: '' };
-      const s = respLayer(st, v)[i];
+      const Lr2 = respLayer(st, v);
+      let s = Lr2[i];
       if (s <= RESP_NONE + 0.5) return { text: `No ${RESPONDER_NOUN[v]}`, tone: 'bad', sub: 'Build one: nothing is sent automatically' };
-      if (s >= 0) return { text: `Auto-dispatch · ${s.toFixed(1)} min to spare`, tone: 'good', sub: 'Incidents here become statistics' };
-      if (s >= -EMG_NEAR) return { text: `Just out of reach by ${(-s).toFixed(1)} min`, tone: 'warn', sub: 'You dispatch: the game drops to live speed' };
-      return { text: `Out of reach by ${(-s).toFixed(1)} min`, tone: 'bad', sub: 'You dispatch — build a station closer' };
+      // empty land beside no road: the drawn value is the nearest road's reach (EMG_DILATE), say so
+      const empty = emgEmpty(st, Lr2, i) && raw > EMG_NONE_T + 0.01;
+      if (empty) s = decodeSlack(raw);
+      const land = empty ? 'Empty land — a lot here: ' : '';
+      if (s >= 0) return { text: `Auto-dispatch · ${s.toFixed(1)} min to spare`, tone: 'good', sub: `${land}${empty ? 'incidents' : 'Incidents'} here become statistics` };
+      if (s >= -EMG_NEAR) return { text: `Just out of reach by ${(-s).toFixed(1)} min`, tone: 'warn', sub: `${land}${empty ? 'you' : 'You'} dispatch: the game drops to live speed` };
+      return { text: `Out of reach by ${(-s).toFixed(1)} min`, tone: 'bad', sub: `${land}${empty ? 'you' : 'You'} dispatch — build a station closer` };
     }
     case Overlay.Demographics: {
       const bid = st.building[i];

@@ -364,7 +364,9 @@ export class Toolbar {
       } catch {
         facts = [];
       }
-      for (const f of facts) rows.push([escapeHtml(f.label), escapeHtml(f.value)]);
+      // (facts that repeat a row above — Jobs, Upkeep, Size — are left out)
+      const seen = new Set(rows.map(([a]) => a.toLowerCase()));
+      for (const f of facts) if (!seen.has(f.label.toLowerCase())) rows.push([escapeHtml(f.label), escapeHtml(f.value)]);
       for (const f of facts) if (f.hint && hints.length < 3) hints.push(f.hint);
       if (!facts.length) {
         if (d.capacity && d.category !== 'growable') rows.push(['Capacity', num(d.capacity)]);
@@ -373,7 +375,9 @@ export class Toolbar {
         if (d.garbageCapacity) rows.push(['Garbage capacity', `${num(d.garbageCapacity)} t/month`]);
         if (d.coverage) rows.push([`${titleCase(d.coverage.kind)} coverage`, `radius ${d.coverage.radius}${d.coverage.capacity ? ` · ${num(d.coverage.capacity)} cap.` : ''}`]);
       }
-      const use = [(d.powerUse ?? 0) > 0 && !d.powerOut ? `${num(d.powerUse!)} MW` : '', (d.waterUse ?? 0) > 0 && d.category !== 'power' ? `${num(d.waterUse!)} kL/day` : ''].filter(Boolean);
+      // (small loads keep a decimal: a fire station's 0.3 MW is not "0 MW")
+      const mw = (v: number) => (v < 10 ? v.toFixed(1).replace(/\.0$/, '') : num(v));
+      const use = [(d.powerUse ?? 0) > 0 && !d.powerOut ? `${mw(d.powerUse!)} MW` : '', (d.waterUse ?? 0) > 0 && d.category !== 'power' ? `${num(d.waterUse!)} kL/day` : ''].filter(Boolean);
       if (use.length) rows.push(['Uses', use.join(' · ')]);
       if (d.landValue) rows.push(['Land value', `<span class="${d.landValue.amount >= 0 ? 'pos' : 'neg'}">${d.landValue.amount >= 0 ? '+' : ''}${Math.round(d.landValue.amount * 100)}</span> · r ${d.landValue.radius}`]);
       if (d.pollution) {

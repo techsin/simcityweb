@@ -101,6 +101,8 @@ describe('inspector model: full outputs', () => {
     expect(responseText({ slackMin: -1.4, covered: false })).toEqual({ text: 'manual only (1.4 min out of reach)', tone: 'warn' });
     expect(responseText({ slackMin: -8, covered: false })!.tone).toBe('neg');
     expect(responseText({ slackMin: -99, covered: false }, 'no fire station')).toEqual({ text: 'no fire station', tone: 'neg' });
+    // the layers' floor (-EMERG_RMAX): no road reaches the lot
+    expect(responseText({ slackMin: -12, covered: false })).toEqual({ text: 'unreachable — no road to it', tone: 'neg' });
     const cr = crimeBars({ density: 0.1, poverty: 0.2, unemployment: 0, landValue: 0.05, abandoned: 0, garbage: 0.03, youth: 0.01, nightlife: 0, multiplier: 1.1, police: 0.4, total: 0.25 })!;
     expect(cr.bars[0].label).toBe('Poverty');
     expect(cr.bars.every((b) => b.value > 0)).toBe(true);

@@ -232,13 +232,13 @@ vec3 homeLight(float h) {
   if (h < 0.97) return vec3(0.52, 0.68, 1.0);
   return vec3(1.0, 0.56, 0.45);
 }
-// Office light per floor: cool 4000 K white, neutral, warm, a greenish fluorescent; warm glass tints (hotels) mostly
+// Office light per tenant: cool 4000 K white, neutral, warm, a greenish fluorescent; warm glass tints (hotels) mostly
 // warm / neutral room light
 vec3 officeLight(float h, float warm) {
   if (warm > 0.5) return h < 0.55 ? vec3(1.0, 0.76, 0.5) : (h < 0.86 ? vec3(1.0, 0.88, 0.72) : vec3(0.82, 0.88, 1.0));
-  if (h < 0.46) return vec3(0.78, 0.88, 1.0);
-  if (h < 0.74) return vec3(0.96, 0.93, 0.84);
-  if (h < 0.94) return vec3(1.0, 0.8, 0.56);
+  if (h < 0.38) return vec3(0.74, 0.86, 1.0);
+  if (h < 0.64) return vec3(0.96, 0.93, 0.84);
+  if (h < 0.93) return vec3(1.0, 0.78, 0.52);
   return vec3(0.8, 1.0, 0.88);
 }
 
@@ -423,35 +423,40 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
         float unitOn = step(hu, litR);
         float pRoom = mix(0.09, 0.7, unitOn);
         float roomB = 0.3 + 0.95 * hp2;
+        // per-household brightness (curtains, lamp count), mean 1
+        float unitB = 0.55 + 0.9 * fract(hu * 31.7 + 0.13);
         vec3 hc = homeLight(fract(hu * 57.3 + vSeed * 3.1));
         vec3 cAvg = vec3(1.0, 0.8, 0.56);
-        vec3 eP = hc * (step(hp, pRoom) * roomB + 0.04);
-        vec3 eU = hc * (pRoom * 0.775 + 0.04);
+        vec3 eP = hc * (step(hp, pRoom) * roomB * unitB + 0.04);
+        vec3 eU = hc * (pRoom * 0.775 * unitB + 0.04);
         vec3 eF = cAvg * ((0.09 + 0.61 * clamp(litR, 0.0, 1.0)) * 0.775 + 0.04);
         vec3 e = mix(eF, mix(eU, eP, fP), fU);
         emis += e * (1.0 - mull) * wNight * 0.62;
       } else {
-      // offices / hotels: per floor dark (~30%, a few late workers), partly lit or fully lit (open plan); 4.5 m sections
-      // lit (75% of their windows on) or not (a stray desk lamp in ~8%), per-panel brightness (blinds, desks) and a
-      // ceiling-light gradient -> clusters of lit windows with gaps, not solid blocks; colour temperature per floor
-      // (cool 4000 K office white, neutral, warm; warm glass tints read hotel-like)
+      // offices / hotels: per floor dark (~30%, a few late workers), partly lit or fully lit (open plan); 3 m sections
+      // lit (75% of their windows on, each section its own brightness) or not (a stray desk lamp in ~8%), per-panel
+      // brightness (blinds, desks) and a ceiling-light gradient -> clusters of lit windows with gaps, not solid blocks;
+      // colour temperature per tenant (9 m of a floor: cool 4000 K office white, neutral, warm; warm glass tints read
+      // hotel-like)
       float warmTint = step(1.5, pattern) * step(pattern, 2.5);
       float fr1 = bh11(cell.y * 3.7 + vSeed * 57.0);
       float occ = fr1 < mix(0.3, 0.12, warmTint) ? 0.1 : (fr1 < 0.72 ? 0.75 : 1.55);
-      float cuS = cu / 3.0;
+      float cuS = cu / 2.0;
       float fS = smoothstep(1.3, 2.6, 1.0 / max(fwidth(cuS), 1e-4)) * fF;
       float hs = bh31(vec3(floor(cuS + 1e-3), cell.y, vSeed * 7.0));
       float litP = uLitFraction * (0.45 + 0.8 * vSeed);
       float secP = clamp(litP * occ, 0.0, 0.97);
       float pWin = mix(0.08, 0.75, step(hs, secP));
+      float secB = 0.5 + fract(hs * 23.7 + 0.31);
       float panB = 0.35 + 0.85 * hp2;
-      vec3 fc = officeLight(bh11(cell.y * 7.3 + vSeed * 31.0), warmTint);
-      vec3 cAvg = mix(vec3(0.86, 0.9, 0.96), vec3(1.0, 0.86, 0.66), warmTint);
+      float fh = bh11(cell.y * 7.3 + vSeed * 31.0);
+      vec3 fc = officeLight(fract(fh + 0.618 * floor(cuS / 3.0 + 1e-3)), warmTint);
+      vec3 cAvg = mix(vec3(0.87, 0.88, 0.88), vec3(1.0, 0.86, 0.66), warmTint);
       float ceilG = mix(0.775, 0.55 + 0.45 * smoothstep(0.15, 0.85, fract(cv)), fF);
       float floorP = 0.08 + 0.67 * secP;
-      vec3 eP = fc * (step(hp, pWin) * panB + 0.045) * ceilG;
-      vec3 eS = fc * (pWin * 0.775 + 0.045) * ceilG;
-      vec3 eFl = fc * (floorP * 0.775 + 0.045) * 0.775;
+      vec3 eP = fc * (step(hp, pWin) * panB * secB + 0.045) * ceilG;
+      vec3 eS = fc * (pWin * 0.775 * secB + 0.045) * ceilG;
+      vec3 eFl = officeLight(fh, warmTint) * (floorP * 0.775 + 0.045) * 0.775;
       vec3 eA = cAvg * ((0.08 + 0.67 * clamp(litP * 0.77, 0.0, 1.0)) * 0.775 + 0.045) * 0.775;
       vec3 e = mix(eA, mix(eFl, mix(eS, eP, fP), fS), fF);
       emis += e * (1.0 - mull) * wNight * 0.6;
@@ -636,11 +641,15 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     // winter wood reads grey-brown + dark evergreens, not speckled with summer green; blossom / autumn / twig colours
     // (red >= green) are left alone
     {
-      float leafK = (1.0 - lowF) * greenK * smoothstep(-0.01, 0.03, albedo.g - albedo.r);
-      albedo *= mix(vec3(1.0), vec3(1.07, 1.1, 0.78), uFoliageSeason.z * leafK * (1.0 - everK));
+      float leafK = greenK * smoothstep(-0.01, 0.03, albedo.g - albedo.r);
+      float decidK = leafK * (1.0 - lowF) * (1.0 - everK);
+      albedo *= mix(vec3(1.0), vec3(1.07, 1.1, 0.78), uFoliageSeason.z * decidK);
       float lumL = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+      // (evergreen hedges / shrubs darken too)
       albedo = mix(albedo, albedo * vec3(0.8, 0.86, 0.9), uFoliageSeason.y * leafK * everK);
-      albedo = mix(albedo, lumL * vec3(1.55, 1.0, 0.55), uFoliageSeason.y * leafK * (1.0 - everK));
+      // dead leaves: russet, broken up by the twig texture so the crown reads thin, not as a solid brown ball
+      float twM = mix(0.5, bnoise(tq + 11.3), twF);
+      albedo = mix(albedo, lumL * vec3(1.7, 0.92, 0.48) * (0.55 + 0.75 * twM), uFoliageSeason.y * decidK);
     }
     // climate / season (uFoliageDry, uFoliageTint): low foliage turns straw-dry in deserts and dormant in winter so
     // lots match the terrain; crowns get a quarter of it; evergreens only the climate part (no winter dormancy)

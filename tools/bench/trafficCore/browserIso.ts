@@ -25,21 +25,30 @@ export interface IsoOpts {
   kinds: string[];
   where: Where[];
   settle: number;
+  /** per-cycle answer timeout (ms) */
+  timeoutMs: number;
 }
 
 const median = (xs: number[]) => { const s = xs.slice().sort((a, b) => a - b); const n = s.length; return n === 0 ? NaN : n % 2 ? s[(n - 1) >> 1] : 0.5 * (s[n / 2 - 1] + s[n / 2]); };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** CPU ms of every thread of a process (schedstat: ns on CPU, current for threads that are not running) */
-function procCpuMs(pid: number): number {
+/** ns on CPU of every thread of a process (schedstat; current for threads that are not running), by thread id */
+function threadCpu(pid: number): Map<string, number> {
+  const m = new Map<string, number>();
   let tasks: string[];
-  try { tasks = readdirSync(`/proc/${pid}/task`); } catch { return NaN; }
-  let ns = 0;
+  try { tasks = readdirSync(`/proc/${pid}/task`); } catch { return m; }
   for (const t of tasks) {
-    try { ns += Number(readFileSync(`/proc/${pid}/task/${t}/schedstat`, 'utf8').split(' ')[0]); } catch { /* thread exited */ }
+    try { m.set(t, Number(readFileSync(`/proc/${pid}/task/${t}/schedstat`, 'utf8').split(' ')[0])); } catch { /* thread exited */ }
   }
+  return m;
+}
+/** CPU ms of a process's threads between two snapshots (threads that exited in between drop out: never negative) */
+function cpuDeltaMs(a: Map<string, number>, b: Map<string, number>): number {
+  let ns = 0;
+  for (const [t, v] of b) ns += v - (a.get(t) ?? 0);
   return ns / 1e6;
 }
+const procCpuMs = (pid: number) => { let ns = 0; for (const v of threadCpu(pid).values()) ns += v; return ns / 1e6; };
 
 async function rendererCpu(cdp: CDPSession): Promise<Map<number, number>> {
   const r = (await cdp.send('SystemInfo.getProcessInfo' as never)) as unknown as { processInfo: { type: string; id: number; cpuTime: number }[] };
@@ -50,6 +59,12 @@ interface ArmPage { kind: string; ctx: BrowserContext; page: Page; pid: number; 
 interface Sample { cpu: number; wall: number; phases: number[] }
 
 export async function runIsolatedBrowser(browser: Browser, o: IsoOpts, log: (s: string) => void): Promise<Record<string, unknown>> {
+  // a cycle takes < 2 s of wall time even under load 150; a page that does not answer within `timeoutMs` (a stalled
+  // renderer / worker, seen once under heavy memory thrash) fails that variant instead of hanging the run
+  const withTimeout = <T,>(p: Promise<T>, what: string): Promise<T> => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([p, new Promise<T>((_, rej) => { t = setTimeout(() => rej(new Error(`${what}: no answer within ${o.timeoutMs} ms`)), o.timeoutMs); })]).finally(() => clearTimeout(t));
+  };
   const cdp = await browser.newBrowserCDPSession();
   const out: Record<string, unknown> = {};
   for (const where of o.where) {
@@ -62,7 +77,7 @@ export async function runIsolatedBrowser(browser: Browser, o: IsoOpts, log: (s: 
         page.on('console', (m) => log(`[${where} ${kind}] ${m.text()}`));
         page.on('pageerror', (e) => log(`[pageerror ${where} ${kind}] ${e.message}`));
         await page.goto(`${o.base}/arm.html`);
-        const info = (await page.evaluate(`window.__arm.init(${JSON.stringify({ kind, testdefs: o.testdefs, resident: o.resident, where })})`)) as Record<string, number>;
+        const info = (await withTimeout(page.evaluate(`window.__arm.init(${JSON.stringify({ kind, testdefs: o.testdefs, resident: o.resident, where })})`), `${where} ${kind} init`)) as Record<string, number>;
         const after = await rendererCpu(cdp);
         let pid = -1, best = 0.5;
         for (const [p, c] of after) { const d = c - (before.get(p) ?? 0); if (d > best) { best = d; pid = p; } }
@@ -73,10 +88,10 @@ export async function runIsolatedBrowser(browser: Browser, o: IsoOpts, log: (s: 
       const n = arms.length;
       const cycle = async (i: number): Promise<Sample> => {
         const a = arms[i];
-        const c0 = procCpuMs(a.pid);
-        const r = (await a.page.evaluate('window.__arm.cycle()')) as { ms: number; phases: number[] };
+        const c0 = threadCpu(a.pid);
+        const r = (await withTimeout(a.page.evaluate('window.__arm.cycle()'), `${where} ${a.kind} cycle`)) as { ms: number; phases: number[] };
         await sleep(o.settle);
-        return { cpu: procCpuMs(a.pid) - c0, wall: r.ms, phases: r.phases };
+        return { cpu: cpuDeltaMs(c0, threadCpu(a.pid)), wall: r.ms, phases: r.phases };
       };
       for (let k = 0; k < o.warm; k++) for (let i = 0; i < n; i++) await cycle(i);
       const S: Sample[][] = arms.map(() => []);
@@ -108,12 +123,17 @@ export async function runIsolatedBrowser(browser: Browser, o: IsoOpts, log: (s: 
       }));
       for (const s of summary) log(`[${where}] ${s.kind.padEnd(12)} CPU median ${s.cpuMedian.toFixed(1)} ms (min ${s.cpuMin.toFixed(1)}), wall median ${s.wallMedian.toFixed(1)} ms (min ${s.wallMin.toFixed(1)})`);
       const dg: { digest: Record<string, number>; stats: Record<string, unknown>; arena: number; lastJsReason: string | null }[] = [];
-      for (const a of arms) dg.push((await a.page.evaluate('window.__arm.digest()')) as (typeof dg)[number]);
+      for (const a of arms) dg.push((await withTimeout(a.page.evaluate('window.__arm.digest()'), `${where} ${a.kind} digest`)) as (typeof dg)[number]);
       const identity = Object.fromEntries(arms.slice(1).map((a, i) => [a.kind, diffDigests(dg[0].digest, dg[i + 1].digest)]));
       log(`[${where}] identical to ${arms[0].kind} after ${o.warm + o.pairs} cycles: ${Object.entries(identity).map(([k, d]) => `${k} ${d.length ? 'NO ' + d.slice(0, 3).join('; ') : 'yes'}`).join(', ')}`);
       const wi = idx('wasm');
       if (wi >= 0) log(`[${where}] wasm stats ${JSON.stringify(dg[wi].stats)}; arena ${(dg[wi].arena / 1048576).toFixed(1)} MiB; last JS reason ${dg[wi].lastJsReason || '-'}`);
       out[where] = { arms: summary, ratios, identity, pids: arms.map((a) => a.pid), wasm: wi >= 0 ? dg[wi] && { stats: dg[wi].stats, arena: dg[wi].arena } : null };
+    } catch (e) {
+      // keep the other variant's results
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`[${where}] FAILED: ${msg}`);
+      out[where] = { error: msg };
     } finally {
       for (const a of arms) await a.ctx.close().catch(() => {});
     }

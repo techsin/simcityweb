@@ -119,7 +119,7 @@ async function browser() {
       const where = rest.includes('--worker-only') ? ['worker'] : rest.includes('--main-only') ? ['main'] : ['main', 'worker'];
       result = await runIsolatedBrowser(b, {
         base, testdefs: fixtureFile.includes('testdefs'), pairs: Number(opt('--pairs', '31')), warm: Number(opt('--warm', '3')),
-        resident: rest.includes('--resident'), kinds, where, settle: Number(opt('--settle', '50')),
+        resident: rest.includes('--resident'), kinds, where, settle: Number(opt('--settle', '50')), timeoutMs: Number(opt('--cycle-timeout', '600000')),
       }, (s) => console.log(s));
       result.protocol = 'isolated: one browser context (renderer process, V8 isolate) per arm; CPU = renderer threads schedstat';
     }

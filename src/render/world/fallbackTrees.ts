@@ -199,9 +199,10 @@ export function natureStats(g: THREE.BufferGeometry): { color: THREE.Color; heig
   const bb = g.boundingBox!;
   const height = Math.max(0.5, bb.max.y);
   const radius = Math.max(0.3, Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z) / 2);
-  // open fraction of a twig crown: foliage area vs its (double-sided) crown shell, only for twig colours (red > green)
+  // open fraction of a twig crown: foliage area vs its (double-sided) crown shell, only for twig colours (red > green);
+  // models without foliage (rocks, cacti) are solid
   const cover = Math.min(1, area / (Math.PI * radius * radius * 2.2));
-  const twig = Math.min(1, Math.max(0, (c.r - c.g) / 0.02));
+  const twig = area > 0 ? Math.min(1, Math.max(0, (c.r - c.g) / 0.02)) : 0;
   const open = twig * (1 - cover);
   if (open > 0) c.lerp(SEE_THROUGH, open * 0.6);
   return { color: c, height, radius, open };

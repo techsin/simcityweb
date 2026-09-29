@@ -25,7 +25,7 @@ import { BF, type Building, type CityState } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
 import type { FactorTerm } from '../explain';
 import { clamp, smoothstep } from '../../core/rng';
-import { Network } from '../../core/types';
+import { DevType, Network } from '../../core/types';
 import type { BuildingDef } from '../catalogTypes';
 import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
@@ -228,6 +228,42 @@ function roadWithin(st: CityState, x: number, z: number, d: number): boolean {
 }
 
 /**
+ * PERF (WP6a, month-tick spike): the static half of a shore cell's beach test — slope, a big water body next to it, a
+ * road within beachRoadDist — only changes with the terrain, the water or the road network, so it is kept per shore
+ * array and rebuilt when one of them changed (terrainChanged / networkChanged mark it stale; a new shore array means
+ * the water changed). The monthly scan re-checks only the lot (building / road on it) and the water pollution:
+ * the same beaches as the full test, without ~85 road probes per shore cell every month.
+ */
+interface BeachStatic { shore: Int32Array; ok: Uint8Array; stale: boolean }
+const beachStatics = new WeakMap<CityState, BeachStatic>();
+/** mark the static beach test of a state stale (road network or terrain changed) */
+function beachStale(st: CityState): void {
+  const b = beachStatics.get(st);
+  if (b) b.stale = true;
+}
+function beachStatic(st: CityState, shore: Int32Array): BeachStatic {
+  let b = beachStatics.get(st);
+  if (b && b.shore === shore && !b.stale) return b;
+  const N = st.size, wm = st.water;
+  const body = waterBodySize(st);
+  const ok = new Uint8Array(shore.length);
+  for (let k = 0; k < shore.length; k++) {
+    const i = shore[k];
+    const x = i % N, z = (i - x) / N;
+    if (st.cellSlope(x, z) >= TOURISM.beachMaxSlope) continue;
+    let big = false;
+    if (x > 0 && wm[i - 1] && body[i - 1] >= TOURISM.beachMinWater) big = true;
+    if (x < N - 1 && wm[i + 1] && body[i + 1] >= TOURISM.beachMinWater) big = true;
+    if (z > 0 && wm[i - N] && body[i - N] >= TOURISM.beachMinWater) big = true;
+    if (z < N - 1 && wm[i + N] && body[i + N] >= TOURISM.beachMinWater) big = true;
+    if (big && roadWithin(st, x, z, TOURISM.beachRoadDist)) ok[k] = 1;
+  }
+  b = { shore, ok, stale: false };
+  beachStatics.set(st, b);
+  return b;
+}
+
+/**
  * Beach cells and their base visitors (at A = 60): land shore cells, unbuilt, slope < 3 m, a road within 6 cells,
  * next to a water body of ≥ 200 cells whose water pollution is < 0.25. `blocks` (coarse block → visitors) receives
  * the per-block sums for the visitor splat.
@@ -236,24 +272,19 @@ function beaches(st: CityState, blocks: Float64Array, cw: number): { visitors: n
   const shore = shoreCells(st);
   if (!shore.length) return { visitors: 0, cells: 0 };
   const N = st.size, wm = st.water, wp = st.waterPollution;
-  const body = waterBodySize(st);
+  const ok = beachStatic(st, shore).ok;
   let v = 0, cells = 0;
   for (let k = 0; k < shore.length; k++) {
+    if (!ok[k]) continue;
     const i = shore[k];
     if (wm[i] || st.building[i] >= 0 || st.network[i] !== Network.None) continue;
     const x = i % N, z = (i - x) / N;
-    if (st.cellSlope(x, z) >= TOURISM.beachMaxSlope) continue;
-    let big = false, poll = wp[i];
-    const look = (j: number) => {
-      if (!wm[j]) return;
-      if (body[j] >= TOURISM.beachMinWater) big = true;
-      if (wp[j] > poll) poll = wp[j];
-    };
-    if (x > 0) look(i - 1);
-    if (x < N - 1) look(i + 1);
-    if (z > 0) look(i - N);
-    if (z < N - 1) look(i + N);
-    if (!big || poll >= TOURISM.beachMaxWaterPoll || !roadWithin(st, x, z, TOURISM.beachRoadDist)) continue;
+    let poll = wp[i];
+    if (x > 0 && wm[i - 1] && wp[i - 1] > poll) poll = wp[i - 1];
+    if (x < N - 1 && wm[i + 1] && wp[i + 1] > poll) poll = wp[i + 1];
+    if (z > 0 && wm[i - N] && wp[i - N] > poll) poll = wp[i - N];
+    if (z < N - 1 && wm[i + N] && wp[i + N] > poll) poll = wp[i + N];
+    if (poll >= TOURISM.beachMaxWaterPoll) continue;
     const g = TOURISM.beachPerCell * (1 - TOURISM.beachWpSlope * poll);
     v += g;
     cells++;
@@ -331,12 +362,17 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
     // historic districts + hotel rooms (one pass over the growables)
     let historicBase = 0, rooms = 0;
     const historicB: Building[] = [];
-    for (const b of rt.growables) {
+    const growList = rt.growables;
+    for (let k = 0; k < growList.length; k++) {
+      const b = growList[k];
       const hist = (b.flags & BF.Historic) !== 0;
       if (!hist && b.jobs <= 0) continue;
       const def = rt.defOf(b);
       if (!def || !isOpen(b)) continue;
       if (hist) { historicBase += TOURISM.historicPerStage * (def.stage ?? 1); historicB.push(b); }
+      // (PERF, WP6a: only shops can be hotels — skip the model lookup for everything else)
+      const dv = def.devType;
+      if (dv === undefined || dv < DevType.CS1 || dv > DevType.CS3) continue;
       const r = HOTEL_ROOMS_PER_JOB[def.model];
       if (r !== undefined && b.jobs > 0) rooms += b.jobs * r;
     }
@@ -469,7 +505,13 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
       rt.attach(sim);
       if (subscribedTo !== sim) {
         unsub?.();
-        unsub = sim.events.on('buildingRemoved', (b) => onRemoved(sim.state, b));
+        const offs = [
+          sim.events.on('buildingRemoved', (b) => onRemoved(sim.state, b)),
+          // (the static beach test follows roads and terrain)
+          sim.events.on('networkChanged', () => beachStale(sim.state)),
+          sim.events.on('terrainChanged', () => beachStale(sim.state)),
+        ];
+        unsub = () => { for (const f of offs) f(); };
         subscribedTo = sim;
       }
       // the visitor raster and venue records are derived (not saved): rebuild them now (WP4-5). A loaded city keeps

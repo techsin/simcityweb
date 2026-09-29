@@ -37,7 +37,8 @@ export function variantChips(ctx: GameContext, o: Overlay, compact = false): HTM
   if (o === Overlay.Desirability) {
     const box = h('div', { class: 'dv-vars grouped' + (compact ? ' compact' : '') });
     for (const g of DESIR_GROUPS) {
-      const row = h('div', { class: 'dv-var-row' }, h('span', { class: 'dv-var-g' }, g.label));
+      // (the legend chip is narrow: short group names, the full one as the tooltip)
+      const row = h('div', { class: 'dv-var-row' }, h('span', { class: 'dv-var-g', title: g.label }, compact ? g.short : g.label));
       for (let v = g.from; v <= g.to; v++) row.appendChild(chip(v));
       box.appendChild(row);
     }
@@ -80,7 +81,8 @@ export class DataViewsPanel extends Panel {
       this.btns.set(o.o, b);
       g.appendChild(b);
     }
-    // layout (fits 1280×720): the overlay grid scrolls inside; variants + legend + Underground toggle stay pinned below
+    // layout (fits 1280×720): the overlay grid (and the Underground toggle under it) scrolls inside; variants + legend
+    // stay pinned below (Desirability's 15 variants + a legend left the grid one row tall with the toggle pinned too)
     const scroll = h('div', { class: 'dv-scroll' });
     let first = true;
     for (const [name, g] of groups) {
@@ -103,7 +105,8 @@ export class DataViewsPanel extends Panel {
         /* ignore */
       }
     });
-    this.body.append(h('div', { class: 'dv-foot' }, this.vars, this.legend, h('div', { class: 'set-row dv-ug' }, h('div', null, h('div', { class: 'sr-l' }, 'Underground view'), h('div', { class: 'sr-d' }, 'Show subway tunnels')), ug)));
+    scroll.append(h('div', { class: 'sec-title' }, 'View'), h('div', { class: 'set-row dv-ug' }, h('div', null, h('div', { class: 'sr-l' }, 'Underground view'), h('div', { class: 'sr-d' }, 'Show subway tunnels')), ug));
+    this.body.append(h('div', { class: 'dv-foot' }, this.vars, this.legend));
     this.ctx.ui.on('overlay', () => this.update());
   }
 
@@ -168,7 +171,8 @@ export class DataViewsPanel extends Panel {
   }
 }
 
-/** small legend chip shown bottom-left while an overlay is active (title, variant switcher, legend, notes) */
+/** small legend chip shown bottom-left while an overlay is active (title, variant switcher, legend, notes); hidden
+ *  while the Data views panel is open (it shows the same switcher and legend) */
 export class LegendChip {
   readonly el: HTMLDivElement;
   private key = '';
@@ -177,6 +181,9 @@ export class LegendChip {
     this.el = h('div', { class: 'legend-chip mp-glass' });
     parent.prepend(this.el);
     ctx.ui.on('overlay', () => this.update());
+    ctx.ui.on('panel', ({ id }) => {
+      if (id === 'dataviews') this.update();
+    });
     // the wind arrow / commute scale follow the city: refresh the legend body now and then
     ctx.ui.on('uiTick', () => this.refreshBody());
     this.update();
@@ -184,7 +191,13 @@ export class LegendChip {
   update(): void {
     const o = this.ctx.overlay;
     const info = overlayInfo(o);
-    if (!info) {
+    let panelOpen = false;
+    try {
+      panelOpen = this.ctx.panels.isOpen('dataviews');
+    } catch {
+      /* panels not built yet */
+    }
+    if (!info || panelOpen) {
       this.el.classList.remove('show');
       this.key = '';
       return;

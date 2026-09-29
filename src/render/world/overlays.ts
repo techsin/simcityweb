@@ -33,6 +33,9 @@ export interface OverlayDef {
   notes?: string[];
   /** the legend shows the prevailing wind (Air pollution: smoke drifts downwind) */
   wind?: boolean;
+  /** per-building data: the terrain draws whole cells (nearest texel) instead of blending into the roads between
+   *  the homes (a pale halo on every street) */
+  crisp?: boolean;
 }
 
 type DefCore = Omit<OverlayDef, 'layers'>;
@@ -128,6 +131,25 @@ const DESIRABILITY = (title: string, labels = ['Undesirable', 'Neutral', 'Desira
   notes,
 });
 
+/** appeal to families / seniors / students (0..1, unsigned): a sequential ramp — poor places stay nearly clear, good
+ *  ones glow green (a diverging red ramp painted the whole map red around a young town) */
+const APPEAL = (title: string, notes?: string[]): DefCore => ({
+  title,
+  ramp: [
+    { t: 0, color: '#8a8f98', a: 0.16 },
+    { t: 0.2, color: '#9aa39a', a: 0.2 },
+    { t: 0.45, color: '#a8dca0', a: 0.5 },
+    { t: 0.75, color: '#3fae5a', a: 0.72 },
+    { t: 1, color: '#1f8a4a', a: 0.85 },
+  ],
+  legend: [
+    { color: '#8a8f98', label: 'Poor' },
+    { color: '#a8dca0', label: 'Fair' },
+    { color: '#1f8a4a', label: 'Great' },
+  ],
+  notes,
+});
+
 /** demographics shares: few (pale) .. typical (mid) .. many (deep); non-homes transparent */
 const DEMO = (title: string, what: string): DefCore => ({
   title,
@@ -144,6 +166,7 @@ const DEMO = (title: string, what: string): DefCore => ({
     { color: '#4a1fa0', label: 'Many' },
   ],
   notes: [`Share of ${what} per home, against the city-wide typical mix`],
+  crisp: true,
 });
 
 const EMERGENCY = (title: string, unit: string, station: string): DefCore => {
@@ -369,6 +392,8 @@ const VARIANTS: Partial<Record<Overlay, (Partial<DefCore> | undefined)[]>> = {
     ],
     swatches: true,
     notes: [`Below ${pctT(TAP_SAFE)} quality residents get sick and unhappy. A water treatment plant cleans the whole network.`],
+    // served cells only: blending into the unserved land would paint an "unsafe" rim around every network
+    crisp: true,
   }],
   [Overlay.Parks]: [undefined,
     { title: 'Parks · play & sports', notes: ['Playgrounds and sports fields for children and teens.'] },
@@ -407,7 +432,7 @@ function desirabilityDef(v: number): DefCore {
   if (v >= 12) {
     const who = labels[v];
     const why = v === 12 ? 'Schools, playgrounds, safety and quiet streets' : v === 13 ? 'Clinics and hospitals, gardens, shops and quiet' : 'Colleges, transit and shops';
-    return DESIRABILITY(`Appeal · ${who.toLowerCase()}`, ['Poor', 'Fair', 'Great'], [`${why} draw ${who.toLowerCase()} here.`]);
+    return APPEAL(`Appeal · ${who.toLowerCase()}`, [`${why} draw ${who.toLowerCase()} here.`]);
   }
   return DESIRABILITY(`Desirability · ${labels[v]}`, ['Undesirable', 'Neutral', 'Desirable'], ['Where this kind of building wants to grow (hover a lot for the reasons).']);
 }

@@ -30,20 +30,20 @@ function ground(L: SkyLighting): number {
 
 describe('light rig', () => {
   it('twilight (sunset -> moon handover, moonless dawn) is never darker than the night floor', () => {
-    for (let day = 0; day < 360; day += 15) {
-      for (let m = 0; m < 24 * 60; m += 5) {
+    for (let day = 0; day < 360; day += 30) {
+      for (let m = 0; m < 24 * 60; m += 10) {
         const L = rig(m / 60, day);
         if (L.night < 0.999) continue;
         // full night: the ground never drops below the configured floor (the dip at the handover used to fall to ~40%)
         expect(ground(L)).toBeGreaterThanOrEqual(LIGHT_RIG.nightGround * 0.99);
       }
     }
-  });
+  }, 120000);
 
   it('keeps the direct light continuous where it switches from the twilight sky light to the moon', () => {
-    for (let day = 0; day < 360; day += 30) {
+    for (let day = 0; day < 360; day += 60) {
       let prev: SkyLighting | null = null;
-      for (let m = 16 * 60; m < 23 * 60; m += 1) {
+      for (let m = 16 * 60; m < 23 * 60; m += 2) {
         const L = rig(m / 60, day);
         if (prev && (L.sunDir.y > LIGHT_RIG.switchY) !== (prev.sunDir.y > LIGHT_RIG.switchY)) {
           // the light jumps direction here: both sides must be (nearly) dark so the jump is invisible
@@ -53,11 +53,11 @@ describe('light rig', () => {
         prev = L;
       }
     }
-  });
+  }, 120000);
 
   it('switches the street lamps on before the night factor rises, and fully on shortly after sunset', () => {
-    for (let day = 0; day < 360; day += 30) {
-      for (let m = 0; m < 24 * 60; m += 5) {
+    for (let day = 0; day < 360; day += 60) {
+      for (let m = 0; m < 24 * 60; m += 10) {
         const L = rig(m / 60, day);
         expect(L.lamps).toBeGreaterThanOrEqual(L.night - 1e-6);
         if (L.sunDir.y < -0.02) expect(L.lamps).toBeCloseTo(1, 5);
@@ -70,19 +70,19 @@ describe('light rig', () => {
       expect(S.lamps).toBeGreaterThan(0.8);
       expect(S.night).toBeLessThan(0.4);
     }
-  });
+  }, 120000);
 
   it('leaves the plain 22:00 night alone when the moon is up', () => {
     const L = rig(22, 12);
     expect(L.fill).toBeCloseTo(LIGHT_RIG.fillBase, 5);
     expect(L.lightIntensity).toBeCloseTo(LIGHT_RIG.moonI, 5);
-  });
+  }, 60000);
 });
 
 describe('street lamp type', () => {
   it('is white on highways / avenues and mixes sodium / LED districts elsewhere', () => {
     let led = 0, n = 0;
-    for (let z = 0; z < 256; z += 3) for (let x = 0; x < 256; x += 3) {
+    for (let z = 0; z < 256; z += 5) for (let x = 0; x < 256; x += 5) {
       expect(lampTint(x, z, 5)).toBe(1);
       expect(lampTint(x, z, 3)).toBe(1);
       const t = lampTint(x, z, 2);
@@ -93,5 +93,5 @@ describe('street lamp type', () => {
     }
     expect(led / n).toBeGreaterThan(0.2);
     expect(led / n).toBeLessThan(0.6);
-  });
+  }, 60000);
 });

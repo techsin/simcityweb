@@ -386,7 +386,9 @@ const W = (o: Partial<DesirWeights>): DesirWeights => ({
 export const DESIR_WEIGHTS: readonly DesirWeights[] = [
   // (WP6: R edu / park moved to the tier terms elem / high / college / play / green, CO / I-HT edu to skill + campus;
   //  garbage re-weighted for WP3's pile semantics — a lot's own uncollected pile, faded in with town size, see
-  //  GARBAGE_FADE_POP; parking weights act only while PARKING_TERMS is on)
+  //  GARBAGE_FADE_POP; parking weights act only while PARKING_TERMS is on; WP6a bias calibration: R$$$ +0.10,
+  //  CS$$$ +0.065, I-D -0.075, I-M -0.13 keep their mean desirability at the phase-0 formula's on the same city — 128×15
+  //  s7 bot, years 5 / 10 / 15; the other DevTypes moved < 0.06)
   // R$: tolerant of pollution, likes transit, shops & short commutes; priced out by rent on premium land
   W({ bias: 0.1, lv: 0.35, lvRef: 0.1, air: -0.3, water: -0.2, garbage: -0.2, crime: -0.2, noise: -0.12, commute: 0.45, police: 0.08, fire: 0.08, health: 0.14, transit: 0.18, slope: -0.3,
     elem: 0.06, high: 0.04, college: 0.03, play: 0.05, green: 0.07, shops: 0.12, stigma: -0.15, trees: 0.04, soil: -0.2, rent: -0.5 }),
@@ -394,7 +396,7 @@ export const DESIR_WEIGHTS: readonly DesirWeights[] = [
   W({ bias: 0.0, lv: 0.7, lvRef: 0.25, air: -0.75, water: -0.3, garbage: -0.25, crime: -0.55, noise: -0.28, commute: 0.5, police: 0.16, fire: 0.12, health: 0.16, transit: 0.08, slope: -0.3,
     elem: 0.12, high: 0.09, college: 0.04, play: 0.09, green: 0.15, shops: 0.10, stigma: -0.3, prestige: 0.05, trees: 0.06, soil: -0.3, rent: -0.1, wealthy: 0.03 }),
   // R$$$: needs high land value, low crime, green space, schools, prestige, rich neighbours
-  W({ bias: -0.1, lv: 1.1, lvRef: 0.42, air: -1.1, water: -0.4, garbage: -0.35, crime: -1.0, noise: -0.45, commute: 0.4, police: 0.22, fire: 0.12, health: 0.2, slope: -0.2,
+  W({ bias: 0.0, lv: 1.1, lvRef: 0.42, air: -1.1, water: -0.4, garbage: -0.35, crime: -1.0, noise: -0.45, commute: 0.4, police: 0.22, fire: 0.12, health: 0.2, slope: -0.2,
     elem: 0.14, high: 0.12, college: 0.05, play: 0.08, green: 0.28, shops: 0.06, stigma: -0.5, prestige: 0.2, trees: 0.08, soil: -0.4, wealthy: 0.15 }),
   // CS$: likes traffic & customers
   W({ bias: 0.1, lv: 0.25, lvRef: 0.1, air: -0.2, garbage: -0.15, crime: -0.3, commute: 0.2, traffic: 0.35, popNear: 0.4, police: 0.06, fire: 0.06, slope: -0.4,
@@ -403,7 +405,7 @@ export const DESIR_WEIGHTS: readonly DesirWeights[] = [
   W({ bias: 0.05, lv: 0.45, lvRef: 0.22, air: -0.3, garbage: -0.18, crime: -0.45, commute: 0.2, traffic: 0.35, popNear: 0.4, police: 0.1, fire: 0.08, park: 0.05, slope: -0.4,
     visitors: 0.2, stigma: -0.1, prestige: 0.03, parking: -0.12 }),
   // CS$$$
-  W({ bias: -0.05, lv: 0.8, lvRef: 0.4, air: -0.5, garbage: -0.25, crime: -0.7, noise: -0.1, commute: 0.2, traffic: 0.28, popNear: 0.35, police: 0.14, fire: 0.08, park: 0.1, slope: -0.4,
+  W({ bias: 0.015, lv: 0.8, lvRef: 0.4, air: -0.5, garbage: -0.25, crime: -0.7, noise: -0.1, commute: 0.2, traffic: 0.28, popNear: 0.35, police: 0.14, fire: 0.08, park: 0.1, slope: -0.4,
     visitors: 0.25, stigma: -0.2, prestige: 0.15, wealthy: 0.1, parking: -0.15 }),
   // CO$$: commute + a skilled workforce nearby
   W({ bias: 0.05, lv: 0.55, lvRef: 0.25, air: -0.4, garbage: -0.18, crime: -0.5, commute: 0.6, traffic: 0.1, transit: 0.12, police: 0.1, fire: 0.1, slope: -0.4,
@@ -414,9 +416,9 @@ export const DESIR_WEIGHTS: readonly DesirWeights[] = [
   // I-Ag: flat cheap land, hurt by pollution and contaminated soil
   W({ bias: 0.42, lv: -0.3, lvRef: 0.2, air: -0.6, water: -0.6, garbage: -0.2, crime: -0.1, commute: 0.1, slope: -0.9, soil: -0.5 }),
   // I-D: tolerates pollution, likes freight, cheap land (rent)
-  W({ bias: 0.25, lv: -0.15, lvRef: 0.2, crime: -0.2, commute: 0.2, freight: 0.35, fire: 0.08, slope: -0.5, rent: -0.15 }),
+  W({ bias: 0.175, lv: -0.15, lvRef: 0.2, crime: -0.2, commute: 0.2, freight: 0.35, fire: 0.08, slope: -0.5, rent: -0.15 }),
   // I-M: needs freight access
-  W({ bias: 0.15, lv: 0.05, lvRef: 0.2, air: -0.1, crime: -0.3, commute: 0.3, freight: 0.55, fire: 0.1, police: 0.06, slope: -0.5, skill: 0.05 }),
+  W({ bias: 0.02, lv: 0.05, lvRef: 0.2, air: -0.1, crime: -0.3, commute: 0.3, freight: 0.55, fire: 0.1, police: 0.06, slope: -0.5, skill: 0.05 }),
   // I-HT: skills + campus + clean air
   W({ bias: 0.0, lv: 0.45, lvRef: 0.3, air: -0.8, water: -0.3, garbage: -0.2, crime: -0.4, noise: -0.1, commute: 0.4, freight: 0.15, police: 0.08, fire: 0.08, slope: -0.4,
     skill: 0.25, campus: 0.25, stigma: -0.2, trees: 0.03, soil: -0.2 }),

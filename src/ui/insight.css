@@ -9,7 +9,7 @@
 .dv-vars { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; }
 .dv-vars.grouped { flex-direction: column; gap: 3px; }
 .dv-var-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.dv-var-g { width: 74px; flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); }
+.dv-var-g { width: 86px; flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dv-var {
   border: 1px solid var(--hair); background: rgba(255, 255, 255, 0.04); color: var(--text-dim); cursor: pointer;
   font: 600 11px/1 var(--font); padding: 5px 8px; border-radius: 6px; white-space: nowrap;
@@ -19,7 +19,7 @@
 .dv-var.on { border-color: #3fd6c6; background: rgba(63, 214, 198, 0.14); color: var(--text); }
 .dv-vars.compact { margin: -2px 0 7px; gap: 3px; }
 .dv-vars.compact .dv-var { font-size: 10.5px; padding: 4px 6px; }
-.dv-vars.compact .dv-var-g { width: 62px; font-size: 9.5px; }
+.dv-vars.compact .dv-var-g { width: 46px; font-size: 9.5px; }
 
 /* legend notes, wind arrow */
 .lg-note { font-size: 10.5px; line-height: 1.4; color: var(--text-faint); margin-top: 6px; }
@@ -169,3 +169,17 @@
 .appr-pop .ap-r .t b { position: absolute; left: calc(50% - 0.5px); top: -2px; bottom: -2px; width: 1px; background: rgba(255, 255, 255, 0.28); }
 .appr-pop .ap-r .v { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
 .appr-pop .ap-f { margin-top: 6px; font-size: 10.5px; color: var(--text-faint); }
+
+/* inspector key / value rows: labels never wrap (a long response text wraps on the value side instead) */
+.ins-sec-b .kv { grid-template-columns: max-content minmax(0, 1fr); }
+.ins-sec-b .kv > :nth-child(odd) { white-space: nowrap; }
+.ins-sec-b .kv > :nth-child(even) { overflow-wrap: break-word; }
+
+/* demographics KPI cards: five across in the panel (~78 px each) — the label drops its icon and tightens up so
+ *  POPULATION / ATTRACTION fit on one line inside the card */
+.demo-kpis .stat-card { padding: 9px 8px; }
+.demo-kpis .sc-l { font-size: 9.5px; letter-spacing: 0.02em; gap: 0; white-space: nowrap; }
+.demo-kpis .sc-l svg { display: none; }
+
+/* plop cursor tip: facility facts and the placement preview wrap inside the tip (it is nowrap for the one-liners) */
+.cursor-tip .tip-facts { white-space: normal; }

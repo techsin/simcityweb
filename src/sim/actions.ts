@@ -36,6 +36,8 @@ import {
 } from './economy/tuning';
 import { countFront, demolishFee, levelLot, lotSlope, lotTouchesRoad, placeBuilding, removeBuilding } from './economy/buildings';
 import { updateNeighborConnections } from './economy/connections';
+import { positionVariant, spreadVariant } from './economy/growth';
+import { MANIFEST_BY_ID } from '../assets/manifest';
 import { blockedByOrdinance, getOrdinance, setOrdinanceEnabled } from './economy/ordinances';
 import { takeLoanNow } from './economy/loans';
 import { formatMoney } from './economy/format';
@@ -592,9 +594,14 @@ export class CityActions implements CityActionsApi {
     }
     const id = st.nextBuildingId++;
     const lv = levelLot(st, x, z, w, d, id, placement === 'shore');
+    // model variant: a position hash, stepped while a same-def neighbour within 6 cells shows it (no rng draw; WP6a)
+    const variants = MANIFEST_BY_ID[def.model]?.variants ?? 1;
     const b: Building = {
-      id, def: def.id, x, z, w, d, rot, variant: 0, pop: 0, jobs: 0, capacity: def.jobs ?? 0, wealth: 0, built: 1, age: 0,
+      id, def: def.id, x, z, w, d, rot, variant: spreadVariant(st, def.id, x, z, w, d, positionVariant(x, z, variants), variants),
+      pop: 0, jobs: 0, capacity: def.jobs ?? 0, wealth: 0, built: 1, age: 0,
       flags: BF.Plopped, baseY: lv.baseY, health: 1, unhappy: 0,
+      // WP1 fields in their fixed order (one hidden class for every building; demographics ensureDemographicsFields)
+      kids: undefined, teens: undefined, yad: undefined, srs: undefined, wf: undefined, edu: undefined, hire: undefined,
     };
     placeBuilding(this.sim, b);
     this.spend(cost, 'oneoff:construction');

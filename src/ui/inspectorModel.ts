@@ -4,6 +4,7 @@
  * slack, crime terms) into display rows, bars and chips. No DOM: InfoPanel renders them; tests pin them with stub
  * outputs (null / [] / -1) and with full outputs.
  */
+import { EMERG_RMAX } from '../sim/infra/params';
 import type { FactorTerm } from '../sim/explain';
 import type { FacilityLine, FacilityReport } from '../sim/infra/facilities';
 import type { NeedReport } from '../sim/economy/demographics';
@@ -260,6 +261,8 @@ export function pyramid(shares: ArrayLike<number> | null | undefined, pop: numbe
 export function responseText(r: { slackMin: number; covered: boolean } | null | undefined, noStation = 'no station'): { text: string; tone: Tone } | null {
   if (!r || !Number.isFinite(r.slackMin)) return null;
   if (r.slackMin <= -98.5) return { text: noStation, tone: 'neg' };
+  // the response layers' floor (-EMERG_RMAX): no road reaches the lot at all
+  if (r.slackMin <= -EMERG_RMAX + 1e-6) return { text: 'unreachable — no road to it', tone: 'neg' };
   if (r.covered || r.slackMin >= 0) return { text: `auto, ${r.slackMin.toFixed(1)} min to spare`, tone: 'pos' };
   return { text: `manual only (${(-r.slackMin).toFixed(1)} min out of reach)`, tone: r.slackMin >= -3 ? 'warn' : 'neg' };
 }

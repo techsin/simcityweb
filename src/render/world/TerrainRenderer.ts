@@ -592,7 +592,14 @@ export class TerrainRenderer {
     const u = this.uniforms;
     u.uZoneMode.value = o === Overlay.Zones ? 1 : 0;
     u.uOverlayOn.value = o !== Overlay.None && o !== Overlay.Zones ? 1 : 0;
-    makeRampTexture(OVERLAYS[o] ? overlayDef(o, variant).ramp : OVERLAYS[Overlay.None].ramp, 128, this.rampTex);
+    const def = OVERLAYS[o] ? overlayDef(o, variant) : OVERLAYS[Overlay.None];
+    makeRampTexture(def.ramp, 128, this.rampTex);
+    // per-building views draw whole cells; fields blend smoothly
+    const filter = def.crisp ? THREE.NearestFilter : THREE.LinearFilter;
+    if (this.overlayTex.magFilter !== filter) {
+      this.overlayTex.magFilter = this.overlayTex.minFilter = filter;
+      this.overlayTex.needsUpdate = true;
+    }
     this.overlayDirty = u.uOverlayOn.value > 0;
   }
   get currentOverlayVariant(): number {

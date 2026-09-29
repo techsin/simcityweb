@@ -135,7 +135,7 @@ export class DemographicsPanel extends Panel {
       this.card('Workforce', 'briefcase', compact(wf), `${pct(pop > 0 ? wf / pop : s.workforceRatio)} of residents · ${pct(s.unemployment, 1)} jobless`, s.unemployment > 0.12 ? 'neg' : ''),
       this.card('Education', 'education', `EQ ${Math.round(s.eq)}`, s.eq >= 100 ? 'Educated workforce' : s.eq >= 60 ? 'Improving' : 'Needs schools', s.eq >= 90 ? 'pos' : s.eq < 50 ? 'neg' : 'warn'),
       this.card('Health', 'health', `HQ ${Math.round(s.hq)}`, s.hq >= 100 ? 'Long, healthy lives' : s.hq >= 60 ? 'Fair' : 'Needs care', s.hq >= 90 ? 'pos' : s.hq < 50 ? 'neg' : 'warn'),
-      this.card('Attractiveness', 'star', `${Math.round(s.attractiveness)}`, 'out of 100 · draws newcomers', s.attractiveness >= 60 ? 'pos' : s.attractiveness < 30 ? 'neg' : ''),
+      this.card('Attraction', 'star', `${Math.round(s.attractiveness)}`, 'out of 100 · draws newcomers', s.attractiveness >= 60 ? 'pos' : s.attractiveness < 30 ? 'neg' : ''),
     ));
     // ---- pyramid by wealth
     this.content.appendChild(h('div', { class: 'sec-title' }, 'Age groups by wealth'));
@@ -251,7 +251,7 @@ export class DemographicsPanel extends Panel {
     this.content.append(h('div', { class: 'stat-cards demo-kpis' },
       this.card('Tourists', 'star', compact(s.tourists), ts ? `${compact(ts.gross)} would come` : 'per day'),
       this.card('Hotel rooms', 'home', compact(s.hotelRooms), ts && ts.hotelShortage > 0 ? `${compact(ts.hotelShortage)} short a night` : 'enough for now', ts && ts.hotelShortage > 50 ? 'warn' : ''),
-      this.card('Attractiveness', 'smile', String(Math.round(s.attractiveness)), 'out of 100'),
+      this.card('Attraction', 'smile', String(Math.round(s.attractiveness)), 'out of 100'),
     ));
     const bars = termBars(attractivenessBreakdown(st), 8, 1);
     if (bars.length) {
