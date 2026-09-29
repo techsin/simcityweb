@@ -1018,12 +1018,12 @@ export class DynamicBatch {
     const prevN = s.count;
     s.count = n;
     // indirect (instance id) texture: rows of ID_ROW ids, as many as the list needs plus slack (grown / shrunk with
-    // hysteresis). A rebuild uploads only the rows the list uses (texture update ranges; three reads ranges in units of
-    // 4 components, one texel here), not the whole texture, let alone the batch's instance capacity; a rebuild that
-    // produced the same ids (vehicles: the visible set rarely changes between frames) uploads nothing.
+    // hysteresis), uploaded whole in one call: a rebuild uploads about the list, not a square power-of-two texture,
+    // let alone the batch's instance capacity; a rebuild that produced the same ids (vehicles: the visible set rarely
+    // changes between frames) uploads nothing.
     const rows = Math.max(1, Math.ceil(n / ID_ROW));
     let fresh = false;
-    if (!s.tex || s.texCap < rows * ID_ROW || (s.texCap > ID_ROW * 8 && rows * ID_ROW * 4 < s.texCap)) {
+    if (!s.tex || s.texCap < rows * ID_ROW || s.texCap > (rows * 2 + 1) * ID_ROW) {
       s.tex?.dispose();
       const h = Math.ceil(rows * 1.25);
       s.tex = new THREE.DataTexture(new Uint32Array(ID_ROW * h), ID_ROW, h, THREE.RedIntegerFormat, THREE.UnsignedIntType);
@@ -1038,11 +1038,7 @@ export class DynamicBatch {
       if (j === n) return;
     }
     data.set(ids.subarray(0, n));
-    if (n > 0) {
-      tex.clearUpdateRanges();
-      for (let r = 0; r * ID_ROW < n; r++) tex.addUpdateRange(r * ID_ROW * 4, Math.min(ID_ROW, n - r * ID_ROW) * 4);
-      tex.needsUpdate = true;
-    }
+    if (n > 0 || fresh) tex.needsUpdate = true;
   }
 
   /** grow a slot's stored tile selection to hold `need` entries */
