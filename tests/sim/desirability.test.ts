@@ -9,14 +9,18 @@ import { createSystems } from '../../src/sim/systems/index';
 import { makeCity, road } from './helpers';
 import { DevType, Network, Zone } from '../../src/core/types';
 import { BF, type Building, type CityState } from '../../src/sim/CityState';
-import type { Simulation } from '../../src/sim/Simulation';
-import { ZONE_DEVTYPES } from '../../src/sim/catalog';
+import { Simulation } from '../../src/sim/Simulation';
+import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
+import { ZONE_DEVTYPES, getDef } from '../../src/sim/catalog';
+import { conditionBreakdown } from '../../src/sim/economy/population';
+import { sumTerms } from '../../src/sim/explain';
 import type { EconRuntime } from '../../src/sim/economy/runtime';
 import { DESIR_TERM_IDS, NT, T_ELEM, desirWeight, desirabilityBreakdown } from '../../src/sim/economy/desirability';
 import { landValueBreakdown } from '../../src/sim/economy/landValue';
 import { commuteRamp, conditionDesirability, garbageFade } from '../../src/sim/economy/factors';
+import { placeBuilding } from '../../src/sim/economy/buildings';
 import { updateNeighborConnections } from '../../src/sim/economy/connections';
-import { DESIR_WEIGHTS, LV_REFRESH_DAYS, RENT_CONDITION_MIN } from '../../src/sim/economy/tuning';
+import { DESIR_WEIGHTS, LV_REFRESH_DAYS, PENALTY_NO_GARBAGE, RENT_CONDITION_MIN } from '../../src/sim/economy/tuning';
 
 const rtOf = (sim: Simulation) => (sim.getSystem('economy.population') as unknown as { rt: EconRuntime }).rt;
 
@@ -152,6 +156,42 @@ describe('desirability: the 33-term model and its breakdown', () => {
   });
 });
 
+describe('condition: the RENT cap and the garbage fade keep conditionBreakdown exact', () => {
+  it('conditionBreakdown sums to the condition target with the RENT cap and a faded no-pickup penalty', { timeout: 300000 }, () => {
+    const { st, sim } = town(20);
+    // an R$ cottage on a ResLow lot facing the z = 16 road (placed directly: growth picks its own DevTypes)
+    const def = getDef('res_cottage.r1.2')!;
+    expect(def.devType).toBe(DevType.R1);
+    const [w, d] = def.footprint;
+    let x0 = -1;
+    for (let x = 9; x + w <= 16 && x0 < 0; x++) {
+      let free = true;
+      for (let z = 17; z < 17 + d; z++) for (let x1 = x; x1 < x + w; x1++) if (st.building[z * st.size + x1] >= 0) free = false;
+      if (free) x0 = x;
+    }
+    expect(x0).toBeGreaterThanOrEqual(0);
+    const b: Building = {
+      id: st.nextBuildingId++, def: def.id, x: x0, z: 17, w, d, rot: 2, variant: 0, pop: 4, jobs: 0, capacity: def.capacity ?? 0, wealth: 1,
+      built: 1, age: 400, flags: BF.Powered | BF.Watered, baseY: 5, health: 0.8, unhappy: 0,
+    };
+    placeBuilding(sim, b);
+    const N = st.size;
+    for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) st.landValue[z * N + x] = 0.95; // full rent pressure
+    b.flags |= BF.NoGarbage;
+    st.stats.population = 11000; // halfway through the garbage fade
+    const br = conditionBreakdown(st, b);
+    expect(Math.max(0, Math.min(1, sumTerms(br.terms)))).toBeCloseTo(br.target, 6);
+    const g = br.terms.find((t) => t.id === 'garbage')!;
+    expect(g.value).toBeCloseTo(-PENALTY_NO_GARBAGE * garbageFade(st), 6);
+    expect(g.value).toBeLessThan(0);
+    expect(g.value).toBeGreaterThan(-PENALTY_NO_GARBAGE);
+    // the desirability term uses the capped rent (≥ the stored desirability, which carries the full R$ rent)
+    const i = (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1);
+    const des = br.terms.find((t) => t.id === 'desirability')!;
+    expect(des.value).toBeGreaterThanOrEqual(0.5 + 0.5 * st.desirability[DevType.R1][i] - 1e-6);
+  });
+});
+
 describe('land value: formula, breakdown, functional-gated splats', () => {
   it('landValueBreakdown sums to the stored land value (± 0.005) on 200 random cells', { timeout: 300000 }, () => {
     const { st, rt } = town();
@@ -186,6 +226,25 @@ describe('land value: formula, breakdown, functional-gated splats', () => {
       if (Math.abs(sm) <= 0.05) small++;
     }
     expect(small / land).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it('save / load: a loaded city keeps its smoothed land value (no first pass) and refreshes the same rows', { timeout: 300000 }, () => {
+    const { st, sim } = town(40);
+    const copy = deserializeCity(structuredClone(serializeCity(st, { copy: true })) as SerializedCity);
+    const saved = Float32Array.from(copy.landValue);
+    const sim2 = new Simulation(copy, createSystems());
+    // init rebuilt the caches but kept the saved values: a first pass would drop the neighbourhood blend and the lag
+    let d0 = 0;
+    for (let i = 0; i < copy.cells; i++) d0 = Math.max(d0, Math.abs(copy.landValue[i] - saved[i]));
+    expect(d0).toBe(0);
+    expect(copy.stats.avgLandValue).toBeGreaterThan(0);
+    expect(Math.abs(copy.stats.avgLandValue - st.stats.avgLandValue)).toBeLessThan(0.02);
+    // the band continues on the rows of the day: the original and the loaded copy stay together
+    sim.runDays(3);
+    sim2.runDays(3);
+    let d1 = 0;
+    for (let i = 0; i < copy.cells; i++) d1 = Math.max(d1, Math.abs(copy.landValue[i] - st.landValue[i]));
+    expect(d1).toBeLessThan(0.02);
   });
 
   it('a burnt landmark gives 0 land-value splat; parks lift land value by their funding', { timeout: 300000 }, () => {

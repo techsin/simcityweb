@@ -26,7 +26,7 @@ import { Simulation, type SimSystem } from '../src/sim/Simulation';
 import { economySystems, economyRuntime } from '../src/sim/systems/economy';
 import { CityActions, lPath, type ActionResult } from '../src/sim/actions';
 import { DevType, Network, Zone, type Difficulty, type TerrainPreset } from '../src/core/types';
-import { getDef, rotatedFootprint } from '../src/sim/catalog';
+import { CAP_RELIEF, getDef, rotatedFootprint } from '../src/sim/catalog';
 import { econData, type EconRuntime } from '../src/sim/economy/runtime';
 import { BF, type Building, type CityState } from '../src/sim/CityState';
 import { maxLoanAmount } from '../src/sim/economy/loans';
@@ -887,8 +887,9 @@ export class SimBot {
       if (mine.length >= 1 + pop / 9000) continue;
       const u = this.uncovered(def, radius);
       if (!u) continue;
-      // prefer civic blocks within reach, else any free spot in developed blocks within reach (lots on a road)
-      const ok = this.placeCivic(def, u.x, u.z, radius * 0.8);
+      // prefer civic blocks within reach, else any free spot in developed blocks within reach (lots on a road), else a few
+      // small lots cleared (deep blocks leave no free frontage in a grown district)
+      const ok = this.placeCivic(def, u.x, u.z, radius * 0.8, true);
       if (ok) spent++;
       else this.svcRetry.set(def, this.st.day + 180);
     }
@@ -915,6 +916,8 @@ export class SimBot {
   private pendingNeeds: { tier: NeedTier; x: number; z: number; pass: number }[] = [];
   /** need placements per tier and 16x16 area in the last two years (a cluster a facility cannot fix is not chased) */
   private needHistory: { tier: NeedTier; key: number; day: number }[] = [];
+  /** tier + 16x16 area -> day until which a cluster with no free site is skipped (the next cluster gets the facility) */
+  private needNoSite = new Map<string, number>();
   private passesHooked = false;
 
   /**
@@ -974,7 +977,8 @@ export class SimBot {
       case 'health': return people < 12000 || pop < 18000 ? 'civ_clinic' : 'civ_hospital';
       case 'college': return st.unlocked.has('college') && pop >= 40000 && this.count('civ_college') < 1 + Math.floor(pop / 250000) ? 'civ_college' : 'civ_library';
       case 'play': return people < 1200 ? 'park_playground' : 'park_soccer';
-      case 'green': return people < 3000 || pop < 4000 ? 'park_small' : 'park_large';
+      // a big park where many are in need (it also relieves the R cap 14,000), a plaza for a block or two, else a pocket park
+      case 'green': return people >= 2500 && pop >= 4000 ? 'park_large' : people >= 1200 && pop > 1500 ? 'park_plaza' : 'park_small';
       default: return null;
     }
   }
@@ -1015,23 +1019,35 @@ export class SimBot {
       // per home: a deep lot whose front door is reached is served (homeNeed)
       const n = this.homeNeed(tier, 40);
       if (!(n.need > 0)) continue;
-      let target: { x: number; z: number; people: number } | null = null;
-      if (n.unreached > Math.max(200, 0.03 * n.need)) {
-        // the unserved need a facility at a cluster would reach: the clusters (8x8 blocks) within its reach
-        const d0 = getDef(this.needDef(tier, 0) ?? '');
-        const reach = (d0?.coverage?.radius ?? 16) * 0.8;
-        const cl = n.clusters;
-        let best = -1;
+      const areaKey = (c: { x: number; z: number }) => ((c.z >> 4) << 12) | (c.x >> 4);
+      // a 16x16 area whose cluster had no free site is skipped for a year: the next cluster gets the facility (the bot
+      // used to retry the same unplaceable cluster every two months, leaving every other district without a school)
+      const skip = (c: { x: number; z: number }) => {
+        const key = areaKey(c);
+        if ((this.needNoSite.get(tier + ':' + key) ?? -1) > st.day) return true;
+        return this.needHistory.filter((h) => h.tier === tier && h.key === key && st.day - h.day < 720).length >= 2;
+      };
+      /** candidate sites, best first: the clusters by the need a facility there would reach */
+      const ranked = (cl: { x: number; z: number; people: number }[], reach: number, minPeople: number, pending: boolean) => {
+        const out: { x: number; z: number; people: number }[] = [];
         for (const c of cl) {
-          if (this.pendingNeeds.some((p) => p.tier === tier && Math.hypot(p.x - c.x, p.z - c.z) < reach)) continue;
-          const key = ((c.z >> 4) << 12) | (c.x >> 4);
-          if (this.needHistory.filter((h) => h.tier === tier && h.key === key && st.day - h.day < 720).length >= 2) continue;
+          if (pending && this.pendingNeeds.some((p) => p.tier === tier && Math.hypot(p.x - c.x, p.z - c.z) < reach)) continue;
+          if (skip(c)) continue;
           let sum = 0;
           for (const o of cl) if (Math.hypot(o.x - c.x, o.z - c.z) <= reach) sum += o.people;
-          if (sum > best) { best = sum; target = { x: c.x, z: c.z, people: sum }; }
+          if (sum >= minPeople) out.push({ x: c.x, z: c.z, people: sum });
         }
-        if (target && target.people < (MIN_PEOPLE[tier] ?? 0)) target = null;
-      } else if (n.served / n.need < 0.9 && !this.pendingNeeds.some((p) => p.tier === tier)) {
+        return out.sort((a, b) => b.people - a.people || a.z - b.z || a.x - b.x);
+      };
+      // clusters are ranked by the need the tier's largest facility would reach there (a big park, a hospital)
+      const d0 = getDef(this.needDef(tier, 1e9) ?? '');
+      const reach0 = (d0?.coverage?.radius ?? 16) * 0.8;
+      let targets: { x: number; z: number; people: number }[] = [];
+      if (n.unreached > Math.max(200, 0.03 * n.need)) {
+        // the unserved need a facility at a cluster would reach: the clusters (8x8 blocks) within its reach
+        targets = ranked(n.clusters, reach0, MIN_PEOPLE[tier] ?? 0, true);
+      }
+      if (!targets.length && n.served / n.need < 0.9 && !this.pendingNeeds.some((p) => p.tier === tier)) {
         // crowded: beside the most overloaded facility of the tier
         let worst: Building | null = null, wu = 1.1;
         for (const b of st.buildings.values()) {
@@ -1040,56 +1056,56 @@ export class SimBot {
           if (!l || l.needTier !== tier || !(l.utilization > wu)) continue;
           wu = l.utilization; worst = b;
         }
-        if (worst) target = { x: worst.x + (worst.w >> 1), z: worst.z + (worst.d >> 1), people: Math.max(0, (wu - 1) * (facilityLoad(this.sim, worst.id)?.capacity ?? 0)) };
+        const w = worst ? { x: worst.x + (worst.w >> 1), z: worst.z + (worst.d >> 1), people: Math.max(0, (wu - 1) * (facilityLoad(this.sim, worst.id)?.capacity ?? 0)) } : null;
+        if (w && !skip(w)) targets = [w];
         else if (tier === 'elementary' || tier === 'high' || tier === 'health') {
           // under-served: homes at the edge of a catchment (partial coverage) — a facility where the unserved part of the
-          // need is largest (same history / MIN_PEOPLE rules as unreached clusters)
-          const d0 = getDef(this.needDef(tier, 0) ?? '');
-          const reach = (d0?.coverage?.radius ?? 16) * 0.8;
-          let best = -1;
-          for (const c of n.gaps) {
-            const key = ((c.z >> 4) << 12) | (c.x >> 4);
-            if (this.needHistory.filter((h) => h.tier === tier && h.key === key && st.day - h.day < 720).length >= 2) continue;
-            let sum = 0;
-            for (const o of n.gaps) if (Math.hypot(o.x - c.x, o.z - c.z) <= reach) sum += o.people;
-            if (sum > best) { best = sum; target = { x: c.x, z: c.z, people: sum }; }
-          }
-          if (target && target.people < 2 * (MIN_PEOPLE[tier] ?? 0)) target = null;
+          // need is largest (same history / no-site / MIN_PEOPLE rules as unreached clusters)
+          targets = ranked(n.gaps, reach0, 2 * (MIN_PEOPLE[tier] ?? 0), false);
         }
       }
-      if (!target) continue;
-      const def = this.needDef(tier, target.people);
-      if (!def) continue;
-      const d = getDef(def)!;
-      // schools and clinics come before most other spending: a smaller cash reserve than canAfford's
-      const cost = d.cost ?? 0;
-      const priority = tier === 'elementary' || tier === 'health';
-      const affordable = this.opts.spendy ? this.funds > cost
-        : priority ? this.funds - cost > 1500 + 0.5 * expense && (this.monthlyNet() + this.pendingUpkeep - (d.upkeep ?? 0) > -0.05 * income || this.funds > 60 * (d.upkeep ?? 0) + 20000)
-          : this.canAfford(def);
-      if (!affordable) continue;
-      const reach = Math.max(8, (d.coverage?.radius ?? 16) * 0.9);
-      // schools, clinics, playgrounds and parks clear a few small lots when a built-up district has no room left (deep
-      // blocks fill their interiors: without clearing a grown district never gets its pocket park)
-      const clear = tier !== 'college';
-      let built = this.placeCivic(def, target.x, target.z, reach, clear) ? d : null;
-      // a built-up district without room for the big facility gets the small one (park / playground / clinic)
-      const small = tier === 'green' ? 'park_small' : tier === 'play' ? 'park_playground' : tier === 'health' ? 'civ_clinic' : null;
-      if (!built && small && small !== def && this.canAfford(small)) {
-        const ds = getDef(small)!;
-        if (this.placeCivic(small, target.x, target.z, Math.max(8, (ds.coverage?.radius ?? 16) * 0.9), clear)) built = ds;
+      if (!targets.length) continue;
+      // up to two sites a month per tier: when the best cluster has no free lot, the next one is tried
+      let tried = 0, done = false;
+      for (const target of targets) {
+        if (tried >= 2 || done || placed >= 3) break;
+        const def = this.needDef(tier, target.people);
+        if (!def) break;
+        const d = getDef(def)!;
+        // schools and clinics come before most other spending: a smaller cash reserve than canAfford's
+        const cost = d.cost ?? 0;
+        const priority = tier === 'elementary' || tier === 'health';
+        const affordable = this.opts.spendy ? this.funds > cost
+          : priority ? this.funds - cost > 1500 + 0.5 * expense && (this.monthlyNet() + this.pendingUpkeep - (d.upkeep ?? 0) > -0.05 * income || this.funds > 60 * (d.upkeep ?? 0) + 20000)
+            : this.canAfford(def);
+        if (!affordable) break;
+        tried++;
+        const reach = Math.max(8, (d.coverage?.radius ?? 16) * 0.9);
+        // schools, clinics, playgrounds and parks clear a few small lots when a built-up district has no room left (deep
+        // blocks fill their interiors: without clearing a grown district never gets its pocket park)
+        const clear = tier !== 'college';
+        let built = this.placeCivic(def, target.x, target.z, reach, clear) ? d : null;
+        // a built-up district without room for the big facility gets the small one (park / playground / clinic)
+        const small = tier === 'green' ? 'park_small' : tier === 'play' ? 'park_playground' : tier === 'health' ? 'civ_clinic' : null;
+        if (!built && small && small !== def && this.canAfford(small)) {
+          const ds = getDef(small)!;
+          if (this.placeCivic(small, target.x, target.z, Math.max(8, (ds.coverage?.radius ?? 16) * 0.9), clear)) built = ds;
+        }
+        if (built) {
+          placed++;
+          done = true;
+          this.pendingNeeds.push({ tier, x: target.x, z: target.z, pass: this.passes });
+          this.needHistory.push({ tier, key: areaKey(target), day: st.day });
+          if (this.needHistory.length > 400) this.needHistory = this.needHistory.filter((h) => st.day - h.day < 720);
+          this.say(`${tier}: ${built.name} for ${Math.round(target.people)} people in need near ${Math.round(target.x)},${Math.round(target.z)}`);
+        } else {
+          this.needNoSite.set(tier + ':' + areaKey(target), st.day + 360);
+          this.say(`${tier}: no site for a ${d.name} near ${Math.round(target.x)},${Math.round(target.z)} (${Math.round(target.people)} people in need)`);
+        }
       }
-      if (built) {
-        placed++;
-        this.pendingNeeds.push({ tier, x: target.x, z: target.z, pass: this.passes });
-        this.needHistory.push({ tier, key: ((target.z >> 4) << 12) | (target.x >> 4), day: st.day });
-        if (this.needHistory.length > 400) this.needHistory = this.needHistory.filter((h) => st.day - h.day < 720);
-        this.say(`${tier}: ${built.name} for ${Math.round(target.people)} people in need near ${Math.round(target.x)},${Math.round(target.z)}`);
-      } else {
-        this.svcRetry.set('need:' + tier, st.day + 60);
-        this.say(`${tier}: no site for a ${d.name} near ${Math.round(target.x)},${Math.round(target.z)} (${Math.round(target.people)} people in need)`);
-      }
+      if (!done && tried > 0) this.svcRetry.set('need:' + tier, st.day + 60);
     }
+    if (this.needNoSite.size > 200) for (const [k, v] of this.needNoSite) if (v <= st.day) this.needNoSite.delete(k);
   }
 
   // ------------------------------------------------------------------------------------------ emergency response
@@ -1242,9 +1258,11 @@ export class SimBot {
     if (planted) this.say(`planted ${planted} buffer trees along the highway (${Math.round((100 * noisy) / homes)} % of homes noisy)`);
   }
 
-  /** center of a developed residential block with no park within 10 cells (nearest the center first) */
+  /** center of a developed residential block with no big park (R cap relief ≥ 4,000) or landmark within 10 cells
+   *  (nearest the center first) */
   uncoveredPark(): { x: number; z: number } | null {
-    const parks = this.services.filter((s) => s.def.startsWith('park_') || s.def.startsWith('lm_'));
+    // (only big parks and landmarks count: the pocket parks and playgrounds of the need rules relieve the R cap little)
+    const parks = this.services.filter((s) => s.def.startsWith('lm_') || (s.def.startsWith('park_') && (CAP_RELIEF[s.def]?.R ?? 0) >= 4000));
     let best: { x: number; z: number } | null = null, bd = Infinity;
     for (const b of this.blocks) {
       if (!b.developed || b.use !== 'R' || b.zone === Zone.None) continue;
@@ -1376,6 +1394,8 @@ export class SimBot {
       // 1) civic/park blocks nearby, 2) empty zoned lots inside residential blocks (small parks / plazas),
       // 3) turn an adjacent undeveloped block into a park block
       let ok = this.placeNear(def, target.x, target.z, ['P'], true, 20);
+      // while the R cap binds a big park is worth a few bulldozed small homes (a grown district has no free 4x4 lot)
+      if (!ok && rBinding && def === 'park_large') ok = this.placeCivic(def, target.x, target.z, 20, true);
       if (!ok) ok = this.placeNear(pop > 1500 ? 'park_plaza' : 'park_small', target.x, target.z, ['R', 'C'], false, 12);
       if (!ok) {
         const nb = this.blocks.filter((b) => !b.developed && b.use === 'R' && this.touchesDeveloped(b))

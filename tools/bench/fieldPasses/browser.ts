@@ -19,8 +19,13 @@ async function run(job: Job): Promise<Record<string, unknown>> {
   const simd = await WebAssembly.compile(await (await fetch(job.simd)).arrayBuffer());
   const scalar = job.scalar ? await WebAssembly.compile(await (await fetch(job.scalar)).arrayBuffer()) : null;
   const cases = (job.cases ?? CASES) as CaseName[];
-  const abOpts = { reps: job.reps, clockName: 'wall (worker performance.now)', warmupMs: 400, minSampleMs: 10 };
-  const out: Record<string, unknown> = { userAgent: navigator.userAgent };
+  const abOpts = { reps: job.reps, clockName: 'wall (worker performance.now)', warmupMs: 600, minSampleMs: 20 };
+  // clock granularity: the smallest non-zero step of performance.now() (5 µs when cross-origin isolated, else 100 µs)
+  let tick = Infinity;
+  for (let k = 0, t0 = performance.now(); k < 20000; k++) { const t = performance.now(); if (t > t0) { tick = Math.min(tick, t - t0); t0 = t; } }
+  const isolated = (self as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
+  log(`# worker: crossOriginIsolated ${isolated}, performance.now() step ${(tick * 1000).toFixed(1)} µs; samples >= ${abOpts.minSampleMs} ms, ${job.reps} interleaved pairs`);
+  const out: Record<string, unknown> = { userAgent: navigator.userAgent, crossOriginIsolated: isolated, clockStepUs: tick * 1000 };
   for (const url of job.caps) {
     const cap = decodeCapture(new Uint8Array(await (await fetch(url)).arrayBuffer()));
     const m = cap.meta;

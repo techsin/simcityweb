@@ -5,7 +5,11 @@
  *  - DynamicBatch per-pass draw lists: view frustum culling, per-instance shadow cascade masks, tiny-caster skipping,
  *    receiver-volume culling and list caching, disabled tiles / tile sets, front-to-back sorting, guard-banded list
  *    reuse while the camera pans (exact again once it rests), LOD geometry swaps without re-culling
- *  - building LOD scheduled by camera travel: never on the wrong side of a swap distance, no work while still
+ *  - building LOD scheduled by camera travel: never on the wrong side of a swap distance (after a camera cut the
+ *    downgrades may trail by a few catch-up frames, upgrades never), no work while still; cut frames stay cheap
+ *  - building LOD cross-fade: swaps in view dissolve over fadeTime (complementary levels in the fade layer, empty
+ *    stand-in in the batch), reverse mid-fade, instant on cuts / flushes / off-screen
+ *  - burnt multi-cell lots are tiled one rubble tile per cell; hill lots get real-size stone skirts
  *  - shadow receivers only bump their version when the volume really changes
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -20,7 +24,7 @@ import { makeReceiver, receiverSweepSphere, setReceiver } from '../../src/render
 import { BuildingRenderer } from '../../src/render/city/buildings/BuildingRenderer';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
-import type { Building } from '../../src/sim/CityState';
+import { BF, type Building } from '../../src/sim/CityState';
 import { CELL_SIZE } from '../../src/core/constants';
 
 registerAllModels();
@@ -389,15 +393,16 @@ describe('DynamicBatch list reuse', () => {
 });
 
 describe('building LOD schedule', () => {
-  it('keeps every building on the right side of its swap distance and does no work while the camera rests', () => {
+  it('keeps every building on the right side of its swap distance (downgrades may trail a cut briefly) and does no work while the camera rests', () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 7, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
     st.heights.fill(0);
     const culler = new TileCuller(64, CELL_SIZE, 16);
     const br = new BuildingRenderer(st, culler);
     br.lodBudgetMs = 1e9; // proxies are built on demand without a frame budget here
     // a small per-frame evaluation slice (the city has fewer buildings than the default 3000): smooth motion stays
-    // within it, camera jumps must evaluate everything at once (no big building left on its proxy after a cut)
+    // within it; camera jumps upgrade at once (flat scan) and catch up the rest at lodCatch evaluations per frame
     br.lodSlice = 100;
+    br.lodCatch = 40;
     const models = ['res_cottage', 'res_ranch', 'res_apartment', 'res_tower', 'com_office_small', 'com_diner', 'com_office_tower', 'ind_warehouse'].filter((m) => MANIFEST_BY_ID[m]);
     expect(models.length).toBeGreaterThan(3);
     let id = 1;
@@ -410,48 +415,277 @@ describe('building LOD schedule', () => {
     type BI = { lod: number; geom: number; lodGeom: number; siteGeom: number; siteLod: number; radius: number; cy: number; vis: { cx: number; cz: number } };
     const list = (br as unknown as { list: BI[] }).list;
     const evals = vi.spyOn(br as unknown as { lodEval: () => void }, 'lodEval');
+    const dist = (bi: BI) => Math.hypot(bi.vis.cx - cam.position.x, bi.cy - cam.position.y, bi.vis.cz - cam.position.z);
+    const hasProxy = (bi: BI) => !(bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom);
+    // allowed lag: one schedule bucket (1 m) of camera travel. up: a proxy that must be full (never allowed);
+    // down: a full model that may be a proxy (allowed while the renderer catches up after a cut)
     const check = () => {
-      let bad = 0;
+      let up = 0, down = 0;
       for (const bi of list) {
-        if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) continue;
-        const d = Math.hypot(bi.vis.cx - cam.position.x, bi.cy - cam.position.y, bi.vis.cz - cam.position.z);
-        const rk = bi.radius * K;
-        // allowed lag: one schedule bucket (1 m) of camera travel
-        if (bi.lod === 0 && d > rk / on + 1.001) bad++;
-        if (bi.lod === 1 && d < rk / off - 1.001) bad++;
+        if (!hasProxy(bi)) continue;
+        const d = dist(bi), rk = bi.radius * K;
+        if (bi.lod === 0 && d > rk / on + 1.001) down++;
+        if (bi.lod === 1 && d < rk / off - 1.001) up++;
       }
-      return bad;
+      return { up, down };
     };
     let seed = 99;
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
     const p = new THREE.Vector3(512, 60, -200);
-    let slowEvals = 0, slowSteps = 0, maxProxies = 0, maxEvals = 0;
+    let slowEvals = 0, slowSteps = 0, maxProxies = 0, cuts = 0, cutLagSeen = 0, maxCutExtra = 0;
     for (let step = 0; step < 600; step++) {
       const mode = Math.floor(step / 50) % 4; // slow pan, fast pan, zoom, jumps
+      const cut = mode === 3 && step % 10 === 0;
       if (mode === 0) p.x += 3;
       else if (mode === 1) { p.x -= 45; p.z += 30; }
       else if (mode === 2) p.y = 40 + (step % 50) * 25;
-      else if (step % 10 === 0) p.set(rnd() * 3000 - 1000, 20 + rnd() * 900, rnd() * 3000 - 1000);
+      else if (cut) p.set(rnd() * 3000 - 1000, 20 + rnd() * 900, rnd() * 3000 - 1000);
       cam.position.copy(p);
       cam.updateMatrixWorld();
+      // proxies the cut must upgrade in its own frame
+      let need = 0;
+      if (cut) for (const bi of list) if (bi.lod === 1 && hasProxy(bi) && dist(bi) < (bi.radius * K) / off) need++;
       const e0 = evals.mock.calls.length;
       br.updateLod(cam, H);
-      if (mode === 0 && step % 50 > 5) { slowEvals += evals.mock.calls.length - e0; slowSteps++; }
-      maxEvals = Math.max(maxEvals, evals.mock.calls.length - e0);
-      expect(check(), `step ${step}`).toBe(0);
+      const n = evals.mock.calls.length - e0;
+      if (mode === 0 && step % 50 > 5) { slowEvals += n; slowSteps++; }
+      const { up, down } = check();
+      expect(up, `step ${step}: proxy left inside its upgrade distance`).toBe(0);
+      if (!br.lodBehind) expect(down, `step ${step}: full model beyond its downgrade distance`).toBe(0);
+      if (cut && step > 0) {
+        cuts++;
+        // the cut frame evaluates its upgrades + a quarter catch-up slice, not the whole city
+        maxCutExtra = Math.max(maxCutExtra, n - need);
+        if (down > 0) cutLagSeen++;
+      }
       maxProxies = Math.max(maxProxies, br.lodCount);
     }
+    expect(cuts).toBeGreaterThan(10);
+    // (whole schedule buckets are evaluated: a few more than the slice)
+    expect(maxCutExtra).toBeLessThan((br.lodCatch >> 2) + 16);
+    expect(maxCutExtra).toBeLessThan(list.length * 0.1);
+    // (with a 40-evaluation catch-up slice some downgrades do trail the cuts)
+    expect(cutLagSeen).toBeGreaterThan(0);
     expect(br.lodCount).toBe(list.filter((b) => b.lod === 1).length);
     expect(maxProxies).toBeGreaterThan(list.length * 0.3);
-    // jump frames evaluated more buildings than the slice allows for smooth motion
-    expect(maxEvals).toBeGreaterThan(br.lodSlice);
     // a slow pan re-evaluates a small fraction of the buildings per frame
     expect(slowEvals / slowSteps).toBeLessThan(list.length * 0.1);
+    // after the last cut the camera rests: the catch-up finishes within backlog / lodCatch frames, then no lag at all
+    let frames = 0;
+    while (br.lodBehind && frames < 100) { br.updateLod(cam, H); frames++; }
+    expect(frames).toBeLessThanOrEqual(Math.ceil(list.length / br.lodCatch) + 2);
+    expect(check()).toEqual({ up: 0, down: 0 });
     // a resting camera costs nothing
     const e1 = evals.mock.calls.length;
     for (let i = 0; i < 20; i++) br.updateLod(cam, H);
     expect(evals.mock.calls.length).toBe(e1);
   }, 120_000);
+});
+
+describe('building LOD cross-fade', () => {
+  type Slots = { n: number; geo: Int32Array; fadingIn: Uint8Array; mesh: THREE.BatchedMesh };
+  type BI = { lod: number; main: number; geom: number; lodGeom: number; radius: number; cy: number; vis: { cx: number; cz: number } };
+  const setup = () => {
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
+    st.heights.fill(0);
+    const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
+    br.lodBudgetMs = 1e9;
+    br.add({ id: 1, def: 'res_apartment', x: 30, z: 30, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
+    const bi = (br as unknown as { list: BI[] }).list[0];
+    const layer = (br as unknown as { fadeLayer: Slots }).fadeLayer;
+    const info = (br.batch.mesh as unknown as { _instanceInfo: { geometryIndex: number }[] })._instanceInfo;
+    const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 20000);
+    const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
+    const dOn = (bi.radius * K) / (br.lodPixels * 0.88), dOff = (bi.radius * K) / (br.lodPixels * 1.12);
+    const dir = new THREE.Vector3(-1, 0.7, -1).normalize();
+    const target = new THREE.Vector3(bi.vis.cx, bi.cy, bi.vis.cz);
+    /** camera at distance d from the building, looking at it (away = looking the other way) */
+    const at = (d: number, away = false) => {
+      cam.position.copy(target).addScaledVector(dir, d);
+      cam.lookAt(away ? cam.position.clone().addScaledVector(dir, 10) : target);
+      cam.updateMatrixWorld();
+      br.updateLod(cam, H);
+    };
+    /** move smoothly (<= 5 m per frame) to distance d */
+    const glide = (d: number, away = false) => {
+      let cur = cam.position.distanceTo(target);
+      while (Math.abs(cur - d) > 1e-6) { cur += Math.max(-5, Math.min(5, d - cur)); at(cur, away); }
+    };
+    // decoded fade code of a slot: [fading in, t]
+    const code = (s: number): [boolean, number] => {
+      const a = ((layer.mesh as unknown as { _colorsTexture: THREE.DataTexture })._colorsTexture.image.data as Float32Array)[s * 4 + 3];
+      const x = (1 - a) * 16, o = x - Math.round(x);
+      return o > 0.23 ? [false, (o - 0.24) / 0.2] : [true, (o - 0.02) / 0.2];
+    };
+    return { br, bi, layer, info, dOn, dOff, at, glide, code };
+  };
+
+  it('dissolves a swap in view over fadeTime with complementary levels, and runs back when the level flips mid-fade', () => {
+    const { br, bi, layer, info, dOn, dOff, at, glide, code } = setup();
+    expect(bi.lodGeom).toBeGreaterThanOrEqual(-1);
+    at(dOn * 0.5);
+    br.update(1);
+    expect(bi.lod).toBe(0);
+    expect(br.fading).toBe(0);
+    // zoom out across the downgrade distance
+    glide(dOn + 20);
+    expect(bi.lod).toBe(1);
+    expect(bi.lodGeom).not.toBe(bi.geom);
+    expect(br.fading).toBe(1);
+    // the building's own instance draws the 3-vertex empty stand-in; the layer draws old (fading out) + new (in)
+    expect(br.batch.triangles(info[bi.main].geometryIndex)).toBe(1);
+    expect(layer.n).toBe(2);
+    const slots = [0, 1];
+    const old = slots.find((s) => !code(s)[0])!, neu = slots.find((s) => code(s)[0])!;
+    expect(layer.geo[old]).toBe(bi.geom);
+    expect(layer.geo[neu]).toBe(bi.lodGeom);
+    // only the level fading in casts shadows
+    expect(layer.fadingIn[neu]).toBe(1);
+    expect(layer.fadingIn[old]).toBe(0);
+    // half way: both codes carry the same (eased) threshold, so the dither keeps complementary pixel sets
+    br.update(br.fadeTime / 2);
+    expect(code(old)[1]).toBeCloseTo(0.5, 3);
+    expect(code(neu)[1]).toBeCloseTo(0.5, 3);
+    // zoom back in across the upgrade distance: the fade reverses (the old level fades back in) from where it is
+    glide(dOff - 20);
+    expect(bi.lod).toBe(0);
+    expect(br.fading).toBe(1);
+    const back = [0, 1].find((s) => code(s)[0])!;
+    expect(layer.geo[back]).toBe(bi.geom);
+    expect(code(back)[1]).toBeCloseTo(0.5, 3);
+    br.update(br.fadeTime * 0.25);
+    expect(br.fading).toBe(1);
+    br.update(br.fadeTime * 0.3);
+    // done: the instance draws the full model again, the layer is empty
+    expect(br.fading).toBe(0);
+    expect(layer.n).toBe(0);
+    expect(info[bi.main].geometryIndex).toBe(bi.geom);
+  });
+
+  it('swaps at once on camera cuts, off-screen, for sub-threshold specks and on flushLod', () => {
+    const { br, bi, layer, info, dOn, dOff, at, glide } = setup();
+    at(dOn * 0.5);
+    // a cut far out: instant downgrade (the whole view changed anyway)
+    at(dOn * 6);
+    expect(bi.lod).toBe(1);
+    expect(br.fading).toBe(0);
+    expect(info[bi.main].geometryIndex).toBe(bi.lodGeom);
+    // a cut back in: the upgrade is instant and happens in the cut frame itself
+    at(dOff * 0.3);
+    expect(bi.lod).toBe(0);
+    expect(br.fading).toBe(0);
+    expect(info[bi.main].geometryIndex).toBe(bi.geom);
+    // looking away while crossing the swap distance: no fade
+    glide(dOn * 0.9, true);
+    glide(dOn + 20, true);
+    expect(bi.lod).toBe(1);
+    expect(br.fading).toBe(0);
+    // fading while in view, then a capture flush: settled at once
+    glide(dOff * 0.9);
+    glide(dOff - 20);
+    expect(bi.lod).toBe(0);
+    expect(br.fading).toBe(1);
+    br.flushLod();
+    expect(br.fading).toBe(0);
+    expect(layer.n).toBe(0);
+    expect(info[bi.main].geometryIndex).toBe(bi.geom);
+    // a sub-threshold speck (swap forced while far beyond the fade size, e.g. after a proxy arrives) is instant
+    br.fadeMinFrac = 2;
+    glide(dOn + 20);
+    expect(bi.lod).toBe(1);
+    expect(br.fading).toBe(0);
+    // removing a fading building drops its fade
+    br.fadeMinFrac = 0.4;
+    glide(dOff - 20);
+    expect(br.fading).toBe(1);
+    br.remove(1);
+    expect(br.fading).toBe(0);
+    expect(layer.n).toBe(0);
+  });
+});
+
+describe('burnt lots and foundations', () => {
+  const setup = () => {
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 5, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
+    st.heights.fill(0);
+    const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
+    br.lodBudgetMs = 1e9;
+    const geo = (br.batch as unknown as { geo: Map<string, number> }).geo;
+    const info = (br.batch.mesh as unknown as { _instanceInfo: { geometryIndex: number }[] })._instanceInfo;
+    return { st, br, geo, info };
+  };
+  type BI = { main: number; cells: number[]; found: number };
+
+  it('tiles a burnt multi-cell lot with one unstretched rubble tile per cell (hashed variant + quarter turn)', () => {
+    const { br, geo, info } = setup();
+    br.add({ id: 7, def: 'res_apartment', x: 10, z: 12, w: 3, d: 3, rot: 1, variant: 0, built: 1, flags: BF.Burnt, baseY: 0 } as unknown as Building, false);
+    br.add({ id: 8, def: 'res_cottage', x: 20, z: 20, w: 1, d: 1, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: 0 } as unknown as Building, false);
+    const [lot, one] = (br as unknown as { list: BI[] }).list;
+    const rubble = new Set([0, 1, 2, 3].map((v) => geo.get(`rubble#${v}`)).filter((g) => g !== undefined));
+    expect(lot.cells.length).toBe(8);
+    const m = new THREE.Matrix4(), pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), e = new THREE.Euler();
+    const cells = new Set<string>(), variants = new Set<number>(), turns = new Set<number>();
+    for (const id of [lot.main, ...lot.cells]) {
+      const g = info[id].geometryIndex;
+      expect(rubble.has(g)).toBe(true);
+      variants.add(g);
+      br.batch.mesh.getMatrixAt(id, m);
+      m.decompose(pos, q, sc);
+      expect(sc.x).toBeCloseTo(1, 5);
+      expect(sc.y).toBeCloseTo(1, 5);
+      expect(sc.z).toBeCloseTo(1, 5);
+      const cx = Math.floor(pos.x / CELL_SIZE), cz = Math.floor(pos.z / CELL_SIZE);
+      expect(pos.x).toBeCloseTo((cx + 0.5) * CELL_SIZE, 4);
+      expect(pos.z).toBeCloseTo((cz + 0.5) * CELL_SIZE, 4);
+      expect(cx >= 10 && cx < 13 && cz >= 12 && cz < 15).toBe(true);
+      cells.add(`${cx},${cz}`);
+      e.setFromQuaternion(q, 'YXZ');
+      turns.add(((Math.round(e.y / (Math.PI / 2)) % 4) + 4) % 4);
+    }
+    // every footprint cell exactly once, not all alike
+    expect(cells.size).toBe(9);
+    expect(variants.size).toBeGreaterThan(1);
+    expect(turns.size).toBeGreaterThan(1);
+    // a 1x1 lot keeps its single (slightly inset) rubble model
+    expect(one.cells.length).toBe(0);
+    expect(rubble.has(info[one.main].geometryIndex)).toBe(true);
+    // rebuilding / removing frees the tiles
+    const live0 = br.batch.instanceCount;
+    br.remove(7);
+    expect(br.batch.instanceCount).toBe(live0 - 9);
+  });
+
+  it('puts real-size (unscaled) stone retaining-wall skirts under lots above the terrain, stepped when deep', () => {
+    const { st, br, geo, info } = setup();
+    const N1 = st.size + 1;
+    // a slope rising 1.5 m per cell along x
+    for (let z = 0; z <= st.size; z++) for (let x = 0; x <= st.size; x++) st.heights[z * N1 + x] = x * 1.5;
+    // lots flattened to their highest corner: 2 cells wide -> 3 m above the low edge; a flat one: no skirt
+    br.add({ id: 1, def: 'res_cottage', x: 20, z: 10, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 22 * 1.5 } as unknown as Building, false);
+    br.add({ id: 2, def: 'res_cottage', x: 30, z: 10, w: 1, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 30 * 1.5 + 0.5 } as unknown as Building, false);
+    br.add({ id: 3, def: 'res_cottage', x: 40, z: 10, w: 1, d: 1, rot: 0, variant: 0, built: 1, flags: 0, baseY: 40 * 1.5 } as unknown as Building, false);
+    const [deep, shallow, flat] = (br as unknown as { list: BI[] }).list;
+    expect(flat.found).toBe(-1);
+    // 3 m + 0.8 m into the ground -> the 4.8 m (two-tier) skirt at the lot's real size; 0.5 + 0.8 m -> the 2.2 m one
+    const gDeep = geo.get('__foundation:32x32:4.8'), gShallow = geo.get('__foundation:16x32:2.2');
+    expect(gDeep).toBeDefined();
+    expect(gShallow).toBeDefined();
+    expect(info[deep.found].geometryIndex).toBe(gDeep);
+    expect(info[shallow.found].geometryIndex).toBe(gShallow);
+    const m = new THREE.Matrix4(), pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+    br.batch.mesh.getMatrixAt(deep.found, m);
+    m.decompose(pos, q, sc);
+    expect([sc.x, sc.y, sc.z].map((v) => +v.toFixed(5))).toEqual([1, 1, 1]);
+    const bb = br.batch.bounds(gDeep!);
+    expect(bb.min.y).toBeCloseTo(-4.8, 5);
+    expect(bb.max.y).toBeCloseTo(0, 5);
+    // the lower tier steps out 0.45 m beyond the lot edge inset
+    expect(bb.max.x).toBeCloseTo(16 - 0.1 + 0.45, 4);
+    const sb = br.batch.bounds(gShallow!);
+    expect(sb.min.y).toBeCloseTo(-2.2, 5);
+    expect(sb.max.x).toBeCloseTo(8 - 0.1 + 0.04, 4);
+    expect(sb.max.z).toBeCloseTo(16 - 0.1 + 0.04, 4);
+  });
 });
 
 describe('shadow receiver versions', () => {

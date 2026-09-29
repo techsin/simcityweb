@@ -559,8 +559,11 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
       prepCaches(st, true);
       prepShift(st);
       band(st, 0, st.size, true);
-      row = 0;
-      sweep = 0;
+      // the rolling band continues on the rows of its day (the schedule of an uninterrupted game: day d refreshes rows
+      // from ((d − 1) mod cycle) × rows): a loaded city refreshes the same rows on the same days as the saved one
+      const N = st.size, rows = Math.ceil(N / DESIR_REFRESH_DAYS), cycle = Math.ceil(N / rows);
+      row = (st.day % cycle) * rows;
+      sweep = Math.floor(st.day / cycle);
     },
     daily(sim) {
       const t0 = performance.now();

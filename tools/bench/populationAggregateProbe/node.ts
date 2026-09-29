@@ -21,8 +21,10 @@ import { unpackFile } from '../../../src/save/bundle';
 import { Simulation } from '../../../src/sim/Simulation';
 import { createSystems } from '../../../src/sim/systems/index';
 import { benchMain, cpuMs, loadAvg } from '../node';
-import { ARM_INFO, DAY_KINDS, captureWorld, checkArms, checkDays, dayOfKind, encodeCapture, instantiate, makeArms, type DayKind, type ProbeWorld } from './core';
+import { type ProbeJs, ARM_INFO, DAY_KINDS, captureWorld, checkArms, checkDays, dayOfKind, encodeCapture, instantiate, makeArms, type DayKind, type ProbeWorld } from './core';
 import { PAIRS, logSummary, runPairs, weightedSpeedups, worldOfSim } from './pairs';
+// arm B's private copy of the fair-JS module (own inline-cache feedback; plugins.mjs jsCopy)
+import * as jsBCopy from 'popagg:js-b';
 
 async function loadWorld(file: string, warm: number, log: (s: string) => void): Promise<ProbeWorld> {
   const name = file.split('/').pop()!.replace(/\.metropolis$/, '');
@@ -59,7 +61,7 @@ benchMain(async ({ args, log }) => {
       log(`# capture -> ${f}`);
     }
     if (args.includes('--capture-only')) continue;
-    const arms = makeArms(world, { simd, scalar });
+    const arms = makeArms(world, { simd, scalar, jsB: jsBCopy as unknown as ProbeJs });
     const days = checkDays(dayOfKind(world.sim.state.day, 'demo'));
     const nCmp = checkArms(world, arms, days);
     log(`# bit-exact: ${Object.keys(arms).filter((a) => a !== 'A').join(', ')} identical to A on days ${days.join(', ')} (${nCmp} comparisons; SoA gathers identical)`);

@@ -12,6 +12,10 @@
  *    populationSystemShell(rt, kernel) and the probed region of aggregate() (the zeroing, growables loop, blurs) replaced
  *    by `kernel.run(...)`; the plopped loop and the O(1) tail stay verbatim. The e2e benchmark installs it in place of
  *    the genuine system for the kernel arms (the genuine system stays in the bundle for arm A).
+ *  - jsCopy(): a virtual module `popagg:js-b` = a second, verbatim copy of src/wasm/js/populationAggregateProbe.ts (it
+ *    has no imports). V8 keeps inline-cache feedback per function (per SharedFunctionInfo), so arm B (stable-shape
+ *    objects) runs its OWN aggregateObjects / DefIndex: their property loads only ever see B's one hidden class
+ *    (monomorphic, as after the fix), instead of sharing feedback with B0 / the gathers, which read the sim's objects.
  * Every edit asserts its exact anchor text, so a changed source fails loudly instead of benchmarking something else.
  */
 import { existsSync, readFileSync } from 'node:fs';
@@ -125,6 +129,25 @@ export function popShell(tree) {
   };
 }
 
+const JS_REL = join('src', 'wasm', 'js', 'populationAggregateProbe.ts');
+
+export function jsCopy() {
+  const src = join(REPO, JS_REL);
+  const id = join(REPO, 'src', 'wasm', 'js', 'populationAggregateProbe.copyB.ts');
+  return {
+    name: 'popagg-js-copy',
+    resolveId(source) {
+      return source === 'popagg:js-b' ? id : null;
+    },
+    load(x) {
+      if (x !== id) return null;
+      const code = readFileSync(src, 'utf8');
+      if (/^\s*import\s/m.test(code)) throw new Error('popagg jsCopy: src/wasm/js/populationAggregateProbe.ts gained imports; the copy must stay self-contained');
+      return { code, moduleType: 'ts' };
+    },
+  };
+}
+
 export function probePlugins(tree, { shell = false } = {}) {
-  return [...treeRedirect(tree), exposeCache(tree), ...(shell ? [popShell(tree)] : [])];
+  return [...treeRedirect(tree), exposeCache(tree), jsCopy(), ...(shell ? [popShell(tree)] : [])];
 }

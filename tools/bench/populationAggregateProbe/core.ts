@@ -12,11 +12,14 @@
  *   checkArms()     every arm bit-exact against arm A (f64 / f32 bit patterns, NaN == NaN) over a sequence of days.
  *   capture codec   encodeCapture / decodeCapture: a world's inputs as a binary file (the real fixtures for the test).
  */
+import * as probeJs from '../../../src/wasm/js/populationAggregateProbe';
 import {
   DefIndex, GATHER_DEMO, GATHER_ID, PopAggSoA, aggregateObjects, aggregateSoA, gatherNeed, gatherSoA, newGrids, newResult, newTotals,
-  recreateStable,
   type PopAggBuilding, type PopAggConstants, type PopAggDef, type PopAggGrids, type PopAggInput, type PopAggResult, type PopAggTotals,
 } from '../../../src/wasm/js/populationAggregateProbe';
+
+/** the fair-JS module (or a copy of it with its own JIT feedback: plugins.mjs jsCopy / 'popagg:js-b') */
+export type ProbeJs = typeof probeJs;
 import { makePopAggKernels, type PopAggBindStats, type PopAggSoAFn, type PopAggWasm } from '../../../src/wasm/kernels/populationAggregateProbeBind';
 import { WasmHeap, type HeapArrayCtor } from '../../../src/wasm/heap';
 import {
@@ -202,6 +205,12 @@ export interface ArmOptions {
   simd: PopAggWasm;
   scalar?: PopAggWasm | null;
   arms?: ArmName[];
+  /**
+   * the module arm B runs (default: the shared one). The benchmarks pass the bundle's second copy ('popagg:js-b'), so
+   * B's aggregateObjects / DefIndex keep their own inline-cache feedback: they only ever see B's stable-shape objects
+   * (monomorphic, as after the fix), while B0 and the gathers see the sim's objects through the shared copy.
+   */
+  jsB?: ProbeJs;
 }
 
 /** SoA allocated in a heap (resident) */
@@ -272,9 +281,11 @@ export function makeArms(world: ProbeWorld, o: ArmOptions): Record<string, Arm> 
     };
   };
   if (want.has('B')) {
-    const objs = recreateStable(list);
-    const defs = new DefIndex(world.resolveDef, c.DEV_TYPE_COUNT);
-    arms.B = jsArm('B', (inp, g, t, coh, out) => aggregateObjects(objs, defs, c, inp, g, t, coh, out));
+    const J = o.jsB ?? probeJs;
+    if (o.jsB && o.jsB.aggregateObjects === probeJs.aggregateObjects) throw new Error('makeArms: jsB is the shared module, not a separate copy (plugins.mjs jsCopy)');
+    const objs = J.recreateStable(list);
+    const defs = new J.DefIndex(world.resolveDef, c.DEV_TYPE_COUNT);
+    arms.B = jsArm('B', (inp, g, t, coh, out) => J.aggregateObjects(objs, defs, c, inp, g, t, coh, out));
   }
   if (want.has('B0')) {
     const defs = new DefIndex(world.resolveDef, c.DEV_TYPE_COUNT);

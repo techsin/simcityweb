@@ -276,6 +276,41 @@ describe('NIMBY rasters: original vs fair JS vs wasm (random worlds)', () => {
       expectSame(`N=${N} wasm`, a.S, c.S);
     }
   });
+
+  it('the corridor cache is keyed by the tables and amounts too (same network, other corridor parameters: rebuilt)', { timeout: 600000 }, () => {
+    const r = rng(0xc0de);
+    const N = 24, C = N * N;
+    const w = randomWorld(N, r);
+    const origFn = orig.makeOriginalNimby(falloff);
+    // [highway amount, bridge amount, rail amount, highway radius, rail radius]; the last entry repeats: a cache hit
+    const params = [[0.18, 0.25, 0.06, 3, 2], [0.3, 0.25, 0.06, 3, 2], [0.3, 0.4, 0.06, 3, 2], [0.3, 0.4, 0.1, 3, 2], [0.3, 0.4, 0.1, 5, 2],
+      [0.3, 0.4, 0.1, 5, 4], [NaN, 0.4, 0.1, 5, 4], [NaN, 0.4, 0.1, 5, 4]];
+    for (const impl of [fieldKernelsJs, wasmKernels()]) {
+      const ctx = {};
+      const tables = new NimbyTables(falloff);
+      params.forEach(([aH, aHB, aR, rH, rR], k) => {
+        const S0 = new Float32Array(C), P0 = new Float32Array(C), K0 = new Float32Array(C);
+        const t0 = origFn({
+          N, splats: w.splats, zone: w.zone, landfillFill: w.fill, network: w.net, netFlags: w.flags, lfA: w.lfA, lfR: w.lfR, NIMBY_LANDFILL_IDLE,
+          NIMBY_HIGHWAY: { amount: aH, radius: rH }, NIMBY_HIGHWAY_BRIDGE: aHB, NIMBY_RAIL: { amount: aR, radius: rR }, stigma: S0, prestige: P0, campus: K0,
+        });
+        const src = new NimbySources(tables);
+        let touches = 0;
+        for (const s of w.splats) touches += src.add(s.x, s.z, s.w, s.d, s.amount, s.R, s.target);
+        const lfTable = w.lfR > 0 ? tables.of(w.lfR, 2, 2) : null;
+        const tabH = tables.of(rH, 1, 1), tabR = tables.of(rR, 1, 1);
+        const S = new Float32Array(C), P = new Float32Array(C), K = new Float32Array(C);
+        const res = impl.nimby(ctx, {
+          N, src, zone: w.zone, fill: w.fill, lfCode: Zone.Landfill, lfTable, lfA: w.lfA, lfIdle: NIMBY_LANDFILL_IDLE, net: w.net, flags: w.flags,
+          highway: Network.Highway, rail: Network.Rail, tabH, tabR, aH, aHB, aR, force: false, S, P, K,
+        }, PH_ALL);
+        expect(res.changed, `${impl.kind} params ${k}: raster rebuilt`).toBe(k !== params.length - 1);
+        expect(touches + res.lf * (lfTable ? lfTable.n : 0) + res.nh * tabH.n + res.nr * tabR.n).toBe(t0);
+        expectSame(`${impl.kind} params ${k} stigma`, S0, S);
+        expectSame(`${impl.kind} params ${k} prestige`, P0, P);
+      });
+    }
+  });
 });
 
 // ================================================================================================= 2. pollution kernels

@@ -26,7 +26,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { setSimWasmPreference, simWasmInstance, simWasmStatus } from '../../src/wasm/simWasm';
 import {
-  DEV_SKIP, DefIndex, PopAggSoA, aggregateSoA, gatherSoA, newGrids, newResult, newTotals, type PopAggBuilding, type PopAggDef,
+  DEV_SKIP, DefIndex, PopAggSoA, aggregateObjects, aggregateSoA, gatherSoA, newGrids, newResult, newTotals, type PopAggBuilding, type PopAggDef,
   type PopAggGrids, type PopAggInput,
 } from '../../src/wasm/js/populationAggregateProbe';
 import {
@@ -36,7 +36,7 @@ import {
   PROBE_CONSTANTS, checkArms, checkDays, decodeCapture, diffSnapshots, makeArms, residentSoA, worldFromCapture, type ArmName, type ProbeWorld,
   type TrafficLike,
 } from '../../tools/bench/populationAggregateProbe/core';
-import { ORIGINAL_CONSTANTS, type OrigBuilding, type OrigCache, type OrigRuntime } from './populationAggregateOriginal';
+import { ORIGINAL_CONSTANTS, makeOriginalAggregate, type OrigBuilding, type OrigCache, type OrigRuntime } from './populationAggregateOriginal';
 
 const ROOT = resolve(__dirname, '..', '..');
 
@@ -79,6 +79,9 @@ interface WorldOpts {
   flags?: 'city' | 'abandoned' | 'constructing' | 'wild';
   /** share of buildings with a def the loop skips */
   skip?: number;
+  /** share of buildings with a def whose devType the int dev code cannot hold (12, 7.5; non-residential, so the
+   *  original survives them: its totals arrays grow NaN entries / extra keys) */
+  odd?: number;
 }
 
 /** f32 values (Math.fround: the sim stores shares as f32) incl. -0, subnormals and infinities */
@@ -92,6 +95,8 @@ function randomWorld(seed: number, o: WorldOpts): ProbeWorld {
   for (let d = 0; d < 12; d++) for (let v = 0; v < 3; v++) defTab.set(`def${d}_${v}`, { devType: d });
   defTab.set('noDev', {});
   const defIds = [...defTab.keys()];
+  defTab.set('odd12', { devType: 12 });
+  defTab.set('odd7.5', { devType: 7.5 });
   const idMax = Math.max(4, o.n * 3);
   const used = new Set<number>();
   const list: OrigBuilding[] = [];
@@ -116,7 +121,8 @@ function randomWorld(seed: number, o: WorldOpts): ProbeWorld {
     while (used.has(id)) id = (id + 1) % idMax;
     used.add(id);
     const u = r();
-    const def = u < (o.skip ?? 0.03) ? (r() < 0.5 ? 'noDev' : 'missing' + ((r() * 3) | 0)) : defIds[(r() * (defIds.length - 1)) | 0];
+    let def = u < (o.skip ?? 0.03) ? (r() < 0.5 ? 'noDev' : 'missing' + ((r() * 3) | 0)) : defIds[(r() * (defIds.length - 1)) | 0];
+    if (o.odd && r() < o.odd) def = r() < 0.5 ? 'odd12' : 'odd7.5';
     const w = 1 + ((r() * 4) | 0), d = 1 + ((r() * 4) | 0);
     // mostly on the map; some on / beyond the edges (block indices that wrap or leave the grid)
     const edge = r();
@@ -251,6 +257,41 @@ describe('edge cases', () => {
   });
 });
 
+describe('def index: devTypes the int dev code cannot hold', () => {
+  it('B / B0 start over in the exact loop and match the original, extra totals keys included', () => {
+    const w = randomWorld(21, { N: 64, n: 600, traffic: 'array', values: 'city', shares: 'city', eduMean: 0.5, odd: 0.05 });
+    // (the gather rejects these defs, so only the object arms run; checkArms compares the 12 real devs + everything else)
+    const arms = makeArms(w, { simd: loaderWasm(), arms: ['A', 'B', 'B0'] });
+    try {
+      expect(checkArms(w, arms, checkDays(0, 2))).toBe(12);
+    } finally {
+      for (const a of Object.values(arms)) a.dispose();
+    }
+    // and the totals' extra entries exactly as the original leaves them: rt.totals persists across calls, fill(0)
+    // resets countByDev[12] once the array has grown to 13 entries, the '7.5' keys stay NaN — so both sides keep their
+    // totals object over the same call sequence (a fresh, identical world)
+    const w2 = randomWorld(21, { N: 64, n: 600, traffic: 'array', values: 'city', shares: 'city', eduMean: 0.5, odd: 0.05 });
+    const orig = makeOriginalAggregate(w2.rt, w2.cache);
+    const defs = new DefIndex(w2.resolveDef, 12);
+    const t = newTotals(12), g = newGrids(w2.rt.cw), coh = new Float64Array(15), res = newResult();
+    for (const day of checkDays(0, 2)) {
+      w2.sim.state.day = day;
+      orig.aggregate(w2.sim, false);
+      const inp: PopAggInput = { cw: w2.rt.cw, sample: day % 4 === 0, demo: day % 32 === 0, mWf: w2.cache.wf, tAcc: true,
+        accArr: (w2.sim.getSystem('traffic') as TrafficLike).accessById, eduFallback: 0.5 };
+      aggregateObjects(w2.rt.growables as unknown as PopAggBuilding[], defs, PROBE_CONSTANTS, inp, g, t, coh, res);
+      const w = w2;
+      for (const k of ['countByDev', 'jobs', 'jobCapAll', 'jobCapBuilt'] as const) {
+        const a = w.rt.totals[k], b = t[k];
+        expect(Object.keys(b)).toEqual(Object.keys(a));
+        expect(Object.keys(a)).toContain('7.5');
+        expect(a.length).toBe(13);
+        for (const key of Object.keys(a)) expect(Object.is((b as unknown as Record<string, number>)[key], (a as unknown as Record<string, number>)[key]) || (Number.isNaN((a as unknown as Record<string, number>)[key]) && Number.isNaN((b as unknown as Record<string, number>)[key]))).toBe(true);
+      }
+    }
+  });
+});
+
 // ------------------------------------------------------------------------------------------------ gather domain
 describe('gather (arm E): values the SoA cannot hold exactly are rejected', () => {
   const defs = () => new DefIndex((id) => (id === 'r' ? { devType: 0 } : id === 'c' ? { devType: 3 } : id === 'x12' ? { devType: 12 } : id === 'xf' ? { devType: 1.5 } : id === 'nd' ? {} : undefined), 12);
@@ -264,6 +305,8 @@ describe('gather (arm E): values the SoA cannot hold exactly are rejected', () =
     ['NaN share', { kids: NaN }], ['null edu', { edu: null }], ['non-f32 share 0.1', { teens: 0.1 }], ['wealth 300', { wealth: 300 }],
     ['wealth 1.5', { wealth: 1.5 }], ['id 1.5', { id: 1.5 }], ['string pop', { pop: '5' }], ['undefined capacity', { capacity: undefined }],
     ['devType 12', { def: 'x12' }], ['devType 1.5', { def: 'xf' }],
+    // ((2^33 + 1) / 8 | 0) * cw overflows int32: the Int32Array would wrap it into the grids, where the JS drops the adds
+    ['block index beyond int32', { z: 2 ** 33 }],
   ] as [string, Record<string, unknown>][]) {
     it(`rejects ${label}`, () => {
       expect(gather([b(), b({ id: 2, ...o })])).toBe(false);

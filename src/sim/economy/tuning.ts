@@ -250,6 +250,9 @@ export const HOTEL_PREF_MAX = 3;
  */
 export const SWAP_MIN_GAIN = 0.25;
 export const SWAP_MIN_DEMAND = 0.1;
+/** ... and only onto healthy ground: the richer DevType's desirability ≥ SWAP_MIN_DES (a relative gain alone let an
+ *  R$$ / CS$$ lot at −0.9 "gentrify" into a CS$$$ shop at −0.6, abandoned a few months later) */
+export const SWAP_MIN_DES = 0.1;
 export const SWAP_MIN_CAP = 0.6;
 export const SWAP_MIN_AGE = 240;
 export const SWAP_LOCK_DAYS = 5 * 360;
@@ -260,12 +263,15 @@ export const SWAP_SCAN_DAYS = 30;
 /**
  * DOWNTOWN (skyline): stage ≥ DOWNTOWN_STAGE growth is weighted by the distance to the commercial core (job-weighted
  * centroid of CS / CO jobs, monthly): weight = max(DOWNTOWN_MIN, 1 − smoothstep(DOWNTOWN_R0, DOWNTOWN_R1, d / map size));
- * a tower lot farther out is built at stage ≤ DOWNTOWN_STAGE − 1 unless a position hash < weight.
+ * a lot may carry a tower only when its position hash < weight (fixed per lot: the skyline concentrates downtown and a
+ * share DOWNTOWN_MIN of the far high-density lots still gets one), else it is built at stage ≤ DOWNTOWN_STAGE − 1.
+ * (WP6a 256×40 s7: with a per-day hash the far lots all won their tower eventually — 29 % of towers near the core vs 36 %
+ * without any weighting.)
  */
 export const DOWNTOWN_STAGE = 6;
-export const DOWNTOWN_R0 = 0.12;
-export const DOWNTOWN_R1 = 0.4;
-export const DOWNTOWN_MIN = 0.35;
+export const DOWNTOWN_R0 = 0.1;
+export const DOWNTOWN_R1 = 0.3;
+export const DOWNTOWN_MIN = 0.3;
 /** at least this many CS / CO jobs before a commercial core exists (smaller towns: no downtown weighting) */
 export const DOWNTOWN_MIN_JOBS = 2000;
 /**

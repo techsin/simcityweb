@@ -11,7 +11,8 @@
  *  - Redevelopment: random existing growables are replaced by higher-stage (bigger) buildings when demand and
  *    desirability allow, merging adjacent small lots — this is how skylines emerge. Abandoned lots get rebuilt.
  *  - Gentrification / filtering (every growable once per SWAP_SCAN_DAYS): a live building swaps to a richer DevType of
- *    its zone at the same stage when that DevType's desirability is SWAP_MIN_GAIN higher and it has demand; an R$$$
+ *    its zone at the same stage when that DevType's desirability is SWAP_MIN_GAIN higher (and at least SWAP_MIN_DES)
+ *    and it has demand; an R$$$
  *    home below FILTER_DES for FILTER_DAYS becomes R$$ (timers in systemData.growth, keyed by building id).
  *  - Model variants: growth keeps its one rng draw, then steps to the next variant while a building within
  *    VARIANT_SPREAD cells has the same def + variant (no identical twins side by side).
@@ -30,7 +31,7 @@ import {
   GROWTH_BANK_DAYS, GROWTH_BANK_MIN_FRAC, GROWTH_MAX_BASE, GROWTH_MAX_FRAC, GROWTH_MAX_SCALE, GROWTH_MIN_ALLOW,
   GROWTH_OVERSHOOT_SLACK, GROWTH_RESPONSE, GROWTH_SIZE_DEMAND, HOTEL_PREF_MAX, INFILL_MAX_EXTRA, PICK_ALLOW_EXP, PICK_DES_EXP,
   REDEVELOP_CHECKS, REDEVELOP_MIN_AGE, REDEVELOP_MIN_GAIN, STAGE_DES_D0, STAGE_DES_D1, STAGE_POP, STAGE_PREF, SWAP_LOCK_DAYS,
-  SWAP_MIN_AGE, SWAP_MIN_CAP, SWAP_MIN_DEMAND, SWAP_MIN_GAIN, SWAP_SCAN_DAYS, VARIANT_SPREAD, WATER_REQUIRED_STAGE,
+  SWAP_MIN_AGE, SWAP_MIN_CAP, SWAP_MIN_DEMAND, SWAP_MIN_DES, SWAP_MIN_GAIN, SWAP_SCAN_DAYS, VARIANT_SPREAD, WATER_REQUIRED_STAGE,
   ZONE_MAX_STAGE, isGrowZone,
 } from './tuning';
 import { type EconRuntime, econData, infraFlags } from './runtime';
@@ -122,13 +123,17 @@ export function downtownWeight(st: CityState, x: number, z: number): number {
   return Math.max(DOWNTOWN_MIN, 1 - smoothstep(DOWNTOWN_R0, DOWNTOWN_R1, d));
 }
 
-/** max stage at cell i after the downtown weight (deterministic position / day hash; no rng draw) */
+/** true when the lot at (x, z) may carry a tower: its fixed position hash < the downtown weight (no rng draw) */
+export function towerLot(st: CityState, x: number, z: number): boolean {
+  const w = downtownWeight(st, x, z);
+  return w >= 1 || hash2(x, z, 911) < w;
+}
+
+/** max stage at cell i after the downtown weight (a fixed per-lot partition: the far lots that lost keep losing) */
 function downtownCap(st: CityState, i: number, maxStage: number): number {
   if (maxStage < DOWNTOWN_STAGE) return maxStage;
   const N = st.size;
-  const w = downtownWeight(st, i % N, (i / N) | 0);
-  if (w >= 1) return maxStage;
-  return hash2(i, st.day, 911) < w ? maxStage : DOWNTOWN_STAGE - 1;
+  return towerLot(st, i % N, (i / N) | 0) ? maxStage : DOWNTOWN_STAGE - 1;
 }
 
 // ------------------------------------------------------------------------------------------------ model variants
@@ -647,7 +652,9 @@ export function growthSystem(rt: EconRuntime): SimSystem {
       const k2 = d2 <= DevType.R3 ? 0 : d2 <= DevType.CS3 ? 1 : d2 <= DevType.CO3 ? 2 : 3;
       if (k2 !== kind || DEV_WEALTH[d2] <= DEV_WEALTH[dev]) continue;
       if (!(st.stats.demand[d2] > SWAP_MIN_DEMAND) || allow[d2] <= 0) continue;
-      const gain = st.desirability[d2][ci] - desOld;
+      const desNew = st.desirability[d2][ci];
+      if (!(desNew >= SWAP_MIN_DES)) continue;
+      const gain = desNew - desOld;
       if (gain >= bGain) { bGain = gain; best = d2; }
     }
     if (best < 0) return;
@@ -773,7 +780,9 @@ export function growthLimits(st: CityState, i: number, dev: number): { desStage:
     for (const d2 of ZONE_DEVTYPES[zone]) {
       const k2 = d2 <= DevType.R3 ? 0 : d2 <= DevType.CS3 ? 1 : d2 <= DevType.CO3 ? 2 : 3;
       if (k2 !== kind || DEV_WEALTH[d2] <= DEV_WEALTH[dev]) continue;
-      const g = (st.desirability[d2]?.[i] ?? 0) - des;
+      const dn = st.desirability[d2]?.[i] ?? 0;
+      if (!(dn >= SWAP_MIN_DES)) continue;
+      const g = dn - des;
       if (g >= gain) { gain = g; best = d2; }
     }
     const tier = (d: number) => '$'.repeat(DEV_WEALTH[d]);
@@ -786,7 +795,9 @@ export function growthLimits(st: CityState, i: number, dev: number): { desStage:
     const w = downtownWeight(st, x, z);
     if (c) {
       const d = Math.round(Math.hypot(x + 0.5 - c.x, z + 0.5 - c.z));
-      out.downtown = w >= 0.999 ? `downtown (${d} tiles from the core): towers welcome` : `${d} tiles from downtown: towers ${Math.round(w * 100)}% as likely`;
+      out.downtown = w >= 0.999 ? `downtown (${d} tiles from the core): towers welcome`
+        : towerLot(st, x, z) ? `${d} tiles from downtown: a tower may still rise here (${Math.round(w * 100)}% of lots this far)`
+          : `${d} tiles from downtown: too far for a tower (stage 5 at most here)`;
     }
   }
   return out;

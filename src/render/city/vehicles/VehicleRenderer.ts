@@ -25,7 +25,7 @@ import { car as kitCar, CAR_COLORS } from '../../../assets/kit';
 import { sharedUniforms } from '../../../assets/materials';
 import { DynamicBatch, type TileCuller } from '../common/batch';
 import { getCityMaterial } from '../common/cityMaterial';
-import { DX, DZ, OPP, RX, RZ, NF_TUNNEL, oneWayDir, type NetInfo } from '../common/netinfo';
+import { DX, DZ, OPP, RX, RZ, LIFT, NF_TUNNEL, oneWayDir, type NetInfo } from '../common/netinfo';
 import type { RoadSurface } from '../common/surface';
 
 export interface TrafficRoute {
@@ -43,6 +43,22 @@ const CAPS: Record<QualityLevel, number> = { low: 600, medium: 1500, high: 2500,
 const TRAIN_CAPS: Record<QualityLevel, number> = { low: 3, medium: 6, high: 10, ultra: 16 };
 const SPEED = [0, 7, 9.5, 12, 10, 21, 17];
 const TWO_PI = Math.PI * 2;
+/**
+ * Doubles handed between the per-vehicle frame helpers go through these typed slots instead of arguments, return values
+ * or object fields: a call V8 does not inline boxes every double it passes or returns (a heap number each), and the frame
+ * loops used to allocate 200-450 KB per frame that way.
+ *   _p: 0-3 path pose out (x, z, heading x, z), 4 arc length in, 5 path length in (evalPath), 6-7 heights out (surfPair)
+ *   _m: pose written by writeMatrix (x, y, z, forward x, y, z)
+ */
+const _p = new Float64Array(8);
+const _m = new Float64Array(6);
+/** chooseExit's per-direction weights */
+const _w4 = new Float64Array(4);
+
+/** classic zoom thinning step: a above h0, easing to b over w metres of camera height */
+function ease(h: number, h0: number, w: number, a: number, b: number): number {
+  return h <= h0 ? a : h >= h0 + w ? b : a + (b - a) * ((h - h0) / w);
+}
 
 function laneCount(t: number): number {
   return t === Network.OneWay || t === Network.Avenue || t === Network.Highway ? 2 : 1;
@@ -74,9 +90,9 @@ function wrapPi(a: number): number {
 }
 function pickWeighted(list: [string, number][], r: number): string {
   let tot = 0;
-  for (const [, w] of list) tot += w;
+  for (let i = 0; i < list.length; i++) tot += list[i][1];
   let x = r * tot;
-  for (const [id, w] of list) { x -= w; if (x <= 0) return id; }
+  for (let i = 0; i < list.length; i++) { x -= list[i][1]; if (x <= 0) return list[i][0]; }
   return list[list.length - 1][0];
 }
 
@@ -198,10 +214,6 @@ export class VehicleRenderer {
   private popTimer = 0;
   private time = 0;
   private rngS = 1234567;
-  private px = 0;
-  private pz = 0;
-  private dx = 1;
-  private dz = 0;
   private trains: Train[] = [];
   /** fraction of vehicle slots the zoom thinning keeps (by camera height, see the file comment) */
   private keep = 1;
@@ -428,33 +440,35 @@ export class VehicleRenderer {
     return (Math.PI / 2) * (rE + rX) * 0.5;
   }
 
-  /** evaluate position (this.px/pz) and heading (this.dx/dz) at distance s along the cell path */
-  private evalPath(ci: number, hi: number, ho: number, oi: number, oo: number, s: number, L: number): void {
+  /** pose (-> _p[0..3]: position x, z, heading x, z) at arc length _p[4] along the path through cell ci of length _p[5]
+   *  (entry heading hi, exit ho, lane offsets oi / oo) */
+  private evalPath(ci: number, hi: number, ho: number, oi: number, oo: number): void {
     const N = this.net.N;
     const H = CELL_SIZE / 2;
+    const s = _p[4], L = _p[5];
     const ox = ((ci % N) + 0.5) * CELL_SIZE, oz = (((ci / N) | 0) + 0.5) * CELL_SIZE;
     if (ho === hi) {
       const ex = ox - DX[hi] * H + RX[hi] * oi, ez = oz - DZ[hi] * H + RZ[hi] * oi;
       const xx = ox + DX[hi] * H + RX[hi] * oo, xz = oz + DZ[hi] * H + RZ[hi] * oo;
       const f = s / L;
-      this.px = ex + (xx - ex) * f; this.pz = ez + (xz - ez) * f;
-      this.dx = (xx - ex) / L; this.dz = (xz - ez) / L;
+      _p[0] = ex + (xx - ex) * f; _p[1] = ez + (xz - ez) * f;
+      _p[2] = (xx - ex) / L; _p[3] = (xz - ez) / L;
       return;
     }
     if (ho === OPP[hi]) {
       const o = Math.max(0.5, Math.abs(oi));
       if (s < H) {
-        this.px = ox - DX[hi] * H + RX[hi] * o + DX[hi] * s; this.pz = oz - DZ[hi] * H + RZ[hi] * o + DZ[hi] * s;
-        this.dx = DX[hi]; this.dz = DZ[hi];
+        _p[0] = ox - DX[hi] * H + RX[hi] * o + DX[hi] * s; _p[1] = oz - DZ[hi] * H + RZ[hi] * o + DZ[hi] * s;
+        _p[2] = DX[hi]; _p[3] = DZ[hi];
       } else if (s < H + Math.PI * o) {
         const a = Math.atan2(RZ[hi], RX[hi]) - (s - H) / o;
         const c = Math.cos(a), sn = Math.sin(a);
-        this.px = ox + o * c; this.pz = oz + o * sn;
-        this.dx = sn; this.dz = -c;
+        _p[0] = ox + o * c; _p[1] = oz + o * sn;
+        _p[2] = sn; _p[3] = -c;
       } else {
         const s3 = s - H - Math.PI * o;
-        this.px = ox - RX[hi] * o - DX[hi] * s3; this.pz = oz - RZ[hi] * o - DZ[hi] * s3;
-        this.dx = -DX[hi]; this.dz = -DZ[hi];
+        _p[0] = ox - RX[hi] * o - DX[hi] * s3; _p[1] = oz - RZ[hi] * o - DZ[hi] * s3;
+        _p[2] = -DX[hi]; _p[3] = -DZ[hi];
       }
       return;
     }
@@ -467,9 +481,9 @@ export class VehicleRenderer {
     const f = Math.min(1, s / L);
     const a = aE + da * f, r = rE + (rX - rE) * f;
     const c = Math.cos(a), sn = Math.sin(a);
-    this.px = cx + r * c; this.pz = cz + r * sn;
+    _p[0] = cx + r * c; _p[1] = cz + r * sn;
     const sg = da > 0 ? 1 : -1;
-    this.dx = -sn * sg; this.dz = c * sg;
+    _p[2] = -sn * sg; _p[3] = c * sg;
   }
 
   /** choose exit heading for road cell ci entered with heading hi (random walk); -1 if impossible */
@@ -480,7 +494,8 @@ export class VehicleRenderer {
     const t = net.roadType[ci];
     const ow = t === Network.OneWay ? oneWayDir(st.netFlags[ci]) : -1;
     let tot = 0;
-    const w0 = [0, 0, 0, 0];
+    const w0 = _w4;
+    w0.fill(0);
     for (let d = 0; d < 4; d++) {
       if (!(m & (1 << d)) || d === OPP[hi]) continue;
       if (ow >= 0 && d === OPP[ow]) continue;
@@ -569,22 +584,24 @@ export class VehicleRenderer {
     }
   }
 
-  /** fast path evaluation from the cache (writes px/pz/dx/dz) */
-  private evalCached(v: number, s: number): void {
-    const p = this.pp, o = v * 8;
+  /** pose of vehicle v at arc length _p[4] along its cached cell path -> _p[0..3] (x, z, heading x, z) */
+  private evalCached(v: number): void {
+    const p = this.pp, o = v * 8, s = _p[4];
     const ty = this.ptype[v];
     if (ty === 0) {
-      this.px = p[o] + p[o + 2] * s; this.pz = p[o + 1] + p[o + 3] * s;
-      this.dx = p[o + 2]; this.dz = p[o + 3];
+      _p[0] = p[o] + p[o + 2] * s; _p[1] = p[o + 1] + p[o + 3] * s;
+      _p[2] = p[o + 2]; _p[3] = p[o + 3];
     } else if (ty === 2) {
       const f = Math.min(1, s / this.len[v]);
       const da = p[o + 3];
       const a = p[o + 2] + da * f, r = p[o + 4] + (p[o + 5] - p[o + 4]) * f;
       const c = Math.cos(a), sn = Math.sin(a);
-      this.px = p[o] + r * c; this.pz = p[o + 1] + r * sn;
-      if (da > 0) { this.dx = -sn; this.dz = c; } else { this.dx = sn; this.dz = -c; }
+      _p[0] = p[o] + r * c; _p[1] = p[o + 1] + r * sn;
+      if (da > 0) { _p[2] = -sn; _p[3] = c; } else { _p[2] = sn; _p[3] = -c; }
     } else {
-      this.evalPath(this.cell[v], this.hin[v], this.hout[v], this.oin[v], this.oout[v], s, this.len[v]);
+      // U-turn (cul-de-sac): analytic
+      _p[5] = this.len[v];
+      this.evalPath(this.cell[v], this.hin[v], this.hout[v], this.oin[v], this.oout[v]);
     }
   }
 
@@ -795,7 +812,12 @@ export class VehicleRenderer {
   }
 
   // ------------------------------------------------------------------ frame
-  /** heightPx: drawing-buffer height (projected-size culling; default 1080) */
+  /**
+   * Advance and pose every vehicle and train. heightPx: drawing-buffer height (projected-size culling; default 1080).
+   * The frame runs as a few small methods (upkeep, car following, car poses, trains) so V8 optimises each hot loop on
+   * its own with everything it calls inlined; inside the loops helpers take only integers and exchange doubles through
+   * the typed slots _p / _m, so no double is ever boxed (see _p) and the frame allocates nothing.
+   */
   update(dt: number, camera: THREE.Camera, heightPx = 1080): void {
     if (!this.enabled) return;
     dt = Math.min(dt, 0.1);
@@ -803,13 +825,31 @@ export class VehicleRenderer {
     // the signal-lamp shader (materials.ts Emissive pattern 13) runs the same per-intersection cycle as the cars below
     sharedUniforms.uSignalTime.value = this.time % 30;
     sharedUniforms.uMapN.value = this.net.N;
-    const net = this.net;
-    const st = this.state;
     // zoom-based thinning: kept fraction by camera height, eased after each classic threshold (never below it)
     const camH = camera.position.y;
-    const ease = (h: number, h0: number, w: number, a: number, b: number) => (h <= h0 ? a : h >= h0 + w ? b : a + (b - a) * ((h - h0) / w));
     this.keep = camH <= 1500 ? ease(camH, 1000, 200, 1, 0.5) : camH <= 2600 ? ease(camH, 1500, 200, 0.5, 1 / 3) : ease(camH, 2600, 300, 1 / 3, 0);
-    // spawn distribution / routes (event driven, debounced by real time so slow frames don't stall it)
+    this.upkeep(dt);
+    this.follow(dt);
+    const night = sharedUniforms.uNight.value > 0.2;
+    const shown = this.poseCars(dt, camera, heightPx, night) + this.poseTrains(dt, camera, heightPx);
+    // nothing visible moved -> no upload, no shadow-map invalidation
+    if (shown > 0) this.batch.markMatricesDirty();
+    // (poseCars copies headlights at night only: headCount is 0 by day)
+    const hl = this.headlights, hc = this.headCount;
+    hl.count = hc;
+    if (hc) {
+      // upload only the headlights in use (the buffer holds one per vehicle slot)
+      const im = hl.instanceMatrix;
+      im.clearUpdateRanges();
+      im.addUpdateRange(0, hc * 16);
+      im.needsUpdate = true;
+    }
+  }
+
+  /** spawn distribution / routes (event driven, debounced by real time so slow frames don't stall it), population
+   *  control (fill up immediately when far below target), service vehicles and trains */
+  private upkeep(dt: number): void {
+    const net = this.net;
     if (this.spawnDirty && performance.now() - this.lastRefresh > 250) {
       this.refreshSpawn();
       this.refreshRoutes();
@@ -820,160 +860,196 @@ export class VehicleRenderer {
       this.routeTimer = 15;
       this.refreshRoutes();
     }
-    // population control (fill up immediately when far below target)
     this.popTimer -= dt;
     const starving = this.n < this.target * 0.6;
-    if (this.popTimer <= 0 || starving) {
-      this.popTimer = 0.4;
-      let budget = starving ? this.target - this.n : 40;
-      let fails = 0;
-      while (this.n < this.target && budget-- > 0 && fails < 60) {
-        const v = this.n;
-        if (this.spawn(v, true, true)) this.n++;
-        else fails++;
-      }
-      budget = 40;
-      while (this.n > this.target + this.serviceRoutes.length && budget-- > 0) this.removeSlot(this.n - 1);
-      // every active service route (fire trucks, police patrols, garbage...) gets its vehicle
-      if (this.serviceRoutes.length) {
-        const active = new Set<TrafficRoute>();
-        for (let v = 0; v < this.n; v++) { const R = this.vroute[v]; if (R) active.add(R); }
-        for (const R of this.serviceRoutes) {
-          if (active.has(R)) continue;
-          const v = this.n;
-          if (v >= this.cap) break;
-          if (this.spawn(v, true, false, R)) this.n++;
-        }
-      }
-      // trains
-      const wantTrains = net.railCells >= 8 ? Math.min(this.trainCap, Math.max(1, Math.round(net.railCells / 45))) : 0;
-      if (this.trains.length < wantTrains) {
-        const tr = this.spawnTrain();
-        if (tr) this.trains.push(tr);
-      } else if (this.trains.length > wantTrains) {
-        const tr = this.trains.pop()!;
-        for (const id of tr.inst) this.batch.remove(id);
-      }
+    if (!(this.popTimer <= 0 || starving)) return;
+    this.popTimer = 0.4;
+    let budget = starving ? this.target - this.n : 40;
+    let fails = 0;
+    while (this.n < this.target && budget-- > 0 && fails < 60) {
+      const v = this.n;
+      if (this.spawn(v, true, true)) this.n++;
+      else fails++;
     }
+    budget = 40;
+    while (this.n > this.target + this.serviceRoutes.length && budget-- > 0) this.removeSlot(this.n - 1);
+    // every active service route (fire trucks, police patrols, garbage...) gets its vehicle
+    if (this.serviceRoutes.length) {
+      const active = this.activeRoutes;
+      active.clear();
+      for (let v = 0; v < this.n; v++) { const R = this.vroute[v]; if (R) active.add(R); }
+      for (const R of this.serviceRoutes) {
+        if (active.has(R)) continue;
+        const v = this.n;
+        if (v >= this.cap) break;
+        if (this.spawn(v, true, false, R)) this.n++;
+      }
+      active.clear();
+    }
+    // trains
+    const wantTrains = net.railCells >= 8 ? Math.min(this.trainCap, Math.max(1, Math.round(net.railCells / 45))) : 0;
+    if (this.trains.length < wantTrains) {
+      const tr = this.spawnTrain();
+      if (tr) this.trains.push(tr);
+    } else if (this.trains.length > wantTrains) {
+      const tr = this.trains.pop()!;
+      for (const id of tr.inst) this.batch.remove(id);
+    }
+  }
+  private activeRoutes = new Set<TrafficRoute>();
+
+  /** car following (queues per cell / heading / lane bucket), 2-phase signals, congestion: target speeds -> spd */
+  private follow(dt: number): void {
     const n = this.n;
-    const head = this.head;
-    const nextB = this.nextB;
-    const used = this.usedK;
+    const head = this.head, nextB = this.nextB, used = this.usedK;
+    const cell = this.cell, hin = this.hin, hout = this.hout, lane = this.lane, tt = this.t, vlen = this.vlen, next = this.next, len = this.len;
     // buckets
     for (let v = 0; v < n; v++) {
-      const key = this.cell[v] * 8 + this.hin[v] * 2 + (this.lane[v] & 1);
+      const key = cell[v] * 8 + hin[v] * 2 + (lane[v] & 1);
       nextB[v] = head[key];
       head[key] = v;
       used[v] = key;
     }
-    const traffic = st.traffic, cong = st.congestion;
+    const roadType = this.net.roadType, cong = this.state.congestion;
     const sig = this.signalized;
     const time = this.time;
+    const vfac = this.vfac, spd = this.spd;
     for (let v = 0; v < n; v++) {
-      const c = this.cell[v];
-      const tv = this.t[v];
-      const lv = this.vlen[v] * 0.5;
+      const c = cell[v];
+      const tv = tt[v];
+      const lv = vlen[v] * 0.5;
       let gap = 1e9;
       for (let j = head[used[v]]; j >= 0; j = nextB[j]) {
         if (j === v) continue;
-        const tj = this.t[j];
+        const tj = tt[j];
         if (tj > tv || (tj === tv && j > v)) {
-          const g = tj - tv - lv - this.vlen[j] * 0.5;
+          const g = tj - tv - lv - vlen[j] * 0.5;
           if (g < gap) gap = g;
         }
       }
-      const nc = this.next[v];
+      const nc = next[v];
       if (gap > 30 && nc >= 0) {
-        const key2 = nc * 8 + this.hout[v] * 2 + (this.lane[v] & 1);
-        const rem = this.len[v] - tv;
+        const key2 = nc * 8 + hout[v] * 2 + (lane[v] & 1);
+        const rem = len[v] - tv;
         for (let j = head[key2]; j >= 0; j = nextB[j]) {
-          const g = rem + this.t[j] - lv - this.vlen[j] * 0.5;
+          const g = rem + tt[j] - lv - vlen[j] * 0.5;
           if (g < gap) gap = g;
         }
       }
       // signals: stop at the end of this cell if the next cell is a red intersection
       if (sig && nc >= 0 && sig[nc]) {
         const ph = (time + ((nc * 2654435761) >>> 0) % 997 * 0.03) % 30;
-        const axis = this.hout[v] & 1; // 0: x axis, 1: z axis
+        const axis = hout[v] & 1; // 0: x axis, 1: z axis
         const green = axis === 0 ? ph < 13 : ph >= 15 && ph < 28;
         if (!green) {
-          const g = this.len[v] - tv - lv - 0.8;
+          const g = len[v] - tv - lv - 0.8;
           if (g > -1.0 && g < gap) gap = Math.max(0, g);
         }
       }
-      const rt = net.roadType[c];
+      const rt = roadType[c];
       const cg = cong[c];
       const cf = 1 / (1 + 1.6 * Math.max(0, cg - 0.35));
-      const desired = SPEED[rt] * this.vfac[v] * cf;
+      const desired = SPEED[rt] * vfac[v] * cf;
       const tgt = gap < 60 ? Math.min(desired, Math.max(0, gap - 1.2) * 1.15) : desired;
-      let sp = this.spd[v];
+      let sp = spd[v];
       if (tgt > sp) sp = Math.min(tgt, sp + 2.8 * dt);
       else sp = Math.max(tgt, sp - 9 * dt);
-      this.spd[v] = sp;
-      void traffic;
+      spd[v] = sp;
     }
     for (let v = 0; v < n; v++) head[used[v]] = -1;
-    // move + pose
+  }
+
+  /**
+   * Move every road vehicle along its path (cell transitions, respawns), cull (tile visibility, tunnels, zoom thinning
+   * relaxed by projected size) and write the visible ones' matrices / headlights. Returns the number drawn.
+   * Zoom thinning by camera height (classic rule), relaxed by projected size: a vehicle of length L at distance d spans
+   * L * K / d px (K = H / (2 tan(fov / 2))); one the classic rule drops is still drawn while it spans >= thinPx (every
+   * 2nd one >= hidePx).
+   */
+  private poseCars(dt: number, camera: THREE.Camera, heightPx: number, night: boolean): number {
+    const net = this.net;
+    const st = this.state;
     const data = this.batch.matrixData();
-    const vis = this.culler.vis;
-    const surf = this.surf;
-    const night = sharedUniforms.uNight.value > 0.2;
-    const hl = this.headlights;
-    const hm = hl.instanceMatrix.array as Float32Array;
-    const headCap = hl.instanceMatrix.count;
+    const cul = this.culler, tileVis = cul.vis;
+    const cellSize = cul.cellSize, tileCells = cul.tileCells, tiles = cul.tiles, tmax = tiles - 1;
+    const hm = this.headlights.instanceMatrix.array as Float32Array;
+    const headCap = this.headlights.instanceMatrix.count;
     let hc = 0;
-    // zoom thinning by camera height (classic rule), relaxed by projected size: a vehicle of length L at distance d
-    // spans L * K / d px (K = H / (2 tan(fov / 2))); one the classic rule drops is still drawn while it spans >= thinPx
-    // (every 2nd one >= hidePx)
-    const cpx = camera.position.x, cpz = camera.position.z, cpy2 = camH * camH;
+    const cp = camera.position;
+    const cpx = cp.x, cpz = cp.z, cpy2 = cp.y * cp.y;
     const fov = (camera as THREE.PerspectiveCamera).isPerspectiveCamera ? (camera as THREE.PerspectiveCamera).fov : 38;
     const K = heightPx / (2 * Math.tan((fov * Math.PI) / 360));
     const kh = K / Math.max(0.5, this.hidePx), kt = K / Math.max(0.5, this.thinPx);
     const D2 = this.maxDistance * this.maxDistance;
+    const keep = this.keep;
+    const flags = st.netFlags, roadType = net.roadType;
+    const life = this.life, tt = this.t, spd = this.spd, len = this.len, vlen = this.vlen, inst = this.inst, vis = this.vis;
     let shown = 0;
     for (let v = 0; v < this.n; v++) {
-      this.life[v] -= dt;
-      let t = this.t[v] + this.spd[v] * dt;
+      life[v] -= dt;
+      let t = tt[v] + spd[v] * dt;
       let ok = true;
       let guard = 0;
-      while (t >= this.len[v] && guard++ < 4) {
-        t -= this.len[v];
-        if (this.life[v] <= 0 || !this.enterNext(v)) { ok = false; break; }
+      while (t >= len[v] && guard++ < 4) {
+        t -= len[v];
+        if (life[v] <= 0 || !this.enterNext(v)) { ok = false; break; }
       }
-      if (ok && !net.roadType[this.cell[v]]) ok = false;
+      if (ok && !roadType[this.cell[v]]) ok = false;
       if (!ok) {
         if (!this.spawn(v, false, false)) { this.removeSlot(v); v--; continue; }
-        t = this.t[v];
+        t = tt[v];
       }
-      this.t[v] = t;
+      tt[v] = t;
       const ci = this.cell[v];
-      this.evalCached(v, t);
-      const x = this.px, z = this.pz;
+      _p[4] = t;
+      this.evalCached(v);
+      const x = _p[0], z = _p[1];
       this.posX[v] = x; this.posZ[v] = z;
-      const tile = this.culler.tileOfWorld(x, z);
-      const tunnel = st.netFlags[ci] & NF_TUNNEL;
+      // culler tile (TileCuller.tileOfWorld)
+      const gx = Math.floor(Math.floor(x / cellSize) / tileCells), gz = Math.floor(Math.floor(z / cellSize) / tileCells);
+      const tile = (gz < 0 ? 0 : gz > tmax ? tmax : gz) * tiles + (gx < 0 ? 0 : gx > tmax ? tmax : gx);
+      const tunnel = flags[ci] & NF_TUNNEL;
       const ddx = x - cpx, ddz = z - cpz, d2 = ddx * ddx + ddz * ddz + cpy2;
-      const L = this.vlen[v], lh = L * kh, lt = L * kt;
+      const L = vlen[v], lh = L * kh, lt = L * kt;
       // (slot rank: golden-ratio sequence, evenly spread for any prefix of slots)
-      const classic = (v * 0.6180339887) % 1 < this.keep;
+      const classic = (v * 0.6180339887) % 1 < keep;
       const sized = d2 < lh * lh && (d2 < lt * lt || (v & 1) === 0);
-      const show = d2 < D2 && (classic || sized) && vis[tile] === 1 && !tunnel ? 1 : 0;
-      if (show !== this.vis[v]) { this.vis[v] = show; this.batch.setVisible(this.inst[v], show === 1); }
+      const show = d2 < D2 && (classic || sized) && tileVis[tile] === 1 && !tunnel ? 1 : 0;
+      if (show !== vis[v]) { vis[v] = show; this.batch.setVisible(inst[v], show === 1); }
       if (!show) continue;
       shown++;
-      const fx = this.dx, fz = this.dz;
-      const half = this.vlen[v] * 0.4;
+      const fx = _p[2], fz = _p[3];
+      const half = vlen[v] * 0.4;
       // (heading-aware: cars crossing under a highway overpass stay on the ground, highway traffic rides the deck)
-      const yF = surf.y(x + fx * half, z + fz * half, fx, fz), yB = surf.y(x - fx * half, z - fz * half, fx, fz);
-      const y = (yF + yB) * 0.5;
-      this.writeMatrix(data, this.inst[v] * 16, x, y, z, fx, (yF - yB) / (2 * half), fz);
+      _p[4] = half;
+      this.surfPair(true);
+      const yF = _p[6], yB = _p[7];
+      _m[0] = x; _m[1] = (yF + yB) * 0.5; _m[2] = z; _m[3] = fx; _m[4] = (yF - yB) / (2 * half); _m[5] = fz;
+      const s = inst[v] * 16;
+      this.writeMatrix(data, s);
       if (night && hc < headCap) {
-        const o = hc * 16, s = this.inst[v] * 16;
+        const o = hc * 16;
         for (let k = 0; k < 16; k++) hm[o + k] = data[s + k];
         hc++;
       }
     }
-    // trains
+    this.headCount = hc;
+    return shown;
+  }
+
+  /** advance, cull and pose the trains (loco + cars along the path history); returns the number of cars drawn */
+  private poseTrains(dt: number, camera: THREE.Camera, heightPx: number): number {
+    if (!this.trains.length) return 0;
+    const st = this.state;
+    const data = this.batch.matrixData();
+    const cul = this.culler, tileVis = cul.vis;
+    const cellSize = cul.cellSize, tileCells = cul.tileCells, tiles = cul.tiles, tmax = tiles - 1;
+    const cp = camera.position;
+    const cpx = cp.x, cpz = cp.z, cpy2 = cp.y * cp.y;
+    const fov = (camera as THREE.PerspectiveCamera).isPerspectiveCamera ? (camera as THREE.PerspectiveCamera).fov : 38;
+    const kh = heightPx / (2 * Math.tan((fov * Math.PI) / 360)) / Math.max(0.5, this.hidePx);
+    const D2 = this.maxDistance * this.maxDistance;
+    let shown = 0;
     for (let k = 0; k < this.trains.length; k++) {
       const tr = this.trains[k];
       tr.speed += Math.max(-4 * dt, Math.min(1.2 * dt, tr.vmax - tr.speed));
@@ -993,32 +1069,67 @@ export class VehicleRenderer {
         let hIdx = tr.hn - 1;
         let s = tr.t;
         while (rem > s && hIdx > 0) { rem -= s; hIdx--; s = tr.hl[hIdx]; }
-        const pos = Math.max(0, s - rem);
         const ci = tr.hc[hIdx];
-        this.evalPath(ci, tr.hi[hIdx], tr.ho[hIdx], 0, 0, pos, tr.hl[hIdx]);
-        const x = this.px, z = this.pz;
+        _p[4] = Math.max(0, s - rem);
+        _p[5] = tr.hl[hIdx];
+        this.evalPath(ci, tr.hi[hIdx], tr.ho[hIdx], 0, 0);
+        const x = _p[0], z = _p[1];
         const id = tr.inst[c];
-        const tile = this.culler.tileOfWorld(x, z);
+        const gx = Math.floor(Math.floor(x / cellSize) / tileCells), gz = Math.floor(Math.floor(z / cellSize) / tileCells);
+        const tile = (gz < 0 ? 0 : gz > tmax ? tmax : gz) * tiles + (gx < 0 ? 0 : gx > tmax ? tmax : gx);
         const tdx = x - cpx, tdz = z - cpz, td2 = tdx * tdx + tdz * tdz + cpy2, tl = tr.lens[c] * kh;
-        const show = vis[tile] === 1 && !(st.netFlags[ci] & NF_TUNNEL) && td2 < D2 * 4 && (this.keep > 0 || td2 < tl * tl);
+        const show = tileVis[tile] === 1 && !(st.netFlags[ci] & NF_TUNNEL) && td2 < D2 * 4 && (this.keep > 0 || td2 < tl * tl);
         this.batch.setVisible(id, show);
         if (!show) continue;
         shown++;
-        const fx = this.dx, fz = this.dz;
+        const fx = _p[2], fz = _p[3];
         const hh = half * 0.8;
-        const yF = surf.y(x + fx * hh, z + fz * hh), yB = surf.y(x - fx * hh, z - fz * hh);
-        this.writeMatrix(data, id * 16, x, (yF + yB) * 0.5 + 0.62, z, fx, (yF - yB) / (2 * hh), fz);
+        _p[4] = hh;
+        this.surfPair(false);
+        const yF = _p[6], yB = _p[7];
+        _m[0] = x; _m[1] = (yF + yB) * 0.5 + 0.62; _m[2] = z; _m[3] = fx; _m[4] = (yF - yB) / (2 * hh); _m[5] = fz;
+        this.writeMatrix(data, id * 16);
       }
     }
-    // nothing visible moved -> no upload, no shadow-map invalidation
-    if (shown > 0) this.batch.markMatricesDirty();
-    hl.count = night ? hc : 0;
-    if (night && hc) hl.instanceMatrix.needsUpdate = true;
-    this.headCount = hc;
+    return shown;
   }
 
-  private writeMatrix(d: Float32Array, o: number, x: number, y: number, z: number, fx: number, fy: number, fz: number): void {
-    // forward f normalized (with pitch), X = normalize(cross(up, f)), Y = cross(f, X)
+  /**
+   * Road-surface heights at the two points _p[0..1] +- _p[2..3] * _p[4] (front -> _p[6], back -> _p[7]). heading: as
+   * RoadSurface.y(x, z, fx, fz) (road vehicles: traffic crossing under an overpass stays on the ground), else as
+   * RoadSurface.y(x, z) (trains). Cells without a bridge / overpass span (nearly all) are evaluated here with
+   * RoadSurface.terrain's formula (the rendered triangulation) + LIFT; spans fall back to RoadSurface.
+   */
+  private surfPair(heading: boolean): void {
+    const net = this.net, surf = this.surf, st = surf.state;
+    const N = st.size, N1 = N + 1, hts = st.heights;
+    const bAxis = net.bAxis, bCross = net.bCross;
+    const fx = _p[2], fz = _p[3], h = _p[4];
+    for (let k = 0; k < 2; k++) {
+      const off = k === 0 ? h : -h;
+      const wx = _p[0] + fx * off, wz = _p[1] + fz * off;
+      const cx = Math.floor(wx / CELL_SIZE), cz = Math.floor(wz / CELL_SIZE);
+      const i = cz * N + cx;
+      let y: number;
+      if (cx >= 0 && cz >= 0 && cx < N && cz < N && bAxis[i] < 0 && !(heading && bCross[i])) {
+        let gx = wx / CELL_SIZE, gz = wz / CELL_SIZE;
+        if (gx < 0) gx = 0; else if (gx > N - 1e-6) gx = N - 1e-6;
+        if (gz < 0) gz = 0; else if (gz > N - 1e-6) gz = N - 1e-6;
+        const ix = gx | 0, iz = gz | 0;
+        const tx = gx - ix, tz = gz - iz;
+        const j = iz * N1 + ix;
+        const a = hts[j], b = hts[j + 1], c = hts[j + N1], d = hts[j + N1 + 1];
+        y = (tx + tz <= 1 ? a + (b - a) * tx + (c - a) * tz : d + (c - d) * (1 - tx) + (b - d) * (1 - tz)) + LIFT;
+      } else y = heading ? surf.y(wx, wz, fx, fz) : surf.y(wx, wz);
+      _p[6 + k] = y;
+    }
+  }
+
+  /** instance matrix at d[o..o+15] for the pose in _m (position, forward with pitch): forward f normalized,
+   *  X = normalize(cross(up, f)), Y = cross(f, X) */
+  private writeMatrix(d: Float32Array, o: number): void {
+    const x = _m[0], y = _m[1], z = _m[2];
+    let fx = _m[3], fy = _m[4], fz = _m[5];
     let l = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1;
     fx /= l; fy /= l; fz /= l;
     let xx = fz, xz = -fx;

@@ -22,3 +22,14 @@ declare module 'popagg:shell' {
   }
   export function populationSystemShell(rt: EconRuntime, kernel: ProbeKernel): SimSystem & { rt: EconRuntime };
 }
+
+/**
+ * The virtual module 'popagg:js-b' (plugins.mjs jsCopy): a second copy of src/wasm/js/populationAggregateProbe.ts with
+ * its own JIT feedback, for arm B.
+ */
+declare module 'popagg:js-b' {
+  // (at runtime the namespace holds every export of src/wasm/js/populationAggregateProbe.ts; importers cast it to
+  // ProbeJs from core.ts — an ambient module cannot re-export a relative path)
+  const copyOf: 'src/wasm/js/populationAggregateProbe.ts';
+  export default copyOf;
+}

@@ -13,8 +13,10 @@ import { deserializeCity, type SerializedCity } from '../../../src/save/serializ
 import { unpackFile } from '../../../src/save/bundle';
 import { Simulation } from '../../../src/sim/Simulation';
 import { createSystems } from '../../../src/sim/systems/index';
-import { ARM_INFO, DAY_KINDS, checkArms, checkDays, dayOfKind, instantiate, makeArms, type DayKind } from './core';
+import { type ProbeJs, ARM_INFO, DAY_KINDS, checkArms, checkDays, dayOfKind, instantiate, makeArms, type DayKind } from './core';
 import { PAIRS, logSummary, runPairs, weightedSpeedups, worldOfSim } from './pairs';
+// arm B's private copy of the fair-JS module (own inline-cache feedback; plugins.mjs jsCopy)
+import * as jsBCopy from 'popagg:js-b';
 
 interface Msg {
   fixtures: { url: string; name: string }[];
@@ -52,7 +54,7 @@ async function run(m: Msg): Promise<unknown> {
     const world = worldOfSim(sim, f.name);
     log(`\n# ${f.name}: load + init ${(t1 - t0).toFixed(0)} ms, ${m.warm} warm days ${(performance.now() - t1).toFixed(0)} ms (wall); day ${st.day}, ` +
       `population ${st.stats.population}, growables ${world.rt.growables.length}`);
-    const arms = makeArms(world, { simd, scalar });
+    const arms = makeArms(world, { simd, scalar, jsB: jsBCopy as unknown as ProbeJs });
     const days = checkDays(dayOfKind(st.day, 'demo'));
     const n = checkArms(world, arms, days);
     log(`# bit-exact: every arm identical to A on days ${days.join(', ')} (${n} comparisons)`);

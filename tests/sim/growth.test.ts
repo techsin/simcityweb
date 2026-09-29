@@ -15,10 +15,10 @@ import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { getDef, rotatedFootprint } from '../../src/sim/catalog';
 import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import {
-  commercialCore, downtownWeight, growthData, growthLimits, positionVariant, spreadVariant,
+  commercialCore, downtownWeight, growthData, growthLimits, positionVariant, spreadVariant, towerLot,
 } from '../../src/sim/economy/growth';
 import { placeBuilding } from '../../src/sim/economy/buildings';
-import { PICK_ALLOW_EXP, PICK_DES_EXP, VARIANT_SPREAD } from '../../src/sim/economy/tuning';
+import { DOWNTOWN_MIN, DOWNTOWN_R0, DOWNTOWN_R1, PICK_ALLOW_EXP, PICK_DES_EXP, VARIANT_SPREAD } from '../../src/sim/economy/tuning';
 
 const isRoad = (n: number) => n >= Network.Street && n <= Network.Highway;
 
@@ -185,6 +185,20 @@ describe('growth: grown towns', () => {
     if (c) {
       expect(downtownWeight(st, Math.round(c.x), Math.round(c.z))).toBe(1);
       expect(downtownWeight(st, 0, 0)).toBeLessThanOrEqual(1);
+      // the tower partition is fixed per lot (no re-roll per day: a far lot that lost keeps losing) and thin far out
+      const N = st.size;
+      let near = 0, nearOk = 0, far = 0, farOk = 0;
+      const day = st.day;
+      for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+        const d = Math.hypot(x + 0.5 - c.x, z + 0.5 - c.z) / N;
+        const ok = towerLot(st, x, z);
+        st.day = day + 17;
+        expect(towerLot(st, x, z)).toBe(ok);
+        st.day = day;
+        if (d < DOWNTOWN_R0) { near++; if (ok) nearOk++; } else if (d > DOWNTOWN_R1) { far++; if (ok) farOk++; }
+      }
+      expect(nearOk).toBe(near);
+      if (far > 50) expect(farOk / far).toBeLessThan(DOWNTOWN_MIN + 0.1);
     }
     // growthLimits keeps its phase-0 shape (optional fields only)
     const gl = growthLimits(st, 20 * st.size + 20, DevType.R2);

@@ -12,6 +12,7 @@
  * was splatted; a Burnt / Abandoned flip (buildingChanged) or a parks-funding change re-splats the difference, so a
  * burnt landmark stops lifting its neighbourhood and an unfunded park lifts it less.
  * Historic buildings are read from a per-cell mask (rebuilt when a historic building changes and once per sweep).
+ * Save / load: land value is saved; a loaded city keeps it (no first pass) and its band continues on the rows of its day.
  */
 import type { SimSystem, Simulation } from '../Simulation';
 import { BF, type Building, type CityState } from '../CityState';
@@ -51,6 +52,13 @@ function extraOf(rt: EconRuntime, st: CityState): LvExtra {
   }
   return e;
 }
+/** true when the state carries land values (a loaded / continued city), false for a fresh map (all 0) */
+function hasStoredLandValue(st: CityState): boolean {
+  const lv = st.landValue;
+  for (let i = 0; i < lv.length; i++) if (lv[i] > 0) return true;
+  return false;
+}
+
 /** historic mask: the cells of every historic building that is not burnt / abandoned */
 function rebuildHistoric(st: CityState, e: LvExtra): void {
   const N = st.size, hist = e.hist, cells = e.histCells;
@@ -395,6 +403,18 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
     st.stats.avgLandValue = acc[1] > 0 ? acc[0] / acc[1] : acc[3] > 0 ? acc[2] / acc[3] : 0;
     acc.fill(0);
   };
+  /** the band's average sums over the STORED land value of rows [z0, z1) (a loaded city) */
+  const accumulate = (st: CityState, z0: number, z1: number) => {
+    const N = st.size, lvArr = st.landValue, water = st.water, zone = st.zone, bld = st.building;
+    let sum = 0, cnt = 0, sumAll = 0, cntAll = 0;
+    for (let i = z0 * N, e = z1 * N; i < e; i++) {
+      if (water[i]) continue;
+      const v = lvArr[i];
+      sumAll += v; cntAll++;
+      if (zone[i] !== Zone.None || bld[i] >= 0) { sum += v; cnt++; }
+    }
+    acc[0] += sum; acc[1] += cnt; acc[2] += sumAll; acc[3] += cntAll;
+  };
   return {
     name: 'economy.landValue',
     init(sim) {
@@ -420,10 +440,21 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
       row = 0;
       refresh(st, true);
       acc.fill(0);
-      band(st, 0, st.size, true);
-      // (stats from the first pass too: a new or loaded city shows its average at once)
-      publish(st);
-      row = 0;
+      const N = st.size, rows = Math.ceil(N / LV_REFRESH_DAYS), cycle = Math.ceil(N / rows);
+      if (st.day > 0 && hasStoredLandValue(st)) {
+        // a loaded city keeps its saved (smoothed) land value — a first pass would drop the neighbourhood blend and the
+        // lag, and the overlay would jump after every load. The band continues on the rows of its day: the schedule of
+        // an uninterrupted game (day d refreshes rows from ((d − 1) mod cycle) × rows), so a save / load changes nothing
+        accumulate(st, 0, N);
+        publish(st);
+        row = (st.day % cycle) * rows;
+        accumulate(st, 0, Math.min(N, row));
+      } else {
+        band(st, 0, N, true);
+        // (stats from the first pass too: a new city shows its average at once)
+        publish(st);
+        row = 0;
+      }
     },
     daily(sim) {
       const t0 = performance.now();

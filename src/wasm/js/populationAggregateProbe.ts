@@ -9,9 +9,10 @@
  *
  * Arms implemented here (tools/bench/populationAggregateProbe.bench.mjs measures them):
  *   B  aggregateObjects(list, defs, …)  the same loop over Building objects, with a per-id def-index cache (DefIndex:
- *      Int16Array id -> def index -> devType) instead of rt.defOf(b) (a Map-free lookup, no def-string compare, no
- *      BuildingDef property load). Run over objects re-created with one stable shape (recreateStable) = arm B, over
- *      the sim's own objects = arm B0 (the def-index change alone).
+ *      Int16Array id -> def index -> Uint8Array dev code) instead of rt.defOf(b) (no def-string compare, no
+ *      BuildingDef property load, and an int32 dev: every per-dev access is an int-keyed element access — a devType
+ *      read into a double would make each of them a float-keyed access). Run over objects re-created with one stable
+ *      shape (recreateStable) = arm B, over the sim's own objects = arm B0 (the def-index change alone).
  *   E  gatherSoA(list, defs, cw, soa)    Building objects -> struct-of-arrays snapshot (the daily cost if buildings
  *      stay objects). Returns false when a value cannot be represented exactly (then use the object path).
  *   C  aggregateSoA(soa, …)              the loop over the SoA in JS (what a building SoA table gives without wasm).
@@ -248,8 +249,89 @@ export function recreateStable<T extends PopAggBuilding>(list: readonly T[]): Po
 /**
  * Arm B / B0: the original loop over Building objects with the def index. Writes t, the raw grids (and on demo days
  * coh + the demographics raw grids), then blurGrids. `coh` keeps its values on non-demo days (like the closure).
+ * The dev is the def index's int code; a def whose devType the code cannot hold (DEV_UNSUPPORTED: not an integer in
+ * [0, DEV_TYPE_COUNT) — no catalog def has one) makes the call start over in aggregateObjectsExact, which rewrites
+ * every output (the zeroing at its start covers everything this loop wrote).
  */
 export function aggregateObjects(
+  list: readonly PopAggBuilding[], defs: DefIndex, c: PopAggConstants, inp: PopAggInput, g: PopAggGrids, t: PopAggTotals,
+  coh: Float64Array, out: PopAggResult,
+): void {
+  resetTotals(t);
+  const cw = inp.cw;
+  const cpr = g.coarsePopRaw, cwr = g.coarseWealthRaw, ccr = g.coarseCountRaw;
+  cpr.fill(0); cwr.fill(0); ccr.fill(0);
+  const sample = inp.sample, demo = inp.demo;
+  const popWRaw = g.popWRaw, skillRaw = g.skillRaw, kidsRaw = g.kidsRaw;
+  if (demo) {
+    popWRaw[0].fill(0); popWRaw[1].fill(0); popWRaw[2].fill(0); skillRaw.fill(0); kidsRaw.fill(0);
+    coh.fill(0);
+  }
+  const COARSE = c.COARSE, R_MAX = c.R_MAX, SKIP = c.MASK_SKIP, CONSTR = c.MASK_CONSTR, WR = c.WORKFORCE_RATIO;
+  const CB0 = c.COHORT_BASE[0], CB1 = c.COHORT_BASE[1], CB2 = c.COHORT_BASE[2], CB4 = c.COHORT_BASE[4];
+  const mWf = inp.mWf, tAcc = inp.tAcc, accArr = inp.accArr, eduFallback = inp.eduFallback;
+  const tPop = t.pop, tCapAll = t.resCapAll, tCapBuilt = t.resCapBuilt, tJobs = t.jobs, tJobCapAll = t.jobCapAll,
+    tJobCapBuilt = t.jobCapBuilt, tCount = t.countByDev;
+  let W = 0, eduSum = 0, eduPop = 0, accE = 0, accW = 0, unW = 0, abandoned = 0, constructingN = 0;
+  const code = defs.code;
+  for (let k = 0; k < list.length; k++) {
+    const b = list[k];
+    const di = defs.of(b);
+    if (di < 0) continue;
+    const dev = code[di];
+    if (dev === DEV_UNSUPPORTED) return aggregateObjectsExact(list, defs, c, inp, g, t, coh, out);
+    const blk = (((b.z + (b.d >> 1)) / COARSE) | 0) * cw + (((b.x + (b.w >> 1)) / COARSE) | 0);
+    const f = b.flags;
+    if (f & SKIP) { abandoned++; continue; }
+    tCount[dev]++;
+    const constructing = (f & CONSTR) !== 0;
+    if (constructing) constructingN++;
+    if (dev <= R_MAX) {
+      const p = b.pop;
+      const cap = b.capacity;
+      tPop[dev] += p;
+      tCapAll[dev] += cap;
+      if (!constructing) tCapBuilt[dev] += cap;
+      cpr[blk] += p;
+      if (p > 0 && sample) {
+        const id = b.id;
+        const wv = mWf[id];
+        const wk = p * (wv === wv ? wv : WR);
+        W += wk;
+        if (tAcc) {
+          const a = accArr ? (id < accArr.length ? accArr[id] : -1) : inp.workerAccess!(id);
+          if (a >= 0) { accE += wk * (a < 1 ? a : 1); accW += wk; } else unW += wk;
+        }
+      }
+      if (p > 0 && demo) {
+        const k0 = b.kids ?? CB0, k1 = b.teens ?? CB1, k2 = b.yad ?? CB2, k4 = b.srs ?? CB4;
+        const x3 = 1 - k0 - k1 - k2 - k4;
+        const k3 = x3 > 0 || x3 !== x3 ? x3 : 0; // Math.max(0, x3)
+        const o = dev * 5;
+        coh[o] += p * k0; coh[o + 1] += p * k1; coh[o + 2] += p * k2; coh[o + 3] += p * k3; coh[o + 4] += p * k4;
+        const e = b.edu;
+        if (e !== undefined) { eduSum += p * e; eduPop += p; }
+        popWRaw[dev][blk] += p;
+        skillRaw[blk] += p * (e ?? eduFallback);
+        kidsRaw[blk] += p * k0;
+      }
+    } else {
+      const cap = b.capacity;
+      tJobs[dev] += b.jobs;
+      tJobCapAll[dev] += cap;
+      if (!constructing) tJobCapBuilt[dev] += cap;
+    }
+    cwr[blk] += b.wealth - 2;
+    ccr[blk]++;
+  }
+  t.abandoned = abandoned;
+  t.constructing = constructingN;
+  out.W = W; out.accE = accE; out.accW = accW; out.unW = unW; out.eduSum = eduSum; out.eduPop = eduPop;
+  blurGrids(g, cw, demo);
+}
+
+/** aggregateObjects for ANY devType (read as a number, exactly like the original's def.devType): the fallback */
+export function aggregateObjectsExact(
   list: readonly PopAggBuilding[], defs: DefIndex, c: PopAggConstants, inp: PopAggInput, g: PopAggGrids, t: PopAggTotals,
   coh: Float64Array, out: PopAggResult,
 ): void {
@@ -388,7 +470,8 @@ export function gatherNeed(sample: boolean, demo: boolean): number {
  * Arm E: fill `soa` from the Building objects (list order). `need` selects the optional columns (the loop reads id only
  * on sample days and kids / teens / yad / srs / edu only on demo days; the other columns are always filled). Returns
  * false (soa content undefined) when a value would not survive the SoA exactly: a def whose devType is not an integer
- * in [0, DEV_TYPE_COUNT), a wealth outside u8, a non-int32 id, a pop / capacity / jobs that is not a number, a cohort /
+ * in [0, DEV_TYPE_COUNT), a block index outside int32 (coordinates beyond ±2^31 / cw), a wealth outside u8, a
+ * non-int32 id, a pop / capacity / jobs that is not a number, a cohort /
  * education share that is not an f32 number (NaN, null, a value Math.fround changes). The sim writes f32 shares
  * (Math.fround) and integer ids / wealth, so this never fails on a real city; the caller then runs the object path.
  */
@@ -409,7 +492,10 @@ export function gatherSoA(list: readonly PopAggBuilding[], defs: DefIndex, c: Po
     D[k] = dc;
     if (dc === DEV_SKIP) continue;
     if (dc === DEV_UNSUPPORTED) { ok = false; continue; }
-    BLK[k] = (((b.z + (b.d >> 1)) / COARSE) | 0) * cw + (((b.x + (b.w >> 1)) / COARSE) | 0);
+    const blk = (((b.z + (b.d >> 1)) / COARSE) | 0) * cw + (((b.x + (b.w >> 1)) / COARSE) | 0);
+    BLK[k] = blk;
+    // (a block index beyond int32 would wrap in the Int32Array and could land inside the grids, where the JS drops it)
+    if (BLK[k] !== blk) ok = false;
     FL[k] = b.flags;
     const p = b.pop, cp = b.capacity, jb = b.jobs, w = b.wealth;
     P[k] = p; CAP[k] = cp; J[k] = jb; WE[k] = w;

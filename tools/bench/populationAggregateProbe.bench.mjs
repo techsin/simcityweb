@@ -15,16 +15,18 @@
  *            a sample and a demo day; all arms bit-exact first (and again after timing)
  *   browser  the same arms in headless Chromium (Playwright): a Web Worker loads the fixture with the frozen sim,
  *            warms it, checks bit-exactness and runs the pairs with performance.now() (wall clock)
- *   e2e      the whole sim (headless days, interleaved chunks): the population system's ms/day with its aggregate
- *            region swapped (bundle-time shell of the frozen population.ts) for B / C+E / D+E, vs the genuine
- *            system and a shell running the verbatim original (control); cities bit-identical at the end
+ *   e2e      the whole sim at 1M population, one child process per arm driven round-robin in chunks of days: the
+ *            population system's CPU ms/day with its aggregate region swapped (bundle-time shell of the frozen
+ *            population.ts) for B0 / B (+ stable-shape buildings) / C+E / D+E / D+E on stable shapes, vs the genuine
+ *            system (also on stable shapes: Aobj) and a shell running the verbatim original (control); cities
+ *            bit-identical at the end. --e2e-fixture F (repeatable; default the first fixture)
  *   capture  write the fixtures' inputs to node_modules/.cache/sim-bench/populationAggregateProbe/ (the test reads them)
  *   all      capture + node + browser + e2e
  *
  * options: --fixture F (repeatable; default dense1m_s7 + bot256_s7_y60 from --fixtures DIR / $SIM_FIXTURES / the
  *   profiler's scratch dir), --tree live|snap|DIR (default snap = the frozen 24f8609 snapshot, $SIM_SNAP), --warm N (8),
- *   --reps N (31), --kinds plain,sample,demo, --pairs A:B,C:D, --days N (e2e, 96), --chunk N (e2e, 3),
- *   --e2e-arms asis,shellOrig,B,CE,DE, --json out.json
+ *   --reps N (31), --kinds plain,sample,demo, --pairs A:B,C:D, --days N (e2e, 128), --chunk N (e2e, 3),
+ *   --e2e-arms asis,shellOrig,B0,Aobj,B,CE,DE,DEs (e2e; --warm defaults to 12 there), --json out.json
  * The scalar binary (same Rust without +simd128) is built on demand into node_modules/.cache/sim-bench/ (skipped
  * without cargo). Needs the popagg exports in src/wasm/sim_kernels.wasm (npm run build:wasm).
  */
@@ -108,7 +110,8 @@ async function e2e() {
   const out = [];
   const list = rest.flatMap((v, i) => (v === '--e2e-fixture' ? [resolve(rest[i + 1])] : []));
   for (const f of list.length ? list : [fixtures[0]]) {
-    out.push(runNode(file, ['--fixture', f, '--warm', warm, ...pass(['--days', '--chunk', '--e2e-arms'])], `e2e.${f.split('/').pop().replace(/\.metropolis$/, '')}`, 12288));
+    // (--warm / --days / --chunk only when given: e2e.ts defaults 12 / 128 / 3)
+    out.push(runNode(file, ['--fixture', f, ...pass(['--warm', '--days', '--chunk', '--e2e-arms'])], `e2e.${f.split('/').pop().replace(/\.metropolis$/, '')}`, 4096));
   }
   return out;
 }

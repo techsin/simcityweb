@@ -56,8 +56,13 @@ interface PassSlot {
   texCap: number;
   count: number;
   version: number;
-  /** geometry-swap counter the list's draw ranges were written for (see setGeometry) */
-  geoVersion: number;
+  /** swap-log position (DynamicBatch.swapSeq) the list's draw ranges are current for (see setGeometry) */
+  swapAt: number;
+  /** list generation (bumped per build) and the generation `pos` was built for (-1 none) */
+  gen: number;
+  posGen: number;
+  /** instance id -> list index, valid where ids[pos[id]] === id (built on the first patch of a list) */
+  pos: Int32Array;
   used: number;
   // ---- what the list was culled for (see beforePass)
   /** projection shape (elements 0, 5, 8, 9, 12, 13: fov / aspect / ortho extent; near / far are checked separately) */
@@ -125,15 +130,25 @@ const TILT_CAP = (3 * Math.PI) / 180;
 const TURN_EPS = 2e-6;
 /** max recorded texture update ranges per frame before falling back to one full upload */
 const MAX_RANGES = 96;
+/** geometry swap log (ring of instance ids, see setGeometry): a cached list more swaps behind than this, or behind by
+ *  more than 1 / SWAP_FULL of its length, rewrites all its draw ranges instead of patching the swapped entries */
+const SWAP_RING = 4096;
+const SWAP_FULL = 4;
 let _frame = 0;
 
 /** unit axes (columns 0-2) of a world matrix -> out[9] */
 function orient(w: ArrayLike<number>, out: Float64Array): void {
   for (let c = 0; c < 3; c++) {
     const o = c * 4;
-    const l = Math.hypot(w[o], w[o + 1], w[o + 2]) || 1;
-    out[c * 3] = w[o] / l; out[c * 3 + 1] = w[o + 1] / l; out[c * 3 + 2] = w[o + 2] / l;
+    const x = w[o], y = w[o + 1], z = w[o + 2];
+    const l = Math.sqrt(x * x + y * y + z * z) || 1;
+    out[c * 3] = x / l; out[c * 3 + 1] = y / l; out[c * 3 + 2] = z / l;
   }
+}
+
+/** equal within a relative 1e-9 (projection shapes: a still, damped camera jitters by float ulps) */
+function close(a: number, b: number): boolean {
+  return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a));
 }
 
 /** rotation angle (rad) between two orientations (unit axes) */
@@ -190,8 +205,17 @@ export class DynamicBatch {
   private slots: PassSlot[] = [];
   /** bumped whenever the draw lists could change (instances, visibility, tiles, bounds) */
   private version = 1;
-  /** bumped by geometry swaps that keep the culling bounds (LOD): cached lists only refresh their draw ranges */
-  private geoVersion = 0;
+  /** geometry swaps that keep the culling bounds (LOD): ring of swapped instance ids and the running swap count;
+   *  cached lists patch just those entries' draw ranges (patchRanges) */
+  private swapLog = new Int32Array(SWAP_RING);
+  private swapSeq = 0;
+  /** registered geometries changed (drawRanges' cache key, with the geometry count and index width) */
+  private geoEpoch = 0;
+  private rangesAt = -1;
+  private rangesLen = -1;
+  private rangesBpe = -1;
+  /** per geometry: culling radius about the instance origin (sphere radius + |sphere centre|; dynamic batches) */
+  private geoRad = new Float32Array(64);
   /** guard band of the per-pass lists, as a fraction of the view distance: a list culled with planes widened by it
    *  is reused while the camera only pans / slides by less (0 = exact lists, rebuilt on any camera move). Main
    *  passes use the view camera's distance to the ground, shadow passes the receiver's. */
@@ -219,10 +243,11 @@ export class DynamicBatch {
   private tileDirty = new Uint8Array(0);
   /** tiles disabled by the owner (skipped in every pass) */
   private tileOff = new Uint8Array(0);
-  /** per-tile content version (visibility / geometry / masks / membership) and cached packed draw ranges per pass
-   *  class (0 main, 1 cascade 0, 2 cascade 1): tiles that need no per-instance test are copied in one block */
+  /** per-tile content version (visibility / masks / membership; not geometry swaps) and cached instance ids per pass
+   *  class (0 main, 1 cascade 0, 2 cascade 1): tiles that need no per-instance test are copied in one block (draw ranges
+   *  looked up from the current geometry, so LOD swaps never invalidate a block) */
   private tileVer = new Uint32Array(0);
-  private tileCache: ({ ver: number; n: number; s: Int32Array; c: Int32Array; i: Uint32Array } | null)[] = [];
+  private tileCache: ({ ver: number; n: number; i: Uint32Array } | null)[] = [];
   private untiled: number[] = [];
   /** main-pass draw lists are sorted front to back (nearest first): opaque overdraw is rejected by the depth test
    *  before shading (big occluders such as buildings; cheap counting sort, only when a list is rebuilt) */
@@ -271,13 +296,23 @@ export class DynamicBatch {
       const cur = (m as any)._maxVertexCount as number;
       const next = Math.max(cur * 2, cur + need * 2);
       m.setGeometrySize(next, next * 2);
+      this.geoEpoch++;
     }
     id = m.addGeometry(g);
     this.geo.set(key, id);
+    this.geoEpoch++;
     if (!g.boundingBox) g.computeBoundingBox();
     this.geoBounds[id] = g.boundingBox!.clone();
     this.geoSphere[id] = g.boundingBox!.getBoundingSphere(new THREE.Sphere());
+    this.noteRad(id);
     return id;
+  }
+
+  /** refresh geoRad[id] from the geometry's culling sphere */
+  private noteRad(id: number): void {
+    if (this.geoRad.length <= id) { const r = new Float32Array(Math.max(id + 1, this.geoRad.length * 2)); r.set(this.geoRad); this.geoRad = r; }
+    const S = this.geoSphere[id];
+    if (S) this.geoRad[id] = S.radius + S.center.length();
   }
 
   /** make room for `vertices` more vertices now (one reallocation, e.g. at load, instead of one while playing) */
@@ -287,6 +322,7 @@ export class DynamicBatch {
     const cur = (m as any)._maxVertexCount as number;
     const next = cur - m.unusedVertexCount + Math.ceil(vertices * 1.25);
     m.setGeometrySize(next, next * 2);
+    this.geoEpoch++;
   }
 
   bounds(geomId: number): THREE.Box3 {
@@ -344,11 +380,10 @@ export class DynamicBatch {
     this.mesh.setGeometryIdAt(id, geomId);
     if (!this.pc) { this.touch(); return; }
     this.instGeo[id] = geomId;
-    this.bumpTile(id);
     // cached draw lists stay valid while the instance's culling sphere still bounds the new geometry (LOD swaps, see
-    // shareSphere): they only refresh their draw ranges (no re-cull, no indirect texture upload). Otherwise the
-    // sphere is rewritten exactly and the lists are rebuilt. Geometries sharing one culling sphere (model + proxy)
-    // skip the check.
+    // shareSphere): they only patch this instance's draw range (swap log; no re-cull, no indirect texture upload; the
+    // per-tile blocks hold instance ids, so they stay valid too). Otherwise the sphere is rewritten exactly and the
+    // lists are rebuilt. Geometries sharing one culling sphere (model + proxy) skip the check.
     const ga = this.geoSphere[prevGeom], gb = this.geoSphere[geomId];
     const shared = ga && gb && ga.radius === gb.radius && ga.center.equals(gb.center) && this.sph[id * 4 + 3] >= 0;
     if (!this.pc.dynamic && !shared) {
@@ -362,7 +397,8 @@ export class DynamicBatch {
         if (!contained || _sp[3] < p[o + 3] * 0.6) this.writeSphere(id, _m4, true);
       }
     }
-    this.geoVersion++;
+    this.swapLog[this.swapSeq % SWAP_RING] = id;
+    this.swapSeq++;
     if (this.mesh.castShadow) shadowCasters.version++;
   }
 
@@ -371,6 +407,7 @@ export class DynamicBatch {
   padSphere(id: number, pad: number): void {
     const S = this.geoSphere[id];
     if (S) S.radius += pad * Math.sqrt(3); // the padded box's corners
+    this.noteRad(id);
   }
 
   /** give two geometries (e.g. a model and its LOD proxy) the same culling sphere, so swapping an instance between
@@ -379,7 +416,7 @@ export class DynamicBatch {
   shareSphere(a: number, b: number, pad = 0): void {
     const A = this.geoSphere[a], B = this.geoSphere[b];
     if (!A || !B || a === b) return;
-    if (pad > 0 && this.geoBounds[a].clone().expandByScalar(pad).containsBox(this.geoBounds[b])) { this.geoSphere[b] = A.clone(); return; }
+    if (pad > 0 && this.geoBounds[a].clone().expandByScalar(pad).containsBox(this.geoBounds[b])) { this.geoSphere[b] = A.clone(); this.noteRad(b); return; }
     const d = A.center.distanceTo(B.center);
     let u: THREE.Sphere;
     if (d + B.radius <= A.radius) u = A.clone();
@@ -390,6 +427,8 @@ export class DynamicBatch {
     }
     this.geoSphere[a] = u;
     this.geoSphere[b] = u.clone();
+    this.noteRad(a);
+    this.noteRad(b);
   }
 
   setMatrix(id: number, m: THREE.Matrix4): void {
@@ -619,17 +658,20 @@ export class DynamicBatch {
   }
 
   private slotFor(camera: THREE.Camera): PassSlot {
-    let s = this.slots.find((x) => x.camera === camera);
+    const slots = this.slots;
+    let s: PassSlot | null = null;
+    for (let i = 0; i < slots.length; i++) if (slots[i].camera === camera) { s = slots[i]; break; }
     if (!s) {
-      if (this.slots.length >= 6) {
+      if (slots.length >= 6) {
         // evict the least recently used slot (e.g. one-off capture cameras)
-        this.slots.sort((a, b) => a.used - b.used);
-        const old = this.slots.shift()!;
+        let lru = 0;
+        for (let i = 1; i < slots.length; i++) if (slots[i].used < slots[lru].used) lru = i;
+        const old = slots.splice(lru, 1)[0];
         old.tex?.dispose();
       }
       s = {
         camera, starts: new Int32Array(64), counts: new Int32Array(64), ids: new Uint32Array(64), tex: null as unknown as THREE.DataTexture, texCap: 0, count: 0,
-        version: -1, geoVersion: -1, used: 0,
+        version: -1, swapAt: 0, gen: 0, posGen: -1, pos: new Int32Array(0), used: 0,
         shape: new Float64Array(6), rot: new Float64Array(9), tiltOk: 0, nearB: 0, farB: 0, texel: -1, px: 0, py: 0, pz: 0, margin: 0, banded: false,
         rform: -1, rrot: new Float64Array(9), rtiltOk: 0, rx: 0, ry: 0, rz: 0, rdn: 0, rdf: 0,
         still: 0, uses: 0, noBand: 0, lx: NaN, ly: NaN, lz: NaN, lrot: new Float64Array(9), lrrot: new Float64Array(9), lrx: NaN, lry: NaN, lrz: NaN,
@@ -692,8 +734,7 @@ export class DynamicBatch {
     let same = s.version === this.version && s.texel === texel && near >= s.nearB && far <= s.farB;
     if (same) {
       const sh = s.shape;
-      const tol = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a));
-      if (!tol(P[0], sh[0]) || !tol(P[5], sh[1]) || !tol(P[8], sh[2]) || !tol(P[9], sh[3]) || !tol(P[12], sh[4]) || !tol(P[13], sh[5])) same = false;
+      if (!close(P[0], sh[0]) || !close(P[5], sh[1]) || !close(P[8], sh[2]) || !close(P[9], sh[3]) || !close(P[12], sh[4]) || !close(P[13], sh[5])) same = false;
     }
     if (same && turnAngle(_rot, s.rot) > Math.max(TURN_EPS, s.tiltOk)) same = false;
     if (same) {
@@ -715,7 +756,8 @@ export class DynamicBatch {
       else if (s.noBand > 0) s.noBand--;
       s.uses = 1;
       s.version = this.version;
-      s.geoVersion = this.geoVersion;
+      s.swapAt = this.swapSeq;
+      s.gen++;
       s.texel = texel;
       s.shape[0] = P[0]; s.shape[1] = P[5]; s.shape[2] = P[8]; s.shape[3] = P[9]; s.shape[4] = P[12]; s.shape[5] = P[13];
       s.rot.set(_rot);
@@ -749,10 +791,7 @@ export class DynamicBatch {
       this.build(s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, recv, tilt, phi, rtilt, reach > this.farReach);
     } else {
       s.uses++;
-      if (s.geoVersion !== this.geoVersion) {
-        s.geoVersion = this.geoVersion;
-        this.refreshRanges(s, geometry);
-      }
+      if (s.swapAt !== this.swapSeq) this.patchRanges(s, geometry);
     }
     m._multiDrawStarts = s.starts;
     m._multiDrawCounts = s.counts;
@@ -868,21 +907,21 @@ export class DynamicBatch {
           const ck = ti * 3 + cls;
           let cc = this.tileCache[ck];
           if (!cc || cc.ver !== this.tileVer[ti]) {
-            if (!cc || cc.s.length < list.length) cc = this.tileCache[ck] = { ver: 0, n: 0, s: new Int32Array(list.length + 16), c: new Int32Array(list.length + 16), i: new Uint32Array(list.length + 16) };
+            if (!cc || cc.i.length < list.length) cc = this.tileCache[ck] = { ver: 0, n: 0, i: new Uint32Array(list.length + 16) };
             let m2 = 0;
+            const ci = cc.i;
             for (let j = 0; j < list.length; j++) {
               const id = list[j];
               if (!vis[id] || (cbit && !(imask[id] & cbit))) continue;
-              const gid = geo[id];
-              cc.s[m2] = gS[gid]; cc.c[m2] = gC[gid]; cc.i[m2] = id; m2++;
+              ci[m2++] = id;
             }
             cc.n = m2;
             cc.ver = this.tileVer[ti];
           }
           // (element loop: subarray() views would allocate three objects per tile)
           const starts = s.starts, counts = s.counts, ind = s.ids;
-          const cs = cc.s, ccn = cc.c, ci = cc.i, cn = cc.n;
-          for (let j = 0; j < cn; j++) { starts[n + j] = cs[j]; counts[n + j] = ccn[j]; ind[n + j] = ci[j]; }
+          const ci = cc.i, cn = cc.n;
+          for (let j = 0; j < cn; j++) { const id = ci[j], gid = geo[id]; starts[n + j] = gS[gid]; counts[n + j] = gC[gid]; ind[n + j] = id; }
           n += cn;
         }
       }
@@ -910,7 +949,7 @@ export class DynamicBatch {
    */
   private pushList(s: PassSlot, list: number[], test: boolean, size: boolean, rcv: boolean, n: number, cbit: number, mat: Float32Array | null): number {
     const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3];
-    const vis = this.instVis, imask = this.instMask, geo = this.instGeo, gsph = this.geoSphere, sph = this.sph, gS = this.gStart, gC = this.gCount;
+    const vis = this.instVis, imask = this.instMask, geo = this.instGeo, grad = this.geoRad, sph = this.sph, gS = this.gStart, gC = this.gCount;
     const fp = _fp, rp = _rp, rnl = _rnl;
     const starts = s.starts, counts = s.counts, ind = s.ids;
     for (let j = 0; j < list.length; j++) {
@@ -921,10 +960,9 @@ export class DynamicBatch {
       if (test || size || rcv) {
         let cx: number, cy: number, cz: number, r: number;
         if (mat) {
-          const gs = gsph[gid];
           const o = id * 16;
           cx = mat[o + 12]; cy = mat[o + 13]; cz = mat[o + 14];
-          r = gs.radius + gs.center.length();
+          r = grad[gid];
         } else {
           const o = id * 4;
           cx = sph[o]; cy = sph[o + 1]; cz = sph[o + 2]; r = sph[o + 3];
@@ -959,21 +997,46 @@ export class DynamicBatch {
     return n;
   }
 
-  /** draw range (index start in bytes, count) per geometry id -> gStart / gCount */
+  /** draw range (index start in bytes, count) per geometry id -> gStart / gCount (recomputed only when geometries were
+   *  added or the index buffer changed) */
   private drawRanges(geometry: THREE.BufferGeometry): void {
     const gInfo = (this.mesh as any)._geometryInfo as { start: number; count: number }[];
     const index = geometry.getIndex();
     const bpe = index === null ? 1 : index.array.BYTES_PER_ELEMENT;
+    if (this.rangesAt === this.geoEpoch && this.rangesLen === gInfo.length && this.rangesBpe === bpe) return;
+    this.rangesAt = this.geoEpoch; this.rangesLen = gInfo.length; this.rangesBpe = bpe;
     if (this.gStart.length < gInfo.length) { this.gStart = new Int32Array(gInfo.length * 2); this.gCount = new Int32Array(gInfo.length * 2); }
     const gS = this.gStart, gC = this.gCount;
     for (let g = 0; g < gInfo.length; g++) { const gi = gInfo[g]; gS[g] = gi ? gi.start * bpe : 0; gC[g] = gi ? gi.count : 0; }
   }
 
-  /** geometry swaps only: rewrite the draw ranges of a cached list in place (same instances, same order) */
-  private refreshRanges(s: PassSlot, geometry: THREE.BufferGeometry): void {
+  /**
+   * Geometry swaps only (same instances, same order): bring a cached list's draw ranges up to date. The instances
+   * swapped since the list was last current (swap log) are patched in place through an instance -> list index map
+   * built on the list's first patch; a list too far behind rewrites all its ranges.
+   */
+  private patchRanges(s: PassSlot, geometry: THREE.BufferGeometry): void {
     this.drawRanges(geometry);
-    const gS = this.gStart, gC = this.gCount, geo = this.instGeo, ids = s.ids, starts = s.starts, counts = s.counts;
-    for (let j = 0; j < s.count; j++) { const g = geo[ids[j]]; starts[j] = gS[g]; counts[j] = gC[g]; }
+    const gS = this.gStart, gC = this.gCount, geo = this.instGeo, ids = s.ids, starts = s.starts, counts = s.counts, n = s.count;
+    const behind = this.swapSeq - s.swapAt;
+    s.swapAt = this.swapSeq;
+    if (behind > SWAP_RING || behind * SWAP_FULL > n) {
+      for (let j = 0; j < n; j++) { const g = geo[ids[j]]; starts[j] = gS[g]; counts[j] = gC[g]; }
+      return;
+    }
+    if (s.posGen !== s.gen) {
+      if (s.pos.length < geo.length) s.pos = new Int32Array(geo.length);
+      const pos = s.pos;
+      for (let j = 0; j < n; j++) pos[ids[j]] = j;
+      s.posGen = s.gen;
+    }
+    const pos = s.pos, log = this.swapLog;
+    for (let q = this.swapSeq - behind; q < this.swapSeq; q++) {
+      const id = log[q % SWAP_RING];
+      if (id >= pos.length) continue;
+      const j = pos[id];
+      if (j < n && ids[j] === id) { const g = geo[id]; starts[j] = gS[g]; counts[j] = gC[g]; }
+    }
   }
 
   /** counting sort of the first n list entries by distance from the camera (sqrt-spaced buckets: fine up close) */

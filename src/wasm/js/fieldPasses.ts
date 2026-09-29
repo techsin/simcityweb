@@ -11,8 +11,9 @@
  * with water, and is kept in both arms so the A/B still isolates the language / runtime):
  *  1. the corridor `line` raster is CACHED between rebuilds while the corridor class map (per cell: none / highway /
  *     highway bridge / rail; tunnels are none) is unchanged — compared cell by cell, so no hash collision can serve a
- *     stale raster; the per-rebuild work is one scan of network / netFlags instead of ~30 splatMax touches per corridor
- *     cell. `force` rebuilds it every time (the original behaviour, for the A/B);
+ *     stale raster — and so are the tables / amounts it was built with (CorridorKey); the per-rebuild work is one scan
+ *     of network / netFlags instead of ~30 splatMax touches per corridor cell. `force` rebuilds it every time (the
+ *     original behaviour, for the A/B);
  *  2. each source's kernel table is resolved ONCE per pass, while the source list is built (the building walk stays
  *     JS), instead of inside every splatAdd call;
  *  3. the water diffusion's loop invariants (each water cell's land inflow term and water-neighbour list) are computed
@@ -186,6 +187,19 @@ export interface NimbyResult {
 /** rebuildNimby phases */
 export const PH_SPLAT = 1, PH_LANDFILL = 2, PH_CORRIDOR = 4, PH_FINAL = 8, PH_ALL = 15;
 
+/**
+ * The corridor inputs a cached line raster was built from besides the class map: the (R, 1, 1) tables (by identity: a
+ * table never changes) and the amounts (by value, NaN-safe). With the class map they determine the raster completely.
+ */
+export interface CorridorKey { tabH: NimbyTable | null; tabR: NimbyTable | null; aH: number; aHB: number; aR: number }
+export const emptyCorridorKey = (): CorridorKey => ({ tabH: null, tabR: null, aH: NaN, aHB: NaN, aR: NaN });
+export function corridorKeyIs(k: CorridorKey, a: NimbyArgs): boolean {
+  return k.tabH === a.tabH && k.tabR === a.tabR && Object.is(k.aH, a.aH) && Object.is(k.aHB, a.aHB) && Object.is(k.aR, a.aR);
+}
+export function setCorridorKey(k: CorridorKey, a: NimbyArgs): void {
+  k.tabH = a.tabH; k.tabR = a.tabR; k.aH = a.aH; k.aHB = a.aHB; k.aR = a.aR;
+}
+
 /** per-state rebuild buffers of one implementation (accumulators + the corridor cache) */
 export interface NimbyJsBuffers {
   C: number;
@@ -194,8 +208,9 @@ export interface NimbyJsBuffers {
   camp: Float32Array;
   line: Float32Array;
   cls: Uint8Array;
-  /** the class map / line raster belong to a completed corridor pass of this size */
+  /** the class map / line raster belong to a completed corridor pass of this size, built with `key` */
   valid: boolean;
+  key: CorridorKey;
 }
 
 /** per-state NIMBY context: each implementation keeps its buffers here (the wasm binding adds its own) */
@@ -207,7 +222,10 @@ export interface NimbyCtx {
 function jsBuffers(ctx: NimbyCtx, C: number): NimbyJsBuffers {
   let b = ctx.js;
   if (!b || b.C !== C) {
-    b = { C, stig: new Float32Array(C), pres: new Float32Array(C), camp: new Float32Array(C), line: new Float32Array(C), cls: new Uint8Array(C), valid: false };
+    b = {
+      C, stig: new Float32Array(C), pres: new Float32Array(C), camp: new Float32Array(C), line: new Float32Array(C), cls: new Uint8Array(C),
+      valid: false, key: emptyCorridorKey(),
+    };
     ctx.js = b;
   }
   return b;
@@ -298,7 +316,7 @@ export function nimbyJs(ctx: NimbyCtx, a: NimbyArgs, phases = PH_ALL): NimbyResu
   }
   if (phases & PH_CORRIDOR) {
     const net = a.net, flags = a.flags, hw = a.highway, rail = a.rail;
-    let changed = !b.valid || a.force;
+    let changed = !b.valid || a.force || !corridorKeyIs(b.key, a);
     let nh = 0, nr = 0;
     for (let i = 0; i < C; i++) {
       const t = net[i];
@@ -321,6 +339,7 @@ export function nimbyJs(ctx: NimbyCtx, a: NimbyArgs, phases = PH_ALL): NimbyResu
         else if (k === 2) splatMaxRuns(line, N, x, z, tabH, aHB);
         else splatMaxRuns(line, N, x, z, tabR, aR);
       }
+      setCorridorKey(b.key, a);
       b.valid = true;
     }
     res.changed = changed; res.nh = nh; res.nr = nr;

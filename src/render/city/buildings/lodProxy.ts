@@ -576,14 +576,19 @@ export function buildLodProxy(g: THREE.BufferGeometry): THREE.BufferGeometry | n
       fz0 = Math.min(fz0, t.az, t.bz, t.cz); fz1 = Math.max(fz1, t.az, t.bz, t.cz);
     }
     const cs = Math.max(6, Math.max(fx1 - fx0, fz1 - fz0) / 4);
-    const cells = new Map<number, { a: number; r: number; g: number; b: number; x0: number; x1: number; y0: number; y1: number; z0: number; z1: number }>();
+    // (per cluster also the foliage pattern area and the biggest face per pattern: the diamond keeps the dominant
+    // pattern + that face's per-tree random, so blossom / seasonal / evergreen crowns keep their seasons at LOD range)
+    const cells = new Map<number, { a: number; r: number; g: number; b: number; x0: number; x1: number; y0: number; y1: number; z0: number; z1: number; pa: number[]; pm: number[]; pf: number[] }>();
     for (const t of tris) {
       if (t.type !== Surf.Foliage || t.maxY <= 0.5) continue;
       const mx = (t.ax + t.bx + t.cx) / 3, mz = (t.az + t.bz + t.cz) / 3;
       const k = Math.floor((mx - fx0) / cs) * 64 + Math.floor((mz - fz0) / cs);
       let c = cells.get(k);
-      if (!c) cells.set(k, (c = { a: 0, r: 0, g: 0, b: 0, x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity, z0: Infinity, z1: -Infinity }));
+      if (!c) cells.set(k, (c = { a: 0, r: 0, g: 0, b: 0, x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity, z0: Infinity, z1: -Infinity, pa: [0, 0, 0, 0, 0], pm: [0, 0, 0, 0, 0], pf: [3.3, 3.3, 3.3, 3.3, 3.3] }));
       c.a += t.area; c.r += t.r * t.area; c.g += t.g * t.area; c.b += t.b * t.area;
+      const pt = Math.max(0, Math.min(4, t.pattern));
+      c.pa[pt] += t.area;
+      if (t.area > c.pm[pt]) { c.pm[pt] = t.area; c.pf[pt] = t.floor; }
       c.x0 = Math.min(c.x0, t.ax, t.bx, t.cx); c.x1 = Math.max(c.x1, t.ax, t.bx, t.cx);
       c.y0 = Math.min(c.y0, t.minY); c.y1 = Math.max(c.y1, t.maxY);
       c.z0 = Math.min(c.z0, t.az, t.bz, t.cz); c.z1 = Math.max(c.z1, t.az, t.bz, t.cz);
@@ -593,7 +598,9 @@ export function buildLodProxy(g: THREE.BufferGeometry): THREE.BufferGeometry | n
       if (c.a < fArea * 0.05) break;
       const cx = (c.x0 + c.x1) / 2, cz = (c.z0 + c.z1) / 2, rx = (c.x1 - c.x0) / 2, rz = (c.z1 - c.z0) / 2;
       const ym = c.y0 + (c.y1 - c.y0) * 0.45;
-      mb.paint({ color: new THREE.Color(c.r / c.a, c.g / c.a, c.b / c.a), surf: Surf.Foliage });
+      let pt = 0;
+      for (let i = 1; i < 5; i++) if (c.pa[i] > c.pa[pt]) pt = i;
+      mb.paint({ color: new THREE.Color(c.r / c.a, c.g / c.a, c.b / c.a), surf: Surf.Foliage, pattern: pt, floor: c.pf[pt] });
       const e: [number, number, number][] = [[cx + rx, ym, cz], [cx, ym, cz + rz], [cx - rx, ym, cz], [cx, ym, cz - rz]];
       for (let i = 0; i < 4; i++) {
         const a = e[i], b = e[(i + 1) % 4];

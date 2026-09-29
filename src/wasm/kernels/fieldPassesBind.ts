@@ -29,8 +29,8 @@ import { kernelSlot, simWasmCallFailed } from '../simWasm';
 import { scratchSlot, type WasmHeap } from '../heap';
 import { gridOk, overlaps } from '../bind';
 import {
-  PH_ALL, SAT_N, SAT_TABLE, WATER_CLEAN, WATER_DIFFUSE_KEEP, WATER_INFLOW, WATER_ITERS, SAT_MAX,
-  type CellsArgs, type FieldKernels, type NimbyArgs, type NimbyCtx, type NimbyResult, type NimbyTables, type WaterArgs,
+  PH_ALL, SAT_N, SAT_TABLE, WATER_CLEAN, WATER_DIFFUSE_KEEP, WATER_INFLOW, WATER_ITERS, SAT_MAX, corridorKeyIs, emptyCorridorKey, setCorridorKey,
+  type CellsArgs, type CorridorKey, type FieldKernels, type NimbyArgs, type NimbyCtx, type NimbyResult, type NimbyTables, type WaterArgs,
 } from '../js/fieldPasses';
 
 /** parameter-block layout version (fields.rs LAYOUT) */
@@ -217,7 +217,9 @@ interface WasmNimbyBuf {
   camp: number;
   line: number;
   cls: number;
+  /** the class map / line raster belong to a completed corridor phase, built with `key` (as the JS buffers) */
   valid: boolean;
+  key: CorridorKey;
 }
 
 /** free the kernel-owned NIMBY buffers of a context (city unload / replaceState); the JS buffers are GC'd with it */
@@ -235,7 +237,10 @@ function nimbyBuf(ctx: NimbyCtx, w: FieldsWasm, C: number): WasmNimbyBuf {
   if (b) releaseNimbyCtx(ctx);
   const f = Math.ceil((C * 4) / 16) * 16, u = Math.ceil(C / 16) * 16;
   const block = w.heap.alloc(4 * f + u, 16);
-  b = { ex: w.ex, heap: w.heap, C, block, stig: block, pres: block + f, camp: block + 2 * f, line: block + 3 * f, cls: block + 4 * f, valid: false };
+  b = {
+    ex: w.ex, heap: w.heap, C, block, stig: block, pres: block + f, camp: block + 2 * f, line: block + 3 * f, cls: block + 4 * f,
+    valid: false, key: emptyCorridorKey(),
+  };
   ctx.wasm = b;
   return b;
 }
@@ -384,7 +389,7 @@ export function makeFieldKernels(js: FieldKernels, opts: { wasm?: FieldsWasm; st
       I32[o + N_N] = N; I32[o + N_NSRC] = ns; I32[o + N_SRC] = src; I32[o + N_AMT] = amt;
       I32[o + N_STIG] = buf.stig; I32[o + N_PRES] = buf.pres; I32[o + N_CAMP] = buf.camp; I32[o + N_LINE] = buf.line;
       I32[o + N_ZONE] = pZone; I32[o + N_FILL] = pFill; I32[o + N_LF_CODE] = a.lfCode; I32[o + N_LF_TAB] = a.lfTable ? a.lfTable.id : -1;
-      I32[o + N_NET] = pNet; I32[o + N_FLAGS] = pFlags; I32[o + N_CLS] = buf.cls; I32[o + N_VALID] = buf.valid ? 1 : 0;
+      I32[o + N_NET] = pNet; I32[o + N_FLAGS] = pFlags; I32[o + N_CLS] = buf.cls; I32[o + N_VALID] = buf.valid && corridorKeyIs(buf.key, a) ? 1 : 0;
       I32[o + N_FORCE] = a.force ? 1 : 0; I32[o + N_TAB_H] = a.tabH.id; I32[o + N_TAB_R] = a.tabR.id;
       I32[o + N_HIGHWAY] = a.highway; I32[o + N_RAIL] = a.rail;
       I32[o + N_S] = pS; I32[o + N_P] = pP; I32[o + N_K] = pK;
@@ -395,7 +400,7 @@ export function makeFieldKernels(js: FieldKernels, opts: { wasm?: FieldsWasm; st
       ex.fields_nimby(ip, fp, phases);
       const I = h.I32;
       const res: NimbyResult = { lf: I[o + N_OUT_LF], changed: I[o + N_OUT_CHANGED] !== 0, nh: I[o + N_OUT_NH], nr: I[o + N_OUT_NR] };
-      if (phases & 4) buf.valid = true;
+      if (phases & 4) { setCorridorKey(buf.key, a); buf.valid = true; }
       unstage(g);
       done();
       return res;
