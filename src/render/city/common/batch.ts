@@ -128,6 +128,11 @@ const _sp = new Float64Array(4);
 const _fp = new Float64Array(24);
 const _rp = new Float64Array(24);
 const _rnl = new Float64Array(6);
+/** the planes an instance list is actually tested against, compacted (pushList): a partly visible tile only needs the
+ *  planes its box straddles (the others hold for every instance in it), typically 1-2 of the 6 */
+const _fq = new Float64Array(24);
+const _rq = new Float64Array(24);
+const _rnq = new Float64Array(6);
 /** list-build doubles handed to pushList (guard band, min caster radius, receiver ground, 1 / light dir y) */
 const _plf = new Float64Array(4);
 /** current camera orientation */
@@ -161,6 +166,13 @@ function orient(w: ArrayLike<number>, out: Float64Array): void {
 /** equal within a relative 1e-9 (projection shapes: a still, damped camera jitters by float ulps) */
 function close(a: number, b: number): boolean {
   return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a));
+}
+
+/** every frustum / receiver plane into the compacted test planes (instances without tile bounds, dynamic batches) */
+function allPlanes(): void {
+  _fq.set(_fp);
+  _rq.set(_rp);
+  _rnq.set(_rnl);
 }
 
 /** rotation angle (rad) between two orientations (unit axes) */
@@ -905,7 +917,7 @@ export class DynamicBatch {
     const coarse = pc.coarse === true || far;
     if (cascade < 0 || (pc.shadowMask! >> cascade) & 1) {
       this.cullPlanes(s, recv, tilt, phi, rtilt);
-      const fp = _fp, rp = _rp, rnl = _rnl;
+      const fp = _fp, rp = _rp, rnl = _rnl, fq = _fq, rq = _rq, rnq = _rnq;
       this.drawRanges(geometry);
       const gS = this.gStart, gC = this.gCount;
       const minR = cascade >= 0 ? pc.minShadowTexels! * texel * 0.5 : 0;
@@ -933,20 +945,26 @@ export class DynamicBatch {
           const kb = ti * 6;
           const x0 = tb[kb], y0 = tb[kb + 1], z0 = tb[kb + 2], x1 = tb[kb + 3], y1 = tb[kb + 4], z1 = tb[kb + 5];
           // kind: 0 block copy, 1 per-instance caster size test, 2 per-instance tests (fine list / tile without bounds)
-          let kind = 0;
-          let test = false, size = false, rcv = false;
-          if (!(x1 >= x0) || !Number.isFinite(x0 + x1)) { kind = 2; test = true; size = minR > 0; rcv = recv !== null; }
+          // against the np frustum / nr receiver planes the tile straddles (compacted into _fq / _rq)
+          let kind = 0, np = 0, nr = 0;
+          let size = false;
+          if (!(x1 >= x0) || !Number.isFinite(x0 + x1)) { kind = 2; np = 6; nr = recv ? 6 : 0; size = minR > 0; allPlanes(); }
           else {
-            let inside = true, outside = false;
+            let outside = false;
             for (let p = 0; p < 6; p++) {
               const o = p * 4, nx = fp[o], ny = fp[o + 1], nz = fp[o + 2], c = fp[o + 3];
-              // p-vertex (farthest along the normal) and n-vertex
+              // p-vertex (farthest along the normal) outside: the tile is out; n-vertex outside: the plane cuts it
               if (nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + c < 0) { outside = true; break; }
-              if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + c < 0) inside = false;
+              if (!coarse && nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + c < 0) {
+                const q = np * 4;
+                fq[q] = nx; fq[q + 1] = ny; fq[q + 2] = nz; fq[q + 3] = c;
+                np++;
+              }
             }
             if (outside) continue;
             // receiver: skip the tile if no caster in it can shadow the visible slice (receiverSweepBox; the band is in
-            // the planes); no per-instance test if the whole tile lies inside the slice (receiverContainsBox)
+            // the planes); per-instance tests only against the receiver planes the tile is not entirely inside of
+            // (receiverContainsBox per plane)
             if (recv) {
               const T = Math.min(6000, Math.max(0, (y1 - rGround) * rInv));
               let hit = true;
@@ -959,13 +977,16 @@ export class DynamicBatch {
               if (!coarse) {
                 for (let i = 0; i < 6; i++) {
                   const o = i * 4, nx = rp[o], ny = rp[o + 1], nz = rp[o + 2];
-                  if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + rp[o + 3] < 0) { rcv = true; break; }
+                  if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + rp[o + 3] < 0) {
+                    const q = nr * 4;
+                    rq[q] = nx; rq[q + 1] = ny; rq[q + 2] = nz; rq[q + 3] = rp[o + 3]; rnq[nr] = rnl[i];
+                    nr++;
+                  }
                 }
               }
             }
-            test = !inside && !coarse;
             size = minR > 0 && tminR[ti] < minR;
-            kind = test || rcv ? 2 : size ? 1 : 0;
+            kind = np > 0 || nr > 0 ? 2 : size ? 1 : 0;
           }
           const tag = ti * 4 + kind, ver = tver[ti];
           if (match) {
@@ -980,7 +1001,7 @@ export class DynamicBatch {
             k++;
           }
           if (s.starts.length < n + list.length) this.ensureList(s, n + list.length, n);
-          if (kind !== 0) { n = this.pushList(s, list, list.length, test, size, rcv, n, cbit, mat); continue; }
+          if (kind !== 0) { n = this.pushList(s, list, list.length, np, size, nr, n, cbit, mat); continue; }
           // every visible instance of the tile (with the cascade bit) is drawn: copy its cached block
           const ck = ti * 3 + cls;
           let cc = this.tileCache[ck];
@@ -1013,7 +1034,8 @@ export class DynamicBatch {
       const un = dyn ? this.untiledVis : this.untiled.length;
       if (un) {
         if (s.starts.length < n + un) this.ensureList(s, n + un, n);
-        n = this.pushList(s, this.untiled, un, true, minR > 0, recv !== null, n, cbit, mat);
+        allPlanes();
+        n = this.pushList(s, this.untiled, un, 6, minR > 0, recv ? 6 : 0, n, cbit, mat);
       }
       if (sorted && n > 1) this.sortList(s, n);
     } else s.selValid = false;
@@ -1054,20 +1076,22 @@ export class DynamicBatch {
 
   /**
    * List-build inner loop over the first len entries of an instance list (a method, not a per-build closure: no
-   * allocation, stable JIT feedback). test: per-instance frustum test; size / rcv: per-instance caster size / receiver
-   * tests (shadow passes). Planes in _fp / _rp, doubles in _plf. The caller made room for len more entries. Returns n.
+   * allocation, stable JIT feedback). Per-instance tests: the first np frustum planes of _fq, the first nr receiver
+   * planes of _rq / _rnq (shadow passes: only casters whose shadow can reach the visible slice), and the caster size
+   * (size). Doubles in _plf. The caller made room for len more entries. Returns n.
    */
-  private pushList(s: PassSlot, list: number[], len: number, test: boolean, size: boolean, rcv: boolean, n: number, cbit: number, mat: Float32Array | null): number {
+  private pushList(s: PassSlot, list: number[], len: number, np: number, size: boolean, nr: number, n: number, cbit: number, mat: Float32Array | null): number {
     const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3];
     const vis = this.instVis, imask = this.instMask, geo = this.instGeo, grad = this.geoRad, sph = this.sph, gS = this.gStart, gC = this.gCount;
-    const fp = _fp, rp = _rp, rnl = _rnl;
+    const fq = _fq, rq = _rq, rnq = _rnq;
     const starts = s.starts, counts = s.counts, ind = s.ids;
+    const tests = np > 0 || nr > 0 || size;
     for (let j = 0; j < len; j++) {
       const id = list[j];
       if (!vis[id]) continue;
       if (cbit && !(imask[id] & cbit)) continue;
       const gid = geo[id];
-      if (test || size || rcv) {
+      if (tests) {
         let cx: number, cy: number, cz: number, r: number;
         if (mat) {
           const o = id * 16;
@@ -1078,23 +1102,23 @@ export class DynamicBatch {
           cx = sph[o]; cy = sph[o + 1]; cz = sph[o + 2]; r = sph[o + 3];
         }
         if (size && r < minR) continue;
-        // shadow passes: only casters whose shadow (the sphere swept away from the light down to the ground) can reach
-        // the visible part of this cascade (receiverSweepSphere; the band is in the planes)
-        if (rcv) {
+        // the sphere swept away from the light down to the ground must reach the slice (receiverSweepSphere; the band
+        // is in the planes)
+        if (nr > 0) {
           const T = Math.min(6000, Math.max(0, (cy + r + mr - rGround) * rInv));
           let hit = true;
-          for (let i = 0; i < 6; i++) {
+          for (let i = 0; i < nr; i++) {
             const o = i * 4;
-            const d0 = rp[o] * cx + rp[o + 1] * cy + rp[o + 2] * cz + rp[o + 3];
-            if (d0 < -r && d0 - T * rnl[i] < -r) { hit = false; break; }
+            const d0 = rq[o] * cx + rq[o + 1] * cy + rq[o + 2] * cz + rq[o + 3];
+            if (d0 < -r && d0 - T * rnq[i] < -r) { hit = false; break; }
           }
           if (!hit) continue;
         }
-        if (test) {
+        if (np > 0) {
           let out = false;
-          for (let p = 0; p < 6; p++) {
+          for (let p = 0; p < np; p++) {
             const o = p * 4;
-            if (fp[o] * cx + fp[o + 1] * cy + fp[o + 2] * cz + fp[o + 3] < -r) { out = true; break; }
+            if (fq[o] * cx + fq[o + 1] * cy + fq[o + 2] * cz + fq[o + 3] < -r) { out = true; break; }
           }
           if (out) continue;
         }

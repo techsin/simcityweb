@@ -100,6 +100,8 @@ export function propGeometry(id: string, variant: number): THREE.BufferGeometry 
 /** per-instance distance thinning of small props (vertex shader, main + depth): each prop vanishes at its own hashed
  *  distance in [uPropFade.x, uPropFade.y] (prop metric, see the file comment; pylons live in their own batch and never
  *  thin) */
+/** doubles handed to PropRenderer.lodScanTile (typed slots, not arguments: a call V8 does not inline would box them) */
+const _lod = new Float64Array(7);
 const propFadeU = { uPropCam: { value: new THREE.Vector3() }, uPropFade: { value: new THREE.Vector2(1e9, 1e9) } };
 function injectPropFade(shader: THREE.WebGLProgramParametersWithUniforms): void {
   shader.uniforms.uPropCam = propFadeU.uPropCam;
@@ -206,7 +208,7 @@ export class PropRenderer {
   /** the proxy switch per map tile: its props with a proxy as contiguous lists (batch id, x / z, state; a tile the
    *  switch band crosses is scanned in order, no per-prop bookkeeping), the bounds of those props (x0, z0, x1, z1; after
    *  removals possibly larger than needed until re-tightened) and the tile's mode: 0 all proxy, 1 all full, 2 mixed
-   *  (the band crosses it: evaluated per prop whenever the camera moves), 3 due (new props / new switch distance) */
+   *  (the band crosses it: scanned prop by prop, see lodSlack), 3 due (new props / new switch distance) */
   private lodN!: Int32Array;
   private lodIds: Int32Array[] = [];
   private lodXZ: Float32Array[] = [];
@@ -216,8 +218,11 @@ export class PropRenderer {
   private lodLoose!: Uint8Array;
   private lodLooseAny = false;
   private lodDue = false;
-  /** camera position of the last proxy pass and the switch distance it used */
-  private lodAt = new Float64Array(3).fill(NaN);
+  /** mixed tiles: camera position of the last scan (x, y, z) and the squared camera travel from there that cannot flip
+   *  any of the tile's props yet (the prop metric is 1-Lipschitz in the camera position): the scan is skipped until the
+   *  camera has moved that far, so a slow pan scans a band tile every few frames instead of every frame */
+  private lodScan!: Float64Array;
+  private lodSlack!: Float64Array;
   private lodFullAt = -1;
   /** props evaluated by the proxy switch (stats) */
   lodEvals = 0;
@@ -273,6 +278,8 @@ export class PropRenderer {
     this.lodBox = new Float32Array(T * 4);
     this.lodMode = new Uint8Array(T);
     this.lodLoose = new Uint8Array(T);
+    this.lodScan = new Float64Array(T * 3);
+    this.lodSlack = new Float64Array(T);
     for (let t = 0; t < T; t++) {
       this.lodIds.push(new Int32Array(0));
       this.lodXZ.push(new Float32Array(0));
@@ -317,90 +324,123 @@ export class PropRenderer {
     // i.e. once none of its props is left
     propFadeU.uPropCam.value.copy(cam);
     propFadeU.uPropFade.value.set(hide, hide * 1.35);
-    const at = this.nearAt;
-    if (cam.x !== at[0] || cam.y !== at[1] || cam.z !== at[2] || hide !== at[3]) {
-      at[0] = cam.x; at[1] = cam.y; at[2] = cam.z; at[3] = hide;
-      const c = this.culler;
-      const T = c.tiles;
-      const size = c.tileCells * c.cellSize;
-      for (let tz = 0; tz < T; tz++) {
-        for (let tx = 0; tx < T; tx++) {
-          const i = tz * T + tx;
-          const dx = Math.max(0, Math.abs(cam.x - (tx + 0.5) * size) - size / 2);
-          const dz = Math.max(0, Math.abs(cam.z - (tz + 0.5) * size) - size / 2);
-          const d = Math.sqrt(dx * dx + dz * dz + cam.y * cam.y * 0.8);
-          const cur = this.near[i];
-          const n = d < hide * (cur ? 1.4 : 1.37) ? 1 : 0;
-          if (n !== cur) {
-            this.near[i] = n;
-            this.batch.setTileEnabled(i, n > 0);
-            this.batch.setTileEnabled(i + this.T, n > 0);
-          }
-        }
-      }
-    }
-    this.updateProxyLod(cam, full);
-    const m = this.propMat, city = getCityMaterial();
-    m.envMapIntensity = city.envMapIntensity; m.roughness = city.roughness; m.metalness = city.metalness;
-  }
-
-  /** per-instance proxy <-> full switch at `full` m (+-6%), per map tile (see lodMode): the per-prop rule
-   *  (d < full * (full model now ? 1.06 : 0.94)) holds for every prop after each call, without lag */
-  private updateProxyLod(cam: THREE.Vector3, full: number): void {
-    const cx = cam.x, cy = cam.y, cz = cam.z;
     if (full !== this.lodFullAt) {
+      // new switch distance: every tile is due
       this.lodFullAt = full;
       this.lodMode.fill(3);
       this.lodDue = true;
     }
-    const at = this.lodAt;
-    const moved = cx !== at[0] || cy !== at[1] || cz !== at[2];
-    if (!moved && !this.lodDue) return;
-    at[0] = cx; at[1] = cy; at[2] = cz;
-    this.lodDue = false;
+    const at = this.nearAt;
+    const cx = cam.x, cy = cam.y, cz = cam.z;
+    const moved = cx !== at[0] || cy !== at[1] || cz !== at[2] || hide !== at[3];
+    if (moved || this.lodDue) {
+      at[0] = cx; at[1] = cy; at[2] = cz; at[3] = hide;
+      this.lodDue = false;
+      this.lodPass(cx, cy, cz, hide, full, moved);
+    }
+    const m = this.propMat, city = getCityMaterial();
+    m.envMapIntensity = city.envMapIntensity; m.roughness = city.roughness; m.metalness = city.metalness;
+  }
+
+  /**
+   * One pass over the map tiles (only while the camera moves, or for due tiles): small props of a tile whose nearest
+   * point lies beyond 140% of `hide` are disabled (re-enabled within 137%), and the per-instance proxy <-> full switch
+   * at `full` m (+-6%) per tile (see lodMode): the per-prop rule (d < full * (full model now ? 1.06 : 0.94)) holds for
+   * every prop after each call, without lag. Distances are squared prop metrics (dx^2 + dz^2 + 0.8 camY^2) against
+   * squared limits (no square roots); a tile's bounds give the nearest / farthest of its props (rounding is monotonic:
+   * consistent with the per-prop test). A mixed tile is re-scanned only once the camera travelled far enough since its
+   * last scan to possibly carry one of its props across a switch distance (lodSlack).
+   */
+  private lodPass(cx: number, cy: number, cz: number, hide: number, full: number, moved: boolean): void {
     if (this.lodLooseAny) this.tightenLodBoxes();
-    // squared prop metric (dx^2 + dz^2 + 0.8 camY^2) against the squared switch distances; a tile's bounds give the
-    // nearest / farthest of its props (rounding is monotonic: consistent with the per-prop test below)
-    const lo = full * 0.94, hi = full * 1.06, lo2 = lo * lo, hi2 = hi * hi, cy2 = cy * cy * 0.8;
-    const N = this.lodN, box = this.lodBox, mode = this.lodMode, T = this.T;
-    const ist = this.ist, igeo = this.igeo, batch = this.batch;
-    for (let t = 0; t < T; t++) {
-      const n = N[t];
-      if (n === 0) continue;
-      const m = mode[t];
-      if (!moved && m !== 3) continue;
-      const b = t * 4;
-      const x0 = box[b] - cx, z0 = box[b + 1] - cz, x1 = box[b + 2] - cx, z1 = box[b + 3] - cz;
-      const ex = x0 > 0 ? x0 : x1 < 0 ? -x1 : 0, ez = z0 > 0 ? z0 : z1 < 0 ? -z1 : 0;
-      const fx = -x0 > x1 ? -x0 : x1, fz = -z0 > z1 ? -z0 : z1;
-      const cls = fx * fx + fz * fz + cy2 < lo2 ? 1 : ex * ex + ez * ez + cy2 >= hi2 ? 0 : 2;
-      if (cls === m && cls !== 2) continue;
-      mode[t] = cls;
-      this.lodEvals += n;
-      const ids = this.lodIds[t], xz = this.lodXZ[t], st = this.lodSt[t];
-      if (cls !== 2) {
-        // the whole tile on one side of the band
-        const want = cls === 1 ? 2 : 1;
-        for (let k = 0; k < n; k++) {
-          if (st[k] === want) continue;
-          const id = ids[k];
-          st[k] = want;
-          ist[id] = want;
-          batch.setGeometry(id, igeo[id * 2 + 2 - want]);
+    const c = this.culler, TT = c.tiles, size = c.tileCells * c.cellSize, hs = size / 2;
+    const cy2 = cy * cy * 0.8;
+    const keep2 = hide * 1.4 * (hide * 1.4), enter2 = hide * 1.37 * (hide * 1.37);
+    const lo = full * 0.94, hi = full * 1.06, lo2 = lo * lo, hi2 = hi * hi;
+    const near = this.near, N = this.lodN, box = this.lodBox, mode = this.lodMode, scan = this.lodScan, slack = this.lodSlack;
+    const batch = this.batch, T = this.T;
+    for (let tz = 0, t = 0; tz < TT; tz++) {
+      const dz0 = Math.abs(cz - (tz + 0.5) * size) - hs, dzt = dz0 > 0 ? dz0 : 0;
+      for (let tx = 0; tx < TT; tx++, t++) {
+        if (moved) {
+          const dx0 = Math.abs(cx - (tx + 0.5) * size) - hs, dxt = dx0 > 0 ? dx0 : 0;
+          const cur = near[t];
+          const nn = dxt * dxt + dzt * dzt + cy2 < (cur ? keep2 : enter2) ? 1 : 0;
+          if (nn !== cur) {
+            near[t] = nn;
+            batch.setTileEnabled(t, nn > 0);
+            batch.setTileEnabled(t + T, nn > 0);
+          }
         }
-        continue;
-      }
-      for (let k = 0; k < n; k++) {
-        const dx = xz[k * 2] - cx, dz = xz[k * 2 + 1] - cz;
-        const s = st[k];
-        const want = dx * dx + dz * dz + cy2 < (s === 2 ? hi2 : lo2) ? 2 : 1;
-        if (want === s) continue;
-        const id = ids[k];
-        st[k] = want;
-        ist[id] = want;
-        batch.setGeometry(id, igeo[id * 2 + 2 - want]);
+        const n = N[t];
+        if (n === 0) continue;
+        const m = mode[t];
+        if (!moved && m !== 3) continue;
+        const b = t * 4;
+        const x0 = box[b] - cx, z0 = box[b + 1] - cz, x1 = box[b + 2] - cx, z1 = box[b + 3] - cz;
+        const ex = x0 > 0 ? x0 : x1 < 0 ? -x1 : 0, ez = z0 > 0 ? z0 : z1 < 0 ? -z1 : 0;
+        const fx = -x0 > x1 ? -x0 : x1, fz = -z0 > z1 ? -z0 : z1;
+        const far2 = fx * fx + fz * fz + cy2;
+        const cls = far2 < lo2 ? 1 : ex * ex + ez * ez + cy2 >= hi2 ? 0 : 2;
+        if (cls !== 2) {
+          if (cls !== m) { mode[t] = cls; this.lodWhole(t, cls === 1 ? 2 : 1); }
+          continue;
+        }
+        if (m === 2) {
+          const o = t * 3, sx = cx - scan[o], sy = cy - scan[o + 1], sz = cz - scan[o + 2];
+          if (sx * sx + sy * sy + sz * sz < slack[t]) continue;
+        }
+        mode[t] = 2;
+        const q = _lod;
+        q[0] = cx; q[1] = cy; q[2] = cz; q[3] = cy2; q[4] = lo2; q[5] = hi2; q[6] = far2;
+        this.lodScanTile(t);
       }
     }
+  }
+
+  /** every prop of LOD tile t to state `want` (2 full, 1 proxy): the tile lies entirely on one side of the band */
+  private lodWhole(t: number, want: number): void {
+    const n = this.lodN[t], ids = this.lodIds[t], st = this.lodSt[t], ist = this.ist, igeo = this.igeo, batch = this.batch;
+    this.lodEvals += n;
+    for (let k = 0; k < n; k++) {
+      if (st[k] === want) continue;
+      const id = ids[k];
+      st[k] = want;
+      ist[id] = want;
+      batch.setGeometry(id, igeo[id * 2 + 2 - want]);
+    }
+  }
+
+  /**
+   * Evaluate every prop of a tile the switch band crosses, and note how far the camera may travel before any of them
+   * could flip: with m2 the smallest |d^2 - limit^2| over the props (limit = the one its new state switches at) and D^2
+   * (far2) an upper bound of their d^2, a camera move by s changes each d by at most s and d^2 by at most s (2D + s):
+   * no prop flips while s < m2 / (sqrt(D^2 + m2) + D). Inputs in _lod (camera x, y, z, 0.8 camY^2, lo^2, hi^2, D^2).
+   */
+  private lodScanTile(t: number): void {
+    const q = _lod, cx = q[0], cy = q[1], cz = q[2], cy2 = q[3], lo2 = q[4], hi2 = q[5], far2 = q[6];
+    const n = this.lodN[t], ids = this.lodIds[t], xz = this.lodXZ[t], st = this.lodSt[t], ist = this.ist, igeo = this.igeo, batch = this.batch;
+    this.lodEvals += n;
+    let m2 = Infinity;
+    for (let k = 0; k < n; k++) {
+      const dx = xz[k * 2] - cx, dz = xz[k * 2 + 1] - cz;
+      const d2 = dx * dx + dz * dz + cy2;
+      const s = st[k];
+      const want = d2 < (s === 2 ? hi2 : lo2) ? 2 : 1;
+      // margin to the limit the (new) state switches at
+      const g = want === 2 ? hi2 - d2 : d2 - lo2;
+      if (g < m2) m2 = g;
+      if (want === s) continue;
+      const id = ids[k];
+      st[k] = want;
+      ist[id] = want;
+      batch.setGeometry(id, igeo[id * 2 + 2 - want]);
+    }
+    const o = t * 3;
+    this.lodScan[o] = cx; this.lodScan[o + 1] = cy; this.lodScan[o + 2] = cz;
+    // (m2 >= 0 after the scan: 1% safety for rounding)
+    const s = m2 > 0 ? (m2 / (Math.sqrt(far2 + m2) + Math.sqrt(far2))) * 0.99 : 0;
+    this.lodSlack[t] = s * s;
   }
 
   /** put a prop with a proxy into its LOD tile's lists: full model until its (now due) tile is evaluated */

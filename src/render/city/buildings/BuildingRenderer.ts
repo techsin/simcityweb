@@ -195,6 +195,11 @@ function rubbleVariant(b: Building, x: number, z: number): number {
 const RUBBLE_BED = 0.35;
 /** steepest vertical shear (rise per m) a rubble tile follows the ground with */
 const RUBBLE_SLOPE = 0.5;
+/** a rubble bed's underside never hangs above the ground under its cell (no slab floating over a lawn) and sinks at
+ *  most this far (m) below the lot base (no tile tilting into level ground) */
+const RUBBLE_SINK = 0.2;
+/** tilts tried per cell, as fractions of the corner plane's slope (see rubbleSlopes) */
+const RUBBLE_TILTS = [1, 0.75, 0.5, 0.25, 0];
 /** rubble culling spheres are padded by this (m, instead of PROXY_PAD): DynamicBatch scales a sphere by the matrix's
  *  longest column, which under-reads a shear's stretch (up to x1.27 at RUBBLE_SLOPE on both axes) */
 const RUBBLE_PAD = 1.8;
@@ -715,33 +720,56 @@ export class BuildingRenderer {
    * Burnt lots: per rubble cell (cell 0 first, row-major like bi.cells) a vertical shear + lift into bi.shear so the
    * tile's bed lies on the ground where the ground rises above the lot base. Lots are levelled to their base only where
    * the sim could (edge corners at roads / neighbours stay put), so on hills the up-slope side of a lot keeps its
-   * slope: a flat bed there had grass poking through the debris. The bed follows the plane through the cell's corner
-   * rises (world-vertical shear: walls stay upright), lifted so it clears the highest corner; where the ground is at
-   * or below the base (the retaining wall's side) the tile stays flat on the base. Returns the highest bed rise (m).
+   * slope: a flat bed there had grass poking through the debris. A tile is rigid (one matrix, world-vertical shear:
+   * walls stay upright) while the ground under a cell is two triangles (TerrainRenderer.meshHeightAt), so the bed
+   * rests on the best plane that neither hangs over the ground nor tilts into the level base (RUBBLE_SINK):
+   * candidates are the corner plane at a few tilts (RUBBLE_TILTS) and the four planes through three corners (one
+   * terrain triangle each), each raised until its underside touches the ground; the one leaving the least ground above
+   * the bed wins (sum of squares over 5 x 5 samples). A uniform slope is followed exactly; a cell with one raised corner
+   * (twisted: no plane fits) keeps a level bed and the hill rises over that corner, like any lot cut into a slope.
+   * Returns the highest bed rise (m).
    */
   private rubbleSlopes(bi: BInst): number {
     const b = bi.b, st = this.state, N = st.size, N1 = N + 1, H = st.heights, base = b.baseY;
     const sh = bi.shear;
     sh.length = 0;
     const rise = (x: number, z: number) => Math.max(0, H[Math.min(N, z) * N1 + Math.min(N, x)] - base);
-    const half = CELL_SIZE / 2;
+    const C = CELL_SIZE, half = C / 2, clampS = (s: number) => Math.max(-RUBBLE_SLOPE, Math.min(RUBBLE_SLOPE, s));
     let top = 0;
     for (let k = 0, n = b.w * b.d; k < n; k++) {
       const x = b.x + (k % b.w), z = b.z + Math.floor(k / b.w);
       const r00 = rise(x, z), r10 = rise(x + 1, z), r01 = rise(x, z + 1), r11 = rise(x + 1, z + 1);
       if (Math.max(r00, r10, r01, r11) <= RUBBLE_BED) { sh.push(0, 0, 0); continue; }
-      const ax = Math.max(-RUBBLE_SLOPE, Math.min(RUBBLE_SLOPE, (r10 + r11 - r00 - r01) / (2 * CELL_SIZE)));
-      const az = Math.max(-RUBBLE_SLOPE, Math.min(RUBBLE_SLOPE, (r01 + r11 - r00 - r10) / (2 * CELL_SIZE)));
-      // plane through the corner mean, then lifted until the bed clears every corner (the bilinear ground rises above
-      // the plane at two opposite corners; a clamped slope leaves more)
-      let lift = (r00 + r10 + r01 + r11) / 4;
-      let need = 0;
-      for (const [r, sx, sz] of [[r00, -1, -1], [r10, 1, -1], [r01, -1, 1], [r11, 1, 1]]) {
-        need = Math.max(need, r - RUBBLE_BED - (lift + (ax * sx + az * sz) * half));
+      // ground rise at (tx, tz) in [0, 1]^2 of the cell, on the rendered triangulation (diagonal (x+1, z)-(x, z+1))
+      const ground = (tx: number, tz: number) => (tx + tz <= 1 ? r00 + (r10 - r00) * tx + (r01 - r00) * tz : r11 + (r01 - r11) * (1 - tx) + (r10 - r11) * (1 - tz));
+      // corner plane (average edge slopes), then the planes through three corners
+      const ax0 = (r10 + r11 - r00 - r01) / (2 * C), az0 = (r01 + r11 - r00 - r10) / (2 * C);
+      const cand: [number, number][] = RUBBLE_TILTS.map((t) => [ax0 * t, az0 * t]);
+      cand.push([(r10 - r00) / C, (r01 - r00) / C], [(r11 - r01) / C, (r11 - r10) / C], [(r10 - r00) / C, (r11 - r10) / C], [(r11 - r01) / C, (r01 - r00) / C]);
+      let best = Infinity, bx = 0, bz = 0, bl = 0;
+      for (const [cx0, cz0] of cand) {
+        const ax = clampS(cx0), az = clampS(cz0);
+        // the ground is linear on each triangle and so is the plane: the extremes of ground - plane lie at the corners.
+        // hi: the lift where the underside touches the ground (never above it); lo: the lowest lift keeping the
+        // underside within RUBBLE_SINK of the base
+        let hi = Infinity, lo = -Infinity;
+        for (const [r, sx, sz] of [[r00, -1, -1], [r10, 1, -1], [r01, -1, 1], [r11, 1, 1]]) {
+          const s = (ax * sx + az * sz) * half;
+          hi = Math.min(hi, r - s);
+          lo = Math.max(lo, -RUBBLE_SINK - s);
+        }
+        if (lo > hi + 1e-9) continue;
+        let cost = 0;
+        for (let i = 0; i <= 4; i++) for (let j = 0; j <= 4; j++) {
+          const tx = i / 4, tz = j / 4;
+          const over = ground(tx, tz) - (hi + (ax * (tx - 0.5) + az * (tz - 0.5)) * C) - RUBBLE_BED;
+          if (over > 0) cost += over * over;
+        }
+        // (ties: the earlier candidate, i.e. the steeper corner plane)
+        if (cost < best - 1e-9) { best = cost; bx = ax; bz = az; bl = hi; }
       }
-      lift += need;
-      sh.push(ax, az, lift);
-      top = Math.max(top, lift + (Math.abs(ax) + Math.abs(az)) * half);
+      sh.push(bx, bz, bl);
+      top = Math.max(top, bl + (Math.abs(bx) + Math.abs(bz)) * half);
     }
     return top;
   }

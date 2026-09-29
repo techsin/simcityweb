@@ -857,6 +857,48 @@ describe('burnt lots and foundations', () => {
     // picking / tile culling see the raised debris
     expect(bi.vis.top).toBeGreaterThanOrEqual(topMax - 0.5);
   });
+
+  it('keeps a rubble bed level where one lot corner is raised (no plane fits: no slab hanging over the lawn)', () => {
+    const { st, br } = setup();
+    const N1 = st.size + 1;
+    // level ground at 0 with ONE vertex raised 3.9 m: cell (30, 20) gets it as its (+x, +z) corner (a triangle apex),
+    // cell (30, 21) as its (+x, -z) corner (on the triangle diagonal)
+    st.heights.fill(0);
+    st.heights[21 * N1 + 31] = 3.9;
+    br.add({ id: 11, def: 'res_apartment', x: 30, z: 20, w: 1, d: 2, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: 0 } as unknown as Building, false);
+    // and a lot on a uniform slope next to it still follows the slope
+    for (let z = 0; z <= st.size; z++) for (let x = 40; x <= st.size; x++) st.heights[z * N1 + x] = (x - 40) * 1.2;
+    br.add({ id: 12, def: 'res_apartment', x: 41, z: 20, w: 2, d: 1, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: 1.2 } as unknown as Building, false);
+    const [twisted, sloped] = (br as unknown as { list: (BI & { shear: number[] })[] }).list;
+    const hAt = (wx: number, wz: number) => {
+      // the rendered triangulation (TerrainRenderer.meshHeightAt)
+      const fx = wx / CELL_SIZE, fz = wz / CELL_SIZE, x = Math.min(st.size - 1, Math.floor(fx)), z = Math.min(st.size - 1, Math.floor(fz));
+      const tx = fx - x, tz = fz - z, i = z * N1 + x, H = st.heights;
+      const a = H[i], b = H[i + 1], c = H[i + N1], d = H[i + N1 + 1];
+      return tx + tz <= 1 ? a + (b - a) * tx + (c - a) * tz : d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
+    };
+    const m = new THREE.Matrix4(), p = new THREE.Vector3();
+    const underside = (id: number) => {
+      br.batch.mesh.getMatrixAt(id, m);
+      return [[-8, -8], [8, -8], [-8, 8], [8, 8]].map(([lx, lz]) => { p.set(lx, 0, lz).applyMatrix4(m); return [p.y, hAt(p.x, p.z)]; });
+    };
+    // both cells of the twisted lot stay level on the base: nothing hangs over the ground, nothing sinks into it
+    expect(twisted.shear.length).toBe(6);
+    for (let k = 0; k < 2; k++) {
+      expect(Math.abs(twisted.shear[k * 3])).toBeLessThan(1e-9);
+      expect(Math.abs(twisted.shear[k * 3 + 1])).toBeLessThan(1e-9);
+    }
+    for (const id of [twisted.main, ...twisted.cells]) {
+      for (const [y, g] of underside(id)) {
+        expect(y).toBeLessThanOrEqual(g + 1e-6);
+        expect(y).toBeGreaterThan(-0.2 - 1e-6);
+      }
+    }
+    // the sloped lot's tiles lie on the slope: underside on the ground at every corner
+    for (const id of [sloped.main, ...sloped.cells]) {
+      for (const [y, g] of underside(id)) expect(Math.abs(y - g)).toBeLessThan(1e-4);
+    }
+  });
 });
 
 describe('shadow receiver versions', () => {
