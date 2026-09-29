@@ -199,6 +199,7 @@ export class VehicleRenderer {
   private posZ!: Float32Array;
   /** cached per-cell path parameters (8 floats / vehicle) + path type (0 straight, 1 U-turn, 2 arc) */
   private pp!: Float32Array;
+  private rank!: Float64Array;
   private ptype!: Uint8Array;
   /** car-following buckets: hash table (power of two, ~3x the vehicle cap: stays in cache) of chains through nextB,
    *  keyed by cell * 8 + heading * 2 + lane (entries of other keys sharing a slot are skipped by their usedK key) */
@@ -294,6 +295,9 @@ export class VehicleRenderer {
     this.posZ = new Float32Array(cap);
     this.pp = new Float32Array(cap * 8);
     this.ptype = new Uint8Array(cap);
+    // zoom-thinning rank per slot: golden-ratio sequence, evenly spread for any prefix of slots (v * phi mod 1)
+    this.rank = new Float64Array(cap);
+    for (let v = 0; v < cap; v++) { const a = v * 0.6180339887; this.rank[v] = a - Math.floor(a); }
     const bits = Math.max(8, Math.ceil(Math.log2(cap * 3)));
     this.head = new Int32Array(1 << bits).fill(-1);
     this.headShift = 32 - bits;
@@ -917,7 +921,8 @@ export class VehicleRenderer {
     }
     const roadType = this.net.roadType, cong = this.state.congestion;
     const sig = this.signalized;
-    const time = this.time;
+    // signal clock: the lamp shader's uSignalTime (materials.ts Emissive pattern 13)
+    const tmod = this.time % 30;
     const vfac = this.vfac, spd = this.spd;
     for (let v = 0; v < n; v++) {
       const c = cell[v];
@@ -945,7 +950,10 @@ export class VehicleRenderer {
       }
       // signals: stop at the end of this cell if the next cell is a red intersection
       if (sig && nc >= 0 && sig[nc]) {
-        const ph = (time + ((nc * 2654435761) >>> 0) % 997 * 0.03) % 30;
+        // the intersection's phase offset: uint32 hash of its cell, like the shader ((ci * 2654435761u) % 997u) * 0.03
+        // (integer ops: the double product, its ToUint32 and a float modulo cost a library call per vehicle)
+        let ph = tmod + ((Math.imul(nc, -1640531535) >>> 0) % 997) * 0.03;
+        if (ph >= 30) ph -= 30;
         const axis = hout[v] & 1; // 0: x axis, 1: z axis
         const green = axis === 0 ? ph < 13 : ph >= 15 && ph < 28;
         if (!green) {
@@ -990,7 +998,7 @@ export class VehicleRenderer {
     const D2 = this.maxDistance * this.maxDistance;
     const keep = this.keep;
     const flags = st.netFlags, roadType = net.roadType;
-    const life = this.life, tt = this.t, spd = this.spd, len = this.len, vlen = this.vlen, inst = this.inst, vis = this.vis;
+    const life = this.life, tt = this.t, spd = this.spd, len = this.len, vlen = this.vlen, inst = this.inst, vis = this.vis, rank = this.rank;
     let shown = 0;
     for (let v = 0; v < this.n; v++) {
       life[v] -= dt;
@@ -1018,8 +1026,7 @@ export class VehicleRenderer {
       const tunnel = flags[ci] & NF_TUNNEL;
       const ddx = x - cpx, ddz = z - cpz, d2 = ddx * ddx + ddz * ddz + cpy2;
       const L = vlen[v], lh = L * kh, lt = L * kt;
-      // (slot rank: golden-ratio sequence, evenly spread for any prefix of slots)
-      const classic = (v * 0.6180339887) % 1 < keep;
+      const classic = rank[v] < keep;
       const sized = d2 < lh * lh && (d2 < lt * lt || (v & 1) === 0);
       const show = d2 < D2 && (classic || sized) && tileVis[tile] === 1 && !tunnel ? 1 : 0;
       if (show !== vis[v]) { vis[v] = show; this.batch.setVisible(inst[v], show === 1); }

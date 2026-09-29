@@ -136,7 +136,6 @@ const LOD_JUMP = 150;
 
 const POP_TIME = 0.55;
 const _sphere = new THREE.Sphere();
-const _q = new THREE.Quaternion();
 const _pm = new THREE.Matrix4();
 
 function easeOutBack(t: number): number {
@@ -188,6 +187,19 @@ function rubbleVariant(b: Building, x: number, z: number): number {
 const RUBBLE_BED = 0.35;
 /** steepest vertical shear (rise per m) a rubble tile follows the ground with */
 const RUBBLE_SLOPE = 0.5;
+/** rubble culling spheres are padded by this (m, instead of PROXY_PAD): DynamicBatch scales a sphere by the matrix's
+ *  longest column, which under-reads a shear's stretch (up to x1.27 at RUBBLE_SLOPE on both axes) */
+const RUBBLE_PAD = 1.8;
+const _sh = new THREE.Matrix4();
+
+/** m = T(x, y + lift, z) · vertical shear (y += ax·dx + az·dz along the WORLD axes: walls stay upright) · m, with
+ *  cell k's [ax, az, lift] from rubbleSlopes (none: plain translation) */
+function shearOnto(m: THREE.Matrix4, x: number, y: number, z: number, sh: number[], k: number): THREE.Matrix4 {
+  const o = k * 3;
+  const ax = sh[o] ?? 0, az = sh[o + 1] ?? 0, lift = sh[o + 2] ?? 0;
+  _sh.set(1, 0, 0, x, ax, 1, az, y + lift, 0, 0, 1, z, 0, 0, 0, 1);
+  return m.premultiply(_sh);
+}
 
 export function modelIdOf(b: Building): string {
   return getDef(b.def)?.model ?? b.def;
@@ -311,6 +323,12 @@ class LodFadeLayer {
       const rt = renderer.getRenderTarget();
       if (rt) fadeUniforms.uLodRes.value.set(rt.width, rt.height);
       else renderer.getDrawingBufferSize(fadeUniforms.uLodRes.value);
+      // the fade material follows the city material's scalars (syncCityMaterials) right before it draws: a fade that
+      // starts after a long idle stretch must not flash with a stale sky / env intensity in its first frame
+      const city = getCityMaterial(), fm = mesh.material as THREE.MeshStandardMaterial;
+      fm.envMapIntensity = city.envMapIntensity;
+      fm.roughness = city.roughness;
+      fm.metalness = city.metalness;
     };
     mesh.onBeforeShadow = () => {
       const m = mesh as any;
@@ -572,7 +590,7 @@ export class BuildingRenderer {
     const id = this.batch.geometryId(key, () => getModelGeometry(model, v));
     // culling sphere with room for the LOD proxy (built later, within the model bounds + 0.6 m): model and proxy then
     // share one sphere and LOD swaps never force a draw-list rebuild
-    if (fresh) this.batch.padSphere(id, PROXY_PAD);
+    if (fresh) this.batch.padSphere(id, model === 'rubble' ? RUBBLE_PAD : PROXY_PAD);
     if (!this.lodMap.has(id) && !this.lodPending.has(id)) {
       this.lodPending.set(id, [model, v]);
       // background prefetch: most proxies exist before any building needs them
@@ -942,17 +960,17 @@ export class BuildingRenderer {
     const sxz = bi.anim > 0 ? 0.85 + 0.15 * Math.min(1, pop) : 1;
     if (bi.main >= 0) {
       if (v.burnt && b.w * b.d > 1) {
-        // one rubble tile per cell (cell 0 = main, the rest in bi.cells), each at its own quarter turn, scale 1 (cell 0
-        // last: its matrix is main's below)
+        // one rubble tile per cell (cell 0 = main, the rest in bi.cells), each at its own quarter turn, scale 1, sheared
+        // onto the ground where it rises above the lot base (cell 0 last: its matrix is main's below)
         for (let k = bi.cells.length; k >= 0; k--) {
           const x = b.x + (k % b.w), z = b.z + Math.floor(k / b.w);
-          _q.setFromAxisAngle(this.up, bi.cellYaw[k]);
-          this.m4.compose(this.v.set((x + 0.5) * CELL_SIZE, v.baseY, (z + 0.5) * CELL_SIZE), _q, this.s.set(1, 1, 1));
+          shearOnto(this.m4.makeRotationY(bi.cellYaw[k]), (x + 0.5) * CELL_SIZE, v.baseY, (z + 0.5) * CELL_SIZE, bi.shear, k);
           if (k > 0) this.batch.setMatrix(bi.cells[k - 1], this.m4);
         }
       } else if (v.burnt) {
         const fw = b.rot & 1 ? b.d : b.w, fd = b.rot & 1 ? b.w : b.d;
-        this.m4.compose(this.v.set(v.cx, v.baseY, v.cz), yawQ, this.s.set(fw * 0.9, 1, fd * 0.9));
+        this.m4.compose(this.v.set(0, 0, 0), yawQ, this.s.set(fw * 0.9, 1, fd * 0.9));
+        shearOnto(this.m4, v.cx, v.baseY, v.cz, bi.shear, 0);
       } else {
         this.m4.compose(this.v.set(v.cx, v.baseY, v.cz), yawQ, this.s.set(sxz, sy, sxz));
       }
@@ -1027,7 +1045,12 @@ export class BuildingRenderer {
     this.lodCamera = camera;
     this.lodKNow = K;
     this.frOk = false;
-    this.fadeNow = !full && !jump && this.fadeTime > 0;
+    // cross-fades only in smooth motion: not in a flush, a cut frame or the catch-up frames after a cut (behind). The
+    // view changed as a whole there, and the late downgrades (buildings already under lodPixels) swap at once instead
+    // of drawing both levels of up to fadeMax buildings for fadeTime
+    this.fadeNow = !full && !jump && !behind && this.fadeTime > 0;
+    // a cut settles the running fades (their buildings mostly left the view, and the fade layer is not culled)
+    if (jump) while (this.fades.length) this.finishFade(this.fades[this.fades.length - 1]);
     if (!full && this.lodPixels > 0 && (jump || (behind && hop > 0))) this.upgradeScan(c, K, on, off, cur);
     let budget = full ? Infinity : jump ? this.lodCatch >> 2 : behind ? this.lodCatch : this.lodSlice;
     if (this.lodNow.length && budget > 0) {
@@ -1142,9 +1165,12 @@ export class BuildingRenderer {
     this.lodCount += want ? 1 : -1;
     this.ls[bi.li] = want;
     const f = bi.fade;
-    // a level change back mid-fade: the fade runs backwards from where it is
-    if (f) this.reverseFade(f);
-    else if (bi.main >= 0) {
+    // a level change back mid-fade: the fade runs backwards from where it is (in smooth motion; else it settles on the
+    // new level at once)
+    if (f) {
+      if (this.fadeNow) this.reverseFade(f);
+      else this.finishFade(f);
+    } else if (bi.main >= 0) {
       const from = want ? bi.geom : bi.lodGeom, to = want ? bi.lodGeom : bi.geom;
       if (from !== to && this.canFade(bi)) this.startFade(bi, from, to);
       else this.batch.setGeometry(bi.main, to);
@@ -1269,11 +1295,6 @@ export class BuildingRenderer {
         f.p += k;
         if (f.p >= 1) this.finishFade(f);
         else this.fadeColors(f);
-      }
-      // the fade material follows the city material's scalars (syncCityMaterials)
-      const city = getCityMaterial(), fm = getFadeMaterial();
-      if (fm.envMapIntensity !== city.envMapIntensity || fm.roughness !== city.roughness || fm.metalness !== city.metalness) {
-        fm.envMapIntensity = city.envMapIntensity; fm.roughness = city.roughness; fm.metalness = city.metalness;
       }
     }
     this.fadeLayer.sync();

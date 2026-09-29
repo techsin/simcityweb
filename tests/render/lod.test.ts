@@ -20,6 +20,7 @@ import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { Surf } from '../../src/core/types';
 import { buildLodProxy } from '../../src/render/city/buildings/lodProxy';
 import { DynamicBatch, TileCuller } from '../../src/render/city/common/batch';
+import { getCityMaterial } from '../../src/render/city/common/cityMaterial';
 import { makeReceiver, receiverSweepSphere, setReceiver } from '../../src/render/world/Shadows';
 import { BuildingRenderer } from '../../src/render/city/buildings/BuildingRenderer';
 import { createCityState } from '../../src/sim/terrainGen';
@@ -578,6 +579,13 @@ describe('building LOD cross-fade', () => {
     // only the level fading in casts shadows
     expect(layer.fadingIn[neu]).toBe(1);
     expect(layer.fadingIn[old]).toBe(0);
+    // the fade material takes the city material's scalars right before it draws (no stale sky light in a first frame)
+    const city = getCityMaterial(), fm = layer.mesh.material as THREE.MeshStandardMaterial, e0 = city.envMapIntensity;
+    city.envMapIntensity = e0 + 0.37;
+    const fakeRenderer = { getRenderTarget: () => null, getDrawingBufferSize: (v: THREE.Vector2) => v.set(1280, 720) };
+    layer.mesh.onBeforeRender(fakeRenderer as unknown as THREE.WebGLRenderer, null!, null!, null!, null!, null!);
+    expect(fm.envMapIntensity).toBeCloseTo(e0 + 0.37, 6);
+    city.envMapIntensity = e0;
     // half way: both codes carry the same (eased) threshold, so the dither keeps complementary pixel sets
     br.update(br.fadeTime / 2);
     expect(code(old)[1]).toBeCloseTo(0.5, 3);
@@ -637,6 +645,44 @@ describe('building LOD cross-fade', () => {
     br.remove(1);
     expect(br.fading).toBe(0);
     expect(layer.n).toBe(0);
+  });
+
+  it('settles running fades at a cut, and the downgrades trailing a cut swap at once (no fade burst after cuts)', () => {
+    const { br, bi, layer, info, dOn, dOff, at, glide } = setup();
+    // a row of neighbours (same model) in view of the camera; a tiny catch-up slice so downgrades trail the cut
+    for (let k = 0; k < 12; k++) {
+      br.add({ id: 10 + k, def: 'res_apartment', x: 26 + 2 * (k % 6), z: 26 + 8 * Math.floor(k / 6), w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
+    }
+    br.lodCatch = 4;
+    type L = { lod: number; b: { id: number }; fade: unknown };
+    const all = (br as unknown as { list: L[] }).list;
+    at(dOn * 0.5);
+    expect(all.every((x) => x.lod === 0)).toBe(true);
+    // a fade in progress, then a cut back in: the fade is settled in the cut frame (upgrade applied at once)
+    glide(dOn + 20);
+    expect(br.fading).toBeGreaterThan(0);
+    at(dOff * 0.3);
+    expect(br.fading).toBe(0);
+    expect(layer.n).toBe(0);
+    expect(bi.lod).toBe(0);
+    expect(info[bi.main].geometryIndex).toBe(bi.geom);
+    // a cut far out: the cut frame downgrades a quarter slice, the rest trails over the next frames without fading
+    at(dOn * 1.4);
+    expect(br.lodBehind).toBe(true);
+    const trailing = all.filter((x) => x.lod === 0).length;
+    expect(trailing).toBeGreaterThan(4);
+    let frames = 0;
+    while (br.lodBehind && frames < 20) {
+      at(dOn * 1.4);
+      frames++;
+      expect(br.fading).toBe(0);
+      expect(all.every((x) => x.fade === null)).toBe(true);
+    }
+    expect(frames).toBeGreaterThan(1);
+    expect(all.every((x) => x.lod === 1)).toBe(true);
+    // caught up: the next smooth swap fades again
+    glide(dOff * 0.9);
+    expect(br.fading).toBeGreaterThan(0);
   });
 });
 
@@ -727,6 +773,45 @@ describe('burnt lots and foundations', () => {
     expect(sb.min.y).toBeCloseTo(-2.2, 5);
     expect(sb.max.x).toBeCloseTo(8 - 0.1 + 0.04, 4);
     expect(sb.max.z).toBeCloseTo(16 - 0.1 + 0.04, 4);
+  });
+
+  it('lays rubble tiles on ground that rises above the lot base (vertical shear, walls upright, culled whole)', () => {
+    const { st, br } = setup();
+    const N1 = st.size + 1;
+    // ground rising 1.5 m per cell along x plus a twist along z; the lot keeps the height of its low corner (the sim
+    // could not level the up-slope side), so its far side is 4.5 m + under the ground
+    const ground = (x: number, z: number) => (x / CELL_SIZE) * 1.5 + ((x / CELL_SIZE) * (z / CELL_SIZE)) * 0.05;
+    for (let z = 0; z <= st.size; z++) for (let x = 0; x <= st.size; x++) st.heights[z * N1 + x] = ground(x * CELL_SIZE, z * CELL_SIZE);
+    const lot = { id: 9, def: 'res_apartment', x: 20, z: 10, w: 3, d: 2, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: ground(20 * CELL_SIZE, 10 * CELL_SIZE) };
+    br.add(lot as unknown as Building, false);
+    const [bi] = (br as unknown as { list: (BI & { vis: { top: number } })[] }).list;
+    const m = new THREE.Matrix4(), p = new THREE.Vector3();
+    let worst = 0, topMax = -Infinity;
+    for (const id of [bi.main, ...bi.cells]) {
+      br.batch.mesh.getMatrixAt(id, m);
+      // upright: the local y axis stays world up (a shear, not a tilt)
+      const e = m.elements;
+      expect([e[4], e[5], e[6]].map((v) => +v.toFixed(6))).toEqual([0, 1, 0]);
+      // the bed's top (0.4 m over the tile origin, prop.ts) lies 0.4 m over the ground at its corners and centre: never
+      // under it (no grass through the debris), never floating
+      for (const [lx, lz] of [[-8, -8], [8, -8], [-8, 8], [8, 8], [0, 0]]) {
+        p.set(lx, 0.4, lz).applyMatrix4(m);
+        const gap = p.y - ground(p.x, p.z);
+        expect(gap).toBeGreaterThan(0.02);
+        worst = Math.max(worst, gap);
+      }
+      p.set(0, 4, 0).applyMatrix4(m);
+      topMax = Math.max(topMax, p.y);
+      // the batch's culling sphere holds every corner of the sheared tile
+      const s = (br.batch as unknown as { sph: Float32Array }).sph, o = id * 4;
+      for (const [lx, ly, lz] of [[-8, -0.5, -8], [8, -0.5, 8], [8, 4, -8], [-8, 4, 8], [8, 4, 8]]) {
+        p.set(lx, ly, lz).applyMatrix4(m);
+        expect(Math.hypot(p.x - s[o], p.y - s[o + 1], p.z - s[o + 2])).toBeLessThanOrEqual(s[o + 3]);
+      }
+    }
+    expect(worst).toBeLessThan(0.5);
+    // picking / tile culling see the raised debris
+    expect(bi.vis.top).toBeGreaterThanOrEqual(topMax - 0.5);
   });
 });
 

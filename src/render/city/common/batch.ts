@@ -682,11 +682,12 @@ export class DynamicBatch {
     const gs = this.geoSphere[gid];
     if (!gs) return false;
     const e = m.elements;
-    const sx = Math.hypot(e[0], e[1], e[2]), sy = Math.max(1, Math.hypot(e[4], e[5], e[6])), sz = Math.hypot(e[8], e[9], e[10]);
+    const syr = Math.sqrt(e[4] * e[4] + e[5] * e[5] + e[6] * e[6]);
+    const sx = Math.sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]), sy = Math.max(1, syr), sz = Math.sqrt(e[8] * e[8] + e[9] * e[9] + e[10] * e[10]);
     const c = gs.center;
     // center = T + R * (S' * c) with S' = diag(sx, sy, sz) (use the unit axes of the matrix)
     const ix = sx > 0 ? 1 / sx : 0, iz = sz > 0 ? 1 / sz : 0;
-    const iy = 1 / Math.max(1e-6, Math.hypot(e[4], e[5], e[6]));
+    const iy = 1 / Math.max(1e-6, syr);
     const lx = c.x * sx, ly = c.y * sy, lz = c.z * sz;
     const cx = e[12] + e[0] * ix * lx + e[4] * iy * ly + e[8] * iz * lz;
     const cy = e[13] + e[1] * ix * lx + e[5] * iy * ly + e[9] * iz * lz;
@@ -755,14 +756,16 @@ export class DynamicBatch {
     orient(w, _rot);
     // motion since this slot's previous pass (~per frame): camera translation / rotation, receiver (view) likewise;
     // a damped camera settling by less than a millimetre counts as still
-    const step = s.lx === s.lx ? Math.hypot(w[12] - s.lx, w[13] - s.ly, w[14] - s.lz) : Infinity;
+    const sdx = w[12] - s.lx, sdy = w[13] - s.ly, sdz = w[14] - s.lz;
+    const step = s.lx === s.lx ? Math.sqrt(sdx * sdx + sdy * sdy + sdz * sdz) : Infinity;
     const turn = s.lx === s.lx ? turnAngle(_rot, s.lrot) : Infinity;
     s.lx = w[12]; s.ly = w[13]; s.lz = w[14];
     s.lrot.set(_rot);
     let rstep = 0, rturn = 0;
     if (recv) {
       const o = recv.origin;
-      rstep = s.lrx === s.lrx ? Math.hypot(o.x - s.lrx, o.y - s.lry, o.z - s.lrz) : Infinity;
+      const rdx = o.x - s.lrx, rdy = o.y - s.lry, rdz = o.z - s.lrz;
+      rstep = s.lrx === s.lrx ? Math.sqrt(rdx * rdx + rdy * rdy + rdz * rdz) : Infinity;
       rturn = s.lrx === s.lrx ? turnAngle(recv.rot, s.lrrot) : Infinity;
       s.lrx = o.x; s.lry = o.y; s.lrz = o.z;
       s.lrrot.set(recv.rot);
