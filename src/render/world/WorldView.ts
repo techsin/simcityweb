@@ -58,6 +58,18 @@ function litFractionAt(h: number): number {
   return k[i] + (k[(i + 1) % 24] - k[i]) * f;
 }
 
+/** dusk / dawn grading (WorldView.updateAtmosphere, weighted by Sky.lightRig `dusk`); exported for tuning tools */
+export const DUSK_GRADE = {
+  /** exposure adapts toward the night level by this fraction of the dusk weight (ahead of the night factor) */
+  exposure: 0.42,
+  /** saturation / contrast added at full dusk */
+  saturation: 0.12,
+  contrast: 0.03,
+  /** cool shadow lift (linear rgb, post tonemap) at full dusk: a hint only (cool shadows come from the sky fill; a
+   *  strong lift read as a blue haze over the dusk scene) */
+  lift: [0.0003, 0.001, 0.003] as [number, number, number],
+};
+
 export class WorldView implements WorldViewApi {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
@@ -393,12 +405,13 @@ export class WorldView implements WorldViewApi {
     this.sun.color.copy(L.lightColor);
     this.sun.intensity = L.lightIntensity;
     this.sun.visible = L.lightIntensity > 0.002;
-    // hemisphere night fill (kept low so night reads as night, not a blue-tinted day), plus a gap term while the direct
-    // light is weak: the sun-twilight -> moon handover (~19:10-19:35 / ~06:00-06:25) and moonless pre-dawn hours would
-    // otherwise be the darkest minutes of the night
-    const gap = L.night * (1 - THREE.MathUtils.clamp(L.lightIntensity / 0.28, 0, 1));
-    this.nightFill.intensity = 0.34 * L.night + 0.28 * gap;
+    // hemisphere sky fill (Sky.lightRig): kept low at night so night reads as night, not a blue-tinted day, topped up
+    // while the direct light is weak (sun-twilight -> moon handover ~19:10-19:35 / moonless pre-dawn) and through the
+    // blue hour, so twilight is never darker than the night that follows
+    this.nightFill.intensity = L.fill;
+    this.nightFill.color.copy(L.fillColor);
     sharedUniforms.uNight.value = L.night;
+    sharedUniforms.uLamps.value = L.lamps;
     sharedUniforms.uTime.value = this.clock;
     sharedUniforms.uLitFraction.value = litFractionAt(this._time);
     sharedUniforms.uSunDir.value.copy(L.lightDir);
@@ -472,14 +485,19 @@ export class WorldView implements WorldViewApi {
     f.uCloudCover.value = su.uCloudCover.value;
     f.uCloudTime.value = su.uCloudTime.value;
     f.uCloudShadow.value = 0.32 * (1 - n) * THREE.MathUtils.smoothstep(L.sunDir.y, 0.05, 0.3) * Math.min(1, su.uCloudCover.value * 2.2);
-    // grading
-    g.exposure = L.exposure;
-    this.renderer.toneMappingExposure = L.exposure;
+    // grading. Dusk / dawn (Sky.lightRig `dusk`): the eye adapts sooner than the night factor rises (exposure), the
+    // colour stays alive instead of desaturating into a murky brown (a winter town of dormant grass under a low red sun
+    // read as one uniform brown), and shadows get a cool blue lift against the warm low sun, lamps and windows
+    const D = DUSK_GRADE;
+    const dusk = L.dusk;
+    const exposure = Math.max(L.exposure, THREE.MathUtils.lerp(1.0, 1.9, D.exposure * dusk));
+    g.exposure = exposure;
+    this.renderer.toneMappingExposure = exposure;
     const golden = L.golden;
     g.tint.setRGB(1 + 0.05 * golden - 0.07 * n, 1 - 0.01 * golden - 0.03 * n, 1 - 0.06 * golden + 0.08 * n);
-    g.saturation = 1.08 + 0.06 * golden - 0.32 * n;
-    g.contrast = 1.04 + 0.04 * n;
-    g.lift.setRGB(0.002 * n, 0.006 * n, 0.016 * n);
+    g.saturation = 1.08 + 0.06 * golden - 0.32 * n + D.saturation * dusk;
+    g.contrast = 1.04 + 0.04 * n + D.contrast * dusk;
+    g.lift.setRGB(0.002 * n + D.lift[0] * dusk, 0.006 * n + D.lift[1] * dusk, 0.016 * n + D.lift[2] * dusk);
     g.vignette = 0.2 + 0.1 * n;
     // bloom mainly catches signs, crowns, street lights and sun glints — lit windows should sparkle, not smear
     g.bloomStrength = THREE.MathUtils.lerp(0.035, 0.36, n);

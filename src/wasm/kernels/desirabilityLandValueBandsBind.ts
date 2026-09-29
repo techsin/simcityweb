@@ -79,6 +79,18 @@ const S_DES: number[] = Array.from({ length: ECON_DEV_MAX }, () => scratchSlot()
 type Layer = Uint8Array | Int32Array | Float32Array;
 const isInt = (v: number): boolean => v === (v | 0);
 
+/** the binary's parameter-block layout matches these bindings (checked once per instance; a stale binary runs JS) */
+const layouts = new WeakMap<object, boolean>();
+function layoutOk(ex: EconExports): boolean {
+  let ok = layouts.get(ex);
+  if (ok === undefined) {
+    ok = typeof ex.econ_layout === 'function' && ex.econ_layout() === ECON_LAYOUT;
+    if (!ok) console.warn(`[simWasm] econ kernels: parameter layout ${String(ex.econ_layout?.())} != ${ECON_LAYOUT} (stale binary? npm run build:wasm), running JS`);
+    layouts.set(ex, ok);
+  }
+  return ok;
+}
+
 /** tables block of one EconBandTables in one heap (written once) */
 interface TablePtrs {
   heap: WasmHeap;
@@ -149,9 +161,13 @@ export function makeEconBandKernels(
 
   const instance = (): EconWasm | null => {
     if (!supported) return null;
-    if (opts.wasm) return opts.wasm;
-    const w = ECON_KERNEL.instance();
-    return w === null ? null : { ex: w.exports as unknown as EconExports, heap: w.heap };
+    let w: EconWasm | null = opts.wasm ?? null;
+    if (!w) {
+      const inst = ECON_KERNEL.instance();
+      if (inst === null) return null;
+      w = { ex: inst.exports as unknown as EconExports, heap: inst.heap };
+    }
+    return layoutOk(w.ex) ? w : null;
   };
 
   const noOverlap = (outs: Layer[], args: Layer[]): boolean => {

@@ -234,6 +234,49 @@ export const CONSTRUCT_RAND = 6;
 /** a lot requires water when stage ≥ this or zone density ≥ 2 */
 export const WATER_REQUIRED_STAGE = 3;
 // §GROWTH (owner WP6): new growth constants go below this line (pickDev exponents, gentrification, hotels) ----------
+/** DevType pick weight = (des − GROW_MIN_DESIR + 0.05)^PICK_DES_EXP × allowance^PICK_ALLOW_EXP (1 / 0.5 = phase 0; the
+ *  spec's 2 / 0.4 lets the rich outbid R$ on premium land together with RENT — only if the balance bot passes) */
+export const PICK_DES_EXP = 1;
+export const PICK_ALLOW_EXP = 0.5;
+/** hotel defs (tourism.ts HOTEL_ROOMS_PER_JOB) are preferred while visitors lack rooms: def weight ×
+ *  (1 + min(HOTEL_PREF_MAX, hotel shortage / rooms of the def)) */
+export const HOTEL_PREF_MAX = 3;
+/**
+ * SAME-STAGE WEALTH SWAP (gentrification): a live growable is replaced by a def of a richer DevType of its zone at the
+ * same stage when des_new − des_old ≥ SWAP_MIN_GAIN, the new DevType's demand > SWAP_MIN_DEMAND (and allowance left),
+ * the new capacity ≥ SWAP_MIN_CAP × the old one and the building is ≥ SWAP_MIN_AGE days old. A swapped building cannot
+ * swap again for SWAP_LOCK_DAYS (anti-oscillation). FILTERING DOWN: an R$$$ home whose desirability stays below
+ * FILTER_DES for FILTER_DAYS becomes R$$ of the same stage. Timers: systemData.growth (by building id, pruned).
+ */
+export const SWAP_MIN_GAIN = 0.25;
+export const SWAP_MIN_DEMAND = 0.1;
+export const SWAP_MIN_CAP = 0.6;
+export const SWAP_MIN_AGE = 240;
+export const SWAP_LOCK_DAYS = 5 * 360;
+export const FILTER_DES = -0.1;
+export const FILTER_DAYS = 180;
+/** buildings checked for swaps / filtering per day: every growable once per SWAP_SCAN_DAYS */
+export const SWAP_SCAN_DAYS = 30;
+/**
+ * DOWNTOWN (skyline): stage ≥ DOWNTOWN_STAGE growth is weighted by the distance to the commercial core (job-weighted
+ * centroid of CS / CO jobs, monthly): weight = max(DOWNTOWN_MIN, 1 − smoothstep(DOWNTOWN_R0, DOWNTOWN_R1, d / map size));
+ * a tower lot farther out is built at stage ≤ DOWNTOWN_STAGE − 1 unless a position hash < weight.
+ */
+export const DOWNTOWN_STAGE = 6;
+export const DOWNTOWN_R0 = 0.12;
+export const DOWNTOWN_R1 = 0.4;
+export const DOWNTOWN_MIN = 0.35;
+/** at least this many CS / CO jobs before a commercial core exists (smaller towns: no downtown weighting) */
+export const DOWNTOWN_MIN_JOBS = 2000;
+/**
+ * DEEP BLOCKS: a new lot anchored on the road may extend its depth by up to INFILL_MAX_EXTRA rows of interior cells
+ * (zoned, empty, no road next to them) behind the building (the frontage rule is kept: its front edge touches the road),
+ * so the interior of deep blocks fills with yards instead of staying vacant.
+ */
+export const INFILL_MAX_EXTRA = 2;
+/** no two buildings of the same def and model variant within this many cells (growth steps the variant; plopped
+ *  buildings start from a position hash) */
+export const VARIANT_SPREAD = 6;
 
 // ============================================================================ OCCUPANCY / HEALTH / ABANDONMENT
 /** fraction of the gap to target occupancy closed per day */
@@ -291,6 +334,33 @@ export const LV = {
   spatial: 0.35,
 };
 // §LAND VALUE (owner WP6): new land-value constants go below this line --------------------------------------------
+/**
+ * SIM_DEPTH_SPEC WP6 land value (landValue.ts lvTerms; LV above keeps base / terrain / pollution / smoothing, its
+ * services / parks / transit entries are the phase-0 formula kept for the frozen WebAssembly reference):
+ *  v = base + view + waterfront·(1 − waterPollutionCut·waterPollution) + plopped splats (functional buildings only; parks
+ *    × parks funding) + police / fire / health / elementary / high / college coverage (Σ .14 as before) + play / green
+ *    (Σ .12 as before) + transit (transit-oriented development) + commute (city-relative score − .5) + neighbourhood
+ *    wealth + prestige − stigma + tree cover − soil contamination + historic building
+ *    − air / water / garbage (pile, faded in with town size) / crime / noise.
+ */
+export const LV_TERMS = {
+  police: 0.025, fire: 0.02, health: 0.03, elem: 0.03, high: 0.02, college: 0.015,
+  play: 0.04, green: 0.08,
+  transit: 0.07,
+  commute: 0.14,
+  wealth: 0.1,
+  prestige: 0.1,
+  stigma: 0.1,
+  trees: 0.04,
+  soil: 0.2,
+  historic: 0.05,
+  /** waterfront bonus × (1 − this × water pollution of the cell) */
+  waterfrontPollution: 0.8,
+  /** pile garbage (× GARBAGE_FADE_POP fade) */
+  garbage: 0.2,
+};
+/** park land-value splats × clamp(parks service effectiveness, 0, PARK_LV_FUNDING_MAX) (budget funding^0.7, 0 on strike) */
+export const PARK_LV_FUNDING_MAX = 1.2;
 
 // ============================================================================ DESIRABILITY
 /**
@@ -303,36 +373,53 @@ export interface DesirWeights {
   bias: number; lv: number; lvRef: number; air: number; water: number; garbage: number; crime: number; noise: number;
   commute: number; police: number; fire: number; health: number; edu: number; park: number; transit: number;
   traffic: number; popNear: number; freight: number; slope: number;
+  // SIM_DEPTH_SPEC WP6 terms 17..32 (desirability.ts; 0 = the DevType ignores the term)
+  elem: number; high: number; college: number; play: number; green: number; shops: number; stigma: number; prestige: number;
+  campus: number; visitors: number; skill: number; trees: number; soil: number; rent: number; wealthy: number; parking: number;
 }
 const W = (o: Partial<DesirWeights>): DesirWeights => ({
   bias: 0, lv: 0, lvRef: 0.25, air: 0, water: 0, garbage: 0, crime: 0, noise: 0, commute: 0, police: 0, fire: 0, health: 0, edu: 0,
-  park: 0, transit: 0, traffic: 0, popNear: 0, freight: 0, slope: 0, ...o,
+  park: 0, transit: 0, traffic: 0, popNear: 0, freight: 0, slope: 0,
+  elem: 0, high: 0, college: 0, play: 0, green: 0, shops: 0, stigma: 0, prestige: 0, campus: 0, visitors: 0, skill: 0, trees: 0,
+  soil: 0, rent: 0, wealthy: 0, parking: 0, ...o,
 });
 export const DESIR_WEIGHTS: readonly DesirWeights[] = [
-  // R$: tolerant of pollution, likes transit & short commutes
-  W({ bias: 0.1, lv: 0.35, lvRef: 0.1, air: -0.3, water: -0.2, garbage: -0.3, crime: -0.2, noise: -0.12, commute: 0.45, police: 0.08, fire: 0.08, health: 0.14, edu: 0.08, park: 0.12, transit: 0.18, slope: -0.3 }),
-  // R$$
-  W({ bias: 0.0, lv: 0.7, lvRef: 0.25, air: -0.75, water: -0.3, garbage: -0.4, crime: -0.55, noise: -0.28, commute: 0.5, police: 0.16, fire: 0.12, health: 0.16, edu: 0.22, park: 0.24, transit: 0.08, slope: -0.3 }),
-  // R$$$: needs high land value, low crime, parks, schools
-  W({ bias: -0.1, lv: 1.1, lvRef: 0.42, air: -1.1, water: -0.4, garbage: -0.6, crime: -1.0, noise: -0.45, commute: 0.4, police: 0.22, fire: 0.12, health: 0.2, edu: 0.3, park: 0.36, slope: -0.2 }),
+  // (WP6: R edu / park moved to the tier terms elem / high / college / play / green, CO / I-HT edu to skill + campus;
+  //  garbage re-weighted for WP3's pile semantics — a lot's own uncollected pile, faded in with town size, see
+  //  GARBAGE_FADE_POP; parking weights act only while PARKING_TERMS is on)
+  // R$: tolerant of pollution, likes transit, shops & short commutes; priced out by rent on premium land
+  W({ bias: 0.1, lv: 0.35, lvRef: 0.1, air: -0.3, water: -0.2, garbage: -0.2, crime: -0.2, noise: -0.12, commute: 0.45, police: 0.08, fire: 0.08, health: 0.14, transit: 0.18, slope: -0.3,
+    elem: 0.06, high: 0.04, college: 0.03, play: 0.05, green: 0.07, shops: 0.12, stigma: -0.15, trees: 0.04, soil: -0.2, rent: -0.5 }),
+  // R$$: families: schools, parks, safety
+  W({ bias: 0.0, lv: 0.7, lvRef: 0.25, air: -0.75, water: -0.3, garbage: -0.25, crime: -0.55, noise: -0.28, commute: 0.5, police: 0.16, fire: 0.12, health: 0.16, transit: 0.08, slope: -0.3,
+    elem: 0.12, high: 0.09, college: 0.04, play: 0.09, green: 0.15, shops: 0.10, stigma: -0.3, prestige: 0.05, trees: 0.06, soil: -0.3, rent: -0.1, wealthy: 0.03 }),
+  // R$$$: needs high land value, low crime, green space, schools, prestige, rich neighbours
+  W({ bias: -0.1, lv: 1.1, lvRef: 0.42, air: -1.1, water: -0.4, garbage: -0.35, crime: -1.0, noise: -0.45, commute: 0.4, police: 0.22, fire: 0.12, health: 0.2, slope: -0.2,
+    elem: 0.14, high: 0.12, college: 0.05, play: 0.08, green: 0.28, shops: 0.06, stigma: -0.5, prestige: 0.2, trees: 0.08, soil: -0.4, wealthy: 0.15 }),
   // CS$: likes traffic & customers
-  W({ bias: 0.1, lv: 0.25, lvRef: 0.1, air: -0.2, garbage: -0.2, crime: -0.3, commute: 0.2, traffic: 0.35, popNear: 0.4, police: 0.06, fire: 0.06, slope: -0.4 }),
+  W({ bias: 0.1, lv: 0.25, lvRef: 0.1, air: -0.2, garbage: -0.15, crime: -0.3, commute: 0.2, traffic: 0.35, popNear: 0.4, police: 0.06, fire: 0.06, slope: -0.4,
+    visitors: 0.08, stigma: -0.05, rent: -0.2, parking: -0.12 }),
   // CS$$
-  W({ bias: 0.05, lv: 0.45, lvRef: 0.22, air: -0.3, garbage: -0.25, crime: -0.45, commute: 0.2, traffic: 0.35, popNear: 0.4, police: 0.1, fire: 0.08, park: 0.05, slope: -0.4 }),
+  W({ bias: 0.05, lv: 0.45, lvRef: 0.22, air: -0.3, garbage: -0.18, crime: -0.45, commute: 0.2, traffic: 0.35, popNear: 0.4, police: 0.1, fire: 0.08, park: 0.05, slope: -0.4,
+    visitors: 0.2, stigma: -0.1, prestige: 0.03, parking: -0.12 }),
   // CS$$$
-  W({ bias: -0.05, lv: 0.8, lvRef: 0.4, air: -0.5, garbage: -0.35, crime: -0.7, noise: -0.1, commute: 0.2, traffic: 0.28, popNear: 0.35, police: 0.14, fire: 0.08, park: 0.1, slope: -0.4 }),
-  // CO$$: commute + some EQ
-  W({ bias: 0.05, lv: 0.55, lvRef: 0.25, air: -0.4, garbage: -0.25, crime: -0.5, commute: 0.6, edu: 0.2, traffic: 0.1, transit: 0.12, police: 0.1, fire: 0.1, slope: -0.4 }),
-  // CO$$$: land value, EQ, short commute
-  W({ bias: -0.05, lv: 0.9, lvRef: 0.42, air: -0.6, garbage: -0.3, crime: -0.7, noise: -0.1, commute: 0.7, edu: 0.3, transit: 0.18, traffic: 0.08, police: 0.12, fire: 0.1, slope: -0.4 }),
-  // I-Ag: flat cheap land, hurt by pollution
-  W({ bias: 0.42, lv: -0.3, lvRef: 0.2, air: -0.6, water: -0.6, garbage: -0.3, crime: -0.1, commute: 0.1, slope: -0.9 }),
-  // I-D: tolerates pollution, likes freight, cheap land
-  W({ bias: 0.25, lv: -0.15, lvRef: 0.2, crime: -0.2, commute: 0.2, freight: 0.35, fire: 0.08, slope: -0.5 }),
+  W({ bias: -0.05, lv: 0.8, lvRef: 0.4, air: -0.5, garbage: -0.25, crime: -0.7, noise: -0.1, commute: 0.2, traffic: 0.28, popNear: 0.35, police: 0.14, fire: 0.08, park: 0.1, slope: -0.4,
+    visitors: 0.25, stigma: -0.2, prestige: 0.15, wealthy: 0.1, parking: -0.15 }),
+  // CO$$: commute + a skilled workforce nearby
+  W({ bias: 0.05, lv: 0.55, lvRef: 0.25, air: -0.4, garbage: -0.18, crime: -0.5, commute: 0.6, traffic: 0.1, transit: 0.12, police: 0.1, fire: 0.1, slope: -0.4,
+    skill: 0.15, campus: 0.08, stigma: -0.1, prestige: 0.05, parking: -0.08 }),
+  // CO$$$: land value, skills, campus, short commute
+  W({ bias: -0.05, lv: 0.9, lvRef: 0.42, air: -0.6, garbage: -0.2, crime: -0.7, noise: -0.1, commute: 0.7, transit: 0.18, traffic: 0.08, police: 0.12, fire: 0.1, slope: -0.4,
+    skill: 0.25, campus: 0.12, stigma: -0.2, prestige: 0.15, parking: -0.08 }),
+  // I-Ag: flat cheap land, hurt by pollution and contaminated soil
+  W({ bias: 0.42, lv: -0.3, lvRef: 0.2, air: -0.6, water: -0.6, garbage: -0.2, crime: -0.1, commute: 0.1, slope: -0.9, soil: -0.5 }),
+  // I-D: tolerates pollution, likes freight, cheap land (rent)
+  W({ bias: 0.25, lv: -0.15, lvRef: 0.2, crime: -0.2, commute: 0.2, freight: 0.35, fire: 0.08, slope: -0.5, rent: -0.15 }),
   // I-M: needs freight access
-  W({ bias: 0.15, lv: 0.05, lvRef: 0.2, air: -0.1, crime: -0.3, commute: 0.3, freight: 0.55, fire: 0.1, police: 0.06, slope: -0.5 }),
-  // I-HT: EQ + clean air
-  W({ bias: 0.0, lv: 0.45, lvRef: 0.3, air: -0.8, water: -0.3, garbage: -0.3, crime: -0.4, noise: -0.1, commute: 0.4, edu: 0.4, freight: 0.15, police: 0.08, fire: 0.08, slope: -0.4 }),
+  W({ bias: 0.15, lv: 0.05, lvRef: 0.2, air: -0.1, crime: -0.3, commute: 0.3, freight: 0.55, fire: 0.1, police: 0.06, slope: -0.5, skill: 0.05 }),
+  // I-HT: skills + campus + clean air
+  W({ bias: 0.0, lv: 0.45, lvRef: 0.3, air: -0.8, water: -0.3, garbage: -0.2, crime: -0.4, noise: -0.1, commute: 0.4, freight: 0.15, police: 0.08, fire: 0.08, slope: -0.4,
+    skill: 0.25, campus: 0.25, stigma: -0.2, trees: 0.03, soil: -0.2 }),
 ];
 /** tax shift on desirability per point above neutral (× TAX_SENS[dev]) */
 export const DESIR_TAX = 0.02;
@@ -355,6 +442,56 @@ export const COARSE = 8;
 /** freight access falls to 0 at this many coarse blocks from a freight source (highway, rail, freight station, port, edge connection) */
 export const FREIGHT_BLOCKS = 7;
 // §DESIRABILITY (owner WP6): new desirability constants go below this line (term indices 17+, cohort weights) -------
+/**
+ * COHORT WEIGHTING (SIM_DEPTH_SPEC WP6; zero runtime cost): residential weights of these terms are scaled per zone
+ * density by the household mix that density brings (economy/demographics profileShares of house / apartment / tower
+ * and the DevType's wealth): w' = w · Σ_c s_c·M[c] / Σ_c base_c·M[c] (base = COHORT_BASE). A family-house lot values an
+ * elementary school ~1.23× the reference, a tower lot ~0.75×; the reference mix reproduces the weights above.
+ * Rows: [kids, teens, young adults, adults, seniors].
+ */
+export const COHORT_TERM_MUL: Readonly<Record<'elem' | 'high' | 'college' | 'play' | 'green' | 'health' | 'noise' | 'shops' | 'transit' | 'crime', readonly number[]>> = {
+  elem: [6, 1, 0.2, 0.6, 0.1],
+  high: [1.5, 6, 0.3, 0.6, 0.1],
+  college: [0.3, 1.5, 6, 0.5, 0.2],
+  play: [5, 3, 0.5, 0.6, 0.4],
+  green: [1, 1, 0.8, 1, 2.5],
+  health: [1.2, 0.8, 0.6, 0.8, 3.5],
+  noise: [1.2, 0.8, 0.5, 1, 2.2],
+  shops: [0.8, 0.8, 1.5, 1, 2],
+  transit: [0.3, 1.5, 3, 0.8, 1.8],
+  crime: [1.5, 1.2, 0.8, 1, 1.2],
+};
+/** CS popNear is wealth-matched: Σ_r residents_r (coarse, blurred) × CUSTOMER_MIX[r][tier] / POP_NEAR_FULL_W[tier] */
+export const POP_NEAR_FULL_W: readonly [number, number, number] = [2600, 2600, 1600];
+/**
+ * COMMUTE rescaled to the city (the fixed 12..80 min ramp saturated: every home scored 0.5 at a 7-minute average):
+ * good = clamp(COMMUTE_REL_GOOD × avg, lo, hi), bad = clamp(COMMUTE_REL_BAD × avg, good + COMMUTE_SPAN_MIN, COMMUTE_BAD);
+ * term = 0.5 − smoothstep(good, bad, minutes) — a home at twice the city's average commute scores below average.
+ */
+export const COMMUTE_REL_GOOD = 0.8;
+export const COMMUTE_GOOD_MIN = 4;
+export const COMMUTE_REL_BAD = 3;
+export const COMMUTE_SPAN_MIN = 10;
+/** RENT term = smoothstep(RENT_LV0, RENT_LV1, land value): the poor are priced out of premium land (R$, CS$, I-D) */
+export const RENT_LV0 = 0.45;
+export const RENT_LV1 = 0.85;
+/** the RENT term counts at most this much in a building's CONDITION (population.ts): rising land value gentrifies
+ *  (growth's same-stage wealth swap) instead of abandoning the homes that are already there (PART_B item 36) */
+export const RENT_CONDITION_MIN = -0.1;
+/**
+ * GARBAGE (WP3 semantics: st.garbage = the uncollected pile on a building's own lot). The desirability, land value and
+ * condition garbage terms fade in with the city like approval's garbage term (smoothstep over residents): a hamlet
+ * without a landfill is told (advisor, NoGarbage chip) but not strangled; a 20k city is.
+ */
+export const GARBAGE_FADE_POP0 = 2000;
+export const GARBAGE_FADE_POP1 = 20000;
+/** WP6-2 PARKING terms (weights in DESIR_WEIGHTS.parking): multiplied by this switch — 1 once WP7b's parking pressure is
+ *  calibrated (PART_B item 19: bot without garages ≤ 0.3 job-weighted, ≤ 15 % of C cells above 0.6), 0 = neutral */
+export const PARKING_TERMS = 0;
+/** I desirability's freight term: traffic's per-building freight access where an industry stands
+ *  (TrafficSystem.freightAccess ≥ 0), else the coarse freight BFS (computeFreightAccess, refreshed on road changes and
+ *  every FREIGHT_REFRESH_DAYS: freight stations count only while rail-linked, WP7 use factor > 0) */
+export const FREIGHT_REFRESH_DAYS = 30;
 
 // ============================================================================ EQ / HQ
 /** EQ target = EQ_BASE + EQ_SPAN × pop-weighted education coverage × edu effect; moves EQ_RATE of the gap per month */

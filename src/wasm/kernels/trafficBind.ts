@@ -470,6 +470,8 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
   function syncScalars(): void {
     const f = lay!.f, s = e.s as unknown as Record<string, number>;
     for (const k of SCALAR_SLOTS) ctxF[f.get(k)!] = s[k];
+    // outputs a kernel does not write keep their values (as in the JS core, also after a call that ran in JS)
+    for (let i = 0; i < 8; i++) ctxF[f.get('out' + i)!] = e.out[i];
   }
 
   /** the class a "too small" code refers to */

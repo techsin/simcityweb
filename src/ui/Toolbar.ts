@@ -3,6 +3,7 @@ import { Network, Zone } from '../core/types';
 import type { GameContext } from '../game/context';
 import { CATEGORIES, CATEGORY_COLORS, categoryOfTool, findToolSpec, type ToolCategory, type ToolSpec } from '../game/toolCatalog';
 import type { BuildingDef } from '../sim/catalogTypes';
+import { facilityDefFacts } from '../sim/infra/facilities';
 import { BRIDGE_COST_MUL, NETWORK_INFO, POWERLINE_COST, SUBWAY_COST, networkCellCost, zoneCellCost } from '../sim/economy/tuning';
 import { clear, escapeHtml, h, toggleClass } from './dom';
 import { icon } from './icons';
@@ -344,6 +345,7 @@ export class Toolbar {
 
   private showSpecTip(s: ToolSpec, anchor: HTMLElement): void {
     const rows: [string, string][] = [];
+    const hints: string[] = [];
     let cat = '';
     let catColor = s.color ?? 'var(--accent-2)';
     const d: BuildingDef | undefined = s.def;
@@ -355,11 +357,24 @@ export class Toolbar {
       if (d.income) rows.push(['Income', `<span class="pos">+${money(d.income)} / month</span>`]);
       rows.push(['Size', `${d.footprint[0]} × ${d.footprint[1]} tiles`]);
       if (d.jobs) rows.push(['Jobs', num(d.jobs)]);
-      if (d.capacity && d.category !== 'growable') rows.push(['Capacity', num(d.capacity)]);
-      if (d.powerOut) rows.push(['Power output', `${num(d.powerOut)} MW`]);
-      if (d.waterOut) rows.push(['Water output', `${num(d.waterOut)} kL/day`]);
-      if (d.garbageCapacity) rows.push(['Garbage capacity', `${num(d.garbageCapacity)} t/month`]);
-      if (d.coverage) rows.push([`${titleCase(d.coverage.kind)} coverage`, `radius ${d.coverage.radius}${d.coverage.capacity ? ` · ${num(d.coverage.capacity)} cap.` : ''}`]);
+      // what it does, in the facility's own units (seats, beds, fleet, patrol capacity, output, spaces, buses ...)
+      let facts: ReturnType<typeof facilityDefFacts> = [];
+      try {
+        facts = facilityDefFacts(d.id);
+      } catch {
+        facts = [];
+      }
+      for (const f of facts) rows.push([escapeHtml(f.label), escapeHtml(f.value)]);
+      for (const f of facts) if (f.hint && hints.length < 3) hints.push(f.hint);
+      if (!facts.length) {
+        if (d.capacity && d.category !== 'growable') rows.push(['Capacity', num(d.capacity)]);
+        if (d.powerOut) rows.push(['Power output', `${num(d.powerOut)} MW`]);
+        if (d.waterOut) rows.push(['Water output', `${num(d.waterOut)} kL/day`]);
+        if (d.garbageCapacity) rows.push(['Garbage capacity', `${num(d.garbageCapacity)} t/month`]);
+        if (d.coverage) rows.push([`${titleCase(d.coverage.kind)} coverage`, `radius ${d.coverage.radius}${d.coverage.capacity ? ` · ${num(d.coverage.capacity)} cap.` : ''}`]);
+      }
+      const use = [(d.powerUse ?? 0) > 0 && !d.powerOut ? `${num(d.powerUse!)} MW` : '', (d.waterUse ?? 0) > 0 && d.category !== 'power' ? `${num(d.waterUse!)} kL/day` : ''].filter(Boolean);
+      if (use.length) rows.push(['Uses', use.join(' · ')]);
       if (d.landValue) rows.push(['Land value', `<span class="${d.landValue.amount >= 0 ? 'pos' : 'neg'}">${d.landValue.amount >= 0 ? '+' : ''}${Math.round(d.landValue.amount * 100)}</span> · r ${d.landValue.radius}`]);
       if (d.pollution) {
         const p = d.pollution;
@@ -380,7 +395,8 @@ export class Toolbar {
     const dis = s.disabled ? `<div class="rt-lock">${icon('alert', 14)}<div>${escapeHtml(s.disabled)}</div></div>` : '';
     const key = s.hotkey ? `<div class="rt-key">Hotkey <kbd>${s.hotkey}</kbd>${s.id.startsWith('plop:') ? '' : ' (press again to cycle)'}</div>` : s.def ? `<div class="rt-key">Click to select · <kbd>R</kbd> rotates while placing</div>` : '';
     this.tip.style.width = '270px';
-    this.tip.innerHTML = `<div class="rt-cat" style="color:${catColor}">${escapeHtml(cat)}</div><h4>${escapeHtml(s.label)}</h4>${s.desc ? `<p>${escapeHtml(s.desc)}</p>` : '<div style="height:6px"></div>'}<div class="rt-rows">${rows.map(([a, b]) => `<span>${a}</span><span>${b}</span>`).join('')}</div>${lock}${dis}${key}`;
+    const notes = hints.length ? `<div class="rt-notes">${hints.map((t) => `<div>${escapeHtml(t)}</div>`).join('')}</div>` : '';
+    this.tip.innerHTML = `<div class="rt-cat" style="color:${catColor}">${escapeHtml(cat)}</div><h4>${escapeHtml(s.label)}</h4>${s.desc ? `<p>${escapeHtml(s.desc)}</p>` : '<div style="height:6px"></div>'}<div class="rt-rows">${rows.map(([a, b]) => `<span>${a}</span><span>${b}</span>`).join('')}</div>${notes}${lock}${dis}${key}`;
     this.placeTip(anchor);
   }
 

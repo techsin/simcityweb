@@ -73,9 +73,17 @@ export interface GameContext {
   panels: PanelsApi;
   tip: CursorTipApi;
   overlay: Overlay;
+  /** variant of the current data view (src/sim/infra/overlays.ts OVERLAY_VARIANTS; -1 = the view's default) */
+  overlayVariant: number;
   /** true when using stand-in views / actions (dev) */
   degraded: { world: boolean; objects: boolean; actions: boolean };
-  setOverlay(o: Overlay): void;
+  /** switch the data view; `variant` picks its variant (omitted: the variant this view was last shown with) */
+  setOverlay(o: Overlay, variant?: number): void;
+  /** the variant a data view opens with (the last one chosen; -1 = default) */
+  overlayVariantOf?(o: Overlay): number;
+  /** choose the variant a data view opens with next (applied at once when it is showing), e.g. a school tool picks
+   *  the Education tier before the tool switches the view on */
+  preferOverlayVariant?(o: Overlay, variant: number): void;
   /** play a UI / game sound (src/audio/sfx.ts names; a few aliases in CityScene's SOUND_MAP). Build sounds pan from the cursor. */
   sound(name: string, opts?: SoundOpts): void;
   focusCell(x: number, z: number, distance?: number): void;

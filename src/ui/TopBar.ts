@@ -5,6 +5,7 @@ import { clear, h, setText, toggleClass } from './dom';
 import { icon } from './icons';
 import { compact, dayLabel, hourLabel, money, moneySigned, num, signClass } from './format';
 import { approvalBreakdown } from '../sim/economy/approval';
+import { econData } from '../sim/economy/runtime';
 
 export function sumValues(r: Record<string, number> | undefined): number {
   let s = 0;
@@ -111,6 +112,7 @@ export class TopBar {
   private apprSeg!: HTMLElement;
   /** approval terms object the tooltip was built from (a new object each month) */
   private apprTerms: unknown = null;
+  private apprPop!: HTMLElement;
   private leftGlass!: HTMLElement;
   private cityName!: HTMLElement;
   private citySub!: HTMLElement;
@@ -119,6 +121,9 @@ export class TopBar {
   private rciSeg!: HTMLElement;
   private capHintsEl!: HTMLElement;
   private capSig = '';
+  /** RCI popover: what the neighbour cities add to demand (econData.regionTerms, WP4-1) */
+  private regionEl!: HTMLElement;
+  private regionSig = '';
   private announced = new Map<string, number>();
   /** RCI families capped at the last update (announceCaps toasts on the change to capped) */
   private cappedFams = new Set<string>();
@@ -183,7 +188,9 @@ export class TopBar {
     });
 
     this.apprEl = h('div', { class: 'hud-value' });
-    this.apprSeg = h('div', { class: 'hud-seg click approval', title: 'Mayor approval — advisors (N)' }, h('span', { class: 'ico-wrap', html: icon('smile', 20) }), h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Approval'), this.apprEl));
+    // hover card: why approval is where it is (approvalBreakdown, rebuilt monthly); the plain title is the fallback
+    this.apprPop = h('div', { class: 'appr-pop mp-glass' });
+    this.apprSeg = h('div', { class: 'hud-seg click approval', title: 'Mayor approval — advisors (N)' }, h('span', { class: 'ico-wrap', html: icon('smile', 20) }), h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Approval'), this.apprEl), this.apprPop);
     this.apprSeg.addEventListener('click', () => this.ctx.panels.toggle('advisors'));
     return h('div', { class: 'mp-glass' }, funds, pop, rciSeg, this.apprSeg);
   }
@@ -205,8 +212,9 @@ export class TopBar {
       h('div', { style: { color: 'var(--ind)', borderColor: 'var(--ind)' } }, 'INDUSTRIAL'),
     );
     this.capHintsEl = h('div', { class: 'rci-hints' });
+    this.regionEl = h('div', { class: 'rci-region' });
     const foot = h('div', { class: 'rci-foot' }, h('span', { class: 'cap-key' }, 'Demand cap reached'), h('span', { class: 'faint' }, 'Bars above the line = growth wanted'));
-    return h('div', { class: 'rci-pop mp-glass i' }, h('div', { class: 'sec-title' }, 'Demand by type'), grid, groups, this.capHintsEl, foot);
+    return h('div', { class: 'rci-pop mp-glass i' }, h('div', { class: 'sec-title' }, 'Demand by type'), grid, groups, this.regionEl, this.capHintsEl, foot);
   }
 
   /** per DevType: is the demand cap limiting growth? (sim-core demandInfo, else supply/cap ratio heuristic) */
@@ -240,6 +248,30 @@ export class TopBar {
       I: 'Connect to neighbors (highway / rail), build freight stations or a seaport to raise the industrial cap.',
     };
     return RCI_DEFS.filter((fam) => fam.devs.some((d) => capped[d])).map((fam) => ({ family: fam.key, devs: fam.devs.filter((d) => capped[d]), hint: fallback[fam.key] }));
+  }
+
+  /** the neighbour cities' share of demand (econData.regionTerms: residents / jobs added to the targets and caps) */
+  private renderRegion(): void {
+    const t = econData(this.ctx.state).regionTerms;
+    const r = (v: number) => Math.round(v);
+    const sig = t ? [...t.R, ...t.CS, t.CO, t.I, t.market, t.capR, t.capC, t.capI].map((v) => r(v * (v < 5 ? 100 : 1))).join(',') : '';
+    if (sig === this.regionSig) return;
+    this.regionSig = sig;
+    clear(this.regionEl);
+    if (!t) return;
+    const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
+    const parts: string[] = [];
+    const R = sum(t.R), C = sum(t.CS) + t.CO, I = t.I;
+    if (Math.abs(R) >= 1) parts.push(`<b>R</b> ${R >= 0 ? '+' : '−'}${compact(Math.abs(R))} residents`);
+    if (Math.abs(C) >= 1) parts.push(`<b>C</b> ${C >= 0 ? '+' : '−'}${compact(Math.abs(C))} jobs`);
+    if (Math.abs(I) >= 1) parts.push(`<b>I</b> ${I >= 0 ? '+' : '−'}${compact(Math.abs(I))} jobs`);
+    const caps = [t.capR >= 1 ? `R +${compact(t.capR)}` : '', t.capC >= 1 ? `C +${compact(t.capC)}` : '', t.capI >= 1 ? `I +${compact(t.capI)}` : ''].filter(Boolean);
+    if (!parts.length && !caps.length && t.market <= 1.001) return;
+    this.regionEl.append(
+      h('div', { class: 'rr-t', html: icon('region', 13) + '<span>Neighbour cities add</span>' }),
+      h('div', { class: 'rr-v', html: parts.length ? parts.join(' · ') : 'no extra demand yet' }),
+      h('div', { class: 'rr-s' }, [t.market > 1.001 ? `industry market ×${t.market.toFixed(2)}` : '', caps.length ? `caps ${caps.join(' · ')}` : '', 'better road / rail links raise it'].filter(Boolean).join(' · ')),
+    );
   }
 
   /** "what to build" cards in the RCI popover — how players discover the cap / reward loop */
@@ -307,6 +339,7 @@ export class TopBar {
       ['budget', 'budget', 'Budget (M)', () => this.ctx.panels.toggle('budget')],
       ['graphs', 'graphs', 'Graphs (G)', () => this.ctx.panels.toggle('graphs')],
       ['stats', 'stats', 'City statistics (J)', () => this.ctx.panels.toggle('stats')],
+      ['demographics', 'people', 'Demographics — ages, schools, services, tourism (P)', () => this.ctx.panels.toggle('demographics')],
       ['advisors', 'advisors', 'Advisors & news (N)', () => this.ctx.panels.toggle('advisors')],
       ['ordinances', 'ordinances', 'Ordinances (Y)', () => this.ctx.panels.toggle('ordinances')],
       ['rewards', 'trophy', 'Rewards & unlocks', () => this.ctx.panels.toggle('rewards')],
@@ -436,6 +469,7 @@ export class TopBar {
         s.el.title = `${DEV_NAMES[s.dev]}: demand ${Math.round(v * 100)}${cap > 0 ? ` · cap ${cap.toLocaleString('en-US')}` : ''}${capped ? ' — CAPPED' : ''}`;
       }
       this.renderCapHints();
+      this.renderRegion();
     }
 
     // emergencies waiting for a player dispatch (WP8)
@@ -455,16 +489,31 @@ export class TopBar {
     if (eco?.approvalTerms !== this.apprTerms) {
       this.apprTerms = eco?.approvalTerms;
       let tip = 'Mayor approval — advisors (N)';
+      clear(this.apprPop);
       try {
         const br = approvalBreakdown(st).filter((t) => t.id !== 'clamp');
         if (br.length > 1) {
-          const line = (t: (typeof br)[number]) => `${t.value >= 0 ? '+' : '−'}${Math.abs(t.value).toFixed(1)}  ${t.label}${t.detail ? ` (${t.detail})` : ''}`;
-          tip = `Mayor approval ${Math.round(ap)}%, heading for ${Math.round(eco?.approvalRaw ?? ap)}%\n${br.slice(0, 10).map(line).join('\n')}\nClick for advisors (N)`;
+          // the styled card replaces the native title (no double tooltip)
+          tip = '';
+          const top = br.slice(0, 10);
+          const max = Math.max(1, ...top.map((t) => Math.abs(t.value)));
+          this.apprPop.append(
+            h('div', { class: 'ap-h' }, h('b', null, `Approval ${Math.round(ap)}%`), h('span', { class: 'faint' }, ` heading for ${Math.round(eco?.approvalRaw ?? ap)}%`)),
+            ...top.map((t) => {
+              const a = Math.min(1, Math.abs(t.value) / max);
+              return h('div', { class: 'ap-r', title: t.detail ?? '' },
+                h('span', { class: 'l' }, t.label),
+                h('span', { class: 't' }, h('i', { class: t.value >= 0 ? 'p' : 'n', style: { width: `${a * 50}%`, left: t.value >= 0 ? '50%' : `${50 - a * 50}%` } }), h('b')),
+                h('span', { class: 'v ' + (t.value >= 0 ? 'pos' : 'neg') }, `${t.value >= 0 ? '+' : '−'}${Math.abs(t.value).toFixed(1)}`));
+            }),
+            h('div', { class: 'ap-f' }, 'Click for your advisors (N)'),
+          );
         }
       } catch {
         /* keep the plain title */
       }
       this.apprSeg.title = tip;
+      this.apprPop.classList.toggle('empty', !this.apprPop.childElementCount);
     }
   }
 }

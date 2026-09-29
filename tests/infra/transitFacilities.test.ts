@@ -165,8 +165,9 @@ function zoneRect(st: CityState, x0: number, z0: number, x1: number, z1: number,
 
 /**
  * park & ride town: R$$ suburb on side roads north-west (no station within walking distance), an avenue (z = 70) to a
- * downtown office strip in the east (commercial zone: little parking), a subway under the avenue from a suburban
- * station (x = 46) to downtown (x = 168). garage: 'none', 'station' (next to the suburban station), 'lonely' (no stop)
+ * dense downtown office strip in the east (5 towers x 840 jobs on a commercial zone: little parking), a subway under the
+ * avenue from a suburban station (x = 46) to downtown (x = 162, 168). garage: 'none', 'station' (next to the suburban
+ * station), 'lonely' (no stop)
  */
 function prTown(garage: 'none' | 'station' | 'lonely'): { st: CityState; offices: number[]; garageId: number } {
   const st = newState(192);
@@ -176,12 +177,12 @@ function prTown(garage: 'none' | 'station' | 'lonely'): { st: CityState; offices
   place(st, 't_coal', 5, 68);
   for (let x = 12; x <= 38; x++) for (const z of [41, 43, 45, 47]) place(st, 't_r2', x, z, { pop: 70, capacity: 70, wealth: 2 });
   const offices: number[] = [];
-  for (let x = 160; x <= 178; x += 2) offices.push(place(st, 't_co', x, 71, { jobs: 420, capacity: 460 }).id);
+  for (let x = 160; x <= 168; x += 2) offices.push(place(st, 't_co', x, 71, { jobs: 840, capacity: 920 }).id);
   zoneRect(st, 158, 66, 181, 76, Zone.ComHigh);
   for (let x = 45; x <= 178; x++) st.subway[st.idx(x, 70)] = 1;
   place(st, 'tr_subway_station', 46, 69);
   place(st, 'tr_subway_station', 162, 69);
-  place(st, 'tr_subway_station', 174, 69);
+  place(st, 'tr_subway_station', 168, 69);
   let garageId = -1;
   // (a garage's own 4 attendant jobs are no transit destination: riders go downtown)
   if (garage === 'station') garageId = place(st, 'tr_parking_garage', 48, 68).id;
@@ -210,15 +211,15 @@ function denseBlock(garage: boolean): { st: CityState; probe: number[]; garageId
   for (const z of [34, 46]) roadLine(st, 50, z, 80, z, Network.Road);
   for (const x of [50, 65, 80]) roadLine(st, x, 34, x, 46, Network.Road);
   place(st, 't_coal', 2, 38);
-  for (let x = 4; x <= 40; x++) place(st, 't_r2', x, 41, { pop: 620, capacity: 620, wealth: 2 });
+  for (let x = 4; x <= 40; x++) place(st, 't_r2', x, 41, { pop: 1240, capacity: 1240, wealth: 2 });
   const offices: number[] = [];
-  for (let x = 51; x <= 63; x += 2) for (const z of [35, 37, 42, 44]) offices.push(place(st, 't_co', x, z, { jobs: 450, capacity: 480 }).id);
+  for (let x = 51; x <= 63; x += 2) for (const z of [35, 37, 42, 44]) offices.push(place(st, 't_co', x, z, { jobs: 900, capacity: 960 }).id);
   zoneRect(st, 50, 34, 80, 46, Zone.ComHigh);
   for (let x = 10; x <= 60; x++) st.subway[st.idx(x, 39)] = 1;
   place(st, 'tr_subway_station', 12, 39);
   place(st, 'tr_subway_station', 58, 39);
   const garageId = garage ? place(st, 'tr_parking_garage', 56, 38).id : -1; // beside the downtown station (2x2: centre 57, 39)
-  st.stats.population = 37 * 620;
+  st.stats.population = 37 * 1240;
   const probe: number[] = [];
   for (const id of offices) {
     const b = st.buildings.get(id)!;

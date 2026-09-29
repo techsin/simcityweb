@@ -12,7 +12,9 @@
     "build:wasm": "node tools/build-wasm.mjs",
     "bench:wasm": "node tools/bench/run.mjs",
     "bench:services": "node tools/bench/servicesTierEngine.bench.mjs",
-    "bench:search": "node tools/bench/roadTransitSearch.bench.mjs"
+    "bench:search": "node tools/bench/roadTransitSearch.bench.mjs",
+    "bench:econ": "node tools/bench/desirabilityLandValueBands.bench.mjs",
+    "bench:traffic": "node tools/bench/trafficCore.bench.mjs"
   },
   "dependencies": {
     "three": "^0.186.0"

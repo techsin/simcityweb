@@ -3,7 +3,7 @@
  * per-kind cooldown, small-town filter).
  */
 import { describe, expect, it } from 'vitest';
-import { AlertQueue, FOLLOW_GRACE, FOLLOW_MAX_MIN, LIVE_IDLE, emgTime, followingDispatch, lossText, speedPolicy, stateText, type LiveState } from '../../src/ui/EmergencyBanner';
+import { AlertQueue, FOLLOW_GRACE, FOLLOW_MAX_MIN, LIVE_IDLE, LIVE_PAUSE_SEC, emgTime, followingDispatch, lossText, speedPolicy, stateText, type LiveState } from '../../src/ui/EmergencyBanner';
 import type { Incident } from '../../src/sim/infra/emergency';
 
 describe('speedPolicy', () => {
@@ -42,6 +42,40 @@ describe('speedPolicy', () => {
     r = speedPolicy('live', LIVE_IDLE, 2, true, 1, 1);
     expect(r.speed).toBe(1);
     expect(r.liveSlowdown).toBe(1);
+  });
+
+  it("'live' with too little time to react (critic item 27): pauses until dispatched, then continues live", () => {
+    // an alert whose best manual dispatch leaves 3 s at live speed: pause right away (from ultra)
+    let r = speedPolicy('live', LIVE_IDLE, 3, true, 1, 3, false, 3);
+    expect(LIVE_PAUSE_SEC).toBe(8);
+    expect(r.speed).toBe(0);
+    expect(r.state.urgentPause).toBe(true);
+    let st = r.state;
+    // still waiting for the player: stays paused
+    r = speedPolicy('live', st, 0, false, 1, 3, false, 3);
+    expect(r.speed).toBeUndefined();
+    st = r.state;
+    // dispatched (the unit is driving: still pending, no longer urgent) -> live 1x with the slow-motion
+    r = speedPolicy('live', st, 0, false, 1, 3, false, Infinity);
+    expect(r.speed).toBe(1);
+    expect(r.liveSlowdown).toBe(3);
+    st = r.state;
+    expect(st.urgentPause).toBe(false);
+    // the unit arrived: back to the player's ultra speed
+    r = speedPolicy('live', st, 1, false, 0, 3, false, Infinity);
+    expect(r.speed).toBe(3);
+    expect(r.toast).toMatch(/ultra/);
+    // plenty of time (20 s): no pause, just live
+    r = speedPolicy('live', LIVE_IDLE, 2, true, 1, 3, false, 20);
+    expect(r.speed).toBe(1);
+    // the player resumes the urgent pause himself: never paused twice in the same episode
+    r = speedPolicy('live', LIVE_IDLE, 1, true, 1, 3, false, 2);
+    expect(r.speed).toBe(0);
+    r = speedPolicy('live', r.state, 2, false, 1, 3, false, 2);
+    expect(r.speed).toBeUndefined();
+    expect(r.state.urgentPause).toBe(false);
+    r = speedPolicy('live', r.state, 2, false, 1, 3, false, 1);
+    expect(r.speed).toBeUndefined();
   });
 
   it('the player changing the speed during LIVE mode is respected (no restore)', () => {

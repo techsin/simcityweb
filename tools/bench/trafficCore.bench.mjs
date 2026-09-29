@@ -18,10 +18,13 @@
  * order-alternated pairs, CPU time from an idle worker thread, median / min, 95% bootstrap CI, load average).
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { loadavg } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { treePlugins } from './trafficCore/plugins.mjs';
+import { searchPlugins } from './roadTransitSearch/plugins.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HERE = join(ROOT, 'tools', 'bench', 'trafficCore');
@@ -40,7 +43,12 @@ const treeTag = treeArg === 'live' ? 'live' : treeArg === 'snap' ? 'snap' : 'tre
 export async function bundle(entry, platform = 'node') {
   const { rolldown } = await import('rolldown');
   const out = join(CACHE, `${entry.replace(/\.ts$/, '')}.${treeTag}.${platform === 'node' ? 'mjs' : 'js'}`);
-  const b = await rolldown({ input: join(HERE, entry), platform, logLevel: 'silent', plugins: treePlugins({ tree }) });
+  // + the search porter's 'swap' plugin: the tree's search.ts dispatches per call on globalThis.__searchMode ('js' =
+  // the original, 'wasm' = src/wasm/kernels/searchBind.ts), for the 'orig-ws' arm (original traffic.ts on the wasm
+  // searches: the baseline once the search port is adopted); everything else runs with 'js'
+  // (node only: the swap module times its calls with process.cpuUsage)
+  const plugins = [...treePlugins({ tree }), ...(platform === 'node' ? searchPlugins({ tree, mode: 'swap' }).filter((p) => p.name !== 'rts-tree-redirect') : [])];
+  const b = await rolldown({ input: join(HERE, entry), platform, logLevel: 'silent', plugins, external: platform === 'node' ? ['vite'] : [] });
   await b.write({ format: 'esm', file: out });
   await b.close();
   return out;
@@ -55,20 +63,116 @@ export function runNode(file, args, label, env = {}) {
   return existsSync(json) ? JSON.parse(readFileSync(json, 'utf8')) : null;
 }
 
+/**
+ * headless Chromium (Playwright): the in-situ cycle A/B on the main thread and in a Worker.
+ * Default (isolated): one browser context = renderer process = V8 isolate per arm (browserArm.ts, coordinated from
+ * node by browserIso.ts), CPU time of each arm's renderer (/proc schedstat of its threads) + wall time in the page.
+ * --shared: the earlier protocol (all arms in one page / one Worker, wall clock only; browserPage.ts).
+ */
+async function browser() {
+  const fixture = opt('--fixture', 'dense1m');
+  const dir = opt('--fixtures', process.env.SIM_FIXTURES ?? '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/fixtures');
+  const fx = { dense1m: 'dense1m_s7.metropolis', bot256: 'bot256_s7_y60.metropolis', stress1m: 'stress1m_testdefs_s7.metropolis' }[fixture] ?? fixture;
+  const fixtureFile = fx.includes('/') ? fx : join(dir, fx);
+  const shared = rest.includes('--shared');
+  const { extraBinaries } = await import('./trafficCore/binaries.mjs');
+  const bins = await extraBinaries(CACHE);
+  const files = {
+    '/sim_kernels.wasm': { file: join(ROOT, 'src', 'wasm', 'sim_kernels.wasm'), type: 'application/wasm' },
+    '/scalar.wasm': bins.scalar ? { file: bins.scalar, type: 'application/wasm' } : null,
+    '/fixture.metropolis': { file: fixtureFile, type: 'application/octet-stream' },
+  };
+  if (shared) {
+    files['/index.html'] = { body: '<!doctype html><meta charset="utf-8"><title>trafficCore A/B</title><script type="module" src="/page.js"></script>', type: 'text/html' };
+    files['/page.js'] = { file: await bundle('browserPage.ts', 'browser'), type: 'text/javascript' };
+    files['/worker.js'] = { file: await bundle('browserWorker.ts', 'browser'), type: 'text/javascript' };
+  } else {
+    files['/arm.html'] = { body: '<!doctype html><meta charset="utf-8"><title>trafficCore arm</title><script type="module" src="/arm.js"></script>', type: 'text/html' };
+    files['/arm.js'] = { file: await bundle('browserArm.ts', 'browser'), type: 'text/javascript' };
+    files['/armworker.js'] = { file: await bundle('browserArmWorker.ts', 'browser'), type: 'text/javascript' };
+  }
+  const server = createServer((req, res) => {
+    const f = files[req.url.split('?')[0]];
+    if (!f) { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'content-type': f.type, 'cache-control': 'no-store' });
+    res.end(f.body ?? readFileSync(f.file));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const { chromium } = await import('playwright');
+  const b = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--max-old-space-size=6144'] });
+  let result;
+  const load0 = loadavg();
+  try {
+    if (shared) {
+      const q = `fixture=${fixture}&testdefs=${fixtureFile.includes('testdefs') ? 1 : 0}&pairs=${opt('--pairs', '31')}&warm=${opt('--warm', '2')}&resident=${rest.includes('--resident') ? 1 : 0}&main=${rest.includes('--worker-only') ? 0 : 1}`;
+      const p = await b.newPage();
+      p.on('console', (m) => console.log(`[browser] ${m.text()}`));
+      p.on('pageerror', (e) => console.log(`[pageerror] ${e.message}`));
+      await p.goto(`${base}/index.html?${q}`);
+      await p.waitForFunction(() => window.__tc?.done === true, null, { timeout: 3 * 60 * 60 * 1000, polling: 2000 });
+      result = await p.evaluate(() => window.__tc);
+      if (result.error) throw new Error(`browser: ${result.error}`);
+    } else {
+      const { runIsolatedBrowser } = await import(pathToFileURL(await bundle('browserIso.ts')).href);
+      const kinds = opt('--arms', `orig,orig2,fair,wasm${bins.scalar ? ',wasm-scalar' : ''}`).split(',');
+      const where = rest.includes('--worker-only') ? ['worker'] : rest.includes('--main-only') ? ['main'] : ['main', 'worker'];
+      result = await runIsolatedBrowser(b, {
+        base, testdefs: fixtureFile.includes('testdefs'), pairs: Number(opt('--pairs', '31')), warm: Number(opt('--warm', '3')),
+        resident: rest.includes('--resident'), kinds, where, settle: Number(opt('--settle', '50')),
+      }, (s) => console.log(s));
+      result.protocol = 'isolated: one browser context (renderer process, V8 isolate) per arm; CPU = renderer threads schedstat';
+    }
+    result.userAgent = b.version();
+  } finally {
+    await b.close();
+    server.close();
+  }
+  const json = opt('--json') ?? join(CACHE, `browser.${treeTag}.${fixture}.json`);
+  writeFileSync(json, JSON.stringify({ load: [load0, loadavg()], result }, null, 1));
+  console.log(`# Chromium ${result.userAgent}; load ${load0.map((v) => v.toFixed(1)).join(' ')} -> ${loadavg().map((v) => v.toFixed(1)).join(' ')}; wrote ${json}`);
+  return result;
+}
+
 const passArgs = rest.filter((a, i) => a !== '--tree' && rest[i - 1] !== '--tree' && a !== '--json' && rest[i - 1] !== '--json');
 
 async function main() {
   if (!existsSync(join(tree, 'src', 'sim', 'infra', 'traffic.ts'))) throw new Error(`no simulation tree at ${tree} (set SIM_SNAP)`);
   switch (suite) {
     case 'verify': return runNode(await bundle('verify.ts'), passArgs, 'verify');
+    case 'micro': {
+      const { extraBinaries } = await import('./trafficCore/binaries.mjs');
+      const bins = await extraBinaries(CACHE);
+      const extra = [...(bins.scalar ? ['--scalar', bins.scalar] : []), ...(bins.imp ? ['--imp', bins.imp] : [])];
+      return runNode(await bundle('micro.ts'), [...passArgs, ...extra], 'micro');
+    }
+    case 'math': return runNode(await bundle('math.ts'), passArgs, 'math');
+    case 'e2e': {
+      const worker = rest.includes('--in-process') ? [] : ['--worker', await bundle('armWorker.ts')];
+      return runNode(await bundle('e2e.ts'), [...passArgs, ...worker], rest.includes('--flush') ? 'e2e-flush' : 'e2e');
+    }
+    case 'browser': return browser();
     case 'insitu': {
       const { extraBinaries } = await import('./trafficCore/binaries.mjs');
       const bins = await extraBinaries(CACHE);
       const extra = [...(bins.scalar ? ['--scalar', bins.scalar] : []), ...(bins.imp ? ['--imp', bins.imp] : [])];
-      return runNode(await bundle('insitu.ts'), [...passArgs, ...extra], 'insitu');
+      // one V8 isolate (worker thread) per arm unless --in-process (see insitu.ts)
+      const worker = rest.includes('--in-process') ? [] : ['--worker', await bundle('armWorker.ts')];
+      return runNode(await bundle('insitu.ts'), [...passArgs, ...extra, ...worker], 'insitu');
     }
     default:
-      console.log('usage: node tools/bench/trafficCore.bench.mjs verify [--fixture F] [--cycles N]');
+      console.log([
+        'usage: node tools/bench/trafficCore.bench.mjs <suite> [--tree snap|live|DIR] [--fixture dense1m|bot256|stress1m|stress256] [--fixtures DIR] [--json FILE]',
+        '  verify   [--cycles N]                      step-by-step equivalence orig / fair / wasm after every traffic step',
+        '  insitu   [--pairs 31] [--warm 3] [--arms orig,orig2,orig-ws,fair,wasm,wasm-scalar,wasm-imp] [--resident] [--in-process]',
+        '                                             traffic cycle A/B (runCycleSync), one isolate per arm, per-phase CPU',
+        '  micro    [--reps 31]                       sort (native / JS radix / wasm radix), logit, roundMatch kernel, SIMD vs scalar',
+        '  math     [--random 100000000]              exp / log bit test vs V8 (fixture arguments + random)',
+        '  e2e      [--days 120] [--chunk 4] [--flush] [--arms orig,orig2,orig-ws,wasm] [--resident]',
+        '                                             whole simulation ms/day with the core swapped in (+ identity after the run)',
+        '  browser  [--pairs 31] [--warm 3] [--resident] [--arms orig,orig2,fair,wasm,wasm-scalar] [--main-only|--worker-only] [--shared]',
+        '                                             headless Chromium: in-situ A/B on the main thread and in a Worker (one renderer per arm)',
+      ].join('\n'));
       process.exitCode = suite ? 1 : 0;
   }
 }

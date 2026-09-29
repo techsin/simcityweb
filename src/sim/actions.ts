@@ -80,7 +80,9 @@ export interface CityActionsApi {
   plantTrees(rect: CellRect, preview?: boolean): ActionResult;
   setTax(dev: DevType, ratePercent: number): void;
   setFunding(service: ServiceKind, percent: number): void;
-  setOrdinance(id: string, enabled: boolean): ActionResult;
+  /** enact / repeal. An ordinance that would shut existing buildings down (nuclear-free zone) is refused with
+   *  `needsConfirm` unless opts.confirm is set (the UI asks the player first, WP5-6) */
+  setOrdinance(id: string, enabled: boolean, opts?: { confirm?: boolean }): ActionResult & { needsConfirm?: boolean };
   takeLoan(amount: number): ActionResult;
   repayLoan(index: number): ActionResult;
   toggleHistoric(buildingId: number): void;
@@ -732,12 +734,12 @@ export class CityActions implements CityActionsApi {
     this.st.budget.funding[service] = Math.max(0, Math.min(150, Math.round(percent)));
   }
 
-  setOrdinance(id: string, enabled: boolean): ActionResult {
+  setOrdinance(id: string, enabled: boolean, opts: { confirm?: boolean } = {}): ActionResult & { needsConfirm?: boolean } {
     const st = this.st;
     const o = getOrdinance(id);
     if (!o) return fail(`Unknown ordinance "${id}"`);
-    const res = setOrdinanceEnabled(st, id, enabled);
-    if (!res.ok) return fail(res.reason ?? 'Refused', res.monthly);
+    const res = setOrdinanceEnabled(st, id, enabled, { confirm: opts.confirm });
+    if (!res.ok) return res.needsConfirm ? { ...fail(res.reason ?? 'Refused', res.monthly), needsConfirm: true } : fail(res.reason ?? 'Refused', res.monthly);
     return { ok: true, cost: res.monthly, affected: 1, reason: enabled ? `${o.name} enacted` : `${o.name} repealed` };
   }
 

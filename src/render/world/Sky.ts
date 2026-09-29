@@ -1,6 +1,7 @@
 /**
  * SkySystem — sun & moon ephemeris (simplified, seasonal), physically-inspired sky dome (sky-view LUT), stars,
- * moon, clouds, city glow, and the PMREM environment map (throttled refresh).
+ * moon, clouds, city glow, and the PMREM environment map (throttled refresh). The time-of-day light rig (direct light,
+ * sky fill, night / lamp / dusk factors) is the pure function lightRig (tuning: LIGHT_RIG).
  *
  * World orientation: north = -Z, east = +X, up = +Y. The sun rises in the east, culminates in the south (+Z).
  */
@@ -26,6 +27,111 @@ export interface SkyLighting {
   golden: number;
   envIntensity: number;
   exposure: number;
+  /** hemisphere sky-fill intensity (WorldView's fill light): the night floor, topped up while the direct light is weak
+   *  (sun -> moon handover, moonless hours) and through the blue hour, so twilight is never darker than the night */
+  fill: number;
+  /** fill colour (linear): night navy, paler blue through the blue hour */
+  fillColor: THREE.Color;
+  /** 0..1 street lamps / lot lights: switch on shortly before sunset, ahead of `night` (photocell-like) */
+  lamps: number;
+  /** 0..1 dusk / dawn (sun within a few degrees of the horizon): cool-shadow split-tone grading */
+  dusk: number;
+}
+
+/**
+ * Tuning of the time-of-day light rig (lightRig). Exported for tools / tests; the game never changes it.
+ * Ground levels are luminances of the irradiance on flat ground (direct light * elevation + sky fill), in the
+ * units of three's light intensities.
+ */
+export const LIGHT_RIG = {
+  /** sun elevation (sin) where the direct light switches from the sun / twilight sky light to the moon (~0 there) */
+  switchY: -0.15,
+  /** the moon light is at full strength once the sun is this far down (sin): a short fade-in after the switch */
+  moonFullY: -0.2,
+  /** moon light intensity, and the lowest elevation (sin) it shines from (a rising / setting moon still lights the
+   *  ground instead of leaving a flat fill-lit dip) */
+  moonI: 0.28,
+  moonMinY: 0.3,
+  /** night ground floor the sky fill tops up to, and the extra through the blue hour */
+  nightGround: 0.19,
+  blueHour: 0.06,
+  /** plain night sky fill (hemisphere intensity) and the top-up cap */
+  fillBase: 0.34,
+  fillMax: 1.8,
+  /** blue-sky fill around sunset / sunrise: the bright sky lights the shadows blue against the low warm sun */
+  skyFill: 0.45,
+  /** street lamps: off above this sun elevation (sin), fully on below `lampFull` */
+  lampOff: 0.07,
+  lampFull: -0.02,
+};
+
+/** fill colours (linear): night navy (0x4a64a8) and a paler blue-hour sky */
+const FILL_NIGHT = new THREE.Color(0x4a64a8);
+const FILL_TWILIGHT = new THREE.Color(0x7890c0);
+const lum = (c: THREE.Color) => c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722;
+const _lc = new THREE.Color();
+const _lc2 = new THREE.Color();
+
+/**
+ * Direct light, sky fill, night / lamp / dusk factors for a sun & moon position (pure; SkySystem.update and tests).
+ * Active light: the sun by day, then a "twilight sky light" from the sunset azimuth (warm -> blue), then the moon at
+ * night. The light only jumps direction at the switch point where its intensity is ~0; the sky fill makes up the
+ * missing ground light there (and while the moon is down) so the handover (~19:10-19:35 in January) and the moonless
+ * pre-dawn are not the darkest minutes of the night.
+ */
+export function lightRig(sunDir: THREE.Vector3, moonDir: THREE.Vector3, sunT: THREE.Color, L: SkyLighting): void {
+  const R = LIGHT_RIG;
+  const ss = THREE.MathUtils.smoothstep;
+  const sy = sunDir.y;
+  // night factor (drives windows, bloom, exposure)
+  L.night = 1 - ss(sy, -0.12, 0.07);
+  L.golden = ss(sy, 0.0, 0.08) * (1 - ss(sy, 0.12, 0.42));
+  L.lamps = 1 - ss(sy, R.lampFull, R.lampOff);
+  L.dusk = ss(sy, -0.17, -0.05) * (1 - ss(sy, 0.03, 0.11));
+  const sunF = ss(sy, -0.035, 0.07);
+  const SW = R.switchY;
+  const twF = (1 - ss(sy, -0.01, 0.1)) * ss(sy, SW, -0.06);
+  const moonF = (1 - ss(sy, R.moonFullY, SW)) * ss(moonDir.y, 0.0, 0.2);
+  const SUN_I = 3.2;
+  if (sy > SW) {
+    L.lightDir.copy(sunDir);
+    // keep the light a bit above the horizon so terrain doesn't go fully black, stays readable
+    if (L.lightDir.y < 0.1) {
+      L.lightDir.y = 0.1;
+      L.lightDir.normalize();
+    }
+    _lc.copy(sunT);
+    // normalise so intensity carries brightness, color carries hue
+    const m = Math.max(_lc.r, _lc.g, _lc.b, 1e-4);
+    _lc.multiplyScalar(1 / m);
+    const sunI = SUN_I * sunF * Math.min(1, 0.35 + m * 0.75);
+    const twI = 0.75 * twF;
+    const blue = ss(-sy, -0.01, 0.1);
+    _lc2.setRGB(THREE.MathUtils.lerp(1.0, 0.5, blue), 0.6, THREE.MathUtils.lerp(0.45, 1.0, blue));
+    const tot = sunI + twI;
+    const wa = sunI / Math.max(tot, 1e-4), wb = twI / Math.max(tot, 1e-4);
+    L.lightColor.setRGB(_lc.r * wa + _lc2.r * wb, _lc.g * wa + _lc2.g * wb, _lc.b * wa + _lc2.b * wb);
+    L.lightIntensity = tot;
+  } else {
+    L.lightDir.copy(moonDir);
+    if (L.lightDir.y < R.moonMinY) {
+      L.lightDir.y = R.moonMinY;
+      L.lightDir.normalize();
+    }
+    L.lightColor.setRGB(0.6, 0.72, 1.0);
+    // moderate moonlight: unlit walls / grass stay readable but night no longer looks like a blue-tinted day
+    L.lightIntensity = R.moonI * moonF;
+  }
+  // sky fill: the night floor, topped up to the ground level the direct light misses (handover dip, moonless hours) and
+  // lifted through the blue hour (reaching into nautical twilight, so the handover minutes stay a touch brighter than
+  // the night that follows); a paler blue while the sky is still bright, and a blue-sky fill of the shadows around
+  // sunset / sunrise
+  const blueHour = ss(sy, -0.26, -0.12) * (1 - ss(sy, -0.01, 0.07));
+  L.fillColor.copy(FILL_NIGHT).lerp(FILL_TWILIGHT, ss(sy, -0.2, -0.08));
+  const eg = L.lightIntensity * Math.max(L.lightDir.y, 0) * lum(L.lightColor);
+  const target = R.nightGround * L.night + R.blueHour * blueHour;
+  const base = Math.max(R.fillBase * L.night, R.skyFill * ss(sy, -0.2, -0.08) * (1 - ss(sy, 0.02, 0.12)));
+  L.fill = Math.max(base, Math.min(R.fillMax, (target - eg) / Math.max(lum(L.fillColor), 1e-3)));
 }
 
 export interface ClimateSky {
@@ -230,7 +336,6 @@ void main() {
 
 const _v = new THREE.Vector3();
 const _c = new THREE.Color();
-const _c2 = new THREE.Color();
 const _m4a = new THREE.Matrix4();
 const _m4b = new THREE.Matrix4();
 
@@ -264,6 +369,10 @@ export class SkySystem {
     golden: 0,
     envIntensity: 1,
     exposure: 1,
+    fill: 0,
+    fillColor: new THREE.Color(0x4a64a8),
+    lamps: 0,
+    dusk: 0,
   };
   /** 0..1 amount of city lights (population driven), set by WorldView */
   cityLights = 0;
@@ -418,47 +527,8 @@ export class SkySystem {
     atmTransmittanceJS(L.sunDir, 0.35, mie, this.sunT);
     atmTransmittanceJS(L.moonDir, 0.35, mie, this.moonT);
 
-    // night factor (drives windows, street lights, bloom)
-    L.night = 1 - THREE.MathUtils.smoothstep(sy, -0.12, 0.07);
-    L.golden = THREE.MathUtils.smoothstep(sy, 0.0, 0.08) * (1 - THREE.MathUtils.smoothstep(sy, 0.12, 0.42));
-
-    // active light: sun by day, then a "twilight sky light" from the sunset azimuth (warm -> blue), then the
-    // moon at night. The light only jumps direction at the switch point where its intensity is ~0.
+    lightRig(L.sunDir, L.moonDir, this.sunT, L);
     const sunF = THREE.MathUtils.smoothstep(sy, -0.035, 0.07);
-    const SWITCH = -0.15;
-    const twF = (1 - THREE.MathUtils.smoothstep(sy, -0.01, 0.1)) * THREE.MathUtils.smoothstep(sy, SWITCH, -0.06);
-    const moonF = (1 - THREE.MathUtils.smoothstep(sy, -0.26, SWITCH)) * THREE.MathUtils.smoothstep(L.moonDir.y, 0.0, 0.2);
-    const SUN_I = 3.2;
-    if (sy > SWITCH) {
-      L.lightDir.copy(L.sunDir);
-      // keep the light a bit above the horizon so terrain doesn't go fully black, stays readable
-      if (L.lightDir.y < 0.1) {
-        L.lightDir.y = 0.1;
-        L.lightDir.normalize();
-      }
-      _c.copy(this.sunT);
-      // normalise so intensity carries brightness, color carries hue
-      const m = Math.max(_c.r, _c.g, _c.b, 1e-4);
-      _c.multiplyScalar(1 / m);
-      const sunI = SUN_I * sunF * Math.min(1, 0.35 + m * 0.75);
-      const twI = 0.75 * twF;
-      const blue = THREE.MathUtils.smoothstep(-sy, -0.01, 0.1);
-      _c2.setRGB(THREE.MathUtils.lerp(1.0, 0.5, blue), THREE.MathUtils.lerp(0.6, 0.6, blue), THREE.MathUtils.lerp(0.45, 1.0, blue));
-      const tot = sunI + twI;
-      const wa = sunI / Math.max(tot, 1e-4), wb = twI / Math.max(tot, 1e-4);
-      L.lightColor.setRGB(_c.r * wa + _c2.r * wb, _c.g * wa + _c2.g * wb, _c.b * wa + _c2.b * wb);
-      L.lightIntensity = tot;
-    } else {
-      L.lightDir.copy(L.moonDir);
-      if (L.lightDir.y < 0.15) {
-        L.lightDir.y = 0.15;
-        L.lightDir.normalize();
-      }
-      L.lightColor.setRGB(0.6, 0.72, 1.0);
-      // moderate moonlight: unlit walls / grass stay readable but night no longer looks like a blue-tinted day
-      // (WorldView adds a hemisphere fill, with an extra gap term while this light is weak)
-      L.lightIntensity = 0.28 * moonF;
-    }
     // twilight amount (sun just below the horizon): brightens the sky for a readable blue hour
     const twilight = THREE.MathUtils.smoothstep(sy, -0.2, -0.07) * (1 - THREE.MathUtils.smoothstep(sy, -0.06, 0.0));
 

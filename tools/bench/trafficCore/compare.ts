@@ -13,11 +13,9 @@ const same = (x: number, y: number) => Object.is(x, y) || (x !== x && y !== y);
 function arr(out: string[], name: string, a: ArrayLike<number> | undefined, b: ArrayLike<number> | undefined, from: number, to: number): void {
   if (out.length >= 24) return;
   if (!a || !b) { if (a !== b) out.push(`${name}: missing`); return; }
+  // common range: right after a graph rebuild the original's per-node arrays still have the old graph's length (the
+  // next prep grows them), while a core may already have the capacity
   const n = Math.min(to, a.length, b.length);
-  if (to > a.length || to > b.length) {
-    // the defined range must exist in both (a shorter array means the other implementation lost data)
-    if (Math.min(a.length, b.length) < to && to - from > 0 && (a.length >= to) !== (b.length >= to)) { out.push(`${name}: length ${a.length} vs ${b.length} (need ${to})`); return; }
-  }
   for (let i = from; i < n; i++) if (!same(a[i], b[i])) { out.push(`${name}[${i}]: ${a[i]} vs ${b[i]}`); return; }
 }
 
@@ -106,4 +104,73 @@ export function diffCity(a: Any, b: Any): string[] {
   if (a.buildings.size !== b.buildings.size) out.push('buildings size');
   else for (const [id, x] of a.buildings) { const y = b.buildings.get(id); if (!y || x.flags !== y.flags) { out.push(`building ${id} flags`); break; } }
   return out;
+}
+
+// ------------------------------------------------------------------------------------------------ digests
+/** FNV-1a over the bytes of a[from, to) (typed arrays; floats by bit pattern after canonicalising NaN) */
+function fnv(h: number, a: ArrayLike<number> & { BYTES_PER_ELEMENT?: number }, from: number, to: number): number {
+  const n = Math.min(to, a.length);
+  const f = new Float64Array(1), b = new Uint8Array(f.buffer);
+  for (let i = from; i < n; i++) {
+    let v = a[i];
+    if (v !== v) v = NaN;
+    f[0] = v;
+    for (let k = 0; k < 8; k++) { h ^= b[k]; h = Math.imul(h, 16777619) >>> 0; }
+  }
+  return h;
+}
+
+/**
+ * per-field digests of everything diffTraffic compares (same defined ranges) + the city's traffic outputs: two arms
+ * in different isolates are identical iff every digest matches
+ */
+export function digestTraffic(a: Any, st: Any): Record<string, number> {
+  const d: Record<string, number> = {};
+  const h = (name: string, arrA: ArrayLike<number> | undefined, from: number, to: number) => { d[name] = arrA ? fnv(2166136261, arrA, from, to) : -1; };
+  for (const k of SCALARS) d[k] = fnv(2166136261, [Number(a[k])], 0, 1);
+  const n = a.road.n, total = n + a.rail.n + a.subway.n;
+  for (const k of ['nodeTime', 'volNew', 'acc', 'volInbound', 'volShop', 'volFreight', 'nodeQ']) h(k, a[k], 0, n);
+  h('busTimeA', a.busTimeA, 0, a.tnet ? n : 0);
+  for (const k of ['tAcc', 'nodeStop']) h(k, a[k], 0, total);
+  h('trStartA', a.trStartA, 0, a.tnet ? total + 1 : 0);
+  h('railNew', a.railNew, 0, a.rail.n);
+  h('subNew', a.subNew, 0, a.subway.n);
+  for (const k of ['oBid', 'oW', 'oPop', 'oWealth', 'oEntS', 'oEntC', 'oCell', 'oHalf', 'oCarNode', 'oBoard', 'oShC', 'oShT', 'oShW', 'oTime', 'oEmp', 'oJobT',
+    'oU', 'oAsg', 'oTimeSum', 'oCarW', 'oTrW', 'oWalkW', 'oTrT', 'oBoardStop', 'oLastD', 'candNode']) h(k, a[k], 0, a.oN);
+  for (const k of ['jBid', 'jSlots', 'jNoise', 'jAsg', 'jCapP', 'jPrice', 'jQ', 'jBase', 'jEntS', 'jEntC', 'jCell', 'jHalf', 'jRailNode', 'jConnType', 'jTimeSum', 'jInbound']) h(k, a[k], 0, a.jN);
+  for (const k of ['qNode', 'qSlots', 'qCapP', 'qAsg', 'qPrice', 'qProp', 'qBase', 'qNoise', 'qTimeSum']) h(k, a[k], 0, a.qN);
+  for (const k of ['sBid', 'sEntS', 'sEntC', 'sLoad']) h(k, a[k], 0, a.sN);
+  for (const k of ['fBid', 'fTrucks', 'fEntS', 'fEntC']) h(k, a[k], 0, a.fN);
+  for (const k of ['kEntS', 'kEntC', 'kLabel']) h(k, a[k], 0, a.kN);
+  h('ent', a.ent, 0, a.entN);
+  const sn = a.stops.n;
+  for (const k of ['stAttC', 'stWait', 'stLoad', 'stopBins']) h(k, a[k], 0, sn);
+  h('stAttS', a.stAttS, 0, sn + 1);
+  h('stAtt', a.stAtt, 0, a.stAttS[sn] ?? 0);
+  h('stopBinStart', a.stopBinStart, 0, a.binN * a.binN + 1);
+  if (a.tnet) { const nTr = a.tnet.trStart[a.tnet.total]; h('tnet.trTo', a.tnet.trTo, 0, nTr); h('tnet.trCost', a.tnet.trCost, 0, nTr); }
+  h('subwayRiders', a.subwayRiders, 0, a.subwayRiders.length);
+  for (const S of ['SA', 'ST', 'SB']) {
+    const s = a[S];
+    d[S + '.meta'] = fnv(2166136261, [s.n, s.settled, s.graphVersion], 0, 3);
+    for (const k of ['dist', 'src', 'next', 'done']) h(`${S}.${k}`, s[k], 0, s.n);
+    h(`${S}.order`, s.order, 0, s.settled);
+    const hops: number[] = [];
+    for (let v = 0; v < s.n; v++) if (s.dist[v] < Infinity) hops.push(s.hops[v]);
+    h(`${S}.hops`, hops, 0, hops.length);
+  }
+  for (const k of ['priceById', 'connPrice', 'accessById', 'jobFillById', 'freightById', 'customersById', 'commuteById', 'reachedById', 'inboundById', 'modeById']) h(k, a[k], 0, a[k].length);
+  d.stLoadPrev = fnv(2166136261, [...a.stLoadPrev.entries()].flat() as number[], 0, a.stLoadPrev.size * 2);
+  for (const r of ['routes', 'pendingRoutes', 'truckRoutes']) d[r] = fnv(2166136261, (a[r] as Any[]).flatMap((x) => [x.kind.length, x.weight, ...Array.from(x.cells as Uint32Array)]), 0, Infinity);
+  for (const k of ['traffic', 'congestion', 'commute']) h(`state.${k}`, st[k], 0, st[k].length);
+  d['state.stats'] = fnv(2166136261, ['tripsCar', 'tripsTransit', 'tripsWalk', 'avgCommute', 'avgTraffic', 'population'].map((k) => st.stats[k]), 0, 6);
+  const flags: number[] = [];
+  for (const [id, b] of st.buildings) flags.push(id, b.flags);
+  d['state.flags'] = fnv(2166136261, flags, 0, flags.length);
+  return d;
+}
+
+/** fields whose digests differ */
+export function diffDigests(a: Record<string, number>, b: Record<string, number>): string[] {
+  return Object.keys(a).filter((k) => a[k] !== b[k]);
 }

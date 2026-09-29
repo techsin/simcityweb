@@ -194,6 +194,20 @@ function findStacks(geo: THREE.BufferGeometry, key: string): V3[] {
 
 export interface Emit { x: number; y: number; z: number; kind: number; size: number; count: number; life: number; }
 
+/**
+ * Plume drift shared by every Effects instance (WP5): the simulation's prevailing wind (src/sim/infra/wind.ts
+ * windVector, the same vector pollution.ts drifts smoke with and the Air legend's arrow shows). Default until the game
+ * sets it: the former fixed breeze.
+ */
+const WIND = { value: new THREE.Vector3(1.6, 0, 0.7) };
+/** WIND_SPEED x strength = drift length of uWind (the former fixed breeze was ~1.75) */
+const WIND_SPEED = 1.9;
+/** set the smoke / steam drift from the sim's wind vector (x = east, z = south, length = strength 0.7..1) */
+export function setEffectsWind(x: number, z: number): void {
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+  WIND.value.set(x * WIND_SPEED, 0, z * WIND_SPEED);
+}
+
 export class Effects {
   readonly smoke: THREE.Mesh;
   readonly flames: THREE.Mesh;
@@ -204,7 +218,7 @@ export class Effects {
   private dirty = true;
   private smokeGeo: THREE.InstancedBufferGeometry;
   private flameGeo: THREE.InstancedBufferGeometry;
-  private uniforms = { uTime: sharedUniforms.uTime, uNight: sharedUniforms.uNight, uWind: { value: new THREE.Vector3(1.6, 0, 0.7) }, uAdditive: { value: 0 } };
+  private uniforms = { uTime: sharedUniforms.uTime, uNight: sharedUniforms.uNight, uWind: WIND, uAdditive: { value: 0 } };
   maxSmoke = 7000;
   maxFlame = 3000;
   particleCount = 0;

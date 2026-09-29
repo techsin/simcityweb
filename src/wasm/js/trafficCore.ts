@@ -520,9 +520,10 @@ export const fairKernels = {
       const uw = walkT < Infinity ? -beta * walkT + walkBias : -Infinity;
       const um = Math.max(uc, ut, uw);
       if (um === -Infinity) continue;
-      const ec = uc > -Infinity ? Math.exp(uc - um) : 0;
-      const et = ut > -Infinity ? Math.exp(ut - um) : 0;
-      const ew = uw > -Infinity ? Math.exp(uw - um) : 0;
+      // the maximum utility's term is exp(+0) = 1 exactly: skipped (NaN / infinite utilities take the full path)
+      const ec = uc > -Infinity ? (uc === um && uc < Infinity ? 1 : Math.exp(uc - um)) : 0;
+      const et = ut > -Infinity ? (ut === um && ut < Infinity ? 1 : Math.exp(ut - um)) : 0;
+      const ew = uw > -Infinity ? (uw === um && uw < Infinity ? 1 : Math.exp(uw - um)) : 0;
       const tot = ec + et + ew;
       const sc = ec / tot, st = et / tot, sw = ew / tot;
       const time = sc * (sc > 0 ? carT : 0) + st * (st > 0 ? trT : 0) + sw * (sw > 0 ? walkT : 0);
@@ -750,7 +751,9 @@ export const fairKernels = {
         if (done[v] === 1 && dist[v] < bd) { bd = dist[v]; bn = v; }
       }
       if (bn < 0) continue;
-      const trips = oPop[o] * perRes * Math.exp(-Math.max(0, bd - 8) / 20);
+      // exp(-max(0, bd - 8) / 20): -0 for shops within 8 minutes, exp(-0) = 1 exactly
+      const ad = Math.max(0, bd - 8);
+      const trips = oPop[o] * perRes * (ad === 0 ? 1 : Math.exp(-ad / 20));
       const carShare = oShC[o] + oShW[o] + oShT[o] > 0 ? oShC[o] : 0.7;
       const walkish = bd < 3 ? 0.6 : 0;
       acc[bn] += trips * carShare * (1 - walkish) * pcu;

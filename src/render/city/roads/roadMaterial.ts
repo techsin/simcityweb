@@ -3,6 +3,9 @@
  * curbs, medians, ballast, sleepers, rails, bridges, barriers). Surface type + road coordinates come from the `rd`
  * vertex attribute (see geobuf.ts / mesher.ts). All markings, wear, patches and cracks are procedural (world-space
  * noise), so there are no textures and one draw call per chunk.
+ * At night lit roads (every street / road / avenue / one-way, highways) carry a continuous lamp-lit ribbon in the
+ * district's lamp colour (lampTint: amber sodium or white LED); PropRenderer's light pools and lamp-head glows use
+ * lampUniforms from here (strength, distance fades) so the per-lamp spots fade out where the ribbons take over.
  */
 import * as THREE from 'three';
 import { sharedUniforms } from '../../../assets/materials';
@@ -12,7 +15,38 @@ export const roadUniforms = {
   uRoadOverlay: { value: 0 },
   /** 0..1: underground view (dim the surface) */
   uRoadDim: { value: 0 },
+  /** strength of the continuous lamp-lit ribbon on lit roads at night (street-lighting block of roadSurface) */
+  uLampRibbon: { value: 0.026 },
 };
+
+/**
+ * Street lighting look, shared with PropRenderer's light pools / lamp-head glows (small hook there): the pools add the
+ * per-lamp spots up close and fade out with camera distance, where the continuous road ribbon (road shader) alone
+ * carries the lit street network (a regular lattice of pool / head dots read as a bead grid from far away).
+ */
+export const lampUniforms = {
+  /** light pool strength (additive) */
+  uPoolStrength: { value: 0.12 },
+  /** camera distance (m): pools fade out between x and y */
+  uPoolFade: { value: new THREE.Vector2(1300, 3000) },
+  /** lamp-head glow sprites: fade between x and y (m) down to z */
+  uGlowFade: { value: new THREE.Vector3(700, 2800, 0.12) },
+};
+
+/** district size (cells) of the street-lamp type (white LED vs sodium districts) */
+const LAMP_DISTRICT = 12;
+/**
+ * Street lamp type at cell (cx, cz) for a road of network type t: 1 = white LED / metal halide (highways, avenues and
+ * ~35% of the districts), 0 = amber sodium. Must match lampLED() in the road shader.
+ */
+export function lampTint(cx: number, cz: number, t: number): number {
+  if (t === 3 || t === 5) return 1;
+  const bx = Math.floor(Math.max(cx, 0) / LAMP_DISTRICT), bz = Math.floor(Math.max(cz, 0) / LAMP_DISTRICT);
+  let h = (Math.imul(bx, 73856093) ^ Math.imul(bz, 19349663)) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 0x5bd1e995) >>> 0;
+  h = (h ^ (h >>> 15)) >>> 0;
+  return h % 100 < 35 ? 1 : 0;
+}
 
 const VERT_PARS = /* glsl */ `
 attribute vec4 rd;
@@ -28,9 +62,21 @@ const FRAG_PARS = /* glsl */ `
 varying vec4 vRd;
 varying vec3 vWp;
 uniform float uNight;
+uniform float uLamps;
 uniform float uTime;
 uniform float uRoadOverlay;
 uniform float uRoadDim;
+uniform float uLampRibbon;
+
+// street lamp type of the district (1 white LED, 0 sodium): must match lampTint() in roadMaterial.ts
+float lampLED(vec2 wp, float kind) {
+  if (abs(kind - 3.0) < 0.5 || abs(kind - 5.0) < 0.5) return 1.0;
+  uvec2 b = uvec2(max(ivec2(floor(wp / 16.0)), ivec2(0)) / ${LAMP_DISTRICT});
+  uint h = (b.x * 73856093u) ^ (b.y * 19349663u);
+  h = (h ^ (h >> 13u)) * 0x5bd1e995u;
+  h ^= h >> 15u;
+  return (h % 100u) < 35u ? 1.0 : 0.0;
+}
 
 float rh21(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
 float rnoise(vec2 p) {
@@ -329,6 +375,24 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
     albedo = vec3(0.004); rough = 1.0; metal = 0.0;
   }
 
+  // street lighting: the chain of lamps along a lit road (every cell of streets / roads / avenues / one-ways,
+  // median lamps on highways) reads as one continuous lit ribbon, brightest along the carriageway and fading over the
+  // outer sidewalk; sodium amber or white LED by district (as the lamp heads / pools), arterials brighter. The light
+  // pools (PropRenderer) add the per-lamp spots up close.
+  if (uLamps > 0.002 && kind > 0.5 && kind < 5.5 && (mat < 3.5 || (mat > 9.5 && mat < 11.5))) {
+    float led = lampLED(wp, kind);
+    vec3 lampC = led > 0.5 ? vec3(0.68, 0.65, 0.54) : vec3(1.0, 0.6, 0.28);
+    float hw = kind < 1.5 ? 3.6 : (kind < 2.5 ? 5.0 : (kind < 3.5 ? 6.8 : (kind < 4.5 ? 5.0 : 8.0)));
+    float lat = 1.0 - 0.5 * smoothstep(0.55, 1.0, au / (hw + 3.2));
+    float k = kind < 1.5 ? 0.8 : (kind > 2.5 && kind < 3.5 ? 1.2 : 1.0);
+    // lighter surfaces (sidewalks, curbs) return more of the light than asphalt
+    float refl = 0.75 + 1.8 * dot(albedo, vec3(0.3, 0.59, 0.11));
+    // far away a road is a 1-3 px line blended with the dark lots beside it: a little brighter so the lit network
+    // still reads (the pools / lamp heads have faded out there)
+    float farB = 1.0 + 0.4 * smoothstep(900.0, 2800.0, distance(vWp, cameraPosition));
+    emis += lampC * uLampRibbon * k * lat * refl * farB * uLamps * (1.0 - 0.8 * uRoadOverlay);
+  }
+
   // data-view overlay: desaturate + lift
   float lum = dot(albedo, vec3(0.3, 0.59, 0.11));
   albedo = mix(albedo, vec3(lum) * 0.8 + 0.03, uRoadOverlay * 0.7);
@@ -346,6 +410,8 @@ export function getRoadMaterial(): THREE.MeshStandardMaterial {
   m.polygonOffsetUnits = -2;
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = sharedUniforms.uNight;
+    shader.uniforms.uLamps = sharedUniforms.uLamps;
+    shader.uniforms.uLampRibbon = roadUniforms.uLampRibbon;
     shader.uniforms.uTime = sharedUniforms.uTime;
     shader.uniforms.uRoadOverlay = roadUniforms.uRoadOverlay;
     shader.uniforms.uRoadDim = roadUniforms.uRoadDim;
@@ -367,7 +433,7 @@ export function getRoadMaterial(): THREE.MeshStandardMaterial {
       )
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += _roadEmis;');
   };
-  m.customProgramCacheKey = () => 'city-road-v1';
+  m.customProgramCacheKey = () => 'city-road-v2';
   _mat = m;
   return m;
 }

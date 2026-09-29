@@ -215,11 +215,13 @@ function htSail(b: B, rng: RNG, tw = false) {
     K.loft(b, sec(t0), sec(t1), 9 + t0 * (H - 9), 9 + t1 * (H - 9), GC(tw ? 2 : 5, 3.6), s === segs - 1 ? ROOF : null);
   }
   for (let s = 1; s < segs; s++) { const t = s / segs; K.bandPts(b, sec(t), 9 + t * (H - 9) - 0.5, 9 + t * (H - 9) + 0.4, K.plain(0xf4f4f0), 0.12); }
-  // LED strip up the sail apex (front)
-  for (let s = 0; s < segs; s++) {
-    const t0 = s / segs, t1 = (s + 1) / segs;
+  // LED strip up the sail apex (front): a dashed run of narrow LED bars (the twin's amber is a deeper, dimmer tone: a
+  // solid 1.8 m bright amber strip bloomed into a hot orange-white line ~130 m long, the brightest vertical in view)
+  const ledN = segs * 5;
+  for (let s = 0; s < ledN; s++) {
+    const t0 = s / ledN, t1 = (s + 0.7) / ledN;
     const za = bz + rz * (1 - 0.35 * t0) + 0.12, zb = bz + rz * (1 - 0.35 * t1) + 0.12;
-    b.paint(tw ? 0xffb060 : 0x6fd8ff, Surf.Emissive, 7).quad([-0.9, 9 + t0 * (H - 9), za], [0.9, 9 + t0 * (H - 9), za], [0.9, 9 + t1 * (H - 9), zb], [-0.9, 9 + t1 * (H - 9), zb]);
+    b.paint(tw ? 0xd88a48 : 0x6fd8ff, Surf.Emissive, tw ? 3 : 5).quad([-0.55, 9 + t0 * (H - 9), za], [0.55, 9 + t0 * (H - 9), za], [0.55, 9 + t1 * (H - 9), zb], [-0.55, 9 + t1 * (H - 9), zb]);
   }
   // back exoskeleton mast
   const mw = K.plain(0xf4f4f0);

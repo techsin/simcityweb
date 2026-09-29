@@ -39,8 +39,8 @@ export class ActionsProxy implements CityActionsApi {
   setFunding(service: ServiceKind, percent: number): void {
     this.target.setFunding(service, percent);
   }
-  setOrdinance(id: string, enabled: boolean): ActionResult {
-    return this.target.setOrdinance(id, enabled);
+  setOrdinance(id: string, enabled: boolean, opts?: { confirm?: boolean }): ActionResult & { needsConfirm?: boolean } {
+    return this.target.setOrdinance(id, enabled, opts);
   }
   takeLoan(amount: number): ActionResult {
     return this.target.takeLoan(amount);

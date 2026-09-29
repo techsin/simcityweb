@@ -14,7 +14,7 @@
  *   hover=x,z         simulate the mouse over a cell;  drag=x0,z0,x1,z1  simulate a left-drag (held, not released)
  *   click=x,z         simulate a left click on a cell (e.g. with the query tool)
  *   query=x,z         open the inspector for a cell / building
- *   overlay=<name>    data view (landvalue, traffic, crime, pollution, power, zones...)
+ *   overlay=<name>    data view (landvalue, traffic, crime, pollution, power, zones...);  variant=<n> its variant
  *   rci=1             expand the RCI popover;   pause=1  open the pause menu;   toasts=1  sample notifications
  *   cam=x,z,dist      focus the camera on a cell;   fallback=all|world|objects  force stand-in views
  *   graph=<id>        graph to show when the graphs panel is open (pop, rci, funds, cash, ...)
@@ -144,6 +144,9 @@ function buildTown(): { cx: number; cz: number } {
   line(x0 + W, z0 + 16, x0 + W + 14, z0 + 16, Network.Road);
   zone(x0 + W + 1, z0 + 17, x0 + W + 14, z0 + 26, Zone.IndMed);
   zone(x0 + W + 1, z0 + 6, x0 + W + 14, z0 + 16, Zone.IndAg);
+  // a landfill behind the industry, on its own road (garbage trucks need one; QA: the demo town collects its garbage)
+  line(x0 + W + 14, z0 + 16, x0 + W + 14, z0 + 32, Network.Road);
+  zone(x0 + W + 15, z0 + 26, x0 + W + 21, z0 + 32, Zone.Landfill);
   // civic plops
   const plopNear = (defId: string, nx: number, nz: number, allowWarnings = false) => {
     const def = getDef(defId);
@@ -355,7 +358,7 @@ async function run(): Promise<void> {
   else if (P.get('town') === '1') scene.ctx.focusCell(center.cx, center.cz, 700);
   (window as any).__step = "f20"; await frames(num("f1", 3)); (window as any).__step = "after-f20";
   const ov = P.get('overlay');
-  if (ov) scene.ctx.setOverlay(OVERLAY_ALIASES[ov.toLowerCase()] ?? (Number(ov) as Overlay));
+  if (ov) scene.ctx.setOverlay(OVERLAY_ALIASES[ov.toLowerCase()] ?? (Number(ov) as Overlay), P.has('variant') ? num('variant', -1) : undefined);
   const tool = P.get('tool');
   if (tool) scene.selectTool(ALIASES[tool] ?? tool);
   for (const p of (P.get('panel') ?? '').split(',').filter(Boolean)) scene.openPanel(p);

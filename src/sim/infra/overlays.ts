@@ -1,9 +1,30 @@
 /**
- * Overlay support: maps a data-view Overlay to the CityState layer that backs it, with a normalisation scale and a
- * palette hint, so renderers / the query tool can draw & read any data view uniformly.
+ * Overlay support (SIM_DEPTH_SPEC §F, WP5): maps a data view Overlay + variant to the per-cell data behind it, with a
+ * normalisation scale and a palette hint, so the terrain renderer, the minimap and the query tool's hover readout all
+ * draw and read the SAME numbers (the hover of a variant reads the variant's raster, never a different layer).
+ * Headless: no DOM / three.js.
+ *
+ *  - overlayLayer(st, o, variant = -1): the layer; variant -1 = the overlay's default (for every pre-spec overlay the
+ *    default is the direct CityState layer, e.g. Transit -> st.transitCov).
+ *  - Derived rasters (Demographics shares / wealth, Emergency response categories, the Families / Seniors / Students
+ *    appeal variants of Desirability, tap-water quality, NIMBY prestige - stigma) are built on demand into a per-state
+ *    cache keyed by (overlay, variant) and rebuilt only when one of their inputs was recomputed: attachOverlays(sim)
+ *    subscribes to the simulation's 'layerUpdated' events (CityScene). Without a subscription (headless callers) an
+ *    entry is valid for the sim day it was built on. overlayValue runs on every hover move: it never rebuilds.
+ *  - overlayValue(st, o, x, z, variant): the normalised value the renderer draws at a cell; overlayReadout(...): the
+ *    player-facing text for the hover tip ("Auto-dispatch · 2.1 min to spare", "Children 18% of 240 residents").
  */
-import { DevType, Overlay } from '../../core/types';
-import type { CityState } from '../CityState';
+import { DEV_TYPE_COUNT, DEV_TYPE_LABELS, DevType, Network, Overlay, Zone } from '../../core/types';
+import { RESP_NONE, type Building, type CityState } from '../CityState';
+import type { Simulation } from '../Simulation';
+import { getDef } from '../catalog';
+import { COHORT_BASE, COVERAGE_FALLBACK, TAP_SAFE, WORKFORCE_RATIO } from '../economy/tuning';
+import { cohortShares, demographicsSim } from '../economy/demographics';
+import { truckVolumeOf } from './transportFacilities';
+import { waterQualityAt } from './utilities';
+import { emergencyOf } from './emergency';
+
+export type OverlayPalette = 'bad' | 'good' | 'binary' | 'diverging';
 
 export interface OverlayLayer {
   /** per-cell values (i = z*N + x) */
@@ -11,40 +32,536 @@ export interface OverlayLayer {
   /** value mapped to full intensity (normalised = value / scale, clamp 0..1; diverging: -scale..scale) */
   scale: number;
   /** 'bad': high = bad (red), 'good': high = good (green/blue), 'binary': 0/1 (e.g. power), 'diverging': -1..1 */
-  palette: 'bad' | 'good' | 'binary' | 'diverging';
+  palette: OverlayPalette;
   /** only meaningful on road / rail cells (traffic) */
   roadsOnly?: boolean;
   label: string;
+  /** the resolved variant (index into OVERLAY_VARIANTS[o]; 0 for overlays without variants) */
+  variant: number;
+  /**
+   * positive values map to floor + (1 - floor) x clamp01(value / scale) and values <= 0 to 0: "no data" stays
+   * transparent while a small real value is still visible (commute minutes: 0 = unknown)
+   */
+  floor?: number;
+  /** simulation 'layerUpdated' names whose recomputation changes this layer (renderer refresh, cache invalidation) */
+  deps: readonly string[];
 }
 
-/** the layer behind an overlay, or null (None / Zones are drawn by the renderer from zone data) */
-export function overlayLayer(st: CityState, o: Overlay): OverlayLayer | null {
+/** variant names per overlay (index = variant); overlays without an entry have the single variant 0 */
+export const OVERLAY_VARIANTS: Partial<Record<Overlay, string[]>> = {
+  [Overlay.Traffic]: ['Cars', 'Trucks'],
+  [Overlay.Garbage]: ['Uncollected piles', 'Landfill fill'],
+  [Overlay.Education]: ['All', 'Elementary', 'High school', 'University'],
+  [Overlay.Water]: ['Service', 'Tap water quality'],
+  [Overlay.Desirability]: [...DEV_TYPE_LABELS, 'Families', 'Seniors', 'Students'],
+  [Overlay.Parks]: ['All', 'Play & sports', 'Gardens & parks'],
+  [Overlay.Demographics]: ['Children', 'Teens', 'Young adults', 'Seniors', 'Workforce', 'Wealth'],
+  [Overlay.Emergency]: ['Fire', 'Police', 'Medical'],
+};
+
+/** Desirability appeal variants (after the 12 DevTypes) */
+export const DESIR_FAMILIES = DEV_TYPE_COUNT, DESIR_SENIORS = DEV_TYPE_COUNT + 1, DESIR_STUDENTS = DEV_TYPE_COUNT + 2;
+/** Demographics variants */
+export const DEMO_KIDS = 0, DEMO_TEENS = 1, DEMO_YAD = 2, DEMO_SENIORS = 3, DEMO_WORKFORCE = 4, DEMO_WEALTH = 5;
+/** Emergency variants (responder order of the resp* layers) */
+export const EMG_FIRE = 0, EMG_POLICE = 1, EMG_MEDICAL = 2;
+/** Emergency response slack is drawn continuously within +-EMG_SPAN minutes (categories: >= 0 auto, -3..0 just out of
+ *  reach, < -3 manual), RESP_NONE gets its own colour (encoded EMG_NONE_T) */
+export const EMG_SPAN = 12;
+export const EMG_NONE_T = 0.02;
+/** slack (minutes) below which a player dispatch is far off (the "Just out of reach" band is -EMG_NEAR..0) */
+export const EMG_NEAR = 3;
+/** tap-water quality raster: served cells encode 0.1 + 0.9 x quality (0 = no water service) */
+export const TAP_T0 = 0.1;
+/** demographics rasters: residential cells encode DEMO_T0 + (1 - DEMO_T0) x clamp01(share / (2 x reference share)) */
+export const DEMO_T0 = 0.04;
+
+/** number of variants of an overlay (>= 1) */
+export function overlayVariantCount(o: Overlay): number {
+  return OVERLAY_VARIANTS[o]?.length ?? 1;
+}
+
+/** the variant a request resolves to: -1 / out of range = the overlay's default (Desirability: R$$) */
+export function resolveVariant(o: Overlay, variant = -1): number {
+  const n = overlayVariantCount(o);
+  if (variant >= 0 && variant < n && Number.isInteger(variant)) return variant;
+  return o === Overlay.Desirability ? DevType.R2 : 0;
+}
+
+/** short name of a variant ('' for overlays without variants) */
+export function overlayVariantLabel(o: Overlay, variant = -1): string {
+  const v = OVERLAY_VARIANTS[o];
+  return v ? v[resolveVariant(o, variant)] : '';
+}
+
+// ================================================================================================ derived-raster cache
+interface Entry {
+  data: Float32Array;
+  /** extra scale computed with the raster (truck volumes) */
+  scale: number;
+  day: number;
+  dirty: boolean;
+  deps: readonly string[];
+}
+interface Cache {
+  sim?: Simulation;
+  /** a simulation's layerUpdated events invalidate the entries (else: valid for one sim day) */
+  subscribed: boolean;
+  entries: Map<number, Entry>;
+}
+const caches = new WeakMap<CityState, Cache>();
+function cacheOf(st: CityState): Cache {
+  let c = caches.get(st);
+  if (!c) caches.set(st, (c = { subscribed: false, entries: new Map() }));
+  return c;
+}
+const keyOf = (o: Overlay, v: number) => o * 64 + v;
+
+/**
+ * Bind a simulation to its state for the derived rasters (water quality, emergency readiness) and invalidate them on
+ * the simulation's layerUpdated events. Returns the unsubscribe function. Call again after the state is replaced.
+ */
+export function attachOverlays(sim: Simulation): () => void {
+  const c = cacheOf(sim.state);
+  c.sim = sim;
+  c.subscribed = true;
+  const off = sim.events.on('layerUpdated', (name) => markOverlaysDirty(sim.state, name));
+  const offReset = sim.events.on('reset', () => {
+    const cc = cacheOf(sim.state);
+    cc.sim = sim;
+    cc.subscribed = true;
+    cc.entries.clear();
+  });
+  return () => {
+    off();
+    offReset();
+    const cc = caches.get(sim.state);
+    if (cc && cc.sim === sim) cc.subscribed = false;
+  };
+}
+
+/** a derived layer was recomputed: rebuild the cached rasters that read it on their next use */
+export function markOverlaysDirty(st: CityState, layer?: string): void {
+  const c = caches.get(st);
+  if (!c) return;
+  for (const e of c.entries.values()) if (layer === undefined || e.deps.includes(layer)) e.dirty = true;
+}
+
+function simOf(st: CityState): Simulation | undefined {
+  const c = caches.get(st);
+  if (c?.sim && c.sim.state === st) return c.sim;
+  return demographicsSim(st);
+}
+
+const NO_RASTER = new Float32Array(0);
+/**
+ * a cached derived raster of (o, v), (re)built by `build` when missing / invalidated. raster = false: only the value
+ * `build` returns is cached (e.g. the truck overlay's scale), no raster is allocated
+ */
+function derived(st: CityState, o: Overlay, v: number, deps: readonly string[], build: (out: Float32Array) => number | void, raster = true): Entry {
+  const c = cacheOf(st);
+  const k = keyOf(o, v);
+  let e = c.entries.get(k);
+  const size = raster ? st.cells : 0;
+  const stale = !e || e.dirty || e.data.length !== size || (!c.subscribed && e.day !== st.day);
+  if (stale) {
+    let data: Float32Array = NO_RASTER;
+    if (raster) {
+      data = e && e.data.length === size ? e.data : new Float32Array(size);
+      data.fill(0);
+    }
+    const s = build(data);
+    e = { data, scale: typeof s === 'number' && s > 0 ? s : 1, day: st.day, dirty: false, deps };
+    c.entries.set(k, e);
+  }
+  return e!;
+}
+
+// ================================================================================================ raster builders
+/** per state: residential class per building id (0 unknown, 1 residential, 2 other) — ids are never reused and a
+ *  building never changes its def, so the raster loop reads a typed array instead of a catalog lookup */
+const homeClass = new WeakMap<CityState, Uint8Array>();
+function isResidential(st: CityState, b: Building): boolean {
+  let a = homeClass.get(st);
+  if (!a || b.id >= a.length) {
+    const n = new Uint8Array(Math.max(1024, b.id + 1, st.nextBuildingId + 1, (a?.length ?? 0) * 2));
+    if (a) n.set(a);
+    homeClass.set(st, (a = n));
+  }
+  let k = a[b.id];
+  if (k === 0) {
+    const def = getDef(b.def);
+    if (!def) return false; // (catalog not loaded yet: do not cache)
+    k = a[b.id] = def.devType !== undefined && def.devType <= DevType.R3 ? 1 : 2;
+  }
+  return k === 1;
+}
+/** residential buildings with residents (the demographics rasters) */
+function isHome(st: CityState, b: Building): boolean {
+  return b.pop > 0 && isResidential(st, b);
+}
+
+function fillFootprint(st: CityState, b: Building, v: number, out: Float32Array): void {
+  const N = st.size;
+  const x0 = Math.max(0, b.x), z0 = Math.max(0, b.z), x1 = Math.min(N, b.x + b.w), z1 = Math.min(N, b.z + b.d);
+  for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) out[z * N + x] = v;
+}
+
+const SHARE = new Float32Array(5);
+/** share of a demographics variant in a home (cohort share, workforce share, wealth / 3) and its reference value */
+function demoShare(b: Building, variant: number): { share: number; ref: number } {
+  if (variant === DEMO_WEALTH) return { share: Math.max(1, Math.min(3, b.wealth)) / 3, ref: 0.5 };
+  if (variant === DEMO_WORKFORCE) return { share: b.wf ?? WORKFORCE_RATIO, ref: WORKFORCE_RATIO };
+  const s = cohortShares(b, SHARE);
+  const c = variant === DEMO_KIDS ? 0 : variant === DEMO_TEENS ? 1 : variant === DEMO_YAD ? 2 : 4;
+  return { share: s[c], ref: COHORT_BASE[c] };
+}
+
+function buildDemographics(st: CityState, variant: number, out: Float32Array): void {
+  const N = st.size;
+  const c = variant === DEMO_KIDS ? 0 : variant === DEMO_TEENS ? 1 : variant === DEMO_YAD ? 2 : 4;
+  const inv = 1 / (2 * (variant === DEMO_WORKFORCE ? WORKFORCE_RATIO : COHORT_BASE[c]));
+  for (const b of st.buildings.values()) {
+    if (!isHome(st, b)) continue;
+    let t: number;
+    if (variant === DEMO_WEALTH) t = (b.wealth < 1 ? 1 : b.wealth > 3 ? 3 : b.wealth) / 3;
+    else {
+      const share = variant === DEMO_WORKFORCE ? b.wf ?? WORKFORCE_RATIO : cohortShares(b, SHARE)[c];
+      t = DEMO_T0 + (1 - DEMO_T0) * clamp01(share * inv);
+    }
+    if (b.w === 1 && b.d === 1) {
+      if (b.x >= 0 && b.z >= 0 && b.x < N && b.z < N) out[b.z * N + b.x] = t;
+    } else fillFootprint(st, b, t, out);
+  }
+}
+
+/** Emergency: slack minutes -> 0.08 .. 1 continuously (-EMG_SPAN .. +EMG_SPAN), RESP_NONE -> EMG_NONE_T */
+export function encodeSlack(slack: number): number {
+  if (slack <= RESP_NONE + 0.5) return EMG_NONE_T;
+  const s = slack < -EMG_SPAN ? -EMG_SPAN : slack > EMG_SPAN ? EMG_SPAN : slack;
+  return 0.08 + (0.92 * (s + EMG_SPAN)) / (2 * EMG_SPAN);
+}
+
+function respLayer(st: CityState, variant: number): Float32Array {
+  return variant === EMG_POLICE ? st.respPolice : variant === EMG_MEDICAL ? st.respMedical : st.respFire;
+}
+
+/** response layers computed (false while the emergency system has not finished its first pass: no data yet) */
+function respReady(st: CityState): boolean {
+  const sim = simOf(st);
+  if (!sim) return true;
+  const em = emergencyOf(sim);
+  return !em || !em.active ? false : em.layersReady;
+}
+
+function buildEmergency(st: CityState, variant: number, out: Float32Array): void {
+  if (!respReady(st)) return;
+  const L = respLayer(st, variant);
+  for (let i = 0; i < st.cells; i++) out[i] = encodeSlack(L[i]);
+}
+
+function servicesOn(st: CityState): boolean {
+  if (st.systemData.infraVersion === undefined) return false;
+  const l = st.systemData.infraLayers as { services?: boolean } | undefined;
+  return l?.services ?? true;
+}
+
+/**
+ * Families / Seniors / Students appeal (demographics.ts familyScoreAt / seniorScoreAt / studentScoreAt) in one typed-array
+ * loop — the same weights; tests/infra/overlays.test.ts pins it to the demographics functions cell by cell.
+ */
+function buildAppeal(st: CityState, variant: number, out: Float32Array): void {
+  const C = st.cells, f = COVERAGE_FALLBACK;
+  const crime = st.crime, noise = st.noise, water = st.water;
+  if (!servicesOn(st)) {
+    // no services system: every coverage reads COVERAGE_FALLBACK (demographics.ts accessAt)
+    for (let i = 0; i < C; i++) {
+      if (water[i]) continue;
+      let v: number;
+      if (variant === DESIR_FAMILIES) { const nz = noise[i]; v = 0.85 * f + 0.15 * (1 - crime[i]) - 0.1 * (nz > 0.3 ? nz - 0.3 : 0); }
+      else if (variant === DESIR_SENIORS) v = 0.85 * f + 0.15 * (1 - noise[i]);
+      else v = f;
+      out[i] = v < 0 ? 0 : v > 1 ? 1 : v;
+    }
+    return;
+  }
+  if (variant === DESIR_FAMILIES) {
+    const E = st.eduElemCov, H = st.eduHighCov, P = st.playCov;
+    for (let i = 0; i < C; i++) {
+      if (water[i]) continue;
+      const nz = noise[i];
+      const v = 0.45 * E[i] + 0.2 * H[i] + 0.2 * P[i] + 0.15 * (1 - crime[i]) - 0.1 * (nz > 0.3 ? nz - 0.3 : 0);
+      out[i] = v < 0 ? 0 : v > 1 ? 1 : v;
+    }
+  } else if (variant === DESIR_SENIORS) {
+    const Hc = st.healthCov, G = st.greenCov, S = st.shopAccess;
+    for (let i = 0; i < C; i++) {
+      if (water[i]) continue;
+      const v = 0.45 * Hc[i] + 0.2 * G[i] + 0.2 * S[i] + 0.15 * (1 - noise[i]);
+      out[i] = v < 0 ? 0 : v > 1 ? 1 : v;
+    }
+  } else {
+    const Co = st.eduCollegeCov, T = st.transitCov, S = st.shopAccess;
+    for (let i = 0; i < C; i++) {
+      if (water[i]) continue;
+      const v = 0.6 * Co[i] + 0.2 * T[i] + 0.2 * S[i];
+      out[i] = v < 0 ? 0 : v > 1 ? 1 : v;
+    }
+  }
+}
+
+/** tap-water quality per served cell: TAP_T0 + (1 - TAP_T0) x quality (utilities per-network quality), 0 = no water */
+function buildTapWater(st: CityState, out: Float32Array): void {
+  const sim = simOf(st);
+  const w = st.watered, C = st.cells;
+  const mean = st.stats.tapWater ?? 1;
+  for (let i = 0; i < C; i++) {
+    if (!w[i]) continue;
+    const q = sim ? waterQualityAt(sim, i) : mean;
+    out[i] = TAP_T0 + (1 - TAP_T0) * clamp01(q);
+  }
+}
+
+function buildNimby(st: CityState, out: Float32Array): void {
+  const P = st.prestige, S = st.stigma, C = st.cells;
+  for (let i = 0; i < C; i++) out[i] = P[i] - S[i];
+}
+
+/** truck volumes: the traffic array itself (no copy) plus a scale = the ~98th percentile of the busy road cells (a
+ *  64-bin histogram over 0..max: O(cells), no sort) */
+const TRUCK_BINS = new Uint32Array(64);
+function truckScale(st: CityState, T: Float32Array): number {
+  const net = st.network, n = Math.min(T.length, net.length);
+  let mx = 0, cnt = 0;
+  for (let i = 0; i < n; i++) {
+    const v = T[i];
+    if (v > 0.5 && net[i] !== Network.None && net[i] !== Network.Rail) { cnt++; if (v > mx) mx = v; }
+  }
+  if (cnt === 0) return 100;
+  TRUCK_BINS.fill(0);
+  const k = 63.999 / mx;
+  for (let i = 0; i < n; i++) {
+    const v = T[i];
+    if (v > 0.5 && net[i] !== Network.None && net[i] !== Network.Rail) TRUCK_BINS[(v * k) | 0]++;
+  }
+  const want = Math.ceil(cnt * 0.98);
+  let acc = 0, b = 0;
+  for (; b < 64; b++) { acc += TRUCK_BINS[b]; if (acc >= want) break; }
+  return Math.max(50, ((b + 1) / 64) * mx);
+}
+
+// ================================================================================================ the layers
+const L = (data: ArrayLike<number>, scale: number, palette: OverlayPalette, label: string, variant: number, deps: readonly string[], extra: Partial<OverlayLayer> = {}): OverlayLayer =>
+  ({ data, scale, palette, label, variant, deps, ...extra });
+
+const EDU_LABELS = ['Education coverage (all school tiers)', 'Elementary schools', 'High schools', 'Colleges & universities'];
+const DEMO_LABELS = ['Children (0–11) share', 'Teens (12–17) share', 'Young adults (18–24) share', 'Seniors (65+) share', 'Workforce share', 'Household wealth'];
+const EMG_LABELS = ['Fire response', 'Police response', 'Ambulance response'];
+
+const D_SVC: readonly string[] = ['services'];
+const D_CATCH: readonly string[] = ['catchments', 'services'];
+const D_POLL: readonly string[] = ['pollution'];
+const D_TRAFFIC: readonly string[] = ['traffic'];
+const D_APPEAL: readonly string[] = ['services', 'catchments', 'crime', 'pollution'];
+
+/**
+ * simulation 'layerUpdated' names that change an overlay + variant (the terrain renderer refreshes on them, the derived
+ * rasters are rebuilt after them); [] = static data (None / Zones)
+ */
+export function overlayDeps(o: Overlay, variant = -1): readonly string[] {
+  const v = resolveVariant(o, variant);
   switch (o) {
-    case Overlay.Traffic: return { data: st.congestion, scale: 1.2, palette: 'bad', roadsOnly: true, label: 'Traffic (volume / capacity)' };
-    case Overlay.AirPollution: return { data: st.airPollution, scale: 1, palette: 'bad', label: 'Air pollution' };
-    case Overlay.WaterPollution: return { data: st.waterPollution, scale: 1, palette: 'bad', label: 'Water pollution' };
-    case Overlay.Garbage: return { data: st.garbage, scale: 1, palette: 'bad', label: 'Garbage' };
-    case Overlay.LandValue: return { data: st.landValue, scale: 1, palette: 'good', label: 'Land value' };
-    case Overlay.Crime: return { data: st.crime, scale: 1, palette: 'bad', label: 'Crime' };
-    case Overlay.Police: return { data: st.policeCov, scale: 1, palette: 'good', label: 'Police coverage' };
-    case Overlay.Fire: return { data: st.fireCov, scale: 1, palette: 'good', label: 'Fire coverage' };
-    case Overlay.Health: return { data: st.healthCov, scale: 1, palette: 'good', label: 'Health coverage' };
-    case Overlay.Education: return { data: st.eduCov, scale: 1, palette: 'good', label: 'Education coverage' };
-    case Overlay.Power: return { data: st.powered, scale: 1, palette: 'binary', label: 'Power' };
-    case Overlay.Water: return { data: st.watered, scale: 1, palette: 'binary', label: 'Water' };
-    case Overlay.Desirability: return { data: st.desirability[DevType.R2], scale: 1, palette: 'diverging', label: 'Desirability (R$$)' };
-    case Overlay.Noise: return { data: st.noise, scale: 1, palette: 'bad', label: 'Noise' };
-    case Overlay.Transit: return { data: st.transitCov, scale: 1, palette: 'good', label: 'Transit coverage' };
+    case Overlay.Traffic: return D_TRAFFIC;
+    case Overlay.AirPollution: case Overlay.WaterPollution: case Overlay.Garbage: case Overlay.Soil: return D_POLL;
+    case Overlay.LandValue: return ['landValue', 'desirability'];
+    case Overlay.Crime: return ['crime', 'services'];
+    case Overlay.Police: case Overlay.Fire: case Overlay.Health: return D_SVC;
+    case Overlay.Education: case Overlay.Parks: case Overlay.Shops: case Overlay.Nimby: return D_CATCH;
+    case Overlay.Power: return ['utilities'];
+    case Overlay.Water: return v === 1 ? ['utilities', 'pollution'] : ['utilities'];
+    case Overlay.Desirability: return v >= DEV_TYPE_COUNT ? D_APPEAL : ['desirability'];
+    case Overlay.Noise: return ['pollution', 'traffic'];
+    case Overlay.Transit: return ['services', 'traffic'];
+    case Overlay.Commute: return ['catchments', 'traffic'];
+    case Overlay.Demographics: return ['demographics'];
+    case Overlay.Tourism: return ['tourism'];
+    case Overlay.Emergency: return ['emergency'];
+    case Overlay.Parking: return ['parking', 'traffic'];
+    default: return [];
+  }
+}
+
+/** the layer behind an overlay + variant, or null (None / Zones are drawn by the renderer from zone data) */
+export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLayer | null {
+  const v = resolveVariant(o, variant);
+  const deps = overlayDeps(o, v);
+  switch (o) {
+    case Overlay.Traffic: {
+      if (v === 1) {
+        const T = truckVolumeOf(st);
+        if (!T || T.length !== st.cells) return L(new Float32Array(st.cells), 1, 'bad', 'Trucks per day (no freight data yet)', v, deps, { roadsOnly: true });
+        const e = derived(st, o, v, deps, () => truckScale(st, T), false);
+        return L(T, e.scale, 'bad', 'Trucks per day', v, deps, { roadsOnly: true });
+      }
+      return L(st.congestion, 1.2, 'bad', 'Traffic (volume / capacity)', v, deps, { roadsOnly: true });
+    }
+    case Overlay.AirPollution: return L(st.airPollution, 1, 'bad', 'Air pollution', v, deps);
+    case Overlay.WaterPollution: return L(st.waterPollution, 1, 'bad', 'Water pollution', v, deps);
+    case Overlay.Garbage:
+      return v === 1 ? L(st.landfillFill, 1, 'bad', 'Landfill fill', v, deps) : L(st.garbage, 1, 'bad', 'Uncollected garbage', v, deps);
+    case Overlay.LandValue: return L(st.landValue, 1, 'good', 'Land value', v, deps);
+    case Overlay.Crime: return L(st.crime, 1, 'bad', 'Crime', v, deps);
+    case Overlay.Police: return L(st.policeCov, 1, 'good', 'Police patrol coverage', v, deps);
+    case Overlay.Fire: return L(st.fireCov, 1, 'good', 'Fire prevention coverage', v, deps);
+    case Overlay.Health: return L(st.healthCov, 1, 'good', 'Care access (clinics & hospitals)', v, deps);
+    case Overlay.Education: {
+      const d = v === 1 ? st.eduElemCov : v === 2 ? st.eduHighCov : v === 3 ? st.eduCollegeCov : st.eduCov;
+      return L(d, 1, 'good', EDU_LABELS[v], v, deps);
+    }
+    case Overlay.Power: return L(st.powered, 1, 'binary', 'Power', v, deps);
+    case Overlay.Water: {
+      if (v === 1) {
+        const e = derived(st, o, v, deps, (out) => buildTapWater(st, out));
+        return L(e.data, 1, 'good', 'Tap water quality', v, deps);
+      }
+      return L(st.watered, 1, 'binary', 'Water', v, deps);
+    }
+    case Overlay.Desirability: {
+      if (v >= DEV_TYPE_COUNT) {
+        const e = derived(st, o, v, deps, (out) => buildAppeal(st, v, out));
+        const who = v === DESIR_FAMILIES ? 'families' : v === DESIR_SENIORS ? 'seniors' : 'students';
+        // appeal 0..1 (0.5 = neutral: the renderer draws it on the desirability colours)
+        return L(e.data, 1, 'good', `Appeal for ${who}`, v, deps);
+      }
+      return L(st.desirability[v], 1, 'diverging', `Desirability (${DEV_TYPE_LABELS[v]})`, v, deps);
+    }
+    case Overlay.Noise: return L(st.noise, 1, 'bad', 'Noise', v, deps);
+    case Overlay.Transit: return L(st.transitCov, 1, 'good', 'Transit coverage', v, deps);
+    case Overlay.Parks: {
+      const d = v === 1 ? st.playCov : v === 2 ? st.greenCov : st.parkCov;
+      return L(d, 1, 'good', v === 1 ? 'Playgrounds & sports' : v === 2 ? 'Gardens & parks' : 'Parks & recreation', v, deps);
+    }
+    case Overlay.Commute: return L(st.accessCommute, commuteScale(st), 'bad', 'Commute time (minutes)', v, deps, { floor: 0.06 });
+    case Overlay.Shops: return L(st.shopAccess, 1, 'good', 'Shops within reach', v, deps);
+    case Overlay.Demographics: {
+      const e = derived(st, o, v, deps, (out) => buildDemographics(st, v, out));
+      return L(e.data, 1, 'good', DEMO_LABELS[v], v, deps);
+    }
+    case Overlay.Tourism: return L(st.visitors, 1, 'good', 'Tourist visitors', v, deps);
+    case Overlay.Nimby: {
+      const e = derived(st, o, v, deps, (out) => buildNimby(st, out));
+      return L(e.data, NIMBY_SCALE, 'diverging', 'Neighbourhood image (prestige − stigma)', v, deps);
+    }
+    case Overlay.Soil: return L(st.soil, 1, 'bad', 'Soil contamination', v, deps);
+    case Overlay.Emergency: {
+      const e = derived(st, o, v, deps, (out) => buildEmergency(st, v, out));
+      return L(e.data, 1, 'good', EMG_LABELS[v], v, deps);
+    }
+    case Overlay.Parking: return L(st.parking, 1, 'bad', 'Parking pressure', v, deps);
     default: return null;
   }
 }
 
-/** normalised overlay value at a cell (0..1; diverging overlays return -1..1), 0 when out of bounds / no layer */
-export function overlayValue(st: CityState, o: Overlay, x: number, z: number): number {
-  if (!st.inBounds(x, z)) return 0;
-  const L = overlayLayer(st, o);
-  if (!L) return 0;
-  const v = L.data[z * st.size + x] / L.scale;
-  if (L.palette === 'diverging') return v < -1 ? -1 : v > 1 ? 1 : v;
+/** Commute overlay scale: 3 x the city's average commute (minutes), at least 15 */
+export function commuteScale(st: CityState): number {
+  const avg = st.stats.avgCommute > 0 ? st.stats.avgCommute : 15;
+  return Math.max(15, 3 * avg);
+}
+/** NIMBY overlay: prestige - stigma of +-NIMBY_SCALE is drawn at full intensity */
+export const NIMBY_SCALE = 0.6;
+
+function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/** normalised value of a layer's raw value (the renderer's mapping before the ramp; diverging: -1..1) */
+export function normaliseOverlay(Lr: OverlayLayer, raw: number): number {
+  const s = raw / (Lr.scale || 1);
+  if (Lr.palette === 'diverging') return s < -1 ? -1 : s > 1 ? 1 : s;
+  if (Lr.floor !== undefined) return raw > 0 ? Lr.floor + (1 - Lr.floor) * clamp01(s) : 0;
+  return clamp01(s);
+}
+
+/** normalised overlay value at a cell (0..1; diverging overlays return -1..1), 0 when out of bounds / no layer */
+export function overlayValue(st: CityState, o: Overlay, x: number, z: number, variant = -1): number {
+  if (!st.inBounds(x, z)) return 0;
+  const Lr = overlayLayer(st, o, variant);
+  if (!Lr) return 0;
+  return normaliseOverlay(Lr, Lr.data[z * st.size + x]);
+}
+
+// ================================================================================================ hover readout
+export interface OverlayReadout {
+  /** value text ("+34", "18%", "Auto-dispatch · 2.1 min to spare") */
+  text: string;
+  /** 'good' | 'warn' | 'bad' | '' (neutral) */
+  tone: 'good' | 'warn' | 'bad' | '';
+  /** optional second line ("of 240 residents") */
+  sub?: string;
+}
+
+const pctS = (v: number) => `${Math.round(v * 100)}%`;
+const toneGood = (g: number): OverlayReadout['tone'] => (g >= 0.66 ? 'good' : g >= 0.33 ? 'warn' : 'bad');
+const RESPONDER_NOUN = ['fire station', 'police station', 'clinic or hospital'];
+
+/** player-facing readout of an overlay at a cell (the value the renderer draws there), null = nothing to say */
+export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, variant = -1): OverlayReadout | null {
+  if (!st.inBounds(x, z)) return null;
+  const Lr = overlayLayer(st, o, variant);
+  if (!Lr) return null;
+  const i = z * st.size + x, v = Lr.variant;
+  const raw = Lr.data[i];
+  switch (o) {
+    case Overlay.Emergency: {
+      if (!respReady(st)) return { text: 'Not computed yet', tone: '' };
+      const s = respLayer(st, v)[i];
+      if (s <= RESP_NONE + 0.5) return { text: `No ${RESPONDER_NOUN[v]}`, tone: 'bad', sub: 'Build one: nothing is sent automatically' };
+      if (s >= 0) return { text: `Auto-dispatch · ${s.toFixed(1)} min to spare`, tone: 'good', sub: 'Incidents here become statistics' };
+      if (s >= -EMG_NEAR) return { text: `Just out of reach by ${(-s).toFixed(1)} min`, tone: 'warn', sub: 'You dispatch: the game drops to live speed' };
+      return { text: `Out of reach by ${(-s).toFixed(1)} min`, tone: 'bad', sub: 'You dispatch — build a station closer' };
+    }
+    case Overlay.Demographics: {
+      const bid = st.building[i];
+      const b = bid >= 0 ? st.buildings.get(bid) : undefined;
+      if (!b || !isHome(st, b)) return { text: 'No residents', tone: '' };
+      if (v === DEMO_WEALTH) return { text: `${'$'.repeat(Math.max(1, Math.min(3, b.wealth)))} homes`, tone: '', sub: `${b.pop.toLocaleString('en-US')} residents` };
+      const { share, ref } = demoShare(b, v);
+      const rel = share / ref;
+      return { text: pctS(share), tone: rel > 1.3 ? 'good' : rel < 0.7 ? 'warn' : '', sub: `of ${b.pop.toLocaleString('en-US')} residents · city typical ${pctS(ref)}` };
+    }
+    case Overlay.Water: {
+      if (v === 1) {
+        if (raw <= 0) return { text: 'No water service', tone: 'bad' };
+        const q = (raw - TAP_T0) / (1 - TAP_T0);
+        return { text: `${pctS(q)} ${q >= TAP_SAFE ? '· safe' : '· unsafe'}`, tone: q >= 0.85 ? 'good' : q >= TAP_SAFE ? 'warn' : 'bad', sub: q >= TAP_SAFE ? undefined : 'Treat the water or move the pumps upstream of pollution' };
+      }
+      return raw > 0.5 ? { text: 'Water service', tone: 'good' } : { text: 'No water', tone: 'bad' };
+    }
+    case Overlay.Power: return raw > 0.5 ? { text: 'Powered', tone: 'good' } : { text: 'No power', tone: 'bad' };
+    case Overlay.Commute:
+      return raw > 0 ? { text: `${Math.round(raw)} min`, tone: raw <= 20 ? 'good' : raw <= 40 ? 'warn' : 'bad', sub: 'to jobs' } : { text: 'No route', tone: '' };
+    case Overlay.Traffic:
+      if (v === 1) return { text: `${Math.round(raw).toLocaleString('en-US')} trucks/day`, tone: raw > Lr.scale * 0.6 ? 'bad' : raw > Lr.scale * 0.25 ? 'warn' : '' };
+      return { text: pctS(raw), tone: raw > 1 ? 'bad' : raw > 0.7 ? 'warn' : 'good', sub: `${Math.round(st.traffic[i]).toLocaleString('en-US')} trips/day` };
+    case Overlay.Nimby: {
+      const p = st.prestige[i], s = st.stigma[i];
+      if (Math.abs(raw) < 0.02) return { text: 'Neutral', tone: '' };
+      return raw > 0 ? { text: `Prestige +${Math.round(raw * 100)}`, tone: 'good', sub: s > 0.02 ? `stigma −${Math.round(s * 100)} offsets it` : undefined }
+        : { text: `Stigma −${Math.round(-raw * 100)}`, tone: 'bad', sub: p > 0.02 ? `prestige +${Math.round(p * 100)} offsets it` : 'Unwanted neighbours nearby' };
+    }
+    case Overlay.Desirability: {
+      if (v >= DEV_TYPE_COUNT) return { text: pctS(raw), tone: toneGood(raw) };
+      return { text: `${raw > 0 ? '+' : ''}${Math.round(raw * 100)}`, tone: raw > 0.15 ? 'good' : raw < -0.15 ? 'bad' : 'warn' };
+    }
+    case Overlay.Garbage:
+      if (v === 1) return st.zone[i] === Zone.Landfill ? { text: `${pctS(raw)} full`, tone: raw > 0.8 ? 'bad' : raw > 0.5 ? 'warn' : 'good' } : { text: 'Not a landfill', tone: '' };
+      return { text: pctS(raw), tone: raw > 0.5 ? 'bad' : raw > 0.2 ? 'warn' : 'good' };
+    case Overlay.Tourism: return { text: pctS(raw), tone: raw > 0.3 ? 'good' : '' };
+    case Overlay.AirPollution: case Overlay.WaterPollution: case Overlay.Crime: case Overlay.Noise: case Overlay.Soil: case Overlay.Parking:
+      return { text: pctS(raw), tone: raw > 0.6 ? 'bad' : raw > 0.3 ? 'warn' : 'good' };
+    default: {
+      const n = normaliseOverlay(Lr, raw);
+      return { text: pctS(n), tone: Lr.palette === 'bad' ? toneGood(1 - n) : toneGood(n) };
+    }
+  }
 }

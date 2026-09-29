@@ -14,7 +14,7 @@ import { Network, Overlay, type Climate, type TerrainPreset } from '../../core/t
 import type { CityState } from '../../sim/CityState';
 import { sharedUniforms } from '../../assets/materials';
 import { getNoiseTexture, makeRampTexture } from './textures';
-import { OVERLAYS, ZONE_COLORS, computeOverlayValues } from './overlays';
+import { OVERLAYS, ZONE_COLORS, computeOverlayValues, overlayDef } from './overlays';
 import { TERRAIN_FRAG_COLOR, TERRAIN_FRAG_PARS, TERRAIN_VERT_MAIN, TERRAIN_VERT_PARS } from './terrainShader';
 import { receiverSweepBox, type ShadowReceiver } from './Shadows';
 
@@ -54,6 +54,8 @@ export class TerrainRenderer {
   private treeDirty = false;
   private overlayDirty = false;
   private overlay: Overlay = Overlay.None;
+  /** data-view variant (src/sim/infra/overlays.ts OVERLAY_VARIANTS; -1 = the overlay's default) */
+  private overlayVariant = -1;
   private heightData: Uint16Array;
   private zoneData: Uint8Array;
   private zoneTex: THREE.DataTexture;
@@ -524,7 +526,7 @@ export class TerrainRenderer {
 
   onLayerUpdated(name: string) {
     if (this.overlay === Overlay.None || this.overlay === Overlay.Zones) return;
-    const def = OVERLAYS[this.overlay];
+    const def = overlayDef(this.overlay, this.overlayVariant);
     if (!def.layers.length || def.layers.includes(name)) this.overlayDirty = true;
   }
 
@@ -584,13 +586,17 @@ export class TerrainRenderer {
   }
 
   // ------------------------------------------------------------------ overlays & tools
-  setOverlay(o: Overlay) {
+  setOverlay(o: Overlay, variant = -1) {
     this.overlay = o;
+    this.overlayVariant = variant;
     const u = this.uniforms;
     u.uZoneMode.value = o === Overlay.Zones ? 1 : 0;
     u.uOverlayOn.value = o !== Overlay.None && o !== Overlay.Zones ? 1 : 0;
-    makeRampTexture(OVERLAYS[o]?.ramp ?? OVERLAYS[Overlay.None].ramp, 128, this.rampTex);
+    makeRampTexture(OVERLAYS[o] ? overlayDef(o, variant).ramp : OVERLAYS[Overlay.None].ramp, 128, this.rampTex);
     this.overlayDirty = u.uOverlayOn.value > 0;
+  }
+  get currentOverlayVariant(): number {
+    return this.overlayVariant;
   }
   get currentOverlay(): Overlay {
     return this.overlay;
@@ -673,7 +679,7 @@ export class TerrainRenderer {
     }
     if (this.overlayDirty) {
       this.overlayDirty = false;
-      computeOverlayValues(this.state, this.overlay, this.overlayData);
+      computeOverlayValues(this.state, this.overlay, this.overlayData, this.overlayVariant);
       this.overlayTex.needsUpdate = true;
     }
   }

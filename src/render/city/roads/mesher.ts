@@ -17,6 +17,7 @@ import {
 } from '../common/netinfo';
 import type { RoadSurface } from '../common/surface';
 import { GeoBuf, type GeoSlice } from './geobuf';
+import { lampTint } from './roadMaterial';
 
 export const M = {
   ASPHALT: 0, SIDEWALK: 1, CURB: 2, GRASS: 3, BALLAST: 4, SLEEPER: 5, RAIL: 6, CONCRETE: 7, DIRT: 8, METAL: 9,
@@ -43,7 +44,7 @@ export interface PoolItem {
   y: number;
   z: number;
   r: number;
-  /** 0 = warm street light, 1 = cool highway light */
+  /** 0 = amber sodium street light, 1 = white LED / highway light (per district: lampTint in roadMaterial.ts) */
   tint: number;
   /** road direction (rotation about +Y mapping the pool's local +X onto it); the pool is stretched along it */
   yaw?: number;
@@ -113,6 +114,8 @@ export class RoadMesher {
   private trackIdx = 0;
   /** set while meshing the minor road under a highway overpass (no streetlights / trees, deck soffit lights instead) */
   private underDeck = false;
+  /** network type of the minor road under the overpass cell being meshed (its soffit lights match its lamp type) */
+  private minorT: number = Network.Road;
   private groundSurf: RoadSurface | null = null;
   private groundOf: RoadSurface | null = null;
   /** per-cell mesh cache: an edit only re-meshes the invalidated cells; chunks are re-assembled by concatenation */
@@ -885,8 +888,10 @@ export class RoadMesher {
     this.out.props.push({ model: 'streetlight', variant, x: this.ox + lx, y, z: this.oz + lz, yaw, scale: 1 });
     const reach = this.light.reach;
     const px = lx + Dx * reach, pz = lz + Dz * reach;
+    // lamp colour: highways always white; streets by district / road class (same rule as the road shader's ribbon)
+    const lt = tint === 1 ? 1 : lampTint(this.cx, this.cz, this.net.state.network[this.ci]);
     this.out.pools.push({
-      x: this.ox + px, y: this.Y(px, pz) + 0.04, z: this.oz + pz, r: tint === 1 ? 9 : 7.5, tint, yaw: Math.atan2(-Dx, -Dz),
+      x: this.ox + px, y: this.Y(px, pz) + 0.04, z: this.oz + pz, r: tint === 1 ? 9 : 8.5, tint: lt, yaw: Math.atan2(-Dx, -Dz),
       hx: this.ox + px, hy: y + this.light.height - 0.35, hz: this.oz + pz,
     });
   }
@@ -1153,6 +1158,7 @@ export class RoadMesher {
       if (isRoadT(t) && t !== Network.Highway && HALF_W[t] >= HALF_W[tm]) { tm = t; from = j; }
     }
     if (!tm) tm = Network.Road;
+    this.minorT = tm;
     if (tm === Network.OneWay && from >= 0) {
       const od = oneWayDir(net.state.netFlags[from]);
       if ((od & 1) === (hm & 1)) hm = od;
@@ -1246,7 +1252,7 @@ export class RoadMesher {
       const px = DX[B] * sB, pz = DZ[B] * sB;
       const gy = G(px, pz) + LIFT;
       this.out.pools.push({
-        x: this.ox + px, y: gy + 0.04, z: this.oz + pz, r: 6.5, tint: 0, yaw: Math.atan2(-DZ[B], DX[B]),
+        x: this.ox + px, y: gy + 0.04, z: this.oz + pz, r: 6.5, tint: lampTint(this.cx, this.cz, this.minorT), yaw: Math.atan2(-DZ[B], DX[B]),
         hx: this.ox + px, hy: this.Y(px, pz) - DECK - 0.25, hz: this.oz + pz,
       });
     }

@@ -88,6 +88,13 @@ fn log(x: f64) -> f64 {
 const INF: f64 = f64::INFINITY;
 const NEG_INF: f64 = f64::NEG_INFINITY;
 
+/// `u > -Infinity ? Math.exp(u - um) : 0` of the mode split, skipping the call for the maximum utility itself:
+/// u - um is then +0 and exp(+-0) = 1 exactly (fdlibm and V8); NaN / infinite utilities take the full path
+#[inline(always)]
+fn share_exp(u: f64, um: f64) -> f64 {
+    if u > NEG_INF { if u == um && u < INF { 1.0 } else { exp(u - um) } } else { 0.0 }
+}
+
 /// `Math.max(a, b)`: NaN if either is NaN, +0 beats -0
 #[inline(always)]
 pub fn js_max(a: f64, b: f64) -> f64 {
@@ -1123,9 +1130,9 @@ fn round_match(c: &Cx, round: i32) -> i32 {
         if um == NEG_INF {
             continue;
         }
-        let ec = if uc > NEG_INF { exp(uc - um) } else { 0.0 };
-        let et = if ut > NEG_INF { exp(ut - um) } else { 0.0 };
-        let ew = if uw > NEG_INF { exp(uw - um) } else { 0.0 };
+        let ec = share_exp(uc, um);
+        let et = share_exp(ut, um);
+        let ew = share_exp(uw, um);
         let tot = ec + et + ew;
         let sc = ec / tot;
         let st = et / tot;
@@ -1661,7 +1668,9 @@ fn shop(c: &Cx) -> i32 {
             continue;
         }
         let bn = bn as usize;
-        let trips = opop[o] as f64 * per_res * exp(-js_max(0.0, bd - 8.0) / 20.0);
+        // exp(-max(0, bd - 8) / 20): the argument is -0 for shops within 8 minutes, exp(-0) = 1 exactly
+        let a = js_max(0.0, bd - 8.0);
+        let trips = opop[o] as f64 * per_res * (if a == 0.0 { 1.0 } else { exp(-a / 20.0) });
         let car_share = if oshc[o] as f64 + oshw[o] as f64 + osht[o] as f64 > 0.0 { oshc[o] as f64 } else { 0.7 };
         let walkish = if bd < 3.0 { 0.6 } else { 0.0 };
         acc[bn] = (acc[bn] as f64 + trips * car_share * (1.0 - walkish) * pcu) as f32;
@@ -1980,9 +1989,9 @@ pub unsafe extern "C" fn traffic_bench_logit(u: *const f64, out: *mut f64, n: i3
             out[4 * i] = f64::NAN;
             continue;
         }
-        let ec = if uc > NEG_INF { exp(uc - um) } else { 0.0 };
-        let et = if ut > NEG_INF { exp(ut - um) } else { 0.0 };
-        let ew = if uw > NEG_INF { exp(uw - um) } else { 0.0 };
+        let ec = share_exp(uc, um);
+        let et = share_exp(ut, um);
+        let ew = share_exp(uw, um);
         let tot = ec + et + ew;
         let sc = ec / tot;
         let st = et / tot;

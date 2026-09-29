@@ -79,7 +79,7 @@ const capName = (f) => `${f.split('/').pop().replace(/\.metropolis$/, '')}.w${wa
 async function runNode(scalar, captureOnly = false) {
   const file = await bundle(join(ROOT, 'tools', 'bench', 'desirabilityLandValueBands', 'node.ts'), join(OUT, 'desirabilityLandValueBands.node.mjs'), 'node');
   const json = join(OUT, 'desirabilityLandValueBands.node.json');
-  const args = ['--max-old-space-size=8192', file, ...fixtures.flatMap((f) => ['--fixture', f]), '--cap-dir', CAP_DIR, '--warm', warm, '--json', json];
+  const args = ['--max-old-space-size=8192', '--expose-gc', file, ...fixtures.flatMap((f) => ['--fixture', f]), '--cap-dir', CAP_DIR, '--warm', warm, '--json', json];
   if (opt('--reps')) args.push('--reps', opt('--reps'));
   if (opt('--sweeps')) args.push('--sweeps', opt('--sweeps'));
   if (captureOnly) args.push('--sweeps', 'none');

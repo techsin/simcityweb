@@ -3,6 +3,8 @@
  *  - fallback models are used ONLY while the asset team's builder for an id is not registered (avoids magenta boxes)
  *  - impostors (broadleaf blob / conifer cone, ~20 tris) are used by TreeRenderer beyond the LOD distance; their
  *    foliage vertex color is white so the per-instance color (species average) tints them.
+ * Foliage patterns (materials.ts): broadleaf impostors 3 (the tint already carries the season of the model variant they
+ * stand for: never recoloured by the shader), conifer impostors 4 (evergreen), like the nature models (nature.ts).
  */
 import * as THREE from 'three';
 import { ModelBuilder } from '../../assets/ModelBuilder';
@@ -12,7 +14,12 @@ import { Surf } from '../../core/types';
 
 type Fn = (b: ModelBuilder, v: number, r: RNG) => void;
 
-const leaf = (b: ModelBuilder, c: number) => b.paint(c, Surf.Foliage);
+/** nature-model foliage patterns (materials.ts): 3 deciduous (variant-seasonal), 4 evergreen */
+const FOL_DECID = 3;
+const FOL_EVER = 4;
+const EVERGREEN = new Set(['tree_pine', 'tree_spruce', 'tree_palm', 'tree_cypress']);
+let leafPattern = FOL_DECID;
+const leaf = (b: ModelBuilder, c: number) => b.paint(c, Surf.Foliage, leafPattern);
 const bark = (b: ModelBuilder, c = 0x5b4330) => b.paint(c, Surf.Wood);
 
 const FALLBACK: Record<string, Fn> = {
@@ -103,6 +110,7 @@ export function getNatureGeometry(id: string, variant: number): THREE.BufferGeom
   let g = fbCache.get(key);
   if (g) return g;
   const b = new ModelBuilder();
+  leafPattern = EVERGREEN.has(id) ? FOL_EVER : FOL_DECID;
   FALLBACK[id](b, variant, new RNG(hashString(key)));
   g = b.build();
   g.name = 'fallback:' + key;
@@ -116,10 +124,10 @@ export function getImpostorGeometries() {
   if (_impostors) return _impostors;
   const broad = new ModelBuilder();
   broad.paint(0x4a3624, Surf.Wood).cylinder(0, 0, 0, 0.42, 0.07, 0.05, 4, { top: false });
-  broad.paint(0xffffff, Surf.Foliage).blob(0, 0.63, 0, 0.44, 0.36, 0.44, 0, 0.14, 3);
+  broad.paint(0xffffff, Surf.Foliage, FOL_DECID).blob(0, 0.63, 0, 0.44, 0.36, 0.44, 0, 0.14, 3);
   const con = new ModelBuilder();
   con.paint(0x4a3624, Surf.Wood).cylinder(0, 0, 0, 0.22, 0.06, 0.05, 4, { top: false });
-  con.paint(0xffffff, Surf.Foliage).cone(0, 0, 0.1, 0.58, 0.38, 7);
+  con.paint(0xffffff, Surf.Foliage, FOL_EVER).cone(0, 0, 0.1, 0.58, 0.38, 7);
   con.cone(0, 0, 0.42, 0.58, 0.27, 6);
   _impostors = { broad: broad.build(), conifer: con.build() };
   return _impostors;
@@ -135,7 +143,7 @@ export function getMicroImpostorGeometries() {
   const q = Math.SQRT1_2;
   const ring = (r: number, y: number): [number, number, number][] => [[r * q, y, r * q], [-r * q, y, r * q], [-r * q, y, -r * q], [r * q, y, -r * q]];
   const broad = new ModelBuilder();
-  broad.paint(0xffffff, Surf.Foliage);
+  broad.paint(0xffffff, Surf.Foliage, FOL_DECID);
   const e = ring(0.46, 0.63);
   for (let i = 0; i < 4; i++) {
     const a = e[i], b = e[(i + 1) % 4];
@@ -143,7 +151,7 @@ export function getMicroImpostorGeometries() {
     broad.tri(a, b, [0, 0.28, 0]);
   }
   const con = new ModelBuilder();
-  con.paint(0xffffff, Surf.Foliage);
+  con.paint(0xffffff, Surf.Foliage, FOL_EVER);
   const c = ring(0.4, 0.1);
   for (let i = 0; i < 4; i++) con.tri(c[(i + 1) % 4], c[i], [0, 1.0, 0]);
   _micro = { broad: broad.build(), conifer: con.build() };
@@ -152,18 +160,36 @@ export function getMicroImpostorGeometries() {
   return _micro;
 }
 
-/** Average foliage color (linear) + bounding box of a nature geometry, for impostor tinting & scaling. */
-export function natureStats(g: THREE.BufferGeometry): { color: THREE.Color; height: number; radius: number } {
+/** what shows between the twigs of a bare crown seen from afar (branch shadows, forest floor) - linear */
+const SEE_THROUGH = new THREE.Color(0.035, 0.034, 0.028);
+const _ta = new THREE.Vector3(), _tb = new THREE.Vector3(), _tc = new THREE.Vector3();
+
+/**
+ * Average foliage color (linear) + bounding box of a nature geometry, for impostor tinting & scaling. Models without
+ * foliage / stone (rocks, cacti: Surf.Plain) average every non-wood surface instead. See-through bare crowns (twig
+ * sprays: little foliage area for their size, twig-coloured) report their open fraction (`open`, 0 = solid crown) and
+ * blend toward SEE_THROUGH by it, so a solid impostor matches the darker average a leafless tree has from afar.
+ */
+export function natureStats(g: THREE.BufferGeometry): { color: THREE.Color; height: number; radius: number; open: number } {
   const col = g.getAttribute('color') as THREE.BufferAttribute | undefined;
   const srf = g.getAttribute('surf') as THREE.BufferAttribute | undefined;
+  const pos = g.getAttribute('position') as THREE.BufferAttribute | undefined;
   const c = new THREE.Color(0, 0, 0);
   let n = 0;
+  let area = 0;
   if (col && srf) {
-    for (let i = 0; i < col.count; i++) {
-      const s = srf.getX(i);
-      if (Math.abs(s - Surf.Foliage) < 0.5 || Math.abs(s - Surf.Stone) < 0.5) {
-        c.r += col.getX(i); c.g += col.getY(i); c.b += col.getZ(i);
-        n++;
+    for (let pass = 0; pass < 2 && !n; pass++) {
+      for (let i = 0; i < col.count; i++) {
+        const s = srf.getX(i);
+        const use = pass === 0 ? Math.abs(s - Surf.Foliage) < 0.5 || Math.abs(s - Surf.Stone) < 0.5 : Math.abs(s - Surf.Wood) >= 0.5;
+        if (use) {
+          c.r += col.getX(i); c.g += col.getY(i); c.b += col.getZ(i);
+          n++;
+          if (pass === 0 && pos && i % 3 === 0 && i + 2 < pos.count && Math.abs(s - Surf.Foliage) < 0.5) {
+            _ta.fromBufferAttribute(pos, i); _tb.fromBufferAttribute(pos, i + 1); _tc.fromBufferAttribute(pos, i + 2);
+            area += _tb.sub(_ta).cross(_tc.sub(_ta)).length() / 2;
+          }
+        }
       }
     }
   }
@@ -173,5 +199,10 @@ export function natureStats(g: THREE.BufferGeometry): { color: THREE.Color; heig
   const bb = g.boundingBox!;
   const height = Math.max(0.5, bb.max.y);
   const radius = Math.max(0.3, Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z) / 2);
-  return { color: c, height, radius };
+  // open fraction of a twig crown: foliage area vs its (double-sided) crown shell, only for twig colours (red > green)
+  const cover = Math.min(1, area / (Math.PI * radius * radius * 2.2));
+  const twig = Math.min(1, Math.max(0, (c.r - c.g) / 0.02));
+  const open = twig * (1 - cover);
+  if (open > 0) c.lerp(SEE_THROUGH, open * 0.6);
+  return { color: c, height, radius, open };
 }

@@ -3,6 +3,7 @@ import type { GameContext } from '../../game/context';
 import { allDefs, defIcon } from '../../game/toolCatalog';
 import type { OrdinanceInfo, RewardInfo } from '../../game/modules';
 import { Panel } from '../Panel';
+import { confirmDialog } from '../Modals';
 import { clear, escapeHtml, h, toggle } from '../dom';
 import { icon } from '../icons';
 import { money, titleCase } from '../format';
@@ -75,11 +76,39 @@ export class OrdinancesPanel extends Panel {
       const on = o.enabled || enabledIds.has(o.id);
       if (on) total += o.monthlyCost;
       const sw = toggle(on, (v) => {
-        let r: { ok: boolean; reason?: string } | null = null;
+        let r: { ok: boolean; reason?: string; needsConfirm?: boolean } | null = null;
         try {
           r = this.ctx.actions.setOrdinance(o.id, v);
         } catch (e) {
           console.warn(e);
+        }
+        if (r && !r.ok && r.needsConfirm) {
+          // WP5-6: it would shut existing buildings down (nuclear-free zone) — ask first, then enact with confirm
+          void confirmDialog(this.ctx, {
+            title: `Enact ${o.name}?`,
+            message: 'This ordinance takes effect immediately:',
+            items: [(r.reason ?? 'It shuts existing buildings down').replace(/^Demolish (.*) first: this ordinance would shut (it|them) down/, 'It shuts down $1'), 'The lost power must come from other plants — check the grid first'],
+            confirm: 'Enact anyway',
+            danger: true,
+          }).then((yes) => {
+            if (yes) {
+              let r2: { ok: boolean; reason?: string } | null = null;
+              try {
+                r2 = this.ctx.actions.setOrdinance(o.id, true, { confirm: true });
+              } catch (e) {
+                console.warn(e);
+              }
+              if (r2 && !r2.ok) {
+                this.ctx.toast(r2.reason ?? 'The council rejected this ordinance', 'error');
+                this.ctx.sound('error');
+              } else this.ctx.sound('toggleOn');
+            }
+            this.sig = '';
+            this.update();
+          });
+          this.sig = '';
+          this.update();
+          return;
         }
         if (r && !r.ok) {
           this.ctx.toast(r.reason ?? 'The council rejected this ordinance', 'error');

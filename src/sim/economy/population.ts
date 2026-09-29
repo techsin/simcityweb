@@ -35,11 +35,12 @@ import {
   RUBBLE_CLEAR_DAYS, TAP_PENALTY, TAP_SAFE, TRAFFIC_JOBFILL_WEIGHT, UNHAPPY_DEMAND, UNHAPPY_DEMAND_HEALTH,
   UNHAPPY_HEALTH, VACANCY_K, VACANCY_MIN, VACANCY_START, WATER_BONUS_LOW, WATER_REQUIRED_STAGE, WORKFORCE_EMA,
   WORKFORCE_MAX, WORKFORCE_MIN, WORKFORCE_RATIO, COHORT_BASE, NEEDS_ABANDON_SHARE, NEEDS_PENALTY_MAX, NEEDS_UNMET_PEOPLE,
-  EQ_FLOOR, EQ_SPAN_STOCK,
+  EQ_FLOOR, EQ_SPAN_STOCK, RENT_CONDITION_MIN,
 } from './tuning';
 import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
 import { frontHasRoad, removeBuilding } from './buildings';
 import { ordinanceEffect } from './ordinances';
+import { conditionDesirability, garbageFade } from './factors';
 import type { FactorTerm } from '../explain';
 import { getDef } from '../catalog';
 import {
@@ -85,6 +86,8 @@ interface CondCtx {
   demo: DemographicsCtx;
   /** home access records (occupancy loop); absent for UI queries (live layers) */
   cache?: DemographicsCache;
+  /** garbage fade 0..1 (penalty for no garbage pickup fades in with the town) */
+  gFade: number;
 }
 /**
  * result of condition() (shared scratch): the clamped health target, the flags it depends on and each of its terms
@@ -100,8 +103,13 @@ interface Cond {
   needsUnmet: boolean;
   /** needs part of the health-target reduction (vacancies; only NEEDS_ABANDON_SHARE of it counts toward abandonment) */
   needsPenalty: number;
-  /** desirability at the building (target starts at 0.5 + 0.5 × des) */
+  /** desirability at the building for its condition (target starts at 0.5 + 0.5 × des): the stored desirability with
+   *  its RENT share capped at RENT_CONDITION_MIN (factors.conditionDesirability) */
   des: number;
+  /** stored desirability (before the rent cap) */
+  desStored: number;
+  /** garbage fade 0..1 of the no-pickup penalty (factors.garbageFade) */
+  gFade: number;
   noPower: number;
   noWater: number;
   /** + piped water for low-density homes */
@@ -119,7 +127,7 @@ interface Cond {
   noise: number;
 }
 const COND: Cond = {
-  target: 0, powered: true, watered: true, needWater: false, road: true, needsUnmet: false, needsPenalty: 0, des: 0,
+  target: 0, powered: true, watered: true, needWater: false, road: true, needsUnmet: false, needsPenalty: 0, des: 0, desStored: 0, gFade: 0,
   noPower: 0, noWater: 0, waterBonus: 0, tap: 0, tapQ: 1, noRoad: 0, noGarbage: 0, jobs: 0, jobAccess: -1, sleep: 0, noise: 0,
 };
 
@@ -132,7 +140,8 @@ function condition(c: CondCtx, b: Building, def: BuildingDef, i: number): Cond {
   const needWater = (def.stage ?? 1) >= WATER_REQUIRED_STAGE || zoneDensity(st.zone[i]) >= 2;
   const watered = buildingWatered(st, b, inf.utilities);
   const road = frontHasRoad(st, b);
-  const des = st.desirability[dev][i];
+  const desStored = st.desirability[dev][i];
+  const des = conditionDesirability(st, dev, i, desStored);
   const noPower = powered ? 0 : PENALTY_NO_POWER;
   let noWater = 0, waterBonus = 0, tap = 0, tapQ = 1;
   if (needWater && !watered) noWater = PENALTY_NO_WATER;
@@ -145,7 +154,8 @@ function condition(c: CondCtx, b: Building, def: BuildingDef, i: number): Cond {
     }
   }
   const noRoad = road ? 0 : PENALTY_NO_ROAD;
-  const noGarbage = b.flags & BF.NoGarbage ? PENALTY_NO_GARBAGE : 0;
+  const gFade = c.gFade;
+  const noGarbage = b.flags & BF.NoGarbage ? PENALTY_NO_GARBAGE * gFade : 0;
   let jobs = 0, jobAccess = -1, needsPen = 0, needsUnmet = false, sleep = 0, noise = 0;
   if (isR) {
     if (c.tAccess) {
@@ -177,7 +187,7 @@ function condition(c: CondCtx, b: Building, def: BuildingDef, i: number): Cond {
   K.target = target < 0 ? 0 : target > 1 ? 1 : target;
   K.powered = powered; K.watered = watered; K.needWater = needWater; K.road = road;
   K.needsUnmet = needsUnmet; K.needsPenalty = needsPen;
-  K.des = des; K.noPower = noPower; K.noWater = noWater; K.waterBonus = waterBonus; K.tap = tap; K.tapQ = tapQ;
+  K.des = des; K.desStored = desStored; K.gFade = gFade; K.noPower = noPower; K.noWater = noWater; K.waterBonus = waterBonus; K.tap = tap; K.tapQ = tapQ;
   K.noRoad = noRoad; K.noGarbage = noGarbage; K.jobs = jobs; K.jobAccess = jobAccess; K.sleep = sleep; K.noise = noise;
   return K;
 }
@@ -191,6 +201,7 @@ function condCtx(st: CityState, sim?: Simulation): CondCtx {
     tAccess: typeof traffic?.workerAccess === 'function' ? traffic : undefined,
     util: typeof util?.waterQualityAt === 'function' ? util : undefined,
     demo: demographicsCtx(st),
+    gFade: garbageFade(st),
   };
 }
 
@@ -560,6 +571,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     }
     // civic buildings: staff hired (power / water gated when the def uses them) and filled by the workforce
     for (const b of rt.plopped) {
+      b.age += 1; // plopped buildings age too (one visit per day; QA item 7)
       cache.touch(b);
       if (!inf.utilities && (b.flags & (BF.Powered | BF.Watered)) !== (BF.Powered | BF.Watered)) {
         b.flags |= BF.Powered | BF.Watered;
@@ -646,13 +658,17 @@ export function conditionBreakdown(st: CityState, b: Building): { terms: FactorT
   const ctx = condCtx(st, demographicsSim(st));
   const cd = condition(ctx, b, def, i);
   // terms in the order condition() sums them (they add up to the unclamped target)
-  const terms: FactorTerm[] = [{ id: 'desirability', label: 'Desirability', value: 0.5 + 0.5 * cd.des, detail: `desirability ${cd.des.toFixed(2)}` }];
+  const rentCapped = Math.abs(cd.des - cd.desStored) > 1e-6;
+  const terms: FactorTerm[] = [{
+    id: 'desirability', label: 'Desirability', value: 0.5 + 0.5 * cd.des,
+    detail: rentCapped ? `desirability ${cd.desStored.toFixed(2)} (rent counts at most ${RENT_CONDITION_MIN} for residents already here: ${cd.des.toFixed(2)})` : `desirability ${cd.des.toFixed(2)}`,
+  }];
   if (!cd.powered) terms.push({ id: 'power', label: 'No power', value: -cd.noPower });
   if (cd.noWater) terms.push({ id: 'water', label: 'No water', value: -cd.noWater, detail: 'this building needs piped water' });
   if (cd.waterBonus) terms.push({ id: 'waterBonus', label: 'Piped water', value: cd.waterBonus });
   if (cd.tap) terms.push({ id: 'tapWater', label: 'Unsafe tap water', value: -cd.tap, detail: `water quality ${Math.round(cd.tapQ * 100)}%` });
   if (!cd.road) terms.push({ id: 'road', label: 'No road access', value: -cd.noRoad });
-  if (cd.noGarbage) terms.push({ id: 'garbage', label: 'Garbage not collected', value: -cd.noGarbage });
+  if (cd.noGarbage) terms.push({ id: 'garbage', label: 'Garbage not collected', value: -cd.noGarbage, detail: cd.gFade < 1 ? `counts ${Math.round(cd.gFade * 100)}% (fades in from 2k to 20k residents)` : undefined });
   if (cd.jobs) terms.push({ id: 'jobs', label: "Can't reach jobs", value: -cd.jobs, detail: `${Math.round(cd.jobAccess * 100)}% of workers reach a job` });
   if (cd.needsPenalty > 0) {
     const pen = cd.needsPenalty;

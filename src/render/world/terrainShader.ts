@@ -1,7 +1,8 @@
 /**
  * GLSL for the terrain material (patched MeshStandardMaterial). Everything is derived from world position:
  * climate palettes, macro/micro noise, forest floor from the tree density texture, rock on slopes (triplanar),
- * beaches / wet sand / seabed, snow, zone tint, data overlay heatmap, grid, tool highlights, brush, map border.
+ * beaches / wet sand / seabed, snow, zone tint, data overlay heatmap, grid, tool highlights, brush, map border (tool /
+ * overlay views only), the muted landscape beyond the map (eased in over ~400 m) and the neighbour-connection ribbons.
  */
 
 export const TERRAIN_VERT_PARS = /* glsl */ `
@@ -229,15 +230,44 @@ vec3 terrainShade(vec3 P, vec3 N) {
   if (!inside) {
     // (no border / dimming under water: it would show through the transparent sea as a seam)
     float landF = smoothstep(-1.5, 0.5, h);
-    float l = tLuma(col);
-    col = mix(col, mix(col, vec3(l), 0.18) * 0.9, landF);
     vec2 dd = max(-gc, gc - uN);
     float dEdge = max(dd.x, dd.y);
-    // thin, faint map border (a bright line read as a "board game" plate from far away and as a laser fence at night)
+    // the landscape beyond the map is slightly muted (it has no lots / tree instances), eased in over ~400 m so the
+    // map square does not end in a hard tonal step
+    float outK = smoothstep(0.0, 26.0, dEdge) * landF;
+    float l = tLuma(col);
+    col = mix(col, mix(col, vec3(l), 0.18) * 0.9, outK);
+    // peri-urban patchwork: fields / pastures aligned with the city grid (~110 x 70 m, rows offset so no grid line runs
+    // across the ring), hedgerows while they are resolvable, strongest next to the map and fading out over ~1.5 km: the
+    // city's grain dissolves into farmland instead of ending in a hard square against uniform meadow
+    float peri = (1.0 - smoothstep(6.0, 95.0, dEdge)) * landF * (1.0 - forest) * (1.0 - rockM) * (1.0 - sandM) * (1.0 - snowM) * (1.0 - 0.7 * uDesert);
+    if (peri > 0.002) {
+      vec2 fs = vec2(7.0, 4.5);
+      float frow = floor(gc.y / fs.y);
+      vec2 fq = vec2(gc.x / fs.x + fract(sin(frow * 12.9898) * 43758.5453), gc.y / fs.y);
+      vec2 fid = floor(fq);
+      float fh = fract(sin(dot(fid, vec2(12.9898, 78.233))) * 43758.5453);
+      float fh2 = fract(fh * 31.7);
+      // pasture (lusher), crop / hay (lighter, yellowed), stubble (straw), ploughed (brown): from the climate palette
+      vec3 fcol = col * vec3(0.92, 1.02, 0.9);
+      if (fh >= 0.35 && fh < 0.62) fcol = mix(col, uPal[1], 0.45) * 1.05;
+      else if (fh >= 0.62 && fh < 0.82) fcol = mix(col, uPal[1] * 1.1, 0.7);
+      else if (fh >= 0.82) fcol = mix(col, uPal[4] * (0.9 + 0.2 * m4), 0.55);
+      fcol *= 0.94 + 0.12 * fh2;
+      vec2 fe = min(fract(fq), 1.0 - fract(fq)) * fs * uCell;
+      float fwm = fpx * uCell;
+      float hedge = (1.0 - smoothstep(1.6 - fwm * 0.5, 1.6 + fwm * 0.5, min(fe.x, fe.y))) * (1.0 - smoothstep(0.08, 0.22, fpx)) * step(0.3, fh2);
+      fcol = mix(fcol, uPal[3] * 0.85, hedge * 0.8);
+      col = mix(col, fcol, peri * 0.7);
+    }
+    // map border: only while zoning / an overlay / the grid is shown (in the normal view any line read as a "board
+    // game" plate from far away and as a laser fence at night)
     float border = 1.0 - smoothstep(0.0, max(fpx * 2.0, 0.08), dEdge);
-    col = mix(col, vec3(0.92, 0.9, 0.8), border * 0.12 * (1.0 - 0.6 * uNightF) * landF);
-    // neighbour connections: roads / highways / rails that run into the map edge continue ~400 m into the landscape
-    // as painted ribbons (straight out of the edge they leave), fading into the haze
+    col = mix(col, vec3(0.92, 0.9, 0.8), border * 0.12 * (1.0 - 0.6 * uNightF) * landF * max(max(uZoneMode, uOverlayOn), uGrid));
+    // neighbour connections: roads / highways / rails that run into the map edge continue into the landscape as painted
+    // ribbons (straight out of the edge they leave), narrowing and blending into the ground: ~110 m for local roads,
+    // ~220 m for highways / avenues / rail; thin local ribbons fade out at far zoom (a fan of 1-2 px dark scratches
+    // off the map edge); at night the major ones keep a faint lamp glow into the dark
     {
       float side = -1.0, kk = 0.0, lat = 0.0, dOut = 0.0;
       if (dd.y <= 0.0 && dd.x > 0.0) { side = gc.x < 0.0 ? 0.0 : 1.0; kk = floor(gc.y); lat = fract(gc.y) - 0.5; dOut = dd.x; }
@@ -250,9 +280,13 @@ vec3 terrainShade(vec3 P, vec3 N) {
           float rail = et > 5.5 ? 1.0 : 0.0;
           float major = (et > 2.5 && et < 3.5) || et > 4.5 ? 1.0 : 0.0;
           float hw = et < 1.5 ? 3.6 : (et < 2.5 ? 5.0 : (et < 3.5 ? 6.8 : (et < 4.5 ? 5.0 : (et < 5.5 ? 7.6 : 2.9))));
-          // highways / avenues / rail run on ~400 m, local roads ~200 m before they vanish into the landscape
-          float fade = major > 0.5 ? 1.0 - smoothstep(15.0, 25.0, dOut) : 1.0 - smoothstep(7.0, 13.0, dOut);
-          float rib = (1.0 - smoothstep(hw - fwm, hw + fwm, lm)) * fade * landF;
+          float run = major > 0.5 ? 14.0 : 7.0;
+          float t = clamp(dOut / run, 0.0, 1.0);
+          float fade = 1.0 - smoothstep(0.35, 1.0, t);
+          // narrower as it recedes (a country road / cutting), and softer from far away
+          hw *= 1.0 - 0.35 * t;
+          float farF = major > 0.5 ? 1.0 - 0.45 * smoothstep(0.1, 0.4, fpx) : 1.0 - smoothstep(0.08, 0.26, fpx);
+          float rib = (1.0 - smoothstep(hw - fwm, hw + fwm, lm)) * fade * landF * farF;
           vec3 rc = rail > 0.5 ? vec3(0.15, 0.14, 0.13) : vec3(0.05, 0.052, 0.056) * (1.0 + 0.2 * (m3 - 0.5));
           if (rail > 0.5) {
             rc = mix(rc, vec3(0.05, 0.035, 0.03), tLine(abs(lm - 0.72), 0.08, fwm));
@@ -266,8 +300,12 @@ vec3 terrainShade(vec3 P, vec3 N) {
           } else {
             rc = mix(rc, vec3(0.5, 0.36, 0.06), tLine(lm, 0.08, fwm) * 0.7);
           }
-          col = mix(col, rc * 0.92, rib);
+          // blend toward the landscape as it recedes (low contrast: no dark scratch lines)
+          rc = mix(rc * 0.92, col * 0.7, 0.35 * t);
+          col = mix(col, rc, rib);
           bump *= 1.0 - rib;
+          // night: highways / avenues keep a faint lamp glow (white) running on from the lit city roads
+          tEmis += (major > 0.5 && rail < 0.5 ? vec3(0.78, 0.74, 0.6) * 0.022 : vec3(1.0, 0.6, 0.28) * 0.012) * rib * uNightF * (1.0 - t) * (1.0 - rail);
         }
       }
     }

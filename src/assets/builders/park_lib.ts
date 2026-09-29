@@ -644,11 +644,29 @@ const TREE_TOP: Record<string, number> = { oak: 7.3, maple: 6.7, round: 6.0, che
 const TREE_SCALE = 1.3;
 export type TreeKind = 'oak' | 'round' | 'cone' | 'poplar' | 'cherry' | 'birch' | 'willow' | 'palm' | 'maple' | 'acacia';
 
+/**
+ * Seasons (Foliage patterns, materials.ts): broadleaf crowns are seasonal (1: autumn colours, bare in winter), cherries
+ * blossom only in spring (2), conifers / palms / acacias / hedges are evergreen (4); lawns and flower beds use the
+ * automatic pattern 0 (dormant in winter). Every seasonal crown gets its own random (floor channel) from its position,
+ * so trees turn one by one - no extra rng draw, park layouts stay unchanged.
+ */
+const FOL_SEASONAL = 1;
+const FOL_BLOSSOM = 2;
+const FOL_EVERGREEN = 4;
+/** per-tree random in [0, 1) from a position (the seasonal crown's floor channel) */
+const treeRand = (x: number, z: number) => Math.abs(Math.sin(x * 12.9898 + z * 78.233) * 43758.5453) % 1;
+/** Foliage pattern + per-tree random (floor channel) of the crown being built (set by tree() / treeClump()) */
+let lobeSeason: [number, number] = [FOL_SEASONAL, 0.5];
+
 /** One soft foliage crown lobe (leafBlob, 20 tris) with normals blended toward the crown centre `nc`. */
 function lobe(b: ModelBuilder, rng: RNG, c: V3, r: V3, nc: V3, color: ColorLike): void {
-  b.paint(color, Surf.Foliage);
+  b.paint(color, Surf.Foliage, lobeSeason[0], lobeSeason[1]);
   leafBlob(b, rng, c, r, { soft: 0.62, nc, jitter: 0.16 });
 }
+
+const DECIDUOUS: ReadonlySet<string> = new Set(['oak', 'round', 'maple', 'birch', 'poplar', 'willow']);
+/** park maples: summer greens + one ornamental dark red-leaf cultivar (the shader adds the autumn colours) */
+const MAPLE_LEAF = [0x5a7f35, 0x6b8a3a, 0x7a2f2a, 0x4f7a32];
 
 /** Richer low-poly park tree (~30-70 tris). s=1 => oak ~9.5 m. Returns the top height. */
 export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kind: TreeKind = 'oak'): number {
@@ -657,6 +675,8 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
   [x, z] = clampIn(x, z, CANOPY_R[kind] * k);
   const g = rng.pick(FOLIAGE);
   let m = 0;
+  // seasonal crowns: cherry = spring blossom, other broadleaves deciduous, the rest evergreen
+  lobeSeason = [kind === 'cherry' ? FOL_BLOSSOM : DECIDUOUS.has(kind) ? FOL_SEASONAL : FOL_EVERGREEN, treeRand(x, z)];
   switch (kind) {
     case 'oak': {
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.6 * k, 0.28 * k, 0.18 * k, 5, { top: false });
@@ -670,7 +690,7 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
     }
     case 'maple': {
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.4 * k, 0.24 * k, 0.16 * k, 5, { top: false });
-      const c = rng.pick([0xc8642c, 0xd9912f, 0xb8452f, 0x8fa33b]);
+      const c = rng.pick(MAPLE_LEAF);
       const a = rng.range(0, TAU);
       m = mark(b);
       const nc: V3 = [x, 4.6 * k, z];
@@ -720,8 +740,8 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 1.4 * k, 0.22 * k, 0.16 * k, 5, { top: false });
       const c = rng.pick([0x2f5a2e, 0x355f32, 0x2b5230]);
       m = mark(b);
-      b.paint(c, Surf.Foliage).cone(x, z, 1.0 * k, 4.8 * k, 2.1 * k, 7, false);
-      b.paint(shade(c, 1.1), Surf.Foliage).cone(x, z, 3.4 * k, 4.4 * k, 1.5 * k, 7, false);
+      b.paint(c, Surf.Foliage, FOL_EVERGREEN).cone(x, z, 1.0 * k, 4.8 * k, 2.1 * k, 7, false);
+      b.paint(shade(c, 1.1), Surf.Foliage, FOL_EVERGREEN).cone(x, z, 3.4 * k, 4.4 * k, 1.5 * k, 7, false);
       tintSince(b, m, foliageShade(1.0 * k, 7.8 * k));
       return 7.8 * k;
     }
@@ -743,7 +763,7 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
         const r0 = 1.6 * k, r1 = 2.3 * k;
         const t0: V3 = [x + Math.cos(a0) * r0, cy + 0.6 * k, z + Math.sin(a0) * r0], t1: V3 = [x + Math.cos(a1) * r0, cy + 0.6 * k, z + Math.sin(a1) * r0];
         const b0: V3 = [x + Math.cos(a0) * r1, 0.9 * k, z + Math.sin(a0) * r1], b1: V3 = [x + Math.cos(a1) * r1, 1.3 * k, z + Math.sin(a1) * r1];
-        b.paint(shade(c, 0.86), Surf.Foliage).quad2(b0, b1, t1, t0);
+        b.paint(shade(c, 0.86), Surf.Foliage, lobeSeason[0], lobeSeason[1]).quad2(b0, b1, t1, t0);
       }
       tintSince(b, m, foliageShade(0.9 * k, 6.0 * k));
       return 6.0 * k;
@@ -759,7 +779,7 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
       const lean = rng.range(-0.5, 0.5);
       b.paint(0x8a7355, Surf.Wood).beam([x, 0, z], [x + lean, 6.2 * k, z + lean * 0.5], 0.36 * k);
       const tx = x + lean, ty = 6.2 * k, tz = z + lean * 0.5;
-      b.paint(0x4a7a34, Surf.Foliage);
+      b.paint(0x4a7a34, Surf.Foliage, FOL_EVERGREEN);
       const seed = rng.next() * 10;
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * TAU + seed;
@@ -796,13 +816,17 @@ export function treeClump(b: ModelBuilder, rng: RNG, cx: number, cz: number, r: 
   }
   const m = mark(b);
   const nc: V3 = [cx, (ymin + ymax) / 2, cz];
-  for (const [x, z, cr, cy] of crowns) lobe(b, rng, [x, cy, z], [cr, cr * 0.8, cr], nc, rng.pick(FOLIAGE));
+  for (const [x, z, cr, cy] of crowns) {
+    lobeSeason = [FOL_SEASONAL, treeRand(x, z)];
+    lobe(b, rng, [x, cy, z], [cr, cr * 0.8, cr], nc, rng.pick(FOLIAGE));
+  }
   tintSince(b, m, foliageShade(ymin, ymax));
 }
 
-/** Low shrub / bush clump (20 tris). */
+/** Low shrub / bush clump (20 tris): 40% evergreen (box, holly), the rest deciduous (autumn colours, bare in winter). */
 export function shrub(b: ModelBuilder, rng: RNG, x: number, z: number, r = 0.8, color?: ColorLike): void {
-  b.paint(color ?? rng.pick(FOLIAGE), Surf.Foliage).blob(x, r * 0.55, z, r, r * 0.75, r, 0, 0.2, rng.next() * 10);
+  const h = treeRand(x + 3.7, z - 1.3);
+  b.paint(color ?? rng.pick(FOLIAGE), Surf.Foliage, h < 0.4 ? FOL_EVERGREEN : FOL_SEASONAL, h).blob(x, r * 0.55, z, r, r * 0.75, r, 0, 0.2, rng.next() * 10);
 }
 
 /** Flower bed: raised stone edge, green bed, overlapping rotated flower tufts (bands of colour, 25% leaves). */
@@ -850,9 +874,9 @@ export function roundBed(b: ModelBuilder, rng: RNG, cx: number, cz: number, r: n
   if (rng.chance(0.5)) shrub(b, rng, cx, cz, 0.6, 0x3d6127);
 }
 
-/** Hedge with slightly rounded look (box). */
+/** Hedge with slightly rounded look (box). Evergreen (box / yew / privet): frames the dormant lawns in winter. */
 export function hedgeBox(b: ModelBuilder, x0: number, z0: number, x1: number, z1: number, h = 1.1, color: ColorLike = 0x3f6b2e): void {
-  b.paint(color, Surf.Foliage).box(x0, 0, z0, x1, h, z1);
+  b.paint(color, Surf.Foliage, FOL_EVERGREEN).box(x0, 0, z0, x1, h, z1);
 }
 
 // ---------------------------------------------------------------------------------------------- furniture

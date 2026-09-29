@@ -16,6 +16,10 @@
  *            waits for a dispatch AND while the unit the player sent is still driving (until it has been on scene
  *            for FOLLOW_GRACE days; not for drives longer than FOLLOW_MAX_MIN). Then the previous speed comes back
  *            (unless the player changed the speed meanwhile) with a toast.
+ *            Too little time to react (critic item 27): when the most urgent alerted incident leaves less than
+ *            LIVE_PAUSE_SEC real seconds at live speed before even the best dispatch arrives too late ((time left −
+ *            best ETA) × seconds per live day), 'live' pauses until the player dispatches, then continues live. A player
+ *            who resumes the game himself is not paused again in the same episode.
  *   'pause'  an alert pauses the game; the previous speed comes back as soon as help is dispatched.
  *   'ignore' no speed change.
  * The setting is re-read every tick: changing it during an alert ends the current slow-down / pause (the speed it set
@@ -32,6 +36,7 @@ import type { IncidentKind } from '../sim/CityState';
 import type { EmergencyEvent } from '../sim/Simulation';
 import { INCIDENT_COLOR, INCIDENT_ICON, INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, emergencyOf, type EmergencySystem, type Incident } from '../sim/infra/emergency';
 import { EMERG_DAYS_PER_MIN } from '../sim/infra/params';
+import { SECONDS_PER_DAY } from '../core/constants';
 import { openDispatch } from '../game/tools/DispatchTool';
 import { clear, h, setText, toggleClass } from './dom';
 import { icon } from './icons';
@@ -43,6 +48,8 @@ export const ALERT_MIN_POP = 1000;
 export const FOLLOW_GRACE = 0.75;
 /** ... unless its drive is longer than this (game minutes): then the previous speed comes back right away */
 export const FOLLOW_MAX_MIN = 15;
+/** 'live': less real time than this (seconds at live speed) to dispatch the most urgent alert pauses the game */
+export const LIVE_PAUSE_SEC = 8;
 
 // ------------------------------------------------------------------------------------------------ pure policy
 /** LIVE-mode bookkeeping between UI ticks */
@@ -53,6 +60,10 @@ export interface LiveState {
   prevSpeed: number | null;
   /** the speed the policy set (the player changed it if the current speed differs) */
   setSpeed: number | null;
+  /** 'live': paused because an alert left too little time to react (resumes live once dispatched) */
+  urgentPause?: boolean;
+  /** 'live': the urgent pause was used in this episode (the player resumed it himself: never twice) */
+  urgentUsed?: boolean;
 }
 export const LIVE_IDLE: Readonly<LiveState> = { active: false, policy: null, prevSpeed: null, setSpeed: null };
 
@@ -74,8 +85,10 @@ const SPEED_NAME = ['paused', 'normal', 'fast', 'ultra'];
  * @param trigger a new alert was raised since the last tick
  * @param pending alerted incidents that still need a player dispatch
  * @param neutral the episode did not end well (a failure, losses, a dismissed alert): neutral restore toast
+ * @param urgentSec real seconds at live speed the most urgent alert still waiting for a dispatch leaves before even the
+ *   best unit arrives too late (Infinity = none waiting); under LIVE_PAUSE_SEC 'live' pauses until dispatched
  */
-export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, speed: number, trigger: boolean, pending: number, slowmo: number, neutral = false): PolicyStep {
+export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, speed: number, trigger: boolean, pending: number, slowmo: number, neutral = false, urgentSec = Infinity): PolicyStep {
   let s: LiveState = { ...st };
   let cur = speed;
   let toast: string | undefined;
@@ -95,12 +108,30 @@ export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, sp
       cur = 0;
     }
   }
+  if (s.active && s.policy === 'live' && pending > 0) {
+    const urgent = urgentSec < LIVE_PAUSE_SEC;
+    if (s.urgentPause) {
+      if (cur !== 0) s = { ...s, urgentPause: false }; // the player resumed it himself
+      else if (!urgent) {
+        // dispatched (or the window closed): continue live
+        cur = 1;
+        s = { ...s, urgentPause: false, setSpeed: 1 };
+      }
+    } else if (urgent && !s.urgentUsed && cur > 0) {
+      cur = 0;
+      s = { ...s, urgentPause: true, urgentUsed: true, setSpeed: 0 };
+    }
+  }
   if (s.active && pending <= 0) {
     // every alerted emergency is handled: restore the speed the player had, unless they changed it meanwhile
     const head = neutral ? 'Emergency over' : 'Emergencies handled';
     if (s.prevSpeed !== null && cur === s.setSpeed) {
       cur = s.prevSpeed;
       toast = `${head} — back to ${SPEED_NAME[s.prevSpeed] ?? 'normal'} speed`;
+    } else if (s.urgentPause && cur === 0) {
+      // paused for an urgent alert that ended without a dispatch (it failed / was dismissed): play on
+      cur = 1;
+      toast = head;
     } else toast = head;
     s = { ...LIVE_IDLE };
   }
@@ -318,11 +349,31 @@ export class EmergencyBanner {
     return n;
   }
 
+  /**
+   * real seconds at live speed the most urgent alerted incident still waiting for a dispatch leaves before even its
+   * best unit would arrive too late: (time left − best ETA) × seconds per live day (Infinity = none waiting)
+   */
+  private urgentSeconds(slowmo: number): number {
+    const em = emergencyOf(this.ctx.sim);
+    if (!em) return Infinity;
+    const now = this.ctx.sim.simTime();
+    const secPerDay = SECONDS_PER_DAY[1] * Math.max(1, slowmo || 1);
+    let best = Infinity;
+    for (const id of this.banners.keys()) {
+      const inc = em.incident(id);
+      if (!inc || !inc.manualPossible || (inc.state !== 'uncovered' && inc.state !== 'queued')) continue;
+      const windowDays = inc.deadline - now - (inc.bestEta ?? 0) * EMERG_DAYS_PER_MIN;
+      best = Math.min(best, Math.max(0, windowDays) * secPerDay);
+    }
+    return best;
+  }
+
   private applyPolicy(): void {
     const sim = this.ctx.sim;
     const policy = this.ctx.settings.emergencyUncovered ?? 'live';
     const was = this.live.active;
-    const step = speedPolicy(policy, this.live, sim.speed, this.trigger, this.pendingCount(policy), this.ctx.settings.emergencyLiveSlowmo ?? 3, this.episodeBad);
+    const slowmo = this.ctx.settings.emergencyLiveSlowmo ?? 3;
+    const step = speedPolicy(policy, this.live, sim.speed, this.trigger, this.pendingCount(policy), slowmo, this.episodeBad, policy === 'live' ? this.urgentSeconds(slowmo) : Infinity);
     this.trigger = false;
     this.live = step.state;
     // outcomes count per episode: from the alert that starts it to the restore toast that ends it

@@ -206,7 +206,7 @@ const T = {
   lower: reg({ id: 'terra:lower', label: 'Lower', icon: 'lower', color: '#c9a36a', hotkey: 'K', desc: 'Lower the terrain (below sea level makes water).', create: (c) => new BrushTool(c, 'lower', 'lower') }),
   level: reg({ id: 'terra:level', label: 'Level', icon: 'level', color: '#c9a36a', hotkey: 'K', desc: 'Flatten to the height where you start.', create: (c) => new BrushTool(c, 'level', 'level') }),
   smooth: reg({ id: 'terra:smooth', label: 'Smooth', icon: 'smooth', color: '#c9a36a', hotkey: 'K', desc: 'Soften bumps and cliffs.', create: (c) => new BrushTool(c, 'smooth', 'smooth') }),
-  trees: reg({ id: 'trees', label: 'Plant trees', icon: 'trees', color: '#52d273', desc: 'Trees raise land value and reduce pollution.', create: (c) => new BrushTool(c, 'trees', 'trees') }),
+  trees: reg({ id: 'trees', label: 'Plant trees', icon: 'trees', color: '#52d273', desc: 'Trees soak up noise and smog around them — plant buffers between highways, industry and homes.', create: (c) => new BrushTool(c, 'trees', 'trees') }),
 };
 
 /** WP8 emergency dispatch tool (opened from the emergency banner / Emergencies panel; not on the toolbar) */
@@ -244,6 +244,7 @@ export const PANEL_HOTKEYS: Record<string, string> = {
   n: 'advisors',
   o: 'dataviews',
   y: 'ordinances',
+  p: 'demographics',
 };
 
 export const CATEGORIES: ToolCategory[] = [

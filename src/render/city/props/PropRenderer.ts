@@ -24,6 +24,7 @@ import { sharedUniforms } from '../../../assets/materials';
 import { DynamicBatch, type TileCuller } from '../common/batch';
 import { getCityMaterial } from '../common/cityMaterial';
 import type { PoolItem, PropItem } from '../roads/mesher';
+import { lampUniforms } from '../roads/roadMaterial';
 import { propLodGeometry } from './propLod';
 import { SEASONAL_TREES, seasonalVariant, treeSeason } from '../../../assets/builders/nat_season';
 
@@ -126,22 +127,28 @@ const POOL_VERT = /* glsl */ `
 attribute vec3 poolColor;
 varying vec2 vUv;
 varying vec3 vCol;
+varying float vDist;
 void main() {
   vUv = uv * 2.0 - 1.0;
   vCol = poolColor;
-  gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+  vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+  vDist = -mv.z;
+  gl_Position = projectionMatrix * mv;
 }`;
+// (strength / distance fade: lampUniforms in roads/roadMaterial.ts, where the road shader's lit ribbon takes over)
 const POOL_FRAG = /* glsl */ `
 uniform float uNight;
 uniform float uStrength;
+uniform vec2 uPoolFade;
 varying vec2 vUv;
 varying vec3 vCol;
+varying float vDist;
 void main() {
   float d2 = dot(vUv, vUv);
   if (d2 > 1.0) discard;
   // soft gaussian pool with a faint brighter core, fading to exactly 0 at the rim
   float a = (exp(-d2 * 3.2) * 0.8 + exp(-d2 * 12.0) * 0.35) * (1.0 - d2);
-  gl_FragColor = vec4(vCol * a * uNight * uStrength, 1.0);
+  gl_FragColor = vec4(vCol * a * uNight * uStrength * (1.0 - smoothstep(uPoolFade.x, uPoolFade.y, vDist)), 1.0);
 }`;
 
 const GLOW_VERT = /* glsl */ `
@@ -163,6 +170,7 @@ void main() {
 }`;
 const GLOW_FRAG = /* glsl */ `
 uniform float uNight;
+uniform vec3 uGlowFade;
 varying vec2 vUv;
 varying float vTint;
 varying float vDist;
@@ -174,7 +182,7 @@ void main() {
   // sodium amber heads (matching the amber pools; a x2.2 core clipped to white); cool white for highway lights
   vec3 c = vTint > 0.5 ? vec3(0.85, 0.85, 0.75) : vec3(1.0, 0.64, 0.32);
   // fade toward far zoom so the lamps become a warm glow instead of a bead lattice
-  float far = mix(1.0, 0.4, smoothstep(1500.0, 4500.0, vDist));
+  float far = mix(1.0, uGlowFade.z, smoothstep(uGlowFade.x, uGlowFade.y, vDist));
   gl_FragColor = vec4(c * (core * 1.4 + halo) * uNight * far, 1.0);
 }`;
 
@@ -259,7 +267,7 @@ export class PropRenderer {
     this.poolMat = new THREE.ShaderMaterial({
       vertexShader: POOL_VERT,
       fragmentShader: POOL_FRAG,
-      uniforms: { uNight: sharedUniforms.uNight, uStrength: { value: 0.16 } },
+      uniforms: { uNight: sharedUniforms.uLamps, uStrength: lampUniforms.uPoolStrength, uPoolFade: lampUniforms.uPoolFade },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -277,7 +285,7 @@ export class PropRenderer {
     this.glowGeo.setAttribute('aGlow', new THREE.InstancedBufferAttribute(new Float32Array(this.glowCap * 4), 4));
     this.glowGeo.instanceCount = 0;
     const gm = new THREE.ShaderMaterial({
-      vertexShader: GLOW_VERT, fragmentShader: GLOW_FRAG, uniforms: { uNight: sharedUniforms.uNight },
+      vertexShader: GLOW_VERT, fragmentShader: GLOW_FRAG, uniforms: { uNight: sharedUniforms.uLamps, uGlowFade: lampUniforms.uGlowFade },
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     });
     this.glows = new THREE.Mesh(this.glowGeo, gm);

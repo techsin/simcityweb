@@ -5,6 +5,7 @@
  *  - animated multi-octave normal map waves, distance-based calming (anti-sparkle)
  *  - fresnel sky reflection via scene.environment + sun glints from the PBR specular (shadowed by buildings)
  *  - shoreline foam bands + whitecaps
+ *  - night: streaks of the city lights (irregular widths / spacing / breaks, running toward the viewer)
  * Output uses premultiplied blending so reflections stay at full strength over transparent shallows.
  */
 import * as THREE from 'three';
@@ -113,14 +114,19 @@ vec3 waterShade(vec3 P) {
     vec2 vd = normalize(P.xz - cameraPosition.xz + 1e-3);
     vec2 wob = g * 22.0;
     // individual light streaks: narrow bands running toward the viewer under the lit shore (sparse ~6 m lateral
-    // stripes of varying length), broken along their length by the wave crests (slow dashes). Both masks fade to their
-    // average once they get too small on screen: a pixel-sized pattern read as a glitter band of foam / wet sand.
+    // stripes of varying width, length and brightness), broken along their length by the wave crests. The lateral
+    // pattern is read along a slanted line through the periodic noise tile (a straight 1D slice repeated every 26 m:
+    // an evenly spaced comb), mixed from two octaves, and meanders slightly. Both masks fade to their average once they
+    // get too small on screen: a pixel-sized pattern read as a glitter band of foam / wet sand.
     float lat = dot(P.xz, vec2(-vd.y, vd.x)) / 26.0;
     float along = dot(P.xz, vd) / 22.0;
+    float latW = lat + (texture2D(uNoise, vec2(along * 0.09 + 0.31, lat * 0.07 + 0.63)).g - 0.5) * 0.16 + g.x * 0.02;
+    vec2 sq = vec2(latW * 0.97, latW * 0.231 + 0.37);
+    float sn = texture2D(uNoise, sq).r * 0.62 + texture2D(uNoise, sq * 1.9 + vec2(0.43, 0.17)).g * 0.38;
     float sfw = clamp(fwidth(lat) * 5.0, 0.0, 1.0);
-    float streak = mix(smoothstep(0.55, 0.75, texture2D(uNoise, vec2(lat + g.x * 0.02, 0.37)).r), 0.25, sfw);
+    float streak = mix(smoothstep(0.54, 0.72, sn) * (0.55 + 0.45 * texture2D(uNoise, sq * 0.61 + 0.2).b), 0.22, sfw);
     // per-streak reach 35-100% (brighter / higher lights throw longer streaks)
-    float reach = mix(0.35, 1.0, smoothstep(0.3, 0.7, texture2D(uNoise, vec2(lat * 0.5 + 0.13, 0.71)).g));
+    float reach = mix(0.35, 1.0, smoothstep(0.3, 0.7, texture2D(uNoise, vec2(latW * 0.5 + 0.13, latW * 0.117 + 0.71)).g));
     reach = mix(reach, 0.7, sfw);
     float acc = 0.0;
     // longer reach toward the viewer (reflections of lights stretch into streaks on rippled water)
@@ -132,7 +138,8 @@ vec3 waterShade(vec3 P) {
     }
     float inMap = step(0.0, P.x) * step(0.0, P.z) * step(P.x, W) * step(P.z, W);
     float dfw = clamp(fwidth(along) * 3.0, 0.0, 1.0);
-    float dash = mix(smoothstep(0.2, 0.8, 0.5 + 0.5 * sin(along * 6.2832 + g.y * 3.0 + uWTime * 1.4)), 0.5, dfw);
+    // (irregular breaks drifting with the waves, not an even sine dash)
+    float dash = mix(smoothstep(0.32, 0.68, texture2D(uNoise, vec2(along * 0.4 + latW * 0.37 + g.y * 0.05, latW * 0.53 - uWTime * 0.004)).g), 0.5, dfw);
     // fresnel: strong at low viewing angles, faint seen from above
     float ndv = max(dot(wNormalW, normalize(cameraPosition - P)), 0.0);
     float fres = 0.25 + 0.75 * (1.0 - ndv) * (1.0 - ndv);

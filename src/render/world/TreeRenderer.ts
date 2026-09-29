@@ -21,6 +21,13 @@
  * bounds from its instances (shadow cascades cull by the real extent, not the 512 m chunk).
  * Placement is deterministic per cell (hash of cell + seed), so rebuilding a chunk after an edit never moves
  * unaffected trees. Cells with network / buildings / zones / power lines / water get no trees.
+ * Seasons: deciduous species (nat_season.ts) show autumn / bare / blossom model variants for the month's fraction of
+ * trees (per cell); conifers stay green, darker in winter (shared foliage shader), and every tree above the terrain's
+ * seasonal snow line is snow-dusted (same line + noise as the terrain). Impostors get metric object coordinates in the
+ * shader, so the shared foliage shading treats them like the model they stand for.
+ * Outer ring: beyond the map edge (the terrain's landscape skirt) impostor-only trees stand on the terrain shader's
+ * outside forests, out to ringWidth, in 8 sectors (2 meshes each, no shadows); candidates are generated once per map
+ * over several frames after the map's chunks, kinds / colours are refilled cheaply on season changes.
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
@@ -29,14 +36,44 @@ import type { CellRect } from '../../core/events';
 import type { Climate } from '../../core/types';
 import { MANIFEST_BY_ID } from '../../assets/manifest';
 import { getBuildingMaterial, patchSurfaceMaterial } from '../../assets/materials';
+import { getNoiseTexture } from './textures';
 import type { CityState } from '../../sim/CityState';
 import { getImpostorGeometries, getMicroImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
 import { TerrainRenderer } from './TerrainRenderer';
 import { shadowCasters, receiverSweepBox, type ShadowReceiver } from './Shadows';
+import { SEASONAL_TREES, seasonMix, seasonalVariant, type SeasonMix } from '../../assets/builders/nat_season';
 
 const CHUNK = 32;
 /** instances per cell for density 0..4 */
 const DENSITY_COUNT = [0, 1.1, 2.3, 3.8, 5.6];
+/**
+ * Outer landscape ring (beyond the map edge, where the terrain continues to the horizon): tree impostors on the terrain
+ * shader's outside "noise forests", in the 8 cells of a 3 x 3 grid around the map square (sector -> [column, row]).
+ */
+const RING_SECTORS: [number, number][] = [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2], [1, 2], [0, 2], [0, 1]];
+/** outer ring placement grid (m): at most one tree per cell, fewer further out */
+const RING_GRID = 10;
+/** instance cap per ring sector */
+const RING_CAP = 7000;
+/** the map's edge chunks continue their forests as full trees this many cells beyond the edge; the ring starts there */
+const RING_EDGE_CELLS = 10;
+
+const _sstep = (a: number, b: number, x: number) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+/** bilinear, repeat-wrapped sample (0..1) of one channel of the 256^2 RGBA world noise texture (textures.ts) */
+function sampleNoise(d: Uint8Array, u: number, v: number, ch: number): number {
+  const S = 256;
+  const x = u * S - 0.5, y = v * S - 0.5;
+  const xf = Math.floor(x), yf = Math.floor(y);
+  const fx = x - xf, fy = y - yf;
+  const i0 = ((xf % S) + S) % S, j0 = ((yf % S) + S) % S;
+  const i1 = (i0 + 1) % S, j1 = (j0 + 1) % S;
+  const a = d[(j0 * S + i0) * 4 + ch], b = d[(j0 * S + i1) * 4 + ch];
+  const c = d[(j1 * S + i0) * 4 + ch], e = d[(j1 * S + i1) * 4 + ch];
+  return ((a + (b - a) * fx) * (1 - fy) + (c + (e - c) * fx) * fy) / 255;
+}
 
 interface SpeciesDef {
   id: string;
@@ -93,6 +130,8 @@ interface Kind {
   color: THREE.Color;
   height: number;
   radius: number;
+  /** impostor radius factor: see-through bare crowns get thinner impostors (the dark floor shows between them) */
+  impR: number;
 }
 
 interface TreeChunk {
@@ -179,6 +218,50 @@ function fadeAlpha(near: boolean): string {
 `;
 }
 
+// ---- seasons: snow on the forest above the terrain's snow line (same line + noise as terrainShader), and metric object
+// coordinates for the unit-size impostors (so the shared foliage shading - low-foliage dormancy below ~2.5 m, leaf
+// noise - treats an impostor like the model it stands for)
+const SEASON_VERT_PARS = /* glsl */ `
+uniform vec4 uTreeSnow;
+uniform sampler2D uTreeNoise;
+varying float vTreeSnow;
+`;
+function seasonVertMain(far: boolean): string {
+  return /* glsl */ `
+vTreeSnow = 0.0;
+#ifdef USE_INSTANCING
+{
+  vec3 _sp = (modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xyz;
+  // (the noise moves the line by at most +-0.66 x its amplitude: trees clearly below / above it skip the lookups)
+  float _dy = _sp.y + 1.0 - uTreeSnow.x, _band = uTreeSnow.y * 0.66 + 5.0;
+  if (uTreeSnow.z > 0.0 && _dy > -_band) {
+    if (_dy > _band) vTreeSnow = uTreeSnow.z;
+    else {
+      float _m2 = textureLod(uTreeNoise, _sp.xz / 520.0, 0.0).g;
+      float _m3 = textureLod(uTreeNoise, _sp.xz / 57.0, 3.0).b;
+      float _sl = uTreeSnow.x + (_m2 - 0.5) * uTreeSnow.y + (_m3 - 0.5) * uTreeSnow.y * 0.31;
+      vTreeSnow = uTreeSnow.z * smoothstep(_sl - 5.0, _sl + 5.0, _sp.y + 1.0);
+    }
+  }
+  ${far ? 'vObjPos *= vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));' : ''}
+}
+#endif
+`;
+}
+const SEASON_FRAG_PARS = /* glsl */ `
+varying float vTreeSnow;
+`;
+/** snow dusting on the up-facing tops of needle tiers / twigs / rocks (not on bark), in clumps, after the surface
+ *  shading: the dark green stays visible between and under the snow */
+const SEASON_FRAG = /* glsl */ `
+if (vTreeSnow > 0.001) {
+  float _up = smoothstep(0.3, 0.85, normalize(vObjNormal).y);
+  float _k = abs(vSurf.x - 8.0) < 0.5 ? (vSurf.y > 3.5 ? 0.62 : 0.3) : (vSurf.x < 0.5 ? 0.85 : 0.0);
+  float _n = smoothstep(0.3, 0.7, bnoise(vObjPos.xz * 1.1 + vObjPos.y * 0.9));
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.64, 0.68, 0.74), vTreeSnow * _up * _k * (0.4 + 0.6 * _n));
+}
+`;
+
 export class TreeRenderer {
   readonly group = new THREE.Group();
   private state: CityState;
@@ -187,6 +270,10 @@ export class TreeRenderer {
   private kindsBySpecies: number[][] = [];
   private autumnKinds: number[][] = [];
   private autumn = 0;
+  /** seasonal species (nat_season.ts: oak / maple / birch): model variant -> kind index, else null */
+  private seasonKinds: (Map<number, number> | null)[] = [];
+  /** current autumn / bare / blossom fractions (seasonMix of month + climate) */
+  private season: SeasonMix = { autumn: 0, bare: 0, blossom: 0 };
   private maxVariants = 3;
   private species: SpeciesDef[];
   private chunks: TreeChunk[] = [];
@@ -215,6 +302,8 @@ export class TreeRenderer {
   private depthNear: THREE.MeshDepthMaterial;
   private depthFar: THREE.MeshDepthMaterial;
   private fadeU = { uTreeCam: { value: new THREE.Vector3() }, uTreeFade: { value: new THREE.Vector4(600, 800, 60, 700) }, uTreeRes: { value: new THREE.Vector2(1920, 1080) } };
+  /** snow on the forest: x terrain snow line (m), y its noise amplitude, z amount (0 = off) */
+  private snowU = { uTreeSnow: { value: new THREE.Vector4(9999, 8, 0, 0) }, uTreeNoise: { value: getNoiseTexture() as THREE.Texture } };
   /** width of the near/impostor cross-fade band as a fraction of lodDistance (each side): alpha-to-coverage (MSAA)
    *  blends smoothly, the screen-door dither (no MSAA) is kept narrow */
   fadeBand = 0.1;
@@ -246,6 +335,21 @@ export class TreeRenderer {
   private farCount = [0, 0];
   /** total instances currently placed (stats) */
   totalInstances = 0;
+  /** outer ring impostors: sector * 2 + (0 broadleaf, 1 conifer) */
+  private ring: (THREE.InstancedMesh | null)[] = new Array(RING_SECTORS.length * 2).fill(null);
+  /** outer ring sectors still to (re)fill (one per frame, after the map chunks) */
+  private ringQueue: number[] = RING_SECTORS.map((_, i) => i);
+  /** outer ring tree candidates per sector (7 floats each, see ringCandidates) and their counts */
+  private ringCand: (Float32Array | null)[] = RING_SECTORS.map(() => null);
+  private ringCandN: number[] = RING_SECTORS.map(() => 0);
+  /** sectors whose candidates must be regenerated first (new map / density, edge trees changed) */
+  private ringStale = new Set<number>(RING_SECTORS.map((_, i) => i));
+  /** candidate generation in progress (resumable over frames): sector, next grid row, candidates so far */
+  private ringGen: { k: number; gz: number; n: number } | null = null;
+  /** width (m) of the landscape ring beyond the map edge that gets tree impostors (0 = none) */
+  ringWidth = 2600;
+  /** outer ring instances currently placed (stats) */
+  ringInstances = 0;
   private lodScratch: LodState = { ...FRESH_STATE };
 
   constructor(state: CityState, terrain: TerrainRenderer, opts: { lodDistance: number; density: number; castShadows: boolean; maxVariants?: number; msaa?: boolean }) {
@@ -258,11 +362,10 @@ export class TreeRenderer {
     this.noise = new Noise2D(state.config.seed + 4242);
     this.maxVariants = opts.maxVariants ?? 3;
     this.a2c = opts.msaa ?? false;
-    // clone of the shared uber material that casts shadows from both faces (thin palm fronds / leaf quads)
-    this.material = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
-    this.material.shadowSide = THREE.DoubleSide;
-    this.materialFar = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
-    this.materialFar.shadowSide = THREE.DoubleSide;
+    // clones of the shared uber material that cast shadows from both faces (thin palm fronds / leaf quads), plus the
+    // season snippets (snow, metric impostor coordinates)
+    this.material = this.makeTreeMaterial(false);
+    this.materialFar = this.makeTreeMaterial(true);
     this.matNearFade = this.makeFadeMaterial(true);
     this.matFarFade = this.makeFadeMaterial(false);
     this.depthNear = this.makeDepthMaterial(true);
@@ -279,7 +382,9 @@ export class TreeRenderer {
     for (let cz = 0; cz < this.perSide; cz++)
       for (let cx = 0; cx < this.perSide; cx++) {
         const x0 = cx * CHUNK * CELL_SIZE, z0 = cz * CHUNK * CELL_SIZE;
-        const box = new THREE.Box3(new THREE.Vector3(x0, -10, z0), new THREE.Vector3(x0 + CHUNK * CELL_SIZE, 60, z0 + CHUNK * CELL_SIZE));
+        // edge chunks reach RING_EDGE_CELLS beyond the map (their forests continue past the edge)
+        const e = RING_EDGE_CELLS * CELL_SIZE, last = this.perSide - 1;
+        const box = new THREE.Box3(new THREE.Vector3(x0 - (cx === 0 ? e : 0), -10, z0 - (cz === 0 ? e : 0)), new THREE.Vector3(x0 + CHUNK * CELL_SIZE + (cx === last ? e : 0), 60, z0 + CHUNK * CELL_SIZE + (cz === last ? e : 0)));
         this.chunks.push({ cx, cz, near: this.kinds.map(() => null), far: [null, null], farTotal: [0, 0], box, sphere: new THREE.Sphere(), isNear: false, total: 0, stateKey: -1, state: null, micro: false });
       }
     for (let i = 0; i < this.chunks.length; i++) this.dirty.add(i);
@@ -344,14 +449,38 @@ export class TreeRenderer {
     }
   }
 
+  /** snow + (impostors) metric object coordinates; see SEASON_* */
+  private injectSeason(shader: THREE.WebGLProgramParametersWithUniforms, far: boolean) {
+    shader.uniforms.uTreeSnow = this.snowU.uTreeSnow;
+    shader.uniforms.uTreeNoise = this.snowU.uTreeNoise;
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n' + SEASON_VERT_PARS).replace(/}\s*$/, seasonVertMain(far) + '\n}');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + SEASON_FRAG_PARS)
+      .replace('#include <normal_fragment_begin>', SEASON_FRAG + '\n#include <normal_fragment_begin>');
+  }
+
+  /** plain (no fade) tree material: near models or impostors */
+  private makeTreeMaterial(far: boolean): THREE.MeshStandardMaterial {
+    const m = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
+    const base = m.onBeforeCompile;
+    m.onBeforeCompile = (shader, renderer) => {
+      base.call(m, shader, renderer);
+      this.injectSeason(shader, far);
+    };
+    m.customProgramCacheKey = () => 'building-uber-v1|tree-' + (far ? 'far' : 'near') + '-v1';
+    m.shadowSide = THREE.DoubleSide;
+    return m;
+  }
+
   private makeFadeMaterial(near: boolean): THREE.MeshStandardMaterial {
     const m = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
     const base = m.onBeforeCompile;
     m.onBeforeCompile = (shader, renderer) => {
       base.call(m, shader, renderer);
       this.injectFade(shader, near, false);
+      this.injectSeason(shader, !near);
     };
-    m.customProgramCacheKey = () => 'building-uber-v1|tree-fade-' + (near ? 'near' : 'far') + '-v2';
+    m.customProgramCacheKey = () => 'building-uber-v1|tree-fade-' + (near ? 'near' : 'far') + '-v3';
     m.shadowSide = THREE.DoubleSide;
     this.applyFadeMode(m);
     return m;
@@ -377,7 +506,28 @@ export class TreeRenderer {
     this.kinds = [];
     this.kindsBySpecies = [];
     this.autumnKinds = [];
+    this.seasonKinds = [];
     this.species.forEach((sp, si) => {
+      const ss = SEASONAL_TREES[sp.id];
+      if (ss) {
+        // deciduous species: quality-limited green variants + every autumn / bare / blossom variant (nat_season.ts)
+        const map = new Map<number, number>();
+        const add = (v: number) => {
+          if (map.has(v)) return;
+          const geo = getNatureGeometry(sp.id, v);
+          const st = natureStats(geo);
+          map.set(v, this.kinds.length);
+          this.kinds.push({ species: si, id: sp.id, variant: v, geo, conifer: !!sp.conifer, color: st.color, height: st.height, radius: st.radius, impR: 1 - 0.3 * st.open });
+        };
+        const green = ss.green.slice(0, Math.max(1, this.maxVariants));
+        for (const v of green) add(v);
+        for (const v of [...ss.autumn, ...ss.bare, ...ss.blossom]) add(v);
+        this.kindsBySpecies.push(green.map((v) => map.get(v)!));
+        this.autumnKinds.push([]);
+        this.seasonKinds.push(map);
+        return;
+      }
+      this.seasonKinds.push(null);
       const nv = Math.min(4, MANIFEST_BY_ID[sp.id]?.variants ?? 1);
       const list: number[] = [];
       const autumn: number[] = [];
@@ -388,7 +538,7 @@ export class TreeRenderer {
         const isAutumn = st.color.r > st.color.g * 0.95 && sp.id !== 'rock' && sp.id !== 'tree_cactus';
         if (isAutumn ? autumn.length >= 1 : list.length >= this.maxVariants) continue;
         (isAutumn ? autumn : list).push(this.kinds.length);
-        this.kinds.push({ species: si, id: sp.id, variant: v, geo, conifer: !!sp.conifer, color: st.color, height: st.height, radius: st.radius });
+        this.kinds.push({ species: si, id: sp.id, variant: v, geo, conifer: !!sp.conifer, color: st.color, height: st.height, radius: st.radius, impR: 1 - 0.3 * st.open });
       }
       if (!list.length && autumn.length) list.push(autumn[0]);
       this.kindsBySpecies.push(list);
@@ -423,6 +573,7 @@ export class TreeRenderer {
       this.markAll();
     }
     const densityChanged = opts.density !== this.density;
+    if (densityChanged) for (let k = 0; k < RING_SECTORS.length; k++) this.ringRestale(k);
     this.lodDistance = opts.lodDistance;
     this.density = opts.density;
     this.castShadows = opts.castShadows;
@@ -436,12 +587,19 @@ export class TreeRenderer {
 
   markAll() {
     for (let i = 0; i < this.chunks.length; i++) this.dirty.add(i);
+    this.ringQueue = RING_SECTORS.map((_, i) => i);
   }
 
   /** cells changed (trees / network / zones / buildings) */
   onCellsChanged(r: CellRect) {
     const x0 = Math.max(0, r.x0), z0 = Math.max(0, r.z0);
     const x1 = Math.min(this.state.size - 1, r.x1), z1 = Math.min(this.state.size - 1, r.z1);
+    // edge cells continue into the outer ring (its first ~3% of the map size)
+    const N = this.state.size;
+    RING_SECTORS.forEach(([ix, iz], k) => {
+      const hit = (ix === 0 && x0 <= 1) || (ix === 2 && x1 >= N - 2) || (iz === 0 && z0 <= 1) || (iz === 2 && z1 >= N - 2);
+      if (hit) this.ringRestale(k);
+    });
     for (let cz = Math.floor(z0 / CHUNK); cz <= Math.floor(z1 / CHUNK); cz++)
       for (let cx = Math.floor(x0 / CHUNK); cx <= Math.floor(x1 / CHUNK); cx++)
         if (cx >= 0 && cz >= 0 && cx < this.perSide && cz < this.perSide) this.dirty.add(cz * this.perSide + cx);
@@ -449,8 +607,11 @@ export class TreeRenderer {
 
   reset(state: CityState) {
     this.state = state;
+    for (let k = 0; k < RING_SECTORS.length; k++) this.ringRestale(k);
     this.seed = state.config.seed | 0;
     this.noise = new Noise2D(state.config.seed + 4242);
+    this.season = seasonMix(state.month, state.config.climate);
+    this.autumn = this.season.autumn;
     const sp = CLIMATE_SPECIES[state.config.climate] ?? CLIMATE_SPECIES.temperate;
     if (sp !== this.species) {
       this.species = sp;
@@ -465,6 +626,11 @@ export class TreeRenderer {
   }
 
   private pickKind(x: number, z: number, h: number, slope: number, r: number, weights: number[]): number {
+    return this.kindOf(this.pickSpecies(x, z, h, slope, r, weights), x, z);
+  }
+
+  /** species index for a tree in cell (x, z) at height h (clustered patches, elevation / coast / slope preferences) */
+  private pickSpecies(x: number, z: number, h: number, slope: number, r: number, weights: number[]): number {
     let total = 0;
     const sp = this.species;
     for (let s = 0; s < sp.length; s++) {
@@ -485,17 +651,36 @@ export class TreeRenderer {
       t -= weights[s];
       if (t <= 0) break;
     }
-    const au = this.autumnKinds[s];
-    if (au.length && this.autumn > 0 && hash2(x * 3 - 7, z * 5 + 2, this.seed + 97) < this.autumn) return au[0];
-    const list = this.kindsBySpecies[s];
-    return list[Math.floor(hash2(x * 7 + 3, z * 13 + 1, this.seed + 91) * list.length) % list.length];
+    return s;
   }
 
-  /** season: month 0..11 -> fraction of deciduous trees showing autumn colors */
+  /** kind (model variant) of species s in cell (x, z) for the current season */
+  private kindOf(s: number, x: number, z: number): number {
+    const list = this.kindsBySpecies[s];
+    const gi = Math.floor(hash2(x * 7 + 3, z * 13 + 1, this.seed + 91) * list.length) % list.length;
+    const sk = this.seasonKinds[s];
+    if (sk) {
+      // deciduous: autumn colours / bare branches / blossom for the month's fraction of trees (stable per cell)
+      const id = this.species[s].id;
+      const v = seasonalVariant(id, SEASONAL_TREES[id].green[gi], hash2(x * 3 - 7, z * 5 + 2, this.seed + 97), this.season);
+      return sk.get(v) ?? list[gi];
+    }
+    const au = this.autumnKinds[s];
+    if (au.length && this.autumn > 0 && hash2(x * 3 - 7, z * 5 + 2, this.seed + 97) < this.autumn) return au[0];
+    return list[gi];
+  }
+
+
+  /**
+   * season: month 0..11 -> fractions of deciduous trees showing autumn colours (Sep 0.3 / Oct 0.8 / Nov 0.55), bare
+   * branches (Dec-Feb 0.85) and blossom (Apr 0.15); temperate / alpine only (nat_season.seasonMix)
+   */
   setMonth(month: number) {
-    const a = month === 8 ? 0.25 : month === 9 ? 0.65 : month === 10 ? 0.45 : 0;
-    if (a !== this.autumn) {
-      this.autumn = a;
+    const m = seasonMix(month, this.state.config.climate);
+    const o = this.season;
+    if (m.autumn !== o.autumn || m.bare !== o.bare || m.blossom !== o.blossom) {
+      this.season = m;
+      this.autumn = m.autumn;
       this.markAll();
     }
   }
@@ -518,6 +703,63 @@ export class TreeRenderer {
     }
   }
 
+  /** placed-tree height range of the chunk being built */
+  private bMinY = Infinity;
+  private bMaxY = -Infinity;
+
+  /** place `count` trees of cell (x, z) (map or virtual edge cell) into the chunk being built */
+  private placeCell(x: number, z: number, count: number, dens: number, h: number, slope: number, weights: number[]) {
+    const seed = this.seed;
+    // stratified jitter on a 3x3 grid, slot order permuted per cell
+    const rot = Math.floor(hash2(x, z, seed + 17) * 9);
+    for (let t = 0; t < count; t++) {
+      const slot = (t * 4 + rot) % 9;
+      const sx = slot % 3, sz = Math.floor(slot / 3);
+      const jx = hash2(x * 9 + t, z, seed + 23), jz = hash2(x, z * 9 + t, seed + 29);
+      const px = (x + (sx + 0.15 + 0.7 * jx) / 3) * CELL_SIZE;
+      const pz = (z + (sz + 0.15 + 0.7 * jz) / 3) * CELL_SIZE;
+      const k = this.pickKind(x, z, h, slope, hash2(x * 5 + t, z * 3 - t, seed + 31), weights);
+      const kind = this.kinds[k];
+      const sp = this.species[kind.species];
+      const [s0, s1] = sp.scale ?? [0.72, 1.18];
+      const s = (s0 + (s1 - s0) * hash2(x + t * 3, z - t, seed + 37)) * (dens >= 4 ? 1.05 : 1);
+      const a = hash2(x - t, z + t * 5, seed + 41) * Math.PI * 2;
+      // sink into slopes so rocks / bushes / trunks never float on the downhill side
+      const footR = sp.id === 'rock' || sp.id === 'bush' ? kind.radius * s * 0.8 : 0.5;
+      const y = this.terrain.worldHeight(px, pz) - 0.12 - Math.min(1.2, (footR * slope) / CELL_SIZE);
+      const c = Math.cos(a), sn = Math.sin(a);
+      // near
+      const cnt = this.scratchCount[k];
+      this.ensureScratch(k, cnt + 1);
+      const e = this.scratch[k];
+      const o = cnt * 16;
+      e[o] = c * s; e[o + 1] = 0; e[o + 2] = -sn * s; e[o + 3] = 0;
+      e[o + 4] = 0; e[o + 5] = s; e[o + 6] = 0; e[o + 7] = 0;
+      e[o + 8] = sn * s; e[o + 9] = 0; e[o + 10] = c * s; e[o + 11] = 0;
+      e[o + 12] = px; e[o + 13] = y; e[o + 14] = pz; e[o + 15] = 1;
+      this.scratchCount[k] = cnt + 1;
+      // far impostor
+      const fc = kind.conifer ? 1 : 0;
+      const fn = this.farCount[fc];
+      this.ensureFar(fc, fn + 1);
+      const f = this.farScratch[fc];
+      const fo = fn * 16;
+      const sxz = (kind.radius / 0.42) * s * 0.92 * kind.impR, sy = kind.height * s;
+      f[fo] = c * sxz; f[fo + 1] = 0; f[fo + 2] = -sn * sxz; f[fo + 3] = 0;
+      f[fo + 4] = 0; f[fo + 5] = sy; f[fo + 6] = 0; f[fo + 7] = 0;
+      f[fo + 8] = sn * sxz; f[fo + 9] = 0; f[fo + 10] = c * sxz; f[fo + 11] = 0;
+      f[fo + 12] = px; f[fo + 13] = y; f[fo + 14] = pz; f[fo + 15] = 1;
+      const cv = 0.9 + 0.2 * hash2(x + t, z * 2 + t, seed + 43);
+      const col = this.farColor[fc];
+      col[fn * 3] = kind.color.r * cv;
+      col[fn * 3 + 1] = kind.color.g * cv;
+      col[fn * 3 + 2] = kind.color.b * cv;
+      this.farCount[fc] = fn + 1;
+      if (y < this.bMinY) this.bMinY = y;
+      if (y + kind.height * s > this.bMaxY) this.bMaxY = y + kind.height * s;
+    }
+  }
+
   private buildChunk(ci: number) {
     const ch = this.chunks[ci];
     const st = this.state, N = st.size;
@@ -525,7 +767,8 @@ export class TreeRenderer {
     for (let k = 0; k < nk; k++) this.scratchCount[k] = 0;
     this.farCount[0] = this.farCount[1] = 0;
     const weights = new Array(this.species.length).fill(0);
-    let minY = Infinity, maxY = -Infinity;
+    this.bMinY = Infinity;
+    this.bMaxY = -Infinity;
     const x0 = ch.cx * CHUNK, z0 = ch.cz * CHUNK;
     const seed = this.seed;
     for (let z = z0; z < Math.min(N, z0 + CHUNK); z++) {
@@ -533,62 +776,38 @@ export class TreeRenderer {
         const i = z * N + x;
         const dens = st.trees[i];
         if (!dens || TerrainRenderer.cellBlocked(st, i)) continue;
-        const base = DENSITY_COUNT[dens] * this.density;
-        let count = Math.floor(base + hash2(x, z, seed + 5));
-        if (count <= 0) continue;
-        if (count > 9) count = 9;
-        const h = st.cellHeight(x, z);
-        const slope = st.cellSlope(x, z);
-        // stratified jitter on a 3x3 grid, slot order permuted per cell
-        const rot = Math.floor(hash2(x, z, seed + 17) * 9);
-        for (let t = 0; t < count; t++) {
-          const slot = (t * 4 + rot) % 9;
-          const sx = slot % 3, sz = Math.floor(slot / 3);
-          const jx = hash2(x * 9 + t, z, seed + 23), jz = hash2(x, z * 9 + t, seed + 29);
-          const px = (x + (sx + 0.15 + 0.7 * jx) / 3) * CELL_SIZE;
-          const pz = (z + (sz + 0.15 + 0.7 * jz) / 3) * CELL_SIZE;
-          const k = this.pickKind(x, z, h, slope, hash2(x * 5 + t, z * 3 - t, seed + 31), weights);
-          const kind = this.kinds[k];
-          const sp = this.species[kind.species];
-          const [s0, s1] = sp.scale ?? [0.72, 1.18];
-          const s = (s0 + (s1 - s0) * hash2(x + t * 3, z - t, seed + 37)) * (dens >= 4 ? 1.05 : 1);
-          const a = hash2(x - t, z + t * 5, seed + 41) * Math.PI * 2;
-          // sink into slopes so rocks / bushes / trunks never float on the downhill side
-          const footR = sp.id === 'rock' || sp.id === 'bush' ? kind.radius * s * 0.8 : 0.5;
-          const y = this.terrain.worldHeight(px, pz) - 0.12 - Math.min(1.2, (footR * slope) / CELL_SIZE);
-          const c = Math.cos(a), sn = Math.sin(a);
-          // near
-          const cnt = this.scratchCount[k];
-          this.ensureScratch(k, cnt + 1);
-          const e = this.scratch[k];
-          const o = cnt * 16;
-          e[o] = c * s; e[o + 1] = 0; e[o + 2] = -sn * s; e[o + 3] = 0;
-          e[o + 4] = 0; e[o + 5] = s; e[o + 6] = 0; e[o + 7] = 0;
-          e[o + 8] = sn * s; e[o + 9] = 0; e[o + 10] = c * s; e[o + 11] = 0;
-          e[o + 12] = px; e[o + 13] = y; e[o + 14] = pz; e[o + 15] = 1;
-          this.scratchCount[k] = cnt + 1;
-          // far impostor
-          const fc = kind.conifer ? 1 : 0;
-          const fn = this.farCount[fc];
-          this.ensureFar(fc, fn + 1);
-          const f = this.farScratch[fc];
-          const fo = fn * 16;
-          const sxz = (kind.radius / 0.42) * s * 0.92, sy = kind.height * s;
-          f[fo] = c * sxz; f[fo + 1] = 0; f[fo + 2] = -sn * sxz; f[fo + 3] = 0;
-          f[fo + 4] = 0; f[fo + 5] = sy; f[fo + 6] = 0; f[fo + 7] = 0;
-          f[fo + 8] = sn * sxz; f[fo + 9] = 0; f[fo + 10] = c * sxz; f[fo + 11] = 0;
-          f[fo + 12] = px; f[fo + 13] = y; f[fo + 14] = pz; f[fo + 15] = 1;
-          const cv = 0.9 + 0.2 * hash2(x + t, z * 2 + t, seed + 43);
-          const col = this.farColor[fc];
-          col[fn * 3] = kind.color.r * cv;
-          col[fn * 3 + 1] = kind.color.g * cv;
-          col[fn * 3 + 2] = kind.color.b * cv;
-          this.farCount[fc] = fn + 1;
-          if (y < minY) minY = y;
-          if (y + kind.height * s > maxY) maxY = y + kind.height * s;
+        const count = Math.min(9, Math.floor(DENSITY_COUNT[dens] * this.density + hash2(x, z, seed + 5)));
+        if (count > 0) this.placeCell(x, z, count, dens, st.cellHeight(x, z), st.cellSlope(x, z), weights);
+      }
+    }
+    // edge chunks: the map's edge forests continue as full trees over a band of virtual cells beyond the edge (the same
+    // forest mask the terrain shader paints there), where the outer ring's impostors take over
+    const B = RING_EDGE_CELLS;
+    if (this.ringWidth > 0 && (ch.cx === 0 || ch.cz === 0 || ch.cx === this.perSide - 1 || ch.cz === this.perSide - 1)) {
+      const noise = getNoiseTexture().image.data as Uint8Array;
+      const W = N * CELL_SIZE;
+      const xs = ch.cx === 0 ? -B : x0, xe = ch.cx === this.perSide - 1 ? N + B : Math.min(N, x0 + CHUNK);
+      const zs = ch.cz === 0 ? -B : z0, ze = ch.cz === this.perSide - 1 ? N + B : Math.min(N, z0 + CHUNK);
+      for (let z = zs; z < ze; z++) {
+        for (let x = xs; x < xe; x++) {
+          if (x >= 0 && z >= 0 && x < N && z < N) continue;
+          const px = (x + 0.5) * CELL_SIZE, pz = (z + 0.5) * CELL_SIZE;
+          const dx = px < 0 ? -px : px > W ? px - W : 0, dz = pz < 0 ? -pz : pz > W ? pz - W : 0;
+          const outside = _sstep(0, 0.03, Math.max(dx, dz) / W);
+          let trees = outside < 1 ? this.edgeTrees(px, pz) * (1 - outside) : 0;
+          if (outside > 0) trees += outside * 0.65 * _sstep(0.6, 0.74, sampleNoise(noise, px / 3100, pz / 3100, 1) * 0.6 + sampleNoise(noise, px / 520, pz / 520, 0) * 0.5);
+          const dens = Math.round(Math.min(1, trees) * 4);
+          if (!dens) continue;
+          const count = Math.min(9, Math.floor(DENSITY_COUNT[dens] * this.density + hash2(x, z, seed + 5)));
+          if (count <= 0) continue;
+          const h = this.terrain.worldHeight(px, pz);
+          if (h < 1.6) continue;
+          const hx = this.terrain.worldHeight(px + CELL_SIZE, pz), hz = this.terrain.worldHeight(px, pz + CELL_SIZE);
+          this.placeCell(x, z, count, dens, h, Math.max(Math.abs(hx - h), Math.abs(hz - h)), weights);
         }
       }
     }
+    let minY = this.bMinY, maxY = this.bMaxY;
     // shuffle far instances so a prefix is a uniform random subset (density fade)
     for (let fc = 0; fc < 2; fc++) {
       const n = this.farCount[fc], f = this.farScratch[fc], col = this.farColor[fc];
@@ -634,7 +853,7 @@ export class TreeRenderer {
     shadowCasters.version++;
   }
 
-  private fill(mesh: THREE.InstancedMesh | null, geo: THREE.BufferGeometry, data: Float32Array, color: Float32Array | null, n: number, ch: TreeChunk, near: boolean): THREE.InstancedMesh | null {
+  private fill(mesh: THREE.InstancedMesh | null, geo: THREE.BufferGeometry, data: Float32Array, color: Float32Array | null, n: number, _ch: TreeChunk | null, near: boolean): THREE.InstancedMesh | null {
     if (n === 0) {
       if (mesh) mesh.count = 0;
       if (mesh) mesh.visible = false;
@@ -763,6 +982,9 @@ export class TreeRenderer {
       }
     }
     if (this.warm.length && ((this.warmMain && (this.warmShadow || !this.castShadows)) || ++this.warmFrames > 600)) this.dropWarmup();
+    // snow on the trees follows the terrain's (seasonal) snow line
+    const tu = this.terrain.uniforms;
+    this.snowU.uTreeSnow.value.set(tu.uSnowLine.value, tu.uSnowNoise.value, tu.uSnowLine.value < 9000 ? 1 : 0, 0);
     const cp = camera.position;
     const lod = this.lodDistance;
     const w = lod * (this.a2c ? this.fadeBand : this.fadeBandDither), jit = w * 0.8;
@@ -803,12 +1025,199 @@ export class TreeRenderer {
       st.micro = micro && !near;
       this.applyLod(ch, st);
     }
+    // outer ring: built after the map's chunks, one sector per frame; density fade + micro impostors by distance
+    if ((this.ringGen || this.ringQueue.length) && !this.dirty.size) this.ringStep(48);
+    const mg = getMicroImpostorGeometries();
+    for (let i = 0; i < this.ring.length; i++) {
+      const m = this.ring[i];
+      if (!m) continue;
+      const tot = (m.userData.ringCount as number | undefined) ?? 0;
+      m.visible = tot > 0;
+      if (!tot) continue;
+      m.boundingBox!.clampPoint(cp, _v);
+      const dN = _v.distanceTo(cp);
+      const keep = dN < lod ? 1 : Math.max(0.3, Math.min(1, 1.25 - (dN - lod) / 7000));
+      m.count = Math.max(1, Math.ceil(tot * Math.round(keep * 20) / 20));
+      const geo = K / Math.max(dN, 1) < this.microPixels * 0.87 ? (i & 1 ? mg.conifer : mg.broad) : (m.userData.regularGeo as THREE.BufferGeometry);
+      if (m.geometry !== geo) m.geometry = geo;
+    }
   }
 
   /** synchronous full rebuild (e.g. before a capture) */
   flush() {
     for (const id of this.dirty) this.buildChunk(id);
     this.dirty.clear();
+    while (this.ringGen || this.ringQueue.length) this.ringStep(Infinity);
+  }
+
+  /** tree density (0..1) of the map's tree texture, clamped to the map like the terrain shader samples it */
+  private edgeTrees(px: number, pz: number): number {
+    const st = this.state, N = st.size;
+    const fx = Math.min(N - 1, Math.max(0, px / CELL_SIZE - 0.5)), fz = Math.min(N - 1, Math.max(0, pz / CELL_SIZE - 0.5));
+    const x0 = Math.floor(fx), z0 = Math.floor(fz), x1 = Math.min(N - 1, x0 + 1), z1 = Math.min(N - 1, z0 + 1);
+    const t = (x: number, z: number) => {
+      const i = z * N + x;
+      return TerrainRenderer.cellBlocked(st, i) ? 0 : st.trees[i] / 4;
+    };
+    const ax = fx - x0, az = fz - z0;
+    return (t(x0, z0) * (1 - ax) + t(x1, z0) * ax) * (1 - az) + (t(x0, z1) * (1 - ax) + t(x1, z1) * ax) * az;
+  }
+
+  /**
+   * Outer ring candidates of one sector (once per map, density or edge-tree change): trees wherever the terrain shader
+   * paints its outside forests (the map's edge forests fading into noise forests over the first 3% of the map size),
+   * thinning out toward the horizon; no water / beaches. Per tree: x, ground height, z, kind random, scale random,
+   * yaw, colour jitter. Resumable: generates at most `rows` grid rows per call (spread over frames) and returns true
+   * once the sector is complete; forest-free 4 x 4-cell blocks are skipped with one mask test.
+   */
+  private ringCandidates(k: number, rows = Infinity): boolean {
+    const st = this.state, N = st.size, W = N * CELL_SIZE, R = this.ringWidth;
+    const [ix, iz] = RING_SECTORS[k];
+    const span = (i: number): [number, number] => (i === 0 ? [-R, 0] : i === 1 ? [0, W] : [W, W + R]);
+    const [x0, x1] = span(ix), [z0, z1] = span(iz);
+    const seed = this.seed;
+    const noise = getNoiseTexture().image.data as Uint8Array;
+    const g = RING_GRID;
+    const gx0 = Math.floor(x0 / g), gx1 = Math.ceil(x1 / g), gz1 = Math.ceil(z1 / g);
+    let gen = this.ringGen;
+    if (!gen || gen.k !== k) gen = this.ringGen = { k, gz: Math.floor(z0 / g), n: 0 };
+    if (R <= 0 || this.density <= 0) gen.gz = gz1;
+    let buf = this.ringCand[k] ?? new Float32Array(7 * 1024);
+    let n = gen.n;
+    const mask = (px: number, pz: number) => _sstep(0.6, 0.74, sampleNoise(noise, px / 3100, pz / 3100, 1) * 0.6 + sampleNoise(noise, px / 520, pz / 520, 0) * 0.5);
+    const weights = new Array(this.species.length).fill(0);
+    for (let done = 0; gen.gz < gz1 && done < rows && n < RING_CAP; gen.gz += 4, done += 4) {
+      const bz = gen.gz;
+      for (let bx = gx0; bx < gx1; bx += 4) {
+        // block test at its centre: well outside the map and the noise far below the forest threshold (the mask varies
+        // over >= ~100 m, a block is 40 m) -> no tree in it
+        const cx = (bx + 2) * g, cz = (bz + 2) * g;
+        const cdx = cx < 0 ? -cx : cx > W ? cx - W : 0, cdz = cz < 0 ? -cz : cz > W ? cz - W : 0;
+        if (Math.max(cdx, cdz) > 0.03 * W + 40 && sampleNoise(noise, cx / 3100, cz / 3100, 1) * 0.6 + sampleNoise(noise, cx / 520, cz / 520, 0) * 0.5 < 0.47) continue;
+        for (let gz = bz; gz < Math.min(gz1, bz + 4); gz++) {
+          for (let gx = bx; gx < Math.min(gx1, bx + 4); gx++) {
+            const px = (gx + 0.1 + 0.8 * hash2(gx, gz, seed + 301)) * g, pz = (gz + 0.1 + 0.8 * hash2(gz, gx, seed + 307)) * g;
+            if (px < x0 || px >= x1 || pz < z0 || pz >= z1) continue;
+            const dx = px < 0 ? -px : px > W ? px - W : 0, dz = pz < 0 ? -pz : pz > W ? pz - W : 0;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            // (the band next to the map belongs to the edge chunks' full trees)
+            if (Math.max(dx, dz) < RING_EDGE_CELLS * CELL_SIZE || dist > R) continue;
+            // forest mask of terrainShader beyond the map: the clamped tree texture fades into the noise forests
+            const outside = _sstep(0, 0.03, Math.max(dx, dz) / W);
+            let trees = outside < 1 ? this.edgeTrees(px, pz) * (1 - outside) : 0;
+            if (outside > 0) trees += outside * 0.65 * mask(px, pz);
+            const forest = _sstep(0.03, 0.55, trees);
+            // thinner toward the horizon (hazy 1-2 px trees there) and fading out before ringWidth (no hard line where the
+            // impostors stop), scaled by the quality density
+            const p = forest * this.density * (1 - 0.7 * _sstep(300, 0.8 * R, dist)) * (1 - _sstep(0.8 * R, R, dist));
+            if (p <= 0.01 || hash2(gx * 3 + 1, gz * 5 - 2, seed + 311) >= p) continue;
+            const h = this.terrain.worldHeight(px, pz);
+            if (h < 1.6) continue;
+            // species (season independent; shrubs and rocks are too small out there)
+            const sp = this.pickSpecies(Math.floor(px / CELL_SIZE), Math.floor(pz / CELL_SIZE), h, 0, hash2(gx * 5 + 3, gz * 3 - 1, seed + 313), weights);
+            const sid = this.species[sp].id;
+            if (sid === 'bush' || sid === 'rock') continue;
+            if ((n + 1) * 7 > buf.length) {
+              const nb = new Float32Array(buf.length * 2);
+              nb.set(buf);
+              buf = nb;
+            }
+            const o = n * 7;
+            buf[o] = px; buf[o + 1] = h; buf[o + 2] = pz;
+            buf[o + 3] = sp;
+            buf[o + 4] = hash2(gx + 11, gz - 13, seed + 317);
+            buf[o + 5] = hash2(gx - 17, gz + 19, seed + 331) * Math.PI * 2;
+            buf[o + 6] = 0.9 + 0.2 * hash2(gx + 23, gz * 2 + 1, seed + 337);
+            n++;
+          }
+        }
+      }
+    }
+    gen.n = n;
+    this.ringCand[k] = buf;
+    this.ringCandN[k] = n;
+    if (gen.gz < gz1 && n < RING_CAP) return false;
+    this.ringGen = null;
+    return true;
+  }
+
+  /** mark ring sector k for new candidates (restarts a generation in progress) and a refill */
+  private ringRestale(k: number): void {
+    this.ringStale.add(k);
+    if (this.ringGen?.k === k) this.ringGen = null;
+    if (!this.ringQueue.includes(k)) this.ringQueue.push(k);
+  }
+
+  /** one step of the outer ring (re)build: a slice of candidate rows, or a refill of a sector's meshes */
+  private ringStep(rows: number): void {
+    if (this.ringGen) {
+      const k = this.ringGen.k;
+      if (this.ringCandidates(k, rows)) this.fillRing(k);
+      return;
+    }
+    const k = this.ringQueue.shift();
+    if (k === undefined) return;
+    if (this.ringStale.has(k)) {
+      this.ringStale.delete(k);
+      if (this.ringCandidates(k, rows)) this.fillRing(k);
+    } else this.fillRing(k);
+  }
+
+  /**
+   * (Re)fill one outer ring sector from its candidates: same species mix, seasons (kind per candidate) and colours as
+   * the map's own far LOD, no shrubs or rocks; impostors only (the camera never gets close), no shadows.
+   */
+  private fillRing(k: number) {
+    const buf = this.ringCand[k] ?? new Float32Array(0), n = this.ringCand[k] ? this.ringCandN[k] : 0;
+    this.farCount[0] = this.farCount[1] = 0;
+    const seed = this.seed;
+    for (let i = 0; i < n; i++) {
+      const o = i * 7;
+      const px = buf[o], h = buf[o + 1], pz = buf[o + 2];
+      const kind = this.kinds[this.kindOf(buf[o + 3], Math.floor(px / CELL_SIZE), Math.floor(pz / CELL_SIZE))];
+      const sp = this.species[kind.species];
+      const [s0, s1] = sp.scale ?? [0.72, 1.18];
+      const s = (s0 + (s1 - s0) * buf[o + 4]) * 1.1;
+      const c = Math.cos(buf[o + 5]), sn = Math.sin(buf[o + 5]);
+      const fc = kind.conifer ? 1 : 0;
+      const fn = this.farCount[fc];
+      this.ensureFar(fc, fn + 1);
+      const f = this.farScratch[fc];
+      const fo = fn * 16;
+      const sxz = (kind.radius / 0.42) * s * 0.92 * kind.impR, sy = kind.height * s;
+      f[fo] = c * sxz; f[fo + 1] = 0; f[fo + 2] = -sn * sxz; f[fo + 3] = 0;
+      f[fo + 4] = 0; f[fo + 5] = sy; f[fo + 6] = 0; f[fo + 7] = 0;
+      f[fo + 8] = sn * sxz; f[fo + 9] = 0; f[fo + 10] = c * sxz; f[fo + 11] = 0;
+      f[fo + 12] = px; f[fo + 13] = h - 0.15; f[fo + 14] = pz; f[fo + 15] = 1;
+      const cv = buf[o + 6];
+      const col = this.farColor[fc];
+      col[fn * 3] = kind.color.r * cv;
+      col[fn * 3 + 1] = kind.color.g * cv;
+      col[fn * 3 + 2] = kind.color.b * cv;
+      this.farCount[fc] = fn + 1;
+    }
+    const imp = getImpostorGeometries();
+    for (let fc = 0; fc < 2; fc++) {
+      const cnt = this.farCount[fc], f = this.farScratch[fc], col = this.farColor[fc];
+      // shuffle: a prefix is a uniform random subset (density fade with distance)
+      for (let i = cnt - 1; i > 0; i--) {
+        const j = Math.floor(hash2(i, k, seed + 353 + fc) * (i + 1));
+        if (j === i) continue;
+        for (let q = 0; q < 16; q++) { const t = f[i * 16 + q]; f[i * 16 + q] = f[j * 16 + q]; f[j * 16 + q] = t; }
+        for (let q = 0; q < 3; q++) { const t = col[i * 3 + q]; col[i * 3 + q] = col[j * 3 + q]; col[j * 3 + q] = t; }
+      }
+      const idx = k * 2 + fc;
+      const old = this.ring[idx];
+      const prev = (old?.userData.ringCount as number | undefined) ?? 0;
+      const m = this.fill(old, fc ? imp.conifer : imp.broad, f, col, cnt, null, false);
+      if (m) {
+        m.name = 'trees-ring';
+        m.castShadow = false;
+        m.userData.ringCount = cnt;
+      }
+      this.ring[idx] = m;
+      this.ringInstances += cnt - prev;
+    }
   }
 
   private disposeChunk(c: TreeChunk) {
@@ -823,6 +1232,8 @@ export class TreeRenderer {
     this.dropWarmup();
     for (const c of this.chunks) this.disposeChunk(c);
     this.chunks = [];
+    for (const m of this.ring) if (m) { this.group.remove(m); m.dispose(); }
+    this.ring.fill(null);
     this.material.dispose();
     this.materialFar.dispose();
     this.depthNearPlain.dispose();

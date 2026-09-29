@@ -14,7 +14,15 @@
  *     and reads back), and each dev's non-zero weights are pre-converted to f64 in NZ order;
  *  5. per-zone dev lists are Int8Arrays; per dev, BIAS + shift is hoisted out of the cell loop (same f64 sum);
  *  6. land value: s / c with c = 4 is s · 0.25 (the same real quotient, so the same rounding) and the value stored at
- *     x − 1 is kept in a local instead of being read back from the layer.
+ *     x − 1 is kept in a local instead of being read back from the layer;
+ *  7. tables and tuning constants are read into band-local variables at band entry instead of being captured by the
+ *     closure. V8 specializes optimized code to a closure's context (constants embedded) only while its function literal
+ *     has ONE closure; as soon as a second closure exists (a second system instance, a benchmark arm, the fallback
+ *     instance of the wasm bindings) the captured-constant form re-optimizes into code that boxes a double per cell:
+ *     land value 1.8x slower with ~99 KiB of garbage per band (desirability: up to 1.16x). The band-local form is as
+ *     fast as the best case (0.98-1.04x, interleaved A/B) whatever the closure count.
+ * Tried and not kept, because they do not make the JS faster (interleaved A/B on the 1M fixtures): the Rust port's
+ * adjacent-cell pairs for desirability (0.96-1.10x) and its land-value value pass + 2-row wavefront (0.86-0.93x).
  * Float semantics are the original's: f64 in the JS order, f32 exactly where the original stores into a Float32Array,
  * Math.min / Math.max with their NaN / ±0 behaviour, the accumulators add the unrounded value.
  *
@@ -212,13 +220,13 @@ export function makeDesirabilityBandJs(tb: EconBandTables): EconBandFns['desirab
     WLV[d] = tb.WT[d * tb.nt + T_LV];
     LVREF64[d] = tb.LVREF[d];
   }
-  const NZ = tb.NZ, NZW = tb.NZW, zoneDevs = tb.zoneDevs, allDevs = tb.allDevs, netNoise = tb.netNoise, netTraffic = tb.netTraffic;
-  const COARSE = C.COARSE, GOOD = C.COMMUTE_GOOD, BAD = C.COMMUTE_BAD, FALLBACK = C.COMMUTE_FALLBACK;
-  const COV = Math.fround(C.COVERAGE_FALLBACK), BUSY = C.TRAFFIC_BUSY, POPFULL = C.POP_NEAR_FULL, SP0 = C.SLOPE_P0, SP1 = C.SLOPE_P1;
-  const EMIN = C.LV_EFFECT_MIN, EMAX = C.LV_EFFECT_MAX;
-  const chkA = C.chkA, chkB = C.chkB;
-
   return function desirabilityBand(st, rt, inf, shift, z0, z1, allCells) {
+    // tables and constants as band-local variables (see fix 7 in the file header)
+    const NZ = tb.NZ, NZW = tb.NZW, zoneDevs = tb.zoneDevs, allDevs = tb.allDevs, netNoise = tb.netNoise, netTraffic = tb.netTraffic;
+    const COARSE = C.COARSE, GOOD = C.COMMUTE_GOOD, BAD = C.COMMUTE_BAD, FALLBACK = C.COMMUTE_FALLBACK;
+    const COV = Math.fround(C.COVERAGE_FALLBACK), BUSY = C.TRAFFIC_BUSY, POPFULL = C.POP_NEAR_FULL, SP0 = C.SLOPE_P0, SP1 = C.SLOPE_P1;
+    const EMIN = C.LV_EFFECT_MIN, EMAX = C.LV_EFFECT_MAX;
+    const chkA = C.chkA, chkB = C.chkB;
     const N = st.size, cw = rt.cw;
     const des = st.desirability;
     const desA = des[chkA], desB = des[chkB];
@@ -320,14 +328,14 @@ export function makeDesirabilityBandJs(tb: EconBandTables): EconBandFns['desirab
 /** landValueSystem → band(st, z0, z1, first) of 24f8609, restructured (see the file header); bit-identical, in place */
 export function makeLandValueBandJs(tb: EconBandTables): EconBandFns['landValue'] {
   const C = tb.consts, L = C.LV;
-  const COARSE = C.COARSE, GOOD = C.COMMUTE_GOOD, BAD = C.COMMUTE_BAD, FALLBACK = C.COMMUTE_FALLBACK, COV = C.COVERAGE_FALLBACK;
-  const EMIN = C.LV_EFFECT_MIN, EMAX = C.LV_EFFECT_MAX;
-  const K_BASE = L.base, K_SERV = L.services, K_PARKS = L.parks, K_TRANSIT = L.transit, K_COMMUTE = L.commute, K_WEALTH = L.wealth;
-  const K_AIR = L.airPollution, K_WPOL = L.waterPollution, K_GARB = L.garbage, K_CRIME = L.crime, K_NOISE = L.noise;
-  const TEMPORAL = L.temporal, SPATIAL = L.spatial, KEEP = 1 - L.spatial;
-  const zoneNone = C.zoneNone;
-
   return function landValueBand(st, rt, inf, z0, z1, first, acc) {
+    // constants as band-local variables (see fix 7 in the file header)
+    const COARSE = C.COARSE, GOOD = C.COMMUTE_GOOD, BAD = C.COMMUTE_BAD, FALLBACK = C.COMMUTE_FALLBACK, COV = C.COVERAGE_FALLBACK;
+    const EMIN = C.LV_EFFECT_MIN, EMAX = C.LV_EFFECT_MAX;
+    const K_BASE = L.base, K_SERV = L.services, K_PARKS = L.parks, K_TRANSIT = L.transit, K_COMMUTE = L.commute, K_WEALTH = L.wealth;
+    const K_AIR = L.airPollution, K_WPOL = L.waterPollution, K_GARB = L.garbage, K_CRIME = L.crime, K_NOISE = L.noise;
+    const TEMPORAL = L.temporal, SPATIAL = L.spatial, KEEP = 1 - L.spatial;
+    const zoneNone = C.zoneNone;
     const N = st.size, cw = rt.cw;
     const avgCommute = st.stats.avgCommute > 0 ? st.stats.avgCommute : FALLBACK;
     const lvArr = st.landValue, zone = st.zone, water = st.water, building = st.building;

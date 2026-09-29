@@ -30,6 +30,7 @@ const GROUP_LABELS: Record<string, string> = {
   tax: 'Taxes', service: 'City services', transport: 'Transportation', ordinance: 'Ordinances', loan: 'Loan payments', loans: 'Loan payments',
   deal: 'Business deals', utilities: 'Utilities', neighbor: 'Neighbor deals', construction: 'Construction', zoning: 'Zoning', bulldoze: 'Demolition',
   income: 'Income', building: 'Buildings', upkeep: 'Upkeep', terraform: 'Terraforming', trees: 'Trees',
+  tourism: 'Tourist spending', recycling: 'Recycled materials',
 };
 
 /** 'oneoff:<item>' labels (paid / received immediately; not part of the monthly net) */

@@ -14,7 +14,8 @@ import { infraFlags } from '../../../src/sim/economy/runtime';
 import { makeOriginalBands } from '../../../tests/wasm/econBandsOriginal';
 import { makeEconBandsJs, type EconBandFns, type EconBandTables } from '../../../src/wasm/js/desirabilityLandValueBands';
 import { makeEconBandKernels, type EconBindStats, type EconWasm } from '../../../src/wasm/kernels/desirabilityLandValueBandsBind';
-import { WasmHeap } from '../../../src/wasm/heap';
+import { ECON_TABLES, econBandsJs } from '../../../src/wasm/kernels/desirabilityLandValueBands';
+import { WasmHeap, type HeapArrayCtor } from '../../../src/wasm/heap';
 
 export type Layer = Uint8Array | Int32Array | Float32Array;
 
@@ -173,8 +174,17 @@ function bandArm(label: string, s: ArmState, bands: EconBandFns, stats?: EconBin
   };
 }
 
+/**
+ * the fair JS; with the live tables it reuses the module's instance (econBandsJs), so the process has ONE closure of
+ * each band function literal, as in the game (one system instance per simulation)
+ */
 export function fixedArm(c: EconCapture, tb: EconBandTables): Arm {
-  return bandArm('fair JS', makeState(c, copyPlain), makeEconBandsJs(tb));
+  return bandArm('fair JS', makeState(c, copyPlain), tb === ECON_TABLES ? econBandsJs : makeEconBandsJs(tb));
+}
+
+/** any EconBandFns on plain copies of the capture (variants of the JS bands) */
+export function bandsArm(c: EconCapture, label: string, bands: EconBandFns): Arm {
+  return bandArm(label, makeState(c, copyPlain), bands);
 }
 
 /** wasm kernels of `w`; resident = the layers live in w's memory (zero copy), else plain arrays staged per call */
@@ -189,7 +199,7 @@ export function wasmArm(c: EconCapture, tb: EconBandTables, w: EconWasm, label: 
   w.heap.reserve(resident ? bytes + 2 * staging : staging);
   const alloc = resident
     ? (a: Layer): Layer => {
-      const v = w.heap.allocArray(a.constructor as unknown as new (b: ArrayBuffer, o: number, n: number) => Layer & Float32Array, a.length) as Layer;
+      const v = w.heap.allocArray(a.constructor as unknown as HeapArrayCtor<Float32Array>, a.length) as Layer;
       (v as Float32Array).set(a as Float32Array);
       blocks.push(v);
       return v;
@@ -241,6 +251,25 @@ export function sweep(arm: Arm, kind: SweepKind, bands: [number, number][]): voi
 export function oneBand(arm: Arm, kind: SweepKind, band: [number, number]): void {
   if (kind === 'lv') arm.landValue(band[0], band[1], false);
   else arm.desirability(band[0], band[1], kind === 'desAll');
+}
+
+/**
+ * JS heap bytes allocated by one daily band (median over `n` bands, heapUsed delta after a forced GC; needs
+ * --expose-gc, else null). Kernels that do not allocate report ~0.3 KiB (the measurement itself).
+ */
+export function heapPerBand(arm: Arm, kind: SweepKind, bands: [number, number][], n = 12): number | null {
+  const gc = (globalThis as { gc?: () => void }).gc;
+  const mem = (globalThis as { process?: { memoryUsage(): { heapUsed: number } } }).process?.memoryUsage;
+  if (typeof gc !== 'function' || !mem) return null;
+  const xs: number[] = [];
+  for (let k = 0; k < n; k++) {
+    gc();
+    const h0 = mem().heapUsed;
+    oneBand(arm, kind, bands[k % bands.length]);
+    xs.push(mem().heapUsed - h0);
+  }
+  xs.sort((p, q) => p - q);
+  return xs[n >> 1];
 }
 
 // ------------------------------------------------------------------------------------------------ equivalence

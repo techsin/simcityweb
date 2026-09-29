@@ -20,8 +20,8 @@ import { formatResult, runAB, type AbResult } from '../ab';
 import { benchMain, cpuMs, loadAvg } from '../node';
 import { captureFixture } from './capture';
 import {
-  SWEEPS, bandsOf, checkArms, decodeCapture, encodeCapture, fixedArm, instantiate, origArm, sweep, wasmArm, type Arm, type EconCapture,
-  type SweepKind,
+  SWEEPS, bandsOf, checkArms, decodeCapture, encodeCapture, fixedArm, heapPerBand, instantiate, origArm, sweep, wasmArm, type Arm,
+  type EconCapture, type SweepKind,
 } from './core';
 
 /** zoned / unzoned / road-water cells of a capture (what the sweeps actually process) */
@@ -102,6 +102,16 @@ benchMain(async ({ args, log }) => {
     if (wScalar) {
       pairs.push(['fair JS vs wasm scalar resident', 'fixed', 'scalarRes']);
       pairs.push(['wasm scalar vs SIMD build (resident)', 'scalarRes', 'simdRes']);
+    }
+    // JS heap garbage per daily band (after the checks above warmed every arm up)
+    const heap: Record<string, Record<string, number | null>> = {};
+    for (const kind of SWEEPS) {
+      heap[kind] = {};
+      for (const a of Object.values(arms)) heap[kind][a.label] = heapPerBand(a, kind, bands);
+    }
+    R.heapPerBand = heap;
+    if (heap.lv[arms.orig.label] !== null) {
+      log(`JS heap allocated per band (KiB): ${SWEEPS.map((k) => `${k} ${Object.entries(heap[k]).map(([l, v]) => `${l} ${((v ?? 0) / 1024).toFixed(1)}`).join(', ')}`).join('; ')}`);
     }
     const results: Record<string, AbResult[]> = {};
     for (const kind of (only ?? SWEEPS).filter((k) => SWEEPS.includes(k))) {

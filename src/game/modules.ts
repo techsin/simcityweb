@@ -14,6 +14,7 @@ const LAZY = import.meta.glob([
   '../render/world/WorldView.ts',
   '../render/world/overlays.ts',
   '../render/city/CityObjectsView.ts',
+  '../render/city/effects/Effects.ts',
   '../sim/economy/index.ts',
   '../sim/economy/rewards.ts',
   '../sim/economy/ordinances.ts',
@@ -93,8 +94,8 @@ export interface TrafficLike {
 export interface InfraApi {
   getTraffic?: (sim: Simulation) => TrafficLike | undefined;
   getUtilities?: (sim: Simulation) => { gridInfo?(sim: Simulation, x: number, z: number): GridInfoLike | null; waterInfo?(sim: Simulation, x: number, z: number): GridInfoLike | null } | undefined;
-  overlayValue?: (state: CityState, o: Overlay, x: number, z: number) => number;
-  overlayLayer?: (state: CityState, o: Overlay) => { palette?: string; label?: string; roadsOnly?: boolean } | null;
+  overlayValue?: (state: CityState, o: Overlay, x: number, z: number, variant?: number) => number;
+  overlayLayer?: (state: CityState, o: Overlay, variant?: number) => { palette?: string; label?: string; roadsOnly?: boolean } | null;
   activeDisasters?: (sim: Simulation) => readonly { kind: string; x: number; z: number }[];
 }
 
@@ -112,8 +113,10 @@ export interface GameModules {
   infra?: InfraApi;
   econ?: EconApi;
   WorldView?: WorldViewCtor;
-  overlayLegend?: (o: Overlay) => unknown;
+  overlayLegend?: (o: Overlay, variant?: number) => unknown;
   CityObjectsView?: CityObjectsViewCtor;
+  /** smoke / steam drift of the render effects from the sim's wind vector (render/city/effects/Effects.ts) */
+  setEffectsWind?: (x: number, z: number) => void;
   listRewards?: (state: CityState) => RewardInfo[];
   listOrdinances?: (state: CityState) => OrdinanceInfo[];
   triggerDisaster?: (sim: Simulation, kind: string, x: number, z: number) => unknown;
@@ -250,15 +253,18 @@ export async function loadGameModules(): Promise<GameModules> {
   if (wv) {
     if (typeof wv.WorldView === 'function') out.WorldView = wv.WorldView as WorldViewCtor;
     else if (typeof wv.default === 'function') out.WorldView = wv.default as WorldViewCtor;
-    if (typeof wv.overlayLegend === 'function') out.overlayLegend = wv.overlayLegend as (o: Overlay) => unknown;
+    if (typeof wv.overlayLegend === 'function') out.overlayLegend = wv.overlayLegend as (o: Overlay, variant?: number) => unknown;
   }
   if (!out.overlayLegend) {
     const ol = await load('../render/world/overlays.ts', errors);
-    if (ol && typeof ol.overlayLegend === 'function') out.overlayLegend = ol.overlayLegend as (o: Overlay) => unknown;
+    if (ol && typeof ol.overlayLegend === 'function') out.overlayLegend = ol.overlayLegend as (o: Overlay, variant?: number) => unknown;
   }
   if (ov) {
     if (typeof ov.CityObjectsView === 'function') out.CityObjectsView = ov.CityObjectsView as CityObjectsViewCtor;
     else if (typeof ov.default === 'function') out.CityObjectsView = ov.default as CityObjectsViewCtor;
+    // (the same module instance the objects view renders its plumes with)
+    const fx = await load('../render/city/effects/Effects.ts', errors);
+    if (fx && typeof fx.setEffectsWind === 'function') out.setEffectsWind = fx.setEffectsWind as (x: number, z: number) => void;
   }
   if (rw && typeof rw.listRewards === 'function') {
     const f = rw.listRewards as (s: CityState) => unknown[];

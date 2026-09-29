@@ -5,6 +5,7 @@ import { Panel } from '../Panel';
 import { h, setText } from '../dom';
 import { icon } from '../icons';
 import { compact, num, pct } from '../format';
+import { INCIDENT_KINDS } from '../../sim/CityState';
 
 function sum(a: number[] | undefined, i0: number, i1: number): number {
   let s = 0;
@@ -49,7 +50,13 @@ export class StatsPanel extends Panel {
       meter('power', 'Power', 'power'), meter('water', 'Water', 'water'), meter('garbage', 'Garbage', 'garbage'),
       h('div', { class: 'sec-title' }, 'Quality of life'),
       meter('eq', 'Education', 'education'), meter('hq', 'Health', 'health'), meter('lv', 'Land value', 'landValue'),
-      meter('crime', 'Crime', 'crime'), meter('poll', 'Pollution', 'smog'), meter('traffic', 'Congestion', 'car'),
+      meter('crime', 'Crime', 'crime'), meter('traffic', 'Congestion', 'car'),
+      h('div', { class: 'sec-title' }, 'Environment at homes'),
+      meter('air', 'Air pollution', 'smog'), meter('waterp', 'Water pollution', 'water'), meter('noise', 'Noise', 'noise'),
+      h('div', { class: 'sec-title' }, 'Safety & transit'),
+      h('div', { class: 'stat-cards', style: 'margin-bottom:6px' }, card('incidents', 'Incidents', 'siren'), card('jail', 'Jail', 'police'), card('buses', 'Bus fleet', 'bus'), card('pr', 'Park & ride', 'parking')),
+      h('div', { class: 'sec-title' }, 'Visitors'),
+      h('div', { class: 'stat-cards' }, card('tourists', 'Tourists', 'star'), card('attract', 'Attractiveness', 'smile')),
       h('div', { class: 'sec-title' }, 'Commute'),
       h('div', { class: 'stat-cards', style: 'margin-bottom:10px' }, card('commute', 'Avg. commute', 'clock'), card('trips', 'Trips / day', 'car')),
       this.modes, this.modesLegend,
@@ -82,7 +89,7 @@ export class StatsPanel extends Panel {
     const s = this.ctx.state.stats;
     const c = this.cards;
     setText(c.pop.v, num(s.population));
-    setText(c.pop.s, `${compact(s.workforce)} workforce`);
+    setText(c.pop.s, `${compact(s.workforce)} workforce (${pct(s.population > 0 ? s.workforce / s.population : s.workforceRatio ?? 0)})`);
     const jobs = sum(s.jobsByDev, DevType.CS1, DevType.IHT);
     const cap = sum(s.jobCapByDev, DevType.CS1, DevType.IHT);
     setText(c.jobs.v, compact(jobs));
@@ -104,7 +111,31 @@ export class StatsPanel extends Panel {
     this.setMeter('hq', s.hq / 150, `HQ ${Math.round(s.hq)}`, s.hq >= 90 ? 'good' : s.hq >= 50 ? 'warn' : 'bad');
     this.setMeter('lv', s.avgLandValue, pct(s.avgLandValue), s.avgLandValue > 0.5 ? 'good' : s.avgLandValue > 0.25 ? 'warn' : 'bad');
     this.setMeter('crime', s.avgCrime, pct(s.avgCrime), s.avgCrime > 0.4 ? 'bad' : s.avgCrime > 0.2 ? 'warn' : 'good');
-    this.setMeter('poll', s.avgPollution, pct(s.avgPollution), s.avgPollution > 0.4 ? 'bad' : s.avgPollution > 0.2 ? 'warn' : 'good');
+    const air = s.avgAir ?? s.avgPollution, wp = s.avgWaterPollution ?? 0, nz = s.avgNoise ?? 0;
+    this.setMeter('air', air, pct(air), air > 0.4 ? 'bad' : air > 0.2 ? 'warn' : 'good');
+    this.setMeter('waterp', wp, pct(wp), wp > 0.4 ? 'bad' : wp > 0.2 ? 'warn' : 'good');
+    this.setMeter('noise', nz, pct(nz), nz > 0.5 ? 'bad' : nz > 0.3 ? 'warn' : 'good');
+    // safety & transit (WP5-3): incidents this month, jail, bus fleet, park & ride
+    const em = s.emergency?.month;
+    let inc = 0;
+    if (em) for (const k of INCIDENT_KINDS) inc += em.count?.[k] ?? 0;
+    setText(c.incidents.v, num(inc));
+    setText(c.incidents.s, em ? `this month · ${num(em.auto)} auto · ${num(em.manual)} by you${em.failed ? ` · ${num(em.failed)} failed` : ''}` : 'this month');
+    c.incidents.v.className = 'sc-v ' + (em && em.failed > 0 ? 'neg' : '');
+    const j = s.justice;
+    setText(c.jail.v, j && j.beds + j.holding > 0 ? pct(j.occupancy) : '—');
+    setText(c.jail.s, j ? `${num(j.inmates)} inmates · ${num(j.beds)} beds${j.overflow > 0.01 ? ` · ${pct(j.overflow)} released early` : ''}` : '');
+    c.jail.v.className = 'sc-v ' + (j && j.overflow > 0.2 ? 'neg' : j && j.occupancy > 0.9 ? 'warn' : '');
+    const tf = s.transitFleet;
+    setText(c.buses.v, tf ? `${num(tf.buses)}` : '—');
+    setText(c.buses.s, tf && tf.busesNeeded > 0 ? `of ${num(tf.busesNeeded)} needed` : 'no bus routes yet');
+    c.buses.v.className = 'sc-v ' + (tf && tf.busesNeeded > 1.15 * tf.buses ? 'warn' : '');
+    setText(c.pr.v, tf ? compact(tf.parkRide) : '—');
+    setText(c.pr.s, tf && tf.parkRideSpaces > 0 ? `a day · ${compact(tf.parkRideSpaces)} spaces` : 'no garages by a stop');
+    setText(c.tourists.v, compact(s.tourists ?? 0));
+    setText(c.tourists.s, `a day · ${compact(s.hotelRooms ?? 0)} hotel rooms`);
+    setText(c.attract.v, `${Math.round(s.attractiveness ?? 0)}`);
+    setText(c.attract.s, 'out of 100 · draws newcomers');
     this.setMeter('traffic', s.avgTraffic, pct(s.avgTraffic), s.avgTraffic > 0.7 ? 'bad' : s.avgTraffic > 0.4 ? 'warn' : 'good');
     setText(c.commute.v, s.avgCommute ? `${Math.round(s.avgCommute)} min` : '—');
     setText(c.commute.s, s.avgCommute > 45 ? 'Too long' : s.avgCommute ? 'Acceptable' : 'No commuters yet');

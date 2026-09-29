@@ -653,9 +653,12 @@ export const BUS_NEED_SMOOTH = 0.5;
  * (street parking, by Network) PARKING_SUPPLY_ROAD, + GARAGE_SPACES per garage (minus its park & ride cars) spread over
  * GARAGE_WALK_RADIUS with a normalised kernel. parking = smoothstep(PARKING_RATIO[0], PARKING_RATIO[1], box(D) / box(S))
  * with box = (2 PARKING_BOX_R + 1)^2 average; car commuters to a site pay PARKING_MIN x parking(site) extra minutes.
+ * Calibrated (critic item 19) on the bot without garages: zone supply 2.5 x the spec's 60 / 30 / 10 keeps the C
+ * job-weighted pressure <= 0.3 through 256x40 (0.22 in 2040; 0.50 at 1.5 x) with <= 15 % of C cells above 0.6 (3 %);
+ * dense cores still saturate (stress metro downtown 0.66, -72 % with the subway grid).
  */
 export const PARKING_SHOP_W = 0.5;
-export const PARKING_SUPPLY_ZONE: readonly number[] = [90, 45, 15];
+export const PARKING_SUPPLY_ZONE: readonly number[] = [150, 75, 25];
 export const PARKING_SUPPLY_R: readonly number[] = [18, 9, 3];
 export const PARKING_SUPPLY_CIVIC = 30;
 /** street parking per road cell [None, Street, Road, Avenue, OneWay, Highway, Rail] */

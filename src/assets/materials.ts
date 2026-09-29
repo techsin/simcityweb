@@ -19,6 +19,8 @@
  *       warm lamp-lit pavement at night; intensity x floor/3.3 (paint `floor`, default 3.3 = 1x; use e.g. 1.5 for
  *       a dimmer outer ring).
  *   10 / 11 = NIGHT-ONLY glow x1 / x2 (no daytime emission: stained glass, lanterns, tent canopies).
+ *   14 = greenhouse grow-light row: night glow like 11, but roof-coloured by day (`floor` < 2: white film, else roof
+ *       glass) so the dark saturated lamp paint shows no stripes in daylight.
  *   12 = floodlit sports surface: like 9 (paint ~0.7x, plain by day) but cool white floodlight at night.
  *   13 = traffic-signal lamp: paint the lamp's lit colour, `floor` = lamp (0 red, 1 amber, 2 green) + 3 * head axis
  *       (0 model +Z, 1 model +X; informational). The shader derives the served axis from the lamp's WORLD normal and
@@ -41,15 +43,26 @@
  *   2 metallic car paint (rough 0.32, metal 0.50); 3 patina (rough 0.62, metal 0.30: copper domes, bronze statues).
  * Corrugated (Surf.Corrugated): vertical ribs, painted sheet metal (rough 0.6, metal 0.25).
  * Foliage (Surf.Foliage): wind sway above 1.5 m; per-plant hue/value + stand-scale tint from the instance position.
- *   Pattern 0 = evergreen / always as painted (the nature-group trees swap seasonal model VARIANTS instead).
- *   Pattern 1 = seasonal deciduous crown baked into a lot model: follows uSeason (month mix from nat_season.ts) -
- *       that fraction of trees turns orange / red / yellow in autumn and grey-brown (bare twigs) in winter.
- *   Pattern 2 = spring-blossom tree (cherry, magnolia): paint the BLOSSOM colour; shown only in Apr-May, a leaf
- *       green of the same brightness otherwise, plus the pattern-1 autumn / winter behaviour.
+ *   Two classes: LOW foliage = lawns, roof gardens, green roofs / walls, hedges, planters, beds, shrubs (faces that are
+ *   flat up-facing or axis-aligned box sides at any height, or anything below ~2.5 m model height) and CROWNS.
+ *   Pattern 0 = automatic (lot models): low foliage goes dormant in winter; crowns are seasonal deciduous crowns (as
+ *       pattern 1, turning per lot instance) unless painted dark (linear luminance < ~0.1: conifers, cypresses, yews),
+ *       which are evergreen (pattern 4).
+ *   Pattern 1 = seasonal deciduous crown: follows uSeason (month mix from nat_season.ts) - that fraction of trees turns
+ *       orange / red / yellow in autumn and grey-brown (bare twigs) in winter; fresh yellow-green leaves in spring.
+ *   Pattern 2 = spring-blossom tree (cherry, magnolia, flowering shrub): paint the BLOSSOM colour; shown only in
+ *       Apr-May (all year in the tropics); otherwise the blossom-coloured faces (red >= green: pink / white / lilac)
+ *       turn leaf green (~0.36x the blossom brightness), leaf-painted faces keep their paint; plus the pattern-1
+ *       autumn / winter behaviour.
  *   For patterns 1-2 paint `floor` = a per-tree random in [0, 1) (all lobes of one crown share it) so each tree
  *   changes as a whole; the instance seed is mixed in.
- *   All foliage follows the climate / season uniforms uFoliageDry / uFoliageTint (setFoliageSeason): low foliage
- *   (lawns, hedges, shrubs below ~2.5 m model height) turns straw-dry in deserts / dormant in winter.
+ *   Pattern 3 = nature-model deciduous foliage (forest / street trees: the renderers swap seasonal model VARIANTS, see
+ *       nat_season.ts): never recoloured by the season; low parts go dormant like pattern 0.
+ *   Pattern 4 = evergreen (conifers, palms, evergreen shrubs): no seasonal recolour or winter dormancy (climate dryness
+ *       only), a darker / cooler green in winter.
+ *   All foliage follows the climate / season uniforms uFoliageDry / uFoliageSeason / uFoliageTint (setFoliageSeason):
+ *   low foliage turns straw-dry in deserts / dormant in winter, crowns get a quarter of it; in winter evergreen crowns
+ *   darken and deciduous leaves still on a tree (patterns 0-3, the non-bare remainder) turn dead brown.
  *
  * Facade coordinates: planar walls use the horizontal distance along the wall; smooth-shaded CURVED walls
  * (cylinders / drums / round towers built with smooth normals) automatically switch to the arc length around the
@@ -60,10 +73,19 @@
  */
 import * as THREE from 'three';
 
+let _lampsOn = 0;
 export const sharedUniforms = {
   uTime: { value: 0 },
   /** 0 = full day, 1 = full night */
   uNight: { value: 0 },
+  /** 0..1 street lamps / lot lights. Reads max(uNight, the switch-on factor WorldView writes from Sky.lightRig, which
+   *  turns the lamps on shortly before sunset); pages that only drive uNight (gallery, demos) keep lamps = night */
+  uLamps: {
+    get value(): number { return Math.max(sharedUniforms.uNight.value, _lampsOn); },
+    set value(v: number) { _lampsOn = v; },
+  },
+  /** strength of the warm night light spill on lot grounds (lawns / yards / paths below ~0.8 m); 0 = off */
+  uLotSpill: { value: 0.035 },
   /** 0..1 global multiplier of how many windows are lit at night */
   uLitFraction: { value: 0.55 },
   /** wind strength for foliage */
@@ -81,24 +103,32 @@ export const sharedUniforms = {
   uFoliageDry: { value: 0 },
   /** multiplier on all foliage (climate tint, e.g. lusher in the tropics) */
   uFoliageTint: { value: new THREE.Color(1, 1, 1) },
+  /** foliage season (setFoliageSeason): x climate-only dryness (evergreens), y winter 0..1 (green crowns darken),
+   *  z spring 0..1 (fresh deciduous leaves), w 1 = flowering all year (tropics; else pattern-2 blossom only Apr-May) */
+  uFoliageSeason: { value: new THREE.Vector4(0, 0, 0, 0) },
 };
 
 /**
  * Climate / season look of lot foliage (render-world WorldView calls this every frame; cheap, idempotent).
- * Lawns / hedges / shrubs baked into lot models turn straw-dry in the desert and dormant in winter so lots harmonise
- * with the terrain palette; tree crowns are mostly left alone (forest and street trees swap seasonal variants).
+ * Low foliage baked into lot models (lawns, roof gardens, hedges, shrubs) turns straw-dry in the desert and dormant in
+ * winter so lots harmonise with the terrain palette; crowns follow the season through uSeason (patterns 0-2) or model
+ * variants (nature trees), evergreens darken in winter (uFoliageSeason.y), deciduous leaves are fresher in spring (.z).
  */
 export function setFoliageSeason(month: number, climate: string): void {
   const m = ((Math.floor(month) % 12) + 12) % 12;
   const winter = m === 11 || m <= 1;
+  const seasonal = climate === 'temperate' || climate === 'alpine';
   let dry = 0;
   const tint = sharedUniforms.uFoliageTint.value;
   tint.setRGB(1, 1, 1);
   if (climate === 'desert') dry = 0.45;
   else if (climate === 'tropical') tint.setRGB(1.02, 1.06, 0.97);
-  else if (climate === 'alpine') dry = winter ? 0.35 : m === 2 || m === 10 ? 0.15 : 0;
-  else dry = winter ? 0.4 : m === 9 ? 0.15 : m === 10 || m === 2 ? 0.25 : 0;
+  else if (climate === 'alpine') dry = winter ? 0.5 : m === 2 || m === 10 ? 0.22 : 0;
+  else dry = winter ? 0.55 : m === 9 ? 0.15 : m === 10 || m === 2 ? 0.3 : 0;
   sharedUniforms.uFoliageDry.value = dry;
+  const wk = !seasonal ? 0 : winter ? 1 : m === 10 || m === 2 ? 0.4 : 0;
+  const sp = !seasonal ? 0 : m === 3 ? 1 : m === 4 ? 0.5 : 0;
+  sharedUniforms.uFoliageSeason.value.set(climate === 'desert' ? 0.45 : 0, wk, sp, climate === 'tropical' ? 1 : 0);
 }
 
 // Per-instance values are FLAT varyings: interpolating a constant is not bit-exact (perspective correction), and the
@@ -160,9 +190,12 @@ flat varying float vWorldNX;
 uniform float uSignalTime;
 uniform float uMapN;
 uniform vec4 uSeason;
+uniform vec4 uFoliageSeason;
 uniform float uFoliageDry;
 uniform vec3 uFoliageTint;
 uniform float uNight;
+uniform float uLamps;
+uniform float uLotSpill;
 uniform float uLitFraction;
 uniform float uTime;
 uniform vec3 uSunDir;
@@ -188,6 +221,25 @@ vec3 windowLight(float h) {
   vec3 neutral = vec3(1.0, 0.88, 0.66);
   vec3 cool = vec3(0.72, 0.85, 1.0);
   return h < 0.55 ? warm : (h < 0.85 ? neutral : cool);
+}
+
+// Home light colour temperature per household: incandescent 2700 K, warm white, neutral, cool LED, TV blue, a rose lamp
+vec3 homeLight(float h) {
+  if (h < 0.3) return vec3(1.0, 0.64, 0.33);
+  if (h < 0.58) return vec3(1.0, 0.79, 0.52);
+  if (h < 0.78) return vec3(1.0, 0.9, 0.75);
+  if (h < 0.92) return vec3(0.8, 0.88, 1.0);
+  if (h < 0.97) return vec3(0.52, 0.68, 1.0);
+  return vec3(1.0, 0.56, 0.45);
+}
+// Office light per floor: cool 4000 K white, neutral, warm, a greenish fluorescent; warm glass tints (hotels) mostly
+// warm / neutral room light
+vec3 officeLight(float h, float warm) {
+  if (warm > 0.5) return h < 0.55 ? vec3(1.0, 0.76, 0.5) : (h < 0.86 ? vec3(1.0, 0.88, 0.72) : vec3(0.82, 0.88, 1.0));
+  if (h < 0.46) return vec3(0.78, 0.88, 1.0);
+  if (h < 0.74) return vec3(0.96, 0.93, 0.84);
+  if (h < 0.94) return vec3(1.0, 0.8, 0.56);
+  return vec3(0.8, 1.0, 0.88);
 }
 
 // Floodlit masonry: warm (pattern 1) / cool white (pattern 2) uplight, fading over the reach height H (paint floor value)
@@ -250,6 +302,8 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
   if (curvK > 0.004 && curvK < 0.4) u = atan(nObj.z, nObj.x) * max(length(P.xz), 1.0);
   float v = P.y;
   float night = uNight;
+  // lit windows come on with the street lamps around sunset (people switch lights on at dusk), ahead of the night factor
+  float wNight = max(uNight, 0.6 * uLamps);
   // contact darkening + faint vertical weathering streaks near the ground on walls (grounds the buildings)
   if (vertical && (type < 1.5 || type > 10.5)) {
     albedo *= 0.8 + 0.2 * smoothstep(0.0, 2.2, v);
@@ -302,9 +356,9 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
         // churches / keeps / clock towers: every (arched) window glows warm amber, slight per-column tint
         float ct = bh11(cell.x * 5.3 + vSeed * 17.0);
         vec3 amber = vec3(1.0, 0.72, 0.42) * 0.9 * mix(vec3(1.0), vec3(1.06, 0.94, 0.86), ct);
-        emis += amber * m * night * 0.9;
+        emis += amber * m * wNight * 0.9;
       } else {
-        emis += mix(farE, nearE, fade) * m * night * 0.9;
+        emis += mix(farE, nearE, fade) * m * wNight * 0.9;
       }
     }
   } else if (type < 2.5) {
@@ -349,38 +403,58 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float calmV = pattern > 3.5 ? 1.0 : 0.0;
       albedo *= mix(0.9 + 0.2 * h, 0.95 + 0.1 * h, calmV);
       rough += mix(0.05, 0.03, calmV) * h;
+      // night lights at window scale: panel (1.5 m) -> section / unit -> floor -> facade levels of detail, each blended
+      // to its average once it gets smaller than ~2 px (sub-pixel cells would shimmer), so towers read as small lit
+      // windows of varied colour and brightness (sparkle) instead of pale 4-9 m blocks at 300-700 m
+      float pxP = 1.0 / max(wu, 1e-4);
+      float pxF = 1.0 / max(wv, 1e-4);
+      float fP = smoothstep(1.3, 2.6, pxP) * smoothstep(1.3, 2.6, pxF);
+      float fF = smoothstep(1.3, 2.6, pxF);
+      float hp = bh31(vec3(floor(cu + 1e-3), cell.y, floor(vSeed * 43.0) + 5.0));
+      float hp2 = fract(hp * 7.31 + 0.17);
       if (resGlass) {
-        // residential towers: apartments (~4 m wide units per floor) lit like homes, warm window colours,
-        // ~55-75% lit in the evening, no fully dark floors
-        vec2 unit = vec2(floor(u / 4.0 + 1e-3), cell.y);
-        float hu = bh31(vec3(unit, floor(vSeed * 71.0)));
-        float litR = clamp(uLitFraction * 0.7 + 0.05, 0.0, 1.0) * (0.8 + 0.4 * vSeed);
-        // units only resolve while the mullions do (a resolved unit hash over a faded mullion mask read as a beige /
-        // grey camouflage of 4 m blocks at 300-700 m)
-        float fadeR = clamp(1.0 - max(fwidth(u / 1.5), wv) * 1.6, 0.0, 1.0);
-        // unlit units keep a faint residual (curtains / a lamp further inside), so the pattern is not binary
-        float litU = max(mix(clamp(litR, 0.0, 1.0), step(hu, litR), fadeR), 0.12);
-        vec3 wl = mix(vec3(1.0, 0.8, 0.52), windowLight(bh11(hu * 57.3 + vSeed)), fadeR);
-        float curtain = 0.6 + 0.4 * smoothstep(0.1, 0.9, fract(u / 4.0)) * (1.0 - smoothstep(0.1, 0.9, fract(u / 4.0)) * 0.5);
-        emis += wl * litU * (1.0 - mull) * night * mix(0.8, (0.55 + 0.6 * bh11(hu * 13.1)) * curtain, fadeR) * 0.45;
+        // homes: every apartment (3 panels) is a household at home with the lights on (70% of its rooms lit) or not
+        // (a stray lamp in ~9% of its rooms), each with its own light colour; every panel a room with its own lamp /
+        // curtain brightness -> scattered small lit windows of varied warm / neutral / cool light
+        float cuU = cu / 3.0;
+        float fU = smoothstep(1.3, 2.6, 1.0 / max(fwidth(cuU), 1e-4)) * fF;
+        float hu = bh31(vec3(floor(cuU + 1e-3), cell.y, floor(vSeed * 71.0)));
+        float litR = clamp(uLitFraction * 0.8, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
+        float unitOn = step(hu, litR);
+        float pRoom = mix(0.09, 0.7, unitOn);
+        float roomB = 0.3 + 0.95 * hp2;
+        vec3 hc = homeLight(fract(hu * 57.3 + vSeed * 3.1));
+        vec3 cAvg = vec3(1.0, 0.8, 0.56);
+        vec3 eP = hc * (step(hp, pRoom) * roomB + 0.04);
+        vec3 eU = hc * (pRoom * 0.775 + 0.04);
+        vec3 eF = cAvg * ((0.09 + 0.61 * clamp(litR, 0.0, 1.0)) * 0.775 + 0.04);
+        vec3 e = mix(eF, mix(eU, eP, fP), fU);
+        emis += e * (1.0 - mull) * wNight * 0.62;
       } else {
-      // offices / hotels at night: lights clustered per floor section, some floors entirely dark, per-panel
-      // brightness, color temperature per floor (warm tints -> hotel-like warm light, blue tints -> office white)
-      float fl = bh31(vec3(floor(cu / 6.0), cell.y, vSeed * 7.0));
-      float floorOn = step(0.35, bh11(cell.y * 3.7 + vSeed * 57.0));
-      float litP = uLitFraction * (0.45 + 0.8 * vSeed);
-      float lit = step(fl, litP) * floorOn;
-      // per-floor fade: distant floors blend to the average so tall towers don't sparkle
-      float fadeF = clamp(1.0 - wv * 1.6, 0.0, 1.0);
-      lit = mix(clamp(litP, 0.0, 1.0) * 0.82, lit, fadeF);
+      // offices / hotels: per floor dark (~30%, a few late workers), partly lit or fully lit (open plan); 4.5 m sections
+      // lit (75% of their windows on) or not (a stray desk lamp in ~8%), per-panel brightness (blinds, desks) and a
+      // ceiling-light gradient -> clusters of lit windows with gaps, not solid blocks; colour temperature per floor
+      // (cool 4000 K office white, neutral, warm; warm glass tints read hotel-like)
       float warmTint = step(1.5, pattern) * step(pattern, 2.5);
-      float fh = bh11(cell.y * 7.3 + vSeed * 31.0);
-      vec3 officeC = mix(vec3(0.74, 0.84, 1.0), vec3(1.0, 0.84, 0.62), clamp(step(0.72, fh) + warmTint * 0.8, 0.0, 1.0));
-      officeC = mix(officeC, vec3(0.86, 0.95, 0.9), step(0.93, fh) * (1.0 - warmTint)); // a few greenish fluorescent floors
-      // brighter toward the ceiling of each floor (ceiling lights), dimmer panels here and there
-      float ceilG = 0.55 + 0.45 * smoothstep(0.15, 0.85, fract(cv));
-      float panelB = 0.7 + 0.45 * bh31(vec3(floor(cu), cell.y, vSeed * 19.0));
-      emis += officeC * lit * (1.0 - mull) * night * mix(0.75, ceilG * panelB, fadeF) * 0.55;
+      float fr1 = bh11(cell.y * 3.7 + vSeed * 57.0);
+      float occ = fr1 < mix(0.3, 0.12, warmTint) ? 0.1 : (fr1 < 0.72 ? 0.75 : 1.55);
+      float cuS = cu / 3.0;
+      float fS = smoothstep(1.3, 2.6, 1.0 / max(fwidth(cuS), 1e-4)) * fF;
+      float hs = bh31(vec3(floor(cuS + 1e-3), cell.y, vSeed * 7.0));
+      float litP = uLitFraction * (0.45 + 0.8 * vSeed);
+      float secP = clamp(litP * occ, 0.0, 0.97);
+      float pWin = mix(0.08, 0.75, step(hs, secP));
+      float panB = 0.35 + 0.85 * hp2;
+      vec3 fc = officeLight(bh11(cell.y * 7.3 + vSeed * 31.0), warmTint);
+      vec3 cAvg = mix(vec3(0.86, 0.9, 0.96), vec3(1.0, 0.86, 0.66), warmTint);
+      float ceilG = mix(0.775, 0.55 + 0.45 * smoothstep(0.15, 0.85, fract(cv)), fF);
+      float floorP = 0.08 + 0.67 * secP;
+      vec3 eP = fc * (step(hp, pWin) * panB + 0.045) * ceilG;
+      vec3 eS = fc * (pWin * 0.775 + 0.045) * ceilG;
+      vec3 eFl = fc * (floorP * 0.775 + 0.045) * 0.775;
+      vec3 eA = cAvg * ((0.08 + 0.67 * clamp(litP * 0.77, 0.0, 1.0)) * 0.775 + 0.045) * 0.775;
+      vec3 e = mix(eA, mix(eFl, mix(eS, eP, fP), fS), fF);
+      emis += e * (1.0 - mull) * wNight * 0.6;
       }
     }
   } else if (type < 3.5) {
@@ -388,6 +462,9 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float n = bnoise(P.xz * 0.8) * 0.6 + bnoise(P.xz * 3.1) * 0.4;
     albedo *= 0.82 + 0.25 * n;
     rough = 0.95;
+    // green-painted (garden / sedum) roofs follow the lawns' season: dormant in winter, straw in the desert (Foliage)
+    float grK = smoothstep(0.02, 0.08, albedo.g - max(albedo.r, albedo.b));
+    albedo = mix(albedo, mix(albedo, vec3(dot(albedo, vec3(0.3, 0.59, 0.11))) * vec3(1.18, 1.02, 0.68), uFoliageDry) * uFoliageTint, grK);
   } else if (type < 4.5) {
     // roof tiles: horizontal courses by height
     float c = v * 3.2;
@@ -422,9 +499,11 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       albedo *= 0.9 + 0.18 * n;
       rough = 0.9;
       // intensity scales with the paint's floor value (floor / 3.3; default 3.3 = 1x) for soft fall-off rings
-      // light color: mostly the lamp's warm white, only lightly tinted by the ground (grass pools don't go lime)
-      vec3 poolBase = mix(vec3(dot(albedo, vec3(0.3, 0.59, 0.11))), albedo, 0.35);
-      emis += poolBase * vec3(1.0, 0.8, 0.55) * night * 0.75 * ((vSurf.z > 0.005 ? vSurf.z : 3.3) / 3.3);
+      // light color: the lamp's warm white, only lightly tinted by the ground; green grounds (park lawns, gardens) keep
+      // almost none of their hue so lamp pools on grass read warm, not mint / sage
+      float gr = smoothstep(0.08, 0.35, (albedo.g - max(albedo.r, albedo.b)) / max(albedo.g, 1e-3));
+      vec3 poolBase = mix(vec3(dot(albedo, vec3(0.3, 0.59, 0.11))), albedo, 0.35 * (1.0 - 0.8 * gr));
+      emis += poolBase * mix(vec3(1.0, 0.8, 0.55), vec3(1.0, 0.74, 0.46), gr) * uLamps * 0.75 * ((vSurf.z > 0.005 ? vSurf.z : 3.3) / 3.3);
     } else if (pattern > 12.5 && pattern < 13.5) {
       // traffic-signal lamp: same per-intersection 30 s cycle as the vehicles (VehicleRenderer)
       ivec2 cell = ivec2(floor(vInstXZ / 16.0));
@@ -448,11 +527,19 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float k = pattern < 10.5 ? 1.0 : 2.0;
       emis += albedo * 1.35 * night * k;
       rough = 0.5;
+    } else if (pattern > 13.5 && pattern < 14.5) {
+      // grow-light lamp rows on greenhouse roofs: like 11 at night (the dark saturated paint glows x2), but by day they
+      // take the roof's colour (floor < 2: white film, else roof glass) instead of showing as rust / plum stripes
+      vec3 dayC = vSurf.z < 2.0 ? vec3(0.8, 0.82, 0.8) : vec3(0.3, 0.37, 0.44);
+      emis += albedo * 2.7 * night;
+      albedo = mix(dayC, albedo, night);
+      rough = mix(0.12, 0.5, night);
+      metal = mix(0.45, 0.0, night) * step(2.0, vSurf.z);
     } else {
       // emissive sign / light. pattern 1..8 scales intensity by pattern / 4 (pattern 0 = default 1x).
       // The night multiplier is moderate so saturated neon keeps its hue; bloom carries the glow.
       float k = pattern > 0.5 ? pattern * 0.25 : 1.0;
-      emis += albedo * (0.3 + 1.35 * night) * k;
+      emis += albedo * (0.3 + 1.35 * wNight) * k;
       rough = 0.5;
     }
   } else if (type < 7.5) {
@@ -464,7 +551,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     metal = 0.55;
     if (pattern > 1.5 && pattern < 2.5) {
       // pavilion glass (lobbies, foyers, greenhouses, concourses): reflective by day, uniform warm glow at night
-      emis += vec3(1.0, 0.84, 0.62) * night * 0.6;
+      emis += vec3(1.0, 0.84, 0.62) * wNight * 0.6;
     } else if (pattern > 2.5 && pattern < 3.5) {
       // grow-light glass (greenhouse walls / roofs): clear, slightly greenish glass by day with NO tint or glow; at
       // night the HPS lamps inside shine through as a saturated sodium amber (kept below the bloom threshold so it
@@ -473,7 +560,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       rough = 0.1;
       metal = 0.45;
       float bay = bh31(vec3(floor(u / 4.0 + 1e-3), floor(v / 6.0 + 1e-3), floor(vSeed * 61.0)));
-      emis += vec3(0.95, 0.34, 0.05) * night * (0.26 + 0.14 * bay);
+      emis += vec3(0.95, 0.34, 0.05) * wNight * (0.26 + 0.14 * bay);
     } else if (pattern > 0.5 && pattern < 1.5) {
       albedo = vec3(0.035, 0.045, 0.055) + albedo * 0.2;
       rough = 0.05;
@@ -491,28 +578,74 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float litFar = clamp(litP, 0.0, 1.0) * mix(1.0, 0.4 + 0.9 * bh11(wc.y * 1.73 + floor(vSeed * 29.0)), fwRow);
       lit = mix(litFar, lit, fw);
       vec3 wl = mix(vec3(1.0, 0.8, 0.52), vec3(1.0, 0.88, 0.7), step(0.7, h));
-      emis += wl * night * (0.6 + 0.5 * h) * lit;
+      emis += wl * wNight * (0.6 + 0.5 * h) * lit;
     }
   } else if (type < 8.5) {
     // foliage
-    if (pattern > 0.5 && pattern < 2.5) {
-      // seasonal crowns baked into lot models (1 deciduous, 2 spring blossom): per-tree random from the paint's
-      // floor channel + instance seed; recolour at the painted brightness so the baked crown shading survives
+    // (patterns 0-4 and the LOW / CROWN classes: see the header)
+    float lum0 = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+    // LOW foliage: flat up-facing faces (lawns, roof gardens, hedge / planter tops) or axis-aligned box sides (hedges,
+    // planters, green walls) at any height, or anything within ~2.5 m of the model base (shrubs, beds)
+    float flatK = max(smoothstep(0.985, 0.998, nObj.y), smoothstep(0.994, 0.999, max(abs(nObj.x), abs(nObj.z))));
+    float lowF = max(1.0 - smoothstep(0.4, 2.6, P.y), flatK);
+    bool autoP = pattern < 0.5;
+    // evergreen: pattern 4, or a dark-painted lot crown (conifers / cypresses ~0.06-0.09 linear luminance, broadleaf
+    // crowns >= ~0.115)
+    float everK = pattern > 3.5 ? 1.0 : (autoP ? (1.0 - smoothstep(0.097, 0.108, lum0)) * (1.0 - lowF) : 0.0);
+    // crowns recoloured by the season: patterns 1-2, and lot crowns (pattern 0) that are neither low nor evergreen
+    // (nature trees, pattern 3, swap seasonal model variants instead)
+    float seasK = pattern > 0.5 && pattern < 2.5 ? 1.0 : (autoP ? (1.0 - lowF) * (1.0 - everK) : 0.0);
+    // 1 = the leaves are still green (not recoloured to bare twigs / autumn colours)
+    float greenK = 1.0;
+    // fine twig texture coordinate for bare crowns + its distance fade (derivatives outside the branches below)
+    vec2 tq = P.xz * 2.7 + P.y * 1.9;
+    float twF = clamp(1.0 - length(fwidth(tq)) * 0.7, 0.0, 1.0);
+    if (seasK > 0.001) {
+      // per-tree random from the paint's floor channel + instance seed (lot crowns, floor 3.3: per lot instance); a
+      // little spatial noise lets crowns near the month's autumn threshold turn patchily; recolour at the painted
+      // brightness so the baked crown shading survives
+      vec2 wq = vInstXZ + P.xz;
       float pr = fract(vSurf.z * 7.13 + vSeed * 3.71);
-      float lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-      if (pattern > 1.5 && uSeason.z < 0.5) albedo = lum * vec3(0.3, 0.62, 0.11);
-      lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-      if (pr < uSeason.y) albedo = lum * vec3(1.3, 0.93, 0.72);
-      else if (pr < uSeason.y + uSeason.x) {
-        float ak = fract(pr * 13.7);
-        albedo = lum * (ak < 0.45 ? vec3(2.55, 0.62, 0.08) : (ak < 0.75 ? vec3(3.3, 0.34, 0.12) : vec3(2.5, 1.7, 0.1)));
+      float prN = pr + (bnoise(wq * 0.21) - 0.5) * 0.12;
+      vec3 c = albedo;
+      float lum = lum0;
+      if (pattern > 1.5 && pattern < 2.5 && uSeason.z < 0.5 && uFoliageSeason.w < 0.5) {
+        // blossom outside Apr-May (the tropics flower all year): the blossom-coloured faces (red >= green) become
+        // ordinary leaf green
+        c = mix(c, lum * vec3(0.21, 0.434, 0.077), smoothstep(-0.03, 0.02, albedo.r - albedo.g));
+        lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
       }
+      if (pr < uSeason.y) {
+        // bare twigs: grey-brown, broken up by a fine twig texture (fades to its average with distance) so a solid
+        // lot crown reads as a branch mass rather than a brown ball
+        float tw = mix(0.5, bnoise(tq + 11.3), twF);
+        c = lum * vec3(1.18, 0.95, 0.8) * (0.62 + 0.62 * tw);
+        greenK = 0.0;
+      } else if (prN < uSeason.y + uSeason.x) {
+        // autumn: orange -> red -> yellow per tree, blended with a little noise (no hard seam across a crown)
+        float h = fract(pr * 13.7) + (bnoise(wq * 0.35 + 7.1) - 0.5) * 0.3;
+        vec3 ac = mix(vec3(2.55, 0.62, 0.08), vec3(3.3, 0.34, 0.12), smoothstep(0.38, 0.52, h));
+        c = lum * mix(ac, vec3(2.5, 1.7, 0.1), smoothstep(0.7, 0.82, h));
+        greenK = 0.0;
+      }
+      albedo = mix(albedo, c, seasK);
+      greenK = mix(1.0, greenK, seasK);
     }
-    // climate / season (uFoliageDry, uFoliageTint): low foliage (lot lawns, hedges, shrubs below ~2.5 m model height)
-    // turns straw-dry in deserts and dormant in winter so lots match the terrain; crowns higher up get a quarter of it
+    // green crown leaves: fresh yellow-green in spring (deciduous); in winter evergreens turn a darker, cooler green and
+    // the deciduous leaves still on a tree (the non-bare remainder) are dead brown (marcescent oaks / beeches), so a
+    // winter wood reads grey-brown + dark evergreens, not speckled with summer green; blossom / autumn / twig colours
+    // (red >= green) are left alone
     {
-      float lowF = 1.0 - smoothstep(0.4, 2.6, P.y);
-      float dryK = uFoliageDry * mix(0.25, 1.0, lowF);
+      float leafK = (1.0 - lowF) * greenK * smoothstep(-0.01, 0.03, albedo.g - albedo.r);
+      albedo *= mix(vec3(1.0), vec3(1.07, 1.1, 0.78), uFoliageSeason.z * leafK * (1.0 - everK));
+      float lumL = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+      albedo = mix(albedo, albedo * vec3(0.8, 0.86, 0.9), uFoliageSeason.y * leafK * everK);
+      albedo = mix(albedo, lumL * vec3(1.55, 1.0, 0.55), uFoliageSeason.y * leafK * (1.0 - everK));
+    }
+    // climate / season (uFoliageDry, uFoliageTint): low foliage turns straw-dry in deserts and dormant in winter so
+    // lots match the terrain; crowns get a quarter of it; evergreens only the climate part (no winter dormancy)
+    {
+      float dryK = mix(uFoliageDry, uFoliageSeason.x, everK) * mix(0.25, 1.0, lowF);
       float fl = dot(albedo, vec3(0.3, 0.59, 0.11));
       albedo = mix(albedo, vec3(fl) * vec3(1.18, 1.02, 0.68), dryK) * uFoliageTint;
     }
@@ -613,6 +746,12 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     albedo *= 0.9 + 0.15 * bnoise(P.xz * 0.15);
     rough = 0.95;
   }
+  // night: the ground of a lot (lawns, yards, paths, parking at the foot of the buildings) catches a faint warm spill of
+  // its windows / porch lights and the street lamps, so gardens stay readable instead of sinking into the night floor
+  // (terrain and roads have their own shaders: open land stays dark)
+  if (!vertical && nObj.y > 0.85 && P.y < 0.8 && (type < 5.5 || (type > 9.5 && type < 14.5) || (type > 6.5 && type < 8.5))) {
+    emis += albedo * vec3(1.0, 0.86, 0.66) * uLamps * uLotSpill * (0.6 + 0.6 * uLitFraction);
+  }
 }
 `;
 
@@ -635,6 +774,8 @@ export function patchSurfaceMaterial<T extends THREE.MeshStandardMaterial>(mat: 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = sharedUniforms.uTime;
     shader.uniforms.uNight = sharedUniforms.uNight;
+    shader.uniforms.uLamps = sharedUniforms.uLamps;
+    shader.uniforms.uLotSpill = sharedUniforms.uLotSpill;
     shader.uniforms.uLitFraction = sharedUniforms.uLitFraction;
     shader.uniforms.uWind = sharedUniforms.uWind;
     shader.uniforms.uSunDir = sharedUniforms.uSunDir;
@@ -644,6 +785,7 @@ export function patchSurfaceMaterial<T extends THREE.MeshStandardMaterial>(mat: 
     shader.uniforms.uSeason = sharedUniforms.uSeason;
     shader.uniforms.uFoliageDry = sharedUniforms.uFoliageDry;
     shader.uniforms.uFoliageTint = sharedUniforms.uFoliageTint;
+    shader.uniforms.uFoliageSeason = sharedUniforms.uFoliageSeason;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + VERT_MAIN);

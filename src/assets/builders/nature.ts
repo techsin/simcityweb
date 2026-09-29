@@ -6,6 +6,12 @@
  * Shading tricks (free at runtime):
  *  - foliage blobs get normals blended toward the crown center => one soft volume with lumpy silhouette
  *  - per-vertex tint: darker/cooler lower crown, warmer sun-kissed tops (see nat_geom.foliageShade)
+ *
+ * Seasons (Foliage patterns, materials.ts): the deciduous trees (oak / maple / birch) are drawn as seasonal model
+ * VARIANTS by the renderers (nat_season.ts), so their foliage is pattern 3 (never recoloured by the shader); conifers,
+ * palms and the evergreen shrub are pattern 4 (evergreen: darker in winter, snow-dusted above the alpine snow line);
+ * the other shrubs follow the season in the shader (bush v0 pattern 1, flowering v2 / v3 pattern 2: blossom only in
+ * spring). FOLIAGE_PATTERN below; applied to every foliage vertex after the build.
  */
 import type { ModelBuilders } from '../registry';
 import type { ModelBuilder } from '../ModelBuilder';
@@ -181,8 +187,45 @@ function bareTree(b: ModelBuilder, rng: RNG, o: BareOpts) {
   tintSince(b, m, foliageShade(tTop, H, 0.5, 0));
 }
 
+// ------------------------------------------------------------------ seasons
+/** Foliage pattern per model (see the header): 3 variant-seasonal deciduous, 4 evergreen, 1 / 2 shader-seasonal */
+const FOLIAGE_PATTERN: Record<string, (v: number) => number> = {
+  tree_oak: () => 3,
+  tree_maple: () => 3,
+  tree_birch: () => 3,
+  tree_pine: () => 4,
+  tree_spruce: () => 4,
+  tree_cypress: () => 4,
+  tree_palm: () => 4,
+  bush: (v) => [1, 4, 2, 2][v] ?? 1,
+};
+
+/**
+ * Stamp the Foliage pattern on every foliage vertex of a built model (also the per-face paints of leafBlob's
+ * faceColor, which drop the pattern). Patterns 1-2 also get a per-model random in the floor channel (the shader mixes
+ * in the instance seed, so each placed shrub turns on its own).
+ */
+function withFoliagePattern(defs: ModelBuilders): ModelBuilders {
+  const out: ModelBuilders = {};
+  for (const [id, fn] of Object.entries(defs)) {
+    const pat = FOLIAGE_PATTERN[id];
+    out[id] = !pat ? fn : (b, v, rng, entry) => {
+      fn(b, v, rng, entry);
+      const p = pat(v);
+      const r = p === 1 || p === 2 ? rng.next() : -1;
+      const s = b.raw().srf;
+      for (let i = 0; i < s.length; i += 3) {
+        if (s[i] !== Surf.Foliage) continue;
+        s[i + 1] = p;
+        if (r >= 0) s[i + 2] = r;
+      }
+    };
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------ builders
-export const models: ModelBuilders = {
+export const models: ModelBuilders = withFoliagePattern({
   // Broadleaf oak: stout trunk, forked branches, wide lumpy crown. 108 tris.
   // v0 v1 v2 v4 green, v3 autumn orange, v5 autumn red, v6 bare winter, v7 spring blossom (<= 120 tris).
   // Layout: nat_season.ts.
@@ -517,7 +560,7 @@ export const models: ModelBuilders = {
       return [k, k, k];
     });
   },
-};
+});
 
 /** Small octahedron (8 tris): coconut clusters, flower heads. */
 function octa(b: ModelBuilder, c: V3, r: number, ry: number) {

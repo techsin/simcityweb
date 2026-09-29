@@ -1,10 +1,11 @@
 /**
  * Advisors (status + advice) and the full news feed. Each advisor card shows its open issues (advice whose condition
- * still holds, highest priority first: sim/economy/advisors openAdvice) — else its latest message of the last 90 days,
- * else its own assessment. An open 'bad' / 'warning' issue also colours the status dot (and 'bad' counts for the badge).
+ * still holds, highest priority first: sim/economy/advisors openAdvice) — else another system's news of the last
+ * RECENT_DAYS (advice posts never linger once resolved: adviceIdOf), else its own assessment. An open 'bad' /
+ * 'warning' issue also colours the status dot. The top-bar badge stays on the (cheap) assessments.
  */
 import type { NewsItem } from '../../sim/CityState';
-import { openAdvice, type OpenAdvice } from '../../sim/economy/advisors';
+import { adviceIdOf, openAdvice, type OpenAdvice } from '../../sim/economy/advisors';
 import type { GameContext } from '../../game/context';
 import { Panel } from '../Panel';
 import { clear, escapeHtml, h, toggleClass } from '../dom';
@@ -128,27 +129,40 @@ export class AdvisorsPanel extends Panel {
   showTab(t: 'advisors' | 'news'): void {
     this.tab = t;
     this.lastSig = '';
+    if (t === 'advisors' && this.isOpen) this.refreshOpen(true);
     this.update();
   }
 
+  /**
+   * the advisor's latest news of the last RECENT_DAYS from another system (emergencies, shortages, connections …).
+   * Advice posts are skipped: the open issues show those while their rule holds, and a resolved one must not linger.
+   */
   private latestFor(a: Advisor): NewsItem | undefined {
-    const news = this.ctx.state.news;
+    const st = this.ctx.state, news = st.news;
     for (let i = news.length - 1; i >= 0; i--) {
       const n = news[i];
-      if (n.advisor && (a.keys.test(n.advisor) || n.advisor === a.id)) return n;
+      if (st.day - n.day >= RECENT_DAYS) break;
+      if (!n.advisor || !(a.keys.test(n.advisor) || n.advisor === a.id)) continue;
+      if (adviceIdOf(st, n)) continue;
+      return n;
     }
     return undefined;
   }
 
-  /** open advice of the whole city, re-evaluated at most once a second of wall-clock time (a few ms on a big map) */
+  /**
+   * open advice of the whole city (a full advisor scan: tens of ms on a big map), evaluated when the Advisors tab is
+   * shown, then again only while the game runs: a new game day and OPEN_REFRESH_MS of wall-clock time since the last
+   */
   private open: OpenAdvice[] = [];
   private openAt = -Infinity;
+  private openDay = -1;
   private openState: unknown = null;
-  private refreshOpen(): void {
-    const now = performance.now();
-    if (this.openState === this.ctx.state && now - this.openAt < 1000) return;
+  private refreshOpen(force = false): void {
+    const st = this.ctx.state, now = performance.now();
+    if (!force && this.openState === st && (st.day === this.openDay || now - this.openAt < OPEN_REFRESH_MS)) return;
     this.openAt = now;
-    this.openState = this.ctx.state;
+    this.openDay = st.day;
+    this.openState = st;
     try {
       this.open = openAdvice(this.ctx.sim);
     } catch {
@@ -163,6 +177,8 @@ export class AdvisorsPanel extends Panel {
 
   override onOpen(): void {
     this.seenNews = this.ctx.state.news.length;
+    // fresh open issues whenever the panel opens (the refresh while it stays open is throttled)
+    this.openState = null;
   }
 
   override update(): void {
@@ -187,11 +203,12 @@ export class AdvisorsPanel extends Panel {
         } catch {
           res = { level: 'good', text: '…' };
         }
-        // open issues first (they still hold, however old the message); else the latest message of the last 90 days
+        // open issues first (they still hold, however old the message); else recent news of other systems; else the
+        // advisor's own assessment
         const open = this.openFor(a);
         const top = open[0];
         const latest = top ? undefined : this.latestFor(a);
-        const recent = !!latest && st.day - latest.day < 90;
+        const recent = !!latest;
         const level = worse(res.level, top ? LEVEL_OF[top.kind] : 'good');
         const stColor = level === 'bad' ? 'var(--bad)' : level === 'warn' ? 'var(--warn)' : 'var(--good)';
         const text = top ? top.text : recent ? latest!.text : res.text;
@@ -236,20 +253,15 @@ export class AdvisorsPanel extends Panel {
       h('i', { class: 'md' }), h('span', { class: 'mt' }, o.text), go ? h('span', { class: 'mg', html: icon('target', 12) }) : null);
   }
 
-  /** advisor warnings count for the top-bar badge (a 'bad' assessment or a 'bad' open issue) */
+  /** advisor warnings count for the top-bar badge (cheap: the assessments; no advisor scan while the panel is shut) */
   alertCount(): number {
-    this.refreshOpen();
     let n = 0;
     for (const a of ADVISORS) {
-      let bad = this.open.some((o) => o.advisor === a.id && o.kind === 'bad');
-      if (!bad) {
-        try {
-          bad = a.assess(this.ctx).level === 'bad';
-        } catch {
-          /* ignore */
-        }
+      try {
+        if (a.assess(this.ctx).level === 'bad') n++;
+      } catch {
+        /* ignore */
       }
-      if (bad) n++;
     }
     return n;
   }
@@ -257,6 +269,10 @@ export class AdvisorsPanel extends Panel {
 
 /** further open issues listed under the top one */
 const MORE_MAX = 2;
+/** other systems' news older than this (days) no longer speaks for an advisor */
+const RECENT_DAYS = 30;
+/** while the panel stays open, open issues are re-evaluated at most this often (ms), and only on a new game day */
+const OPEN_REFRESH_MS = 3000;
 const LEVEL_OF: Record<OpenAdvice['kind'], 'good' | 'warn' | 'bad'> = { bad: 'bad', warning: 'warn', info: 'good', good: 'good' };
 const RANK = { good: 0, warn: 1, bad: 2 } as const;
 const worse = (a: 'good' | 'warn' | 'bad', b: 'good' | 'warn' | 'bad') => (RANK[b] > RANK[a] ? b : a);

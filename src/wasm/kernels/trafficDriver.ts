@@ -558,8 +558,8 @@ export function installTrafficCore(trObj: object, deps: TrafficDriverDeps, core:
       const units = Math.ceil(len / d.mult);
       if (units > (need[d.cls] ?? 0)) need[d.cls] = units;
     };
-    const pairs: [ArrayLike<number> & { subarray(a: number, b: number): unknown }, string][] = [];
-    for (const [f, k] of FIELD_MAP) if (tr[f] && ArrayBuffer.isView(tr[f])) pairs.push([tr[f], k]);
+    const pairs: [Float32Array, string][] = [];
+    for (const [f, k] of FIELD_MAP) if (tr[f] && ArrayBuffer.isView(tr[f])) pairs.push([tr[f] as Float32Array, k]);
     for (const [f, p] of SEARCH_MAP) {
       const S = tr[f];
       for (const [x, y] of [['dist', 'Dist'], ['src', 'Src'], ['next', 'Next'], ['hops', 'Hops'], ['order', 'Order'], ['done', 'Done']]) pairs.push([S[x], p + y]);
@@ -571,7 +571,7 @@ export function installTrafficCore(trObj: object, deps: TrafficDriverDeps, core:
     for (const [src, k] of pairs) {
       const dst = a[k];
       const m = Math.min(src.length, dst.length);
-      if (m > 0) dst.set((src as unknown as Float32Array).subarray(0, m));
+      if (m > 0) dst.set(src.subarray(0, m));
     }
     c.n = tr.road.n; c.nRail = tr.rail.n; c.nSub = tr.subway.n; c.nComp = tr.road.nComp; c.mapN = tr.road.N;
     c.total = c.n + c.nRail + c.nSub;

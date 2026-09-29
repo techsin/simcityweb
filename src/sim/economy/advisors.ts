@@ -17,17 +17,34 @@
  * Rules marked `confirm` read utilities results (which lag an edit by a few days) and only speak when the condition
  * already held at the previous monthly check.
  * openAdvice(sim): the advice that holds right now (Advisors panel: open issues per advisor, highest priority first).
+ * advisorIssues(st): the full, unthrottled list of the last monthly pass grouped by advisor (ADVICE_PER_MONTH = 2 only
+ * limits what is announced; everything else still shows in the Advisors panel).
+ *
+ * SIM_DEPTH_SPEC §F / WP5-4 rules (each with a map location): schools / health / playgrounds from the catchment needs
+ * (unservedClusters), overcrowded schools / hospitals / police stations (facilityLoad), one fire rule (response gap
+ * first — residents beyond auto-dispatch reach, uncoveredHotspots — then prevention coverage), slow ambulances, riot
+ * risk, an overcrowded jail, noise, sewage, tap water, landfills filling up, ONE garbage rule (homes without pickup from
+ * 300 residents, with the reason: capacity / truck range / no road), hotels, tourism, attractiveness, the bus fleet,
+ * parking and regional job markets. PERF: the map scans (zoned blocks, homes, facilities) run on the last days of the
+ * month (MONTH_SCAN_DAYS, deterministic day offsets) and the month tick reuses them.
  *
  * Flavour headlines: a shuffle bag over HEADLINES (each line once per cycle; lines that don't fit the city's size,
  * season, climate or buildings wait in the bag), and no line again within HEADLINE_REPEAT_DAYS (2 in-game years).
  * Bag / schedule persist in state.systemData.advisors; they use one sim.rng draw per headline like the former pick.
  */
 import type { SimSystem, Simulation } from '../Simulation';
-import { BF, RESP_NONE, type Building, type CityState } from '../CityState';
+import { BF, RESP_NONE, type Building, type CityState, type NeedStat, type NeedTier } from '../CityState';
 import { DEV_TYPE_LABELS, DevType, Network, Zone, zoneDensity } from '../../core/types';
-import { type EconRuntime, econData, infraFlags } from './runtime';
-import { capHints } from './demand';
-import { residentCoverage } from './approval';
+import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
+import { capHints, regionInputs } from './demand';
+import { residentCoverage, residentSurvey } from './approval';
+import { cohortShares } from './demographics';
+import { attractivenessBreakdown } from './tourism';
+import { facilityLoad, unservedClusters } from '../infra/catchments';
+import { emergencyOf, uncoveredHotspots } from '../infra/emergency';
+import { GARBAGE_TRUCK_RANGE } from '../infra/params';
+import type { PollutionSystem } from '../infra/pollution';
+import type { UtilitiesSystem } from '../infra/utilities';
 import { maxLoanAmount, loanRate } from './loans';
 import { RNG, hash2 } from '../../core/rng';
 import { ZONE_DEVTYPES, getDef } from '../catalog';
@@ -51,6 +68,21 @@ interface Advice {
   z?: number;
   /** only speak when the condition already held at the previous monthly check (utilities results lag edits) */
   confirm?: boolean;
+  /** stay quiet in the news feed while a news item matching this was posted within QUIET_DAYS (another system's news
+   *  said the same; the issue still shows in the Advisors panel) */
+  quietIf?: RegExp;
+}
+/** see Advice.quietIf */
+const QUIET_DAYS = 90;
+/** a news item matching `re` was posted within QUIET_DAYS */
+function recentNews(st: CityState, re: RegExp): boolean {
+  const news = st.news;
+  for (let k = news.length - 1; k >= 0; k--) {
+    const n = news[k];
+    if (st.day - n.day > QUIET_DAYS) break;
+    if (re.test(n.text)) return true;
+  }
+  return false;
 }
 
 const POP_MILESTONES = [500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 750000, 1000000];
@@ -76,7 +108,12 @@ export interface AdvisorData {
   shown: Record<string, number>;
   /** confirm-rule id -> first day of the current uninterrupted sighting */
   seen: Record<string, number>;
+  /** the advice posted lately, oldest first (at most POSTS_KEPT): which news items came from an advice rule — the
+   *  Advisors panel shows those only while their rule holds (openAdvice), never as a stale "latest message" */
+  posts?: { day: number; id: string; text: string }[];
 }
+/** advice posts kept in AdvisorData.posts (2 a month at most: two years) */
+const POSTS_KEPT = 48;
 
 export function advisorData(st: CityState): AdvisorData {
   let a = st.systemData.advisors as AdvisorData | undefined;
@@ -219,12 +256,17 @@ interface FacilityScan {
   plantsRisky: Building[];
   /** standing fire stations */
   fireStations: number;
+  /** standing seat / patient / patrol facilities (schools, colleges, clinics, hospitals, police) for overcrowding */
+  tiered: Building[];
+  /** standing bus depots and jails */
+  depots: Building[];
+  jails: Building[];
 }
 
 function scanFacilities(st: CityState, rt: EconRuntime): FacilityScan {
   const f: FacilityScan = {
     plants: [], plantsBurnt: [], plantsIsolated: [], burntMW: 0, plantsDry: [], waterOk: [], waterBurnt: [], waterNoRoad: [], waterNoPower: [],
-    civicUnpowered: 0, civicFirst: null, liveMW: 0, plantsRisky: [], fireStations: 0,
+    civicUnpowered: 0, civicFirst: null, liveMW: 0, plantsRisky: [], fireStations: 0, tiered: [], depots: [], jails: [],
   };
   rt.ensureLists();
   for (const b of rt.plopped) {
@@ -232,6 +274,12 @@ function scanFacilities(st: CityState, rt: EconRuntime): FacilityScan {
     if (!def) continue;
     const burnt = (b.flags & BF.Burnt) !== 0;
     if (!burnt && def.category === 'fire') f.fireStations++;
+    if (!burnt && b.built >= 1) {
+      const tier = def.coverage?.tier;
+      if (tier === 'elementary' || tier === 'high' || tier === 'college' || tier === 'clinic' || tier === 'hospital' || tier === 'police') f.tiered.push(b);
+      if (def.id === 'civ_bus_depot' || def.model === 'civ_bus_depot') f.depots.push(b);
+      if (def.id === 'civ_jail' || def.model === 'civ_jail') f.jails.push(b);
+    }
     if ((def.powerOut ?? 0) > 0) {
       if (burnt) { f.plantsBurnt.push(b); f.burntMW += def.powerOut!; continue; }
       f.plants.push(b);
@@ -251,6 +299,84 @@ function scanFacilities(st: CityState, rt: EconRuntime): FacilityScan {
     }
   }
   return f;
+}
+
+/** homes (residential growables with residents) and shops for the WP5 rules, one pass over the growables */
+interface HomeScan {
+  day: number;
+  residents: number;
+  homes: number;
+  /** homes with BF.Noisy (and the first one's cell, -1 = none) */
+  noisy: number;
+  noisyAt: number;
+  /** residents beyond auto-dispatch reach of a fire station / an ambulance (resp* < 0); -1 = layers not ready */
+  fireOut: number;
+  medOut: number;
+  /** seniors in homes no clinic / hospital reaches, children in homes without a playground nearby, all children */
+  seniorsOut: number;
+  kidsNoPlay: number;
+  kids: number;
+  /** homes without garbage pickup and the cell of the one with the biggest pile */
+  noGarbage: number;
+  noGarbageAt: number;
+  /** shops / offices whose lot is over PARKING_FULL parking pressure, all of them, the worst cell */
+  parkingFull: number;
+  shops: number;
+  parkingAt: number;
+  parkingMax: number;
+  /** the home cell with the highest crime */
+  crimeAt: number;
+}
+/** parking pressure above which shoppers give up (WP5-4 parkingPressure) */
+const PARKING_FULL = 0.6;
+/** playCov below this = no playground nearby (spec: ≥ 30 % of kids with play < 0.2) */
+const PLAY_MIN = 0.2;
+/** healthCov below this = no clinic / hospital reaches the home */
+const HEALTH_REACH = 0.05;
+
+const SHARES = new Float32Array(5);
+function scanHomes(st: CityState, rt: EconRuntime, respReady: boolean): HomeScan {
+  const N = st.size;
+  const r: HomeScan = {
+    day: st.day, residents: 0, homes: 0, noisy: 0, noisyAt: -1, fireOut: respReady ? 0 : -1, medOut: respReady ? 0 : -1, seniorsOut: 0,
+    kidsNoPlay: 0, kids: 0, noGarbage: 0, noGarbageAt: -1, parkingFull: 0, shops: 0, parkingAt: -1, parkingMax: 0, crimeAt: -1,
+  };
+  let pileMax = -1, crimeMax = -1;
+  rt.ensureLists();
+  for (const b of rt.growables) {
+    if (b.flags & BF.Abandoned || b.built < 1) continue;
+    const def = rt.defOf(b);
+    const dev = def?.devType;
+    if (dev === undefined) continue;
+    const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+    if (dev <= DevType.R3) {
+      if (b.pop <= 0) continue;
+      const p = b.pop;
+      r.homes++;
+      r.residents += p;
+      if (b.flags & BF.Noisy) { r.noisy++; if (r.noisyAt < 0) r.noisyAt = i; }
+      if (respReady) {
+        if (st.respFire[i] < 0) r.fireOut += p;
+        if (st.respMedical[i] < 0) r.medOut += p;
+      }
+      const sh = cohortShares(b, SHARES);
+      r.kids += p * sh[0];
+      if (st.playCov[i] < PLAY_MIN) r.kidsNoPlay += p * sh[0];
+      if (st.healthCov[i] < HEALTH_REACH) r.seniorsOut += p * sh[4];
+      if (b.flags & BF.NoGarbage) {
+        r.noGarbage++;
+        const g = st.garbage[i];
+        if (g > pileMax) { pileMax = g; r.noGarbageAt = i; }
+      }
+      if (st.crime[i] > crimeMax) { crimeMax = st.crime[i]; r.crimeAt = i; }
+    } else if (dev <= DevType.CO3) {
+      r.shops++;
+      const pk = st.parking[i];
+      if (pk > PARKING_FULL) r.parkingFull++;
+      if (pk > r.parkingMax) { r.parkingMax = pk; r.parkingAt = i; }
+    }
+  }
+  return r;
 }
 
 const nameOf = (b: Building) => getDef(b.def)?.name ?? 'building';
@@ -403,6 +529,243 @@ function drawHeadline(a: AdvisorData, c: HeadlineCtx, day: number, seed: number)
   return null;
 }
 
+// ------------------------------------------------------------------------------------------------ WP5 rules
+/** the month's map scans (reused by the month tick when taken on its last days; see MONTH_SCAN_DAYS) */
+interface Scans {
+  zone: ZoneScan;
+  fac: FacilityScan;
+  homes: HomeScan;
+  /** memoised map locations (unservedClusters / uncoveredHotspots: O(cells) / O(buildings) each; warmed before the
+   *  month tick on LOCATE_DAYS so the tick itself only evaluates rules) */
+  locate?: (key: string, f: () => { x: number; z: number } | undefined) => { x?: number; z?: number };
+}
+const pctS = (v: number) => `${Math.round(v * 100)}%`;
+const EDGE_NAME: Record<string, string> = { n: 'north', s: 'south', e: 'east', w: 'west' };
+/** a need tier's unreached share (0 without need) */
+const unreachedShare = (n: NeedStat | undefined) => (n && n.need > 0 ? n.unreached / n.need : 0);
+/** the residents' tolerance for missing services shrinks as the city grows (approval fades garbage in over 2k .. 20k) */
+const GARBAGE_FADE = 'Uncollected garbage costs approval from 2,000 residents (full effect at 20,000).';
+
+/**
+ * SIM_DEPTH_SPEC §F advisor table + WP5-4 + critic item 31 (one advisor per problem). Every rule names a place to act
+ * (unservedClusters / uncoveredHotspots / the facility) where one exists.
+ */
+function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, out: Advice[]): void {
+  const s = st.stats, pop = s.population, N = st.size;
+  const sim = rt.sim as Simulation | undefined;
+  const d = econData(st);
+  const at = (b: Building) => ({ x: b.x + (b.w >> 1), z: b.z + (b.d >> 1) });
+  const cellAt = (i: number): { x?: number; z?: number } => (i >= 0 ? { x: i % N, z: (i / N) | 0 } : {});
+  const loc = sc.locate ?? ((_k: string, f: () => { x: number; z: number } | undefined) => f() ?? {});
+  const cluster = (tier: NeedTier): { x?: number; z?: number } => loc('cluster:' + tier, () => {
+    const c = sim ? unservedClusters(sim, tier, 1)[0] : undefined;
+    return c ? { x: Math.round(c.x), z: Math.round(c.z) } : undefined;
+  });
+  const hotspot = (r: 'fire' | 'medical'): { x?: number; z?: number } => loc('hot:' + r, () => {
+    const h = sim ? uncoveredHotspots(sim, r, 1)[0] : undefined;
+    return h ? { x: h.x, z: h.z } : undefined;
+  });
+  const nd = s.needs;
+  const svc = inf.services && !!nd;
+  const H = sc.homes;
+  const cov = residentCoverage(st);
+
+  // ---------------- education, health, recreation (catchment needs; residents expect them as the city grows)
+  if (svc) {
+    const el = nd.elementary;
+    if (el && el.need > 0 && el.unreached >= Math.max(300, 0.05 * el.need)) {
+      out.push({ id: 'noElementary', cooldown: 120, priority: 6, kind: 'warning', advisor: 'health', ...cluster('elementary'),
+        text: `${int(el.unreached)} children have no elementary school within walking distance — build one near here.` });
+    }
+    const hi = nd.high;
+    if (hi && hi.need > 0 && hi.unreached >= Math.max(200, 0.05 * hi.need)) {
+      out.push({ id: 'noHigh', cooldown: 150, priority: 5, kind: 'warning', advisor: 'health', ...cluster('high'),
+        text: `${int(hi.unreached)} teenagers have no high school within reach — build one near here, or they drop out and leave.` });
+    }
+    const co = nd.college;
+    if (co && co.need > 0 && pop > 20000 && co.served / co.need < 0.3 && collegeAvailable(st)) {
+      out.push({ id: 'noCollege', cooldown: 240, priority: 3, kind: 'info', advisor: 'health', ...cluster('college'),
+        text: `Only ${pctS(co.served / co.need)} of our young adults can study here — they move away. A college or library raises EQ and attracts offices.` });
+    }
+    if (H.seniorsOut >= 500) {
+      out.push({ id: 'seniorsHealth', cooldown: 150, priority: 5, kind: 'warning', advisor: 'health', ...cluster('health'),
+        text: `${int(H.seniorsOut)} seniors have no clinic or hospital in reach — build a clinic near here.` });
+    }
+    if (pop > 5000 && H.kids > 100 && H.kidsNoPlay >= 0.3 * H.kids) {
+      out.push({ id: 'playgrounds', cooldown: 240, priority: 3, kind: 'info', advisor: 'health', ...cluster('play'),
+        text: `${pctS(H.kidsNoPlay / H.kids)} of our children have no playground or sports field nearby. Families want them — build playgrounds in residential blocks.` });
+    }
+    // overcrowded facilities: the worst school / hospital (utilisation of its seats)
+    if (sim) {
+      let schoolB: Building | null = null, schoolU = 0, clinicB: Building | null = null, clinicU = 0;
+      let policeB: Building | null = null, policeU = 0, policeN = 0;
+      for (const b of sc.fac.tiered) {
+        const L = facilityLoad(sim, b.id);
+        if (!L || !(L.capacity > 0) || !Number.isFinite(L.capacity)) continue;
+        const u = L.utilization;
+        if (L.needTier === 'elementary' || L.needTier === 'high' || L.needTier === 'college') {
+          if (!schoolB || u > schoolU) { schoolB = b; schoolU = u; }
+        } else if (L.needTier === 'health') {
+          if (!clinicB || u > clinicU) { clinicB = b; clinicU = u; }
+        } else if (L.needTier === 'police' && u > 1.15) {
+          policeN++;
+          if (!policeB || u > policeU) { policeB = b; policeU = u; }
+        }
+      }
+      const school = schoolB ? { b: schoolB, u: schoolU } : null;
+      const clinic = clinicB ? { b: clinicB, u: clinicU } : null;
+      const police = policeB ? { b: policeB, u: policeU, n: policeN } : null;
+      if (school && school.u >= 1.3) {
+        out.push({ id: 'schoolOvercrowded', cooldown: 150, priority: 4, kind: 'warning', advisor: 'health', ...at(school.b),
+          text: `${nameOf(school.b)} is at ${Math.round(school.u * 100)}% capacity — every pupil learns less. Build another school nearby.` });
+      }
+      if (clinic && clinic.u >= 1.3) {
+        out.push({ id: 'hospitalOvercrowded', cooldown: 150, priority: 4, kind: 'warning', advisor: 'health', ...at(clinic.b),
+          text: `${nameOf(clinic.b)} is at ${Math.round(clinic.u * 100)}% capacity — patients wait and health suffers. Build another clinic or a hospital nearby.` });
+      }
+      // police: unreached neighbourhoods vs overloaded stations (critic item 31)
+      const pn = nd.police;
+      if (pop > 3000 && (unreachedShare(pn) >= 0.25 || cov.police < 0.2)) {
+        out.push({ id: 'noPolice', cooldown: 180, priority: 4, kind: 'warning', advisor: 'safety', ...cluster('police'),
+          text: `${pn && pn.need > 0 ? `${pctS(unreachedShare(pn))} of the city` : 'Most neighborhoods'} ${pn && pn.need > 0 ? 'has' : 'have'} no police patrols. Build a police station near here.` });
+      } else if (pop > 3000 && police) {
+        out.push({ id: 'policeOverloaded', cooldown: 180, priority: 4, kind: 'warning', advisor: 'safety', ...at(police.b),
+          text: `${police.n > 1 ? `${police.n} police stations are overloaded — ${nameOf(police.b)} patrols` : `${nameOf(police.b)} patrols`} ${Math.round(police.u * 100)}% of its capacity, so crime creeps back. Build another station nearby.` });
+      }
+    }
+  }
+
+  // ---------------- fire: the response gap first (nobody arrives in time without you), prevention second
+  const fireShare = H.fireOut >= 0 && H.residents > 0 ? H.fireOut / H.residents : 0;
+  if (pop > 1500 && H.fireOut >= 0 && fireShare >= 0.15) {
+    const noStation = sc.fac.fireStations === 0;
+    out.push({ id: 'noFireResponse', cooldown: 150, priority: 6, kind: 'warning', advisor: 'safety', ...hotspot('fire'),
+      text: noStation
+        ? `The city has no fire station: every fire waits for you to act and can spread. Build a Fire Station near here.`
+        : `${pctS(fireShare)} of residents live beyond the reach of a fire station — fires there wait for you to dispatch a truck. Build a Fire Station near here${inf.services && cov.fire < 0.2 ? ' (it also lowers the fire risk)' : ''}.` });
+  } else if (pop > 3000 && inf.services && cov.fire < 0.2) {
+    out.push({ id: 'noFire', cooldown: 180, priority: 5, kind: 'warning', advisor: 'safety', text: 'Most homes are outside fire station coverage. One spark and we lose whole blocks!' });
+  }
+  // ambulances: medical calls answered late (12-month quality)
+  const med = s.emergency?.medScore ?? 1;
+  if (pop > 2000 && med < 0.8) {
+    out.push({ id: 'slowAmbulances', cooldown: 150, priority: 5, kind: 'warning', advisor: 'health', ...hotspot('medical'),
+      text: `Ambulances are too slow: only ${pctS(med)} of medical emergencies were answered in time this year. Build a clinic or hospital near here.` });
+  }
+  // riots: unhappy, lawless districts
+  if (pop > 5000 && s.approval < 40 && s.avgCrime > 0.4) {
+    out.push({ id: 'riotRisk', cooldown: 120, priority: 8, kind: 'bad', advisor: 'safety', ...cellAt(H.crimeAt),
+      text: `Tension is rising: approval is ${Math.round(s.approval)}% and crime ${pctS(s.avgCrime)}. Riots start in unhappy, lawless districts — add police and fix what residents complain about.` });
+  }
+  // justice: an overcrowded jail releases convicts early
+  const jus = s.justice;
+  if (jus && jus.overflow > 0.2 && pop > 5000) {
+    const plus = Math.max(0, Math.round(((jus.crimeMul ?? 1) - 1) * 100));
+    out.push({ id: 'jailOvercrowded', cooldown: 150, priority: 6, kind: 'warning', advisor: 'safety', ...(sc.fac.jails[0] ? at(sc.fac.jails[0]) : {}),
+      text: `${sc.fac.jails.length ? 'The jail is overcrowded' : 'The city has no jail'}: ${pctS(jus.overflow)} of convicts are released early${plus > 0 ? ` (+${plus}% crime)` : ''}. ${sc.fac.jails.length ? 'Build another jail' : 'Build a jail'} — away from wealthy homes.` });
+  }
+
+  // ---------------- environment and utilities
+  if (H.homes >= 20 && H.noisy >= 0.1 * H.homes) {
+    out.push({ id: 'noise', cooldown: 180, priority: 4, kind: 'warning', advisor: 'environment', ...cellAt(H.noisyAt),
+      text: `${pctS(H.noisy / H.homes)} of homes are too noisy to sleep. Plant trees along highways and busy roads, or keep homes away from industry and nightlife.` });
+  }
+  if (pop > 20000 && inf.utilities && s.sewageTreated < 0.5) {
+    out.push({ id: 'sewage', cooldown: 240, priority: 4, kind: 'warning', advisor: 'environment',
+      text: `Only ${pctS(s.sewageTreated)} of our sewage is treated — the rest pollutes rivers and the drinking water. Build a water treatment plant.` });
+  }
+  if (pop > 1000 && inf.utilities && s.tapWater < 0.7 && s.waterSupply > 0) {
+    // the dirtiest intake (utilities producerInfo: load = intake pollution for water producers)
+    let dirty: Building | null = null, worst = 0;
+    const u = sim?.getSystem<UtilitiesSystem>('utilities');
+    if (u && typeof u.producerInfo === 'function') {
+      for (const b of sc.fac.waterOk) {
+        const pi = u.producerInfo(b.id);
+        if (pi && pi.kind === 'water' && pi.load > worst) { worst = pi.load; dirty = b; }
+      }
+    }
+    out.push({ id: 'tapWater', cooldown: 150, priority: 6, kind: 'warning', advisor: 'utilities', ...(dirty ? at(dirty) : {}),
+      text: `Tap water quality is only ${pctS(s.tapWater)} and residents are getting sick. ${dirty ? `Your ${nameOf(dirty)} draws polluted water — ` : ''}build a water treatment plant or move pumps away from pollution (Water data view → Tap water quality).` });
+  }
+  // landfills filling up (preventive; WP3's own fill news said the same: stay quiet in the feed while it is recent)
+  if (s.landfillFill > 0.8 && pop > 300) {
+    let bi = -1, bv = -1;
+    const F = st.landfillFill;
+    for (let i = 0; i < F.length; i++) if (F[i] > bv && st.zone[i] === Zone.Landfill) { bv = F[i]; bi = i; }
+    out.push({ id: 'landfillFull', cooldown: 180, priority: 5, kind: 'warning', advisor: 'utilities', ...cellAt(bi), quietIf: /^Landfills are/,
+      text: `Landfills are ${pctS(s.landfillFill)} full — once full they take no more garbage. Zone more landfill, or build an incinerator or recycling center.` });
+  }
+  // garbage: ONE rule (critic item 31) — homes without pickup, with the reason and where; from 300 residents (QA)
+  const garbageHomes = H.homes > 0 ? H.noGarbage / H.homes : 0;
+  const legacyShort = !inf.pollution && pop > 2000 && s.garbageProduced > s.garbageCapacity * 1.02;
+  if ((pop >= 300 && H.homes >= 10 && garbageHomes >= 0.2) || legacyShort) {
+    const gs = sim?.getSystem<PollutionSystem>('pollution')?.garbageSummary?.();
+    let reason: 'capacity' | 'range' | 'noRoad' = 'capacity';
+    if (gs) {
+      const cap = gs.overCapacityT, rng = gs.outOfRangeT, nr = gs.noRoadT;
+      reason = rng >= cap && rng >= nr ? 'range' : nr > cap ? 'noRoad' : 'capacity';
+      if (s.garbageCapacity <= 0) reason = 'range';
+    }
+    const share = garbageHomes > 0 ? pctS(garbageHomes) : 'many';
+    const tail = pop < 20000 ? ` ${GARBAGE_FADE}` : '';
+    const text = s.garbageCapacity <= 0 && (!gs || gs.landfillCapT <= 0)
+      ? `Garbage is piling up at ${share} of homes: the city has nowhere to take it. Zone a landfill (or build an incinerator) and connect it by road.${tail}`
+      : reason === 'range'
+        ? `Garbage trucks can't reach ${share} of homes — they are more than ${GARBAGE_TRUCK_RANGE} road tiles from a landfill, incinerator or recycling center. Build one closer (Garbage data view).${tail}`
+        : reason === 'noRoad'
+          ? `${gs ? int(gs.noRoadBuildings) : 'Many'} buildings have no road at the door, so garbage trucks can't stop there. Build roads to them.${tail}`
+          : `Garbage is piling up at ${share} of homes: landfills and incinerators are full (${int(s.garbageProduced)} t a month made, ${int(s.garbageCapacity)} t taken). Zone more landfill or build an incinerator / recycling center.${tail}`;
+    out.push({ id: 'garbage', cooldown: 120, priority: garbageHomes >= 0.5 ? 7 : 6, kind: garbageHomes >= 0.5 ? 'bad' : 'warning', advisor: 'utilities',
+      ...cellAt(H.noGarbageAt), quietIf: /^Garbage is piling up/, text });
+  }
+
+  // ---------------- tourism, attractiveness, region
+  if (pop > 5000 && d.hotelShortage > 50) {
+    out.push({ id: 'hotelsFull', cooldown: 240, priority: 3, kind: 'info', advisor: 'planning',
+      text: `${int(d.hotelShortage)} overnight tourists a day find no hotel room and stay away. Zone medium or high density commercial land near attractions — hotels grow there.` });
+  }
+  if (pop > 3000 && s.tourists >= 1000 && s.attractiveness >= 70) {
+    out.push({ id: 'tourismGood', cooldown: 720, priority: 1, kind: 'good', advisor: 'planning',
+      text: `Tourists love ${st.config.name}: ${int(s.tourists)} visitors a day, and our attractiveness is ${Math.round(s.attractiveness)}/100.` });
+  }
+  if (pop > 10000 && s.attractiveness > 0 && s.attractiveness < 30) {
+    const worst = attractivenessBreakdown(st).filter((t) => t.value < 0).sort((a, b) => a.value - b.value)[0];
+    out.push({ id: 'lowAttractiveness', cooldown: 240, priority: 3, kind: 'info', advisor: 'planning',
+      text: `Few people want to move here (attractiveness ${Math.round(s.attractiveness)}/100)${worst ? ` — the biggest drag is ${worst.label.toLowerCase()}` : ''}. Culture, parks, safety and clean air draw newcomers and tourists.` });
+  }
+  const reg = regionInputs(st);
+  if (reg) {
+    const n = reg.neighbors.filter((x) => x.jobs - x.workers > 20000 && x.edgeF < 0.5).sort((a, b) => b.jobs - b.workers - (a.jobs - a.workers))[0];
+    if (n) {
+      out.push({ id: 'regionOpportunity', cooldown: 360, priority: 3, kind: 'info', advisor: 'planning',
+        text: `${n.name ?? 'Our neighbour'} has ${int(n.jobs - n.workers)} more jobs than workers. Connect a highway on the ${EDGE_NAME[n.edge] ?? n.edge} edge so our residents can commute there (more residential demand).` });
+    }
+  }
+
+  // ---------------- transit: bus fleet, parking
+  const tf = s.transitFleet;
+  if (tf && tf.busesNeeded >= 2 && tf.busesNeeded > 1.15 * tf.buses) {
+    const dep = sc.fac.depots[0];
+    out.push({ id: 'busFleetShort', cooldown: 150, priority: 4, kind: 'warning', advisor: 'transport', ...(dep ? at(dep) : {}),
+      text: tf.buses <= 0 && !dep
+        ? `Your bus stops have no depot, so no buses run. Build a Bus Depot near the stops.`
+        : `Bus stops need ${int(tf.busesNeeded)} buses but the depots run ${int(tf.buses)} — riders wait and drive instead. Build another Bus Depot (or raise the transit budget).` });
+  }
+  if (H.shops >= 10 && H.parkingFull >= Math.max(3, 0.1 * H.shops)) {
+    out.push({ id: 'parkingPressure', cooldown: 180, priority: 3, kind: 'info', advisor: 'transport', ...cellAt(H.parkingAt),
+      text: `Shoppers can't find parking here (${pctS(H.parkingMax)} full) — ${H.parkingFull > 1 ? `${int(H.parkingFull)} shops and offices lose` : 'the shop loses'} customers. Build a parking garage next to a transit stop.` });
+  }
+}
+
+/** a college / library def is unlocked (or needs no unlock) */
+function collegeAvailable(st: CityState): boolean {
+  for (const id of ['civ_college', 'civ_library']) {
+    const def = getDef(id);
+    if (def && (!def.requires || st.unlocked.has(def.requires) || st.config.sandbox)) return true;
+  }
+  return false;
+}
+
 /** a piece of advice whose condition holds right now (Advisors panel) */
 export interface OpenAdvice {
   id: string;
@@ -426,9 +789,59 @@ export function openAdvice(sim: Simulation): OpenAdvice[] {
   return typeof sys?.openAdvice === 'function' ? sys.openAdvice(sim.state) : [];
 }
 
+/** last monthly pass: every issue (unthrottled), per state (derived, not saved: recomputed at the next month tick) */
+const lastIssues = new WeakMap<CityState, OpenAdvice[]>();
+
+/**
+ * The full, unthrottled list of issues of the last monthly pass, grouped by advisor id (highest priority first).
+ * ADVICE_PER_MONTH limits only what is announced in the news feed; the Advisors panel shows all of them (with "Show me").
+ */
+export function advisorIssues(st: CityState): Record<string, OpenAdvice[]> {
+  const out: Record<string, OpenAdvice[]> = {};
+  for (const a of lastIssues.get(st) ?? []) (out[a.advisor] ??= []).push(a);
+  return out;
+}
+
+/** the advice rule a news item came from (null: another system's news, or a post older than the kept ones) */
+export function adviceIdOf(st: CityState, n: { day: number; text: string }): string | null {
+  const posts = (st.systemData.advisors as AdvisorData | undefined)?.posts;
+  if (!posts) return null;
+  for (let k = posts.length - 1; k >= 0 && posts[k].day >= n.day; k--) if (posts[k].day === n.day && posts[k].text === n.text) return posts[k].id;
+  return null;
+}
+
+/** days of the month on which the month tick's map scans are taken (homes, zoned blocks, facilities: spread so the
+ *  month tick itself only evaluates rules; deterministic, stale by at most 3 days) */
+export const MONTH_SCAN_DAYS = [27, 28, 29] as const;
+/** a found rule place (unservedClusters / uncoveredHotspots, looked up on the last scan day) is reused this many days
+ *  (the month tick and the Advisors panel read the memo) */
+const LOCATE_TTL = 8;
+
 export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
   /** flood-fill scratch for the monthly zone scan (re-sized with the map) */
   let scratch = { visited: new Uint8Array(0), stack: new Int32Array(0) };
+  const zoneScan = (st: CityState, util: boolean): ZoneScan => {
+    if (scratch.visited.length !== st.cells) scratch = { visited: new Uint8Array(st.cells), stack: new Int32Array(st.cells) };
+    return scanZones(st, util, scratch.visited, scratch.stack);
+  };
+  /** the emergency response layers are computed (the fire / ambulance reach of homes is known) */
+  const respReady = (st: CityState): boolean => {
+    const sim = rt.sim as Simulation | undefined;
+    if (!sim || sim.state !== st) return false;
+    const em = emergencyOf(sim);
+    return !!em && em.active && em.layersReady;
+  };
+  /** scans taken on MONTH_SCAN_DAYS for the coming month tick */
+  let monthScans: { st: CityState; month: number } & Partial<Scans> | null = null;
+  /** memoised rule locations (LOCATE_TTL days) */
+  const locMemo = new Map<string, { st: CityState; day: number; at: { x: number; z: number } | null }>();
+  const locate = (st: CityState) => (key: string, f: () => { x: number; z: number } | undefined): { x?: number; z?: number } => {
+    const m = locMemo.get(key);
+    if (m && m.st === st && st.day >= m.day && st.day - m.day <= LOCATE_TTL) return m.at ? { ...m.at } : {};
+    const at = f() ?? null;
+    locMemo.set(key, { st, day: st.day, at });
+    return at ? { ...at } : {};
+  };
 
   const headlineCtx = (st: CityState): HeadlineCtx => {
     rt.ensureLists();
@@ -449,7 +862,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
   const fillHeadline = (text: string, st: CityState) => text.replaceAll('{city}', st.config.name).replaceAll('{mayor}', st.config.mayor)
     .replaceAll('{year}', String(st.year)).replaceAll('{pop}', int(st.stats.population));
 
-  const gather = (st: CityState): Advice[] => {
+  const gather = (st: CityState, scans?: Partial<Scans>): Advice[] => {
     const out: Advice[] = [];
     const s = st.stats;
     const d = econData(st);
@@ -484,9 +897,10 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     for (let z = Zone.ResLow; z <= Zone.IndHigh; z++) zoned += rt.emptyZoned[z];
     const N = st.size;
     const util = inf.utilities;
-    if (scratch.visited.length !== st.cells) scratch = { visited: new Uint8Array(st.cells), stack: new Int32Array(st.cells) };
-    const scan = scanZones(st, util, scratch.visited, scratch.stack);
-    const fac = scanFacilities(st, rt);
+    const scan = scans?.zone ?? zoneScan(st, util);
+    const fac = scans?.fac ?? scanFacilities(st, rt);
+    const homes = scans?.homes ?? scanHomes(st, rt, respReady(st));
+    const loc = scans?.locate ?? locate(st);
     const at = (b: Building) => ({ x: b.x + (b.w >> 1), z: b.z + (b.d >> 1) });
     const cellAt = (i: number): { x?: number; z?: number } => (i >= 0 ? { x: i % N, z: (i / N) | 0 } : {});
     const burntWhat = (list: Building[], many: string) => (list.length > 1 ? `${list.length} ${many}` : `The ${nameOf(list[0])}`);
@@ -578,10 +992,6 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
           text: `Water is flowing, but ${count(scan.unwatered, 'medium/high-density tile')} ${scan.unwatered === 1 ? 'has' : 'have'} none, so they can't grow. Pipes run under roads — connect those roads to the one your ${src ? nameOf(src) : 'water supply'} stands on.` });
       }
     }
-    if (pop > 2000 && s.garbageProduced > s.garbageCapacity * 1.02) {
-      out.push({ id: 'garbage', cooldown: 120, priority: 6, kind: 'warning', advisor: 'utilities',
-        text: 'Garbage is piling up in the streets! Zone a landfill or build a recycling center.' });
-    }
     // ---------------- transport
     if (st.neighborConnections.length === 0 && pop > 800) {
       out.push({ id: 'noConnection', cooldown: 240, priority: 5, kind: 'info', advisor: 'transport',
@@ -602,12 +1012,8 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         text: `Commutes average ${Math.round(s.avgCommute)} minutes. Build highways, avenues, buses or subways.` });
     }
     // ---------------- safety / health / education / environment
-    const cov = residentCoverage(st);
     if (pop > 2500 && d.resCrime > 0.35) {
       out.push({ id: 'crime', cooldown: 150, priority: 6, kind: 'warning', advisor: 'safety', text: 'Crime is rising in residential areas. We need more police stations.' });
-    }
-    if (pop > 3000 && inf.services && cov.fire < 0.2) {
-      out.push({ id: 'noFire', cooldown: 180, priority: 5, kind: 'warning', advisor: 'safety', text: 'Most homes are outside fire station coverage. One spark and we lose whole blocks!' });
     }
     // thermal plants and incinerators can have industrial accidents: unanswered, one sets the plant on fire, and a young
     // city can lose its only plant. A fire station in reach answers it (WP8 auto-dispatch; st.respFire < 0 = beyond
@@ -634,9 +1040,6 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         }
       }
     }
-    if (pop > 3000 && inf.services && cov.police < 0.2) {
-      out.push({ id: 'noPolice', cooldown: 180, priority: 4, kind: 'warning', advisor: 'safety', text: 'Most neighborhoods have no police coverage.' });
-    }
     if (pop > 5000 && s.eq < 60) {
       out.push({ id: 'eqLow', cooldown: 240, priority: 3, kind: 'info', advisor: 'health',
         text: `Our education quotient is only ${Math.round(s.eq)}. Schools attract offices and high-tech industry (and clean the air of dirty industry).` });
@@ -648,6 +1051,8 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       out.push({ id: 'airPollution', cooldown: 180, priority: 5, kind: 'warning', advisor: 'environment',
         text: 'Smog is choking our neighborhoods. Separate industry from homes, plant trees, or pass the Clean Air Act.' });
     }
+    // ---------------- WP5: services, emergencies, justice, environment, tourism, region, transit (depthRules)
+    depthRules(st, rt, inf, { zone: scan, fac, homes, locate: loc }, out);
     // ---------------- planning
     for (const h of capHints(st)) {
       const what = h.family === 'R' ? 'Residential' : h.family === 'C' ? 'Commercial' : 'Industrial';
@@ -747,6 +1152,19 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     daily(sim) {
       const st = sim.state;
       const d = econData(st);
+      // the month tick's map scans, spread over the month's last days (PERF: month-tick / normal-day cost)
+      const dom = st.day % 30;
+      if (dom >= MONTH_SCAN_DAYS[0]) {
+        if (!monthScans || monthScans.st !== st || monthScans.month !== st.monthIndex) monthScans = { st, month: st.monthIndex, locate: locate(st) };
+        if (dom === MONTH_SCAN_DAYS[0] && !monthScans.homes) monthScans.homes = scanHomes(st, rt, respReady(st));
+        else if (dom === MONTH_SCAN_DAYS[1] && !monthScans.zone) monthScans.zone = zoneScan(st, infraFlags(st).utilities);
+        else if (dom === MONTH_SCAN_DAYS[2]) {
+          if (!monthScans.fac) monthScans.fac = scanFacilities(st, rt);
+          // the places of the rules that fire (unservedClusters / uncoveredHotspots) are found now, from the scans
+          // above: the month tick reuses scans and places and only evaluates the rules
+          gather(st, monthScans);
+        }
+      }
       // population milestones
       const pop = st.stats.population;
       for (const m of POP_MILESTONES) {
@@ -770,7 +1188,9 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     monthly(sim) {
       const st = sim.state;
       const d = econData(st);
-      const list = gather(st).sort((a, b) => b.priority - a.priority);
+      const ms = monthScans && monthScans.st === st && monthScans.month === st.monthIndex - 1 ? monthScans : undefined;
+      monthScans = null;
+      const list = gather(st, ms).sort((a, b) => b.priority - a.priority);
       // persistent conditions back off: each repeat doubles the cooldown (max ×8); cleared conditions reset
       const streak = (d.streak ??= {});
       const active = new Set(list.map((a) => a.id));
@@ -779,6 +1199,8 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       const seen = advisorData(st).seen;
       for (const id of Object.keys(seen)) if (!active.has(id)) delete seen[id];
       for (const a of list) if (a.confirm) seen[a.id] ??= st.day;
+      lastIssues.set(st, list.filter((a) => !a.confirm || st.day - seen[a.id] >= CONFIRM_DAYS)
+        .map(({ id, advisor, text, kind, priority, x, z }) => ({ id, advisor, text, kind, priority, x, z })));
       let shown = 0;
       for (const a of list) {
         if (shown >= ADVICE_PER_MONTH) break;
@@ -786,9 +1208,13 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         const last = d.cooldowns[a.id];
         const cooldown = Math.max(MIN_COOLDOWN, a.cooldown) * 2 ** Math.min(3, streak[a.id] ?? 0);
         if (last !== undefined && st.day - last < cooldown) continue;
+        if (a.quietIf && recentNews(st, a.quietIf)) continue;
         d.cooldowns[a.id] = st.day;
         streak[a.id] = (streak[a.id] ?? 0) + 1;
         sim.notify(a.text, a.kind === 'info' ? 'advisor' : a.kind, a.x, a.z, a.advisor);
+        const posts = (advisorData(st).posts ??= []);
+        posts.push({ day: st.day, id: a.id, text: a.text });
+        if (posts.length > POSTS_KEPT) posts.splice(0, posts.length - POSTS_KEPT);
         shown++;
       }
     },

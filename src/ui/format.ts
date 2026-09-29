@@ -42,6 +42,15 @@ export function pct(v01: number, digits = 0): string {
   return (v01 * 100).toFixed(digits) + '%';
 }
 
+/** signed percentage of a -1..1 value: +34% / −12% / 0% (RCI demand, desirability terms, margins) */
+export function signedPct(v: number, digits = 0): string {
+  if (!isFinite(v)) return '—';
+  const p = v * 100;
+  const r = Number(p.toFixed(digits));
+  if (r === 0) return (0).toFixed(digits) + '%';
+  return (r > 0 ? '+' : '−') + Math.abs(r).toFixed(digits) + '%';
+}
+
 export function signClass(n: number): string {
   return n > 0.5 ? 'pos' : n < -0.5 ? 'neg' : 'zero';
 }

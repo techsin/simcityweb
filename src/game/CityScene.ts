@@ -55,6 +55,9 @@ import { EmergenciesPanel } from '../ui/panels/EmergenciesPanel';
 import { Sirens, type SirenOut, type SirenSource } from '../audio/sirens';
 import type { EmergencyVehicles } from '../render/city/vehicles/EmergencyVehicles';
 import type { EmergencySystem } from '../sim/infra/emergency';
+import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
+import { attachOverlays } from '../sim/infra/overlays';
+import { windVector } from '../sim/infra/wind';
 
 export type { GameSettings } from './settings';
 
@@ -223,8 +226,14 @@ export class CityScene {
       panels: null as unknown as PanelManager,
       tip: this.tip,
       overlay: Overlay.None,
+      overlayVariant: -1,
       degraded: this.degraded,
-      setOverlay: (o) => this.setOverlay(o),
+      setOverlay: (o, v) => this.setOverlay(o, v),
+      overlayVariantOf: (o) => this.overlayVariants.get(o) ?? -1,
+      preferOverlayVariant: (o, v) => {
+        this.overlayVariants.set(o, v);
+        if (this.ctx.overlay === o && this.ctx.overlayVariant !== v) this.setOverlay(o, v);
+      },
       sound: (n, o) => this.sound(n, o),
       focusCell: (x, z, d) => this.focusCell(x, z, d),
       showQuery: (t, o) => this.showQuery(t, o),
@@ -283,6 +292,9 @@ export class CityScene {
     this.advisors = new AdvisorsPanel(ctx);
     for (const p of [new BudgetPanel(ctx), new GraphsPanel(ctx), new StatsPanel(ctx), this.advisors, new OrdinancesPanel(ctx), new RewardsPanel(ctx), new SettingsPanel(ctx), new DataViewsPanel(ctx), this.info, new HelpPanel(ctx)]) this.panels.register(p);
     this.panels.register(new EmergenciesPanel(ctx));
+    // WP5: demographics panel; derived data-view rasters follow the sim's layer updates
+    this.panels.register(new DemographicsPanel(ctx));
+    this.offs.push(attachOverlays(this.sim));
     this.emgBanner = new EmergencyBanner(ctx, this.uiRoot);
     this.pause = new PauseMenu(ctx, this.uiRoot, { onSettings: () => this.panels.open('settings'), onHelp: () => this.panels.open('help') });
 
@@ -309,6 +321,8 @@ export class CityScene {
     this.root.addEventListener('pointerleave', () => (this.mouse.inside = false));
     this.offs.push(
       this.sim.events.on('month', () => this.onMonth()),
+      // smoke / steam plumes drift with the simulation's wind (the pollution plume and the Air legend's arrow agree)
+      this.sim.events.on('day', () => this.feedWind()),
       this.sim.events.on('disaster', (d) => {
         if (d.active && d.kind === 'earthquake') this.quakeEventAt = performance.now();
       }),
@@ -492,6 +506,7 @@ export class CityScene {
     this.placeInitialCamera();
     if (this.mods.errors.length) console.warn('[game] module load issues', this.mods.errors);
     this.showDevBadge();
+    this.feedWind();
     this.uiEvents.emit('viewsReady', undefined);
     this.readyPending = true; // resolved after the next rendered frame (see loop)
     this.veil.classList.add('gone');
@@ -924,10 +939,22 @@ export class CityScene {
     this.opts.onExitToRegion(thumb);
   }
 
-  private setOverlay(o: Overlay): void {
+  /** the variant each data view was last shown with (-1 = its default) */
+  private overlayVariants = new Map<Overlay, number>();
+
+  private setOverlay(o: Overlay, variant?: number): void {
+    if (variant !== undefined) this.overlayVariants.set(o, variant);
+    const v = this.overlayVariants.get(o) ?? -1;
     this.ctx.overlay = o;
+    this.ctx.overlayVariant = v;
     try {
       this.world.setOverlay(o);
+    } catch (e) {
+      console.warn(e);
+    }
+    // variant plumbing: the real WorldView's terrain renderer takes the variant (stand-in views show the default)
+    try {
+      (this.world as unknown as { terrain?: { setOverlay?(o: Overlay, v: number): void } }).terrain?.setOverlay?.(o, v);
     } catch (e) {
       console.warn(e);
     }
@@ -938,6 +965,18 @@ export class CityScene {
     }
     this.minimap.markDirty();
     this.uiEvents.emit('overlay', o);
+  }
+
+  /** the day's wind for the render plumes (src/render/city/effects/Effects.ts setEffectsWind) */
+  private feedWind(): void {
+    const f = this.mods.setEffectsWind;
+    if (!f) return;
+    try {
+      const w = windVector(this.sim.state);
+      f(w.x, w.z);
+    } catch {
+      /* ignore */
+    }
   }
 
   private focusCell(x: number, z: number, distance?: number): void {
