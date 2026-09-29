@@ -2735,10 +2735,11 @@ export class TrafficSystem implements SimSystem {
     for (let j = 0; j < this.jB; j++) { const b = this.jObj[j]; if (b) addFootprint(N, b, this.jCar[j] * inv, D); }
     for (let s = 0; s < this.sN; s++) { const b = this.sObj[s]; if (b) addFootprint(N, b, PARKING_SHOP_W * this.sCar[s] * inv, D); }
     baseSupply(st, S);
-    // garages: their free spaces (spaces minus this assignment's park & ride cars) ease the blocks around them
+    // garages: their free spaces (spaces minus this assignment's park & ride cars) ease the blocks around them; one
+    // without a road beside it gives none (drivers can't reach it — what its report says)
     for (let q = 0; q < this.gN; q++) {
       const b = st.buildings.get(this.gBid[q]);
-      if (!b) continue;
+      if (!b || this.gState[q] === GARAGE_NO_ROAD) continue;
       const spaces = this.gSpaces[q];
       addGarageSupply(N, b, spaces - Math.min(spaces, this.gState[q] === GARAGE_PR ? this.gCars[q] : 0), S);
     }

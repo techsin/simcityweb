@@ -6,8 +6,8 @@
  *             x car shopping trips (traffic fills it with addFootprint)
  *  supply S   per cell: zoned land by density (PARKING_SUPPLY_ZONE C / I, PARKING_SUPPLY_R R: surface lots, driveways),
  *             plopped civic lots PARKING_SUPPLY_CIVIC, road cells PARKING_SUPPLY_ROAD (street parking) + every parking
- *             garage's free spaces (GARAGE_SPACES minus the cars its commuters park there) spread over
- *             GARAGE_WALK_RADIUS with a normalised kernel (1 - d / (R + 1), sums to the spaces)
+ *             garage's free spaces (GARAGE_SPACES minus the cars its commuters park there; none without a road beside
+ *             it) spread over GARAGE_WALK_RADIUS with a normalised kernel (1 - d / (R + 1), sums to the spaces)
  *  parking    smoothstep(PARKING_RATIO[0], PARKING_RATIO[1], box(D) / box(S)); box = (2 PARKING_BOX_R + 1)^2 mean, so
  *             a block borrows spaces from its neighbours but a dense core runs out; blended with the previous raster
  *             (traffic passes it, PARKING_BLEND) so one noisy assignment does not flip a block.

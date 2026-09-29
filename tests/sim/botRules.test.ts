@@ -2,8 +2,9 @@
  * WP6a balance-bot rules (tools/simbot.ts; SIM_DEPTH_SPEC WP6 Bot, SIM_DEPTH_AMENDMENTS WP6-3, docs/SIM_DEPTH_PART_B.md
  * §5 WP6a + item 38): an attentive mayor dispatches to uncovered major emergencies (--neglect never does), a prison
  * goes into an industrial / utility block away from wealthy homes when the jail overflows, pumps are upgraded to a
- * treatment plant in place when no land is left, and a short run serves the catchment needs with every service and
- * utility on a lot that touches a road. With BALANCE=1 also the slow 128 x 15 balance gate (bottom of the file).
+ * treatment plant in place when no land is left, the land kept for utilities stays theirs and a grown city's full blocks
+ * do not hide it, and a short run serves the catchment needs with every service and utility on a lot that touches a
+ * road. With BALANCE=1 also the slow 128 x 15 balance gate (bottom of the file).
  */
 import { describe, expect, it } from 'vitest';
 import { JAIL_GAP, SimBot, botSystems } from '../../tools/simbot';
@@ -101,6 +102,36 @@ describe('bot: facilities', () => {
     expect(b.upgradePumps()).toBe(true);
     const plants = [...b.st.buildings.values()].filter((o) => o.def === 'util_water_treatment');
     expect(plants.length).toBe(1);
+  });
+
+  it('reserved (undeveloped) utility blocks are for power and water only; blocks without room do not use up the search', { timeout: 600000 }, async () => {
+    const b = await bot(128);
+    b.setup();
+    b.st.funds = 5e6;
+    b.st.unlocked.add('water_treatment');
+    b.st.unlocked.add('jail');
+    const st = b.st, N = st.size;
+    const u = b.blocks.find((o) => o.use === 'U' && !o.developed)!;
+    expect(u).toBeTruthy();
+    const ux = (u.x0 + u.x1) / 2, uz = (u.z0 + u.z1) / 2;
+    // a prison (or anything but power / water) never takes the land kept for utilities
+    expect(b.placeNear('civ_jail', ux, uz, ['U'], true, 1, true)).toBeNull();
+    expect(u.developed).toBe(false);
+    // the nearest 14 industrial / utility blocks are full: the search goes on to the first block with room (it used to
+    // try only the 14 nearest, full or not — the reserved blocks of a grown city were never reached)
+    const cx = b.line(b.cbx), cz = b.line(b.cbz);
+    const dist = (o: typeof u) => Math.hypot((o.x0 + o.x1) / 2 - cx, (o.z0 + o.z1) / 2 - cz);
+    const cand = b.blocks.filter((o) => o.use === 'I' || o.use === 'X' || (o.use === 'U' && o !== u)).sort((p, q) => dist(p) - dist(q));
+    expect(cand.length).toBeGreaterThan(15);
+    for (const o of cand.slice(0, 15)) {
+      b.buildBlockRoads(o);
+      o.developed = true;
+      for (let z = o.z0; z < o.z1; z++) for (let x = o.x0; x < o.x1; x++) if (st.network[z * N + x] === Network.None) st.building[z * N + x] = 0x7fffff;
+    }
+    const r = b.placeNear('util_water_treatment', cx, cz, ['U', 'I', 'X'], true, Infinity, true);
+    expect(r?.ok).toBe(true);
+    const plant = [...st.buildings.values()].find((o) => o.def === 'util_water_treatment')!;
+    expect(lotTouchesRoad(st, plant.x, plant.z, plant.w, plant.d)).toBe(true);
   });
 
   it('a short run serves catchment needs and puts every service and utility on a lot that touches a road', { timeout: 1200000 }, async () => {

@@ -403,6 +403,15 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
     const rep2 = transportFacilityReport(sim, off)!;
     expect(rep2.warnings.join()).toMatch(/No road access/);
     expect(rep2.warnings.join()).not.toMatch(/No transit stop/);
+    // ... and it eases no parking (drivers can't reach it): no relief line, no supply in the parking raster
+    expect(rep2.lines.find((l) => l.key === 'parking')!.value).toBe('none — no road access');
+    const supplyWith = () => { cycles(sim, 2); return tr.parkingSummary.supply; };
+    const s1 = supplyWith();
+    st.buildings.get(off.id)!.flags |= BF.Burnt; // (a burnt garage is not collected: the supply without it)
+    sim.events.emit('buildingChanged', st.buildings.get(off.id)!);
+    const s0 = supplyWith();
+    console.log(`off-road garage: supply ${s1.toFixed(0)} with it, ${s0.toFixed(0)} burnt`);
+    expect(Math.abs(s1 - s0)).toBeLessThan(0.25 * GARAGE_SPACES);
     // the one by the station is park & ride now
     expect(tr.garageInfo(g.id)!.state).toBe('parkRide');
   });

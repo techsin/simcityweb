@@ -201,8 +201,9 @@
 .dv-scroll.more-above { -webkit-mask-image: linear-gradient(to top, #000 calc(100% - 20px), transparent); mask-image: linear-gradient(to top, #000 calc(100% - 20px), transparent); }
 .dv-scroll.more-above.more-below { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 20px, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to bottom, transparent, #000 20px, #000 calc(100% - 28px), transparent); }
 
-/* demographics panel: every tab as tall as the tallest (switching tabs must not make the centered panel jump) */
-.demo-panel { min-height: min(470px, calc(100vh - 300px)); }
+/* demographics panel: one height for every tab — the tallest tab's (switching tabs must not make the centered panel
+ *  jump: the toolbar clearance moved it up when the Services tab grew it) */
+.panel.demo-fixed { height: min(calc(100% - 170px), 790px); }
 
 /* hover readouts: a long value or sub-line wraps inside the tip (max-width) instead of running out of its box over the
  *  panels beside it */

@@ -109,6 +109,8 @@ const GRID = 9;
 export const JAIL_GAP = 12;
 /** a cluster of buildings beyond garbage-truck range producing this much (t / month) gets a facility (ensureGarbage) */
 const GARB_RANGE_MIN_T = 10;
+/** small parks a school or clinic may replace when a built-up district has no other lot (placeByClearing) */
+const POCKET_PARKS = new Set(['park_small', 'park_plaza', 'park_playground']);
 
 export class SimBot {
   sim: Simulation;
@@ -445,12 +447,12 @@ export class SimBot {
   /**
    * like a player who bulldozes a few small houses for a school: the lot (touching a road) inside a developed block of
    * `uses` (R / C by default; a prison clears industrial lots) within `reach` of the target (to the block's nearest cell)
-   * whose cells are empty or hold only small growables (stage ≤ 2, not historic; a deep lot that reaches past the new lot
-   * at most max(6 cells, twice its size)) and that `accept` allows, fewest residents / jobs displaced first; they are
-   * bulldozed and the facility is built there
+   * whose cells are empty or hold only small growables (stage ≤ maxStage, 2 by default; not historic; a deep lot that
+   * reaches past the new lot at most max(6 cells, twice its size)) or a bus stop, and that `accept` allows, fewest
+   * residents / jobs displaced first; they are bulldozed and the facility is built there
    */
   placeByClearing(defId: string, x: number, z: number, reach: number, uses: readonly Use[] = ['R', 'C'],
-    accept?: (x: number, z: number, w: number, d: number) => boolean): ActionResult | null {
+    accept?: (x: number, z: number, w: number, d: number) => boolean, maxStage = 2, clearParks = false): ActionResult | null {
     const def = getDef(defId);
     if (!def) return null;
     const st = this.st, N = this.N;
@@ -476,9 +478,13 @@ export class SimBot {
             if (!o) continue;
             if (olds.includes(o)) continue;
             const od = getDef(o.def);
+            // a bus stop moves out of the way (the transit rule puts one back where the block lacks coverage); for a school
+            // or clinic also a pocket park / plaza / playground (the green / play rules put one back elsewhere)
+            if (o.def === 'tr_bus_stop' && defId !== 'tr_bus_stop') { olds.push(o); cost += 3; continue; }
+            if (clearParks && POCKET_PARKS.has(o.def)) { olds.push(o); cost += 20; continue; }
             // small homes / shops only; a deep lot reaching past the new lot goes too (a cottage with its yards, or at most
             // twice the new lot's size)
-            if (o.flags & (BF.Plopped | BF.Historic | BF.OnFire) || (od?.stage ?? 9) > 2 || o.w * o.d > Math.max(6, 2 * w * d)) { ok = false; break; }
+            if (o.flags & (BF.Plopped | BF.Historic | BF.OnFire) || (od?.stage ?? 9) > maxStage || o.w * o.d > Math.max(6, 2 * w * d)) { ok = false; break; }
             olds.push(o);
             cost += o.pop + o.jobs + 1;
           }
@@ -1185,6 +1191,9 @@ export class SimBot {
           const ds = getDef(small)!;
           if (this.placeCivic(small, target.x, target.z, Math.max(8, (ds.coverage?.radius ?? 16) * 0.9), clear)) built = ds;
         }
+        // schools and clinics: a district without a single small lot left loses a pocket park or a few townhouses / small
+        // shops (stage 3) for them, like a mayor who buys out a corner — kids stuck without a school for years is worse
+        if (!built && priority && this.placeByClearing(def, target.x, target.z, reach, ['P', 'R', 'C'], undefined, 3, true)) built = d;
         if (built) {
           placed++;
           done = true;

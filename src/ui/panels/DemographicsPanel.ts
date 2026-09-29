@@ -83,6 +83,8 @@ export class DemographicsPanel extends Panel {
   }
 
   protected build(): void {
+    // one height for every tab (insight.css): switching to the taller Services tab must not move the centred panel
+    this.el.classList.add('demo-fixed');
     const tabs = h('div', { class: 'tabs' });
     for (const [id, label] of [['people', 'People'], ['services', 'Schools & services'], ['tourism', 'Tourism']] as const) {
       const b = h('button', null, label) as HTMLButtonElement;

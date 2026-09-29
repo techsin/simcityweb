@@ -244,9 +244,11 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
         }
         lines.push({ key: 'switched', label: 'Commuters switched', value: `${fmt(ridersG)}/day to ${stopName}`, status: ridersG < 1 ? 'warn' : undefined, hint });
       }
-      // free spaces (minus the park & ride cars) ease the blocks around it
+      // free spaces (minus the park & ride cars) ease the blocks around it — none while no road reaches it
       const free = Math.max(0, spaces - prCars);
-      lines.push({ key: 'parking', label: 'Parking relief', value: `${plural(free, 'space', 'spaces')} for ${plural(businesses, 'business', 'businesses')} within ${GARAGE_WALK_RADIUS} tiles` });
+      lines.push({ key: 'parking', label: 'Parking relief', value: road
+        ? `${plural(free, 'space', 'spaces')} for ${plural(businesses, 'business', 'businesses')} within ${GARAGE_WALK_RADIUS} tiles`
+        : 'none — no road access', status: road ? undefined : 'bad' });
       const p = parkingNear(st, b, GARAGE_WALK_RADIUS);
       lines.push({ key: 'pressure', label: 'Parking pressure around it', value: p < 0.005 ? 'none' : pct(p), ratio: p, status: p > 0.6 ? 'bad' : p > 0.3 ? 'warn' : 'ok',
         hint: businesses > 0 && p < 0.05 ? 'No parking shortage around it — shortages appear in dense downtowns' : p > 0.6 ? 'Still short of parking: add another garage, or transit to these jobs' : undefined });

@@ -173,7 +173,8 @@ export const DESIRABILITY_LOW = 0;
 /**
  * The one line the default inspector view leads with (critic item 30) — only when the building actually struggles,
  * always with its fix: a facility warning (they carry their fix); else, while it is abandoned / counting down /
- * heading below STRUGGLE_TARGET or one penalty reaches PENALTY_PROBLEM, the worst condition penalty with its hint;
+ * heading below STRUGGLE_TARGET, its worst condition penalty with its hint, or any penalty (but unmet needs: the chip
+ * and the Residents list show those) that reaches PENALTY_PROBLEM;
  * else, while its desirability is low (< DESIRABILITY_LOW) or is what limits its stage (desLimited), the worst
  * desirability factor that has a hint (DESIRABILITY_HINTS). A healthy building shows nothing.
  */
@@ -193,8 +194,10 @@ export function mainProblem(input: {
   const c = input.condition;
   const countdown = (c?.abandon ?? null) !== null;
   const struggling = !!input.abandoned || countdown || (!!c && c.target < STRUGGLE_TARGET);
-  const neg = c?.bars.filter((b) => b.id !== 'desirability' && b.value < -0.02).sort((a, b) => a.value - b.value)[0];
-  if (neg && (struggling || neg.value <= -PENALTY_PROBLEM)) {
+  // (unmet needs lead only while the building struggles: the "Needs unmet" chip and the Residents list show them)
+  const neg = c?.bars.filter((b) => b.id !== 'desirability' && b.value < -0.02 && (struggling || (b.id !== 'needs' && b.value <= -PENALTY_PROBLEM)))
+    .sort((a, b) => a.value - b.value)[0];
+  if (neg) {
     const hint = CONDITION_HINTS[neg.id] || neg.detail;
     const tone = input.abandoned || countdown || neg.value <= -0.2 ? 'bad' : 'warn';
     return { text: neg.detail && neg.id === 'needs' ? `${neg.label}: ${neg.detail}` : neg.label, hint: neg.id === 'needs' ? CONDITION_HINTS.needs : hint, tone };

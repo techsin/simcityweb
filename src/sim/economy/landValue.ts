@@ -327,9 +327,9 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
   let unsub: (() => void) | null = null;
 
   /**
-   * full-map passes are throttled: terrain (lot leveling, terraform) at most every LV_STATIC_MIN_DAYS, landfill splats
-   * every LV_EFFECTS_MIN_DAYS; plopped buildings are splatted incrementally (add / remove queue, flag flips, parks
-   * funding).
+   * full-map passes are throttled: terrain (lot leveling, terraform) once per LV_STATIC_MIN_DAYS (phase LV_STATIC_PHASE,
+   * spread over LV_STATIC_SPREAD days), landfill splats every LV_EFFECTS_MIN_DAYS — neither on a month tick; plopped
+   * buildings are splatted incrementally (add / remove queue, flag flips, parks funding).
    */
   const refresh = (st: CityState, force: boolean) => {
     const ex = extraOf(rt, st);
