@@ -16,11 +16,12 @@ import { conditionBreakdown } from '../../src/sim/economy/population';
 import { sumTerms } from '../../src/sim/explain';
 import type { EconRuntime } from '../../src/sim/economy/runtime';
 import { DESIR_TERM_IDS, NT, T_ELEM, desirWeight, desirabilityBreakdown } from '../../src/sim/economy/desirability';
-import { landValueBreakdown } from '../../src/sim/economy/landValue';
+import { computeStaticLandValue, landValueBreakdown } from '../../src/sim/economy/landValue';
 import { commuteMinutes, commuteRamp, conditionDesirability, garbageFade, lotCell } from '../../src/sim/economy/factors';
 import { placeBuilding } from '../../src/sim/economy/buildings';
 import { updateNeighborConnections } from '../../src/sim/economy/connections';
-import { DESIR_WEIGHTS, LV_REFRESH_DAYS, PENALTY_NO_GARBAGE, RENT_CONDITION_MIN } from '../../src/sim/economy/tuning';
+import { DESIR_WEIGHTS, LV_REFRESH_DAYS, LV_STATIC_MIN_DAYS, LV_STATIC_PHASE, LV_STATIC_SPREAD, PENALTY_NO_GARBAGE, RENT_CONDITION_MIN } from '../../src/sim/economy/tuning';
+import { computeWater } from '../../src/sim/terrainGen';
 
 const rtOf = (sim: Simulation) => (sim.getSystem('economy.population') as unknown as { rt: EconRuntime }).rt;
 
@@ -228,6 +229,51 @@ describe('land value: formula, breakdown, functional-gated splats', () => {
       if (Math.abs(sm) <= 0.05) small++;
     }
     expect(small / land).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it('the static terrain pass after a terrain edit runs a slice a day from its phase day, skips month ticks and ends equal to a full pass', { timeout: 300000 }, () => {
+    // roads and services only: nothing grows, so nothing levels a lot while the pass runs
+    const { st, sim, A } = makeCity({ size: 48 }, createSystems());
+    st.funds = 1e6;
+    road(A, 0, 24, 47, 24, Network.Avenue);
+    road(A, 24, 4, 24, 44);
+    sim.runDays(20);
+    const rt = rtOf(sim), N = st.size, N1 = N + 1;
+    // a pond (water distance, waterfront) and a hill (view: flat land has none) away from the roads — the hill in the
+    // last rows, so the view layer is complete only after the last slice
+    for (let z = 36; z <= 41; z++) for (let x = 3; x <= 8; x++) st.heights[z * N1 + x] = -3;
+    for (let z = 42; z <= 47; z++) for (let x = 36; x <= 41; x++) st.heights[z * N1 + x] += 25;
+    computeWater(st);
+    sim.events.emit('terrainChanged', { x0: 0, z0: 34, x1: N, z1: N });
+    const view = new Float32Array(st.cells), wf = new Float32Array(st.cells);
+    computeStaticLandValue(st, view, wf);
+    const same = (a: Float32Array, b: Float32Array) => a.every((v, i) => v === b[i]);
+    const before = rt.lvStatic.slice();
+    expect(same(before, view)).toBe(false);
+    // nothing before the phase day, nothing during the first three phases (water distance, coarse heights)
+    while (st.day % LV_STATIC_MIN_DAYS !== LV_STATIC_PHASE + 3 * LV_STATIC_SPREAD - 1) {
+      sim.advanceDay();
+      expect(same(rt.lvStatic, before)).toBe(true);
+    }
+    // the rows phase: its six slices end one day later than six days (the month tick on the way is skipped)
+    let done = -1;
+    for (let d = 0; d < 20 && done < 0; d++) {
+      sim.advanceDay();
+      if (same(rt.lvStatic, view)) done = st.day % LV_STATIC_MIN_DAYS;
+    }
+    const monthTicks = [...Array(LV_STATIC_SPREAD + 1).keys()].filter((k) => (LV_STATIC_PHASE + 3 * LV_STATIC_SPREAD + k) % 30 === 0).length;
+    expect(monthTicks).toBe(1);
+    expect(done).toBe(LV_STATIC_PHASE + 4 * LV_STATIC_SPREAD - 1 + monthTicks);
+    // the waterfront part too (the breakdown's waterfront term; no water pollution here)
+    let checked = 0;
+    for (let z = 30; z < 46; z++) for (let x = 0; x < 16; x++) {
+      const i = z * N + x;
+      if (st.water[i] || wf[i] <= 0 || st.waterPollution[i] > 0) continue;
+      const t = landValueBreakdown(st, rt, i).find((u) => u.id === 'waterfront');
+      expect(t?.value ?? 0).toBeCloseTo(wf[i], 6);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(20);
   });
 
   it('save / load: a loaded city keeps its smoothed land value (no first pass) and refreshes the same rows', { timeout: 300000 }, () => {

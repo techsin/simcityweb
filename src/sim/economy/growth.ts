@@ -1006,7 +1006,7 @@ export function growthLimits(st: CityState, i: number, dev: number): GrowthLimit
       // (the system's allowance: what it left in the bank at the end of the day)
       const carry = econData(st).carry;
       const t = swapTarget(st, b, dev, zone, ci, stage, des, (d) => st.stats.demand[d] > SWAP_MIN_DEMAND && carry[d] > 0);
-      if (t) out.wealth = `gentrifying: ${tier(t.dev)} outbid ${tier(dev)} here (${pts(t.gain)}): renovated within ${SWAP_SCAN_DAYS} days`;
+      if (t) out.wealth = `gentrifying: ${tier(t.dev)} outbid ${tier(dev)} here (${pts(t.gain)}): renovated in ~${SWAP_SCAN_DAYS} days if demand holds`;
     }
   }
   if (Math.min(desStage, popStage, zoneStage) >= DOWNTOWN_STAGE) {
@@ -1021,7 +1021,7 @@ export function growthLimits(st: CityState, i: number, dev: number): GrowthLimit
       if (w >= 0.999) out.downtown = `downtown (${d} tiles from the core): towers welcome`;
       else if (towerLot(st, x, z)) out.downtown = `a tower site: downtown is ${d} tiles${dir} (${share}% of lots this far are)`;
       else {
-        out.downtown = `not a tower site (${share}% of lots this far are) — stage ${DOWNTOWN_STAGE - 1} max; downtown ${d} tiles${dir}`;
+        out.downtown = `stage ${DOWNTOWN_STAGE - 1} max: not a tower site (${share}% of lots this far are); core ${d} tiles${dir}`;
         Object.defineProperty(out, 'downtownStage', { value: DOWNTOWN_STAGE - 1, enumerable: false, configurable: true, writable: true });
       }
     }

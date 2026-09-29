@@ -306,7 +306,7 @@ describe('growth: wealth swaps and the inspector rows', () => {
       found = true;
       expect(g.downtownStage).toBe(DOWNTOWN_STAGE - 1);
       expect(Object.keys(g)).not.toContain('downtownStage');
-      expect(g.downtown).toMatch(/^not a tower site \(\d+% of lots this far are\) — stage 5 max; downtown \d+ tiles (N|NE|E|SE|S|SW|W|NW)$/);
+      expect(g.downtown).toMatch(/^stage 5 max: not a tower site \(\d+% of lots this far are\); core \d+ tiles (N|NE|E|SE|S|SW|W|NW)$/);
       expect(g.downtown!.length).toBeLessThan(80);
     }
     expect(found).toBe(true);
