@@ -27,7 +27,7 @@ import { icon } from '../icons';
 import { money, num, pct, titleCase } from '../format';
 import { thumbs } from '../thumbs';
 import { DEV_NAMES } from '../TopBar';
-import { ACCESS_TEXT, emptyZoneStatus, lotAccess, utilityReaches, zoneStatusLine, zoneStatusTone } from '../zoneStatus';
+import { ACCESS_TEXT, emptyZoneStatus, frontCellOf, lotAccess, utilityReaches, zoneStatusLine, zoneStatusTone } from '../zoneStatus';
 import { demolishRisks } from '../../game/demolishRisk';
 import { confirmDialog } from '../Modals';
 import { loadPref, savePref } from '../../game/settings';
@@ -515,8 +515,9 @@ export class InfoPanel extends Panel {
     return out;
   }
 
-  /** noise, air, water, garbage, tap water, response times, coverages at a cell (building-aware when b is set) */
-  private environment(ci: number, b: Building | null, fam: 'R' | 'C' | 'I' | null): (HTMLElement | null)[] {
+  /** noise, air, water, garbage, tap water, response times, coverages at a cell (building-aware when b is set; a back
+   *  lot's coverages are read at the lot cell on its road front, covCell) */
+  private environment(ci: number, b: Building | null, fam: 'R' | 'C' | 'I' | null, covCell = ci): (HTMLElement | null)[] {
     const st = this.ctx.state;
     const sim = this.ctx.sim;
     const kv = this.kv();
@@ -547,21 +548,22 @@ export class InfoPanel extends Panel {
     const out: (HTMLElement | null)[] = [kv.el];
     // coverages
     const cov = this.kv();
+    const k = covCell;
     const c = (l: string, ic: string, v: number) => cov.add(l, ic, this.lvl(v));
-    c('Police patrols', 'police', st.policeCov[ci]);
-    c('Fire prevention', 'fire', st.fireCov[ci]);
-    c('Care access', 'health', st.healthCov[ci]);
+    c('Police patrols', 'police', st.policeCov[k]);
+    c('Fire prevention', 'fire', st.fireCov[k]);
+    c('Care access', 'health', st.healthCov[k]);
     if (fam === 'R' || fam === null) {
-      c('Elementary school', 'education', st.eduElemCov[ci]);
-      c('High school', 'education', st.eduHighCov[ci]);
-      c('University', 'education', st.eduCollegeCov[ci]);
-      c('Play & sports', 'park', st.playCov[ci]);
-      c('Parks & gardens', 'trees', st.greenCov[ci]);
+      c('Elementary school', 'education', st.eduElemCov[k]);
+      c('High school', 'education', st.eduHighCov[k]);
+      c('University', 'education', st.eduCollegeCov[k]);
+      c('Play & sports', 'park', st.playCov[k]);
+      c('Parks & gardens', 'trees', st.greenCov[k]);
     }
-    c('Transit', 'bus', st.transitCov[ci]);
-    if (fam !== 'I') c('Shops in reach', 'com', st.shopAccess[ci]);
-    if (fam === 'C' && st.parking[ci] > 0.01) cov.add('Parking pressure', 'parking', `<span class="${st.parking[ci] > 0.6 ? 'neg' : st.parking[ci] > 0.3 ? 'warn' : ''}">${pct(st.parking[ci])}</span>`);
-    out.push(h('div', { class: 'ins-sub' }, 'Coverage'), cov.el);
+    c('Transit', 'bus', st.transitCov[k]);
+    if (fam !== 'I') c('Shops in reach', 'com', st.shopAccess[k]);
+    if (fam === 'C' && st.parking[k] > 0.01) cov.add('Parking pressure', 'parking', `<span class="${st.parking[k] > 0.6 ? 'neg' : st.parking[k] > 0.3 ? 'warn' : ''}">${pct(st.parking[k])}</span>`);
+    out.push(h('div', { class: 'ins-sub' }, k !== ci ? 'Coverage (at its road front)' : 'Coverage'), cov.el);
     // utility grids
     try {
       const util = this.ctx.mods.infra?.getUtilities?.(sim);
@@ -735,7 +737,8 @@ export class InfoPanel extends Panel {
       }));
     }
     const zf = zone ? zoneFamily(zone) : null;
-    if (!st.water[i]) this.body.appendChild(this.section('environment', 'Environment', 'leaf', '', () => this.environment(i, null, zf === 'R' || zf === 'C' || zf === 'I' ? zf : null)));
+    const covCell = zone && zone !== Zone.Landfill ? safeCall(() => frontCellOf(st, x, z), i) : i;
+    if (!st.water[i]) this.body.appendChild(this.section('environment', 'Environment', 'leaf', '', () => this.environment(i, null, zf === 'R' || zf === 'C' || zf === 'I' ? zf : null, covCell)));
   }
 }
 

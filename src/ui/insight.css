@@ -203,3 +203,9 @@
 
 /* demographics panel: every tab as tall as the tallest (switching tabs must not make the centered panel jump) */
 .demo-panel { min-height: min(470px, calc(100vh - 300px)); }
+
+/* hover readouts: a long value or sub-line wraps inside the tip (max-width) instead of running out of its box over the
+ *  panels beside it */
+.cursor-tip .tip-head { flex-wrap: wrap; column-gap: 12px; row-gap: 0; }
+.cursor-tip .tip-head > span { white-space: normal; }
+.cursor-tip .tip-sub { white-space: normal; }

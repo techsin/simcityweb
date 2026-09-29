@@ -13,6 +13,9 @@ export const LV_REFRESH_DAYS = 12;
  *  biggest single piece of economy work of a day; a loaded city keeps the same schedule) */
 export const LV_STATIC_MIN_DAYS = 90;
 export const LV_STATIC_PHASE = 41;
+/** ... its rows spread over this many days (~0.6 ms a day on 256² instead of one 3–60 ms day: the pass runs so rarely
+ *  that its code is often cold) */
+export const LV_STATIC_SPREAD = 6;
 /** plopped-building land value splat recompute: at most every N days */
 export const LV_EFFECTS_MIN_DAYS = 7;
 /** desirability: full-map refresh period (days); unzoned land (all DevTypes, for overlays) every DESIR_ALL_SWEEPS sweeps */

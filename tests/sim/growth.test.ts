@@ -18,7 +18,11 @@ import {
   commercialCore, downtownWeight, growthData, growthLimits, positionVariant, spreadVariant, towerLot,
 } from '../../src/sim/economy/growth';
 import { placeBuilding } from '../../src/sim/economy/buildings';
-import { DOWNTOWN_MIN, DOWNTOWN_R0, DOWNTOWN_R1, PICK_ALLOW_EXP, PICK_DES_EXP, VARIANT_SPREAD } from '../../src/sim/economy/tuning';
+import { econData } from '../../src/sim/economy/runtime';
+import { lotCell } from '../../src/sim/economy/factors';
+import {
+  DOWNTOWN_MIN, DOWNTOWN_R0, DOWNTOWN_R1, DOWNTOWN_STAGE, PICK_ALLOW_EXP, PICK_DES_EXP, SWAP_SCAN_DAYS, VARIANT_SPREAD,
+} from '../../src/sim/economy/tuning';
 
 const isRoad = (n: number) => n >= Network.Street && n <= Network.Highway;
 
@@ -207,6 +211,105 @@ describe('growth: grown towns', () => {
     // pickDev defaults reproduce phase 0 (des^1 × allowance^0.5)
     expect(PICK_DES_EXP).toBe(1);
     expect(PICK_ALLOW_EXP).toBe(0.5);
+  });
+});
+
+describe('growth: wealth swaps and the inspector rows', () => {
+  it('gentrification tries the richer DevTypes best gain first: an R$ row with no R$$$ model of its size goes R$$', () => {
+    const { st, sim, A } = makeCity({ size: 32 });
+    st.funds = 1e6;
+    road(A, 2, 20, 30, 20);
+    A.zone({ x0: 4, z0: 18, x1: 12, z1: 20 }, Zone.ResMed);
+    const def = getDef('res_townhouse_row.r1.3')!;
+    const [w, d] = def.footprint;
+    const b: Building = {
+      id: st.nextBuildingId++, def: def.id, x: 6, z: 20 - d, w, d, rot: 0, variant: 0, pop: 20, jobs: 0, capacity: def.capacity ?? 0,
+      wealth: 1, built: 1, age: 1000, flags: BF.Powered | BF.Watered, baseY: 5, health: 0.8, unhappy: 0,
+    };
+    placeBuilding(sim, b);
+    const i = lotCell(b, st.size);
+    st.desirability[DevType.R1][i] = -0.1;
+    st.desirability[DevType.R2][i] = 0.3;
+    st.desirability[DevType.R3][i] = 0.5; // the best gain — but no stage-3 R$$$ model of this lot's size keeps 60 % of 30
+    st.stats.demand[DevType.R2] = st.stats.demand[DevType.R3] = 0.5;
+    const carry = econData(st).carry;
+    carry[DevType.R2] = carry[DevType.R3] = 100;
+    const gl = growthLimits(st, b.z * st.size + b.x, DevType.R1);
+    expect(gl.wealth).toMatch(/^gentrifying: \$\$ outbid \$ here \(\+40\)/);
+    // the same gates as the swap scan: without allowance for R$$ nothing is announced
+    carry[DevType.R2] = 0;
+    expect(growthLimits(st, i, DevType.R1).wealth).toBeUndefined();
+  });
+
+  it('filtering down counts only established R$$$ homes (a new one gets SWAP_MIN_AGE days to settle)', { timeout: 300000 }, () => {
+    const pinned: Building[] = [];
+    const pin: SimSystem = {
+      name: 'test.pinR3',
+      // (every R DevType: no redevelopment picks these lots either)
+      daily(sim) { for (const b of pinned) for (const dv of [DevType.R1, DevType.R2, DevType.R3]) sim.state.desirability[dv][lotCell(b, sim.state.size)] = -0.5; },
+    };
+    const systems = economySystems();
+    systems.splice(systems.findIndex((x) => x.name === 'economy.desirability') + 1, 0, pin);
+    const { st, sim, A } = makeCity({ size: 32 }, systems);
+    st.funds = 1e6;
+    road(A, 2, 20, 30, 20);
+    A.zone({ x0: 4, z0: 16, x1: 20, z1: 20 }, Zone.ResLow);
+    const def = getDef('res_villa.r3.1')!;
+    const [w, d] = def.footprint;
+    for (const [x, age] of [[6, 0], [12, 1000]] as const) {
+      const b: Building = {
+        id: st.nextBuildingId++, def: def.id, x, z: 20 - d, w, d, rot: 0, variant: 0, pop: 4, jobs: 0, capacity: def.capacity ?? 0,
+        wealth: 3, built: 1, age, flags: BF.Powered | BF.Watered, baseY: 5, health: 0.8, unhappy: 0,
+      };
+      placeBuilding(sim, b);
+      pinned.push(b);
+    }
+    sim.runDays(SWAP_SCAN_DAYS + 2);
+    const gd = growthData(st);
+    const [young, old] = pinned;
+    expect(st.buildings.has(old.id) && st.buildings.has(young.id)).toBe(true);
+    expect(gd.low[old.id]).toBeGreaterThanOrEqual(SWAP_SCAN_DAYS);
+    // one scan cycle per SWAP_SCAN_DAYS, however small the town (every visit counts SWAP_SCAN_DAYS low days)
+    expect(gd.low[old.id]).toBeLessThanOrEqual(2 * SWAP_SCAN_DAYS);
+    expect(gd.low[young.id]).toBeUndefined();
+    expect(gd.filtered).toBe(0);
+    // the inspector counts down for the old one
+    expect(growthLimits(st, old.z * st.size + old.x, DevType.R3).wealth).toMatch(/^declining: the wealthy leave in ~\d+ days unless desirability tops −10/);
+  });
+
+  it('growthLimits: an empty lot no road can reach is rejected; a far lot that is no tower site says so and caps the stage', () => {
+    const { st, sim, A } = makeCity({ size: 64 });
+    st.funds = 1e6;
+    road(A, 2, 10, 60, 10);
+    A.zone({ x0: 2, z0: 11, x1: 60, z1: 40 }, Zone.ResHigh);
+    const N = st.size;
+    // 20 rows in from the road: beyond any lot's reach (its footprint + INFILL_MAX_EXTRA yard rows)
+    const deep = 31 * N + 30;
+    st.desirability[DevType.R2][deep] = 0.5;
+    const g0 = growthLimits(st, deep, DevType.R2);
+    expect(g0.rejected).toBe(true);
+    expect(g0.reason).toMatch(/^No road access/);
+    // the front row can grow; with a commercial core far away and every other limit above tower height, a lot that lost
+    // the fixed tower draw is capped below DOWNTOWN_STAGE — in a non-enumerable field (generic row lists skip it)
+    const gd = growthData(st);
+    gd.core = { x: 60.5, z: 60.5, jobs: 50000 };
+    st.day = 30;
+    sim.getSystem('economy.growth')!.init!(sim);
+    st.stats.population = 5e6;
+    let found = false;
+    for (let x = 2; x < 60 && !found; x++) {
+      const i = 11 * N + x;
+      st.desirability[DevType.R2][i] = 1;
+      const g = growthLimits(st, i, DevType.R2);
+      expect(g.rejected).toBe(false);
+      if (g.downtownStage === undefined) continue;
+      found = true;
+      expect(g.downtownStage).toBe(DOWNTOWN_STAGE - 1);
+      expect(Object.keys(g)).not.toContain('downtownStage');
+      expect(g.downtown).toMatch(/^not a tower site \(\d+% of lots this far are\) — stage 5 max; downtown \d+ tiles (N|NE|E|SE|S|SW|W|NW)$/);
+      expect(g.downtown!.length).toBeLessThan(80);
+    }
+    expect(found).toBe(true);
   });
 });
 

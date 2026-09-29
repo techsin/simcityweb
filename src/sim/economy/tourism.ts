@@ -234,12 +234,21 @@ function roadWithin(st: CityState, x: number, z: number, d: number): boolean {
  * the water changed). The monthly scan re-checks only the lot (building / road on it) and the water pollution:
  * the same beaches as the full test, without ~85 road probes per shore cell every month.
  */
-interface BeachStatic { shore: Int32Array; ok: Uint8Array; stale: boolean }
+interface BeachStatic { shore: Int32Array; ok: Uint8Array; stale: boolean; /** coarse blocks holding shore cells */ blk: Uint8Array; cw: number }
 const beachStatics = new WeakMap<CityState, BeachStatic>();
-/** mark the static beach test of a state stale (road network or terrain changed) */
-function beachStale(st: CityState): void {
+/**
+ * mark the static beach test of a state stale — only when the changed rect (grown by beachRoadDist + 1: a road that
+ * newly reaches a shore cell, a leveled shore lot) touches a coarse block with shore cells: growth levels lots nearly
+ * every day, and inland changes used to rebuild the test most months
+ */
+function beachStale(st: CityState, r?: { x0: number; z0: number; x1: number; z1: number }): void {
   const b = beachStatics.get(st);
-  if (b) b.stale = true;
+  if (!b || b.stale) return;
+  if (!r) { b.stale = true; return; }
+  const R = TOURISM.beachRoadDist + 1, cw = b.cw;
+  const bx0 = Math.max(0, ((r.x0 - R) / COARSE) | 0), bx1 = Math.min(cw - 1, Math.floor((r.x1 - 1 + R) / COARSE));
+  const bz0 = Math.max(0, ((r.z0 - R) / COARSE) | 0), bz1 = Math.min(cw - 1, Math.floor((r.z1 - 1 + R) / COARSE));
+  for (let bz = bz0; bz <= bz1; bz++) for (let bx = bx0; bx <= bx1; bx++) if (b.blk[bz * cw + bx]) { b.stale = true; return; }
 }
 function beachStatic(st: CityState, shore: Int32Array): BeachStatic {
   let b = beachStatics.get(st);
@@ -247,9 +256,11 @@ function beachStatic(st: CityState, shore: Int32Array): BeachStatic {
   const N = st.size, wm = st.water;
   const body = waterBodySize(st);
   const ok = new Uint8Array(shore.length);
+  const cw = Math.ceil(N / COARSE), blk = new Uint8Array(cw * cw);
   for (let k = 0; k < shore.length; k++) {
     const i = shore[k];
     const x = i % N, z = (i - x) / N;
+    blk[((z / COARSE) | 0) * cw + ((x / COARSE) | 0)] = 1;
     if (st.cellSlope(x, z) >= TOURISM.beachMaxSlope) continue;
     let big = false;
     if (x > 0 && wm[i - 1] && body[i - 1] >= TOURISM.beachMinWater) big = true;
@@ -258,7 +269,7 @@ function beachStatic(st: CityState, shore: Int32Array): BeachStatic {
     if (z < N - 1 && wm[i + N] && body[i + N] >= TOURISM.beachMinWater) big = true;
     if (big && roadWithin(st, x, z, TOURISM.beachRoadDist)) ok[k] = 1;
   }
-  b = { shore, ok, stale: false };
+  b = { shore, ok, stale: false, blk, cw };
   beachStatics.set(st, b);
   return b;
 }
@@ -508,8 +519,8 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
         const offs = [
           sim.events.on('buildingRemoved', (b) => onRemoved(sim.state, b)),
           // (the static beach test follows roads and terrain)
-          sim.events.on('networkChanged', () => beachStale(sim.state)),
-          sim.events.on('terrainChanged', () => beachStale(sim.state)),
+          sim.events.on('networkChanged', (r) => beachStale(sim.state, r)),
+          sim.events.on('terrainChanged', (r) => beachStale(sim.state, r)),
         ];
         unsub = () => { for (const f of offs) f(); };
         subscribedTo = sim;

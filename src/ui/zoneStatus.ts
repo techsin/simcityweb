@@ -101,6 +101,24 @@ export function lotAccess(st: CityState, x: number, z: number): LotAccess {
   return BY_RANK[best];
 }
 
+/**
+ * the lot cell on the road front a back lot fills from (the cell just before the road in the direction of the cell's
+ * best road access; the cell itself when it fronts a road or has no access): coverages of a back lot are judged there
+ * (services reach a lot through its front; a grown building takes its best cell's coverage)
+ */
+export function frontCellOf(st: CityState, x: number, z: number): number {
+  const N = st.size, i = z * N + x;
+  let best = 0, bk = -1;
+  for (let k = 0; k < 4; k++) { const r = walkDir(st, x, z, k, null); if (r > best) { best = r; bk = k; } }
+  if (bk < 0 || best === RANK.front) return i;
+  const [dx, dz] = DIRS[bk];
+  for (let d = 1; d <= BACK_LOT_DEPTH; d++) {
+    const xx = x + dx * d, zz = z + dz * d;
+    if (isRoad(st.network[zz * N + xx])) return (zz - dz) * N + (xx - dx);
+  }
+  return i;
+}
+
 /** a lot through this cell can front a road: a road within LOT_DEPTH in a straight line, only open same-zone lot between */
 export function roadAccess(st: CityState, x: number, z: number): boolean {
   return lotAccess(st, x, z) === 'front';

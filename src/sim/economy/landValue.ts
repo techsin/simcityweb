@@ -20,8 +20,8 @@ import { clamp, smoothstep } from '../../core/rng';
 import { Zone } from '../../core/types';
 import { getDef } from '../catalog';
 import {
-  COARSE, COVERAGE_FALLBACK, LV, LV_EFFECTS_MIN_DAYS, LV_REFRESH_DAYS, LV_STATIC_MIN_DAYS, LV_STATIC_PHASE, LV_TERMS,
-  PARK_LV_FUNDING_MAX,
+  COARSE, COVERAGE_FALLBACK, LV, LV_EFFECTS_MIN_DAYS, LV_REFRESH_DAYS, LV_STATIC_MIN_DAYS, LV_STATIC_PHASE, LV_STATIC_SPREAD,
+  LV_TERMS, PARK_LV_FUNDING_MAX,
 } from './tuning';
 import { DAYS_PER_MONTH } from '../../core/constants';
 import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
@@ -76,8 +76,10 @@ function rebuildHistoric(st: CityState, e: LvExtra): void {
 }
 
 // ------------------------------------------------------------------------------------------------ static terrain part
-/** static terrain component: view / elevation into `out`; the waterfront bonus into `wfOut` (added to `out` when absent) */
-export function computeStaticLandValue(st: CityState, out: Float32Array, wfOut?: Float32Array): void {
+/** the global inputs of the static terrain part: chamfer distance to water (cells) and the coarse mean heights */
+interface StaticPrep { dist: Uint8Array; mean: Float32Array; cw: number }
+
+function staticPrep(st: CityState): StaticPrep {
   const N = st.size;
   // chamfer distance to water (cells)
   const INF = 255;
@@ -118,7 +120,13 @@ export function computeStaticLandValue(st: CityState, out: Float32Array, wfOut?:
       mean[bz * cw + bx] = c ? s / c : 0;
     }
   }
-  for (let z = 0; z < N; z++) {
+  return { dist, mean, cw };
+}
+
+/** view / elevation (into out) and the waterfront bonus (into wfOut, or added to out when absent) of rows [z0, z1) */
+function staticRows(st: CityState, p: StaticPrep, out: Float32Array, wfOut: Float32Array | undefined, z0: number, z1: number): void {
+  const N = st.size, dist = p.dist, mean = p.mean, cw = p.cw;
+  for (let z = z0; z < z1; z++) {
     for (let x = 0; x < N; x++) {
       const i = z * N + x;
       if (st.water[i]) { out[i] = 0; if (wfOut) wfOut[i] = 0; continue; }
@@ -129,6 +137,11 @@ export function computeStaticLandValue(st: CityState, out: Float32Array, wfOut?:
       if (wfOut) { out[i] = view; wfOut[i] = wf; } else out[i] = wf + view;
     }
   }
+}
+
+/** static terrain component: view / elevation into `out`; the waterfront bonus into `wfOut` (added to `out` when absent) */
+export function computeStaticLandValue(st: CityState, out: Float32Array, wfOut?: Float32Array): void {
+  staticRows(st, staticPrep(st), out, wfOut, 0, st.size);
 }
 
 // ------------------------------------------------------------------------------------------------ plopped splats
@@ -303,6 +316,9 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
   /** average accumulators: zoned / built sum, count; all land sum, count (band locals, written back once per band) */
   const acc = new Float64Array(4);
   let lastLandfill = -1e9;
+  /** the spread static terrain pass: its global inputs and the next row (-1 = idle) */
+  let staticPrepared: StaticPrep | null = null;
+  let staticRow = -1;
   let rawRow = new Float64Array(0);
   let ctx: LvCtx | undefined;
   /** plopped buildings whose flags changed since the last refresh (Burnt / Abandoned flips re-splat) */
@@ -317,11 +333,24 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
    */
   const refresh = (st: CityState, force: boolean) => {
     const ex = extraOf(rt, st);
-    // (the full-map terrain pass runs on absolute days LV_STATIC_PHASE mod LV_STATIC_MIN_DAYS, which are never month
-    // ticks: it used to run every 90 days from day 0, i.e. on a month tick — the largest month-tick hitch of big cities)
-    if (rt.terrainDirty && (force || st.day % LV_STATIC_MIN_DAYS === LV_STATIC_PHASE)) {
+    // (the full-map terrain pass starts on absolute days LV_STATIC_PHASE mod LV_STATIC_MIN_DAYS, never a month tick —
+    // it used to run every 90 days from day 0, i.e. on a month tick: the largest month-tick hitch of big cities — and
+    // its rows are spread over LV_STATIC_SPREAD days; the band reads the older values of the rows not yet redone)
+    if (force) {
       computeStaticLandValue(st, rt.lvStatic, ex.wf);
       rt.terrainDirty = false;
+      staticPrepared = null;
+      staticRow = -1;
+    } else if (rt.terrainDirty && staticRow < 0 && st.day % LV_STATIC_MIN_DAYS === LV_STATIC_PHASE) {
+      staticPrepared = staticPrep(st);
+      staticRow = 0;
+      rt.terrainDirty = false;
+    }
+    if (staticRow >= 0 && staticPrepared) {
+      const N = st.size, z1 = Math.min(N, staticRow + Math.ceil(N / LV_STATIC_SPREAD));
+      staticRows(st, staticPrepared, rt.lvStatic, ex.wf, staticRow, z1);
+      staticRow = z1 >= N ? -1 : z1;
+      if (staticRow < 0) staticPrepared = null;
     }
     if (rt.lvEffectsDirty || force) {
       computeLandValueEffects(st, rt, rt.lvEffects);

@@ -357,7 +357,13 @@ export class SimBot {
     const def = getDef(defId);
     if (!def) return null;
     const dist = (b: Block) => Math.hypot((b.x0 + b.x1) / 2 - nx, (b.z0 + b.z1) / 2 - nz);
-    const cand = this.blocks.filter((b) => uses.includes(b.use) && (b.developed || developOk) && dist(b) <= maxDist)
+    // undeveloped utility blocks are the land reserveUtilityLand keeps for power and water: nothing else takes them
+    const utility = def.category === 'power' || def.category === 'water';
+    const area = def.footprint[0] * def.footprint[1];
+    // (only blocks with room for the lot count toward the 14 tried: in a grown city the nearest blocks are full, and a
+    // window of full blocks left the reserved utility land unused for decades — 256×60 s7 ran dry from 2040)
+    const cand = this.blocks.filter((b) => uses.includes(b.use) && (b.developed || developOk) && (utility || b.use !== 'U' || b.developed)
+      && dist(b) <= maxDist && this.freeCells(b) >= area)
       .sort((a, b) => dist(a) - dist(b));
     for (const b of cand.slice(0, 14)) {
       for (const rot of [0, 1, 2, 3] as const) {
@@ -392,8 +398,23 @@ export class SimBot {
   count(defId: string): number {
     return this.st.milestones[defId] ?? 0;
   }
+
+  /** free cells of a block's interior (no building, road or water) */
+  freeCells(b: Block): number {
+    const st = this.st, N = this.N;
+    let n = 0;
+    for (let z = b.z0; z < b.z1; z++) {
+      for (let x = b.x0; x < b.x1; x++) {
+        const i = z * N + x;
+        if (st.building[i] < 0 && st.network[i] === Network.None && !st.water[i]) n++;
+      }
+    }
+    return n;
+  }
   /** lot of the last successful placeNear */
   lastPlaced = { x: 0, z: 0, w: 0, d: 0 };
+  /** origin of the last successful placeByClearing */
+  lastCleared = { x: 0, z: 0 };
 
   /**
    * a civic / service building near (x, z) within `reach` cells, always on a lot that touches a road: civic blocks,
@@ -474,10 +495,40 @@ export class SimBot {
       const r = this.A.plop(defId, best.x, best.z, rot);
       if (r.ok) {
         const [w, d] = rotatedFootprint(def, rot);
+        this.lastCleared = { x: best.x, z: best.z };
         this.pendingUpkeep -= def.upkeep ?? 0;
         this.services.push({ def: defId, x: best.x + (w >> 1), z: best.z + (d >> 1) });
         this.say(`cleared ${best.olds.length} small lots for ${def.name} ($${r.cost})`);
         return r;
+      }
+    }
+    return null;
+  }
+
+  /** a bus stop on a free frontage cell of block b (avenue sides first, from the middle of each side); its cell or null */
+  placeStop(b: Block): { x: number; z: number } | null {
+    const st = this.st, N = this.N;
+    const sides: { x: number; z: number; dx: number; dz: number; len: number; avenue: boolean }[] = [
+      { x: b.x0, z: b.z0, dx: 1, dz: 0, len: b.x1 - b.x0, avenue: this.lineType(b.bz, false) === Network.Avenue },
+      { x: b.x0, z: b.z1 - 1, dx: 1, dz: 0, len: b.x1 - b.x0, avenue: this.lineType(b.bz + 1, false) === Network.Avenue },
+      { x: b.x0, z: b.z0, dx: 0, dz: 1, len: b.z1 - b.z0, avenue: this.lineType(b.bx, true) === Network.Avenue },
+      { x: b.x1 - 1, z: b.z0, dx: 0, dz: 1, len: b.z1 - b.z0, avenue: this.lineType(b.bx + 1, true) === Network.Avenue },
+    ];
+    sides.sort((p, q) => Number(q.avenue) - Number(p.avenue));
+    for (const sd of sides) {
+      const mid = sd.len >> 1;
+      for (let k = 0; k < sd.len; k++) {
+        const off = mid + (k & 1 ? 1 : -1) * ((k + 1) >> 1);
+        if (off < 0 || off >= sd.len) continue;
+        const x = sd.x + sd.dx * off, z = sd.z + sd.dz * off;
+        const i = z * N + x;
+        if (x < 0 || z < 0 || x >= N || z >= N || st.building[i] >= 0 || st.network[i] !== Network.None || st.water[i]) continue;
+        for (const rot of [0, 1, 2, 3] as const) {
+          const p = this.A.plop('tr_bus_stop', x, z, rot, true);
+          if (!p.ok || p.reason) continue;
+          if (this.A.plop('tr_bus_stop', x, z, rot).ok) return { x, z };
+          break;
+        }
       }
     }
     return null;
@@ -589,7 +640,16 @@ export class SimBot {
       return;
     }
     const n = def === 'util_wind_turbine' ? 3 : 1;
-    for (let k = 0; k < n; k++) if (!this.placeUtility(def, cx, cz)) break;
+    for (let k = 0; k < n; k++) {
+      if (this.placeUtility(def, cx, cz)) continue;
+      // a full map: clear small industrial / utility lots for the plant (at most every 120 days while it finds no site)
+      if (def !== 'util_wind_turbine' && (this.svcRetry.get('power:clear') ?? -1) <= this.st.day) {
+        const ok = !!this.placeByClearing(def, cx, cz, Infinity, ['I', 'U']);
+        this.svcRetry.set('power:clear', this.st.day + (ok ? 30 : 120));
+        if (ok) { this.say(`power: cleared small lots for a ${getDef(def)?.name}`); continue; }
+      }
+      break;
+    }
   }
 
   /**
@@ -607,13 +667,14 @@ export class SimBot {
   }
 
   /**
-   * keep land for utilities as the map fills (QA growth regression b): at least 1 + pop / 250k undeveloped utility
-   * blocks while undeveloped land remains, taken from the undeveloped blocks next to the town nearest the utility area
+   * keep land for utilities as the map fills (QA growth regression b): at least 1 + pop / 150k undeveloped utility
+   * blocks while undeveloped land remains (a treatment plant serves ~130k residents), taken from the undeveloped blocks
+   * next to the town nearest the utility area; only power and water may use them (placeNear)
    */
   reserveUtilityLand(): void {
     const free = this.blocks.filter((b) => !b.developed);
     if (free.length > this.blocks.length * 0.3) return;
-    const want = 1 + Math.floor(this.st.stats.population / 250000);
+    const want = 1 + Math.floor(this.st.stats.population / 150000);
     let have = free.filter((b) => b.use === 'U').length;
     const cx = this.line(this.cbx) + 3 * GRID, cz = this.trunkZ;
     while (have < want) {
@@ -652,6 +713,13 @@ export class SimBot {
         if (ok) continue;
       }
       if (big && this.upgradePumps()) continue;
+      // a full map: clear a few small lots for the plant (industrial / utility blocks first, then shops / homes), like
+      // a player bulldozing a corner of town for water (at most every 120 days while it finds no site)
+      if (big && (this.svcRetry.get('water:clear') ?? -1) <= st.day) {
+        const ok = !!this.placeByClearing(def, cx, cz, Infinity, ['I', 'U']) || !!this.placeByClearing(def, cx, cz, Infinity, ['C', 'R']);
+        this.svcRetry.set('water:clear', st.day + (ok ? 30 : 120));
+        if (ok) { this.say(`water: cleared small lots for a ${getDef(def)?.name}`); continue; }
+      }
       break;
     }
   }
@@ -874,7 +942,8 @@ export class SimBot {
    * land. It must touch the developed area so its roads join the town's network.
    */
   private zoneLandfillNear(x: number, z: number, maxDist: number): boolean {
-    const penalty: Partial<Record<Use, number>> = { X: 0, U: 6, I: 10, P: 40 };
+    // (undeveloped utility blocks are reserved for power and water: reserveUtilityLand)
+    const penalty: Partial<Record<Use, number>> = { X: 0, I: 10, P: 40 };
     let best: Block | undefined, bs = Infinity;
     for (const b of this.blocks) {
       const pen = penalty[b.use];
@@ -1195,54 +1264,62 @@ export class SimBot {
   }
 
   // ------------------------------------------------------------------------------------------ transit (item 38c)
-  /** stop cells already used (avoid retrying the same block side) */
-  private stopBlocks = new Set<string>();
+  /** block key -> day until which it gets no new stop (placed: a year; no site: half a year) */
+  private stopRetry = new Map<string, number>();
+  /** stops placed in the last ~4 months (their coverage shows only after the next services pass) */
+  private recentStops: { x: number; z: number; day: number }[] = [];
   /**
-   * Bus service from 20k people: a stop on the avenue side of R / C blocks (about every 9 cells), a depot whenever the
-   * fleet needs more than 110 % of the buses it has, and (once unlocked) a garage beside a stop for a commercial block
-   * under parking pressure > 0.6.
+   * Bus service from 20k people: a stop for every developed R / C block whose centre has no transit coverage and no stop
+   * within walking distance — the blocks with the most residents / jobs first, up to 5 a month (8 above 150k): on a free
+   * frontage cell of any side (avenue sides first), else in place of the smallest home / shop on the block's edge (a grown
+   * district has no free frontage; the old rule tried each block once, on avenue sides only, and a 188k city had 2
+   * stops). A depot whenever the fleet needs more than 110 % of the buses it has, and (once unlocked) a garage beside a
+   * stop for a commercial block under parking pressure > 0.6.
    */
   ensureTransit(): void {
     const st = this.st, pop = st.stats.population;
     if (pop < 20000) return;
     const N = this.N;
-    // stops: up to 4 a month, on developed R / C blocks next to an avenue (a free frontage cell next to the avenue)
     let stops = 0;
     if (this.canSpend(2000)) {
+      const maxStops = pop > 150000 ? 8 : 5;
+      this.recentStops = this.recentStops.filter((p) => st.day - p.day < 120);
+      const have: { x: number; z: number }[] = [...this.recentStops];
+      for (const b of st.buildings.values()) if (b.def === 'tr_bus_stop' || b.def === 'tr_subway_station' || b.def === 'tr_train_station') have.push({ x: b.x, z: b.z });
+      const cands: { b: Block; p: number }[] = [];
       for (const b of this.blocks) {
-        if (stops >= 4) break;
-        if (!b.developed || (b.use !== 'R' && b.use !== 'C') || this.stopBlocks.has(b.bx + ',' + b.bz)) continue;
-        const sides: [number, number, number, number][] = [];
-        // [x, z, dx, dz]: the frontage row along each avenue side of the block (middle cells first)
-        const mx = (b.x0 + b.x1) >> 1, mz = (b.z0 + b.z1) >> 1;
-        if (this.lineType(b.bz, false) === Network.Avenue) sides.push([mx, b.z0, 1, 0]);
-        if (this.lineType(b.bz + 1, false) === Network.Avenue) sides.push([mx, b.z1 - 1, 1, 0]);
-        if (this.lineType(b.bx, true) === Network.Avenue) sides.push([b.x0, mz, 0, 1]);
-        if (this.lineType(b.bx + 1, true) === Network.Avenue) sides.push([b.x1 - 1, mz, 0, 1]);
-        this.stopBlocks.add(b.bx + ',' + b.bz);
-        let done = false;
-        for (const [sx, sz, dx, dz] of sides) {
-          for (let k = 0; k < 8 && !done; k++) {
-            const off = (k & 1 ? 1 : -1) * ((k + 1) >> 1);
-            const x = sx + dx * off, z = sz + dz * off;
-            if (x < 0 || z < 0 || x >= N || z >= N || st.building[z * N + x] >= 0) continue;
-            for (const rot of [0, 1, 2, 3] as const) {
-              const p = this.A.plop('tr_bus_stop', x, z, rot, true);
-              if (!p.ok || p.reason) continue;
-              if (this.A.plop('tr_bus_stop', x, z, rot).ok) { stops++; done = true; }
-              break;
-            }
-          }
-          if (done) break;
+        if (!b.developed || (b.use !== 'R' && b.use !== 'C') || b.zone === Zone.None) continue;
+        if ((this.stopRetry.get(b.bx + ',' + b.bz) ?? -1) > st.day) continue;
+        const cx = (b.x0 + b.x1) >> 1, cz = (b.z0 + b.z1) >> 1;
+        if (st.transitCov[cz * N + cx] >= 0.25) continue;
+        if (have.some((q) => Math.abs(q.x - cx) + Math.abs(q.z - cz) <= 7)) continue;
+        let p = 0;
+        for (let z = b.z0; z < b.z1; z += 2) for (let x = b.x0; x < b.x1; x += 2) {
+          const id = st.building[z * N + x];
+          const o = id >= 0 ? st.buildings.get(id) : undefined;
+          if (o) p += o.pop + 0.5 * o.jobs;
         }
+        if (p > 0) cands.push({ b, p });
+      }
+      cands.sort((a, c) => c.p - a.p || a.b.ring - c.b.ring);
+      for (const { b } of cands) {
+        if (stops >= maxStops || !this.canSpend(2000)) break;
+        const cx = (b.x0 + b.x1) >> 1, cz = (b.z0 + b.z1) >> 1;
+        if (have.some((q) => Math.abs(q.x - cx) + Math.abs(q.z - cz) <= 7)) continue; // (a stop placed this month)
+        const at = this.placeStop(b) ?? (this.placeByClearing('tr_bus_stop', cx, cz, 4, ['R', 'C']) ? this.lastCleared : null);
+        this.stopRetry.set(b.bx + ',' + b.bz, st.day + (at ? 360 : 180));
+        if (!at) continue;
+        stops++;
+        this.recentStops.push({ x: at.x, z: at.z, day: st.day });
+        have.push(at);
       }
       if (stops) this.say(`built ${stops} bus stop${stops > 1 ? 's' : ''}`);
     }
-    // depot: the fleet runs short
+    // depot: the fleet runs short (a full map: clear small industrial / commercial lots for it)
     const f = st.stats.transitFleet;
     if (f && f.busesNeeded > 1.1 * Math.max(1, f.buses) && (this.svcRetry.get('depot') ?? -1) <= st.day && this.canAfford('civ_bus_depot')) {
       const cx = this.line(this.cbx), cz = this.line(this.cbz);
-      const ok = this.placeNear('civ_bus_depot', cx, cz, ['P', 'U', 'I'], true, Infinity, true);
+      const ok = this.placeNear('civ_bus_depot', cx, cz, ['P', 'U', 'I'], true, Infinity, true) || this.placeByClearing('civ_bus_depot', cx, cz, Infinity, ['I', 'C']);
       this.svcRetry.set('depot', st.day + (ok ? 120 : 180));
       if (ok) this.say(`bus depot: ${Math.round(f.busesNeeded)} buses needed, ${f.buses} running`);
     }

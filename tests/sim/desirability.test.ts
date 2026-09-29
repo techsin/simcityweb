@@ -17,7 +17,7 @@ import { sumTerms } from '../../src/sim/explain';
 import type { EconRuntime } from '../../src/sim/economy/runtime';
 import { DESIR_TERM_IDS, NT, T_ELEM, desirWeight, desirabilityBreakdown } from '../../src/sim/economy/desirability';
 import { landValueBreakdown } from '../../src/sim/economy/landValue';
-import { commuteRamp, conditionDesirability, garbageFade } from '../../src/sim/economy/factors';
+import { commuteMinutes, commuteRamp, conditionDesirability, garbageFade, lotCell } from '../../src/sim/economy/factors';
 import { placeBuilding } from '../../src/sim/economy/buildings';
 import { updateNeighborConnections } from '../../src/sim/economy/connections';
 import { DESIR_WEIGHTS, LV_REFRESH_DAYS, PENALTY_NO_GARBAGE, RENT_CONDITION_MIN } from '../../src/sim/economy/tuning';
@@ -57,8 +57,9 @@ function sampler(seed: number) {
 describe('desirability: the 33-term model and its breakdown', () => {
   it('desirabilityBreakdown sums to the stored desirability (before the clamp) on 200 random cells', { timeout: 300000 }, () => {
     const { st, sim, rt } = town();
-    // a full band from the current inputs (the band and the breakdown share one term function)
-    sim.getSystem('economy.desirability')!.init!(sim);
+    // a full band from the current inputs (the band and the breakdown share one term function): init runs one for a
+    // new city (a loaded one keeps its saved layer)
+    { const d = st.day; st.day = 0; sim.getSystem('economy.desirability')!.init!(sim); st.day = d; }
     const rnd = sampler(7);
     let checked = 0;
     for (let k = 0; k < 200; k++) {
@@ -185,8 +186,9 @@ describe('condition: the RENT cap and the garbage fade keep conditionBreakdown e
     expect(g.value).toBeCloseTo(-PENALTY_NO_GARBAGE * garbageFade(st), 6);
     expect(g.value).toBeLessThan(0);
     expect(g.value).toBeGreaterThan(-PENALTY_NO_GARBAGE);
-    // the desirability term uses the capped rent (≥ the stored desirability, which carries the full R$ rent)
-    const i = (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1);
+    // the desirability term uses the capped rent (≥ the stored desirability, which carries the full R$ rent) — at the
+    // lot's front row, where the occupancy loop evaluates the building
+    const i = lotCell(b, N);
     const des = br.terms.find((t) => t.id === 'desirability')!;
     expect(des.value).toBeGreaterThanOrEqual(0.5 + 0.5 * st.desirability[DevType.R1][i] - 1e-6);
   });
@@ -279,6 +281,64 @@ describe('land value: formula, breakdown, functional-gated splats', () => {
     A.bulldoze({ x0: park!.x, z0: park!.z, x1: park!.x + park!.w, z1: park!.z + park!.d });
     sim.runDays(1);
     expect(Math.abs(around(park!))).toBeLessThan(1e-3);
+  });
+});
+
+describe('desirability: save / load and early-game commute', () => {
+  it('a loaded city keeps its saved desirability (no band on the empty coarse inputs) and follows the original', { timeout: 300000 }, () => {
+    const { st, sim } = town(40);
+    const copy = deserializeCity(structuredClone(serializeCity(st, { copy: true })) as SerializedCity);
+    const saved = copy.desirability.map((l) => Float32Array.from(l));
+    const sim2 = new Simulation(copy, createSystems());
+    // right after init: every cell as saved (shops / offices read their customers, skills and wealthy neighbours from
+    // the coarse grids that population.init fills after desirability.init)
+    let d0 = 0, cCells = 0;
+    for (let i = 0; i < copy.cells; i++) {
+      const zn = copy.zone[i];
+      for (const d of zn !== Zone.None && zn !== Zone.Landfill ? ZONE_DEVTYPES[zn] : []) {
+        d0 = Math.max(d0, Math.abs(copy.desirability[d][i] - saved[d][i]));
+        if (d >= DevType.CS1 && d <= DevType.CO3) cCells++;
+      }
+    }
+    expect(cCells).toBeGreaterThan(50);
+    expect(d0).toBeLessThanOrEqual(0.005);
+    // the band continues on the rows of the day: the original and the loaded copy refresh the same rows with the same
+    // inputs (a few days: the other systems' post-load passes differ a little)
+    sim.runDays(3);
+    sim2.runDays(3);
+    let d1 = 0, n = 0, sum = 0;
+    for (let i = 0; i < copy.cells; i++) {
+      const zn = copy.zone[i];
+      if (zn === Zone.None || zn === Zone.Landfill) continue;
+      for (const d of ZONE_DEVTYPES[zn]) { const e = Math.abs(copy.desirability[d][i] - st.desirability[d][i]); d1 = Math.max(d1, e); sum += e; n++; }
+    }
+    expect(sum / n).toBeLessThan(0.01);
+    void d1;
+  });
+
+  it('before traffic has an average commute, a cell with no road route scores a long commute, not the average', () => {
+    const { st } = makeCity({ size: 16 });
+    st.stats.avgCommute = 0;
+    const r = commuteRamp(st);
+    const a = 3 * 16 + 3, b = 3 * 16 + 5;
+    // services has not written accessCommute yet: unknown everywhere -> the average
+    expect(commuteMinutes(st, true, a, r.avg, r.unreached)).toBe(r.avg);
+    // it has (b is reached, a is not): a no longer scores as an average commute
+    st.day = 1;
+    st.accessCommute[b] = 6;
+    const r2 = commuteRamp(st);
+    expect(commuteMinutes(st, true, b, r2.avg, r2.unreached)).toBe(6);
+    expect(commuteMinutes(st, true, a, r2.avg, r2.unreached)).toBeGreaterThan(r2.avg);
+  });
+
+  it('lotCell: a growable is evaluated at the middle of its road-side row', () => {
+    const N = 32;
+    // a 2 x 4 lot at (10, 10): rot 0 faces +z (row z = 13), rot 2 faces -z (row 10), rot 1 +x (column 11), rot 3 -x (10)
+    const lot = (rot: number) => ({ x: 10, z: 10, w: 2, d: 4, rot });
+    expect(lotCell(lot(0), N)).toBe(13 * N + 11);
+    expect(lotCell(lot(2), N)).toBe(10 * N + 11);
+    expect(lotCell(lot(1), N)).toBe(12 * N + 11);
+    expect(lotCell(lot(3), N)).toBe(12 * N + 10);
   });
 });
 

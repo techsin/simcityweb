@@ -65,18 +65,21 @@ export interface GrowthData {
   swaps: number;
   filtered: number;
   /** id of the last building the swap scan checked (it walks the buildings in id order: a loaded city continues with
-   *  the next one; -1 = start of a cycle) */
+   *  the next one); -1 = a cycle that has checked none yet, -2 = the cycle is done (the next starts SWAP_SCAN_DAYS after
+   *  it began) */
   cursor: number;
+  /** day the current / last swap-scan cycle began */
+  cycle: number;
   /** commercial core of the last monthly update (null: none yet) */
   core: { x: number; z: number; jobs: number } | null;
 }
 export function growthData(st: CityState): GrowthData {
   let d = st.systemData.growth as GrowthData | undefined;
   if (!d || d.v !== 1) {
-    d = { v: 1, lock: {}, low: {}, swaps: 0, filtered: 0, cursor: -1, core: null };
+    d = { v: 1, lock: {}, low: {}, swaps: 0, filtered: 0, cursor: -1, cycle: -1e9, core: null };
     st.systemData.growth = d;
   }
-  d.lock ??= {}; d.low ??= {}; d.swaps ??= 0; d.filtered ??= 0; d.cursor ??= -1; d.core ??= null;
+  d.lock ??= {}; d.low ??= {}; d.swaps ??= 0; d.filtered ??= 0; d.cursor ??= -1; d.cycle ??= -1e9; d.core ??= null;
   return d;
 }
 
@@ -788,8 +791,10 @@ export function growthSystem(rt: EconRuntime): SimSystem {
   /**
    * The swap scan walks st.buildings in id order — Map insertion order: ids only grow and a save keeps the order — with
    * a live iterator (buildings added during a cycle are met later in it), ceil(growables / SWAP_SCAN_DAYS) growables a
-   * day; GrowthData.cursor = the id of the last one checked, so a loaded city goes on with the same building on the same
-   * day (the growables list is swap-removed while the game runs and rebuilt in Map order on load)
+   * day, one cycle per SWAP_SCAN_DAYS (a small town waits for the rest of the period: every visit counts
+   * SWAP_SCAN_DAYS towards FILTER_DAYS). GrowthData.cursor / cycle carry the position, so a loaded city goes on with the
+   * same building on the same day (the growables list is swap-removed while the game runs and rebuilt in Map order on
+   * load, so a list index would not).
    */
   let swapIt: Iterator<Building> | null = null;
   let swapPending: Building | null = null;
@@ -801,7 +806,7 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     if (cursor < 0) return;
     for (;;) {
       const r = swapIt.next();
-      if (r.done) { swapIt = st.buildings.values(); return; } // (the cycle ended there: a new one starts)
+      if (r.done) { swapPending = null; return; } // (nothing after the cursor: the cycle ends with the next step)
       if (r.value.id > cursor) { swapPending = r.value; return; }
     }
   };
@@ -810,21 +815,22 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     const n = rt.growables.length;
     if (!n) return;
     const gd = growthData(st);
+    if (gd.cursor === -2) {
+      if (st.day - gd.cycle < SWAP_SCAN_DAYS) return; // (this period's cycle is done)
+      gd.cursor = -1;
+      gd.cycle = st.day;
+      swapState = null;
+    } else if (gd.cursor === -1 && gd.cycle < 0) gd.cycle = st.day;
     if (swapState !== st || !swapIt) resumeSwaps(st, gd.cursor);
     prepSwaps(st);
     const slice = Math.ceil(n / SWAP_SCAN_DAYS);
-    let seen = 0, restarts = 0;
+    let seen = 0;
     while (seen < slice) {
       let b = swapPending;
       swapPending = null;
       if (!b) {
         const r = swapIt!.next();
-        if (r.done) {
-          if (++restarts > 1) break; // (fewer buildings than a slice)
-          swapIt = st.buildings.values();
-          gd.cursor = -1;
-          continue;
-        }
+        if (r.done) { gd.cursor = -2; swapIt = null; return; }
         b = r.value;
       }
       if (b.flags & BF.Plopped) continue;

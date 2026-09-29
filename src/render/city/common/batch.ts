@@ -161,14 +161,6 @@ const _rnl = new Float64Array(6);
 const _fq = new Float64Array(24);
 const _rq = new Float64Array(24);
 const _rnq = new Float64Array(6);
-/** frustum planes of the last pass camera fitted and the render() call (renderer.info.render.frame) they were fitted
- *  in: every batch culls the same pass cameras in the same order within a render, so one plane fit per camera and frame
- *  serves all their list builds */
-const _cpPlanes = new Float64Array(24);
-let _cpCam: THREE.Camera | null = null;
-let _cpFrame = -1;
-/** render() call of the pass being prepared (beforePass) */
-let _renderFrame = -1;
 /** list-build doubles handed to pushPack / pushList (guard band, min caster radius, receiver ground, 1 / light dir y) */
 const _plf = new Float64Array(4);
 /** current camera orientation */
@@ -313,6 +305,8 @@ export class DynamicBatch {
   /** per tile: its instance pack (see InstPack); dynamic batches: the visible instances' pack */
   private tilePack: (InstPack | null)[] = [];
   private dynPack: InstPack | null = null;
+  /** swapSeq the dynamic pack was built at */
+  private dynSwap = -1;
   /** bumped whenever drawRanges() recomputed the per-geometry ranges */
   private rangesGen = 0;
   private untiled: number[] = [];
@@ -795,7 +789,6 @@ export class DynamicBatch {
     const m = this.mesh as any;
     // once per frame (the first pass that draws this batch): finalize partial / full texture uploads
     const fr = renderer.info.render.frame;
-    _renderFrame = fr;
     if (fr !== this.lastFrame) {
       this.lastFrame = fr;
       _frame++;
@@ -906,18 +899,12 @@ export class DynamicBatch {
   /** planes of the list build -> _fp (view / shadow camera) and _rp / _rnl (receiver), widened by the slot's bands */
   private cullPlanes(s: PassSlot, recv: ShadowReceiver | null, tilt: number, phi: number, rtilt: number): void {
     const cam = s.camera;
-    if (cam !== _cpCam || _renderFrame !== _cpFrame) {
-      _frustum.setFromProjectionMatrix(_pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse), cam.coordinateSystem, (cam as any).reversedDepth);
-      const cp = _cpPlanes;
-      for (let i = 0; i < 6; i++) {
-        const pl = _frustum.planes[i], n = pl.normal, o = i * 4;
-        cp[o] = n.x; cp[o + 1] = n.y; cp[o + 2] = n.z; cp[o + 3] = pl.constant;
-      }
-      _cpCam = cam;
-      _cpFrame = _renderFrame;
-    }
+    _frustum.setFromProjectionMatrix(_pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse), cam.coordinateSystem, (cam as any).reversedDepth);
     const fp = _fp, mr = s.margin;
-    fp.set(_cpPlanes);
+    for (let i = 0; i < 6; i++) {
+      const pl = _frustum.planes[i], n = pl.normal, o = i * 4;
+      fp[o] = n.x; fp[o + 1] = n.y; fp[o + 2] = n.z; fp[o + 3] = pl.constant;
+    }
     if (s.banded) {
       const w = cam.matrixWorld.elements;
       const ax = w[12], ay = w[13], az = w[14];
@@ -1171,11 +1158,13 @@ export class DynamicBatch {
   }
 
   /** a dynamic batch's pack of its visible instances (the front of `untiled`), positions from the live matrices: built
-   *  by the first pass after a content change (vehicles: once per frame) and shared by the others */
+   *  by the first pass after a content change (vehicles: once per frame; owners writing matrixData() call
+   *  markMatricesDirty(), which bumps the version) or a geometry swap (radius), and shared by the others */
   private packDyn(mat: Float32Array): InstPack {
     const un = this.untiledVis;
     let pk = this.dynPack;
-    if (pk !== null && pk.ver === this.version && pk.n === un) return pk;
+    if (pk !== null && pk.ver === this.version && pk.n === un && this.dynSwap === this.swapSeq) return pk;
+    this.dynSwap = this.swapSeq;
     if (pk === null || pk.ids.length < un) pk = this.dynPack = this.newPack(Math.ceil(un * 1.25) + 16);
     const u = this.untiled, imask = this.instMask, geo = this.instGeo, grad = this.geoRad, ids = pk.ids, ps = pk.sph, mk = pk.mk;
     for (let j = 0; j < un; j++) {
