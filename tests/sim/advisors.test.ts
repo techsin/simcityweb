@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { BF, type Building, type NeedTier } from '../../src/sim/CityState';
 import { Simulation, type SimSystem } from '../../src/sim/Simulation';
 import { EconRuntime } from '../../src/sim/economy/runtime';
-import { advisorIssues, advisorsSystem, type AdvisorsSystem } from '../../src/sim/economy/advisors';
+import { MONTH_SCAN_DAYS, advisorData, advisorIssues, advisorsSystem, type AdvisorsSystem } from '../../src/sim/economy/advisors';
 import type { FacilityLoad } from '../../src/sim/infra/catchments';
 import { newState, place, roadLine } from '../infra/cityGen';
 
@@ -162,5 +162,97 @@ describe('advisors: WP5 rules with locations', () => {
     c.st.stats.population = 250;
     monthTick(sim, adv, 60);
     expect((advisorIssues(c.st).utilities ?? []).some((a) => a.id === 'garbage')).toBe(false);
+  });
+});
+
+describe('advisors: review round 1 (one fire advisor, Prison wording, shared stats, saved scans)', () => {
+  it('no fire station at all: ONE fire advisor that also names the power plant (plantNoFire stays quiet)', () => {
+    const c = city({ emergency: true });
+    const hs = homes(c.st, 60);
+    for (const b of hs) c.st.respFire[b.z * c.st.size + b.x] = -99; // RESP_NONE: no station of the type
+    place(c.st, 'util_coal_plant', 40, 40, { flags: BF.Plopped });
+    c.st.stats.population = 3000;
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30);
+    const ids = Object.values(advisorIssues(c.st)).flat().map((a) => a.id);
+    expect(ids).toContain('noFireResponse');
+    expect(ids).not.toContain('plantNoFire');
+    const t = Object.values(advisorIssues(c.st)).flat().find((a) => a.id === 'noFireResponse')!.text;
+    expect(t).toMatch(/no fire station/);
+    expect(t).toMatch(/power plant/);
+  });
+
+  it('justice: "Prison" wording; before the Prison unlocks the advice points at police holding cells', () => {
+    const c = city();
+    c.st.stats.population = 9000;
+    c.st.stats.justice = { inmates: 900, beds: 0, holding: 500, arrestsMonth: 100, releasesMonth: 120, occupancy: 1.8, overflow: 0.45, policeMul: 0.9, crimeMul: 1.12 };
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30);
+    const j = advisorIssues(c.st).safety!.find((a) => a.id === 'jailOvercrowded')!;
+    expect(j.text).toMatch(/holding cells are full/);
+    expect(j.text).toMatch(/Prison unlocks at 15,000/);
+    expect(j.text).not.toMatch(/\bjail\b/i);
+    c.st.unlocked.add('jail');
+    monthTick(sim, adv, 60);
+    expect(advisorIssues(c.st).safety!.find((a) => a.id === 'jailOvercrowded')!.text).toMatch(/^The city has no Prison/);
+    // a Prison that just opened is not in the justice stats yet: no "overcrowded" in its first month
+    const p = place(c.st, 'civ_jail', 20, 40, { flags: BF.Plopped, age: 10 });
+    sim.events.emit('buildingAdded', p);
+    monthTick(sim, adv, 90);
+    expect((advisorIssues(c.st).safety ?? []).some((a) => a.id === 'jailOvercrowded')).toBe(false);
+    p.age = 200;
+    monthTick(sim, adv, 120);
+    expect(advisorIssues(c.st).safety!.find((a) => a.id === 'jailOvercrowded')!.text).toMatch(/^The Prison is overcrowded/);
+  });
+
+  it('seniors / playgrounds read the services pass (stats.needs), "None of" instead of "Only 0%"', () => {
+    const c = city({ clusters: { health: [{ x: 12, z: 30, people: 600 }] } });
+    c.st.stats.population = 30000;
+    c.st.stats.cohorts = [4000, 2000, 3000, 17000, 4000];
+    c.st.stats.needs.health = { need: 40000, served: 30000, capacity: 30000, unreached: 8000, overcrowded: 0 };
+    c.st.stats.needs.play = { need: 5400, served: 1000, capacity: 1200, unreached: 3000, overcrowded: 0 };
+    c.st.stats.sewageTreated = 0;
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30);
+    const all = Object.values(advisorIssues(c.st)).flat();
+    const sh = all.find((a) => a.id === 'seniorsHealth')!;
+    expect(sh.text).toMatch(/About 800 seniors have no clinic or hospital in reach/);
+    expect([sh.x, sh.z]).toEqual([12, 30]);
+    expect(all.find((a) => a.id === 'playgrounds')!.text).toMatch(/^56% of our children/);
+    expect(all.find((a) => a.id === 'sewage')!.text).toMatch(/^None of our sewage is treated/);
+  });
+
+  it('noise: Noisy homes are counted from building events (no monthly scan)', () => {
+    const c = city();
+    const hs = homes(c.st, 40);
+    c.st.stats.population = 3000;
+    const { sim, adv } = start(c);
+    (c.rt.totals.countByDev as number[])[1] = hs.length; // (the population system counts the homes)
+    for (const b of hs.slice(0, 8)) { b.flags |= BF.Noisy; sim.events.emit('buildingChanged', b); }
+    monthTick(sim, adv, 30);
+    const n = (advisorIssues(c.st).environment ?? []).find((a) => a.id === 'noise')!;
+    expect(n.text).toMatch(/^20% of homes are too noisy/);
+    expect(n.x).toBeDefined();
+    // quiet again: the rule clears
+    for (const b of hs.slice(0, 8)) { b.flags &= ~BF.Noisy; sim.events.emit('buildingChanged', b); }
+    monthTick(sim, adv, 60);
+    expect((advisorIssues(c.st).environment ?? []).some((a) => a.id === 'noise')).toBe(false);
+  });
+
+  it('the month scans are saved with the city (a game loaded between the scan days and the month tick gives the same advice)', () => {
+    const c = city();
+    c.st.stats.population = 500;
+    const { sim, adv } = start(c);
+    for (const d of MONTH_SCAN_DAYS) { c.st.day = 30 + d; adv.daily!(sim); }
+    const a = advisorData(c.st);
+    expect(a.scan?.month).toBe(c.st.monthIndex);
+    expect(a.scan?.zone).toBeDefined();
+    expect(a.scan?.fac).toBeDefined();
+    // plain data (structured-clone safe: it is saved in systemData)
+    expect(structuredClone(a.scan)).toEqual(a.scan);
+    c.st.day = 60;
+    expect(c.st.monthIndex).toBe(a.scan!.month + 1);
+    adv.monthly!(sim);
+    expect(advisorData(c.st).scan).toBeUndefined();
   });
 });
