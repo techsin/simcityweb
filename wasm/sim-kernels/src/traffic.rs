@@ -177,7 +177,7 @@ slots!(U, U_NAMES;
     kEntS, kEntC, kLabel,
     // stops
     stCell, stX, stZ, stMode, stAttS, stAttC, stAtt, stWait, stLoad, stopBins, stopBinStart, binFill, nsIdx, nsDist,
-    trTo, trCost,
+    trTo, trCost, trEFrom, trETo, trECost,
     // shared entry nodes, pool scratch, radix histograms, sampled car pieces
     ent, poolU, poolO, hist, routeCand, routeW,
 );
@@ -651,7 +651,9 @@ fn prep_stops(c: &Cx) -> i32 {
 }
 
 /// transfers between stops of different modes within walking distance (CSR, the JS decrementing-cursor fill), bus
-/// in-vehicle times. Returns the edge count, or -1 (U::outNeed = edges) when the transfer arrays are too small.
+/// in-vehicle times. One nearStops pass records the edges in push order (from, to, cost stored as the f32 the CSR
+/// keeps), then traffic.ts's counting placement. Returns the edge count, or -7 (U::outNeed = edges) when the edge
+/// arrays are too small (only scratch written).
 fn transfers(c: &Cx) -> i32 {
     let sn = c.n(U::stopN);
     let total = c.n(U::total);
@@ -671,8 +673,9 @@ fn transfers(c: &Cx) -> i32 {
             }
         }
     }
-    // pass 1: count edges (from-node buckets need them before the fill)
-    let tr_start = c.sl::<i32>(U::trStart, total + 1);
+    let cap = c.n(U::capTr);
+    let (efrom, eto, ecost) = (c.sl::<i32>(U::trEFrom, cap), c.sl::<i32>(U::trETo, cap), c.sl::<f32>(U::trECost, cap));
+    let wt = c.f(F::stopWalkT);
     let mut ne = 0usize;
     for s in 0..sn {
         if attc[s] == 0 {
@@ -684,51 +687,39 @@ fn transfers(c: &Cx) -> i32 {
             if s2 <= s || mode[s2] == mode[s] || attc[s2] == 0 {
                 continue;
             }
+            if ne + 2 <= cap {
+                let a = att[atts[s] as usize];
+                let b = att[atts[s2] as usize];
+                let cst = (dist[q] as f64 * wt + 0.5 * (wait[s] as f64 + wait[s2] as f64)) as f32;
+                efrom[ne] = a;
+                eto[ne] = b;
+                ecost[ne] = cst;
+                efrom[ne + 1] = b;
+                eto[ne + 1] = a;
+                ecost[ne + 1] = cst;
+            }
             ne += 2;
         }
     }
-    if ne > c.n(U::capTr) {
+    if ne > cap {
         c.set(U::outNeed, ne as i32);
         return -7;
     }
+    let tr_start = c.sl::<i32>(U::trStart, total + 1);
     let (to, cost) = (c.sl::<i32>(U::trTo, ne), c.sl::<f32>(U::trCost, ne));
     tr_start.fill(0);
-    // the edge sequence (a -> b, b -> a per pair, in JS push order) is generated twice: count per from-node, place
-    let wt = c.f(F::stopWalkT);
-    for pass in 0..2 {
-        for s in 0..sn {
-            if attc[s] == 0 {
-                continue;
-            }
-            let cnt = grid.near(grid.x[s], grid.z[s], r, idx, dist);
-            for q in 0..cnt {
-                let s2 = idx[q] as usize;
-                if s2 <= s || mode[s2] == mode[s] || attc[s2] == 0 {
-                    continue;
-                }
-                let a = att[atts[s] as usize] as usize;
-                let b = att[atts[s2] as usize] as usize;
-                if pass == 0 {
-                    tr_start[a + 1] += 1;
-                    tr_start[b + 1] += 1;
-                } else {
-                    let cst = (dist[q] as f64 * wt + 0.5 * (wait[s] as f64 + wait[s2] as f64)) as f32;
-                    tr_start[a + 1] -= 1;
-                    let p = tr_start[a + 1] as usize;
-                    to[p] = b as i32;
-                    cost[p] = cst;
-                    tr_start[b + 1] -= 1;
-                    let p = tr_start[b + 1] as usize;
-                    to[p] = a as i32;
-                    cost[p] = cst;
-                }
-            }
-        }
-        if pass == 0 {
-            for i in 0..total {
-                tr_start[i + 1] += tr_start[i];
-            }
-        }
+    for k in 0..ne {
+        tr_start[efrom[k] as usize + 1] += 1;
+    }
+    for i in 0..total {
+        tr_start[i + 1] += tr_start[i];
+    }
+    for k in 0..ne {
+        let f = efrom[k] as usize + 1;
+        tr_start[f] -= 1;
+        let p = tr_start[f] as usize;
+        to[p] = eto[k];
+        cost[p] = ecost[k];
     }
     // trStart[k] = start[k - 1] for k >= 1 now: shift back
     for i in 1..total {

@@ -17,7 +17,7 @@
  */
 import type { FairSearch } from './roadTransitSearch';
 import {
-  BYTES, CTOR, HIST_WORDS, ROUTE_MAX, TRAFFIC_ARRAYS, newCounts,
+  BYTES, CTOR, HIST_WORDS, ROUTE_MAX, TRAFFIC_ARRAYS, newArraysObject, newCounts,
   type ArrDef, type Cls, type GridGraphLike, type LayersLike, type RoadGraphLike, type TrafficArrays, type TrafficCoreApi, type TrafficCounts,
   type TrafficParams, type TrafficScalars,
 } from '../kernels/trafficLayout';
@@ -47,7 +47,7 @@ export interface Arrs {
   kEntS: Int32Array; kEntC: Uint8Array; kLabel: Float32Array;
   stCell: Int32Array; stX: Int32Array; stZ: Int32Array; stMode: Uint8Array; stAttS: Int32Array; stAttC: Uint8Array; stAtt: Int32Array;
   stWait: Float32Array; stLoad: Float32Array; stopBins: Int32Array; stopBinStart: Int32Array; binFill: Int32Array; nsIdx: Int32Array;
-  nsDist: Float32Array; trTo: Int32Array; trCost: Float32Array;
+  nsDist: Float32Array; trTo: Int32Array; trCost: Float32Array; trEFrom: Int32Array; trETo: Int32Array; trECost: Float32Array;
   ent: Int32Array; poolU: Float64Array; poolO: Float64Array; routeCand: Int32Array; routeW: Float64Array;
 }
 
@@ -296,12 +296,18 @@ export const fairKernels = {
     }
   },
 
-  /** transfer CSR between stops of different modes + bus times; returns the edge count or -need (class E) */
+  /**
+   * transfer CSR between stops of different modes + bus times; returns the edge count or -need (class E). One
+   * nearStops pass records the edges in push order (from, to, cost as the f32 the CSR stores), then the original's
+   * counting fill with the decrementing cursor.
+   */
   transfers(e: KernelEnv): number {
     const A = e.A, c = e.c, P = e.P;
     const sn = c.stopN, total = c.total, nb = c.binN, R = P.stopR;
     const mode = A.stMode, attC = A.stAttC, attS = A.stAttS, att = A.stAtt, wait = A.stWait, sx = A.stX, sz = A.stZ;
     const idx = A.nsIdx, dist = A.nsDist;
+    const eFrom = A.trEFrom, eTo = A.trETo, eCost = A.trECost, cap = eFrom.length;
+    const wt = P.stopWalkT;
     let ne = 0;
     for (let s = 0; s < sn; s++) {
       if (attC[s] === 0) continue;
@@ -309,30 +315,24 @@ export const fairKernels = {
       for (let q = 0; q < cnt; q++) {
         const s2 = idx[q];
         if (s2 <= s || mode[s2] === mode[s] || attC[s2] === 0) continue;
+        if (ne + 2 <= cap) {
+          const a = att[attS[s]], b = att[attS[s2]];
+          const cst = dist[q] * wt + 0.5 * (wait[s] + wait[s2]);
+          eFrom[ne] = a; eTo[ne] = b; eCost[ne] = cst;
+          eFrom[ne + 1] = b; eTo[ne + 1] = a; eCost[ne + 1] = cst;
+        }
         ne += 2;
       }
     }
-    if (ne > A.trTo.length) return -ne;
+    if (ne > cap) return -ne;
     const trStart = A.trStart, to = A.trTo, cost = A.trCost;
     trStart.fill(0, 0, total + 1);
-    const wt = P.stopWalkT;
-    for (let pass = 0; pass < 2; pass++) {
-      for (let s = 0; s < sn; s++) {
-        if (attC[s] === 0) continue;
-        const cnt = nearStops(A, nb, sx[s], sz[s], R);
-        for (let q = 0; q < cnt; q++) {
-          const s2 = idx[q];
-          if (s2 <= s || mode[s2] === mode[s] || attC[s2] === 0) continue;
-          const a = att[attS[s]], b = att[attS[s2]];
-          if (pass === 0) { trStart[a + 1]++; trStart[b + 1]++; continue; }
-          const cst = dist[q] * wt + 0.5 * (wait[s] + wait[s2]);
-          let p = --trStart[a + 1];
-          to[p] = b; cost[p] = cst;
-          p = --trStart[b + 1];
-          to[p] = a; cost[p] = cst;
-        }
-      }
-      if (pass === 0) for (let i = 0; i < total; i++) trStart[i + 1] += trStart[i];
+    for (let k = 0; k < ne; k++) trStart[eFrom[k] + 1]++;
+    for (let i = 0; i < total; i++) trStart[i + 1] += trStart[i];
+    for (let k = 0; k < ne; k++) {
+      const p = --trStart[eFrom[k] + 1];
+      to[p] = eTo[k];
+      cost[p] = eCost[k];
     }
     for (let i = 1; i < total; i++) trStart[i] = trStart[i + 1];
     trStart[total] = ne;
@@ -1013,7 +1013,7 @@ export function ensureSortScratch(e: KernelEnv, oCap: number): void {
 export function makeFairTrafficCore(P: TrafficParams, search: FairSearch): TrafficCoreApi & { readonly env: KernelEnv } {
   const caps = zeroCaps();
   const defs = TRAFFIC_ARRAYS.filter((a) => !a.wasmOnly);
-  const A = {} as Record<string, Float32Array | Float64Array | Int32Array | Uint8Array | Uint16Array | Uint32Array>;
+  const A = newArraysObject() as unknown as Record<string, Float32Array | Float64Array | Int32Array | Uint8Array | Uint16Array | Uint32Array>;
   for (const a of defs) A[a.name] = new (CTOR[a.type] as unknown as new (n: number) => Float32Array)(arrLen(a, caps));
   const e = newEnv(P, search, A as unknown as Arrs);
   const moved: (() => void)[] = [];

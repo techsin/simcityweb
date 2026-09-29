@@ -104,7 +104,7 @@ benchMain(async ({ args, log }) => {
       pairs.push(['wasm scalar vs SIMD build (resident)', 'scalarRes', 'simdRes']);
     }
     const results: Record<string, AbResult[]> = {};
-    for (const kind of only ?? SWEEPS) {
+    for (const kind of (only ?? SWEEPS).filter((k) => SWEEPS.includes(k))) {
       results[kind] = [];
       log(`\n### ${kind}: one full sweep = ${bands.length} daily bands (per day = / ${bands.length})`);
       for (const [label, a, b] of pairs) {

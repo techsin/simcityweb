@@ -30,7 +30,7 @@ import {
   ALL_CLASSES, arrLen, bindEnvViews, ensureSortScratch, fairKernels, growCap, newEnv, zeroCaps, type Arrs, type KernelEnv,
 } from '../js/trafficCore';
 import {
-  BYTES, COUNT_NAMES, CTOR, TRAFFIC_ARRAYS, type ArrDef, type Cls, type GridGraphLike, type LayersLike, type RoadGraphLike,
+  BYTES, COUNT_NAMES, CTOR, TRAFFIC_ARRAYS, newArraysObject, type ArrDef, type Cls, type GridGraphLike, type LayersLike, type RoadGraphLike,
   type TrafficArrays, type TrafficCoreApi, type TrafficParams,
 } from './trafficLayout';
 
@@ -221,7 +221,7 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
   caps.P = 1; caps.Q = 1; caps.T1 = 1; caps.G = 1;
   /** capacities the current arena was laid out with (caps = the target while a reallocation runs) */
   let arenaCaps = { ...caps };
-  const A = {} as Record<string, Float32Array | Float64Array | Int32Array | Uint8Array | Uint16Array | Uint32Array | BigUint64Array>;
+  const A = newArraysObject() as unknown as Record<string, Float32Array | Float64Array | Int32Array | Uint8Array | Uint16Array | Uint32Array | BigUint64Array>;
   const offs = new Map<string, number>();
   const fairDefs = TRAFFIC_ARRAYS.filter((a) => !a.wasmOnly);
   // until the first allocation the arrays are empty plain arrays (JS path)
@@ -240,6 +240,7 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
   let graphKey = '';
   let graphOk = false;
   let graphObjs: [RoadGraphLike | null, GridGraphLike | null, GridGraphLike | null] = [null, null, null];
+  const gk = new Float64Array(7);
   let layers: LayersLike | null = null;
   let resident = { traffic: -1, congestion: -1, network: -1 };
   let lastJsReason = 'not initialised';
@@ -417,8 +418,9 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
   /** copy the graphs into the arena when their version changed (lazy: at the first kernel call of a cycle) */
   function syncGraphs(w: SimWasmInstance): boolean {
     const road = e.road, rail = e.rail, sub = e.sub;
+    if (graphKey !== '' && gk[0] === road.version && gk[1] === road.n && gk[2] === rail.version && gk[3] === rail.n && gk[4] === sub.version && gk[5] === sub.n && gk[6] === road.nComp) return graphOk;
     const key = `${road.version}:${road.n}:${rail.version}:${rail.n}:${sub.version}:${sub.n}:${road.nComp}`;
-    if (key === graphKey) return graphOk;
+    gk[0] = road.version; gk[1] = road.n; gk[2] = rail.version; gk[3] = rail.n; gk[4] = sub.version; gk[5] = sub.n; gk[6] = road.nComp;
     const n = road.n;
     ensure({ N: n, R: rail.n, B: sub.n, C: road.nComp, T: n + rail.n + sub.n });
     copyInto('rev', road.rev, 4 * n); copyInto('fwd', road.fwd, 4 * n); copyInto('typ', road.type, n); copyInto('cellOf', road.cellOf, n);

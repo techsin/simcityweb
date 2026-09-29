@@ -79,10 +79,53 @@ export const TRAFFIC_ARRAYS: readonly ArrDef[] = [
   d('stCell', 'i32', 'P'), d('stX', 'i32', 'P'), d('stZ', 'i32', 'P'), d('stMode', 'u8', 'P'), d('stAttS', 'i32', 'P'), d('stAttC', 'u8', 'P'),
   d('stAtt', 'i32', 'A'), d('stWait', 'f32', 'P'), d('stLoad', 'f32', 'P'), d('stopBins', 'i32', 'P'), d('stopBinStart', 'i32', 'G'), d('binFill', 'i32', 'G'),
   d('nsIdx', 'i32', 'P'), d('nsDist', 'f32', 'P'), d('trTo', 'i32', 'E'), d('trCost', 'f32', 'E'),
+  // transfer edges in push order (from, to, cost), placed into the CSR afterwards (traffic.ts trFrom / trTo / trCost)
+  d('trEFrom', 'i32', 'E'), d('trETo', 'i32', 'E'), d('trECost', 'f32', 'E'),
   // shared entry nodes, pool scratch, radix histograms, sampled car pieces
   d('ent', 'i32', 'NT'), d('poolU', 'f64', 'C'), d('poolO', 'f64', 'C'), d('hist', 'u32', 'X', HIST_WORDS, true),
   d('routeCand', 'i32', 'X', ROUTE_MAX), d('routeW', 'f64', 'X', ROUTE_MAX),
 ];
+
+/**
+ * a fixed-shape object holding one (empty) array per table entry: created as ONE object literal (constant keys, in
+ * table order) so V8 keeps fast properties; the cores only ever REPLACE these properties (same typed-array class), so
+ * `A.x` loads in the driver's loops stay monomorphic
+ */
+export function newArraysObject(): TrafficArrays {
+  const o = {
+    rev: new Int32Array(0), fwd: new Int32Array(0), typ: new Uint8Array(0), cellOf: new Int32Array(0), cap: new Float32Array(0), t0: new Float32Array(0),
+    comp: new Int32Array(0), railAdj: new Int32Array(0), railCellOf: new Int32Array(0), subAdj: new Int32Array(0), subCellOf: new Int32Array(0),
+    traffic: new Float32Array(0), congestion: new Float32Array(0), network: new Uint8Array(0), subwayRiders: new Float32Array(0),
+    nodeTime: new Float32Array(0), volNew: new Float32Array(0), acc: new Float32Array(0), busTime: new Float32Array(0), volInbound: new Float32Array(0),
+    volShop: new Float32Array(0), volFreight: new Float32Array(0), nodeQ: new Int32Array(0),
+    tAcc: new Float32Array(0), nodeStop: new Int32Array(0), trStart: new Int32Array(0), railNew: new Float32Array(0), subNew: new Float32Array(0),
+    saDist: new Float64Array(0), saSrc: new Int32Array(0), saNext: new Int32Array(0), saOrder: new Int32Array(0), saHops: new Uint16Array(0), saDone: new Uint8Array(0),
+    stDist: new Float64Array(0), stSrc: new Int32Array(0), stNext: new Int32Array(0), stOrder: new Int32Array(0), stHops: new Uint16Array(0), stDone: new Uint8Array(0),
+    sbDist: new Float64Array(0), sbSrc: new Int32Array(0), sbNext: new Int32Array(0), sbOrder: new Int32Array(0), sbHops: new Uint16Array(0), sbDone: new Uint8Array(0),
+    head: new Int32Array(0), qent: new Int32Array(0), seedNode: new Int32Array(0), seedLabel: new Float64Array(0), seedId: new Int32Array(0),
+    oBid: new Int32Array(0), oW: new Float32Array(0), oPop: new Float32Array(0), oWealth: new Uint8Array(0), oEntS: new Int32Array(0), oEntC: new Uint8Array(0),
+    oCell: new Int32Array(0), oHalf: new Uint8Array(0), oCarNode: new Int32Array(0), oBoard: new Int32Array(0), oShC: new Float32Array(0), oShT: new Float32Array(0),
+    oShW: new Float32Array(0), oTime: new Float32Array(0), oEmp: new Float32Array(0), oJobT: new Int32Array(0), oU: new Float32Array(0), oAsg: new Float32Array(0),
+    oTimeSum: new Float32Array(0), oCarW: new Float32Array(0), oTrW: new Float32Array(0), oWalkW: new Float32Array(0), oTrT: new Float32Array(0), oBoardStop: new Int32Array(0),
+    oLastD: new Float32Array(0), candNode: new Int32Array(0), sortA: new Int32Array(0), sortB: new Int32Array(0), keyA: new BigUint64Array(0), keyB: new BigUint64Array(0),
+    jBid: new Int32Array(0), jSlots: new Float32Array(0), jNoise: new Float32Array(0), jAsg: new Float32Array(0), jCapP: new Float32Array(0), jPrice: new Float32Array(0),
+    jQ: new Int32Array(0), jBase: new Float32Array(0), jEntS: new Int32Array(0), jEntC: new Uint8Array(0), jCell: new Int32Array(0), jHalf: new Uint8Array(0),
+    jRailNode: new Int32Array(0), jConnType: new Uint8Array(0), jTimeSum: new Float32Array(0), jInbound: new Float32Array(0), jTmp: new Float32Array(0),
+    desire: new Float32Array(0), bestNode: new Int32Array(0), inCand: new Int32Array(0), conns: new Int32Array(0), scale: new Float32Array(0), connSum: new Float64Array(0),
+    qNode: new Int32Array(0), qSlots: new Float32Array(0), qCapP: new Float32Array(0), qAsg: new Float32Array(0), qPrice: new Float32Array(0), qProp: new Float32Array(0),
+    qBase: new Float32Array(0), qNoise: new Float32Array(0), qTimeSum: new Float32Array(0),
+    sBid: new Int32Array(0), sEntS: new Int32Array(0), sEntC: new Uint8Array(0), sLoad: new Float32Array(0),
+    fBid: new Int32Array(0), fTrucks: new Float32Array(0), fEntS: new Int32Array(0), fEntC: new Uint8Array(0), fAcc: new Float32Array(0), fNode: new Int32Array(0),
+    kEntS: new Int32Array(0), kEntC: new Uint8Array(0), kLabel: new Float32Array(0),
+    stCell: new Int32Array(0), stX: new Int32Array(0), stZ: new Int32Array(0), stMode: new Uint8Array(0), stAttS: new Int32Array(0), stAttC: new Uint8Array(0),
+    stAtt: new Int32Array(0), stWait: new Float32Array(0), stLoad: new Float32Array(0), stopBins: new Int32Array(0), stopBinStart: new Int32Array(0), binFill: new Int32Array(0),
+    nsIdx: new Int32Array(0), nsDist: new Float32Array(0), trTo: new Int32Array(0), trCost: new Float32Array(0),
+    trEFrom: new Int32Array(0), trETo: new Int32Array(0), trECost: new Float32Array(0),
+    ent: new Int32Array(0), poolU: new Float64Array(0), poolO: new Float64Array(0), hist: new Uint32Array(0),
+    routeCand: new Int32Array(0), routeW: new Float64Array(0),
+  };
+  return o as unknown as TrafficArrays;
+}
 
 /** the arrays by name (typed per element type; u64 arrays are only views in the wasm core) */
 export interface TrafficArrays {
