@@ -30,6 +30,8 @@ const _corners = Array.from({ length: 8 }, () => new THREE.Vector3());
 const CASCADES = 2;
 const FADE = 0.12;
 const _world = new THREE.Vector3();
+/** scalar inputs of a cascade fit (CityCascadeShadow.sameFit) */
+const _fitV = new Float64Array(15);
 
 /**
  * Global shadow-caster change counter: bumped by anything that changes what the shadow map would contain
@@ -101,53 +103,64 @@ const _rf = new THREE.Frustum();
 const _rm = new THREE.Matrix4();
 const _fwd = new THREE.Vector3();
 const _cp = new THREE.Vector3();
+/** the receiver volume's values (6 planes, light direction, ground) and the form values (light, ground, projection
+ *  shape) for change detection (plain loops: setReceiver runs a few times per frame) */
+const _snapV = new Float64Array(28);
+const _formV = new Float64Array(9);
+const _formTol = new Float64Array(9);
 
 /** fit a receiver to a perspective view camera between view depths dn..df */
 export function setReceiver(rec: ShadowReceiver, cam: THREE.Camera, dn: number, df: number, dirToLight: THREE.Vector3, ground: number): void {
   _rf.setFromProjectionMatrix(_rm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
-  for (let i = 0; i < 4; i++) rec.planes[i].copy(_rf.planes[i]);
+  const planes = rec.planes;
+  for (let i = 0; i < 4; i++) planes[i].copy(_rf.planes[i]);
   _fwd.set(0, 0, -1).transformDirection(cam.matrixWorld);
   _cp.setFromMatrixPosition(cam.matrixWorld);
   const fc = _fwd.dot(_cp);
-  rec.planes[4].normal.copy(_fwd).negate();
-  rec.planes[4].constant = fc + df;
-  rec.planes[5].normal.copy(_fwd);
-  rec.planes[5].constant = -fc - dn;
+  planes[4].normal.copy(_fwd).negate();
+  planes[4].constant = fc + df;
+  planes[5].normal.copy(_fwd);
+  planes[5].constant = -fc - dn;
   rec.dir.copy(dirToLight).normalize();
-  for (let i = 0; i < 6; i++) rec.nl[i] = rec.planes[i].normal.dot(rec.dir);
+  const dx = rec.dir.x, dy = rec.dir.y, dz = rec.dir.z;
+  for (let i = 0; i < 6; i++) rec.nl[i] = planes[i].normal.dot(rec.dir);
   rec.ground = ground;
   // change detection (tolerant: a still, damped camera jitters by float ulps)
+  const v = _snapV;
+  for (let i = 0; i < 6; i++) { const p = planes[i], n = p.normal, o = i * 4; v[o] = n.x; v[o + 1] = n.y; v[o + 2] = n.z; v[o + 3] = p.constant; }
+  v[24] = dx; v[25] = dy; v[26] = dz; v[27] = ground;
   const s = rec.snap;
-  let o = 0, changed = false;
-  const note = (v: number) => {
-    if (Math.abs(s[o] - v) > 1e-7 * Math.max(1, Math.abs(v))) { s[o] = v; changed = true; }
-    o++;
-  };
-  for (const p of rec.planes) { note(p.normal.x); note(p.normal.y); note(p.normal.z); note(p.constant); }
-  note(rec.dir.x); note(rec.dir.y); note(rec.dir.z); note(ground);
+  let changed = false;
+  for (let i = 0; i < 28; i++) {
+    const x = v[i];
+    if (Math.abs(s[i] - x) > 1e-7 * Math.max(1, Math.abs(x))) { s[i] = x; changed = true; }
+  }
   if (changed) rec.version++;
   // translation-invariant fingerprint: normals, plane offsets relative to the view position, light, ground
   rec.origin.copy(_cp);
   rec.reach = viewReach(cam);
   const h = rec.shapeSnap;
-  let q = 0, reshaped = false;
-  const noteS = (v: number, tol: number) => {
-    if (Math.abs(h[q] - v) > tol) { h[q] = v; reshaped = true; }
-    q++;
-  };
-  for (const p of rec.planes) {
-    const n = p.normal;
-    noteS(n.x, 1e-7); noteS(n.y, 1e-7); noteS(n.z, 1e-7);
-    const c = p.constant + n.x * _cp.x + n.y * _cp.y + n.z * _cp.z;
-    noteS(c, 1e-6 * Math.max(1, Math.abs(c), Math.abs(p.constant)));
+  const cx = _cp.x, cy = _cp.y, cz = _cp.z;
+  let reshaped = false;
+  for (let i = 0; i < 6; i++) {
+    const p = planes[i], n = p.normal, o = i * 4;
+    if (Math.abs(h[o] - n.x) > 1e-7) { h[o] = n.x; reshaped = true; }
+    if (Math.abs(h[o + 1] - n.y) > 1e-7) { h[o + 1] = n.y; reshaped = true; }
+    if (Math.abs(h[o + 2] - n.z) > 1e-7) { h[o + 2] = n.z; reshaped = true; }
+    const c = p.constant + n.x * cx + n.y * cy + n.z * cz;
+    if (Math.abs(h[o + 3] - c) > 1e-6 * Math.max(1, Math.abs(c), Math.abs(p.constant))) { h[o + 3] = c; reshaped = true; }
   }
-  noteS(rec.dir.x, 1e-7); noteS(rec.dir.y, 1e-7); noteS(rec.dir.z, 1e-7); noteS(ground, 1e-6);
+  if (Math.abs(h[24] - dx) > 1e-7) { h[24] = dx; reshaped = true; }
+  if (Math.abs(h[25] - dy) > 1e-7) { h[25] = dy; reshaped = true; }
+  if (Math.abs(h[26] - dz) > 1e-7) { h[26] = dz; reshaped = true; }
+  if (Math.abs(h[27] - ground) > 1e-6) { h[27] = ground; reshaped = true; }
   if (reshaped) rec.shape++;
   // view orientation / slice / cone for widened-receiver caster lists
   const w = cam.matrixWorld.elements;
   for (let c = 0; c < 3; c++) {
-    const l = Math.hypot(w[c * 4], w[c * 4 + 1], w[c * 4 + 2]) || 1;
-    rec.rot[c * 3] = w[c * 4] / l; rec.rot[c * 3 + 1] = w[c * 4 + 1] / l; rec.rot[c * 3 + 2] = w[c * 4 + 2] / l;
+    const ax = w[c * 4], ay = w[c * 4 + 1], az = w[c * 4 + 2];
+    const l = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
+    rec.rot[c * 3] = ax / l; rec.rot[c * 3 + 1] = ay / l; rec.rot[c * 3 + 2] = az / l;
   }
   rec.fwd.copy(_fwd);
   rec.dn = dn;
@@ -155,14 +168,12 @@ export function setReceiver(rec: ShadowReceiver, cam: THREE.Camera, dn: number, 
   const P = cam.projectionMatrix.elements;
   const persp = (cam as THREE.PerspectiveCamera).isPerspectiveCamera === true;
   rec.phi = persp ? Math.atan(Math.hypot(1 / P[0], 1 / P[5]) + Math.hypot(P[8] / P[0], P[9] / P[5])) : 0;
+  const f = _formV, ft = _formTol;
+  f[0] = dx; f[1] = dy; f[2] = dz; f[3] = ground; f[4] = P[0]; f[5] = P[5]; f[6] = P[8]; f[7] = P[9]; f[8] = persp ? 1 : 0;
+  ft[0] = ft[1] = ft[2] = 1e-7; ft[3] = 1e-6; ft[4] = 1e-9 * Math.abs(P[0]); ft[5] = 1e-9 * Math.abs(P[5]); ft[6] = ft[7] = 1e-9; ft[8] = 0.5;
   const fs = rec.formSnap;
-  let fo = 0, reformed = false;
-  const noteF = (v: number, tol: number) => {
-    if (Math.abs(fs[fo] - v) > tol) { fs[fo] = v; reformed = true; }
-    fo++;
-  };
-  noteF(rec.dir.x, 1e-7); noteF(rec.dir.y, 1e-7); noteF(rec.dir.z, 1e-7); noteF(ground, 1e-6);
-  noteF(P[0], 1e-9 * Math.abs(P[0])); noteF(P[5], 1e-9 * Math.abs(P[5])); noteF(P[8], 1e-9); noteF(P[9], 1e-9); noteF(persp ? 1 : 0, 0.5);
+  let reformed = false;
+  for (let i = 0; i < 9; i++) if (Math.abs(fs[i] - f[i]) > ft[i]) { fs[i] = f[i]; reformed = true; }
   if (reformed) rec.form++;
 }
 
@@ -211,6 +222,11 @@ export class CityCascadeShadow extends SunLightShadow {
   groundY = -50;
   readonly receivers = [makeReceiver(), makeReceiver()];
 
+  /** inputs of the last fit (view / light matrices, splits, sizes; see sameFit) */
+  private fitKey = new Float64Array(48);
+  private fitCam: THREE.Camera | null = null;
+  private fitLight: THREE.Light | null = null;
+
   constructor() {
     super();
     const cams = (this as any)._cameras as THREE.OrthographicCamera[];
@@ -218,8 +234,30 @@ export class CityCascadeShadow extends SunLightShadow {
     cams.forEach((c, i) => { c.userData.cascade = i; c.userData.texel = 1; c.userData.recv = this.receivers[i]; (frus[i] as any).recv = this.receivers[i]; });
   }
 
+  /** true when the fit inputs equal the last call's: the cascades are fitted twice per rendered shadow frame (WorldView
+   *  fits them to see whether they moved, three fits them again when it renders the map), the second one is free */
+  private sameFit(light: THREE.Light, vc: THREE.Camera): boolean {
+    const k = this.fitKey;
+    let same = vc === this.fitCam && light === this.fitLight;
+    this.fitCam = vc;
+    this.fitLight = light;
+    const a = vc.matrixWorld.elements, b = vc.projectionMatrix.elements, l = light.matrixWorld.elements;
+    for (let i = 0; i < 16; i++) {
+      if (k[i] !== a[i]) { k[i] = a[i]; same = false; }
+      if (k[16 + i] !== b[i]) { k[16 + i] = b[i]; same = false; }
+    }
+    const f = _fitV, pc = vc as THREE.PerspectiveCamera;
+    f[0] = l[12]; f[1] = l[13]; f[2] = l[14];
+    f[3] = this.splits[0]; f[4] = this.splits[1]; f[5] = this.splits[2]; f[6] = this.casterTop; f[7] = this.groundY;
+    f[8] = this.radius; f[9] = this.mapSize.x; f[10] = this.mapSize.y; f[11] = this.camera.near; f[12] = pc.near; f[13] = pc.far;
+    f[14] = pc.isPerspectiveCamera === true ? 1 : 0;
+    for (let i = 0; i < 15; i++) if (k[32 + i] !== f[i]) { k[32 + i] = f[i]; same = false; }
+    return same;
+  }
+
   override updateMatrices(light: THREE.Light, viewCamera?: THREE.Camera): void {
     if (!viewCamera) return;
+    if (this.sameFit(light, viewCamera)) return;
     const self = this as any;
     const cams: THREE.OrthographicCamera[] = self._cameras;
     const mats: THREE.Matrix4[] = self._matrices;
@@ -237,7 +275,6 @@ export class CityCascadeShadow extends SunLightShadow {
     const s0 = Math.max(camNear, this.splits[0]);
     const s2 = Math.max(s0 + 1, Math.min(this.splits[2], vc.far));
     const s1 = THREE.MathUtils.clamp(this.splits[1], s0 + 0.5, s2 - 0.5);
-    const splits = [s0, s1, s2];
 
     _lightDirection.setFromMatrixPosition(light.matrixWorld).negate().normalize();
     _up.set(0, 1, 0);
@@ -274,12 +311,12 @@ export class CityCascadeShadow extends SunLightShadow {
     const shadowNear = this.camera.near;
     const toLight = _world.copy(_lightDirection).negate();
     for (let i = 0; i < CASCADES; i++) {
-      const cNear = i === 0 ? splits[0] : cdata[i - 1].z;
-      const cFar = splits[i + 1];
+      const cNear = i === 0 ? s0 : cdata[i - 1].z;
+      const cFar = i === 0 ? s1 : s2;
       if (persp) setReceiver(this.receivers[i], vc, i === 0 ? camNear : cNear * 0.98, cFar * 1.02, toLight, this.groundY);
       cams[i].userData.recv = persp ? this.receivers[i] : undefined;
       (frus[i] as any).recv = persp ? this.receivers[i] : undefined;
-      const fadeStart = cFar - FADE * (cFar - splits[i]);
+      const fadeStart = cFar - FADE * (cFar - (i === 0 ? s0 : s1));
       cdata[i].set(i === 0 ? -1e10 : cNear, cFar, fadeStart, 0);
       const na = (cNear - s0) / (s2 - s0), fa = (cFar - s0) / (s2 - s0);
       _center.set(0, 0, 0);
@@ -319,7 +356,8 @@ export class CityCascadeShadow extends SunLightShadow {
       cc.userData.texel = (2 * radius) / resX;
       self._updateMatrix(cc, mats[i], frus[i], vps[i]);
     }
-    this.lastTexel = [(2 * cams[0].right) / resX, (2 * cams[1].right) / resX];
+    this.lastTexel[0] = (2 * cams[0].right) / resX;
+    this.lastTexel[1] = (2 * cams[1].right) / resX;
   }
   /** world size of a shadow texel per cascade (after last update) */
   lastTexel = [0.2, 1];

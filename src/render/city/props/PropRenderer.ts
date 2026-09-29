@@ -352,7 +352,7 @@ export class PropRenderer {
       for (; i < q.length && budget > 0; i++) {
         const id = q[i];
         if (this.idue[id] !== -1) continue;
-        this.evalProxy(id, cam, full, cur);
+        this.evalProxy(id, cam, cur);
         budget--;
       }
       for (; i < q.length; i++) this.lodNow.push(q[i]);
@@ -365,7 +365,7 @@ export class PropRenderer {
       for (let i = 0; i < q.length; i++) {
         const id = q[i];
         if (this.idue[id] !== this.lodAt) continue;
-        this.evalProxy(id, cam, full, cur);
+        this.evalProxy(id, cam, cur);
         budget--;
       }
       q.length = 0;
@@ -385,8 +385,11 @@ export class PropRenderer {
     if (this.idue[id] !== -1) { this.idue[id] = -1; this.lodNow.push(id); }
   }
 
-  private evalProxy(id: number, cam: THREE.Vector3, full: number, cur: number): void {
+  /** (the switch distance comes from lodFullAt, not an argument: a double argument is boxed when V8 does not inline
+   *  the call, once per evaluated prop) */
+  private evalProxy(id: number, cam: THREE.Vector3, cur: number): void {
     this.lodEvals++;
+    const full = this.lodFullAt;
     // prop metric (changes by at most the camera travel: the schedule's slack stays valid)
     const o = id * 3, dx = this.ipos[o] - cam.x, dz = this.ipos[o + 2] - cam.z;
     const d = Math.sqrt(dx * dx + dz * dz + cam.y * cam.y * 0.8);

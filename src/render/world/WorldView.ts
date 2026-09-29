@@ -19,7 +19,7 @@ import type { CameraControllerApi, CellHit, QualityLevel, WorldViewApi } from '.
 import { CameraController } from './CameraController';
 import { PostFX } from './PostFX';
 import { QUALITY_PRESETS, type QualitySettings } from './quality';
-import { CitySun, fitSunShadow, shadowCasters } from './Shadows';
+import { CitySun, fitSunShadow, shadowCasters, type ShadowFit, type ShadowReceiver } from './Shadows';
 import { SkySystem } from './Sky';
 import { TerrainRenderer } from './TerrainRenderer';
 import { TreeRenderer } from './TreeRenderer';
@@ -140,6 +140,8 @@ export class WorldView implements WorldViewApi {
   private shDynamic = -1;
   private shSunVisible = false;
   private shadowDir = new THREE.Vector3(0, 1, 0);
+  /** this frame's shadow fit parameters (one object reused every frame) */
+  private shadowFit: ShadowFit = { target: new THREE.Vector3(), distance: 1, rangeMul: 1, lightDir: this.shadowDir, maxHeight: 0, minHeight: 0, mapSize: 0 };
   /** frames the shadow map was actually re-rendered / skipped (stats) */
   readonly shadowStats = { rendered: 0, skipped: 0, reason: '' };
   // dynamic resolution state
@@ -426,15 +428,14 @@ export class WorldView implements WorldViewApi {
     if (vis !== this.shSunVisible) { this.shSunVisible = vis; this.invalidateShadows(1); }
     const lowSun = THREE.MathUtils.clamp(L.lightDir.y / 0.5, 0.05, 1);
     if (this.shadowDir.angleTo(L.lightDir) > 0.0014 * lowSun * lowSun || !this.shadowCache) this.shadowDir.copy(L.lightDir);
-    fitSunShadow(this.sun, this.camera, {
-      target: this.cameraController.target,
-      distance: this.cameraController.distance,
-      rangeMul: this.q.shadowRangeMul,
-      lightDir: this.shadowDir,
-      maxHeight: this.maxHeight,
-      minHeight: this.terrainMin,
-      mapSize: this.state.size * CELL_SIZE,
-    });
+    const fit = this.shadowFit;
+    fit.target = this.cameraController.target;
+    fit.distance = this.cameraController.distance;
+    fit.rangeMul = this.q.shadowRangeMul;
+    fit.maxHeight = this.maxHeight;
+    fit.minHeight = this.terrainMin;
+    fit.mapSize = this.state.size * CELL_SIZE;
+    fitSunShadow(this.sun, this.camera, fit);
 
     this.updateAtmosphere();
     this.terrain.update();
@@ -549,11 +550,14 @@ export class WorldView implements WorldViewApi {
     sun.target.updateMatrixWorld();
     const sh = sun.shadow;
     (sh as unknown as { updateMatrices(l: THREE.Light, c: THREE.Camera): void }).updateMatrices(sun, this.camera);
-    const cams: THREE.Camera[] = sun.cascaded ? ((sun.cascadeShadow as any)._cameras as THREE.Camera[]) : [sh.camera];
+    const cams: THREE.Camera[] | null = sun.cascaded ? ((sun.cascadeShadow as any)._cameras as THREE.Camera[]) : null;
+    const nc = cams ? cams.length : 1;
     const key = this.shKey;
     let o = 0, moved = false;
-    for (const c of cams) {
-      for (const m of [c.matrixWorld.elements, c.projectionMatrix.elements]) {
+    for (let c = 0; c < nc; c++) {
+      const cam = cams ? cams[c] : sh.camera;
+      for (let k = 0; k < 2; k++) {
+        const m = k === 0 ? cam.matrixWorld.elements : cam.projectionMatrix.elements;
         for (let i = 0; i < 16; i++, o++) {
           // tolerance: the damped camera jitters by float ulps even when still
           if (Math.abs(key[o] - m[i]) > 1e-6 * Math.max(1, Math.abs(m[i]))) { key[o] = m[i]; moved = true; }
@@ -562,9 +566,10 @@ export class WorldView implements WorldViewApi {
     }
     // casters are culled against the visible slice (receiver), which also changes when the view only rotates / zooms
     // while the (texel-snapped, target-centred) single map stays put
-    const recvs = sun.cascaded ? sun.cascadeShadow.receivers : [sun.dirReceiver];
+    const recvs: ShadowReceiver[] | null = sun.cascaded ? sun.cascadeShadow.receivers : null;
     let rv = 0;
-    for (const r of recvs) rv += r.version;
+    if (recvs) for (let i = 0; i < recvs.length; i++) rv += recvs[i].version;
+    else rv = sun.dirReceiver.version;
     if (rv !== this.shRecv) { this.shRecv = rv; moved = true; }
     let need = moved || this.shForce > 0 || !sh.map || this.frameNo - this.shFrame >= this.shadowMaxAge;
     // moving vehicles near the camera: every frame (their shadows would trail them by a frame)

@@ -974,19 +974,39 @@ pub unsafe extern "C" fn fields_soil(soil: *mut f32, src: *const f32, c: i32, gr
         return 0;
     }
     let (soil, src) = unsafe { (core::slice::from_raw_parts_mut(soil, c), core::slice::from_raw_parts(src, c)) };
-    for i in 0..c {
-        let mut s = soil[i] as f64;
-        let q = src[i] as f64;
-        if s == 0.0 && q == 0.0 {
-            continue;
+    let mut i = 0usize;
+    // SIMD build: most cells have neither soil nor a source (~92 % on the 1M fixtures): skip 4 of them per test (the
+    // scalar test `s == 0 && q == 0` per lane, exact in f32: ±0 skip, NaN does not). Without this the SIMD build lets
+    // LLVM auto-vectorize the loop into f64x2 lanes with per-lane stores, which Chrome 141's V8 runs at 0.67x of the
+    // scalar build.
+    #[cfg(target_feature = "simd128")]
+    while i + 4 <= c {
+        if simd::any_nonzero4(soil, src, i) {
+            for j in i..i + 4 {
+                soil_cell(soil, src, j, grow, keep);
+            }
         }
-        if q > 0.0 {
-            s += grow * (if q < 1.0 { q } else { 1.0 }) * (1.0 - s);
-        }
-        s *= keep;
-        soil[i] = if s < 1e-4 { 0.0 } else { s as f32 };
+        i += 4;
+    }
+    while i < c {
+        soil_cell(soil, src, i, grow, keep);
+        i += 1;
     }
     0
+}
+
+#[inline(always)]
+fn soil_cell(soil: &mut [f32], src: &[f32], i: usize, grow: f64, keep: f64) {
+    let mut s = soil[i] as f64;
+    let q = src[i] as f64;
+    if s == 0.0 && q == 0.0 {
+        return;
+    }
+    if q > 0.0 {
+        s += grow * (if q < 1.0 { q } else { 1.0 }) * (1.0 - s);
+    }
+    s *= keep;
+    soil[i] = if s < 1e-4 { 0.0 } else { s as f32 };
 }
 
 // ------------------------------------------------------------------------------------------------ math self-test
@@ -1035,6 +1055,14 @@ mod simd {
     #[inline(always)]
     unsafe fn st2(p: *mut f32, v: v128) {
         unsafe { v128_store64_lane::<0>(v, p as *mut u64) }
+    }
+
+    /// any of a[i..i + 4], b[i..i + 4] != ±0 (NaN counts as non-zero)
+    #[inline(always)]
+    pub fn any_nonzero4(a: &[f32], b: &[f32], i: usize) -> bool {
+        let (x, y) = (&a[i..i + 4], &b[i..i + 4]);
+        let z = f32x4_splat(0.0);
+        unsafe { v128_any_true(v128_or(f32x4_ne(ld(x.as_ptr() as *const u8), z), f32x4_ne(ld(y.as_ptr() as *const u8), z))) }
     }
 
     /// any byte == code in zone[a..a + 16] or zone[b..b + 16]
