@@ -108,6 +108,12 @@ function staticPrep(st: CityState): StaticPrep {
   const sum = new Float32Array(cw * cw), cnt = new Float32Array(cw * cw);
   for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) { const b = ((z / COARSE) | 0) * cw + ((x / COARSE) | 0); sum[b] += st.cellHeight(x, z); cnt[b]++; }
   const mean = new Float32Array(cw * cw);
+  coarseMean(sum, cnt, cw, mean);
+  return { dist, mean, cw };
+}
+
+/** the 5 × 5-block mean of the coarse height sums */
+function coarseMean(sum: Float32Array, cnt: Float32Array, cw: number, mean: Float32Array): void {
   for (let bz = 0; bz < cw; bz++) {
     for (let bx = 0; bx < cw; bx++) {
       let s = 0, c = 0;
@@ -120,7 +126,6 @@ function staticPrep(st: CityState): StaticPrep {
       mean[bz * cw + bx] = c ? s / c : 0;
     }
   }
-  return { dist, mean, cw };
 }
 
 /** view / elevation (into out) and the waterfront bonus (into wfOut, or added to out when absent) of rows [z0, z1) */
@@ -142,6 +147,56 @@ function staticRows(st: CityState, p: StaticPrep, out: Float32Array, wfOut: Floa
 /** static terrain component: view / elevation into `out`; the waterfront bonus into `wfOut` (added to `out` when absent) */
 export function computeStaticLandValue(st: CityState, out: Float32Array, wfOut?: Float32Array): void {
   staticRows(st, staticPrep(st), out, wfOut, 0, st.size);
+}
+
+/**
+ * The same pass spread over days (the system, after terrain changes): four phases — the forward and the backward
+ * chamfer pass of the water distance, the coarse height sums (then their means), the view / waterfront rows — each a
+ * slice of rows a day. The loops and their order are staticPrep's / staticRows', so a finished job equals
+ * computeStaticLandValue (a terrain edit during the job marks the terrain dirty again: the next job catches it). Done at
+ * once, the pass cost ~50 ms on a 337k 256² city: it runs so rarely that its code is always cold.
+ */
+interface StaticJob { phase: number; row: number; p: StaticPrep; sum: Float32Array; cnt: Float32Array }
+
+function staticJob(st: CityState): StaticJob {
+  const cw = Math.ceil(st.size / COARSE);
+  return { phase: 0, row: 0, p: { dist: new Uint8Array(st.cells), mean: new Float32Array(cw * cw), cw }, sum: new Float32Array(cw * cw), cnt: new Float32Array(cw * cw) };
+}
+
+/** the next k rows of the job's current phase; true once the last phase is done */
+function staticJobStep(st: CityState, j: StaticJob, out: Float32Array, wfOut: Float32Array, k: number): boolean {
+  const N = st.size, dist = j.p.dist, water = st.water;
+  const z0 = j.row, z1 = Math.min(N, z0 + k);
+  if (j.phase === 0) {
+    // water 0, land the forward pass (it reads only cells before i in row order: as if the map were initialised first)
+    for (let z = z0; z < z1; z++) {
+      for (let x = 0; x < N; x++) {
+        const i = z * N + x;
+        let d = water[i] ? 0 : 255;
+        if (x > 0 && dist[i - 1] + 1 < d) d = dist[i - 1] + 1;
+        if (z > 0 && dist[i - N] + 1 < d) d = dist[i - N] + 1;
+        dist[i] = d;
+      }
+    }
+  } else if (j.phase === 1) {
+    // the backward pass, bottom-up: rows N − 1 − z0 … N − z1
+    for (let z = N - 1 - z0; z >= N - z1; z--) {
+      for (let x = N - 1; x >= 0; x--) {
+        const i = z * N + x;
+        let d = dist[i];
+        if (x < N - 1 && dist[i + 1] + 1 < d) d = dist[i + 1] + 1;
+        if (z < N - 1 && dist[i + N] + 1 < d) d = dist[i + N] + 1;
+        dist[i] = d;
+      }
+    }
+  } else if (j.phase === 2) {
+    const cw = j.p.cw, sum = j.sum, cnt = j.cnt;
+    for (let z = z0; z < z1; z++) for (let x = 0; x < N; x++) { const b = ((z / COARSE) | 0) * cw + ((x / COARSE) | 0); sum[b] += st.cellHeight(x, z); cnt[b]++; }
+    if (z1 >= N) coarseMean(sum, cnt, cw, j.p.mean);
+  } else staticRows(st, j.p, out, wfOut, z0, z1);
+  if (z1 < N) j.row = z1;
+  else { j.row = 0; j.phase++; }
+  return j.phase > 3;
 }
 
 // ------------------------------------------------------------------------------------------------ plopped splats
@@ -316,9 +371,8 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
   /** average accumulators: zoned / built sum, count; all land sum, count (band locals, written back once per band) */
   const acc = new Float64Array(4);
   let lastLandfill = -1e9;
-  /** the spread static terrain pass: its global inputs and the next row (-1 = idle) */
-  let staticPrepared: StaticPrep | null = null;
-  let staticRow = -1;
+  /** the spread static terrain pass in progress (null = idle) */
+  let job: StaticJob | null = null;
   let rawRow = new Float64Array(0);
   let ctx: LvCtx | undefined;
   /** plopped buildings whose flags changed since the last refresh (Burnt / Abandoned flips re-splat) */
@@ -327,31 +381,24 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
   let unsub: (() => void) | null = null;
 
   /**
-   * full-map passes are throttled: terrain (lot leveling, terraform) once per LV_STATIC_MIN_DAYS (phase LV_STATIC_PHASE,
-   * spread over LV_STATIC_SPREAD days), landfill splats every LV_EFFECTS_MIN_DAYS — neither on a month tick; plopped
-   * buildings are splatted incrementally (add / remove queue, flag flips, parks funding).
+   * full-map passes are throttled: terrain (lot leveling, terraform) once per LV_STATIC_MIN_DAYS (from phase
+   * LV_STATIC_PHASE, a slice a day: StaticJob), landfill splats every LV_EFFECTS_MIN_DAYS — neither on a month tick;
+   * plopped buildings are splatted incrementally (add / remove queue, flag flips, parks funding).
    */
   const refresh = (st: CityState, force: boolean) => {
     const ex = extraOf(rt, st);
-    // (the full-map terrain pass starts on absolute days LV_STATIC_PHASE mod LV_STATIC_MIN_DAYS, never a month tick —
-    // it used to run every 90 days from day 0, i.e. on a month tick: the largest month-tick hitch of big cities — and
-    // its rows are spread over LV_STATIC_SPREAD days; the band reads the older values of the rows not yet redone)
+    // (the full-map terrain pass starts on absolute days LV_STATIC_PHASE mod LV_STATIC_MIN_DAYS — it used to run every
+    // 90 days from day 0, i.e. on a month tick: the largest month-tick hitch of big cities — and each of its four phases
+    // is spread over LV_STATIC_SPREAD days, skipping month ticks; the band reads the older values until the rows phase)
     if (force) {
       computeStaticLandValue(st, rt.lvStatic, ex.wf);
       rt.terrainDirty = false;
-      staticPrepared = null;
-      staticRow = -1;
-    } else if (rt.terrainDirty && staticRow < 0 && st.day % LV_STATIC_MIN_DAYS === LV_STATIC_PHASE) {
-      staticPrepared = staticPrep(st);
-      staticRow = 0;
+      job = null;
+    } else if (rt.terrainDirty && !job && st.day % LV_STATIC_MIN_DAYS === LV_STATIC_PHASE) {
+      job = staticJob(st);
       rt.terrainDirty = false;
     }
-    if (staticRow >= 0 && staticPrepared) {
-      const N = st.size, z1 = Math.min(N, staticRow + Math.ceil(N / LV_STATIC_SPREAD));
-      staticRows(st, staticPrepared, rt.lvStatic, ex.wf, staticRow, z1);
-      staticRow = z1 >= N ? -1 : z1;
-      if (staticRow < 0) staticPrepared = null;
-    }
+    if (job && st.day % DAYS_PER_MONTH !== 0 && staticJobStep(st, job, rt.lvStatic, ex.wf, Math.ceil(st.size / LV_STATIC_SPREAD))) job = null;
     if (rt.lvEffectsDirty || force) {
       computeLandValueEffects(st, rt, rt.lvEffects);
       rt.lvEffectsDirty = false;
