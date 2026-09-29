@@ -95,7 +95,7 @@ import {
   DEPOT_UNPOWERED, FERRY_TIME_PER_CELL, FREIGHT_SINK_MIN, GARAGE_SPACES, MINIBUS_FLEET,
   PARKING_BLEND, PARKING_MIN, PARKING_SHOP_W, PR_CAR_LEG_MAX, PR_HOME_MIN, PR_LEG_SEARCH, PR_LIMIT, PR_PARK_MIN, PR_PRICE_MAX,
   PR_PRICE_STEP, PR_STOP_RADIUS, RAMP_ALPHA, RAMP_BY_NET, RAMP_CAP, RAMP_MAX_FACTOR, RAMP_MSA_MIN, RIDERS_PER_BUS,
-  STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRANSIT_SEED_PRICE, TRUCK_LOCAL_FACTOR, WAIT_FERRY,
+  STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRUCK_LOCAL_FACTOR, WAIT_FERRY,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
@@ -449,13 +449,21 @@ export class TrafficSystem implements SimSystem {
   private gWant: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gCatch: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gPrice: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** park & ride groups (garages within GARAGE_GROUP_CELLS pool their spaces and share one price): root garage index
+   *  per garage, spaces per root; gLoad / gRiders / gWant accumulate at the root during the assignment, commuteEnd
+   *  shares them out by spaces into the per-garage gCars / gRidersM (reports, parking supply) */
+  private gGrp: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private gGSp: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gCars: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gRidersM: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gPrN = 0;
   /** park & ride cars per garage id of the last completed assignment [persisted] */
   private garageLoad = new Map<number, number>();
   /** park & ride price (minutes) per garage id [persisted] */
   private garagePrice = new Map<number, number>();
-  /** last completed assignment per garage id (report): riders, wanted, catchment workers, state */
-  private garageLast = new Map<number, { riders: number; want: number; catchment: number; state: number }>();
+  /** last completed assignment per garage id (report): riders, wanted (its share of its group's), catchment workers,
+   *  state, garages pooled with it */
+  private garageLast = new Map<number, { riders: number; want: number; catchment: number; state: number; pooled: number }>();
   /** P&R forest: free-flow minutes of the car leg from each settled node to its garage (PR_CAR_LEG_MAX test) */
   private prFF: Float32Array<ArrayBuffer> = new Float32Array(0);
   // per origin: park & ride option (total minutes, garage index, car entry node, board node, stop), car-less share
@@ -1505,10 +1513,13 @@ export class TrafficSystem implements SimSystem {
     this.gRide = growU8(this.gRide, gN + 1); this.gState = growU8(this.gState, gN + 1); this.gSpaces = growF32(this.gSpaces, gN + 1);
     this.gRiders = growF32(this.gRiders, gN + 1); this.gWant = growF32(this.gWant, gN + 1); this.gCatch = growF32(this.gCatch, gN + 1);
     this.gPrice = growF32(this.gPrice, gN + 1); this.gCell = growI32(this.gCell, gN + 1); this.gHalf = growU8(this.gHalf, gN + 1);
+    this.gGrp = growI32(this.gGrp, gN + 1); this.gGSp = growF32(this.gGSp, gN + 1); this.gCars = growF32(this.gCars, gN + 1);
+    this.gRidersM = growF32(this.gRidersM, gN + 1);
     let prN = 0, key = '';
     for (let q = 0; q < gN; q++) {
       this.gStop[q] = -1; this.gWalk[q] = 0; this.gLoad[q] = 0; this.gBoard[q] = -1; this.gRide[q] = 0;
       this.gRiders[q] = 0; this.gWant[q] = 0; this.gCatch[q] = 0; this.gLabel[q] = Infinity;
+      this.gGrp[q] = q; this.gGSp[q] = 0; this.gCars[q] = 0; this.gRidersM[q] = 0;
       const id = this.gBid[q];
       const b = st.buildings.get(id);
       this.gSpaces[q] = (b && GARAGE_DEFS[b.def]) || GARAGE_SPACES;
@@ -1627,9 +1638,7 @@ export class TrafficSystem implements SimSystem {
     seeds.clear();
     const N = this.road.N;
     for (let j = 0; j < this.jN; j++) {
-      // (+ the site's matching price, shifted by MATCH_PRICE_MAX like the rounds' seeds: the transit option leads to a
-      // job with room, not to the nearest handful of jobs thousands can't all take — see transitLabel0)
-      const label0 = this.transitLabel0(j);
+      const label0 = this.jBase[j] + this.jNoise[j];
       if (this.jRailNode[j] >= 0) {
         seeds.push(T.nR + this.jRailNode[j], label0, j);
         continue;
@@ -1647,23 +1656,13 @@ export class TrafficSystem implements SimSystem {
         for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) seeds.push(this.stAtt[a], label0 + walk, j);
       }
     }
-    transitSearch(T, S, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME + 2 * MATCH_PRICE_MAX);
+    transitSearch(T, S, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME);
     // the per-origin options follow in their own step (PH_TRANSIT2)
   }
 
-  /**
-   * seed label of job site j in the transit search: base (regional time) + noise + TRANSIT_SEED_PRICE x its matching
-   * price (minutes, persistent tatonnement on excess demand) + MATCH_PRICE_MAX (labels stay >= 0). The transit forest
-   * thus shapes catchments like the road rounds do: a small job site beside a stop no longer draws every rider of the
-   * line (the option's time was the ride to it, the flows went there, while the matching sent them elsewhere).
-   * transitPure(v) = the option's minutes without the shift / price / noise.
-   */
-  private transitLabel0(j: number): number {
-    return MATCH_PRICE_MAX + this.jBase[j] + this.jNoise[j] + TRANSIT_SEED_PRICE * Math.max(0, this.jPrice[j]);
-  }
-  /** pure transit minutes of the transit-forest label d reaching job site j (d minus the seed's shift / price / noise) */
+  /** pure transit minutes of the transit-forest label d reaching job site j (without the seed's noise) */
   private transitPure(d: number, j: number): number {
-    return j >= 0 && j < this.jN ? d - MATCH_PRICE_MAX - this.jNoise[j] - TRANSIT_SEED_PRICE * Math.max(0, this.jPrice[j]) : d - MATCH_PRICE_MAX;
+    return j >= 0 && j < this.jN ? d - this.jNoise[j] : d;
   }
 
   /**
@@ -1764,8 +1763,33 @@ export class TrafficSystem implements SimSystem {
       this.gRide[q] = 1;
       this.gStop[q] = bs;
       this.gWalk[q] = bw;
-      this.gLabel[q] = PR_PARK_MIN + best + this.gPrice[q];
+      this.gLabel[q] = PR_PARK_MIN + best; // pure minutes (the price only steers choices, it is no travel time)
       this.gBoard[q] = board;
+    }
+    // groups: park & ride garages within GARAGE_GROUP_CELLS of each other pool their spaces and share one price — every
+    // origin's option is its single best garage of the P&R forest, so two garages at one station would otherwise take
+    // turns (the cheaper one gets the whole catchment, the other idles)
+    {
+      const grp = this.gGrp, R2 = GARAGE_GROUP_CELLS * GARAGE_GROUP_CELLS;
+      const find = (q: number): number => { while (grp[q] !== q) { grp[q] = grp[grp[q]]; q = grp[q]; } return q; };
+      for (let q = 0; q < gN; q++) grp[q] = q;
+      for (let q = 0; q < gN; q++) {
+        if (this.gState[q] !== GARAGE_PR) continue;
+        const cq = this.gCell[q], xq = cq % N, zq = (cq - xq) / N;
+        for (let r = 0; r < q; r++) {
+          if (this.gState[r] !== GARAGE_PR) continue;
+          const cr = this.gCell[r], dx = xq - (cr % N), dz = zq - (cr - (cr % N)) / N;
+          if (dx * dx + dz * dz > R2) continue;
+          const a = find(q), b = find(r);
+          if (a !== b) grp[a > b ? a : b] = a > b ? b : a; // root = the lowest index
+        }
+      }
+      const gp = this.gGSp;
+      for (let q = 0; q < gN; q++) { gp[q] = 0; this.gRiders[q] = 0; }
+      // (gRiders doubles as the group's price scratch here: the max of the members' stored prices)
+      for (let q = 0; q < gN; q++) { const r = find(q); grp[q] = r; gp[r] += this.gSpaces[q]; if (this.gPrice[q] > this.gRiders[r]) this.gRiders[r] = this.gPrice[q]; }
+      for (let q = 0; q < gN; q++) this.gPrice[q] = this.gRiders[grp[q]];
+      for (let q = 0; q < gN; q++) this.gRiders[q] = 0;
     }
     const g = this.road, SP = this.SP;
     if (this.prSearchDue()) {
@@ -1773,7 +1797,8 @@ export class TrafficSystem implements SimSystem {
       seeds.clear();
       let maxL = 0;
       for (let q = 0; q < gN; q++) {
-        const L = this.gLabel[q];
+        // seed = minutes + the group's price: the price moves the catchment boundary between garages
+        const L = this.gLabel[q] + this.gPrice[q];
         this.gSeed[q] = L;
         if (!(L < PR_LIMIT)) continue;
         for (let e = this.gEntS[q], e1 = e + this.gEntC[q]; e < e1; e++) seeds.push(this.ent[e], L, q);
@@ -1799,7 +1824,7 @@ export class TrafficSystem implements SimSystem {
       this.oPrT[o] = Infinity;
       this.oPrG[o] = -1;
       this.oPrNode[o] = -1;
-      let best = Infinity, node = -1, gq = -1;
+      let best = Infinity, bestC = Infinity, node = -1, gq = -1;
       for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) {
         const v = this.ent[e];
         if (v >= n || done[v] !== 1) continue;
@@ -1809,10 +1834,10 @@ export class TrafficSystem implements SimSystem {
         if (!(lab < Infinity) || !(seed < Infinity)) continue;
         if (ff[v] > PR_CAR_LEG_MAX) continue;
         const t = PR_HOME_MIN + (dist[v] - seed) + lab;
-        if (t < best) { best = t; node = v; gq = q; }
+        if (t + this.gPrice[q] < bestC) { best = t; bestC = t + this.gPrice[q]; node = v; gq = q; }
       }
       if (gq < 0 || best > MAX_COMMUTE) continue;
-      this.oPrT[o] = best;
+      this.oPrT[o] = best; // pure minutes; the group's price is added to the utility in split()
       this.oPrG[o] = gq;
       this.oPrNode[o] = node;
       this.gCatch[gq] += this.oW[o];
@@ -1954,19 +1979,18 @@ export class TrafficSystem implements SimSystem {
       const carT = d + CAR_OVERHEAD + PARKING_MIN * qPark[q];
       const carOk = d <= MAX_COMMUTE;
       const walkT = qBase[q] === 0 && hops[node] <= WALK_MAX_CELLS ? (hops[node] + 1) * WALK_TIME_PER_CELL : Infinity;
-      const trT = this.oTrT[o], prT = this.oPrT[o];
-      if (!this.split(o, carT, carOk, walkT, trT, prT, trBonus)) continue;
+      const trT = this.oTrT[o], prT = this.oPrT[o], gq = this.oPrG[o], prCost = gq >= 0 ? this.gPrice[gq] : 0;
+      if (!this.split(o, carT, carOk, walkT, trT, prT, prCost, trBonus)) continue;
       let sc = this.mC, stW = this.mTW, stP = this.mTP, sw = this.mW, time = this.mT, ext = this.mX;
       if (stP > 0) {
-        // park & ride capacity: the garage takes at most its free spaces this assignment; the rest of the piece
-        // re-splits without park & ride (the demand, incl. the part turned away, drives the garage's price)
-        const gq = this.oPrG[o];
+        // park & ride capacity: the garage (group) takes at most its free spaces this assignment; the rest of the
+        // piece re-splits without park & ride (the demand, incl. the part turned away, drives the group's price)
         const want = take * stP;
-        this.gWant[gq] += want;
+        this.gWant[this.gGrp[gq]] += want;
         const room = this.prRoom(gq);
         if (want > room) {
           const f = room / want, f2 = 1 - f;
-          if (this.split(o, carT, carOk, walkT, trT, Infinity, trBonus)) {
+          if (this.split(o, carT, carOk, walkT, trT, Infinity, 0, trBonus)) {
             sc = f * sc + f2 * this.mC; stW = f * stW + f2 * this.mTW; sw = f * sw + f2 * this.mW;
             time = f * time + f2 * this.mT; ext = f * ext + f2 * this.mX; stP *= f;
           } else take *= f; // no other mode: only the part that fits is matched
@@ -2079,18 +2103,17 @@ export class TrafficSystem implements SimSystem {
       const carT = Math.min(MAX_COMMUTE, Math.max(avgT + 5, 1.3 * (this.oLastD[o] + CAR_OVERHEAD)));
       // car / transit split (long pooled car trip vs the origin's transit option: walk to a stop or park & ride;
       // car-less residents pay CARLESS_EXTRA_MIN on car and park & ride)
-      const trT = this.oTrT[o], prT = this.oPrT[o];
-      this.splitPool(o, carT, trT, prT);
+      const trT = this.oTrT[o], prT = this.oPrT[o], gq = this.oPrG[o];
+      this.splitPool(o, carT, trT, prT, gq >= 0 ? this.gPrice[gq] : 0);
       let stW = this.mTW, stP = this.mTP, time = this.mT, ext = this.mX;
       if (stP > 0) {
-        // park & ride capacity (as in roundMatch): the part beyond the garage's free spaces re-splits without it
-        const gq = this.oPrG[o];
+        // park & ride capacity (as in roundMatch): the part beyond the group's free spaces re-splits without it
         const want = take * stP;
-        this.gWant[gq] += want;
+        this.gWant[this.gGrp[gq]] += want;
         const room = this.prRoom(gq);
         if (want > room) {
           const f = room / want, f2 = 1 - f;
-          this.splitPool(o, carT, trT, Infinity);
+          this.splitPool(o, carT, trT, Infinity, 0);
           stW = f * stW + f2 * this.mTW; time = f * time + f2 * this.mT; ext = f * ext + f2 * this.mX; stP *= f;
         }
       }
@@ -2153,7 +2176,7 @@ export class TrafficSystem implements SimSystem {
       if (open < 0.01) continue;
       let take = Math.min(this.oU[o], open);
       if (viaPr) {
-        this.gWant[gq] += take;
+        this.gWant[this.gGrp[gq]] += take;
         take = Math.min(take, this.prRoom(gq));
       }
       this.oU[o] -= take;
@@ -2182,30 +2205,34 @@ export class TrafficSystem implements SimSystem {
     const board = this.gBoard[gq], s = this.gStop[gq], node = this.oPrNode[o];
     if (board < 0 || s < 0 || node < 0) return;
     this.prAcc[node] += y * carPcu;
-    this.gLoad[gq] += y / CAR_OCCUPANCY;
-    this.gRiders[gq] += y;
+    const r = this.gGrp[gq];
+    this.gLoad[r] += y / CAR_OCCUPANCY;
+    this.gRiders[r] += y;
     this.tAcc[board] += y;
     this.stLoad[s] += y;
     this.prRiders += y;
   }
 
-  /** free park & ride room of garage gq this assignment (riders: spaces left x CAR_OCCUPANCY) */
+  /** free park & ride room of garage gq's group this assignment (riders: spaces left x CAR_OCCUPANCY) */
   private prRoom(gq: number): number {
-    const r = (this.gSpaces[gq] - this.gLoad[gq]) * CAR_OCCUPANCY;
+    const g = this.gGrp[gq];
+    const r = (this.gGSp[g] - this.gLoad[g]) * CAR_OCCUPANCY;
     return r > 1e-6 ? r : 0;
   }
 
   /**
    * mode split of one matched piece of origin o (shares sum to 1; written to mC / mTW / mTP / mW, time mT, car-less
    * extra minutes x share mX): car (carT, when carOk), transit = the faster of walk to a stop (trT) and park & ride (prT),
-   * walk (walkT); car-less residents (share oCl) pay CARLESS_EXTRA_MIN by car / park & ride (taxi, lift). false = no mode
+   * walk (walkT); car-less residents (share oCl) pay CARLESS_EXTRA_MIN by car / park & ride (taxi, lift). prCost = the
+   * garage's rationing price: in the utility only (minutes of choice, not of travel). false = no mode
    */
-  private split(o: number, carT: number, carOk: boolean, walkT: number, trT: number, prT: number, trBonus: number): boolean {
-    const usePr = prT < trT;
+  private split(o: number, carT: number, carOk: boolean, walkT: number, trT: number, prT: number, prCost: number, trBonus: number): boolean {
+    const usePr = prT + prCost < trT;
     const tOwn = usePr ? prT : trT;
+    const cOwn = usePr ? prT + prCost : trT;
     const wl = this.oWealth[o] - 1;
     const uc = carOk ? -MODE_BETA * carT + CAR_BIAS[wl] : -Infinity;
-    const ut = tOwn < Infinity ? -MODE_BETA * tOwn + TRANSIT_BIAS[wl] + trBonus : -Infinity;
+    const ut = tOwn < Infinity ? -MODE_BETA * cOwn + TRANSIT_BIAS[wl] + trBonus : -Infinity;
     const uw = walkT < Infinity ? -MODE_BETA * walkT + WALK_BIAS : -Infinity;
     const um = Math.max(uc, ut, uw);
     if (um === -Infinity) return false;
@@ -2225,7 +2252,7 @@ export class TrafficSystem implements SimSystem {
       let etL = et, tL = tOwn, prL = usePr;
       if (usePr) {
         const p2 = prT + CARLESS_EXTRA_MIN;
-        if (trT <= p2) { prL = false; tL = trT; etL = Math.exp(-MODE_BETA * trT + TRANSIT_BIAS[wl] + trBonus - um); }
+        if (trT <= p2 + prCost) { prL = false; tL = trT; etL = Math.exp(-MODE_BETA * trT + TRANSIT_BIAS[wl] + trBonus - um); }
         else { tL = p2; etL = et * CARLESS_K; }
       }
       const totL = ecL + etL + ew;
@@ -2247,22 +2274,23 @@ export class TrafficSystem implements SimSystem {
    * pooled long commute (poolRemaining): binary car / transit split (walk to a stop or park & ride: the faster) with the
    * car-less adjustment -> mC / mTW / mTP / mW (= 0) / mT / mX
    */
-  private splitPool(o: number, carT: number, trT: number, prT: number): void {
+  private splitPool(o: number, carT: number, trT: number, prT: number, prCost: number): void {
     const logit = (x: number) => 1 / (1 + Math.exp(-x));
     const wl = this.oWealth[o] - 1;
-    const usePr = prT < trT, tOwn = usePr ? prT : trT;
+    const usePr = prT + prCost < trT, tOwn = usePr ? prT : trT, cOwn = usePr ? prT + prCost : trT;
     const cl = this.oCl[o];
     const uCar = -MODE_BETA * carT + CAR_BIAS[wl];
     let stO = 0, stW = 0, stP = 0, time: number;
     if (tOwn < Infinity) {
-      stO = logit(-MODE_BETA * tOwn + TRANSIT_BIAS[wl] - uCar);
+      stO = logit(-MODE_BETA * cOwn + TRANSIT_BIAS[wl] - uCar);
       if (usePr) stP = stO; else stW = stO;
     }
     time = (1 - stO) * carT + stO * (tOwn < Infinity ? tOwn : 0);
     let extra = 0;
     if (cl > 0) {
-      const tL = Math.min(trT, prT + CARLESS_EXTRA_MIN), prL = prT + CARLESS_EXTRA_MIN < trT;
-      const stL = tL < Infinity ? logit(-MODE_BETA * tL + TRANSIT_BIAS[wl] - (uCar - MODE_BETA * CARLESS_EXTRA_MIN)) : 0;
+      const prL = prT + prCost + CARLESS_EXTRA_MIN < trT;
+      const tL = prL ? prT + CARLESS_EXTRA_MIN : trT, cL = prL ? tL + prCost : trT;
+      const stL = tL < Infinity ? logit(-MODE_BETA * cL + TRANSIT_BIAS[wl] - (uCar - MODE_BETA * CARLESS_EXTRA_MIN)) : 0;
       const timeL = (1 - stL) * (carT + CARLESS_EXTRA_MIN) + stL * (tL < Infinity ? tL : 0);
       const co = 1 - cl;
       stW = co * stW + cl * (prL ? 0 : stL);

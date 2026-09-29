@@ -28,7 +28,7 @@ import { justiceData } from '../../src/sim/infra/justice';
 import type { ServicesSystem } from '../../src/sim/infra/services';
 import type { PollutionSystem } from '../../src/sim/infra/pollution';
 import type { TrafficSystem } from '../../src/sim/infra/traffic';
-import { POLICE_CAP } from '../../src/sim/infra/params';
+import { JAIL_BEDS, POLICE_CAP } from '../../src/sim/infra/params';
 import { newSim, newState, place, roadLine, TEST_DEFS } from './cityGen';
 
 const N = 80;
@@ -617,6 +617,6 @@ describe('facilities: report texts say what the simulation does (review r1)', ()
     expect(facilityDefFacts('park_playground').find((f) => f.key === 'seats')?.value ?? '').not.toMatch(/kids and teens/);
     expect(facilityDefFacts('util_wind_turbine').find((f) => f.key === 'output')!.value).toBe('3–7 MW by height');
     expect(facilityDefFacts('civ_jail').find((f) => f.key === 'stigma')!.value).toMatch(/^severe within 10 tiles$/);
-    expect(facilityDefFacts('civ_jail').find((f) => f.key === 'beds')!.value).toBe('6,000');
+    expect(facilityDefFacts('civ_jail').find((f) => f.key === 'beds')!.value).toBe(JAIL_BEDS.civ_jail.toLocaleString('en-US'));
   });
 });

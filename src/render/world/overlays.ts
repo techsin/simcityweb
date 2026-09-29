@@ -194,7 +194,8 @@ const EMERGENCY = (title: string, unit: string, station: string): DefCore => {
     swatches: true,
     notes: [
       `Green: ${unit} are sent automatically in time — incidents there become statistics.`,
-      'Amber / red: nobody arrives in time on their own. The game drops to live speed and you dispatch.',
+      'Amber / red: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.',
+      'Red on a single building: no road reaches it — build one beside it.',
     ],
   };
 };
@@ -282,7 +283,7 @@ const BASE: Record<Overlay, DefCore> = {
   [Overlay.Health]: COVERAGE('Health · care access', '#d6457e', '#f0a0c0', ['None', 'Weak', 'Strong'],
     ['Clinic and hospital seats within reach. Ambulance response: Emergency data view.']),
   [Overlay.Education]: COVERAGE('Education · all school tiers', '#8a52d6', '#c8a8f0', ['None', 'Some', 'Full'],
-    ['Full only with every tier nearby: elementary 45%, high school 35%, university 20%.']),
+    ['Full with every school tier you can build nearby: elementary 45%, high school 35%, university 20% (once unlocked).']),
   [Overlay.Power]: BINARY('Power', '#ffd84a', 'Powered', 'No power'),
   [Overlay.Water]: BINARY('Water Supply', '#3aa0e6', 'Water service', 'No water'),
   [Overlay.Desirability]: DESIRABILITY('Desirability · R$$'),
@@ -385,8 +386,8 @@ const VARIANTS: Partial<Record<Overlay, (Partial<DefCore> | undefined)[]>> = {
       { t: 1, color: '#1f78d0', a: 0.78 },
     ],
     legend: [
-      { color: '#c8322a', label: 'Unsafe' },
-      { color: '#e8903a', label: `< ${pctT(TAP_SAFE)}` },
+      { color: '#c8322a', label: 'Toxic' },
+      { color: '#e8903a', label: `Unsafe (< ${pctT(TAP_SAFE)})` },
       { color: '#6cc0e8', label: 'Safe' },
       { color: '#1f78d0', label: 'Clean' },
     ],
@@ -434,7 +435,7 @@ function desirabilityDef(v: number): DefCore {
     const why = v === 12 ? 'Schools, playgrounds, safety and quiet streets' : v === 13 ? 'Clinics and hospitals, gardens, shops and quiet' : 'Colleges, transit and shops';
     return APPEAL(`Appeal · ${who.toLowerCase()}`, [`${why} draw ${who.toLowerCase()} here.`]);
   }
-  return DESIRABILITY(`Desirability · ${labels[v]}`, ['Undesirable', 'Neutral', 'Desirable'], ['Where this kind of building wants to grow (hover a lot for the reasons).']);
+  return DESIRABILITY(`Desirability · ${labels[v]}`, ['Undesirable', 'Neutral', 'Desirable'], ['Where this kind of building wants to grow. The reasons: click a lot, Inspector → Why?']);
 }
 
 /** the definition (ramp, legend, refresh layers) of an overlay + variant */
@@ -499,6 +500,12 @@ export function computeOverlayValues(state: CityState, o: Overlay, out: Uint8Arr
     return;
   }
   if (L.palette === 'diverging') {
+    if (L.maskNet) {
+      // roads / water hold no lots (desirability writes -1 there): neutral, not a red rim along every street
+      const net = state.network, water = state.water;
+      for (let i = 0; i < C; i++) out[i] = net[i] !== 0 || water[i] ? 128 : Math.round(clamp01(0.5 + 0.5 * d[i] * inv) * 255);
+      return;
+    }
     for (let i = 0; i < C; i++) out[i] = Math.round(clamp01(0.5 + 0.5 * d[i] * inv) * 255);
     return;
   }

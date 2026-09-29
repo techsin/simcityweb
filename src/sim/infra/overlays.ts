@@ -21,9 +21,9 @@ import { getDef } from '../catalog';
 import { COHORT_BASE, COVERAGE_FALLBACK, TAP_SAFE, WORKFORCE_RATIO } from '../economy/tuning';
 import { cohortShares, demographicsSim } from '../economy/demographics';
 import { truckVolumeOf } from './transportFacilities';
-import { waterQualityAt } from './utilities';
+import { type UtilitiesSystem, waterQualityAt } from './utilities';
 import { emergencyOf } from './emergency';
-import { EMERG_RMAX, EMERG_SLOW_MARGIN } from './params';
+import { EDU_LEGACY_W, EMERG_RMAX, EMERG_SLOW_MARGIN } from './params';
 import { buildingList } from './common';
 
 export type OverlayPalette = 'bad' | 'good' | 'binary' | 'diverging';
@@ -47,6 +47,9 @@ export interface OverlayLayer {
   floor?: number;
   /** simulation 'layerUpdated' names whose recomputation changes this layer (renderer refresh, cache invalidation) */
   deps: readonly string[];
+  /** roads / rails and water hold no meaningful value (desirability writes -1 there): they read neutral (0) in the
+   *  render and the hover, instead of a red rim along every street */
+  maskNet?: boolean;
 }
 
 /** variant names per overlay (index = variant); overlays without an entry have the single variant 0 */
@@ -368,9 +371,11 @@ let emgQueue = new Int32Array(0);
 let emgDepth = new Uint8Array(0);
 let emgOpen = new Int32Array(0);
 /**
- * PERF (one pass per 'emergency' event while shown): building footprints first (their best slack, see footprintSlack),
- * then one pass over the cells that also queues the dilation sources (known cells beside empty land), a BFS of at most
- * EMG_DILATE steps, and the leftover empty cells (out of reach) from a list
+ * PERF (one pass per 'emergency' event while shown): one pass over the cells that also queues the dilation sources
+ * (known cells beside empty land: each adjacent pair is seen from its later cell in index order), a BFS of at most
+ * EMG_DILATE steps, and the leftover empty cells (out of reach) from a list. Building cells read their own value: the
+ * emergency pass writes one value per footprint, and the raster is rebuilt right after each pass
+ * (emergencyReachAt reads the footprint's best cell for a building that grew since).
  */
 function buildEmergency(st: CityState, variant: number, out: Float32Array): void {
   if (!respReady(st)) return;
@@ -378,50 +383,35 @@ function buildEmergency(st: CityState, variant: number, out: Float32Array): void
   const C = st.cells, N = st.size, bld = st.building, net = st.network;
   if (emgQueue.length < C) { emgQueue = new Int32Array(C); emgDepth = new Uint8Array(C); emgOpen = new Int32Array(C); }
   const q = emgQueue, dep = emgDepth, openList = emgOpen;
-  // buildings: one value per footprint (1x1 lots read their cell)
-  const list = buildingList(st);
-  for (let k = 0; k < list.length; k++) {
-    const b = list[k];
-    if (b.w === 1 && b.d === 1) {
-      const i = b.z * N + b.x;
-      if (i >= 0 && i < C && bld[i] === b.id) out[i] = encodeSlack(L[i]);
-      continue;
-    }
-    const t = encodeSlack(footprintSlack(st, L, b));
-    for (let z = Math.max(0, b.z); z < Math.min(N, b.z + b.d); z++) {
-      for (let x = Math.max(0, b.x); x < Math.min(N, b.x + b.w); x++) { const i = z * N + x; if (bld[i] === b.id) out[i] = t; }
-    }
-  }
-  // cells: land / roads as computed, empty land beside no road = -1 (open); queue the known cells beside open ones
-  // (each adjacent pair is seen from its later cell in index order)
   const floor = -EMERG_RMAX, none = RESP_NONE + 0.5;
   let open = 0, tail = 0;
-  dep.fill(255, 0, C);
   for (let z = 0; z < N; z++) {
     const row = z * N;
     for (let x = 0; x < N; x++) {
       const i = row + x;
-      let known = true;
-      if (bld[i] < 0) {
-        const s = L[i];
-        if (s <= floor && s > none && net[i] === Network.None) { out[i] = -1; openList[open++] = i; known = false; }
-        else out[i] = encodeSlack(s);
-      } else if (bld[i] >= 0 && out[i] === 0) out[i] = encodeSlack(L[i]); // (a building missing from the list)
-      if (known) {
-        if ((x > 0 && out[i - 1] < 0) || (z > 0 && out[i - N] < 0)) { if (dep[i] === 255) { dep[i] = 0; q[tail++] = i; } }
+      const s = L[i];
+      if (s <= floor && s > none && bld[i] < 0 && net[i] === Network.None) {
+        out[i] = -1;
+        openList[open++] = i;
+        // known neighbours before it (left / up) are dilation sources
+        if (x > 0 && out[i - 1] >= 0 && dep[i - 1] !== 1) { dep[i - 1] = 1; q[tail++] = i - 1; }
+        if (z > 0 && out[i - N] >= 0 && dep[i - N] !== 1) { dep[i - N] = 1; q[tail++] = i - N; }
       } else {
-        if (x > 0 && out[i - 1] >= 0 && dep[i - 1] === 255) { dep[i - 1] = 0; q[tail++] = i - 1; }
-        if (z > 0 && out[i - N] >= 0 && dep[i - N] === 255) { dep[i - N] = 0; q[tail++] = i - N; }
+        out[i] = encodeSlack(s);
+        dep[i] = 0;
+        // an empty cell before it (left / up): this known cell is a source
+        if ((x > 0 && out[i - 1] < 0) || (z > 0 && out[i - N] < 0)) { dep[i] = 1; q[tail++] = i; }
       }
     }
   }
   if (open === 0) return;
-  // multi-source 4-neighbour BFS (queue order: deterministic ties)
+  // multi-source 4-neighbour BFS (depth stored +1: sources 1; queue order: deterministic ties)
   let head = 0;
+  for (let k = 0; k < open; k++) dep[openList[k]] = 0;
   while (head < tail) {
     const i = q[head++];
     const d = dep[i] + 1;
-    if (d > EMG_DILATE) continue;
+    if (d > EMG_DILATE + 1) continue;
     const v = out[i], x = i % N;
     if (x > 0 && out[i - 1] < 0) { out[i - 1] = v; dep[i - 1] = d; q[tail++] = i - 1; }
     if (x < N - 1 && out[i + 1] < 0) { out[i + 1] = v; dep[i + 1] = d; q[tail++] = i + 1; }
@@ -482,15 +472,33 @@ function buildAppeal(st: CityState, variant: number, out: Float32Array): void {
   }
 }
 
-/** tap-water quality per served cell: TAP_T0 + (1 - TAP_T0) x quality (utilities per-network quality), 0 = no water */
+/**
+ * tap-water quality per served cell: TAP_T0 + (1 - TAP_T0) x quality (utilities per-network quality), 0 = no water.
+ * PERF: a building is served by one network (utilities' per-building component), so its footprint needs one lookup;
+ * the per-cell lookup is left for roads and lots.
+ */
 function buildTapWater(st: CityState, out: Float32Array): void {
   const sim = simOf(st);
-  const w = st.watered, C = st.cells;
+  const w = st.watered, C = st.cells, N = st.size, bld = st.building;
   const mean = st.stats.tapWater ?? 1;
+  const u = sim?.getSystem<UtilitiesSystem>('utilities');
+  const qAt = (i: number): number => (sim ? (u ? u.waterQualityAt(sim, i) : waterQualityAt(sim, i)) : mean);
+  const list = buildingList(st);
+  for (let k = 0; k < list.length; k++) {
+    const b = list[k];
+    let t = -1;
+    for (let z = Math.max(0, b.z); z < Math.min(N, b.z + b.d); z++) {
+      for (let x = Math.max(0, b.x); x < Math.min(N, b.x + b.w); x++) {
+        const i = z * N + x;
+        if (!w[i] || bld[i] !== b.id) continue;
+        if (t < 0) t = TAP_T0 + (1 - TAP_T0) * clamp01(qAt(i));
+        out[i] = t;
+      }
+    }
+  }
   for (let i = 0; i < C; i++) {
-    if (!w[i]) continue;
-    const q = sim ? waterQualityAt(sim, i) : mean;
-    out[i] = TAP_T0 + (1 - TAP_T0) * clamp01(q);
+    if (!w[i] || bld[i] >= 0) continue;
+    out[i] = TAP_T0 + (1 - TAP_T0) * clamp01(qAt(i));
   }
 }
 
@@ -571,7 +579,8 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
     case Overlay.Traffic: {
       if (v === 1) {
         const T = truckVolumeOf(st);
-        if (!T || T.length !== st.cells) return L(new Float32Array(st.cells), 1, 'bad', 'Trucks per day (no freight data yet)', v, deps, { roadsOnly: true });
+        // (no freight data yet: one cached zero raster — overlayValue runs on every hover move)
+        if (!T || T.length !== st.cells) return L(derived(st, o, 63, deps, () => undefined).data, 1, 'bad', 'Trucks per day (no freight data yet)', v, deps, { roadsOnly: true });
         const e = derived(st, o, v, deps, () => truckScale(st, T), false);
         return L(T, e.scale, 'bad', 'Trucks per day', v, deps, { roadsOnly: true });
       }
@@ -588,7 +597,9 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
     case Overlay.Health: return L(st.healthCov, 1, 'good', 'Care access (clinics & hospitals)', v, deps);
     case Overlay.Education: {
       const d = v === 1 ? st.eduElemCov : v === 2 ? st.eduHighCov : v === 3 ? st.eduCollegeCov : st.eduCov;
-      return L(d, 1, 'good', EDU_LABELS[v], v, deps);
+      // 'All': st.eduCov weighs the tiers 45 / 35 / 20 % — scaled to the tiers the city can build, so a town without a
+      // university yet still reaches full colour with elementary + high schools nearby
+      return L(d, v === 0 ? educationScale(st) : 1, 'good', EDU_LABELS[v], v, deps);
     }
     case Overlay.Power: return L(st.powered, 1, 'binary', 'Power', v, deps);
     case Overlay.Water: {
@@ -605,7 +616,7 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
         // appeal 0..1 (0.5 = neutral: the renderer draws it on the desirability colours)
         return L(e.data, 1, 'good', `Appeal for ${who}`, v, deps);
       }
-      return L(st.desirability[v], 1, 'diverging', `Desirability (${DEV_TYPE_LABELS[v]})`, v, deps);
+      return L(st.desirability[v], 1, 'diverging', `Desirability (${DEV_TYPE_LABELS[v]})`, v, deps, { maskNet: true });
     }
     case Overlay.Noise: return L(st.noise, 1, 'bad', 'Noise', v, deps);
     case Overlay.Transit: return L(st.transitCov, 1, 'good', 'Transit coverage', v, deps);
@@ -634,6 +645,21 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
   }
 }
 
+/** Education 'All' scale: the EDU_LEGACY_W weights of the school tiers the city can build (elementary + high school
+ *  always; university / library once unlocked) */
+export function educationScale(st: CityState): number {
+  const [we, wh, wc] = EDU_LEGACY_W;
+  return we + wh + (collegeUnlocked(st) ? wc : 0);
+}
+/** a university or library can be built (unlocked, or needs no unlock / sandbox) */
+export function collegeUnlocked(st: CityState): boolean {
+  for (const id of ['civ_college', 'civ_library']) {
+    const def = getDef(id);
+    if (def && (!def.requires || st.unlocked.has(def.requires) || st.config.sandbox)) return true;
+  }
+  return false;
+}
+
 /** Commute overlay scale: 3 x the city's average commute (minutes), at least 15 */
 export function commuteScale(st: CityState): number {
   const avg = st.stats.avgCommute > 0 ? st.stats.avgCommute : 15;
@@ -659,7 +685,9 @@ export function overlayValue(st: CityState, o: Overlay, x: number, z: number, va
   if (!st.inBounds(x, z)) return 0;
   const Lr = overlayLayer(st, o, variant);
   if (!Lr) return 0;
-  return normaliseOverlay(Lr, Lr.data[z * st.size + x]);
+  const i = z * st.size + x;
+  if (Lr.maskNet && (st.network[i] !== Network.None || st.water[i])) return 0;
+  return normaliseOverlay(Lr, Lr.data[i]);
 }
 
 // ================================================================================================ hover readout
@@ -733,12 +761,15 @@ export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, 
     }
     case Overlay.Desirability: {
       if (v >= DEV_TYPE_COUNT) return { text: pctS(raw), tone: toneGood(raw) };
+      if (st.network[i] !== Network.None || st.water[i]) return { text: '—', tone: '', sub: st.water[i] ? 'Water: no lots here' : 'Road: no lots here' };
       return { text: `${raw > 0 ? '+' : ''}${Math.round(raw * 100)}`, tone: raw > 0.15 ? 'good' : raw < -0.15 ? 'bad' : 'warn' };
     }
     case Overlay.Garbage:
       if (v === 1) return st.zone[i] === Zone.Landfill ? { text: `${pctS(raw)} full`, tone: raw > 0.8 ? 'bad' : raw > 0.5 ? 'warn' : 'good' } : { text: 'Not a landfill', tone: '' };
       return { text: pctS(raw), tone: raw > 0.5 ? 'bad' : raw > 0.2 ? 'warn' : 'good' };
-    case Overlay.Tourism: return { text: pctS(raw), tone: raw > 0.3 ? 'good' : '' };
+    case Overlay.Tourism:
+      if (raw < 0.02) return { text: 'No tourists', tone: '' };
+      return { text: raw >= 0.5 ? 'Crowded' : raw >= 0.15 ? 'Busy' : 'Few visitors', tone: raw >= 0.15 ? 'good' : '', sub: `visitor intensity ${pctS(raw)} · landmarks, parks, beaches and hotels draw them` };
     case Overlay.AirPollution: case Overlay.WaterPollution: case Overlay.Crime: case Overlay.Noise: case Overlay.Soil: case Overlay.Parking:
       return { text: pctS(raw), tone: raw > 0.6 ? 'bad' : raw > 0.3 ? 'warn' : 'good' };
     default: {

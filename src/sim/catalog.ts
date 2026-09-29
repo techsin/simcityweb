@@ -312,7 +312,7 @@ const PLOPPABLES: BuildingDef[] = [
   p({ id: 'civ_jail', name: 'Prison', category: 'police', service: 'police', cost: 12000, upkeep: 900, jobs: 150, powerUse: 1, waterUse: 120,
     landValue: { amount: -0.3, radius: 8 }, requires: 'jail',
     stigma: { amount: 0.55, radius: 10 },
-    description: '6,000 prison beds for the whole city (no patrols of its own; without power it holds only 30 %). Without enough beds offenders are released early: more crime and weaker police. An overcrowded prison riots. Nobody wants to live next to it; a little crime spills around it.' }),
+    description: '8,000 prison beds for the whole city (no patrols of its own; without power it holds only 30 %). Without enough beds offenders are released early: more crime and weaker police. An overcrowded prison riots. Nobody wants to live next to it; a little crime spills around it.' }),
 
   // ================================================================ FIRE
   p({ id: 'civ_fire_station', name: 'Fire Station', category: 'fire', service: 'fire', cost: 1400, upkeep: 160, jobs: 25, powerUse: 0.15, waterUse: 20,

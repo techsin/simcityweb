@@ -589,10 +589,10 @@ export const SENTENCE_MONTHS = 12;
 export const INMATE_CAP = 1.3;
 /**
  * prison beds per def (x police funding; an unpowered prison UNPOWERED_SERVICE_EFF of them) and police-station holding
- * cells (beds, x police funding). A prison holds 6,000: arrests run ~1.6-2.5 % of residents a year at 500k, so a 1M city
- * needs about 3-4 prisons (2,500 beds needed 8-10)
+ * cells (beds, x police funding). A prison holds 8,000: the bot's cities sentence ~1.6-2.5 % of their residents a year
+ * (8,800-13,800 at 550k), so one prison lasts to ~300k and a 1M city needs 2-3 (2,500 beds needed 8-10)
  */
-export const JAIL_BEDS: Readonly<Record<string, number>> = { civ_jail: 6000 };
+export const JAIL_BEDS: Readonly<Record<string, number>> = { civ_jail: 8000 };
 export const HOLDING_CELLS: Readonly<Record<string, number>> = { civ_police_kiosk: 5, civ_police_station: 25, civ_police_hq: 100 };
 /** overflow = max(0, 12 sentenced - beds - holding) / (12 sentenced): policeMul = (1 - JUSTICE_POLICE_K overflow) x
  *  (courthouse ? COURTHOUSE_POLICE_MUL : 1), crimeMul = 1 + JUSTICE_CRIME_K overflow */
@@ -700,9 +700,6 @@ export const CARLESS_EXTRA_MIN = 12;
 /** stop load (riders / day) smoothing across assignments (weight of the new value): the crowding wait of the next
  *  assignment reads it, so an undamped value alternates (full stop -> long wait -> empty stop -> short wait) */
 export const STOP_LOAD_SMOOTH = 0.3;
-/** weight of a job site's matching price (minutes) in its transit-search seed: the transit option then leads to jobs
- *  with room (0 = nearest transit job, the pre-r1 behaviour) */
-export const TRANSIT_SEED_PRICE = 1;
 /**
  * WP7-9 ferries (ferry.ts): links = water BFS (4-neighbour water cells) from each terminal's front water cells, at most
  * FERRY_MAX_CELLS steps, to its FERRY_PARTNERS nearest terminals on the same water body (links are symmetric); crossing

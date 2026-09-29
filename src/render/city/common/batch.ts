@@ -147,6 +147,14 @@ const _rnl = new Float64Array(6);
 const _fq = new Float64Array(24);
 const _rq = new Float64Array(24);
 const _rnq = new Float64Array(6);
+/** frustum planes of the last pass camera fitted and the render() call (renderer.info.render.frame) they were fitted
+ *  in: every batch culls the same pass cameras in the same order within a render, so one plane fit per camera and frame
+ *  serves all their list builds */
+const _cpPlanes = new Float64Array(24);
+let _cpCam: THREE.Camera | null = null;
+let _cpFrame = -1;
+/** render() call of the pass being prepared (beforePass) */
+let _renderFrame = -1;
 /** list-build doubles handed to pushList (guard band, min caster radius, receiver ground, 1 / light dir y) */
 const _plf = new Float64Array(4);
 /** current camera orientation */
@@ -769,6 +777,7 @@ export class DynamicBatch {
     const m = this.mesh as any;
     // once per frame (the first pass that draws this batch): finalize partial / full texture uploads
     const fr = renderer.info.render.frame;
+    _renderFrame = fr;
     if (fr !== this.lastFrame) {
       this.lastFrame = fr;
       _frame++;
@@ -879,12 +888,18 @@ export class DynamicBatch {
   /** planes of the list build -> _fp (view / shadow camera) and _rp / _rnl (receiver), widened by the slot's bands */
   private cullPlanes(s: PassSlot, recv: ShadowReceiver | null, tilt: number, phi: number, rtilt: number): void {
     const cam = s.camera;
-    _frustum.setFromProjectionMatrix(_pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse), cam.coordinateSystem, (cam as any).reversedDepth);
-    const fp = _fp, mr = s.margin;
-    for (let i = 0; i < 6; i++) {
-      const pl = _frustum.planes[i], n = pl.normal, o = i * 4;
-      fp[o] = n.x; fp[o + 1] = n.y; fp[o + 2] = n.z; fp[o + 3] = pl.constant;
+    if (cam !== _cpCam || _renderFrame !== _cpFrame) {
+      _frustum.setFromProjectionMatrix(_pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse), cam.coordinateSystem, (cam as any).reversedDepth);
+      const cp = _cpPlanes;
+      for (let i = 0; i < 6; i++) {
+        const pl = _frustum.planes[i], n = pl.normal, o = i * 4;
+        cp[o] = n.x; cp[o + 1] = n.y; cp[o + 2] = n.z; cp[o + 3] = pl.constant;
+      }
+      _cpCam = cam;
+      _cpFrame = _renderFrame;
     }
+    const fp = _fp, mr = s.margin;
+    fp.set(_cpPlanes);
     if (s.banded) {
       const w = cam.matrixWorld.elements;
       const ax = w[12], ay = w[13], az = w[14];
