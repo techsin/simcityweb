@@ -23,9 +23,12 @@
  * screen position, the tree LOD fade's dither): both levels are drawn by a small side batch (LodFadeLayer: same
  * vertex buffer, a discard variant of the city material, so the main building program stays discard-free for
  * early-z) while the building's own instance draws a 3-vertex empty stand-in with the same culling sphere (no
- * draw-list rebuild). A level change back mid-fade runs the fade backwards. New / rebuilt buildings, camera cuts and
- * captures (flushLod) swap at once; beyond `fadeMax` concurrent fades swaps are instant too. The shadow switches at
- * the start of a fade (only the level fading in casts).
+ * draw-list rebuild). A level change back mid-fade runs the fade backwards. A fade completes after fadeTime or, when
+ * the camera moves fast, once its distance to the building changed by `fadeTravel` (a fast zoom dissolves each swap
+ * over a few frames instead of drawing both levels of ~1000 buildings for fadeTime). New / rebuilt buildings, camera
+ * cuts, the catch-up frames after a cut (running fades are settled at the cut) and captures (flushLod) swap at once;
+ * beyond `fadeMax` concurrent fades swaps are instant too. The shadow switches at the start of a fade (only the level
+ * fading in casts).
  * Burnt lots: one rubble tile (16 m, designed to tile) per footprint cell, variant + quarter turn from a per-cell
  * hash, instead of one model stretched over the lot. Hill lots: real-size stone retaining-wall skirts under lots that
  * sit above the terrain (see foundation()).
@@ -124,6 +127,8 @@ interface Fade {
   sNew: number;
   /** index in BuildingRenderer.fades */
   i: number;
+  /** camera distance to the building at the last progress step (travel-driven progress, see fadeTravel) */
+  d: number;
 }
 
 /** LOD schedule: camera travel (m) per bucket, and ring size (travel horizon; longer slack is re-checked then) */
@@ -527,6 +532,10 @@ export class BuildingRenderer {
   // ---- LOD cross-fade
   /** cross-fade duration (s); 0 = instant swaps */
   fadeTime = 0.35;
+  /** a fade also completes once the camera's distance to the building changed by this much (log ratio, 0 = off):
+   *  during fast zooms / pans the dissolve follows the motion that causes it (a few frames at a fast zoom) instead of
+   *  trailing it by fadeTime with both levels of hundreds of buildings drawn; ~half the +-12% hysteresis band */
+  fadeTravel = 0.12;
   /** at most this many buildings fade at once (more swaps in a frame are instant) */
   fadeMax = 1024;
   /** buildings fading in / out now smaller than lodPixels x this swap instantly (sub-threshold specks) */
@@ -1181,17 +1190,20 @@ export class BuildingRenderer {
   // ------------------------------------------------------------------ LOD cross-fade
   /** fade this swap? (smooth camera motion, not the building's first level, in the view, not a sub-threshold speck) */
   private canFade(bi: BInst): boolean {
-    if (!this.fadeNow || this.evalFresh || this.fades.length >= this.fadeMax || bi.cells.length) return false;
-    const cam = this.lodCamera;
-    if (!cam) return false;
-    const v = bi.vis, c = cam.position;
-    const dx = v.cx - c.x, dy = bi.cy - c.y, dz = v.cz - c.z;
-    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (!this.fadeNow || this.evalFresh || this.fades.length >= this.fadeMax || bi.cells.length || !this.lodCamera) return false;
     // projected radius (px) = radius * K / d
-    if (bi.radius * this.lodKNow < d * this.lodPixels * this.fadeMinFrac) return false;
-    _sphere.center.set(v.cx, bi.cy, v.cz);
+    if (bi.radius * this.lodKNow < this.camDist(bi) * this.lodPixels * this.fadeMinFrac) return false;
+    _sphere.center.set(bi.vis.cx, bi.cy, bi.vis.cz);
     _sphere.radius = bi.radius;
     return this.viewFrustum()!.intersectsSphere(_sphere);
+  }
+
+  /** distance from the LOD camera to a building's LOD centre (0 without a camera) */
+  private camDist(bi: BInst): number {
+    const cam = this.lodCamera;
+    if (!cam) return 0;
+    const c = cam.position, dx = bi.vis.cx - c.x, dy = bi.cy - c.y, dz = bi.vis.cz - c.z;
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
   }
 
   /** the LOD camera's view frustum (built once per updateLod, when first needed) */
@@ -1231,7 +1243,7 @@ export class BuildingRenderer {
 
   private startFade(bi: BInst, from: number, to: number): void {
     const L = this.fadeLayer;
-    const f: Fade = { bi, p: 0, sOld: -1, sNew: -1, i: this.fades.length };
+    const f: Fade = { bi, p: 0, sOld: -1, sNew: -1, i: this.fades.length, d: this.camDist(bi) };
     f.sOld = L.alloc(f, from, false);
     f.sNew = L.alloc(f, to, true);
     this.fades.push(f);
@@ -1288,10 +1300,18 @@ export class BuildingRenderer {
       }
     }
     if (this.fades.length) {
-      const k = this.fadeTime > 0 ? dt / this.fadeTime : 1;
+      const kt = this.fadeTime > 0 ? dt / this.fadeTime : 1;
+      // progress by time, or faster by the camera's relative distance change to the building (fadeTravel)
+      const kd = this.fadeTravel > 0 && this.lodCamera ? 1 / this.fadeTravel : 0;
       // (backwards: a finished fade is replaced by the last one, which was already advanced)
       for (let i = this.fades.length - 1; i >= 0; i--) {
         const f = this.fades[i];
+        let k = kt;
+        if (kd > 0) {
+          const d = this.camDist(f.bi);
+          if (f.d > 0 && d > 0) k = Math.max(k, Math.abs(Math.log(d / f.d)) * kd);
+          f.d = d;
+        }
         f.p += k;
         if (f.p >= 1) this.finishFade(f);
         else this.fadeColors(f);
