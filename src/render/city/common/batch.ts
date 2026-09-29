@@ -685,7 +685,8 @@ export class DynamicBatch {
     }
     p[o] = cx; p[o + 1] = cy; p[o + 2] = cz; p[o + 3] = r;
     const t = this.instTile[id];
-    if (t >= 0) this.growTile(t, id);
+    // (the tile's content version too: kept list blocks filtered by caster size depend on the radius)
+    if (t >= 0) { this.growTile(t, id); this.tileVer[t]++; }
     this.version++;
   }
 

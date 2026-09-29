@@ -10,6 +10,9 @@
  * are built off the main thread (lodBuilder.ts worker): every model is queued for its proxy when it first appears
  * (background prefetch), a building that needs a proxy not built yet stays on its full model and swaps when it
  * arrives, so proxy generation never costs frame time (flushLod() builds everything synchronously for captures).
+ * The buildings waiting for an arriving proxy (often hundreds sharing one model) are woken a few per frame
+ * (`lodWakeSlice`, and in smooth motion only while fewer than fadeMax / 2 fades run), so each arrival dissolves them
+ * over a few frames instead of swapping them all in one frame (a 1000-3000-swap spike).
  * Without worker support (Node tests) proxies are built on demand within `lodBudgetMs` per frame.
  * Each building is re-evaluated only when the camera has travelled far enough to possibly carry it across its swap
  * distance, so a panning camera costs a few evaluations per frame and a still one none.
@@ -524,6 +527,13 @@ export class BuildingRenderer {
   private lodAsked = new Set<number>();
   private lodUrgent = new Set<number>();
   private lodWaiting = new Map<number, BInst[]>();
+  /** buildings whose proxy arrived while they waited on their full model (late downgrades): evaluated from lodWakeAt
+   *  on, at most lodWakeSlice per frame and, while swaps may fade, only while fewer than fadeMax / 2 fades run (see
+   *  wakeWaiting); cut frames leave them for the next frames */
+  private lodWake: BInst[] = [];
+  private lodWakeAt = 0;
+  /** woken buildings evaluated per frame (x4 when swaps are instant: no fade to pace) */
+  lodWakeSlice = 64;
   private disposed = false;
   /** dense list of instances for the per-frame LOD sweep */
   private list: BInst[] = [];
@@ -649,10 +659,11 @@ export class BuildingRenderer {
     const w = this.lodWaiting.get(geom);
     if (w) {
       this.lodWaiting.delete(geom);
+      // (paced by wakeWaiting: a model shared by hundreds of buildings must not swap them all in one frame)
       for (const bi of w) {
         if (bi.waiting !== geom) continue;
         bi.waiting = -1;
-        if (bi.due !== -2 && bi.geom === geom) this.lodQueue(bi);
+        if (bi.due !== -2 && bi.geom === geom) this.lodWake.push(bi);
       }
     }
     return id;
@@ -782,6 +793,8 @@ export class BuildingRenderer {
     this.list.length = 0;
     for (const q of this.lodBuckets) q.length = 0;
     this.lodNow.length = 0;
+    this.lodWake.length = 0;
+    this.lodWakeAt = 0;
     this.lodCount = 0;
     this.lodBehind = false;
     this.animating.clear();
@@ -1076,7 +1089,7 @@ export class BuildingRenderer {
       this.lodAt = cur + 1;
     }
     const behind = this.lodBehind;
-    if (!this.lodNow.length && this.lodAt > cur && !behind) { this.fadeLayer.sync(); return; }
+    if (!this.lodNow.length && this.lodAt > cur && !behind && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
     const on = this.lodPixels * 0.88, off = this.lodPixels * 1.12;
     this.lodDeadline = performance.now() + this.lodBudgetMs;
     const full = this.lodFull;
@@ -1128,8 +1141,27 @@ export class BuildingRenderer {
       this.lodSpare = q;
       this.lodAt++;
     }
+    // buildings whose proxy arrived (they waited on their full model): a few per frame, never in a cut frame
+    if (this.lodWakeAt < this.lodWake.length && !jump) this.wakeWaiting(c, K, on, off, cur, full);
     this.lodBehind = this.lodNow.length > 0 || this.lodAt <= cur;
     this.fadeLayer.sync();
+  }
+
+  /** evaluate buildings woken by an arriving proxy (lodWake): a flush takes all; else lodWakeSlice per frame — while
+   *  swaps may fade only as long as fewer than fadeMax / 2 fades run (each wake dissolves; the rest waits for the
+   *  running fades), x4 when swaps are instant anyway. Those buildings are already past their downgrade distance on
+   *  their full model, so pacing them only delays a GPU saving, never shows the wrong detail up close */
+  private wakeWaiting(c: THREE.Vector3, K: number, on: number, off: number, cur: number, all: boolean): void {
+    const q = this.lodWake;
+    let n = all ? Infinity : this.fadeNow ? Math.min(this.lodWakeSlice, (this.fadeMax >> 1) - this.fades.length) : this.lodWakeSlice * 4;
+    while (n > 0 && this.lodWakeAt < q.length) {
+      const bi = q[this.lodWakeAt++];
+      // removed, queued / scheduled by another evaluation meanwhile, or waiting again (rebuilt with a new model)
+      if (bi.due !== -1 || bi.now || bi.waiting >= 0) continue;
+      this.lodEval(bi, c, K, on, off, cur);
+      n--;
+    }
+    if (this.lodWakeAt >= q.length) { q.length = 0; this.lodWakeAt = 0; }
   }
 
   /** every building drawn as a proxy that is now within its upgrade distance gets its full model: evaluated now when it
