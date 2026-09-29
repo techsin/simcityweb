@@ -672,24 +672,34 @@ export const GARAGE_WALK_RADIUS = 6;
 export const PARKING_RATIO: readonly [number, number] = [1.0, 2.5];
 export const PARKING_BOX_R = 3;
 export const PARKING_MIN = 5;
+/** weight of the previous raster when the parking layer is recomputed (every 2nd assignment): one assignment's car
+ *  arrivals are noisy (destination noise, the matching's price steps) */
+export const PARKING_BLEND = 0.5;
 /**
- * WP7-8 park & ride: a garage within PR_STOP_RADIUS (+ half its footprint) of an attached transit stop is a park & ride:
- * a reverse road search (every 2nd assignment, only with such garages) seeded at its road entries with label
- * PR_PARK_MIN + walk + wait + transit time from its best stop (+ crowding GARAGE_CROWD_K x max(0, load / spaces -
- * GARAGE_CROWD_FROM) of the last assignment), limit PR_LIMIT; an origin's option = PR_HOME_MIN + label if the car leg is
- * <= PR_CAR_LEG_MAX. Car-less residents (demographics carlessShare) pay CARLESS_EXTRA_MIN more on car and park & ride trips
- * (taxi / lift), with or without garages.
+ * WP7-8 park & ride: a garage within PR_STOP_RADIUS (+ half its footprint) of an attached transit stop whose best transit
+ * path rides a vehicle is a park & ride (a stop whose riders all walk to jobs nearby — downtown — makes it plain
+ * parking): a reverse road search (every 2nd assignment, only with such garages) seeded at its road entries with label
+ * PR_PARK_MIN + walk + wait + transit time from its stop + the garage's price, limit min(MAX_COMMUTE, max label +
+ * PR_LEG_SEARCH x PR_CAR_LEG_MAX); an origin's option = PR_HOME_MIN + congested car leg + label if the car leg is
+ * <= PR_CAR_LEG_MAX free-flow minutes (a jam does not move the garage out of reach; the logit sees the jam).
+ * Capacity: a garage takes at most its spaces per assignment (pieces beyond it re-split without park & ride); its
+ * price (minutes, persisted) follows the demand: price += PR_PRICE_STEP x ln(clamp(wanted / spaces, 0.25, 4)) per
+ * assignment, clamped to [0, PR_PRICE_MAX], so demand settles at the spaces and a second garage takes the rest.
+ * Car-less residents (demographics carlessShare) pay CARLESS_EXTRA_MIN more on car and park & ride trips (taxi / lift),
+ * with or without garages.
  */
 export const PR_STOP_RADIUS = 5;
 export const PR_PARK_MIN = 1.5;
 export const PR_HOME_MIN = 1;
 export const PR_LIMIT = 40;
 export const PR_CAR_LEG_MAX = 12;
-export const GARAGE_CROWD_K = 60;
-export const GARAGE_CROWD_FROM = 0.9;
-/** garage load (park & ride cars) smoothing across assignments (weight of the new value) */
-export const GARAGE_LOAD_SMOOTH = 0.25;
+export const PR_LEG_SEARCH = 2.5;
+export const PR_PRICE_STEP = 0.75;
+export const PR_PRICE_MAX = 30;
 export const CARLESS_EXTRA_MIN = 12;
+/** stop load (riders / day) smoothing across assignments (weight of the new value): the crowding wait of the next
+ *  assignment reads it, so an undamped value alternates (full stop -> long wait -> empty stop -> short wait) */
+export const STOP_LOAD_SMOOTH = 0.3;
 /**
  * WP7-9 ferries (ferry.ts): links = water BFS (4-neighbour water cells) from each terminal's front water cells, at most
  * FERRY_MAX_CELLS steps, to its FERRY_PARTNERS nearest terminals on the same water body (links are symmetric); crossing
@@ -711,6 +721,9 @@ export const RAMP_BY_NET: readonly number[] = [0, 0.45, 0.45, 0.25, 0.35, 0, 0];
 export const RAMP_CAP = 2400;
 export const RAMP_ALPHA = 0.15;
 export const RAMP_MAX_FACTOR = 8;
+/** MSA floor of the ramp flows (the volumes use MSA_MIN_ALPHA): commuters pick one ramp each, so a higher weight of the
+ *  new flow lets two interchanges trade the load every cycle */
+export const RAMP_MSA_MIN = 0.15;
 /** trucks: time x TRUCK_LOCAL_FACTOR on non-highway cells in the freight searches (trucks prefer highways) */
 export const TRUCK_LOCAL_FACTOR = 1.15;
 /** freight sinks (seaports, rail-linked freight stations): industry trucks within FREIGHT_SINK_MIN minutes (truck time)

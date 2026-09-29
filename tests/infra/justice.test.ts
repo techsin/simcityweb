@@ -8,7 +8,9 @@ import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { CATALOG, getDef, rebuildCatalogIndex } from '../../src/sim/catalog';
 import { clearInfoCache } from '../../src/sim/infra/common';
 import { ARREST_K, COURTHOUSE_POLICE_MUL, HOLDING_CELLS, JAIL_BEDS } from '../../src/sim/infra/params';
-import { addArrestPotential, hash01, justiceData, justiceFactors, justiceMonthly } from '../../src/sim/infra/justice';
+import { addArrestPotential, hash01, justiceData, justiceFactors, justiceMonthly, justiceRefresh } from '../../src/sim/infra/justice';
+import { removeBuilding } from '../../src/sim/infra/common';
+import { facilityReport } from '../../src/sim/infra/facilities';
 import { emergencyOf } from '../../src/sim/infra/emergency';
 import type { CrimeSystem } from '../../src/sim/infra/crime';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
@@ -173,7 +175,7 @@ describe('justice: the monthly model', () => {
     j = run(0, 60000);
     expect(j.inmates).toBeCloseTo(600 - 600 / 12, 3);
     expect(j.releasesMonth).toBeCloseTo(50, 1);
-    expect(j.occupancy).toBeCloseTo(j.inmates / (2500 + 25), 2);
+    expect(j.occupancy).toBeCloseTo(j.inmates / (JAIL_BEDS.civ_jail + 25), 2);
     // WP8's failed prison riot lets 30 % escape: the stock is a plain number it can scale
     (st.systemData.justice as { inmates: number }).inmates *= 0.7;
     j = run(0, 60000);
@@ -204,6 +206,66 @@ describe('justice: the monthly model', () => {
     expect(d.riotMonth).toBe(riotMonth);
     expect(st.stats.justice.occupancy).toBeGreaterThan(1.2);
     expect(sim.rng.state).toBe(rng0);
+  });
+});
+
+describe('justice: the numbers follow the buildings at once (refresh on placement / removal, end of day)', () => {
+  it('a new prison counts the moment it is placed (report, stats and factors agree); an unpowered prison holds 30 % of its beds; bulldozing it brings the overflow back', () => {
+    registerJusticeDefs();
+    const st = newState(48);
+    roadLine(st, 2, 20, 45, 20);
+    const station = place(st, 'civ_police_station', 10, 21);
+    station.flags |= BF.Powered | BF.Watered;
+    const sim = newSim(st);
+    st.unlocked.add('jail');
+    const d = justiceData(st);
+    d.potential = 20000; // 80 arrests a month
+    st.stats.population = 60000;
+    justiceMonthly(sim);
+    const before = st.stats.justice;
+    expect(before.overflow).toBeGreaterThan(0.9);
+    expect(before.policeMul).toBeLessThan(0.75);
+    // the station's report: stock and places (no "% full" next to the early releases), the yearly flow, the fix
+    let rep = facilityReport(sim, station.id)!;
+    const jails = rep.lines.find((l) => l.key === 'jails')!;
+    expect(jails.value).toMatch(/inmates · 25 places/);
+    expect(jails.value).not.toMatch(/full/);
+    const ovf = rep.lines.find((l) => l.key === 'overflow')!;
+    expect(ovf.value).toMatch(/≈960 sentences a year for 25 places/);
+    expect(ovf.hint).toMatch(/build a prison/);
+    // the quality line names the justice factor
+    expect(rep.lines.find((l) => l.key === 'quality')!.hint).toMatch(/criminals released early −\d+%/);
+    // place a prison (the plop path emits buildingAdded): counted at once, no month tick needed
+    const jail = place(st, 'wp7a_jail22', 30, 21);
+    jail.flags |= BF.Powered | BF.Watered;
+    sim.events.emit('buildingAdded', jail);
+    const j = st.stats.justice;
+    expect(j.beds).toBe(JAIL_BEDS.civ_jail);
+    expect(j.overflow).toBe(0);
+    expect(j.policeMul).toBe(1);
+    expect(j.crimeMul).toBe(1);
+    rep = facilityReport(sim, jail.id)!;
+    const inm = rep.lines.find((l) => l.key === 'inmates')!;
+    expect(inm.value).toMatch(new RegExp(`/ ${JAIL_BEDS.civ_jail.toLocaleString('en-US')} \\(\\d+% full\\)`));
+    expect(inm.status).toBe('ok');
+    expect(inm.hint).toBeUndefined();
+    expect(rep.lines.some((l) => l.key === 'overflow')).toBe(false);
+    expect(facilityReport(sim, station.id)!.lines.some((l) => l.key === 'overflow')).toBe(false);
+    // an unpowered prison holds only 30 % of its beds (and says so); power back -> full again, at the end of the day
+    jail.flags &= ~BF.Powered;
+    justiceRefresh(sim);
+    expect(st.stats.justice.beds).toBe(Math.round(JAIL_BEDS.civ_jail * 0.3));
+    expect(facilityReport(sim, jail.id)!.warnings.some((w) => /^No power — holds only 30% of its beds/.test(w))).toBe(true);
+    jail.flags |= BF.Powered;
+    sim.events.emit('day', st.day);
+    expect(st.stats.justice.beds).toBe(JAIL_BEDS.civ_jail);
+    // bulldoze it: the overflow comes back right away
+    removeBuilding(sim, jail);
+    expect(st.stats.justice.beds).toBe(0);
+    expect(st.stats.justice.overflow).toBeGreaterThan(0.9);
+    expect(st.stats.justice.policeMul).toBeCloseTo(before.policeMul, 4);
+    // the monthly rate the overflow projects is persisted (a save keeps it)
+    expect(justiceData(st).sentenced).toBeCloseTo(80, 6);
   });
 });
 

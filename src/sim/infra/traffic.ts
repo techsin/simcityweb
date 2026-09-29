@@ -32,25 +32,35 @@
  *             next to a road, subway / train station on a line holding another station of its mode (train: or rail to
  *             the map edge), ferry terminal linked to a partner (ferry.ts). Unattached stops carry no riders and no
  *             transitCov (transit.ts / services' transit slot); stopAttached(id), stopLoad(id).
+ *  riders     an origin boards only at a stop whose transit-forest path rides a vehicle (bus on roads, rail, subway,
+ *             ferry crossing): a stop whose best path is "walk to a job beside it" carries no riders (its residents
+ *             walk or drive; stopLoad().walkers counts them for the report). Riders / bus need / tripsTransit are rides.
  *  buses      depots run DEPOT_BUSES each for the stops within DEPOT_RANGE road tiles (multi-source BFS on road / depot
  *             change); stops no depot reaches share MINIBUS_FLEET minibuses; rho = fleet / (riders / RIDERS_PER_BUS)
- *             in [BUS_RHO_MIN, BUS_RHO_MAX] divides the bus base wait (prepTransit).
+ *             in [BUS_RHO_MIN, BUS_RHO_MAX] divides the bus base wait (prepTransit). Stop loads are smoothed across
+ *             assignments (STOP_LOAD_SMOOTH): the crowding wait reads them. stats.transitFleet counts the fleets that
+ *             serve stops; busesShort = sum over the pools (depots, minibuses) of max(0, need - fleet).
  *  ferries    ferry nodes in the transit net (links = transfer edges, steps x FERRY_TIME_PER_CELL minutes).
  *  P&R        PH_PARKRIDE: reverse road search from park & ride garages (garage within PR_STOP_RADIUS of an attached
- *             stop) labelled with the stop's transit time; the origin's transit option is min(walk to a stop, park &
- *             ride); car legs flow on the P&R forest, riders join the transit forest at the garage's stop. A garage
- *             whose stop's best path rides nothing (jobs a walk away: downtown) is park & walk: car trips (car
- *             overhead, no wait), no stop riders, the parked cars leave the blocks' lots (garageInfo().ride = false).
- *  car-less   carlessShare(b) of each origin pays CARLESS_EXTRA_MIN more by car and park & ride (taxi / lift).
- *  parking    PH_PARKING (every 2nd cycle): parking.ts raster from car arrivals vs supply; car commuters to a site pay
- *             PARKING_MIN x parking(site).
+ *             stop whose path rides) labelled with the stop's transit time + the garage's price; the origin's transit
+ *             option is min(walk to a stop, park & ride); car legs flow on the P&R forest, riders join the transit forest
+ *             at the garage's stop. A garage holds at most its spaces per assignment (the rest re-splits without park &
+ *             ride); its price follows the demand across assignments (tatonnement), so the load settles at the spaces
+ *             and a second garage takes the rest. A garage by a downtown stop (riders walk to jobs nearby) is parking
+ *             only: its spaces ease the blocks around it (parking.ts).
+ *  car-less   carlessShare(b) of each origin pays CARLESS_EXTRA_MIN more by car and park & ride (taxi / lift);
+ *             routeInfo().carless / carlessMin show it.
+ *  parking    PH_PARKING (every 2nd cycle): parking.ts raster from car arrivals vs supply, blended with the previous
+ *             raster (PARKING_BLEND); car commuters to a site pay PARKING_MIN x parking(site).
  *  ramps      traffic's searches charge RAMP_BY_NET x congestion of the interchange (ramp flow per non-highway cell next
- *             to a highway, MSA smoothed) instead of the flat RAMP_PENALTY; roadCellReport shows the interchange load.
+ *             to a highway, MSA smoothed with floor RAMP_MSA_MIN) instead of the flat RAMP_PENALTY; roadCellReport shows
+ *             the interchange load.
  *  trucks     truck time x TRUCK_LOCAL_FACTOR off highways; trucks / day per road cell (truckVolume); PH_SINKS: trucks
- *             within FREIGHT_SINK_MIN of each seaport / rail-linked freight station (sinkTrucks); freight trains run from
- *             rail-linked freight stations to the map edge / a seaport (freightRailCells).
- * Persistent (systemData.infraTransport): smoothed bus need per depot, stop / garage loads, ramp flows, parking (u8), so
- * the first post-load assignment continues where the save left off.
+ *             within FREIGHT_SINK_MIN of a seaport / rail-linked freight station (sinkTrucks) — every 2nd cycle one sink's
+ *             own reverse search (unknown sinks first, then round-robin), so each counts every industry within reach;
+ *             freight trains run from rail-linked freight stations to the map edge / a seaport (freightRailCells).
+ * Persistent (systemData.infraTransport): smoothed bus need per depot, stop loads, garage loads and prices, ramp flows,
+ * parking (u8), so the first post-load assignment continues where the save left off.
  *
  * OUTPUTS: state.traffic (PCU trips/day per road cell; riders/day on rail cells), state.congestion (v/c),
  *   state.commute (minutes on residential building cells), stats.avgCommute / avgTraffic / tripsCar / tripsTransit /
@@ -82,9 +92,10 @@ import {
   WALK_TIME_PER_CELL, WORKER_SHARE, DEST_NOISE, RESULT_SMOOTH, MATCH_ROUNDS, REGION_JOB_MIN, REGION_JOB_SHARE,
   REGION_WORKER_MIN, REGION_WORKER_SHARE, MATCH_PROP_ROUNDS, MATCH_PROP_SLACK, MATCH_PRICE_STEP_REL, MATCH_PRICE_STEP_MIN, MATCH_PRICE_MAX,
   RAMP_PENALTY, BUS_NEED_SMOOTH, BUS_RHO_MAX, BUS_RHO_MIN, CARLESS_EXTRA_MIN, DEPOT_BUSES, DEPOT_FUNDING_MAX, DEPOT_RANGE,
-  DEPOT_UNPOWERED, FERRY_TIME_PER_CELL, FREIGHT_SINK_MIN, GARAGE_CROWD_FROM, GARAGE_CROWD_K, GARAGE_SPACES, MINIBUS_FLEET,
-  PARKING_MIN, PARKING_SHOP_W, PR_CAR_LEG_MAX, PR_HOME_MIN, PR_LIMIT, PR_PARK_MIN, PR_STOP_RADIUS, RAMP_ALPHA, RAMP_BY_NET,
-  RAMP_CAP, RAMP_MAX_FACTOR, RIDERS_PER_BUS, STOP_CAP_FERRY, TRUCK_LOCAL_FACTOR, WAIT_FERRY, GARAGE_LOAD_SMOOTH, GARAGE_WALK_RADIUS,
+  DEPOT_UNPOWERED, FERRY_TIME_PER_CELL, FREIGHT_SINK_MIN, GARAGE_SPACES, MINIBUS_FLEET,
+  PARKING_BLEND, PARKING_MIN, PARKING_SHOP_W, PR_CAR_LEG_MAX, PR_HOME_MIN, PR_LEG_SEARCH, PR_LIMIT, PR_PARK_MIN, PR_PRICE_MAX,
+  PR_PRICE_STEP, PR_STOP_RADIUS, RAMP_ALPHA, RAMP_BY_NET, RAMP_CAP, RAMP_MAX_FACTOR, RAMP_MSA_MIN, RIDERS_PER_BUS,
+  STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRUCK_LOCAL_FACTOR, WAIT_FERRY,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
@@ -115,6 +126,24 @@ export interface RouteInfo {
   mode: string;
   /** residential: workers that reached a job; job site: workers arriving (local + regional) */
   jobsReached: number;
+  /** residential (WP7-8): share of the workers without a car (demographics carlessShare) — they pay CARLESS_EXTRA_MIN
+   *  by car / park & ride (taxi, lift) */
+  carless?: number;
+  /** residential: extra commute minutes of those car-less workers vs their car-owning neighbours (last assignments) */
+  carlessMin?: number;
+}
+
+/** stats.transitFleet with the optional WP7b field (CityState's TransitFleetStats plus busesShort) */
+export interface TransitFleetStatsX {
+  buses: number;
+  busesNeeded: number;
+  parkRide: number;
+  parkRideSpaces: number;
+  ferryRiders: number;
+  ferryLinks: number;
+  /** sum over the bus pools (each depot, the minibus pool) of max(0, buses needed - buses): a shortage a surplus
+   *  elsewhere does not hide (the bot's depot rule, the busFleetShort advisor) */
+  busesShort?: number;
 }
 
 const PH_PREP = 0, PH_PREP2 = 1, PH_TRANSIT = 2, PH_RSEARCH = 3, PH_RMATCH = 4, PH_COMMUTE = 5, PH_INBOUND = 6, PH_SHOP = 7,
@@ -143,6 +172,10 @@ const GARAGE_DEFS: Readonly<Record<string, number>> = { tr_parking_garage: GARAG
 const REBUILD_COST = 2.5;
 const MAX_ENTRIES = 12;
 const MODE_NAMES = ['none', 'car', 'transit', 'walk'];
+/** garage state of a cycle: no road entry, no attached stop within PR_STOP_RADIUS, a stop without a transit path to any
+ *  job, a downtown stop (its best path rides nothing: jobs a walk away — parking only), park & ride */
+const GARAGE_NO_ROAD = 0, GARAGE_NO_STOP = 1, GARAGE_NO_TRANSIT = 2, GARAGE_DOWNTOWN = 3, GARAGE_PR = 4;
+const GARAGE_STATE = ['noRoad', 'noStop', 'noTransit', 'downtown', 'parkRide'];
 const IND_KEYS = ['IA', 'ID', 'IM', 'IHT'] as const;
 
 /** growable typed arrays helper */
@@ -400,23 +433,51 @@ export class TrafficSystem implements SimSystem {
   private gLabel: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gSeed: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gBoard: Int32Array<ArrayBuffer> = new Int32Array(0);
-  /** 1 = the stop's best transit path rides a vehicle; 0 = its jobs are a walk away (the garage is plain parking) */
-  private gRide: Uint8Array<ArrayBuffer> = new Uint8Array(0);
-  /** garage centre cell and walk reach (GARAGE_WALK_RADIUS + half footprint): park & walk serves jobs within it */
+  /** GARAGE_* state of the garage this cycle (no stop / stop without transit / downtown stop / park & ride) */
+  private gState: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  /** garage centre cell and half footprint (its stop candidates are the attached stops within PR_STOP_RADIUS + half) */
   private gCell: Int32Array<ArrayBuffer> = new Int32Array(0);
-  private gReach: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  private gHalf: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  /** 1 = park & ride this cycle (its stop's best transit path rides a vehicle) */
+  private gRide: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  /** spaces, cars parked (this assignment), riders, park & ride wanted (riders, incl. those turned away when full),
+   *  workers whose park & ride option it is, price (minutes) */
+  private gSpaces: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gLoad: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gRiders: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gWant: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gCatch: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gPrice: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gPrN = 0;
-  /** park & ride cars per garage id of the last assignment [persisted] */
+  /** park & ride cars per garage id of the last completed assignment [persisted] */
   private garageLoad = new Map<number, number>();
-  /** garage id -> its users ride transit (false: park & walk) in the last assignment (derived) */
-  private garageRide = new Map<number, boolean>();
+  /** park & ride price (minutes) per garage id [persisted] */
+  private garagePrice = new Map<number, number>();
+  /** last completed assignment per garage id (report): riders, wanted, catchment workers, state */
+  private garageLast = new Map<number, { riders: number; want: number; catchment: number; state: number }>();
+  /** P&R forest: free-flow minutes of the car leg from each settled node to its garage (PR_CAR_LEG_MAX test) */
+  private prFF: Float32Array<ArrayBuffer> = new Float32Array(0);
   // per origin: park & ride option (total minutes, garage index, car entry node, board node, stop), car-less share
   private oPrT: Float32Array<ArrayBuffer> = new Float32Array(0);
   private oPrG: Int32Array<ArrayBuffer> = new Int32Array(0);
   private oPrNode: Int32Array<ArrayBuffer> = new Int32Array(0);
   private oCl: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** car-less extra minutes (sum over the assigned pieces of take x car-less share x extra) */
+  private oClX: Float32Array<ArrayBuffer> = new Float32Array(0);
   private prRiders = 0;
+  /** transit forest memo per node this cycle: 1 = the path rides a vehicle, -1 = walk only (a stop next to its job) */
+  private rideMemo: Int8Array<ArrayBuffer> = new Int8Array(0);
+  /** workers per stop (this cycle) whose best stop path rides nothing (jobs a walk away): no riders, report hint */
+  private stWalk: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** last completed assignment per stop building id: walkers (see stWalk), a path from the stop rides (stopsNear) */
+  private stopWalkers = new Map<number, number>();
+  private stopRide = new Map<number, boolean>();
+  /** mode-split result of the last split() call (shares car / walk to a stop / park & ride / walk, minutes, car-less
+   *  extra minutes x share) */
+  private mC = 0; private mTW = 0; private mTP = 0; private mW = 0; private mT = 0; private mX = 0;
+  /** car-less share and extra minutes per residential building id (smoothed like the commute) */
+  carlessById: Float32Array<ArrayBuffer> = new Float32Array(1024);
+  carlessMinById: Float32Array<ArrayBuffer> = new Float32Array(1024);
   // parking: car commuters arriving per cluster / job site, car shopping trips per shop, parking at each cluster
   private qCar: Float32Array<ArrayBuffer> = new Float32Array(0);
   private jCar: Float32Array<ArrayBuffer> = new Float32Array(0);
@@ -427,11 +488,16 @@ export class TrafficSystem implements SimSystem {
   private parkS: Float32Array<ArrayBuffer> = new Float32Array(0);
   private parkTmpA: Float32Array<ArrayBuffer> = new Float32Array(0);
   private parkTmpB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** previous raster (blend) and whether st.parking holds one (a restored save or an earlier recompute) */
+  private parkPrev: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private parkHas = false;
   /** last parking raster summary (demand-weighted pressure, share of demand cells above 0.6, supply / demand) */
   parkingSummary: ParkingSummary = { demandWeighted: 0, highShare: 0, supply: 0, demand: 0 };
   // freight sinks (seaports + rail-linked freight stations): trucks / day within FREIGHT_SINK_MIN, by building id
   private sinkIds: number[] = [];
   private sinkTrucksById: Float32Array<ArrayBuffer> = new Float32Array(1024).fill(-1);
+  /** the sink whose throughput was searched last (round-robin over the sinks, unknown ones first) */
+  private sinkLast = -1;
   private sinksDone = false;
   private transitDone = false;
   private sinkK: number[] = [];
@@ -517,8 +583,14 @@ export class TrafficSystem implements SimSystem {
     this.prKey = '';
     this.SP.graphVersion = -1;
     this.sinkTrucksById.fill(-1);
+    this.sinkLast = -1;
     this.sinksDone = false;
     this.hasTruckData = false;
+    this.garageLast.clear();
+    this.stopWalkers.clear();
+    this.stopRide.clear();
+    this.carlessById.fill(0);
+    this.carlessMinById.fill(0);
     this.restoreTransport(sim.state);
     sim.state.systemData.infraVersion = 1;
     this.graphDirty = true;
@@ -629,7 +701,10 @@ export class TrafficSystem implements SimSystem {
     if (buildingId < 0 || buildingId >= this.modeById.length) return null;
     const m = this.modeById[buildingId];
     if (m === 0 && this.reachedById[buildingId] === 0 && this.commuteById[buildingId] === 0) return null;
-    return { commuteMin: this.commuteById[buildingId], mode: MODE_NAMES[m] ?? 'none', jobsReached: Math.round(this.reachedById[buildingId]) };
+    const r: RouteInfo = { commuteMin: this.commuteById[buildingId], mode: MODE_NAMES[m] ?? 'none', jobsReached: Math.round(this.reachedById[buildingId]) };
+    const cl = buildingId < this.carlessById.length ? this.carlessById[buildingId] : 0;
+    if (cl > 0) { r.carless = Math.round(cl * 1000) / 1000; r.carlessMin = Math.round(this.carlessMinById[buildingId] * 10) / 10; }
+    return r;
   }
   /** residential: 0..1 share of workers that can reach a job (-1 = not assessed yet) */
   workerAccess(id: number): number {
@@ -682,13 +757,22 @@ export class TrafficSystem implements SimSystem {
     if (st) this.refreshAttach(st);
     return (this.attach.get(id) ?? 0) === 1;
   }
-  /** riders (boardings + alightings / day, last assignment), current wait (min) and the depot (building id, -1 = none /
-   *  minibuses) of a stop building; null = not a stop (or not seen by an assignment yet) */
-  stopLoad(id: number): { riders: number; waitMin: number; depotId: number } | null {
+  /**
+   * riders (boardings + alightings / day, smoothed across assignments), current wait (min), the depot (building id, -1 =
+   * none / minibuses) of a stop building, walkers = residents within walking distance whose nearest jobs are a walk from
+   * this stop (they don't ride: last assignment) and rho = the service ratio of its bus pool (buses / buses needed; bus
+   * stops only); null = not a stop (or not seen by an assignment yet)
+   */
+  stopLoad(id: number): { riders: number; waitMin: number; depotId: number; walkers?: number; rho?: number } | null {
     const s = this.stIdxById.get(id);
     if (s === undefined || s >= this.stops.n || this.stops.bid[s] !== id) return null;
     const d = this.stDepot[s];
-    return { riders: this.stLoadPrev.get(id) ?? 0, waitMin: this.stWait[s], depotId: d >= 0 && d < this.depots.length ? this.depots[d].id : -1 };
+    const out: { riders: number; waitMin: number; depotId: number; walkers?: number; rho?: number } = {
+      riders: this.stLoadPrev.get(id) ?? 0, waitMin: this.stWait[s], depotId: d >= 0 && d < this.depots.length ? this.depots[d].id : -1,
+      walkers: this.stopWalkers.get(id) ?? 0,
+    };
+    if (this.stops.mode[s] === Transit.Bus && this.stRho[s] > 0) out.rho = this.stRho[s];
+    return out;
   }
   /** cell indices on the freight train routes (rail-linked freight stations -> map edge / seaport) */
   freightRailCells(): ArrayLike<number> {
@@ -752,17 +836,27 @@ export class TrafficSystem implements SimSystem {
     return { ...this.minibus };
   }
   /**
-   * parking garage: park & ride stop (building id, -1 none), cars / day parked by commuters in the last assignment,
-   * spaces, walk to the stop; ride = false when its stop's jobs are a walk away (users park and walk: no riders)
+   * parking garage (last completed assignment): its stop (building id, -1 none), park & ride cars parked (<= spaces),
+   * spaces, walk to the stop; ride = its stop's transit path rides a vehicle (park & ride; false: a downtown stop whose
+   * riders walk to jobs nearby, or no stop — the garage is parking only). riders = commuters who switched (the same
+   * number stats.transitFleet.parkRide sums), wanted = park & ride demand incl. commuters turned away when full,
+   * catchment = workers within a PR_CAR_LEG_MAX free-flow drive for whom it is the park & ride option, price = its
+   * rationing price (minutes), state = GARAGE_STATE ('noRoad' | 'noStop' | 'noTransit' | 'downtown' | 'parkRide');
+   * null = not seen by an assignment yet
    */
-  garageInfo(id: number): { stopId: number; parkRide: number; spaces: number; walkMin: number; ride: boolean } | null {
+  garageInfo(id: number): {
+    stopId: number; parkRide: number; spaces: number; walkMin: number; ride: boolean;
+    riders?: number; wanted?: number; catchment?: number; price?: number; state?: string;
+  } | null {
     for (let g = 0; g < this.gN; g++) {
       if (this.gBid[g] !== id) continue;
       const s = this.gStop[g];
+      const last = this.garageLast.get(id);
+      const state = last ? last.state : this.gState[g];
       return {
-        stopId: s >= 0 ? this.stops.bid[s] : -1, parkRide: this.garageLoad.get(id) ?? 0,
-        spaces: GARAGE_DEFS[this.lastState?.buildings.get(id)?.def ?? ''] ?? GARAGE_SPACES, walkMin: this.gWalk[g],
-        ride: this.garageRide.get(id) ?? true,
+        stopId: s >= 0 ? this.stops.bid[s] : -1, parkRide: this.garageLoad.get(id) ?? 0, spaces: this.gSpaces[g], walkMin: this.gWalk[g],
+        ride: state === GARAGE_PR, riders: last?.riders ?? 0, wanted: last?.want ?? 0, catchment: last?.catchment ?? 0,
+        price: this.garagePrice.get(id) ?? 0, state: GARAGE_STATE[state] ?? 'noStop',
       };
     }
     return null;
@@ -788,11 +882,15 @@ export class TrafficSystem implements SimSystem {
     this.refreshAttach(st);
     return ferryPartnersAt(st, this.ferryTerms, x, z, w, d, rot);
   }
-  /** attached stops within r cells (+ half the footprint) of a footprint (garage preview), nearest first */
-  stopsNear(st: CityState, x: number, z: number, w: number, d: number, r = PR_STOP_RADIUS): { id: number; mode: number; dist: number }[] {
+  /**
+   * attached stops within r cells (+ half the footprint) of a footprint (garage preview), nearest first; ride = a
+   * transit path from the stop rides a vehicle in the last assignment (false: its riders walk to jobs beside it — a
+   * garage there is parking only, no park & ride; undefined: not assessed yet)
+   */
+  stopsNear(st: CityState, x: number, z: number, w: number, d: number, r = PR_STOP_RADIUS): { id: number; mode: number; dist: number; ride?: boolean }[] {
     this.refreshAttach(st);
     const cx = x + (w >> 1), cz = z + (d >> 1), R = r + (Math.max(w, d) >> 1);
-    const out: { id: number; mode: number; dist: number }[] = [];
+    const out: { id: number; mode: number; dist: number; ride?: boolean }[] = [];
     // stops of the last assignment (a stop placed since shows after the next one; previews run on every mouse move)
     const S = this.stops, N = st.size;
     for (let s = 0; s < S.n; s++) {
@@ -800,14 +898,14 @@ export class TrafficSystem implements SimSystem {
       if (id < 0 || this.attach.get(id) !== 1 || !st.buildings.has(id)) continue;
       const c = S.cell[s], sx = c % N, sz = (c - sx) / N;
       const dd = Math.hypot(sx - cx, sz - cz);
-      if (dd <= R) out.push({ id, mode: S.mode[s], dist: dd });
+      if (dd <= R) out.push({ id, mode: S.mode[s], dist: dd, ride: this.stopRide.get(id) });
     }
     return out.sort((a, b) => a.dist - b.dist || a.id - b.id);
   }
-  /** fleet / park & ride / ferry totals of the last assignment (also in stats.transitFleet) */
-  get fleetStats(): { buses: number; busesNeeded: number; parkRide: number; parkRideSpaces: number; ferryRiders: number; ferryLinks: number } {
+  /** fleet / park & ride / ferry totals of the last assignment (also in stats.transitFleet, + busesShort) */
+  get fleetStats(): TransitFleetStatsX {
     const st = this.lastState;
-    return st ? { ...st.stats.transitFleet } : { buses: 0, busesNeeded: 0, parkRide: 0, parkRideSpaces: 0, ferryRiders: 0, ferryLinks: 0 };
+    return st ? { ...(st.stats.transitFleet as TransitFleetStatsX) } : { buses: 0, busesNeeded: 0, parkRide: 0, parkRideSpaces: 0, ferryRiders: 0, ferryLinks: 0, busesShort: 0 };
   }
 
   /** a transient service-vehicle route (fire trucks etc.) shown for `days` sim days */
@@ -985,6 +1083,8 @@ export class TrafficSystem implements SimSystem {
     this.inboundById = ensureIdFloat(this.inboundById, st);
     this.modeById = growU8(this.modeById, st.nextBuildingId + 1);
     this.sinkTrucksById = ensureIdFloat(this.sinkTrucksById, st, -1);
+    this.carlessById = ensureIdFloat(this.carlessById, st);
+    this.carlessMinById = ensureIdFloat(this.carlessMinById, st);
 
     // node times from smoothed volumes (state.traffic per cell)
     const n = g.n;
@@ -1190,11 +1290,12 @@ export class TrafficSystem implements SimSystem {
     this.oTrT = growF32(this.oTrT, oN); this.oBoardStop = growI32(this.oBoardStop, oN);
     this.oLastD = growF32(this.oLastD, oN);
     this.oPrT = growF32(this.oPrT, oN); this.oPrG = growI32(this.oPrG, oN); this.oPrNode = growI32(this.oPrNode, oN);
+    this.oClX = growF32(this.oClX, oN);
     this.candKey = this.candKey.length >= oN ? this.candKey : new Float64Array(Math.max(oN, 64) * 2);
     this.candNode = growI32(this.candNode, oN);
     for (let o = 0; o < oN; o++) {
       this.oU[o] = this.oW[o];
-      this.oAsg[o] = 0; this.oTimeSum[o] = 0; this.oCarW[o] = 0; this.oTrW[o] = 0; this.oWalkW[o] = 0;
+      this.oAsg[o] = 0; this.oTimeSum[o] = 0; this.oCarW[o] = 0; this.oTrW[o] = 0; this.oWalkW[o] = 0; this.oClX[o] = 0;
       this.oCarNode[o] = -1;
       this.oLastD[o] = -1;
     }
@@ -1393,25 +1494,36 @@ export class TrafficSystem implements SimSystem {
     const gN = this.gN;
     this.gStop = growI32(this.gStop, gN + 1); this.gWalk = growF32(this.gWalk, gN + 1); this.gLabel = growF32(this.gLabel, gN + 1);
     this.gSeed = growF32(this.gSeed, gN + 1); this.gBoard = growI32(this.gBoard, gN + 1); this.gLoad = growF32(this.gLoad, gN + 1);
-    this.gRide = growU8(this.gRide, gN + 1); this.gCell = growI32(this.gCell, gN + 1); this.gReach = growU8(this.gReach, gN + 1);
+    this.gRide = growU8(this.gRide, gN + 1); this.gState = growU8(this.gState, gN + 1); this.gSpaces = growF32(this.gSpaces, gN + 1);
+    this.gRiders = growF32(this.gRiders, gN + 1); this.gWant = growF32(this.gWant, gN + 1); this.gCatch = growF32(this.gCatch, gN + 1);
+    this.gPrice = growF32(this.gPrice, gN + 1); this.gCell = growI32(this.gCell, gN + 1); this.gHalf = growU8(this.gHalf, gN + 1);
     let prN = 0, key = '';
     for (let q = 0; q < gN; q++) {
       this.gStop[q] = -1; this.gWalk[q] = 0; this.gLoad[q] = 0; this.gBoard[q] = -1; this.gRide[q] = 0;
-      const b = st.buildings.get(this.gBid[q]);
+      this.gRiders[q] = 0; this.gWant[q] = 0; this.gCatch[q] = 0; this.gLabel[q] = Infinity;
+      const id = this.gBid[q];
+      const b = st.buildings.get(id);
+      this.gSpaces[q] = (b && GARAGE_DEFS[b.def]) || GARAGE_SPACES;
+      this.gPrice[q] = this.garagePrice.get(id) ?? 0;
+      this.gState[q] = GARAGE_NO_ROAD;
       if (!b || this.gEntC[q] === 0) continue;
+      this.gState[q] = GARAGE_NO_STOP;
       const c = centerCell(st, b), x = c % N, z = (c - x) / N;
       const half = Math.max(b.w, b.d) >> 1;
       this.gCell[q] = c;
-      this.gReach[q] = GARAGE_WALK_RADIUS + half + 1;
+      this.gHalf[q] = half;
+      // candidate stops: every attached stop within reach; the nearest (walk + wait) until PH_PARKRIDE picks the stop
+      // whose transit path rides (the P&R search key covers the candidates, so it is known before that step)
       const cnt = this.nearStops(N, x, z, PR_STOP_RADIUS + half);
-      let best = Infinity;
+      let best = Infinity, cand = '';
       for (let k = 0; k < cnt; k++) {
         const s = this.nsIdx[k];
         if (this.stAttC[s] === 0) continue;
         const walk = Math.max(0, this.nsDist[k] - half) * STOP_WALK_TIME_PER_CELL;
+        cand += this.stKey[s] + ' ';
         if (walk + this.stWait[s] < best) { best = walk + this.stWait[s]; this.gStop[q] = s; this.gWalk[q] = walk; }
       }
-      if (this.gStop[q] >= 0) { prN++; key += this.gBid[q] + ':' + this.stKey[this.gStop[q]] + ','; }
+      if (this.gStop[q] >= 0) { prN++; key += id + ':' + cand + ','; this.gState[q] = GARAGE_NO_TRANSIT; }
     }
     this.gPrN = prN;
     this.prKeyNow = key;
@@ -1529,12 +1641,22 @@ export class TrafficSystem implements SimSystem {
     // the per-origin options follow in their own step (PH_TRANSIT2)
   }
 
-  /** each origin's best transit option (board node, stop, pure minutes, destination) from the transit forest */
+  /**
+   * each origin's best transit option (board node, stop, pure minutes, destination) from the transit forest. Only board
+   * nodes whose path rides a vehicle count: a stop whose best path is "walk to the job beside it" is no transit trip
+   * (it would count the walker twice as a rider — boarding and alighting at the same stop — and size buses for them);
+   * those workers are counted per stop (stWalk: the report explains the empty stop)
+   */
   private originTransit(): void {
     const ST = this.ST;
     const distT = ST.dist, srcT = ST.src, doneT = ST.done;
     const N = this.road.N;
     const hasStops = this.stops.n > 0;
+    const total = this.tnet ? this.tnet.total : 0;
+    if (this.rideMemo.length < total) this.rideMemo = new Int8Array(total + (total >> 3) + 16);
+    this.rideMemo.fill(0, 0, total);
+    this.stWalk = growF32(this.stWalk, this.stops.n + 1);
+    this.stWalk.fill(0, 0, this.stops.n + 1);
     for (let o = 0; o < this.oN; o++) {
       this.oTrT[o] = Infinity;
       this.oBoard[o] = -1;
@@ -1548,7 +1670,7 @@ export class TrafficSystem implements SimSystem {
       const c = this.oCell[o], x = c % N, z = (c - x) / N;
       const half = this.oHalf[o];
       const cnt = this.nearStops(N, x, z, STOP_WALK_RADIUS + half);
-      let best = Infinity, board = -1, boardStop = -1;
+      let best = Infinity, board = -1, boardStop = -1, bestWalkOnly = Infinity, walkStop = -1;
       for (let q = 0; q < cnt; q++) {
         const s = this.nsIdx[q];
         const walk = Math.max(0, this.nsDist[q] - half) * STOP_WALK_TIME_PER_CELL + this.stWait[s];
@@ -1556,9 +1678,12 @@ export class TrafficSystem implements SimSystem {
           const v = this.stAtt[a];
           if (doneT[v] !== 1) continue;
           const g = walk + distT[v];
-          if (g < best) { best = g; board = v; boardStop = s; }
+          if (!(g < best)) continue;
+          if (this.rides(v)) { best = g; board = v; boardStop = s; } else if (g < bestWalkOnly) { bestWalkOnly = g; walkStop = s; }
         }
       }
+      // (nearest option walk-only: these workers walk / drive; the stop's report says why it carries nobody)
+      if (walkStop >= 0 && bestWalkOnly < best) this.stWalk[walkStop] += this.oW[o];
       if (board < 0) continue;
       const jT = srcT[board];
       const t = best - this.jNoise[jT];

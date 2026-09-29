@@ -19,8 +19,8 @@ import { defaultCityConfig } from '../../src/sim/config';
 import { computeMonthlyBudget } from '../../src/sim/economy/budget';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import {
-  airportPassengers, facilityDefFacts, facilityOpFactor, facilityReport, facilityUseFactor, policeCapacityOf, staffingOf, updateUseFactors,
-  useFactorOf,
+  airportPassengers, facilityDefFacts, facilityOpFactor, facilityQuality, facilityReport, facilityUseFactor, policeCapacityOf, staffingOf, understaffed,
+  updateUseFactors, useFactorOf,
 } from '../../src/sim/infra/facilities';
 import { TRANSPORT_EFFECT_METRICS, freightSinkTrucks } from '../../src/sim/infra/transportFacilities';
 import { facilityLoad } from '../../src/sim/infra/catchments';
@@ -44,6 +44,10 @@ function road(A: CityActions, x0: number, z0: number, x1: number, z1: number, t 
 
 /** a small sandbox city: homes, shops, industry, a coal plant, pumps, a landfill, a sea along the south edge */
 function buildBase(): CityState {
+  return buildCity(360).st;
+}
+/** the base city's layout grown for `days` days (a young town for days ~5) */
+function buildCity(days: number): { st: CityState; sim: Sim; A: CityActions } {
   const st = createCityState(defaultCityConfig({ size: N, seed: 4242, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false, difficulty: 'sandbox' }));
   const N1 = N + 1;
   st.heights.fill(5);
@@ -71,8 +75,8 @@ function buildBase(): CityState {
   must(A.plop('util_coal_plant', 75, 0, 0), 'coal plant');
   for (const z of [5, 6, 7]) must(A.plop('util_water_pump', 1, z, 0), 'pump');
   A.zone({ x0: 44, z0: 5, x1: 49, z1: 10 }, Zone.Landfill);
-  sim.runDays(360);
-  return st;
+  sim.runDays(days);
+  return { st, sim, A };
 }
 
 let baseCache: SerializedCity | null = null;
@@ -361,6 +365,33 @@ describe('facilities: staffing (WP7-3, critic items 7 / 8)', () => {
   });
 });
 
+describe('facilities: staffing in a new town (review r1)', () => {
+  it('a new sandbox town: a road-connected school is never flagged Understaffed, op >= 0.95 over its first 60 days, and the flag (and the report warning) equal live understaffed() every day', { timeout: 300_000 }, () => {
+    const { st, sim, A } = buildCity(5);
+    expect(A.plop('civ_elementary_school', SITE.x0, SITE.z0, 0).ok).toBe(true);
+    const school = st.buildingAt(SITE.x0, SITE.z0)!;
+    let flagged = 0, mismatch = 0, repMismatch = 0, minOp = 1;
+    for (let d = 0; d < 60; d++) {
+      sim.advanceDay();
+      const live = understaffed(st, school);
+      const flag = (school.flags & BF.Understaffed) !== 0;
+      if (flag) flagged++;
+      if (flag !== live) mismatch++;
+      if (facilityReport(sim, school.id)!.warnings.some((w) => /^Understaffed/.test(w)) !== live) repMismatch++;
+      minOp = Math.min(minOp, facilityOpFactor(st, school));
+    }
+    console.log(`young town: pop ${st.stats.population}, city fill ${justiceData(st).cityFill}, school jobs ${school.jobs} / ${school.capacity}, min op ${minOp}`);
+    expect(flagged).toBe(0);
+    expect(mismatch).toBe(0);
+    expect(repMismatch).toBe(0);
+    expect(minOp).toBeGreaterThanOrEqual(0.95);
+    // the staff line states the staffing effect (no "service at x %"), and no city-workforce line on a staffed school
+    const rep = facilityReport(sim, school.id)!;
+    expect(rep.lines.find((l) => l.key === 'staff')!.value).not.toMatch(/service at/);
+    expect(rep.lines.some((l) => l.key === 'cityStaff')).toBe(false);
+  });
+});
+
 describe('facilities: police capacity (WP7-1)', () => {
   it('police need = (residents + 0.5 jobs) x (0.5 + crime); capacities 6k / 30k / 110k; two stations beat one overloaded station', () => {
     const st = newState(64);
@@ -473,5 +504,115 @@ describe('facilities: patrol model hints and static facts', () => {
     expect(facilityDefFacts('growable-does-not-exist')).toEqual([]);
     expect(getDef('civ_jail')!.coverage).toBeUndefined();
     expect(getDef('civ_courthouse')!.coverage).toBeUndefined();
+  });
+});
+
+describe('facilities: report texts say what the simulation does (review r1)', () => {
+  it('a station placed today is "on duty from tomorrow", not underfunded; a hospital not yet assessed counts beds; a burnt station reports only that', { timeout: 300_000 }, () => {
+    const { st, sim, A } = branch();
+    expect(A.plop('civ_police_station', SITE.x0, SITE.z0, 0).ok).toBe(true);
+    const ps = st.buildingAt(SITE.x0, SITE.z0)!;
+    let fleet = facilityReport(sim, ps.id)!.lines.find((l) => l.key === 'fleet')!;
+    expect(fleet.value).toBe('0 — on duty from tomorrow');
+    expect(fleet.status).toBe('ok');
+    expect(fleet.hint).toBeUndefined();
+    sim.advanceDay();
+    fleet = facilityReport(sim, ps.id)!.lines.find((l) => l.key === 'fleet')!;
+    expect(fleet.value).toMatch(/^2 \(\d out\)$/);
+    // below ~14 % funding no unit leaves: underfunded, with the real threshold
+    st.budget.funding.police = 10;
+    sim.advanceDay();
+    fleet = facilityReport(sim, ps.id)!.lines.find((l) => l.key === 'fleet')!;
+    expect(fleet.value).toBe('0 — underfunded');
+    expect(fleet.status).toBe('bad');
+    expect(fleet.hint).toMatch(/at least 14%/);
+    st.budget.funding.police = 100;
+    // a hospital before its first services pass: beds, not patient-equivalents
+    expect(A.plop('civ_hospital', SITE.x0, SITE.z0 + 4, 0).ok).toBe(true);
+    const hosp = st.buildingAt(SITE.x0, SITE.z0 + 4)!;
+    const beds = facilityReport(sim, hosp.id)!.lines.find((l) => l.key === 'beds')!;
+    expect(beds.value).toBe(`— / ${((getDef('civ_hospital')!.coverage!.capacity ?? 0) / 200).toLocaleString('en-US')} (not yet assessed)`);
+    // burnt: one status line + the upkeep still charged, one warning — no live-looking service lines
+    ps.flags |= BF.Burnt;
+    sim.events.emit('buildingChanged', ps);
+    const rep = facilityReport(sim, ps.id)!;
+    expect(rep.lines.map((l) => l.key)).toEqual(['status', 'upkeep']);
+    expect(rep.lines[1].hint).toMatch(/bulldoze/);
+    expect(rep.warnings).toEqual(['Burnt down — bulldoze it and build it again']);
+  });
+
+  it('live service quality names every factor (ordinances, funding, staffing); an unpowered airport claims no relief, income or benefit', { timeout: 300_000 }, () => {
+    const { st, sim, A } = branch();
+    expect(A.plop('civ_elementary_school', SITE.x0, SITE.z0, 0).ok).toBe(true);
+    const school = st.buildingAt(SITE.x0, SITE.z0)!;
+    sim.runDays(3);
+    st.budget.ordinances.push('pro_reading');
+    st.budget.funding.education = 80;
+    const q = facilityQuality(st, school);
+    const f80 = Math.pow(0.8, 0.7);
+    expect(q.total).toBeCloseTo(f80 * 1.1 * (school.flags & BF.Powered ? 1 : 0.3) * facilityOpFactor(st, school), 6);
+    const line = facilityReport(sim, school.id)!.lines.find((l) => l.key === 'quality')!;
+    expect(line.value).toBe(`${Math.round(Math.min(1.5, q.total) * 100)}%`);
+    expect(line.hint).toMatch(/Pro-Reading Campaign \+10%/);
+    expect(line.hint).toMatch(/80% budget −/);
+    st.budget.ordinances.length = 0;
+    st.budget.funding.education = 100;
+    // an unpowered airport: demand.ts gives it no relief (venue op 0) and the next booking no income -> the report agrees
+    expect(A.plop('tr_airport_small', SITE.x0, SITE.z0 + 5, 0).ok).toBe(true);
+    const air = st.buildingAt(SITE.x0, SITE.z0 + 5)!;
+    updateUseFactors(sim);
+    air.flags &= ~BF.Powered;
+    for (let z = air.z; z < air.z + air.d; z++) for (let x = air.x; x < air.x + air.w; x++) st.powered[st.idx(x, z)] = 0;
+    const rep = facilityReport(sim, air.id)!;
+    const by = (k: string) => rep.lines.find((l) => l.key === k)!;
+    expect(by('relief').value).toMatch(/^none while it has no power/);
+    expect(by('income').value).toBe('none while it has no power');
+    expect(by('use').value).toBe('none while it has no power');
+    expect(rep.warnings.some((w) => /^No power — closed/.test(w))).toBe(true);
+    // over its rating: at full benefit, and the report says so
+    st.stats.population = 2_000_000;
+    updateUseFactors(sim);
+    air.flags |= BF.Powered;
+    const pax = facilityReport(sim, air.id)!.lines.find((l) => l.key === 'passengers')!;
+    expect(pax.hint).toMatch(/Busier than its 3,000 rating — already at full benefit/);
+  });
+
+  it('a clinic that faces only a highway: "Nobody can walk to it"; producer factors read as signed changes; static facts without repeated nouns', () => {
+    const st = newState(64);
+    roadLine(st, 2, 30, 61, 30, Network.Highway);
+    roadLine(st, 2, 44, 61, 44, Network.Road);
+    for (let x = 10; x < 50; x += 2) place(st, 't_r2', x, 45, { pop: 60, capacity: 60, wealth: 1 });
+    const clinic = place(st, 'civ_clinic', 20, 31);
+    clinic.flags |= BF.Powered | BF.Watered;
+    const sim = newSim(st);
+    for (const b of st.buildings.values()) b.flags |= BF.Powered | BF.Watered;
+    sim.getSystem<ServicesSystem>('services')!.compute(sim, false);
+    const rep = facilityReport(sim, clinic.id)!;
+    expect(facilityLoad(sim, clinic.id)!.demand).toBeLessThan(1);
+    expect(rep.warnings.some((w) => /^Nobody can walk to it — the highway it faces blocks pedestrians/.test(w))).toBe(true);
+    expect(rep.lines.some((l) => l.key === 'seniors')).toBe(false); // nobody in reach: no "≈ 0 of 0 residents"
+    // producers: a factor under a 1 % change is left out; the rest are signed changes, not bare percentages
+    const wind = place(st, 'util_wind_turbine', 40, 20);
+    const pump = place(st, 'util_water_pump', 44, 20);
+    const plant = place(st, 'util_water_treatment', 50, 10);
+    const u = sim.getSystem('utilities') as unknown as { producerInfo: (id: number) => unknown };
+    const info: Record<number, unknown> = {
+      [wind.id]: { kind: 'power', nominal: 5, output: 3, factors: [{ label: 'Sheltered site', mul: 0.6 }], load: 0.5 },
+      [pump.id]: { kind: 'water', nominal: 5000, output: 4995, factors: [{ label: 'Polluted intake', mul: 0.999 }], load: 0.2 },
+      [plant.id]: { kind: 'water', nominal: 50000, output: 40500, factors: [{ label: 'Polluted intake', mul: 0.81 }], load: 0.9 },
+    };
+    u.producerInfo = (id: number) => info[id] ?? null;
+    const line = (b: Building, k: string) => facilityReport(sim, b.id)!.lines.find((l) => l.key === k)!;
+    expect(line(wind, 'output').hint).toBe('Sheltered site −40%');
+    expect(line(pump, 'output').hint).toBeUndefined();
+    expect(line(pump, 'intake').hint).toMatch(/tap-water quality/);
+    expect(line(plant, 'output').hint).toBe('Polluted intake −19%');
+    expect(line(plant, 'intake').hint).toMatch(/it still delivers clean water/);
+    // static facts: numbers with their unit once; the wind turbine's height range; stigma in words
+    expect(facilityDefFacts('civ_clinic').find((f) => f.key === 'seats')!.value).not.toMatch(/patients/);
+    expect(facilityDefFacts('park_playground').find((f) => f.key === 'seats')?.value ?? '').not.toMatch(/kids and teens/);
+    expect(facilityDefFacts('util_wind_turbine').find((f) => f.key === 'output')!.value).toBe('3–7 MW by height');
+    expect(facilityDefFacts('civ_jail').find((f) => f.key === 'stigma')!.value).toMatch(/^severe within 10 tiles$/);
+    expect(facilityDefFacts('civ_jail').find((f) => f.key === 'beds')!.value).toBe('6,000');
   });
 });

@@ -199,6 +199,15 @@ export class VehicleRenderer {
   private pp!: Float32Array;
   private rank!: Float64Array;
   private ptype!: Uint8Array;
+  /** per-vehicle cache of the per-frame lookups of its cell (noteCell): culler tile (-1 in a tunnel, -2 once the cell
+   *  lost its road), road speed + congestion factor (2 per vehicle) and the next cell's signal phase offset (-1: none).
+   *  The frame loops then read these in vehicle order instead of five map-sized arrays at random cells. */
+  private vtile!: Int32Array;
+  private vcs!: Float64Array;
+  private vsg!: Float64Array;
+  /** cell caches need a full refresh (network / traffic changed), and the rolling refresh position */
+  private cellsDirty = true;
+  private refreshAt = 0;
   /** car-following buckets: hash table (power of two, ~3x the vehicle cap: stays in cache) of chains through nextB,
    *  keyed by cell * 8 + heading * 2 + lane (entries of other keys sharing a slot are skipped by their usedK key) */
   private head = new Int32Array(0);
@@ -293,6 +302,10 @@ export class VehicleRenderer {
     this.usedK = new Int32Array(cap);
     this.pp = new Float32Array(cap * 8);
     this.ptype = new Uint8Array(cap);
+    this.vtile = new Int32Array(cap);
+    this.vcs = new Float64Array(cap * 2);
+    this.vsg = new Float64Array(cap);
+    this.cellsDirty = true;
     // zoom-thinning rank per slot: golden-ratio sequence, evenly spread for any prefix of slots (v * phi mod 1)
     this.rank = new Float64Array(cap);
     for (let v = 0; v < cap; v++) { const a = v * 0.6180339887; this.rank[v] = a - Math.floor(a); }
@@ -339,6 +352,7 @@ export class VehicleRenderer {
   /** mark spawn distribution + routes stale (network / traffic changed); refreshed on the next update (debounced) */
   invalidate(): void {
     this.spawnDirty = true;
+    this.cellsDirty = true;
   }
   private spawnDirty = false;
   private lastRefresh = -1e9;
@@ -561,7 +575,41 @@ export class VehicleRenderer {
     this.oout[v] = ho === OPP[hi] ? this.oin[v] : edgeOff(t0, t1, this.lane[v]);
     this.len[v] = this.pathLen(hi, ho, this.oin[v], this.oout[v]);
     this.cachePath(v);
+    this.noteCell(v);
     return true;
+  }
+
+  /** cache vehicle v's per-frame cell lookups (see vtile): on every cell entry, after invalidate() and in the rolling
+   *  refresh (refreshCells) */
+  private noteCell(v: number): void {
+    const ci = this.cell[v], nc = this.next[v];
+    const rt = this.net.roadType[ci];
+    const cellTile = this.tilesOfCells();
+    this.vtile[v] = !rt ? -2 : this.state.netFlags[ci] & NF_TUNNEL ? -1 : cellTile[ci];
+    const cg = this.state.congestion[ci];
+    this.vcs[v * 2] = SPEED[rt];
+    this.vcs[v * 2 + 1] = 1 / (1 + 1.6 * Math.max(0, cg - 0.35));
+    // the intersection's phase offset: uint32 hash of its cell, like the lamp shader ((ci * 2654435761u) % 997u) * 0.03
+    const sig = this.signalized;
+    this.vsg[v] = sig && nc >= 0 && sig[nc] ? ((Math.imul(nc, -1640531535) >>> 0) % 997) * 0.03 : -1;
+  }
+
+  /** refresh the cell caches: all of them after invalidate() (network / traffic changed), else a rolling slice so every
+   *  vehicle is refreshed at least every 32 frames (congestion / signal / tunnel changes without an invalidate()) */
+  private refreshCells(): void {
+    const n = this.n;
+    if (n === 0) return;
+    if (this.cellsDirty) {
+      this.cellsDirty = false;
+      for (let v = 0; v < n; v++) this.noteCell(v);
+      return;
+    }
+    let v = this.refreshAt;
+    for (let k = Math.ceil(n / 32); k > 0; k--) {
+      if (v >= n) v = 0;
+      this.noteCell(v++);
+    }
+    this.refreshAt = v;
   }
 
   /** precompute the analytic path of vehicle v through its current cell (called once per cell) */
@@ -700,6 +748,9 @@ export class VehicleRenderer {
       this.next[v] = this.next[last]; this.vis[v] = this.vis[last];
       this.ptype[v] = this.ptype[last];
       this.pp.copyWithin(v * 8, last * 8, last * 8 + 8);
+      this.vtile[v] = this.vtile[last];
+      this.vcs[v * 2] = this.vcs[last * 2]; this.vcs[v * 2 + 1] = this.vcs[last * 2 + 1];
+      this.vsg[v] = this.vsg[last];
     }
     this.vroute[last] = null;
   }
@@ -835,6 +886,7 @@ export class VehicleRenderer {
     const camH = camera.position.y;
     this.keep = camH <= 1500 ? ease(camH, 1000, 200, 1, 0.5) : camH <= 2600 ? ease(camH, 1500, 200, 0.5, 1 / 3) : ease(camH, 2600, 300, 1 / 3, 0);
     this.upkeep(dt);
+    this.refreshCells();
     this.follow(dt);
     const night = sharedUniforms.uNight.value > 0.2;
     const shown = this.poseCars(dt, camera, heightPx, night) + this.poseTrains(dt, camera, heightPx);
@@ -917,13 +969,10 @@ export class VehicleRenderer {
       head[hk] = v;
       used[v] = key;
     }
-    const roadType = this.net.roadType, cong = this.state.congestion;
-    const sig = this.signalized;
     // signal clock: the lamp shader's uSignalTime (materials.ts Emissive pattern 13)
     const tmod = this.time % 30;
-    const vfac = this.vfac, spd = this.spd;
+    const vfac = this.vfac, spd = this.spd, vcs = this.vcs, vsg = this.vsg;
     for (let v = 0; v < n; v++) {
-      const c = cell[v];
       const tv = tt[v];
       const lv = vlen[v] * 0.5;
       let gap = 1e9;
@@ -946,11 +995,10 @@ export class VehicleRenderer {
           if (g < gap) gap = g;
         }
       }
-      // signals: stop at the end of this cell if the next cell is a red intersection
-      if (sig && nc >= 0 && sig[nc]) {
-        // the intersection's phase offset: uint32 hash of its cell, like the shader ((ci * 2654435761u) % 997u) * 0.03
-        // (integer ops: the double product, its ToUint32 and a float modulo cost a library call per vehicle)
-        let ph = tmod + ((Math.imul(nc, -1640531535) >>> 0) % 997) * 0.03;
+      // signals: stop at the end of this cell if the next cell is a red intersection (its phase offset: noteCell)
+      const sg = vsg[v];
+      if (sg >= 0) {
+        let ph = tmod + sg;
         if (ph >= 30) ph -= 30;
         const axis = hout[v] & 1; // 0: x axis, 1: z axis
         const green = axis === 0 ? ph < 13 : ph >= 15 && ph < 28;
@@ -959,10 +1007,8 @@ export class VehicleRenderer {
           if (g > -1.0 && g < gap) gap = Math.max(0, g);
         }
       }
-      const rt = roadType[c];
-      const cg = cong[c];
-      const cf = 1 / (1 + 1.6 * Math.max(0, cg - 0.35));
-      const desired = SPEED[rt] * vfac[v] * cf;
+      // road speed x vehicle factor x congestion factor of its cell (noteCell)
+      const desired = vcs[v * 2] * vfac[v] * vcs[v * 2 + 1];
       const tgt = gap < 60 ? Math.min(desired, Math.max(0, gap - 1.2) * 1.15) : desired;
       let sp = spd[v];
       if (tgt > sp) sp = Math.min(tgt, sp + 2.8 * dt);
@@ -995,8 +1041,6 @@ export class VehicleRenderer {
    * 2nd one >= hidePx).
    */
   private poseCars(dt: number, camera: THREE.Camera, heightPx: number, night: boolean): number {
-    const net = this.net;
-    const st = this.state;
     const data = this.batch.matrixData();
     const tileVis = this.culler.vis;
     const hm = this.headlights.instanceMatrix.array as Float32Array;
@@ -1011,8 +1055,8 @@ export class VehicleRenderer {
     const keep = this.keep;
     // (classic rule keeps every vehicle and no distance cap: no distance needed)
     const all = keep >= 1 && D2 === Infinity;
-    const flags = st.netFlags, roadType = net.roadType, cellTile = this.tilesOfCells();
     const life = this.life, tt = this.t, spd = this.spd, len = this.len, vlen = this.vlen, inst = this.inst, vis = this.vis, rank = this.rank;
+    const vtile = this.vtile;
     let shown = 0;
     for (let v = 0; v < this.n; v++) {
       life[v] -= dt;
@@ -1023,15 +1067,17 @@ export class VehicleRenderer {
         t -= len[v];
         if (life[v] <= 0 || !this.enterNext(v)) { ok = false; break; }
       }
-      if (ok && !roadType[this.cell[v]]) ok = false;
+      // (-2: the cell lost its road, see noteCell)
+      if (ok && vtile[v] === -2) ok = false;
       if (!ok) {
         if (!this.spawn(v, false, false)) { this.removeSlot(v); v--; continue; }
         t = tt[v];
       }
       tt[v] = t;
-      const ci = this.cell[v];
+      // the culler tile of its cell (-1 in a tunnel)
+      const tl = vtile[v];
       let show = 0;
-      if (tileVis[cellTile[ci]] === 1 && !(flags[ci] & NF_TUNNEL)) {
+      if (tl >= 0 && tileVis[tl] === 1) {
         _p[4] = t;
         this.evalCached(v);
         if (all) show = 1;
