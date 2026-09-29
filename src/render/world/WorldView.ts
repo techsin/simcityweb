@@ -185,6 +185,11 @@ export class WorldView implements WorldViewApi {
 
     this.camera = new THREE.PerspectiveCamera(38, 1, 1, 50000);
     this.scene.name = 'world';
+    // the scene's own transform is the identity and never changes. With matrixAutoUpdate on, its per-frame
+    // updateMatrix() marks it dirty and three then recomputes the world matrix of every object below it on each render
+    // (~1400, nearly all static tree / terrain / road chunks with matrixAutoUpdate off: ~0.2 ms of main-thread CPU per
+    // frame); off, only objects that update their own matrix (and their subtrees) are recomputed
+    this.scene.matrixAutoUpdate = false;
     this.scene.matrixWorldAutoUpdate = true;
 
     const W = state.size * CELL_SIZE;
