@@ -280,13 +280,14 @@ describe('def index: devTypes the int dev code cannot hold', () => {
       const inp: PopAggInput = { cw: w2.rt.cw, sample: day % 4 === 0, demo: day % 32 === 0, mWf: w2.cache.wf, tAcc: true,
         accArr: (w2.sim.getSystem('traffic') as TrafficLike).accessById, eduFallback: 0.5 };
       aggregateObjects(w2.rt.growables as unknown as PopAggBuilding[], defs, PROBE_CONSTANTS, inp, g, t, coh, res);
-      const w = w2;
       for (const k of ['countByDev', 'jobs', 'jobCapAll', 'jobCapBuilt'] as const) {
-        const a = w.rt.totals[k], b = t[k];
+        const a = w2.rt.totals[k] as unknown as Record<string, number> & number[];
+        const b = t[k] as unknown as Record<string, number> & number[];
         expect(Object.keys(b)).toEqual(Object.keys(a));
         expect(Object.keys(a)).toContain('7.5');
         expect(a.length).toBe(13);
-        for (const key of Object.keys(a)) expect(Object.is((b as unknown as Record<string, number>)[key], (a as unknown as Record<string, number>)[key]) || (Number.isNaN((a as unknown as Record<string, number>)[key]) && Number.isNaN((b as unknown as Record<string, number>)[key]))).toBe(true);
+        // same value under every key (NaN == NaN)
+        for (const key of Object.keys(a)) expect(Object.is(b[key], a[key]) || (Number.isNaN(a[key]) && Number.isNaN(b[key]))).toBe(true);
       }
     }
   });
