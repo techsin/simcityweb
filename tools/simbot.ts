@@ -547,6 +547,7 @@ export class SimBot {
         return r;
       }
     }
+    this.say(`cleared ${best.olds.length} small lots at ${best.x},${best.z} but could not build a ${def.name} there`);
     return null;
   }
 
@@ -689,7 +690,8 @@ export class SimBot {
       if (this.placeUtility(def, cx, cz)) continue;
       // a full map: clear small industrial / utility lots for the plant (at most every 120 days while it finds no site)
       if (def !== 'util_wind_turbine' && (this.svcRetry.get('power:clear') ?? -1) <= this.st.day) {
-        const ok = !!this.placeByClearing(def, cx, cz, Infinity, ['I', 'U']);
+        // (a built-up map: stage-3 lots too, on either side of the trunk — one grid spans it)
+        const ok = !!this.placeByClearing(def, cx, cz, Infinity, ['I', 'U']) || !!this.placeByClearing(def, cx, cz, Infinity, ['I', 'U'], undefined, 3, false, true);
         this.svcRetry.set('power:clear', this.st.day + (ok ? 30 : 120));
         if (ok) { this.say(`power: cleared small lots for a ${getDef(def)?.name}`); continue; }
       }
@@ -772,7 +774,10 @@ export class SimBot {
       // a full map: clear a few small lots for the plant (industrial / utility blocks first, then shops / homes), like
       // a player bulldozing a corner of town for water (at most every 120 days while it finds no site)
       if (big && (this.svcRetry.get('water:clear') ?? -1) <= st.day) {
-        const ok = !!this.placeByClearing(def, cx, cz, Infinity, ['I', 'U']) || !!this.placeByClearing(def, cx, cz, Infinity, ['C', 'R']);
+        // (a built-up map, where schools, clinics and depots have taken the small lots: stage-3 lots too, on either side
+        // of the trunk — pipes run under every road, the highway included; 256×60 s7 had no site 2040–57 without it)
+        const ok = !!this.placeByClearing(def, cx, cz, Infinity, ['I', 'U']) || !!this.placeByClearing(def, cx, cz, Infinity, ['C', 'R'])
+          || !!this.placeByClearing(def, cx, cz, Infinity, ['I', 'U', 'C', 'R'], undefined, 3, false, true);
         this.svcRetry.set('water:clear', st.day + (ok ? 30 : 120));
         if (ok) { this.say(`water: cleared small lots for a ${getDef(def)?.name}`); continue; }
       }

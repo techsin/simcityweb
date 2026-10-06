@@ -503,7 +503,7 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
         // its stop's riders ride (park & ride), but the businesses around it are short of parking: they come first
         expect(info.state).toBe('parkRide');
         expect(info.reserve!).toBeGreaterThan(0.9 * GARAGE_SPACES);
-        expect(rep.lines.find((l) => l.key === 'kept')!.value).toMatch(/spaces — the businesses around it are short of parking/);
+        expect(rep.lines.find((l) => l.key === 'kept')!.value).toMatch(/spaces — it is short of parking/);
       } else {
         expect(info.state).toBe('noStop');
         expect(rep.lines.find((l) => l.key === 'parkRide')!.value).toMatch(/none — no transit stop within 5 tiles/);

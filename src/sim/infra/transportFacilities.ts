@@ -305,7 +305,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
             hint: ridersG < 1 ? idleGarageHint(sim, tr, b, g.catchment ?? 0, stopName) : undefined });
         }
         if (reserve >= 1) {
-          lines.push({ key: 'kept', label: 'Kept for the block', value: `${plural(reserve, 'space', 'spaces')} — the businesses around it are short of parking`,
+          lines.push({ key: 'kept', label: 'Kept for the block', value: `${plural(reserve, 'space', 'spaces')} — it is short of parking`,
             hint: 'Local parkers come first; park & ride gets the rest' });
         }
       }
