@@ -1071,7 +1071,18 @@ export class ServicesSystem implements SimSystem {
       edu[i] = e < 1 ? e : 1;
       park[i] = 1 - (1 - P[i]) * (1 - G[i]);
     }
-    // stats.needs
+    // stats.needs — per building: the footprint pass made each lot's coverage uniform, so the back rows of deep lots
+    // (no road within one cell: never reached per cell) count as served / reached with their front door (WP6a probe)
+    for (let k = 0; k < NT; k++) {
+      if (!this.hadFac[k]) continue;
+      const needL = this.provNeed[k] ?? this.need[NEED_RASTER[k]];
+      if (!needL || needL.length !== C) continue;
+      const layer = tierLayer(st, NEED_ORDER[k]);
+      let served = 0, unreached = 0;
+      for (let i = 0; i < C; i++) { const n = needL[i]; if (n <= 0) continue; const v = layer[i]; served += n * v; if (v <= 0) unreached += n; }
+      this.tierStats[k].served = served;
+      this.tierStats[k].unreached = unreached;
+    }
     const needs = st.stats.needs as Record<NeedTier, NeedStat> | undefined;
     if (needs) {
       for (let k = 0; k < NT; k++) {
