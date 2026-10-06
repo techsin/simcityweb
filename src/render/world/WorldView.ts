@@ -98,6 +98,13 @@ export class WorldView implements WorldViewApi {
   shadowCache = true;
   shadowInterval = 2;
   shadowMaxAge = 20;
+  /**
+   * Single shadow map (low quality): while the view moves, a re-render asked for only by that motion (or by throttled
+   * caster changes) waits until this many frames passed since the last one. The map keeps the light matrix it was
+   * rendered with, so its shadows stay put in the world; only casters entering the view's edge, and animated ones,
+   * show up a frame late. 1 = every frame. Set from the quality preset (2 for the single map).
+   */
+  shadowMoveInterval = 1;
   /** moving vehicles re-render the map every frame (no throttle) while the camera is closer than this (m): beyond it
    *  a one-frame shadow lag is under a pixel */
   dynamicShadowDistance = 600;
@@ -346,6 +353,7 @@ export class WorldView implements WorldViewApi {
   private applyShadowQuality() {
     const q = this.q;
     const cascaded = q.shadowCascades === 2;
+    this.shadowMoveInterval = cascaded ? 1 : 2;
     const modeChanged = this.sun.cascaded !== cascaded;
     this.sun.setCascaded(cascaded);
     const sh = this.sun.shadow;
@@ -553,18 +561,20 @@ export class WorldView implements WorldViewApi {
     sun.updateMatrixWorld();
     sun.target.updateMatrixWorld();
     const sh = sun.shadow;
+    // (the single map's lookup matrix as rendered: restored when its re-render waits a frame)
+    if (!sun.cascaded) _shM.copy(sh.matrix);
     (sh as unknown as { updateMatrices(l: THREE.Light, c: THREE.Camera): void }).updateMatrices(sun, this.camera);
     const cams: THREE.Camera[] | null = sun.cascaded ? ((sun.cascadeShadow as any)._cameras as THREE.Camera[]) : null;
     const nc = cams ? cams.length : 1;
     const key = this.shKey;
     let o = 0, moved = false;
-    for (let c = 0; c < nc; c++) {
+    for (let c = 0; c < nc && !moved; c++) {
       const cam = cams ? cams[c] : sh.camera;
-      for (let k = 0; k < 2; k++) {
+      for (let k = 0; k < 2 && !moved; k++) {
         const m = k === 0 ? cam.matrixWorld.elements : cam.projectionMatrix.elements;
         for (let i = 0; i < 16; i++, o++) {
           // tolerance: the damped camera jitters by float ulps even when still
-          if (Math.abs(key[o] - m[i]) > 1e-6 * Math.max(1, Math.abs(m[i]))) { key[o] = m[i]; moved = true; }
+          if (Math.abs(key[o] - m[i]) > 1e-6 * Math.max(1, Math.abs(m[i]))) { moved = true; break; }
         }
       }
     }
@@ -574,12 +584,29 @@ export class WorldView implements WorldViewApi {
     let rv = 0;
     if (recvs) for (let i = 0; i < recvs.length; i++) rv += recvs[i].version;
     else rv = sun.dirReceiver.version;
-    if (rv !== this.shRecv) { this.shRecv = rv; moved = true; }
+    if (rv !== this.shRecv) moved = true;
     let need = moved || this.shForce > 0 || !sh.map || this.frameNo - this.shFrame >= this.shadowMaxAge;
     // moving vehicles near the camera: every frame (their shadows would trail them by a frame)
     const dyn = shadowCasters.dynamic !== this.shDynamic && this.cameraController.distance < this.dynamicShadowDistance;
     if (!need && (dyn || (shadowCasters.version !== this.shVersion && this.frameNo - this.shFrame >= this.shadowInterval))) need = true;
+    // single map: a re-render asked for by the view's motion / throttled caster changes may wait (shadowMoveInterval);
+    // the map keeps its own lookup matrix meanwhile. The comparison state above stays at the rendered map, so the frame
+    // after the view comes to rest renders it for the final view.
+    if (need && !sun.cascaded && this.shForce === 0 && sh.map && !dyn && this.frameNo - this.shFrame < this.shadowMoveInterval) {
+      sh.matrix.copy(_shM);
+      need = false;
+    }
     if (need) {
+      // the state the map is rendered for
+      o = 0;
+      for (let c = 0; c < nc; c++) {
+        const cam = cams ? cams[c] : sh.camera;
+        for (let k = 0; k < 2; k++) {
+          const m = k === 0 ? cam.matrixWorld.elements : cam.projectionMatrix.elements;
+          for (let i = 0; i < 16; i++, o++) key[o] = m[i];
+        }
+      }
+      this.shRecv = rv;
       this.shadowStats.reason = moved ? 'moved' : this.shForce > 0 ? 'forced' : !sh.map ? 'nomap' : dyn ? 'vehicles' : shadowCasters.version !== this.shVersion ? 'casters' : 'age';
       this.shVersion = shadowCasters.version;
       this.shDynamic = shadowCasters.dynamic;
@@ -821,3 +848,5 @@ export class WorldView implements WorldViewApi {
 const _bbox = new THREE.Box3();
 const _bboxMax = new THREE.Vector3();
 const _rayInv = new THREE.Ray();
+/** the single shadow map's lookup matrix before this frame's fit (updateShadowPolicy) */
+const _shM = new THREE.Matrix4();
