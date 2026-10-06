@@ -88,6 +88,47 @@ describe('bot: facilities', () => {
     expect(within).toBe(false);
   });
 
+  it('a built-up city: with no small lot left in the industrial / utility blocks, the prison replaces stage-3 lots', { timeout: 600000 }, async () => {
+    const b = await bot(96);
+    b.setup();
+    const st = b.st, N = st.size;
+    st.funds = 5e6;
+    st.unlocked.add('jail');
+    st.stats.justice.overflow = 0.5;
+    // every industrial / utility block developed and built up with stage-3 industry: no free lot, nothing small to clear
+    const ind = CATALOG.filter((d) => d.category === 'growable' && d.stage === 3 && d.devType !== undefined && d.devType >= DevType.ID && d.devType <= DevType.IM)
+      .sort((p, q) => p.footprint[0] * p.footprint[1] - q.footprint[0] * q.footprint[1])[0];
+    expect(ind).toBeTruthy();
+    const [w, d] = ind.footprint;
+    let placed = 0;
+    for (const o of b.blocks) {
+      if (o.use !== 'I' && o.use !== 'U') continue;
+      b.buildBlockRoads(o);
+      o.developed = true;
+      for (let z = o.z0; z + d <= o.z1; z += d) for (let x = o.x0; x + w <= o.x1; x += w) {
+        let free = true;
+        for (let zz = z; zz < z + d && free; zz++) for (let xx = x; xx < x + w; xx++) if (st.building[zz * N + xx] >= 0 || st.network[zz * N + xx] || st.water[zz * N + xx]) { free = false; break; }
+        if (!free) continue;
+        placeBuilding(b.sim, {
+          id: st.nextBuildingId++, def: ind.id, x, z, w, d, rot: 0, variant: 0, pop: 0, jobs: 10, capacity: ind.capacity ?? 10,
+          wealth: 2, built: 1, age: 400, flags: BF.Powered | BF.Watered, baseY: 1, health: 1, unhappy: 0,
+        });
+        placed++;
+      }
+    }
+    expect(placed).toBeGreaterThan(10);
+    const factories = [...st.buildings.values()].filter((o) => o.def === ind.id).map((o) => o.id);
+    b.ensureJustice();
+    const jails = [...st.buildings.values()].filter((o) => o.def === 'civ_jail');
+    expect(jails.length).toBe(1);
+    const j = jails[0];
+    expect(lotTouchesRoad(st, j.x, j.z, j.w, j.d)).toBe(true);
+    const blk = b.blocks.find((o) => j.x >= o.x0 && j.x < o.x1 && j.z >= o.z0 && j.z < o.z1);
+    expect(['I', 'U']).toContain(blk?.use);
+    // stage-3 factories made way for it
+    expect(factories.filter((id) => !st.buildings.has(id)).length).toBeGreaterThan(0);
+  });
+
   it('replaces pumps by a treatment plant in place when no land is left', { timeout: 600000 }, async () => {
     const b = await bot(96);
     b.setup();
