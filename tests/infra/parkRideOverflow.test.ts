@@ -30,8 +30,8 @@ function line(sim: Simulation, id: number, key: string): { value: string; hint: 
   const l = transportFacilityReport(sim, sim.state.buildings.get(id)!)!.lines.find((x) => x.key === key);
   return { value: l?.value ?? '', hint: l?.hint ?? '' };
 }
-/** cars per garage and city park & ride riders over cycles 10..n */
-function run(st: CityState, ids: number[], n = 30): { sim: Simulation; tr: TrafficSystem; cars: number[][]; city: number[] } {
+/** cars per garage and city park & ride riders over cycles 10..n (`each`: a check after each of those cycles) */
+function run(st: CityState, ids: number[], n = 30, each?: (sim: Simulation, k: number) => void): { sim: Simulation; tr: TrafficSystem; cars: number[][]; city: number[] } {
   const sim = newSim(st);
   const cars: number[][] = ids.map(() => []), city: number[] = [];
   let tr = getTraffic(sim)!;
@@ -40,6 +40,7 @@ function run(st: CityState, ids: number[], n = 30): { sim: Simulation; tr: Traff
     if (k < 9) continue;
     ids.forEach((id, q) => cars[q].push(tr.garageInfo(id)!.parkRide));
     city.push(st.stats.transitFleet.parkRide);
+    each?.(sim, k + 1);
   }
   return { sim, tr, cars, city };
 }
@@ -80,13 +81,22 @@ describe('WP7b r4 park & ride overflow (no option cap)', () => {
     expect(Math.min(...city)).toBeGreaterThanOrEqual(0.95 * 6 * GARAGE_SPACES * CAR_OCCUPANCY);
   });
 
-  it('1x: a full garage names where its spill parks; a little-used one says why; the unneeded fifth keeps its reason through the next update', { timeout: 600000 }, () => {
+  it('1.5x: a full garage whose turned-away riders park at a garage up the line names that garage, every cycle', { timeout: 600000 }, () => {
+    // (review r3: the first read "Full — build another garage by a stop" while the next ones up the line had room)
+    const { st, ids } = lineTown(LINE5, 1.5);
+    const hints: string[] = [];
+    const { cars } = run(st, ids, 20, (sim) => hints.push(line(sim, ids[0], 'parkRide').hint));
+    console.log(`five stations 1.5x (cycles 10-20): cars ${cars.map(range).join(' / ')}; g0: ${[...new Set(hints)].join(' | ')}`);
+    for (const h of hints) expect(h).toMatch(/^Full — .*; the overflow parks at the Parking Garage \d+ tiles E$/);
+  });
+
+  it('1x: a little-used garage says why; the unneeded fifth keeps its reason through the next update', { timeout: 600000 }, () => {
     const { st, ids } = lineTown(LINE5, 1);
-    const { sim, tr, cars } = run(st, ids, 14);
-    console.log(`five stations 1x (cycles 10-14): cars ${cars.map(range).join(' / ')}`);
-    // the fastest is full, the next ones up the line take its spill (review r3: it read "Full — build another garage by
-    // a stop" while they had room)
-    expect(line(sim, ids[0], 'parkRide').hint).toMatch(/^Full — .*; the overflow parks at the Parking Garage 12 tiles E$/);
+    const g0: string[] = [];
+    const { sim, tr, cars } = run(st, ids, 14, (s) => g0.push(line(s, ids[0], 'parkRide').hint));
+    console.log(`five stations 1x (cycles 10-14): cars ${cars.map(range).join(' / ')}; g0: ${[...new Set(g0)].join(' | ')}`);
+    // (the fastest hovers at its room: when it reads full, its spill parks up the line — never "build another garage")
+    for (const h of g0) if (h) expect(h).toMatch(/^Full — .*; the overflow parks at the Parking Garage \d+ tiles E$/);
     // the fourth carries under a fifth of its room: why (review r3: 17-160 of 900 read "ok" with no reason)
     expect(Math.max(...cars[3])).toBeLessThan(0.2 * GARAGE_SPACES);
     expect(Math.min(...cars[3])).toBeGreaterThan(10);
@@ -120,9 +130,7 @@ describe('WP7b r4 park & ride overflow (no option cap)', () => {
     expect(line(sim, ids[0], 'switched').hint).toBe('No commuters within a 12-minute drive — the homes there are empty');
     // (a garage with no homes at all in reach still says "no homes")
     const far = place(st, 'tr_parking_garage', 179, 68);
-    place(st, 'tr_bus_stop', 178, 69);
-    place(st, 'tr_bus_stop', 164, 69);
-    sim.events.emit('buildingAdded', far);
+    for (const b of [far, place(st, 'tr_bus_stop', 178, 69), place(st, 'tr_bus_stop', 164, 69)]) sim.events.emit('buildingAdded', b);
     cycle(sim); cycle(sim);
     expect(line(sim, far.id, 'switched').hint).toMatch(/^No homes within a 12-minute drive/);
   });
