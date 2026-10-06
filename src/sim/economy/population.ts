@@ -347,16 +347,13 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
             if (a >= 0) { accE += wk * (a < 1 ? a : 1); accW += wk; } else unW += wk;
           }
         }
-        if (p > 0) {
-          const k0 = b.kids ?? COHORT_BASE[0];
+        if (p > 0 && demo) {
+          const k0 = b.kids ?? COHORT_BASE[0], k1 = b.teens ?? COHORT_BASE[1], k2 = b.yad ?? COHORT_BASE[2], k4 = b.srs ?? COHORT_BASE[4];
+          const k3 = Math.max(0, 1 - k0 - k1 - k2 - k4);
+          const o = dev * 5;
+          coh[o] += p * k0; coh[o + 1] += p * k1; coh[o + 2] += p * k2; coh[o + 3] += p * k3; coh[o + 4] += p * k4;
           const e = b.edu;
-          if (demo) {
-            const k1 = b.teens ?? COHORT_BASE[1], k2 = b.yad ?? COHORT_BASE[2], k4 = b.srs ?? COHORT_BASE[4];
-            const k3 = Math.max(0, 1 - k0 - k1 - k2 - k4);
-            const o = dev * 5;
-            coh[o] += p * k0; coh[o + 1] += p * k1; coh[o + 2] += p * k2; coh[o + 3] += p * k3; coh[o + 4] += p * k4;
-            if (e !== undefined) { eduSum += p * e; eduPop += p; }
-          }
+          if (e !== undefined) { eduSum += p * e; eduPop += p; }
           popWRaw[dev][blk] += p;
           skillRaw[blk] += p * (e ?? eduFallback);
           kidsRaw[blk] += p * k0;
@@ -395,8 +392,13 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
         rt.coarseWealth[bz * cw + bx] = sc > 0 ? sw / sc : 0;
       }
     }
-    // demographics coarse grids (WP6 desirability terms): residents by wealth, education, kids (daily, see above)
-    if (rt.coarsePopW[0].length === cc) {
+    // demographics coarse grids (WP6 desirability terms): residents by wealth, education, kids (a loaded city: the saved
+    // sample)
+    if (saved) {
+      for (let w = 0; w < 3; w++) rt.coarsePopW[w].set(saved.popW[w]);
+      rt.coarseKids.set(saved.kids);
+      rt.coarseSkill.set(saved.skill);
+    } else if (demo && rt.coarsePopW[0].length === cc) {
       for (let w = 0; w < 3; w++) blurCoarse(popWRaw[w], rt.coarsePopW[w], cw);
       blurCoarse(kidsRaw, rt.coarseKids, cw);
       blurCoarse(skillRaw, skillBlur, cw);
