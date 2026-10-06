@@ -37,7 +37,8 @@
  *            of EMERG_FILL_CHUNK), every EMERG_RESP_PERIOD days, right after station / fleet changes, within
  *            EMERG_RESP_NET_DAYS of a road-graph change in live play, and synchronously in init() (derived, not saved).
  * EVENTS     sim.events 'emergency' (new / queued / dispatched / arrived / escalated / resolved / failed / uncovered),
- *            news via sim.notify (advisors 'safety' / 'health'), BF.Incident on the site building.
+ *            news via sim.notify (advisors 'safety' / 'health'; its per-key throttle is saved), BF.Incident on every
+ *            building an incident lists, while it lists it (the site; the burning buildings of a fire cluster).
  */
 import { RNG } from '../../core/rng';
 import { Network } from '../../core/types';
@@ -623,6 +624,9 @@ interface Persist {
    *  are derived (recomputed in init), but a loaded game keeps the original's refresh days, so the shared scheduler
    *  runs the same layer steps and the other tasks' timing (and the city) continue the same way */
   resp?: [number, number];
+  /** news throttle: the day each news key ('uncovered:fire', 'failed:medical', ...) was last posted, so a loaded game
+   *  words its news feed like the original (absent in older saves: nothing throttled yet) */
+  news?: Record<string, number>;
 }
 
 /** generated kinds (daily Poisson draw over monthly candidate weights) */
@@ -718,7 +722,6 @@ export class EmergencySystem implements SimSystem {
   private p: Persist = EmergencySystem.emptyPersist();
   private unsub: (() => void)[] = [];
   private inDaily = false;
-  private lastNews = new Map<string, number>();
   // generation
   private gw: Record<GenKind, BlockWeights> = { medical: new BlockWeights(), crime: new BlockWeights(), industrial: new BlockWeights(), spill: new BlockWeights() };
   private shares = new Float32Array(5);
@@ -791,7 +794,6 @@ export class EmergencySystem implements SimSystem {
     this.batch = false;
     // a loaded game sits between two days: today's incidents were already processed
     this.processedDay = st.day;
-    this.lastNews.clear();
     this.optCache.clear();
     this.ensureGraph(st);
     this.refreshStations(sim);
@@ -857,6 +859,11 @@ export class EmergencySystem implements SimSystem {
       if (raw.gen && typeof raw.gen === 'object') p.gen = raw.gen;
       if (typeof raw.stVer === 'number') p.stVer = raw.stVer;
       if (Array.isArray(raw.resp) && raw.resp.length === 2) p.resp = [Number(raw.resp[0]), Number(raw.resp[1]) | 0];
+      if (raw.news && typeof raw.news === 'object' && !Array.isArray(raw.news)) {
+        const news: Record<string, number> = {};
+        for (const [k, d] of Object.entries(raw.news)) if (typeof d === 'number' && Number.isFinite(d)) news[k] = d;
+        p.news = news;
+      }
       const gb = raw.genBuild;
       // a pass saved with another slice count is dropped (the saved weights of the last complete pass stay in use)
       if (gb && typeof gb === 'object' && gb.n === GEN_SLICES && Array.isArray(gb.acc) && gb.acc.length === 4 && gb.acc.every((a) => Array.isArray(a))) p.genBuild = gb;
@@ -885,6 +892,13 @@ export class EmergencySystem implements SimSystem {
       }
       fl.length = n;
       this.byId.set(inc.id, inc);
+    }
+    // BF.Incident marks exactly the listed buildings (sites and burning cluster members). A save from before the
+    // stale-flag fix carries it on buildings that left a fire cluster part-way (put out, burnt down): repair it here,
+    // without events (the game is being (re)loaded). A save written since then is unchanged by this.
+    for (const inc of this.list) if (inc.buildingId >= 0) listed.add(inc.buildingId);
+    for (const b of st.buildings.values()) {
+      if (((b.flags & BF.Incident) !== 0) !== listed.has(b.id)) b.flags ^= BF.Incident;
     }
     this.vById.clear();
     for (const v of this.vlist) this.vById.set(v.id, v);
@@ -1417,6 +1431,25 @@ export class EmergencySystem implements SimSystem {
     if (has === on) return;
     b.flags = on ? b.flags | BF.Incident : b.flags & ~BF.Incident;
     sim.events.emit('buildingChanged', b);
+  }
+
+  /**
+   * BF.Incident marks the buildings an incident lists: its site, and the burning buildings of a fire cluster. A
+   * building that leaves a cluster part-way (put out, burnt down, its fire ended outside the step) loses the flag right
+   * then unless it is still listed — finalize() only sees the site and the ids listed at the end, so such a building
+   * used to keep "Emergency here" for good. These two run after / before the building leaves `inc.fires`.
+   */
+  private unlisted(sim: Simulation, id: number): void {
+    const b = sim.state.buildings.get(id);
+    if (b) this.setIncidentFlag(sim, b, false);
+  }
+
+  /** `b` is put out / burnt down in its cluster's step: drop BF.Incident unless it stays listed (the site of `inc`, or
+   *  another incident's). No event of its own: the putOut / burnDown right after emits buildingChanged with it. */
+  private leaveCluster(inc: Incident, b: Building): void {
+    if (!(b.flags & BF.Incident) || inc.buildingId === b.id) return;
+    for (const o of this.list) if (o !== inc && (o.buildingId === b.id || o.fires.includes(b.id))) return;
+    b.flags &= ~BF.Incident;
   }
 
   private assigned(inc: Incident, r: Responder): number {
@@ -2290,7 +2323,12 @@ export class EmergencySystem implements SimSystem {
         cl.push(b);
       }
     }
-    if (cl.length !== inc.fires.length) inc.fires = cl.map((b) => b.id);
+    if (cl.length !== inc.fires.length) {
+      const was = inc.fires;
+      inc.fires = cl.map((b) => b.id);
+      // a fire that ended outside this step (UI, a disaster) leaves the cluster here: so does its BF.Incident
+      for (const id of was) if (!seen.has(id)) this.unlisted(sim, id);
+    }
     if (cl.length === 0) {
       inc.state = inc.lost > 0 && inc.lost >= inc.saved ? 'failed' : 'resolved';
       return;
@@ -2316,11 +2354,13 @@ export class EmergencySystem implements SimSystem {
         f.heat = Math.round(((f.heat ?? 1) - share / (FIRE_WORK_PER_AREA * Math.sqrt(Math.max(1, b.w * b.d)) * (watered ? 1 : FIRE_DRY_WORK))) * 1e6) / 1e6;
       }
       if ((f.heat ?? 1) <= 0) {
+        this.leaveCluster(inc, b);
         fire.putOut(sim, b);
         inc.saved++;
         continue;
       }
       if (f.days >= FIRE_BURN_DAYS) {
+        this.leaveCluster(inc, b);
         fire.burnDown(sim, b);
         inc.lost++;
         const m = st.stats.emergency.month;
@@ -2357,7 +2397,9 @@ export class EmergencySystem implements SimSystem {
         if (rng.next() < p) fire.ignite(sim, nbld, true);
       }
     }
-    inc.fires = inc.fires.filter((id) => fire.fires.has(id));
+    const fl = inc.fires;
+    inc.fires = fl.filter((id) => fire.fires.has(id));
+    if (inc.fires.length !== fl.length) for (const id of fl) if (!fire.fires.has(id)) this.unlisted(sim, id);
     const alive = inc.fires.length;
     if (alive === 0) {
       inc.state = inc.lost > 0 && inc.lost >= inc.saved ? 'failed' : 'resolved';
@@ -2582,8 +2624,9 @@ export class EmergencySystem implements SimSystem {
 
   private news(sim: Simulation, key: string, minDays: number, text: string, kind: 'good' | 'bad' | 'warning' | 'disaster' | 'info', x: number, z: number, adv: string): void {
     const day = sim.state.day;
-    if (day - (this.lastNews.get(key) ?? -1e9) < minDays) return;
-    this.lastNews.set(key, day);
+    const last = (this.p.news ??= {}); // (saved: systemData.emergency is this.p)
+    if (day - (last[key] ?? -1e9) < minDays) return;
+    last[key] = day;
     sim.notify(text, kind, x, z, adv);
   }
 

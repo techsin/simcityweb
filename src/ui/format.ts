@@ -10,7 +10,8 @@ export function num(n: number): string {
   return nf.format(Math.round(n));
 }
 
-/** compact number: 1234 -> 1.2k, 1234567 -> 1.23M */
+/** compact number for one value: 1234 -> 1,234 (in full below 10,000), 12345 -> 12.3k, 123456 -> 123k,
+ *  1234567 -> 1.23M. A graph axis writes all its ticks in one notation instead (graphAxis.axisLabels: "0 5k 10k 15k") */
 export function compact(n: number, digits = 1): string {
   if (!isFinite(n)) return '—';
   const a = Math.abs(n);

@@ -10,8 +10,8 @@ import type { GameContext } from '../../game/context';
 import { Panel } from '../Panel';
 import { clear, h, segmented, toggleClass } from '../dom';
 import { icon } from '../icons';
-import { compact, moneyCompact, monthLabel, num, pct, signedPct } from '../format';
-import { niceAxis, niceStep } from '../graphAxis';
+import { CURRENCY, compact, moneyCompact, monthLabel, num, pct, signedPct } from '../format';
+import { axisLabels, axisTicks, niceAxis, niceStep } from '../graphAxis';
 import { uiZoom } from '../zoom';
 
 type Key = Exclude<keyof HistorySeries, 't'>;
@@ -32,6 +32,8 @@ export interface GraphDef {
   goodUp?: boolean;
   /** counts / money: the y-axis ticks on whole numbers (graphAxis.niceAxis) */
   int?: boolean;
+  /** y-axis labels of the whole axis at once — one notation for every tick (graphAxis.axisLabels); else fmt per tick */
+  axis?: (ticks: readonly number[], step: number) => string[];
 }
 
 // Dark-surface categorical steps (dataviz reference palette): blue, orange, aqua, purple, rose. R/C/I keep the game's
@@ -39,16 +41,19 @@ export interface GraphDef {
 const BLUE = '#3987e5', ORANGE = '#d95926', AQUA = '#199e70', PURPLE = '#9a6ae0', ROSE = '#d6457e', SAND = '#c9a23a';
 const pct01 = (v: number) => pct(v);
 const mins = (v: number) => `${v.toFixed(v < 10 ? 1 : 0)} min`;
+// count / money axes: compact() per tick mixed notations on one axis ("0 5,000 10.0k 15.0k", "§0 §500k §1.00M")
+const countAxis = (ticks: readonly number[], step: number) => axisLabels(ticks, step);
+const moneyAxis = (ticks: readonly number[], step: number) => axisLabels(ticks, step, CURRENCY);
 
 export const GRAPHS: GraphDef[] = [
-  { id: 'pop', group: 'City', label: 'Population', icon: 'people', series: [{ key: 'pop', label: 'Population', color: BLUE }], fmt: (v) => compact(v), int: true },
+  { id: 'pop', group: 'City', label: 'Population', icon: 'people', series: [{ key: 'pop', label: 'Population', color: BLUE }], fmt: (v) => compact(v), int: true, axis: countAxis },
   // demand is stored as -1..1: a signed percentage (compact() showed 0 / ±1 only)
   { id: 'rci', group: 'City', label: 'R · C · I', icon: 'zones', series: [{ key: 'r', label: 'Residential', color: '#3cc76a' }, { key: 'c', label: 'Commercial', color: '#3d8bff' }, { key: 'i', label: 'Industrial', color: '#f0b429' }], fmt: (v) => signedPct(v), range: [-1, 1] },
   { id: 'approval', group: 'City', label: 'Approval', icon: 'smile', series: [{ key: 'approval', label: 'Mayor approval', color: AQUA }], fmt: (v) => Math.round(v) + '%', range: [0, 100] },
-  { id: 'funds', group: 'Money', label: 'Treasury', icon: 'money', series: [{ key: 'funds', label: 'Funds', color: BLUE }], fmt: (v) => moneyCompact(v), int: true },
-  { id: 'cash', group: 'Money', label: 'Income vs expenses', icon: 'budget', series: [{ key: 'income', label: 'Income', color: BLUE }, { key: 'expense', label: 'Expenses', color: ORANGE }], fmt: (v) => moneyCompact(v), int: true },
+  { id: 'funds', group: 'Money', label: 'Treasury', icon: 'money', series: [{ key: 'funds', label: 'Funds', color: BLUE }], fmt: (v) => moneyCompact(v), int: true, axis: moneyAxis },
+  { id: 'cash', group: 'Money', label: 'Income vs expenses', icon: 'budget', series: [{ key: 'income', label: 'Income', color: BLUE }, { key: 'expense', label: 'Expenses', color: ORANGE }], fmt: (v) => moneyCompact(v), int: true, axis: moneyAxis },
   { id: 'lv', group: 'Money', label: 'Land value', icon: 'landValue', series: [{ key: 'landValue', label: 'Avg. land value', color: BLUE }], fmt: pct01, range: [0, 1] },
-  { id: 'demo', group: 'People', label: 'Age groups', icon: 'people', stacked: true, fmt: (v) => compact(v), int: true, series: [
+  { id: 'demo', group: 'People', label: 'Age groups', icon: 'people', stacked: true, fmt: (v) => compact(v), int: true, axis: countAxis, series: [
     { key: 'kids', label: 'Children', color: PURPLE }, { key: 'teens', label: 'Teens', color: BLUE }, { key: 'youngAdults', label: 'Young adults', color: AQUA },
     { key: 'adults', label: 'Adults', color: SAND }, { key: 'seniors', label: 'Seniors', color: ROSE }] },
   { id: 'jobs', group: 'People', label: 'Unemployment', icon: 'briefcase', series: [{ key: 'unemployment', label: 'Unemployment', color: ORANGE }], fmt: (v) => pct(v, 1), goodUp: false },
@@ -67,7 +72,7 @@ export const GRAPHS: GraphDef[] = [
   // (a 0-1 load and a count on one axis read "0" at every tick): one graph each
   { id: 'busLoad', group: 'Services', label: 'Bus load', icon: 'bus', fmt: pct01, goodUp: false, series: [
     { key: 'busLoad', label: 'Buses needed / buses running', color: ORANGE, fmt: pct01 }] },
-  { id: 'parkRide', group: 'Services', label: 'Park & ride', icon: 'parking', fmt: (v) => compact(v), int: true, series: [
+  { id: 'parkRide', group: 'Services', label: 'Park & ride', icon: 'parking', fmt: (v) => compact(v), int: true, axis: countAxis, series: [
     { key: 'parkRide', label: 'Park & ride trips / day', color: AQUA, fmt: (v) => compact(v) }] },
   { id: 'traffic', group: 'Services', label: 'Traffic', icon: 'car', series: [{ key: 'traffic', label: 'Avg. congestion', color: BLUE }], fmt: pct01, range: [0, 1], goodUp: false },
   { id: 'margins', group: 'Utilities', label: 'Power & water margin', icon: 'power', fmt: (v) => signedPct(v), range: [-1, 1], series: [
@@ -75,7 +80,7 @@ export const GRAPHS: GraphDef[] = [
   { id: 'garbage', group: 'Utilities', label: 'Garbage load', icon: 'garbage', series: [{ key: 'garbageLoad', label: 'Garbage made / capacity', color: ORANGE }], fmt: pct01, goodUp: false },
   { id: 'pollution', group: 'Environment', label: 'Pollution', icon: 'smog', fmt: pct01, range: [0, 1], goodUp: false, series: [
     { key: 'air', label: 'Air (at homes)', color: SAND }, { key: 'waterPoll', label: 'Water', color: BLUE }, { key: 'noise', label: 'Noise', color: ROSE }] },
-  { id: 'tourism', group: 'Environment', label: 'Tourists', icon: 'star', series: [{ key: 'tourists', label: 'Tourists / day', color: ROSE }], fmt: (v) => compact(v), int: true },
+  { id: 'tourism', group: 'Environment', label: 'Tourists', icon: 'star', series: [{ key: 'tourists', label: 'Tourists / day', color: ROSE }], fmt: (v) => compact(v), int: true, axis: countAxis },
   { id: 'attract', group: 'Environment', label: 'Attractiveness', icon: 'smile', series: [{ key: 'attractiveness', label: 'Attractiveness', color: AQUA }], fmt: (v) => String(Math.round(v)), range: [0, 100] },
 ];
 
@@ -226,10 +231,13 @@ export class GraphsPanel extends Panel {
     }
     const X = (i: number) => x0 + ((i - start) / (n - 1)) * (x1 - x0);
     const Y = (v: number) => y1 - ((v - lo) / (hi - lo || 1)) * (y1 - y0);
-    // grid (recessive hairlines) + y labels
+    // grid (recessive hairlines) + y labels (count / money axes: one notation for every tick, axisLabels)
     g.textAlign = 'right';
     g.textBaseline = 'middle';
-    for (let v = lo; v <= hi + step * 0.001; v += step) {
+    const ticks = axisTicks(lo, hi, step);
+    const labels = this.cur.axis ? this.cur.axis(ticks, step) : ticks.map((v) => this.cur.fmt(v));
+    for (let k = 0; k < ticks.length; k++) {
+      const v = ticks[k];
       const y = Math.round(Y(v)) + 0.5;
       g.strokeStyle = v === 0 ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.07)';
       g.lineWidth = 1;
@@ -238,7 +246,7 @@ export class GraphsPanel extends Panel {
       g.lineTo(x1, y);
       g.stroke();
       g.fillStyle = '#898781';
-      g.fillText(this.cur.fmt(v), x0 - 8, y);
+      g.fillText(labels[k], x0 - 8, y);
     }
     // x labels
     g.textAlign = 'center';

@@ -49,7 +49,7 @@ import type { CrimeSystem } from '../../sim/infra/crime';
 import { NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
 import {
   type Bar, type Chip, type ModelRow, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView, growthRows, mainProblem,
-  landValueView, needRows, pyramid, responseText,
+  landValueView, needRows, pyramid, responseText, signedPts,
 } from '../inspectorModel';
 
 const FLAG_CHIPS: [number, string, Chip['cls'], Chip['topic']?][] = [
@@ -233,9 +233,11 @@ export class InfoPanel extends Panel {
     return box;
   }
 
-  /** signed bars (factor lists); worse = a positive term is bad news (crime causes: red, not green) */
-  private bars(title: string | null, bars: Bar[], unit: 'pts' | 'raw' = 'raw', note?: string, worse = false): HTMLElement | null {
-    if (!bars.length) return null;
+  /** signed bars (factor lists) + notes (a line each); worse = a positive term is bad news (crime causes: red, not
+   *  green). Points read like the header (signedPts: "+61" / "−10" / "0") */
+  private bars(title: string | null, bars: Bar[], unit: 'pts' | 'raw' = 'raw', note?: string | readonly string[], worse = false): HTMLElement | null {
+    const notes = (typeof note === 'string' ? [note] : note ?? []).filter(Boolean);
+    if (!bars.length && !notes.length) return null;
     const max = Math.max(0.05, ...bars.map((b) => Math.abs(b.value)));
     const box = h('div', { class: 'ins-bars' });
     if (title) box.appendChild(h('div', { class: 'ins-sub' }, title));
@@ -246,11 +248,11 @@ export class InfoPanel extends Panel {
       box.appendChild(h('div', { class: 'ins-bar', title: b.detail ?? '' },
         h('span', { class: 'l' }, b.label),
         h('span', { class: 't' }, fill, h('b')),
-        h('span', { class: 'v ' + (good ? 'pos' : 'neg') }, unit === 'pts' ? `${b.value >= 0 ? '+' : '−'}${Math.abs(Math.round(b.value * 100))}` : b.text),
+        h('span', { class: 'v ' + (good ? 'pos' : 'neg') }, unit === 'pts' ? signedPts(b.value) : b.text),
       ));
       if (b.detail && bars.length <= 4) box.appendChild(h('div', { class: 'ins-bar-d' }, b.detail));
     }
-    if (note) box.appendChild(h('div', { class: 'ins-note' }, note));
+    for (const n of notes) box.appendChild(h('div', { class: 'ins-note' }, n));
     return box;
   }
 
@@ -356,7 +358,7 @@ export class InfoPanel extends Panel {
       kv.add('Land value', 'landValue', pct(st.landValue[ci]));
       if (dev !== undefined && st.desirability[dev]) {
         const dv = st.desirability[dev][ci];
-        kv.add(`Desirability (${DEV_TYPE_LABELS[dev]})`, 'desire', h('span', { style: 'display:flex;align-items:center;gap:8px;justify-content:flex-end' }, desirBar(dv), h('span', null, (dv > 0 ? '+' : '') + Math.round(dv * 100))));
+        kv.add(`Desirability (${DEV_TYPE_LABELS[dev]})`, 'desire', h('span', { style: 'display:flex;align-items:center;gap:8px;justify-content:flex-end' }, desirBar(dv), h('span', null, signedPts(dv))));
       }
       const commute = this.commuteText(b, traffic, ci);
       if (commute) kv.add('Commute', 'clock', commute);
@@ -435,9 +437,9 @@ export class InfoPanel extends Panel {
   private whyBuilding(b: Building, dev: number | undefined, ci: number, des: ReturnType<typeof desirabilityView>, cond: ReturnType<typeof conditionView>, rt: EconRuntime | null): (HTMLElement | null)[] {
     const st = this.ctx.state;
     const out: (HTMLElement | null)[] = [];
-    if (des) out.push(this.bars(`Desirability ${des.value >= 0 ? '+' : '−'}${Math.abs(Math.round(des.value * 100))} — what drives it`, des.bars, 'pts', des.note));
+    if (des) out.push(this.bars(`Desirability ${signedPts(des.value)} — what drives it`, des.bars, 'pts', des.notes));
     if (cond) {
-      const box = this.bars(`Condition heading for ${pct(Math.max(0, Math.min(1, cond.target)))}`, cond.bars, 'pts');
+      const box = this.bars(`Condition heading for ${pct(Math.max(0, Math.min(1, cond.target)))}`, cond.bars, 'pts', cond.note);
       if (box && cond.abandon) box.appendChild(h('div', { class: 'ins-abandon', html: icon('alert', 13) + `<span>${escapeHtml(cond.abandon)} — fix the red factors above</span>` }));
       out.push(box);
     }
@@ -720,7 +722,7 @@ export class InfoPanel extends Panel {
     const devs = devsForZone(zone);
     for (const d of devs.slice(0, 5)) {
       const dv = st.desirability[d]?.[i] ?? 0;
-      kv.add(`Desirability ${DEV_TYPE_LABELS[d]}`, 'desire', h('span', { style: 'display:flex;align-items:center;gap:8px;justify-content:flex-end' }, desirBar(dv), h('span', null, (dv > 0 ? '+' : '') + Math.round(dv * 100))));
+      kv.add(`Desirability ${DEV_TYPE_LABELS[d]}`, 'desire', h('span', { style: 'display:flex;align-items:center;gap:8px;justify-content:flex-end' }, desirBar(dv), h('span', null, signedPts(dv))));
     }
     this.body.appendChild(kv.el);
     if (devs.length) {
@@ -731,7 +733,7 @@ export class InfoPanel extends Panel {
         const rt = this.rt();
         const des = desirabilityView(safeCall(() => desirabilityBreakdown(st, rt as EconRuntime, best, i), null));
         const out: (HTMLElement | null)[] = [];
-        if (des) out.push(this.bars(`Desirability ${DEV_TYPE_LABELS[best]} — what drives it`, des.bars, 'pts', des.note));
+        if (des) out.push(this.bars(`Desirability ${DEV_TYPE_LABELS[best]} — what drives it`, des.bars, 'pts', des.notes));
         out.push(this.rows(growthRows(safeCall(() => growthLimits(st, i, best), null))));
         const lv = landValueView(safeCall(() => landValueBreakdown(st, rt as EconRuntime, i), []));
         if (lv.bars.length) out.push(this.bars('Land value — factors', lv.bars, 'pts', lv.note));

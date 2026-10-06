@@ -11,7 +11,7 @@
  * (background prefetch), a building that needs a proxy not built yet stays on its full model and swaps when it
  * arrives, so proxy generation never costs frame time (flushLod() builds everything synchronously for captures).
  * The buildings waiting for an arriving proxy (often hundreds sharing one model) are woken a few per frame
- * (`lodWakeSlice`, and in smooth motion only while fewer than fadeMax / 2 fades run), so each arrival dissolves them
+ * (`lodWakeSlice`, and in smooth motion only while fewer than half the fade cap run), so each arrival dissolves them
  * over a few frames instead of swapping them all in one frame (a 1000-3000-swap spike).
  * Without worker support (Node tests) proxies are built on demand within `lodBudgetMs` per frame.
  * Each building is re-evaluated only when the camera has travelled far enough to possibly carry it across its swap
@@ -29,14 +29,22 @@
  * draw-list rebuild). A level change back mid-fade runs the fade backwards. A fade completes after fadeTime or, when
  * the camera moves fast, once its distance to the building changed by `fadeTravel` (a fast zoom dissolves each swap
  * over a few frames instead of drawing both levels of ~1000 buildings for fadeTime); a swap the motion would dissolve
- * within a frame or two anyway (`fadeFast`: fast pans / fly-bys, where the view changes wholesale) is instant. New /
- * rebuilt buildings, camera cuts, the catch-up frames after a cut (running fades are settled at the cut) and captures
- * (flushLod) swap at once; beyond `fadeMax` concurrent fades swaps are instant too. The shadow switches half way
+ * within a frame or two anyway (`fadeFast`: fast fly-bys) is instant. Downgrades start dissolving at `fadeOn` x
+ * lodPixels (1.0 instead of the instant swap's 0.88), so a zoom-out's dissolve is over about where an instant swap
+ * happens: fading never draws a full model farther out than not fading would. Fast pans / orbits (the view shifting
+ * or turning by more than `fadeMotion` per frame) cap the concurrent fades down to none: the view changes wholesale
+ * there. New / rebuilt buildings, camera cuts, the catch-up frames after a cut (running fades are settled at the cut)
+ * and captures (flushLod) swap at once; beyond the cap (`fadeMax`) swaps are instant too. The shadow switches half way
  * through a fade (the level covering most pixels casts: the other level's shadow would streak the visible one, e.g. a
- * proxy's coarser roof shadowing the full model's roof in the first frames).
- * Burnt lots: one rubble tile (16 m, designed to tile) per footprint cell, variant + quarter turn from a per-cell
- * hash, instead of one model stretched over the lot. Hill lots: real-size stone retaining-wall skirts under lots that
- * sit above the terrain (see foundation()).
+ * proxy's coarser roof shadowing the full model's roof in the first frames). The fade layer's program is not part of
+ * the load-time precompile: it is compiled asynchronously a few frames after the first (compileFade), swaps are
+ * instant until it is ready.
+ * Burnt multi-cell lots are composed from a rubble kit (rubbleKit): one debris bed over the whole lot (exactly over
+ * rising ground), heap clusters / big collapsed heaps / outer-wall stubs / a burnt car scattered at hashed offsets,
+ * yaws and scales, each with a low-poly proxy it swaps to with the lot at LOD distance; one-cell lots keep prop.ts's
+ * rubble tile. Hill lots: real-size stone retaining-wall skirts under lots that sit above the terrain (foundation()),
+ * drawn as a plain 8-tri box (foundationLod()) once the building is on its proxy or the skirt is under FOUND_PX tall
+ * on screen; shallow skirts / rubble cast no shadow or only into the near cascade.
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../../core/constants';
@@ -160,6 +168,9 @@ const LOD_JUMP = 150;
 /** a foundation skirt is drawn as its plain box (no cap band / step tier) while its exposed height projects under this
  *  many pixels (or the building is on its proxy) */
 const FOUND_PX = 2;
+/** the fade program is compiled after this many frames have drawn the buildings (see compileFade): the first frames
+ *  after a load (or a city switch) carry none of its cost */
+const FADE_COMPILE_FRAMES = 12;
 
 /** foundation skirt depth (m) for an exposed depth: + 0.8 m into the ground, quantized to 1.2 / 2.2 / 3.4 / 4.8 / 6.8
  *  (bounded geometry count) */
@@ -255,62 +266,100 @@ function bedHeight(w: number, d: number, tops: Float32Array | null, x: number, z
   return tx + tz <= 1 ? a + (b - a) * tx + (c - a) * tz : e + (c - e) * (1 - tx) + (b - e) * (1 - tz);
 }
 
-/** irregular flat fan: n rim points around (cx, cz) at radii r x 0.65-1.1 (clamped to |x| <= limX, |z| <= limZ), every
- *  vertex at height y(x, z) */
-function rubFan(mb: ModelBuilder, rng: RNG, cx: number, cz: number, r: number, y: (x: number, z: number) => number, n: number, limX = Infinity, limZ = Infinity): void {
-  const a0 = rng.range(0, Math.PI * 2);
-  const rim: V3[] = [];
+const _cc = new THREE.Color();
+/** an up-facing flat triangle with its own colour (sRGB hex) per corner */
+function upTri(mb: ModelBuilder, a: V3, ca: number, b: V3, cb: number, c: V3, cc: number): void {
+  // counter-clockwise seen from above (+y normal)
+  if ((b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]) < 0) { const t = b; b = c; c = t; const u = cb; cb = cc; cc = u; }
+  mb.tri(a, b, c);
+  const col = mb.raw().col, o = col.length - 9;
+  const put = (k: number, h: number) => { _cc.set(h); col[o + k * 3] = _cc.r; col[o + k * 3 + 1] = _cc.g; col[o + k * 3 + 2] = _cc.b; };
+  put(0, ca); put(1, cb); put(2, cc);
+}
+
+/** the debris bed's plain tone (prop.ts's rubble bed) */
+const RUB_BED_COL = 0x55493f;
+
+/**
+ * Ash / brick-dust spill under a debris pile: dark ash at the core, then dust, then the bed's own tone at an irregular,
+ * slightly oval rim of n points around radius r, so the spill has no edge on the bed (the one-cell tile's crisp scorch
+ * polygon reads as a sticker once piles are scattered). A very flat cone (7.5 cm at the core, 1.2 cm at the rim over
+ * the piece's base): where the spills of neighbouring piles overlap, each point shows the spill it lies deeper inside
+ * of, so their tones meet without an edge (and never z-fight). 5 n triangles.
+ */
+function rubSpill(mb: ModelBuilder, rng: RNG, r: number, n: number, core: number, dust: number): void {
+  const a0 = rng.range(0, Math.PI * 2), asp = rng.range(0.72, 1), rot = rng.range(0, Math.PI), cr = Math.cos(rot), sr = Math.sin(rot);
+  const ring = (f: number, jit: number, y: number): V3[] => {
+    const out: V3[] = [];
+    for (let k = 0; k < n; k++) {
+      const a = a0 + (k / n) * Math.PI * 2, rr = r * f * rng.range(1 - jit, 1 + jit);
+      const x = Math.cos(a) * rr, z = -Math.sin(a) * rr * asp;
+      out.push([x * cr - z * sr, y, x * sr + z * cr]);
+    }
+    return out;
+  };
+  const r0 = ring(0.38, 0.25, 0.065), r1 = ring(0.7, 0.2, 0.04), r2 = ring(1, 0.22, 0.012);
+  const c: V3 = [0, 0.075, 0];
+  mb.paint(core, Surf.Plain);
   for (let k = 0; k < n; k++) {
-    const a = a0 + (k / n) * Math.PI * 2, rr = r * rng.range(0.65, 1.1);
-    const x = Math.max(-limX, Math.min(limX, cx + Math.cos(a) * rr)), z = Math.max(-limZ, Math.min(limZ, cz - Math.sin(a) * rr));
-    rim.push([x, y(x, z), z]);
+    const k1 = (k + 1) % n;
+    upTri(mb, c, core, r0[k], core, r0[k1], core);
+    upTri(mb, r0[k], core, r1[k], dust, r1[k1], dust);
+    upTri(mb, r0[k], core, r1[k1], dust, r0[k1], core);
+    upTri(mb, r1[k], dust, r2[k], RUB_BED_COL, r2[k1], RUB_BED_COL);
+    upTri(mb, r1[k], dust, r2[k1], RUB_BED_COL, r1[k1], dust);
   }
-  const c: V3 = [cx, y(cx, cz), cz];
-  for (let k = 0; k < n; k++) triOut(mb, c, rim[k], rim[(k + 1) % n], [0, 1, 0]);
+}
+
+/** smooth 2D value noise in [0, 1] (lattice spacing 1, hashed corners from seed) */
+function vnoise(x: number, z: number, seed: number): number {
+  const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+  const h = (i: number, j: number) => (cellHash(i, j, seed) & 0xffff) / 65535;
+  const u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+  return (h(ix, iz) * (1 - u) + h(ix + 1, iz) * u) * (1 - v) + (h(ix, iz + 1) * (1 - u) + h(ix + 1, iz + 1) * u) * v;
 }
 
 /**
  * Debris bed of a w x d cell burnt lot (lot-local m, origin at the lot centre on its base): ONE surface over the whole
- * lot (no seams between cells), level at RUB_TOP or through every cell corner at `tops` on the terrain's triangle split
- * (bedHeight: wherever the ground rises above the base the bed stays RUB_TOP over it, so no hill pokes through and no
- * step shows between cells), closed sides RUB_SIDE deep, and lot-scale scorch marks and brick-dust / ash drifts (about
- * the cover per cell of prop.ts's one-cell tile, but placed over the whole lot instead of once per cell).
+ * lot (no seams between cells), level at RUB_TOP or through every cell corner at `tops` (bedHeight: wherever the ground
+ * rises above the base the bed stays RUB_TOP over it, so no hill pokes through and no step shows between cells), a
+ * 5.3 m grid (3 x 3 per cell, split like the terrain, so it lies exactly on the creased surface) whose vertex tones
+ * drift softly between ash and brick dust at lot scale (no crisp blots), and closed sides RUB_SIDE deep.
  */
 function rubbleBed(w: number, d: number, tops: Float32Array | null, seed: number): THREE.BufferGeometry {
-  const C = CELL_SIZE, hx = (w * C) / 2 - 0.02, hz = (d * C) / 2 - 0.02, w1 = w + 1;
+  const C = CELL_SIZE, S = 3, hx = (w * C) / 2 - 0.02, hz = (d * C) / 2 - 0.02, w1 = w + 1;
   const mb = new ModelBuilder();
   const top = (i: number, j: number) => (tops ? tops[j * w1 + i] : RUB_TOP);
-  // corner coordinates (the outer ones pulled 2 cm inside the lot edge)
-  const ex = (i: number) => (tops ? Math.max(-hx, Math.min(hx, i * C - (w * C) / 2)) : i ? hx : -hx);
-  const ez = (j: number) => (tops ? Math.max(-hz, Math.min(hz, j * C - (d * C) / 2)) : j ? hz : -hz);
-  const nx = tops ? w : 1, nz = tops ? d : 1;
-  mb.paint(0x55493f, Surf.Plain);
-  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
-    const a: V3 = [ex(i), top(i, j), ez(j)], b: V3 = [ex(i + 1), top(i + 1, j), ez(j)];
-    const c: V3 = [ex(i), top(i, j + 1), ez(j + 1)], e: V3 = [ex(i + 1), top(i + 1, j + 1), ez(j + 1)];
+  const X = (i: number) => Math.max(-hx, Math.min(hx, (i * C) / S - (w * C) / 2));
+  const Z = (j: number) => Math.max(-hz, Math.min(hz, (j * C) / S - (d * C) / 2));
+  const at = (x: number, z: number): V3 => [x, bedHeight(w, d, tops, x, z), z];
+  mb.paint(RUB_BED_COL, Surf.Plain);
+  const m0 = mark(mb);
+  for (let j = 0; j < d * S; j++) for (let i = 0; i < w * S; i++) {
+    const a = at(X(i), Z(j)), b = at(X(i + 1), Z(j)), c = at(X(i), Z(j + 1)), e = at(X(i + 1), Z(j + 1));
+    // (split along (i + 1, j)-(i, j + 1) like the terrain cell's own diagonal: every piece lies in one terrain triangle)
     triOut(mb, a, b, c, [0, 1, 0]);
     triOut(mb, b, e, c, [0, 1, 0]);
   }
+  // soft lot-scale tone drift: ash-darkened patches and warm brick-dust drifts (~11 m / ~6 m features)
+  const s1 = seed * 7 + 11, s2 = seed * 13 + 5;
+  tintSince(mb, m0, (p) => {
+    const ash = Math.min(1, Math.max(0, (vnoise(p[0] / 11, p[2] / 11, s1) - 0.5) / 0.35)) * 0.22;
+    const du = Math.min(1, Math.max(0, (vnoise(p[0] / 6 + 40, p[2] / 6, s2) - 0.55) / 0.35)) * 0.24;
+    const k = 1 - ash;
+    return [k * (1 + du), k * (1 + du * 0.82), k * (1 + du * 0.6)];
+  });
   mb.paint(0x3f3630, Surf.Plain);
   const side = (x0: number, z0: number, t0: number, x1: number, z1: number, t1: number, out: V3) =>
     quadOut(mb, [x0, t0 - RUB_SIDE, z0], [x1, t1 - RUB_SIDE, z1], [x1, t1, z1], [x0, t0, z0], out);
-  for (let i = 0; i < nx; i++) {
+  const ex = (i: number) => Math.max(-hx, Math.min(hx, i * C - (w * C) / 2)), ez = (j: number) => Math.max(-hz, Math.min(hz, j * C - (d * C) / 2));
+  for (let i = 0; i < w; i++) {
     side(ex(i), -hz, top(i, 0), ex(i + 1), -hz, top(i + 1, 0), [0, 0, -1]);
     side(ex(i), hz, top(i, d), ex(i + 1), hz, top(i + 1, d), [0, 0, 1]);
   }
-  for (let j = 0; j < nz; j++) {
+  for (let j = 0; j < d; j++) {
     side(-hx, ez(j), top(0, j), -hx, ez(j + 1), top(0, j + 1), [-1, 0, 0]);
     side(hx, ez(j), top(w, j), hx, ez(j + 1), top(w, j + 1), [1, 0, 0]);
-  }
-  // scorch marks first (lowest), then the drifts, each a few mm over the previous ones (no z-fighting where they meet)
-  const rng = new RNG(seed || 1);
-  const n = w * d, ns = Math.max(1, Math.round(n * 0.6)), nd = Math.max(2, Math.round(n * 1.2));
-  for (let k = 0; k < ns + nd; k++) {
-    const scorch = k < ns, r = scorch ? rng.range(4, 7) : rng.range(2.2, 4.2);
-    const px = rng.range(-hx + r * 0.5, hx - r * 0.5), pz = rng.range(-hz + r * 0.5, hz - r * 0.5);
-    mb.paint(scorch ? jitterHex(rng, 0x2c2826, 0.05) : jitterHex(rng, k % 2 ? 0x8c7a66 : 0x7a5a48, 0.06), Surf.Plain);
-    const lift = scorch ? 0.02 + 0.003 * (k % 4) : 0.035 + 0.004 * (k % 8);
-    rubFan(mb, rng, px, pz, r, (x, z) => bedHeight(w, d, tops, x, z) + lift, 7, hx - 0.1, hz - 0.1);
   }
   return mb.build();
 }
@@ -366,9 +415,8 @@ function rubbleCluster(fam: number, k: number): [THREE.BufferGeometry, THREE.Buf
   const rng = new RNG(0x3c11 + fam * 1013 + k * 97);
   const mb = new ModelBuilder(), px = new ModelBuilder();
   const cols = RUB_HEAP_COLS[fam], heaps = RUB_HEAPS[k];
-  // brick-dust / ash spill under the pile, over the bed's drifts: blends the pile into the bed
-  mb.paint(jitterHex(rng, fam ? 0x6e675f : 0x7a5a48, 0.05), Surf.Plain);
-  rubFan(mb, rng, 0, 0, k === 3 ? 4.2 : 4.5, () => 0.085, 8);
+  // ash / dust spill under the pile, fading into the bed
+  rubSpill(mb, rng, k === 3 ? 5.2 : 5.8, 9, fam ? 0x35312e : 0x2c2826, jitterHex(rng, fam ? 0x6e675f : 0x7a5a48, 0.05));
   if (k === 3) {
     // the low debris field keeps a standing sooty wall stub
     mb.push().translate(-2.6, 0, 0.8).rotateY(rng.range(-0.5, 0.5));
@@ -396,8 +444,7 @@ function rubbleBigHeap(fam: number, k: number): [THREE.BufferGeometry, THREE.Buf
   const rng = new RNG(0x8b21 + fam * 733 + k * 59);
   const mb = new ModelBuilder(), px = new ModelBuilder();
   const cols = RUB_HEAP_COLS[fam];
-  mb.paint(jitterHex(rng, fam ? 0x6e675f : 0x7a5a48, 0.05), Surf.Plain);
-  rubFan(mb, rng, 0, 0, 9.8, () => 0.085, 10);
+  rubSpill(mb, rng, 11.5, 12, fam ? 0x35312e : 0x2c2826, jitterHex(rng, fam ? 0x6e675f : 0x7a5a48, 0.05));
   const m2 = mark(mb);
   const heap = (x: number, z: number, r: V3, detail: number) => {
     const c = rng.pick(cols);
@@ -824,11 +871,13 @@ export class BuildingRenderer {
   fadeMotion: [number, number] = [0.02, 0.06];
   /** fadeMax scaled down by this frame's view motion (see fadeMotion) */
   private fadeCap = 1024;
-  /** the fade layer's program is compiled: it is compiled asynchronously right after the first frame that drew the
+  /** the fade layer's program is compiled: it is compiled asynchronously a few frames after the first one that drew the
    *  buildings (not in the load-time precompile, see compileFade); until then every swap is instant */
   fadeReady = false;
-  /** 0 nothing rendered yet, 1 first scene pass seen (compile next update), 2 compiling, 3 ready */
+  /** 0 waiting for FADE_COMPILE_FRAMES drawn frames, 1 compile at the next update, 2 compiling, 3 ready */
   private fadeStage = 0;
+  private fadeFrames = 0;
+  private fadeFrameNo = -1;
   private fadeRc: { r: THREE.WebGLRenderer; scene: THREE.Object3D; cam: THREE.Camera; rt: THREE.WebGLRenderTarget | null } | null = null;
   /** view direction at the previous updateLod (view turn rate, see fadeMotion) */
   private lodDir = new THREE.Vector3(NaN, NaN, NaN);
@@ -864,18 +913,23 @@ export class BuildingRenderer {
     this.fadeLayer = new LodFadeLayer(this.batch.mesh, this.batch.mesh.customDepthMaterial);
     const mesh = this.batch.mesh, before = mesh.onBeforeRender;
     mesh.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
-      // the first scene pass that draws the buildings: compile the fade program after this frame
+      // frames that drew the buildings: after FADE_COMPILE_FRAMES of them, compile the fade program at the next update
       if (this.fadeStage === 0) {
-        this.fadeStage = 1;
-        this.fadeRc = { r: renderer, scene, cam: camera, rt: renderer.getRenderTarget() };
+        const fr = renderer.info.render.frame;
+        if (fr !== this.fadeFrameNo) { this.fadeFrameNo = fr; this.fadeFrames++; }
+        if (this.fadeFrames >= FADE_COMPILE_FRAMES) {
+          this.fadeStage = 1;
+          this.fadeRc = { r: renderer, scene, cam: camera, rt: renderer.getRenderTarget() };
+        }
       }
       before.call(mesh, renderer, scene, camera, geometry, material, group);
     };
   }
 
   /**
-   * Compile the fade layer's program off the load path: after the first frame that drew the buildings, with the scene
-   * pass's render target bound (the same output variant, as PostFX.compileScene does) and asynchronously where
+   * Compile the fade layer's program off the load path: once FADE_COMPILE_FRAMES frames have drawn the buildings (the
+   * load-time precompile, PostFX.compileScene, does not see the layer: it joins the scene graph here), with that scene
+   * pass's render target bound (the same output variant, as compileScene does) and asynchronously where
    * KHR_parallel_shader_compile exists (three's compileAsync polls the program instead of blocking on it). Fades start
    * once it is ready (fadeReady); a quality change recompiles the scene, the layer included, as before.
    */
@@ -1053,6 +1107,19 @@ export class BuildingRenderer {
     return id;
   }
 
+  /** the far level of a level w x d debris bed: one quad in the bed's mean tone + its sides (10 tris), sharing the full
+   *  bed's culling sphere */
+  private bedLod(full: number, w: number, d: number): number {
+    const key = `__rubble:bedlod:${w}x${d}`;
+    const fresh = !this.batch.hasGeometry(key);
+    const id = this.batch.geometryId(key, () => {
+      const hx = (w * CELL_SIZE) / 2 - 0.02, hz = (d * CELL_SIZE) / 2 - 0.02, mb = new ModelBuilder();
+      return mb.paint(0x52463c, Surf.Plain).box(-hx, RUB_TOP - RUB_SIDE, -hz, hx, RUB_TOP, hz, { top: { color: 0x52463c, surf: Surf.Plain }, px: { color: 0x3f3630, surf: Surf.Plain }, nx: { color: 0x3f3630, surf: Surf.Plain }, pz: { color: 0x3f3630, surf: Surf.Plain }, nz: { color: 0x3f3630, surf: Surf.Plain } }).build();
+    });
+    if (fresh) this.batch.shareSphere(full, id, 0.05);
+    return id;
+  }
+
   /** a rubble-kit piece's [full, proxy] geometry ids, built on first use: the proxy shares the full piece's culling
    *  sphere, padded for the vertical shear onto slopes (DynamicBatch scales a sphere by the matrix's longest column,
    *  which under-reads a shear's stretch by up to ~10% at RUBBLE_SLOPE) */
@@ -1098,8 +1165,11 @@ export class BuildingRenderer {
     const T = sloped ? tops : null, bv = lotH % 3;
     const bedKey = sloped ? `__rubble:bed:${w}x${d}:${Array.from(tops, (t) => Math.round(t * 100)).join(',')}` : `__rubble:bed:${w}x${d}:${bv}`;
     const bed = this.batch.geometryId(bedKey, () => rubbleBed(w, d, T, sloped ? lotH : 0x1b5 + bv * 7919 + w * 31 + d * 131));
-    bi.geom = bi.lodGeom = bed;
-    bi.main = this.batch.add(bed);
+    // far away a level bed is one plain quad + its sides (its tone drift is sub-pixel there); a sloped bed keeps its
+    // shape (it must stay over the ground)
+    bi.geom = bed;
+    bi.lodGeom = sloped ? bed : this.bedLod(bed, w, d);
+    bi.main = this.batch.add(bi.lod ? bi.lodGeom : bed);
     // (the bed lies on the ground: it casts no shadow)
     this.batch.setShadowCascades(bi.main, 0);
     // debris family and wall height from the building that burnt: charred brick for low houses / walk-ups / shops,
@@ -1128,12 +1198,21 @@ export class BuildingRenderer {
       // the middle collapsed into one heap spilling into the edge-middle cells
       if (rng.chance(0.55)) big(1, 1, 1, 1, [1, 3, 5, 7]);
     } else if (w === 2 && d === 2 && rng.chance(0.5)) big(0, 0, 2, 2);
-    // heap clusters on the other cells (some left bare)
-    for (let j = 0; j < d; j++) for (let i = 0; i < w; i++) {
-      if (used[j * w + i] || rng.chance(0.12)) continue;
-      const k = rng.int(0, 3), s = rng.range(0.85, 1.15), R = RUB_CLUSTER_R * s;
-      const x = (i + 0.5) * C - hx + rng.range(-3.5, 3.5), z = (j + 0.5) * C - hz + rng.range(-3.5, 3.5);
+    // heap clusters on the other cells (a few left bare, some with a second, smaller pile)
+    const cluster = (cx: number, cz: number, s: number, jit: number) => {
+      const k = rng.int(0, 3), R = RUB_CLUSTER_R * s;
+      const x = cx + rng.range(-jit, jit), z = cz + rng.range(-jit, jit);
       pieces.push({ ids: this.kitPiece(`cl${fam}.${k}`, () => rubbleCluster(fam, k)), x: clampIn(x, hx - R - 0.6), z: clampIn(z, hz - R - 0.6), yaw: rng.range(0, Math.PI * 2), s, r: R });
+    };
+    for (let j = 0; j < d; j++) for (let i = 0; i < w; i++) {
+      if (used[j * w + i] || rng.chance(0.06)) continue;
+      const cx = (i + 0.5) * C - hx, cz = (j + 0.5) * C - hz;
+      if (rng.chance(0.3)) {
+        // two piles on opposite sides of the cell
+        const a = rng.range(0, Math.PI * 2);
+        cluster(cx + Math.cos(a) * 4, cz + Math.sin(a) * 4, rng.range(0.85, 1.05), 1.5);
+        cluster(cx - Math.cos(a) * 4.5, cz - Math.sin(a) * 4.5, rng.range(0.65, 0.85), 1.5);
+      } else cluster(cx, cz, rng.range(0.95, 1.25), 3.5);
     }
     // the burnt shell: outer-wall stubs on about half of the edge cells, 1.4-2.4 m inside the lot's edge
     const inset = rng.range(1.4, 2.4), ex = hx - inset, ez = hz - inset;

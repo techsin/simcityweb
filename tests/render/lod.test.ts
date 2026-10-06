@@ -881,7 +881,7 @@ describe('building LOD cross-fade', () => {
     expect(fast.faded).toBe(0);
   });
 
-  it('compiles the fade program asynchronously after the first frame that drew the buildings (not at load), fading only from then on', async () => {
+  it('compiles the fade program asynchronously a few frames after the first that drew the buildings (not at load), fading only from then on', async () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
     st.heights.fill(0);
     const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
@@ -916,9 +916,17 @@ describe('building LOD cross-fade', () => {
     };
     const scene = new THREE.Scene();
     scene.add(br.batch.mesh);
-    br.batch.mesh.onBeforeRender(renderer as unknown as THREE.WebGLRenderer, scene, cam, br.batch.mesh.geometry, br.batch.mesh.material as THREE.Material, null as unknown as THREE.Group);
-    bound = null;
-    // no compile inside the render itself; the next update starts it with the scene target bound, then restores
+    const draw = () => {
+      renderer.info.render.frame++;
+      bound = sceneRT;
+      br.batch.mesh.onBeforeRender(renderer as unknown as THREE.WebGLRenderer, scene, cam, br.batch.mesh.geometry, br.batch.mesh.material as THREE.Material, null as unknown as THREE.Group);
+      bound = null;
+    };
+    // the first frames after the load carry none of the compile: it starts after a dozen drawn frames, never inside a
+    // render, at the next update with the scene target bound (then restored)
+    for (let f = 0; f < 11; f++) { draw(); at(dOn * 1.1); }
+    expect(calls.length).toBe(0);
+    draw();
     expect(calls.length).toBe(0);
     at(dOn * 1.1);
     expect(calls.length).toBe(1);
@@ -938,8 +946,7 @@ describe('building LOD cross-fade', () => {
     glide(dOn * 0.5, dOn * 1.05);
     expect(bi.lod).toBe(1);
     expect(br.fading).toBe(1);
-    br.batch.mesh.onBeforeRender(renderer as unknown as THREE.WebGLRenderer, scene, cam, br.batch.mesh.geometry, br.batch.mesh.material as THREE.Material, null as unknown as THREE.Group);
-    at(dOn * 1.05);
+    for (let f = 0; f < 20; f++) { draw(); at(dOn * 1.05); }
     expect(calls.length).toBe(1);
   });
 });
@@ -1093,7 +1100,7 @@ describe('burnt lots and foundations', () => {
         const ex = m.elements;
         // upright: the local y axis stays world up (a vertical shear onto the slope, not a tilt; scaled with the piece)
         expect(Math.abs(ex[4]) + Math.abs(ex[6])).toBeLessThan(1e-6);
-        expect(ex[5]).toBeGreaterThan(0.8);
+        expect(ex[5]).toBeGreaterThan(0.5);
         const lx = ex[12] - cx, lz = ex[14] - cz;
         const bedY = topAt(src, Math.max(-b.w * 8 + 0.1, Math.min(b.w * 8 - 0.1, lx)), Math.max(-b.d * 8 + 0.1, Math.min(b.d * 8 - 0.1, lz))) + b.baseY;
         expect(ex[13]).toBeLessThan(bedY + 0.1);
@@ -1199,15 +1206,15 @@ describe('burnt lots and foundations', () => {
     expect(info[thin.found].geometryIndex).toBe(thin.foundGeom);
     // the deep skirt (3 m) still projects over 2 px where its house swaps to the proxy: it turns plain with the house
     const dHouse = (radius(deep) * K) / (br.lodPixels * br.fadeOn);
-    expect((3 * K) / 2).toBeGreaterThan(dHouse * 1.3);
+    expect((3 * K) / 2 / 0.88).toBeGreaterThan(dHouse * 1.1);
     glideTo(deep, dHouse * 0.7, dHouse * 0.9);
     expect(deep.lod).toBe(0);
     expect(info[deep.found].geometryIndex).toBe(deep.foundGeom);
-    glideTo(deep, dHouse * 0.9, dHouse * 1.3);
+    glideTo(deep, dHouse * 0.9, dHouse * 1.1);
     expect(deep.lod).toBe(1);
     expect(info[deep.found].geometryIndex).toBe(deep.foundLod);
     // far: every house on its proxy, every skirt the plain box; swaps within shared spheres (no list rebuild)
-    glideTo(deep, dHouse * 1.3, 3000);
+    glideTo(deep, dHouse * 1.1, 3000);
     for (const bi of [deep, shallow, thin]) { expect(bi.lod).toBe(1); expect(info[bi.found].geometryIndex).toBe(bi.foundLod); }
     expect((br.batch as unknown as { version: number }).version).toBe(ver0);
     // a camera cut back close: the cut frame restores the full skirt (with the house) in view

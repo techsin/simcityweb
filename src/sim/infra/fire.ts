@@ -12,8 +12,10 @@
  *  - Emits buildingChanged on flag flips, 'disaster' {kind:'fire', x, z, active} when a fire starts / ends,
  *    news via sim.notify(..., 'disaster') (legacy path; the emergency system writes its own news).
  *  Burning state persists in state.systemData.infraFires = [buildingId, daysBurning, putOutDay, incidentId, heat][]
- *  (+ infraFireRng / infraFireBoost so a loaded game continues the same ignition sequence) — written by persist() at
- *  the end of fire.daily, on every ignition, and again by the emergency system after its daily fire steps.
+ *  (+ infraFireRng / infraFireBoost so a loaded game continues the same ignition sequence, infraFireNews: the legacy
+ *  news throttle) — written by persist() at the end of fire.daily, on every ignition, when a burning building is
+ *  removed (bulldozed, meteor: it leaves the registry at once, like a load drops it), and again by the emergency
+ *  system after its daily fire steps.
  */
 import { BF, type Building } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
@@ -45,15 +47,25 @@ export class FireSystem implements SimSystem {
   riskBoost = 1;
   /** ordinance 'fire.effect' (firefighting effectiveness) */
   private fireEffect = 1;
+  private unsub: (() => void) | null = null;
 
   init(sim: Simulation): void {
     const st = sim.state;
+    // a burning building that is bulldozed leaves the registry right away (a loaded game never restores it, so live
+    // and loaded games keep the same registry — fires.size gates the riskBoost decay)
+    this.unsub?.();
+    this.unsub = sim.events.on('buildingRemoved', (b) => {
+      if (this.fires.delete(b.id)) this.persist(sim);
+    });
     st.systemData.infraVersion = 1;
     this.rng = new RNG((st.config.seed ^ 0xf12e) + st.day);
     const rs = st.systemData.infraFireRng;
     if (typeof rs === 'number' && rs > 0) this.rng.state = rs;
     const boost = st.systemData.infraFireBoost;
     if (typeof boost === 'number' && isFinite(boost) && boost >= 0) this.riskBoost = boost;
+    // the legacy news throttle (absent in older saves: nothing posted yet)
+    const news = st.systemData.infraFireNews;
+    this.lastNews = typeof news === 'number' && isFinite(news) ? news : -1e9;
     this.fires.clear();
     const saved = st.systemData.infraFires as number[][] | undefined;
     if (Array.isArray(saved)) {
@@ -248,5 +260,6 @@ export class FireSystem implements SimSystem {
     sd.infraFires = arr;
     sd.infraFireRng = this.rng.state;
     sd.infraFireBoost = this.riskBoost;
+    sd.infraFireNews = this.lastNews;
   }
 }

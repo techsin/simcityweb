@@ -33,8 +33,9 @@ export interface OverlayDef {
   notes?: string[];
   /** the legend shows the prevailing wind (Air pollution: smoke drifts downwind) */
   wind?: boolean;
-  /** per-building data: the terrain draws whole cells (nearest texel) instead of blending into the roads between
-   *  the homes (a pale halo on every street) */
+  /** per-building data / categories: the terrain draws whole cells (nearest texel) instead of blending into the roads
+   *  between the homes (a pale halo on every street) — or, across a ramp of categories, through the categories between
+   *  two neighbours (Emergency: an amber "Just out of reach" ring around every red roadless building) */
   crisp?: boolean;
 }
 
@@ -197,6 +198,9 @@ const EMERGENCY = (title: string, unit: string, station: string): DefCore => {
       'Amber / red: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.',
       'Red on a single building: no road reaches it — build one beside it.',
     ],
+    // whole cells: a bilinear blend from a red roadless building (t 0.08) to a green neighbour passes through amber —
+    // a half-cell "Just out of reach" ring that hovers as "Auto-dispatch" (the cells are categories, not a field)
+    crisp: true,
   };
 };
 

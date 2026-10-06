@@ -48,6 +48,20 @@ const fmt = (v: number, digits = 2) => {
   return r === 0 ? (0).toFixed(digits) : `${r > 0 ? '+' : '−'}${Math.abs(r).toFixed(digits)}`;
 };
 
+/**
+ * A −1..1 value in the inspector's points, the one way the whole inspector writes them (the header's desirability, the
+ * Why? bars, titles and notes): "+61", "−10" (a true minus, U+2212, never ASCII "-10"), and "0" for anything under half
+ * a point (never "+0" / "−0").
+ */
+export function signedPts(v: number): string {
+  if (!Number.isFinite(v)) return '—';
+  const r = Math.round(Math.abs(v) * 100);
+  return r === 0 ? '0' : `${v > 0 ? '+' : '−'}${r}`;
+}
+
+/** a bar that would read "0" points (under half a point): the Why? lists leave it out ("Unmet needs −0", "Crowding +0") */
+const shownPts = (b: Bar) => signedPts(b.value) !== '0';
+
 /** the n terms with the largest |value| (stable), as bars */
 export function termBars(terms: readonly FactorTerm[] | null | undefined, n = MAX_BARS, digits = 2, scale = 1): Bar[] {
   if (!terms || !terms.length) return [];
@@ -59,6 +73,12 @@ export function termBars(terms: readonly FactorTerm[] | null | undefined, n = MA
     .map(({ t }) => ({ id: t.id, label: t.label, value: t.value, text: fmt(t.value * scale, digits), detail: t.detail }));
 }
 
+/** termBars in points (the inspector's Why? lists): the n largest terms that show at least one point. (Sorted by |value|,
+ *  the hidden ones are the tail: filtering after the top n keeps the top n of the shown ones.) */
+function pointBars(terms: readonly FactorTerm[] | null | undefined, n = MAX_BARS): Bar[] {
+  return termBars(terms, n).filter(shownPts);
+}
+
 // ------------------------------------------------------------------------------------------------ desirability
 export interface DesirabilityView {
   bars: Bar[];
@@ -68,25 +88,30 @@ export interface DesirabilityView {
   clamped: boolean;
   /** the stored value still moves towards clamp(raw) (smoothing / refresh lag) */
   updating: boolean;
+  /** the clamp and updating notes, each a line (both when the factors are capped and the stored value lags behind) */
+  notes: string[];
+  /** the notes in one line (undefined: none) */
   note?: string;
 }
 
 /** the desirability "updating" note shows from this gap between the stored value and clamp(raw) (5 points: a loaded or
  *  just-refreshed city shows 2-5 point gaps on most lots for a few days — no news for the player) */
 export const DES_UPDATING_GAP = 0.05;
-/** desirability in the inspector's points (+61), like the header and the bars */
-const pts = (v: number) => { const r = Math.round(v * 100); return r === 0 ? '0' : `${r > 0 ? '+' : '−'}${Math.abs(r)}`; };
 
-/** desirabilityBreakdown → top bars + clamp / updating notes (in points); null when there is nothing to show (stub: no terms) */
+/**
+ * desirabilityBreakdown → top bars (those that show at least a point) + clamp / updating notes (in points); null when
+ * there is nothing to show (stub: no terms). Capped factors and a stored value still more than DES_UPDATING_GAP behind
+ * show both notes: a header of +92 beside "tops out at +100" needs the "Updating" line too.
+ */
 export function desirabilityView(br: { terms: FactorTerm[]; raw: number; value: number } | null | undefined): DesirabilityView | null {
   if (!br || !br.terms || !br.terms.length) return null;
   const clampedRaw = Math.max(-1, Math.min(1, br.raw));
   const clamped = Math.abs(br.raw) > 1 + 1e-6;
   const updating = Math.abs(clampedRaw - br.value) > DES_UPDATING_GAP;
-  let note: string | undefined;
-  if (clamped) note = `Capped: the factors add up to ${pts(br.raw)}, desirability tops out at ${pts(clampedRaw)}`;
-  else if (updating) note = `Updating: heading for ${pts(clampedRaw)}`;
-  return { bars: termBars(br.terms), value: br.value, raw: br.raw, clamped, updating, note };
+  const notes: string[] = [];
+  if (clamped) notes.push(`Capped: the factors add up to ${signedPts(br.raw)}, desirability tops out at ${signedPts(clampedRaw)}`);
+  if (updating) notes.push(`Updating: heading for ${signedPts(clampedRaw)}`);
+  return { bars: pointBars(br.terms), value: br.value, raw: br.raw, clamped, updating, notes, note: notes.length ? notes.join(' · ') : undefined };
 }
 
 // ------------------------------------------------------------------------------------------------ condition
@@ -96,20 +121,38 @@ export interface ConditionView {
   target: number;
   /** "Abandons in 34 days" (null = not at risk) */
   abandon: string | null;
+  /** the 0…100 % clamp of the target ("Floored at 0%: the factors add up to −21%"), a note rather than a bar */
+  note?: string;
 }
 
-/** conditionBreakdown → bars (the base term first, then the penalties) + the abandonment countdown */
+/** a clamp ("Floored at 0%" / "Capped at 100%" term) of a target in % as a note: what the factors add up to (raw =
+ *  the sum of the other terms); none under half a point, where the sum reads the same as the clamped value */
+function clampNote(clamp: FactorTerm | undefined, raw: number): string | undefined {
+  if (!clamp || !Number.isFinite(clamp.value) || signedPts(clamp.value) === '0') return undefined;
+  return `${clamp.label}: the factors add up to ${signedPts(raw)}%`;
+}
+const sumOf = (terms: readonly FactorTerm[]) => terms.reduce((a, t) => a + (Number.isFinite(t.value) ? t.value : 0), 0);
+
+/**
+ * conditionBreakdown → bars (the base term first, then the penalties that show at least a point) + the abandonment
+ * countdown. The clamp term (the target is kept within 0…100 %) is a note like land value's, not a bar: a green
+ * "Floored at 0% +21" read as a bonus on an unpowered home, and a "Capped at 100%" of −3 could lead the main problem.
+ */
 export function conditionView(cb: { terms: FactorTerm[]; target: number; abandonInDays: number | null } | null | undefined): ConditionView | null {
   if (!cb || !cb.terms || !cb.terms.length) return null;
   const abandon = cb.abandonInDays === null || cb.abandonInDays === undefined ? null
     : cb.abandonInDays <= 0 ? 'Abandons any day now' : `Abandons in ${Math.round(cb.abandonInDays)} day${Math.round(cb.abandonInDays) === 1 ? '' : 's'}`;
-  const base = cb.terms.filter((t) => t.id === 'desirability');
-  const rest = termBars(cb.terms.filter((t) => t.id !== 'desirability'), MAX_BARS - base.length);
-  return {
+  const terms = cb.terms.filter((t) => t.id !== 'clamp');
+  const base = terms.filter((t) => t.id === 'desirability');
+  const rest = pointBars(terms.filter((t) => t.id !== 'desirability'), MAX_BARS - base.length);
+  const view: ConditionView = {
     bars: [...base.map((t) => ({ id: t.id, label: 'From desirability', value: t.value, text: fmt(t.value), detail: t.detail })), ...rest],
     target: cb.target,
     abandon,
   };
+  const note = clampNote(cb.terms.find((t) => t.id === 'clamp'), sumOf(terms));
+  if (note) view.note = note;
+  return view;
 }
 
 /** fix hints of condition terms (population.ts conditionBreakdown ids) */
@@ -200,8 +243,9 @@ export function mainProblem(input: {
   const c = input.condition;
   const countdown = (c?.abandon ?? null) !== null;
   const struggling = !!input.abandoned || countdown || (!!c && c.target < STRUGGLE_TARGET);
-  // (unmet needs lead only while the building struggles: the "Needs unmet" chip and the Residents list show them)
-  const neg = c?.bars.filter((b) => b.id !== 'desirability' && b.value < -0.02 && (struggling || (b.id !== 'needs' && b.value <= -PENALTY_PROBLEM)))
+  // (unmet needs lead only while the building struggles: the "Needs unmet" chip and the Residents list show them; the
+  // 0…100 % clamp is no penalty — conditionView keeps it out of the bars, a note)
+  const neg = c?.bars.filter((b) => b.id !== 'desirability' && b.id !== 'clamp' && b.value < -0.02 && (struggling || (b.id !== 'needs' && b.value <= -PENALTY_PROBLEM)))
     .sort((a, b) => a.value - b.value)[0];
   if (neg) {
     const hint = CONDITION_HINTS[neg.id] || neg.detail;
@@ -217,14 +261,13 @@ export function mainProblem(input: {
 }
 
 // ------------------------------------------------------------------------------------------------ land value
-/** landValueBreakdown → bars; the clamp term ("Floored at 0%" / "Capped at 100%") becomes a note, not a bar */
+/** landValueBreakdown → bars (those that show at least a point); the clamp term ("Floored at 0%" / "Capped at 100%")
+ *  becomes a note, not a bar */
 export function landValueView(terms: readonly FactorTerm[] | null | undefined): { bars: Bar[]; note?: string } {
   if (!terms || !terms.length) return { bars: [] };
-  const clamp = terms.find((t) => t.id === 'clamp');
-  const bars = termBars(terms.filter((t) => t.id !== 'clamp'));
-  if (!clamp || !Number.isFinite(clamp.value) || Math.abs(clamp.value) < 1e-3) return { bars };
-  const raw = terms.filter((t) => t.id !== 'clamp' && t.id !== 'smoothing').reduce((a, t) => a + (Number.isFinite(t.value) ? t.value : 0), 0);
-  return { bars, note: `${clamp.label}: the factors add up to ${raw >= 0 ? '+' : '−'}${Math.abs(Math.round(raw * 100))}%` };
+  const bars = pointBars(terms.filter((t) => t.id !== 'clamp'));
+  const note = clampNote(terms.find((t) => t.id === 'clamp'), sumOf(terms.filter((t) => t.id !== 'clamp' && t.id !== 'smoothing')));
+  return note ? { bars, note } : { bars };
 }
 
 // ------------------------------------------------------------------------------------------------ growth limits
@@ -250,11 +293,14 @@ export function growthRows(gl: GrowthLimitsLike | null | undefined, stage?: numb
   if (gl.rejected) rows.push({ label: 'Growth', value: gl.reason ?? 'Blocked', tone: 'neg' });
   else rows.push({ label: 'Can grow to', value: `stage ${lim} · limited by ${which}`, tone: stage !== undefined && stage >= lim ? 'warn' : '' });
   rows.push({ label: 'Stage limits', value: `desirability ${gl.desStage} · population ${gl.popStage} · zone ${gl.zoneStage}` });
-  // optional fields added by WP6a (e.g. downtown weight): show numbers / short strings generically
+  // optional fields added by WP6a (e.g. downtown weight): show numbers / short strings generically (a negative number
+  // with a true minus, like every other sign in the inspector)
   for (const [k, v] of Object.entries(gl)) {
     if (['desStage', 'popStage', 'zoneStage', 'rejected', 'reason'].includes(k)) continue;
-    if (typeof v === 'number' && Number.isFinite(v)) rows.push({ label: labelOf(k), value: Math.abs(v) < 10 ? v.toFixed(2) : String(Math.round(v)) });
-    else if (typeof v === 'string' && v.length < 80) rows.push({ label: labelOf(k), value: v });
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      const t = Math.abs(v) < 10 ? Math.abs(v).toFixed(2) : String(Math.round(Math.abs(v)));
+      rows.push({ label: labelOf(k), value: v < 0 && Number(t) !== 0 ? '−' + t : t });
+    } else if (typeof v === 'string' && v.length < 80) rows.push({ label: labelOf(k), value: v });
   }
   return rows;
 }
@@ -376,7 +422,7 @@ const CRIME_LABEL: Record<string, string> = {
   density: 'Crowding', poverty: 'Poverty', unemployment: 'Unemployment', landValue: 'Low land value', abandoned: 'Abandoned buildings',
   garbage: 'Garbage in the streets', youth: 'Bored teens', nightlife: 'Nightlife',
 };
-/** CrimeSystem.termsOf → bars (causes positive, police removes a share) */
+/** CrimeSystem.termsOf → bars (causes positive, police removes a share; those that show at least a point) */
 export function crimeBars(t: CrimeTermsLike | null | undefined): { bars: Bar[]; total: number; police: number; multiplier: number } | null {
   if (!t) return null;
   const terms: FactorTerm[] = [];
@@ -384,5 +430,5 @@ export function crimeBars(t: CrimeTermsLike | null | undefined): { bars: Bar[]; 
     const v = (t as unknown as Record<string, number>)[k];
     if (typeof v === 'number' && Math.abs(v) > 1e-3) terms.push({ id: k, label: CRIME_LABEL[k], value: v });
   }
-  return { bars: termBars(terms, MAX_BARS, 2), total: t.total, police: t.police, multiplier: t.multiplier };
+  return { bars: pointBars(terms), total: t.total, police: t.police, multiplier: t.multiplier };
 }
