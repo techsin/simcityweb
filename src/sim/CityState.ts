@@ -232,6 +232,9 @@ export interface EmergencyMonth {
   /** answered after the grace time / not resolved before the deadline */
   late: number;
   failed: number;
+  /** WP6b: failed major incidents nobody answered although the player was told a unit could still make it in time
+   *  (the Dispatch prompt) — residents remember them (approval). Absent in months saved before WP6b round 2. */
+  ignored?: number;
   /** summed response minutes and number of responses per responder (average = responseMin / responses) */
   responseMin: Record<Responder, number>;
   responses: Record<Responder, number>;
@@ -247,7 +250,7 @@ export interface EmergencyMonth {
 export function emptyEmergencyMonth(): EmergencyMonth {
   return {
     count: { fire: 0, industrial: 0, spill: 0, crime: 0, riot: 0, medical: 0, collapse: 0, prisonRiot: 0 },
-    auto: 0, manual: 0, late: 0, failed: 0,
+    auto: 0, manual: 0, late: 0, failed: 0, ignored: 0,
     responseMin: { fire: 0, police: 0, medical: 0 },
     responses: { fire: 0, police: 0, medical: 0 },
     deaths: 0, injured: 0, rescued: 0, buildingsLost: 0, damage: 0, arrests: 0, riotDays: 0,

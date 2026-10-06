@@ -97,6 +97,9 @@ export interface Incident {
   manualPossible: boolean;
   /** a free unit of the needed type can be sent at all (by road), even if it only arrives after the deadline */
   canSend?: boolean;
+  /** WP6b: the player was prompted (a major incident uncovered while a free unit could still make it in time): if it
+   *  fails with nobody answering, it counts as ignored (stats.emergency month.ignored; approval remembers) */
+  prompted?: boolean;
   /** ETA (game minutes incl. turnout) of the nearest free unit the last dispatch attempt found beyond the stations'
    *  ranges (undefined = none within the time left): manualPossible lapses once the time left drops below it */
   bestEta?: number;
@@ -1773,6 +1776,7 @@ export class EmergencySystem implements SimSystem {
     inc.canSend = canSend;
     inc.note = note;
     inc.etaMin = undefined;
+    if (manualPossible && inc.major) inc.prompted = true;
     if (!changed) return;
     this.emit(sim, inc, 'uncovered');
     if (inc.major) {
@@ -2545,7 +2549,11 @@ export class EmergencySystem implements SimSystem {
     this.byId.delete(inc.id);
     this.optCache.delete(inc.id);
     const m = st.stats.emergency.month;
-    if (inc.state === 'failed') m.failed++;
+    if (inc.state === 'failed') {
+      m.failed++;
+      // nobody came although the player was told a unit could still make it (WP6b: approval remembers these)
+      if (inc.major && inc.answered === 0 && inc.prompted) m.ignored = (m.ignored ?? 0) + 1;
+    }
     // release units
     for (const id of inc.units) {
       const v = this.vById.get(id);
@@ -2945,7 +2953,7 @@ function sumMonths(ms: readonly EmergencyMonth[]): EmergencyMonth {
       s.responseMin[r] += m.responseMin?.[r] ?? 0;
       s.responses[r] += m.responses?.[r] ?? 0;
     }
-    s.auto += m.auto; s.manual += m.manual; s.late += m.late; s.failed += m.failed;
+    s.auto += m.auto; s.manual += m.manual; s.late += m.late; s.failed += m.failed; s.ignored = (s.ignored ?? 0) + (m.ignored ?? 0);
     s.deaths += m.deaths; s.injured += m.injured; s.rescued += m.rescued; s.buildingsLost += m.buildingsLost;
     s.damage += m.damage; s.arrests += m.arrests; s.riotDays += m.riotDays;
   }

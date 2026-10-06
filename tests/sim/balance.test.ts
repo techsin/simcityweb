@@ -13,8 +13,9 @@
  *  - the wrong choices do clearly worse (critic item 41): a mayor who builds no services at all ends with less than
  *    half the population, approval below 45 and most incidents failed; one who builds no schools ends with EQ < 60 and
  *    lower approval — and neither ends with more than 5 % more people than the base (the chaos margin);
- *  - WP6b round 2: a mayor who never dispatches to uncovered emergencies (--neglect) has more of them fail and a lower
- *    approval over the run (residents remember unanswered emergencies for a year); one who refuses smokestack industry
+ *  - WP6b round 2: a mayor who never dispatches to uncovered emergencies (--neglect) has more of them fail and an
+ *    approval at least a point lower over the run (residents remember unanswered emergencies for a year, and each
+ *    ignored Dispatch prompt at a fixed weight); one who refuses smokestack industry
  *    (--skip dirty) breathes cleaner air but pays with unemployment (labour headroom: commerce alone no longer employs
  *    everyone) and a smaller city.
  * The yearly tables for seeds 7 and 11 (256 x 60) live in the partB set; tools/simbot.ts prints the same columns.
@@ -110,7 +111,7 @@ describe.skipIf(process.env.BALANCE !== '1' && process.env.BALANCE !== '256')('W
     const mean = (v: Yearly[], f: (r: Yearly) => number) => v.reduce((s, r) => s + f(r), 0) / v.length;
     const ng = await play(128, 15, 7, { neglect: true });
     expect(ng.reduce((s, r) => s + r.failed, 0), 'neglect: failed incidents').toBeGreaterThan(y.reduce((s, r) => s + r.failed, 0));
-    expect(mean(ng, (r) => r.approval), 'neglect: mean approval').toBeLessThan(mean(y, (r) => r.approval));
+    expect(mean(ng, (r) => r.approval), 'neglect: mean approval').toBeLessThan(mean(y, (r) => r.approval) - 1);
     // no smokestack industry: cleaner air, but jobs lag (unemployment) and the city stays smaller
     const dirty = await play(128, 15, 7, { skip: ['dirty'] });
     expect(dirty.at(-1)!.air, 'no dirty industry: air').toBeLessThan(base.air);

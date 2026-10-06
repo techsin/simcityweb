@@ -6,7 +6,8 @@
  *    with income, landmarks and civic buildings keep the flat upkeep; economy-only cities (no sim-infra services) too.
  *  - LABOUR HEADROOM (demand.ts): commerce and industry expand only while the workforce can staff the new jobs; the
  *    headroom is shared by the two families by the jobs each offers.
- *  - Residents remember unanswered emergencies for a year (approval.ts, APPROVAL_TERMS.emFailRate).
+ *  - Residents remember unanswered emergencies for a year (approval.ts, APPROVAL_TERMS.emFailRate), and every Dispatch
+ *    prompt the mayor ignored at a fixed weight (APPROVAL_TERMS.emIgnored; emergency.ts counts them: month.ignored).
  */
 import { describe, expect, it } from 'vitest';
 import { makeCity, road } from './helpers';
@@ -21,6 +22,9 @@ import { computeMonthlyBudget } from '../../src/sim/economy/budget';
 import { demandSystem } from '../../src/sim/economy/demand';
 import { placeBuilding } from '../../src/sim/economy/buildings';
 import { buildingUpkeep, expectedUpkeep, opexTierOf } from '../../src/sim/economy/opex';
+import { emergencyOf } from '../../src/sim/infra/emergency';
+import { getFire, triggerDisaster } from '../../src/sim/systems/infra';
+import { newSim, newState, place, roadLine } from '../infra/cityGen';
 import {
   APPROVAL_TERMS, LABOUR_MIN_HEAD, LABOUR_UNEMP0, LABOUR_VAC0, OPEX_BUILDING_SHARE, OPEX_PER_SERVED, WORKFORCE_RATIO,
 } from '../../src/sim/economy/tuning';
@@ -175,5 +179,53 @@ describe('approval remembers unanswered emergencies', () => {
     const yr = c.st.stats.emergency.year;
     yr.count.fire = 1; yr.failed = 1;
     expect(month(c).emergencies ?? 0).toBe(0);
+  });
+
+  it('an ignored Dispatch prompt costs a fixed APPROVAL_TERMS.emIgnored for twelve months, whatever the city\'s size', () => {
+    const c = town(12000);
+    const yr = c.st.stats.emergency.year;
+    yr.count.fire = 10; yr.count.medical = 600; yr.failed = 2;
+    const share = month(c).emergencies!;
+    expect(share).toBeGreaterThan(-1);
+    yr.ignored = 2;
+    expect(month(c).emergencies).toBeCloseTo(share - 2 * APPROVAL_TERMS.emIgnored, 5);
+  });
+});
+
+describe('ignored Dispatch prompts (emergency.ts: stats.emergency month.ignored)', () => {
+  /** a street along z = 20; a fire station at x = 58 (or none) and a burning home at x */
+  function fireAt(x: number, station: boolean) {
+    const st = newState(64);
+    roadLine(st, 2, 20, 62, 20, Network.Road);
+    if (station) place(st, 't_fire', 58, 19);
+    const sim = newSim(st);
+    getFire(sim)!.riskBoost = 0; // no random ignitions
+    const home = place(st, 't_r2', x, 21, { pop: 60 });
+    sim.events.emit('buildingAdded', home);
+    expect(triggerDisaster(sim, 'fire', x, 21)).toBe(true);
+    const em = emergencyOf(sim)!;
+    return { st, sim, em, inc: em.incidents()[0] };
+  }
+
+  it('a fire beyond the station\'s range that a truck could still reach in time: ignored when nobody is sent', () => {
+    const { st, sim, inc } = fireAt(12, true);
+    expect(inc.state).toBe('uncovered');
+    expect(inc.reason).toBe('outOfRange');
+    expect(inc.manualPossible).toBe(true);
+    sim.runDays(10);
+    expect(st.stats.emergency.month.failed).toBe(1);
+    expect(st.stats.emergency.month.ignored).toBe(1);
+  });
+
+  it('answered by the player: not ignored; no station at all (no prompt): failed, not ignored', () => {
+    const a = fireAt(12, true);
+    expect(a.em.dispatchBest(a.sim, a.inc.id).ok).toBe(true);
+    a.sim.runDays(10);
+    expect(a.st.stats.emergency.month.ignored).toBe(0);
+    const b = fireAt(12, false);
+    expect(b.inc.manualPossible).toBe(false);
+    b.sim.runDays(10);
+    expect(b.st.stats.emergency.month.failed).toBe(1);
+    expect(b.st.stats.emergency.month.ignored).toBe(0);
   });
 });

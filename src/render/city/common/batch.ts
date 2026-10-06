@@ -224,6 +224,28 @@ function orient(w: ArrayLike<number>, out: Float64Array): void {
 }
 
 /** equal within a relative 1e-9 (projection shapes: a still, damped camera jitters by float ulps) */
+/**
+ * One texSubImage2D of rows [y0, y0 + h) (full width w) straight into a texture three.js has already created (no
+ * re-specification, no sampler parameters). It runs inside a pass (onBeforeRender / onBeforeShadow), so the texture is
+ * bound on the active unit only for the upload and that unit's previous texture is bound back: three.js does not
+ * re-bind a material's textures for a draw that reuses the previous draw's program and material (two batches sharing
+ * the city material), which would otherwise sample this texture in place of one of them.
+ */
+function uploadRows(renderer: THREE.WebGLRenderer, tex: WebGLTexture, y0: number, w: number, h: number, format: number, type: number, data: ArrayBufferView, offset: number): void {
+  const gl = renderer.getContext() as WebGL2RenderingContext, st = renderer.state;
+  const prev = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+  st.bindTexture(gl.TEXTURE_2D, tex);
+  st.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  st.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  st.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  st.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  st.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+  st.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, y0, w, h, format, type, data, offset);
+  // (null: three.js binds its empty texture)
+  st.bindTexture(gl.TEXTURE_2D, prev as WebGLTexture);
+}
+
 function close(a: number, b: number): boolean {
   return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a));
 }
@@ -985,15 +1007,8 @@ export class DynamicBatch {
     }
     const W = tex.image.width, rows = Math.min(tex.image.height, Math.ceil((this.top * 4) / W));
     if (rows <= 0) return;
-    const gl = renderer.getContext() as WebGL2RenderingContext, st = renderer.state;
-    st.bindTexture(gl.TEXTURE_2D, props.__webglTexture);
-    st.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    st.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    st.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-    st.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
-    st.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
-    st.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, rows, gl.RGBA, gl.FLOAT, tex.image.data as unknown as Float32Array, 0);
+    const gl = renderer.getContext() as WebGL2RenderingContext;
+    uploadRows(renderer, props.__webglTexture, 0, W, rows, gl.RGBA, gl.FLOAT, tex.image.data as unknown as Float32Array, 0);
   }
 
   /** planes of the list build -> _fp (view / shadow camera) and _rp / _rnl (receiver), widened by the slot's bands */
@@ -1211,16 +1226,9 @@ export class DynamicBatch {
     // (stub renderers in tests have no GL state: whole upload)
     const props = renderer.properties ? (renderer.properties.get(tex) as { __webglTexture?: WebGLTexture; __version?: number }) : undefined;
     if (props === undefined || props.__webglTexture === undefined || props.__version !== tex.version) { tex.needsUpdate = true; return; }
-    const gl = renderer.getContext() as WebGL2RenderingContext, st = renderer.state;
+    const gl = renderer.getContext() as WebGL2RenderingContext;
     const r0 = (j / ID_W) | 0, r1 = ((n - 1) / ID_W) | 0;
-    st.bindTexture(gl.TEXTURE_2D, props.__webglTexture);
-    st.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    st.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    st.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-    st.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
-    st.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
-    st.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, ID_W, r1 - r0 + 1, gl.RED_INTEGER, gl.UNSIGNED_INT, data, r0 * ID_W);
+    uploadRows(renderer, props.__webglTexture, r0, ID_W, r1 - r0 + 1, gl.RED_INTEGER, gl.UNSIGNED_INT, data, r0 * ID_W);
   }
 
   /** (re)fill tile ti's block for pass class ck % 3: its visible instances with the cascade bit, and their ranges */

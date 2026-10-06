@@ -704,9 +704,15 @@ export const APPROVAL_TERMS = {
    *  hamlet's first fire, before it could afford a station, is not held against the mayor). A town of 40k that let 3
    *  of its 40 emergencies of the year go unanswered: −4.3; a 1M city failing 10 of 600 (busy units): −1.6. The
    *  one-month term alone cost a neglectful mayor 1.2 points for a month per burnt-out block, which no one noticed
-   *  (128×15 s7 --neglect: approval +0.5 vs attentive; with the memory −1.7 over the run, 17 vs 3 incidents failed) */
+   *  (acceptance r1, 128×15 s7 --neglect: approval +0.5 vs attentive). */
   emFailRate: 100,
   emFailN0: 30,
+  /** WP6b: + emIgnored per IGNORED prompt of the last 12 months (stats.emergency month.ignored: a major incident failed
+   *  with nobody sent although the Dispatch prompt said a unit could still make it) — a choice, so a fixed weight that
+   *  does not shrink with the city (the share term above dilutes a big city's failures). A competent mayor answers
+   *  them (the bot: 0-2 a year); 256×60 s7 --neglect let 5-17 a year fail (approval −2.2 over the run with the share
+   *  term alone; population unchanged) */
+  emIgnored: 1.5,
   /** legacy fallback while the emergency system is inactive: −1.5 per fire started last month, at most 6 */
   firePer: 1.5,
   fireMax: 6,

@@ -16,7 +16,7 @@
  * treatment plants in place, desalination / shore sites, no brown-out trap), serves the catchment needs (schools,
  * clinics / hospitals, colleges / libraries, playgrounds, parks: unserved homes counted per building — homeNeed —,
  * partly served catchment edges, overloaded facilities; keyed to completed services passes), sends a unit to every
- * uncovered major emergency like an attentive player (--neglect: never), builds fire stations / clinics where responders
+ * uncovered major emergency a unit can still reach in time, like an attentive player (--neglect: never), builds fire stations / clinics where responders
  * cannot reach, a prison when the jail overflows, bus stops / depots / garages, tree buffers along noisy highways, and
  * places every service and utility on a lot that touches a road.
  * Prints a yearly table (population, funds, income/expense, demand, EQ, commute, cohorts, enrolment, tourism, timings).
@@ -704,8 +704,10 @@ export class SimBot {
     const list = em.incidents();
     for (let k = 0; k < list.length; k++) {
       const inc = list[k];
-      if (inc.state !== 'uncovered' || !inc.major) continue;
-      if (inc.canSend === false && !inc.manualPossible) continue;
+      // only while a unit can still make it in time (what the prompt says): a truck sent across the city to arrive after
+      // the deadline saves nothing and leaves its own district uncovered (WP6b: 256x60 s11 failed 7-14 incidents a
+      // year that way from 2025 on, 0-5 with this rule)
+      if (inc.state !== 'uncovered' || !inc.major || !inc.manualPossible) continue;
       const r = em.dispatchBest(this.sim, inc.id);
       if (r.ok) this.dispatches++;
     }
