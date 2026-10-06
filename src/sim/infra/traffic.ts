@@ -174,9 +174,10 @@ export interface GarageReach {
   viaRoom: number;
   /** minutes park & ride from here would add for them vs their first pick */
   slower: number;
-  /** their mean number of park & ride options; the share for which this garage's group is a full-weight option; the
-   *  share whose options are all full */
+  /** their mean number of park & ride options, and of those in other groups than this garage's; the share for which this
+   *  garage's group is a full-weight option; the share whose options are all full */
   options: number;
+  others: number;
   own: number;
   full: number;
   /** their options of other groups (ids, the most picked first, each picked by >= 10 % of the top one's workers), and
@@ -239,13 +240,16 @@ const OV_PASSES = 3;
 const OV_MIN_ROOM = 10;
 const OV_CACHE = 3;
 const OV_SEARCHES = 6;
-/** overflow records re-decided per scheduler step (each: a mode split per option tried), and the estimated ms per
- *  record (calibrated like PHASE_COST) */
+/** overflow records re-decided per scheduler step (each: a mode split per option tried); estimated ms per record, of a
+ *  step and of the round's car flows (accumulate + commit over its forest: they move from roundMatch's step to the
+ *  overflow's last one) on the reference city; states of an overflow search per step at PR_CHUNK_COST (two labels per
+ *  node: about a third of the K-label search's ms per state). Calibrated like PHASE_COST (the scheduler-cost driver on
+ *  stressCity(256) + facilities + the transport set: CPU per estimated ms of these steps ~ the matching rounds') */
 const OV_CHUNK = 3000;
-const OV_REC_COST = 4e-4;
-/** estimated ms of a round's car flows (accumulate + commit over its forest) on the reference city, scaled like the
- *  phases (they move from roundMatch's step to the overflow's last one) */
-const OV_FLOW_COST = 0.4;
+const OV_REC_COST = 1e-4;
+const OV_STEP_COST = 0.02;
+const OV_FLOW_COST = 0.15;
+const OV_CHUNK_STATES = 40000;
 const MAX_ENTRIES = 12;
 /** job matching: a proportional round (round < MATCH_PROP_ROUNDS) that matched under this share of the waiting workers
  *  is starved and does not count toward MATCH_ROUNDS (at most MATCH_EXTRA_ROUNDS such rounds per assignment); starved
@@ -566,14 +570,16 @@ export class TrafficSystem implements SimSystem {
   private gWantR: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gRes: Float32Array<ArrayBuffer> = new Float32Array(0);
   /** r4, per group root: riders turned away with no room at any option (the overflow included), attributed to the
-   *  options they wanted (logit weights), the worker-weighted sum of their homes' x / z (report: where another garage
-   *  would take them), and the riders it took as other groups' overflow */
+   *  options they wanted (logit weights), the worker-weighted sums of their homes' x / z and x² + z² (report: where
+   *  another garage would take them, when they live close together), and the riders it took as other groups' overflow */
   private gUnpl: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gUnplX: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gUnplZ: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gUnplQ: Float64Array<ArrayBuffer> = new Float64Array(0);
   private gOvIn: Float32Array<ArrayBuffer> = new Float32Array(0);
-  /** overflow riders of this assignment by (root of an option they were turned away from) x (gN + 1) + (root that took
-   *  them), split by their logit weights over their options: the report names a full garage's main taker */
+  /** riders turned away by a full group that another group took this assignment — spilled to another option (prRest, by
+   *  the riders each option turned away) or as the overflow (PH_PROVER, by their logit weights over their options) — by
+   *  (root of the full group) x (gN + 1) + (root that took them): the report names a full garage's main taker */
   private ovTo = new Map<number, number>();
   /** overflow riders per origin x (gN + 1) + root this assignment (the group's catchment counts the origin's workers once,
    *  the origin's main overflow group) */
@@ -607,8 +613,9 @@ export class TrafficSystem implements SimSystem {
   private garageLast = new Map<number, {
     riders: number; want: number; catchment: number; state: number; pooled: number; reserve: number; transit: number;
     /** r4: riders it took as other groups' overflow; the garage that took most of its commuters' overflow (-1 none) and
-     *  those riders; its commuters' riders turned away with nowhere to go and the cell at the centre of their homes */
-    ovIn: number; ovTo: number; ovToRiders: number; unplaced: number; unplacedHome: number;
+     *  those riders; its commuters' riders turned away with nowhere to go, the cell at the centre of their homes and their
+     *  spread around it (tiles, rms) */
+    ovIn: number; ovTo: number; ovToRiders: number; unplaced: number; unplacedHome: number; unplacedSpread: number;
   }>();
   /** free spaces per garage id in the last parking update (report: the pressure around it with and without them) */
   private garageFree = new Map<number, number>();
@@ -616,6 +623,9 @@ export class TrafficSystem implements SimSystem {
    *  over the mode split's option (sum of riders x (t_k - t_ref)) */
   private prAk = new Float64Array(PR_OPTIONS);
   private prWk = new Float64Array(PR_OPTIONS);
+  /** riders each option of the last prAlloc turned away (full): their spill, attributed to the options that take it (r4,
+   *  the report names a full garage's main taker) */
+  private prRj = new Float64Array(PR_OPTIONS);
   private prDT = 0;
   /** the split arguments of the piece prRest re-decides (car minutes / car possible, walk, walk-to-stop transit, the
    *  ordinance's transit bonus; pcPool: poolRemaining's binary split) */
@@ -673,8 +683,11 @@ export class TrafficSystem implements SimSystem {
   private ovSlot = -1;
   private ovSearches = 0;
   private ovFilled = false;
-  /** use counter of the overflow forest cache (least recently used goes first) */
+  /** use counter of the overflow forest cache (least recently used goes first); the cache slot of the first forest this
+   *  assignment used (its seeds are a superset of every later pass's — room only shrinks within an assignment —, so an
+   *  origin it leaves without an option in reach has none later: ovReachable; -1 none yet) */
   private ovTick = 0;
+  private ovFilt = -1;
   /** the round's car commuters and sample-route candidates (flows committed after the overflow), its transit bonus and
    *  car PCU */
   private ovCarRound = 0;
@@ -926,12 +939,12 @@ export class TrafficSystem implements SimSystem {
       if (this.ovStage === 1) return PR_CHUNK_COST * Math.min(1, 3 * road);
       if (this.ovStage === 3) {
         const f = this.ovSlot >= 0 && this.ovSlot < this.ov.length ? this.ov[this.ovSlot] : null;
-        return 0.05 + OV_REC_COST * recs + (f && f.alt !== this.cycles ? PR_REFRESH_COST * f.S.settled : 0);
+        return OV_STEP_COST + OV_REC_COST * recs + (f && f.alt !== this.cycles ? PR_REFRESH_COST * f.S.settled : 0);
       }
-      if (this.ovCur + OV_CHUNK < this.pnN) return 0.05 + OV_REC_COST * recs;
+      if (this.ovCur + OV_CHUNK < this.pnN) return OV_STEP_COST + OV_REC_COST * recs;
       let states = 0;
       for (const f of this.ov) if (f.dirty) states += f.S.settled;
-      return 0.05 + OV_REC_COST * recs + PR_REFRESH_COST * states + OV_FLOW_COST * (0.8 * road + 0.2 * bld);
+      return OV_STEP_COST + OV_REC_COST * recs + 0.3 * PR_REFRESH_COST * states + OV_FLOW_COST * (0.8 * road + 0.2 * bld);
     }
     return base * (0.8 * road + 0.2 * bld);
   }
@@ -1150,13 +1163,13 @@ export class TrafficSystem implements SimSystem {
    * whose transitMin >= PR_LIMIT is no option for anybody); r4: overflowIn = riders it took as the overflow of full
    * garages, overflowTo / overflowToRiders = the garage that took most of its own commuters' overflow (-1 none),
    * unplaced = its commuters' riders that found no room at any garage (its share), unplacedHome = the cell at the centre of
-   * their homes (-1 none); null = not seen by an assignment yet
+   * their homes (-1 none), unplacedSpread = their homes' spread around it (tiles, rms); null = not seen by an assignment yet
    */
   garageInfo(id: number): {
     stopId: number; parkRide: number; spaces: number; walkMin: number; ride: boolean;
     riders?: number; wanted?: number; catchment?: number; price?: number; state?: string; pooled?: number;
     reserve?: number; relief?: { with: number; without: number; short: number; shortWithout: number }; transitMin?: number;
-    overflowIn?: number; overflowTo?: number; overflowToRiders?: number; unplaced?: number; unplacedHome?: number;
+    overflowIn?: number; overflowTo?: number; overflowToRiders?: number; unplaced?: number; unplacedHome?: number; unplacedSpread?: number;
   } | null {
     for (let g = 0; g < this.gN; g++) {
       if (this.gBid[g] !== id) continue;
@@ -1174,7 +1187,7 @@ export class TrafficSystem implements SimSystem {
         relief,
         transitMin: last && Number.isFinite(last.transit) ? last.transit : undefined,
         overflowIn: last?.ovIn ?? 0, overflowTo: last?.ovTo ?? -1, overflowToRiders: last?.ovToRiders ?? 0,
-        unplaced: last?.unplaced ?? 0, unplacedHome: last?.unplacedHome ?? -1,
+        unplaced: last?.unplaced ?? 0, unplacedHome: last?.unplacedHome ?? -1, unplacedSpread: last?.unplacedSpread ?? 0,
       };
     }
     return null;
@@ -1197,7 +1210,7 @@ export class TrafficSystem implements SimSystem {
     const c = this.reachCache.get(id);
     const copy = (c: GarageReach): GarageReach => ({
       workers: c.workers, homes: c.homes, ovTo: c.ovTo, ovShare: c.ovShare, via: c.via, viaRoom: c.viaRoom, slower: c.slower, options: c.options,
-      own: c.own, full: c.full, opts: c.opts.slice(), optsRoom: c.optsRoom.slice(),
+      others: c.others, own: c.own, full: c.full, opts: c.opts.slice(), optsRoom: c.optsRoom.slice(),
     });
     const rs = this.rs;
     if (!rs) return c ? copy(c) : null;
@@ -1207,7 +1220,7 @@ export class TrafficSystem implements SimSystem {
     const g = this.road;
     // (a garage newer than the snapshot, or not park & ride then, or node ids of an older graph: what was known)
     if (q < 0 || !(rs.gRank[q] < Infinity) || g.version !== rs.ver) return c ? copy(c) : null;
-    let workers = 0, homes = 0, via = -1, slower = 0, options = 0, own = 0, full = 0, viaRoom = -1, ovTo = -1, ovShare = 0;
+    let workers = 0, homes = 0, via = -1, slower = 0, options = 0, others = 0, own = 0, full = 0, viaRoom = -1, ovTo = -1, ovShare = 0;
     let opts: number[] = [], optsRoom: number[] = [];
     if (rs.gEntC[q] > 0 && g.n > 0) {
       const S = (this.SR ??= new Search()), seeds = new Seeds();
@@ -1246,7 +1259,7 @@ export class TrafficSystem implements SimSystem {
         for (let k = 0; k < n; k++) {
           const u = rs.prG[o * K + k];
           if (rs.gGrp[u] === ownG && Math.exp(-PR_GARAGE_BETA * rs.prA[o * K + k]) >= 0.5) own += W;
-          if (rs.gGrp[u] !== ownG) byAll.set(u, (byAll.get(u) ?? 0) + W);
+          if (rs.gGrp[u] !== ownG) { others += W; byAll.set(u, (byAll.get(u) ?? 0) + W); }
           if (!fullQ(u)) { allFull = false; if (rs.gGrp[u] !== ownG) byRoom.set(u, (byRoom.get(u) ?? 0) + W); }
         }
         if (allFull) full += W;
@@ -1256,6 +1269,7 @@ export class TrafficSystem implements SimSystem {
         if (Number.isFinite(mine) && Number.isFinite(rs.f0[o])) { slower += W * ((d + mine) - rs.f0[o]); ws += W; }
       }
       options = w > 0 ? options / w : 0;
+      others = w > 0 ? others / w : 0;
       own = w > 0 ? own / w : 0;
       full = w > 0 ? full / w : 0;
       ovShare = w > 0 ? ovShare / w : 0;
@@ -1276,7 +1290,7 @@ export class TrafficSystem implements SimSystem {
       opts = top(byAll);
       optsRoom = top(byRoom);
     }
-    const out: GarageReach = { workers, homes, ovTo, ovShare, via, viaRoom, slower, options, own, full, opts, optsRoom };
+    const out: GarageReach = { workers, homes, ovTo, ovShare, via, viaRoom, slower, options, others, own, full, opts, optsRoom };
     this.reachCache.set(id, { ...out, cycle: rs.tick });
     if (this.reachCache.size > 4 * rs.gN + 64) for (const k of [...this.reachCache.keys()]) if (this.reachCache.get(k)!.cycle !== rs.tick) this.reachCache.delete(k);
     return copy(out);
@@ -1806,6 +1820,7 @@ export class TrafficSystem implements SimSystem {
     this.oPrN.fill(0, 0, oN);
     this.pnN = 0;
     this.ovSearches = 0;
+    this.ovFilt = -1;
     this.ovTo.clear();
     this.ovSeen.clear();
     this.oClX = growF32(this.oClX, oN);
@@ -2024,6 +2039,7 @@ export class TrafficSystem implements SimSystem {
     this.gRide = growU8(this.gRide, gN + 1); this.gState = growU8(this.gState, gN + 1); this.gSpaces = growF32(this.gSpaces, gN + 1);
     this.gRiders = growF32(this.gRiders, gN + 1); this.gWant = growF32(this.gWant, gN + 1); this.gCatch = growF32(this.gCatch, gN + 1);
     this.gUnpl = growF32(this.gUnpl, gN + 1); this.gUnplX = growF32(this.gUnplX, gN + 1); this.gUnplZ = growF32(this.gUnplZ, gN + 1);
+    this.gUnplQ = growF64(this.gUnplQ, gN + 1);
     this.gOvIn = growF32(this.gOvIn, gN + 1);
     this.gPrice = growF32(this.gPrice, gN + 1); this.gCell = growI32(this.gCell, gN + 1); this.gHalf = growU8(this.gHalf, gN + 1);
     this.gGrp = growI32(this.gGrp, gN + 1); this.gGSp = growF32(this.gGSp, gN + 1); this.gCars = growF32(this.gCars, gN + 1);
@@ -2032,7 +2048,7 @@ export class TrafficSystem implements SimSystem {
     for (let q = 0; q < gN; q++) {
       this.gStop[q] = -1; this.gWalk[q] = 0; this.gLoad[q] = 0; this.gBoard[q] = -1; this.gRide[q] = 0;
       this.gRiders[q] = 0; this.gWant[q] = 0; this.gWantR[q] = 0; this.gCatch[q] = 0; this.gLabel[q] = Infinity;
-      this.gUnpl[q] = 0; this.gUnplX[q] = 0; this.gUnplZ[q] = 0; this.gOvIn[q] = 0;
+      this.gUnpl[q] = 0; this.gUnplX[q] = 0; this.gUnplZ[q] = 0; this.gUnplQ[q] = 0; this.gOvIn[q] = 0;
       this.gGrp[q] = q; this.gGSp[q] = 0; this.gCars[q] = 0; this.gRidersM[q] = 0;
       const id = this.gBid[q];
       const b = st.buildings.get(id);
@@ -2688,7 +2704,7 @@ export class TrafficSystem implements SimSystem {
         const placed = this.prAlloc(o, want, prT);
         if (placed < want - 1e-9) {
           this.pcPool = false; this.pcCarT = carT; this.pcCarOk = carOk; this.pcWalkT = walkT; this.pcTrT = trT; this.pcBonus = trBonus;
-          this.prDefer = ovOn;
+          this.prDefer = ovOn && this.ovReachable(o);
           const m = this.prRest(o, take, placed / want);
           this.prDefer = false;
           sc = this.mC; stW = this.mTW; stP = this.mTP; sw = this.mW; time = this.mT; ext = this.mX;
@@ -2854,7 +2870,7 @@ export class TrafficSystem implements SimSystem {
         const placed = this.prAlloc(o, want, prT);
         if (placed < want - 1e-9) {
           this.pcPool = true; this.pcCarT = carT; this.pcTrT = trT;
-          this.prDefer = ovOn;
+          this.prDefer = ovOn && this.ovReachable(o);
           this.prRest(o, take, placed / want);
           this.prDefer = false;
           stW = this.mTW; stP = this.mTP; time = this.mT; ext = this.mX;
@@ -2981,8 +2997,9 @@ export class TrafficSystem implements SimSystem {
     for (let k = 0; k < n; k++) { const c = this.prCostOf(base + k); w[k] = c; if (c < cmin) cmin = c; }
     let ws = 0;
     for (let k = 0; k < n; k++) { const x = Math.exp(-PR_GARAGE_BETA * (w[k] - cmin)); w[k] = x; ws += x; }
-    // (the options are distinct groups: each one's room is its own)
+    // (the options are distinct groups: each one's room is its own; prRj = the riders each turned away: their spill)
     let placed = 0, dT = 0;
+    const rj = this.prRj;
     for (let k = 0; k < n; k++) {
       const q = this.oPrG[base + k], r = this.gGrp[q];
       const y = want * w[k] / ws;
@@ -2991,6 +3008,7 @@ export class TrafficSystem implements SimSystem {
       const room = this.prRoom(q);
       const t = y < room ? y : room;
       a[k] = t;
+      rj[k] = y - t;
       placed += t;
       dT += t * (this.oPrT[base + k] - tRef);
     }
@@ -3046,6 +3064,7 @@ export class TrafficSystem implements SimSystem {
         a[k] += fit;
         placed += fit;
         this.prDT += fit * (this.oPrT[base + k] - tr);
+        if (fit > 0) this.spillTo(o, n, fit, this.gGrp[q]);
       }
       const ww = rest * (want > 1e-12 ? Math.min(1, placed / want) : 1);
       aC += ww * this.mC; aW += ww * this.mTW; aP += ww * this.mTP; aK += ww * this.mW; aT += ww * this.mT; aX += ww * this.mX;
@@ -3095,6 +3114,22 @@ export class TrafficSystem implements SimSystem {
     for (let k = 0; k < n; k++) this.prUnplacedAt(this.oPrG[base + k], o, u * w[k]);
   }
 
+  /** fit riders of origin o turned away by its full options (prRj of the last prAlloc) took group r: the full options'
+   *  spill destinations (report) */
+  private spillTo(o: number, n: number, fit: number, r: number): void {
+    const rj = this.prRj, base = o * PR_OPTIONS, M = this.gN + 1;
+    let sum = 0;
+    for (let k = 0; k < n; k++) sum += rj[k];
+    if (!(sum > 1e-9)) return;
+    for (let k = 0; k < n; k++) {
+      if (!(rj[k] > 0)) continue;
+      const a = this.gGrp[this.oPrG[base + k]];
+      if (a === r) continue;
+      const key = a * M + r;
+      this.ovTo.set(key, (this.ovTo.get(key) ?? 0) + fit * rj[k] / sum);
+    }
+  }
+
   /** u riders of origin o that wanted garage gq's group found no room (see prUnplaced) */
   private prUnplacedAt(gq: number, o: number, u: number): void {
     if (!(u > 1e-12) || gq < 0 || gq >= this.gN) return;
@@ -3102,6 +3137,7 @@ export class TrafficSystem implements SimSystem {
     this.gUnpl[r] += u;
     this.gUnplX[r] += u * x;
     this.gUnplZ[r] += u * z;
+    this.gUnplQ[r] += u * (x * x + z * z);
   }
 
   /** split (roundMatch) or splitPool (poolRemaining) of the current piece with park & ride option (prT, prCost) */
@@ -3167,7 +3203,7 @@ export class TrafficSystem implements SimSystem {
    */
   private overflow(): number {
     if (this.ovStage === 1) {
-      if (this.ov[this.ovSlot].S.run(PR_CHUNK_STATES)) this.ovStartPass();
+      if (this.ov[this.ovSlot].S.run(OV_CHUNK_STATES)) this.ovStartPass();
       return PH_PROVER;
     }
     if (this.ovStage === 3) {
@@ -3229,6 +3265,24 @@ export class TrafficSystem implements SimSystem {
     return false;
   }
 
+  /** origin o may still find a group with room in reach (else its riders are decided at once, without a record): the
+   *  first forest of this assignment (ovFilt) gives it a group within PR_OPTION_MARGIN of its fastest option */
+  private ovReachable(o: number): boolean {
+    if (this.ovFilt < 0) return true;
+    const f = this.ov[this.ovFilt], S = f.S, KS = S.K;
+    if (S.running) return true;
+    const lim = this.oPrF0[o] + PR_OPTION_MARGIN, n = Math.min(S.n, this.road.n);
+    for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) {
+      const u = this.ent[e];
+      if (u >= n) continue;
+      for (let k = 0, kn = S.cnt[u]; k < kn; k++) {
+        const s = KS * u + k, q = S.src[s];
+        if (q >= 0 && q < this.gN && S.dist[s] - f.seed[q] + this.gRank[q] <= lim) return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * plan an overflow pass: the seeds (ovSeedOk) — none, or no record left: stage 4 (the rest without park & ride); a
    * kept forest of the same seeds (the same garages and graph, no seed's ranking minutes moved more than PR_SEED_DRIFT,
@@ -3253,6 +3307,7 @@ export class TrafficSystem implements SimSystem {
     if (slot >= 0) {
       this.ov[slot].used = ++this.ovTick;
       this.ovSlot = slot;
+      if (this.ovFilt < 0) this.ovFilt = slot;
       this.ovStartPass();
       return;
     }
@@ -3267,6 +3322,8 @@ export class TrafficSystem implements SimSystem {
     const f = this.ov[slot];
     // (the car legs it carried earlier in this assignment first: the forest is replaced)
     if (f.dirty) { this.commitK(f.S, f.acc); f.dirty = false; }
+    // (a forest replacing the filter's: its seeds are those of now, a superset of every later pass's too)
+    if (this.ovFilt < 0 || this.ovFilt === slot) this.ovFilt = slot;
     const seeds = this.seeds;
     seeds.clear();
     if (f.seed.length < gN) f.seed = new Float32Array(gN + 16);
@@ -3608,12 +3665,13 @@ export class TrafficSystem implements SimSystem {
       const share = this.gGSp[r] > 0 ? room / this.gGSp[r] : 0;
       this.gCars[q] = this.gLoad[r] * share;
       this.gRidersM[q] = this.gRiders[r] * share;
-      const un = this.gUnpl[r];
+      const un = this.gUnpl[r], ux = un > 1e-9 ? this.gUnplX[r] / un : 0, uz = un > 1e-9 ? this.gUnplZ[r] / un : 0;
       this.garageLast.set(id, {
         riders: this.gRidersM[q], want: this.gWantR[r] * share, catchment: this.gCatch[r], state: this.gState[q], pooled: members[r] - 1,
         reserve: pr ? this.gRes[q] : 0, transit: pr ? this.gLabel[q] : Infinity,
         ovIn: this.gOvIn[r] * share, ovTo: toG[r] >= 0 ? this.gBid[toG[r]] : -1, ovToRiders: toY[r] * share, unplaced: un * share,
-        unplacedHome: un > 1e-9 ? Math.round(this.gUnplZ[r] / un) * N + Math.round(this.gUnplX[r] / un) : -1,
+        unplacedHome: un > 1e-9 ? Math.round(uz) * N + Math.round(ux) : -1,
+        unplacedSpread: un > 1e-9 ? Math.sqrt(Math.max(0, this.gUnplQ[r] / un - ux * ux - uz * uz)) : 0,
       });
       if (!pr) { this.garagePrice.delete(id); continue; }
       this.garageLoad.set(id, this.gCars[q]);

@@ -295,7 +295,8 @@ vec3 floodlight(vec3 albedo, float pattern, float v, float H, bool vertical, flo
 }
 
 // aaBox with linear edge ramps of the same width: the edges are ~1 px wide, so the ramp shape does not show, and it
-// costs less than two smoothsteps in software rendering (where every branch of the uber shader runs per fragment)
+// costs less than two smoothsteps in software rendering (where every branch of the uber shader runs per fragment,
+// whatever the surface type): window / mullion grids, brick, planks, stone joints, crop rows
 float aaBoxL(float x, float a, float b, float w) {
   float f = fract(x);
   float k = 0.5 / w;
@@ -726,7 +727,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float cx = u / 0.6 + 0.5 * floor(cy);
     float wy = fwidth(cy) + 1e-4; float wx = fwidth(cx) + 1e-4;
     float fade = clamp(1.0 - max(wx, wy) * 3.0, 0.0, 1.0);
-    float mortar = 1.0 - aaBox(cy, 0.1, 0.95, wy) * aaBox(cx, 0.04, 0.97, wx);
+    float mortar = 1.0 - aaBoxL(cy, 0.1, 0.95, wy) * aaBoxL(cx, 0.04, 0.97, wx);
     float bh = bh21(vec2(floor(cx), floor(cy)));
     albedo *= mix(1.0, (0.85 + 0.25 * bh) * (1.0 - 0.3 * mortar), fade * (vertical ? 1.0 : 0.0));
     albedo = mix(albedo, albedo * 0.93, 1.0 - fade);
@@ -736,7 +737,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float c = (vertical ? v : P.x) / 0.22;
     float w = fwidth(c) + 1e-4;
     float fade = clamp(1.0 - w * 3.0, 0.0, 1.0);
-    float line = 1.0 - aaBox(c, 0.06, 0.96, w);
+    float line = 1.0 - aaBoxL(c, 0.06, 0.96, w);
     albedo *= 1.0 - 0.25 * line * fade;
     albedo *= 0.9 + 0.15 * bh11(floor(c) + vSeed * 7.0);
     rough = 0.8;
@@ -746,7 +747,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float cx = u / 1.4 + 0.5 * floor(cy);
     float wy = fwidth(cy) + 1e-4; float wx = fwidth(cx) + 1e-4;
     float fade = clamp(1.0 - max(wx, wy) * 3.0, 0.0, 1.0);
-    float joint = 1.0 - aaBox(cy, 0.04, 0.97, wy) * aaBox(cx, 0.02, 0.98, wx);
+    float joint = 1.0 - aaBoxL(cy, 0.04, 0.97, wy) * aaBoxL(cx, 0.02, 0.98, wx);
     float bh = bh21(vec2(floor(cx), floor(cy)));
     albedo *= mix(1.0, (0.9 + 0.16 * bh) * (1.0 - 0.25 * joint), fade * (vertical ? 1.0 : 0.3));
     rough = 0.85;
@@ -756,7 +757,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float c = P.z / 1.6;
     float w = fwidth(c) + 1e-4;
     float fade = clamp(1.0 - w * 2.0, 0.0, 1.0);
-    float row = aaBox(c, 0.15, 0.7, w);
+    float row = aaBoxL(c, 0.15, 0.7, w);
     albedo = mix(albedo * 0.95, mix(albedo * 0.55 + vec3(0.12, 0.08, 0.03), albedo * 1.08, row), fade);
     albedo *= 0.9 + 0.15 * bnoise(P.xz * 0.15);
     rough = 0.95;

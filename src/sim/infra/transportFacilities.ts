@@ -17,12 +17,15 @@
  * no power); crowded stops / stations / terminals name the fix; a garage names its real state (no road, no stop — a
  * neutral note where it serves businesses —, a stop without transit, a downtown stop, park & ride with cars / room /
  * riders / demand of the last assignment — the numbers stats.transitFleet sums —, full while more commuters want it than
- * it holds, and the spaces it keeps for a parking-short block, from PR_RESERVE_MIN x its spaces); an idle park & ride
- * garage says why (transit from its stop takes PR_LIMIT minutes or more, or from its reach: no homes within the drive, or
- * the garage the commuters near it use — full or not — and why it is not theirs: too many minutes longer, or as many
- * faster options as they weigh); the pressure around a garage credits its own relief ("(X% without it)"), or, where the
- * pressure is at the top of the scale either way, the spaces the block still lacks with and without it; a depot shows its
- * stops' need beside its fleet.
+ * it holds, and the spaces it keeps for a parking-short block, from PR_RESERVE_MIN x its spaces); a full garage says
+ * where its overflow parks, that it takes the overflow of full garages nearby, or — commuters turned away with nowhere to
+ * go — where another garage would take them (by a stop near their homes); an idle park & ride garage, or one under
+ * PR_LOW_USE of its room, says why (transit from its stop takes PR_LIMIT minutes or more, or from its reach: no homes
+ * within the drive, or none with commuters, or the garages the commuters near it use — the nearest, full or not — and why
+ * this one is not theirs: too many minutes longer, their garages have room, or their overflow parks at a garage that is
+ * faster for them); the pressure around a garage credits its own relief ("(X% without it)"), or, where the pressure is at
+ * the top of the scale either way, the spaces the block still lacks with and without it; a depot shows its stops' need
+ * beside its fleet.
  * Every function accepts a sim without the traffic system (infra-less tests) and returns the documented stub value.
  */
 import type { Building, CityState } from '../CityState';
@@ -37,7 +40,7 @@ import { TRAFFIC_OF_STATE } from './transit';
 import type { TrafficSystem } from './traffic';
 import {
   BUS_RHO_MAX, CAR_OCCUPANCY, DEPOT_BUSES, DEPOT_RANGE, FERRY_MAX_CELLS, FERRY_PARTNERS, FREIGHT_SINK_MIN, GARAGE_SPACES,
-  GARAGE_WALK_RADIUS, MINIBUS_FLEET, PR_CAR_LEG_MAX, PR_LIMIT, PR_OPTIONS, PR_OPTION_MARGIN, PR_RESERVE_MIN, PR_STOP_RADIUS, RAMP_BY_NET,
+  GARAGE_WALK_RADIUS, MINIBUS_FLEET, PR_CAR_LEG_MAX, PR_LIMIT, PR_OPTION_MARGIN, PR_RESERVE_MIN, PR_STOP_RADIUS, RAMP_BY_NET,
   RIDERS_PER_BUS, STOP_CAP_BUS, STOP_CAP_FERRY, STOP_CAP_SUBWAY, STOP_CAP_TRAIN, STOP_WALK_RADIUS, WAIT_BUS, WAIT_FERRY, WAIT_SUBWAY,
   WAIT_TRAIN,
 } from './params';
@@ -158,51 +161,96 @@ function garageFull(g: { parkRide: number; spaces: number; reserve?: number; wan
   return Math.min(g.parkRide, room) >= 0.97 * room && ((g.wanted ?? 0) / CAR_OCCUPANCY > 1.02 * room || (g.price ?? 0) >= PR_FULL_PRICE);
 }
 
+/** a park & ride garage carrying fewer riders than this share of its room says why (review r3: 17-160 / 900 read "ok"
+ *  with no reason) */
+const PR_LOW_USE = 0.2;
+
+/** the garage nearest to b among ids (a hint's example the player finds on the map; reviews r2 / r3: hints named garages
+ *  79-148 tiles away) */
+function nearestOf(st: CityState, b: Building, ids: readonly number[]): Building | undefined {
+  let best: Building | undefined, bd = Infinity;
+  for (const id of ids) {
+    const g = st.buildings.get(id);
+    if (!g) continue;
+    const d = dist(st, b, g);
+    if (d < bd) { bd = d; best = g; }
+  }
+  return best;
+}
+
 /**
- * why a park & ride garage carries nobody: transit from its stop takes PR_LIMIT minutes or more (no option for
- * anybody), or — from the homes nearest to it (TrafficSystem.garageReach) — none within the drive, it is their option but
- * driving beats park & ride, or it is not their option: park & ride from here takes them more than PR_OPTION_MARGIN
- * minutes longer than from the garage they use (named, full or not), or they already weigh PR_OPTIONS faster garages
- * (with room to spare, or all full: then this one is too far out of their way)
+ * why a park & ride garage carries nobody (or, low, few riders: under PR_LOW_USE of its room): transit from its stop
+ * takes PR_LIMIT minutes or more (no option for anybody), or — from the homes nearest to it (TrafficSystem.garageReach,
+ * the last completed traffic update) — no homes within the drive, or none with commuters, it is their option but
+ * driving (or, low, their faster options with room) wins, or it is not their option: park & ride from here takes them
+ * PR_OPTION_MARGIN or more minutes longer than via the nearest of their options (beyond the overflow too), their
+ * options have room, or those are full and their overflow parks at a garage that is faster for them (r4: the overflow
+ * takes the next garage with room, so a garage within the margin is never left out by the count of faster ones)
  */
-function idleGarageHint(sim: Simulation, tr: TrafficSystem, b: Building, stopName: string, transitMin: number | undefined): string {
+function garageUseHint(sim: Simulation, tr: TrafficSystem, b: Building, stopName: string, transitMin: number | undefined, low: boolean): string {
   const st = sim.state;
   const fix = 'link it to a subway / train line or a better-served stop';
-  if (transitMin !== undefined && transitMin >= PR_LIMIT) return `Nobody switches: transit from ${stopName} takes ${fmt(transitMin)} min to the jobs — too slow to beat driving; ${fix}`;
+  const lead = low ? 'Few commuters switch' : 'Nobody switches';
+  if (transitMin !== undefined && transitMin >= PR_LIMIT) return `${lead}: transit from ${stopName} takes ${fmt(transitMin)} min to the jobs — too slow to beat driving; ${fix}`;
   const reach = tr.garageReach(b.id);
   if (!reach) return 'Not picked yet — next traffic update';
-  if (reach.workers < 1) return `No homes within a ${PR_CAR_LEG_MAX}-minute drive — build garages where commuters live`;
-  if (reach.own >= 0.5) return `Nobody switches: transit from ${stopName} is slower than driving — ${fix}`;
+  if (reach.workers < 1) {
+    return reach.homes > 0 ? `No commuters within a ${PR_CAR_LEG_MAX}-minute drive — the homes there are empty`
+      : `No homes within a ${PR_CAR_LEG_MAX}-minute drive — build garages where commuters live`;
+  }
+  const at = (g: Building) => `the ${nameOf(st, g.id)} ${dist(st, b, g)} tiles ${compass(st, b, g)}`;
+  const isFull = (g: Building) => { const gi = tr.garageInfo(g.id); return gi ? garageFull(gi) : false; };
+  // (their options in other groups: this garage may be one of theirs, faded near its cutoff)
+  const k = Math.max(1, Math.round(reach.others));
+  const faster = `${k} faster park & ride garage${k === 1 ? '' : 's'}`;
   const via = reach.via >= 0 ? st.buildings.get(reach.via) : undefined;
-  if (!via) return `Nobody switches: the drive here plus transit from ${stopName} takes longer than driving to work — ${fix}`;
-  const vg = tr.garageInfo(via.id);
-  const full = vg ? garageFull(vg) : false;
-  const where = `the ${nameOf(st, via.id)} ${dist(st, b, via)} tiles ${compass(st, b, via)}`;
+  if (reach.own >= 0.5) {
+    // (one of their options: the faster ones with room take most of their riders, or driving wins)
+    const vr = low && reach.full < 0.5 ? nearestOf(st, b, reach.optsRoom) : undefined;
+    if (vr) return `${lead}: commuters near here have faster garages with room, e.g. ${at(vr)}`;
+    return `${lead}: transit from ${stopName} is ${low ? 'barely faster than' : 'slower than'} driving — ${fix}`;
+  }
+  const ex = nearestOf(st, b, reach.opts) ?? via;
+  if (!ex) return `${lead}: the drive here plus transit from ${stopName} takes longer than driving to work — ${fix}`;
   if (reach.slower >= PR_OPTION_MARGIN - 0.25) {
-    return `Commuters near here use ${where}${full ? ' (full)' : ''}: park & ride from here would take them ${fmt(reach.slower)} min longer${full ? ', so when it is full they drive or ride from home instead' : ''} — ${fix}`;
+    const full = isFull(ex);
+    return `Commuters near here use ${at(ex)}${full ? ' (full)' : ''}: park & ride from here would take them ${fmt(reach.slower)} min longer${full ? ', so when it is full they drive or ride from home instead' : ''} — ${fix}`;
   }
-  if (reach.options >= PR_OPTIONS - 0.5) {
-    // (the example: of their faster options — with room, when they have room — the one nearest to this garage, so the
-    // player finds it on the map; review r2: a hint named a garage 148 tiles away)
-    const nearest = (ids: readonly number[]): Building | undefined => {
-      let best: Building | undefined, bd = Infinity;
-      for (const gid of ids) {
-        const g = st.buildings.get(gid);
-        if (!g) continue;
-        const d = dist(st, b, g);
-        if (d < bd) { bd = d; best = g; }
-      }
-      return best;
-    };
-    const at = (g: Building) => `the ${nameOf(st, g.id)} ${dist(st, b, g)} tiles ${compass(st, b, g)}`;
-    if (reach.full >= 0.5) {
-      const ex = nearest(reach.opts);
-      return `Commuters near here weigh ${PR_OPTIONS} faster park & ride garages, e.g. ${ex ? at(ex) : where}, and drive or ride from home when those are full — this one is too far out of their way`;
-    }
-    const vr = nearest(reach.optsRoom) ?? (reach.viaRoom >= 0 ? st.buildings.get(reach.viaRoom) : undefined);
-    return `Commuters near here have ${PR_OPTIONS} faster park & ride garages with room, e.g. ${vr ? at(vr) : where} — this one is not needed here`;
+  if (reach.full < 0.5) {
+    const vr = nearestOf(st, b, reach.optsRoom) ?? (reach.viaRoom >= 0 ? st.buildings.get(reach.viaRoom) : undefined) ?? ex;
+    return `Commuters near here have ${faster} with room, e.g. ${at(vr)} — ${low ? 'few come this far' : 'this one is not needed here'}`;
   }
-  return `Commuters near here use ${where} — it gets them to their jobs sooner`;
+  // (their options are full: the overflow takes the garages with room, the fastest for them first)
+  const ov = reach.ovTo >= 0 ? st.buildings.get(reach.ovTo) : undefined;
+  if (ov) return `Commuters near here fill their ${faster}, and their overflow parks at ${at(ov)}, which is faster for them${low ? '' : ' — this one is next in line'}`;
+  return `Commuters near here fill their ${faster}, e.g. ${at(ex)}; few of them overflow this far — park & ride from here takes them ${fmt(Math.max(0, reach.slower))} min longer`;
+}
+
+/** " (about N tiles DIR)" from building b to a map cell: homes centred there within `spread` tiles (rms) — none when
+ *  they are closer than 4 tiles or spread wider than half the way there (a centre of scattered homes points nowhere) */
+function towards(st: CityState, b: Building, cell: number, spread: number): string {
+  const N = st.size, c = centerCell(st, b), dx = (cell % N) - (c % N), dz = Math.floor(cell / N) - Math.floor(c / N);
+  const d = Math.round(Math.hypot(dx, dz));
+  if (d < 4 || spread > Math.max(8, 0.5 * d)) return '';
+  const deg = (Math.atan2(dx, -dz) * 180 / Math.PI + 360) % 360;
+  return ` (about ${d} tiles ${['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(deg / 45) % 8]})`;
+}
+
+/**
+ * hint of a full park & ride garage (r4, review r3: "build another garage" while a neighbouring option had room): the
+ * block around it keeps spaces; it takes the overflow of full garages nearby; its commuters were turned away with nowhere
+ * to go — another garage helps by a stop near their homes (the centre of those homes); its overflow parks at a garage
+ * with room (named: no shortage)
+ */
+function fullGarageHint(st: CityState, b: Building, g: NonNullable<ReturnType<TrafficSystem['garageInfo']>>, wanted: string, reserve: number, room: number): string {
+  if (reserve >= 1) return `Full — ${wanted}; this block needs its own parking: for more park & ride, build garages by stops nearer homes`;
+  const riders = g.riders ?? 0, ovIn = g.overflowIn ?? 0, unpl = g.unplaced ?? 0;
+  const short = unpl >= Math.max(10, 0.02 * room * CAR_OCCUPANCY);
+  if (short) return `Full — ${wanted}: build another garage by a stop near their homes${(g.unplacedHome ?? -1) >= 0 ? towards(st, b, g.unplacedHome!, g.unplacedSpread ?? 0) : ''}`;
+  const to = (g.overflowTo ?? -1) >= 0 ? st.buildings.get(g.overflowTo!) : undefined;
+  if (to && to.id !== b.id && (g.overflowToRiders ?? 0) >= 1) return `Full — ${wanted}; the overflow parks at the ${nameOf(st, to.id)} ${dist(st, b, to)} tiles ${compass(st, b, to)}`;
+  if (ovIn >= 0.5 * riders && ovIn >= 1) return `Full — it takes the overflow of the full garages nearby`;
+  return `Full — ${wanted}: build another garage by a stop`;
 }
 
 /** transport part of a facility's inspector report; null = not a transport facility */
@@ -357,12 +405,11 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
           const full = garageFull(g);
           const wanted = wantedCars > 1.1 * room ? `${fmt(wantedCars)} cars wanted` : 'more commuters want its spaces than it has';
           lines.push({ key: 'parkRide', label: 'Park & ride', value: `${fmt(prCars)} / ${fmt(room)} cars${pooled > 0 ? ` (shared with ${plural(pooled, 'garage', 'garages')} at ${stopName})` : ''}`,
-            ratio: prCars / room, status: full ? 'warn' : 'ok',
-            hint: !full ? undefined : reserve >= 1
-              ? `Full — ${wanted}; this block needs its own parking: for more park & ride, build garages by stops nearer homes`
-              : `Full — ${wanted}: build another garage by a stop` });
+            ratio: prCars / room, status: full ? 'warn' : 'ok', hint: full ? fullGarageHint(st, b, g, wanted, reserve, room) : undefined });
+          // (idle — or few riders: under PR_LOW_USE of its room — says why)
+          const low = !full && ridersG < PR_LOW_USE * room * CAR_OCCUPANCY;
           lines.push({ key: 'switched', label: 'Commuters switched', value: `${fmt(ridersG)}/day to ${stopName}`, status: ridersG < 1 ? 'warn' : undefined,
-            hint: ridersG < 1 ? idleGarageHint(sim, tr, b, stopName, g.transitMin) : undefined });
+            hint: low ? garageUseHint(sim, tr, b, stopName, g.transitMin, ridersG >= 1) : undefined });
         }
         if (reserve >= 1) {
           lines.push({ key: 'kept', label: 'Kept for the block', value: `${plural(reserve, 'space', 'spaces')} — it is short of parking`,
@@ -382,7 +429,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
       // (a block far beyond its parking stays near the top of the scale with or without the garage: then the spaces it
       // still lacks, and what it would lack without this garage, show the garage's part)
       const short = rl && businesses > 0 && p > 0.3 && credit < 0.05 && rl.shortWithout - rl.short >= 1
-        ? `Still short of about ${plural(rl.short, 'space', 'spaces')} (${fmt(rl.shortWithout)} without its ${fmt(free)} free ones): add another garage, or transit to these jobs`
+        ? `Still short of about ${plural(rl.short, 'space', 'spaces')} (${fmt(rl.shortWithout)} without it): add another garage, or transit to these jobs`
         : undefined;
       lines.push({ key: 'pressure', label: 'Parking pressure around it',
         value: `${p < 0.005 ? 'none' : pct(p)}${credit >= 0.05 ? ` (${pct(Math.min(1, p + credit))} without it)` : ''}`, ratio: p,
