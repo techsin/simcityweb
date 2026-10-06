@@ -25,7 +25,7 @@ import {
 } from './tuning';
 import { DAYS_PER_MONTH } from '../../core/constants';
 import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
-import { commuteMinutes, commuteRamp, garbageFade, type CommuteRamp } from './factors';
+import { advanceCommuteAvg, commuteMinutes, commuteRamp, garbageFade, type CommuteRamp } from './factors';
 import { serviceEffectiveness } from './budget';
 import type { FactorTerm } from '../explain';
 
@@ -539,6 +539,7 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
       const t0 = performance.now();
       const st = sim.state;
       rt.attach(sim);
+      advanceCommuteAvg(st); // (the commute ramp of today's bands: first economy system of the day)
       refresh(st, false);
       const N = st.size;
       const rows = Math.ceil(N / LV_REFRESH_DAYS);

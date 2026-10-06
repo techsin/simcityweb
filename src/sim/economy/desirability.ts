@@ -33,7 +33,7 @@ import {
 import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
 import { lvEffectAt } from './landValue';
-import { commuteMinutes, commuteRamp, garbageFade, rentLevel, type CommuteRamp } from './factors';
+import { advanceCommuteAvg, commuteMinutes, commuteRamp, garbageFade, rentLevel, type CommuteRamp } from './factors';
 import { profileShares } from './demographics';
 import { facilityUseFactor } from '../infra/facilities';
 import type { FactorTerm } from '../explain';
@@ -577,6 +577,7 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
     daily(sim) {
       const t0 = performance.now();
       const st = sim.state;
+      advanceCommuteAvg(st); // (once a day: the land value system usually did it already)
       // freight sources: road / rail changes, and every FREIGHT_REFRESH_DAYS (absolute days, so a loaded city refreshes
       // on the same days; mid-month, away from the month-tick spike: a freight station counts only while its rail is
       // linked — WP7's use factor is monthly); traffic's per-industry freight access is cached per cell at the same time

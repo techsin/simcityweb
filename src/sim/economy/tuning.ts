@@ -492,6 +492,10 @@ export const COMMUTE_REL_GOOD = 0.8;
 export const COMMUTE_GOOD_MIN = 4;
 export const COMMUTE_REL_BAD = 3;
 export const COMMUTE_SPAN_MIN = 10;
+/** the city average the ramp follows: traffic's stats.avgCommute smoothed with this time constant (days; kept in
+ *  systemData.commuteAvg, saved) — traffic recomputes its average from scratch at load (128 s7 2010: 8.9 → 7.7 min, and
+ *  ~25 % apart from the saved game a month later), and every home's commute term used to jump with it */
+export const COMMUTE_AVG_DAYS = 30;
 /** RENT term = smoothstep(RENT_LV0, RENT_LV1, land value): the poor are priced out of premium land (R$, CS$, I-D) */
 export const RENT_LV0 = 0.45;
 export const RENT_LV1 = 0.85;

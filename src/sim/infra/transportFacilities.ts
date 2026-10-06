@@ -290,7 +290,8 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
         } else {
           const ridersG = g.riders ?? prCars * CAR_OCCUPANCY;
           const wantedCars = (g.wanted ?? 0) / CAR_OCCUPANCY;
-          const full = prCars >= 0.97 * room;
+          // full: at its room and commuters turned away (wanted beyond the room)
+          const full = prCars >= 0.97 * room && wantedCars > 1.02 * room;
           lines.push({ key: 'parkRide', label: 'Park & ride', value: `${fmt(prCars)} / ${fmt(room)} cars${pooled > 0 ? ` (shared with ${plural(pooled, 'garage', 'garages')} at ${stopName})` : ''}`,
             ratio: prCars / room, status: full ? 'warn' : 'ok',
             hint: !full ? undefined : reserve >= 1

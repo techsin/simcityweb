@@ -100,7 +100,7 @@ import {
   DEPOT_UNPOWERED, FERRY_TIME_PER_CELL, FREIGHT_SINK_MIN, GARAGE_SPACES, MINIBUS_FLEET,
   PARKING_BLEND, PARKING_MIN, PARKING_SHOP_W, PR_CAR_LEG_MAX, PR_HOME_MIN, PR_LEG_SEARCH, PR_LIMIT, PR_PARK_MIN, PR_PRICE_MAX,
   PR_PRICE_STEP, PR_STOP_RADIUS, GARAGE_GROUP_CELLS, RAMP_ALPHA, RAMP_BY_NET, RAMP_CAP, RAMP_MAX_FACTOR, RAMP_MSA_MIN, RIDERS_PER_BUS,
-  STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRUCK_LOCAL_FACTOR, WAIT_FERRY, PR_GARAGE_BETA, PR_RESERVE_SMOOTH, PR_SECOND_MAX, PR_STOP_KEEP,
+  STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRUCK_LOCAL_FACTOR, WAIT_FERRY, PR_GARAGE_BETA, PR_RESERVE_FULL, PR_RESERVE_SMOOTH, PR_SECOND_MAX, PR_STOP_KEEP,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
@@ -110,7 +110,7 @@ import { TRAFFIC_OF_STATE, collectStops, isStopMode, type StopList } from './tra
 import { getDef } from '../catalog';
 import { computeFerryNet, ferryPartnersAt, type FerryLink, type FerryNet, type FerryPartner, type FerryTerminal } from './ferry';
 import {
-  addFootprint, addGarageSupply, baseSupply, garageRelief, garageUnmet, parkingBox, parkingFromBoxes, parkingOver, type ParkingSummary,
+  addFootprint, addGarageSupply, baseSupply, garagePressure, garageRelief, parkingBox, parkingFromBoxes, parkingOver, type ParkingSummary,
 } from './parking';
 
 /** netFlags bit 5: rail level crossing on a road cell (see src/sim/actions.ts NET_CROSSING) */
@@ -180,7 +180,7 @@ const REBUILD_COST = 2.5;
 /** P&R two-label search: states settled per scheduler step, and the estimated ms of such a step (calibrated like
  *  PHASE_COST: stressTransit, CPU per estimated ms of the utilities task) */
 const PR_CHUNK_STATES = 24000;
-const PR_CHUNK_COST = 2.2;
+const PR_CHUNK_COST = 1.7;
 const MAX_ENTRIES = 12;
 const MODE_NAMES = ['none', 'car', 'transit', 'walk'];
 /** garage state of a cycle: no road entry, no attached stop within PR_STOP_RADIUS, a stop without a transit path to any
@@ -689,7 +689,7 @@ export class TrafficSystem implements SimSystem {
     if (ph === PH_RMATCH) return 0.7 + 0.5 * (0.3 * road + 0.7 * bld);
     // WP7b: + persisted state (parking u8 on the cycles that recompute it) / P&R car legs on the P&R forest
     if (ph === PH_FINAL2) return 1.0 + 0.6 * (0.3 * road + 0.7 * bld) + (this.sfRecompute ? 0.25 * (size * size / 65536) : 0);
-    if (ph === PH_COMMUTE) return base * (0.3 * road + 0.7 * bld) + (this.gPrN > 0 ? 0.2 * road : 0);
+    if (ph === PH_COMMUTE) return base * (0.3 * road + 0.7 * bld) + (this.gPrN > 0 ? 0.3 * road : 0);
     // WP7b prep extras: car-less shares, parking over job footprints, sink / garage / depot lists
     if (ph === PH_PREP) return base * (0.3 * road + 0.7 * bld) + 0.3 * bld + attach;
     if (ph === PH_TRANSIT2) return base * (0.3 * road + 0.7 * bld);
@@ -701,11 +701,12 @@ export class TrafficSystem implements SimSystem {
     // P&R: garages + per-origin options (reused forest), or a two-label search chunk (the first step also places the
     // garages and seeds the search), then the options in their own step
     if (ph === PH_PARKRIDE) {
-      if (this.prStage === 2) return 0.1 + 0.35 * bld;
+      if (this.prStage === 2) return 0.15 + 0.45 * bld;
       if (this.prStage === 1 || this.prSearchDue()) return PR_CHUNK_COST * Math.min(1, 3 * road) + (this.prStage === 0 ? 0.1 : 0);
-      return 0.15 + 0.4 * bld;
+      return 0.2 + 0.45 * bld;
     }
-    if (ph === PH_PARKING) return 0.3 * bld + base * (size * size / 65536);
+    // (+ the park & ride garages' reserves: box(supply without them), unmet cars over their walk areas)
+    if (ph === PH_PARKING) return 0.3 * bld + (base + (this.gPrN > 0 ? 0.4 : 0)) * (size * size / 65536);
     return base * (0.8 * road + 0.2 * bld);
   }
 
@@ -2965,10 +2966,10 @@ export class TrafficSystem implements SimSystem {
     baseSupply(st, S);
     // garages: their free spaces ease the blocks around them; one without a road beside it gives none (drivers can't
     // reach it — what its report says). Parking-only garages (no park & ride) free all their spaces. Every park & ride
-    // garage keeps for the businesses around it what their block lacks without the park & ride garages (garageUnmet:
-    // cars arriving beyond the parking around them, over its walk area; PR_RESERVE_SMOOTH-blended, persisted: park &
-    // ride gets spaces - reserve from the next assignment on — local parkers first) and frees its spaces minus this
-    // assignment's park & ride cars
+    // garage keeps spaces for the businesses around it: spaces x min(1, the pressure they feel without the park & ride
+    // garages / PR_RESERVE_FULL) (garagePressure; PR_RESERVE_SMOOTH-blended, persisted: park & ride gets spaces -
+    // reserve from the next assignment on — local parkers first), and frees its spaces minus this assignment's park &
+    // ride cars
     const prB: Building[] = [], prQ: number[] = [];
     this.garageFree.clear();
     for (let q = 0; q < this.gN; q++) {
@@ -2984,11 +2985,9 @@ export class TrafficSystem implements SimSystem {
     parkingBox(N, D, this.parkBoxD, this.parkTmpA);
     if (prB.length > 0) {
       parkingBox(N, S, this.parkTmpB, this.parkTmpA);
-      this.parkTmpA.fill(0);
-      const unmet = garageUnmet(N, prB, D, this.parkBoxD, this.parkTmpB, this.parkTmpA);
       for (let k = 0; k < prB.length; k++) {
         const q = prQ[k], id = this.gBid[q], spaces = this.gSpaces[q];
-        const raw = Math.min(spaces, unmet[k]);
+        const raw = spaces * Math.min(1, garagePressure(N, prB[k], D, this.parkBoxD, this.parkTmpB) / PR_RESERVE_FULL);
         const old = this.garageReserve.get(id);
         const res = old === undefined ? raw : old + PR_RESERVE_SMOOTH * (raw - old);
         if (res >= 0.5) this.garageReserve.set(id, res); else this.garageReserve.delete(id);

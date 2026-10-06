@@ -10,18 +10,37 @@
 import type { CityState } from '../CityState';
 import { smoothstep } from '../../core/rng';
 import {
-  COMMUTE_BAD, COMMUTE_FALLBACK, COMMUTE_GOOD, COMMUTE_GOOD_MIN, COMMUTE_REL_BAD, COMMUTE_REL_GOOD, COMMUTE_SPAN_MIN,
-  DESIR_WEIGHTS, GARBAGE_FADE_POP0, GARBAGE_FADE_POP1, RENT_CONDITION_MIN, RENT_LV0, RENT_LV1,
+  COMMUTE_AVG_DAYS, COMMUTE_BAD, COMMUTE_FALLBACK, COMMUTE_GOOD, COMMUTE_GOOD_MIN, COMMUTE_REL_BAD, COMMUTE_REL_GOOD,
+  COMMUTE_SPAN_MIN, DESIR_WEIGHTS, GARBAGE_FADE_POP0, GARBAGE_FADE_POP1, RENT_CONDITION_MIN, RENT_LV0, RENT_LV1,
 } from './tuning';
 import { ACCESS_UNREACHED } from '../infra/params';
 
 /** commute ramp of the city: minutes at which the score starts to drop (good) and reaches 0 (bad); avg = the city's
- *  average commute (fallback COMMUTE_FALLBACK before traffic has measured one); unreached = the minutes of a cell the
- *  services pass found no road route from (see commuteMinutes) */
+ *  average commute (smoothed, see advanceCommuteAvg; fallback COMMUTE_FALLBACK before traffic has measured one);
+ *  unreached = the minutes of a cell the services pass found no road route from (see commuteMinutes) */
 export interface CommuteRamp { avg: number; good: number; bad: number; unreached: number }
 
+/** systemData.commuteAvg: the smoothed city-average commute (minutes) and the day it was last advanced */
+interface CommuteAvg { v: number; day: number }
+
+/**
+ * Advance the city-average commute the ramp follows to today (once a day, by the economy before its bands; a second
+ * call the same day does nothing): traffic's stats.avgCommute smoothed over COMMUTE_AVG_DAYS. Saved with the city, so a
+ * loaded game keeps its ramp while traffic re-measures from scratch.
+ */
+export function advanceCommuteAvg(st: CityState): void {
+  const raw = st.stats.avgCommute;
+  if (!(raw > 0)) return;
+  const d = st.systemData.commuteAvg as CommuteAvg | undefined;
+  if (!d || !(d.v > 0) || !(d.day <= st.day)) { st.systemData.commuteAvg = { v: raw, day: st.day }; return; }
+  if (d.day === st.day) return;
+  d.v += (raw - d.v) * (1 - Math.exp(-(st.day - d.day) / COMMUTE_AVG_DAYS));
+  d.day = st.day;
+}
+
 export function commuteRamp(st: CityState, out: CommuteRamp = { avg: 0, good: 0, bad: 0, unreached: 0 }): CommuteRamp {
-  const avg = st.stats.avgCommute > 0 ? st.stats.avgCommute : COMMUTE_FALLBACK;
+  const sm = (st.systemData.commuteAvg as CommuteAvg | undefined)?.v ?? 0;
+  const avg = sm > 0 ? sm : st.stats.avgCommute > 0 ? st.stats.avgCommute : COMMUTE_FALLBACK;
   const g0 = COMMUTE_REL_GOOD * avg;
   const good = g0 < COMMUTE_GOOD_MIN ? COMMUTE_GOOD_MIN : g0 > COMMUTE_GOOD ? COMMUTE_GOOD : g0;
   const b0 = COMMUTE_REL_BAD * avg, bLo = good + COMMUTE_SPAN_MIN;

@@ -688,9 +688,9 @@ export const PARKING_BLEND = 0.5;
  * garage out of reach; the logit sees the jam). Mode choice sees the best (minutes + price); its park & ride riders
  * split between the two options by a logit on minutes + price (PR_GARAGE_BETA per minute), each part takes its group's
  * free room this assignment and the part that does not fit overflows to the other option; the rest re-splits without
- * park & ride. Room = spaces minus the garage's reserve: what the block around it lacks in parking (cars arriving over
- * its walk area minus the supply there, its own spaces not counted; every parking update, blended PR_RESERVE_SMOOTH) —
- * local parkers first. Price (minutes, persisted): += PR_PRICE_STEP x ln(clamp(wanted / room, 0.25, 4)) per assignment
+ * park & ride. Room = spaces minus the garage's reserve for the businesses around it: spaces x min(1, the parking
+ * pressure they feel without the park & ride garages / PR_RESERVE_FULL) (every parking update, blended
+ * PR_RESERVE_SMOOTH) — local parkers first. Price (minutes, persisted): += PR_PRICE_STEP x ln(clamp(wanted / room, 0.25, 4)) per assignment
  * (wanted = the logit choice), clamped to [0, PR_PRICE_MAX] (a choice weight, not travel time: commutes exclude it), so
  * demand settles at the room — smoothly, since the logit spreads the riders over both options. Garages at the same stop
  * within GARAGE_GROUP_CELLS pool their room (one price). Car-less residents (demographics carlessShare) pay
@@ -713,6 +713,9 @@ export const PR_GARAGE_BETA = 0.5;
 export const PR_SECOND_MAX = 6;
 /** a park & ride garage keeps its stop unless another is faster by more than this many minutes (or 10 %) */
 export const PR_STOP_KEEP = 1;
+/** a park & ride garage keeps spaces x min(1, p / PR_RESERVE_FULL) for the businesses around it, p = the parking
+ *  pressure they feel without the park & ride garages (local parkers first: a block at 25 % keeps all its spaces) */
+export const PR_RESERVE_FULL = 0.25;
 /** weight of the new value when a park & ride garage's reserve for its block is recomputed (every parking update) */
 export const PR_RESERVE_SMOOTH = 0.5;
 export const CARLESS_EXTRA_MIN = 12;

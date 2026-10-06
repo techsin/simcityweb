@@ -17,7 +17,7 @@ import { sumTerms } from '../../src/sim/explain';
 import type { EconRuntime } from '../../src/sim/economy/runtime';
 import { DESIR_TERM_IDS, NT, T_ELEM, desirWeight, desirabilityBreakdown } from '../../src/sim/economy/desirability';
 import { computeStaticLandValue, landValueBreakdown } from '../../src/sim/economy/landValue';
-import { commuteMinutes, commuteRamp, conditionDesirability, garbageFade, lotCell } from '../../src/sim/economy/factors';
+import { advanceCommuteAvg, commuteMinutes, commuteRamp, conditionDesirability, garbageFade, lotCell } from '../../src/sim/economy/factors';
 import { placeBuilding } from '../../src/sim/economy/buildings';
 import { updateNeighborConnections } from '../../src/sim/economy/connections';
 import { DESIR_WEIGHTS, LV_REFRESH_DAYS, LV_STATIC_MIN_DAYS, LV_STATIC_PHASE, LV_STATIC_SPREAD, PENALTY_NO_GARBAGE, RENT_CONDITION_MIN } from '../../src/sim/economy/tuning';
@@ -118,6 +118,7 @@ describe('desirability: the 33-term model and its breakdown', () => {
     const { st, rt } = town(10);
     const i = 20 * st.size + 12;
     st.stats.avgCommute = 10;
+    st.systemData.commuteAvg = { v: 10, day: st.day };
     const r = commuteRamp(st);
     expect(r.good).toBeCloseTo(8, 6);
     expect(r.bad).toBeCloseTo(30, 6);
@@ -397,6 +398,27 @@ describe('desirability: save / load and early-game commute', () => {
     expect(tot).toBeGreaterThan(0);
     expect(same(rt.coarseSkill, rt2.coarseSkill), 'skills').toBe(true);
     expect(same(rt.coarseKids, rt2.coarseKids), 'kids').toBe(true);
+  });
+
+  it('the commute ramp follows a smoothed city average that a loaded city keeps (traffic re-measures from scratch)', () => {
+    const { st } = makeCity({ size: 16 });
+    st.stats.avgCommute = 10;
+    advanceCommuteAvg(st);
+    expect(commuteRamp(st).avg).toBeCloseTo(10, 6);
+    // traffic's average jumps (a new road, or its first cycle after a load): the ramp moves ~1/30 of the way a day
+    st.stats.avgCommute = 20;
+    advanceCommuteAvg(st); // (same day: nothing)
+    expect(commuteRamp(st).avg).toBeCloseTo(10, 6);
+    st.day += 1;
+    advanceCommuteAvg(st);
+    advanceCommuteAvg(st);
+    const a1 = commuteRamp(st).avg;
+    expect(a1).toBeGreaterThan(10.2);
+    expect(a1).toBeLessThan(10.5);
+    // saved with the city: a loaded copy whose traffic measured 7 minutes still ramps from the saved average
+    const copy = deserializeCity(structuredClone(serializeCity(st, { copy: true })) as SerializedCity);
+    copy.stats.avgCommute = 7;
+    expect(commuteRamp(copy).avg).toBeCloseTo(a1, 6);
   });
 
   it('before traffic has an average commute, a cell with no road route scores a long commute, not the average', () => {

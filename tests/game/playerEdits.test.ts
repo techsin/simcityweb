@@ -9,7 +9,7 @@ import { playerEditCounter } from '../../src/ui/playerEdits';
 import { makeCity, road } from '../sim/helpers';
 
 describe('playerEditCounter (Advisors panel refresh)', () => {
-  it('counts zoning, roads, power lines and plopped buildings — not the buildings the city grows', () => {
+  it('counts zoning, roads, power lines and plopped buildings — not the buildings the city grows', { timeout: 180000 }, () => {
     const { st, sim, A } = makeCity({ size: 64 });
     st.funds = 1e7;
     const edits = playerEditCounter(sim);

@@ -8,8 +8,9 @@
  *             plopped civic lots PARKING_SUPPLY_CIVIC, road cells PARKING_SUPPLY_ROAD (street parking) + every parking
  *             garage's free spaces (GARAGE_SPACES minus the cars its commuters park there; none without a road beside
  *             it) spread over GARAGE_WALK_RADIUS with a normalised kernel (1 - d / (R + 1), sums to the spaces). A park
- *             & ride garage keeps for the block around it what the block lacks (garageArea: demand minus supply over
- *             its walk area — traffic's reserve; local parkers first, park & ride gets the rest)
+ *             & ride garage keeps spaces for the businesses around it (traffic's reserve: spaces x min(1, the pressure
+ *             they feel without the park & ride garages / PR_RESERVE_FULL), garagePressure — local parkers first;
+ *             park & ride gets the rest)
  *  parking    smoothstep(PARKING_RATIO[0], PARKING_RATIO[1], box(D) / box(S)); box = (2 PARKING_BOX_R + 1)^2 mean, so
  *             a block borrows spaces from its neighbours but a dense core runs out; blended with the previous raster
  *             (traffic passes it, PARKING_BLEND) so one noisy assignment does not flip a block.
@@ -68,36 +69,23 @@ export function addGarageSupply(N: number, b: Pick<Building, 'x' | 'z' | 'w' | '
 }
 
 /**
- * park & ride garages' reserve basis (local parkers first): the cars arriving on each demand cell beyond the parking
- * around it, u = D x max(0, 1 - box(S) / box(D)) (the raster's box model: ratio > 1 = cars without a space), summed
- * over each garage's walk area (its kernel disk) — a cell inside several garages' areas shared by their kernel weights.
- * boxS = box(supply without these garages); `cover` = scratch raster of st.cells, all 0 (left all 0). Returns the
- * cars per garage.
+ * the parking pressure the businesses around a garage feel (park & ride reserve, local parkers first): demand-weighted
+ * mean over the demand cells of its walk area (its kernel disk) of the raster's pressure from boxD / boxS (boxS = box of
+ * the supply without the park & ride garages: what the block has without them)
  */
-export function garageUnmet(N: number, garages: readonly Pick<Building, 'x' | 'z' | 'w' | 'd'>[], D: Float32Array, boxD: Float32Array,
-  boxS: Float32Array, cover: Float32Array): Float64Array {
-  const out = new Float64Array(garages.length);
-  const each = (fn: (g: number, i: number, w: number) => void) => {
-    for (let g = 0; g < garages.length; g++) {
-      const b = garages[g];
-      const k = kernel(GARAGE_WALK_RADIUS + (Math.max(b.w, b.d) >> 1));
-      const cx = b.x + (b.w >> 1), cz = b.z + (b.d >> 1);
-      for (let q = 0; q < k.w.length; q++) {
-        const x = cx + k.dx[q], z = cz + k.dz[q];
-        if (x < 0 || z < 0 || x >= N || z >= N) continue;
-        fn(g, z * N + x, k.w[q]);
-      }
-    }
-  };
-  each((_g, i, w) => { cover[i] += w; });
-  each((g, i, w) => {
-    const d = D[i], bd = boxD[i];
-    if (!(d > 0) || !(bd > 1e-6) || !(cover[i] > 0)) return;
-    const u = d * (1 - boxS[i] / bd);
-    if (u > 0) out[g] += (u * w) / cover[i];
-  });
-  each((_g, i) => { cover[i] = 0; });
-  return out;
+export function garagePressure(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>, D: Float32Array, boxD: Float32Array, boxS: Float32Array): number {
+  const k = kernel(GARAGE_WALK_RADIUS + (Math.max(b.w, b.d) >> 1));
+  const cx = b.x + (b.w >> 1), cz = b.z + (b.d >> 1);
+  let wSum = 0, pSum = 0;
+  for (let q = 0; q < k.w.length; q++) {
+    const x = cx + k.dx[q], z = cz + k.dz[q];
+    if (x < 0 || z < 0 || x >= N || z >= N) continue;
+    const i = z * N + x, d = D[i];
+    if (!(d > 0)) continue;
+    wSum += d;
+    pSum += d * pressureOf(boxD[i], boxS[i]);
+  }
+  return wSum > 0 ? pSum / wSum : 0;
 }
 
 /**
