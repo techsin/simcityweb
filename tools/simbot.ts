@@ -1366,6 +1366,7 @@ export class SimBot {
       return;
     }
     this.jailSaving = false;
+    const ov = Math.round(j.overflow * 100); // (before the plop: placing a prison refreshes stats.justice)
     const rich: { x: number; z: number }[] = [];
     for (const b of st.buildings.values()) if (!(b.flags & BF.Plopped) && b.wealth === 3 && getDef(b.def)?.devType === DevType.R3) rich.push({ x: b.x, z: b.z });
     const cx = this.line(this.cbx) + 5 * GRID, cz = this.trunkZ;
@@ -1380,8 +1381,8 @@ export class SimBot {
     // on and ran 59 % of the sentenced without a bed in 2053; with it 40,000 beds, overflow <= 0.24)
     if (!ok) ok = cleared = !!this.placeByClearing('civ_jail', cx, cz, Infinity, ['I', 'U'], far, 3, false, true);
     this.svcRetry.set('jail', st.day + (ok ? 240 : 120));
-    if (ok) this.say(`prison: ${Math.round(j.overflow * 100)} % of the sentenced had no bed (${cleared ? 'small industrial lots cleared, ' : ''}${G}+ cells from R$$$ homes)`);
-    else this.say(`prison: no industrial / utility lot ${G}+ cells from R$$$ homes (${Math.round(j.overflow * 100)} % without a bed)`);
+    if (ok) this.say(`prison: ${ov} % of the sentenced had no bed (${cleared ? 'small industrial lots cleared, ' : ''}${G}+ cells from R$$$ homes)`);
+    else this.say(`prison: no industrial / utility lot ${G}+ cells from R$$$ homes (${ov} % without a bed)`);
   }
 
   // ------------------------------------------------------------------------------------------ transit (item 38c)

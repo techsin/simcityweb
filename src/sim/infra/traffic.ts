@@ -187,6 +187,10 @@ const REBUILD_COST = 2.5;
 const PR_CHUNK_STATES = 24000;
 const PR_CHUNK_COST = 1.7;
 const MAX_ENTRIES = 12;
+/** job matching: a round that matched under this share of the waiting workers is starved (does not count toward
+ *  MATCH_ROUNDS), at most MATCH_EXTRA_ROUNDS such rounds per assignment */
+const MATCH_STARVED = 0.02;
+const MATCH_EXTRA_ROUNDS = 4;
 const MODE_NAMES = ['none', 'car', 'transit', 'walk'];
 /** garage state of a cycle: no road entry, no attached stop within PR_STOP_RADIUS, a stop without a transit path to any
  *  job, a downtown stop (its best path rides nothing: jobs a walk away — parking only), park & ride */
@@ -366,6 +370,8 @@ export class TrafficSystem implements SimSystem {
   private candKey: Float64Array<ArrayBuffer> = new Float64Array(0);
   private candNode: Int32Array<ArrayBuffer> = new Int32Array(0);
   private round = 0;
+  /** starved matching rounds this cycle (each allows one round beyond MATCH_ROUNDS, at most MATCH_EXTRA_ROUNDS) */
+  private extraRounds = 0;
   private propFactor = 1;
   private roundAccepted = 0;
   /** shopping / freight volumes are recomputed every 2nd cycle; cached per road node in between */
@@ -930,20 +936,22 @@ export class TrafficSystem implements SimSystem {
    * parking garage (last completed assignment): its stop (building id, -1 none), park & ride cars parked (<= room),
    * spaces, walk to the stop; ride = its stop's transit path rides a vehicle (park & ride; false: a downtown stop whose
    * riders walk to jobs nearby, or no stop — the garage is parking only). riders = commuters who switched (the same
-   * number stats.transitFleet.parkRide sums), wanted = park & ride demand incl. commuters turned away when full and the
-   * overflow from the commuters' other garage, catchment = workers within a PR_CAR_LEG_MAX free-flow drive for whom it
-   * is one of their two park & ride options, price = its rationing price (minutes), state = GARAGE_STATE ('noRoad' |
+   * number stats.transitFleet.parkRide sums), wanted = park & ride demand (their choice, incl. commuters turned away when
+   * full) + the riders who came over from a full option, catchment = workers within a PR_CAR_LEG_MAX free-flow drive for
+   * whom it is one of their PR_OPTIONS park & ride options, price = its rationing price (minutes; > 0 while the demand
+   * exceeds its room), state = GARAGE_STATE ('noRoad' |
    * 'noStop' | 'noTransit' | 'downtown' | 'parkRide'), pooled = other park & ride garages at its stop sharing its room
    * (cars / riders / wanted are its share of the group's), reserve = spaces it keeps for the businesses around it (their
    * block is short of parking: park & ride gets spaces - reserve), relief = the parking pressure over its walk area
-   * with and without its free spaces (last parking update; undefined before one), transitMin = minutes from parking
+   * with and without its free spaces, and the cars arriving there beyond the parking around them (short / shortWithout;
+   * last parking update; undefined before one), transitMin = minutes from parking
    * here to the job by transit (park, walk to the stop, wait, ride; undefined: no park & ride — a park & ride garage
    * whose transitMin >= PR_LIMIT is no option for anybody); null = not seen by an assignment yet
    */
   garageInfo(id: number): {
     stopId: number; parkRide: number; spaces: number; walkMin: number; ride: boolean;
     riders?: number; wanted?: number; catchment?: number; price?: number; state?: string; pooled?: number;
-    reserve?: number; relief?: { with: number; without: number }; transitMin?: number;
+    reserve?: number; relief?: { with: number; without: number; short: number; shortWithout: number }; transitMin?: number;
   } | null {
     for (let g = 0; g < this.gN; g++) {
       if (this.gBid[g] !== id) continue;
@@ -1479,6 +1487,7 @@ export class TrafficSystem implements SimSystem {
     for (let j = 0; j < jN; j++) this.jCapP[j] = this.jSlots[j] * this.propFactor;
     this.buildClusters();
     this.round = 0;
+    this.extraRounds = 0;
     this.tripsCar = this.tripsTransit = this.tripsWalk = 0;
     this.commuteSum = this.commuteW = 0;
     // shopping / freight: recompute every 2nd cycle or after a graph rebuild
@@ -2322,9 +2331,13 @@ export class TrafficSystem implements SimSystem {
     // next round?
     let left = 0;
     for (let o = 0; o < oN; o++) left += this.oU[o];
+    // (a starved round — every waiting worker's nearest open site was a handful of jobs, e.g. a garage's attendants or
+    // a small plant between the homes and a jammed job centre — matched under MATCH_STARVED of them: it does not use up
+    // one of the MATCH_ROUNDS, else the pooled match would time their commutes from that small site)
+    if (left >= 0.5 && accepted < MATCH_STARVED * (left + accepted) && this.extraRounds < MATCH_EXTRA_ROUNDS) this.extraRounds++;
     let next = this.round + 1;
     if (next < MATCH_PROP_ROUNDS && (accepted < 0.5 || this.propFactor >= 1)) next = Math.max(next, accepted < 0.5 ? MATCH_PROP_ROUNDS : next); // proportional caps exhausted
-    if (left < 0.5 || next >= MATCH_ROUNDS || (accepted < 0.5 && this.round >= MATCH_PROP_ROUNDS)) return PH_COMMUTE;
+    if (left < 0.5 || next >= MATCH_ROUNDS + this.extraRounds || (accepted < 0.5 && this.round >= MATCH_PROP_ROUNDS)) return PH_COMMUTE;
     let open = 0;
     const saveRound = this.round;
     this.round = next;

@@ -94,10 +94,11 @@ export function garageShortage(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd
 /**
  * a garage's relief (report): the demand-weighted parking pressure over the demand cells of its walk area with every
  * garage's free spaces (boxD / boxS of the last parking update) and without its own `free` spaces (its kernel's share of
- * each cell's box taken out of box(S))
+ * each cell's box taken out of box(S)); short / shortWithout = the cars arriving there beyond the parking around them
+ * (sum of D x max(0, 1 - boxS / boxD)) with and without them — what the report shows where the pressure saturates
  */
 export function garageRelief(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>, free: number, D: Float32Array, boxD: Float32Array,
-  boxS: Float32Array): { with: number; without: number } {
+  boxS: Float32Array): { with: number; without: number; short: number; shortWithout: number } {
   const R = GARAGE_WALK_RADIUS + (Math.max(b.w, b.d) >> 1), B = PARKING_BOX_R;
   const k = kernel(R);
   const cx = b.x + (b.w >> 1), cz = b.z + (b.d >> 1);
@@ -105,7 +106,7 @@ export function garageRelief(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>
   const W = 2 * R + 1, grid = new Float32Array(W * W);
   for (let q = 0; q < k.w.length; q++) grid[(k.dz[q] + R) * W + (k.dx[q] + R)] = k.w[q];
   const inv = 1 / ((2 * B + 1) * (2 * B + 1));
-  let wSum = 0, pw = 0, po = 0;
+  let wSum = 0, pw = 0, po = 0, sw = 0, so = 0;
   for (let q = 0; q < k.w.length; q++) {
     const x = cx + k.dx[q], z = cz + k.dz[q];
     if (x < 0 || z < 0 || x >= N || z >= N) continue;
@@ -122,11 +123,13 @@ export function garageRelief(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>
         g += grid[gz * W + gx];
       }
     }
+    const bd = boxD[i], bs = boxS[i], bo = Math.max(0, bs - free * g * inv);
     wSum += d;
-    pw += d * pressureOf(boxD[i], boxS[i]);
-    po += d * pressureOf(boxD[i], Math.max(0, boxS[i] - free * g * inv));
+    pw += d * pressureOf(bd, bs);
+    po += d * pressureOf(bd, bo);
+    if (bd > 1e-6) { if (bs < bd) sw += d * (1 - bs / bd); if (bo < bd) so += d * (1 - bo / bd); }
   }
-  return wSum > 0 ? { with: pw / wSum, without: po / wSum } : { with: 0, without: 0 };
+  return wSum > 0 ? { with: pw / wSum, without: po / wSum, short: sw, shortWithout: so } : { with: 0, without: 0, short: 0, shortWithout: 0 };
 }
 
 /** parking pressure of a demand / supply ratio (the raster's smoothstep, PARKING_RATIO) */

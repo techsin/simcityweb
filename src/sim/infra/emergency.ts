@@ -749,6 +749,8 @@ export class EmergencySystem implements SimSystem {
   private optCache = new Map<number, { day: number; ver: number; stVer: number; eta: Map<number, number> }>();
   /** per-responder on-scene unit-days of the incident being processed (scratch) */
   private udBuf = new Float64Array(3);
+  /** building ids of the fire cluster being synced (scratch) */
+  private clusterSeen = new Set<number>();
   /** profiling: ms spent in daily() (last / total) */
   lastDailyMs = 0;
 
@@ -866,11 +868,22 @@ export class EmergencySystem implements SimSystem {
     this.list = p.incidents;
     this.vlist = p.vehicles;
     this.byId.clear();
+    // a save from before the duplicate-fire fix can list a burning building twice, in one fire incident or in two:
+    // keep its first listing (in list order that is the incident its fire joined), so each fire is stepped once a day
+    const listed = new Set<number>();
     for (const inc of this.list) {
       inc.fires ??= [];
       inc.firstAt ??= {};
       inc.units ??= [];
       inc.need ??= {};
+      const fl = inc.fires;
+      let n = 0;
+      for (let k = 0; k < fl.length; k++) {
+        if (listed.has(fl[k])) continue;
+        listed.add(fl[k]);
+        fl[n++] = fl[k];
+      }
+      fl.length = n;
       this.byId.set(inc.id, inc);
     }
     this.vById.clear();
@@ -1269,27 +1282,44 @@ export class EmergencySystem implements SimSystem {
     const fire = sim.getSystem<FireSystem>('fire');
     const f = fire?.fires.get(b.id);
     if (!fire || !f) return false;
-    // join a fire incident within FIRE_CLUSTER_R cells
-    for (const inc of this.list) {
-      if (inc.kind !== 'fire' || inc.state === 'resolved' || inc.state === 'failed') continue;
-      if (this.nearCluster(st, inc, b)) {
-        inc.fires.push(b.id);
-        f.incidentId = inc.id;
-        this.setIncidentFlag(sim, b, true);
-        inc.severity = inc.fires.length;
-        inc.need.fire = 1 + Math.floor(inc.fires.length / FIRE_HOLD_PER_UNIT);
-        this.emit(sim, inc, 'escalated');
-        if (inc.need.fire > this.assigned(inc, 'fire')) inc.retry = Math.min(inc.retry, st.day);
-        if (!this.inDaily) this.tryDispatch(sim, inc);
-        this.persist();
-        return true;
-      }
+    // join a fire incident within FIRE_CLUSTER_R cells. A building is listed by at most one incident, once: if an
+    // incident still lists it (its old fire ended outside that incident's step — the incident drops it only at its next
+    // sync), the new fire joins that incident and keeps the one entry
+    const inc = this.listingFire(b.id) ?? this.nearFire(st, b);
+    if (inc) {
+      if (!inc.fires.includes(b.id)) inc.fires.push(b.id);
+      f.incidentId = inc.id;
+      this.setIncidentFlag(sim, b, true);
+      inc.severity = inc.fires.length;
+      inc.need.fire = 1 + Math.floor(inc.fires.length / FIRE_HOLD_PER_UNIT);
+      this.emit(sim, inc, 'escalated');
+      if (inc.need.fire > this.assigned(inc, 'fire')) inc.retry = Math.min(inc.retry, st.day);
+      if (!this.inDaily) this.tryDispatch(sim, inc);
+      this.persist();
+      return true;
     }
-    const inc = this.create(sim, 'fire', b.x, b.z, b, { major: true });
-    if (!inc) return false;
-    f.incidentId = inc.id;
+    const created = this.create(sim, 'fire', b.x, b.z, b, { major: true });
+    if (!created) return false;
+    f.incidentId = created.id;
     void spread;
     return true;
+  }
+
+  /** the active fire incident whose cluster lists building `id`, if any */
+  private listingFire(id: number): Incident | undefined {
+    for (const inc of this.list) {
+      if (inc.kind === 'fire' && inc.state !== 'resolved' && inc.state !== 'failed' && inc.fires.includes(id)) return inc;
+    }
+    return undefined;
+  }
+
+  /** the first active fire incident within FIRE_CLUSTER_R cells of building b, if any */
+  private nearFire(st: CityState, b: Building): Incident | undefined {
+    for (const inc of this.list) {
+      if (inc.kind !== 'fire' || inc.state === 'resolved' || inc.state === 'failed') continue;
+      if (this.nearCluster(st, inc, b)) return inc;
+    }
+    return undefined;
   }
 
   // ------------------------------------------------------------------------------------------ incidents
@@ -2246,12 +2276,19 @@ export class EmergencySystem implements SimSystem {
     const st = sim.state;
     const fire = sim.getSystem<FireSystem>('fire');
     if (!fire) { inc.state = 'resolved'; return; }
-    // sync the cluster with the fire registry (disasters / UI may have removed fires)
+    // sync the cluster with the fire registry (disasters / UI may have removed fires), each building once: a list
+    // never repeats an id (see below and onFire), but a save from before that fix can — such a building would be
+    // stepped twice a day, and once one pass put it out or burnt it down the other found no fire
     const cl: Building[] = [];
+    const seen = this.clusterSeen;
+    seen.clear();
     for (const id of inc.fires) {
       const b = st.buildings.get(id);
       const f = fire.fires.get(id);
-      if (b && f && b.flags & BF.OnFire) cl.push(b);
+      if (b && f && b.flags & BF.OnFire && !seen.has(id)) {
+        seen.add(id);
+        cl.push(b);
+      }
     }
     if (cl.length !== inc.fires.length) inc.fires = cl.map((b) => b.id);
     if (cl.length === 0) {
@@ -2269,7 +2306,8 @@ export class EmergencySystem implements SimSystem {
     let maxDays = 0;
     const toSpread: Building[] = [];
     for (const b of cl) {
-      const f = fire.fires.get(b.id)!;
+      const f = fire.fires.get(b.id);
+      if (!f) continue; // (each building is stepped once, so its fire is still there: never crash a game on it)
       const nd = f.days + 1 - held;
       f.days = hold && nd >= FIRE_BURN_DAYS ? Math.max(f.days, FIRE_BURN_DAYS - 0.5) : nd;
       if (share > 0) {
@@ -2295,6 +2333,12 @@ export class EmergencySystem implements SimSystem {
       maxDays = Math.max(maxDays, f.days);
       toSpread.push(b);
     }
+    // the buildings put out or burnt down above leave the cluster before the spread below. putOut clears OnFire, so a
+    // neighbour's spread can re-ignite one of them this very step: it then joins (onFire) as a new fire, listed once.
+    // (Left in the list until the end of the step, its old entry made onFire add it a second time and both were kept —
+    // the building was stepped twice a day, and the day one pass put it out or burnt it down the other read a fire that
+    // was gone: the TypeError on f.days.)
+    if (toSpread.length !== cl.length) inc.fires = toSpread.map((b) => b.id);
     // spread to neighbours (legacy FIRE_SPREAD_P; x0.2 with a crew on scene, x1.3 without water)
     const N = st.size;
     const fc = st.fireCov;
@@ -2313,9 +2357,9 @@ export class EmergencySystem implements SimSystem {
         if (rng.next() < p) fire.ignite(sim, nbld, true);
       }
     }
-    const alive = inc.fires.filter((id) => fire.fires.has(id)).length;
     inc.fires = inc.fires.filter((id) => fire.fires.has(id));
-    if (inc.fires.length === 0) {
+    const alive = inc.fires.length;
+    if (alive === 0) {
       inc.state = inc.lost > 0 && inc.lost >= inc.saved ? 'failed' : 'resolved';
       return;
     }
