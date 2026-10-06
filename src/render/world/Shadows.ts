@@ -109,6 +109,7 @@ export function viewReach(cam: THREE.Camera): number {
 
 const _rf = new THREE.Frustum();
 const _rm = new THREE.Matrix4();
+const _rmi = new THREE.Matrix4();
 const _fwd = new THREE.Vector3();
 const _cp = new THREE.Vector3();
 /** the receiver volume's values (6 planes, light direction, ground) and the form values (light, ground, projection
@@ -186,27 +187,27 @@ export function setReceiver(rec: ShadowReceiver, cam: THREE.Camera, dn: number, 
   let reformed = false;
   for (let i = 0; i < 9; i++) if (Math.abs(fs[i] - f[i]) > ft[i]) { fs[i] = f[i]; reformed = true; }
   if (reformed) rec.form++;
-  // corners: the view's corner rays (through its near-plane corners) at view depths dn and df
-  const pi = cam.projectionMatrixInverse.elements, cr = rec.corners;
+  // corners: the view's 4 corner rays (NDC x, y = +-1: the side planes' edges), each through two of its points (NDC
+  // depth -1 and 0, finite for any far plane), at view depths dn and df
+  const e = _rmi.copy(_rm).invert().elements, cr = rec.corners, fx = _fwd.x, fy = _fwd.y, fz = _fwd.z;
+  let ok = true;
   for (let c = 0; c < 4; c++) {
     const x = c & 1 ? 1 : -1, y = c & 2 ? 1 : -1;
-    const vw = pi[3] * x + pi[7] * y - pi[11] + pi[15];
-    const vx = (pi[0] * x + pi[4] * y - pi[8] + pi[12]) / vw, vy = (pi[1] * x + pi[5] * y - pi[9] + pi[13]) / vw, vz = (pi[2] * x + pi[6] * y - pi[10] + pi[14]) / vw;
-    // the near-plane corner in world space, its ray from the camera and that ray's view depth per unit
-    const wx = w[0] * vx + w[4] * vy + w[8] * vz + w[12], wy = w[1] * vx + w[5] * vy + w[9] * vz + w[13], wz = w[2] * vx + w[6] * vy + w[10] * vz + w[14];
-    let rx = wx - cx, ry = wy - cy, rz = wz - cz;
-    const dep = rx * _fwd.x + ry * _fwd.y + rz * _fwd.z;
-    if (persp && dep > 1e-9) { rx /= dep; ry /= dep; rz /= dep; }
-    else { rx = 0; ry = 0; rz = 0; }
-    // (orthographic views: the corner itself at both depths, shifted along the view direction)
-    const bx = persp ? cx : wx - _fwd.x * dep, by = persp ? cy : wy - _fwd.y * dep, bz = persp ? cz : wz - _fwd.z * dep;
-    for (let k = 0; k < 2; k++) {
-      const d = k === 0 ? dn : df, o = (c * 2 + k) * 3;
-      cr[o] = persp ? bx + rx * d : bx + _fwd.x * d;
-      cr[o + 1] = persp ? by + ry * d : by + _fwd.y * d;
-      cr[o + 2] = persp ? bz + rz * d : bz + _fwd.z * d;
+    const wa = e[3] * x + e[7] * y - e[11] + e[15], wb = e[3] * x + e[7] * y + e[15];
+    const ax = (e[0] * x + e[4] * y - e[8] + e[12]) / wa, ay = (e[1] * x + e[5] * y - e[9] + e[13]) / wa, az = (e[2] * x + e[6] * y - e[10] + e[14]) / wa;
+    const bx = (e[0] * x + e[4] * y + e[12]) / wb, by = (e[1] * x + e[5] * y + e[13]) / wb, bz = (e[2] * x + e[6] * y + e[14]) / wb;
+    // view depth along the ray is affine in its parameter
+    const da = (ax - cx) * fx + (ay - cy) * fy + (az - cz) * fz, db = (bx - cx) * fx + (by - cy) * fy + (bz - cz) * fz;
+    const k = 1 / (db - da);
+    for (let q = 0; q < 2; q++) {
+      const t = ((q === 0 ? dn : df) - da) * k, o = (c * 2 + q) * 3;
+      const px = ax + (bx - ax) * t, py = ay + (by - ay) * t, pz = az + (bz - az) * t;
+      if (!Number.isFinite(px + py + pz)) ok = false;
+      cr[o] = px; cr[o + 1] = py; cr[o + 2] = pz;
     }
   }
+  // (degenerate: no list is kept by containment)
+  if (!ok) cr.fill(NaN);
 }
 
 /** can a caster sphere shadow the receiver volume? (sphere swept away from the light down to the ground) */

@@ -86,31 +86,36 @@ interface PassSlot {
   selValid: boolean;
   used: number;
   // ---- what the list was culled for (see beforePass)
-  /** projection shape (elements 0, 5, 8, 9, 12, 13: fov / aspect / ortho extent; near / far are checked separately) */
+  /** projection at the build (elements 0, 5, 8, 9, 10, 12, 13, 14: fov / aspect / ortho extent, near / far) */
   shape: Float64Array;
-  /** camera orientation (unit axes) and the rotation (rad) the list tolerates (its angular band) */
+  /** camera orientation (unit axes) at the build */
   rot: Float64Array;
-  tiltOk: number;
-  /** depth range [nearB, farB] the list covers (near / far may move inside it) */
-  nearB: number;
-  farB: number;
   texel: number;
-  /** camera position the list was culled at and the translation band (world units) its planes were widened by */
+  /** camera position the list was culled at */
   px: number;
   py: number;
   pz: number;
+  /** band of the build (see bandPersp): frames of predicted motion asked for (0: exact list), the shift every plane gets
+   *  (prediction error), the largest directional shift allowed, and the band's widest shift (the caster sweep is
+   *  lengthened by it) */
+  bk: number;
+  iso: number;
+  sweepCap: number;
   margin: number;
-  /** list was culled with any band (re-culled exactly once the view rests) */
+  /** the planes the list was culled with (nx, ny, nz, constant x 6, bands included) and, for shadow passes, the
+   *  receiver's: the list stays valid while the current frustum (receiver volume) lies inside them */
+  bp: Float64Array;
+  brp: Float64Array;
+  /** view distance at the build (a list kept while zooming in is rebuilt once the view is much closer: it would draw
+   *  far more than needed) and whether the build was a far one (tile-level, unsorted) */
+  reach0: number;
+  farMode: boolean;
+  /** list was culled with any band, or kept while the view moved (re-culled exactly once the view rests) */
   banded: boolean;
-  /** receiver (shadow passes): form counter, view orientation + tolerated rotation, origin, covered slice [rdn, rdf] */
+  stale: boolean;
+  /** receiver (shadow passes): form counter and volume version at the build */
   rform: number;
-  rrot: Float64Array;
-  rtiltOk: number;
-  rx: number;
-  ry: number;
-  rz: number;
-  rdn: number;
-  rdf: number;
+  rver: number;
   // ---- motion tracking
   /** consecutive frames the camera (and the receiver) stood still */
   still: number;
@@ -126,6 +131,11 @@ interface PassSlot {
   lrx: number;
   lry: number;
   lrz: number;
+  /** the camera's (receiver's) last per-frame motion: translation and rotation (row-major 3x3), predicted by bands */
+  mv: Float64Array;
+  mq: Float64Array;
+  rmv: Float64Array;
+  rmq: Float64Array;
 }
 
 /**
@@ -201,10 +211,23 @@ const KEYQ = (() => {
 const _rot = new Float64Array(9);
 /** TileCuller.update's frustum planes (nx, ny, nz, constant) x 6 */
 const _tcp = new Float64Array(24);
+/** a pass camera's frustum corners (x, y, z x 8) and the inverse view-projection they come from */
+const _cc = new Float64Array(24);
+const _pvi = new THREE.Matrix4();
 /** frames a camera must rest before a guard-banded list is re-culled exactly */
 const SETTLE_FRAMES = 8;
-/** angular band cap (rad): wider bands keep lists through faster turns but draw more of the periphery */
-const TILT_CAP = (3 * Math.PI) / 180;
+/** a list kept while the view zooms in is rebuilt once the view distance fell below this fraction of the build's */
+const REACH_SHRINK = 0.7;
+/** guard bands (see bandPersp): frames of the camera's last motion a band covers at most, the largest outward turn of
+ *  one side plane (rad) and the largest outward shift of a plane (fraction of the view distance, <= 3000 m) */
+const BAND_FRAMES = 4;
+const TILT_CAP = (6 * Math.PI) / 180;
+const SWEEP_CAP = 0.2;
+/** band scratch: predicted corner offsets (8 corners x BAND_FRAMES frames) and the banded planes being fitted */
+const _po = new Float64Array(24 * BAND_FRAMES);
+const _bp = new Float64Array(24);
+const _bq = new Float64Array(24);
+const _rc = new Float64Array(24);
 /** rotation below this counts as none (a still, damped camera jitters by float ulps) */
 const TURN_EPS = 2e-6;
 /** max recorded texture update ranges per frame before falling back to one full upload */
@@ -257,6 +280,34 @@ function close(a: number, b: number): boolean {
   return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a));
 }
 
+/** the 8 corners of a camera's view volume (NDC cube through the inverse view-projection) -> out; false if one is not
+ *  finite (degenerate or infinite projection) */
+function frustumCorners(cam: THREE.Camera, out: Float64Array): boolean {
+  const e = _pvi.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse).invert().elements;
+  for (let c = 0; c < 8; c++) {
+    const x = c & 1 ? 1 : -1, y = c & 2 ? 1 : -1, z = c & 4 ? 1 : -1;
+    const w = e[3] * x + e[7] * y + e[11] * z + e[15];
+    const o = c * 3;
+    const px = (e[0] * x + e[4] * y + e[8] * z + e[12]) / w, py = (e[1] * x + e[5] * y + e[9] * z + e[13]) / w, pz = (e[2] * x + e[6] * y + e[10] * z + e[14]) / w;
+    if (!Number.isFinite(px + py + pz)) return false;
+    out[o] = px; out[o + 1] = py; out[o + 2] = pz;
+  }
+  return true;
+}
+
+/** are all 8 corners (x, y, z each) inside the 6 planes (nx, ny, nz, constant each)? Within float noise; NaN planes or
+ *  corners: no. A convex volume whose corners are inside lies inside. */
+function cornersInside(c: Float64Array, pl: Float64Array): boolean {
+  for (let p = 0; p < 24; p += 4) {
+    const nx = pl[p], ny = pl[p + 1], nz = pl[p + 2], d = pl[p + 3];
+    for (let o = 0; o < 24; o += 3) {
+      const x = c[o], y = c[o + 1], z = c[o + 2];
+      if (!(nx * x + ny * y + nz * z + d >= -(1e-4 + 1e-7 * (Math.abs(x) + Math.abs(y) + Math.abs(z))))) return false;
+    }
+  }
+  return true;
+}
+
 /** every frustum / receiver plane into the compacted test planes (instances without tile bounds, dynamic batches) */
 function allPlanes(): void {
   _fq.set(_fp);
@@ -272,38 +323,94 @@ function turnAngle(a: Float64Array, b: Float64Array): number {
   return c >= 1 ? 0 : c <= -1 ? Math.PI : Math.acos(c);
 }
 
-/** rotation (rad) a view cone of half-diagonal phi stays inside once its side planes are turned outward by A (the
- *  outward turn about a plane's hinge shrinks toward the cone's corners; 10% safety) */
-function tiltHold(A: number, phi: number): number {
-  return A > 0 ? 0.9 * Math.atan(Math.cos(Math.min(1.5, phi + 2 * A)) * Math.tan(A)) : 0;
+/** rotation from orientation a to orientation b (unit axes, see orient) as a row-major 3x3 matrix: out = B A^T */
+function rotBetween(a: Float64Array, b: Float64Array, out: Float64Array): void {
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) out[i * 3 + j] = b[i] * a[j] + b[3 + i] * a[3 + j] + b[6 + i] * a[6 + j];
+  }
 }
 
-/** angular band for a camera turning by `turn` rad per frame: ~4 frames of the turn, capped; 0 = not worth one */
-function tiltFor(turn: number, phi: number): number {
-  if (!(turn > TURN_EPS)) return 0;
-  const hold = tiltHold(TILT_CAP, phi);
-  if (turn * 1.3 > hold) return 0;
-  const want = Math.min(hold, 4 * turn);
-  // tiltHold is ~linear in A: scale the cap down to the wanted hold (then re-check)
-  let A = TILT_CAP * (want / hold);
-  if (tiltHold(A, phi) < want) A = Math.min(TILT_CAP, A * 1.1);
-  return A;
-}
-
-/** turn the 4 side planes (through apex a) outward by A: each normal rotates toward the view direction f */
-function tiltPlanes(pl: Float64Array, fx: number, fy: number, fz: number, ax: number, ay: number, az: number, A: number): void {
-  const cA = Math.cos(A), sA = Math.sin(A);
+/**
+ * Guard band of a perspective volume (view frustum, or a receiver: a slice of one) for the next k frames of the camera's
+ * last per-frame motion (translation v, rotation q about the apex a): each side plane of pl (planes 0-3, through the
+ * apex) is turned outward about its hinge just enough to hold the predicted corner rays (directional: only the side the
+ * view turns toward opens), then shifted outward by the apex's predicted travel across it; the depth planes (4 far, 5
+ * near) are moved to the predicted corners' depth range, at least [nd0, fd0] (slack for near / far following the zoom).
+ * cs: the volume's 8 corners (near 0-3, far 4-7), f: the view direction. Writes the banded planes to out (iso added to
+ * every plane) and returns the largest shift, or -1 when a turn or shift exceeds its cap (no band for k frames).
+ */
+function bandPersp(pl: Float64Array, cs: Float64Array, ax: number, ay: number, az: number, fx: number, fy: number, fz: number, v: Float64Array, q: Float64Array, k: number, iso: number, sweepCap: number, nd0: number, fd0: number, out: Float64Array): number {
+  // predicted corner offsets from the apex, frame s = 1..k: q^s (c - a)
+  const po = _po;
+  for (let c = 0; c < 8; c++) {
+    let x = cs[c * 3] - ax, y = cs[c * 3 + 1] - ay, z = cs[c * 3 + 2] - az;
+    for (let st = 0; st < k; st++) {
+      const nx = q[0] * x + q[1] * y + q[2] * z, ny = q[3] * x + q[4] * y + q[5] * z, nz = q[6] * x + q[7] * y + q[8] * z;
+      x = nx; y = ny; z = nz;
+      const o = (st * 8 + c) * 3;
+      po[o] = x; po[o + 1] = y; po[o + 2] = z;
+    }
+  }
+  const vx = v[0], vy = v[1], vz = v[2];
+  let maxShift = 0;
   for (let i = 0; i < 4; i++) {
-    const o = i * 4;
-    const nx = pl[o], ny = pl[o + 1], nz = pl[o + 2];
+    const o = i * 4, nx = pl[o], ny = pl[o + 1], nz = pl[o + 2];
+    // hinge turn: the normal rotates toward the view direction (its component normal to the plane)
     const fn = fx * nx + fy * ny + fz * nz;
     let ux = fx - fn * nx, uy = fy - fn * ny, uz = fz - fn * nz;
-    const ul = Math.hypot(ux, uy, uz);
-    if (ul < 1e-9) continue;
-    ux /= ul; uy /= ul; uz /= ul;
+    const ul = Math.sqrt(ux * ux + uy * uy + uz * uz);
+    let A = 0;
+    if (ul > 1e-9) {
+      ux /= ul; uy /= ul; uz /= ul;
+      for (let st = 0; st < k; st++) {
+        for (let c = 4; c < 8; c++) {
+          const p = (st * 8 + c) * 3, rx = po[p], ry = po[p + 1], rz = po[p + 2];
+          const a = nx * rx + ny * ry + nz * rz;
+          if (a >= 0) continue;
+          const b = ux * rx + uy * ry + uz * rz;
+          if (!(b > 0)) return -1;
+          const t = Math.atan2(-a, b);
+          if (t > A) A = t;
+        }
+      }
+      if (A > TILT_CAP) return -1;
+    } else ux = uy = uz = 0;
+    const cA = Math.cos(A), sA = Math.sin(A);
     const mx = nx * cA + ux * sA, my = ny * cA + uy * sA, mz = nz * cA + uz * sA;
-    pl[o] = mx; pl[o + 1] = my; pl[o + 2] = mz; pl[o + 3] = -(mx * ax + my * ay + mz * az);
+    // the apex travels k v: shift the plane out by what crosses it
+    const mv = mx * vx + my * vy + mz * vz, sh = mv < 0 ? -k * mv : 0;
+    if (sh > sweepCap) return -1;
+    if (sh > maxShift) maxShift = sh;
+    out[o] = mx; out[o + 1] = my; out[o + 2] = mz; out[o + 3] = -(mx * ax + my * ay + mz * az) + sh + iso;
   }
+  // depth range of the predicted corners (apex travel included)
+  const fv = fx * vx + fy * vy + fz * vz;
+  let nd = nd0, fd = fd0;
+  for (let st = 0; st < k; st++) {
+    for (let c = 0; c < 8; c++) {
+      const p = (st * 8 + c) * 3, d = fx * po[p] + fy * po[p + 1] + fz * po[p + 2] + (st + 1) * fv;
+      if (d < nd) nd = d;
+      if (d > fd) fd = d;
+    }
+  }
+  const fa = fx * ax + fy * ay + fz * az;
+  out[16] = -fx; out[17] = -fy; out[18] = -fz; out[19] = fa + fd + iso; // far
+  out[20] = fx; out[21] = fy; out[22] = fz; out[23] = -fa - nd + iso; // near
+  // (the list is drawn this frame too: the band must hold the current volume)
+  return cornersInside(cs, out) ? maxShift : -1;
+}
+
+/** guard band of an orthographic volume (shadow camera) for the next k frames of its last translation v: every plane
+ *  shifted outward by what crosses it, plus iso -> out; the largest shift, or -1 beyond sweepCap */
+function bandOrtho(pl: Float64Array, v: Float64Array, k: number, iso: number, sweepCap: number, out: Float64Array): number {
+  let maxShift = 0;
+  for (let o = 0; o < 24; o += 4) {
+    const mv = pl[o] * v[0] + pl[o + 1] * v[1] + pl[o + 2] * v[2], sh = mv < 0 ? -k * mv : 0;
+    if (sh > sweepCap) return -1;
+    if (sh > maxShift) maxShift = sh;
+    out[o] = pl[o]; out[o + 1] = pl[o + 1]; out[o + 2] = pl[o + 2]; out[o + 3] = pl[o + 3] + sh + iso;
+  }
+  return maxShift;
 }
 
 export class DynamicBatch {
@@ -318,6 +425,9 @@ export class DynamicBatch {
   private slots: PassSlot[] = [];
   /** bumped whenever the draw lists could change (instances, visibility, tiles, bounds) */
   private version = 1;
+  /** bumped by content changes only (not by a dynamic batch's matrix updates): view-culled main lists */
+  private cver = 1;
+  private vc = false;
   /** geometry swaps that keep the culling bounds (LOD): ring of swapped instance ids and the running swap count;
    *  cached lists patch just those entries' draw ranges (patchRanges) */
   private swapLog = new Int32Array(SWAP_RING);
@@ -423,6 +533,22 @@ export class DynamicBatch {
 
   get instanceCount(): number {
     return this.live;
+  }
+
+  /**
+   * Dynamic batches whose owner already hides every instance that is out of the view (vehicles without shadows): the
+   * main pass draws every visible instance, no per-instance tests, and its list is rebuilt only when instances are
+   * added / removed / shown / hidden (an O(visible) copy), not when they move or the camera does. Shadow passes still
+   * cull per pass.
+   */
+  get viewCulled(): boolean {
+    return this.vc;
+  }
+  set viewCulled(on: boolean) {
+    if (on === this.vc) return;
+    this.vc = on;
+    // (main-pass lists switch between the two version counters)
+    for (const s of this.slots) s.version = -1;
   }
 
   /** can this pass draw anything? Not without instances (a dynamic batch: without a visible one), nor in a shadow
@@ -683,6 +809,7 @@ export class DynamicBatch {
 
   private touch(): void {
     this.version++;
+    this.cver++;
     if (this.mesh.castShadow) shadowCasters.version++;
   }
 
@@ -876,9 +1003,12 @@ export class DynamicBatch {
         // (fields holding doubles start as doubles, -0 / NaN: a field first stored as a small integer changes its
         // representation at the first double, which deoptimizes the code that read it)
         selT: new Int32Array(64), selV: new Uint32Array(64), selO: new Int32Array(64), selN: 0, selEnd: 0, selMinR: -0, selValid: false, used: 0,
-        shape: new Float64Array(6), rot: new Float64Array(9), tiltOk: -0, nearB: -0, farB: -0, texel: NaN, px: -0, py: -0, pz: -0, margin: -0, banded: false,
-        rform: -1, rrot: new Float64Array(9), rtiltOk: -0, rx: -0, ry: -0, rz: -0, rdn: -0, rdf: -0,
+        shape: new Float64Array(8), rot: new Float64Array(9), texel: NaN, px: -0, py: -0, pz: -0, bk: 0, iso: -0, sweepCap: -0, margin: -0,
+        // (NaN planes: no corner is inside them until a build sets them)
+        bp: new Float64Array(24).fill(NaN), brp: new Float64Array(24).fill(NaN), reach0: -0, farMode: false, banded: false, stale: false,
+        rform: -1, rver: -1,
         still: 0, uses: 0, noBand: 0, lx: NaN, ly: NaN, lz: NaN, lrot: new Float64Array(9), lrrot: new Float64Array(9), lrx: NaN, lry: NaN, lrz: NaN,
+        mv: new Float64Array(3), mq: new Float64Array(9), rmv: new Float64Array(3), rmq: new Float64Array(9),
       };
       this.slots.push(s);
     }
@@ -917,15 +1047,13 @@ export class DynamicBatch {
     // rebuild the lists of the others)
     const texel = shadow && this.pc.minShadowTexels! > 0 ? ((camera.userData.texel as number | undefined) ?? 0) : 0;
     const recv = shadow ? ((camera.userData.recv as ShadowReceiver | undefined) ?? null) : null;
-    const cam = camera as THREE.PerspectiveCamera;
-    const persp = cam.isPerspectiveCamera === true;
-    const near = typeof cam.near === 'number' ? cam.near : 0, far = typeof cam.far === 'number' ? cam.far : Infinity;
     orient(w, _rot);
-    // motion since this slot's previous pass (~per frame): camera translation / rotation, receiver (view) likewise;
-    // a damped camera settling by less than a millimetre counts as still
+    // motion since this slot's previous pass (~per frame): camera translation / rotation, receiver (view) likewise (kept
+    // for the bands' prediction); a damped camera settling by less than a millimetre counts as still
     const sdx = w[12] - s.lx, sdy = w[13] - s.ly, sdz = w[14] - s.lz;
     const step = s.lx === s.lx ? Math.sqrt(sdx * sdx + sdy * sdy + sdz * sdz) : Infinity;
     const turn = s.lx === s.lx ? turnAngle(_rot, s.lrot) : Infinity;
+    if (s.lx === s.lx) { s.mv[0] = sdx; s.mv[1] = sdy; s.mv[2] = sdz; rotBetween(s.lrot, _rot, s.mq); }
     s.lx = w[12]; s.ly = w[13]; s.lz = w[14];
     s.lrot.set(_rot);
     let rstep = 0, rturn = 0;
@@ -934,31 +1062,33 @@ export class DynamicBatch {
       const rdx = o.x - s.lrx, rdy = o.y - s.lry, rdz = o.z - s.lrz;
       rstep = s.lrx === s.lrx ? Math.sqrt(rdx * rdx + rdy * rdy + rdz * rdz) : Infinity;
       rturn = s.lrx === s.lrx ? turnAngle(recv.rot, s.lrrot) : Infinity;
+      if (s.lrx === s.lrx) { s.rmv[0] = rdx; s.rmv[1] = rdy; s.rmv[2] = rdz; rotBetween(s.lrrot, recv.rot, s.rmq); }
       s.lrx = o.x; s.lry = o.y; s.lrz = o.z;
       s.lrrot.set(recv.rot);
     }
     s.still = step > 1e-3 || turn > TURN_EPS || rstep > 1e-3 || rturn > TURN_EPS ? 0 : s.still + 1;
-    // a list stays valid while the content, the projection shape and the texel are unchanged, near / far stay within
-    // the depth range it was culled for, and the camera turned / moved by less than its bands (receiver likewise)
-    let same = s.version === this.version && s.texel === texel && near >= s.nearB && far <= s.farB;
-    if (same) {
-      const sh = s.shape;
-      if (!close(P[0], sh[0]) || !close(P[5], sh[1]) || !close(P[8], sh[2]) || !close(P[9], sh[3]) || !close(P[12], sh[4]) || !close(P[13], sh[5])) same = false;
+    // view-culled main list (see viewCulled): every visible instance, rebuilt on content changes only
+    if (this.vc && !shadow) {
+      if (s.version !== this.cver) { s.version = this.cver; this.buildAll(renderer, s, geometry); }
+      else if (s.swapAt !== this.swapSeq) this.patchRanges(s, geometry);
+      this.useList(s);
+      return;
     }
-    if (same && turnAngle(_rot, s.rot) > Math.max(TURN_EPS, s.tiltOk)) same = false;
-    if (same) {
-      const tol = s.margin + 1e-6 * (1 + Math.abs(w[12]) + Math.abs(w[13]) + Math.abs(w[14]));
-      const dx = w[12] - s.px, dy = w[13] - s.py, dz = w[14] - s.pz;
-      if (dx * dx + dy * dy + dz * dz > tol * tol) same = false;
-      else if (recv) {
-        const o = recv.origin, ex = o.x - s.rx, ey = o.y - s.ry, ez = o.z - s.rz;
-        if (ex * ex + ey * ey + ez * ez > tol * tol) same = false;
-        else if (recv.form !== s.rform || recv.dn < s.rdn * (1 - 1e-9) - 1e-6 || recv.df > s.rdf * (1 + 1e-9) + 1e-6) same = false;
-        else if (turnAngle(recv.rot, s.rrot) > Math.max(TURN_EPS, s.rtiltOk)) same = false;
-      }
-      // the view came to rest: cull exactly once (no band drawn while nothing moves)
-      if (same && s.banded && s.still === SETTLE_FRAMES) same = false;
+    // a list stays valid while the content, the texel (caster size cutoff), the receiver's form (light, ground) and the
+    // build mode (far: tile level) are unchanged and the view did not zoom in much, and either the camera (receiver) is
+    // where the list was built, or its frustum (receiver volume) lies inside the planes the list was culled with (bands
+    // included): every instance that can show is then in the list. A list kept that way while the view moves draws a
+    // little more than needed: it is re-culled exactly once the view rests.
+    const reach = recv ? recv.reach : shadow ? 0 : viewReach(camera);
+    const farMode = reach > this.farReach;
+    let same = s.version === this.version && s.texel === texel && s.farMode === farMode && !(reach < s.reach0 * REACH_SHRINK);
+    if (same && recv && recv.form !== s.rform) same = false;
+    if (same && !this.atBuild(s, w, P, recv)) {
+      same = frustumCorners(camera, _cc) && cornersInside(_cc, s.bp) && (recv === null || cornersInside(recv.corners, s.brp));
+      if (same) s.stale = true;
     }
+    // the view came to rest: cull exactly once (no band drawn while nothing moves)
+    if (same && (s.banded || s.stale) && s.still === SETTLE_FRAMES) same = false;
     if (!same) {
       // a banded list that served a single frame bought nothing: build the next few lists exactly
       if (s.banded && s.uses < 2) s.noBand = 8;
@@ -966,45 +1096,70 @@ export class DynamicBatch {
       s.uses = 1;
       s.version = this.version;
       s.texel = texel;
-      s.shape[0] = P[0]; s.shape[1] = P[5]; s.shape[2] = P[8]; s.shape[3] = P[9]; s.shape[4] = P[12]; s.shape[5] = P[13];
+      s.farMode = farMode;
+      s.reach0 = reach;
+      s.stale = false;
+      const sh = s.shape;
+      sh[0] = P[0]; sh[1] = P[5]; sh[2] = P[8]; sh[3] = P[9]; sh[4] = P[10]; sh[5] = P[12]; sh[6] = P[13]; sh[7] = P[14];
       s.rot.set(_rot);
       s.px = w[12]; s.py = w[13]; s.pz = w[14];
-      // bands: translation ~4 frames of the camera speed, at most `guard` x the view distance (capped: far views are
-      // GPU-bound and their pans fast, a wide band would mostly add triangles); perspective views turning add an
-      // angular band (~4 frames of the turn, <= TILT_CAP), receivers one for the view's turn. None for a resting
-      // view, for dynamic batches, or when the camera moves too fast for a band to outlast a frame or so.
-      const reach = recv ? recv.reach : shadow ? 0 : viewReach(camera);
-      const cap = this.guard * Math.min(reach, 3000);
-      const bandOk = cap > 0 && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0;
+      // band (see cullPlanes): the camera's last motion predicted for up to BAND_FRAMES frames, plus `guard` x the view
+      // distance at most for the prediction's error (half a frame of travel). None for a resting view, for dynamic
+      // batches, after a jump, or while bands keep failing (noBand).
+      const range = Math.min(reach, 3000);
+      const cap = this.guard * range;
       // (shadow passes: the band must also cover the receiver, which moves with the view, not the shadow camera)
       const move = Math.max(step, rstep);
-      s.margin = bandOk && move < cap * 0.75 ? Math.min(cap, 4 * move) : 0;
-      const phi = persp ? Math.atan(Math.hypot(1 / P[0], 1 / P[5]) + Math.hypot(P[8] / P[0], P[9] / P[5])) : 0;
-      const tilt = bandOk && persp ? tiltFor(turn, phi) : 0;
-      s.tiltOk = tiltHold(tilt, phi);
-      const rtilt = bandOk && recv && recv.phi > 0 ? tiltFor(rturn, recv.phi) : 0;
-      s.rtiltOk = tiltHold(rtilt, recv ? recv.phi : 0);
-      s.banded = s.margin > 0 || tilt > 0 || rtilt > 0;
-      // depth range: exact, or with slack while banded (near / far follow the zoom every frame)
-      s.nearB = s.banded ? near * 0.5 : near;
-      s.farB = s.banded ? far * 1.25 : far;
+      const bandOk = cap > 0 && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0 && move < Infinity && turn < Infinity && rturn < Infinity;
+      s.bk = bandOk ? BAND_FRAMES : 0;
+      s.iso = bandOk ? Math.min(cap, 0.5 * move + 1e-3 * range) : 0;
+      s.sweepCap = SWEEP_CAP * range;
       if (recv) {
         s.rform = recv.form;
-        s.rrot.set(recv.rot);
-        s.rx = recv.origin.x; s.ry = recv.origin.y; s.rz = recv.origin.z;
-        s.rdn = s.banded ? recv.dn * 0.5 : recv.dn;
-        s.rdf = s.banded ? recv.df * 1.1 : recv.df;
+        s.rver = recv.version;
       }
-      this.build(renderer, s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, recv, tilt, phi, rtilt, reach > this.farReach);
+      this.build(renderer, s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, recv, farMode);
     } else {
       s.uses++;
       if (s.swapAt !== this.swapSeq) this.patchRanges(s, geometry);
     }
+    this.useList(s);
+  }
+
+  /** hand a slot's list to three.js for this pass */
+  private useList(s: PassSlot): void {
+    const m = this.mesh as any;
     m._multiDrawStarts = s.starts;
     m._multiDrawCounts = s.counts;
     m._multiDrawCount = s.count;
     m._indirectTexture = s.tex;
     m._visibilityChanged = false;
+  }
+
+  /** is the camera where the slot's list was built (pose and projection, within float noise), and the receiver the
+   *  same volume? */
+  private atBuild(s: PassSlot, w: number[], P: number[], recv: ShadowReceiver | null): boolean {
+    const tol = 1e-6 * (1 + Math.abs(w[12]) + Math.abs(w[13]) + Math.abs(w[14]));
+    const dx = w[12] - s.px, dy = w[13] - s.py, dz = w[14] - s.pz;
+    if (dx * dx + dy * dy + dz * dz > tol * tol) return false;
+    const sh = s.shape;
+    if (!close(P[0], sh[0]) || !close(P[5], sh[1]) || !close(P[8], sh[2]) || !close(P[9], sh[3]) || !close(P[10], sh[4]) || !close(P[12], sh[5]) || !close(P[13], sh[6]) || !close(P[14], sh[7])) return false;
+    if (turnAngle(_rot, s.rot) > TURN_EPS) return false;
+    return recv === null || recv.version === s.rver;
+  }
+
+  /** view-culled main list (see viewCulled): every visible instance of the dynamic batch (the front of `untiled`) */
+  private buildAll(renderer: THREE.WebGLRenderer, s: PassSlot, geometry: THREE.BufferGeometry): void {
+    this.drawRanges(geometry);
+    s.swapAt = this.swapSeq;
+    s.gen++;
+    s.selValid = false;
+    const un = this.untiledVis;
+    this.ensureList(s, un, 0);
+    const u = this.untiled, geo = this.instGeo, gS = this.gStart, gC = this.gCount, S = s.starts, C = s.counts, I = s.ids;
+    for (let j = 0; j < un; j++) { const id = u[j], g = geo[id]; S[j] = gS[g]; C[j] = gC[g]; I[j] = id; }
+    s.count = un;
+    this.syncIds(renderer, s, un, 0);
   }
 
   /**
@@ -1030,42 +1185,58 @@ export class DynamicBatch {
     uploadRows(renderer, props.__webglTexture, 0, W, rows, gl.RGBA, gl.FLOAT, tex.image.data as unknown as Float32Array, 0);
   }
 
-  /** planes of the list build -> _fp (view / shadow camera) and _rp / _rnl (receiver), widened by the slot's bands */
-  private cullPlanes(s: PassSlot, recv: ShadowReceiver | null, tilt: number, phi: number, rtilt: number): void {
+  /**
+   * Planes of the list build -> _fp (view / shadow camera) and _rp / _rnl (receiver), kept in the slot (bp / brp) for the
+   * containment test of later passes. While the view moves (s.bk > 0) they are guard-banded for the camera's motion: its
+   * last per-frame translation / rotation predicted for k frames (the most of s.bk that fits the caps; perspective
+   * volumes turn the side planes it rotates toward and shift the planes it moves across, see bandPersp; orthographic
+   * shadow cameras only shift), plus s.iso on every plane. Shadow passes band the receiver (the view's slice) with the
+   * view's motion and the shadow camera with its own, for the same k. Sets s.banded and s.margin (widest shift).
+   */
+  private cullPlanes(s: PassSlot, recv: ShadowReceiver | null): void {
     const cam = s.camera;
     _frustum.setFromProjectionMatrix(_pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse), cam.coordinateSystem, (cam as any).reversedDepth);
-    const fp = _fp, mr = s.margin;
+    const fp = _fp;
     for (let i = 0; i < 6; i++) {
       const pl = _frustum.planes[i], n = pl.normal, o = i * 4;
       fp[o] = n.x; fp[o + 1] = n.y; fp[o + 2] = n.z; fp[o + 3] = pl.constant;
     }
-    if (s.banded) {
+    const rp = _rp;
+    if (recv) rp.set(recv.pl);
+    s.banded = false;
+    s.margin = 0;
+    if (s.bk > 0 && frustumCorners(cam, _cc)) {
+      const persp = (cam as THREE.PerspectiveCamera).isPerspectiveCamera === true;
       const w = cam.matrixWorld.elements;
-      const ax = w[12], ay = w[13], az = w[14];
-      // view direction (-Z axis)
-      const fx = -s.rot[6], fy = -s.rot[7], fz = -s.rot[8];
-      if (tilt > 0) tiltPlanes(fp, fx, fy, fz, ax, ay, az, tilt);
-      for (let i = 0; i < 4; i++) fp[i * 4 + 3] += mr;
-      // depth planes rebuilt for the covered range [nearB, farB] (turning moves a cone's depth by up to cos(phi -+ t))
-      const t = s.tiltOk, kn = tilt > 0 ? Math.cos(Math.min(1.5, phi + t)) / Math.cos(phi) : 1, kf = tilt > 0 ? Math.cos(Math.max(0, phi - t)) / Math.cos(phi) : 1;
-      const fa = fx * ax + fy * ay + fz * az;
-      const nd = s.nearB * kn - mr, fd = s.farB * kf + mr;
-      fp[16] = -fx; fp[17] = -fy; fp[18] = -fz; fp[19] = fa + fd; // far
-      fp[20] = fx; fp[21] = fy; fp[22] = fz; fp[23] = -fa - nd; // near
+      const ax = w[12], ay = w[13], az = w[14], fx = -s.rot[6], fy = -s.rot[7], fz = -s.rot[8];
+      const c = cam as THREE.PerspectiveCamera;
+      const near = typeof c.near === 'number' ? c.near : 0, far = typeof c.far === 'number' ? c.far : Infinity;
+      if (recv) {
+        // receiver corners in bandPersp's order (near 0-3, far 4-7)
+        const rc = _rc, cr = recv.corners;
+        for (let k = 0; k < 4; k++) for (let j = 0; j < 3; j++) { rc[k * 3 + j] = cr[k * 6 + j]; rc[(k + 4) * 3 + j] = cr[k * 6 + 3 + j]; }
+      }
+      for (let k = s.bk; k >= 1; k--) {
+        // (depth slack: near / far follow the zoom every frame, the receiver's slice the cascade splits)
+        const m1 = persp ? bandPersp(fp, _cc, ax, ay, az, fx, fy, fz, s.mv, s.mq, k, s.iso, s.sweepCap, near * 0.5, far * 1.25, _bp) : bandOrtho(fp, s.mv, k, s.iso, s.sweepCap, _bp);
+        if (m1 < 0) continue;
+        let m2 = 0;
+        if (recv) {
+          const o = recv.origin, f = recv.fwd;
+          m2 = bandPersp(rp, _rc, o.x, o.y, o.z, f.x, f.y, f.z, s.rmv, s.rmq, k, s.iso, s.sweepCap, recv.dn * 0.5, recv.df * 1.1, _bq);
+          if (m2 < 0) continue;
+          rp.set(_bq);
+        }
+        fp.set(_bp);
+        s.banded = true;
+        s.margin = Math.max(m1, m2) + s.iso;
+        break;
+      }
     }
+    s.bp.set(fp);
     if (!recv) return;
-    const rp = _rp, rnl = _rnl, d = recv.dir;
-    rp.set(recv.pl);
-    if (s.banded) {
-      const o = recv.origin, f = recv.fwd, rph = recv.phi;
-      if (rtilt > 0) tiltPlanes(rp, f.x, f.y, f.z, o.x, o.y, o.z, rtilt);
-      for (let i = 0; i < 4; i++) rp[i * 4 + 3] += mr;
-      const t = s.rtiltOk, kn = rtilt > 0 ? Math.cos(Math.min(1.5, rph + t)) / Math.cos(rph) : 1, kf = rtilt > 0 ? Math.cos(Math.max(0, rph - t)) / Math.cos(rph) : 1;
-      const fo = f.x * o.x + f.y * o.y + f.z * o.z;
-      const nd = s.rdn * kn - mr, fd = s.rdf * kf + mr;
-      rp[16] = -f.x; rp[17] = -f.y; rp[18] = -f.z; rp[19] = fo + fd; // far
-      rp[20] = f.x; rp[21] = f.y; rp[22] = f.z; rp[23] = -fo - nd; // near
-    }
+    s.brp.set(rp);
+    const rnl = _rnl, d = recv.dir;
     for (let i = 0; i < 6; i++) rnl[i] = rp[i * 4] * d.x + rp[i * 4 + 1] * d.y + rp[i * 4 + 2] * d.z;
   }
 
@@ -1076,7 +1247,7 @@ export class DynamicBatch {
    * keeps the whole list and skips the upload (a view that pans / turns / zooms without moving a tile boundary across
    * the frustum rebuilds nothing).
    */
-  private build(renderer: THREE.WebGLRenderer, s: PassSlot, cascade: number, texel: number, geometry: THREE.BufferGeometry, recv: ShadowReceiver | null, tilt: number, phi: number, rtilt: number, far = false): void {
+  private build(renderer: THREE.WebGLRenderer, s: PassSlot, cascade: number, texel: number, geometry: THREE.BufferGeometry, recv: ShadowReceiver | null, far = false): void {
     const pc = this.pc!;
     const m = this.mesh as any;
     // the list about to be rebuilt may keep a prefix: bring its draw ranges up to date first
@@ -1093,7 +1264,7 @@ export class DynamicBatch {
     const sorted = cascade < 0 && this.sortFront && !dyn && !far;
     const coarse = pc.coarse === true || far;
     if (cascade < 0 || (pc.shadowMask! >> cascade) & 1) {
-      this.cullPlanes(s, recv, tilt, phi, rtilt);
+      this.cullPlanes(s, recv);
       const fp = _fp, rp = _rp, rnl = _rnl, fq = _fq, rq = _rq, rnq = _rnq;
       this.drawRanges(geometry);
       const minR = cascade >= 0 ? pc.minShadowTexels! * texel * 0.5 : 0;

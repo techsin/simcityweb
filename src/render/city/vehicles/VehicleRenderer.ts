@@ -54,8 +54,10 @@ const _p = new Float64Array(8);
 const _m = new Float64Array(6);
 /** chooseExit's per-direction weights */
 const _w4 = new Float64Array(4);
-/** a vehicle whose cell sphere stays this far (m) outside the view frustum is neither posed nor drawn: beyond the
- *  shadow a vehicle can cast into the view (~4 m tall at >= 6 deg sun elevation) */
+/** with shadows, a vehicle whose cell sphere stays this far (m) outside the view frustum is neither posed nor drawn:
+ *  beyond the shadow a vehicle can cast into the view (~4 m tall at >= 6 deg sun elevation). Without shadows (low /
+ *  medium quality) every vehicle outside the view is hidden, and the batch's main pass draws the visible ones without
+ *  testing them again (DynamicBatch.viewCulled) */
 const VIEW_MARGIN = 40;
 /** poseCars: the view frustum planes (nx, ny, nz, constant) x 6 */
 const _vf = new Float64Array(24);
@@ -269,6 +271,7 @@ export class VehicleRenderer {
     this.trainCap = TRAIN_CAPS[quality];
     this.batch = new DynamicBatch(getCityMaterial(), this.cap + 128, 1 << 16, 'vehicles');
     this.batch.mesh.castShadow = quality === 'high' || quality === 'ultra';
+    this.batch.viewCulled = !this.batch.mesh.castShadow;
     this.batch.mesh.receiveShadow = true;
     // both cascades (the far one only where a vehicle spans > ~1 shadow texel)
     this.batch.enablePassCulling({ culler, dynamic: true, minShadowTexels: 1.2 });
@@ -361,6 +364,7 @@ export class VehicleRenderer {
     this.trainCap = TRAIN_CAPS[q];
     this.alloc(cap);
     this.batch.mesh.castShadow = q === 'high' || q === 'ultra';
+    this.batch.viewCulled = !this.batch.mesh.castShadow;
     this.refreshSpawn();
   }
 
@@ -624,14 +628,14 @@ export class VehicleRenderer {
     const sig = this.signalized;
     this.vsg[v] = sig && nc >= 0 && sig[nc] ? ((Math.imul(nc, -1640531535) >>> 0) % 997) * 0.03 : -1;
     // the cell's culling sphere: its footprint and terrain height range (bridge / overpass cells: up to a deck high above
-    // it), the overhang of a long vehicle into the next cell, and the view margin
+    // it) and the overhang of a long vehicle into the next cell
     const st = this.state, N = st.size, N1 = N + 1, hts = st.heights;
     const ix = ci % N, iz = (ci / N) | 0, j = iz * N1 + ix;
     const a = hts[j], b = hts[j + 1], c = hts[j + N1], d = hts[j + N1 + 1];
     const lo = Math.min(a, b, c, d), hi = Math.max(a, b, c, d) + LIFT + (this.net.bAxis[ci] >= 0 || this.net.bCross[ci] ? 60 : 5);
     const hy = (hi - lo) * 0.5, o = v * 4, sp = this.vsph;
     sp[o] = (ix + 0.5) * CELL_SIZE; sp[o + 1] = lo + hy; sp[o + 2] = (iz + 0.5) * CELL_SIZE;
-    sp[o + 3] = Math.sqrt(CELL_SIZE * CELL_SIZE * 0.5 + hy * hy) + 12 + VIEW_MARGIN;
+    sp[o + 3] = Math.sqrt(CELL_SIZE * CELL_SIZE * 0.5 + hy * hy) + 12;
   }
 
   /** refresh the cell caches: all of them after invalidate() (network / traffic changed), else a rolling slice so every
@@ -1135,9 +1139,10 @@ export class VehicleRenderer {
     const life = this.life, tt = this.t, spd = this.spd, len = this.len, vlen = this.vlen, inst = this.inst, vis = this.vis, rank = this.rank;
     const vtile = this.vtile, posed = this.posed, vsph = this.vsph;
     // the view frustum (a vehicle in a visible tile but out of view, beyond any shadow it could cast into the view, is
-    // hidden: no pose, no draw)
+    // hidden: no pose, no draw); its planes are pushed out by the shadow margin (none without shadows: see VIEW_MARGIN)
+    const margin = this.batch.mesh.castShadow ? VIEW_MARGIN : 0;
     _vfr.setFromProjectionMatrix(_vfm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
-    for (let i = 0; i < 6; i++) { const pl = _vfr.planes[i], o = i * 4; _vf[o] = pl.normal.x; _vf[o + 1] = pl.normal.y; _vf[o + 2] = pl.normal.z; _vf[o + 3] = pl.constant; }
+    for (let i = 0; i < 6; i++) { const pl = _vfr.planes[i], o = i * 4; _vf[o] = pl.normal.x; _vf[o + 1] = pl.normal.y; _vf[o + 2] = pl.normal.z; _vf[o + 3] = pl.constant + margin; }
     const vf = _vf;
     let written = 0;
     for (let v = 0; v < this.n; v++) {
@@ -1206,7 +1211,8 @@ export class VehicleRenderer {
     return written;
   }
 
-  /** advance, cull and pose the trains (loco + cars along the path history); returns the number of cars drawn */
+  /** advance, cull and pose the trains (loco + cars along the path history; culled like the cars, with the view
+   *  frustum poseCars set up this frame); returns the number of cars drawn */
   private poseTrains(dt: number, camera: THREE.Camera, heightPx: number): number {
     if (!this.trains.length) return 0;
     const st = this.state;
@@ -1247,15 +1253,21 @@ export class VehicleRenderer {
         const gx = Math.floor(Math.floor(x / cellSize) / tileCells), gz = Math.floor(Math.floor(z / cellSize) / tileCells);
         const tile = (gz < 0 ? 0 : gz > tmax ? tmax : gz) * tiles + (gx < 0 ? 0 : gx > tmax ? tmax : gx);
         const tdx = x - cpx, tdz = z - cpz, td2 = tdx * tdx + tdz * tdz + cpy2, tl = tr.lens[c] * kh;
-        const show = tileVis[tile] === 1 && !(st.netFlags[ci] & NF_TUNNEL) && td2 < D2 * 4 && (this.keep > 0 || td2 < tl * tl);
+        let show = tileVis[tile] === 1 && !(st.netFlags[ci] & NF_TUNNEL) && td2 < D2 * 4 && (this.keep > 0 || td2 < tl * tl);
+        const hh = half * 0.8;
+        let yF = 0, yB = 0;
+        if (show) {
+          _p[4] = hh;
+          this.surfPair(false);
+          yF = _p[6]; yB = _p[7];
+          // out of view (the frustum poseCars set up, pushed out by its shadow margin): hidden like a car
+          const cy = (yF + yB) * 0.5 + 2.5, r = -(half + 4);
+          for (let k = 0; k < 24; k += 4) if (_vf[k] * x + _vf[k + 1] * cy + _vf[k + 2] * z + _vf[k + 3] < r) { show = false; break; }
+        }
         this.batch.setVisible(id, show);
         if (!show) continue;
         shown++;
         const fx = _p[2], fz = _p[3];
-        const hh = half * 0.8;
-        _p[4] = hh;
-        this.surfPair(false);
-        const yF = _p[6], yB = _p[7];
         _m[0] = x; _m[1] = (yF + yB) * 0.5 + 0.62; _m[2] = z; _m[3] = fx; _m[4] = (yF - yB) / (2 * hh); _m[5] = fz;
         this.writeMatrix(data, id * 16);
       }
