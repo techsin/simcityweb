@@ -710,8 +710,9 @@ export const APPROVAL_TERMS = {
   /** WP6b: + emIgnored per IGNORED prompt of the last 12 months (stats.emergency month.ignored: a major incident failed
    *  with nobody sent although the Dispatch prompt said a unit could still make it) — a choice, so a fixed weight that
    *  does not shrink with the city (the share term above dilutes a big city's failures). A competent mayor answers
-   *  them (the bot: 0-2 a year); 256×60 s7 --neglect let 5-17 a year fail (approval −2.2 over the run with the share
-   *  term alone; population unchanged) */
+   *  them (the bot: all it can reach in time); 256×60 s7 --neglect let 5-17 a year fail: approval −2.2 over the run
+   *  with the share term alone, population unchanged. With this term, 256×60 --neglect s7 / s11: approval −5.5 / −3.6
+   *  over the run (−5.7 / −5.6 in year 60), population −3.2 % / −2.7 % in year 60; 128×15 s7: approval −2.0 */
   emIgnored: 1.5,
   /** legacy fallback while the emergency system is inactive: −1.5 per fire started last month, at most 6 */
   firePer: 1.5,
