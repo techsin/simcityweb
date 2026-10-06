@@ -1919,7 +1919,22 @@ function parseArgs(argv: string[]): BotOptions {
   return o;
 }
 
-if (process.argv[1]?.includes('simbot')) {
+/** the flags of the command line (--help) */
+export const USAGE = `SIMBOT — scripted "competent mayor" for balance testing
+usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/rolldown, see tools/balance-json.ts)
+  --size N          map size (256)                 --years N        years to play (60)
+  --seed N          terrain / sim seed (7)         --difficulty D   easy | medium | hard | sandbox (medium)
+  --terrain T       terrain preset (plains)        --water F        water amount 0..1 (0.2)
+  --quiet           no per-action log              --no-infra       economy systems only (no sim-infra)
+  --tax N           fixed tax rate for every type  --spendy         150 % funding, builds without budget checks
+  --neglect         never dispatches to uncovered emergencies
+  --skip a,b,...    leave rules out (the wrong choices): schools, garbage, jail, transit, police, services
+  --help, -h        this text
+env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1 · SIMBOT_PROFILE=1`;
+
+if (process.argv[1]?.includes('simbot') && (process.argv.includes('--help') || process.argv.includes('-h'))) {
+  console.log(USAGE);
+} else if (process.argv[1]?.includes('simbot')) {
   const opts = parseArgs(process.argv.slice(2));
   console.log(`SIMBOT size=${opts.size} years=${opts.years} seed=${opts.seed} ${opts.difficulty} ${opts.terrain}${opts.noInfra ? ' (no infra)' : ''}`);
   const systems = opts.noInfra ? economySystems() : (await import("../src/sim/systems/index")).createSystems();
