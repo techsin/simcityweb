@@ -44,9 +44,10 @@
  *  P&R        PH_PARKRIDE: K-label reverse road search (search.ts SearchK, K = PR_OPTIONS) from park & ride garages
  *             (garage within PR_STOP_RADIUS of an attached stop whose path rides; it keeps that stop unless another is
  *             clearly faster, PR_STOP_KEEP, and stays park & ride while under PR_DOWNTOWN_SHARE of its recent assignments
- *             ride nothing — a walk within PR_DOWNTOWN_TIE minutes of its last ride counts as a ride) labelled with the stop's transit minutes (no price: the option sets do not move with the
- *             prices): every origin gets its PR_OPTIONS fastest garage groups within PR_CAR_LEG_MAX free-flow minutes
- *             and PR_OPTION_MARGIN minutes of its fastest. The transit option is min(walk to a stop, the best park &
+ *             ride nothing — a walk within PR_DOWNTOWN_TIE minutes of its last ride counts as a ride) labelled with
+ *             the stop's transit minutes (no price: the option sets do not move with the prices): every origin gets
+ *             its PR_OPTIONS fastest garage groups within PR_CAR_LEG_MAX free-flow minutes and PR_OPTION_MARGIN minutes
+ *             of its fastest. The transit option is min(walk to a stop, the best park &
  *             ride option by minutes + price); its park & ride riders split over the options (logit on minutes +
  *             price, PR_GARAGE_BETA), each part takes its group's free room and the rest fills the other options' free
  *             room, fastest first; what still does not fit re-splits without park & ride. Car legs flow on the K-label

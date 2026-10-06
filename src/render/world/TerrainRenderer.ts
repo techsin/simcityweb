@@ -38,6 +38,8 @@ const PALETTES: Record<Climate, number[]> = {
   alpine: [0x52703a, 0x767e52, 0x3b572b, 0x26361c, 0x655645, 0x8a8a86, 0x676865, 0xb3a98e, 0x8c836c, 0x6b6656, 0xe2e8ef, 0x51514f],
 };
 
+const _ff = new THREE.Color();
+
 export class TerrainRenderer {
   readonly group = new THREE.Group();
   readonly material: THREE.MeshStandardMaterial;
@@ -166,6 +168,8 @@ export class TerrainRenderer {
       uDormant: { value: 0 },
       /** painted woods beyond the map / forest floor: x autumn share, y bare share (seasonMix, like the 3D trees) */
       uCanopy: { value: new THREE.Vector2() },
+      /** forest floor colour (palette forest floor, leaf litter browns in autumn / winter): applySnowLine */
+      uForestFloor: { value: new THREE.Color() },
       // (same object as the building material's: WorldView updates it every frame)
       uTSunDir: sharedUniforms.uSunDir,
       uExitTex: { value: this.exitTex as THREE.Texture },
@@ -267,6 +271,12 @@ export class TerrainRenderer {
     this.uniforms.uDormant.value = !seasonal ? 0 : winter ? 0.55 : m === 10 || m === 2 ? 0.3 : m === 9 ? 0.15 : 0;
     const mix = seasonMix(m, cfg.climate);
     this.uniforms.uCanopy.value.set(mix.autumn, mix.bare);
+    // leaf litter under the woods (the bare 3D trees of autumn / winter show the forest floor through)
+    const pal = this.uniforms.uPal.value;
+    if (pal.length > 4) {
+      const k = 0.55 * Math.min(1, mix.autumn * 0.6 + mix.bare);
+      this.uniforms.uForestFloor.value.copy(pal[3]).lerp(_ff.copy(pal[4]).multiplyScalar(0.62), k);
+    }
   }
 
   /** season for the snow line (WorldView calls this on the sim's 'month' event) */

@@ -49,6 +49,8 @@ uniform vec3 uTSunDir;
 uniform float uDormant;
 /** deciduous woods: x autumn share, y bare share (nat_season.ts seasonMix, like the 3D trees) */
 uniform vec2 uCanopy;
+/** forest floor colour of the season (TerrainRenderer: leaf litter browns in autumn / winter) */
+uniform vec3 uForestFloor;
 /** neighbour connections: N x 4 (row = map edge -x, +x, -z, +z), texel = network type of the edge cell whose line runs off-map */
 uniform sampler2D uExitTex;
 
@@ -123,8 +125,7 @@ vec3 terrainShade(vec3 P, vec3 N) {
   trees = mix(trees, smoothstep(0.6, 0.74, nA.g * 0.6 + nB.r * 0.5) * 0.65, outside);
   float forest = smoothstep(0.03, 0.55, trees);
   // forest floor: leaf litter browns under the woods in autumn / winter (bare 3D trees show the floor through)
-  vec3 floorC = mix(uPal[3], uPal[4] * 0.62, 0.55 * clamp(uCanopy.x * 0.6 + uCanopy.y, 0.0, 1.0));
-  col = mix(col, floorC * (0.85 + 0.3 * m3), forest * 0.82);
+  col = mix(col, uForestFloor * (0.85 + 0.3 * m3), forest * 0.82);
   if (outside > 0.001) {
     // landscape beyond the map has no tree instances: its noise forests get a canopy look (crown clumps with dark
     // gaps as fake AO) plus a fake sun shadow on the meadow beside them and a lit crown edge toward the sun, so from
@@ -265,7 +266,7 @@ vec3 terrainShade(vec3 P, vec3 N) {
       vec2 fs = bh < 0.34 ? vec2(7.0, 4.5) : (bh < 0.67 ? vec2(4.5, 3.0) : vec2(10.0, 6.5));
       vec2 fqb = fract(bh * 7.13) < 0.5 ? gq : gq.yx;
       float frow = floor(fqb.y / fs.y);
-      vec2 fq = vec2(fqb.x / fs.x + fract(sin(frow * 12.9898 + bh * 91.7) * 43758.5453), fqb.y / fs.y);
+      vec2 fq = vec2(fqb.x / fs.x + fract(frow * 0.618034 + bh), fqb.y / fs.y);
       vec2 fid = floor(fq);
       float fh = fract(sin(dot(fid + bid * 37.0, vec2(12.9898, 78.233))) * 43758.5453);
       float fh2 = fract(fh * 31.7);

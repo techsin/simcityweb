@@ -93,10 +93,6 @@ uniform float uRoadDim;
 uniform float uLampRibbon;
 uniform float uFoliageDry;
 
-// grass of medians / verges: dormant straw in winter and in deserts, like the lot lawns (materials.ts uFoliageDry)
-vec3 dormantGrass(vec3 c) {
-  return mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))) * vec3(1.18, 1.02, 0.68), uFoliageDry);
-}
 
 float rh21(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
 float rnoise(vec2 p) {
@@ -149,6 +145,8 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
   vec2 wp = vWp.xz;
   float au = abs(u);
   float distFade = clamp(1.0 - length(fwidth(wp)) * 0.35, 0.0, 1.0);
+  // share of verge / median grass in this fragment (its season is applied once at the end)
+  float grassK = 0.0;
 
   if (mat < 0.5) {
     // ---------------------------------------------------------------- asphalt
@@ -278,8 +276,9 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
       if (kind < 1.5) {
         // street: grass verge between curb and sidewalk, and behind it
         float g = range1(au, aw + 0.25, 5.3) + range1(au, 7.55, 8.2);
-        vec3 grass = dormantGrass(vec3(0.075, 0.13, 0.035) * (0.75 + 0.5 * rfbm(wp * 0.6)) * (0.9 + 0.2 * rnoise(wp * 7.0)));
+        vec3 grass = vec3(0.075, 0.13, 0.035) * (0.75 + 0.5 * rfbm(wp * 0.6)) * (0.9 + 0.2 * rnoise(wp * 7.0));
         c = mix(c, grass, g);
+        grassK = g;
         rough = mix(rough, 0.95, g);
       } else if (kind > 1.5 && kind < 2.5) {
         // road: square tree pits every 12 m
@@ -297,7 +296,7 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
   } else if (mat < 3.5) {
     // grass (median)
     vec3 c = vec3(0.07, 0.125, 0.035) * (0.72 + 0.55 * rfbm(wp * 0.5)) * (0.88 + 0.24 * rnoise(wp * 8.0));
-    albedo = dormantGrass(c); rough = 0.95; metal = 0.0;
+    albedo = c; rough = 0.95; metal = 0.0; grassK = 1.0;
   } else if (mat < 4.5) {
     // ballast gravel
     float g = rnoise(wp * 14.0) * 0.55 + rnoise(wp * 37.0) * 0.45;
@@ -343,7 +342,7 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
   } else if (mat < 11.5) {
     // verge (highway shoulders beyond the barrier)
     vec3 grass = vec3(0.08, 0.12, 0.04) * (0.7 + 0.6 * rfbm(wp * 0.4));
-    albedo = dormantGrass(grass); rough = 0.95; metal = 0.0;
+    albedo = grass; rough = 0.95; metal = 0.0; grassK = 1.0;
   } else if (mat < 12.5) {
     // jersey barrier
     vec3 c = vec3(0.38, 0.375, 0.36) * (0.85 + 0.2 * rfbm(wp * 0.7));
@@ -413,6 +412,9 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
     emis += lampC * uLampRibbon * k * lat * refl * vFarB * uLamps * (1.0 - 0.8 * uRoadOverlay);
   }
 
+  // grass of medians / verges: dormant straw in winter and in deserts, like the lot lawns (materials.ts uFoliageDry)
+  float grL = dot(albedo, vec3(0.3, 0.59, 0.11));
+  albedo = mix(albedo, vec3(grL) * vec3(1.18, 1.02, 0.68), uFoliageDry * grassK);
   // data-view overlay: desaturate + lift
   float lum = dot(albedo, vec3(0.3, 0.59, 0.11));
   albedo = mix(albedo, vec3(lum) * 0.8 + 0.03, uRoadOverlay * 0.7);
