@@ -128,49 +128,38 @@ interface PassSlot {
   lrz: number;
 }
 
-/** instances for the per-instance tests, packed in list order with their culling spheres and cascade masks: a tile's
- *  visible instances (static batches, refreshed when the tile's content changes) or a dynamic batch's visible instances
- *  (once per content version, i.e. per frame while they move, shared by all passes). The tests then read memory
- *  sequentially instead of four scattered per-instance arrays. */
+/**
+ * Instances packed for the list builds, in groups: a static tile's visible instances grouped by sub-cell (SUB x SUB per
+ * tile, refreshed when the tile's content changes), or a dynamic batch's visible instances grouped by culler tile (once
+ * per content version, i.e. per frame while they move, shared by all passes). Per entry: id, culling sphere, cascade
+ * mask and draw range; per group: its entries' range, sphere bounds, smallest radius and AND / OR of the masks. A list
+ * build skips groups outside a pass, copies groups inside it and tests only the entries of groups that straddle one of
+ * its planes (against just those planes), reading memory sequentially.
+ */
 interface InstPack {
+  /** content version the pack was built for (static: tileVer; dynamic: the batch version) */
   ver: number;
   n: number;
   ids: Uint32Array;
-  /** x, y, z, radius per instance */
+  /** x, y, z, radius per entry */
   sph: Float32Array;
   mk: Uint8Array;
-}
-
-/** a dynamic batch's visible instances (packDyn) in culler-tile order, plus per non-empty tile (nt of them, in tile
- *  order): its first entry and count, the bounds of its spheres, its smallest radius and the AND / OR of its cascade
- *  masks. The per-pass lists then skip, copy or test whole tiles against only the planes they straddle, like the static
- *  batches' tiles. */
-interface DynPack extends InstPack {
-  nt: number;
-  tf: Int32Array;
-  tc: Int32Array;
-  tb: Float32Array;
-  tr: Float32Array;
-  ta: Uint8Array;
-  to: Uint8Array;
-  /** scratch: tile of each visible instance (untiled order), and per culler tile its count / fill cursor (zero between
-   *  builds) */
-  et: Int32Array;
-  cnt: Int32Array;
-}
-
-/** a tile's cached block for one pass class (see DynamicBatch.tileCache) */
-interface TileBlock {
-  /** tile content version the ids were collected for */
-  ver: number;
-  n: number;
-  /** instance ids and their draw ranges (index start in bytes, count) */
-  i: Uint32Array;
-  s: Int32Array;
-  c: Int32Array;
-  /** tileSwap / rangesGen the ranges were computed for */
+  /** draw range per entry (index start in bytes, count), computed for tileSwap / rangesGen (rs / rg) */
+  st: Int32Array;
+  ct: Int32Array;
   rs: number;
   rg: number;
+  /** AND of all entries' masks */
+  and: number;
+  /** groups: count, first entry / entry count, bounds [x0 y0 z0 x1 y1 z1] (x0 NaN: an entry without a sphere, always
+   *  tested), smallest radius, AND / OR of the masks */
+  ng: number;
+  gf: Int32Array;
+  gc: Int32Array;
+  gb: Float32Array;
+  gr: Float32Array;
+  ga: Uint8Array;
+  go: Uint8Array;
 }
 
 const _frustum = new THREE.Frustum();
@@ -184,13 +173,29 @@ const _sp = new Float64Array(4);
 const _fp = new Float64Array(24);
 const _rp = new Float64Array(24);
 const _rnl = new Float64Array(6);
-/** the planes an instance list is actually tested against, compacted (pushPack): a partly visible tile only needs the
- *  planes its box straddles (the others hold for every instance in it), typically 1-2 of the 6 */
+/** the planes a tile's groups are tested against, compacted: a partly visible tile only needs the planes its box
+ *  straddles (the others hold for every instance in it), typically 1-2 of the 6; and per group (pushGroups) the planes
+ *  the group's box straddles, which its entries are tested against */
 const _fq = new Float64Array(24);
 const _rq = new Float64Array(24);
 const _rnq = new Float64Array(6);
-/** list-build doubles handed to pushPack / pushList (guard band, min caster radius, receiver ground, 1 / light dir y) */
-const _plf = new Float64Array(4);
+const _fg = new Float64Array(24);
+const _rg = new Float64Array(24);
+const _rng = new Float64Array(6);
+/** list-build doubles handed to the emitters (guard band, min caster radius, receiver ground, 1 / light dir y, and for
+ *  sorted lists the camera position) */
+const _plf = new Float64Array(7);
+/** sub-cells per tile side (pack groups of static tiles) */
+const SUB = 4;
+/** sorted lists: distance key per entry (sqrt-spaced buckets: fine up close) and the histogram of the counting sort;
+ *  KEYQ[i] = key of a distance of i / 4 m (quarter-metre steps up to KEYQ_M m: no square root for those) */
+const _hist = new Int32Array(257);
+const KEYQ_M = 1024;
+const KEYQ = (() => {
+  const t = new Uint8Array(KEYQ_M * 4);
+  for (let i = 0; i < t.length; i++) t[i] = Math.min(255, Math.floor(Math.sqrt(i / 4) * 4));
+  return t;
+})();
 /** current camera orientation */
 const _rot = new Float64Array(9);
 /** TileCuller.update's frustum planes (nx, ny, nz, constant) x 6 */
@@ -349,18 +354,31 @@ export class DynamicBatch {
   private tileDirty = new Uint8Array(0);
   /** tiles disabled by the owner (skipped in every pass) */
   private tileOff = new Uint8Array(0);
-  /** per-tile content version (visibility / masks / membership; not geometry swaps) and cached blocks per pass class
-   *  (0 main, 1 cascade 0, 2 cascade 1): tiles that need no per-instance test are copied as one block (instance ids and
-   *  their draw ranges, read sequentially). A block's ranges are refreshed when an instance of its tile swapped geometry
-   *  (tileSwap, LOD) or the draw ranges moved (rangesGen); its ids only when the tile's content changed (tileVer). */
+  /** per-tile content version (visibility / masks / membership / spheres; not geometry swaps) and per tile its instance
+   *  pack (see InstPack): its entries are re-packed when the tile's content changed (tileVer), their draw ranges
+   *  refreshed when an instance of the tile swapped geometry (tileSwap, LOD) or the draw ranges moved (rangesGen) */
   private tileVer = new Uint32Array(0);
   private tileSwap = new Uint32Array(0);
-  private tileCache: (TileBlock | null)[] = [];
-  /** per tile: its instance pack (see InstPack); dynamic batches: the visible instances' pack */
   private tilePack: (InstPack | null)[] = [];
-  private dynPack: DynPack | null = null;
-  /** swapSeq the dynamic pack was built at */
+  /** dynamic batches: the visible instances' pack, the swapSeq it was built at, and its scratch (tile of each visible
+   *  instance in untiled order; per culler tile its count / fill cursor, zero between builds) */
+  private dynPack: InstPack | null = null;
   private dynSwap = -1;
+  private dynEt = new Int32Array(0);
+  private dynCnt = new Int32Array(0);
+  /** packOf scratch: sub-cell of each instance of the tile list being packed, and per sub-cell its count / cursor */
+  private subOf = new Int32Array(0);
+  private subCnt = new Int32Array(SUB * SUB + 1);
+  /** where the emitters write the list being built: the slot's own arrays, or (sorted lists) these scratch arrays with a
+   *  distance key per entry, scattered into the slot's arrays by key once the list is complete (counting sort) */
+  private oS = new Int32Array(0);
+  private oC = new Int32Array(0);
+  private oI = new Uint32Array(0);
+  private oK: Uint8Array | null = null;
+  private eS = new Int32Array(64);
+  private eC = new Int32Array(64);
+  private eI = new Uint32Array(64);
+  private eK = new Uint8Array(64);
   /** bumped whenever drawRanges() recomputed the per-geometry ranges */
   private rangesGen = 0;
   private untiled: number[] = [];
@@ -368,11 +386,9 @@ export class DynamicBatch {
    *  builds walk only those (a zoomed-out view hides most vehicles) */
   private untiledVis = 0;
   /** main-pass draw lists are sorted front to back (nearest first): opaque overdraw is rejected by the depth test
-   *  before shading (big occluders such as buildings; cheap counting sort, only when a list is rebuilt) */
+   *  before shading (big occluders such as buildings; cheap counting sort on a key computed as the entries are
+   *  emitted, only when a list is rebuilt) */
   sortFront = false;
-  private sortKey = new Uint8Array(0);
-  private sortTmp = new Int32Array(0);
-  private sortCnt = new Int32Array(257);
   private gStart = new Int32Array(0);
   private gCount = new Int32Array(0);
   // ---- partial texture uploads
@@ -681,7 +697,6 @@ export class DynamicBatch {
     this.tileOff = new Uint8Array(T);
     this.tileVer = new Uint32Array(T);
     this.tileSwap = new Uint32Array(T);
-    this.tileCache = new Array(T * 3).fill(null);
     this.tilePack = new Array(T).fill(null);
     this.ensureCap(this.mesh.maxInstanceCount);
     this.instTile.fill(-1);
@@ -1080,19 +1095,28 @@ export class DynamicBatch {
       const minR = cascade >= 0 ? pc.minShadowTexels! * texel * 0.5 : 0;
       const mat = dyn ? (m._matricesTexture.image.data as Float32Array) : null;
       const cbit = cascade >= 0 ? 1 << cascade : 0;
-      const cls = cascade < 0 ? 0 : Math.min(2, cascade + 1);
       let rGround = 0, rInv = 0;
       if (recv) {
         rGround = recv.ground;
         rInv = 1 / Math.max(recv.dir.y, 0.05);
       }
       _plf[0] = s.margin; _plf[1] = minR; _plf[2] = rGround; _plf[3] = rInv;
+      // where the entries go: straight into the slot's arrays, or (sorted) into the scratch arrays with a distance key
+      // each, scattered by key once the list is complete
+      if (sorted) {
+        const e = s.camera.matrixWorld.elements;
+        _plf[4] = e[12]; _plf[5] = e[13]; _plf[6] = e[14];
+        _hist.fill(0);
+        this.oS = this.eS; this.oC = this.eC; this.oI = this.eI; this.oK = this.eK;
+      } else {
+        this.oS = s.starts; this.oC = s.counts; this.oI = s.ids; this.oK = null;
+      }
       // prefix reuse: tile-level lists only (fine lists hold per-instance results, sorted lists a camera order)
       const reuse = coarse && !sorted && !dyn;
       let match = reuse && s.selValid && s.selMinR === minR;
       let k = 0;
       if (!dyn) {
-        const tb = this.tileBox, off = this.tileOff, dirty = this.tileDirty, tmask = this.tileMask, tminR = this.tileMinR, tver = this.tileVer, tswap = this.tileSwap;
+        const tb = this.tileBox, off = this.tileOff, dirty = this.tileDirty, tmask = this.tileMask, tminR = this.tileMinR, tver = this.tileVer;
         for (let ti = 0; ti < this.tileLists.length; ti++) {
           const list = this.tileLists[ti];
           if (!list.length || off[ti]) continue;
@@ -1100,8 +1124,8 @@ export class DynamicBatch {
           if (cbit && !(tmask[ti] & cbit)) continue;
           const kb = ti * 6;
           const x0 = tb[kb], y0 = tb[kb + 1], z0 = tb[kb + 2], x1 = tb[kb + 3], y1 = tb[kb + 4], z1 = tb[kb + 5];
-          // kind: 0 block copy, 1 per-instance caster size test, 2 per-instance tests (fine list / tile without bounds)
-          // against the np frustum / nr receiver planes the tile straddles (compacted into _fq / _rq)
+          // kind: 0 whole tile, 1 per-instance caster size test, 2 per-group / per-instance tests (fine list / tile
+          // without bounds) against the np frustum / nr receiver planes the tile straddles (compacted into _fq / _rq)
           let kind = 0, np = 0, nr = 0;
           let size = false;
           if (!(x1 >= x0) || !Number.isFinite(x0 + x1)) { kind = 2; np = 6; nr = recv ? 6 : 0; size = minR > 0; allPlanes(); }
@@ -1156,18 +1180,11 @@ export class DynamicBatch {
             s.selT[k] = tag; s.selV[k] = ver; s.selO[k] = n;
             k++;
           }
-          if (s.starts.length < n + list.length) this.ensureList(s, n + list.length, n);
-          if (kind !== 0) { const pk = this.packOf(ti); n = this.pushPack(s, pk, 0, pk.n, np, size, nr, n, cbit); continue; }
-          // every visible instance of the tile (with the cascade bit) is drawn: copy its cached block
-          const ck = ti * 3 + cls;
-          let cc = this.tileCache[ck];
-          if (cc === null || cc.ver !== ver) cc = this.fillBlock(ck, ti, cbit);
-          else if (cc.rs !== tswap[ti] || cc.rg !== this.rangesGen) this.blockRanges(cc, ti);
-          // (element loop: subarray() views would allocate three objects per tile)
-          const starts = s.starts, counts = s.counts, ind = s.ids;
-          const ci = cc.i, cs = cc.s, cq = cc.c, cn = cc.n;
-          for (let j = 0; j < cn; j++) { starts[n + j] = cs[j]; counts[n + j] = cq[j]; ind[n + j] = ci[j]; }
-          n += cn;
+          const pk = this.packOf(ti);
+          if (this.oS.length < n + pk.n) this.growOut(s, n + pk.n, n);
+          // kind 0: every visible instance of the tile (with the cascade bit) is drawn
+          if (kind === 0) n = this.emitRange(pk, 0, pk.n, n, cbit !== 0 && (pk.and & cbit) === 0 ? cbit : 0);
+          else n = this.pushGroups(pk, np, size, nr, n, cbit);
         }
       }
       if (match) {
@@ -1179,18 +1196,43 @@ export class DynamicBatch {
       if (reuse) { s.selN = k; s.selEnd = n; s.selMinR = minR; s.selValid = true; } else s.selValid = false;
       const un = dyn ? this.untiledVis : this.untiled.length;
       if (un) {
-        if (s.starts.length < n + un) this.ensureList(s, n + un, n);
-        if (mat) n = this.pushDyn(s, this.packDyn(mat), minR > 0, recv !== null, n, cbit);
-        else {
-          allPlanes();
-          n = this.pushList(s, this.untiled, un, minR > 0, recv ? 6 : 0, n, cbit);
-        }
+        if (this.oS.length < n + un) this.growOut(s, n + un, n);
+        allPlanes();
+        if (mat) n = this.pushGroups(this.packDyn(mat), 6, minR > 0, recv ? 6 : 0, n, cbit);
+        else n = this.pushList(this.untiled, un, minR > 0, recv ? 6 : 0, n, cbit);
       }
-      if (sorted && n > 1) this.sortList(s, n);
+      if (sorted) this.scatterSorted(s, n);
     } else s.selValid = false;
     if (keep && s.tex && n === s.count) return;
     s.count = n;
     this.syncIds(renderer, s, n, Math.min(pre, n));
+  }
+
+  /** room for `need` entries in the current emission target (keeps the first n) */
+  private growOut(s: PassSlot, need: number, n: number): void {
+    if (this.oK === null) {
+      this.ensureList(s, need, n);
+      this.oS = s.starts; this.oC = s.counts; this.oI = s.ids;
+      return;
+    }
+    if (this.eS.length >= need) return;
+    const cap = Math.max(need, Math.ceil(this.eS.length * 1.5), 64);
+    const a = new Int32Array(cap), b = new Int32Array(cap), c = new Uint32Array(cap), d = new Uint8Array(cap);
+    a.set(this.eS.subarray(0, n)); b.set(this.eC.subarray(0, n)); c.set(this.eI.subarray(0, n)); d.set(this.eK.subarray(0, n));
+    this.eS = this.oS = a; this.eC = this.oC = b; this.eI = this.oI = c; this.eK = this.oK = d;
+  }
+
+  /** sorted list: the n emitted entries (scratch arrays, key each, histogram in _hist) into the slot's arrays, nearest
+   *  key first (stable counting sort) */
+  private scatterSorted(s: PassSlot, n: number): void {
+    if (s.starts.length < n) this.ensureList(s, n, 0);
+    const h = _hist;
+    for (let b = 1; b < 257; b++) h[b] += h[b - 1];
+    const key = this.eK, eS = this.eS, eC = this.eC, eI = this.eI, S = s.starts, C = s.counts, I = s.ids;
+    for (let i = 0; i < n; i++) {
+      const j = h[key[i]]++;
+      S[j] = eS[i]; C[j] = eC[i]; I[j] = eI[i];
+    }
   }
 
   /**
@@ -1231,36 +1273,6 @@ export class DynamicBatch {
     uploadRows(renderer, props.__webglTexture, r0, ID_W, r1 - r0 + 1, gl.RED_INTEGER, gl.UNSIGNED_INT, data, r0 * ID_W);
   }
 
-  /** (re)fill tile ti's block for pass class ck % 3: its visible instances with the cascade bit, and their ranges */
-  private fillBlock(ck: number, ti: number, cbit: number): TileBlock {
-    const list = this.tileLists[ti], vis = this.instVis, imask = this.instMask;
-    let cc = this.tileCache[ck];
-    if (cc === null || cc.i.length < list.length) {
-      const cap = list.length + 16;
-      cc = this.tileCache[ck] = { ver: 0, n: 0, i: new Uint32Array(cap), s: new Int32Array(cap), c: new Int32Array(cap), rs: 0, rg: -1 };
-    }
-    let m2 = 0;
-    const ci = cc.i;
-    for (let j = 0; j < list.length; j++) {
-      const id = list[j];
-      if (!vis[id] || (cbit && !(imask[id] & cbit))) continue;
-      ci[m2++] = id;
-    }
-    cc.n = m2;
-    cc.ver = this.tileVer[ti];
-    this.blockRanges(cc, ti);
-    return cc;
-  }
-
-  /** a block's draw ranges from its instances' current geometries (after a fill, a geometry swap in its tile or a
-   *  draw-range change; drawRanges() ran for this build) */
-  private blockRanges(cc: TileBlock, ti: number): void {
-    const geo = this.instGeo, gS = this.gStart, gC = this.gCount, ci = cc.i, cs = cc.s, cq = cc.c;
-    for (let j = 0; j < cc.n; j++) { const g = geo[ci[j]]; cs[j] = gS[g]; cq[j] = gC[g]; }
-    cc.rs = this.tileSwap[ti];
-    cc.rg = this.rangesGen;
-  }
-
   /** grow a slot's stored tile selection to hold `need` entries */
   private growSel(s: PassSlot, need: number): void {
     const cap = Math.max(need, s.selT.length * 2);
@@ -1269,51 +1281,125 @@ export class DynamicBatch {
     s.selT = t; s.selV = v; s.selO = o;
   }
 
-  /** tile ti's instance pack, refreshed when the tile's content changed (tileVer: visibility, masks, membership and
-   *  culling spheres all bump it; geometry swaps do not, the draw ranges are looked up per build) */
+  /**
+   * Tile ti's instance pack (see InstPack), re-packed when the tile's content changed (tileVer: visibility, masks,
+   * membership and culling spheres all bump it): its visible instances grouped by the sub-cell (SUB x SUB per tile) of
+   * their sphere centre (stable: list order within a sub-cell), with each group's bounds. Its draw ranges are refreshed
+   * when an instance of the tile swapped geometry (tileSwap) or the ranges moved (rangesGen; drawRanges() ran for this
+   * build).
+   */
   private packOf(ti: number): InstPack {
     const ver = this.tileVer[ti];
     let pk = this.tilePack[ti];
-    if (pk !== null && pk.ver === ver) return pk;
-    const list = this.tileLists[ti];
-    if (pk === null || pk.ids.length < list.length) pk = this.tilePack[ti] = this.newPack(list.length + 16);
-    const vis = this.instVis, imask = this.instMask, sph = this.sph, ids = pk.ids, ps = pk.sph, mk = pk.mk;
-    let n = 0;
-    for (let j = 0; j < list.length; j++) {
-      const id = list[j];
-      if (!vis[id]) continue;
-      const o = id * 4, q = n * 4;
-      ids[n] = id;
-      mk[n] = imask[id];
-      ps[q] = sph[o]; ps[q + 1] = sph[o + 1]; ps[q + 2] = sph[o + 2]; ps[q + 3] = sph[o + 3];
-      n++;
+    if (pk !== null && pk.ver === ver) {
+      if (pk.rs !== this.tileSwap[ti] || pk.rg !== this.rangesGen) this.packRanges(pk, ti);
+      return pk;
     }
-    pk.n = n;
+    const list = this.tileLists[ti], len = list.length, G = SUB * SUB;
+    if (pk === null || pk.ids.length < len) pk = this.tilePack[ti] = this.newPack(len + 16, G);
+    if (this.subOf.length < len) this.subOf = new Int32Array(Math.max(len, this.subOf.length * 2));
+    const cul = this.pc!.culler, TT = cul.tiles, size = cul.tileCells * cul.cellSize;
+    const mt = ti % (TT * TT), ox = (mt % TT) * size, oz = ((mt / TT) | 0) * size, inv = SUB / size, smax = SUB - 1;
+    const vis = this.instVis, imask = this.instMask, sph = this.sph, sub = this.subOf, cnt = this.subCnt;
+    cnt.fill(0);
+    // sub-cell of every visible instance (an instance without a sphere yet: group 0, which then always tests per entry)
+    for (let j = 0; j < len; j++) {
+      const id = list[j];
+      if (!vis[id]) { sub[j] = -1; continue; }
+      const o = id * 4;
+      let g = 0;
+      if (sph[o + 3] >= 0) {
+        let gx = Math.floor((sph[o] - ox) * inv), gz = Math.floor((sph[o + 2] - oz) * inv);
+        gx = gx > 0 ? (gx < smax ? gx : smax) : 0;
+        gz = gz > 0 ? (gz < smax ? gz : smax) : 0;
+        g = gz * SUB + gx;
+      }
+      sub[j] = g;
+      cnt[g + 1]++;
+    }
+    // groups in sub-cell order; cnt[g] becomes the fill cursor of sub-cell g
+    const gf = pk.gf, gc = pk.gc;
+    let ng = 0, off = 0;
+    for (let g = 0; g < G; g++) {
+      const c = cnt[g + 1];
+      cnt[g] = off;
+      if (c === 0) continue;
+      gf[ng] = off; gc[ng] = c; ng++;
+      off += c;
+    }
+    const ids = pk.ids, ps = pk.sph, mk = pk.mk;
+    for (let j = 0; j < len; j++) {
+      const g = sub[j];
+      if (g < 0) continue;
+      const id = list[j], o = id * 4, k = cnt[g]++, q = k * 4;
+      ids[k] = id;
+      mk[k] = imask[id];
+      ps[q] = sph[o]; ps[q + 1] = sph[o + 1]; ps[q + 2] = sph[o + 2]; ps[q + 3] = sph[o + 3];
+    }
+    pk.n = off;
+    pk.ng = ng;
     pk.ver = ver;
+    this.groupStats(pk);
+    this.packRanges(pk, ti);
     return pk;
   }
 
-  /** a dynamic batch's pack of its visible instances (the front of `untiled`) grouped by culler tile (DynPack),
-   *  positions from the live matrices: built by the first pass after a content change (vehicles: once per frame; owners
-   *  writing matrixData() call markMatricesDirty(), which bumps the version) or a geometry swap (radius), and shared by
-   *  the others. A counting sort by tile (stable: untiled order within a tile), then each tile's bounds. */
-  private packDyn(mat: Float32Array): DynPack {
+  /** per group of a pack: sphere bounds (x0 NaN if an entry has no sphere), smallest radius, AND / OR of the masks;
+   *  and the pack's AND of all masks */
+  private groupStats(pk: InstPack): void {
+    const ps = pk.sph, mk = pk.mk, gf = pk.gf, gc = pk.gc, gb = pk.gb, gr = pk.gr, ga = pk.ga, go = pk.go;
+    let all = 0xff;
+    for (let i = 0, ng = pk.ng; i < ng; i++) {
+      let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity, rmin = Infinity, a = 0xff, b = 0;
+      let unb = false;
+      for (let k = gf[i], e = k + gc[i]; k < e; k++) {
+        const q = k * 4, cx = ps[q], cy = ps[q + 1], cz = ps[q + 2], r = ps[q + 3];
+        a &= mk[k];
+        b |= mk[k];
+        if (r < 0) { unb = true; rmin = 0; continue; }
+        if (cx - r < x0) x0 = cx - r;
+        if (cy - r < y0) y0 = cy - r;
+        if (cz - r < z0) z0 = cz - r;
+        if (cx + r > x1) x1 = cx + r;
+        if (cy + r > y1) y1 = cy + r;
+        if (cz + r > z1) z1 = cz + r;
+        if (r < rmin) rmin = r;
+      }
+      const kb = i * 6;
+      gb[kb] = unb ? NaN : x0; gb[kb + 1] = y0; gb[kb + 2] = z0; gb[kb + 3] = x1; gb[kb + 4] = y1; gb[kb + 5] = z1;
+      gr[i] = rmin; ga[i] = a; go[i] = b;
+      all &= a;
+    }
+    pk.and = all;
+  }
+
+  /** a static pack's draw ranges from its instances' current geometries (after a re-pack, a geometry swap in its tile
+   *  or a draw-range change; drawRanges() ran for this build) */
+  private packRanges(pk: InstPack, ti: number): void {
+    const geo = this.instGeo, gS = this.gStart, gC = this.gCount, ids = pk.ids, st = pk.st, ct = pk.ct;
+    for (let j = 0, n = pk.n; j < n; j++) { const g = geo[ids[j]]; st[j] = gS[g]; ct[j] = gC[g]; }
+    pk.rs = this.tileSwap[ti];
+    pk.rg = this.rangesGen;
+  }
+
+  /** a dynamic batch's pack of its visible instances (the front of `untiled`) grouped by culler tile, positions from the
+   *  live matrices: built by the first pass after a content change (vehicles: once per frame; owners writing
+   *  matrixData() call markMatricesDirty(), which bumps the version), a geometry swap (radius) or a draw-range change,
+   *  and shared by the others. A counting sort by tile (stable: untiled order within a tile), then each tile's bounds. */
+  private packDyn(mat: Float32Array): InstPack {
     const un = this.untiledVis;
     let pk = this.dynPack;
-    if (pk !== null && pk.ver === this.version && pk.n === un && this.dynSwap === this.swapSeq) return pk;
+    if (pk !== null && pk.ver === this.version && pk.n === un && this.dynSwap === this.swapSeq && pk.rg === this.rangesGen) return pk;
     this.dynSwap = this.swapSeq;
     const cul = this.pc!.culler, TT = cul.tiles, T = TT * TT, inv = 1 / (cul.tileCells * cul.cellSize), tmax = TT - 1;
-    if (pk === null || pk.ids.length < un || pk.cnt.length !== T) {
+    if (pk === null || pk.ids.length < un) {
       const cap = Math.max(Math.ceil(un * 1.25) + 16, pk === null ? 0 : pk.ids.length);
-      const base = this.newPack(cap);
-      const tcap = Math.min(T, cap);
-      pk = this.dynPack = {
-        ...base, nt: 0, tf: new Int32Array(tcap), tc: new Int32Array(tcap), tb: new Float32Array(tcap * 6), tr: new Float32Array(tcap),
-        ta: new Uint8Array(tcap), to: new Uint8Array(tcap), et: new Int32Array(cap), cnt: new Int32Array(T),
-      };
+      pk = this.dynPack = this.newPack(cap, Math.min(T, cap));
     }
-    const u = this.untiled, imask = this.instMask, geo = this.instGeo, grad = this.geoRad;
-    const ids = pk.ids, ps = pk.sph, mk = pk.mk, et = pk.et, cnt = pk.cnt;
+    if (this.dynEt.length < pk.ids.length) this.dynEt = new Int32Array(pk.ids.length);
+    if (this.dynCnt.length !== T) this.dynCnt = new Int32Array(T);
+    const u = this.untiled, imask = this.instMask, geo = this.instGeo, grad = this.geoRad, gS = this.gStart, gC = this.gCount;
+    const ids = pk.ids, ps = pk.sph, mk = pk.mk, st = pk.st, ct = pk.ct, et = this.dynEt, cnt = this.dynCnt;
     // tile of each instance + counts per tile
     for (let j = 0; j < un; j++) {
       const o = u[j] * 16;
@@ -1326,125 +1412,142 @@ export class DynamicBatch {
       cnt[t]++;
     }
     // non-empty tiles in tile order: first entry / count; cnt becomes the fill cursor
-    const tf = pk.tf, tc = pk.tc;
-    let nt = 0, off = 0;
+    const gf = pk.gf, gc = pk.gc;
+    let ng = 0, off = 0;
     for (let t = 0; t < T; t++) {
       const c = cnt[t];
       if (c === 0) continue;
-      tf[nt] = off; tc[nt] = c; nt++;
+      gf[ng] = off; gc[ng] = c; ng++;
       cnt[t] = off;
       off += c;
     }
     for (let j = 0; j < un; j++) {
-      const id = u[j], o = id * 16, k = cnt[et[j]]++, q = k * 4;
+      const id = u[j], o = id * 16, k = cnt[et[j]]++, q = k * 4, g = geo[id];
       ids[k] = id;
       mk[k] = imask[id];
-      ps[q] = mat[o + 12]; ps[q + 1] = mat[o + 13]; ps[q + 2] = mat[o + 14]; ps[q + 3] = grad[geo[id]];
-    }
-    // per tile: sphere bounds, smallest radius, AND / OR of the masks; the cursors back to zero
-    const tb = pk.tb, tr = pk.tr, ta = pk.ta, to = pk.to;
-    for (let i = 0; i < nt; i++) {
-      let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity, rmin = Infinity, a = 0xff, b = 0;
-      for (let k = tf[i], e = k + tc[i]; k < e; k++) {
-        const q = k * 4, cx = ps[q], cy = ps[q + 1], cz = ps[q + 2], r = ps[q + 3];
-        if (cx - r < x0) x0 = cx - r;
-        if (cy - r < y0) y0 = cy - r;
-        if (cz - r < z0) z0 = cz - r;
-        if (cx + r > x1) x1 = cx + r;
-        if (cy + r > y1) y1 = cy + r;
-        if (cz + r > z1) z1 = cz + r;
-        if (r < rmin) rmin = r;
-        a &= mk[k];
-        b |= mk[k];
-      }
-      const kb = i * 6;
-      tb[kb] = x0; tb[kb + 1] = y0; tb[kb + 2] = z0; tb[kb + 3] = x1; tb[kb + 4] = y1; tb[kb + 5] = z1;
-      tr[i] = rmin; ta[i] = a; to[i] = b;
+      ps[q] = mat[o + 12]; ps[q + 1] = mat[o + 13]; ps[q + 2] = mat[o + 14]; ps[q + 3] = grad[g];
+      st[k] = gS[g]; ct[k] = gC[g];
     }
     for (let j = 0; j < un; j++) cnt[et[j]] = 0;
-    pk.nt = nt;
     pk.n = un;
+    pk.ng = ng;
     pk.ver = this.version;
+    pk.rg = this.rangesGen;
+    this.groupStats(pk);
     return pk;
   }
 
-  private newPack(cap: number): InstPack {
-    return { ver: -1, n: 0, ids: new Uint32Array(cap), sph: new Float32Array(cap * 4), mk: new Uint8Array(cap) };
+  private newPack(cap: number, gcap: number): InstPack {
+    return {
+      ver: -1, n: 0, ids: new Uint32Array(cap), sph: new Float32Array(cap * 4), mk: new Uint8Array(cap), st: new Int32Array(cap), ct: new Int32Array(cap), rs: -1, rg: -1, and: 0,
+      ng: 0, gf: new Int32Array(gcap), gc: new Int32Array(gcap), gb: new Float32Array(gcap * 6), gr: new Float32Array(gcap), ga: new Uint8Array(gcap), go: new Uint8Array(gcap),
+    };
   }
 
   /**
-   * A dynamic batch's list: per tile of its pack, the tile box against the frustum planes (and the receiver: swept by
-   * the tallest sphere's height + the band, as the per-instance sweep) — tiles outside are skipped, tiles inside every
-   * plane (whose instances all pass the size cutoff and carry the cascade) copied whole, the rest tested per instance
-   * against only the planes their box straddles. Draws exactly the instances the per-instance tests would (the box
-   * bounds every sphere of its tile), in tile order.
+   * The groups of a pack into the list: each group's box against the np frustum / nr receiver planes in _fq / _rq (a
+   * tile's straddled planes, or all of them) — groups outside are skipped, groups inside every plane (whose entries all
+   * pass the size cutoff and carry the cascade) copied whole, the rest tested per entry against only the planes their
+   * box straddles (compacted into _fg / _rg). The receiver sweep of a group uses its tallest sphere plus the band, as the
+   * per-entry sweep. Draws exactly the entries the per-entry tests would (a box bounds every sphere of its group).
    */
-  private pushDyn(s: PassSlot, pk: DynPack, size0: boolean, recv: boolean, n: number, cbit: number): number {
+  private pushGroups(pk: InstPack, np: number, size: boolean, nr: number, n: number, cbit: number): number {
     const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3];
-    const fp = _fp, rp = _rp, rnl = _rnl, fq = _fq, rq = _rq, rnq = _rnq;
-    const tb = pk.tb, tf = pk.tf, tc = pk.tc, tr = pk.tr, ta = pk.ta, to = pk.to, ids = pk.ids;
-    const geo = this.instGeo, gS = this.gStart, gC = this.gCount;
-    for (let i = 0, nt = pk.nt; i < nt; i++) {
-      if (cbit && !(to[i] & cbit)) continue;
+    const fq = _fq, rq = _rq, rnq = _rnq, fg = _fg, rg = _rg, rng = _rng;
+    const gf = pk.gf, gc = pk.gc, gb = pk.gb, gr = pk.gr, ga = pk.ga, go = pk.go;
+    for (let i = 0, ng = pk.ng; i < ng; i++) {
+      if (cbit !== 0 && (go[i] & cbit) === 0) continue;
       const kb = i * 6;
-      const x0 = tb[kb], y0 = tb[kb + 1], z0 = tb[kb + 2], x1 = tb[kb + 3], y1 = tb[kb + 4], z1 = tb[kb + 5];
-      let np = 0, nr = 0, outside = false;
-      for (let p = 0; p < 6; p++) {
-        const o = p * 4, nx = fp[o], ny = fp[o + 1], nz = fp[o + 2], c = fp[o + 3];
-        if (nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + c < 0) { outside = true; break; }
-        if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + c < 0) {
-          const q = np * 4;
-          fq[q] = nx; fq[q + 1] = ny; fq[q + 2] = nz; fq[q + 3] = c;
-          np++;
-        }
-      }
-      if (outside) continue;
-      if (recv) {
-        const T = Math.min(6000, Math.max(0, (y1 + mr - rGround) * rInv));
-        let hit = true;
-        for (let r = 0; r < 6; r++) {
-          const o = r * 4, nx = rp[o], ny = rp[o + 1], nz = rp[o + 2];
-          const d = nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + rp[o + 3];
-          if (d < 0 && d - T * rnl[r] < 0) { hit = false; break; }
-        }
-        if (!hit) continue;
-        for (let r = 0; r < 6; r++) {
-          const o = r * 4, nx = rp[o], ny = rp[o + 1], nz = rp[o + 2];
-          if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + rp[o + 3] < 0) {
-            const q = nr * 4;
-            rq[q] = nx; rq[q + 1] = ny; rq[q + 2] = nz; rq[q + 3] = rp[o + 3]; rnq[nr] = rnl[r];
-            nr++;
+      const x0 = gb[kb], y0 = gb[kb + 1], z0 = gb[kb + 2], x1 = gb[kb + 3], y1 = gb[kb + 4], z1 = gb[kb + 5];
+      let gp = 0, gq = 0;
+      if (x0 === x0) {
+        let out = false;
+        for (let p = 0; p < np; p++) {
+          const o = p * 4, nx = fq[o], ny = fq[o + 1], nz = fq[o + 2], c = fq[o + 3];
+          if (nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + c < 0) { out = true; break; }
+          if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + c < 0) {
+            const q = gp * 4;
+            fg[q] = nx; fg[q + 1] = ny; fg[q + 2] = nz; fg[q + 3] = c;
+            gp++;
           }
         }
+        if (out) continue;
+        if (nr > 0) {
+          const T = Math.min(6000, Math.max(0, (y1 + mr - rGround) * rInv));
+          let hit = true;
+          for (let r = 0; r < nr; r++) {
+            const o = r * 4, nx = rq[o], ny = rq[o + 1], nz = rq[o + 2];
+            const d = nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + rq[o + 3];
+            if (d < 0 && d - T * rnq[r] < 0) { hit = false; break; }
+          }
+          if (!hit) continue;
+          for (let r = 0; r < nr; r++) {
+            const o = r * 4, nx = rq[o], ny = rq[o + 1], nz = rq[o + 2];
+            if (nx * (nx > 0 ? x0 : x1) + ny * (ny > 0 ? y0 : y1) + nz * (nz > 0 ? z0 : z1) + rq[o + 3] < 0) {
+              const q = gq * 4;
+              rg[q] = nx; rg[q + 1] = ny; rg[q + 2] = nz; rg[q + 3] = rq[o + 3]; rng[gq] = rnq[r];
+              gq++;
+            }
+          }
+        }
+      } else {
+        // an entry without a sphere: test every entry against all the planes
+        for (let q = 0; q < np * 4; q++) fg[q] = fq[q];
+        for (let q = 0; q < nr * 4; q++) rg[q] = rq[q];
+        for (let r = 0; r < nr; r++) rng[r] = rnq[r];
+        gp = np; gq = nr;
       }
-      const size = size0 && tr[i] < minR;
-      const f0 = tf[i], f1 = f0 + tc[i];
-      if (np === 0 && nr === 0 && !size && (!cbit || (ta[i] & cbit))) {
-        // the whole tile is drawn
-        const starts = s.starts, counts = s.counts, ind = s.ids;
-        for (let j = f0; j < f1; j++) { const id = ids[j], g = geo[id]; starts[n] = gS[g]; counts[n] = gC[g]; ind[n] = id; n++; }
-        continue;
-      }
-      n = this.pushPack(s, pk, f0, f1, np, size, nr, n, cbit);
+      const gsize = size && gr[i] < minR;
+      const gbit = cbit !== 0 && (ga[i] & cbit) === 0 ? cbit : 0;
+      const j0 = gf[i], j1 = j0 + gc[i];
+      n = gp === 0 && gq === 0 && !gsize ? this.emitRange(pk, j0, j1, n, gbit) : this.testRange(pk, j0, j1, gp, gsize, gq, n, gbit);
     }
     return n;
   }
 
-  /** pushList over the entries [j0, j1) of an instance pack (always with some per-instance test: tile kinds 1 / 2,
-   *  dynamic tiles the planes cut) */
-  private pushPack(s: PassSlot, pk: InstPack, j0: number, j1: number, np: number, size: boolean, nr: number, n: number, cbit: number): number {
-    const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3];
-    const geo = this.instGeo, gS = this.gStart, gC = this.gCount;
-    const fq = _fq, rq = _rq, rnq = _rnq;
-    const starts = s.starts, counts = s.counts, ind = s.ids;
-    const ids = pk.ids, ps = pk.sph, mk = pk.mk;
+  /** the entries [j0, j1) of a pack into the list (with the cascade bit cbit, unless 0); sorted lists: with their
+   *  distance keys (main passes: no cascade bit) */
+  private emitRange(pk: InstPack, j0: number, j1: number, n: number, cbit: number): number {
+    const starts = this.oS, counts = this.oC, ind = this.oI, key = this.oK;
+    const ids = pk.ids, st = pk.st, ct = pk.ct;
+    if (key === null) {
+      if (cbit === 0) {
+        for (let j = j0; j < j1; j++) { starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++; }
+      } else {
+        const mk = pk.mk;
+        for (let j = j0; j < j1; j++) { if ((mk[j] & cbit) === 0) continue; starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++; }
+      }
+      return n;
+    }
+    const ps = pk.sph, hist = _hist, kx = _plf[4], ky = _plf[5], kz = _plf[6];
     for (let j = j0; j < j1; j++) {
-      if (cbit && !(mk[j] & cbit)) continue;
+      const o = j * 4, dx = ps[o] - kx, dy = ps[o + 1] - ky, dz = ps[o + 2] - kz;
+      // (distance key: sqrt-spaced buckets of the distance to the sphere, quarter metres up close)
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - ps[o + 3];
+      const kk = d <= 0 ? 0 : d < KEYQ_M ? KEYQ[(d * 4) | 0] : d >= 4096 ? 255 : (Math.sqrt(d) * 4) | 0;
+      key[n] = kk;
+      hist[kk + 1]++;
+      starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++;
+    }
+    return n;
+  }
+
+  /**
+   * The entries [j0, j1) of a pack that pass the per-entry tests into the list: the cascade bit (cbit, unless 0), the
+   * caster size (size), the first nr receiver planes of _rg / _rng (shadow passes: only casters whose shadow can reach the
+   * visible slice, the sphere swept away from the light down to the ground) and the first np frustum planes of _fg.
+   * Doubles in _plf. Sorted lists: with their distance keys.
+   */
+  private testRange(pk: InstPack, j0: number, j1: number, np: number, size: boolean, nr: number, n: number, cbit: number): number {
+    const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3], kx = _plf[4], ky = _plf[5], kz = _plf[6];
+    const fq = _fg, rq = _rg, rnq = _rng, hist = _hist;
+    const starts = this.oS, counts = this.oC, ind = this.oI, key = this.oK;
+    const ids = pk.ids, ps = pk.sph, mk = pk.mk, st = pk.st, ct = pk.ct;
+    for (let j = j0; j < j1; j++) {
+      if (cbit !== 0 && (mk[j] & cbit) === 0) continue;
       const o = j * 4;
       const cx = ps[o], cy = ps[o + 1], cz = ps[o + 2], r = ps[o + 3];
       if (size && r < minR) continue;
-      // the sphere swept away from the light down to the ground must reach the slice (receiverSweepSphere; the band is
-      // in the planes)
       if (nr > 0) {
         const T = Math.min(6000, Math.max(0, (cy + r + mr - rGround) * rInv));
         let hit = true;
@@ -1463,26 +1566,29 @@ export class DynamicBatch {
         }
         if (out) continue;
       }
-      const id = ids[j], gid = geo[id];
-      starts[n] = gS[gid];
-      counts[n] = gC[gid];
-      ind[n] = id;
-      n++;
+      if (key !== null) {
+        const dx = cx - kx, dy = cy - ky, dz = cz - kz;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - r;
+        const kk = d <= 0 ? 0 : d < KEYQ_M ? KEYQ[(d * 4) | 0] : d >= 4096 ? 255 : (Math.sqrt(d) * 4) | 0;
+        key[n] = kk;
+        hist[kk + 1]++;
+      }
+      starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++;
     }
     return n;
   }
 
   /**
-   * List-build inner loop over the first len entries of a static batch's untiled instances (a method, not a per-build
+   * List-build loop over the first len entries of a static batch's untiled instances (a method, not a per-build
    * closure: no allocation, stable JIT feedback): the 6 frustum planes of _fq, the first nr receiver planes of _rq /
    * _rnq (shadow passes: only casters whose shadow can reach the visible slice), and the caster size (size). Doubles in
    * _plf. The caller made room for len more entries. Returns n.
    */
-  private pushList(s: PassSlot, list: number[], len: number, size: boolean, nr: number, n: number, cbit: number): number {
-    const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3];
+  private pushList(list: number[], len: number, size: boolean, nr: number, n: number, cbit: number): number {
+    const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3], kx = _plf[4], ky = _plf[5], kz = _plf[6];
     const vis = this.instVis, imask = this.instMask, geo = this.instGeo, sph = this.sph, gS = this.gStart, gC = this.gCount;
-    const fq = _fq, rq = _rq, rnq = _rnq;
-    const starts = s.starts, counts = s.counts, ind = s.ids;
+    const fq = _fq, rq = _rq, rnq = _rnq, hist = _hist;
+    const starts = this.oS, counts = this.oC, ind = this.oI, key = this.oK;
     for (let j = 0; j < len; j++) {
       const id = list[j];
       if (!vis[id]) continue;
@@ -1506,6 +1612,13 @@ export class DynamicBatch {
         if (fq[k] * cx + fq[k + 1] * cy + fq[k + 2] * cz + fq[k + 3] < -r) { out = true; break; }
       }
       if (out) continue;
+      if (key !== null) {
+        const dx = cx - kx, dy = cy - ky, dz = cz - kz;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - r;
+        const kk = d <= 0 ? 0 : d < KEYQ_M ? KEYQ[(d * 4) | 0] : d >= 4096 ? 255 : (Math.sqrt(d) * 4) | 0;
+        key[n] = kk;
+        hist[kk + 1]++;
+      }
       const gid = geo[id];
       starts[n] = gS[gid];
       counts[n] = gC[gid];
@@ -1556,31 +1669,6 @@ export class DynamicBatch {
       const j = pos[id];
       if (j < n && ids[j] === id) { const g = geo[id]; starts[j] = gS[g]; counts[j] = gC[g]; }
     }
-  }
-
-  /** counting sort of the first n list entries by distance from the camera (sqrt-spaced buckets: fine up close) */
-  private sortList(s: PassSlot, n: number): void {
-    const e = s.camera.matrixWorld.elements;
-    const px = e[12], py = e[13], pz = e[14];
-    if (this.sortKey.length < n) { const c = Math.ceil(n * 1.25); this.sortKey = new Uint8Array(c); this.sortTmp = new Int32Array(c * 3); }
-    const key = this.sortKey, tmp = this.sortTmp, cnt = this.sortCnt, sph = this.sph;
-    const starts = s.starts, counts = s.counts, ind = s.ids;
-    cnt.fill(0);
-    for (let i = 0; i < n; i++) {
-      const o = ind[i] * 4;
-      const dx = sph[o] - px, dy = sph[o + 1] - py, dz = sph[o + 2] - pz;
-      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - sph[o + 3];
-      const k = d <= 0 ? 0 : Math.min(255, (Math.sqrt(d) * 4) | 0);
-      key[i] = k;
-      cnt[k + 1]++;
-    }
-    for (let b = 1; b < 257; b++) cnt[b] += cnt[b - 1];
-    const T1 = n, T2 = n * 2;
-    for (let i = 0; i < n; i++) {
-      const j = cnt[key[i]]++;
-      tmp[j] = starts[i]; tmp[T1 + j] = counts[i]; tmp[T2 + j] = ind[i];
-    }
-    for (let i = 0; i < n; i++) { starts[i] = tmp[i]; counts[i] = tmp[T1 + i]; ind[i] = tmp[T2 + i]; }
   }
 
   dispose(): void {
