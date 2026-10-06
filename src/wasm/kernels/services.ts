@@ -422,7 +422,17 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
       onFault(err);
       if (!state.active) { proto.finish.call(this, sim, first); return; }
     }
-    // ---- verbatim from services.ts finish (24f8609)
+    // ---- verbatim from services.ts finish (24f8609 + the per-building stats.needs pass)
+    for (let k = 0; k < NT; k++) {
+      if (!this.hadFac[k]) continue;
+      const needL = this.provNeed[k] ?? this.need[NEED_RASTER[k]];
+      if (!needL || needL.length !== C) continue;
+      const layer = tierLayer(st, NEED_ORDER[k]);
+      let served = 0, unreached = 0;
+      for (let i = 0; i < C; i++) { const n = needL[i]; if (n <= 0) continue; const v = layer[i]; served += n * v; if (v <= 0) unreached += n; }
+      this.tierStats[k].served = served;
+      this.tierStats[k].unreached = unreached;
+    }
     const needs = st.stats.needs as Record<NeedTier, NeedStat> | undefined;
     if (needs) {
       for (let k = 0; k < NT; k++) {
