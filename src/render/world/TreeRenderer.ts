@@ -227,8 +227,9 @@ interface TreeChunk {
   cx: number;
   cz: number;
   near: (TreeMesh | null)[];
+  /** impostors: 0 broadleaf, 1 conifer, 2 both as micro impostors (one draw for far chunks; see microMerge) */
   far: (TreeMesh | null)[];
-  farTotal: [number, number];
+  farTotal: [number, number, number];
   box: THREE.Box3;
   sphere: THREE.Sphere;
   isNear: boolean;
@@ -361,9 +362,9 @@ vTreeSnow = 0.0;
   ${far ? 'vObjPos *= vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));' : ''}
 }
 #endif
-#if defined(TREE_RING) && defined(USE_INSTANCING_COLOR)
-  // outer ring sector mesh (broadleaves and conifers share the micro impostor): conifers carry a negative instance blue
-  // -> evergreen foliage pattern (4) instead of the impostor's variant-seasonal deciduous one
+#if defined(TREE_MERGED) && defined(USE_INSTANCING_COLOR)
+  // merged micro impostor mesh (broadleaves and conifers share one draw): conifers carry a negative instance blue ->
+  // evergreen foliage pattern (4) instead of the impostor's variant-seasonal deciduous one
   if (instanceColor.b < 0.0) {
     vSurf.y = 4.0;
     vColor.b = -vColor.b;
@@ -414,8 +415,9 @@ export class TreeRenderer {
   /** impostors (per-instance colour) get their own material and depth materials: sharing one material object between
    *  meshes with and without instanceColor makes three re-derive the program on every switch between them */
   private materialFar: THREE.MeshStandardMaterial;
-  /** outer ring sector meshes (TREE_RING: broadleaves + conifers in one micro impostor mesh) */
-  private materialRing: THREE.MeshStandardMaterial;
+  /** broadleaves + conifers in one micro impostor mesh (TREE_MERGED: conifers flagged evergreen; see microMerge):
+   *  far chunks and the outer ring's sectors */
+  private materialMerged: THREE.MeshStandardMaterial;
   private depthNearPlain = new THREE.MeshDepthMaterial();
   private depthFarPlain = new THREE.MeshDepthMaterial();
   /** depth materials of chunks drawn with an alpha-to-coverage fade material: three forces alphaTest 0.5 on the depth
@@ -516,7 +518,7 @@ export class TreeRenderer {
     // season snippets (snow, metric impostor coordinates)
     this.material = this.makeTreeMaterial(false);
     this.materialFar = this.makeTreeMaterial(true);
-    this.materialRing = this.makeTreeMaterial(true, true);
+    this.materialMerged = this.makeTreeMaterial(true, true);
     this.matNearFade = this.makeFadeMaterial(true);
     this.matFarFade = this.makeFadeMaterial(false);
     this.depthNear = this.makeDepthMaterial(true);
@@ -537,7 +539,7 @@ export class TreeRenderer {
         // edge chunks reach RING_EDGE_CELLS beyond the map (their forests continue past the edge)
         const e = RING_EDGE_CELLS * CELL_SIZE, last = this.perSide - 1;
         const box = new THREE.Box3(new THREE.Vector3(x0 - (cx === 0 ? e : 0), -10, z0 - (cz === 0 ? e : 0)), new THREE.Vector3(x0 + CHUNK * CELL_SIZE + (cx === last ? e : 0), 60, z0 + CHUNK * CELL_SIZE + (cz === last ? e : 0)));
-        this.chunks.push({ cx, cz, near: this.kinds.map(() => null), far: [null, null], farTotal: [0, 0], box, sphere: new THREE.Sphere(), isNear: false, total: 0, stateKey: -1, lastKey: FRESH_KEY, micro: false });
+        this.chunks.push({ cx, cz, near: this.kinds.map(() => null), far: [null, null, null], farTotal: [0, 0, 0], box, sphere: new THREE.Sphere(), isNear: false, total: 0, stateKey: -1, lastKey: FRESH_KEY, micro: false });
         this.storeChunkBox(this.chunks.length - 1);
       }
     for (let i = 0; i < this.chunks.length; i++) this.dirty.add(i);
@@ -557,7 +559,7 @@ export class TreeRenderer {
     for (const isNear of [true, false]) for (const fade of [false, true]) for (const cut of [false, true]) {
       pairs.push([isNear ? near : imp.broad, isNear ? (fade ? this.matNearFade : this.material) : (fade ? this.matFarFade : this.materialFar), this.depthFor(isNear, fade, cut), !isNear]);
     }
-    pairs.push([getMicroImpostorGeometries().broad, this.materialRing, null, true]);
+    pairs.push([getMicroImpostorGeometries().broad, this.materialMerged, this.depthFor(false, false, false), true]);
     for (const [geo, mat, depth, color] of pairs) {
       if (!geo) continue;
       const m = new THREE.InstancedMesh(geo, mat, 1);
@@ -615,16 +617,16 @@ export class TreeRenderer {
       .replace('#include <normal_fragment_begin>', SEASON_FRAG + '\n#include <normal_fragment_begin>');
   }
 
-  /** plain (no fade) tree material: near models or impostors (ring: the outer ring's shared sector meshes) */
-  private makeTreeMaterial(far: boolean, ring = false): THREE.MeshStandardMaterial {
+  /** plain (no fade) tree material: near models or impostors (merged: broadleaf + conifer micro impostor meshes) */
+  private makeTreeMaterial(far: boolean, merged = false): THREE.MeshStandardMaterial {
     const m = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
     const base = m.onBeforeCompile;
     m.onBeforeCompile = (shader, renderer) => {
       base.call(m, shader, renderer);
       this.injectSeason(shader, far);
     };
-    m.customProgramCacheKey = () => 'building-uber-v1|tree-' + (far ? 'far' : 'near') + (ring ? '-ring' : '') + '-v1';
-    if (ring) m.defines = { ...(m.defines ?? {}), TREE_RING: '' };
+    m.customProgramCacheKey = () => 'building-uber-v1|tree-' + (far ? 'far' : 'near') + (merged ? '-merged' : '') + '-v1';
+    if (merged) m.defines = { ...(m.defines ?? {}), TREE_MERGED: '' };
     m.shadowSide = THREE.DoubleSide;
     return m;
   }
@@ -724,7 +726,7 @@ export class TreeRenderer {
       this.buildKinds();
       for (const c of this.chunks) {
         c.near = this.kinds.map(() => null);
-        c.far = [null, null];
+        c.far = [null, null, null];
         c.total = 0;
       }
       this.totalInstances = 0;
@@ -776,7 +778,7 @@ export class TreeRenderer {
       this.buildKinds();
       for (const c of this.chunks) {
         c.near = this.kinds.map(() => null);
-        c.far = [null, null];
+        c.far = [null, null, null];
       }
     }
     // a new map: new ring candidates (the old sectors stay hidden until refilled)
@@ -1505,7 +1507,7 @@ export class TreeRenderer {
     const geos = [imp.broad, imp.conifer, mg.broad];
     for (let m = 0; m < 3; m++) {
       const idx = k * 3 + m;
-      const mesh = this.meshFor(this.ring[idx], geos[m], m === 2 ? this.materialRing : this.materialFar, Math.max(1, counts[m]), true, false);
+      const mesh = this.meshFor(this.ring[idx], geos[m], m === 2 ? this.materialMerged : this.materialFar, Math.max(1, counts[m]), true, false);
       mesh.name = 'trees-ring';
       mesh.castShadow = false;
       mesh.receiveShadow = true;
@@ -1643,7 +1645,7 @@ export class TreeRenderer {
     this.ring.fill(null);
     this.material.dispose();
     this.materialFar.dispose();
-    this.materialRing.dispose();
+    this.materialMerged.dispose();
     this.depthNearPlain.dispose();
     this.depthFarPlain.dispose();
     this.matNearFade.dispose();
