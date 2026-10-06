@@ -71,6 +71,8 @@ export interface TierEngineOptions {
    * protector for the whole isolate (every JS typed-array loop slows down)
    */
   reserveBytes?: number;
+  /** smallest reach pool per slot, in entries (default 65,536; tests shrink it to force compaction / growth) */
+  minPoolEntries?: number;
 }
 
 export interface InstalledTierEngine {
@@ -208,7 +210,7 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
   const orig = { prep: proto.prep, invalidateReach: proto.invalidateReach, workOf: proto.workOf };
   const K = reachConsts();
   const be = backendOf(opts);
-  const engine = new TierEngine(NT + 1, K, be.kernels, be.space);
+  const engine = new TierEngine(NT + 1, K, be.kernels, be.space, { minPool: opts.minPoolEntries });
   const accessFields = opts.accessFields ?? true;
   let lastCache: unknown = sys.cache;
   let infos: DefInfo[] = [];

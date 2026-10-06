@@ -359,10 +359,10 @@ afterEach(() => {
   for (const e of liveEngines.splice(0)) e.dispose();
 });
 
-function makeArm(label: string, st: CityState, backend: TierBackend | 'orig', opts: { wasm?: CatchWasm } = {}): Arm {
+function makeArm(label: string, st: CityState, backend: TierBackend | 'orig', opts: { wasm?: CatchWasm; minPoolEntries?: number } = {}): Arm {
   const systems = createSystems();
   const svc = systems.find((s) => s.name === 'services') as ServicesSystem;
-  const inst = backend === 'orig' ? null : installServicesTierEngine(svc, { backend, wasm: opts.wasm });
+  const inst = backend === 'orig' ? null : installServicesTierEngine(svc, { backend, wasm: opts.wasm, minPoolEntries: opts.minPoolEntries });
   if (inst) liveEngines.push(inst);
   const sim = new Simulation(st, systems);
   return { label, st, sim, svc, inst };
@@ -526,6 +526,25 @@ describe('services tier engine installed into the live ServicesSystem', () => {
     expect(s.fresh).toBeGreaterThan(0);
     expect(s.cached).toBeGreaterThan(0);
     expect(servicesBackendStats(arms[2].inst!.engine)!.jsCalls).toBe(0);
+  });
+
+  it('tight reach pools: mid-search compaction (facility ranges fixed up) and pool growth keep every phase identical', { timeout: 900000 }, () => {
+    // pools of one map's worth of entries: a fresh reach finds the pool "full" constantly, so the search compacts dead
+    // segments mid-slot (re-reading the ranges of the facilities searched so far) or grows the pool
+    const C = 64 * 64;
+    const arms = [makeArm('orig', servicesCity(64, 23).st, 'orig'), makeArm('js', servicesCity(64, 23).st, 'js', { minPoolEntries: C }),
+      makeArm('wasm', servicesCity(64, 23).st, 'wasm', { minPoolEntries: C })];
+    for (let p = 0; p < 3; p++) {
+      for (const a of arms) invalidateAll(a);
+      passAndCompare(arms, `tight pools, cold pass ${p}`);
+    }
+    roadEdit(arms, 13);
+    passAndCompare(arms, 'tight pools, road edit');
+    for (const a of arms.slice(1)) {
+      const s = a.inst!.engine.stats;
+      expect(s.compactions, `${a.label}: mid-search compactions`).toBeGreaterThan(0);
+      expect(s.poolGrows, `${a.label}: pool growth`).toBeGreaterThan(0);
+    }
   });
 
   it('a city simulated 120 days on the engine is bit-identical to the original (JS-vs-JS baseline first)', { timeout: 1800000 }, () => {
@@ -836,9 +855,6 @@ describe.skipIf(FIXTURES.length === 0)('real profiler fixtures', () => {
       expect(reaches).toBeGreaterThan(500);
       for (const a of arms) (a.svc as unknown as { invalidateReach(r: unknown): void }).invalidateReach(undefined);
       passAndCompare(arms, `${name} cold`);
-      // the cold pass re-searched every road reach into full pools: dead segments were compacted mid-search (the
-      // facility ranges fixed up), instead of the pools doubling — and the per-phase pool segments still matched
-      expect(arms[2].inst!.engine.stats.compactions, 'mid-search compaction exercised').toBeGreaterThan(0);
       passAndCompare(arms, `${name} warm`);
       roadEdit(arms, 7);
       passAndCompare(arms, `${name} road edit`);

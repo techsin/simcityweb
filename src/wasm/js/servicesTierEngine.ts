@@ -938,7 +938,11 @@ export class TierEngine {
   private readonly sa: SearchArgs;
   private readonly pa: PhaseArgs;
 
-  constructor(nSlots: number, K: ReachConsts, kernels: TierKernels = jsKernels, space: Space = jsSpace) {
+  /** smallest pool a slot allocates / grows to (entries; tests shrink it to exercise compaction and growth) */
+  readonly minPool: number;
+
+  constructor(nSlots: number, K: ReachConsts, kernels: TierKernels = jsKernels, space: Space = jsSpace, opts: { minPool?: number } = {}) {
+    this.minPool = Math.max(1, Math.floor(opts.minPool ?? 65536));
     this.K = K;
     this.kernels = kernels;
     this.space = space;
@@ -1179,7 +1183,7 @@ export class TierEngine {
 
   private ensurePool(S: SlotState, need: number): void {
     if (need <= S.poolCap) return;
-    const cap = Math.max(need, S.poolCap * 2, 65536);
+    const cap = Math.max(need, S.poolCap * 2, this.minPool);
     S.idx = this.realloc(S.poolCap ? S.idx : undefined, Int32Array, cap, S.top);
     S.w = this.realloc(S.poolCap ? S.w : undefined, Float32Array, cap, S.top);
     S.poolCap = cap;
@@ -1251,7 +1255,7 @@ export class TierEngine {
     this.ensureIds(maxId);
     const S = this.slots[k];
     this.ensureRecs(S, S.live + n);
-    if (S.poolCap === 0) this.ensurePool(S, 65536);
+    if (S.poolCap === 0) this.ensurePool(S, this.minPool);
     this.compact(S);
     this.A.v.fill(0);
     this.cov.v.fill(0);

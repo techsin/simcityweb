@@ -279,7 +279,9 @@ describe('fire incidents never list a building twice', () => {
       }
       expect(s.st.day).toBe(1000);
     }
-    expect(reignitions).toBeGreaterThanOrEqual(3); // the path was exercised (put out, then re-ignited the same day)
+    // the path was exercised (put out, then re-ignited the same day) at least once per seed; if fire tuning changes and
+    // this fails, pick seeds that still re-ignite a just-extinguished building (the scratch search printed them)
+    expect(reignitions, 'same-day re-ignitions of extinguished buildings').toBeGreaterThanOrEqual(3);
   });
 
   it('determinism and save / load around an active multi-building fire', { timeout: 900000 }, () => {

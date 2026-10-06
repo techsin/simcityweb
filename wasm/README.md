@@ -256,3 +256,25 @@ alternating order, n = 41 pairs, 95 % bootstrap CI of the paired ratio, load ave
 - **Conclusion.** Blur only proves the pipeline. Million-population cities need the hot systems ported as whole
   kernels (traffic assignment, road search, pollution stages, population / justice loops), with their layers in wasm
   memory, and the sim moved off the main thread into a Web Worker.
+
+## Measured (services tier engine, `catch.rs`; dense1m = 1.12M people, 256²)
+
+`npm run bench:services -- all --fixture <dir>/dense1m_s7.metropolis` (tools/bench/servicesTierEngine.bench.mjs): one
+isolate per arm (node child process / Chromium worker), CPU time in node, 31 interleaved rotated rounds, paired-ratio
+median with a 95 % bootstrap CI, every arm's city hash identical after each case. "fair JS" = the restructured JS
+engine (src/wasm/js/servicesTierEngine.ts) on the same data layout; the wasm arm stages layers (copies included);
+"resident" adopts the CityState layers into wasm memory. Protector INTACT on both sides unless noted (load 8–18).
+
+| in situ, design cadence (31 × 6 days) | sim ms/day | services ms/day | tier engine ms/day |
+|---|---|---|---|
+| node: orig JS → wasm | 61.9 → 57.1, 1.06× [1.04, 1.14] | 20.9 → 15.4, 1.35× [1.25, 1.42] | 16.8 → 11.5, 1.42× [1.36, 1.53] |
+| node: fair JS → wasm | 62.9 → 57.1, 1.06× [1.00, 1.15] | 20.4 → 15.4, 1.21× [1.17, 1.28] | 14.5 → 11.5, 1.26× [1.20, 1.37] |
+| node: fair JS → resident | 62.9 → 53.5, 1.11× [1.05, 1.17] | 20.4 → 14.0, 1.23× [1.18, 1.41] | 14.5 → 10.5, 1.40× [1.25, 1.47] |
+| Chromium 141 worker: orig → wasm / fair → wasm | 1.04× [0.99, 1.16] / 1.12× [1.06, 1.20] | 1.35× / 1.29× | 1.43× [1.37, 1.57] / 1.37× [1.26, 1.41] |
+| node, protector invalidated on both sides: orig → wasm | 1.16× [1.11, 1.19] | 1.42× | 1.55× [1.50, 1.61] |
+| node, one run: today's main thread (invalidated) → same JS, protector intact | 1.13× [1.04, 1.21] | 1.18× | 1.23× |
+
+Kernels (replay, protector intact): alloc 1.21×, union 1.32×, report 1.26×, finalize 1.81× vs the original JS loops;
+SIMD vs scalar build 1.00–1.03× except finalize 1.27×. Lessons: (1) a JS arm with an invalidated protector inflates
+wasm's lead by ~0.15–0.3×; (2) keeping the protector intact is worth as much for the whole sim (+13 %) as this port;
+(3) the e-cache that helps wasm's alloc (1.08×) slows JS's (0.91×) — each side gets its faster exact variant.

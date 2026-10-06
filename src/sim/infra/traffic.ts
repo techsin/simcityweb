@@ -105,7 +105,7 @@ import {
   PARKING_BLEND, PARKING_MIN, PARKING_SHOP_W, PR_CAR_LEG_MAX, PR_HOME_MIN, PR_LEG_SEARCH, PR_LIMIT, PR_PARK_MIN, PR_PRICE_MAX,
   PR_PRICE_STEP, PR_STOP_RADIUS, GARAGE_GROUP_CELLS, RAMP_ALPHA, RAMP_BY_NET, RAMP_CAP, RAMP_MAX_FACTOR, RAMP_MSA_MIN, RIDERS_PER_BUS,
   STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRUCK_LOCAL_FACTOR, WAIT_FERRY, PR_GARAGE_BETA, PR_RESERVE_FULL, PR_RESERVE_SMOOTH, PR_RESERVE_SPREAD, PR_STOP_KEEP,
-  PR_DOWNTOWN_KEEP, PR_OPTIONS, PR_OPTION_MARGIN, PR_RESERVE_MIN,
+  PR_DOWNTOWN_KEEP, PR_OPTIONS, PR_OPTION_MARGIN, PR_OPTION_TAPER, PR_RESERVE_MIN,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
@@ -387,9 +387,9 @@ export class TrafficSystem implements SimSystem {
   private task: InfraTask | null = null;
 
   // ---- WP7b transport facilities ---------------------------------------------------------------------------------
-  /** park & ride car legs: K-label reverse road search from the P&R garages (PR_OPTIONS garage options per node; kept
-   *  across a cycle, reused every 2nd cycle) */
-  private SPK = new SearchK(PR_OPTIONS);
+  /** park & ride car legs: K-label reverse road search from the P&R garages (PR_OPTIONS garage options per node + the
+   *  next one, the cutoff the last option fades against; kept across a cycle, reused every 2nd cycle) */
+  private SPK = new SearchK(PR_OPTIONS + 1);
   /** P&R phase stage of this cycle: 0 = garages (+ search start), 1 = search chunks, 2 = per-origin options */
   private prStage = 0;
   private prKey = '';
@@ -512,20 +512,22 @@ export class TrafficSystem implements SimSystem {
    *  ordinance's transit bonus; pcPool: poolRemaining's binary split) */
   private pcCarT = 0; private pcCarOk = false; private pcWalkT = Infinity; private pcTrT = Infinity; private pcBonus = 0;
   private pcPool = false;
-  /** prOptions scratch: an origin's options while collected (free-flow minutes, congested minutes, garage, state, group) */
-  private poT = new Float64Array(PR_OPTIONS);
-  private poC = new Float64Array(PR_OPTIONS);
-  private poQ = new Int32Array(PR_OPTIONS);
-  private poS = new Int32Array(PR_OPTIONS);
-  private poR = new Int32Array(PR_OPTIONS);
+  /** prOptions scratch: an origin's options while collected (free-flow minutes, congested minutes, garage, state, group;
+   *  PR_OPTIONS + 1: the next one is the cutoff) */
+  private poT = new Float64Array(PR_OPTIONS + 1);
+  private poC = new Float64Array(PR_OPTIONS + 1);
+  private poQ = new Int32Array(PR_OPTIONS + 1);
+  private poS = new Int32Array(PR_OPTIONS + 1);
+  private poR = new Int32Array(PR_OPTIONS + 1);
   /** road graph version of the origin snapshot (prep): garageReach needs the origins' entry nodes of the same graph */
   private prepVer = -1;
   private reachCache = new Map<number, { cycle: number; workers: number; via: number; slower: number; options: number }>();
   private SR: Search | null = null;
-  // per origin: park & ride options k = 0 .. oPrN - 1 at o x PR_OPTIONS + k, fastest first (total minutes, garage index,
-  // car-leg state of SPK), car-less share
+  // per origin: park & ride options k = 0 .. oPrN - 1 at o x PR_OPTIONS + k, fastest first (total minutes, availability
+  // cost — minutes of choice as it nears the cutoff, PR_OPTION_TAPER —, garage index, car-leg state of SPK), car-less share
   private oPrN: Uint8Array<ArrayBuffer> = new Uint8Array(0);
   private oPrT: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oPrA: Float32Array<ArrayBuffer> = new Float32Array(0);
   private oPrG: Int32Array<ArrayBuffer> = new Int32Array(0);
   private oPrNode: Int32Array<ArrayBuffer> = new Int32Array(0);
   private oCl: Float32Array<ArrayBuffer> = new Float32Array(0);
@@ -1277,9 +1279,9 @@ export class TrafficSystem implements SimSystem {
     this.rampT = growF32(this.rampT, n);
     this.rampNew = growF32(this.rampNew, n);
     this.rampNew.fill(0, 0, n);
-    // (park & ride car legs per K-label search state: PR_OPTIONS per node)
-    this.prAcc = growF32(this.prAcc, PR_OPTIONS * n);
-    this.prAcc.fill(0, 0, PR_OPTIONS * n);
+    // (park & ride car legs per K-label search state: SPK.K per node)
+    this.prAcc = growF32(this.prAcc, this.SPK.K * n);
+    this.prAcc.fill(0, 0, this.SPK.K * n);
     this.prepVer = g.version;
     {
       const type = g.type, rv = this.rampVolCell, cellOf = g.cellOf, rt = this.rampT;
@@ -1466,6 +1468,7 @@ export class TrafficSystem implements SimSystem {
     this.oLastD = growF32(this.oLastD, oN);
     this.oPrN = growU8(this.oPrN, oN);
     this.oPrT = growF32(this.oPrT, oN * PR_OPTIONS); this.oPrG = growI32(this.oPrG, oN * PR_OPTIONS); this.oPrNode = growI32(this.oPrNode, oN * PR_OPTIONS);
+    this.oPrA = growF32(this.oPrA, oN * PR_OPTIONS);
     this.oClX = growF32(this.oClX, oN);
     this.candKey = this.candKey.length >= oN ? this.candKey : new Float64Array(Math.max(oN, 64) * 2);
     this.candNode = growI32(this.candNode, oN);
@@ -2061,65 +2064,86 @@ export class TrafficSystem implements SimSystem {
     this.SPK.start(g, g.rev, g.t0, seeds, grp, Math.min(MAX_COMMUTE, maxL + PR_CAR_LEG_MAX), null, PR_CAR_LEG_MAX, PR_OPTION_MARGIN, this.nodeTime, this.rampT);
   }
 
-  /** P&R: every origin's options — its PR_OPTIONS fastest garage groups (free-flow car leg + the garage's minutes) within
-   *  PR_OPTION_MARGIN minutes of its fastest (current groups: a reused forest may hold two members of a group merged
-   *  since; current labels: the transit part is this cycle's) with their minutes for the choices (congested car leg) —
-   *  and the catchments (workers whose option a group is) */
+  /**
+   * P&R: every origin's options — its PR_OPTIONS fastest garage groups (free-flow car leg + the garage's minutes) — with
+   * their minutes for the choices (congested car leg) and an availability cost: an option fades out (PR_OPTION_TAPER)
+   * as it nears the cutoff — PR_OPTION_MARGIN minutes behind the fastest, or the next garage group beyond PR_OPTIONS (the
+   * search keeps one more) — so a garage drifting across it loses riders gradually; and the catchments (workers whose
+   * option a group is, weighted by how available). Current groups (a reused forest may hold two members of a group
+   * merged since) and labels (the transit part is this cycle's).
+   */
   private prOptions(): void {
-    const K = PR_OPTIONS, gN = this.gN, g = this.road, SP = this.SPK, grp = this.gGrp, room = this.gGSp;
+    const K = PR_OPTIONS, gN = this.gN, g = this.road, SP = this.SPK, KS = SP.K, grp = this.gGrp, room = this.gGSp;
     const dist = SP.dist, src = SP.src, alt = SP.alt, cntS = SP.cnt;
     const n = Math.min(g.n, SP.n);
     // (scratch per option: free-flow minutes F, congested minutes, garage, state, group)
     const F = this.poT, T = this.poC, Q = this.poQ, S = this.poS, R = this.poR;
+    const M = KS; // options collected: PR_OPTIONS + the cutoff
     for (let o = 0; o < this.oN; o++) {
       let m = 0;
       for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) {
         const v = this.ent[e];
         if (v >= n) continue;
         for (let k = 0, kn = cntS[v]; k < kn; k++) {
-          const s = K * v + k, q = src[s];
+          const s = KS * v + k, q = src[s];
           if (q < 0 || q >= gN) continue;
           const seed = this.gSeed[q], lab = this.gLabel[q], r = grp[q];
           if (!(lab < Infinity) || !(seed < Infinity) || !(room[r] >= 1)) continue;
           const f = (dist[s] - seed) + lab;
-          // the group's best over the entries / states, the K fastest groups, sorted by free-flow minutes
+          // the group's best over the entries / states, the M fastest groups, sorted by free-flow minutes
           let i = 0;
           while (i < m && R[i] !== r) i++;
           if (i < m) {
             if (!(f < F[i])) continue;
             for (let j = i; j < m - 1; j++) { F[j] = F[j + 1]; T[j] = T[j + 1]; Q[j] = Q[j + 1]; S[j] = S[j + 1]; R[j] = R[j + 1]; }
             m--;
-          } else if (m === K && !(f < F[K - 1])) continue;
-          let j = m < K ? m : K - 1;
+          } else if (m === M && !(f < F[M - 1])) continue;
+          let j = m < M ? m : M - 1;
           while (j > 0 && F[j - 1] > f) { F[j] = F[j - 1]; T[j] = T[j - 1]; Q[j] = Q[j - 1]; S[j] = S[j - 1]; R[j] = R[j - 1]; j--; }
           F[j] = f; T[j] = PR_HOME_MIN + alt[s] + lab; Q[j] = q; S[j] = s; R[j] = r;
-          if (m < K) m++;
+          if (m < M) m++;
         }
       }
       let c = 0;
       const base = o * K;
-      for (let i = 0; i < m; i++) {
-        if (F[i] > F[0] + PR_OPTION_MARGIN) break;
-        if (!(T[i] <= MAX_COMMUTE)) continue;
-        this.oPrT[base + c] = T[i]; // pure minutes; the group's price is added to the utility in split() / prAlloc()
-        this.oPrG[base + c] = Q[i];
-        this.oPrNode[base + c] = S[i];
-        this.gCatch[R[i]] += this.oW[o];
-        c++;
+      if (m > 0) {
+        const cut = Math.min(F[0] + PR_OPTION_MARGIN, m > K ? F[K] : Infinity);
+        for (let i = 0; i < m && i < K; i++) {
+          const gap = cut - F[i];
+          if (!(gap > 1e-3)) break;
+          if (!(T[i] <= MAX_COMMUTE)) continue;
+          const av = gap >= PR_OPTION_TAPER ? 1 : gap / PR_OPTION_TAPER;
+          this.oPrT[base + c] = T[i]; // pure minutes; the group's price (+ availability) is added to the utility in split() / prAlloc()
+          this.oPrA[base + c] = av < 1 ? -Math.log(av) / PR_GARAGE_BETA : 0;
+          this.oPrG[base + c] = Q[i];
+          this.oPrNode[base + c] = S[i];
+          this.gCatch[R[i]] += this.oW[o] * av;
+          c++;
+        }
       }
       this.oPrN[o] = c;
     }
   }
 
-  /** the option of origin o the mode choice sees: the least minutes + price (-1 = none) */
+  /** the option of origin o the mode choice sees: the least minutes + price + availability cost (-1 = none) */
   private prPick(o: number): number {
     const n = this.oPrN[o], base = o * PR_OPTIONS;
     let best = -1, bc = Infinity;
     for (let k = 0; k < n; k++) {
-      const c = this.oPrT[base + k] + this.gPrice[this.oPrG[base + k]];
+      const c = this.prCostOf(base + k);
       if (c < bc) { bc = c; best = k; }
     }
     return best;
+  }
+
+  /** choice cost of option i (o x PR_OPTIONS + k): minutes + the group's price + its availability cost */
+  private prCostOf(i: number): number {
+    return this.oPrT[i] + this.gPrice[this.oPrG[i]] + this.oPrA[i];
+  }
+
+  /** the choice weight beyond the minutes of option i: price + availability (split()'s prCost) */
+  private prExtra(i: number): number {
+    return this.gPrice[this.oPrG[i]] + this.oPrA[i];
   }
 
   // ------------------------------------------------------------------------------------------ ROUNDS
@@ -2259,7 +2283,7 @@ export class TrafficSystem implements SimSystem {
       const walkT = qBase[q] === 0 && hops[node] <= WALK_MAX_CELLS ? (hops[node] + 1) * WALK_TIME_PER_CELL : Infinity;
       // (park & ride: the origin's option with the least minutes + price)
       const pk = this.prPick(o), pq = pk >= 0 ? o * PR_OPTIONS + pk : -1;
-      const trT = this.oTrT[o], prT = pq >= 0 ? this.oPrT[pq] : Infinity, prCost = pq >= 0 ? this.gPrice[this.oPrG[pq]] : 0;
+      const trT = this.oTrT[o], prT = pq >= 0 ? this.oPrT[pq] : Infinity, prCost = pq >= 0 ? this.prExtra(pq) : 0;
       if (!this.split(o, carT, carOk, walkT, trT, prT, prCost, trBonus)) continue;
       let sc = this.mC, stW = this.mTW, stP = this.mTP, sw = this.mW, time = this.mT, ext = this.mX;
       if (stP > 0) {
@@ -2268,16 +2292,15 @@ export class TrafficSystem implements SimSystem {
         // not fit re-decide with the options that still have room, then without park & ride (prRest)
         const want = take * stP;
         const placed = this.prAlloc(o, want, prT);
-        const dT = this.prDT;
         if (placed < want - 1e-9) {
-          // the riders that do not fit re-decide: the next option with room, else another mode (prRest)
+          // the riders that do not fit re-decide: the options with room left, else another mode (prRest)
           this.pcPool = false; this.pcCarT = carT; this.pcCarOk = carOk; this.pcWalkT = walkT; this.pcTrT = trT; this.pcBonus = trBonus;
           const m = this.prRest(o, take, placed / want);
           sc = this.mC; stW = this.mTW; stP = this.mTP; sw = this.mW; time = this.mT; ext = this.mX;
           take *= m; // (no other mode: only the part that fits is matched)
           if (!(take > 1e-9)) continue;
         }
-        time += dT / take; // riders at another option than the split's: its minutes
+        time += this.prDT / take; // riders at another option than the split's: its minutes
       }
       const stt = stW + stP;
       // commit
@@ -2391,19 +2414,18 @@ export class TrafficSystem implements SimSystem {
       // car-less residents pay CARLESS_EXTRA_MIN on car and park & ride)
       const pk = this.prPick(o), pq = pk >= 0 ? o * PR_OPTIONS + pk : -1;
       const trT = this.oTrT[o], prT = pq >= 0 ? this.oPrT[pq] : Infinity;
-      this.splitPool(o, carT, trT, prT, pq >= 0 ? this.gPrice[this.oPrG[pq]] : 0);
+      this.splitPool(o, carT, trT, prT, pq >= 0 ? this.prExtra(pq) : 0);
       let stW = this.mTW, stP = this.mTP, time = this.mT, ext = this.mX;
       if (stP > 0) {
         // park & ride capacity (as in roundMatch): the options with overflow, the part that does not fit re-splits
         const want = take * stP;
         const placed = this.prAlloc(o, want, prT);
-        const dT = this.prDT;
         if (placed < want - 1e-9) {
           this.pcPool = true; this.pcCarT = carT; this.pcTrT = trT;
           this.prRest(o, take, placed / want);
           stW = this.mTW; stP = this.mTP; time = this.mT; ext = this.mX;
         }
-        time += dT / take;
+        time += this.prDT / take;
       }
       const st = stW + stP;
       const sc = 1 - st;
@@ -2457,7 +2479,7 @@ export class TrafficSystem implements SimSystem {
       for (let k = 0, n = this.oPrN[o]; k < n; k++) {
         const q = this.oPrG[base + k];
         if (!(this.prRoom(q) > 0.01)) continue;
-        const c = this.oPrT[base + k] + this.gPrice[q];
+        const c = this.prCostOf(base + k);
         if (c < bc) { bc = c; opt = k; }
       }
       const gq = opt >= 0 ? this.oPrG[base + opt] : -1;
@@ -2507,7 +2529,7 @@ export class TrafficSystem implements SimSystem {
     a.fill(0);
     if (n === 0 || !(want > 0)) return 0;
     let cmin = Infinity;
-    for (let k = 0; k < n; k++) { const c = this.oPrT[base + k] + this.gPrice[this.oPrG[base + k]]; w[k] = c; if (c < cmin) cmin = c; }
+    for (let k = 0; k < n; k++) { const c = this.prCostOf(base + k); w[k] = c; if (c < cmin) cmin = c; }
     let ws = 0;
     for (let k = 0; k < n; k++) { const x = Math.exp(-PR_GARAGE_BETA * (w[k] - cmin)); w[k] = x; ws += x; }
     // (the options are distinct groups: each one's room is its own)
@@ -2529,35 +2551,46 @@ export class TrafficSystem implements SimSystem {
 
   /**
    * the park & ride riders of a piece that did not fit their garage choice (prAlloc placed a share f of them) re-decide:
-   * a share f of the piece keeps the split in m* (its riders are placed), the rest re-splits with the option of most
-   * room-left value (least minutes + price among the options with room left) — riders that take it fill its room, those
-   * that find it full re-split with the next one, and so on — then without park & ride (the split's arguments: pc*).
-   * Leaves the piece's mixed shares in m*, adds the placed riders to prAk; returns the share of the piece that has a mode
-   * (< 1 only when nothing but park & ride reaches a job)
+   * a share f of the piece keeps the split in m* (its riders are placed), the rest re-splits with the park & ride options
+   * that still have room — the mode choice sees the best of them (least minutes + price + availability), its riders split
+   * over all of them by the same logit as prAlloc (no single garage takes every turned-away rider), each part takes its
+   * room, and those that find it full re-decide again with what is left — then without park & ride (the split's arguments:
+   * pc*). Leaves the piece's mixed shares in m*, adds the placed riders to prAk and their extra minutes to prDT; returns the
+   * share of the piece that has a mode (< 1 only when nothing but park & ride reaches a job)
    */
   private prRest(o: number, take: number, f: number): number {
     let aC = f * this.mC, aW = f * this.mTW, aP = f * this.mTP, aK = f * this.mW, aT = f * this.mT, aX = f * this.mX;
     let rest = 1 - f;
-    const base = o * PR_OPTIONS, n = this.oPrN[o], a = this.prAk;
+    const base = o * PR_OPTIONS, n = this.oPrN[o], a = this.prAk, w = this.prWk;
     for (let lvl = 0; lvl < n && rest > 1e-9; lvl++) {
       let kr = -1, bc = Infinity;
       for (let k = 0; k < n; k++) {
-        const q = this.oPrG[base + k];
-        if (!(this.prRoom(q) - a[k] > 1e-6)) continue;
-        const c = this.oPrT[base + k] + this.gPrice[q];
+        w[k] = -1;
+        if (!(this.prRoom(this.oPrG[base + k]) - a[k] > 1e-6)) continue;
+        const c = this.prCostOf(base + k);
+        w[k] = c;
         if (c < bc) { bc = c; kr = k; }
       }
       if (kr < 0) break;
-      const q = this.oPrG[base + kr];
-      if (!this.splitFor(o, this.oPrT[base + kr], this.gPrice[q])) break;
+      const tr = this.oPrT[base + kr];
+      if (!this.splitFor(o, tr, this.prExtra(base + kr))) break;
       const want = take * rest * this.mTP;
-      const free = this.prRoom(q) - a[kr];
-      const fit = want < free ? want : free;
-      this.gWantR[this.gGrp[q]] += want;
-      a[kr] += fit;
-      const w = rest * (want > 1e-12 ? fit / want : 1);
-      aC += w * this.mC; aW += w * this.mTW; aP += w * this.mTP; aK += w * this.mW; aT += w * this.mT; aX += w * this.mX;
-      rest -= w;
+      let ws = 0;
+      for (let k = 0; k < n; k++) if (w[k] >= 0) { const x = Math.exp(-PR_GARAGE_BETA * (w[k] - bc)); w[k] = x; ws += x; } else w[k] = 0;
+      let placed = 0;
+      for (let k = 0; k < n; k++) {
+        if (!(w[k] > 0)) continue;
+        const q = this.oPrG[base + k];
+        const y = want * w[k] / ws, free = this.prRoom(q) - a[k];
+        const fit = y < free ? y : free;
+        this.gWantR[this.gGrp[q]] += y;
+        a[k] += fit;
+        placed += fit;
+        this.prDT += fit * (this.oPrT[base + k] - tr);
+      }
+      const ww = rest * (want > 1e-12 ? Math.min(1, placed / want) : 1);
+      aC += ww * this.mC; aW += ww * this.mTW; aP += ww * this.mTP; aK += ww * this.mW; aT += ww * this.mT; aX += ww * this.mX;
+      rest -= ww;
     }
     let matched = 1;
     if (rest > 1e-9) {
@@ -2795,7 +2828,7 @@ export class TrafficSystem implements SimSystem {
     // next one: tatonnement on wanted (the logit choice) / room (demand beyond the room raises it, idle room lowers it
     // to 0; a group that is nobody's option has no demand to ration: 0)
     if (this.gPrN > 0 && this.prRiders > 0 && this.SPK.graphVersion === this.road.version) this.commitK(this.SPK, this.prAcc);
-    else if (this.prAcc.length > 0) this.prAcc.fill(0, 0, Math.min(this.prAcc.length, PR_OPTIONS * this.road.n));
+    else if (this.prAcc.length > 0) this.prAcc.fill(0, 0, Math.min(this.prAcc.length, this.SPK.K * this.road.n));
     this.garageLoad.clear();
     this.garageLast.clear();
     const members = new Int32Array(this.gN + 1);

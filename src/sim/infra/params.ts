@@ -713,9 +713,13 @@ export const GARAGE_GROUP_CELLS = 10;
 export const PR_GARAGE_BETA = 0.5;
 /** park & ride options per commuter: the fastest garage groups within reach (a full one overflows to the others) */
 export const PR_OPTIONS = 4;
-/** a park & ride option more than this many minutes (travel time, not price) slower than the commuter's fastest is
- *  none (no overflow there: the commuter re-decides without park & ride) */
-export const PR_OPTION_MARGIN = 6;
+/** a park & ride option more than this many minutes (free-flow drive + the garage's transit minutes; not price) slower
+ *  than the commuter's fastest is none (no overflow there: the commuter re-decides without park & ride) */
+export const PR_OPTION_MARGIN = 10;
+/** options fade out over this many minutes before the cutoff (the margin, or the next faster garage beyond PR_OPTIONS):
+ *  an availability cost -ln(gap / PR_OPTION_TAPER) / PR_GARAGE_BETA minutes, so a garage drifting across the cutoff
+ *  loses its riders gradually instead of a whole neighbourhood at once */
+export const PR_OPTION_TAPER = 1.5;
 /** a park & ride garage whose stop's best path stops riding (jobs a walk away) stays park & ride through this many
  *  assignments in a row (the forest's best path at a stop beside a few jobs flips with congestion) */
 export const PR_DOWNTOWN_KEEP = 2;

@@ -7,7 +7,7 @@
  * road. With BALANCE=1 also the slow 128 x 15 balance gate (bottom of the file).
  */
 import { describe, expect, it } from 'vitest';
-import { JAIL_GAP, SimBot, botSystems } from '../../tools/simbot';
+import { JAIL_GAP, JAIL_OVERFLOW_FIRST, JAIL_OVERFLOW_MORE, SimBot, botSystems } from '../../tools/simbot';
 import { DevType, Network } from '../../src/core/types';
 import { BF, type Building } from '../../src/sim/CityState';
 import { lPath } from '../../src/sim/actions';
@@ -86,6 +86,34 @@ describe('bot: facilities', () => {
     expect(G).toBe(12);
     const within = hx >= j.x - G && hx < j.x + j.w + G && hz >= j.z - G && hz < j.z + j.d + G;
     expect(within).toBe(false);
+  });
+
+  it('the first prison comes at 25 % of the sentenced without a bed, the next ones at 15 % (WP6b gate: overflow <= 0.2)', { timeout: 600000 }, async () => {
+    expect(JAIL_OVERFLOW_FIRST).toBe(0.25);
+    expect(JAIL_OVERFLOW_MORE).toBeLessThan(0.2);
+    const b = await bot(96);
+    b.setup();
+    const st = b.st;
+    st.funds = 5e6;
+    st.unlocked.add('jail');
+    const jails = () => [...st.buildings.values()].filter((o) => o.def === 'civ_jail').length;
+    // no prison yet: 18 % is no reason for the first one
+    st.stats.justice.overflow = 0.18;
+    b.ensureJustice();
+    expect(jails()).toBe(0);
+    st.stats.justice.overflow = 0.3;
+    b.ensureJustice();
+    expect(jails()).toBe(1);
+    // with one standing, 18 % builds the next once the retry has passed (240 days after a prison)
+    st.day += 241;
+    st.stats.justice.overflow = 0.18;
+    b.ensureJustice();
+    expect(jails()).toBe(2);
+    // and 12 % does not
+    st.day += 241;
+    st.stats.justice.overflow = 0.12;
+    b.ensureJustice();
+    expect(jails()).toBe(2);
   });
 
   it('a built-up city: with no small lot left in the industrial / utility blocks, the prison replaces stage-3 lots', { timeout: 600000 }, async () => {
