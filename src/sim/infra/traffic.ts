@@ -676,14 +676,15 @@ export class TrafficSystem implements SimSystem {
   /** overflow phase: stage (1 overflow search chunks, 3 records re-decided with the pass's forest — a kept forest's
    *  car-leg minutes refreshed first —, 4 the rest without park & ride, its last chunk with the overflow car legs and the
    *  round's car flows; 0 before the first overflow), pass, record cursor, the round's successor, the cache slot of the
-   *  pass's forest, fresh searches this assignment, the pass filled a group (another pass can place more) */
+   *  pass's forest, fresh searches this assignment, and the people the pass left that its forest could not serve (all
+   *  its labels at their node full, the last within the margin: a group beyond them may have room — another pass) */
   private ovStage = 0;
   private ovPass = 0;
   private ovCur = 0;
   private ovNext = -1;
   private ovSlot = -1;
   private ovSearches = 0;
-  private ovFilled = false;
+  private ovExh = 0;
   /** use counter of the overflow forest cache (least recently used goes first); the cache slot of the first forest this
    *  assignment used (its seeds are a superset of every later pass's — room only shrinks within an assignment —, so an
    *  origin it leaves without an option in reach has none later: ovReachable; -1 none yet) */
@@ -937,7 +938,12 @@ export class TrafficSystem implements SimSystem {
     // with the overflow car legs (a pass over each forest used) and the round's car flows
     if (ph === PH_PROVER) {
       const recs = Math.min(OV_CHUNK, Math.max(0, this.pnN - this.ovCur));
-      if (this.ovStage === 1) return PR_CHUNK_COST * Math.min(1, 3 * road);
+      if (this.ovStage === 1) {
+        // (at most OV_K states per node: a small graph's search is less than a chunk)
+        const S = this.ov[this.ovSlot]?.S;
+        const left = S ? Math.max(0, S.K * this.road.n - S.settled) : OV_CHUNK_STATES;
+        return PR_CHUNK_COST * Math.min(1, 3 * road) * Math.max(0.1, Math.min(1, left / OV_CHUNK_STATES));
+      }
       if (this.ovStage === 3) {
         const f = this.ovSlot >= 0 && this.ovSlot < this.ov.length ? this.ov[this.ovSlot] : null;
         return OV_STEP_COST + OV_REC_COST * recs + (f && f.alt !== this.cycles ? PR_REFRESH_COST * f.S.settled : 0);
@@ -2052,6 +2058,8 @@ export class TrafficSystem implements SimSystem {
       this.gUnpl[q] = 0; this.gUnplX[q] = 0; this.gUnplZ[q] = 0; this.gUnplQ[q] = 0; this.gOvIn[q] = 0;
       this.gGrp[q] = q; this.gGSp[q] = 0; this.gCars[q] = 0; this.gRidersM[q] = 0;
       const id = this.gBid[q];
+      // (every garage in order: the searches' seed ids are these indices — a garage without a stop shifts them too)
+      key += id + ';';
       const b = st.buildings.get(id);
       this.gSpaces[q] = (b && GARAGE_DEFS[b.def]) || GARAGE_SPACES;
       this.gPrice[q] = this.garagePrice.get(id) ?? 0;
@@ -3214,9 +3222,9 @@ export class TrafficSystem implements SimSystem {
       this.ovAlloc(this.ovCur, end);
       this.ovCur = end;
       if (end < this.pnN) return PH_PROVER;
-      // another pass while riders are left over and this one filled a group: they try the groups that still have room
+      // another pass while people are left that this pass's forest could not serve: a forest with fewer seeds
       this.ovPass++;
-      if (this.ovFilled && this.ovPass < OV_PASSES && this.ovLeft()) this.ovPlan();
+      if (this.ovExh >= OV_MIN_ROOM && this.ovPass < OV_PASSES && this.ovLeft()) this.ovPlan(true);
       else { this.ovStage = 4; this.ovCur = 0; }
       return PH_PROVER;
     }
@@ -3238,14 +3246,14 @@ export class TrafficSystem implements SimSystem {
     this.ovRouteCand = routeCand;
     this.ovRouteW = routeW;
     this.ovPass = 0;
-    this.ovPlan();
+    this.ovPlan(false);
   }
 
   /** the pass's forest is ready: re-decide the records with it (stage 3) */
   private ovStartPass(): void {
     this.ovStage = 3;
     this.ovCur = 0;
-    this.ovFilled = false;
+    this.ovExh = 0;
   }
 
   /** any overflow record with people left */
@@ -3286,24 +3294,32 @@ export class TrafficSystem implements SimSystem {
   }
 
   /**
-   * plan an overflow pass: the seeds (ovSeedOk) — none, or no record left: stage 4 (the rest without park & ride); a
-   * kept forest of the same seeds (the same garages and graph, no seed's ranking minutes moved more than PR_SEED_DRIFT,
-   * younger than PR_SEARCH_EVERY assignments): stage 3; else a fresh OV_K-label search from their road entries (ranking
-   * minutes, free-flow car legs within PR_CAR_LEG_MAX, the congested ones along them for the choices) in a free or the
-   * least recently used cache slot, at most OV_SEARCHES per assignment: stage 1 runs it
+   * plan an overflow pass: the seeds (ovSeedOk) — none, or no record left: stage 4 (the rest without park & ride); a kept
+   * forest seeded at a superset of them (the same garages and graph, younger than PR_SEARCH_EVERY assignments, none of
+   * their ranking minutes moved more than PR_SEED_DRIFT since): its best label at a node of a group with room is the best
+   * of the groups with room there (they are among its seeds), so it serves every record whose node has such a label —
+   * the one with the fewest seeds; `again` (the last pass left people its forest could not serve, ovExh): only one with
+   * fewer seeds than that forest, and a fresh search only when groups filled since (else nothing new: stage 4). Stage 3;
+   * else a fresh OV_K-label search from the seeds' road entries (ranking minutes, free-flow car legs within
+   * PR_CAR_LEG_MAX, the congested ones along them for the choices) in a free or the least recently used cache slot, at
+   * most OV_SEARCHES per assignment: stage 1 runs it. (Rooms only shrink within an assignment: a forest of this
+   * assignment is seeded at a superset of every later pass's groups.)
    */
-  private ovPlan(): void {
+  private ovPlan(again: boolean): void {
     const g = this.road, gN = this.gN;
     this.ovCur = 0;
-    let key = this.prKeyNow + '|' + g.version + '|', any = false;
-    for (let q = 0; q < gN; q++) if (this.ovSeedOk(q)) { key += q + ','; any = true; }
-    if (!any || !this.ovLeft()) { this.ovStage = 4; return; }
+    let nSeed = 0;
+    for (let q = 0; q < gN; q++) if (this.ovSeedOk(q)) nSeed++;
+    if (nSeed === 0 || !this.ovLeft()) { this.ovStage = 4; return; }
+    const key = this.prKeyNow + '|' + g.version;
+    const below = again && this.ovSlot >= 0 && this.ovSlot < this.ov.length ? this.ov[this.ovSlot].nSeed : Infinity;
     let slot = -1;
-    for (let i = 0; i < this.ov.length && slot < 0; i++) {
+    for (let i = 0; i < this.ov.length; i++) {
       const f = this.ov[i];
       if (f.key !== key || f.S.graphVersion !== g.version || f.S.running || this.cycles - f.built >= PR_SEARCH_EVERY) continue;
+      if (f.nSeed >= below || (slot >= 0 && f.nSeed >= this.ov[slot].nSeed) || f.inS.length < gN) continue;
       let ok = true;
-      for (let q = 0; q < gN && ok; q++) if (this.ovSeedOk(q) && Math.abs(this.gRank[q] - f.seed[q]) > PR_SEED_DRIFT) ok = false;
+      for (let q = 0; q < gN && ok; q++) if (this.ovSeedOk(q) && (f.inS[q] !== 1 || Math.abs(this.gRank[q] - f.seed[q]) > PR_SEED_DRIFT)) ok = false;
       if (ok) slot = i;
     }
     if (slot >= 0) {
@@ -3313,9 +3329,10 @@ export class TrafficSystem implements SimSystem {
       this.ovStartPass();
       return;
     }
-    if (this.ovSearches >= OV_SEARCHES) { this.ovStage = 4; return; }
+    // (a fresh search of the same seeds as the forest that left them would find nothing new)
+    if (this.ovSearches >= OV_SEARCHES || nSeed >= below) { this.ovStage = 4; return; }
     if (this.ov.length < OV_CACHE) {
-      this.ov.push({ S: new SearchK(OV_K), key: '', seed: new Float32Array(0), built: -1, alt: -1, used: 0, acc: new Float32Array(0), dirty: false });
+      this.ov.push({ S: new SearchK(OV_K), key: '', seed: new Float32Array(0), inS: new Uint8Array(0), nSeed: 0, built: -1, alt: -1, used: 0, acc: new Float32Array(0), dirty: false });
       slot = this.ov.length - 1;
     } else {
       slot = 0;
@@ -3329,16 +3346,19 @@ export class TrafficSystem implements SimSystem {
     const seeds = this.seeds;
     seeds.clear();
     if (f.seed.length < gN) f.seed = new Float32Array(gN + 16);
+    if (f.inS.length < gN) f.inS = new Uint8Array(gN + 16);
+    else f.inS.fill(0);
     let maxL = 0;
     for (let q = 0; q < gN; q++) {
       if (!this.ovSeedOk(q)) continue;
       const L = this.gRank[q];
       f.seed[q] = L;
+      f.inS[q] = 1;
       for (let e = this.gEntS[q], e1 = e + this.gEntC[q]; e < e1; e++) seeds.push(this.ent[e], L, q);
       if (L > maxL) maxL = L;
     }
     f.S.start(g, g.rev, g.t0, seeds, this.gGrp, Math.min(MAX_COMMUTE, maxL + PR_CAR_LEG_MAX), null, PR_CAR_LEG_MAX, PR_OPTION_MARGIN, this.nodeTime, this.rampT);
-    f.key = key; f.built = f.alt = this.cycles; f.used = ++this.ovTick;
+    f.key = key; f.nSeed = nSeed; f.built = f.alt = this.cycles; f.used = ++this.ovTick;
     if (f.acc.length < OV_K * g.n) f.acc = new Float32Array(OV_K * g.n + 64);
     else f.acc.fill(0, 0, OV_K * g.n);
     this.ovSearches++;
@@ -3347,10 +3367,12 @@ export class TrafficSystem implements SimSystem {
   }
 
   /**
-   * overflow records [from, to) with the current pass's forest: at the origin's road entry with the fastest label, its
-   * groups (fastest first) that still have room, within PR_OPTION_MARGIN of the origin's fastest option and transit
-   * under PR_LIMIT — a mode split with that option, like prRest's levels: the people whose riders fit are decided
-   * (ovCommit), the rest try the next group, the next pass, then go without park & ride (ovRest)
+   * overflow records [from, to) with the current pass's forest: at the origin's road entry whose fastest label of a group
+   * with room is the fastest (none: the entry with the fastest label), its groups (fastest first) that still have room,
+   * within PR_OPTION_MARGIN of the origin's fastest option and transit under PR_LIMIT — a mode split with that option,
+   * like prRest's levels: the people whose riders fit are decided (ovCommit), the rest try the next group, then (ovExh:
+   * the node's labels all within the margin, a group beyond them may have room) a pass with fewer seeds, then go without
+   * park & ride (ovRest)
    */
   private ovAlloc(from: number, to: number): void {
     const f = this.ov[this.ovSlot], S = f.S, KS = S.K, gN = this.gN, grp = this.gGrp, ent = this.ent;
@@ -3360,11 +3382,17 @@ export class TrafficSystem implements SimSystem {
       let y = this.pnY[i];
       if (!(y > 1e-9)) continue;
       const o = this.pnO[i];
-      let v = -1, bd = Infinity;
+      let v = -1, bd = Infinity, v0 = -1, b0 = Infinity;
       for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) {
         const u = ent[e];
-        if (u < n && cnt[u] > 0 && dist[KS * u] < bd) { bd = dist[KS * u]; v = u; }
+        if (u >= n) continue;
+        for (let k = 0, kn = cnt[u]; k < kn; k++) {
+          const s = KS * u + k, q = src[s];
+          if (k === 0 && dist[s] < b0) { b0 = dist[s]; v0 = u; }
+          if (q >= 0 && q < gN && this.prRoom(q) > 1e-6) { if (dist[s] < bd) { bd = dist[s]; v = u; } break; }
+        }
       }
+      if (v < 0) v = v0;
       if (v < 0) continue;
       const lim = this.oPrF0[o] + PR_OPTION_MARGIN;
       this.ovArgs(i);
@@ -3382,9 +3410,12 @@ export class TrafficSystem implements SimSystem {
         this.pnTP[i] = this.mTP;
         this.ovCommit(i, p, fit, q, s, f);
         y -= p;
-        if (fit > 0 && !this.ovSeedOk(q)) this.ovFilled = true;
       }
       this.pnY[i] = y;
+      if (y > 1e-9 && cnt[v] === KS) {
+        const s = KS * v + KS - 1, q = src[s];
+        if (q >= 0 && q < gN && dist[s] - f.seed[q] + this.gRank[q] <= lim) this.ovExh += y;
+      }
     }
   }
 
@@ -4623,10 +4654,13 @@ export class TrafficSystem implements SimSystem {
 /** a cached park & ride overflow forest (r4): an OV_K-label search seeded at the groups that had room */
 interface OvForest {
   S: SearchK;
-  /** the seed garages (indices) and the road graph version; each garage's ranking minutes at the search (its labels
-   *  include them: options use dist - seed + the current ranking minutes) */
+  /** the garages (prKeyNow: their indices) and the road graph version of the search; each seed garage's ranking minutes
+   *  at the search (its labels include them: options use dist - seed + the current ranking minutes), the seeds (1) and
+   *  their count */
   key: string;
   seed: Float32Array<ArrayBuffer>;
+  inS: Uint8Array<ArrayBuffer>;
+  nSeed: number;
   /** assignment of the search, of the last car-leg refresh (alt), of the last use (least recently used goes first) */
   built: number;
   alt: number;
