@@ -212,6 +212,16 @@ export class VehicleRenderer {
    *  keyed by cell * 8 + heading * 2 + lane (entries of other keys sharing a slot are skipped by their usedK key) */
   private head = new Int32Array(0);
   private headShift = 32;
+  /** car following per bucket group (see follow): gap to the leader in the same group (1e9: none), the group's rearmost
+   *  member (the leader of a car entering from behind), group-visited stamps and a scratch list of one group's members */
+  private fgap!: Float64Array;
+  private frear!: Int32Array;
+  private fdone!: Int32Array;
+  private fgrp!: Int32Array;
+  private fstamp = 0;
+  /** 1 = the vehicle's instance matrix holds its pose for its current cell path and arc length (a stopped car is not
+   *  re-posed); cleared on a new path (planCell) and by the rolling cell refresh (terrain / surface edits) */
+  private posed!: Uint8Array;
   // spawn distribution
   private spawnCells = new Int32Array(0);
   private spawnCdf = new Float32Array(0);
@@ -305,6 +315,12 @@ export class VehicleRenderer {
     this.vtile = new Int32Array(cap);
     this.vcs = new Float64Array(cap * 2);
     this.vsg = new Float64Array(cap);
+    this.fgap = new Float64Array(cap);
+    this.frear = new Int32Array(cap);
+    this.fdone = new Int32Array(cap);
+    this.fgrp = new Int32Array(cap);
+    this.fstamp = 0;
+    this.posed = new Uint8Array(cap);
     this.cellsDirty = true;
     // zoom-thinning rank per slot: golden-ratio sequence, evenly spread for any prefix of slots (v * phi mod 1)
     this.rank = new Float64Array(cap);
@@ -576,6 +592,7 @@ export class VehicleRenderer {
     this.len[v] = this.pathLen(hi, ho, this.oin[v], this.oout[v]);
     this.cachePath(v);
     this.noteCell(v);
+    this.posed[v] = 0;
     return true;
   }
 
@@ -595,18 +612,22 @@ export class VehicleRenderer {
   }
 
   /** refresh the cell caches: all of them after invalidate() (network / traffic changed), else a rolling slice so every
-   *  vehicle is refreshed at least every 32 frames (congestion / signal / tunnel changes without an invalidate()) */
+   *  vehicle is refreshed at least every 32 frames (congestion / signal / tunnel changes without an invalidate()). The
+   *  refreshed vehicles are also re-posed (a stopped car keeps its matrix otherwise: terrain / road surface edits) */
   private refreshCells(): void {
     const n = this.n;
     if (n === 0) return;
+    const posed = this.posed;
     if (this.cellsDirty) {
       this.cellsDirty = false;
       for (let v = 0; v < n; v++) this.noteCell(v);
+      posed.fill(0);
       return;
     }
     let v = this.refreshAt;
     for (let k = Math.ceil(n / 32); k > 0; k--) {
       if (v >= n) v = 0;
+      posed[v] = 0;
       this.noteCell(v++);
     }
     this.refreshAt = v;
@@ -745,7 +766,7 @@ export class VehicleRenderer {
       this.t[v] = this.t[last]; this.len[v] = this.len[last]; this.oin[v] = this.oin[last]; this.oout[v] = this.oout[last];
       this.spd[v] = this.spd[last]; this.vfac[v] = this.vfac[last]; this.vlen[v] = this.vlen[last]; this.kind[v] = this.kind[last];
       this.inst[v] = this.inst[last]; this.vroute[v] = this.vroute[last]; this.ridx[v] = this.ridx[last]; this.life[v] = this.life[last];
-      this.next[v] = this.next[last]; this.vis[v] = this.vis[last];
+      this.next[v] = this.next[last]; this.vis[v] = this.vis[last]; this.posed[v] = this.posed[last];
       this.ptype[v] = this.ptype[last];
       this.pp.copyWithin(v * 8, last * 8, last * 8 + 8);
       this.vtile[v] = this.vtile[last];
@@ -889,9 +910,9 @@ export class VehicleRenderer {
     this.refreshCells();
     this.follow(dt);
     const night = sharedUniforms.uNight.value > 0.2;
-    const shown = this.poseCars(dt, camera, heightPx, night) + this.poseTrains(dt, camera, heightPx);
+    const written = this.poseCars(dt, camera, heightPx, night) + this.poseTrains(dt, camera, heightPx);
     // nothing visible moved -> no upload, no shadow-map invalidation
-    if (shown > 0) this.batch.markMatricesDirty();
+    if (written > 0) this.batch.markMatricesDirty();
     // (poseCars copies headlights at night only: headCount is 0 by day)
     const hl = this.headlights, hc = this.headCount;
     hl.count = hc;
@@ -956,7 +977,14 @@ export class VehicleRenderer {
   }
   private activeRoutes = new Set<TrafficRoute>();
 
-  /** car following (queues per cell / heading / lane bucket), 2-phase signals, congestion: target speeds -> spd */
+  /**
+   * Car following (queues per cell / heading / lane bucket), 2-phase signals, congestion: target speeds -> spd.
+   * A car's leader is the car ahead of it in its group (same bucket key) whose rear is nearest (the smallest t - len / 2
+   * among the cars ahead); a group's front car follows the rearmost car of the group in its next cell. Each group is
+   * collected once and ordered by (t, slot) (insertion sort: groups hold a few cars), and one pass from its front keeps
+   * the running nearest rear: O(cars) per frame instead of every car scanning its whole bucket (queues of 10-25 cars
+   * in congested cities). Same gaps (and arithmetic) as testing every pair.
+   */
   private follow(dt: number): void {
     const n = this.n;
     const head = this.head, nextB = this.nextB, used = this.usedK, sh = this.headShift;
@@ -969,30 +997,52 @@ export class VehicleRenderer {
       head[hk] = v;
       used[v] = key;
     }
+    // per group: gap to the leader (fgap) and the group's rearmost car (frear)
+    const fgap = this.fgap, frear = this.frear, done = this.fdone, grp = this.fgrp;
+    if (this.fstamp >= 0x3fffffff) { this.fstamp = 0; done.fill(0); }
+    const stamp = ++this.fstamp;
+    for (let v = 0; v < n; v++) {
+      if (done[v] === stamp) continue;
+      const key = used[v];
+      let m = 0;
+      for (let j = head[Math.imul(key, 0x9e3779b1) >>> sh]; j >= 0; j = nextB[j]) {
+        if (used[j] !== key) continue;
+        // insert by (t, slot): "ahead" = later in this order (equal t: the higher slot is ahead)
+        const tj = tt[j];
+        let i = m++;
+        while (i > 0) {
+          const p = grp[i - 1], tp = tt[p];
+          if (tp > tj || (tp === tj && p > j)) { grp[i] = p; i--; } else break;
+        }
+        grp[i] = j;
+      }
+      let best = -1, bestB = Infinity;
+      for (let i = m - 1; i >= 0; i--) {
+        const j = grp[i];
+        done[j] = stamp;
+        fgap[j] = best >= 0 ? tt[best] - tt[j] - vlen[j] * 0.5 - vlen[best] * 0.5 : 1e9;
+        const b = tt[j] - vlen[j] * 0.5;
+        if (b < bestB) { bestB = b; best = j; }
+      }
+      for (let i = 0; i < m; i++) frear[grp[i]] = best;
+    }
     // signal clock: the lamp shader's uSignalTime (materials.ts Emissive pattern 13)
     const tmod = this.time % 30;
     const vfac = this.vfac, spd = this.spd, vcs = this.vcs, vsg = this.vsg;
     for (let v = 0; v < n; v++) {
       const tv = tt[v];
       const lv = vlen[v] * 0.5;
-      let gap = 1e9;
-      const key = used[v];
-      for (let j = head[Math.imul(key, 0x9e3779b1) >>> sh]; j >= 0; j = nextB[j]) {
-        if (j === v || used[j] !== key) continue;
-        const tj = tt[j];
-        if (tj > tv || (tj === tv && j > v)) {
-          const g = tj - tv - lv - vlen[j] * 0.5;
-          if (g < gap) gap = g;
-        }
-      }
+      let gap = fgap[v];
       const nc = next[v];
       if (gap > 30 && nc >= 0) {
+        // the next cell's group (any member names its rearmost car)
         const key2 = nc * 8 + hout[v] * 2 + (lane[v] & 1);
-        const rem = len[v] - tv;
         for (let j = head[Math.imul(key2, 0x9e3779b1) >>> sh]; j >= 0; j = nextB[j]) {
           if (used[j] !== key2) continue;
-          const g = rem + tt[j] - lv - vlen[j] * 0.5;
+          const r = frear[j];
+          const g = len[v] - tv + tt[r] - lv - vlen[r] * 0.5;
           if (g < gap) gap = g;
+          break;
         }
       }
       // signals: stop at the end of this cell if the next cell is a red intersection (its phase offset: noteCell)
@@ -1034,8 +1084,9 @@ export class VehicleRenderer {
 
   /**
    * Move every road vehicle along its path (cell transitions, respawns), cull (tile visibility, tunnels, zoom thinning
-   * relaxed by projected size) and write the visible ones' matrices / headlights. Returns the number drawn. A vehicle
-   * in a hidden tile (or a tunnel) only advances: its pose is evaluated only where it can be drawn.
+   * relaxed by projected size) and write the visible ones' matrices / headlights. Returns the number of matrices
+   * written. A vehicle in a hidden tile (or a tunnel) only advances: its pose is evaluated only where it can be drawn,
+   * and a car that did not move (queues, red lights: most cars of a congested city) keeps the matrix it has (posed).
    * Zoom thinning by camera height (classic rule), relaxed by projected size: a vehicle of length L at distance d spans
    * L * K / d px (K = H / (2 tan(fov / 2))); one the classic rule drops is still drawn while it spans >= thinPx (every
    * 2nd one >= hidePx).
@@ -1056,11 +1107,12 @@ export class VehicleRenderer {
     // (classic rule keeps every vehicle and no distance cap: no distance needed)
     const all = keep >= 1 && D2 === Infinity;
     const life = this.life, tt = this.t, spd = this.spd, len = this.len, vlen = this.vlen, inst = this.inst, vis = this.vis, rank = this.rank;
-    const vtile = this.vtile;
-    let shown = 0;
+    const vtile = this.vtile, posed = this.posed;
+    let written = 0;
     for (let v = 0; v < this.n; v++) {
       life[v] -= dt;
-      let t = tt[v] + spd[v] * dt;
+      const t0 = tt[v];
+      let t = t0 + spd[v] * dt;
       let ok = true;
       let guard = 0;
       while (t >= len[v] && guard++ < 4) {
@@ -1074,14 +1126,19 @@ export class VehicleRenderer {
         t = tt[v];
       }
       tt[v] = t;
+      // moved (also while hidden): the matrix no longer holds its pose (a new path cleared it already)
+      if (t !== t0) posed[v] = 0;
+      // the matrix holds this exact pose (a car that stood still since it was last posed): no evaluation needed unless
+      // the thinning needs its position
+      const keepPose = posed[v] === 1;
       // the culler tile of its cell (-1 in a tunnel)
       const tl = vtile[v];
       let show = 0;
       if (tl >= 0 && tileVis[tl] === 1) {
-        _p[4] = t;
-        this.evalCached(v);
         if (all) show = 1;
         else {
+          _p[4] = t;
+          this.evalCached(v);
           const ddx = _p[0] - cpx, ddz = _p[1] - cpz, d2 = ddx * ddx + ddz * ddz + cpy2;
           const L = vlen[v], lh = L * kh, lt = L * kt;
           show = d2 < D2 && (rank[v] < keep || (d2 < lh * lh && (d2 < lt * lt || (v & 1) === 0))) ? 1 : 0;
@@ -1089,16 +1146,21 @@ export class VehicleRenderer {
       }
       if (show !== vis[v]) { vis[v] = show; this.batch.setVisible(inst[v], show === 1); }
       if (!show) continue;
-      shown++;
-      const x = _p[0], z = _p[1], fx = _p[2], fz = _p[3];
-      const half = vlen[v] * 0.4;
-      // (heading-aware: cars crossing under a highway overpass stay on the ground, highway traffic rides the deck)
-      _p[4] = half;
-      this.surfPair(true);
-      const yF = _p[6], yB = _p[7];
-      _m[0] = x; _m[1] = (yF + yB) * 0.5; _m[2] = z; _m[3] = fx; _m[4] = (yF - yB) / (2 * half); _m[5] = fz;
       const s = inst[v] * 16;
-      this.writeMatrix(data, s);
+      if (!keepPose) {
+        if (all) { _p[4] = t; this.evalCached(v); }
+        const x = _p[0], z = _p[1], fx = _p[2], fz = _p[3];
+        const half = vlen[v] * 0.4;
+        // (heading-aware: cars crossing under a highway overpass stay on the ground, highway traffic rides the deck)
+        _p[4] = half;
+        this.surfPair(true);
+        const yF = _p[6], yB = _p[7];
+        _m[0] = x; _m[1] = (yF + yB) * 0.5; _m[2] = z; _m[3] = fx; _m[4] = (yF - yB) / (2 * half); _m[5] = fz;
+        this.writeMatrix(data, s);
+        written++;
+        // posed at the stored arc length (t is a double, the store a float: next frame evaluates the stored one)
+        posed[v] = tt[v] === t ? 1 : 0;
+      }
       if (night && hc < headCap) {
         const o = hc * 16;
         for (let k = 0; k < 16; k++) hm[o + k] = data[s + k];
@@ -1106,7 +1168,7 @@ export class VehicleRenderer {
       }
     }
     this.headCount = hc;
-    return shown;
+    return written;
   }
 
   /** advance, cull and pose the trains (loco + cars along the path history); returns the number of cars drawn */

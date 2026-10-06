@@ -306,7 +306,8 @@ export function accumulate(S: Search, acc: Float32Array | Float64Array, onSink?:
  * at every node whose path runs through it). A move whose free-flow minutes (g.t0, interchange RAMP_BY_NET) from the
  * seed would exceed ffMax is dropped (the car leg limit), so a node's labels come from garages within reach. Along each
  * label's path the search also adds up `time2` / `ramp2` (alt: park & ride ranks by free-flow minutes — options that do
- * not move with congestion — and chooses by the congested minutes alt; refreshAlt() renews them on a kept forest). Dial
+ * not move with congestion — and chooses by the congested minutes alt; refreshAlt() renews them on a kept forest, or
+ * markAlt() + altAt() on demand along the parent chains of the states used). Dial
  * buckets with the entry payload; labels within one bucket width (< 0.04 min) may settle in either order. Resumable:
  * start() then run(maxStates) until it returns true (the caller spreads a big search over scheduler steps; nothing the
  * search reads may change between).
@@ -334,6 +335,10 @@ export class SearchK {
   graphVersion = -1;
   /** a started search has buckets left (run() continues it) */
   running = false;
+  /** lazy alt: the states whose alt is of the current time2 / ramp2 (= altTick; settling stamps them), a chain buffer */
+  private altStamp: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private altTick = 0;
+  private altPath: Int32Array<ArrayBuffer> = new Int32Array(64);
   /** tentative best labels of K distinct groups per node (K v .. K v + K - 1, ascending): pruning */
   private tb: Float32Array<ArrayBuffer> = new Float32Array(0);
   private tg: Int32Array<ArrayBuffer> = new Int32Array(0);
@@ -374,6 +379,7 @@ export class SearchK {
       this.dist = new Float32Array(K * c); this.src = new Int32Array(K * c); this.grp = new Int32Array(K * c);
       this.next = new Int32Array(K * c); this.ff = new Float32Array(K * c); this.alt = new Float32Array(K * c); this.order = new Int32Array(K * c);
       this.node = new Int32Array(K * c);
+      this.altStamp = new Int32Array(K * c);
       this.tb = new Float32Array(K * c); this.tg = new Int32Array(K * c);
       this.cnt = new Uint8Array(c);
     }
@@ -450,6 +456,7 @@ export class SearchK {
       if (this.offer(v, l, groupOf[id])) this.push((l * invQ) | 0, v, id, -1, l, 0, 0);
     }
     this.running = true;
+    this.nextAltTick();
   }
 
   /** settle at most maxStates more states; true = the search is complete */
@@ -459,7 +466,7 @@ export class SearchK {
     const time2 = this.time2, ramp2 = this.ramp2;
     const limit = this.limit, ffMax = this.ffMax, margin = this.margin, nb = this.nb, invQ = 1 / Q;
     const dist = this.dist, src = this.src, grp = this.grp, next = this.next, ff = this.ff, alt = this.alt, cnt = this.cnt, order = this.order;
-    const snode = this.node;
+    const snode = this.node, altStamp = this.altStamp, altTick = this.altTick;
     const type = g.type, t0 = g.t0, HW = Network.Highway, head = this.head;
     let m = this.settled, b = this.b, e = this.e;
     const stop = m + maxStates;
@@ -480,7 +487,7 @@ export class SearchK {
         }
         const s = bu + c0;
         cnt[u] = c0 + 1;
-        dist[s] = key; src[s] = q; grp[s] = gr; next[s] = par; ff[s] = fu; alt[s] = au; snode[s] = u;
+        dist[s] = key; src[s] = q; grp[s] = gr; next[s] = par; ff[s] = fu; alt[s] = au; snode[s] = u; altStamp[s] = altTick;
         order[m++] = s;
         const tu = time[u], fu0 = t0[u], tu2 = time2 !== null ? time2[u] : 0;
         const hu = type[u] === HW;
@@ -519,6 +526,9 @@ export class SearchK {
     if (!g || this.running) return;
     const order = this.order, next = this.next, alt = this.alt, snode = this.node, type = g.type, HW = Network.Highway;
     this.time2 = time2; this.ramp2 = ramp2;
+    this.nextAltTick();
+    const altStamp = this.altStamp, tick = this.altTick;
+    for (let k = 0, n = this.settled; k < n; k++) altStamp[order[k]] = tick;
     for (let k = 0, n = this.settled; k < n; k++) {
       const s = order[k], p = next[s];
       if (p < 0) { alt[s] = 0; continue; }
@@ -528,6 +538,44 @@ export class SearchK {
       if ((tu === HW) !== (tv === HW)) { const r = tu === HW ? v : u; c += ramp2 === null ? (RAMP_BY_NET[type[r]] ?? RAMP_PENALTY) : ramp2[r]; }
       alt[s] = c;
     }
+  }
+
+  /** new time2 / ramp2 for alt on a kept forest, renewed on demand (altAt): a caller that reads few states' alt skips
+   *  refreshAlt's pass over the whole forest */
+  markAlt(time2: Float32Array, ramp2: Float32Array | null): void {
+    if (!this.g || this.running) return;
+    this.time2 = time2; this.ramp2 = ramp2;
+    this.nextAltTick();
+  }
+
+  /** alt of settled state s with the time2 / ramp2 of the last search, refreshAlt or markAlt (its parent chain renewed
+   *  up to the first current state; the same sums as refreshAlt) */
+  altAt(s: number): number {
+    const altStamp = this.altStamp, tick = this.altTick, alt = this.alt;
+    if (altStamp[s] === tick) return alt[s];
+    const g = this.g!, next = this.next, snode = this.node, type = g.type, HW = Network.Highway, time2 = this.time2, ramp2 = this.ramp2;
+    // (the chain from s up to a current state or a seed, then down again)
+    let path = this.altPath, n = 0, x = s;
+    while (x >= 0 && altStamp[x] !== tick) {
+      if (n >= path.length) { const b = new Int32Array(path.length * 2); b.set(path); path = this.altPath = b; }
+      path[n++] = x;
+      x = next[x];
+    }
+    for (let i = n - 1; i >= 0; i--) {
+      const t = path[i], p = next[t];
+      if (p < 0 || time2 === null) { alt[t] = 0; altStamp[t] = tick; continue; }
+      const v = snode[t], u = snode[p];
+      let c = alt[p] + 0.5 * (time2[u] + time2[v]);
+      const tu = type[u], tv = type[v];
+      if ((tu === HW) !== (tv === HW)) { const r = tu === HW ? v : u; c += ramp2 === null ? (RAMP_BY_NET[type[r]] ?? RAMP_PENALTY) : ramp2[r]; }
+      alt[t] = c;
+      altStamp[t] = tick;
+    }
+    return alt[s];
+  }
+
+  private nextAltTick(): void {
+    if (++this.altTick >= 0x3fffffff) { this.altStamp.fill(0); this.altTick = 1; }
   }
 }
 

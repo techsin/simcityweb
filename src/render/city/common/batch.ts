@@ -51,10 +51,13 @@ interface PassSlot {
   /** draw list (grown on demand: sized to the lists, not the batch capacity) */
   starts: Int32Array;
   counts: Int32Array;
-  /** instance ids of the list (copied into the indirect texture, which is sized to the list, not the capacity) */
+  /** instance ids of the list (copied into the indirect texture, which is sized to the lists, not the capacity; its data
+   *  mirrors the GPU copy, see syncIds) */
   ids: Uint32Array;
   tex: THREE.DataTexture;
   texCap: number;
+  /** builds in a row whose list used under a quarter of the texture (it shrinks after SHRINK_AFTER) */
+  small: number;
   count: number;
   version: number;
   /** swap-log position (DynamicBatch.swapSeq) the list's draw ranges are current for (see setGeometry) */
@@ -177,8 +180,10 @@ const MAX_RANGES = 96;
  *  more than 1 / SWAP_FULL of its length, rewrites all its draw ranges instead of patching the swapped entries */
 const SWAP_RING = 4096;
 const SWAP_FULL = 4;
-/** width (ids per row) of the per-pass indirect textures (WebGL2 guarantees 2048 texels) */
-const ID_ROW = 2048;
+/** width (ids per row) of the per-pass indirect textures: uploads are whole rows (see syncIds), 2 KB each */
+const ID_W = 512;
+/** a pass list's indirect texture shrinks only after this many builds in a row that used under a quarter of it */
+const SHRINK_AFTER = 180;
 let _frame = 0;
 
 /** unit axes (columns 0-2) of a world matrix -> out[9] */
@@ -763,7 +768,7 @@ export class DynamicBatch {
         old.tex?.dispose();
       }
       s = {
-        camera, starts: new Int32Array(64), counts: new Int32Array(64), ids: new Uint32Array(64), tex: null as unknown as THREE.DataTexture, texCap: 0, count: 0,
+        camera, starts: new Int32Array(64), counts: new Int32Array(64), ids: new Uint32Array(64), tex: null as unknown as THREE.DataTexture, texCap: 0, small: 0, count: 0,
         version: -1, swapAt: 0, gen: 0, posGen: -1, pos: new Int32Array(0),
         selT: new Int32Array(64), selV: new Uint32Array(64), selO: new Int32Array(64), selN: 0, selEnd: 0, selMinR: 0, selValid: false, used: 0,
         shape: new Float64Array(6), rot: new Float64Array(9), tiltOk: 0, nearB: 0, farB: 0, texel: -1, px: 0, py: 0, pz: 0, margin: 0, banded: false,
@@ -884,7 +889,7 @@ export class DynamicBatch {
         s.rdn = s.banded ? recv.dn * 0.5 : recv.dn;
         s.rdf = s.banded ? recv.df * 1.1 : recv.df;
       }
-      this.build(s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, recv, tilt, phi, rtilt, reach > this.farReach);
+      this.build(renderer, s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, recv, tilt, phi, rtilt, reach > this.farReach);
     } else {
       s.uses++;
       if (s.swapAt !== this.swapSeq) this.patchRanges(s, geometry);
@@ -942,7 +947,7 @@ export class DynamicBatch {
    * keeps the whole list and skips the upload (a view that pans / turns / zooms without moving a tile boundary across
    * the frustum rebuilds nothing).
    */
-  private build(s: PassSlot, cascade: number, texel: number, geometry: THREE.BufferGeometry, recv: ShadowReceiver | null, tilt: number, phi: number, rtilt: number, far = false): void {
+  private build(renderer: THREE.WebGLRenderer, s: PassSlot, cascade: number, texel: number, geometry: THREE.BufferGeometry, recv: ShadowReceiver | null, tilt: number, phi: number, rtilt: number, far = false): void {
     const pc = this.pc!;
     const m = this.mesh as any;
     // the list about to be rebuilt may keep a prefix: bring its draw ranges up to date first
@@ -953,6 +958,8 @@ export class DynamicBatch {
     s.gen++;
     let n = 0;
     let keep = false;
+    /** leading entries known to be unchanged since the last build (a kept prefix of tile blocks) */
+    let pre = 0;
     const dyn = pc.dynamic;
     const sorted = cascade < 0 && this.sortFront && !dyn && !far;
     const coarse = pc.coarse === true || far;
@@ -1032,7 +1039,7 @@ export class DynamicBatch {
             // unchanged block of the previous selection, still in place
             if (kind !== 2 && k < s.selN && s.selT[k] === tag && s.selV[k] === ver) { k++; continue; }
             match = false;
-            n = k < s.selN ? s.selO[k] : s.selEnd;
+            n = pre = k < s.selN ? s.selO[k] : s.selEnd;
           }
           if (reuse) {
             if (k >= s.selT.length) this.growSel(s, k + 1);
@@ -1057,7 +1064,7 @@ export class DynamicBatch {
         // every selected tile matched the previous selection: the same blocks (all of them: nothing to upload, or a
         // shorter prefix: the list is cut)
         keep = k === s.selN && this.untiled.length === 0;
-        n = k < s.selN ? s.selO[k] : s.selEnd;
+        n = pre = k < s.selN ? s.selO[k] : s.selEnd;
       }
       if (reuse) { s.selN = k; s.selEnd = n; s.selMinR = minR; s.selValid = true; } else s.selValid = false;
       const un = dyn ? this.untiledVis : this.untiled.length;
@@ -1069,30 +1076,53 @@ export class DynamicBatch {
       if (sorted && n > 1) this.sortList(s, n);
     } else s.selValid = false;
     if (keep && s.tex && n === s.count) return;
-    const prevN = s.count;
     s.count = n;
-    // indirect (instance id) texture: rows of ID_ROW ids, as many as the list needs plus slack (grown / shrunk with
-    // hysteresis), uploaded whole in one call: a rebuild uploads about the list, not a square power-of-two texture,
-    // let alone the batch's instance capacity; a rebuild that produced the same ids (vehicles: the visible set rarely
-    // changes between frames) uploads nothing.
-    const rows = Math.max(1, Math.ceil(n / ID_ROW));
-    let fresh = false;
-    if (!s.tex || s.texCap < rows * ID_ROW || s.texCap > (rows * 2 + 1) * ID_ROW) {
+    this.syncIds(renderer, s, n, Math.min(pre, n));
+  }
+
+  /**
+   * The list's indirect (instance id) texture: rows of ID_W ids, kept at its high-water size (grown with 50% slack;
+   * shrunk only once the lists stayed under a quarter of it for SHRINK_AFTER builds, so zooming does not re-create it).
+   * Its data mirrors the GPU copy: only the rows from the first id that differs (at or after `from`, a prefix the build
+   * kept) to the end of the list are uploaded, with one texSubImage2D straight into the existing texture (three.js
+   * would re-upload the whole texture and re-set its sampler parameters); an unchanged list uploads nothing. A texture
+   * three.js has not uploaded yet (new, or an upload pending) goes through three.js.
+   */
+  private syncIds(renderer: THREE.WebGLRenderer, s: PassSlot, n: number, from: number): void {
+    const cap = s.texCap;
+    let fresh = s.tex === null || cap < n;
+    if (!fresh) {
+      if (n * 4 < cap && cap > ID_W) fresh = ++s.small > SHRINK_AFTER;
+      else s.small = 0;
+    }
+    if (fresh) {
+      s.small = 0;
       s.tex?.dispose();
-      const h = Math.ceil(rows * 1.25);
-      s.tex = new THREE.DataTexture(new Uint32Array(ID_ROW * h), ID_ROW, h, THREE.RedIntegerFormat, THREE.UnsignedIntType);
-      s.texCap = ID_ROW * h;
-      fresh = true;
+      const rows = Math.max(1, Math.ceil((n * 1.5) / ID_W));
+      s.tex = new THREE.DataTexture(new Uint32Array(ID_W * rows), ID_W, rows, THREE.RedIntegerFormat, THREE.UnsignedIntType);
+      s.texCap = ID_W * rows;
+      from = 0;
     }
     const tex = s.tex;
     const data = tex.image.data as unknown as Uint32Array, ids = s.ids;
-    if (!fresh && n === prevN) {
-      let j = 0;
-      while (j < n && data[j] === ids[j]) j++;
-      if (j === n) return;
-    }
-    data.set(ids.subarray(0, n));
-    if (n > 0 || fresh) tex.needsUpdate = true;
+    let j = from;
+    if (!fresh) while (j < n && data[j] === ids[j]) j++;
+    if (j >= n) { if (fresh) tex.needsUpdate = true; return; }
+    for (let i = j; i < n; i++) data[i] = ids[i];
+    if (fresh) { tex.needsUpdate = true; return; }
+    // (stub renderers in tests have no GL state: whole upload)
+    const props = renderer.properties ? (renderer.properties.get(tex) as { __webglTexture?: WebGLTexture; __version?: number }) : undefined;
+    if (props === undefined || props.__webglTexture === undefined || props.__version !== tex.version) { tex.needsUpdate = true; return; }
+    const gl = renderer.getContext() as WebGL2RenderingContext, st = renderer.state;
+    const r0 = (j / ID_W) | 0, r1 = ((n - 1) / ID_W) | 0;
+    st.bindTexture(gl.TEXTURE_2D, props.__webglTexture);
+    st.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    st.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    st.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    st.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    st.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+    st.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, ID_W, r1 - r0 + 1, gl.RED_INTEGER, gl.UNSIGNED_INT, data, r0 * ID_W);
   }
 
   /** (re)fill tile ti's block for pass class ck % 3: its visible instances with the cascade bit, and their ranges */
