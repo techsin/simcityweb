@@ -8,8 +8,11 @@
  *  - building LOD scheduled by camera travel: never on the wrong side of a swap distance (after a camera cut the
  *    downgrades may trail by a few catch-up frames, upgrades never), no work while still; cut frames stay cheap
  *  - building LOD cross-fade: swaps in view dissolve over fadeTime (complementary levels in the fade layer, empty
- *    stand-in in the batch), reverse mid-fade, instant on cuts / flushes / off-screen
- *  - burnt multi-cell lots are tiled one rubble tile per cell; hill lots get real-size stone skirts
+ *    stand-in in the batch), reverse mid-fade, instant on cuts / flushes / off-screen; a zoom-out's dissolve is over by
+ *    the instant-swap distance; fast pans / orbits swap at once (motion cap); the fade program compiles after the first
+ *    frame, asynchronously
+ *  - burnt multi-cell lots are composed from the rubble kit (one bed over the lot, following rising ground exactly;
+ *    debris pieces off the cell grid with low-poly proxies); hill lots get real-size stone skirts, a plain box far away
  *  - shadow receivers only bump their version when the volume really changes
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -527,13 +530,16 @@ describe('building LOD cross-fade', () => {
     st.heights.fill(0);
     const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
     br.lodBudgetMs = 1e9;
+    // (the fade program counts as compiled: no renderer here, see 'compiles the fade program ...')
+    br.fadeReady = true;
     br.add({ id: 1, def: 'res_apartment', x: 30, z: 30, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
     const bi = (br as unknown as { list: BI[] }).list[0];
     const layer = (br as unknown as { fadeLayer: Slots }).fadeLayer;
     const info = (br.batch.mesh as unknown as { _instanceInfo: { geometryIndex: number }[] })._instanceInfo;
     const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 20000);
     const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
-    const dOn = (bi.radius * K) / (br.lodPixels * 0.88), dOff = (bi.radius * K) / (br.lodPixels * 1.12);
+    // downgrade distance while swaps may fade (the dissolve starts at fadeOn x lodPixels), upgrade distance (1.12 x)
+    const dOn = (bi.radius * K) / (br.lodPixels * br.fadeOn), dOff = (bi.radius * K) / (br.lodPixels * 1.12);
     const dir = new THREE.Vector3(-1, 0.7, -1).normalize();
     const target = new THREE.Vector3(bi.vis.cx, bi.cy, bi.vis.cz);
     /** camera at distance d from the building, looking at it (away = looking the other way) */
@@ -762,6 +768,7 @@ describe('building LOD cross-fade', () => {
       const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
       st.heights.fill(0);
       const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
+      br.fadeReady = true;
       // worker stand-in: proxies arrive only when the test delivers them
       const asked: { geo: THREE.BufferGeometry; done: (g: THREE.BufferGeometry | null) => void }[] = [];
       (br as unknown as { proxies: unknown }).proxies = { available: true, request: (_k: string, geo: THREE.BufferGeometry, done: (g: THREE.BufferGeometry | null) => void) => asked.push({ geo, done }) };
@@ -818,6 +825,123 @@ describe('building LOD cross-fade', () => {
     expect(c.maxStep).toBeLessThanOrEqual(16);
     expect(c.frames).toBeGreaterThanOrEqual(Math.ceil(150 / 16));
   });
+
+  it('starts a downgrade dissolve at fadeOn x lodPixels and has it over by the instant-swap distance in a zoom-out', () => {
+    const { br, bi, dOn, at, glide } = setup();
+    // the instant swap's distance (0.88 x lodPixels): a zoom-out never draws the full model beyond it
+    const dInstant = (dOn * br.fadeOn) / 0.88;
+    for (const rate of [1.002, 1.01, 1.03]) {
+      at(dOn * 0.5);
+      br.update(1);
+      glide(dOn * 0.97);
+      let d = dOn * 0.97, started = -1, over = -1;
+      // frame loop order: camera, update, LOD
+      for (let k = 0; k < 400 && over < 0; k++) {
+        d *= rate;
+        at(d);
+        br.update(1 / 60);
+        if (started < 0 && bi.lod === 1) started = d;
+        if (started > 0 && br.fading === 0) over = d;
+      }
+      expect(started / dOn).toBeLessThan(rate + 1e-6);
+      expect(over).toBeGreaterThan(started);
+      expect(over).toBeLessThan(dInstant * rate * 1.02);
+    }
+  });
+
+  it('caps the concurrent fades by the view motion: a slow orbit dissolves its swaps, a fast one swaps at once', () => {
+    const { br, bi, dOn } = setup();
+    const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 20000);
+    // orbiting a point 0.2 dOn beside the building: its distance swings across both swap distances every revolution
+    const C = new THREE.Vector3(bi.vis.cx + dOn * 0.2, 0, bi.vis.cz);
+    let a = 0;
+    const orbit = (deg: number, frames: number) => {
+      let swaps = 0, faded = 0, lod = bi.lod;
+      for (let i = 0; i < frames; i++) {
+        a += (deg * Math.PI) / 180;
+        cam.position.set(C.x + Math.cos(a) * dOn * 0.95, dOn * 0.3, C.z + Math.sin(a) * dOn * 0.95);
+        cam.lookAt(C);
+        cam.updateMatrixWorld();
+        br.updateLod(cam, 720);
+        if (bi.lod !== lod) { swaps++; if (br.fading > 0) faded++; lod = bi.lod; }
+        br.update(1 / 60);
+      }
+      return { swaps, faded };
+    };
+    // (the building's first level is applied at once)
+    orbit(0.25, 4);
+    // 0.25 deg / frame (15 deg/s): every swap dissolves
+    const slow = orbit(0.25, 1440);
+    expect(slow.swaps).toBeGreaterThanOrEqual(2);
+    expect(slow.faded).toBe(slow.swaps);
+    // 4 deg / frame (240 deg/s): the view changes wholesale, every swap is instant
+    br.flushLod();
+    const fast = orbit(4, 180);
+    expect(fast.swaps).toBeGreaterThanOrEqual(2);
+    expect(fast.faded).toBe(0);
+  });
+
+  it('compiles the fade program asynchronously after the first frame that drew the buildings (not at load), fading only from then on', async () => {
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
+    st.heights.fill(0);
+    const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
+    br.lodBudgetMs = 1e9;
+    br.add({ id: 1, def: 'res_apartment', x: 30, z: 30, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
+    type L = { lod: number; radius: number; cy: number; vis: { cx: number; cz: number } };
+    const bi = (br as unknown as { list: L[] }).list[0];
+    const layer = (br as unknown as { fadeLayer: { mesh: THREE.BatchedMesh } }).fadeLayer;
+    // not in the scene graph: the load-time precompile (PostFX.compileScene) does not compile it
+    expect(layer.mesh.parent).toBe(null);
+    expect(br.fadeReady).toBe(false);
+    const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 20000);
+    const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
+    const dOn = (bi.radius * K) / (br.lodPixels * br.fadeOn);
+    const target = new THREE.Vector3(bi.vis.cx, bi.cy, bi.vis.cz), dir = new THREE.Vector3(-1, 0.7, -1).normalize();
+    const at = (d: number) => { cam.position.copy(target).addScaledVector(dir, d); cam.lookAt(target); cam.updateMatrixWorld(); br.updateLod(cam, H); };
+    const glide = (from: number, to: number) => { for (let d = from; Math.abs(d - to) > 1e-6; d += Math.max(-5, Math.min(5, to - d))) at(d); at(to); };
+    // before any frame: swaps are instant
+    glide(dOn * 0.5, dOn * 1.1);
+    expect(bi.lod).toBe(1);
+    expect(br.fading).toBe(0);
+    // the first scene pass that draws the building batch (inside the post-processing scene target)
+    const sceneRT = new THREE.WebGLRenderTarget(4, 4);
+    let bound: THREE.WebGLRenderTarget | null = sceneRT;
+    const calls: [THREE.Object3D, THREE.WebGLRenderTarget | null, THREE.Object3D][] = [];
+    let release = () => {};
+    const renderer = {
+      info: { render: { frame: 1 } },
+      getRenderTarget: () => bound,
+      setRenderTarget: (t: THREE.WebGLRenderTarget | null) => { bound = t; },
+      compileAsync: (obj: THREE.Object3D, _c: THREE.Camera, scene: THREE.Object3D) => { calls.push([obj, bound, scene]); return new Promise((r) => { release = () => r(obj); }); },
+    };
+    const scene = new THREE.Scene();
+    scene.add(br.batch.mesh);
+    br.batch.mesh.onBeforeRender(renderer as unknown as THREE.WebGLRenderer, scene, cam, br.batch.mesh.geometry, br.batch.mesh.material as THREE.Material, null as unknown as THREE.Group);
+    bound = null;
+    // no compile inside the render itself; the next update starts it with the scene target bound, then restores
+    expect(calls.length).toBe(0);
+    at(dOn * 1.1);
+    expect(calls.length).toBe(1);
+    expect(calls[0][0]).toBe(layer.mesh);
+    expect(calls[0][1]).toBe(sceneRT);
+    expect(calls[0][2]).toBe(scene);
+    expect(bound).toBe(null);
+    expect(layer.mesh.parent).toBe(br.batch.mesh);
+    // still compiling: instant swaps
+    glide(dOn * 1.1, dOn * 0.5);
+    expect(bi.lod).toBe(0);
+    expect(br.fading).toBe(0);
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(br.fadeReady).toBe(true);
+    // ready: the next swap in view dissolves; later frames never compile again
+    glide(dOn * 0.5, dOn * 1.05);
+    expect(bi.lod).toBe(1);
+    expect(br.fading).toBe(1);
+    br.batch.mesh.onBeforeRender(renderer as unknown as THREE.WebGLRenderer, scene, cam, br.batch.mesh.geometry, br.batch.mesh.material as THREE.Material, null as unknown as THREE.Group);
+    at(dOn * 1.05);
+    expect(calls.length).toBe(1);
+  });
 });
 
 describe('burnt lots and foundations', () => {
@@ -827,69 +951,200 @@ describe('burnt lots and foundations', () => {
     const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
     br.lodBudgetMs = 1e9;
     const geo = (br.batch as unknown as { geo: Map<string, number> }).geo;
+    const keyOf = (g: number) => [...geo].find(([, id]) => id === g)?.[0] ?? '';
     const info = (br.batch.mesh as unknown as { _instanceInfo: { geometryIndex: number }[] })._instanceInfo;
-    return { st, br, geo, info };
+    const mask = (id: number) => (br.batch as unknown as { instMask: Uint8Array }).instMask[id];
+    return { st, br, geo, keyOf, info, mask };
   };
-  type BI = { main: number; cells: number[]; found: number };
-
-  it('tiles a burnt multi-cell lot with one unstretched rubble tile per cell (hashed variant + quarter turn)', () => {
-    const { br, geo, info } = setup();
-    br.add({ id: 7, def: 'res_apartment', x: 10, z: 12, w: 3, d: 3, rot: 1, variant: 0, built: 1, flags: BF.Burnt, baseY: 0 } as unknown as Building, false);
-    br.add({ id: 8, def: 'res_cottage', x: 20, z: 20, w: 1, d: 1, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: 0 } as unknown as Building, false);
-    const [lot, one] = (br as unknown as { list: BI[] }).list;
-    const rubble = new Set([0, 1, 2, 3].map((v) => geo.get(`rubble#${v}`)).filter((g) => g !== undefined));
-    expect(lot.cells.length).toBe(8);
-    const m = new THREE.Matrix4(), pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), e = new THREE.Euler();
-    const cells = new Set<string>(), variants = new Set<number>(), turns = new Set<number>();
-    for (const id of [lot.main, ...lot.cells]) {
-      const g = info[id].geometryIndex;
-      expect(rubble.has(g)).toBe(true);
-      variants.add(g);
-      br.batch.mesh.getMatrixAt(id, m);
-      m.decompose(pos, q, sc);
-      // unstretched: only a hair wider than the cell, so neighbouring tiles overlap instead of leaving pixel cracks
-      expect(sc.y).toBeCloseTo(1, 5);
-      for (const s of [sc.x, sc.z]) {
-        expect(s).toBeGreaterThan(1);
-        expect(s).toBeLessThan(1.005);
-      }
-      const cx = Math.floor(pos.x / CELL_SIZE), cz = Math.floor(pos.z / CELL_SIZE);
-      expect(pos.x).toBeCloseTo((cx + 0.5) * CELL_SIZE, 4);
-      expect(pos.z).toBeCloseTo((cz + 0.5) * CELL_SIZE, 4);
-      expect(cx >= 10 && cx < 13 && cz >= 12 && cz < 15).toBe(true);
-      cells.add(`${cx},${cz}`);
-      e.setFromQuaternion(q, 'YXZ');
-      turns.add(((Math.round(e.y / (Math.PI / 2)) % 4) + 4) % 4);
-      // a tile's broken walls (its -X / -Z sides) face the outside on the lot's edge cells
-      const wall = new THREE.Vector3(-1, 0, -1).applyQuaternion(q), i = cx - 10, j = cz - 12;
-      if (i === 0) expect(wall.x).toBeLessThan(0);
-      if (i === 2) expect(wall.x).toBeGreaterThan(0);
-      if (j === 0) expect(wall.z).toBeLessThan(0);
-      if (j === 2) expect(wall.z).toBeGreaterThan(0);
+  type BI = { b: Building; main: number; cells: number[]; kitGeo: number[]; kitLod: number[]; found: number; lod: number; flod: number; foundGeom: number; foundLod: number; vis: { top: number; cx: number; cz: number } };
+  const N1 = 65;
+  /** the rendered terrain triangulation (TerrainRenderer.meshHeightAt) */
+  const groundAt = (H: Float32Array, wx: number, wz: number) => {
+    const fx = wx / CELL_SIZE, fz = wz / CELL_SIZE, x = Math.min(63, Math.floor(fx)), z = Math.min(63, Math.floor(fz));
+    const tx = fx - x, tz = fz - z, i = z * N1 + x;
+    const a = H[i], b = H[i + 1], c = H[i + N1], d = H[i + N1 + 1];
+    return tx + tz <= 1 ? a + (b - a) * tx + (c - a) * tz : d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
+  };
+  /** highest up-facing surface of geometry g (lot-local) at (x, z): the bed's top incl. its blots */
+  const topAt = (g: THREE.BufferGeometry, x: number, z: number) => {
+    const p = g.getAttribute('position') as THREE.BufferAttribute;
+    let best = -Infinity;
+    for (let i = 0; i < p.count; i += 3) {
+      const ax = p.getX(i), az = p.getZ(i), bx = p.getX(i + 1), bz = p.getZ(i + 1), cx = p.getX(i + 2), cz = p.getZ(i + 2);
+      const det = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+      if (Math.abs(det) < 1e-9) continue;
+      const l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / det, l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / det, l3 = 1 - l1 - l2;
+      if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) continue;
+      best = Math.max(best, l1 * p.getY(i) + l2 * p.getY(i + 1) + l3 * p.getY(i + 2));
     }
-    // every footprint cell exactly once, not all alike
-    expect(cells.size).toBe(9);
-    expect(variants.size).toBeGreaterThan(1);
-    expect(turns.size).toBeGreaterThan(1);
-    // a 1x1 lot keeps its single (slightly inset) rubble model
+    return best;
+  };
+  const m = new THREE.Matrix4(), pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), e = new THREE.Euler();
+
+  it('composes a burnt multi-cell lot from the rubble kit: one bed over the whole lot, debris pieces off the cell grid', () => {
+    const { br, keyOf, info, mask } = setup();
+    const lots: [number, number, number, number, string][] = [
+      [4, 4, 4, 4, 'com_office_tower'], [12, 4, 3, 3, 'res_apartment'], [20, 4, 4, 3, 'ind_warehouse'], [28, 4, 2, 1, 'res_townhouse_row'],
+      [34, 4, 2, 2, 'res_ranch'], [4, 14, 4, 4, 'res_tenement'], [12, 14, 4, 4, 'com_office_block'], [20, 14, 3, 2, 'com_strip_mall'],
+    ];
+    let id = 100;
+    for (const [x, z, w, d, def] of lots) br.add({ id: id++, def, x, z, w, d, rot: (x + z) % 4, variant: 0, built: 1, flags: BF.Burnt, baseY: 0 } as unknown as Building, false);
+    // a one-cell lot keeps prop.ts's (slightly inset) rubble tile
+    br.add({ id: 8, def: 'res_cottage', x: 40, z: 20, w: 1, d: 1, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: 0 } as unknown as Building, false);
+    const list = (br as unknown as { list: BI[] }).list;
+    let bigs = 0, offGrid = 0, oddYaw = 0, pieces = 0, walls = 0;
+    const offsets = new Set<string>();
+    for (const bi of list.slice(0, lots.length)) {
+      const { x, z, w, d } = bi.b;
+      // the bed: one geometry over the whole lot (no per-cell tiles, so no seams), at the lot origin, casting no shadow
+      const bed = info[bi.main].geometryIndex;
+      expect(keyOf(bed).startsWith(`__rubble:bed:${w}x${d}:`)).toBe(true);
+      const bb = br.batch.bounds(bed);
+      expect(bb.min.x).toBeCloseTo((-w * CELL_SIZE) / 2 + 0.02, 3);
+      expect(bb.max.z).toBeCloseTo((d * CELL_SIZE) / 2 - 0.02, 3);
+      expect(mask(bi.main)).toBe(0);
+      br.batch.mesh.getMatrixAt(bi.main, m);
+      m.decompose(pos, q, sc);
+      expect([pos.x, pos.z]).toEqual([(x + w / 2) * CELL_SIZE, (z + d / 2) * CELL_SIZE]);
+      expect(sc.x).toBeCloseTo(1, 6);
+      // the pieces: inside the lot, at hashed offsets and any yaw (not one per cell, centred, a quarter turn apart)
+      expect(bi.cells.length).toBeGreaterThan(w * d * 0.6);
+      for (let k = 0; k < bi.cells.length; k++) {
+        const key = keyOf(bi.kitGeo[k]);
+        expect(key.startsWith('__rubble:')).toBe(true);
+        expect(info[bi.cells[k]].geometryIndex).toBe(bi.kitGeo[k]);
+        expect(keyOf(bi.kitLod[k]).startsWith(key)).toBe(true);
+        expect(mask(bi.cells[k])).toBe(1);
+        br.batch.mesh.getMatrixAt(bi.cells[k], m);
+        m.decompose(pos, q, sc);
+        expect(pos.x).toBeGreaterThan(x * CELL_SIZE);
+        expect(pos.x).toBeLessThan((x + w) * CELL_SIZE);
+        expect(pos.z).toBeGreaterThan(z * CELL_SIZE);
+        expect(pos.z).toBeLessThan((z + d) * CELL_SIZE);
+        const ox = pos.x / CELL_SIZE - Math.floor(pos.x / CELL_SIZE) - 0.5, oz = pos.z / CELL_SIZE - Math.floor(pos.z / CELL_SIZE) - 0.5;
+        if (Math.hypot(ox, oz) * CELL_SIZE > 1) offGrid++;
+        offsets.add(`${ox.toFixed(2)},${oz.toFixed(2)}`);
+        e.setFromQuaternion(q, 'YXZ');
+        const quarter = e.y / (Math.PI / 2);
+        if (Math.abs(quarter - Math.round(quarter)) > 0.05) oddYaw++;
+        if (key.startsWith('__rubble:big')) bigs++;
+        if (key.startsWith('__rubble:w')) {
+          walls++;
+          // the burnt shell: wall stubs stand within 2.5 m of the lot's edge
+          const edge = Math.min(pos.x - x * CELL_SIZE, (x + w) * CELL_SIZE - pos.x, pos.z - z * CELL_SIZE, (z + d) * CELL_SIZE - pos.z);
+          expect(edge).toBeLessThan(2.5);
+        }
+        pieces++;
+      }
+      expect(bi.vis.top).toBeGreaterThan(1);
+    }
+    expect(offGrid / pieces).toBeGreaterThan(0.5);
+    expect(offsets.size).toBeGreaterThan(pieces * 0.8);
+    expect(oddYaw).toBeGreaterThan(pieces * 0.3);
+    expect(walls).toBeGreaterThan(lots.length);
+    // interior 2 x 2 blocks of the 4 x 4 lots collapse into one big heap (most of the time)
+    expect(bigs).toBeGreaterThanOrEqual(2);
+    // the one-cell lot keeps its rubble tile
+    const one = list[lots.length];
     expect(one.cells.length).toBe(0);
-    expect(rubble.has(info[one.main].geometryIndex)).toBe(true);
-    // rebuilding / removing frees the tiles
-    const live0 = br.batch.instanceCount;
-    br.remove(7);
-    expect(br.batch.instanceCount).toBe(live0 - 9);
+    expect(keyOf(info[one.main].geometryIndex).startsWith('rubble#')).toBe(true);
+    // rebuilding / removing frees every piece
+    const live0 = br.batch.instanceCount, first = list[0];
+    expect(first.b.id).toBe(100);
+    const n0 = 1 + first.cells.length + (first.found >= 0 ? 1 : 0);
+    br.remove(100);
+    expect(br.batch.instanceCount).toBe(live0 - n0);
+    expect(first.cells.length).toBe(0);
   });
 
-  it('puts real-size (unscaled) stone retaining-wall skirts under lots above the terrain, stepped when deep', () => {
-    const { st, br, geo, info } = setup();
-    const N1 = st.size + 1;
+  it('lays the debris bed over rising ground exactly (no grass through it, no steps between cells) and rests every piece on it', () => {
+    const { st, br, info } = setup();
+    // ground rising 1.5 m per cell along x plus a twist along z; the lot keeps the height of its low corner (the sim
+    // could not level the up-slope side), so its far side lies 4.5 m+ under the ground
+    const ground = (x: number, z: number) => (x / CELL_SIZE) * 1.5 + ((x / CELL_SIZE) * (z / CELL_SIZE)) * 0.05;
+    for (let z = 0; z <= st.size; z++) for (let x = 0; x <= st.size; x++) st.heights[z * N1 + x] = ground(x * CELL_SIZE, z * CELL_SIZE);
+    // ... and a level lot with ONE vertex raised 3.9 m (a twisted cell: no plane fits it)
+    for (let z = 0; z <= st.size; z++) for (let x = 36; x <= st.size; x++) st.heights[z * N1 + x] = 60;
+    st.heights[21 * N1 + 41] = 63.9;
+    br.add({ id: 9, def: 'res_apartment', x: 20, z: 10, w: 3, d: 2, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: st.heights[10 * N1 + 20] } as unknown as Building, false);
+    br.add({ id: 11, def: 'res_apartment', x: 40, z: 20, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: 60 } as unknown as Building, false);
+    const list = (br as unknown as { list: BI[] }).list;
+    for (const bi of list) {
+      const b = bi.b, cx = (b.x + b.w / 2) * CELL_SIZE, cz = (b.z + b.d / 2) * CELL_SIZE;
+      const bed = br.batch.mesh.geometry, g = info[bi.main].geometryIndex;
+      // the bed's own geometry (lot-local), read back from the batch's vertex range
+      const gi = (br.batch.mesh as unknown as { _geometryInfo: { vertexStart: number; vertexCount: number }[] })._geometryInfo[g];
+      const src = new THREE.BufferGeometry();
+      const pa = bed.getAttribute('position') as THREE.BufferAttribute;
+      src.setAttribute('position', new THREE.BufferAttribute((pa.array as Float32Array).slice(gi.vertexStart * 3, (gi.vertexStart + gi.vertexCount) * 3), 3));
+      let worstUnder = Infinity, worstOver = 0;
+      for (let i = 0; i <= b.w * 8; i++) for (let j = 0; j <= b.d * 8; j++) {
+        const lx = -b.w * 8 + 0.05 + i * 2 - (i === b.w * 8 ? 0.1 : 0), lz = -b.d * 8 + 0.05 + j * 2 - (j === b.d * 8 ? 0.1 : 0);
+        const top = topAt(src, lx, lz) + b.baseY, gr = Math.max(b.baseY, groundAt(st.heights, cx + lx, cz + lz));
+        // the debris floor is 0.4 m over max(ground, base) everywhere (a level bed would leave the hill over it)
+        worstUnder = Math.min(worstUnder, top - gr);
+        worstOver = Math.max(worstOver, top - gr);
+      }
+      expect(worstUnder).toBeGreaterThan(0.35);
+      expect(worstOver).toBeLessThan(0.55);
+      // every piece rests on the bed: its origin on or a little under the bed (feet in the debris), never floating
+      for (let k = 0; k < bi.cells.length; k++) {
+        br.batch.mesh.getMatrixAt(bi.cells[k], m);
+        const ex = m.elements;
+        // upright: the local y axis stays world up (a vertical shear onto the slope, not a tilt; scaled with the piece)
+        expect(Math.abs(ex[4]) + Math.abs(ex[6])).toBeLessThan(1e-6);
+        expect(ex[5]).toBeGreaterThan(0.8);
+        const lx = ex[12] - cx, lz = ex[14] - cz;
+        const bedY = topAt(src, Math.max(-b.w * 8 + 0.1, Math.min(b.w * 8 - 0.1, lx)), Math.max(-b.d * 8 + 0.1, Math.min(b.d * 8 - 0.1, lz))) + b.baseY;
+        expect(ex[13]).toBeLessThan(bedY + 0.1);
+        expect(ex[13]).toBeGreaterThan(bedY - 1.6);
+        // the batch's culling sphere holds the sheared piece
+        const s = (br.batch as unknown as { sph: Float32Array }).sph, o = bi.cells[k] * 4;
+        const bb = br.batch.bounds(bi.kitGeo[k]);
+        for (const [px, py, pz] of [[bb.min.x, bb.min.y, bb.min.z], [bb.max.x, bb.max.y, bb.max.z], [bb.min.x, bb.max.y, bb.max.z], [bb.max.x, bb.max.y, bb.min.z]]) {
+          pos.set(px, py, pz).applyMatrix4(m);
+          expect(Math.hypot(pos.x - s[o], pos.y - s[o + 1], pos.z - s[o + 2])).toBeLessThanOrEqual(s[o + 3] + 1e-3);
+        }
+      }
+      // picking / tile culling see the raised debris
+      expect(bi.vis.top).toBeGreaterThan(b.baseY + 1);
+    }
+  });
+
+  it('swaps every rubble piece to its low-poly proxy with the lot at LOD distance, without rebuilding draw lists', () => {
+    const { br, info } = setup();
+    br.add({ id: 21, def: 'res_tenement', x: 30, z: 30, w: 4, d: 4, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: 0 } as unknown as Building, false);
+    const [bi] = (br as unknown as { list: BI[] }).list;
+    const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 30000);
+    const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
+    const at = (d: number) => { cam.position.set(bi.vis.cx, 0, bi.vis.cz).addScaledVector(new THREE.Vector3(-1, 0.8, -1).normalize(), d); cam.lookAt(bi.vis.cx, 0, bi.vis.cz); cam.updateMatrixWorld(); br.updateLod(cam, H); };
+    at(100);
+    expect(bi.lod).toBe(0);
+    const full = bi.cells.reduce((a, id) => a + br.batch.triangles(info[id].geometryIndex), 0);
+    const dOn = (11.3 * K) / (br.lodPixels * 0.88);
+    for (let d = 100; d < dOn * 1.3; d += 25) at(d);
+    expect(bi.lod).toBe(1);
+    bi.cells.forEach((id, k) => expect(info[id].geometryIndex).toBe(bi.kitLod[k]));
+    const lod = bi.cells.reduce((a, id) => a + br.batch.triangles(info[id].geometryIndex), 0);
+    expect(lod).toBeLessThan(full * 0.2);
+    // shared culling spheres: the swaps only patched draw ranges (no list rebuild)
+    const ver = (br.batch as unknown as { version: number }).version;
+    for (let d = dOn * 1.3; d > 100; d -= 25) at(d);
+    expect(bi.lod).toBe(0);
+    bi.cells.forEach((id, k) => expect(info[id].geometryIndex).toBe(bi.kitGeo[k]));
+    expect((br.batch as unknown as { version: number }).version).toBe(ver);
+  });
+
+  it('puts real-size stone retaining-wall skirts under lots above the terrain; far away a plain 8-tri box, shadows only from deep ones', () => {
+    const { st, br, geo, info, mask } = setup();
     // a slope rising 1.5 m per cell along x
     for (let z = 0; z <= st.size; z++) for (let x = 0; x <= st.size; x++) st.heights[z * N1 + x] = x * 1.5;
-    // lots flattened to their highest corner: 2 cells wide -> 3 m above the low edge; a flat one: no skirt
+    // lots flattened to their highest corner: 2 cells wide -> 3 m above the low edge; 1 cell + 0.5 m; 0.3 m; a flat one
     br.add({ id: 1, def: 'res_cottage', x: 20, z: 10, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 22 * 1.5 } as unknown as Building, false);
     br.add({ id: 2, def: 'res_cottage', x: 30, z: 10, w: 1, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 30 * 1.5 + 0.5 } as unknown as Building, false);
     br.add({ id: 3, def: 'res_cottage', x: 40, z: 10, w: 1, d: 1, rot: 0, variant: 0, built: 1, flags: 0, baseY: 40 * 1.5 } as unknown as Building, false);
-    const [deep, shallow, flat] = (br as unknown as { list: BI[] }).list;
+    br.add({ id: 4, def: 'res_cottage', x: 44, z: 10, w: 1, d: 1, rot: 0, variant: 0, built: 1, flags: 0, baseY: 44 * 1.5 + 0.3 } as unknown as Building, false);
+    const [deep, shallow, flat, thin] = (br as unknown as { list: BI[] }).list;
     expect(flat.found).toBe(-1);
     // 3 m + 0.8 m into the ground -> the 4.8 m (two-tier) skirt at the lot's real size; 0.5 + 0.8 m -> the 2.2 m one
     const gDeep = geo.get('__foundation:32x32:4.8'), gShallow = geo.get('__foundation:16x32:2.2');
@@ -897,7 +1152,6 @@ describe('burnt lots and foundations', () => {
     expect(gShallow).toBeDefined();
     expect(info[deep.found].geometryIndex).toBe(gDeep);
     expect(info[shallow.found].geometryIndex).toBe(gShallow);
-    const m = new THREE.Matrix4(), pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
     br.batch.mesh.getMatrixAt(deep.found, m);
     m.decompose(pos, q, sc);
     expect([sc.x, sc.y, sc.z].map((v) => +v.toFixed(5))).toEqual([1, 1, 1]);
@@ -910,96 +1164,73 @@ describe('burnt lots and foundations', () => {
     expect(sb.min.y).toBeCloseTo(-2.2, 5);
     expect(sb.max.x).toBeCloseTo(8 - 0.1 + 0.04, 4);
     expect(sb.max.z).toBeCloseTo(16 - 0.1 + 0.04, 4);
-  });
-
-  it('lays rubble tiles on ground that rises above the lot base (vertical shear, walls upright, culled whole)', () => {
-    const { st, br } = setup();
-    const N1 = st.size + 1;
-    // ground rising 1.5 m per cell along x plus a twist along z; the lot keeps the height of its low corner (the sim
-    // could not level the up-slope side), so its far side is 4.5 m + under the ground
-    const ground = (x: number, z: number) => (x / CELL_SIZE) * 1.5 + ((x / CELL_SIZE) * (z / CELL_SIZE)) * 0.05;
-    for (let z = 0; z <= st.size; z++) for (let x = 0; x <= st.size; x++) st.heights[z * N1 + x] = ground(x * CELL_SIZE, z * CELL_SIZE);
-    const lot = { id: 9, def: 'res_apartment', x: 20, z: 10, w: 3, d: 2, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: ground(20 * CELL_SIZE, 10 * CELL_SIZE) };
-    br.add(lot as unknown as Building, false);
-    const [bi] = (br as unknown as { list: (BI & { vis: { top: number } })[] }).list;
-    const m = new THREE.Matrix4(), p = new THREE.Vector3();
-    let worst = 0, topMax = -Infinity;
-    for (const id of [bi.main, ...bi.cells]) {
-      br.batch.mesh.getMatrixAt(id, m);
-      // upright: the local y axis stays world up (a shear, not a tilt)
-      const e = m.elements;
-      expect([e[4], e[5], e[6]].map((v) => +v.toFixed(6))).toEqual([0, 1, 0]);
-      // the bed's top (0.4 m over the tile origin, prop.ts) lies 0.4 m over the ground at its corners and centre: never
-      // under it (no grass through the debris), never floating
-      for (const [lx, lz] of [[-8, -8], [8, -8], [-8, 8], [8, 8], [0, 0]]) {
-        p.set(lx, 0.4, lz).applyMatrix4(m);
-        const gap = p.y - ground(p.x, p.z);
-        expect(gap).toBeGreaterThan(0.02);
-        worst = Math.max(worst, gap);
-      }
-      p.set(0, 4, 0).applyMatrix4(m);
-      topMax = Math.max(topMax, p.y);
-      // the batch's culling sphere holds every corner of the sheared tile
-      const s = (br.batch as unknown as { sph: Float32Array }).sph, o = id * 4;
-      for (const [lx, ly, lz] of [[-8, -0.5, -8], [8, -0.5, 8], [8, 4, -8], [-8, 4, 8], [8, 4, 8]]) {
-        p.set(lx, ly, lz).applyMatrix4(m);
-        expect(Math.hypot(p.x - s[o], p.y - s[o + 1], p.z - s[o + 2])).toBeLessThanOrEqual(s[o + 3]);
-      }
+    expect(br.batch.triangles(gDeep!)).toBe(34);
+    expect(br.batch.triangles(gShallow!)).toBe(16);
+    // shadows: skirts up to 0.4 m exposed none, up to 1.4 m the near cascade, deeper ones every cascade
+    expect(mask(thin.found)).toBe(0);
+    expect(mask(shallow.found)).toBe(1);
+    expect(mask(deep.found)).toBe(0xff);
+    // the far level: a plain box of the same real size (8 tris), sharing the full skirt's culling sphere
+    for (const bi of [deep, shallow, thin]) {
+      expect(br.batch.triangles(bi.foundLod)).toBe(8);
+      const lb = br.batch.bounds(bi.foundLod), fb = br.batch.bounds(bi.foundGeom);
+      expect(fb.clone().expandByScalar(1e-4).containsBox(lb)).toBe(true);
     }
-    expect(worst).toBeLessThan(0.5);
-    // picking / tile culling see the raised debris
-    expect(bi.vis.top).toBeGreaterThanOrEqual(topMax - 0.5);
+    const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 30000);
+    const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
+    const dir = new THREE.Vector3(0.2, 0.6, 1).normalize();
+    const lookAt = (bi: BI, d: number) => {
+      const t = new THREE.Vector3(bi.vis.cx, (bi as unknown as { cy: number }).cy, bi.vis.cz);
+      cam.position.copy(t).addScaledVector(dir, d); cam.lookAt(t); cam.updateMatrixWorld(); br.updateLod(cam, H);
+    };
+    /** glide (<= 4% per frame) to distance d from building bi */
+    const glideTo = (bi: BI, from: number, d: number) => { for (let x = from; Math.abs(x - d) > 1e-6; x = d > x ? Math.min(d, x * 1.04) : Math.max(d, x / 1.04)) lookAt(bi, x); lookAt(bi, d); };
+    const ver0 = (br.batch as unknown as { version: number }).version;
+    const radius = (bi: BI) => (bi as unknown as { radius: number }).radius;
+    // the thin skirt (0.3 m exposed) turns plain once it projects under 2 px (~0.3 K / 2 away) while its house is still
+    // full; up close it is the full skirt
+    const dThin = (0.3 * K) / 2;
+    lookAt(thin, dThin * 0.5);
+    expect(info[thin.found].geometryIndex).toBe(thin.foundGeom);
+    glideTo(thin, dThin * 0.5, dThin * 1.3);
+    expect(thin.lod).toBe(0);
+    expect(info[thin.found].geometryIndex).toBe(thin.foundLod);
+    glideTo(thin, dThin * 1.3, dThin * 0.7);
+    expect(info[thin.found].geometryIndex).toBe(thin.foundGeom);
+    // the deep skirt (3 m) still projects over 2 px where its house swaps to the proxy: it turns plain with the house
+    const dHouse = (radius(deep) * K) / (br.lodPixels * br.fadeOn);
+    expect((3 * K) / 2).toBeGreaterThan(dHouse * 1.3);
+    glideTo(deep, dHouse * 0.7, dHouse * 0.9);
+    expect(deep.lod).toBe(0);
+    expect(info[deep.found].geometryIndex).toBe(deep.foundGeom);
+    glideTo(deep, dHouse * 0.9, dHouse * 1.3);
+    expect(deep.lod).toBe(1);
+    expect(info[deep.found].geometryIndex).toBe(deep.foundLod);
+    // far: every house on its proxy, every skirt the plain box; swaps within shared spheres (no list rebuild)
+    glideTo(deep, dHouse * 1.3, 3000);
+    for (const bi of [deep, shallow, thin]) { expect(bi.lod).toBe(1); expect(info[bi.found].geometryIndex).toBe(bi.foundLod); }
+    expect((br.batch as unknown as { version: number }).version).toBe(ver0);
+    // a camera cut back close: the cut frame restores the full skirt (with the house) in view
+    lookAt(shallow, 60);
+    expect(shallow.lod).toBe(0);
+    expect(info[shallow.found].geometryIndex).toBe(shallow.foundGeom);
   });
 
-  it('keeps a rubble bed within its skirt of the ground where one lot corner is raised (no plane fits: no gap under the bed, less grass than a level bed)', () => {
+  it('keeps a one-cell rubble tile within its skirt of the ground where a corner is raised (no plane fits: no gap under the bed)', () => {
     const { st, br } = setup();
-    const N1 = st.size + 1;
-    // level ground at 0 with ONE vertex raised 3.9 m: cell (30, 20) gets it as its (+x, +z) corner (a triangle apex),
-    // cell (30, 21) as its (+x, -z) corner (on the triangle diagonal)
+    // level ground at 0 with ONE vertex raised 3.9 m: cell (30, 20) gets it as its (+x, +z) corner (a triangle apex)
     st.heights.fill(0);
     st.heights[21 * N1 + 31] = 3.9;
-    br.add({ id: 11, def: 'res_apartment', x: 30, z: 20, w: 1, d: 2, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: 0 } as unknown as Building, false);
-    // and a lot on a uniform slope next to it still follows the slope
-    for (let z = 0; z <= st.size; z++) for (let x = 40; x <= st.size; x++) st.heights[z * N1 + x] = (x - 40) * 1.2;
-    br.add({ id: 12, def: 'res_apartment', x: 41, z: 20, w: 2, d: 1, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: 1.2 } as unknown as Building, false);
-    const [twisted, sloped] = (br as unknown as { list: (BI & { shear: number[] })[] }).list;
-    const hAt = (wx: number, wz: number) => {
-      // the rendered triangulation (TerrainRenderer.meshHeightAt)
-      const fx = wx / CELL_SIZE, fz = wz / CELL_SIZE, x = Math.min(st.size - 1, Math.floor(fx)), z = Math.min(st.size - 1, Math.floor(fz));
-      const tx = fx - x, tz = fz - z, i = z * N1 + x, H = st.heights;
-      const a = H[i], b = H[i + 1], c = H[i + N1], d = H[i + N1 + 1];
-      return tx + tz <= 1 ? a + (b - a) * tx + (c - a) * tz : d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
-    };
-    const m = new THREE.Matrix4(), p = new THREE.Vector3();
-    const underside = (id: number) => {
-      br.batch.mesh.getMatrixAt(id, m);
-      return [[-8, -8], [8, -8], [-8, 8], [8, 8]].map(([lx, lz]) => { p.set(lx, 0, lz).applyMatrix4(m); return [p.y, hAt(p.x, p.z)]; });
-    };
-    // the twisted lot's tiles float at most 0.45 m over the ground at any corner (the bed's closed sides reach 0.5 m
-    // under the tile origin, prop.ts: nothing shows under the bed) and never sink more than 0.2 m under the base
-    expect(twisted.shear.length).toBe(6);
-    for (const id of [twisted.main, ...twisted.cells]) {
-      for (const [y, g] of underside(id)) {
-        expect(y).toBeLessThanOrEqual(g + 0.45 + 1e-6);
-        expect(y).toBeGreaterThan(-0.2 - 1e-6);
-      }
-    }
-    // ... and leave less of the hill over the debris floor (0.4 m over the tile origin) than a level bed on the base
-    let pokeNow = 0, pokeLevel = 0;
-    for (const id of [twisted.main, ...twisted.cells]) {
-      br.batch.mesh.getMatrixAt(id, m);
-      for (let i = 0; i <= 8; i++) for (let j = 0; j <= 8; j++) {
-        p.set(-8 + 2 * i, 0.4, -8 + 2 * j).applyMatrix4(m);
-        const g = hAt(p.x, p.z);
-        if (g > p.y + 0.05) pokeNow++;
-        if (g > 0.4 + 0.05) pokeLevel++;
-      }
-    }
-    expect(pokeLevel).toBeGreaterThan(0);
-    expect(pokeNow).toBeLessThan(pokeLevel);
-    // the sloped lot's tiles lie on the slope: underside on the ground at every corner
-    for (const id of [sloped.main, ...sloped.cells]) {
-      for (const [y, g] of underside(id)) expect(Math.abs(y - g)).toBeLessThan(1e-4);
+    br.add({ id: 11, def: 'res_cottage', x: 30, z: 20, w: 1, d: 1, rot: 0, variant: 0, built: 1, flags: BF.Burnt, baseY: 0 } as unknown as Building, false);
+    const [one] = (br as unknown as { list: (BI & { shear: number[] })[] }).list;
+    expect(one.shear.length).toBe(3);
+    br.batch.mesh.getMatrixAt(one.main, m);
+    // the tile floats at most 0.45 m over the ground at any corner (the bed's closed sides reach 0.5 m under the tile
+    // origin, prop.ts) and never sinks more than 0.2 m under the base
+    for (const [lx, lz] of [[-8, -8], [8, -8], [-8, 8], [8, 8]]) {
+      pos.set(lx * 0.9, 0, lz * 0.9).applyMatrix4(m);
+      expect(pos.y).toBeLessThanOrEqual(groundAt(st.heights, pos.x, pos.z) + 0.45 + 1e-6);
+      expect(pos.y).toBeGreaterThan(-0.2 - 1e-6);
     }
   });
 });
