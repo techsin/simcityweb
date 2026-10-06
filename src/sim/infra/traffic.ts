@@ -162,8 +162,13 @@ export interface TransitFleetStatsX {
 
 /** TrafficSystem.garageReach: the park & ride choices of the homes nearest to a garage (its idle hint) */
 export interface GarageReach {
-  /** workers within a PR_CAR_LEG_MAX drive of it */
+  /** workers within a PR_CAR_LEG_MAX drive of it, and the homes there (with residents or not: "no commuters") */
   workers: number;
+  homes: number;
+  /** r4: the garage that took most of their overflow in the last assignment (another group; -1 none), and the share of
+   *  their workers whose riders overflowed anywhere */
+  ovTo: number;
+  ovShare: number;
   /** the garage id the nearest half of them pick first (another group; -1 none), and one of their options with room */
   via: number;
   viaRoom: number;
@@ -184,19 +189,23 @@ const PH_PREP = 0, PH_PREP2 = 1, PH_TRANSIT = 2, PH_RSEARCH = 3, PH_RMATCH = 4, 
   PH_FREIGHT = 8, PH_FINAL = 9, PH_FINAL2 = 10,
   // WP7b (appended so the indices of the phases above stay stable): per-origin transit options (split from TRANSIT),
   // park & ride search, freight sink throughput, parking raster
-  PH_TRANSIT2 = 11, PH_PARKRIDE = 12, PH_SINKS = 13, PH_PARKING = 14;
-const PHASES = 15;
-/** phase order (the matching rounds PH_RSEARCH <-> PH_RMATCH choose their successor in roundMatch) */
+  PH_TRANSIT2 = 11, PH_PARKRIDE = 12, PH_SINKS = 13, PH_PARKING = 14,
+  // r4: park & ride overflow of a matching round (entered from roundMatch when riders were turned away by all their
+  // options; it returns to the round's successor)
+  PH_PROVER = 15;
+const PHASES = 16;
+/** phase order (the matching rounds PH_RSEARCH <-> PH_RMATCH choose their successor in roundMatch, PH_PROVER returns
+ *  to it) */
 const NEXT_PHASE: readonly number[] = [
   PH_PREP2, PH_TRANSIT, PH_TRANSIT2, PH_RMATCH, -2, PH_INBOUND, PH_SHOP, PH_FREIGHT, PH_SINKS, PH_FINAL2, -1,
-  PH_PARKRIDE, PH_RSEARCH, PH_PARKING, PH_FINAL,
+  PH_PARKRIDE, PH_RSEARCH, PH_PARKING, PH_FINAL, -2,
 ];
 /**
  * estimated ms per phase on the reference 256² stress city (scaled by graph / building counts). WP7b phases calibrated
  * by step-wise CPU on stressCity(256) + 853 facilities + 40 garages / 6 terminals / 2 depots (CPU per estimated ms of
  * the cycle unchanged: 3.31 vs 3.35 without WP7b)
  */
-const PHASE_COST = [1.9, 0.9, 2.3, 1.2, 1.2, 1.5, 2.4, 2.8, 2.4, 0.4, 1.6, 0.6, 1.6, 1.2, 1.8];
+const PHASE_COST = [1.9, 0.9, 2.3, 1.2, 1.2, 1.5, 2.4, 2.8, 2.4, 0.4, 1.6, 0.6, 1.6, 1.2, 1.8, 0.6];
 /** car-less share: the car / park & ride utility x exp(-MODE_BETA x CARLESS_EXTRA_MIN) */
 const CARLESS_K = Math.exp(-MODE_BETA * CARLESS_EXTRA_MIN);
 /** transport defs of the WP7b fleet / parking models (per-def data keyed by def id; catalogTypes is read-only) */
@@ -216,6 +225,30 @@ const PR_SEARCH_EVERY = 8;
 const PR_SEED_DRIFT = 2;
 /** weight of the new label when a garage's ranking minutes are smoothed (per assignment) */
 const PR_RANK_SMOOTH = 0.25;
+/**
+ * park & ride overflow (r4): riders turned away by every one of their PR_OPTIONS options are re-decided at the end of
+ * the matching round with the garage groups that still have room — an overflow search (OV_K labels per node, seeded
+ * only at the groups with room for OV_MIN_ROOM riders or more, ranking minutes, the PR_CAR_LEG_MAX car leg) gives each
+ * of them the fastest such group within PR_OPTION_MARGIN minutes of their fastest option; passes repeat (re-seeded at
+ * the groups that still have room) while riders are left over and a pass filled a group, at most OV_PASSES per round.
+ * Forests are kept (OV_CACHE, keyed by the seed set) and reused while their seeds have not moved (PR_SEED_DRIFT,
+ * PR_SEARCH_EVERY); at most OV_SEARCHES fresh searches per assignment.
+ */
+const OV_K = 2;
+const OV_PASSES = 3;
+const OV_MIN_ROOM = 10;
+const OV_CACHE = 3;
+const OV_SEARCHES = 6;
+/** overflow records re-decided per scheduler step (each: a mode split per option tried) */
+const OV_CHUNK = 3000;
+/**
+ * rationing price signal x of a group (p += PR_PRICE_STEP x ln x): (riders placed + riders turned away with nowhere to
+ * go, attributed to the options they wanted) / room. A full group whose turned-away riders all found room elsewhere
+ * (another option, the overflow) or chose another mode gets x = PR_FULL_EASE: its price eases, so commuters keep
+ * choosing it and spilling over to the garages with room until some find none (the price then rises again) — a price
+ * that rationed a full garage to its own room would leave the slower garages beside it empty
+ */
+const PR_FULL_EASE = 0.97;
 const MAX_ENTRIES = 12;
 /** job matching: a proportional round (round < MATCH_PROP_ROUNDS) that matched under this share of the waiting workers
  *  is starved and does not count toward MATCH_ROUNDS (at most MATCH_EXTRA_ROUNDS such rounds per assignment); starved
@@ -517,17 +550,28 @@ export class TrafficSystem implements SimSystem {
   private gHalf: Uint8Array<ArrayBuffer> = new Uint8Array(0);
   /** 1 = park & ride this cycle (its stop's best transit path rides a vehicle) */
   private gRide: Uint8Array<ArrayBuffer> = new Uint8Array(0);
-  /** spaces, cars parked (this assignment), riders, park & ride wanted (riders choosing it, logit: the price signal),
-   *  workers whose park & ride option it is (at the group root), price (minutes), wanted incl. the overflow from the
-   *  commuters' other option (report), spaces kept for the block around it (reserve, from the last parking raster) */
+  /** spaces, cars parked (this assignment), riders, workers whose park & ride option it is (at the group root; + the
+   *  workers whose overflow it took), price (minutes), wanted (report: riders choosing it, incl. those that came over
+   *  from a full option and the overflow), spaces kept for the block around it (reserve, from the last parking raster) */
   private gSpaces: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gLoad: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gRiders: Float32Array<ArrayBuffer> = new Float32Array(0);
-  private gWant: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gCatch: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gPrice: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gWantR: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gRes: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** r4, per group root: riders turned away with no room at any option (the overflow included), attributed to the
+   *  options they wanted (logit weights) — with the riders placed, the price signal —, the worker-weighted sum of their
+   *  homes' x / z (report: where another garage would take them), and the riders it took as other groups' overflow */
+  private gUnpl: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gUnplX: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gUnplZ: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gOvIn: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** overflow riders of this assignment by (root of an option they were turned away from) x (gN + 1) + (root that took
+   *  them), split by their logit weights over their options: the report names a full garage's main taker */
+  private ovTo = new Map<number, number>();
+  /** overflow catchment credited this assignment: origin x (gN + 1) + root */
+  private ovSeen = new Set<number>();
   /** park & ride groups (garages at the same stop within GARAGE_GROUP_CELLS pool their room and share one price): root
    *  garage index per garage, room (spaces - reserve) per root; gLoad / gRiders / gWant / gWantR / gCatch accumulate at
    *  the root during the assignment, commuteEnd shares them out by room into the per-garage gCars / gRidersM (reports,
@@ -590,6 +634,53 @@ export class TrafficSystem implements SimSystem {
   /** car-less extra minutes (sum over the assigned pieces of take x car-less share x extra) */
   private oClX: Float32Array<ArrayBuffer> = new Float32Array(0);
   private prRiders = 0;
+  /** r4, per origin: free-flow ranking minutes of its fastest option (the overflow's PR_OPTION_MARGIN), and the group
+   *  root that took most of its overflow this assignment (-1 none) with those riders */
+  private oPrF0: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oOvG: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private oOvY: Float32Array<ArrayBuffer> = new Float32Array(0);
+  // r4 overflow records: the people of a round's pieces whose park & ride riders found no room at any of their options
+  // (prRest); their mode is decided at the end of the round with the groups that still have room (PH_PROVER). Origin,
+  // job cluster, car node of the round's forest, people, the split's car minutes / car possible / walk minutes /
+  // walk-to-stop transit minutes, and the park & ride share of their last split (riders that found no room)
+  private pnN = 0;
+  private pnO: Int32Array<ArrayBuffer> = new Int32Array(64);
+  private pnQ: Int32Array<ArrayBuffer> = new Int32Array(64);
+  private pnNode: Int32Array<ArrayBuffer> = new Int32Array(64);
+  private pnY: Float64Array<ArrayBuffer> = new Float64Array(64);
+  private pnCarT: Float32Array<ArrayBuffer> = new Float32Array(64);
+  private pnCarOk: Uint8Array<ArrayBuffer> = new Uint8Array(64);
+  private pnWalkT: Float32Array<ArrayBuffer> = new Float32Array(64);
+  private pnTrT: Float32Array<ArrayBuffer> = new Float32Array(64);
+  private pnTP: Float32Array<ArrayBuffer> = new Float32Array(64);
+  /** overflow phase: stage (0 seeds, 1 search chunks, 2 car-leg minutes of a kept forest, 3 re-decide records, 4 the
+   *  rest without park & ride + flows), pass, record cursor, the round's successor, the cache slot of the pass's forest,
+   *  fresh searches this assignment, the pass placed riders / filled a group */
+  private ovStage = 0;
+  private ovPass = 0;
+  private ovCur = 0;
+  private ovNext = -1;
+  private ovSlot = -1;
+  private ovSearches = 0;
+  private ovPlaced = false;
+  private ovFilled = false;
+  /** the round's car commuters and sample-route candidates (flows committed after the overflow), its transit bonus and
+   *  car PCU */
+  private ovCarRound = 0;
+  private ovRouteCand: number[] = [];
+  private ovRouteW: number[] = [];
+  private ovBonus = 0;
+  private ovCarPcu = 1;
+  /** overflow forests, least recently used first out (OV_CACHE) */
+  private ov: OvForest[] = [];
+  /** prRest: records allowed for this piece (roundMatch), and its results: the undecided share of the piece (a record),
+   *  the park & ride share of the last split tried */
+  private prDefer = false;
+  private prPend = 0;
+  private prLastTP = 0;
+  /** r4 (idle hint): the origins, their options and overflow, and the garages of the last completed assignment — the
+   *  hint reads this snapshot at any time (the live arrays are rebuilt from the next assignment's prep on) */
+  private rs: ReachSnap | null = null;
   /** transit forest memo per node this cycle: 1 = the path rides a vehicle, -1 = walk only (a stop next to its job) */
   private rideMemo: Int8Array<ArrayBuffer> = new Int8Array(0);
   /** workers per stop (this cycle) whose best stop path rides nothing (jobs a walk away): no riders, report hint */
@@ -3953,6 +4044,50 @@ export class TrafficSystem implements SimSystem {
       }
     }
   }
+}
+
+/** a cached park & ride overflow forest (r4): an OV_K-label search seeded at the groups that had room */
+interface OvForest {
+  S: SearchK;
+  /** the seed garages (indices) and the road graph version; each garage's ranking minutes at the search (its labels
+   *  include them: options use dist - seed + the current ranking minutes) */
+  key: string;
+  seed: Float32Array<ArrayBuffer>;
+  /** assignment of the search, of the last car-leg refresh (alt), of the last use (least recently used goes first) */
+  built: number;
+  alt: number;
+  used: number;
+  /** overflow car legs of this assignment per state (committed by the overflow phase), any to commit */
+  acc: Float32Array<ArrayBuffer>;
+  dirty: boolean;
+}
+
+/** r4: the last completed assignment as the idle hint (garageReach) reads it — the live per-origin / per-garage arrays
+ *  are rebuilt from the next assignment's prep on */
+interface ReachSnap {
+  /** assignment count after it, road graph version of its node ids */
+  cycle: number;
+  ver: number;
+  /** origins: road entries (CSR), workers, park & ride options (garage index, availability cost; PR_OPTIONS stride),
+   *  free-flow ranking minutes of the fastest option, the group root that took most of their overflow (-1 none) */
+  n: number;
+  entS: Int32Array<ArrayBuffer>;
+  entC: Uint8Array<ArrayBuffer>;
+  ent: Int32Array<ArrayBuffer>;
+  w: Float32Array<ArrayBuffer>;
+  prN: Uint8Array<ArrayBuffer>;
+  prG: Int32Array<ArrayBuffer>;
+  prA: Float32Array<ArrayBuffer>;
+  f0: Float32Array<ArrayBuffer>;
+  ovG: Int32Array<ArrayBuffer>;
+  /** garages: ids, group roots, ranking minutes (Infinity: no park & ride), road entries (CSR) */
+  gN: number;
+  gBid: Int32Array<ArrayBuffer>;
+  gGrp: Int32Array<ArrayBuffer>;
+  gRank: Float32Array<ArrayBuffer>;
+  gEntS: Int32Array<ArrayBuffer>;
+  gEntC: Uint8Array<ArrayBuffer>;
+  gEnt: Int32Array<ArrayBuffer>;
 }
 
 /** persisted WP7b state (systemData.infraTransport) */

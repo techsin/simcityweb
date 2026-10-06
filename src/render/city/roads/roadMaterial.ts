@@ -126,11 +126,16 @@ float arrowMask(float ul, float vl, float fwv) {
   return clamp(shaft + head, 0.0, 1.0);
 }
 
+// grass of medians / verges: dormant straw in winter and in deserts, like the lot lawns (materials.ts uFoliageDry)
+vec3 roadGrass(vec3 c) {
+  return mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))) * vec3(1.18, 1.02, 0.68), uFoliageDry);
+}
+
 void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout vec3 emis, vec3 nrm) {
   float code = floor(vRd.z + 0.5);
-  // white LED lamps on this cell (LAMP_LED_BIT, baked by the mesher from lampTint)
-  float led = step(${LAMP_LED_BIT - 0.5}, code);
-  code -= ${LAMP_LED_BIT}.0 * led;
+  // (white LED lamp bit: LAMP_LED_BIT, baked by the mesher from lampTint; read again at the lamp ribbon below. Values kept
+  // alive across this whole shader cost more in software rendering than recomputing them)
+  code -= ${LAMP_LED_BIT}.0 * step(${LAMP_LED_BIT - 0.5}, code);
   float mat = floor(code / 64.0);
   float kind = floor(mod(code, 64.0) / 8.0);
   float feat = mod(code, 8.0);
@@ -139,11 +144,8 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
   float wf = floor(vRd.w + 0.5);
   vec2 wp = vWp.xz;
   float au = abs(u);
-  // on-screen footprint (m per pixel) of the road surface
-  float fpx = length(fwidth(wp));
-  float distFade = clamp(1.0 - fpx * 0.35, 0.0, 1.0);
-  // share of verge / median grass in this fragment (its season is applied once at the end)
-  float grassK = 0.0;
+  // on-screen footprint of the road surface: 1 up close, 0 from ~2.9 m per pixel
+  float distFade = clamp(1.0 - length(fwidth(wp)) * 0.35, 0.0, 1.0);
 
   if (mat < 0.5) {
     // ---------------------------------------------------------------- asphalt
@@ -273,9 +275,8 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
       if (kind < 1.5) {
         // street: grass verge between curb and sidewalk, and behind it
         float g = range1(au, aw + 0.25, 5.3) + range1(au, 7.55, 8.2);
-        vec3 grass = vec3(0.075, 0.13, 0.035) * (0.75 + 0.5 * rfbm(wp * 0.6)) * (0.9 + 0.2 * rnoise(wp * 7.0));
+        vec3 grass = roadGrass(vec3(0.075, 0.13, 0.035) * (0.75 + 0.5 * rfbm(wp * 0.6)) * (0.9 + 0.2 * rnoise(wp * 7.0)));
         c = mix(c, grass, g);
-        grassK = g;
         rough = mix(rough, 0.95, g);
       } else if (kind > 1.5 && kind < 2.5) {
         // road: square tree pits every 12 m
@@ -293,7 +294,7 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
   } else if (mat < 3.5) {
     // grass (median)
     vec3 c = vec3(0.07, 0.125, 0.035) * (0.72 + 0.55 * rfbm(wp * 0.5)) * (0.88 + 0.24 * rnoise(wp * 8.0));
-    albedo = c; rough = 0.95; metal = 0.0; grassK = 1.0;
+    albedo = roadGrass(c); rough = 0.95; metal = 0.0;
   } else if (mat < 4.5) {
     // ballast gravel
     float g = rnoise(wp * 14.0) * 0.55 + rnoise(wp * 37.0) * 0.45;
@@ -339,7 +340,7 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
   } else if (mat < 11.5) {
     // verge (highway shoulders beyond the barrier)
     vec3 grass = vec3(0.08, 0.12, 0.04) * (0.7 + 0.6 * rfbm(wp * 0.4));
-    albedo = grass; rough = 0.95; metal = 0.0; grassK = 1.0;
+    albedo = roadGrass(grass); rough = 0.95; metal = 0.0;
   } else if (mat < 12.5) {
     // jersey barrier
     vec3 c = vec3(0.38, 0.375, 0.36) * (0.85 + 0.2 * rfbm(wp * 0.7));
@@ -399,7 +400,7 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
   // the lamp heads / pools); a road hierarchy: avenues / one-way arterials brighter, local streets dimmer. The light
   // pools (PropRenderer) add the per-lamp spots up close.
   if (uLamps > 0.002 && kind > 0.5 && kind < 5.5 && (mat < 3.5 || (mat > 9.5 && mat < 11.5))) {
-    float isLed = max(led, step(4.5, kind));
+    float isLed = max(step(${LAMP_LED_BIT - 0.5}, floor(vRd.z + 0.5)), step(4.5, kind));
     vec3 lampC = isLed > 0.5 ? vec3(0.7, 0.68, 0.6) * 0.75 : vec3(1.0, 0.55, 0.2);
     float hw = kind < 1.5 ? 3.6 : (kind < 2.5 ? 5.0 : (kind < 3.5 ? 6.8 : (kind < 4.5 ? 5.0 : 8.0)));
     float lat = 1.0 - 0.5 * smoothstep(0.55, 1.0, au / (hw + 3.2));
@@ -407,14 +408,12 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
     // lighter surfaces (sidewalks, curbs) return more of the light than asphalt
     float refl = 0.75 + 1.8 * dot(albedo, vec3(0.3, 0.59, 0.11));
     // far away a road is a 1-3 px line blended with the dark lots beside it: its ribbon gets up to 2x brighter (by its
-    // on-screen footprint, ~1 -> 2.5 m per pixel) so the lit network still reads once the pools / lamp heads have faded
-    float farB = 1.0 + smoothstep(0.9, 2.4, fpx);
+    // on-screen footprint, ~0.9 -> 2.4 m per pixel, read back from distFade) so the lit network still reads once the
+    // pools / lamp heads have faded
+    float farB = 1.0 + smoothstep(0.9, 2.4, (1.0 - distFade) * 2.857);
     emis += lampC * uLampRibbon * k * lat * refl * farB * uLamps * (1.0 - 0.8 * uRoadOverlay);
   }
 
-  // grass of medians / verges: dormant straw in winter and in deserts, like the lot lawns (materials.ts uFoliageDry)
-  float grL = dot(albedo, vec3(0.3, 0.59, 0.11));
-  albedo = mix(albedo, vec3(grL) * vec3(1.18, 1.02, 0.68), uFoliageDry * grassK);
   // data-view overlay: desaturate + lift
   float lum = dot(albedo, vec3(0.3, 0.59, 0.11));
   albedo = mix(albedo, vec3(lum) * 0.8 + 0.03, uRoadOverlay * 0.7);

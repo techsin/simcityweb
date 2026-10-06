@@ -358,11 +358,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
   float curvK = length(fwidth(nObj.xz)) / (length(fwidth(P.xz)) + 1e-4);
   if (curvK > 0.004 && curvK < 0.4) u = atan(nObj.z, nObj.x) * max(length(P.xz), 1.0);
   float v = P.y;
-  // facade-coordinate derivatives, shared by the window / curtain / glass patterns (one fwidth per fragment)
-  vec2 fwUV = max(fwidth(vec2(u, v)), vec2(1e-4));
   float night = uNight;
-  // lit windows come on with the street lamps around sunset (people switch lights on at dusk), ahead of the night factor
-  float wNight = max(uNight, 0.6 * uLamps);
   // contact darkening + faint vertical weathering streaks near the ground on walls (grounds the buildings)
   if (vertical && (type < 1.5 || type > 10.5)) {
     albedo *= 0.8 + 0.2 * smoothstep(0.0, 2.2, v);
@@ -370,6 +366,11 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
   }
 
   if ((type > 0.5 && type < 2.5) || (type > 6.5 && type < 7.5)) {
+    // (facade-coordinate derivatives and the window-light factor are computed here and in the emissive branch, not once
+    // at the top: values kept alive across the whole uber shader cost several % in software rendering)
+    vec2 fwUV = max(fwidth(vec2(u, v)), vec2(1e-4));
+    // lit windows come on with the street lamps around sunset (people switch lights on at dusk), ahead of the night factor
+    float wNight = max(uNight, 0.6 * uLamps);
     // ---- glazed facades (WallWindows, GlassCurtain, PlainGlass): the branches set up the night window grid, lit once at
     // the end of this block (nightWindows); the grid state stays local to the block (short live ranges). Weight of the
     // window glass in this fragment (0 = no windows), cell (column, floor) + position in the floor + on-screen cell size
@@ -540,7 +541,9 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     // thin light strands (patterns 0-8 and the night-only 10 / 11 with a paint floor below 0.5 m = the strand thickness:
     // festoons, light strings, rooftop bulb lines): dotted bulbs up close, and the emission scaled by the strand's share
     // of a pixel, so a sub-pixel strand fades out instead of aliasing into a full-brightness 1 px laser line at 300-700 m
-    float fp = max(fwUV.x, fwUV.y);
+    vec2 fwS = fwidth(vec2(u, v));
+    float fp = max(max(fwS.x, fwS.y), 1e-4);
+    float wNight = max(uNight, 0.6 * uLamps);
     float bulbs = clamp(1.57 - 2.86 * abs(fract(dot(P, vec3(1.9, 2.3, 1.7))) - 0.5) * 2.0, 0.0, 1.0);
     float strandK = vSurf.z < 0.5 ? clamp(vSurf.z * 1.5 / fp, 0.1, 1.0) * mix(0.55, 0.25 + 1.5 * bulbs, clamp(1.0 - fp * 5.0, 0.0, 1.0)) : 1.0;
     if (pattern > 8.5 && pattern < 9.5) {
