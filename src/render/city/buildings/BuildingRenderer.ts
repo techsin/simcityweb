@@ -45,7 +45,7 @@ import { getDef } from '../../../sim/catalog';
 import { getModelGeometry } from '../../../assets/registry';
 import { MANIFEST_BY_ID } from '../../../assets/manifest';
 import { ModelBuilder } from '../../../assets/ModelBuilder';
-import { jitterHex, leafBlob, mark, mixHex, shadeHex, tintSince, triOut, type V3 } from '../../../assets/builders/nat_geom';
+import { jitterHex, leafBlob, mark, mixHex, quadOut, shadeHex, tintSince, triOut, type V3 } from '../../../assets/builders/nat_geom';
 import { P, profileSolid, type PP } from '../../../assets/builders/veh_parts';
 import { RNG } from '../../../core/rng';
 import { Surf } from '../../../core/types';
@@ -157,10 +157,22 @@ const LOD_BUCKETS = 4096;
  *  rest is caught up over the next frames. At least LOD_JUMP m and half the camera height (a fast zoom at a far view
  *  moves the camera 100-300 m per frame: smooth motion, sliced) */
 const LOD_JUMP = 150;
+/** a foundation skirt is drawn as its plain box (no cap band / step tier) while its exposed height projects under this
+ *  many pixels (or the building is on its proxy) */
+const FOUND_PX = 2;
+
+/** foundation skirt depth (m) for an exposed depth: + 0.8 m into the ground, quantized to 1.2 / 2.2 / 3.4 / 4.8 / 6.8
+ *  (bounded geometry count) */
+function foundQ(depth: number): number {
+  const q = depth + 0.8;
+  return q <= 1.2 ? 1.2 : q <= 2.2 ? 2.2 : q <= 3.4 ? 3.4 : q <= 4.8 ? 4.8 : 6.8;
+}
 
 const POP_TIME = 0.55;
 const _sphere = new THREE.Sphere();
 const _pm = new THREE.Matrix4();
+const _km = new THREE.Matrix4();
+const _dir = new THREE.Vector3();
 
 function easeOutBack(t: number): number {
   const c1 = 1.4, c3 = c1 + 1;
@@ -174,37 +186,6 @@ function cellHash(x: number, z: number, id: number): number {
   h = Math.imul(h, 0x27d4eb2d);
   h ^= h >>> 13;
   return h >>> 0;
-}
-
-/** quarter turn (radians) of the rubble tile at cell (i, j) of a w x d burnt lot. A tile's broken walls stand along its
- *  -X and -Z sides: on the lot's edge cells they face outward, so the lot reads as ONE burnt-out building (outer walls
- *  standing, the inside collapsed into heaps) rather than a grid of small ruins; inside the lot (and across a side
- *  that is one cell wide) the side comes from the cell hash */
-function rubbleTurn(i: number, j: number, w: number, d: number, h: number): number {
-  const sx = w > 1 && i === 0 ? -1 : w > 1 && i === w - 1 ? 1 : (h >>> 9) & 1 ? 1 : -1;
-  const sz = d > 1 && j === 0 ? -1 : d > 1 && j === d - 1 ? 1 : (h >>> 10) & 1 ? 1 : -1;
-  // a turn by k quarters takes the local wall corner (-X, -Z) to (-,-), (-,+), (+,+), (+,-) for k = 0..3
-  return (sx < 0 ? (sz < 0 ? 0 : 1) : sz > 0 ? 2 : 3) * (Math.PI / 2);
-}
-
-/**
- * Rubble tile variant of cell (x, z) of a burnt multi-cell lot (prop.ts rubble: v0 charred brick heaps, v1 concrete
- * heaps, v2 concrete heaps + a burnt-out car, v3 low debris field with a standing wall corner). The lot's interior gets
- * the heavy heaps (v0 / v1), half of its border cells the low field with standing wall corners (the collapsed
- * building's perimeter), and at most ONE border cell of every other lot with 3+ cells the car (hashing all four
- * variants put a burnt car in every 4th cell: a scrapyard, not a burnt building).
- */
-function rubbleVariant(b: Building, x: number, z: number): number {
-  const n = b.w * b.d;
-  const h = cellHash(x, z, b.id) >>> 11;
-  const border = x === b.x || z === b.z || x === b.x + b.w - 1 || z === b.z + b.d - 1;
-  const lot = cellHash(b.x, b.z, b.id ^ 0x2c1b3c6d);
-  if (n >= 3 && lot & 1 && border) {
-    const kc = (lot >>> 1) % n;
-    if (x === b.x + (kc % b.w) && z === b.z + Math.floor(kc / b.w)) return 2;
-  }
-  if (border && (h & 1) === 0) return 3;
-  return (h >>> 1) & 1;
 }
 
 /** rubble bed top above the tile origin is 0.4 m (prop.ts): ground up to this much above the bed plane stays hidden */
@@ -224,12 +205,7 @@ const RUBBLE_TILTS = [1, 0.75, 0.5, 0.25, 0];
 /** rubble culling spheres are padded by this (m, instead of PROXY_PAD): DynamicBatch scales a sphere by the matrix's
  *  longest column, which under-reads a shear's stretch (up to x1.27 at RUBBLE_SLOPE on both axes) */
 const RUBBLE_PAD = 1.8;
-/** horizontal scale of tiled rubble: neighbouring tiles overlap by ~1.6 cm, since coplanar beds of separately transformed
- *  tiles leave pixel cracks along the seams (a dotted dark line through the lot); the overlap is the plain bed colour
- *  on both tiles (prop.ts keeps the scorch marks 0.2 m inside the tile), so where they coincide nothing changes */
-const RUBBLE_TILE_S = 1.002;
 const _sh = new THREE.Matrix4();
-const _ts = new THREE.Vector3(RUBBLE_TILE_S, 1, RUBBLE_TILE_S);
 
 /** m = T(x, y + lift, z) · vertical shear (y += ax·dx + az·dz along the WORLD axes: walls stay upright) · m, with
  *  cell k's [ax, az, lift] from rubbleSlopes (none: plain translation) */
@@ -238,6 +214,256 @@ function shearOnto(m: THREE.Matrix4, x: number, y: number, z: number, sh: number
   const ax = sh[o] ?? 0, az = sh[o + 1] ?? 0, lift = sh[o + 2] ?? 0;
   _sh.set(1, 0, 0, x, ax, 1, az, y + lift, 0, 0, 1, z, 0, 0, 0, 1);
   return m.premultiply(_sh);
+}
+
+// ------------------------------------------------------------------------------------- burnt lots: the rubble kit
+
+/** debris bed top over the lot base (m) where the ground is not higher (prop.ts's one-cell rubble: 0.4 m as well) */
+const RUB_TOP = 0.4;
+/** the bed's closed sides reach this far under its top edge (0.5 m under the base on level ground) */
+const RUB_SIDE = 0.9;
+/** LOD metric radius of a rubble lot (m): its pieces are cell-sized, so it swaps detail like a one-cell building */
+const RUB_LOD_R = 11.3;
+/** footprint radius (m, at scale 1) of a heap cluster / a big heap */
+const RUB_CLUSTER_R = 4.7;
+const RUB_BIG_R = 10.6;
+/** outer-wall stub heights (m) by the burnt building's height class */
+const RUB_WALL_H = [1.9, 2.9, 4.2];
+/** debris palettes per family (0 charred brick, 1 grey concrete; prop.ts's rubble colours) */
+const RUB_HEAP_COLS: readonly (readonly number[])[] = [
+  [0x2c2724, 0x3b322d, 0x4a3a30, 0x563428, 0x7a5a48, 0x8c7a66],
+  [0x625e58, 0x53504b, 0x6f6a64, 0x3a3734, 0x8c7a66, 0x7a5a48],
+];
+const RUB_BLOCK_COLS: readonly (readonly number[])[] = [[0x6b3a2c, 0x3a3430, 0x7a4432, 0x7a5a48], [0x8e8a82, 0x6e6a64, 0x8c7a66]];
+/** heap layouts of the cluster pieces, [x, z, rx, ry, rz] (m, piece centre at 0): a big heap + a small one, a long
+ *  collapsed mass, three medium heaps, a low debris field (with a standing wall stub) */
+const RUB_HEAPS: readonly (readonly (readonly [number, number, number, number, number])[])[] = [
+  [[-0.6, 0.3, 3.4, 1.35, 2.7], [2.7, -1.9, 1.9, 0.7, 1.6]],
+  [[0, 0, 4.0, 1.0, 2.0], [-2.5, 2.2, 1.7, 0.6, 1.5], [2.8, 1.8, 1.4, 0.5, 1.2]],
+  [[-2.0, -1.3, 2.4, 1.05, 2.1], [1.9, -0.8, 2.2, 0.9, 1.9], [0.1, 2.1, 2.0, 0.8, 1.8]],
+  [[1.6, -1.9, 2.8, 0.6, 2.2], [-1.8, 2.2, 2.0, 0.45, 1.8]],
+];
+
+/** height (m over the lot base) of a w x d burnt lot's debris bed at lot-local (x, z): RUB_TOP, or through the corner
+ *  heights `tops` ((w + 1) x (d + 1), row-major) on the terrain's own triangle split (diagonal (x + 1, z)-(x, z + 1),
+ *  TerrainRenderer.meshHeightAt) */
+function bedHeight(w: number, d: number, tops: Float32Array | null, x: number, z: number): number {
+  if (!tops) return RUB_TOP;
+  const fx = Math.min(w - 1e-6, Math.max(0, x / CELL_SIZE + w / 2)), fz = Math.min(d - 1e-6, Math.max(0, z / CELL_SIZE + d / 2));
+  const gx = Math.floor(fx), gz = Math.floor(fz), tx = fx - gx, tz = fz - gz, w1 = w + 1, i = gz * w1 + gx;
+  const a = tops[i], b = tops[i + 1], c = tops[i + w1], e = tops[i + w1 + 1];
+  return tx + tz <= 1 ? a + (b - a) * tx + (c - a) * tz : e + (c - e) * (1 - tx) + (b - e) * (1 - tz);
+}
+
+/** irregular flat fan: n rim points around (cx, cz) at radii r x 0.65-1.1 (clamped to |x| <= limX, |z| <= limZ), every
+ *  vertex at height y(x, z) */
+function rubFan(mb: ModelBuilder, rng: RNG, cx: number, cz: number, r: number, y: (x: number, z: number) => number, n: number, limX = Infinity, limZ = Infinity): void {
+  const a0 = rng.range(0, Math.PI * 2);
+  const rim: V3[] = [];
+  for (let k = 0; k < n; k++) {
+    const a = a0 + (k / n) * Math.PI * 2, rr = r * rng.range(0.65, 1.1);
+    const x = Math.max(-limX, Math.min(limX, cx + Math.cos(a) * rr)), z = Math.max(-limZ, Math.min(limZ, cz - Math.sin(a) * rr));
+    rim.push([x, y(x, z), z]);
+  }
+  const c: V3 = [cx, y(cx, cz), cz];
+  for (let k = 0; k < n; k++) triOut(mb, c, rim[k], rim[(k + 1) % n], [0, 1, 0]);
+}
+
+/**
+ * Debris bed of a w x d cell burnt lot (lot-local m, origin at the lot centre on its base): ONE surface over the whole
+ * lot (no seams between cells), level at RUB_TOP or through every cell corner at `tops` on the terrain's triangle split
+ * (bedHeight: wherever the ground rises above the base the bed stays RUB_TOP over it, so no hill pokes through and no
+ * step shows between cells), closed sides RUB_SIDE deep, and lot-scale scorch marks and brick-dust / ash drifts (about
+ * the cover per cell of prop.ts's one-cell tile, but placed over the whole lot instead of once per cell).
+ */
+function rubbleBed(w: number, d: number, tops: Float32Array | null, seed: number): THREE.BufferGeometry {
+  const C = CELL_SIZE, hx = (w * C) / 2 - 0.02, hz = (d * C) / 2 - 0.02, w1 = w + 1;
+  const mb = new ModelBuilder();
+  const top = (i: number, j: number) => (tops ? tops[j * w1 + i] : RUB_TOP);
+  // corner coordinates (the outer ones pulled 2 cm inside the lot edge)
+  const ex = (i: number) => (tops ? Math.max(-hx, Math.min(hx, i * C - (w * C) / 2)) : i ? hx : -hx);
+  const ez = (j: number) => (tops ? Math.max(-hz, Math.min(hz, j * C - (d * C) / 2)) : j ? hz : -hz);
+  const nx = tops ? w : 1, nz = tops ? d : 1;
+  mb.paint(0x55493f, Surf.Plain);
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+    const a: V3 = [ex(i), top(i, j), ez(j)], b: V3 = [ex(i + 1), top(i + 1, j), ez(j)];
+    const c: V3 = [ex(i), top(i, j + 1), ez(j + 1)], e: V3 = [ex(i + 1), top(i + 1, j + 1), ez(j + 1)];
+    triOut(mb, a, b, c, [0, 1, 0]);
+    triOut(mb, b, e, c, [0, 1, 0]);
+  }
+  mb.paint(0x3f3630, Surf.Plain);
+  const side = (x0: number, z0: number, t0: number, x1: number, z1: number, t1: number, out: V3) =>
+    quadOut(mb, [x0, t0 - RUB_SIDE, z0], [x1, t1 - RUB_SIDE, z1], [x1, t1, z1], [x0, t0, z0], out);
+  for (let i = 0; i < nx; i++) {
+    side(ex(i), -hz, top(i, 0), ex(i + 1), -hz, top(i + 1, 0), [0, 0, -1]);
+    side(ex(i), hz, top(i, d), ex(i + 1), hz, top(i + 1, d), [0, 0, 1]);
+  }
+  for (let j = 0; j < nz; j++) {
+    side(-hx, ez(j), top(0, j), -hx, ez(j + 1), top(0, j + 1), [-1, 0, 0]);
+    side(hx, ez(j), top(w, j), hx, ez(j + 1), top(w, j + 1), [1, 0, 0]);
+  }
+  // scorch marks first (lowest), then the drifts, each a few mm over the previous ones (no z-fighting where they meet)
+  const rng = new RNG(seed || 1);
+  const n = w * d, ns = Math.max(1, Math.round(n * 0.6)), nd = Math.max(2, Math.round(n * 1.2));
+  for (let k = 0; k < ns + nd; k++) {
+    const scorch = k < ns, r = scorch ? rng.range(4, 7) : rng.range(2.2, 4.2);
+    const px = rng.range(-hx + r * 0.5, hx - r * 0.5), pz = rng.range(-hz + r * 0.5, hz - r * 0.5);
+    mb.paint(scorch ? jitterHex(rng, 0x2c2826, 0.05) : jitterHex(rng, k % 2 ? 0x8c7a66 : 0x7a5a48, 0.06), Surf.Plain);
+    const lift = scorch ? 0.02 + 0.003 * (k % 4) : 0.035 + 0.004 * (k % 8);
+    rubFan(mb, rng, px, pz, r, (x, z) => bedHeight(w, d, tops, x, z) + lift, 7, hx - 0.1, hz - 0.1);
+  }
+  return mb.build();
+}
+
+/** a proxy pyramid's tone: the heap's paint mixed with its palette's mean (its faces' mix), darkened like the heap's
+ *  shaded lower half */
+function heapTone(c: number, cols: readonly number[]): number {
+  let m = cols[0];
+  for (let i = 1; i < cols.length; i++) m = mixHex(m, cols[i], 1 / (i + 1));
+  return shadeHex(mixHex(c, m, 0.55), 0.84);
+}
+
+/** jagged broken wall stub along local z (length len, up to hMax tall, 2 hw thick, feet 0.15 m into the bed), sooty
+ *  toward its broken top (prop.ts's brokenWall) */
+function rubWall(mb: ModelBuilder, rng: RNG, fam: number, len: number, hMax: number, hw: number): void {
+  const m = mark(mb);
+  const n = Math.max(3, Math.round(len / 2.1));
+  const pts: PP[] = [{ z: -len / 2, y: -0.15 }, { z: len / 2, y: -0.15 }];
+  for (let i = n; i >= 0; i--) {
+    const z = -len / 2 + (len * i) / n + (i > 0 && i < n ? rng.range(-0.3, 0.3) : 0);
+    pts.push({ z, y: hMax * (i % 2 === 0 ? rng.range(0.55, 1.0) : rng.range(0.15, 0.5)) });
+  }
+  profileSolid(mb, pts, hw, fam ? P(0x7e7a72, Surf.Plain) : P(0x7a4432, Surf.Brick));
+  tintSince(mb, m, (p) => { const k = 1 - 0.55 * Math.min(1, Math.max(0, p[1]) / hMax); return [k, k * 0.96, k * 0.93]; });
+}
+
+/** n tumbled blocks / brick chunks within radius R of (cx, cz) */
+function rubBlocks(mb: ModelBuilder, rng: RNG, fam: number, n: number, R: number, small: boolean, cx = 0, cz = 0, rz = R): void {
+  const cols = RUB_BLOCK_COLS[fam];
+  for (let i = 0; i < n; i++) {
+    const a = rng.range(0, Math.PI * 2), r = Math.sqrt(rng.range(0.05, 1));
+    mb.push().translate(cx + Math.cos(a) * r * R, 0.04, cz + Math.sin(a) * r * rz).rotateY(rng.range(0, Math.PI)).rotateX(rng.range(-0.4, 0.4));
+    mb.paint(rng.pick(cols), fam ? Surf.Plain : Surf.Brick);
+    const s = small ? rng.range(0.3, 0.6) : rng.range(0.45, 0.9);
+    mb.box(-s, -0.12, -s * 0.6, s, s * 0.7, s * 0.6, { bottom: null });
+    mb.pop();
+  }
+}
+
+/** n fallen charred beams (brick) / twisted rebar (concrete) lying across the heaps at `at` ([x, z, ...]) */
+function rubBeams(mb: ModelBuilder, rng: RNG, fam: number, at: readonly (readonly number[])[], n: number, spread: number): void {
+  mb.paint(fam ? 0x5a3a2a : 0x1f1b19, fam ? Surf.Metal : Surf.Wood);
+  for (let i = 0; i < n; i++) {
+    const h = rng.pick(at);
+    const x = h[0] + rng.range(-spread, spread), z = h[1] + rng.range(-spread, spread), a = rng.range(0, Math.PI), L = rng.range(3, 5);
+    const dx = (Math.cos(a) * L) / 2, dz = (Math.sin(a) * L) / 2;
+    mb.beam([x - dx, rng.range(0.05, 0.35), z - dz], [x + dx, rng.range(0.6, 1.4), z + dz], fam ? 0.07 : 0.24);
+  }
+}
+
+/** heap-cluster piece k (RUB_HEAPS) of debris family fam, and its proxy (one pyramid per heap) */
+function rubbleCluster(fam: number, k: number): [THREE.BufferGeometry, THREE.BufferGeometry] {
+  const rng = new RNG(0x3c11 + fam * 1013 + k * 97);
+  const mb = new ModelBuilder(), px = new ModelBuilder();
+  const cols = RUB_HEAP_COLS[fam], heaps = RUB_HEAPS[k];
+  // brick-dust / ash spill under the pile, over the bed's drifts: blends the pile into the bed
+  mb.paint(jitterHex(rng, fam ? 0x6e675f : 0x7a5a48, 0.05), Surf.Plain);
+  rubFan(mb, rng, 0, 0, k === 3 ? 4.2 : 4.5, () => 0.085, 8);
+  if (k === 3) {
+    // the low debris field keeps a standing sooty wall stub
+    mb.push().translate(-2.6, 0, 0.8).rotateY(rng.range(-0.5, 0.5));
+    rubWall(mb, rng, fam, 5.2, 2.6, fam ? 0.2 : 0.18);
+    mb.pop();
+  }
+  const m2 = mark(mb);
+  for (const [x, z, rx, ry, rz] of heaps) {
+    const c = rng.pick(cols);
+    mb.paint(c, Surf.Plain);
+    leafBlob(mb, rng, [x, ry * 0.2 - 0.12, z], [rx, ry, rz], { jitter: 0.16, soft: 0.45, floorY: -0.1, faceColor: () => (rng.chance(0.55) ? jitterHex(rng, rng.pick(cols), 0.08) : null) });
+    px.paint(heapTone(c, cols), Surf.Plain).push().translate(x, 0, z).rotateY(rng.range(0, Math.PI));
+    px.pyramid(0, 0, rx * 1.45, rz * 1.45, -0.1, ry * 1.05).pop();
+  }
+  // heaps darken toward the ground
+  tintSince(mb, m2, (p) => { const t = 0.72 + 0.28 * Math.min(1, Math.max(0, p[1]) / 1.4); return [t, t, t]; });
+  rubBlocks(mb, rng, fam, k === 3 ? 7 : 4, 4.2, k === 3);
+  rubBeams(mb, rng, fam, heaps, k === 0 ? 3 : 2, 1.5);
+  return [mb.build(), px.build()];
+}
+
+/** big collapsed heap over a 2 x 2 block of cells (layout k of family fam: a detail-1 core ringed by four smaller heaps,
+ *  pancaked floor slabs on the concrete core, a burnt-out car at the edge of layout 1), and its proxy */
+function rubbleBigHeap(fam: number, k: number): [THREE.BufferGeometry, THREE.BufferGeometry] {
+  const rng = new RNG(0x8b21 + fam * 733 + k * 59);
+  const mb = new ModelBuilder(), px = new ModelBuilder();
+  const cols = RUB_HEAP_COLS[fam];
+  mb.paint(jitterHex(rng, fam ? 0x6e675f : 0x7a5a48, 0.05), Surf.Plain);
+  rubFan(mb, rng, 0, 0, 9.8, () => 0.085, 10);
+  const m2 = mark(mb);
+  const heap = (x: number, z: number, r: V3, detail: number) => {
+    const c = rng.pick(cols);
+    mb.paint(c, Surf.Plain);
+    leafBlob(mb, rng, [x, r[1] * 0.18 - 0.14, z], r, { detail, jitter: 0.15, soft: 0.42, floorY: -0.1, faceColor: () => (rng.chance(0.55) ? jitterHex(rng, rng.pick(cols), 0.08) : null) });
+    px.paint(heapTone(c, cols), Surf.Plain).push().translate(x, 0, z).rotateY(rng.range(0, Math.PI));
+    px.pyramid(0, 0, r[0] * 1.45, r[2] * 1.45, -0.1, r[1] * 1.05).pop();
+  };
+  heap(0, 0, k ? [6.4, 2.9, 6.6] : [7.6, 2.5, 5.6], 1);
+  const at: number[][] = [[0, 0]];
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + rng.range(-0.45, 0.45), r = rng.range(6.2, 8.2);
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    heap(x, z, [rng.range(1.8, 2.8), rng.range(0.6, 1.15), rng.range(1.6, 2.5)], 0);
+    at.push([x, z]);
+  }
+  tintSince(mb, m2, (p) => { const t = 0.7 + 0.3 * Math.min(1, Math.max(0, p[1]) / 2.4); return [t, t, t]; });
+  if (fam) {
+    // pancaked floor slabs leaning on the core
+    for (let i = 0; i < 3; i++) {
+      const a = rng.range(0, Math.PI * 2), r = rng.range(3.2, 5.0);
+      mb.push().translate(Math.cos(a) * r, 0.6, Math.sin(a) * r).rotateY(-a + rng.range(-0.4, 0.4)).rotateZ(rng.range(0.2, 0.45));
+      mb.paint(jitterHex(rng, 0x8a857c, 0.05), Surf.Plain).box(-2.4, -0.15, -1.7, 2.4, 0.15, 1.7, { bottom: null });
+      mb.pop();
+    }
+  }
+  rubBlocks(mb, rng, fam, 8, 9.2, false);
+  rubBeams(mb, rng, fam, at, 5, 2.0);
+  if (k === 1) {
+    mb.push().translate(7.4, 0, -5.2).rotateY(rng.range(0, Math.PI));
+    mb.paint(0x4d3a2e, Surf.Metal).box(-0.9, 0.1, -2.2, 0.9, 0.85, 2.2, { bottom: null });
+    mb.paint(0x2b2320, Surf.Metal).box(-0.8, 0.85, -1.0, 0.8, 1.25, 0.9, { bottom: null });
+    mb.pop();
+  }
+  return [mb.build(), px.build()];
+}
+
+/** outer-wall stub of the burnt building's shell (height class hc, layout k): straight (12 m along local z) or a corner
+ *  (7.5 m arms along +x and +z from the origin) with a few chunks at its foot; its proxy is a plain slab per arm */
+function rubbleWallPiece(fam: number, corner: boolean, hc: number, k: number): [THREE.BufferGeometry, THREE.BufferGeometry] {
+  const rng = new RNG(0x5e77 + fam * 389 + (corner ? 7919 : 0) + hc * 31 + k * 13);
+  const mb = new ModelBuilder(), px = new ModelBuilder();
+  const h = RUB_WALL_H[hc] * (k ? 0.85 : 1), hw = fam ? 0.2 : 0.18;
+  const tone = shadeHex(fam ? 0x7e7a72 : 0x7a4432, 0.68);
+  const arm = (x: number, z: number, yaw: number, len: number, hh: number) => {
+    mb.push().translate(x, 0, z).rotateY(yaw);
+    rubWall(mb, rng, fam, len, hh, hw);
+    rubBlocks(mb, rng, fam, 2, 1.3, true, rng.chance(0.5) ? 0.9 : -0.9, 0, len * 0.4);
+    mb.pop();
+    px.paint(tone, fam ? Surf.Plain : Surf.Brick).push().translate(x, 0, z).rotateY(yaw);
+    px.box(-hw, -0.15, -len / 2, hw, hh * 0.62, len / 2, { pz: null, nz: null, bottom: null }).pop();
+  };
+  if (!corner) arm(0, 0, 0, 12, h);
+  else {
+    arm(0, 3.75 - hw, 0, 7.5, h);
+    arm(3.75 - hw, 0, Math.PI / 2, 7.5, h * rng.range(0.65, 1));
+  }
+  return [mb.build(), px.build()];
+}
+
+/** a burnt-out car shell (prop.ts's rubble v2 car); its own proxy */
+function rubbleCar(): THREE.BufferGeometry {
+  const mb = new ModelBuilder();
+  mb.paint(0x4d3a2e, Surf.Metal).box(-0.9, 0.1, -2.2, 0.9, 0.85, 2.2, { bottom: null });
+  mb.paint(0x2b2320, Surf.Metal).box(-0.8, 0.85, -1.0, 0.8, 1.25, 0.9, { bottom: null });
+  return mb.build();
 }
 
 export function modelIdOf(b: Building): string {
@@ -588,6 +814,24 @@ export class BuildingRenderer {
    *  than fadeTravel x fadeFast in log this frame: fast pans / fly-bys) are instant: the view changes wholesale there, a
    *  1-2 frame dissolve is invisible and only churns the fade layer (0 = off) */
   fadeFast = 0.5;
+  /** downgrade threshold (x lodPixels) while swaps may fade (fadeTime > 0; instant swaps: 0.88): a downgrade dissolve
+   *  starts here and, over its fadeTravel of camera travel, ends about where the instant swap happens, so a fading
+   *  zoom-out draws the full model no farther out than an instant one would (the upgrade threshold stays 1.12) */
+  fadeOn = 1;
+  /** view motion per frame (lateral camera shift / view distance + turn, rad) from which the number of concurrent fades
+   *  is cut down (fadeMax up to the first value, none from the second): fast pans and orbits change the view wholesale,
+   *  a dissolve there is invisible and only draws both levels */
+  fadeMotion: [number, number] = [0.02, 0.06];
+  /** fadeMax scaled down by this frame's view motion (see fadeMotion) */
+  private fadeCap = 1024;
+  /** the fade layer's program is compiled: it is compiled asynchronously right after the first frame that drew the
+   *  buildings (not in the load-time precompile, see compileFade); until then every swap is instant */
+  fadeReady = false;
+  /** 0 nothing rendered yet, 1 first scene pass seen (compile next update), 2 compiling, 3 ready */
+  private fadeStage = 0;
+  private fadeRc: { r: THREE.WebGLRenderer; scene: THREE.Object3D; cam: THREE.Camera; rt: THREE.WebGLRenderTarget | null } | null = null;
+  /** view direction at the previous updateLod (view turn rate, see fadeMotion) */
+  private lodDir = new THREE.Vector3(NaN, NaN, NaN);
   private fades: Fade[] = [];
   private fadeLayer: LodFadeLayer;
   /** full geometry id -> its 3-vertex empty stand-in (drawn by the building's instance while it fades) */
@@ -599,6 +843,8 @@ export class BuildingRenderer {
   private lodKNow = 1;
   private fr = new THREE.Frustum();
   private frOk = false;
+  /** rubble kit pieces: key -> [full, proxy] geometry ids (see kitPiece) */
+  private kitIds = new Map<string, [number, number]>();
   selected: number | null = null;
   onVisual: ((v: BuildingVisual | null, id: number) => void) | null = null;
 
@@ -613,8 +859,45 @@ export class BuildingRenderer {
     this.batch.enablePassCulling({ culler, minShadowTexels: 1.2 });
     // nearest buildings first: occluded facades / lots behind them fail the depth test before the (heavy) uber shader
     this.batch.sortFront = true;
+    // the fade layer joins the scene graph only when its program is compiled (compileFade): the load-time precompile
+    // (PostFX.compileScene) must not block the first frame on it
     this.fadeLayer = new LodFadeLayer(this.batch.mesh, this.batch.mesh.customDepthMaterial);
-    this.batch.mesh.add(this.fadeLayer.mesh);
+    const mesh = this.batch.mesh, before = mesh.onBeforeRender;
+    mesh.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
+      // the first scene pass that draws the buildings: compile the fade program after this frame
+      if (this.fadeStage === 0) {
+        this.fadeStage = 1;
+        this.fadeRc = { r: renderer, scene, cam: camera, rt: renderer.getRenderTarget() };
+      }
+      before.call(mesh, renderer, scene, camera, geometry, material, group);
+    };
+  }
+
+  /**
+   * Compile the fade layer's program off the load path: after the first frame that drew the buildings, with the scene
+   * pass's render target bound (the same output variant, as PostFX.compileScene does) and asynchronously where
+   * KHR_parallel_shader_compile exists (three's compileAsync polls the program instead of blocking on it). Fades start
+   * once it is ready (fadeReady); a quality change recompiles the scene, the layer included, as before.
+   */
+  private compileFade(): void {
+    const rc = this.fadeRc;
+    this.fadeRc = null;
+    if (!rc || this.disposed) return;
+    this.fadeStage = 2;
+    const mesh = this.fadeLayer.mesh;
+    this.batch.mesh.add(mesh);
+    const r = rc.r, prev = r.getRenderTarget();
+    let done: Promise<unknown>;
+    try {
+      r.setRenderTarget(rc.rt);
+      done = r.compileAsync(mesh, rc.cam, rc.scene as THREE.Scene);
+    } catch {
+      // (compiled lazily by the first fade instead)
+      done = Promise.resolve();
+    } finally {
+      r.setRenderTarget(prev);
+    }
+    done.then(() => { if (!this.disposed) { this.fadeStage = 3; this.fadeReady = true; } }, () => {});
   }
 
   setState(state: CityState): void {
@@ -734,11 +1017,10 @@ export class BuildingRenderer {
   /**
    * Foundation skirt at its REAL size (the uber shader's stone courses live in model space, so the skirt must not be
    * scaled): coursed retaining-wall stone 0x8a8274 with a darker 0.3 m cap band; skirts deeper than 3 m step out in two
-   * tiers so tall ones read as graded retaining walls instead of a hard grey cake plate. Depth is quantized
-   * (1.2 / 2.2 / 3.4 / 4.8 / 6.8 m, the skirt reaches 0.8 m into the ground like before) to bound the geometry count.
+   * tiers so tall ones read as graded retaining walls instead of a hard grey cake plate. The depth q is quantized
+   * (foundQ) to bound the geometry count. 16 triangles (34 stepped); far away it is drawn as foundationLod's plain box.
    */
-  private foundation(sw: number, sd: number, depth: number): number {
-    const q = depth <= 1.2 ? 1.2 : depth <= 2.2 ? 2.2 : depth <= 3.4 ? 3.4 : depth <= 4.8 ? 4.8 : 6.8;
+  private foundation(sw: number, sd: number, q: number): number {
     const w = Math.round(sw * 10) / 10, d = Math.round(sd * 10) / 10;
     return this.batch.geometryId(`__foundation:${w}x${d}:${q}`, () => {
       const mb = new ModelBuilder();
@@ -757,9 +1039,169 @@ export class BuildingRenderer {
     });
   }
 
+  /** the skirt's far level: one plain box at its real size, the stone's mean tone (no cap band, no step tier; 8
+   *  triangles like the old scaled skirt), sharing the full skirt's culling sphere (a swap never rebuilds a list) */
+  private foundationLod(full: number, sw: number, sd: number, q: number): number {
+    const w = Math.round(sw * 10) / 10, d = Math.round(sd * 10) / 10;
+    const key = `__foundation:${w}x${d}:${q}:lod`;
+    const fresh = !this.batch.hasGeometry(key);
+    const id = this.batch.geometryId(key, () => {
+      const hx = w / 2 - 0.1, hz = d / 2 - 0.1;
+      return new ModelBuilder().paint(0x857d70, Surf.Stone).box(-hx, -q, -hz, hx, 0, hz, { top: null, bottom: null }).build();
+    });
+    if (fresh) this.batch.shareSphere(full, id, 0.05);
+    return id;
+  }
+
+  /** a rubble-kit piece's [full, proxy] geometry ids, built on first use: the proxy shares the full piece's culling
+   *  sphere, padded for the vertical shear onto slopes (DynamicBatch scales a sphere by the matrix's longest column,
+   *  which under-reads a shear's stretch by up to ~10% at RUBBLE_SLOPE) */
+  private kitPiece(key: string, make: () => [THREE.BufferGeometry, THREE.BufferGeometry]): [number, number] {
+    const done = this.kitIds.get(key);
+    if (done) return done;
+    const [g, p] = make();
+    const full = this.batch.geometryId(`__rubble:${key}`, () => g);
+    const prox = p === g ? full : this.batch.geometryId(`__rubble:${key}#lod`, () => p);
+    this.batch.padSphere(full, 0.1 * this.batch.bounds(full).getBoundingSphere(_sphere).radius + 0.3);
+    if (prox !== full) this.batch.shareSphere(full, prox, 0.3);
+    const ids: [number, number] = [full, prox];
+    this.kitIds.set(key, ids);
+    return ids;
+  }
+
   /**
-   * Burnt lots: per rubble cell (cell 0 first, row-major like bi.cells) a vertical shear + lift into bi.shear so the
-   * tile's bed lies on the ground where the ground rises above the lot base. Lots are levelled to their base only where
+   * Burnt multi-cell lot from the rubble kit (see rubbleBed and the piece builders): the debris bed is bi.main (level
+   * lots share a bed per lot size and variant; on a slope the lot gets its own bed through max(ground, base) + RUB_TOP
+   * at every cell corner), the debris pieces are bi.cells: big collapsed heaps over 2 x 2 blocks of interior cells (or
+   * over a whole 2 x 2 lot / around the middle of a 3 x 3 lot, sometimes), a heap cluster on most other cells at a
+   * hashed offset (up to 3.5 m, kept inside the lot), any yaw and 0.85-1.15 scale, a bare cell now and then, broken
+   * outer-wall stubs (L pieces at the corners) on about half of the lot's edge cells 1.4-2.4 m inside its edge (the
+   * burnt building's shell: brick or concrete and their height from the building that burnt), and on some lots a
+   * burnt-out car. Every piece rests on the bed: a plane fitted to the bed under its footprint (vertical shear, walls
+   * stay upright), lowered where the bed sags so it nowhere floats more than 8 cm (feet reach 10-15 cm into the bed).
+   * At LOD distance every piece swaps to its proxy (pyramids / slabs) with the lot. Returns the pieces' top (m over the
+   * base).
+   */
+  private rubbleKit(bi: BInst): number {
+    const b = bi.b, st = this.state, N = st.size, N1 = N + 1, H = st.heights, base = b.baseY, C = CELL_SIZE;
+    const w = b.w, d = b.d, hx = (w * C) / 2, hz = (d * C) / 2;
+    const lotH = cellHash(b.x, b.z, b.id ^ 0x2c1b3c6d);
+    const rng = new RNG(lotH || 1);
+    // bed corners: max(ground, base) + RUB_TOP; level unless the ground rises (nearly) through the level bed somewhere
+    const tops = new Float32Array((w + 1) * (d + 1));
+    let sloped = false;
+    for (let j = 0; j <= d; j++) for (let i = 0; i <= w; i++) {
+      const g = H[Math.min(N, b.z + j) * N1 + Math.min(N, b.x + i)] - base;
+      tops[j * (w + 1) + i] = Math.max(0, g) + RUB_TOP;
+      if (g > RUB_TOP - 0.05) sloped = true;
+    }
+    const T = sloped ? tops : null, bv = lotH % 3;
+    const bedKey = sloped ? `__rubble:bed:${w}x${d}:${Array.from(tops, (t) => Math.round(t * 100)).join(',')}` : `__rubble:bed:${w}x${d}:${bv}`;
+    const bed = this.batch.geometryId(bedKey, () => rubbleBed(w, d, T, sloped ? lotH : 0x1b5 + bv * 7919 + w * 31 + d * 131));
+    bi.geom = bi.lodGeom = bed;
+    bi.main = this.batch.add(bed);
+    // (the bed lies on the ground: it casts no shadow)
+    this.batch.setShadowCascades(bi.main, 0);
+    // debris family and wall height from the building that burnt: charred brick for low houses / walk-ups / shops,
+    // grey concrete for tall blocks and industry (one lot in five the other way)
+    const model = modelIdOf(b);
+    const hTop = MANIFEST_BY_ID[model]?.height[1] ?? 12;
+    const fam = (hTop >= 22 || model.startsWith('ind_') ? 1 : 0) ^ (lotH % 5 === 0 ? 1 : 0);
+    const hc = hTop < 10 ? 0 : hTop < 30 ? 1 : 2;
+    type Piece = { ids: [number, number]; x: number; z: number; yaw: number; s: number; r: number };
+    const pieces: Piece[] = [];
+    const clampIn = (v: number, lim: number) => Math.max(-Math.max(0, lim), Math.min(Math.max(0, lim), v));
+    const used = new Uint8Array(w * d);
+    // big heaps: sw x sd cells from (i0, j0) (and the cells in `also`) take one heap at the block's centre
+    const big = (i0: number, j0: number, sw: number, sd: number, also: number[] = []) => {
+      for (let j = j0; j < j0 + sd; j++) for (let i = i0; i < i0 + sw; i++) used[j * w + i] = 1;
+      for (const c of also) used[c] = 1;
+      const k = rng.int(0, 1), s = rng.range(0.88, 1.06), R = RUB_BIG_R * s;
+      const x = (i0 + sw / 2) * C - hx + rng.range(-1.5, 1.5), z = (j0 + sd / 2) * C - hz + rng.range(-1.5, 1.5);
+      pieces.push({ ids: this.kitPiece(`big${fam}.${k}`, () => rubbleBigHeap(fam, k)), x: clampIn(x, hx - R - 0.5), z: clampIn(z, hz - R - 0.5), yaw: rng.range(0, Math.PI * 2), s, r: R });
+    };
+    if (w >= 4 && d >= 4) {
+      // 2 x 2 blocks of interior cells (either parity where the interior is odd)
+      const oi = (w - 2) % 2 && rng.chance(0.5) ? 1 : 0, oj = (d - 2) % 2 && rng.chance(0.5) ? 1 : 0;
+      for (let j = 1 + oj; j + 1 <= d - 2; j += 2) for (let i = 1 + oi; i + 1 <= w - 2; i += 2) if (rng.chance(0.85)) big(i, j, 2, 2);
+    } else if (w === 3 && d === 3) {
+      // the middle collapsed into one heap spilling into the edge-middle cells
+      if (rng.chance(0.55)) big(1, 1, 1, 1, [1, 3, 5, 7]);
+    } else if (w === 2 && d === 2 && rng.chance(0.5)) big(0, 0, 2, 2);
+    // heap clusters on the other cells (some left bare)
+    for (let j = 0; j < d; j++) for (let i = 0; i < w; i++) {
+      if (used[j * w + i] || rng.chance(0.12)) continue;
+      const k = rng.int(0, 3), s = rng.range(0.85, 1.15), R = RUB_CLUSTER_R * s;
+      const x = (i + 0.5) * C - hx + rng.range(-3.5, 3.5), z = (j + 0.5) * C - hz + rng.range(-3.5, 3.5);
+      pieces.push({ ids: this.kitPiece(`cl${fam}.${k}`, () => rubbleCluster(fam, k)), x: clampIn(x, hx - R - 0.6), z: clampIn(z, hz - R - 0.6), yaw: rng.range(0, Math.PI * 2), s, r: R });
+    }
+    // the burnt shell: outer-wall stubs on about half of the edge cells, 1.4-2.4 m inside the lot's edge
+    const inset = rng.range(1.4, 2.4), ex = hx - inset, ez = hz - inset;
+    const wall = (corner: boolean) => { const k = rng.int(0, 1); return this.kitPiece(`w${fam}.${corner ? 1 : 0}.${hc}.${k}`, () => rubbleWallPiece(fam, corner, hc, k)); };
+    const flip = () => (rng.chance(0.5) ? Math.PI : 0);
+    if (w >= 2 && d >= 2) {
+      // corners: L pieces (arms along the piece's +x / +z) turned onto the lot's inside
+      for (const [x, z, yaw] of [[-ex, -ez, 0], [ex, -ez, -Math.PI / 2], [-ex, ez, Math.PI / 2], [ex, ez, Math.PI]]) {
+        if (rng.chance(0.6)) pieces.push({ ids: wall(true), x, z, yaw, s: 1, r: 7.6 });
+      }
+      for (let i = 1; i < w - 1; i++) for (const sz of [-1, 1]) {
+        if (rng.chance(0.55)) pieces.push({ ids: wall(false), x: (i + 0.5) * C - hx + rng.range(-1.5, 1.5), z: sz * ez, yaw: Math.PI / 2 + flip(), s: 1, r: 6.2 });
+      }
+      for (let j = 1; j < d - 1; j++) for (const sx of [-1, 1]) {
+        if (rng.chance(0.55)) pieces.push({ ids: wall(false), x: sx * ex, z: (j + 0.5) * C - hz + rng.range(-1.5, 1.5), yaw: flip(), s: 1, r: 6.2 });
+      }
+    } else {
+      // one cell wide: stubs along the two long sides
+      const alongX = w > 1, n = alongX ? w : d;
+      for (let i = 0; i < n; i++) for (const sd of [-1, 1]) {
+        if (!rng.chance(0.5)) continue;
+        const t = (i + 0.5) * C - (alongX ? hx : hz) + rng.range(-1.5, 1.5);
+        pieces.push({ ids: wall(false), x: alongX ? t : sd * ex, z: alongX ? sd * ez : t, yaw: (alongX ? Math.PI / 2 : 0) + flip(), s: 1, r: 6.2 });
+      }
+    }
+    // a burnt-out car on some lots (near one edge)
+    if (w * d >= 3 && rng.chance(0.4)) {
+      const side = rng.int(0, 3), t = rng.range(-0.6, 0.6);
+      const x = side < 2 ? (side ? 1 : -1) * (hx - 3.4) : t * Math.max(0, hx - 4), z = side < 2 ? t * Math.max(0, hz - 4) : (side === 3 ? 1 : -1) * (hz - 3.4);
+      pieces.push({ ids: this.kitPiece('car', () => { const g = rubbleCar(); return [g, g]; }), x, z, yaw: rng.range(0, Math.PI * 2), s: 1, r: 2.4 });
+    }
+    // rest every piece on the bed
+    const M = new Float32Array(pieces.length * 16);
+    const clampS = (s: number) => Math.max(-RUBBLE_SLOPE, Math.min(RUBBLE_SLOPE, s));
+    const cx = (b.x + w / 2) * C, cz = (b.z + d / 2) * C;
+    let top = RUB_TOP;
+    for (let k = 0; k < pieces.length; k++) {
+      const pc = pieces[k];
+      let y = bedHeight(w, d, T, pc.x, pc.z), ax = 0, az = 0;
+      if (T) {
+        const h = pc.r * 0.5;
+        ax = clampS((bedHeight(w, d, T, pc.x + h, pc.z) - bedHeight(w, d, T, pc.x - h, pc.z)) / (2 * h));
+        az = clampS((bedHeight(w, d, T, pc.x, pc.z + h) - bedHeight(w, d, T, pc.x, pc.z - h)) / (2 * h));
+        let lift = 0;
+        for (let q = 0; q < 8; q++) {
+          const a = (q / 8) * Math.PI * 2, ox = Math.cos(a) * pc.r * 0.85, oz = Math.sin(a) * pc.r * 0.85;
+          lift = Math.max(lift, y + ax * ox + az * oz - bedHeight(w, d, T, pc.x + ox, pc.z + oz) - 0.08);
+        }
+        y -= lift;
+      }
+      const m = this.m4.makeRotationY(pc.yaw).scale(this.s.set(pc.s, pc.s, pc.s));
+      _sh.set(1, 0, 0, cx + pc.x, ax, 1, az, base + y, 0, 0, 1, cz + pc.z, 0, 0, 0, 1);
+      m.premultiply(_sh).toArray(M, k * 16);
+      const id = this.batch.add(bi.lod ? pc.ids[1] : pc.ids[0]);
+      bi.cells.push(id);
+      bi.kitGeo.push(pc.ids[0]);
+      bi.kitLod.push(pc.ids[1]);
+      // small casters: the near cascade only
+      this.batch.setShadowCascades(id, 1);
+      top = Math.max(top, y + this.batch.bounds(pc.ids[0]).max.y * pc.s + (Math.abs(ax) + Math.abs(az)) * pc.r);
+    }
+    bi.kitM = M;
+    return top;
+  }
+
+  /**
+   * Burnt one-cell lots (prop.ts's rubble tile; bigger lots use the rubble kit): a vertical shear + lift into bi.shear
+   * so the tile's bed lies on the ground where the ground rises above the lot base. Lots are levelled to their base only where
    * the sim could (edge corners at roads / neighbours stay put), so on hills the up-slope side of a lot keeps its
    * slope: a flat bed there had grass poking through the debris. A tile is rigid (one matrix, world-vertical shear:
    * walls stay upright) while the ground under a cell is two triangles (TerrainRenderer.meshHeightAt), so the bed
@@ -841,9 +1283,10 @@ export class BuildingRenderer {
   rebuildAll(): void {
     this.clear();
     for (const b of this.state.buildings.values()) this.add(b, false);
-    // room for the proxies the worker is about to deliver and their 3-vertex cross-fade stand-ins: growing the batch's
-    // vertex buffer later would re-upload all of it in some frame (reserveVertices adds 25%)
-    this.batch.reserveVertices(this.lodPending.size * (PROXY_VERTS + 3));
+    // room for the proxies the worker is about to deliver and their 3-vertex cross-fade stand-ins, and for the rubble
+    // kit's pieces (~12k vertices, built when the first big lot burns): growing the batch's vertex buffer later would
+    // re-upload all of it in some frame (reserveVertices adds 25%)
+    this.batch.reserveVertices(this.lodPending.size * (PROXY_VERTS + 3) + (this.kitIds.size ? 0 : 12000));
   }
 
   private freeInstances(bi: BInst): void {
@@ -853,9 +1296,12 @@ export class BuildingRenderer {
     if (bi.found >= 0) this.batch.remove(bi.found);
     for (const id of bi.cells) this.batch.remove(id);
     bi.cells.length = 0;
-    bi.cellYaw.length = 0;
+    bi.kitGeo.length = 0;
+    bi.kitLod.length = 0;
+    bi.kitM = null;
     bi.shear.length = 0;
     bi.main = bi.site = bi.found = -1;
+    bi.foundGeom = bi.foundLod = -1;
   }
 
   private stateKey(b: Building): string {
@@ -876,10 +1322,12 @@ export class BuildingRenderer {
 
   add(b: Building, animate = true): void {
     if (this.inst.has(b.id)) this.remove(b.id);
+    // (rubble does not pop in)
+    if (b.flags & BF.Burnt) animate = false;
     const bi: BInst = {
-      b, main: -1, site: -1, found: -1, cells: [], cellYaw: [], shear: [], tile: 0, key: '', flags: 0, cr: 1, cg: 1, cb: 1, anim: animate ? POP_TIME : 0, geom: -1,
-      vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, minH: 0, li: this.list.length,
-      due: -1, now: false, waiting: -1, fresh: true, fade: null,
+      b, main: -1, site: -1, found: -1, cells: [], kitGeo: [], kitLod: [], kitM: null, shear: [], tile: 0, key: '', flags: 0, cr: 1, cg: 1, cb: 1, anim: animate ? POP_TIME : 0, geom: -1,
+      vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, minH: 0, foundGeom: -1, foundLod: -1, fh: 0, flod: 0,
+      li: this.list.length, due: -1, now: false, waiting: -1, fresh: true, fade: null,
     };
     this.inst.set(b.id, bi);
     this.ensureFlat(bi.li);
@@ -939,40 +1387,32 @@ export class BuildingRenderer {
     bi.fresh = true;
     const cx = (b.x + b.w / 2) * CELL_SIZE, cz = (b.z + b.d / 2) * CELL_SIZE;
     const yaw = b.rot * (Math.PI / 2);
-    // burnt: the rubble model covers ONE 16 m cell (designed to tile) -> one tile per footprint cell, variant from the
-    // cell's place in the lot (rubbleVariant) + quarter turn from a per-cell hash, unscaled, instead of one heap
-    // stretched over the lot; every tile follows the ground where it rises above the lot base (rubbleSlopes). Tiled
-    // rubble has no LOD (<= 200 triangles a cell, and the cells must not switch one by one)
-    const tiled = burnt && b.w * b.d > 1;
-    const geom = burnt ? this.geomFor('rubble', tiled ? rubbleVariant(b, b.x, b.z) : b.id) : this.geomFor(model, b.variant);
-    bi.geom = geom;
-    // a building currently drawn as a proxy gets its new model's proxy right away if it exists (no detail pop; without
-    // a worker it is built now), else it shows the full model until the worker delivers; for the others the proxy is
-    // looked up by updateLod (-1 until then)
-    bi.lodGeom = tiled ? geom : this.proxyOf(geom, bi.lod === 1 && !this.proxies);
-    if (bi.lod === 1 && (bi.lodGeom < 0 || bi.lodGeom === geom)) {
-      bi.lod = 0;
-      this.lodCount--;
-      if (bi.lodGeom < 0) this.waitFor(bi, geom);
-    }
+    // burnt: one-cell lots keep prop.ts's rubble tile (sheared onto the ground, rubbleSlopes); bigger lots are composed
+    // from the rubble kit (one debris bed + scattered pieces, rubbleKit) instead of one heap stretched over the lot
+    const kit = burnt && b.w * b.d > 1;
     bi.siteGeom = bi.siteLod = -1;
-    const bounds = this.batch.bounds(geom);
-    // keep the current LOD state across rebuilds (state changes must not pop the detail level)
-    bi.main = this.batch.add(bi.lod ? bi.lodGeom : geom);
-    // (tallest model on the lot: the rubble tiles differ)
-    let modelTop = bounds.max.y;
-    if (tiled) {
-      // quarter turns of all cells, cell 0 (= main) first (rubbleTurn: walls on the lot's edge face outward)
-      bi.cellYaw.push(rubbleTurn(0, 0, b.w, b.d, cellHash(b.x, b.z, b.id)));
-      for (let k = 1; k < b.w * b.d; k++) {
-        const x = b.x + (k % b.w), z = b.z + Math.floor(k / b.w);
-        const h = cellHash(x, z, b.id);
-        const g = this.geomFor('rubble', rubbleVariant(b, x, z));
-        modelTop = Math.max(modelTop, this.batch.bounds(g).max.y);
-        bi.cells.push(this.batch.add(g));
-        bi.cellYaw.push(rubbleTurn(k % b.w, Math.floor(k / b.w), b.w, b.d, h));
+    let geom: number, modelTop: number;
+    if (kit) {
+      // (bi.geom = bi.lodGeom = the bed: the pieces carry the lot's levels)
+      modelTop = this.rubbleKit(bi);
+      geom = bi.geom;
+    } else {
+      geom = burnt ? this.geomFor('rubble', b.id) : this.geomFor(model, b.variant);
+      bi.geom = geom;
+      // a building currently drawn as a proxy gets its new model's proxy right away if it exists (no detail pop; without
+      // a worker it is built now), else it shows the full model until the worker delivers; for the others the proxy is
+      // looked up by updateLod (-1 until then)
+      bi.lodGeom = this.proxyOf(geom, bi.lod === 1 && !this.proxies);
+      if (bi.lod === 1 && (bi.lodGeom < 0 || bi.lodGeom === geom)) {
+        bi.lod = 0;
+        this.lodCount--;
+        if (bi.lodGeom < 0) this.waitFor(bi, geom);
       }
+      // keep the current LOD state across rebuilds (state changes must not pop the detail level)
+      bi.main = this.batch.add(bi.lod ? bi.lodGeom : geom);
+      modelTop = this.batch.bounds(geom).max.y;
     }
+    const bounds = this.batch.bounds(geom);
     if (constructing) {
       bi.siteGeom = this.geomFor('construction_site', b.id);
       bi.siteLod = this.proxyOf(bi.siteGeom, true);
@@ -987,7 +1427,18 @@ export class BuildingRenderer {
     }
     bi.minH = minH;
     const depth = b.baseY - minH;
-    if (depth > 0.08) bi.found = this.batch.add(this.foundation(b.w * CELL_SIZE, b.d * CELL_SIZE, depth + 0.8));
+    bi.fh = 0;
+    if (depth > 0.08) {
+      const q = foundQ(depth), sw = b.w * CELL_SIZE, sd = b.d * CELL_SIZE;
+      bi.foundGeom = this.foundation(sw, sd, q);
+      bi.foundLod = this.foundationLod(bi.foundGeom, sw, sd, q);
+      bi.fh = depth;
+      // (keeps its level across rebuilds like the building)
+      bi.found = this.batch.add(bi.flod ? bi.foundLod : bi.foundGeom);
+      // shadows only from skirts that can cast one wider than a shadow texel or so: up to 0.4 m exposed none, up to
+      // 1.4 m only into the near cascade
+      this.batch.setShadowCascades(bi.found, q <= 1.2 ? 0 : q <= 2.2 ? 1 : 0xff);
+    } else bi.flod = 0;
     bi.tile = this.culler.tileOf(b.x + (b.w >> 1), b.z + (b.d >> 1));
     // flags / tint
     let flags = 0;
@@ -995,18 +1446,18 @@ export class BuildingRenderer {
     if (burning) flags |= IF_FIRE;
     if (this.selected === b.id) flags |= IF_SELECTED;
     bi.flags = flags;
-    // rubble on a slope rises with the ground (rubbleSlopes): its top / LOD centre follow
-    const rise = burnt ? this.rubbleSlopes(bi) : 0;
+    // one-cell rubble on a slope rises with the ground (rubbleSlopes): its top / LOD centre follow
+    const rise = burnt && !kit ? this.rubbleSlopes(bi) : 0;
     bi.vis = {
       id: b.id, model: burnt ? 'rubble' : model, variant: b.variant, cx, cz, baseY: b.baseY, yaw, sw: b.w * CELL_SIZE, sd: b.d * CELL_SIZE,
       top: b.baseY + modelTop + rise, bounds, burning, burnt, constructing, abandoned, sy: 1,
     };
     this.culler.noteHeight(bi.tile, bi.vis.top);
     const sp = bounds.getBoundingSphere(_sphere);
-    bi.radius = Math.max(2, sp.radius);
-    bi.cy = b.baseY + sp.center.y + (bi.shear.length ? bi.shear[2] : 0);
+    bi.radius = kit ? RUB_LOD_R : Math.max(2, sp.radius);
+    bi.cy = kit ? b.baseY + RUB_TOP + 1 : b.baseY + sp.center.y + (bi.shear.length ? bi.shear[2] : 0);
     const li = bi.li;
-    this.lx[li] = cx; this.ly[li] = bi.cy; this.lz[li] = cz; this.lr[li] = bi.radius; this.ls[li] = bi.lod;
+    this.lx[li] = cx; this.ly[li] = bi.cy; this.lz[li] = cz; this.lr[li] = this.scanRadius(bi); this.ls[li] = bi.lod | bi.flod;
     this.applyColor(bi);
     this.place(bi);
     for (const id of [bi.main, bi.site, bi.found]) if (id >= 0) this.batch.setTile(id, bi.tile);
@@ -1051,15 +1502,11 @@ export class BuildingRenderer {
     v.sy = sy;
     const sxz = bi.anim > 0 ? 0.85 + 0.15 * Math.min(1, pop) : 1;
     if (bi.main >= 0) {
-      if (v.burnt && b.w * b.d > 1) {
-        // one rubble tile per cell (cell 0 = main, the rest in bi.cells), each at its own quarter turn, unscaled (bar the
-        // seam overlap, RUBBLE_TILE_S), sheared onto the ground where it rises above the lot base (cell 0 last: its matrix
-        // is main's below)
-        for (let k = bi.cells.length; k >= 0; k--) {
-          const x = b.x + (k % b.w), z = b.z + Math.floor(k / b.w);
-          shearOnto(this.m4.makeRotationY(bi.cellYaw[k]).scale(_ts), (x + 0.5) * CELL_SIZE, v.baseY, (z + 0.5) * CELL_SIZE, bi.shear, k);
-          if (k > 0) this.batch.setMatrix(bi.cells[k - 1], this.m4);
-        }
+      const km = bi.kitM;
+      if (km) {
+        // rubble kit: the bed in lot-local coordinates at the lot origin, the pieces at their matrices (rubbleKit)
+        for (let k = 0; k < bi.cells.length; k++) this.batch.setMatrix(bi.cells[k], _km.fromArray(km, k * 16));
+        this.m4.makeTranslation(v.cx, v.baseY, v.cz);
       } else if (v.burnt) {
         const fw = b.rot & 1 ? b.d : b.w, fd = b.rot & 1 ? b.w : b.d;
         this.m4.compose(this.v.set(0, 0, 0), yawQ, this.s.set(fw * 0.9, 1, fd * 0.9));
@@ -1105,6 +1552,8 @@ export class BuildingRenderer {
    * the cut frame only upgrades (flat scan) and the remaining evaluations are spread over the next frames.
    */
   updateLod(camera: THREE.PerspectiveCamera, heightPx: number): void {
+    // the fade program, once the first frame has drawn the buildings (see compileFade)
+    if (this.fadeStage === 1) this.compileFade();
     const c = camera.position;
     // px = radius / dist * H / (2 tan(fov/2)): swap to the proxy beyond dist = radius * K / on, back within radius * K / off
     const K = (heightPx / Math.tan((camera.fov * Math.PI) / 360)) * 0.5;
@@ -1120,6 +1569,20 @@ export class BuildingRenderer {
     this.lodTravel += hop;
     this.lodPrev.copy(p);
     p.copy(c);
+    // view motion this frame: the camera's shift across its view (relative to the distance it looks at) plus its turn;
+    // fast pans / orbits get fewer (no) new fades (fadeMotion)
+    const f = camera.getWorldDirection(_dir), q0 = this.lodDir;
+    let motion = 0;
+    if (q0.x === q0.x && hop > 0) {
+      const hx = c.x - this.lodPrev.x, hy = c.y - this.lodPrev.y, hz = c.z - this.lodPrev.z;
+      const along = hx * f.x + hy * f.y + hz * f.z;
+      const lat = Math.sqrt(Math.max(0, hop * hop - along * along));
+      motion = lat / (f.y < -0.05 ? Math.max(30, c.y / -f.y) : 3000);
+    }
+    if (q0.x === q0.x) motion += Math.acos(Math.min(1, Math.max(-1, f.x * q0.x + f.y * q0.y + f.z * q0.z)));
+    q0.copy(f);
+    const [m0, m1] = this.fadeMotion;
+    this.fadeCap = motion <= m0 ? this.fadeMax : motion >= m1 ? 0 : Math.floor((this.fadeMax * (m1 - motion)) / (m1 - m0));
     const cur = Math.floor(this.lodTravel / LOD_BUCKET);
     if (cur - this.lodAt >= LOD_BUCKETS - 2) {
       // a jump beyond the schedule horizon: everything is due
@@ -1129,7 +1592,10 @@ export class BuildingRenderer {
     }
     const behind = this.lodBehind;
     if (!this.lodNow.length && this.lodAt > cur && !behind && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
-    const on = this.lodPixels * 0.88, off = this.lodPixels * 1.12;
+    // downgrades: while swaps may fade, the dissolve starts at fadeOn x lodPixels and its camera travel (fadeTravel)
+    // ends it near 0.88 x, where an instant swap happens: a fading zoom-out draws no full model farther out than an
+    // instant one; upgrades at 1.12 x (the full model appears where it would without a fade)
+    const on = this.lodPixels * (this.fadeTime > 0 ? Math.min(1.08, this.fadeOn) : 0.88), off = this.lodPixels * 1.12;
     this.lodDeadline = performance.now() + this.lodBudgetMs;
     const full = this.lodFull;
     this.lodFull = false;
@@ -1187,12 +1653,13 @@ export class BuildingRenderer {
   }
 
   /** evaluate buildings woken by an arriving proxy (lodWake): a flush takes all; else lodWakeSlice per frame — while
-   *  swaps may fade only as long as fewer than fadeMax / 2 fades run (each wake dissolves; the rest waits for the
+   *  swaps may fade only as long as fewer than half the fade cap run (each wake dissolves; the rest waits for the
    *  running fades), x4 when swaps are instant anyway. Those buildings are already past their downgrade distance on
    *  their full model, so pacing them only delays a GPU saving, never shows the wrong detail up close */
   private wakeWaiting(c: THREE.Vector3, K: number, on: number, off: number, cur: number, all: boolean): void {
     const q = this.lodWake;
-    let n = all ? Infinity : this.fadeNow ? Math.min(this.lodWakeSlice, (this.fadeMax >> 1) - this.fades.length) : this.lodWakeSlice * 4;
+    const fading = this.fadeNow && this.fadeReady && this.fadeCap > 0;
+    let n = all ? Infinity : fading ? Math.min(this.lodWakeSlice, (this.fadeCap >> 1) - this.fades.length) : this.lodWakeSlice * 4;
     while (n > 0 && this.lodWakeAt < q.length) {
       const bi = q[this.lodWakeAt++];
       // removed, queued / scheduled by another evaluation meanwhile, or waiting again (rebuilt with a new model)
@@ -1203,15 +1670,15 @@ export class BuildingRenderer {
     if (this.lodWakeAt >= q.length) { q.length = 0; this.lodWakeAt = 0; }
   }
 
-  /** every building drawn as a proxy that is now within its upgrade distance gets its full model: evaluated now when it
-   *  is in the view, else queued first for the catch-up frames (out of view it only draws into shadows). A flat pass
-   *  over typed arrays: ~10k buildings in well under a millisecond */
+  /** every building drawn as a proxy (or with a plain foundation box) that is now within its upgrade distance gets its
+   *  full model: evaluated now when it is in the view, else queued first for the catch-up frames (out of view it only
+   *  draws into shadows). A flat pass over typed arrays: ~10k buildings in well under a millisecond */
   private upgradeScan(c: THREE.Vector3, K: number, on: number, off: number, cur: number): void {
     const lx = this.lx, ly = this.ly, lz = this.lz, lr = this.lr, ls = this.ls, list = this.list;
     const px = c.x, py = c.y, pz = c.z, off2 = off * off, K2 = K * K;
     const fr = this.viewFrustum();
     for (let i = 0, n = list.length; i < n; i++) {
-      if (ls[i] !== 1) continue;
+      if (!ls[i]) continue;
       const dx = lx[i] - px, dy = ly[i] - py, dz = lz[i] - pz;
       const r = lr[i];
       if ((dx * dx + dy * dy + dz * dz) * off2 >= r * r * K2) continue;
@@ -1223,7 +1690,7 @@ export class BuildingRenderer {
     // the selected building is always drawn full
     if (this.selected != null) {
       const s = this.inst.get(this.selected);
-      if (s && s.lod) this.lodEval(s, c, K, on, off, cur);
+      if (s && (s.lod || s.flod)) this.lodEval(s, c, K, on, off, cur);
     }
   }
 
@@ -1241,14 +1708,16 @@ export class BuildingRenderer {
     // when a proxy it waited for arrives) fades
     this.evalFresh = bi.fresh;
     bi.fresh = false;
-    // no proxy: always full, nothing to schedule (a rebuild re-queues it)
-    if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) { this.lodSet(bi, 0); return; }
+    // (rubble kit lots: the pieces carry the levels)
+    const levels = bi.kitM !== null || bi.lodGeom !== bi.geom || bi.siteLod !== bi.siteGeom;
+    // no proxy and no foundation: always full, nothing to schedule (a rebuild re-queues it)
+    if (!levels && bi.found < 0) { this.lodSet(bi, 0); return; }
     const v = bi.vis;
     const dx = v.cx - c.x, dy = bi.cy - c.y, dz = v.cz - c.z;
     const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
     const rk = bi.radius * K;
     const lim = this.lodPixels > 0 && bi.b.id !== this.selected;
-    const want = lim && d * (bi.lod ? off : on) > rk ? 1 : 0;
+    const want = levels && lim && d * (bi.lod ? off : on) > rk ? 1 : 0;
     if (want && bi.lodGeom < 0) {
       // first time this model is needed as a proxy: the worker builds it (the building stays full and is evaluated again
       // when it arrives); without a worker it is built within the frame budget, else retried next frame
@@ -1259,24 +1728,47 @@ export class BuildingRenderer {
         return;
       }
       bi.lodGeom = pg;
-      if (pg === bi.geom && bi.siteLod === bi.siteGeom) { this.lodSet(bi, 0); return; }
+      if (pg === bi.geom && bi.siteLod === bi.siteGeom && bi.found < 0) { this.lodSet(bi, 0); return; }
+      if (pg === bi.geom && bi.siteLod === bi.siteGeom) return this.lodEval(bi, c, K, on, off, cur);
     }
     this.lodSet(bi, want);
+    // foundation skirt: its plain box with the proxy, or while its exposed height projects under FOUND_PX (distance fk;
+    // +-12% hysteresis like the buildings)
+    const fk = (bi.fh * K) / FOUND_PX;
+    const fw = bi.found >= 0 && (want || (lim && d * (bi.flod ? 1.12 : 0.88) > fk)) ? 1 : 0;
+    this.setFound(bi, fw);
+    this.lr[bi.li] = this.scanRadius(bi);
     // LOD off / selected: stays full until the metric or the selection changes (both re-queue)
     if (!lim) return;
-    // camera travel before the swap distance can be reached; the bucket at or before that travel (at least the next)
-    const slack = want ? d - rk / off : rk / on - d;
+    // camera travel before a swap distance can be reached (the building's; while it is full also its skirt's); the
+    // bucket at or before that travel (at least the next)
+    let slack = levels ? (want ? d - rk / off : rk / on - d) : Infinity;
+    if (bi.found >= 0 && !want) slack = Math.min(slack, fw ? d - fk / 1.12 : fk / 0.88 - d);
     // (capped one ring lap past the oldest unprocessed bucket, so no live entry shares a slot that is still pending)
     const b = Math.min(this.lodAt + LOD_BUCKETS - 1, Math.max(cur + 1, Math.floor((this.lodTravel + Math.max(0, slack)) / LOD_BUCKET)));
     bi.due = b;
     this.lodBuckets[b % LOD_BUCKETS].push(bi);
   }
 
+  /** a building's foundation level (1 = the plain box) */
+  private setFound(bi: BInst, f: number): void {
+    if (bi.found < 0 || bi.flod === f) return;
+    bi.flod = f;
+    this.ls[bi.li] = bi.lod | f;
+    this.batch.setGeometry(bi.found, f ? bi.foundLod : bi.foundGeom);
+  }
+
+  /** radius the cut-frame upgrade scan tests a building with (its foundation's upgrade distance may lie beyond the
+   *  building's: a deep skirt under a small house) */
+  private scanRadius(bi: BInst): number {
+    return Math.max(bi.radius, (bi.fh * this.lodPixels) / FOUND_PX);
+  }
+
   private lodSet(bi: BInst, want: number): void {
     if (want === bi.lod) return;
     bi.lod = want;
     this.lodCount += want ? 1 : -1;
-    this.ls[bi.li] = want;
+    this.ls[bi.li] = want | bi.flod;
     const f = bi.fade;
     // a level change back mid-fade: the fade runs backwards from where it is (in smooth motion; else it settles on the
     // new level at once)
@@ -1289,12 +1781,14 @@ export class BuildingRenderer {
       else this.batch.setGeometry(bi.main, to);
     }
     if (bi.site >= 0) this.batch.setGeometry(bi.site, want ? bi.siteLod : bi.siteGeom);
+    // rubble kit: every piece swaps with the lot (shared culling spheres: no list rebuild)
+    for (let k = 0; k < bi.cells.length; k++) this.batch.setGeometry(bi.cells[k], want ? bi.kitLod[k] : bi.kitGeo[k]);
   }
 
   // ------------------------------------------------------------------ LOD cross-fade
   /** fade this swap? (smooth camera motion, not the building's first level, in the view, not a sub-threshold speck) */
   private canFade(bi: BInst): boolean {
-    if (!this.fadeNow || this.evalFresh || this.fades.length >= this.fadeMax || bi.cells.length || !this.lodCamera) return false;
+    if (!this.fadeNow || !this.fadeReady || this.evalFresh || this.fades.length >= this.fadeCap || bi.cells.length || !this.lodCamera) return false;
     const d = this.camDist(bi);
     // projected radius (px) = radius * K / d
     if (bi.radius * this.lodKNow < d * this.lodPixels * this.fadeMinFrac) return false;

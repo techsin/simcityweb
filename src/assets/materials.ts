@@ -294,6 +294,14 @@ vec3 floodlight(vec3 albedo, float pattern, float v, float H, bool vertical, flo
   return albedo * c * night * 0.4 * (1.0 - 0.7 * smoothstep(0.0, H, v)) * (vertical ? 1.0 : 0.35);
 }
 
+// aaBox with linear edge ramps of the same width: the edges are ~1 px wide, so the ramp shape does not show, and it
+// costs less than two smoothsteps in software rendering (where every branch of the uber shader runs per fragment)
+float aaBoxL(float x, float a, float b, float w) {
+  float f = fract(x);
+  float k = 0.5 / w;
+  return clamp((f - a) * k + 0.5, 0.0, 1.0) * clamp((b - f) * k + 0.5, 0.0, 1.0);
+}
+
 // Returns window mask (0..1) and writes cell id + column width. u,v in meters on the facade, fw = fwidth(u, v).
 float windowMask(float pattern, float u, float v, float floorH, vec2 fw, out vec2 cell, out float fade, out float colWOut) {
   // window layout per pattern: column width (m) and the window's x0, x1, y0, y1 within its cell (0 ... 7+). Select
@@ -319,13 +327,13 @@ float windowMask(float pattern, float u, float v, float floorH, vec2 fw, out vec
   float fadeU = clamp(1.0 - wu * 2.5, 0.0, 1.0);
   float fadeV = clamp(1.0 - wv * 1.4, 0.0, 1.0);
   fade = fadeU;
-  float rowM = aaBox(cv, wy0, wy1, wv);
-  float m = aaBox(cu, wx0, wx1, wu) * rowM;
+  float rowM = aaBoxL(cv, wy0, wy1, wv);
+  float m = aaBoxL(cu, wx0, wx1, wu) * rowM;
   float colCov = wx1 - wx0;
   // shopfront ground floor for pattern 6
   if (pattern > 5.5 && pattern < 6.5 && v < floorH * 1.15) {
-    rowM = smoothstep(0.1, 0.12, v / floorH) * (1.0 - smoothstep(0.82, 0.86, v / floorH));
-    m = aaBox(u / 5.0, 0.06, 0.94, fw.x / 5.0 + 1e-4) * rowM;
+    rowM = clamp((cv - 0.1) * 50.0, 0.0, 1.0) * clamp((0.86 - cv) * 25.0, 0.0, 1.0);
+    m = aaBoxL(u / 5.0, 0.06, 0.94, fw.x / 5.0 + 1e-4) * rowM;
     colCov = 0.88;
   }
   // average coverage for distance fade: first per floor row (band), then of the whole facade
@@ -425,8 +433,8 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
         // unlit sky-tint term by day (reads as clean glass from above), weaker at distance where it turned whole
         // towers into smooth white plastic
         emis += mix(vec3(0.55, 0.65, 0.8), tint * 1.4, 0.35) * 0.08 * (1.0 - night) * mix(0.55, 1.0, fadeU);
-        float boxV = aaBox(cv, 0.05, 0.93, wv);
-        float mullNear = 1.0 - aaBox(cu, 0.06, 0.94, wu) * boxV;
+        float boxV = aaBoxL(cv, 0.05, 0.93, wv);
+        float mullNear = 1.0 - aaBoxL(cu, 0.06, 0.94, wu) * boxV;
         float farLvl = resGlass ? 0.5 : 0.35;
         // u-averaged mask (1 - 0.88 * boxV averages 0.226), re-centred on the far level so the tone stays constant
         float mullRow = clamp(1.0 - 0.88 * boxV + (farLvl - 0.226), 0.0, 1.0);
@@ -533,7 +541,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     // festoons, light strings, rooftop bulb lines): dotted bulbs up close, and the emission scaled by the strand's share
     // of a pixel, so a sub-pixel strand fades out instead of aliasing into a full-brightness 1 px laser line at 300-700 m
     float fp = max(fwUV.x, fwUV.y);
-    float bulbs = 1.0 - smoothstep(0.2, 0.55, abs(fract(dot(P, vec3(1.9, 2.3, 1.7))) - 0.5) * 2.0);
+    float bulbs = clamp(1.57 - 2.86 * abs(fract(dot(P, vec3(1.9, 2.3, 1.7))) - 0.5) * 2.0, 0.0, 1.0);
     float strandK = vSurf.z < 0.5 ? clamp(vSurf.z * 1.5 / fp, 0.1, 1.0) * mix(0.55, 0.25 + 1.5 * bulbs, clamp(1.0 - fp * 5.0, 0.0, 1.0)) : 1.0;
     if (pattern > 8.5 && pattern < 9.5) {
       // ground light pool (lit pavement under lamps): painted ~0.7x the ground color -> reads as normal pavement
