@@ -11,7 +11,8 @@
  * center along the trunk, residential rings, 1-in-9 civic/park blocks, utility blocks, a landfill block),
  * develops blocks as demand calls for them, places power / water / garbage by capacity, services by coverage,
  * parks / airports / freight / connections when demand caps bind, rezones to medium / high density as the city
- * grows, builds rewards and landmarks, manages taxes and takes a loan early if needed.
+ * grows, builds rewards and landmarks (saving for the tourism venues: VENUE_*), manages taxes and takes a loan early if
+ * needed.
  * SIM_DEPTH (WP6a): keeps water, power, sewage and garbage ahead of demand (reserved utility blocks, pumps upgraded to
  * treatment plants in place, desalination / shore sites, no brown-out trap), serves the catchment needs (schools,
  * clinics / hospitals, colleges / libraries, playgrounds, parks: unserved homes counted per building — homeNeed —,
@@ -36,6 +37,10 @@ import type { NeedTier } from '../src/sim/CityState';
 import { facilityLoad, tierLayer, unservedClusters } from '../src/sim/infra/catchments';
 import { emergencyOf, uncoveredHotspots } from '../src/sim/infra/emergency';
 import { expectedUpkeep } from '../src/sim/economy/opex';
+import { ATTRACTIONS, venueVisits } from '../src/sim/economy/tourism';
+import { TOURISM, TOURISM_INCOME_PER_VISITOR, VENUE_INCOME, TAX_NEUTRAL } from '../src/sim/economy/tuning';
+import type { BuildingDef } from '../src/sim/catalogTypes';
+import { smoothstep } from '../src/core/rng';
 
 export interface BotOptions {
   size: number;
@@ -135,6 +140,33 @@ const HOSPITAL_POP = 150000;
  *  "≤ 0.2 from year 20" gate (at 0.25 the 256x60 bots sat at 0.23-0.24 for years: s7 2057, s11 2054) */
 export const JAIL_OVERFLOW_FIRST = 0.25;
 export const JAIL_OVERFLOW_MORE = 0.15;
+/**
+ * TOURISM VENUES (WP6b round 3; acceptance round 2, LEAD DECISION 13): landmarks, the big sport / entertainment /
+ * business venues (stadium, amusement park, convention center), the city's zoo and its airports are investments a
+ * sensible mayor saves for. The bot bought a reward only with 1.5 × its price above canSpend's 1.5-month reserve, and
+ * the round-2 budget keeps the bank at that reserve: 256x60 s7 bought no landmark from 2002 to 2016 (cathedral 2021,
+ * stadium 2022, never a zoo) and its tourism jobs ran at 0.55-0.67 of the old formula until 2022. Now, from VENUE_POP
+ * residents, VENUE_SAVE_SHARE of each month's surplus goes into a venue fund for the cheapest venue the city has unlocked
+ * and not built; optional spending (parks the residential cap does not need, tree buffers, non-venue rewards) leaves
+ * the fund alone, while utilities, garbage, schools, clinics, police / fire, transit, prisons and new blocks come first.
+ * The venue is bought when the fund holds its price and a purchase leaves VENUE_RESERVE_MONTHS of expenses in the bank,
+ * as long as its expected tourist spending + tickets (counted from the city's own venues) pay its upkeep or the budget
+ * carries the difference; it goes on any free lot of a park block next to town (placeVenue), an airport on the airport
+ * blocks once they border the town.
+ */
+export const VENUE_SAVE_SHARE = 0.7;
+export const VENUE_POP = 25000;
+export const VENUE_RESERVE_MONTHS = 1.25;
+/** visitors per day at attractiveness 60 from which a venue is a tourism investment (plazas, parks, the country club,
+ *  city hall, small ports and stations are not) */
+const VENUE_MIN_DRAW = 500;
+/** emergency response (ensureResponse): a fire station while more than FIRE_GAP of residents + workers are out of the
+ *  fire response's automatic reach (WP6b round 3: 10 % of residents left industrial districts uncovered and the failed
+ *  fires there made 5-7 % of a year's incidents), a clinic while more than MEDICAL_GAP of residents are */
+export const FIRE_GAP = 0.05;
+const MEDICAL_GAP = 0.1;
+/** a venue with no free lot is not saved for again for this many days */
+const VENUE_NO_SITE_DAYS = 360;
 
 export class SimBot {
   sim: Simulation;
@@ -261,6 +293,13 @@ export class SimBot {
   canSpend(cost: number): boolean {
     return this.funds - cost > this.reserve();
   }
+  /** optional spending (parks the residential cap does not need, tree buffers, non-venue rewards) leaves the venue fund
+   *  alone (saveForVenue) */
+  canSpendOpt(cost: number): boolean {
+    return this.canSpend(cost + this.venueFund);
+  }
+  /** money set aside for the next tourism venue (saveForVenue / venues; VENUE_SAVE_SHARE) */
+  venueFund = 0;
   /** investments that raise income (zoning / roads for new blocks) use a much smaller reserve; the price of a needed
    *  prison the bot is saving for (jailHold) is not theirs */
   canInvest(cost: number): boolean {
@@ -272,15 +311,15 @@ export class SimBot {
   jailHold = 0;
   private jailSaving = false;
   /** a competent mayor only adds recurring costs the budget can carry (or when sitting on a big pile of cash) */
-  canAfford(defId: string, people?: number): boolean {
+  canAfford(defId: string, people?: number, optional = false): boolean {
     const d = getDef(defId);
     if (!d) return false;
     // (a school / clinic / station costs its building upkeep plus running costs for the people it serves: economy/opex.ts;
-    // `people` = those it would newly serve when the caller knows them)
+    // `people` = those it would newly serve when the caller knows them; `optional`: leaves the venue fund alone)
     const up = expectedUpkeep(this.st, d, people);
     const net = this.monthlyNet() + this.pendingUpkeep;
     if (this.opts.spendy) return this.funds > (d.cost ?? 0);
-    if (!this.canSpend(d.cost ?? 0)) return false;
+    if (!(optional ? this.canSpendOpt(d.cost ?? 0) : this.canSpend(d.cost ?? 0))) return false;
     return net - up > 0 || this.funds > 60 * up + 50000;
   }
   /** upkeep committed this month (not yet in the last budget) */
@@ -665,6 +704,7 @@ export class SimBot {
     const st = this.st, s = st.stats;
     const pop = s.population;
     this.finance();
+    this.saveForVenue();
     this.repairUtilities();
     this.reserveUtilityLand();
     this.ensurePower();
@@ -681,6 +721,7 @@ export class SimBot {
     if (!this.skips('transit')) this.ensureTransit();
     this.treeBuffers();
     this.caps();
+    this.venues();
     this.rewards();
     this.density();
     this.ordinances();
@@ -1368,8 +1409,8 @@ export class SimBot {
   }
 
   // ------------------------------------------------------------------------------------------ emergency response
-  /** WP6-3: a fire station / clinic at the largest uncovered hotspot while more than 10 % of residents are out of that
-   *  responder's automatic reach */
+  /** WP6-3: a fire station / clinic at the largest uncovered hotspot while more of the people at risk than FIRE_GAP /
+   *  MEDICAL_GAP are out of that responder's automatic reach (fire: residents and workers, fireGap; medical: residents) */
   ensureResponse(): void {
     const st = this.st, pop = st.stats.population;
     if (pop < 6000) return;
@@ -1377,21 +1418,55 @@ export class SimBot {
     if (!em || !em.active || !em.layersReady) return;
     for (const [r, def] of [['fire', 'civ_fire_station'], ['medical', 'civ_clinic']] as const) {
       if ((this.svcRetry.get('resp:' + r) ?? -1) > st.day || !this.canAfford(def)) continue;
-      const layer = r === 'fire' ? st.respFire : st.respMedical;
-      let out = 0, tot = 0;
-      for (const b of st.buildings.values()) {
-        if (b.pop <= 0) continue;
-        tot += b.pop;
-        if (layer[Math.min(this.N - 1, b.z + (b.d >> 1)) * this.N + Math.min(this.N - 1, b.x + (b.w >> 1))] < 0) out += b.pop;
+      let h: { x: number; z: number } | undefined, share: number;
+      if (r === 'fire') {
+        const g = this.fireGap();
+        share = g.share;
+        if (share <= FIRE_GAP) continue;
+        h = g.at ?? undefined;
+      } else {
+        const layer = st.respMedical;
+        let out = 0, tot = 0;
+        for (const b of st.buildings.values()) {
+          if (b.pop <= 0) continue;
+          tot += b.pop;
+          if (layer[Math.min(this.N - 1, b.z + (b.d >> 1)) * this.N + Math.min(this.N - 1, b.x + (b.w >> 1))] < 0) out += b.pop;
+        }
+        if (tot <= 0 || out / tot <= MEDICAL_GAP) continue;
+        share = out / tot;
+        h = uncoveredHotspots(this.sim, r, 1)[0];
       }
-      if (tot <= 0 || out / tot <= 0.1) continue;
-      const h = uncoveredHotspots(this.sim, r, 1)[0];
       if (!h) continue;
       const ok = this.placeCivic(def, h.x, h.z, 14);
       this.svcRetry.set('resp:' + r, st.day + (ok ? 90 : 150));
-      if (ok) this.say(`${def === 'civ_clinic' ? 'clinic' : 'fire station'}: ${Math.round((100 * out) / tot)} % of residents beyond ${r} response`);
+      if (ok) this.say(`${def === 'civ_clinic' ? 'clinic' : 'fire station'}: ${Math.round(100 * share)} % of ${r === 'fire' ? 'residents and workers' : 'residents'} beyond ${r} response`);
     }
     this.ensureHospital();
+  }
+
+  /**
+   * share of the people a fire can hit — residents and workers: a factory or a shop burns like a home — out of the fire
+   * response's automatic reach (respFire < 0, at each building's centre), and the 8 × 8 area holding most of them (WP6b
+   * round 3: counting residents only, 256x60 s11 left 20-22 % of the jobs beyond reach from 2040 on, and the fires there
+   * failed 3-6 times a year — 7 % of the incidents of 2013 in one trajectory)
+   */
+  fireGap(): { share: number; at: { x: number; z: number } | null } {
+    const st = this.st, N = this.N, layer = st.respFire;
+    const B = 8, nb = Math.ceil(N / B);
+    const acc = new Float64Array(nb * nb);
+    let out = 0, tot = 0;
+    for (const b of st.buildings.values()) {
+      const w = b.pop + b.jobs;
+      if (w <= 0) continue;
+      tot += w;
+      if (layer[Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1))] < 0) {
+        out += w;
+        acc[Math.floor(b.z / B) * nb + Math.floor(b.x / B)] += w;
+      }
+    }
+    let bk = -1, bw = 0;
+    for (let k = 0; k < acc.length; k++) if (acc[k] > bw) { bw = acc[k]; bk = k; }
+    return { share: tot > 0 ? out / tot : 0, at: bk >= 0 ? { x: (bk % nb) * B + B / 2, z: Math.floor(bk / nb) * B + B / 2 } : null };
   }
 
   /**
@@ -1564,7 +1639,7 @@ export class SimBot {
   /** tree buffers along the highway while more than 5 % of homes are Noisy: free cells within 2 of highway cells */
   treeBuffers(): void {
     const st = this.st, N = this.N;
-    if (!this.highway || (this.svcRetry.get('trees') ?? -1) > st.day || !this.canSpend(3000)) return;
+    if (!this.highway || (this.svcRetry.get('trees') ?? -1) > st.day || !this.canSpendOpt(3000)) return;
     let homes = 0, noisy = 0;
     for (const b of st.buildings.values()) {
       if (b.pop <= 0 || b.flags & BF.Plopped) continue;
@@ -1584,7 +1659,7 @@ export class SimBot {
         const free = x < N && st.building[i] < 0 && st.network[i] === Network.None && !st.water[i] && st.trees[i] < 3;
         if (free && run < 0) run = x;
         if ((!free || x === N) && run >= 0) {
-          if (x - run >= 1 && this.canSpend(1000)) { const r = this.A.plantTrees({ x0: run, z0: z, x1: x, z1: z + 1 }); if (r.ok) planted += r.affected ?? 0; }
+          if (x - run >= 1 && this.canSpendOpt(1000)) { const r = this.A.plantTrees({ x0: run, z0: z, x1: x, z1: z + 1 }); if (r.ok) planted += r.affected ?? 0; }
           run = -1;
         }
       }
@@ -1722,13 +1797,15 @@ export class SimBot {
     // park upkeep budget: ≤ 8% of income unless the residential cap binds
     let income = 0;
     for (const k in st.budget.lastIncome) if (!k.startsWith('oneoff:')) income += st.budget.lastIncome[k];
-    if (!rBinding && ((st.budget.lastExpense['service:parks'] ?? 0) > income * 0.08 || !this.canSpend(8000))) return this.capsCI(binding, pop);
+    // (parks the residential cap does not need are optional spending: they leave the venue fund alone)
+    const spend = (c: number) => (rBinding ? this.canSpend(c) : this.canSpendOpt(c));
+    if (!rBinding && ((st.budget.lastExpense['service:parks'] ?? 0) > income * 0.08 || !spend(8000))) return this.capsCI(binding, pop);
     for (let k = 0; k < (rBinding ? 3 : 1) && placed < 2; k++) {
-      const big = pop > 4000 && this.canSpend(3000);
-      const def = st.unlocked.has('zoo') && this.count('park_zoo') < 1 + Math.floor(pop / 250000) && this.canSpend(20000) ? 'park_zoo'
+      const big = pop > 4000 && spend(3000);
+      const def = st.unlocked.has('zoo') && this.count('park_zoo') < 1 + Math.floor(pop / 250000) && spend(20000) ? 'park_zoo'
         : big ? 'park_large' : pop > 1500 ? 'park_plaza' : 'park_small';
       const target = this.uncoveredPark() ?? (rBinding ? center : null);
-      if (!target || !this.canAfford(def)) break;
+      if (!target || !this.canAfford(def, undefined, !rBinding)) break;
       // 1) civic/park blocks nearby, 2) empty zoned lots inside residential blocks (small parks / plazas),
       // 3) turn an adjacent undeveloped block into a park block
       let ok = this.placeNear(def, target.x, target.z, ['P'], true, 20);
@@ -1859,7 +1936,9 @@ export class SimBot {
       for (const defId of r.defIds) {
         const def = getDef(defId);
         if (!def || !def.unique) continue;
-        if (!this.canSpend((def.cost ?? 0) * 1.5)) continue;
+        // (tourism venues from VENUE_POP on: venues(); other rewards are optional spending that leaves the venue fund alone)
+        if (this.st.stats.population >= VENUE_POP && isVenue(def)) continue;
+        if (!this.canSpendOpt((def.cost ?? 0) * 1.5)) continue;
         if (def.placement === 'shore') { this.placeShore(defId); continue; }
         this.placeNear(defId, center.x, center.z, ['P']);
       }
@@ -1876,6 +1955,169 @@ export class SimBot {
         if (r.ok) this.say(`accepted deal: ${def.name}`);
       }
     }
+  }
+
+  // ------------------------------------------------------------------------------------------ tourism venues (VENUE_*)
+  /** venue defs whose next one waits for a free lot until the day stored */
+  private venueNoSite = new Map<string, number>();
+
+  /**
+   * unlocked tourism venues not built yet (each once: the parks rule may add zoos for the residential cap, caps()) with
+   * their expected visitors per day, monthly tourist spending + ticket income and upkeep — cheapest first, as a mayor
+   * saving up buys them (256x60: arch, zoo, observatory, convention center, cathedral, municipal airport, castle,
+   * amusement park, ...; buying the most visitors for the price first — zoo, amusement park, stadium — ran the tourism
+   * jobs to 1.4-1.5 x the old formula until the airports and landmarks followed)
+   */
+  venueCandidates(): { id: string; def: BuildingDef; cost: number; visits: number; income: number; upkeep: number }[] {
+    const st = this.st;
+    const out: { id: string; def: BuildingDef; cost: number; visits: number; income: number; upkeep: number }[] = [];
+    let rate = -1, spend = 0;
+    for (const def of venueDefs()) {
+      if (def.requires && !st.unlocked.has(def.requires)) continue;
+      if (this.count(def.id) >= 1) continue;
+      if ((this.venueNoSite.get(def.id) ?? -1) > st.day) continue;
+      if (rate < 0) { rate = this.venueVisitRate(); spend = this.touristSpend(); }
+      const a = ATTRACTIONS[def.id];
+      const visits = Math.min(a.capacity, a.draw * rate);
+      // tourist spending (budget 'tourism') + tickets (budget.ts venueIncomeFactor, without its attractiveness term)
+      const income = visits * spend + (def.income ?? 0) * (VENUE_INCOME.base + VENUE_INCOME.use * Math.min(VENUE_INCOME.useMax, visits / a.draw));
+      out.push({ id: def.id, def, cost: def.cost ?? 0, visits, income, upkeep: expectedUpkeep(st, def) });
+    }
+    return out.sort((p, q) => p.cost - q.cost || q.visits - p.visits || (p.id < q.id ? -1 : 1));
+  }
+
+  /**
+   * expected visitors per day per unit of draw for one more landmark / venue: what the city's own open ones get now (its
+   * attractiveness, their access, the city's size, the hotel rooms — the inspector shows each venue's tourists), else the
+   * tourism model's factors with a typical access of 0.6
+   */
+  venueVisitRate(): number {
+    const st = this.st;
+    let v = 0, d = 0;
+    for (const b of st.buildings.values()) {
+      const a = ATTRACTIONS[b.def];
+      if (!a || a.kind === 'nature' || a.kind === 'transport') continue;
+      const r = venueVisits(st, b.id);
+      // (a venue at its capacity says nothing about the rate)
+      if (!r || r.op <= 0 || r.visits >= r.capacity * 0.999) continue;
+      v += r.visits; d += a.draw;
+    }
+    if (d > 0) return v / d;
+    const data = econData(st);
+    const A = data.attractiveness > 0 ? data.attractiveness : TOURISM.aRef;
+    const sizeF = TOURISM.sizeMin + (1 - TOURISM.sizeMin) * smoothstep(0, TOURISM.sizePop, st.stats.population);
+    const kEff = (data.touristsGross ?? 0) > 0 ? data.tourists / (data.touristsGross ?? 1) : 1;
+    return Math.pow(A / TOURISM.aRef, TOURISM.aExp) * 0.6 * sizeF * kEff;
+  }
+
+  /** the city's tourist spending per visitor per month (last month's 'tourism' income line; else the budget formula) */
+  touristSpend(): number {
+    const st = this.st;
+    const t = econData(st).tourists, inc = st.budget.lastIncome['tourism'] ?? 0;
+    if (t > 50 && inc > 0) return inc / t;
+    const r = st.budget.taxRates;
+    return TOURISM_INCOME_PER_VISITOR * ((r[3] + r[4] + r[5]) / 3 / TAX_NEUTRAL);
+  }
+
+  /** VENUE_SAVE_SHARE of last month's surplus goes into the venue fund while a venue waits (at most the price of the
+   *  next one, venueCandidates()[0]); the fund is released when none is left */
+  saveForVenue(): void {
+    const st = this.st;
+    if (this.opts.spendy || st.stats.population < VENUE_POP) { this.venueFund = 0; return; }
+    const best = this.venueCandidates()[0];
+    if (!best) { this.venueFund = 0; return; }
+    const net = this.monthlyNet();
+    this.venueFund = Math.min(best.cost, this.venueFund + (net > 0 ? VENUE_SAVE_SHARE * net : 0));
+  }
+
+  /**
+   * buys a tourism venue (one a month): the next one when the fund holds its price, any other only from money the fund
+   * and the reserve leave (canSpendOpt); a purchase leaves VENUE_RESERVE_MONTHS of expenses (and a prison being saved
+   * for) in the bank, and its own tourist spending + tickets pay its upkeep or the budget carries the rest (as canAfford)
+   */
+  venues(): void {
+    const st = this.st;
+    if (st.stats.population < VENUE_POP) return;
+    let expense = 0;
+    for (const k in st.budget.lastExpense) if (!k.startsWith('oneoff:')) expense += st.budget.lastExpense[k];
+    const list = this.venueCandidates();
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      const fromFund = i === 0 && this.venueFund >= c.cost - 1;
+      if (!(fromFund || this.canSpendOpt(c.cost))) continue;
+      if (this.funds - c.cost - this.jailHold <= 4000 + VENUE_RESERVE_MONTHS * expense) continue;
+      const extra = Math.max(0, c.upkeep - c.income);
+      if (!(this.monthlyNet() + this.pendingUpkeep - extra > 0 || this.funds > 60 * extra + 50000)) continue;
+      if (!this.placeVenue(c.id)) {
+        this.venueNoSite.set(c.id, st.day + VENUE_NO_SITE_DAYS);
+        this.say(`venue: no free lot for a ${c.def.name}`);
+        continue;
+      }
+      if (fromFund) this.venueFund = Math.max(0, this.venueFund - c.cost);
+      this.say(`venue: ${c.def.name} for ≈${Math.round(c.visits)} visitors a day (+$${Math.round(c.income)} vs $${Math.round(c.upkeep)} upkeep a month)${fromFund ? ', from the venue fund' : ''}`);
+      return;
+    }
+  }
+
+  /**
+   * a tourism venue on a free lot touching a road in a civic / park block next to town, nearest the centre first — every
+   * lot position and rotation (placeNear tries a block's edges and centre only, and a grown city's park blocks rarely
+   * have those free: 256x60 never placed its Glass Pyramid or Twin Spires); else the nearest undeveloped residential /
+   * commercial block next to town becomes a park block for it
+   */
+  placeVenue(defId: string): boolean {
+    const def = getDef(defId);
+    if (!def) return false;
+    if (VENUE_AIRPORTS.has(defId)) {
+      // the airport blocks (placeAirport), once they border the developed town (an airport out in the fields has no road
+      // link and no visitors)
+      const all = this.blocks.filter((b) => b.use === 'A').sort((a, b) => a.bx - b.bx);
+      const mine = defId === 'tr_airport_small' ? all.slice(0, 1) : all.slice(1, 3);
+      const linked = mine.some((b) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => {
+        const o = this.byKey.get(b.bx + dx + ',' + (b.bz + dz));
+        return !!o && o.developed && o.use !== 'A';
+      }));
+      if (all.length < 3 || !linked) return false;
+      const n = this.count(defId);
+      this.placeAirport(defId);
+      return this.count(defId) > n;
+    }
+    const cx = this.line(this.cbx), cz = this.line(this.cbz);
+    const area = def.footprint[0] * def.footprint[1];
+    const dist = (b: Block) => Math.hypot((b.x0 + b.x1) / 2 - cx, (b.z0 + b.z1) / 2 - cz);
+    const tryBlock = (b: Block): boolean => {
+      for (const rot of [0, 1, 2, 3] as const) {
+        const [w, d] = rotatedFootprint(def, rot);
+        for (let z = b.z0; z + d <= b.z1; z++) {
+          for (let x = b.x0; x + w <= b.x1; x++) {
+            // (an undeveloped block gets its roads first: only lots on its edge will touch them)
+            if (!b.developed && x !== b.x0 && z !== b.z0 && x + w !== b.x1 && z + d !== b.z1) continue;
+            const p = this.A.plop(defId, x, z, rot, true);
+            if (!p.ok || (b.developed && p.reason)) continue;
+            if (!b.developed) { this.buildBlockRoads(b); b.developed = true; }
+            const r = this.A.plop(defId, x, z, rot);
+            if (!r.ok) continue;
+            this.pendingUpkeep -= expectedUpkeep(this.st, def);
+            this.services.push({ def: defId, x: x + (w >> 1), z: z + (d >> 1) });
+            this.lastPlaced = { x, z, w, d };
+            this.say(`built ${def.name} ($${r.cost})`);
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    const parks = this.blocks.filter((b) => b.use === 'P' && (b.developed || this.touchesDeveloped(b)) && this.freeCells(b) >= area)
+      .sort((a, b) => dist(a) - dist(b));
+    for (const b of parks) if (tryBlock(b)) return true;
+    const nb = this.blocks.filter((b) => !b.developed && (b.use === 'R' || b.use === 'C') && this.touchesDeveloped(b))
+      .sort((a, b) => dist(a) - dist(b))[0];
+    if (!nb) return false;
+    const was = nb.use;
+    nb.use = 'P';
+    if (tryBlock(nb)) return true;
+    nb.use = was;
+    return false;
   }
 
   density(): void {
@@ -1957,6 +2199,22 @@ export class SimBot {
     }
     return this.rows;
   }
+}
+
+/** a tourism venue the bot saves for (VENUE_*): a landmark / culture / sport / entertainment / business attraction drawing
+ *  at least VENUE_MIN_DRAW visitors that is unique (rewards, landmarks) or the zoo (the casino is a deal it never takes) */
+function isVenue(def: BuildingDef): boolean {
+  const a = ATTRACTIONS[def.id];
+  if (!a || a.draw < VENUE_MIN_DRAW || a.kind === 'nature' || def.id === 'rw_casino') return false;
+  // (the airports fly the visitors in: placeAirport's blocks; other ports and stations are transit)
+  if (a.kind === 'transport') return VENUE_AIRPORTS.has(def.id);
+  return !!def.unique || def.id === 'park_zoo';
+}
+const VENUE_AIRPORTS = new Set(['tr_airport_small', 'tr_airport_large']);
+let VENUE_DEFS: BuildingDef[] | null = null;
+function venueDefs(): BuildingDef[] {
+  if (!VENUE_DEFS) VENUE_DEFS = Object.keys(ATTRACTIONS).map((id) => getDef(id)).filter((d): d is BuildingDef => !!d && isVenue(d));
+  return VENUE_DEFS;
 }
 
 function avg(a: number[], i0: number, i1: number): number {
