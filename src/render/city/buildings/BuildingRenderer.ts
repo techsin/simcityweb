@@ -19,8 +19,9 @@
  * Camera cuts (jumps): the cut frame only upgrades what is in view — a scan of flat per-building arrays finds the
  * proxies that are now close enough to need their full model; those in the view frustum swap at once, the others are
  * queued first — and the rest of the re-evaluation (mostly downgrades to proxies, which only cost GPU while they wait)
- * is spread over the next frames at `lodCatch` evaluations per frame, so a cut costs about what a normal frame does
- * instead of thousands of evaluations + swaps at once.
+ * is spread over the next frames at `lodCatch` evaluations per frame (on top of what the frame's own camera travel
+ * made due, so a fast pan right after a cut still catches up), so a cut costs about what a normal frame does instead
+ * of thousands of evaluations + swaps at once.
  * LOD cross-fade: a building that changes level while it is in view and not tiny on screen dissolves from one level
  * into the other over `fadeTime` s (screen-door dither with complementary pixel sets anchored to the building's
  * screen position, the tree LOD fade's dither): both levels are drawn by a small side batch (LodFadeLayer: same

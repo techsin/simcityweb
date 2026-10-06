@@ -243,6 +243,9 @@ const OV_SEARCHES = 6;
  *  record (calibrated like PHASE_COST) */
 const OV_CHUNK = 3000;
 const OV_REC_COST = 4e-4;
+/** estimated ms of a round's car flows (accumulate + commit over its forest) on the reference city, scaled like the
+ *  phases (they move from roundMatch's step to the overflow's last one) */
+const OV_FLOW_COST = 0.4;
 const MAX_ENTRIES = 12;
 /** job matching: a proportional round (round < MATCH_PROP_ROUNDS) that matched under this share of the waiting workers
  *  is starved and does not count toward MATCH_ROUNDS (at most MATCH_EXTRA_ROUNDS such rounds per assignment); starved
@@ -915,21 +918,20 @@ export class TrafficSystem implements SimSystem {
     }
     // (+ the park & ride garages' reserves: box(supply without them), the pressure over their walk areas)
     if (ph === PH_PARKING) return 0.3 * bld + (base + (this.gPrN > 0 ? 0.4 : 0)) * (size * size / 65536);
-    // r4 park & ride overflow of a round: seeds (+ cache lookup) / an overflow search chunk / the car-leg minutes of a
-    // kept forest / a chunk of records re-decided with the groups that have room / a chunk of the rest without park &
-    // ride / the overflow car legs (one pass over each forest used) + the round's car flows
+    // r4 park & ride overflow of a round: an overflow search chunk / a chunk of records re-decided with the groups that
+    // have room (a kept forest's car-leg minutes refreshed first) / a chunk of the rest without park & ride, the last one
+    // with the overflow car legs (a pass over each forest used) and the round's car flows
     if (ph === PH_PROVER) {
-      switch (this.ovStage) {
-        case 1: return PR_CHUNK_COST * Math.min(1, 3 * road);
-        case 2: return 0.1 + PR_REFRESH_COST * (this.ovSlot >= 0 && this.ovSlot < this.ov.length ? this.ov[this.ovSlot].S.settled : 0);
-        case 3: case 4: return 0.1 + OV_REC_COST * Math.min(OV_CHUNK, Math.max(0, this.pnN - this.ovCur));
-        case 5: {
-          let states = 0;
-          for (const f of this.ov) if (f.dirty) states += f.S.settled;
-          return 0.2 + PR_REFRESH_COST * states + base * (0.8 * road + 0.2 * bld);
-        }
-        default: return 0.15 + 0.05 * road;
+      const recs = Math.min(OV_CHUNK, Math.max(0, this.pnN - this.ovCur));
+      if (this.ovStage === 1) return PR_CHUNK_COST * Math.min(1, 3 * road);
+      if (this.ovStage === 3) {
+        const f = this.ovSlot >= 0 && this.ovSlot < this.ov.length ? this.ov[this.ovSlot] : null;
+        return 0.05 + OV_REC_COST * recs + (f && f.alt !== this.cycles ? PR_REFRESH_COST * f.S.settled : 0);
       }
+      if (this.ovCur + OV_CHUNK < this.pnN) return 0.05 + OV_REC_COST * recs;
+      let states = 0;
+      for (const f of this.ov) if (f.dirty) states += f.S.settled;
+      return 0.05 + OV_REC_COST * recs + PR_REFRESH_COST * states + OV_FLOW_COST * (0.8 * road + 0.2 * bld);
     }
     return base * (0.8 * road + 0.2 * bld);
   }
@@ -1481,8 +1483,7 @@ export class TrafficSystem implements SimSystem {
           this.poolRemaining();
           next = PH_COMMUTE;
           if (this.pnN > 0) {
-            this.ovCarRound = this.poolFlows ? 1 : 0; this.ovRouteCand = []; this.ovRouteW = [];
-            this.ovNext = PH_COMMUTE; this.ovStage = 0; this.ovPass = 0; this.ovCur = 0;
+            this.ovBegin(PH_COMMUTE, this.poolFlows ? 1 : 0, [], []);
             next = PH_PROVER;
           } else if (this.poolFlows) {
             accumulate(this.SA, this.acc);
@@ -2644,6 +2645,8 @@ export class TrafficSystem implements SimSystem {
     const fx = this.fx;
     const carPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
     const trBonus = fx ? 2.5 * Math.log(fx.transitRidership) : 0;
+    // (r4: riders turned away by all their options become overflow records only while some group has room)
+    const ovOn = this.gPrN > 0 && this.ovAnyRoom();
     const acc = this.acc, tAcc = this.tAcc;
     const qAsg = this.qAsg, qBase = this.qBase, qNoise = this.qNoise, qPrice = this.qPrice, qTimeSum = this.qTimeSum;
     const qPark = this.qPark;
@@ -2685,7 +2688,7 @@ export class TrafficSystem implements SimSystem {
         const placed = this.prAlloc(o, want, prT);
         if (placed < want - 1e-9) {
           this.pcPool = false; this.pcCarT = carT; this.pcCarOk = carOk; this.pcWalkT = walkT; this.pcTrT = trT; this.pcBonus = trBonus;
-          this.prDefer = true;
+          this.prDefer = ovOn;
           const m = this.prRest(o, take, placed / want);
           this.prDefer = false;
           sc = this.mC; stW = this.mTW; stP = this.mTP; sw = this.mW; time = this.mT; ext = this.mX;
@@ -2735,8 +2738,8 @@ export class TrafficSystem implements SimSystem {
     // r4: riders turned away by all their options: the overflow decides their mode (its drivers join this round's car
     // flows), then the round's car flows; else the car flows now
     if (this.pnN > 0) {
-      this.ovCarRound = carRound; this.ovRouteCand = routeCand; this.ovRouteW = routeW; this.ovBonus = trBonus; this.ovCarPcu = carPcu;
-      this.ovNext = next; this.ovStage = 0; this.ovPass = 0; this.ovCur = 0;
+      this.ovBonus = trBonus; this.ovCarPcu = carPcu;
+      this.ovBegin(next, carRound, routeCand, routeW);
       return PH_PROVER;
     }
     this.roundFlows(carRound, routeCand, routeW);
@@ -2820,6 +2823,7 @@ export class TrafficSystem implements SimSystem {
     const fx = this.fx;
     const carPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
     const SA = this.SA, acc = this.acc;
+    const ovOn = this.gPrN > 0 && this.ovAnyRoom();
     let flows = false;
     // pooled car commuters per component (parking demand of the sites that take them; the overflow records' drivers
     // are added when PH_PROVER decides them: poolCars)
@@ -2850,7 +2854,7 @@ export class TrafficSystem implements SimSystem {
         const placed = this.prAlloc(o, want, prT);
         if (placed < want - 1e-9) {
           this.pcPool = true; this.pcCarT = carT; this.pcTrT = trT;
-          this.prDefer = true;
+          this.prDefer = ovOn;
           this.prRest(o, take, placed / want);
           this.prDefer = false;
           stW = this.mTW; stP = this.mTP; time = this.mT; ext = this.mX;
@@ -3155,53 +3159,49 @@ export class TrafficSystem implements SimSystem {
   }
 
   /**
-   * PH_PROVER: the overflow records of a matching round re-decide with the park & ride groups that still have room, pass
-   * by pass (stage 0: the seeds, a kept forest or a fresh overflow search; 1: its chunks; 2: a kept forest's car-leg
-   * minutes of this assignment; 3: the records, in chunks), then what is left without park & ride (4, in chunks), then
-   * the overflow car legs and the round's car flows (5). Returns the next phase (the round's successor when done)
+   * PH_PROVER: the overflow records of a matching round (or of the pooled match) re-decide with the park & ride groups
+   * that still have room, pass by pass — each planned by ovPlan (seeds, a kept forest or a fresh overflow search, whose
+   * chunks stage 1 runs) — in stage 3 (records in chunks; a kept forest's car-leg minutes of this assignment refreshed
+   * first), then stage 4: what is left without park & ride (chunks), and with the last chunk the overflow car legs and
+   * the round's car flows. Returns the next phase (the round's successor when done)
    */
   private overflow(): number {
-    switch (this.ovStage) {
-      case 0: return this.ovSeedStage();
-      case 1:
-        if (!this.ov[this.ovSlot].S.run(PR_CHUNK_STATES)) return PH_PROVER;
-        this.ovStartPass();
-        return PH_PROVER;
-      case 2: {
-        const f = this.ov[this.ovSlot];
-        f.S.refreshAlt(this.nodeTime, this.rampT);
-        f.alt = this.cycles;
-        this.ovStartPass();
-        return PH_PROVER;
-      }
-      case 3: {
-        const end = Math.min(this.pnN, this.ovCur + OV_CHUNK);
-        this.ovAlloc(this.ovCur, end);
-        this.ovCur = end;
-        if (end < this.pnN) return PH_PROVER;
-        // another pass while riders are left over and this one filled a group: they try the groups that still have room
-        this.ovPass++;
-        this.ovStage = this.ovFilled && this.ovPass < OV_PASSES && this.ovLeft() ? 0 : 4;
-        this.ovCur = 0;
-        return PH_PROVER;
-      }
-      case 4: {
-        const end = Math.min(this.pnN, this.ovCur + OV_CHUNK);
-        this.ovRest(this.ovCur, end);
-        this.ovCur = end;
-        if (end < this.pnN) return PH_PROVER;
-        this.ovStage = 5;
-        return PH_PROVER;
-      }
-      default: {
-        for (const f of this.ov) if (f.dirty) { this.commitK(f.S, f.acc); f.dirty = false; }
-        this.roundFlows(this.ovCarRound, this.ovRouteCand, this.ovRouteW);
-        this.ovRouteCand = []; this.ovRouteW = [];
-        this.pnN = 0;
-        this.ovStage = 0;
-        return this.ovNext;
-      }
+    if (this.ovStage === 1) {
+      if (this.ov[this.ovSlot].S.run(PR_CHUNK_STATES)) this.ovStartPass();
+      return PH_PROVER;
     }
+    if (this.ovStage === 3) {
+      const f = this.ov[this.ovSlot];
+      if (f.alt !== this.cycles) { f.S.refreshAlt(this.nodeTime, this.rampT); f.alt = this.cycles; }
+      const end = Math.min(this.pnN, this.ovCur + OV_CHUNK);
+      this.ovAlloc(this.ovCur, end);
+      this.ovCur = end;
+      if (end < this.pnN) return PH_PROVER;
+      // another pass while riders are left over and this one filled a group: they try the groups that still have room
+      this.ovPass++;
+      if (this.ovFilled && this.ovPass < OV_PASSES && this.ovLeft()) this.ovPlan();
+      else { this.ovStage = 4; this.ovCur = 0; }
+      return PH_PROVER;
+    }
+    const end = Math.min(this.pnN, this.ovCur + OV_CHUNK);
+    this.ovRest(this.ovCur, end);
+    this.ovCur = end;
+    if (end < this.pnN) return PH_PROVER;
+    for (const f of this.ov) if (f.dirty) { this.commitK(f.S, f.acc); f.dirty = false; }
+    this.roundFlows(this.ovCarRound, this.ovRouteCand, this.ovRouteW);
+    this.ovRouteCand = []; this.ovRouteW = [];
+    this.pnN = 0;
+    return this.ovNext;
+  }
+
+  /** the records of a round / the pooled match are complete: plan the overflow's first pass (PH_PROVER follows) */
+  private ovBegin(next: number, carRound: number, routeCand: number[], routeW: number[]): void {
+    this.ovNext = next;
+    this.ovCarRound = carRound;
+    this.ovRouteCand = routeCand;
+    this.ovRouteW = routeW;
+    this.ovPass = 0;
+    this.ovPlan();
   }
 
   private ovStartPass(): void {
@@ -3223,18 +3223,25 @@ export class TrafficSystem implements SimSystem {
     return this.prRoom(q) >= Math.max(OV_MIN_ROOM, 0.01 * this.gGSp[this.gGrp[q]] * CAR_OCCUPANCY);
   }
 
+  /** some park & ride group has room for an overflow pass (records are made only then: prDefer) */
+  private ovAnyRoom(): boolean {
+    for (let q = 0; q < this.gN; q++) if (this.ovSeedOk(q)) return true;
+    return false;
+  }
+
   /**
-   * overflow pass, stage 0: the seeds (ovSeedOk) — none (or no record left): the rest without park & ride; a kept forest
-   * of the same seeds (the same garages and graph, no seed's ranking minutes moved more than PR_SEED_DRIFT, younger than
-   * PR_SEARCH_EVERY assignments; its car-leg minutes refreshed once per assignment); else a fresh OV_K-label search from
-   * their road entries (ranking minutes, free-flow car legs within PR_CAR_LEG_MAX, the congested ones along them for the
-   * choices), at most OV_SEARCHES per assignment, in a free or the least recently used cache slot
+   * plan an overflow pass: the seeds (ovSeedOk) — none, or no record left: stage 4 (the rest without park & ride); a
+   * kept forest of the same seeds (the same garages and graph, no seed's ranking minutes moved more than PR_SEED_DRIFT,
+   * younger than PR_SEARCH_EVERY assignments): stage 3; else a fresh OV_K-label search from their road entries (ranking
+   * minutes, free-flow car legs within PR_CAR_LEG_MAX, the congested ones along them for the choices) in a free or the
+   * least recently used cache slot, at most OV_SEARCHES per assignment: stage 1 runs it
    */
-  private ovSeedStage(): number {
+  private ovPlan(): void {
     const g = this.road, gN = this.gN;
+    this.ovCur = 0;
     let key = this.prKeyNow + '|' + g.version + '|', any = false;
     for (let q = 0; q < gN; q++) if (this.ovSeedOk(q)) { key += q + ','; any = true; }
-    if (!any || !this.ovLeft()) { this.ovStage = 4; this.ovCur = 0; return PH_PROVER; }
+    if (!any || !this.ovLeft()) { this.ovStage = 4; return; }
     let slot = -1;
     for (let i = 0; i < this.ov.length && slot < 0; i++) {
       const f = this.ov[i];
@@ -3244,13 +3251,12 @@ export class TrafficSystem implements SimSystem {
       if (ok) slot = i;
     }
     if (slot >= 0) {
-      const f = this.ov[slot];
-      f.used = ++this.ovTick;
+      this.ov[slot].used = ++this.ovTick;
       this.ovSlot = slot;
-      if (f.alt === this.cycles) this.ovStartPass(); else this.ovStage = 2;
-      return PH_PROVER;
+      this.ovStartPass();
+      return;
     }
-    if (this.ovSearches >= OV_SEARCHES) { this.ovStage = 4; this.ovCur = 0; return PH_PROVER; }
+    if (this.ovSearches >= OV_SEARCHES) { this.ovStage = 4; return; }
     if (this.ov.length < OV_CACHE) {
       this.ov.push({ S: new SearchK(OV_K), key: '', seed: new Float32Array(0), built: -1, alt: -1, used: 0, acc: new Float32Array(0), dirty: false });
       slot = this.ov.length - 1;
@@ -3279,7 +3285,6 @@ export class TrafficSystem implements SimSystem {
     this.ovSearches++;
     this.ovSlot = slot;
     this.ovStage = 1;
-    return PH_PROVER;
   }
 
   /**

@@ -6,7 +6,8 @@
  *    receiver-volume culling and list caching, disabled tiles / tile sets, front-to-back sorting, guard-banded list
  *    reuse while the camera pans (exact again once it rests), LOD geometry swaps without re-culling
  *  - building LOD scheduled by camera travel: never on the wrong side of a swap distance (after a camera cut the
- *    downgrades may trail by a few catch-up frames, upgrades never), no work while still; cut frames stay cheap
+ *    downgrades may trail by a few catch-up frames, upgrades never), no work while still; cut frames stay cheap; the
+ *    catch-up also finishes while a fast pan goes on
  *  - building LOD cross-fade: swaps in view dissolve over fadeTime (complementary levels in the fade layer, empty
  *    stand-in in the batch), reverse mid-fade, instant on cuts / flushes / off-screen; a zoom-out's dissolve is over by
  *    the instant-swap distance; fast pans / orbits swap at once (motion cap); the fade program compiles after the first
@@ -519,6 +520,57 @@ describe('building LOD schedule', () => {
     const e1 = evals.mock.calls.length;
     for (let i = 0; i < 20; i++) br.updateLod(cam, H);
     expect(evals.mock.calls.length).toBe(e1);
+  }, 120_000);
+
+  it('catches up after a cut while the camera keeps panning fast (the catch-up slice comes on top of the pan\'s own evaluations)', () => {
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 7, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
+    st.heights.fill(0);
+    const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
+    br.lodBudgetMs = 1e9;
+    br.lodSlice = 2000;
+    const models = ['res_cottage', 'res_ranch', 'res_apartment', 'res_tower', 'com_office_small', 'com_diner', 'com_office_tower', 'ind_warehouse'].filter((m) => MANIFEST_BY_ID[m]);
+    let id = 1;
+    for (let z = 0; z < 64; z += 2) for (let x = 0; x < 64; x += 2) {
+      br.add({ id: id++, def: models[(x * 7 + z * 3) % models.length], x, z, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
+    }
+    type BI = { lod: number; geom: number; lodGeom: number; siteGeom: number; siteLod: number; radius: number; cy: number; vis: { cx: number; cz: number } };
+    const list = (br as unknown as { list: BI[] }).list;
+    const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 8000);
+    const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
+    const evals = vi.spyOn(br as unknown as { lodEval: () => void }, 'lodEval');
+    // a fast low pan around the map (42 m per frame): many swap distances crossed every frame
+    let a = 0;
+    const pan = (da: number): number => {
+      a += da;
+      cam.position.set(512 + Math.cos(a) * 700, 120, 512 + Math.sin(a) * 700);
+      cam.lookAt(512, 0, 512);
+      cam.updateMatrixWorld();
+      const e0 = evals.mock.calls.length;
+      br.updateLod(cam, H);
+      return evals.mock.calls.length - e0;
+    };
+    for (let i = 0; i < 60; i++) pan(0.06);
+    expect(br.lodBehind).toBe(false);
+    let own = 0;
+    for (let i = 0; i < 20; i++) own += pan(0.06) / 20;
+    expect(own).toBeGreaterThan(8);
+    // a catch-up slice well below the pan's own share: on its own it could never shrink the backlog of a cut
+    br.lodCatch = Math.max(4, Math.floor(own / 3));
+    // the cut: to the far side of the circle (1400 m), then the pan goes on
+    pan(Math.PI);
+    expect(br.lodBehind).toBe(true);
+    let frames = 0;
+    while (br.lodBehind && frames < 400) { pan(0.06); frames++; }
+    expect(frames).toBeLessThanOrEqual(Math.ceil(list.length / br.lodCatch) + 3);
+    // caught up: every building on the right side of its swap distance
+    const on = br.lodPixels * 0.88, off = br.lodPixels * 1.12;
+    let wrong = 0;
+    for (const bi of list) {
+      if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) continue;
+      const d = Math.hypot(bi.vis.cx - cam.position.x, bi.cy - cam.position.y, bi.vis.cz - cam.position.z), rk = bi.radius * K;
+      if ((bi.lod === 0 && d > rk / on + 1.001) || (bi.lod === 1 && d < rk / off - 1.001)) wrong++;
+    }
+    expect(wrong).toBe(0);
   }, 120_000);
 });
 
