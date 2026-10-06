@@ -216,10 +216,11 @@ const PR_SEED_DRIFT = 2;
 /** weight of the new label when a garage's ranking minutes are smoothed (per assignment) */
 const PR_RANK_SMOOTH = 0.25;
 const MAX_ENTRIES = 12;
-/** job matching: a round that matched under this share of the waiting workers is starved (does not count toward
- *  MATCH_ROUNDS), at most MATCH_EXTRA_ROUNDS such rounds per assignment */
+/** job matching: a proportional round (round < MATCH_PROP_ROUNDS) that matched under this share of the waiting workers
+ *  is starved and does not count toward MATCH_ROUNDS (at most MATCH_EXTRA_ROUNDS such rounds per assignment); starved
+ *  full-capacity rounds count as before (the pooled match takes the rest) */
 const MATCH_STARVED = 0.02;
-const MATCH_EXTRA_ROUNDS = 4;
+const MATCH_EXTRA_ROUNDS = MATCH_PROP_ROUNDS;
 const MODE_NAMES = ['none', 'car', 'transit', 'walk'];
 /** garage state of a cycle: no road entry, no attached stop within PR_STOP_RADIUS, a stop without a transit path to any
  *  job, a downtown stop (its best path rides nothing: jobs a walk away — parking only), park & ride */
@@ -2505,10 +2506,13 @@ export class TrafficSystem implements SimSystem {
     // next round?
     let left = 0;
     for (let o = 0; o < oN; o++) left += this.oU[o];
-    // (a starved round — every waiting worker's nearest open site was a handful of jobs, e.g. a garage's attendants or
-    // a small plant between the homes and a jammed job centre — matched under MATCH_STARVED of them: it does not use up
-    // one of the MATCH_ROUNDS, else the pooled match would time their commutes from that small site)
-    if (left >= 0.5 && accepted < MATCH_STARVED * (left + accepted) && this.extraRounds < MATCH_EXTRA_ROUNDS) this.extraRounds++;
+    // (a starved proportional round — every waiting worker's nearest open site was a handful of jobs, e.g. a garage's
+    // attendants or a small plant between the homes and a jammed job centre — matched under MATCH_STARVED of them: it
+    // does not use up one of the MATCH_ROUNDS, else no full-capacity round is left and the pooled match times their
+    // commutes from that small site. Starved full-capacity rounds still count: in a town of many small sites every
+    // round peels off a few, and more rounds there would only trade the pool's even spread for the round order — a
+    // newly linked school then fills slower)
+    if (this.round < MATCH_PROP_ROUNDS && left >= 0.5 && accepted < MATCH_STARVED * (left + accepted) && this.extraRounds < MATCH_EXTRA_ROUNDS) this.extraRounds++;
     let next = this.round + 1;
     if (next < MATCH_PROP_ROUNDS && (accepted < 0.5 || this.propFactor >= 1)) next = Math.max(next, accepted < 0.5 ? MATCH_PROP_ROUNDS : next); // proportional caps exhausted
     if (left < 0.5 || next >= MATCH_ROUNDS + this.extraRounds || (accepted < 0.5 && this.round >= MATCH_PROP_ROUNDS)) return PH_COMMUTE;
