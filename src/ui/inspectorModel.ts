@@ -71,15 +71,21 @@ export interface DesirabilityView {
   note?: string;
 }
 
-/** desirabilityBreakdown → top bars + clamp / updating notes; null when there is nothing to show (stub: no terms) */
+/** the desirability "updating" note shows from this gap between the stored value and clamp(raw) (5 points: a loaded or
+ *  just-refreshed city shows 2-5 point gaps on most lots for a few days — no news for the player) */
+export const DES_UPDATING_GAP = 0.05;
+/** desirability in the inspector's points (+61), like the header and the bars */
+const pts = (v: number) => { const r = Math.round(v * 100); return r === 0 ? '0' : `${r > 0 ? '+' : '−'}${Math.abs(r)}`; };
+
+/** desirabilityBreakdown → top bars + clamp / updating notes (in points); null when there is nothing to show (stub: no terms) */
 export function desirabilityView(br: { terms: FactorTerm[]; raw: number; value: number } | null | undefined): DesirabilityView | null {
   if (!br || !br.terms || !br.terms.length) return null;
   const clampedRaw = Math.max(-1, Math.min(1, br.raw));
   const clamped = Math.abs(br.raw) > 1 + 1e-6;
-  const updating = Math.abs(clampedRaw - br.value) > 0.02;
+  const updating = Math.abs(clampedRaw - br.value) > DES_UPDATING_GAP;
   let note: string | undefined;
-  if (clamped) note = `Capped: the factors add up to ${fmt(br.raw)}, desirability tops out at ${fmt(clampedRaw)}`;
-  else if (updating) note = `Updating: heading for ${fmt(clampedRaw)}`;
+  if (clamped) note = `Capped: the factors add up to ${pts(br.raw)}, desirability tops out at ${pts(clampedRaw)}`;
+  else if (updating) note = `Updating: heading for ${pts(clampedRaw)}`;
   return { bars: termBars(br.terms), value: br.value, raw: br.raw, clamped, updating, note };
 }
 

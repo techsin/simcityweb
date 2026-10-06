@@ -57,9 +57,14 @@ describe('inspector model: full outputs', () => {
     expect(Math.abs(d.bars[0].value)).toBeGreaterThanOrEqual(Math.abs(d.bars[7].value));
     expect(d.clamped).toBe(true);
     expect(d.note).toMatch(/Capped/);
+    expect(d.note).toMatch(/add up to \+140, desirability tops out at \+100/); // (points, like the header)
     const u = desirabilityView({ terms: terms(3), raw: 0.5, value: 0.3 })!;
     expect(u.updating).toBe(true);
-    expect(u.note).toMatch(/heading for \+0\.50/);
+    expect(u.note).toMatch(/heading for \+50$/);
+    // a gap under 5 points (a loaded city, a lot between two refreshes) is no news
+    const q = desirabilityView({ terms: terms(3), raw: 0.5, value: 0.46 })!;
+    expect(q.updating).toBe(false);
+    expect(q.note).toBeUndefined();
   });
 
   it('condition: base term first, penalties, abandonment countdown; the main problem names the worst penalty with its fix', () => {
