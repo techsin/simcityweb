@@ -264,7 +264,7 @@ export class TerrainRenderer {
     this.uniforms.uWinter.value = 0;
     // dormant grass (temperate / alpine): winter, a little in Nov / Mar, a hint in Oct
     const seasonal = cfg.climate === 'temperate' || cfg.climate === 'alpine';
-    this.uniforms.uDormant.value = !seasonal ? 0 : winter ? 0.55 : m === 10 || m === 2 ? 0.28 : m === 9 ? 0.1 : 0;
+    this.uniforms.uDormant.value = !seasonal ? 0 : winter ? 0.55 : m === 10 || m === 2 ? 0.3 : m === 9 ? 0.15 : 0;
     const mix = seasonMix(m, cfg.climate);
     this.uniforms.uCanopy.value.set(mix.autumn, mix.bare);
   }

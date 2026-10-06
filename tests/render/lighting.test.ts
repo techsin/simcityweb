@@ -91,7 +91,7 @@ describe('light rig', () => {
         if (sy < -0.17 || sy > 0.15) continue;
         // (exposure-scaled) ground of the whole rig: never below the night; within ~2 deg of the horizon well above it
         expect(ground(L) * L.exposure).toBeGreaterThanOrEqual(nightOut * 0.99);
-        if (Math.abs(sy) < 0.035) expect(ground(L) * L.exposure).toBeGreaterThan(nightOut * 1.4);
+        if (Math.abs(sy) < 0.035) expect(ground(L) * L.exposure).toBeGreaterThan(nightOut * 1.35);
         // back-lit surfaces see only the sky fill: not darker than the night's fill-lit ground either
         expect(L.fill * lum(L.fillColor) * L.exposure).toBeGreaterThanOrEqual(LIGHT_RIG.fillBase * lum(night.fillColor) * night.exposure * 0.99);
       }

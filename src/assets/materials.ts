@@ -237,13 +237,13 @@ vec3 roomLight(float h, float k) {
 // floor), fy = position within the floor (0..1), px = on-screen size of a cell (px), unitN = cells per unit (apartment /
 // office section), kind 0 homes, 1 offices, 2 hotels (warm offices), 3 every window lit warm amber (churches), litP =
 // lit probability of a unit. Levels of detail window -> unit -> floor -> facade, each blended to its expected value
-// once it gets smaller than ~1.3-2.6 px (sub-pixel cells would shimmer): lit windows of varied brightness and colour up
-// close, lit / dark units (with their household / tenant colour) and floors down to ~1.5 px, and a low facade average
+// once it gets too small on screen (sub-pixel cells would shimmer): lit windows of varied brightness and colour down to
+// ~2 px, lit / dark units (with their household / tenant colour) and floors down to ~1.5 px, and a low facade average
 // far away, so distant towers read as dark masses with sparkle instead of pale cream slabs.
 vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float litP) {
-  float fF = smoothstep(1.3, 2.6, px.y);
-  float fU = smoothstep(1.3, 2.6, px.x * unitN) * fF;
-  float fP = smoothstep(1.3, 2.6, px.x) * fF;
+  float fF = smoothstep(1.0, 2.0, px.y);
+  float fU = smoothstep(1.0, 2.0, px.x * unitN) * fF;
+  float fP = smoothstep(1.3, 2.6, px.x) * smoothstep(1.3, 2.6, px.y);
   float uid = floor(ci.x / unitN + 1e-3);
   float home = step(kind, 0.5);
   float hF = bh11(ci.y * 3.7 + vSeed * 57.0);

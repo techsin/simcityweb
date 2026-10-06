@@ -367,6 +367,8 @@ vTreeSnow = 0.0;
   if (instanceColor.b < 0.0) {
     vSurf.y = 4.0;
     vColor.b = -vColor.b;
+    // object normals of the stretched shape (RING_CON_*), so snow / leaf shading see the conifer's steep flanks
+    vObjNormal = normalize(vObjNormal / vec3(${RING_CON_R.toFixed(4)}, ${RING_CON_A.toFixed(4)}, ${RING_CON_R.toFixed(4)}));
   }
 #endif
 `;
@@ -1193,8 +1195,7 @@ export class TreeRenderer {
   /** per frame: which outer ring meshes are drawn (sector distance, camera height) and how dense */
   private updateRingView(px: number, py: number, pz: number, lod: number): void {
     const camH = py - this.terrain.meshHeightAt(px, pz);
-    const [h0, h1] = this.ringFadeHeight;
-    const vis = _sstep(h0, h1, camH);
+    const vis = _sstep(this.ringFadeHeight[0], this.ringFadeHeight[1], camH);
     const ring = this.ring, RB = this.ringBox;
     for (let k = 0; k < RING_N; k++) {
       const mb = ring[k * 3], mc = ring[k * 3 + 1], mm = ring[k * 3 + 2];

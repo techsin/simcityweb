@@ -182,11 +182,25 @@ function idleGarageHint(sim: Simulation, tr: TrafficSystem, b: Building, stopNam
     return `Commuters near here use ${where}${full ? ' (full)' : ''}: park & ride from here would take them ${fmt(reach.slower)} min longer${full ? ', so when it is full they drive or ride from home instead' : ''} — ${fix}`;
   }
   if (reach.options >= PR_OPTIONS - 0.5) {
-    if (reach.full >= 0.5) return `Commuters near here weigh ${PR_OPTIONS} faster park & ride garages, e.g. ${where}, and drive or ride from home when those are full — this one is too far out of their way`;
-    // (the example: one of those with room)
-    const vr = reach.viaRoom >= 0 ? st.buildings.get(reach.viaRoom) : undefined;
-    const ex = vr ? `the ${nameOf(st, vr.id)} ${dist(st, b, vr)} tiles ${compass(st, b, vr)}` : where;
-    return `Commuters near here have ${PR_OPTIONS} faster park & ride garages with room, e.g. ${ex} — this one is not needed here`;
+    // (the example: of their faster options — with room, when they have room — the one nearest to this garage, so the
+    // player finds it on the map; review r2: a hint named a garage 148 tiles away)
+    const nearest = (ids: readonly number[]): Building | undefined => {
+      let best: Building | undefined, bd = Infinity;
+      for (const gid of ids) {
+        const g = st.buildings.get(gid);
+        if (!g) continue;
+        const d = dist(st, b, g);
+        if (d < bd) { bd = d; best = g; }
+      }
+      return best;
+    };
+    const at = (g: Building) => `the ${nameOf(st, g.id)} ${dist(st, b, g)} tiles ${compass(st, b, g)}`;
+    if (reach.full >= 0.5) {
+      const ex = nearest(reach.opts);
+      return `Commuters near here weigh ${PR_OPTIONS} faster park & ride garages, e.g. ${ex ? at(ex) : where}, and drive or ride from home when those are full — this one is too far out of their way`;
+    }
+    const vr = nearest(reach.optsRoom) ?? (reach.viaRoom >= 0 ? st.buildings.get(reach.viaRoom) : undefined);
+    return `Commuters near here have ${PR_OPTIONS} faster park & ride garages with room, e.g. ${vr ? at(vr) : where} — this one is not needed here`;
   }
   return `Commuters near here use ${where} — it gets them to their jobs sooner`;
 }

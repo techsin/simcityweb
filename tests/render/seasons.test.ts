@@ -15,7 +15,7 @@ import { getModelGeometry, registeredModelIds } from '../../src/assets/registry'
 import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { Surf } from '../../src/core/types';
 import { setFoliageSeason, sharedUniforms } from '../../src/assets/materials';
-import { natureStats } from '../../src/render/world/fallbackTrees';
+import { getImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
@@ -143,9 +143,19 @@ describe('outer ring trees', () => {
         expect(Math.max(-x, x - W, -z, z - W)).toBeGreaterThan(10 * CELL_SIZE - 1);
       }
     }
-    // each sector draws its trees in one micro mesh (broadleaves + conifers) beyond lodDistance
+    // each sector draws its trees in one micro mesh (broadleaves + conifers) beyond lodDistance; its conifers carry the
+    // evergreen flag (negative instance blue), the near pair keeps the two impostor shapes apart; no ring shadows
     const micro = ring.filter((m) => (m.geometry.name ?? '').startsWith('impostor-micro'));
     expect(micro.reduce((a, m) => a + ((m.userData.ringCount as number) ?? 0), 0)).toBe(tr.ringInstances);
+    let flagged = 0, conifers = 0;
+    for (const m of ring) {
+      const n = (m.userData.ringCount as number) ?? 0, c = m.instanceColor!.array as Float32Array;
+      if (micro.includes(m)) for (let i = 0; i < n; i++) flagged += c[i * 3 + 2] < 0 ? 1 : 0;
+      else if (m.geometry === getImpostorGeometries().conifer) conifers += n;
+    }
+    expect(conifers).toBeGreaterThan(0);
+    expect(flagged).toBe(conifers);
+    expect(ring.every((m) => !m.castShadow)).toBe(true);
     // deterministic
     expect(make().tr.ringInstances).toBe(tr.ringInstances);
     tr.dispose();

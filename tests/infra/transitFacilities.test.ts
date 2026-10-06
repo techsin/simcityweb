@@ -687,7 +687,8 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
       console.log(`five stations: cars ${ids.map((id) => Math.round(tr5.garageInfo(id)!.parkRide)).join(' / ')}; fifth: ${h}`);
       expect(tr5.garageInfo(last)!.riders).toBe(0);
       expect(tr5.garageReach(last)!.options).toBeGreaterThanOrEqual(3.5);
-      expect(h).toMatch(/^Commuters near here have 4 faster park & ride garages with room, e\.g\. the Parking Garage \d+ tiles W — this one is not needed here/);
+      // (the example is the nearest of those options: the next garage up the line, 12 tiles W)
+      expect(h).toMatch(/^Commuters near here have 4 faster park & ride garages with room, e\.g\. the Parking Garage 12 tiles W — this one is not needed here/);
       for (const id of ids.slice(0, 3)) expect(tr5.garageInfo(id)!.riders!).toBeGreaterThan(50);
     }
     // the only garage of a gridlocked town (3 x homes / jobs on one avenue), by a bus stop: its buses take over PR_LIMIT
@@ -1046,6 +1047,39 @@ describe('WP7b save / load', () => {
     const tr = cycles(sim, 1);
     expect(tr2.stopLoad(homeStop)!.waitMin).toBeCloseTo(tr.stopLoad(homeStop)!.waitMin, 4);
     expect(restored.stats.transitFleet.buses).toBe(st.stats.transitFleet.buses);
+  });
+
+  it('the job matching (prices, RNG, assignment count, MSA iteration) is persisted: a loaded town continues the original', { timeout: 300000 }, () => {
+    // (review r2: without the prices a loaded park & ride town re-matched from zero — commute 49.8 vs 41.1 by cycle 5)
+    for (const garages of [[], [[48, 68]]] as [number, number][][]) {
+      const { st, ids } = prTown(garages, 1.5);
+      const sim = newSim(st);
+      cycles(sim, 12);
+      const save = serializeCity(st, { copy: true });
+      const d0 = st.systemData.infraTransport as Record<string, unknown>;
+      expect((d0.jobIds as Int32Array).length).toBeGreaterThan(0);
+      const restored = deserializeCity(structuredClone(save) as SerializedCity);
+      const d1 = restored.systemData.infraTransport as Record<string, unknown>;
+      for (const k of ['rng', 'cycles', 'iter']) expect(d1[k], k).toBe(d0[k]);
+      for (const k of ['jobIds', 'jobPrice', 'connCells', 'connPrice']) expect(Array.from(d1[k] as ArrayLike<number>), k).toEqual(Array.from(d0[k] as ArrayLike<number>));
+      // the restored city's warm start is the original's next assignment, and so on: same commute, garage cars and
+      // price (up to the rounding of the saved loads / parking raster and the fresh park & ride search of a load)
+      const sim2 = newSim(restored);
+      const tr2 = getTraffic(sim2)!;
+      const a: number[][] = [], b: number[][] = [];
+      const row = (s: CityState, t: TrafficSystem) => [s.stats.avgCommute, ...ids.flatMap((id) => [t.garageInfo(id)!.parkRide, t.garageInfo(id)!.price ?? 0])];
+      for (let k = 0; k < 8; k++) {
+        const tr = cycles(sim, 1);
+        a.push(row(st, tr));
+        b.push(row(restored, tr2));
+        cycles(sim2, 1);
+      }
+      const fmt = (r: number[][]) => r.map((x) => x.map((v) => v.toFixed(2)).join('/')).join(' ');
+      console.log(`round trip (${garages.length} garages):\n  orig ${fmt(a)}\n  load ${fmt(b)}`);
+      for (let k = 0; k < a.length; k++) for (let i = 0; i < a[k].length; i++) {
+        expect(Math.abs(b[k][i] - a[k][i]), `cycle ${k} value ${i}`).toBeLessThanOrEqual(0.005 * Math.max(1, Math.abs(a[k][i])));
+      }
+    }
   });
 });
 

@@ -69,7 +69,8 @@
  *             own reverse search (unknown sinks first, then round-robin), so each counts every industry within reach;
  *             freight trains run from rail-linked freight stations to the map edge / a seaport (freightRailCells).
  * Persistent (systemData.infraTransport): smoothed bus need per depot, stop loads, garage loads, prices, reserves and
- * stops, ramp flows, parking (u8), so the first post-load assignment continues where the save left off.
+ * stops, ramp flows, parking (u8), the job-matching prices, the matching RNG, the assignment count and the MSA
+ * iteration, so the first post-load assignment continues where the save left off.
  *
  * OUTPUTS: state.traffic (PCU trips/day per road cell; riders/day on rail cells), state.congestion (v/c),
  *   state.commute (minutes on residential building cells), stats.avgCommute / avgTraffic / tripsCar / tripsTransit /
@@ -158,6 +159,26 @@ export interface TransitFleetStatsX {
   busesShort?: number;
 }
 
+/** TrafficSystem.garageReach: the park & ride choices of the homes nearest to a garage (its idle hint) */
+export interface GarageReach {
+  /** workers within a PR_CAR_LEG_MAX drive of it */
+  workers: number;
+  /** the garage id the nearest half of them pick first (another group; -1 none), and one of their options with room */
+  via: number;
+  viaRoom: number;
+  /** minutes park & ride from here would add for them vs their first pick */
+  slower: number;
+  /** their mean number of park & ride options; the share for which this garage's group is a full-weight option; the
+   *  share whose options are all full */
+  options: number;
+  own: number;
+  full: number;
+  /** their options of other groups (ids, the most picked first, each picked by >= 10 % of the top one's workers), and
+   *  those of them with room — the inspector names the one nearest to the garage */
+  opts: number[];
+  optsRoom: number[];
+}
+
 const PH_PREP = 0, PH_PREP2 = 1, PH_TRANSIT = 2, PH_RSEARCH = 3, PH_RMATCH = 4, PH_COMMUTE = 5, PH_INBOUND = 6, PH_SHOP = 7,
   PH_FREIGHT = 8, PH_FINAL = 9, PH_FINAL2 = 10,
   // WP7b (appended so the indices of the phases above stay stable): per-origin transit options (split from TRANSIT),
@@ -243,6 +264,8 @@ export class TrafficSystem implements SimSystem {
   private lastCycleMs0 = -1e9;
   /** cycles since graph rebuild (MSA) */
   private iter = 0;
+  /** the saved MSA iteration, taken by the first graph build after a load */
+  private iterLoad = 0;
   /** total completed assignments */
   cycles = 0;
   /** timings (ms) of the last completed cycle per phase */
@@ -547,7 +570,7 @@ export class TrafficSystem implements SimSystem {
   private poR = new Int32Array(PR_OPTIONS + 1);
   /** road graph version of the origin snapshot (prep): garageReach needs the origins' entry nodes of the same graph */
   private prepVer = -1;
-  private reachCache = new Map<number, { cycle: number; workers: number; via: number; slower: number; options: number; own: number; full: number; viaRoom: number }>();
+  private reachCache = new Map<number, GarageReach & { cycle: number }>();
   /** the per-origin park & ride options are complete (false from originTransit until prOptions has rebuilt them) */
   private prOptsValid = false;
   private SR: Search | null = null;
@@ -668,7 +691,8 @@ export class TrafficSystem implements SimSystem {
       ev.on('networkChanged', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; }),
       ev.on('subwayChanged', () => { this.graphDirty = true; this.attachDirty = true; this.subVer++; }),
       ev.on('terrainChanged', () => { this.attachDirty = true; this.terrainVer++; }),
-      ev.on('reset', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; this.subVer++; this.terrainVer++; }),
+      // (a reset follows replaceState's init, whose warm start built this same network: the MSA keeps its iteration)
+      ev.on('reset', () => { this.iterLoad = Math.max(this.iterLoad, this.iter); this.graphDirty = true; this.attachDirty = true; this.netVer++; this.subVer++; this.terrainVer++; }),
       ev.on('buildingAdded', markT),
       ev.on('buildingRemoved', dropT),
       ev.on('buildingChanged', markT),
@@ -719,6 +743,8 @@ export class TrafficSystem implements SimSystem {
     this.sfVersion = -1;
     this.truckRoutes = [];
     this.rngState = (sim.state.config.seed ^ 0x51ed27) >>> 0 || 1;
+    this.iterLoad = 0;
+    this.restoreMatching(sim.state);
     // steps are executed by the shared infra scheduler
     const self = this;
     this.task = {
@@ -1021,21 +1047,26 @@ export class TrafficSystem implements SimSystem {
    * id, -1 none / its own group), slower = how many minutes longer park & ride via this garage takes them than via their
    * fastest option (worker-weighted, free-flow car legs), options = their mean number of options (PR_OPTIONS = as many as
    * a commuter weighs: a garage behind that many faster ones is nobody's option), full = the share of their workers whose
-   * options were all full in the last assignment, viaRoom = the option with room most of them have (-1 none). On demand (a free-flow reverse search from its road entries, cached per
-   * assignment); null = unknown (not a garage of this assignment, the road graph was rebuilt since the origin snapshot,
-   * or the options are being rebuilt and nothing is cached)
+   * options were all full in the last assignment, viaRoom = the option with room most of them have (-1 none), opts /
+   * optsRoom = their options of other groups / those with room (see GarageReach). On demand (a free-flow reverse search
+   * from its road entries, cached per assignment); null = unknown (not a garage of this assignment, the road graph was
+   * rebuilt since the origin snapshot, or the options are being rebuilt and nothing is cached)
    */
-  garageReach(id: number): { workers: number; via: number; slower: number; options: number; own: number; full: number; viaRoom: number } | null {
+  garageReach(id: number): GarageReach | null {
     let q = -1;
     for (let k = 0; k < this.gN; k++) if (this.gBid[k] === id) { q = k; break; }
     if (q < 0) return null;
     const g = this.road;
     const c = this.reachCache.get(id);
+    const copy = (c: GarageReach): GarageReach => ({
+      workers: c.workers, via: c.via, viaRoom: c.viaRoom, slower: c.slower, options: c.options, own: c.own, full: c.full, opts: c.opts.slice(), optsRoom: c.optsRoom.slice(),
+    });
     // (between originTransit and the end of PH_PARKRIDE the per-origin options are being rebuilt: the last result)
-    if (!this.prOptsValid) return c ? { workers: c.workers, via: c.via, slower: c.slower, options: c.options, own: c.own, full: c.full, viaRoom: c.viaRoom } : null;
+    if (!this.prOptsValid) return c ? copy(c) : null;
     if (g.version !== this.prepVer) return null;
-    if (c && c.cycle === this.cycles) return { workers: c.workers, via: c.via, slower: c.slower, options: c.options, own: c.own, full: c.full, viaRoom: c.viaRoom };
+    if (c && c.cycle === this.cycles) return copy(c);
     let workers = 0, via = -1, slower = 0, options = 0, own = 0, full = 0, viaRoom = -1;
+    let opts: number[] = [], optsRoom: number[] = [];
     if (this.gEntC[q] > 0 && g.n > 0) {
       const S = (this.SR ??= new Search()), seeds = new Seeds();
       for (let e = this.gEntS[q], e1 = e + this.gEntC[q]; e < e1; e++) seeds.push(this.ent[e], 0, 0);
@@ -1059,7 +1090,7 @@ export class TrafficSystem implements SimSystem {
         const room = spaces - (last?.reserve ?? 0);
         return room < 1 || (this.garageLoad.get(gid) ?? 0) >= 0.97 * room;
       };
-      const by = new Map<number, number>(), byRoom = new Map<number, number>();
+      const by = new Map<number, number>(), byRoom = new Map<number, number>(), byAll = new Map<number, number>();
       const mine = this.gLabel[q];
       let w = 0, ws = 0;
       for (const { d, o } of near) {
@@ -1073,6 +1104,7 @@ export class TrafficSystem implements SimSystem {
         for (let k = 0; k < n; k++) {
           const u = this.oPrG[o * K + k];
           if (this.gGrp[u] === ownG && Math.exp(-PR_GARAGE_BETA * this.oPrA[o * K + k]) >= 0.5) own += W;
+          if (this.gGrp[u] !== ownG) byAll.set(u, (byAll.get(u) ?? 0) + W);
           if (!fullId(this.gBid[u], this.gSpaces[u])) { allFull = false; if (this.gGrp[u] !== ownG) byRoom.set(u, (byRoom.get(u) ?? 0) + W); }
         }
         if (allFull) full += W;
@@ -1093,9 +1125,19 @@ export class TrafficSystem implements SimSystem {
       for (const [u, x] of by) if (x > bw) { bw = x; via = this.gBid[u]; }
       bw = 0;
       for (const [u, x] of byRoom) if (x > bw) { bw = x; viaRoom = this.gBid[u]; }
+      // (the options picked by >= 10 % of the top one's workers, most picked first: an example the inspector can name
+      // without pointing at a garage one household weighs)
+      const top = (m: Map<number, number>): number[] => {
+        let mx = 0;
+        for (const x of m.values()) if (x > mx) mx = x;
+        return [...m].filter(([, x]) => x >= 0.1 * mx).sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, 8).map(([u]) => this.gBid[u]);
+      };
+      opts = top(byAll);
+      optsRoom = top(byRoom);
     }
-    this.reachCache.set(id, { cycle: this.cycles, workers, via, slower, options, own, full, viaRoom });
-    return { workers, via, slower, options, own, full, viaRoom };
+    const out: GarageReach = { workers, via, viaRoom, slower, options, own, full, opts, optsRoom };
+    this.reachCache.set(id, { ...out, cycle: this.cycles });
+    return copy(out);
   }
   /** ferry links (a, b terminal ids, water path a -> b, crossing minutes) — for the renderer (ferry boats) / inspector */
   ferryLinks(): readonly FerryLink[] {
@@ -1302,7 +1344,9 @@ export class TrafficSystem implements SimSystem {
     const sub = st.subway;
     this.subway.build(st.size, (i) => sub[i] !== 0);
     this.graphDirty = false;
-    this.iter = 0;
+    // (a load's first build: the saved volumes are of this same network, so the MSA continues the saved iteration)
+    this.iter = this.iterLoad;
+    this.iterLoad = 0;
   }
 
   private addEntries(nodeOfCell: Int32Array, N: number, b: Building): number {
@@ -3471,6 +3515,26 @@ export class TrafficSystem implements SimSystem {
     if (pq && pq.length === st.cells) { for (let i = 0; i < st.cells; i++) st.parking[i] = pq[i] / 255; this.parkHas = true; }
   }
 
+  /** the saved job-matching state (after init's reset of the prices / RNG): prices per job site, the RNG, the
+   *  assignment count and the MSA iteration — the matching continues the saved one instead of re-converging */
+  private restoreMatching(st: CityState): void {
+    const d = st.systemData.infraTransport as TransportSave | undefined;
+    if (!d || typeof d !== 'object') return;
+    const ji = d.jobIds, jp = d.jobPrice, ci = d.connCells, cp = d.connPrice;
+    if (ji && jp && ji.length === jp.length && ji.length > 0) {
+      this.priceById = ensureIdFloat(this.priceById, st);
+      const P = this.priceById;
+      for (let k = 0; k < ji.length; k++) { const id = ji[k], p = jp[k]; if (id >= 0 && id < P.length && isFinite(p)) P[id] = p; }
+    }
+    if (ci && cp && ci.length === cp.length) {
+      const P = this.connPrice;
+      for (let k = 0; k < ci.length; k++) { const c = ci[k], p = cp[k]; if (c >= 0 && c < P.length && isFinite(p)) P[c] = p; }
+    }
+    if (typeof d.rng === 'number' && isFinite(d.rng) && d.rng > 0) this.rngState = d.rng >>> 0;
+    if (typeof d.cycles === 'number' && isFinite(d.cycles) && d.cycles > 0) this.cycles = Math.floor(d.cycles);
+    if (typeof d.iter === 'number' && isFinite(d.iter) && d.iter > 0) this.iterLoad = Math.floor(d.iter);
+  }
+
   private saveTransport(st: CityState): void {
     const f = Math.fround;
     const rc: number[] = [], rv: number[] = [];
@@ -3487,6 +3551,19 @@ export class TrafficSystem implements SimSystem {
     }
     const sinks: [number, number][] = [];
     for (const id of this.sinkIds) if (id < this.sinkTrucksById.length && this.sinkTrucksById[id] >= 0) sinks.push([id, f(this.sinkTrucksById[id])]);
+    // job-matching prices of this assignment's job sites (exact Float32: the prices converge over many assignments, and
+    // a load without them re-matches the city from zero prices)
+    let nj = 0, nc = 0;
+    for (let j = 0; j < this.jN; j++) {
+      if (this.jBid[j] >= 0) { if (this.priceById[this.jBid[j]] !== 0) nj++; } else if (this.connPrice[this.jCell[j]] !== 0) nc++;
+    }
+    const jobIds = new Int32Array(nj), jobPrice = new Float32Array(nj), connCells = new Int32Array(nc), connPrice = new Float32Array(nc);
+    nj = nc = 0;
+    for (let j = 0; j < this.jN; j++) {
+      const id = this.jBid[j];
+      if (id >= 0) { const p = this.priceById[id]; if (p !== 0) { jobIds[nj] = id; jobPrice[nj++] = p; } }
+      else { const c = this.jCell[j], p = this.connPrice[c]; if (p !== 0) { connCells[nc] = c; connPrice[nc++] = p; } }
+    }
     const save: TransportSave = {
       v: 1,
       busNeed: [...this.busNeed].map(([k, v]) => [k, f(v)]),
@@ -3504,6 +3581,10 @@ export class TrafficSystem implements SimSystem {
       rampCells: Int32Array.from(rc),
       rampVol: Float32Array.from(rv),
       parkingQ: pq,
+      jobIds, jobPrice, connCells, connPrice,
+      rng: this.rngState,
+      cycles: this.cycles,
+      iter: this.iter,
     };
     st.systemData.infraTransport = save;
   }
@@ -3886,6 +3967,16 @@ interface TransportSave {
   rampVol: Float32Array;
   /** parking pressure x 255 per cell */
   parkingQ: Uint8Array;
+  /** job-matching prices (minutes) per job building id and per neighbour-connection cell, the matching RNG state, the
+   *  assignment count and the MSA iteration (optional: saves before r3 have none — their matching restarts from zero
+   *  prices and drifts for several assignments) */
+  jobIds?: Int32Array;
+  jobPrice?: Float32Array;
+  connCells?: Int32Array;
+  connPrice?: Float32Array;
+  rng?: number;
+  cycles?: number;
+  iter?: number;
 }
 
 /** traffic system of a city state (transportUseFactor / truckVolumeOf only receive the state; registry in transit.ts) */
