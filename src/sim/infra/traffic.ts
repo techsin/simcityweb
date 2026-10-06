@@ -677,8 +677,8 @@ export class TrafficSystem implements SimSystem {
   private pnTrT: Float64Array<ArrayBuffer> = new Float64Array(64);
   private pnTP: Float64Array<ArrayBuffer> = new Float64Array(64);
   /** overflow phase: stage (1 overflow search chunks, 3 records re-decided with the pass's forest — a kept forest's
-   *  car-leg minutes refreshed first —, 4 the rest without park & ride, its last chunk with the overflow car legs and the
-   *  round's car flows; 0 before the first overflow), pass, record cursor, the round's successor, the cache slot of the
+   *  car-leg minutes renewed on demand —, 4 the rest without park & ride, its last chunk with the round's car flows; 0
+   *  before the first overflow), pass, record cursor, the round's successor, the cache slot of the
    *  pass's forest, fresh searches this assignment, and the people the pass left that its forest could not serve (all
    *  its labels at their node full, the last within the margin: a group beyond them may have room — another pass) */
   private ovStage = 0;
@@ -940,8 +940,8 @@ export class TrafficSystem implements SimSystem {
     // (+ the park & ride garages' reserves: box(supply without them), the pressure over their walk areas)
     if (ph === PH_PARKING) return 0.3 * bld + (base + (this.gPrN > 0 ? 0.4 : 0)) * (size * size / 65536);
     // r4 park & ride overflow of a round: an overflow search chunk / a chunk of records re-decided with the groups that
-    // have room (a kept forest's car-leg minutes refreshed first) / a chunk of the rest without park & ride, the last one
-    // with the overflow car legs (a pass over each forest used) and the round's car flows
+    // have room (car-leg minutes renewed along the labels read) / a chunk of the rest without park & ride, the last one
+    // with the round's car flows (the overflow car legs: PH_COMMUTE)
     if (ph === PH_PROVER) {
       const recs = Math.min(OV_CHUNK, Math.max(0, this.pnN - this.ovCur));
       if (this.ovStage === 1) {
@@ -3211,8 +3211,8 @@ export class TrafficSystem implements SimSystem {
   /**
    * PH_PROVER: the overflow records of a matching round (or of the pooled match) re-decide with the park & ride groups
    * that still have room, pass by pass — each planned by ovPlan (seeds, a kept forest or a fresh overflow search, whose
-   * chunks stage 1 runs) — in stage 3 (records in chunks; a kept forest's car-leg minutes of this assignment refreshed
-   * first), then stage 4: what is left without park & ride (chunks), and with the last chunk the round's car flows (the
+   * chunks stage 1 runs) — in stage 3 (records in chunks; a kept forest's car-leg minutes of this assignment renewed along
+   * the labels read), then stage 4: what is left without park & ride (chunks), and with the last chunk the round's car flows (the
    * overflow car legs: PH_COMMUTE, before commuteEnd). Returns the next phase (the round's successor when done)
    */
   private overflow(): number {
