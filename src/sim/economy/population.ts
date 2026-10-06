@@ -455,12 +455,14 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     s.employed = Math.round(employed);
     s.unemployment = W > 0 ? Math.max(0, 1 - employed / W) : 0;
     s.workforceRatio = ratio;
-    if (demo) {
+    if (saved) cohShare.set(saved.coh);
+    else if (demo) {
       // cohort shares per wealth at the sample (reference mix where a wealth class has no residents yet)
       for (let w = 0; w < 3; w++) {
         const pw = coh[w * 5] + coh[w * 5 + 1] + coh[w * 5 + 2] + coh[w * 5 + 3] + coh[w * 5 + 4];
         for (let c = 0; c < 5; c++) cohShare[w * 5 + c] = pw > 0 ? coh[w * 5 + c] / pw : COHORT_BASE[c];
       }
+      if (rt.coarsePopW[0].length === cc) storeGrids(st, rt, cohShare);
     }
     const sc = s.cohorts, sw = s.cohortsByWealth;
     for (let q = 0; q < 15; q++) sw[q] = Math.round(t.pop[(q / 5) | 0] * cohShare[q]);

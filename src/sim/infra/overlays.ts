@@ -407,7 +407,6 @@ let emgQueue = new Int32Array(0);
 let emgQx = new Uint16Array(0);
 let emgDepth = new Uint8Array(0);
 let emgOpen = new Int32Array(0);
-let emgOpenX = new Uint16Array(0);
 /** per building id: the best footprint slack of a building met at the floor (stamped per build: emgPass) */
 let emgBest = new Float32Array(0);
 let emgBestPass = new Uint32Array(0);
@@ -440,53 +439,73 @@ function buildingBest(st: CityState, L: Float32Array, id: number): number {
  *    EMG_DILATE steps (a lot there would face that road), else EMG_NOROAD_T ("No road nearby");
  *  - inert: buildings at the floor (no road beside them, or 6+ min out) and RESP_NONE cells keep their own value, and
  *    the fill neither starts from nor passes through them — land beside a roadless plaza reads the road, not the plaza.
- * PERF (one build per 'emergency' event while shown, 256²): (1) one pass encodes the sources / inert cells and lists
- * the targets, (2) the sources beside a target are queued in target order (left, right, up, down: deterministic
- * ties), (3) a multi-source BFS through targets only (x kept in the queue: no modulo per step).
+ * PERF (one build per 'emergency' event while shown, 256²; small typed-array helpers V8 compiles tight): (1) emgEncode
+ * encodes the sources and lists the targets and the building cells at the floor, (2) those buildings read their
+ * footprint's best cell, (3) emgSeed queues the sources beside a target in target order (left, right, up, down:
+ * deterministic ties), (4) emgFill: a multi-source BFS through targets only (x kept in the queue: no modulo per step).
  */
 function buildEmergency(st: CityState, variant: number, out: Float32Array): void {
   if (!respReady(st)) return;
   const L = respLayer(st, variant);
-  const C = st.cells, N = st.size, bld = st.building, net = st.network;
+  const C = st.cells, N = st.size;
   if (emgQueue.length < C) {
     emgQueue = new Int32Array(C); emgQx = new Uint16Array(C); emgDepth = new Uint8Array(C);
-    emgOpen = new Int32Array(C); emgOpenX = new Uint16Array(C);
+    emgOpen = new Int32Array(C); emgFloorB = new Int32Array(C);
   }
-  const q = emgQueue, qx = emgQx, dep = emgDepth, openList = emgOpen, openX = emgOpenX;
+  const dep = emgDepth, open = emgOpen;
   dep.fill(0, 0, C);
   emgPass = (emgPass % 0xfffffff0) + 1;
-  const floor = -EMERG_RMAX + 1e-3, none = RESP_NONE + 0.5, k0 = 0.92 / (2 * EMG_SPAN);
-  // (1) encode sources and inert cells (encodeSlack inlined), list the targets
-  let open = 0;
-  for (let z = 0, i = 0; z < N; z++) {
-    for (let x = 0; x < N; x++, i++) {
-      let s = L[i];
-      if (s <= floor) {
-        if (s <= none) { out[i] = EMG_NONE_T; dep[i] = EMG_INERT; continue; }
-        const id = bld[i];
-        if (id >= 0) {
-          s = buildingBest(st, L, id);
-          if (s <= floor) { out[i] = s <= none ? EMG_NONE_T : EMG_FLOOR_T; dep[i] = EMG_INERT; continue; }
-        } else {
-          const n = net[i];
-          if (n < Network.Street || n > Network.Highway) { out[i] = -1; openList[open] = i; openX[open++] = x; continue; }
-        }
-      }
-      out[i] = 0.08 + k0 * ((s < -EMG_SPAN ? -EMG_SPAN : s > EMG_SPAN ? EMG_SPAN : s) + EMG_SPAN);
-    }
+  const floor = -EMERG_RMAX + 1e-3, none = RESP_NONE + 0.5;
+  emgEncode(L, out, st.building, st.network, dep, open, emgFloorB, C, floor, none, 0.92 / (2 * EMG_SPAN), EMG_SPAN, EMG_NONE_T, EMG_INERT);
+  const nOpen = EMG_COUNT[0], nFloorB = EMG_COUNT[1];
+  // building cells at the floor: the footprint's best cell (a source), else inert at the floor
+  for (let k = 0; k < nFloorB; k++) {
+    const i = emgFloorB[k];
+    const s = buildingBest(st, L, st.building[i]);
+    if (s > floor) out[i] = encodeSlack(s);
+    else { out[i] = s <= none ? EMG_NONE_T : EMG_FLOOR_T; dep[i] = EMG_INERT; }
   }
-  if (open === 0) return;
-  // (2) the sources beside a target (dep 1); inert cells (dep EMG_INERT) and targets (out -1) are not
+  if (nOpen === 0) return;
+  const tail = emgSeed(out, dep, open, nOpen, emgQueue, emgQx, N, C);
+  emgFill(out, dep, emgQueue, emgQx, tail, N, C, EMG_DILATE + 1);
+  // no road within EMG_DILATE steps: drawn like the floor, read as "No road nearby"
+  for (let k = 0; k < nOpen; k++) { const i = open[k]; if (out[i] < 0) out[i] = EMG_NOROAD_T; }
+}
+/** emgEncode's counts: [targets, building cells at the floor] */
+const EMG_COUNT = new Int32Array(2);
+let emgFloorB = new Int32Array(0);
+/** (1) sources encoded (encodeSlack inlined), RESP_NONE cells inert, targets (out -1) and floor buildings listed */
+function emgEncode(L: Float32Array, out: Float32Array, bld: Int32Array, net: Uint8Array, dep: Uint8Array, open: Int32Array, floorB: Int32Array,
+  C: number, floor: number, none: number, k0: number, span: number, noneT: number, inert: number): void {
+  let n = 0, m = 0;
+  for (let i = 0; i < C; i++) {
+    const s = L[i];
+    if (s > floor) { out[i] = 0.08 + k0 * ((s < -span ? -span : s > span ? span : s) + span); continue; }
+    if (s <= none) { out[i] = noneT; dep[i] = inert; continue; }
+    if (bld[i] >= 0) { floorB[m++] = i; continue; }
+    const k = net[i];
+    // a road at the floor: a source 6+ min out
+    if (k >= Network.Street && k <= Network.Highway) { out[i] = 0.08 + k0 * ((s < -span ? -span : s) + span); continue; }
+    out[i] = -1;
+    open[n++] = i;
+  }
+  EMG_COUNT[0] = n;
+  EMG_COUNT[1] = m;
+}
+/** (3) the sources beside a target (dep 1; inert cells: dep EMG_INERT, targets: out -1); returns the queue length */
+function emgSeed(out: Float32Array, dep: Uint8Array, open: Int32Array, n: number, q: Int32Array, qx: Uint16Array, N: number, C: number): number {
   let tail = 0;
-  for (let k = 0; k < open; k++) {
-    const i = openList[k], x = openX[k];
+  for (let k = 0; k < n; k++) {
+    const i = open[k], x = i % N;
     if (x > 0 && dep[i - 1] === 0 && out[i - 1] >= 0) { dep[i - 1] = 1; q[tail] = i - 1; qx[tail++] = x - 1; }
     if (x < N - 1 && dep[i + 1] === 0 && out[i + 1] >= 0) { dep[i + 1] = 1; q[tail] = i + 1; qx[tail++] = x + 1; }
     if (i >= N && dep[i - N] === 0 && out[i - N] >= 0) { dep[i - N] = 1; q[tail] = i - N; qx[tail++] = x; }
     if (i + N < C && dep[i + N] === 0 && out[i + N] >= 0) { dep[i + N] = 1; q[tail] = i + N; qx[tail++] = x; }
   }
-  // (3) BFS through targets, at most EMG_DILATE steps (depth stored +1: sources 1; the last ring is not queued)
-  const last = EMG_DILATE + 1;
+  return tail;
+}
+/** (4) BFS through targets (out < 0), depth stored +1 (sources 1), cells at depth `last` are filled but not queued */
+function emgFill(out: Float32Array, dep: Uint8Array, q: Int32Array, qx: Uint16Array, tail: number, N: number, C: number, last: number): void {
   for (let head = 0; head < tail; head++) {
     const i = q[head], x = qx[head];
     const d = dep[i] + 1, more = d < last, v = out[i];
@@ -495,8 +514,6 @@ function buildEmergency(st: CityState, variant: number, out: Float32Array): void
     if (i >= N && out[i - N] < 0) { out[i - N] = v; dep[i - N] = d; if (more) { q[tail] = i - N; qx[tail++] = x; } }
     if (i + N < C && out[i + N] < 0) { out[i + N] = v; dep[i + N] = d; if (more) { q[tail] = i + N; qx[tail++] = x; } }
   }
-  // no road within EMG_DILATE steps: drawn like the floor, read as "No road nearby"
-  for (let k = 0; k < open; k++) { const i = openList[k]; if (out[i] < 0) out[i] = EMG_NOROAD_T; }
 }
 
 function servicesOn(st: CityState): boolean {
