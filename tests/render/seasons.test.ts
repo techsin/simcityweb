@@ -222,13 +222,16 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
-  it('generation and refills run in small slices (one block row / batch per step at a zero budget)', () => {
-    const { st, tr } = make(128);
+  it('the ring is ready with the load; later regenerations / refills run in small slices (zero budget)', () => {
+    const { tr } = make(128);
     const n0 = tr.ringInstances;
-    tr.reset(st);
+    // generated and filled by the constructor (behind the loading screen): nothing left for the frames
+    const ring = tr as unknown as { ringStale: number; ringRefill: number };
+    expect(ring.ringStale | ring.ringRefill).toBe(0);
+    expect(tr.ringGenerations).toBe(8);
+    // a regeneration of every sector (as after border terrain edits) is time-sliced: one block / batch per zero-budget step
+    ring.ringStale = 0xff;
     let steps = 0;
-    // (chunk rebuilds after the reset are separate: flush them, then only the ring is left)
-    tr.flush(false);
     while (steps < 100000) {
       const before = tr.ringGenerations;
       tr.ringStep(0);

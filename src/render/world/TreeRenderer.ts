@@ -28,9 +28,9 @@
  * Outer ring (far view): beyond the map edge (the terrain's landscape skirt) impostor-only trees stand on the terrain
  * shader's outside forests, out to ringWidth, in 8 sectors (see the RING_* constants and ringStep):
  *   - candidates are a pure function of the noise texture, the outer terrain and the seed (the map's own cells only
- *     reach the edge band), generated once per map in a few-ms-per-frame time budget after the map's chunks, at full
- *     density (a per-tree threshold picks the quality's subset): a quality / density, season or map-cell change only
- *     refills (also time-budgeted), only a terrain edit on the map border regenerates the sectors on that side;
+ *     reach the edge band), generated (and filled) once per map with the load, at full density (a per-tree threshold
+ *     picks the quality's subset): a quality / density, season or map-cell change only refills, in a ~1 ms-per-frame
+ *     budget; only a terrain edit on the map border regenerates the sectors on that side (same budget);
  *   - drawn as one mesh per sector (micro impostors, conifers carry an evergreen flag) beyond lodDistance, as the
  *     broadleaf / conifer impostor pair closer in; hidden from low (street-level) cameras, where the city and the edge
  *     band hide it anyway; thinned at low quality; no shadows.
@@ -573,6 +573,9 @@ export class TreeRenderer {
     for (let i = 0; i < this.chunks.length; i++) this.dirty.add(i);
     this.snapshotRingEdge();
     this.setMonth(state.month);
+    // the outer ring is generated and filled with the load (~10-80 ms, behind the loading screen), so no interactive
+    // frame pays for it; later refills (season, density) and border regenerations are time-sliced (ringStep)
+    this.flushRing();
     this.makeWarmup();
   }
 
@@ -810,12 +813,13 @@ export class TreeRenderer {
         c.far = [null, null, null];
       }
     }
-    // a new map: new ring candidates (the old sectors stay hidden until refilled)
+    // a new map: new ring candidates, generated right away (a reset is a load)
     this.ringStale = (1 << RING_N) - 1;
     this.ringGen = null;
     this.ringReady.fill(0);
     this.snapshotRingEdge();
     this.markAll();
+    this.flushRing();
   }
 
   private pickKind(x: number, z: number, h: number, slope: number, r: number, weights: number[]): number {
@@ -1313,7 +1317,12 @@ export class TreeRenderer {
   flush(ring = true) {
     for (const id of this.dirty) this.buildChunk(id);
     this.dirty.clear();
-    if (ring) while (this.ringStale || this.ringRefill || this.ringGen || this.ringFillState) this.ringStep(Infinity);
+    if (ring) this.flushRing();
+  }
+
+  /** finish the outer ring's pending generation / refills now */
+  private flushRing(): void {
+    while (this.ringStale || this.ringRefill || this.ringGen || this.ringFillState) this.ringStep(Infinity);
   }
 
   /** tree density (0..1) of the map's tree texture, clamped to the map like the terrain shader samples it */
