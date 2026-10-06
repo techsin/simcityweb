@@ -75,9 +75,20 @@ pull in. The panic handler itself only traps. That cost is paid once, not per ke
   env `SIM_WASM` (node), then localStorage `metropolis.simwasm`, then URL `?simwasm=`, then
   `setSimWasmPreference()`. Syntax: `js | wasm | auto | 0 | 1`, optionally followed by `,kernel:pref` (for example
   `?simwasm=auto,blur:js`).
+- **Imports**: the binary imports the engine's own `Math.exp` / `Math.log` as `env.js_exp` / `env.js_log` (the traffic
+  core's logit mode split, shopping decay and price updates call them), so kernels and JS compute identical values on
+  every engine by construction — V8, SpiderMonkey and JavaScriptCore each use their own libm. Every instantiation must
+  pass `simWasmImports()` (the loader, tests and benchmarks do): `new WebAssembly.Instance(mod, {})` fails with
+  "Import #0 module="env"". V8 calls an imported Math builtin directly; measured cost-neutral against an inline fdlibm
+  port (traffic cycle 0.99× [0.97, 1.02], tools/bench/trafficCore.bench.mjs insitu, arm `wasm-fdlibm`).
 - **Failures**:
   - A missing WebAssembly, a broken or stale binary (ABI or export check), or a trap disables wasm for the session
     and logs once. Calls then use JS.
+  - A trap can come after a kernel already wrote state. Running the JS kernel on that state would silently diverge, so
+    a binding must recover exactly or discard the work. The traffic core (`src/wasm/kernels/trafficBind.ts`) reruns
+    kernels whose outputs depend only on inputs they do not write, restores a snapshot of the few read-modify-write
+    arrays of the others (volNew, sLoad, the traffic layer: tens of µs per cycle), and aborts the cycle for roundMatch
+    / commute (`TrafficCycleAbortError`; the driver restarts it from prep, in JS). A trapped core never uses wasm again.
   - `WasmHeapFullError` only makes that one call use JS. It is counted in `simWasmStatus().kernels[k].heapFullCalls`.
   - Unusual arguments always go to JS: non-integer sizes, arrays that are too short, or overlapping arrays.
   - `simWasmStatus()` reports the state, source, size, init time, features, heap stats, and per-kernel activity.

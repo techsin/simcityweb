@@ -9,31 +9,41 @@ import { registerTestDefs } from '../../../tests/infra/cityGen';
 import { initSimWasmSync, simWasmInstance, simWasmStatus } from '../../../src/wasm/simWasm';
 import { adoptLayers } from '../../../src/wasm/layers';
 import { trafficWasmStats, type TrafficWasmCore } from '../../../src/wasm/kernels/trafficBind';
-import { makeArm, runCycle, type Arm, type ArmKind } from './arms';
+import { baseKind, makeArm, runCycle, type Arm, type ArmKind } from './arms';
 import { digestTraffic } from './compare';
 import { instanceFrom } from './browserCore';
+import { invalidateProtector, makeProtectorProbe } from './protector';
+import type { SimWasmInstance } from '../../../src/wasm/simWasm';
 
 export interface ArmHostOpts { kind: ArmKind; testdefs: boolean; resident: boolean }
 export interface ArmHost {
   info: Record<string, unknown>;
   /** one traffic cycle: wall ms measured around runCycleSync inside this thread, per-phase ms, steps per phase */
   cycle(): { ms: number; phases: number[]; steps: number[] };
-  digest(): { digest: Record<string, number>; stats: Record<string, unknown>; arena: number; lastJsReason: string | null };
+  digest(): { digest: Record<string, number>; stats: Record<string, unknown>; arena: number; lastJsReason: string | null; protector: boolean | null; heap: unknown };
 }
 
 export async function makeArmHost(o: ArmHostOpts): Promise<ArmHost> {
   const t0 = performance.now();
+  // the probe first (it only sees invalidations after it was optimized; needs natives syntax), then '-inv' arms
+  // invalidate the protector like the game's main thread today
+  const probe = makeProtectorProbe();
+  if (o.kind.endsWith('-inv')) invalidateProtector();
   const wasmBytes = await (await fetch('/sim_kernels.wasm')).arrayBuffer();
   if (!initSimWasmSync(wasmBytes)) throw new Error('wasm init failed: ' + simWasmStatus().error);
-  const scalar = o.kind === 'wasm-scalar' ? instanceFrom(await (await fetch('/scalar.wasm')).arrayBuffer(), 'scalar') : null;
+  const base = baseKind(o.kind);
+  const other = base === 'wasm-scalar' || base === 'wasm-fdlibm'
+    ? instanceFrom(await (await fetch(base === 'wasm-scalar' ? '/scalar.wasm' : '/fdlibm.wasm')).arrayBuffer(), base) : null;
+  const inst: SimWasmInstance | null = other ?? (base.startsWith('wasm') ? simWasmInstance() : null);
   const file = new Uint8Array(await (await fetch('/fixture.metropolis')).arrayBuffer());
   if (o.testdefs) registerTestDefs();
+  // Chromium's streams (DecompressionStream inside unpackFile) do not detach ArrayBuffers: the protector stays intact
   const st = deserializeCity((await unpackFile(file)) as Parameters<typeof deserializeCity>[0]);
-  if (o.resident && o.kind.startsWith('wasm')) adoptLayers(st, (o.kind === 'wasm' ? simWasmInstance()! : scalar!).heap, { reserveExtra: 32 << 20 });
-  const arm: Arm = makeArm(o.kind, st, { 'wasm-scalar': () => scalar });
+  if (o.resident && base.startsWith('wasm')) adoptLayers(st, inst!.heap, { reserveExtra: 32 << 20 });
+  const arm: Arm = makeArm(o.kind, st, other ? { [base]: () => other } : {});
   const info = {
     kind: o.kind, pop: st.stats.population, nodes: arm.tr.road.n, oN: arm.tr.oN, stops: arm.tr.stops.n,
-    setupMs: performance.now() - t0, simd: scalar ? scalar.features.simd128 : simWasmStatus().features?.simd128 ?? null,
+    setupMs: performance.now() - t0, simd: inst ? inst.features.simd128 : null, protector: probe ? probe() : null,
   };
   return {
     info,
@@ -43,7 +53,10 @@ export async function makeArmHost(o: ArmHostOpts): Promise<ArmHost> {
     },
     digest() {
       const w = arm.core as TrafficWasmCore | null;
-      return { digest: digestTraffic(arm.tr, arm.st), stats: { ...trafficWasmStats }, arena: w && 'arenaBytes' in w ? w.arenaBytes : 0, lastJsReason: w && 'lastJsReason' in w ? w.lastJsReason : null };
+      return {
+        digest: digestTraffic(arm.tr, arm.st), stats: { ...trafficWasmStats }, arena: w && 'arenaBytes' in w ? w.arenaBytes : 0,
+        lastJsReason: w && 'lastJsReason' in w ? w.lastJsReason : null, protector: probe ? probe() : null, heap: inst ? inst.heap.stats() : null,
+      };
     },
   };
 }

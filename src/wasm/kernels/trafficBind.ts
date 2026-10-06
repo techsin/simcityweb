@@ -657,12 +657,13 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
         trafficWasmStats.jsCalls++;
         return js();
       }
+      // restore first: the report may rethrow (forced 'wasm' mode), the state is consistent either way
+      if (rec !== 'abort') restore?.();
       onTrap(name, err);
       if (rec === 'abort') {
         trafficWasmStats.aborts++;
         throw new TrafficCycleAbortError(name, err);
       }
-      restore?.();
       trafficWasmStats.jsCalls++;
       return js();
     }

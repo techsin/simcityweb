@@ -22,6 +22,7 @@ import {
 export type ProbeJs = typeof probeJs;
 import { makePopAggKernels, type PopAggBindStats, type PopAggSoAFn, type PopAggWasm } from '../../../src/wasm/kernels/populationAggregateProbeBind';
 import { WasmHeap, type HeapArrayCtor } from '../../../src/wasm/heap';
+import { simWasmImports } from '../../../src/wasm/simWasm';
 import {
   ORIGINAL_CONSTANTS, makeOriginalAggregate, type OrigBuilding, type OrigCache, type OrigRuntime, type OrigSim, type OrigTotals,
 } from '../../../tests/wasm/populationAggregateOriginal';
@@ -123,7 +124,7 @@ export class InputDeriver {
 
 // ------------------------------------------------------------------------------------------------ wasm instances
 export function instantiate(mod: WebAssembly.Module, reserveBytes = 32 << 20): PopAggWasm {
-  const inst = new WebAssembly.Instance(mod, {});
+  const inst = new WebAssembly.Instance(mod, simWasmImports());
   const ex = inst.exports as unknown as PopAggWasm['ex'] & { __heap_base: WebAssembly.Global };
   if (typeof ex.popagg_aggregate !== 'function') throw new Error('the wasm binary has no popagg_aggregate export (npm run build:wasm)');
   const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));

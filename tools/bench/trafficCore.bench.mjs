@@ -2,7 +2,8 @@
 /**
  * trafficCore benchmarks and checks: original JS (the tree's traffic.ts) vs the fair optimised-JS core
  * (src/wasm/js/trafficCore.ts) vs the wasm core (wasm/sim-kernels/src/traffic.rs via src/wasm/kernels/trafficBind.ts;
- * SIMD = the shipped binary, scalar = the same Rust without simd128, imp = exp / log imported from JS).
+ * SIMD = the shipped binary (exp / log = the engine's Math.exp / Math.log, imported), scalar = the same Rust without
+ * simd128, fdlibm = SIMD with the inline fdlibm exp / log instead of the imports: what the imports cost).
  *
  *   node tools/bench/trafficCore.bench.mjs <suite> [--tree snap|live|DIR] [--fixture dense1m|bot256|stress1m|stress256]
  *        [--fixtures DIR] [--json out.json] [suite options]
@@ -16,6 +17,10 @@
  * = this repo (only meaningful once src/sim/infra/traffic.ts is back at the 24f8609 phase structure), or a directory.
  * Bundles go to node_modules/.cache/sim-bench/trafficCore/. Protocol: tools/bench/ab.ts (warm-up, >= 31 interleaved
  * order-alternated pairs, CPU time from an idle worker thread, median / min, 95% bootstrap CI, load average).
+ * Fairness: one V8 isolate per arm; V8's ArrayBuffer-detaching protector intact in every arm unless it is '-inv'
+ * (fixtures gunzipped with zlib in node, pre-sized wasm memory; node runs with --allow-natives-syntax to probe it).
+ * Binaries: the loader's ($SIM_WASM_PATH or src/wasm/sim_kernels.wasm); scalar / fdlibm builds of $TRAFFIC_CRATE
+ * (default wasm/sim-kernels; trafficCore/binaries.mjs).
  */
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -57,7 +62,7 @@ export async function bundle(entry, platform = 'node') {
 export function runNode(file, args, label, env = {}) {
   const json = opt('--json') ?? join(CACHE, `${label}.${treeTag}.${opt('--fixture', 'default')}.json`);
   const t0 = Date.now();
-  const r = spawnSync(process.execPath, ['--max-old-space-size=8192', file, ...args, '--json', json], { stdio: 'inherit', cwd: ROOT, env: { ...process.env, ...env } });
+  const r = spawnSync(process.execPath, ['--max-old-space-size=8192', '--allow-natives-syntax', file, ...args, '--json', json], { stdio: 'inherit', cwd: ROOT, env: { ...process.env, ...env } });
   if (r.status !== 0) throw new Error(`${label} failed (exit ${r.status})`);
   console.log(`# ${label}: ${((Date.now() - t0) / 1000).toFixed(0)} s wall -> ${json}`);
   return existsSync(json) ? JSON.parse(readFileSync(json, 'utf8')) : null;
@@ -78,8 +83,10 @@ async function browser() {
   const { extraBinaries } = await import('./trafficCore/binaries.mjs');
   const bins = await extraBinaries(CACHE);
   const files = {
-    '/sim_kernels.wasm': { file: join(ROOT, 'src', 'wasm', 'sim_kernels.wasm'), type: 'application/wasm' },
+    // the loader's binary: $SIM_WASM_PATH (as in node) or the committed one
+    '/sim_kernels.wasm': { file: process.env.SIM_WASM_PATH ?? join(ROOT, 'src', 'wasm', 'sim_kernels.wasm'), type: 'application/wasm' },
     '/scalar.wasm': bins.scalar ? { file: bins.scalar, type: 'application/wasm' } : null,
+    '/fdlibm.wasm': bins.fdlibm ? { file: bins.fdlibm, type: 'application/wasm' } : null,
     '/fixture.metropolis': { file: fixtureFile, type: 'application/octet-stream' },
   };
   if (shared) {
@@ -100,7 +107,7 @@ async function browser() {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const { chromium } = await import('playwright');
-  const b = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--max-old-space-size=6144'] });
+  const b = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--max-old-space-size=6144 --allow-natives-syntax'] });
   let result;
   const load0 = loadavg();
   try {
@@ -115,7 +122,7 @@ async function browser() {
       if (result.error) throw new Error(`browser: ${result.error}`);
     } else {
       const { runIsolatedBrowser } = await import(pathToFileURL(await bundle('browserIso.ts')).href);
-      const kinds = opt('--arms', `orig,orig2,fair,wasm${bins.scalar ? ',wasm-scalar' : ''}`).split(',');
+      const kinds = opt('--arms', `orig,orig2,fair,wasm${bins.scalar ? ',wasm-scalar' : ''}${bins.fdlibm ? ',wasm-fdlibm' : ''}`).split(',');
       const where = rest.includes('--worker-only') ? ['worker'] : rest.includes('--main-only') ? ['main'] : ['main', 'worker'];
       result = await runIsolatedBrowser(b, {
         base, testdefs: fixtureFile.includes('testdefs'), pairs: Number(opt('--pairs', '31')), warm: Number(opt('--warm', '3')),
@@ -143,10 +150,14 @@ async function main() {
     case 'micro': {
       const { extraBinaries } = await import('./trafficCore/binaries.mjs');
       const bins = await extraBinaries(CACHE);
-      const extra = [...(bins.scalar ? ['--scalar', bins.scalar] : []), ...(bins.imp ? ['--imp', bins.imp] : [])];
+      const extra = [...(bins.scalar ? ['--scalar', bins.scalar] : []), ...(bins.fdlibm ? ['--fdlibm', bins.fdlibm] : [])];
       return runNode(await bundle('micro.ts'), [...passArgs, ...extra], 'micro');
     }
-    case 'math': return runNode(await bundle('math.ts'), passArgs, 'math');
+    case 'math': {
+      const { extraBinaries } = await import('./trafficCore/binaries.mjs');
+      const bins = await extraBinaries(CACHE);
+      return runNode(await bundle('math.ts'), [...passArgs, ...(bins.fdlibm ? ['--fdlibm', bins.fdlibm] : [])], 'math');
+    }
     case 'e2e': {
       const worker = rest.includes('--in-process') ? [] : ['--worker', await bundle('armWorker.ts')];
       return runNode(await bundle('e2e.ts'), [...passArgs, ...worker], rest.includes('--flush') ? 'e2e-flush' : 'e2e');
@@ -155,7 +166,7 @@ async function main() {
     case 'insitu': {
       const { extraBinaries } = await import('./trafficCore/binaries.mjs');
       const bins = await extraBinaries(CACHE);
-      const extra = [...(bins.scalar ? ['--scalar', bins.scalar] : []), ...(bins.imp ? ['--imp', bins.imp] : [])];
+      const extra = [...(bins.scalar ? ['--scalar', bins.scalar] : []), ...(bins.fdlibm ? ['--fdlibm', bins.fdlibm] : [])];
       // one V8 isolate (worker thread) per arm unless --in-process (see insitu.ts)
       const worker = rest.includes('--in-process') ? [] : ['--worker', await bundle('armWorker.ts')];
       return runNode(await bundle('insitu.ts'), [...passArgs, ...extra, ...worker], 'insitu');
@@ -164,13 +175,16 @@ async function main() {
       console.log([
         'usage: node tools/bench/trafficCore.bench.mjs <suite> [--tree snap|live|DIR] [--fixture dense1m|bot256|stress1m|stress256] [--fixtures DIR] [--json FILE]',
         '  verify   [--cycles N]                      step-by-step equivalence orig / fair / wasm after every traffic step',
-        '  insitu   [--pairs 31] [--warm 3] [--arms orig,orig2,orig-ws,fair,wasm,wasm-scalar,wasm-imp] [--resident] [--in-process]',
-        '                                             traffic cycle A/B (runCycleSync), one isolate per arm, per-phase CPU',
-        '  micro    [--reps 31]                       sort (native / JS radix / wasm radix), logit, roundMatch kernel, SIMD vs scalar',
-        '  math     [--random 100000000]              exp / log bit test vs V8 (fixture arguments + random)',
+        '  insitu   [--pairs 31] [--warm 3] [--arms orig,orig2,fair,wasm,wasm2,wasm-scalar,wasm-fdlibm,orig-inv,wasm-inv,orig-ws,wasm-ws]',
+        '           [--edit] [--resident] [--in-process]',
+        '                                             traffic cycle A/B (runCycleSync), one isolate per arm, per-phase CPU;',
+        '                                             --edit: a dead-end road cell bulldozed / rebuilt before every cycle',
+        '  micro    [--reps 31]                       sort (native / JS radix / wasm radix), logit (imported vs inline exp), roundMatch kernel,',
+        '                                             SIMD vs scalar',
+        '  math     [--random 100000000]              exp / log bit test vs the engine (shipped: imports = by construction; + the fdlibm build)',
         '  e2e      [--days 120] [--chunk 4] [--flush] [--arms orig,orig2,orig-ws,wasm] [--resident]',
         '                                             whole simulation ms/day with the core swapped in (+ identity after the run)',
-        '  browser  [--pairs 31] [--warm 3] [--resident] [--arms orig,orig2,fair,wasm,wasm-scalar] [--main-only|--worker-only] [--shared]',
+        '  browser  [--pairs 31] [--warm 3] [--resident] [--arms orig,orig2,fair,wasm,wasm-scalar,wasm-fdlibm,orig-inv] [--main-only|--worker-only]',
         '                                             headless Chromium: in-situ A/B on the main thread and in a Worker (one renderer per arm)',
       ].join('\n'));
       process.exitCode = suite ? 1 : 0;

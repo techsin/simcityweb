@@ -19,6 +19,7 @@
  */
 import { falloff } from '../../../src/sim/infra/catchments';
 import { WasmHeap, type HeapArrayCtor } from '../../../src/wasm/heap';
+import { simWasmImports } from '../../../src/wasm/simWasm';
 import {
   NimbySources, NimbyTables, PH_ALL, fieldKernelsJs, type CellsArgs, type FieldKernels, type NimbyArgs, type NimbyCtx, type WaterArgs,
 } from '../../../src/wasm/js/fieldPasses';
@@ -327,7 +328,7 @@ export function wasmArm(cap: FieldCapture, w: FieldsWasm, label: string, residen
 
 /** an explicit kernel instance of a binary (scalar / SIMD builds) with its own memory + heap */
 export function instantiate(mod: WebAssembly.Module, reserveBytes = 160 << 20): FieldsWasm {
-  const inst = new WebAssembly.Instance(mod, {});
+  const inst = new WebAssembly.Instance(mod, simWasmImports());
   const ex = inst.exports as unknown as FieldsWasm['ex'] & { __heap_base: WebAssembly.Global };
   const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
   heap.reserve(reserveBytes);

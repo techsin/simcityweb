@@ -8,7 +8,7 @@
 import { unpackFile } from '../../../src/save/bundle';
 import { deserializeCity } from '../../../src/save/serialize';
 import { registerTestDefs } from '../../../tests/infra/cityGen';
-import { initSimWasmSync, simWasmStatus, type SimWasmInstance } from '../../../src/wasm/simWasm';
+import { initSimWasmSync, simWasmImports, simWasmStatus, SIM_WASM_INITIAL_RESERVE, type SimWasmInstance } from '../../../src/wasm/simWasm';
 import { WasmHeap } from '../../../src/wasm/heap';
 import { adoptLayers } from '../../../src/wasm/layers';
 import { simWasmInstance } from '../../../src/wasm/simWasm';
@@ -18,11 +18,12 @@ import { diffCity, diffTraffic } from './compare';
 
 const median = (xs: number[]) => { const s = xs.slice().sort((a, b) => a - b); const n = s.length; return n % 2 ? s[(n - 1) >> 1] : 0.5 * (s[n / 2 - 1] + s[n / 2]); };
 
+/** an instance of `bytes` with its own (pre-sized) memory, the loader's imports and its start-up reserve */
 export function instanceFrom(bytes: ArrayBuffer, label: string): SimWasmInstance {
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), {});
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), simWasmImports());
   const ex = inst.exports as unknown as SimWasmInstance['exports'];
   const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
-  heap.reserve(4 << 20);
+  heap.reserve(SIM_WASM_INITIAL_RESERVE);
   const f = ex.sk_features();
   return {
     exports: ex, memory: ex.memory, heap, source: label, bytes: bytes.byteLength, initMs: 0,

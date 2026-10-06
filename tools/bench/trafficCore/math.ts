@@ -1,13 +1,16 @@
 /**
- * Exhaustive bit test of the kernels' exp / log (wasm/sim-kernels/src/fdlibm.rs, the port of V8's ieee754.cc) against
- * this engine's Math.exp / Math.log: `--random N` random arguments per function (default 10^8: all bit patterns,
- * the logit range, utility differences <= 0, price ratios [0.25, 8]) plus EVERY argument the traffic phases pass to
- * Math.exp / Math.log during `--cycles` cycles of each fixture (recorded through a wrapper around the fair JS core's
- * calls, which are the original's calls). Mismatch count must be 0.
- *   args: [--random 100000000] [--fixtures DIR] [--cities dense1m,bot256,stress1m] [--cycles 4]
+ * Bit test of the traffic kernels' exp / log against this engine's Math.exp / Math.log: `--random N` random arguments
+ * per function (default 10^8: all bit patterns, the logit range, utility differences <= 0, price ratios [0.25, 8]) plus
+ * EVERY argument the traffic phases pass to Math.exp / Math.log during `--cycles` cycles of each fixture (recorded
+ * through a wrapper around the fair JS core's calls, which are the original's calls). Mismatch count must be 0.
+ * The shipped binary imports the engine's functions (env.js_exp / env.js_log), so it matches by construction: this is a
+ * wiring check. `--fdlibm FILE` (the benchmark-only build with the inline fdlibm port, V8's algorithm) is checked too:
+ * exact on V8, but only there.
+ *   args: [--random 100000000] [--fixtures DIR] [--cities dense1m,bot256,stress1m] [--cycles 4] [--fdlibm FILE]
  */
 import { benchMain, loadAvg } from '../node';
-import { initSimWasmSync, simWasmInstance, simWasmStatus } from '../../../src/wasm/simWasm';
+import { initSimWasmSync, simWasmInstance, simWasmStatus, type SimWasmInstance } from '../../../src/wasm/simWasm';
+import { instanceFromFile } from './instances';
 import { makeFairTrafficCore } from '../../../src/wasm/js/trafficCore';
 import { installTrafficCore } from '../../../src/wasm/kernels/trafficDriver';
 import { Simulation } from '../../../src/sim/Simulation';
@@ -21,12 +24,16 @@ benchMain(async ({ args, log }) => {
   const cycles = Number(opt('--cycles', '4'));
   const cities = opt('--cities', 'dense1m,bot256,stress1m')!.split(',').filter(Boolean);
   if (!initSimWasmSync()) throw new Error('wasm init failed: ' + simWasmStatus().error);
-  const w = simWasmInstance()!;
-  const ex = w.exports as unknown as { traffic_math_batch(x: number, o: number, n: number, which: number): void };
+  const builds: [string, SimWasmInstance][] = [['shipped (imported Math.exp / Math.log)', simWasmInstance()!]];
+  if (opt('--fdlibm')) builds.push(['inline fdlibm (benchmark-only build)', instanceFromFile(opt('--fdlibm')!, 'fdlibm')]);
   const CH = 1 << 20;
+  const same = (a: number, b: number) => Object.is(a, b) || (a !== a && b !== b);
+  const out: Record<string, unknown> = {};
+  for (const [label, w] of builds) {
+  log(`## ${label}`);
+  const ex = w.exports as unknown as { traffic_math_batch(x: number, o: number, n: number, which: number): void };
   const h = w.heap;
   const p = h.alloc(16 * CH + 64, 16);
-  const same = (a: number, b: number) => Object.is(a, b) || (a !== a && b !== b);
   const check = (xs: Float64Array, which: 0 | 1): number => {
     let bad = 0;
     for (let s = 0; s < xs.length; s += CH) {
@@ -80,5 +87,7 @@ benchMain(async ({ args, log }) => {
     log(`${spec}: ${E.length} exp + ${L.length} log arguments from ${cycles} cycles, ${bad} mismatches`);
   }
   h.free(p);
-  return { node: process.version, random: doneR, randomMismatches: badR, cities: perCity, load: loadAvg() };
+  out[label] = { random: doneR, randomMismatches: badR, cities: perCity };
+  }
+  return { node: process.version, builds: out, load: loadAvg() };
 });

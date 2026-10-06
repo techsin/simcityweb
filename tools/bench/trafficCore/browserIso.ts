@@ -109,7 +109,7 @@ export async function runIsolatedBrowser(browser: Browser, o: IsoOpts, log: (s: 
       const fmt = (r: ReturnType<typeof vs>) => (r ? `${r.speedup.toFixed(3)}x [${r.lo.toFixed(3)}, ${r.hi.toFixed(3)}]` : 'n/a');
       const idx = (k: string) => o.kinds.indexOf(k);
       const ratios: Record<string, unknown> = {};
-      for (const [x, y] of [['orig', 'orig2'], ['orig', 'fair'], ['orig', 'wasm'], ['fair', 'wasm'], ['wasm-scalar', 'wasm']]) {
+      for (const [x, y] of [['orig', 'orig2'], ['orig', 'fair'], ['orig', 'wasm'], ['fair', 'wasm'], ['wasm-scalar', 'wasm'], ['wasm-fdlibm', 'wasm'], ['orig-inv', 'orig'], ['orig-inv', 'wasm'], ['fair-inv', 'wasm-inv']]) {
         const i = idx(x), j = idx(y);
         if (i < 0 || j < 0) continue;
         const cpu = vs(i, j, (s) => s.cpu), wall = vs(i, j, (s) => s.wall);
@@ -122,8 +122,9 @@ export async function runIsolatedBrowser(browser: Browser, o: IsoOpts, log: (s: 
         phasesWall: Object.fromEntries(PHASE_NAMES.map((nm, p) => [nm, median(S[i].map((s) => s.phases[p]))])),
       }));
       for (const s of summary) log(`[${where}] ${s.kind.padEnd(12)} CPU median ${s.cpuMedian.toFixed(1)} ms (min ${s.cpuMin.toFixed(1)}), wall median ${s.wallMedian.toFixed(1)} ms (min ${s.wallMin.toFixed(1)})`);
-      const dg: { digest: Record<string, number>; stats: Record<string, unknown>; arena: number; lastJsReason: string | null }[] = [];
+      const dg: { digest: Record<string, number>; stats: Record<string, unknown>; arena: number; lastJsReason: string | null; protector: boolean | null; heap: { capacity: number; used: number; grows: number } | null }[] = [];
       for (const a of arms) dg.push((await withTimeout(a.page.evaluate('window.__arm.digest()'), `${where} ${a.kind} digest`)) as (typeof dg)[number]);
+      arms.forEach((a, i) => log(`[${where}] ${a.kind.padEnd(12)} protector ${dg[i].protector === null ? 'not probed' : dg[i].protector ? 'intact' : 'INVALIDATED'}; ${dg[i].heap ? `wasm heap ${(dg[i].heap!.capacity / 1048576).toFixed(1)} MiB, memory.grow ${dg[i].heap!.grows}` : 'no wasm heap'}`));
       const identity = Object.fromEntries(arms.slice(1).map((a, i) => [a.kind, diffDigests(dg[0].digest, dg[i + 1].digest)]));
       log(`[${where}] identical to ${arms[0].kind} after ${o.warm + o.pairs} cycles: ${Object.entries(identity).map(([k, d]) => `${k} ${d.length ? 'NO ' + d.slice(0, 3).join('; ') : 'yes'}`).join(', ')}`);
       const wi = idx('wasm');

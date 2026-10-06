@@ -143,35 +143,40 @@ function downtownCap(st: CityState, i: number, maxStage: number): number {
 
 // ------------------------------------------------------------------------------------------------ model variants
 /**
- * variant of a new building: start from v0 and step to the next variant while a building within VARIANT_SPREAD cells of
- * the lot shows the same model and variant; when every variant is taken nearby, the one whose nearest twin is farthest
- * away (ties: the first in stepping order from v0) — identical twins never stand side by side unless a model has fewer
- * variants than same-model neighbours touching the lot. Twins are matched by model, not def: the renderer draws model +
- * variant only, so two defs sharing a model (the stage-3 and stage-4 walk-ups, the stage-6 and stage-7 towers) look
- * identical (128x15 s7: 17.6 % of growables had such a twin within 6 cells while 0.55 % had a same-def one)
+ * variant of a new building, from v0 in stepping order: the first variant no building within VARIANT_SPREAD cells of the
+ * lot shows with the same model; else (every variant shows nearby) the variant with no same-def twin nearby whose
+ * same-model twin is farthest; else the one whose same-def twin is farthest (ties: the farther same-model twin, then
+ * stepping order). Twins are matched by model first: the renderer draws model + variant only, so two defs sharing a model
+ * (the stage-3 and stage-4 walk-ups, the stage-6 and stage-7 towers) look identical (128x15 s7: 17.6 % of the growables
+ * had such a twin within 6 cells while 0.55 % had a same-def one); the same-def rule keeps the second number where it was
  */
 export function spreadVariant(st: CityState, defId: string, x0: number, z0: number, w: number, d: number, v0: number, variants: number): number {
   if (variants <= 1) return 0;
   VIDS[0] = getDef(defId)?.model ?? defId;
-  variantScan(st, VIDS, 1, x0, z0, w, d);
+  VDEFS[0] = defId;
+  variantScan(st, 1, x0, z0, w, d);
   return bestVariant(0, v0, variants);
 }
-/** nearest same-model building per (model k of the scan, variant v): VNEAR[k * 32 + v] (Chebyshev distance lot to lot) */
+/** nearest building per (candidate k of the scan, variant v) showing candidate k's model: VNEAR[k * 32 + v], and of its
+ *  very def: VNEAR_DEF[k * 32 + v] (Chebyshev distance lot to lot; Infinity: none within VARIANT_SPREAD) */
 const VNEAR = new Float64Array(4 * 32);
-/** model ids of the current scan */
+const VNEAR_DEF = new Float64Array(4 * 32);
+/** model and def ids of the current scan's candidates */
 const VIDS: string[] = ['', '', '', ''];
+const VDEFS: string[] = ['', '', '', ''];
 /** building-id stamps of the current scan (a building spanning several rows is looked up once) */
 let vStamp = new Int32Array(0);
 let vGen = 0;
 /**
- * one pass over the buildings within VARIANT_SPREAD of the lot: for each of the first n model ids in `ids`, the nearest
- * building showing that model per variant (manifests have < 32 variants) into VNEAR
+ * one pass over the buildings within VARIANT_SPREAD of the lot: for each of the first n candidates (VIDS / VDEFS), the
+ * nearest building per variant (manifests have < 32 variants) showing its model (VNEAR) and of its def (VNEAR_DEF)
  */
-function variantScan(st: CityState, ids: readonly string[], n: number, x0: number, z0: number, w: number, d: number): void {
+function variantScan(st: CityState, n: number, x0: number, z0: number, w: number, d: number): void {
   const N = st.size, R = VARIANT_SPREAD;
   const xa = Math.max(0, x0 - R), xb = Math.min(N - 1, x0 + w - 1 + R);
   const za = Math.max(0, z0 - R), zb = Math.min(N - 1, z0 + d - 1 + R);
   VNEAR.fill(Infinity, 0, n * 32);
+  VNEAR_DEF.fill(Infinity, 0, n * 32);
   if (vStamp.length < st.nextBuildingId) vStamp = new Int32Array(Math.max(st.nextBuildingId + 1024, vStamp.length * 2));
   if (++vGen > 0x3fffffff) { vGen = 1; vStamp.fill(0); }
   const gen = vGen, bld = st.building;
@@ -184,31 +189,38 @@ function variantScan(st: CityState, ids: readonly string[], n: number, x0: numbe
       const o = st.buildings.get(id);
       if (!o || o.variant >= 32 || o.variant < 0) continue;
       const model = getDef(o.def)?.model;
-      let k = 0;
-      while (k < n && ids[k] !== model) k++;
-      if (k === n) continue;
       // (lot-to-lot distance from the other building's rectangle)
       const dx = o.x + o.w - 1 < x0 ? x0 - (o.x + o.w - 1) : o.x > x0 + w - 1 ? o.x - (x0 + w - 1) : 0;
       const dz = o.z + o.d - 1 < z0 ? z0 - (o.z + o.d - 1) : o.z > z0 + d - 1 ? o.z - (z0 + d - 1) : 0;
       const dist = dx > dz ? dx : dz;
-      const q = k * 32 + o.variant;
-      if (dist < VNEAR[q]) VNEAR[q] = dist;
+      for (let k = 0; k < n; k++) {
+        if (VIDS[k] !== model) continue;
+        const q = k * 32 + o.variant;
+        if (dist < VNEAR[q]) VNEAR[q] = dist;
+        if (o.def === VDEFS[k] && dist < VNEAR_DEF[q]) VNEAR_DEF[q] = dist;
+      }
     }
   }
 }
-/** variant of model k of the last scan: step from v0 to the first variant with no same-model building nearby, else the
- *  one whose nearest twin is farthest (ties: the first in stepping order); VBEST_D = its nearest twin (Infinity: none) */
+/** variant of candidate k of the last scan (see spreadVariant for the order); VBEST_D = its nearest same-model twin
+ *  (Infinity: none nearby) */
 let VBEST_D = Infinity;
 function bestVariant(k: number, v0: number, variants: number): number {
   const start = ((v0 % variants) + variants) % variants;
-  let best = start, bd = -1;
+  const o = k * 32;
+  // 1. no building nearby shows this model + variant
   for (let j = 0; j < variants; j++) {
     const v = (start + j) % variants;
-    const dv = v < 32 ? VNEAR[k * 32 + v] : Infinity;
-    if (dv === Infinity) { VBEST_D = Infinity; return v; }
-    if (dv > bd) { bd = dv; best = v; }
+    if (v >= 32 || VNEAR[o + v] === Infinity) { VBEST_D = Infinity; return v; }
   }
-  VBEST_D = bd;
+  // 2. no same-def twin nearby: the farthest same-model one; 3. else the farthest same-def twin (then same-model)
+  let best = start, bDef = -1, bMod = -1;
+  for (let j = 0; j < variants; j++) {
+    const v = (start + j) % variants;
+    const dDef = VNEAR_DEF[o + v], dMod = VNEAR[o + v];
+    if (dDef > bDef || (dDef === bDef && dMod > bMod)) { best = v; bDef = dDef; bMod = dMod; }
+  }
+  VBEST_D = bMod;
   return best;
 }
 
@@ -553,9 +565,9 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     let use = def, variant = 0;
     const ns = subs ? Math.min(3, subs.length) : 0;
     if (variants > 1 || ns > 0) {
-      VIDS[0] = def.model;
-      for (let k = 0; k < ns; k++) VIDS[k + 1] = subs![k].model;
-      variantScan(st, VIDS, 1 + ns, x0, z0, W, D);
+      VIDS[0] = def.model; VDEFS[0] = def.id;
+      for (let k = 0; k < ns; k++) { VIDS[k + 1] = subs![k].model; VDEFS[k + 1] = subs![k].id; }
+      variantScan(st, 1 + ns, x0, z0, W, D);
       variant = variants > 1 ? bestVariant(0, v0, variants) : 0;
       const twin = variants > 1 ? VBEST_D !== Infinity : VNEAR[0] !== Infinity;
       if (twin) {

@@ -538,10 +538,11 @@ export class SimBot {
           // a site that failed after clearing before is skipped for CLEAR_FAIL_DAYS; a new best must pass the plop check
           // as if it were cleared (slope, water, a road along the lot, money), so nothing is bulldozed for a facility
           // that cannot stand there (256x60 s11: 28 times 'cleared 1 small lots at 251,131 but could not build')
+          // (short of money is no reason to give a site up)
           const key = `${defId}@${lx},${lz},${rot}`;
           if ((this.clearFailed.get(key) ?? -1) > st.day) continue;
           const pre = this.clearedPlopRot(defId, lx, lz, w, d, rot, olds);
-          if (pre < 0) { this.clearFailed.set(key, st.day + CLEAR_FAIL_DAYS); continue; }
+          if (pre < 0) { if (pre === -1) this.clearFailed.set(key, st.day + CLEAR_FAIL_DAYS); continue; }
           best = { x: lx, z: lz, rot: pre as 0 | 1 | 2 | 3, cost, olds };
         }
       }
@@ -569,8 +570,9 @@ export class SimBot {
   private clearFailed = new Map<string, number>();
   /**
    * the rotation (rot, else its opposite: the same footprint) at which defId would plop on lot (x, z, w, d) once the
-   * buildings `olds` are gone, with no warning (a road along the lot), else -1: the plop preview runs with the lot's
-   * cells of `olds` marked free for the call (the real check: bounds, roads / rails, water, slope, money, road access)
+   * buildings `olds` are gone, with no warning (a road along the lot); -2 when only money is short, else -1: the plop
+   * preview runs with the lot's cells of `olds` marked free for the call (the real check: bounds, roads / rails, water,
+   * slope, money, road access)
    */
   clearedPlopRot(defId: string, x: number, z: number, w: number, d: number, rot: number, olds: readonly Building[]): number {
     const st = this.st, N = this.N;
@@ -584,6 +586,7 @@ export class SimBot {
       for (const r of [rot, (rot + 2) & 3] as (0 | 1 | 2 | 3)[]) {
         const p = this.A.plop(defId, x, z, r, true);
         if (p.ok && !p.reason) { out = r; break; }
+        if (!p.ok && p.reason?.startsWith('Not enough money')) out = -2;
       }
     } finally {
       for (let k = 0; k < saved.length; k += 2) st.building[saved[k]] = saved[k + 1];

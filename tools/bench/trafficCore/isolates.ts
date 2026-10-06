@@ -9,7 +9,7 @@ export interface ArmProc {
   close(): Promise<number>;
 }
 
-export async function spawnArm(file: string, kind: ArmKind, fixture: string, args: string[], resident: boolean, extra: { scalar?: string; imp?: string }): Promise<ArmProc> {
+export async function spawnArm(file: string, kind: ArmKind, fixture: string, args: string[], resident: boolean, extra: { scalar?: string; fdlibm?: string }): Promise<ArmProc> {
   const w = new Worker(file, { workerData: { kind, fixture, args, resident, ...extra }, resourceLimits: { maxOldGenerationSizeMb: 6144 } });
   let pending: { res: (v: unknown) => void; rej: (e: Error) => void } | null = null;
   w.on('message', (m: { error?: string }) => {

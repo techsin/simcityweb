@@ -680,21 +680,24 @@ export const PARKING_BLEND = 0.5;
 /**
  * WP7-8 park & ride: a garage within PR_STOP_RADIUS (+ half its footprint) of an attached transit stop whose best transit
  * path rides a vehicle is a park & ride (a stop whose riders all walk to jobs nearby — downtown — makes it plain
- * parking); it keeps the stop it used last unless another is faster by more than max(PR_STOP_KEEP, 10 %). A two-label
- * reverse road search (every 2nd assignment, only with such garages) seeded at their road entries with label
- * PR_PARK_MIN + walk + wait + transit time from the stop + the garage's price, limit min(MAX_COMMUTE, max label +
+ * parking; a park & ride garage stays one through PR_DOWNTOWN_KEEP such assignments in a row); it keeps the stop it used
+ * last unless another is faster by more than max(PR_STOP_KEEP, 10 %). A K-label reverse road search (K = PR_OPTIONS;
+ * every 2nd assignment, only with such garages) seeded at their road entries with label PR_PARK_MIN + walk + wait +
+ * transit time from the stop (minutes only: the options do not depend on prices), limit min(MAX_COMMUTE, max label +
  * PR_LEG_SEARCH x PR_CAR_LEG_MAX), moves beyond PR_CAR_LEG_MAX free-flow minutes from the garage dropped: every origin
- * gets its two best options of distinct garage groups = PR_HOME_MIN + congested car leg + label (a jam does not move a
- * garage out of reach; the logit sees the jam). Mode choice sees the best (minutes + price); its park & ride riders
- * split between the two options by a logit on minutes + price (PR_GARAGE_BETA per minute), each part takes its group's
- * free room this assignment and the part that does not fit overflows to the other option; the rest re-splits without
- * park & ride. Room = spaces minus the garage's reserve for the businesses around it: spaces x min(1, the parking
- * pressure they feel without the park & ride garages / PR_RESERVE_FULL), at most PR_RESERVE_SPREAD x the cars they
- * lack (every parking update, blended PR_RESERVE_SMOOTH) — local parkers first. Price (minutes, persisted): += PR_PRICE_STEP x ln(clamp(wanted / room, 0.25, 4)) per assignment
- * (wanted = the logit choice), clamped to [0, PR_PRICE_MAX] (a choice weight, not travel time: commutes exclude it), so
- * demand settles at the room — smoothly, since the logit spreads the riders over both options. Garages at the same stop
- * within GARAGE_GROUP_CELLS pool their room (one price). Car-less residents (demographics carlessShare) pay
- * CARLESS_EXTRA_MIN more on car and park & ride trips (taxi / lift), with or without garages.
+ * gets its PR_OPTIONS fastest garage groups within PR_OPTION_MARGIN minutes of its fastest = PR_HOME_MIN + congested car
+ * leg + label (a jam does not move a garage out of reach; the logit sees the jam). Mode choice sees the best option
+ * (minutes + price); its park & ride riders split over the options by a logit on minutes + price (PR_GARAGE_BETA per
+ * minute), each part takes its group's free room this assignment and what does not fit fills the other options' free
+ * room, fastest first; the rest re-splits without park & ride. Room = spaces minus the garage's reserve for the
+ * businesses around it: spaces x min(1, the parking pressure they feel without the park & ride garages /
+ * PR_RESERVE_FULL), at most PR_RESERVE_SPREAD x the cars they lack (every parking update, blended PR_RESERVE_SMOOTH;
+ * none below PR_RESERVE_MIN x spaces) — local parkers first. Price (minutes, persisted): += PR_PRICE_STEP x
+ * ln(clamp(wanted / room, 0.25, 4)) per assignment (wanted = the logit choice; 0 for a garage that is nobody's option),
+ * clamped to [0, PR_PRICE_MAX] (a choice weight, not travel time: commutes exclude it), so demand settles at the room —
+ * smoothly, since the logit spreads the riders over every option and the option sets do not move with the prices.
+ * Garages at the same stop within GARAGE_GROUP_CELLS pool their room (one price). Car-less residents (demographics
+ * carlessShare) pay CARLESS_EXTRA_MIN more on car and park & ride trips (taxi / lift), with or without garages.
  */
 export const PR_STOP_RADIUS = 5;
 export const PR_PARK_MIN = 1.5;
@@ -706,11 +709,16 @@ export const PR_PRICE_STEP = 0.75;
 export const PR_PRICE_MAX = 30;
 /** park & ride garages at the same stop within this many cells of each other pool their room and share one price */
 export const GARAGE_GROUP_CELLS = 10;
-/** garage choice between a commuter's two park & ride options: logit scale per minute (of minutes + price) */
+/** garage choice among a commuter's park & ride options: logit scale per minute (of minutes + price) */
 export const PR_GARAGE_BETA = 0.5;
-/** a second park & ride option more than this many minutes (incl. price) behind the first is none (no overflow there:
- *  the commuter re-decides without park & ride) */
-export const PR_SECOND_MAX = 6;
+/** park & ride options per commuter: the fastest garage groups within reach (a full one overflows to the others) */
+export const PR_OPTIONS = 4;
+/** a park & ride option more than this many minutes (travel time, not price) slower than the commuter's fastest is
+ *  none (no overflow there: the commuter re-decides without park & ride) */
+export const PR_OPTION_MARGIN = 6;
+/** a park & ride garage whose stop's best path stops riding (jobs a walk away) stays park & ride through this many
+ *  assignments in a row (the forest's best path at a stop beside a few jobs flips with congestion) */
+export const PR_DOWNTOWN_KEEP = 2;
 /** a park & ride garage keeps its stop unless another is faster by more than this many minutes (or 10 %) */
 export const PR_STOP_KEEP = 1;
 /** a park & ride garage keeps spaces x min(1, p / PR_RESERVE_FULL) for the businesses around it, p = the parking
@@ -721,6 +729,8 @@ export const PR_RESERVE_FULL = 0.25;
 export const PR_RESERVE_SPREAD = 3;
 /** weight of the new value when a park & ride garage's reserve for its block is recomputed (every parking update) */
 export const PR_RESERVE_SMOOTH = 0.5;
+/** a reserve below this share of the spaces is none (a block that is barely short keeps no spaces: park & ride gets all) */
+export const PR_RESERVE_MIN = 0.05;
 export const CARLESS_EXTRA_MIN = 12;
 /** stop load (riders / day) smoothing across assignments (weight of the new value): the crowding wait of the next
  *  assignment reads it, so an undamped value alternates (full stop -> long wait -> empty stop -> short wait) */

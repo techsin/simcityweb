@@ -1,10 +1,10 @@
 /** a second kernel instance (another binary, e.g. the scalar build) usable through makeSearchKernels({ instance }) */
 import { WasmHeap } from '../../../src/wasm/heap';
-import type { SimWasmInstance } from '../../../src/wasm/simWasm';
+import { simWasmImports, type SimWasmInstance } from '../../../src/wasm/simWasm';
 
 export function instanceFrom(bytes: Uint8Array, label: string): SimWasmInstance {
   const t0 = performance.now();
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes as Uint8Array<ArrayBuffer>), {});
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes as Uint8Array<ArrayBuffer>), simWasmImports());
   const ex = inst.exports as unknown as SimWasmInstance['exports'];
   const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
   heap.reserve(4 << 20);

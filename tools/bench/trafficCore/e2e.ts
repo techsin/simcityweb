@@ -8,6 +8,8 @@
  * With --worker FILE (the bench script's default) every arm runs in its own V8 isolate (armWorker.ts, see insitu.ts);
  * the JS-vs-JS baseline is then the arm `orig2` (a second original, interleaved like the others: also the control
  * ratio orig -> orig2), identity = per-field traffic digests + SHA-256 of the saved city.
+ * Every arm keeps V8's ArrayBuffer-detaching protector intact (fixtures gunzipped with zlib, pre-sized wasm memory)
+ * unless its kind ends in '-inv'; the state is reported per arm at the end (protector, memory.grow, JS fallbacks).
  *   args: --fixture dense1m [--fixtures DIR] [--days 120] [--chunk 4] [--warm 2] [--flush] [--arms orig,orig2,orig-ws,wasm]
  *         [--resident] [--no-baseline] [--worker armWorker.mjs | --in-process] [--settle 30]
  */
@@ -120,7 +122,8 @@ benchMain(async ({ args, log }) => {
   };
   const ratios: Record<string, unknown> = {};
   for (let i = 0; i < kinds.length; i++) for (let j = 0; j < kinds.length; j++) {
-    if (i === j || !(kinds[i] === 'orig' || (kinds[i] === 'orig-ws' && kinds[j].startsWith('wasm')))) continue;
+    const a = kinds[i], b = kinds[j];
+    if (i === j || !(a === 'orig' || ((a === 'orig-ws' || a === 'fair' || a === 'orig-inv') && b.startsWith('wasm')) || (a === 'orig-inv' && b === 'orig'))) continue;
     const whole = ratio(i, j, (x) => x.ms), traffic = ratio(i, j, (x) => x.traffic);
     ratios[`${kinds[i]}->${kinds[j]}`] = { whole, traffic };
     const f = (r: typeof whole) => (r ? `${r.speedup.toFixed(3)}x [${r.lo.toFixed(3)}, ${r.hi.toFixed(3)}]` : 'n/a');
@@ -133,13 +136,14 @@ benchMain(async ({ args, log }) => {
   let pops: string;
   let wasm: unknown = null;
   if (worker) {
-    const dg: { digest: Record<string, number>; stats: unknown; arena: number; lastJsReason: string | null; pop: number }[] = [];
+    const dg: { digest: Record<string, number>; stats: unknown; arena: number; lastJsReason: string | null; pop: number; protector: boolean | null; heap: { capacity: number; used: number; grows: number } | null; jsCalls: number }[] = [];
     const sv: { hash: string; pop: number; day: number }[] = [];
     for (const p of procs) { dg.push(await p.call({ cmd: 'digest' })); sv.push(await p.call({ cmd: 'save' })); }
     for (let i = 1; i < procs.length; i++) {
       identity[kinds[i]] = [...(sv[0].hash === sv[i].hash ? [] : ['saved city (sha256)']), ...diffDigests(dg[0].digest, dg[i].digest)];
       log(`${kinds[0]} vs ${kinds[i]} after ${total} days (day ${sv[i].day}): ${identity[kinds[i]].length === 0 ? 'city and traffic state identical' : 'DIFFERENT ' + identity[kinds[i]].slice(0, 4).join('; ')}`);
     }
+    dg.forEach((d, i) => log(`  ${kinds[i].padEnd(8)} protector ${d.protector === null ? 'not probed' : d.protector ? 'intact' : 'INVALIDATED'}; ${d.heap ? `wasm heap ${(d.heap.capacity / 1048576).toFixed(1)} MiB, used ${(d.heap.used / 1048576).toFixed(1)} MiB, memory.grow ${d.heap.grows}` : 'no wasm heap'}; traffic-core JS calls ${d.jsCalls}`));
     pops = kinds.map((k, i) => `${k} ${sv[i].pop}`).join(', ');
     const wi = kinds.indexOf('wasm');
     if (wi >= 0) wasm = { stats: dg[wi].stats, arena: dg[wi].arena, lastJsReason: dg[wi].lastJsReason };

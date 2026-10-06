@@ -19,7 +19,7 @@ import { deserializeCity, serializeCity, type SerializedCity } from '../../src/s
 import * as FAC from '../../src/sim/infra/facilities';
 import { econData } from '../../src/sim/economy/runtime';
 import { RoadGraph } from '../../src/sim/infra/graph';
-import { Search2, Seeds } from '../../src/sim/infra/search';
+import { SearchK, Seeds } from '../../src/sim/infra/search';
 
 function cycles(sim: Simulation, n: number): TrafficSystem {
   const tr = getTraffic(sim)!;
@@ -761,7 +761,7 @@ describe('WP7-8 car-less residents (WP1-4)', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-describe('WP7-8 two-label search (park & ride options: the two best garage groups per node)', () => {
+describe('WP7-8 K-label search (park & ride options: the K fastest garage groups per node)', () => {
   /** a 41 x 41 grid town (roads every 4 cells, avenues every 12) with deterministic congested times (1-3 x free flow) */
   function grid(): { g: RoadGraph; time: Float32Array } {
     const st = newState(41);
@@ -804,65 +804,70 @@ describe('WP7-8 two-label search (park & ride options: the two best garage group
     return d;
   }
 
-  it('matches the exact two best groups per node (within one bucket width); chunked runs are identical', () => {
-    const { g, time } = grid();
-    const M = 3, tol = 0.05;
-    const S = new Search2();
-    S.start(g, g.rev, time, seeds(g), GROUP, 200, null, Infinity, M);
-    expect(S.run(Infinity)).toBe(true);
-    const ex = [0, 1, 2, 3, 4, 5].map((gr) => exact(g, time, gr));
-    let checked = 0, two = 0;
-    for (let v = 0; v < g.n; v++) {
-      const c = ex.map((d, gr) => ({ d: d[v], gr })).filter((x) => x.d < Infinity).sort((a, b) => a.d - b.d);
-      const want = c.length === 0 ? 0 : c.length > 1 && c[1].d <= c[0].d + M ? 2 : 1;
-      const got = S.cnt[v];
-      // (a second label right at the margin may fall on either side of it)
-      if (want === 2 || got === 2) { if (c.length > 1 && Math.abs(c[1].d - (c[0].d + M)) < tol) continue; }
-      expect(got, `labels at node ${v}`).toBe(want);
-      const found = [0, 1].slice(0, got).map((k) => ({ d: S.dist[2 * v + k], gr: S.grp[2 * v + k] })).sort((a, b) => a.d - b.d);
-      for (let k = 0; k < got; k++) {
-        expect(Math.abs(found[k].d - c[k].d), `label ${k} at node ${v}`).toBeLessThanOrEqual(tol);
-        // the group is the exact one unless another group is within a bucket width of it
-        const clear = c.every((x, j) => j === k || Math.abs(x.d - c[k].d) > tol);
-        if (clear) expect(found[k].gr).toBe(c[k].gr);
+  for (const K of [2, 4]) {
+    it(`K = ${K}: matches the exact ${K} best groups per node within the margin (one bucket width); chunked runs are identical`, () => {
+      const { g, time } = grid();
+      const M = K === 2 ? 3 : 6, tol = 0.05;
+      const S = new SearchK(K);
+      S.start(g, g.rev, time, seeds(g), GROUP, 200, null, Infinity, M);
+      expect(S.run(Infinity)).toBe(true);
+      const ex = [0, 1, 2, 3, 4, 5].map((gr) => exact(g, time, gr));
+      let checked = 0, full = 0;
+      for (let v = 0; v < g.n; v++) {
+        const c = ex.map((d, gr) => ({ d: d[v], gr })).filter((x) => x.d < Infinity).sort((a, b) => a.d - b.d);
+        const within = c.filter((x) => x.d <= c[0].d + M);
+        const want = Math.min(K, within.length);
+        const got = S.cnt[v];
+        // (a label right at the margin, or the K-th and the next within a bucket width, may fall on either side)
+        if (c.some((x) => Math.abs(x.d - (c[0].d + M)) < tol)) continue;
+        if (within.length > K && Math.abs(within[K].d - within[K - 1].d) < tol) continue;
+        expect(got, `labels at node ${v}`).toBe(want);
+        const found = Array.from({ length: got }, (_, k) => ({ d: S.dist[K * v + k], gr: S.grp[K * v + k] })).sort((a, b) => a.d - b.d);
+        for (let k = 0; k < got; k++) {
+          expect(Math.abs(found[k].d - c[k].d), `label ${k} at node ${v}`).toBeLessThanOrEqual(tol);
+          // the group is the exact one unless another group is within a bucket width of it
+          const clear = c.every((x, j) => j === k || Math.abs(x.d - c[k].d) > tol);
+          if (clear) expect(found[k].gr).toBe(c[k].gr);
+        }
+        checked++;
+        if (got === K) full++;
       }
-      checked++;
-      if (got === 2) two++;
-    }
-    console.log(`two-label search: ${g.n} nodes, ${checked} checked, ${two} with a second group, ${S.settled} states`);
-    expect(two).toBeGreaterThan(g.n / 4);
-    // resumable: the same search in chunks of 97 states (spread over scheduler steps) is identical
-    const S2 = new Search2();
-    S2.start(g, g.rev, time, seeds(g), GROUP, 200, null, Infinity, M);
-    let steps = 0;
-    while (!S2.run(97)) steps++;
-    expect(steps).toBeGreaterThan(5);
-    expect(S2.settled).toBe(S.settled);
-    expect(Array.from(S2.order.subarray(0, S2.settled))).toEqual(Array.from(S.order.subarray(0, S.settled)));
-    for (let k = 0; k < S.settled; k++) {
-      const s = S.order[k];
-      expect(S2.dist[s]).toBe(S.dist[s]);
-      expect(S2.src[s]).toBe(S.src[s]);
-      expect(S2.next[s]).toBe(S.next[s]);
-    }
-  });
+      console.log(`${K}-label search: ${g.n} nodes, ${checked} checked, ${full} with ${K} groups, ${S.settled} states`);
+      expect(checked).toBeGreaterThan(0.8 * g.n);
+      expect(full).toBeGreaterThan(g.n / 8);
+      // resumable: the same search in chunks of 97 states (spread over scheduler steps) is identical
+      const S2 = new SearchK(K);
+      S2.start(g, g.rev, time, seeds(g), GROUP, 200, null, Infinity, M);
+      let steps = 0;
+      while (!S2.run(97)) steps++;
+      expect(steps).toBeGreaterThan(5);
+      expect(S2.settled).toBe(S.settled);
+      expect(Array.from(S2.order.subarray(0, S2.settled))).toEqual(Array.from(S.order.subarray(0, S.settled)));
+      for (let k = 0; k < S.settled; k++) {
+        const s = S.order[k];
+        expect(S2.dist[s]).toBe(S.dist[s]);
+        expect(S2.src[s]).toBe(S.src[s]);
+        expect(S2.next[s]).toBe(S.next[s]);
+      }
+    });
+  }
 
   it('a car leg beyond the free-flow limit gets no label; labels follow their parent chain', () => {
     const { g, time } = grid();
-    const FF = 1.5;
-    const all = new Search2(), lim = new Search2();
+    const FF = 1.5, K = 4;
+    const all = new SearchK(K), lim = new SearchK(K);
     all.start(g, g.rev, time, seeds(g), GROUP, 200, null, Infinity, 3);
     all.run(Infinity);
     lim.start(g, g.rev, time, seeds(g), GROUP, 200, null, FF, 3);
     lim.run(Infinity);
     const ex = [0, 1, 2, 3, 4, 5].map((gr) => exact(g, time, gr));
     for (let k = 0; k < lim.settled; k++) {
-      const s = lim.order[k], v = s >> 1, p = lim.next[s];
+      const s = lim.order[k], v = (s / K) | 0, p = lim.next[s];
       expect(lim.ff[s]).toBeLessThanOrEqual(FF + 1e-6);
       // never better than the group's unconstrained optimum
       expect(lim.dist[s]).toBeGreaterThanOrEqual(ex[lim.grp[s]][v] - 1e-4);
       if (p < 0) continue;
-      const u = p >> 1;
+      const u = (p / K) | 0;
       expect(lim.grp[p]).toBe(lim.grp[s]);
       expect(lim.dist[s]).toBeCloseTo(lim.dist[p] + 0.5 * (time[u] + time[v]), 4);
       expect(lim.ff[s]).toBeCloseTo(lim.ff[p] + 0.5 * (g.t0[u] + g.t0[v]), 4);

@@ -3,12 +3,12 @@
  * search is captured once, then
  *   sort       the candidate ordering: JS native (Float64Array.prototype.sort of the packed keys, traffic.ts) vs JS
  *              LSD radix (fair core) vs wasm LSD radix (traffic.rs), inputs copied in each rep for all three
- *   logit      the mode split of every candidate (3 exps, shares, time): JS (Math.exp) vs wasm with the inline fdlibm
- *              vs wasm with imported Math.exp (benchmark-only build)
+ *   logit      the mode split of every candidate (3 exps, shares, time): JS (Math.exp) vs the shipped wasm (exp =
+ *              the imported engine Math.exp) vs the benchmark-only build with the inline fdlibm exp (--fdlibm FILE)
  *   roundMatch the whole kernel (candidates, keys, sort, proposals, accept loop, commits, forest walk, volNew):
- *              fair JS vs wasm (SIMD) vs wasm scalar; the mutated arrays are restored before every rep (restore
- *              cost is in both sides)
- *   args: --fixture dense1m [--fixtures DIR] [--reps 31] [--scalar FILE] [--imp FILE]
+ *              fair JS vs wasm (SIMD) vs wasm scalar vs wasm fdlibm; the mutated arrays are restored before every rep
+ *              (restore cost is in both sides)
+ *   args: --fixture dense1m [--fixtures DIR] [--reps 31] [--scalar FILE] [--fdlibm FILE]
  */
 import { benchMain, loadAvg } from '../node';
 import { formatResult, runAB, type AbResult } from '../ab';
@@ -36,7 +36,7 @@ benchMain(async ({ args, log }) => {
   if (!initSimWasmSync()) throw new Error('wasm init failed: ' + simWasmStatus().error);
   const W = simWasmInstance()!;
   const scalar = opt('--scalar') ? instanceFromFile(opt('--scalar')!, 'scalar') : null;
-  const imp = opt('--imp') ? instanceFromFile(opt('--imp')!, 'imported-math') : null;
+  const fdl = opt('--fdlibm') ? instanceFromFile(opt('--fdlibm')!, 'fdlibm') : null;
   const ab = (c: Parameters<typeof runAB>[0]) => { const r = runAB(c, { reps, clock: cpuMs, clockName: 'cpu', warmupMs: 500, minSampleMs: 6 }); log(formatResult(r)); return r; };
   const results: AbResult[] = [];
   // one system per core, stepped to "round 0 searched"
@@ -56,6 +56,7 @@ benchMain(async ({ args, log }) => {
   const F = await prepared(makeFairTrafficCore(P, fairSearch));
   const Wc = await prepared(makeWasmTrafficCore(P, { search: fairSearch, label: 'wasm' }));
   const Sc = scalar ? await prepared(makeWasmTrafficCore(P, { search: fairSearch, instance: () => scalar, label: 'wasm-scalar' })) : null;
+  const Fd = fdl ? await prepared(makeWasmTrafficCore(P, { search: fairSearch, instance: () => fdl, label: 'wasm-fdlibm' })) : null;
   log(`# ${spec}: origins ${F.core.c.oN}, clusters ${F.core.c.qN}, SA settled ${F.core.c.saSettled}; load ${loadAvg().join(' ')}`);
 
   // ------------------------------------------------------------------ candidates / keys of round 0 (as the kernels compute them)
@@ -172,13 +173,13 @@ benchMain(async ({ args, log }) => {
   const LW = logitOn(W);
   logitJs(); LW.run();
   { const o = LW.out(); for (let i = 0; i < 4 * nl; i++) if (!Object.is(o[i], Oj[i])) throw new Error(`logit differs at ${i}`); }
-  results.push(ab({ name: `logit ${nl} pieces (3 exp): JS -> wasm fdlibm`, a: logitJs, b: LW.run, aLabel: 'js', bLabel: 'wasm fdlibm' }));
-  if (imp) {
-    const LI = logitOn(imp);
-    LI.run();
-    { const o = LI.out(); for (let i = 0; i < 4 * nl; i++) if (!Object.is(o[i], Oj[i])) throw new Error(`logit (imported exp) differs at ${i}`); }
-    results.push(ab({ name: `logit ${nl} pieces (3 exp): JS -> wasm imported exp`, a: logitJs, b: LI.run, aLabel: 'js', bLabel: 'wasm import' }));
-    results.push(ab({ name: `logit ${nl} pieces: wasm imported exp -> fdlibm`, a: LI.run, b: LW.run, aLabel: 'wasm import', bLabel: 'wasm fdlibm' }));
+  results.push(ab({ name: `logit ${nl} pieces (3 exp): JS -> wasm (imported Math.exp)`, a: logitJs, b: LW.run, aLabel: 'js', bLabel: 'wasm import' }));
+  if (fdl) {
+    const LF = logitOn(fdl);
+    LF.run();
+    { const o = LF.out(); for (let i = 0; i < 4 * nl; i++) if (!Object.is(o[i], Oj[i])) throw new Error(`logit (inline fdlibm) differs at ${i}`); }
+    results.push(ab({ name: `logit ${nl} pieces (3 exp): JS -> wasm inline fdlibm`, a: logitJs, b: LF.run, aLabel: 'js', bLabel: 'wasm fdlibm' }));
+    results.push(ab({ name: `logit ${nl} pieces: wasm inline fdlibm -> imported exp`, a: LF.run, b: LW.run, aLabel: 'wasm fdlibm', bLabel: 'wasm import' }));
   }
 
   // ------------------------------------------------------------------ the whole roundMatch kernel (state restored per rep)
@@ -188,7 +189,7 @@ benchMain(async ({ args, log }) => {
     const s = MUT.map((k) => a[k].slice());
     return () => { const b = core.A as unknown as Record<string, Float32Array>; MUT.forEach((k, i) => b[k].set(s[i])); };
   };
-  const rF = snapshot(F.core), rW = snapshot(Wc.core), rS = Sc ? snapshot(Sc.core) : null;
+  const rF = snapshot(F.core), rW = snapshot(Wc.core), rS = Sc ? snapshot(Sc.core) : null, rD = Fd ? snapshot(Fd.core) : null;
   const mF = () => { rF(); F.core.roundMatch(0); };
   const mW = () => { rW(); Wc.core.roundMatch(0); };
   mF(); mW();
@@ -203,6 +204,10 @@ benchMain(async ({ args, log }) => {
   if (Sc && rS) {
     const mS = () => { rS(); Sc.core.roundMatch(0); };
     results.push(ab({ name: 'roundMatch round 0: wasm scalar -> wasm SIMD', a: mS, b: mW, aLabel: 'wasm scalar', bLabel: 'wasm simd' }));
+  }
+  if (Fd && rD) {
+    const mD = () => { rD(); Fd.core.roundMatch(0); };
+    results.push(ab({ name: 'roundMatch round 0: wasm inline fdlibm -> imported exp', a: mD, b: mW, aLabel: 'wasm fdlibm', bLabel: 'wasm import' }));
   }
   h.free(pk);
   return { fixture: spec, candidates: nc, pieces: nl, results, load: loadAvg() };

@@ -1,5 +1,7 @@
 /**
- * City fixtures for the trafficCore benchmarks (node only), loaded with the benchmark tree's own save code.
+ * City fixtures for the trafficCore benchmarks (node only), loaded with the benchmark tree's own save code — except the
+ * gunzip, done with node:zlib: bundle.ts unpackFile gunzips through node's web streams (undici), which DETACH
+ * ArrayBuffers and so would invalidate V8's ArrayBuffer-detaching protector in every arm (see protector.ts).
  *   dense1m    profiler fixture dense1m_s7.metropolis (1.12M residents, 23k road nodes, 3k stops: transit-heavy)
  *   bot256     profiler fixture bot256_s7_y60.metropolis (balance-bot city, year 60, no transit stops)
  *   stress1m   profiler fixture stress1m_testdefs_s7.metropolis (~1.03M residents, 36k road nodes; test defs)
@@ -10,8 +12,9 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { deserializeCity } from '../../../src/save/serialize';
-import { unpackFile } from '../../../src/save/bundle';
+import { decodeBundle } from '../../../src/save/bundle';
 import { registerTestDefs, stressCity } from '../../../tests/infra/cityGen';
 import type { CityState } from '../../../src/sim/CityState';
 
@@ -39,6 +42,8 @@ export async function loadCity(spec: string, dir: string): Promise<{ st: CitySta
   const file = fixtureFile(spec, dir)!;
   if (spec === 'stress1m' || file.includes('testdefs')) registerTestDefs();
   if (!existsSync(file)) throw new Error(`fixture ${file} not found (--fixtures DIR / SIM_FIXTURES)`);
-  const st = deserializeCity((await unpackFile(new Uint8Array(readFileSync(file)))) as Parameters<typeof deserializeCity>[0]);
+  const raw = new Uint8Array(readFileSync(file));
+  const bytes = raw[0] === 0x1f && raw[1] === 0x8b ? new Uint8Array(gunzipSync(raw)) : raw;
+  const st = deserializeCity(decodeBundle(bytes) as Parameters<typeof deserializeCity>[0]);
   return { st, label: spec };
 }

@@ -5,6 +5,7 @@
  * Query: ?simwasm=js|wasm|auto (A/B flag), ?ab=1 (timings), ?quick=1.
  */
 import { initSimWasmBrowser, simWasmUrl } from '../../src/wasm/browser';
+import { simWasmImports } from '../../src/wasm/simWasm';
 import { browserAB, equivalence } from './wasmCheckCore';
 
 interface CheckResult {
@@ -34,7 +35,7 @@ async function main(): Promise<void> {
   try {
     const bytes = await (await fetch(simWasmUrl)).arrayBuffer();
     const t0 = performance.now();
-    new WebAssembly.Instance(new WebAssembly.Module(bytes), {});
+    new WebAssembly.Instance(new WebAssembly.Module(bytes), simWasmImports());
     out.syncCompile = { ok: true, ms: performance.now() - t0, bytes: bytes.byteLength };
   } catch (e) {
     out.syncCompile = { ok: false, error: String(e) };

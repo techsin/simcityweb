@@ -16,6 +16,7 @@ import { makeEconBandsJs, type EconBandFns, type EconBandTables } from '../../..
 import { makeEconBandKernels, type EconBindStats, type EconWasm } from '../../../src/wasm/kernels/desirabilityLandValueBandsBind';
 import { ECON_TABLES, econBandsJs } from '../../../src/wasm/kernels/desirabilityLandValueBands';
 import { WasmHeap, type HeapArrayCtor } from '../../../src/wasm/heap';
+import { simWasmImports } from '../../../src/wasm/simWasm';
 
 export type Layer = Uint8Array | Int32Array | Float32Array;
 
@@ -218,7 +219,7 @@ export function wasmArm(c: EconCapture, tb: EconBandTables, w: EconWasm, label: 
 
 /** an explicit kernel instance of a binary (scalar / SIMD builds) with its own memory + heap */
 export function instantiate(mod: WebAssembly.Module, reserveBytes = 96 << 20): EconWasm {
-  const inst = new WebAssembly.Instance(mod, {});
+  const inst = new WebAssembly.Instance(mod, simWasmImports());
   const ex = inst.exports as unknown as EconWasm['ex'] & { __heap_base: WebAssembly.Global };
   const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
   heap.reserve(reserveBytes);

@@ -26,7 +26,7 @@
 //!  * f64 arithmetic in the JS evaluation order; `as f32` exactly where JS stores into a Float32Array (a single
 //!    + - * / of two f32 values may stay in f32); f64 accumulations in the JS loop order.
 //!  * Math.max / Math.min with their NaN / -0 semantics, Math.floor exact (math.rs), Math.sqrt = f64.sqrt,
-//!    Math.exp / Math.log = fdlibm.rs (V8's algorithm; see there for the engine check).
+//!    Math.exp / Math.log = the engine's own functions, imported (env.js_exp / env.js_log: see below).
 //!  * the candidate sort: the JS packs key = floor(max(0, g) * q) * M + o into a Float64Array and sorts it. Those keys
 //!    are distinct integers < 2^50 and o ascends in candidate order, so a STABLE sort of the candidates by
 //!    k = floor(max(0, g) * q) yields exactly the JS order: an LSD radix sort (11-bit digits) on k. A non-finite or
@@ -57,39 +57,45 @@ fn sqrt(x: f64) -> f64 {
     unsafe { libm_sqrt(x) }
 }
 
-#[cfg(not(traffic_import_math))]
-#[inline(always)]
-fn exp(x: f64) -> f64 {
-    crate::fdlibm::exp(x)
-}
-#[cfg(not(traffic_import_math))]
-#[inline(always)]
-fn log(x: f64) -> f64 {
-    crate::fdlibm::log(x)
-}
-// benchmark-only build: Math.exp / Math.log imported from JS (never shipped: the shipped binary has no imports)
-#[cfg(traffic_import_math)]
+// Math.exp / Math.log are the ENGINE'S OWN functions, imported: env.js_exp = Math.exp, env.js_log = Math.log (the loader
+// passes src/wasm/simWasm.ts simWasmImports() to every instantiation). The kernels therefore compute exactly what the JS
+// original computes on every engine, by construction (V8, SpiderMonkey and JavaScriptCore each call their own libm).
+// Cost: tools/bench/trafficCore/micro.ts (logit) and the in-situ arm `wasm-fdlibm` (a benchmark-only build with
+// `--cfg traffic_inline_math`, which inlines fdlibm.rs = V8's algorithm instead: exact on V8 only).
+#[cfg(all(target_arch = "wasm32", not(traffic_inline_math)))]
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn js_exp(x: f64) -> f64;
     fn js_log(x: f64) -> f64;
 }
-#[cfg(traffic_import_math)]
+#[cfg(all(target_arch = "wasm32", not(traffic_inline_math)))]
 #[inline(always)]
 fn exp(x: f64) -> f64 {
     unsafe { js_exp(x) }
 }
-#[cfg(traffic_import_math)]
+#[cfg(all(target_arch = "wasm32", not(traffic_inline_math)))]
 #[inline(always)]
 fn log(x: f64) -> f64 {
     unsafe { js_log(x) }
+}
+// host builds (cargo test) and the benchmark-only inline build: fdlibm, V8's algorithm
+#[cfg(any(not(target_arch = "wasm32"), traffic_inline_math))]
+#[inline(always)]
+fn exp(x: f64) -> f64 {
+    crate::fdlibm::exp(x)
+}
+#[cfg(any(not(target_arch = "wasm32"), traffic_inline_math))]
+#[inline(always)]
+fn log(x: f64) -> f64 {
+    crate::fdlibm::log(x)
 }
 
 const INF: f64 = f64::INFINITY;
 const NEG_INF: f64 = f64::NEG_INFINITY;
 
 /// `u > -Infinity ? Math.exp(u - um) : 0` of the mode split, skipping the call for the maximum utility itself:
-/// u - um is then +0 and exp(+-0) = 1 exactly (fdlibm and V8); NaN / infinite utilities take the full path
+/// u - um is then +0 and exp(+-0) = 1 exactly (every engine: IEEE 754 / ECMA-262 Math.exp(+-0) is 1); NaN /
+/// infinite utilities take the full path
 #[inline(always)]
 fn share_exp(u: f64, um: f64) -> f64 {
     if u > NEG_INF { if u == um && u < INF { 1.0 } else { exp(u - um) } } else { 0.0 }
@@ -265,9 +271,12 @@ fn counts_check(c: &Cx) -> i32 {
         le(U::nTr, U::capTr),
         c.i(U::cells) >= 0 && c.n(U::cells) <= c.n(U::capCells),
         c.i(U::mapN) >= 0,
-        c.i(U::saSettled) >= 0 && c.n(U::saSettled) <= c.n(U::n),
-        c.i(U::sbSettled) >= 0 && c.n(U::sbSettled) <= c.n(U::n),
-        c.i(U::stSettled) >= 0 && c.n(U::stSettled) <= c.n(U::total),
+        // settled counts against the CAPACITIES, not the current n / total: after a road / rail / subway shrink the
+        // last searches' counts are legally stale (> n) until the next search runs, exactly as in the JS (traffic.ts
+        // keeps S.settled). Kernels that READ a settled count require it to be fresh (<= n / total) themselves.
+        c.i(U::saSettled) >= 0 && c.n(U::saSettled) <= c.n(U::capN),
+        c.i(U::sbSettled) >= 0 && c.n(U::sbSettled) <= c.n(U::capN),
+        c.i(U::stSettled) >= 0 && c.n(U::stSettled) <= c.n(U::capT),
     ];
     for (i, ok) in conds.iter().enumerate() {
         if !ok {
@@ -1006,6 +1015,10 @@ fn radix_sort(nc: usize, max_k: u64, keys: &mut [u64], keys2: &mut [u64], idx: &
 /// this phase; no state changed).
 fn round_match(c: &Cx, round: i32) -> i32 {
     let n = c.n(U::n);
+    // SA must be this cycle's search (roundSearch always precedes roundMatch): a stale count is outside the domain
+    if c.n(U::saSettled) > n {
+        return -2;
+    }
     let on = c.n(U::oN);
     let (dist, src, hops, done) = (c.sl::<f64>(U::saDist, n), c.sl::<i32>(U::saSrc, n), c.sl::<u16>(U::saHops, n), c.sl::<u8>(U::saDone, n));
     let ent = c.sl::<i32>(U::ent, c.n(U::entN));
@@ -1310,6 +1323,10 @@ fn pool_remaining(c: &Cx) {
 fn commute(c: &Cx) -> i32 {
     // validate what poolRemaining indexes with (no state change on failure)
     let (n, on, qn) = (c.n(U::n), c.n(U::oN), c.n(U::qN));
+    // the SA / ST forests must be this cycle's (stale settled counts after a graph shrink: outside the domain)
+    if c.n(U::saSettled) > n || c.n(U::stSettled) > c.n(U::total) {
+        return -2;
+    }
     let (ncomp, en) = (c.n(U::nComp) as i32, c.n(U::entN));
     let comp = c.sl::<i32>(U::comp, n);
     let ent = c.sl::<i32>(U::ent, en);

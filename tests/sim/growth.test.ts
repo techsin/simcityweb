@@ -84,17 +84,33 @@ describe('growth: plopped buildings', () => {
   });
 
   it('twins are matched by model: two defs sharing a model and variant look identical, so they count', () => {
-    const { st, sim } = makeCity({ size: 32 });
     // the stage-3 and stage-4 walk-ups (and the R$ stage-2 / R$$ stage-1 cottages) are one model each
     const s3 = getDef('res_walkup.r1.3')!, s4 = getDef('res_walkup.r1.4')!;
     expect(s3.model).toBe(s4.model);
     expect(getDef('res_cottage.r1.2')!.model).toBe(getDef('res_cottage.r2.1')!.model);
-    placeBuilding(sim, growable(st, s4.id, 10, 10, 0));
-    placeBuilding(sim, growable(st, s4.id, 12, 10, 1));
-    // a stage-3 walk-up next to them steps past the variants its stage-4 neighbours show
-    expect(spreadVariant(st, s3.id, 11, 10, 1, 1, 0, 4)).toBe(2);
-    // another model is no twin: a cottage keeps its start variant
-    expect(spreadVariant(st, 'res_cottage.r1.2', 11, 12, 1, 1, 0, 4)).toBe(0);
+    {
+      const { st, sim } = makeCity({ size: 32 });
+      placeBuilding(sim, growable(st, s4.id, 10, 10, 0));
+      placeBuilding(sim, growable(st, s4.id, 12, 10, 1));
+      // a stage-3 walk-up next to them steps past the variants its stage-4 neighbours show
+      expect(spreadVariant(st, s3.id, 11, 10, 1, 1, 0, 4)).toBe(2);
+      // another model is no twin: a cottage keeps its start variant
+      expect(spreadVariant(st, 'res_cottage.r1.2', 11, 12, 1, 1, 0, 4)).toBe(0);
+    }
+    {
+      // every variant shows nearby (2 variants): variant 0 on a stage-4 walk-up 1 cell away, variant 1 on a stage-3 one
+      // 2 cells away — a same-def twin is avoided first (the contract's "no same def + variant within 6 cells"): a
+      // stage-3 lot takes variant 0, a stage-4 lot variant 1
+      const { st, sim } = makeCity({ size: 32 });
+      placeBuilding(sim, growable(st, s4.id, 10, 10, 0));
+      placeBuilding(sim, growable(st, s3.id, 13, 10, 1));
+      expect(spreadVariant(st, s3.id, 11, 10, 1, 1, 0, 2)).toBe(0);
+      expect(spreadVariant(st, s3.id, 11, 10, 1, 1, 1, 2)).toBe(0);
+      expect(spreadVariant(st, s4.id, 11, 10, 1, 1, 0, 2)).toBe(1);
+      // with a same-def twin on every variant: the farthest one (variant 0's stage-3 twin 3 cells off, variant 1's 2)
+      placeBuilding(sim, growable(st, s3.id, 11, 13, 0));
+      expect(spreadVariant(st, s3.id, 11, 10, 1, 1, 1, 2)).toBe(0);
+    }
   });
 });
 

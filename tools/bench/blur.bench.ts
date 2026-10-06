@@ -12,7 +12,7 @@ import * as js from '../../src/sim/infra/blur';
 import { makeBlurKernels } from '../../src/wasm/kernels/blurBind';
 import { WasmHeap } from '../../src/wasm/heap';
 import { adoptLayers } from '../../src/wasm/layers';
-import { initSimWasmSync, simWasmInstance, simWasmStatus } from '../../src/wasm/simWasm';
+import { initSimWasmSync, simWasmImports, simWasmInstance, simWasmStatus } from '../../src/wasm/simWasm';
 import { type AbCase, type AbResult, formatResult, runAB } from './ab';
 import { blur3Opt } from './blurJsOpt';
 import { benchMain, cpuMs } from './node';
@@ -43,7 +43,7 @@ interface RawKernels {
 }
 function loadVariant(file: string): RawKernels | null {
   if (!existsSync(file)) return null;
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(file)), {});
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(file)), simWasmImports());
   const ex = inst.exports as unknown as Record<string, (...a: number[]) => number> & { memory: WebAssembly.Memory; __heap_base: WebAssembly.Global };
   const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
   heap.reserve(8 << 20);

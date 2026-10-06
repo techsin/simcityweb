@@ -8,13 +8,17 @@
   ],
   "cargoFeatures": [],
   "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
-  "bytes": 169318,
-  "gzip": 67905,
-  "brotli": 56019,
-  "sha256": "5fc3532f735a89d08255ba4a3ba3ae8e7d9bc10b749959fad005ed1c816991f8",
-  "sourceHash": "2156619fd3ae234651517969ee89e09ee6a604a6add26569ddc133f3fa8a9ab4",
+  "bytes": 169419,
+  "gzip": 67980,
+  "brotli": 56070,
+  "sha256": "2329cfdf5760f692f8c20b2cc388d111d320ed514da09bceedc8f4cba9047de7",
+  "sourceHash": "0ec5cd4282ea32e2408c6658b9af983184a7da1d21d5759c34dc83bdfaf3ec00",
   "heapBase": 1058368,
   "initialPages": 1024,
+  "imports": [
+    "env.js_exp",
+    "env.js_log"
+  ],
   "exports": [
     "blur_blur3",
     "blur_box_average",
