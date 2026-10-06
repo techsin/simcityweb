@@ -37,6 +37,7 @@ import { desirabilityBreakdown } from '../../sim/economy/desirability';
 import { landValueBreakdown } from '../../sim/economy/landValue';
 import { growthLimits } from '../../sim/economy/growth';
 import { conditionBreakdown } from '../../sim/economy/population';
+import { lotCell } from '../../sim/economy/factors';
 import { type NeedReport, cohortShares, needsExpectation, needsOf, tapWaterAt, waterRequired } from '../../sim/economy/demographics';
 import { facilityLoad } from '../../sim/infra/catchments';
 import { TAP_SAFE } from '../../sim/economy/tuning';
@@ -294,7 +295,8 @@ export class InfoPanel extends Panel {
     const def = getDef(b.def);
     const N = st.size;
     const i = st.idx(b.x, b.z);
-    const ci = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+    // (where the growth and occupancy rules evaluate the building: the middle of its road-side row, WP6a lotCell)
+    const ci = lotCell(b, N);
     const growable = !def || def.category === 'growable';
     const color = def ? CATEGORY_COLORS[def.category] ?? (zoneFamily(st.zone[i] as Zone) === 'R' ? '#3cc76a' : zoneFamily(st.zone[i] as Zone) === 'C' ? '#3d8bff' : '#f0b429') : '#9aa7b6';
     const dev = def?.devType;

@@ -235,8 +235,12 @@ export interface GrowthLimitsLike {
 export function growthRows(gl: GrowthLimitsLike | null | undefined, stage?: number): ModelRow[] {
   if (!gl) return [];
   const rows: ModelRow[] = [];
-  const lim = Math.min(gl.desStage, gl.popStage, gl.zoneStage);
-  const which = lim === gl.zoneStage ? 'zone density' : lim === gl.popStage ? 'city population' : 'desirability';
+  // WP6a's downtown cap (a non-enumerable field: the generic loop below never prints it): a lot that is no tower site
+  // stops at DOWNTOWN_STAGE − 1 although every other limit allows a tower
+  const dts = typeof gl.downtownStage === 'number' && Number.isFinite(gl.downtownStage) ? gl.downtownStage : Infinity;
+  const lim0 = Math.min(gl.desStage, gl.popStage, gl.zoneStage);
+  const lim = Math.min(lim0, dts);
+  const which = dts < lim0 ? 'distance to downtown' : lim === gl.zoneStage ? 'zone density' : lim === gl.popStage ? 'city population' : 'desirability';
   if (gl.rejected) rows.push({ label: 'Growth', value: gl.reason ?? 'Blocked', tone: 'neg' });
   else rows.push({ label: 'Can grow to', value: `stage ${lim} · limited by ${which}`, tone: stage !== undefined && stage >= lim ? 'warn' : '' });
   rows.push({ label: 'Stage limits', value: `desirability ${gl.desStage} · population ${gl.popStage} · zone ${gl.zoneStage}` });
