@@ -242,9 +242,12 @@ export const CONSTRUCT_RAND = 6;
 export const WATER_REQUIRED_STAGE = 3;
 // §GROWTH (owner WP6): new growth constants go below this line (pickDev exponents, gentrification, hotels) ----------
 /** DevType pick weight = (des − GROW_MIN_DESIR + 0.05)^PICK_DES_EXP × allowance^PICK_ALLOW_EXP (1 / 0.5 = phase 0; the
- *  spec's 2 / 0.4 lets the rich outbid R$ on premium land together with RENT — only if the balance bot passes) */
-export const PICK_DES_EXP = 1;
-export const PICK_ALLOW_EXP = 0.5;
+ *  spec's 2 / 0.4 lets the rich outbid R$ on premium land together with RENT — only if the balance bot passes).
+ *  WP6b: 2 / 0.4 ship — the bot passes every gate it passes at 1 / 0.5 (256x60 s7 / s11: 1.54M / 1.57M at year 60 vs
+ *  1.50M / 1.50M, approval from year 30 82 / 83 vs 82 / 84; 128x15: 195k either way, EQ 109 vs 108) and R$$$ homes
+ *  sit on higher land value than at 1 / 0.5 (s11 2020-2045: 0.46-0.49 vs 0.44-0.45), R$ on lower (s7 2040+: -0.01) */
+export const PICK_DES_EXP: number = 2; // (typed number: growth.ts keeps its phase-0 fast paths for 1 / 0.5)
+export const PICK_ALLOW_EXP: number = 0.4;
 /** hotel defs (tourism.ts HOTEL_ROOMS_PER_JOB) are preferred while visitors lack rooms: def weight ×
  *  (1 + min(HOTEL_PREF_MAX, hotel shortage / rooms of the def)) */
 export const HOTEL_PREF_MAX = 3;

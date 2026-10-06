@@ -238,9 +238,9 @@ describe('growth: grown towns', () => {
     const gl = growthLimits(st, 20 * st.size + 20, DevType.R2);
     expect(typeof gl.desStage).toBe('number');
     expect(typeof gl.rejected).toBe('boolean');
-    // pickDev defaults reproduce phase 0 (des^1 × allowance^0.5)
-    expect(PICK_DES_EXP).toBe(1);
-    expect(PICK_ALLOW_EXP).toBe(0.5);
+    // pickDev exponents: the spec's des^2 × allowance^0.4 (WP6b shipped them once the balance bot passed; phase 0 was 1 / 0.5)
+    expect(PICK_DES_EXP).toBe(2);
+    expect(PICK_ALLOW_EXP).toBe(0.4);
   });
 });
 

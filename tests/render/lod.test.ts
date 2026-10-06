@@ -9,9 +9,9 @@
  *    downgrades may trail by a few catch-up frames, upgrades never), no work while still; cut frames stay cheap; the
  *    catch-up also finishes while a fast pan goes on
  *  - building LOD cross-fade: swaps in view dissolve over fadeTime (complementary levels in the fade layer, empty
- *    stand-in in the batch), reverse mid-fade, instant on cuts / flushes / off-screen; a zoom-out's dissolve is over by
- *    the instant-swap distance; fast pans / orbits swap at once (motion cap); the fade program compiles after the first
- *    frame, asynchronously
+ *    stand-in in the batch), reverse mid-fade, instant on cuts / flushes / off-screen; with fadeOn 1 a zoom-out's
+ *    dissolve is over by the instant-swap distance; fast pans / orbits swap at once (motion cap); the fade program
+ *    compiles after the first frame, asynchronously
  *  - burnt multi-cell lots are composed from the rubble kit (one bed over the lot, following rising ground exactly;
  *    debris pieces off the cell grid with low-poly proxies); hill lots get real-size stone skirts, a plain box far away
  *  - shadow receivers only bump their version when the volume really changes
@@ -878,8 +878,13 @@ describe('building LOD cross-fade', () => {
     expect(c.frames).toBeGreaterThanOrEqual(Math.ceil(150 / 16));
   });
 
-  it('starts a downgrade dissolve at fadeOn x lodPixels and has it over by the instant-swap distance in a zoom-out', () => {
-    const { br, bi, dOn, at, glide } = setup();
+  it('starts a downgrade dissolve at fadeOn x lodPixels and, with fadeOn 1, has it over by the instant-swap distance in a zoom-out', () => {
+    const s = setup();
+    const { br, bi, at, glide } = s;
+    // (default 0.88: dissolves start at the instant-swap distance; fadeOn 1 starts them early enough to end there)
+    expect(br.fadeOn).toBe(0.88);
+    br.fadeOn = 1;
+    const dOn = (s.dOn * 0.88) / br.fadeOn;
     // the instant swap's distance (0.88 x lodPixels): a zoom-out never draws the full model beyond it
     const dInstant = (dOn * br.fadeOn) / 0.88;
     for (const rate of [1.002, 1.01, 1.03]) {
@@ -904,8 +909,9 @@ describe('building LOD cross-fade', () => {
   it('caps the concurrent fades by the view motion: a slow orbit dissolves its swaps, a fast one swaps at once', () => {
     const { br, bi, dOn } = setup();
     const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 20000);
-    // orbiting a point 0.2 dOn beside the building: its distance swings across both swap distances every revolution
-    const C = new THREE.Vector3(bi.vis.cx + dOn * 0.2, 0, bi.vis.cz);
+    // orbiting a point 0.3 dOn beside the building: its distance (0.72 .. 1.29 dOn) swings across both swap distances
+    // (dOn, and 0.79 dOn for the upgrade) every revolution
+    const C = new THREE.Vector3(bi.vis.cx + dOn * 0.3, 0, bi.vis.cz);
     let a = 0;
     const orbit = (deg: number, frames: number) => {
       let swaps = 0, faded = 0, lod = bi.lod;

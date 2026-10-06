@@ -673,9 +673,10 @@ export class TrafficSystem implements SimSystem {
   private pnWalkT: Float64Array<ArrayBuffer> = new Float64Array(64);
   private pnTrT: Float64Array<ArrayBuffer> = new Float64Array(64);
   private pnTP: Float64Array<ArrayBuffer> = new Float64Array(64);
-  /** overflow phase: stage (0 seeds, 1 search chunks, 2 car-leg minutes of a kept forest, 3 re-decide records, 4 the
-   *  rest without park & ride, 5 flows), pass, record cursor, the round's successor, the cache slot of the pass's forest,
-   *  fresh searches this assignment, the pass filled a group (another pass can place more) */
+  /** overflow phase: stage (1 overflow search chunks, 3 records re-decided with the pass's forest — a kept forest's
+   *  car-leg minutes refreshed first —, 4 the rest without park & ride, its last chunk with the overflow car legs and the
+   *  round's car flows; 0 before the first overflow), pass, record cursor, the round's successor, the cache slot of the
+   *  pass's forest, fresh searches this assignment, the pass filled a group (another pass can place more) */
   private ovStage = 0;
   private ovPass = 0;
   private ovCur = 0;
@@ -3240,6 +3241,7 @@ export class TrafficSystem implements SimSystem {
     this.ovPlan();
   }
 
+  /** the pass's forest is ready: re-decide the records with it (stage 3) */
   private ovStartPass(): void {
     this.ovStage = 3;
     this.ovCur = 0;

@@ -30,16 +30,16 @@
  * draw-list rebuild). A level change back mid-fade runs the fade backwards. A fade completes after fadeTime or, when
  * the camera moves fast, once its distance to the building changed by `fadeTravel` (a fast zoom dissolves each swap
  * over a few frames instead of drawing both levels of ~1000 buildings for fadeTime); a swap the motion would dissolve
- * within a frame or two anyway (`fadeFast`: fast fly-bys) is instant. Downgrades start dissolving at `fadeOn` x
- * lodPixels (1.0 instead of the instant swap's 0.88), so a zoom-out's dissolve is over about where an instant swap
- * happens: fading never draws a full model farther out than not fading would. Fast pans / orbits (the view shifting
- * or turning by more than `fadeMotion` per frame) cap the concurrent fades down to none: the view changes wholesale
- * there. New / rebuilt buildings, camera cuts, the catch-up frames after a cut (running fades are settled at the cut)
- * and captures (flushLod) swap at once; beyond the cap (`fadeMax`) swaps are instant too. The shadow switches half way
- * through a fade (the level covering most pixels casts: the other level's shadow would streak the visible one, e.g. a
- * proxy's coarser roof shadowing the full model's roof in the first frames). The fade layer's program is not part of
- * the load-time precompile: it is compiled asynchronously a few frames after the first (compileFade), swaps are
- * instant until it is ready.
+ * within a frame or two anyway (`fadeFast`: fast fly-bys, zoom sweeps) is instant. Downgrades start dissolving at
+ * `fadeOn` x lodPixels (default the instant swap's 0.88; up to 1.08 trades a narrower hysteresis band, i.e. more LOD
+ * work in motion, for a zoom-out dissolve that is over where an instant swap happens). Fast pans / orbits (the view
+ * shifting or turning by more than `fadeMotion` per frame) cap the concurrent fades down to none: the view changes
+ * wholesale there. New / rebuilt buildings, camera cuts, the catch-up frames after a cut (running fades are settled at
+ * the cut) and captures (flushLod) swap at once; beyond the cap (`fadeMax`) swaps are instant too. The shadow switches
+ * half way through a fade (the level covering most pixels casts: the other level's shadow would streak the visible
+ * one, e.g. a proxy's coarser roof shadowing the full model's roof in the first frames). The fade layer's program is
+ * not part of the load-time precompile: it is compiled asynchronously a few frames after the first (compileFade),
+ * swaps are instant until it is ready.
  * Burnt multi-cell lots are composed from a rubble kit (rubbleKit): one debris bed over the whole lot (exactly over
  * rising ground), heap clusters / big collapsed heaps / outer-wall stubs / a burnt car scattered at hashed offsets,
  * yaws and scales, each with a low-poly proxy it swaps to with the lot at LOD distance; one-cell lots keep prop.ts's
@@ -885,13 +885,15 @@ export class BuildingRenderer {
   /** buildings fading in / out now smaller than lodPixels x this swap instantly (sub-threshold specks) */
   fadeMinFrac = 0.4;
   /** swaps the camera motion would dissolve within 1 / fadeFast frames (the building's camera distance changed by more
-   *  than fadeTravel x fadeFast in log this frame: fast pans / fly-bys) are instant: the view changes wholesale there, a
-   *  1-2 frame dissolve is invisible and only churns the fade layer (0 = off) */
-  fadeFast = 0.5;
-  /** downgrade threshold (x lodPixels) while swaps may fade (fadeTime > 0; instant swaps: 0.88): a downgrade dissolve
-   *  starts here and, over its fadeTravel of camera travel, ends about where the instant swap happens, so a fading
-   *  zoom-out draws the full model no farther out than an instant one would (the upgrade threshold stays 1.12) */
-  fadeOn = 1;
+   *  than fadeTravel x fadeFast in log this frame: fast pans / fly-bys, a street-to-region zoom sweep) are instant: the
+   *  view changes wholesale there, a 1-2 frame dissolve is invisible and only draws both levels (0 = off) */
+  fadeFast = 0.4;
+  /** downgrade threshold (x lodPixels) while swaps may fade (fadeTime > 0; instant swaps always 0.88). 0.88: dissolves
+   *  start where an instant swap happens and run over fadeTravel of camera travel. Up to 1.08: they start earlier and
+   *  end about where the instant swap happens (a fading zoom-out draws no full model beyond it, ~5% fewer triangles in
+   *  motion), but the hysteresis band against the 1.12 upgrade threshold narrows (12% instead of 27%): measured ~10%
+   *  more main-thread CPU in motion (more evaluations, swaps and fades), so not the default */
+  fadeOn = 0.88;
   /** view motion per frame (lateral camera shift / view distance + turn, rad) from which the number of concurrent fades
    *  is cut down (fadeMax up to the first value, none from the second): fast pans and orbits change the view wholesale,
    *  a dissolve there is invisible and only draws both levels */
@@ -1712,9 +1714,8 @@ export class BuildingRenderer {
     }
     const behind = this.lodBehind;
     if (!this.lodNow.length && this.lodAt > cur && !behind && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
-    // downgrades: while swaps may fade, the dissolve starts at fadeOn x lodPixels and its camera travel (fadeTravel)
-    // ends it near 0.88 x, where an instant swap happens: a fading zoom-out draws no full model farther out than an
-    // instant one; upgrades at 1.12 x (the full model appears where it would without a fade)
+    // downgrades: at 0.88 x lodPixels, or while swaps may fade at fadeOn x (see there); upgrades at 1.12 x (the full
+    // model appears where it would without a fade)
     const on = this.lodPixels * (this.fadeTime > 0 ? Math.min(1.08, this.fadeOn) : 0.88), off = this.lodPixels * 1.12;
     this.lodDeadline = performance.now() + this.lodBudgetMs;
     const full = this.lodFull;
