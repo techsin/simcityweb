@@ -9,8 +9,8 @@
  *             garage's free spaces (GARAGE_SPACES minus the cars its commuters park there; none without a road beside
  *             it) spread over GARAGE_WALK_RADIUS with a normalised kernel (1 - d / (R + 1), sums to the spaces). A park
  *             & ride garage keeps spaces for the businesses around it (traffic's reserve: spaces x min(1, the pressure
- *             they feel without the park & ride garages / PR_RESERVE_FULL), garagePressure — local parkers first;
- *             park & ride gets the rest)
+ *             they feel without the park & ride garages / PR_RESERVE_FULL), at most PR_RESERVE_SPREAD x the cars
+ *             they lack — garageShortage; local parkers first, park & ride gets the rest)
  *  parking    smoothstep(PARKING_RATIO[0], PARKING_RATIO[1], box(D) / box(S)); box = (2 PARKING_BOX_R + 1)^2 mean, so
  *             a block borrows spaces from its neighbours but a dense core runs out; blended with the previous raster
  *             (traffic passes it, PARKING_BLEND) so one noisy assignment does not flip a block.
@@ -69,23 +69,26 @@ export function addGarageSupply(N: number, b: Pick<Building, 'x' | 'z' | 'w' | '
 }
 
 /**
- * the parking pressure the businesses around a garage feel (park & ride reserve, local parkers first): demand-weighted
- * mean over the demand cells of its walk area (its kernel disk) of the raster's pressure from boxD / boxS (boxS = box of
- * the supply without the park & ride garages: what the block has without them)
+ * the parking shortage of the businesses around a garage (park & ride reserve, local parkers first), over the demand
+ * cells of its walk area (its kernel disk) with boxD / boxS (boxS = box of the supply without the park & ride garages:
+ * what the block has without them): p = demand-weighted mean of the raster's pressure, unmet = cars arriving beyond the
+ * parking around them, sum of D x max(0, 1 - boxS / boxD)
  */
-export function garagePressure(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>, D: Float32Array, boxD: Float32Array, boxS: Float32Array): number {
+export function garageShortage(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>, D: Float32Array, boxD: Float32Array, boxS: Float32Array): { p: number; unmet: number } {
   const k = kernel(GARAGE_WALK_RADIUS + (Math.max(b.w, b.d) >> 1));
   const cx = b.x + (b.w >> 1), cz = b.z + (b.d >> 1);
-  let wSum = 0, pSum = 0;
+  let wSum = 0, pSum = 0, unmet = 0;
   for (let q = 0; q < k.w.length; q++) {
     const x = cx + k.dx[q], z = cz + k.dz[q];
     if (x < 0 || z < 0 || x >= N || z >= N) continue;
     const i = z * N + x, d = D[i];
     if (!(d > 0)) continue;
+    const bd = boxD[i], bs = boxS[i];
     wSum += d;
-    pSum += d * pressureOf(boxD[i], boxS[i]);
+    pSum += d * pressureOf(bd, bs);
+    if (bd > 1e-6 && bs < bd) unmet += d * (1 - bs / bd);
   }
-  return wSum > 0 ? pSum / wSum : 0;
+  return { p: wSum > 0 ? pSum / wSum : 0, unmet };
 }
 
 /**

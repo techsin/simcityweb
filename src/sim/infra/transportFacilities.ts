@@ -11,11 +11,14 @@
  * ride), ferryPartnersFor (ferry preview), ferryLinks (render team: ferry boats), truckVolumeOf (Traffic overlay
  * "Trucks"), transportUseFactor (WP7a's facilityUseFactor: 0 = not connected), and TRANSPORT_EFFECT_METRICS (facilities
  * matrix test). Road-flag bus stops (netFlags bit 4) are legacy: no report.
- * Report rules (r1): a closed (burnt / abandoned) facility says so first; riders are rides (walkers who would board and
- * alight at the same stop are counted apart, with a hint); a long bus wait blames the fleet only when its pool is short
- * (rho < 1), else the stop's crowding; crowded stops / stations / terminals name the fix; a garage names its real state
- * (no road, no stop, a stop without transit, a downtown stop, park & ride with cars / riders / demand of the last
- * assignment — the numbers stats.transitFleet sums).
+ * Report rules (r1, r2): a closed (burnt / abandoned) facility says so first; riders are rides (walkers who would board
+ * and alight at the same stop are counted apart, with a hint); a long bus wait blames the fleet only when its pool is
+ * short (rho < 1), else the stop's crowding, and names the depot's cause (transit funding below 75 %, no power); crowded
+ * stops / stations / terminals name the fix; a garage names its real state (no road, no stop — a neutral note where it
+ * serves businesses —, a stop without transit, a downtown stop, park & ride with cars / room / riders / demand of the
+ * last assignment — the numbers stats.transitFleet sums — and the spaces it keeps for a parking-short block); an idle
+ * park & ride garage says why from its reach (no homes within the drive, or the garage those homes use); the pressure
+ * around a garage credits its own relief ("(X% without it)").
  * Every function accepts a sim without the traffic system (infra-less tests) and returns the documented stub value.
  */
 import type { Building, CityState } from '../CityState';
@@ -133,8 +136,8 @@ function depotCause(st: CityState, depot: Building, d: { fleet: number } | null)
 }
 
 /**
- * why a park & ride garage carries nobody: no stop is involved — it is nobody's option (no homes within the drive, or
- * the homes there have faster garages), or transit from its stop is slower than driving
+ * why a park & ride garage carries nobody: it is an option but transit from its stop is slower than driving, or it is
+ * nobody's option — no homes within the drive, or the homes there use a faster garage (TrafficSystem.garageReach)
  */
 function idleGarageHint(sim: Simulation, tr: TrafficSystem, b: Building, catchment: number, stopName: string): string {
   const st = sim.state;

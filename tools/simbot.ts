@@ -490,7 +490,7 @@ export class SimBot {
    * residents / jobs displaced first; they are bulldozed and the facility is built there
    */
   placeByClearing(defId: string, x: number, z: number, reach: number, uses: readonly Use[] = ['R', 'C'],
-    accept?: (x: number, z: number, w: number, d: number) => boolean, maxStage = 2, clearParks = false): ActionResult | null {
+    accept?: (x: number, z: number, w: number, d: number) => boolean, maxStage = 2, clearParks = false, anySide = false): ActionResult | null {
     const def = getDef(defId);
     if (!def) return null;
     const st = this.st, N = this.N;
@@ -500,7 +500,8 @@ export class SimBot {
       // distance to the block's nearest cell (not its centre: a target near a block corner reaches the next blocks)
       const bdx = x < b.x0 ? b.x0 - x : x > b.x1 ? x - b.x1 : 0, bdz = z < b.z0 ? b.z0 - z : z > b.z1 ? z - b.z1 : 0;
       if (Math.hypot(bdx, bdz) > reach) continue;
-      if (this.highway && ((b.z0 + b.z1) / 2 < this.trunkZ) !== (z < this.trunkZ)) continue;
+      // (the target's side of the trunk highway, unless the facility serves both: `anySide`)
+      if (!anySide && this.highway && ((b.z0 + b.z1) / 2 < this.trunkZ) !== (z < this.trunkZ)) continue;
       for (const rot of [0, 1] as const) {
         const [w, d] = rotatedFootprint(def, rot);
         // lots on the block edge (they touch the road)
@@ -1381,11 +1382,14 @@ export class SimBot {
       }
       if (stops) this.say(`built ${stops} bus stop${stops > 1 ? 's' : ''}`);
     }
-    // depot: the fleet runs short (a full map: clear small industrial / commercial lots for it)
+    // depot: the fleet runs short (a full map: clear small industrial / commercial lots for it; a grown city, where none
+    // is left at stage ≤ 2, also stage-3 lots on either side of the trunk — 256×60 s11 ran 288 buses for 447 needed from
+    // 2038 on: a depot's road reach crosses the highway)
     const f = st.stats.transitFleet;
     if (f && f.busesNeeded > 1.1 * Math.max(1, f.buses) && (this.svcRetry.get('depot') ?? -1) <= st.day && this.canAfford('civ_bus_depot')) {
       const cx = this.line(this.cbx), cz = this.line(this.cbz);
-      const ok = this.placeNear('civ_bus_depot', cx, cz, ['P', 'U', 'I'], true, Infinity, true) || this.placeByClearing('civ_bus_depot', cx, cz, Infinity, ['I', 'C']);
+      const ok = this.placeNear('civ_bus_depot', cx, cz, ['P', 'U', 'I'], true, Infinity, true) || this.placeByClearing('civ_bus_depot', cx, cz, Infinity, ['I', 'C'])
+        || this.placeByClearing('civ_bus_depot', cx, cz, Infinity, ['I', 'C', 'R'], undefined, 3, false, true);
       this.svcRetry.set('depot', st.day + (ok ? 120 : 180));
       if (ok) this.say(`bus depot: ${Math.round(f.busesNeeded)} buses needed, ${f.buses} running`);
     }
