@@ -222,6 +222,31 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
+  it('low cameras: no ring from inside the city, the near sectors next to the map edge; high cameras: far sectors', () => {
+    const { st, tr } = make(128);
+    const W = st.size * CELL_SIZE;
+    const terr = (tr as unknown as { terrain: TerrainRenderer }).terrain;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    const ring = () => tr.group.children.filter((o) => o.name === 'trees-ring') as THREE.InstancedMesh[];
+    const isMicro = (m: THREE.InstancedMesh) => (m.geometry.name ?? '').startsWith('impostor-micro');
+    const at = (x: number, h: number, z: number) => {
+      cam.position.set(x, terr.meshHeightAt(x, z) + h, z);
+      tr.update(cam);
+    };
+    // street height in the middle of a 2 km map: the ring is hidden
+    at(W / 2, 30, W / 2);
+    expect(ring().some((m) => m.visible)).toBe(false);
+    // street height next to the west edge: the ring is the horizon there - that side's regular impostor pair
+    at(60, 30, W / 2);
+    const shown = ring().filter((m) => m.visible);
+    expect(shown.length).toBeGreaterThan(0);
+    expect(shown.some(isMicro)).toBe(false);
+    // high above the map: the far sectors' micro impostors
+    at(W / 2, 3000, W / 2);
+    expect(ring().some((m) => m.visible && isMicro(m))).toBe(true);
+    tr.dispose();
+  }, 120_000);
+
   it('the ring is ready with the load; later regenerations / refills run in small slices (zero budget)', () => {
     const { tr } = make(128);
     const n0 = tr.ringInstances;
