@@ -20,11 +20,18 @@
  * removals). The build loop reads typed per-instance mirrors (visibility, geometry) instead of three's objects, and the
  * per-instance tests read packed per-tile copies of the instances' spheres / masks (InstPack) in list order.
  * Optionally (sortFront) main-pass lists are sorted nearest first so the depth test rejects occluded fragments
- * before shading.
+ * before shading. Dynamic batches (vehicles) group their visible instances by culler tile once per content version
+ * (packDyn) and cull those groups like tiles: groups outside a pass are skipped whole, groups inside copied whole.
+ * Pass skipping: the mesh answers three.js's per-pass frustum test (intersectsFrustum) with "does this pass draw
+ * anything" (nothing live, or a shadow cascade outside the batch's shadowMask), so three.js does not even set up an
+ * empty draw for it.
  *
- * Partial uploads: setMatrix / setColor record per-instance texture update ranges (three r186 honours
+ * Uploads: setMatrix / setColor record per-instance texture update ranges (three r186 honours
  * Texture.updateRanges for RGBA data textures), so animating a few buildings uploads a few rows instead of the whole
- * matrix + colour textures. Many changes in one frame fall back to one full upload.
+ * matrix + colour textures. Many changes in one frame fall back to one full upload. A dynamic batch's whole-matrix
+ * update (markMatricesDirty) and the per-pass instance id lists go straight to GL as one texSubImage2D of the rows that
+ * changed (ids: from the first id that differs; matrices: the rows of the ids in use) into textures kept at their
+ * high-water size, instead of three.js re-uploading (and, for lists that change length, re-allocating) whole textures.
  */
 import * as THREE from 'three';
 import { shadowCasters, viewReach, type ShadowReceiver } from '../../world/Shadows';
@@ -558,6 +565,21 @@ export class DynamicBatch {
     const tex = (this.mesh as any)._colorsTexture as THREE.DataTexture;
     if (fresh) this.colFull = true;
     this.noteRange(tex, id * 4, 4, false);
+  }
+
+  /**
+   * Create the per-instance colour texture now, all white (the material's default look; for the city material alpha 1 =
+   * no flags). A batch that never sets colours but shares its material with batches that do (vehicles and buildings:
+   * the city material) then draws with the same shader program as they do: otherwise three.js re-resolves the
+   * material's program (parameters, cache key, uniform refresh) every time consecutive draws of it switch between
+   * having instance colours and not, twice a frame.
+   */
+  ensureColors(): void {
+    const m = this.mesh as any;
+    if (m._colorsTexture !== null) return;
+    m._initColorsTexture();
+    (m._colorsTexture as THREE.DataTexture).needsUpdate = true;
+    this.colFull = true;
   }
 
   setVisible(id: number, v: boolean): void {

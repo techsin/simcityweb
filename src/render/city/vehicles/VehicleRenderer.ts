@@ -261,6 +261,8 @@ export class VehicleRenderer {
     this.batch.mesh.receiveShadow = true;
     // both cascades (the far one only where a vehicle spans > ~1 shadow texel)
     this.batch.enablePassCulling({ culler, dynamic: true, minShadowTexels: 1.2 });
+    // (white instance colours: the buildings' shader program, which shares the city material; see ensureColors)
+    this.batch.ensureColors();
     // register the most common model now: the batch geometry gets its attribute layout before the first frame, so its
     // program compiles with the others instead of when the first car appears
     this.geomFor(CAR_MODELS[0][0], 0);
