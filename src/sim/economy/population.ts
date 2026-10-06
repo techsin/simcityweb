@@ -229,7 +229,8 @@ function blurCoarse(raw: Float32Array, out: Float32Array, cw: number): void {
  *  population at the last update, a new home is seeded on its first visit, its second update comes at a per-building
  *  phase within the period) */
 const DEMO_UPDATE_DAYS = 16 * OCC_PERIOD;
-/** the city-wide cohort / education / coarse-grid sample (aggregate) runs every DEMO_AGG_DAYS */
+/** the city-wide cohort / education sample (aggregate) runs every DEMO_AGG_DAYS (the coarse demographics grids that
+ *  desirability reads — residents by wealth, education, kids — follow the homes daily, like the coarse population) */
 const DEMO_AGG_DAYS = 8 * OCC_PERIOD;
 
 /** day of the month of the EQ / HQ update (off the month tick; the commercial core runs on day 20, freight on 15) */
@@ -269,22 +270,22 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     rt.coarsePopRaw.fill(0); rt.coarseWealthRaw.fill(0); rt.coarseCountRaw.fill(0);
     const cw = rt.cw;
     const cc = cw * cw;
-    // employment sample (workforce x traffic access): every OCC_PERIOD days; cohort shares / coarse demographics
-    // grids / city mean education: every DEMO_AGG_DAYS (the fields change slowly) — the cohort stats follow the daily
-    // population at the sampled shares
+    // employment sample (workforce x traffic access): every OCC_PERIOD days; cohort shares / city mean education:
+    // every DEMO_AGG_DAYS (the fields change slowly) — the cohort stats follow the daily population at the sampled
+    // shares. The coarse demographics grids (customers by wealth, skilled workforce, kids) are summed every day: a
+    // loaded city rebuilds them at once, and with a monthly sample its shops / offices read fresher grids than the
+    // saved game for up to DEMO_AGG_DAYS (the save / load divergence of grownCity doubled)
     const sample = first || st.day % OCC_PERIOD === 0;
     const demo = first || st.day % DEMO_AGG_DAYS === 0;
     if (sample) cache.ensure(st.nextBuildingId);
     const mWf = cache.wf;
-    if (demo) {
-      if (skillRaw.length !== cc) {
-        popWRaw = [new Float32Array(cc), new Float32Array(cc), new Float32Array(cc)];
-        skillRaw = new Float32Array(cc); kidsRaw = new Float32Array(cc); skillBlur = new Float32Array(cc);
-      } else {
-        popWRaw[0].fill(0); popWRaw[1].fill(0); popWRaw[2].fill(0); skillRaw.fill(0); kidsRaw.fill(0);
-      }
-      coh.fill(0);
+    if (skillRaw.length !== cc) {
+      popWRaw = [new Float32Array(cc), new Float32Array(cc), new Float32Array(cc)];
+      skillRaw = new Float32Array(cc); kidsRaw = new Float32Array(cc); skillBlur = new Float32Array(cc);
+    } else {
+      popWRaw[0].fill(0); popWRaw[1].fill(0); popWRaw[2].fill(0); skillRaw.fill(0); kidsRaw.fill(0);
     }
+    if (demo) coh.fill(0);
     const dd = demographicsData(st);
     const eduFallback = dd.eduMean >= 0 ? dd.eduMean : 0;
     let W = 0, eduSum = 0, eduPop = 0;
@@ -320,13 +321,16 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
             if (a >= 0) { accE += wk * (a < 1 ? a : 1); accW += wk; } else unW += wk;
           }
         }
-        if (p > 0 && demo) {
-          const k0 = b.kids ?? COHORT_BASE[0], k1 = b.teens ?? COHORT_BASE[1], k2 = b.yad ?? COHORT_BASE[2], k4 = b.srs ?? COHORT_BASE[4];
-          const k3 = Math.max(0, 1 - k0 - k1 - k2 - k4);
-          const o = dev * 5;
-          coh[o] += p * k0; coh[o + 1] += p * k1; coh[o + 2] += p * k2; coh[o + 3] += p * k3; coh[o + 4] += p * k4;
+        if (p > 0) {
+          const k0 = b.kids ?? COHORT_BASE[0];
           const e = b.edu;
-          if (e !== undefined) { eduSum += p * e; eduPop += p; }
+          if (demo) {
+            const k1 = b.teens ?? COHORT_BASE[1], k2 = b.yad ?? COHORT_BASE[2], k4 = b.srs ?? COHORT_BASE[4];
+            const k3 = Math.max(0, 1 - k0 - k1 - k2 - k4);
+            const o = dev * 5;
+            coh[o] += p * k0; coh[o + 1] += p * k1; coh[o + 2] += p * k2; coh[o + 3] += p * k3; coh[o + 4] += p * k4;
+            if (e !== undefined) { eduSum += p * e; eduPop += p; }
+          }
           popWRaw[dev][blk] += p;
           skillRaw[blk] += p * (e ?? eduFallback);
           kidsRaw[blk] += p * k0;
@@ -365,8 +369,8 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
         rt.coarseWealth[bz * cw + bx] = sc > 0 ? sw / sc : 0;
       }
     }
-    // demographics coarse grids (WP6 desirability terms): residents by wealth, education, kids
-    if (demo && rt.coarsePopW[0].length === cc) {
+    // demographics coarse grids (WP6 desirability terms): residents by wealth, education, kids (daily, see above)
+    if (rt.coarsePopW[0].length === cc) {
       for (let w = 0; w < 3; w++) blurCoarse(popWRaw[w], rt.coarsePopW[w], cw);
       blurCoarse(kidsRaw, rt.coarseKids, cw);
       blurCoarse(skillRaw, skillBlur, cw);
