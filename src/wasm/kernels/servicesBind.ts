@@ -82,7 +82,7 @@ export function wasmSpace(w: CatchWasm): Space {
     alloc<T extends TA>(ctor: TACtor<T>, n: number): Buf<T> {
       const bytes = Math.max(16, n * ctor.BYTES_PER_ELEMENT);
       const ptr = w.heap.alloc(bytes, 16);
-      live.set(ptr, bytes);
+      live.set(ptr, Math.ceil(bytes / 16) * 16); // the heap's block size (16-byte granules)
       const v = new ctor(w.memory.buffer, ptr, n);
       v.fill(0);
       return new Buf(ctor, n, ptr, w.memory, v);

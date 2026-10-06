@@ -1160,9 +1160,13 @@ export class TierEngine {
     this.pass = (this.pass % 0x3fffffff) + 1;
   }
 
-  /** move the live segments of slot k down (keeps each segment's order) when dead entries exceed 50 % */
-  private compact(S: SlotState): void {
-    if (!(S.dead > 0 && S.dead * 2 > S.top)) return;
+  /**
+   * Move the live segments of slot k down (each segment keeps its order: the touched order is the contract; the order
+   * ACROSS facilities is free) when dead entries exceed 50 % (`force`: whenever there are dead entries). Returns true
+   * when it compacted. Only the record ranges are rewritten: the caller fixes the facility table (see search()).
+   */
+  private compact(S: SlotState, force = false): boolean {
+    if (!(S.dead > 0 && (force || S.dead * 2 > S.top))) return false;
     const n = S.cap, ids = S.recId;
     const live: number[] = [];
     const start = S.recStart.v, end = S.recEnd.v;
@@ -1180,6 +1184,7 @@ export class TierEngine {
     S.top = top;
     S.dead = 0;
     this.stats.compactions++;
+    return true;
   }
 
   /**
@@ -1253,6 +1258,16 @@ export class TierEngine {
       this.stats.fresh += a.nFresh; this.stats.cached += a.nCached;
       cursor = a.cursor; work = a.work; left = a.left;
       if (status !== 1) break;
+      // the pool has no room for a fresh reach: reclaim the dead segments first (a cold pass re-searches every road
+      // reach, so half the pool turns dead mid-pass), grow only if that is not enough. Compaction moves segments: the
+      // ranges of the facilities searched so far in this slot are re-read from their records (same entries, same order).
+      if (this.compact(S, true)) {
+        const fs = this.fs.v, fe = this.fe.v, rec = this.rec.v, al = this.alive.v, rs = S.recStart.v, re = S.recEnd.v;
+        for (let c = 0; c < cursor; c++) {
+          if (al[c] !== 0 && rec[c] >= 0) { fs[c] = rs[rec[c]]; fe[c] = re[rec[c]]; } else { fs[c] = 0; fe[c] = 0; }
+        }
+        if (S.poolCap - S.top >= this.C) continue;
+      }
       this.ensurePool(S, S.top + 2 * this.C);
     }
     return { cursor, work, left };

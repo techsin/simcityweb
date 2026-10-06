@@ -27,7 +27,7 @@ import { schedulerOf } from '../../src/sim/infra/scheduler';
 import { removeBuilding } from '../../src/sim/economy/buildings';
 import { deserializeCity, type SerializedCity } from '../../src/save/serialize';
 import { unpackFile } from '../../src/save/bundle';
-import { initSimWasmSync, setSimWasmPreference } from '../../src/wasm/simWasm';
+import { initSimWasmSync, setSimWasmPreference, SIM_WASM_INITIAL_RESERVE } from '../../src/wasm/simWasm';
 import { WasmHeap } from '../../src/wasm/heap';
 import { adoptLayers } from '../../src/wasm/layers';
 import {
@@ -37,7 +37,9 @@ import {
 import {
   CATCH_LAYOUT, catchWasmFromSlot, makeWasmTierKernels, reachRawWasm, servicesBackendStats, wasmSpace, type CatchWasm,
 } from '../../src/wasm/kernels/servicesBind';
-import { installServicesTierEngine, reachConsts, type InstalledTierEngine, type TierBackend } from '../../src/wasm/kernels/services';
+import {
+  disposeServicesTierEngine, installServicesTierEngine, reachConsts, servicesTierEngineOf, type InstalledTierEngine, type TierBackend,
+} from '../../src/wasm/kernels/services';
 import { servicesCity } from './servicesCity';
 import { checkImpl, fairImpl, origImpl, wasmImpl, type SlotCapture } from '../../tools/bench/servicesTierEngine.core';
 
@@ -448,7 +450,7 @@ function layersOf(st: object): Map<string, ArrayBufferView> {
   }
   return m;
 }
-function diffCities(a: Arm, b: Arm): string[] {
+function diffCities(a: Arm, b: Arm, skipWork = false): string[] {
   const out: string[] = [];
   const la = layersOf(a.st), lb = layersOf(b.st);
   for (const [k, va] of la) {
@@ -461,7 +463,10 @@ function diffCities(a: Arm, b: Arm): string[] {
   if (JSON.stringify(a.st.stats) !== JSON.stringify(b.st.stats)) out.push('stats');
   const pa = a.svc as unknown as Priv, pb = b.svc as unknown as Priv;
   for (const f of BY_ID) if (firstDiff(pa[f] as Float32Array, pb[f] as Float32Array) !== -1) out.push(`services.${f}`);
-  for (const f of ['stepIdx', 'tierSlot', 'tierPhase', 'cursor', 'workLeft']) if (!Object.is(pa[f], pb[f])) out.push(`services.${f}: ${String(pa[f])} vs ${String(pb[f])}`);
+  for (const f of ['stepIdx', 'tierSlot', 'tierPhase', 'cursor', 'workLeft']) {
+    if (skipWork && f === 'workLeft') continue;
+    if (!Object.is(pa[f], pb[f])) out.push(`services.${f}: ${String(pa[f])} vs ${String(pb[f])}`);
+  }
   if (JSON.stringify(pa.tierStats) !== JSON.stringify(pb.tierStats)) out.push('services.tierStats');
   return out;
 }
@@ -577,7 +582,9 @@ describe('services tier engine installed into the live ServicesSystem', () => {
     const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
     const w: CatchWasm = { ex, memory: ex.memory, heap };
     const pin = { a: new Float32Array(4) };
+    // the binary is pre-sized (64 MiB): fill all but 3 MiB, then pin a view — the engine cannot grow the heap
     heap.reserve(3 << 20);
+    heap.alloc(heap.capacity - heap.stats().top - (3 << 20));
     adoptLayers(pin, heap);
     const a = makeArm('orig', servicesCity(64, 13).st, 'orig');
     const b = makeArm('wasm', servicesCity(64, 13).st, 'wasm', { wasm: w });
@@ -589,6 +596,198 @@ describe('services tier engine installed into the live ServicesSystem', () => {
     expect(b.inst!.engine.stats.migratedToJs).toBe(true);
     expect(b.inst!.active).toBe(true);
     expect(diffCities(a, b)).toEqual([]);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------ 4. revision fixes
+// services.ts step indices / tier phases (module-private there)
+const S_TIERS_ = 1, S_ACC_SEED = 4, S_ACC_LAND = 6, S_SHOP_B = 8;
+
+/** one services pass on every arm, one scheduler step at a time; `between(next, arm)` runs after each step */
+function steppedPass(arms: Arm[], between: (next: number, a: Arm) => void): void {
+  for (const a of arms) {
+    const p = a.svc as unknown as Priv & { firstPass: boolean };
+    p.stepIdx = -1;
+    p.firstPass = false;
+    do {
+      a.svc.step(a.sim);
+      if (p.stepIdx >= 0) between(p.stepIdx, a);
+    } while (p.stepIdx >= 0);
+  }
+}
+
+/** a CatchWasm on the loader's instance whose export `fn` traps at call number `at` (an injected kernel bug) */
+function trapping(fn: keyof CatchWasm['ex'], at: number): { w: CatchWasm; t: { at: number; calls: number } } {
+  const real = catchWasmFromSlot()!;
+  const ex = { ...(real.ex as unknown as Record<string, unknown>) };
+  const f = ex[fn] as (...a: number[]) => number;
+  const t = { at, calls: 0 };
+  ex[fn] = (...a: number[]) => {
+    if (++t.calls === t.at) throw new WebAssembly.RuntimeError('unreachable (injected trap)');
+    return f(...a);
+  };
+  return { w: { ex: ex as unknown as CatchWasm['ex'], memory: real.memory, heap: real.heap }, t };
+}
+
+const invalidateAll = (a: Arm): void => (a.svc as unknown as { invalidateReach(r: unknown): void }).invalidateReach(undefined);
+
+describe('revision fixes: staged network, dispose, fault hand-over, pre-sized memory', () => {
+  it('the access fields see a road edit made between the tier steps and the access steps (no stale staged network)', { timeout: 900000 }, () => {
+    let cases = 0, sensitive = 0;
+    for (const seed of [3, 5, 8]) {
+      for (const [label, at] of [['before S_ACC_SEED', S_ACC_SEED], ['before S_ACC_LAND', S_ACC_LAND], ['before S_SHOP_B', S_SHOP_B]] as const) {
+        const mk = (b: TierBackend | 'orig') => makeArm(b, servicesCity(64, seed).st, b);
+        const arms = [mk('orig'), mk('js'), mk('wasm')];
+        const ref = mk('orig'); // the same pass without the edit: the edit must matter
+        const st0 = arms[0].st, N = st0.size;
+        let cell = -1;
+        for (let i = 3 * N; i < N * N && cell < 0; i++) if (st0.network[i] >= 1 && st0.network[i] <= 4 && st0.building[i] < 0) cell = i;
+        expect(cell).toBeGreaterThan(0);
+        for (const a of [...arms, ref]) {
+          (a.svc as unknown as { accessDirty: boolean }).accessDirty = true;
+          // every road reach fresh: the tier steps stage the network (the old binding reused that copy in the access steps)
+          invalidateAll(a);
+        }
+        const edited = new Set<Arm>();
+        // a direct write (no event), like a tool or another system writing the array between two scheduler steps
+        steppedPass(arms, (next, a) => { if (next === at && !edited.has(a)) { a.st.network[cell] = Network.None; edited.add(a); } });
+        steppedPass([ref], () => {});
+        expect(edited.size).toBe(3);
+        for (const a of arms.slice(1)) expect(diffCities(arms[0], a), `${label}, seed ${seed}: ${a.label}`).toEqual([]);
+        if (firstDiff(arms[0].st.accessCommute, ref.st.accessCommute) !== -1 || firstDiff(arms[0].st.shopAccess, ref.st.shopAccess) !== -1) sensitive++;
+        cases++;
+      }
+    }
+    expect(sensitive, `the edit changes the access fields (${sensitive} of ${cases} cases)`).toBeGreaterThanOrEqual(cases - 1);
+  });
+
+  it('accessLand copies the network on every call: an edit within one staging step is seen', () => {
+    const N = 48, C = N * N;
+    const map = randomMap(N, 77);
+    const { wa } = engines(N);
+    const r = rng(9);
+    const dist = Int32Array.from({ length: C }, () => (r() < 0.2 ? -1 : Math.floor(r() * 4000)));
+    wa.kernels.beginStep?.(wa);
+    const o1 = new Float32Array(C), o2 = new Float32Array(C), ref = new Float32Array(C), vref = new Float32Array(C);
+    wa.kernels.accessLand(wa, N, map.network, dist, wa.tmp.v, o1, true, 0.005, 0.35, 1e9, 12.5);
+    let flipped = 0;
+    for (let i = 0; i < C && flipped < 40; i += 7) if (map.network[i] >= 1 && map.network[i] <= 5) { map.network[i] = Network.None; flipped++; }
+    wa.kernels.accessLand(wa, N, map.network, dist, wa.tmp.v, o2, true, 0.005, 0.35, 1e9, 12.5);
+    accessLandJS(N, map.network, dist, vref, ref, true, 0.005, 0.35, 1e9, 12.5);
+    expectSame(o2, ref, 'access field after an edit within the same staging step');
+    expect(firstDiff(o1, o2), 'the edit changed the field').not.toBe(-1);
+    expect(servicesBackendStats(wa)!.jsCalls).toBe(0);
+  });
+
+  it('dispose() frees every engine block; re-loaded cities and re-installs reuse the memory; the pre-sized memory never grows', { timeout: 900000 }, () => {
+    const h = wasm.heap;
+    const s0 = h.stats();
+    for (let k = 0; k < 4; k++) {
+      // a city load: install, init pass, 6 days at design cadence; then the scene is disposed
+      const a = makeArm('wasm', servicesCity(96, 21 + k).st, 'wasm');
+      for (let d = 0; d < 6; d++) { a.sim.advanceDay(); schedulerOf(a.sim).flush(a.sim); }
+      expect(a.inst!.engine.space.liveBytes!()).toBeGreaterThan(1 << 20);
+      expect(h.stats().used).toBe(s0.used + a.inst!.engine.space.liveBytes!());
+      expect(servicesTierEngineOf(a.svc)).toBe(a.inst);
+      expect(disposeServicesTierEngine(a.svc)).toBe(true);
+      expect(a.inst!.active).toBe(false);
+      expect(a.inst!.engine.disposed).toBe(true);
+      expect(servicesTierEngineOf(a.svc)).toBeUndefined();
+      expect(h.stats().used, `city ${k}: every engine block is back in the heap`).toBe(s0.used);
+    }
+    // installing again on the same system frees the previous engine
+    const systems = createSystems();
+    const svc = systems.find((x) => x.name === 'services') as ServicesSystem;
+    const i1 = installServicesTierEngine(svc, { backend: 'wasm' });
+    const sim = new Simulation(servicesCity(64, 3).st, systems);
+    const used1 = h.stats().used;
+    expect(used1).toBeGreaterThan(s0.used);
+    const i2 = installServicesTierEngine(svc, { backend: 'wasm' });
+    expect(i1.active).toBe(false);
+    expect(h.stats().used).toBe(s0.used);
+    svc.compute(sim, false);
+    expect(i2.engine.stats.fresh + i2.engine.stats.cached).toBeGreaterThan(0);
+    expect(Math.abs(h.stats().used - used1)).toBeLessThan(1 << 20);
+    i2.dispose();
+    expect(h.stats().used).toBe(s0.used);
+    expect(h.stats().grows, 'no memory.grow (pre-sized binary)').toBe(s0.grows);
+    expect(h.capacity).toBe(s0.capacity);
+  });
+
+  it('dispose() in the middle of a pass: the original methods finish it identically and keep the city identical', { timeout: 900000 }, () => {
+    const o = makeArm('orig', servicesCity(96, 31).st, 'orig'), w = makeArm('wasm', servicesCity(96, 31).st, 'wasm');
+    for (const a of [o, w]) invalidateAll(a);
+    let at = '';
+    steppedPass([o, w], (next, a) => {
+      const p = a.svc as unknown as Priv;
+      // the first step boundary inside a shared slot (search / alloc / report under way)
+      if (a === w && !at && next === S_TIERS_ && p.tierPhase !== 0 && p.shared[p.tierSlot]) {
+        at = `slot ${p.tierSlot}, phase ${p.tierPhase}, cursor ${p.cursor}`;
+        w.inst!.dispose();
+      }
+    });
+    expect(at, 'disposed mid-slot').not.toBe('');
+    expect(w.inst!.active).toBe(false);
+    expect(diffCities(o, w, true), `pass finished by the original after a dispose at ${at}`).toEqual([]);
+    for (let d = 0; d < 20; d++) {
+      if (d === 5) roadEdit([o, w], 41);
+      for (const a of [o, w]) { a.sim.advanceDay(); schedulerOf(a.sim).flush(a.sim); }
+    }
+    expect(diffCities(o, w, true), 'after 20 more days on the original methods').toEqual([]);
+  });
+
+  it('a kernel fault hands the pass over: the original finishes it identically (access fields included), the next pass is forced', { timeout: 1800000 }, () => {
+    const quiet = console.error;
+    console.error = () => {};
+    // forced 'wasm' for the services kernels: the trap is rethrown as a fault instead of disabling wasm for the session
+    setSimWasmPreference('wasm', 'services');
+    try {
+      const scenarios: [keyof CatchWasm['ex'], 'init' | 'later'][] = [
+        ['catch_alloc', 'init'], ['catch_search', 'init'], ['catch_finalize', 'init'], ['catch_access_land', 'init'],
+        ['catch_search', 'later'], ['catch_report', 'later'], ['catch_transit_cov', 'later'], ['catch_footprints', 'later'],
+        ['catch_access_land', 'later'], ['catch_shop_taps', 'later'], ['catch_box3', 'later'], ['catch_combo', 'later'],
+      ];
+      for (const [fn, when] of scenarios) {
+        const label = `${fn} (${when} pass)`;
+        const used0 = wasm.heap.stats().used;
+        const o = makeArm('orig', servicesCity(64, 13).st, 'orig');
+        const { w: tw, t } = trapping(fn, when === 'init' ? 2 : Infinity);
+        const f = makeArm('fault', servicesCity(64, 13).st, 'wasm', { wasm: tw });
+        if (when === 'later') {
+          expect(f.inst!.active, `${label}: no trap in the init pass`).toBe(true);
+          expect(diffCities(o, f)).toEqual([]);
+          t.at = t.calls + 1;
+          for (const a of [o, f]) { invalidateAll(a); (a.svc as unknown as { accessDirty: boolean }).accessDirty = true; a.svc.compute(a.sim, false); }
+        }
+        expect(t.calls, `${label}: the trap fired`).toBeGreaterThanOrEqual(t.at);
+        expect(f.inst!.active, `${label}: engine uninstalled`).toBe(false);
+        expect(f.inst!.fault?.name).toBe('TierEngineFault');
+        expect((f.svc as unknown as Priv).stepIdx, `${label}: the pass completed`).toBe(-1);
+        expect(diffCities(o, f, true), `${label}: the faulted pass equals the original's`).toEqual([]);
+        expect(f.st.accessCommute.some((v) => v > 0), `${label}: access fields computed`).toBe(true);
+        // the next pass is forced (with access fields and NIMBY) and runs on the original methods
+        const fp = f.svc as unknown as { lastRun: number; accessDirty: boolean; nimbyDirty: boolean };
+        expect([fp.lastRun, fp.accessDirty, fp.nimbyDirty]).toEqual([-1e9, true, true]);
+        for (const a of [o, f]) { (a.svc as unknown as { accessDirty: boolean }).accessDirty = true; a.svc.compute(a.sim, false); }
+        expect(diffCities(o, f, true), `${label}: the next pass`).toEqual([]);
+        expect(f.inst!.engine.disposed).toBe(true);
+        expect(wasm.heap.stats().used, `${label}: the faulted engine's memory is freed`).toBe(used0);
+      }
+    } finally {
+      console.error = quiet;
+      setSimWasmPreference('auto', 'services');
+    }
+  });
+
+  it('the committed binary is pre-sized: its initial memory covers the loader reserve and a 256² engine', () => {
+    const bytes = readFileSync(join(process.cwd(), 'src', 'wasm', 'sim_kernels.wasm'));
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), {});
+    const ex = inst.exports as unknown as { memory: WebAssembly.Memory; __heap_base: WebAssembly.Global; sk_initial_memory(): number };
+    expect(ex.sk_initial_memory()).toBeGreaterThanOrEqual(64 << 20);
+    expect(ex.memory.buffer.byteLength).toBe(ex.sk_initial_memory());
+    const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
+    heap.reserve(SIM_WASM_INITIAL_RESERVE);
+    expect(heap.stats().grows).toBe(0);
   });
 });
 
