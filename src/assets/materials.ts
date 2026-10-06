@@ -15,8 +15,8 @@
  *   ~55-75% lit in the evening, no dark floors)
  *   (offices, tints 0-5, at night: floors lit in clusters, some floors dark, per-panel brightness; 2 bronze/gold warmer)
  * Emissive (Surf.Emissive, surf.y): 0 default intensity; 1..8 intensity x pattern/4 (4 = default, 2 = half, 8 = double);
- *   for patterns 0-8 a paint `floor` below 0.5 marks a thin light strand of that thickness in m (festoons, light
- *   strings): dotted bulbs up close, emission scaled by its share of a pixel far away (no 1 px laser lines);
+ *   for patterns 0-8 and 10-11 a paint `floor` below 0.5 marks a thin light strand of that thickness in m (festoons,
+ *   light strings): dotted bulbs up close, emission scaled by its share of a pixel far away (no 1 px laser lines);
  *   9 = ground light pool: paint it ~0.7x the surrounding ground color -> plain pavement by day (no tint),
  *       warm lamp-lit pavement at night; intensity x floor/3.3 (paint `floor`, default 3.3 = 1x; use e.g. 1.5 for
  *       a dimmer outer ring).
@@ -258,8 +258,8 @@ vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float lit
   float pWin = mix(pOff, pOn, step(hU, secP));
   float winOn = step(hP, pWin);
   // per window lamp / curtain brightness (mean 0.775) and per unit brightness (mean 1)
-  float winB = 0.3 + 0.95 * fract(hP * 7.31 + 0.17);
-  float unitB = 0.55 + 0.9 * fract(hU * 31.7 + 0.13);
+  float winB = 0.45 + 0.65 * fract(hP * 7.31 + 0.17);
+  float unitB = 0.7 + 0.6 * fract(hU * 31.7 + 0.13);
   float eA = (pOff + (pOn - pOff) * clamp(litP * mix(0.78, 1.0, home), 0.0, 1.0)) * 0.775 * 0.5;
   float eF = (pOff + (pOn - pOff) * secP) * 0.775;
   float eU = pWin * 0.775 * unitB;
@@ -395,7 +395,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       nwUnit = office ? max(1.0, floor(3.2 / colW + 0.5)) : max(1.0, floor(8.0 / colW + 0.5));
       nwKind = pattern > 7.5 && pattern < 8.5 ? 3.0 : (office ? 1.0 : 0.0);
       nwLit = office ? uLitFraction * (0.45 + 0.8 * vSeed) : clamp(uLitFraction * 0.8, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
-      nwGain = 0.75;
+      nwGain = 0.7;
     }
   } else if (type < 2.5) {
     // Glass curtain wall
@@ -484,6 +484,12 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       metal = 0.75;
     }
   } else if (type < 6.5) {
+    // thin light strands (patterns 0-8 and the night-only 10 / 11 with a paint floor below 0.5 m = the strand thickness:
+    // festoons, light strings, rooftop bulb lines): dotted bulbs up close, and the emission scaled by the strand's share
+    // of a pixel, so a sub-pixel strand fades out instead of aliasing into a full-brightness 1 px laser line at 300-700 m
+    float fp = max(fwUV.x, fwUV.y);
+    float bulbs = 1.0 - smoothstep(0.2, 0.55, abs(fract(dot(P, vec3(1.9, 2.3, 1.7))) - 0.5) * 2.0);
+    float strandK = vSurf.z < 0.5 ? clamp(vSurf.z * 1.5 / fp, 0.1, 1.0) * mix(0.55, 0.25 + 1.5 * bulbs, clamp(1.0 - fp * 5.0, 0.0, 1.0)) : 1.0;
     if (pattern > 8.5 && pattern < 9.5) {
       // ground light pool (lit pavement under lamps): painted ~0.7x the ground color -> reads as normal pavement
       // by day, warm lamp-lit pavement at night (no daytime glow / tint)
@@ -517,7 +523,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       emis += albedo * vec3(0.85, 0.92, 1.0) * night * 0.6;
     } else if (pattern > 9.5 && pattern < 11.5) {
       // night-only glow (stained glass, lanterns, tent canopies): no daytime emission; 10 = x1, 11 = x2
-      float k = pattern < 10.5 ? 1.0 : 2.0;
+      float k = (pattern < 10.5 ? 1.0 : 2.0) * strandK;
       emis += albedo * 1.35 * night * k;
       rough = 0.5;
     } else if (pattern > 13.5 && pattern < 14.5) {
@@ -531,14 +537,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     } else {
       // emissive sign / light. pattern 1..8 scales intensity by pattern / 4 (pattern 0 = default 1x).
       // The night multiplier is moderate so saturated neon keeps its hue; bloom carries the glow.
-      float k = pattern > 0.5 ? pattern * 0.25 : 1.0;
-      // thin light strands (paint floor below 0.5 m = the strand thickness: festoons, light strings): dotted bulbs up
-      // close, and the emission scaled by the strand's share of a pixel, so a sub-pixel strand fades out instead of
-      // aliasing into a full-brightness 1 px laser line at 300-700 m
-      float fp = max(fwUV.x, fwUV.y);
-      float strand = step(vSurf.z, 0.5);
-      float bulbs = 1.0 - smoothstep(0.2, 0.55, abs(fract(dot(P, vec3(1.9, 2.3, 1.7))) - 0.5) * 2.0);
-      k *= mix(1.0, clamp(vSurf.z * 1.5 / fp, 0.1, 1.0) * mix(0.55, 0.25 + 1.5 * bulbs, clamp(1.0 - fp * 5.0, 0.0, 1.0)), strand);
+      float k = (pattern > 0.5 ? pattern * 0.25 : 1.0) * strandK;
       emis += albedo * (0.3 + 1.35 * wNight) * k;
       rough = 0.5;
     }
@@ -575,7 +574,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       nwUnit = 2.0;
       nwKind = 0.0;
       nwLit = clamp(uLitFraction * 0.95 + 0.05, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
-      nwGain = 0.85;
+      nwGain = 0.8;
     }
   } else if (type < 8.5) {
     // foliage

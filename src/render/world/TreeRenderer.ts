@@ -112,6 +112,27 @@ function sweepBox(rec: ShadowReceiver, b: THREE.Box3): boolean {
 }
 
 /**
+ * Micro impostor merge (far chunks, outer ring sectors): broadleaf and conifer impostors in ONE instanced mesh, drawn
+ * with the micro broadleaf double pyramid. A conifer's instance matrix stretches the pyramid's upper half onto the micro
+ * conifer pyramid (RING_CON_*: the lower half ends up in the ground) and its instance blue is negative (TREE_MERGED
+ * shader: evergreen foliage). Copies instance `i` of src / scol (an impostor matrix + tint) to slot `slot` of dst / dcol.
+ */
+function mergeImpostor(src: Float32Array, scol: Float32Array, i: number, dst: Float32Array, dcol: Float32Array, slot: number, conifer: boolean): void {
+  const o = i * 16, d = slot * 16;
+  for (let q = 0; q < 16; q++) dst[d + q] = src[o + q];
+  const c = i * 3, e = slot * 3;
+  dcol[e] = scol[c];
+  dcol[e + 1] = scol[c + 1];
+  dcol[e + 2] = scol[c + 2];
+  if (!conifer) return;
+  const sy = src[o + 5];
+  dst[d] *= RING_CON_R; dst[d + 2] *= RING_CON_R; dst[d + 8] *= RING_CON_R; dst[d + 10] *= RING_CON_R;
+  dst[d + 5] = sy * RING_CON_A;
+  dst[d + 13] += sy * RING_CON_B;
+  dcol[e + 2] = -Math.max(scol[c + 2], 1e-4);
+}
+
+/**
  * Every tree / impostor / ring mesh. Prototype methods (one function for all meshes, no per-mesh closures):
  *  - frustum test by the tight instance bounds; in shadow passes only if the trees' shadows can reach the part of the
  *    view the cascade shades;
@@ -466,6 +487,13 @@ export class TreeRenderer {
   private farScratch: Float32Array[] = [new Float32Array(16 * 4096), new Float32Array(16 * 4096)];
   private farColor: Float32Array[] = [new Float32Array(3 * 4096), new Float32Array(3 * 4096)];
   private farCount = [0, 0];
+  /** merged micro impostors of the chunk being built (mergeImpostor) and their shuffled slots */
+  private mergedScratch = new Float32Array(16 * 4096);
+  private mergedColor = new Float32Array(3 * 4096);
+  private mergedPerm = new Int32Array(4096);
+  /** the chunk LOD pass is skipped while the camera / LOD inputs stay put (see update) */
+  private lodInputs = new Float64Array(9).fill(NaN);
+  private lodForce = true;
   /** total instances currently placed (stats) */
   totalInstances = 0;
 
@@ -733,6 +761,7 @@ export class TreeRenderer {
       this.markAll();
     }
     const densityChanged = opts.density !== this.density;
+    this.lodForce = true;
     this.lodDistance = opts.lodDistance;
     this.density = opts.density;
     this.castShadows = opts.castShadows;
@@ -1010,10 +1039,34 @@ export class TreeRenderer {
     ch.far[1] = this.fill(ch.far[1], imp.conifer, this.farScratch[1], this.farColor[1], this.farCount[1], false);
     ch.farTotal[0] = this.farCount[0];
     ch.farTotal[1] = this.farCount[1];
+    // far (micro) state: both classes in one mesh (one draw per far chunk instead of two), its own shuffle
+    const nb = this.farCount[0], nm = nb + this.farCount[1];
+    if (this.mergedPerm.length < nm) {
+      const cap = Math.ceil(nm * 1.5);
+      this.mergedScratch = new Float32Array(cap * 16);
+      this.mergedColor = new Float32Array(cap * 3);
+      this.mergedPerm = new Int32Array(cap);
+    }
+    const perm = this.mergedPerm;
+    for (let i = 0; i < nm; i++) perm[i] = i;
+    for (let i = nm - 1; i > 0; i--) {
+      const j = Math.floor(hash2(i, ci, seed + 59) * (i + 1));
+      const t = perm[i];
+      perm[i] = perm[j];
+      perm[j] = t;
+    }
+    for (let i = 0; i < nm; i++) {
+      const conifer = i >= nb;
+      const fc = conifer ? 1 : 0;
+      mergeImpostor(this.farScratch[fc], this.farColor[fc], conifer ? i - nb : i, this.mergedScratch, this.mergedColor, perm[i], conifer);
+    }
+    ch.far[2] = this.fill(ch.far[2], getMicroImpostorGeometries().broad, this.mergedScratch, this.mergedColor, nm, false, this.materialMerged);
+    ch.farTotal[2] = nm;
     this.totalInstances += total - ch.total;
     ch.total = total;
-    // keep the chunk's current LOD state (new meshes default to visible + plain material)
+    // keep the chunk's current LOD state (new meshes default to visible + plain material); the next update re-derives it
     this.applyLod(ch, ch.lastKey, true);
+    this.lodForce = true;
     shadowCasters.version++;
   }
 
@@ -1046,13 +1099,13 @@ export class TreeRenderer {
     return m;
   }
 
-  private fill(mesh: TreeMesh | null, geo: THREE.BufferGeometry, data: Float32Array, color: Float32Array | null, n: number, near: boolean): TreeMesh | null {
+  private fill(mesh: TreeMesh | null, geo: THREE.BufferGeometry, data: Float32Array, color: Float32Array | null, n: number, near: boolean, material?: THREE.Material): TreeMesh | null {
     if (n === 0) {
       if (mesh) mesh.count = 0;
       if (mesh) mesh.visible = false;
       return mesh;
     }
-    mesh = this.meshFor(mesh, geo, near ? this.material : this.materialFar, n, !!color, !near);
+    mesh = this.meshFor(mesh, geo, material ?? (near ? this.material : this.materialFar), n, !!color, !near);
     mesh.name = near ? `trees-${geo.name}` : 'trees-far';
     (mesh.instanceMatrix.array as Float32Array).set(data.subarray(0, n * 16));
     mesh.instanceMatrix.clearUpdateRanges();
@@ -1109,22 +1162,30 @@ export class TreeRenderer {
       m.material = nearMat;
       m.customDepthMaterial = nearDepth;
     }
-    const mg = micro ? getMicroImpostorGeometries() : null;
     // impostors past the shadow switch distance cast shadows even where the view still shows near models
     const shadowOnly = !far && cast && farCast;
     const farMat = farFade ? this.matFarFade : this.materialFar, farDepth = this.depthFor(false, farFade, farCut);
-    for (let i = 0; i < 2; i++) {
+    // micro chunks (no fade / cut there) draw both classes as one merged mesh
+    const merged = micro && !farFade && !farCut && ch.far[2] !== null && ch.farTotal[2] > 0;
+    const mg = micro && !merged ? getMicroImpostorGeometries() : null;
+    for (let i = 0; i < 3; i++) {
       const m = ch.far[i];
       if (!m) continue;
+      if ((i === 2) !== merged) {
+        m.visible = false;
+        continue;
+      }
       const tot = ch.farTotal[i];
       const c = Math.ceil(tot * keep);
       m.count = c < 0 ? 0 : c > tot ? tot : c;
       m.shadowOnly = shadowOnly;
       m.visible = (far || shadowOnly) && m.count > 0;
       m.castShadow = cast && farCast;
-      m.material = farMat;
       m.customDepthMaterial = farDepth;
-      m.geometry = mg ? (i === 0 ? mg.broad : mg.conifer) : (m.userData.regularGeo as THREE.BufferGeometry);
+      if (i < 2) {
+        m.material = farMat;
+        m.geometry = mg ? (i === 0 ? mg.broad : mg.conifer) : (m.userData.regularGeo as THREE.BufferGeometry);
+      }
     }
     shadowCasters.version++;
   }
@@ -1158,7 +1219,16 @@ export class TreeRenderer {
     const K = (3.5 * this.viewHeight) / (2 * Math.tan((this.viewFov * Math.PI) / 360));
     const microIn = this.microPixels * 0.87, microOut = this.microPixels * 1.15;
     const chunks = this.chunks, B = this.chunkBox;
-    for (let ci = 0; ci < chunks.length; ci++) {
+    // the chunk LOD pass only runs when its inputs changed (camera, distances, view size) or a chunk was rebuilt: a still
+    // camera re-derives nothing
+    const LI = this.lodInputs;
+    const lodChanged = this.lodForce || px !== LI[0] || py !== LI[1] || pz !== LI[2] || K !== LI[3] || lo !== LI[4] || hi !== LI[5] ||
+      cutLo !== LI[6] || cutHi !== LI[7] || microIn !== LI[8];
+    if (lodChanged) {
+      LI[0] = px; LI[1] = py; LI[2] = pz; LI[3] = K; LI[4] = lo; LI[5] = hi; LI[6] = cutLo; LI[7] = cutHi; LI[8] = microIn;
+      this.lodForce = false;
+    }
+    for (let ci = 0; lodChanged && ci < chunks.length; ci++) {
       const ch = chunks[ci], o = ci * 6;
       const x0 = B[o], y0 = B[o + 1], z0 = B[o + 2], x1 = B[o + 3], y1 = B[o + 4], z1 = B[o + 5];
       // nearest / farthest distance from the camera to the chunk box

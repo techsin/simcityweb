@@ -193,6 +193,35 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
+  it('far (micro) chunks draw broadleaf + conifer impostors as one merged mesh; nearer chunks keep the pair', () => {
+    const { st, tr } = make();
+    const W = st.size * CELL_SIZE;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    const chunks = (tr as unknown as { chunks: { far: (THREE.InstancedMesh | null)[]; farTotal: number[] }[] }).chunks;
+    // far above the map: every chunk projects its trees below a pixel -> micro state
+    cam.position.set(W / 2, 30000, W / 2);
+    tr.update(cam);
+    let merged = 0;
+    for (const c of chunks) {
+      const [b, k, m] = c.far;
+      if (!m || !c.farTotal[2]) continue;
+      expect(c.farTotal[2]).toBe(c.farTotal[0] + c.farTotal[1]);
+      expect(m.visible).toBe(true);
+      expect(!!b?.visible || !!k?.visible).toBe(false);
+      const col = m.instanceColor!.array as Float32Array;
+      let flagged = 0;
+      for (let i = 0; i < c.farTotal[2]; i++) flagged += col[i * 3 + 2] < 0 ? 1 : 0;
+      expect(flagged).toBe(c.farTotal[1]);
+      merged++;
+    }
+    expect(merged).toBeGreaterThan(0);
+    // close to the map: the regular broadleaf / conifer pair again
+    cam.position.set(W / 2, 300, W / 2);
+    tr.update(cam);
+    for (const c of chunks) if (c.far[2]) expect(c.far[2].visible).toBe(false);
+    tr.dispose();
+  }, 120_000);
+
   it('generation and refills run in small slices (one block row / batch per step at a zero budget)', () => {
     const { st, tr } = make(128);
     const n0 = tr.ringInstances;
