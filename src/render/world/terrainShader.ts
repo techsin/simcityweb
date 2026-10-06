@@ -47,6 +47,8 @@ uniform float uSnowNoise;
 uniform vec3 uTSunDir;
 /** 0..1 dormant (straw) grass: winter in temperate / alpine climates, a little in late autumn / early spring */
 uniform float uDormant;
+/** deciduous woods: x autumn share, y bare share (nat_season.ts seasonMix, like the 3D trees) */
+uniform vec2 uCanopy;
 /** neighbour connections: N x 4 (row = map edge -x, +x, -z, +z), texel = network type of the edge cell whose line runs off-map */
 uniform sampler2D uExitTex;
 
@@ -120,7 +122,9 @@ vec3 terrainShade(vec3 P, vec3 N) {
   float outside = smoothstep(0.0, 0.03, max(tout.x, tout.y));
   trees = mix(trees, smoothstep(0.6, 0.74, nA.g * 0.6 + nB.r * 0.5) * 0.65, outside);
   float forest = smoothstep(0.03, 0.55, trees);
-  col = mix(col, uPal[3] * (0.85 + 0.3 * m3), forest * 0.82);
+  // forest floor: leaf litter browns under the woods in autumn / winter (bare 3D trees show the floor through)
+  vec3 floorC = mix(uPal[3], uPal[4] * 0.62, 0.55 * clamp(uCanopy.x * 0.6 + uCanopy.y, 0.0, 1.0));
+  col = mix(col, floorC * (0.85 + 0.3 * m3), forest * 0.82);
   if (outside > 0.001) {
     // landscape beyond the map has no tree instances: its noise forests get a canopy look (crown clumps with dark
     // gaps as fake AO) plus a fake sun shadow on the meadow beside them and a lit crown edge toward the sun, so from
@@ -138,6 +142,16 @@ vec3 terrainShade(vec3 P, vec3 N) {
       float crowns = smoothstep(0.3, 0.72, nF.r * 0.55 + nC.g * 0.3 + nF.b * 0.15);
       float gaps = 1.0 - smoothstep(0.05, 0.3, nF.a * 0.6 + crowns * 0.5);
       vec3 canopy = mix(uPal[3] * 0.6, uPal[2] * 1.05, crowns) * (0.88 + 0.24 * nB.g) * (1.0 - 0.35 * gaps);
+      // the season, in stands of ~30 m like the 3D woods (nat_season.ts mix): ~30% evergreens (a darker, cooler green
+      // in winter), the deciduous rest bare grey-brown in winter or orange / rust / yellow in autumn
+      float stand = fract(nF.g * 5.3 + nB.b * 2.1);
+      float decid = step(0.3, stand);
+      float sr = (stand - 0.3) / 0.7;
+      float cl = tLuma(canopy);
+      vec3 autumnC = cl * mix(vec3(2.5, 1.05, 0.3), vec3(2.1, 1.6, 0.32), smoothstep(0.35, 0.65, nF.a));
+      vec3 bareC = cl * vec3(1.45, 1.12, 0.85) * (1.1 + 0.25 * nF.a);
+      vec3 seasonC = sr < uCanopy.y ? bareC : (sr < uCanopy.y + uCanopy.x ? autumnC : canopy);
+      canopy = mix(canopy * mix(vec3(1.0), vec3(0.82, 0.9, 0.95), uCanopy.y), seasonC, decid);
       canopy *= 1.0 + 0.45 * litRim * (1.0 - 0.7 * uNightF);
       col = mix(col, canopy, outside * smoothstep(0.02, 0.25, forest) * 0.94);
       bump += (crowns * 2.2 - gaps * 1.2) * outside * forest;
@@ -237,28 +251,38 @@ vec3 terrainShade(vec3 P, vec3 N) {
     float outK = smoothstep(0.0, 26.0, dEdge) * landF;
     float l = tLuma(col);
     col = mix(col, mix(col, vec3(l), 0.18) * 0.9, outK);
-    // peri-urban patchwork: fields / pastures aligned with the city grid (~110 x 70 m, rows offset so no grid line runs
-    // across the ring), hedgerows while they are resolvable, strongest next to the map and fading out over ~1.5 km: the
-    // city's grain dissolves into farmland instead of ending in a hard square against uniform meadow
-    float peri = (1.0 - smoothstep(6.0, 95.0, dEdge)) * landF * (1.0 - forest) * (1.0 - rockM) * (1.0 - sandM) * (1.0 - snowM) * (1.0 - 0.7 * uDesert);
+    // peri-urban patchwork: fields / pastures (the city's grain dissolves into farmland instead of ending in a hard square
+    // against uniform meadow), eased in over the first ~60 m past the map edge and fading out over ~1.5 km. Blocks of
+    // ~290 m each have their own field size (3 sizes) and row direction and the field edges wobble a little, so it reads
+    // as farmland rather than a tiled quilt; low value contrast between fields; hedgerows only while they are wider than
+    // ~2 px (a 1-2 px dark outline at 900 m read as a grid); the season: autumn / winter fields are harvested (stubble,
+    // ploughed browns, dormant pasture: no bright summer green in January)
+    float peri = smoothstep(0.0, 4.0, dEdge) * (1.0 - smoothstep(6.0, 95.0, dEdge)) * landF * (1.0 - forest) * (1.0 - rockM) * (1.0 - sandM) * (1.0 - snowM) * (1.0 - 0.7 * uDesert);
     if (peri > 0.002) {
-      vec2 fs = vec2(7.0, 4.5);
-      float frow = floor(gc.y / fs.y);
-      vec2 fq = vec2(gc.x / fs.x + fract(sin(frow * 12.9898) * 43758.5453), gc.y / fs.y);
+      vec2 gq = gc + (vec2(nB.g, nC.r) - 0.5) * 0.6;
+      vec2 bid = floor(gq / 18.0);
+      float bh = fract(sin(dot(bid, vec2(41.3, 289.1))) * 43758.5453);
+      vec2 fs = bh < 0.34 ? vec2(7.0, 4.5) : (bh < 0.67 ? vec2(4.5, 3.0) : vec2(10.0, 6.5));
+      vec2 fqb = fract(bh * 7.13) < 0.5 ? gq : gq.yx;
+      float frow = floor(fqb.y / fs.y);
+      vec2 fq = vec2(fqb.x / fs.x + fract(sin(frow * 12.9898 + bh * 91.7) * 43758.5453), fqb.y / fs.y);
       vec2 fid = floor(fq);
-      float fh = fract(sin(dot(fid, vec2(12.9898, 78.233))) * 43758.5453);
+      float fh = fract(sin(dot(fid + bid * 37.0, vec2(12.9898, 78.233))) * 43758.5453);
       float fh2 = fract(fh * 31.7);
-      // pasture (lusher), crop / hay (lighter, yellowed), stubble (straw), ploughed (brown): from the climate palette
-      vec3 fcol = col * vec3(0.92, 1.02, 0.9);
-      if (fh >= 0.35 && fh < 0.62) fcol = mix(col, uPal[1], 0.45) * 1.05;
-      else if (fh >= 0.62 && fh < 0.82) fcol = mix(col, uPal[1] * 1.1, 0.7);
-      else if (fh >= 0.82) fcol = mix(col, uPal[4] * (0.9 + 0.2 * m4), 0.55);
-      fcol *= 0.94 + 0.12 * fh2;
+      float dorm = clamp(uDormant * 1.8, 0.0, 1.0);
+      vec3 brown = uPal[4] * (0.88 + 0.16 * m4);
+      // pasture (a touch lusher; dormant like the meadow in winter), crop (yellowing; ploughed / sown brown after the
+      // harvest), hay / stubble (straw), ploughed (brown): from the climate palette
+      vec3 fcol = col * mix(vec3(0.95, 1.01, 0.94), vec3(1.0), dorm);
+      if (fh >= 0.35 && fh < 0.62) fcol = mix(col, mix(uPal[1], brown, dorm * 0.75), 0.27 + 0.1 * dorm);
+      else if (fh >= 0.62 && fh < 0.82) fcol = mix(col, uPal[1] * 1.05, 0.42);
+      else if (fh >= 0.82) fcol = mix(col, brown, 0.33 + 0.12 * dorm);
+      fcol *= 0.97 + 0.07 * fh2;
       vec2 fe = min(fract(fq), 1.0 - fract(fq)) * fs * uCell;
       float fwm = fpx * uCell;
-      float hedge = (1.0 - smoothstep(1.6 - fwm * 0.5, 1.6 + fwm * 0.5, min(fe.x, fe.y))) * (1.0 - smoothstep(0.08, 0.22, fpx)) * step(0.3, fh2);
-      fcol = mix(fcol, uPal[3] * 0.85, hedge * 0.8);
-      col = mix(col, fcol, peri * 0.7);
+      float hedge = (1.0 - smoothstep(1.6 - fwm * 0.5, 1.6 + fwm * 0.5, min(fe.x, fe.y))) * (1.0 - smoothstep(0.035, 0.075, fpx)) * step(0.3, fh2);
+      fcol = mix(fcol, uPal[3] * mix(0.85, 0.75, dorm), hedge * 0.6);
+      col = mix(col, fcol, peri * 0.65);
     }
     // map border: only while zoning / an overlay / the grid is shown (in the normal view any line read as a "board
     // game" plate from far away and as a laser fence at night)

@@ -58,10 +58,9 @@ function litFractionAt(h: number): number {
   return k[i] + (k[(i + 1) % 24] - k[i]) * f;
 }
 
-/** dusk / dawn grading (WorldView.updateAtmosphere, weighted by Sky.lightRig `dusk`); exported for tuning tools */
+/** dusk / dawn grading (WorldView.updateAtmosphere, weighted by Sky.lightRig `dusk`; the dusk exposure is part of the
+ *  light rig: Sky.LIGHT_RIG.duskExposure); exported for tuning tools */
 export const DUSK_GRADE = {
-  /** exposure adapts toward the night level by this fraction of the dusk weight (ahead of the night factor) */
-  exposure: 0.42,
   /** saturation / contrast added at full dusk */
   saturation: 0.12,
   contrast: 0.03,
@@ -496,9 +495,9 @@ export class WorldView implements WorldViewApi {
     // read as one uniform brown), and shadows get a cool blue lift against the warm low sun, lamps and windows
     const D = DUSK_GRADE;
     const dusk = L.dusk;
-    const exposure = Math.max(L.exposure, THREE.MathUtils.lerp(1.0, 1.9, D.exposure * dusk));
-    g.exposure = exposure;
-    this.renderer.toneMappingExposure = exposure;
+    // (exposure: Sky.lightRig, night + dusk adaptation)
+    g.exposure = L.exposure;
+    this.renderer.toneMappingExposure = L.exposure;
     const golden = L.golden;
     g.tint.setRGB(1 + 0.05 * golden - 0.07 * n, 1 - 0.01 * golden - 0.03 * n, 1 - 0.06 * golden + 0.08 * n);
     g.saturation = 1.08 + 0.06 * golden - 0.32 * n + D.saturation * dusk;

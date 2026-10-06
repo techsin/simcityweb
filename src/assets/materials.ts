@@ -395,7 +395,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       nwUnit = office ? max(1.0, floor(3.2 / colW + 0.5)) : max(1.0, floor(8.0 / colW + 0.5));
       nwKind = pattern > 7.5 && pattern < 8.5 ? 3.0 : (office ? 1.0 : 0.0);
       nwLit = office ? uLitFraction * (0.45 + 0.8 * vSeed) : clamp(uLitFraction * 0.8, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
-      nwGain = 1.05;
+      nwGain = 0.75;
     }
   } else if (type < 2.5) {
     // Glass curtain wall
@@ -575,7 +575,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       nwUnit = 2.0;
       nwKind = 0.0;
       nwLit = clamp(uLitFraction * 0.95 + 0.05, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
-      nwGain = 1.15;
+      nwGain = 0.85;
     }
   } else if (type < 8.5) {
     // foliage

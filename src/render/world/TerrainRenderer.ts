@@ -14,6 +14,7 @@ import { Network, Overlay, type Climate, type TerrainPreset } from '../../core/t
 import type { CityState } from '../../sim/CityState';
 import { sharedUniforms } from '../../assets/materials';
 import { getNoiseTexture, makeRampTexture } from './textures';
+import { seasonMix } from '../../assets/builders/nat_season';
 import { OVERLAYS, ZONE_COLORS, computeOverlayValues, overlayDef } from './overlays';
 import { overlayStale } from '../../sim/infra/overlays';
 import { TERRAIN_FRAG_COLOR, TERRAIN_FRAG_PARS, TERRAIN_VERT_MAIN, TERRAIN_VERT_PARS } from './terrainShader';
@@ -163,6 +164,8 @@ export class TerrainRenderer {
       uWinter: { value: 0 },
       uSnowNoise: { value: 45 },
       uDormant: { value: 0 },
+      /** painted woods beyond the map / forest floor: x autumn share, y bare share (seasonMix, like the 3D trees) */
+      uCanopy: { value: new THREE.Vector2() },
       // (same object as the building material's: WorldView updates it every frame)
       uTSunDir: sharedUniforms.uSunDir,
       uExitTex: { value: this.exitTex as THREE.Texture },
@@ -232,8 +235,9 @@ export class TerrainRenderer {
    * Seasonal snow line. Alpine: relative to the map's own height range (a 4-49 m hill map never gets June snow, a
    * mountain map keeps snow on its peaks), dropping by half the range in Dec-Feb and rising by 30% in Jun-Aug.
    * Temperate: only high mountains (unchanged base), with a gentler seasonal swing. The shader additionally keeps
-   * zoned / developed cells (and a 1-cell ring around lots and roads) free of terrain snow (uWinter = 0), and winter
-   * turns the grass dormant (uDormant).
+   * zoned / developed cells (and a 1-cell ring around lots and roads) free of terrain snow (uWinter = 0), winter turns
+   * the grass dormant (uDormant, as dormant as the lot lawns: materials.ts uFoliageDry) and the painted woods follow
+   * the 3D trees' season (uCanopy).
    */
   private applySnowLine() {
     const cfg = this.state.config;
@@ -260,7 +264,9 @@ export class TerrainRenderer {
     this.uniforms.uWinter.value = 0;
     // dormant grass (temperate / alpine): winter, a little in Nov / Mar, a hint in Oct
     const seasonal = cfg.climate === 'temperate' || cfg.climate === 'alpine';
-    this.uniforms.uDormant.value = !seasonal ? 0 : winter ? 0.45 : m === 10 || m === 2 ? 0.24 : m === 9 ? 0.08 : 0;
+    this.uniforms.uDormant.value = !seasonal ? 0 : winter ? 0.55 : m === 10 || m === 2 ? 0.28 : m === 9 ? 0.1 : 0;
+    const mix = seasonMix(m, cfg.climate);
+    this.uniforms.uCanopy.value.set(mix.autumn, mix.bare);
   }
 
   /** season for the snow line (WorldView calls this on the sim's 'month' event) */

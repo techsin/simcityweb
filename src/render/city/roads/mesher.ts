@@ -17,7 +17,7 @@ import {
 } from '../common/netinfo';
 import type { RoadSurface } from '../common/surface';
 import { GeoBuf, type GeoSlice } from './geobuf';
-import { lampTint } from './roadMaterial';
+import { LAMP_LED_BIT, lampTint } from './roadMaterial';
 
 export const M = {
   ASPHALT: 0, SIDEWALK: 1, CURB: 2, GRASS: 3, BALLAST: 4, SLEEPER: 5, RAIL: 6, CONCRETE: 7, DIRT: 8, METAL: 9,
@@ -114,8 +114,9 @@ export class RoadMesher {
   private trackIdx = 0;
   /** set while meshing the minor road under a highway overpass (no streetlights / trees, deck soffit lights instead) */
   private underDeck = false;
-  /** network type of the minor road under the overpass cell being meshed (its soffit lights match its lamp type) */
-  private minorT: number = Network.Road;
+  /** LAMP_LED_BIT when the cell being meshed has white LED street lamps (lampTint), else 0: added to every surface code
+   *  of the cell so the road shader's lamp ribbon, the light pools and the lamp heads share one lamp type */
+  private ledBit = 0;
   private groundSurf: RoadSurface | null = null;
   private groundOf: RoadSurface | null = null;
   /** per-cell mesh cache: an edit only re-meshes the invalidated cells; chunks are re-assembled by concatenation */
@@ -178,7 +179,7 @@ export class RoadMesher {
     const gz = (s.baseIn(i, wx, wz + e) - s.baseIn(i, wx, wz - e)) / (2 * e);
     const il = 1 / Math.sqrt(gx * gx + 1 + gz * gz);
     this.mapUV(lx, lz);
-    this.g.push(wx, y, wz, -gx * il, il, -gz * il, this._u, this._v, code, w);
+    this.g.push(wx, y, wz, -gx * il, il, -gz * il, this._u, this._v, code + this.ledBit, w);
   }
 
   /** upward facing surface triangle (local coords), auto-winding + recursive subdivision for terrain following */
@@ -220,6 +221,7 @@ export class RoadMesher {
     nx /= l; ny /= l; nz /= l;
     const g = this.g;
     const ox = this.ox, oz = this.oz;
+    code += this.ledBit;
     if (nx * hx + ny * hy + nz * hz < 0) {
       nx = -nx; ny = -ny; nz = -nz;
       this.mapUV(ax, az); g.push(ox + ax, ay, oz + az, nx, ny, nz, this._u, this._v, code, w);
@@ -303,6 +305,8 @@ export class RoadMesher {
         this.oz = z * CELL_SIZE + HALF;
         this.g = out.main;
         this.trackIdx = 0;
+        // street-lamp type of the cell (white LED / sodium; never LED next to industry), see lampTint
+        this.ledBit = t >= Network.Street && t <= Network.Highway && lampTint(x, z, t, st.zone, N) ? LAMP_LED_BIT : 0;
         if (st.netFlags[i] & NF_TUNNEL) {
           this.tunnelCell(t);
         } else {
@@ -888,10 +892,10 @@ export class RoadMesher {
     this.out.props.push({ model: 'streetlight', variant, x: this.ox + lx, y, z: this.oz + lz, yaw, scale: 1 });
     const reach = this.light.reach;
     const px = lx + Dx * reach, pz = lz + Dz * reach;
-    // lamp colour: highways always white; streets by district / road class (same rule as the road shader's ribbon)
-    const lt = tint === 1 ? 1 : lampTint(this.cx, this.cz, this.net.state.network[this.ci]);
+    // lamp colour: highways always white; streets the cell's lamp type (baked into the road surface code as well)
+    const lt = tint === 1 || this.ledBit ? 1 : 0;
     this.out.pools.push({
-      x: this.ox + px, y: this.Y(px, pz) + 0.04, z: this.oz + pz, r: tint === 1 ? 9 : 8.5, tint: lt, yaw: Math.atan2(-Dx, -Dz),
+      x: this.ox + px, y: this.Y(px, pz) + 0.04, z: this.oz + pz, r: tint === 1 ? 9 : 7.5, tint: lt, yaw: Math.atan2(-Dx, -Dz),
       hx: this.ox + px, hy: y + this.light.height - 0.35, hz: this.oz + pz,
     });
   }
@@ -1158,7 +1162,9 @@ export class RoadMesher {
       if (isRoadT(t) && t !== Network.Highway && HALF_W[t] >= HALF_W[tm]) { tm = t; from = j; }
     }
     if (!tm) tm = Network.Road;
-    this.minorT = tm;
+    // the minor road under the deck has its own lamp type (its soffit lights match it; the deck itself is highway:
+    // white in the shader anyway)
+    this.ledBit = lampTint(this.cx, this.cz, tm, net.state.zone, net.N) ? LAMP_LED_BIT : 0;
     if (tm === Network.OneWay && from >= 0) {
       const od = oneWayDir(net.state.netFlags[from]);
       if ((od & 1) === (hm & 1)) hm = od;
@@ -1252,7 +1258,7 @@ export class RoadMesher {
       const px = DX[B] * sB, pz = DZ[B] * sB;
       const gy = G(px, pz) + LIFT;
       this.out.pools.push({
-        x: this.ox + px, y: gy + 0.04, z: this.oz + pz, r: 6.5, tint: lampTint(this.cx, this.cz, this.minorT), yaw: Math.atan2(-DZ[B], DX[B]),
+        x: this.ox + px, y: gy + 0.04, z: this.oz + pz, r: 6.5, tint: this.ledBit ? 1 : 0, yaw: Math.atan2(-DZ[B], DX[B]),
         hx: this.ox + px, hy: this.Y(px, pz) - DECK - 0.25, hz: this.oz + pz,
       });
     }

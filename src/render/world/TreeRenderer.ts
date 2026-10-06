@@ -254,8 +254,9 @@ const FRESH_KEY = L_FAR | L_FAR_CAST | (20 << L_KEEP_SHIFT);
 /** outer ring candidate generation of one sector, in progress (resumable over frames) */
 interface RingGen {
   k: number;
-  /** next block row (grid z of its first row) */
+  /** next block row (grid z of its first row) and next block in it (-1: its bottom corner row is not computed yet) */
   bz: number;
+  bi: number;
   n: number;
   buf: Float32Array;
   /** forest probability at the block corners of the current block row: top (z = bz) / bottom (z = bz + BLOCK) */
@@ -1380,17 +1381,17 @@ export class TreeRenderer {
     const gx0 = Math.floor(x0 / g), gx1 = Math.ceil(x1 / g);
     const nc = Math.ceil((gx1 - gx0) / RING_BLOCK) + 1;
     const gz0 = Math.floor(z0 / g);
-    const gen: RingGen = { k, bz: gz0, n: 0, buf: this.ringCand[k] ?? new Float32Array(RING_STRIDE * 1024), top: new Float32Array(nc), bot: new Float32Array(nc) };
+    const gen: RingGen = { k, bz: gz0, bi: -1, n: 0, buf: this.ringCand[k] ?? new Float32Array(RING_STRIDE * 1024), top: new Float32Array(nc), bot: new Float32Array(nc) };
     if (this.ringWidth > 0) this.ringCornerRow(getNoiseTexture().image.data as Uint8Array, gen.top, gx0, gz0);
     this.ringGen = gen;
   }
 
   /**
-   * Candidate generation of the current sector, block row by block row until `end` (ms, performance.now): per
-   * 10 m grid cell at most one tree at a jittered spot, kept with the forest probability (interpolated from the block
-   * corners; forest-free blocks skipped), no water / beaches, no shrubs / rocks (too small out there). Each candidate
-   * stores its density threshold (the uniform random over the probability), so any lower density is a subset. Returns
-   * true once the sector is complete (its meshes are then refilled).
+   * Candidate generation of the current sector, block by block (resumable inside a block row) until `end` (ms,
+   * performance.now): per 10 m grid cell at most one tree at a jittered spot, kept with the forest probability
+   * (interpolated from the block corners; forest-free blocks skipped), no water / beaches, no shrubs / rocks (too small
+   * out there). Each candidate stores its density threshold (the uniform random over the probability), so any lower
+   * density is a subset. Returns true once the sector is complete (its meshes are then refilled).
    */
   private ringGenRows(end: number): boolean {
     const gen = this.ringGen!;
@@ -1403,11 +1404,21 @@ export class TreeRenderer {
     const weights = this.weights;
     let buf = gen.buf, n = gen.n;
     if (R <= 0) gen.bz = gz1;
+    let out = false;
     while (gen.bz < gz1 && n < RING_CAP) {
       const bz = gen.bz;
-      this.ringCornerRow(noise, gen.bot, gx0, bz + BK);
+      if (gen.bi < 0) {
+        this.ringCornerRow(noise, gen.bot, gx0, bz + BK);
+        gen.bi = 0;
+      }
       const top = gen.top, bot = gen.bot;
-      for (let bi = 0; bi < top.length - 1; bi++) {
+      for (let bi = gen.bi; bi < top.length - 1; bi++) {
+        // (time check after every 8th block, so each call progresses: a block is at most 16 candidates)
+        if ((bi & 7) === 7 && bi > gen.bi && performance.now() >= end) {
+          gen.bi = bi;
+          out = true;
+          break;
+        }
         const p00 = top[bi], p10 = top[bi + 1], p01 = bot[bi], p11 = bot[bi + 1];
         // (bilinear: never above the largest corner)
         if (p00 <= 0.01 && p10 <= 0.01 && p01 <= 0.01 && p11 <= 0.01) continue;
@@ -1446,10 +1457,12 @@ export class TreeRenderer {
           }
         }
       }
+      gen.n = n;
+      if (out) break;
       gen.top = bot;
       gen.bot = top;
       gen.bz = bz + BK;
-      gen.n = n;
+      gen.bi = -1;
       if (performance.now() >= end) break;
     }
     if (gen.bz < gz1 && n < RING_CAP) return false;

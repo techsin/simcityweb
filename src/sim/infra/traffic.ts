@@ -660,10 +660,14 @@ export class TrafficSystem implements SimSystem {
     };
     const dropT = (b: Building) => { if (this.transportB.delete(b.id) || getDef(b.def)?.category === 'transport') this.attachDirty = true; };
     this.unsub.push(
-      // (a road / rail edit re-labels the rail components only, a tunnel edit the subway ones, terrain / reset all)
+      // (a road / rail edit re-labels the rail components only, a tunnel edit the subway ones, a terrain edit the ferry
+      // water paths only, reset all. The graphs and the rail / tunnel components read the network / tunnel grids only,
+      // so a terrain edit leaves them as they are: growth levels a lot most days, and a rebuild would bump the graph
+      // version, which restarts the convergence and the park & ride search every cycle. An edit that also cuts a road
+      // — a meteor — sends networkChanged as well.)
       ev.on('networkChanged', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; }),
       ev.on('subwayChanged', () => { this.graphDirty = true; this.attachDirty = true; this.subVer++; }),
-      ev.on('terrainChanged', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; this.subVer++; this.terrainVer++; }),
+      ev.on('terrainChanged', () => { this.attachDirty = true; this.terrainVer++; }),
       ev.on('reset', () => { this.graphDirty = true; this.attachDirty = true; this.netVer++; this.subVer++; this.terrainVer++; }),
       ev.on('buildingAdded', markT),
       ev.on('buildingRemoved', dropT),
