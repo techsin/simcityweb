@@ -45,6 +45,9 @@ import { getDef } from '../../../sim/catalog';
 import { getModelGeometry } from '../../../assets/registry';
 import { MANIFEST_BY_ID } from '../../../assets/manifest';
 import { ModelBuilder } from '../../../assets/ModelBuilder';
+import { jitterHex, leafBlob, mark, mixHex, shadeHex, tintSince, triOut, type V3 } from '../../../assets/builders/nat_geom';
+import { P, profileSolid, type PP } from '../../../assets/builders/veh_parts';
+import { RNG } from '../../../core/rng';
 import { Surf } from '../../../core/types';
 import { DynamicBatch, type TileCuller } from '../common/batch';
 import { getCityMaterial, flagsToAlpha, IF_FIRE, IF_SELECTED, IF_WINDOWS_OFF } from '../common/cityMaterial';
@@ -87,11 +90,13 @@ interface BInst {
   main: number;
   site: number;
   found: number;
-  /** burnt multi-cell lots: rubble tiles of the cells after the first (`main` = cell 0), and the quarter turns of all
-   *  cells (cellYaw[0] = main's) */
+  /** burnt multi-cell lots (rubble kit, `main` = the debris bed): the debris pieces' instances, their full / proxy
+   *  geometries and world matrices (16 floats each), see rubbleKit() */
   cells: number[];
-  cellYaw: number[];
-  /** burnt lots: per rubble cell (cell 0 first) [rise per m along world x, along world z, lift m] (rubbleSlopes) */
+  kitGeo: number[];
+  kitLod: number[];
+  kitM: Float32Array | null;
+  /** burnt one-cell lots: [rise per m along world x, along world z, lift m] of the rubble tile (rubbleSlopes) */
   shear: number[];
   tile: number;
   key: string;
@@ -114,6 +119,12 @@ interface BInst {
   cy: number;
   /** lowest terrain height under the lot (foundation skirt) */
   minH: number;
+  /** foundation skirt: full (cap band, stepped tiers) and plain-box geometries, exposed height (m) and level (1 = the
+   *  plain box: the building is on its proxy or the skirt is under FOUND_PX tall on screen) */
+  foundGeom: number;
+  foundLod: number;
+  fh: number;
+  flod: number;
   /** index in BuildingRenderer.list (and the flat lx / ly / lz / lr / ls arrays) */
   li: number;
   /** LOD schedule: absolute travel bucket of its live queue entry (-1 = none, -2 = removed); queued in lodNow */

@@ -685,3 +685,225 @@ If a re-port is approved, the architect's memory model applies:
 - `dense1m_s7.metropolis`: 1.12M residents;
 - `bot256_s7_y{20..60}.metropolis`: 653k at year 60, before WP6a;
 - `stress1m_testdefs_s7.metropolis`: 1.03M, for infrastructure-only benchmarks.
+
+## Skeptic review
+
+- **Date:** 2026-10-06. Independent reviewer; no part in the ports or in this plan. The lead's text above is unchanged.
+- **Scope:** the decision (§0), the numbers it rests on (§1–§4), the worker plan (§5), the fixes (§6) and the integration plan (§7).
+- **Code measured:** a read-only `git archive` snapshot of `ac90736`, which already contains WP6a, the police tier, bus fleets and ferries. Fixtures: the profiler's `dense1m_s7` (1.12M) and `bot256_s7_y60` (653k). The plan's kernel numbers are on `24f8609`.
+- **Method:**
+  - node 22.22 (V8 12.4). Every arm in its own process, with the protector probed per arm. Fixtures gunzipped with zlib.
+  - Design cadence (`advanceDay` + `flush`): 16 warm-up days, then 32 interleaved rounds of 4 days, in rotating order.
+  - Sim-thread CPU from `/proc/thread-self/schedstat` (tick-granular, hence 4-day chunks), plus process CPU. Median of the paired chunk ratios, with a 95 % bootstrap CI.
+  - **Two isolates per arm**, so every run carries its own A/A control. Load average is given per result.
+- **Not re-measured:** Chromium whole-day A/Bs, the W2 estimates, anything on R1.
+- **Artefacts** (scratch, not in the repo): `/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/skeptic/`
+  - `h/`: the harnesses (`arm.ts`, `abDriver.mjs`, `svcTrigger.ts`, `saveCost.ts`, `minimap.ts`);
+  - `web/gameProbe.mjs`;
+  - `out/`: the JSON results and logs.
+
+### Verdict
+
+The direction holds: the worker first, the free JS fixes next, and no heavy reliance on WebAssembly. The numbers that carry the decision either hold or are conservative. Four corrections change the plan:
+
+1. **B1 is measured now, not projected:** 1.27–1.56× on the whole design-cadence day. That is about three times what all WASM ports together would give, so B1 should land first.
+2. **B1 as specified misses triggers:** funding, ordinances, water and the staffing level.
+3. **After B1, traffic is about half of the worker's day.** The traffic-core decision (§7.10) belongs right after B1 and B5, not after W2. W2-services stops being needed.
+4. **WASM blur should not become a production default.** Its expected gain is 5–10× below what this A/B setup can resolve, and its gate is decided by isolate noise.
+
+In addition, W1's acceptance criteria cannot all pass before B2 and B3, and §5–§7 contain several inconsistencies (finding 9).
+
+### Measured in this review
+
+| # | what | result |
+|---|---|---|
+| M1 | Protector, whole day, dense1m (load 12.6–17.6) | Intact vs invalidated: 1.07–1.10× over the four isolate pairings (best resolved: 1.092× [1.071, 1.108]). Mean-based: 1.095× thread CPU, 1.08× process CPU. Medians 54.4 / 57.5 vs 60.4 / 62.4 ms/day; minimums 41.1 / 41.4 vs 43.4 / 46.1. A/A: 1.021× [0.964, 1.079] and 0.984× [0.900, 1.078] |
+| M2 | Why services passes run (60 days, design cadence) | dense1m: 30 passes, every one dirty-triggered (gap 2 days), every trigger a `Congested` flip (255 relevant events, no other cause). bot256: 30 passes. Of its 1,607 relevant events, 93 % are `Congested`; the rest include 84 `Understaffed`, 13 `Watered` and 4 `Powered` |
+| M3 | B1 emulated at runtime vs today's trigger, dense1m (two runs, load 10.2–11.0 and 19.4–20.6) | Passes 64 → 8 per 128 days. Services 22.1–23.1 → 4.7–6.4 ms/day. Whole day 1.40–1.56× (paired medians, CI lows 1.25–1.40); mean-based 1.37–1.39× thread, 1.24–1.26× process. Medians 54.2–58.3 → 37.0–40.2 ms/day; minimums 40.5–43.6 → 23.6–27.3. Population after 144 days −0.05 %. A/A 0.967–1.048× |
+| M4 | Same, bot256 (load 13.5–16.3) | Passes 64 → 15. Services 14.6–15.8 → 5.5–5.7 ms/day. Whole day 1.37–1.48× (CI lows 1.09–1.20); mean-based 1.27× thread, 1.17× process. Minimums 27.5–29.3 → 14.2–14.8. Population −0.19 %. A/A 1.056× [0.966, 1.091] and 1.025× |
+| M5 | CPU per task at design cadence (means, ms/day) | dense1m, today: services 22.8–23.2, traffic 22.7–24.4, population 5.1–5.2, pollution 2.9–3.5, utilities 2.7–3.0 plus 2.5–2.8 in `daily`, crime 1.0–1.2. dense1m with B1: traffic 23.4–23.7 of 47–48 (≈ 50 %), services 4.8–5.7. bot256 with B1: traffic 10.7–11.0 of 36 (≈ 30 %) |
+| M6 | Game main thread: Chromium 141, `demo-ui.html` small town, dev server | The protector is intact at start and dies at 4.1 s, on the first `lodBuilder.ts` transfer. With transfer lists stripped (J0 emulated), it stays intact through 60 s of play (20 LOD posts) and a `packFile` / `unpackFile` round trip (CompressionStream and DecompressionStream). Instrumented, with no other detach seen: every `postMessage`, `structuredClone`, `ArrayBuffer.transfer`, `Memory.grow` and `decodeAudioData` |
+| M7 | Snapshot costs, dense1m, node thread CPU | `serializeCity(copy)` 46 ms. `structuredClone` of the result (10.6 MiB) 6.1 ms. `encodeBundle` 6 ms. gzip level 6: 209 ms, giving 3.3 MiB; level 1: 114 ms. Cloning a 3.6 MiB layer group: ≤ 1.3 ms |
+| M8 | `MiniMap.paintBase`'s per-cell loop (copied), dense1m state, node | 13.6 ms cold, ≈ 3 ms warm (median of 40) |
+
+### Findings
+
+1. **B1 is the largest lever, and it is now measured. Land it first.** (M2–M5)
+   - At design cadence, every services pass in the 1M city comes from a `Congested` flip (M2). The flip gives the pass no new input:
+     - the tiers never read congestion;
+     - the one step that does (access commute, through traffic's commute times) runs on its own 30-day `ACCESS_PERIOD`.
+   - What the 2-day passes do pick up is drift in needs and staffing. The 15-day period picks that up too, at a cost of −0.05 % (dense1m) and −0.19 % (bot256) population after 144 days.
+   - B1 cut the whole day by 1.37–1.56× on dense1m and 1.27–1.48× on bot256 (M3, M4). The emulation leaves out the extra triggers of finding 2, so a complete B1 may run a few more passes and save a few % less.
+     - §4.1 row D projected −8 to −15 ms/day. B1 alone reaches row D's central value: 37–40 ms/day median.
+     - On dense1m it also meets AC5's node criterion on its own (≤ 0.75 × baseline; measured 0.64–0.73×). On bot256 it comes to 0.68–0.79×.
+     - Row E put all WASM ports together at about 12 % of the remaining day; B1 is worth about three times that.
+   - B1 also changes what everything else is worth, because services drop to 5–6 ms/day:
+     - J3 (1.07–1.14× on services) saves only about 0.3–0.7 ms/day, and J4 less;
+     - the services WASM port saves about 1 ms;
+     - W2-services saves nothing a player can see (finding 7).
+   - **Change:** move B1 to the front of the sim-file work, through the balance procedure, in parallel with W1. Re-rank J2–J11 on the post-B1 profile.
+
+2. **B1 as written misses triggers, and today's 2-day passes hide this.**
+   - A facility's op factor reads more than B1 watches:
+     - funding and ordinances;
+     - `justiceFactors().policeMul`;
+     - `Powered`, and `Watered` for health;
+     - the continuous staffing level (`facilityOpFactor`), not just the `Understaffed` flag.
+   - `CityActions.setFunding` and `setOrdinance` emit no event.
+   - At 1M a funding change shows within 2 days today only because `Congested` flips force a pass every 2 days. In cities with little congestion the pass can already wait up to 15 days, which is 7.5 s at speed 1.
+   - **Change:** B1 marks services dirty, and urgent, on:
+     - funding and ordinance actions;
+     - `Watered` flips of health facilities;
+     - staffing changes beyond a threshold;
+     - the monthly justice update.
+   - Add a "funding change → coverage within N days" test. The balance procedure cannot catch this, because the bot never changes funding.
+
+3. **The protector claims hold.** (M1, M6)
+   - On the whole day in node, on today's code, the protector is worth 1.07–1.10×; the plan says 1.05–1.16×.
+   - In the real game page, `lodBuilder.ts:82` kills the main-thread protector after 4 s. J0 alone keeps it intact. Chromium's compression streams do not detach.
+   - **One contradiction:** S4 allows a main → worker transfer of the save bundle at load. That detaches on the main thread and re-invalidates the isolate that J0 is meant to protect (the render code and the LocalSimHost fallback).
+   - **Change:** post the bundle without a transfer list. Cloning 10.6 MiB costs about 6 ms (M7).
+
+4. **The A/B method understates the uncertainty of small effects.**
+   - The CIs resample chunks within one pair of isolates, so they leave out the bias between isolates. Identical arms in separate isolates differ by 0.957–1.070×:
+
+     | source | A/A ratio |
+     |---|---|
+     | `ab-trafficCore/r2`, e2e dense1m | 0.958× [0.915, 1.002] |
+     | `ab-trafficCore/r2`, in situ | 0.957× [0.910, 1.008] |
+     | `ab-trafficCore`, e2e bot256, process CPU | 1.070× [1.017, 1.126]: the CI excludes 1 |
+     | `ab-fieldPasses` | 0.98× [0.93, 1.01] |
+     | this review | 0.967–1.056× |
+
+   - So every whole-day claim near 1.04–1.08× that rests on one pair of isolates sits at the noise floor:
+     - the protector in Chromium (1.04–1.06×);
+     - the trafficCore day (1.08–1.11×);
+     - the services port's day (1.05–1.08×);
+     - the blur gate.
+
+     Replication resolves this. M1's protector effect, for example, holds across all four pairings.
+   - **Changes to §7.11:**
+     - Use at least two fresh isolates per arm (better three), with an A/A pair in every run.
+     - Bootstrap over isolates as well as chunks. Count an effect only when it exceeds the A/A spread.
+     - Set budgets on means, not medians, because CPU per day is skewed: today's dense1m median is 54–58 ms/day, its mean 63–67. AC5 should be total CPU over total days.
+     - Report process CPU next to thread CPU. GC and compiler threads add about 25 ms/day (85–94 vs 61–68 ms/day, means, M1 and M3). Some ratios vanish in process CPU: the trafficCore day in the Chromium worker is 1.083× [1.038, 1.204] in thread CPU but 1.030× [0.978, 1.137] in renderer-process CPU.
+
+5. **WASM blur should not become a production default now.**
+   - **The gain is too small to measure.** Against J8 it is 0.2–0.35 ms/day (§3): about 0.5 % of today's day and under 1 % after B1, which is 5–10× below the A/A floor.
+   - **The gate measures noise.** "Whole day CI lower bound ≥ 0.99" is decided by isolate noise: this review's A/A pairs had CI lower bounds of 0.89–0.99, and would mostly fail it. The gate can neither confirm blur's gain nor reliably catch a loss.
+   - **It is cheap, but not free:**
+     - an async init step in both hosts, before deserializing;
+     - 8 MiB of wasm memory per sim isolate, and per W2 helper;
+     - a Settings toggle and overlay fields with no visible effect;
+     - every behavioural change to `blur.ts` now needs the matching Rust change and a rebuild. `--check` demands byte identity, but nothing pins rustc 1.94.1 (there is no `rust-toolchain.toml`), so contributors on another rustc fail it.
+   - **Change:**
+     - J8 is the production blur.
+     - Keep WASM blur behind `?simwasm=blur:wasm` (default `js`), and keep it in CI (vitest, bundled node, `browser-check` prod and worker) as pipeline insurance.
+     - Pin the toolchain.
+     - Add no Settings toggle until a kernel that matters ships.
+   - Players notice neither way: the binary is committed, and the JS fallback is exact.
+   - If the team wants WebAssembly in production for pipeline coverage, blur is the right kernel for it. In that case switch it on without a performance gate, and gate only on exactness and 0 grows.
+
+6. **After B1, the traffic core is the one place where WebAssembly could still matter. Decide it right after B1 and B5.**
+   - On `ac90736` after B1, traffic is about 50 % of the design-cadence day on dense1m and about 30 % on bot256 (M5).
+   - G0's share condition (≥ 25 %) is therefore already met, and AC4's traffic freshness at ultra is the binding goal.
+   - If the old ratios survive a re-port (fair → wasm 1.17–1.32× on the cycle), the post-B1 day gains about 1.08–1.14× on dense1m and 1.05–1.08× on bot256. On dense1m that is above the A/A floor and above G3's ≥ 1.05×. "WASM can't matter" was computed with the pre-B1 denominator.
+   - The cost stands: `traffic.ts` is 4,123 lines and still changing.
+   - **Change:** move PI-8 to right after PI-5 (B1, B5) and W1b. Compare three options on the final code, with the statistics of finding 4:
+     - a WASM traffic re-port, hottest phases first (G1);
+     - W2 traffic helpers;
+     - JS only: J2 + B5 + W1b.
+
+7. **W2-services is no longer needed.**
+   - After B1, a full pass comes every 8–16 days (M3, M4). At ultra that is one 30–60 ms pass every 0.4–0.8 s: about 55–75 ms of CPU per second, on one core.
+   - Splitting it over helpers buys nothing visible, and it adds the snapshot and merge risk (risk 13).
+   - Keep W2 only for traffic, as one of the options in finding 6.
+
+8. **W1's acceptance needs B2, B3 and yield points in the worker.**
+   - The worker handles actions only between ticks. The estimate below uses the profile's per-frame sim CPU at ultra (`profile/prof/dense*_frames*.json`, profiler scale):
+     - In dense1m, 4.3–11 % of the busy time is spent in ticks with more than 50 ms still to run (3 runs; bot256: 1.4–3.5 %).
+     - The worker is busy about 62–70 % of the time, so 2.7–7.7 % of actions wait over 50 ms.
+     - So p95 sits at the 50 ms limit, and p99 is 70–100 ms.
+   - Each of these blocks the worker for that long on its own:
+     - a month boundary, 73–105 ms;
+     - a single step, up to 67 ms;
+     - `serializeCity(copy)` for a snapshot, 46 ms (M7).
+   - **Change:**
+     - In the worker, run one day, and one scheduler step, per task, with a post to self in between, so actions interleave.
+     - Make W1 the default only after B2 and B3.
+     - Add p99 to the latency criterion.
+   - **Diff volume:** at design cadence, `buildingChanged` fired 110 times a day on dense1m and 263 on bot256 (M2), against the plan's "about 18 changed per day". That is still only a few KB per day. But every event re-fires render listeners on the main thread, and all of them must fit in AC1's ≤ 1 ms per sim day.
+
+9. **Inconsistencies in §5–§7:**
+   1. **B5 vs AC4.** 60 sim days at ultra take 3.0 s, so ≥ 10 traffic cycles need `TRAFFIC_MIN_CYCLE_MS` ≤ 300 ms. B5's range of 250–500 ms meets AC4 only at its low end: "every 5–10 days" is 6–12 cycles.
+   2. **AC4 vs B1.** AC4 asks for at least one services pass per 6 days at ultra, but B1's design period is 15 days. Ultra would then run 2.5× more passes than design cadence. Use "≥ 90 % of design cadence", as for utilities.
+   3. **W1b is missing from §7.2.**
+      - The freshness numbers of §4.1 and AC4 assume the worker gets 45 ms per day. That is W1b: 12 ms of each tick, which needs a budget setter in `scheduler.ts`, a part-B file. Make it a PI step.
+      - 12 ms per tick plus the daily systems comes to about 0.92–0.96 core, above AC5's 0.9.
+   4. **The render items have no PI step,** but AC2 depends on them. Give them one, owned by the render owner, and size them on R1 (finding 11).
+   5. **"A MessageChannel self-post loop … every ~16 ms" spins a core.**
+      - Unless something else paces it, a self-post loop runs back to back and burns a core, even while paused.
+      - A 16 ms `setTimeout` is not affected by the 4 ms nesting clamp, so clamping is not a reason to avoid it.
+      - Better: pace the worker from the page's rAF, with one tiny tick message per frame. That keeps today's semantics, where the sim stops whenever rAF stops, as in a hidden tab. A self-paced worker would keep running in a hidden tab when `pauseWhenHidden` is off, which never happens today.
+   6. **"No WASM configuration reduces main-thread time while the sim stays on the main thread" (§4.1)** holds only for the budget-capped infrastructure at ultra. Faster kernels in the daily systems would reduce it; none of the ports targets them.
+   7. **§4.1 row A** applies node's protector factor (1.05–1.14) to a Chromium main-thread row. Chromium's factor is 1.04–1.06.
+
+10. **Saves at 1M put about 0.2 s of gzip on the main thread.** (M7)
+    - S3 has the main thread run `packFile` on every save and autosave. At 1M, gzip level 6 of the 10.6 MiB bundle costs 209 ms of CPU, on whichever thread drives the `CompressionStream`.
+    - Workers have `CompressionStream` and IndexedDB, and Chromium's streams do not detach (M6).
+    - **Change:**
+      - Let the worker compress and write the save itself, and post only a completion message. Fall back to the main thread on Safari < 16.4, which has no `CompressionStream`.
+      - The main thread keeps the replica-based snapshot at unload.
+
+11. **The render-side spike sizes come from SwiftShader under load. Re-measure them on R1.**
+    - The minimap's per-cell loop costs about 3 ms warm and 13.6 ms cold in V8 (M8). The trace showed 120 ms. That is most likely SwiftShader, which emulates the GPU-backed canvas work (`putImageData`, `drawImage`) on the CPU, at load 31–89.
+    - The same caution applies to the "2 ms per building" of LOD work and to the 57 ms GC.
+    - The items stay, but R1 should set their priority.
+
+12. **Engines other than V8 are untested, for performance as well as determinism.**
+    - Every A/B ran on V8 (node 22, Chromium 141). SpiderMonkey and JavaScriptCore have different typed-array JITs and no V8 protector, so the JS/WASM ratios there are unknown, and so is the value of the "free" protector fix.
+    - The worker and B1 are wins on any engine, so the decision stands.
+    - But G3 should include Firefox and WebKit once Playwright has them, and R1 should include Safari if it is a target.
+
+13. **What checked out:**
+    - **The quoted numbers match the reviews' logs.**
+      - trafficCore fair → wasm on the day: node 1.108× [1.032, 1.201], Chromium worker 1.083× [1.038, 1.204] (`ab-trafficCore/r2/out/e2e-dense1m-E.log`, `browser-e2e-worker-dense1m-E.log`).
+      - The protector on the traffic cycle: 1.110× in node, 1.117× on the Chromium main thread.
+      - The ultra profile: 34.9 ms/day, p99 frame 100.5 ms, longest step 67.2 ms, 3 traffic cycles in 90 days.
+    - **The baselines are fair in both directions,** as far as I checked.
+      - JS is compared at its best exact form, with the protector intact.
+      - The ports had a real chance: LTO, `opt-level 3`, unchecked indexing in the hot search loops, and SIMD where the code vectorises.
+    - **Marshalling is included** in every in-situ number. For the worker it is small: ≤ 1.3 ms per 3.6 MiB layer group and about 6 ms per full city (M7).
+    - **No save-format change and no Rust for players.** Neither WASM nor W1 changes the save format. The binary is committed, and `binary.test.ts` checks it without cargo.
+    - **Browser support:**
+      - SIMD needs Safari 16.4 or later; older engines fall back to the exact JS.
+      - W1 and W2 need neither threads nor SharedArrayBuffer, so static hosting needs no COOP/COEP.
+      - Vite builds workers as IIFE bundles but keeps `{type: 'module'}`, so module workers are still required (Firefox 114+, Safari 15+). Older engines take the LocalSimHost fallback, as planned.
+    - **For frame spikes, the worker beats WebAssembly outright.**
+      - The month-boundary work (tourism, EQ/HQ, advisors, budget: 73–105 ms) is object-heavy and has no port. The best port shortens a step by 1.2–1.5×, while W1 moves all of the work off the main thread.
+      - The same holds for the player's small-town spikes (18–336 ms on day and month ticks, `perf_journal.txt`), which the plan does not discuss. That is day-tick work: W1 and B3 address it, and WebAssembly would not.
+
+### Corrected recommendation
+
+1. **Answer to the player: unchanged.**
+   - We built a WebAssembly toolchain, ported six kernels and A/B-tested every port. Kernels got 1.2–5× faster, but the simulated day at most about 10 %, so the game will not rely on WebAssembly.
+   - Smoothness comes from moving the simulation into a Web Worker.
+   - Throughput comes from not redoing work: B1 alone is worth 1.27–1.56× on the day.
+2. **Order** (replaces the critical path of §7.2; PI-3 and PI-5a can run in parallel):
+
+   | step | what | gate |
+   |---|---|---|
+   | PI-1 | Baseline on the final sim, with A/A controls (finding 4) | – |
+   | PI-2 | J0 + J1 (shown sufficient in Chromium, M6) | protector probe |
+   | PI-5a | **B1 first,** with the full trigger list (finding 2) | balance procedure; a funding-latency test; ≥ 1.2× on the whole day, replicated |
+   | PI-3 | W1 + W1b: rAF-paced, yielding per day and per step, with saves compressed in the worker | §5.5, with latency measured once B2 and B3 are in |
+   | PI-5b | B2 and B3 (W1's latency criterion needs them), then B5 at ≤ 300 ms, then B4 | as in §7.2 |
+   | PI-4 | J-fixes, re-ranked on the post-B1 profile: J2, J5, J6 and J7/J9 first; J3 and J4 only if still ≥ 2 % of the day | as in §7.2 |
+   | PI-8′ | Traffic decision on the final `traffic.ts`: WASM re-port, W2-traffic or JS only | G0–G6, with finding 4's statistics |
+   | PI-R | Render items, sized on R1 | AC2 |
+   | – | Drop W2-services. W3 is unchanged: only if copies show up | – |
+3. **WebAssembly in production now: none by default.**
+   - Keep the toolchain, the loader, the blur kernel and the CI checks as tested insurance, behind `?simwasm=blur:wasm`.
+   - Pin rustc, and keep the archived ports on the tag.
+   - Revisit at PI-8′. Traffic is the only candidate with a plausible end-to-end case.
+4. **A/B rules:** §7.11, plus finding 4: replicated isolates with A/A controls, means for budgets, and process CPU reported next to thread CPU.

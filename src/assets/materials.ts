@@ -296,15 +296,17 @@ vec3 floodlight(vec3 albedo, float pattern, float v, float H, bool vertical, flo
 
 // Returns window mask (0..1) and writes cell id + column width. u,v in meters on the facade, fw = fwidth(u, v).
 float windowMask(float pattern, float u, float v, float floorH, vec2 fw, out vec2 cell, out float fade, out float colWOut) {
-  float colW = 3.0; float wx0 = 0.2; float wx1 = 0.8; float wy0 = 0.3; float wy1 = 0.78;
-  if (pattern < 0.5) { colW = 3.0; wx0 = 0.22; wx1 = 0.78; wy0 = 0.32; wy1 = 0.78; }
-  else if (pattern < 1.5) { colW = 2.2; wx0 = 0.3; wx1 = 0.7; wy0 = 0.22; wy1 = 0.85; }
-  else if (pattern < 2.5) { colW = 1.6; wx0 = 0.03; wx1 = 0.97; wy0 = 0.38; wy1 = 0.86; }
-  else if (pattern < 3.5) { colW = 4.2; wx0 = 0.1; wx1 = 0.9; wy0 = 0.12; wy1 = 0.88; }
-  else if (pattern < 4.5) { colW = 6.0; wx0 = 0.35; wx1 = 0.65; wy0 = 0.62; wy1 = 0.82; }
-  else if (pattern < 5.5) { colW = 1.5; wx0 = 0.1; wx1 = 0.9; wy0 = 0.18; wy1 = 0.9; }
-  else if (pattern < 6.5) { colW = 2.8; wx0 = 0.25; wx1 = 0.75; wy0 = 0.3; wy1 = 0.8; }
-  else { colW = 3.2; wx0 = 0.28; wx1 = 0.72; wy0 = 0.15; wy1 = 0.9; }
+  // window layout per pattern: column width (m) and the window's x0, x1, y0, y1 within its cell (0 ... 7+). Select
+  // trees, not an if-chain of assignments: software renderers evaluate every branch of the uber shader (with masked
+  // stores), the selects cost ~30% less for this function
+  vec4 l01 = pattern < 0.5 ? vec4(0.22, 0.78, 0.32, 0.78) : vec4(0.3, 0.7, 0.22, 0.85);
+  vec4 l23 = pattern < 2.5 ? vec4(0.03, 0.97, 0.38, 0.86) : vec4(0.1, 0.9, 0.12, 0.88);
+  vec4 l45 = pattern < 4.5 ? vec4(0.35, 0.65, 0.62, 0.82) : vec4(0.1, 0.9, 0.18, 0.9);
+  vec4 l67 = pattern < 6.5 ? vec4(0.25, 0.75, 0.3, 0.8) : vec4(0.28, 0.72, 0.15, 0.9);
+  vec4 wl = pattern < 3.5 ? (pattern < 1.5 ? l01 : l23) : (pattern < 5.5 ? l45 : l67);
+  float colW = pattern < 3.5 ? (pattern < 1.5 ? (pattern < 0.5 ? 3.0 : 2.2) : (pattern < 2.5 ? 1.6 : 4.2)) :
+    (pattern < 5.5 ? (pattern < 4.5 ? 6.0 : 1.5) : (pattern < 6.5 ? 2.8 : 3.2));
+  float wx0 = wl.x; float wx1 = wl.y; float wy0 = wl.z; float wy1 = wl.w;
   colWOut = colW;
   float cu = u / colW;
   float cv = v / floorH;
@@ -402,13 +404,11 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       }
     } else if (type < 2.5) {
       // Glass curtain wall
-      vec3 tint = vec3(0.24, 0.36, 0.5);
-      if (pattern > 0.5 && pattern < 1.5) tint = vec3(0.22, 0.42, 0.42);
-      else if (pattern > 1.5 && pattern < 2.5) tint = vec3(0.45, 0.35, 0.2);
-      else if (pattern > 2.5 && pattern < 3.5) tint = vec3(0.07, 0.08, 0.1);
-      else if (pattern > 3.5 && pattern < 4.5) tint = vec3(0.55, 0.58, 0.62);
-      else if (pattern > 4.5 && pattern < 5.5) tint = vec3(0.45, 0.6, 0.78);
-      else if (pattern > 5.5) tint = vec3(0.34, 0.42, 0.48); // 6: residential glass (neutral blue-grey)
+      // tint per pattern 0 ... 6 (6: residential glass, neutral blue-grey); a select tree (see windowMask)
+      vec3 t01 = pattern < 0.5 ? vec3(0.24, 0.36, 0.5) : vec3(0.22, 0.42, 0.42);
+      vec3 t23 = pattern < 2.5 ? vec3(0.45, 0.35, 0.2) : vec3(0.07, 0.08, 0.1);
+      vec3 t45 = pattern < 4.5 ? vec3(0.55, 0.58, 0.62) : vec3(0.45, 0.6, 0.78);
+      vec3 tint = pattern < 1.5 ? t01 : (pattern < 3.5 ? t23 : (pattern < 5.5 ? t45 : vec3(0.34, 0.42, 0.48)));
       bool resGlass = pattern > 5.5 && pattern < 6.5;
       // less metallic + brighter base than a pure mirror so every tint survives the 45 deg view (which mostly reflects
       // the ground); plus an unlit sky-tint term by day (reads as clean glass from above)
