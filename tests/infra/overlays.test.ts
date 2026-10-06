@@ -9,12 +9,13 @@ import { describe, expect, it } from 'vitest';
 import { DevType, Network, Overlay } from '../../src/core/types';
 import { RESP_NONE } from '../../src/sim/CityState';
 import {
-  DEMO_KIDS, DEMO_WEALTH, DESIR_FAMILIES, DESIR_SENIORS, DESIR_STUDENTS, EMG_FIRE, EMG_NONE_T, OVERLAY_VARIANTS, attachOverlays, educationScale,
+  DEMO_KIDS, DEMO_WEALTH, DESIR_FAMILIES, DESIR_SENIORS, DESIR_STUDENTS, EMG_FIRE, EMG_FLOOR_T, EMG_NONE_T, EMG_NOROAD_T, OVERLAY_VARIANTS, attachOverlays, educationScale,
   emergencyReachAt, encodeSlack, markOverlaysDirty, overlayDeps, overlayLayer, overlayReadout, overlayStale, overlayValue, overlayVariantCount,
   resolveVariant,
 } from '../../src/sim/infra/overlays';
 import { computeOverlayValues, overlayDef, overlayLegend } from '../../src/render/world/overlays';
 import { familyScoreAt, seniorScoreAt, studentScoreAt } from '../../src/sim/economy/demographics';
+import { responseText } from '../../src/ui/inspectorModel';
 import { newSim, newState, place, roadLine } from './cityGen';
 
 const ALL = Object.values(Overlay).filter((v) => typeof v === 'number') as Overlay[];
@@ -343,5 +344,110 @@ describe('overlays: review round 1 (emergency floor, back lots, stale rasters, m
     expect(a).toBe(b);
     expect(overlayValue(st2, Overlay.Traffic, 3, 3, 1)).toBe(0);
     expect(overlayReadout(st2, Overlay.Traffic, 3, 3, 1)!.text).toBe('No trucks'); // not "0 trucks/day"
+  });
+});
+
+describe('overlays: review round 2 (emergency fill: roadless buildings and rail are not sources, no road nearby)', () => {
+  /** a covered road along z = 10 (fire station at 20, 11), the real emergency pass */
+  function strip(extra: (st: ReturnType<typeof newState>) => void) {
+    const st = newState(40);
+    roadLine(st, 2, 10, 37, 10);
+    place(st, 't_fire', 20, 11);
+    extra(st);
+    const sim = newSim(st);
+    const off = attachOverlays(sim);
+    sim.runDays(2);
+    expect((sim.getSystem('emergency') as unknown as { layersReady: boolean } | undefined)?.layersReady).toBe(true);
+    return { st, sim, off };
+  }
+  const inspector = (st: ReturnType<typeof newState>, x: number, z: number) => {
+    const r = emergencyReachAt(st, st.idx(x, z), EMG_FIRE);
+    return responseText(r ? { slackMin: r.slack, covered: r.slack >= 0, hasRoad: r.why !== 'noRoad', land: st.building[st.idx(x, z)] < 0 } : null, 'no fire station');
+  };
+
+  it('land beside a roadless 2x2 plaza 2 cells from a covered road reads the road (view, hover and inspector), the plaza stays red', () => {
+    // plaza at x 10..11, z 12..13: land row z = 11 between it and the road
+    const { st, off } = strip((s) => place(s, 't_im', 10, 12));
+    const road = emergencyReachAt(st, st.idx(10, 10), EMG_FIRE)!;
+    expect(road.why).toBe('');
+    expect(road.slack).toBeGreaterThan(0);
+    // the plaza itself: unreachable, drawn at the floor
+    expect(emergencyReachAt(st, st.idx(11, 13), EMG_FIRE)).toEqual({ slack: -12, why: 'noRoad' });
+    expect(overlayReadout(st, Overlay.Emergency, 11, 13, EMG_FIRE)!.text).toBe('Unreachable — no road beside it');
+    expect(overlayLayer(st, Overlay.Emergency, EMG_FIRE)!.data[st.idx(11, 13)]).toBeCloseTo(EMG_FLOOR_T, 5);
+    // beside and behind it (2-3 cells from the road): the road's reach, never "6+ min beyond every station"
+    for (const [x, z] of [[9, 12], [9, 13], [12, 12], [12, 13], [9, 14], [12, 14], [10, 14]]) {
+      const r = emergencyReachAt(st, st.idx(x, z), EMG_FIRE)!;
+      expect(r.why, `${x},${z}`).toBe('land');
+      expect(r.slack, `${x},${z}`).toBeGreaterThan(0);
+      expect(Math.abs(r.slack - road.slack), `${x},${z}`).toBeLessThan(0.6);
+      expect(overlayReadout(st, Overlay.Emergency, x, z, EMG_FIRE)!.text, `${x},${z}`).toMatch(/^Auto-dispatch · [\d.]+ min to spare$/);
+      expect(inspector(st, x, z)!.text, `${x},${z}`).toMatch(/^a lot here: auto, [\d.]+ min to spare$/);
+    }
+    // no 'far' cell anywhere: the road is covered
+    for (let i = 0; i < st.cells; i++) expect(emergencyReachAt(st, i, EMG_FIRE)!.why, `${i % 40},${(i / 40) | 0}`).not.toBe('far');
+    off();
+  });
+
+  it('a rail line through a covered district reads the nearest road (no "far" rail or land cell); "Rail: no lots here"', () => {
+    const { st, off } = strip((s) => {
+      roadLine(s, 2, 18, 37, 18);
+      roadLine(s, 2, 18, 2, 10);
+      roadLine(s, 3, 14, 37, 14, Network.Rail); // 4 cells from both roads
+      roadLine(s, 3, 9, 37, 9, Network.Rail); // right beside the road
+    });
+    let rail = 0;
+    for (let i = 0; i < st.cells; i++) {
+      const x = i % 40, z = (i / 40) | 0;
+      const r = emergencyReachAt(st, i, EMG_FIRE)!;
+      expect(r.why, `${x},${z}`).not.toBe('far');
+      if (st.network[i] !== Network.Rail) continue;
+      rail++;
+      expect(r.slack, `${x},${z}`).toBeGreaterThan(0);
+      const t = overlayReadout(st, Overlay.Emergency, x, z, EMG_FIRE)!;
+      expect(t.text).toMatch(/^Auto-dispatch/);
+      expect(t.sub).toBe("Rail: no lots here — the nearest road's reach");
+    }
+    expect(rail).toBe(70);
+    off();
+  });
+
+  it('land that no road reaches within EMG_DILATE steps reads "No road nearby" (not "6+ min out"), drawn like the floor', () => {
+    // a short road (x 2..10): (14, 14) is 4 cells from its end diagonally but 7 steps away
+    const st = newState(40);
+    roadLine(st, 2, 10, 10, 10);
+    place(st, 't_fire', 6, 11);
+    const sim = newSim(st);
+    const off = attachOverlays(sim);
+    sim.runDays(2);
+    for (const [x, z] of [[14, 14], [30, 30]]) {
+      expect(emergencyReachAt(st, st.idx(x, z), EMG_FIRE), `${x},${z}`).toEqual({ slack: -12, why: 'noRoad' });
+      const t = overlayReadout(st, Overlay.Emergency, x, z, EMG_FIRE)!;
+      expect(t.text).toBe('No road nearby');
+      expect(t.sub).toBe('Empty land: lots here need a road first');
+      expect(inspector(st, x, z)!.text).toBe('no road nearby');
+    }
+    expect(overlayLayer(st, Overlay.Emergency, EMG_FIRE)!.data[st.idx(30, 30)]).toBeCloseTo(EMG_NOROAD_T, 5);
+    // the same texel as the floor: no new colour on the map
+    const px = new Uint8Array(st.cells);
+    computeOverlayValues(st, Overlay.Emergency, px, EMG_FIRE);
+    expect(px[st.idx(30, 30)]).toBe(Math.round(EMG_FLOOR_T * 255));
+    off();
+  });
+
+  it('a road 6+ min beyond every station: the road and the land it serves read "Out of reach by 6+ min"', () => {
+    const { st, off } = strip(() => undefined);
+    const L = st.respFire;
+    const keep = Float32Array.from(L);
+    // the east end of the road (x >= 30) and the land beside it at the floor
+    for (let z = 9; z <= 11; z++) for (let x = 30; x <= 37; x++) L[st.idx(x, z)] = -12;
+    markOverlaysDirty(st, 'emergency');
+    expect(emergencyReachAt(st, st.idx(34, 10), EMG_FIRE)).toEqual({ slack: -12, why: 'far' });
+    expect(emergencyReachAt(st, st.idx(34, 13), EMG_FIRE)).toEqual({ slack: -12, why: 'far' });
+    expect(overlayReadout(st, Overlay.Emergency, 34, 13, EMG_FIRE)!.text).toBe('Out of reach by 6+ min');
+    expect(inspector(st, 34, 13)!.text).toBe('manual only — 6+ min beyond every station');
+    L.set(keep);
+    markOverlaysDirty(st, 'emergency');
+    off();
   });
 });

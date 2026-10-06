@@ -538,11 +538,11 @@ export class InfoPanel extends Panel {
       kv.add('Tap water', 'water', q >= TAP_SAFE ? `<span class="${q >= 0.85 ? 'pos' : 'warn'}">${pct(q)} · safe</span>` : `<span class="neg">${pct(q)} · unsafe tap water</span>`);
     }
     // emergency response (auto-dispatch reach): the Emergency data view's value — a building's best footprint cell and
-    // road access, empty land the nearest road / lot's reach
+    // road access, empty land the nearest road / lot's reach ("a lot here: …", "no road nearby")
     const resp: [string, number, string, string][] = [['Fire response', EMG_FIRE, 'fire', 'no fire station'], ['Police response', EMG_POLICE, 'police', 'no police station'], ['Ambulance', EMG_MEDICAL, 'health', 'no clinic or hospital']];
     for (const [label, v, ic, none] of resp) {
       const r = safeCall(() => emergencyReachAt(st, ci, v), null);
-      const t = responseText(r ? { slackMin: r.slack, covered: r.slack >= 0, hasRoad: r.why !== 'noRoad', land: r.why === 'land' } : null, none);
+      const t = responseText(r ? { slackMin: r.slack, covered: r.slack >= 0, hasRoad: r.why !== 'noRoad', land: !b } : null, none);
       if (t) kv.add(label, ic, `<span class="${t.tone}">${escapeHtml(t.text)}</span>`, 'Auto-dispatch reach: covered incidents become statistics; beyond it major emergencies wait for your dispatch');
     }
     const out: (HTMLElement | null)[] = [kv.el];

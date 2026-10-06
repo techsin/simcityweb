@@ -1179,10 +1179,16 @@ export class SimBot {
         }
       }
       if (!targets.length) continue;
-      // up to two sites a month per tier: when the best cluster has no free lot, the next one is tried
-      let tried = 0, done = false;
+      // up to two sites a month per tier: when the best cluster has no free lot, the next one is tried. A town of 30k+
+      // opens a second elementary school (out of the first one's reach, with canAfford's reserve) while more than 5 %
+      // of the kids are unreached: growing ~15k a year it opens districts faster than one school a month (128 s7 2010:
+      // 6 % unreached). Not earlier, and not for clinics: the early cash went to the first high school (EQ −5…−14).
+      const maxBuilt = tier === 'elementary' && pop >= 30000 && n.unreached > 0.05 * n.need ? 2 : 1;
+      const builtAt: { x: number; z: number }[] = [];
+      let tried = 0;
       for (const target of targets) {
-        if (tried >= 2 || done || placed >= 3) break;
+        if (tried >= maxBuilt + 1 || builtAt.length >= maxBuilt || placed >= 3) break;
+        if (builtAt.some((p) => Math.hypot(p.x - target.x, p.z - target.z) < reach0)) continue;
         const def = this.needDef(tier, target.people);
         if (!def) break;
         const d = getDef(def)!;
@@ -1190,7 +1196,7 @@ export class SimBot {
         const cost = d.cost ?? 0;
         const priority = tier === 'elementary' || tier === 'health';
         const affordable = this.opts.spendy ? this.funds > cost
-          : priority ? this.funds - cost > 1500 + 0.5 * expense && (this.monthlyNet() + this.pendingUpkeep - (d.upkeep ?? 0) > -0.05 * income || this.funds > 60 * (d.upkeep ?? 0) + 20000)
+          : priority && !builtAt.length ? this.funds - cost > 1500 + 0.5 * expense && (this.monthlyNet() + this.pendingUpkeep - (d.upkeep ?? 0) > -0.05 * income || this.funds > 60 * (d.upkeep ?? 0) + 20000)
             : this.canAfford(def);
         if (!affordable) break;
         tried++;
@@ -1209,8 +1215,8 @@ export class SimBot {
         // shops (stage 3) for them, like a mayor who buys out a corner — kids stuck without a school for years is worse
         if (!built && priority && this.placeByClearing(def, target.x, target.z, reach, ['P', 'R', 'C'], undefined, 3, true)) built = d;
         if (built) {
-          placed++;
-          done = true;
+          if (!builtAt.length) placed++; // (a second school / clinic this month leaves the other tiers their places)
+          builtAt.push(target);
           this.pendingNeeds.push({ tier, x: target.x, z: target.z, pass: this.passes });
           this.needHistory.push({ tier, key: areaKey(target), day: st.day });
           if (this.needHistory.length > 400) this.needHistory = this.needHistory.filter((h) => st.day - h.day < 720);
@@ -1220,7 +1226,7 @@ export class SimBot {
           this.say(`${tier}: no site for a ${d.name} near ${Math.round(target.x)},${Math.round(target.z)} (${Math.round(target.people)} people in need)`);
         }
       }
-      if (!done && tried > 0) this.svcRetry.set('need:' + tier, st.day + 60);
+      if (!builtAt.length && tried > 0) this.svcRetry.set('need:' + tier, st.day + 60);
     }
     if (this.needNoSite.size > 200) for (const [k, v] of this.needNoSite) if (v <= st.day) this.needNoSite.delete(k);
   }
