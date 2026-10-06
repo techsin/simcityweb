@@ -86,12 +86,16 @@ export interface ShadowReceiver {
   /** bumped when the light direction, ground or view projection change (a widened receiver cannot cover that) */
   form: number;
   formSnap: Float64Array;
+  /** the volume's 8 corners (x, y, z each): a caster list culled against a widened receiver stays valid while the
+   *  current volume lies inside it (DynamicBatch) */
+  corners: Float64Array;
 }
 
 export function makeReceiver(): ShadowReceiver {
   return {
     planes: Array.from({ length: 6 }, () => new THREE.Plane()), pl: new Float64Array(24), nl: new Float64Array(6), dir: new THREE.Vector3(0, 1, 0), ground: 0, version: 0, snap: new Float64Array(28), origin: new THREE.Vector3(), shape: 0, shapeSnap: new Float64Array(28), reach: 100,
     rot: new Float64Array(9), fwd: new THREE.Vector3(0, 0, -1), dn: 0, df: 0, phi: 0.6, form: 0, formSnap: new Float64Array(10),
+    corners: new Float64Array(24),
   };
 }
 
@@ -182,6 +186,27 @@ export function setReceiver(rec: ShadowReceiver, cam: THREE.Camera, dn: number, 
   let reformed = false;
   for (let i = 0; i < 9; i++) if (Math.abs(fs[i] - f[i]) > ft[i]) { fs[i] = f[i]; reformed = true; }
   if (reformed) rec.form++;
+  // corners: the view's corner rays (through its near-plane corners) at view depths dn and df
+  const pi = cam.projectionMatrixInverse.elements, cr = rec.corners;
+  for (let c = 0; c < 4; c++) {
+    const x = c & 1 ? 1 : -1, y = c & 2 ? 1 : -1;
+    const vw = pi[3] * x + pi[7] * y - pi[11] + pi[15];
+    const vx = (pi[0] * x + pi[4] * y - pi[8] + pi[12]) / vw, vy = (pi[1] * x + pi[5] * y - pi[9] + pi[13]) / vw, vz = (pi[2] * x + pi[6] * y - pi[10] + pi[14]) / vw;
+    // the near-plane corner in world space, its ray from the camera and that ray's view depth per unit
+    const wx = w[0] * vx + w[4] * vy + w[8] * vz + w[12], wy = w[1] * vx + w[5] * vy + w[9] * vz + w[13], wz = w[2] * vx + w[6] * vy + w[10] * vz + w[14];
+    let rx = wx - cx, ry = wy - cy, rz = wz - cz;
+    const dep = rx * _fwd.x + ry * _fwd.y + rz * _fwd.z;
+    if (persp && dep > 1e-9) { rx /= dep; ry /= dep; rz /= dep; }
+    else { rx = 0; ry = 0; rz = 0; }
+    // (orthographic views: the corner itself at both depths, shifted along the view direction)
+    const bx = persp ? cx : wx - _fwd.x * dep, by = persp ? cy : wy - _fwd.y * dep, bz = persp ? cz : wz - _fwd.z * dep;
+    for (let k = 0; k < 2; k++) {
+      const d = k === 0 ? dn : df, o = (c * 2 + k) * 3;
+      cr[o] = persp ? bx + rx * d : bx + _fwd.x * d;
+      cr[o + 1] = persp ? by + ry * d : by + _fwd.y * d;
+      cr[o + 2] = persp ? bz + rz * d : bz + _fwd.z * d;
+    }
+  }
 }
 
 /** can a caster sphere shadow the receiver volume? (sphere swept away from the light down to the ground) */
