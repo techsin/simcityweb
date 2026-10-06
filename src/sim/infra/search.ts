@@ -307,7 +307,7 @@ export function accumulate(S: Search, acc: Float32Array | Float64Array, onSink?:
  * seed would exceed ffMax is dropped (the car leg limit), so a node's labels come from garages within reach. Along each
  * label's path the search also adds up `time2` / `ramp2` (alt: park & ride ranks by free-flow minutes — options that do
  * not move with congestion — and chooses by the congested minutes alt; refreshAlt() renews them on a kept forest, or
- * markAlt() + altAt() on demand along the parent chains of the states used). Dial
+ * with lazyAlt markAlt() + altAt() on demand along the parent chains of the states read). Dial
  * buckets with the entry payload; labels within one bucket width (< 0.04 min) may settle in either order. Resumable:
  * start() then run(maxStates) until it returns true (the caller spreads a big search over scheduler steps; nothing the
  * search reads may change between).
@@ -335,7 +335,9 @@ export class SearchK {
   graphVersion = -1;
   /** a started search has buckets left (run() continues it) */
   running = false;
-  /** lazy alt: the states whose alt is of the current time2 / ramp2 (= altTick; settling stamps them), a chain buffer */
+  /** lazy alt (an instance made with lazyAlt): the states whose alt is of the current time2 / ramp2 (= altTick; settling
+   *  stamps them), a chain buffer */
+  private readonly lazyAlt: boolean;
   private altStamp: Int32Array<ArrayBuffer> = new Int32Array(0);
   private altTick = 0;
   private altPath: Int32Array<ArrayBuffer> = new Int32Array(64);
@@ -368,8 +370,9 @@ export class SearchK {
   /** entry to continue with in bucket b (-2 = bucket not opened yet) */
   private e = -2;
 
-  constructor(K = 2) {
+  constructor(K = 2, lazyAlt = false) {
     this.K = Math.max(1, Math.min(8, K | 0));
+    this.lazyAlt = lazyAlt;
   }
 
   private reset(n: number): void {
@@ -379,7 +382,7 @@ export class SearchK {
       this.dist = new Float32Array(K * c); this.src = new Int32Array(K * c); this.grp = new Int32Array(K * c);
       this.next = new Int32Array(K * c); this.ff = new Float32Array(K * c); this.alt = new Float32Array(K * c); this.order = new Int32Array(K * c);
       this.node = new Int32Array(K * c);
-      this.altStamp = new Int32Array(K * c);
+      this.altStamp = new Int32Array(this.lazyAlt ? K * c : 0);
       this.tb = new Float32Array(K * c); this.tg = new Int32Array(K * c);
       this.cnt = new Uint8Array(c);
     }
@@ -468,7 +471,7 @@ export class SearchK {
     const time2 = this.time2, ramp2 = this.ramp2;
     const limit = this.limit, ffMax = this.ffMax, margin = this.margin, nb = this.nb, invQ = 1 / Q;
     const dist = this.dist, src = this.src, grp = this.grp, next = this.next, ff = this.ff, alt = this.alt, cnt = this.cnt, order = this.order;
-    const snode = this.node, altStamp = this.altStamp, altTick = this.altTick;
+    const snode = this.node, altStamp = this.altStamp, altTick = this.altTick, stampOn = altStamp.length > 0;
     const type = g.type, t0 = g.t0, HW = Network.Highway, head = this.head;
     let m = this.settled, b = this.b, e = this.e;
     const stop = m + maxStates;
@@ -489,7 +492,8 @@ export class SearchK {
         }
         const s = bu + c0;
         cnt[u] = c0 + 1;
-        dist[s] = key; src[s] = q; grp[s] = gr; next[s] = par; ff[s] = fu; alt[s] = au; snode[s] = u; altStamp[s] = altTick;
+        dist[s] = key; src[s] = q; grp[s] = gr; next[s] = par; ff[s] = fu; alt[s] = au; snode[s] = u;
+        if (stampOn) altStamp[s] = altTick;
         order[m++] = s;
         const tu = time[u], fu0 = t0[u], tu2 = time2 !== null ? time2[u] : 0;
         const hu = type[u] === HW;
@@ -530,7 +534,7 @@ export class SearchK {
     this.time2 = time2; this.ramp2 = ramp2;
     this.nextAltTick();
     const altStamp = this.altStamp, tick = this.altTick;
-    for (let k = 0, n = this.settled; k < n; k++) altStamp[order[k]] = tick;
+    if (altStamp.length > 0) for (let k = 0, n = this.settled; k < n; k++) altStamp[order[k]] = tick;
     for (let k = 0, n = this.settled; k < n; k++) {
       const s = order[k], p = next[s];
       if (p < 0) { alt[s] = 0; continue; }
@@ -555,15 +559,17 @@ export class SearchK {
    *  refreshAlt's pass over the whole forest */
   markAlt(time2: Float32Array, ramp2: Float32Array | null): void {
     if (!this.g || this.running) return;
+    // (an instance without lazy alt: the pass over the forest)
+    if (!this.lazyAlt) { this.refreshAlt(time2, ramp2); return; }
     this.time2 = time2; this.ramp2 = ramp2;
     this.nextAltTick();
   }
 
-  /** alt of settled state s with the time2 / ramp2 of the last search, refreshAlt or markAlt (its parent chain renewed
-   *  up to the first current state; the same sums as refreshAlt) */
+  /** alt of settled state s with the time2 / ramp2 of the last search, refreshAlt or markAlt (with lazyAlt: its parent
+   *  chain renewed up to the first current state; the same sums as refreshAlt) */
   altAt(s: number): number {
     const altStamp = this.altStamp, tick = this.altTick, alt = this.alt;
-    if (altStamp[s] === tick) return alt[s];
+    if (altStamp.length === 0 || altStamp[s] === tick) return alt[s];
     const g = this.g!, next = this.next, snode = this.node, type = g.type, HW = Network.Highway, time2 = this.time2, ramp2 = this.ramp2;
     // (the chain from s up to a current state or a seed, then down again)
     let path = this.altPath, n = 0, x = s;

@@ -995,6 +995,34 @@ describe('WP7-8 K-label search (park & ride options: the K fastest garage groups
     }
     expect(lim.settled).toBeLessThan(all.settled);
   });
+
+  it('r4: congested minutes on demand (lazyAlt: markAlt + altAt, the park & ride overflow) equal the pass over the kept forest (refreshAlt)', () => {
+    const { g, time } = grid();
+    const K = 4;
+    const later = new Float32Array(g.n);
+    for (let v = 0; v < g.n; v++) later[v] = time[v] + 0.1 * (v % 7);
+    // ranking by free-flow minutes, alt along the congested ones (as the overflow forests)
+    const a = new SearchK(K, true), b = new SearchK(K);
+    for (const S of [a, b]) { S.start(g, g.rev, g.t0, seeds(g), GROUP, 200, null, Infinity, 6, time, null); S.run(Infinity); }
+    expect(a.settled).toBe(b.settled);
+    for (let k = 0; k < a.settled; k++) { const s = a.order[k]; expect(a.altAt(s)).toBe(b.alt[s]); }
+    // the next assignment's minutes: renewed along the chains read (the deepest first) vs one pass over the forest
+    a.markAlt(later, null);
+    b.refreshAlt(later, null);
+    let moved = 0;
+    for (let k = a.settled - 1; k >= 0; k--) {
+      const s = a.order[k];
+      expect(a.altAt(s)).toBeCloseTo(b.alt[s], 4);
+      if (Math.abs(b.alt[s] - a.ff[s]) > 1e-3) moved++;
+    }
+    expect(moved).toBeGreaterThan(0.5 * a.settled);
+    // a kept forest without its search scratch (releaseScratch) searches again like a new one
+    a.releaseScratch();
+    a.start(g, g.rev, g.t0, seeds(g), GROUP, 200, null, Infinity, 6, time, null);
+    a.run(Infinity);
+    expect(a.settled).toBe(b.settled);
+    for (let k = 0; k < a.settled; k++) { const s = a.order[k]; expect(a.dist[s]).toBe(b.dist[s]); expect(a.next[s]).toBe(b.next[s]); }
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------------

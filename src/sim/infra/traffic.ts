@@ -3340,7 +3340,7 @@ export class TrafficSystem implements SimSystem {
     // (a fresh search of the same seeds as the forest that left them would find nothing new)
     if (this.ovSearches >= OV_SEARCHES || nSeed >= below) { this.ovStage = 4; return; }
     if (this.ov.length < OV_CACHE) {
-      this.ov.push({ S: new SearchK(OV_K), key: '', seed: new Float32Array(0), inS: new Uint8Array(0), nSeed: 0, built: -1, alt: -1, used: 0, acc: new Float32Array(0), dirty: false });
+      this.ov.push({ S: new SearchK(OV_K, true), key: '', seed: new Float32Array(0), inS: new Uint8Array(0), nSeed: 0, built: -1, alt: -1, used: 0, acc: new Float32Array(0), dirty: false });
       slot = this.ov.length - 1;
     } else {
       // (the least recently used; one without car legs of this assignment to commit first)
