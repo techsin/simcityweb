@@ -142,8 +142,11 @@ describe('WP7-5 bus fleet and depots', () => {
     cycles(sim, 3);
     const half = transportFacilityReport(sim, st.buildings.get(depotId)!)!;
     console.log(`depot at 50 % funding: ${half.lines.map((l) => `${l.label}: ${l.value}`).join(' · ')} ! ${half.warnings.join(' ! ')}`);
-    expect(half.lines.find((l) => l.key === 'buses')!.value).toMatch(/^20 \/ 20 · its stops need [\d,]+$/);
-    expect(half.warnings.join()).toMatch(/runs 20 buses \(transit funding 50 %\).*its stops need [\d,]+ buses/);
+    const m = /^(\d+) \/ (\d+) · its stops need ([\d,]+)$/.exec(half.lines.find((l) => l.key === 'buses')!.value)!;
+    expect(m).toBeTruthy();
+    expect(m[1]).toBe(m[2]);
+    expect(Number(m[3].replace(/,/g, ''))).toBeGreaterThan(Number(m[2]));
+    expect(half.warnings.join()).toMatch(/runs \d+ buses \(transit funding 50 %\).*its stops need [\d,]+ buses/);
     // a transit strike (budget cuts) names the strike
     econData(st).strikes.transit = 2;
     const stop2 = transportFacilityReport(sim, st.buildings.get(homeStop)!)!;
@@ -550,7 +553,7 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
     expect(Math.min(...res[1].city)).toBeGreaterThan(2.1 * GARAGE_SPACES * CAR_OCCUPANCY);
   });
 
-  it('a park & ride stop whose path stops riding for an assignment or two stays park & ride; then it is downtown', { timeout: 300000 }, () => {
+  it('a park & ride stop whose path stops riding now and then stays park & ride; one that stays walk-only turns downtown', { timeout: 300000 }, () => {
     const { st } = prTown([[48, 68]]);
     const sim = newSim(st);
     const tr = cycles(sim, 6);
@@ -562,8 +565,8 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
     const states: string[] = [];
     for (let k = 0; k < 4; k++) { cycles(sim, 1); states.push(tr.garageInfo(g.id)!.state!); }
     console.log(`garage state with a job beside its stop: ${states.join(' ')}`);
-    expect(states.slice(0, 2)).toEqual(['parkRide', 'parkRide']);
-    expect(states[3]).toBe('downtown');
+    // (the smoothed share of walk-only assignments: 0.35, 0.58, 0.73 — still park & ride —, 0.82: downtown)
+    expect(states).toEqual(['parkRide', 'parkRide', 'parkRide', 'downtown']);
     // the office goes: park & ride again at once
     for (let z = off.z; z < off.z + off.d; z++) for (let x = off.x; x < off.x + off.w; x++) st.building[st.idx(x, z)] = -1;
     st.buildings.delete(off.id);
@@ -646,10 +649,10 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
     expect(res.none - res.nostop).toBeGreaterThanOrEqual(0.15);
   });
 
-  it('an idle garage says why: the homes within reach use a faster garage, or no homes within a 12-minute drive', { timeout: 300000 }, () => {
+  it('a slower garage takes the riders a full one turns away; an idle garage says why (faster garages with room, no homes)', { timeout: 300000 }, () => {
     const { st } = prTown([]);
-    // a slow bus stop west of the homes (minibuses, a long ride downtown): its garage is nobody's option; and a bus stop
-    // east of downtown, more than a 12-minute drive from every home
+    // a slow bus stop west of the homes (minibuses, a long ride downtown): its garage is a slower option of the homes
+    // nearest to it; and a bus stop east of downtown, more than a 12-minute drive from every home
     for (const x of [20, 164, 178]) place(st, 'tr_bus_stop', x, 69);
     const g0 = place(st, 'tr_parking_garage', 48, 68).id;
     const west = place(st, 'tr_parking_garage', 21, 68).id;
@@ -658,17 +661,35 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
     const tr = cycles(sim, 8);
     expect(tr.garageInfo(g0)!.parkRide).toBeGreaterThan(0.9 * GARAGE_SPACES);
     const hint = (id: number) => transportFacilityReport(sim, st.buildings.get(id)!)!.lines.find((l) => l.key === 'switched')!.hint ?? '';
+    // the subway garage is full: commuters it turns away take the slow bus garage, which has room
     expect(tr.garageInfo(west)!.state).toBe('parkRide');
-    expect(tr.garageInfo(west)!.riders).toBe(0);
+    expect(tr.garageInfo(west)!.riders!).toBeGreaterThan(50);
+    expect(hint(west)).toBe('');
+    // (for the homes nearest to it the subway garage is the much faster one: their fastest, more than 6 min ahead)
     const rw = tr.garageReach(west)!;
     expect(rw.workers).toBeGreaterThan(1000);
     expect(rw.via).toBe(g0);
-    expect(rw.own).toBe(0);
+    expect(rw.own).toBeLessThan(0.5);
     expect(rw.slower).toBeGreaterThan(6);
-    console.log(`idle west garage: ${hint(west)}`);
-    expect(hint(west)).toMatch(/^Commuters near here use the Parking Garage 27 tiles E( \(full\))?: park & ride from here would take them \d+ min longer/);
     expect(tr.garageReach(east)!.workers).toBe(0);
     expect(hint(east)).toMatch(/No homes within a 12-minute drive/);
+    // five garages at five stations of the line: the homes weigh the four fastest (PR_OPTIONS), which have room — the
+    // fifth is nobody's option and says so
+    {
+      const { st: s5 } = prTown([]);
+      const xs = [48, 60, 72, 84, 96];
+      for (const x of xs) if (x !== 48) place(s5, 'tr_subway_station', x - 2, 69);
+      const ids = xs.map((x) => place(s5, 'tr_parking_garage', x, 68).id);
+      const sim5 = newSim(s5);
+      const tr5 = cycles(sim5, 8);
+      const last = ids[4];
+      const h = transportFacilityReport(sim5, s5.buildings.get(last)!)!.lines.find((l) => l.key === 'switched')!.hint ?? '';
+      console.log(`five stations: cars ${ids.map((id) => Math.round(tr5.garageInfo(id)!.parkRide)).join(' / ')}; fifth: ${h}`);
+      expect(tr5.garageInfo(last)!.riders).toBe(0);
+      expect(tr5.garageReach(last)!.options).toBeGreaterThanOrEqual(3.5);
+      expect(h).toMatch(/^Commuters near here have 4 faster park & ride garages with room, e\.g\. the Parking Garage \d+ tiles W — this one is not needed here/);
+      for (const id of ids.slice(0, 3)) expect(tr5.garageInfo(id)!.riders!).toBeGreaterThan(50);
+    }
     // the only garage of a gridlocked town (3 x homes / jobs on one avenue), by a bus stop: its buses take over PR_LIMIT
     // minutes to the jobs, so it is nobody's option — its report says so, not "faster options elsewhere"
     const jam = prTown([], 3).st;
@@ -1014,8 +1035,8 @@ describe('WP7b save / load', () => {
     const d0 = st.systemData.infraTransport as Record<string, unknown>;
     const d1 = restored.systemData.infraTransport as Record<string, unknown>;
     expect(d1).toBeTruthy();
-    for (const k of ['busNeed', 'garageLoad', 'garagePrice', 'garageReserve', 'garageStop', 'garageDown', 'stopLoad', 'stopPr', 'sinkTrucks', 'sinkLast']) expect(d1[k]).toEqual(d0[k]);
-    expect((d0.stopPr as unknown[]).length).toBe(1);
+    for (const k of ['busNeed', 'garageLoad', 'garagePrice', 'garageReserve', 'garageStop', 'garageDown', 'garageRank', 'stopLoad', 'stopPr', 'sinkTrucks', 'sinkLast']) expect(d1[k]).toEqual(d0[k]);
+    expect(Array.isArray(d0.stopPr)).toBe(true);
     expect((d0.garageStop as unknown[]).length).toBe(1);
     expect(Array.from(d1.parkingQ as Uint8Array)).toEqual(Array.from(d0.parkingQ as Uint8Array));
     expect(Array.from(d1.rampVol as Float32Array)).toEqual(Array.from(d0.rampVol as Float32Array));

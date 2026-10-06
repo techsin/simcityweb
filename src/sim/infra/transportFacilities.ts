@@ -182,9 +182,11 @@ function idleGarageHint(sim: Simulation, tr: TrafficSystem, b: Building, stopNam
     return `Commuters near here use ${where}${full ? ' (full)' : ''}: park & ride from here would take them ${fmt(reach.slower)} min longer${full ? ', so when it is full they drive or ride from home instead' : ''} — ${fix}`;
   }
   if (reach.options >= PR_OPTIONS - 0.5) {
-    return reach.full >= 0.5
-      ? `Commuters near here weigh ${PR_OPTIONS} faster park & ride garages, e.g. ${where}, and drive or ride from home when those are full — this one is too far out of their way`
-      : `Commuters near here have ${PR_OPTIONS} faster park & ride garages with room, e.g. ${where} — this one is not needed here`;
+    if (reach.full >= 0.5) return `Commuters near here weigh ${PR_OPTIONS} faster park & ride garages, e.g. ${where}, and drive or ride from home when those are full — this one is too far out of their way`;
+    // (the example: one of those with room)
+    const vr = reach.viaRoom >= 0 ? st.buildings.get(reach.viaRoom) : undefined;
+    const ex = vr ? `the ${nameOf(st, vr.id)} ${dist(st, b, vr)} tiles ${compass(st, b, vr)}` : where;
+    return `Commuters near here have ${PR_OPTIONS} faster park & ride garages with room, e.g. ${ex} — this one is not needed here`;
   }
   return `Commuters near here use ${where} — it gets them to their jobs sooner`;
 }

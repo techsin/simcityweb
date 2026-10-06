@@ -680,7 +680,8 @@ export const PARKING_BLEND = 0.5;
 /**
  * WP7-8 park & ride: a garage within PR_STOP_RADIUS (+ half its footprint) of an attached transit stop whose best transit
  * path rides a vehicle is a park & ride (a stop whose riders all walk to jobs nearby — downtown — makes it plain
- * parking; a park & ride garage stays one through PR_DOWNTOWN_KEEP such assignments in a row); it keeps the stop it used
+ * parking; a park & ride garage stays one while the share of recent assignments whose stop path rode nothing stays
+ * below PR_DOWNTOWN_SHARE, smoothed PR_DOWNTOWN_SMOOTH per assignment); it keeps the stop it used
  * last unless another is faster by more than max(PR_STOP_KEEP, 10 %). A K-label reverse road search (K = PR_OPTIONS;
  * every 2nd assignment, only with such garages) seeded at their road entries with label PR_PARK_MIN + walk + wait +
  * transit time from the stop (minutes only: the options do not depend on prices), limit min(MAX_COMMUTE, max label +
@@ -720,9 +721,12 @@ export const PR_OPTION_MARGIN = 10;
  *  an availability cost -ln(gap / PR_OPTION_TAPER) / PR_GARAGE_BETA minutes, so a garage drifting across the cutoff
  *  loses its riders gradually instead of a whole neighbourhood at once */
 export const PR_OPTION_TAPER = 1.5;
-/** a park & ride garage whose stop's best path stops riding (jobs a walk away) stays park & ride through this many
- *  assignments in a row (the forest's best path at a stop beside a few jobs flips with congestion) */
-export const PR_DOWNTOWN_KEEP = 2;
+/** a park & ride garage whose stop's best path stops riding (jobs a walk away) stays park & ride while the share of
+ *  recent assignments without a ride (smoothed: weight PR_DOWNTOWN_SMOOTH of the new one) stays below PR_DOWNTOWN_SHARE —
+ *  the forest's best path at a stop beside a few jobs flips between a short ride and a walk with congestion; a stop that
+ *  stays walk-only turns downtown on the 4th assignment */
+export const PR_DOWNTOWN_SMOOTH = 0.35;
+export const PR_DOWNTOWN_SHARE = 0.75;
 /** a park & ride garage keeps its stop unless another is faster by more than this many minutes (or 10 %) */
 export const PR_STOP_KEEP = 1;
 /** a park & ride garage keeps spaces x min(1, p / PR_RESERVE_FULL) for the businesses around it, p = the parking

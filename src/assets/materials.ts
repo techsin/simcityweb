@@ -15,6 +15,8 @@
  *   ~55-75% lit in the evening, no dark floors)
  *   (offices, tints 0-5, at night: floors lit in clusters, some floors dark, per-panel brightness; 2 bronze/gold warmer)
  * Emissive (Surf.Emissive, surf.y): 0 default intensity; 1..8 intensity x pattern/4 (4 = default, 2 = half, 8 = double);
+ *   for patterns 0-8 a paint `floor` below 0.5 marks a thin light strand of that thickness in m (festoons, light
+ *   strings): dotted bulbs up close, emission scaled by its share of a pixel far away (no 1 px laser lines);
  *   9 = ground light pool: paint it ~0.7x the surrounding ground color -> plain pavement by day (no tint),
  *       warm lamp-lit pavement at night; intensity x floor/3.3 (paint `floor`, default 3.3 = 1x; use e.g. 1.5 for
  *       a dimmer outer ring).
@@ -67,8 +69,11 @@
  * Facade coordinates: planar walls use the horizontal distance along the wall; smooth-shaded CURVED walls
  * (cylinders / drums / round towers built with smooth normals) automatically switch to the arc length around the
  * model's vertical axis (exact for shapes centred on the model origin), so they get windows / mullions too.
- * Distant windows fade to their average coverage and average lit color (no shimmer), per axis: window columns first,
- * floor rows (and curtain-wall floor lines) much later, so facades keep horizontal window bands at the default camera.
+ * Distant windows fade to their average coverage (no shimmer), per axis: window columns first, floor rows (and
+ * curtain-wall floor lines) much later, so facades keep horizontal window bands at the default camera.
+ * Night window lights (WallWindows, GlassCurtain, PlainGlass 0) are one shared evaluation (nightWindows): homes
+ * (households per apartment, warm / neutral / cool lamps, TV flicker) or offices / hotels (dark, half and fully lit
+ * floors, sections, tenant colours), with window -> unit -> floor -> facade levels of detail down to ~1.5 px.
  * The render-world WorldView drives uNight, uTime and uLitFraction (time-of-day dependent: evening peak, late-night dip).
  */
 import * as THREE from 'three';
@@ -215,31 +220,65 @@ float aaBox(float x, float a, float b, float w) {
   return smoothstep(a - w, a + w, f) * (1.0 - smoothstep(b - w, b + w, f));
 }
 
-// Window light color per window
-vec3 windowLight(float h) {
-  vec3 warm = vec3(1.0, 0.72, 0.38);
-  vec3 neutral = vec3(1.0, 0.88, 0.66);
-  vec3 cool = vec3(0.72, 0.85, 1.0);
-  return h < 0.55 ? warm : (h < 0.85 ? neutral : cool);
+// Room light colour temperature (select chains, no early returns: an inlined function with several returns becomes a
+// loop in some drivers / SwiftShader). Homes (k = 0) per household: incandescent 2700 K, warm white, neutral, cool LED,
+// TV blue, a rose lamp. Offices (k = 1) per tenant: cool 4000 K white, neutral, warm, a greenish fluorescent. Hotels /
+// warm glass tints (k = 2): mostly warm / neutral room light.
+vec3 roomLight(float h, float k) {
+  vec3 home = h < 0.3 ? vec3(1.0, 0.64, 0.33) : (h < 0.58 ? vec3(1.0, 0.79, 0.52) : (h < 0.78 ? vec3(1.0, 0.9, 0.75) :
+    (h < 0.92 ? vec3(0.8, 0.88, 1.0) : (h < 0.97 ? vec3(0.52, 0.68, 1.0) : vec3(1.0, 0.56, 0.45)))));
+  vec3 office = h < 0.38 ? vec3(0.74, 0.86, 1.0) : (h < 0.64 ? vec3(0.96, 0.93, 0.84) : (h < 0.93 ? vec3(1.0, 0.78, 0.52) : vec3(0.8, 1.0, 0.88)));
+  vec3 hotel = h < 0.55 ? vec3(1.0, 0.76, 0.5) : (h < 0.86 ? vec3(1.0, 0.88, 0.72) : vec3(0.82, 0.88, 1.0));
+  return k < 0.5 ? home : (k < 1.5 ? office : hotel);
 }
 
-// Home light colour temperature per household: incandescent 2700 K, warm white, neutral, cool LED, TV blue, a rose lamp
-vec3 homeLight(float h) {
-  if (h < 0.3) return vec3(1.0, 0.64, 0.33);
-  if (h < 0.58) return vec3(1.0, 0.79, 0.52);
-  if (h < 0.78) return vec3(1.0, 0.9, 0.75);
-  if (h < 0.92) return vec3(0.8, 0.88, 1.0);
-  if (h < 0.97) return vec3(0.52, 0.68, 1.0);
-  return vec3(1.0, 0.56, 0.45);
-}
-// Office light per tenant: cool 4000 K white, neutral, warm, a greenish fluorescent; warm glass tints (hotels) mostly
-// warm / neutral room light
-vec3 officeLight(float h, float warm) {
-  if (warm > 0.5) return h < 0.55 ? vec3(1.0, 0.76, 0.5) : (h < 0.86 ? vec3(1.0, 0.88, 0.72) : vec3(0.82, 0.88, 1.0));
-  if (h < 0.38) return vec3(0.74, 0.86, 1.0);
-  if (h < 0.64) return vec3(0.96, 0.93, 0.84);
-  if (h < 0.93) return vec3(1.0, 0.78, 0.52);
-  return vec3(0.8, 1.0, 0.88);
+// Night window lights of every glazed facade (WallWindows, GlassCurtain, PlainGlass storefronts / house windows): ONE
+// evaluation per fragment after the surface branches (they only set up the window grid). ci = window cell (column,
+// floor), fy = position within the floor (0..1), px = on-screen size of a cell (px), unitN = cells per unit (apartment /
+// office section), kind 0 homes, 1 offices, 2 hotels (warm offices), 3 every window lit warm amber (churches), litP =
+// lit probability of a unit. Levels of detail window -> unit -> floor -> facade, each blended to its expected value
+// once it gets smaller than ~1.3-2.6 px (sub-pixel cells would shimmer): lit windows of varied brightness and colour up
+// close, lit / dark units (with their household / tenant colour) and floors down to ~1.5 px, and a low facade average
+// far away, so distant towers read as dark masses with sparkle instead of pale cream slabs.
+vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float litP) {
+  float fF = smoothstep(1.3, 2.6, px.y);
+  float fU = smoothstep(1.3, 2.6, px.x * unitN) * fF;
+  float fP = smoothstep(1.3, 2.6, px.x) * fF;
+  float uid = floor(ci.x / unitN + 1e-3);
+  float home = step(kind, 0.5);
+  float hF = bh11(ci.y * 3.7 + vSeed * 57.0);
+  float hU = bh31(vec3(uid, ci.y, floor(vSeed * 71.0)));
+  float hP = bh31(vec3(ci, floor(vSeed * 43.0) + 5.0));
+  // floor occupancy: offices have dark floors (~30%, hotels ~12%: a few late workers), half and fully lit open-plan
+  // floors (mean ~0.78); homes only vary a little per floor
+  float occ = mix(hF < mix(0.3, 0.12, step(1.5, kind)) ? 0.1 : (hF < 0.72 ? 0.75 : 1.55), 0.8 + 0.4 * hF, home);
+  float secP = clamp(litP * occ, 0.0, 0.97);
+  // a lit unit (household at home / office section in use) has ~70-75% of its windows lit, a dark one a stray lamp in ~8%
+  float pOn = mix(0.75, 0.7, home), pOff = mix(0.08, 0.09, home);
+  float pWin = mix(pOff, pOn, step(hU, secP));
+  float winOn = step(hP, pWin);
+  // per window lamp / curtain brightness (mean 0.775) and per unit brightness (mean 1)
+  float winB = 0.3 + 0.95 * fract(hP * 7.31 + 0.17);
+  float unitB = 0.55 + 0.9 * fract(hU * 31.7 + 0.13);
+  float eA = (pOff + (pOn - pOff) * clamp(litP * mix(0.78, 1.0, home), 0.0, 1.0)) * 0.775 * 0.5;
+  float eF = (pOff + (pOn - pOff) * secP) * 0.775;
+  float eU = pWin * 0.775 * unitB;
+  float eP = winOn * winB * unitB;
+  float e = mix(mix(mix(eA, eF, fF), eU, fU), eP, fP);
+  // ceiling lights: resolved windows are brighter toward the top of the floor
+  e *= mix(1.0, 0.55 + 0.6 * smoothstep(0.15, 0.85, fy), fP);
+  // colour per household / tenant (offices: 3 sections per tenant), the kind's average once units blur
+  vec3 c = roomLight(home > 0.5 ? fract(hU * 57.3 + vSeed * 3.1) : fract(hF + 0.618 * floor(uid / 3.0 + 1e-3)), kind);
+  vec3 cAvg = home > 0.5 ? vec3(1.0, 0.8, 0.56) : (kind < 1.5 ? vec3(0.87, 0.88, 0.88) : vec3(1.0, 0.86, 0.66));
+  c = mix(cAvg, c, fU);
+  // a few lit living rooms show a flickering TV
+  float tv = step(0.95, fract(hP * 13.7)) * winOn * home * fP;
+  c = mix(c, vec3(0.5, 0.68, 1.0) * (0.8 + 0.25 * sin(uTime * 6.3 + hP * 40.0)), tv);
+  // churches / keeps / clock towers: every window glows warm amber, a slight per-column tint
+  float allLit = step(2.5, kind);
+  c = mix(c, vec3(1.0, 0.72, 0.42) * mix(vec3(1.0), vec3(1.06, 0.94, 0.86), fract(hP * 5.3)), allLit);
+  e = mix(e, 0.9, allLit);
+  return c * (e + 0.03);
 }
 
 // Floodlit masonry: warm (pattern 1) / cool white (pattern 2) uplight, fading over the reach height H (paint floor value)
@@ -248,8 +287,8 @@ vec3 floodlight(vec3 albedo, float pattern, float v, float H, bool vertical, flo
   return albedo * c * night * 0.4 * (1.0 - 0.7 * smoothstep(0.0, H, v)) * (vertical ? 1.0 : 0.35);
 }
 
-// Returns window mask (0..1) and writes cell id. u,v in meters on the facade.
-float windowMask(float pattern, float u, float v, float floorH, out vec2 cell, out float fade) {
+// Returns window mask (0..1) and writes cell id + column width. u,v in meters on the facade, fw = fwidth(u, v).
+float windowMask(float pattern, float u, float v, float floorH, vec2 fw, out vec2 cell, out float fade, out float colWOut) {
   float colW = 3.0; float wx0 = 0.2; float wx1 = 0.8; float wy0 = 0.3; float wy1 = 0.78;
   if (pattern < 0.5) { colW = 3.0; wx0 = 0.22; wx1 = 0.78; wy0 = 0.32; wy1 = 0.78; }
   else if (pattern < 1.5) { colW = 2.2; wx0 = 0.3; wx1 = 0.7; wy0 = 0.22; wy1 = 0.85; }
@@ -259,12 +298,13 @@ float windowMask(float pattern, float u, float v, float floorH, out vec2 cell, o
   else if (pattern < 5.5) { colW = 1.5; wx0 = 0.1; wx1 = 0.9; wy0 = 0.18; wy1 = 0.9; }
   else if (pattern < 6.5) { colW = 2.8; wx0 = 0.25; wx1 = 0.75; wy0 = 0.3; wy1 = 0.8; }
   else { colW = 3.2; wx0 = 0.28; wx1 = 0.72; wy0 = 0.15; wy1 = 0.9; }
+  colWOut = colW;
   float cu = u / colW;
   float cv = v / floorH;
   // (+1e-3: faces starting exactly on a cell boundary must not alternate between two cells per pixel)
   cell = floor(vec2(cu, cv) + 1e-3);
-  float wu = fwidth(cu) * 1.2 + 1e-4;
-  float wv = fwidth(cv) * 1.2 + 1e-4;
+  float wu = fw.x / colW * 1.2 + 1e-4;
+  float wv = fw.y / floorH * 1.2 + 1e-4;
   // the fade is split by axis: window columns (~3 m) blur out first, while the floor rows (3 m tall, ~4 px at the
   // default 700 m camera) stay readable as horizontal window bands much longer -> no flat plastic slabs at game zoom
   float fadeU = clamp(1.0 - wu * 2.5, 0.0, 1.0);
@@ -276,7 +316,7 @@ float windowMask(float pattern, float u, float v, float floorH, out vec2 cell, o
   // shopfront ground floor for pattern 6
   if (pattern > 5.5 && pattern < 6.5 && v < floorH * 1.15) {
     rowM = smoothstep(0.1, 0.12, v / floorH) * (1.0 - smoothstep(0.82, 0.86, v / floorH));
-    m = aaBox(u / 5.0, 0.06, 0.94, fwidth(u / 5.0) + 1e-4) * rowM;
+    m = aaBox(u / 5.0, 0.06, 0.94, fw.x / 5.0 + 1e-4) * rowM;
     colCov = 0.88;
   }
   // average coverage for distance fade: first per floor row (band), then of the whole facade
@@ -301,9 +341,22 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
   float curvK = length(fwidth(nObj.xz)) / (length(fwidth(P.xz)) + 1e-4);
   if (curvK > 0.004 && curvK < 0.4) u = atan(nObj.z, nObj.x) * max(length(P.xz), 1.0);
   float v = P.y;
+  // facade-coordinate derivatives, shared by the window / curtain / glass patterns (one fwidth per fragment)
+  vec2 fwUV = max(fwidth(vec2(u, v)), vec2(1e-4));
   float night = uNight;
   // lit windows come on with the street lamps around sunset (people switch lights on at dusk), ahead of the night factor
   float wNight = max(uNight, 0.6 * uLamps);
+  // night window grid, set by the glazed facade branches below and lit once after them (nightWindows): weight of the
+  // window glass in this fragment (0 = no windows), cell (column, floor) + position in the floor + on-screen cell size
+  // (px), cells per unit, kind (0 homes, 1 offices, 2 hotels, 3 all lit), unit lit probability, gain
+  float nwK = 0.0;
+  vec2 nwCi = vec2(0.0);
+  float nwFy = 0.5;
+  vec2 nwPx = vec2(1.0);
+  float nwUnit = 3.0;
+  float nwKind = 0.0;
+  float nwLit = 0.5;
+  float nwGain = 1.0;
   // contact darkening + faint vertical weathering streaks near the ground on walls (grounds the buildings)
   if (vertical && (type < 1.5 || type > 10.5)) {
     albedo *= 0.8 + 0.2 * smoothstep(0.0, 2.2, v);
@@ -320,9 +373,8 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     // WallWindows
     rough = 0.82;
     if (vertical) {
-      vec2 cell; float fade;
-      float m = windowMask(pattern, u, v, floorH, cell, fade);
-      float h = bh31(vec3(cell, floor(vSeed * 97.0)));
+      vec2 cell; float fade; float colW;
+      float m = windowMask(pattern, u, v, floorH, fwUV, cell, fade, colW);
       float h2 = bh31(vec3(cell.yx + 3.1, vSeed * 13.0));
       vec3 glass = mix(vec3(0.08, 0.1, 0.13), vec3(0.2, 0.26, 0.32), h2 * 0.6);
       // distant windows a bit darker so the (averaged) window rows still contrast with the wall
@@ -332,34 +384,18 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       albedo = mix(albedo, glass, m);
       rough = mix(rough, 0.12, m);
       metal = mix(metal, 0.55, m);
-      float litProb = uLitFraction * (0.55 + 0.9 * vSeed);
-      // office facades (ribbon / dense grid) empty out at night more than homes
-      if ((pattern > 1.5 && pattern < 2.5) || (pattern > 4.5 && pattern < 5.5)) litProb *= 0.6;
-      litProb = min(litProb, 0.9);
-      float lit = step(h, litProb);
-      // curtains / variation
-      float intensity = 0.6 + 0.8 * h2;
-      vec3 wl = windowLight(bh11(h * 91.7 + vSeed));
-      // a few lit windows show a flickering TV
-      float tv = step(0.94, h2) * lit;
-      wl = mix(wl, vec3(0.5, 0.68, 1.0) * (0.75 + 0.25 * sin(uTime * 6.3 + h * 40.0) * sin(uTime * 2.7 + h2 * 17.0)), tv);
-      // far away: average lit color instead of per-window noise (no shimmering when the camera moves)
-      vec3 nearE = wl * lit * intensity;
-      vec3 farE = vec3(1.0, 0.8, 0.56) * clamp(litProb, 0.0, 1.0);
-      // distant facades: keep per-floor brightness variation (while floors are still resolvable) so they read as
-      // banded, not flat cream slabs
-      float fadeFl = clamp(1.0 - fwidth(v / floorH) * 1.6, 0.0, 1.0);
-      farE *= mix(1.0, 0.4 + 0.9 * bh11(cell.y * 1.73 + floor(vSeed * 23.0)), fadeFl);
-      // the averaged far glow is capped so mid-distance towers don't read as glowing cream slabs
-      farE *= 0.7;
-      if (pattern > 7.5 && pattern < 8.5) {
-        // churches / keeps / clock towers: every (arched) window glows warm amber, slight per-column tint
-        float ct = bh11(cell.x * 5.3 + vSeed * 17.0);
-        vec3 amber = vec3(1.0, 0.72, 0.42) * 0.9 * mix(vec3(1.0), vec3(1.06, 0.94, 0.86), ct);
-        emis += amber * m * wNight * 0.9;
-      } else {
-        emis += mix(farE, nearE, fade) * m * wNight * 0.9;
-      }
+      // night (nightWindows): the window mask (already blended to its average coverage far away) carries the per-window
+      // / unit / floor lit states; ribbon / dense-grid offices, industrial and arched civic windows are offices (dark
+      // floors, tenants), the rest homes (apartments of ~8 m: 2-4 windows), pattern 8 (churches) all lit warm amber
+      bool office = (pattern > 1.5 && pattern < 2.5) || (pattern > 3.5 && pattern < 5.5) || (pattern > 6.5 && pattern < 7.5);
+      nwK = m;
+      nwCi = cell;
+      nwFy = fract(v / floorH);
+      nwPx = vec2(colW, floorH) / fwUV;
+      nwUnit = office ? max(1.0, floor(3.2 / colW + 0.5)) : max(1.0, floor(8.0 / colW + 0.5));
+      nwKind = pattern > 7.5 && pattern < 8.5 ? 3.0 : (office ? 1.0 : 0.0);
+      nwLit = office ? uLitFraction * (0.45 + 0.8 * vSeed) : clamp(uLitFraction * 0.8, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
+      nwGain = 1.05;
     }
   } else if (type < 2.5) {
     // Glass curtain wall
@@ -378,7 +414,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     metal = 0.7;
     if (vertical) {
       float cu = u / 1.5; float cv = v / floorH;
-      float wu = fwidth(cu) + 1e-4; float wv = fwidth(cv) + 1e-4;
+      float wu = fwUV.x / 1.5 + 1e-4; float wv = fwUV.y / floorH + 1e-4;
       // mullions (1.5 m) fade first; the floor lines (spandrel per floor) stay readable until floors are ~2 px, then
       // everything blends to a flat average (~35% frame; residential glass 50% so lit units keep dark floor slabs)
       float fadeU = clamp(1.0 - wu * 2.0, 0.0, 1.0);
@@ -403,64 +439,16 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float calmV = pattern > 3.5 ? 1.0 : 0.0;
       albedo *= mix(0.9 + 0.2 * h, 0.95 + 0.1 * h, calmV);
       rough += mix(0.05, 0.03, calmV) * h;
-      // night lights at window scale: panel (1.5 m) -> section / unit -> floor -> facade levels of detail, each blended
-      // to its average once it gets smaller than ~2 px (sub-pixel cells would shimmer), so towers read as small lit
-      // windows of varied colour and brightness (sparkle) instead of pale 4-9 m blocks at 300-700 m
-      float pxP = 1.0 / max(wu, 1e-4);
-      float pxF = 1.0 / max(wv, 1e-4);
-      float fP = smoothstep(1.3, 2.6, pxP) * smoothstep(1.3, 2.6, pxF);
-      float fF = smoothstep(1.3, 2.6, pxF);
-      float hp = bh31(vec3(floor(cu + 1e-3), cell.y, floor(vSeed * 43.0) + 5.0));
-      float hp2 = fract(hp * 7.31 + 0.17);
-      if (resGlass) {
-        // homes: every apartment (3 panels) is a household at home with the lights on (70% of its rooms lit) or not
-        // (a stray lamp in ~9% of its rooms), each with its own light colour; every panel a room with its own lamp /
-        // curtain brightness -> scattered small lit windows of varied warm / neutral / cool light
-        float cuU = cu / 3.0;
-        float fU = smoothstep(1.3, 2.6, 1.0 / max(fwidth(cuU), 1e-4)) * fF;
-        float hu = bh31(vec3(floor(cuU + 1e-3), cell.y, floor(vSeed * 71.0)));
-        float litR = clamp(uLitFraction * 0.8, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
-        float unitOn = step(hu, litR);
-        float pRoom = mix(0.09, 0.7, unitOn);
-        float roomB = 0.3 + 0.95 * hp2;
-        // per-household brightness (curtains, lamp count), mean 1
-        float unitB = 0.55 + 0.9 * fract(hu * 31.7 + 0.13);
-        vec3 hc = homeLight(fract(hu * 57.3 + vSeed * 3.1));
-        vec3 cAvg = vec3(1.0, 0.8, 0.56);
-        vec3 eP = hc * (step(hp, pRoom) * roomB * unitB + 0.04);
-        vec3 eU = hc * (pRoom * 0.775 * unitB + 0.04);
-        vec3 eF = cAvg * ((0.09 + 0.61 * clamp(litR, 0.0, 1.0)) * 0.775 + 0.04);
-        vec3 e = mix(eF, mix(eU, eP, fP), fU);
-        emis += e * (1.0 - mull) * wNight * 0.62;
-      } else {
-      // offices / hotels: per floor dark (~30%, a few late workers), partly lit or fully lit (open plan); 3 m sections
-      // lit (75% of their windows on, each section its own brightness) or not (a stray desk lamp in ~8%), per-panel
-      // brightness (blinds, desks) and a ceiling-light gradient -> clusters of lit windows with gaps, not solid blocks;
-      // colour temperature per tenant (9 m of a floor: cool 4000 K office white, neutral, warm; warm glass tints read
-      // hotel-like)
-      float warmTint = step(1.5, pattern) * step(pattern, 2.5);
-      float fr1 = bh11(cell.y * 3.7 + vSeed * 57.0);
-      float occ = fr1 < mix(0.3, 0.12, warmTint) ? 0.1 : (fr1 < 0.72 ? 0.75 : 1.55);
-      float cuS = cu / 2.0;
-      float fS = smoothstep(1.3, 2.6, 1.0 / max(fwidth(cuS), 1e-4)) * fF;
-      float hs = bh31(vec3(floor(cuS + 1e-3), cell.y, vSeed * 7.0));
-      float litP = uLitFraction * (0.45 + 0.8 * vSeed);
-      float secP = clamp(litP * occ, 0.0, 0.97);
-      float pWin = mix(0.08, 0.75, step(hs, secP));
-      float secB = 0.5 + fract(hs * 23.7 + 0.31);
-      float panB = 0.35 + 0.85 * hp2;
-      float fh = bh11(cell.y * 7.3 + vSeed * 31.0);
-      vec3 fc = officeLight(fract(fh + 0.618 * floor(cuS / 3.0 + 1e-3)), warmTint);
-      vec3 cAvg = mix(vec3(0.87, 0.88, 0.88), vec3(1.0, 0.86, 0.66), warmTint);
-      float ceilG = mix(0.775, 0.55 + 0.45 * smoothstep(0.15, 0.85, fract(cv)), fF);
-      float floorP = 0.08 + 0.67 * secP;
-      vec3 eP = fc * (step(hp, pWin) * panB * secB + 0.045) * ceilG;
-      vec3 eS = fc * (pWin * 0.775 * secB + 0.045) * ceilG;
-      vec3 eFl = officeLight(fh, warmTint) * (floorP * 0.775 + 0.045) * 0.775;
-      vec3 eA = cAvg * ((0.08 + 0.67 * clamp(litP * 0.77, 0.0, 1.0)) * 0.775 + 0.045) * 0.775;
-      vec3 e = mix(eA, mix(eFl, mix(eS, eP, fP), fS), fF);
-      emis += e * (1.0 - mull) * wNight * 0.6;
-      }
+      // night (nightWindows): every 1.5 m panel is a window; residential glass = homes in apartments of 3 panels,
+      // offices in 3 m sections of 2 panels (tenant colour per 9 m), warm bronze / gold tints = hotels
+      nwK = 1.0 - mull;
+      nwCi = floor(vec2(cu, cv) + 1e-3);
+      nwFy = fract(cv);
+      nwPx = 1.0 / vec2(wu, wv);
+      nwUnit = resGlass ? 3.0 : 2.0;
+      nwKind = resGlass ? 0.0 : (pattern > 1.5 && pattern < 2.5 ? 2.0 : 1.0);
+      nwLit = resGlass ? clamp(uLitFraction * 0.8, 0.0, 1.0) * (0.75 + 0.5 * vSeed) : uLitFraction * (0.45 + 0.8 * vSeed);
+      nwGain = resGlass ? 0.62 : 0.6;
     }
   } else if (type < 3.5) {
     // flat roof: gravel + tar patches
@@ -544,6 +532,13 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       // emissive sign / light. pattern 1..8 scales intensity by pattern / 4 (pattern 0 = default 1x).
       // The night multiplier is moderate so saturated neon keeps its hue; bloom carries the glow.
       float k = pattern > 0.5 ? pattern * 0.25 : 1.0;
+      // thin light strands (paint floor below 0.5 m = the strand thickness: festoons, light strings): dotted bulbs up
+      // close, and the emission scaled by the strand's share of a pixel, so a sub-pixel strand fades out instead of
+      // aliasing into a full-brightness 1 px laser line at 300-700 m
+      float fp = max(fwUV.x, fwUV.y);
+      float strand = step(vSurf.z, 0.5);
+      float bulbs = 1.0 - smoothstep(0.2, 0.55, abs(fract(dot(P, vec3(1.9, 2.3, 1.7))) - 0.5) * 2.0);
+      k *= mix(1.0, clamp(vSurf.z * 1.5 / fp, 0.1, 1.0) * mix(0.55, 0.25 + 1.5 * bulbs, clamp(1.0 - fp * 5.0, 0.0, 1.0)), strand);
       emis += albedo * (0.3 + 1.35 * wNight) * k;
       rough = 0.5;
     }
@@ -571,19 +566,16 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       rough = 0.05;
       metal = 0.9;
     } else {
-      // homes / shops: per-window (~2.5 x 2.8 m cells) lit state follows the time-of-day lit fraction
-      // (homes a bit above offices: ~55-75% in the evening, dipping late at night)
-      vec2 wc = vec2(floor(u / 2.5), floor(v / 2.8));
-      float hw = bh31(vec3(wc, floor(vSeed * 113.0)));
-      float litP = clamp(uLitFraction * 0.95 + 0.05, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
-      float lit = step(hw, litP);
-      float fw = clamp(1.0 - length(fwidth(vec2(u / 2.5, v / 2.8))) * 2.0, 0.0, 1.0);
-      // far: per-row (floor) brightness variation while rows are resolvable -> banded, not a uniform glowing slab
-      float fwRow = clamp(1.0 - fwidth(v / 2.8) * 1.6, 0.0, 1.0);
-      float litFar = clamp(litP, 0.0, 1.0) * mix(1.0, 0.4 + 0.9 * bh11(wc.y * 1.73 + floor(vSeed * 29.0)), fwRow);
-      lit = mix(litFar, lit, fw);
-      vec3 wl = mix(vec3(1.0, 0.8, 0.52), vec3(1.0, 0.88, 0.7), step(0.7, h));
-      emis += wl * wNight * (0.6 + 0.5 * h) * lit;
+      // homes / shops (nightWindows): ~2.5 x 2.8 m windows in units of two, lit a bit more than apartment towers
+      // (~55-75% of the households in the evening, dipping late at night)
+      nwK = 1.0;
+      nwCi = floor(vec2(u / 2.5, v / 2.8) + 1e-3);
+      nwFy = fract(v / 2.8);
+      nwPx = vec2(2.5, 2.8) / fwUV;
+      nwUnit = 2.0;
+      nwKind = 0.0;
+      nwLit = clamp(uLitFraction * 0.95 + 0.05, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
+      nwGain = 1.15;
     }
   } else if (type < 8.5) {
     // foliage
@@ -756,6 +748,8 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     albedo *= 0.9 + 0.15 * bnoise(P.xz * 0.15);
     rough = 0.95;
   }
+  // lit windows of the glazed facades (one evaluation for WallWindows / GlassCurtain / PlainGlass)
+  if (nwK > 0.0 && wNight > 0.001) emis += nightWindows(nwCi, nwFy, nwPx, nwUnit, nwKind, nwLit) * nwK * nwGain * wNight;
   // night: the ground of a lot (lawns, yards, paths, parking at the foot of the buildings) catches a faint warm spill of
   // its windows / porch lights and the street lamps, so gardens stay readable instead of sinking into the night floor
   // (terrain and roads have their own shaders: open land stays dark)
