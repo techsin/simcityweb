@@ -310,6 +310,23 @@ describe('growth: wealth swaps and the inspector rows', () => {
       expect(g.downtown!.length).toBeLessThan(80);
     }
     expect(found).toBe(true);
+    // a standing building is judged where its redevelopment is (lotCell, the middle of its road-side row): on a deep lot
+    // whose centre lost the tower draw but whose front cell won it (or the other way round), the inspector follows lotCell
+    expect(getDef('res_apartment.r2.4')?.devType).toBe(DevType.R2);
+    let checked = 0;
+    for (let x = 2; x + 2 <= 60 && checked < 4; x++) {
+      // a deep lot fronting the road at z = 10 (rot 2: its road-side row is z = 11, its centre z = 14)
+      const ci = 11 * N + x + 1, centre = 14 * N + x + 1;
+      if (towerLot(st, ci % N, (ci / N) | 0) === towerLot(st, centre % N, (centre / N) | 0)) continue;
+      placeBuilding(sim, { ...growable(st, 'res_apartment.r2.4', x, 11, 0), w: 2, d: 6, rot: 2 });
+      expect(lotCell(st.buildingAt(x, 11)!, N)).toBe(ci);
+      st.desirability[DevType.R2][ci] = 1;
+      const g = growthLimits(st, centre, DevType.R2);
+      expect(g.downtownStage === undefined, `tower site at the lot cell of ${x},11`).toBe(towerLot(st, ci % N, (ci / N) | 0));
+      checked++;
+      x += 2;
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 });
 

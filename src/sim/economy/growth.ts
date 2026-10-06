@@ -1010,7 +1010,8 @@ export function growthLimits(st: CityState, i: number, dev: number): GrowthLimit
     }
   }
   if (Math.min(desStage, popStage, zoneStage) >= DOWNTOWN_STAGE) {
-    const x = i % N, z = (i / N) | 0;
+    // (a building: the cell its redevelopment is judged at, lotCell — the tower-lot hash is per cell)
+    const x = ci % N, z = (ci / N) | 0;
     const c = commercialCore(st);
     const w = downtownWeight(st, x, z);
     if (c) {
