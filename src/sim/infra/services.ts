@@ -109,6 +109,9 @@ const NEED_RASTER: readonly number[] = [0, 0, 1, 2, 3, 4, 5, 6];
 const N_RASTERS = 7;
 
 // steps
+/** tier work units per footprint cell of the per-tier footprint max (two passes; tierWork counts C × 0.2 for two passes
+ *  over every cell) */
+const FOOT_WORK = 0.2;
 const S_PREP = 0, S_TIERS = 1, S_STOPS = 2, S_NIMBY = 3, S_ACC_SEED = 4, S_ACC_SEARCH = 5, S_ACC_LAND = 6, S_SHOP_A = 7,
   S_SHOP_B = 8, S_FOOT = 9, S_FINISH = 10;
 // tier phases (shared tiers: init -> search -> alloc (in seat order) -> report -> final; union: init -> search -> final)
@@ -178,6 +181,8 @@ export class ServicesSystem implements SimSystem {
   /** slot had facilities in the previous pass (an empty slot's layer is already 0) */
   private hadFac: boolean[] = new Array(NT + 1).fill(true);
   private multi: Building[] = [];
+  /** Σ footprint cells of `multi` (work estimate of the per-tier footprint max in finalizeTier) */
+  private multiCells = 0;
   private fx: OrdEffects | null = null;
   private roadCells = 0;
   private csSeeds = new Int32Array(0);
@@ -456,6 +461,7 @@ export class ServicesSystem implements SimSystem {
     for (const l of this.facOp) l.length = 0;
     for (const l of this.facCap) l.length = 0;
     this.multi.length = 0;
+    this.multiCells = 0;
     this.fx = readEffects(st);
     const policeMul = justiceFactors(st).policeMul;
     this.policeMul = policeMul;
@@ -475,7 +481,7 @@ export class ServicesSystem implements SimSystem {
     this.passNo = (this.passNo % 1e6) + 1;
     for (let bI = 0; bI < bL.length; bI++) {
       const b = bL[bI];
-      if (b.w * b.d > 1) this.multi.push(b);
+      if (b.w * b.d > 1) { this.multi.push(b); this.multiCells += b.w * b.d; }
       const inf = infoOf(st, b);
       if (inf.fam === Fam.R) {
         if (b.pop <= 0) continue;
@@ -540,7 +546,7 @@ export class ServicesSystem implements SimSystem {
     let w = 0;
     for (let k = 0; k <= NT; k++) {
       if (this.fac[k].length === 0) { if (this.hadFac[k] || k === SLOT_TRANSIT) w += C * 0.05; continue; }
-      w += C * (this.shared[k] ? 0.45 : 0.3);
+      w += C * (this.shared[k] ? 0.45 : 0.3) + (k === SLOT_TRANSIT ? 0 : FOOT_WORK * this.multiCells);
       const cache = this.cache[k];
       const perEntry = U_ENTRY * (this.shared[k] ? 3 : 2);
       for (const b of this.fac[k]) {
@@ -684,7 +690,7 @@ export class ServicesSystem implements SimSystem {
           if (old) { this.pIdx = old.idx; this.pW = old.w; } else { this.pIdx = new Int32Array(0); this.pW = new Float32Array(0); }
           this.poolN = 0;
           this.curEnt = new Map();
-          const w = C * (shared ? 0.3 : 0.2);
+          const w = C * (shared ? 0.3 : 0.2) + (k === SLOT_TRANSIT ? 0 : FOOT_WORK * this.multiCells);
           work += w; this.workLeft -= w;
           this.tierSlot++;
           this.tierPhase = P_INIT;
@@ -893,6 +899,11 @@ export class ServicesSystem implements SimSystem {
     }
     const ts = this.tierStats[k];
     ts.need = need; ts.served = served; ts.capacity = capacity; ts.unreached = unreached; ts.overcrowded = over;
+    // a lot is covered as a whole from the moment its tier is written (the max over its footprint, as the footprint step
+    // makes it at the end of the pass): the back rows of a deep lot, never reached per cell, would otherwise read 0 for
+    // the days until that step, and the desirability band, needsOf (Residents) and the data views read the layer (195k
+    // city: mean police over R cells 0.98 -> 0.46 on those days, a deep lot's stored desirability -9 vs raw +49)
+    this.footprintMax(st, layer);
   }
 
   // ------------------------------------------------------------------------------------------------ transit stops
@@ -1055,6 +1066,17 @@ export class ServicesSystem implements SimSystem {
         for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = L[z * N + x]; if (v > m) m = v; }
         for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) L[z * N + x] = m;
       }
+    }
+  }
+  /** one layer's max over each multi-cell footprint (finalizeTier: a tier is uniform per lot as soon as it is written) */
+  private footprintMax(st: CityState, L: Float32Array): void {
+    const N = st.size, list = this.multi;
+    for (let q = 0; q < list.length; q++) {
+      const b = list[q];
+      const x0 = Math.max(0, b.x), z0 = Math.max(0, b.z), x1 = Math.min(N, b.x + b.w), z1 = Math.min(N, b.z + b.d);
+      let m = 0;
+      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = L[z * N + x]; if (v > m) m = v; }
+      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) L[z * N + x] = m;
     }
   }
 

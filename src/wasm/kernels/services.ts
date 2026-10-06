@@ -56,6 +56,9 @@ import {
 } from '../js/servicesTierEngine';
 import { CATCH_LAYOUT, TierEngineFault, catchWasmFromSlot, makeWasmTierKernels, wasmSpace, type CatchWasm } from './servicesBind';
 
+/** verbatim services.ts FOOT_WORK: tier work units per footprint cell of finalizeTier's footprint max */
+const FOOT_WORK = 0.2;
+
 export type TierBackend = 'wasm' | 'js';
 
 export interface TierEngineOptions {
@@ -143,6 +146,7 @@ interface Svc {
   order: Int32Array;
   cache: unknown[];
   multi: Building[];
+  multiCells: number;
   stops: transit.StopList | undefined;
   tierById: Float32Array;
   demById: Float32Array;
@@ -281,7 +285,7 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
     for (let k = 0; k <= NT; k++) {
       const list = this.fac[k];
       if (list.length === 0) { if (this.hadFac[k] || k === SLOT_TRANSIT) w += C * 0.05; continue; }
-      w += C * (this.shared[k] ? 0.45 : 0.3);
+      w += C * (this.shared[k] ? 0.45 : 0.3) + (k === SLOT_TRANSIT ? 0 : FOOT_WORK * this.multiCells);
       const perEntry = U_ENTRY * (this.shared[k] ? 3 : 2);
       for (const b of list) {
         const e = engine.recordOf(k, b.id, keyOf(b));
@@ -416,9 +420,12 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
             }
             const ts = this.tierStats[k];
             ts.need = f[0]; ts.served = f[1]; ts.capacity = capacity; ts.unreached = f[2]; ts.overcrowded = over;
+            // verbatim: the original's finalizeTier ends with the footprint max of the tier layer (a lot is covered as a
+            // whole from the moment its tier is written)
+            footprintMax(this.multi, N, layer);
           }
           eng.finishSlot(k);
-          const w = C * (shared ? 0.3 : 0.2);
+          const w = C * (shared ? 0.3 : 0.2) + (k === SLOT_TRANSIT ? 0 : FOOT_WORK * this.multiCells);
           work += w; this.workLeft -= w;
           this.tierSlot++;
           this.tierPhase = P_INIT;
@@ -478,6 +485,16 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
   }
 
   // ---------------------------------------------------------------------------------------------- footprints
+  /** verbatim ServicesSystem.footprintMax: one layer's max over each multi-cell footprint */
+  function footprintMax(list: readonly Building[], N: number, L: Float32Array): void {
+    for (let q = 0; q < list.length; q++) {
+      const b = list[q];
+      const x0 = Math.max(0, b.x), z0 = Math.max(0, b.z), x1 = Math.min(N, b.x + b.w), z1 = Math.min(N, b.z + b.d);
+      let m = 0;
+      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = L[z * N + x]; if (v > m) m = v; }
+      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) L[z * N + x] = m;
+    }
+  }
   function footprints(this: Svc, st: CityState): void {
     try {
       const N = st.size;
