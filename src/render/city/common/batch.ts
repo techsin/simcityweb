@@ -371,14 +371,14 @@ export class DynamicBatch {
   private subCnt = new Int32Array(SUB * SUB + 1);
   /** where the emitters write the list being built: the slot's own arrays, or (sorted lists) these scratch arrays with a
    *  distance key per entry, scattered into the slot's arrays by key once the list is complete (counting sort) */
-  private oS = new Int32Array(0);
-  private oC = new Int32Array(0);
-  private oI = new Uint32Array(0);
+  private oS: Int32Array = new Int32Array(0);
+  private oC: Int32Array = new Int32Array(0);
+  private oI: Uint32Array = new Uint32Array(0);
   private oK: Uint8Array | null = null;
-  private eS = new Int32Array(64);
-  private eC = new Int32Array(64);
-  private eI = new Uint32Array(64);
-  private eK = new Uint8Array(64);
+  private eS: Int32Array = new Int32Array(64);
+  private eC: Int32Array = new Int32Array(64);
+  private eI: Uint32Array = new Uint32Array(64);
+  private eK: Uint8Array = new Uint8Array(64);
   /** bumped whenever drawRanges() recomputed the per-geometry ranges */
   private rangesGen = 0;
   private untiled: number[] = [];
