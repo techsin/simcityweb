@@ -383,6 +383,8 @@ export class SearchK {
       this.tb = new Float32Array(K * c); this.tg = new Int32Array(K * c);
       this.cnt = new Uint8Array(c);
     }
+    // (released by releaseScratch)
+    if (this.tb.length < K * n) { this.tb = new Float32Array(this.dist.length); this.tg = new Int32Array(this.dist.length); }
     this.n = n;
     this.cnt.fill(0, 0, n);
     this.tb.fill(Infinity, 0, K * n);
@@ -538,6 +540,15 @@ export class SearchK {
       if ((tu === HW) !== (tv === HW)) { const r = tu === HW ? v : u; c += ramp2 === null ? (RAMP_BY_NET[type[r]] ?? RAMP_PENALTY) : ramp2[r]; }
       alt[s] = c;
     }
+  }
+
+  /** a complete search kept for its result only (a cache of forests): drop the queue and the tentative labels (about
+   *  half its memory); start() allocates them again */
+  releaseScratch(): void {
+    if (this.running) return;
+    this.tb = new Float32Array(0); this.tg = new Int32Array(0); this.head = new Int32Array(0);
+    this.enext = new Int32Array(0); this.enode = new Int32Array(0); this.esrc = new Int32Array(0); this.epar = new Int32Array(0);
+    this.elab = new Float32Array(0); this.eff = new Float32Array(0); this.ealt = new Float32Array(0);
   }
 
   /** new time2 / ramp2 for alt on a kept forest, renewed on demand (altAt): a caller that reads few states' alt skips

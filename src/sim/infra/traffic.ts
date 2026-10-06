@@ -3217,7 +3217,9 @@ export class TrafficSystem implements SimSystem {
    */
   private overflow(): number {
     if (this.ovStage === 1) {
-      if (this.ov[this.ovSlot].S.run(OV_CHUNK_STATES)) this.ovStartPass();
+      const S = this.ov[this.ovSlot].S;
+      // (a cached forest keeps its result only)
+      if (S.run(OV_CHUNK_STATES)) { S.releaseScratch(); this.ovStartPass(); }
       return PH_PROVER;
     }
     if (this.ovStage === 3) {
