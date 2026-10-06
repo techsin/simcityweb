@@ -1397,6 +1397,10 @@ export class SimBot {
     // trunk, as for water, power and depots — still JAIL_GAP cells from R$$$ homes (256x60 s7 kept 16,000 beds from 2032
     // on and ran 59 % of the sentenced without a bed in 2053; with it 40,000 beds, overflow <= 0.24)
     if (!ok) ok = cleared = !!this.placeByClearing('civ_jail', cx, cz, Infinity, ['I', 'U'], far, 3, false, true);
+    // a dense industrial park (every lot at stage 4+, WP6b: 256x60 s11 found no site from 2051 on, at 1.4M people with 4
+    // prisons, and ran 30 % of the sentenced without a bed): any factory lot, fewest jobs first — the city runs a job
+    // surplus, so the displaced jobs are refilled elsewhere
+    if (!ok) ok = cleared = !!this.placeByClearing('civ_jail', cx, cz, Infinity, ['I'], far, 8, false, true);
     this.svcRetry.set('jail', st.day + (ok ? 240 : 120));
     if (ok) this.say(`prison: ${ov} % of the sentenced had no bed (${cleared ? 'small industrial lots cleared, ' : ''}${G}+ cells from R$$$ homes)`);
     else this.say(`prison: no industrial / utility lot ${G}+ cells from R$$$ homes (${ov} % without a bed)`);

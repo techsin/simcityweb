@@ -316,8 +316,8 @@ export class ServicesSystem implements SimSystem {
       case S_SHOP_A: return 0.2 + 0.3 * bld + 1.3 * roads;
       case S_SHOP_B: return 0.2 + 0.4 * bld + 1.7 * cells;
       case S_FOOT: {
-        let L = this.hadFac[SLOT_TRANSIT] || (this.stops?.n ?? 0) > 0 ? 1 : 0;
-        for (let k = 0; k < NT; k++) if (this.hadFac[k]) L++;
+        // (the transit layer only: footprints)
+        const L = this.hadFac[SLOT_TRANSIT] || (this.stops?.n ?? 0) > 0 ? 1 : 0;
         return 0.1 + 0.3 * bld + 0.9 * (this.multi.length / 2000) * (L / 9);
       }
       default: return 0.2 + 0.5 * bld + 0.6 * cells;
@@ -1050,23 +1050,12 @@ export class ServicesSystem implements SimSystem {
   }
 
   // ------------------------------------------------------------------------------------------------ footprints / finish
-  /** uniform coverage over building footprints (max over the footprint); layers of empty slots are all 0 (skipped) */
+  /** uniform transit coverage over building footprints (max over the footprint). The tier layers are uniform per lot
+   *  already (finalizeTier applies the footprint max as it writes each one, and empty slots are all 0); the transit layer
+   *  gets the stop coverage composed after its slot (finishTransit), so it is the one layer left. (WP6b: redoing every
+   *  tier here gave the same layers and a step estimate of 4.5 ms on the 1.5M bot city, over the 3 ms step budget) */
   private footprints(st: CityState): void {
-    const N = st.size;
-    const layers: Float32Array[] = [];
-    for (let k = 0; k < NT; k++) if (this.hadFac[k]) layers.push(tierLayer(st, NEED_ORDER[k]));
-    if (this.hadFac[SLOT_TRANSIT] || (this.stops?.n ?? 0) > 0) layers.push(st.transitCov);
-    if (layers.length === 0) return;
-    const list = this.multi;
-    for (let q = 0; q < list.length; q++) {
-      const b = list[q];
-      const x0 = Math.max(0, b.x), z0 = Math.max(0, b.z), x1 = Math.min(N, b.x + b.w), z1 = Math.min(N, b.z + b.d);
-      for (const L of layers) {
-        let m = 0;
-        for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = L[z * N + x]; if (v > m) m = v; }
-        for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) L[z * N + x] = m;
-      }
-    }
+    if (this.hadFac[SLOT_TRANSIT] || (this.stops?.n ?? 0) > 0) this.footprintMax(st, st.transitCov);
   }
   /** one layer's max over each multi-cell footprint (finalizeTier: a tier is uniform per lot as soon as it is written) */
   private footprintMax(st: CityState, L: Float32Array): void {

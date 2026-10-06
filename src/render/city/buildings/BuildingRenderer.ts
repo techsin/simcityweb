@@ -857,7 +857,7 @@ export class BuildingRenderer {
   private disposed = false;
   /** dense list of instances for the per-frame LOD sweep */
   private list: BInst[] = [];
-  /** flat copies per list index for the jump scan: LOD centre, radius, level (1 = proxy) */
+  /** flat copies per list index for the jump scan: LOD centre, scan radius, level (1 = proxy or plain skirt; see flat) */
   private lx = new Float32Array(1024);
   private ly = new Float32Array(1024);
   private lz = new Float32Array(1024);
@@ -1570,7 +1570,8 @@ export class BuildingRenderer {
     bi.radius = kit ? RUB_LOD_R : Math.max(2, sp.radius);
     bi.cy = kit ? b.baseY + RUB_TOP + 1 : b.baseY + sp.center.y + (bi.shear.length ? bi.shear[2] : 0);
     const li = bi.li;
-    this.lx[li] = cx; this.ly[li] = bi.cy; this.lz[li] = cz; this.lr[li] = this.scanRadius(bi); this.ls[li] = bi.lod | bi.flod;
+    this.lx[li] = cx; this.ly[li] = bi.cy; this.lz[li] = cz;
+    this.flat(bi);
     this.applyColor(bi);
     this.place(bi);
     for (const id of [bi.main, bi.site, bi.found]) if (id >= 0) this.batch.setTile(id, bi.tile);
@@ -1675,7 +1676,8 @@ export class BuildingRenderer {
       this.lodDirty = false;
       this.lastLodPixels = this.lodPixels;
       this.lodK = K;
-      for (const bi of this.list) this.lodQueue(bi);
+      // (flat: a plain skirt's scan radius scales with lodPixels)
+      for (const bi of this.list) { this.flat(bi); this.lodQueue(bi); }
     }
     const p = this.lodPos;
     const hop = p.x === p.x ? Math.hypot(c.x - p.x, c.y - p.y, c.z - p.z) : 0;
@@ -1796,7 +1798,7 @@ export class BuildingRenderer {
       const r = lr[i];
       if ((dx * dx + dy * dy + dz * dz) * off2 >= r * r * K2) continue;
       _sphere.center.set(lx[i], ly[i], lz[i]);
-      _sphere.radius = r;
+      _sphere.radius = list[i].radius;
       if (!fr || fr.intersectsSphere(_sphere)) this.lodEval(list[i], c, K, on, off, cur);
       else this.lodQueue(list[i]);
     }
@@ -1850,7 +1852,6 @@ export class BuildingRenderer {
     const fk = (bi.fh * K) / FOUND_PX;
     const fw = bi.found >= 0 && (want || (lim && d * (bi.flod ? 1.12 : 0.88) > fk)) ? 1 : 0;
     this.setFound(bi, fw);
-    this.lr[bi.li] = this.scanRadius(bi);
     // LOD off / selected: stays full until the metric or the selection changes (both re-queue)
     if (!lim) return;
     // camera travel before a swap distance can be reached (the building's; while it is full also its skirt's); the
@@ -1867,21 +1868,24 @@ export class BuildingRenderer {
   private setFound(bi: BInst, f: number): void {
     if (bi.found < 0 || bi.flod === f) return;
     bi.flod = f;
-    this.ls[bi.li] = bi.lod | f;
+    this.flat(bi);
     this.batch.setGeometry(bi.found, f ? bi.foundLod : bi.foundGeom);
   }
 
-  /** radius the cut-frame upgrade scan tests a building with (its foundation's upgrade distance may lie beyond the
-   *  building's: a deep skirt under a small house) */
-  private scanRadius(bi: BInst): number {
-    return Math.max(bi.radius, (bi.fh * this.lodPixels) / FOUND_PX);
+  /** the upgrade scan's view of a building (ls / lr): drawn below full detail (proxy or plain skirt), and the radius
+   *  whose upgrade distance (radius x K / off) the scan tests: the building's own on its proxy (its skirt follows it),
+   *  else its skirt's (exposed height x lodPixels / FOUND_PX: the skirt turns full within that, only near the camera) */
+  private flat(bi: BInst): void {
+    const i = bi.li;
+    this.ls[i] = bi.lod | bi.flod;
+    this.lr[i] = bi.lod ? bi.radius : (bi.fh * this.lodPixels) / FOUND_PX;
   }
 
   private lodSet(bi: BInst, want: number): void {
     if (want === bi.lod) return;
     bi.lod = want;
     this.lodCount += want ? 1 : -1;
-    this.ls[bi.li] = want | bi.flod;
+    this.flat(bi);
     const f = bi.fade;
     // a level change back mid-fade: the fade runs backwards from where it is (in smooth motion; else it settles on the
     // new level at once)
