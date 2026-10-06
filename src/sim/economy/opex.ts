@@ -111,6 +111,8 @@ export interface FacilityOpex {
   running: number;
   /** the people that share stands for (its share of stats.needs[tier].served) */
   people: number;
+  /** the tier's people served city-wide (stats.needs[tier].served: what the running costs are charged on) */
+  total: number;
   /** § per person served per month */
   rate: number;
 }
@@ -131,7 +133,7 @@ export function facilityOpex(sim: Simulation, b: Building): FacilityOpex | null 
   const rate = OPEX_PER_SERVED[tier];
   const own = facilityLoad(sim, b.id);
   const served = (st.stats.needs as Partial<Record<NeedTier, { served?: number }>> | undefined)?.[tier]?.served ?? 0;
-  if (!own || !(own.served > 0) || !(served > 0) || (b.flags & BF.Burnt)) return { tier, building, running: 0, people: 0, rate };
+  if (!own || !(own.served > 0) || !(served > 0) || (b.flags & BF.Burnt)) return { tier, building, running: 0, people: 0, total: served, rate };
   let sum = 0;
   for (const o of st.buildings.values()) {
     if (!(o.flags & BF.Plopped) || opexTierOf(getDef(o.def)) !== tier) continue;
@@ -139,5 +141,5 @@ export function facilityOpex(sim: Simulation, b: Building): FacilityOpex | null 
     if (L && L.served > 0) sum += L.served;
   }
   const share = sum > 0 ? own.served / sum : 0;
-  return { tier, building, running: served * share * rate, people: served * share, rate };
+  return { tier, building, running: served * share * rate, people: served * share, total: served, rate };
 }

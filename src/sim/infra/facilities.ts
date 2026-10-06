@@ -739,8 +739,10 @@ function upkeepLine(c: Ctx, burnt = false): void {
     if (burnt) { add(c, 'upkeep', 'Upkeep', `${money(ox.building)} / month${fNote}`, { status: 'warn', hint: 'Still charged until you bulldoze it' }); return; }
     const many = OPEX_UNIT[ox.tier][1], one = OPEX_UNIT[ox.tier][0];
     const each = `§${ox.rate < 0.1 ? ox.rate.toFixed(3) : ox.rate.toFixed(2)}`;
+    // (running costs are charged on the city's served count — stats.needs, the Statistics panel — and split by the
+    // coverage each facility delivers; its seat count above is measured per cell, so the two are not compared here)
     const hint = ox.people >= 1
-      ? `Building ${money(ox.building)} + running costs ${money(ox.running)} for ≈${fmt(ox.people)} ${many} (${each} each a month)`
+      ? `Building ${money(ox.building)} + its share of the running costs ${money(ox.running)} (${each} a month for each of the city's ${fmt(ox.total)} ${many})`
       : `Building ${money(ox.building)}; running costs of ${each} per ${one} a month start once it serves people`;
     add(c, 'upkeep', 'Upkeep', `${money(ox.building + ox.running)} / month${fNote}`, { hint });
     return;
