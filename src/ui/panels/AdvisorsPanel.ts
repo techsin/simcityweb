@@ -4,8 +4,9 @@
  * else its own assessment. An open 'bad' / 'warning' issue also colours the status dot. The top-bar badge stays on the
  * (cheap) assessments.
  * PERF: while the game runs the cards read advisorIssues (the month tick's full list — no scan of the city); a fresh
- * openAdvice scan (several ms on a big map) runs only while paused, or once after the player built something, so a
- * school placed while paused shows at once.
+ * openAdvice scan (several ms on a big map) runs only while paused, or once after the player edited the map (zones,
+ * roads, lines, plopped buildings: playerEditCounter — the city's own growth never counts), so a school placed while
+ * paused shows at once.
  */
 import type { NewsItem } from '../../sim/CityState';
 import { adviceIdOf, advisorIssues, advisorIssuesReady, openAdvice, type OpenAdvice } from '../../sim/economy/advisors';
@@ -15,6 +16,7 @@ import { clear, escapeHtml, h, toggleClass } from '../dom';
 import { icon } from '../icons';
 import { dayLabel, money, pct } from '../format';
 import { lastNet } from '../TopBar';
+import { playerEditCounter, type EditCounter } from '../playerEdits';
 
 interface Advisor {
   id: string;
@@ -111,6 +113,13 @@ export class AdvisorsPanel extends Panel {
   private content!: HTMLDivElement;
   private lastSig = '';
   seenNews = 0;
+  /** the player's map edits (a fresh scan after one; growth alone keeps the month tick's list) */
+  private readonly edits: EditCounter;
+
+  constructor(ctx: GameContext) {
+    super(ctx);
+    this.edits = playerEditCounter(ctx.sim);
+  }
 
   override defaultPos(w: number): { x: number; y: number } {
     return { x: w - this.width - 14, y: 72 };
@@ -154,24 +163,23 @@ export class AdvisorsPanel extends Panel {
 
   /**
    * open advice of the whole city. Running game: the month tick's list (advisorIssues, re-read each new month).
-   * Paused, or the player built something since the last look: a fresh openAdvice scan (several ms on a big map),
-   * throttled to OPEN_REFRESH_MS of wall-clock time.
+   * Paused, or the player edited the map since the last look (zones, roads, lines, plopped buildings — not the city's
+   * own growth): a fresh openAdvice scan (several ms on a big map), throttled to OPEN_REFRESH_MS of wall-clock time.
    */
   private open: OpenAdvice[] = [];
   private openAt = -Infinity;
   private openDay = -1;
-  private openBld = -1;
-  private openNext = -1;
+  private openEdits = -1;
   private openMonth = -1;
   private openState: unknown = null;
   private refreshOpen(force = false): void {
     const st = this.ctx.state, now = performance.now();
     const paused = this.ctx.sim.speed === 0;
-    const built = st.nextBuildingId !== this.openNext || st.buildings.size !== this.openBld;
+    const edited = this.edits.count !== this.openEdits;
     if (!force && this.openState === st) {
-      if (paused || built) {
-        // the city changed while paused, or the player built something: a fresh look, throttled
-        if ((st.day === this.openDay && !built) || now - this.openAt < OPEN_REFRESH_MS) return;
+      if (paused || edited) {
+        // the city changed while paused, or the player edited the map: a fresh look, throttled
+        if ((st.day === this.openDay && !edited) || now - this.openAt < OPEN_REFRESH_MS) return;
         this.scanFresh(st, now);
         return;
       }
@@ -185,8 +193,7 @@ export class AdvisorsPanel extends Panel {
   private mark(st: typeof this.ctx.state, now: number): void {
     this.openAt = now;
     this.openDay = st.day;
-    this.openBld = st.buildings.size;
-    this.openNext = st.nextBuildingId;
+    this.openEdits = this.edits.count;
     this.openMonth = st.monthIndex;
     this.openState = st;
   }
