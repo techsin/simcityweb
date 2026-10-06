@@ -424,24 +424,42 @@ export class SimBot {
    * then an undeveloped block next to town (it becomes a civic block), then free lots of developed blocks within
    * 0.7 × reach (deep blocks fill their interiors with yards, so free lots there get rare)
    */
+  /** a walking catchment (elementary school, clinic, library, parks) starts on the streets / roads / avenues along the
+   *  lot: true when one touches lot (lx, lz, w, d) — a highway is no footpath */
+  walkableLot(lx: number, lz: number, w: number, d: number): boolean {
+    const N = this.N, net = this.st.network;
+    const foot = (x: number, z: number) => x >= 0 && z >= 0 && x < N && z < N && net[z * N + x] >= Network.Street && net[z * N + x] <= Network.OneWay;
+    for (let x = lx; x < lx + w; x++) if (foot(x, lz - 1) || foot(x, lz + d)) return true;
+    for (let z = lz; z < lz + d; z++) if (foot(lx - 1, z) || foot(lx + w, z)) return true;
+    return false;
+  }
+
   /**
    * lot filter of a civic building serving (x, z): on the target's side of the trunk highway (walking catchments stop at
-   * highways) and, for a walking catchment (elementary school, clinic, library, parks), touching a street / road / avenue:
-   * the catchment starts on the roads along the lot, so a lot whose only road is the highway reaches nobody (128 s7: a
-   * school fronting the trunk served 0 pupils while 5,670 kids around it were unreached). The trunk line counts as
-   * highway from the start: the bot upgrades the avenue later, and a school placed on it would be stranded then.
+   * highways) and, for a walking catchment, a lot along a street / road / avenue (walkableLot): a lot whose only road is
+   * the highway reaches nobody (128 s7: a school fronting the trunk served 0 pupils while 5,670 kids were unreached)
    */
   civicAccept(defId: string, z: number): (lx: number, lz: number, w: number, d: number) => boolean {
     const side = (lz: number, d: number) => !this.highway || (lz + d / 2 < this.trunkZ) === (z < this.trunkZ);
     const walk = (getDef(defId)?.coverage as { metric?: string } | undefined)?.metric === 'walk';
-    const N = this.N, net = this.st.network, trunk = this.trunkZ;
-    const foot = (x: number, zz: number) => x >= 0 && zz >= 0 && x < N && zz < N && zz !== trunk && net[zz * N + x] >= Network.Street && net[zz * N + x] <= Network.OneWay;
-    const walkable = (lx: number, lz: number, w: number, d: number) => {
-      for (let x = lx; x < lx + w; x++) if (foot(x, lz - 1) || foot(x, lz + d)) return true;
-      for (let zz = lz; zz < lz + d; zz++) if (foot(lx - 1, zz) || foot(lx + w, zz)) return true;
-      return false;
-    };
-    return (lx, lz, w, d) => side(lz, d) && (!walk || walkable(lx, lz, w, d));
+    return (lx, lz, w, d) => side(lz, d) && (!walk || this.walkableLot(lx, lz, w, d));
+  }
+
+  /**
+   * after the trunk avenue became a highway: walking-catchment facilities whose only road it was reach nobody any more
+   * (no footpath along their lot) — bulldoze them, like a mayor moving the school; the needs rules build new ones on
+   * walkable lots for the districts left unserved
+   */
+  rehomeStranded(): void {
+    const st = this.st;
+    const gone: Building[] = [];
+    for (const b of st.buildings.values()) {
+      if (!(b.flags & BF.Plopped) || (getDef(b.def)?.coverage as { metric?: string } | undefined)?.metric !== 'walk') continue;
+      if (!this.walkableLot(b.x, b.z, b.w, b.d)) gone.push(b);
+    }
+    for (const b of gone) {
+      if (this.A.bulldoze({ x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d }).ok) this.say(`trunk highway: ${getDef(b.def)?.name} at ${b.x},${b.z} had no footpath left — bulldozed`);
+    }
   }
 
   placeCivic(defId: string, x: number, z: number, reach: number, clearLots = false): ActionResult | null {
@@ -599,7 +617,7 @@ export class SimBot {
     this.ordinances();
     if (!this.highway && pop > 12000 && this.canSpend(30000)) {
       const r = this.A.buildNetwork(lPath({ x: 0, z: this.trunkZ }, { x: this.N - 1, z: this.trunkZ }), Network.Highway);
-      if (r.ok) { this.highway = true; this.say(`trunk upgraded to highway ($${Math.round(r.cost)})`); }
+      if (r.ok) { this.highway = true; this.say(`trunk upgraded to highway ($${Math.round(r.cost)})`); this.rehomeStranded(); }
     }
   }
 

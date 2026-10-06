@@ -175,9 +175,10 @@ function simOf(st: CityState): Simulation | undefined {
 const NO_RASTER = new Float32Array(0);
 /**
  * a cached derived raster of (o, v), (re)built by `build` when missing / invalidated. raster = false: only the value
- * `build` returns is cached (e.g. the truck overlay's scale), no raster is allocated
+ * `build` returns is cached (e.g. the truck overlay's scale), no raster is allocated. zero = false: `build` writes
+ * every cell itself (no zero fill first)
  */
-function derived(st: CityState, o: Overlay, v: number, deps: readonly string[], build: (out: Float32Array) => number | void, raster = true, perBuilding = false): Entry {
+function derived(st: CityState, o: Overlay, v: number, deps: readonly string[], build: (out: Float32Array) => number | void, raster = true, perBuilding = false, zero = true): Entry {
   const c = cacheOf(st);
   const k = keyOf(o, v);
   let e = c.entries.get(k);
@@ -187,7 +188,7 @@ function derived(st: CityState, o: Overlay, v: number, deps: readonly string[], 
     let data: Float32Array = NO_RASTER;
     if (raster) {
       data = e && e.data.length === size ? e.data : new Float32Array(size);
-      data.fill(0);
+      if (zero) data.fill(0);
     }
     const bver = c.bver;
     const s = build(data);
@@ -445,7 +446,8 @@ function buildingBest(st: CityState, L: Float32Array, id: number): number {
  * deterministic ties), (4) emgFill: a multi-source BFS through targets only (x kept in the queue: no modulo per step).
  */
 function buildEmergency(st: CityState, variant: number, out: Float32Array): void {
-  if (!respReady(st)) return;
+  // (writes every cell: derived() skips its zero fill)
+  if (!respReady(st)) { out.fill(0); return; }
   const L = respLayer(st, variant);
   const C = st.cells, N = st.size;
   if (emgQueue.length < C) {
@@ -456,7 +458,7 @@ function buildEmergency(st: CityState, variant: number, out: Float32Array): void
   dep.fill(0, 0, C);
   emgPass = (emgPass % 0xfffffff0) + 1;
   const floor = -EMERG_RMAX + 1e-3, none = RESP_NONE + 0.5;
-  emgEncode(L, out, st.building, st.network, dep, open, emgFloorB, C, floor, none, 0.92 / (2 * EMG_SPAN), EMG_SPAN, EMG_NONE_T, EMG_INERT);
+  emgEncode(L, out, st.building, st.network, dep, open, emgFloorB, C, floor, none, 0.92 / (2 * EMG_SPAN), encodeSlack(0), EMG_NONE_T, EMG_INERT);
   const nOpen = EMG_COUNT[0], nFloorB = EMG_COUNT[1];
   // building cells at the floor: the footprint's best cell (a source), else inert at the floor
   for (let k = 0; k < nFloorB; k++) {
@@ -474,18 +476,19 @@ function buildEmergency(st: CityState, variant: number, out: Float32Array): void
 /** emgEncode's counts: [targets, building cells at the floor] */
 const EMG_COUNT = new Int32Array(2);
 let emgFloorB = new Int32Array(0);
-/** (1) sources encoded (encodeSlack inlined), RESP_NONE cells inert, targets (out -1) and floor buildings listed */
+/** (1) sources encoded (encodeSlack(s) = a + k s clamped to 0.08 .. 1, a = encodeSlack(0): doubles only in the loop),
+ *  RESP_NONE cells inert, targets (out -1) and floor buildings listed */
 function emgEncode(L: Float32Array, out: Float32Array, bld: Int32Array, net: Uint8Array, dep: Uint8Array, open: Int32Array, floorB: Int32Array,
-  C: number, floor: number, none: number, k0: number, span: number, noneT: number, inert: number): void {
+  C: number, floor: number, none: number, k: number, a: number, noneT: number, inert: number): void {
   let n = 0, m = 0;
   for (let i = 0; i < C; i++) {
     const s = L[i];
-    if (s > floor) { out[i] = 0.08 + k0 * ((s < -span ? -span : s > span ? span : s) + span); continue; }
+    if (s > floor) { const v = a + k * s; out[i] = v > 1 ? 1 : v < 0.08 ? 0.08 : v; continue; }
     if (s <= none) { out[i] = noneT; dep[i] = inert; continue; }
     if (bld[i] >= 0) { floorB[m++] = i; continue; }
-    const k = net[i];
+    const c = net[i];
     // a road at the floor: a source 6+ min out
-    if (k >= Network.Street && k <= Network.Highway) { out[i] = 0.08 + k0 * ((s < -span ? -span : s) + span); continue; }
+    if (c >= Network.Street && c <= Network.Highway) { out[i] = 0.08; continue; }
     out[i] = -1;
     open[n++] = i;
   }
@@ -495,8 +498,10 @@ function emgEncode(L: Float32Array, out: Float32Array, bld: Int32Array, net: Uin
 /** (3) the sources beside a target (dep 1; inert cells: dep EMG_INERT, targets: out -1); returns the queue length */
 function emgSeed(out: Float32Array, dep: Uint8Array, open: Int32Array, n: number, q: Int32Array, qx: Uint16Array, N: number, C: number): number {
   let tail = 0;
+  // (x of a power-of-two map without a division)
+  const mask = (N & (N - 1)) === 0 ? N - 1 : -1;
   for (let k = 0; k < n; k++) {
-    const i = open[k], x = i % N;
+    const i = open[k], x = mask >= 0 ? i & mask : i % N;
     if (x > 0 && dep[i - 1] === 0 && out[i - 1] >= 0) { dep[i - 1] = 1; q[tail] = i - 1; qx[tail++] = x - 1; }
     if (x < N - 1 && dep[i + 1] === 0 && out[i + 1] >= 0) { dep[i + 1] = 1; q[tail] = i + 1; qx[tail++] = x + 1; }
     if (i >= N && dep[i - N] === 0 && out[i - N] >= 0) { dep[i - N] = 1; q[tail] = i - N; qx[tail++] = x; }
@@ -579,10 +584,11 @@ function buildTapWater(st: CityState, out: Float32Array): void {
   const w = st.watered, C = st.cells, N = st.size, bld = st.building, net = st.network;
   const A = TAP_T0, B = 1 - TAP_T0;
   const u = sim?.getSystem<UtilitiesSystem>('utilities');
+  // (writes every cell: derived() skips its zero fill)
   if (!sim || !u) {
     // no per-network quality: every served cell reads the city mean
     const t = A + B * clamp01(st.stats.tapWater ?? 1);
-    for (let i = 0; i < C; i++) if (w[i]) out[i] = t;
+    for (let i = 0; i < C; i++) out[i] = w[i] ? t : 0;
     return;
   }
   let ids = tapIds.get(st);
@@ -596,7 +602,7 @@ function buildTapWater(st: CityState, out: Float32Array): void {
   for (let z = 0, i = 0; z < N; z++) {
     let left = false;
     for (let x = 0; x < N; x++, i++) {
-      if (!w[i]) { left = false; up[x] = 0; continue; }
+      if (!w[i]) { out[i] = 0; left = false; up[x] = 0; continue; }
       const id = bld[i];
       if (id >= 0) {
         if (stamp[id] !== pass) {
@@ -690,7 +696,8 @@ export function overlayDeps(o: Overlay, variant = -1): readonly string[] {
     case Overlay.Police: case Overlay.Fire: case Overlay.Health: return D_SVC;
     case Overlay.Education: case Overlay.Parks: case Overlay.Shops: case Overlay.Nimby: return D_CATCH;
     case Overlay.Power: return ['utilities'];
-    case Overlay.Water: return v === 1 ? ['utilities', 'pollution'] : ['utilities'];
+    // (tap quality: utilities recomputes it from the intake pollution in its own pass, then emits 'utilities')
+    case Overlay.Water: return ['utilities'];
     case Overlay.Desirability: return v >= DEV_TYPE_COUNT ? D_APPEAL : ['desirability'];
     case Overlay.Noise: return ['pollution', 'traffic'];
     case Overlay.Transit: return ['services', 'traffic'];
@@ -737,7 +744,7 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
     case Overlay.Power: return L(st.powered, 1, 'binary', 'Power', v, deps);
     case Overlay.Water: {
       if (v === 1) {
-        const e = derived(st, o, v, deps, (out) => buildTapWater(st, out));
+        const e = derived(st, o, v, deps, (out) => buildTapWater(st, out), true, false, false);
         return L(e.data, 1, 'good', 'Tap water quality', v, deps);
       }
       return L(st.watered, 1, 'binary', 'Water', v, deps);
@@ -770,7 +777,7 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
     }
     case Overlay.Soil: return L(st.soil, 1, 'bad', 'Soil contamination', v, deps);
     case Overlay.Emergency: {
-      const e = derived(st, o, v, deps, (out) => buildEmergency(st, v, out));
+      const e = derived(st, o, v, deps, (out) => buildEmergency(st, v, out), true, false, false);
       return L(e.data, 1, 'good', EMG_LABELS[v], v, deps);
     }
     case Overlay.Parking: return L(st.parking, 1, 'bad', 'Parking pressure', v, deps);

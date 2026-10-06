@@ -141,7 +141,7 @@ describe('bot: facilities', () => {
     expect(lotTouchesRoad(st, plant.x, plant.z, plant.w, plant.d)).toBe(true);
   });
 
-  it('a walking-catchment facility (school, clinic, park) never takes a lot whose only road is the highway', { timeout: 600000 }, async () => {
+  it('a walking-catchment facility (school, clinic, park) never takes a lot whose only road is the highway; the trunk upgrade re-homes stranded ones', { timeout: 600000 }, async () => {
     const b = await bot(96);
     b.setup();
     b.st.funds = 5e6;
@@ -159,10 +159,16 @@ describe('bot: facilities', () => {
     }
     expect(x0).toBeGreaterThanOrEqual(0);
     const target = b.trunkZ + 8; // (a target on the same side of the trunk)
-    // the trunk avenue becomes a highway (a pedestrian barrier) once the town grows: a school on it would be stranded
-    expect(b.civicAccept('civ_elementary_school', target)(x0, z0, 3, 3)).toBe(false);
+    // while the trunk is an avenue it is a footpath like any street: a school may front it
+    expect(b.civicAccept('civ_elementary_school', target)(x0, z0, 3, 3)).toBe(true);
+    let school: Building | null = null;
+    for (const rot of [0, 1, 2, 3] as const) if (!school && b.A.plop('civ_elementary_school', x0, z0, rot).ok) school = st.buildingAt(x0, z0)!;
+    expect(school).toBeTruthy();
+    // the town grows, the trunk becomes a highway (a pedestrian barrier): the school would reach nobody — it is moved
     expect(b.A.buildNetwork(lPath({ x: 0, z: b.trunkZ }, { x: N - 1, z: b.trunkZ }), Network.Highway).ok).toBe(true);
     b.highway = true;
+    b.rehomeStranded();
+    expect(st.buildings.has(school!.id)).toBe(false);
     expect(b.civicAccept('civ_elementary_school', target)(x0, z0, 3, 3)).toBe(false);
     expect(b.civicAccept('park_small', target)(x0, z0, 1, 1)).toBe(false);
     // a drive catchment (police, fire, high school) takes the highway; across the trunk nothing serves the target

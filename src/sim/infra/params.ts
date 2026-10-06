@@ -708,6 +708,9 @@ export const PR_PRICE_MAX = 30;
 export const GARAGE_GROUP_CELLS = 10;
 /** garage choice between a commuter's two park & ride options: logit scale per minute (of minutes + price) */
 export const PR_GARAGE_BETA = 0.5;
+/** a second park & ride option more than this many minutes (incl. price) behind the first is none (no overflow there:
+ *  the commuter re-decides without park & ride) */
+export const PR_SECOND_MAX = 6;
 /** a park & ride garage keeps its stop unless another is faster by more than this many minutes (or 10 %) */
 export const PR_STOP_KEEP = 1;
 /** weight of the new value when a park & ride garage's reserve for its block is recomputed (every parking update) */

@@ -68,21 +68,74 @@ export function addGarageSupply(N: number, b: Pick<Building, 'x' | 'z' | 'w' | '
 }
 
 /**
- * a garage's walk area (the disk its spaces spread over, see addGarageSupply): demand d and supply s summed over it and
- * the share of its kernel on the map (mass: its own spaces there = spaces x mass)
+ * park & ride garages' reserve basis (local parkers first): the cars arriving on each demand cell beyond the parking
+ * around it, u = D x max(0, 1 - box(S) / box(D)) (the raster's box model: ratio > 1 = cars without a space), summed
+ * over each garage's walk area (its kernel disk) — a cell inside several garages' areas shared by their kernel weights.
+ * boxS = box(supply without these garages); `cover` = scratch raster of st.cells, all 0 (left all 0). Returns the
+ * cars per garage.
  */
-export function garageArea(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>, D: Float32Array, S: Float32Array): { d: number; s: number; mass: number } {
-  const R = GARAGE_WALK_RADIUS + (Math.max(b.w, b.d) >> 1);
+export function garageUnmet(N: number, garages: readonly Pick<Building, 'x' | 'z' | 'w' | 'd'>[], D: Float32Array, boxD: Float32Array,
+  boxS: Float32Array, cover: Float32Array): Float64Array {
+  const out = new Float64Array(garages.length);
+  const each = (fn: (g: number, i: number, w: number) => void) => {
+    for (let g = 0; g < garages.length; g++) {
+      const b = garages[g];
+      const k = kernel(GARAGE_WALK_RADIUS + (Math.max(b.w, b.d) >> 1));
+      const cx = b.x + (b.w >> 1), cz = b.z + (b.d >> 1);
+      for (let q = 0; q < k.w.length; q++) {
+        const x = cx + k.dx[q], z = cz + k.dz[q];
+        if (x < 0 || z < 0 || x >= N || z >= N) continue;
+        fn(g, z * N + x, k.w[q]);
+      }
+    }
+  };
+  each((_g, i, w) => { cover[i] += w; });
+  each((g, i, w) => {
+    const d = D[i], bd = boxD[i];
+    if (!(d > 0) || !(bd > 1e-6) || !(cover[i] > 0)) return;
+    const u = d * (1 - boxS[i] / bd);
+    if (u > 0) out[g] += (u * w) / cover[i];
+  });
+  each((_g, i) => { cover[i] = 0; });
+  return out;
+}
+
+/**
+ * a garage's relief (report): the demand-weighted parking pressure over the demand cells of its walk area with every
+ * garage's free spaces (boxD / boxS of the last parking update) and without its own `free` spaces (its kernel's share of
+ * each cell's box taken out of box(S))
+ */
+export function garageRelief(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>, free: number, D: Float32Array, boxD: Float32Array,
+  boxS: Float32Array): { with: number; without: number } {
+  const R = GARAGE_WALK_RADIUS + (Math.max(b.w, b.d) >> 1), B = PARKING_BOX_R;
   const k = kernel(R);
   const cx = b.x + (b.w >> 1), cz = b.z + (b.d >> 1);
-  let d = 0, s = 0, mass = 0;
+  // the kernel as a dense (2R + 1)^2 grid: weight at offset (dx, dz)
+  const W = 2 * R + 1, grid = new Float32Array(W * W);
+  for (let q = 0; q < k.w.length; q++) grid[(k.dz[q] + R) * W + (k.dx[q] + R)] = k.w[q];
+  const inv = 1 / ((2 * B + 1) * (2 * B + 1));
+  let wSum = 0, pw = 0, po = 0;
   for (let q = 0; q < k.w.length; q++) {
     const x = cx + k.dx[q], z = cz + k.dz[q];
     if (x < 0 || z < 0 || x >= N || z >= N) continue;
-    const i = z * N + x;
-    d += D[i]; s += S[i]; mass += k.w[q];
+    const i = z * N + x, d = D[i];
+    if (!(d > 0)) continue;
+    // its spaces inside the box of cell i (the box mean: / box area)
+    let g = 0;
+    for (let oz = -B; oz <= B; oz++) {
+      const gz = k.dz[q] + oz + R;
+      if (gz < 0 || gz >= W || z + oz < 0 || z + oz >= N) continue;
+      for (let ox = -B; ox <= B; ox++) {
+        const gx = k.dx[q] + ox + R;
+        if (gx < 0 || gx >= W || x + ox < 0 || x + ox >= N) continue;
+        g += grid[gz * W + gx];
+      }
+    }
+    wSum += d;
+    pw += d * pressureOf(boxD[i], boxS[i]);
+    po += d * pressureOf(boxD[i], Math.max(0, boxS[i] - free * g * inv));
   }
-  return { d, s, mass };
+  return wSum > 0 ? { with: pw / wSum, without: po / wSum } : { with: 0, without: 0 };
 }
 
 /** parking pressure of a demand / supply ratio (the raster's smoothstep, PARKING_RATIO) */
@@ -130,27 +183,29 @@ export interface ParkingSummary {
   demand: number;
 }
 
+/** box mean ((2 PARKING_BOX_R + 1)^2) of a raster: src -> dst (tmp = scratch of st.cells) */
+export function parkingBox(N: number, src: Float32Array, dst: Float32Array, tmp: Float32Array): void {
+  boxH(src, tmp, N, PARKING_BOX_R);
+  boxV(tmp, dst, N, PARKING_BOX_R);
+}
+
 /**
- * parking = smoothstep(r0, r1, box(D) / box(S)) into `out` (0 where there is no demand nearby); with `prev` (the
- * previous raster, not aliasing `out`) out = blend x prev + (1 - blend) x fresh. `tmpA` / `tmpB` are scratch rasters of
- * st.cells. D and S are left unchanged. The summary describes the (blended) result.
+ * parking = smoothstep(r0, r1, boxD / boxS) into `out` (0 where there is no demand nearby; boxD / boxS = parkingBox of
+ * the demand D and the supply S); with `prev` (the previous raster, not aliasing `out`) out = blend x prev + (1 - blend)
+ * x fresh. D, S and the boxes are left unchanged. The summary describes the (blended) result.
  */
-export function computeParking(N: number, D: Float32Array, S: Float32Array, out: Float32Array, tmpA: Float32Array, tmpB: Float32Array,
+export function parkingFromBoxes(N: number, D: Float32Array, S: Float32Array, boxD: Float32Array, boxS: Float32Array, out: Float32Array,
   prev: Float32Array | null = null, blend = 0): ParkingSummary {
-  const C = N * N, R = PARKING_BOX_R;
-  boxH(D, tmpA, N, R);
-  boxV(tmpA, out, N, R); // out = box(D)
-  boxH(S, tmpA, N, R);
-  boxV(tmpA, tmpB, N, R); // tmpB = box(S)
+  const C = N * N;
   const r0 = PARKING_RATIO[0], r1 = PARKING_RATIO[1];
   const bl = prev && prev.length === C ? Math.max(0, Math.min(1, blend)) : 0;
   let wSum = 0, pSum = 0, dCells = 0, high = 0, sTot = 0, dTot = 0;
   for (let i = 0; i < C; i++) {
-    const d = out[i];
+    const d = boxD[i];
     sTot += S[i];
     const di = D[i];
     dTot += di;
-    const s = tmpB[i];
+    const s = boxS[i];
     let p = !(d > 1e-6) ? 0 : s > 1e-6 ? sstep(r0, r1, d / s) : 1;
     if (bl > 0) p = bl * prev![i] + (1 - bl) * p;
     out[i] = p;
@@ -160,6 +215,19 @@ export function computeParking(N: number, D: Float32Array, S: Float32Array, out:
     }
   }
   return { demandWeighted: wSum > 0 ? pSum / wSum : 0, highShare: dCells > 0 ? high / dCells : 0, supply: sTot, demand: dTot };
+}
+
+/**
+ * parking = smoothstep(r0, r1, box(D) / box(S)) into `out` (0 where there is no demand nearby); with `prev` (the
+ * previous raster, not aliasing `out`) out = blend x prev + (1 - blend) x fresh. `tmpA` / `tmpB` are scratch rasters of
+ * st.cells. D and S are left unchanged. The summary describes the (blended) result.
+ */
+export function computeParking(N: number, D: Float32Array, S: Float32Array, out: Float32Array, tmpA: Float32Array, tmpB: Float32Array,
+  prev: Float32Array | null = null, blend = 0): ParkingSummary {
+  // (box(D) into out first: parkingFromBoxes reads boxD[i] before it writes out[i])
+  parkingBox(N, D, out, tmpA);
+  parkingBox(N, S, tmpB, tmpA);
+  return parkingFromBoxes(N, D, S, out, tmpB, out, prev, blend);
 }
 
 /** mean parking pressure over a footprint */
