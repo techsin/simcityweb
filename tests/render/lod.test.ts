@@ -1134,11 +1134,17 @@ describe('burnt lots and foundations', () => {
     bi.cells.forEach((id, k) => expect(info[id].geometryIndex).toBe(bi.kitLod[k]));
     const lod = bi.cells.reduce((a, id) => a + br.batch.triangles(info[id].geometryIndex), 0);
     expect(lod).toBeLessThan(full * 0.2);
+    // the level bed turns into one plain quad + sides
+    const bb = bi as unknown as { geom: number; lodGeom: number };
+    expect(bb.lodGeom).not.toBe(bb.geom);
+    expect(info[bi.main].geometryIndex).toBe(bb.lodGeom);
+    expect(br.batch.triangles(bb.lodGeom)).toBe(10);
     // shared culling spheres: the swaps only patched draw ranges (no list rebuild)
     const ver = (br.batch as unknown as { version: number }).version;
     for (let d = dOn * 1.3; d > 100; d -= 25) at(d);
     expect(bi.lod).toBe(0);
     bi.cells.forEach((id, k) => expect(info[id].geometryIndex).toBe(bi.kitGeo[k]));
+    expect(info[bi.main].geometryIndex).toBe(bb.geom);
     expect((br.batch as unknown as { version: number }).version).toBe(ver);
   });
 

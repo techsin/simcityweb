@@ -27,6 +27,29 @@ export class StatsPanel extends Panel {
   private modesLegend!: HTMLElement;
   private wealth!: HTMLElement;
   private wealthLegend!: HTMLElement;
+  /** parking garages by park & ride state, counted at most once a day (only while no park & ride room is open) */
+  private garages: { key: string; counts: GarageCounts } | null = null;
+
+  /** garages by their state in the last traffic assignment (the plopped list when the economy runtime has one) */
+  private garageCounts(): GarageCounts {
+    const st = this.ctx.state;
+    const key = `${st.day}:${st.buildings.size}`;
+    if (this.garages?.key === key) return this.garages.counts;
+    const sim = this.ctx.sim;
+    let list: Iterable<Building> = st.buildings.values();
+    try {
+      const rt = sim.getSystem<SimSystem & { rt?: EconRuntime }>('economy.population')?.rt;
+      if (rt) {
+        rt.ensureLists();
+        list = rt.plopped;
+      }
+    } catch {
+      /* the whole city */
+    }
+    const counts = countGarages(list, sim.getSystem<SimSystem & GarageStates>('traffic'));
+    this.garages = { key, counts };
+    return counts;
+  }
 
   protected build(): void {
     const card = (id: string, label: string, ic: string) => {
@@ -135,7 +158,8 @@ export class StatsPanel extends Panel {
     setText(c.buses.s, tf && tf.busesNeeded > 0 ? `buses · ${num(tf.busesNeeded)} needed` : 'no bus routes yet');
     c.buses.v.className = 'sc-v ' + (tf && tf.busesNeeded > 1.15 * tf.buses ? 'warn' : '');
     setText(c.pr.v, tf ? compact(tf.parkRide) : '—');
-    setText(c.pr.s, tf && tf.parkRideSpaces > 0 ? `a day · ${compact(tf.parkRideSpaces)} spaces` : 'no garages by a stop');
+    // (no park & ride room: why — every park & ride garage keeps its spaces for its block, or none is by a stop)
+    setText(c.pr.s, parkRideLine(tf, tf && tf.parkRideSpaces > 0 ? { total: 0, parkRide: 0, downtown: 0, noTransit: 0 } : this.garageCounts()));
     setText(c.tourists.v, compact(s.tourists ?? 0));
     setText(c.tourists.s, `a day · ${compact(s.hotelRooms ?? 0)} hotel rooms`);
     setText(c.attract.v, `${Math.round(s.attractiveness ?? 0)}`);
