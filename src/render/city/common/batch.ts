@@ -187,13 +187,14 @@ const _rng = new Float64Array(6);
 const _plf = new Float64Array(7);
 /** sub-cells per tile side (pack groups of static tiles) */
 const SUB = 4;
-/** sorted lists: distance key per entry (sqrt-spaced buckets: fine up close) and the histogram of the counting sort;
- *  KEYQ[i] = key of a distance of i / 4 m (quarter-metre steps up to KEYQ_M m: no square root for those) */
+/** sorted lists: distance key per entry, floor(4 sqrt(d)) of its distance d to the camera (sqrt-spaced buckets: fine up
+ *  close; 255 from 4064 m on), and the histogram of the counting sort. The key comes from a table instead of a second
+ *  square root: KEYQ[i] for d = i / 4 m below 1024 m (quarter-metre steps), KEYQ[4096 + i] for d = 1024 + i m above. */
 const _hist = new Int32Array(257);
-const KEYQ_M = 1024;
 const KEYQ = (() => {
-  const t = new Uint8Array(KEYQ_M * 4);
-  for (let i = 0; i < t.length; i++) t[i] = Math.min(255, Math.floor(Math.sqrt(i / 4) * 4));
+  const t = new Uint8Array(4096 + 3072);
+  for (let i = 0; i < 4096; i++) t[i] = Math.min(255, Math.floor(Math.sqrt(i / 4) * 4));
+  for (let i = 0; i < 3072; i++) t[4096 + i] = Math.min(255, Math.floor(Math.sqrt(1024 + i) * 4));
   return t;
 })();
 /** current camera orientation */
@@ -228,18 +229,16 @@ function orient(w: ArrayLike<number>, out: Float64Array): void {
   }
 }
 
-/** equal within a relative 1e-9 (projection shapes: a still, damped camera jitters by float ulps) */
 /**
  * One texSubImage2D of rows [y0, y0 + h) (full width w) straight into a texture three.js has already created (no
  * re-specification, no sampler parameters). It runs inside a pass (onBeforeRender / onBeforeShadow), so the texture is
- * bound on the active unit only for the upload and that unit's previous texture is bound back: three.js does not
- * re-bind a material's textures for a draw that reuses the previous draw's program and material (two batches sharing
- * the city material), which would otherwise sample this texture in place of one of them.
+ * bound for the upload on the last texture unit, which materials never use (three.js allocates their units from 0; it
+ * tracks the binding): binding it on the active unit could replace a material texture that three.js does not re-bind
+ * for a draw reusing the previous draw's program and material (two batches sharing the city material).
  */
 function uploadRows(renderer: THREE.WebGLRenderer, tex: WebGLTexture, y0: number, w: number, h: number, format: number, type: number, data: ArrayBufferView, offset: number): void {
   const gl = renderer.getContext() as WebGL2RenderingContext, st = renderer.state;
-  const prev = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
-  st.bindTexture(gl.TEXTURE_2D, tex);
+  st.bindTexture(gl.TEXTURE_2D, tex, gl.TEXTURE0 + renderer.capabilities.maxTextures - 1);
   st.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   st.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
   st.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
@@ -247,10 +246,9 @@ function uploadRows(renderer: THREE.WebGLRenderer, tex: WebGLTexture, y0: number
   st.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
   st.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
   gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, y0, w, h, format, type, data, offset);
-  // (null: three.js binds its empty texture)
-  st.bindTexture(gl.TEXTURE_2D, prev as WebGLTexture);
 }
 
+/** equal within a relative 1e-9 (projection shapes: a still, damped camera jitters by float ulps) */
 function close(a: number, b: number): boolean {
   return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a));
 }
@@ -871,9 +869,11 @@ export class DynamicBatch {
       s = {
         camera, starts: new Int32Array(64), counts: new Int32Array(64), ids: new Uint32Array(64), tex: null as unknown as THREE.DataTexture, texCap: 0, small: 0, count: 0,
         version: -1, swapAt: 0, gen: 0, posGen: -1, pos: new Int32Array(0),
-        selT: new Int32Array(64), selV: new Uint32Array(64), selO: new Int32Array(64), selN: 0, selEnd: 0, selMinR: 0, selValid: false, used: 0,
-        shape: new Float64Array(6), rot: new Float64Array(9), tiltOk: 0, nearB: 0, farB: 0, texel: -1, px: 0, py: 0, pz: 0, margin: 0, banded: false,
-        rform: -1, rrot: new Float64Array(9), rtiltOk: 0, rx: 0, ry: 0, rz: 0, rdn: 0, rdf: 0,
+        // (fields holding doubles start as doubles, -0 / NaN: a field first stored as a small integer changes its
+        // representation at the first double, which deoptimizes the code that read it)
+        selT: new Int32Array(64), selV: new Uint32Array(64), selO: new Int32Array(64), selN: 0, selEnd: 0, selMinR: -0, selValid: false, used: 0,
+        shape: new Float64Array(6), rot: new Float64Array(9), tiltOk: -0, nearB: -0, farB: -0, texel: NaN, px: -0, py: -0, pz: -0, margin: -0, banded: false,
+        rform: -1, rrot: new Float64Array(9), rtiltOk: -0, rx: -0, ry: -0, rz: -0, rdn: -0, rdf: -0,
         still: 0, uses: 0, noBand: 0, lx: NaN, ly: NaN, lz: NaN, lrot: new Float64Array(9), lrrot: new Float64Array(9), lrx: NaN, lry: NaN, lrz: NaN,
       };
       this.slots.push(s);
@@ -1202,6 +1202,13 @@ export class DynamicBatch {
         else n = this.pushList(this.untiled, un, minR > 0, recv ? 6 : 0, n, cbit);
       }
       if (sorted) this.scatterSorted(s, n);
+      // a kept prefix keeps its entries' positions: the instance -> list index map of the previous list (patchRanges)
+      // stays valid for it and only the rewritten tail is re-indexed, instead of the whole map at the next patch
+      if (reuse && s.posGen === s.gen - 1 && s.pos.length >= this.instGeo.length) {
+        const pos = s.pos, ids = this.oI;
+        for (let j = Math.min(pre, n); j < n; j++) pos[ids[j]] = j;
+        s.posGen = s.gen;
+      }
     } else s.selValid = false;
     if (keep && s.tex && n === s.count) return;
     s.count = n;
@@ -1524,7 +1531,7 @@ export class DynamicBatch {
       const o = j * 4, dx = ps[o] - kx, dy = ps[o + 1] - ky, dz = ps[o + 2] - kz;
       // (distance key: sqrt-spaced buckets of the distance to the sphere, quarter metres up close)
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - ps[o + 3];
-      const kk = d <= 0 ? 0 : d < KEYQ_M ? KEYQ[(d * 4) | 0] : d >= 4096 ? 255 : (Math.sqrt(d) * 4) | 0;
+      const kk = d <= 0 ? 0 : d < 1024 ? KEYQ[(d * 4) | 0] : d < 4096 ? KEYQ[3072 + (d | 0)] : 255;
       key[n] = kk;
       hist[kk + 1]++;
       starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++;
@@ -1569,7 +1576,7 @@ export class DynamicBatch {
       if (key !== null) {
         const dx = cx - kx, dy = cy - ky, dz = cz - kz;
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - r;
-        const kk = d <= 0 ? 0 : d < KEYQ_M ? KEYQ[(d * 4) | 0] : d >= 4096 ? 255 : (Math.sqrt(d) * 4) | 0;
+        const kk = d <= 0 ? 0 : d < 1024 ? KEYQ[(d * 4) | 0] : d < 4096 ? KEYQ[3072 + (d | 0)] : 255;
         key[n] = kk;
         hist[kk + 1]++;
       }
@@ -1615,7 +1622,7 @@ export class DynamicBatch {
       if (key !== null) {
         const dx = cx - kx, dy = cy - ky, dz = cz - kz;
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - r;
-        const kk = d <= 0 ? 0 : d < KEYQ_M ? KEYQ[(d * 4) | 0] : d >= 4096 ? 255 : (Math.sqrt(d) * 4) | 0;
+        const kk = d <= 0 ? 0 : d < 1024 ? KEYQ[(d * 4) | 0] : d < 4096 ? KEYQ[3072 + (d | 0)] : 255;
         key[n] = kk;
         hist[kk + 1]++;
       }

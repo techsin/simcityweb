@@ -54,6 +54,13 @@ const _p = new Float64Array(8);
 const _m = new Float64Array(6);
 /** chooseExit's per-direction weights */
 const _w4 = new Float64Array(4);
+/** a vehicle whose cell sphere stays this far (m) outside the view frustum is neither posed nor drawn: beyond the
+ *  shadow a vehicle can cast into the view (~4 m tall at >= 6 deg sun elevation) */
+const VIEW_MARGIN = 40;
+/** poseCars: the view frustum planes (nx, ny, nz, constant) x 6 */
+const _vf = new Float64Array(24);
+const _vfr = new THREE.Frustum();
+const _vfm = new THREE.Matrix4();
 
 /** classic zoom thinning step: a above h0, easing to b over w metres of camera height */
 function ease(h: number, h0: number, w: number, a: number, b: number): number {
@@ -205,6 +212,10 @@ export class VehicleRenderer {
   private vtile!: Int32Array;
   private vcs!: Float64Array;
   private vsg!: Float64Array;
+  /** per vehicle: a sphere (x, y, z, r) around its cell (noteCell) that bounds the vehicle wherever it is on the cell
+   *  path, widened by VIEW_MARGIN: a vehicle whose sphere misses the view frustum is neither posed nor drawn (see
+   *  poseCars) */
+  private vsph!: Float32Array;
   /** cell caches need a full refresh (network / traffic changed), and the rolling refresh position */
   private cellsDirty = true;
   private refreshAt = 0;
@@ -317,6 +328,7 @@ export class VehicleRenderer {
     this.vtile = new Int32Array(cap);
     this.vcs = new Float64Array(cap * 2);
     this.vsg = new Float64Array(cap);
+    this.vsph = new Float32Array(cap * 4);
     this.fgap = new Float64Array(cap);
     this.frear = new Int32Array(cap);
     this.fdone = new Int32Array(cap);
@@ -611,6 +623,15 @@ export class VehicleRenderer {
     // the intersection's phase offset: uint32 hash of its cell, like the lamp shader ((ci * 2654435761u) % 997u) * 0.03
     const sig = this.signalized;
     this.vsg[v] = sig && nc >= 0 && sig[nc] ? ((Math.imul(nc, -1640531535) >>> 0) % 997) * 0.03 : -1;
+    // the cell's culling sphere: its footprint and terrain height range (bridge / overpass cells: up to a deck high above
+    // it), the overhang of a long vehicle into the next cell, and the view margin
+    const st = this.state, N = st.size, N1 = N + 1, hts = st.heights;
+    const ix = ci % N, iz = (ci / N) | 0, j = iz * N1 + ix;
+    const a = hts[j], b = hts[j + 1], c = hts[j + N1], d = hts[j + N1 + 1];
+    const lo = Math.min(a, b, c, d), hi = Math.max(a, b, c, d) + LIFT + (this.net.bAxis[ci] >= 0 || this.net.bCross[ci] ? 60 : 5);
+    const hy = (hi - lo) * 0.5, o = v * 4, sp = this.vsph;
+    sp[o] = (ix + 0.5) * CELL_SIZE; sp[o + 1] = lo + hy; sp[o + 2] = (iz + 0.5) * CELL_SIZE;
+    sp[o + 3] = Math.sqrt(CELL_SIZE * CELL_SIZE * 0.5 + hy * hy) + 12 + VIEW_MARGIN;
   }
 
   /** refresh the cell caches: all of them after invalidate() (network / traffic changed), else a rolling slice so every
@@ -774,6 +795,7 @@ export class VehicleRenderer {
       this.vtile[v] = this.vtile[last];
       this.vcs[v * 2] = this.vcs[last * 2]; this.vcs[v * 2 + 1] = this.vcs[last * 2 + 1];
       this.vsg[v] = this.vsg[last];
+      this.vsph.copyWithin(v * 4, last * 4, last * 4 + 4);
     }
     this.vroute[last] = null;
   }
@@ -1111,7 +1133,12 @@ export class VehicleRenderer {
     // (classic rule keeps every vehicle and no distance cap: no distance needed)
     const all = keep >= 1 && D2 === Infinity;
     const life = this.life, tt = this.t, spd = this.spd, len = this.len, vlen = this.vlen, inst = this.inst, vis = this.vis, rank = this.rank;
-    const vtile = this.vtile, posed = this.posed;
+    const vtile = this.vtile, posed = this.posed, vsph = this.vsph;
+    // the view frustum (a vehicle in a visible tile but out of view, beyond any shadow it could cast into the view, is
+    // hidden: no pose, no draw)
+    _vfr.setFromProjectionMatrix(_vfm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+    for (let i = 0; i < 6; i++) { const pl = _vfr.planes[i], o = i * 4; _vf[o] = pl.normal.x; _vf[o + 1] = pl.normal.y; _vf[o + 2] = pl.normal.z; _vf[o + 3] = pl.constant; }
+    const vf = _vf;
     let written = 0;
     for (let v = 0; v < this.n; v++) {
       life[v] -= dt;
@@ -1139,7 +1166,11 @@ export class VehicleRenderer {
       const tl = vtile[v];
       let show = 0;
       if (tl >= 0 && tileVis[tl] === 1) {
-        if (all) show = 1;
+        const o = v * 4, sx = vsph[o], sy = vsph[o + 1], sz = vsph[o + 2], sr = -vsph[o + 3];
+        let inView = true;
+        for (let k = 0; k < 24; k += 4) if (vf[k] * sx + vf[k + 1] * sy + vf[k + 2] * sz + vf[k + 3] < sr) { inView = false; break; }
+        if (!inView) show = 0;
+        else if (all) show = 1;
         else {
           _p[4] = t;
           this.evalCached(v);
