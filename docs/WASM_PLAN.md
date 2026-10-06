@@ -17,7 +17,7 @@ Since then we built a Rust → wasm32 toolchain, ported six kernels, and had eve
 1. **WebAssembly does not win broadly, so we will not rely heavily on it.**
    - Every port is correct on the sim's domain: bit-identical in 10k–49k randomized differential cases per port, and in 120–365-day city runs.
    - Most kernels are faster on their own: 1.2–1.5× on graph searches and gathers, 3–5× on blur stencils.
-   - But against the best exact JS, with V8's ArrayBuffer-detaching protector intact on both sides, the systems that contain them gain only 1.0–1.3×, and the whole simulated day 0–11 %.
+   - But against the best exact JS, with V8's ArrayBuffer-detaching protector intact on both sides, the systems that contain them gain at most 1.3×, and the whole simulated day at most 11 %. Several ports made the day slower.
    - Free JS fixes are worth as much or more.
 2. **Smoothness comes from a Web Worker, not from WebAssembly.** Moving the Simulation into a dedicated worker (W1) takes all sim work off the main thread. Today at ultra that work is 31–35 ms of CPU per simulated day, with p99 frames of 95 ms, 73–105 ms month boundaries and single steps of up to 67 ms. W1 is the first and largest item.
 3. **The sim's JS isolate must never detach an ArrayBuffer.**
@@ -49,7 +49,7 @@ Since then we built a Rust → wasm32 toolchain, ported six kernels, and had eve
 - **Cadences.**
   - Design cadence is `advanceDay()` plus `schedulerOf(sim).flush(sim)` every day, so every infrastructure pass runs when it is due.
   - Ultra is the live game at speed 3: 0.05 s per day, 20 days/s. At this speed the scheduler starves passes.
-- **The porters' bias.** The porters measured their JS baselines in isolates whose protector was already invalidated, either by wasm `memory.grow` or by loading fixtures through `unpackFile`, whose undici streams detach buffers in node. That inflated their speed-ups. This plan uses only the independent numbers, measured with the protector intact.
+- **The porters' bias.** Most porters measured their JS baselines in isolates whose protector was already invalidated, either by wasm `memory.grow` or by loading fixtures through `unpackFile`, whose undici streams detach buffers in node. That inflated their speed-ups. This plan uses only the independent numbers, measured with the protector intact.
 
   | kernel | porter's claim | independent, protector intact |
   |---|---|---|
@@ -202,7 +202,7 @@ The table gives CPU ms per simulated day at design cadence, on the A/B scale.
 
 | step | central | range | basis |
 |---|---|---|---|
-| A. Today: main thread, protector invalidated | 64 | 60–68 | B × 1.05–1.14, the measured protector effect on the whole day |
+| A. Today: main thread, protector invalidated | 64 | 60–68 | B × 1.05–1.14, the measured protector effect on the whole day in node (1.04–1.06× in Chromium) |
 | B. Today's JS in a worker, protector intact | 57 | 53–62 | measured "original" arms in three harnesses: 54.2, 62.0, 52.7 |
 | C. B + exact JS fixes (§6) | 51 | 47–56 | sum of the measured savings, about 6 ms/day (below) |
 | D. C + cadence fixes, mainly the services dirty trigger | 40 | 32–48 (projection) | full services passes every 4–15 days instead of every 2: −8 to −15 ms/day. Measured in PI-5 |
@@ -229,7 +229,7 @@ The table gives CPU ms per simulated day at design cadence, on the A/B scale.
 
 - **The hot code is bound by memory latency.**
   - In V8's TurboFan, bucket-queue Dijkstra, pool gathers and seat filling over typed arrays already compile to near-native loads. WebAssembly only removes bounds checks and tagging: 1.2–1.5×.
-  - SIMD gives 0.96–1.01× on these kernels. Only the blur and field stencils vectorise, at 1.12–1.4×.
+  - SIMD gives 0.96–1.01× on these kernels. Only the stencil and band kernels (blur, field passes, desirability bands) vectorise, at 1.12–1.4×.
 - **Amdahl's law.**
   - Search, traffic and services together (kernels K1+K2+K3 in the profile) are 62 % of the design-cadence work.
   - At their measured 1.19–1.29×, the whole day gains 1.11–1.16× at best.
@@ -442,7 +442,7 @@ These are not sim fixes; they are for the render owner.
 
 | step | what | needs | files | gate to continue |
 |---|---|---|---|---|
-| PI-0 (now) | Freeze the ports; keep the harnesses and evidence; copy the summary JSONs out of the scratch dir. Touch nothing in `src/**` | – | `tools/bench/baselines/` (new) | – |
+| PI-0 (now) | Freeze the ports; keep the harnesses and evidence. Copy the summary JSONs out of the scratch dir, together with the reviewers' improved-JS sources that J2–J6 start from (`myjs*.ts`, `jsopt.ts`, `fairopt.ts`). Touch nothing in `src/**` | – | `tools/bench/baselines/` (new) | – |
 | PI-1 | Baseline on the final sim: re-grow `dense1m` (`tools/bench/sim-profile/fixtures/dense1m.ts`), `bot256` seed 7 at year 60 (about 1.4M since WP6a) and the stress fixture. Run the profile matrix: ultra, headless and design cadence, in node and Chromium | part B merged | `tools/bench/baselines/` | baseline JSON committed |
 | PI-2 | J0, plus the J1 CI test | PI-1 | `lodBuilder.ts`; `tests/perf/protector.test.ts` (new) | probe intact in Chromium after a 10-minute session |
 | PI-3 | W1 worker host | PI-1 | `src/worker/**` (new), `CityScene.ts`, tools, panels, `main.ts`, `src/save/**`, `region/settings.ts` | W1 acceptance (§5.5), then default on |
@@ -459,7 +459,7 @@ PI-2, PI-3 and PI-4 touch disjoint files and can run in parallel. PI-6 changes t
 - Point the blur imports in `pollution.ts` and `crime.ts` at `src/wasm/kernels/blur.ts`.
 - Rebuild the binary with only the blur module: about 24 KB (8 KB brotli), instead of 169 KB (56 KB brotli).
 - Size its initial memory to blur's staging needs on a 256² map, about 8 MiB. It never grows.
-- Tag the commit that still has all the ports as `wasm-ports-24f8609`. Then remove the parked and rejected ports from main: their bindings in `src/wasm/kernels` and `src/wasm/js`, their Rust modules, their `tests/wasm` suites and their benches.
+- Tag the commit that still has all the ports as `wasm-ports-24f8609`. Then remove the parked and rejected ports from main: their bindings in `src/wasm/kernels` and `src/wasm/js`, their Rust modules, their `tests/wasm` suites and their benches. J-fixes that are still open take their reference code (the fair JS in `src/wasm/js`) from the tag.
 - Move the protector probe from `tools/bench/trafficCore/protector.ts` to `tools/bench/protector.ts`.
 - Update `wasm/README.md`.
 
@@ -559,7 +559,7 @@ If the gate passes, the default becomes `auto` in both hosts. Otherwise blur sta
 - their `*Original.ts` files and scenario helpers.
 
 **New:**
-- `tests/perf/protector.test.ts`. It spawns node with `--trace-protector-invalidation` and the natives probe, then runs 60 headless days of a 128² city loaded through `decodeBundle`, with WASM blur on. It fails on `Invalidating protector cell ArrayBufferDetaching`, or on any growth of wasm memory.
+- `tests/perf/protector.test.ts`. It spawns node with `--trace-protector-invalidation` and the natives probe, then runs 60 headless days of a 128² city (generated, or loaded with zlib and `decodeBundle`), with WASM blur on. It fails on `Invalidating protector cell ArrayBufferDetaching`, or on any growth of wasm memory.
 - `tests/worker/protocol.test.ts`: a round trip of every message type, the packed building records and the cell diffs.
 - `tests/worker/replica.test.ts`: applies 120 days of the diff stream. At every tick boundary, every replica field, building and consumed layer must equal the authoritative state.
 - `tests/worker/hosts.test.ts`: LocalSimHost against WorkerSimHost (node `worker_threads`, real protocol) in deterministic mode, with scripted plop, zone, bulldoze, road and budget actions for 120 days. The hashes must be equal. It also saves in one host and loads in the other.

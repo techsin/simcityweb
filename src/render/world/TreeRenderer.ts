@@ -1275,7 +1275,7 @@ export class TreeRenderer {
     const ring = this.ring, RB = this.ringBox;
     for (let k = 0; k < RING_N; k++) {
       const mb = ring[k * 3], mc = ring[k * 3 + 1], mm = ring[k * 3 + 2];
-      if (!this.ringReady[k] || vis <= 0) {
+      if (!this.ringReady[k]) {
         if (mb) mb.visible = false;
         if (mc) mc.visible = false;
         if (mm) mm.visible = false;
@@ -1289,8 +1289,12 @@ export class TreeRenderer {
       // the regular impostor pair within lodDistance (hysteresis), one micro impostor mesh beyond
       const near = this.ringNearSel[k] ? dN < lod * 1.06 : dN < lod * 0.94;
       this.ringNearSel[k] = near ? 1 : 0;
+      // low cameras: the far sectors fade out with the camera height (seen from inside the city they are hidden or a
+      // few specks in the haze); a sector within lodDistance stays (the camera is near the map edge, where the ring is
+      // the horizon), its density fading in over the outer third of lodDistance
+      const v = near ? Math.max(vis, _sstep(lod * 0.94, lod * 0.6, dN)) : vis;
       let keep = dN < lod ? 1 : 1.25 - (dN - lod) / 7000;
-      keep = (keep < 0.3 ? 0.3 : keep > 1 ? 1 : keep) * vis;
+      keep = (keep < 0.3 ? 0.3 : keep > 1 ? 1 : keep) * v;
       const q = Math.round(keep * 20) / 20;
       if (near) {
         this.ringCount(mb, q);
