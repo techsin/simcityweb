@@ -1325,9 +1325,8 @@ export class BuildingRenderer {
    * ground and RUBBLE_HANG above it; the one with the least ground above the debris floor plus RUBBLE_FLOAT_W x bed
    * above the ground wins (sums of squares over 5 x 5 samples). A uniform slope is followed exactly; a cell with one
    * raised corner (twisted: no plane fits) tilts / lifts part of the way (a low plinth edge on the down-slope side)
-   * and the hill rises over the rest of that corner, like any lot cut into a slope. On the alpine hills city (every lot
-   * burnt, lots with ground > 0.35 m over their base) this leaves grass over the debris floor on 3-4% of the rubble
-   * (resting-only planes: 10-15%). Returns the highest bed rise (m).
+   * and the hill rises over the rest of that corner, like any lot cut into a slope (a one-cell tile is rigid; the kit's
+   * bed of bigger lots follows the ground exactly). Returns the highest bed rise (m).
    */
   private rubbleSlopes(bi: BInst): number {
     const b = bi.b, st = this.state, N = st.size, N1 = N + 1, H = st.heights, base = b.baseY;
