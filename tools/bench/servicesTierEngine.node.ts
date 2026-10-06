@@ -9,6 +9,7 @@
  * Run `node --allow-natives-syntax` for the protector probe (the driver does).
  */
 import { readFileSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import { loadavg } from 'node:os';
 import { BenchArm, type ArmConfig, type ReplayFamily } from './servicesTierEngine.core';
 
@@ -29,8 +30,11 @@ process.on('message', (m: Record<string, unknown>) => {
       switch (m.cmd) {
         case 'init': {
           const t0 = cpu();
+          // gunzip with zlib: node's web streams (bundle.ts unpackFile) detach ArrayBuffers -> protector invalidated
+          const file = new Uint8Array(readFileSync(m.fixture as string));
+          const fixture = file[0] === 0x1f && file[1] === 0x8b ? new Uint8Array(gunzipSync(file)) : file;
           const cfg: ArmConfig = {
-            kind: m.kind as ArmConfig['kind'], group: m.group as ArmConfig['group'], fixture: new Uint8Array(readFileSync(m.fixture as string)),
+            kind: m.kind as ArmConfig['kind'], group: m.group as ArmConfig['group'], fixture,
             wasm: m.wasm ? new Uint8Array(readFileSync(m.wasm as string)) : null, protector: m.protector as ArmConfig['protector'], clock: cpu,
           };
           arm = await BenchArm.create(cfg);

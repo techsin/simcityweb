@@ -24,7 +24,7 @@ import { WasmHeap } from '../../src/wasm/heap';
 import { SIM_WASM_INITIAL_RESERVE } from '../../src/wasm/simWasm';
 import { adoptLayers } from '../../src/wasm/layers';
 import { deserializeCity, type SerializedCity } from '../../src/save/serialize';
-import { unpackFile } from '../../src/save/bundle';
+import { decodeBundle, unpackFile } from '../../src/save/bundle';
 import { Simulation } from '../../src/sim/Simulation';
 import { createSystems } from '../../src/sim/systems/index';
 import type { ServicesSystem } from '../../src/sim/infra/services';
@@ -481,7 +481,11 @@ export interface ArmConfig {
   kind: ArmKind;
   /** 'replay': captured slots + phase kernels only; 'sim': the full simulation (passes, in situ) */
   group: 'replay' | 'sim';
-  /** .metropolis file bytes */
+  /**
+   * .metropolis file bytes, ideally already gunzipped by the host: node's web streams (undici: Blob.stream,
+   * DecompressionStream, Response.arrayBuffer) DETACH ArrayBuffers and would invalidate the protector before the first
+   * sample (Chromium's do not); gzip input falls back to unpackFile
+   */
   fixture: Uint8Array;
   /** the binary of a wasm arm (pre-sized: it must never grow) */
   wasm: Uint8Array | null;
@@ -590,7 +594,8 @@ export class BenchArm {
   static async create(cfg: ArmConfig): Promise<BenchArm> {
     const a = new BenchArm(cfg);
     if (cfg.protector === 'invalidated') invalidateProtector();
-    const st = deserializeCity((await unpackFile(cfg.fixture)) as SerializedCity);
+    const gz = cfg.fixture[0] === 0x1f && cfg.fixture[1] === 0x8b;
+    const st = deserializeCity((gz ? await unpackFile(cfg.fixture) : decodeBundle(cfg.fixture)) as SerializedCity);
     const wasmKind = cfg.kind === 'wasm' || cfg.kind === 'scalar' || cfg.kind === 'resident' || cfg.kind === 'staged';
     if (wasmKind) {
       if (!cfg.wasm) throw new Error(`${cfg.kind}: no wasm binary`);
