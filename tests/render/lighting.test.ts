@@ -1,16 +1,18 @@
 /**
- * Time-of-day light rig (Sky.lightRig): twilight must never be darker than the night that follows / precedes it, the
- * street lamps come on before the night factor, and the lamp-type rule shared by the mesher and the road shader.
+ * Time-of-day light rig (Sky.lightRig): twilight must never be darker than the night that follows / precedes it (also
+ * back-lit, fill-only views around sunrise / sunset), the street lamps come on before the night factor, and the
+ * lamp-type rule shared by the mesher and the road shader.
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { LIGHT_RIG, SkySystem, lightRig, type SkyLighting } from '../../src/render/world/Sky';
 import { atmTransmittanceJS } from '../../src/render/world/atmosphere';
 import { lampTint } from '../../src/render/city/roads/roadMaterial';
+import { Network, Zone } from '../../src/core/types';
 
 const lum = (c: THREE.Color) => c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722;
 
-function rig(hour: number, day: number): SkyLighting {
+function rig(hour: number, day: number, cityLights = 1): SkyLighting {
   const L: SkyLighting = {
     sunDir: new THREE.Vector3(), moonDir: new THREE.Vector3(), lightDir: new THREE.Vector3(), lightColor: new THREE.Color(),
     lightIntensity: 0, night: 0, golden: 0, envIntensity: 1, exposure: 1, fill: 0, fillColor: new THREE.Color(), lamps: 0, dusk: 0,
@@ -19,7 +21,7 @@ function rig(hour: number, day: number): SkyLighting {
   SkySystem.moonDirection(hour, day, L.moonDir);
   const sunT = new THREE.Color();
   atmTransmittanceJS(L.sunDir, 0.35, 1.3, sunT);
-  lightRig(L.sunDir, L.moonDir, sunT, L);
+  lightRig(L.sunDir, L.moonDir, sunT, L, cityLights);
   return L;
 }
 
@@ -76,22 +78,69 @@ describe('light rig', () => {
     const L = rig(22, 12);
     expect(L.fill).toBeCloseTo(LIGHT_RIG.fillBase, 5);
     expect(L.lightIntensity).toBeCloseTo(LIGHT_RIG.moonI, 5);
+    expect(L.exposure).toBeCloseTo(1.9, 5);
+  }, 60000);
+
+  it('makes the minutes around sunset / sunrise clearly brighter than the night, also back-lit (fill only)', () => {
+    for (let day = 0; day < 360; day += 30) {
+      const night = rig(1, day);
+      const nightOut = ground(night) * night.exposure;
+      for (let m = 0; m < 24 * 60; m += 5) {
+        const L = rig(m / 60, day);
+        const sy = L.sunDir.y;
+        if (sy < -0.17 || sy > 0.15) continue;
+        // (exposure-scaled) ground of the whole rig: never below the night; within ~2 deg of the horizon well above it
+        expect(ground(L) * L.exposure).toBeGreaterThanOrEqual(nightOut * 0.99);
+        if (Math.abs(sy) < 0.035) expect(ground(L) * L.exposure).toBeGreaterThan(nightOut * 1.4);
+        // back-lit surfaces see only the sky fill: not darker than the night's fill-lit ground either
+        expect(L.fill * lum(L.fillColor) * L.exposure).toBeGreaterThanOrEqual(LIGHT_RIG.fillBase * lum(night.fillColor) * night.exposure * 0.99);
+      }
+    }
+  }, 120000);
+
+  it('adapts the exposure to a dark landscape (few city lights) at dusk / night only', () => {
+    const dayL = rig(13, 12, 0.3), dayB = rig(13, 12, 1);
+    expect(dayL.exposure).toBeCloseTo(dayB.exposure, 6);
+    const nL = rig(22, 12, 0.3), nB = rig(22, 12, 1);
+    expect(nL.exposure).toBeGreaterThan(nB.exposure * 1.15);
   }, 60000);
 });
 
 describe('street lamp type', () => {
-  it('is white on highways / avenues and mixes sodium / LED districts elsewhere', () => {
+  it('is white on highways, warm sodium in most districts and white LED in a few', () => {
     let led = 0, n = 0;
     for (let z = 0; z < 256; z += 5) for (let x = 0; x < 256; x += 5) {
-      expect(lampTint(x, z, 5)).toBe(1);
-      expect(lampTint(x, z, 3)).toBe(1);
-      const t = lampTint(x, z, 2);
+      expect(lampTint(x, z, Network.Highway)).toBe(1);
+      const t = lampTint(x, z, Network.Road);
       expect(t === 0 || t === 1).toBe(true);
-      // same district -> same type for every local road class
-      expect(lampTint(x, z, 1)).toBe(t);
+      // same district -> same type for every city road class (arterials only differ in brightness)
+      expect(lampTint(x, z, Network.Street)).toBe(t);
+      expect(lampTint(x, z, Network.Avenue)).toBe(t);
+      expect(lampTint(x, z, Network.OneWay)).toBe(t);
       led += t; n++;
     }
-    expect(led / n).toBeGreaterThan(0.2);
-    expect(led / n).toBeLessThan(0.6);
+    // sodium stays the majority (the warm night city), LED in roughly one district in seven
+    expect(led / n).toBeGreaterThan(0.05);
+    expect(led / n).toBeLessThan(0.3);
+  }, 60000);
+
+  it('never puts white LED lamps next to industry (sodium-lit yards)', () => {
+    const N = 96;
+    const zone = new Uint8Array(N * N);
+    // an LED district (found by search) with an industrial lot two cells from the road cell
+    let cx = -1, cz = -1;
+    for (let z = 2; z < N - 2 && cx < 0; z++) for (let x = 2; x < N - 2; x++) if (lampTint(x, z, Network.Road) === 1) { cx = x; cz = z; break; }
+    expect(cx).toBeGreaterThanOrEqual(0);
+    expect(lampTint(cx, cz, Network.Road, zone, N)).toBe(1);
+    for (const zt of [Zone.IndAg, Zone.IndMed, Zone.IndHigh, Zone.Landfill]) {
+      zone[(cz + 2) * N + cx] = zt;
+      expect(lampTint(cx, cz, Network.Road, zone, N)).toBe(0);
+    }
+    // residential / commercial neighbours keep the district's LEDs; highways stay white
+    zone[(cz + 2) * N + cx] = Zone.ComHigh;
+    zone[cz * N + cx + 1] = Zone.ResMed;
+    expect(lampTint(cx, cz, Network.Road, zone, N)).toBe(1);
+    zone[(cz + 1) * N + cx] = Zone.IndMed;
+    expect(lampTint(cx, cz, Network.Highway, zone, N)).toBe(1);
   }, 60000);
 });
