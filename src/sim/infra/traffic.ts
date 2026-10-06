@@ -186,8 +186,12 @@ const REBUILD_COST = 2.5;
  *  PHASE_COST: stressTransit, CPU per estimated ms of the utilities task) */
 const PR_CHUNK_STATES = 24000;
 const PR_CHUNK_COST = 1.7;
-/** P&R: a fresh K-label search every this many assignments (see prSearchDue) */
-const PR_SEARCH_EVERY = 4;
+/** P&R: estimated ms per kept-forest state of a car-leg refresh (refreshAlt; calibrated like PHASE_COST) */
+const PR_REFRESH_COST = 1.2e-5;
+/** P&R: a fresh K-label search at least every this many assignments, or when a garage's minutes moved more than
+ *  PR_SEED_DRIFT since the last one (see prSearchDue) */
+const PR_SEARCH_EVERY = 8;
+const PR_SEED_DRIFT = 1;
 const MAX_ENTRIES = 12;
 /** job matching: a round that matched under this share of the waiting workers is starved (does not count toward
  *  MATCH_ROUNDS), at most MATCH_EXTRA_ROUNDS such rounds per assignment */
@@ -398,8 +402,11 @@ export class TrafficSystem implements SimSystem {
   /** park & ride car legs: K-label reverse road search from the P&R garages (PR_OPTIONS garage options per node + the
    *  next one, the cutoff the last option fades against; kept across a cycle, reused every 2nd cycle) */
   private SPK = new SearchK(PR_OPTIONS + 1);
-  /** P&R phase stage of this cycle: 0 = garages (+ search start), 1 = search chunks, 2 = per-origin options */
+  /** P&R phase stage of this cycle: 0 = garages (+ search start), 1 = search chunks, 3 = car legs refreshed on the kept
+   *  forest, 2 = per-origin options */
   private prStage = 0;
+  /** assignment of the last completed P&R search (cycles) */
+  private prSearched = -1e9;
   private prKey = '';
   /** per road node: interchange minutes (non-highway nodes), ramp flow of this cycle, ramp flow of the cached
    *  inbound / shop / freight passes (added again on the cycles those are cached) */
@@ -466,6 +473,8 @@ export class TrafficSystem implements SimSystem {
   private gWalk: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gLabel: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gSeed: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** 1 = the garage seeded the last search (its seed label gSeed) */
+  private gSeeded: Uint8Array<ArrayBuffer> = new Uint8Array(0);
   private gBoard: Int32Array<ArrayBuffer> = new Int32Array(0);
   /** GARAGE_* state of the garage this cycle (no stop / stop without transit / downtown stop / park & ride) */
   private gState: Uint8Array<ArrayBuffer> = new Uint8Array(0);
@@ -667,6 +676,7 @@ export class TrafficSystem implements SimSystem {
     this.depotVer = -1;
     this.prKey = '';
     this.prStage = 0;
+    this.prSearched = -1e9;
     this.SPK.graphVersion = -1;
     this.garageFree.clear();
     this.reachCache.clear();
@@ -738,9 +748,11 @@ export class TrafficSystem implements SimSystem {
     // P&R: garages + per-origin options (reused forest), or a two-label search chunk (the first step also places the
     // garages and seeds the search), then the options in their own step
     if (ph === PH_PARKRIDE) {
+      if (this.prStage === 1) return PR_CHUNK_COST * Math.min(1, 3 * road);
+      // (refresh: one pass over the kept forest's states; options: per origin; garages + a search's seeding)
+      if (this.prStage === 3) return 0.1 + PR_REFRESH_COST * this.SPK.settled;
       if (this.prStage === 2) return 0.2 + 0.55 * bld;
-      if (this.prStage === 1 || this.prSearchDue()) return PR_CHUNK_COST * Math.min(1, 3 * road) + (this.prStage === 0 ? 0.1 : 0);
-      return 0.2 + 0.45 * bld;
+      return 0.2 + 0.3 * road;
     }
     // (+ the park & ride garages' reserves: box(supply without them), the pressure over their walk areas)
     if (ph === PH_PARKING) return 0.3 * bld + (base + (this.gPrN > 0 ? 0.4 : 0)) * (size * size / 65536);
@@ -1234,11 +1246,21 @@ export class TrafficSystem implements SimSystem {
     }
   }
 
-  /** P&R: a fresh search this cycle (every PR_SEARCH_EVERY cycles — the forest is ranked by free-flow minutes, so only
-   *  the garages' transit minutes move it; in between its congested car legs are refreshed — or when the forest does not
-   *  match the graph / garages) */
+  /**
+   * P&R: a fresh search this cycle? (after prGarages) The forest is ranked by free-flow minutes, so only the garages and
+   * their transit minutes move it: a search when the forest does not match the graph / garages / candidate stops, a
+   * garage is a seed now that was not one then (or the reverse), a seed's minutes moved more than PR_SEED_DRIFT since,
+   * or PR_SEARCH_EVERY assignments have passed; in between the congested car legs along it are refreshed (stage 3)
+   */
   private prSearchDue(): boolean {
-    return this.SPK.graphVersion !== this.road.version || this.prKey !== this.prKeyNow || this.cycles % PR_SEARCH_EVERY === 1;
+    if (this.SPK.graphVersion !== this.road.version || this.prKey !== this.prKeyNow || this.cycles - this.prSearched >= PR_SEARCH_EVERY) return true;
+    const room = this.gGSp, grp = this.gGrp;
+    for (let q = 0; q < this.gN; q++) {
+      const L = this.gLabel[q], seeded = this.gSeeded[q] === 1, now = L < PR_LIMIT && room[grp[q]] >= 1;
+      if (now !== seeded) return true;
+      if (now && Math.abs(L - this.gSeed[q]) > PR_SEED_DRIFT) return true;
+    }
+    return false;
   }
 
   private rand(): number {
@@ -1711,6 +1733,7 @@ export class TrafficSystem implements SimSystem {
     const gN = this.gN;
     this.gStop = growI32(this.gStop, gN + 1); this.gWalk = growF32(this.gWalk, gN + 1); this.gLabel = growF32(this.gLabel, gN + 1);
     this.gSeed = growF32(this.gSeed, gN + 1); this.gBoard = growI32(this.gBoard, gN + 1); this.gLoad = growF32(this.gLoad, gN + 1);
+    this.gSeeded = growU8(this.gSeeded, gN + 1);
     this.gRide = growU8(this.gRide, gN + 1); this.gState = growU8(this.gState, gN + 1); this.gSpaces = growF32(this.gSpaces, gN + 1);
     this.gRiders = growF32(this.gRiders, gN + 1); this.gWant = growF32(this.gWant, gN + 1); this.gCatch = growF32(this.gCatch, gN + 1);
     this.gPrice = growF32(this.gPrice, gN + 1); this.gCell = growI32(this.gCell, gN + 1); this.gHalf = growU8(this.gHalf, gN + 1);
@@ -1951,28 +1974,30 @@ export class TrafficSystem implements SimSystem {
    * an origin's options (logit) but never takes a garage out of anybody's choice set.
    */
   private parkRide(): number {
-    // stage 0: stops and groups (+ start the search when due, then its first chunk); 1: search chunks of at most
-    // PR_CHUNK_STATES states per step; 2: the options per origin
-    if (this.prStage === 0) {
-      this.prGarages();
-      if (!this.prSearchDue()) {
-        // the kept forest: this cycle's congested car legs along it, then the options
+    // stage 0: stops and groups, then a fresh search (seeded here, run in stage 1: chunks of at most PR_CHUNK_STATES
+    // states per step) or the kept forest (stage 3: this cycle's congested car legs along it, every 2nd cycle); stage 2:
+    // the options per origin. Each its own step (estimated apart in stepCost)
+    switch (this.prStage) {
+      case 0:
+        this.prGarages();
+        if (this.prSearchDue()) { this.prStart(); this.prStage = 1; }
+        else this.prStage = this.cycles % 2 === 0 ? 3 : 2;
+        return PH_PARKRIDE;
+      case 1:
+        if (!this.SPK.run(PR_CHUNK_STATES)) return PH_PARKRIDE;
+        this.prKey = this.prKeyNow;
+        this.prSearched = this.cycles;
+        this.prStage = 2;
+        return PH_PARKRIDE;
+      case 3:
         this.SPK.refreshAlt(this.nodeTime, this.rampT);
+        this.prStage = 2;
+        return PH_PARKRIDE;
+      default:
         this.prOptions();
+        this.prStage = 0;
         return NEXT_PHASE[PH_PARKRIDE];
-      }
-      this.prStart();
-      this.prStage = 1;
     }
-    if (this.prStage === 1) {
-      if (!this.SPK.run(PR_CHUNK_STATES)) return PH_PARKRIDE;
-      this.prKey = this.prKeyNow;
-      this.prStage = 2;
-      return PH_PARKRIDE;
-    }
-    this.prOptions();
-    this.prStage = 0;
-    return NEXT_PHASE[PH_PARKRIDE];
   }
 
   /** P&R: each garage's stop (hysteresis) and state, groups at the same stop (room, price) */
@@ -2092,7 +2117,9 @@ export class TrafficSystem implements SimSystem {
       // option.
       const L = this.gLabel[q];
       this.gSeed[q] = L;
+      this.gSeeded[q] = 0;
       if (!(L < PR_LIMIT) || !(room[grp[q]] >= 1)) continue;
+      this.gSeeded[q] = 1;
       for (let e = this.gEntS[q], e1 = e + this.gEntC[q]; e < e1; e++) seeds.push(this.ent[e], L, q);
       if (L > maxL) maxL = L;
     }
