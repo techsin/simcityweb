@@ -1,6 +1,8 @@
 /**
- * Services tier engine A/B — environment-agnostic core (node worker: servicesTierEngine.node.ts, browser worker:
- * servicesTierEngine.browser.ts, driver: servicesTierEngine.bench.mjs).
+ * Services tier engine A/B — environment-agnostic core: the replay implementations (a) and one benchmark ARM (b–d),
+ * shared by the node arm process (servicesTierEngine.node.ts) and the Chromium arm worker (servicesTierEngine.browser.ts),
+ * driven by tools/bench/servicesTierEngine.bench.mjs. One arm per isolate: V8's ArrayBuffer-detaching protector is
+ * per isolate, so an arm that detaches nothing (JS arms, and wasm arms on the pre-sized binary) keeps it intact.
  *
  * Replay (a): after one pass of the ORIGINAL ServicesSystem on a fixture, every tier slot's inputs are captured from
  * its private fields (facility list, op, capacity, the reach pool + ranges from its cache, the need raster, the seat
@@ -10,9 +12,25 @@
  *    wasm          catch_* of each binary variant (SIMD build = shipped, scalar build) with the slot data resident in
  *                  its linear memory (the engine's memory model); "staged" arms copy the need raster in per call
  * Every case is checked bit-exact (u32 patterns; NaN = NaN) against the original before it is timed.
+ *
+ * Arms (b–d): the live ServicesSystem of a full createSystems() simulation on the fixture, as is (orig) or with the tier
+ * engine installed before the Simulation is built (fair = JS kernels, wasm = SIMD binary with layers staged, scalar =
+ * scalar binary, resident = SIMD with the CityState layers + need rasters adopted into wasm memory: zero copies).
  */
 import { allocJS, finalizeJS, reportJS, unionJS, type PhaseArgs } from '../../src/wasm/js/servicesTierEngine';
-import type { CatchWasm } from '../../src/wasm/kernels/servicesBind';
+import { servicesBackendStats, type CatchWasm } from '../../src/wasm/kernels/servicesBind';
+import { installServicesTierEngine, type InstalledTierEngine } from '../../src/wasm/kernels/services';
+import { WasmHeap } from '../../src/wasm/heap';
+import { SIM_WASM_INITIAL_RESERVE } from '../../src/wasm/simWasm';
+import { adoptLayers } from '../../src/wasm/layers';
+import { deserializeCity, type SerializedCity } from '../../src/save/serialize';
+import { unpackFile } from '../../src/save/bundle';
+import { Simulation } from '../../src/sim/Simulation';
+import { createSystems } from '../../src/sim/systems/index';
+import type { ServicesSystem } from '../../src/sim/infra/services';
+import type { CityState } from '../../src/sim/CityState';
+import { schedulerOf } from '../../src/sim/infra/scheduler';
+import { infoOf } from '../../src/sim/infra/common';
 import { runAB, type AbOptions, type AbResult } from './ab';
 
 // ------------------------------------------------------------------------------------------------ capture
@@ -452,3 +470,230 @@ export function replayAB(a: Impl, b: Impl, slots: SlotCapture[], opts: AbOptions
 }
 
 const fmt = (ms: number): string => (ms >= 1 ? ms.toFixed(2) + ' ms' : (ms * 1000).toFixed(0) + ' µs');
+
+// ------------------------------------------------------------------------------------------------ benchmark arms
+export type ArmKind = 'orig' | 'fair' | 'wasm' | 'scalar' | 'resident' | 'staged';
+/** replay arms: orig / fair / wasm (resident slot data) / staged (need raster copied in per call) / scalar */
+export const REPLAY_FAMILIES = ['alloc', 'union', 'report', 'finalize'] as const;
+export type ReplayFamily = (typeof REPLAY_FAMILIES)[number];
+
+export interface ArmConfig {
+  kind: ArmKind;
+  /** 'replay': captured slots + phase kernels only; 'sim': the full simulation (passes, in situ) */
+  group: 'replay' | 'sim';
+  /** .metropolis file bytes */
+  fixture: Uint8Array;
+  /** the binary of a wasm arm (pre-sized: it must never grow) */
+  wasm: Uint8Array | null;
+  /** 'invalidated': detach an ArrayBuffer first, like the game's main thread after lodBuilder's first transfer */
+  protector: 'intact' | 'invalidated';
+  /** CPU time (node arm process) or wall clock (browser worker), ms */
+  clock: () => number;
+}
+
+/** per-sample CPU ms of the services methods (instance wrappers, identical on every arm) */
+export interface ArmSample {
+  ms: number;
+  /** services = every services step; engine = tierWork + finishTransit + footprints + finish (what the port replaces
+   *  besides the access fields); access = accessCommuteLand + shopLand; passes = completed passes */
+  services: number;
+  engine: number;
+  tier: number;
+  prep: number;
+  access: number;
+  passes: number;
+  day: number;
+}
+
+const TIMED = ['step', 'prep', 'tierWork', 'finishTransit', 'footprints', 'finish', 'accessCommuteLand', 'shopLand'] as const;
+
+/**
+ * V8's ArrayBuffer-detaching protector, observed through an optimized typed-array loop: code optimized while the
+ * protector holds depends on it and deoptimizes when it is invalidated. null when natives syntax is not enabled
+ * (node --allow-natives-syntax / chromium --js-flags=--allow-natives-syntax).
+ */
+export function makeProtectorProbe(): (() => boolean) | null {
+  try {
+    const ta = new Float32Array(64);
+    const probe = new Function('a', 'let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s;') as (a: Float32Array) => number;
+    const prep = new Function('f', 'a', '%PrepareFunctionForOptimization(f); f(a); f(a); %OptimizeFunctionOnNextCall(f); f(a);') as (f: unknown, a: unknown) => void;
+    const status = new Function('f', 'return %GetOptimizationStatus(f);') as (f: unknown) => number;
+    prep(probe, ta);
+    const s0 = status(probe);
+    return () => { probe(ta); return status(probe) === s0; };
+  } catch {
+    return null;
+  }
+}
+
+/** detach an ArrayBuffer (invalidates the protector for this isolate) */
+export function invalidateProtector(): void {
+  const b = new ArrayBuffer(8) as ArrayBuffer & { transfer?: () => ArrayBuffer };
+  if (typeof b.transfer === 'function') b.transfer();
+  else structuredClone(b, { transfer: [b] });
+}
+
+/** a kernel instance from bytes, with the loader's start-up reserve (no memory.grow on the pre-sized binary) */
+export function instanceFrom(bytes: Uint8Array): CatchWasm {
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes as Uint8Array<ArrayBuffer>), {});
+  const ex = inst.exports as unknown as CatchWasm['ex'] & { memory: WebAssembly.Memory; __heap_base: WebAssembly.Global };
+  const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
+  heap.reserve(SIM_WASM_INITIAL_RESERVE);
+  return { ex, memory: ex.memory, heap };
+}
+
+function fnv(h: number, b: Uint8Array): number {
+  for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 16777619) >>> 0;
+  return h;
+}
+const viewBytes = (v: ArrayBufferView): Uint8Array => new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+const BY_ID = ['tierById', 'capById', 'demById', 'servById', 'seatById', 'opById', 'utilById', 'powById', 'seenById'];
+
+/** FNV-1a over every typed-array layer of the state, stats, buildings and the services per-facility data */
+export function cityHash(st: CityState, svc: ServicesSystem): string {
+  let h = 0x811c9dc5 >>> 0;
+  const o = st as unknown as Record<string, unknown>;
+  for (const k of Object.keys(o).sort()) {
+    const v = o[k];
+    if (ArrayBuffer.isView(v) && !(v instanceof DataView)) h = fnv(h, viewBytes(v));
+    else if (Array.isArray(v) && v.length && v.every((x) => ArrayBuffer.isView(x))) for (const x of v as ArrayBufferView[]) h = fnv(h, viewBytes(x));
+  }
+  const enc = new TextEncoder();
+  h = fnv(h, enc.encode(JSON.stringify(st.stats)));
+  const bl: number[] = [];
+  for (const b of st.buildings.values()) { const x = b as unknown as Record<string, number>; bl.push(b.id, b.x, b.z, b.w, b.d, b.pop ?? 0, x.jobs ?? 0, b.flags, x.capacity ?? 0); }
+  h = fnv(h, viewBytes(Float64Array.from(bl)));
+  const p = svc as unknown as Record<string, unknown>;
+  for (const f of BY_ID) h = fnv(h, viewBytes(p[f] as Float32Array));
+  h = fnv(h, enc.encode(JSON.stringify(p.tierStats)));
+  return `${h.toString(16).padStart(8, '0')}/day${st.day}/pop${Math.round((st.stats as unknown as { population?: number }).population ?? 0)}`;
+}
+
+/** one A/B arm: built from a fixture, then driven command by command (each command timed with the arm's clock) */
+export class BenchArm {
+  readonly cfg: ArmConfig;
+  st!: CityState;
+  sim!: Simulation;
+  svc!: ServicesSystem;
+  inst: InstalledTierEngine | null = null;
+  w: CatchWasm | null = null;
+  impl: Impl | null = null;
+  slots: SlotCapture[] = [];
+  readonly probe = makeProtectorProbe();
+  private readonly acc: Record<string, number> = {};
+  private calls = 0;
+
+  private constructor(cfg: ArmConfig) {
+    this.cfg = cfg;
+  }
+
+  static async create(cfg: ArmConfig): Promise<BenchArm> {
+    const a = new BenchArm(cfg);
+    if (cfg.protector === 'invalidated') invalidateProtector();
+    const st = deserializeCity((await unpackFile(cfg.fixture)) as SerializedCity);
+    const wasmKind = cfg.kind === 'wasm' || cfg.kind === 'scalar' || cfg.kind === 'resident' || cfg.kind === 'staged';
+    if (wasmKind) {
+      if (!cfg.wasm) throw new Error(`${cfg.kind}: no wasm binary`);
+      a.w = instanceFrom(cfg.wasm);
+    }
+    if (cfg.group === 'replay') {
+      // capture the slots from one ORIGINAL pass (every arm: deterministic), then this arm's implementation
+      const sim = new Simulation(st, createSystems());
+      const svc = sim.getSystem<ServicesSystem>('services')!;
+      svc.compute(sim, false);
+      a.st = st; a.sim = sim; a.svc = svc;
+      a.slots = captureSlots(svc, st.cells, (k, b) => (k === 8 ? infoOf(st, b as never).covStrength : infoOf(st, b as never).tierStrength));
+      const ref = origImpl(a.slots);
+      a.impl = cfg.kind === 'orig' ? ref : cfg.kind === 'fair' ? fairImpl(a.slots)
+        : wasmImpl(a.w!, a.slots, cfg.kind === 'staged' ? 'wasm SIMD, need raster staged per call' : cfg.kind, cfg.kind === 'staged');
+      if (a.impl !== ref) {
+        const bad = checkImpl(ref, a.impl);
+        if (bad.length) throw new Error(`${cfg.kind}: replay outputs differ from the original: ${bad.slice(0, 5).join('; ')}`);
+      }
+      return a;
+    }
+    const systems = createSystems();
+    const svc = systems.find((s) => s.name === 'services') as ServicesSystem;
+    if (cfg.kind !== 'orig') a.inst = installServicesTierEngine(svc, { backend: cfg.kind === 'fair' ? 'js' : 'wasm', wasm: a.w ?? undefined });
+    if (a.inst && a.inst.backend !== (cfg.kind === 'fair' ? 'js' : 'wasm')) throw new Error(`${cfg.kind}: got the ${a.inst.backend} backend`);
+    const sim = new Simulation(st, systems);
+    if (cfg.kind === 'resident') {
+      // the memory model's resident case: CityState layers + the services need rasters live in wasm memory
+      adoptLayers(st, a.w!.heap);
+      adoptLayers(svc, a.w!.heap, { include: (k) => k === 'need' });
+    }
+    a.st = st; a.sim = sim; a.svc = svc;
+    a.instrument();
+    return a;
+  }
+
+  /** CPU wrappers on the services methods (installed after the engine: they wrap its overrides) */
+  private instrument(): void {
+    const svc = this.svc as unknown as Record<string, (...x: unknown[]) => unknown>;
+    const clock = this.cfg.clock, acc = this.acc;
+    for (const m of TIMED) {
+      acc[m] = 0;
+      const f = svc[m];
+      svc[m] = function (this: unknown, ...x: unknown[]) {
+        const t0 = clock();
+        try { return f.apply(this, x); } finally { acc[m] += clock() - t0; }
+      };
+    }
+  }
+
+  private sample(ms: number, days: number): ArmSample {
+    const a = this.acc, d = Math.max(1, days);
+    const s: ArmSample = {
+      ms: ms / d, services: a.step / d, engine: (a.tierWork + a.finishTransit + a.footprints + a.finish) / d, tier: a.tierWork / d, prep: a.prep / d,
+      access: (a.accessCommuteLand + a.shopLand) / d, passes: (this.svc as unknown as { donePasses: number }).donePasses - this.calls, day: this.st.day,
+    };
+    this.calls = (this.svc as unknown as { donePasses: number }).donePasses;
+    for (const k of Object.keys(a)) a[k] = 0;
+    return s;
+  }
+
+  /** one services pass (cold: every road reach searched fresh) */
+  pass(cold: boolean): ArmSample {
+    for (const k of Object.keys(this.acc)) this.acc[k] = 0;
+    this.calls = (this.svc as unknown as { donePasses: number }).donePasses;
+    const t0 = this.cfg.clock();
+    if (cold) (this.svc as unknown as { invalidateReach(r: unknown): void }).invalidateReach(undefined);
+    this.svc.compute(this.sim, false);
+    return this.sample(this.cfg.clock() - t0, 1);
+  }
+
+  /** n days at design cadence (advanceDay + scheduler flush); per-day sample */
+  days(n: number): ArmSample {
+    for (const k of Object.keys(this.acc)) this.acc[k] = 0;
+    this.calls = (this.svc as unknown as { donePasses: number }).donePasses;
+    const t0 = this.cfg.clock();
+    for (let d = 0; d < n; d++) { this.sim.advanceDay(); schedulerOf(this.sim).flush(this.sim); }
+    return this.sample(this.cfg.clock() - t0, n);
+  }
+
+  /** `inner` calls of one replay family; ms per call */
+  replay(family: ReplayFamily, inner: number): number {
+    const f = this.impl![family];
+    const t0 = this.cfg.clock();
+    for (let i = 0; i < inner; i++) f();
+    return (this.cfg.clock() - t0) / inner;
+  }
+
+  hash(): string {
+    return cityHash(this.st, this.svc);
+  }
+
+  info(): Record<string, unknown> {
+    const out: Record<string, unknown> = {
+      kind: this.cfg.kind, group: this.cfg.group, protectorIntact: this.probe ? this.probe() : null, pop: (this.st.stats as unknown as { population: number }).population,
+      day: this.st.day,
+    };
+    if (this.w) out.wasmHeap = this.w.heap.stats();
+    if (this.inst) {
+      const e = this.inst.engine;
+      out.engine = { backend: this.inst.backend, active: this.inst.active, kernels: e.kernels.name, stats: { ...e.stats }, pool: e.poolInfo(), calls: servicesBackendStats(e), liveBytes: e.space.liveBytes?.() ?? 0 };
+    }
+    if (this.slots.length) out.slots = this.slots.map((s) => ({ slot: s.name, facilities: s.n, entries: s.entries, shared: s.shared }));
+    return out;
+  }
+}

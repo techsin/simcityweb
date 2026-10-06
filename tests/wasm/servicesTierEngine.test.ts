@@ -118,6 +118,12 @@ afterEach(() => {
   setSimWasmPreference('auto', 'services');
 });
 
+/** kernel-level engines of the current test (freed after it) */
+const rawEngines: TierEngine[] = [];
+afterEach(() => {
+  for (const e of rawEngines.splice(0)) e.dispose();
+});
+
 /** a JS engine and a wasm engine sized for N (kernel-level tests) */
 function engines(N: number): { js: TierEngine; wa: TierEngine } {
   const K = reachConsts();
@@ -125,6 +131,7 @@ function engines(N: number): { js: TierEngine; wa: TierEngine } {
   js.ensure(N);
   const wa = new TierEngine(9, K, makeWasmTierKernels(), wasmSpace(wasm));
   wa.ensure(N);
+  rawEngines.push(wa);
   return { js, wa };
 }
 
@@ -346,10 +353,17 @@ interface Arm {
   inst: InstalledTierEngine | null;
 }
 
+/** engines installed by the current test (disposed after it, like a city unload: the loader's heap stays clean) */
+const liveEngines: InstalledTierEngine[] = [];
+afterEach(() => {
+  for (const e of liveEngines.splice(0)) e.dispose();
+});
+
 function makeArm(label: string, st: CityState, backend: TierBackend | 'orig', opts: { wasm?: CatchWasm } = {}): Arm {
   const systems = createSystems();
   const svc = systems.find((s) => s.name === 'services') as ServicesSystem;
   const inst = backend === 'orig' ? null : installServicesTierEngine(svc, { backend, wasm: opts.wasm });
+  if (inst) liveEngines.push(inst);
   const sim = new Simulation(st, systems);
   return { label, st, sim, svc, inst };
 }
@@ -822,6 +836,9 @@ describe.skipIf(FIXTURES.length === 0)('real profiler fixtures', () => {
       expect(reaches).toBeGreaterThan(500);
       for (const a of arms) (a.svc as unknown as { invalidateReach(r: unknown): void }).invalidateReach(undefined);
       passAndCompare(arms, `${name} cold`);
+      // the cold pass re-searched every road reach into full pools: dead segments were compacted mid-search (the
+      // facility ranges fixed up), instead of the pools doubling — and the per-phase pool segments still matched
+      expect(arms[2].inst!.engine.stats.compactions, 'mid-search compaction exercised').toBeGreaterThan(0);
       passAndCompare(arms, `${name} warm`);
       roadEdit(arms, 7);
       passAndCompare(arms, `${name} road edit`);
@@ -830,6 +847,37 @@ describe.skipIf(FIXTURES.length === 0)('real profiler fixtures', () => {
         for (const a of arms) { a.sim.advanceDay(); schedulerOf(a.sim).flush(a.sim); }
       }
       for (const a of arms.slice(1)) expect(diffCities(arms[0], a), `${name} ${a.label} after 8 days`).toEqual([]);
+    });
+
+    it(`${name}: on the pre-sized binary the engine + resident CityState never grow memory, never fall back, stay identical`, { timeout: 1800000 }, async () => {
+      const bytes = new Uint8Array(readFileSync(file));
+      const load = async () => deserializeCity((await unpackFile(bytes)) as SerializedCity);
+      const wb = readFileSync(join(process.cwd(), 'src', 'wasm', 'sim_kernels.wasm'));
+      const inst = new WebAssembly.Instance(new WebAssembly.Module(wb), {});
+      const ex = inst.exports as unknown as CatchWasm['ex'] & { memory: WebAssembly.Memory; __heap_base: WebAssembly.Global };
+      const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
+      heap.reserve(SIM_WASM_INITIAL_RESERVE); // the loader's start-up reserve
+      const w: CatchWasm = { ex, memory: ex.memory, heap };
+      const o = makeArm('orig', await load(), 'orig');
+      const a = makeArm('resident', await load(), 'wasm', { wasm: w });
+      // the memory model's resident case: CityState layers + need rasters in wasm memory (zero copies)
+      const l1 = adoptLayers(a.st, heap);
+      const l2 = adoptLayers(a.svc, heap, { include: (k) => k === 'need' });
+      expect(heap.ptrOf(a.st.policeCov)).toBeGreaterThan(0);
+      for (const x of [o, a]) invalidateAll(x);
+      for (const x of [o, a]) x.svc.compute(x.sim, false);
+      roadEdit([o, a], 5);
+      for (const x of [o, a]) x.svc.compute(x.sim, false);
+      for (let d = 0; d < 6; d++) for (const x of [o, a]) { x.sim.advanceDay(); schedulerOf(x.sim).flush(x.sim); }
+      expect(diffCities(o, a), `${name}: resident vs original`).toEqual([]);
+      expect(heap.stats().grows, `${name}: memory.grow calls (capacity ${heap.capacity >> 20} MiB, top ${heap.stats().top >> 20} MiB)`).toBe(0);
+      expect(a.inst!.engine.stats.migratedToJs).toBe(false);
+      expect(servicesBackendStats(a.inst!.engine)!.jsCalls).toBe(0);
+      const pinned = heap.stats().pinned;
+      a.inst!.dispose();
+      expect(heap.stats().used, 'only the adopted layers remain').toBe(pinned);
+      l2.release();
+      l1.release();
     });
   }
 });
