@@ -7,13 +7,17 @@
  * pass and every shadow cascade. Here each camera (main view, shadow cascade 0, cascade 1, captures) gets its own
  * cached draw list (starts / counts / indirect texture), built from per-tile instance lists tested against THAT
  * camera's frustum (tile AABB first, per-instance bounding spheres only in partially visible tiles). A list is
- * rebuilt only when the camera matrices or the batch content changed, so a still camera costs nothing.
+ * kept while the batch content is unchanged and the camera's view volume (shadow passes: also the receiver volume)
+ * lies inside the planes the list was culled with (containment test of the volume's 8 corners), so a still camera
+ * costs nothing and a zoom-in keeps its list.
  * Shadow passes can additionally be restricted to some cascades (shadowMask, per instance setShadowCascades) and skip
  * casters smaller than a few shadow texels (minShadowTexels) — shadow cameras carry `userData.cascade` /
  * `userData.texel` (see Shadows.ts) — and casters whose shadow cannot reach the visible slice (receiver volume).
- * Guard bands: while the camera moves, a list is culled with its planes widened (translation band ~4 frames of the
- * camera speed; perspective views also turned outward by an angular band, receivers likewise) and reused until the
- * camera leaves the band; once the view rests it is culled exactly again.
+ * Guard bands: while the camera moves, a list is culled with its planes widened: ~4 frames of its travel on every side
+ * for slow motion, and steady motion (pans, zooms, orbits) predicted for up to 4 frames, directionally (only the
+ * side planes the view turns toward open, only the planes it moves across shift; receivers with the view's motion);
+ * it is reused while the view stays inside (see above), and culled exactly again once the view rests.
+ * Tiles enabled / disabled by the owner (setTileEnabled) only rebuild the lists whose planes they touch.
  * Whole tiles are skipped when disabled by the owner (setTileEnabled: e.g. props beyond their LOD distance), when
  * none of their instances casts into the cascade, or when their swept box misses the receiver; tiles fully inside the
  * frustum / receiver skip the per-instance tests. Per-tile bounds / masks are recomputed lazily (exact, also after
@@ -21,7 +25,9 @@
  * per-instance tests read packed per-tile copies of the instances' spheres / masks (InstPack) in list order.
  * Optionally (sortFront) main-pass lists are sorted nearest first so the depth test rejects occluded fragments
  * before shading. Dynamic batches (vehicles) group their visible instances by culler tile once per content version
- * (packDyn) and cull those groups like tiles: groups outside a pass are skipped whole, groups inside copied whole.
+ * (packDyn) and cull those groups like tiles: groups outside a pass are skipped whole, groups inside copied whole; an
+ * owner that hides everything out of view itself (viewCulled: vehicles without shadows) gets a main-pass list of all
+ * visible instances, rebuilt only when instances are added / removed / shown / hidden.
  * Pass skipping: the mesh answers three.js's per-pass frustum test (intersectsFrustum) with "does this pass draw
  * anything" (nothing live, or a shadow cascade outside the batch's shadowMask), so three.js does not even set up an
  * empty draw for it.
@@ -69,6 +75,8 @@ interface PassSlot {
   version: number;
   /** swap-log position (DynamicBatch.swapSeq) the list's draw ranges are current for (see setGeometry) */
   swapAt: number;
+  /** tile-toggle log position (DynamicBatch.offSeq) the list is current for (see tilesOk) */
+  offAt: number;
   /** list generation (bumped per build) and the generation `pos` was built for (-1 none) */
   gen: number;
   posGen: number;
@@ -100,6 +108,7 @@ interface PassSlot {
    *  lengthened by it) */
   bk: number;
   iso: number;
+  err: number;
   sweepCap: number;
   margin: number;
   /** the planes the list was culled with (nx, ny, nz, constant x 6, bands included) and, for shadow passes, the
@@ -131,11 +140,17 @@ interface PassSlot {
   lrx: number;
   lry: number;
   lrz: number;
-  /** the camera's (receiver's) last per-frame motion: translation and rotation (row-major 3x3), predicted by bands */
+  /** the camera's (receiver's) last per-frame motion: translation and rotation (row-major 3x3), predicted by bands, the
+   *  frame's before it (pmv / pmq) and whether the prediction is used (steady motion) */
   mv: Float64Array;
   mq: Float64Array;
   rmv: Float64Array;
   rmq: Float64Array;
+  pmv: Float64Array;
+  pmq: Float64Array;
+  rpmv: Float64Array;
+  rpmq: Float64Array;
+  pred: boolean;
 }
 
 /**
@@ -222,7 +237,7 @@ const REACH_SHRINK = 0.7;
  *  one side plane (rad) and the largest outward shift of a plane (fraction of the view distance, <= 3000 m) */
 const BAND_FRAMES = 4;
 const TILT_CAP = (6 * Math.PI) / 180;
-const SWEEP_CAP = 0.2;
+const SWEEP_CAP = 0.08;
 /** band scratch: predicted corner offsets (8 corners x BAND_FRAMES frames) and the banded planes being fitted */
 const _po = new Float64Array(24 * BAND_FRAMES);
 const _bp = new Float64Array(24);
@@ -236,6 +251,8 @@ const MAX_RANGES = 96;
  *  more than 1 / SWAP_FULL of its length, rewrites all its draw ranges instead of patching the swapped entries */
 const SWAP_RING = 4096;
 const SWAP_FULL = 4;
+/** tile toggle log (see setTileEnabled): a cached list more toggles behind than this is rebuilt */
+const OFF_RING = 256;
 /** width (ids per row) of the per-pass indirect textures: uploads are whole rows (see syncIds), 2 KB each */
 const ID_W = 512;
 /** a pass list's indirect texture shrinks only after this many builds in a row that used under a quarter of it */
@@ -334,12 +351,13 @@ function rotBetween(a: Float64Array, b: Float64Array, out: Float64Array): void {
  * Guard band of a perspective volume (view frustum, or a receiver: a slice of one) for the next k frames of the camera's
  * last per-frame motion (translation v, rotation q about the apex a): each side plane of pl (planes 0-3, through the
  * apex) is turned outward about its hinge just enough to hold the predicted corner rays (directional: only the side the
- * view turns toward opens), then shifted outward by the apex's predicted travel across it; the depth planes (4 far, 5
- * near) are moved to the predicted corners' depth range, at least [nd0, fd0] (slack for near / far following the zoom).
- * cs: the volume's 8 corners (near 0-3, far 4-7), f: the view direction. Writes the banded planes to out (iso added to
- * every plane) and returns the largest shift, or -1 when a turn or shift exceeds its cap (no band for k frames).
+ * view turns toward opens), then shifted outward by the apex's predicted travel across it plus err (the prediction's
+ * error), at least by iso (an isotropic band); the depth planes (4 far, 5 near) are moved to the predicted corners'
+ * depth range, at least [nd0, fd0] (slack for near / far following the zoom), and as far again. cs: the volume's 8
+ * corners (near 0-3, far 4-7), f: the view direction. Writes the banded planes to out and returns the largest shift, or
+ * -1 when a turn or the travel exceeds its cap, or the band would not hold the current volume.
  */
-function bandPersp(pl: Float64Array, cs: Float64Array, ax: number, ay: number, az: number, fx: number, fy: number, fz: number, v: Float64Array, q: Float64Array, k: number, iso: number, sweepCap: number, nd0: number, fd0: number, out: Float64Array): number {
+function bandPersp(pl: Float64Array, cs: Float64Array, ax: number, ay: number, az: number, fx: number, fy: number, fz: number, v: Float64Array, q: Float64Array, k: number, iso: number, err: number, sweepCap: number, nd0: number, fd0: number, out: Float64Array): number {
   // predicted corner offsets from the apex, frame s = 1..k: q^s (c - a)
   const po = _po;
   for (let c = 0; c < 8; c++) {
@@ -378,10 +396,11 @@ function bandPersp(pl: Float64Array, cs: Float64Array, ax: number, ay: number, a
     const cA = Math.cos(A), sA = Math.sin(A);
     const mx = nx * cA + ux * sA, my = ny * cA + uy * sA, mz = nz * cA + uz * sA;
     // the apex travels k v: shift the plane out by what crosses it
-    const mv = mx * vx + my * vy + mz * vz, sh = mv < 0 ? -k * mv : 0;
-    if (sh > sweepCap) return -1;
+    const mv = mx * vx + my * vy + mz * vz, tr = mv < 0 ? -k * mv : 0;
+    if (tr > sweepCap) return -1;
+    const sh = Math.max(iso, tr + err);
     if (sh > maxShift) maxShift = sh;
-    out[o] = mx; out[o + 1] = my; out[o + 2] = mz; out[o + 3] = -(mx * ax + my * ay + mz * az) + sh + iso;
+    out[o] = mx; out[o + 1] = my; out[o + 2] = mz; out[o + 3] = -(mx * ax + my * ay + mz * az) + sh;
   }
   // depth range of the predicted corners (apex travel included)
   const fv = fx * vx + fy * vy + fz * vz;
@@ -393,24 +412,44 @@ function bandPersp(pl: Float64Array, cs: Float64Array, ax: number, ay: number, a
       if (d > fd) fd = d;
     }
   }
-  const fa = fx * ax + fy * ay + fz * az;
-  out[16] = -fx; out[17] = -fy; out[18] = -fz; out[19] = fa + fd + iso; // far
-  out[20] = fx; out[21] = fy; out[22] = fz; out[23] = -fa - nd + iso; // near
+  const fa = fx * ax + fy * ay + fz * az, ds = Math.max(iso, err);
+  if (ds > maxShift) maxShift = ds;
+  out[16] = -fx; out[17] = -fy; out[18] = -fz; out[19] = fa + fd + ds; // far
+  out[20] = fx; out[21] = fy; out[22] = fz; out[23] = -fa - nd + ds; // near
   // (the list is drawn this frame too: the band must hold the current volume)
   return cornersInside(cs, out) ? maxShift : -1;
 }
 
 /** guard band of an orthographic volume (shadow camera) for the next k frames of its last translation v: every plane
- *  shifted outward by what crosses it, plus iso -> out; the largest shift, or -1 beyond sweepCap */
-function bandOrtho(pl: Float64Array, v: Float64Array, k: number, iso: number, sweepCap: number, out: Float64Array): number {
+ *  shifted outward by what crosses it plus err, at least by iso -> out; the largest shift, or -1 beyond sweepCap */
+function bandOrtho(pl: Float64Array, v: Float64Array, k: number, iso: number, err: number, sweepCap: number, out: Float64Array): number {
   let maxShift = 0;
   for (let o = 0; o < 24; o += 4) {
-    const mv = pl[o] * v[0] + pl[o + 1] * v[1] + pl[o + 2] * v[2], sh = mv < 0 ? -k * mv : 0;
-    if (sh > sweepCap) return -1;
+    const mv = pl[o] * v[0] + pl[o + 1] * v[1] + pl[o + 2] * v[2], tr = mv < 0 ? -k * mv : 0;
+    if (tr > sweepCap) return -1;
+    const sh = Math.max(iso, tr + err);
     if (sh > maxShift) maxShift = sh;
-    out[o] = pl[o]; out[o + 1] = pl[o + 1]; out[o + 2] = pl[o + 2]; out[o + 3] = pl[o + 3] + sh + iso;
+    out[o] = pl[o]; out[o + 1] = pl[o + 1]; out[o + 2] = pl[o + 2]; out[o + 3] = pl[o + 3] + sh;
   }
   return maxShift;
+}
+
+/** no motion (bands without a prediction) */
+const _v0 = new Float64Array(3);
+const _q0 = new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+
+/** did the per-frame motion (translation v, rotation q) keep its pace since the previous frame's (pv, pq)? Then it is
+ *  worth predicting (a jump, a start or an erratic camera is not) */
+function steady(v: Float64Array, q: Float64Array, pv: Float64Array, pq: Float64Array, eps: number): boolean {
+  const dx = v[0] - pv[0], dy = v[1] - pv[1], dz = v[2] - pv[2];
+  const l2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+  if (dx * dx + dy * dy + dz * dz > 0.09 * l2 + eps * eps) return false;
+  // rotation between the two per-frame rotations (q pq^T) against the rotation itself
+  let t = 0, tq = 0;
+  for (let i = 0; i < 9; i++) t += q[i] * pq[i];
+  tq = q[0] + q[4] + q[8];
+  const a = Math.acos(Math.max(-1, Math.min(1, (t - 1) / 2))), turn = Math.acos(Math.max(-1, Math.min(1, (tq - 1) / 2)));
+  return a <= 0.3 * turn + 1e-5;
 }
 
 export class DynamicBatch {
@@ -432,6 +471,9 @@ export class DynamicBatch {
    *  cached lists patch just those entries' draw ranges (patchRanges) */
   private swapLog = new Int32Array(SWAP_RING);
   private swapSeq = 0;
+  /** tiles enabled / disabled (setTileEnabled): ring of tile ids and the running count (see tilesOk) */
+  private offLog = new Int32Array(OFF_RING);
+  private offSeq = 0;
   /** registered geometries changed (drawRanges' cache key, with the geometry count and index width) */
   private geoEpoch = 0;
   private rangesAt = -1;
@@ -439,9 +481,9 @@ export class DynamicBatch {
   private rangesBpe = -1;
   /** per geometry: culling radius about the instance origin (sphere radius + |sphere centre|; dynamic batches) */
   private geoRad = new Float32Array(64);
-  /** guard band of the per-pass lists, as a fraction of the view distance: a list culled with planes widened by it
-   *  is reused while the camera only pans / slides by less (0 = exact lists, rebuilt on any camera move). Main
-   *  passes use the view camera's distance to the ground, shadow passes the receiver's. */
+  /** guard band of the per-pass lists, as a fraction of the view distance: the widest isotropic band (slow motion) and
+   *  prediction error, and the fastest travel per frame that is predicted (0 = exact lists, rebuilt on any camera
+   *  move). Main passes use the view camera's distance to the ground, shadow passes the receiver's. */
   guard = 0.06;
   /** views farther out than this (m to the ground along the view axis; shadow passes: their slice) cull per tile only
    *  and skip the front-to-back sort: at that range instances are small (LOD proxies), overdraw is low and the lists
@@ -867,7 +909,35 @@ export class DynamicBatch {
     const off = on ? 0 : 1;
     if (this.tileOff[tile] === off) return;
     this.tileOff[tile] = off;
-    this.touch();
+    // (logged, not a version bump: a cached list stays valid unless the tile can show in its pass, see tilesOk)
+    this.offLog[this.offSeq % OFF_RING] = tile;
+    this.offSeq++;
+    this.cver++;
+    if (this.mesh.castShadow) shadowCasters.version++;
+  }
+
+  /** did none of the tiles enabled / disabled since slot s's build touch its pass volume (the planes it was culled
+   *  with)? A tile whose box lies outside them was not in the list and still is not; a dirty tile (bounds pending)
+   *  counts as touching. */
+  private tilesOk(s: PassSlot): boolean {
+    const behind = this.offSeq - s.offAt;
+    if (behind > OFF_RING) return false;
+    const tb = this.tileBox, pl = s.bp, lists = this.tileLists, dirty = this.tileDirty, log = this.offLog;
+    for (let q = s.offAt; q < this.offSeq; q++) {
+      const t = log[q % OFF_RING];
+      if (lists[t].length === 0) continue;
+      if (dirty[t]) return false;
+      const k = t * 6, x0 = tb[k], y0 = tb[k + 1], z0 = tb[k + 2], x1 = tb[k + 3], y1 = tb[k + 4], z1 = tb[k + 5];
+      if (!(x1 >= x0) || !Number.isFinite(x0 + x1)) return false;
+      let out = false;
+      for (let p = 0; p < 24; p += 4) {
+        const nx = pl[p], ny = pl[p + 1], nz = pl[p + 2];
+        if (nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + pl[p + 3] < 0) { out = true; break; }
+      }
+      if (!out) return false;
+    }
+    s.offAt = this.offSeq;
+    return true;
   }
 
   /** assign an instance to a culling tile (-1 = untiled: always tested per instance) */
@@ -999,16 +1069,17 @@ export class DynamicBatch {
       }
       s = {
         camera, starts: new Int32Array(64), counts: new Int32Array(64), ids: new Uint32Array(64), tex: null as unknown as THREE.DataTexture, texCap: 0, small: 0, count: 0,
-        version: -1, swapAt: 0, gen: 0, posGen: -1, pos: new Int32Array(0),
+        version: -1, swapAt: 0, offAt: 0, gen: 0, posGen: -1, pos: new Int32Array(0),
         // (fields holding doubles start as doubles, -0 / NaN: a field first stored as a small integer changes its
         // representation at the first double, which deoptimizes the code that read it)
         selT: new Int32Array(64), selV: new Uint32Array(64), selO: new Int32Array(64), selN: 0, selEnd: 0, selMinR: -0, selValid: false, used: 0,
-        shape: new Float64Array(8), rot: new Float64Array(9), texel: NaN, px: -0, py: -0, pz: -0, bk: 0, iso: -0, sweepCap: -0, margin: -0,
+        shape: new Float64Array(8), rot: new Float64Array(9), texel: NaN, px: -0, py: -0, pz: -0, bk: 0, iso: -0, err: -0, sweepCap: -0, margin: -0,
         // (NaN planes: no corner is inside them until a build sets them)
         bp: new Float64Array(24).fill(NaN), brp: new Float64Array(24).fill(NaN), reach0: -0, farMode: false, banded: false, stale: false,
         rform: -1, rver: -1,
         still: 0, uses: 0, noBand: 0, lx: NaN, ly: NaN, lz: NaN, lrot: new Float64Array(9), lrrot: new Float64Array(9), lrx: NaN, lry: NaN, lrz: NaN,
-        mv: new Float64Array(3), mq: new Float64Array(9), rmv: new Float64Array(3), rmq: new Float64Array(9),
+        mv: new Float64Array(3), mq: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]), rmv: new Float64Array(3), rmq: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+        pmv: new Float64Array(3), pmq: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]), rpmv: new Float64Array(3), rpmq: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]), pred: false,
       };
       this.slots.push(s);
     }
@@ -1053,7 +1124,7 @@ export class DynamicBatch {
     const sdx = w[12] - s.lx, sdy = w[13] - s.ly, sdz = w[14] - s.lz;
     const step = s.lx === s.lx ? Math.sqrt(sdx * sdx + sdy * sdy + sdz * sdz) : Infinity;
     const turn = s.lx === s.lx ? turnAngle(_rot, s.lrot) : Infinity;
-    if (s.lx === s.lx) { s.mv[0] = sdx; s.mv[1] = sdy; s.mv[2] = sdz; rotBetween(s.lrot, _rot, s.mq); }
+    if (s.lx === s.lx) { s.pmv.set(s.mv); s.pmq.set(s.mq); s.mv[0] = sdx; s.mv[1] = sdy; s.mv[2] = sdz; rotBetween(s.lrot, _rot, s.mq); }
     s.lx = w[12]; s.ly = w[13]; s.lz = w[14];
     s.lrot.set(_rot);
     let rstep = 0, rturn = 0;
@@ -1062,7 +1133,7 @@ export class DynamicBatch {
       const rdx = o.x - s.lrx, rdy = o.y - s.lry, rdz = o.z - s.lrz;
       rstep = s.lrx === s.lrx ? Math.sqrt(rdx * rdx + rdy * rdy + rdz * rdz) : Infinity;
       rturn = s.lrx === s.lrx ? turnAngle(recv.rot, s.lrrot) : Infinity;
-      if (s.lrx === s.lrx) { s.rmv[0] = rdx; s.rmv[1] = rdy; s.rmv[2] = rdz; rotBetween(s.lrrot, recv.rot, s.rmq); }
+      if (s.lrx === s.lrx) { s.rpmv.set(s.rmv); s.rpmq.set(s.rmq); s.rmv[0] = rdx; s.rmv[1] = rdy; s.rmv[2] = rdz; rotBetween(s.lrrot, recv.rot, s.rmq); }
       s.lrx = o.x; s.lry = o.y; s.lrz = o.z;
       s.lrrot.set(recv.rot);
     }
@@ -1082,6 +1153,7 @@ export class DynamicBatch {
     const reach = recv ? recv.reach : shadow ? 0 : viewReach(camera);
     const farMode = reach > this.farReach;
     let same = s.version === this.version && s.texel === texel && s.farMode === farMode && !(reach < s.reach0 * REACH_SHRINK);
+    if (same && s.offAt !== this.offSeq && !this.tilesOk(s)) same = false;
     if (same && recv && recv.form !== s.rform) same = false;
     if (same && !this.atBuild(s, w, P, recv)) {
       same = frustumCorners(camera, _cc) && cornersInside(_cc, s.bp) && (recv === null || cornersInside(recv.corners, s.brp));
@@ -1103,16 +1175,21 @@ export class DynamicBatch {
       sh[0] = P[0]; sh[1] = P[5]; sh[2] = P[8]; sh[3] = P[9]; sh[4] = P[10]; sh[5] = P[12]; sh[6] = P[13]; sh[7] = P[14];
       s.rot.set(_rot);
       s.px = w[12]; s.py = w[13]; s.pz = w[14];
-      // band (see cullPlanes): the camera's last motion predicted for up to BAND_FRAMES frames, plus `guard` x the view
-      // distance at most for the prediction's error (half a frame of travel). None for a resting view, for dynamic
-      // batches, after a jump, or while bands keep failing (noBand).
+      // band (see cullPlanes): ~4 frames of the camera's travel on every side for slow motion (at most `guard` x the view
+      // distance: far views are GPU-bound and their pans fast, a wide band would mostly add triangles), and steady
+      // motion of less than that per frame predicted for up to BAND_FRAMES frames (directional: the planes the view
+      // turns / moves across; plus half a frame of travel for the prediction's error). None for a resting view, for
+      // dynamic batches, after a jump or for fast travel, or while bands keep failing (noBand).
       const range = Math.min(reach, 3000);
       const cap = this.guard * range;
       // (shadow passes: the band must also cover the receiver, which moves with the view, not the shadow camera)
       const move = Math.max(step, rstep);
       const bandOk = cap > 0 && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0 && move < Infinity && turn < Infinity && rturn < Infinity;
-      s.bk = bandOk ? BAND_FRAMES : 0;
-      s.iso = bandOk ? Math.min(cap, 0.5 * move + 1e-3 * range) : 0;
+      s.iso = bandOk && move < cap * 0.75 ? Math.min(cap, 4 * move) : 0;
+      // (fast travel is not predicted: a band covering frames of it would mostly add triangles)
+      s.pred = bandOk && move < cap && (step > 1e-3 || turn > TURN_EPS || rstep > 1e-3 || rturn > TURN_EPS) && steady(s.mv, s.mq, s.pmv, s.pmq, 1e-3 * range) && (recv === null || steady(s.rmv, s.rmq, s.rpmv, s.rpmq, 1e-3 * range));
+      s.err = s.pred ? Math.min(cap, 0.5 * move) + 1e-3 * range : 0;
+      s.bk = s.pred ? BAND_FRAMES : s.iso > 0 ? 1 : 0;
       s.sweepCap = SWEEP_CAP * range;
       if (recv) {
         s.rform = recv.form;
@@ -1216,20 +1293,24 @@ export class DynamicBatch {
         const rc = _rc, cr = recv.corners;
         for (let k = 0; k < 4; k++) for (let j = 0; j < 3; j++) { rc[k * 3 + j] = cr[k * 6 + j]; rc[(k + 4) * 3 + j] = cr[k * 6 + 3 + j]; }
       }
-      for (let k = s.bk; k >= 1; k--) {
+      // steady motion: predicted for k frames (the most that fits the caps); else (or if none fits) the isotropic band
+      for (let k = s.pred ? s.bk : 0; k >= 0; k--) {
+        if (k === 0 && !(s.iso > 0)) break;
+        const v = k > 0 ? s.mv : _v0, qq = k > 0 ? s.mq : _q0, rv = k > 0 ? s.rmv : _v0, rq = k > 0 ? s.rmq : _q0;
+        const err = k > 0 ? s.err : 0, kk = k > 0 ? k : 1;
         // (depth slack: near / far follow the zoom every frame, the receiver's slice the cascade splits)
-        const m1 = persp ? bandPersp(fp, _cc, ax, ay, az, fx, fy, fz, s.mv, s.mq, k, s.iso, s.sweepCap, near * 0.5, far * 1.25, _bp) : bandOrtho(fp, s.mv, k, s.iso, s.sweepCap, _bp);
+        const m1 = persp ? bandPersp(fp, _cc, ax, ay, az, fx, fy, fz, v, qq, kk, s.iso, err, s.sweepCap, near * 0.5, far * 1.25, _bp) : bandOrtho(fp, v, kk, s.iso, err, s.sweepCap, _bp);
         if (m1 < 0) continue;
         let m2 = 0;
         if (recv) {
           const o = recv.origin, f = recv.fwd;
-          m2 = bandPersp(rp, _rc, o.x, o.y, o.z, f.x, f.y, f.z, s.rmv, s.rmq, k, s.iso, s.sweepCap, recv.dn * 0.5, recv.df * 1.1, _bq);
+          m2 = bandPersp(rp, _rc, o.x, o.y, o.z, f.x, f.y, f.z, rv, rq, kk, s.iso, err, s.sweepCap, recv.dn * 0.5, recv.df * 1.1, _bq);
           if (m2 < 0) continue;
           rp.set(_bq);
         }
         fp.set(_bp);
         s.banded = true;
-        s.margin = Math.max(m1, m2) + s.iso;
+        s.margin = Math.max(m1, m2);
         break;
       }
     }
@@ -1256,6 +1337,7 @@ export class DynamicBatch {
       else s.swapAt = this.swapSeq;
     }
     s.gen++;
+    s.offAt = this.offSeq;
     let n = 0;
     let keep = false;
     /** leading entries known to be unchanged since the last build (a kept prefix of tile blocks) */

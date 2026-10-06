@@ -56,9 +56,10 @@ const _m = new Float64Array(6);
 const _w4 = new Float64Array(4);
 /** with shadows, a vehicle whose cell sphere stays this far (m) outside the view frustum is neither posed nor drawn:
  *  beyond the shadow a vehicle can cast into the view (~4 m tall at >= 6 deg sun elevation). Without shadows (low /
- *  medium quality) every vehicle outside the view is hidden, and the batch's main pass draws the visible ones without
- *  testing them again (DynamicBatch.viewCulled) */
+ *  medium quality) only the reach of its headlight decal (15 m ahead of the car) is added, and the batch's main pass
+ *  draws the visible ones without testing them again (DynamicBatch.viewCulled) */
 const VIEW_MARGIN = 40;
+const HEAD_MARGIN = 6;
 /** poseCars: the view frustum planes (nx, ny, nz, constant) x 6 */
 const _vf = new Float64Array(24);
 const _vfr = new THREE.Frustum();
@@ -215,8 +216,8 @@ export class VehicleRenderer {
   private vcs!: Float64Array;
   private vsg!: Float64Array;
   /** per vehicle: a sphere (x, y, z, r) around its cell (noteCell) that bounds the vehicle wherever it is on the cell
-   *  path, widened by VIEW_MARGIN: a vehicle whose sphere misses the view frustum is neither posed nor drawn (see
-   *  poseCars) */
+   *  path: a vehicle whose sphere misses the view frustum (pushed out by VIEW_MARGIN / HEAD_MARGIN) is neither posed
+   *  nor drawn (see poseCars) */
   private vsph!: Float32Array;
   /** cell caches need a full refresh (network / traffic changed), and the rolling refresh position */
   private cellsDirty = true;
@@ -1139,8 +1140,8 @@ export class VehicleRenderer {
     const life = this.life, tt = this.t, spd = this.spd, len = this.len, vlen = this.vlen, inst = this.inst, vis = this.vis, rank = this.rank;
     const vtile = this.vtile, posed = this.posed, vsph = this.vsph;
     // the view frustum (a vehicle in a visible tile but out of view, beyond any shadow it could cast into the view, is
-    // hidden: no pose, no draw); its planes are pushed out by the shadow margin (none without shadows: see VIEW_MARGIN)
-    const margin = this.batch.mesh.castShadow ? VIEW_MARGIN : 0;
+    // hidden: no pose, no draw); its planes are pushed out by the shadow / headlight margin (see VIEW_MARGIN)
+    const margin = this.batch.mesh.castShadow ? VIEW_MARGIN : HEAD_MARGIN;
     _vfr.setFromProjectionMatrix(_vfm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
     for (let i = 0; i < 6; i++) { const pl = _vfr.planes[i], o = i * 4; _vf[o] = pl.normal.x; _vf[o + 1] = pl.normal.y; _vf[o + 2] = pl.normal.z; _vf[o + 3] = pl.constant + margin; }
     const vf = _vf;
