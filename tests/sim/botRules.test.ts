@@ -141,6 +141,38 @@ describe('bot: facilities', () => {
     expect(lotTouchesRoad(st, plant.x, plant.z, plant.w, plant.d)).toBe(true);
   });
 
+  it('a walking-catchment facility (school, clinic, park) never takes a lot whose only road is the highway', { timeout: 600000 }, async () => {
+    const b = await bot(96);
+    b.setup();
+    b.st.funds = 5e6;
+    const st = b.st, N = st.size;
+    const walkRoad = (x: number, z: number) => x >= 0 && z >= 0 && x < N && z < N && st.network[z * N + x] >= Network.Street && st.network[z * N + x] <= Network.OneWay;
+    // a 3 x 3 lot just below the trunk (an avenue for now) with no other road along its edges
+    const z0 = b.trunkZ + 1;
+    let x0 = -1;
+    for (let x = 1; x + 4 < N && x0 < 0; x++) {
+      let ok = st.network[(z0 - 1) * N + x] === Network.Avenue;
+      for (let dz = 0; dz < 3 && ok; dz++) for (let dx = 0; dx < 3; dx++) if (st.network[(z0 + dz) * N + x + dx] !== Network.None) ok = false;
+      for (let k = -1; k <= 3 && ok; k++) if (walkRoad(x + k, z0 + 3)) ok = false;
+      for (let k = 0; k < 3 && ok; k++) if (walkRoad(x - 1, z0 + k) || walkRoad(x + 3, z0 + k)) ok = false;
+      if (ok) x0 = x;
+    }
+    expect(x0).toBeGreaterThanOrEqual(0);
+    const target = b.trunkZ + 8; // (a target on the same side of the trunk)
+    // the trunk avenue becomes a highway (a pedestrian barrier) once the town grows: a school on it would be stranded
+    expect(b.civicAccept('civ_elementary_school', target)(x0, z0, 3, 3)).toBe(false);
+    expect(b.A.buildNetwork(lPath({ x: 0, z: b.trunkZ }, { x: N - 1, z: b.trunkZ }), Network.Highway).ok).toBe(true);
+    b.highway = true;
+    expect(b.civicAccept('civ_elementary_school', target)(x0, z0, 3, 3)).toBe(false);
+    expect(b.civicAccept('park_small', target)(x0, z0, 1, 1)).toBe(false);
+    // a drive catchment (police, fire, high school) takes the highway; across the trunk nothing serves the target
+    expect(b.civicAccept('civ_police_station', target)(x0, z0, 3, 3)).toBe(true);
+    expect(b.civicAccept('civ_police_station', b.trunkZ - 8)(x0, z0, 3, 3)).toBe(false);
+    // a street along the lot's back: the school may go there
+    expect(b.A.buildNetwork(lPath({ x: x0, z: z0 + 3 }, { x: x0 + 2, z: z0 + 3 }), Network.Street).ok).toBe(true);
+    expect(b.civicAccept('civ_elementary_school', target)(x0, z0, 3, 3)).toBe(true);
+  });
+
   it('a short run serves catchment needs and puts every service and utility on a lot that touches a road', { timeout: 1200000 }, async () => {
     const b = await bot(96);
     b.run(4);

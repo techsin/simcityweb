@@ -229,9 +229,34 @@ function blurCoarse(raw: Float32Array, out: Float32Array, cw: number): void {
  *  population at the last update, a new home is seeded on its first visit, its second update comes at a per-building
  *  phase within the period) */
 const DEMO_UPDATE_DAYS = 16 * OCC_PERIOD;
-/** the city-wide cohort / education sample (aggregate) runs every DEMO_AGG_DAYS (the coarse demographics grids that
- *  desirability reads — residents by wealth, education, kids — follow the homes daily, like the coarse population) */
+/** the city-wide cohort / education / coarse-grid sample (aggregate) runs every DEMO_AGG_DAYS */
 const DEMO_AGG_DAYS = 8 * OCC_PERIOD;
+
+/**
+ * The last demographics sample (coarse grids desirability reads — residents by wealth, education, kids — and the cohort
+ * shares), kept in systemData.popGrids: a loaded city reads the saved game's sample until its next one. Rebuilt at load,
+ * its shops / offices read customers up to DEMO_AGG_DAYS fresher than the game it continues (grownCity's save / load
+ * divergence doubled); summing the grids daily instead cost +0.6 ms/day on the 256² stress city.
+ */
+interface PopGrids { v: 1; popW: Float32Array[]; skill: Float32Array; kids: Float32Array; coh: Float64Array }
+function savedGrids(st: CityState, cc: number): PopGrids | null {
+  const g = st.systemData.popGrids as PopGrids | undefined;
+  if (!g || g.v !== 1 || !Array.isArray(g.popW) || g.popW.length !== 3 || g.popW.some((a) => !(a instanceof Float32Array) || a.length !== cc)) return null;
+  if (!(g.skill instanceof Float32Array) || g.skill.length !== cc || !(g.kids instanceof Float32Array) || g.kids.length !== cc) return null;
+  return g.coh instanceof Float64Array && g.coh.length === 15 ? g : null;
+}
+function storeGrids(st: CityState, rt: EconRuntime, coh: Float64Array): void {
+  const cc = rt.cw * rt.cw;
+  const g = savedGrids(st, cc) ?? {
+    v: 1, popW: [new Float32Array(cc), new Float32Array(cc), new Float32Array(cc)], skill: new Float32Array(cc), kids: new Float32Array(cc),
+    coh: new Float64Array(15),
+  };
+  for (let w = 0; w < 3; w++) g.popW[w].set(rt.coarsePopW[w]);
+  g.skill.set(rt.coarseSkill);
+  g.kids.set(rt.coarseKids);
+  g.coh.set(coh);
+  st.systemData.popGrids = g;
+}
 
 /** day of the month of the EQ / HQ update (off the month tick; the commercial core runs on day 20, freight on 15) */
 const EQHQ_DAY = 25;
@@ -270,22 +295,23 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     rt.coarsePopRaw.fill(0); rt.coarseWealthRaw.fill(0); rt.coarseCountRaw.fill(0);
     const cw = rt.cw;
     const cc = cw * cw;
-    // employment sample (workforce x traffic access): every OCC_PERIOD days; cohort shares / city mean education:
-    // every DEMO_AGG_DAYS (the fields change slowly) — the cohort stats follow the daily population at the sampled
-    // shares. The coarse demographics grids (customers by wealth, skilled workforce, kids) are summed every day: a
-    // loaded city rebuilds them at once, and with a monthly sample its shops / offices read fresher grids than the
-    // saved game for up to DEMO_AGG_DAYS (the save / load divergence of grownCity doubled)
+    // employment sample (workforce x traffic access): every OCC_PERIOD days; cohort shares / coarse demographics
+    // grids / city mean education: every DEMO_AGG_DAYS (the fields change slowly) — the cohort stats follow the daily
+    // population at the sampled shares. A loaded city takes the saved sample (systemData.popGrids, see PopGrids)
     const sample = first || st.day % OCC_PERIOD === 0;
     const demo = first || st.day % DEMO_AGG_DAYS === 0;
+    const saved = first && st.day > 0 && rt.coarsePopW[0].length === cc ? savedGrids(st, cc) : null;
     if (sample) cache.ensure(st.nextBuildingId);
     const mWf = cache.wf;
-    if (skillRaw.length !== cc) {
-      popWRaw = [new Float32Array(cc), new Float32Array(cc), new Float32Array(cc)];
-      skillRaw = new Float32Array(cc); kidsRaw = new Float32Array(cc); skillBlur = new Float32Array(cc);
-    } else {
-      popWRaw[0].fill(0); popWRaw[1].fill(0); popWRaw[2].fill(0); skillRaw.fill(0); kidsRaw.fill(0);
+    if (demo) {
+      if (skillRaw.length !== cc) {
+        popWRaw = [new Float32Array(cc), new Float32Array(cc), new Float32Array(cc)];
+        skillRaw = new Float32Array(cc); kidsRaw = new Float32Array(cc); skillBlur = new Float32Array(cc);
+      } else {
+        popWRaw[0].fill(0); popWRaw[1].fill(0); popWRaw[2].fill(0); skillRaw.fill(0); kidsRaw.fill(0);
+      }
+      coh.fill(0);
     }
-    if (demo) coh.fill(0);
     const dd = demographicsData(st);
     const eduFallback = dd.eduMean >= 0 ? dd.eduMean : 0;
     let W = 0, eduSum = 0, eduPop = 0;

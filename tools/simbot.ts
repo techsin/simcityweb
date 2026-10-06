@@ -424,20 +424,29 @@ export class SimBot {
    * then an undeveloped block next to town (it becomes a civic block), then free lots of developed blocks within
    * 0.7 × reach (deep blocks fill their interiors with yards, so free lots there get rare)
    */
-  placeCivic(defId: string, x: number, z: number, reach: number, clearLots = false): ActionResult | null {
-    // on the target's side of the trunk highway (walking catchments stop at highways)
+  /**
+   * lot filter of a civic building serving (x, z): on the target's side of the trunk highway (walking catchments stop at
+   * highways) and, for a walking catchment (elementary school, clinic, library, parks), touching a street / road / avenue:
+   * the catchment starts on the roads along the lot, so a lot whose only road is the highway reaches nobody (128 s7: a
+   * school fronting the trunk served 0 pupils while 5,670 kids around it were unreached). The trunk line counts as
+   * highway from the start: the bot upgrades the avenue later, and a school placed on it would be stranded then.
+   */
+  civicAccept(defId: string, z: number): (lx: number, lz: number, w: number, d: number) => boolean {
     const side = (lz: number, d: number) => !this.highway || (lz + d / 2 < this.trunkZ) === (z < this.trunkZ);
-    // a walking catchment (elementary school, clinic, library, parks) starts on the roads along the lot: a lot whose only
-    // road is the highway reaches nobody (128 s7 2010: a school fronting the trunk served 0 pupils, 5,670 kids unreached)
     const walk = (getDef(defId)?.coverage as { metric?: string } | undefined)?.metric === 'walk';
-    const N = this.N, net = this.st.network;
-    const foot = (x: number, zz: number) => x >= 0 && zz >= 0 && x < N && zz < N && net[zz * N + x] >= Network.Street && net[zz * N + x] <= Network.OneWay;
+    const N = this.N, net = this.st.network, trunk = this.trunkZ;
+    const foot = (x: number, zz: number) => x >= 0 && zz >= 0 && x < N && zz < N && zz !== trunk && net[zz * N + x] >= Network.Street && net[zz * N + x] <= Network.OneWay;
     const walkable = (lx: number, lz: number, w: number, d: number) => {
       for (let x = lx; x < lx + w; x++) if (foot(x, lz - 1) || foot(x, lz + d)) return true;
       for (let zz = lz; zz < lz + d; zz++) if (foot(lx - 1, zz) || foot(lx + w, zz)) return true;
       return false;
     };
-    const accept = (lx: number, lz: number, w: number, d: number) => side(lz, d) && (!walk || walkable(lx, lz, w, d));
+    return (lx, lz, w, d) => side(lz, d) && (!walk || walkable(lx, lz, w, d));
+  }
+
+  placeCivic(defId: string, x: number, z: number, reach: number, clearLots = false): ActionResult | null {
+    const side = (lz: number, d: number) => !this.highway || (lz + d / 2 < this.trunkZ) === (z < this.trunkZ);
+    const accept = this.civicAccept(defId, z);
     const r = this.placeNear(defId, x, z, ['P'], true, reach, true, accept);
     if (r) return r;
     const dist = (b: Block) => Math.hypot((b.x0 + b.x1) / 2 - x, (b.z0 + b.z1) / 2 - z);
@@ -1223,7 +1232,7 @@ export class SimBot {
         }
         // schools and clinics: a district without a single small lot left loses a pocket park or a few townhouses / small
         // shops (stage 3) for them, like a mayor who buys out a corner — kids stuck without a school for years is worse
-        if (!built && priority && this.placeByClearing(def, target.x, target.z, reach, ['P', 'R', 'C'], undefined, 3, true)) built = d;
+        if (!built && priority && this.placeByClearing(def, target.x, target.z, reach, ['P', 'R', 'C'], this.civicAccept(def, target.z), 3, true)) built = d;
         if (built) {
           if (!builtAt.length) placed++; // (a second school / clinic this month leaves the other tiers their places)
           builtAt.push(target);

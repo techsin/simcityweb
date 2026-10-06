@@ -7,7 +7,9 @@
  *  supply S   per cell: zoned land by density (PARKING_SUPPLY_ZONE C / I, PARKING_SUPPLY_R R: surface lots, driveways),
  *             plopped civic lots PARKING_SUPPLY_CIVIC, road cells PARKING_SUPPLY_ROAD (street parking) + every parking
  *             garage's free spaces (GARAGE_SPACES minus the cars its commuters park there; none without a road beside
- *             it) spread over GARAGE_WALK_RADIUS with a normalised kernel (1 - d / (R + 1), sums to the spaces)
+ *             it) spread over GARAGE_WALK_RADIUS with a normalised kernel (1 - d / (R + 1), sums to the spaces). A park
+ *             & ride garage keeps for the block around it what the block lacks (garageArea: demand minus supply over
+ *             its walk area — traffic's reserve; local parkers first, park & ride gets the rest)
  *  parking    smoothstep(PARKING_RATIO[0], PARKING_RATIO[1], box(D) / box(S)); box = (2 PARKING_BOX_R + 1)^2 mean, so
  *             a block borrows spaces from its neighbours but a dense core runs out; blended with the previous raster
  *             (traffic passes it, PARKING_BLEND) so one noisy assignment does not flip a block.
@@ -63,6 +65,29 @@ export function addGarageSupply(N: number, b: Pick<Building, 'x' | 'z' | 'w' | '
     if (x < 0 || z < 0 || x >= N || z >= N) continue;
     out[z * N + x] += spaces * k.w[q];
   }
+}
+
+/**
+ * a garage's walk area (the disk its spaces spread over, see addGarageSupply): demand d and supply s summed over it and
+ * the share of its kernel on the map (mass: its own spaces there = spaces x mass)
+ */
+export function garageArea(N: number, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>, D: Float32Array, S: Float32Array): { d: number; s: number; mass: number } {
+  const R = GARAGE_WALK_RADIUS + (Math.max(b.w, b.d) >> 1);
+  const k = kernel(R);
+  const cx = b.x + (b.w >> 1), cz = b.z + (b.d >> 1);
+  let d = 0, s = 0, mass = 0;
+  for (let q = 0; q < k.w.length; q++) {
+    const x = cx + k.dx[q], z = cz + k.dz[q];
+    if (x < 0 || z < 0 || x >= N || z >= N) continue;
+    const i = z * N + x;
+    d += D[i]; s += S[i]; mass += k.w[q];
+  }
+  return { d, s, mass };
+}
+
+/** parking pressure of a demand / supply ratio (the raster's smoothstep, PARKING_RATIO) */
+export function pressureOf(d: number, s: number): number {
+  return !(d > 1e-6) ? 0 : s > 1e-6 ? sstep(PARKING_RATIO[0], PARKING_RATIO[1], d / s) : 1;
 }
 
 /** supply per cell by Zone value (lookup: no per-cell function calls) */

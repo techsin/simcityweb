@@ -11,11 +11,12 @@ import { RESP_NONE } from '../../src/sim/CityState';
 import {
   DEMO_KIDS, DEMO_WEALTH, DESIR_FAMILIES, DESIR_SENIORS, DESIR_STUDENTS, EMG_FIRE, EMG_FLOOR_T, EMG_NONE_T, EMG_NOROAD_T, OVERLAY_VARIANTS, attachOverlays, educationScale,
   emergencyReachAt, encodeSlack, markOverlaysDirty, overlayDeps, overlayLayer, overlayReadout, overlayStale, overlayValue, overlayVariantCount,
-  resolveVariant,
+  resolveVariant, TAP_T0,
 } from '../../src/sim/infra/overlays';
 import { computeOverlayValues, overlayDef, overlayLegend } from '../../src/render/world/overlays';
 import { familyScoreAt, seniorScoreAt, studentScoreAt } from '../../src/sim/economy/demographics';
 import { responseText } from '../../src/ui/inspectorModel';
+import { waterQualityAt } from '../../src/sim/infra/utilities';
 import { newSim, newState, place, roadLine } from './cityGen';
 
 const ALL = Object.values(Overlay).filter((v) => typeof v === 'number') as Overlay[];
@@ -448,6 +449,58 @@ describe('overlays: review round 2 (emergency fill: roadless buildings and rail 
     expect(inspector(st, 34, 13)!.text).toBe('manual only — 6+ min beyond every station');
     L.set(keep);
     markOverlaysDirty(st, 'emergency');
+    off();
+  });
+});
+
+describe('overlays: review round 2 (refresh cost rewrites keep the same values)', () => {
+  it('Tap water raster = utilities quality at every served cell (per-building and road-run shortcuts are exact)', () => {
+    const st = newState(64);
+    for (let z = 0; z < 64; z++) for (let x = 30; x < 34; x++) st.water[st.idx(x, z)] = 1;
+    place(st, 'rw_toxic_dump', 24, 4);
+    roadLine(st, 35, 21, 60, 21, Network.Road); // network A: pump on the polluted river
+    roadLine(st, 45, 10, 45, 40, Network.Road);
+    place(st, 't_pump', 35, 20);
+    for (let x = 38; x < 60; x += 3) place(st, 't_r2', x, 22, { pop: 60 });
+    place(st, 't_r3', 46, 24, { pop: 200 });
+    roadLine(st, 2, 50, 25, 50, Network.Road); // network B: a tower on clean ground
+    roadLine(st, 12, 40, 12, 60, Network.Road);
+    place(st, 't_tower', 2, 51);
+    for (let x = 4; x < 25; x += 3) place(st, 't_r2', x, 51, { pop: 60 });
+    const sim = newSim(st);
+    const off = attachOverlays(sim);
+    sim.runDays(12);
+    const data = overlayLayer(st, Overlay.Water, 1)!.data;
+    const qs = new Set<number>();
+    let served = 0;
+    for (let i = 0; i < st.cells; i++) {
+      if (!st.watered[i]) { expect(data[i]).toBe(0); continue; }
+      served++;
+      const q = waterQualityAt(sim, i);
+      qs.add(Math.round(q * 1000));
+      expect(data[i], `cell ${i % 64},${(i / 64) | 0}`).toBeCloseTo(TAP_T0 + (1 - TAP_T0) * Math.min(1, Math.max(0, q)), 6);
+    }
+    expect(served).toBeGreaterThan(60);
+    expect(qs.size).toBeGreaterThanOrEqual(2); // two networks of different quality
+    off();
+  });
+
+  it('Demographics raster paints each home footprint (a 2x2 home: all 4 cells), nothing else', () => {
+    const st = newState(32);
+    roadLine(st, 2, 10, 30, 10);
+    const big = place(st, 't_r3', 10, 11, { pop: 300, kids: 0.3, teens: 0.07, yad: 0.1, srs: 0.1 });
+    const small = place(st, 't_r1', 14, 11, { pop: 10, kids: 0.05, teens: 0.07, yad: 0.1, srs: 0.1 });
+    place(st, 't_cs', 16, 11, { jobs: 10 });
+    const sim = newSim(st);
+    const off = attachOverlays(sim);
+    const d = overlayLayer(st, Overlay.Demographics, DEMO_KIDS)!.data;
+    for (let i = 0; i < st.cells; i++) {
+      const id = st.building[i];
+      if (id === big.id || id === small.id) expect(d[i]).toBeGreaterThan(0.03);
+      else expect(d[i]).toBe(0);
+    }
+    expect(d[st.idx(11, 12)]).toBe(d[st.idx(10, 11)]);
+    expect(d[st.idx(10, 11)]).toBeGreaterThan(d[st.idx(14, 11)]);
     off();
   });
 });
