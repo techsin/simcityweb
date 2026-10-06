@@ -227,28 +227,38 @@ vec3 roomLight(float t) {
   return mix(mix(vec3(1.0, 0.6, 0.29), vec3(1.0, 0.85, 0.66), clamp(t * 2.0, 0.0, 1.0)), vec3(0.76, 0.86, 1.0), clamp(t * 2.0 - 1.0, 0.0, 1.0));
 }
 
+// cheap arithmetic hash for integer-spaced keys (no sin: this shader also runs on software renderers, where every
+// branch of the uber shader is evaluated for every fragment and a sin costs several times this)
+float qh11(float p) {
+  p = fract(p * 0.1031);
+  p *= p + 33.33;
+  return fract(2.0 * p * p);
+}
+
 // Night window lights of every glazed facade (WallWindows, GlassCurtain, PlainGlass storefronts / house windows): ONE
-// evaluation per fragment after the surface branches (they only set up the window grid). ci = window cell (column,
-// floor), fy = position within the floor (0..1), px = on-screen size of a cell (px), unitN = cells per unit (apartment /
-// office section), kind 0 homes, 1 offices, 2 hotels (warm offices), 3 every window lit warm amber (churches), litP =
-// lit probability of a unit. Levels of detail window -> unit -> floor -> facade, each blended to its expected value
-// once it gets too small on screen (sub-pixel cells would shimmer): lit windows of varied brightness and colour down to
-// ~2 px, lit / dark units (with their household / tenant colour) and floors down to ~1.5 px, and a low facade average
-// far away, so distant towers read as dark masses with sparkle instead of pale cream slabs.
+// evaluation per fragment at the end of the glazed-facade block (its branches only set up the window grid). ci = window
+// cell (column, floor), fy = position within the floor (0..1), px = on-screen size of a cell (px), unitN = cells per
+// unit (apartment / office section), kind 0 homes, 1 offices, 2 hotels (warm offices), 3 every window lit warm amber
+// (churches), litP = lit probability of a unit. Levels of detail window -> unit -> floor -> facade, each blended to its
+// expected value once it gets too small on screen (sub-pixel cells would shimmer): lit windows of varied brightness and
+// colour down to ~2 px, lit / dark units (with their household / tenant colour) and floors down to ~1.5 px, and a low
+// facade average far away, so distant towers read as dark masses with sparkle instead of pale cream slabs.
 vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float litP) {
   float fF = clamp(px.y - 1.0, 0.0, 1.0);
   float fU = clamp(px.x * unitN - 1.0, 0.0, 1.0) * fF;
-  float fP = clamp((px.x - 1.3) * 0.77, 0.0, 1.0) * clamp((px.y - 1.3) * 0.77, 0.0, 1.0);
+  float fP = clamp(px.x * 0.77 - 1.0, 0.0, 1.0) * clamp(px.y * 0.77 - 1.0, 0.0, 1.0);
   float uid = floor(ci.x / unitN + 1e-3);
   float home = step(kind, 0.5);
-  float hF = bh11(ci.y * 3.7 + vSeed * 57.0);
-  float hU = bh31(vec3(uid, ci.y, floor(vSeed * 71.0)));
-  float hP = bh31(vec3(ci, floor(vSeed * 43.0) + 5.0));
+  // random value per floor (of this building), per unit and per window
+  float hF = qh11(ci.y + vSeed * 1013.0);
+  float hU = qh11(uid + hF * 397.0 + 0.37);
+  float hP = qh11(ci.x + hF * 613.0 + 0.71);
   // floor occupancy: offices have dark floors (~30%, hotels ~12%: a few late workers), half and fully lit open-plan
   // floors (mean ~0.78); homes only vary a little per floor
   float occ = mix(hF < mix(0.3, 0.12, step(1.5, kind)) ? 0.1 : (hF < 0.72 ? 0.75 : 1.55), 0.8 + 0.4 * hF, home);
   float secP = clamp(litP * occ, 0.0, 0.97);
-  // a lit unit (household at home / office section in use) has ~70-75% of its windows lit, a dark one a stray lamp in ~8%
+  // a lit unit (household at home / office section in use) has ~70-75% of its windows lit, a dark one a stray lamp in
+  // ~8%
   float pOn = mix(0.75, 0.7, home), pOff = mix(0.08, 0.09, home);
   float pWin = mix(pOff, pOn, step(hU, secP));
   float winOn = step(hP, pWin);
@@ -264,16 +274,16 @@ vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float lit
   e *= mix(1.0, 0.55 + 0.6 * clamp(fy * 1.43 - 0.21, 0.0, 1.0), fP);
   // colour temperature per household (homes: mostly warm) / tenant (offices: 3 sections per tenant, warm white to cool
   // white; hotels warm), the kind's average once units blur
-  float hc = home > 0.5 ? fract(hU * 57.3 + vSeed * 3.1) : fract(hF + 0.618 * floor(uid / 3.0 + 1e-3));
+  float hc = home > 0.5 ? fract(hU * 5.37) : fract(hF + 0.618 * floor(uid / 3.0 + 1e-3));
   float t = home > 0.5 ? hc * hc : (kind < 1.5 ? hc : hc * 0.6);
   float tAvg = home > 0.5 ? 0.33 : (kind < 1.5 ? 0.5 : 0.3);
   vec3 c = roomLight(mix(tAvg, t, fU));
-  // a few lit living rooms show a flickering TV
+  // a few lit living rooms show a flickering TV (triangle wave: no sin)
   float tv = step(0.95, fract(hP * 13.7)) * winOn * home * fP;
-  c = mix(c, vec3(0.5, 0.68, 1.0) * (0.8 + 0.25 * sin(uTime * 6.3 + hP * 40.0)), tv);
-  // churches / keeps / clock towers: every window glows warm amber, a slight per-column tint
+  c = mix(c, vec3(0.5, 0.68, 1.0) * (0.55 + abs(fract(uTime + hP * 7.0) - 0.5)), tv);
+  // churches / keeps / clock towers: every window glows warm amber
   float allLit = step(2.5, kind);
-  c = mix(c, vec3(1.0, 0.72, 0.42) * mix(vec3(1.0), vec3(1.06, 0.94, 0.86), fract(hP * 5.3)), allLit);
+  c = mix(c, vec3(1.0, 0.72, 0.42), allLit);
   e = mix(e, 0.9, allLit);
   return c * (e + 0.03);
 }
