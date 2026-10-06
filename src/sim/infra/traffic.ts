@@ -690,7 +690,7 @@ export class TrafficSystem implements SimSystem {
     if (ph === PH_RMATCH) return 0.7 + 0.5 * (0.3 * road + 0.7 * bld);
     // WP7b: + persisted state (parking u8 on the cycles that recompute it) / P&R car legs on the P&R forest
     if (ph === PH_FINAL2) return 1.0 + 0.6 * (0.3 * road + 0.7 * bld) + (this.sfRecompute ? 0.25 * (size * size / 65536) : 0);
-    if (ph === PH_COMMUTE) return base * (0.3 * road + 0.7 * bld) + (this.gPrN > 0 ? 0.3 * road : 0);
+    if (ph === PH_COMMUTE) return base * (0.3 * road + 0.7 * bld) + (this.gPrN > 0 ? 0.45 * road : 0);
     // WP7b prep extras: car-less shares, parking over job footprints, sink / garage / depot lists
     if (ph === PH_PREP) return base * (0.3 * road + 0.7 * bld) + 0.3 * bld + attach;
     if (ph === PH_TRANSIT2) return base * (0.3 * road + 0.7 * bld);
@@ -702,7 +702,7 @@ export class TrafficSystem implements SimSystem {
     // P&R: garages + per-origin options (reused forest), or a two-label search chunk (the first step also places the
     // garages and seeds the search), then the options in their own step
     if (ph === PH_PARKRIDE) {
-      if (this.prStage === 2) return 0.15 + 0.45 * bld;
+      if (this.prStage === 2) return 0.2 + 0.55 * bld;
       if (this.prStage === 1 || this.prSearchDue()) return PR_CHUNK_COST * Math.min(1, 3 * road) + (this.prStage === 0 ? 0.1 : 0);
       return 0.2 + 0.45 * bld;
     }
