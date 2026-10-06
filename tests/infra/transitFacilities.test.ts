@@ -132,7 +132,18 @@ describe('WP7-5 bus fleet and depots', () => {
     const stop = transportFacilityReport(sim, st.buildings.get(homeStop)!)!;
     expect(stop.lines.find((l) => l.key === 'depot')!.value).toMatch(/Bus Depot · \d+ tiles away — runs 0 buses \(transit funding 0 %\)/);
     expect(stop.lines.find((l) => l.key === 'wait')!.hint).toMatch(/Not enough buses: Bus Depot runs 0 buses \(transit funding 0 %\)/);
-    expect(transportFacilityReport(sim, st.buildings.get(depotId)!)!.warnings.join()).toMatch(/transit funding 0 %/);
+    const dep = transportFacilityReport(sim, st.buildings.get(depotId)!)!;
+    expect(dep.warnings.join()).toMatch(/transit funding 0 %/);
+    // the cut fleet does not hide the stops' need: beside the fleet and in the warning
+    expect(dep.lines.find((l) => l.key === 'buses')!.value).toMatch(/^0 \/ 0 · its stops need [\d,]+$/);
+    expect(dep.warnings.join()).toMatch(/\(its stops need [\d,]+ buses\)/);
+    // half funding: 20 of 40 buses run, the stops need more
+    (st.budget.funding as Record<string, number>).transit = 50;
+    cycles(sim, 3);
+    const half = transportFacilityReport(sim, st.buildings.get(depotId)!)!;
+    console.log(`depot at 50 % funding: ${half.lines.map((l) => `${l.label}: ${l.value}`).join(' · ')} ! ${half.warnings.join(' ! ')}`);
+    expect(half.lines.find((l) => l.key === 'buses')!.value).toMatch(/^20 \/ 20 · its stops need [\d,]+$/);
+    expect(half.warnings.join()).toMatch(/runs 20 buses \(transit funding 50 %\).*its stops need [\d,]+ buses/);
     // a transit strike (budget cuts) names the strike
     econData(st).strikes.transit = 2;
     const stop2 = transportFacilityReport(sim, st.buildings.get(homeStop)!)!;
@@ -490,6 +501,117 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
     expect(tr.garageInfo(ids[0])!.pooled).toBe(0);
   });
 
+  it('three garages at three stations of one line: every one carries riders, steadily (1x); all full, steadily (2x)', { timeout: 300000 }, () => {
+    // the homes have all three garages among their options (PR_OPTIONS), whatever the prices or the jam do: no garage is
+    // ever pushed out of their choice, so none takes turns with the others; riders that do not fit their choice
+    // re-decide with the garages that still have room
+    const res: Record<number, { cars: number[][]; city: number[]; commute: number[] }> = {};
+    for (const mul of [1, 2]) {
+      const { st } = prTown([], mul);
+      for (const x of [72, 96]) place(st, 'tr_subway_station', x - 2, 69);
+      const ids = [48, 72, 96].map((x) => place(st, 'tr_parking_garage', x, 68).id);
+      const sim = newSim(st);
+      const tr = getTraffic(sim)!;
+      const r = (res[mul] = { cars: [[], [], []] as number[][], city: [] as number[], commute: [] as number[] });
+      for (let k = 0; k < 30; k++) {
+        tr.invalidate(); tr.runCycleSync(sim);
+        if (k < 9) continue;
+        ids.forEach((id, q) => {
+          const g = tr.garageInfo(id)!;
+          r.cars[q].push(g.parkRide);
+          expect(g.catchment!, `garage ${q} ${mul}x cycle ${k + 1}`).toBeGreaterThan(1000);
+        });
+        r.city.push(st.stats.transitFleet.parkRide);
+        r.commute.push(st.stats.avgCommute);
+      }
+      if (mul === 2) {
+        // every garage full: the report says so, and its demand beyond the room is visible
+        for (const id of ids) expect(transportFacilityReport(sim, st.buildings.get(id)!)!.lines.find((l) => l.key === 'parkRide')!.hint).toMatch(/^Full — /);
+      }
+    }
+    const spread = (a: number[]) => { const m = a.reduce((x, y) => x + y, 0) / a.length; return (Math.max(...a) - Math.min(...a)) / m; };
+    const range = (a: number[]) => `${Math.min(...a).toFixed(0)}-${Math.max(...a).toFixed(0)}`;
+    console.log(`three stations (cycles 10-30): ${[1, 2].map((m) => `${m}x cars ${res[m].cars.map(range).join(' / ')}, city P&R ${range(res[m].city)}, commute ${range(res[m].commute)}`).join(' | ')}`);
+    // 2x: wanted far beyond the three garages: each full, every cycle
+    for (const c of res[2].cars) {
+      expect(Math.min(...c)).toBeGreaterThanOrEqual(0.8 * GARAGE_SPACES);
+      expect(spread(c)).toBeLessThanOrEqual(0.2);
+    }
+    expect(spread(res[2].city)).toBeLessThanOrEqual(0.2);
+    // (the job matching does not starve on the garages' few attendant jobs: commutes steady too)
+    expect(spread(res[2].commute)).toBeLessThanOrEqual(0.2);
+    // 1x: the demand fills the fastest garage; the others carry what is left — each its share, no turns
+    expect(Math.min(...res[1].cars[0])).toBeGreaterThanOrEqual(0.8 * GARAGE_SPACES);
+    for (const c of res[1].cars) {
+      expect(Math.min(...c)).toBeGreaterThanOrEqual(0.3 * GARAGE_SPACES);
+      expect(Math.max(...c) - Math.min(...c)).toBeLessThanOrEqual(0.2 * GARAGE_SPACES);
+    }
+    // more than two full garages' worth (the old two-option search carried exactly 2 x 900 cars, the third idle)
+    expect(Math.min(...res[1].city)).toBeGreaterThan(2.1 * GARAGE_SPACES * CAR_OCCUPANCY);
+  });
+
+  it('a park & ride stop whose path stops riding for an assignment or two stays park & ride; then it is downtown', { timeout: 300000 }, () => {
+    const { st } = prTown([[48, 68]]);
+    const sim = newSim(st);
+    const tr = cycles(sim, 6);
+    const g = st.buildings.get(st.building[st.idx(48, 68)])!;
+    expect(tr.garageInfo(g.id)!.state).toBe('parkRide');
+    // an office beside the suburban station: its best transit path is now a walk to that office (no ride)
+    const off = place(st, 't_co', 43, 71, { jobs: 400, capacity: 420 });
+    sim.events.emit('buildingAdded', off);
+    const states: string[] = [];
+    for (let k = 0; k < 4; k++) { cycles(sim, 1); states.push(tr.garageInfo(g.id)!.state!); }
+    console.log(`garage state with a job beside its stop: ${states.join(' ')}`);
+    expect(states.slice(0, 2)).toEqual(['parkRide', 'parkRide']);
+    expect(states[3]).toBe('downtown');
+    // the office goes: park & ride again at once
+    for (let z = off.z; z < off.z + off.d; z++) for (let x = off.x; x < off.x + off.w; x++) st.building[st.idx(x, z)] = -1;
+    st.buildings.delete(off.id);
+    sim.events.emit('buildingRemoved', off);
+    cycles(sim, 1);
+    expect(tr.garageInfo(g.id)!.state).toBe('parkRide');
+  });
+
+  it('a reserve below 5 % of the spaces is none: no "kept for the block" line next to "no shortage"', { timeout: 300000 }, () => {
+    const { st, ids } = prTown([[48, 68]]);
+    const sim = newSim(st);
+    const tr = cycles(sim, 4);
+    const res = (tr as unknown as { garageReserve: Map<number, number> }).garageReserve;
+    const kept = () => transportFacilityReport(sim, st.buildings.get(ids[0])!)!.lines.find((l) => l.key === 'kept');
+    res.set(ids[0], 0.04 * GARAGE_SPACES);
+    cycles(sim, 1);
+    expect(tr.garageInfo(ids[0])!.reserve).toBe(0);
+    expect(kept()).toBeUndefined();
+    expect(transportFacilityReport(sim, st.buildings.get(ids[0])!)!.lines.find((l) => l.key === 'parkRide')!.value).toMatch(/\/ 900 cars/);
+    res.set(ids[0], 0.2 * GARAGE_SPACES);
+    cycles(sim, 1);
+    expect(tr.garageInfo(ids[0])!.reserve).toBeCloseTo(0.2 * GARAGE_SPACES, 3);
+    expect(kept()!.value).toMatch(/^180 spaces — it is short of parking/);
+  });
+
+  it('a block far beyond its parking: the report shows the spaces it still lacks, with and without the garage', { timeout: 300000 }, () => {
+    // the dense block at 3 x the jobs: its pressure sits at the top of the scale with or without the garage's spaces
+    const st = newState(96);
+    roadLine(st, 2, 40, 93, 40, Network.Avenue);
+    for (const z of [34, 46]) roadLine(st, 50, z, 80, z, Network.Road);
+    for (const x of [50, 65, 80]) roadLine(st, x, 34, x, 46, Network.Road);
+    place(st, 't_coal', 2, 38);
+    for (let x = 4; x <= 40; x++) place(st, 't_r2', x, 41, { pop: 2400, capacity: 2400, wealth: 2 });
+    for (let x = 51; x <= 63; x += 2) for (const z of [35, 37, 42, 44]) place(st, 't_co', x, z, { jobs: 1800, capacity: 1900 });
+    zoneRect(st, 50, 34, 80, 46, Zone.ComHigh);
+    const gar = place(st, 'tr_parking_garage', 56, 38);
+    st.stats.population = 37 * 2400;
+    const sim = newSim(st);
+    const tr = cycles(sim, 8);
+    const info = tr.garageInfo(gar.id)!;
+    const rep = transportFacilityReport(sim, gar)!;
+    const pr = rep.lines.find((l) => l.key === 'pressure')!;
+    console.log(`saturated block: ${pr.value} {${pr.hint}} relief ${JSON.stringify(info.relief)}`);
+    expect(info.relief!.without - info.relief!.with).toBeLessThan(0.05);
+    expect(info.relief!.shortWithout).toBeGreaterThan(info.relief!.short + 100);
+    expect(pr.hint).toMatch(/^Still short of about [\d,]+ spaces \([\d,]+ without its [\d,]+ free ones\): add another garage/);
+  });
+
   it('a garage by a ride stop in a parking-short block keeps its spaces for the block first; one off the stops is parking', { timeout: 300000 }, () => {
     const res: Record<string, number> = {};
     for (const g of ['none', 'ride', 'nostop'] as const) {
@@ -538,9 +660,13 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
     const hint = (id: number) => transportFacilityReport(sim, st.buildings.get(id)!)!.lines.find((l) => l.key === 'switched')!.hint ?? '';
     expect(tr.garageInfo(west)!.state).toBe('parkRide');
     expect(tr.garageInfo(west)!.riders).toBe(0);
-    expect(tr.garageReach(west)!.workers).toBeGreaterThan(1000);
-    expect(tr.garageReach(west)!.via).toBe(g0);
-    expect(hint(west)).toMatch(/Commuters within a 12-minute drive use the Parking Garage 27 tiles E/);
+    const rw = tr.garageReach(west)!;
+    expect(rw.workers).toBeGreaterThan(1000);
+    expect(rw.via).toBe(g0);
+    expect(rw.own).toBe(0);
+    expect(rw.slower).toBeGreaterThan(6);
+    console.log(`idle west garage: ${hint(west)}`);
+    expect(hint(west)).toMatch(/^Commuters near here use the Parking Garage 27 tiles E( \(full\))?: park & ride from here would take them \d+ min longer/);
     expect(tr.garageReach(east)!.workers).toBe(0);
     expect(hint(east)).toMatch(/No homes within a 12-minute drive/);
     // the only garage of a gridlocked town (3 x homes / jobs on one avenue), by a bus stop: its buses take over PR_LIMIT
@@ -888,7 +1014,8 @@ describe('WP7b save / load', () => {
     const d0 = st.systemData.infraTransport as Record<string, unknown>;
     const d1 = restored.systemData.infraTransport as Record<string, unknown>;
     expect(d1).toBeTruthy();
-    for (const k of ['busNeed', 'garageLoad', 'garagePrice', 'garageReserve', 'garageStop', 'stopLoad', 'sinkTrucks', 'sinkLast']) expect(d1[k]).toEqual(d0[k]);
+    for (const k of ['busNeed', 'garageLoad', 'garagePrice', 'garageReserve', 'garageStop', 'garageDown', 'stopLoad', 'stopPr', 'sinkTrucks', 'sinkLast']) expect(d1[k]).toEqual(d0[k]);
+    expect((d0.stopPr as unknown[]).length).toBe(1);
     expect((d0.garageStop as unknown[]).length).toBe(1);
     expect(Array.from(d1.parkingQ as Uint8Array)).toEqual(Array.from(d0.parkingQ as Uint8Array));
     expect(Array.from(d1.rampVol as Float32Array)).toEqual(Array.from(d0.rampVol as Float32Array));

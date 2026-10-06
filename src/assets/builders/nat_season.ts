@@ -12,7 +12,7 @@
  *
  * Month mix (temperate / alpine; tropical and desert never change):
  *   autumn  Sep 0.3, Oct 0.8, Nov 0.55
- *   bare    Nov 0.2, Dec-Feb 0.85, Mar 0.4
+ *   bare    Nov 0.2, Dec-Feb 0.93, Mar 0.4 (the rest keep dead russet leaves: marcescent oaks / beeches)
  *   blossom Apr 0.15 (oak: white street-tree blossom, maple: pink)
  */
 import { sharedUniforms } from '../materials';
@@ -43,7 +43,7 @@ export function seasonMix(month: number, climate = 'temperate'): SeasonMix {
   if (climate === 'tropical' || climate === 'desert') return NONE;
   const m = ((Math.floor(month) % 12) + 12) % 12;
   const autumn = m === 8 ? 0.3 : m === 9 ? 0.8 : m === 10 ? 0.55 : 0;
-  const bare = m === 11 || m <= 1 ? 0.85 : m === 10 ? 0.2 : m === 2 ? 0.4 : 0;
+  const bare = m === 11 || m <= 1 ? 0.93 : m === 10 ? 0.2 : m === 2 ? 0.4 : 0;
   const blossom = m === 3 ? 0.15 : 0;
   return { autumn, bare, blossom };
 }

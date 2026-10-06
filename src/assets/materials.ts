@@ -621,10 +621,11 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
         lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
       }
       if (pr < uSeason.y) {
-        // bare twigs: grey-brown, broken up by a fine twig texture (fades to its average with distance) so a solid
-        // lot crown reads as a branch mass rather than a brown ball
-        float tw = mix(0.5, bnoise(tq + 11.3), twF);
-        c = lum * vec3(1.18, 0.95, 0.8) * (0.62 + 0.62 * tw);
+        // bare twigs: a dark grey-brown interior crossed by lighter twig strands (a fine texture that fades to its
+        // average with distance), darker undersides, so a solid lot crown reads as a see-through branch tangle rather
+        // than a grey-brown puffball (about the far-impostor brightness of the bare nature trees)
+        float strand = mix(0.42, smoothstep(0.4, 0.75, bnoise(tq + 11.3)), twF);
+        c = lum * vec3(1.1, 0.93, 0.84) * (0.3 + 0.75 * strand) * (0.72 + 0.28 * smoothstep(-0.5, 0.6, nObj.y));
         greenK = 0.0;
       } else if (prN < uSeason.y + uSeason.x) {
         // autumn: orange -> red -> yellow per tree, blended with a little noise (no hard seam across a crown)
@@ -649,7 +650,7 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       albedo = mix(albedo, albedo * vec3(0.8, 0.86, 0.9), uFoliageSeason.y * leafK * everK);
       // dead leaves: russet, broken up by the twig texture so the crown reads thin, not as a solid brown ball
       float twM = mix(0.5, bnoise(tq + 11.3), twF);
-      albedo = mix(albedo, lumL * vec3(1.7, 0.92, 0.48) * (0.55 + 0.75 * twM), uFoliageSeason.y * decidK);
+      albedo = mix(albedo, lumL * vec3(1.15, 0.81, 0.58) * (0.55 + 0.75 * twM), uFoliageSeason.y * decidK);
     }
     // climate / season (uFoliageDry, uFoliageTint): low foliage turns straw-dry in deserts and dormant in winter so
     // lots match the terrain; crowns get a quarter of it; evergreens only the climate part (no winter dormancy)

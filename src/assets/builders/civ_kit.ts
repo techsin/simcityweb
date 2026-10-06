@@ -570,7 +570,8 @@ export function palm(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1) {
   const lean = rng.range(-0.5, 0.5);
   b.paint(0x7a6448, Surf.Wood).pipe([x, 0, z], [x + lean, h, z + lean * 0.4], 0.22 * k, 5);
   const tx = x + lean, tz = z + lean * 0.4;
-  b.paint(0x3f7a2e, Surf.Foliage);
+  // fronds: Foliage pattern 4 = evergreen (materials.ts), never turned autumn / bare by the season
+  b.paint(0x3f7a2e, Surf.Foliage, 4);
   const n = 7;
   const a0 = rng.next() * 6;
   for (let i = 0; i < n; i++) {

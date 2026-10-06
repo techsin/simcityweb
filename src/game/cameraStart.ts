@@ -1,7 +1,7 @@
 /**
  * Where the camera starts (QA UX-3): new cities open on the best buildable land (largest flat, dry area near the map
  * centre / a neighbour connection) instead of the map centre (often water); saved cities restore the last view,
- * stored in state.systemData.camera on save.
+ * stored in state.systemData.camera (CameraMemory: only once the real view's camera has been placed).
  */
 import { CELL_SIZE } from '../core/constants';
 import type { CameraControllerApi } from '../render/contracts';
@@ -122,4 +122,50 @@ export function applyCamera(c: CameraControllerApi, cam: SavedCamera): void {
   const v = c as ViewControls;
   if (typeof v.setView === 'function') v.setView(cam.x, cam.z, cam.distance, cam.tilt, cam.yaw);
   else c.focusOn(cam.x, cam.z, cam.distance);
+}
+
+/**
+ * The view a city opens on: the save's stored camera; else (a new city, or an old save without one) the best buildable
+ * land, or the centre of an old save's buildings. `distance`: zoom for the latter two.
+ */
+export function startCamera(st: CityState, distance: number): SavedCamera {
+  const saved = validCamera(st.systemData.camera, st);
+  if (saved) return saved;
+  let cell = bestBuildableCell(st);
+  if (st.buildings.size) {
+    // an older save without a stored camera: centre on the city itself
+    let sx = 0, sz = 0, n = 0;
+    for (const b of st.buildings.values()) {
+      sx += b.x + b.w / 2;
+      sz += b.z + b.d / 2;
+      n++;
+    }
+    cell = { x: Math.floor(sx / n), z: Math.floor(sz / n) };
+  }
+  return { x: (cell.x + 0.5) * CELL_SIZE, z: (cell.z + 0.5) * CELL_SIZE, distance };
+}
+
+/**
+ * Keeps the view in the save (state.systemData.camera, so every save path restores it), but only once the real view's
+ * camera has been placed. Until then the game runs on stand-in views (while the renderer modules load, or for good
+ * without WebGL) whose camera sits at the map corner (0, 0) / 800 m: storing that would overwrite a save's camera, and
+ * the start view placed from it (place) would open the city on the corner.
+ */
+export class CameraMemory {
+  /** the real view's camera was placed (place()): from now on store() keeps the save's camera up to date */
+  placed = false;
+
+  /** open the view on startCamera() (call once the real views exist) */
+  place(st: CityState, c: CameraControllerApi | null | undefined, fallbackDistance = 900): void {
+    if (!c) return;
+    applyCamera(c, startCamera(st, c.distance || fallbackDistance));
+    this.placed = true;
+  }
+
+  /** remember the current view in the save; a no-op before place() and on a stand-in view (`standIn`) */
+  store(st: CityState, c: CameraControllerApi | null | undefined, standIn = false): void {
+    if (!this.placed || standIn) return;
+    const cam = readCamera(c);
+    if (cam) st.systemData.camera = cam;
+  }
 }

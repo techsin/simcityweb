@@ -160,28 +160,32 @@ function garageFull(g: { parkRide: number; spaces: number; reserve?: number; wan
 
 /**
  * why a park & ride garage carries nobody: transit from its stop takes PR_LIMIT minutes or more (no option for
- * anybody), it is an option but driving beats park & ride, or it is nobody's option — no homes within the drive, or the
- * commuters near it have faster garages (TrafficSystem.garageReach over the homes nearest to it: the garage most of them
- * use, full or not, how many minutes longer park & ride from here takes them — beyond PR_OPTION_MARGIN they do not weigh
- * it — and how many options they weigh: a garage behind PR_OPTIONS faster ones is nobody's option)
+ * anybody), or — from the homes nearest to it (TrafficSystem.garageReach) — none within the drive, it is their option but
+ * driving beats park & ride, or it is not their option: park & ride from here takes them more than PR_OPTION_MARGIN
+ * minutes longer than from the garage they use (named, full or not), or they already weigh PR_OPTIONS faster garages
+ * (with room to spare, or all full: then this one is too far out of their way)
  */
-function idleGarageHint(sim: Simulation, tr: TrafficSystem, b: Building, catchment: number, stopName: string, transitMin: number | undefined): string {
+function idleGarageHint(sim: Simulation, tr: TrafficSystem, b: Building, stopName: string, transitMin: number | undefined): string {
   const st = sim.state;
   const fix = 'link it to a subway / train line or a better-served stop';
   if (transitMin !== undefined && transitMin >= PR_LIMIT) return `Nobody switches: transit from ${stopName} takes ${fmt(transitMin)} min to the jobs — too slow to beat driving; ${fix}`;
-  if (catchment >= 1) return `Nobody switches: transit from ${stopName} is slower than driving — ${fix}`;
   const reach = tr.garageReach(b.id);
   if (!reach) return 'Not picked yet — next traffic update';
   if (reach.workers < 1) return `No homes within a ${PR_CAR_LEG_MAX}-minute drive — build garages where commuters live`;
+  if (reach.own >= 0.5) return `Nobody switches: transit from ${stopName} is slower than driving — ${fix}`;
   const via = reach.via >= 0 ? st.buildings.get(reach.via) : undefined;
   if (!via) return `Nobody switches: the drive here plus transit from ${stopName} takes longer than driving to work — ${fix}`;
   const vg = tr.garageInfo(via.id);
   const full = vg ? garageFull(vg) : false;
-  const where = `the ${nameOf(st, via.id)} ${dist(st, b, via)} tiles ${compass(st, b, via)}${full ? ' (full)' : ''}`;
+  const where = `the ${nameOf(st, via.id)} ${dist(st, b, via)} tiles ${compass(st, b, via)}`;
   if (reach.slower >= PR_OPTION_MARGIN - 0.25) {
-    return `Commuters near here use ${where}: park & ride from here would take them ${fmt(reach.slower)} min longer${full ? ', so when it is full they drive or ride from home instead' : ''} — ${fix}`;
+    return `Commuters near here use ${where}${full ? ' (full)' : ''}: park & ride from here would take them ${fmt(reach.slower)} min longer${full ? ', so when it is full they drive or ride from home instead' : ''} — ${fix}`;
   }
-  if (reach.options >= PR_OPTIONS - 0.5) return `Commuters near here already weigh ${PR_OPTIONS} faster park & ride garages, e.g. ${where} — build garages where commuters have fewer`;
+  if (reach.options >= PR_OPTIONS - 0.5) {
+    return reach.full >= 0.5
+      ? `Commuters near here weigh ${PR_OPTIONS} faster park & ride garages, e.g. ${where}, and drive or ride from home when those are full — this one is too far out of their way`
+      : `Commuters near here have ${PR_OPTIONS} faster park & ride garages with room, e.g. ${where} — this one is not needed here`;
+  }
   return `Commuters near here use ${where} — it gets them to their jobs sooner`;
 }
 
@@ -342,7 +346,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
               ? `Full — ${wanted}; this block needs its own parking: for more park & ride, build garages by stops nearer homes`
               : `Full — ${wanted}: build another garage by a stop` });
           lines.push({ key: 'switched', label: 'Commuters switched', value: `${fmt(ridersG)}/day to ${stopName}`, status: ridersG < 1 ? 'warn' : undefined,
-            hint: ridersG < 1 ? idleGarageHint(sim, tr, b, g.catchment ?? 0, stopName, g.transitMin) : undefined });
+            hint: ridersG < 1 ? idleGarageHint(sim, tr, b, stopName, g.transitMin) : undefined });
         }
         if (reserve >= 1) {
           lines.push({ key: 'kept', label: 'Kept for the block', value: `${plural(reserve, 'space', 'spaces')} — it is short of parking`,

@@ -33,7 +33,7 @@ import { CursorTip } from '../ui/CursorTip';
 import { h, isTyping } from '../ui/dom';
 import { MiniMap } from '../ui/MiniMap';
 import { ErrorOverlay, HelpPanel, PauseMenu, SavePill, confirmOpen } from '../ui/Modals';
-import { applyCamera, bestBuildableCell, readCamera, validCamera } from './cameraStart';
+import { CameraMemory, validCamera } from './cameraStart';
 import { NewsTicker, Toasts } from '../ui/Notifications';
 import { Onboarding } from '../ui/Onboarding';
 import { PanelManager } from '../ui/Panel';
@@ -155,8 +155,10 @@ export class CityScene {
   private actionsProxy: ActionsProxy;
   private simReady = false;
   private abort = new AbortController();
-  /** founded just now (day 0, never saved with a camera): starts paused, camera on the best buildable land */
+  /** founded just now (never saved with a camera, nothing built yet): starts paused, camera on the best buildable land */
   private readonly newCity: boolean;
+  /** the view stored in the save (state.systemData.camera), only once the real view's camera has been placed */
+  private camMemory = new CameraMemory();
 
   constructor(opts: CitySceneOptions) {
     this.opts = opts;
@@ -174,8 +176,9 @@ export class CityScene {
 
     // ---- simulation: systems are attached in loadSim() (guarded so one broken system can't take the game down)
     this.sim = new Simulation(state, []);
-    // a brand-new city starts PAUSED (build first, then press play); saved cities keep running at normal speed
-    this.newCity = state.day === 0 && !validCamera(state.systemData.camera, state);
+    // a brand-new city starts PAUSED (build first, then press play); saved cities keep running at normal speed. (Not
+    // keyed on day 0: the calendar may open later in the year.)
+    this.newCity = !validCamera(state.systemData.camera, state) && state.buildings.size === 0;
     if (opts.initialSpeed !== undefined) this.sim.speed = opts.initialSpeed;
     else if (this.newCity) this.sim.speed = 0;
 
@@ -522,23 +525,7 @@ export class CityScene {
     const c = this.world.controls;
     if (!c) return;
     try {
-      const saved = validCamera(st.systemData.camera, st);
-      if (saved) {
-        applyCamera(c, saved);
-        return;
-      }
-      let cell = bestBuildableCell(st);
-      if (st.buildings.size) {
-        // an older save without a stored camera: centre on the city itself
-        let sx = 0, sz = 0, n = 0;
-        for (const b of st.buildings.values()) {
-          sx += b.x + b.w / 2;
-          sz += b.z + b.d / 2;
-          n++;
-        }
-        cell = { x: Math.floor(sx / n), z: Math.floor(sz / n) };
-      }
-      applyCamera(c, { x: (cell.x + 0.5) * CELL_SIZE, z: (cell.z + 0.5) * CELL_SIZE, distance: c.distance || 900 });
+      this.camMemory.place(st, c);
     } catch (e) {
       console.warn('[game] initial camera', e);
       try {
@@ -549,11 +536,13 @@ export class CityScene {
     }
   }
 
-  /** remember the view in the save (state.systemData.camera) */
+  /**
+   * remember the view in the save (state.systemData.camera). A no-op until placeInitialCamera() ran on the real views:
+   * the stand-in view's camera (map corner, 800 m) must not overwrite the saved / start view while the modules load.
+   */
   private storeCamera(): void {
     try {
-      const cam = readCamera(this.world.controls);
-      if (cam) this.sim.state.systemData.camera = cam;
+      this.camMemory.store(this.sim.state, this.world.controls, !!(this.world as NullWorldView).isNull);
     } catch {
       /* ignore */
     }
@@ -672,8 +661,9 @@ export class CityScene {
     if (this.slowAcc > 2) {
       this.slowAcc = 0;
       this.topBar.setBadge('advisors', this.panels.isOpen('advisors') ? 0 : this.advisors.alertCount());
-      // keep the view in state.systemData.camera so every save path (autosave, tab hide, exit) restores it
-      if (!this.readyPending && this.simReady) this.storeCamera();
+      // keep the view in state.systemData.camera so every save path (autosave, tab hide, exit) restores it (only once
+      // the real view's camera was placed: see storeCamera)
+      if (this.camMemory.placed && !this.readyPending && this.simReady) this.storeCamera();
     }
     // fps (real wall-clock delta: the clamped dt above would cap the readout at >= 10 fps)
     const tNow = performance.now();

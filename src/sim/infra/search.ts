@@ -483,15 +483,9 @@ export class SearchK {
         const base = u * 4;
         for (let k = 0; k < 4; k++) {
           const v = adj[base + k];
-          if (v < 0) continue;
-          const cv = cnt[v];
-          if (cv >= K) continue;
-          if (cv > 0) {
-            const bv = K * v;
-            let has = false;
-            for (let j = 0; j < cv; j++) if (grp[bv + j] === gr) { has = true; break; }
-            if (has) continue;
-          }
+          if (v < 0 || cnt[v] >= K) continue;
+          // (a group settled at v is never offered again: its tentative entry there is at most its settled label,
+          // which is below anything reaching v later — offer() rejects it)
           let c = 0.5 * (tu + time[v]), cf = 0.5 * (fu0 + t0[v]), c2 = time2 !== null ? 0.5 * (tu2 + time2[v]) : 0;
           if (hu !== (type[v] === HW)) {
             const r = hu ? v : u, rf = RAMP_BY_NET[type[r]] ?? RAMP_PENALTY;
