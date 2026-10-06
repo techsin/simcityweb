@@ -7,7 +7,7 @@
 import { Network } from '../../core/types';
 import { MinHeap } from './heap';
 import type { RoadGraph } from './graph';
-import { BUS_TIME_FACTOR, NET_TIME, RAMP_PENALTY, SUBWAY_TIME } from './params';
+import { BUS_TIME_FACTOR, NET_TIME, RAMP_BY_NET, RAMP_PENALTY, SUBWAY_TIME } from './params';
 
 export class Search {
   n = 0;
@@ -294,4 +294,159 @@ export function accumulate(S: Search, acc: Float32Array | Float64Array, onSink?:
     if (nx >= 0) acc[nx] += f;
     else if (onSink) onSink(src[v], f, v);
   }
+}
+
+// ---------------------------------------------------------------------------------------------- two-label search (WP7b)
+/**
+ * Two-label road search result (WP7b park & ride, roadSearch2): every node keeps the settled labels of up to two
+ * distinct seed groups — state s = 2 v + k, k = the order they settled in (within one bucket width the slot order need
+ * not be the label order: read both). Per state: dist (minutes incl. the seed label), src (seed id), grp (its group),
+ * next (parent state toward the seed, -1 at a seed), ff (free-flow minutes to the seed); cnt[v] = settled labels of v;
+ * order = settled states in label order (flows: walk it backwards, see the caller's accumulation).
+ */
+export class Search2 {
+  n = 0;
+  dist: Float32Array<ArrayBuffer> = new Float32Array(0);
+  src: Int32Array<ArrayBuffer> = new Int32Array(0);
+  grp: Int32Array<ArrayBuffer> = new Int32Array(0);
+  next: Int32Array<ArrayBuffer> = new Int32Array(0);
+  ff: Float32Array<ArrayBuffer> = new Float32Array(0);
+  cnt: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  order: Int32Array<ArrayBuffer> = new Int32Array(0);
+  settled = 0;
+  /** version of the graph this search ran on */
+  graphVersion = -1;
+  /** tentative best labels of two distinct groups per node (2 v, 2 v + 1): pruning */
+  tb: Float32Array<ArrayBuffer> = new Float32Array(0);
+  tg: Int32Array<ArrayBuffer> = new Int32Array(0);
+
+  reset(n: number): void {
+    if (this.cnt.length < n) {
+      const c = n + (n >> 2) + 16;
+      this.dist = new Float32Array(2 * c); this.src = new Int32Array(2 * c); this.grp = new Int32Array(2 * c);
+      this.next = new Int32Array(2 * c); this.ff = new Float32Array(2 * c); this.order = new Int32Array(2 * c);
+      this.tb = new Float32Array(2 * c); this.tg = new Int32Array(2 * c);
+      this.cnt = new Uint8Array(c);
+    }
+    this.n = n;
+    this.cnt.fill(0, 0, n);
+    this.tb.fill(Infinity, 0, 2 * n);
+    this.tg.fill(-1, 0, 2 * n);
+    this.settled = 0;
+  }
+
+  /** a label nd of group gr reaching node v: is it among the two best distinct-group labels offered so far? (updates) */
+  offer(v: number, nd: number, gr: number): boolean {
+    const tb = this.tb, tg = this.tg, i = 2 * v;
+    if (gr === tg[i]) {
+      if (!(nd < tb[i])) return false;
+      tb[i] = nd;
+      return true;
+    }
+    if (gr === tg[i + 1]) {
+      if (!(nd < tb[i + 1])) return false;
+      tb[i + 1] = nd;
+      if (nd < tb[i]) { tb[i + 1] = tb[i]; tg[i + 1] = tg[i]; tb[i] = nd; tg[i] = gr; }
+      return true;
+    }
+    if (nd < tb[i]) { tb[i + 1] = tb[i]; tg[i + 1] = tg[i]; tb[i] = nd; tg[i] = gr; return true; }
+    if (nd < tb[i + 1]) { tb[i + 1] = nd; tg[i + 1] = gr; return true; }
+    return false;
+  }
+}
+
+/** Dial bucket queue with per-entry payload (two-label search): node, seed id, parent state, label, free-flow minutes */
+class LabelQueue {
+  head: Int32Array<ArrayBuffer> = new Int32Array(0);
+  enext: Int32Array<ArrayBuffer> = new Int32Array(0);
+  enode: Int32Array<ArrayBuffer> = new Int32Array(0);
+  esrc: Int32Array<ArrayBuffer> = new Int32Array(0);
+  epar: Int32Array<ArrayBuffer> = new Int32Array(0);
+  elab: Float32Array<ArrayBuffer> = new Float32Array(0);
+  eff: Float32Array<ArrayBuffer> = new Float32Array(0);
+  en = 0;
+  reset(buckets: number, entries: number): void {
+    if (this.head.length < buckets) this.head = new Int32Array(buckets + 64);
+    this.head.fill(-1, 0, buckets);
+    if (this.enext.length < entries) this.grow(entries);
+    this.en = 0;
+  }
+  private grow(c: number): void {
+    const g32 = (a: Int32Array<ArrayBuffer>) => { const b = new Int32Array(c); b.set(a.subarray(0, Math.min(a.length, c))); return b; };
+    const gf = (a: Float32Array<ArrayBuffer>) => { const b = new Float32Array(c); b.set(a.subarray(0, Math.min(a.length, c))); return b; };
+    this.enext = g32(this.enext); this.enode = g32(this.enode); this.esrc = g32(this.esrc); this.epar = g32(this.epar);
+    this.elab = gf(this.elab); this.eff = gf(this.eff);
+  }
+  push(b: number, v: number, src: number, par: number, lab: number, ff: number): void {
+    const e = this.en++;
+    if (e >= this.enext.length) this.grow(this.enext.length * 2 + 16);
+    this.enode[e] = v; this.esrc[e] = src; this.epar[e] = par; this.elab[e] = lab; this.eff[e] = ff;
+    this.enext[e] = this.head[b];
+    this.head[b] = e;
+  }
+}
+const lq = new LabelQueue();
+
+/**
+ * Two-label road search (WP7b park & ride): like roadSearch (adj = g.rev: minutes TO the seeds; congested `time`, ramp
+ * minutes `ramp`), but each node settles the best labels of up to two distinct seed groups (groupOf[seed id]; a pooled
+ * garage group counts once) — the second option a commuter has when the first garage is full. Labels within one
+ * bucket width (< 0.04 min) may settle in either order. A move whose free-flow minutes (g.t0, interchange RAMP_BY_NET)
+ * from the seed would exceed ffMax is dropped (the car leg limit), so a node's labels come from garages within reach.
+ */
+export function roadSearch2(g: RoadGraph, adj: Int32Array, time: Float32Array, S: Search2, seeds: Seeds, groupOf: ArrayLike<number>,
+  limit: number, ramp: Float32Array | null, ffMax: number): void {
+  const n = g.n;
+  S.reset(n);
+  S.graphVersion = g.version;
+  if (!(limit < 2000)) limit = 2000;
+  const invQ = 1 / Q;
+  const nb = Math.ceil(limit * invQ) + 2;
+  lq.reset(nb, n * 3 + seeds.n + 16);
+  for (let s = 0; s < seeds.n; s++) {
+    const v = seeds.node[s], l = seeds.label[s], id = seeds.id[s];
+    if (v < 0 || v >= n || !(l <= limit)) continue;
+    if (S.offer(v, l, groupOf[id])) lq.push((l * invQ) | 0, v, id, -1, l, 0);
+  }
+  const dist = S.dist, src = S.src, grp = S.grp, next = S.next, ff = S.ff, cnt = S.cnt, order = S.order;
+  const type = g.type, t0 = g.t0, HW = Network.Highway;
+  const head = lq.head;
+  let m = 0;
+  for (let b = 0; b < nb; b++) {
+    let e = head[b];
+    while (e >= 0) {
+      const u = lq.enode[e], q = lq.esrc[e], par = lq.epar[e], key = lq.elab[e], fu = lq.eff[e];
+      e = lq.enext[e];
+      const c0 = cnt[u];
+      if (c0 >= 2) continue;
+      const gr = groupOf[q];
+      if (c0 === 1 && grp[2 * u] === gr) continue;
+      const s = 2 * u + c0;
+      cnt[u] = c0 + 1;
+      dist[s] = key; src[s] = q; grp[s] = gr; next[s] = par; ff[s] = fu;
+      order[m++] = s;
+      const tu = time[u], fu0 = t0[u];
+      const hu = type[u] === HW;
+      const base = u * 4;
+      for (let k = 0; k < 4; k++) {
+        const v = adj[base + k];
+        if (v < 0) continue;
+        const cv = cnt[v];
+        if (cv >= 2 || (cv === 1 && grp[2 * v] === gr)) continue;
+        let c = 0.5 * (tu + time[v]), cf = 0.5 * (fu0 + t0[v]);
+        if (hu !== (type[v] === HW)) {
+          const r = hu ? v : u;
+          c += ramp === null ? RAMP_PENALTY : ramp[r];
+          cf += RAMP_BY_NET[type[r]] ?? RAMP_PENALTY;
+        }
+        const nd = key + c, nf = fu + cf;
+        if (!(nd <= limit) || nf > ffMax) continue;
+        if (!S.offer(v, nd, gr)) continue;
+        const bi = (nd * invQ) | 0;
+        lq.push(bi > b ? bi : b + 1, v, q, s, nd, nf);
+      }
+    }
+    head[b] = -1;
+  }
+  S.settled = m;
 }

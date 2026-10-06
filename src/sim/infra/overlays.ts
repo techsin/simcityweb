@@ -21,7 +21,7 @@ import { getDef } from '../catalog';
 import { COHORT_BASE, COVERAGE_FALLBACK, TAP_SAFE, WORKFORCE_RATIO } from '../economy/tuning';
 import { cohortShares, demographicsSim } from '../economy/demographics';
 import { truckVolumeOf } from './transportFacilities';
-import { type UtilitiesSystem, waterQualityAt } from './utilities';
+import type { UtilitiesSystem } from './utilities';
 import { emergencyOf } from './emergency';
 import { EDU_LEGACY_W, EMERG_RMAX, EMERG_SLOW_MARGIN } from './params';
 import { buildingList } from './common';
@@ -249,10 +249,10 @@ function demoShare(b: Building, variant: number): { share: number; ref: number }
 }
 
 /** per state: the residential buildings (the demographics rasters), rebuilt when buildings come or go */
-const homesCache = new WeakMap<CityState, { size: number; nextId: number; list: Building[]; val: Float32Array }>();
-function homesOf(st: CityState): { list: Building[]; val: Float32Array } {
-  let c = homesCache.get(st);
-  if (c && c.size === st.buildings.size && c.nextId === st.nextBuildingId) return c;
+const homesCache = new WeakMap<CityState, { size: number; nextId: number; list: Building[] }>();
+function homesOf(st: CityState): Building[] {
+  const c = homesCache.get(st);
+  if (c && c.size === st.buildings.size && c.nextId === st.nextBuildingId) return c.list;
   const cls = homeClassOf(st);
   const list: Building[] = [];
   const all = buildingList(st);
@@ -261,24 +261,23 @@ function homesOf(st: CityState): { list: Building[]; val: Float32Array } {
     const kk = cls[b.id];
     if ((kk === 0 ? classify(cls, b) : kk) === 1) list.push(b);
   }
-  // per building id: the value of its home in the last raster (0 = not a home / nobody lives there)
-  const val = c && c.val.length >= st.nextBuildingId ? c.val : new Float32Array(Math.max(1024, st.nextBuildingId * 2));
-  homesCache.set(st, (c = { size: st.buildings.size, nextId: st.nextBuildingId, list, val }));
-  return c;
+  homesCache.set(st, { size: st.buildings.size, nextId: st.nextBuildingId, list });
+  return list;
 }
 
 /** PERF (256²: one pass per 'demographics' event and at most once a sim day after buildings change, while shown): the
  *  cached homes list gives one value per home (cohort share inlined: cohortShares reads the profile shares when a
- *  cohort field is unset), then one typed-array pass over the cells paints the footprints (st.building) */
+ *  cohort field is unset), painted over its own footprint cells (st.building) — no pass over the whole map (the raster
+ *  arrives zeroed) */
 function buildDemographics(st: CityState, variant: number, out: Float32Array): void {
-  const C = st.cells, bld = st.building;
+  const N = st.size, bld = st.building;
   const c = variant === DEMO_KIDS ? 0 : variant === DEMO_TEENS ? 1 : variant === DEMO_YAD ? 2 : 4;
   const inv = 1 / (2 * (variant === DEMO_WORKFORCE ? WORKFORCE_RATIO : COHORT_BASE[c]));
   const base = COHORT_BASE[c];
-  const { list, val } = homesOf(st);
+  const list = homesOf(st);
   for (let k = 0; k < list.length; k++) {
     const b = list[k];
-    if (b.pop <= 0) { val[b.id] = 0; continue; }
+    if (b.pop <= 0) continue;
     let t: number;
     if (variant === DEMO_WEALTH) t = (b.wealth < 1 ? 1 : b.wealth > 3 ? 3 : b.wealth) / 3;
     else {
@@ -291,12 +290,11 @@ function buildDemographics(st: CityState, variant: number, out: Float32Array): v
       const r = share * inv;
       t = DEMO_T0 + (1 - DEMO_T0) * (r < 0 ? 0 : r > 1 ? 1 : r);
     }
-    val[b.id] = t;
-  }
-  const n = val.length;
-  for (let i = 0; i < C; i++) {
-    const id = bld[i];
-    if (id >= 0 && id < n) { const t = val[id]; if (t > 0) out[i] = t; }
+    if (!(t > 0)) continue;
+    const id = b.id, x0 = b.x < 0 ? 0 : b.x, x1 = b.x + b.w > N ? N : b.x + b.w, z1 = b.z + b.d > N ? N : b.z + b.d;
+    for (let z = b.z < 0 ? 0 : b.z; z < z1; z++) {
+      for (let i = z * N + x0, e = z * N + x1; i < e; i++) if (bld[i] === id) out[i] = t;
+    }
   }
 }
 
@@ -406,8 +404,10 @@ export function emergencyReachAt(st: CityState, i: number, variant = -1): Emerge
 }
 
 let emgQueue = new Int32Array(0);
+let emgQx = new Uint16Array(0);
 let emgDepth = new Uint8Array(0);
 let emgOpen = new Int32Array(0);
+let emgOpenX = new Uint16Array(0);
 /** per building id: the best footprint slack of a building met at the floor (stamped per build: emgPass) */
 let emgBest = new Float32Array(0);
 let emgBestPass = new Uint32Array(0);
@@ -432,31 +432,34 @@ function buildingBest(st: CityState, L: Float32Array, id: number): number {
   return s;
 }
 /**
- * PERF (one pass per 'emergency' event while shown): one pass over the cells sorts them into
+ * The Emergency raster. The cells are
  *  - sources: road cells (their own reach — a road at the floor is itself 6+ min out) and every other cell above the
  *    floor (land / rail beside a road node, a building with a road; a building that grew since the last emergency pass
  *    reads its footprint's best cell, as emergencyReachAt does — its inner cells still hold the land fill's floor);
  *  - targets: land, water and rail at the floor (beside no road node) take the nearest source's value within
  *    EMG_DILATE steps (a lot there would face that road), else EMG_NOROAD_T ("No road nearby");
  *  - inert: buildings at the floor (no road beside them, or 6+ min out) and RESP_NONE cells keep their own value, and
- *    the fill neither starts from nor passes through them — land beside a roadless plaza reads the road, not the plaza;
- * and queues the sources beside a target (each adjacent pair is seen from its later cell in index order), then a
- * multi-source BFS of at most EMG_DILATE steps.
+ *    the fill neither starts from nor passes through them — land beside a roadless plaza reads the road, not the plaza.
+ * PERF (one build per 'emergency' event while shown, 256²): (1) one pass encodes the sources / inert cells and lists
+ * the targets, (2) the sources beside a target are queued in target order (left, right, up, down: deterministic
+ * ties), (3) a multi-source BFS through targets only (x kept in the queue: no modulo per step).
  */
 function buildEmergency(st: CityState, variant: number, out: Float32Array): void {
   if (!respReady(st)) return;
   const L = respLayer(st, variant);
   const C = st.cells, N = st.size, bld = st.building, net = st.network;
-  if (emgQueue.length < C) { emgQueue = new Int32Array(C); emgDepth = new Uint8Array(C); emgOpen = new Int32Array(C); }
-  const q = emgQueue, dep = emgDepth, openList = emgOpen;
+  if (emgQueue.length < C) {
+    emgQueue = new Int32Array(C); emgQx = new Uint16Array(C); emgDepth = new Uint8Array(C);
+    emgOpen = new Int32Array(C); emgOpenX = new Uint16Array(C);
+  }
+  const q = emgQueue, qx = emgQx, dep = emgDepth, openList = emgOpen, openX = emgOpenX;
   dep.fill(0, 0, C);
   emgPass = (emgPass % 0xfffffff0) + 1;
   const floor = -EMERG_RMAX + 1e-3, none = RESP_NONE + 0.5, k0 = 0.92 / (2 * EMG_SPAN);
-  let open = 0, tail = 0;
-  for (let z = 0; z < N; z++) {
-    const row = z * N;
-    for (let x = 0; x < N; x++) {
-      const i = row + x;
+  // (1) encode sources and inert cells (encodeSlack inlined), list the targets
+  let open = 0;
+  for (let z = 0, i = 0; z < N; z++) {
+    for (let x = 0; x < N; x++, i++) {
       let s = L[i];
       if (s <= floor) {
         if (s <= none) { out[i] = EMG_NONE_T; dep[i] = EMG_INERT; continue; }
@@ -466,37 +469,34 @@ function buildEmergency(st: CityState, variant: number, out: Float32Array): void
           if (s <= floor) { out[i] = s <= none ? EMG_NONE_T : EMG_FLOOR_T; dep[i] = EMG_INERT; continue; }
         } else {
           const n = net[i];
-          if (n < Network.Street || n > Network.Highway) {
-            // target: land / water / rail; known sources before it (left / up) are queued
-            out[i] = -1;
-            openList[open++] = i;
-            if (x > 0 && dep[i - 1] === 0 && out[i - 1] >= 0) { dep[i - 1] = 1; q[tail++] = i - 1; }
-            if (z > 0 && dep[i - N] === 0 && out[i - N] >= 0) { dep[i - N] = 1; q[tail++] = i - N; }
-            continue;
-          }
+          if (n < Network.Street || n > Network.Highway) { out[i] = -1; openList[open] = i; openX[open++] = x; continue; }
         }
       }
-      // source (encodeSlack inlined); a target before it (left / up): queued
       out[i] = 0.08 + k0 * ((s < -EMG_SPAN ? -EMG_SPAN : s > EMG_SPAN ? EMG_SPAN : s) + EMG_SPAN);
-      if ((x > 0 && out[i - 1] < 0) || (z > 0 && out[i - N] < 0)) { dep[i] = 1; q[tail++] = i; }
     }
   }
-  if (open > 0) {
-    // multi-source 4-neighbour BFS through targets only (depth stored +1: sources 1; queue order: deterministic ties)
-    let head = 0;
-    while (head < tail) {
-      const i = q[head++];
-      const d = dep[i] + 1;
-      if (d > EMG_DILATE + 1) continue;
-      const v = out[i], x = i % N;
-      if (x > 0 && out[i - 1] < 0) { out[i - 1] = v; dep[i - 1] = d; q[tail++] = i - 1; }
-      if (x < N - 1 && out[i + 1] < 0) { out[i + 1] = v; dep[i + 1] = d; q[tail++] = i + 1; }
-      if (i >= N && out[i - N] < 0) { out[i - N] = v; dep[i - N] = d; q[tail++] = i - N; }
-      if (i + N < C && out[i + N] < 0) { out[i + N] = v; dep[i + N] = d; q[tail++] = i + N; }
-    }
-    // no road within EMG_DILATE steps: drawn like the floor, read as "No road nearby"
-    for (let k = 0; k < open; k++) { const i = openList[k]; if (out[i] < 0) out[i] = EMG_NOROAD_T; }
+  if (open === 0) return;
+  // (2) the sources beside a target (dep 1); inert cells (dep EMG_INERT) and targets (out -1) are not
+  let tail = 0;
+  for (let k = 0; k < open; k++) {
+    const i = openList[k], x = openX[k];
+    if (x > 0 && dep[i - 1] === 0 && out[i - 1] >= 0) { dep[i - 1] = 1; q[tail] = i - 1; qx[tail++] = x - 1; }
+    if (x < N - 1 && dep[i + 1] === 0 && out[i + 1] >= 0) { dep[i + 1] = 1; q[tail] = i + 1; qx[tail++] = x + 1; }
+    if (i >= N && dep[i - N] === 0 && out[i - N] >= 0) { dep[i - N] = 1; q[tail] = i - N; qx[tail++] = x; }
+    if (i + N < C && dep[i + N] === 0 && out[i + N] >= 0) { dep[i + N] = 1; q[tail] = i + N; qx[tail++] = x; }
   }
+  // (3) BFS through targets, at most EMG_DILATE steps (depth stored +1: sources 1; the last ring is not queued)
+  const last = EMG_DILATE + 1;
+  for (let head = 0; head < tail; head++) {
+    const i = q[head], x = qx[head];
+    const d = dep[i] + 1, more = d < last, v = out[i];
+    if (x > 0 && out[i - 1] < 0) { out[i - 1] = v; dep[i - 1] = d; if (more) { q[tail] = i - 1; qx[tail++] = x - 1; } }
+    if (x < N - 1 && out[i + 1] < 0) { out[i + 1] = v; dep[i + 1] = d; if (more) { q[tail] = i + 1; qx[tail++] = x + 1; } }
+    if (i >= N && out[i - N] < 0) { out[i - N] = v; dep[i - N] = d; if (more) { q[tail] = i - N; qx[tail++] = x; } }
+    if (i + N < C && out[i + N] < 0) { out[i + N] = v; dep[i + N] = d; if (more) { q[tail] = i + N; qx[tail++] = x; } }
+  }
+  // no road within EMG_DILATE steps: drawn like the floor, read as "No road nearby"
+  for (let k = 0; k < open; k++) { const i = openList[k]; if (out[i] < 0) out[i] = EMG_NOROAD_T; }
 }
 
 function servicesOn(st: CityState): boolean {
@@ -553,36 +553,56 @@ function buildAppeal(st: CityState, variant: number, out: Float32Array): void {
  * tap-water quality per served cell: TAP_T0 + (1 - TAP_T0) x quality (utilities per-network quality), 0 = no water.
  * PERF: one quality lookup per building (utilities keeps one network per building: the first cell of a footprint
  * answers for all of it) and per run of road cells (4-adjacent road cells are one pipe network: a road cell next to
- * an already known one copies it); the per-cell lookup is left for the few other served cells.
+ * an already known one copies it — left / up flags instead of re-testing the neighbours); the per-cell lookup is left
+ * for the few other served cells.
  */
-const tapIds = new WeakMap<CityState, { val: Float32Array; stamp: Uint32Array; pass: number }>();
+const tapIds = new WeakMap<CityState, { val: Float32Array; stamp: Uint32Array; pass: number; up: Uint8Array }>();
 function buildTapWater(st: CityState, out: Float32Array): void {
   const sim = simOf(st);
   const w = st.watered, C = st.cells, N = st.size, bld = st.building, net = st.network;
-  const mean = st.stats.tapWater ?? 1;
+  const A = TAP_T0, B = 1 - TAP_T0;
   const u = sim?.getSystem<UtilitiesSystem>('utilities');
-  const qAt = (i: number): number => TAP_T0 + (1 - TAP_T0) * clamp01(sim ? (u ? u.waterQualityAt(sim, i) : waterQualityAt(sim, i)) : mean);
-  let ids = tapIds.get(st);
-  if (!ids || ids.val.length < st.nextBuildingId) {
-    const n = Math.max(1024, st.nextBuildingId * 2);
-    tapIds.set(st, (ids = { val: new Float32Array(n), stamp: new Uint32Array(n), pass: 0 }));
+  if (!sim || !u) {
+    // no per-network quality: every served cell reads the city mean
+    const t = A + B * clamp01(st.stats.tapWater ?? 1);
+    for (let i = 0; i < C; i++) if (w[i]) out[i] = t;
+    return;
   }
-  const pass = (ids.pass = (ids.pass % 0xfffffff0) + 1), val = ids.val, stamp = ids.stamp;
-  for (let i = 0; i < C; i++) {
-    if (!w[i]) continue;
-    const id = bld[i];
-    if (id >= 0) {
-      if (stamp[id] !== pass) { stamp[id] = pass; val[id] = qAt(i); }
-      out[i] = val[id];
-      continue;
+  let ids = tapIds.get(st);
+  if (!ids || ids.val.length < st.nextBuildingId || ids.up.length < N) {
+    const n = Math.max(1024, st.nextBuildingId * 2);
+    tapIds.set(st, (ids = { val: new Float32Array(n), stamp: new Uint32Array(n), pass: 0, up: new Uint8Array(N) }));
+  }
+  const pass = (ids.pass = (ids.pass % 0xfffffff0) + 1), val = ids.val, stamp = ids.stamp, up = ids.up;
+  // up[x]: (x, z - 1) is a served road cell (no building); left: (x - 1, z) is
+  up.fill(0, 0, N);
+  for (let z = 0, i = 0; z < N; z++) {
+    let left = false;
+    for (let x = 0; x < N; x++, i++) {
+      if (!w[i]) { left = false; up[x] = 0; continue; }
+      const id = bld[i];
+      if (id >= 0) {
+        if (stamp[id] !== pass) {
+          stamp[id] = pass;
+          const q = u.waterQualityAt(sim, i);
+          val[id] = A + B * (q < 0 ? 0 : q > 1 ? 1 : q);
+        }
+        out[i] = val[id];
+        left = false; up[x] = 0;
+        continue;
+      }
+      const n = net[i];
+      if (n >= Network.Street && n <= Network.Highway) {
+        if (left) out[i] = out[i - 1];
+        else if (up[x]) out[i] = out[i - N];
+        else { const q = u.waterQualityAt(sim, i); out[i] = A + B * (q < 0 ? 0 : q > 1 ? 1 : q); }
+        left = true; up[x] = 1;
+        continue;
+      }
+      const q = u.waterQualityAt(sim, i);
+      out[i] = A + B * (q < 0 ? 0 : q > 1 ? 1 : q);
+      left = false; up[x] = 0;
     }
-    const n = net[i];
-    if (n >= Network.Street && n <= Network.Highway) {
-      const x = i % N;
-      if (x > 0 && w[i - 1] && bld[i - 1] < 0 && net[i - 1] >= Network.Street && net[i - 1] <= Network.Highway) { out[i] = out[i - 1]; continue; }
-      if (i >= N && w[i - N] && bld[i - N] < 0 && net[i - N] >= Network.Street && net[i - N] <= Network.Highway) { out[i] = out[i - N]; continue; }
-    }
-    out[i] = qAt(i);
   }
 }
 

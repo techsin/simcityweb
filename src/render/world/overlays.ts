@@ -494,30 +494,47 @@ export function computeOverlayValues(state: CityState, o: Overlay, out: Uint8Arr
     }
     return;
   }
+  // PERF: byte = round(clamp01(v) x 255) as (v x 255 + 0.5) | 0 (v >= 0) — Math.round cost ~3x the whole pass
   if (L.roadsOnly) {
     const net = state.network;
-    for (let i = 0; i < C; i++) out[i] = net[i] !== 0 && net[i] !== Network.Rail ? Math.round((0.05 + 0.95 * clamp01(d[i] * inv)) * 255) : 0;
+    for (let i = 0; i < C; i++) {
+      const n = net[i];
+      if (n === 0 || n === Network.Rail) { out[i] = 0; continue; }
+      const v = d[i] * inv;
+      out[i] = ((0.05 + 0.95 * (v > 0 ? (v < 1 ? v : 1) : 0)) * 255 + 0.5) | 0;
+    }
     return;
   }
   if (L.palette === 'diverging') {
+    const k = 0.5 * inv;
     if (L.maskNet) {
       // roads / water hold no lots (desirability writes -1 there): neutral, not a red rim along every street
       const net = state.network, water = state.water;
-      for (let i = 0; i < C; i++) out[i] = net[i] !== 0 || water[i] ? 128 : Math.round(clamp01(0.5 + 0.5 * d[i] * inv) * 255);
+      for (let i = 0; i < C; i++) {
+        if (net[i] !== 0 || water[i]) { out[i] = 128; continue; }
+        const v = 0.5 + k * d[i];
+        out[i] = v > 0 ? (v < 1 ? (v * 255 + 0.5) | 0 : 255) : 0;
+      }
       return;
     }
-    for (let i = 0; i < C; i++) out[i] = Math.round(clamp01(0.5 + 0.5 * d[i] * inv) * 255);
+    for (let i = 0; i < C; i++) {
+      const v = 0.5 + k * d[i];
+      out[i] = v > 0 ? (v < 1 ? (v * 255 + 0.5) | 0 : 255) : 0;
+    }
     return;
   }
   if (L.floor !== undefined) {
     const f = L.floor;
     for (let i = 0; i < C; i++) {
       const v = d[i];
-      out[i] = v > 0 ? Math.round((f + (1 - f) * clamp01(v * inv)) * 255) : 0;
+      out[i] = v > 0 ? ((f + (1 - f) * clamp01(v * inv)) * 255 + 0.5) | 0 : 0;
     }
     return;
   }
-  for (let i = 0; i < C; i++) out[i] = Math.round(clamp01(d[i] * inv) * 255);
+  for (let i = 0; i < C; i++) {
+    const v = d[i] * inv;
+    out[i] = v > 0 ? (v < 1 ? (v * 255 + 0.5) | 0 : 255) : 0;
+  }
 }
 
 /** Zone tint colors (sRGB hex) indexed by Zone. Lighter = low density, darker = high density. */

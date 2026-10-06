@@ -427,7 +427,17 @@ export class SimBot {
   placeCivic(defId: string, x: number, z: number, reach: number, clearLots = false): ActionResult | null {
     // on the target's side of the trunk highway (walking catchments stop at highways)
     const side = (lz: number, d: number) => !this.highway || (lz + d / 2 < this.trunkZ) === (z < this.trunkZ);
-    const accept = (_lx: number, lz: number, _w: number, d: number) => side(lz, d);
+    // a walking catchment (elementary school, clinic, library, parks) starts on the roads along the lot: a lot whose only
+    // road is the highway reaches nobody (128 s7 2010: a school fronting the trunk served 0 pupils, 5,670 kids unreached)
+    const walk = (getDef(defId)?.coverage as { metric?: string } | undefined)?.metric === 'walk';
+    const N = this.N, net = this.st.network;
+    const foot = (x: number, zz: number) => x >= 0 && zz >= 0 && x < N && zz < N && net[zz * N + x] >= Network.Street && net[zz * N + x] <= Network.OneWay;
+    const walkable = (lx: number, lz: number, w: number, d: number) => {
+      for (let x = lx; x < lx + w; x++) if (foot(x, lz - 1) || foot(x, lz + d)) return true;
+      for (let zz = lz; zz < lz + d; zz++) if (foot(lx - 1, zz) || foot(lx + w, zz)) return true;
+      return false;
+    };
+    const accept = (lx: number, lz: number, w: number, d: number) => side(lz, d) && (!walk || walkable(lx, lz, w, d));
     const r = this.placeNear(defId, x, z, ['P'], true, reach, true, accept);
     if (r) return r;
     const dist = (b: Block) => Math.hypot((b.x0 + b.x1) / 2 - x, (b.z0 + b.z1) / 2 - z);
