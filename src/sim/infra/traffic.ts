@@ -2119,9 +2119,13 @@ export class TrafficSystem implements SimSystem {
     const M = KS; // options collected: PR_OPTIONS + the cutoff
     for (let o = 0; o < this.oN; o++) {
       let m = 0;
+      // (from its road entry with the fastest label: the entries of one lot see the same garages within a step or two)
+      let v = -1, bd = Infinity;
       for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) {
-        const v = this.ent[e];
-        if (v >= n) continue;
+        const u = this.ent[e];
+        if (u < n && cntS[u] > 0 && dist[KS * u] < bd) { bd = dist[KS * u]; v = u; }
+      }
+      if (v >= 0) {
         for (let k = 0, kn = cntS[v]; k < kn; k++) {
           const s = KS * v + k, q = src[s];
           if (q < 0 || q >= gN) continue;
@@ -2816,19 +2820,19 @@ export class TrafficSystem implements SimSystem {
    * volumes per node, highway <-> non-highway moves counted as ramp flow of the non-highway node; clears acc
    */
   private commitK(S: SearchK, acc: Float32Array): void {
-    const order = S.order, next = S.next, volNew = this.volNew, rampNew = this.rampNew, type = this.road.type;
-    const HW = Network.Highway, K = S.K;
+    const order = S.order, next = S.next, snode = S.node, volNew = this.volNew, rampNew = this.rampNew, type = this.road.type;
+    const HW = Network.Highway;
     for (let k = S.settled - 1; k >= 0; k--) {
       const s = order[k];
       const f = acc[s];
       if (f === 0) continue;
       acc[s] = 0;
-      const v = (s / K) | 0;
+      const v = snode[s];
       volNew[v] += f;
       const p = next[s];
       if (p < 0) continue;
       acc[p] += f;
-      const nx = (p / K) | 0;
+      const nx = snode[p];
       if ((type[v] === HW) !== (type[nx] === HW)) rampNew[type[v] === HW ? nx : v] += f;
     }
   }

@@ -325,6 +325,8 @@ export class SearchK {
   next: Int32Array<ArrayBuffer> = new Int32Array(0);
   ff: Float32Array<ArrayBuffer> = new Float32Array(0);
   alt: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** node of each settled state (= floor(s / K); kept so passes over the states need no division) */
+  node: Int32Array<ArrayBuffer> = new Int32Array(0);
   cnt: Uint8Array<ArrayBuffer> = new Uint8Array(0);
   order: Int32Array<ArrayBuffer> = new Int32Array(0);
   settled = 0;
@@ -371,6 +373,7 @@ export class SearchK {
       const c = n + (n >> 2) + 16;
       this.dist = new Float32Array(K * c); this.src = new Int32Array(K * c); this.grp = new Int32Array(K * c);
       this.next = new Int32Array(K * c); this.ff = new Float32Array(K * c); this.alt = new Float32Array(K * c); this.order = new Int32Array(K * c);
+      this.node = new Int32Array(K * c);
       this.tb = new Float32Array(K * c); this.tg = new Int32Array(K * c);
       this.cnt = new Uint8Array(c);
     }
@@ -456,6 +459,7 @@ export class SearchK {
     const time2 = this.time2, ramp2 = this.ramp2;
     const limit = this.limit, ffMax = this.ffMax, margin = this.margin, nb = this.nb, invQ = 1 / Q;
     const dist = this.dist, src = this.src, grp = this.grp, next = this.next, ff = this.ff, alt = this.alt, cnt = this.cnt, order = this.order;
+    const snode = this.node;
     const type = g.type, t0 = g.t0, HW = Network.Highway, head = this.head;
     let m = this.settled, b = this.b, e = this.e;
     const stop = m + maxStates;
@@ -476,7 +480,7 @@ export class SearchK {
         }
         const s = bu + c0;
         cnt[u] = c0 + 1;
-        dist[s] = key; src[s] = q; grp[s] = gr; next[s] = par; ff[s] = fu; alt[s] = au;
+        dist[s] = key; src[s] = q; grp[s] = gr; next[s] = par; ff[s] = fu; alt[s] = au; snode[s] = u;
         order[m++] = s;
         const tu = time[u], fu0 = t0[u], tu2 = time2 !== null ? time2[u] : 0;
         const hu = type[u] === HW;
@@ -511,17 +515,17 @@ export class SearchK {
 
   /** recompute alt along the kept forest from new time2 / ramp2 (parents settle before their children: one pass) */
   refreshAlt(time2: Float32Array, ramp2: Float32Array | null): void {
-    const K = this.K, g = this.g;
+    const g = this.g;
     if (!g || this.running) return;
-    const order = this.order, next = this.next, alt = this.alt, type = g.type, HW = Network.Highway;
+    const order = this.order, next = this.next, alt = this.alt, snode = this.node, type = g.type, HW = Network.Highway;
     this.time2 = time2; this.ramp2 = ramp2;
-    for (let k = 0; k < this.settled; k++) {
+    for (let k = 0, n = this.settled; k < n; k++) {
       const s = order[k], p = next[s];
       if (p < 0) { alt[s] = 0; continue; }
-      const v = (s / K) | 0, u = (p / K) | 0;
+      const v = snode[s], u = snode[p];
       let c = alt[p] + 0.5 * (time2[u] + time2[v]);
-      const hu = type[u] === HW;
-      if (hu !== (type[v] === HW)) { const r = hu ? v : u; c += ramp2 === null ? (RAMP_BY_NET[type[r]] ?? RAMP_PENALTY) : ramp2[r]; }
+      const tu = type[u], tv = type[v];
+      if ((tu === HW) !== (tv === HW)) { const r = tu === HW ? v : u; c += ramp2 === null ? (RAMP_BY_NET[type[r]] ?? RAMP_PENALTY) : ramp2[r]; }
       alt[s] = c;
     }
   }
