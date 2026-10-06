@@ -154,6 +154,7 @@ export function spreadVariant(st: CityState, defId: string, x0: number, z0: numb
   if (variants <= 1) return 0;
   VIDS[0] = getDef(defId)?.model ?? defId;
   VDEFS[0] = defId;
+  VMDEFS[0] = sameModelDefs(VIDS[0]);
   variantScan(st, 1, x0, z0, w, d);
   return bestVariant(0, v0, variants);
 }
@@ -161,9 +162,20 @@ export function spreadVariant(st: CityState, defId: string, x0: number, z0: numb
  *  very def: VNEAR_DEF[k * 32 + v] (Chebyshev distance lot to lot; Infinity: none within VARIANT_SPREAD) */
 const VNEAR = new Float64Array(4 * 32);
 const VNEAR_DEF = new Float64Array(4 * 32);
-/** model and def ids of the current scan's candidates */
+/** model and def ids of the current scan's candidates, and the defs showing each model (sameModelDefs) */
 const VIDS: string[] = ['', '', '', ''];
 const VDEFS: string[] = ['', '', '', ''];
+const VMDEFS: (readonly string[])[] = [[], [], [], []];
+/** def ids per model (the scan compares a neighbour's def with these few strings instead of a catalog lookup per
+ *  building: 4.6 -> 7.4 µs per scan with getDef on the 887k city); rebuilt when the catalog grows */
+const modelDefs = new Map<string, string[]>();
+let modelDefsLen = -1;
+function sameModelDefs(model: string): readonly string[] {
+  if (modelDefsLen !== CATALOG.length) { modelDefs.clear(); modelDefsLen = CATALOG.length; }
+  let a = modelDefs.get(model);
+  if (!a) { a = CATALOG.filter((d) => d.model === model).map((d) => d.id); modelDefs.set(model, a); }
+  return a;
+}
 /** building-id stamps of the current scan (a building spanning several rows is looked up once) */
 let vStamp = new Int32Array(0);
 let vGen = 0;
@@ -188,16 +200,20 @@ function variantScan(st: CityState, n: number, x0: number, z0: number, w: number
       vStamp[id] = gen;
       const o = st.buildings.get(id);
       if (!o || o.variant >= 32 || o.variant < 0) continue;
-      const model = getDef(o.def)?.model;
-      // (lot-to-lot distance from the other building's rectangle)
-      const dx = o.x + o.w - 1 < x0 ? x0 - (o.x + o.w - 1) : o.x > x0 + w - 1 ? o.x - (x0 + w - 1) : 0;
-      const dz = o.z + o.d - 1 < z0 ? z0 - (o.z + o.d - 1) : o.z > z0 + d - 1 ? o.z - (z0 + d - 1) : 0;
-      const dist = dx > dz ? dx : dz;
+      const od = o.def;
       for (let k = 0; k < n; k++) {
-        if (VIDS[k] !== model) continue;
+        // (o shows candidate k's model when its def is one of the model's defs)
+        const md = VMDEFS[k];
+        let j = 0;
+        while (j < md.length && md[j] !== od) j++;
+        if (j === md.length) continue;
+        // (lot-to-lot distance from the other building's rectangle)
+        const dx = o.x + o.w - 1 < x0 ? x0 - (o.x + o.w - 1) : o.x > x0 + w - 1 ? o.x - (x0 + w - 1) : 0;
+        const dz = o.z + o.d - 1 < z0 ? z0 - (o.z + o.d - 1) : o.z > z0 + d - 1 ? o.z - (z0 + d - 1) : 0;
+        const dist = dx > dz ? dx : dz;
         const q = k * 32 + o.variant;
         if (dist < VNEAR[q]) VNEAR[q] = dist;
-        if (o.def === VDEFS[k] && dist < VNEAR_DEF[q]) VNEAR_DEF[q] = dist;
+        if (od === VDEFS[k] && dist < VNEAR_DEF[q]) VNEAR_DEF[q] = dist;
       }
     }
   }
@@ -565,8 +581,8 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     let use = def, variant = 0;
     const ns = subs ? Math.min(3, subs.length) : 0;
     if (variants > 1 || ns > 0) {
-      VIDS[0] = def.model; VDEFS[0] = def.id;
-      for (let k = 0; k < ns; k++) { VIDS[k + 1] = subs![k].model; VDEFS[k + 1] = subs![k].id; }
+      VIDS[0] = def.model; VDEFS[0] = def.id; VMDEFS[0] = sameModelDefs(def.model);
+      for (let k = 0; k < ns; k++) { VIDS[k + 1] = subs![k].model; VDEFS[k + 1] = subs![k].id; VMDEFS[k + 1] = sameModelDefs(subs![k].model); }
       variantScan(st, 1 + ns, x0, z0, W, D);
       variant = variants > 1 ? bestVariant(0, v0, variants) : 0;
       const twin = variants > 1 ? VBEST_D !== Infinity : VNEAR[0] !== Infinity;
