@@ -524,8 +524,9 @@ export class TreeRenderer {
   ringWidth = 2600;
   /** main-thread time (ms) per frame the outer ring's generation / refill may take */
   ringBudgetMs = 1;
-  /** camera heights above the ground (m) between which the ring fades in: low cameras look through the city / edge
-   *  band at the horizon, where the ring is hidden or a few specks in the haze */
+  /** camera heights above the ground (m) between which the ring's far sectors fade in: low cameras look through the
+   *  city / edge band at the horizon, where they are hidden or a few specks in the haze (sectors within lodDistance,
+   *  i.e. a camera near the map edge, stay at any height) */
   ringFadeHeight: [number, number] = [110, 240];
   /** outer ring instances currently placed (stats) */
   ringInstances = 0;
