@@ -278,3 +278,38 @@ Kernels (replay, protector intact): alloc 1.21×, union 1.32×, report 1.26×, f
 SIMD vs scalar build 1.00–1.03× except finalize 1.27×. Lessons: (1) a JS arm with an invalidated protector inflates
 wasm's lead by ~0.15–0.3×; (2) keeping the protector intact is worth as much for the whole sim (+13 %) as this port;
 (3) the e-cache that helps wasm's alloc (1.08×) slows JS's (0.91×) — each side gets its faster exact variant.
+
+## Measured (traffic core, `traffic.rs`: the numeric phases of traffic.ts @24f8609; 1M-population fixtures)
+
+`node tools/bench/trafficCore.bench.mjs insitu|micro|math|e2e|browser --fixture dense1m|stress1m|bot256` (frozen
+24f8609 tree; `$SIM_WASM_PATH` / `$TRAFFIC_CRATE` select another build). One V8 isolate per arm (node worker thread /
+Chromium browser context), CPU time per arm, rotating interleaved order, 41–61 pairs after 3 warm-up cycles,
+paired-ratio median with a 95 % bootstrap CI, load 12–30 on 4 cores. The protector is INTACT in every arm unless the
+arm is `-inv` (checked per arm with a natives-syntax probe; fixtures gunzipped with zlib; the pre-sized memory never
+grew: `memory.grow` 0 in every run). Every run ended bit-identical to the original; the wasm arms ran 0 JS fallbacks.
+"orig" = traffic.ts as is, "fair" = the restructured JS core (src/wasm/js/trafficCore.ts: radix sort, precomputed stop
+x / z, reused scratch), "wasm" = the shipped binary (imported Math.exp / Math.log), layers staged per call.
+
+| traffic cycle (runCycleSync) | orig ms | orig → wasm | fair → wasm | orig → fair |
+|---|---|---|---|---|
+| node, dense1m (2 runs, 41 / 61 pairs) | 38.0 | 1.29× [1.18, 1.36] / 1.26× [1.24, 1.31] | 1.17× [1.09, 1.19] / 1.23× [1.19, 1.29] | 1.14× / 1.04× |
+| node, dense1m, layers resident | 37.6 | 1.30× [1.25, 1.35] | 1.18× [1.15, 1.23] | 1.06× |
+| node, dense1m, a road cell bulldozed / rebuilt before every cycle | 45.4 | 1.29× [1.20, 1.42] | 1.14× [1.11, 1.20] | 1.13× |
+| node, stress1m (36k road nodes) / with edits | 45.8 / 48.0 | 1.29× [1.21, 1.36] / 1.26× [1.23, 1.30] | 1.23× [1.18, 1.35] / 1.17× [1.14, 1.21] | 1.03× / 1.08× |
+| node, bot256 (650k people, no stops) | 16.5 | 1.16× [1.07, 1.26] | 1.15× [1.10, 1.23] | 1.05× |
+| Chromium 141, main thread / Worker, dense1m | 45.7 / 46.6 | 1.28× [1.20, 1.55] / 1.35× [1.15, 1.58] | 1.32× [1.25, 1.44] / 1.27× [1.17, 1.39] | 0.99× / 1.08× |
+
+- **Whole day at 1.1M people** (node e2e, dense1m, 248 days, 60 interleaved 4-day chunks; control orig → orig2 1.00×
+  [0.97, 1.08]): design cadence (a traffic cycle every 2nd day) orig → wasm 1.13× [1.08, 1.17] (traffic 19.6 → 14.3
+  ms/day, 1.34×), fair → wasm 1.07× [1.00, 1.13]. Headless scheduler budget: orig → wasm 1.10× [1.02, 1.16].
+- **Protector** (node, dense1m): orig-inv → orig 1.13× [1.10, 1.14] — keeping it intact is free; wasm-inv → wasm 0.99×;
+  orig-inv → wasm-inv 1.41× [1.35, 1.52]. Chromium: orig-inv → orig 1.04× (main) / 1.08× (Worker). The earlier node
+  A/Bs of this port loaded fixtures through bundle.ts `unpackFile`, whose undici streams detach an ArrayBuffer: every
+  arm ran with the protector invalidated, which put fair → wasm at 1.31–1.39×.
+- **Imports vs inline fdlibm** (arm `wasm-fdlibm`): 0.97–0.99× in node, 0.94–0.95× in Chromium — the price of
+  engine-independent exp / log. **SIMD vs scalar build**: 0.97–1.01× (no gain; the kernels are gather / search bound).
+- **Micro** (dense1m round 0, 12,338 candidates): sort native 1.06 ms → JS radix 0.32 ms (3.35×) → wasm radix 0.25 ms
+  (1.31×); logit 12,338 three-way splits JS 0.42 ms vs wasm 0.54 ms (0.78×; inline fdlibm 0.80×): exp-bound, no wasm
+  gain; the roundMatch kernel fair → wasm 1.20× [1.13, 1.24].
+- **exp / log bit test**: 20M random arguments + every argument of 3 cycles of each fixture, 0 mismatches (shipped
+  imports by construction; the fdlibm build on V8).
