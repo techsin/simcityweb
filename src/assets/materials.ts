@@ -252,21 +252,21 @@ vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float lit
   float pOn = mix(0.75, 0.7, home), pOff = mix(0.08, 0.09, home);
   float pWin = mix(pOff, pOn, step(hU, secP));
   float winOn = step(hP, pWin);
-  // per window lamp / curtain brightness (mean 0.775) and per unit brightness (mean 1)
-  float winB = 0.45 + 0.65 * fract(hP * 7.31 + 0.17);
-  float unitB = 0.7 + 0.6 * fract(hU * 31.7 + 0.13);
-  float eA = (pOff + (pOn - pOff) * clamp(litP * mix(0.78, 1.0, home), 0.0, 1.0)) * 0.775 * 0.5;
-  float eF = (pOff + (pOn - pOff) * secP) * 0.775;
-  float eU = pWin * 0.775 * unitB;
+  // per window lamp / curtain brightness (mean 0.825) and per unit brightness (mean 1)
+  float winB = 0.55 + 0.55 * fract(hP * 7.31 + 0.17);
+  float unitB = 0.75 + 0.5 * fract(hU * 31.7 + 0.13);
+  float eA = (pOff + (pOn - pOff) * clamp(litP * mix(0.78, 1.0, home), 0.0, 1.0)) * 0.825 * 0.47;
+  float eF = (pOff + (pOn - pOff) * secP) * 0.825;
+  float eU = pWin * 0.825 * unitB;
   float eP = winOn * winB * unitB;
   float e = mix(mix(mix(eA, eF, fF), eU, fU), eP, fP);
   // ceiling lights: resolved windows are brighter toward the top of the floor
   e *= mix(1.0, 0.55 + 0.6 * clamp(fy * 1.43 - 0.21, 0.0, 1.0), fP);
-  // colour temperature per household (homes: mostly warm) / tenant (offices: 3 sections per tenant, mostly cool white;
-  // hotels warm), the kind's average once units blur
+  // colour temperature per household (homes: mostly warm) / tenant (offices: 3 sections per tenant, warm white to cool
+  // white; hotels warm), the kind's average once units blur
   float hc = home > 0.5 ? fract(hU * 57.3 + vSeed * 3.1) : fract(hF + 0.618 * floor(uid / 3.0 + 1e-3));
-  float t = home > 0.5 ? hc * hc : (kind < 1.5 ? 1.0 - (1.0 - hc) * (1.0 - hc) : hc * 0.6);
-  float tAvg = home > 0.5 ? 0.33 : (kind < 1.5 ? 0.67 : 0.3);
+  float t = home > 0.5 ? hc * hc : (kind < 1.5 ? hc : hc * 0.6);
+  float tAvg = home > 0.5 ? 0.33 : (kind < 1.5 ? 0.5 : 0.3);
   vec3 c = roomLight(mix(tAvg, t, fU));
   // a few lit living rooms show a flickering TV
   float tv = step(0.95, fract(hP * 13.7)) * winOn * home * fP;
