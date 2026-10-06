@@ -21,6 +21,10 @@ import { defaultCityConfig } from '../../src/sim/config';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
 import { TreeRenderer } from '../../src/render/world/TreeRenderer';
 import { CELL_SIZE } from '../../src/core/constants';
+import { ModelBuilder } from '../../src/assets/ModelBuilder';
+import { RNG } from '../../src/core/rng';
+import { palm as comPalm } from '../../src/assets/builders/com_kit';
+import { palm as civPalm } from '../../src/assets/builders/civ_kit';
 
 registerAllModels();
 
@@ -77,6 +81,14 @@ describe('seasonal foliage patterns', () => {
     }
     for (const p of [1, 2, 4]) expect(tot.get(p) ?? 0, `pattern ${p}`).toBeGreaterThan(10);
   }, 120_000);
+
+  it('lot palms (commercial / civic kits) are evergreen: their fronds never turn autumn-coloured or bare', () => {
+    for (const palm of [comPalm, civPalm]) {
+      const b = new ModelBuilder();
+      palm(b, new RNG(5), 0, 0, 1);
+      expect([...foliagePatterns(b.build()).keys()]).toEqual([4]);
+    }
+  });
 
   it('setFoliageSeason: winter / spring only in seasonal climates, the tropics flower all year', () => {
     const fs = sharedUniforms.uFoliageSeason.value;

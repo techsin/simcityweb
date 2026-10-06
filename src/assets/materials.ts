@@ -220,16 +220,11 @@ float aaBox(float x, float a, float b, float w) {
   return smoothstep(a - w, a + w, f) * (1.0 - smoothstep(b - w, b + w, f));
 }
 
-// Room light colour temperature (select chains, no early returns: an inlined function with several returns becomes a
-// loop in some drivers / SwiftShader). Homes (k = 0) per household: incandescent 2700 K, warm white, neutral, cool LED,
-// TV blue, a rose lamp. Offices (k = 1) per tenant: cool 4000 K white, neutral, warm, a greenish fluorescent. Hotels /
-// warm glass tints (k = 2): mostly warm / neutral room light.
-vec3 roomLight(float h, float k) {
-  vec3 home = h < 0.3 ? vec3(1.0, 0.64, 0.33) : (h < 0.58 ? vec3(1.0, 0.79, 0.52) : (h < 0.78 ? vec3(1.0, 0.9, 0.75) :
-    (h < 0.92 ? vec3(0.8, 0.88, 1.0) : (h < 0.97 ? vec3(0.52, 0.68, 1.0) : vec3(1.0, 0.56, 0.45)))));
-  vec3 office = h < 0.38 ? vec3(0.74, 0.86, 1.0) : (h < 0.64 ? vec3(0.96, 0.93, 0.84) : (h < 0.93 ? vec3(1.0, 0.78, 0.52) : vec3(0.8, 1.0, 0.88)));
-  vec3 hotel = h < 0.55 ? vec3(1.0, 0.76, 0.5) : (h < 0.86 ? vec3(1.0, 0.88, 0.72) : vec3(0.82, 0.88, 1.0));
-  return k < 0.5 ? home : (k < 1.5 ? office : hotel);
+// Room light colour temperature t (0 = 2700 K incandescent amber, 0.5 = neutral warm white, 1 = cool 5000 K LED /
+// office white): one ramp, no select chains or early returns (the uber shader is evaluated in full for every fragment
+// by software renderers)
+vec3 roomLight(float t) {
+  return mix(mix(vec3(1.0, 0.6, 0.29), vec3(1.0, 0.85, 0.66), clamp(t * 2.0, 0.0, 1.0)), vec3(0.76, 0.86, 1.0), clamp(t * 2.0 - 1.0, 0.0, 1.0));
 }
 
 // Night window lights of every glazed facade (WallWindows, GlassCurtain, PlainGlass storefronts / house windows): ONE
@@ -241,9 +236,9 @@ vec3 roomLight(float h, float k) {
 // ~2 px, lit / dark units (with their household / tenant colour) and floors down to ~1.5 px, and a low facade average
 // far away, so distant towers read as dark masses with sparkle instead of pale cream slabs.
 vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float litP) {
-  float fF = smoothstep(1.0, 2.0, px.y);
-  float fU = smoothstep(1.0, 2.0, px.x * unitN) * fF;
-  float fP = smoothstep(1.3, 2.6, px.x) * smoothstep(1.3, 2.6, px.y);
+  float fF = clamp(px.y - 1.0, 0.0, 1.0);
+  float fU = clamp(px.x * unitN - 1.0, 0.0, 1.0) * fF;
+  float fP = clamp((px.x - 1.3) * 0.77, 0.0, 1.0) * clamp((px.y - 1.3) * 0.77, 0.0, 1.0);
   float uid = floor(ci.x / unitN + 1e-3);
   float home = step(kind, 0.5);
   float hF = bh11(ci.y * 3.7 + vSeed * 57.0);
@@ -266,11 +261,13 @@ vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float lit
   float eP = winOn * winB * unitB;
   float e = mix(mix(mix(eA, eF, fF), eU, fU), eP, fP);
   // ceiling lights: resolved windows are brighter toward the top of the floor
-  e *= mix(1.0, 0.55 + 0.6 * smoothstep(0.15, 0.85, fy), fP);
-  // colour per household / tenant (offices: 3 sections per tenant), the kind's average once units blur
-  vec3 c = roomLight(home > 0.5 ? fract(hU * 57.3 + vSeed * 3.1) : fract(hF + 0.618 * floor(uid / 3.0 + 1e-3)), kind);
-  vec3 cAvg = home > 0.5 ? vec3(1.0, 0.8, 0.56) : (kind < 1.5 ? vec3(0.87, 0.88, 0.88) : vec3(1.0, 0.86, 0.66));
-  c = mix(cAvg, c, fU);
+  e *= mix(1.0, 0.55 + 0.6 * clamp(fy * 1.43 - 0.21, 0.0, 1.0), fP);
+  // colour temperature per household (homes: mostly warm) / tenant (offices: 3 sections per tenant, mostly cool white;
+  // hotels warm), the kind's average once units blur
+  float hc = home > 0.5 ? fract(hU * 57.3 + vSeed * 3.1) : fract(hF + 0.618 * floor(uid / 3.0 + 1e-3));
+  float t = home > 0.5 ? hc * hc : (kind < 1.5 ? 1.0 - (1.0 - hc) * (1.0 - hc) : hc * 0.6);
+  float tAvg = home > 0.5 ? 0.33 : (kind < 1.5 ? 0.67 : 0.3);
+  vec3 c = roomLight(mix(tAvg, t, fU));
   // a few lit living rooms show a flickering TV
   float tv = step(0.95, fract(hP * 13.7)) * winOn * home * fP;
   c = mix(c, vec3(0.5, 0.68, 1.0) * (0.8 + 0.25 * sin(uTime * 6.3 + hP * 40.0)), tv);
@@ -346,110 +343,148 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
   float night = uNight;
   // lit windows come on with the street lamps around sunset (people switch lights on at dusk), ahead of the night factor
   float wNight = max(uNight, 0.6 * uLamps);
-  // night window grid, set by the glazed facade branches below and lit once after them (nightWindows): weight of the
-  // window glass in this fragment (0 = no windows), cell (column, floor) + position in the floor + on-screen cell size
-  // (px), cells per unit, kind (0 homes, 1 offices, 2 hotels, 3 all lit), unit lit probability, gain
-  float nwK = 0.0;
-  vec2 nwCi = vec2(0.0);
-  float nwFy = 0.5;
-  vec2 nwPx = vec2(1.0);
-  float nwUnit = 3.0;
-  float nwKind = 0.0;
-  float nwLit = 0.5;
-  float nwGain = 1.0;
   // contact darkening + faint vertical weathering streaks near the ground on walls (grounds the buildings)
   if (vertical && (type < 1.5 || type > 10.5)) {
     albedo *= 0.8 + 0.2 * smoothstep(0.0, 2.2, v);
     albedo *= 0.96 + 0.05 * bnoise(vec2(u * 0.9, v * 0.06 + vSeed * 13.0));
   }
 
-  if (type < 0.5) {
+  if ((type > 0.5 && type < 2.5) || (type > 6.5 && type < 7.5)) {
+    // ---- glazed facades (WallWindows, GlassCurtain, PlainGlass): the branches set up the night window grid, lit once at
+    // the end of this block (nightWindows); the grid state stays local to the block (short live ranges). Weight of the
+    // window glass in this fragment (0 = no windows), cell (column, floor) + position in the floor + on-screen cell size
+    // (px), cells per unit, kind (0 homes, 1 offices, 2 hotels, 3 all lit), unit lit probability, gain
+    float nwK = 0.0;
+    vec2 nwCi = vec2(0.0);
+    float nwFy = 0.5;
+    vec2 nwPx = vec2(1.0);
+    float nwUnit = 3.0;
+    float nwKind = 0.0;
+    float nwLit = 0.5;
+    float nwGain = 1.0;
+    if (type < 1.5) {
+      // WallWindows
+      rough = 0.82;
+      if (vertical) {
+        vec2 cell; float fade; float colW;
+        float m = windowMask(pattern, u, v, floorH, fwUV, cell, fade, colW);
+        float h2 = bh31(vec3(cell.yx + 3.1, vSeed * 13.0));
+        vec3 glass = mix(vec3(0.08, 0.1, 0.13), vec3(0.2, 0.26, 0.32), h2 * 0.6);
+        // distant windows a bit darker so the (averaged) window rows still contrast with the wall
+        glass *= mix(0.8, 1.0, fade);
+        // slight wall weathering per floor
+        albedo *= 0.95 + 0.05 * bh11(cell.y + vSeed * 10.0);
+        albedo = mix(albedo, glass, m);
+        rough = mix(rough, 0.12, m);
+        metal = mix(metal, 0.55, m);
+        // night (nightWindows): the window mask (already blended to its average coverage far away) carries the per-window
+        // / unit / floor lit states; ribbon / dense-grid offices, industrial and arched civic windows are offices (dark
+        // floors, tenants), the rest homes (apartments of ~8 m: 2-4 windows), pattern 8 (churches) all lit warm amber
+        bool office = (pattern > 1.5 && pattern < 2.5) || (pattern > 3.5 && pattern < 5.5) || (pattern > 6.5 && pattern < 7.5);
+        nwK = m;
+        nwCi = cell;
+        nwFy = fract(v / floorH);
+        nwPx = vec2(colW, floorH) / fwUV;
+        nwUnit = office ? max(1.0, floor(3.2 / colW + 0.5)) : max(1.0, floor(8.0 / colW + 0.5));
+        nwKind = pattern > 7.5 && pattern < 8.5 ? 3.0 : (office ? 1.0 : 0.0);
+        nwLit = office ? uLitFraction * (0.45 + 0.8 * vSeed) : clamp(uLitFraction * 0.8, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
+        nwGain = 0.7;
+      }
+    } else if (type < 2.5) {
+      // Glass curtain wall
+      vec3 tint = vec3(0.24, 0.36, 0.5);
+      if (pattern > 0.5 && pattern < 1.5) tint = vec3(0.22, 0.42, 0.42);
+      else if (pattern > 1.5 && pattern < 2.5) tint = vec3(0.45, 0.35, 0.2);
+      else if (pattern > 2.5 && pattern < 3.5) tint = vec3(0.07, 0.08, 0.1);
+      else if (pattern > 3.5 && pattern < 4.5) tint = vec3(0.55, 0.58, 0.62);
+      else if (pattern > 4.5 && pattern < 5.5) tint = vec3(0.45, 0.6, 0.78);
+      else if (pattern > 5.5) tint = vec3(0.34, 0.42, 0.48); // 6: residential glass (neutral blue-grey)
+      bool resGlass = pattern > 5.5 && pattern < 6.5;
+      // less metallic + brighter base than a pure mirror so every tint survives the 45 deg view (which mostly reflects
+      // the ground); plus an unlit sky-tint term by day (reads as clean glass from above)
+      albedo = tint * 0.75;
+      rough = 0.06;
+      metal = 0.7;
+      if (vertical) {
+        float cu = u / 1.5; float cv = v / floorH;
+        float wu = fwUV.x / 1.5 + 1e-4; float wv = fwUV.y / floorH + 1e-4;
+        // mullions (1.5 m) fade first; the floor lines (spandrel per floor) stay readable until floors are ~2 px, then
+        // everything blends to a flat average (~35% frame; residential glass 50% so lit units keep dark floor slabs)
+        float fadeU = clamp(1.0 - wu * 2.0, 0.0, 1.0);
+        float fadeV = clamp(1.0 - wv * 1.6, 0.0, 1.0);
+        // unlit sky-tint term by day (reads as clean glass from above), weaker at distance where it turned whole
+        // towers into smooth white plastic
+        emis += mix(vec3(0.55, 0.65, 0.8), tint * 1.4, 0.35) * 0.08 * (1.0 - night) * mix(0.55, 1.0, fadeU);
+        float boxV = aaBox(cv, 0.05, 0.93, wv);
+        float mullNear = 1.0 - aaBox(cu, 0.06, 0.94, wu) * boxV;
+        float farLvl = resGlass ? 0.5 : 0.35;
+        // u-averaged mask (1 - 0.88 * boxV averages 0.226), re-centred on the far level so the tone stays constant
+        float mullRow = clamp(1.0 - 0.88 * boxV + (farLvl - 0.226), 0.0, 1.0);
+        float mull = mix(mix(farLvl, mullRow, fadeV), mullNear, fadeU);
+        // distant curtain glass slightly darker (panels read as glass, not white plastic, at the default camera)
+        albedo *= mix(0.82, 1.0, fadeU);
+        albedo = mix(albedo, vec3(0.28, 0.3, 0.33), mull * 0.8);
+        rough = mix(rough, 0.5, mull);
+        // per-panel subtle tint variation (reflection breakup)
+        vec2 cell = floor(vec2(cu / 2.0, cv) + 1e-3);
+        float h = bh31(vec3(cell, floor(vSeed * 51.0)));
+        // light tints (silver / sky / residential) show blotches easily -> gentler variation
+        float calmV = pattern > 3.5 ? 1.0 : 0.0;
+        albedo *= mix(0.9 + 0.2 * h, 0.95 + 0.1 * h, calmV);
+        rough += mix(0.05, 0.03, calmV) * h;
+        // night (nightWindows): every 1.5 m panel is a window; residential glass = homes in apartments of 3 panels,
+        // offices in 3 m sections of 2 panels (tenant colour per 9 m), warm bronze / gold tints = hotels
+        nwK = 1.0 - mull;
+        nwCi = floor(vec2(cu, cv) + 1e-3);
+        nwFy = fract(cv);
+        nwPx = 1.0 / vec2(wu, wv);
+        nwUnit = resGlass ? 3.0 : 2.0;
+        nwKind = resGlass ? 0.0 : (pattern > 1.5 && pattern < 2.5 ? 2.0 : 1.0);
+        nwLit = resGlass ? clamp(uLitFraction * 0.8, 0.0, 1.0) * (0.75 + 0.5 * vSeed) : uLitFraction * (0.45 + 0.8 * vSeed);
+        nwGain = resGlass ? 0.62 : 0.6;
+      }
+    } else {
+      // plain glass: pattern 0 storefront / small windows (warm lit at night), pattern 1 vehicle glass (never glows)
+      float h = bh31(vec3(floor(u / 4.0), floor(v / 3.0), vSeed * 31.0));
+      // same look as the WallWindows procedural glass so modelled and procedural windows match
+      albedo = mix(vec3(0.08, 0.1, 0.13), vec3(0.2, 0.26, 0.32), 0.3) * (0.9 + 0.2 * h);
+      rough = 0.12;
+      metal = 0.55;
+      if (pattern > 1.5 && pattern < 2.5) {
+        // pavilion glass (lobbies, foyers, greenhouses, concourses): reflective by day, uniform warm glow at night
+        emis += vec3(1.0, 0.84, 0.62) * wNight * 0.6;
+      } else if (pattern > 2.5 && pattern < 3.5) {
+        // grow-light glass (greenhouse walls / roofs): clear, slightly greenish glass by day with NO tint or glow; at
+        // night the HPS lamps inside shine through as a saturated sodium amber (kept below the bloom threshold so it
+        // stays orange instead of bleaching to white), a little brightness variation per 4 m bay
+        albedo = mix(albedo, vec3(0.16, 0.2, 0.19), 0.35);
+        rough = 0.1;
+        metal = 0.45;
+        emis += vec3(0.95, 0.34, 0.05) * wNight * (0.26 + 0.14 * h);
+      } else if (pattern > 0.5 && pattern < 1.5) {
+        albedo = vec3(0.035, 0.045, 0.055) + albedo * 0.2;
+        rough = 0.05;
+        metal = 0.9;
+      } else {
+        // homes / shops (nightWindows): ~2.5 x 2.8 m windows in units of two, lit a bit more than apartment towers
+        // (~55-75% of the households in the evening, dipping late at night)
+        nwK = 1.0;
+        nwCi = floor(vec2(u / 2.5, v / 2.8) + 1e-3);
+        nwFy = fract(v / 2.8);
+        nwPx = vec2(2.5, 2.8) / fwUV;
+        nwUnit = 2.0;
+        nwKind = 0.0;
+        nwLit = clamp(uLitFraction * 0.95 + 0.05, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
+        nwGain = 0.8;
+      }
+    }
+    if (nwK > 0.0 && wNight > 0.001) emis += nightWindows(nwCi, nwFy, nwPx, nwUnit, nwKind, nwLit) * nwK * nwGain * wNight;
+  } else if (type < 0.5) {
     // Plain: subtle grime toward the bottom & noise
     float n = bnoise(P.xz * 0.35 + P.y * 0.2);
     albedo *= 0.93 + 0.07 * n;
     rough = 0.85;
     if (pattern > 0.5 && pattern < 2.5) emis += floodlight(albedo, pattern, v, floorH, vertical, night);
-  } else if (type < 1.5) {
-    // WallWindows
-    rough = 0.82;
-    if (vertical) {
-      vec2 cell; float fade; float colW;
-      float m = windowMask(pattern, u, v, floorH, fwUV, cell, fade, colW);
-      float h2 = bh31(vec3(cell.yx + 3.1, vSeed * 13.0));
-      vec3 glass = mix(vec3(0.08, 0.1, 0.13), vec3(0.2, 0.26, 0.32), h2 * 0.6);
-      // distant windows a bit darker so the (averaged) window rows still contrast with the wall
-      glass *= mix(0.8, 1.0, fade);
-      // slight wall weathering per floor
-      albedo *= 0.95 + 0.05 * bh11(cell.y + vSeed * 10.0);
-      albedo = mix(albedo, glass, m);
-      rough = mix(rough, 0.12, m);
-      metal = mix(metal, 0.55, m);
-      // night (nightWindows): the window mask (already blended to its average coverage far away) carries the per-window
-      // / unit / floor lit states; ribbon / dense-grid offices, industrial and arched civic windows are offices (dark
-      // floors, tenants), the rest homes (apartments of ~8 m: 2-4 windows), pattern 8 (churches) all lit warm amber
-      bool office = (pattern > 1.5 && pattern < 2.5) || (pattern > 3.5 && pattern < 5.5) || (pattern > 6.5 && pattern < 7.5);
-      nwK = m;
-      nwCi = cell;
-      nwFy = fract(v / floorH);
-      nwPx = vec2(colW, floorH) / fwUV;
-      nwUnit = office ? max(1.0, floor(3.2 / colW + 0.5)) : max(1.0, floor(8.0 / colW + 0.5));
-      nwKind = pattern > 7.5 && pattern < 8.5 ? 3.0 : (office ? 1.0 : 0.0);
-      nwLit = office ? uLitFraction * (0.45 + 0.8 * vSeed) : clamp(uLitFraction * 0.8, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
-      nwGain = 0.7;
-    }
-  } else if (type < 2.5) {
-    // Glass curtain wall
-    vec3 tint = vec3(0.24, 0.36, 0.5);
-    if (pattern > 0.5 && pattern < 1.5) tint = vec3(0.22, 0.42, 0.42);
-    else if (pattern > 1.5 && pattern < 2.5) tint = vec3(0.45, 0.35, 0.2);
-    else if (pattern > 2.5 && pattern < 3.5) tint = vec3(0.07, 0.08, 0.1);
-    else if (pattern > 3.5 && pattern < 4.5) tint = vec3(0.55, 0.58, 0.62);
-    else if (pattern > 4.5 && pattern < 5.5) tint = vec3(0.45, 0.6, 0.78);
-    else if (pattern > 5.5) tint = vec3(0.34, 0.42, 0.48); // 6: residential glass (neutral blue-grey)
-    bool resGlass = pattern > 5.5 && pattern < 6.5;
-    // less metallic + brighter base than a pure mirror so every tint survives the 45 deg view (which mostly reflects
-    // the ground); plus an unlit sky-tint term by day (reads as clean glass from above)
-    albedo = tint * 0.75;
-    rough = 0.06;
-    metal = 0.7;
-    if (vertical) {
-      float cu = u / 1.5; float cv = v / floorH;
-      float wu = fwUV.x / 1.5 + 1e-4; float wv = fwUV.y / floorH + 1e-4;
-      // mullions (1.5 m) fade first; the floor lines (spandrel per floor) stay readable until floors are ~2 px, then
-      // everything blends to a flat average (~35% frame; residential glass 50% so lit units keep dark floor slabs)
-      float fadeU = clamp(1.0 - wu * 2.0, 0.0, 1.0);
-      float fadeV = clamp(1.0 - wv * 1.6, 0.0, 1.0);
-      // unlit sky-tint term by day (reads as clean glass from above), weaker at distance where it turned whole
-      // towers into smooth white plastic
-      emis += mix(vec3(0.55, 0.65, 0.8), tint * 1.4, 0.35) * 0.08 * (1.0 - night) * mix(0.55, 1.0, fadeU);
-      float boxV = aaBox(cv, 0.05, 0.93, wv);
-      float mullNear = 1.0 - aaBox(cu, 0.06, 0.94, wu) * boxV;
-      float farLvl = resGlass ? 0.5 : 0.35;
-      // u-averaged mask (1 - 0.88 * boxV averages 0.226), re-centred on the far level so the tone stays constant
-      float mullRow = clamp(1.0 - 0.88 * boxV + (farLvl - 0.226), 0.0, 1.0);
-      float mull = mix(mix(farLvl, mullRow, fadeV), mullNear, fadeU);
-      // distant curtain glass slightly darker (panels read as glass, not white plastic, at the default camera)
-      albedo *= mix(0.82, 1.0, fadeU);
-      albedo = mix(albedo, vec3(0.28, 0.3, 0.33), mull * 0.8);
-      rough = mix(rough, 0.5, mull);
-      // per-panel subtle tint variation (reflection breakup)
-      vec2 cell = floor(vec2(cu / 2.0, cv) + 1e-3);
-      float h = bh31(vec3(cell, floor(vSeed * 51.0)));
-      // light tints (silver / sky / residential) show blotches easily -> gentler variation
-      float calmV = pattern > 3.5 ? 1.0 : 0.0;
-      albedo *= mix(0.9 + 0.2 * h, 0.95 + 0.1 * h, calmV);
-      rough += mix(0.05, 0.03, calmV) * h;
-      // night (nightWindows): every 1.5 m panel is a window; residential glass = homes in apartments of 3 panels,
-      // offices in 3 m sections of 2 panels (tenant colour per 9 m), warm bronze / gold tints = hotels
-      nwK = 1.0 - mull;
-      nwCi = floor(vec2(cu, cv) + 1e-3);
-      nwFy = fract(cv);
-      nwPx = 1.0 / vec2(wu, wv);
-      nwUnit = resGlass ? 3.0 : 2.0;
-      nwKind = resGlass ? 0.0 : (pattern > 1.5 && pattern < 2.5 ? 2.0 : 1.0);
-      nwLit = resGlass ? clamp(uLitFraction * 0.8, 0.0, 1.0) * (0.75 + 0.5 * vSeed) : uLitFraction * (0.45 + 0.8 * vSeed);
-      nwGain = resGlass ? 0.62 : 0.6;
-    }
   } else if (type < 3.5) {
     // flat roof: gravel + tar patches
     float n = bnoise(P.xz * 0.8) * 0.6 + bnoise(P.xz * 3.1) * 0.4;
@@ -540,41 +575,6 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
       float k = (pattern > 0.5 ? pattern * 0.25 : 1.0) * strandK;
       emis += albedo * (0.3 + 1.35 * wNight) * k;
       rough = 0.5;
-    }
-  } else if (type < 7.5) {
-    // plain glass: pattern 0 storefront / small windows (warm lit at night), pattern 1 vehicle glass (never glows)
-    float h = bh31(vec3(floor(u / 4.0), floor(v / 3.0), vSeed * 31.0));
-    // same look as the WallWindows procedural glass so modelled and procedural windows match
-    albedo = mix(vec3(0.08, 0.1, 0.13), vec3(0.2, 0.26, 0.32), 0.3) * (0.9 + 0.2 * h);
-    rough = 0.12;
-    metal = 0.55;
-    if (pattern > 1.5 && pattern < 2.5) {
-      // pavilion glass (lobbies, foyers, greenhouses, concourses): reflective by day, uniform warm glow at night
-      emis += vec3(1.0, 0.84, 0.62) * wNight * 0.6;
-    } else if (pattern > 2.5 && pattern < 3.5) {
-      // grow-light glass (greenhouse walls / roofs): clear, slightly greenish glass by day with NO tint or glow; at
-      // night the HPS lamps inside shine through as a saturated sodium amber (kept below the bloom threshold so it
-      // stays orange instead of bleaching to white), a little brightness variation per 4 m bay
-      albedo = mix(albedo, vec3(0.16, 0.2, 0.19), 0.35);
-      rough = 0.1;
-      metal = 0.45;
-      float bay = bh31(vec3(floor(u / 4.0 + 1e-3), floor(v / 6.0 + 1e-3), floor(vSeed * 61.0)));
-      emis += vec3(0.95, 0.34, 0.05) * wNight * (0.26 + 0.14 * bay);
-    } else if (pattern > 0.5 && pattern < 1.5) {
-      albedo = vec3(0.035, 0.045, 0.055) + albedo * 0.2;
-      rough = 0.05;
-      metal = 0.9;
-    } else {
-      // homes / shops (nightWindows): ~2.5 x 2.8 m windows in units of two, lit a bit more than apartment towers
-      // (~55-75% of the households in the evening, dipping late at night)
-      nwK = 1.0;
-      nwCi = floor(vec2(u / 2.5, v / 2.8) + 1e-3);
-      nwFy = fract(v / 2.8);
-      nwPx = vec2(2.5, 2.8) / fwUV;
-      nwUnit = 2.0;
-      nwKind = 0.0;
-      nwLit = clamp(uLitFraction * 0.95 + 0.05, 0.0, 1.0) * (0.75 + 0.5 * vSeed);
-      nwGain = 0.8;
     }
   } else if (type < 8.5) {
     // foliage
@@ -747,8 +747,6 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     albedo *= 0.9 + 0.15 * bnoise(P.xz * 0.15);
     rough = 0.95;
   }
-  // lit windows of the glazed facades (one evaluation for WallWindows / GlassCurtain / PlainGlass)
-  if (nwK > 0.0 && wNight > 0.001) emis += nightWindows(nwCi, nwFy, nwPx, nwUnit, nwKind, nwLit) * nwK * nwGain * wNight;
   // night: the ground of a lot (lawns, yards, paths, parking at the foot of the buildings) catches a faint warm spill of
   // its windows / porch lights and the street lamps, so gardens stay readable instead of sinking into the night floor
   // (terrain and roads have their own shaders: open land stays dark)
