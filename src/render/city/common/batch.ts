@@ -238,7 +238,11 @@ function orient(w: ArrayLike<number>, out: Float64Array): void {
  */
 function uploadRows(renderer: THREE.WebGLRenderer, tex: WebGLTexture, y0: number, w: number, h: number, format: number, type: number, data: ArrayBufferView, offset: number): void {
   const gl = renderer.getContext() as WebGL2RenderingContext, st = renderer.state;
-  st.bindTexture(gl.TEXTURE_2D, tex, gl.TEXTURE0 + renderer.capabilities.maxTextures - 1);
+  // (the unit made active first: bindTexture skips both the bind and the unit switch when its cache already has the
+  // texture on that unit, and texSubImage2D writes to the active unit's texture)
+  const unit = gl.TEXTURE0 + renderer.capabilities.maxTextures - 1;
+  st.activeTexture(unit);
+  st.bindTexture(gl.TEXTURE_2D, tex, unit);
   st.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   st.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
   st.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
