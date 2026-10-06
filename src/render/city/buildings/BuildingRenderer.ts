@@ -813,13 +813,16 @@ export class BuildingRenderer {
   private lodSpare: BInst[] = [];
   /** next bucket (absolute index) to evaluate */
   private lodAt = 0;
+  /** the travel bucket of the previous update (the buckets a frame's own travel makes due: see dueSince) */
+  private lodCur = 0;
   private lodNow: BInst[] = [];
   private lodNowSpare: BInst[] = [];
   /** at most this many building evaluations per frame while the camera moves smoothly (a new metric spreads over a
    *  few frames) */
   lodSlice = 3000;
   /** evaluations per frame while catching up after a camera jump (upgrades are done by the cut frame's scan; what is
-   *  left are mostly downgrades) */
+   *  left are mostly downgrades), on top of what the frame's own camera travel made due: the backlog shrinks by about
+   *  this much per frame however fast the camera keeps moving */
   lodCatch = 1000;
   /** due evaluations were left over (after a jump or a heavy frame): upgrades come from the flat scan meanwhile */
   lodBehind = false;
@@ -1698,7 +1701,8 @@ export class BuildingRenderer {
     q0.copy(f);
     const [m0, m1] = this.fadeMotion;
     this.fadeCap = motion <= m0 ? this.fadeMax : motion >= m1 ? 0 : Math.floor((this.fadeMax * (m1 - motion)) / (m1 - m0));
-    const cur = Math.floor(this.lodTravel / LOD_BUCKET);
+    const cur = Math.floor(this.lodTravel / LOD_BUCKET), prev = this.lodCur;
+    this.lodCur = cur;
     if (cur - this.lodAt >= LOD_BUCKETS - 2) {
       // a jump beyond the schedule horizon: everything is due
       for (const q of this.lodBuckets) q.length = 0;
@@ -1727,7 +1731,8 @@ export class BuildingRenderer {
     // a cut settles the running fades (their buildings mostly left the view, and the fade layer is not culled)
     if (jump) while (this.fades.length) this.finishFade(this.fades[this.fades.length - 1]);
     if (!full && this.lodPixels > 0 && (jump || (behind && hop > 0))) this.upgradeScan(c, K, on, off, cur);
-    let budget = full ? Infinity : jump ? this.lodCatch >> 2 : behind ? this.lodCatch : this.lodSlice;
+    // (catching up: lodCatch on top of the frame's own share, so a fast pan after a cut does not stay behind for long)
+    let budget = full ? Infinity : jump ? this.lodCatch >> 2 : behind ? Math.min(this.lodSlice, this.lodCatch + this.dueSince(prev, cur)) : this.lodSlice;
     if (this.lodNow.length && budget > 0) {
       // (two alternating arrays: no garbage per frame)
       const q = this.lodNow;
@@ -1807,6 +1812,14 @@ export class BuildingRenderer {
       const s = this.inst.get(this.selected);
       if (s && (s.lod || s.flod)) this.lodEval(s, c, K, on, off, cur);
     }
+  }
+
+  /** schedule entries in the travel buckets (prev, cur]: what this frame's own camera travel made due (an upper bound:
+   *  stale entries count too) */
+  private dueSince(prev: number, cur: number): number {
+    let n = 0;
+    for (let b = Math.max(prev + 1, this.lodAt, cur - LOD_BUCKETS + 2); b <= cur; b++) n += this.lodBuckets[b % LOD_BUCKETS].length;
+    return n;
   }
 
   /** evaluate a building's LOD at the next update */

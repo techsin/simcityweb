@@ -243,14 +243,6 @@ const OV_SEARCHES = 6;
  *  record (calibrated like PHASE_COST) */
 const OV_CHUNK = 3000;
 const OV_REC_COST = 4e-4;
-/**
- * rationing price signal x of a group (p += PR_PRICE_STEP x ln x): (riders placed + riders turned away with nowhere to
- * go, attributed to the options they wanted) / room. A full group whose turned-away riders all found room elsewhere
- * (another option, the overflow) or chose another mode gets x = PR_FULL_EASE: its price eases, so commuters keep
- * choosing it and spilling over to the garages with room until some find none (the price then rises again) — a price
- * that rationed a full garage to its own room would leave the slower garages beside it empty
- */
-const PR_FULL_EASE = 0.97;
 const MAX_ENTRIES = 12;
 /** job matching: a proportional round (round < MATCH_PROP_ROUNDS) that matched under this share of the waiting workers
  *  is starved and does not count toward MATCH_ROUNDS (at most MATCH_EXTRA_ROUNDS such rounds per assignment); starved
@@ -564,13 +556,15 @@ export class TrafficSystem implements SimSystem {
   private gSpaces: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gLoad: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gRiders: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** riders choosing it (the logit over their options: the price signal) */
+  private gWant: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gCatch: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gPrice: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gWantR: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gRes: Float32Array<ArrayBuffer> = new Float32Array(0);
   /** r4, per group root: riders turned away with no room at any option (the overflow included), attributed to the
-   *  options they wanted (logit weights) — with the riders placed, the price signal —, the worker-weighted sum of their
-   *  homes' x / z (report: where another garage would take them), and the riders it took as other groups' overflow */
+   *  options they wanted (logit weights), the worker-weighted sum of their homes' x / z (report: where another garage
+   *  would take them), and the riders it took as other groups' overflow */
   private gUnpl: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gUnplX: Float32Array<ArrayBuffer> = new Float32Array(0);
   private gUnplZ: Float32Array<ArrayBuffer> = new Float32Array(0);
@@ -582,7 +576,7 @@ export class TrafficSystem implements SimSystem {
    *  the origin's main overflow group) */
   private ovSeen = new Map<number, number>();
   /** park & ride groups (garages at the same stop within GARAGE_GROUP_CELLS pool their room and share one price): root
-   *  garage index per garage, room (spaces - reserve) per root; gLoad / gRiders / gWantR / gCatch / gUnpl / gOvIn
+   *  garage index per garage, room (spaces - reserve) per root; gLoad / gRiders / gWant / gWantR / gCatch / gUnpl / gOvIn
    *  accumulate at the root during the assignment, commuteEnd shares them out by room into the per-garage gCars /
    *  gRidersM (reports, parking supply) */
   private gGrp: Int32Array<ArrayBuffer> = new Int32Array(0);
@@ -2027,7 +2021,7 @@ export class TrafficSystem implements SimSystem {
     this.gSeed = growF32(this.gSeed, gN + 1); this.gBoard = growI32(this.gBoard, gN + 1); this.gLoad = growF32(this.gLoad, gN + 1);
     this.gSeeded = growU8(this.gSeeded, gN + 1); this.gRank = growF32(this.gRank, gN + 1);
     this.gRide = growU8(this.gRide, gN + 1); this.gState = growU8(this.gState, gN + 1); this.gSpaces = growF32(this.gSpaces, gN + 1);
-    this.gRiders = growF32(this.gRiders, gN + 1); this.gCatch = growF32(this.gCatch, gN + 1);
+    this.gRiders = growF32(this.gRiders, gN + 1); this.gWant = growF32(this.gWant, gN + 1); this.gCatch = growF32(this.gCatch, gN + 1);
     this.gUnpl = growF32(this.gUnpl, gN + 1); this.gUnplX = growF32(this.gUnplX, gN + 1); this.gUnplZ = growF32(this.gUnplZ, gN + 1);
     this.gOvIn = growF32(this.gOvIn, gN + 1);
     this.gPrice = growF32(this.gPrice, gN + 1); this.gCell = growI32(this.gCell, gN + 1); this.gHalf = growU8(this.gHalf, gN + 1);
@@ -2036,7 +2030,7 @@ export class TrafficSystem implements SimSystem {
     let prN = 0, key = '';
     for (let q = 0; q < gN; q++) {
       this.gStop[q] = -1; this.gWalk[q] = 0; this.gLoad[q] = 0; this.gBoard[q] = -1; this.gRide[q] = 0;
-      this.gRiders[q] = 0; this.gWantR[q] = 0; this.gCatch[q] = 0; this.gLabel[q] = Infinity;
+      this.gRiders[q] = 0; this.gWant[q] = 0; this.gWantR[q] = 0; this.gCatch[q] = 0; this.gLabel[q] = Infinity;
       this.gUnpl[q] = 0; this.gUnplX[q] = 0; this.gUnplZ[q] = 0; this.gOvIn[q] = 0;
       this.gGrp[q] = q; this.gGSp[q] = 0; this.gCars[q] = 0; this.gRidersM[q] = 0;
       const id = this.gBid[q];
@@ -2509,25 +2503,37 @@ export class TrafficSystem implements SimSystem {
     }
   }
 
-  /** the option of origin o the mode choice sees: the least minutes + price + availability cost (-1 = none) */
+  /**
+   * the option of origin o the mode choice sees: the least minutes + availability cost (-1 = none). r4: no price — the
+   * rationing price only splits the park & ride riders over their options (prAlloc). A price in the mode choice priced
+   * the commuters near a garage with room out of park & ride (the full garages' prices rise with the demand of
+   * commuters elsewhere who have nowhere else to go), so nobody spilled over to it and it stood empty; a full option's
+   * riders now overflow to the groups with room (PH_PROVER) and those that find none re-decide without park & ride
+   */
   private prPick(o: number): number {
     const n = this.oPrN[o], base = o * PR_OPTIONS;
     let best = -1, bc = Infinity;
     for (let k = 0; k < n; k++) {
-      const c = this.prCostOf(base + k);
+      const c = this.prMinOf(base + k);
       if (c < bc) { bc = c; best = k; }
     }
     return best;
   }
 
-  /** choice cost of option i (o x PR_OPTIONS + k): minutes + the group's price + its availability cost */
+  /** choice cost of option i (o x PR_OPTIONS + k) among the origin's options (logit): minutes + the group's price + its
+   *  availability cost */
   private prCostOf(i: number): number {
     return this.oPrT[i] + this.gPrice[this.oPrG[i]] + this.oPrA[i];
   }
 
-  /** the choice weight beyond the minutes of option i: price + availability (split()'s prCost) */
+  /** the mode choice's minutes of option i: minutes + availability cost (no price, see prPick) */
+  private prMinOf(i: number): number {
+    return this.oPrT[i] + this.oPrA[i];
+  }
+
+  /** the choice weight beyond the minutes of option i the mode choice sees: its availability cost (split()'s prCost) */
   private prExtra(i: number): number {
-    return this.gPrice[this.oPrG[i]] + this.oPrA[i];
+    return this.oPrA[i];
   }
 
   // ------------------------------------------------------------------------------------------ ROUNDS
@@ -2910,13 +2916,13 @@ export class TrafficSystem implements SimSystem {
     let accepted = 0;
     for (let o = 0; o < this.oN; o++) {
       if (this.oU[o] < 0.01 || this.candNode[o] >= 0) continue;
-      // (park & ride: the option with the least minutes + price whose group has room)
+      // (park & ride: the option with the least minutes + availability whose group has room)
       const base = o * PR_OPTIONS;
       let opt = -1, bc = Infinity;
       for (let k = 0, n = this.oPrN[o]; k < n; k++) {
         const q = this.oPrG[base + k];
         if (!(this.prRoom(q) > 0.01)) continue;
-        const c = this.prCostOf(base + k);
+        const c = this.prMinOf(base + k);
         if (c < bc) { bc = c; opt = k; }
       }
       const gq = opt >= 0 ? this.oPrG[base + opt] : -1;
@@ -2932,6 +2938,7 @@ export class TrafficSystem implements SimSystem {
       if (open < 0.01) continue;
       let take = Math.min(this.oU[o], open);
       if (viaPr) {
+        this.gWant[this.gGrp[gq]] += take;
         this.gWantR[this.gGrp[gq]] += take;
         const room = this.prRoom(gq);
         if (take > room) { this.prUnplacedAt(gq, o, take - room); take = room; }
@@ -2954,8 +2961,9 @@ export class TrafficSystem implements SimSystem {
 
   /**
    * park & ride riders `want` of origin o: they split over its garage options by a logit on minutes + price
-   * (PR_GARAGE_BETA) and each part takes its group's free room (gWantR: the report's demand = the choice + the riders that
-   * came over from a full option, prRest, or as the overflow, PH_PROVER). Returns the riders placed
+   * (PR_GARAGE_BETA; the price signal gWant counts this choice) and each part takes its group's free room (gWantR: the
+   * report's demand = the choice + the riders that came over from a full option, prRest, or as the overflow, PH_PROVER).
+   * Returns the riders placed
    * (<= want); prAk = riders per option, prDT = their extra minutes over tRef (the minutes of the option the mode split
    * saw). Nothing is committed: the caller re-decides the riders that did not fit (prRest) and adds the placed ones
    * (addParkRides) with the rest of the piece.
@@ -2974,6 +2982,7 @@ export class TrafficSystem implements SimSystem {
     for (let k = 0; k < n; k++) {
       const q = this.oPrG[base + k], r = this.gGrp[q];
       const y = want * w[k] / ws;
+      this.gWant[r] += y;
       this.gWantR[r] += y;
       const room = this.prRoom(q);
       const t = y < room ? y : room;
@@ -3005,13 +3014,16 @@ export class TrafficSystem implements SimSystem {
     let lastTP = this.mTP;
     const base = o * PR_OPTIONS, n = this.oPrN[o], a = this.prAk, w = this.prWk;
     for (let lvl = 0; lvl < n && rest > 1e-9; lvl++) {
-      let kr = -1, bc = Infinity;
+      // (the mode choice sees the option with room with the least minutes + availability; its riders split over the
+      // options with room by the price-weighted logit)
+      let kr = -1, bc = Infinity, bm = Infinity;
       for (let k = 0; k < n; k++) {
         w[k] = -1;
         if (!(this.prRoom(this.oPrG[base + k]) - a[k] > 1e-6)) continue;
-        const c = this.prCostOf(base + k);
+        const c = this.prCostOf(base + k), cm = this.prMinOf(base + k);
         w[k] = c;
-        if (c < bc) { bc = c; kr = k; }
+        if (c < bc) bc = c;
+        if (cm < bm) { bm = cm; kr = k; }
       }
       if (kr < 0) break;
       const tr = this.oPrT[base + kr];
@@ -3070,8 +3082,8 @@ export class TrafficSystem implements SimSystem {
 
   /**
    * r4: u park & ride riders of origin o found no room at any option (the overflow included): the unplaced demand of
-   * the options they wanted (by their logit weights) — the price signal — and the centre of their homes (report: where
-   * another garage would take them)
+   * the options they wanted (by their logit weights) and the centre of their homes (report: where another garage would
+   * take them)
    */
   private prUnplaced(o: number, u: number): void {
     if (!(u > 1e-9)) return;
@@ -3298,7 +3310,7 @@ export class TrafficSystem implements SimSystem {
         const room = this.prRoom(q);
         if (!(room > 1e-6) || !(this.gLabel[q] < PR_LIMIT) || this.gBoard[q] < 0 || this.gStop[q] < 0) continue;
         const T = PR_HOME_MIN + alt[s] + this.gLabel[q];
-        if (!(T <= MAX_COMMUTE) || !this.splitFor(o, T, this.gPrice[q])) continue;
+        if (!(T <= MAX_COMMUTE) || !this.splitFor(o, T, 0)) continue;
         const want = y * this.mTP;
         const fit = want < room ? want : room;
         const p = want > 1e-12 ? y * Math.min(1, fit / want) : y;
@@ -3570,9 +3582,9 @@ export class TrafficSystem implements SimSystem {
     }
     // WP7-8 park & ride: car legs along the K-label P&R forest (the overflow's were committed by PH_PROVER); per garage
     // the cars / riders / demand of this assignment (the reports and stats.transitFleet.parkRide read the same numbers)
-    // and the rationing price for the next one: tatonnement on (riders placed + riders turned away with nowhere to go) /
-    // room — a full group whose turned-away riders all found room elsewhere eases (PR_FULL_EASE), idle room lowers it to
-    // 0; a group that is nobody's option has no demand to ration: 0
+    // and the rationing price for the next one: tatonnement on wanted (the logit choice) / room (demand beyond the room
+    // raises it, idle room lowers it to 0; a group that is nobody's option has no demand to ration: 0). The price only
+    // splits the riders over their options (r4: the mode choice does not see it, see prPick)
     if (this.gPrN > 0 && this.prRiders > 0 && this.SPK.graphVersion === this.road.version) this.commitK(this.SPK, this.prAcc);
     else if (this.prAcc.length > 0) this.prAcc.fill(0, 0, Math.min(this.prAcc.length, this.SPK.K * this.road.n));
     this.garageLoad.clear();
@@ -3601,8 +3613,7 @@ export class TrafficSystem implements SimSystem {
       if (!pr) { this.garagePrice.delete(id); continue; }
       this.garageLoad.set(id, this.gCars[q]);
       if (!(this.gCatch[r] >= 1)) { this.garagePrice.delete(id); continue; }
-      const roomR = Math.max(1, this.gGSp[r]) * CAR_OCCUPANCY, placed = this.gRiders[r];
-      const x = un > 0.5 ? (placed + un) / roomR : placed >= 0.97 * roomR ? PR_FULL_EASE : placed / roomR;
+      const x = this.gWant[r] / CAR_OCCUPANCY / Math.max(1, this.gGSp[r]);
       const p = this.gPrice[q] + PR_PRICE_STEP * Math.log(x < 0.25 ? 0.25 : x > 4 ? 4 : x);
       const pc = p < 0.01 ? 0 : p > PR_PRICE_MAX ? PR_PRICE_MAX : p;
       if (pc > 0) this.garagePrice.set(id, pc); else this.garagePrice.delete(id);
