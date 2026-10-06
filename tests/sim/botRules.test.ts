@@ -208,16 +208,20 @@ describe('bot: facilities', () => {
  *   BALANCE=1 npx vitest run tests/sim/botRules.test.ts -t balance
  * The bot on a 128 map for 15 years (seed 7): population >= 0.9 x the phase-0 baseline; from year 10 the elementary need
  * is >= 85 % served with < 5 % of the kids unreached, counted per home (SimBot.homeNeed: a deep lot whose front door is
- * in a school's catchment is served — services.ts stats.needs still counts the back rows of deep lots as unreached,
- * see the WP6a report); <= 3 % of the growables abandoned in any year; a prison once the jail overflows (overflow <= 0.2
- * from year 8). WP6b moves / extends this gate in tests/sim/balance.test.ts (256 x 60, the partB baseline set).
+ * in a school's catchment is served), and the per-cell stats.needs that migration, approval and the advisors read agrees
+ * with it within 0.05 — this last check needs services.ts to count a lot by its footprint (routed item 1, owner lead /
+ * WP6b: scratchpad simB/review-WP6a-sim/fixes/services_needs_stats.patch; without it stats.needs still counts the back
+ * rows of deep lots as unreached: 0.51 served / 0.45 unreached per cell vs 0.91 / 0.02 per home in 2015); <= 3 % of the
+ * growables abandoned in any year; a prison once the jail overflows (overflow <= 0.2 from year 8). WP6b moves / extends
+ * this gate in tests/sim/balance.test.ts (256 x 60, the partB baseline set).
  */
 describe.skipIf(process.env.BALANCE !== '1')('balance (slow, BALANCE=1)', () => {
   it('128 x 15 seed 7: population, elementary schools per home, abandonment, justice', { timeout: 7_200_000 }, async () => {
     const b = new SimBot({ size: 128, years: 15, seed: 7, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false }, await botSystems(false));
-    const yearly: { year: number; pop: number; served: number; unreached: number; abandoned: number; overflow: number }[] = [];
+    const yearly: { year: number; pop: number; served: number; unreached: number; cellServed: number; cellUnreached: number; abandoned: number; overflow: number }[] = [];
     b.run(15, (r) => {
       const n = b.homeNeed('elementary');
+      const c = b.st.stats.needs?.elementary;
       let grow = 0, ab = 0;
       for (const o of b.st.buildings.values()) {
         if (o.flags & BF.Plopped) continue;
@@ -226,6 +230,7 @@ describe.skipIf(process.env.BALANCE !== '1')('balance (slow, BALANCE=1)', () => 
       }
       yearly.push({
         year: r.year, pop: r.pop, served: n.need > 0 ? n.served / n.need : 1, unreached: n.need > 0 ? n.unreached / n.need : 0,
+        cellServed: c && c.need > 0 ? c.served / c.need : 1, cellUnreached: c && c.need > 0 ? c.unreached / c.need : 0,
         abandoned: grow ? ab / grow : 0, overflow: b.st.stats.justice?.overflow ?? 0,
       });
     });
@@ -234,6 +239,9 @@ describe.skipIf(process.env.BALANCE !== '1')('balance (slow, BALANCE=1)', () => 
     for (const y of yearly.slice(9)) {
       expect(y.served, `elementary served per home ${y.year}`).toBeGreaterThanOrEqual(0.85);
       expect(y.unreached, `kids unreached per home ${y.year}`).toBeLessThan(0.05);
+      // (what the advisors, approval and migration read: needs services.ts's footprint-aware stats, see above)
+      expect(Math.abs(y.cellServed - y.served), `stats.needs elementary served per cell vs per home ${y.year}`).toBeLessThanOrEqual(0.05);
+      expect(Math.abs(y.cellUnreached - y.unreached), `stats.needs kids unreached per cell vs per home ${y.year}`).toBeLessThanOrEqual(0.05);
     }
     for (const y of yearly) expect(y.abandoned, `abandoned ${y.year}`).toBeLessThanOrEqual(0.03);
     for (const y of yearly.slice(7)) expect(y.overflow, `justice overflow ${y.year}`).toBeLessThanOrEqual(0.2);

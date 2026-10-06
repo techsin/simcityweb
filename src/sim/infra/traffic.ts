@@ -485,8 +485,9 @@ export class TrafficSystem implements SimSystem {
   /** the stop (stop key: building id, or -1 - cell) a park & ride garage used last (stop hysteresis) [persisted] */
   private garageStop = new Map<number, number>();
   /** last completed assignment per garage id (report): riders, wanted (its share of its group's), catchment workers,
-   *  state, garages pooled with it, spaces kept for the block */
-  private garageLast = new Map<number, { riders: number; want: number; catchment: number; state: number; pooled: number; reserve: number }>();
+   *  state, garages pooled with it, spaces kept for the block, minutes from parking to the job by transit (Infinity:
+   *  no park & ride) */
+  private garageLast = new Map<number, { riders: number; want: number; catchment: number; state: number; pooled: number; reserve: number; transit: number }>();
   /** free spaces per garage id in the last parking update (report: the pressure around it with and without them) */
   private garageFree = new Map<number, number>();
   /** riders placed at option 1 / 2 by the last prAlloc, and their extra minutes (riders x (t2 - t1)) */
@@ -918,12 +919,14 @@ export class TrafficSystem implements SimSystem {
    * 'noStop' | 'noTransit' | 'downtown' | 'parkRide'), pooled = other park & ride garages at its stop sharing its room
    * (cars / riders / wanted are its share of the group's), reserve = spaces it keeps for the businesses around it (their
    * block is short of parking: park & ride gets spaces - reserve), relief = the parking pressure over its walk area
-   * with and without its free spaces (last parking update; undefined before one); null = not seen by an assignment yet
+   * with and without its free spaces (last parking update; undefined before one), transitMin = minutes from parking
+   * here to the job by transit (park, walk to the stop, wait, ride; undefined: no park & ride — a park & ride garage
+   * whose transitMin >= PR_LIMIT is no option for anybody); null = not seen by an assignment yet
    */
   garageInfo(id: number): {
     stopId: number; parkRide: number; spaces: number; walkMin: number; ride: boolean;
     riders?: number; wanted?: number; catchment?: number; price?: number; state?: string; pooled?: number;
-    reserve?: number; relief?: { with: number; without: number };
+    reserve?: number; relief?: { with: number; without: number }; transitMin?: number;
   } | null {
     for (let g = 0; g < this.gN; g++) {
       if (this.gBid[g] !== id) continue;
@@ -939,6 +942,7 @@ export class TrafficSystem implements SimSystem {
         price: this.garagePrice.get(id) ?? 0, state: GARAGE_STATE[state] ?? 'noStop', pooled: last?.pooled ?? 0,
         reserve: last?.reserve ?? 0,
         relief,
+        transitMin: last && Number.isFinite(last.transit) ? last.transit : undefined,
       };
     }
     return null;
@@ -2649,7 +2653,7 @@ export class TrafficSystem implements SimSystem {
       this.gRidersM[q] = this.gRiders[r] * share;
       this.garageLast.set(id, {
         riders: this.gRidersM[q], want: this.gWantR[r] * share, catchment: this.gCatch[r], state: this.gState[q], pooled: members[r] - 1,
-        reserve: pr ? this.gRes[q] : 0,
+        reserve: pr ? this.gRes[q] : 0, transit: pr ? this.gLabel[q] : Infinity,
       });
       if (!pr) { this.garagePrice.delete(id); continue; }
       this.garageLoad.set(id, this.gCars[q]);

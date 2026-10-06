@@ -13,12 +13,13 @@
  * matrix test). Road-flag bus stops (netFlags bit 4) are legacy: no report.
  * Report rules (r1, r2): a closed (burnt / abandoned) facility says so first; riders are rides (walkers who would board
  * and alight at the same stop are counted apart, with a hint); a long bus wait blames the fleet only when its pool is
- * short (rho < 1), else the stop's crowding, and names the depot's cause (transit funding below 75 %, no power); crowded
- * stops / stations / terminals name the fix; a garage names its real state (no road, no stop — a neutral note where it
- * serves businesses —, a stop without transit, a downtown stop, park & ride with cars / room / riders / demand of the
- * last assignment — the numbers stats.transitFleet sums — and the spaces it keeps for a parking-short block); an idle
- * park & ride garage says why from its reach (no homes within the drive, or the garage those homes use); the pressure
- * around a garage credits its own relief ("(X% without it)").
+ * short (rho < 1), else the stop's crowding, and names the depot's cause (a transit strike, transit funding below 75 %,
+ * no power); crowded stops / stations / terminals name the fix; a garage names its real state (no road, no stop — a
+ * neutral note where it serves businesses —, a stop without transit, a downtown stop, park & ride with cars / room /
+ * riders / demand of the last assignment — the numbers stats.transitFleet sums — and the spaces it keeps for a
+ * parking-short block); an idle park & ride garage says why (transit from its stop takes PR_LIMIT minutes or more, or
+ * from its reach: no homes within the drive, or the garage those homes use); the pressure around a garage credits its
+ * own relief ("(X% without it)").
  * Every function accepts a sim without the traffic system (infra-less tests) and returns the documented stub value.
  */
 import type { Building, CityState } from '../CityState';
@@ -26,13 +27,14 @@ import type { Simulation } from '../Simulation';
 import { BF } from '../CityState';
 import { Network } from '../../core/types';
 import { getDef } from '../catalog';
+import { onStrike } from '../economy/budget';
 import type { FacilityLine } from './facilities';
 import { Fam, Transit, centerCell, infoOf, isFunctional } from './common';
 import { TRAFFIC_OF_STATE } from './transit';
 import type { TrafficSystem } from './traffic';
 import {
   BUS_RHO_MAX, CAR_OCCUPANCY, DEPOT_BUSES, DEPOT_RANGE, FERRY_MAX_CELLS, FERRY_PARTNERS, FREIGHT_SINK_MIN, GARAGE_SPACES,
-  GARAGE_WALK_RADIUS, MINIBUS_FLEET, PR_CAR_LEG_MAX, PR_STOP_RADIUS, RAMP_BY_NET, RIDERS_PER_BUS, STOP_CAP_BUS, STOP_CAP_FERRY,
+  GARAGE_WALK_RADIUS, MINIBUS_FLEET, PR_CAR_LEG_MAX, PR_LIMIT, PR_STOP_RADIUS, RAMP_BY_NET, RIDERS_PER_BUS, STOP_CAP_BUS, STOP_CAP_FERRY,
   STOP_CAP_SUBWAY, STOP_CAP_TRAIN, STOP_WALK_RADIUS, WAIT_BUS, WAIT_FERRY, WAIT_SUBWAY, WAIT_TRAIN,
 } from './params';
 
@@ -116,14 +118,18 @@ function walkersHint(walkers: number, kind: 'stop' | 'station' | 'terminal', rea
 }
 
 /**
- * why a depot runs fewer buses than it could: transit funding below 75 % (budget) or no power; null = neither (the
- * stops' report names it instead of a generic "not enough buses")
+ * why a depot runs fewer buses than it could: a transit strike (budget cuts), transit funding below 75 % (budget) or no
+ * power; null = none (the stops' report names it instead of a generic "not enough buses")
  */
-function depotCause(st: CityState, depot: Building, d: { fleet: number } | null): { kind: 'funding' | 'power'; short: string; fix: string; text: string } | null {
+function depotCause(st: CityState, depot: Building, d: { fleet: number } | null): { kind: 'strike' | 'funding' | 'power'; short: string; fix: string; text: string } | null {
   const f = st.budget?.funding?.transit;
   const fund = typeof f === 'number' && Number.isFinite(f) ? f : 100;
   const fleet = d ? d.fleet : DEPOT_BUSES;
   const name = nameOf(st, depot.id);
+  if (onStrike(st, 'transit')) {
+    return { kind: 'strike', short: `on strike — no buses run (transit funding ${Math.round(fund)} %)`, fix: 'Raise transit funding in the budget to end the strike',
+      text: `${name} is on strike over budget cuts — no buses run until it ends; raise transit funding` };
+  }
   if (fund < 75) {
     const short = `runs ${plural(fleet, 'bus', 'buses')} (transit funding ${Math.round(fund)} %)`;
     return { kind: 'funding', short, fix: 'Raise transit funding in the budget', text: `${name} ${short} — raise it in the budget` };
@@ -136,17 +142,20 @@ function depotCause(st: CityState, depot: Building, d: { fleet: number } | null)
 }
 
 /**
- * why a park & ride garage carries nobody: it is an option but transit from its stop is slower than driving, or it is
- * nobody's option — no homes within the drive, or the homes there use a faster garage (TrafficSystem.garageReach)
+ * why a park & ride garage carries nobody: transit from its stop takes PR_LIMIT minutes or more (no option for
+ * anybody), it is an option but transit is slower than driving, or it is nobody's option — no homes within the drive,
+ * the homes there use a faster garage (TrafficSystem.garageReach), or the drive here plus the ride takes too long
  */
-function idleGarageHint(sim: Simulation, tr: TrafficSystem, b: Building, catchment: number, stopName: string): string {
+function idleGarageHint(sim: Simulation, tr: TrafficSystem, b: Building, catchment: number, stopName: string, transitMin: number | undefined): string {
   const st = sim.state;
-  if (catchment >= 1) return `Nobody switches: transit from ${stopName} is slower than driving — link it to a subway / train line or a better-served stop`;
+  const fix = 'link it to a subway / train line or a better-served stop';
+  if (transitMin !== undefined && transitMin >= PR_LIMIT) return `Nobody switches: transit from ${stopName} takes ${fmt(transitMin)} min to the jobs — too slow to beat driving; ${fix}`;
+  if (catchment >= 1) return `Nobody switches: transit from ${stopName} is slower than driving — ${fix}`;
   const reach = tr.garageReach(b.id);
   if (reach && reach.workers < 1) return `No homes within a ${PR_CAR_LEG_MAX}-minute drive — build garages where commuters live`;
   const via = reach && reach.via >= 0 ? st.buildings.get(reach.via) : undefined;
   if (via) return `Commuters within a ${PR_CAR_LEG_MAX}-minute drive use the ${nameOf(st, via.id)} ${dist(st, b, via)} tiles ${compass(st, b, via)} — it gets them to their jobs faster`;
-  return reach ? 'Commuters within reach have faster park & ride options' : 'Not picked yet — next traffic update';
+  return reach ? `Nobody switches: the drive here plus transit from ${stopName} takes longer than driving to work — ${fix}` : 'Not picked yet — next traffic update';
 }
 
 /** transport part of a facility's inspector report; null = not a transport facility */
@@ -217,7 +226,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
       lines.push({ key: 'riders', label: 'Riders', value: `${fmt(d.riders)}/day` });
       if (d.stops === 0) warnings.push(`No bus stops within ${DEPOT_RANGE} road tiles — place stops next to roads nearby`);
       const cause = depotCause(st, b, d);
-      if (cause && cause.kind === 'funding') warnings.push(cause.text);
+      if (cause && cause.kind !== 'power') warnings.push(cause.text);
       else if (d.need > 1.1 * d.fleet) warnings.push(`Its stops need ${fmt(d.need)} buses — build another depot or raise transit funding`);
       if (infoOf(st, b).usesPower && (b.flags & BF.Powered) === 0) warnings.push('No power: half the buses stay in the garage');
       break;
@@ -302,7 +311,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
               ? `Full — ${fmt(wantedCars)} cars wanted; this block needs its own parking: for more park & ride, build garages by stops nearer homes`
               : `Full — ${fmt(wantedCars)} cars wanted: build another garage by a stop` });
           lines.push({ key: 'switched', label: 'Commuters switched', value: `${fmt(ridersG)}/day to ${stopName}`, status: ridersG < 1 ? 'warn' : undefined,
-            hint: ridersG < 1 ? idleGarageHint(sim, tr, b, g.catchment ?? 0, stopName) : undefined });
+            hint: ridersG < 1 ? idleGarageHint(sim, tr, b, g.catchment ?? 0, stopName, g.transitMin) : undefined });
         }
         if (reserve >= 1) {
           lines.push({ key: 'kept', label: 'Kept for the block', value: `${plural(reserve, 'space', 'spaces')} — it is short of parking`,

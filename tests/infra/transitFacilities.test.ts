@@ -17,6 +17,9 @@ import { newSim, newState, place, roadLine, stressCity } from './cityGen';
 import { schedulerOf } from '../../src/sim/infra/scheduler';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import * as FAC from '../../src/sim/infra/facilities';
+import { econData } from '../../src/sim/economy/runtime';
+import { RoadGraph } from '../../src/sim/infra/graph';
+import { Search2, Seeds } from '../../src/sim/infra/search';
 
 function cycles(sim: Simulation, n: number): TrafficSystem {
   const tr = getTraffic(sim)!;
@@ -130,6 +133,12 @@ describe('WP7-5 bus fleet and depots', () => {
     expect(stop.lines.find((l) => l.key === 'depot')!.value).toMatch(/Bus Depot · \d+ tiles away — runs 0 buses \(transit funding 0 %\)/);
     expect(stop.lines.find((l) => l.key === 'wait')!.hint).toMatch(/Not enough buses: Bus Depot runs 0 buses \(transit funding 0 %\)/);
     expect(transportFacilityReport(sim, st.buildings.get(depotId)!)!.warnings.join()).toMatch(/transit funding 0 %/);
+    // a transit strike (budget cuts) names the strike
+    econData(st).strikes.transit = 2;
+    const stop2 = transportFacilityReport(sim, st.buildings.get(homeStop)!)!;
+    expect(stop2.lines.find((l) => l.key === 'depot')!.value).toMatch(/Bus Depot · \d+ tiles away — on strike — no buses run/);
+    expect(stop2.lines.find((l) => l.key === 'wait')!.hint).toMatch(/Not enough buses: Bus Depot is on strike over budget cuts/);
+    expect(transportFacilityReport(sim, st.buildings.get(depotId)!)!.warnings.join()).toMatch(/on strike/);
   });
 });
 
@@ -534,6 +543,17 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
     expect(hint(west)).toMatch(/Commuters within a 12-minute drive use the Parking Garage 27 tiles E/);
     expect(tr.garageReach(east)!.workers).toBe(0);
     expect(hint(east)).toMatch(/No homes within a 12-minute drive/);
+    // the only garage of a gridlocked town (3 x homes / jobs on one avenue), by a bus stop: its buses take over PR_LIMIT
+    // minutes to the jobs, so it is nobody's option — its report says so, not "faster options elsewhere"
+    const jam = prTown([], 3).st;
+    place(jam, 'tr_bus_stop', 56, 69);
+    place(jam, 'tr_bus_stop', 165, 69);
+    const slow = place(jam, 'tr_parking_garage', 57, 68).id;
+    const simJ = newSim(jam);
+    const trJ = cycles(simJ, 4);
+    expect(trJ.garageInfo(slow)!.state).toBe('parkRide');
+    expect(trJ.garageInfo(slow)!.transitMin!).toBeGreaterThan(40);
+    expect(transportFacilityReport(simJ, jam.buildings.get(slow)!)!.lines.find((l) => l.key === 'switched')!.hint).toMatch(/Nobody switches: transit from Bus Stop takes \d+ min to the jobs — too slow to beat driving/);
   });
 });
 
@@ -737,6 +757,117 @@ describe('WP7-8 car-less residents (WP1-4)', () => {
     expect(r.carless!).toBeGreaterThan(0.2);
     expect(r.carlessMin!).toBeGreaterThan(3);
     expect(r.carlessMin!).toBeLessThanOrEqual(12.01);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+describe('WP7-8 two-label search (park & ride options: the two best garage groups per node)', () => {
+  /** a 41 x 41 grid town (roads every 4 cells, avenues every 12) with deterministic congested times (1-3 x free flow) */
+  function grid(): { g: RoadGraph; time: Float32Array } {
+    const st = newState(41);
+    for (let k = 0; k <= 40; k += 4) {
+      const t = k % 12 === 0 ? Network.Avenue : Network.Road;
+      roadLine(st, 0, k, 40, k, t);
+      roadLine(st, k, 0, k, 40, t);
+    }
+    const g = new RoadGraph();
+    g.build(st);
+    const time = new Float32Array(g.n);
+    let r = 7;
+    for (let v = 0; v < g.n; v++) { r = (r * 1103515245 + 12345) & 0x7fffffff; time[v] = g.t0[v] * (1 + 2 * (r / 0x7fffffff)); }
+    return { g, time };
+  }
+  // 8 seeds (garage road entries) of 6 groups (two groups with 2 entries), labels 0-4 min
+  const SEED = [[0, 0.5], [37, 2.0], [140, 0.0], [260, 3.1], [300, 1.2], [455, 4.0], [610, 0.7], [770, 2.6]] as const;
+  const GROUP = [0, 0, 1, 2, 2, 3, 4, 5];
+  function seeds(g: RoadGraph): Seeds {
+    const s = new Seeds();
+    SEED.forEach(([node, label], id) => s.push(node % g.n, label, id));
+    return s;
+  }
+  /** exact per-group labels (Dijkstra, O(n^2)): minutes to the group's best seed along congested times */
+  function exact(g: RoadGraph, time: Float32Array, gr: number): Float64Array {
+    const n = g.n, d = new Float64Array(n).fill(Infinity), done = new Uint8Array(n);
+    SEED.forEach(([node, label], id) => { if (GROUP[id] === gr) d[node % n] = Math.min(d[node % n], label); });
+    for (;;) {
+      let u = -1;
+      for (let v = 0; v < n; v++) if (!done[v] && d[v] < Infinity && (u < 0 || d[v] < d[u])) u = v;
+      if (u < 0) break;
+      done[u] = 1;
+      for (let k = 0; k < 4; k++) {
+        const v = g.rev[u * 4 + k];
+        if (v < 0 || done[v]) continue;
+        const nd = d[u] + 0.5 * (time[u] + time[v]);
+        if (nd < d[v]) d[v] = nd;
+      }
+    }
+    return d;
+  }
+
+  it('matches the exact two best groups per node (within one bucket width); chunked runs are identical', () => {
+    const { g, time } = grid();
+    const M = 3, tol = 0.05;
+    const S = new Search2();
+    S.start(g, g.rev, time, seeds(g), GROUP, 200, null, Infinity, M);
+    expect(S.run(Infinity)).toBe(true);
+    const ex = [0, 1, 2, 3, 4, 5].map((gr) => exact(g, time, gr));
+    let checked = 0, two = 0;
+    for (let v = 0; v < g.n; v++) {
+      const c = ex.map((d, gr) => ({ d: d[v], gr })).filter((x) => x.d < Infinity).sort((a, b) => a.d - b.d);
+      const want = c.length === 0 ? 0 : c.length > 1 && c[1].d <= c[0].d + M ? 2 : 1;
+      const got = S.cnt[v];
+      // (a second label right at the margin may fall on either side of it)
+      if (want === 2 || got === 2) { if (c.length > 1 && Math.abs(c[1].d - (c[0].d + M)) < tol) continue; }
+      expect(got, `labels at node ${v}`).toBe(want);
+      const found = [0, 1].slice(0, got).map((k) => ({ d: S.dist[2 * v + k], gr: S.grp[2 * v + k] })).sort((a, b) => a.d - b.d);
+      for (let k = 0; k < got; k++) {
+        expect(Math.abs(found[k].d - c[k].d), `label ${k} at node ${v}`).toBeLessThanOrEqual(tol);
+        // the group is the exact one unless another group is within a bucket width of it
+        const clear = c.every((x, j) => j === k || Math.abs(x.d - c[k].d) > tol);
+        if (clear) expect(found[k].gr).toBe(c[k].gr);
+      }
+      checked++;
+      if (got === 2) two++;
+    }
+    console.log(`two-label search: ${g.n} nodes, ${checked} checked, ${two} with a second group, ${S.settled} states`);
+    expect(two).toBeGreaterThan(g.n / 4);
+    // resumable: the same search in chunks of 97 states (spread over scheduler steps) is identical
+    const S2 = new Search2();
+    S2.start(g, g.rev, time, seeds(g), GROUP, 200, null, Infinity, M);
+    let steps = 0;
+    while (!S2.run(97)) steps++;
+    expect(steps).toBeGreaterThan(5);
+    expect(S2.settled).toBe(S.settled);
+    expect(Array.from(S2.order.subarray(0, S2.settled))).toEqual(Array.from(S.order.subarray(0, S.settled)));
+    for (let k = 0; k < S.settled; k++) {
+      const s = S.order[k];
+      expect(S2.dist[s]).toBe(S.dist[s]);
+      expect(S2.src[s]).toBe(S.src[s]);
+      expect(S2.next[s]).toBe(S.next[s]);
+    }
+  });
+
+  it('a car leg beyond the free-flow limit gets no label; labels follow their parent chain', () => {
+    const { g, time } = grid();
+    const FF = 1.5;
+    const all = new Search2(), lim = new Search2();
+    all.start(g, g.rev, time, seeds(g), GROUP, 200, null, Infinity, 3);
+    all.run(Infinity);
+    lim.start(g, g.rev, time, seeds(g), GROUP, 200, null, FF, 3);
+    lim.run(Infinity);
+    const ex = [0, 1, 2, 3, 4, 5].map((gr) => exact(g, time, gr));
+    for (let k = 0; k < lim.settled; k++) {
+      const s = lim.order[k], v = s >> 1, p = lim.next[s];
+      expect(lim.ff[s]).toBeLessThanOrEqual(FF + 1e-6);
+      // never better than the group's unconstrained optimum
+      expect(lim.dist[s]).toBeGreaterThanOrEqual(ex[lim.grp[s]][v] - 1e-4);
+      if (p < 0) continue;
+      const u = p >> 1;
+      expect(lim.grp[p]).toBe(lim.grp[s]);
+      expect(lim.dist[s]).toBeCloseTo(lim.dist[p] + 0.5 * (time[u] + time[v]), 4);
+      expect(lim.ff[s]).toBeCloseTo(lim.ff[p] + 0.5 * (g.t0[u] + g.t0[v]), 4);
+    }
+    expect(lim.settled).toBeLessThan(all.settled);
   });
 });
 
