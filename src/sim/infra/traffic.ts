@@ -44,7 +44,7 @@
  *  P&R        PH_PARKRIDE: K-label reverse road search (search.ts SearchK, K = PR_OPTIONS) from park & ride garages
  *             (garage within PR_STOP_RADIUS of an attached stop whose path rides; it keeps that stop unless another is
  *             clearly faster, PR_STOP_KEEP, and stays park & ride while under PR_DOWNTOWN_SHARE of its recent assignments
- *             ride nothing) labelled with the stop's transit minutes (no price: the option sets do not move with the
+ *             ride nothing — a walk within PR_DOWNTOWN_TIE minutes of its last ride counts as a ride) labelled with the stop's transit minutes (no price: the option sets do not move with the
  *             prices): every origin gets its PR_OPTIONS fastest garage groups within PR_CAR_LEG_MAX free-flow minutes
  *             and PR_OPTION_MARGIN minutes of its fastest. The transit option is min(walk to a stop, the best park &
  *             ride option by minutes + price); its park & ride riders split over the options (logit on minutes +
@@ -106,7 +106,7 @@ import {
   PARKING_BLEND, PARKING_MIN, PARKING_SHOP_W, PR_CAR_LEG_MAX, PR_HOME_MIN, PR_LEG_SEARCH, PR_LIMIT, PR_PARK_MIN, PR_PRICE_MAX,
   PR_PRICE_STEP, PR_STOP_RADIUS, GARAGE_GROUP_CELLS, RAMP_ALPHA, RAMP_BY_NET, RAMP_CAP, RAMP_MAX_FACTOR, RAMP_MSA_MIN, RIDERS_PER_BUS,
   STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRUCK_LOCAL_FACTOR, WAIT_FERRY, PR_GARAGE_BETA, PR_RESERVE_FULL, PR_RESERVE_SMOOTH, PR_RESERVE_SPREAD, PR_STOP_KEEP,
-  PR_DOWNTOWN_SHARE, PR_DOWNTOWN_SMOOTH, PR_OPTIONS, PR_OPTION_MARGIN, PR_OPTION_TAPER, PR_RESERVE_MIN,
+  PR_DOWNTOWN_SHARE, PR_DOWNTOWN_SMOOTH, PR_DOWNTOWN_TIE, PR_OPTIONS, PR_OPTION_MARGIN, PR_OPTION_TAPER, PR_RESERVE_MIN,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
@@ -547,6 +547,9 @@ export class TrafficSystem implements SimSystem {
   /** park & ride garages whose stop's best path rode nothing lately: the smoothed share of such assignments
    *  (PR_DOWNTOWN_SMOOTH; it stays park & ride below PR_DOWNTOWN_SHARE) [persisted] */
   private garageDown = new Map<number, number>();
+  /** a park & ride garage's minutes from its stop on its last riding path (the downtown near-tie test, PR_DOWNTOWN_TIE;
+   *  not persisted: after a load the first walk-only assignment counts as one) */
+  private garageRideT = new Map<number, number>();
   /** last completed assignment per garage id (report): riders, wanted (its share of its group's), catchment workers,
    *  state, garages pooled with it, spaces kept for the block, minutes from parking to the job by transit (Infinity:
    *  no park & ride) */
@@ -1823,7 +1826,7 @@ export class TrafficSystem implements SimSystem {
       const res = Math.max(0, Math.min(this.gSpaces[q], this.garageReserve.get(id) ?? 0));
       this.gRes[q] = res >= PR_RESERVE_MIN * this.gSpaces[q] ? res : 0;
       this.gState[q] = GARAGE_NO_ROAD;
-      if (!b || this.gEntC[q] === 0) { this.garageStop.delete(id); this.garageDown.delete(id); continue; }
+      if (!b || this.gEntC[q] === 0) { this.garageStop.delete(id); this.garageDown.delete(id); this.garageRideT.delete(id); continue; }
       this.gState[q] = GARAGE_NO_STOP;
       const c = centerCell(st, b), x = c % N, z = (c - x) / N;
       const half = Math.max(b.w, b.d) >> 1;
@@ -1843,7 +1846,7 @@ export class TrafficSystem implements SimSystem {
       if (this.gStop[q] >= 0) { prN++; key += id + ':' + cand + ','; this.gState[q] = GARAGE_NO_TRANSIT; }
       // (no stop within reach: no park & ride stop to keep — PH_PARKRIDE, which drops it otherwise, is skipped when no
       // garage has a stop)
-      else { this.garageStop.delete(id); this.garageDown.delete(id); }
+      else { this.garageStop.delete(id); this.garageDown.delete(id); this.garageRideT.delete(id); }
     }
     this.gPrN = prN;
     this.prKeyNow = key;
@@ -2079,7 +2082,7 @@ export class TrafficSystem implements SimSystem {
       this.gBoard[q] = -1;
       this.gRide[q] = 0;
       const id = this.gBid[q];
-      if (this.gState[q] < GARAGE_NO_TRANSIT) { this.garageStop.delete(id); this.garageDown.delete(id); continue; } // no road entry / no stop within reach
+      if (this.gState[q] < GARAGE_NO_TRANSIT) { this.garageStop.delete(id); this.garageDown.delete(id); this.garageRideT.delete(id); continue; } // no road entry / no stop within reach
       const c = this.gCell[q], x = c % N, z = (c - x) / N, half = this.gHalf[q];
       const cnt = this.nearStops(N, x, z, PR_STOP_RADIUS + half);
       const keep = this.garageStop.get(id);
@@ -2112,17 +2115,22 @@ export class TrafficSystem implements SimSystem {
         // assignments ride nothing (smoothed; a stop beside a few jobs: its best path flips between a short ride and a
         // walk with congestion) at its stop, with its last label (riders board there and walk on); then — or a garage
         // that was not park & ride — downtown: the stop's riders walk to jobs beside it (no park & ride); else its transit
-        // reaches no job
-        const w0 = this.garageDown.get(id) ?? 0, down = w0 + PR_DOWNTOWN_SMOOTH * (1 - w0);
+        // reaches no job. A walk not PR_DOWNTOWN_TIE minutes faster than its last ride from there is a near tie: it
+        // counts as a ride (the share decays)
+        const rt = this.garageRideT.get(id);
+        const tie = keep !== undefined && rt !== undefined && woBest >= rt - PR_DOWNTOWN_TIE;
+        const w0 = this.garageDown.get(id) ?? 0, down = tie ? w0 * (1 - PR_DOWNTOWN_SMOOTH) : w0 + PR_DOWNTOWN_SMOOTH * (1 - w0);
         const ks = kwS >= 0 ? kwS : wo, kb = kwS >= 0 ? kwBoard : woBoard;
+        // (its last label; right after a load — no last assignment — its smoothed ranking minutes)
         const last = this.garageLast.get(id);
-        if (keep !== undefined && down < PR_DOWNTOWN_SHARE && ks >= 0 && last && last.state === GARAGE_PR && Number.isFinite(last.transit)) {
-          this.garageDown.set(id, down);
+        const lastT = last ? (last.state === GARAGE_PR ? last.transit : NaN) : this.garageRank.get(id) ?? NaN;
+        if (keep !== undefined && down < PR_DOWNTOWN_SHARE && ks >= 0 && Number.isFinite(lastT)) {
+          if (down > 0.01) this.garageDown.set(id, down); else this.garageDown.delete(id);
           this.gState[q] = GARAGE_PR;
           this.gRide[q] = 1;
           this.gStop[q] = ks;
           this.gWalk[q] = kwS >= 0 ? kwW : woWalk;
-          this.gLabel[q] = last.transit;
+          this.gLabel[q] = lastT;
           this.gBoard[q] = kb;
           this.garageStop.set(id, this.stKey[ks]);
           continue;
@@ -2130,11 +2138,13 @@ export class TrafficSystem implements SimSystem {
         if (wo >= 0) { this.gState[q] = GARAGE_DOWNTOWN; this.gStop[q] = wo; this.gWalk[q] = woWalk; }
         this.garageStop.delete(id);
         this.garageDown.delete(id);
+        this.garageRideT.delete(id);
         continue;
       }
-      // (a ride this assignment: the walk-only share decays)
+      // (a ride this assignment: the walk-only share decays; its minutes are the reference of the near-tie test)
       const wd = (this.garageDown.get(id) ?? 0) * (1 - PR_DOWNTOWN_SMOOTH);
       if (wd > 0.01) this.garageDown.set(id, wd); else this.garageDown.delete(id);
+      this.garageRideT.set(id, best);
       this.gState[q] = GARAGE_PR;
       this.gRide[q] = 1;
       this.gStop[q] = bs;
@@ -3009,10 +3019,10 @@ export class TrafficSystem implements SimSystem {
       if (pc > 0) this.garagePrice.set(id, pc); else this.garagePrice.delete(id);
     }
     if (this.garagePrice.size > this.gN || this.garageReserve.size > this.gN || this.garageStop.size > this.gN || this.garageDown.size > this.gN
-      || this.garageRank.size > this.gN) {
+      || this.garageRank.size > this.gN || this.garageRideT.size > this.gN) {
       const live = new Set<number>();
       for (let q = 0; q < this.gN; q++) live.add(this.gBid[q]);
-      for (const m of [this.garagePrice, this.garageReserve, this.garageStop, this.garageDown, this.garageRank]) for (const id of [...m.keys()]) if (!live.has(id)) m.delete(id);
+      for (const m of [this.garagePrice, this.garageReserve, this.garageStop, this.garageDown, this.garageRank, this.garageRideT]) for (const id of [...m.keys()]) if (!live.has(id)) m.delete(id);
     }
     this.reachCache.clear();
     const ST = this.ST, T = this.tnet!;
@@ -3486,6 +3496,7 @@ export class TrafficSystem implements SimSystem {
     this.garageReserve.clear();
     this.garageStop.clear();
     this.garageDown.clear();
+    this.garageRideT.clear();
     this.garageRank.clear();
     this.stLoadPrev.clear();
     this.stPrPrev.clear();
