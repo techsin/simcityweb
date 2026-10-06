@@ -11,7 +11,7 @@ import { DevType, Network, Zone } from '../../src/core/types';
 import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { Simulation } from '../../src/sim/Simulation';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
-import { ZONE_DEVTYPES, getDef } from '../../src/sim/catalog';
+import { DEV_WEALTH, ZONE_DEVTYPES, getDef } from '../../src/sim/catalog';
 import { conditionBreakdown } from '../../src/sim/economy/population';
 import { sumTerms } from '../../src/sim/explain';
 import type { EconRuntime } from '../../src/sim/economy/runtime';
@@ -360,6 +360,42 @@ describe('desirability: save / load and early-game commute', () => {
     }
     expect(sum / n).toBeLessThan(0.01);
     void d1;
+  });
+
+  it('the coarse demographics grids (customers by wealth, skills, kids) follow the homes daily: a loaded city reads the same grids', { timeout: 300000 }, () => {
+    // homes of each wealth placed on day 40, saved on day 43: the cohort sample runs every 32 days, so with a grid
+    // sample on that cadence the saved game's shops / offices still read the day-32 grids (no residents here) while a
+    // loaded copy rebuilds them at once (grownCity's save / load divergence doubled)
+    const { st, sim, rt } = town(40);
+    const N = st.size;
+    let placed = 0;
+    for (const [id, x0, z0] of [['res_cottage.r1.2', 9, 33], ['res_cottage.r1.2', 11, 33], ['res_cottage.r2.1', 13, 33], ['res_cottage.r2.1', 15, 33], ['res_villa.r3.1', 18, 33], ['res_villa.r3.1', 21, 33]] as const) {
+      const def = getDef(id)!;
+      const [w, d] = def.footprint;
+      let free = true;
+      for (let z = z0; z < z0 + d; z++) for (let x = x0; x < x0 + w; x++) if (st.building[z * N + x] >= 0 || st.network[z * N + x] !== Network.None) free = false;
+      if (!free) continue;
+      placeBuilding(sim, {
+        id: st.nextBuildingId++, def: id, x: x0, z: z0, w, d, rot: 2, variant: 0, pop: def.capacity ?? 4, jobs: 0, capacity: def.capacity ?? 0,
+        wealth: DEV_WEALTH[def.devType!], built: 1, age: 400, flags: BF.Powered | BF.Watered, baseY: 5, health: 0.9, unhappy: 0,
+      });
+      placed++;
+    }
+    expect(placed).toBeGreaterThanOrEqual(4);
+    sim.runDays(3);
+    expect(st.day % 32).not.toBe(0);
+    const copy = deserializeCity(structuredClone(serializeCity(st, { copy: true })) as SerializedCity);
+    const rt2 = rtOf(new Simulation(copy, createSystems()));
+    const rel = (a: Float32Array, b: Float32Array) => {
+      let d = 0, s = 0;
+      for (let q = 0; q < a.length; q++) { d += Math.abs(a[q] - b[q]); s += Math.abs(b[q]); }
+      return s > 0 ? d / s : 0;
+    };
+    let tot = 0;
+    for (let w = 0; w < 3; w++) { tot += rt2.coarsePopW[w].reduce((x, y) => x + y, 0); expect(rel(rt.coarsePopW[w], rt2.coarsePopW[w]), `residents ${'$'.repeat(w + 1)}`).toBeLessThan(0.02); }
+    expect(tot).toBeGreaterThan(0);
+    expect(rel(rt.coarseSkill, rt2.coarseSkill), 'skills').toBeLessThan(0.02);
+    expect(rel(rt.coarseKids, rt2.coarseKids), 'kids').toBeLessThan(0.02);
   });
 
   it('before traffic has an average commute, a cell with no road route scores a long commute, not the average', () => {
