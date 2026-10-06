@@ -142,7 +142,11 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
     const def = getDef(b.def);
     if (!def) continue;
     let up = def.upkeep ?? 0;
-    if (def.powerOut && def.category === 'power') up *= UTIL_FIXED + (1 - UTIL_FIXED) * powerUtil;
+    if (def.powerOut && def.category === 'power') {
+      up *= UTIL_FIXED + (1 - UTIL_FIXED) * powerUtil;
+      // Clean Power Act: scrubbers on the plants that smoke (SIM_DEPTH_SPEC C1 "plant upkeep +15 %")
+      if ((def.pollution?.air ?? 0) > 0) up *= ordinanceEffect(st, 'upkeep.power.smoke');
+    }
     else if (def.waterOut && def.category === 'water') up *= UTIL_FIXED + (1 - UTIL_FIXED) * waterUtil;
     if (def.service) add(expense, 'service:' + def.service, up * (funding[def.service] ?? 100) / 100);
     else add(expense, 'service:civic', up);

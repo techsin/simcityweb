@@ -97,9 +97,9 @@ function checkInvariants(s: Sys): void {
     expect(owner.get(id), `day ${s.st.day}: fire ${id} is not listed by its incident`).toBe(f.incidentId);
     expect(s.st.buildings.has(id), `day ${s.st.day}: the registry keeps fire ${id} of a removed building`).toBe(true);
   }
-  for (const b of s.st.buildings.values()) {
-    expect((b.flags & BF.Incident) !== 0, `day ${s.st.day}: BF.Incident of building ${b.id} (listed: ${listed.has(b.id)})`).toBe(listed.has(b.id));
-  }
+  const wrong: number[] = [];
+  for (const b of s.st.buildings.values()) if (((b.flags & BF.Incident) !== 0) !== listed.has(b.id)) wrong.push(b.id);
+  expect(wrong, `day ${s.st.day}: buildings whose BF.Incident does not match their listing`).toEqual([]);
 }
 
 /** the scratch reproduction's dense town: 3-deep rows of 1x1 homes / factories between roads every 4 cells, 2 stations */
@@ -309,8 +309,9 @@ describe('fire incidents never list a building twice', () => {
       expect(s.st.day).toBe(1000);
       reignitions.set(seed, n);
     }
-    // the path was exercised (put out, then re-ignited the same day) at least once per seed; if fire tuning changes and
-    // this fails, pick seeds that still re-ignite a just-extinguished building (the scratch search printed them)
+    // the path was exercised (put out, then re-ignited the same day) at least once per seed — today exactly once each,
+    // on days 85 / 86 / 896; if fire tuning changes and this fails, pick seeds that still re-ignite a just-extinguished
+    // building (the scratch search printed them)
     for (const [seed, n] of reignitions) expect(n, `seed ${seed}: same-day re-ignitions of extinguished buildings`).toBeGreaterThanOrEqual(1);
   });
 
@@ -320,7 +321,7 @@ describe('fire incidents never list a building twice', () => {
     for (let d = 0; d < 300; d++) { hotDay(a); hotDay(b); }
     expect(cityHash(b.st)).toBe(cityHash(a.st));
     // save while a multi-building fire is being fought (crews on scene), then both continue for 300 days through
-    // more same-step re-ignitions: identical incidents, fire registry and city
+    // more same-step re-ignitions: identical incidents, fire registry, news feed and city
     let guard = 0;
     const multi = (s: Sys) => s.em.incidents().some((i: Incident) => i.kind === 'fire' && i.fires.length >= 2 && i.state === 'onScene');
     while (!multi(a) && guard++ < 400) hotDay(a);
@@ -333,6 +334,9 @@ describe('fire incidents never list a building twice', () => {
       hotDay(l);
       expect(l.em.incidents()).toEqual(a.em.incidents());
       expect([...l.fire.fires]).toEqual([...a.fire.fires]);
+      // (the news throttles are saved: before routed item 34 the loaded game posted alerts the original had throttled —
+      // 4 news items instead of 2 on its first day here)
+      expect(l.st.news, `day ${a.st.day}: news feed`).toEqual(a.st.news);
     }
     checkInvariants(l);
     expect(cityHash(l.st)).toBe(cityHash(a.st));
@@ -423,6 +427,7 @@ describe('fire aftermath: BF.Incident, bulldozed fires, news throttles (routed i
       l.sim.runDays(1);
       expectSame(l, a, `day ${a.st.day}`);
       checkInvariants(a);
+      checkInvariants(l);
       // a few days on the player clears every burning building in both games: nothing burns, the boost starts decaying
       if (d === 5) {
         for (const s of [a, l]) for (const id of [...s.fire.fires.keys()]) removeBuilding(s.sim, s.st.buildings.get(id)!);

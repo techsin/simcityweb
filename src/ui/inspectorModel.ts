@@ -101,7 +101,8 @@ export const DES_UPDATING_GAP = 0.05;
 /**
  * desirabilityBreakdown → top bars (those that show at least a point) + clamp / updating notes (in points); null when
  * there is nothing to show (stub: no terms). Capped factors and a stored value still more than DES_UPDATING_GAP behind
- * show both notes: a header of +92 beside "tops out at +100" needs the "Updating" line too.
+ * show both notes: a header of +92 beside "tops out at +100" needs the "Updating" line too. (A cap under half a point
+ * — "the factors add up to +100, desirability tops out at +100" — is no news: no note, though `clamped` is set.)
  */
 export function desirabilityView(br: { terms: FactorTerm[]; raw: number; value: number } | null | undefined): DesirabilityView | null {
   if (!br || !br.terms || !br.terms.length) return null;
@@ -109,7 +110,7 @@ export function desirabilityView(br: { terms: FactorTerm[]; raw: number; value: 
   const clamped = Math.abs(br.raw) > 1 + 1e-6;
   const updating = Math.abs(clampedRaw - br.value) > DES_UPDATING_GAP;
   const notes: string[] = [];
-  if (clamped) notes.push(`Capped: the factors add up to ${signedPts(br.raw)}, desirability tops out at ${signedPts(clampedRaw)}`);
+  if (clamped && signedPts(br.raw) !== signedPts(clampedRaw)) notes.push(`Capped: the factors add up to ${signedPts(br.raw)}, desirability tops out at ${signedPts(clampedRaw)}`);
   if (updating) notes.push(`Updating: heading for ${signedPts(clampedRaw)}`);
   return { bars: pointBars(br.terms), value: br.value, raw: br.raw, clamped, updating, notes, note: notes.length ? notes.join(' · ') : undefined };
 }

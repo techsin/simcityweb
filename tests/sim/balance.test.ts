@@ -1,0 +1,114 @@
+/**
+ * WP6b final balance gate (docs/SIM_DEPTH_PART_B.md §7, SIM_DEPTH_SPEC WP6 "Balance procedure", SIM_DEPTH_AMENDMENTS
+ * WP6-4). SLOW: only with BALANCE=1 (the 128 x 15 gates, ~10-20 min on a loaded box); BALANCE=256 also runs the
+ * 256 x 60 seed 7 gate (an hour or more).
+ *   BALANCE=1 npx vitest run tests/sim/balance.test.ts --testTimeout=7200000
+ *
+ * 128 x 15 seed 7, the partB baseline set (tests/sim/fixtures/balance-baseline.json, recorded by WP6b; phase0 kept):
+ *  - population >= 0.9 x phase0 and >= 0.9 x partB every year, approval >= 50 from year 10, funds >= 0 every year,
+ *    EQ >= 100 by year 15;
+ *  - one employment ledger: |unemployment - (1 - access-weighted employment)| <= 0.02 every year;
+ *  - emergencies: >= 85 % of the incidents auto-dispatched from year 10, <= 5 % failed over the run; justice overflow
+ *    <= 0.2 from year 8; <= 3 % of the growables abandoned; water and power supply >= demand from year 6;
+ *  - the wrong choices do clearly worse (critic item 41): a mayor who builds no services at all ends with less than
+ *    half the population, approval below 45 and most incidents failed; one who builds no schools ends with EQ < 60 and
+ *    lower approval — and neither ends with more than 5 % more people than the base (the chaos margin).
+ * The yearly tables for seeds 7 and 11 (256 x 60) live in the partB set; tools/simbot.ts prints the same columns.
+ */
+import { describe, expect, it } from 'vitest';
+import { SimBot, botSystems, type BotOptions } from '../../tools/simbot';
+import { BF } from '../../src/sim/CityState';
+import { workerShare } from '../../src/sim/economy/demographics';
+import baseline from './fixtures/balance-baseline.json';
+
+interface Yearly {
+  year: number; pop: number; funds: number; approval: number; eq: number; unemployment: number; accUnemp: number;
+  incidents: number; auto: number; failed: number; overflow: number; abandoned: number; waterOk: boolean; powerOk: boolean;
+}
+
+async function play(size: number, years: number, seed: number, extra: Partial<BotOptions> = {}): Promise<Yearly[]> {
+  const b = new SimBot({ size, years, seed, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false, ...extra }, await botSystems(false));
+  const out: Yearly[] = [];
+  b.run(years, (r) => {
+    const st = b.st, s = st.stats;
+    const tr = b.sim.getSystem('traffic') as unknown as { workerAccess?: (id: number) => number } | undefined;
+    let grow = 0, ab = 0, accW = 0, accE = 0, unW = 0;
+    for (const o of st.buildings.values()) {
+      if (o.flags & BF.Plopped) continue;
+      grow++;
+      if (o.flags & BF.Abandoned) ab++;
+      if (o.pop <= 0 || o.flags & (BF.Abandoned | BF.Burnt)) continue;
+      const w = o.pop * workerShare(o);
+      const a = tr?.workerAccess ? tr.workerAccess(o.id) : -1;
+      if (a >= 0) { accW += w; accE += w * Math.max(0, Math.min(1, a)); } else unW += w;
+    }
+    const mean = accW > 0 ? accE / accW : 1;
+    const em = s.emergency?.year;
+    const sum = (v: Record<string, number> | number | undefined) => (typeof v === 'number' ? v : v ? Object.values(v).reduce((x, y) => x + y, 0) : 0);
+    out.push({
+      year: r.year, pop: r.pop, funds: r.funds, approval: r.approval, eq: r.eq, unemployment: r.unemployment,
+      accUnemp: accW + unW > 0 ? 1 - (accE + unW * mean) / (accW + unW) : 0,
+      incidents: sum(em?.count), auto: sum(em?.auto), failed: sum(em?.failed), overflow: s.justice?.overflow ?? 0,
+      abandoned: grow ? ab / grow : 0, waterOk: s.waterSupply >= s.waterDemand, powerOk: s.powerSupply >= s.powerDemand,
+    });
+  });
+  return out;
+}
+
+type Runs = Record<string, { phase0: number[][]; partB?: number[][] }>;
+const runs = (baseline as unknown as { runs: Runs }).runs;
+
+function gates(key: string, y: Yearly[], opts: { approvalFrom: number; eqBy: number; overflowFrom: number; utilFrom: number }) {
+  const p0 = new Map(runs[key].phase0.map((r) => [r[0], r[1]]));
+  const pb = new Map((runs[key].partB ?? []).map((r) => [r[0], r[1]]));
+  let inc = 0, failed = 0;
+  y.forEach((r, k) => {
+    const n = k + 1;
+    if (p0.has(r.year)) expect(r.pop, `pop ${r.year} vs phase0`).toBeGreaterThanOrEqual(0.9 * p0.get(r.year)!);
+    if (pb.has(r.year)) expect(r.pop, `pop ${r.year} vs partB`).toBeGreaterThanOrEqual(0.9 * pb.get(r.year)!);
+    expect(r.funds, `funds ${r.year}`).toBeGreaterThanOrEqual(0);
+    if (n >= opts.approvalFrom) expect(r.approval, `approval ${r.year}`).toBeGreaterThanOrEqual(50);
+    expect(Math.abs(r.unemployment - r.accUnemp), `unemployment vs access ${r.year}`).toBeLessThanOrEqual(0.02);
+    if (n >= 10 && r.incidents > 0) expect(r.auto / r.incidents, `auto-dispatched ${r.year}`).toBeGreaterThanOrEqual(0.85);
+    if (n >= opts.overflowFrom) expect(r.overflow, `justice overflow ${r.year}`).toBeLessThanOrEqual(0.2);
+    expect(r.abandoned, `abandoned ${r.year}`).toBeLessThanOrEqual(0.03);
+    if (n >= opts.utilFrom) {
+      expect(r.waterOk, `water ${r.year}`).toBe(true);
+      expect(r.powerOk, `power ${r.year}`).toBe(true);
+    }
+    inc += r.incidents; failed += r.failed;
+  });
+  expect(failed / Math.max(1, inc), 'failed incidents over the run').toBeLessThanOrEqual(0.05);
+  expect(Math.max(...y.slice(0, opts.eqBy).map((r) => r.eq)), `EQ by year ${opts.eqBy}`).toBeGreaterThanOrEqual(100);
+}
+
+describe.skipIf(process.env.BALANCE !== '1' && process.env.BALANCE !== '256')('WP6b balance gate (slow, BALANCE=1)', () => {
+  it('128 x 15 seed 7: the acceptance gates and the partB baseline', { timeout: 7_200_000 }, async () => {
+    const y = await play(128, 15, 7);
+    gates('128x15_seed7', y, { approvalFrom: 10, eqBy: 15, overflowFrom: 8, utilFrom: 6 });
+  });
+
+  it('128 x 15 seed 7: the wrong choices do clearly worse (no services at all / no schools)', { timeout: 7_200_000 }, async () => {
+    const base = (await play(128, 15, 7)).at(-1)!;
+    const none = await play(128, 15, 7, { skip: ['services'] });
+    const n = none.at(-1)!;
+    expect(n.pop).toBeLessThan(0.5 * base.pop);
+    expect(n.approval).toBeLessThan(45);
+    expect(n.approval).toBeLessThan(base.approval - 20);
+    const inc = none.reduce((s, r) => s + r.incidents, 0), failed = none.reduce((s, r) => s + r.failed, 0);
+    expect(failed / Math.max(1, inc)).toBeGreaterThan(0.5);
+    const ns = (await play(128, 15, 7, { skip: ['schools'] })).at(-1)!;
+    expect(ns.eq).toBeLessThan(60);
+    expect(ns.approval).toBeLessThan(base.approval);
+    expect(ns.pop).toBeLessThanOrEqual(1.05 * base.pop);
+  });
+});
+
+describe.skipIf(process.env.BALANCE !== '256')('WP6b balance gate 256 x 60 (very slow, BALANCE=256)', () => {
+  it('256 x 60 seed 7: the spec gates', { timeout: 14_400_000 }, async () => {
+    const y = await play(256, 60, 7);
+    gates('256x60_seed7', y, { approvalFrom: 30, eqBy: 30, overflowFrom: 20, utilFrom: 21 });
+    expect(y[14].pop, 'year 15').toBeGreaterThanOrEqual(150000);
+    expect(y[59].pop, 'year 60').toBeGreaterThanOrEqual(950000);
+  });
+});

@@ -22,6 +22,7 @@
  *    'tourism.draw'           venue visitor draw                   (economy tourism, WP4)
  *    'power.nuclear'          nuclear plant output (0 = shut down) (sim-infra utilities, WP3)
  *    'pollution.air.power'    extra air multiplier for power plants (sim-infra pollution, WP3)
+ *    'upkeep.power.smoke'     upkeep of power plants that emit smoke (scrubbers; economy budget, WP6b — SIM_DEPTH_SPEC C1)
  *    'pollution.sewage'       residential sewage (water pollution)  (sim-infra pollution, WP3)
  *    'pollution.noise'        noise of commerce, industry and construction sites (sim-infra pollution, WP3)
  *    'pollution.noise.traffic' road / rail traffic noise           (sim-infra pollution, WP3)
@@ -100,7 +101,7 @@ export const ORDINANCES: OrdinanceDef[] = [
   { id: 'sewage_mandate', name: 'Sewage Treatment Mandate', description: 'Septic upgrades and sewer connections for every home.', fixed: 40, perCapita: 0.003,
     unlockPop: 6000, effects: { 'pollution.sewage': 0.6 }, effectText: '−40% sewage water pollution (cleaner rivers and tap water)' },
   { id: 'clean_power_act', name: 'Clean Power Act', description: 'Scrubbers and filters on every power plant. Utilities pass the cost on.', fixed: 150, perCapita: 0.004,
-    unlockPop: 8000, effects: { 'pollution.air.power': 0.6 }, effectText: '−40% power plant smoke' },
+    unlockPop: 8000, effects: { 'pollution.air.power': 0.6, 'upkeep.power.smoke': 1.15 }, effectText: '−40% power plant smoke, +15% upkeep of smoking plants' },
   { id: 'brownfield_cleanup', name: 'Brownfield Cleanup', description: 'Crews excavate and treat contaminated soil at old industrial sites and landfills.', fixed: 200, perCapita: 0.002,
     unlockPop: 10000, effects: { 'soil.decay': 5 }, effectText: 'Contaminated soil recovers 5× faster' },
 ];

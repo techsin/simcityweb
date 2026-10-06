@@ -287,9 +287,10 @@ const RUB_BED_COL = 0x55493f;
  * the piece's base): where the spills of neighbouring piles overlap, each point shows the spill it lies deeper inside
  * of, so their tones meet without an edge (and never z-fight). 5 n triangles.
  */
-function rubSpill(mb: ModelBuilder, rng: RNG, r: number, n: number, core: number, tint: number): void {
-  // mid ring: between the core and the bed (a lighter dust ring would ring every pile like a target), warmed by tint
-  const dust = mixHex(mixHex(core, RUB_BED_COL, 0.55), tint, 0.18);
+function rubSpill(mb: ModelBuilder, rng: RNG, r: number, n: number, ash: number, tint: number): void {
+  // core: ash a third of the way to the bed (a black disc under every pile reads as a hole); mid ring between core and
+  // bed warmed by the dust tint (a lighter ring would ring every pile like a target)
+  const core = mixHex(ash, RUB_BED_COL, 0.3), dust = mixHex(mixHex(ash, RUB_BED_COL, 0.62), tint, 0.35);
   const a0 = rng.range(0, Math.PI * 2), asp = rng.range(0.72, 1), rot = rng.range(0, Math.PI), cr = Math.cos(rot), sr = Math.sin(rot);
   const ring = (f: number, jit: number, y: number): V3[] => {
     const out: V3[] = [];
@@ -347,7 +348,7 @@ function rubbleBed(w: number, d: number, tops: Float32Array | null, seed: number
   const s1 = seed * 7 + 11, s2 = seed * 13 + 5;
   tintSince(mb, m0, (p) => {
     const ash = Math.min(1, Math.max(0, (vnoise(p[0] / 11, p[2] / 11, s1) - 0.5) / 0.35)) * 0.22;
-    const du = Math.min(1, Math.max(0, (vnoise(p[0] / 6 + 40, p[2] / 6, s2) - 0.55) / 0.35)) * 0.24;
+    const du = Math.min(1, Math.max(0, (vnoise(p[0] / 6 + 40, p[2] / 6, s2) - 0.5) / 0.35)) * 0.36;
     const k = 1 - ash;
     return [k * (1 + du), k * (1 + du * 0.82), k * (1 + du * 0.6)];
   });
@@ -436,7 +437,7 @@ function rubbleCluster(fam: number, k: number): [THREE.BufferGeometry, THREE.Buf
   // heaps darken toward the ground
   tintSince(mb, m2, (p) => { const t = 0.72 + 0.28 * Math.min(1, Math.max(0, p[1]) / 1.4); return [t, t, t]; });
   rubBlocks(mb, rng, fam, k === 3 ? 7 : 4, 4.2, k === 3);
-  rubBeams(mb, rng, fam, heaps, k === 0 ? 3 : 2, 1.5);
+  rubBeams(mb, rng, fam, heaps, k === 0 ? 2 : 1, 1.5);
   return [mb.build(), px.build()];
 }
 
@@ -455,8 +456,8 @@ function rubbleScatter(fam: number, k: number): [THREE.BufferGeometry, THREE.Buf
     px.pyramid(0, 0, rx * 1.45, rz * 1.45, -0.08, ry * 1.05).pop();
     at.push([x, z]);
   }
-  rubBlocks(mb, rng, fam, 9 + k * 2, 5.2, true);
-  rubBeams(mb, rng, fam, at, 2 + k, 2.2);
+  rubBlocks(mb, rng, fam, 6 + k * 2, 5.2, false);
+  rubBeams(mb, rng, fam, at, k, 2.2);
   return [mb.build(), px.build()];
 }
 
@@ -494,7 +495,7 @@ function rubbleBigHeap(fam: number, k: number): [THREE.BufferGeometry, THREE.Buf
     }
   }
   rubBlocks(mb, rng, fam, 8, 9.2, false);
-  rubBeams(mb, rng, fam, at, 5, 2.0);
+  rubBeams(mb, rng, fam, at, 3, 2.0);
   if (k === 1) {
     mb.push().translate(7.4, 0, -5.2).rotateY(rng.range(0, Math.PI));
     mb.paint(0x4d3a2e, Surf.Metal).box(-0.9, 0.1, -2.2, 0.9, 0.85, 2.2, { bottom: null });
@@ -1115,15 +1116,17 @@ export class BuildingRenderer {
     });
   }
 
-  /** the skirt's far level: one plain box at its real size, the stone's mean tone (no cap band, no step tier; 8
-   *  triangles like the old scaled skirt), sharing the full skirt's culling sphere (a swap never rebuilds a list) */
+  /** the skirt's far level: one plain box at its real size (no cap band, no step tier; 8 triangles like the old scaled
+   *  skirt) in the mean tone of the skirt's exposed part (a shallow skirt shows mostly its dark 0.3 m cap band), sharing
+   *  the full skirt's culling sphere (a swap never rebuilds a list) */
   private foundationLod(full: number, sw: number, sd: number, q: number): number {
     const w = Math.round(sw * 10) / 10, d = Math.round(sd * 10) / 10;
     const key = `__foundation:${w}x${d}:${q}:lod`;
     const fresh = !this.batch.hasGeometry(key);
     const id = this.batch.geometryId(key, () => {
       const hx = w / 2 - 0.1, hz = d / 2 - 0.1;
-      return new ModelBuilder().paint(0x857d70, Surf.Stone).box(-hx, -q, -hz, hx, 0, hz, { top: null, bottom: null }).build();
+      const tone = mixHex(0x8a8274, 0x6e675b, Math.min(1, 0.3 / (q - 0.8)));
+      return new ModelBuilder().paint(tone, Surf.Stone).box(-hx, -q, -hz, hx, 0, hz, { top: null, bottom: null }).build();
     });
     if (fresh) this.batch.shareSphere(full, id, 0.05);
     return id;
@@ -1242,9 +1245,9 @@ export class BuildingRenderer {
       if (rng.chance(0.35)) {
         // two piles on opposite sides of the cell
         const a = rng.range(0, Math.PI * 2);
-        cluster(cx + Math.cos(a) * 4, cz + Math.sin(a) * 4, rng.range(0.95, 1.15), 1.5);
-        cluster(cx - Math.cos(a) * 4.5, cz - Math.sin(a) * 4.5, rng.range(0.75, 0.95), 1.5);
-      } else cluster(cx, cz, rng.range(1.05, 1.4), 3.5);
+        cluster(cx + Math.cos(a) * 4, cz + Math.sin(a) * 4, rng.range(1.0, 1.2), 1.5);
+        cluster(cx - Math.cos(a) * 4.5, cz - Math.sin(a) * 4.5, rng.range(0.8, 1.0), 1.5);
+      } else cluster(cx, cz, rng.range(1.15, 1.5), 3.5);
     }
     // the burnt shell: outer-wall stubs on about half of the edge cells, 1.4-2.4 m inside the lot's edge
     const inset = rng.range(1.4, 2.4), ex = hx - inset, ez = hz - inset;

@@ -159,7 +159,7 @@ export class StatsPanel extends Panel {
     c.buses.v.className = 'sc-v ' + (tf && tf.busesNeeded > 1.15 * tf.buses ? 'warn' : '');
     setText(c.pr.v, tf ? compact(tf.parkRide) : '—');
     // (no park & ride room: why — every park & ride garage keeps its spaces for its block, or none is by a stop)
-    setText(c.pr.s, parkRideLine(tf, tf && tf.parkRideSpaces > 0 ? { total: 0, parkRide: 0, downtown: 0, noTransit: 0 } : this.garageCounts()));
+    setText(c.pr.s, parkRideLine(tf, tf && tf.parkRideSpaces > 0 ? { total: 0, parkRide: 0, kept: 0, downtown: 0, noTransit: 0, pending: 0 } : this.garageCounts()));
     setText(c.tourists.v, compact(s.tourists ?? 0));
     setText(c.tourists.s, `a day · ${compact(s.hotelRooms ?? 0)} hotel rooms`);
     setText(c.attract.v, `${Math.round(s.attractiveness ?? 0)}`);

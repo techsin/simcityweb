@@ -76,6 +76,11 @@ describe('item 41: capped and still updating — both notes', () => {
     const none = desirabilityView({ terms, raw: 0.8, value: 0.78 })!;
     expect(none.notes).toEqual([]);
     expect(none.note).toBeUndefined();
+    // capped by under half a point ("add up to +100, tops out at +100"): only the updating line (a 195k city's
+    // Walk-up Apartments: raw 1.004, stored +92)
+    const sub = desirabilityView({ terms, raw: 1.004, value: 0.92 })!;
+    expect(sub.clamped).toBe(true);
+    expect(sub.notes).toEqual(['Updating: heading for +100']);
   });
 });
 

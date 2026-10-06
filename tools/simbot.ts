@@ -3,6 +3,7 @@
  *
  *   npx tsx tools/simbot.ts [--size 256] [--years 60] [--seed 7] [--difficulty medium] [--terrain plains]
  *                           [--water 0.2] [--quiet] [--no-infra] [--tax 12] [--spendy] [--neglect]
+ *                           [--skip schools,garbage,jail,transit,police,services]
  *   env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1
  *
  * Plays through CityActions only (like the UI): lays out a 9-cell road grid (avenues every 4th line) with a
@@ -51,6 +52,13 @@ export interface BotOptions {
   spendy?: boolean;
   /** inattentive mayor: never dispatches to uncovered emergencies (measures failure outcomes) */
   neglect?: boolean;
+  /**
+   * WP6b "rewards correct choices" (SIM_DEPTH_PART_B item 41): rules this mayor leaves out (the wrong choice of each
+   * pair): 'schools' (elementary / high school / college), 'garbage' (no landfill, incinerator or recycling),
+   * 'jail' (no prison), 'transit' (no stops, depots or garages), 'police' (no police stations), 'services' (no police,
+   * fire, school, clinic, park or emergency-response rules at all)
+   */
+  skip?: string[];
 }
 
 export interface YearRow {
@@ -562,7 +570,8 @@ export class SimBot {
         return r;
       }
     }
-    this.clearFailed.set(`${defId}@${best.x},${best.z},${best.rot}`, st.day + CLEAR_FAIL_DAYS);
+    // (keyed by the loop rotation 0 / 1 the scan looks up: best.rot may be its opposite, 2 / 3 — same footprint)
+    this.clearFailed.set(`${defId}@${best.x},${best.z},${best.rot & 1}`, st.day + CLEAR_FAIL_DAYS);
     this.say(`cleared ${best.olds.length} small lots at ${best.x},${best.z} but could not build a ${def.name} there`);
     return null;
   }
@@ -648,13 +657,15 @@ export class SimBot {
     this.ensurePower();
     this.ensureWater();
     this.ensureSewage();
-    this.ensureGarbage();
-    this.ensureJustice();
+    if (!this.skips('garbage')) this.ensureGarbage();
+    if (!this.skips('jail')) this.ensureJustice();
     this.zoning();
-    this.ensureServices();
-    this.ensureNeeds();
-    this.ensureResponse();
-    this.ensureTransit();
+    if (!this.skips('services')) {
+      this.ensureServices();
+      this.ensureNeeds();
+      this.ensureResponse();
+    }
+    if (!this.skips('transit')) this.ensureTransit();
     this.treeBuffers();
     this.caps();
     this.rewards();
@@ -664,6 +675,11 @@ export class SimBot {
       const r = this.A.buildNetwork(lPath({ x: 0, z: this.trunkZ }, { x: this.N - 1, z: this.trunkZ }), Network.Highway);
       if (r.ok) { this.highway = true; this.say(`trunk upgraded to highway ($${Math.round(r.cost)})`); this.rehomeStranded(); }
     }
+  }
+
+  /** a rule this mayor leaves out (BotOptions.skip) */
+  skips(rule: string): boolean {
+    return this.opts.skip?.includes(rule) ?? false;
   }
 
   // ------------------------------------------------------------------------------------------ daily (attentive mayor)
@@ -1079,7 +1095,7 @@ export class SimBot {
     ];
     let spent = 0;
     for (const [def, minPop, radius] of plan) {
-      if (pop < minPop || spent >= 2) continue;
+      if (pop < minPop || spent >= 2 || (def === 'civ_police_station' && this.skips('police'))) continue;
       if ((this.svcRetry.get(def) ?? -1) > this.st.day) continue;
       if (!this.canAfford(def)) continue;
       const mine = this.services.filter((s) => s.def === def);
@@ -1094,7 +1110,7 @@ export class SimBot {
       else this.svcRetry.set(def, this.st.day + 180);
     }
     // police capacity (WP7-1): a station beside any station whose patrol load exceeds 110 %
-    if (pop >= 20000 && spent < 2 && (this.svcRetry.get('police:load') ?? -1) <= this.st.day && this.canAfford('civ_police_station')) {
+    if (pop >= 20000 && spent < 2 && !this.skips('police') && (this.svcRetry.get('police:load') ?? -1) <= this.st.day && this.canAfford('civ_police_station')) {
       let worst: { x: number; z: number } | null = null, wu = 1.1;
       for (const b of this.st.buildings.values()) {
         if (b.def !== 'civ_police_station' && b.def !== 'civ_police_kiosk') continue;
@@ -1213,6 +1229,7 @@ export class SimBot {
     for (const tier of tiers) {
       if (placed >= 3) break;
       if (pop < (MIN_POP[tier] ?? 0)) continue;
+      if (this.skips('schools') && (tier === 'elementary' || tier === 'high' || tier === 'college')) continue;
       const n0 = s.needs[tier];
       if (!n0 || !(n0.need > 0)) continue;
       if ((this.svcRetry.get('need:' + tier) ?? -1) > st.day) continue;
@@ -1897,6 +1914,7 @@ function parseArgs(argv: string[]): BotOptions {
     else if (a === '--tax') { o.tax = +v; i++; }
     else if (a === '--spendy') o.spendy = true;
     else if (a === '--neglect') o.neglect = true;
+    else if (a === '--skip') { o.skip = v.split(','); i++; }
   }
   return o;
 }

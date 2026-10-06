@@ -95,7 +95,9 @@ export function demandContext(st: CityState, rt: EconRuntime): DemandContext {
       relief.R3 += (r.R3 ?? 0) * k; relief.IHT += (r.IHT ?? 0) * k; relief.CO3 += (r.CO3 ?? 0) * k;
       if (!(b.flags & BF.Burnt)) tourism += (r.C ?? 0) * 0.05; // legacy comparison number: unchanged formula
       if (k < 0.999) {
-        const why = (b.flags & BF.Burnt) || !def ? 'closed' : venueIssue(st, b, def, inf) ?? 'use';
+        // (a use factor of 0 is a transit facility with no link — a station without a line / rail neighbour, an unlinked
+        // ferry: WP7b transportUseFactor — 'not connected', not 'little used'; SIM_DEPTH_PART_B item 42)
+        const why = (b.flags & BF.Burnt) || !def ? 'closed' : venueIssue(st, b, def, inf) ?? (facilityUseFactor(st, b) <= 0 ? 'unconnected' : 'use');
         const add = (fam: 'R' | 'C' | 'I', v: number) => {
           if (!(v > 0)) return;
           lost[fam] += v * (1 - k);
@@ -359,7 +361,7 @@ export function demandSystem(rt: EconRuntime): SimSystem {
 
 const ISSUE_TEXT: Record<string, string> = {
   closed: 'burnt or closed', unpowered: 'without power', noRoad: 'without road access', strike: 'on strike', funding: 'underfunded',
-  use: 'little used',
+  use: 'little used', unconnected: 'not connected',
 };
 
 /**
