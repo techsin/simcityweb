@@ -71,20 +71,15 @@ const VERT_PARS = /* glsl */ `
 attribute vec4 rd;
 varying vec4 vRd;
 varying vec3 vWp;
-varying float vFarB;
 `;
 const VERT_MAIN = /* glsl */ `
 vRd = rd;
 vWp = (modelMatrix * vec4(position, 1.0)).xyz;
-// far away a road is a 1-3 px line blended with the dark lots beside it: its lamp ribbon gets up to 2x brighter so the
-// lit network still reads once the pools / lamp heads have faded out (per vertex: no per-pixel distance)
-vFarB = 1.0 + smoothstep(700.0, 1500.0, distance(vWp, cameraPosition));
 `;
 
 const FRAG_PARS = /* glsl */ `
 varying vec4 vRd;
 varying vec3 vWp;
-varying float vFarB;
 uniform float uNight;
 uniform float uLamps;
 uniform float uTime;
@@ -144,7 +139,9 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
   float wf = floor(vRd.w + 0.5);
   vec2 wp = vWp.xz;
   float au = abs(u);
-  float distFade = clamp(1.0 - length(fwidth(wp)) * 0.35, 0.0, 1.0);
+  // on-screen footprint (m per pixel) of the road surface
+  float fpx = length(fwidth(wp));
+  float distFade = clamp(1.0 - fpx * 0.35, 0.0, 1.0);
   // share of verge / median grass in this fragment (its season is applied once at the end)
   float grassK = 0.0;
 
@@ -409,7 +406,10 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
     float k = kind < 1.5 ? 0.7 : (kind < 2.5 ? 1.0 : (kind < 3.5 ? 1.4 : (kind < 4.5 ? 1.15 : 1.3)));
     // lighter surfaces (sidewalks, curbs) return more of the light than asphalt
     float refl = 0.75 + 1.8 * dot(albedo, vec3(0.3, 0.59, 0.11));
-    emis += lampC * uLampRibbon * k * lat * refl * vFarB * uLamps * (1.0 - 0.8 * uRoadOverlay);
+    // far away a road is a 1-3 px line blended with the dark lots beside it: its ribbon gets up to 2x brighter (by its
+    // on-screen footprint, ~1 -> 2.5 m per pixel) so the lit network still reads once the pools / lamp heads have faded
+    float farB = 1.0 + smoothstep(0.9, 2.4, fpx);
+    emis += lampC * uLampRibbon * k * lat * refl * farB * uLamps * (1.0 - 0.8 * uRoadOverlay);
   }
 
   // grass of medians / verges: dormant straw in winter and in deserts, like the lot lawns (materials.ts uFoliageDry)

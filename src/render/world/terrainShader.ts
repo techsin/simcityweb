@@ -146,13 +146,10 @@ vec3 terrainShade(vec3 P, vec3 N) {
       // the season, in stands of ~30 m like the 3D woods (nat_season.ts mix): ~30% evergreens (a darker, cooler green
       // in winter), the deciduous rest bare grey-brown in winter or orange / rust / yellow in autumn
       float stand = fract(nF.g * 5.3 + nB.b * 2.1);
-      float decid = step(0.3, stand);
-      float sr = (stand - 0.3) / 0.7;
-      float cl = tLuma(canopy);
-      vec3 autumnC = cl * mix(vec3(2.5, 1.05, 0.3), vec3(2.1, 1.6, 0.32), smoothstep(0.35, 0.65, nF.a));
-      vec3 bareC = cl * vec3(1.45, 1.12, 0.85) * (1.1 + 0.25 * nF.a);
-      vec3 seasonC = sr < uCanopy.y ? bareC : (sr < uCanopy.y + uCanopy.x ? autumnC : canopy);
-      canopy = mix(canopy * mix(vec3(1.0), vec3(0.82, 0.9, 0.95), uCanopy.y), seasonC, decid);
+      float sr = (stand - 0.3) * 1.43;
+      float cl = tLuma(canopy) * (1.0 + 0.3 * nF.a);
+      vec3 seasonC = sr < 0.0 ? canopy * (1.0 - 0.15 * uCanopy.y) : (sr < uCanopy.y ? cl * vec3(1.6, 1.24, 0.94) : (sr < uCanopy.y + uCanopy.x ? cl * mix(vec3(2.5, 1.05, 0.3), vec3(2.1, 1.6, 0.32), step(0.5, nF.a)) : canopy));
+      canopy = seasonC;
       canopy *= 1.0 + 0.45 * litRim * (1.0 - 0.7 * uNightF);
       col = mix(col, canopy, outside * smoothstep(0.02, 0.25, forest) * 0.94);
       bump += (crowns * 2.2 - gaps * 1.2) * outside * forest;
