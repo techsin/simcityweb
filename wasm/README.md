@@ -11,7 +11,8 @@ First kernel ported: the blur module (`src/sim/infra/blur.ts` → `wasm/sim-kern
 wasm/sim-kernels/            Rust crate (cdylib, #![no_std], no external crates, no wasm-bindgen)
   Cargo.toml                 release profile: opt-level 3, lto, codegen-units 1, panic abort, strip
   src/lib.rs                 panic handler (traps), module list, porting rules
-  src/abi.rs                 ABI_VERSION, sk_abi_version / sk_features, pointer -> slice helpers
+  src/abi.rs                 ABI_VERSION, sk_abi_version / sk_features / sk_initial_memory, pointer -> slice helpers
+  src/build.rs               cargo build script (Cargo.toml `build`): PRE-SIZES the linear memory (64 MiB, see below)
   src/math.rs                exact JS Math equivalents for no_std (floor), with host tests
   src/probe.rs               tiny exports for the memory-model benchmark
   src/blur.rs                port of src/sim/infra/blur.ts (+ host unit tests of the restructured loops)
@@ -103,6 +104,23 @@ pull in. The panic handler itself only traps. That cost is paid once, not per ke
   - Local aliases such as `const L = st.crime` cannot be fixed after growth, so memory must not grow while systems
     run.
   - At init, 4 MiB of scratch is reserved, so the copy-mode staging for a 256² map never grows memory.
+- **Pre-sized memory: never grow after startup.** Every `memory.grow` DETACHES the old ArrayBuffer, and the first
+  detach in a V8 isolate permanently invalidates V8's ArrayBuffer-detaching protector: from then on every typed-array
+  access in that isolate — the JS sim included — carries a detach check. Measured on the original JS sim, dense1m: the
+  services pass 1.19–1.25× slower, the whole simulation 1.07–1.16× slower (independent A/B of the services port).
+  So the binary is linked with `--initial-memory` = 64 MiB (`src/build.rs`, exported as `sk_initial_memory()`; the
+  manifest shows `initialPages: 1024`), which holds the loader's 4 MiB reserve, the services engine at 1M population
+  (31 MiB on dense1m, 21 MiB on bot256) and the adopted CityState layers (12.3 MiB) with room to spare — a 256² city
+  (the largest region tile) never grows memory. Untouched pages cost no physical memory. If more kernels move their
+  state into wasm memory, raise the constant instead of calling `reserve()` later. Other detach sources in the same
+  isolate count too: a `postMessage` transfer list (the game's main thread: `lodBuilder.ts:82`), and in NODE the web
+  streams of undici (`Blob.stream()`, `DecompressionStream`, `Response.arrayBuffer()` — e.g. `unpackFile`); Chromium's
+  streams do not detach (verified). Benchmarks: one isolate per arm, fixtures gunzipped with zlib in node.
+- **Kernel state has an owner and a lifetime.** A binding that allocates per-city state (the services engine: cell
+  scratch, staging buffers, reach pools) frees it when the city goes away: `installServicesTierEngine(...).dispose()`
+  (or `disposeServicesTierEngine(system)`) on scene dispose / city unload; a `FinalizationRegistry` frees an engine
+  whose system was garbage-collected without it (a safety net: GC timing is unbounded). Freed blocks return to the
+  heap's free list; linear memory never shrinks, but the next city reuses them.
 - **Per argument, a binding either passes the array's own offset** (it lives in wasm memory: zero copy) or stages it:
   inputs are copied into a scratch block before the call and outputs copied back after. Mixed calls are fine.
 - **CityState layers in wasm memory**: `adoptLayers(st, heap)` moves every typed-array field of an existing object
@@ -117,8 +135,8 @@ pull in. The panic handler itself only traps. That cost is paid once, not per ke
      and is safe. `deserializeCity` `.set()`s into the fresh state's arrays, and the bundle and recovery code honour
      `byteOffset` / `byteLength`. The round trip was verified bit-identical on adopted layers.
 - **Sizing (256²)**: CityState is 12.3 MiB (56 arrays). The systems' own typed arrays on the grown stress city add
-  about 25 MiB (363 arrays). If everything lived in wasm memory, that is about 40 MiB plus scratch, so reserve
-  48–64 MiB. Growing costs 0.05 ms. wasm32 allows up to 4 GiB.
+  about 25 MiB (363 arrays). If everything lived in wasm memory, that is about 40 MiB plus scratch: the pre-sized
+  64 MiB. Growing costs 0.05 ms of time but the protector (above). wasm32 allows up to 4 GiB.
 - **SharedArrayBuffer and threads** need cross-origin isolation (headers `Cross-Origin-Opener-Policy: same-origin` and
   `Cross-Origin-Embedder-Policy: require-corp`).
   - Vite supports them through `server.headers` and `preview.headers` (see `tools/bench/vite.check.config.ts`,

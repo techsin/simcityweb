@@ -7,25 +7,35 @@
  *  A  kernels, fair JS vs wasm, on random synthetic inputs (road grids with one-ways / highways / disconnected pieces,
  *     rail and subway, connections, stops, 0 / huge / subnormal values, wealth outside 1..3) and edge cases (empty
  *     map, no roads, no stops, a single node, entities at the map edges): all arrays after EVERY kernel.
+ *  R  robustness (verifier findings of the A/B round):
+ *     P1  graphs that SHRINK below the last searches' settled counts (bulldozed roads) keep every call in wasm;
+ *     P4  the binary imports exactly env.js_exp / env.js_log and the kernels call them: they follow the engine's
+ *         Math.exp / Math.log (also a different libm), so wasm = JS on every engine by construction;
+ *     P5  a trap after a kernel wrote state: redo / snapshot kernels recover exactly, roundMatch / commute abort the
+ *         cycle (TrafficCycleAbortError) and the driver restarts it.
  *  B  the ORIGINAL TrafficSystem methods (frozen 24f8609 class) vs the driver + fair JS vs the driver + wasm on the
  *     same synthetic inputs, from transit to finalize (round control flow, route sampling and RNG draws included).
  *  C  whole cities: three Simulations (original / fair / wasm) stepped phase by phase over several cycles with a
- *     network edit in between (graph rebuild, capacity growth, cached shop / freight cycles), the profiler's 1M
- *     fixture when present, days of the whole sim (JS-vs-JS baseline first), a mid-game install and a wasm memory
- *     growth between steps.
+ *     network edit in between (graph rebuild, capacity growth, cached shop / freight cycles), road bulldozing (P1),
+ *     the profiler's 1M fixture when present (+ a bulldozed dead end, no memory growth), days of the whole sim
+ *     (JS-vs-JS baseline first), a mid-game install, a wasm memory growth between steps, and injected traps inside the
+ *     driver (P5: exact recovery, or a cycle restart equal to an original whose cycle restarts at the same step).
  *  D  the kernels' exp / log against Math.exp / Math.log bit for bit: specials, 2M random arguments and every
  *     argument the cities' cycles produce.
  * B and C need the frozen tree (SIM_SNAP or the profiler's snapshot); they are skipped when it is absent.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { makeFairTrafficCore, type Arrs } from '../../src/wasm/js/trafficCore';
-import { makeWasmTrafficCore, resetTrafficWasmStats, trafficMathSelfTest, trafficWasmStats, type TrafficWasmCore } from '../../src/wasm/kernels/trafficBind';
+import {
+  makeWasmTrafficCore, resetTrafficWasmStats, TrafficCycleAbortError, trafficMathSelfTest, trafficWasmStats, type TrafficWasmCore, type TrafficWasmOptions,
+} from '../../src/wasm/kernels/trafficBind';
 import { installTrafficCore } from '../../src/wasm/kernels/trafficDriver';
 import { TRAFFIC_ARRAYS, trafficParams, type Cls, type TrafficCoreApi } from '../../src/wasm/kernels/trafficLayout';
 import { makeFairSearch } from '../../src/wasm/js/roadTransitSearch';
-import { initSimWasmSync, setSimWasmPreference, simWasmInstance, simWasmStatus } from '../../src/wasm/simWasm';
+import { initSimWasmSync, setSimWasmPreference, simWasmImports, simWasmInstance, simWasmStatus, type SimWasmInstance } from '../../src/wasm/simWasm';
+import { WasmHeap } from '../../src/wasm/heap';
 import { cloneLayers, loadCore, makeScenario, type Scenario } from './trafficCoreScenario';
 import { diffCity, diffTraffic } from '../../tools/bench/trafficCore/compare';
 
@@ -42,11 +52,47 @@ const P = trafficParams(P24, NET);
 const fairSearch = makeFairSearch({ NET_TIME: P24.NET_TIME, RAMP_PENALTY: P24.RAMP_PENALTY, SUBWAY_TIME: P24.SUBWAY_TIME, BUS_TIME_FACTOR: P24.BUS_TIME_FACTOR, HIGHWAY: 5 });
 
 const cores: TrafficWasmCore[] = [];
-const wasmCore = (): TrafficWasmCore => {
-  const c = makeWasmTrafficCore(P, { search: fairSearch });
+const wasmCore = (o: Partial<TrafficWasmOptions> = {}): TrafficWasmCore => {
+  const c = makeWasmTrafficCore(P, { search: fairSearch, ...o });
   cores.push(c);
   return c;
 };
+
+/** the binary the loader uses ($SIM_WASM_PATH or src/wasm/sim_kernels.wasm) */
+const loadedBinary = (): Uint8Array => {
+  expect(initSimWasmSync(), simWasmStatus().error ?? '').toBe(true);
+  return new Uint8Array(readFileSync(simWasmStatus().source!));
+};
+
+/** a private instance of `bytes` with its own memory / heap (as the loader builds it) and the given imports */
+function privateInstance(bytes: Uint8Array, imports: WebAssembly.Imports, label: string): SimWasmInstance {
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes as Uint8Array<ArrayBuffer>), imports);
+  const ex = inst.exports as unknown as SimWasmInstance['exports'];
+  const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
+  heap.reserve(4 << 20);
+  return { exports: ex, memory: ex.memory, heap, source: label, bytes: bytes.length, initMs: 0, features: simWasmInstance()!.features };
+}
+
+/**
+ * a wrapper of the loader's instance (own identity: the binding's per-instance caches miss) whose export `name` TRAPS
+ * on its `k`-th call after the real kernel ran (`after`: state written) or before it; `armed()` = calls so far
+ */
+function trapInstance(name: string, k: number, after = true): SimWasmInstance & { calls(): number } {
+  const W = simWasmInstance()!;
+  const real = W.exports as unknown as Record<string, (...a: number[]) => number>;
+  const ex = Object.create(W.exports as object) as Record<string, unknown>;
+  let n = 0;
+  Object.defineProperty(ex, name, {
+    value: (...a: number[]) => {
+      if (++n === k) {
+        if (after) real[name](...a);
+        throw new WebAssembly.RuntimeError(`injected trap in ${name} (call ${n}, ${after ? 'after' : 'before'} the kernel)`);
+      }
+      return real[name](...a);
+    },
+  });
+  return { ...W, exports: ex as SimWasmInstance['exports'], calls: () => n };
+}
 afterAll(() => { for (const c of cores) c.dispose(); });
 
 // ------------------------------------------------------------------------------------------------ comparison of cores
@@ -103,6 +149,18 @@ function stepsOf(core: TrafficCoreApi, sc: Scenario): [string, () => void][] {
     ['addCached', () => { core.addCached(0); core.addCached(1); core.addCached(2); }], ['finalize', () => core.finalize()],
   );
   return steps;
+}
+
+/** run the kernel sequence of `sc` on two loaded cores in lockstep; the first difference after any kernel, or [] */
+function stepBoth(f: TrafficCoreApi, w: TrafficCoreApi, sc: Scenario, label = ''): string[] {
+  const sf = stepsOf(f, sc), sw = stepsOf(w, sc);
+  for (let i = 0; i < sf.length; i++) {
+    sf[i][1]();
+    sw[i][1]();
+    const d = diffCores(f, w);
+    if (d.length) return [`${label}after ${sf[i][0]}: ${d.slice(0, 5).join('; ')}`];
+  }
+  return [];
 }
 
 /** run the kernel sequence on a fair and a wasm core in lockstep, comparing everything after every kernel */
@@ -180,6 +238,160 @@ describe('trafficCore kernels: fair JS vs wasm on synthetic inputs', () => {
     }
     setSimWasmPreference('auto', 'traffic');
   }, 120_000);
+});
+
+// ================================================================================================ R: robustness
+describe('trafficCore robustness: graph shrink (P1), engine math imports (P4), traps (P5)', () => {
+  it('P1: graphs that SHRINK below the last searches\' settled counts keep every call in wasm (identical to fair JS)', () => {
+    resetTrafficWasmStats();
+    let staleSeen = 0;
+    for (let seed = 1; seed <= 6; seed++) {
+      const big = makeScenario(900 + seed, { N: 44, roadFill: 0.75, railFill: 0.08, subFill: 0.06, stops: 40, origins: 250, sites: 90 }, P24);
+      const small = makeScenario(950 + seed, { N: 44, roadFill: 0.2, railFill: 0.01, subFill: 0.01, stops: 10, origins: 120, sites: 40 }, P24);
+      const f = makeFairTrafficCore(P, fairSearch), w = wasmCore();
+      // small twice: the stale counts only live until this cycle's searches ran
+      for (const [i, sc] of [big, small, small, big].entries()) {
+        loadCore(f, sc, cloneLayers(sc.layers));
+        loadCore(w, sc, cloneLayers(sc.layers));
+        const c = w.c;
+        if (c.saSettled > c.n || c.sbSettled > c.n || c.stSettled > c.total) staleSeen++;
+        expect(stepBoth(f, w, sc, `seed ${seed} load ${i}: `)).toEqual([]);
+        expect(w.lastJsReason, `seed ${seed} load ${i}`).toBe('');
+      }
+    }
+    // every shrink left stale counts above the new graph's size (the condition the old binary turned into JS calls)
+    expect(staleSeen).toBeGreaterThanOrEqual(6);
+    expect(trafficWasmStats.jsCalls).toBe(0);
+    expect(trafficWasmStats.fallbacks).toBe(0);
+  }, 300_000);
+
+  it('P4: the binary imports exactly env.js_exp / env.js_log, and the kernels call them (no inline exp / log left)', () => {
+    const bytes = loadedBinary();
+    const mod = new WebAssembly.Module(bytes as Uint8Array<ArrayBuffer>);
+    expect(WebAssembly.Module.imports(mod).map((i) => `${i.module}.${i.name}:${i.kind}`).sort()).toEqual(['env.js_exp:function', 'env.js_log:function']);
+    expect(() => new WebAssembly.Instance(mod, {}), 'instantiation without the imports').toThrow();
+    expect(Object.keys(simWasmImports().env).sort()).toEqual(['js_exp', 'js_log']);
+    // a private instance whose imports count their calls: identical results, and the counts prove the kernels call them
+    let ne = 0, nl = 0;
+    const inst = privateInstance(bytes, { env: { js_exp: (x: number) => { ne++; return Math.exp(x); }, js_log: (x: number) => { nl++; return Math.log(x); } } }, 'counting');
+    resetTrafficWasmStats();
+    for (let seed = 21; seed <= 26; seed++) {
+      const sc = makeScenario(seed, { stops: 30, origins: 200, sites: 80, shops: 20 }, P24);
+      const f = makeFairTrafficCore(P, fairSearch), w = wasmCore({ instance: () => inst });
+      loadCore(f, sc, cloneLayers(sc.layers));
+      loadCore(w, sc, cloneLayers(sc.layers));
+      expect(stepBoth(f, w, sc, `seed ${seed}: `)).toEqual([]);
+      w.dispose();
+    }
+    expect(trafficWasmStats.jsCalls).toBe(0);
+    // the self-test of the first core accounts for 2 x 20,000; the rest are the kernels' own calls
+    expect(ne).toBeGreaterThan(20_000 + 1000);
+    expect(nl).toBeGreaterThan(20_000 + 50);
+  }, 300_000);
+
+  it('P4: on an engine with a different libm (Math.exp / Math.log off by an ulp) the kernels follow the engine: wasm = JS', () => {
+    const bytes = loadedBinary();
+    const exp0 = Math.exp, log0 = Math.log;
+    // another engine's libm: last-bit differences from V8's fdlibm on most arguments (exact values kept where ECMA-262
+    // fixes them: exp(+-0) = 1, log(1) = +0)
+    const fexp = (x: number) => (x === 0 ? 1 : exp0(x) * (1 + 2 ** -52));
+    const flog = (x: number) => (x === 1 ? 0 : log0(x) * (1 - 2 ** -52));
+    let diffFromV8 = 0;
+    for (const x of [-0.3, -1.7, 0.5, -12.25]) if (fexp(x) !== exp0(x)) diffFromV8++;
+    expect(diffFromV8).toBe(4);
+    Math.exp = fexp;
+    Math.log = flog;
+    try {
+      const inst = privateInstance(bytes, simWasmImports(), 'other-libm');
+      resetTrafficWasmStats();
+      for (let seed = 31; seed <= 36; seed++) {
+        const sc = makeScenario(seed, { stops: 30, origins: 200, sites: 80, shops: 20 }, P24);
+        const f = makeFairTrafficCore(P, fairSearch), w = wasmCore({ instance: () => inst });
+        loadCore(f, sc, cloneLayers(sc.layers));
+        loadCore(w, sc, cloneLayers(sc.layers));
+        expect(stepBoth(f, w, sc, `seed ${seed}: `)).toEqual([]);
+        expect(w.lastJsReason).toBe('');
+        w.dispose();
+      }
+      expect(trafficWasmStats.jsCalls).toBe(0);
+      expect(trafficWasmStats.wasmCalls).toBeGreaterThan(6 * 20);
+    } finally {
+      Math.exp = exp0;
+      Math.log = log0;
+    }
+  }, 300_000);
+
+  /** kernel export -> core step it belongs to, and its recovery class */
+  const TRAPS: [string, 'redo' | 'snapshot' | 'abort'][] = [
+    ['traffic_prep_nodes', 'redo'], ['traffic_prep_origins', 'redo'], ['traffic_clusters', 'redo'], ['traffic_prep_stops', 'redo'],
+    ['traffic_transfers', 'redo'], ['traffic_transit', 'redo'], ['traffic_round_search', 'redo'], ['traffic_inbound_cached', 'snapshot'],
+    ['traffic_inbound', 'snapshot'], ['traffic_shop', 'snapshot'], ['traffic_freight', 'snapshot'], ['traffic_add_cached', 'snapshot'],
+    ['traffic_finalize', 'snapshot'], ['traffic_round_match', 'abort'], ['traffic_commute', 'abort'],
+  ];
+  it('P5: a trap AFTER the kernel wrote state — redo / snapshot kernels recover exactly, roundMatch / commute abort the cycle', () => {
+    resetTrafficWasmStats();
+    for (const [name, kind] of TRAPS) {
+      for (const k of name === 'traffic_round_search' || name === 'traffic_round_match' || name === 'traffic_add_cached' ? [1, 3] : [1]) {
+        const sc = makeScenario(name.length * 7 + k, { stops: 30, origins: 220, sites: 80, shops: 20, fsrc: 15, sinks: 2, conns: 3 }, P24);
+        const errs: unknown[] = [];
+        const inst = trapInstance(name, k);
+        const f = makeFairTrafficCore(P, fairSearch), w = wasmCore({ instance: () => inst, onError: (e) => errs.push(e) });
+        loadCore(f, sc, cloneLayers(sc.layers));
+        loadCore(w, sc, cloneLayers(sc.layers));
+        const label = `${name} trap #${k}`;
+        if (kind !== 'abort') {
+          expect(stepBoth(f, w, sc, `${label}: `)).toEqual([]);
+          expect(inst.calls(), label).toBeGreaterThanOrEqual(k);
+        } else {
+          const sf = stepsOf(f, sc), sw = stepsOf(w, sc);
+          let aborted = false;
+          for (let i = 0; i < sf.length && !aborted; i++) {
+            sf[i][1]();
+            try {
+              sw[i][1]();
+              expect(diffCores(f, w), `${label} before the trap, after ${sf[i][0]}`).toEqual([]);
+            } catch (e) {
+              expect(e, label).toBeInstanceOf(TrafficCycleAbortError);
+              expect((e as TrafficCycleAbortError).kernel).toBe(name === 'traffic_commute' ? 'commute' : 'roundMatch');
+              aborted = true;
+            }
+          }
+          expect(aborted, label).toBe(true);
+        }
+        expect(errs.length, `${label}: reported once`).toBe(1);
+        expect(String(errs[0]), label).toContain('injected trap');
+        expect(w.trapped, label).toContain('injected trap');
+        // the core stays on JS: a full second pass of the scenario runs no wasm call and still matches
+        const w0 = trafficWasmStats.wasmCalls;
+        if (kind !== 'abort') {
+          loadCore(f, sc, cloneLayers(sc.layers));
+          loadCore(w, sc, cloneLayers(sc.layers));
+          expect(stepBoth(f, w, sc, `${label} (second pass): `)).toEqual([]);
+          expect(trafficWasmStats.wasmCalls, label).toBe(w0);
+        }
+        w.dispose();
+      }
+    }
+    expect(trafficWasmStats.traps).toBe(TRAPS.length + 3);
+    expect(trafficWasmStats.restores).toBeGreaterThanOrEqual(7);
+    expect(trafficWasmStats.aborts).toBe(3);
+  }, 600_000);
+
+  it('P5: a trap BEFORE any write recovers exactly in every kernel class (the JS kernel runs on untouched state)', () => {
+    for (const [name] of TRAPS) {
+      const sc = makeScenario(name.length * 11, { stops: 25, origins: 180, sites: 60, shops: 15, fsrc: 10, sinks: 2, conns: 2 }, P24);
+      const errs: unknown[] = [];
+      const inst = trapInstance(name, 1, false);
+      const f = makeFairTrafficCore(P, fairSearch), w = wasmCore({ instance: () => inst, onError: (e) => errs.push(e) });
+      loadCore(f, sc, cloneLayers(sc.layers));
+      loadCore(w, sc, cloneLayers(sc.layers));
+      const r = (() => { try { return stepBoth(f, w, sc, `${name}: `); } catch (e) { return e instanceof TrafficCycleAbortError ? ['abort'] : [String(e)]; } })();
+      // roundMatch / commute cannot know the trap came before the writes: they abort (the driver restarts the cycle)
+      expect(r, name).toEqual(name === 'traffic_round_match' || name === 'traffic_commute' ? ['abort'] : []);
+      expect(errs.length, name).toBe(1);
+      w.dispose();
+    }
+  }, 300_000);
 });
 
 // ================================================================================================ frozen tree
@@ -324,17 +536,40 @@ describe.skipIf(!haveSnap)('trafficCore vs the original traffic.ts (frozen 24f86
   }, 600_000);
 
   // ---------------------------------------------------------------------------------------------- C: whole cities
-  /** a Simulation of the frozen tree with `kind` installed on its TrafficSystem before init */
-  function arm(X: Any, st: Any, kind: 'orig' | 'fair' | 'wasm'): Any {
+  /** a Simulation of the frozen tree with `kind` installed on its TrafficSystem before init (`given`: that core) */
+  function arm(X: Any, st: Any, kind: 'orig' | 'fair' | 'wasm', given?: TrafficCoreApi): Any {
     const systems = X.systems.createSystems();
     const tr = systems.find((s: Any) => s.name === 'traffic');
-    let core: TrafficCoreApi | null = null;
-    if (kind === 'fair') core = makeFairTrafficCore(X.PS, X.fs);
-    if (kind === 'wasm') { core = makeWasmTrafficCore(X.PS, { search: X.fs }); cores.push(core as TrafficWasmCore); }
-    if (core) installTrafficCore(tr, X.deps, core);
+    let core: TrafficCoreApi | null = given ?? null;
+    if (!core && kind === 'fair') core = makeFairTrafficCore(X.PS, X.fs);
+    if (!core && kind === 'wasm') { core = makeWasmTrafficCore(X.PS, { search: X.fs }); cores.push(core as TrafficWasmCore); }
+    const handle = core ? installTrafficCore(tr, X.deps, core) : null;
     const sim = new X.sim.Simulation(st, systems);
-    return { kind, sim, st, tr, core };
+    return { kind, sim, st, tr, core, handle };
   }
+  /** the loader's instance with the exports `names` trapping once after the real kernel ran, whenever armed */
+  function armedTraps(names: readonly string[]): { inst: SimWasmInstance; arm(): void; fired(): number } {
+    const W0 = simWasmInstance()!;
+    const real = W0.exports as unknown as Record<string, (...a: number[]) => number>;
+    const ex = Object.create(W0.exports as object) as Record<string, unknown>;
+    let armed = false, fired = 0;
+    for (const nm of names) {
+      Object.defineProperty(ex, nm, {
+        value: (...a: number[]) => {
+          const r = real[nm](...a);
+          if (armed) { armed = false; fired++; throw new WebAssembly.RuntimeError(`injected trap in ${nm} after the kernel wrote state`); }
+          return r;
+        },
+      });
+    }
+    return { inst: { ...W0, exports: ex as SimWasmInstance['exports'] }, arm: () => { armed = true; }, fired: () => fired };
+  }
+  /** diffTraffic + diffCity, candNode only where it is defined (origins that were candidates this cycle: oLastD >= 0) */
+  const diffDefined = (A: Any, B: Any): string[] => {
+    const d = [...diffTraffic(A.tr, B.tr), ...diffCity(A.st, B.st)].filter((x) => !x.startsWith('candNode['));
+    for (let o = 0; o < A.tr.oN; o++) if (A.tr.oLastD[o] >= 0 && A.tr.candNode[o] !== B.tr.candNode[o]) { d.push(`candNode[${o}] (defined)`); break; }
+    return d;
+  };
   const stepCompare = (arms: Any[], cycles: number, label: string, edit?: (cy: number, a: Any) => void) => {
     const [A, ...B] = arms;
     const check = (where: string) => {
@@ -420,6 +655,124 @@ describe.skipIf(!haveSnap)('trafficCore vs the original traffic.ts (frozen 24f86
     expect(w.core.lastJsReason).toBe('');
   }, 900_000);
 
+  it('C (P1): bulldozing roads — the graph shrinks below the last searches\' settled counts — keeps every call in wasm', async () => {
+    const X = await snap();
+    X.gen.registerTestDefs();
+    const arms = (['orig', 'wasm'] as const).map((k) => arm(X, X.gen.stressCity(96).st, k));
+    const W = arms[1];
+    resetTrafficWasmStats();
+    let settledBefore = 0, nBefore = 0;
+    // cycle 2: bulldoze the eastern half of the map's network (roads, rail, subway); cycle 4: a single dead-end cell
+    const edit = (cy: number, a: Any) => {
+      const st = a.st, N = st.size;
+      if (cy === 2) {
+        if (a === W) { settledBefore = Math.max(W.core.c.saSettled, W.core.c.sbSettled); nBefore = W.tr.road.n; }
+        for (let z = 0; z < N; z++) for (let x = N >> 1; x < N; x++) { const i = z * N + x; if (st.network[i] !== 0 && st.building[i] < 0) st.network[i] = 0; if (st.subway[i] !== 0) st.subway[i] = 0; }
+        a.sim.events.emit('networkChanged');
+        a.sim.events.emit('subwayChanged');
+      }
+      if (cy === 4) {
+        const isRoad = (i: number) => st.network[i] >= 1 && st.network[i] <= 5;
+        for (let i = 0; i < N * N; i++) {
+          if (!isRoad(i) || st.building[i] >= 0) continue;
+          const x = i % N, z = (i - x) / N;
+          const k = (x > 0 && isRoad(i - 1) ? 1 : 0) + (x < N - 1 && isRoad(i + 1) ? 1 : 0) + (z > 0 && isRoad(i - N) ? 1 : 0) + (z < N - 1 && isRoad(i + N) ? 1 : 0);
+          if (k === 1) { st.network[i] = 0; break; }
+        }
+        a.sim.events.emit('networkChanged');
+      }
+    };
+    stepCompare(arms, 6, 'bulldoze96', edit);
+    // the shrink really left stale settled counts above the new graph size (the old binary's sticky JS fallback)
+    expect(nBefore).toBeGreaterThan(W.tr.road.n);
+    expect(settledBefore).toBeGreaterThan(W.tr.road.n);
+    expect(trafficWasmStats.jsCalls).toBe(0);
+    expect(trafficWasmStats.fallbacks).toBe(0);
+    expect(trafficWasmStats.wasmCalls).toBeGreaterThan(80);
+    expect(W.core.lastJsReason).toBe('');
+  }, 900_000);
+
+  it('C (P5): a trap after roundMatch / commute wrote state restarts the cycle — equal to an original whose cycle restarts at the same step', async () => {
+    const X = await snap();
+    X.gen.registerTestDefs();
+    for (const [name, phase] of [['traffic_round_match', 4], ['traffic_commute', 5]] as const) {
+      const T = armedTraps([name]);
+      const errs: unknown[] = [];
+      const core = makeWasmTrafficCore(X.PS, { search: X.fs, instance: () => T.inst, onError: (e) => errs.push(e) });
+      cores.push(core);
+      const A = arm(X, X.gen.stressCity(96).st, 'orig');
+      const B = arm(X, X.gen.stressCity(96).st, 'wasm', core);
+      resetTrafficWasmStats();
+      const start = () => { for (const x of [A, B]) { x.tr.phase = 0; x.tr.lastCycleStart = x.st.day; } };
+      // cycle 0: normal
+      start();
+      while (A.tr.phase >= 0) for (const x of [A, B]) x.tr.step(x.sim);
+      expect(diffDefined(A, B), `${name} cycle 0`).toEqual([]);
+      // cycle 1: the trap at the 2nd roundMatch (or at commute) of the cycle
+      start();
+      let seen = 0, restarted = false;
+      while (A.tr.phase >= 0 || B.tr.phase >= 0) {
+        const ph = A.tr.phase;
+        expect(B.tr.phase, `${name} phase`).toBe(ph);
+        if (!restarted && ph === phase && ++seen === (phase === 4 ? 2 : 1)) {
+          T.arm();
+          B.tr.step(B.sim); // the kernel runs and writes, traps -> TrafficCycleAbortError -> the driver restarts the cycle
+          expect(T.fired(), name).toBe(1);
+          expect(B.tr.phase, `${name}: restarted at prep`).toBe(0);
+          // the reference: the same restart at the same step, without running the step
+          A.tr.phase = 0; A.tr.rebuiltInCycle = false; A.tr.sfVersion = -1;
+          restarted = true;
+          continue;
+        }
+        for (const x of [A, B]) x.tr.step(x.sim);
+      }
+      expect(restarted, name).toBe(true);
+      expect(diffDefined(A, B), `${name}: after the restarted cycle`).toEqual([]);
+      // two more cycles: the core runs JS now (trapped), still identical
+      for (let cy = 2; cy < 4; cy++) {
+        start();
+        while (A.tr.phase >= 0) for (const x of [A, B]) x.tr.step(x.sim);
+        expect(diffDefined(A, B), `${name} cycle ${cy}`).toEqual([]);
+      }
+      expect(errs.length, name).toBe(1);
+      expect(core.trapped, name).toContain('injected trap');
+      expect(B.handle.restarts, name).toBe(1);
+      expect(trafficWasmStats.aborts, name).toBe(1);
+      expect(trafficWasmStats.wasmCalls, `${name}: wasm until the trap`).toBeGreaterThan(10);
+    }
+  }, 900_000);
+
+  it('C (P5): traps after writes in redo / snapshot kernels inside the driver keep the city bit-identical (no restart)', async () => {
+    const X = await snap();
+    X.gen.registerTestDefs();
+    const cases: [string[], number, string][] = [
+      [['traffic_prep_nodes'], 0, 'prepNodes (redo)'], [['traffic_transit'], 2, 'transit (redo)'], [['traffic_round_search'], 3, 'roundSearch (redo)'],
+      [['traffic_inbound', 'traffic_inbound_cached'], 6, 'inbound (snapshot)'], [['traffic_shop', 'traffic_add_cached'], 7, 'shop / addCached (snapshot)'],
+      [['traffic_finalize'], 9, 'finalize (snapshot: traffic layer + railNew)'],
+    ];
+    for (const [names, phase, label] of cases) {
+      const T = armedTraps(names);
+      const errs: unknown[] = [];
+      const core = makeWasmTrafficCore(X.PS, { search: X.fs, instance: () => T.inst, onError: (e) => errs.push(e) });
+      cores.push(core);
+      const A = arm(X, X.gen.stressCity(96).st, 'orig');
+      const B = arm(X, X.gen.stressCity(96).st, 'wasm', core);
+      for (let cy = 0; cy < 3; cy++) {
+        for (const x of [A, B]) { x.tr.phase = 0; x.tr.lastCycleStart = x.st.day; }
+        while (A.tr.phase >= 0) {
+          const ph = A.tr.phase;
+          if (cy === 1 && ph === phase && T.fired() === 0) T.arm();
+          for (const x of [A, B]) x.tr.step(x.sim);
+          expect([...diffTraffic(A.tr, B.tr), ...diffCity(A.st, B.st)], `${label}: cycle ${cy} phase ${ph}`).toEqual([]);
+        }
+      }
+      expect(T.fired(), label).toBe(1);
+      expect(errs.length, label).toBe(1);
+      expect(core.trapped, label).toContain('injected trap');
+      expect(B.handle.restarts, label).toBe(0);
+    }
+  }, 900_000);
+
   const dense = join(FIXTURES, 'dense1m_s7.metropolis');
   it.skipIf(!existsSync(dense))('C: the 1M-population dense fixture, every phase of 2 cycles', async () => {
     const X = await snap();
@@ -429,6 +782,48 @@ describe.skipIf(!haveSnap)('trafficCore vs the original traffic.ts (frozen 24f86
     expect(arms[0].st.stats.population).toBeGreaterThan(1_000_000);
     stepCompare(arms, 2, 'dense1m');
     expect(arms[2].core.lastJsReason).toBe('');
+  }, 1_800_000);
+
+  it.skipIf(!existsSync(dense))('C (P1, P6): dense1m — a bulldozed dead-end road cell keeps every call in wasm; the pre-sized memory never grows', async () => {
+    const X = await snap();
+    const load = async () => X.ser.deserializeCity(await X.bundle.unpackFile(new Uint8Array(readFileSync(dense))));
+    // a fresh instance (the memory-growth test above grew the shared one): its pre-sized memory must never grow
+    const inst = privateInstance(loadedBinary(), simWasmImports(), 'dense1m-p6');
+    const heap = inst.heap;
+    const grows0 = heap.stats().grows;
+    expect(heap.capacity, 'pre-sized initial memory').toBeGreaterThanOrEqual(64 << 20);
+    const core = makeWasmTrafficCore(X.PS, { search: X.fs, instance: () => inst });
+    cores.push(core);
+    const A = arm(X, await load(), 'orig'), W = arm(X, await load(), 'wasm', core);
+    resetTrafficWasmStats();
+    const cycle = (label: string) => {
+      for (const x of [A, W]) x.tr.runCycleSync(x.sim);
+      expect([...diffTraffic(A.tr, W.tr), ...diffCity(A.st, W.st)], label).toEqual([]);
+    };
+    cycle('cycle 1');
+    const st = A.st, N = st.size, isRoad = (i: number) => st.network[i] >= 1 && st.network[i] <= 5;
+    let cell = -1;
+    for (let i = 0; i < N * N && cell < 0; i++) {
+      if (!isRoad(i) || st.building[i] >= 0) continue;
+      const x = i % N, z = (i - x) / N;
+      const k = (x > 0 && isRoad(i - 1) ? 1 : 0) + (x < N - 1 && isRoad(i + 1) ? 1 : 0) + (z > 0 && isRoad(i - N) ? 1 : 0) + (z < N - 1 && isRoad(i + N) ? 1 : 0);
+      if (k === 1) cell = i;
+    }
+    expect(cell).toBeGreaterThanOrEqual(0);
+    const n0 = W.tr.road.n, settled0 = W.core.c.saSettled;
+    for (const x of [A, W]) { x.st.network[cell] = 0; x.sim.events.emit('networkChanged'); }
+    const j0 = trafficWasmStats.jsCalls;
+    for (let c = 2; c <= 4; c++) cycle(`cycle ${c}${c === 2 ? ' (dead end bulldozed)' : ''}`);
+    expect(W.tr.road.n).toBe(n0 - 1);
+    expect(settled0, 'the last search settled more nodes than the shrunk graph has').toBeGreaterThan(W.tr.road.n);
+    expect(trafficWasmStats.jsCalls - j0).toBe(0);
+    expect(trafficWasmStats.fallbacks).toBe(0);
+    expect(W.core.lastJsReason).toBe('');
+    expect(heap.stats().grows - grows0, 'memory.grow calls (pre-sized 64 MiB binary)').toBe(0);
+    expect(heap.capacity).toBe(64 << 20);
+    // one arena at a time (reallocations free the old block first): the heap holds the arena, the context, the loader's
+    // reserve-free scratch and nothing else
+    expect(heap.stats().used).toBeLessThan(core.arenaBytes + (1 << 20));
   }, 1_800_000);
 
   // ---------------------------------------------------------------------------------------------- D: exp / log

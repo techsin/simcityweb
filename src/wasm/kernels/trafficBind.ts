@@ -6,8 +6,10 @@
  *
  * Memory model (the architect's: arrays live in wasm memory, used in place):
  *  - every array of TRAFFIC_ARRAYS is a view of ONE pinned arena block in the instance's WasmHeap; the arena is laid
- *    out from the capacity classes and reallocated (contents copied) only in ensure(), i.e. at prep / prepTransit,
- *    the step boundaries where the driver grows capacities. Kernels never grow memory.
+ *    out from the capacity classes and reallocated only in ensure(), i.e. at prep / prepTransit, the step boundaries
+ *    where the driver grows capacities. A reallocation moves the contents out to JS first and frees the old block, so
+ *    the heap never holds two arenas (peak = one arena: the pre-sized 64 MiB memory never has to grow for it).
+ *    Kernels never grow memory.
  *  - a context block ([F: f64][U: u32], layout read from the binary: traffic_names) holds counts, capacities, the
  *    array offsets and the constants; the kernels take one pointer.
  *  - wasm memory growth (any binding's reserve) detaches views: the heap's onGrow listener re-creates the views from
@@ -16,10 +18,26 @@
  *  - graph arrays are copied into the arena once per graph version (and validated there: traffic_check_graph);
  *    the traffic / congestion / network layers are used in place when they live in this heap (adoptLayers), else
  *    staged per call (prepNodes: traffic in; finalize: traffic + network in, traffic + congestion out).
- * Fallbacks: no instance / 'traffic:js' / the binary lacks the exports / the engine's Math.exp or Math.log differ from
- * the kernels' fdlibm (self-test at first use) / a graph that fails validation / a kernel reporting an input outside
- * its domain (-2) -> that call runs the fair JS kernel on the same arrays (bit-identical by construction). A trap goes
- * through simWasmCallFailed (disables wasm for the session, or rethrows in forced 'wasm' mode).
+ *  - Math.exp / Math.log inside the kernels are the engine's own functions (imports env.js_exp / env.js_log, wired by
+ *    the loader: simWasmImports()), so they equal the JS original's on every engine by construction; a wiring
+ *    self-test at first use (trafficMathSelfTest) guards against a binary / loader mismatch.
+ * Fallbacks — the call runs the fair JS kernel on the same arrays (bit-identical by construction):
+ *  - no instance / 'traffic:js' / the binary lacks the exports / layout mismatch / the math self-test fails / a graph
+ *    that fails validation;
+ *  - a kernel code returned BEFORE any state change: -2 input outside the kernel domain, -3 invalid transit net, -4 a
+ *    search capacity, -6 counts beyond capacities, or a buffer still too small after 4 growth retries.
+ * Traps (a kernel bug: a bounds check fails; the kernel may already have written state): the trap is reported
+ * (`onError`, default simWasmCallFailed: wasm off for the session, or rethrown in forced 'wasm' mode), this core stops
+ * using wasm for good, and the call is recovered exactly where that is cheap:
+ *  - redo      kernels whose outputs depend only on inputs they do not write (prepNodes, prepOrigins, clusters,
+ *              prepStops, transfers, transit, roundSearch): the JS kernel simply runs again;
+ *  - snapshot  kernels with a few read-modify-write arrays (inboundCached / inbound / freight / addCached: volNew;
+ *              shop: volNew + sLoad; finalize: the traffic layer + railNew): copied before the call (≈ 0.1 MiB each,
+ *              tens of µs per cycle), restored after a trap, then the JS kernel runs;
+ *  - abort     roundMatch / commute (read-modify-write of ~20 per-origin / per-cluster / per-node arrays, ~0.8 MiB per
+ *              call — too much to copy on every call): the call throws TrafficCycleAbortError and the driver
+ *              (trafficDriver.ts) discards the cycle and restarts it from prep, in JS. Nothing persistent was touched:
+ *              the per-id scatters (prices, inbound, freight) run only after a kernel returned.
  *
  * No simulation imports (constants come in through TrafficParams), so benchmarks can bind a frozen tree.
  */
@@ -40,12 +58,31 @@ export const TRAFFIC_LAYOUT = 1;
 export const TRAFFIC_EXPORTS = [
   'traffic_layout', 'traffic_names', 'traffic_prep_nodes', 'traffic_prep_origins', 'traffic_clusters', 'traffic_prep_stops',
   'traffic_transfers', 'traffic_transit', 'traffic_round_search', 'traffic_round_match', 'traffic_commute', 'traffic_inbound_cached',
-  'traffic_inbound', 'traffic_shop', 'traffic_freight', 'traffic_add_cached', 'traffic_finalize', 'traffic_check_graph', 'traffic_exp',
-  'traffic_log', 'traffic_math_batch',
+  'traffic_inbound', 'traffic_shop', 'traffic_freight', 'traffic_add_cached', 'traffic_finalize', 'traffic_check_graph', 'traffic_counts_check',
+  'traffic_exp', 'traffic_log', 'traffic_math_batch',
 ] as const;
 
 /** the kernel slot (A/B flag `traffic`, e.g. ?simwasm=auto,traffic:js) */
 export const TRAFFIC_KERNEL = kernelSlot('traffic', TRAFFIC_EXPORTS);
+
+/**
+ * Thrown by roundMatch / commute of a wasm core when the kernel TRAPPED after it may have written cycle state (the
+ * trap was already reported through `onError`): the cycle's state is inconsistent and must be rebuilt from prep. The
+ * traffic driver catches it in step() and restarts the cycle (in JS: the core stops using wasm after a trap).
+ */
+export class TrafficCycleAbortError extends Error {
+  readonly kernel: string;
+  readonly trap: unknown;
+  constructor(kernel: string, trap: unknown) {
+    super(`traffic kernel ${kernel} trapped after writing cycle state; the cycle restarts (${trap instanceof Error ? trap.message : String(trap)})`);
+    this.name = 'TrafficCycleAbortError';
+    this.kernel = kernel;
+    this.trap = trap;
+  }
+}
+
+/** how a kernel call is recovered after a trap (see the header) */
+type Recovery = 'redo' | 'snapshot' | 'abort';
 
 interface TrafficExports {
   memory: WebAssembly.Memory;
@@ -67,6 +104,7 @@ interface TrafficExports {
   traffic_add_cached(ctx: number, which: number): number;
   traffic_finalize(ctx: number): number;
   traffic_check_graph(ctx: number): number;
+  traffic_counts_check(ctx: number): number;
   traffic_exp(x: number): number;
   traffic_log(x: number): number;
   traffic_math_batch(x: number, out: number, n: number, which: number): void;
@@ -143,7 +181,9 @@ function readLayout(w: SimWasmInstance): Layout | null {
 /**
  * The kernels' exp / log against this engine's Math.exp / Math.log, bit for bit, on arguments covering the traffic
  * phases' ranges (utility differences <= 0, logistic arguments, shop decay, price ratios in [0.25, 8]) and special
- * values. Cached per instance; a mismatch makes every traffic call run JS (reported in trafficWasmInfo()).
+ * values. The kernels call the imported engine functions (env.js_exp / env.js_log), so this is a WIRING check (a
+ * binary built without the imports, or a loader passing other functions, fails it). Cached per instance; a mismatch
+ * makes every traffic call run JS (reported in trafficWasmInfo()).
  */
 const mathOk = new WeakMap<SimWasmInstance, boolean>();
 export function trafficMathSelfTest(w: SimWasmInstance, n = 20000): boolean {
@@ -183,7 +223,11 @@ export function trafficMathSelfTest(w: SimWasmInstance, n = 20000): boolean {
 }
 
 /** statistics of all wasm traffic cores (tests / benchmarks: prove which path ran) */
-export const trafficWasmStats = { wasmCalls: 0, jsCalls: 0, fallbacks: 0, reallocs: 0, graphCopies: 0, stagedCalls: 0, reserves: 0, bytes: 0 };
+export const trafficWasmStats = {
+  wasmCalls: 0, jsCalls: 0, fallbacks: 0, reallocs: 0, graphCopies: 0, stagedCalls: 0, reserves: 0, bytes: 0,
+  /** traps caught (each disables its core), snapshot restores after a trap, cycles aborted (TrafficCycleAbortError) */
+  traps: 0, restores: 0, aborts: 0,
+};
 export function resetTrafficWasmStats(): void {
   for (const k of Object.keys(trafficWasmStats) as (keyof typeof trafficWasmStats)[]) trafficWasmStats[k] = 0;
 }
@@ -191,7 +235,10 @@ export function resetTrafficWasmStats(): void {
 export interface TrafficWasmOptions {
   /** instance provider (default: the global 'traffic' kernel slot); benchmarks pass a second binary (e.g. scalar) */
   instance?: () => SimWasmInstance | null;
-  /** failure handler for traps (default: simWasmCallFailed('traffic', e): JS fallback or rethrow when forced) */
+  /**
+   * failure handler for traps (default: simWasmCallFailed('traffic', e): wasm off for the session, or rethrow when
+   * forced). Whatever it does, the core itself runs JS after a trap (see the header).
+   */
   onError?: (e: unknown) => void;
   /** the fair JS searches for the JS fallback path (required: every call can fall back) */
   search: FairSearch;
@@ -203,6 +250,8 @@ export interface TrafficWasmCore extends TrafficCoreApi {
   readonly env: KernelEnv;
   /** why the last call ran JS ('' = wasm) */
   readonly lastJsReason: string;
+  /** the trap that switched this core to JS for good ('' = none) */
+  readonly trapped: string;
   /** arena bytes */
   readonly arenaBytes: number;
   /** free the arena and the context (the core then runs JS) */
@@ -245,6 +294,10 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
   let resident = { traffic: -1, congestion: -1, network: -1 };
   let lastJsReason = 'not initialised';
   let disposed = false;
+  /** set by the first trap: this core runs JS from then on */
+  let trapped = '';
+  /** reusable copies for the snapshot recovery (see the header) */
+  const snapBufs: Float32Array[] = [];
 
   const layoutOf = (cs: Record<Cls, number>) => {
     const out: { def: ArrDef; off: number; len: number }[] = [];
@@ -291,6 +344,7 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
   /** the instance if the wasm path can run, else null (and lastJsReason) */
   function live(): SimWasmInstance | null {
     if (disposed) { lastJsReason = 'disposed'; return null; }
+    if (trapped) { lastJsReason = `wasm off after a trap (${trapped})`; return null; }
     let w: SimWasmInstance | null;
     try {
       w = inst();
@@ -308,7 +362,7 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
         return null;
       }
       if (!trafficMathSelfTest(w)) {
-        lastJsReason = "engine Math.exp / Math.log differ from the kernels' fdlibm";
+        lastJsReason = "the kernels' exp / log are not this engine's Math.exp / Math.log (binary built without the env imports?)";
         if (forced) throw new Error(`[simWasm] kernel 'traffic' forced to wasm: ${lastJsReason}`);
         return null;
       }
@@ -332,13 +386,21 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
     return w;
   }
 
-  /** allocate the arena for `caps` and copy the current contents; `migrate` = the old arrays are plain JS arrays */
+  /**
+   * allocate the arena for `caps` and copy the current contents; `migrate` = the old arrays are plain JS arrays.
+   * The old arena's contents move out to JS copies and its block is freed BEFORE the new one is allocated, so the heap
+   * never holds two arenas (the first-fit heap reuses the freed range; no memory growth for a reallocation that fits).
+   */
   function allocate(migrate: boolean): void {
     const L = layoutOf(caps);
+    if (!migrate && arena) {
+      for (const a of TRAFFIC_ARRAYS) A[a.name] = (A[a.name] as unknown as Float32Array).slice();
+      heap!.free(arena);
+      arena = null;
+    }
+    // A holds plain JS arrays now (copies, or the original arrays when migrating): a memory growth inside the
+    // allocation (onGrow -> bindViews) finds no arena and leaves them alone
     const blk = withRoom(L.bytes, () => heap!.allocArray(Uint8Array, Math.max(16, L.bytes), 16));
-    // a memory growth inside the allocation re-created the views of the OLD arena (onGrow -> bindViews with
-    // arenaCaps), so A holds live views of the old contents (or the plain arrays when migrating) right now
-    const old = migrate ? null : arena;
     const buf = heap!.memory.buffer as ArrayBuffer, base = blk.byteOffset;
     for (const { def, off, len } of L.entries) {
       const nv = new (CTOR[def.type] as unknown as new (b: ArrayBuffer, o: number, n: number) => Float32Array)(buf, base + off, len);
@@ -352,7 +414,6 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
     arenaCaps = { ...caps };
     arenaBytes = L.bytes;
     trafficWasmStats.bytes = Math.max(trafficWasmStats.bytes, L.bytes);
-    if (old) heap!.free(old);
     ctxF = new Float64Array(buf, ctxPtr, lay!.nF);
     ctxU = new Int32Array(buf, ctxPtr + 8 * lay!.nF, lay!.nU);
     for (const a of TRAFFIC_ARRAYS) ctxU[lay!.u.get(a.name)!] = offs.get(a.name)!;
@@ -415,12 +476,15 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
     graphObjs = [road, rail, sub];
   }
 
-  /** copy the graphs into the arena when their version changed (lazy: at the first kernel call of a cycle) */
+  /**
+   * copy the graphs into the arena when their version changed (lazy: at the first kernel call of a cycle) and validate
+   * them. The verdict is cached per graph version only when it is about the graph itself (valid, or invalid content):
+   * a count / capacity mismatch (-6) is re-checked at the next call instead of pinning this graph to JS.
+   */
   function syncGraphs(w: SimWasmInstance): boolean {
     const road = e.road, rail = e.rail, sub = e.sub;
     if (graphKey !== '' && gk[0] === road.version && gk[1] === road.n && gk[2] === rail.version && gk[3] === rail.n && gk[4] === sub.version && gk[5] === sub.n && gk[6] === road.nComp) return graphOk;
     const key = `${road.version}:${road.n}:${rail.version}:${rail.n}:${sub.version}:${sub.n}:${road.nComp}`;
-    gk[0] = road.version; gk[1] = road.n; gk[2] = rail.version; gk[3] = rail.n; gk[4] = sub.version; gk[5] = sub.n; gk[6] = road.nComp;
     const n = road.n;
     ensure({ N: n, R: rail.n, B: sub.n, C: road.nComp, T: n + rail.n + sub.n });
     copyInto('rev', road.rev, 4 * n); copyInto('fwd', road.fwd, 4 * n); copyInto('typ', road.type, n); copyInto('cellOf', road.cellOf, n);
@@ -429,12 +493,17 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
     copyInto('subAdj', sub.adj, 4 * sub.n); copyInto('subCellOf', sub.cellOf, sub.n);
     trafficWasmStats.graphCopies++;
     syncCounts();
-    const r = (w.exports as unknown as TrafficExports).traffic_check_graph(ctxPtr);
+    const ex = w.exports as unknown as TrafficExports;
+    const r = ex.traffic_check_graph(ctxPtr);
     graphOk = r === 0;
-    if (!graphOk) {
-      const ck = (w.exports as unknown as { traffic_counts_check?: (p: number) => number }).traffic_counts_check?.(ctxPtr) ?? -1;
-      lastJsReason = r === -6 ? `counts exceed capacities (condition ${ck})` : `graph failed validation (${r})`;
+    if (r === -6) {
+      // counts beyond capacities (a binding bug): not a property of the graph — validate again at the next call
+      lastJsReason = `counts exceed capacities (condition ${ex.traffic_counts_check(ctxPtr)})`;
+      graphKey = '';
+      return false;
     }
+    if (!graphOk) lastJsReason = `graph failed validation (${r})`;
+    gk[0] = road.version; gk[1] = road.n; gk[2] = rail.version; gk[3] = rail.n; gk[4] = sub.version; gk[5] = sub.n; gk[6] = road.nComp;
     graphKey = key;
     return graphOk;
   }
@@ -476,19 +545,74 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
 
   /** the class a "too small" code refers to */
   const needCls: Record<number, Cls> = { [-1]: 'SD', [-5]: 'QE', [-7]: 'E', [-8]: 'G' };
+  /** codes a kernel returns BEFORE changing any state (the call then runs JS) */
+  const CODE: Record<number, string> = {
+    [-1]: 'seed buffer too small', [-2]: 'input outside the kernel domain', [-3]: 'invalid transit net', [-4]: 'search capacity',
+    [-5]: 'bucket queue too small', [-6]: 'counts exceed capacities', [-7]: 'transfer buffer too small', [-8]: 'stop bins too small',
+  };
 
   /**
-   * one kernel call: wasm when possible (retrying after growth for "too small" codes), else / on -2 the JS kernel.
-   * `stageIn` / `stageOut`: layers the call reads / writes when they are staged.
+   * copies of the read-modify-write arrays of a 'snapshot' kernel (`names`: core arrays with their live lengths;
+   * `layer`: the traffic layer too). Returns the restore function.
    */
-  function run(name: string, wasm: (ex: TrafficExports) => number, js: () => number, stageIn: ('traffic' | 'network')[] = [], stageOut: ('traffic' | 'congestion')[] = []): number {
+  function takeSnapshot(names: readonly (readonly [string, number])[], layer: boolean): () => void {
+    const parts: [Float32Array, Float32Array][] = [];
+    const keep = (v: Float32Array, len: number) => {
+      const k = parts.length;
+      if (!snapBufs[k] || snapBufs[k].length < len) snapBufs[k] = new Float32Array(Math.max(len, 1024));
+      const b = snapBufs[k].subarray(0, len);
+      b.set(v.subarray(0, len));
+      parts.push([v, b]);
+    };
+    for (const [nm, len] of names) { const v = A[nm] as Float32Array; keep(v, Math.min(len, v.length)); }
+    if (layer && layers) keep(layers.traffic, layers.traffic.length);
+    return () => {
+      // restore into the CURRENT views (a retry may have reallocated the arena; capacities only grow)
+      let k = 0;
+      for (const [nm] of names) (A[nm] as Float32Array).set(parts[k++][1]);
+      if (layer && layers) layers.traffic.set(parts[k][1]);
+      trafficWasmStats.restores++;
+    };
+  }
+
+  /** a trap (or an error in the binding around the call): report, switch this core to JS for good */
+  function onTrap(name: string, err: unknown): void {
+    trapped = `${name}: ${err instanceof Error ? err.message : String(err)}`;
+    lastJsReason = `trap in ${trapped}`;
+    trafficWasmStats.traps++;
+    failed(err);
+  }
+
+  /**
+   * one kernel call: wasm when possible (retrying after growth for "too small" codes), else / on a code returned before
+   * any state change the JS kernel; traps are recovered per `rec` (see the header). `snap`: the arrays a 'snapshot'
+   * kernel reads and writes (+ the traffic layer). `stageIn` / `stageOut`: layers the call reads / writes when staged.
+   */
+  function run(
+    name: string, wasm: (ex: TrafficExports) => number, js: () => number, rec: Recovery,
+    snap: () => readonly (readonly [string, number])[] = () => [], snapLayer = false,
+    stageIn: ('traffic' | 'network')[] = [], stageOut: ('traffic' | 'congestion')[] = [],
+  ): number {
     calls[name] = (calls[name] ?? 0) + 1;
     const w = live();
-    if (w === null || !syncGraphs(w)) {
+    let ok = false;
+    if (w !== null) {
+      try {
+        ok = syncGraphs(w);
+      } catch (err) {
+        // a heap that cannot grow for the graph copies (WasmHeapFullError: that call runs JS), or a trap in
+        // traffic_check_graph (reads only)
+        if (err instanceof WasmHeapFullError) { lastJsReason = `${name}: ${err.message}`; failed(err); }
+        else onTrap(`${name} (graph check)`, err);
+        ok = false;
+      }
+    }
+    if (!ok) {
       trafficWasmStats.jsCalls++;
       return js();
     }
-    const ex = w.exports as unknown as TrafficExports;
+    const ex = w!.exports as unknown as TrafficExports;
+    let restore: (() => void) | null = null;
     try {
       let staged = false;
       for (const k of stageIn) {
@@ -496,6 +620,7 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
         (A[k] as Float32Array).set(layers![k] as Float32Array);
         staged = true;
       }
+      if (rec === 'snapshot') restore = takeSnapshot(snap(), snapLayer);
       for (let tries = 0; ; tries++) {
         syncCounts();
         syncScalars();
@@ -507,17 +632,13 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
           if (!live()) { trafficWasmStats.jsCalls++; return js(); }
           continue;
         }
-        if (r === -2 || r === -3) {
-          lastJsReason = `${name}: input outside the kernel domain (${r})`;
+        if (r < 0) {
+          // returned before changing any state: this call runs JS on the same arrays (bit-identical by construction)
+          lastJsReason = `${name}: ${CODE[r] ?? `code ${r}`}${r === -6 ? ` (condition ${ex.traffic_counts_check(ctxPtr)})` : ''}`;
           trafficWasmStats.fallbacks++;
           trafficWasmStats.jsCalls++;
           return js();
         }
-        if (r === -6) {
-          const ck = (ex as unknown as { traffic_counts_check?: (p: number) => number }).traffic_counts_check?.(ctxPtr) ?? -1;
-          throw new Error(`traffic kernel ${name}: counts exceed capacities (condition ${ck})`);
-        }
-        if (r < 0) throw new Error(`traffic kernel ${name} returned ${r}`);
         for (const k of stageOut) {
           if (resident[k] >= 0) continue;
           (layers![k] as Float32Array).set((A[k] as Float32Array).subarray(0, layers!.cells));
@@ -529,14 +650,29 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
         return r;
       }
     } catch (err) {
-      failed(err);
+      if (err instanceof WasmHeapFullError) {
+        // growth for a retry failed: thrown before the retried kernel ran (no state change) -> JS for this call
+        lastJsReason = `${name}: ${err.message}`;
+        failed(err);
+        trafficWasmStats.jsCalls++;
+        return js();
+      }
+      onTrap(name, err);
+      if (rec === 'abort') {
+        trafficWasmStats.aborts++;
+        throw new TrafficCycleAbortError(name, err);
+      }
+      restore?.();
       trafficWasmStats.jsCalls++;
-      lastJsReason = `${name}: ${err instanceof Error ? err.message : String(err)}`;
       return js();
     }
   }
 
   const K = fairKernels;
+  /** the read-modify-write arrays of the 'snapshot' kernels (live lengths) */
+  const volSnap = () => [['volNew', e.c.n]] as const;
+  const shopSnap = () => [['volNew', e.c.n], ['sLoad', e.c.sN]] as const;
+  const railSnap = () => [['railNew', e.c.nRail]] as const;
   /** the JS fallbacks retry like the fair core (they report -need too) */
   const jsRetry = (f: () => number, cls: Cls): number => {
     for (;;) {
@@ -556,32 +692,35 @@ export function makeWasmTrafficCore(P: TrafficParams, opts: TrafficWasmOptions):
     P,
     calls,
     get lastJsReason() { return lastJsReason; },
+    get trapped() { return trapped; },
     get arenaBytes() { return arenaBytes; },
     ensure,
     onMove(cb: () => void) { moved.push(cb); },
     bindGraphs,
     bindLayers,
-    prepNodes() { run('prepNodes', (ex) => ex.traffic_prep_nodes(ctxPtr), () => (K.prepNodes(e), 0), ['traffic']); },
-    prepOrigins() { run('prepOrigins', (ex) => ex.traffic_prep_origins(ctxPtr), () => (K.prepOrigins(e), 0)); },
-    clusters() { run('clusters', (ex) => ex.traffic_clusters(ctxPtr), () => (K.clusters(e), 0)); },
+    prepNodes() { run('prepNodes', (ex) => ex.traffic_prep_nodes(ctxPtr), () => (K.prepNodes(e), 0), 'redo', undefined, false, ['traffic']); },
+    prepOrigins() { run('prepOrigins', (ex) => ex.traffic_prep_origins(ctxPtr), () => (K.prepOrigins(e), 0), 'redo'); },
+    clusters() { run('clusters', (ex) => ex.traffic_clusters(ctxPtr), () => (K.clusters(e), 0), 'redo'); },
     prepStops() {
       ensure({ G: Math.ceil(e.c.mapN / 8) ** 2 + 1 });
-      run('prepStops', (ex) => ex.traffic_prep_stops(ctxPtr), () => (K.prepStops(e), 0));
+      run('prepStops', (ex) => ex.traffic_prep_stops(ctxPtr), () => (K.prepStops(e), 0), 'redo');
     },
-    transfers() { run('transfers', (ex) => ex.traffic_transfers(ctxPtr), () => jsRetry(() => K.transfers(e), 'E')); },
-    transit() { run('transit', (ex) => ex.traffic_transit(ctxPtr), () => jsRetry(() => K.transit(e), 'SD')); },
+    transfers() { run('transfers', (ex) => ex.traffic_transfers(ctxPtr), () => jsRetry(() => K.transfers(e), 'E'), 'redo'); },
+    transit() { run('transit', (ex) => ex.traffic_transit(ctxPtr), () => jsRetry(() => K.transit(e), 'SD'), 'redo'); },
     roundSearch(round: number) {
       ensure({ SD: e.c.qN });
-      run('roundSearch', (ex) => ex.traffic_round_search(ctxPtr, round), () => (K.roundSearch(e, round), 0));
+      run('roundSearch', (ex) => ex.traffic_round_search(ctxPtr, round), () => (K.roundSearch(e, round), 0), 'redo');
     },
-    roundMatch(round: number) { run('roundMatch', (ex) => ex.traffic_round_match(ctxPtr, round), () => (K.roundMatch(e, round), 0)); },
-    commute() { run('commute', (ex) => ex.traffic_commute(ctxPtr), () => (K.commute(e), 0)); },
-    inboundCached() { run('inboundCached', (ex) => ex.traffic_inbound_cached(ctxPtr), () => (K.inboundCached(e), 0)); },
-    inbound() { return run('inbound', (ex) => ex.traffic_inbound(ctxPtr), () => jsRetry(() => K.inbound(e), 'SD')); },
-    shop() { return run('shop', (ex) => ex.traffic_shop(ctxPtr), () => jsRetry(() => K.shop(e), 'SD')); },
-    freight() { return run('freight', (ex) => ex.traffic_freight(ctxPtr), () => jsRetry(() => K.freight(e), 'SD')); },
-    addCached(which: 0 | 1 | 2) { run('addCached', (ex) => ex.traffic_add_cached(ctxPtr, which), () => (K.addCached(e, which), 0)); },
-    finalize() { run('finalize', (ex) => ex.traffic_finalize(ctxPtr), () => (K.finalize(e), 0), ['traffic', 'network'], ['traffic', 'congestion']); },
+    roundMatch(round: number) { run('roundMatch', (ex) => ex.traffic_round_match(ctxPtr, round), () => (K.roundMatch(e, round), 0), 'abort'); },
+    commute() { run('commute', (ex) => ex.traffic_commute(ctxPtr), () => (K.commute(e), 0), 'abort'); },
+    inboundCached() { run('inboundCached', (ex) => ex.traffic_inbound_cached(ctxPtr), () => (K.inboundCached(e), 0), 'snapshot', volSnap); },
+    inbound() { return run('inbound', (ex) => ex.traffic_inbound(ctxPtr), () => jsRetry(() => K.inbound(e), 'SD'), 'snapshot', volSnap); },
+    shop() { return run('shop', (ex) => ex.traffic_shop(ctxPtr), () => jsRetry(() => K.shop(e), 'SD'), 'snapshot', shopSnap); },
+    freight() { return run('freight', (ex) => ex.traffic_freight(ctxPtr), () => jsRetry(() => K.freight(e), 'SD'), 'snapshot', volSnap); },
+    addCached(which: 0 | 1 | 2) { run('addCached', (ex) => ex.traffic_add_cached(ctxPtr, which), () => (K.addCached(e, which), 0), 'snapshot', volSnap); },
+    finalize() {
+      run('finalize', (ex) => ex.traffic_finalize(ctxPtr), () => (K.finalize(e), 0), 'snapshot', railSnap, true, ['traffic', 'network'], ['traffic', 'congestion']);
+    },
     dispose() {
       if (disposed) return;
       disposed = true;

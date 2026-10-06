@@ -193,6 +193,24 @@ describe('condition: the RENT cap and the garbage fade keep conditionBreakdown e
     const i = lotCell(b, N);
     const des = br.terms.find((t) => t.id === 'desirability')!;
     expect(des.value).toBeGreaterThanOrEqual(0.5 + 0.5 * st.desirability[DevType.R1][i] - 1e-6);
+    // a home with every penalty: the target floors at 0 and a 'clamp' term keeps Σ terms = target (no −1 % for a 0 %
+    // target); a perfect lot caps at 100 % the same way
+    for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) st.desirability[DevType.R1][z * N + x] = -1;
+    b.flags &= ~BF.Powered;
+    st.stats.population = 40000;
+    const low = conditionBreakdown(st, b);
+    expect(low.target).toBe(0);
+    expect(sumTerms(low.terms)).toBeCloseTo(0, 12);
+    const floor = low.terms.find((t) => t.id === 'clamp')!;
+    expect(floor.label).toBe('Floored at 0%');
+    expect(floor.value).toBeGreaterThan(0);
+    for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) { st.desirability[DevType.R1][z * N + x] = 1; st.landValue[z * N + x] = 0; }
+    b.flags = (b.flags | BF.Powered) & ~BF.NoGarbage;
+    const high = conditionBreakdown(st, b);
+    expect(sumTerms(high.terms)).toBeCloseTo(high.target, 12);
+    const cap = high.terms.find((t) => t.id === 'clamp');
+    if (high.target === 1) expect(cap?.label).toBe('Capped at 100%');
+    else expect(cap).toBeUndefined();
   });
 });
 

@@ -715,6 +715,11 @@ export function conditionBreakdown(st: CityState, b: Building): { terms: FactorT
     terms.push({ id: 'needs', label: 'Unmet needs', value: -pen, detail: miss.length ? miss.join(', ') : undefined });
   }
   if (cd.sleep) terms.push({ id: 'noise', label: 'Noise at night', value: -cd.sleep, detail: `noise ${Math.round(cd.noise * 100)}%` });
+  // the target is clamped to 0…100 %: the clamp is a term too, so the terms always add up to the target (an abandoned
+  // home with every penalty would otherwise list −1 % for a 0 % target)
+  let sum = 0;
+  for (const t of terms) sum += t.value;
+  if (Math.abs(cd.target - sum) > 1e-9) terms.push({ id: 'clamp', label: sum < cd.target ? 'Floored at 0%' : 'Capped at 100%', value: cd.target - sum });
   const dmd = st.stats.demand[def.devType] ?? 0;
   const hA = b.health + (1 - NEEDS_ABANDON_SHARE) * cd.needsPenalty;
   const unhappy = hA < UNHAPPY_HEALTH || (dmd < UNHAPPY_DEMAND && hA < UNHAPPY_DEMAND_HEALTH) || !cd.powered || !cd.road

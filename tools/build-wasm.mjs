@@ -106,15 +106,18 @@ function sizes(buf) {
   };
 }
 
+/** the binary's imports: the engine's Math.exp / Math.log (src/wasm/simWasm.ts simWasmImports(), same object) */
+const IMPORTS = { env: { js_exp: Math.exp, js_log: Math.log } };
+
 function describe(buf) {
   const mod = new WebAssembly.Module(buf);
-  const inst = new WebAssembly.Instance(mod, {});
+  const inst = new WebAssembly.Instance(mod, IMPORTS);
   const ex = inst.exports;
   return {
     abi: ex.sk_abi_version(),
     featureBits: ex.sk_features(),
     exports: WebAssembly.Module.exports(mod).filter((e) => e.kind === 'function').map((e) => e.name).sort(),
-    imports: WebAssembly.Module.imports(mod).length,
+    imports: WebAssembly.Module.imports(mod).map((i) => `${i.module}.${i.name}`).sort(),
     heapBase: Number(ex.__heap_base.value),
     initialPages: ex.memory.buffer.byteLength / 65536,
   };
@@ -143,6 +146,7 @@ function manifestFor(b) {
     sourceHash: sourceHash(),
     heapBase: d.heapBase,
     initialPages: d.initialPages,
+    imports: d.imports,
     exports: d.exports,
   };
 }

@@ -14,6 +14,8 @@
  * protector state (node --allow-natives-syntax / chromium --js-flags=--allow-natives-syntax probe).
  *   --protector intact       (default) nothing detaches: the sim worker of the integration plan
  *   --protector invalidated  every arm detaches a buffer first: today's main thread (lodBuilder.ts:82 transfers)
+ *   per arm: 'orig@inv', 'wasm@inv', ... = that arm with an invalidated protector, in the same interleaved run (weighs
+ *            the free JS fix — keep the protector intact — against wasm)
  *
  * Arms (tools/bench/servicesTierEngine.core.ts BenchArm):
  *   orig      the live ServicesSystem (services.ts / catchments.ts / transit.ts)
@@ -23,6 +25,7 @@
  *   scalar    the same Rust built without +simd128 (node tools/build-wasm.mjs --variant scalar; cargo needed)
  *   resident  SIMD with the CityState layers + need rasters adopted into wasm memory (zero copies)
  *   staged    (replay only) SIMD with the need raster copied in per call
+ *   fairEcache (replay only) fair JS with the wasm port's e-cache alloc structure (allocEcacheJS)
  * Cases:
  *   replay    (a) the phase kernels (alloc / union / report / finalize) on the slots captured after one original pass
  *   warm/cold (b) one full services pass, cached reaches / every road reach fresh (invalidateReach(undefined))
@@ -55,7 +58,7 @@ if (fixtures.length === 0) {
 const CASES = opt('--cases', 'replay,warm,cold,insitu').split(',');
 const BROWSER_CASES = opt('--browser-cases', opt('--cases', 'replay,warm,cold,insitu')).split(',');
 const SIM_ARMS = opt('--arms', 'orig,fair,wasm,scalar,resident').split(',');
-const REPLAY_ARMS = opt('--replay-arms', 'orig,fair,wasm,staged,scalar').split(',');
+const REPLAY_ARMS = opt('--replay-arms', 'orig,fair,fairEcache,wasm,staged,scalar').split(',');
 const BROWSER_ARMS = opt('--browser-arms', 'orig,fair,wasm,scalar').split(',');
 const REPS = Number(opt('--reps', 31));
 const CHUNK = Number(opt('--chunk', 6));
@@ -87,7 +90,12 @@ function paired(a, b, seed = 99) {
 }
 const f2 = (v) => (v >= 100 ? v.toFixed(1) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
 const fmt = (s) => `${s.speedup.toFixed(3)}x [${s.lo.toFixed(3)}, ${s.hi.toFixed(3)}]  (median ${f2(s.medA)} -> ${f2(s.medB)} ms, min ${f2(s.minA)} -> ${f2(s.minB)})`;
-const PAIRS = [['orig', 'wasm'], ['fair', 'wasm'], ['orig', 'fair'], ['scalar', 'wasm'], ['orig', 'scalar'], ['wasm', 'resident'], ['orig', 'resident'], ['fair', 'resident'], ['wasm', 'staged']];
+const PAIRS = [['orig', 'wasm'], ['fair', 'wasm'], ['orig', 'fair'], ['orig', 'fairEcache'], ['fairEcache', 'wasm'], ['scalar', 'wasm'], ['orig', 'scalar'], ['wasm', 'resident'], ['orig', 'resident'], ['fair', 'resident'], ['wasm', 'staged'],
+  // per-arm protector modes ('kind@inv' = that arm detaches a buffer first): today's main thread vs the free JS fix vs wasm
+  ['orig@inv', 'orig'], ['fair@inv', 'fair'], ['orig@inv', 'wasm@inv'], ['fair@inv', 'wasm@inv'], ['orig@inv', 'fair'], ['orig@inv', 'wasm'], ['orig@inv', 'resident'], ['wasm@inv', 'wasm']];
+/** arm label -> kind + protector: 'wasm@inv' = the wasm arm with an invalidated protector, 'wasm' = the run's mode */
+const kindOf = (label) => label.replace(/@inv$/, '');
+const protOf = (label, prot) => (label.endsWith('@inv') ? 'invalidated' : prot);
 
 function summarise(tag, samples, metrics, log) {
   const out = {};
@@ -260,7 +268,7 @@ async function runGroup(mk, group, kinds, cs, init, log) {
   try {
     const infos = {};
     for (const a of arms) {
-      const r = await a.init({ kind: a.label, group, ...init(a.label) });
+      const r = await a.init({ group, ...init(a.label), kind: kindOf(a.label) });
       infos[a.label] = r.info;
       log(`init ${group}/${a.label}: ${r.initMs.toFixed(0)} ms, pop ${r.info.pop}, protector intact ${r.info.protectorIntact}` +
         (r.info.engine ? `, engine ${r.info.engine.backend} (${(r.info.engine.liveBytes / 1048576).toFixed(1)} MiB)` : '') +
@@ -282,15 +290,15 @@ async function runGroup(mk, group, kinds, cs, init, log) {
 // ------------------------------------------------------------------------------------------------ node
 async function runNode(scalar) {
   const entry = await bundle(join(ROOT, 'tools', 'bench', 'servicesTierEngine.node.ts'), join(OUT, 'servicesTierEngine.node.mjs'), 'node');
-  const wasmOf = (k) => (k === 'scalar' ? scalar : k === 'orig' || k === 'fair' ? null : SIMD);
+  const wasmOf = (l) => { const k = kindOf(l); return k === 'scalar' ? scalar : k === 'orig' || k === 'fair' || k === 'fairEcache' ? null : SIMD; };
   for (const fx of fixtures) {
     const name = basename(fx).replace(/\.metropolis$/, '');
     result.node[name] = {};
     for (const prot of PROTECTORS) {
       const log = (s) => console.log(`[node ${name} ${prot}] ${s}`);
       const R = (result.node[name][prot] = {});
-      const init = (k) => ({ fixture: fx, wasm: wasmOf(k), protector: prot });
-      const ok = (k) => k !== 'scalar' || scalar;
+      const init = (l) => ({ fixture: fx, wasm: wasmOf(l), protector: protOf(l, prot) });
+      const ok = (l) => kindOf(l) !== 'scalar' || scalar;
       if (CASES.includes('replay')) R.replay = await runGroup((k) => nodeArm(k, entry), 'replay', REPLAY_ARMS.filter(ok), [], init, log);
       save();
       const simCases = CASES.filter((c) => c !== 'replay');
@@ -329,15 +337,15 @@ async function runBrowser(scalar) {
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--allow-natives-syntax --max-old-space-size=4096'] });
   try {
-    const wasmOf = (k) => (k === 'scalar' ? '/scalar.wasm' : k === 'orig' || k === 'fair' ? null : '/simd.wasm');
+    const wasmOf = (l) => { const k = kindOf(l); return k === 'scalar' ? '/scalar.wasm' : k === 'orig' || k === 'fair' || k === 'fairEcache' ? null : '/simd.wasm'; };
     for (let i = 0; i < fixtures.length; i++) {
       const name = basename(fixtures[i]).replace(/\.metropolis$/, '');
       result.browser[name] = {};
       for (const prot of PROTECTORS) {
         const log = (s) => console.log(`[chromium ${name} ${prot}] ${s}`);
         const R = (result.browser[name][prot] = {});
-        const init = (k) => ({ fixture: `/fixture${i}.metropolis`, wasm: wasmOf(k), protector: prot });
-        const ok = (k) => k !== 'scalar' || scalar;
+        const init = (l) => ({ fixture: `/fixture${i}.metropolis`, wasm: wasmOf(l), protector: protOf(l, prot) });
+        const ok = (l) => kindOf(l) !== 'scalar' || scalar;
         const fresh = async () => {
           const page = await browser.newPage();
           page.on('console', (m) => console.log(`  [chromium console] ${m.text()}`));

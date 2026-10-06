@@ -15,7 +15,7 @@
  *    and it has demand; an R$$$
  *    home below FILTER_DES for FILTER_DAYS becomes R$$ (timers in systemData.growth, keyed by building id).
  *  - Model variants: growth keeps its one rng draw, then steps to the next variant while a building within
- *    VARIANT_SPREAD cells has the same def + variant (no identical twins side by side).
+ *    VARIANT_SPREAD cells shows the same model + variant (no identical twins side by side; defs sharing a model count).
  *  - New buildings start with BF.Constructing (population system advances construction).
  */
 import type { SimSystem, Simulation } from '../Simulation';
@@ -144,25 +144,28 @@ function downtownCap(st: CityState, i: number, maxStage: number): number {
 // ------------------------------------------------------------------------------------------------ model variants
 /**
  * variant of a new building: start from v0 and step to the next variant while a building within VARIANT_SPREAD cells of
- * the lot has the same def and variant; when every variant is taken nearby, the one whose nearest same-def twin is
- * farthest away (ties: the first in stepping order from v0) — identical twins never stand side by side unless a def has
- * fewer variants than same-def neighbours touching the lot
+ * the lot shows the same model and variant; when every variant is taken nearby, the one whose nearest twin is farthest
+ * away (ties: the first in stepping order from v0) — identical twins never stand side by side unless a model has fewer
+ * variants than same-model neighbours touching the lot. Twins are matched by model, not def: the renderer draws model +
+ * variant only, so two defs sharing a model (the stage-3 and stage-4 walk-ups, the stage-6 and stage-7 towers) look
+ * identical (128x15 s7: 17.6 % of growables had such a twin within 6 cells while 0.55 % had a same-def one)
  */
 export function spreadVariant(st: CityState, defId: string, x0: number, z0: number, w: number, d: number, v0: number, variants: number): number {
   if (variants <= 1) return 0;
-  VIDS[0] = defId;
+  VIDS[0] = getDef(defId)?.model ?? defId;
   variantScan(st, VIDS, 1, x0, z0, w, d);
   return bestVariant(0, v0, variants);
 }
-/** nearest same-def building per (def k of the scan, variant v): VNEAR[k * 32 + v] (Chebyshev distance lot to lot) */
+/** nearest same-model building per (model k of the scan, variant v): VNEAR[k * 32 + v] (Chebyshev distance lot to lot) */
 const VNEAR = new Float64Array(4 * 32);
+/** model ids of the current scan */
 const VIDS: string[] = ['', '', '', ''];
 /** building-id stamps of the current scan (a building spanning several rows is looked up once) */
 let vStamp = new Int32Array(0);
 let vGen = 0;
 /**
- * one pass over the buildings within VARIANT_SPREAD of the lot: for each of the first n def ids in `ids`, the nearest
- * building of that def per variant (manifests have < 32 variants) into VNEAR
+ * one pass over the buildings within VARIANT_SPREAD of the lot: for each of the first n model ids in `ids`, the nearest
+ * building showing that model per variant (manifests have < 32 variants) into VNEAR
  */
 function variantScan(st: CityState, ids: readonly string[], n: number, x0: number, z0: number, w: number, d: number): void {
   const N = st.size, R = VARIANT_SPREAD;
@@ -180,8 +183,9 @@ function variantScan(st: CityState, ids: readonly string[], n: number, x0: numbe
       vStamp[id] = gen;
       const o = st.buildings.get(id);
       if (!o || o.variant >= 32 || o.variant < 0) continue;
+      const model = getDef(o.def)?.model;
       let k = 0;
-      while (k < n && ids[k] !== o.def) k++;
+      while (k < n && ids[k] !== model) k++;
       if (k === n) continue;
       // (lot-to-lot distance from the other building's rectangle)
       const dx = o.x + o.w - 1 < x0 ? x0 - (o.x + o.w - 1) : o.x > x0 + w - 1 ? o.x - (x0 + w - 1) : 0;
@@ -192,8 +196,8 @@ function variantScan(st: CityState, ids: readonly string[], n: number, x0: numbe
     }
   }
 }
-/** variant of def k of the last scan: step from v0 to the first variant with no same-def building nearby, else the one
- *  whose nearest twin is farthest (ties: the first in stepping order); VBEST_D = its nearest twin (Infinity: none) */
+/** variant of model k of the last scan: step from v0 to the first variant with no same-model building nearby, else the
+ *  one whose nearest twin is farthest (ties: the first in stepping order); VBEST_D = its nearest twin (Infinity: none) */
 let VBEST_D = Infinity;
 function bestVariant(k: number, v0: number, variants: number): number {
   const start = ((v0 % variants) + variants) % variants;
@@ -411,8 +415,9 @@ export function growthSystem(rt: EconRuntime): SimSystem {
 
   /**
    * TWINS: substitutes for the def just taken — the other candidates of the same pick with its stage and its footprint
-   * for rot (they fit the same lot), capacity ≥ minCap, best original weight first (≤ 3). create() builds the first
-   * whose variants are not all taken within VARIANT_SPREAD of the lot when the taken def's are (no rng draw).
+   * for rot (they fit the same lot) and another model, capacity ≥ minCap, best original weight first (≤ 3). create()
+   * builds the first whose variants are not all taken within VARIANT_SPREAD of the lot when the taken def's are (no rng
+   * draw).
    */
   const alts: BuildingDef[] = [];
   const altsFor = (def: BuildingDef, rot: number, minCap: number): BuildingDef[] => {
@@ -424,7 +429,7 @@ export function growthSystem(rt: EconRuntime): SimSystem {
       let bi = -1, bw = -1;
       for (let k = 0; k < defPick.length; k++) {
         const d = defPick[k];
-        if (d === def || (d.stage ?? 1) !== s || (d.capacity ?? 0) < minCap || alts.includes(d) || !(defW0[k] > bw)) continue;
+        if (d === def || d.model === def.model || (d.stage ?? 1) !== s || (d.capacity ?? 0) < minCap || alts.includes(d) || !(defW0[k] > bw)) continue;
         const [w2, d2] = rotatedFootprint(d, rot);
         if (w2 !== W || d2 !== D) continue;
         bw = defW0[k]; bi = k;
@@ -527,9 +532,9 @@ export function growthSystem(rt: EconRuntime): SimSystem {
   };
 
   /** a new growable; `hashVariant` (new code paths: wealth swaps) starts from a position hash instead of the one rng
-   *  draw of the phase-0 growth paths, so the rng stream of those paths is unchanged. TWINS: when every variant of `def`
-   *  stands within VARIANT_SPREAD of the lot, the first of `subs` (same stage and footprint, see altsFor) with a free
-   *  variant is built instead (same scan, no rng draw) */
+   *  draw of the phase-0 growth paths, so the rng stream of those paths is unchanged. TWINS: when every variant of `def`'s
+   *  model stands within VARIANT_SPREAD of the lot, the first of `subs` (same stage and footprint, another model, see
+   *  altsFor) with a free variant is built instead (same scan, no rng draw) */
   const create = (sim: Simulation, def: BuildingDef, x0: number, z0: number, W: number, D: number, rot: number, hasUtil: boolean, hashVariant = false, subs?: readonly BuildingDef[]): Building => {
     const st = sim.state;
     const N = st.size;
@@ -548,8 +553,8 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     let use = def, variant = 0;
     const ns = subs ? Math.min(3, subs.length) : 0;
     if (variants > 1 || ns > 0) {
-      VIDS[0] = def.id;
-      for (let k = 0; k < ns; k++) VIDS[k + 1] = subs![k].id;
+      VIDS[0] = def.model;
+      for (let k = 0; k < ns; k++) VIDS[k + 1] = subs![k].model;
       variantScan(st, VIDS, 1 + ns, x0, z0, W, D);
       variant = variants > 1 ? bestVariant(0, v0, variants) : 0;
       const twin = variants > 1 ? VBEST_D !== Infinity : VNEAR[0] !== Infinity;

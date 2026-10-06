@@ -65,7 +65,11 @@ export interface TierEngineOptions {
   wasm?: CatchWasm;
   /** also replace the numeric parts of accessCommuteLand / shopLand (default true) */
   accessFields?: boolean;
-  /** heap.reserve() this many bytes at install (a safe point) so pools grow without memory.grow */
+  /**
+   * heap.reserve() this many bytes at install (a safe point). Normally unnecessary: the binary is pre-sized (64 MiB,
+   * wasm/sim-kernels/src/build.rs) and a reserve beyond it GROWS memory, which invalidates V8's ArrayBuffer-detaching
+   * protector for the whole isolate (every JS typed-array loop slows down)
+   */
   reserveBytes?: number;
 }
 

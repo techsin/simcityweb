@@ -129,6 +129,52 @@ describe('bot: facilities', () => {
     expect(factories.filter((id) => !st.buildings.has(id)).length).toBeGreaterThan(0);
   });
 
+  it('clearing lots: nothing is bulldozed for a facility that cannot stand on the cleared site, and a failed site is skipped', { timeout: 600000 }, async () => {
+    const b = await bot(96);
+    b.setup();
+    const st = b.st, N = st.size, N1 = N + 1;
+    st.funds = 5e6;
+    st.unlocked.add('jail');
+    // one industrial block, built up with small workshops (stage 1: what placeByClearing may clear)
+    const blk = b.blocks.find((o) => o.use === 'I')!;
+    b.buildBlockRoads(blk);
+    blk.developed = true;
+    const ws = getDef('ind_workshop.id.1')!;
+    const [w, d] = ws.footprint;
+    for (let z = blk.z0; z + d <= blk.z1; z += d) for (let x = blk.x0; x + w <= blk.x1; x += w) {
+      let free = true;
+      for (let zz = z; zz < z + d && free; zz++) for (let xx = x; xx < x + w; xx++) if (st.building[zz * N + xx] >= 0 || st.network[zz * N + xx] || st.water[zz * N + xx]) { free = false; break; }
+      if (free) placeBuilding(b.sim, {
+        id: st.nextBuildingId++, def: ws.id, x, z, w, d, rot: 0, variant: 0, pop: 0, jobs: 5, capacity: ws.capacity ?? 5,
+        wealth: 2, built: 1, age: 400, flags: BF.Powered | BF.Watered, baseY: 1, health: 1, unhappy: 0,
+      });
+    }
+    const inBlk = (x: number, z: number) => x >= blk.x0 && x < blk.x1 && z >= blk.z0 && z < blk.z1;
+    const shops = () => [...st.buildings.values()].filter((o) => o.def === ws.id && inBlk(o.x, o.z)).length;
+    const n0 = shops();
+    expect(n0).toBeGreaterThan(4);
+    const only = (x: number, z: number) => inBlk(x, z);
+    const cx = (blk.x0 + blk.x1) >> 1, cz = (blk.z0 + blk.z1) >> 1;
+    // a hillside: every lot of the block is too steep for a prison (no plop check passes) — nothing is cleared
+    const hills = new Float32Array(st.heights);
+    for (let z = blk.z0; z <= blk.z1; z++) for (let x = blk.x0; x <= blk.x1; x++) st.heights[z * N1 + x] += 8 * (x - blk.x0);
+    expect(b.placeByClearing('civ_jail', cx, cz, Infinity, ['I'], only)).toBeNull();
+    expect(shops()).toBe(n0);
+    expect(b.log.some((l) => l.includes('could not build'))).toBe(false);
+    // levelled again: the sites tried on the hillside wait CLEAR_FAIL_DAYS, so the same call still clears nothing ...
+    st.heights.set(hills);
+    expect(b.placeByClearing('civ_jail', cx, cz, Infinity, ['I'], only)).toBeNull();
+    expect(shops()).toBe(n0);
+    // ... and two years later the prison goes up, on cleared workshop lots
+    st.day += 721;
+    const r = b.placeByClearing('civ_jail', cx, cz, Infinity, ['I'], only);
+    expect(r?.ok).toBe(true);
+    expect(shops()).toBeLessThan(n0);
+    const jail = [...st.buildings.values()].find((o) => o.def === 'civ_jail')!;
+    expect(inBlk(jail.x, jail.z)).toBe(true);
+    expect(lotTouchesRoad(st, jail.x, jail.z, jail.w, jail.d)).toBe(true);
+  });
+
   it('replaces pumps by a treatment plant in place when no land is left', { timeout: 600000 }, async () => {
     const b = await bot(96);
     b.setup();

@@ -17,11 +17,11 @@
  * engine installed before the Simulation is built (fair = JS kernels, wasm = SIMD binary with layers staged, scalar =
  * scalar binary, resident = SIMD with the CityState layers + need rasters adopted into wasm memory: zero copies).
  */
-import { allocJS, finalizeJS, reportJS, unionJS, type PhaseArgs } from '../../src/wasm/js/servicesTierEngine';
+import { allocEcacheJS, allocJS, finalizeJS, reportJS, unionJS, type PhaseArgs } from '../../src/wasm/js/servicesTierEngine';
 import { servicesBackendStats, type CatchWasm } from '../../src/wasm/kernels/servicesBind';
 import { installServicesTierEngine, type InstalledTierEngine } from '../../src/wasm/kernels/services';
 import { WasmHeap } from '../../src/wasm/heap';
-import { SIM_WASM_INITIAL_RESERVE } from '../../src/wasm/simWasm';
+import { SIM_WASM_INITIAL_RESERVE, simWasmImports } from '../../src/wasm/simWasm';
 import { adoptLayers } from '../../src/wasm/layers';
 import { deserializeCity, type SerializedCity } from '../../src/save/serialize';
 import { decodeBundle, unpackFile } from '../../src/save/bundle';
@@ -315,8 +315,9 @@ function maskDem(s: SlotCapture, sig: Float64Array, dem: Float64Array): Float64A
   return o;
 }
 
-/** fair-JS implementation (servicesTierEngine.ts kernels; e-cache alloc) */
-export function fairImpl(slots: SlotCapture[]): Impl {
+/** fair-JS implementation (servicesTierEngine.ts kernels; `ecache`: allocEcacheJS, the wasm port's alloc structure) */
+export function fairImpl(slots: SlotCapture[], ecache = false): Impl {
+  const allocK = ecache ? allocEcacheJS : allocJS;
   const C = slots[0]?.C ?? 0;
   const shared = slots.filter((s) => s.shared), union = slots.filter((s) => !s.shared);
   const ec = new Float64Array(C);
@@ -336,7 +337,7 @@ export function fairImpl(slots: SlotCapture[]): Impl {
       const a = st.get(s)!.a;
       a.u.fill(1); a.A.fill(0); a.cov.fill(0); a.cursor = 0; a.work = 0; a.left = 0;
       a.o1 = sig.get(s)!; a.o2 = seat.get(s)!; a.o3 = st.get(s)!.a.o3;
-      allocJS(a);
+      allocK(a);
     }
   };
   const union1 = () => {
@@ -358,7 +359,7 @@ export function fairImpl(slots: SlotCapture[]): Impl {
   };
   alloc(); union1();
   return {
-    label: 'fair JS',
+    label: ecache ? 'fair JS (e-cache alloc)' : 'fair JS',
     alloc, union: union1, report: report1,
     finalize: () => { for (const s of slots) { const x = st.get(s)!; finalizeJS(C, x.a.cov, x.layer, false, s.needL, x.a.A, x.fin); } },
     allocOut: () => { alloc(); return shared.flatMap((s) => { const a = st.get(s)!.a; return [sig.get(s)!, seat.get(s)!, a.o3, a.u, a.A, a.cov]; }); },
@@ -472,8 +473,8 @@ export function replayAB(a: Impl, b: Impl, slots: SlotCapture[], opts: AbOptions
 const fmt = (ms: number): string => (ms >= 1 ? ms.toFixed(2) + ' ms' : (ms * 1000).toFixed(0) + ' µs');
 
 // ------------------------------------------------------------------------------------------------ benchmark arms
-export type ArmKind = 'orig' | 'fair' | 'wasm' | 'scalar' | 'resident' | 'staged';
-/** replay arms: orig / fair / wasm (resident slot data) / staged (need raster copied in per call) / scalar */
+export type ArmKind = 'orig' | 'fair' | 'fairEcache' | 'wasm' | 'scalar' | 'resident' | 'staged';
+/** replay arms: orig / fair / fairEcache (fair JS with the e-cache alloc) / wasm (resident slot data) / staged (need raster copied in per call) / scalar */
 export const REPLAY_FAMILIES = ['alloc', 'union', 'report', 'finalize'] as const;
 export type ReplayFamily = (typeof REPLAY_FAMILIES)[number];
 
@@ -524,7 +525,15 @@ export function makeProtectorProbe(): (() => boolean) | null {
     const status = new Function('f', 'return %GetOptimizationStatus(f);') as (f: unknown) => number;
     prep(probe, ta);
     const s0 = status(probe);
-    return () => { probe(ta); return status(probe) === s0; };
+    // latched: after an invalidation the probe deoptimizes, and V8 may later RE-optimize it (with explicit detach
+    // checks), which would read as intact again — the protector itself never recovers
+    let intact = true;
+    return () => {
+      if (!intact) return false;
+      probe(ta);
+      intact = status(probe) === s0;
+      return intact;
+    };
   } catch {
     return null;
   }
@@ -539,7 +548,7 @@ export function invalidateProtector(): void {
 
 /** a kernel instance from bytes, with the loader's start-up reserve (no memory.grow on the pre-sized binary) */
 export function instanceFrom(bytes: Uint8Array): CatchWasm {
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes as Uint8Array<ArrayBuffer>), {});
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes as Uint8Array<ArrayBuffer>), simWasmImports());
   const ex = inst.exports as unknown as CatchWasm['ex'] & { memory: WebAssembly.Memory; __heap_base: WebAssembly.Global };
   const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
   heap.reserve(SIM_WASM_INITIAL_RESERVE);
@@ -609,7 +618,7 @@ export class BenchArm {
       a.st = st; a.sim = sim; a.svc = svc;
       a.slots = captureSlots(svc, st.cells, (k, b) => (k === 8 ? infoOf(st, b as never).covStrength : infoOf(st, b as never).tierStrength));
       const ref = origImpl(a.slots);
-      a.impl = cfg.kind === 'orig' ? ref : cfg.kind === 'fair' ? fairImpl(a.slots)
+      a.impl = cfg.kind === 'orig' ? ref : cfg.kind === 'fair' ? fairImpl(a.slots) : cfg.kind === 'fairEcache' ? fairImpl(a.slots, true)
         : wasmImpl(a.w!, a.slots, cfg.kind === 'staged' ? 'wasm SIMD, need raster staged per call' : cfg.kind, cfg.kind === 'staged');
       if (a.impl !== ref) {
         const bad = checkImpl(ref, a.impl);

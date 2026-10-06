@@ -8,9 +8,14 @@
  *    for the life of the city: kernels use it in place, cached reaches are read in place, nothing is copied per pass;
  *  - inputs owned by the sim are used in place when they live in wasm memory (adoptLayers) and STAGED otherwise:
  *      need rasters     copied once per pass (services writes them only in prep; TierEngine.beginPass),
- *      network / water  copied once per scheduler step, and only when a fresh reach needs them (catch_search status 3),
+ *      network / water  copied at most once per scheduler step (every installed step method calls beginStep(), and the
+ *                       sim edits these arrays in place only between steps), and only when a fresh reach needs them
+ *                       (catch_search status 3); the access-field chamfer (accessLand) re-copies the network on every
+ *                       call — it runs in steps of its own (S_ACC_LAND, S_SHOP_B), after a possible road edit,
  *      layers / fields  copied in (when read) and out per call;
  *    every staging buffer is allocated up front in `prepare()` (engine.ensure), so a kernel call never allocates;
+ *    `release()` frees them (re-prepare, migration to JS memory, TierEngine.dispose);
+ *  - the engine's space (wasmSpace) tracks its blocks: TierEngine.dispose() returns all of them to the WasmHeap;
  *  - scalars go through two small parameter blocks (i32 + f64) at fixed indices (CATCH_LAYOUT, mirrored from catch.rs).
  * Fallbacks: no instance (wasm unavailable, or preference 'js' for kernel 'services') -> the JS kernels run on the same
  * buffers (views of wasm memory); a network code outside the cost tables -> catch_search returns status 2 and the rest

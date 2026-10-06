@@ -27,7 +27,7 @@ import { schedulerOf } from '../../src/sim/infra/scheduler';
 import { removeBuilding } from '../../src/sim/economy/buildings';
 import { deserializeCity, type SerializedCity } from '../../src/save/serialize';
 import { unpackFile } from '../../src/save/bundle';
-import { initSimWasmSync, setSimWasmPreference, SIM_WASM_INITIAL_RESERVE } from '../../src/wasm/simWasm';
+import { initSimWasmSync, setSimWasmPreference, SIM_WASM_INITIAL_RESERVE, simWasmImports } from '../../src/wasm/simWasm';
 import { WasmHeap } from '../../src/wasm/heap';
 import { adoptLayers } from '../../src/wasm/layers';
 import {
@@ -289,7 +289,7 @@ describe('services tier engine kernels', () => {
         });
       }
       const ref = origImpl(slots);
-      for (const x of [fairImpl(slots), wasmImpl(wasm, slots, 'wasm')]) expect(checkImpl(ref, x), `N=${N} ${x.label}`).toEqual([]);
+      for (const x of [fairImpl(slots), fairImpl(slots, true), wasmImpl(wasm, slots, 'wasm')]) expect(checkImpl(ref, x), `N=${N} ${x.label}`).toEqual([]);
     }
   });
 
@@ -591,7 +591,7 @@ describe('services tier engine installed into the live ServicesSystem', () => {
   it('a full heap (pinned views, no room to grow) migrates the engine to JS memory without changing results', { timeout: 900000 }, () => {
     // a private instance with a small, non-growable reservation: adopted layers pin views, so pool growth must fail
     const bytes = readFileSync(join(process.cwd(), 'src', 'wasm', 'sim_kernels.wasm'));
-    const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), {});
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), simWasmImports());
     const ex = inst.exports as unknown as CatchWasm['ex'] & { memory: WebAssembly.Memory; __heap_base: WebAssembly.Global };
     const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
     const w: CatchWasm = { ex, memory: ex.memory, heap };
@@ -795,7 +795,7 @@ describe('revision fixes: staged network, dispose, fault hand-over, pre-sized me
 
   it('the committed binary is pre-sized: its initial memory covers the loader reserve and a 256² engine', () => {
     const bytes = readFileSync(join(process.cwd(), 'src', 'wasm', 'sim_kernels.wasm'));
-    const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), {});
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), simWasmImports());
     const ex = inst.exports as unknown as { memory: WebAssembly.Memory; __heap_base: WebAssembly.Global; sk_initial_memory(): number };
     expect(ex.sk_initial_memory()).toBeGreaterThanOrEqual(64 << 20);
     expect(ex.memory.buffer.byteLength).toBe(ex.sk_initial_memory());
@@ -853,7 +853,7 @@ describe.skipIf(FIXTURES.length === 0)('real profiler fixtures', () => {
       const bytes = new Uint8Array(readFileSync(file));
       const load = async () => deserializeCity((await unpackFile(bytes)) as SerializedCity);
       const wb = readFileSync(join(process.cwd(), 'src', 'wasm', 'sim_kernels.wasm'));
-      const inst = new WebAssembly.Instance(new WebAssembly.Module(wb), {});
+      const inst = new WebAssembly.Instance(new WebAssembly.Module(wb), simWasmImports());
       const ex = inst.exports as unknown as CatchWasm['ex'] & { memory: WebAssembly.Memory; __heap_base: WebAssembly.Global };
       const heap = new WasmHeap(ex.memory, Number(ex.__heap_base.value));
       heap.reserve(SIM_WASM_INITIAL_RESERVE); // the loader's start-up reserve

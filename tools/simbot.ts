@@ -111,6 +111,13 @@ export const JAIL_GAP = 12;
 const GARB_RANGE_MIN_T = 10;
 /** small parks a school or clinic may replace when a built-up district has no other lot (placeByClearing) */
 const POCKET_PARKS = new Set(['park_small', 'park_plaza', 'park_playground']);
+/** a placeByClearing site the facility cannot stand on is not tried again for this many days */
+const CLEAR_FAIL_DAYS = 720;
+/** a prison when this share of the sentenced has no bed (the first one: JAIL_OVERFLOW_FIRST, PART_B §5 WP6a "a jail when
+ *  justice.overflow > 0.25"); once one stands the next is built at JAIL_OVERFLOW_MORE, so overflow stays within WP6b's
+ *  "≤ 0.2 from year 20" gate (at 0.25 the 256x60 bots sat at 0.23-0.24 for years: s7 2057, s11 2054) */
+export const JAIL_OVERFLOW_FIRST = 0.25;
+export const JAIL_OVERFLOW_MORE = 0.15;
 
 export class SimBot {
   sim: Simulation;
@@ -528,7 +535,14 @@ export class SimBot {
             cost += o.pop + o.jobs + 1;
           }
           if (!ok || (best && cost >= best.cost)) continue;
-          best = { x: lx, z: lz, rot, cost, olds };
+          // a site that failed after clearing before is skipped for CLEAR_FAIL_DAYS; a new best must pass the plop check
+          // as if it were cleared (slope, water, a road along the lot, money), so nothing is bulldozed for a facility
+          // that cannot stand there (256x60 s11: 28 times 'cleared 1 small lots at 251,131 but could not build')
+          const key = `${defId}@${lx},${lz},${rot}`;
+          if ((this.clearFailed.get(key) ?? -1) > st.day) continue;
+          const pre = this.clearedPlopRot(defId, lx, lz, w, d, rot, olds);
+          if (pre < 0) { this.clearFailed.set(key, st.day + CLEAR_FAIL_DAYS); continue; }
+          best = { x: lx, z: lz, rot: pre as 0 | 1 | 2 | 3, cost, olds };
         }
       }
     }
@@ -547,8 +561,34 @@ export class SimBot {
         return r;
       }
     }
+    this.clearFailed.set(`${defId}@${best.x},${best.z},${best.rot}`, st.day + CLEAR_FAIL_DAYS);
     this.say(`cleared ${best.olds.length} small lots at ${best.x},${best.z} but could not build a ${def.name} there`);
     return null;
+  }
+  /** placeByClearing sites (def @ x,z,rot) that failed: skipped until the day stored */
+  private clearFailed = new Map<string, number>();
+  /**
+   * the rotation (rot, else its opposite: the same footprint) at which defId would plop on lot (x, z, w, d) once the
+   * buildings `olds` are gone, with no warning (a road along the lot), else -1: the plop preview runs with the lot's
+   * cells of `olds` marked free for the call (the real check: bounds, roads / rails, water, slope, money, road access)
+   */
+  clearedPlopRot(defId: string, x: number, z: number, w: number, d: number, rot: number, olds: readonly Building[]): number {
+    const st = this.st, N = this.N;
+    const saved: number[] = [];
+    for (let zz = z; zz < z + d; zz++) for (let xx = x; xx < x + w; xx++) {
+      const i = zz * N + xx, id = st.building[i];
+      if (id >= 0 && olds.some((o) => o.id === id)) { saved.push(i, id); st.building[i] = -1; }
+    }
+    let out = -1;
+    try {
+      for (const r of [rot, (rot + 2) & 3] as (0 | 1 | 2 | 3)[]) {
+        const p = this.A.plop(defId, x, z, r, true);
+        if (p.ok && !p.reason) { out = r; break; }
+      }
+    } finally {
+      for (let k = 0; k < saved.length; k += 2) st.building[saved[k]] = saved[k + 1];
+    }
+    return out;
   }
 
   /** a bus stop on a free frontage cell of block b (avenue sides first, from the middle of each side); its cell or null */
@@ -1301,14 +1341,16 @@ export class SimBot {
   }
 
   // ------------------------------------------------------------------------------------------ justice
-  /** WP6-3: a prison when more than 25 % of sentenced offenders find no bed — in an industrial / utility block, never
+  /** WP6-3: a prison when more than 25 % of sentenced offenders find no bed (15 % once a prison stands: JAIL_OVERFLOW_MORE)
+   *  — in an industrial / utility block, never
    *  within 12 cells of wealthy (R$$$) homes (stigma, crime spill). It runs before zoning: a prison is lumpy ($12k) and
    *  a growing town's income goes to new blocks, so it may use the investment reserve, and while it is short its price
    *  is held back from zoning (an overflowing justice system costs every police station up to 30 % of its effect). */
   ensureJustice(): void {
     const st = this.st, j = st.stats.justice;
     this.jailHold = 0;
-    if (!j || !(j.overflow > 0.25) || !st.unlocked.has('jail') || (this.svcRetry.get('jail') ?? -1) > st.day) {
+    const limit = this.count('civ_jail') > 0 ? JAIL_OVERFLOW_MORE : JAIL_OVERFLOW_FIRST;
+    if (!j || !(j.overflow > limit) || !st.unlocked.has('jail') || (this.svcRetry.get('jail') ?? -1) > st.day) {
       this.jailSaving = false;
       return;
     }

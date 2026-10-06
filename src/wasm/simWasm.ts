@@ -19,6 +19,10 @@
  * is unavailable — for A/B runs that must not silently measure JS). Global or per kernel. Sources: env SIM_WASM
  * (node), URL ?simwasm=… or localStorage 'metropolis.simwasm' (browser), setSimWasmPreference(). Syntax:
  * "js" | "wasm" | "auto" | "0" | "1", optionally followed by per-kernel entries: "auto,blur:js", "js,blur:wasm".
+ *
+ * Imports: the binary imports the engine's own Math.exp / Math.log (env.js_exp / env.js_log, used by the traffic core),
+ * so kernels and JS compute identical values on every engine by construction. Every instantiation of the binary —
+ * here, in tests and in benchmarks — must pass simWasmImports().
  */
 import { WasmHeap, WasmHeapFullError } from './heap';
 
@@ -28,6 +32,16 @@ export const SIM_WASM_ABI = 1;
 export const SIM_WASM_FILE = 'sim_kernels.wasm';
 /** scratch bytes reserved at init: copy-mode staging for a 256² map never grows memory */
 export const SIM_WASM_INITIAL_RESERVE = 4 << 20;
+
+/**
+ * The import object of sim_kernels.wasm: env.js_exp = Math.exp, env.js_log = Math.log — the ENGINE'S functions, so a
+ * kernel's exp / log is the JS original's on every engine (V8, SpiderMonkey, JavaScriptCore) by construction. Pass it
+ * to every instantiation (new WebAssembly.Instance(mod, simWasmImports()), WebAssembly.instantiate*(…, simWasmImports()));
+ * a binary without imports ignores it. A fresh object each call (callers may add entries).
+ */
+export function simWasmImports(): { env: { js_exp: (x: number) => number; js_log: (x: number) => number } } {
+  return { env: { js_exp: Math.exp, js_log: Math.log } };
+}
 
 export type SimWasmPreference = 'auto' | 'js' | 'wasm';
 export type SimWasmState = 'idle' | 'loading' | 'ready' | 'failed' | 'unavailable';
@@ -270,10 +284,10 @@ export function initSimWasmSync(source?: BufferSource | WebAssembly.Module): boo
   const t0 = now();
   try {
     if (source instanceof WebAssembly.Module) {
-      adopt(finish(new WebAssembly.Instance(source, {}), 'module', 0, t0));
+      adopt(finish(new WebAssembly.Instance(source, simWasmImports()), 'module', 0, t0));
     } else if (source !== undefined) {
       const mod = new WebAssembly.Module(source);
-      adopt(finish(new WebAssembly.Instance(mod, {}), 'bytes', source.byteLength, t0));
+      adopt(finish(new WebAssembly.Instance(mod, simWasmImports()), 'bytes', source.byteLength, t0));
     } else {
       const f = nodeReadWasm();
       if (!f) {
@@ -281,7 +295,7 @@ export function initSimWasmSync(source?: BufferSource | WebAssembly.Module): boo
         return false;
       }
       const mod = new WebAssembly.Module(f.bytes as Uint8Array<ArrayBuffer>);
-      adopt(finish(new WebAssembly.Instance(mod, {}), f.path, f.bytes.byteLength, t0));
+      adopt(finish(new WebAssembly.Instance(mod, simWasmImports()), f.path, f.bytes.byteLength, t0));
     }
     return true;
   } catch (e) {
@@ -302,20 +316,20 @@ async function instantiateResponse(res: Response, label: string, t0: number, ref
   const size = Number(res.headers.get('content-length') ?? 0);
   if (typeof WebAssembly.instantiateStreaming === 'function' && type.toLowerCase().startsWith('application/wasm')) {
     try {
-      const r = await WebAssembly.instantiateStreaming(res, {});
+      const r = await WebAssembly.instantiateStreaming(res, simWasmImports());
       return finish(r.instance, label, size, t0);
     } catch (e) {
       // streaming compile failed after the body was consumed: fetch again and use the buffered path
       if (!refetch) throw e;
       const again = await fetch(refetch);
       const bytes = await again.arrayBuffer();
-      const r = await WebAssembly.instantiate(bytes, {});
+      const r = await WebAssembly.instantiate(bytes, simWasmImports());
       return finish(r.instance, label, bytes.byteLength, t0);
     }
   }
   // wrong / missing MIME type (static hosts serving application/octet-stream): buffered compile
   const bytes = await res.arrayBuffer();
-  const r = await WebAssembly.instantiate(bytes, {});
+  const r = await WebAssembly.instantiate(bytes, simWasmImports());
   return finish(r.instance, label, bytes.byteLength, t0);
 }
 

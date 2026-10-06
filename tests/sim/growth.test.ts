@@ -82,6 +82,20 @@ describe('growth: plopped buildings', () => {
     // outside VARIANT_SPREAD nothing counts
     expect(spreadVariant(st, def, 10 + VARIANT_SPREAD + 2, 10, 1, 1, 0, 3)).toBe(0);
   });
+
+  it('twins are matched by model: two defs sharing a model and variant look identical, so they count', () => {
+    const { st, sim } = makeCity({ size: 32 });
+    // the stage-3 and stage-4 walk-ups (and the R$ stage-2 / R$$ stage-1 cottages) are one model each
+    const s3 = getDef('res_walkup.r1.3')!, s4 = getDef('res_walkup.r1.4')!;
+    expect(s3.model).toBe(s4.model);
+    expect(getDef('res_cottage.r1.2')!.model).toBe(getDef('res_cottage.r2.1')!.model);
+    placeBuilding(sim, growable(st, s4.id, 10, 10, 0));
+    placeBuilding(sim, growable(st, s4.id, 12, 10, 1));
+    // a stage-3 walk-up next to them steps past the variants its stage-4 neighbours show
+    expect(spreadVariant(st, s3.id, 11, 10, 1, 1, 0, 4)).toBe(2);
+    // another model is no twin: a cottage keeps its start variant
+    expect(spreadVariant(st, 'res_cottage.r1.2', 11, 12, 1, 1, 0, 4)).toBe(0);
+  });
 });
 
 describe('growth: grown towns', () => {

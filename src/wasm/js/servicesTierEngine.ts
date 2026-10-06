@@ -11,8 +11,9 @@
  *  2. a valid cached reach is read IN PLACE from the slot's persistent pool (the original copies every cached reach into
  *     the next pass's pool: 1.28M entries ~ 10 MB per pass on the dense 1M city); fresh / invalid reaches are appended,
  *     the pool is compacted when dead segments exceed 50 %;
- *  3. allocSeats loop 1 caches e = min(u, a) per entry (cells are unique within one reach, so loop 2 would recompute
- *     exactly the same e);
+ *  3. allocSeats: the wasm port caches e = min(u, a) per entry in loop 1 (cells are unique within one reach, so loop 2
+ *     would recompute exactly the same e); in JS that store / load is slower than recomputing (0.91x), so the JS kernel
+ *     keeps the original two loops (allocEcacheJS is the e-cache form) — each side runs its faster exact variant;
  *  4. infoOf(st, b) is hoisted into per-facility strength / radius / metric arrays (a building's def never changes);
  *  5. every phase runs as a batch over facilities with the scheduler's work accounting (U_SEARCH / U_COPY / U_ENTRY,
  *     WORK_PER_STEP) done in the kernel in the JS order, so each scheduler step stops at exactly the same facility.
@@ -471,8 +472,60 @@ export function unionJS(a: PhaseArgs): void {
   a.cursor = cursor; a.work = work; a.left = left;
 }
 
-/** allocSeats for facilities order[cursor..n) while work < limit (e-cache variant; arithmetic of services.ts 24f8609) */
+/**
+ * allocSeats for facilities order[cursor..n) while work < limit (arithmetic and loop order of services.ts 24f8609).
+ * JS keeps the original two loops: loop 2 RECOMPUTES e = min(u, a) — the same value loop 1 used, since a reach's cells
+ * are unique (u[i] changes once per facility). The wasm port caches e in loop 1 instead (1.08x there); in JS the extra
+ * f64 store / load per entry measured 0.91x [0.89, 0.92] (dense1m replay, protector intact), so each side runs its own
+ * faster exact variant. `allocEcacheJS` below is the e-cache form (tests / benchmarks).
+ */
 export function allocJS(a: PhaseArgs): void {
+  const nf = a.nFac, order = a.order, fs = a.fs, fe = a.fe, str = a.str, op = a.op, cap = a.cap;
+  const pIdx = a.idx, pW = a.w, needL = a.need, u = a.u, A = a.A, cov = a.cov, sigO = a.o1, seatO = a.o2, DO = a.o3;
+  let cursor = a.cursor, work = a.work, left = a.left;
+  const limit = a.limit;
+  while (cursor < nf) {
+    const c = order[cursor++];
+    const s0 = fs[c], s1 = fe[c];
+    sigO[c] = 1; seatO[c] = 0;
+    let uw: number;
+    if (s1 <= s0) { DO[c] = 0; uw = 4; }
+    else {
+      const s = str[c];
+      let D = 0;
+      for (let q = s0; q < s1; q++) {
+        const i = pIdx[q];
+        const aq = pW[q] * s;
+        A[i] += aq;
+        const ui = u[i];
+        D += needL[i] * (ui < aq ? ui : aq);
+      }
+      const S = cap[c];
+      const sig = S < Infinity && D > S ? S / D : 1;
+      const rho = sig * op[c];
+      if (sig > 0) {
+        for (let q = s0; q < s1; q++) {
+          const i = pIdx[q];
+          const aq = pW[q] * s;
+          const ui = u[i];
+          const e = ui < aq ? ui : aq;
+          if (!(e > 0)) continue;
+          const lf = ui - e * sig;
+          u[i] = lf > 0 ? lf : 0;
+          cov[i] += e * rho;
+        }
+      }
+      sigO[c] = sig; seatO[c] = D * sig; DO[c] = D;
+      uw = 2 * (s1 - s0) * U_ENTRY + 8;
+    }
+    work += uw; left -= uw;
+    if (!(work < limit)) break;
+  }
+  a.cursor = cursor; a.work = work; a.left = left;
+}
+
+/** allocSeats, e-cache form (the structure of catch_alloc): loop 1 stores e = min(u, a) per entry, loop 2 reads it */
+export function allocEcacheJS(a: PhaseArgs): void {
   const nf = a.nFac, order = a.order, fs = a.fs, fe = a.fe, str = a.str, op = a.op, cap = a.cap;
   const pIdx = a.idx, pW = a.w, needL = a.need, u = a.u, A = a.A, cov = a.cov, sigO = a.o1, seatO = a.o2, DO = a.o3, ec = a.ec;
   let cursor = a.cursor, work = a.work, left = a.left;
@@ -1258,10 +1311,11 @@ export class TierEngine {
       this.stats.fresh += a.nFresh; this.stats.cached += a.nCached;
       cursor = a.cursor; work = a.work; left = a.left;
       if (status !== 1) break;
-      // the pool has no room for a fresh reach: reclaim the dead segments first (a cold pass re-searches every road
-      // reach, so half the pool turns dead mid-pass), grow only if that is not enough. Compaction moves segments: the
-      // ranges of the facilities searched so far in this slot are re-read from their records (same entries, same order).
-      if (this.compact(S, true)) {
+      // the pool has no room for a fresh reach: reclaim the dead segments first when they amount to at least one map's
+      // worth (a cold pass re-searches every road reach, so half the pool turns dead mid-pass; the threshold keeps the
+      // number of compactions per pass low), grow only if that is not enough. Compaction moves segments: the ranges of
+      // the facilities searched so far in this slot are re-read from their records (same entries, same order).
+      if (S.dead >= this.C && this.compact(S, true)) {
         const fs = this.fs.v, fe = this.fe.v, rec = this.rec.v, al = this.alive.v, rs = S.recStart.v, re = S.recEnd.v;
         for (let c = 0; c < cursor; c++) {
           if (al[c] !== 0 && rec[c] >= 0) { fs[c] = rs[rec[c]]; fe[c] = re[rec[c]]; } else { fs[c] = 0; fe[c] = 0; }

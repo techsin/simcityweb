@@ -15,12 +15,19 @@
  * re-pointed at the core's arrays (views into wasm memory for the wasm core) at every phase and whenever the core
  * reports that its arrays moved (reallocation / memory growth), so the original JS that still reads them (finalize2,
  * buildSampleRoutes, findPath, nodeTimes, tests) is unchanged.
+ *
+ * Cycle restart: step() is wrapped too. When a wasm kernel trapped after it may have written cycle state (roundMatch,
+ * commute: trafficBind.ts throws TrafficCycleAbortError; the trap was already reported and the core runs JS from then
+ * on), the step ends there and the cycle starts again from prep: every per-cycle array is rebuilt from the city, and
+ * nothing persistent was touched (the per-id scatters below run only after a kernel returned; finalize, the one kernel
+ * writing a persistent layer, restores a snapshot instead of aborting). Shopping / freight / inbound are recomputed in
+ * the new cycle (their cached volumes may be part of the discarded cycle).
  */
 import type { Arrs } from '../js/trafficCore';
 import { TRAFFIC_ARRAYS, type Cls, type NetworkEnum, type TrafficCoreApi, type TrafficParamsModule } from './trafficLayout';
 
 /** phase ids of traffic.ts 24f8609 */
-const PH_RSEARCH = 3, PH_COMMUTE = 5;
+const PH_PREP = 0, PH_RSEARCH = 3, PH_COMMUTE = 5;
 /** traffic.ts MAX_ENTRIES: entry nodes per building and role */
 const MAX_ENTRIES_24F8609 = 12;
 const IND_KEYS = ['IA', 'ID', 'IM', 'IHT'] as const;
@@ -66,7 +73,12 @@ export interface TrafficCoreHandle {
   mirror(): void;
   /** remove the overrides (the fields keep the core's arrays) */
   uninstall(): void;
+  /** cycles restarted after a kernel trap (TrafficCycleAbortError) */
+  readonly restarts: number;
 }
+
+/** trafficBind.ts TrafficCycleAbortError (matched by name: the driver does not import the wasm binding) */
+const isCycleAbort = (e: unknown): boolean => e instanceof Error && e.name === 'TrafficCycleAbortError';
 
 function growU8(a: Uint8Array, n: number): Uint8Array {
   if (a.length >= n) return a;
@@ -535,6 +547,24 @@ export function installTrafficCore(trObj: object, deps: TrafficDriverDeps, core:
     mirror();
   };
 
+  // ------------------------------------------------------------------------------------------ STEP (cycle restart)
+  let restarts = 0;
+  const baseStep = tr.step as (this: Any, sim: Any) => void;
+  const ownStep = Object.getOwnPropertyDescriptor(tr, 'step');
+  o.step = function step(this: Any, sim: Any): void {
+    try {
+      baseStep.call(this, sim);
+    } catch (e) {
+      if (!isCycleAbort(e)) throw e;
+      // discard this cycle's state: restart from prep (the core runs JS now); cached shop / freight / inbound volumes
+      // may be half of the discarded cycle -> recompute them
+      restarts++;
+      this.phase = PH_PREP;
+      this.rebuiltInCycle = false;
+      this.sfVersion = -1;
+    }
+  };
+
   o.finalize2 = function finalize2(this: Any, sim: Any): void {
     mirror();
     return proto.finalize2.call(this, sim);
@@ -596,6 +626,8 @@ export function installTrafficCore(trObj: object, deps: TrafficDriverDeps, core:
     uninstall() {
       active = false;
       for (const k of Object.keys(o)) delete tr[k];
+      if (ownStep) Object.defineProperty(tr, 'step', ownStep);
     },
+    get restarts() { return restarts; },
   };
 }
