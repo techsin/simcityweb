@@ -3,6 +3,8 @@ name = "sim-kernels"
 version = "0.1.0"
 edition = "2024"
 publish = false
+# pre-sizes the wasm linear memory (see the file); under src/ so the build-wasm source hash covers it
+build = "src/build.rs"
 description = "Metropolis simulation kernels compiled to wasm32 (raw exports, no wasm-bindgen, no external crates)"
 
 [lib]

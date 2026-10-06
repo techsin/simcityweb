@@ -12,6 +12,19 @@ pub extern "C" fn sk_abi_version() -> u32 {
     ABI_VERSION
 }
 
+/// Initial linear memory of this binary in bytes (src/build.rs pre-sizes it so the heap never grows on a 256² city:
+/// `memory.grow` detaches ArrayBuffers, which invalidates V8's detaching protector for the whole isolate).
+pub const INITIAL_MEMORY_BYTES: u32 = match u32::from_str_radix(env!("SK_INITIAL_MEMORY"), 10) {
+    Ok(v) => v,
+    Err(_) => panic!("SK_INITIAL_MEMORY must be a decimal byte count"),
+};
+
+/// Initial linear memory the binary was linked with (bytes; the loader compares it with memory.buffer.byteLength).
+#[unsafe(no_mangle)]
+pub extern "C" fn sk_initial_memory() -> u32 {
+    INITIAL_MEMORY_BYTES
+}
+
 /// Build feature bits: 1 = simd128, 2 = linked with std (size experiment), 4 = bulk-memory, 8 = nontrapping-fptoint,
 /// 16 = sign-ext, 32 = atomics (shared-memory build).
 #[unsafe(no_mangle)]

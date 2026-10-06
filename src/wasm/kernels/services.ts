@@ -5,8 +5,10 @@
  * runtime), everything else of the system keeps running as is.
  *
  *   const systems = createSystems();
- *   installServicesTierEngine(systems.find((s) => s.name === 'services') as ServicesSystem);   // before new Simulation()
+ *   const svc = installServicesTierEngine(systems.find((s) => s.name === 'services') as ServicesSystem);   // before new Simulation()
  *   const sim = new Simulation(state, systems);
+ *   ...
+ *   svc.dispose();   // city unload / scene dispose (or disposeServicesTierEngine(system)): frees the engine's wasm memory
  *
  * Overridden (ported to the engine; bit-identical results, identical scheduler step boundaries):
  *   tierWork          P_INIT / P_SEARCH (reachOf + splatUnion) / P_ALLOC / P_REPORT / P_FINAL as engine batches
@@ -16,12 +18,27 @@
  *   finishTransit     stop list + stop rules in JS (collectStops, def-coverage / serving skips, radius by mode), the
  *                     coverage disks + combine in the kernel
  *   footprints        the max / fill loops in the kernel
- *   finish            the legacy-combo loop in the kernel, the rest verbatim (stats.needs, stale records, EQ / HQ)
+ *   finish            the legacy-combo loop in the kernel, the rest verbatim (per-building stats.needs pass, stale
+ *                     records, EQ / HQ)
  *   accessCommuteLand, shopLand   chamfer / block sums / box3 / bilinear taps in the kernel, building walks in JS
  * Install BEFORE the Simulation is constructed (init runs the first pass): both engines then start from empty caches,
  * so the work estimates — and with them the scheduler — match the original exactly.
  *
- * Reference: services.ts at commit 24f8609 (+ the transit-slot stop rules of the live transit.ts, feature-detected).
+ * Staged inputs: every installed step method starts a new staging step (kernels.beginStep), so a network / water copy
+ * is never reused across scheduler steps (road edits happen between steps); the access-field chamfer always re-copies.
+ *
+ * Lifecycle / memory: the engine's arrays (≈ 20–40 MiB of wasm memory on a 256² city) belong to one ServicesSystem.
+ * dispose() restores the original methods and returns every block to the shared WasmHeap; installing again on the same
+ * system disposes the previous engine; a ServicesSystem that is garbage-collected without dispose() has its engine freed
+ * by a FinalizationRegistry (a safety net only: GC timing is unbounded, call dispose() on unload).
+ *
+ * Kernel fault (a trap = a bug): the original methods take over IN THE SAME PASS — a fault inside the tier steps
+ * restarts the current tier slot on the original engine (the slots the engine finished are bit-identical), a fault in a
+ * later step runs the original method of that step — and the next pass is forced (lastRun, dirty, accessDirty,
+ * nimbyDirty), so anything a partial in-place write may have touched is recomputed by the original code within a day.
+ *
+ * Reference: services.ts at commit 24f8609 (+ the transit-slot stop rules of the live transit.ts, feature-detected, and
+ * the per-building stats.needs pass of 233ea41).
  */
 import type { Simulation } from '../../sim/Simulation';
 import type { Building, CityState, NeedStat, NeedTier } from '../../sim/CityState';
@@ -55,11 +72,37 @@ export interface TierEngineOptions {
 export interface InstalledTierEngine {
   readonly engine: TierEngine;
   readonly backend: TierBackend;
-  /** false after uninstall() or a kernel fault (the original methods are back) */
+  /** false after dispose() / uninstall() or a kernel fault (the original methods are back) */
   readonly active: boolean;
   /** the fault that uninstalled the engine, if any */
   readonly fault: Error | null;
+  /** restore the original methods (mid-pass safe) and free the engine's memory */
+  dispose(): void;
+  /** alias of dispose() */
   uninstall(): void;
+}
+
+/** the installed engine of each system (re-install, disposeServicesTierEngine) */
+const installedOf = new WeakMap<object, InstalledTierEngine>();
+
+/**
+ * Safety net for a city unloaded without dispose(): when its ServicesSystem is garbage-collected, the engine's blocks
+ * go back to the WasmHeap. The held value is the engine only (it holds no reference to the system).
+ */
+const reclaim: FinalizationRegistry<TierEngine> | null =
+  typeof FinalizationRegistry === 'function' ? new FinalizationRegistry<TierEngine>((e) => { if (!e.disposed) e.dispose(); }) : null;
+
+/** the engine installed into `system` (undefined: none, or disposed) */
+export function servicesTierEngineOf(system: ServicesSystem): InstalledTierEngine | undefined {
+  return installedOf.get(system);
+}
+
+/** dispose the engine installed into `system` (city unload / scene dispose); false when none is installed */
+export function disposeServicesTierEngine(system: ServicesSystem): boolean {
+  const inst = installedOf.get(system);
+  if (!inst) return false;
+  inst.dispose();
+  return true;
 }
 
 // services.ts @ 24f8609 (module-private there)
@@ -73,6 +116,10 @@ const OVERRIDDEN = ['tierWork', 'prep', 'invalidateReach', 'workOf', 'finishTran
 /** the private surface of ServicesSystem the engine drives (24f8609 field names) */
 interface Svc {
   stepIdx: number;
+  lastRun: number;
+  dirty: boolean;
+  accessDirty: boolean;
+  nimbyDirty: boolean;
   tierSlot: number;
   tierPhase: number;
   cursor: number;
@@ -149,6 +196,8 @@ function backendOf(opts: TierEngineOptions): { kernels: TierKernels; space: Spac
 
 /** install the engine into `system` (see the file header); throws when the live constants are unusable */
 export function installServicesTierEngine(system: ServicesSystem, opts: TierEngineOptions = {}): InstalledTierEngine {
+  // one engine per system: a second install replaces (and frees) the first
+  installedOf.get(system)?.dispose();
   const sys = system as unknown as Svc;
   const self = system as unknown as Record<string, unknown>;
   const proto = Object.getPrototypeOf(system) as Svc;
@@ -163,19 +212,46 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
   const state = { active: true, fault: null as Error | null };
   /** true while the original prep runs: its work estimate is replaced below, so workOf is a no-op meanwhile */
   let inOrigPrep = false;
+  const token = {};
+  reclaim?.register(system, engine, token);
 
   const syncReset = (): void => {
     if (sys.cache !== lastCache) { lastCache = sys.cache; engine.reset(); }
   };
 
-  /** a kernel fault: restore the original methods and restart the pass on them (the partial pass is dropped) */
-  const onFault = (err: unknown): never | void => {
-    if (!(err instanceof TierEngineFault)) throw err;
-    state.fault = err;
-    uninstall();
-    sys.stepIdx = -1;
+  /**
+   * Give the system back to the original methods, mid-pass safe: a pass inside the tier steps restarts the current tier
+   * slot on the original engine (its reach cache is empty: fresh searches, identical results; the slots the engine
+   * finished stay as written), later steps simply continue on the original methods. Frees the engine.
+   */
+  function handOver(fault: Error | null): void {
+    if (!state.active) return;
+    state.active = false;
+    state.fault = fault;
+    // the prototype's methods again (assigned rather than deleted: deleting properties would turn the system object
+    // into a slow dictionary-mode object for the rest of the city)
+    const pr = proto as unknown as Record<string, unknown>;
+    for (const name of OVERRIDDEN) if (Object.prototype.hasOwnProperty.call(self, name)) self[name] = pr[name];
     sys.cache = new Array(NT + 1).fill(null);
-    console.error('[services tier engine] kernel fault, original JS engine restored:', err.message);
+    if (sys.stepIdx === S_TIERS) { sys.tierPhase = P_INIT; sys.cursor = 0; }
+    if (fault) {
+      // force the next pass (with access fields and NIMBY): whatever a trapped kernel may have half-written in place
+      // (resident layers) is recomputed by the original code
+      sys.lastRun = -1e9;
+      sys.dirty = true;
+      sys.accessDirty = true;
+      sys.nimbyDirty = true;
+    }
+    reclaim?.unregister(token);
+    if (installedOf.get(system) === handle) installedOf.delete(system);
+    engine.dispose();
+  }
+
+  /** a kernel fault (TierEngineFault; anything else is rethrown): the original methods take over, see handOver */
+  const onFault = (err: unknown): void => {
+    if (!(err instanceof TierEngineFault)) throw err;
+    handOver(err);
+    console.error('[services tier engine] kernel fault, the original JS engine finishes this pass and runs the next one:', err.message);
   };
 
   // ---------------------------------------------------------------------------------------------- prep
@@ -215,6 +291,7 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
     try {
       tierWorkInner.call(this, sim);
     } catch (err) {
+      // stepIdx stays S_TIERS: the next step() runs the original tierWork from P_INIT of the current slot
       onFault(err);
     }
   }
@@ -223,6 +300,7 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
     const st = sim.state;
     const C = st.cells, N = st.size;
     const eng = engine;
+    // a new scheduler step: network / water copies of an earlier step are stale (road edits happen between steps)
     eng.kernels.beginStep?.(eng);
     const alive = (b: { id: number }): boolean => st.buildings.has(b.id);
     let work = 0;
@@ -363,6 +441,7 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
     try {
       const st = sim.state;
       const N = st.size;
+      engine.kernels.beginStep?.(engine);
       this.stops = transit.collectStops(st, this.stops);
       const stops = this.stops;
       const n = stops.n;
@@ -388,6 +467,7 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
       engine.kernels.transitCov(engine, N, { n, cell, R, factor: fac, skip }, funding, engine.tmp.v, st.transitCov);
     } catch (err) {
       onFault(err);
+      proto.finishTransit.call(this, sim);
     }
   }
 
@@ -395,6 +475,7 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
   function footprints(this: Svc, st: CityState): void {
     try {
       const N = st.size;
+      engine.kernels.beginStep?.(engine);
       const layers: Float32Array[] = [];
       for (let k = 0; k < NT; k++) if (this.hadFac[k]) layers.push(tierLayer(st, NEED_ORDER[k]));
       if (this.hadFac[SLOT_TRANSIT] || (this.stops?.n ?? 0) > 0) layers.push(st.transitCov);
@@ -407,6 +488,7 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
       engine.kernels.footprints(engine, N, list.length, bx, layers);
     } catch (err) {
       onFault(err);
+      proto.footprints.call(this, st);
     }
   }
 
@@ -417,10 +499,12 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
     const E = st.eduElemCov, H = st.eduHighCov, Kc = st.eduCollegeCov, Pl = st.playCov, G = st.greenCov;
     const [we, wh, wc] = P.EDU_LEGACY_W;
     try {
+      engine.kernels.beginStep?.(engine);
       engine.kernels.combo(engine, C, E, H, Kc, Pl, G, st.eduCov, st.parkCov, we, wh, wc);
     } catch (err) {
       onFault(err);
-      if (!state.active) { proto.finish.call(this, sim, first); return; }
+      proto.finish.call(this, sim, first);
+      return;
     }
     // ---- verbatim from services.ts finish (24f8609 + the per-building stats.needs pass)
     for (let k = 0; k < NT; k++) {
@@ -482,12 +566,14 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
     const N = st.size;
     try {
       engine.ensure(N);
+      engine.kernels.beginStep?.(engine);
       const avg = st.stats.avgCommute;
       const unreached = avg > 0 ? P.ACCESS_UNREACHED * avg : 0;
       engine.kernels.accessLand(engine, N, st.network, this.idist, engine.tmp.v, st.accessCommute, true, TIME_Q, P.ACCESS_LAND_STEP, 1e9, unreached);
     } catch (err) {
       onFault(err);
-      if (!state.active) { proto.accessCommuteLand.call(this, sim); return; }
+      proto.accessCommuteLand.call(this, sim);
+      return;
     }
     // ---- verbatim: residential footprints keep their own (traffic) commute
     const out = st.accessCommute, cm = st.commute;
@@ -508,6 +594,7 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
       const st = sim.state;
       const N = st.size;
       engine.ensure(N);
+      engine.kernels.beginStep?.(engine);
       const v = engine.tmp.v;
       const INF = 1e9;
       engine.kernels.accessLand(engine, N, st.network, this.shopDist, v, null, false, 1, 4, INF, 0);
@@ -542,7 +629,7 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
       engine.kernels.shopTaps(engine, N, nb, B, v, ratio, this.shopLut, cx0, cx1, ct, st.shopAccess, capQ, P.SHOP_BASE);
     } catch (err) {
       onFault(err);
-      if (!state.active) proto.shopLand.call(this, sim);
+      proto.shopLand.call(this, sim);
     }
   }
 
@@ -556,17 +643,14 @@ export function installServicesTierEngine(system: ServicesSystem, opts: TierEngi
     self[name] = impl[name];
   }
 
-  function uninstall(): void {
-    if (!state.active) return;
-    state.active = false;
-    for (const name of OVERRIDDEN) delete self[name];
-  }
-
-  return {
+  const handle: InstalledTierEngine = {
     engine,
     backend: be.backend,
     get active() { return state.active; },
     get fault() { return state.fault; },
-    uninstall,
+    dispose(): void { handOver(null); },
+    uninstall(): void { handOver(null); },
   };
+  installedOf.set(system, handle);
+  return handle;
 }

@@ -70,19 +70,34 @@ export function catchWasmFromSlot(): CatchWasm | null {
   return { ex: i.exports as unknown as CatchExports, memory: i.memory, heap: i.heap };
 }
 
-/** a Space in the kernels' linear memory (blocks from the WasmHeap; views re-created after growth) */
+/**
+ * A Space in the kernels' linear memory (blocks from the WasmHeap; views re-created after growth). One space per engine:
+ * it tracks its live blocks, so `freeAll()` (TierEngine.dispose) returns everything the engine allocated to the heap.
+ */
 export function wasmSpace(w: CatchWasm): Space {
+  const live = new Map<number, number>();
   return {
     wasm: true,
     memory: w.memory,
     alloc<T extends TA>(ctor: TACtor<T>, n: number): Buf<T> {
-      const ptr = w.heap.alloc(Math.max(16, n * ctor.BYTES_PER_ELEMENT), 16);
+      const bytes = Math.max(16, n * ctor.BYTES_PER_ELEMENT);
+      const ptr = w.heap.alloc(bytes, 16);
+      live.set(ptr, bytes);
       const v = new ctor(w.memory.buffer, ptr, n);
       v.fill(0);
       return new Buf(ctor, n, ptr, w.memory, v);
     },
     free(b: Buf<TA>): void {
-      if (b.ptr >= 0) w.heap.free(b.ptr);
+      if (b.ptr >= 0 && live.delete(b.ptr)) w.heap.free(b.ptr);
+    },
+    liveBytes(): number {
+      let s = 0;
+      for (const v of live.values()) s += v;
+      return s;
+    },
+    freeAll(): void {
+      for (const p of live.keys()) w.heap.free(p);
+      live.clear();
     },
   };
 }
@@ -171,15 +186,19 @@ export function makeWasmTierKernels(get: () => CatchWasm | null = catchWasmFromS
     throw new TierEngineFault(`services wasm kernel failed: ${err instanceof Error ? err.message : String(err)}`, err);
   }
 
-  /** network / water: in place when resident, else copied once per step */
-  function stageU8(st: Stage, src: Uint8Array, which: 'net' | 'water'): number {
+  /**
+   * network / water: in place when resident, else copied at most once per scheduler step (`force`: copy now). The
+   * sim mutates these arrays in place between steps (road tools, terraforming), so a copy is only reused within the
+   * step that made it: every installed step method calls beginStep() first.
+   */
+  function stageU8(st: Stage, src: Uint8Array, which: 'net' | 'water', force = false): number {
     const p = ptrIn(st.w, src);
     if (p >= 0) return p;
     const buf = which === 'net' ? st.u8a : st.u8b;
     if (src.length > buf.n) return -1;
     if (which === 'net') {
-      if (st.netSrc !== src || st.netStep !== st.step) { buf.v.set(src); st.netSrc = src; st.netStep = st.step; }
-    } else if (st.waterSrc !== src || st.waterStep !== st.step) { buf.v.set(src); st.waterSrc = src; st.waterStep = st.step; }
+      if (force || st.netSrc !== src || st.netStep !== st.step) { buf.v.set(src); st.netSrc = src; st.netStep = st.step; }
+    } else if (force || st.waterSrc !== src || st.waterStep !== st.step) { buf.v.set(src); st.waterSrc = src; st.waterStep = st.step; }
     return buf.ptr;
   }
   /** a need raster: in place when resident, else copied once per pass */
@@ -302,11 +321,20 @@ export function makeWasmTierKernels(get: () => CatchWasm | null = catchWasmFromS
     e.stage = st;
   }
 
+  /** free an engine's staging buffers + parameter blocks (they live in the engine's space) */
+  function releaseStage(e: TierEngine): void {
+    const st = e.stage as Stage | null;
+    e.stage = null;
+    if (!st) return;
+    const sp = e.space;
+    for (const b of [st.ip, st.fp, st.walk, st.drive, st.u8a, st.u8b, st.i32, st.i32b, st.i32c, ...st.f32, ...st.need] as Buf<TA>[]) sp.free(b);
+  }
+
   return {
     name,
 
     prepare(e: TierEngine): void {
-      e.stage = null;
+      releaseStage(e);
       const w = get();
       if (!w || e.space.memory !== w.memory) return;
       try {
@@ -315,6 +343,10 @@ export function makeWasmTierKernels(get: () => CatchWasm | null = catchWasmFromS
         // no room for the staging buffers (heap full while views are pinned): run on JS memory + JS kernels
         e.migrateToJs();
       }
+    },
+
+    release(e: TierEngine): void {
+      releaseStage(e);
     },
 
     beginStep(e: TierEngine): void {
@@ -452,7 +484,9 @@ export function makeWasmTierKernels(get: () => CatchWasm | null = catchWasmFromS
     accessLand(e: TierEngine, N: number, net: Uint8Array, dist: Int32Array, v: Float32Array, out: Float32Array | null, scaled: boolean, scale: number,
       step: number, inf: number, unreached: number): void {
       const st = ready(e);
-      const pNet = st ? stageU8(st, net, 'net') : -1;
+      // always a fresh copy (64 KiB at 256²): accessCommuteLand / shopLand are scheduler steps of their own, and a road
+      // edit between the last tier step and these would otherwise leave the chamfer on a stale network
+      const pNet = st ? stageU8(st, net, 'net', true) : -1;
       const pDist = st ? stageI32(st, dist, st.i32, true) : -1;
       const pOut = st && out ? stageF32(st, out, 0, false) : 0;
       if (!st || pNet < 0 || pDist < 0 || pOut < 0 || ptrIn(st.w, v) < 0) {

@@ -65,6 +65,10 @@ export interface Space {
   /** zero-filled array of n elements */
   alloc<T extends TA>(ctor: TACtor<T>, n: number): Buf<T>;
   free(b: Buf<TA>): void;
+  /** bytes held by live blocks of this space (wasm spaces; 0 for JS memory) */
+  liveBytes?(): number;
+  /** free every block still allocated through this space (engine disposal; the space stays usable) */
+  freeAll?(): void;
 }
 
 export const jsSpace: Space = {
@@ -724,10 +728,12 @@ export interface TierKernels {
   box3(e: TierEngine, a: Float32Array, n: number, t: Float32Array): void;
   blockSum(e: TierEngine, N: number, B: number, nb: number, res: Float32Array, pop: Float32Array): void;
   shopTaps(e: TierEngine, N: number, nb: number, B: number, v: Float32Array, ratio: Float32Array, lut: Float32Array, cx0: Int32Array, cx1: Int32Array, ct: Float32Array, out: Float32Array, capQ: number, base: number): void;
-  /** start of a scheduler step: staged copies of mutable inputs are stale */
+  /** start of a scheduler step: staged copies of mutable inputs (network, water) are stale */
   beginStep?(e: TierEngine): void;
   /** allocate backend state for an engine sized for its map (called by ensure(); kernels themselves never allocate) */
   prepare?(e: TierEngine): void;
+  /** free the backend state of an engine (re-prepare, migration to JS, disposal) */
+  release?(e: TierEngine): void;
 }
 
 export const jsKernels: TierKernels = {
@@ -922,10 +928,17 @@ export class TierEngine {
   }
   private migrated = new Map<Buf<TA>, Buf<TA>>();
 
+  /** free a block of the current space (no-op for JS memory / undefined) */
+  private drop(b: Buf<TA> | undefined): void {
+    if (b && b.ptr >= 0) this.space.free(b);
+  }
+
   /** move every array into plain JS memory and switch to the JS kernels (results are identical) */
   migrateToJs(): void {
     if (!this.space.wasm) return;
     const old = this.space;
+    // the backend's staging buffers / parameter blocks live in the old space too
+    this.kernels.release?.(this);
     this.space = jsSpace;
     this.kernels = jsKernels;
     this.stats.migratedToJs = true;
@@ -950,11 +963,61 @@ export class TierEngine {
       }
       if (s.poolCap > 0) { s.idx = move(s.idx); s.w = move(s.w); }
     }
+    // anything else the old space still holds (nothing should be left: every engine array was moved above)
+    old.freeAll?.();
   }
+
+  /** engine fields holding cell-sized arrays (reach scratch + accumulators) */
+  private static readonly CELL_KEYS = ['visit', 'dstamp', 'dist', 'touched', 'best', 'head', 'enode', 'enext', 'fall', 'nfSeen', 'nfQueue', 'A', 'u', 'cov',
+    'ec', 'tmp'] as const;
+  /** engine fields holding the per-facility table of the current slot */
+  private static readonly FAC_KEYS = ['geo', 'radius', 'metric', 'str', 'op', 'capv', 'key', 'rec', 'alive', 'fs', 'fe', 'sig', 'seat', 'D', 'served', 'dem',
+    'demOk', 'order'] as const;
+  private static readonly STOP_KEYS = ['stopCell', 'stopR', 'stopFactor', 'stopSkip'] as const;
+
+  /**
+   * free the arrays of these engine fields and clear the fields (before re-allocating them: a migration to JS memory
+   * triggered by the next allocation must not see — and free again — a block that was already freed)
+   */
+  private dropKeys(keys: readonly string[]): void {
+    const self = this as unknown as Record<string, Buf<TA> | undefined>;
+    for (const k of keys) { this.drop(self[k]); self[k] = undefined; }
+  }
+
+  /**
+   * Free everything the engine holds (city unload, uninstall, a kernel fault): every array, the slot pools and records,
+   * the backend's staging buffers. The engine is empty afterwards (ensure() would allocate again); in a wasm space the
+   * blocks return to the shared WasmHeap (linear memory never shrinks, but the next engine reuses them).
+   */
+  dispose(): void {
+    this.kernels.release?.(this);
+    this.stage = null;
+    this.dropKeys(TierEngine.CELL_KEYS);
+    this.dropKeys(TierEngine.FAC_KEYS);
+    this.dropKeys(TierEngine.STOP_KEYS);
+    this.dropKeys(['boxes']);
+    for (const s of this.slots) {
+      if (s.cap > 0) for (const b of [s.recStart, s.recEnd, s.recBox, s.recKey, s.recValid, s.recRoad, s.recStamp] as Buf<TA>[]) this.drop(b);
+      if (s.poolCap > 0) { this.drop(s.idx as Buf<TA>); this.drop(s.w as Buf<TA>); }
+    }
+    // anything left in a wasm space (nothing should be: every block is owned by one of the fields above)
+    this.space.freeAll?.();
+    this.slots = this.slots.map(() => new SlotState());
+    this.slotOfId = new Int8Array(0);
+    this.recOfId = new Int32Array(0);
+    this.migrated.clear();
+    this.N = 0; this.C = 0; this.fcap = 0; this.nFac = 0; this.stopCap = 0; this.boxCap = 0; this.stamp = 0;
+    this.disposed = true;
+  }
+  /** dispose() ran (the engine holds no memory) */
+  disposed = false;
 
   /** (re)size the cell-sized state for an N x N map; drops every cache record */
   ensure(N: number): void {
     if (this.N === N && this.visit) return;
+    // a new map size: the old cell arrays (and the backend's staging buffers, re-prepared below) are freed first
+    this.dropKeys(TierEngine.CELL_KEYS);
+    this.disposed = false;
     this.N = N;
     const C = (this.C = N * N);
     this.visit = this.alloc(Int32Array, C);
@@ -982,6 +1045,8 @@ export class TierEngine {
   ensureStops(n: number): void {
     if (n <= this.stopCap && this.stopCap > 0) return;
     const cap = Math.max(n, this.stopCap * 2, 256);
+    // the old arrays are refilled by the caller: free them (no copy)
+    this.dropKeys(TierEngine.STOP_KEYS);
     this.stopCell = this.alloc(Int32Array, cap);
     this.stopR = this.alloc(Int32Array, cap);
     this.stopFactor = this.alloc(Float64Array, cap);
@@ -993,6 +1058,7 @@ export class TierEngine {
   ensureBoxes(n: number): void {
     if (n <= this.boxCap && this.boxCap > 0) return;
     const cap = Math.max(n, this.boxCap * 2, 1024);
+    this.dropKeys(['boxes']);
     this.boxes = this.alloc(Int32Array, 4 * cap);
     this.boxCap = cap;
   }
@@ -1007,6 +1073,8 @@ export class TierEngine {
   private ensureFac(n: number): void {
     if (n <= this.fcap) return;
     const cap = Math.max(n, this.fcap * 2, 256);
+    // initSlot refills the whole table: the old arrays are freed, not copied
+    this.dropKeys(TierEngine.FAC_KEYS);
     this.fcap = cap;
     this.geo = this.alloc(Int32Array, 4 * cap);
     this.radius = this.alloc(Float64Array, cap);
