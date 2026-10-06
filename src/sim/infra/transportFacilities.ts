@@ -116,17 +116,18 @@ function walkersHint(walkers: number, kind: 'stop' | 'station' | 'terminal', rea
  * why a depot runs fewer buses than it could: transit funding below 75 % (budget) or no power; null = neither (the
  * stops' report names it instead of a generic "not enough buses")
  */
-function depotCause(st: CityState, depot: Building, d: { fleet: number } | null): { kind: 'funding' | 'power'; short: string; text: string } | null {
+function depotCause(st: CityState, depot: Building, d: { fleet: number } | null): { kind: 'funding' | 'power'; short: string; fix: string; text: string } | null {
   const f = st.budget?.funding?.transit;
   const fund = typeof f === 'number' && Number.isFinite(f) ? f : 100;
   const fleet = d ? d.fleet : DEPOT_BUSES;
   const name = nameOf(st, depot.id);
   if (fund < 75) {
-    return { kind: 'funding', short: `runs ${plural(fleet, 'bus', 'buses')} (transit funding ${Math.round(fund)} %)`,
-      text: `${name} runs ${plural(fleet, 'bus', 'buses')} — transit funding is ${Math.round(fund)} %: raise it in the budget` };
+    const short = `runs ${plural(fleet, 'bus', 'buses')} (transit funding ${Math.round(fund)} %)`;
+    return { kind: 'funding', short, fix: 'Raise transit funding in the budget', text: `${name} ${short} — raise it in the budget` };
   }
   if (infoOf(st, depot).usesPower && (depot.flags & BF.Powered) === 0) {
-    return { kind: 'power', short: `no power (${plural(fleet, 'bus', 'buses')} run)`, text: `${name} has no power: half its buses stay in the garage` };
+    return { kind: 'power', short: `no power (${plural(fleet, 'bus', 'buses')} run)`, fix: 'Connect it to the power grid',
+      text: `${name} has no power: half its buses stay in the garage` };
   }
   return null;
 }
@@ -188,13 +189,13 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
       lines.push({ key: 'wait', label: 'Wait', value: `${min1(wait)} min`, status: wait > 1.7 * WAIT_BUS ? 'bad' : wait > 1.25 * WAIT_BUS ? 'warn' : 'ok',
         hint: wait > 1.25 * WAIT_BUS
           ? (!short ? 'Crowded stop — add another stop nearby'
-            : cause ? `Not enough buses — ${cause.text}`
+            : cause ? `Not enough buses: ${cause.text}`
               : depot ? `Not enough buses — its ${nameOf(st, depotId)} runs too few for all its stops: build another depot nearby or raise transit funding`
                 : 'Not enough buses — build a Bus Depot nearby or raise transit funding')
           : undefined });
       if (depot) {
         lines.push({ key: 'depot', label: 'Buses from', value: `${nameOf(st, depotId)} · ${dist(st, b, depot)} tiles away${cause ? ` — ${cause.short}` : ''}`,
-          status: cause ? 'bad' : undefined, hint: cause?.text });
+          status: cause ? 'bad' : undefined, hint: cause?.fix });
       } else {
         const mb = tr.minibusInfo;
         lines.push({ key: 'depot', label: 'Buses from', value: `Minibus service only (${MINIBUS_FLEET} buses)`, status: mb.rho < 1 ? 'warn' : 'ok',
@@ -213,7 +214,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
       lines.push({ key: 'riders', label: 'Riders', value: `${fmt(d.riders)}/day` });
       if (d.stops === 0) warnings.push(`No bus stops within ${DEPOT_RANGE} road tiles — place stops next to roads nearby`);
       const cause = depotCause(st, b, d);
-      if (cause && cause.kind === 'funding') warnings.push(cause.text.charAt(0).toUpperCase() + cause.text.slice(1));
+      if (cause && cause.kind === 'funding') warnings.push(cause.text);
       else if (d.need > 1.1 * d.fleet) warnings.push(`Its stops need ${fmt(d.need)} buses — build another depot or raise transit funding`);
       if (infoOf(st, b).usesPower && (b.flags & BF.Powered) === 0) warnings.push('No power: half the buses stay in the garage');
       break;

@@ -1703,6 +1703,12 @@ export class TrafficSystem implements SimSystem {
     }
   }
 
+  /** wait (minutes) at stop s without crowding: the mode's wait, buses / the service ratio of the stop's bus pool */
+  private baseWait(s: number): number {
+    const m = this.stops.mode[s];
+    return m === Transit.Bus ? WAIT_BUS / (this.stRho[s] > 0 ? this.stRho[s] : 1) : m === Transit.Subway ? WAIT_SUBWAY : m === Transit.Ferry ? WAIT_FERRY : WAIT_TRAIN;
+  }
+
   /** stops within radius R of (x,z) -> this.nsIdx / this.nsDist (returns count; no allocation) */
   private nearStops(N: number, x: number, z: number, R: number): number {
     const BS = 8, nb = this.binN;
@@ -1880,21 +1886,24 @@ export class TrafficSystem implements SimSystem {
       const keep = this.garageStop.get(id);
       let best = Infinity, board = -1, bs = -1, bw = 0, wo = -1, woBest = Infinity, woWalk = 0;
       let kT = Infinity, kBoard = -1, kS = -1, kW = 0;
+      // (the stop is chosen by its base wait — without crowding: the garage's own riders crowd whichever stop it picks,
+      // so crowding would make it hop between two stops — and kept unless another is clearly faster; the label below
+      // uses the chosen stop's real wait)
       for (let k = 0; k < cnt; k++) {
         const s = this.nsIdx[k];
         if (this.stAttC[s] === 0) continue;
         const walk = Math.max(0, this.nsDist[k] - half) * STOP_WALK_TIME_PER_CELL;
+        const w0 = this.baseWait(s);
         for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) {
           const v = this.stAtt[a];
           if (doneT[v] !== 1) continue;
-          const t = walk + this.stWait[s] + this.transitPure(distT[v], srcT[v]);
+          const t = walk + w0 + this.transitPure(distT[v], srcT[v]);
           if (this.rides(v)) {
             if (t < best) { best = t; board = v; bs = s; bw = walk; }
             if (this.stKey[s] === keep && t < kT) { kT = t; kBoard = v; kS = s; kW = walk; }
           } else if (t < woBest) { woBest = t; wo = s; woWalk = walk; }
         }
       }
-      // (stop hysteresis: crowding waits move a little every assignment; the stop names the garage's riders)
       if (kS >= 0 && kS !== bs && kT <= best + Math.max(PR_STOP_KEEP, 0.1 * best)) { best = kT; board = kBoard; bs = kS; bw = kW; }
       if (board < 0) {
         // downtown: the stop's riders walk to jobs beside it (no park & ride); else its transit reaches no job
@@ -1906,7 +1915,8 @@ export class TrafficSystem implements SimSystem {
       this.gRide[q] = 1;
       this.gStop[q] = bs;
       this.gWalk[q] = bw;
-      this.gLabel[q] = PR_PARK_MIN + best; // pure minutes (the price only steers choices, it is no travel time)
+      // pure minutes with the stop's real (crowded) wait; the price only steers choices, it is no travel time
+      this.gLabel[q] = PR_PARK_MIN + best - this.baseWait(bs) + this.stWait[bs];
       this.gBoard[q] = board;
       this.garageStop.set(id, this.stKey[bs]);
     }
