@@ -861,7 +861,8 @@ export class BuildingRenderer {
   private disposed = false;
   /** dense list of instances for the per-frame LOD sweep */
   private list: BInst[] = [];
-  /** flat copies per list index for the jump scan: LOD centre, scan radius, level (1 = proxy or plain skirt; see flat) */
+  /** flat copies per list index: LOD centre (also read by every evaluation / fade distance: much cheaper than the
+   *  visual's boxed doubles), and for the jump scan the scan radius and level (1 = proxy or plain skirt; see flat) */
   private lx = new Float32Array(1024);
   private ly = new Float32Array(1024);
   private lz = new Float32Array(1024);
@@ -1842,8 +1843,10 @@ export class BuildingRenderer {
     const levels = bi.kitM !== null || bi.lodGeom !== bi.geom || bi.siteLod !== bi.siteGeom;
     // no proxy and no foundation: always full, nothing to schedule (a rebuild re-queues it)
     if (!levels && bi.found < 0) { this.lodSet(bi, 0); return; }
-    const v = bi.vis;
-    const dx = v.cx - c.x, dy = bi.cy - c.y, dz = v.cz - c.z;
+    // (the LOD centre from the flat arrays: no pointer chase into the visual and its boxed doubles per evaluation, which
+    // measured 2-4x the cost of the whole evaluation in a zoom)
+    const li = bi.li;
+    const dx = this.lx[li] - c.x, dy = this.ly[li] - c.y, dz = this.lz[li] - c.z;
     const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
     const rk = bi.radius * K;
     const lim = this.lodPixels > 0 && bi.b.id !== this.selected;
@@ -1926,10 +1929,10 @@ export class BuildingRenderer {
     if (bi.radius * this.lodKNow < d * this.lodPixels * this.fadeMinFrac) return false;
     // fast relative motion: the travel-driven dissolve (see update) would be over in a frame or two
     if (this.fadeFast > 0 && this.fadeTravel > 0) {
-      const q = this.lodPrev, dx = bi.vis.cx - q.x, dy = bi.cy - q.y, dz = bi.vis.cz - q.z;
+      const q = this.lodPrev, i = bi.li, dx = this.lx[i] - q.x, dy = this.ly[i] - q.y, dz = this.lz[i] - q.z;
       if (Math.abs(Math.log(d / Math.sqrt(dx * dx + dy * dy + dz * dz))) > this.fadeTravel * this.fadeFast) return false;
     }
-    _sphere.center.set(bi.vis.cx, bi.cy, bi.vis.cz);
+    _sphere.center.set(this.lx[bi.li], this.ly[bi.li], this.lz[bi.li]);
     _sphere.radius = bi.radius;
     return this.viewFrustum()!.intersectsSphere(_sphere);
   }
@@ -1938,7 +1941,7 @@ export class BuildingRenderer {
   private camDist(bi: BInst): number {
     const cam = this.lodCamera;
     if (!cam) return 0;
-    const c = cam.position, dx = bi.vis.cx - c.x, dy = bi.cy - c.y, dz = bi.vis.cz - c.z;
+    const c = cam.position, i = bi.li, dx = this.lx[i] - c.x, dy = this.ly[i] - c.y, dz = this.lz[i] - c.z;
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
   }
 

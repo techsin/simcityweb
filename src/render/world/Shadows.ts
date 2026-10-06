@@ -12,7 +12,8 @@
  * Direction convention: `sun.position - sun.target.position` points TO the light in both modes.
  *
  * Shadow cameras carry `userData.cascade` (0 / 1; the single map is 0) and `userData.texel` (world size of a shadow
- * texel) so casters can cull / LOD per cascade (see DynamicBatch per-pass culling). The cascaded fit is clamped to
+ * texel) so casters can cull / LOD per cascade (see DynamicBatch per-pass culling); the shadow frustums carry the
+ * receiver volume (`recv`) and the cascade (`cascade`) for the casters' intersectsFrustum. The cascaded fit is clamped to
  * the view-depth range of the map box (no far cascade beyond the city) and its caster ceiling only reaches as far
  * toward the sun as the tallest possible caster needs.
  */
@@ -237,7 +238,8 @@ export class CityCascadeShadow extends SunLightShadow {
     super();
     const cams = (this as any)._cameras as THREE.OrthographicCamera[];
     const frus = (this as any)._frustums as THREE.Frustum[];
-    cams.forEach((c, i) => { c.userData.cascade = i; c.userData.texel = 1; c.userData.recv = this.receivers[i]; (frus[i] as any).recv = this.receivers[i]; });
+    // (frustums carry their cascade too: casters skip whole passes in Object3D.intersectsFrustum, see DynamicBatch)
+    cams.forEach((c, i) => { c.userData.cascade = i; c.userData.texel = 1; c.userData.recv = this.receivers[i]; (frus[i] as any).recv = this.receivers[i]; (frus[i] as any).cascade = i; });
   }
 
   /** true when the fit inputs equal the last call's: the cascades are fitted twice per rendered shadow frame (WorldView
@@ -385,6 +387,7 @@ export class CitySun extends THREE.DirectionalLight {
     this.dirShadow.camera.userData.texel = 1;
     this.dirShadow.camera.userData.recv = this.dirReceiver;
     (this.dirShadow as any)._frustum.recv = this.dirReceiver;
+    (this.dirShadow as any)._frustum.cascade = 0;
     this.cascadeShadow = new CityCascadeShadow();
   }
 

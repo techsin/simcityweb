@@ -913,9 +913,11 @@ export class VehicleRenderer {
     const written = this.poseCars(dt, camera, heightPx, night) + this.poseTrains(dt, camera, heightPx);
     // nothing visible moved -> no upload, no shadow-map invalidation
     if (written > 0) this.batch.markMatricesDirty();
-    // (poseCars copies headlights at night only: headCount is 0 by day)
+    // (poseCars copies headlights at night only: headCount is 0 by day; hidden without any, so the renderer does no
+    // per-object work for an empty mesh. Its program is still precompiled: WebGLRenderer.compile visits hidden meshes)
     const hl = this.headlights, hc = this.headCount;
     hl.count = hc;
+    hl.visible = hc > 0;
     if (hc) {
       // upload only the headlights in use (the buffer holds one per vehicle slot)
       const im = hl.instanceMatrix;
