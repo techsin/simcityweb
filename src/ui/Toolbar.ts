@@ -4,6 +4,7 @@ import type { GameContext } from '../game/context';
 import { CATEGORIES, CATEGORY_COLORS, categoryOfTool, findToolSpec, type ToolCategory, type ToolSpec } from '../game/toolCatalog';
 import type { BuildingDef } from '../sim/catalogTypes';
 import { facilityDefFacts } from '../sim/infra/facilities';
+import { expectedUpkeep, opexTierOf } from '../sim/economy/opex';
 import { BRIDGE_COST_MUL, NETWORK_INFO, POWERLINE_COST, SUBWAY_COST, networkCellCost, zoneCellCost } from '../sim/economy/tuning';
 import { clear, escapeHtml, h, toggleClass } from './dom';
 import { icon } from './icons';
@@ -177,7 +178,10 @@ export class Toolbar {
   private costLine(spec: ToolSpec): string {
     if (spec.def) {
       const cost = spec.cost ? money(spec.cost) : 'Free';
-      const up = spec.upkeep ? `${money(spec.upkeep)}/mo` : spec.income ? `+${money(spec.income)}/mo` : '&nbsp;';
+      // (schools, clinics, stations, parks also pay running costs per person served: their cost at a typical load,
+      // sim economy/opex.ts — the tooltip splits it)
+      const oUp = opexTierOf(spec.def) ? expectedUpkeep(null, spec.def) : 0;
+      const up = oUp ? `≈${money(oUp)}/mo` : spec.upkeep ? `${money(spec.upkeep)}/mo` : spec.income ? `+${money(spec.income)}/mo` : '&nbsp;';
       return `<span>${cost}</span><span class="up">${up}</span>`;
     }
     if (spec.costUnit) {
@@ -353,7 +357,14 @@ export class Toolbar {
       cat = CAT_LABELS[d.category] ?? titleCase(d.category);
       catColor = CATEGORY_COLORS[d.category] ?? catColor;
       rows.push(['Cost', d.cost ? money(d.cost) : 'Free']);
-      if (d.upkeep) rows.push(['Upkeep', `${money(d.upkeep)} / month`]);
+      // (schools, clinics, stations, parks: "§72 / month + §0.60 per pupil served", the facts' line — sim economy/opex.ts)
+      let opexUp: { value: string } | undefined;
+      try {
+        opexUp = opexTierOf(d) ? facilityDefFacts(d.id).find((f) => f.key === 'upkeep') : undefined;
+      } catch {
+        opexUp = undefined;
+      }
+      if (d.upkeep) rows.push(['Upkeep', opexUp ? escapeHtml(opexUp.value) : `${money(d.upkeep)} / month`]);
       if (d.income) rows.push(['Income', `<span class="pos">+${money(d.income)} / month</span>`]);
       rows.push(['Size', `${d.footprint[0]} × ${d.footprint[1]} tiles`]);
       if (d.jobs) rows.push(['Jobs', num(d.jobs)]);

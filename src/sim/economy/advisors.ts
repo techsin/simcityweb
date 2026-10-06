@@ -1243,12 +1243,17 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     for (const [dev, zs, text] of SUBTYPE_HINT) {
       if (s.demand[dev] > 0.6 && room(zs) === 0) out.push({ id: 'zoneDev' + dev, cooldown: 150, priority: 6, kind: 'info', advisor: 'planning', text });
     }
-    if (pop > 2000 && s.unemployment > 0.15) {
-      out.push({ id: 'unemployment', cooldown: 120, priority: 7, kind: 'warning', advisor: 'planning',
-        text: `Unemployment is at ${Math.round(s.unemployment * 100)}%. Zone more commercial and industrial land.` });
+    // (WP6b labour headroom: jobs follow the workforce, so a few % unemployed already means the jobs lag — industry the
+    // city refused or has no land for)
+    if (pop > 2000 && s.unemployment > 0.06) {
+      const dirty = Math.max(s.demand[DevType.ID], s.demand[DevType.IM]) > 0.3;
+      out.push({ id: 'unemployment', cooldown: 120, priority: s.unemployment > 0.1 ? 7 : 5, kind: 'warning', advisor: 'planning',
+        text: `Unemployment is at ${Math.round(s.unemployment * 100)}%. Zone more commercial and industrial land${dirty ? ' — factories want to come, if you accept their smoke' : ''}.` });
     }
-    if (pop > 2000 && rt.jobFill < 0.8 && rt.jobFill > 0) {
-      out.push({ id: 'workers', cooldown: 120, priority: 5, kind: 'info', advisor: 'planning', text: 'Businesses cannot find enough workers. Zone more residential land.' });
+    const lab = d.labour;
+    if (pop > 5000 && ((lab && lab.scale < 0.5 && s.unemployment < 0.03) || (rt.jobFill < 0.8 && rt.jobFill > 0))) {
+      out.push({ id: 'workers', cooldown: 120, priority: 5, kind: 'info', advisor: 'planning',
+        text: 'Shops and factories would expand, but every worker has a job. Zone residential land — new residents bring the workers.' });
     }
     if (rt.totals.abandoned > 20) {
       out.push({ id: 'abandoned', cooldown: 180, priority: 4, kind: 'warning', advisor: 'planning',

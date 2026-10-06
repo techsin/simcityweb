@@ -77,8 +77,10 @@ export const CIVIC_WEALTH_MIX: readonly [number, number, number] = [0.3, 0.5, 0.
  */
 /** regional residential attraction (residents that come without local jobs) per wealth */
 export const R_BASE: readonly [number, number, number] = [1400, 900, 150];
-/** residents wanted per local job (beyond WORKFORCE_RATIO) — >1 keeps R slightly ahead of jobs */
-export const R_JOB_SLACK = 1.06;
+/** residents wanted per local job (beyond WORKFORCE_RATIO) — >1 keeps R slightly ahead of jobs (WP6b: 1.06 → 1.1 with
+ *  the labour headroom below — jobs now track the workforce instead of running 1.3–1.7× ahead of it, and at 1.06 the
+ *  R target sat on its own capacity: 128×15 s7 −12 % population) */
+export const R_JOB_SLACK = 1.1;
 /** multiplier on job targets (keeps C/I slightly ahead of workforce) */
 export const JOB_SLACK = 1.06;
 /** base CS jobs per wealth (a few shops even in a hamlet) */
@@ -154,6 +156,25 @@ export const UNEMP_R_PENALTY = 1.2; // R target × (1 − penalty × excess)
 export const UNEMP_CI_BOOST = 0.8; // C/I target × (1 + boost × excess)
 /** approval effect on R: target × (1 + APPROVAL_R × (approval − 50)/50) */
 export const APPROVAL_R = 0.06;
+/**
+ * LABOUR HEADROOM (WP6b; SIM_DEPTH_PART_B acceptance r1 "no mid-game trade-offs"): commerce and industry expand only
+ * while the city has workers for the new jobs. The jobs the workforce can staff = W × (1 − LABOUR_UNEMP0) /
+ * (1 − LABOUR_VAC0) (workers at the natural unemployment, jobs at the natural vacancy; residents working in the region
+ * and regional commuters coming in roughly cancel). The positive C / I demand is held to the headroom staffable − jobs
+ * (civic + C / I capacity incl. under construction; at least LABOUR_MIN_HEAD), which commerce and industry share in
+ * proportion to the jobs each offers (what one family cannot use goes to the other) and, within a family, by positive
+ * demand. The targets stay the economy's (RCI tooltip, region terms) and existing businesses are never pushed into
+ * negative demand by it. Faded in over LABOUR_POP0..POP1 residents (a town's first shops and factories come with it).
+ * Without it, connections (×1.3–1.5), EQ (×1.4) and freight (×1.3) multiplied the job targets to ~1.7 × the workforce:
+ * the 256×60 bot ran 1.3–1.7 jobs per worker for 40 years, unemployment stayed 0 and refusing dirty industry cost
+ * nothing — commerce alone employed everyone. With it (128×15 s7): the competent bot 0–5 % unemployed, one that zones no
+ * smokestack industry up to 9 % with a third fewer residents; 256×60: 0 % until the map is full, 7–10 % after (land).
+ */
+export const LABOUR_UNEMP0 = 0.03;
+export const LABOUR_VAC0 = 0.1;
+export const LABOUR_MIN_HEAD = 400;
+export const LABOUR_POP0 = 8000;
+export const LABOUR_POP1 = 40000;
 
 /** demand normalisation: norm = NORM_MIN[family] + NORM_FRAC × max(current, target) */
 export const DEMAND_NORM_MIN = { R: 900, C: 450, I: 450 };
@@ -557,6 +578,22 @@ export const STRIKE_FUNDING = 50;
 /** months of negative funds before the bankruptcy warning escalates / the game-over state */
 export const BANKRUPT_WARN_MONTHS = [1, 3, 6];
 export const BANKRUPT_MONTHS = 12;
+/**
+ * OPERATING COSTS (WP6b, economy/opex.ts): a school, clinic, police / fire station or park (no income) pays
+ * OPEX_BUILDING_SHARE of its catalog upkeep for the building, plus running costs per person its tier serves
+ * (stats.needs[tier].served; § per month). A dense city's services then cost per resident what a sprawling one's do,
+ * instead of falling from §0.40 to §0.17 a month (256×60 s7 bot, 2020 → 2060) while taxes stay ~§0.6 at 9 %.
+ * Calibrated on the 256×60 / 128×15 bots: income / expense 1.1–1.2 at 9 % tax through year 30 and ~1.06 at the bot's 7 %
+ * floor after it (≈ 1.35 at 9 %); the 1.4M city of year 60 holds §15M instead of §118M (was 1.24 → 2.76 at 7 %).
+ */
+export const OPEX_BUILDING_SHARE = 0.3;
+export const OPEX_PER_SERVED: Readonly<Record<'elementary' | 'high' | 'college' | 'health' | 'play' | 'green' | 'police' | 'fire', number>> = {
+  elementary: 0.6, high: 0.72, college: 0.6, health: 0.078, play: 0.03, green: 0.015, police: 0.072, fire: 0.048,
+};
+/** expectedUpkeep (bot budget checks, plop tooltip): a new school / clinic / park fills this share of its seats; a police
+ *  or fire station of radius 26 covers this many people (× (radius / 26)²) */
+export const OPEX_TYPICAL_LOAD = 0.7;
+export const OPEX_TYPICAL_COVERED = 12000;
 
 // ============================================================================ LOANS
 export const LOAN_TERM_MONTHS = 120;
@@ -662,6 +699,14 @@ export const APPROVAL_TERMS = {
   emLate: 0.4,
   emDeaths: 0.3,
   emRiotDays: 0.1,
+  /** WP6b: residents remember unanswered emergencies for a year — −emFailRate × failed / (incidents + emFailN0) over
+   *  the last 12 months, within the same emergencyMax and faded in like the outage terms (needsPop0..needsPop1: a
+   *  hamlet's first fire, before it could afford a station, is not held against the mayor). A town of 40k that let 3
+   *  of its 40 emergencies of the year go unanswered: −4.3; a 1M city failing 10 of 600 (busy units): −1.6. The
+   *  one-month term alone cost a neglectful mayor 1.2 points for a month per burnt-out block, which no one noticed
+   *  (128×15 s7 --neglect: approval +0.5 vs attentive; with the memory −1.7 over the run, 17 vs 3 incidents failed) */
+  emFailRate: 100,
+  emFailN0: 30,
   /** legacy fallback while the emergency system is inactive: −1.5 per fire started last month, at most 6 */
   firePer: 1.5,
   fireMax: 6,

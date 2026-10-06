@@ -24,15 +24,16 @@
  *  the first day of the month. Σ lastIncome − Σ lastExpense = change of funds over the month.
  */
 import type { SimSystem, Simulation } from '../Simulation';
-import { BF, type CityState } from '../CityState';
+import { BF, type CityState, type NeedTier } from '../CityState';
 import { DEV_TYPE_LABELS, Network, Zone } from '../../core/types';
 import type { ServiceKind } from '../catalogTypes';
 import { getDef } from '../catalog';
 import {
-  BANKRUPT_MONTHS, BANKRUPT_WARN_MONTHS, BRIDGE_UPKEEP_MUL, DIFFICULTY_INCOME, LANDFILL_UPKEEP, NETWORK_UPKEEP, POWERLINE_UPKEEP,
-  RECYCLING_INCOME_PER_T, STRIKE_FUNDING, SUBWAY_UPKEEP, TAX_NEUTRAL, TAX_PER_JOB, TAX_PER_RES, TOURISM, TOURISM_INCOME_PER_VISITOR,
-  UTIL_FIXED, VENUE_INCOME,
+  BANKRUPT_MONTHS, BANKRUPT_WARN_MONTHS, BRIDGE_UPKEEP_MUL, DIFFICULTY_INCOME, LANDFILL_UPKEEP, NETWORK_UPKEEP, OPEX_BUILDING_SHARE,
+  POWERLINE_UPKEEP, RECYCLING_INCOME_PER_T, STRIKE_FUNDING, SUBWAY_UPKEEP, TAX_NEUTRAL, TAX_PER_JOB, TAX_PER_RES, TOURISM,
+  TOURISM_INCOME_PER_VISITOR, UTIL_FIXED, VENUE_INCOME,
 } from './tuning';
+import { OPEX_SERVICE, opexActive, opexTierOf, tierOperatingCosts } from './opex';
 import { type EconRuntime, econData, infraFlags } from './runtime';
 import { ORDINANCES, ordinanceEffect, ordinanceMonthly } from './ordinances';
 import { payLoansMonthly } from './loans';
@@ -137,11 +138,17 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
   const powerUtil = s.powerSupply > 0 ? Math.min(1, s.powerDemand / s.powerSupply) : 0;
   const waterUtil = s.waterSupply > 0 ? Math.min(1, s.waterDemand / s.waterSupply) : 0;
   const plopped = rt ? rt.plopped : [...st.buildings.values()].filter((b) => b.flags & BF.Plopped);
+  // operating costs (economy/opex.ts): service facilities pay a share of their upkeep for the building, plus running
+  // costs per person their tier serves (charged per tier below, for the tiers the city runs such a facility of)
+  const opexOn = opexActive(st);
+  const opexTiers = new Set<NeedTier>();
   for (const b of plopped) {
     if (!st.buildings.has(b.id)) continue;
     const def = getDef(b.def);
     if (!def) continue;
     let up = def.upkeep ?? 0;
+    const ot = opexOn ? opexTierOf(def) : null;
+    if (ot) { up *= OPEX_BUILDING_SHARE; if (!(b.flags & BF.Burnt)) opexTiers.add(ot); }
     if (def.powerOut && def.category === 'power') {
       up *= UTIL_FIXED + (1 - UTIL_FIXED) * powerUtil;
       // Clean Power Act: scrubbers on the plants that smoke (SIM_DEPTH_SPEC C1 "plant upkeep +15 %")
@@ -154,6 +161,12 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
       const deal = def.category === 'reward';
       add(income, (deal ? 'deal:' : 'facility:') + def.id, def.income * (deal ? 1 : venueIncomeFactor(st, b.id, def.id)) * facilityUseFactor(st, b));
     }
+  }
+  // running costs of the service facilities: § per person served (stats.needs: funding, strikes, power and staffing are
+  // in the served count already — an underfunded school teaches fewer pupils and costs less)
+  if (opexOn) {
+    const tc = tierOperatingCosts(st, opexTiers);
+    for (const t in tc) add(expense, 'service:' + OPEX_SERVICE[t as NeedTier], tc[t as NeedTier] ?? 0);
   }
   // ---- tourism (WP4): tourist spending taxed like shops; recycled material sales (WP3 writes stats.garbageRecycled)
   const tourists = (st.systemData.economy as { tourists?: number } | undefined)?.tourists ?? 0;

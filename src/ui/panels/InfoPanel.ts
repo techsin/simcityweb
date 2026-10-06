@@ -384,7 +384,10 @@ export class InfoPanel extends Panel {
       const tgt = cond ? ` → ${pct(Math.max(0, Math.min(1, cond.target)))}` : '';
       kv.add('Condition', 'heart', `${pct(b.health ?? 1)}${tgt}`, cond ? 'Current condition → the level it is heading for' : undefined);
     } else if (def) {
-      if (def.upkeep) kv.add('Upkeep', 'budget', `${money(def.upkeep)}/mo`);
+      // (a school, clinic, station or park also pays running costs per person served: the facility report's line has the
+      // actual monthly total, sim economy/opex.ts)
+      const upRow = rep?.rows.find((r) => r.label.toLowerCase() === 'upkeep');
+      if (def.upkeep) kv.add('Upkeep', 'budget', upRow ? upRow.value.replace(' / month', '/mo') : `${money(def.upkeep)}/mo`, upRow?.hint);
       if (def.income) kv.add('Income', 'budget', `<span class="pos">+${money(def.income)}/mo</span>`);
     }
     if (kv.count() < 6) kv.add('Age', 'calendar', b.age >= 360 ? `${Math.floor(b.age / 360)} yr ${Math.floor((b.age % 360) / 30)} mo` : `${Math.floor(b.age / 30)} months`);

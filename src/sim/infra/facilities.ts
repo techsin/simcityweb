@@ -49,6 +49,7 @@ import type { PollutionSystem } from './pollution';
 import { cohortShares } from '../economy/demographics';
 import { ATTRACTIONS, venueIssue, venueOp, venueVisits, type VenueIssue } from '../economy/tourism';
 import { onStrike, venueIncomeFactor } from '../economy/budget';
+import { OPEX_UNIT, buildingUpkeep, expectedUpkeep, facilityOpex, opexRateOf } from '../economy/opex';
 import { getOrdinance, ordinanceEffect } from '../economy/ordinances';
 import { RECYCLING_INCOME_PER_T } from '../economy/tuning';
 
@@ -731,7 +732,20 @@ function upkeepLine(c: Ctx, burnt = false): void {
   if (!(up > 0)) return;
   const svc = c.def.service;
   const f = svc ? c.st.budget.funding[svc] ?? 100 : 100;
-  add(c, 'upkeep', 'Upkeep', `${money(up * (svc ? f / 100 : 1))} / month${svc && f !== 100 ? ` (${f}% funding)` : ''}`, burnt ? { status: 'warn', hint: 'Still charged until you bulldoze it' } : {});
+  const fNote = svc && f !== 100 ? ` (${f}% funding)` : '';
+  // schools, clinics, stations, parks: the building plus running costs per person served (economy/opex.ts, WP6b)
+  const ox = facilityOpex(c.sim, c.b);
+  if (ox) {
+    if (burnt) { add(c, 'upkeep', 'Upkeep', `${money(ox.building)} / month${fNote}`, { status: 'warn', hint: 'Still charged until you bulldoze it' }); return; }
+    const many = OPEX_UNIT[ox.tier][1], one = OPEX_UNIT[ox.tier][0];
+    const each = `§${ox.rate < 0.1 ? ox.rate.toFixed(3) : ox.rate.toFixed(2)}`;
+    const hint = ox.people >= 1
+      ? `Building ${money(ox.building)} + running costs ${money(ox.running)} for ≈${fmt(ox.people)} ${many} (${each} each a month)`
+      : `Building ${money(ox.building)}; running costs of ${each} per ${one} a month start once it serves people`;
+    add(c, 'upkeep', 'Upkeep', `${money(ox.building + ox.running)} / month${fNote}`, { hint });
+    return;
+  }
+  add(c, 'upkeep', 'Upkeep', `${money(up * (svc ? f / 100 : 1))} / month${fNote}`, burnt ? { status: 'warn', hint: 'Still charged until you bulldoze it' } : {});
 }
 
 function staffLine(c: Ctx, tier: boolean): void {
@@ -1306,7 +1320,12 @@ export function facilityDefFacts(defId: string): FacilityLine[] {
   if ((def.income ?? 0) > 0) f('income', 'Income', `${money(def.income ?? 0)} / month`);
   if (def.landValue && def.landValue.amount > 0 && !def.prestige) f('landValue', 'Land value', `+${def.landValue.amount} within ${def.landValue.radius} tiles`);
   if ((def.jobs ?? 0) > 0) f('jobs', 'Jobs', fmt(def.jobs ?? 0));
-  if ((def.upkeep ?? 0) > 0) f('upkeep', 'Upkeep', `${money(def.upkeep ?? 0)} / month`);
+  const orate = opexRateOf(def);
+  if (orate && (def.upkeep ?? 0) > 0) {
+    // building + running costs per person served (economy/opex.ts): the monthly cost when it runs at a typical load
+    const each = `§${orate.rate < 0.1 ? orate.rate.toFixed(3) : orate.rate.toFixed(2)}`;
+    f('upkeep', 'Upkeep', `${money(buildingUpkeep(null, def))} / month + ${each} per ${orate.unit} served`, `≈ ${money(expectedUpkeep(null, def))} a month at a typical load`);
+  } else if ((def.upkeep ?? 0) > 0) f('upkeep', 'Upkeep', `${money(def.upkeep ?? 0)} / month`);
   for (const t of TF.transportDefFacts(defId)) out.push(t);
   return out;
 }

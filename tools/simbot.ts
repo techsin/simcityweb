@@ -35,6 +35,7 @@ import { listRewards } from '../src/sim/economy/rewards';
 import type { NeedTier } from '../src/sim/CityState';
 import { facilityLoad, tierLayer, unservedClusters } from '../src/sim/infra/catchments';
 import { emergencyOf, uncoveredHotspots } from '../src/sim/infra/emergency';
+import { expectedUpkeep } from '../src/sim/economy/opex';
 
 export interface BotOptions {
   size: number;
@@ -56,7 +57,8 @@ export interface BotOptions {
    * WP6b "rewards correct choices" (SIM_DEPTH_PART_B item 41): rules this mayor leaves out (the wrong choice of each
    * pair): 'schools' (elementary / high school / college), 'garbage' (no landfill, incinerator or recycling),
    * 'jail' (no prison), 'transit' (no stops, depots or garages), 'police' (no police stations), 'services' (no police,
-   * fire, school, clinic, park or emergency-response rules at all)
+   * fire, school, clinic, park or emergency-response rules at all), 'dirty' (industry zoned high density only:
+   * manufacturing and high-tech, no smokestack industry — WP6b's pollution-versus-jobs check)
    */
   skip?: string[];
 }
@@ -121,6 +123,13 @@ const GARB_RANGE_MIN_T = 10;
 const POCKET_PARKS = new Set(['park_small', 'park_plaza', 'park_playground']);
 /** a placeByClearing site the facility cannot stand on is not tried again for this many days */
 const CLEAR_FAIL_DAYS = 720;
+/** ensureNeeds stops while schools, clinics and parks cost more than this share of income (spec WP6: 45 % of flat
+ *  upkeep; WP6b: running costs per pupil / patient served make them ~40–60 % of a well-served city's income, and the
+ *  tax rule raises taxes when the margin goes) */
+const NEEDS_UPKEEP_SHARE = 0.7;
+/** a hospital from this population on, and one more per HOSPITAL_POP residents (ensureHospital) */
+const HOSPITAL_POP0 = 25000;
+const HOSPITAL_POP = 150000;
 /** a prison when this share of the sentenced has no bed (the first one: JAIL_OVERFLOW_FIRST, PART_B §5 WP6a "a jail when
  *  justice.overflow > 0.25"); once one stands the next is built at JAIL_OVERFLOW_MORE, so overflow stays within WP6b's
  *  "≤ 0.2 from year 20" gate (at 0.25 the 256x60 bots sat at 0.23-0.24 for years: s7 2057, s11 2054) */
@@ -263,10 +272,12 @@ export class SimBot {
   jailHold = 0;
   private jailSaving = false;
   /** a competent mayor only adds recurring costs the budget can carry (or when sitting on a big pile of cash) */
-  canAfford(defId: string): boolean {
+  canAfford(defId: string, people?: number): boolean {
     const d = getDef(defId);
     if (!d) return false;
-    const up = d.upkeep ?? 0;
+    // (a school / clinic / station costs its building upkeep plus running costs for the people it serves: economy/opex.ts;
+    // `people` = those it would newly serve when the caller knows them)
+    const up = expectedUpkeep(this.st, d, people);
     const net = this.monthlyNet() + this.pendingUpkeep;
     if (this.opts.spendy) return this.funds > (d.cost ?? 0);
     if (!this.canSpend(d.cost ?? 0)) return false;
@@ -319,6 +330,8 @@ export class SimBot {
     if (b.use === 'I') {
       const d = this.st.stats.demand;
       // follow sub-type demand: high-tech / manufacturing → high density, dirty / manufacturing → medium
+      // (--skip dirty: a mayor who refuses smokestack industry zones high density only: manufacturing + high-tech)
+      if (this.skips('dirty')) return Zone.IndHigh;
       return d[DevType.IHT] > 0.25 && d[DevType.IHT] >= d[DevType.ID] && (eq > 70 || pop > 20000) ? Zone.IndHigh : Zone.IndMed;
     }
     if (b.use === 'X' || b.use === 'L') return Zone.Landfill;
@@ -400,7 +413,7 @@ export class SimBot {
             if (!b.developed) { this.buildBlockRoads(b); b.developed = true; }
             const r = this.A.plop(defId, x, z, rot);
             if (r.ok) {
-              this.pendingUpkeep -= def.upkeep ?? 0;
+              this.pendingUpkeep -= expectedUpkeep(this.st, def);
               this.services.push({ def: defId, x: x + (w >> 1), z: z + (d >> 1) });
               this.lastPlaced = { x, z, w, d };
               this.say(`built ${def.name} ($${r.cost})`);
@@ -564,7 +577,7 @@ export class SimBot {
       if (r.ok) {
         const [w, d] = rotatedFootprint(def, rot);
         this.lastCleared = { x: best.x, z: best.z };
-        this.pendingUpkeep -= def.upkeep ?? 0;
+        this.pendingUpkeep -= expectedUpkeep(this.st, def);
         this.services.push({ def: defId, x: best.x + (w >> 1), z: best.z + (d >> 1) });
         this.say(`cleared ${best.olds.length} small lots for ${def.name} ($${r.cost})`);
         return r;
@@ -706,7 +719,10 @@ export class SimBot {
     // early loans to invest (competent mayors borrow while the town is small and the budget is tight)
     let income = 0;
     for (const k in st.budget.lastIncome) if (!k.startsWith('oneoff:')) income += st.budget.lastIncome[k];
-    if (st.budget.loans.length < 2 && st.day < 360 * 12 && st.funds < 25000 && net < income * 0.05 && st.stats.population > 1000) {
+    // (also when the till is nearly empty while residents want to move in: a small surplus builds no new blocks — WP6b,
+    // running costs leave a young town a few hundred § a month, and the 256 s7 town stalled 20 months at 5.6k without it)
+    const rWant = (st.stats.demand[0] + st.stats.demand[1] + st.stats.demand[2]) / 3;
+    if (st.budget.loans.length < 2 && st.day < 360 * 12 && st.funds < 25000 && (net < income * 0.05 || (st.funds < 10000 && rWant > 0.4)) && st.stats.population > 1000) {
       const amt = Math.min(maxLoanAmount(st), 60000);
       if (amt >= 5000 && this.A.takeLoan(amt).ok) this.say(`took a loan of $${amt}`);
     }
@@ -718,12 +734,19 @@ export class SimBot {
       for (let d = 0; d < 12; d++) this.A.setTax(d as DevType, this.opts.tax);
       return;
     }
-    // taxes: 9% baseline; +1 when losing money and low on funds, −1 when rich
+    // taxes: 9 % baseline; up when losing money and low on funds, down when rich. WP6b: services have running costs per
+    // person served (economy/opex.ts), so a growing city's budget keeps a margin only if taxes follow it — the mayor
+    // raises them while the surplus is under 2 % of income with less than 6 months of expenses in the bank, and lowers
+    // them only with a 12 % surplus and a year of expenses saved (before, the bot sat at its 7 % floor at break-even
+    // with no money for garbage, schools or parks: 256 s11 2040-2058 shrank 810k -> 763k)
     const cur = st.budget.taxRates[0];
+    let expense = 0;
+    for (const k in st.budget.lastExpense) if (!k.startsWith('oneoff:')) expense += st.budget.lastExpense[k];
+    const margin = income > 0 ? net / income : 0, months = expense > 0 ? st.funds / expense : 99;
     let t = cur;
-    if (net < 0 && st.funds < 30000) t = Math.min(11, cur + 0.5);
-    else if (net > 0 && st.funds > 400000 + st.stats.population * 2) t = Math.max(7, cur - 0.5);
-    else if (st.funds > 60000 && cur > 9) t = cur - 0.5;
+    if ((net < 0 && st.funds < 30000) || (margin < 0.02 && months < 6 && st.stats.population > 20000)) t = Math.min(11, cur + 0.5);
+    else if (margin > 0.12 && months > 12 && st.funds > 400000 + st.stats.population * 2) t = Math.max(7, cur - 0.5);
+    else if (st.funds > 60000 && cur > 9 && margin > 0.05) t = cur - 0.5;
     if (t !== cur) for (let d = 0; d < 12; d++) this.A.setTax(d as DevType, t);
   }
 
@@ -1097,12 +1120,18 @@ export class SimBot {
     for (const [def, minPop, radius] of plan) {
       if (pop < minPop || spent >= 2 || (def === 'civ_police_station' && this.skips('police'))) continue;
       if ((this.svcRetry.get(def) ?? -1) > this.st.day) continue;
-      if (!this.canAfford(def)) continue;
       const mine = this.services.filter((s) => s.def === def);
       // don't chase coverage of a sprawling town with more stations than its size justifies
       if (mine.length >= 1 + pop / 9000) continue;
       const u = this.uncovered(def, radius);
       if (!u) continue;
+      // the town's first fire / police station is built as soon as the cash is there, whatever the monthly net (WP6b,
+      // acceptance r1: canAfford's 60 × upkeep reserve kept the first police station back until month 26 at 10.4k people,
+      // with crime the largest approval drag of years 1–5); later ones when the budget carries the building plus the
+      // running costs of the residents in the uncovered blocks (crime-weighted ≈ 0.7 for police)
+      let near = 0;
+      for (const b of this.st.buildings.values()) if (b.pop > 0 && Math.hypot(b.x + b.w / 2 - u.x, b.z + b.d / 2 - u.z) <= radius * 0.85) near += b.pop;
+      if (mine.length === 0 ? !this.canSpend(getDef(def)?.cost ?? 0) : !this.canAfford(def, near * (def === 'civ_police_station' ? 0.7 : 1))) continue;
       // prefer civic blocks within reach, else any free spot in developed blocks within reach (lots on a road), else a few
       // small lots cleared (deep blocks leave no free frontage in a grown district)
       const ok = this.placeCivic(def, u.x, u.z, radius * 0.8, true);
@@ -1215,12 +1244,14 @@ export class SimBot {
     }
     if (pop < 1500 || !s.needs) return;
     this.pendingNeeds = this.pendingNeeds.filter((p) => this.passes < p.pass + 2);
-    // the upkeep of what these rules build (schools, clinics / hospitals, parks) stays within 45 % of income
+    // the upkeep of what these rules build (schools, clinics / hospitals, parks) stays within NEEDS_UPKEEP_SHARE of income
+    // (running costs, economy/opex.ts, charge every pupil and patient served: the share no longer falls as the city
+    // densifies)
     let income = 0, upkeep = 0, expense = 0;
     for (const k in st.budget.lastIncome) if (!k.startsWith('oneoff:')) income += st.budget.lastIncome[k];
     for (const k in st.budget.lastExpense) if (!k.startsWith('oneoff:')) expense += st.budget.lastExpense[k];
     for (const k of ['service:education', 'service:health', 'service:parks']) upkeep += st.budget.lastExpense[k] ?? 0;
-    if (!this.opts.spendy && income > 0 && upkeep > 0.45 * income) return;
+    if (!this.opts.spendy && income > 0 && upkeep > NEEDS_UPKEEP_SHARE * income) return;
     const MIN_POP: Partial<Record<NeedTier, number>> = { elementary: 1500, high: 6000, health: 2500, college: 15000, play: 3000, green: 1500 };
     /** smallest unserved need (people in the facility's reach) worth a facility */
     const MIN_PEOPLE: Partial<Record<NeedTier, number>> = { elementary: 120, high: 150, health: 500, college: 400, play: 150, green: 600 };
@@ -1299,7 +1330,7 @@ export class SimBot {
         const cost = d.cost ?? 0;
         const priority = tier === 'elementary' || tier === 'health';
         const affordable = this.opts.spendy ? this.funds > cost
-          : priority && !builtAt.length ? this.funds - cost > 1500 + 0.5 * expense && (this.monthlyNet() + this.pendingUpkeep - (d.upkeep ?? 0) > -0.05 * income || this.funds > 60 * (d.upkeep ?? 0) + 20000)
+          : priority && !builtAt.length ? this.funds - cost > 1500 + 0.5 * expense && (this.monthlyNet() + this.pendingUpkeep - expectedUpkeep(this.st, d, target.people) > -0.05 * income || this.funds > 60 * expectedUpkeep(this.st, d, target.people) + 20000)
             : this.canAfford(def);
         if (!affordable) break;
         tried++;
@@ -1358,6 +1389,45 @@ export class SimBot {
       this.svcRetry.set('resp:' + r, st.day + (ok ? 90 : 150));
       if (ok) this.say(`${def === 'civ_clinic' ? 'clinic' : 'fire station'}: ${Math.round((100 * out) / tot)} % of residents beyond ${r} response`);
     }
+    this.ensureHospital();
+  }
+
+  /**
+   * Hospitals (WP6b): clinics cover the walk-in need, but ambulances take medical emergencies to a hospital within
+   * EMERG_HOSPITAL_MAX minutes (better survival) and a hospital treats 40,000 patient-equivalents by road. A city keeps
+   * one per HOSPITAL_POP residents from HOSPITAL_POP0 on: at the most populous area without a hospital within 30 cells
+   * (16-cell blocks, residents summed within 24 cells). (ensureNeeds alone never built one: its clinics serve every
+   * cluster before it reaches the 12,000 patients a hospital is chosen for — 256x60 s7: 174 clinics, 0 hospitals.)
+   */
+  ensureHospital(): void {
+    const st = this.st, pop = st.stats.population;
+    if (pop < HOSPITAL_POP0 || (this.svcRetry.get('hospital') ?? -1) > st.day) return;
+    const have = this.count('civ_hospital');
+    if (have >= 1 + Math.floor((pop - HOSPITAL_POP0) / HOSPITAL_POP) || !this.canAfford('civ_hospital')) return;
+    const B = 16, nb = Math.ceil(this.N / B);
+    const res = new Float64Array(nb * nb), sx = new Float64Array(nb * nb), sz = new Float64Array(nb * nb);
+    const hosp: { x: number; z: number }[] = [];
+    for (const b of st.buildings.values()) {
+      const cx = b.x + (b.w >> 1), cz = b.z + (b.d >> 1);
+      if (b.def === 'civ_hospital' || b.def === 'civ_medical_center') hosp.push({ x: cx, z: cz });
+      if (b.pop <= 0) continue;
+      const k = Math.min(nb - 1, cz >> 4) * nb + Math.min(nb - 1, cx >> 4);
+      res[k] += b.pop; sx[k] += cx * b.pop; sz[k] += cz * b.pop;
+    }
+    let best = -1, bestPop = 0;
+    for (let k = 0; k < nb * nb; k++) {
+      if (res[k] <= 0) continue;
+      const x = sx[k] / res[k], z = sz[k] / res[k];
+      if (hosp.some((h) => Math.hypot(h.x - x, h.z - z) < 30)) continue;
+      let sum = 0;
+      for (let q = 0; q < nb * nb; q++) if (res[q] > 0 && Math.hypot(sx[q] / res[q] - x, sz[q] / res[q] - z) <= 24) sum += res[q];
+      if (sum > bestPop) { bestPop = sum; best = k; }
+    }
+    if (best < 0) { this.svcRetry.set('hospital', st.day + 360); return; }
+    const x = sx[best] / res[best], z = sz[best] / res[best];
+    const ok = this.placeCivic('civ_hospital', x, z, 16, true);
+    this.svcRetry.set('hospital', st.day + (ok ? 180 : 120));
+    if (ok) this.say(`hospital for ${Math.round(bestPop)} residents without one within 30 cells (medical emergencies, patients by road)`);
   }
 
   // ------------------------------------------------------------------------------------------ justice
@@ -1608,13 +1678,15 @@ export class SimBot {
     }
     // out of land with high unemployment: convert an outer residential block next to industry into jobs land
     const iDem = Math.max(d[DevType.ID], d[DevType.IM], d[DevType.IHT]);
-    if (s.unemployment > 0.1 && iDem > 0.4 && !this.blocks.some((b) => !b.developed && (b.use === 'I' || b.use === 'R')) &&
+    // (6 %: WP6b's labour headroom keeps jobs close to the workforce, so a full map with no industrial land left shows as
+    // unemployment of 3-8 % — the 256 s7 city stalled at 1.06M with 5 % from 2040 while its industry wanted to grow)
+    if (s.unemployment > 0.06 && iDem > 0.4 && !this.blocks.some((b) => !b.developed && (b.use === 'I' || b.use === 'R')) &&
       st.day - this.lastConvert > 180 && this.canInvest(5000)) {
       const cand = this.blocks.filter((b) => b.developed && b.use === 'R' && b.zone !== Zone.None &&
         [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => this.byKey.get(b.bx + dx + ',' + (b.bz + dz))?.use === 'I'))
         .sort((a, b) => b.ring - a.ring)[0];
       if (cand) {
-        const z = d[DevType.IHT] >= Math.max(d[DevType.ID], d[DevType.IM]) ? Zone.IndHigh : Zone.IndMed;
+        const z = this.skips('dirty') || d[DevType.IHT] >= Math.max(d[DevType.ID], d[DevType.IM]) ? Zone.IndHigh : Zone.IndMed;
         if (this.A.zone({ x0: cand.x0, z0: cand.z0, x1: cand.x1, z1: cand.z1 }, z).ok) {
           cand.use = 'I'; cand.zone = z; this.lastConvert = st.day;
           this.say(`converted residential block (${cand.bx},${cand.bz}) to industry (unemployment ${(s.unemployment * 100).toFixed(0)}%)`);
@@ -1637,7 +1709,9 @@ export class SimBot {
   caps(): void {
     const st = this.st;
     const data = econData(st);
-    const binding = (a: number, b: number) => { for (let k = a; k <= b; k++) if (data.capBinding[k] && st.stats.demand[k] > -0.2) return true; return false; };
+    // (a binding cap also pushes demand below zero once the city shrinks under it — the cap follows population — so a
+    // capped DevType counts whatever its demand: WP6b, 256 s11 lost 6 % to a capped R$$ at demand −0.2…−0.38 with no park)
+    const binding = (a: number, b: number) => { for (let k = a; k <= b; k++) if (data.capBinding[k]) return true; return false; };
     const center = { x: this.line(this.cbx), z: this.line(this.cbz) };
     const pop = st.stats.population;
     // parks: coverage of residential blocks + more when the R cap binds
@@ -1932,7 +2006,7 @@ usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/
   --quiet           no per-action log              --no-infra       economy systems only (no sim-infra)
   --tax N           fixed tax rate for every type  --spendy         150 % funding, builds without budget checks
   --neglect         never dispatches to uncovered emergencies
-  --skip a,b,...    leave rules out (the wrong choices): schools, garbage, jail, transit, police, services
+  --skip a,b,...    leave rules out (the wrong choices): schools, garbage, jail, transit, police, services, dirty
   --help, -h        this text
 env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1 · SIMBOT_PROFILE=1`;
 

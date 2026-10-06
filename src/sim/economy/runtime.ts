@@ -71,6 +71,9 @@ export interface EconData {
   /** WP4: tourists per day before the hotel limit, overnight visitors (for the tourism panel / advisors) */
   touristsGross?: number;
   overnight?: number;
+  /** WP6b labour headroom of the last demand update (demand.ts, tuning LABOUR_*): jobs the workforce can staff, jobs
+   *  (civic + C / I capacity incl. under construction), headroom = staffable − jobs, scale on the positive C / I demand */
+  labour?: { staffable: number; jobs: number; headroom: number; scale: number };
 }
 
 /** WP4-1 regional demand terms (capacity units added to the targets / caps) */

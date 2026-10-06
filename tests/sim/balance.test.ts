@@ -12,7 +12,11 @@
  *    <= 0.2 from year 8; <= 3 % of the growables abandoned; water and power supply >= demand from year 6;
  *  - the wrong choices do clearly worse (critic item 41): a mayor who builds no services at all ends with less than
  *    half the population, approval below 45 and most incidents failed; one who builds no schools ends with EQ < 60 and
- *    lower approval — and neither ends with more than 5 % more people than the base (the chaos margin).
+ *    lower approval — and neither ends with more than 5 % more people than the base (the chaos margin);
+ *  - WP6b round 2: a mayor who never dispatches to uncovered emergencies (--neglect) has more of them fail and a lower
+ *    approval over the run (residents remember unanswered emergencies for a year); one who refuses smokestack industry
+ *    (--skip dirty) breathes cleaner air but pays with unemployment (labour headroom: commerce alone no longer employs
+ *    everyone) and a smaller city.
  * The yearly tables for seeds 7 and 11 (256 x 60) live in the partB set; tools/simbot.ts prints the same columns.
  */
 import { describe, expect, it } from 'vitest';
@@ -24,6 +28,7 @@ import baseline from './fixtures/balance-baseline.json';
 interface Yearly {
   year: number; pop: number; funds: number; approval: number; eq: number; unemployment: number; accUnemp: number;
   incidents: number; auto: number; failed: number; overflow: number; abandoned: number; waterOk: boolean; powerOk: boolean;
+  air: number;
 }
 
 async function play(size: number, years: number, seed: number, extra: Partial<BotOptions> = {}): Promise<Yearly[]> {
@@ -50,6 +55,7 @@ async function play(size: number, years: number, seed: number, extra: Partial<Bo
       accUnemp: accW + unW > 0 ? 1 - (accE + unW * mean) / (accW + unW) : 0,
       incidents: sum(em?.count), auto: sum(em?.auto), failed: sum(em?.failed), overflow: s.justice?.overflow ?? 0,
       abandoned: grow ? ab / grow : 0, waterOk: s.waterSupply >= s.waterDemand, powerOk: s.powerSupply >= s.powerDemand,
+      air: s.avgAir ?? 0,
     });
   });
   return out;
@@ -100,6 +106,16 @@ describe.skipIf(process.env.BALANCE !== '1' && process.env.BALANCE !== '256')('W
     expect(ns.eq, 'no schools: EQ').toBeLessThan(60);
     expect(ns.approval, 'no schools: approval').toBeLessThan(base.approval);
     expect(ns.pop, 'no schools: population').toBeLessThanOrEqual(1.05 * base.pop);
+    // neglect (never dispatching to uncovered emergencies): more of them fail, approval over the run is lower
+    const mean = (v: Yearly[], f: (r: Yearly) => number) => v.reduce((s, r) => s + f(r), 0) / v.length;
+    const ng = await play(128, 15, 7, { neglect: true });
+    expect(ng.reduce((s, r) => s + r.failed, 0), 'neglect: failed incidents').toBeGreaterThan(y.reduce((s, r) => s + r.failed, 0));
+    expect(mean(ng, (r) => r.approval), 'neglect: mean approval').toBeLessThan(mean(y, (r) => r.approval));
+    // no smokestack industry: cleaner air, but jobs lag (unemployment) and the city stays smaller
+    const dirty = await play(128, 15, 7, { skip: ['dirty'] });
+    expect(dirty.at(-1)!.air, 'no dirty industry: air').toBeLessThan(base.air);
+    expect(Math.max(...dirty.map((r) => r.unemployment)), 'no dirty industry: unemployment').toBeGreaterThan(0.04);
+    expect(dirty.at(-1)!.pop, 'no dirty industry: population').toBeLessThan(0.9 * base.pop);
   });
 });
 

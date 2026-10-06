@@ -11,6 +11,8 @@
  *    CO from the workforce, city size, EQ and connectivity.
  *  - Industry: export demand (region/world, boosted by neighbor connections, freight stations, seaport, airports)
  *    + workforce share; EQ shifts dirty → high-tech. Unemployment pushes C/I up.
+ *  - LABOUR HEADROOM (WP6b): commerce and industry expand only while the workforce can staff the new jobs (tuning
+ *    LABOUR_*; econData.labour) — their targets stay as above, the positive demand is held to the headroom.
  *  - REGIONAL PLAY (WP4-1): founded neighbour cities (state.systemData.region, src/region/regionEffects.ts) change the
  *    targets like SC4 — a neighbouring job centre raises R, a neighbouring bedroom town raises C / I, neighbouring
  *    residents shop here, a big region widens the industrial market, and neighbours relieve the caps. Every effect is
@@ -33,8 +35,8 @@ import {
   CS_BASE, CS_PER_RES, CS_SMALL_TOWN_BOOST, CS_SMALL_TOWN_POP, CUSTOMER_MIX, DEMAND_ABS_EMA, DEMAND_EMA, DEMAND_NORM_FRAC, DEMAND_NORM_MIN,
   EDGE_CONN, EDGE_NONE, FREIGHT_BOOST, FREIGHT_BOOST_MAX, I_BASE, I_SHARE_MAX, I_SHARE_MIN, IA_BASE, IA_PER_RES, ID_EQ_START,
   ID_SHARE_AT_EQ0, ID_SHARE_EQ_SLOPE, ID_SHARE_MIN, IHT_EQ_START, IHT_SHARE_MAX, IHT_SHARE_PER_EQ, JOB_MIX_AVG, JOB_SLACK,
-  JOB_WEALTH_MIX, R_BASE, R_JOB_SLACK, REGION_WEALTH_MIX, RG_CAP, RG_CI, RG_CI_SPLIT, RG_CS, RG_CS_MAX, RG_MARKET, RG_MARKET_POP,
-  RG_R, TAX_FACTOR_MAX, TAX_FACTOR_MIN, TAX_NEUTRAL, TAX_SENS, TOURISM_CS_PER_POINT, TOURISM_CS_SPLIT, UNEMP_CI_BOOST,
+  JOB_WEALTH_MIX, LABOUR_MIN_HEAD, LABOUR_POP0, LABOUR_POP1, LABOUR_UNEMP0, LABOUR_VAC0, R_BASE, R_JOB_SLACK, REGION_WEALTH_MIX,
+  RG_CAP, RG_CI, RG_CI_SPLIT, RG_CS, RG_CS_MAX, RG_MARKET, RG_MARKET_POP, RG_R, TAX_FACTOR_MAX, TAX_FACTOR_MIN, TAX_NEUTRAL, TAX_SENS, TOURISM_CS_PER_POINT, TOURISM_CS_SPLIT, UNEMP_CI_BOOST,
   UNEMP_NEUTRAL, UNEMP_R_PENALTY, WORKFORCE_RATIO,
 } from './tuning';
 import { type EconRuntime, type RegionTerms, econData, infraFlags } from './runtime';
@@ -206,6 +208,8 @@ export function demandSystem(rt: EconRuntime): SimSystem {
   const raw = new Float64Array(DEV_TYPE_COUNT);
   const cap = new Float64Array(DEV_TYPE_COUNT);
   const cur = new Float64Array(DEV_TYPE_COUNT);
+  /** soft-capped targets of the day (softmin(raw, cap)) */
+  const eff = new Float64Array(DEV_TYPE_COUNT);
   /** regional additions per DevType before modifiers (capacity units) */
   const reg = new Float64Array(DEV_TYPE_COUNT);
   /** product of all multiplicative modifiers applied after the additions, per DevType */
@@ -317,16 +321,37 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     } else if (data.regionTerms) {
       delete data.regionTerms;
     }
+    // ---- labour headroom: commerce and industry expand only while workers are there for the new jobs (tuning LABOUR_*;
+    // their targets stay the economy's). The headroom is shared by commerce and industry in proportion to the jobs each
+    // offers now — what one family cannot use (no positive demand) goes to the other — and within a family by the
+    // positive demand of its DevTypes (an industrial target the city has no land for no longer starves the offices)
+    for (let d = 0; d < DEV_TYPE_COUNT; d++) eff[d] = softmin(raw[d], cap[d]);
+    const lf = smoothstep(LABOUR_POP0, LABOUR_POP1, P);
+    let jobsNow = t.civicJobCap, capC = 0, capI = 0, exC = 0, exI = 0;
+    for (let d = DevType.CS1; d <= DevType.IHT; d++) {
+      jobsNow += t.jobCapAll[d];
+      const ex = Math.max(0, eff[d] - cur[d]);
+      if (d <= DevType.CO3) { capC += t.jobCapAll[d]; exC += ex; } else { capI += t.jobCapAll[d]; exI += ex; }
+    }
+    const staffable = (W * (1 - LABOUR_UNEMP0)) / (1 - LABOUR_VAC0);
+    const head = Math.max(LABOUR_MIN_HEAD, staffable - jobsNow);
+    let hC = head * (capC + capI > 0 ? capC / (capC + capI) : 0.5), hI = head - hC;
+    if (exC < hC) { hI += hC - exC; hC = exC; } else if (exI < hI) { hC += hI - exI; hI = exI; }
+    const lkC = lf > 0 && exC > hC ? 1 - lf + (lf * hC) / exC : 1;
+    const lkI = lf > 0 && exI > hI ? 1 - lf + (lf * hI) / exI : 1;
+    const lkAll = exC + exI > 0 ? (exC * lkC + exI * lkI) / (exC + exI) : 1;
+    data.labour = { staffable: Math.round(staffable), jobs: Math.round(jobsNow), headroom: Math.round(staffable - jobsNow), scale: Math.round(lkAll * 1000) / 1000 };
     // ---- absolute & normalised demand
     for (let d = 0; d < DEV_TYPE_COUNT; d++) {
       const fam = devFamily(d);
-      const eff = softmin(raw[d], cap[d]);
-      const abs = eff - cur[d];
+      const e = eff[d];
+      let abs = e - cur[d];
+      if (abs > 0 && d >= DevType.CS1) abs *= d <= DevType.CO3 ? lkC : lkI;
       data.rawTarget[d] = Math.round(raw[d]);
-      data.target[d] = Math.round(eff);
+      data.target[d] = Math.round(e);
       data.capBinding[d] = raw[d] > CAP_BINDING * cap[d] ? 1 : 0;
       data.demandAbs[d] = first ? abs : data.demandAbs[d] + (abs - data.demandAbs[d]) * DEMAND_ABS_EMA;
-      const norm = DEMAND_NORM_MIN[fam] + DEMAND_NORM_FRAC * Math.max(cur[d], eff);
+      const norm = DEMAND_NORM_MIN[fam] + DEMAND_NORM_FRAC * Math.max(cur[d], e);
       const n = Math.tanh(data.demandAbs[d] / norm);
       s.demand[d] = first ? n : s.demand[d] + (n - s.demand[d]) * DEMAND_EMA;
       s.demandCap[d] = Math.round(cap[d]);

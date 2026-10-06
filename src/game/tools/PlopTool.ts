@@ -11,6 +11,7 @@ import type { ActionResult } from '../../sim/actions';
 import { getDef } from '../../sim/catalog';
 import type { BuildingDef } from '../../sim/catalogTypes';
 import { facilityDefFacts } from '../../sim/infra/facilities';
+import { expectedUpkeep, opexTierOf } from '../../sim/economy/opex';
 import { ferryPartnersFor, stopsNear } from '../../sim/infra/transportFacilities';
 import { EMG_FIRE } from '../../sim/infra/overlays';
 import type { GameContext } from '../context';
@@ -175,7 +176,8 @@ export class PlopTool extends Tool {
       }
       this.ctx.world.setHighlight(cells);
     }
-    const up = this.def.upkeep ? `Upkeep ${money(this.def.upkeep)}/mo` : '';
+    // (schools, clinics, stations, parks: building + running costs per person served at a typical load, economy/opex.ts)
+    const up = !this.def.upkeep ? '' : opexTierOf(this.def) ? `Upkeep ≈${money(expectedUpkeep(null, this.def))}/mo` : `Upkeep ${money(this.def.upkeep)}/mo`;
     const t = resultTip(this.def.name, this.res, [up, this.manual ? 'R rotate' : 'Auto-facing road · R rotate'].filter(Boolean).map(escapeHtml).join(' · '));
     const pv = this.place ? this.placementPreview(this.place.x, this.place.z, this.place.rot) : '';
     this.ctx.tip.show(t.html + (this.facts ? `<div class="tip-sub tip-facts">${this.facts}</div>` : '') + pv, t.kind);

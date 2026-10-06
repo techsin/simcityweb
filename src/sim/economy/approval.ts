@@ -298,8 +298,12 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     T.hq = hq < 0 ? hq * fadeIn : hq;
     const em = sim.getSystem<SimSystem & EmergencyApi>('emergency');
     if (em?.active === true && s.emergency) {
-      const lm = s.emergency.lastMonth;
-      T.emergencies = -Math.min(AT.emergencyMax, AT.emFailed * lm.failed + AT.emLate * lm.late + AT.emDeaths * lm.deaths + AT.emRiotDays * lm.riotDays);
+      const lm = s.emergency.lastMonth, yr = s.emergency.year;
+      // + the share of the last 12 months' emergencies that went unanswered (residents remember a burnt-out block)
+      let yCount = 0;
+      for (const k in yr.count) yCount += yr.count[k as keyof typeof yr.count] ?? 0;
+      const remembered = fadeIn * AT.emFailRate * (yr.failed ?? 0) / (yCount + AT.emFailN0);
+      T.emergencies = -Math.min(AT.emergencyMax, AT.emFailed * lm.failed + AT.emLate * lm.late + AT.emDeaths * lm.deaths + AT.emRiotDays * lm.riotDays + remembered);
     } else {
       T.emergencies = -Math.min(AT.fireMax, AT.firePer * firesMonth);
     }
@@ -378,6 +382,17 @@ function approvalDetail(st: CityState, id: string, T: Record<string, number>): s
     case 'tourism': return `${n0(d?.tourists ?? 0)} tourists / day`;
     case 'unemployment': return `${pct(s.unemployment)} unemployed`;
     case 'justice': return `jail overflow ${pct(s.justice?.overflow ?? 0)}`;
+    case 'emergencies': {
+      const e = s.emergency;
+      if (!e) return undefined;
+      let n = 0;
+      for (const k in e.year.count) n += e.year.count[k as keyof typeof e.year.count] ?? 0;
+      const parts: string[] = [];
+      if (e.year.failed > 0) parts.push(`${n0(e.year.failed)} of ${n0(n)} emergencies in the last 12 months went unanswered`);
+      if (e.lastMonth.late > 0) parts.push(`${n0(e.lastMonth.late)} answered late last month`);
+      if (e.lastMonth.deaths > 0) parts.push(`${n0(e.lastMonth.deaths)} dead last month`);
+      return parts.length ? parts.join(', ') : undefined;
+    }
     case 'noise': return sv ? `average noise at homes ${pct(sv.noise[3])}` : undefined;
     case 'garbage': return sv ? `${pct(sv.noGarbage[3])} of residents without garbage pickup${limit}` : undefined;
     case 'outages': return sv ? `${pct(sv.unpowered[3])} of residents without power, ${pct(sv.unwatered[3])} without water` : undefined;
