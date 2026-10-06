@@ -10,8 +10,8 @@
  *  - one employment ledger: |unemployment - (1 - access-weighted employment)| <= 0.02 every year;
  *  - emergencies: >= 85 % of the incidents auto-dispatched from year 10, <= 5 % failed over the run; justice overflow
  *    <= 0.2 from year 8; <= 3 % of the growables abandoned; water and power supply >= demand from year 6;
- *  - the wrong choices do clearly worse (critic item 41): a mayor who builds no services at all ends with less than
- *    half the population, approval below 45 and most incidents failed; one who builds no schools ends with EQ < 60 and
+ *  - the wrong choices do clearly worse (critic item 41): a mayor who builds no services at all ends with under three
+ *    quarters of the population, EQ < 60, approval below 45 and most incidents failed; one who builds no schools ends with EQ < 60 and
  *    lower approval — and neither ends with more than 5 % more people than the base (the chaos margin);
  *  - WP6b round 2: a mayor who never dispatches to uncovered emergencies (--neglect) has more of them fail and an
  *    approval at least a point lower over the run (residents remember unanswered emergencies for a year, and each
@@ -98,7 +98,11 @@ describe.skipIf(process.env.BALANCE !== '1' && process.env.BALANCE !== '256')('W
     // no services at all (police, fire, schools, clinics, parks, emergency response): far fewer people, angry, failing
     const none = await play(128, 15, 7, { skip: ['services'] });
     const n = none.at(-1)!;
-    expect(n.pop, 'no services: population').toBeLessThan(0.5 * base.pop);
+    // (round 1: < 0.5 x base. That city ran 1.45 jobs per worker — the bot zoned commerce / industry nobody could staff
+    // instead of homes; with the labour headroom (WP6b round 2) it builds the homes and ends near 0.63 x base, still
+    // with a third of the base's people missing, approval ~37 and its EQ and safety gone)
+    expect(n.pop, 'no services: population').toBeLessThan(0.75 * base.pop);
+    expect(n.eq, 'no services: EQ').toBeLessThan(60);
     expect(n.approval, 'no services: approval').toBeLessThan(Math.min(45, base.approval - 20));
     const inc = none.reduce((s, r) => s + r.incidents, 0), failed = none.reduce((s, r) => s + r.failed, 0);
     expect(failed / Math.max(1, inc), 'no services: failed incidents').toBeGreaterThan(0.5);
