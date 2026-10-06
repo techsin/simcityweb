@@ -16,7 +16,9 @@ import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { Simulation } from '../../src/sim/Simulation';
 import { FireSystem } from '../../src/sim/infra/fire';
 import { EmergencySystem, type Incident } from '../../src/sim/infra/emergency';
-import { DisastersSystem } from '../../src/sim/infra/disasters';
+import { DisastersSystem, triggerDisaster } from '../../src/sim/infra/disasters';
+import { removeBuilding } from '../../src/sim/economy/buildings';
+import { FIRE_BURN_DAYS } from '../../src/sim/infra/params';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import { newState, place, roadLine } from './cityGen';
 

@@ -5,7 +5,10 @@ import { Panel } from '../Panel';
 import { h, setText } from '../dom';
 import { icon } from '../icons';
 import { compact, num, pct } from '../format';
-import { INCIDENT_KINDS } from '../../sim/CityState';
+import { type Building, INCIDENT_KINDS } from '../../sim/CityState';
+import type { SimSystem } from '../../sim/Simulation';
+import type { EconRuntime } from '../../sim/economy/runtime';
+import { type GarageCounts, type GarageStates, countGarages, parkRideLine } from '../statsModel';
 
 function sum(a: number[] | undefined, i0: number, i1: number): number {
   let s = 0;

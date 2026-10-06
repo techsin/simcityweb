@@ -281,13 +281,15 @@ function upTri(mb: ModelBuilder, a: V3, ca: number, b: V3, cb: number, c: V3, cc
 const RUB_BED_COL = 0x55493f;
 
 /**
- * Ash / brick-dust spill under a debris pile: dark ash at the core, then dust, then the bed's own tone at an irregular,
+ * Ash spill under a debris pile: dark ash at the core, a warmer half tone, then the bed's own tone at an irregular,
  * slightly oval rim of n points around radius r, so the spill has no edge on the bed (the one-cell tile's crisp scorch
  * polygon reads as a sticker once piles are scattered). A very flat cone (7.5 cm at the core, 1.2 cm at the rim over
  * the piece's base): where the spills of neighbouring piles overlap, each point shows the spill it lies deeper inside
  * of, so their tones meet without an edge (and never z-fight). 5 n triangles.
  */
-function rubSpill(mb: ModelBuilder, rng: RNG, r: number, n: number, core: number, dust: number): void {
+function rubSpill(mb: ModelBuilder, rng: RNG, r: number, n: number, core: number, tint: number): void {
+  // mid ring: between the core and the bed (a lighter dust ring would ring every pile like a target), warmed by tint
+  const dust = mixHex(mixHex(core, RUB_BED_COL, 0.55), tint, 0.18);
   const a0 = rng.range(0, Math.PI * 2), asp = rng.range(0.72, 1), rot = rng.range(0, Math.PI), cr = Math.cos(rot), sr = Math.sin(rot);
   const ring = (f: number, jit: number, y: number): V3[] => {
     const out: V3[] = [];
@@ -435,6 +437,26 @@ function rubbleCluster(fam: number, k: number): [THREE.BufferGeometry, THREE.Buf
   tintSince(mb, m2, (p) => { const t = 0.72 + 0.28 * Math.min(1, Math.max(0, p[1]) / 1.4); return [t, t, t]; });
   rubBlocks(mb, rng, fam, k === 3 ? 7 : 4, 4.2, k === 3);
   rubBeams(mb, rng, fam, heaps, k === 0 ? 3 : 2, 1.5);
+  return [mb.build(), px.build()];
+}
+
+/** scattered debris between the piles (layout k): chunks, a couple of beams / rebar and one or two low drifts; its
+ *  proxy keeps the drifts */
+function rubbleScatter(fam: number, k: number): [THREE.BufferGeometry, THREE.BufferGeometry] {
+  const rng = new RNG(0x6a07 + fam * 211 + k * 41);
+  const mb = new ModelBuilder(), px = new ModelBuilder();
+  const cols = RUB_HEAP_COLS[fam], at: number[][] = [];
+  for (let i = 0; i < 1 + k; i++) {
+    const a = rng.range(0, Math.PI * 2), r = rng.range(1, 3.5), x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const rx = rng.range(0.9, 1.5), ry = rng.range(0.3, 0.5), rz = rng.range(0.8, 1.3), c = rng.pick(cols);
+    mb.paint(c, Surf.Plain);
+    leafBlob(mb, rng, [x, ry * 0.2 - 0.1, z], [rx, ry, rz], { jitter: 0.18, soft: 0.45, floorY: -0.08, faceColor: () => (rng.chance(0.5) ? jitterHex(rng, rng.pick(cols), 0.08) : null) });
+    px.paint(heapTone(c, cols), Surf.Plain).push().translate(x, 0, z).rotateY(rng.range(0, Math.PI));
+    px.pyramid(0, 0, rx * 1.45, rz * 1.45, -0.08, ry * 1.05).pop();
+    at.push([x, z]);
+  }
+  rubBlocks(mb, rng, fam, 9 + k * 2, 5.2, true);
+  rubBeams(mb, rng, fam, at, 2 + k, 2.2);
   return [mb.build(), px.build()];
 }
 
@@ -1185,7 +1207,7 @@ export class BuildingRenderer {
     // big heaps: sw x sd cells from (i0, j0) (and the cells in `also`) take one heap at the block's centre
     const big = (i0: number, j0: number, sw: number, sd: number, also: number[] = []) => {
       for (let j = j0; j < j0 + sd; j++) for (let i = i0; i < i0 + sw; i++) used[j * w + i] = 1;
-      for (const c of also) used[c] = 1;
+      for (const c of also) used[c] = 2;
       const k = rng.int(0, 1), s = rng.range(0.88, 1.06), R = RUB_BIG_R * s;
       const x = (i0 + sw / 2) * C - hx + rng.range(-1.5, 1.5), z = (j0 + sd / 2) * C - hz + rng.range(-1.5, 1.5);
       pieces.push({ ids: this.kitPiece(`big${fam}.${k}`, () => rubbleBigHeap(fam, k)), x: clampIn(x, hx - R - 0.5), z: clampIn(z, hz - R - 0.5), yaw: rng.range(0, Math.PI * 2), s, r: R });
@@ -1205,14 +1227,24 @@ export class BuildingRenderer {
       pieces.push({ ids: this.kitPiece(`cl${fam}.${k}`, () => rubbleCluster(fam, k)), x: clampIn(x, hx - R - 0.6), z: clampIn(z, hz - R - 0.6), yaw: rng.range(0, Math.PI * 2), s, r: R });
     };
     for (let j = 0; j < d; j++) for (let i = 0; i < w; i++) {
-      if (used[j * w + i] || rng.chance(0.06)) continue;
       const cx = (i + 0.5) * C - hx, cz = (j + 0.5) * C - hz;
-      if (rng.chance(0.3)) {
+      // scattered chunks / beams between the piles on most cells
+      if (rng.chance(0.65)) {
+        const k = rng.int(0, 1);
+        pieces.push({ ids: this.kitPiece(`sc${fam}.${k}`, () => rubbleScatter(fam, k)), x: clampIn(cx + rng.range(-5, 5), hx - 6), z: clampIn(cz + rng.range(-5, 5), hz - 6), yaw: rng.range(0, Math.PI * 2), s: rng.range(0.9, 1.2), r: 5.5 });
+      }
+      if (used[j * w + i]) {
+        // the cells a big heap spills into: a smaller pile pushed toward the lot edge
+        if (used[j * w + i] === 2) cluster(cx + Math.sign(cx) * 3, cz + Math.sign(cz) * 3, rng.range(0.7, 0.9), 1.5);
+        continue;
+      }
+      if (rng.chance(0.04)) continue;
+      if (rng.chance(0.35)) {
         // two piles on opposite sides of the cell
         const a = rng.range(0, Math.PI * 2);
-        cluster(cx + Math.cos(a) * 4, cz + Math.sin(a) * 4, rng.range(0.85, 1.05), 1.5);
-        cluster(cx - Math.cos(a) * 4.5, cz - Math.sin(a) * 4.5, rng.range(0.65, 0.85), 1.5);
-      } else cluster(cx, cz, rng.range(0.95, 1.25), 3.5);
+        cluster(cx + Math.cos(a) * 4, cz + Math.sin(a) * 4, rng.range(0.95, 1.15), 1.5);
+        cluster(cx - Math.cos(a) * 4.5, cz - Math.sin(a) * 4.5, rng.range(0.75, 0.95), 1.5);
+      } else cluster(cx, cz, rng.range(1.05, 1.4), 3.5);
     }
     // the burnt shell: outer-wall stubs on about half of the edge cells, 1.4-2.4 m inside the lot's edge
     const inset = rng.range(1.4, 2.4), ex = hx - inset, ez = hz - inset;
