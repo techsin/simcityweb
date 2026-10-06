@@ -186,6 +186,8 @@ const _rnq = new Float64Array(6);
 const _plf = new Float64Array(4);
 /** current camera orientation */
 const _rot = new Float64Array(9);
+/** TileCuller.update's frustum planes (nx, ny, nz, constant) x 6 */
+const _tcp = new Float64Array(24);
 /** frames a camera must rest before a guard-banded list is re-culled exactly */
 const SETTLE_FRAMES = 8;
 /** angular band cap (rad): wider bands keep lists through faster turns but draw more of the periphery */
@@ -348,6 +350,11 @@ export class DynamicBatch {
   private matFull = true;
   private colFull = true;
   private lastFrame = -1;
+  /** dynamic batches: a whole-matrix upload is pending (markMatricesDirty), done by the frame's first pass for the rows
+   *  in use only; instance ids in use lie below `top` (recomputed after a removal at the top) */
+  private matDirect = false;
+  private top = 0;
+  private topDirty = false;
 
   constructor(material: THREE.Material, instances = 1024, vertices = 65536, name = 'batch') {
     this.mesh = new THREE.BatchedMesh(instances, vertices, vertices * 2, material);
@@ -449,6 +456,7 @@ export class DynamicBatch {
     }
     this.live++;
     const id = m.addInstance(geomId);
+    if (id >= this.top) this.top = id + 1;
     if (this.pc) {
       this.ensureCap(id + 1);
       this.instTile[id] = -1;
@@ -465,6 +473,7 @@ export class DynamicBatch {
 
   remove(id: number): void {
     this.live--;
+    if (id + 1 >= this.top) this.topDirty = true;
     if (this.pc) {
       if (this.pc.dynamic) this.partSet(id, false);
       this.unlink(id);
@@ -590,8 +599,9 @@ export class DynamicBatch {
     const tex = (this.mesh as any)._matricesTexture as THREE.DataTexture;
     tex.clearUpdateRanges();
     this.matFull = true;
-    tex.needsUpdate = true;
-    if (this.pc?.dynamic) this.version++;
+    // dynamic batches: uploaded by the frame's first pass, only the rows of the instance ids in use (uploadMatrices)
+    if (this.pc?.dynamic) { this.version++; this.matDirect = true; }
+    else tex.needsUpdate = true;
     if (this.mesh.castShadow) {
       shadowCasters.version++;
       if (this.pc?.dynamic) shadowCasters.dynamic++;
@@ -829,6 +839,7 @@ export class DynamicBatch {
     if (fr !== this.lastFrame) {
       this.lastFrame = fr;
       _frame++;
+      if (this.matDirect) { this.matDirect = false; this.uploadMatrices(renderer); }
       if (this.matFull) { m._matricesTexture.clearUpdateRanges(); this.matFull = false; }
       if (this.colFull && m._colorsTexture) { m._colorsTexture.clearUpdateRanges(); this.colFull = false; }
     }
@@ -931,6 +942,36 @@ export class DynamicBatch {
     m._multiDrawCount = s.count;
     m._indirectTexture = s.tex;
     m._visibilityChanged = false;
+  }
+
+  /**
+   * A dynamic batch's whole-matrix update (markMatricesDirty): one texSubImage2D of the texture rows that hold instance
+   * ids in use (vehicles: a city with fewer vehicles than the batch was sized for uploads only that part; three.js would
+   * upload the whole texture and re-set its sampler parameters). A texture three.js has not uploaded yet goes through
+   * three.js.
+   */
+  private uploadMatrices(renderer: THREE.WebGLRenderer): void {
+    const tex = (this.mesh as any)._matricesTexture as THREE.DataTexture;
+    const props = renderer.properties ? (renderer.properties.get(tex) as { __webglTexture?: WebGLTexture; __version?: number }) : undefined;
+    if (props === undefined || props.__webglTexture === undefined || props.__version !== tex.version) { tex.needsUpdate = true; return; }
+    if (this.topDirty) {
+      const info = (this.mesh as any)._instanceInfo as { active: boolean }[];
+      let t = Math.min(this.top, info.length);
+      while (t > 0 && !(info[t - 1] && info[t - 1].active)) t--;
+      this.top = t;
+      this.topDirty = false;
+    }
+    const W = tex.image.width, rows = Math.min(tex.image.height, Math.ceil((this.top * 4) / W));
+    if (rows <= 0) return;
+    const gl = renderer.getContext() as WebGL2RenderingContext, st = renderer.state;
+    st.bindTexture(gl.TEXTURE_2D, props.__webglTexture);
+    st.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    st.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    st.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    st.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    st.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+    st.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, rows, gl.RGBA, gl.FLOAT, tex.image.data as unknown as Float32Array, 0);
   }
 
   /** planes of the list build -> _fp (view / shadow camera) and _rp / _rnl (receiver), widened by the slot's bands */
@@ -1537,7 +1578,6 @@ export class TileCuller {
   minY: Float32Array;
   private frustum = new THREE.Frustum();
   private mat = new THREE.Matrix4();
-  private box = new THREE.Box3();
   private listeners: ((tile: number, visible: boolean) => void)[] = [];
   private first = true;
   /** camera (projection + view matrix) of the last update and whether a tile height grew since: an unchanged camera
@@ -1589,19 +1629,26 @@ export class TileCuller {
     this.stale = false;
     this.mat.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.mat);
+    // flat planes; the tile boxes are tested inline (Frustum.intersectsBox's farthest-corner test, same arithmetic)
+    const pl = this.frustum.planes, fp = _tcp;
+    for (let k = 0; k < 6; k++) { const n = pl[k].normal, o = k * 4; fp[o] = n.x; fp[o + 1] = n.y; fp[o + 2] = n.z; fp[o + 3] = pl[k].constant; }
     const T = this.tiles;
     const size = this.tileCells * this.cell;
+    const maxY = this.maxY, minY = this.minY, vis = this.vis, first = this.first, ls = this.listeners, nl = ls.length;
     for (let tz = 0; tz < T; tz++) {
       for (let tx = 0; tx < T; tx++) {
         const i = tz * T + tx;
-        const top = this.maxY[i];
+        const top = maxY[i];
         const infl = Math.min(400, Math.max(0, top) * 0.9) + 8;
-        this.box.min.set(tx * size - infl, this.minY[i], tz * size - infl);
-        this.box.max.set((tx + 1) * size + infl, top + 5, (tz + 1) * size + infl);
-        const v = this.frustum.intersectsBox(this.box) ? 1 : 0;
-        if (v !== this.vis[i] || this.first) {
-          this.vis[i] = v;
-          for (const fn of this.listeners) fn(i, v === 1);
+        const x0 = tx * size - infl, y0 = minY[i], z0 = tz * size - infl, x1 = (tx + 1) * size + infl, y1 = top + 5, z1 = (tz + 1) * size + infl;
+        let v = 1;
+        for (let k = 0; k < 6; k++) {
+          const o = k * 4, nx = fp[o], ny = fp[o + 1], nz = fp[o + 2];
+          if (nx * (nx > 0 ? x1 : x0) + ny * (ny > 0 ? y1 : y0) + nz * (nz > 0 ? z1 : z0) + fp[o + 3] < 0) { v = 0; break; }
+        }
+        if (v !== vis[i] || first) {
+          vis[i] = v;
+          for (let l = 0; l < nl; l++) ls[l](i, v === 1);
         }
       }
     }
