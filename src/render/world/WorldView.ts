@@ -168,6 +168,7 @@ export class WorldView implements WorldViewApi {
   private instancedAt = -1;
   private renders = 0;
   private hiddenEmpty: THREE.Mesh[] = [];
+  private nHidden = 0;
 
   constructor(canvas: HTMLCanvasElement, state: CityState, events: Emitter<CityEvents>, opts: WorldViewOptions = {}) {
     registerAllModels();
@@ -555,38 +556,41 @@ export class WorldView implements WorldViewApi {
    * before until then.
    */
   private hideEmpty(): void {
+    // (index-filled arrays, never truncated below their high-water size: no per-frame allocation)
     if (this.renders++ - this.instancedAt >= EMPTY_SCAN || this.instancedAt < 0) {
       this.instancedAt = this.renders;
       const out = this.instanced, stack = _scan;
-      out.length = 0;
-      stack.length = 0;
-      stack.push(this.scene);
-      while (stack.length > 0) {
-        const o = stack.pop()!;
+      let k = 0, sp = 0;
+      stack[sp++] = this.scene;
+      while (sp > 0) {
+        const o = stack[--sp];
         const ch = o.children;
-        for (let i = 0; i < ch.length; i++) stack.push(ch[i]);
+        for (let i = 0; i < ch.length; i++) stack[sp++] = ch[i];
         if (ch.length > 0) continue;
         const m = o as THREE.Mesh;
-        if ((m as THREE.InstancedMesh).isInstancedMesh === true || (m.isMesh === true && (m.geometry as THREE.InstancedBufferGeometry).isInstancedBufferGeometry === true)) out.push(m);
+        if ((m as THREE.InstancedMesh).isInstancedMesh === true || (m.isMesh === true && (m.geometry as THREE.InstancedBufferGeometry).isInstancedBufferGeometry === true)) out[k++] = m;
       }
+      if (out.length !== k) out.length = k;
     }
     const list = this.instanced, hidden = this.hiddenEmpty;
+    let h = 0;
     for (let i = 0; i < list.length; i++) {
       const m = list[i];
       if (!m.visible) continue;
       const n = (m as THREE.InstancedMesh).isInstancedMesh === true ? (m as THREE.InstancedMesh).count : (m.geometry as THREE.InstancedBufferGeometry).instanceCount;
       if (n === 0) {
         m.visible = false;
-        hidden.push(m);
+        hidden[h++] = m;
       }
     }
+    this.nHidden = h;
   }
 
   /** undo hideEmpty after the frame's render */
   private showEmpty(): void {
     const hidden = this.hiddenEmpty;
-    for (let i = 0; i < hidden.length; i++) hidden[i].visible = true;
-    hidden.length = 0;
+    for (let i = 0, n = this.nHidden; i < n; i++) hidden[i].visible = true;
+    this.nHidden = 0;
   }
 
   /** start time of the current animation frame (document timeline = the rAF timestamp), else NaN */
