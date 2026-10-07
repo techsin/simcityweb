@@ -60,6 +60,11 @@ const _w4 = new Float64Array(4);
  *  draws the visible ones without testing them again (DynamicBatch.viewCulled) */
 const VIEW_MARGIN = 40;
 const HEAD_MARGIN = 6;
+/** car following (target speeds from gaps, signals and congestion) runs once this much time (s) has accumulated: at
+ *  ~30-40 Hz instead of every frame (every other frame at 60 fps, every frame below 40 fps). Speeds respond within
+ *  ~33 ms, positions still advance every frame; the following gaps keep a 1.2 m buffer, more than the up to ~0.25 m
+ *  a car travels in the extra frame before it reacts. */
+const FOLLOW_STEP = 1 / 40;
 /** poseCars: the view frustum planes (nx, ny, nz, constant) x 6 */
 const _vf = new Float64Array(24);
 const _vfr = new THREE.Frustum();
@@ -248,6 +253,8 @@ export class VehicleRenderer {
   private routeTimer = 0;
   private popTimer = 0;
   private time = 0;
+  /** time accumulated since the last car-following pass (see FOLLOW_STEP) */
+  private followDt = 0;
   private rngS = 1234567;
   private trains: Train[] = [];
   /** fraction of vehicle slots the zoom thinning keeps (by camera height, see the file comment) */
@@ -937,7 +944,12 @@ export class VehicleRenderer {
     this.keep = camH <= 1500 ? ease(camH, 1000, 200, 1, 0.5) : camH <= 2600 ? ease(camH, 1500, 200, 0.5, 1 / 3) : ease(camH, 2600, 300, 1 / 3, 0);
     this.upkeep(dt);
     this.refreshCells();
-    this.follow(dt);
+    // (see FOLLOW_STEP)
+    this.followDt += dt;
+    if (this.followDt >= FOLLOW_STEP) {
+      this.follow(this.followDt);
+      this.followDt = 0;
+    }
     const night = sharedUniforms.uNight.value > 0.2;
     const written = this.poseCars(dt, camera, heightPx, night) + this.poseTrains(dt, camera, heightPx);
     // nothing visible moved -> no upload, no shadow-map invalidation

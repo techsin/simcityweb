@@ -185,6 +185,11 @@ interface InstPack {
   gr: Float32Array;
   ga: Uint8Array;
   go: Uint8Array;
+  /** static packs: views of the first n draw ranges / ids (re-made on a re-pack) for whole-pack copies into unsorted
+   *  lists (TypedArray.set: a block copy instead of a per-entry loop); null for dynamic packs */
+  vS: Int32Array | null;
+  vC: Int32Array | null;
+  vI: Uint32Array | null;
 }
 
 const _frustum = new THREE.Frustum();
@@ -208,13 +213,16 @@ const _fg = new Float64Array(24);
 const _rg = new Float64Array(24);
 const _rng = new Float64Array(6);
 /** list-build doubles handed to the emitters (guard band, min caster radius, receiver ground, 1 / light dir y, and for
- *  sorted lists the camera position) */
-const _plf = new Float64Array(7);
+ *  sorted lists the camera position and the near-field distance, see sortNear) */
+const _plf = new Float64Array(8);
 /** sub-cells per tile side (pack groups of static tiles) */
 const SUB = 4;
-/** sorted lists: distance key per entry, floor(4 sqrt(d)) of its distance d to the camera (sqrt-spaced buckets: fine up
- *  close; 255 from 4064 m on), and the histogram of the counting sort. The key comes from a table instead of a second
- *  square root: KEYQ[i] for d = i / 4 m below 1024 m (quarter-metre steps), KEYQ[4096 + i] for d = 1024 + i m above. */
+/** whole packs at least this long are copied into unsorted lists with TypedArray.set (shorter ones: per entry) */
+const BULK_MIN = 48;
+/** sorted lists: distance key floor(4 sqrt(d)) of a distance d to the camera (sqrt-spaced buckets: fine up close; 255
+ *  from 4064 m on), per entry in the near field and per pack group beyond it (see sortNear), and the histogram of the
+ *  counting sort (entries per key). The key comes from a table instead of a second square root: KEYQ[i] for d = i / 4 m
+ *  below 1024 m (quarter-metre steps), KEYQ[4096 + i] for d = 1024 + i m above. */
 const _hist = new Int32Array(257);
 const KEYQ = (() => {
   const t = new Uint8Array(4096 + 3072);
@@ -330,6 +338,19 @@ function allPlanes(): void {
   _fq.set(_fp);
   _rq.set(_rp);
   _rnq.set(_rnl);
+}
+
+/** sorted lists: distance key of a pack group (bounds gb[kb..kb + 5]: its nearest point to the camera in _plf[4..6]),
+ *  or -1 inside the near field (_plf[7]) or for a group with an entry without a sphere (x0 NaN): keyed per entry */
+function groupKey(gb: Float32Array, kb: number): number {
+  const x0 = gb[kb];
+  if (!(x0 === x0)) return -1;
+  const kx = _plf[4], ky = _plf[5], kz = _plf[6];
+  const y0 = gb[kb + 1], z0 = gb[kb + 2], x1 = gb[kb + 3], y1 = gb[kb + 4], z1 = gb[kb + 5];
+  const dx = kx < x0 ? x0 - kx : kx > x1 ? kx - x1 : 0, dy = ky < y0 ? y0 - ky : ky > y1 ? ky - y1 : 0, dz = kz < z0 ? z0 - kz : kz > z1 ? kz - z1 : 0;
+  const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (d < _plf[7]) return -1;
+  return d < 1024 ? KEYQ[(d * 4) | 0] : d < 4096 ? KEYQ[3072 + (d | 0)] : 255;
 }
 
 /** rotation angle (rad) between two orientations (unit axes) */
@@ -529,16 +550,21 @@ export class DynamicBatch {
   /** packOf scratch: sub-cell of each instance of the tile list being packed, and per sub-cell its count / cursor */
   private subOf = new Int32Array(0);
   private subCnt = new Int32Array(SUB * SUB + 1);
-  /** where the emitters write the list being built: the slot's own arrays, or (sorted lists) these scratch arrays with a
-   *  distance key per entry, scattered into the slot's arrays by key once the list is complete (counting sort) */
+  /** where the emitters write the list being built: the slot's own arrays, or (sorted lists, srt) these scratch arrays
+   *  as segments — a pack group beyond the near field sharing the group's distance key, or a single entry with its own —
+   *  placed into the slot's arrays by key once the list is complete (sortSegments: stable counting sort by key) */
   private oS: Int32Array = new Int32Array(0);
   private oC: Int32Array = new Int32Array(0);
   private oI: Uint32Array = new Uint32Array(0);
-  private oK: Uint8Array | null = null;
+  private srt = false;
   private eS: Int32Array = new Int32Array(64);
   private eC: Int32Array = new Int32Array(64);
   private eI: Uint32Array = new Uint32Array(64);
-  private eK: Uint8Array = new Uint8Array(64);
+  /** segments: first entry in the scratch arrays, length, distance key; and their count */
+  private sgA: Int32Array = new Int32Array(64);
+  private sgN: Int32Array = new Int32Array(64);
+  private sgK: Uint8Array = new Uint8Array(64);
+  private nSeg = 0;
   /** bumped whenever drawRanges() recomputed the per-geometry ranges */
   private rangesGen = 0;
   private untiled: number[] = [];
@@ -549,6 +575,12 @@ export class DynamicBatch {
    *  before shading (big occluders such as buildings; cheap counting sort on a key computed as the entries are
    *  emitted, only when a list is rebuilt) */
   sortFront = false;
+  /** sorted lists: instances within this distance of the camera (m; at least sortNearFrac x the view distance) are
+   *  ordered one by one; beyond it, by their pack group (a 1/4-tile sub-cell, nearest point of its bounds): the far
+   *  field is small on screen (little overdraw to save between neighbours), and keying it per group skips most of the
+   *  per-instance distance work and scatter of the sort */
+  sortNear = 300;
+  sortNearFrac = 0.5;
   private gStart = new Int32Array(0);
   private gCount = new Int32Array(0);
   // ---- partial texture uploads
@@ -1389,15 +1421,19 @@ export class DynamicBatch {
         rInv = 1 / Math.max(recv.dir.y, 0.05);
       }
       _plf[0] = s.margin; _plf[1] = minR; _plf[2] = rGround; _plf[3] = rInv;
-      // where the entries go: straight into the slot's arrays, or (sorted) into the scratch arrays with a distance key
-      // each, scattered by key once the list is complete
+      // where the entries go: straight into the slot's arrays, or (sorted) into the scratch arrays as keyed segments,
+      // placed by key once the list is complete
       if (sorted) {
         const e = s.camera.matrixWorld.elements;
         _plf[4] = e[12]; _plf[5] = e[13]; _plf[6] = e[14];
+        _plf[7] = Math.max(this.sortNear, this.sortNearFrac * s.reach0);
         _hist.fill(0);
-        this.oS = this.eS; this.oC = this.eC; this.oI = this.eI; this.oK = this.eK;
+        this.nSeg = 0;
+        this.srt = true;
+        this.oS = this.eS; this.oC = this.eC; this.oI = this.eI;
       } else {
-        this.oS = s.starts; this.oC = s.counts; this.oI = s.ids; this.oK = null;
+        this.srt = false;
+        this.oS = s.starts; this.oC = s.counts; this.oI = s.ids;
       }
       // prefix reuse: tile-level lists only (fine lists hold per-instance results, sorted lists a camera order)
       const reuse = coarse && !sorted && !dyn;
@@ -1471,7 +1507,7 @@ export class DynamicBatch {
           const pk = this.packOf(ti);
           if (this.oS.length < n + pk.n) this.growOut(s, n + pk.n, n);
           // kind 0: every visible instance of the tile (with the cascade bit) is drawn
-          if (kind === 0) n = this.emitRange(pk, 0, pk.n, n, cbit !== 0 && (pk.and & cbit) === 0 ? cbit : 0);
+          if (kind === 0) n = sorted ? this.emitTileSorted(pk, n) : this.emitRange(pk, 0, pk.n, n, cbit !== 0 && (pk.and & cbit) === 0 ? cbit : 0);
           else n = this.pushGroups(pk, np, size, nr, n, cbit);
         }
       }
@@ -1489,7 +1525,7 @@ export class DynamicBatch {
         if (mat) n = this.pushGroups(this.packDyn(mat), 6, minR > 0, recv ? 6 : 0, n, cbit);
         else n = this.pushList(this.untiled, un, minR > 0, recv ? 6 : 0, n, cbit);
       }
-      if (sorted) this.scatterSorted(s, n);
+      if (sorted) { this.sortSegments(s, n); this.srt = false; }
       // a kept prefix keeps its entries' positions: the instance -> list index map of the previous list (patchRanges)
       // stays valid for it and only the rewritten tail is re-indexed, instead of the whole map at the next patch
       if (reuse && s.posGen === s.gen - 1 && s.pos.length >= this.instGeo.length) {
@@ -1505,28 +1541,35 @@ export class DynamicBatch {
 
   /** room for `need` entries in the current emission target (keeps the first n) */
   private growOut(s: PassSlot, need: number, n: number): void {
-    if (this.oK === null) {
+    if (!this.srt) {
       this.ensureList(s, need, n);
       this.oS = s.starts; this.oC = s.counts; this.oI = s.ids;
       return;
     }
     if (this.eS.length >= need) return;
-    const cap = Math.max(need, Math.ceil(this.eS.length * 1.5), 64);
-    const a = new Int32Array(cap), b = new Int32Array(cap), c = new Uint32Array(cap), d = new Uint8Array(cap);
-    a.set(this.eS.subarray(0, n)); b.set(this.eC.subarray(0, n)); c.set(this.eI.subarray(0, n)); d.set(this.eK.subarray(0, n));
-    this.eS = this.oS = a; this.eC = this.oC = b; this.eI = this.oI = c; this.eK = this.oK = d;
+    // (segments hold at least one entry each: as many slots as entries)
+    const cap = Math.max(need, Math.ceil(this.eS.length * 1.5), 64), ns = this.nSeg;
+    const a = new Int32Array(cap), b = new Int32Array(cap), c = new Uint32Array(cap);
+    a.set(this.eS.subarray(0, n)); b.set(this.eC.subarray(0, n)); c.set(this.eI.subarray(0, n));
+    this.eS = this.oS = a; this.eC = this.oC = b; this.eI = this.oI = c;
+    const sa = new Int32Array(cap), sn = new Int32Array(cap), sk = new Uint8Array(cap);
+    sa.set(this.sgA.subarray(0, ns)); sn.set(this.sgN.subarray(0, ns)); sk.set(this.sgK.subarray(0, ns));
+    this.sgA = sa; this.sgN = sn; this.sgK = sk;
   }
 
-  /** sorted list: the n emitted entries (scratch arrays, key each, histogram in _hist) into the slot's arrays, nearest
-   *  key first (stable counting sort) */
-  private scatterSorted(s: PassSlot, n: number): void {
+  /** sorted list: the n emitted entries (scratch arrays, as segments with a key each, entries per key in _hist) into the
+   *  slot's arrays, nearest key first (stable counting sort of the segments, each copied as a block) */
+  private sortSegments(s: PassSlot, n: number): void {
     if (s.starts.length < n) this.ensureList(s, n, 0);
     const h = _hist;
     for (let b = 1; b < 257; b++) h[b] += h[b - 1];
-    const key = this.eK, eS = this.eS, eC = this.eC, eI = this.eI, S = s.starts, C = s.counts, I = s.ids;
-    for (let i = 0; i < n; i++) {
-      const j = h[key[i]]++;
-      S[j] = eS[i]; C[j] = eC[i]; I[j] = eI[i];
+    const eS = this.eS, eC = this.eC, eI = this.eI, S = s.starts, C = s.counts, I = s.ids;
+    const sA = this.sgA, sN = this.sgN, sK = this.sgK;
+    for (let q = 0, ns = this.nSeg; q < ns; q++) {
+      const k = sK[q], len = sN[q];
+      let j = h[k];
+      h[k] = j + len;
+      for (let i = sA[q], e = i + len; i < e; i++, j++) { S[j] = eS[i]; C[j] = eC[i]; I[j] = eI[i]; }
     }
   }
 
@@ -1635,6 +1678,9 @@ export class DynamicBatch {
     pk.n = off;
     pk.ng = ng;
     pk.ver = ver;
+    // (views for whole-pack block copies, see emitRange; re-made per re-pack, none for short packs)
+    if (off >= BULK_MIN) { pk.vS = pk.st.subarray(0, off); pk.vC = pk.ct.subarray(0, off); pk.vI = ids.subarray(0, off); }
+    else pk.vS = pk.vC = pk.vI = null;
     this.groupStats(pk);
     this.packRanges(pk, ti);
     return pk;
@@ -1737,6 +1783,7 @@ export class DynamicBatch {
     return {
       ver: -1, n: 0, ids: new Uint32Array(cap), sph: new Float32Array(cap * 4), mk: new Uint8Array(cap), st: new Int32Array(cap), ct: new Int32Array(cap), rs: -1, rg: -1, and: 0,
       ng: 0, gf: new Int32Array(gcap), gc: new Int32Array(gcap), gb: new Float32Array(gcap * 6), gr: new Float32Array(gcap), ga: new Uint8Array(gcap), go: new Uint8Array(gcap),
+      vS: null, vC: null, vI: null,
     };
   }
 
@@ -1749,7 +1796,7 @@ export class DynamicBatch {
    */
   private pushGroups(pk: InstPack, np: number, size: boolean, nr: number, n: number, cbit: number): number {
     const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3];
-    const fq = _fq, rq = _rq, rnq = _rnq, fg = _fg, rg = _rg, rng = _rng;
+    const fq = _fq, rq = _rq, rnq = _rnq, fg = _fg, rg = _rg, rng = _rng, srt = this.srt;
     const gf = pk.gf, gc = pk.gc, gb = pk.gb, gr = pk.gr, ga = pk.ga, go = pk.go;
     for (let i = 0, ng = pk.ng; i < ng; i++) {
       if (cbit !== 0 && (go[i] & cbit) === 0) continue;
@@ -1796,35 +1843,68 @@ export class DynamicBatch {
       const gsize = size && gr[i] < minR;
       const gbit = cbit !== 0 && (ga[i] & cbit) === 0 ? cbit : 0;
       const j0 = gf[i], j1 = j0 + gc[i];
-      n = gp === 0 && gq === 0 && !gsize ? this.emitRange(pk, j0, j1, n, gbit) : this.testRange(pk, j0, j1, gp, gsize, gq, n, gbit);
+      // (sorted lists: the group's key beyond the near field, else -1: per entry)
+      const gk = srt ? groupKey(gb, kb) : -1;
+      if (gp === 0 && gq === 0 && !gsize) n = srt ? this.emitSorted(pk, j0, j1, n, gk) : this.emitRange(pk, j0, j1, n, gbit);
+      else n = this.testRange(pk, j0, j1, gp, gsize, gq, n, gbit, gk);
     }
     return n;
   }
 
-  /** the entries [j0, j1) of a pack into the list (with the cascade bit cbit, unless 0); sorted lists: with their
-   *  distance keys (main passes: no cascade bit) */
+  /** sorted list, a tile entirely in view: its groups as segments (keyed per group beyond the near field) */
+  private emitTileSorted(pk: InstPack, n: number): number {
+    const gf = pk.gf, gc = pk.gc, gb = pk.gb;
+    for (let i = 0, ng = pk.ng; i < ng; i++) {
+      const j0 = gf[i];
+      n = this.emitSorted(pk, j0, j0 + gc[i], n, groupKey(gb, i * 6));
+    }
+    return n;
+  }
+
+  /** the entries [j0, j1) of a pack into an unsorted list (with the cascade bit cbit, unless 0); a whole long pack as
+   *  one block copy per array */
   private emitRange(pk: InstPack, j0: number, j1: number, n: number, cbit: number): number {
-    const starts = this.oS, counts = this.oC, ind = this.oI, key = this.oK;
+    const starts = this.oS, counts = this.oC, ind = this.oI;
     const ids = pk.ids, st = pk.st, ct = pk.ct;
-    if (key === null) {
-      if (cbit === 0) {
-        for (let j = j0; j < j1; j++) { starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++; }
-      } else {
-        const mk = pk.mk;
-        for (let j = j0; j < j1; j++) { if ((mk[j] & cbit) === 0) continue; starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++; }
+    if (cbit === 0) {
+      const vS = pk.vS;
+      if (vS !== null && j0 === 0 && j1 === pk.n) {
+        starts.set(vS, n); counts.set(pk.vC!, n); ind.set(pk.vI!, n);
+        return n + j1;
       }
+      for (let j = j0; j < j1; j++) { starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++; }
+    } else {
+      const mk = pk.mk;
+      for (let j = j0; j < j1; j++) { if ((mk[j] & cbit) === 0) continue; starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++; }
+    }
+    return n;
+  }
+
+  /** sorted list (main pass: no cascade bit): the entries [j0, j1) of a pack as one segment with the group's key gk, or
+   *  (gk < 0: near field) one segment per entry with its own key (distance to its sphere, quarter metres up close) */
+  private emitSorted(pk: InstPack, j0: number, j1: number, n: number, gk: number): number {
+    const starts = this.oS, counts = this.oC, ind = this.oI;
+    const ids = pk.ids, st = pk.st, ct = pk.ct;
+    if (gk >= 0) {
+      if (j1 <= j0) return n;
+      const q = this.nSeg++;
+      this.sgA[q] = n; this.sgN[q] = j1 - j0; this.sgK[q] = gk;
+      _hist[gk + 1] += j1 - j0;
+      for (let j = j0; j < j1; j++) { starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++; }
       return n;
     }
     const ps = pk.sph, hist = _hist, kx = _plf[4], ky = _plf[5], kz = _plf[6];
+    const sA = this.sgA, sN = this.sgN, sK = this.sgK;
+    let q = this.nSeg;
     for (let j = j0; j < j1; j++) {
       const o = j * 4, dx = ps[o] - kx, dy = ps[o + 1] - ky, dz = ps[o + 2] - kz;
-      // (distance key: sqrt-spaced buckets of the distance to the sphere, quarter metres up close)
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - ps[o + 3];
       const kk = d <= 0 ? 0 : d < 1024 ? KEYQ[(d * 4) | 0] : d < 4096 ? KEYQ[3072 + (d | 0)] : 255;
-      key[n] = kk;
+      sA[q] = n; sN[q] = 1; sK[q] = kk; q++;
       hist[kk + 1]++;
       starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++;
     }
+    this.nSeg = q;
     return n;
   }
 
@@ -1832,13 +1912,16 @@ export class DynamicBatch {
    * The entries [j0, j1) of a pack that pass the per-entry tests into the list: the cascade bit (cbit, unless 0), the
    * caster size (size), the first nr receiver planes of _rg / _rng (shadow passes: only casters whose shadow can reach the
    * visible slice, the sphere swept away from the light down to the ground) and the first np frustum planes of _fg.
-   * Doubles in _plf. Sorted lists: with their distance keys.
+   * Doubles in _plf. Sorted lists: the passing entries as one segment with the group's key gk, or (gk < 0) one segment
+   * per entry with its own key (see emitSorted).
    */
-  private testRange(pk: InstPack, j0: number, j1: number, np: number, size: boolean, nr: number, n: number, cbit: number): number {
+  private testRange(pk: InstPack, j0: number, j1: number, np: number, size: boolean, nr: number, n: number, cbit: number, gk: number): number {
     const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3], kx = _plf[4], ky = _plf[5], kz = _plf[6];
     const fq = _fg, rq = _rg, rnq = _rng, hist = _hist;
-    const starts = this.oS, counts = this.oC, ind = this.oI, key = this.oK;
+    const starts = this.oS, counts = this.oC, ind = this.oI;
     const ids = pk.ids, ps = pk.sph, mk = pk.mk, st = pk.st, ct = pk.ct;
+    const srt = this.srt, per = srt && gk < 0, sA = this.sgA, sN = this.sgN, sK = this.sgK, n0 = n;
+    let q = this.nSeg;
     for (let j = j0; j < j1; j++) {
       if (cbit !== 0 && (mk[j] & cbit) === 0) continue;
       const o = j * 4;
@@ -1862,14 +1945,20 @@ export class DynamicBatch {
         }
         if (out) continue;
       }
-      if (key !== null) {
+      if (per) {
         const dx = cx - kx, dy = cy - ky, dz = cz - kz;
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - r;
         const kk = d <= 0 ? 0 : d < 1024 ? KEYQ[(d * 4) | 0] : d < 4096 ? KEYQ[3072 + (d | 0)] : 255;
-        key[n] = kk;
+        sA[q] = n; sN[q] = 1; sK[q] = kk; q++;
         hist[kk + 1]++;
       }
       starts[n] = st[j]; counts[n] = ct[j]; ind[n] = ids[j]; n++;
+    }
+    if (per) this.nSeg = q;
+    else if (srt && n > n0) {
+      sA[q] = n0; sN[q] = n - n0; sK[q] = gk;
+      this.nSeg = q + 1;
+      hist[gk + 1] += n - n0;
     }
     return n;
   }
@@ -1884,7 +1973,8 @@ export class DynamicBatch {
     const mr = _plf[0], minR = _plf[1], rGround = _plf[2], rInv = _plf[3], kx = _plf[4], ky = _plf[5], kz = _plf[6];
     const vis = this.instVis, imask = this.instMask, geo = this.instGeo, sph = this.sph, gS = this.gStart, gC = this.gCount;
     const fq = _fq, rq = _rq, rnq = _rnq, hist = _hist;
-    const starts = this.oS, counts = this.oC, ind = this.oI, key = this.oK;
+    const starts = this.oS, counts = this.oC, ind = this.oI, srt = this.srt, sA = this.sgA, sN = this.sgN, sK = this.sgK;
+    let q = this.nSeg;
     for (let j = 0; j < len; j++) {
       const id = list[j];
       if (!vis[id]) continue;
@@ -1908,11 +1998,11 @@ export class DynamicBatch {
         if (fq[k] * cx + fq[k + 1] * cy + fq[k + 2] * cz + fq[k + 3] < -r) { out = true; break; }
       }
       if (out) continue;
-      if (key !== null) {
+      if (srt) {
         const dx = cx - kx, dy = cy - ky, dz = cz - kz;
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - r;
         const kk = d <= 0 ? 0 : d < 1024 ? KEYQ[(d * 4) | 0] : d < 4096 ? KEYQ[3072 + (d | 0)] : 255;
-        key[n] = kk;
+        sA[q] = n; sN[q] = 1; sK[q] = kk; q++;
         hist[kk + 1]++;
       }
       const gid = geo[id];
@@ -1921,6 +2011,7 @@ export class DynamicBatch {
       ind[n] = id;
       n++;
     }
+    if (srt) this.nSeg = q;
     return n;
   }
 
