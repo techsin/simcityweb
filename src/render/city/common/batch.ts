@@ -69,7 +69,7 @@ interface PassSlot {
   ids: Uint32Array;
   tex: THREE.DataTexture;
   texCap: number;
-  /** builds in a row whose list used under a quarter of the texture (it shrinks after SHRINK_AFTER) */
+  /** builds in a row with the texture over twice the size it needs (it shrinks after SHRINK_AFTER, see syncIds) */
   small: number;
   count: number;
   version: number;
@@ -263,7 +263,7 @@ const SWAP_FULL = 4;
 const OFF_RING = 256;
 /** width (ids per row) of the per-pass indirect textures: uploads are whole rows (see syncIds), 2 KB each */
 const ID_W = 512;
-/** a pass list's indirect texture shrinks only after this many builds in a row that used under a quarter of it */
+/** a pass list's indirect texture shrinks only after this many builds in a row with it over twice the size it needs */
 const SHRINK_AFTER = 180;
 let _frame = 0;
 
@@ -1574,24 +1574,25 @@ export class DynamicBatch {
   }
 
   /**
-   * The list's indirect (instance id) texture: rows of ID_W ids, kept at its high-water size (grown with 50% slack;
-   * shrunk only once the lists stayed under a quarter of it for SHRINK_AFTER builds, so zooming does not re-create it).
-   * Its data mirrors the GPU copy: only the rows from the first id that differs (at or after `from`, a prefix the build
-   * kept) to the end of the list are uploaded, with one texSubImage2D straight into the existing texture (three.js
-   * would re-upload the whole texture and re-set its sampler parameters); an unchanged list uploads nothing. A texture
+   * The list's indirect (instance id) texture: rows of ID_W ids, sized for every live instance of the batch (no list is
+   * longer; 2 KB per 512 instances) or 1.5 x the list, whichever is more, so a zoom that grows the lists does not
+   * re-create it; shrunk only once it stayed over twice that size for SHRINK_AFTER builds (mass removals). Its data
+   * mirrors the GPU copy: only the rows from the first id that differs (at or after `from`, a prefix the build kept) to
+   * the end of the list are uploaded, with one texSubImage2D straight into the existing texture (three.js would
+   * re-upload the whole texture and re-set its sampler parameters); an unchanged list uploads nothing. A texture
    * three.js has not uploaded yet (new, or an upload pending) goes through three.js.
    */
   private syncIds(renderer: THREE.WebGLRenderer, s: PassSlot, n: number, from: number): void {
-    const cap = s.texCap;
+    const cap = s.texCap, want = Math.max(n * 1.5, this.live);
     let fresh = s.tex === null || cap < n;
     if (!fresh) {
-      if (n * 4 < cap && cap > ID_W) fresh = ++s.small > SHRINK_AFTER;
+      if (cap > ID_W && cap > want * 2) fresh = ++s.small > SHRINK_AFTER;
       else s.small = 0;
     }
     if (fresh) {
       s.small = 0;
       s.tex?.dispose();
-      const rows = Math.max(1, Math.ceil((n * 1.5) / ID_W));
+      const rows = Math.max(1, Math.ceil(want / ID_W));
       s.tex = new THREE.DataTexture(new Uint32Array(ID_W * rows), ID_W, rows, THREE.RedIntegerFormat, THREE.UnsignedIntType);
       s.texCap = ID_W * rows;
       from = 0;
