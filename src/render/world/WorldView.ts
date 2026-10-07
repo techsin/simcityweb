@@ -162,6 +162,12 @@ export class WorldView implements WorldViewApi {
   /** construction timings (ms, cumulative) for diagnostics */
   readonly initTimings: Record<string, number> = {};
   private precompiled = false;
+  /** the scene's instanced leaf meshes (re-collected every EMPTY_SCAN renders) and those hidden for this render because
+   *  they hold no instance (see hideEmpty) */
+  private instanced: THREE.Mesh[] = [];
+  private instancedAt = -1;
+  private renders = 0;
+  private hiddenEmpty: THREE.Mesh[] = [];
 
   constructor(canvas: HTMLCanvasElement, state: CityState, events: Emitter<CityEvents>, opts: WorldViewOptions = {}) {
     registerAllModels();
@@ -530,9 +536,57 @@ export class WorldView implements WorldViewApi {
     }
     this.updateDynamicResolution();
     this.updateShadowPolicy();
-    this.post.render(this.scene, this.camera, null);
+    this.hideEmpty();
+    try {
+      this.post.render(this.scene, this.camera, null);
+    } finally {
+      this.showEmpty();
+    }
     // main-thread busy time of this frame: from the frame's start (rAF time) to the end of the render submission
     if (this.drsStart === this.drsStart) this.drsBusy = performance.now() - this.drsStart;
+  }
+
+  /**
+   * Instanced meshes that hold no instance this frame (count / instanceCount 0: idle effect layers such as the emergency
+   * beacons, empty LOD or decal layers) are hidden for the frame's render passes and shown again right after it: three.js
+   * otherwise projects, sets up and issues an empty draw for each of them in every pass (a transparent DoubleSide one
+   * twice, switching its side and re-resolving its program each time). Their owners' `visible` is only touched inside
+   * render(). The candidates (leaf meshes) are re-collected every EMPTY_SCAN renders: one added in between is drawn as
+   * before until then.
+   */
+  private hideEmpty(): void {
+    if (this.renders++ - this.instancedAt >= EMPTY_SCAN || this.instancedAt < 0) {
+      this.instancedAt = this.renders;
+      const out = this.instanced, stack = _scan;
+      out.length = 0;
+      stack.length = 0;
+      stack.push(this.scene);
+      while (stack.length > 0) {
+        const o = stack.pop()!;
+        const ch = o.children;
+        for (let i = 0; i < ch.length; i++) stack.push(ch[i]);
+        if (ch.length > 0) continue;
+        const m = o as THREE.Mesh;
+        if ((m as THREE.InstancedMesh).isInstancedMesh === true || (m.isMesh === true && (m.geometry as THREE.InstancedBufferGeometry).isInstancedBufferGeometry === true)) out.push(m);
+      }
+    }
+    const list = this.instanced, hidden = this.hiddenEmpty;
+    for (let i = 0; i < list.length; i++) {
+      const m = list[i];
+      if (!m.visible) continue;
+      const n = (m as THREE.InstancedMesh).isInstancedMesh === true ? (m as THREE.InstancedMesh).count : (m.geometry as THREE.InstancedBufferGeometry).instanceCount;
+      if (n === 0) {
+        m.visible = false;
+        hidden.push(m);
+      }
+    }
+  }
+
+  /** undo hideEmpty after the frame's render */
+  private showEmpty(): void {
+    const hidden = this.hiddenEmpty;
+    for (let i = 0; i < hidden.length; i++) hidden[i].visible = true;
+    hidden.length = 0;
   }
 
   /** start time of the current animation frame (document timeline = the rAF timestamp), else NaN */
@@ -850,3 +904,6 @@ const _bboxMax = new THREE.Vector3();
 const _rayInv = new THREE.Ray();
 /** the single shadow map's lookup matrix before this frame's fit (updateShadowPolicy) */
 const _shM = new THREE.Matrix4();
+/** renders between re-collections of the scene's instanced meshes (WorldView.hideEmpty), and the walk's stack */
+const EMPTY_SCAN = 30;
+const _scan: THREE.Object3D[] = [];
