@@ -481,6 +481,10 @@ export class DynamicBatch {
   private rangesBpe = -1;
   /** per geometry: culling radius about the instance origin (sphere radius + |sphere centre|; dynamic batches) */
   private geoRad = new Float32Array(64);
+  /** per geometry: identity of its culling sphere (geometries sharing one, see shareSphere, carry the same id: a swap
+   *  between them keeps the instance's bounds without comparing spheres) and the last id handed out */
+  private geoSid = new Int32Array(64);
+  private sidSeq = 0;
   /** guard band of the per-pass lists, as a fraction of the view distance: the widest isotropic band (slow motion) and
    *  prediction error, and the fastest travel per frame that is predicted (0 = exact lists, rebuilt on any camera
    *  move). Main passes use the view camera's distance to the ground, shadow passes the receiver's. */
@@ -491,6 +495,8 @@ export class DynamicBatch {
   farReach = 2000;
   private instTile = new Int32Array(0);
   private instSlot = new Int32Array(0);
+  /** entry of the instance in its tile's pack when it was last packed (valid where pack.ids[instPk[id]] === id) */
+  private instPk = new Int32Array(0);
   private sph = new Float32Array(0);
   /** per-instance shadow cascade mask (bit i = casts into cascade i), ANDed with the batch-wide shadowMask */
   private instMask = new Uint8Array(0);
@@ -628,12 +634,14 @@ export class DynamicBatch {
     this.geoBounds[id] = g.boundingBox!.clone();
     this.geoSphere[id] = g.boundingBox!.getBoundingSphere(new THREE.Sphere());
     this.noteRad(id);
+    this.geoSid[id] = ++this.sidSeq;
     return id;
   }
 
-  /** refresh geoRad[id] from the geometry's culling sphere */
+  /** refresh geoRad[id] from the geometry's culling sphere (and make room for its sphere id) */
   private noteRad(id: number): void {
     if (this.geoRad.length <= id) { const r = new Float32Array(Math.max(id + 1, this.geoRad.length * 2)); r.set(this.geoRad); this.geoRad = r; }
+    if (this.geoSid.length <= id) { const s = new Int32Array(Math.max(id + 1, this.geoSid.length * 2)); s.set(this.geoSid); this.geoSid = s; }
     const S = this.geoSphere[id];
     if (S) this.geoRad[id] = S.radius + S.center.length();
   }
@@ -700,23 +708,43 @@ export class DynamicBatch {
   }
 
   setGeometry(id: number, geomId: number): void {
-    const m = this.mesh as any;
-    const prevGeom = m._instanceInfo[id].geometryIndex as number;
+    const pc = this.pc;
+    if (pc === null) {
+      if ((this.mesh as any)._instanceInfo[id].geometryIndex === geomId) return;
+      this.mesh.setGeometryIdAt(id, geomId);
+      this.touch();
+      return;
+    }
+    // (LOD swaps run by the thousand while zooming: the typed mirror instead of three's per-instance objects, and three's
+    // per-instance geometry written directly, as setGeometryIdAt does after its checks; an unknown instance or geometry
+    // goes through those checks, which throw)
+    const prevGeom = this.instGeo[id];
     if (prevGeom === geomId) return;
-    this.mesh.setGeometryIdAt(id, geomId);
-    if (!this.pc) { this.touch(); return; }
+    if (prevGeom < 0 || !(geomId >= 0 && geomId < this.geoBounds.length && this.geoBounds[geomId] !== undefined)) this.mesh.setGeometryIdAt(id, geomId);
+    else (this.mesh as any)._instanceInfo[id].geometryIndex = geomId;
     this.instGeo[id] = geomId;
-    const tile = this.instTile[id];
-    if (tile >= 0) this.tileSwap[tile]++;
     // cached draw lists stay valid while the instance's culling sphere still bounds the new geometry (LOD swaps, see
     // shareSphere): they only patch this instance's draw range (swap log; no re-cull, no indirect texture upload; the
-    // tile's cached blocks keep their ids and only refresh their ranges, see tileSwap). Otherwise the sphere is
-    // rewritten exactly and the lists are rebuilt. Geometries sharing one culling sphere (model + proxy) skip the check.
-    const ga = this.geoSphere[prevGeom], gb = this.geoSphere[geomId];
-    const shared = ga && gb && ga.radius === gb.radius && ga.center.equals(gb.center) && this.sph[id * 4 + 3] >= 0;
-    if (!this.pc.dynamic && !shared) {
+    // tile's cached blocks keep their ids). Its tile pack's entry is patched in place when the pack and the draw ranges
+    // are current, else the pack refreshes its ranges at its next use (tileSwap). Otherwise the sphere is rewritten
+    // exactly and the lists are rebuilt. Geometries sharing one culling sphere (model + proxy: one sphere id) skip the
+    // comparison.
+    const p = this.sph, o = id * 4;
+    let shared = false;
+    if (p[o + 3] >= 0) {
+      shared = this.geoSid[prevGeom] === this.geoSid[geomId];
+      if (!shared) { const ga = this.geoSphere[prevGeom], gb = this.geoSphere[geomId]; shared = ga !== undefined && gb !== undefined && ga.radius === gb.radius && ga.center.equals(gb.center); }
+    }
+    const tile = this.instTile[id];
+    if (tile >= 0) {
+      const pk = this.tilePack[tile], j = this.instPk[id];
+      if (shared && pk !== null && j >= 0 && j < pk.n && pk.ids[j] === id && pk.ver === this.tileVer[tile] && pk.rs === this.tileSwap[tile] && pk.rg === this.rangesGen && this.rangesAt === this.geoEpoch) {
+        pk.st[j] = this.gStart[geomId];
+        pk.ct[j] = this.gCount[geomId];
+      } else this.tileSwap[tile]++;
+    }
+    if (!pc.dynamic && !shared) {
       this.mesh.getMatrixAt(id, _m4);
-      const p = this.sph, o = id * 4;
       if (!this.sphereOf(geomId, _m4) || p[o + 3] < 0) this.writeSphere(id, _m4, true);
       else {
         const dx = _sp[0] - p[o], dy = _sp[1] - p[o + 1], dz = _sp[2] - p[o + 2];
@@ -736,6 +764,7 @@ export class DynamicBatch {
     const S = this.geoSphere[id];
     if (S) S.radius += pad * Math.sqrt(3); // the padded box's corners
     this.noteRad(id);
+    this.geoSid[id] = ++this.sidSeq;
   }
 
   /** give two geometries (e.g. a model and its LOD proxy) the same culling sphere, so swapping an instance between
@@ -744,7 +773,7 @@ export class DynamicBatch {
   shareSphere(a: number, b: number, pad = 0): void {
     const A = this.geoSphere[a], B = this.geoSphere[b];
     if (!A || !B || a === b) return;
-    if (pad > 0 && this.geoBounds[a].clone().expandByScalar(pad).containsBox(this.geoBounds[b])) { this.geoSphere[b] = A.clone(); this.noteRad(b); return; }
+    if (pad > 0 && this.geoBounds[a].clone().expandByScalar(pad).containsBox(this.geoBounds[b])) { this.geoSphere[b] = A.clone(); this.noteRad(b); this.geoSid[b] = this.geoSid[a]; return; }
     const d = A.center.distanceTo(B.center);
     let u: THREE.Sphere;
     if (d + B.radius <= A.radius) u = A.clone();
@@ -757,6 +786,7 @@ export class DynamicBatch {
     this.geoSphere[b] = u.clone();
     this.noteRad(a);
     this.noteRad(b);
+    this.geoSid[a] = this.geoSid[b] = ++this.sidSeq;
   }
 
   setMatrix(id: number, m: THREE.Matrix4): void {
@@ -1011,6 +1041,7 @@ export class DynamicBatch {
     const cap = Math.max(n, this.instTile.length * 2, 64);
     const t = new Int32Array(cap).fill(-1); t.set(this.instTile); this.instTile = t;
     const s = new Int32Array(cap).fill(-1); s.set(this.instSlot); this.instSlot = s;
+    const k = new Int32Array(cap).fill(-1); k.set(this.instPk); this.instPk = k;
     const p = new Float32Array(cap * 4); p.set(this.sph); this.sph = p;
     const mk = new Uint8Array(cap).fill(0xff); mk.set(this.instMask); this.instMask = mk;
     const v = new Uint8Array(cap); v.set(this.instVis); this.instVis = v;
@@ -1591,12 +1622,13 @@ export class DynamicBatch {
       gf[ng] = off; gc[ng] = c; ng++;
       off += c;
     }
-    const ids = pk.ids, ps = pk.sph, mk = pk.mk;
+    const ids = pk.ids, ps = pk.sph, mk = pk.mk, ipk = this.instPk;
     for (let j = 0; j < len; j++) {
       const g = sub[j];
       if (g < 0) continue;
       const id = list[j], o = id * 4, k = cnt[g]++, q = k * 4;
       ids[k] = id;
+      ipk[id] = k;
       mk[k] = imask[id];
       ps[q] = sph[o]; ps[q + 1] = sph[o + 1]; ps[q + 2] = sph[o + 2]; ps[q + 3] = sph[o + 3];
     }
