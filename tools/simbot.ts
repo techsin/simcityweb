@@ -38,7 +38,7 @@ import { facilityLoad, tierLayer, unservedClusters } from '../src/sim/infra/catc
 import { emergencyOf, uncoveredHotspots } from '../src/sim/infra/emergency';
 import { expectedUpkeep } from '../src/sim/economy/opex';
 import { ATTRACTIONS, venueVisits } from '../src/sim/economy/tourism';
-import { TOURISM, TOURISM_INCOME_PER_VISITOR, VENUE_INCOME, TAX_NEUTRAL } from '../src/sim/economy/tuning';
+import { COARSE, NETWORK_UPKEEP, TOURISM, TOURISM_INCOME_PER_VISITOR, VENUE_INCOME, TAX_NEUTRAL } from '../src/sim/economy/tuning';
 import type { BuildingDef } from '../src/sim/catalogTypes';
 import { smoothstep } from '../src/core/rng';
 
@@ -142,17 +142,19 @@ export const JAIL_OVERFLOW_FIRST = 0.25;
 export const JAIL_OVERFLOW_MORE = 0.15;
 /**
  * TOURISM VENUES (WP6b round 3; acceptance round 2, LEAD DECISION 13): landmarks, the big sport / entertainment /
- * business venues (stadium, amusement park, convention center), the city's zoo and its airports are investments a
- * sensible mayor saves for. The bot bought a reward only with 1.5 × its price above canSpend's 1.5-month reserve, and
- * the round-2 budget keeps the bank at that reserve: 256x60 s7 bought no landmark from 2002 to 2016 (cathedral 2021,
- * stadium 2022, never a zoo) and its tourism jobs ran at 0.55-0.67 of the old formula until 2022. Now, from VENUE_POP
- * residents, VENUE_SAVE_SHARE of each month's surplus goes into a venue fund for the cheapest venue the city has unlocked
- * and not built; optional spending (parks the residential cap does not need, tree buffers) leaves the fund alone, while
- * utilities, garbage, schools, clinics, police / fire, transit, prisons, civic rewards and new blocks come first.
- * The venue is bought when the fund holds its price and a purchase leaves VENUE_RESERVE_MONTHS of expenses in the bank,
- * as long as its expected tourist spending + tickets (counted from the city's own venues) pay its upkeep or the budget
- * carries the difference; it goes on any free lot of a park block next to town (placeVenue), an airport on the airport
- * blocks once they border the town.
+ * business venues (stadium, amusement park, convention center) and the airports are investments a sensible mayor saves
+ * for. The bot bought a reward only with 1.5 × its price above canSpend's 1.5-month reserve, and the round-2 budget keeps
+ * the bank at that reserve: 256x60 s7 bought no landmark from 2002 to 2016 (cathedral 2021, stadium 2022) and its
+ * tourism jobs ran at 0.55-0.67 of the old formula until 2022. Now, from VENUE_POP residents, VENUE_SAVE_SHARE of each
+ * month's surplus goes into a venue fund for the cheapest venue the city has unlocked and not built; optional spending
+ * (parks the residential cap does not need, tree buffers) leaves the fund alone, while utilities, garbage, schools,
+ * clinics, police / fire, transit, prisons, civic rewards and new blocks come first. The venue is bought when the fund
+ * holds its price and a purchase leaves VENUE_RESERVE_MONTHS of expenses in the bank, as long as its expected tourist
+ * spending + tickets (counted from the city's own venues) pay its upkeep or the budget carries the difference; it goes on
+ * any free lot of a park block next to town (placeVenue), an airport on the airport blocks once they border the town.
+ * The zoo ("Huge residential cap boost") is not one of them: the parks rule builds it for the residential cap (caps()).
+ * Bought as the second venue, it drew 2,400-3,200 visitors a day where the old cap-relief formula counted 400 tourism
+ * jobs, and the young city's tourism read 1.4-1.5 x that formula (256x60 s7 / s11 2013-15, 128x15 s7 2011-15).
  */
 export const VENUE_SAVE_SHARE = 0.7;
 export const VENUE_POP = 25000;
@@ -163,11 +165,30 @@ const VENUE_MIN_DRAW = 500;
 /** emergency response (ensureResponse): a fire station while more than FIRE_GAP of residents + workers are out of the
  *  fire response's automatic reach, a clinic while more than MEDICAL_GAP of residents are (WP6b round 3: counting
  *  residents only, at 10 %, the bot left industrial districts beyond reach, and fires nobody could reach made 5-7 % of a
- *  year's incidents in years 10-14 on 256x60 seeds 3, 5 and 11 — over the 5 % gate) */
+ *  year's incidents in years 10-14 on 256x60 seeds 3, 5 and 11 — over the 5 % gate). Fire protection is not optional:
+ *  while more than FIRE_URGENT are beyond the trucks' reach a station is built whenever its price is in the bank, even
+ *  when the budget must stretch for its running costs (the tax rule pays them) — the people-aware running-cost check
+ *  (canAfford) left 13-19 % of 256x60 s11's residents and workers beyond reach in 2010-12 while it added clinics, and
+ *  4 of 72 incidents failed in 2012 */
 export const FIRE_GAP = 0.05;
+export const FIRE_URGENT = 0.1;
 const MEDICAL_GAP = 0.1;
 /** a venue with no free lot is not saved for again for this many days */
 const VENUE_NO_SITE_DAYS = 360;
+/**
+ * TRUNK HIGHWAY (WP6b round 3): the trunk avenue becomes a highway from HIGHWAY_POP residents while more than
+ * HIGHWAY_FREIGHT_GAP of the industrial jobs have no highway, rail or edge connection within freight reach (the
+ * desirability factor 'Highway or freight rail access'; a 128 map's industry reaches its edge connection, a 256 map's
+ * does not). It is an investment that raises income — the edge connections become highway links (demand, caps, the
+ * region) and every block within reach of the trunk gains freight access: industry, and every tourism venue (access =
+ * 0.35 + 0.65 x freight reach) — so it is bought when HIGHWAY_RESERVE_MONTHS of expenses stay in the bank and the budget
+ * carries its upkeep. It used to wait for canSpend(30,000) above the 1.5-month reserve, which the round-2 budget left out
+ * of reach until 2019-20 on 256x60 s7 / s11 (round 1: 2012-13): the industry had no freight access and every venue ran at
+ * half its visitors for 19 years (tourism jobs 0.55-0.69 of the old formula).
+ */
+const HIGHWAY_POP = 12000;
+export const HIGHWAY_FREIGHT_GAP = 0.5;
+export const HIGHWAY_RESERVE_MONTHS = 1;
 
 export class SimBot {
   sim: Simulation;
@@ -721,15 +742,53 @@ export class SimBot {
     }
     if (!this.skips('transit')) this.ensureTransit();
     this.treeBuffers();
+    if (!this.highway && pop > HIGHWAY_POP) {
+      const gap = this.freightGap();
+      if (gap > HIGHWAY_FREIGHT_GAP) this.upgradeTrunk(gap);
+    }
     this.caps();
     this.venues();
     this.rewards();
     this.density();
     this.ordinances();
-    if (!this.highway && pop > 12000 && this.canSpend(30000)) {
-      const r = this.A.buildNetwork(lPath({ x: 0, z: this.trunkZ }, { x: this.N - 1, z: this.trunkZ }), Network.Highway);
-      if (r.ok) { this.highway = true; this.say(`trunk upgraded to highway ($${Math.round(r.cost)})`); this.rehomeStranded(); }
+  }
+
+  /** share of the industrial jobs with no highway, rail or edge connection within freight reach (the coarse freight access
+   *  at its base value: computeFreightAccess, desirability's 'Highway or freight rail access') */
+  freightGap(): number {
+    const st = this.st, rt = this.rt, N = this.N;
+    if (!rt?.coarseFreight) return 0;
+    const cw = rt.cw, base = st.neighborConnections.length ? 0.25 : 0.1;
+    let all = 0, out = 0;
+    for (const b of st.buildings.values()) {
+      if (!(b.jobs > 0)) continue;
+      const dv = getDef(b.def)?.devType ?? -1;
+      if (dv < DevType.IA) continue;
+      all += b.jobs;
+      const c = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+      if (rt.coarseFreight[((((c / N) | 0) / COARSE) | 0) * cw + (((c % N) / COARSE) | 0)] <= base + 1e-6) out += b.jobs;
     }
+    return all > 0 ? out / all : 0;
+  }
+
+  /** the trunk avenue becomes a highway (HIGHWAY_*): HIGHWAY_RESERVE_MONTHS of expenses (and a prison being saved for)
+   *  stay in the bank, and the budget carries the extra upkeep */
+  upgradeTrunk(gap = this.freightGap()): boolean {
+    const path = lPath({ x: 0, z: this.trunkZ }, { x: this.N - 1, z: this.trunkZ });
+    const p = this.A.buildNetwork(path, Network.Highway, true);
+    if (!p.ok) return false;
+    let expense = 0;
+    for (const k in this.st.budget.lastExpense) if (!k.startsWith('oneoff:')) expense += this.st.budget.lastExpense[k];
+    if (this.funds - p.cost - this.jailHold <= 4000 + HIGHWAY_RESERVE_MONTHS * expense) return false;
+    const up = this.N * (NETWORK_UPKEEP[Network.Highway] - NETWORK_UPKEEP[Network.Avenue]);
+    if (!(this.monthlyNet() + this.pendingUpkeep - up > 0 || this.funds > 60 * up + 50000)) return false;
+    const r = this.A.buildNetwork(path, Network.Highway);
+    if (!r.ok) return false;
+    this.highway = true;
+    this.pendingUpkeep -= up;
+    this.say(`trunk upgraded to highway ($${Math.round(r.cost)}): ${Math.round(100 * gap)} % of the industrial jobs had no freight access`);
+    this.rehomeStranded();
+    return true;
   }
 
   /** a rule this mayor leaves out (BotOptions.skip) */
@@ -1418,14 +1477,17 @@ export class SimBot {
     const em = emergencyOf(this.sim);
     if (!em || !em.active || !em.layersReady) return;
     for (const [r, def] of [['fire', 'civ_fire_station'], ['medical', 'civ_clinic']] as const) {
-      if ((this.svcRetry.get('resp:' + r) ?? -1) > st.day || !this.canAfford(def)) continue;
-      let h: { x: number; z: number } | undefined, share: number;
+      if ((this.svcRetry.get('resp:' + r) ?? -1) > st.day) continue;
+      let h: { x: number; z: number } | undefined, share: number, alts: { x: number; z: number }[] = [];
       if (r === 'fire') {
         const g = this.fireGap();
         share = g.share;
         if (share <= FIRE_GAP) continue;
+        if (!this.canAfford(def) && !(share > FIRE_URGENT && this.canSpend(getDef(def)?.cost ?? 0))) continue;
         h = g.at ?? undefined;
+        alts = g.alts;
       } else {
+        if (!this.canAfford(def)) continue;
         const layer = st.respMedical;
         let out = 0, tot = 0;
         for (const b of st.buildings.values()) {
@@ -1438,7 +1500,17 @@ export class SimBot {
         h = uncoveredHotspots(this.sim, r, 1)[0];
       }
       if (!h) continue;
-      const ok = this.placeCivic(def, h.x, h.z, 14);
+      let ok = !!this.placeCivic(def, h.x, h.z, 14);
+      // (no free lot by the largest gap: a few small homes / shops make way, else the next-largest gaps get the station —
+      // 256x25 s7 retried one built-up district every 150 days for six years while 9-20 % of its residents and workers
+      // were beyond the trucks' reach; WP6b round 3)
+      if (!ok && r === 'fire') {
+        ok = !!this.placeCivic(def, h.x, h.z, 14, true);
+        for (const a of alts) {
+          if (ok) break;
+          ok = !!this.placeCivic(def, a.x, a.z, 14) || !!this.placeCivic(def, a.x, a.z, 14, true);
+        }
+      }
       this.svcRetry.set('resp:' + r, st.day + (ok ? 90 : 150));
       if (ok) this.say(`${def === 'civ_clinic' ? 'clinic' : 'fire station'}: ${Math.round(100 * share)} % of ${r === 'fire' ? 'residents and workers' : 'residents'} beyond ${r} response`);
     }
@@ -1447,11 +1519,11 @@ export class SimBot {
 
   /**
    * share of the people a fire can hit — residents and workers: a factory or a shop burns like a home — out of the fire
-   * response's automatic reach (respFire < 0, at each building's centre), and the 8 × 8 area holding most of them (WP6b
-   * round 3: counting residents only, 256x60 s11 left 20-22 % of the jobs beyond reach from 2040 on, and the fires there
-   * failed 3-6 times a year — 7 % of the incidents of 2013 in one trajectory)
+   * response's automatic reach (respFire < 0, at each building's centre), the 8 × 8 area holding most of them and the
+   * next two (alts) (WP6b round 3: counting residents only, 256x60 s11 left 20-22 % of the jobs beyond reach from 2040 on,
+   * and the fires there failed 3-6 times a year — 7 % of the incidents of 2013 in one trajectory)
    */
-  fireGap(): { share: number; at: { x: number; z: number } | null } {
+  fireGap(): { share: number; at: { x: number; z: number } | null; alts: { x: number; z: number }[] } {
     const st = this.st, N = this.N, layer = st.respFire;
     const B = 8, nb = Math.ceil(N / B);
     const acc = new Float64Array(nb * nb);
@@ -1465,9 +1537,16 @@ export class SimBot {
         acc[Math.floor(b.z / B) * nb + Math.floor(b.x / B)] += w;
       }
     }
-    let bk = -1, bw = 0;
-    for (let k = 0; k < acc.length; k++) if (acc[k] > bw) { bw = acc[k]; bk = k; }
-    return { share: tot > 0 ? out / tot : 0, at: bk >= 0 ? { x: (bk % nb) * B + B / 2, z: Math.floor(bk / nb) * B + B / 2 } : null };
+    // (the three areas with the most people beyond reach, largest first; ties: the lower index)
+    const top: number[] = [];
+    for (let k = 0; k < acc.length; k++) {
+      if (!(acc[k] > 0)) continue;
+      let i = top.length;
+      while (i > 0 && acc[top[i - 1]] < acc[k]) i--;
+      if (i < 3) { top.splice(i, 0, k); if (top.length > 3) top.pop(); }
+    }
+    const area = (k: number) => ({ x: (k % nb) * B + B / 2, z: Math.floor(k / nb) * B + B / 2 });
+    return { share: tot > 0 ? out / tot : 0, at: top.length ? area(top[0]) : null, alts: top.slice(1).map(area) };
   }
 
   /**
@@ -1943,7 +2022,9 @@ export class SimBot {
         if (this.st.stats.population >= VENUE_POP && isVenue(def)) continue;
         if (!this.canSpend((def.cost ?? 0) * 1.5)) continue;
         if (def.placement === 'shore') { this.placeShore(defId); continue; }
-        this.placeNear(defId, center.x, center.z, ['P']);
+        // (on a lot that touches a road: a landmark without one draws nobody and gives no cap relief — 256x60 s7 put its
+        // Obelisk in the middle of a park block in 2002, where it stood for 58 years with 0 visitors; WP6b round 3)
+        this.placeNear(defId, center.x, center.z, ['P'], true, Infinity, true);
       }
     }
     // business deals: take the military base far from the center
@@ -1965,11 +2046,11 @@ export class SimBot {
   private venueNoSite = new Map<string, number>();
 
   /**
-   * unlocked tourism venues not built yet (each once: the parks rule may add zoos for the residential cap, caps()) with
-   * their expected visitors per day, monthly tourist spending + ticket income and upkeep — cheapest first, as a mayor
-   * saving up buys them (256x60: arch, zoo, observatory, convention center, cathedral, municipal airport, castle,
-   * amusement park, ...; buying the most visitors for the price first — zoo, amusement park, stadium — ran the tourism
-   * jobs to 1.4-1.5 x the old formula until the airports and landmarks followed)
+   * unlocked tourism venues not built yet (each once) with their expected visitors per day, monthly tourist spending +
+   * ticket income and upkeep — cheapest first, as a mayor saving up buys them (256x60: arch, observatory, convention
+   * center, cathedral, municipal airport, castle, amusement park, observation wheel, ...; buying the most visitors for the
+   * price first — amusement park, stadium — ran the tourism jobs to 1.4-1.5 x the old formula until the airports and
+   * landmarks followed)
    */
   venueCandidates(): { id: string; def: BuildingDef; cost: number; visits: number; income: number; upkeep: number }[] {
     const st = this.st;
@@ -2204,14 +2285,15 @@ export class SimBot {
   }
 }
 
-/** a tourism venue the bot saves for (VENUE_*): a landmark / culture / sport / entertainment / business attraction drawing
- *  at least VENUE_MIN_DRAW visitors that is unique (rewards, landmarks) or the zoo (the casino is a deal it never takes) */
+/** a tourism venue the bot saves for (VENUE_*): a unique landmark / culture / sport / entertainment / business attraction
+ *  (rewards, landmarks) drawing at least VENUE_MIN_DRAW visitors, or an airport (the casino is a deal it never takes; the
+ *  zoo is a park the residential cap asks for: caps()) */
 function isVenue(def: BuildingDef): boolean {
   const a = ATTRACTIONS[def.id];
   if (!a || a.draw < VENUE_MIN_DRAW || a.kind === 'nature' || def.id === 'rw_casino') return false;
   // (the airports fly the visitors in: placeAirport's blocks; other ports and stations are transit)
   if (a.kind === 'transport') return VENUE_AIRPORTS.has(def.id);
-  return !!def.unique || def.id === 'park_zoo';
+  return !!def.unique;
 }
 const VENUE_AIRPORTS = new Set(['tr_airport_small', 'tr_airport_large']);
 let VENUE_DEFS: BuildingDef[] | null = null;
