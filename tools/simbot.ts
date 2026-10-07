@@ -147,8 +147,8 @@ export const JAIL_OVERFLOW_MORE = 0.15;
  * the round-2 budget keeps the bank at that reserve: 256x60 s7 bought no landmark from 2002 to 2016 (cathedral 2021,
  * stadium 2022, never a zoo) and its tourism jobs ran at 0.55-0.67 of the old formula until 2022. Now, from VENUE_POP
  * residents, VENUE_SAVE_SHARE of each month's surplus goes into a venue fund for the cheapest venue the city has unlocked
- * and not built; optional spending (parks the residential cap does not need, tree buffers, non-venue rewards) leaves
- * the fund alone, while utilities, garbage, schools, clinics, police / fire, transit, prisons and new blocks come first.
+ * and not built; optional spending (parks the residential cap does not need, tree buffers) leaves the fund alone, while
+ * utilities, garbage, schools, clinics, police / fire, transit, prisons, civic rewards and new blocks come first.
  * The venue is bought when the fund holds its price and a purchase leaves VENUE_RESERVE_MONTHS of expenses in the bank,
  * as long as its expected tourist spending + tickets (counted from the city's own venues) pay its upkeep or the budget
  * carries the difference; it goes on any free lot of a park block next to town (placeVenue), an airport on the airport
@@ -161,8 +161,9 @@ export const VENUE_RESERVE_MONTHS = 1.25;
  *  city hall, small ports and stations are not) */
 const VENUE_MIN_DRAW = 500;
 /** emergency response (ensureResponse): a fire station while more than FIRE_GAP of residents + workers are out of the
- *  fire response's automatic reach (WP6b round 3: 10 % of residents left industrial districts uncovered and the failed
- *  fires there made 5-7 % of a year's incidents), a clinic while more than MEDICAL_GAP of residents are */
+ *  fire response's automatic reach, a clinic while more than MEDICAL_GAP of residents are (WP6b round 3: counting
+ *  residents only, at 10 %, the bot left industrial districts beyond reach, and fires nobody could reach made 5-7 % of a
+ *  year's incidents in years 10-14 on 256x60 seeds 3, 5 and 11 — over the 5 % gate) */
 export const FIRE_GAP = 0.05;
 const MEDICAL_GAP = 0.1;
 /** a venue with no free lot is not saved for again for this many days */
@@ -293,8 +294,8 @@ export class SimBot {
   canSpend(cost: number): boolean {
     return this.funds - cost > this.reserve();
   }
-  /** optional spending (parks the residential cap does not need, tree buffers, non-venue rewards) leaves the venue fund
-   *  alone (saveForVenue) */
+  /** optional spending (parks the residential cap does not need, tree buffers) leaves the venue fund alone
+   *  (saveForVenue) */
   canSpendOpt(cost: number): boolean {
     return this.canSpend(cost + this.venueFund);
   }
@@ -1936,9 +1937,11 @@ export class SimBot {
       for (const defId of r.defIds) {
         const def = getDef(defId);
         if (!def || !def.unique) continue;
-        // (tourism venues from VENUE_POP on: venues(); other rewards are optional spending that leaves the venue fund alone)
+        // (tourism venues from VENUE_POP on: venues(); the civic rewards — the mayor's statue and house, the courthouse, city
+        // hall, the country club, the research centers — are bought as before, whatever the venue fund: holding them back
+        // left 256x60 s7 without its statue, −3 approval, from 2010 to 2021)
         if (this.st.stats.population >= VENUE_POP && isVenue(def)) continue;
-        if (!this.canSpendOpt((def.cost ?? 0) * 1.5)) continue;
+        if (!this.canSpend((def.cost ?? 0) * 1.5)) continue;
         if (def.placement === 'shore') { this.placeShore(defId); continue; }
         this.placeNear(defId, center.x, center.z, ['P']);
       }
