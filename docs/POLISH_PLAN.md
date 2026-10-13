@@ -2390,3 +2390,81 @@ P3 · M · WORLD and CONTENT · round 4
 **Depends on.** FEEL-01, FEEL-08, FEEL-20.
 
 **Risk.** None.
+
+### J. Audio
+
+#### FEEL-11 · Audio mix: ducking, siren fatigue, song rests
+P2 · M · WORLD · round 1
+
+**Problem**
+- **Nothing ducks the music.** Bus gains are static (`applyVolumes`, `AudioEngine.ts:409-420`): at the defaults the music bus sits near −11 dB and the SFX bus near −4 dB (`DEFAULT_PREFS`, `:70`). Tracks are mixed to −18 LUFS (`music/types.ts:22`), while events and fanfares are trimmed to −23..−25 LUFS (`sfx.ts:11-13`), so a milestone fanfare plays under a loud chorus.
+- **The New Year countdown plays over the music.**
+- **Sirens never stop in a big city.** The nearest source of each kind within 1,400 m sounds (`sirens.ts:45-46`, `:64`). At 1.29M the bot city answers 742 incidents a year automatically, 727 of them medical (`G_256x60_s7`, 2050): about 4 new ones per real second at 1× and 41 at ultra.
+- **Songs run back to back** with a 5 s crossfade and no rest (`XF_AUTO`, `music/director.ts:89`, `:440-445`).
+
+**Change**
+- **`duck(db, hold, release)`.** Sounds of 0.6 s or longer duck the music by 6 dB (60 ms attack, 600 ms release, at most once per 2 s) and the ambience by 3 dB.
+- **New Year ducks the music by 14 dB** from the countdown to 4 s after the last burst. META adds the call in `NewYear.ts` in round 2.
+- **Sirens.**
+  - Only sources in the view frustum plus 150 m, and at most 2 voices.
+  - Automatic responses beyond 600 m are silent.
+  - Units the player dispatched are always audible.
+- **Rests between songs** of 15–40 s, with a setting (default: with pauses).
+
+**Files.** `src/audio/AudioEngine.ts`, `src/audio/sirens.ts`, `src/audio/music/director.ts`, `src/game/GameSounds.ts` (WORLD part).
+
+**Acceptance**
+- `tools/render-audio.mjs` shows the music 6 ± 1 dB lower under a fanfare and back within 1 s.
+- In a 2-minute ultra window at 1.3M, sirens are above −40 dB for at most 30% of the time.
+- During the New Year countdown the music is at least 12 dB below its normal level.
+- Gaps of 15–40 s between songs in the city, none in the menus.
+
+**Depends on.** None. META's New Year call lands in round 2.
+
+**Risk.** None for the gates; audio only.
+
+#### FEEL-12 · City ambience: surf, seasons and climate
+P2 · S · WORLD · round 1
+
+**Problem**
+- **The surf layer is built but never fed.** `AmbienceParams.water` drives it (`ambience.ts:16-17`, `:139-153`, `:204`), but neither caller passes `water` (`CityScene.ts:1033`, `main.ts:536`).
+- **The ambience has no seasons or climates**: the same birds by day and crickets by night all year, in every climate (`ambience.ts:1-20`, `:213-222`).
+
+**Change**
+- **Feed the surf.** Sample a 9×9 grid of water cells around the camera target every 0.5 s. Also pass the month and the climate.
+- **Seasons and climates**:
+  - birds at full strength April–August, half in March, September and October, 15% from November to February;
+  - crickets on nights from May to September, all year in the desert;
+  - wind +40% from December to February and on alpine maps;
+  - gulls when water fills more than 30% of the sample.
+
+**Files.** `src/audio/ambience.ts`; `src/game/CityScene.ts` (WORLD hunk: `updateAmbience`).
+
+**Acceptance**
+- At the beach at 300 m the surf gain is above 0.1.
+- January birds play at most a quarter as often as July birds.
+- No crickets on January nights; crickets on desert nights.
+
+**Depends on.** None.
+
+**Risk.** None.
+
+#### FEEL-13 · Hear what the camera is over
+P3 · M · WORLD · round 4
+
+**Problem.** The ambience depends only on population, zoom, night and construction (`ambience.ts:7-20`). An industrial park, a park full of children, the airport and the harbour all sound the same.
+
+**Change**
+- **A 7×7 land-use sample** below 700 m, crossfading over 1.5 s between up to 4 layers: industry, parks and children, the downtown crowd, airport jets every 30–60 s, train rumble and horns, harbour gulls and horns.
+- **People layers are halved at night.**
+
+**Files.** `src/audio/ambience.ts`; `src/game/CityScene.ts` (WORLD hunk: `updateAmbience`).
+
+**Acceptance**
+- The dominant layer switches within 2 s of moving over a new district.
+- Above 1,500 m every location layer is at least 18 dB down.
+- At most 6 extra audio nodes, and no audible seam over 2 minutes.
+
+**Depends on.** FEEL-12.
+
+**Risk.** None.
