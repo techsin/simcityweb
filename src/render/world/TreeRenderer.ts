@@ -39,12 +39,13 @@
  *     orbit, see RING_CALM_*), at full density (a per-tree threshold picks the quality's subset), then faded in; a quality /
  *     density, season or map-cell change only refills (same budget); only a terrain edit on the map border regenerates
  *     the sectors on that side;
- *   - every sector's trees beyond lodDistance are ONE merged micro impostor mesh (one draw for the whole far ring,
- *     4 tris per tree: the micro broadleaf's upper half, seen from high cameras only; conifers stretch it onto their
- *     pyramid and carry an evergreen flag): the vertex shader thins it with the distance (per tree), fades it with the
- *     camera height and drops the sectors drawn by their near pair; a sector within lodDistance (camera near the map
- *     edge) draws its broadleaf / conifer impostor pair instead; hidden from low (street-level) cameras, where the
- *     city and the edge band hide it anyway; no shadows.
+ *   - a sector beyond lodDistance draws its trees as micro impostors (4 tris per tree: the micro broadleaf's upper
+ *     half, seen from high cameras only; conifers stretch it onto their pyramid and carry an evergreen flag) in
+ *     RING_SUB block meshes (its quarters), each frustum-culled by its own bounds and ordered by the per-tree thinning
+ *     random (ringRand): the vertex shader thins the trees with their distance and fades them with the camera height,
+ *     and each block only submits the prefix of its trees that its nearest point's distance can keep; a sector within
+ *     lodDistance (camera near the map edge) draws its broadleaf / conifer impostor pair instead; hidden from low
+ *     (street-level) cameras, where the city and the edge band hide it anyway; no shadows.
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
@@ -76,6 +77,9 @@ const RING_GRID = 10;
 const RING_BLOCK = 4;
 /** candidate cap per ring sector (at full density) */
 const RING_CAP = 7000;
+/** far ring blocks per sector (its 2 x 2 quarters): one mesh each, culled by its own bounds (the sectors span ~2.6 km;
+ *  a high camera looking down sees a few of their quarters) */
+const RING_SUB = 4;
 /** floats per ring candidate: x, ground height, z, species, kind random, yaw, colour jitter, density threshold */
 const RING_STRIDE = 8;
 /** the map's edge chunks continue their forests as full trees this many cells beyond the edge; the ring starts there */
@@ -121,6 +125,43 @@ const _sstep = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
+
+/** distance from (px, py, pz) to the box at offset o of b (min x y z, max x y z) */
+function boxDist(b: Float64Array, o: number, px: number, py: number, pz: number): number {
+  const dx = px < b[o] ? b[o] - px : px > b[o + 3] ? px - b[o + 3] : 0;
+  const dy = py < b[o + 1] ? b[o + 1] - py : py > b[o + 4] ? py - b[o + 4] : 0;
+  const dz = pz < b[o + 2] ? b[o + 2] - pz : pz > b[o + 5] ? pz - b[o + 5] : 0;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+const _rf = new Float32Array(1), _ru = new Uint32Array(_rf.buffer);
+/**
+ * The far outer ring's per-tree thinning random in [0, 1) from the tree's (float32) instance position: an integer hash
+ * of the position's bits, bit-exact with the vertex shader's (RING_RAND), so the CPU can order a block's trees by it and
+ * submit only the prefix the shader can keep.
+ */
+export function ringRand(x: number, z: number): number {
+  _rf[0] = x;
+  const ux = _ru[0];
+  _rf[0] = z;
+  const uz = _ru[0];
+  let h = Math.imul(ux, 0x9e3779b1) ^ Math.imul(uz, 0x85ebca77);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x2c1b3c6d);
+  h ^= h >>> 12;
+  h = Math.imul(h, 0x297a2d39);
+  h ^= h >>> 15;
+  return (h >>> 8) / 16777216;
+}
+const RING_RAND = /* glsl */ `
+  uint _h = floatBitsToUint(instanceMatrix[3].x) * 0x9E3779B1u ^ floatBitsToUint(instanceMatrix[3].z) * 0x85EBCA77u;
+  _h ^= _h >> 15u;
+  _h *= 0x2C1B3C6Du;
+  _h ^= _h >> 12u;
+  _h *= 0x297A2D39u;
+  _h ^= _h >> 15u;
+  float _r = float(_h >> 8u) * (1.0 / 16777216.0);
+`;
 /** bilinear, repeat-wrapped sample (0..1) of one channel of the 256^2 RGBA world noise texture (textures.ts) */
 function sampleNoise(d: Uint8Array, u: number, v: number, ch: number): number {
   const S = 256;
@@ -186,27 +227,12 @@ class TreeMesh extends THREE.InstancedMesh {
   owner: TreeRenderer | null = null;
   imp = false;
   shadowOnly = false;
-  /** merged outer-ring mesh: per-sector boxes (min x y z, max x y z) and the sectors it draws (bits): visible when one
-   *  of those boxes is (its own box spans the whole ring, i.e. the map square) */
-  ringBoxes: Float64Array | null = null;
-  ringMask = 0;
   private savedShadow = -1;
   private savedView = -1;
 
   override intersectsFrustum(f: THREE.Frustum): boolean {
     const b = this.boundingBox!;
     if (!f.intersectsBox(b)) return false;
-    const rb = this.ringBoxes;
-    if (rb) {
-      for (let k = 0, m = this.ringMask; m; k++, m >>= 1) {
-        if (!(m & 1)) continue;
-        const o = k * 6;
-        _rbox.min.set(rb[o], rb[o + 1], rb[o + 2]);
-        _rbox.max.set(rb[o + 3], rb[o + 4], rb[o + 5]);
-        if (f.intersectsBox(_rbox)) return true;
-      }
-      return false;
-    }
     const recv = (f as unknown as { recv?: ShadowReceiver }).recv;
     return !recv || sweepBox(recv, b);
   }
@@ -364,7 +390,6 @@ interface RingFill {
 }
 
 const _box = new THREE.Box3();
-const _rbox = new THREE.Box3();
 
 // ---- LOD cross-fade shader snippets (near models fade out / impostors fade in over the band)
 const FADE_VERT_PARS = /* glsl */ `
@@ -426,12 +451,11 @@ uniform vec4 uTreeSnow;
 uniform sampler2D uTreeNoise;
 varying float vTreeSnow;
 `;
-/** far (impostor) programs: see-through bare crowns (BARE_*) and the merged outer ring's per-tree culling (RING_*) */
+/** far (impostor) programs: see-through bare crowns (BARE_*) and the far outer ring's per-tree thinning (RING_*) */
 const FAR_VERT_PARS = /* glsl */ `
 varying float vTreeBare;
 varying vec2 vBareNdc;
 #ifdef TREE_RING
-uniform mat3 uRingNear;
 uniform vec3 uRingP;
 #endif
 `;
@@ -488,14 +512,12 @@ vObjPos *= vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), le
 #endif
 #ifdef TREE_RING
 {
-  // merged outer ring: thinned with the distance per tree (a stable per-tree random against the keep fraction),
-  // faded with the camera height / its appearance (uRingP.y); the trees of a sector drawn by its near impostor pair are
-  // dropped (uRingNear: 3 x 3 sector grid around the map square [0, uRingP.z])
-  int _ci = _sp.x < 0.0 ? 0 : (_sp.x > uRingP.z ? 2 : 1);
-  int _ri = _sp.z < 0.0 ? 0 : (_sp.z > uRingP.z ? 2 : 1);
+  // far outer ring block: thinned with the distance per tree (its stable random, ringRand, against the keep
+  // fraction), faded with the camera height / its appearance (uRingP.y); the CPU draws the prefix of the block's trees
+  // (ordered by that random) its nearest point keeps
   float _keep = clamp(1.25 - (distance(_sp, cameraPosition) - uRingP.x) / 7000.0, 0.3, 1.0) * uRingP.y;
-  float _r = fract(sin(dot(_sp.xz, vec2(12.9898, 78.233))) * 43758.5453);
-  if (uRingNear[_ci][_ri] > 0.5 || _r >= _keep) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+${RING_RAND}
+  if (_r >= _keep) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 }
 #endif
 `;
@@ -703,9 +725,8 @@ export class TreeRenderer {
   private fadeU = { uTreeCam: { value: new THREE.Vector3() }, uTreeFade: { value: new THREE.Vector4(600, 800, 60, 700) }, uTreeRes: { value: new THREE.Vector2(1920, 1080) } };
   /** snow on the forest: x terrain snow line (m), y its noise amplitude, z amount (0 = off) */
   private snowU = { uTreeSnow: { value: new THREE.Vector4(9999, 8, 0, 0) }, uTreeNoise: { value: getNoiseTexture() as THREE.Texture } };
-  /** merged far ring: sectors drawn by their near pair (3 x 3 grid flags, column-major [column][row]) and x lodDistance,
-   *  y visibility (camera height fade x appearance), z map size (m) */
-  private ringU = { uRingNear: { value: new THREE.Matrix3().set(0, 0, 0, 0, 0, 0, 0, 0, 0) }, uRingP: { value: new THREE.Vector3(850, 0, 2048) } };
+  /** far ring blocks: x lodDistance, y visibility (camera height fade x appearance), z map size (m) */
+  private ringU = { uRingP: { value: new THREE.Vector3(850, 0, 2048) } };
   /** width of the near/impostor cross-fade band as a fraction of lodDistance (each side): alpha-to-coverage (MSAA)
    *  blends smoothly, the screen-door dither (no MSAA) is kept narrow */
   fadeBand = 0.1;
@@ -748,16 +769,18 @@ export class TreeRenderer {
   // ---- outer ring (see the header and ringStep)
   /** near impostor pair per sector (drawn while the sector is within lodDistance): 2k broadleaf, 2k + 1 conifer */
   private ring: (TreeMesh | null)[] = new Array(RING_N * 2).fill(null);
-  /** every sector's trees as micro impostors (CPU copies: 16 matrix + 3 colour floats each; see rebuildRingFar) */
-  private ringMicro: (Float32Array | null)[] = new Array(RING_N).fill(null);
-  private ringMicroCol: (Float32Array | null)[] = new Array(RING_N).fill(null);
-  private ringMicroN = new Int32Array(RING_N);
-  /** the merged far ring: one mesh / draw for all sectors' micro impostors (TREE_RING) */
-  private ringFar: TreeMesh | null = null;
-  /** sectors (bits) whose micro impostors the merged far mesh holds */
-  private ringFarSectors = 0;
-  /** a sector's micro impostors changed: rebuild the merged far mesh once the ring work is idle */
-  private ringFarDirty = false;
+  /** every sector's trees as micro impostors, per block (sector k's RING_SUB quarters: ids k * RING_SUB + q), ordered by
+   *  their thinning random: CPU copies (16 matrix + 3 colour floats each; see rebuildRingFar), the sorted randoms
+   *  (ringRand) and the block bounds (min x y z, max x y z) */
+  private ringMicro: (Float32Array | null)[] = new Array(RING_N * RING_SUB).fill(null);
+  private ringMicroCol: (Float32Array | null)[] = new Array(RING_N * RING_SUB).fill(null);
+  private ringMicroR: (Float32Array | null)[] = new Array(RING_N * RING_SUB).fill(null);
+  private ringMicroN = new Int32Array(RING_N * RING_SUB);
+  private ringMicroBox = new Float64Array(RING_N * RING_SUB * 6);
+  /** the far ring's block meshes (TREE_RING), one per block */
+  private ringFar: (TreeMesh | null)[] = new Array(RING_N * RING_SUB).fill(null);
+  /** sectors (bits) whose micro impostors changed: their block meshes are uploaded once the ring work is idle */
+  private ringFarDirty = 0;
   /** candidates per sector (RING_STRIDE floats each) and their counts */
   private ringCand: (Float32Array | null)[] = new Array(RING_N).fill(null);
   private ringCandN = new Int32Array(RING_N);
@@ -895,13 +918,15 @@ export class TreeRenderer {
   private disposeRing(): void {
     for (const m of this.ring) if (m) { this.group.remove(m); m.dispose(); }
     this.ring.fill(null);
-    if (this.ringFar) { this.group.remove(this.ringFar); this.ringFar.dispose(); this.ringFar = null; }
+    for (const m of this.ringFar) if (m) { this.group.remove(m); m.dispose(); }
+    this.ringFar.fill(null);
     this.ringMicro.fill(null);
     this.ringMicroCol.fill(null);
+    this.ringMicroR.fill(null);
     this.ringMicroN.fill(0);
     this.ringReady.fill(0);
     this.ringNearSel.fill(0);
-    this.ringFarDirty = false;
+    this.ringFarDirty = 0;
     this.ringInstances = 0;
   }
 
@@ -975,7 +1000,6 @@ export class TreeRenderer {
     let vp = SEASON_VERT_PARS, fp = SEASON_FRAG_PARS;
     if (far) {
       shader.uniforms.uBareRes = this.fadeU.uTreeRes;
-      shader.uniforms.uRingNear = this.ringU.uRingNear;
       shader.uniforms.uRingP = this.ringU.uRingP;
       vp += FAR_VERT_PARS;
       fp += FAR_FRAG_PARS;
@@ -1628,8 +1652,8 @@ export class TreeRenderer {
     // outer ring: candidates / refills in a small time budget once the first frames after a load have built the map's
     // chunks, on calm frames only (camera still or drifting for RING_CALM_FRAMES: zooms, cuts and fast pans / orbits
     // keep their frame time, and so do the catch-up frames after a cut); a camera that keeps moving gets its slices after
-    // RING_MAX_WAIT frames anyway. The merged far mesh is rebuilt (one upload) on a calm frame once its sectors are
-    // done, then faded in
+    // RING_MAX_WAIT frames anyway. The far block meshes are uploaded on a calm frame once the sectors are done, then
+    // faded in
     this.ringFrames++;
     const camH = this.ringOn ? py - this.terrain.meshHeightAt(px, pz) : 0;
     const rc = this.ringCam;
@@ -1651,7 +1675,7 @@ export class TreeRenderer {
         this.rebuildRingFar();
       }
     }
-    if (this.ringAppear < 1 && this.ringFar && this.ringFar.count > 0) this.ringAppear = Math.min(1, this.ringAppear + 1 / RING_APPEAR_FRAMES);
+    if (this.ringAppear < 1 && this.ringInstances > 0) this.ringAppear = Math.min(1, this.ringAppear + 1 / RING_APPEAR_FRAMES);
     this.updateRingView(px, py, pz, lod, camH);
   }
 
@@ -1675,54 +1699,67 @@ export class TreeRenderer {
   }
 
   /** per frame: which outer ring meshes are drawn (sector distance, camera height) and how dense: a sector within
-   *  lodDistance draws its near pair (CPU density prefix), the others the merged far mesh (GPU per-tree thinning) */
+   *  lodDistance draws its near pair (CPU density prefix), the others their far blocks (the prefix of each block's
+   *  trees its nearest point keeps; the vertex shader thins the rest per tree) */
   private updateRingView(px: number, py: number, pz: number, lod: number, camH: number): void {
     const ring = this.ring, rf = this.ringFar;
-    if (!this.ringOn || (!rf && !this.ringAnyReady())) return;
+    if (!this.ringOn) return;
     const vis = _sstep(this.ringFadeHeight[0], this.ringFadeHeight[1], camH);
-    const app = this.ringAppear, RB = this.ringBox, nearM = this.ringU.uRingNear.value.elements;
-    let farMask = 0;
+    const app = this.ringAppear, RB = this.ringBox;
+    // low cameras: the far sectors fade out with the camera height (seen from inside the city they are hidden or a
+    // few specks in the haze)
+    const fv = vis * app;
+    this.ringU.uRingP.value.set(lod, fv, this.state.size * CELL_SIZE);
     for (let k = 0; k < RING_N; k++) {
       const mb = ring[k * 2], mc = ring[k * 2 + 1];
-      const cell = RING_SECTORS[k][0] * 3 + RING_SECTORS[k][1];
+      let far = false;
       if (!this.ringReady[k]) {
         if (mb) mb.visible = false;
         if (mc) mc.visible = false;
-        nearM[cell] = 0;
         this.ringNearSel[k] = 0;
-        continue;
-      }
-      const o = k * 6;
-      const nx = px < RB[o] ? RB[o] - px : px > RB[o + 3] ? px - RB[o + 3] : 0;
-      const ny = py < RB[o + 1] ? RB[o + 1] - py : py > RB[o + 4] ? py - RB[o + 4] : 0;
-      const nz = pz < RB[o + 2] ? RB[o + 2] - pz : pz > RB[o + 5] ? pz - RB[o + 5] : 0;
-      const dN = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      // the regular impostor pair within lodDistance (hysteresis), the merged micro impostor mesh beyond
-      const near = this.ringNearSel[k] ? dN < lod * 1.06 : dN < lod * 0.94;
-      this.ringNearSel[k] = near ? 1 : 0;
-      nearM[cell] = near ? 1 : 0;
-      if (near) {
-        // a sector within lodDistance stays at any camera height (the camera is near the map edge, where the ring is
-        // the horizon), its density fading in over the outer third of lodDistance
-        const v = Math.max(vis, _sstep(lod * 0.94, lod * 0.6, dN));
-        let keep = dN < lod ? 1 : 1.25 - (dN - lod) / 7000;
-        keep = (keep < 0.3 ? 0.3 : keep > 1 ? 1 : keep) * v * app;
-        const q = Math.round(keep * 20) / 20;
-        this.ringCount(mb, q);
-        this.ringCount(mc, q);
       } else {
-        if (mb) mb.visible = false;
-        if (mc) mc.visible = false;
-        farMask |= 1 << k;
+        const o = k * 6;
+        const dN = boxDist(RB, o, px, py, pz);
+        // the regular impostor pair within lodDistance (hysteresis), the far blocks beyond
+        const near = this.ringNearSel[k] ? dN < lod * 1.06 : dN < lod * 0.94;
+        this.ringNearSel[k] = near ? 1 : 0;
+        if (near) {
+          // a sector within lodDistance stays at any camera height (the camera is near the map edge, where the ring is
+          // the horizon), its density fading in over the outer third of lodDistance
+          const v = Math.max(vis, _sstep(lod * 0.94, lod * 0.6, dN));
+          let keep = dN < lod ? 1 : 1.25 - (dN - lod) / 7000;
+          keep = (keep < 0.3 ? 0.3 : keep > 1 ? 1 : keep) * v * app;
+          const q = Math.round(keep * 20) / 20;
+          this.ringCount(mb, q);
+          this.ringCount(mc, q);
+        } else {
+          if (mb) mb.visible = false;
+          if (mc) mc.visible = false;
+          far = fv > 0.001;
+        }
       }
-    }
-    if (rf) {
-      // low cameras: the far sectors fade out with the camera height (seen from inside the city they are hidden or a
-      // few specks in the haze)
-      const fv = vis * app;
-      this.ringU.uRingP.value.set(lod, fv, this.state.size * CELL_SIZE);
-      rf.ringMask = farMask & this.ringFarSectors;
-      rf.visible = fv > 0.001 && rf.ringMask !== 0 && rf.count > 0;
+      for (let q = 0; q < RING_SUB; q++) {
+        const id = k * RING_SUB + q, m = rf[id];
+        if (!m) continue;
+        const n = (m.userData.ringCount as number | undefined) ?? 0, r = this.ringMicroR[id];
+        if (!far || !n || !r) {
+          m.visible = false;
+          continue;
+        }
+        // the block's trees the shader can keep (its own keep at the block's nearest point bounds every tree's, the
+        // trees are ordered by their random): a prefix
+        const d = boxDist(this.ringMicroBox, id * 6, px, py, pz);
+        let keep = 1.25 - (d - lod) / 7000;
+        keep = (keep < 0.3 ? 0.3 : keep > 1 ? 1 : keep) * fv + 1e-3;
+        let lo = 0, hi = n;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (r[mid] < keep) lo = mid + 1;
+          else hi = mid;
+        }
+        m.count = lo;
+        m.visible = lo > 0;
+      }
     }
   }
 
@@ -2152,13 +2189,57 @@ export class TreeRenderer {
       RB[ro + a] = Math.min(bd[a], bd[6 + a]);
       RB[ro + 3 + a] = Math.max(bd[3 + a], bd[9 + a]);
     }
-    this.ringMicro[k] = micro;
-    this.ringMicroCol[k] = microCol;
-    this.ringMicroN[k] = w[2];
+    this.ringBlocks(k, micro, microCol, w[2]);
     this.ringReady[k] = w[2] > 0 ? 1 : 0;
-    this.ringFarDirty = true;
+    this.ringFarDirty |= 1 << k;
     this.ringFillState = null;
     return true;
+  }
+
+  /** sector k's n micro impostors (16 matrix + 3 colour floats each) into its RING_SUB blocks (the quarters of its
+   *  span), each ordered by the trees' thinning random (ringRand: a prefix is what a distance keeps), with its bounds */
+  private ringBlocks(k: number, micro: Float32Array, col: Float32Array, n: number): void {
+    const [x0, x1, z0, z1] = this.ringSpan(k), xm = (x0 + x1) / 2, zm = (z0 + z1) / 2;
+    const rnd = new Float32Array(n), blk = new Uint8Array(n), cnt = new Int32Array(RING_SUB);
+    for (let i = 0; i < n; i++) {
+      const x = micro[i * 16 + 12], z = micro[i * 16 + 14];
+      rnd[i] = ringRand(x, z);
+      const q = (x >= xm ? 1 : 0) + (z >= zm ? 2 : 0);
+      blk[i] = q;
+      cnt[q]++;
+    }
+    const B = this.ringMicroBox;
+    for (let q = 0; q < RING_SUB; q++) {
+      const id = k * RING_SUB + q, c = cnt[q], o = id * 6;
+      const idx = new Int32Array(c);
+      for (let i = 0, j = 0; i < n; i++) if (blk[i] === q) idx[j++] = i;
+      idx.sort((a, b) => rnd[a] - rnd[b]);
+      const m = new Float32Array(Math.max(1, c) * 16), cc = new Float32Array(Math.max(1, c) * 3), rr = new Float32Array(Math.max(1, c));
+      B[o] = B[o + 1] = B[o + 2] = Infinity;
+      B[o + 3] = B[o + 4] = B[o + 5] = -Infinity;
+      for (let j = 0; j < c; j++) {
+        const i = idx[j], s = i * 16;
+        m.set(micro.subarray(s, s + 16), j * 16);
+        cc[j * 3] = col[i * 3];
+        cc[j * 3 + 1] = col[i * 3 + 1];
+        cc[j * 3 + 2] = col[i * 3 + 2];
+        rr[j] = rnd[i];
+        // the micro top: the double pyramid's upper half (waist r 0.46 at y 0.63, apex 1) in the instance's frame
+        const hs = Math.hypot(micro[s], micro[s + 2]) * 0.5, vs = micro[s + 5];
+        const x = micro[s + 12], y = micro[s + 13], z = micro[s + 14];
+        if (x - hs < B[o]) B[o] = x - hs;
+        if (y + vs * 0.6 < B[o + 1]) B[o + 1] = y + vs * 0.6;
+        if (z - hs < B[o + 2]) B[o + 2] = z - hs;
+        if (x + hs > B[o + 3]) B[o + 3] = x + hs;
+        if (y + vs > B[o + 4]) B[o + 4] = y + vs;
+        if (z + hs > B[o + 5]) B[o + 5] = z + hs;
+      }
+      if (!c) B.fill(0, o, o + 6);
+      this.ringMicro[id] = m;
+      this.ringMicroCol[id] = cc;
+      this.ringMicroR[id] = rr;
+      this.ringMicroN[id] = c;
+    }
   }
 
   /** the merged far ring: every ready sector's micro impostors in one mesh (rebuilt once the ring work is idle) */
