@@ -7,7 +7,8 @@
  *  - setFoliageSeason: winter / spring strengths only in seasonal climates, tropics flower all year
  *  - TreeRenderer: winter flags the bare broadleaf impostors see-through (negative instance red) and stretches the
  *    conifer impostors; the map's edge forests continue past the edge (edge band) and the outer ring gets impostors,
- *    deterministically, its far sectors in ONE merged mesh; a season / density / map-cell change refills the ring without
+ *    deterministically, its far sectors in quarter blocks (each drawn as the prefix of its trees, ordered by the thinning
+ *    random, that its nearest point keeps); a season / density / map-cell change refills the ring without
  *    regenerating it (only a terrain edit on the map border regenerates that side); the ring waits for the first frames
  *    after a load, generates in small slices and fades in; low quality (short tree LOD distance) has no ring / band
  */
@@ -22,7 +23,7 @@ import { bareTreeProxy, getImpostorGeometries, natureStats } from '../../src/ren
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
-import { TreeRenderer, treeSurfaceChain } from '../../src/render/world/TreeRenderer';
+import { TreeRenderer, ringRand, treeSurfaceChain } from '../../src/render/world/TreeRenderer';
 import { CELL_SIZE } from '../../src/core/constants';
 import { ModelBuilder } from '../../src/assets/ModelBuilder';
 import { RNG } from '../../src/core/rng';
@@ -156,8 +157,11 @@ describe('seasonal foliage patterns', () => {
       if (p === 1) blob++;
     }
     expect(blob).toBe(20);
-    // 3 tips x 3 double-sided spikes
-    expect(twig).toBe(18);
+    // 3 tips x (a limb blade + 3 spikes), each double-sided; nothing else (no wood: the limbs are winter-only too)
+    expect(twig).toBe(24);
+    let wood = 0;
+    for (let i = 0; i < srf.count; i += 3) if (Math.round(srf.getX(i)) === Surf.Wood) wood++;
+    expect(wood).toBe(10);
     // the same tree position always gives the same crown (no rng draw)
     const b2 = new ModelBuilder();
     expect(bareCrown(b2, 4, -2, [4, 2.3, -2], [4, 3.9, -2], 2.2, 2.0, 0x5b4330, 0.14)).toBe(fl);
@@ -331,8 +335,9 @@ describe('outer ring trees', () => {
     // each sector draws its trees in one micro mesh (broadleaves + conifers) beyond lodDistance; its conifers carry the
     // evergreen flag (negative instance blue), the near pair keeps the two impostor shapes apart; no ring shadows
     const micro = ring.filter((m) => (m.geometry.name ?? '').startsWith('impostor-micro'));
-    // (all sectors' micro impostors in ONE merged mesh / draw call)
-    expect(micro.length).toBe(1);
+    // (the sectors' micro impostors in their quarter blocks: at most 4 meshes per sector)
+    expect(micro.length).toBeGreaterThan(8);
+    expect(micro.length).toBeLessThanOrEqual(32);
     expect(micro.reduce((a, m) => a + ((m.userData.ringCount as number) ?? 0), 0)).toBe(tr.ringInstances);
     let flagged = 0, conifers = 0;
     for (const m of ring) {
@@ -434,6 +439,81 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
+  it('edge band: a near edge chunk submits only the band trees within the view\'s reach (none it could show is cut)', () => {
+    const { st, tr } = make(128);
+    const W = st.size * CELL_SIZE;
+    const terr = (tr as unknown as { terrain: TerrainRenderer }).terrain;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    const chunks = (tr as unknown as { chunks: { near: (THREE.InstancedMesh | null)[]; isNear: boolean; mapN: Int32Array | null; nearN: Int32Array | null }[] }).chunks;
+    // the fade end + jitter (TreeRenderer.update): a near model past it is fully faded out
+    const lod = 850, w = lod * tr.fadeBandDither, reach = lod + w + w * 0.8 * 0.5;
+    const a2c = (tr as unknown as { a2c: boolean }).a2c;
+    expect(a2c).toBe(false);
+    for (const [x, z] of [[W / 2, W / 2], [W * 0.3, W * 0.6], [120, W / 2]]) {
+      cam.position.set(x, terr.meshHeightAt(x, z) + 40, z);
+      cam.lookAt(x + 100, 0, z + 50);
+      cam.updateMatrixWorld();
+      tr.update(cam);
+      let band = 0, cut = 0;
+      for (const c of chunks) {
+        if (!c.mapN || !c.nearN || !c.isNear) continue;
+        for (let k = 0; k < c.near.length; k++) {
+          const m = c.near[k];
+          if (!m) continue;
+          band += c.nearN[k] - c.mapN[k];
+          cut += c.nearN[k] - m.count;
+          expect(m.count).toBeGreaterThanOrEqual(c.mapN[k]);
+          const e = m.instanceMatrix.array as Float32Array;
+          // every band tree left out is beyond the reach of the view's near models
+          for (let i = m.count; i < c.nearN[k]; i++) expect(Math.hypot(e[i * 16 + 12] - cam.position.x, e[i * 16 + 13] - cam.position.y, e[i * 16 + 14] - cam.position.z)).toBeGreaterThan(reach);
+        }
+      }
+      expect(band).toBeGreaterThan(0);
+      // from the middle of a 2 km map most band trees are out of reach (off-centre cameras: a looser bound)
+      if (x === W / 2) expect(cut).toBeGreaterThan(band * 0.5);
+    }
+    tr.dispose();
+  }, 120_000);
+
+  it('far ring blocks: culled by their own bounds, each submits the prefix of its trees (ordered by ringRand) the shader can keep', () => {
+    const { st, tr } = make(128);
+    const W = st.size * CELL_SIZE;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    // the bench's far view: 4 km from the map centre, 85 degrees down
+    const a = (85 * Math.PI) / 180, y = (45 * Math.PI) / 180, d = 4000;
+    cam.position.set(W / 2 - Math.sin(y) * Math.cos(a) * d, Math.sin(a) * d, W / 2 + Math.cos(y) * Math.cos(a) * d);
+    cam.lookAt(W / 2, 0, W / 2);
+    cam.updateMatrixWorld();
+    tr.update(cam);
+    const blocks = tr.group.children.filter((o) => o.name === 'trees-ring' && ((o as THREE.Mesh).geometry.name ?? '').startsWith('impostor-micro')) as THREE.InstancedMesh[];
+    expect(blocks.length).toBeGreaterThan(8);
+    const fr = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    let total = 0, submitted = 0, culled = 0, cut = 0;
+    for (const m of blocks) {
+      const n = (m.userData.ringCount as number) ?? 0, e = m.instanceMatrix.array as Float32Array;
+      total += n;
+      // ordered by the thinning random
+      for (let j = 1; j < n; j++) expect(ringRand(e[j * 16 + 12], e[j * 16 + 14])).toBeGreaterThanOrEqual(ringRand(e[(j - 1) * 16 + 12], e[(j - 1) * 16 + 14]));
+      // every tree past the prefix is one the shader drops at its own distance (keep fraction, as TREE_RING)
+      for (let j = m.count; j < n; j++) {
+        const dist = Math.hypot(e[j * 16 + 12] - cam.position.x, e[j * 16 + 13] - cam.position.y, e[j * 16 + 14] - cam.position.z);
+        const keep = Math.min(1, Math.max(0.3, 1.25 - (dist - 850) / 7000));
+        expect(ringRand(e[j * 16 + 12], e[j * 16 + 14])).toBeGreaterThanOrEqual(keep);
+      }
+      if (m.count < n) cut++;
+      if (!m.visible) continue;
+      if (!m.intersectsFrustum(fr)) culled++;
+      else submitted += m.count;
+    }
+    expect(total).toBe(tr.ringInstances);
+    // seen from above (4 km), a third of the blocks are off screen and the rest thinned: ~half the trees are submitted
+    expect(culled).toBeGreaterThan(5);
+    expect(cut).toBeGreaterThan(10);
+    expect(submitted).toBeGreaterThan(0);
+    expect(submitted).toBeLessThan(total * 0.6);
+    tr.dispose();
+  }, 120_000);
+
   it('the ring waits for the first frames after a load, then generates in small slices and fades in', () => {
     const st = createCityState(defaultCityConfig({ size: 128, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
     const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
@@ -465,14 +545,14 @@ describe('outer ring trees', () => {
     expect(tr.ringGenerations).toBe(8);
     // 128-cell map: a sector spans 52-66 block rows
     expect(frames).toBeGreaterThan(8 * 40);
-    // the far sectors' merged mesh, faded in over the next frames
-    const merged = () => tr.group.children.find((o) => o.name === 'trees-ring' && ((o as THREE.Mesh).geometry.name ?? '').startsWith('impostor-micro')) as THREE.InstancedMesh | undefined;
-    for (let f = 0; f < 3 && !merged(); f++) tr.update(cam);
-    expect(merged()).toBeTruthy();
+    // the far sectors' blocks, faded in over the next frames
+    const blocks = () => tr.group.children.filter((o) => o.name === 'trees-ring' && ((o as THREE.Mesh).geometry.name ?? '').startsWith('impostor-micro')) as THREE.InstancedMesh[];
+    for (let f = 0; f < 3 && !blocks().length; f++) tr.update(cam);
+    expect(blocks().length).toBeGreaterThan(0);
     expect(ring.ringAppear).toBeLessThan(1);
     for (let f = 0; f < 60; f++) tr.update(cam);
     expect(ring.ringAppear).toBe(1);
-    expect(merged()!.userData.ringCount).toBe(tr.ringInstances);
+    expect(blocks().reduce((a, m) => a + ((m.userData.ringCount as number) ?? 0), 0)).toBe(tr.ringInstances);
     // a regeneration of every sector (as after border terrain edits) is time-sliced the same way; flush() completes it
     const n0 = tr.ringInstances;
     ring.ringStale = 0xff;

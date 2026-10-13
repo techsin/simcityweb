@@ -30,6 +30,9 @@
  * the twigs of the near models; in winter conifer impostors are a little taller and darker (BARE_* / SEASON_*).
  * Chunk builds run nearest-first within buildBudgetMs per frame (at least one), so the view fills in first and the
  * first frames after a load stay short.
+ * Edge band: the map's edge chunks continue their forests as full trees over RING_EDGE_CELLS virtual cells past the
+ * edge, thinning toward the outer ring's density over its outer cells; their band trees are ordered by the distance to
+ * the map centre, so a near edge chunk only submits the band trees within the view's reach (trimBand).
  * Outer ring (far view): beyond the map edge (the terrain's landscape skirt) impostor-only trees stand on the terrain
  * shader's outside forests, out to ringWidth, in 8 sectors (see the RING_* constants and ringStep). Medium quality and
  * up (lodDistance >= RING_MIN_LOD); low quality has neither the ring nor the edge band:
@@ -84,7 +87,7 @@ const RING_SUB = 4;
 const RING_STRIDE = 8;
 /** the map's edge chunks continue their forests as full trees this many cells beyond the edge; the ring starts there */
 const RING_EDGE_CELLS = 10;
-/** merged-mesh conifers: the micro broadleaf double pyramid's upper half (waist r 0.46 at y 0.63, apex 1) stretched
+/** far-ring conifers: the micro broadleaf double pyramid's upper half (waist r 0.46 at y 0.63, apex 1) stretched
  *  onto the micro conifer pyramid (base r 0.4 at y 0.1, apex 1); its lower half ends up below the ground */
 const RING_CON_A = 0.9 / 0.37;
 const RING_CON_B = 1 - RING_CON_A;
@@ -344,6 +347,12 @@ interface TreeChunk {
   stateKey: number;
   lastKey: number;
   micro: boolean;
+  /** edge chunks with an edge band: per kind, the near instances of the map's own cells (the band's follow, ordered by
+   *  their distance to the map centre: bandD) and the total; a near mesh draws only the band trees the view can reach
+   *  (see trimBand) */
+  mapN: Int32Array | null;
+  nearN: Int32Array | null;
+  bandD: (Float32Array | null)[] | null;
 }
 
 /**
@@ -372,7 +381,8 @@ interface RingGen {
 }
 
 /** outer ring (re)fill of one sector, in progress: candidates are written straight into its near pair's instance
- *  arrays and its micro data (uploaded / merged once the sector is complete, so no half-refilled frame is ever drawn) */
+ *  arrays and its micro data (uploaded / split into its far blocks once the sector is complete, so no half-refilled
+ *  frame is ever drawn) */
 interface RingFill {
   k: number;
   /** next candidate */
@@ -384,7 +394,7 @@ interface RingFill {
   /** instance bounds per near mesh: min x y z, max x y z */
   bounds: Float64Array;
   dens: number;
-  /** the sector's micro impostors (matrices / colours) for the merged far mesh */
+  /** the sector's micro impostors (matrices / colours) for its far blocks */
   micro: Float32Array;
   microCol: Float32Array;
 }
@@ -704,7 +714,7 @@ export class TreeRenderer {
   /** broadleaves + conifers in one micro impostor mesh (TREE_MERGED: conifers flagged evergreen; see microMerge):
    *  far chunks and the outer ring's sectors */
   private materialMerged: THREE.MeshStandardMaterial;
-  /** the merged far outer ring (micro impostors of every sector, thinned / culled per tree in the vertex shader) */
+  /** the far outer ring's blocks (micro impostors, culled per block, thinned per tree in the vertex shader) */
   private materialRing: THREE.MeshStandardMaterial;
   private depthNearPlain = new THREE.MeshDepthMaterial();
   private depthFarPlain: THREE.MeshDepthMaterial;
@@ -798,7 +808,7 @@ export class TreeRenderer {
   /** map-border corner heights the ring heights were generated with (west, east, north, south edges; N + 1 each):
    *  only a terrain edit on the border moves the outer landscape the ring stands on */
   private ringEdgeH = new Float32Array(0);
-  /** frames the ring's pending work / merged far mesh rebuild waited for a calm frame (RING_MAX_WAIT) */
+  /** frames the ring's pending work / far block upload waited for a calm frame (RING_MAX_WAIT) */
   private ringWait = 0;
   private ringFarWait = 0;
   /** camera position of the previous frame and the number of calm frames in a row (RING_CALM_*) */
@@ -860,7 +870,7 @@ export class TreeRenderer {
     this.chunkBox = new Float64Array(this.perSide * this.perSide * 6);
     for (let cz = 0; cz < this.perSide; cz++)
       for (let cx = 0; cx < this.perSide; cx++) {
-        this.chunks.push({ cx, cz, near: this.kinds.map(() => null), far: [null, null, null], farTotal: [0, 0, 0], box: new THREE.Box3(), sphere: new THREE.Sphere(), isNear: false, total: 0, stateKey: -1, lastKey: FRESH_KEY, micro: false });
+        this.chunks.push({ cx, cz, near: this.kinds.map(() => null), far: [null, null, null], farTotal: [0, 0, 0], box: new THREE.Box3(), sphere: new THREE.Sphere(), isNear: false, total: 0, stateKey: -1, lastKey: FRESH_KEY, micro: false, mapN: null, nearN: null, bandD: null });
         this.chunkExtent(this.chunks.length - 1);
       }
     for (let i = 0; i < this.chunks.length; i++) this.dirty.add(i);
@@ -942,7 +952,7 @@ export class TreeRenderer {
       pairs.push([isNear ? near : imp.broad, isNear ? (fade ? this.matNearFade : this.material) : (fade ? this.matFarFade : this.materialFar), this.depthFor(isNear, fade, cut), !isNear]);
     }
     pairs.push([getMicroImpostorGeometries().broad, this.materialMerged, this.depthFor(false, false, false), true]);
-    // (the merged far ring casts no shadow)
+    // (the far ring casts no shadow)
     pairs.push([getMicroImpostorGeometries().top, this.materialRing, null, true]);
     for (const [geo, mat, depth, color] of pairs) {
       if (!geo) continue;
@@ -992,7 +1002,7 @@ export class TreeRenderer {
     }
   }
 
-  /** snow + (impostors) metric object coordinates, see-through bare crowns and the merged ring's per-tree culling; see
+  /** snow + (impostors) metric object coordinates, see-through bare crowns and the far ring's per-tree thinning; see
    *  SEASON_* / FAR_* / BARE_* */
   private injectSeason(shader: THREE.WebGLProgramParametersWithUniforms, far: boolean) {
     shader.uniforms.uTreeSnow = this.snowU.uTreeSnow;
@@ -1014,7 +1024,7 @@ export class TreeRenderer {
   }
 
   /** plain (no fade) tree material: near models or impostors (merged: broadleaf + conifer micro impostor meshes; ring:
-   *  the merged outer ring). Impostor materials blend see-through bare crowns by alpha-to-coverage with MSAA. */
+   *  the far outer ring's blocks). Impostor materials blend see-through bare crowns by alpha-to-coverage with MSAA. */
   private makeTreeMaterial(far: boolean, merged = false, ring = false): THREE.MeshStandardMaterial {
     const m = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
     const base = m.onBeforeCompile;
@@ -1377,9 +1387,11 @@ export class TreeRenderer {
     // edge chunks: the map's edge forests continue as full trees over a band of virtual cells beyond the edge (the same
     // forest mask the terrain shader paints there), where the outer ring's impostors take over
     const B = RING_EDGE_CELLS;
+    ch.mapN = ch.nearN = ch.bandD = null;
     if (this.ringOn && (ch.cx === 0 || ch.cz === 0 || ch.cx === this.perSide - 1 || ch.cz === this.perSide - 1)) {
       const noise = getNoiseTexture().image.data as Uint8Array;
       const W = N * CELL_SIZE;
+      const mapN = Int32Array.from(this.scratchCount.slice(0, nk));
       const xs = ch.cx === 0 ? -B : x0, xe = ch.cx === this.perSide - 1 ? N + B : Math.min(N, x0 + CHUNK);
       const zs = ch.cz === 0 ? -B : z0, ze = ch.cz === this.perSide - 1 ? N + B : Math.min(N, z0 + CHUNK);
       for (let z = zs; z < ze; z++) {
@@ -1392,7 +1404,9 @@ export class TreeRenderer {
           if (outside > 0) trees += outside * 0.65 * _sstep(0.6, 0.74, sampleNoise(noise, px / 3100, pz / 3100, 1) * 0.6 + sampleNoise(noise, px / 520, pz / 520, 0) * 0.5);
           const dens = Math.round(Math.min(1, trees) * 4);
           if (!dens) continue;
-          const count = Math.min(9, Math.floor(DENSITY_COUNT[dens] * this.density + hash2(x, z, seed + 5)));
+          // the band's outer cells thin toward the outer ring's density (its impostors take over at the band's edge)
+          const thin = 1 - 0.5 * _sstep(3, B, Math.max(dx, dz) / CELL_SIZE);
+          const count = Math.min(9, Math.floor(DENSITY_COUNT[dens] * this.density * thin + hash2(x, z, seed + 5)));
           if (count <= 0) continue;
           const h = this.terrain.worldHeight(px, pz);
           if (h < 1.6) continue;
@@ -1400,6 +1414,7 @@ export class TreeRenderer {
           this.placeCell(x, z, count, dens, h, Math.max(Math.abs(hx - h), Math.abs(hz - h)), weights);
         }
       }
+      this.sortBand(ch, mapN, W / 2);
     }
     let minY = this.bMinY, maxY = this.bMaxY;
     // shuffle far instances so a prefix is a uniform random subset (density fade)
@@ -1430,6 +1445,7 @@ export class TreeRenderer {
     ch.box.getBoundingSphere(ch.sphere);
     this.storeChunkBox(ci);
     let total = 0;
+    if (ch.mapN) ch.nearN = Int32Array.from(this.scratchCount.slice(0, nk));
     for (let k = 0; k < nk; k++) {
       const n = this.scratchCount[k];
       total += n;
@@ -1469,6 +1485,64 @@ export class TreeRenderer {
     this.applyLod(ch, ch.lastKey, true);
     this.lodForce = true;
     shadowCasters.version++;
+  }
+
+  /**
+   * An edge chunk's band trees (each kind's near instances past mapN[k]) ordered by their distance to the map centre
+   * (c, c), so a near mesh can draw its map trees plus only the band trees within reach of the view (trimBand)
+   */
+  private sortBand(ch: TreeChunk, mapN: Int32Array, c: number): void {
+    const nk = this.kinds.length;
+    const bandD: (Float32Array | null)[] = new Array(nk).fill(null);
+    for (let k = 0; k < nk; k++) {
+      const m0 = mapN[k], n = this.scratchCount[k] - m0;
+      if (n <= 0) continue;
+      const e = this.scratch[k];
+      const d = new Float32Array(n), idx = new Int32Array(n);
+      for (let i = 0; i < n; i++) {
+        const o = (m0 + i) * 16;
+        d[i] = Math.hypot(e[o + 12] - c, e[o + 14] - c);
+        idx[i] = i;
+      }
+      idx.sort((a, b) => d[a] - d[b]);
+      const tmp = e.slice(m0 * 16, (m0 + n) * 16), ds = new Float32Array(n);
+      for (let j = 0; j < n; j++) {
+        e.set(tmp.subarray(idx[j] * 16, idx[j] * 16 + 16), (m0 + j) * 16);
+        ds[j] = d[idx[j]];
+      }
+      bandD[k] = ds;
+    }
+    ch.mapN = mapN;
+    ch.bandD = bandD;
+  }
+
+  /**
+   * A near edge chunk's band trees beyond the view's reach are not submitted: a tree farther than `reach` (the LOD fade
+   * end + jitter, where its near model is fully faded out and casts no shadow) from the camera is farther than reach +
+   * the camera's distance to the map centre from that centre, so each near mesh draws its map trees plus the prefix of
+   * its (sorted) band trees within that radius. Returns whether a count changed.
+   */
+  private trimBand(ch: TreeChunk, radius: number): boolean {
+    const mapN = ch.mapN, nearN = ch.nearN, bandD = ch.bandD;
+    if (!mapN || !nearN || !bandD) return false;
+    let changed = false;
+    for (let k = 0; k < ch.near.length; k++) {
+      const m = ch.near[k], d = bandD[k];
+      if (!m || !d) continue;
+      let lo = 0, hi = d.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (d[mid] <= radius) lo = mid + 1;
+        else hi = mid;
+      }
+      const c = Math.min(nearN[k], mapN[k] + lo);
+      if (m.count !== c) {
+        m.count = c;
+        changed = true;
+      }
+      m.visible = ch.isNear && c > 0;
+    }
+    return changed;
   }
 
   private storeChunkBox(ci: number): void {
@@ -1623,6 +1697,9 @@ export class TreeRenderer {
       LI[0] = px; LI[1] = py; LI[2] = pz; LI[3] = K; LI[4] = lo; LI[5] = hi; LI[6] = cutLo; LI[7] = cutHi; LI[8] = microIn;
       this.lodForce = false;
     }
+    // (edge band trees beyond the view's reach: trimBand)
+    const half = (this.state.size * CELL_SIZE) / 2, bandR = hi + Math.hypot(px - half, pz - half);
+    let trimmed = false;
     for (let ci = 0; lodChanged && ci < chunks.length; ci++) {
       const ch = chunks[ci], o = ci * 6;
       const x0 = B[o], y0 = B[o + 1], z0 = B[o + 2], x1 = B[o + 3], y1 = B[o + 4], z1 = B[o + 5];
@@ -1648,7 +1725,9 @@ export class TreeRenderer {
         (nearCast && dF > cutLo ? L_NEAR_CUT : 0) | (farCast && dN < cutHi ? L_FAR_CUT : 0) | (micro ? L_MICRO : 0) |
         (nearCast ? L_NEAR_CAST : 0) | (farCast ? L_FAR_CAST : 0) | (Math.round(keep * 20) << L_KEEP_SHIFT);
       if (key !== ch.stateKey) this.applyLod(ch, key);
+      if (ch.bandD && ch.isNear && this.trimBand(ch, bandR)) trimmed = true;
     }
+    if (trimmed) shadowCasters.version++;
     // outer ring: candidates / refills in a small time budget once the first frames after a load have built the map's
     // chunks, on calm frames only (camera still or drifting for RING_CALM_FRAMES: zooms, cuts and fast pans / orbits
     // keep their frame time, and so do the catch-up frames after a cut); a camera that keeps moving gets its slices after
@@ -1761,11 +1840,6 @@ export class TreeRenderer {
         m.visible = lo > 0;
       }
     }
-  }
-
-  private ringAnyReady(): boolean {
-    for (let k = 0; k < RING_N; k++) if (this.ringReady[k]) return true;
-    return false;
   }
 
   /** draw the first q of a ring mesh's (shuffled) instances (userData.ringCount = its total) */
@@ -2085,7 +2159,7 @@ export class TreeRenderer {
   /**
    * Write the current sector's instances (kind for the season, matrices, colours) straight into its near pair's
    * instance arrays and its micro data until `end`; once complete: upload ranges, counts, bounds, the sector may be drawn
-   * and the merged far mesh is due for a rebuild. Returns true when complete.
+   * and its far blocks are due for an upload. Returns true when complete.
    */
   private ringFillRows(end: number): boolean {
     const f = this.ringFillState!;
@@ -2126,7 +2200,7 @@ export class TreeRenderer {
       if (yhi > bd[q + 4]) bd[q + 4] = yhi;
       if (z + rr > bd[q + 5]) bd[q + 5] = z + rr;
     };
-    // the micro copy (merged far mesh): the double pyramid's top half shaped as the conifer pyramid for conifers
+    // the micro copy (far blocks): the double pyramid's top half shaped as the conifer pyramid for conifers
     // (negative blue = evergreen), see-through bare crowns keep their negative red
     const putMicro = (c: number, sn: number, hs: number, vs: number, x: number, y: number, z: number, r: number, gc: number, b: number) => {
       const s = w[2]++;
@@ -2183,7 +2257,7 @@ export class TreeRenderer {
         bb.getBoundingSphere(mesh.boundingSphere!);
       } else bb.makeEmpty();
     }
-    // sector bounds (its per-frame distance, the merged mesh's per-sector culling): the near pair's union
+    // sector bounds (its per-frame distance): the near pair's union
     const RB = this.ringBox, ro = k * 6;
     for (let a = 0; a < 3; a++) {
       RB[ro + a] = Math.min(bd[a], bd[6 + a]);

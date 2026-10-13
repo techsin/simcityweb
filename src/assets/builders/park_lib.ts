@@ -13,7 +13,7 @@ import { ModelBuilder, PALETTE, type ColorLike, type Paint } from '../ModelBuild
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import type { ModelBuilders, ModelBuildFn } from '../registry';
-import { leafBlob, tintSince, foliageShade, mark, limb, triOutN, vadd, vcross, vlen, vnorm, vscale, vsub } from './nat_geom';
+import { leafBlob, tintSince, foliageShade, mark, triOutN, vadd, vcross, vlen, vnorm, vscale, vsub } from './nat_geom';
 
 export type P2 = [number, number];
 export type V3 = [number, number, number];
@@ -672,35 +672,47 @@ function lobe(b: ModelBuilder, rng: RNG, c: V3, r: V3, nc: V3, color: ColorLike)
   leafBlob(b, rng, c, r, { soft: 0.62, nc, jitter: 0.16 });
 }
 
+/** a slender double-sided spike / blade from base `a` (half-width w along `side`) to `tip`, both faces lit by one soft
+ *  up / outward normal (a twig haze from every side): 2 tris */
+function spike(b: ModelBuilder, a: V3, tip: V3, side: V3, w: number, dir: V3): void {
+  const q0 = vadd(a, vscale(side, w)), q1 = vadd(a, vscale(side, -w));
+  const n = vnorm(vcross(vsub(q1, tip), vsub(q0, tip)));
+  const nsh = vnorm(vadd(vscale(dir, 0.45), [0, 0.9, 0]));
+  triOutN(b, tip, q1, q0, nsh, nsh, nsh, n);
+  triOutN(b, tip, q0, q1, nsh, nsh, nsh, vscale(n, -1));
+}
+
 /**
  * Bare winter crown of a deciduous kit tree (see the seasons note above): `limbs` limbs from the trunk top `top` out to
- * ~55% of the crown (radius rx / half-height ry around c: inside the leaf lobes, which hide them in leaf), each tip and
- * a leader fanning out 4 slender double-sided twig spikes (pattern 5, floor = the lobes' floor) to about the crown's
- * size. No rng draws (layouts unchanged): the shape is hashed from the tree position. ~32-50 tris.
+ * ~55% of the crown (radius rx / half-height ry around c: inside the leaf lobes) and a leader, each a tapering
+ * double-sided blade in the bark colour, each tip fanning out `spikes` (3) slender double-sided twig spikes to about
+ * the crown's size; limbs and twigs are Foliage pattern 5 (floor = the lobes' floor): drawn only while the tree is bare
+ * (no vertices to shade in leaf). No rng draws (layouts unchanged): the shape is hashed from the tree position.
+ * (limbs + 1) x (spikes + 1) x 2 tris: 32 by default.
  * Other builders' lot trees can get the same winter crown: paint the crown blob(s) Foliage pattern 1 with floor =
  * 1 + a per-tree random in [0, 1) and call twigCrown with that floor (else bare lot crowns only thin out, materials.ts).
  */
 export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3, rx: number, ry: number, floor: number, bark: ColorLike, rT: number, o: { limbs?: number; twig?: ColorLike; upright?: number; spikes?: number } = {}): void {
   const hr = (i: number) => treeRand(x * 1.13 + i * 7.31 + 0.5, z * 0.97 - i * 3.17 + 0.25);
-  const up = o.upright ?? 0, nl = o.limbs ?? 3, ns = o.spikes ?? 4;
-  b.paint(bark, Surf.Wood);
+  const up = o.upright ?? 0, nl = o.limbs ?? 3, ns = o.spikes ?? 3;
   const tips: { p: V3; d: V3 }[] = [];
   const a0 = hr(0) * TAU;
   for (let i = 0; i < nl; i++) {
     const a = a0 + (i / nl) * TAU + (hr(i + 1) - 0.5) * 0.6;
     const reach = rx * (0.48 + 0.12 * hr(i + 4)) * (1 - 0.45 * up);
     const p1: V3 = [c[0] + Math.cos(a) * reach, c[1] + ry * (0.05 + 0.3 * hr(i + 7) + 0.25 * up), c[2] + Math.sin(a) * reach];
-    limb(b, [top, p1], [rT * 0.55, rT * 0.2], { seg: 3 });
     tips.push({ p: p1, d: vnorm(vsub(p1, top)) });
   }
   const lead: V3 = [c[0] + (hr(10) - 0.5) * rx * 0.2, c[1] + ry * 0.5, c[2] + (hr(11) - 0.5) * rx * 0.2];
-  limb(b, [top, lead], [rT * 0.45, rT * 0.15], { seg: 3 });
   tips.push({ p: lead, d: vnorm(vsub(lead, top)) });
   const L = Math.max(rx, ry) * 0.55;
   tips.forEach(({ p, d }, ti) => {
     const side0 = vcross(d, [0, 1, 0]);
     const sa: V3 = vlen(side0) > 0.1 ? vnorm(side0) : [1, 0, 0];
     const sb = vnorm(vcross(sa, d));
+    // the limb (leader: a little thinner)
+    b.paint(bark, Surf.Foliage, FOL_TWIG, floor);
+    spike(b, top, p, sa, rT * (ti < nl ? 0.55 : 0.45), d);
     const ph = hr(20 + ti) * TAU;
     for (let k = 0; k < ns; k++) {
       b.paint(k === 1 ? shade(o.twig ?? TWIG, 0.9) : (o.twig ?? TWIG), Surf.Foliage, FOL_TWIG, floor);
@@ -709,15 +721,7 @@ export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3,
       const dir = vnorm(vadd(vadd(d, vadd(vscale(sa, Math.cos(an) * cone), vscale(sb, Math.sin(an) * cone))), [0, 0.25, 0]));
       const side = vnorm(vcross(dir, Math.abs(dir[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]));
       const len = L * (0.8 + 0.4 * hr(60 + ti * 7 + k));
-      const base = vadd(p, vscale(dir, -len * 0.1));
-      const tip = vadd(p, vscale(dir, len));
-      const w = len * 0.09;
-      const q0 = vadd(base, vscale(side, w)), q1 = vadd(base, vscale(side, -w));
-      const n = vnorm(vcross(vsub(q1, tip), vsub(q0, tip)));
-      // both faces share one soft up / outward normal: the sprays light like a twig haze from every side
-      const nsh = vnorm(vadd(vscale(dir, 0.45), [0, 0.9, 0]));
-      triOutN(b, tip, q1, q0, nsh, nsh, nsh, n);
-      triOutN(b, tip, q0, q1, nsh, nsh, nsh, vscale(n, -1));
+      spike(b, vadd(p, vscale(dir, -len * 0.1)), vadd(p, vscale(dir, len)), side, len * 0.09, dir);
     }
   });
 }
@@ -726,7 +730,7 @@ export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3,
  * Bare winter crown for the other builders' cheap lot trees (a trunk + one or two blob crowns): returns the floor `fl`
  * to paint the crown blob(s) with - `b.paint(color, Surf.Foliage, 1, fl)` - so they swap to these twigs while the
  * tree is bare (materials.ts, Foliage); `top` = trunk top, `c` / rx / ry = the crown's centre / radius / half-height.
- * A lighter twigCrown (2 limbs + a leader, 3 twig spikes each: ~36 tris), no rng draws (lot layouts unchanged).
+ * A lighter twigCrown (2 limbs + a leader, 3 twig spikes each: 24 tris), no rng draws (lot layouts unchanged).
  */
 export function bareCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3, rx: number, ry: number, bark: ColorLike, rT: number): number {
   const fl = 1 + treeRand(x, z);
@@ -738,7 +742,8 @@ const DECIDUOUS: ReadonlySet<string> = new Set(['oak', 'round', 'maple', 'birch'
 /** park maples: summer greens + one ornamental dark red-leaf cultivar (the shader adds the autumn colours) */
 const MAPLE_LEAF = [0x5a7f35, 0x6b8a3a, 0x7a2f2a, 0x4f7a32];
 
-/** Richer low-poly park tree (~30-70 tris). s=1 => oak ~9.5 m. Returns the top height. */
+/** Richer low-poly park tree (~30-70 tris; the deciduous kinds + a 32-tri winter twig crown). s=1 => oak ~9.5 m. Returns
+ *  the top height. */
 export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kind: TreeKind = 'oak'): number {
   let k = s * TREE_SCALE * rng.range(0.85, 1.15);
   if (TREE_TOP[kind] * k > TREE_CAP) k = TREE_CAP / TREE_TOP[kind];
