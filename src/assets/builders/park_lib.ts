@@ -710,9 +710,9 @@ export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3,
     const side0 = vcross(d, [0, 1, 0]);
     const sa: V3 = vlen(side0) > 0.1 ? vnorm(side0) : [1, 0, 0];
     const sb = vnorm(vcross(sa, d));
-    // the limb (leader: a little thinner)
-    b.paint(bark, Surf.Foliage, FOL_TWIG, floor);
-    spike(b, top, p, sa, rT * (ti < nl ? 0.55 : 0.45), d);
+    // the limb (leader: a little thinner), darker than the bark paint: the twig shading lights it like the sprays
+    b.paint(shade(bark, 0.6), Surf.Foliage, FOL_TWIG, floor);
+    spike(b, top, p, sa, rT * (ti < nl ? 0.7 : 0.55), d);
     const ph = hr(20 + ti) * TAU;
     for (let k = 0; k < ns; k++) {
       b.paint(k === 1 ? shade(o.twig ?? TWIG, 0.9) : (o.twig ?? TWIG), Surf.Foliage, FOL_TWIG, floor);

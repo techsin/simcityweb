@@ -3643,6 +3643,10 @@ Each round's verifiers play the personas §8 names, record the listed numbers, a
 - **D1: accepted, with one change.** The "can start now" subset (FEEL-11 audio parts, FEEL-12, LG-01 ranks, the §4 copy module, new-file art) waits until part B's final-fix lanes have been assigned their files. Triage may give `src/audio/**` or `src/sim/economy/rewards.ts` to a final-fix lane, and starting earlier would not bring the finish date forward: the weekly usage allowance is the bottleneck, not parallel capacity.
 - **D13: accepted.** The million-pop performance phase lands Worker render steps R1 and R2 right after W0.5.
 - **D2-D12, D15-D17: the recommended defaults are accepted as written.**
+- **Handoffs from part-B triage round 1 (Oct 13, 23:50 UTC) to this pass's WORLD lane:**
+  - (a) The Emergency view legend label "You must dispatch" and the note "Amber / red: major emergencies there wait for your dispatch" (`src/render/world/overlays.ts`, `EMERGENCY()`) are wrong for the Fire variant once the final-fix lane sim-econ narrows the Fire amber band. Use the exact text sim-econ reports.
+  - (c) The fireworks particle timer advances by a clamped frame dt (playtest note).
+  - Part-B routed items 6, 7, 8, 15, 49 and 52 are in NEW-07's wording sweep, as the routed-items table says.
 
 Each decision has a recommended default, which applies if the lead does not answer before round 1.
 
