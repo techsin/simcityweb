@@ -722,6 +722,18 @@ export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3,
   });
 }
 
+/**
+ * Bare winter crown for the other builders' cheap lot trees (a trunk + one or two blob crowns): returns the floor `fl`
+ * to paint the crown blob(s) with - `b.paint(color, Surf.Foliage, 1, fl)` - so they swap to these twigs while the
+ * tree is bare (materials.ts, Foliage); `top` = trunk top, `c` / rx / ry = the crown's centre / radius / half-height.
+ * A lighter twigCrown (2 limbs + a leader, 3 twig spikes each: ~36 tris), no rng draws (lot layouts unchanged).
+ */
+export function bareCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3, rx: number, ry: number, bark: ColorLike, rT: number): number {
+  const fl = 1 + treeRand(x, z);
+  twigCrown(b, x, z, top, c, rx, ry, fl, bark, rT, { limbs: 2, spikes: 3 });
+  return fl;
+}
+
 const DECIDUOUS: ReadonlySet<string> = new Set(['oak', 'round', 'maple', 'birch', 'poplar', 'willow']);
 /** park maples: summer greens + one ornamental dark red-leaf cultivar (the shader adds the autumn colours) */
 const MAPLE_LEAF = [0x5a7f35, 0x6b8a3a, 0x7a2f2a, 0x4f7a32];

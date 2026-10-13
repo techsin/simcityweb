@@ -35,7 +35,8 @@
  * up (lodDistance >= RING_MIN_LOD); low quality has neither the ring nor the edge band:
  *   - candidates are a pure function of the noise texture, the outer terrain and the seed (the map's own cells only
  *     reach the edge band), generated (and filled) in ~1 ms slices once the first frames after a load have built the
- *     map's chunks, at full density (a per-tree threshold picks the quality's subset), then faded in; a quality /
+ *     map's chunks, on calm frames (still / drifting camera: no slice lands on a zoom, cut or orbit frame, see
+ *     RING_CALM_*), at full density (a per-tree threshold picks the quality's subset), then faded in; a quality /
  *     density, season or map-cell change only refills (same budget); only a terrain edit on the map border regenerates
  *     the sectors on that side;
  *   - every sector's trees beyond lodDistance are ONE merged micro impostor mesh (one draw for the whole far ring;
@@ -89,6 +90,13 @@ const RING_MIN_LOD = 560;
 const RING_DELAY_FRAMES = 12;
 /** frames over which a freshly generated outer ring fades in (its density ramps up: no pop) */
 const RING_APPEAR_FRAMES = 45;
+/** the ring's slices run on calm frames: the camera moved at most RING_CALM_MOVE x its height above the ground (summed
+ *  axis deltas) in each of the last RING_CALM_FRAMES frames (still / drifting, not zooming, cutting or orbiting; the
+ *  frames right after a cut, when the city's LODs catch up, are skipped too); after RING_MAX_WAIT frames of waiting
+ *  it runs anyway */
+const RING_CALM_MOVE = 0.004;
+const RING_CALM_FRAMES = 8;
+const RING_MAX_WAIT = 240;
 /** a nature model whose crown is at least this see-through (natureStats.open) has a see-through impostor */
 const BARE_OPEN = 0.3;
 /** winter conifer impostors: taller (the needle tiers' tips) and darker than the summer tint (they are what reads of
@@ -96,6 +104,16 @@ const BARE_OPEN = 0.3;
 const WINTER_CONIFER_H = 1.1;
 const WINTER_CONIFER_R = 1.04;
 const WINTER_CONIFER_TINT = 0.84;
+
+/** bare share of the deciduous trees for the shader's / renderers' season mix: x BARE_ALL, so mid-winter (seasonMix
+ *  0.93 in Dec-Feb) leaves every deciduous tree bare - the few marcescent ones (dead russet leaves) read as brown
+ *  boulders among the bare crowns at the game's scale. The same factor as the Foliage shader (materials.ts) */
+const BARE_ALL = 1.08;
+/** month mix of the forest trees (nat_season.seasonMix, bare share x BARE_ALL) */
+function forestMix(month: number, climate: string): SeasonMix {
+  const m = seasonMix(month, climate);
+  return { autumn: m.autumn, bare: Math.min(1, m.bare * BARE_ALL), blossom: m.blossom };
+}
 
 const _sstep = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -755,8 +773,12 @@ export class TreeRenderer {
   /** map-border corner heights the ring heights were generated with (west, east, north, south edges; N + 1 each):
    *  only a terrain edit on the border moves the outer landscape the ring stands on */
   private ringEdgeH = new Float32Array(0);
-  /** frames the ring waited for chunk rebuilds (it then gets a step anyway) */
+  /** frames the ring's pending work / merged far mesh rebuild waited for a calm frame (RING_MAX_WAIT) */
   private ringWait = 0;
+  private ringFarWait = 0;
+  /** camera position of the previous frame and the number of calm frames in a row (RING_CALM_*) */
+  private ringCam = new Float64Array(3).fill(NaN);
+  private ringCalm = 0;
   /** frames since the last load / reset (the ring's generation waits RING_DELAY_FRAMES) */
   private ringFrames = 0;
   /** fade-in of a freshly generated ring (0..1; see RING_APPEAR_FRAMES) */
@@ -1139,7 +1161,7 @@ export class TreeRenderer {
     if (this.ringWanted() !== this.ringOn) this.applyRingOn();
     this.seed = state.config.seed | 0;
     this.noise = new Noise2D(state.config.seed + 4242);
-    this.season = seasonMix(state.month, state.config.climate);
+    this.season = forestMix(state.month, state.config.climate);
     this.autumn = this.season.autumn;
     const sp = CLIMATE_SPECIES[state.config.climate] ?? CLIMATE_SPECIES.temperate;
     if (sp !== this.species) {
@@ -1156,6 +1178,7 @@ export class TreeRenderer {
     this.ringStale = this.ringOn ? (1 << RING_N) - 1 : 0;
     this.ringGen = null;
     this.ringFrames = 0;
+    this.ringWait = this.ringFarWait = this.ringCalm = 0;
     this.ringAppear = 0;
     this.snapshotRingEdge();
     this.markAll();
@@ -1218,10 +1241,10 @@ export class TreeRenderer {
 
   /**
    * season: month 0..11 -> fractions of deciduous trees showing autumn colours (Sep 0.3 / Oct 0.8 / Nov 0.55), bare
-   * branches (Dec-Feb 0.93) and blossom (Apr 0.15); temperate / alpine only (nat_season.seasonMix)
+   * branches (Dec-Feb all: forestMix) and blossom (Apr 0.15); temperate / alpine only (nat_season.seasonMix)
    */
   setMonth(month: number) {
-    const m = seasonMix(month, this.state.config.climate);
+    const m = forestMix(month, this.state.config.climate);
     const o = this.season;
     if (m.autumn !== o.autumn || m.bare !== o.bare || m.blossom !== o.blossom) {
       this.season = m;
@@ -1606,16 +1629,33 @@ export class TreeRenderer {
       if (key !== ch.stateKey) this.applyLod(ch, key);
     }
     // outer ring: candidates / refills in a small time budget once the first frames after a load have built the map's
-    // chunks (or after waiting long); the merged far mesh is rebuilt once its sectors are done, then faded in
+    // chunks, on calm frames only (camera still or drifting for RING_CALM_FRAMES: zooms, cuts and orbits keep their
+    // frame time, and so do the catch-up frames after a cut); a camera that keeps moving gets its slices after
+    // RING_MAX_WAIT frames anyway. The merged far mesh is rebuilt (one upload) on a calm frame once its sectors are
+    // done, then faded in
     this.ringFrames++;
+    const camH = this.ringOn ? py - this.terrain.meshHeightAt(px, pz) : 0;
+    const rc = this.ringCam;
+    const mv = Math.abs(px - rc[0]) + Math.abs(py - rc[1]) + Math.abs(pz - rc[2]);
+    rc[0] = px; rc[1] = py; rc[2] = pz;
+    this.ringCalm = mv <= RING_CALM_MOVE * (camH > 25 ? camH : 25) ? this.ringCalm + 1 : 0;
+    const calm = this.ringCalm >= RING_CALM_FRAMES;
     if (this.ringOn && (this.ringStale || this.ringRefill || this.ringGen || this.ringFillState)) {
-      if (this.ringFrames > RING_DELAY_FRAMES && (!this.dirty.size || ++this.ringWait > 90)) {
+      if (this.ringFrames <= RING_DELAY_FRAMES) {
+        // (the first frames after a load build the map's chunks)
+      } else if (calm && !this.dirty.size) {
         this.ringWait = 0;
         this.ringStep(this.ringBudgetMs);
+      } else if (++this.ringWait > RING_MAX_WAIT) this.ringStep(this.ringBudgetMs);
+    } else {
+      this.ringWait = 0;
+      if (this.ringFarDirty && (calm || ++this.ringFarWait > RING_MAX_WAIT)) {
+        this.ringFarWait = 0;
+        this.rebuildRingFar();
       }
-    } else if (this.ringFarDirty) this.rebuildRingFar();
+    }
     if (this.ringAppear < 1 && this.ringFar && this.ringFar.count > 0) this.ringAppear = Math.min(1, this.ringAppear + 1 / RING_APPEAR_FRAMES);
-    this.updateRingView(px, py, pz, lod);
+    this.updateRingView(px, py, pz, lod, camH);
   }
 
   /** build dirty chunks, nearest to the camera first, until buildBudgetMs is used up (at least one, at most `max`) */
@@ -1639,10 +1679,9 @@ export class TreeRenderer {
 
   /** per frame: which outer ring meshes are drawn (sector distance, camera height) and how dense: a sector within
    *  lodDistance draws its near pair (CPU density prefix), the others the merged far mesh (GPU per-tree thinning) */
-  private updateRingView(px: number, py: number, pz: number, lod: number): void {
+  private updateRingView(px: number, py: number, pz: number, lod: number, camH: number): void {
     const ring = this.ring, rf = this.ringFar;
     if (!this.ringOn || (!rf && !this.ringAnyReady())) return;
-    const camH = py - this.terrain.meshHeightAt(px, pz);
     const vis = _sstep(this.ringFadeHeight[0], this.ringFadeHeight[1], camH);
     const app = this.ringAppear, RB = this.ringBox, nearM = this.ringU.uRingNear.value.elements;
     let farMask = 0;

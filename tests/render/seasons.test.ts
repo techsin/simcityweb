@@ -29,6 +29,7 @@ import { RNG } from '../../src/core/rng';
 import { palm as comPalm } from '../../src/assets/builders/com_kit';
 import { palm as civPalm } from '../../src/assets/builders/civ_kit';
 import { tree as parkTree, type TreeKind } from '../../src/assets/builders/park_lib';
+import { SEASONAL_TREES } from '../../src/assets/builders/nat_season';
 
 registerAllModels();
 
@@ -191,6 +192,18 @@ describe('tree impostors in winter', () => {
     expect(jul.broad).toBeGreaterThan(100);
     expect(jul.bare).toBe(0);
     expect(jan.bare).toBeGreaterThan(jan.broad * 0.3);
+    // mid-winter: every deciduous forest tree is bare (no marcescent leftovers: they read as brown boulders)
+    const kinds = (tr as unknown as { kinds: { id: string; variant: number }[] }).kinds;
+    const near = (tr as unknown as { chunks: { near: (THREE.InstancedMesh | null)[] }[] }).chunks;
+    let seasonal = 0, leafy = 0;
+    for (const c of near) c.near.forEach((m, k) => {
+      const s = SEASONAL_TREES[kinds[k].id];
+      if (!m || !s) return;
+      seasonal += m.count;
+      if (!s.bare.includes(kinds[k].variant)) leafy += m.count;
+    });
+    expect(seasonal).toBeGreaterThan(50);
+    expect(leafy).toBe(0);
     expect(jan.con).toBe(jul.con);
     expect(jan.con).toBeGreaterThan(20);
     expect(jan.conH / jul.conH).toBeCloseTo(1.1, 2);
@@ -397,6 +410,53 @@ describe('outer ring trees', () => {
     expect(tr.ringGenerations).toBe(16);
     expect(tr.ringInstances).toBe(n0);
     tr.dispose();
+  }, 120_000);
+
+  it('ring slices run on calm frames: not while the camera zooms / cuts, after a few still frames, or after a long wait', () => {
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
+    const W = st.size * CELL_SIZE;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    /** a renderer whose ring slices are counted (zero budget: one block row / refill batch per slice) */
+    const counted = () => {
+      const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
+      tr.ringBudgetMs = 0;
+      const step = tr.ringStep.bind(tr);
+      const c = { tr, slices: 0 };
+      tr.ringStep = (b: number) => { c.slices++; step(b); };
+      return c;
+    };
+    const a = counted();
+    // a camera zooming out from the first frame on (2% of its height per frame): no slice for 200 frames
+    let h = 200;
+    for (let f = 0; f < 200; f++) {
+      cam.position.set(W / 2, (h *= 1.02), W / 2 + 300);
+      a.tr.update(cam);
+    }
+    expect(a.slices).toBe(0);
+    // the camera stops: slices start after a few still frames, one per frame
+    let still = 0;
+    while (!a.slices && still < 50) { a.tr.update(cam); still++; }
+    expect(still).toBeGreaterThanOrEqual(8);
+    expect(still).toBeLessThanOrEqual(10);
+    for (let f = 0; f < 5; f++) a.tr.update(cam);
+    expect(a.slices).toBe(6);
+    // a cut (one big jump) pauses them for the catch-up frames after it, then they resume
+    cam.position.set(W / 4, 900, W / 4);
+    for (let f = 0; f < 6; f++) a.tr.update(cam);
+    expect(a.slices).toBe(6);
+    for (let f = 0; f < 4; f++) a.tr.update(cam);
+    expect(a.slices).toBeGreaterThan(6);
+    // a camera that never stops (a pan of 20 m per frame) still gets the slices after the long wait (240 frames)
+    const b = counted();
+    let k = 0;
+    for (; k < 400 && !b.slices; k++) {
+      cam.position.set(W / 2 + k * 20, 600, W / 2);
+      b.tr.update(cam);
+    }
+    expect(k).toBeGreaterThan(240);
+    expect(k).toBeLessThan(260);
+    a.tr.dispose();
+    b.tr.dispose();
   }, 120_000);
 
   it('low quality (tree LOD distance < 560 m): no outer ring and no edge band; a higher quality brings both back', () => {
