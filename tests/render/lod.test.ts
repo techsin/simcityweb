@@ -564,18 +564,18 @@ describe('building LOD schedule', () => {
     const tri = (g: number) => br.batch.triangles(g);
     const heavy = list.reduce((a, b) => (tri(b.geom) > tri(a.geom) ? b : a)), light = list.reduce((a, b) => (tri(b.geom) < tri(a.geom) ? b : a));
     expect(pri[heavy.li]).toBeGreaterThan(pri[light.li]);
-    // a fast low pan around the map (42 m per frame)
+    // a fast pan around the map (66 m per frame)
     let a = 0;
     const pan = (da: number) => {
       a += da;
-      cam.position.set(512 + Math.cos(a) * 700, 120, 512 + Math.sin(a) * 700);
+      cam.position.set(512 + Math.cos(a) * 1100, 200, 512 + Math.sin(a) * 1100);
       cam.lookAt(512, 0, 512);
       cam.updateMatrixWorld();
       br.updateLod(cam, H);
     };
     for (let i = 0; i < 60; i++) pan(0.06);
     expect(br.lodBehind).toBe(false);
-    // the cut: to the far side of the circle (1400 m), a small catch-up per frame (count-bounded)
+    // the cut: to the far side of the circle (2200 m), a small catch-up per frame (count-bounded)
     br.lodCatch = 12;
     const before = list.map((b) => b.lod);
     pan(Math.PI);
