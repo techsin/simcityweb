@@ -2242,48 +2242,43 @@ export class TreeRenderer {
     }
   }
 
-  /** the merged far ring: every ready sector's micro impostors in one mesh (rebuilt once the ring work is idle) */
+  /** upload the far blocks of the sectors whose micro impostors changed (once the ring work is idle; drawn from the
+   *  next updateRingView on) */
   private rebuildRingFar(): void {
-    this.ringFarDirty = false;
-    let n = 0, mask = 0;
-    for (let k = 0; k < RING_N; k++) if (this.ringReady[k] && this.ringMicro[k] && this.ringMicroN[k] > 0) { n += this.ringMicroN[k]; mask |= 1 << k; }
-    if (!n) {
-      if (this.ringFar) { this.ringFar.count = 0; this.ringFar.visible = false; this.ringFar.userData.ringCount = 0; }
-      this.ringFarSectors = 0;
-      this.ringInstances = 0;
-      return;
+    const dirty = this.ringFarDirty;
+    this.ringFarDirty = 0;
+    let total = 0;
+    for (let id = 0; id < RING_N * RING_SUB; id++) {
+      const k = (id / RING_SUB) | 0, n = this.ringReady[k] && this.ringMicro[id] ? this.ringMicroN[id] : 0;
+      total += n;
+      if (!(dirty & (1 << k))) continue;
+      let mesh = this.ringFar[id];
+      if (!n) {
+        if (mesh) { mesh.count = 0; mesh.visible = false; mesh.userData.ringCount = 0; }
+        continue;
+      }
+      mesh = this.ringFar[id] = this.meshFor(mesh, getMicroImpostorGeometries().top, this.materialRing, n, true, false);
+      mesh.name = 'trees-ring';
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      (mesh.instanceMatrix.array as Float32Array).set(this.ringMicro[id]!.subarray(0, n * 16));
+      (mesh.instanceColor!.array as Float32Array).set(this.ringMicroCol[id]!.subarray(0, n * 3));
+      const B = this.ringMicroBox, o = id * 6;
+      mesh.boundingBox!.min.set(B[o], B[o + 1], B[o + 2]);
+      mesh.boundingBox!.max.set(B[o + 3], B[o + 4], B[o + 5]);
+      mesh.boundingBox!.getBoundingSphere(mesh.boundingSphere!);
+      // (drawn as a prefix from the next view update on)
+      mesh.count = 0;
+      mesh.visible = false;
+      mesh.userData.ringCount = n;
+      mesh.instanceMatrix.clearUpdateRanges();
+      mesh.instanceMatrix.addUpdateRange(0, n * 16);
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.instanceColor!.clearUpdateRanges();
+      mesh.instanceColor!.addUpdateRange(0, n * 3);
+      mesh.instanceColor!.needsUpdate = true;
     }
-    const mesh = this.ringFar = this.meshFor(this.ringFar, getMicroImpostorGeometries().top, this.materialRing, n, true, false);
-    mesh.name = 'trees-ring';
-    mesh.castShadow = false;
-    mesh.receiveShadow = true;
-    mesh.ringBoxes = this.ringBox;
-    const ma = mesh.instanceMatrix.array as Float32Array, ca = mesh.instanceColor!.array as Float32Array;
-    const RB = this.ringBox, bb = mesh.boundingBox!;
-    bb.makeEmpty();
-    let o = 0;
-    for (let k = 0; k < RING_N; k++) {
-      if (!(mask & (1 << k))) continue;
-      const c = this.ringMicroN[k];
-      ma.set(this.ringMicro[k]!.subarray(0, c * 16), o * 16);
-      ca.set(this.ringMicroCol[k]!.subarray(0, c * 3), o * 3);
-      o += c;
-      const ro = k * 6;
-      _box.min.set(RB[ro], RB[ro + 1], RB[ro + 2]);
-      _box.max.set(RB[ro + 3], RB[ro + 4], RB[ro + 5]);
-      bb.union(_box);
-    }
-    bb.getBoundingSphere(mesh.boundingSphere!);
-    mesh.count = n;
-    mesh.userData.ringCount = n;
-    mesh.instanceMatrix.clearUpdateRanges();
-    mesh.instanceMatrix.addUpdateRange(0, n * 16);
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.instanceColor!.clearUpdateRanges();
-    mesh.instanceColor!.addUpdateRange(0, n * 3);
-    mesh.instanceColor!.needsUpdate = true;
-    this.ringFarSectors = mask;
-    this.ringInstances = n;
+    this.ringInstances = total;
   }
 
   private disposeChunk(c: TreeChunk) {
