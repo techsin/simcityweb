@@ -737,7 +737,8 @@ function blockMies(b: B, rng: RNG, tw = false) {
   const fin = K.metal(tw ? 0x2e3236 : 0x6b5238);
   for (let x = x0 + 1.5; x < x1; x += 3) b.paint(fin).quad2([x, base, z1], [x, base, z1 + 0.45], [x, top, z1 + 0.45], [x, top, z1]);
   for (let z = z0 + 1.5; z < z1; z += 3) b.paint(fin).quad2([x1, base, z], [x1 + 0.45, base, z], [x1 + 0.45, top, z], [x1, top, z]);
-  K.bandRect(b, x0, z0, x1, z1, top - 3.8, top + 0.3, K.metal(0x2e2a26), 0.02);
+  // crown band: patina bronze, mostly diffuse (a dark bare-metal band rendered as a pitch-black stripe even in sunlight)
+  K.bandRect(b, x0, z0, x1, z1, top - 3.8, top + 0.3, P(tw ? 0x5a5f66 : 0x6b5238, Surf.Metal, 3), 0.02);
   K.roofJunk(b, rng, x0 + 1.5, z0 + 1.5, x1 - 1.5, z1 - 1.5, top, 4, false);
   K.canopy(b, -4.5, 4.5, 1.5, 3.8, 4.2, 0.3, K.metal(0x6b5238), K.emis(0xffb060, 5));
   // plaza pools

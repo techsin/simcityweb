@@ -331,12 +331,14 @@ vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float lit
   float eP = winOn * winB * unitB * ceilG;
   float e = mix(mix(mix(mix(eA, eB, fB), eF, fF), eU, fU), eP, fP);
   // colour temperature per household (homes: mostly warm) / tenant (offices: 3 units per tenant, warm white to cool
-  // white; hotels warm) / shop (per building) / lit block; the floor and facade levels use the kind's MEAN colour
-  // (roomLight is not linear: the colour of the mean temperature is ~4-7% brighter than the units it stands for)
-  float hc = home > 0.5 ? fract(mix(hU, vSeed * 3.17, shop) * 5.37) : fract(hF + 0.618 * floor(uid / 3.0 + 1e-3));
+  // white; hotels warm) / shop bay (warm amber to warm white: a glass wall reads as one interior, no mismatched cells) /
+  // lit block; the floor and facade levels use the kind's MEAN colour (roomLight is not linear: the colour of the mean
+  // temperature is ~4-7% brighter than the units it stands for)
+  float hc = home > 0.5 ? fract(hU * 5.37) : fract(hF + 0.618 * floor(uid / 3.0 + 1e-3));
   hc = mix(fract(hB * 5.37 + 0.31), hc, fF);
-  float t = home > 0.5 ? hc * hc : hc * mix(1.0, 0.6, hotel);
-  vec3 cAvg = home > 0.5 ? vec3(0.967, 0.734, 0.533) : (hotel > 0.5 ? vec3(0.996, 0.746, 0.512) : vec3(0.94, 0.79, 0.653));
+  float t = home > 0.5 ? mix(hc * hc, 0.1 + 0.4 * hc, shop) : hc * mix(1.0, 0.6, hotel);
+  vec3 cAvg = home > 0.5 ? (shop > 0.5 ? vec3(1.0, 0.75, 0.512) : vec3(0.967, 0.734, 0.533)) :
+    (hotel > 0.5 ? vec3(0.996, 0.746, 0.512) : vec3(0.94, 0.79, 0.653));
   vec3 c = mix(cAvg, roomLight(t), fU + fB * (1.0 - fF));
   // a few lit living rooms show a flickering TV (triangle wave: no sin)
   float tv = step(0.95, fract(hP * 13.7)) * winOn * (home - shop) * fP;

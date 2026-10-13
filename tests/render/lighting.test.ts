@@ -166,12 +166,15 @@ describe('night window levels of detail', () => {
     return acc;
   };
 
-  it('uses the mean light colour of homes / offices / hotels for the coarse levels', () => {
+  it('uses the mean light colour of homes / shops / offices / hotels for the coarse levels', () => {
     expect(ramp).not.toBeNull();
-    const cAvg = /vec3 cAvg = home > 0\.5 \? vec3\(([^)]*)\) : \(hotel > 0\.5 \? vec3\(([^)]*)\) : vec3\(([^)]*)\)\);/.exec(nw);
+    const cAvg = /vec3 cAvg = home > 0\.5 \? \(shop > 0\.5 \? vec3\(([^)]*)\) : vec3\(([^)]*)\)\) :\s*\(hotel > 0\.5 \? vec3\(([^)]*)\) : vec3\(([^)]*)\)\);/.exec(nw);
     expect(cAvg).not.toBeNull();
-    const [homes, hotels, offices] = [v3(cAvg![1]), v3(cAvg![2]), v3(cAvg![3])];
-    const want: [number[], (h: number) => number][] = [[homes, (h) => h * h], [offices, (h) => h], [hotels, (h) => h * 0.6]];
+    const [shops, homes, hotels, offices] = [v3(cAvg![1]), v3(cAvg![2]), v3(cAvg![3]), v3(cAvg![4])];
+    const want: [number[], (h: number) => number][] = [
+      [homes, (h) => h * h], [shops, (h) => 0.1 + 0.4 * h], [offices, (h) => h], [hotels, (h) => h * 0.6],
+    ];
+    expect(nw).toContain('mix(hc * hc, 0.1 + 0.4 * hc, shop) : hc * mix(1.0, 0.6, hotel)');
     for (const [got, tOf] of want) meanColour(tOf).forEach((x, k) => expect(got[k]).toBeCloseTo(x, 2));
   });
 
