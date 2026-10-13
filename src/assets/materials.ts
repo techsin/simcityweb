@@ -60,11 +60,17 @@
  *       turn leaf green (~0.36x the blossom brightness), leaf-painted faces keep their paint; plus the pattern-1
  *       autumn / winter behaviour.
  *   For patterns 1-2 paint `floor` = a per-tree random in [0, 1) (all lobes of one crown share it) so each tree
- *   changes as a whole; the instance seed is mixed in.
+ *   changes as a whole; the instance seed is mixed in. floor = 1 + that random marks a crown with a bare winter twig
+ *   crown (pattern 5, same floor): while the tree is bare its leaf lobes collapse (vertex shader: zero-area, no
+ *   fragments) and the twig sprays appear - a see-through branch tangle (park kit trees, park_lib.ts).
  *   Pattern 3 = nature-model deciduous foliage (forest / street trees: the renderers swap seasonal model VARIANTS, see
  *       nat_season.ts): never recoloured by the season; low parts go dormant like pattern 0.
  *   Pattern 4 = evergreen (conifers, palms, evergreen shrubs): no seasonal recolour or winter dormancy (climate dryness
  *       only), a darker / cooler green in winter.
+ *   Pattern 5 = winter twig spray of a kit tree (see floor >= 1 above): drawn only while its tree is bare, shaded as
+ *       painted (twig colour).
+ *   Bare pattern-0 crowns (lot blobs: not flat / box faces, not dark evergreens) also thin out in the vertex shader to
+ *   ~45% of their faces (a per-face random of the flat face normal), so a bare lot tree is see-through, not a lump.
  *   All foliage follows the climate / season uniforms uFoliageDry / uFoliageSeason / uFoliageTint (setFoliageSeason):
  *   low foliage turns straw-dry in deserts / dormant in winter, crowns get a quarter of it; in winter evergreen crowns
  *   darken and deciduous leaves still on a tree (patterns 0-3, the non-bare remainder) turn dead brown.
@@ -152,6 +158,7 @@ flat varying vec2 vInstXZ;
 flat varying float vWorldNX;
 uniform float uTime;
 uniform float uWind;
+uniform vec4 uSeason;
 `;
 
 const VERT_MAIN = /* glsl */ `
@@ -183,9 +190,25 @@ if (abs(surf.x - 6.0) < 0.5 && abs(surf.y - 13.0) < 0.5) {
 if (abs(surf.x - 8.0) < 0.5) {
   float hgt = max(position.y - 1.5, 0.0);
   float ph = uTime * 1.3 + instPos.x * 0.031 + instPos.z * 0.047;
-  float sway = (sin(ph) * 0.6 + sin(ph * 2.3 + 1.7) * 0.25) * 0.012 * hgt * uWind;
+  // the two sway harmonics as parabolic waves 4y(1 - |y|) (C1, within ~6% of a sine; no sin per vertex)
+  float sy1 = fract(ph * 0.1592 + 0.5) * 2.0 - 1.0, sy2 = fract(ph * 0.366 + 0.77) * 2.0 - 1.0;
+  float sway = (sy1 * (1.0 - abs(sy1)) * 2.4 + sy2 * (1.0 - abs(sy2))) * 0.012 * hgt * uWind;
   transformed.x += sway;
   transformed.z += sway * 0.7;
+  // bare winter crowns (header, Foliage): while this tree is bare (the fragment shader's per-tree random), kit trees
+  // swap their leaf lobes (patterns 1-2, floor >= 1) for their twig sprays (pattern 5), and other lot crowns (pattern 0:
+  // not flat, box-side or vertical faces, not dark-painted evergreens: linear green < 0.125) thin out to ~45% of their
+  // faces (a per-face random of the flat face normal - all three corners agree). Dropped faces collapse to the model
+  // origin (zero area: no fragments)
+  float gW = 0.2;
+  #if defined(USE_COLOR) || defined(USE_COLOR_ALPHA)
+    gW = color.g;
+  #endif
+  float nyW = abs(normal.y);
+  bool bareW = fract(surf.z * 7.13 + vSeed * 3.71) < uSeason.y;
+  bool thinW = surf.y < 0.5 && nyW > 0.1 && nyW < 0.985 && max(abs(normal.x), abs(normal.z)) < 0.994 && gW >= 0.125 &&
+    fract(dot(normal, vec3(41.3, 29.7, 37.1)) + vSeed * 7.13) >= 0.45;
+  if (surf.y > 4.5 ? !bareW : bareW && (thinW || (surf.y > 0.5 && surf.y < 2.5 && surf.z >= 1.0))) transformed = vec3(0.0);
 }
 `;
 
@@ -630,97 +653,70 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     }
   } else if (type < 8.5) {
     // foliage
-    // (patterns 0-4 and the LOW / CROWN classes: see the header)
+    // (patterns 0-5 and the LOW / CROWN classes: see the header). Software renderers run this block for every fragment
+    // of the uber shader, whatever its surface: linear ramps, one recolour per season state (selects, no branches), and
+    // the season logic reuses the leaf-clump noise and its one derivative
     float lum0 = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
     // LOW foliage: flat up-facing faces (lawns, roof gardens, hedge / planter tops) or axis-aligned box sides (hedges,
     // planters, green walls) at any height, or anything within ~2.5 m of the model base (shrubs, beds)
-    float flatK = max(smoothstep(0.985, 0.998, nObj.y), smoothstep(0.994, 0.999, max(abs(nObj.x), abs(nObj.z))));
-    float lowF = max(1.0 - smoothstep(0.4, 2.6, P.y), flatK);
+    float lowF = clamp(max(max((nObj.y - 0.985) * 77.0, (max(abs(nObj.x), abs(nObj.z)) - 0.994) * 200.0), (2.6 - P.y) * 0.4545), 0.0, 1.0);
     bool autoP = pattern < 0.5;
-    // evergreen: pattern 4, or a dark-painted lot crown (conifers / cypresses ~0.06-0.09 linear luminance, broadleaf
-    // crowns >= ~0.115)
-    float everK = pattern > 3.5 ? 1.0 : (autoP ? (1.0 - smoothstep(0.097, 0.108, lum0)) * (1.0 - lowF) : 0.0);
+    // evergreen: pattern 4 (and 5, the kit trees' twig sprays: no season recolour), or a dark-painted lot crown
+    // (conifers / cypresses ~0.06-0.09 linear luminance, broadleaf crowns >= ~0.115)
+    float everK = pattern > 3.5 ? 1.0 : (autoP ? clamp((0.108 - lum0) * 91.0, 0.0, 1.0) * (1.0 - lowF) : 0.0);
     // crowns recoloured by the season: patterns 1-2, and lot crowns (pattern 0) that are neither low nor evergreen
     // (nature trees, pattern 3, swap seasonal model variants instead)
-    float seasK = pattern > 0.5 && pattern < 2.5 ? 1.0 : (autoP ? (1.0 - lowF) * (1.0 - everK) : 0.0);
-    // 1 = the leaves are still green (not recoloured to bare twigs / autumn colours)
-    float greenK = 1.0;
-    // fine twig texture coordinate for bare crowns + its distance fade (derivatives outside the branches below)
-    vec2 tq = P.xz * 2.7 + P.y * 1.9;
-    float twF = clamp(1.0 - length(fwidth(tq)) * 0.7, 0.0, 1.0);
-    if (seasK > 0.001) {
-      // per-tree random from the paint's floor channel + instance seed (lot crowns, floor 3.3: per lot instance); a
-      // little spatial noise lets crowns near the month's autumn threshold turn patchily; recolour at the painted
-      // brightness so the baked crown shading survives
-      vec2 wq = vInstXZ + P.xz;
-      float pr = fract(vSurf.z * 7.13 + vSeed * 3.71);
-      float prN = pr + (bnoise(wq * 0.21) - 0.5) * 0.12;
-      vec3 c = albedo;
-      float lum = lum0;
-      if (pattern > 1.5 && pattern < 2.5 && uSeason.z < 0.5 && uFoliageSeason.w < 0.5) {
-        // blossom outside Apr-May (the tropics flower all year): the blossom-coloured faces (red >= green) become
-        // ordinary leaf green
-        c = mix(c, lum * vec3(0.21, 0.434, 0.077), smoothstep(-0.03, 0.02, albedo.r - albedo.g));
-        lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
-      }
-      if (pr < uSeason.y) {
-        // bare twigs: a dark grey-brown interior crossed by lighter twig strands (a fine texture that fades to its
-        // average with distance), darker undersides, so a solid lot crown reads as a see-through branch tangle rather
-        // than a grey-brown puffball (about the far-impostor brightness of the bare nature trees)
-        float strand = mix(0.42, smoothstep(0.4, 0.75, bnoise(tq + 11.3)), twF);
-        c = lum * vec3(1.1, 0.93, 0.84) * (0.3 + 0.75 * strand) * (0.72 + 0.28 * smoothstep(-0.5, 0.6, nObj.y));
-        greenK = 0.0;
-      } else if (prN < uSeason.y + uSeason.x) {
-        // autumn: orange -> red -> yellow per tree, blended with a little noise (no hard seam across a crown)
-        float h = fract(pr * 13.7) + (bnoise(wq * 0.35 + 7.1) - 0.5) * 0.3;
-        vec3 ac = mix(vec3(2.55, 0.62, 0.08), vec3(3.3, 0.34, 0.12), smoothstep(0.38, 0.52, h));
-        c = lum * mix(ac, vec3(2.5, 1.7, 0.1), smoothstep(0.7, 0.82, h));
-        greenK = 0.0;
-      }
-      albedo = mix(albedo, c, seasK);
-      greenK = mix(1.0, greenK, seasK);
-    }
-    // green crown leaves: fresh yellow-green in spring (deciduous); in winter evergreens turn a darker, cooler green and
-    // the deciduous leaves still on a tree (the non-bare remainder) are dead brown (marcescent oaks / beeches), so a
-    // winter wood reads grey-brown + dark evergreens, not speckled with summer green; blossom / autumn / twig colours
-    // (red >= green) are left alone
-    {
-      float leafK = greenK * smoothstep(-0.01, 0.03, albedo.g - albedo.r);
-      float decidK = leafK * (1.0 - lowF) * (1.0 - everK);
-      albedo *= mix(vec3(1.0), vec3(1.07, 1.1, 0.78), uFoliageSeason.z * decidK);
-      float lumL = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-      // (evergreen hedges / shrubs darken too)
-      albedo = mix(albedo, albedo * vec3(0.8, 0.86, 0.9), uFoliageSeason.y * leafK * everK);
-      // dead leaves: russet, broken up by the twig texture so the crown reads thin, not as a solid brown ball
-      float twM = mix(0.5, bnoise(tq + 11.3), twF);
-      albedo = mix(albedo, lumL * vec3(1.15, 0.81, 0.58) * (0.55 + 0.75 * twM), uFoliageSeason.y * decidK);
-    }
+    float seasK = pattern < 2.5 ? (autoP ? (1.0 - lowF) * (1.0 - everK) : 1.0) : 0.0;
+    // leaf clumps (~1 m) and fine strands (~0.25 m: leaves, bare twigs) in object space, faded with their screen
+    // footprint so distant canopies don't shimmer (the strands ~2.6x earlier)
+    vec2 fq = P.xz * 0.9 + P.y * 0.7;
+    float fwq = length(fwidth(fq));
+    float fw1 = clamp(1.0 - fwq * 0.8, 0.0, 1.0);
+    float twF = clamp(1.0 - fwq * 2.1, 0.0, 1.0);
+    float n = mix(0.5, bnoise(fq), fw1);
+    float nS = bnoise(P.xz * 4.0 + P.y * 3.0);
+    float tw = mix(0.5, nS, twF);
+    // the crown's season state: a per-tree random from the paint's floor channel + instance seed (lot crowns: per lot
+    // instance); the clump noise lets crowns near the month's autumn threshold turn patchily. Blossom outside Apr-May
+    // (the tropics flower all year): the blossom-coloured faces (red >= green) become leaf green. Recoloured at the
+    // painted brightness so the baked crown shading survives
+    float pr = fract(vSurf.z * 7.13 + vSeed * 3.71);
+    float blK = pattern > 1.5 && pattern < 2.5 && uSeason.z < 0.5 && uFoliageSeason.w < 0.5 ? clamp((albedo.r - albedo.g) * 20.0 + 0.6, 0.0, 1.0) : 0.0;
+    albedo = mix(albedo, lum0 * vec3(0.21, 0.434, 0.077), blK);
+    float lum = lum0 - lum0 * 0.6394 * blK;
+    bool bare = pr < uSeason.y;
+    float h = fract(pr * 13.7) + (n - 0.5) * 0.3;
+    // bare: a grey-brown tangle of lighter twig strands (a fine texture that fades to its average with distance), a
+    // little darker than the kit trees' twig sprays (not a charcoal lump); autumn: orange -> red -> yellow per tree
+    vec3 sc = bare ? vec3(1.15, 0.93, 0.78) * (0.62 + 0.9 * mix(0.42, clamp(nS * 2.86 - 1.14, 0.0, 1.0), twF))
+      : mix(mix(vec3(2.55, 0.62, 0.08), vec3(3.3, 0.34, 0.12), clamp(h * 7.14 - 2.71, 0.0, 1.0)), vec3(2.5, 1.7, 0.1), clamp(h * 8.33 - 5.83, 0.0, 1.0));
+    float sK = bare || pr + (n - 0.5) * 0.12 < uSeason.y + uSeason.x ? seasK : 0.0;
+    albedo = mix(albedo, lum * sc, sK);
+    // green crown leaves (not recoloured above; blossom / autumn / twig colours, red >= green, are left alone): fresh
+    // yellow-green in spring (deciduous); in winter evergreens turn a darker, cooler green and the deciduous leaves still
+    // on a tree (the non-bare remainder) are dead brown (marcescent oaks / beeches), broken up by the strand texture so
+    // the crown reads thin - a winter wood reads grey-brown + dark evergreens, not speckled with summer green
+    float leafK = (1.0 - sK) * clamp((albedo.g - albedo.r) * 25.0 + 0.25, 0.0, 1.0);
+    float decidK = leafK * (1.0 - lowF) * (1.0 - everK);
+    albedo *= 1.0 + vec3(0.07, 0.1, -0.22) * (uFoliageSeason.z * decidK) - vec3(0.2, 0.14, 0.1) * (uFoliageSeason.y * leafK * everK);
+    albedo = mix(albedo, lum * vec3(1.15, 0.81, 0.58) * (0.55 + 0.75 * tw), uFoliageSeason.y * decidK);
     // climate / season (uFoliageDry, uFoliageTint): low foliage turns straw-dry in deserts and dormant in winter so
     // lots match the terrain; crowns get a quarter of it; evergreens only the climate part (no winter dormancy)
-    {
-      float dryK = mix(uFoliageDry, uFoliageSeason.x, everK) * mix(0.25, 1.0, lowF);
-      float fl = dot(albedo, vec3(0.3, 0.59, 0.11));
-      albedo = mix(albedo, vec3(fl) * vec3(1.18, 1.02, 0.68), dryK) * uFoliageTint;
-    }
-    // leaf clumps (fade the noise with its screen footprint so distant canopies don't shimmer)
-    vec2 fq = P.xz * 0.9 + P.y * 0.7;
-    float fw1 = clamp(1.0 - length(fwidth(fq)) * 0.8, 0.0, 1.0);
-    float n = mix(0.5, bnoise(fq), fw1);
-    float n2 = mix(0.5, bnoise(P.xz * 4.0 + P.y * 3.0), fw1 * fw1);
-    albedo *= 0.78 + 0.35 * n + 0.1 * n2;
-    // per-plant hue + value variation, plus stand-scale patches (neighbouring trees share a tint) so forests
-    // don't read as a uniform carpet. Depends only on the instance position -> identical for the far impostors.
-    albedo *= mix(vec3(0.9, 0.98, 1.05), vec3(1.07, 1.02, 0.84), vSeed) * (0.78 + 0.3 * fract(vSeed * 7.31));
-    float stand = bnoise(vInstXZ * 0.006) * 0.7 + bnoise(vInstXZ * 0.021 + 3.1) * 0.3;
-    albedo *= (0.9 + 0.2 * stand) * mix(vec3(1.03, 1.0, 0.94), vec3(0.96, 1.0, 1.04), stand);
-    // canopy self-occlusion: undersides / lower leaves darker (up-facing lawns & hedge tops unaffected)
-    albedo *= 0.6 + 0.4 * smoothstep(-0.7, 0.75, nObj.y);
+    float dryK = mix(uFoliageDry, uFoliageSeason.x, everK) * (0.25 + 0.75 * lowF);
+    albedo = mix(albedo, dot(albedo, vec3(0.3, 0.59, 0.11)) * vec3(1.18, 1.02, 0.68), dryK) * uFoliageTint;
+    // leaf clumps; per-plant hue + value variation, plus stand-scale patches (neighbouring trees share a tint) so
+    // forests don't read as a uniform carpet (depends only on the instance position -> identical for the far
+    // impostors); canopy self-occlusion: undersides / lower leaves darker (up-facing lawns & hedge tops unaffected)
+    float stand = bnoise(vInstXZ * 0.006);
+    albedo *= mix(vec3(0.9, 0.98, 1.05), vec3(1.07, 1.02, 0.84), vSeed) * mix(vec3(1.03, 1.0, 0.94), vec3(0.96, 1.0, 1.04), stand)
+      * ((0.78 + 0.35 * n + 0.1 * mix(0.5, nS, fw1 * fw1)) * (0.78 + 0.3 * fract(vSeed * 7.31)) * (0.9 + 0.2 * stand)
+      * (0.6 + 0.4 * clamp(nObj.y * 0.69 + 0.483, 0.0, 1.0)));
     rough = 0.9;
-    // leaf translucency when looking toward the light through the canopy
-    vec3 Lv = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
-    vec3 Vv = normalize(vViewPosition);
-    float back = pow(max(dot(-Vv, Lv), 0.0), 4.0);
-    emis += albedo * uSunColor * back * 0.14;
+    // leaf translucency when looking toward the light through the canopy (^4 as two squares: no pow; uSunDir is a unit
+    // vector)
+    float back = max(-dot(normalize(vViewPosition), (viewMatrix * vec4(uSunDir, 0.0)).xyz), 0.0);
+    back *= back;
+    emis += albedo * uSunColor * (back * back * 0.14);
   } else if (type < 9.5) {
     // water (pools, fountains, reflecting pools, ponds): a dielectric (no metallic env mirror -> no flat opaque cyan),
     // pale lit floor seen from above and deeper colour toward grazing angles, drifting caustics by day, sun glints from
