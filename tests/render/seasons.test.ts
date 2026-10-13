@@ -2,11 +2,14 @@
  * Seasons (pure JS, no WebGL context):
  *  - nature models carry their Foliage patterns (3 variant-seasonal deciduous, 4 evergreen, 1 / 2 shader-seasonal
  *    shrubs), never the automatic pattern 0; see-through bare crowns report an open fraction (darker, thinner impostors)
- *  - park trees: cherries blossom (2), broadleaves seasonal (1), conifers / palms evergreen (4), layouts unchanged
+ *  - park trees: cherries blossom (2), broadleaves seasonal (1), conifers / palms evergreen (4), layouts unchanged; the
+ *    deciduous kit trees mark their leaf lobes (floor >= 1) and carry a winter twig crown (pattern 5, same floor)
  *  - setFoliageSeason: winter / spring strengths only in seasonal climates, tropics flower all year
- *  - TreeRenderer: the map's edge forests continue past the edge (edge band) and the outer ring gets impostors,
- *    deterministically; a season / density / map-cell change refills the ring without regenerating it (only a terrain
- *    edit on the map border regenerates that side), and the generation runs in small slices
+ *  - TreeRenderer: winter flags the bare broadleaf impostors see-through (negative instance red) and stretches the
+ *    conifer impostors; the map's edge forests continue past the edge (edge band) and the outer ring gets impostors,
+ *    deterministically, its far sectors in ONE merged mesh; a season / density / map-cell change refills the ring without
+ *    regenerating it (only a terrain edit on the map border regenerates that side); the ring waits for the first frames
+ *    after a load, generates in small slices and fades in; low quality (short tree LOD distance) has no ring / band
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
@@ -25,6 +28,7 @@ import { ModelBuilder } from '../../src/assets/ModelBuilder';
 import { RNG } from '../../src/core/rng';
 import { palm as comPalm } from '../../src/assets/builders/com_kit';
 import { palm as civPalm } from '../../src/assets/builders/civ_kit';
+import { tree as parkTree, type TreeKind } from '../../src/assets/builders/park_lib';
 
 registerAllModels();
 
@@ -82,6 +86,33 @@ describe('seasonal foliage patterns', () => {
     for (const p of [1, 2, 4]) expect(tot.get(p) ?? 0, `pattern ${p}`).toBeGreaterThan(10);
   }, 120_000);
 
+  it('deciduous kit trees: lobes marked floor >= 1 + a winter twig crown (pattern 5, same floor); evergreens: neither', () => {
+    /** distinct floor values of the faces painted Foliage pattern `pat` */
+    const floors = (g: THREE.BufferGeometry, pat: number) => {
+      const srf = g.getAttribute('surf') as THREE.BufferAttribute;
+      const out = new Set<string>();
+      for (let i = 0; i < srf.count; i += 3) if (Math.round(srf.getX(i)) === Surf.Foliage && Math.round(srf.getY(i)) === pat) out.add(srf.getZ(i).toFixed(4));
+      return [...out].map(Number);
+    };
+    for (const kind of ['oak', 'round', 'maple', 'birch', 'poplar', 'willow', 'cherry'] as TreeKind[]) {
+      const b = new ModelBuilder();
+      parkTree(b, new RNG(3), 0, 0, 1, kind);
+      const g = b.build();
+      // a few square metres of twig sprays (thin spikes), one per-tree floor shared by the lobes and the twigs
+      expect(foliagePatterns(g).get(5) ?? 0, kind).toBeGreaterThan(0.3);
+      const lobes = floors(g, kind === 'cherry' ? 2 : 1), twigs = floors(g, 5);
+      expect(lobes.length, kind).toBe(1);
+      expect(lobes[0], kind).toBeGreaterThanOrEqual(1);
+      expect(twigs, kind).toEqual(lobes);
+    }
+    for (const kind of ['cone', 'acacia', 'palm'] as TreeKind[]) {
+      const b = new ModelBuilder();
+      parkTree(b, new RNG(3), 0, 0, 1, kind);
+      // (evergreen lobes: pattern 4, never swapped whatever their floor)
+      expect([...foliagePatterns(b.build()).keys()], kind).toEqual([4]);
+    }
+  });
+
   it('lot palms (commercial / civic kits) are evergreen: their fronds never turn autumn-coloured or bare', () => {
     for (const palm of [comPalm, civPalm]) {
       const b = new ModelBuilder();
@@ -106,6 +137,42 @@ describe('seasonal foliage patterns', () => {
     expect(fs.y + fs.z).toBe(0);
     setFoliageSeason(5, 'temperate');
   });
+});
+
+describe('tree impostors in winter', () => {
+  it('bare broadleaf impostors are flagged see-through (negative instance red); conifer impostors stretch 10%', () => {
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
+    const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
+    const chunks = (tr as unknown as { chunks: { far: (THREE.InstancedMesh | null)[]; farTotal: number[] }[] }).chunks;
+    const scan = () => {
+      let bare = 0, broad = 0, conH = 0, con = 0;
+      for (const c of chunks) {
+        const [b, k] = c.far;
+        if (b) {
+          const col = b.instanceColor!.array as Float32Array;
+          for (let i = 0; i < c.farTotal[0]; i++) { broad++; bare += col[i * 3] < 0 ? 1 : 0; }
+        }
+        if (k) {
+          const e = k.instanceMatrix.array as Float32Array;
+          for (let i = 0; i < c.farTotal[1]; i++) { conH += e[i * 16 + 5]; con++; }
+        }
+      }
+      return { bare, broad, conH, con };
+    };
+    tr.setMonth(6);
+    tr.flush(false);
+    const jul = scan();
+    tr.setMonth(0);
+    tr.flush(false);
+    const jan = scan();
+    expect(jul.broad).toBeGreaterThan(100);
+    expect(jul.bare).toBe(0);
+    expect(jan.bare).toBeGreaterThan(jan.broad * 0.3);
+    expect(jan.con).toBe(jul.con);
+    expect(jan.con).toBeGreaterThan(20);
+    expect(jan.conH / jul.conH).toBeCloseTo(1.1, 2);
+    tr.dispose();
+  }, 120_000);
 });
 
 describe('outer ring trees', () => {
@@ -158,6 +225,8 @@ describe('outer ring trees', () => {
     // each sector draws its trees in one micro mesh (broadleaves + conifers) beyond lodDistance; its conifers carry the
     // evergreen flag (negative instance blue), the near pair keeps the two impostor shapes apart; no ring shadows
     const micro = ring.filter((m) => (m.geometry.name ?? '').startsWith('impostor-micro'));
+    // (all sectors' micro impostors in ONE merged mesh / draw call)
+    expect(micro.length).toBe(1);
     expect(micro.reduce((a, m) => a + ((m.userData.ringCount as number) ?? 0), 0)).toBe(tr.ringInstances);
     let flagged = 0, conifers = 0;
     for (const m of ring) {
@@ -259,27 +328,84 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
-  it('the ring is ready with the load; later regenerations / refills run in small slices (zero budget)', () => {
-    const { tr } = make(128);
-    const n0 = tr.ringInstances;
-    // generated and filled by the constructor (behind the loading screen): nothing left for the frames
-    const ring = tr as unknown as { ringStale: number; ringRefill: number };
-    expect(ring.ringStale | ring.ringRefill).toBe(0);
-    expect(tr.ringGenerations).toBe(8);
-    // a regeneration of every sector (as after border terrain edits) is time-sliced: one block / batch per zero-budget step
-    ring.ringStale = 0xff;
-    let steps = 0;
-    while (steps < 100000) {
+  it('the ring waits for the first frames after a load, then generates in small slices and fades in', () => {
+    const st = createCityState(defaultCityConfig({ size: 128, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
+    const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
+    const ring = tr as unknown as { ringStale: number; ringRefill: number; ringGen: unknown; ringFillState: unknown; ringAppear: number; dirty: Set<number> };
+    const busy = () => !!(ring.ringStale || ring.ringRefill || ring.ringGen || ring.ringFillState);
+    const W = st.size * CELL_SIZE;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    cam.position.set(W / 2, 900, W / 2 + 700);
+    cam.lookAt(W / 2, 0, W / 2);
+    cam.updateMatrixWorld();
+    // the constructor (load) neither builds chunks nor generates the ring
+    expect(ring.dirty.size).toBe(16);
+    expect(ring.ringStale).toBe(0xff);
+    expect(tr.ringGenerations).toBe(0);
+    // the first frames build the map's chunks (nearest first); the ring waits RING_DELAY_FRAMES
+    tr.ringBudgetMs = 0;
+    for (let f = 0; f < 12; f++) tr.update(cam);
+    expect(tr.ringGenerations).toBe(0);
+    // then one zero-budget slice per frame (a block of candidate rows / a refill batch)
+    let frames = 0;
+    while (busy() && frames < 100000) {
       const before = tr.ringGenerations;
-      tr.ringStep(0);
-      steps++;
+      tr.update(cam);
+      frames++;
       expect(tr.ringGenerations - before).toBeLessThanOrEqual(1);
-      if (tr.ringGenerations >= 16) break;
     }
+    expect(tr.ringGenerations).toBe(8);
     // 128-cell map: a sector spans 52-66 block rows
-    expect(steps).toBeGreaterThan(8 * 40);
+    expect(frames).toBeGreaterThan(8 * 40);
+    // the far sectors' merged mesh, faded in over the next frames
+    const merged = () => tr.group.children.find((o) => o.name === 'trees-ring' && ((o as THREE.Mesh).geometry.name ?? '').startsWith('impostor-micro')) as THREE.InstancedMesh | undefined;
+    for (let f = 0; f < 3 && !merged(); f++) tr.update(cam);
+    expect(merged()).toBeTruthy();
+    expect(ring.ringAppear).toBeLessThan(1);
+    for (let f = 0; f < 60; f++) tr.update(cam);
+    expect(ring.ringAppear).toBe(1);
+    expect(merged()!.userData.ringCount).toBe(tr.ringInstances);
+    // a regeneration of every sector (as after border terrain edits) is time-sliced the same way; flush() completes it
+    const n0 = tr.ringInstances;
+    ring.ringStale = 0xff;
+    tr.ringStep(0);
+    expect(ring.ringStale).not.toBe(0);
     tr.flush();
+    expect(tr.ringGenerations).toBe(16);
     expect(tr.ringInstances).toBe(n0);
+    tr.dispose();
+  }, 120_000);
+
+  it('low quality (tree LOD distance < 560 m): no outer ring and no edge band; a higher quality brings both back', () => {
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
+    const q = (lodDistance: number) => ({ lodDistance, density: 1, castShadows: false, maxVariants: 3 });
+    const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), q(460));
+    tr.flush();
+    const W = st.size * CELL_SIZE;
+    /** trees placed beyond the map edge (edge band: full models) */
+    const beyond = () => {
+      let n = 0;
+      for (const m of tr.group.children as THREE.InstancedMesh[]) {
+        if (!m.isInstancedMesh || !m.name.startsWith('trees-') || m.name === 'trees-far' || m.name === 'trees-ring' || m.name === 'trees-warmup') continue;
+        const e = m.instanceMatrix.array as Float32Array;
+        for (let i = 0; i < m.count; i++) if (Math.max(-e[i * 16 + 12], e[i * 16 + 12] - W, -e[i * 16 + 14], e[i * 16 + 14] - W) > 0) n++;
+      }
+      return n;
+    };
+    const ringMeshes = () => tr.group.children.filter((o) => o.name === 'trees-ring').length;
+    expect(ringMeshes()).toBe(0);
+    expect(tr.ringInstances).toBe(0);
+    expect(beyond()).toBe(0);
+    tr.setQuality(q(850));
+    tr.flush();
+    expect(tr.ringInstances).toBeGreaterThan(500);
+    expect(ringMeshes()).toBeGreaterThan(0);
+    expect(beyond()).toBeGreaterThan(0);
+    tr.setQuality(q(460));
+    tr.flush();
+    expect(ringMeshes()).toBe(0);
+    expect(tr.ringInstances).toBe(0);
+    expect(beyond()).toBe(0);
     tr.dispose();
   }, 120_000);
 });

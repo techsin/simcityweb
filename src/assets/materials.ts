@@ -35,7 +35,7 @@
  *   (churches, keeps, clock towers).
  * Floodlit masonry: Surf.Plain and Surf.Stone pattern 1 (warm) / 2 (cool white) glow from the base up at night;
  *   the paint's `floor` value is the reach height H in meters (light fades 70% by H). Pattern 0 = unlit.
- * Plain glass (Surf.GlassPlain, surf.y): 0 storefront / lobby / house windows (~2.5 x 2.8 m cells in 5 m bays lit
+ * Plain glass (Surf.GlassPlain, surf.y): 0 storefront / lobby / house windows (~2.5 x 2.8 m cells in 10 m bays lit
  *   evenly in one light colour per building, the lit share following the time of day); 1 vehicle glass (dark,
  *   reflective, never glows);
  *   2 pavilion glass (reflective by day, uniform warm glow ~0.6 at night: lobbies, foyers, pyramids, concourses);
@@ -281,25 +281,29 @@ vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float lit
   float occ = mix(hF < mix(0.3, 0.12, hotel) ? 0.1 : (hF < 0.72 ? 0.75 : mix(1.15, 1.4, hotel)), 0.8 + 0.4 * hF, home);
   float occM = mix(mix(0.667, 0.854, hotel), 1.0, home);
   float secP = clamp(litP * occ, 0.0, 0.97);
-  // a lit unit (household at home / office section in use / open shop) has ~70% of its windows lit (shops 92%), a dark
-  // one a stray lamp in ~8%
-  float pOn = mix(0.7, 0.92, shop), pOff = mix(mix(0.08, 0.09, home), 0.12, shop);
+  // a lit unit (household at home / office section in use) has ~70% of its windows lit, a dark one a stray lamp in ~8%;
+  // a lit shop / lobby bay is lit throughout (no dark cells in a glass wall)
+  float pOn = mix(0.7, 0.97, shop), pOff = mix(mix(0.08, 0.09, home), 0.1, shop);
   float pWin = mix(pOff, pOn, step(hU, secP));
   float winOn = step(hP, pWin);
   // per window lamp / curtain brightness (0.3 - 1.35, mean 0.825) and per unit brightness (0.5 - 1.5, mean 1): a wide
   // spread of bright and dim windows reads as sparkle, a narrow one as a cream checkerboard; shops evenly lit
-  float winB = 0.825 + mix(1.05, 0.25, shop) * (fract(hP * 7.31 + 0.17) - 0.5);
-  float unitB = 1.0 + mix(1.0, 0.3, shop) * (fract(hU * 31.7 + 0.13) - 0.5);
+  float winB = 0.825 + mix(1.05, 0.16, shop) * (fract(hP * 7.31 + 0.17) - 0.5);
+  float unitB = 1.0 + mix(1.0, 0.24, shop) * (fract(hU * 31.7 + 0.13) - 0.5);
   // ceiling lights: brighter toward the top of the floor (mean 0.852), kept while the floors are resolved (the unit and
   // floor levels keep that vertical contrast), their mean further away
   float ceilG = 0.55 + 0.6 * clamp(fy * 1.43 - 0.21, 0.0, 1.0);
-  float gF = mix(0.852, ceilG, fF) * 0.825;
-  // expected brightness of the coarser levels (x 0.825 mean window brightness x the ceiling gradient / its mean)
+  // expected brightness of the coarser levels (x 0.825 mean window brightness x the ceiling gradient / its mean). The
+  // smooth unit / floor / facade levels are drawn at 0.85 of it: a flat patch reads ~15% brighter (sRGB) than the lit /
+  // dark windows of the same mean it replaces (sub-pixel window contrast is lost), which made zooming out brighten the
+  // city into a milky haze; the high-contrast block level keeps the full mean
+  float gF = mix(0.852, ceilG, fF) * 0.825 * 0.85;
   float eF = (pOff + (pOn - pOff) * secP) * gF;
-  float eA = (pOff + (pOn - pOff) * min(litP * occM, 0.97)) * 0.703;
-  // block level: a share qB of the blocks lit at ~0.6 (a lit cluster of rooms), the rest dark; same mean as the facade
-  float qB = clamp(eA * 1.65, 0.05, 1.0);
-  float eB = step(hB, qB) * (eA / qB) * (0.6 + 0.8 * fract(hB * 17.3));
+  float eAt = (pOff + (pOn - pOff) * min(litP * occM, 0.97)) * 0.703;
+  float eA = eAt * 0.85;
+  // block level: a share qB of the blocks lit at ~0.6 (a lit cluster of rooms), the rest dark; the facade's mean
+  float qB = clamp(eAt * 1.65, 0.05, 1.0);
+  float eB = step(hB, qB) * (eAt / qB) * (0.6 + 0.8 * fract(hB * 17.3));
   float eU = pWin * gF * unitB;
   float eP = winOn * winB * unitB * ceilG;
   float e = mix(mix(mix(mix(eA, eB, fB), eF, fF), eU, fU), eP, fP);
@@ -506,19 +510,19 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     // floors, tenants), the rest homes (apartments of ~8 m: 2-4 windows), pattern 8 (churches) all lit warm amber.
     // Curtain glass: residential glass (6) = homes in apartments of 3 panels, offices in 3 m sections of 2 panels
     // (tenant colour per 9 m), warm bronze / gold tint (2) = hotels. Plain glass: shops / lobbies / house windows in
-    // 5 m bays, one light colour per building, lit a bit more than apartment towers (~55-75% in the evening, dipping
-    // late at night)
+    // evenly lit 10 m bays, one light colour per building, lit a bit more than apartment towers (~55-75% in the evening,
+    // dipping late at night)
     bool resG = pattern > 5.5 && pattern < 6.5;
     bool officeW = (pattern > 1.5 && pattern < 2.5) || (pattern > 3.5 && pattern < 5.5) ||
       (pattern > 6.5 && pattern < 7.5);
     float officeK = wallT ? (officeW ? 1.0 : 0.0) : (plainT || resG ? 0.0 : 1.0);
     float kind = wallT ? (pattern > 7.5 && pattern < 8.5 ? 3.0 : officeK) :
       (plainT ? 4.0 : (pattern > 1.5 && pattern < 2.5 ? 2.0 : officeK));
-    float unitN = wallT ? max(1.0, floor((officeW ? 3.2 : 8.0) / colW + 0.5)) : (plainT || !resG ? 2.0 : 3.0);
+    float unitN = wallT ? max(1.0, floor((officeW ? 3.2 : 8.0) / colW + 0.5)) : (plainT ? 4.0 : (resG ? 3.0 : 2.0));
     float homeLit = clamp(uLitFraction * (plainT ? 0.95 : 0.8) + (plainT ? 0.05 : 0.0), 0.0, 1.0) *
       (0.75 + 0.5 * vSeed);
     float litP = officeK > 0.5 ? uLitFraction * (0.45 + 0.8 * vSeed) : homeLit;
-    float gain = wallT ? 0.7 : (plainT ? 0.8 : (resG ? 0.62 : 0.6));
+    float gain = wallT ? 0.7 : (plainT ? 0.65 : (resG ? 0.62 : 0.6));
     if (nwK > 0.0 && wNight > 0.001) {
       emis += nightWindows(cid, fract(cq.y), vec2(cW, cH) / fwUV, unitN, kind, litP) * nwK * gain * wNight;
     }

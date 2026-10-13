@@ -1,9 +1,12 @@
 /**
  * Time-of-day light rig (Sky.lightRig): twilight must never be darker than the night that follows / precedes it (also
- * back-lit, fill-only views around sunrise / sunset), the street lamps come on before the night factor, and the
- * lamp-type rule shared by the mesher and the road shader.
+ * back-lit, fill-only views around sunrise / sunset), the street lamps come on before the night factor, the
+ * lamp-type rule shared by the mesher and the road shader, and the night-window levels of detail (materials.ts: each
+ * coarse level is the expected value of the finer one).
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import * as THREE from 'three';
 import { LIGHT_RIG, SkySystem, lightRig, type SkyLighting } from '../../src/render/world/Sky';
 import { atmTransmittanceJS } from '../../src/render/world/atmosphere';
@@ -143,4 +146,56 @@ describe('street lamp type', () => {
     zone[(cz + 1) * N + cx] = Zone.IndMed;
     expect(lampTint(cx, cz, Network.Highway, zone, N)).toBe(1);
   }, 60000);
+});
+
+// ---- night window lights (materials.ts nightWindows): every level of detail is the EXPECTED value of the finer level it
+// replaces, so zooming out neither brightens nor dims the night city (the constants are read from the shader source)
+describe('night window levels of detail', () => {
+  const src = readFileSync(resolve(__dirname, '../../src/assets/materials.ts'), 'utf8');
+  const v3 = (s: string) => s.split(',').map(Number) as [number, number, number];
+  const ramp = /vec3 roomLight\(float t\) \{\s*return mix\(mix\(vec3\(([^)]*)\), vec3\(([^)]*)\), [^;]*\), vec3\(([^)]*)\)/.exec(src);
+  const nw = src.slice(src.indexOf('vec3 nightWindows('), src.indexOf('// Floodlit masonry'));
+  const roomLight = (t: number): number[] => {
+    const [a, w, c] = [v3(ramp![1]), v3(ramp![2]), v3(ramp![3])];
+    const s1 = Math.min(Math.max(t * 2, 0), 1), s2 = Math.min(Math.max(t * 2 - 1, 0), 1);
+    return a.map((x, i) => { const m = x + (w[i] - x) * s1; return m + (c[i] - m) * s2; });
+  };
+  const meanColour = (tOf: (h: number) => number) => {
+    const acc = [0, 0, 0], n = 20000;
+    for (let i = 0; i < n; i++) roomLight(tOf((i + 0.5) / n)).forEach((x, k) => (acc[k] += x / n));
+    return acc;
+  };
+
+  it('uses the mean light colour of homes / offices / hotels for the coarse levels', () => {
+    expect(ramp).not.toBeNull();
+    const cAvg = /vec3 cAvg = home > 0\.5 \? vec3\(([^)]*)\) : \(hotel > 0\.5 \? vec3\(([^)]*)\) : vec3\(([^)]*)\)\);/.exec(nw);
+    expect(cAvg).not.toBeNull();
+    const [homes, hotels, offices] = [v3(cAvg![1]), v3(cAvg![2]), v3(cAvg![3])];
+    const want: [number[], (h: number) => number][] = [[homes, (h) => h * h], [offices, (h) => h], [hotels, (h) => h * 0.6]];
+    for (const [got, tOf] of want) meanColour(tOf).forEach((x, k) => expect(got[k]).toBeCloseTo(x, 2));
+  });
+
+  it('keeps the ceiling-light gradient mean and the mean window brightness in the coarse levels', () => {
+    const g = /float ceilG = ([\d.]+) \+ ([\d.]+) \* clamp\(fy \* ([\d.]+) - ([\d.]+), 0\.0, 1\.0\);/.exec(nw);
+    expect(g).not.toBeNull();
+    const [b, k, s, o] = g!.slice(1).map(Number);
+    let mean = 0;
+    const n = 10000;
+    for (let i = 0; i < n; i++) mean += (b + k * Math.min(Math.max(((i + 0.5) / n) * s - o, 0), 1)) / n;
+    expect(nw).toContain(`mix(${mean.toFixed(3)}, ceilG, fF) * 0.825`);
+    // window brightness winB = 0.825 + spread * (u - 0.5): mean 0.825; the facade level 0.825 x the gradient mean
+    expect(nw).toMatch(/float winB = 0\.825 \+/);
+    expect(nw).toContain(`* ${(0.825 * mean).toFixed(3)};`);
+  });
+
+  it('weights the facade level by the mean floor occupancy', () => {
+    const occ = /hF < mix\(([\d.]+), ([\d.]+), hotel\) \? ([\d.]+) : \(hF < ([\d.]+) \? ([\d.]+) : mix\(([\d.]+), ([\d.]+), hotel\)\)/.exec(nw);
+    const occM = /float occM = mix\(mix\(([\d.]+), ([\d.]+), hotel\), 1\.0, home\);/.exec(nw);
+    expect(occ).not.toBeNull();
+    expect(occM).not.toBeNull();
+    const [dO, dH, lo, mid, midV, fullO, fullH] = occ!.slice(1).map(Number);
+    const m = (dark: number, full: number) => dark * lo + (mid - dark) * midV + (1 - mid) * full;
+    expect(Number(occM![1])).toBeCloseTo(m(dO, fullO), 2);
+    expect(Number(occM![2])).toBeCloseTo(m(dH, fullH), 2);
+  });
 });
