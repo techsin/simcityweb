@@ -36,8 +36,8 @@
  * Floodlit masonry: Surf.Plain and Surf.Stone pattern 1 (warm) / 2 (cool white) glow from the base up at night;
  *   the paint's `floor` value is the reach height H in meters (light fades 70% by H). Pattern 0 = unlit.
  * Plain glass (Surf.GlassPlain, surf.y): 0 storefront / lobby / house windows (~2.5 x 2.8 m cells in 10 m bays lit
- *   evenly in one light colour per building, the lit share following the time of day); 1 vehicle glass (dark,
- *   reflective, never glows);
+ *   evenly in warm light, amber to warm white per bay, the lit share following the time of day); 1 vehicle glass
+ *   (dark, reflective, never glows);
  *   2 pavilion glass (reflective by day, uniform warm glow ~0.6 at night: lobbies, foyers, pyramids, concourses);
  *   3 grow-light glass (greenhouse walls / roofs: clear greenish glass by day with no tint or glow, saturated sodium
  *     amber at night with a little per-4 m-bay variation; stays orange under bloom).
@@ -278,8 +278,8 @@ float qnoise(vec2 p) {
 // evaluation per fragment at the end of the glazed-facade block (its branches only set up the window grid). ci = window
 // cell (column, floor), fy = position within the floor (0..1), px = on-screen size of a cell (px), unitN = cells per
 // unit (apartment / office section / shop bay), kind 0 homes, 1 offices, 2 hotels (warm offices), 3 every window lit
-// warm amber (churches), 4 shops / lobbies / house windows (plain glass: one light colour per building, evenly lit
-// bays), litP = lit probability of a unit. Levels of detail window -> unit -> floor -> block -> facade, each blended in
+// warm amber (churches), 4 shops / lobbies / house windows (plain glass: evenly lit bays of warm light), litP = lit
+// probability of a unit. Levels of detail window -> unit -> floor -> block -> facade, each blended in
 // once the finer level gets too small on screen (sub-pixel cells would shimmer), and each the EXPECTED value of the
 // level it replaces (window lamp / curtain brightness x ceiling-light gradient means, the mean light colour of the
 // units), so zooming out neither brightens nor dims the city: lit windows of varied brightness and colour down to ~2 px,
@@ -539,8 +539,8 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     // floors, tenants), the rest homes (apartments of ~8 m: 2-4 windows), pattern 8 (churches) all lit warm amber.
     // Curtain glass: residential glass (6) = homes in apartments of 3 panels, offices in 3 m sections of 2 panels
     // (tenant colour per 9 m), warm bronze / gold tint (2) = hotels. Plain glass: shops / lobbies / house windows in
-    // evenly lit 10 m bays, one light colour per building, lit a bit more than apartment towers (~55-75% in the evening,
-    // dipping late at night)
+    // evenly lit 10 m bays of warm light (amber to warm white per bay), lit a bit more than apartment towers (~55-75% in
+    // the evening, dipping late at night)
     bool resG = pattern > 5.5 && pattern < 6.5;
     bool officeW = (pattern > 1.5 && pattern < 2.5) || (pattern > 3.5 && pattern < 5.5) ||
       (pattern > 6.5 && pattern < 7.5);
