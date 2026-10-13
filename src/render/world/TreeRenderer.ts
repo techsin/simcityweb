@@ -86,8 +86,9 @@ const RING_CON_B = 1 - RING_CON_A;
 const RING_CON_R = 0.4 / 0.46;
 /** the outer ring and the edge band need a far tree LOD distance to pay off: lower qualities (low: 460 m) skip both */
 const RING_MIN_LOD = 560;
-/** frames after a load / reset before the outer ring's generation starts (the first frames build the map's chunks) */
-const RING_DELAY_FRAMES = 12;
+/** frames after a load / reset before the outer ring's generation starts (the first frames build the map's chunks and
+ *  the city's first LODs / programs: ~0.5 s at 60 fps) */
+const RING_DELAY_FRAMES = 30;
 /** frames over which a freshly generated outer ring fades in (its density ramps up: no pop) */
 const RING_APPEAR_FRAMES = 45;
 /** the ring's slices run on calm frames: the camera moved at most RING_CALM_MOVE x its height above the ground (summed

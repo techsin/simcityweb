@@ -17,8 +17,8 @@ import { registerAllModels } from '../../src/assets/builders';
 import { getModelGeometry, registeredModelIds } from '../../src/assets/registry';
 import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { Surf } from '../../src/core/types';
-import { getBuildingMaterial, setFoliageSeason, sharedUniforms } from '../../src/assets/materials';
-import { getImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
+import { getBuildingMaterial, patchFoliageDepthMaterial, setFoliageSeason, sharedUniforms } from '../../src/assets/materials';
+import { bareTreeProxy, getImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
@@ -28,7 +28,7 @@ import { ModelBuilder } from '../../src/assets/ModelBuilder';
 import { RNG } from '../../src/core/rng';
 import { palm as comPalm } from '../../src/assets/builders/com_kit';
 import { palm as civPalm } from '../../src/assets/builders/civ_kit';
-import { tree as parkTree, type TreeKind } from '../../src/assets/builders/park_lib';
+import { bareCrown, tree as parkTree, type TreeKind } from '../../src/assets/builders/park_lib';
 import { SEASONAL_TREES } from '../../src/assets/builders/nat_season';
 
 registerAllModels();
@@ -78,6 +78,31 @@ describe('seasonal foliage patterns', () => {
     expect(Math.abs(rock.g - rock.r)).toBeLessThan(0.05);
   });
 
+  it('bareTreeProxy (opaque mid-distance LODs): a slim twig spindle + trunk for bare trees, none for leafy ones', () => {
+    for (const [id, bare, green] of [['tree_oak', 6, 0], ['tree_maple', 4, 0], ['tree_birch', 4, 0]] as [string, number, number][]) {
+      const gb = getModelGeometry(id, bare), st = natureStats(gb);
+      const p = bareTreeProxy(gb)!;
+      expect(p, id).toBeTruthy();
+      expect(bareTreeProxy(getModelGeometry(id, green)), id).toBeNull();
+      expect(p.getAttribute('position').count / 3).toBe(16);
+      const bb = p.boundingBox!;
+      expect(bb.min.y).toBeCloseTo(0, 3);
+      expect(bb.max.y).toBeCloseTo(st.height, 3);
+      // at most ~55% of the crown radius wide: the ground shows around a bare tree
+      expect(Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z) / 2).toBeLessThan(st.radius * 0.6);
+      // foliage pattern 3 (never recoloured: the variant carries the season), in the twig colour (red > green)
+      const srf = p.getAttribute('surf') as THREE.BufferAttribute, col = p.getAttribute('color') as THREE.BufferAttribute;
+      let fol = 0;
+      for (let i = 0; i < srf.count; i += 3) {
+        if (Math.round(srf.getX(i)) !== Surf.Foliage) continue;
+        fol++;
+        expect(Math.round(srf.getY(i))).toBe(3);
+        expect(col.getX(i)).toBeGreaterThan(col.getY(i));
+      }
+      expect(fol).toBe(8);
+    }
+  });
+
   it('park trees: cherries blossom, broadleaves seasonal, conifers and palms evergreen', () => {
     const tot = new Map<number, number>();
     for (const id of registeredModelIds()) {
@@ -112,6 +137,51 @@ describe('seasonal foliage patterns', () => {
       // (evergreen lobes: pattern 4, never swapped whatever their floor)
       expect([...foliagePatterns(b.build()).keys()], kind).toEqual([4]);
     }
+  });
+
+  it('bareCrown (for the other kits\' lot trees): a lighter twig crown on the floor its crown blob is painted with', () => {
+    const b = new ModelBuilder();
+    b.paint(0x5b4330, Surf.Wood).cylinder(4, -2, 0, 2.4, 0.2, 0.14, 5, { top: false });
+    const fl = bareCrown(b, 4, -2, [4, 2.3, -2], [4, 3.9, -2], 2.2, 2.0, 0x5b4330, 0.14);
+    b.paint(0x4c7630, Surf.Foliage, 1, fl).blob(4, 3.9, -2, 2.2, 2.0, 2.2, 0, 0.16, 1.5);
+    const g = b.build();
+    expect(fl).toBeGreaterThanOrEqual(1);
+    expect(fl).toBeLessThan(2);
+    const srf = g.getAttribute('surf') as THREE.BufferAttribute;
+    let twig = 0, blob = 0;
+    for (let i = 0; i < srf.count; i += 3) {
+      if (Math.round(srf.getX(i)) !== Surf.Foliage) continue;
+      const p = Math.round(srf.getY(i));
+      if (p === 5) { twig++; expect(srf.getZ(i)).toBeCloseTo(fl, 4); }
+      if (p === 1) blob++;
+    }
+    expect(blob).toBe(20);
+    // 3 tips x 3 double-sided spikes
+    expect(twig).toBe(18);
+    // the same tree position always gives the same crown (no rng draw)
+    const b2 = new ModelBuilder();
+    expect(bareCrown(b2, 4, -2, [4, 2.3, -2], [4, 3.9, -2], 2.2, 2.0, 0x5b4330, 0.14)).toBe(fl);
+  });
+
+  it('lot shadows: patchFoliageDepthMaterial runs the bare-winter crown swap in the depth pass, winter only', () => {
+    const m = patchFoliageDepthMaterial(new THREE.MeshDepthMaterial());
+    expect(m.vertexColors).toBe(true);
+    const sh = { vertexShader: THREE.ShaderLib.depth.vertexShader, fragmentShader: THREE.ShaderLib.depth.fragmentShader, uniforms: {} } as unknown as THREE.WebGLProgramParametersWithUniforms;
+    m.onBeforeCompile(sh, {} as THREE.WebGLRenderer);
+    const vs = sh.vertexShader;
+    expect(vs).toContain('attribute vec3 surf;');
+    expect(vs).toContain('if (uSeason.y > 0.0 && abs(surf.x - 8.0) < 0.5)');
+    // the view's swap (FOLIAGE_WINTER), after begin_vertex
+    expect(vs.indexOf('bool bareW')).toBeGreaterThan(vs.indexOf('#include <begin_vertex>'));
+    expect(vs).toContain('transformed = vec3(0.0)');
+    expect((sh.uniforms as Record<string, unknown>).uSeason).toBe(sharedUniforms.uSeason);
+    expect(m.customProgramCacheKey()).toContain('foliage-winter');
+    // the view's vertex shader runs the same swap
+    const vw = { vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader, uniforms: {} } as unknown as THREE.WebGLProgramParametersWithUniforms;
+    getBuildingMaterial().onBeforeCompile(vw, {} as THREE.WebGLRenderer);
+    const swap = vs.slice(vs.indexOf('float gW'), vs.indexOf('transformed = vec3(0.0)'));
+    expect(swap.length).toBeGreaterThan(200);
+    expect(vw.vertexShader).toContain(swap);
   });
 
   it('lot palms (commercial / civic kits) are evergreen: their fronds never turn autumn-coloured or bare', () => {
@@ -380,8 +450,10 @@ describe('outer ring trees', () => {
     expect(tr.ringGenerations).toBe(0);
     // the first frames build the map's chunks (nearest first); the ring waits RING_DELAY_FRAMES
     tr.ringBudgetMs = 0;
-    for (let f = 0; f < 12; f++) tr.update(cam);
+    for (let f = 0; f < 30; f++) tr.update(cam);
     expect(tr.ringGenerations).toBe(0);
+    expect(ring.ringStale).toBe(0xff);
+    expect(ring.dirty.size).toBe(0);
     // then one zero-budget slice per frame (a block of candidate rows / a refill batch)
     let frames = 0;
     while (busy() && frames < 100000) {
@@ -446,15 +518,15 @@ describe('outer ring trees', () => {
     expect(a.slices).toBe(6);
     for (let f = 0; f < 4; f++) a.tr.update(cam);
     expect(a.slices).toBeGreaterThan(6);
-    // a camera that never stops (a pan of 20 m per frame) still gets the slices after the long wait (240 frames)
+    // a camera that never stops (a pan of 20 m per frame) still gets the slices after the load delay (30 frames) + the
+    // long wait (240 frames)
     const b = counted();
     let k = 0;
     for (; k < 400 && !b.slices; k++) {
       cam.position.set(W / 2 + k * 20, 600, W / 2);
       b.tr.update(cam);
     }
-    expect(k).toBeGreaterThan(240);
-    expect(k).toBeLessThan(260);
+    expect(k).toBe(30 + 240 + 1);
     a.tr.dispose();
     b.tr.dispose();
   }, 120_000);

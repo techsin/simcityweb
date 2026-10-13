@@ -175,6 +175,33 @@ export function getMicroImpostorGeometries() {
   return _micro;
 }
 
+/**
+ * Opaque mid-distance proxy of a BARE (see-through twig) nature tree, for LODs that cannot draw see-through (props'
+ * street trees, propLod): a trunk and a slim twig spindle (~55% of the crown's radius, from a third of the height up)
+ * in the twig colour, so the ground shows around a bare tree as it does between its twigs - not a brown ball the size
+ * of the summer crown. Foliage pattern 3 (never recoloured: the model variant carries the season). 16 tris, base at
+ * y = 0 like the model. null for a solid crown (natureStats.open <= 0.3: use the regular impostor).
+ */
+export function bareTreeProxy(g: THREE.BufferGeometry): THREE.BufferGeometry | null {
+  const st = natureStats(g);
+  if (st.open <= 0.3) return null;
+  const H = st.height, R = st.radius;
+  const b = new ModelBuilder();
+  b.paint(0x4a3624, Surf.Wood).cylinder(0, 0, 0, H * 0.55, Math.max(0.12, R * 0.06), Math.max(0.08, R * 0.04), 4, { top: false });
+  const q = Math.SQRT1_2, r = R * 0.55, y0 = H * 0.34, yw = H * 0.62;
+  const e: [number, number, number][] = [[r * q, yw, r * q], [-r * q, yw, r * q], [-r * q, yw, -r * q], [r * q, yw, -r * q]];
+  b.paint(st.raw.clone().multiplyScalar(0.8), Surf.Foliage, FOL_DECID);
+  for (let i = 0; i < 4; i++) {
+    const a = e[i], c = e[(i + 1) % 4];
+    b.tri(c, a, [0, H, 0]);
+    b.tri(a, c, [0, y0, 0]);
+  }
+  const out = b.build();
+  out.computeBoundingBox();
+  out.computeBoundingSphere();
+  return out;
+}
+
 /** what shows between the twigs of a bare crown seen from afar (branch shadows, forest floor) - linear */
 const SEE_THROUGH = new THREE.Color(0.035, 0.034, 0.028);
 const _ta = new THREE.Vector3(), _tb = new THREE.Vector3(), _tc = new THREE.Vector3();

@@ -70,7 +70,8 @@
  *   Pattern 5 = winter twig spray of a kit tree (see floor >= 1 above): drawn only while its tree is bare, shaded as
  *       painted (twig colour).
  *   Bare pattern-0 crowns (lot blobs: not flat / box faces, not dark evergreens) also thin out in the vertex shader to
- *   ~45% of their faces (a per-face random of the flat face normal), so a bare lot tree is see-through, not a lump.
+ *   a third of their faces (a per-face random of the flat face normal), so a bare lot tree is see-through, not a lump,
+ *   and every bare crown (patterns 0-2) takes the twig colour, whatever its leaf paint.
  *   All foliage follows the climate / season uniforms uFoliageDry / uFoliageSeason / uFoliageTint (setFoliageSeason):
  *   low foliage turns straw-dry in deserts / dormant in winter, crowns get a quarter of it; in winter evergreen crowns
  *   darken and deciduous leaves still on a tree (patterns 0-3, the non-bare remainder) turn dead brown.
@@ -138,12 +139,46 @@ export function setFoliageSeason(month: number, climate: string): void {
   tint.setRGB(1, 1, 1);
   if (climate === 'desert') dry = 0.45;
   else if (climate === 'tropical') tint.setRGB(1.02, 1.06, 0.97);
-  else if (climate === 'alpine') dry = winter ? 0.5 : m === 2 || m === 10 ? 0.22 : 0;
-  else dry = winter ? 0.55 : m === 9 ? 0.15 : m === 10 || m === 2 ? 0.3 : 0;
+  else if (climate === 'alpine') dry = winter ? 0.65 : m === 2 || m === 10 ? 0.22 : 0;
+  else dry = winter ? 0.7 : m === 9 ? 0.15 : m === 10 || m === 2 ? 0.3 : 0;
   sharedUniforms.uFoliageDry.value = dry;
   const wk = !seasonal ? 0 : winter ? 1 : m === 10 || m === 2 ? 0.4 : 0;
   const sp = !seasonal ? 0 : m === 3 ? 1 : m === 4 ? 0.5 : 0;
   sharedUniforms.uFoliageSeason.value.set(climate === 'desert' ? 0.45 : 0, wk, sp, climate === 'tropical' ? 1 : 0);
+}
+
+/**
+ * Shadow (depth) material of meshes drawn with the uber material: the same bare-winter crown swap as the view
+ * (FOLIAGE_WINTER: kit trees' leaf lobes -> twig sprays, thinned lot crowns), so a bare tree casts its twigs' shadow,
+ * not its summer crown's. Only while some trees are bare (a uniform branch: no cost from spring to autumn, when the
+ * twig sprays, hidden inside their crowns, cast inside the crown's shadow anyway). Turns on vertexColors (the
+ * evergreen test reads the paint colour). Patches `m` in place (composes with an existing onBeforeCompile).
+ */
+export function patchFoliageDepthMaterial<T extends THREE.MeshDepthMaterial>(m: T): T {
+  const base = m.onBeforeCompile;
+  const key = m.customProgramCacheKey;
+  m.vertexColors = true;
+  m.onBeforeCompile = (shader, renderer) => {
+    base.call(m, shader, renderer);
+    shader.uniforms.uSeason = sharedUniforms.uSeason;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute vec3 surf;\nuniform vec4 uSeason;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+if (uSeason.y > 0.0 && abs(surf.x - 8.0) < 0.5) {
+  vec3 instPos = modelMatrix[3].xyz;
+  #ifdef USE_BATCHING
+    instPos += batchingMatrix[3].xyz;
+  #endif
+  #ifdef USE_INSTANCING
+    instPos += instanceMatrix[3].xyz;
+  #endif
+  float sdW = fract(sin(dot(instPos.xz, vec2(12.9898, 78.233)) + instPos.y * 0.37) * 43758.5453);
+  ${FOLIAGE_WINTER}
+}`);
+  };
+  m.customProgramCacheKey = () => key.call(m) + '|foliage-winter-v1';
+  m.needsUpdate = true;
+  return m;
 }
 
 // Per-instance values are FLAT varyings: interpolating a constant is not bit-exact (perspective correction), and the
@@ -159,6 +194,27 @@ flat varying float vWorldNX;
 uniform float uTime;
 uniform float uWind;
 uniform vec4 uSeason;
+`;
+
+/**
+ * Bare winter crowns (header, Foliage), per foliage vertex (sdW = the instance seed): while a tree is bare (the same
+ * per-tree random as the fragment shader's), kit trees swap their leaf lobes (patterns 1-2, floor >= 1) for their twig
+ * sprays (pattern 5), and other lot crowns (pattern 0: not flat, box-side or vertical faces, not dark-painted
+ * evergreens: linear green < 0.125) thin out to a third of their faces (a per-face random of the flat face normal - all
+ * three corners agree). Dropped faces collapse to the model origin (zero area: no fragments). The bare share is the
+ * month's x 1.08 (BARE_ALL, as TreeRenderer's forests): every deciduous crown is bare in Dec-Feb. Shared by the view
+ * (VERT_MAIN) and the lot models' shadow depth material (patchFoliageDepthMaterial).
+ */
+const FOLIAGE_WINTER = /* glsl */ `
+  float gW = 0.2;
+  #if defined(USE_COLOR) || defined(USE_COLOR_ALPHA)
+    gW = color.g;
+  #endif
+  float nyW = abs(normal.y);
+  bool bareW = fract(surf.z * 7.13 + sdW * 3.71) < uSeason.y * 1.08;
+  bool thinW = surf.y < 0.5 && nyW > 0.1 && nyW < 0.985 && max(abs(normal.x), abs(normal.z)) < 0.994 && gW >= 0.125 &&
+    fract(dot(normal, vec3(41.3, 29.7, 37.1)) + sdW * 7.13) >= 0.33;
+  if (surf.y > 4.5 ? !bareW : bareW && (thinW || (surf.y > 0.5 && surf.y < 2.5 && surf.z >= 1.0))) transformed = vec3(0.0);
 `;
 
 const VERT_MAIN = /* glsl */ `
@@ -195,20 +251,8 @@ if (abs(surf.x - 8.0) < 0.5) {
   float sway = (sy1 * (1.0 - abs(sy1)) * 2.4 + sy2 * (1.0 - abs(sy2))) * 0.012 * hgt * uWind;
   transformed.x += sway;
   transformed.z += sway * 0.7;
-  // bare winter crowns (header, Foliage): while this tree is bare (the fragment shader's per-tree random), kit trees
-  // swap their leaf lobes (patterns 1-2, floor >= 1) for their twig sprays (pattern 5), and other lot crowns (pattern 0:
-  // not flat, box-side or vertical faces, not dark-painted evergreens: linear green < 0.125) thin out to ~45% of their
-  // faces (a per-face random of the flat face normal - all three corners agree). Dropped faces collapse to the model
-  // origin (zero area: no fragments)
-  float gW = 0.2;
-  #if defined(USE_COLOR) || defined(USE_COLOR_ALPHA)
-    gW = color.g;
-  #endif
-  float nyW = abs(normal.y);
-  bool bareW = fract(surf.z * 7.13 + vSeed * 3.71) < uSeason.y;
-  bool thinW = surf.y < 0.5 && nyW > 0.1 && nyW < 0.985 && max(abs(normal.x), abs(normal.z)) < 0.994 && gW >= 0.125 &&
-    fract(dot(normal, vec3(41.3, 29.7, 37.1)) + vSeed * 7.13) >= 0.45;
-  if (surf.y > 4.5 ? !bareW : bareW && (thinW || (surf.y > 0.5 && surf.y < 2.5 && surf.z >= 1.0))) transformed = vec3(0.0);
+  float sdW = vSeed;
+  ${FOLIAGE_WINTER}
 }
 `;
 
@@ -690,13 +734,15 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     float blK = pattern > 1.5 && pattern < 2.5 && uSeason.z < 0.5 && uFoliageSeason.w < 0.5 ? clamp((albedo.r - albedo.g) * 20.0 + 0.6, 0.0, 1.0) : 0.0;
     albedo = mix(albedo, lum0 * vec3(0.21, 0.434, 0.077), blK);
     float lum = lum0 - lum0 * 0.6394 * blK;
-    bool bare = pr < uSeason.y;
+    // (bare share x 1.08: every deciduous crown is bare in Dec-Feb, as in FOLIAGE_WINTER)
+    float bareF = uSeason.y * 1.08;
+    bool bare = pr < bareF;
     float h = fract(pr * 13.7) + (n - 0.5) * 0.12;
-    // bare: a grey-brown tangle of lighter twig strands (a fine texture that fades to its average with distance), a
-    // little darker than the kit trees' twig sprays (not a charcoal lump); autumn: orange -> red -> yellow per tree
-    vec3 sc = bare ? vec3(1.15, 0.93, 0.78) * (0.62 + 0.9 * mix(0.42, clamp(nS * 2.86 - 1.14, 0.0, 1.0), twF))
+    // bare: a grey-brown tangle of lighter twig strands (a fine texture that fades to its average with distance) at the
+    // kit trees' twig brightness whatever the leaf paint (not a charcoal lump); autumn: orange -> red -> yellow per tree
+    vec3 sc = bare ? vec3(1.15, 0.93, 0.78) * (0.62 + 0.9 * mix(0.42, clamp(nS * 2.86 - 1.14, 0.0, 1.0), twF)) * (0.21 / max(lum, 0.04))
       : mix(mix(vec3(2.55, 0.62, 0.08), vec3(3.3, 0.34, 0.12), clamp(h * 7.14 - 2.71, 0.0, 1.0)), vec3(2.5, 1.7, 0.1), clamp(h * 8.33 - 5.83, 0.0, 1.0));
-    float sK = bare || max(pr, 0.03) + (n - 0.5) * 0.05 < uSeason.y + uSeason.x ? seasK : 0.0;
+    float sK = bare || max(pr, 0.03) + (n - 0.5) * 0.05 < bareF + uSeason.x ? seasK : 0.0;
     albedo = mix(albedo, lum * sc, sK);
     // green crown leaves (not recoloured above; blossom / autumn / twig colours, red >= green, are left alone): fresh
     // yellow-green in spring (deciduous); in winter evergreens turn a darker, cooler green and the deciduous leaves still

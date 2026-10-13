@@ -19,11 +19,12 @@
  * object access) and evaluates only the buildings that left their band, i.e. about one evaluation per actual swap
  * whatever the motion (pan, orbit, zoom sweep); a still camera costs nothing.
  * Camera cuts (jumps), a new metric and any frame with more swaps due than `lodSlice`: the due buildings are
- * evaluated by priority within a time budget (`lodCatchMs`) — upgrades in view first and always all of them (no big
- * building in view left on its proxy), then downgrades heaviest model first (the triangles a cut leaves over are
- * mostly towers: the first frame removes most of them), then upgrades out of view (shadows only); what is left waits
- * for the next frame (lodBehind), so a cut costs a bounded few ms per frame and its GPU excess is gone within 2-3
- * frames instead of one 20-40 ms frame of thousands of swaps.
+ * evaluated by priority — upgrades in view first and always all of them (no big building in view left on its proxy),
+ * then downgrades heaviest model first, then upgrades out of view (shadows only) — at least `lodCatchMin` per frame
+ * (a fixed amount of work: a wall-clock budget alone shrinks to a few hundred evaluations on a loaded machine and left
+ * a cut's triangle excess on screen for many frames), more while within `lodCatchMs`; what is left waits for the next
+ * frame (lodBehind). A cut costs a bounded few ms per frame and its GPU excess is gone within two frames instead of
+ * one 20-40 ms frame of thousands of swaps.
  * LOD cross-fade: a building that changes level while it is in view and not tiny on screen dissolves from one level
  * into the other over `fadeTime` s (screen-door dither with complementary pixel sets anchored to the building's
  * screen position, the tree LOD fade's dither): both levels are drawn by a small side batch (LodFadeLayer: same
@@ -41,11 +42,13 @@
  * (flushLod) swap at once; beyond the cap (`fadeMax`) swaps are instant too. The shadow switches half way through a
  * fade (the level covering most pixels casts: the other level's shadow would streak the visible one, e.g. a proxy's
  * coarser roof shadowing the full model's roof in the first frames). The low quality preset (lodPixels above
- * `fadeMaxPixels`) swaps at once: weak machines skip the fade layer's draws and both levels' triangles. The fade
- * layer's program is part of the load-time precompile (the empty layer sits in the scene graph, culled), so no frame
- * of play compiles it; fades start once the driver reports it ready (fadeProbe). A renderer that did not precompile it
- * compiles it in an idle period a few frames later (compileFade via requestIdleCallback); swaps are instant until it
- * is ready.
+ * `fadeMaxPixels`) swaps at once: weak machines skip the fade layer's draws and both levels' triangles, and the layer
+ * is hidden there (no program at all). The fade layer sits in the scene graph from the start and is drawn, empty, in
+ * the first frame that renders the buildings (LodFadeLayer.primed): the load's frame, which compiles and first uses
+ * every program. three links a program and reads its uniforms at its first use, a blocking driver round trip, so a
+ * later first use stalled the first dissolve after a load (15-80 ms of main thread, seconds on a loaded software
+ * renderer, where KHR_parallel_shader_compile is missing and a program always reports ready). After a quality change
+ * it is drawn once more (that frame recompiles everything); fades start once it has been drawn (fadeReady).
  * Burnt multi-cell lots are composed from a rubble kit (rubbleKit): one debris bed over the whole lot (exactly over
  * rising ground), heap clusters / big collapsed heaps / outer-wall stubs / a burnt car scattered at hashed offsets,
  * yaws and scales, each with a low-poly proxy it swaps to with the lot at LOD distance; one-cell lots keep prop.ts's
@@ -178,13 +181,6 @@ const LOD_PRI = 16;
 /** a foundation skirt is drawn as its plain box (no cap band / step tier) while its exposed height projects under this
  *  many pixels (or the building is on its proxy) */
 const FOUND_PX = 2;
-/** the fade program is compiled after this many frames have drawn the buildings (see compileFade): the first frames
- *  after a load (or a city switch) carry none of its cost */
-const FADE_COMPILE_FRAMES = 12;
-/** ... in an idle period with at least this much time left (ms; its source assembly takes a few ms on a desktop,
- *  15-20 ms on a loaded software renderer), or in the first idle period after FADE_IDLE_WAIT ms without one */
-const FADE_IDLE_MS = 8;
-const FADE_IDLE_WAIT = 15000;
 
 /** foundation skirt depth (m) for an exposed depth: + 0.8 m into the ground, quantized to 1.2 / 2.2 / 3.4 / 4.8 / 6.8
  *  (bounded geometry count) */
@@ -626,12 +622,17 @@ function getFadeMaterial(): THREE.MeshStandardMaterial {
  * LOD cross-fade. It shares the building batch's vertex buffer and geometry table (no model is uploaded twice) and
  * keeps its own compact instance slots [0, n) (matrix + colour texture rows = slot index). Draw lists are written
  * directly (no three.js per-instance culling: the few fading buildings are in view): the main pass draws every slot,
- * shadow passes only the level of each fade that casts (own indirect texture). With no slot it is frustum-culled away (it stays
- * `visible`, so the precompile still builds its program).
+ * shadow passes only the level of each fade that casts (own indirect texture). With no slot it is frustum-culled away,
+ * once it has been drawn a first time (primed).
  */
 class LodFadeLayer {
   readonly mesh: THREE.BatchedMesh;
   n = 0;
+  /** the layer has been drawn with its own material once (an empty draw list: three set up its program, the blocking
+   *  link check + uniform read of a program's first use). Until then it is not frustum-culled even when empty, so that
+   *  first use falls into the first frame that renders it — the load's (or a quality change's) frame, which compiles
+   *  and first uses every program — instead of the first dissolve of play */
+  primed = false;
   private cap = 0;
   private geo = new Int32Array(0);
   /** per slot: its level casts the building's shadow now (one level per fade, see BuildingRenderer.fadeColors) */
@@ -659,19 +660,22 @@ class LodFadeLayer {
     mesh.perObjectFrustumCulled = false;
     mesh.sortObjects = false;
     if (depth) mesh.customDepthMaterial = depth;
-    // culled while empty: a sphere far below the map never meets a frustum (no per-frame cost for an idle layer)
+    // culled while empty (once primed, see sync): a sphere far below the map never meets a frustum (no per-frame cost
+    // for an idle layer); not culled until its first draw
     mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, -1e9, 0), 1);
-    mesh.frustumCulled = true;
+    mesh.frustumCulled = false;
     (mesh as any)._initColorsTexture();
     this.mesh = mesh;
     this.fit(64);
-    mesh.onBeforeRender = (renderer) => {
+    mesh.onBeforeRender = (renderer, _scene, _camera, _geometry, material) => {
       const m = mesh as any;
       m._multiDrawStarts = this.starts;
       m._multiDrawCounts = this.counts;
       m._multiDrawCount = this.nMain;
       m._indirectTexture = this.mainInd;
       m._visibilityChanged = false;
+      // (three sets up the program right after this hook, also for an empty list)
+      if (material === mesh.material) this.primed = true;
       const rt = renderer.getRenderTarget();
       if (rt) fadeUniforms.uLodRes.value.set(rt.width, rt.height);
       else renderer.getDrawingBufferSize(fadeUniforms.uLodRes.value);
@@ -775,7 +779,7 @@ class LodFadeLayer {
   sync(): void {
     this.syncGeometry();
     const mesh = this.mesh;
-    if (this.n === 0) { mesh.frustumCulled = true; return; }
+    if (this.n === 0) { mesh.frustumCulled = this.primed; return; }
     mesh.frustumCulled = false;
     const m = mesh as any;
     if (this.listDirty) {
@@ -832,13 +836,18 @@ export class BuildingRenderer {
   /** some band was made due (lodQueue, a new metric, flushLod): the next update scans even with a resting camera */
   private lodScanAll = false;
   /** at most this many due buildings are evaluated in a frame of smooth motion in the order found; beyond it, and in
-   *  cut frames / while behind, they are evaluated by priority within lodCatchMs */
+   *  cut frames / while behind, they are evaluated by priority (lodCatchMin / lodCatchMs, see catchUp) */
   lodSlice = 1500;
-  /** time budget (ms per frame) of the prioritized evaluations (cut frames and the frames catching up after them, a
-   *  new metric): upgrades in view are always all done, the rest (downgrades heaviest first, then upgrades out of view)
-   *  within this budget */
+  /** prioritized evaluations per frame (cut frames and the frames catching up after them, a new metric): upgrades in
+   *  view are always all done; of the rest (downgrades heaviest first, then upgrades out of view) at least this many
+   *  (a few ms of main thread at ~1-2 us each), so a loaded machine, whose wall-clock budget shrinks to a few hundred
+   *  evaluations, catches up as fast as an idle one: a street -> far cut over a dense 256 x 256 city leaves ~5.5k
+   *  downgrades, spread over thousands of mid-size buildings (the heaviest 3000 hold ~70% of the excess triangles),
+   *  done within two frames */
+  lodCatchMin = 3000;
+  /** ... then more while the frame's catch-up has run under this long (ms; a fast machine finishes a cut in its frame) */
   lodCatchMs = 2.5;
-  /** ... and at most this many of them per frame (tests; the time budget is what bounds it in the game) */
+  /** ... and at most this many per frame (tests) */
   lodCatch = Infinity;
   /** due evaluations were left over (after a jump or a heavy frame): the next frames scan and catch up by priority */
   lodBehind = false;
@@ -927,18 +936,11 @@ export class BuildingRenderer {
   /** fadeMax scaled down by this frame's view motion (see fadeMotion) */
   private fadeCap = 1024;
   /** cross-fades run only while lodPixels <= this: the medium / high / ultra presets (10 / 9 / 7 px); the low preset
-   *  (11 px, weak machines) swaps at once like the instant LOD, without the fade layer's draws */
+   *  (11 px, weak machines) swaps at once like the instant LOD, without the fade layer (hidden: no program, no draws) */
   fadeMaxPixels = 10;
-  /** the fade layer's program is compiled and ready (the load-time precompile builds it, see fadeProbe); until then
-   *  every swap is instant */
+  /** the fade layer has been drawn once, its program is set up (LodFadeLayer.primed: the load's first frame); until
+   *  then every swap is instant */
   fadeReady = false;
-  /** 0 waiting for the precompiled program to be ready (or FADE_COMPILE_FRAMES drawn frames without one), 1 schedule
-   *  the fallback compile at the next update, 4 waiting for an idle period, 2 compiling, 3 ready */
-  private fadeStage = 0;
-  private fadeIdleSince = 0;
-  private fadeFrames = 0;
-  private fadeFrameNo = -1;
-  private fadeRc: { r: THREE.WebGLRenderer; scene: THREE.Object3D; cam: THREE.Camera; rt: THREE.WebGLRenderTarget | null } | null = null;
   /** view direction at the previous updateLod (view turn rate, see fadeMotion) */
   private lodDir = new THREE.Vector3(NaN, NaN, NaN);
   private fades: Fade[] = [];
@@ -968,87 +970,11 @@ export class BuildingRenderer {
     this.batch.enablePassCulling({ culler, minShadowTexels: 1.2 });
     // nearest buildings first: occluded facades / lots behind them fail the depth test before the (heavy) uber shader
     this.batch.sortFront = true;
-    // the fade layer is in the scene graph from the start (an empty layer is culled: no draw), so the load-time
-    // precompile (PostFX.compileScene) builds its program with the rest of the scene and no frame of play pays for it;
-    // fades start once the program is ready (see fadeProbe)
+    // the fade layer is in the scene graph from the start: the load-time precompile (PostFX.compileScene) builds its
+    // program with the rest of the scene, and the load's first frame draws it once, empty (its program's first use, see
+    // LodFadeLayer.primed); fades start from then on
     this.fadeLayer = new LodFadeLayer(this.batch.mesh, this.batch.mesh.customDepthMaterial);
     this.batch.mesh.add(this.fadeLayer.mesh);
-    const mesh = this.batch.mesh, before = mesh.onBeforeRender;
-    mesh.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
-      if (this.fadeStage === 0) this.fadeProbe(renderer, scene, camera);
-      before.call(mesh, renderer, scene, camera, geometry, material, group);
-    };
-  }
-
-  /**
-   * Frames that drew the buildings, until the fade program is usable: compiled by the load-time precompile, it is
-   * ready once the driver says so (KHR_parallel_shader_compile completion status, polled every 8 frames; without the
-   * extension three reports it ready at once, the compile having run with the load's first frame). A renderer that
-   * did not precompile it (the batch joined the scene after the precompile, a city switch) compiles it in an idle
-   * period after FADE_COMPILE_FRAMES frames (scheduleFadeCompile).
-   */
-  private fadeProbe(renderer: THREE.WebGLRenderer, scene: THREE.Object3D, camera: THREE.Camera): void {
-    const fr = renderer.info.render.frame;
-    if (fr === this.fadeFrameNo) return;
-    this.fadeFrameNo = fr;
-    this.fadeFrames++;
-    const props = renderer.properties?.get(this.fadeLayer.mesh.material) as { currentProgram?: { isReady(): boolean } } | undefined;
-    const prog = props?.currentProgram;
-    if (prog) {
-      if ((this.fadeFrames & 7) === 1 && prog.isReady()) { this.fadeStage = 3; this.fadeReady = true; }
-      return;
-    }
-    if (this.fadeFrames >= FADE_COMPILE_FRAMES) {
-      this.fadeStage = 1;
-      this.fadeRc = { r: renderer, scene, cam: camera, rt: renderer.getRenderTarget() };
-    }
-  }
-
-  /**
-   * Schedule the fade program's compile into an idle period: three's source assembly for the city material's fade
-   * variant is synchronous (a few ms on a desktop, 15-20 ms on a loaded software renderer), so it must not run inside a
-   * frame. requestIdleCallback with at least FADE_IDLE_MS left (or any idle period once FADE_IDLE_WAIT ms passed
-   * without one); without it (no idle callbacks), a task between frames.
-   */
-  private scheduleFadeCompile(): void {
-    this.fadeStage = 4;
-    this.fadeIdleSince = performance.now();
-    const ric = (globalThis as { requestIdleCallback?: (cb: (d: { timeRemaining(): number; didTimeout: boolean }) => void, o?: { timeout: number }) => number }).requestIdleCallback;
-    if (typeof ric !== 'function') { setTimeout(() => this.compileFade(), 0); return; }
-    const tryIdle = (d: { timeRemaining(): number; didTimeout: boolean }) => {
-      if (this.disposed || this.fadeStage !== 4) return;
-      if (d.timeRemaining() >= FADE_IDLE_MS || performance.now() - this.fadeIdleSince > FADE_IDLE_WAIT) this.compileFade();
-      else ric(tryIdle, { timeout: 1000 });
-    };
-    ric(tryIdle, { timeout: 1000 });
-  }
-
-  /**
-   * Fallback compile of the fade layer's program, for a renderer whose load-time precompile did not build it (see
-   * fadeProbe): once FADE_COMPILE_FRAMES frames have drawn the buildings, in an idle period (scheduleFadeCompile), with
-   * that scene pass's render target bound (the same output variant, as compileScene does) and asynchronously where
-   * KHR_parallel_shader_compile exists (three's compileAsync polls the program instead of blocking on it). Fades start
-   * once it is ready (fadeReady); a quality change recompiles the scene, the layer included.
-   */
-  private compileFade(): void {
-    const rc = this.fadeRc;
-    this.fadeRc = null;
-    if (!rc || this.disposed) return;
-    this.fadeStage = 2;
-    const mesh = this.fadeLayer.mesh;
-    if (mesh.parent !== this.batch.mesh) this.batch.mesh.add(mesh);
-    const r = rc.r, prev = r.getRenderTarget();
-    let done: Promise<unknown>;
-    try {
-      r.setRenderTarget(rc.rt);
-      done = r.compileAsync(mesh, rc.cam, rc.scene as THREE.Scene);
-    } catch {
-      // (compiled lazily by the first fade instead)
-      done = Promise.resolve();
-    } finally {
-      r.setRenderTarget(prev);
-    }
-    done.then(() => { if (!this.disposed) { this.fadeStage = 3; this.fadeReady = true; } }, () => {});
   }
 
   setState(state: CityState): void {
@@ -1775,11 +1701,9 @@ export class BuildingRenderer {
    * Distance LOD: swap buildings to / from their proxy by projected radius (px) with hysteresis. Call once per frame
    * with the view camera and the drawing-buffer height in pixels. A frame whose camera moved scans the distance bands
    * (see lodPos) and evaluates the buildings that left theirs (none while the camera rests); cut frames, a new metric
-   * and backlogs evaluate by priority within lodCatchMs (see catchUp).
+   * and backlogs evaluate by priority, a bounded amount per frame (see catchUp).
    */
   updateLod(camera: THREE.PerspectiveCamera, heightPx: number): void {
-    // the fade program, when no load-time precompile built it: in an idle period (see fadeProbe)
-    if (this.fadeStage === 1) this.scheduleFadeCompile();
     const c = camera.position;
     // px = radius / dist * H / (2 tan(fov/2)): swap to the proxy beyond dist = radius * K / on, back within radius * K / off
     const K = (heightPx / Math.tan((camera.fov * Math.PI) / 360)) * 0.5;
@@ -1787,15 +1711,26 @@ export class BuildingRenderer {
     // fadeOn x (see there); upgrades at 1.12 x (the full model appears where it would without a fade)
     const fades = this.fadeTime > 0 && this.lodPixels <= this.fadeMaxPixels;
     const on = this.lodPixels * (fades ? Math.min(1.08, this.fadeOn) : 0.88), off = this.lodPixels * 1.12;
+    const L = this.fadeLayer;
     if (this.lodDirty || this.lodPixels !== this.lastLodPixels || on !== this.lastLodOn || !(Math.abs(K - this.lodK) < 0.25)) {
       // new metric (quality preset, FOV, resize) or a flush: every band is stale, every building due
       this.lodDirty = false;
+      // a quality change: the frame it takes effect in recompiles every program, the fade layer's new variant included,
+      // so the layer is drawn (empty) once more there (its first use, see LodFadeLayer.primed)
+      if (this.lodPixels !== this.lastLodPixels) L.primed = false;
       this.lastLodPixels = this.lodPixels;
       this.lastLodOn = on;
       this.lodK = K;
       this.lo2.fill(Infinity, 0, this.list.length);
       this.lodScanAll = true;
     }
+    // the fade layer only exists for presets that fade: hidden at the low preset (no program, no draws; running fades
+    // settle first, a hidden layer would leave their buildings on the empty stand-in); fades once it has been drawn
+    if (L.mesh.visible !== fades) {
+      if (!fades) while (this.fades.length) this.finishFade(this.fades[this.fades.length - 1]);
+      L.mesh.visible = fades;
+    }
+    if (L.primed && !this.fadeReady) this.fadeReady = true;
     const p = this.lodPos;
     const hop = p.x === p.x ? Math.hypot(c.x - p.x, c.y - p.y, c.z - p.z) : 0;
     this.lodPrev.copy(p);
@@ -1868,10 +1803,10 @@ export class BuildingRenderer {
 
   /**
    * The due buildings (scanOut [0, n)) of a cut frame, a backlog, a new metric or a heavy frame, by priority: upgrades
-   * in view all at once (no big building in view left on its proxy), then — within lodCatchMs and lodCatch
-   * evaluations — downgrades by the triangles they save, heaviest first (what a cut leaves over is mostly towers: the
-   * first frame removes most of the excess), then upgrades out of view (only their shadows show). Returns true when
-   * some were left for the next frame (lodBehind: the next update scans again, so nothing goes stale).
+   * in view all at once (no big building in view left on its proxy), then — at least lodCatchMin, more while within
+   * lodCatchMs, at most lodCatch — downgrades by the triangles they save, heaviest first (the first frame removes most
+   * of the excess), then upgrades out of view (only their shadows show). Returns true when some were left for the
+   * next frame (lodBehind: the next update scans again, so nothing goes stale).
    */
   private catchUp(n: number, c: THREE.Vector3, K: number, on: number, off: number): boolean {
     const out = this.scanOut, ord = this.catchOrd, cnt = this.catchCnt, list = this.list;
@@ -1900,17 +1835,18 @@ export class BuildingRenderer {
     cnt[0] = nu;
     for (let b = 1; b <= LOD_PRI; b++) cnt[b] += cnt[b - 1];
     for (let j = 0; j < nd; j++) { const i = ord[j]; out[cnt[LOD_PRI - 1 - lpr[i]]++] = i; }
-    const end = performance.now() + this.lodCatchMs;
-    let budget = this.lodCatch, k = nu;
+    // at least lodCatchMin evaluations, then while within lodCatchMs (the clock is read every 16), at most lodCatch
+    const end = performance.now() + this.lodCatchMs, min = Math.min(this.lodCatchMin, this.lodCatch);
+    let budget = this.lodCatch, done = 0, k = nu;
     const stop = nu + nd;
-    for (; k < stop && budget > 0; k++, budget--) {
-      if ((k & 15) === 0 && performance.now() > end) break;
+    for (; k < stop && budget > 0; k++, budget--, done++) {
+      if (done >= min && (done & 15) === 0 && performance.now() > end) break;
       this.lodEval(list[out[k]], c, K, on, off);
     }
     if (k < stop) return true;
     // upgrades out of view (shadows only)
-    for (k = 0; k < nu && budget > 0; k++, budget--) {
-      if ((k & 15) === 0 && performance.now() > end) break;
+    for (k = 0; k < nu && budget > 0; k++, budget--, done++) {
+      if (done >= min && (done & 15) === 0 && performance.now() > end) break;
       this.lodEval(list[out[k]], c, K, on, off);
     }
     return k < nu;

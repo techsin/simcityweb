@@ -12,7 +12,8 @@
  *  - building LOD cross-fade: swaps in view dissolve over fadeTime (complementary levels in the fade layer, empty
  *    stand-in in the batch), reverse mid-fade, instant on cuts / flushes / off-screen; with fadeOn 1 a zoom-out's
  *    dissolve is over by the instant-swap distance; fast pans / orbits / zooms swap at once (motion cap), so does the
- *    low quality preset; the fade program comes with the load-time precompile (an idle-time compile otherwise)
+ *    low quality preset (fade layer hidden); the fade layer is drawn once, empty, in the first frame (its program's
+ *    first use falls into the load) and again after a quality change; fades start only after that draw
  *  - burnt multi-cell lots are composed from the rubble kit (one bed over the lot, following rising ground exactly;
  *    debris pieces off the cell grid with low-poly proxies); hill lots get real-size stone skirts, a plain box far away
  *  - shadow receivers only bump their version when the volume really changes
@@ -531,7 +532,7 @@ describe('building LOD schedule', () => {
     expect(evals.mock.calls.length).toBe(e1);
   }, 120_000);
 
-  it('catches up after a cut by priority: upgrades in view at once, then the downgrades saving the most triangles, within its time budget, while a fast pan goes on', () => {
+  it('catches up after a cut by priority: upgrades in view at once, then the downgrades saving the most triangles, a guaranteed minimum + a time budget per frame, while a fast pan goes on', () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 7, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
     st.heights.fill(0);
     const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
@@ -594,8 +595,10 @@ describe('building LOD schedule', () => {
     while (br.lodBehind && frames < 400) { pan(0.06); frames++; expect(wrong().upIn).toBe(0); }
     expect(frames).toBeLessThanOrEqual(Math.ceil(list.length / br.lodCatch) + 3);
     expect(wrong()).toEqual({ upIn: 0, other: 0 });
-    // the time budget bounds a frame's prioritized evaluations (a fake clock: 1 us per performance.now call)
+    // the time budget bounds a frame's prioritized evaluations beyond the guaranteed minimum (none here; a fake clock:
+    // 1 us per performance.now call)
     br.lodCatch = Infinity;
+    br.lodCatchMin = 0;
     br.lodCatchMs = 0.002;
     let clock = 0;
     const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 0.001));
@@ -611,6 +614,21 @@ describe('building LOD schedule', () => {
       expect(frames).toBeGreaterThanOrEqual(2);
       expect(n1).toBeLessThan(list.length * 0.6);
     } finally { now.mockRestore(); }
+    expect(wrong()).toEqual({ upIn: 0, other: 0 });
+    // a loaded machine (every clock check over budget: the wall clock runs 5 ms per read) still does lodCatchMin
+    // prioritized evaluations per frame: its catch-up takes as many frames as an idle machine's
+    br.lodCatchMin = 64;
+    const slow = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 5));
+    try {
+      const before2 = list.map((b) => b.lod);
+      pan(Math.PI);
+      expect(br.lodBehind).toBe(true);
+      const down = list.filter((b, i) => before2[i] === 0 && b.lod === 1).length;
+      expect(down).toBeGreaterThanOrEqual(64);
+      frames = 0;
+      while (br.lodBehind && frames < 400) { pan(0.06); frames++; }
+      expect(frames).toBeLessThanOrEqual(Math.ceil(list.length / br.lodCatchMin) + 3);
+    } finally { slow.mockRestore(); }
     expect(wrong()).toEqual({ upIn: 0, other: 0 });
   }, 120_000);
 });
@@ -1014,11 +1032,13 @@ describe('building LOD cross-fade', () => {
     expect(fast.faded).toBe(0);
   });
 
-  it('swaps at once at the low quality preset (lodPixels above fadeMaxPixels: no fade layer draws on weak machines)', () => {
-    const { br, bi, dOn, at, glide } = setup();
+  it('swaps at once at the low quality preset (lodPixels above fadeMaxPixels): the fade layer is hidden there, running fades settle', () => {
+    const { br, bi, layer, info, dOn, at, glide } = setup();
     br.lodPixels = 11;
     const d11 = (dOn * 9) / 11;
     at(d11 * 0.5);
+    // hidden at the low preset: no program in the precompile, no draws in any pass
+    expect(layer.mesh.visible).toBe(false);
     glide(d11 + 20);
     expect(bi.lod).toBe(1);
     expect(br.fading).toBe(0);
@@ -1026,12 +1046,19 @@ describe('building LOD cross-fade', () => {
     br.lodPixels = 10;
     const d10 = (dOn * 9) / 10;
     at(d10 * 0.5);
+    expect(layer.mesh.visible).toBe(true);
     glide(d10 + 20);
     expect(bi.lod).toBe(1);
     expect(br.fading).toBe(1);
+    // switching to low mid-fade settles the fade (a hidden layer would leave the building on its empty stand-in)
+    br.lodPixels = 11;
+    at(d10 + 20);
+    expect(br.fading).toBe(0);
+    expect(layer.mesh.visible).toBe(false);
+    expect(info[bi.main].geometryIndex).toBe(bi.lodGeom);
   });
 
-  it('fades once the load-time precompile\'s fade program is ready (polled, no compile of its own), never inside a frame of play', () => {
+  it('draws the fade layer once, empty, in the first frame that renders it (its program\'s first use falls into the load) and fades only from then on', () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
     st.heights.fill(0);
     const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
@@ -1039,138 +1066,74 @@ describe('building LOD cross-fade', () => {
     br.add({ id: 1, def: 'res_apartment', x: 30, z: 30, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
     type L = { lod: number; radius: number; cy: number; vis: { cx: number; cz: number } };
     const bi = (br as unknown as { list: L[] }).list[0];
-    const layer = (br as unknown as { fadeLayer: { mesh: THREE.BatchedMesh } }).fadeLayer;
-    // in the scene graph from the start (empty: culled), so PostFX.compileScene builds its program with the scene's
+    const layer = (br as unknown as { fadeLayer: { mesh: THREE.BatchedMesh; primed: boolean; n: number } }).fadeLayer;
+    // in the scene graph from the start (the load-time precompile builds its program with the scene's), and not
+    // frustum-culled although empty: the first frame draws it (an empty multi-draw), so three links its program and
+    // reads its uniforms there, with every other program of the load, instead of stalling the first dissolve of play
     expect(layer.mesh.parent).toBe(br.batch.mesh);
     expect(layer.mesh.visible).toBe(true);
+    expect(layer.mesh.frustumCulled).toBe(false);
+    expect(br.fadeReady).toBe(false);
     const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 20000);
     const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
     const dOn = (bi.radius * K) / (br.lodPixels * br.fadeOn);
     const target = new THREE.Vector3(bi.vis.cx, bi.cy, bi.vis.cz), dir = new THREE.Vector3(-1, 0.7, -1).normalize();
     const at = (d: number) => { cam.position.copy(target).addScaledVector(dir, d); cam.lookAt(target); cam.updateMatrixWorld(); br.updateLod(cam, H); };
     const glide = (from: number, to: number) => { for (let d = from; Math.abs(d - to) > 1e-6; d += Math.max(-5, Math.min(5, to - d))) at(d); at(to); };
-    // the precompiled program, still compiling in the driver (KHR_parallel_shader_compile)
-    let ready = false, polls = 0, compiles = 0;
-    const prog = { isReady: () => { polls++; return ready; } };
-    const renderer = {
-      info: { render: { frame: 1 } },
-      properties: { get: (m: unknown) => (m === layer.mesh.material ? { currentProgram: prog } : {}) },
-      getRenderTarget: () => null,
-      setRenderTarget: () => {},
-      compileAsync: () => { compiles++; return Promise.resolve(); },
-    };
+    const renderer = { getRenderTarget: () => null, getDrawingBufferSize: (v: THREE.Vector2) => v.set(1280, 720) } as unknown as THREE.WebGLRenderer;
     const scene = new THREE.Scene();
     scene.add(br.batch.mesh);
-    const draw = () => {
-      renderer.info.render.frame++;
-      br.batch.mesh.onBeforeRender(renderer as unknown as THREE.WebGLRenderer, scene, cam, br.batch.mesh.geometry, br.batch.mesh.material as THREE.Material, null as unknown as THREE.Group);
-    };
-    for (let f = 0; f < 40; f++) { draw(); at(dOn * 0.5); }
-    // polled every 8 frames, not compiled again; swaps are instant meanwhile
-    expect(polls).toBe(5);
-    expect(compiles).toBe(0);
-    expect(br.fadeReady).toBe(false);
-    glide(dOn * 0.5, dOn * 1.05);
-    expect(bi.lod).toBe(1);
-    expect(br.fading).toBe(0);
-    // the driver is done: the next poll makes fades available
-    ready = true;
-    for (let f = 0; f < 8; f++) draw();
-    expect(br.fadeReady).toBe(true);
-    glide(dOn * 1.05, dOn * 0.5);
-    glide(dOn * 0.5, dOn * 1.05);
-    expect(bi.lod).toBe(1);
-    expect(br.fading).toBe(1);
-    expect(compiles).toBe(0);
-  });
-
-  it('compiles the fade program in an idle period a few frames after the first that drew the buildings when no precompile built it, fading only from then on', async () => {
-    const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
-    st.heights.fill(0);
-    const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
-    br.lodBudgetMs = 1e9;
-    br.add({ id: 1, def: 'res_apartment', x: 30, z: 30, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
-    type L = { lod: number; radius: number; cy: number; vis: { cx: number; cz: number } };
-    const bi = (br as unknown as { list: L[] }).list[0];
-    const layer = (br as unknown as { fadeLayer: { mesh: THREE.BatchedMesh } }).fadeLayer;
-    // (a renderer whose precompile did not build the fade program: no program on its material)
-    expect(br.fadeReady).toBe(false);
-    const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 20000);
-    const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
-    const dOn = (bi.radius * K) / (br.lodPixels * br.fadeOn);
-    const target = new THREE.Vector3(bi.vis.cx, bi.cy, bi.vis.cz), dir = new THREE.Vector3(-1, 0.7, -1).normalize();
-    const at = (d: number) => { cam.position.copy(target).addScaledVector(dir, d); cam.lookAt(target); cam.updateMatrixWorld(); br.updateLod(cam, H); };
-    const glide = (from: number, to: number) => { for (let d = from; Math.abs(d - to) > 1e-6; d += Math.max(-5, Math.min(5, to - d))) at(d); at(to); };
-    // before any frame: swaps are instant
+    const draw = (material: THREE.Material) => layer.mesh.onBeforeRender(renderer, scene, cam, layer.mesh.geometry, material, null as unknown as THREE.Group);
+    // before that first draw every swap is instant
     glide(dOn * 0.5, dOn * 1.1);
     expect(bi.lod).toBe(1);
     expect(br.fading).toBe(0);
-    // the first scene pass that draws the building batch (inside the post-processing scene target)
-    const sceneRT = new THREE.WebGLRenderTarget(4, 4);
-    let bound: THREE.WebGLRenderTarget | null = sceneRT;
-    const calls: [THREE.Object3D, THREE.WebGLRenderTarget | null, THREE.Object3D][] = [];
-    let release = () => {};
-    const renderer = {
-      info: { render: { frame: 1 } },
-      properties: { get: () => ({}) },
-      getRenderTarget: () => bound,
-      setRenderTarget: (t: THREE.WebGLRenderTarget | null) => { bound = t; },
-      compileAsync: (obj: THREE.Object3D, _c: THREE.Camera, scene: THREE.Object3D) => { calls.push([obj, bound, scene]); return new Promise((r) => { release = () => r(obj); }); },
-    };
-    const scene = new THREE.Scene();
-    scene.add(br.batch.mesh);
-    const draw = () => {
-      renderer.info.render.frame++;
-      bound = sceneRT;
-      br.batch.mesh.onBeforeRender(renderer as unknown as THREE.WebGLRenderer, scene, cam, br.batch.mesh.geometry, br.batch.mesh.material as THREE.Material, null as unknown as THREE.Group);
-      bound = null;
-    };
-    // idle callbacks under the test's control
-    const idle: ((d: { timeRemaining(): number; didTimeout: boolean }) => void)[] = [];
-    const g = globalThis as unknown as { requestIdleCallback?: unknown };
-    const hadRic = 'requestIdleCallback' in g, ric0 = g.requestIdleCallback;
-    g.requestIdleCallback = (cb: (d: { timeRemaining(): number; didTimeout: boolean }) => void) => { idle.push(cb); return idle.length; };
-    try {
-      // the first frames after the load carry none of the compile: it is scheduled after a dozen drawn frames, by the
-      // next update, into an idle period with enough time left (never inside a render or an update)
-      for (let f = 0; f < 11; f++) { draw(); at(dOn * 1.1); }
-      expect(idle.length).toBe(0);
-      draw();
-      at(dOn * 1.1);
-      expect(calls.length).toBe(0);
-      expect(idle.length).toBe(1);
-      // a short idle period (2 ms left): not yet, asked again
-      idle.shift()!({ timeRemaining: () => 2, didTimeout: false });
-      expect(calls.length).toBe(0);
-      expect(idle.length).toBe(1);
-      for (let f = 0; f < 5; f++) { draw(); at(dOn * 1.1); }
-      expect(calls.length).toBe(0);
-      // a long one: compiled there with the scene target bound (then restored)
-      idle.shift()!({ timeRemaining: () => 30, didTimeout: false });
-      expect(calls.length).toBe(1);
-      expect(idle.length).toBe(0);
-    } finally {
-      if (hadRic) g.requestIdleCallback = ric0;
-      else delete g.requestIdleCallback;
-    }
-    expect(calls[0][0]).toBe(layer.mesh);
-    expect(calls[0][1]).toBe(sceneRT);
-    expect(calls[0][2]).toBe(scene);
-    expect(bound).toBe(null);
-    expect(layer.mesh.parent).toBe(br.batch.mesh);
-    // still compiling: instant swaps
-    glide(dOn * 1.1, dOn * 0.5);
-    expect(bi.lod).toBe(0);
-    expect(br.fading).toBe(0);
-    release();
-    await new Promise((r) => setTimeout(r, 0));
+    expect(layer.mesh.frustumCulled).toBe(false);
+    // a pass with another material (a depth / override pass) does not set the layer's own program up
+    draw(new THREE.MeshDepthMaterial());
+    at(dOn * 1.1);
+    expect(br.fadeReady).toBe(false);
+    // the first frame's scene pass: an empty draw list, its program set up right after the hook
+    draw(layer.mesh.material as THREE.Material);
+    expect(layer.n).toBe(0);
+    expect(layer.primed).toBe(true);
+    at(dOn * 1.1);
     expect(br.fadeReady).toBe(true);
-    // ready: the next swap in view dissolves; later frames never compile again
+    // from then on an empty layer is culled (no per-frame cost), and swaps in view dissolve
+    expect(layer.mesh.frustumCulled).toBe(true);
+    glide(dOn * 1.1, dOn * 0.5);
     glide(dOn * 0.5, dOn * 1.05);
     expect(bi.lod).toBe(1);
     expect(br.fading).toBe(1);
-    for (let f = 0; f < 20; f++) { draw(); at(dOn * 1.05); }
-    expect(calls.length).toBe(1);
+    expect(layer.mesh.frustumCulled).toBe(false);
+  });
+
+  it('draws the fade layer once more after a quality change (that frame recompiles every program), keeping fades available', () => {
+    const { br, layer } = setup();
+    const L = layer as unknown as { mesh: THREE.BatchedMesh; primed: boolean };
+    const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 20000);
+    cam.position.set(500, 300, 500);
+    cam.lookAt(480, 0, 480);
+    cam.updateMatrixWorld();
+    const renderer = { getRenderTarget: () => null, getDrawingBufferSize: (v: THREE.Vector2) => v.set(1280, 720) } as unknown as THREE.WebGLRenderer;
+    const draw = () => L.mesh.onBeforeRender(renderer, null!, cam, L.mesh.geometry, L.mesh.material as THREE.Material, null as unknown as THREE.Group);
+    br.updateLod(cam, 720);
+    draw();
+    br.updateLod(cam, 720);
+    expect(L.primed).toBe(true);
+    expect(L.mesh.frustumCulled).toBe(true);
+    // high -> ultra: drawn (empty) again in the frame the new preset takes effect in
+    br.lodPixels = 7;
+    br.updateLod(cam, 720);
+    expect(L.primed).toBe(false);
+    expect(L.mesh.frustumCulled).toBe(false);
+    expect(br.fadeReady).toBe(true);
+    draw();
+    br.updateLod(cam, 720);
+    expect(L.mesh.frustumCulled).toBe(true);
+    // a resize / FOV change (same preset) does not
+    br.updateLod(cam, 900);
+    expect(L.primed).toBe(true);
   });
 });
 
