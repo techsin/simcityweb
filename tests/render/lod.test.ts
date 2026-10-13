@@ -422,14 +422,14 @@ describe('DynamicBatch list reuse', () => {
 });
 
 describe('building LOD schedule', () => {
-  it('keeps every building on the right side of its swap distance (downgrades may trail a cut briefly) and does no work while the camera rests', () => {
+  it('keeps every building on the right side of its swap distance (downgrades may trail a cut briefly), evaluates about once per swap and does no work while the camera rests', () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 7, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
     st.heights.fill(0);
     const culler = new TileCuller(64, CELL_SIZE, 16);
     const br = new BuildingRenderer(st, culler);
     br.lodBudgetMs = 1e9; // proxies are built on demand without a frame budget here
-    // a small per-frame evaluation slice (the city has fewer buildings than the default 3000): smooth motion stays
-    // within it; camera jumps upgrade at once (flat scan) and catch up the rest at lodCatch evaluations per frame
+    // a small per-frame catch-up (count-bounded here; the game bounds it by lodCatchMs): camera jumps upgrade in view
+    // at once and catch up the rest by priority, at most lodCatch evaluations per frame
     br.lodSlice = 100;
     br.lodCatch = 40;
     const models = ['res_cottage', 'res_ranch', 'res_apartment', 'res_tower', 'com_office_small', 'com_diner', 'com_office_tower', 'ind_warehouse'].filter((m) => MANIFEST_BY_ID[m]);
@@ -448,17 +448,16 @@ describe('building LOD schedule', () => {
     const hasProxy = (bi: BI) => !(bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom);
     const fr = new THREE.Frustum(), pm = new THREE.Matrix4(), sph = new THREE.Sphere();
     const inView = (bi: BI) => { sph.center.set(bi.vis.cx, bi.cy, bi.vis.cz); sph.radius = bi.radius; return fr.intersectsSphere(sph); };
-    // allowed lag: one schedule bucket (1 m) of camera travel. up: a proxy in view that must be full (never allowed);
-    // upOut: the same out of view, down: a full model that may be a proxy (both allowed while the renderer catches up
-    // after a cut)
+    // up: a proxy in view that must be full (never allowed); upOut: the same out of view, down: a full model that may
+    // be a proxy (both allowed while the renderer catches up after a cut). (Float32 band arithmetic: 1 mm slack)
     const check = () => {
       fr.setFromProjectionMatrix(pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
       let up = 0, upOut = 0, down = 0;
       for (const bi of list) {
         if (!hasProxy(bi)) continue;
         const d = dist(bi), rk = bi.radius * K;
-        if (bi.lod === 0 && d > rk / on + 1.001) down++;
-        if (bi.lod === 1 && d < rk / off - 1.001) { if (inView(bi)) up++; else upOut++; }
+        if (bi.lod === 0 && d > rk / on + 0.001) down++;
+        if (bi.lod === 1 && d < rk / off - 0.001) { if (inView(bi)) up++; else upOut++; }
       }
       return { up, upOut, down };
     };
@@ -466,6 +465,7 @@ describe('building LOD schedule', () => {
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
     const p = new THREE.Vector3(512, 60, -200);
     let slowEvals = 0, slowSteps = 0, maxProxies = 0, cuts = 0, cutLagSeen = 0, maxCutExtra = 0;
+    let smoothEvals = 0, smoothSwaps = 0;
     for (let step = 0; step < 600; step++) {
       const mode = Math.floor(step / 50) % 4; // slow pan, fast pan, zoom, jumps
       const cut = mode === 3 && step % 10 === 0;
@@ -483,10 +483,16 @@ describe('building LOD schedule', () => {
         fr.setFromProjectionMatrix(pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
         for (const bi of list) if (bi.lod === 1 && hasProxy(bi) && dist(bi) < (bi.radius * K) / off && inView(bi)) need++;
       }
+      const lods = list.map((b) => b.lod);
+      const wasBehind = br.lodBehind;
       const e0 = evals.mock.calls.length;
       br.updateLod(cam, H);
       const n = evals.mock.calls.length - e0;
       if (mode === 0 && step % 50 > 5) { slowEvals += n; slowSteps++; }
+      if (mode < 3 && step % 50 > 5 && !wasBehind && !br.lodBehind) {
+        smoothEvals += n;
+        smoothSwaps += list.reduce((a, b, i) => a + (b.lod !== lods[i] ? 1 : 0), 0);
+      }
       const { up, upOut, down } = check();
       expect(up, `step ${step}: proxy in view left inside its upgrade distance`).toBe(0);
       if (!br.lodBehind) {
@@ -495,22 +501,24 @@ describe('building LOD schedule', () => {
       }
       if (cut && step > 0) {
         cuts++;
-        // the cut frame evaluates its upgrades + a quarter catch-up slice, not the whole city
+        // the cut frame evaluates its upgrades in view + at most lodCatch more, not the whole city
         maxCutExtra = Math.max(maxCutExtra, n - need);
         if (down > 0) cutLagSeen++;
       }
       maxProxies = Math.max(maxProxies, br.lodCount);
     }
     expect(cuts).toBeGreaterThan(10);
-    // (whole schedule buckets are evaluated: a few more than the slice)
-    expect(maxCutExtra).toBeLessThan((br.lodCatch >> 2) + 16);
+    expect(maxCutExtra).toBeLessThanOrEqual(br.lodCatch);
     expect(maxCutExtra).toBeLessThan(list.length * 0.1);
-    // (with a 40-evaluation catch-up slice some downgrades do trail the cuts)
+    // (with a 40-evaluation catch-up some downgrades do trail the cuts)
     expect(cutLagSeen).toBeGreaterThan(0);
     expect(br.lodCount).toBe(list.filter((b) => b.lod === 1).length);
     expect(maxProxies).toBeGreaterThan(list.length * 0.3);
-    // a slow pan re-evaluates a small fraction of the buildings per frame
-    expect(slowEvals / slowSteps).toBeLessThan(list.length * 0.1);
+    // smooth motion (pans and zooms) evaluates only the buildings that leave their distance band: one per swap
+    expect(smoothSwaps).toBeGreaterThan(100);
+    expect(smoothEvals).toBeLessThanOrEqual(smoothSwaps);
+    // a slow pan re-evaluates a tiny fraction of the buildings per frame
+    expect(slowEvals / slowSteps).toBeLessThan(list.length * 0.02);
     // after the last cut the camera rests: the catch-up finishes within backlog / lodCatch frames, then no lag at all
     let frames = 0;
     while (br.lodBehind && frames < 100) { br.updateLod(cam, H); frames++; }
@@ -522,55 +530,87 @@ describe('building LOD schedule', () => {
     expect(evals.mock.calls.length).toBe(e1);
   }, 120_000);
 
-  it('catches up after a cut while the camera keeps panning fast (the catch-up slice comes on top of the pan\'s own evaluations)', () => {
+  it('catches up after a cut by priority: upgrades in view at once, then the downgrades saving the most triangles, within its time budget, while a fast pan goes on', () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 7, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
     st.heights.fill(0);
     const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
     br.lodBudgetMs = 1e9;
-    br.lodSlice = 2000;
     const models = ['res_cottage', 'res_ranch', 'res_apartment', 'res_tower', 'com_office_small', 'com_diner', 'com_office_tower', 'ind_warehouse'].filter((m) => MANIFEST_BY_ID[m]);
     let id = 1;
     for (let z = 0; z < 64; z += 2) for (let x = 0; x < 64; x += 2) {
       br.add({ id: id++, def: models[(x * 7 + z * 3) % models.length], x, z, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
     }
-    type BI = { lod: number; geom: number; lodGeom: number; siteGeom: number; siteLod: number; radius: number; cy: number; vis: { cx: number; cz: number } };
+    type BI = { lod: number; li: number; geom: number; lodGeom: number; siteGeom: number; siteLod: number; radius: number; cy: number; vis: { cx: number; cz: number } };
     const list = (br as unknown as { list: BI[] }).list;
+    const pri = (br as unknown as { lpr: Uint8Array }).lpr;
     const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 8000);
     const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
-    const evals = vi.spyOn(br as unknown as { lodEval: () => void }, 'lodEval');
-    // a fast low pan around the map (42 m per frame): many swap distances crossed every frame
+    const on = br.lodPixels * 0.88, off = br.lodPixels * 1.12;
+    const fr = new THREE.Frustum(), pm = new THREE.Matrix4(), sph = new THREE.Sphere();
+    const dist = (bi: BI) => Math.hypot(bi.vis.cx - cam.position.x, bi.cy - cam.position.y, bi.vis.cz - cam.position.z);
+    const wrong = () => {
+      fr.setFromProjectionMatrix(pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+      let upIn = 0, other = 0;
+      for (const bi of list) {
+        if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) continue;
+        const d = dist(bi), rk = bi.radius * K;
+        sph.center.set(bi.vis.cx, bi.cy, bi.vis.cz); sph.radius = bi.radius;
+        if (bi.lod === 1 && d < rk / off - 0.001 && fr.intersectsSphere(sph)) upIn++;
+        else if ((bi.lod === 0 && d > rk / on + 0.001) || (bi.lod === 1 && d < rk / off - 0.001)) other++;
+      }
+      return { upIn, other };
+    };
+    // the heaviest models save the most triangles: their priority is higher (log2 of the triangles saved)
+    const tri = (g: number) => br.batch.triangles(g);
+    const heavy = list.reduce((a, b) => (tri(b.geom) > tri(a.geom) ? b : a)), light = list.reduce((a, b) => (tri(b.geom) < tri(a.geom) ? b : a));
+    expect(pri[heavy.li]).toBeGreaterThan(pri[light.li]);
+    // a fast low pan around the map (42 m per frame)
     let a = 0;
-    const pan = (da: number): number => {
+    const pan = (da: number) => {
       a += da;
       cam.position.set(512 + Math.cos(a) * 700, 120, 512 + Math.sin(a) * 700);
       cam.lookAt(512, 0, 512);
       cam.updateMatrixWorld();
-      const e0 = evals.mock.calls.length;
       br.updateLod(cam, H);
-      return evals.mock.calls.length - e0;
     };
     for (let i = 0; i < 60; i++) pan(0.06);
     expect(br.lodBehind).toBe(false);
-    let own = 0;
-    for (let i = 0; i < 20; i++) own += pan(0.06) / 20;
-    expect(own).toBeGreaterThan(8);
-    // a catch-up slice well below the pan's own share: on its own it could never shrink the backlog of a cut
-    br.lodCatch = Math.max(4, Math.floor(own / 3));
-    // the cut: to the far side of the circle (1400 m), then the pan goes on
+    // the cut: to the far side of the circle (1400 m), a small catch-up per frame (count-bounded)
+    br.lodCatch = 12;
+    const before = list.map((b) => b.lod);
     pan(Math.PI);
     expect(br.lodBehind).toBe(true);
+    expect(wrong().upIn).toBe(0);
+    // the cut frame's downgrades are the heaviest of the due ones: none left waiting has a higher priority
+    const done = list.filter((b, i) => before[i] === 0 && b.lod === 1);
+    const waiting = list.filter((b) => b.lod === 0 && b.lodGeom !== b.geom && dist(b) > (b.radius * K) / on + 0.001);
+    expect(done.length).toBeGreaterThan(0);
+    expect(waiting.length).toBeGreaterThan(0);
+    const minDone = Math.min(...done.map((b) => pri[b.li])), maxWaiting = Math.max(...waiting.map((b) => pri[b.li]));
+    expect(minDone).toBeGreaterThanOrEqual(maxWaiting);
+    // the pan goes on: in-view upgrades every frame, the backlog done within a few frames
     let frames = 0;
-    while (br.lodBehind && frames < 400) { pan(0.06); frames++; }
+    while (br.lodBehind && frames < 400) { pan(0.06); frames++; expect(wrong().upIn).toBe(0); }
     expect(frames).toBeLessThanOrEqual(Math.ceil(list.length / br.lodCatch) + 3);
-    // caught up: every building on the right side of its swap distance
-    const on = br.lodPixels * 0.88, off = br.lodPixels * 1.12;
-    let wrong = 0;
-    for (const bi of list) {
-      if (bi.lodGeom === bi.geom && bi.siteLod === bi.siteGeom) continue;
-      const d = Math.hypot(bi.vis.cx - cam.position.x, bi.cy - cam.position.y, bi.vis.cz - cam.position.z), rk = bi.radius * K;
-      if ((bi.lod === 0 && d > rk / on + 1.001) || (bi.lod === 1 && d < rk / off - 1.001)) wrong++;
-    }
-    expect(wrong).toBe(0);
+    expect(wrong()).toEqual({ upIn: 0, other: 0 });
+    // the time budget bounds a frame's prioritized evaluations (a fake clock: 1 us per performance.now call)
+    br.lodCatch = Infinity;
+    br.lodCatchMs = 0.004;
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 0.001));
+    const evals = vi.spyOn(br as unknown as { lodEval: () => void }, 'lodEval');
+    try {
+      pan(Math.PI);
+      const n1 = evals.mock.calls.length;
+      expect(br.lodBehind).toBe(true);
+      expect(wrong().upIn).toBe(0);
+      frames = 0;
+      while (br.lodBehind && frames < 400) { pan(0.06); frames++; }
+      // (4 clock checks per frame, one per 16 evaluations, beyond the in-view upgrades)
+      expect(frames).toBeGreaterThan(2);
+      expect(n1).toBeLessThan(list.length * 0.6);
+    } finally { now.mockRestore(); }
+    expect(wrong()).toEqual({ upIn: 0, other: 0 });
   }, 120_000);
 });
 

@@ -8,20 +8,22 @@
  * LOD: buildings whose projected radius drops below `lodPixels` swap to an auto-generated massing proxy
  * (lodProxy.ts, 12-40 triangles, same material / windows / night lights) with hysteresis; see updateLod(). Proxies
  * are built off the main thread (lodBuilder.ts worker): every model is queued for its proxy when it first appears
- * (background prefetch), a building that needs a proxy not built yet stays on its full model and swaps when it
- * arrives, so proxy generation never costs frame time (flushLod() builds everything synchronously for captures).
- * The buildings waiting for an arriving proxy (often hundreds sharing one model) are woken a few per frame
- * (`lodWakeSlice`, and in smooth motion only while fewer than half the fade cap run), so each arrival dissolves them
- * over a few frames instead of swapping them all in one frame (a 1000-3000-swap spike).
+ * (background prefetch, so the worker builds them while the player looks around after a load), a building that needs
+ * a proxy not built yet stays on its full model and swaps when it arrives, so proxy generation never costs frame time
+ * (flushLod() builds everything synchronously for captures). The buildings waiting for an arriving proxy (often
+ * hundreds sharing one model) are woken a few per frame (`lodWakeSlice`, and in smooth motion only while fewer than
+ * half the fade cap run), so each arrival dissolves them over a few frames instead of swapping them all in one frame.
  * Without worker support (Node tests) proxies are built on demand within `lodBudgetMs` per frame.
- * Each building is re-evaluated only when the camera has travelled far enough to possibly carry it across its swap
- * distance, so a panning camera costs a few evaluations per frame and a still one none.
- * Camera cuts (jumps): the cut frame only upgrades what is in view — a scan of flat per-building arrays finds the
- * proxies that are now close enough to need their full model; those in the view frustum swap at once, the others are
- * queued first — and the rest of the re-evaluation (mostly downgrades to proxies, which only cost GPU while they wait)
- * is spread over the next frames at `lodCatch` evaluations per frame (on top of what the frame's own camera travel
- * made due, so a fast pan right after a cut still catches up), so a cut costs about what a normal frame does instead
- * of thousands of evaluations + swaps at once.
+ * Schedule: after each evaluation a building stores the band of camera distances its current levels stay right for
+ * (squared, flat typed arrays: lo2 / hi2). A frame whose camera moved scans those arrays (a few ns per building, no
+ * object access) and evaluates only the buildings that left their band, i.e. about one evaluation per actual swap
+ * whatever the motion (pan, orbit, zoom sweep); a still camera costs nothing.
+ * Camera cuts (jumps), a new metric and any frame with more swaps due than `lodSlice`: the due buildings are
+ * evaluated by priority within a time budget (`lodCatchMs`) — upgrades in view first and always all of them (no big
+ * building in view left on its proxy), then downgrades heaviest model first (the triangles a cut leaves over are
+ * mostly towers: the first frame removes most of them), then upgrades out of view (shadows only); what is left waits
+ * for the next frame (lodBehind), so a cut costs a bounded few ms per frame and its GPU excess is gone within 2-3
+ * frames instead of one 20-40 ms frame of thousands of swaps.
  * LOD cross-fade: a building that changes level while it is in view and not tiny on screen dissolves from one level
  * into the other over `fadeTime` s (screen-door dither with complementary pixel sets anchored to the building's
  * screen position, the tree LOD fade's dither): both levels are drawn by a small side batch (LodFadeLayer: same
@@ -32,14 +34,17 @@
  * over a few frames instead of drawing both levels of ~1000 buildings for fadeTime); a swap the motion would dissolve
  * within a frame or two anyway (`fadeFast`: fast fly-bys, zoom sweeps) is instant. Downgrades start dissolving at
  * `fadeOn` x lodPixels (default the instant swap's 0.88; up to 1.08 trades a narrower hysteresis band, i.e. more LOD
- * work in motion, for a zoom-out dissolve that is over where an instant swap happens). Fast pans / orbits (the view
- * shifting or turning by more than `fadeMotion` per frame) cap the concurrent fades down to none: the view changes
- * wholesale there. New / rebuilt buildings, camera cuts, the catch-up frames after a cut (running fades are settled at
- * the cut) and captures (flushLod) swap at once; beyond the cap (`fadeMax`) swaps are instant too. The shadow switches
- * half way through a fade (the level covering most pixels casts: the other level's shadow would streak the visible
- * one, e.g. a proxy's coarser roof shadowing the full model's roof in the first frames). The fade layer's program is
- * not part of the load-time precompile: it is compiled asynchronously a few frames after the first (compileFade),
- * swaps are instant until it is ready.
+ * work in motion, for a zoom-out dissolve that is over where an instant swap happens). Fast pans, orbits and zooms
+ * (the view shifting, turning or dollying by more than `fadeMotion` per frame) cap the concurrent fades down to none:
+ * the view changes wholesale there, a dissolve is invisible and only costs the fade layer's draws. New / rebuilt
+ * buildings, camera cuts, the catch-up frames after a cut (running fades are settled at the cut) and captures
+ * (flushLod) swap at once; beyond the cap (`fadeMax`) swaps are instant too. The shadow switches half way through a
+ * fade (the level covering most pixels casts: the other level's shadow would streak the visible one, e.g. a proxy's
+ * coarser roof shadowing the full model's roof in the first frames). The low quality preset (lodPixels above
+ * `fadeMaxPixels`) swaps at once: weak machines skip the fade layer's draws and both levels' triangles. The fade
+ * layer's program is not part of the load-time precompile: it is compiled in an idle period a few frames after the
+ * first (compileFade: requestIdleCallback, so its source assembly never lands in a frame); swaps are instant until it
+ * is ready.
  * Burnt multi-cell lots are composed from a rubble kit (rubbleKit): one debris bed over the whole lot (exactly over
  * rising ground), heap clusters / big collapsed heaps / outer-wall stubs / a burnt car scattered at hashed offsets,
  * yaws and scales, each with a low-poly proxy it swaps to with the lot at LOD distance; one-cell lots keep prop.ts's
@@ -134,11 +139,12 @@ interface BInst {
   foundLod: number;
   fh: number;
   flod: number;
-  /** index in BuildingRenderer.list (and the flat lx / ly / lz / lr / ls arrays) */
+  /** building id (= b.id) */
+  id: number;
+  /** index in BuildingRenderer.list (and the flat lx / ly / lz / lo2 / hi2 / lpr arrays) */
   li: number;
-  /** LOD schedule: absolute travel bucket of its live queue entry (-1 = none, -2 = removed); queued in lodNow */
-  due: number;
-  now: boolean;
+  /** removed (stale references in the LOD wake queue are skipped) */
+  gone: boolean;
   /** full geometry id whose proxy (being built) this building waits for, -1 none */
   waiting: number;
   /** built / rebuilt since its last LOD evaluation: the first level is applied without a cross-fade */
@@ -159,19 +165,22 @@ interface Fade {
   d: number;
 }
 
-/** LOD schedule: camera travel (m) per bucket, and ring size (travel horizon; longer slack is re-checked then) */
-const LOD_BUCKET = 1;
-const LOD_BUCKETS = 4096;
-/** camera travel in one frame that counts as a jump (view change / cut): the cut frame only upgrades (flat scan), the
- *  rest is caught up over the next frames. At least LOD_JUMP m and half the camera height (a fast zoom at a far view
- *  moves the camera 100-300 m per frame: smooth motion, sliced) */
+/** camera travel in one frame that counts as a jump (view change / cut): the due evaluations run by priority within
+ *  the catch-up budget (upgrades in view first). At least LOD_JUMP m and half the camera height (a fast zoom at a far
+ *  view moves the camera 100-300 m per frame: smooth motion) */
 const LOD_JUMP = 150;
+/** catch-up priority buckets (log2 of the triangles a building's proxy level saves) */
+const LOD_PRI = 16;
 /** a foundation skirt is drawn as its plain box (no cap band / step tier) while its exposed height projects under this
  *  many pixels (or the building is on its proxy) */
 const FOUND_PX = 2;
 /** the fade program is compiled after this many frames have drawn the buildings (see compileFade): the first frames
  *  after a load (or a city switch) carry none of its cost */
 const FADE_COMPILE_FRAMES = 12;
+/** ... in an idle period with at least this much time left (ms; its source assembly takes a few ms on a desktop,
+ *  15-20 ms on a loaded software renderer), or in the first idle period after FADE_IDLE_WAIT ms without one */
+const FADE_IDLE_MS = 8;
+const FADE_IDLE_WAIT = 15000;
 
 /** foundation skirt depth (m) for an exposed depth: + 0.8 m into the ground, quantized to 1.2 / 2.2 / 3.4 / 4.8 / 6.8
  *  (bounded geometry count) */
@@ -801,33 +810,31 @@ export class BuildingRenderer {
   readonly batch: DynamicBatch;
   private inst = new Map<number, BInst>();
   private lastLodPixels = -1;
-  /** LOD schedule by camera travel: after an evaluation a building's slack (distance to its swap distance) says how
-   *  far the camera can travel before the building could need the other level (|distance change| <= path length);
-   *  it is queued in the ring bucket of travel (lodTravel + slack) and re-evaluated when the travel gets there.
-   *  New / rebuilt / (de)selected buildings and a new metric (quality, FOV, resize) are evaluated at once (lodNow). */
-  private lodTravel = 0;
+  private lastLodOn = -1;
+  /** LOD schedule by distance bands: after an evaluation a building's levels stay right while its camera distance d
+   *  stays within [lo, hi] (its swap distances with their hysteresis: lo the upgrade distance of what it draws below
+   *  full detail, hi the downgrade distance of what it draws at full detail; 0 / Infinity where nothing can swap),
+   *  kept squared in the flat arrays lo2 / hi2. A frame whose camera moved scans them (see scan) and evaluates the
+   *  buildings out of their band. New / rebuilt / (de)selected buildings (lodQueue) and a new metric (quality, FOV,
+   *  resize) make their bands due at once (lo2 = Infinity) and the next update scan. */
   private lodPos = new THREE.Vector3(NaN, NaN, NaN);
   /** the camera position of the previous updateLod (how fast each building's distance changes, see fadeFast) */
   private lodPrev = new THREE.Vector3(NaN, NaN, NaN);
   private lodK = NaN;
-  private lodBuckets: BInst[][] = Array.from({ length: LOD_BUCKETS }, () => []);
-  private lodSpare: BInst[] = [];
-  /** next bucket (absolute index) to evaluate */
-  private lodAt = 0;
-  /** the travel bucket of the previous update (the buckets a frame's own travel makes due: see dueSince) */
-  private lodCur = 0;
-  private lodNow: BInst[] = [];
-  private lodNowSpare: BInst[] = [];
-  /** at most this many building evaluations per frame while the camera moves smoothly (a new metric spreads over a
-   *  few frames) */
-  lodSlice = 3000;
-  /** evaluations per frame while catching up after a camera jump (upgrades are done by the cut frame's scan; what is
-   *  left are mostly downgrades), on top of what the frame's own camera travel made due: the backlog shrinks by about
-   *  this much per frame however fast the camera keeps moving */
-  lodCatch = 1000;
-  /** due evaluations were left over (after a jump or a heavy frame): upgrades come from the flat scan meanwhile */
+  /** some band was made due (lodQueue, a new metric, flushLod): the next update scans even with a resting camera */
+  private lodScanAll = false;
+  /** at most this many due buildings are evaluated in a frame of smooth motion in the order found; beyond it, and in
+   *  cut frames / while behind, they are evaluated by priority within lodCatchMs */
+  lodSlice = 1500;
+  /** time budget (ms per frame) of the prioritized evaluations (cut frames and the frames catching up after them, a
+   *  new metric): upgrades in view are always all done, the rest (downgrades heaviest first, then upgrades out of view)
+   *  within this budget */
+  lodCatchMs = 2.5;
+  /** ... and at most this many of them per frame (tests; the time budget is what bounds it in the game) */
+  lodCatch = Infinity;
+  /** due evaluations were left over (after a jump or a heavy frame): the next frames scan and catch up by priority */
   lodBehind = false;
-  /** next update ignores lodSlice (flushLod: captures / benchmarks want the settled state now) */
+  /** next update evaluates everything due without a budget (flushLod: captures / benchmarks want the settled state) */
   private lodFull = false;
   private animating = new Set<number>();
   private m4 = new THREE.Matrix4();
@@ -859,15 +866,21 @@ export class BuildingRenderer {
   /** woken buildings evaluated per frame (x4 when swaps are instant: no fade to pace) */
   lodWakeSlice = 64;
   private disposed = false;
-  /** dense list of instances for the per-frame LOD sweep */
+  /** dense list of instances for the per-frame LOD scan */
   private list: BInst[] = [];
   /** flat copies per list index: LOD centre (also read by every evaluation / fade distance: much cheaper than the
-   *  visual's boxed doubles), and for the jump scan the scan radius and level (1 = proxy or plain skirt; see flat) */
+   *  visual's boxed doubles), the squared distance band of its current levels (see lodPos) and its catch-up priority
+   *  (log2 of the triangles its proxy level saves, see prio) */
   private lx = new Float32Array(1024);
   private ly = new Float32Array(1024);
   private lz = new Float32Array(1024);
-  private lr = new Float32Array(1024);
-  private ls = new Uint8Array(1024);
+  private lo2 = new Float32Array(1024);
+  private hi2 = new Float32Array(1024);
+  private lpr = new Uint8Array(1024);
+  /** scan output (list indices of the buildings out of their band) and the catch-up's ordering scratch */
+  private scanOut = new Int32Array(1024);
+  private catchOrd = new Int32Array(1024);
+  private catchCnt = new Int32Array(LOD_PRI + 1);
   /** every building is due (flushLod) */
   private lodDirty = true;
   /** projected radius (px) below which a building is drawn with its proxy (0 = LOD off); hysteresis +-12% */
@@ -895,17 +908,24 @@ export class BuildingRenderer {
    *  motion), but the hysteresis band against the 1.12 upgrade threshold narrows (12% instead of 27%): measured ~10%
    *  more main-thread CPU in motion (more evaluations, swaps and fades), so not the default */
   fadeOn = 0.88;
-  /** view motion per frame (lateral camera shift / view distance + turn, rad) from which the number of concurrent fades
-   *  is cut down (fadeMax up to the first value, none from the second): fast pans and orbits change the view wholesale,
-   *  a dissolve there is invisible and only draws both levels */
-  fadeMotion: [number, number] = [0.02, 0.06];
+  /** view motion per frame (camera shift across the view and along it, both relative to the view distance, + turn,
+   *  rad) from which the number of concurrent fades is cut down (fadeMax up to the first value, none from the second):
+   *  fast pans, orbits and zooms change the view wholesale, a dissolve there is invisible and only draws both levels.
+   *  A slow drag (3 m / frame at the default view: 0.004) dissolves everything; a 90 deg/s orbit (0.043), a fast wheel
+   *  zoom (> 3% of the view distance per frame) or a zoom sweep swap at once */
+  fadeMotion: [number, number] = [0.012, 0.03];
   /** fadeMax scaled down by this frame's view motion (see fadeMotion) */
   private fadeCap = 1024;
-  /** the fade layer's program is compiled: it is compiled asynchronously a few frames after the first one that drew the
-   *  buildings (not in the load-time precompile, see compileFade); until then every swap is instant */
+  /** cross-fades run only while lodPixels <= this: the medium / high / ultra presets (10 / 9 / 7 px); the low preset
+   *  (11 px, weak machines) swaps at once like the instant LOD, without the fade layer's draws */
+  fadeMaxPixels = 10;
+  /** the fade layer's program is compiled: it is compiled in an idle period a few frames after the first one that drew
+   *  the buildings (not in the load-time precompile, see compileFade); until then every swap is instant */
   fadeReady = false;
-  /** 0 waiting for FADE_COMPILE_FRAMES drawn frames, 1 compile at the next update, 2 compiling, 3 ready */
+  /** 0 waiting for FADE_COMPILE_FRAMES drawn frames, 1 schedule the compile at the next update, 4 waiting for an idle
+   *  period, 2 compiling, 3 ready */
   private fadeStage = 0;
+  private fadeIdleSince = 0;
   private fadeFrames = 0;
   private fadeFrameNo = -1;
   private fadeRc: { r: THREE.WebGLRenderer; scene: THREE.Object3D; cam: THREE.Camera; rt: THREE.WebGLRenderTarget | null } | null = null;
@@ -957,11 +977,31 @@ export class BuildingRenderer {
   }
 
   /**
+   * Schedule the fade program's compile into an idle period: three's source assembly for the city material's fade
+   * variant is synchronous (a few ms on a desktop, 15-20 ms on a loaded software renderer), so it must not run inside a
+   * frame. requestIdleCallback with at least FADE_IDLE_MS left (or any idle period once FADE_IDLE_WAIT ms passed
+   * without one); without it (no idle callbacks), a task between frames.
+   */
+  private scheduleFadeCompile(): void {
+    this.fadeStage = 4;
+    this.fadeIdleSince = performance.now();
+    const ric = (globalThis as { requestIdleCallback?: (cb: (d: { timeRemaining(): number; didTimeout: boolean }) => void, o?: { timeout: number }) => number }).requestIdleCallback;
+    if (typeof ric !== 'function') { setTimeout(() => this.compileFade(), 0); return; }
+    const tryIdle = (d: { timeRemaining(): number; didTimeout: boolean }) => {
+      if (this.disposed || this.fadeStage !== 4) return;
+      if (d.timeRemaining() >= FADE_IDLE_MS || performance.now() - this.fadeIdleSince > FADE_IDLE_WAIT) this.compileFade();
+      else ric(tryIdle, { timeout: 1000 });
+    };
+    ric(tryIdle, { timeout: 1000 });
+  }
+
+  /**
    * Compile the fade layer's program off the load path: once FADE_COMPILE_FRAMES frames have drawn the buildings (the
-   * load-time precompile, PostFX.compileScene, does not see the layer: it joins the scene graph here), with that scene
-   * pass's render target bound (the same output variant, as compileScene does) and asynchronously where
-   * KHR_parallel_shader_compile exists (three's compileAsync polls the program instead of blocking on it). Fades start
-   * once it is ready (fadeReady); a quality change recompiles the scene, the layer included, as before.
+   * load-time precompile, PostFX.compileScene, does not see the layer: it joins the scene graph here), in an idle
+   * period (scheduleFadeCompile), with that scene pass's render target bound (the same output variant, as
+   * compileScene does) and asynchronously where KHR_parallel_shader_compile exists (three's compileAsync polls the
+   * program instead of blocking on it). Fades start once it is ready (fadeReady); a quality change recompiles the
+   * scene, the layer included, as before.
    */
   private compileFade(): void {
     const rc = this.fadeRc;
@@ -1058,7 +1098,7 @@ export class BuildingRenderer {
       for (const bi of w) {
         if (bi.waiting !== geom) continue;
         bi.waiting = -1;
-        if (bi.due !== -2 && bi.geom === geom) this.lodWake.push(bi);
+        if (!bi.gone && bi.geom === geom) this.lodWake.push(bi);
       }
     }
     return id;
@@ -1091,11 +1131,23 @@ export class BuildingRenderer {
   /** build every pending LOD proxy now and settle every level (captures, benchmarks): no cut catch-up, no fades */
   flushLod(): void {
     for (const g of [...this.lodPending.keys()]) this.proxyOf(g, true);
-    for (const bi of this.list) if (bi.lodGeom < 0) bi.lodGeom = this.proxyOf(bi.geom, true);
+    for (const bi of this.list) if (bi.lodGeom < 0) { bi.lodGeom = this.proxyOf(bi.geom, true); this.prio(bi); }
     while (this.fades.length) this.finishFade(this.fades[this.fades.length - 1]);
     this.fadeLayer.sync();
     this.lodDirty = true;
     this.lodFull = true;
+  }
+
+  /** catch-up priority of a building: log2 of the triangles its proxy level saves (all its levels: model, site, rubble
+   *  pieces; a model whose proxy is not known yet counts its full triangles) */
+  private prio(bi: BInst): void {
+    const B = this.batch;
+    let t = 0;
+    if (bi.kitM) {
+      for (let k = 0; k < bi.kitGeo.length; k++) t += B.triangles(bi.kitGeo[k]) - B.triangles(bi.kitLod[k]);
+    } else if (bi.geom >= 0 && bi.lodGeom !== bi.geom) t = B.triangles(bi.geom) - (bi.lodGeom >= 0 ? B.triangles(bi.lodGeom) : 0);
+    if (bi.siteGeom >= 0 && bi.siteLod !== bi.siteGeom) t += B.triangles(bi.siteGeom) - (bi.siteLod >= 0 ? B.triangles(bi.siteLod) : 0);
+    this.lpr[bi.li] = t >= 2 ? Math.min(LOD_PRI - 1, Math.floor(Math.log2(t))) : 0;
   }
 
   /**
@@ -1387,11 +1439,9 @@ export class BuildingRenderer {
   }
 
   clear(): void {
-    for (const bi of this.inst.values()) { this.freeInstances(bi); bi.due = -2; }
+    for (const bi of this.inst.values()) { this.freeInstances(bi); bi.gone = true; }
     this.inst.clear();
     this.list.length = 0;
-    for (const q of this.lodBuckets) q.length = 0;
-    this.lodNow.length = 0;
     this.lodWake.length = 0;
     this.lodWakeAt = 0;
     this.lodCount = 0;
@@ -1433,11 +1483,13 @@ export class BuildingRenderer {
 
   /** room in the flat per-building arrays for index i */
   private ensureFlat(i: number): void {
-    if (i < this.ls.length) return;
-    const n = Math.max(i + 1, this.ls.length * 2);
+    if (i < this.lpr.length) return;
+    const n = Math.max(i + 1, this.lpr.length * 2);
     const grow = (a: Float32Array) => { const b = new Float32Array(n); b.set(a); return b; };
-    this.lx = grow(this.lx); this.ly = grow(this.ly); this.lz = grow(this.lz); this.lr = grow(this.lr);
-    const s = new Uint8Array(n); s.set(this.ls); this.ls = s;
+    this.lx = grow(this.lx); this.ly = grow(this.ly); this.lz = grow(this.lz); this.lo2 = grow(this.lo2); this.hi2 = grow(this.hi2);
+    const s = new Uint8Array(n); s.set(this.lpr); this.lpr = s;
+    this.scanOut = new Int32Array(n);
+    this.catchOrd = new Int32Array(n);
   }
 
   add(b: Building, animate = true): void {
@@ -1447,12 +1499,11 @@ export class BuildingRenderer {
     const bi: BInst = {
       b, main: -1, site: -1, found: -1, cells: [], kitGeo: [], kitLod: [], kitM: null, shear: [], tile: 0, key: '', flags: 0, cr: 1, cg: 1, cb: 1, anim: animate ? POP_TIME : 0, geom: -1,
       vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, minH: 0, foundGeom: -1, foundLod: -1, fh: 0, flod: 0,
-      li: this.list.length, due: -1, now: false, waiting: -1, fresh: true, fade: null,
+      id: b.id, li: this.list.length, gone: false, waiting: -1, fresh: true, fade: null,
     };
     this.inst.set(b.id, bi);
     this.ensureFlat(bi.li);
     this.list.push(bi);
-    this.ls[bi.li] = 0;
     this.build(bi);
     if (animate) this.animating.add(b.id);
   }
@@ -1463,13 +1514,14 @@ export class BuildingRenderer {
     this.freeInstances(bi);
     this.inst.delete(id);
     if (bi.lod) this.lodCount--;
-    bi.due = -2;
+    bi.gone = true;
     const last = this.list.pop()!;
     if (last !== bi) {
       const i = bi.li, j = last.li;
       this.list[i] = last;
       last.li = i;
-      this.lx[i] = this.lx[j]; this.ly[i] = this.ly[j]; this.lz[i] = this.lz[j]; this.lr[i] = this.lr[j]; this.ls[i] = this.ls[j];
+      this.lx[i] = this.lx[j]; this.ly[i] = this.ly[j]; this.lz[i] = this.lz[j];
+      this.lo2[i] = this.lo2[j]; this.hi2[i] = this.hi2[j]; this.lpr[i] = this.lpr[j];
     }
     this.animating.delete(id);
     this.onVisual?.(null, id);
@@ -1578,7 +1630,7 @@ export class BuildingRenderer {
     bi.cy = kit ? b.baseY + RUB_TOP + 1 : b.baseY + sp.center.y + (bi.shear.length ? bi.shear[2] : 0);
     const li = bi.li;
     this.lx[li] = cx; this.ly[li] = bi.cy; this.lz[li] = cz;
-    this.flat(bi);
+    this.prio(bi);
     this.applyColor(bi);
     this.place(bi);
     for (const id of [bi.main, bi.site, bi.found]) if (id >= 0) this.batch.setTile(id, bi.tile);
@@ -1668,61 +1720,54 @@ export class BuildingRenderer {
 
   /**
    * Distance LOD: swap buildings to / from their proxy by projected radius (px) with hysteresis. Call once per frame
-   * with the view camera and the drawing-buffer height in pixels. Only buildings the camera travel could have carried
-   * across their swap distance are evaluated (none while the camera stands still or only turns); after a camera jump
-   * the cut frame only upgrades (flat scan) and the remaining evaluations are spread over the next frames.
+   * with the view camera and the drawing-buffer height in pixels. A frame whose camera moved scans the distance bands
+   * (see lodPos) and evaluates the buildings that left theirs (none while the camera rests); cut frames, a new metric
+   * and backlogs evaluate by priority within lodCatchMs (see catchUp).
    */
   updateLod(camera: THREE.PerspectiveCamera, heightPx: number): void {
-    // the fade program, once the first frame has drawn the buildings (see compileFade)
-    if (this.fadeStage === 1) this.compileFade();
+    // the fade program, in an idle period once the first frames have drawn the buildings (see compileFade)
+    if (this.fadeStage === 1) this.scheduleFadeCompile();
     const c = camera.position;
     // px = radius / dist * H / (2 tan(fov/2)): swap to the proxy beyond dist = radius * K / on, back within radius * K / off
     const K = (heightPx / Math.tan((camera.fov * Math.PI) / 360)) * 0.5;
-    if (this.lodDirty || this.lodPixels !== this.lastLodPixels || !(Math.abs(K - this.lodK) < 0.25)) {
-      // new metric (quality preset, FOV, resize) or a flush: every building is due now
+    // cross-fades at medium quality and up (fadeMaxPixels). Downgrades at 0.88 x lodPixels, or while swaps may fade at
+    // fadeOn x (see there); upgrades at 1.12 x (the full model appears where it would without a fade)
+    const fades = this.fadeTime > 0 && this.lodPixels <= this.fadeMaxPixels;
+    const on = this.lodPixels * (fades ? Math.min(1.08, this.fadeOn) : 0.88), off = this.lodPixels * 1.12;
+    if (this.lodDirty || this.lodPixels !== this.lastLodPixels || on !== this.lastLodOn || !(Math.abs(K - this.lodK) < 0.25)) {
+      // new metric (quality preset, FOV, resize) or a flush: every band is stale, every building due
       this.lodDirty = false;
       this.lastLodPixels = this.lodPixels;
+      this.lastLodOn = on;
       this.lodK = K;
-      // (flat: a plain skirt's scan radius scales with lodPixels)
-      for (const bi of this.list) { this.flat(bi); this.lodQueue(bi); }
+      this.lo2.fill(Infinity, 0, this.list.length);
+      this.lodScanAll = true;
     }
     const p = this.lodPos;
     const hop = p.x === p.x ? Math.hypot(c.x - p.x, c.y - p.y, c.z - p.z) : 0;
-    this.lodTravel += hop;
     this.lodPrev.copy(p);
     p.copy(c);
-    // view motion this frame: the camera's shift across its view (relative to the distance it looks at) plus its turn;
-    // fast pans / orbits get fewer (no) new fades (fadeMotion)
+    // view motion this frame: the camera's shift across its view and along it (zoom), both relative to the distance
+    // it looks at, plus its turn; fast pans / orbits / zooms get fewer (no) new fades (fadeMotion)
     const f = camera.getWorldDirection(_dir), q0 = this.lodDir;
     let motion = 0;
     if (q0.x === q0.x && hop > 0) {
       const hx = c.x - this.lodPrev.x, hy = c.y - this.lodPrev.y, hz = c.z - this.lodPrev.z;
       const along = hx * f.x + hy * f.y + hz * f.z;
       const lat = Math.sqrt(Math.max(0, hop * hop - along * along));
-      motion = lat / (f.y < -0.05 ? Math.max(30, c.y / -f.y) : 3000);
+      motion = (lat + Math.abs(along)) / (f.y < -0.05 ? Math.max(30, c.y / -f.y) : 3000);
     }
     if (q0.x === q0.x) motion += Math.acos(Math.min(1, Math.max(-1, f.x * q0.x + f.y * q0.y + f.z * q0.z)));
     q0.copy(f);
     const [m0, m1] = this.fadeMotion;
     this.fadeCap = motion <= m0 ? this.fadeMax : motion >= m1 ? 0 : Math.floor((this.fadeMax * (m1 - motion)) / (m1 - m0));
-    const cur = Math.floor(this.lodTravel / LOD_BUCKET), prev = this.lodCur;
-    this.lodCur = cur;
-    if (cur - this.lodAt >= LOD_BUCKETS - 2) {
-      // a jump beyond the schedule horizon: everything is due
-      for (const q of this.lodBuckets) q.length = 0;
-      for (const bi of this.list) this.lodQueue(bi);
-      this.lodAt = cur + 1;
-    }
     const behind = this.lodBehind;
-    if (!this.lodNow.length && this.lodAt > cur && !behind && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
-    // downgrades: at 0.88 x lodPixels, or while swaps may fade at fadeOn x (see there); upgrades at 1.12 x (the full
-    // model appears where it would without a fade)
-    const on = this.lodPixels * (this.fadeTime > 0 ? Math.min(1.08, this.fadeOn) : 0.88), off = this.lodPixels * 1.12;
+    const scan = hop > 0 || behind || this.lodScanAll;
+    if (!scan && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
     this.lodDeadline = performance.now() + this.lodBudgetMs;
     const full = this.lodFull;
     this.lodFull = false;
-    // a jump (view change, camera cut): the cut frame upgrades every proxy that is now close (a slice would leave big
-    // buildings in view on their proxies for a frame or two); the downgrades wait for the catch-up frames
+    // a jump (view change, camera cut): its due buildings are evaluated by priority (upgrades in view at once)
     const jump = !full && hop > Math.max(LOD_JUMP, c.y * 0.5);
     this.lodCamera = camera;
     this.lodKNow = K;
@@ -1730,130 +1775,141 @@ export class BuildingRenderer {
     // cross-fades only in smooth motion: not in a flush, a cut frame or the catch-up frames after a cut (behind). The
     // view changed as a whole there, and the late downgrades (buildings already under lodPixels) swap at once instead
     // of drawing both levels of up to fadeMax buildings for fadeTime
-    this.fadeNow = !full && !jump && !behind && this.fadeTime > 0;
+    this.fadeNow = !full && !jump && !behind && fades;
     // a cut settles the running fades (their buildings mostly left the view, and the fade layer is not culled)
     if (jump) while (this.fades.length) this.finishFade(this.fades[this.fades.length - 1]);
-    if (!full && this.lodPixels > 0 && (jump || (behind && hop > 0))) this.upgradeScan(c, K, on, off, cur);
-    // (catching up: lodCatch on top of the frame's own share, so a fast pan after a cut does not stay behind for long)
-    let budget = full ? Infinity : jump ? this.lodCatch >> 2 : behind ? Math.min(this.lodSlice, this.lodCatch + this.dueSince(prev, cur)) : this.lodSlice;
-    if (this.lodNow.length && budget > 0) {
-      // (two alternating arrays: no garbage per frame)
-      const q = this.lodNow;
-      this.lodNow = this.lodNowSpare;
-      this.lodNowSpare = q;
-      let i = 0;
-      for (; i < q.length && budget > 0; i++) {
-        const bi = q[i];
-        bi.now = false;
-        if (bi.due === -2) continue;
-        this.lodEval(bi, c, K, on, off, cur);
-        budget--;
+    let left = false;
+    if (scan) {
+      // (an evaluation may queue its building again for the next update: lodQueue)
+      this.lodScanAll = false;
+      const n = this.scan(c);
+      if (n > 0) {
+        // smooth motion: everything due, in list order; else (a cut, a backlog, a new metric, a heavy frame) by priority
+        if (full || (!jump && !behind && n <= this.lodSlice)) {
+          const out = this.scanOut, list = this.list;
+          for (let k = 0; k < n; k++) this.lodEval(list[out[k]], c, K, on, off);
+        } else left = this.catchUp(n, c, K, on, off);
       }
-      // over the frame budget: the rest stays due
-      for (; i < q.length; i++) this.lodNow.push(q[i]);
-      q.length = 0;
-    }
-    while (this.lodAt <= cur && budget > 0) {
-      const slot = this.lodAt % LOD_BUCKETS;
-      const q = this.lodBuckets[slot];
-      // re-scheduled entries may land in this ring slot again (one lap ahead): collect them in a fresh array
-      this.lodBuckets[slot] = this.lodSpare;
-      for (let i = 0; i < q.length; i++) {
-        const bi = q[i];
-        // stale entry (re-queued / removed since)
-        if (bi.due !== this.lodAt) continue;
-        this.lodEval(bi, c, K, on, off, cur);
-        budget--;
-      }
-      q.length = 0;
-      this.lodSpare = q;
-      this.lodAt++;
     }
     // buildings whose proxy arrived (they waited on their full model): a few per frame, never in a cut frame
-    if (this.lodWakeAt < this.lodWake.length && !jump) this.wakeWaiting(c, K, on, off, cur, full);
-    this.lodBehind = this.lodNow.length > 0 || this.lodAt <= cur;
+    if (this.lodWakeAt < this.lodWake.length && !jump) this.wakeWaiting(c, K, on, off, full);
+    this.lodBehind = left;
     this.fadeLayer.sync();
+  }
+
+  /** list indices of the buildings whose camera distance left the band of their current levels (see lodPos) ->
+   *  scanOut; returns how many. Flat typed arrays only: a few ns per building */
+  private scan(c: THREE.Vector3): number {
+    const lx = this.lx, ly = this.ly, lz = this.lz, lo2 = this.lo2, hi2 = this.hi2, out = this.scanOut;
+    const px = c.x, py = c.y, pz = c.z;
+    let k = 0;
+    for (let i = 0, n = this.list.length; i < n; i++) {
+      const dx = lx[i] - px, dy = ly[i] - py, dz = lz[i] - pz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < lo2[i] || d2 > hi2[i]) out[k++] = i;
+    }
+    return k;
+  }
+
+  /**
+   * The due buildings (scanOut [0, n)) of a cut frame, a backlog, a new metric or a heavy frame, by priority: upgrades
+   * in view all at once (no big building in view left on its proxy), then — within lodCatchMs and lodCatch
+   * evaluations — downgrades by the triangles they save, heaviest first (what a cut leaves over is mostly towers: the
+   * first frame removes most of the excess), then upgrades out of view (only their shadows show). Returns true when
+   * some were left for the next frame (lodBehind: the next update scans again, so nothing goes stale).
+   */
+  private catchUp(n: number, c: THREE.Vector3, K: number, on: number, off: number): boolean {
+    const out = this.scanOut, ord = this.catchOrd, cnt = this.catchCnt, list = this.list;
+    const lx = this.lx, ly = this.ly, lz = this.lz, lo2 = this.lo2, lpr = this.lpr;
+    const px = c.x, py = c.y, pz = c.z;
+    const fr = this.viewFrustum();
+    // classify: upgrades (a building under its band: lo2 = Infinity for new / rebuilt ones) in view now, out of view
+    // compacted to the front of scanOut; downgrades into catchOrd, counted per priority bucket (highest first)
+    cnt.fill(0);
+    let nu = 0, nd = 0;
+    for (let k = 0; k < n; k++) {
+      const i = out[k];
+      const dx = lx[i] - px, dy = ly[i] - py, dz = lz[i] - pz;
+      if (dx * dx + dy * dy + dz * dz < lo2[i]) {
+        const bi = list[i];
+        _sphere.center.set(lx[i], ly[i], lz[i]);
+        _sphere.radius = bi.radius;
+        if (!fr || fr.intersectsSphere(_sphere)) this.lodEval(bi, c, K, on, off);
+        else out[nu++] = i;
+      } else {
+        ord[nd++] = i;
+        cnt[LOD_PRI - 1 - lpr[i] + 1]++;
+      }
+    }
+    // downgrades sorted by priority (stable counting sort into scanOut after the deferred upgrades)
+    cnt[0] = nu;
+    for (let b = 1; b <= LOD_PRI; b++) cnt[b] += cnt[b - 1];
+    for (let j = 0; j < nd; j++) { const i = ord[j]; out[cnt[LOD_PRI - 1 - lpr[i]]++] = i; }
+    const end = performance.now() + this.lodCatchMs;
+    let budget = this.lodCatch, k = nu;
+    const stop = nu + nd;
+    for (; k < stop && budget > 0; k++, budget--) {
+      if ((k & 15) === 0 && performance.now() > end) break;
+      this.lodEval(list[out[k]], c, K, on, off);
+    }
+    if (k < stop) return true;
+    // upgrades out of view (shadows only)
+    for (k = 0; k < nu && budget > 0; k++, budget--) {
+      if ((k & 15) === 0 && performance.now() > end) break;
+      this.lodEval(list[out[k]], c, K, on, off);
+    }
+    return k < nu;
   }
 
   /** evaluate buildings woken by an arriving proxy (lodWake): a flush takes all; else lodWakeSlice per frame — while
    *  swaps may fade only as long as fewer than half the fade cap run (each wake dissolves; the rest waits for the
    *  running fades), x4 when swaps are instant anyway. Those buildings are already past their downgrade distance on
    *  their full model, so pacing them only delays a GPU saving, never shows the wrong detail up close */
-  private wakeWaiting(c: THREE.Vector3, K: number, on: number, off: number, cur: number, all: boolean): void {
+  private wakeWaiting(c: THREE.Vector3, K: number, on: number, off: number, all: boolean): void {
     const q = this.lodWake;
     const fading = this.fadeNow && this.fadeReady && this.fadeCap > 0;
     let n = all ? Infinity : fading ? Math.min(this.lodWakeSlice, (this.fadeCap >> 1) - this.fades.length) : this.lodWakeSlice * 4;
     while (n > 0 && this.lodWakeAt < q.length) {
       const bi = q[this.lodWakeAt++];
-      // removed, queued / scheduled by another evaluation meanwhile, or waiting again (rebuilt with a new model)
-      if (bi.due !== -1 || bi.now || bi.waiting >= 0) continue;
-      this.lodEval(bi, c, K, on, off, cur);
+      // removed, or waiting again (rebuilt with a new model)
+      if (bi.gone || bi.waiting >= 0) continue;
+      this.lodEval(bi, c, K, on, off);
       n--;
     }
     if (this.lodWakeAt >= q.length) { q.length = 0; this.lodWakeAt = 0; }
   }
 
-  /** every building drawn as a proxy (or with a plain foundation box) that is now within its upgrade distance gets its
-   *  full model: evaluated now when it is in the view, else queued first for the catch-up frames (out of view it only
-   *  draws into shadows). A flat pass over typed arrays: ~10k buildings in well under a millisecond */
-  private upgradeScan(c: THREE.Vector3, K: number, on: number, off: number, cur: number): void {
-    const lx = this.lx, ly = this.ly, lz = this.lz, lr = this.lr, ls = this.ls, list = this.list;
-    const px = c.x, py = c.y, pz = c.z, off2 = off * off, K2 = K * K;
-    const fr = this.viewFrustum();
-    for (let i = 0, n = list.length; i < n; i++) {
-      if (!ls[i]) continue;
-      const dx = lx[i] - px, dy = ly[i] - py, dz = lz[i] - pz;
-      const r = lr[i];
-      if ((dx * dx + dy * dy + dz * dz) * off2 >= r * r * K2) continue;
-      _sphere.center.set(lx[i], ly[i], lz[i]);
-      _sphere.radius = list[i].radius;
-      if (!fr || fr.intersectsSphere(_sphere)) this.lodEval(list[i], c, K, on, off, cur);
-      else this.lodQueue(list[i]);
-    }
-    // the selected building is always drawn full
-    if (this.selected != null) {
-      const s = this.inst.get(this.selected);
-      if (s && (s.lod || s.flod)) this.lodEval(s, c, K, on, off, cur);
-    }
-  }
-
-  /** schedule entries in the travel buckets (prev, cur]: what this frame's own camera travel made due (an upper bound:
-   *  stale entries count too) */
-  private dueSince(prev: number, cur: number): number {
-    let n = 0;
-    for (let b = Math.max(prev + 1, this.lodAt, cur - LOD_BUCKETS + 2); b <= cur; b++) n += this.lodBuckets[b % LOD_BUCKETS].length;
-    return n;
-  }
-
-  /** evaluate a building's LOD at the next update */
+  /** evaluate a building's LOD at the next update (its band due at once) */
   private lodQueue(bi: BInst): void {
-    if (bi.due === -2) return;
-    bi.due = -1;
-    if (!bi.now) { bi.now = true; this.lodNow.push(bi); }
+    if (bi.gone) return;
+    this.lo2[bi.li] = Infinity;
+    this.lodScanAll = true;
   }
 
-  /** evaluate a building's LOD now (swap if needed) and schedule its next evaluation */
-  private lodEval(bi: BInst, c: THREE.Vector3, K: number, on: number, off: number, cur: number): void {
-    bi.due = -1;
+  /** evaluate a building's LOD now (swap if needed) and store the distance band its levels now stay right for */
+  private lodEval(bi: BInst, c: THREE.Vector3, K: number, on: number, off: number): void {
+    const li = bi.li;
     // a building's first level after it was built / rebuilt is applied at once (no fade); a later swap (also the one
     // when a proxy it waited for arrives) fades
     this.evalFresh = bi.fresh;
     bi.fresh = false;
+    // (nothing due until a band is set below: buildings without levels, LOD off / selected, waiting for a proxy)
+    this.lo2[li] = 0;
+    this.hi2[li] = Infinity;
     // (rubble kit lots: the pieces carry the levels)
     const levels = bi.kitM !== null || bi.lodGeom !== bi.geom || bi.siteLod !== bi.siteGeom;
-    // no proxy and no foundation: always full, nothing to schedule (a rebuild re-queues it)
+    // no proxy and no foundation: always full (a rebuild re-queues it)
     if (!levels && bi.found < 0) { this.lodSet(bi, 0); return; }
-    // (the LOD centre from the flat arrays: no pointer chase into the visual and its boxed doubles per evaluation, which
-    // measured 2-4x the cost of the whole evaluation in a zoom)
-    const li = bi.li;
+    // (the LOD centre from the flat arrays: no pointer chase into the visual and its boxed doubles per evaluation)
     const dx = this.lx[li] - c.x, dy = this.ly[li] - c.y, dz = this.lz[li] - c.z;
     const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
     const rk = bi.radius * K;
-    const lim = this.lodPixels > 0 && bi.b.id !== this.selected;
+    const lim = this.lodPixels > 0 && bi.id !== this.selected;
     const want = levels && lim && d * (bi.lod ? off : on) > rk ? 1 : 0;
     if (want && bi.lodGeom < 0) {
-      // first time this model is needed as a proxy: the worker builds it (the building stays full and is evaluated again
-      // when it arrives); without a worker it is built within the frame budget, else retried next frame
+      // first time this model is needed as a proxy: the worker builds it (the building stays full and is evaluated
+      // again when it arrives, see wakeWaiting); without a worker it is built within the frame budget, else retried
+      // at the next update
       const pg = this.proxyOf(bi.geom);
       if (pg < 0) {
         if (this.proxies) this.waitFor(bi, bi.geom);
@@ -1861,8 +1917,9 @@ export class BuildingRenderer {
         return;
       }
       bi.lodGeom = pg;
+      this.prio(bi);
       if (pg === bi.geom && bi.siteLod === bi.siteGeom && bi.found < 0) { this.lodSet(bi, 0); return; }
-      if (pg === bi.geom && bi.siteLod === bi.siteGeom) return this.lodEval(bi, c, K, on, off, cur);
+      if (pg === bi.geom && bi.siteLod === bi.siteGeom) { this.lodEval(bi, c, K, on, off); return; }
     }
     this.lodSet(bi, want);
     // foundation skirt: its plain box with the proxy, or while its exposed height projects under FOUND_PX (distance fk;
@@ -1872,38 +1929,26 @@ export class BuildingRenderer {
     this.setFound(bi, fw);
     // LOD off / selected: stays full until the metric or the selection changes (both re-queue)
     if (!lim) return;
-    // camera travel before a swap distance can be reached (the building's; while it is full also its skirt's); the
-    // bucket at or before that travel (at least the next)
-    let slack = levels ? (want ? d - rk / off : rk / on - d) : Infinity;
-    if (bi.found >= 0 && !want) slack = Math.min(slack, fw ? d - fk / 1.12 : fk / 0.88 - d);
-    // (capped one ring lap past the oldest unprocessed bucket, so no live entry shares a slot that is still pending)
-    const b = Math.min(this.lodAt + LOD_BUCKETS - 1, Math.max(cur + 1, Math.floor((this.lodTravel + Math.max(0, slack)) / LOD_BUCKET)));
-    bi.due = b;
-    this.lodBuckets[b % LOD_BUCKETS].push(bi);
+    // the band: below it the upgrade distance of what is drawn below full detail, above it the downgrade distance of
+    // what is drawn full (the skirt follows the building on its proxy)
+    let lo = 0, hi = Infinity;
+    if (levels) { if (want) lo = rk / off; else hi = rk / on; }
+    if (bi.found >= 0 && !want) { if (fw) lo = Math.max(lo, fk / 1.12); else hi = Math.min(hi, fk / 0.88); }
+    this.lo2[li] = lo * lo;
+    this.hi2[li] = hi * hi;
   }
 
   /** a building's foundation level (1 = the plain box) */
   private setFound(bi: BInst, f: number): void {
     if (bi.found < 0 || bi.flod === f) return;
     bi.flod = f;
-    this.flat(bi);
     this.batch.setGeometry(bi.found, f ? bi.foundLod : bi.foundGeom);
-  }
-
-  /** the upgrade scan's view of a building (ls / lr): drawn below full detail (proxy or plain skirt), and the radius
-   *  whose upgrade distance (radius x K / off) the scan tests: the building's own on its proxy (its skirt follows it),
-   *  else its skirt's (exposed height x lodPixels / FOUND_PX: the skirt turns full within that, only near the camera) */
-  private flat(bi: BInst): void {
-    const i = bi.li;
-    this.ls[i] = bi.lod | bi.flod;
-    this.lr[i] = bi.lod ? bi.radius : (bi.fh * this.lodPixels) / FOUND_PX;
   }
 
   private lodSet(bi: BInst, want: number): void {
     if (want === bi.lod) return;
     bi.lod = want;
     this.lodCount += want ? 1 : -1;
-    this.flat(bi);
     const f = bi.fade;
     // a level change back mid-fade: the fade runs backwards from where it is (in smooth motion; else it settles on the
     // new level at once)
