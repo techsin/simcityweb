@@ -13,7 +13,7 @@ import { ModelBuilder, PALETTE, type ColorLike, type Paint } from '../ModelBuild
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import type { ModelBuilders, ModelBuildFn } from '../registry';
-import { leafBlob, tintSince, foliageShade, mark } from './nat_geom';
+import { leafBlob, tintSince, foliageShade, mark, limb, triOutN, vadd, vcross, vlen, vnorm, vscale, vsub } from './nat_geom';
 
 export type P2 = [number, number];
 export type V3 = [number, number, number];
@@ -648,11 +648,19 @@ export type TreeKind = 'oak' | 'round' | 'cone' | 'poplar' | 'cherry' | 'birch' 
  * Seasons (Foliage patterns, materials.ts): broadleaf crowns are seasonal (1: autumn colours, bare in winter), cherries
  * blossom only in spring (2), conifers / palms / acacias / hedges are evergreen (4); lawns and flower beds use the
  * automatic pattern 0 (dormant in winter). Every seasonal crown gets its own random (floor channel) from its position,
- * so trees turn one by one - no extra rng draw, park layouts stay unchanged.
+ * so trees turn one by one - no extra rng draw, park layouts stay unchanged. Deciduous trees (and clump crowns) also
+ * carry a bare winter crown (twigCrown: limbs inside the leafy crown + pattern-5 twig sprays): their lobes are painted
+ * with floor = 1 + the tree's random, which tells the shader to swap the lobes for the twig sprays while the tree is
+ * bare (materials.ts, Foliage) - a see-through branch tangle in winter instead of a grey lump.
  */
 const FOL_SEASONAL = 1;
 const FOL_BLOSSOM = 2;
 const FOL_EVERGREEN = 4;
+/** winter twig spray of a kit tree: drawn only while its tree is bare (same floor value as the tree's lobes) */
+const FOL_TWIG = 5;
+/** bare-winter twigs: warm grey-brown (as the forest's bare trees, nature.ts), purple-brown for birches */
+const TWIG = 0x8c7b6a;
+const TWIG_BIRCH = 0x806259;
 /** per-tree random in [0, 1) from a position (the seasonal crown's floor channel) */
 const treeRand = (x: number, z: number) => Math.abs(Math.sin(x * 12.9898 + z * 78.233) * 43758.5453) % 1;
 /** Foliage pattern + per-tree random (floor channel) of the crown being built (set by tree() / treeClump()) */
@@ -662,6 +670,54 @@ let lobeSeason: [number, number] = [FOL_SEASONAL, 0.5];
 function lobe(b: ModelBuilder, rng: RNG, c: V3, r: V3, nc: V3, color: ColorLike): void {
   b.paint(color, Surf.Foliage, lobeSeason[0], lobeSeason[1]);
   leafBlob(b, rng, c, r, { soft: 0.62, nc, jitter: 0.16 });
+}
+
+/**
+ * Bare winter crown of a deciduous kit tree (see the seasons note above): `limbs` limbs from the trunk top `top` out to
+ * ~55% of the crown (radius rx / half-height ry around c: inside the leaf lobes, which hide them in leaf), each tip and
+ * a leader fanning out 4 slender double-sided twig spikes (pattern 5, floor = the lobes' floor) to about the crown's
+ * size. No rng draws (layouts unchanged): the shape is hashed from the tree position. ~32-50 tris.
+ */
+function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3, rx: number, ry: number, floor: number, bark: ColorLike, rT: number, o: { limbs?: number; twig?: ColorLike; upright?: number; spikes?: number } = {}): void {
+  const hr = (i: number) => treeRand(x * 1.13 + i * 7.31 + 0.5, z * 0.97 - i * 3.17 + 0.25);
+  const up = o.upright ?? 0, nl = o.limbs ?? 3, ns = o.spikes ?? 4;
+  b.paint(bark, Surf.Wood);
+  const tips: { p: V3; d: V3 }[] = [];
+  const a0 = hr(0) * TAU;
+  for (let i = 0; i < nl; i++) {
+    const a = a0 + (i / nl) * TAU + (hr(i + 1) - 0.5) * 0.6;
+    const reach = rx * (0.48 + 0.12 * hr(i + 4)) * (1 - 0.45 * up);
+    const p1: V3 = [c[0] + Math.cos(a) * reach, c[1] + ry * (0.05 + 0.3 * hr(i + 7) + 0.25 * up), c[2] + Math.sin(a) * reach];
+    limb(b, [top, p1], [rT * 0.55, rT * 0.2], { seg: 3 });
+    tips.push({ p: p1, d: vnorm(vsub(p1, top)) });
+  }
+  const lead: V3 = [c[0] + (hr(10) - 0.5) * rx * 0.2, c[1] + ry * 0.5, c[2] + (hr(11) - 0.5) * rx * 0.2];
+  limb(b, [top, lead], [rT * 0.45, rT * 0.15], { seg: 3 });
+  tips.push({ p: lead, d: vnorm(vsub(lead, top)) });
+  const L = Math.max(rx, ry) * 0.55;
+  tips.forEach(({ p, d }, ti) => {
+    const side0 = vcross(d, [0, 1, 0]);
+    const sa: V3 = vlen(side0) > 0.1 ? vnorm(side0) : [1, 0, 0];
+    const sb = vnorm(vcross(sa, d));
+    const ph = hr(20 + ti) * TAU;
+    for (let k = 0; k < ns; k++) {
+      b.paint(k === 1 ? shade(o.twig ?? TWIG, 0.9) : (o.twig ?? TWIG), Surf.Foliage, FOL_TWIG, floor);
+      const an = ph + (k / ns) * TAU;
+      const cone = 0.45 + 0.35 * hr(30 + ti * 7 + k);
+      const dir = vnorm(vadd(vadd(d, vadd(vscale(sa, Math.cos(an) * cone), vscale(sb, Math.sin(an) * cone))), [0, 0.25, 0]));
+      const side = vnorm(vcross(dir, Math.abs(dir[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]));
+      const len = L * (0.8 + 0.4 * hr(60 + ti * 7 + k));
+      const base = vadd(p, vscale(dir, -len * 0.1));
+      const tip = vadd(p, vscale(dir, len));
+      const w = len * 0.09;
+      const q0 = vadd(base, vscale(side, w)), q1 = vadd(base, vscale(side, -w));
+      const n = vnorm(vcross(vsub(q1, tip), vsub(q0, tip)));
+      // both faces share one soft up / outward normal: the sprays light like a twig haze from every side
+      const nsh = vnorm(vadd(vscale(dir, 0.45), [0, 0.9, 0]));
+      triOutN(b, tip, q1, q0, nsh, nsh, nsh, n);
+      triOutN(b, tip, q0, q1, nsh, nsh, nsh, vscale(n, -1));
+    }
+  });
 }
 
 const DECIDUOUS: ReadonlySet<string> = new Set(['oak', 'round', 'maple', 'birch', 'poplar', 'willow']);
@@ -675,8 +731,11 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
   [x, z] = clampIn(x, z, CANOPY_R[kind] * k);
   const g = rng.pick(FOLIAGE);
   let m = 0;
-  // seasonal crowns: cherry = spring blossom, other broadleaves deciduous, the rest evergreen
-  lobeSeason = [kind === 'cherry' ? FOL_BLOSSOM : DECIDUOUS.has(kind) ? FOL_SEASONAL : FOL_EVERGREEN, treeRand(x, z)];
+  // seasonal crowns: cherry = spring blossom, other broadleaves deciduous, the rest evergreen; deciduous lobes carry
+  // the bare-winter swap marker (floor >= 1, see twigCrown)
+  const decid = kind === 'cherry' || DECIDUOUS.has(kind);
+  const fl = decid ? 1 + treeRand(x, z) : treeRand(x, z);
+  lobeSeason = [kind === 'cherry' ? FOL_BLOSSOM : decid ? FOL_SEASONAL : FOL_EVERGREEN, fl];
   switch (kind) {
     case 'oak': {
       b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.6 * k, 0.28 * k, 0.18 * k, 5, { top: false });
@@ -686,6 +745,7 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
       lobe(b, rng, [x - Math.cos(a) * 0.4 * k, 4.5 * k, z - Math.sin(a) * 0.4 * k], [2.5 * k, 2.0 * k, 2.4 * k], nc, g);
       lobe(b, rng, [x + Math.cos(a) * 0.9 * k, 5.6 * k, z + Math.sin(a) * 0.9 * k], [1.7 * k, 1.5 * k, 1.7 * k], nc, shade(g, 1.08));
       tintSince(b, m, foliageShade(2.5 * k, 7.1 * k));
+      twigCrown(b, x, z, [x, 2.5 * k, z], nc, 2.5 * k, 1.9 * k, fl, PALETTE.trunk, 0.18 * k);
       return 7.1 * k;
     }
     case 'maple': {
@@ -697,6 +757,7 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
       lobe(b, rng, [x - Math.cos(a) * 0.4 * k, 4.2 * k, z - Math.sin(a) * 0.4 * k], [2.2 * k, 2.0 * k, 2.1 * k], nc, c);
       lobe(b, rng, [x + Math.cos(a) * 0.8 * k, 5.2 * k, z + Math.sin(a) * 0.8 * k], [1.5 * k, 1.4 * k, 1.5 * k], nc, shade(c, 1.1));
       tintSince(b, m, foliageShade(2.2 * k, 6.6 * k));
+      twigCrown(b, x, z, [x, 2.3 * k, z], nc, 2.2 * k, 1.9 * k, fl, PALETTE.trunk, 0.16 * k);
       return 6.6 * k;
     }
     case 'round': {
@@ -707,6 +768,7 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
       lobe(b, rng, [x - Math.cos(a) * 0.35 * k, 3.8 * k, z - Math.sin(a) * 0.35 * k], [2.0 * k, 1.75 * k, 1.95 * k], nc, g);
       lobe(b, rng, [x + Math.cos(a) * 0.75 * k, 4.6 * k, z + Math.sin(a) * 0.75 * k], [1.35 * k, 1.25 * k, 1.35 * k], nc, shade(g, 1.12));
       tintSince(b, m, foliageShade(2.0 * k, 5.9 * k));
+      twigCrown(b, x, z, [x, 2.1 * k, z], nc, 2.0 * k, 1.7 * k, fl, PALETTE.trunk, 0.15 * k);
       return 5.9 * k;
     }
     case 'cherry': {
@@ -718,6 +780,7 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
       lobe(b, rng, [x - Math.cos(a) * 0.5 * k, 3.4 * k, z - Math.sin(a) * 0.5 * k], [2.0 * k, 1.4 * k, 1.9 * k], nc, c);
       lobe(b, rng, [x + Math.cos(a) * 0.9 * k, 3.9 * k, z + Math.sin(a) * 0.9 * k], [1.5 * k, 1.1 * k, 1.5 * k], nc, shade(c, 1.06));
       tintSince(b, m, foliageShade(2.0 * k, 5.1 * k, 0.7));
+      twigCrown(b, x, z, [x, 1.9 * k, z], nc, 2.0 * k, 1.4 * k, fl, 0x4a3528, 0.14 * k);
       return 5.1 * k;
     }
     case 'birch': {
@@ -727,6 +790,7 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
       lobe(b, rng, [x, 4.7 * k, z], [1.5 * k, 1.8 * k, 1.5 * k], nc, 0x6f9440);
       lobe(b, rng, [x + 0.3 * k, 6.3 * k, z - 0.2 * k], [1.05 * k, 1.3 * k, 1.05 * k], nc, 0x7a9e47);
       tintSince(b, m, foliageShade(2.9 * k, 7.6 * k));
+      twigCrown(b, x, z, [x, 3.5 * k, z], nc, 1.5 * k, 2.0 * k, fl, 0xc8c4b8, 0.1 * k, { upright: 1, twig: TWIG_BIRCH });
       return 7.6 * k;
     }
     case 'poplar': {
@@ -734,6 +798,7 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
       m = mark(b);
       lobe(b, rng, [x, 5.0 * k, z], [1.2 * k, 4.2 * k, 1.2 * k], [x, 5.0 * k, z], shade(g, 0.95));
       tintSince(b, m, foliageShade(0.8 * k, 9.2 * k));
+      twigCrown(b, x, z, [x, 1.3 * k, z], [x, 5.0 * k, z], 1.2 * k, 3.8 * k, fl, PALETTE.trunk, 0.15 * k, { upright: 1 });
       return 9.2 * k;
     }
     case 'cone': {
@@ -766,6 +831,7 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
         b.paint(shade(c, 0.86), Surf.Foliage, lobeSeason[0], lobeSeason[1]).quad2(b0, b1, t1, t0);
       }
       tintSince(b, m, foliageShade(0.9 * k, 6.0 * k));
+      twigCrown(b, x, z, [x, 2.7 * k, z], [x, cy + 0.3 * k, z], 2.4 * k, 1.8 * k, fl, 0x55402e, 0.2 * k);
       return 6.0 * k;
     }
     case 'acacia': {
@@ -809,18 +875,21 @@ export function treeClump(b: ModelBuilder, rng: RNG, cx: number, cz: number, r: 
   }
   let ymin = Infinity, ymax = 0;
   for (const [x, z, cr, cy] of crowns) {
+    // (inner trunks: thinner, they carry the bare winter crowns; the summer canopy hides them)
     const outer = Math.hypot(x - cx, z - cz) > r * 0.45;
     if (outer) b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, cy - cr * 0.4, 0.3, 0.2, 5, { top: false });
+    else b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, cy - cr * 0.4, 0.22, 0.15, 4, { top: false });
     ymin = Math.min(ymin, cy - cr * 0.8);
     ymax = Math.max(ymax, cy + cr * 0.8);
   }
   const m = mark(b);
   const nc: V3 = [cx, (ymin + ymax) / 2, cz];
   for (const [x, z, cr, cy] of crowns) {
-    lobeSeason = [FOL_SEASONAL, treeRand(x, z)];
+    lobeSeason = [FOL_SEASONAL, 1 + treeRand(x, z)];
     lobe(b, rng, [x, cy, z], [cr, cr * 0.8, cr], nc, rng.pick(FOLIAGE));
   }
   tintSince(b, m, foliageShade(ymin, ymax));
+  for (const [x, z, cr, cy] of crowns) twigCrown(b, x, z, [x, cy - cr * 0.45, z], [x, cy, z], cr, cr * 0.8, 1 + treeRand(x, z), PALETTE.trunk, 0.2, { limbs: 2, spikes: 3 });
 }
 
 /** Low shrub / bush clump (20 tris): 40% evergreen (box, holly), the rest deciduous (autumn colours, bare in winter). */

@@ -1031,7 +1031,7 @@ export class TreeRenderer {
     const x0 = Math.max(0, r.x0), z0 = Math.max(0, r.z0);
     const x1 = Math.min(this.state.size - 1, r.x1), z1 = Math.min(this.state.size - 1, r.z1);
     const N = this.state.size;
-    if (x0 <= 1 || z0 <= 1 || x1 >= N - 2 || z1 >= N - 2) this.ringEdgeChanged(x0, z0, x1, z1);
+    if (this.ringOn && (x0 <= 1 || z0 <= 1 || x1 >= N - 2 || z1 >= N - 2)) this.ringEdgeChanged(x0, z0, x1, z1);
     for (let cz = Math.floor(z0 / CHUNK); cz <= Math.floor(z1 / CHUNK); cz++)
       for (let cx = Math.floor(x0 / CHUNK); cx <= Math.floor(x1 / CHUNK); cx++)
         if (cx >= 0 && cz >= 0 && cx < this.perSide && cz < this.perSide) this.dirty.add(cz * this.perSide + cx);
@@ -1704,6 +1704,12 @@ export class TreeRenderer {
    * one; a stale sector is never refilled from its old candidates).
    */
   ringStep(budgetMs: number): void {
+    if (!this.ringOn) {
+      this.ringStale = this.ringRefill = 0;
+      this.ringGen = null;
+      this.ringFillState = null;
+      return;
+    }
     const end = performance.now() + budgetMs;
     for (;;) {
       if (this.ringFillState) {

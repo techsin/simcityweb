@@ -1694,7 +1694,16 @@ P3 (lowered from P2: L size, five demand and cap variants to balance) · L · SI
 
 **Change**
 - **A one-time City Charter dialog at 100k.** It can be changed after 20 years for §1M and −5 approval for a year.
-- **Five charters**: Tourism Capital, Industrial Powerhouse, Knowledge City, Financial Centre and Green City, with the LG draft's effects (for example, Knowledge City: education effectiveness ×1.1, I-HT share max 0.55 from 0.45, I-D demand −10%).
+- **Five charters**:
+
+  | charter | effects | unlocks |
+  |---|---|---|
+  | Tourism Capital | venue draw ×1.2; hotel rooms per job ×1.25; noise +5% | Aquarium, Water Park, Theatre (not unique) |
+  | Industrial Powerhouse | I demand cap +15%; better freight access; R$$$ desirability −0.03 | Logistics Hub, Steel Works |
+  | Knowledge City | education effectiveness ×1.1; I-HT share max 0.55 (from 0.45); I-D demand −10% | Science Park, Innovation District |
+  | Financial Centre | CO$$$ cap +20%; office tax +10%; CS$ desirability −0.02 | Bank Tower; the Stock Exchange at 300k instead of 400k |
+  | Green City | air and noise emissions −10%; park capacity ×1.2; I-D demand −15% | Eco-Arcology, Solar Tower |
+
 - **Each charter has a 3-tier track** with its own buildings, about 10 small buildings in total.
 - **The charter shows** on the city badge and the region card.
 
@@ -1838,7 +1847,7 @@ P2 · L · META (SIM writes the scenario generator) · round 3
   | Lights Out | a 71k city whose coal plant just burned | back to 70k and approval 60 within 12 / 9 / 6 months |
   | Gridlock | 400k on 256 with no transit | 25% transit trips and a 9-minute commute within 8 years |
   | Island Hopper | the archipelago preset | 3 islands connected, 60k residents in total |
-  | Tourist Capital | a 128 tile where dirty industry (I-D) is not allowed | 40k tourists a day |
+  | Postcard Town | a 128 tile where dirty industry (I-D) is not allowed | 40k tourists a day |
 
 - **Medals.** Bronze, silver and gold, saved per profile.
 - **On screen.** A pinned objectives card that updates monthly, and a win or lose screen.
@@ -2050,7 +2059,7 @@ P1 · S · WORLD · round 1
 - **Help lists every pan method** (GUIDE edits the Help rows).
 - **Settings rows for pan speed and inverted orbit** (META adds the rows).
 
-**Files.** `src/render/world/CameraController.ts`; `src/game/tools/QueryTool.ts` (WORLD hunk: `down`/`up`); `src/game/ToolController.ts`; new `src/ui/HintBar.ts`.
+**Files.** `src/render/world/CameraController.ts`; `src/game/tools/QueryTool.ts` (WORLD hunk: `down`/`up`); `src/game/tools/ToolController.ts`; new `src/ui/HintBar.ts`.
 
 **Acceptance**
 - A 40 px left drag with Query moves the camera and opens no inspector. A click still inspects.
@@ -2468,3 +2477,324 @@ P3 · M · WORLD · round 4
 **Depends on.** FEEL-12.
 
 **Risk.** None.
+
+### K. Access and settings
+
+#### FH-21 · The first run picks a graphics quality the machine can carry
+P1 · S · META · round 1
+
+**Problem**
+- **Every first run starts on High, whatever the machine.** `detectQuality()` exists (`quality.ts:167-174`: mobile → Low, under 8 cores → Medium) but nothing calls it; it is only re-exported (`WorldView.ts:29`). The app default is `quality: 'high'` (`region/settings.ts:19`), passed to the scene by `main.ts:542`.
+- **The game never notices a slideshow.** The playtest machine ran at 2–7 s a frame until the tester found Graphics → Low (`playtest`, test environment; `shots2/011`). That machine used software rendering under load, so it is an upper bound, but a weak laptop on High meets the same silence.
+
+**Change**
+- **On the first run only**, the app default comes from `detectQuality()`.
+- **A one-time prompt.** After 20 s at a median under 25 fps on High or Ultra, one toast: "The city is running slowly — switch graphics to Medium?" with Switch and Keep. The answer is remembered.
+
+**Files.** `src/region/settings.ts`, `src/main.ts`; `src/game/CityScene.ts` (META hunk: the slow-tick fps check).
+
+**Acceptance**
+- A first run with 4 cores starts on Medium; with 8 cores on High.
+- An existing profile keeps its setting.
+- The prompt shows at most once per profile.
+
+**Depends on.** Re-tune the thresholds after W1.4 (the sim leaves the main thread).
+
+**Risk.** None for the gates.
+
+#### FH-23 · Text that can actually get bigger
+P2 · S · META · round 2
+
+**Problem**
+- **The UI can't grow at 1280 px wide.** `computeUiZoom` caps the zoom at width / 1280 (`zoom.ts:14-19`). At 1280×720 the automatic zoom is 0.8 and the cap is 1.0, so the UI scale slider (`SettingsPanel.ts:96`, 70–150%) can enlarge text by at most 25% there.
+- **The labels are small to begin with.** `hud.css` has 63 font sizes between 9 and 11.9 css px, which render at 7–9.5 px at zoom 0.8.
+- **Dialogs ignore the scale.** It is set only on the city HUD root (`CityScene.ts:760-772`), so the title, region and New City screens never scale.
+
+**Change**
+- **A Text size setting**: +10%, +20% or +30%, applied as a font-size multiplier on top of the zoom cap, with an 11 px floor.
+- **It applies everywhere**: the HUD, the title, the region screen and the New City dialog.
+
+**Files.** `src/ui/zoom.ts`; `src/game/CityScene.ts` (META hunk: `resize`); `src/ui/hud.css` (META: the global rules); `src/region/ui/meta.css`; `src/region/settings.ts`.
+
+**Acceptance**
+- At 1280×720 with +30%, no visible text is under 13 px and the top bar still fits on one line.
+- The New City dialog grows with the setting.
+
+**Depends on.** PB-DIALOG, PB-DATAVIEWS (the 720p layout fixes).
+
+**Risk.** Overflow in dense panels, checked by persona P-5.
+
+#### FEEL-21 · Motion and flashing settings (absorbs FH-24)
+P2 · S · META (WORLD makes its effects obey) · round 2
+
+**Problem**
+- **No code reads `prefers-reduced-motion`** (no `matchMedia` anywhere in `src`).
+- **Moving and flashing things a player can't turn off**:
+  - the earthquake shake, repeated every 1.2 s for as long as a quake lasts (`CityScene.ts:715-729`);
+  - the New Year camera;
+  - the emergency icon flashing at 1 Hz (`emergency.css:24-31`);
+  - the scrolling ticker.
+
+**Change**
+- **`settings.motion`** follows the OS setting by default (`matchMedia('(prefers-reduced-motion: reduce)')`).
+- **Reduced means**:
+  - no camera shake;
+  - camera flights and spotlights become 150 ms fades or are skipped;
+  - no New Year camera, and fireworks flashes at half strength;
+  - steady emergency colours instead of flashing;
+  - toasts fade without moving;
+  - a static ticker.
+- **How**: a `.mp-ui.reduced-motion` class plus an `@media (prefers-reduced-motion: reduce)` block. WORLD's camera and effects read the setting.
+
+**Files.** `src/game/settings.ts`, `src/ui/panels/SettingsPanel.ts`, `src/ui/hud.css` (META); `src/ui/emergency.css` (WORLD owns it in round 2 and adds the steady-colour rules); the camera and effects code (WORLD).
+
+**Acceptance**
+- With the OS set to reduced motion, the setting reads "Reduced".
+- A quake moves the camera 0 m.
+- No animation lasts over 200 ms and nothing flashes more than 3 times a second.
+- Switching back restores everything.
+
+**Depends on.** FEEL-08 (flights to replace), FH-19 (hint bar), FEEL-01 (ticker).
+
+**Risk.** None.
+
+#### FH-20 · Colour-blind safe views
+P2 · M · WORLD (META adds the settings row) · round 3
+
+**Problem**
+- **Key colour pairs collapse under red-green colour blindness.** RGB distance, normal → simulated deuteranopia (Machado), measured on the theme tokens:
+
+  | pair | normal | deuteranopia |
+  |---|---|---|
+  | residential vs industrial zones | 192 | 77 |
+  | Emergency view: automatic vs just out of reach | 183 | 66 |
+  | Emergency view: automatic vs must dispatch | 195 | 79 |
+  | desirability, low end vs high end | 201 | 47 |
+  | good vs bad (HUD) | 223 | 46 |
+  | residential vs commercial (fine) | 161 | 213 |
+
+- **There is no colour-vision setting** (`SettingsPanel.ts:95-98`).
+- **The Zones legend names dirty industry "Industrial (low)"**, while the tool says "Industrial · Medium density" (`render/world/overlays.ts:238` vs `ZoneTool.ts:19`).
+
+**Change**
+- **A Colour vision setting**: Standard, Red-green safe, Blue-yellow safe. Each swaps the theme tokens and the overlay ramps.
+- **Emergency colours that work for everyone**: blue = automatic, orange = out of reach, magenta = must dispatch, grey = no coverage.
+- **Shape as well as colour**: hatching on "must dispatch" in all modes, and zone patterns in the safe modes.
+- **The legend says "Industrial (medium)" and "Industrial (high)".**
+
+**Files.** `src/ui/theme.css`, `src/render/world/overlays.ts`, `src/ui/overlays.ts`, `src/render/world/TerrainRenderer.ts` (WORLD); `src/ui/panels/SettingsPanel.ts`, `src/game/settings.ts` (META).
+
+**Acceptance**
+- In the safe mode, all five pairs are 120 or more apart under simulation.
+- The legend names match the tool names.
+- Screenshots of the zone, Emergency and desirability views in both modes are attached to the round report.
+
+**Depends on.** Render round 2 (overlay and terrain shaders).
+
+**Risk.** None for the gates.
+
+#### FH-25 · Rebindable keys
+P3 · M · WORLD (META adds the Settings button) · round 4
+
+**Problem**
+- **Keys are fixed** (`Modals.ts:150-210` lists them).
+- **R does two things**: the residential zone cycle (`toolCatalog.ts:227`) and rotate in the Plop tool (`PlopTool.ts:221`).
+
+**Change**
+- **A key bindings panel** with conflict warnings and a reset, saved per profile (new `src/game/bindings.ts` and `src/ui/panels/KeyBindingsPanel.ts`).
+- **Help shows the live bindings.**
+
+**Files.** `src/game/toolCatalog.ts` (WORLD hunk: `HOTKEY_CYCLES`, `PANEL_HOTKEYS`); `src/game/CityScene.ts` (WORLD hunk: `onKey`); `src/render/world/CameraController.ts`; `src/ui/panels/SettingsPanel.ts` (META: the button).
+
+**Acceptance**
+- Binding Bulldoze to X flags the conflict with De-zone.
+- Help shows the rebound key.
+
+**Depends on.** FH-19 (`e.code` movement).
+
+**Risk.** None.
+
+### L. Voices and stories
+
+#### FEEL-20 · Headlines that react to what the player just did
+P3 · M · CONTENT · round 4
+
+**Problem**
+- **70 headlines come from a bag** every 40–100 days (`advisors.ts:488-566`, `:1341-1349`). They react to the city's state, never to an event.
+- **Some contradict the world**: snowball fights and snow days in towns that never see snow (`advisors.ts:516-517`; FEEL-23).
+
+**Change**
+- **About 25 event headlines**, posted 1–10 days after the event and at most once per type per year: openings, saves, blackouts, firsts, strikes, an averted bankruptcy, the 100th park.
+- **Serial stories**, such as Gerald's.
+- **Snow headlines only where snow is visible**, or on FEEL-23 snow days.
+- **No extra RNG draws.** The pick is a hash of (day, event). Today's headline draws (`rng.int` + `rng.next`, `advisors.ts:1343-1346`) stay exactly as they are.
+
+**Files.** `src/sim/economy/advisors.ts` (CONTENT hunk: headlines); new `src/sim/economy/eventHeadlines.ts`.
+
+**Acceptance**
+- A landmark opening gets its headline within 10 days in 10 of 10 trials.
+- A blackout gets exactly one headline.
+- No headline repeats within 360 days.
+- A 256×20 s7 run is bit-identical (determinism hash).
+
+**Depends on.** FEEL-01.
+
+**Risk.** Determinism, held by the hash pick and the acceptance.
+
+#### FEEL-22 · Residents speak: named households and quotes
+P3 · M · CONTENT · round 4
+
+**Problem**
+- **Residents are anonymous.** The inspector's Residents section lists counts and needs only (`InfoPanel.ts:411-415`).
+- **Advisors have names and faces** (`shots2/027`), and the name pools and the needs report already exist (`region/names.ts:25-58`; `needsOf`, `demographics.ts:534`).
+
+**Change**
+- **A Household card** in the inspector: a stable family name from a hash of the building, the household's make-up, the commute, and one quote from its worst unmet need ("If only the bus stopped closer.").
+- **A resident quote in the ticker** about every 2 game months, at most once per 3 real minutes, through `ticker.push`. Clicking it focuses the home.
+- **UI side only**: no sim state, no RNG draws.
+
+**Files.** New `src/ui/residentVoice.ts` (`householdCard(b)`); `src/ui/panels/InfoPanel.ts` (GUIDE inserts one line).
+
+**Acceptance**
+- The same home shows the same name after save/load.
+- 9 of 10 homes with an unmet school need quote about school.
+- Clicking a ticker quote focuses the home.
+
+**Depends on.** FEEL-01 (`ticker.push`).
+
+**Risk.** None.
+
+## 4. Onboarding and tutorial
+
+This section is the full first-hour flow. FH-01, FH-02, FH-08, FH-11, FH-12, FH-13 and FH-18 implement it; their acceptance criteria point here for the texts.
+
+### 4.1 Teaching rules
+
+- **Teach in the order the city needs things**: road, zones, power, water, play, then garbage, safety, fire cover, money, schools, data views, Why?, rewards.
+- **Little at once.** At most 2 goals and 1 explainer on screen, and at most 1 new explainer per 2 game months.
+- **Name the cheap, safe choice with its price**: "3 wind turbines (§800 each)", never just "a power plant".
+- **One action per tip.** Each goal or explainer has one button that opens the fix, and a coach mark on the control.
+- **Never blame the player.** "Your town grew faster than its fire cover", not "You failed".
+- **Use the city's own numbers** ("18 of 40 tiles", "§183 a month"), read from the state, the catalog and tuning, never typed into strings.
+- **Once per profile.** Each explainer shows once per profile. Help → "Tips you've seen" lists them, and a Tips on/off setting turns them all off.
+- **Veterans skip in one click** (Phase E).
+- **Tone.** Second person, at most 2 sentences and 30 words. The plain word comes first and the code after it in brackets: "high-wealth homes (R$$$)". Money is written with §.
+- **Pausing.** On Easy an explainer card pauses the game until it is closed. On Medium and Hard only E1a pauses. Nothing shows during the New Year show.
+
+### 4.2 Game time and the target pace
+
+| speed | day | month | year |
+|---|---|---|---|
+| 1× | 0.5 s | 15 s | 3 min |
+| 2× | 0.2 s | 6 s | 72 s |
+| ultra | 0.05 s | 1.5 s | 18 s |
+
+(`SECONDS_PER_DAY`, `constants.ts:35`.)
+
+**Today's newcomers against the bot** (all Medium):
+
+| | Queensbury (playtest) | Sunside (new player) | bot s7 (acceptance r3) |
+|---|---|---|---|
+| spent before Play | ≈ §48,400 (`shots2/021`) | ≈ §29,000 (`newplayer/047`, `056`) | ≈ §2,900 |
+| end of year 1 | 2,430 at 45%, "+§150" (`shots2/027`, Nov 2000) | 124 at 40%, −§63/mo (`newplayer/073`, Oct 2000) | 3,470 at 53.1 |
+| year 3 | 7,261 at 40% (`shots2/058`, Oct 2002) | 233 at 36%, −§84/mo (`newplayer/096`, Mar 2002) | 17,645 |
+| years 6–7 | 19,944 at 49% (`shots2/i01`, Feb 2007) | 863 at 43% (`newplayer/146`, Feb 2006) | 46,762 (2006) |
+| later | 19,935 at 50% (`shots2/121`, Dec 2009): flat for almost 3 years | 2,379 at 41% (`newplayer/175`, Apr 2010) | 100k by 2011 |
+
+**The three mistakes the UI invites today**, which Phases B–D are built to prevent:
+1. **An oversized power plant on day 0**: both humans bought the §25,018 coal plant (400 MW) for a town that used 21 MW three years later (`shots2/058`).
+2. **Too little zoning, or zoning with no road**: step 2 ticks with roadless zones (`shots2/131`), and nothing says how much to zone (`newplayer/063`, `146`).
+3. **Services the budget can't carry**: a Fire Station read ≈ §539/mo against +§259/mo of profit (`shots2/024`), and the first deficit surfaced at −§968/mo (`shots2/078`).
+
+### 4.3 Phase A: before the city
+
+- **A0. First run.** Graphics quality from `detectQuality()` (FH-21). The city hint bar is armed for the first 2 sessions (FH-19).
+- **A1. Title screen.** With no region saved, the primary button is "Start your first city", sub-line "Guided · your first road in about 2 minutes". "New Region" comes second (FH-12).
+- **A2. One-click start.** It creates a Greenvale Valley region with a unique id and founds the recommended tile on Easy, with Guided start on, Disasters off and the date 1 April (day 90, FEEL-05). One loading screen rotates three first-city tips:
+  - "Start small: 3 wind turbines power your first 3,000 residents."
+  - "Zones only grow next to roads."
+  - "The game waits for you until you press Play."
+- **A3. The New Region path.** The region screen outlines one tile, "A good first city". Its New City dialog preselects Easy and Guided start, shows the four difficulty lines and unticks Disasters (FH-11). "I've played city builders before" switches to Phase E.
+
+### 4.4 Phase B: found your town
+
+The card header reads **"Found your town"**, and under it: **"The game is paused while you build."**
+
+| # | step | text | button | done when | hints while current |
+|---|---|---|---|---|---|
+| 1 | Connect to the region | "Build a road from the map edge into your town. New residents and trade arrive along it." | Road tool: selects `net:2`; a ghost road marks the nearest buildable edge | `neighborConnections.length ≥ 1`: 6 network cells reaching 3 tiles in (`connections.ts:15-18`) | "Run your road at least 3 tiles in from the edge." |
+| 2 | Zone homes, shops and jobs | "Paint zones along your roads: about 40 tiles of homes (R), 8 of shops (C) and 12 of industry (I). Zoning costs §5–10 a tile." | Zones: selects Residential low (`zone:1`) and pulses R, C and I | ≥ 40 R, 8 C and 12 I cells with `lotAccess` front or yard (half on 64-cell tiles) | "Some zones don't touch a road — nothing grows there." · "Zone a bit more housing: 40 tiles of R (you have 18)." |
+| 3 | Power: start with wind | "Place 3 wind turbines (§800 each, 3–7 MW) next to a road. Together they power your first 3,000 residents, and roads carry the power to your zones." | Wind turbine: selects `plop:util_wind_turbine` | power reaches a zoned lot (today's `zoneServed`) | today's "Your plant isn't reaching any zone yet…" · when a coal or gas plant is picked: "A coal plant makes 400 MW, enough for about 120,000 residents, for §25,000. Wind is plenty for now." |
+| 4 | Water | "Place a water tower (§300, 2,500 kL a day) touching a road that runs past your zones. Pipes follow the roads. Industry and denser homes need water." | Water tower: selects `plop:util_water_tower` | water reaches a zoned lot (today's check) | today's "No zone gets water yet…" |
+| 5 | Press play | "Unpause and watch your town grow. Space pauses at any time." | Play: `host.setSpeed(1, 'onboarding')` | one game day has passed (today's check) | — |
+
+- **The numbers behind steps 3 and 4.** The bot's town of 3,470 used 10 MW and 1,352 kL a day at the end of year 1 (`G_256x60_s7`, 2001: power [18, 10], water [4936, 1352]). A turbine makes 3–7 MW depending on height (`utilities.ts:8-9`; `newplayer/047`). One water tower supplies 2,500 kL (`catalog.ts:279`). The bot builds gas above 12 MW of demand and coal above 150 MW (`simbot.ts:862`).
+- **Spend guard**, once per profile: when day-0 spending passes 40% of the start money, "You've spent §48,000 of §100,000 before anyone moved in. Running costs come next — keep a reserve."
+- **Completion toast**: "Your town is on the map, Mayor! A few goals will guide your first year." The old fire-station tip stays only if a fuel plant was built anyway (`Onboarding.ts:297-303`).
+
+### 4.5 Phase C: your first year
+
+The card becomes **"Your first year"** with a pill such as "3/9 · Take out the trash". At most two goals are visible; the next one appears when its trigger fires.
+
+| goal | appears | text | button | done when |
+|---|---|---|---|---|
+| G1 Grow to 500 | at once | "The coloured bars (RCI) show what your town wants. Zone more of the tallest bar. Click a lot with Query to see why it isn't growing." | coach mark on the RCI meter; selects Query | 500 residents |
+| G2 Take out the trash | the first NoGarbage building, or 300 residents | "Garbage is piling up at homes. Zone a small landfill (3×3, §15 a tile) on a road, away from homes." | selects the Landfill zone | landfill capacity reachable by road > 0 |
+| G3 Safe streets | crime term ≤ −4, or 400 residents | "Crime is costing you approval. A Police Kiosk (§400) covers a few blocks; a Police Station (§1,500) covers a district." | Civic → Police, with the Police view | police coverage at homes ≥ 50% |
+| G4 Fire cover | a fuel plant is built, or 800 residents | "A fire no station can reach burns until you send help. A Fire Station (§1,400) answers automatically within ~24 road tiles." | Civic → Fire, with the Emergency view | ≥ 50% of buildings covered, including any fuel plant |
+| G5 Balance the books | the first deficit, or 2 services built | "Each tax point brings about §{X} a month, and every point above 9% costs 3.5 approval. Check the budget before you build more." | Budget → Taxes | the panel was opened, or net ≥ 0 for 2 months |
+| G6 Schools | ≥ 100 children with no elementary school | "{N} children have no school. An Elementary School (§2,000) seats 1,500 within walking distance." | Civic → Education, with the Education view | unreached children < 50% |
+| G7 See your city | 1,500 residents | "Data views colour the map by power, water, crime, pollution and more." | opens Data views | a data view stays open for 3 s |
+| G8 Ask why | after G7 | "Click any building with Query. Why? lists what helps it and what holds it back." | selects Query; Why? opens expanded | Why? expanded on a growable |
+| G9 Your first reward | after G1 | "At 1,200 residents the town offers you a Mayor's House (§2,000; it raises land value nearby). At 3,000 comes the Lighthouse." | opens Rewards | 2,500 residents |
+
+When G9 completes: **"Your first year is done, Mayor. The advisors take it from here — your next goal is on the top bar."** The top-bar goal line (LG-01) takes over.
+
+Sources for the numbers: `ZONE_COST` (`tuning.ts:644`), `catalog.ts` (kiosk, station, fire station, elementary school `:341-342`, Mayor's House `:361`), `rewards.ts:74`, `:102`; the 3.5 per point and the 9% neutral rate from `APPROVAL.taxPerPoint` and `TAX_NEUTRAL` (`tuning.ts:148`).
+
+### 4.6 Phase D: explainers when something first goes wrong
+
+Each fires once per profile, when its event first happens, and follows §4.1.
+
+| id | event | text (short form) | buttons | item |
+|---|---|---|---|---|
+| E1a | first alerted major incident that can still be saved | "Emergency! No station covers this spot, so nobody comes on their own. Send nearest dispatches Fire Station #1 (3.9 min)." Pauses once. | Send nearest · Emergency view · Got it | FH-08 |
+| E1b | first alerted major incident already out of reach | "No station can reach this in time. Build a Fire Station within ~24 road tiles — the Emergency view shows where help is automatic." | Fire tab · Emergency view | FH-08 |
+| E2 | first LIVE slowdown | "LIVE: the game slowed down so you can follow the truck. Your speed comes back when help arrives." | Got it · Settings | FH-08 |
+| E3 | first failed incident | The outcome adds the reason: "the nearest truck needed 5.6 min; this fire burned out in 5." | Fire tab | FH-08 |
+| E4 | first month with net < 0 and > 200 residents | "Your town spends §183 more than it earns each month. +1% tax brings about §{X}; a §10,000 loan costs §106 a month for 10 years." | Taxes · Loans · Got it | FH-13 |
+| E5 | funds below 0 | The finance card becomes a 3-step recovery plan: +1 tax point, the most over-funded service to 90%, the largest affordable loan, each with its monthly effect. | one button per step | FH-13 |
+| E6 | growth stalls with zones full | "Your town has no room to grow — zone more {R/C/I} land next to roads." Shown as an amber card with a pulse, not only in the ticker. | Zones | FH-03 |
+| E7 | first demand cap | "{Family} growth is capped. Parks, landmarks and rewards lift the cap." | Parks · Rewards | FH-03 |
+| E8 | approval below 45 with ≥ 300 residents | "Approval is {N}%. The biggest drag is {term} ({value}). Below 40% people start to leave." | the panel for that term | FH-06 |
+| E9 | first reward unlocked | "The citizens have built you a Mayor's House! Place it from Rewards." | Place it | FEEL-06 |
+| E10 | first disaster | "A {tornado} hit {district}. Damaged buildings rebuild on their own if they still have road, power and water." | Jump · Got it | LG-15 |
+| E11 | first New Year | The New Year toast adds one line: "Each year-end shows how the city did." At ultra it plays every 5th year (FEEL-02). | — | LG-21 |
+
+The §106 figure is the 5% loan rate over 120 months (`loanRate`, `loans.ts`). E8's "below 40%" must match the approval → migration threshold the sim uses; FH-06 reads it from tuning.
+
+### 4.7 Phase E: the veteran briefing
+
+Shown instead of Phase B when "I've played city builders before" is ticked, or when the guide is dismissed within 30 s (FH-18). At most 90 words:
+
+- **Roads carry power.** Power lines are only for gaps.
+- **Pipes are automatic** under every road. Only medium and high density need water.
+- **Any road leaving the map edge** connects you to the region.
+- **Uncovered emergencies drop the game to LIVE** and wait for you to dispatch.
+- **Why?** in the inspector explains every building.
+- **9% tax is neutral**; each point above costs 3.5 approval.
+
+Buttons: "Got it" and "Show the guided start anyway".
+
+### 4.8 Persistence and measurement
+
+- **Where the state lives** (FH-22): the phase and goal progress per city in `systemData.onboarding`; "veteran", "seen explainers" and "tips on/off" per profile.
+- **How it is measured**:
+  - the FH-10 newcomer bot profile (cheap start, under-zoning, one late service) on Easy and Medium;
+  - a scripted real-input run that presses only guide buttons (the FH-01 and FH-02 acceptance);
+  - persona P-1 (§9).
+- **Targets**:
+  - at most §15,000 spent before Play;
+  - 2,500 residents by game year 3 on Easy and year 4 on Medium;
+  - no deficit longer than 3 months without E4;
+  - approval at or above 45% for at least 9 of the first 12 months on Easy.
