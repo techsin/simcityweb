@@ -498,17 +498,25 @@ if (vTreeSnow > 0.001) {
 }
 `;
 /**
- * See-through bare crown (impostors of twig models): its crown covers ~60% of the pixels where the view crosses the
- * crown's middle (more twigs along a long sight line) down to ~30% at its rim; the trunk stays solid. Alpha-to-coverage
- * with MSAA (the coverage blends after the resolve), else a dither anchored to the tree's screen position, decorrelated
- * from the LOD fade's (complementary near / far) dither. Before alphatest_fragment (after the LOD fade's alpha).
+ * See-through bare crown (impostors of twig models): its crown covers ~40% of the pixels where the view crosses the
+ * crown's middle (more twigs along a long sight line), fading to ~10% at its rim (no hard ball outline), in ~2-3 m
+ * twig clumps where they resolve; the trunk stays solid. Alpha-to-coverage with MSAA (the coverage blends after the
+ * resolve), else a dither anchored to the tree's screen position (denser and darker: low contrast), decorrelated from
+ * the LOD fade's (complementary near / far) dither. Before alphatest_fragment (after the LOD fade's alpha).
  */
 const BARE_FRAG = /* glsl */ `
 if (vTreeBare > 0.5 && abs(vSurf.x - 8.0) < 0.5) {
-  float _cov = 0.3 + 0.3 * abs(normalize(vNormal).z);
+  float _fz = abs(normalize(vNormal).z);
+  vec2 _cq = vObjPos.xz * 0.35 + vObjPos.y * 0.3;
+  float _cn = mix(0.5, bnoise(_cq), clamp(1.0 - length(fwidth(_cq)) * 1.6, 0.0, 1.0));
+  float _cov = (0.1 + 0.3 * _fz * _fz) * (0.55 + 0.9 * _cn);
 #ifdef TREE_A2C
   diffuseColor.a *= _cov;
 #else
+  // (a pixel dither is not averaged: twice the coverage at ~half the brightness - the same mean over the dark floor,
+  // half the speckle contrast)
+  _cov = min(1.0, _cov * 1.9);
+  diffuseColor.rgb *= 0.55;
   vec2 _bp = gl_FragCoord.xy - floor((vBareNdc * 0.5 + 0.5) * uBareRes);
   float _bn = fract(52.9829189 * fract(dot(_bp, vec2(0.06711056, 0.00583715)) + 0.5));
   if (_bn >= _cov) discard;
@@ -974,7 +982,8 @@ export class TreeRenderer {
     const geo = getNatureGeometry(sp.id, v);
     const st = natureStats(geo);
     const bare = st.open > BARE_OPEN;
-    return { species: si, id: sp.id, variant: v, geo, conifer: !!sp.conifer, color: bare ? st.raw : st.color, height: st.height, radius: st.radius, impR: bare ? 0.92 : 1, bare };
+    // (bare: the twigs' own colour, a little darker - their shaded inner tangle; the floor shows between them)
+    return { species: si, id: sp.id, variant: v, geo, conifer: !!sp.conifer, color: bare ? st.raw.clone().multiplyScalar(0.75) : st.color, height: st.height, radius: st.radius, impR: bare ? 0.92 : 1, bare };
   }
 
   setQuality(opts: { lodDistance: number; density: number; castShadows: boolean; maxVariants?: number; msaa?: boolean }) {

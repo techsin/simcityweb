@@ -7,6 +7,7 @@
  * stand for: never recoloured by the shader), conifer impostors 4 (evergreen), like the nature models (nature.ts).
  */
 import * as THREE from 'three';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { ModelBuilder } from '../../assets/ModelBuilder';
 import { getModelGeometry, hasModel } from '../../assets/registry';
 import { RNG, hashString } from '../../core/rng';
@@ -133,10 +134,24 @@ export function getImpostorGeometries() {
   return _impostors;
 }
 
+/**
+ * Indexed copy of a small non-indexed geometry with shared corners and smooth normals: a GPU's vertex cache then shades
+ * each corner once per instance (micro impostors: 6 instead of 24 vertices), and at 1-2 px the facets do not show.
+ */
+function indexedSmooth(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  const src = g.clone();
+  src.deleteAttribute('normal');
+  const out = mergeVertices(src, 1e-4);
+  out.computeVertexNormals();
+  src.dispose();
+  return out;
+}
+
 let _micro: { broad: THREE.BufferGeometry; conifer: THREE.BufferGeometry } | null = null;
 /**
  * Micro impostors for trees that project to 1-2 px (far zoom): same unit bounds as getImpostorGeometries, foliage only
- * (white, tinted per instance). Broadleaf = 4-sided double pyramid (8 tris), conifer = 4-sided pyramid (4 tris).
+ * (white, tinted per instance). Broadleaf = 4-sided double pyramid (8 tris, 6 vertices), conifer = 4-sided pyramid
+ * (4 tris, 5 vertices); indexed with smooth normals (TreeRenderer's instanced meshes only).
  */
 export function getMicroImpostorGeometries() {
   if (_micro) return _micro;
@@ -154,7 +169,7 @@ export function getMicroImpostorGeometries() {
   con.paint(0xffffff, Surf.Foliage, FOL_EVER);
   const c = ring(0.4, 0.1);
   for (let i = 0; i < 4; i++) con.tri(c[(i + 1) % 4], c[i], [0, 1.0, 0]);
-  _micro = { broad: broad.build(), conifer: con.build() };
+  _micro = { broad: indexedSmooth(broad.build()), conifer: indexedSmooth(con.build()) };
   _micro.broad.name = 'impostor-micro-broad';
   _micro.conifer.name = 'impostor-micro-conifer';
   return _micro;

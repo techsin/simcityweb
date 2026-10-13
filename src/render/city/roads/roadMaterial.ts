@@ -406,10 +406,11 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
     float k = kind < 1.5 ? 0.7 : (kind < 2.5 ? 1.0 : (kind < 3.5 ? 1.4 : (kind < 4.5 ? 1.15 : 1.3)));
     // lighter surfaces (sidewalks, curbs) return more of the light than asphalt
     float refl = 0.75 + 1.8 * dot(albedo, vec3(0.3, 0.59, 0.11));
-    // far away a road is a 1-3 px line blended with the dark lots beside it: its ribbon gets up to 2x brighter as the
-    // light pools / lamp heads fade with the camera distance (PropRenderer, lampUniforms.uPoolFade), so the lit network
-    // still reads and the street lighting keeps its brightness while zooming out
-    float farB = 1.0 + smoothstep(uPoolFade.x, uPoolFade.y, vViewPosition.z);
+    // far away a road is a 1-3 px line blended with the dark lots beside it: its ribbon gets brighter as the light pools /
+    // lamp heads fade with the camera distance (PropRenderer, lampUniforms.uPoolFade), so the lit network still reads
+    // and the street lighting keeps its brightness while zooming out; arterials up to 2x, local streets less (a uniform
+    // boost turned the far city into an even amber waffle: the road hierarchy keeps the main roads as the lit frame)
+    float farB = 1.0 + smoothstep(uPoolFade.x, uPoolFade.y, vViewPosition.z) * (kind < 1.5 ? 0.35 : (kind < 2.5 ? 0.7 : 1.0));
     emis += lampC * uLampRibbon * k * lat * refl * farB * uLamps * (1.0 - 0.8 * uRoadOverlay);
   }
 
