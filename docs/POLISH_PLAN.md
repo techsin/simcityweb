@@ -1305,6 +1305,31 @@ P2 (unblocks the long game) · M · SIM · round 1, then one rule per item
 - New rules move gate runs by design. Record them under the separate fixture key and get the lead's sign-off, as for LD11 and LD14a.
 - Gate runs are long (BALANCE=1 took 251 s, and 60-year runs take minutes each), so run them one at a time on the shared box (§7).
 
+#### NEW-05 · Taxes that cost growth gradually (only if part-B triage does not take PB-TAXRESPONSE)
+P1 · M · SIM · round 2 (conditional)
+
+**Problem.** A hard growth throughput cap makes the tax response flat, then a cliff (veteran #1, major).
+- **128×15 s7 at year 15, with taxes fixed**: the bot's 9–11% gives 194,627 people; 12% gives 183,871 (−5.5%) with §1.35M banked, 7.6× the base; 13% gives 170,325 (−12.5%); 14% gives 58,766 (−70%); 15% gives 26,645 (−86%).
+- **256 from year 21 at 12%**: −0.3% population in 2030, and $12.0M in the bank instead of $3.57M.
+- **The mechanism.** At 310k, residential growth wanted is 4,251 capacity a day against the cap's 72, 59× over (`growth.ts` `computeAllowance`). At 12% it is still 8.9× over, so realized growth does not change. At 14% residential demand turns negative at once.
+- **Why it is P1 for the long game.** It defeats Goal 6, LG-03's sinks (a free 12% tax pays for any project), LG-16's council gates (approval stays about 70) and FH-09's honest copy. It also hides the region's effect (veteran #10).
+
+**Change**
+- **Realized growth follows demand below the cap.** Each family's throughput is scaled by its tax-adjusted demand, for example by `min(1, demand / 0.5)` or `smoothstep(0, k, wanted / cap)` (the veteran's two suggestions), instead of only clipping wanted growth above the cap. If the 13 → 14% cliff remains, steepen `taxFactor` in the 9–13% band.
+- **LG-10 adds `--tax=N`** (fixed taxes), so the sweep is reproducible.
+- **Base rows move by design**, because the bot runs 9–11% and pays a little growth too. They go under `polish` with the lead's sign-off (D2).
+
+**Files.** `src/sim/economy/growth.ts` (`computeAllowance`); `src/sim/economy/tuning.ts` (`GROWTH_RESPONSE`, `GROWTH_MAX_*`, `TAX_SENS`, `TAX_FACTOR_MIN`); `src/sim/economy/demand.ts` (`taxFactor`); `tools/simbot.ts` (`--tax`).
+
+**Acceptance**
+- 128×15 s7 with taxes fixed at 10, 11, 12, 13 and 14%: population at year 15 falls monotonically with the rate. Each one-point step above 10% costs at least 3% and at most 15% of the population.
+- 256×30 s7 with 12% from year 21: population in 2030 at least 3% below base (today −0.3%).
+- Every gate passes on the base runs, recorded under `polish`.
+
+**Depends on.** Part-B triage's call on veteran #1: if triage fixes it as PB-TAXRESPONSE, this item is dropped. LG-10.
+
+**Risk.** It moves every base row, so it lands early in round 2, before the items that measure money (LG-03, LG-16) record their own rows.
+
 #### LG-09 · Hard and Expert that change the rules, not just the money
 P2 · M · SIM (META adds the dialog lines) · round 2
 
@@ -1508,7 +1533,7 @@ P1 · M · CONTENT (META adds the region card) · round 1
 - **The rank also shows on the region city card** and on the floating city label, e.g. "Global City · 512k" (META: `citySummary`, `RegionScreen`).
 - **Rank-up moments** (card, sound, fireworks) are FEEL-06.
 
-**Files.** `src/sim/economy/rewards.ts`; `src/ui/TopBar.ts` (CONTENT hunk: population segment); `src/ui/panels/ListPanels.ts`; `src/region/citySummary.ts` and `RegionScreen.ts` (META); `src/worker/replicaSafe.ts` (SIM adds the entry).
+**Files.** `src/sim/economy/rewards.ts`; the population segment of the TopBar (its own component after the round-1 split, §7.4); `src/ui/panels/ListPanels.ts`; `src/region/citySummary.ts` and `RegionScreen.ts` (META); `src/worker/replicaSafe.ts` (SIM adds the entry).
 
 **Acceptance**
 - In a 256×60 s7 replay sampled monthly to 1.5M, the HUD's "next" line is never empty.
@@ -1516,7 +1541,7 @@ P1 · M · CONTENT (META adds the region card) · round 1
 - `listMilestones` passes `replicaSafe.test`.
 - Once LG-02, LG-03 and LG-04 land, no gap between unlocks or rank-ups from 2010 to 2056 is longer than 5 years (today 27).
 
-**Depends on.** None for the ranks. The content that fills the late gaps comes from LG-02, LG-03, LG-04 and LG-20.
+**Depends on.** None for `CITY_RANKS`, `listMilestones` and their tests, which can start now (no in-flight phase edits `rewards.ts`). The HUD line waits for the TopBar split (§7.4), the replica-safe entry for the Worker's `replicaSafe.ts`. The content that fills the late gaps comes from LG-02, LG-03, LG-04 and LG-20.
 
 **Risk.**
 - No sim formula changes.
@@ -1536,9 +1561,9 @@ P2 · M · CONTENT · round 2
 - **A sound for every milestone.** `milestone` plays for all milestones, with 1.25M and 1.5M added to both lists.
 - **Fireworks for rank-ups.** A 6–10 s daytime burst (`Fireworks.start`, intensity by tier), skipped during New Year or LIVE.
 - **Stage-unlock news**, once each. It is stored like `popMilestone` and initialised from the current population on load, so old saves post nothing.
-- **"Place it".** Reward and landmark toasts get this action, which opens Rewards scrolled to the item. META wires it in the Toasts handler.
+- **"Place it".** Reward and landmark toasts get this action, which opens Rewards scrolled to the item. The reward news posts with `ref: {reward: id}` (§7.4), and META wires the action in the Toasts handler by `ref`, never by text.
 
-**Files.** `src/sim/economy/advisors.ts` (CONTENT hunk: milestones and stage news); `src/game/GameSounds.ts` (CONTENT hunk: milestone case, `POP_MILESTONES`); new `src/ui/MilestoneCard.ts`; `src/game/CityScene.ts` (CONTENT wiring block); `src/ui/Notifications.ts` (META: the action).
+**Files.** `src/sim/economy/advisors.ts` (CONTENT hunk: milestones and stage news); `src/sim/economy/rewards.ts` (the `ref` on reward news); `src/game/GameSounds.ts` (CONTENT hunk: milestone case, `POP_MILESTONES`); new `src/ui/MilestoneCard.ts`; `src/game/CityScene.ts` (CONTENT wiring block); `src/ui/Notifications.ts` (META: the action). The rank-up burst calls `Fireworks.start` with an intensity option; if that needs a change in `Fireworks.ts`, it waits for Worker R2, which rewrites `collectLaunchSites` in the same file (D13).
 
 **Acceptance**
 - Crossing 10,000 at 1× shows the card for 4 ± 0.5 s, plays `milestone` once and launches fireworks for at most 10 s.
@@ -1548,9 +1573,9 @@ P2 · M · CONTENT · round 2
 - Clicking a reward toast opens Rewards with that row highlighted.
 - At ultra, at most 1 card per 30 s.
 
-**Depends on.** FEEL-02, LG-01.
+**Depends on.** FEEL-02a, LG-01; the `NewsItem.ref` interface (§7.4); Worker R2 for any `Fireworks.ts` change.
 
-**Risk.** Stage news reads only the population and makes no RNG draw.
+**Risk.** Stage news reads only the population and makes no RNG draw. It lands in news and `systemData.advisors`, so the determinism check uses FH-03's rule.
 
 #### LG-21 · Year in review and a mayor's grade (absorbs FEEL-26)
 P2 · M · CONTENT · round 2
@@ -1561,7 +1586,7 @@ P2 · M · CONTENT · round 2
 - **After 2050 there is no yearly feedback at all**, with approval flat at 80–82 and growth under 2%.
 
 **Change**
-- **When it appears.** After the New Year show (it waits for `NewYearCelebration.busy` to clear) or on 1 January when the show is off. At speed 2 or below every year; at ultra every 5th year (FEEL-02).
+- **When it appears.** After the New Year show or burst (it waits for `NewYearCelebration.busy` to clear) or on 1 January when the show is off. At 1× every year; at 2× every second year (a 15 s card every 72 s year would be another 21% of real time on top of New Year); at ultra every 5th year (FEEL-02a).
 - **The card**, "Queensbury Gazette — 2006", is dismissible and shows:
   - population and growth;
   - the bank in months of expenses;
@@ -1569,21 +1594,35 @@ P2 · M · CONTENT · round 2
   - emergencies answered, failed and lost; tourists; EQ and HQ;
   - records broken this year;
   - goals completed this year and the next three (LG-01);
-  - a mayor's grade from A to F (growth 25%, approval 20%, finances 15%, safety 15%, environment 15%, services 10%) with a sparkline of past grades;
+  - a mayor's grade from A to F with a sparkline of past grades (scoring below);
   - a region line.
+- **The grade.** Each stat scores 0–100, linear between the anchors and clamped; the grade is the weighted sum:
+
+  | stat (weight) | 0 points | 100 points |
+  |---|---|---|
+  | growth (25%) | population −5% over the year | +8% (a built-out city, LG-05, scores unemployment instead: 12% → 0, 4% → 100) |
+  | approval (20%) | year mean 30 | year mean 80 |
+  | finances (15%) | funds below 0 at year end (score 0) | 3 months of expenses banked; 30 points at 0 months; −15 if the year's recurring net was negative |
+  | safety (15%) | 10% of the year's emergencies failed | none failed; times (1 − 0.5 × mean crime at homes) |
+  | environment (15%) | air at homes 0.30, or 20% of homes Noisy (mean of the two) | air 0.05, no Noisy homes |
+  | services (10%) | mean coverage at homes 0.3 (education, health, police, fire, parks) | 0.9 |
+
+  Cutoffs: A ≥ 85, B ≥ 70, C ≥ 55, D ≥ 40, F below 40.
 - **Closing.** It closes after 15 s or on any map input, never shows during LIVE, and can be switched off in Settings.
 
 **Files.** New `src/ui/YearReview.ts` (computed UI-side from the history arrays); `src/game/CityScene.ts` (CONTENT wiring block). `NewYear.ts` is not edited.
 
 **Acceptance**
-- On a 20-year save the card appears once per New Year and never on load.
+- On a 20-year save the card appears once per New Year at 1× and every second New Year at 2×, and never on load.
 - Its population change is within 0.5% of the Graphs panel.
 - It names the same approval term as the approval tooltip.
 - It is skipped during LIVE.
+- Unit tests: each stat's score hits its anchors exactly (approval 55 → 50 points), and the cutoffs map 84.9 to B and 85 to A.
+- A fixture with funds below 0, approval 30 and 20% of emergencies failed grades F. The 256×60 s7 base run grades C or better every year from 2010.
 - The grade is deterministic for a given save.
 - The toggle hides it.
 
-**Depends on.** LG-01, FEEL-02, PB-NEWYEAR.
+**Depends on.** LG-01, FEEL-02a, PB-NEWYEAR.
 
 **Risk.** Noise, held by the speed and frequency gates.
 
@@ -1838,7 +1877,7 @@ P2 · L · CONTENT (SIM adds the spread rule) · round 3
 **Acceptance**
 - 256×60 s7: same-model twins within 6 cells at most 5% of growables in 2020 and 2040 (today 12–14%), same-def at most 2%.
 - Gates pass, with `polish` rows: def swaps change capacities slightly.
-- Art review A/B at 300 m and 700 m.
+- Art review A/B at 300 m and 700 m, plus 10 suburb shots in which no street shows more than 2 identical facades in a row (today whole streets of brick walk-ups, `cmp/tp_jun13_suburb_AB.png`).
 
 **Depends on.** Render round 2; LG-10; D8 (ownership).
 
@@ -1906,7 +1945,7 @@ P3 · M · SIM (CONTENT adds defs and text) · round 4
 
 **Problem**
 - **Deals pay fixed sums**: Military Base §1,500, Missile Test Range §2,500 and Toxic Waste Dump §4,000 a month (`catalog.ts:445-453`). That is 0.7% of a 2045 bot city's $541k monthly income.
-- **The downside depends only on distance.** In the veteran's deals run, the dump went in the map corner and that city ended with 102,145 people and 72.7 approval, against 101,331 and 70.9 without it (`veteran/deals_128x15_s7.log` vs `base2`).
+- **The downside depends only on distance.** In the veteran's deals run, the dump went in the map corner, and that city ended year 15 with 194,185 people, 81.4 approval and $122.1k a month of income, against 194,627, 78.7 and $118.2k without it (`veteran/deals_128x15_s7.log` vs `base2`; veteran #7).
 
 **Change**
 - **10-year contracts whose pay scales**: dump §0.004 per resident (at least §4k), missile range §0.0025, military base §0.0015.
@@ -1993,6 +2032,7 @@ P2 · M · META (SIM adds the endowment line and the approval term) · round 3
 - **An endowment slider**: up to 25% of the parent's funds, at most §5M, once per city per 10 game years.
   - It is a one-off expense in the parent, on a "Sister city endowment" line.
   - It is added to the new city's start money.
+  - It is charged only when the player presses "Found", inside the same save chain as the new city's first save, so the transfer and the new city exist together or not at all.
 - **A road stub** continues the parent's edge road into the new tile, so the two connect from day one.
 - **Recognition.** The parent gets +1 approval ("Founded a sister city") for 12 months. Sister links show on the region card.
 
@@ -2004,6 +2044,8 @@ P2 · M · META (SIM adds the endowment line and the approval term) · round 3
   - the new city opens with §2.1M (§100k + §2M) and a road stub joined to the parent's edge road.
 - Sister jobs count for the parent only once the edge is connected (PB-REGION).
 - A confirm dialog says the transfer can't be undone. A second endowment within 10 years is refused, with the date it becomes possible.
+- Cancelling the New City dialog leaves the parent's funds unchanged. Killing the tab between "Found" and the first save gives exactly one transfer or none, never two.
+- The road stub adds no demand-cap relief to either city until it joins the other city's network (veteran #6: dead-end stubs stack relief without limit today).
 
 **Depends on.** PB-REGION, PB-DIALOG, LG-05, `WORKER_DESIGN.md` §4.4 (region switching through the host).
 
@@ -2027,7 +2069,7 @@ P2 · L · META (SIM writes the scenario generator) · round 3
   |---|---|---|
   | Smog City | a 2015 ~195k city on 128 built on dirty industry | air at homes −40% within 10 years while keeping 180k people |
   | Boomtown | an empty 128 tile with §100k | 50k / 100k / 150k residents by year 10 (bronze / silver / gold) |
-  | Lights Out | a 71k city whose coal plant just burned | back to 70k and approval 60 within 12 / 9 / 6 months |
+  | Lights Out | a 71k city whose coal plant just burned, with less money than one replacement plant costs | back to 70k and approval 60 within 12 / 9 / 6 months; gold also needs no new loan |
   | Gridlock | 400k on 256 with no transit | 25% transit trips and a 9-minute commute within 8 years |
   | Island Hopper | the archipelago preset | 3 islands connected, 60k residents in total |
   | Postcard Town | a 128 tile where dirty industry (I-D) is not allowed | 40k tourists a day |
@@ -2042,6 +2084,7 @@ P2 · L · META (SIM writes the scenario generator) · round 3
 **Acceptance**
 - Every scenario starts from the menu.
 - Each has a bot strategy that reaches bronze and a do-nothing run that fails.
+- Lights Out: a run that only buys one replacement plant earns at most bronze. Without the start-money limit it would earn gold, because the veteran's crisis city was back at 72,734 within 4 months of power returning (`veteran/crisis_128x12_s7.log`; veteran #8).
 - The objectives card updates monthly. Medals persist across reloads.
 - Every bundled file loads at HEAD (the audit's old-save method, as a test).
 
@@ -2058,6 +2101,7 @@ P3 · M · META · round 4
 - **The region card shows only totals**: population, R/C/I and the tile count (`RegionScreen.ts:126-145`; `shots2/114`).
 - **Each city keeps its own calendar.** The region list shows "Year 2009" next to "Year 2003" (`shots2/095`, `114`).
 - **Neighbours are a snapshot.** They are read once when the city opens (`main.ts:530-531`) and the same numbers are re-applied every month (`regionEffects.ts:147-150`).
+- **Neighbours barely change growth.** A synthetic 400k-job neighbour pins residential demand at 1.0 for 11 years but adds only 1.0% population, because the growth throughput cap absorbs the extra demand (veteran #10). PB-TAXRESPONSE or NEW-05 changes that cap; the region perks below are measured after it.
 - **The region has no goals, no unlocks and no connection lines.**
 
 **Change**
@@ -2077,7 +2121,7 @@ P3 · M · META · round 4
 - The RCI popover's neighbour block (`TopBar.ts:258-275`) reflects the +0.25.
 - A region without the new data behaves as today.
 
-**Depends on.** PB-REGION, LG-01.
+**Depends on.** PB-REGION, LG-01; PB-TAXRESPONSE or NEW-05 (veteran #10).
 
 **Risk.** A region format bump with a migration.
 
@@ -2133,67 +2177,98 @@ P3 · S · META · round 4
 
 ### H. Pacing and notifications
 
-#### FEEL-02 · Ultra speed on real-time budgets: New Year, autosave, toasts
+#### FEEL-02a · Real-time budgets at every speed: New Year pacing and the toast budget
 P1 · M · META · round 1
 
-**Problem.** The late game is played at ultra, where a game year lasts 18 s (`constants.ts:35`; 60 bot years ≈ 18 minutes). Everything that is paced in game time turns into spam:
-- **New Year.** Every year plays the fanfare and a toast (`NewYear.ts:201-212`). A fast year runs an 8 s show after a 2.8 s lead-in (`NewYear.ts:244-252`, `:283`: `max(6, 0.6 × 18 − 2.8)`), so fireworks fill about 11 of every 18 seconds.
-- **Autosave.** It runs every 3 game months (`region/settings.ts:19`, passed in by `main.ts:542`): every 45 s at 1×, 18 s at 2× and 4.5 s at ultra (`WORKER_DESIGN.md` §4.2).
-  - Each autosave plays a chime and shows the top-centre pill (`CityScene.ts:897-915`).
-  - The pill sits at z-index 70 (`hud.css:690`), above the emergency banners, and repeats what the minimap's save chip already shows.
+**Problem.** Everything paced in game time turns into spam, and New Year does at every speed. For a 100k city (`NewYear.ts:247-283`; show length `fireworksShowLength`, `Fireworks.ts:88-90`):
+- **Ultra** (18 s a year, `SECONDS_PER_DAY`, `src/core/constants.ts:34`; 60 bot years ≈ 18 minutes): every year plays the fanfare and a toast (`NewYear.ts:201-212`), then an 8 s show after a 2.8 s lead-in (`:283`: `max(6, 0.6 × 18 − 2.8)`). Fireworks fill about 11 of every 18 seconds.
+- **2×** (72 s a year): the year is too short for the cinematic (its budget, 72 / 2 − 16.8 = 19.2 s, is under 20), so it plays a 3.6 s countdown and a 39.6 s show in fireworks mode: 43 of every 72 seconds, about 60%.
+- **1×** (180 s a year): a 73 s cinematic after a 3.6–6.8 s lead-in, with the camera taken by default (`newYearCamera: true`, `settings.ts:60-61`): about 44% of real time, every 3 minutes. Any camera input hands the camera back, but the clock and the night switch keep running.
+- **LG-21 would add** a 15 s card after each show.
 - **Advice.** Up to 2 advisor messages a month (`ADVICE_PER_MONTH`, `advisors.ts:60`), with a 60-day minimum cooldown, which is 3 s at ultra (`:62`).
 
 **Change**
-1. **New Year at speed 3.** Fanfare and fireworks only on every 5th year, and never sooner than 3 real minutes after the last show; at ultra that is a show every 10 game years. Other years get a silent compact toast: "2034 · 812,400 residents, up 6%". Speeds 1 and 2 are unchanged.
-2. **Autosave.**
-   - Never sooner than 60 s of real time after the last save; when the Worker's own 30 s floor lands, the larger of the two applies.
-   - Autosave is silent: no chime and no pill, only the minimap chip updates.
-   - Ctrl+S keeps its pill and chime.
-3. **A toast budget** for advisor, warning and good news: at most 1 per 4 s and 8 per minute.
+1. **New Year paced by real time, at every speed.**
+   - A full show plays on the city's first New Year, on a New Year in which it ranked up (LG-01), and otherwise at most once per 10 real minutes. Two full shows are never less than 3 real minutes apart, rank-ups included. A full show is today's cinematic at 1×, and the fireworks-mode show at 2× and ultra.
+   - Every other New Year at 1× and 2× gets a burst of at most 12 s, with no countdown and no camera or clock takeover. At ultra it gets no burst, only a silent compact toast: "2034 · 812,400 residents, up 6%".
+   - The yearly toast stays.
+   - The Settings row "New Year celebration" gains "Every year" for players who want today's pacing (D17).
+2. **A toast budget** for advisor, warning and good news: at most 1 per 4 s and 8 per minute.
    - Bad news, disasters and errors always show.
-   - Extras go to the badge, the ticker and the news feed.
+   - A toast that carries an action is queued and shown when the budget allows, never dropped. That covers FH-03's "Zone homes" and FEEL-06's "Place it", found by `NewsItem.ref`. Other extras go to the badge, the ticker and the news feed.
    - The demand-cap toast (`TopBar.ts:308-321`) shares the budget, which `Toasts` enforces.
 
-**Files.** `src/game/NewYear.ts` (META in rounds 1–3); `src/game/CityScene.ts` (META hunks: `onMonth`, `save`); `src/ui/Modals.ts` (`SavePill`); `src/ui/Notifications.ts` (`Toasts`); `src/ui/hud.css`; `src/game/settings.ts`.
+**Files.** `src/game/NewYear.ts` (META in rounds 1–3); `src/ui/Notifications.ts` (`Toasts`); `src/game/settings.ts`; `src/ui/panels/SettingsPanel.ts` (the New Year row).
 
 **Acceptance**
-- 5 minutes at ultra on a save of 100k or more:
-  - at most 2 fanfares and 2 shows;
-  - at most 5 autosaves, with 0 chimes and 0 pills;
-  - at most 8 toasts in any 60 s, with every disaster toast shown.
-- At 1×: New Year every year, and an autosave at the first month end at least 60 s after the last save (every 4 game months instead of 3).
-- Recovery snapshots continue: after a crash 50 s past an autosave, the latest state is recovered.
+- 5 minutes at ultra on a save of 100k or more: at most 2 fanfares and 2 full shows, and at most 8 toasts in any 60 s, with every disaster toast shown.
+- 10 minutes at 2× on a 100k save: at most 2 full shows, and fireworks on screen at most 25% of the time (today about 60%).
+- 10 minutes at 1× on a 100k save: at most 2 full shows (camera takeovers); every other New Year is a burst of at most 12 s.
+- A city's first New Year, and a rank-up New Year, each get a full show unless one played in the last 3 real minutes.
+- A toast with an action that arrives over budget appears within 60 s.
 
-**Depends on.** PB-NEWYEAR; `WORKER_DESIGN.md` §4.2 and §4.3 (autosave and recovery move to the host).
+**Depends on.** PB-NEWYEAR (the date holds during the cinematic; real-time timer); LG-01 for rank-up years (until it lands, the first-New-Year and 10-minute rules apply). It starts with its lane after W0.6, because its toast budget shares `Notifications.ts` with W0.5.
 
-**Risk.** Autosaves become sparser at ultra, so a crash relies on the recovery journal; the acceptance checks it.
+**Risk.** Fewer full shows. The first New Year and rank-ups keep the big moment, and "Every year" keeps today's pacing for players who want it.
+
+#### FEEL-02b · Quiet autosave with a real-time floor
+P1 · S · META · round 1 (after W0.6); its recovery check after W1.3
+
+**Problem**
+- **Autosave runs every 3 game months** (`region/settings.ts:19`, passed in by `main.ts:542`): every 45 s at 1×, 18 s at 2× and 4.5 s at ultra (`WORKER_DESIGN.md` §4.2).
+  - Each autosave plays a chime and shows the top-centre pill (`CityScene.ts:897-915`).
+  - The pill sits at z-index 70 (`hud.css:690`), above the emergency banners, and repeats what the minimap's save chip already shows.
+- **The labels promise game time only**: "Saves every N game months" (`SettingsPanel.ts:84`) and "Autosave · game time" (`region/ui/dialogs.ts:66-80`). With a real-time floor they would be untrue.
+- **The trigger moves.** W0.6 routes every save through `host.save`, so this item lands after it.
+
+**Change**
+- Never sooner than 60 s of real time after the last save; when the Worker's own 30 s floor lands, the larger of the two applies.
+- Autosave is silent: no chime and no pill, only the minimap chip updates. Ctrl+S keeps its pill and chime.
+- Both labels read "Every N game months, at most once a minute".
+
+**Files.** `src/game/CityScene.ts` (META hunks: `onMonth`, `save`, calling `host.save` after W0.6); `src/ui/Modals.ts` (`SavePill`); `src/ui/hud.css`; `src/ui/panels/SettingsPanel.ts` and `src/region/ui/dialogs.ts` (labels).
+
+**Acceptance**
+- 5 minutes at ultra on a save of 100k or more: at most 5 autosaves, with 0 chimes and 0 pills.
+- At 1×: an autosave at the first month end at least 60 s after the last save (every 4 game months instead of 3).
+- After W1.3: kill the tab 50 s after an autosave. The restore offers the last snapshot, at most 30 s and 90 game days old, plus every journaled edit (`WORKER_DESIGN.md:852-853`). Until W1.3 the net is today's recovery snapshot every 30 s while dirty (`SNAPSHOT_INTERVAL_MS`, `main.ts:152`).
+
+**Depends on.** W0.6 (saves through the host); W1.3 for the recovery check (`WORKER_DESIGN.md` §4.3).
+
+**Risk.** Autosaves become sparser at ultra, so a crash relies on the recovery snapshots and, after W1.3, the journal; the acceptance checks it. NEW-03 keeps older saves to go back to.
 
 #### FEEL-05 · Found new cities in spring, with a seasonal minimap (lead decision)
-P1 · M · META (SIM adds the test) · round 1
+P2 · M · META (SIM adds the test) · round 1, not gating round-1 sign-off
 
 **Problem**
 - **Day 0 is 1 January** (`CityState.ts:447`), so every first view is winter: grey-brown woods with no visible map edge (`shots2/010`; `newplayer/047`; `cmp/fv_temp_def_AB.png`, `x_fv_forest_crop_AB.png`).
 - **The minimap stays summer-green in every season** (`MiniMap.ts:95-100`; `cmp/ui_U_def_1300_ui_AB.png`).
-- The lead chose day 90 (1 April).
+- The lead chose day 90 (1 April). It is P2: a winter first view confuses no one, and the art review rated it minor (render art r2 #4). Round-1 P1 effort goes to NEW-03, NEW-04 and the tax response first.
 
 **Change**
 - **Start on day 90.** `main.ts` `startNewCity` sets `st.day = 90` and `systemData.foundedDay = 90` right after it creates the state (`:449`).
   - The `CityState` constructor stays as it is, so the bot, the tests and the baselines keep day 0.
-  - The "day > 0 means a resumed city" heuristics also require stored data, which a fresh city lacks, so they are safe (see "Where the drafts were wrong", point 4). A test confirms it. The one exception, `growth.ts:897`, computes a harmless early downtown core.
-  - The two advisor rules that count from day 0 (`advisors.ts:1272`, `:1284`) count days since founding instead. That is two lines, done by GUIDE.
+  - The six systems' "day > 0 means a resumed city" heuristics also require stored data, which a fresh city lacks, so they are safe. `growth.ts:897` computes nothing for a fresh city, because `computeCore` returns null without shop or office jobs (`growth.ts:107`). See "Where the drafts were wrong", point 4. A test confirms all of it.
+  - Three advisor checks count from day 0, and all three count from `foundedDay` instead (GUIDE, three lines):
+    - the two rules at `advisors.ts:1272` and `:1284`;
+    - `advisorData`'s first headline (`advisors.ts:144`), which would otherwise treat the day-90 city as an older save and post on day 120, 30 days after founding instead of 45.
   - `CityScene.newCity` already keys on the camera and the buildings (`CityScene.ts:181`).
-- **A seasonal minimap.** `MiniMap.paintBase` blends land toward `lum × (1.18, 1.02, 0.68)` by the renderer's `uFoliageDry`, multiplies by `uFoliageTint`, and repaints on `'month'`.
+- **A seasonal minimap, composited over the cached base.** `paintBase` loops over every cell (`MiniMap.ts:77-121`), and repainting it each month would mean every 1.5 s at ultra, while Worker R2 is throttling exactly this function. So the seasonal tint is a separate layer:
+  - a land mask, built whenever the base repaints anyway;
+  - multiplied over the base at draw time, blending land toward `lum × (1.18, 1.02, 0.68)` by the renderer's `uFoliageDry` and then by `uFoliageTint`;
+  - updated on `'month'` as two `drawImage` calls.
 
-**Files.** `src/main.ts:443-469`; `src/ui/MiniMap.ts:77-120` (`paintBase`, reading `sharedUniforms` from `src/assets/materials.ts:108-133`, `setFoliageSeason`); new `tests/sim/foundingDay.test.ts`; `src/sim/economy/advisors.ts` (GUIDE).
+**Files.** `src/main.ts:443-469`; `src/ui/MiniMap.ts` (the draw step and a land mask, not `paintBase`'s cell loop; reading `sharedUniforms` from `src/assets/materials.ts:108-133`, `setFoliageSeason`); new `tests/sim/foundingDay.test.ts`; `src/sim/economy/advisors.ts` (GUIDE).
 
 **Acceptance**
 - A new city opens on "Apr 1, 2000" with green foliage, and its first New Year is 1 January 2001.
-- A day-90 city is treated as fresh by all six systems (the test).
+- A day-90 city is treated as fresh by every day-0 check: the six systems, growth's core and the advisors' headline schedule (the test). Its first headline comes 45 days after founding.
 - "Nothing growing" never fires earlier than 60 days after founding.
 - The minimap differs visibly between January and July.
+- A month tick adds no `paintBase` call (counted in a test).
 - The bot 128×15 s7 table is unchanged.
 
-**Depends on.** R2-SEASONS (spring foliage look).
+**Depends on.** R2-SEASONS (spring foliage look); W0.5 (it marks the MiniMap dirty on `layerUpdated`). It avoids Worker R2's `paintBase` rewrite.
 
 **Risk.** The first calendar year is 9 months long, so year-1 statistics cover 9 months; the Year in review (LG-21) labels it "since April".
 
@@ -2203,8 +2278,8 @@ P2 · S · META · round 2
 **Problem**
 - **'info' news reaches only the ticker**: the toast filter drops it (`Notifications.ts:113-114`).
 - **New items appear late.** `rebuild` (`Notifications.ts:54-76`) puts the newest item first but never resets the scroll offset, so a new item shows only after the 8-item loop wraps: 60–120 s at 38 px/s (`:86`).
-- **The window is narrow.** At 1280 px wide the bottom-left block is `50% − 340px` = 300 px (`hud.css:345`). Players read fragments: "g garden gnomes." (`shots2/i01`), "— zone more commercial land." (`shots2/091`), "…ury reaches 500 residents!" (`shots2/023`).
-- **The welcome tip is wrong.** It says to "connect it with power lines" (`Notifications.ts:62-63`), while roads already carry power (`utilities.ts:5`).
+- **The window is small, and the scroll causes the fragments.** `hud.css:345` sizes the bottom-left block as `clamp(240px, 50% − 340px, 460px)` inside the zoomed HUD root (`zoom: var(--ui-zoom)`, `hud.css:18`). At 1280×720 the zoom is 0.8 (`zoom.ts:13-19`), so the block is 460 css px, about 368 screen px; `shots2/010` shows about 365 px. The fragments come from the scroll offset never resetting (`frame`, `Notifications.ts:78-89`): players read "g garden gnomes." (`shots2/i01`), "— zone more commercial land." (`shots2/091`) and "…ury reaches 500 residents!" (`shots2/023`).
+- **The welcome tip is wrong.** It says to "connect it with power lines" (`Notifications.ts:62-63`), while roads already carry power (`utilities.ts:5`). The utilities advisor card says the same (`AdvisorsPanel.ts:52`, fixed by FH-18).
 
 **Change**
 - **The newest item enters from the right.** It holds for 5 s if it fits; otherwise it scrolls through once at 60 px/s. Bursts queue: 5 s for the first, then 3 s each.
@@ -2219,36 +2294,114 @@ P2 · S · META · round 2
 - Within 1 s of a `notify`, the first 20 characters of the item are inside `.tk-view`.
 - A 200-character item shows at most 91 characters, plus a tooltip with the full text.
 - Each of 10 consecutive headlines is fully visible within 15 s of arriving.
+- FH-18's text test covers the welcome tip ("power lines" never appears as the way to connect a plant).
 
 **Depends on.** PB-PANELS (the ticker caches its width), W0.5 (the news sequence number).
 
 **Risk.** None for the gates; UI only.
 
+### H2. Saves and storage
+
+#### NEW-03 · Save history and safe exits
+P1 · M · META (with the Worker save owner; SIM adds the worker rows) · round 2, after W0.6 and W1.3
+
+**Problem**
+- **One save slot per city.** Every save overwrites the city's single record (`saveCity`, `save/index.ts:49-55`), and autosave runs every 4.5 s at ultra (every 60 s after FEEL-02b). A bulldozed downtown is autosaved before the player notices.
+- **FH-07b's undo only covers the current game day**, which ends within half a second at 1×.
+- **No way out without saving.** The pause menu offers Resume, Save city, Save & exit, Settings and Help (`Modals.ts:33-50`). "Save & exit" always saves (`CityScene.exitToRegion`, `:918-930`), and the app re-saves a dirty city on exit and on tab hide (`main.ts` `exitCity`, `saveCurrentCity`).
+- **The planned endings would trap the player.** LG-09's and LG-16's endings offer "Reload", which would reload an autosave already inside the failing streak.
+
+**Change**
+- **Save history per city**: the last 3 autosaves, at least 5 real minutes apart, plus the last manual save. Older autosaves rotate out.
+  - A slot is compressed with the existing `packFile` (gzip through `CompressionStream`) when it is demoted, in the worker after W1.3.
+  - The live record keeps today's uncompressed format (`WORKER_DESIGN.md` §4.2), so a normal save costs nothing more.
+- **"Restore an earlier save"** in the pause menu and on the region city card. Each slot shows its date, population and funds. Restoring asks for confirmation and keeps the current state as a new slot, so a restore can itself be undone.
+- **"Exit without saving"** in the pause menu, with a confirmation ("Changes since 14:32 will be lost"). It skips the exit save and the dirty re-save, and discards the recovery snapshot.
+- **"Revert to last save"** reloads the newest slot.
+- **Endings restore the right save.** LG-09's and LG-16's "Reload" restores the newest slot from before the failing streak began.
+
+**Files.** `src/save/index.ts` and new `src/save/history.ts`, after W0.6 splits the record code into `src/save/cities.ts`; `src/worker/**` (SIM: the history write in `save:put`); `src/ui/Modals.ts` (META: `PauseMenu`); `src/region/RegionScreen.ts` (the city card); `src/main.ts` (`exitCity`, the restore path); `src/game/CityScene.ts` (META hunk: an exit without a save).
+
+**Acceptance**
+- Bulldoze downtown, let 2 autosaves pass, restore the slot from before: the city's fingerprint equals the pre-bulldoze save.
+- Exit without saving, then Continue: the city equals the last save (fingerprint), and no recovery prompt appears.
+- LG-09's removal screen offers "Restore" with the date of a save from before the 12 bankrupt months.
+- The restore dialog shows each region's storage use.
+
+**Depends on.** W0.6 (saves through the host, and the `save/index.ts` split); W1.3 (worker persistence and the journal); NEW-04 (quota handling).
+
+**Risk.**
+- Storage: a 1M city is 4.4 MB gzipped (veteran summary), so its history adds up to about 18 MB. NEW-04's quota message covers a full disk.
+- Compressing a 1M slot costs 114–209 ms of CPU (`WORKER_DESIGN.md` §4.2). It runs in the worker, at most once per 5 minutes.
+
+#### NEW-04 · Storage you can trust: persistence, quota errors, one tab per region
+P1 · S · META · round 1 (after W0.6)
+
+**Problem**
+- **Saves live in best-effort storage.** Nothing in `src` calls `navigator.storage.persist()` or `navigator.storage.estimate()`, so the browser may evict IndexedDB (`save/db.ts`) under storage pressure. The only backup is a manual export (`RegionScreen.ts:106`). The game does warn when IndexedDB is missing altogether (`main.ts:239`).
+- **A failed save shows the raw exception**: "Saving failed" plus `err.message` (`CityScene.ts:910`; `ErrorOverlay.report`, `Modals.ts:259-285`), and "Saving failed: {message}" on exit (`main.ts` `exitCity`). A full disk reads as a crash.
+- **Two tabs overwrite each other.** There is no Web Lock or BroadcastChannel in `src`. Every city save also rewrites the whole region record (`doSaveCity` → `persistRegion`, `main.ts:691`), so two tabs in one region can drop each other's city summaries even when they play different cities. The lock is therefore per region, not per city.
+
+**Change**
+- **Persistent storage.** After the first city is founded (inside the player's "Found" click), call `navigator.storage.persist()`. If it is denied or unsupported, the region screen shows a dismissible "Back up your region" reminder with a one-click export, while the last export is more than 7 days old.
+- **Quota errors.** A `QuotaExceededError`, or an `estimate()` within 5% of the quota before a save, shows a guided message: "Your browser's storage for Metropolis is full. Export this region, or delete old regions or save history to free space." Its buttons are Export, Manage storage (regions and NEW-03 slots with their sizes) and Retry. Other save errors get one plain sentence plus Details.
+- **One tab per region.** A Web Lock (`navigator.locks`) is held while a region or one of its cities is open.
+  - A second tab opens the region read-only: "This region is open in another tab", with saves and autosave off.
+  - Its "Use it here instead" button takes the lock over; the first tab stops saving and says so.
+  - Where Web Locks are missing, a BroadcastChannel heartbeat does the same.
+
+**Files.** `src/main.ts` (founding, the lock, save errors); `src/save/db.ts` (`persist` and `estimate` helpers); `src/region/RegionScreen.ts` (the reminder, Manage storage); new `src/ui/StorageDialog.ts`; `src/game/CityScene.ts` (META hunk: `save` routes storage errors to the dialog).
+
+**Acceptance**
+- A second tab on the same region cannot save: its save buttons are disabled and autosave is off. "Use it here instead" moves saving to it, and the first tab shows "This region is now open in another tab".
+- A `QuotaExceededError` from the store shows the guided message with Export, Manage storage and Retry, never the raw exception.
+- Founding the first city calls `navigator.storage.persist()` once. When it resolves false, the region screen shows the backup reminder until an export is made.
+
+**Depends on.** W0.6 (save errors now arrive from `host.save`); PB-DIALOG (region dialogs).
+
+**Risk.**
+- Safari deletes script-written storage after 7 days without a visit for sites not added to the home screen, and `persist()` may not help there. The reminder is the defence.
+- Firefox may prompt on `persist()`, hence the call inside the player's own click.
+
 ### I. World and camera
 
-#### FH-19 · Camera controls a laptop player can find (incl. AZERTY movement)
+#### FH-19 · Camera and keys a laptop player can use (AZERTY, Dvorak, Mac)
 P1 · S · WORLD · round 1
 
 **Problem**
 - **A trackpad can't pan the city.** Left is reserved for tools; pan is middle-drag or Shift+right-drag (`CameraController.ts:4-5`, `:242-244`). A trackpad has no middle button, and nothing mentions Shift+right.
 - **The region screen shows a controls hint bar** (`shots2/005`); **the city shows none** (`shots2/010`).
-- **Help lists only "Pan (mouse) Middle-drag"** (`Modals.ts:200-208`).
+- **Help omits the pan a trackpad has.** It lists "Pan W A S D" and middle-drag (`Modals.ts:200-208`), but not Shift+Right-drag, the arrow keys, Home or + / −.
 - **Keys are read by character, not position** (`e.key`, `CameraController.ts:337-353`). On AZERTY the physical W key types 'z', which does nothing, and the physical A key types 'q', which rotates the camera.
+- **More keys fail outside QWERTY:**
+  - the speed keys compare `e.key` with '1', '2' and '3' (`CityScene.ts:840`); on AZERTY the unshifted keys type '&', 'é' and '"', so they do nothing;
+  - the brush keys `[` and `]` (`BrushTool.ts:108`) need AltGr on AZERTY;
+  - Delete selects bulldoze (`CityScene.ts:846`), but a Mac laptop's delete key sends Backspace (B still works);
+  - moving the camera on `e.code` alone collides on other layouts: on Dvorak the physical S key types 'o', which opens Data views (`toolCatalog.ts:245`), and on Colemak it types 'r', the residential zone cycle.
 
 **Change**
 - **A hint bar for the first 2 city sessions**: "WASD or Shift+Right-drag to pan · Right-drag to rotate · Wheel to zoom · Space to pause". It fades after the first pan and the first zoom.
 - **Left-drag pans** when the Query tool or no tool is active. A click that moves less than 6 px still inspects (`QueryTool.up` already ignores moves over 6 px).
-- **Movement and rotation use `e.code`** (KeyW/A/S/D, KeyQ/E). No tool or panel hotkey uses those keys (`toolCatalog.ts:226-248`), so nothing conflicts.
-- **Help lists every pan method** (GUIDE edits the Help rows).
+- **Movement and rotation use `e.code`** (KeyW/A/S/D, KeyQ/E).
+- **Character hotkeys skip camera keys.** When `e.code` is a camera-movement key, `onKey` does not run the character hotkey, so Dvorak's 'o' at the S position pans instead of opening Data views. That costs Dvorak players the O hotkey until FH-25's rebinding.
+- **Speeds on positions**: Digit1–3 and Numpad1–3 by `e.code`.
+- **Brush size also on the Minus and Equal key positions**, next to `[` and `]` (a GUIDE hunk in `BrushTool.ts`).
+- **Backspace is a bulldoze alias**, like Delete.
+- **The New Year camera hands control back on the same keys.** `NewYear.ts`'s `CAMERA_KEYS` (`:102`, read by `e.key` at `:623`) moves to `e.code` (META hunk).
+- **Help lists every pan method** (GUIDE edits the Help rows; FH-17's Shortcuts topic).
 - **Settings rows for pan speed and inverted orbit** (META adds the rows).
 
-**Files.** `src/render/world/CameraController.ts`; `src/game/tools/QueryTool.ts` (WORLD hunk: `down`/`up`); `src/game/tools/ToolController.ts`; new `src/ui/HintBar.ts`.
+**Files.** `src/render/world/CameraController.ts`; `src/game/CityScene.ts` (WORLD hunk: `onKey` speed keys, Backspace and the hotkey skip, and `consume`'s camera-key check at `:873`, which also reads `e.key`); `src/game/tools/QueryTool.ts` (WORLD hunk: `down`/`up`); `src/game/tools/ToolController.ts`; `src/game/tools/BrushTool.ts` (GUIDE hunk: the key check); `src/game/NewYear.ts` (META hunk: `CAMERA_KEYS`); new `src/ui/HintBar.ts`.
 
 **Acceptance**
 - A 40 px left drag with Query moves the camera and opens no inspector. A click still inspects.
 - `code: 'KeyA'` with `key: 'q'` pans left and does not rotate; `code: 'KeyQ'` with `key: 'a'` rotates.
+- `{code: 'Digit2', key: 'é'}` sets speed 2.
+- `{code: 'KeyS', key: 'o'}` pans and does not open Data views.
+- `{code: 'Equal', key: '='}` grows the brush; `{key: 'Backspace'}` selects bulldoze.
+- During a New Year cinematic, `{code: 'KeyW', key: 'z'}` hands the camera back.
 - The hint hides after one pan and one zoom, and does not show in a third session.
-- Persona P-5 pans, rotates and zooms with a trackpad only.
+- Persona P-5 pans, rotates and zooms with a trackpad only, and changes speed on AZERTY.
 
 **Depends on.** None. Rebase on render round 2 if its zoom-hitch work touched `CameraController.ts`.
 
@@ -2259,21 +2412,23 @@ P2 · S · WORLD · round 1
 
 **Problem**
 - **Every jump only moves the goal.** `CityScene.focusCell` (`:972-980`) calls `focusOn` (`CameraController.ts:142-147`), and the damping covers 4 km in about 0.4 s as a smear (`shots2/041`).
-- **Five callers use it**: the emergency banner, toasts, the ticker, the advisors' "Show me" and the minimap.
+- **Four callers go through `focusCell`**: the emergency banner, toasts, the ticker and the advisors' "Show me". **The minimap calls `focusOn` directly**, on pointerdown and on every pointer move while dragging (`MiniMap.ts:58-75`).
 
 **Change**
-- **`focusOn(x, z, d, {fly: true})` for trips over 500 m**: 0.6 s + 0.25 s per km, at most 1.6 s, eased with smoothstep.
+- **`focusOn(x, z, d, {fly: true})` for trips over 500 m**: 0.6 s + 0.25 s per km, at most 1.6 s, eased with smoothstep. Flying is opt-in: `focusOn` without the option stays instant.
+- **`focusCell` flies.** The minimap flies only on a click (its pointerdown); its drags keep calling the instant `focusOn`, and the first drag move cancels any flight.
 - **The camera rises mid-flight** to max(start, end, 0.5 × trip length), so the player sees where it is going.
 - **Any input cancels the flight.** The existing whoosh (`CityScene.ts:974`) is stretched to the flight. With reduced motion (FEEL-21) a 150 ms fade replaces it.
 
-**Files.** `src/render/world/CameraController.ts`; `src/render/contracts.ts` (the option); `src/game/CityScene.ts` (WORLD hunk: `focusCell`).
+**Files.** `src/render/world/CameraController.ts`; `src/render/contracts.ts` (the option); `src/game/CityScene.ts` (WORLD hunk: `focusCell`); `src/ui/MiniMap.ts` (META: the pointerdown call passes `{fly: true}`).
 
 **Acceptance**
 - A 4 km jump takes 1.2–1.6 s, its peak distance is at least 1.5× the end distance, and it ends within 1% of the target.
 - A 300 m jump behaves as today.
 - A drag during a flight stops it within one frame.
+- A minimap drag tracks the pointer with no flight; a minimap click more than 500 m away flies.
 
-**Depends on.** None.
+**Depends on.** Render round 2 (`CameraController.ts`); W0.5 for the minimap hunk.
 
 **Risk.** None for the gates.
 
@@ -2298,7 +2453,7 @@ P2 · M · WORLD · round 1
 - Power restored: windows return within 2 s of rebuilding the plant. Parks are unchanged.
 - A 1,000-building flip keeps every frame under 20 ms.
 
-**Depends on.** R2-NIGHT (the night-window LOD patch).
+**Depends on.** R2-NIGHT (the night-window LOD patch); Worker R2, which budgets `BuildingRenderer.add` in the same file. It stays in round 1 only if D13 pulls R2 forward; otherwise it moves to round 2.
 
 **Risk.** Frame spikes on big flips, held by the stagger and the acceptance.
 
@@ -2322,7 +2477,7 @@ P2 · M · WORLD · round 2
 - A 2×2 house bulldozed at 300 m shows 1.5–2.5 s of dust.
 - A 200-building drag adds under 4 ms and at most 600 particles (the pool holds 7,000 smoke particles).
 
-**Depends on.** None.
+**Depends on.** Worker R2 (`BuildingRenderer.ts`; D13).
 
 **Risk.** Building ids are reused, so the collapse copy must not be keyed by id.
 
@@ -2348,7 +2503,7 @@ P2 · S · WORLD · round 2
 - The 15% coal plant shows at most 40% of its full-load particles.
 - Emitters rebuild at most once per building per month.
 
-**Depends on.** None.
+**Depends on.** Worker R2 (`BuildingVisual` lives in `BuildingRenderer.ts`; D13).
 
 **Risk.** None for the gates; render only.
 
@@ -2397,9 +2552,11 @@ P2 · M · WORLD (CONTENT draws the sign) · round 3
 - The look survives the proxy LOD.
 - Abandoned buildings stay dark at night.
 
-**Depends on.** R2-NIGHT.
+**Depends on.** R2-NIGHT; Worker R2 (`BuildingRenderer.ts`).
 
-**Risk.** Shader cost, measured in the R3 perf check.
+**Risk.**
+- Shader cost, measured in the R3 perf check.
+- `IF_ABANDONED` takes the last free instance-flag bit: `flagsToAlpha` packs `flags & 15` (`cityMaterial.ts:21-27`). Later per-building looks (NEW-02's unreachable tint, FEEL-28) use the overlay uniform path or a per-instance attribute instead.
 
 #### FEEL-16 · Polluted districts look polluted: local smog haze
 P3 · M · WORLD · round 4
@@ -2442,7 +2599,7 @@ P3 · M · WORLD · round 4
 - At 400 m, 95% or more of the troubled buildings in view show their icon.
 - At most 1 draw call and 0.3 ms a frame.
 
-**Depends on.** FEEL-04.
+**Depends on.** FEEL-04; Worker R2 (`BuildingRenderer.ts`).
 
 **Risk.** Clutter, held by the default (Query tool only).
 
@@ -2556,7 +2713,7 @@ P3 · L · WORLD (CONTENT gates the headlines) · round 4
 - Flakes and the snow headline fall on the same day.
 - Rain shows the road sheen and plays the rain bed.
 - At most 0.5 ms of GPU at 1080p on High.
-- Bot hashes are unchanged.
+- Bot hashes are unchanged outside advice: weather headlines change which bag headline fits, so the check compares hashes without `news` and `systemData.advisors` (FH-03's rule).
 
 **Depends on.** R2-SEASONS.
 
@@ -2577,7 +2734,7 @@ P3 · M · WORLD and CONTENT · round 4
 
 **Acceptance**
 - Each sighting appears at most twice in 30 game years, always with its headline.
-- No sim change: bot hashes are unchanged.
+- No sim change: bot hashes are unchanged when compared without `news` and `systemData.advisors` (FH-03's rule; the sighting headlines are news).
 
 **Depends on.** FEEL-01, FEEL-08, FEEL-20.
 
@@ -2593,6 +2750,7 @@ P2 · M · WORLD · round 1
 - **The New Year countdown plays over the music.**
 - **Sirens never stop in a big city.** The nearest source of each kind within 1,400 m sounds (`sirens.ts:45-46`, `:64`). At 1.29M the bot city answers 742 incidents a year automatically, 727 of them medical (`G_256x60_s7`, 2050): about 4 new ones per real second at 1× and 41 at ultra.
 - **Songs run back to back** with a 5 s crossfade and no rest (`XF_AUTO`, `music/director.ts:88`, `:440-445`).
+- **Music plays on in a background tab.** `pauseWhenHidden` pauses the simulation (`CityScene.onVisibility`), but nothing calls `AudioEngine.suspend()` (`AudioEngine.ts:394`), and the music director keeps scheduling with a 4 s lookahead while hidden (`music/director.ts:4`, `:171`).
 
 **Change**
 - **`duck(db, hold, release)`.** Sounds of 0.6 s or longer duck the music by 6 dB (60 ms attack, 600 ms release, at most once per 2 s) and the ambience by 3 dB.
@@ -2600,18 +2758,20 @@ P2 · M · WORLD · round 1
 - **Sirens.**
   - Only sources in the view frustum plus 150 m, and at most 2 voices.
   - Automatic responses beyond 600 m are silent.
-  - Units the player dispatched are always audible.
+  - Units the player dispatched are always audible. Telling them apart needs W0.2's cause tags and W0.5's `EmergencyView`; today `feedSirens` reads `EmergencyVehicles.sirenSources`, which carries no dispatcher (`CityScene.ts:1051-1070`). So this sub-part waits for both.
 - **Rests between songs** of 15–40 s, with a setting (default: with pauses).
+- **"Mute when in background"** (default on): the master gain fades to 0 when the tab is hidden and the engine suspends; it resumes on return.
 
-**Files.** `src/audio/AudioEngine.ts`, `src/audio/sirens.ts`, `src/audio/music/director.ts`, `src/game/GameSounds.ts` (WORLD part).
+**Files.** `src/audio/AudioEngine.ts`, `src/audio/sirens.ts`, `src/audio/music/director.ts`, `src/game/GameSounds.ts` (WORLD part); `src/game/CityScene.ts` (WORLD hunk: `feedSirens`, after W0.5); the setting key in §7.5.
 
 **Acceptance**
 - `tools/render-audio.mjs` shows the music 6 ± 1 dB lower under a fanfare and back within 1 s.
 - In a 2-minute ultra window at 1.3M, sirens are above −40 dB for at most 30% of the time.
 - During the New Year countdown the music is at least 12 dB below its normal level.
 - Gaps of 15–40 s between songs in the city, none in the menus.
+- The master gain reaches 0 within 1 s of the tab being hidden.
 
-**Depends on.** None. META's New Year call lands in round 2.
+**Depends on.** None for the ducking, the rests and the background mute (`src/audio/**` only, so they can start now). The siren sub-part depends on W0.2 and W0.5. META's New Year call lands in round 2.
 
 **Risk.** None for the gates; audio only.
 
@@ -2655,7 +2815,7 @@ P3 · M · WORLD · round 4
 **Acceptance**
 - The dominant layer switches within 2 s of moving over a new district.
 - Above 1,500 m every location layer is at least 18 dB down.
-- At most 6 extra audio nodes, and no audible seam over 2 minutes.
+- At most 6 extra audio nodes, and over 2 minutes of moving between districts no layer's gain steps by more than 1 dB within 100 ms (measured with `tools/render-audio.mjs`).
 
 **Depends on.** FEEL-12.
 
@@ -2663,47 +2823,58 @@ P3 · M · WORLD · round 4
 
 ### K. Access and settings
 
-#### FH-21 · The first run picks a graphics quality the machine can carry
+#### FH-21 · The first run picks a graphics quality the machine can carry, and survives a lost context
 P1 · S · META · round 1
 
 **Problem**
 - **Every first run starts on High, whatever the machine.** `detectQuality()` exists (`quality.ts:167-174`: mobile → Low, under 8 cores → Medium) but nothing calls it; it is only re-exported (`WorldView.ts:29`). The app default is `quality: 'high'` (`region/settings.ts:19`), passed to the scene by `main.ts:542`.
 - **The game never notices a slideshow.** The playtest machine ran at 2–7 s a frame until the tester found Graphics → Low (`playtest`, test environment; `shots2/011`). That machine used software rendering under load, so it is an upper bound, but a weak laptop on High meets the same silence.
+- **A lost graphics context is not handled.** There is no `webglcontextlost` listener anywhere in `src`; the only WebGL check runs at start-up (`CityScene.ts:471`). A driver reset or a GPU-starved laptop leaves a frozen or black city with the simulation still running.
 
 **Change**
 - **On the first run only**, the app default comes from `detectQuality()`.
 - **A one-time prompt.** After 20 s at a median under 25 fps on High or Ultra, one toast: "The city is running slowly — switch graphics to Medium?" with Switch and Keep. The answer is remembered.
+- **Context loss.** On `webglcontextlost` the game pauses the simulation, saves, and shows "Graphics reset — Restore". Restore rebuilds the WorldView (and the city views) on a fresh context, or on `webglcontextrestored`.
+- **Load time is recorded.** The time from "Found City" to the first interactive frame goes into the fps counter's log, so persona P-5 can report it.
 
-**Files.** `src/region/settings.ts`, `src/main.ts`; `src/game/CityScene.ts` (META hunk: the slow-tick fps check).
+**Files.** `src/region/settings.ts`, `src/main.ts`; `src/game/CityScene.ts` (META hunk: the slow-tick fps check and the context-loss handler).
 
 **Acceptance**
 - A first run with 4 cores starts on Medium; with 8 cores on High.
 - An existing profile keeps its setting.
 - The prompt shows at most once per profile.
+- `WEBGL_lose_context.loseContext()` pauses the game, saves, and shows the card. Restore brings back a working view at the same camera, and the city's state hash is unchanged.
+- P-5's report includes the time to the first interactive frame on its 4-core profile.
 
 **Depends on.** Re-tune the thresholds after W1.4 (the sim leaves the main thread).
 
 **Risk.** None for the gates.
 
-#### FH-23 · Text that can actually get bigger
-P2 · S · META · round 2
+#### FH-23 · Text that can actually get bigger, and tips keyboard focus can open
+P2 · S · META (GUIDE adds the focus handlers) · round 2
 
 **Problem**
 - **The UI can't grow at 1280 px wide.** `computeUiZoom` caps the zoom at width / 1280 (`zoom.ts:14-19`). At 1280×720 the automatic zoom is 0.8 and the cap is 1.0, so the UI scale slider (`SettingsPanel.ts:96`, 70–150%) can enlarge text by at most 25% there.
-- **The labels are small to begin with.** `hud.css` has 63 font sizes between 9 and 11.9 css px, which render at 7–9.5 px at zoom 0.8.
+- **The labels are small to begin with.** `hud.css` has 63 font sizes between 9 and 11.9 css px, which render at 7–9.5 px at zoom 0.8. Even at +30% the 9–11.5 px rules would render at 9.4–12 px, and an 11 px css floor renders at 8.8 px.
 - **Dialogs ignore the scale.** It is set only on the city HUD root (`CityScene.ts:760-772`), so the title, region and New City screens never scale.
+- **The settings can't be reached before the first city.** The title-screen Settings has only audio, default quality, autosave, edge scrolling and FPS (`region/ui/dialogs.ts:16-95`). UI scale, and the new motion, colour-vision and text-size settings, would exist only in the in-city panel (`SettingsPanel.ts:76-105`).
+- **Some information is hover-only.** Approval row details are `title` attributes (`TopBar.ts:504`), toolbar tips open only on `pointerenter` (`Toolbar.ts:48-49`, `:278-279`), and the top-bar segments are click-only `div`s that Tab never reaches.
 
 **Change**
-- **A Text size setting**: +10%, +20% or +30%, applied as a font-size multiplier on top of the zoom cap, with an 11 px floor.
+- **A Text size setting**: +10%, +20% or +30%, applied as a font-size multiplier on top of the zoom cap. Its floor is set in rendered pixels: at +30% no text renders under 12 px, so the css floor is 12 px ÷ zoom (15 px at zoom 0.8).
 - **It applies everywhere**: the HUD, the title, the region screen and the New City dialog.
+- **An "Accessibility & interface" section in the title-screen Settings** (`dialogs.ts`): UI scale, text size, motion (FEEL-21) and colour vision (FH-20), from the same §7.5 schema, plus "Reset to defaults".
+- **Keyboard focus shows the same tips as hover** (GUIDE): the top-bar segments become focusable buttons, and `focus` opens what `pointerenter` opens on the top bar and the toolbar.
 
-**Files.** `src/ui/zoom.ts`; `src/game/CityScene.ts` (META hunk: `resize`); `src/ui/hud.css` (META: the global rules); `src/region/ui/meta.css`; `src/region/settings.ts`.
+**Files.** `src/ui/zoom.ts`; `src/game/CityScene.ts` (META hunk: `resize`); `src/ui/hud.css` (META: the global rules); `src/region/ui/meta.css`; `src/region/settings.ts`; `src/region/ui/dialogs.ts` (the new section); the TopBar segments and `src/ui/Toolbar.ts` (GUIDE: focus handlers).
 
 **Acceptance**
-- At 1280×720 with +30%, no visible text is under 13 px and the top bar still fits on one line.
+- At 1280×720 with +30%, no text renders under 12 px and the top bar still fits on one line. The "13 px" first proposed cannot be met by a css floor at zoom 0.8: it would need 16.25 css px.
 - The New City dialog grows with the setting.
+- On a fresh profile, text size, UI scale, motion and colour vision can be set from the title screen, and the first city opens with them.
+- Tabbing through the top bar and the toolbar shows every tip that hover shows.
 
-**Depends on.** PB-DIALOG, PB-DATAVIEWS (the 720p layout fixes).
+**Depends on.** PB-DIALOG, PB-DATAVIEWS (the 720p layout fixes); the TopBar split (§7.4).
 
 **Risk.** Overflow in dense panels, checked by persona P-5.
 
@@ -2729,7 +2900,7 @@ P2 · S · META (WORLD makes its effects obey) · round 2
   - a static ticker.
 - **How**: a `.mp-ui.reduced-motion` class plus an `@media (prefers-reduced-motion: reduce)` block. WORLD's camera and effects read the setting.
 
-**Files.** `src/game/settings.ts`, `src/ui/panels/SettingsPanel.ts`, `src/ui/hud.css` (META); `src/ui/emergency.css` (WORLD owns it in round 2 and adds the steady-colour rules); the camera and effects code (WORLD).
+**Files.** `src/game/settings.ts`, `src/region/settings.ts`, `src/ui/panels/SettingsPanel.ts`, `src/region/ui/dialogs.ts` (the title-screen "Accessibility & interface" section, FH-23), `src/ui/hud.css` (META); `src/ui/emergency.css` (WORLD owns it in round 2 and adds the steady-colour rules); the camera and effects code (WORLD).
 
 **Acceptance**
 - With the OS set to reduced motion, the setting reads "Reduced".
@@ -2742,37 +2913,40 @@ P2 · S · META (WORLD makes its effects obey) · round 2
 **Risk.** None.
 
 #### FH-20 · Colour-blind safe views
-P2 · M · WORLD (META adds the settings row) · round 3
+P2 · M · WORLD (META adds the settings rows) · round 3; the Emergency palette in round 1
 
 **Problem**
-- **Key colour pairs collapse under red-green colour blindness.** RGB distance, normal → simulated deuteranopia (Machado), measured on the theme tokens:
+- **Key colour pairs collapse under red-green colour blindness.** RGB distance on the theme and legend tokens, normal and after the Machado 2009 simulation at full severity, applied in linear RGB (in gamma space the numbers differ: R vs I gives 99, not 77):
 
-  | pair | normal | deuteranopia |
-  |---|---|---|
-  | residential vs industrial zones | 192 | 77 |
-  | Emergency view: automatic vs just out of reach | 183 | 66 |
-  | Emergency view: automatic vs must dispatch | 195 | 79 |
-  | desirability, low end vs high end | 201 | 47 |
-  | good vs bad (HUD) | 223 | 46 |
-  | residential vs commercial (fine) | 161 | 213 |
+  | pair | normal | deuteranopia | protanopia |
+  |---|---|---|---|
+  | residential vs industrial zones | 192 | 77 | 99 |
+  | Emergency view: automatic vs just out of reach (`overlays.ts:190-191`) | 183 | 66 | 56 |
+  | Emergency view: automatic vs must dispatch | 195 | 79 | 124 |
+  | desirability, low end vs high end | 201 | 47 | 85 |
+  | good vs bad (HUD) | 223 | 46 | 101 |
+  | residential vs commercial (fine) | 161 | 213 | 202 |
 
-- **There is no colour-vision setting** (`SettingsPanel.ts:95-98`).
-- **The Zones legend names dirty industry "Industrial (low)"**, while the tool says "Industrial · Medium density" (`render/world/overlays.ts:238` vs `ZoneTool.ts:19`).
+  Under tritanopia, residential vs commercial falls to 30, the case the Blue-yellow safe mode is for.
+- **There is no colour-vision setting** (`SettingsPanel.ts:95-98`), and the title screen has no place for one (`region/ui/dialogs.ts:16-95`).
+- **The Zones legend misnames and omits zones.** It names dirty industry "Industrial (low)", while the tool says "Industrial · Medium density" (`render/world/overlays.ts:238` vs `ZoneTool.ts:19`). It also lists no Agriculture and no medium densities (`overlays.ts:233-240`), although the tool has all nine zones (`ZoneTool.ts:10-21`).
 
 **Change**
-- **A Colour vision setting**: Standard, Red-green safe, Blue-yellow safe. Each swaps the theme tokens and the overlay ramps.
-- **Emergency colours that work for everyone**: blue = automatic, orange = out of reach, magenta = must dispatch, grey = no coverage.
-- **Shape as well as colour**: hatching on "must dispatch" in all modes, and zone patterns in the safe modes.
-- **The legend says "Industrial (medium)" and "Industrial (high)".**
+- **A Colour vision setting**: Standard, Red-green safe, Blue-yellow safe. Each swaps the theme tokens and the overlay ramps. It sits in the in-city panel and in the title screen's "Accessibility & interface" section (FH-23), from the same §7.5 key.
+- **Emergency colours that work for everyone, in round 1** with FH-08: blue = automatic, orange = out of reach, magenta = must dispatch, grey = no coverage. This is the ramp and legend in `render/world/overlays.ts` only, a file no in-flight phase edits.
+  - A palette that meets the target: `#2a7de1`, `#f5a623`, `#9b1d6a`, `#c8ccd2`.
+  - Its closest pair is 135 apart under deuteranopia and 138 under protanopia, against 66 and 56 for today's automatic vs out of reach.
+- **Shape as well as colour, in round 3**: hatching on "must dispatch" in all modes, and zone patterns in the safe modes. These need the terrain overlay shader (Worker R1, W0.5, render round 2).
+- **The legend lists every zone**: Residential (low, medium, high), Commercial (low, medium, high), Agriculture, Industrial (medium), Industrial (high), Landfill, with the tool's names.
 
-**Files.** `src/ui/theme.css`, `src/render/world/overlays.ts`, `src/ui/overlays.ts`, `src/render/world/TerrainRenderer.ts` (WORLD); `src/ui/panels/SettingsPanel.ts`, `src/game/settings.ts` (META).
+**Files.** `src/ui/theme.css`, `src/render/world/overlays.ts`, `src/ui/overlays.ts`, `src/render/world/TerrainRenderer.ts` (WORLD); `src/ui/panels/SettingsPanel.ts`, `src/region/ui/dialogs.ts`, `src/game/settings.ts`, `src/region/settings.ts` (META).
 
 **Acceptance**
-- In the safe mode, all five pairs are 120 or more apart under simulation.
-- The legend names match the tool names.
+- In the safe mode, all five problem pairs are 120 or more apart under both deuteranopia and protanopia (Machado 2009, linear RGB). The Emergency pairs pass in every mode from round 1.
+- The legend names match the tool names, and all nine zones and the landfill are listed.
 - Screenshots of the zone, Emergency and desirability views in both modes are attached to the round report.
 
-**Depends on.** Render round 2 (overlay and terrain shaders).
+**Depends on.** Render round 2 (overlay and terrain shaders); Worker R1 and W0.5 for the hatching (`TerrainRenderer.ts`). The round-1 palette depends on nothing in flight.
 
 **Risk.** None for the gates.
 
@@ -2818,7 +2992,7 @@ P3 · M · CONTENT · round 4
 - A landmark opening gets its headline within 10 days in 10 of 10 trials.
 - A blackout gets exactly one headline.
 - No headline repeats within 360 days.
-- A 256×20 s7 run is bit-identical (determinism hash).
+- A 256×20 s7 run gives the same hashes when compared without `news` and `systemData.advisors` (FH-03's rule). Event headlines write news and the advisors' bag, which the audit hash includes, so full bit-identity is not expected.
 
 **Depends on.** FEEL-01.
 
@@ -2894,7 +3068,7 @@ This section is the full first-hour flow. FH-01, FH-02, FH-08, FH-11, FH-12, FH-
 - **A0. First run.** Graphics quality from `detectQuality()` (FH-21). The city hint bar is armed for the first 2 sessions (FH-19).
 - **A1. Title screen.** With no region saved, the primary button is "Start your first city", sub-line "Guided · your first road in about 2 minutes". "New Region" comes second (FH-12).
 - **A2. One-click start.** It creates a Greenvale Valley region with a unique id and founds the recommended tile on Easy, with Guided start on, Disasters off and the date 1 April (day 90, FEEL-05). One loading screen rotates three first-city tips:
-  - "Start small: 3 wind turbines power your first 3,000 residents."
+  - "Start small: 3 wind turbines power your first 2,500 or so residents."
   - "Zones only grow next to roads."
   - "The game waits for you until you press Play."
 - **A3. The New Region path.** The region screen outlines one tile, "A good first city". Its New City dialog preselects Easy and Guided start, shows the four difficulty lines and unticks Disasters (FH-11). "I've played city builders before" switches to Phase E.
@@ -2907,17 +3081,17 @@ The card header reads **"Found your town"**, and under it: **"The game is paused
 |---|---|---|---|---|---|
 | 1 | Connect to the region | "Build a road from the map edge into your town. New residents and trade arrive along it." | Road tool: selects `net:2`; a ghost road marks the nearest buildable edge | `neighborConnections.length ≥ 1`: 6 network cells reaching 3 tiles in (`connections.ts:15-18`) | "Run your road at least 3 tiles in from the edge." |
 | 2 | Zone homes, shops and jobs | "Paint zones along your roads: about 40 tiles of homes (R), 8 of shops (C) and 12 of industry (I). Zoning costs §5–10 a tile." | Zones: selects Residential low (`zone:1`) and pulses R, C and I | ≥ 40 R, 8 C and 12 I cells with `lotAccess` front or yard (half on 64-cell tiles) | "Some zones don't touch a road — nothing grows there." · "Zone a bit more housing: 40 tiles of R (you have 18)." |
-| 3 | Power: start with wind | "Place 3 wind turbines (§800 each, 3–7 MW) next to a road. Together they power your first 3,000 residents, and roads carry the power to your zones." | Wind turbine: selects `plop:util_wind_turbine` | power reaches a zoned lot (today's `zoneServed`) | today's "Your plant isn't reaching any zone yet…" · when a coal or gas plant is picked: "A coal plant makes 400 MW, enough for about 120,000 residents, for §25,000. Wind is plenty for now." |
+| 3 | Power: start with wind | "Place 3 wind turbines (§800 each) next to a road, 2 tiles apart. Each makes 3 MW on flat land, up to 7 on hills: together about 2,500 residents. Roads carry the power to your zones." The numbers are computed from the catalog and `params.ts`; the ghost shows the 2-tile spacing ring. | Wind turbine: selects `plop:util_wind_turbine` | power reaches a zoned lot (today's `zoneServed`) | today's "Your plant isn't reaching any zone yet…" · when a coal or gas plant is picked: "A coal plant makes 400 MW, enough for about 120,000 residents, for §25,000. Wind is plenty for now." |
 | 4 | Water | "Place a water tower (§300, 2,500 kL a day) touching a road that runs past your zones. Pipes follow the roads. Industry and denser homes need water." | Water tower: selects `plop:util_water_tower` | water reaches a zoned lot (today's check) | today's "No zone gets water yet…" |
-| 5 | Press play | "Unpause and watch your town grow. Space pauses at any time." | Play: `host.setSpeed(1, 'onboarding')` | one game day has passed (today's check) | — |
+| 5 | Press play | "Unpause and watch your town grow. Space pauses at any time." | Play: `host.setSpeed(1, 'onboarding')`. The button appears once steps 1–4 are done; before that the step reads "Finish the steps above first — or press Space to play anyway" (today it works at 1/5, `shots2/132`) | one game day has passed (today's check) | — |
 
-- **The numbers behind steps 3 and 4.** The bot's town of 3,470 used 10 MW and 1,352 kL a day at the end of year 1 (`G_256x60_s7`, 2001: power [18, 10], water [4936, 1352]). A turbine makes 3–7 MW depending on height (`utilities.ts:8-9`; `newplayer/047`). One water tower supplies 2,500 kL (`catalog.ts:279`). The bot builds gas above 12 MW of demand and coal above 150 MW (`simbot.ts:862`).
+- **The numbers behind steps 3 and 4.** The bot's town of 3,470 used 10 MW and 1,352 kL a day at the end of year 1 (`G_256x60_s7`, 2001: power [18, 10], water [4936, 1352]), about 1 MW per 350 residents. A turbine makes `powerOut` 5 × (0.6 + 0.8 × smoothstep(10, 60 m above the local mean)) (`params.ts:411-415`): 3 MW on flat land, up to 7 MW on a hilltop (`catalog.ts:255-257`). The bot's 18 MW from 3 turbines came from its hilly map (`hilliness: 0.25`, `simbot.ts:224`), about 6 MW each. On FH-11's flat tile, 3 turbines make 9 MW: about 2,700 residents at 1 MW per 300, so the text says "about 2,500" to leave a margin. One water tower supplies 2,500 kL (`catalog.ts:279`). The bot builds gas above 12 MW of demand and coal above 150 MW (`simbot.ts:862`); G10 takes the newcomer there.
 - **Spend guard**, once per profile: when day-0 spending passes 40% of the start money, "You've spent §48,000 of §100,000 before anyone moved in. Running costs come next — keep a reserve."
 - **Completion toast**: "Your town is on the map, Mayor! A few goals will guide your first year." The old fire-station tip stays only if a fuel plant was built anyway (`Onboarding.ts:297-303`).
 
 ### 4.5 Phase C: your first year
 
-The card becomes **"Your first year"** with a pill such as "3/9 · Take out the trash". At most two goals are visible; the next one appears when its trigger fires.
+The card becomes **"Your first year"** with a pill such as "3/10 · Take out the trash". At most two goals are visible; the next one appears when its trigger fires.
 
 | goal | appears | text | button | done when |
 |---|---|---|---|---|
@@ -2929,11 +3103,12 @@ The card becomes **"Your first year"** with a pill such as "3/9 · Take out the 
 | G6 Schools | ≥ 100 children with no elementary school | "{N} children have no school. An Elementary School (§2,000) seats 1,500 within walking distance." | Civic → Education, with the Education view | unreached children < 50% |
 | G7 See your city | 1,500 residents | "Data views colour the map by power, water, crime, pollution and more." | opens Data views | a data view stays open for 3 s |
 | G8 Ask why | after G7 | "Click any building with Query. Why? lists what helps it and what holds it back." | selects Query; Why? opens expanded | Why? expanded on a growable |
-| G9 Your first reward | after G1 | "At 1,200 residents the town offers you a Mayor's House (§2,000; it raises land value nearby). At 3,000 comes the Lighthouse." | opens Rewards | 2,500 residents |
+| G9 Your first reward | after G1 | "At 1,200 residents the town offers you a Mayor's House (§2,000; it raises land value nearby). At 3,000 comes the Lighthouse." The Lighthouse sentence appears only when the map has a valid shore site (NEW-06); otherwise "At 5,000 comes the Clock Tower." | opens Rewards | 2,500 residents |
+| G10 More power | power demand above 80% of supply, or the first brownout | "Your town needs {D} MW and makes {S} MW. Add wind turbines (§800, about 3 MW each, 2 tiles apart), or build a Natural Gas plant (§22,000, 250 MW; smoke and stigma within 8–9 tiles, so keep it away from homes)." | Utilities → Power, with the Power view | supply at least 1.25× demand for a month |
 
-When G9 completes: **"Your first year is done, Mayor. The advisors take it from here — your next goal is on the top bar."** The top-bar goal line (LG-01) takes over.
+When G9 completes: **"Your first year is done, Mayor. The advisors take it from here — your next goal is on the top bar."** The top-bar goal line (LG-01) takes over. G10 can still appear after that, because the 9 MW ceiling of three flat turbines arrives at about 2,500–3,000 residents, right when G9 hands over.
 
-Sources for the numbers: `ZONE_COST` (`tuning.ts:644`), `catalog.ts` (kiosk, station, fire station, elementary school `:341-342`, Mayor's House `:361`), `rewards.ts:74`, `:102`; the 3.5 per point and the 9% neutral rate from `APPROVAL.taxPerPoint` and `TAX_NEUTRAL` (`tuning.ts:148`).
+Sources for the numbers: `ZONE_COST` (`tuning.ts:644`), `catalog.ts` (kiosk, station, fire station, elementary school `:341-342`, Mayor's House `:361`, wind turbine `:255-257`, gas plant `:258-260`), `rewards.ts:74`, `:102`; the 3.5 per point and the 9% neutral rate from `APPROVAL.taxPerPoint` and `TAX_NEUTRAL` (`tuning.ts:148`). At a 3,000-resident town's load the gas plant's upkeep is about §120 a month, not its listed §650, because plant upkeep scales with use (`UTIL_FIXED` 0.15, `tuning.ts:575`).
 
 ### 4.6 Phase D: explainers when something first goes wrong
 
@@ -2949,14 +3124,15 @@ Each fires once per profile, when its event first happens, and follows §4.1.
 | E5 | funds below 0 | The finance card becomes a 3-step recovery plan: +1 tax point, the most over-funded service to 90%, the largest affordable loan, each with its monthly effect. | one button per step | FH-13 |
 | E6 | growth stalls with zones full | "Your town has no room to grow — zone more {R/C/I} land next to roads." Shown as an amber card with a pulse, not only in the ticker. | Zones | FH-03 |
 | E7 | first demand cap | The existing cap toast already names the fix ("Build parks, plazas, a zoo or landmarks to raise the residential cap.", `capHints`, `demand.ts:396-418`; toast at `TopBar.ts:308-321`). E7 adds the buttons and a coach mark on the capped RCI bar. | Parks · Rewards | FH-02 |
-| E8 | approval below 45 with ≥ 300 residents | "Approval is {N}%. The biggest drag is {term} ({value}). Low approval slows people moving in, and below 35% with high crime it can spark riots." | the fix for that term (FH-06's row links) | FH-02, FH-06 |
+| E8 | approval below 45 with ≥ 300 residents | "Approval is {N}%. The biggest drag is {term} ({value}). Below 35% with high crime it can spark riots." No claim that low approval slows people moving in: 8–12 points cost 0–3% of the population (veteran #2). Once LG-16 or a part-B fix gives approval real effects, the text names them. | the fix for that term (FH-06's row links) | FH-02, FH-06 |
 | E9 | first reward unlocked | Today's announcement (`rewards.ts:75`): "The citizens have built you a Mayor's House! Place it from Rewards." | Place it | FEEL-06 |
 | E10 | first disaster | "A {tornado} hit {district}: {N} buildings are rubble. Bulldoze it (§5 a tile) so the lots can rebuild, or adopt Municipal Demolition Crews to clear it automatically." | Jump · Bulldoze · Ordinances | FH-02, LG-15 |
 | E11 | first New Year | The first New Year toast adds one line: "Each year-end shows how the city did." | — | FH-02, LG-21 |
+| E12 | first brownout | "Some homes have no power: your town needs {D} MW and your plants make {S} MW. Homes without power empty fast — add turbines or a gas plant." The wording follows PB-BROWNOUT's advice and PB-OUTAGE's exodus speed. | Power tab · Power view | FH-02 (G10) |
 
 Checked against the code:
 - §106 is a first loan at 5% over 120 months (`LOAN_RATE_MIN`, `LOAN_TERM_MONTHS`, `tuning.ts:599-603`; `loanRate`, `loans.ts:29-33`).
-- Approval moves residential demand by up to ±6% (`APPROVAL_R`, `demand.ts:280`), and riots need approval below 35% and average crime above 0.45 (`RIOT_APPROVAL`, `params.ts:533-537`). There is no "people leave below N%" rule, so no text may claim one.
+- Approval moves residential demand by up to ±6% (`APPROVAL_R`, `demand.ts:280`), and the growth throughput cap masks even that (veteran #2). Riots need approval below 35% and average crime above 0.45 (`RIOT_APPROVAL`, `params.ts:533-537`). There is no "people leave below N%" rule, so no text may claim one, and E8 makes no growth claim.
 - Rubble never clears by itself: it must be bulldozed or cleared by the ordinance (`growth.ts:680`; `RUBBLE_CLEAR_DAYS` 30, `tuning.ts:349`; `ordinances.ts:63-64`, unlocked at 1,000 residents, before the first disaster at 2,000).
 
 ### 4.7 Phase E: the veteran briefing
@@ -2979,9 +3155,10 @@ Buttons: "Got it" and "Show the guided start anyway".
   - the FH-10 newcomer bot profile (cheap start, under-zoning, one late service) on Easy and Medium;
   - a scripted real-input run that presses only guide buttons (the FH-01 and FH-02 acceptance);
   - persona P-1 (§9).
-- **Targets**:
+- **Targets** (years counted from founding, "How to read this plan"):
   - at most §15,000 spent before Play;
-  - 2,500 residents by game year 3 on Easy and year 4 on Medium;
+  - 2,500 residents by year 3 on Easy and year 4 on Medium;
+  - no brownout before year 4 (G10, E12);
   - no deficit longer than 3 months without E4;
   - approval at or above 45% for at least 9 of the first 12 months on Easy.
 
@@ -3073,11 +3250,12 @@ The gates are acceptance r3's GATE SUMMARY:
 | item | gates it can move | how it is measured |
 |---|---|---|
 | FH-04 Easy rules | none on Medium or Hard | G-DET bit-identical on Medium and Hard; Easy rows recorded separately |
-| FH-07 refunds and undo | none | the bot never undoes: G-DET on 256×20 s7 |
-| FH-03, FH-13, LG-05 advisor changes | G-DET (advisor news only) | hashes compared without `news` and `systemData.advisors` |
+| FH-07a refunds, FH-07b undo | none (unless the bot bulldozes buildings under 30 days old) | the bot never undoes: G-DET on 256×20 s7, with the young-bulldoze count logged |
+| news and advice writers: FH-03, FH-09, FH-13, FH-14, LG-05, FEEL-06 (stage news), FEEL-20, FEEL-23, FEEL-29, NEW-07 | G-DET (advisor news only) | hashes compared without `news` and `systemData.advisors`. These items write news and `systemData.advisors` (`advisors.ts:575-598`, `:1376-1381`), which the audit hash includes, so they cannot be bit-identical. Only `recentNews` reads news back (`advisors.ts:97-106`), and no headline pick draws from the sim RNG |
 | FEEL-05 spring start | none | the constructor keeps day 0; 128×15 s7 table unchanged |
-| FEEL-20, FEEL-23 headlines and weather | none | hash picks, no RNG draws: G-DET on 256×20 s7 |
 | FH-10, LG-10 bot profiles | none for the base run | flags off reproduce today's rows exactly; variants under `polish` |
+| NEW-05 tax response (or PB-TAXRESPONSE) | every base row; G-POP, G-FUNDS, G-APPR | the tax sweep (10–14%) and all three gate runs, under `polish` |
+| NEW-06 shore rule | G-DET (the bot places desalination and seaports, `placeShore`) | G-DET on 256×60 s7; `polish` rows if it moves |
 | LG-09 Hard and Expert | Hard rows | Medium bit-identical; Hard rows under `polish` |
 | LG-06 neglect costs | G-POP, G-FUNDS, G-APPR, G-EMG | base within ±0.5%; `--neglect` variant |
 | LG-07 clean and dirty industry | G-POP, G-UNEMP, G-AB, the air check (LD15a) | base within ±1%; `--skip dirty` variants |
@@ -3088,11 +3266,11 @@ The gates are acceptance r3's GATE SUMMARY:
 | LG-02 late rewards | G-TOUR (main risk), G-POP | all three gate runs |
 | LG-20 honours (perks ≤ 5%) | G-POP, G-TOUR (small) | `polish` rows |
 | LG-18 ordinances | G-POP, G-APPR, G-TOUR (24-Hour City) | the base bot adopts none; variant rows |
-| LG-16 political capital | none (formula untouched; bot approval ≥ 79 from 2029) | base rows unchanged |
+| LG-16 political capital | none (formula untouched; bot approval within 1 point of the §8.0 base from 2029) | base rows unchanged |
 | LG-15 disasters | none (gate runs have disasters off, `simbot.ts:224`) | base rows unchanged |
 | LG-17 charter | every gate, per charter | five variants |
 | LG-22 business deals | G-POP, G-TOUR | the base bot hosts the military base and missile range: re-run |
-| LG-25 late crises | G-EMG, G-APPR | crises are kept out of the gate counters |
+| LG-25 late crises | none for the bot (crises are off in `simbot.ts` and draw from their own stream) | G-DET bit-identical on 256×60 s7; crises are kept out of the gate counters |
 | NEW-01 visual variety (SIM rule) | G-DET, G-STEP | `polish` rows; def swaps change capacities slightly |
 | LG-11, LG-12, LG-13, LG-24 region items | none (the bot plays one city) | region unit tests |
 | LG-14, LG-23, LG-26 player-only content | none (the bot doesn't use them) | base rows unchanged |
@@ -3105,7 +3283,7 @@ Rule: every run that changes base rows is recorded under the `polish` fixture ke
 
 - **Three beats within 100 ms.** Every consequential event answers in the world (something moves or changes), in sound, and in the UI.
 - **The size of a moment follows its rarity.** A month tick is a soft coin; a rank-up is a card, a sound and fireworks. Something that happens 40 times a minute at ultra gets no sound at all.
-- **Real-time budgets, not game-time ones** (FEEL-02, FEEL-11): at most 2 New Year shows per 5 real minutes at ultra, 0 autosave chimes, at most 8 sim toasts a minute (disasters always show), at most 1 milestone card per 30 s, at most 2 siren voices.
+- **Real-time budgets, not game-time ones, at every speed** (FEEL-02a, FEEL-02b, FEEL-11): at most 2 full New Year shows per 10 real minutes at 1× and 2× and per 5 at ultra, fireworks on screen at most 25% of real time, 0 autosave chimes, at most 8 sim toasts a minute (disasters always show; toasts with an action wait instead of vanishing), at most 1 milestone card per 30 s, at most 2 siren voices, no music from a background tab.
 - **One cause, one message.** No news item repeats three times (PB-GARBAGE); the ticker shows one clause.
 
 ### 6.2 Event table
@@ -3119,8 +3297,8 @@ Status: **OK** = all three beats exist; **WEAK** = one or two beats, or a mislea
 | 3 | zone | zone colours | `zone` | funds change | WEAK: nothing says how much to zone | FEEL-03, FH-01 |
 | 4 | place a building | it pops in; cranes and dust while building | `plop`, `construct`, `built` | funds change; no budget preview | WEAK: no ground contact, no monthly cost | FH-05, FH-15, FEEL-03, FEEL-14 |
 | 5 | invalid action | red ghost | `error` | tooltip reason | OK | — |
-| 6 | bulldoze | gone in one frame (`BuildingRenderer.ts:1460-1476`) | `bulldoze` | funds change | WEAK | FEEL-14, FH-07 |
-| 7 | undo | — | — | — (no undo exists) | MISSING | FH-07 |
+| 6 | bulldoze | gone in one frame (`BuildingRenderer.ts:1460-1476`) | `bulldoze` | funds change | WEAK | FEEL-14, FH-07a |
+| 7 | undo | — | — | — (no undo, no save history, no exit without saving) | MISSING | FH-07b, NEW-03 |
 | 8 | a lot grows | construction, then the building | `built` | population ticks up | OK | — |
 | 9 | redevelopment | the building swaps between frames (`growth.ts:674`) | — | — | MISSING | FEEL-14 |
 | 10 | a building stage unlocks (3k, 12k, 35k, 90k, 220k) | — | — | — (`tuning.ts:243-249`) | MISSING | FEEL-06, FEEL-07 |
@@ -3144,22 +3322,22 @@ Status: **OK** = all three beats exist; **WEAK** = one or two beats, or a mislea
 | 28 | data view | map colours | `overlay` | legend | OK (fails red-green) | FH-20 |
 | 29 | camera rotate | smooth snap | `camRotate` | — | OK | — |
 | 30 | jump to a place | a 0.4 s smear (`shots2/041`) | `whoosh` | — | WEAK | FEEL-08 |
-| 31 | save | — | `save` / `autosave` | pill at z 70 | OK when manual; spam at ultra (every 4.5 s) | FEEL-02 |
+| 31 | save | — | `save` / `autosave` | pill at z 70; a failed save shows the raw exception (`CityScene.ts:910`) | OK when manual; spam at ultra (every 4.5 s) | FEEL-02b, NEW-04 |
 | 32 | headline | — | — | ticker fragment (`shots2/i01`) | WEAK | FEEL-01, FEEL-20 |
 | 33 | advisor tip | — | `advisor` | toast only if urgent | OK, but "zone more" never toasts (`Notifications.ts:113-114`) | FH-03 |
-| 34 | New Year | fireworks show | countdown, fanfare | toast | OK at 1×; spam at ultra | FEEL-02, FEEL-11, LG-21 |
+| 34 | New Year | fireworks show | countdown, fanfare | toast | WEAK: about 44% of real time at 1×, 60% at 2×, every year at ultra | FEEL-02a, FEEL-11, LG-21 |
 | 35 | music track change | — | 5 s crossfade, no rest | now-playing toast | OK | FEEL-11 (rests) |
 | 36 | neighbour connection | — | `good` | news "New neighbor connection!" (`actions.ts:399`) | WEAK | FEEL-07 |
 | 37 | mega-project progress | — | — | — (no projects) | MISSING | LG-03 |
 | 38 | year end | — | — | one toast, the same in year 5 and 50 (`shots2/047`) | WEAK | LG-21 |
 
-Count: 13 OK (5 of them with a caveat: rows 19, 28, 31, 33, 34), 18 WEAK, 7 MISSING.
+Count: 12 OK (4 of them with a caveat: rows 19, 28, 31, 33), 19 WEAK, 7 MISSING. Row 34 moved from OK to WEAK once the 1× and 2× New Year shares were measured.
 
 ### 6.3 Audio map
 
 - **Buses.** Master, music (≈ −11 dB at the defaults), SFX (≈ −4 dB) and ambience, all static today (`AudioEngine.ts:70`, `:409-420`).
 - **One-shots** (`sfx.ts`): 70 named voices, trimmed by role: UI −34..−46 LUFS, game actions −28..−31, notifications −29..−35, rewards and fanfares −24, alarms −23..−25 (`sfx.ts:11-13`).
-- **Music** (`music/director.ts`): 7 procedural tracks at −18 LUFS, 5 s crossfades, no rests. After FEEL-11: ducking under long sounds and New Year, 15–40 s rests.
+- **Music** (`music/director.ts`): 7 procedural tracks at −18 LUFS, 5 s crossfades, no rests, still playing in a background tab. After FEEL-11: ducking under long sounds and New Year, 15–40 s rests, and a mute when the tab is hidden.
 - **Sirens** (`sirens.ts`): the nearest source per kind within 1,400 m. After FEEL-11: frustum + 150 m, at most 2 voices, distant automatic responses silent.
 - **Ambience** (`ambience.ts`): bed, hum, horns, birds or crickets, wind, construction; surf built but never fed. After FEEL-12 and FEEL-13: surf, seasons, climates and location layers.
 - **New sounds in this plan**: power down (FEEL-04), collapse dust (FEEL-14), rank-up (FEEL-06), rain bed (FEEL-23).
@@ -3176,7 +3354,7 @@ Count: 13 OK (5 of them with a caveat: rows 19, 28, 31, 33, 34), 18 WEAK, 7 MISS
 - **Read from the replica, never the sim.** Feedback code reads replica-safe helpers, building records and the event stream, never `sim.state` directly (`WORKER_DESIGN.md` §1.3, §2.8).
 - **The hygiene test applies.** No `.speed =`, `emergencyOf(` or `getSystem(` in `src/ui` or `src/game` (`WORKER_DESIGN.md` §5.3).
 - **Speed and policy go through the host**: `host.setSpeed` and `host.policy`.
-- **New player actions are Worker commands**: `undo`, `startProject`, `cancelProject`, `expandFacility`, `setHistoricRect`, `chooseCharter`, `scheduleEvent`, and the region operations (§7.3).
+- **New player actions are Worker commands**: `undo`, `startProject`, `cancelProject`, `expandFacility`, `setHistoricRect`, `chooseCharter`, `scheduleEvent`, and the region operations (§7.3). Each is also a recovery-journal entry, and `undo` is journaled as its concrete inverse commands (§7.6).
 - **Predictions stay honest.** A command that plays a confirmation sound must use the preview prediction (`WORKER_DESIGN.md` §2.2), so a refused command never plays a success sound.
 
 ## 7. Lanes and file ownership
@@ -3185,13 +3363,13 @@ Count: 13 OK (5 of them with a caveat: rows 19, 28, 31, 33, 34), 18 WEAK, 7 MISS
 
 | lane | what it owns | R1 | R2 | R3 | R4 | total (P1/P2/P3) |
 |---|---|---|---|---|---|---|
-| **GUIDE** | onboarding, advice, money and approval UI, inspector, Help, placement previews | FH-01, FH-02, FH-22, FH-03, LG-05, FH-05, FH-06, FH-09 | FH-18, FH-17, FH-14, FEEL-19, FH-15, FH-16, FH-13, FEEL-03 | UI parts of SIM items (LG-16, LG-19, LG-04) | UI parts of SIM items (LG-11 and LG-23 Budget tabs; the FEEL-22 inspector line) | 16 (7/9/0) |
-| **SIM** | simulation, bot, sim tests, Worker rows | FH-04, FH-07, FH-10, LG-10 | LG-09, LG-06, LG-07, LG-08, LG-03 (framework, Express Metro) | LG-16, LG-15, LG-04, LG-19, LG-18 (+ LG-03 Fusion, Expo, Space Center) | LG-25, LG-17, LG-22, LG-23, LG-26, LG-11 | 20 (2/12/6) |
-| **WORLD** | render, audio, camera, input, colour vision, key bindings | FH-19, FEEL-08, FEEL-04, FEEL-11, FEEL-12 | FEEL-09, FEEL-10, NEW-02, FEEL-14, FEEL-15, FEEL-17 | FEEL-18, FH-20 | FEEL-16, FEEL-28, FEEL-07, FEEL-27, FEEL-24, FEEL-25, FEEL-23, FEEL-29, FEEL-13, FH-25 | 23 (1/12/10) |
+| **GUIDE** | onboarding, advice, money and approval UI, inspector, Help, placement previews | FH-01, FH-02, FH-22, FH-03, LG-05, FH-05, FH-06, FH-09 (+ the TopBar split, §7.4) | FH-18, FH-17, FH-14, FEEL-19, FH-15, FH-16, FH-13, FEEL-03, NEW-06, NEW-07 | UI parts of SIM items (LG-16, LG-19, LG-04) | UI parts of SIM items (LG-11 and LG-23 Budget tabs; the FEEL-22 inspector line) | 18 (7/11/0) |
+| **SIM** | simulation, bot, sim tests, Worker rows | FH-04, FH-07a, FH-10, LG-10 (+ the `NewsItem.ref` interface) | LG-09, LG-06, LG-07, LG-08, LG-03 (framework, Express Metro), FH-07b, NEW-05 | LG-16, LG-15, LG-04, LG-19, LG-18 (+ LG-03 Fusion, Expo, Space Center) | LG-25, LG-17, LG-22, LG-23, LG-26, LG-11 | 22 (3/13/6) |
+| **WORLD** | render, audio, camera, input, colour vision, key bindings | FH-19, FEEL-08, FEEL-04 (if D13), FEEL-11, FEEL-12 (+ FH-20's Emergency palette) | FEEL-09, FEEL-10, NEW-02, FEEL-14, FEEL-15, FEEL-17 | FEEL-18, FH-20 | FEEL-16, FEEL-28, FEEL-07, FEEL-27, FEEL-24, FEEL-25, FEEL-23, FEEL-29, FEEL-13, FH-25 | 23 (1/12/10) |
 | **CONTENT** | rewards, ranks, honours, catalog content, models, milestone and year cards, headlines | LG-01 (+ start of the art pipeline) | FEEL-06, LG-21 (+ LG-03 defs and models) | LG-20, LG-02, NEW-01 | FH-26, FEEL-20, FEEL-22 | 9 (1/5/3) |
-| **META** | app shell, region, settings, notifications and pacing, the emergency banner flow | FH-08, FH-11, FEEL-02, FEEL-05, FH-21 (+ the settings schema) | FH-12, FEEL-01, FH-23, FEEL-21 | LG-12, LG-14 | LG-13, LG-24 | 13 (5/6/2) |
+| **META** | app shell, region, settings, saves and storage, notifications and pacing, the emergency banner flow | FH-08, FH-11, FEEL-02a, FEEL-02b, FEEL-05, FH-21, NEW-04 (+ the settings schema) | FH-12, FEEL-01, FH-23, FEEL-21, NEW-03 | LG-12, LG-14 | LG-13, LG-24 | 16 (7/7/2) |
 
-All 81 items: 16 P1, 44 P2, 21 P3. By round: R1 23, R2 25, R3 12, R4 21.
+All 88 items: 19 P1, 48 P2, 21 P3. By round: R1 25, R2 30, R3 12, R4 21. NEW-05 is conditional: if part-B triage fixes veteran #1 as PB-TAXRESPONSE, drop it (87 items, 18 P1, R2 29).
 
 ### 7.2 Files with one owner
 
@@ -3408,7 +3586,7 @@ Each round's verifiers play the personas §8 names, record the listed numbers, a
   - mutual aid between stations on Easy;
   - weather with simulation effects (FEEL-23 is visual and audio only);
   - pedestrian agents with their own trips (FEEL-25 draws density, not agents);
-  - multi-day or unlimited undo (FH-07 keeps the current game day);
+  - multi-day or unlimited undo (FH-07b keeps the current game day; NEW-03's save history covers bigger regrets);
   - a separate tutorial campaign (the guide teaches inside the player's own first city);
   - localisation, gamepad and touch-first controls;
   - the late-teens tourism spike;
