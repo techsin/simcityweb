@@ -1938,3 +1938,455 @@ P3 · S · META · round 4
 **Depends on.** `WORKER_DESIGN.md` §4.4, PB-DIALOG.
 
 **Risk.** None for the gates; it is navigation only.
+
+### H. Pacing and notifications
+
+#### FEEL-02 · Ultra speed on real-time budgets: New Year, autosave, toasts
+P1 · M · META · round 1
+
+**Problem.** The late game is played at ultra, where a game year lasts 18 s (`constants.ts:35`; 60 bot years ≈ 18 minutes). Everything that is paced in game time turns into spam:
+- **New Year.** Every year plays the fanfare and a toast (`NewYear.ts:201-212`). A fast year runs an 8 s show after a 2.8 s lead-in (`NewYear.ts:244-252`, `:283`: `max(6, 0.6 × 18 − 2.8)`), so fireworks fill about 11 of every 18 seconds.
+- **Autosave.** It runs every 3 game months (`region/settings.ts:19`, passed in by `main.ts:542`): every 45 s at 1×, 18 s at 2× and 4.5 s at ultra (`WORKER_DESIGN.md` §4.2).
+  - Each autosave plays a chime and shows the top-centre pill (`CityScene.ts:897-915`).
+  - The pill sits at z-index 70 (`hud.css:690`), above the emergency banners, and repeats what the minimap's save chip already shows.
+- **Advice.** Up to 2 advisor messages a month (`ADVICE_PER_MONTH`, `advisors.ts:60`), with a 60-day minimum cooldown, which is 3 s at ultra (`:62`).
+
+**Change**
+1. **New Year at speed 3.** Fanfare and fireworks only every 5th year, or when at least 3 real minutes have passed since the last show. Other years get a silent compact toast: "2034 · 812,400 residents, up 6%". Speeds 1 and 2 are unchanged.
+2. **Autosave.**
+   - Never sooner than 60 s of real time after the last save; when the Worker's own 30 s floor lands, the larger of the two applies.
+   - Autosave is silent: no chime and no pill, only the minimap chip updates.
+   - Ctrl+S keeps its pill and chime.
+3. **A toast budget** for advisor, warning and good news: at most 1 per 4 s and 8 per minute.
+   - Bad news, disasters and errors always show.
+   - Extras go to the badge, the ticker and the news feed.
+   - The demand-cap toast (`TopBar.ts:308-321`) shares the budget, which `Toasts` enforces.
+
+**Files.** `src/game/NewYear.ts` (META in rounds 1–3); `src/game/CityScene.ts` (META hunks: `onMonth`, `save`); `src/ui/Modals.ts` (`SavePill`); `src/ui/Notifications.ts` (`Toasts`); `src/ui/hud.css`; `src/game/settings.ts`.
+
+**Acceptance**
+- 5 minutes at ultra on a save of 100k or more:
+  - at most 2 fanfares and 2 shows;
+  - at most 5 autosaves, with 0 chimes and 0 pills;
+  - at most 8 toasts in any 60 s, with every disaster toast shown.
+- At 1×: New Year every year, and an autosave every 3 game months (45 s).
+- Recovery snapshots continue: after a crash 50 s past an autosave, the latest state is recovered.
+
+**Depends on.** PB-NEWYEAR; `WORKER_DESIGN.md` §4.2 and §4.3 (autosave and recovery move to the host).
+
+**Risk.** Autosaves become sparser at ultra, so a crash relies on the recovery journal; the acceptance checks it.
+
+#### FEEL-05 · Found new cities in spring, with a seasonal minimap (lead decision)
+P1 · M · META (SIM adds the test) · round 1
+
+**Problem**
+- **Day 0 is 1 January** (`CityState.ts:447`), so every first view is winter: grey-brown woods with no visible map edge (`shots2/010`; `newplayer/047`; `cmp/fv_temp_def_AB.png`, `x_fv_forest_crop_AB.png`).
+- **The minimap stays summer-green in every season** (`MiniMap.ts:95-100`; `cmp/ui_U_def_1300_ui_AB.png`).
+- The lead chose day 90 (1 April).
+
+**Change**
+- **Start on day 90.** `main.ts` `startNewCity` sets `st.day = 90` and `systemData.foundedDay = 90` right after it creates the state (`:449`).
+  - The `CityState` constructor stays as it is, so the bot, the tests and the baselines keep day 0.
+  - The "day > 0 means a resumed city" heuristics also require stored data, which a fresh city lacks, so they are safe (see "Where the drafts were wrong", point 4). A test confirms it. The one exception, `growth.ts:897`, computes a harmless early downtown core.
+  - The two advisor rules that count from day 0 (`advisors.ts:1272`, `:1284`) count days since founding instead. That is two lines, done by GUIDE.
+  - `CityScene.newCity` already keys on the camera and the buildings (`CityScene.ts:181`).
+- **A seasonal minimap.** `MiniMap.paintBase` blends land toward `lum × (1.18, 1.02, 0.68)` by the renderer's `uFoliageDry`, multiplies by `uFoliageTint`, and repaints on `'month'`.
+
+**Files.** `src/main.ts:443-469`; `src/ui/MiniMap.ts:77-120` (`paintBase`, reading `sharedUniforms` from `src/assets/materials.ts:112-137`); new `tests/sim/foundingDay.test.ts`; `src/sim/economy/advisors.ts` (GUIDE).
+
+**Acceptance**
+- A new city opens on "Apr 1, 2000" with green foliage, and its first New Year is 1 January 2001.
+- A day-90 city is treated as fresh by all six systems (the test).
+- "Nothing growing" never fires earlier than 60 days after founding.
+- The minimap differs visibly between January and July.
+- The bot 128×15 s7 table is unchanged.
+
+**Depends on.** R2-SEASONS (spring foliage look).
+
+**Risk.** The first calendar year is 9 months long, so year-1 statistics cover 9 months; the Year in review (LG-21) labels it "since April".
+
+#### FEEL-01 · News ticker: newest headline first, one readable clause
+P2 · S · META · round 2
+
+**Problem**
+- **'info' news reaches only the ticker**: the toast filter drops it (`Notifications.ts:113-114`).
+- **New items appear late.** `rebuild` (`Notifications.ts:54-76`) puts the newest item first but never resets the scroll offset, so a new item shows only after the 8-item loop wraps: 60–120 s at 38 px/s (`:86`).
+- **The window is narrow.** At 1280 px wide the bottom-left block is `50% − 340px` = 300 px (`hud.css:345`). Players read fragments: "g garden gnomes." (`shots2/i01`), "— zone more commercial land." (`shots2/091`), "…ury reaches 500 residents!" (`shots2/023`).
+- **The welcome tip is wrong.** It says to "connect it with power lines" (`Notifications.ts:62-63`), while roads already carry power (`utilities.ts:5`).
+
+**Change**
+- **The newest item enters from the right.** It holds for 5 s if it fits; otherwise it scrolls through once at 60 px/s. Bursts queue: 5 s for the first, then 3 s each.
+- **One clause.** The ticker shows the first clause only (at most 90 characters, split at " — " or ". "). The full text is in the tooltip and the news feed.
+- **Flavour headlines get a "Gazette" label.** Hover pauses the ticker.
+- **A correct welcome tip**: "Tip: roads and power lines carry electricity from your plant to your zones."
+- **A new `ticker.push(item)` API**, used by FEEL-22.
+
+**Files.** `src/ui/Notifications.ts` (`NewsTicker`, `:35-89`); `src/ui/hud.css:345-359`.
+
+**Acceptance**
+- Within 1 s of a `notify`, the first 20 characters of the item are inside `.tk-view`.
+- A 200-character item shows at most 91 characters, plus a tooltip with the full text.
+- Each of 10 consecutive headlines is fully visible within 15 s of arriving.
+
+**Depends on.** PB-PANELS (the ticker caches its width), W0.5 (the news sequence number).
+
+**Risk.** None for the gates; UI only.
+
+### I. World and camera
+
+#### FH-19 · Camera controls a laptop player can find (incl. AZERTY movement)
+P1 · S · WORLD · round 1
+
+**Problem**
+- **A trackpad can't pan the city.** Left is reserved for tools; pan is middle-drag or Shift+right-drag (`CameraController.ts:4-5`, `:242-244`). A trackpad has no middle button, and nothing mentions Shift+right.
+- **The region screen shows a controls hint bar** (`shots2/005`); **the city shows none** (`shots2/010`).
+- **Help lists only "Pan (mouse) Middle-drag"** (`Modals.ts:200-208`).
+- **Keys are read by character, not position** (`e.key`, `CameraController.ts:337-353`). On AZERTY the physical W key types 'z', which does nothing, and the physical A key types 'q', which rotates the camera.
+
+**Change**
+- **A hint bar for the first 2 city sessions**: "WASD or Shift+Right-drag to pan · Right-drag to rotate · Wheel to zoom · Space to pause". It fades after the first pan and the first zoom.
+- **Left-drag pans** when the Query tool or no tool is active. A click that moves less than 6 px still inspects (`QueryTool.up` already ignores moves over 6 px).
+- **Movement and rotation use `e.code`** (KeyW/A/S/D, KeyQ/E). No tool or panel hotkey uses those keys (`toolCatalog.ts:226-248`), so nothing conflicts.
+- **Help lists every pan method** (GUIDE edits the Help rows).
+- **Settings rows for pan speed and inverted orbit** (META adds the rows).
+
+**Files.** `src/render/world/CameraController.ts`; `src/game/tools/QueryTool.ts` (WORLD hunk: `down`/`up`); `src/game/ToolController.ts`; new `src/ui/HintBar.ts`.
+
+**Acceptance**
+- A 40 px left drag with Query moves the camera and opens no inspector. A click still inspects.
+- `code: 'KeyA'` with `key: 'q'` pans left and does not rotate; `code: 'KeyQ'` with `key: 'a'` rotates.
+- The hint hides after one pan and one zoom, and does not show in a third session.
+- Persona P-5 pans, rotates and zooms with a trackpad only.
+
+**Depends on.** None. Rebase on render round 2 if its zoom-hitch work touched `CameraController.ts`.
+
+**Risk.** A left drag with Query used to do nothing, so no habit breaks.
+
+#### FEEL-08 · Camera flights instead of smears for Jump and Focus
+P2 · S · WORLD · round 1
+
+**Problem**
+- **Every jump only moves the goal.** `CityScene.focusCell` (`:972-980`) calls `focusOn` (`CameraController.ts:142-147`), and the damping covers 4 km in about 0.4 s as a smear (`shots2/041`).
+- **Five callers use it**: the emergency banner, toasts, the ticker, the advisors' "Show me" and the minimap.
+
+**Change**
+- **`focusOn(x, z, d, {fly: true})` for trips over 500 m**: 0.6 s + 0.25 s per km, at most 1.6 s, eased with smoothstep.
+- **The camera rises mid-flight** to max(start, end, 0.5 × trip length), so the player sees where it is going.
+- **Any input cancels the flight.** The existing whoosh (`CityScene.ts:974`) is stretched to the flight. With reduced motion (FEEL-21) a 150 ms fade replaces it.
+
+**Files.** `src/render/world/CameraController.ts`; `src/render/contracts.ts` (the option); `src/game/CityScene.ts` (WORLD hunk: `focusCell`).
+
+**Acceptance**
+- A 4 km jump takes 1.2–1.6 s, its peak distance is at least 1.5× the end distance, and it ends within 1% of the target.
+- A 300 m jump behaves as today.
+- A drag during a flight stops it within one frame.
+
+**Depends on.** None.
+
+**Risk.** None for the gates.
+
+#### FEEL-04 · Blackouts you can see
+P2 · M · WORLD · round 1
+
+**Problem**
+- **No render code reads `BF.Powered`.** The building state key has no power bit (`BuildingRenderer.ts:1427-1431`), and only abandonment turns windows off (`:1564`).
+- **A blackout is invisible.** In the factors probe, 837 of 1,669 homes and 272 of 596 shops went dark, and the city fell from 174.7k to 110.4k people in 30 days (approval 77.8 → 75.4; a 10-day blackout cost 49%). The skyline stayed lit throughout.
+- **The sim already announces each flip**: `buildingChanged` fires for every building whose power flag changes (`utilities.ts:509-514`).
+
+**Change**
+- **Dark windows.** Unpowered buildings that need power get `IF_WINDOWS_OFF` and a 10% darker day tint, updated in place (the batch's colour and alpha, no rebuild).
+- **A visible wave.** The change staggers outward from the plant over 0.6 s, with 1 sim day of hysteresis so a flickering grid doesn't strobe.
+- **Street-lamp pools fade on unpowered roads.**
+- **A new "power down" sound** when 20% or more of homes lose power at night.
+
+**Files.** `src/render/city/buildings/BuildingRenderer.ts`, `src/render/city/common/cityMaterial.ts`, `src/render/city/props/PropRenderer.ts` (lamp pools), `src/audio/sfx.ts`.
+
+**Acceptance**
+- On a 20k save at 22:00, at least 90% of unpowered buildings go dark within 2 s, and the night luma of the district drops by 35% or more.
+- Power restored: windows return within 2 s of rebuilding the plant. Parks are unchanged.
+- A 1,000-building flip keeps every frame under 20 ms.
+
+**Depends on.** R2-NIGHT (the night-window LOD patch).
+
+**Risk.** Frame spikes on big flips, held by the stagger and the acceptance.
+
+#### FEEL-14 · Bulldozing and placement with weight
+P2 · M · WORLD · round 2
+
+**Problem**
+- **Bulldozed buildings vanish in one frame**: `remove` frees the instances at once (`BuildingRenderer.ts:1460-1476`). Only the bulldoze sound marks it.
+- **Redevelopment blinks**: a growable is swapped for a bigger one between two frames (`tryRedevelop`, `growth.ts:674`).
+- **Plopped buildings pop in** with no ground contact.
+- **The dust particle exists** but is used only for construction (kind 4, `Effects.ts:303-305`).
+
+**Change**
+- **A collapse.** A detached copy of the removed instance sinks to 15% of its height with a slight tilt over 0.35 s, with a dust cloud of 16–40 particles living 2.5 s.
+- **Limits.** More than 30 buildings at once share one merged cloud. Nothing plays beyond 2,200 m. Redevelopment plays at most 4 per second.
+- **A landing ring** for plopped buildings (lives 1.2 s), and an ash puff when rubble is cleared.
+
+**Files.** `src/render/city/buildings/BuildingRenderer.ts`, `src/render/city/effects/Effects.ts`, `src/render/city/CityObjectsView.ts`.
+
+**Acceptance**
+- A 2×2 house bulldozed at 300 m shows 1.5–2.5 s of dust.
+- A 200-building drag adds under 4 ms and at most 600 particles (the pool holds 7,000 smoke particles).
+
+**Depends on.** None.
+
+**Risk.** Building ids are reused, so the collapse copy must not be keyed by id.
+
+#### FEEL-15 · Smoke that reads output
+P2 · S · WORLD · round 2
+
+**Problem**
+- **Smoke ignores load.** `operating = !constructing && !abandoned && !burnt` (`Effects.ts:261`).
+- The coal plant at 15% load smokes at full plume, while its inspector already says "Smoke by load" (`shots2/i01`).
+- A refinery with 0 of 340 jobs filled still smokes (`shots2/041`).
+
+**Change**
+- **A `BuildingVisual.activity` value**:
+  - industry: jobs filled / capacity, times powered;
+  - plants: max(0.25, the plant's share of its grid's load);
+  - 0 when unpowered or under 10% staffed.
+- **Four steps** of plume strength; emitters rebuild only when the step changes.
+
+**Files.** `src/render/city/effects/Effects.ts` (`onBuilding`), `src/render/city/buildings/BuildingRenderer.ts` (`BuildingVisual`).
+
+**Acceptance**
+- The 0/340 refinery shows no smoke.
+- The 15% coal plant shows at most 40% of its full-load particles.
+- Emitters rebuild at most once per building per month.
+
+**Depends on.** None.
+
+**Risk.** None for the gates; render only.
+
+#### FEEL-17 · Uncollected garbage shows on the street
+P2 · M · WORLD (CONTENT builds the bag props) · round 2
+
+**Problem**
+- **The sim tracks it**: `BF.NoGarbage` (`CityState.ts:42`).
+- **The UI says it loudly**: "garbage at the homes of 98% of residents" (`shots2/027`), and the news repeats three times (PB-GARBAGE).
+- **The world shows nothing.**
+
+**Change**
+- **Bags and bins at the kerb.** 1–4 instanced bags or bins at the road front of each NoGarbage lot, drawn below 900 m only. They build up over 1–2 months and clear the same way.
+- **Two prop variants** (CONTENT).
+
+**Files.** `src/render/city/props/PropRenderer.ts`, `src/render/city/CityObjectsView.ts`; `src/assets/builders/prop.ts` (CONTENT).
+
+**Acceptance**
+- At 300 m, bags show at 90% or more of NoGarbage lots.
+- At least 90% are gone within 2 months of connecting a landfill.
+- On the 287k save: +1 draw call and at most 5% more triangles.
+
+**Depends on.** PB-GARBAGE.
+
+**Risk.** Triangle cost on big saves, held by the distance cut and the acceptance.
+
+#### FEEL-18 · Abandonment reads at a glance
+P2 · M · WORLD (CONTENT draws the sign) · round 3
+
+**Problem**
+- **Abandonment is a flat 0.46 tint with the windows off** (`BuildingRenderer.ts:1564`, `:1593`).
+- It matters: abandonment peaked at 2.76% of buildings on seed 11 (acceptance r3).
+
+**Change**
+- **A new instance flag `IF_ABANDONED`** (bit 3, value 8; `cityMaterial.ts:21-27` uses bits 0–2) drives:
+  - boarded windows;
+  - 20% desaturation with grime;
+  - darker roofs and weedy lawns;
+  - a "For lease" sign on stage 2 and up.
+- **The flat tint is dropped.**
+
+**Files.** `src/render/city/buildings/BuildingRenderer.ts`, `src/render/city/common/cityMaterial.ts`, `src/assets/materials.ts` (WORLD); `src/assets/builders/prop.ts` (CONTENT, the sign).
+
+**Acceptance**
+- A reviewer picks out the abandoned buildings in at least 9 of 10 A/B shots at 300 m and 700 m.
+- The look survives the proxy LOD.
+- Abandoned buildings stay dark at night.
+
+**Depends on.** R2-NIGHT.
+
+**Risk.** Shader cost, measured in the R3 perf check.
+
+#### FEEL-16 · Polluted districts look polluted: local smog haze
+P3 · M · WORLD · round 4
+
+**Problem**
+- **There is one global haze**: `uHaze` is a constant 0.00002 (`PostFX.ts:32`, `:67`, `:327`). The only local tint is the night city glow (`Sky.ts:595-598`).
+- **Dirty air never looks bad**, though it costs approval every month (pollution −3.5 in 2060, `G_256x60_s7`).
+
+**Change**
+- **A smog value** sampled at 2 Hz: the share of Polluted buildings within 32 cells of the camera target, blended with the city's air history and eased over 3 s.
+- **What it does.** Haze × (1 + 2.5 × smog). Above 0.25 a brown-grey tint (0.55, 0.50, 0.42) and a dimmer sun.
+- **Limits.** Off in data views; on Low only the haze density changes. It reads building flags, not the pollution layer.
+
+**Files.** `src/render/world/PostFX.ts`, `src/render/world/WorldView.ts`, `src/render/world/Sky.ts`.
+
+**Acceptance**
+- Over a dirty district (60% or more Polluted) the R−B of the frame rises by 6 levels or more.
+- No change when nothing is polluted.
+- One uniform added.
+
+**Depends on.** None.
+
+**Risk.** None for the gates; render only.
+
+#### FEEL-28 · Optional problem icons over troubled buildings
+P3 · M · WORLD · round 4
+
+**Problem**
+- **Problems are found only by clicking or in data views.** A lot with no road, power or water says so only in the inspector (`newplayer/063`).
+- **No code in `src/render` or `src/game` draws a marker over a building** (no sprite, billboard or marker class).
+
+**Change**
+- **Icons** for no power, no water, no road, abandoned and no garbage.
+- **Limits.** Below 700 m only, at most 300, hidden in data views and photo mode.
+- **A setting**: off / with the Query tool (default) / always.
+
+**Files.** New `src/render/city/StatusIcons.ts`; `src/render/city/CityObjectsView.ts`; `src/render/city/buildings/BuildingRenderer.ts`.
+
+**Acceptance**
+- At 400 m, 95% or more of the troubled buildings in view show their icon.
+- At most 1 draw call and 0.3 ms a frame.
+
+**Depends on.** FEEL-04.
+
+**Risk.** Clutter, held by the default (Query tool only).
+
+#### FEEL-07 · Spotlight camera for the city's firsts
+P3 · M · WORLD (CONTENT records the firsts) · round 4
+
+**Problem**
+- **The only cinematic is New Year** (`NewYear.ts` `camStart`/`camStop`, `:488-650`).
+- **Firsts happen off camera**: the first unique building (`actions.ts:612-614`), the first tower, the first neighbour connection. The camera usually sits 600–1,200 m out (`shots2/082`, `091`).
+
+**Change**
+- **A shared show camera.** Extract `src/game/ShowCamera.ts` from `NewYear.ts`; WORLD owns `NewYear.ts` in round 4 for this.
+- **The spotlight plays** on the first stage 6, 7 and 8 building, unique openings and the first neighbour connection. The firsts are recorded in `systemData.firsts` (CONTENT).
+- **When it may play**: only after at least 4 s without input, with no drag, no LIVE emergency and no New Year show.
+- **What it does**: 2 s in to a 30° view at 280–450 m, a 25° orbit over 4 s, then 2.5 s back, with a caption. Any input ends it.
+- **A "Camera moments" setting.**
+
+**Files.** New `src/game/ShowCamera.ts`; `src/game/NewYear.ts` (round 4); `src/game/CityScene.ts` (WORLD hunk).
+
+**Acceptance**
+- It arrives within 2.5 s and is back within 9 s, within 1 m and 1% of the start view.
+- Input returns control within a frame.
+- It plays once per kind per city, across save/load.
+
+**Depends on.** FEEL-06, FEEL-08, PB-NEWYEAR.
+
+**Risk.** Taking the camera unasked, held by the idle rule and the setting.
+
+#### FEEL-27 · A founding fly-in with a title card
+P3 · S · WORLD · round 4
+
+**Problem**
+- **A new city appears with an instant cut** to its start view (`CityScene.placeInitialCamera`, `:523-536`; `cameraStart.ts`).
+- **The `cityReady` sound plays at load** (`main.ts:578`), not at a moment on screen.
+
+**Change**
+- **A fly-in.** A new city starts at 3× the start distance and descends in 2.5 s.
+- **A title card**: "Queensbury · Founded April 2000 · Mayor Maya Vance".
+- **`cityReady` is timed to the landing** (META moves the call).
+- **Any input skips it.**
+
+**Files.** `src/game/CityScene.ts` (WORLD hunk: `placeInitialCamera`); `src/game/cameraStart.ts`; `src/main.ts` (META).
+
+**Acceptance**
+- It starts at 3× or more of the start distance and reaches the start view in 2.5–3 s.
+- Saved cities open exactly at their stored camera.
+
+**Depends on.** FEEL-05, FEEL-08.
+
+**Risk.** None.
+
+#### FEEL-24 · Photo mode
+P3 · S · WORLD · round 4
+
+**Problem**
+- **There is no way to hide the HUD.** 'h' is free, and the renderer can already capture the frame (`world.capture`, `CityScene.ts:925`).
+
+**Change**
+- **H toggles photo mode.** The HUD fades out in 200 ms.
+- **A small bar** with a time-of-day scrubber (it overrides `fixedHour`), pause, Capture (a PNG up to 4096 px, named "{city}-{date}.png") and Exit.
+
+**Files.** `src/game/CityScene.ts` (WORLD hunk: `onKey`); new `src/ui/PhotoBar.ts`; new `src/ui/fx.css`.
+
+**Acceptance**
+- Leaving photo mode restores the layout exactly.
+- Capture delivers the PNG within 1 s.
+- The clock returns to the game time.
+
+**Depends on.** None.
+
+**Risk.** None.
+
+#### FEEL-25 · Street life: pedestrians at close zoom
+P3 · L · WORLD · round 4
+
+**Problem**
+- **Streets are empty at close zoom.** The only people are static riders at bus stops (`assets/builders/transport.ts:73-76`; `cmp/tp_jun13_dt_street_AB.png`).
+
+**Change**
+- **Walkers** in a dynamic batch within 350 m of the camera. Density comes from customers, visitors and riders by time of day.
+- **Umbrellas on rain days** (FEEL-23).
+- **The existing 20-triangle pedestrian** (`transport.ts:79`) in 4 coat colours.
+- **Limits**: at most 600 instances, none beyond 600 m.
+
+**Files.** New `src/render/city/Pedestrians.ts`; `src/render/city/CityObjectsView.ts`.
+
+**Acceptance**
+- In a 50k city at 120 m, 20 or more walkers by day, and at most 20% of that at 3 am.
+- At most 0.8 ms and 1 draw call.
+
+**Depends on.** The Worker (W1.x: it reads streamed data, not sim state).
+
+**Risk.** Frame cost, held by the limits.
+
+#### FEEL-23 · Weather moments that match the headlines
+P3 · L · WORLD (CONTENT gates the headlines) · round 4
+
+**Problem**
+- **There is no weather code.**
+- **Towns never see snow.** The snow line sits at max(165 m, 78% of the highest point) on temperate maps (`TerrainRenderer.ts:265-270`), so only peaks turn white.
+- **Yet the headlines talk weather**: "April showers", snowball fights and snow days (`advisors.ts:516-521`).
+
+**Change**
+- **A pure `weather(day, seed)` function**: rain spells in spring and autumn, snowfall days in December–February, haze in the desert. It makes no RNG draw from the sim.
+- **What the player sees and hears**: particles, a darker sky, wet roads, a dusting on roofs and a rain bed in the ambience.
+- **Headlines follow it**: weather headlines only on matching days.
+
+**Files.** New `src/render/world/Weather.ts`; `src/render/world/WorldView.ts`, `Sky.ts`; the road material; `src/audio/ambience.ts`; `src/sim/economy/advisors.ts` (CONTENT hunk).
+
+**Acceptance**
+- Flakes and the snow headline fall on the same day.
+- Rain shows the road sheen and plays the rain bed.
+- At most 0.5 ms of GPU at 1080p on High.
+- Bot hashes are unchanged.
+
+**Depends on.** R2-SEASONS.
+
+**Risk.** GPU cost, held by the acceptance.
+
+#### FEEL-29 · Rare sightings
+P3 · M · WORLD and CONTENT · round 4
+
+**Problem**
+- **Nothing in the world surprises a long-time player.**
+- **The headlines hint at things nobody sees**: the mountain goat (`advisors.ts:525`) and Gerald (`:496`).
+
+**Change**
+- **Five rare sightings**: hot-air balloons, a whale off the coast, a blimp, an observatory light, and Gerald's ribbon cutting.
+- **Each comes with its headline.** The pick uses a hash of the day; clicking the headline flies there.
+
+**Files.** New `src/render/city/Sightings.ts` (WORLD); `src/sim/economy/advisors.ts` (CONTENT hunk: the headlines).
+
+**Acceptance**
+- Each sighting appears at most twice in 30 game years, always with its headline.
+- No sim change: bot hashes are unchanged.
+
+**Depends on.** FEEL-01, FEEL-08, FEEL-20.
+
+**Risk.** None.

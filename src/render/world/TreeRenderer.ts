@@ -325,19 +325,22 @@ interface RingGen {
   bot: Float32Array;
 }
 
-/** outer ring (re)fill of one sector, in progress: candidates are written straight into the meshes' instance arrays
- *  (uploaded once the sector is complete, so no half-refilled frame is ever drawn) */
+/** outer ring (re)fill of one sector, in progress: candidates are written straight into its near pair's instance
+ *  arrays and its micro data (uploaded / merged once the sector is complete, so no half-refilled frame is ever drawn) */
 interface RingFill {
   k: number;
   /** next candidate */
   i: number;
-  /** instances written so far per mesh (0 broadleaf, 1 conifer, 2 merged micro) */
+  /** instances written so far: 0 broadleaf, 1 conifer (near pair), 2 micro (all) */
   w: Int32Array;
-  /** shuffled slot of each instance per mesh (a prefix of the slots is a uniform random subset: density fade) */
+  /** shuffled slot of each near pair instance (a prefix of the slots is a uniform random subset: density fade) */
   perm: Int32Array[];
-  /** instance bounds per mesh: min x y z, max x y z */
+  /** instance bounds per near mesh: min x y z, max x y z */
   bounds: Float64Array;
   dens: number;
+  /** the sector's micro impostors (matrices / colours) for the merged far mesh */
+  micro: Float32Array;
+  microCol: Float32Array;
 }
 
 const _box = new THREE.Box3();
@@ -636,6 +639,8 @@ export class TreeRenderer {
   private ringMicroN = new Int32Array(RING_N);
   /** the merged far ring: one mesh / draw for all sectors' micro impostors (TREE_RING) */
   private ringFar: TreeMesh | null = null;
+  /** sectors (bits) whose micro impostors the merged far mesh holds */
+  private ringFarSectors = 0;
   /** a sector's micro impostors changed: rebuild the merged far mesh once the ring work is idle */
   private ringFarDirty = false;
   /** candidates per sector (RING_STRIDE floats each) and their counts */
@@ -708,24 +713,77 @@ export class TreeRenderer {
     this.group.matrixAutoUpdate = false;
     this.species = CLIMATE_SPECIES[state.config.climate] ?? CLIMATE_SPECIES.temperate;
     this.buildKinds();
+    this.ringOn = this.ringWanted();
     this.perSide = Math.ceil(state.size / CHUNK);
     this.chunkBox = new Float64Array(this.perSide * this.perSide * 6);
     for (let cz = 0; cz < this.perSide; cz++)
       for (let cx = 0; cx < this.perSide; cx++) {
-        const x0 = cx * CHUNK * CELL_SIZE, z0 = cz * CHUNK * CELL_SIZE;
-        // edge chunks reach RING_EDGE_CELLS beyond the map (their forests continue past the edge)
-        const e = RING_EDGE_CELLS * CELL_SIZE, last = this.perSide - 1;
-        const box = new THREE.Box3(new THREE.Vector3(x0 - (cx === 0 ? e : 0), -10, z0 - (cz === 0 ? e : 0)), new THREE.Vector3(x0 + CHUNK * CELL_SIZE + (cx === last ? e : 0), 60, z0 + CHUNK * CELL_SIZE + (cz === last ? e : 0)));
-        this.chunks.push({ cx, cz, near: this.kinds.map(() => null), far: [null, null, null], farTotal: [0, 0, 0], box, sphere: new THREE.Sphere(), isNear: false, total: 0, stateKey: -1, lastKey: FRESH_KEY, micro: false });
-        this.storeChunkBox(this.chunks.length - 1);
+        this.chunks.push({ cx, cz, near: this.kinds.map(() => null), far: [null, null, null], farTotal: [0, 0, 0], box: new THREE.Box3(), sphere: new THREE.Sphere(), isNear: false, total: 0, stateKey: -1, lastKey: FRESH_KEY, micro: false });
+        this.chunkExtent(this.chunks.length - 1);
       }
     for (let i = 0; i < this.chunks.length; i++) this.dirty.add(i);
     this.snapshotRingEdge();
     this.setMonth(state.month);
-    // the outer ring is generated and filled with the load (~10-80 ms, behind the loading screen), so no interactive
-    // frame pays for it; later refills (season, density) and border regenerations are time-sliced (ringStep)
-    this.flushRing();
+    // the outer ring is generated and filled in ~1 ms slices once the first frames have built the map's chunks
+    // (update / ringStep), then faded in; flush() finishes it at once (captures)
+    this.ringAppear = 0;
     this.makeWarmup();
+  }
+
+  /** the ring and the edge band at the current settings */
+  private ringWanted(): boolean {
+    return this.ringWidth > 0 && this.lodDistance >= RING_MIN_LOD;
+  }
+
+  /** horizontal extent of chunk ci (edge chunks reach RING_EDGE_CELLS beyond the map while the edge band is on: their
+   *  forests continue past the edge); the height range comes from the trees placed (buildChunk) */
+  private chunkExtent(ci: number): void {
+    const ch = this.chunks[ci], cx = ch.cx, cz = ch.cz;
+    const x0 = cx * CHUNK * CELL_SIZE, z0 = cz * CHUNK * CELL_SIZE;
+    const e = this.ringOn ? RING_EDGE_CELLS * CELL_SIZE : 0, last = this.perSide - 1;
+    const y0 = ch.total > 0 || ch.box.max.y > ch.box.min.y ? ch.box.min.y : -10, y1 = ch.total > 0 || ch.box.max.y > ch.box.min.y ? ch.box.max.y : 60;
+    ch.box.min.set(x0 - (cx === 0 ? e : 0), y0, z0 - (cz === 0 ? e : 0));
+    ch.box.max.set(x0 + CHUNK * CELL_SIZE + (cx === last ? e : 0), y1, z0 + CHUNK * CELL_SIZE + (cz === last ? e : 0));
+    ch.box.getBoundingSphere(ch.sphere);
+    this.storeChunkBox(ci);
+  }
+
+  /**
+   * Turn the outer ring + edge band on / off for the current settings (quality: lodDistance; ringWidth): off drops the
+   * ring's meshes and data; on regenerates it (sliced, faded in); the edge chunks rebuild with / without their band.
+   */
+  private applyRingOn(): void {
+    const on = this.ringWanted();
+    if (on === this.ringOn) return;
+    this.ringOn = on;
+    this.disposeRing();
+    this.ringStale = on ? (1 << RING_N) - 1 : 0;
+    this.ringRefill = 0;
+    this.ringGen = null;
+    this.ringFillState = null;
+    this.ringAppear = 0;
+    const last = this.perSide - 1;
+    for (let i = 0; i < this.chunks.length; i++) {
+      const ch = this.chunks[i];
+      if (ch.cx !== 0 && ch.cz !== 0 && ch.cx !== last && ch.cz !== last) continue;
+      this.chunkExtent(i);
+      this.dirty.add(i);
+    }
+    this.lodForce = true;
+  }
+
+  /** drop every outer ring mesh / sector (not the candidates' buffers) */
+  private disposeRing(): void {
+    for (const m of this.ring) if (m) { this.group.remove(m); m.dispose(); }
+    this.ring.fill(null);
+    if (this.ringFar) { this.group.remove(this.ringFar); this.ringFar.dispose(); this.ringFar = null; }
+    this.ringMicro.fill(null);
+    this.ringMicroCol.fill(null);
+    this.ringMicroN.fill(0);
+    this.ringReady.fill(0);
+    this.ringNearSel.fill(0);
+    this.ringFarDirty = false;
+    this.ringInstances = 0;
   }
 
   /** one hidden, degenerate instance per material pairing (near / far x plain / fade, each with its depth variant,
@@ -922,9 +980,9 @@ export class TreeRenderer {
   setQuality(opts: { lodDistance: number; density: number; castShadows: boolean; maxVariants?: number; msaa?: boolean }) {
     if (opts.msaa !== undefined && opts.msaa !== this.a2c) {
       this.a2c = opts.msaa;
-      this.applyFadeMode(this.matNearFade);
-      this.applyFadeMode(this.matFarFade);
+      for (const m of [this.matNearFade, this.matFarFade, this.materialFar, this.materialMerged, this.materialRing]) this.applyFadeMode(m);
       for (const c of this.chunks) c.stateKey = -1;
+      // (ring meshes: their depth materials do not matter, they cast no shadow)
       // the new variants compile with the next frames, not when a chunk next enters the band
       this.dropWarmup();
       this.makeWarmup();
@@ -956,12 +1014,14 @@ export class TreeRenderer {
     }
     // (the ring's candidates are density independent: a new density only refills it)
     if (densityChanged) this.markAll();
+    // low quality: no outer ring / edge band
+    this.applyRingOn();
   }
 
   /** rebuild every chunk and refill the outer ring (season, density, tree kinds) */
   markAll() {
     for (let i = 0; i < this.chunks.length; i++) this.dirty.add(i);
-    this.ringRefill = (1 << RING_N) - 1;
+    this.ringRefill = this.ringOn ? (1 << RING_N) - 1 : 0;
     // a refill in progress used the old kinds / density: start it over
     this.ringFillState = null;
   }
@@ -979,6 +1039,7 @@ export class TreeRenderer {
 
   reset(state: CityState) {
     this.state = state;
+    if (this.ringWanted() !== this.ringOn) this.applyRingOn();
     this.seed = state.config.seed | 0;
     this.noise = new Noise2D(state.config.seed + 4242);
     this.season = seasonMix(state.month, state.config.climate);
@@ -993,21 +1054,25 @@ export class TreeRenderer {
         c.far = [null, null, null];
       }
     }
-    // a new map: new ring candidates, generated right away (a reset is a load)
-    this.ringStale = (1 << RING_N) - 1;
+    // a new map: new ring candidates, generated in slices after the first frames (a reset is a load), then faded in
+    this.disposeRing();
+    this.ringStale = this.ringOn ? (1 << RING_N) - 1 : 0;
     this.ringGen = null;
-    this.ringReady.fill(0);
+    this.ringFrames = 0;
+    this.ringAppear = 0;
     this.snapshotRingEdge();
     this.markAll();
-    this.flushRing();
-  }
-
-  private pickKind(x: number, z: number, h: number, slope: number, r: number, weights: number[]): number {
-    return this.kindOf(this.pickSpecies(x, z, h, slope, r, weights), x, z);
+    this.ringRefill = 0;
   }
 
   /** species index for a tree in cell (x, z) at height h (clustered patches, elevation / coast / slope preferences) */
   private pickSpecies(x: number, z: number, h: number, slope: number, r: number, weights: number[]): number {
+    return this.pickFrom(weights, this.speciesWeights(x, z, h, slope, weights), r);
+  }
+
+  /** species weights of cell (x, z) at height h into `weights`; returns their total (the same for every tree of a
+   *  cell: placeCell computes them once per cell) */
+  private speciesWeights(x: number, z: number, h: number, slope: number, weights: number[]): number {
     let total = 0;
     const sp = this.species;
     for (let s = 0; s < sp.length; s++) {
@@ -1022,9 +1087,15 @@ export class TreeRenderer {
       weights[s] = w;
       total += w;
     }
+    return total;
+  }
+
+  /** species drawn by the uniform random r from the weights (speciesWeights) */
+  private pickFrom(weights: number[], total: number, r: number): number {
     let t = r * total;
+    const n = this.species.length - 1;
     let s = 0;
-    for (; s < sp.length - 1; s++) {
+    for (; s < n; s++) {
       t -= weights[s];
       if (t <= 0) break;
     }
@@ -1089,13 +1160,16 @@ export class TreeRenderer {
     const seed = this.seed;
     // stratified jitter on a 3x3 grid, slot order permuted per cell
     const rot = Math.floor(hash2(x, z, seed + 17) * 9);
+    const total = this.speciesWeights(x, z, h, slope, weights);
+    // winter: conifer impostors a little taller / darker (see WINTER_CONIFER_*)
+    const winter = this.season.bare > 0.5;
     for (let t = 0; t < count; t++) {
       const slot = (t * 4 + rot) % 9;
       const sx = slot % 3, sz = Math.floor(slot / 3);
       const jx = hash2(x * 9 + t, z, seed + 23), jz = hash2(x, z * 9 + t, seed + 29);
       const px = (x + (sx + 0.15 + 0.7 * jx) / 3) * CELL_SIZE;
       const pz = (z + (sz + 0.15 + 0.7 * jz) / 3) * CELL_SIZE;
-      const k = this.pickKind(x, z, h, slope, hash2(x * 5 + t, z * 3 - t, seed + 31), weights);
+      const k = this.kindOf(this.pickFrom(weights, total, hash2(x * 5 + t, z * 3 - t, seed + 31)), x, z);
       const kind = this.kinds[k];
       const sp = this.species[kind.species];
       const [s0, s1] = sp.scale ?? [0.72, 1.18];
@@ -1121,14 +1195,16 @@ export class TreeRenderer {
       this.ensureFar(fc, fn + 1);
       const f = this.farScratch[fc];
       const fo = fn * 16;
-      const sxz = (kind.radius / 0.42) * s * 0.92 * kind.impR, sy = kind.height * s;
+      const wc = winter && kind.conifer;
+      const sxz = (kind.radius / 0.42) * s * 0.92 * kind.impR * (wc ? WINTER_CONIFER_R : 1), sy = kind.height * s * (wc ? WINTER_CONIFER_H : 1);
       f[fo] = c * sxz; f[fo + 1] = 0; f[fo + 2] = -sn * sxz; f[fo + 3] = 0;
       f[fo + 4] = 0; f[fo + 5] = sy; f[fo + 6] = 0; f[fo + 7] = 0;
       f[fo + 8] = sn * sxz; f[fo + 9] = 0; f[fo + 10] = c * sxz; f[fo + 11] = 0;
       f[fo + 12] = px; f[fo + 13] = y; f[fo + 14] = pz; f[fo + 15] = 1;
-      const cv = 0.9 + 0.2 * hash2(x + t, z * 2 + t, seed + 43);
+      const cv = (0.9 + 0.2 * hash2(x + t, z * 2 + t, seed + 43)) * (wc ? WINTER_CONIFER_TINT : 1);
       const col = this.farColor[fc];
-      col[fn * 3] = kind.color.r * cv;
+      // (see-through bare crowns: negative red, see FAR_VERT_MAIN)
+      col[fn * 3] = kind.bare ? -Math.max(kind.color.r * cv, 1e-4) : kind.color.r * cv;
       col[fn * 3 + 1] = kind.color.g * cv;
       col[fn * 3 + 2] = kind.color.b * cv;
       this.farCount[fc] = fn + 1;
@@ -1160,7 +1236,7 @@ export class TreeRenderer {
     // edge chunks: the map's edge forests continue as full trees over a band of virtual cells beyond the edge (the same
     // forest mask the terrain shader paints there), where the outer ring's impostors take over
     const B = RING_EDGE_CELLS;
-    if (this.ringWidth > 0 && (ch.cx === 0 || ch.cz === 0 || ch.cx === this.perSide - 1 || ch.cz === this.perSide - 1)) {
+    if (this.ringOn && (ch.cx === 0 || ch.cz === 0 || ch.cx === this.perSide - 1 || ch.cz === this.perSide - 1)) {
       const noise = getNoiseTexture().image.data as Uint8Array;
       const W = N * CELL_SIZE;
       const xs = ch.cx === 0 ? -B : x0, xe = ch.cx === this.perSide - 1 ? N + B : Math.min(N, x0 + CHUNK);
@@ -1374,16 +1450,10 @@ export class TreeRenderer {
     shadowCasters.version++;
   }
 
-  /** per frame: incremental rebuilds + LOD selection */
+  /** per frame: incremental rebuilds + LOD selection. Chunk rebuilds: nearest to the camera first, within buildBudgetMs
+   *  (at least one, at most 4 x budget chunks per frame) */
   update(camera: THREE.Camera, budget = 3) {
-    if (this.dirty.size) {
-      let n = budget;
-      for (const id of this.dirty) {
-        this.dirty.delete(id);
-        this.buildChunk(id);
-        if (--n <= 0) break;
-      }
-    }
+    if (this.dirty.size) this.buildDirty(camera.position, budget * 4);
     if (this.warm.length && ((this.warmMain && (this.warmShadow || !this.castShadows)) || ++this.warmFrames > 600)) this.dropWarmup();
     // snow on the trees follows the terrain's (seasonal) snow line
     const tu = this.terrain.uniforms;
@@ -1438,27 +1508,55 @@ export class TreeRenderer {
         (nearCast ? L_NEAR_CAST : 0) | (farCast ? L_FAR_CAST : 0) | (Math.round(keep * 20) << L_KEEP_SHIFT);
       if (key !== ch.stateKey) this.applyLod(ch, key);
     }
-    // outer ring: candidates / refills in a small time budget once the map's chunks are built (or after waiting long)
-    if (this.ringStale || this.ringRefill || this.ringGen || this.ringFillState) {
-      if (!this.dirty.size || ++this.ringWait > 90) {
+    // outer ring: candidates / refills in a small time budget once the first frames after a load have built the map's
+    // chunks (or after waiting long); the merged far mesh is rebuilt once its sectors are done, then faded in
+    this.ringFrames++;
+    if (this.ringOn && (this.ringStale || this.ringRefill || this.ringGen || this.ringFillState)) {
+      if (this.ringFrames > RING_DELAY_FRAMES && (!this.dirty.size || ++this.ringWait > 90)) {
         this.ringWait = 0;
         this.ringStep(this.ringBudgetMs);
       }
-    }
+    } else if (this.ringFarDirty) this.rebuildRingFar();
+    if (this.ringAppear < 1 && this.ringFar && this.ringFar.count > 0) this.ringAppear = Math.min(1, this.ringAppear + 1 / RING_APPEAR_FRAMES);
     this.updateRingView(px, py, pz, lod);
   }
 
-  /** per frame: which outer ring meshes are drawn (sector distance, camera height) and how dense */
+  /** build dirty chunks, nearest to the camera first, until buildBudgetMs is used up (at least one, at most `max`) */
+  private buildDirty(cp: THREE.Vector3, max: number): void {
+    const end = performance.now() + this.buildBudgetMs;
+    const B = this.chunkBox, px = cp.x, pz = cp.z;
+    for (let n = 0; n < max && this.dirty.size; n++) {
+      let best = -1, bd = Infinity;
+      for (const id of this.dirty) {
+        const o = id * 6;
+        const dx = px < B[o] ? B[o] - px : px > B[o + 3] ? px - B[o + 3] : 0;
+        const dz = pz < B[o + 2] ? B[o + 2] - pz : pz > B[o + 5] ? pz - B[o + 5] : 0;
+        const d = dx * dx + dz * dz;
+        if (d < bd) { bd = d; best = id; }
+      }
+      this.dirty.delete(best);
+      this.buildChunk(best);
+      if (performance.now() >= end) break;
+    }
+  }
+
+  /** per frame: which outer ring meshes are drawn (sector distance, camera height) and how dense: a sector within
+   *  lodDistance draws its near pair (CPU density prefix), the others the merged far mesh (GPU per-tree thinning) */
   private updateRingView(px: number, py: number, pz: number, lod: number): void {
+    const ring = this.ring, rf = this.ringFar;
+    if (!this.ringOn || (!rf && !this.ringAnyReady())) return;
     const camH = py - this.terrain.meshHeightAt(px, pz);
     const vis = _sstep(this.ringFadeHeight[0], this.ringFadeHeight[1], camH);
-    const ring = this.ring, RB = this.ringBox;
+    const app = this.ringAppear, RB = this.ringBox, nearM = this.ringU.uRingNear.value.elements;
+    let farMask = 0;
     for (let k = 0; k < RING_N; k++) {
-      const mb = ring[k * 3], mc = ring[k * 3 + 1], mm = ring[k * 3 + 2];
+      const mb = ring[k * 2], mc = ring[k * 2 + 1];
+      const cell = RING_SECTORS[k][0] * 3 + RING_SECTORS[k][1];
       if (!this.ringReady[k]) {
         if (mb) mb.visible = false;
         if (mc) mc.visible = false;
-        if (mm) mm.visible = false;
+        nearM[cell] = 0;
+        this.ringNearSel[k] = 0;
         continue;
       }
       const o = k * 6;
@@ -1466,26 +1564,38 @@ export class TreeRenderer {
       const ny = py < RB[o + 1] ? RB[o + 1] - py : py > RB[o + 4] ? py - RB[o + 4] : 0;
       const nz = pz < RB[o + 2] ? RB[o + 2] - pz : pz > RB[o + 5] ? pz - RB[o + 5] : 0;
       const dN = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      // the regular impostor pair within lodDistance (hysteresis), one micro impostor mesh beyond
+      // the regular impostor pair within lodDistance (hysteresis), the merged micro impostor mesh beyond
       const near = this.ringNearSel[k] ? dN < lod * 1.06 : dN < lod * 0.94;
       this.ringNearSel[k] = near ? 1 : 0;
-      // low cameras: the far sectors fade out with the camera height (seen from inside the city they are hidden or a
-      // few specks in the haze); a sector within lodDistance stays (the camera is near the map edge, where the ring is
-      // the horizon), its density fading in over the outer third of lodDistance
-      const v = near ? Math.max(vis, _sstep(lod * 0.94, lod * 0.6, dN)) : vis;
-      let keep = dN < lod ? 1 : 1.25 - (dN - lod) / 7000;
-      keep = (keep < 0.3 ? 0.3 : keep > 1 ? 1 : keep) * v;
-      const q = Math.round(keep * 20) / 20;
+      nearM[cell] = near ? 1 : 0;
       if (near) {
+        // a sector within lodDistance stays at any camera height (the camera is near the map edge, where the ring is
+        // the horizon), its density fading in over the outer third of lodDistance
+        const v = Math.max(vis, _sstep(lod * 0.94, lod * 0.6, dN));
+        let keep = dN < lod ? 1 : 1.25 - (dN - lod) / 7000;
+        keep = (keep < 0.3 ? 0.3 : keep > 1 ? 1 : keep) * v * app;
+        const q = Math.round(keep * 20) / 20;
         this.ringCount(mb, q);
         this.ringCount(mc, q);
-        if (mm) mm.visible = false;
       } else {
-        this.ringCount(mm, q);
         if (mb) mb.visible = false;
         if (mc) mc.visible = false;
+        farMask |= 1 << k;
       }
     }
+    if (rf) {
+      // low cameras: the far sectors fade out with the camera height (seen from inside the city they are hidden or a
+      // few specks in the haze)
+      const fv = vis * app;
+      this.ringU.uRingP.value.set(lod, fv, this.state.size * CELL_SIZE);
+      rf.ringMask = farMask & this.ringFarSectors;
+      rf.visible = fv > 0.001 && rf.ringMask !== 0 && rf.count > 0;
+    }
+  }
+
+  private ringAnyReady(): boolean {
+    for (let k = 0; k < RING_N; k++) if (this.ringReady[k]) return true;
+    return false;
   }
 
   /** draw the first q of a ring mesh's (shuffled) instances (userData.ringCount = its total) */
@@ -1506,7 +1616,10 @@ export class TreeRenderer {
 
   /** finish the outer ring's pending generation / refills now */
   private flushRing(): void {
+    if (!this.ringOn) return;
     while (this.ringStale || this.ringRefill || this.ringGen || this.ringFillState) this.ringStep(Infinity);
+    if (this.ringFarDirty) this.rebuildRingFar();
+    this.ringAppear = 1;
   }
 
   /** tree density (0..1) of the map's tree texture, clamped to the map like the terrain shader samples it */
@@ -1744,7 +1857,7 @@ export class TreeRenderer {
   private ringFillStart(k: number): void {
     const buf = this.ringCand[k], n = buf ? this.ringCandN[k] : 0;
     const dens = this.ringDensity();
-    // instances per mesh: broadleaf / conifer (near pair) and all (micro)
+    // instances of the near pair: broadleaf / conifer (all of them also go to the sector's micro data)
     let nb = 0, nc = 0;
     for (let i = 0; i < n; i++) {
       const o = i * RING_STRIDE;
@@ -1752,9 +1865,9 @@ export class TreeRenderer {
       if (this.species[buf![o + 3]].conifer) nc++;
       else nb++;
     }
-    const counts = [nb, nc, nb + nc];
+    const counts = [nb, nc];
     const perm: Int32Array[] = [];
-    for (let m = 0; m < 3; m++) {
+    for (let m = 0; m < 2; m++) {
       // shuffled slots: a prefix of the drawn instances is a uniform random subset (density fade with distance)
       const c = counts[m], p = new Int32Array(c);
       for (let i = 0; i < c; i++) p[i] = i;
@@ -1766,38 +1879,40 @@ export class TreeRenderer {
       }
       perm.push(p);
     }
-    const imp = getImpostorGeometries(), mg = getMicroImpostorGeometries();
-    const geos = [imp.broad, imp.conifer, mg.broad];
-    for (let m = 0; m < 3; m++) {
-      const idx = k * 3 + m;
-      const mesh = this.meshFor(this.ring[idx], geos[m], m === 2 ? this.materialMerged : this.materialFar, Math.max(1, counts[m]), true, false);
+    const imp = getImpostorGeometries();
+    const geos = [imp.broad, imp.conifer];
+    for (let m = 0; m < 2; m++) {
+      const idx = k * 2 + m;
+      const mesh = this.meshFor(this.ring[idx], geos[m], this.materialFar, Math.max(1, counts[m]), true, false);
       mesh.name = 'trees-ring';
       mesh.castShadow = false;
       mesh.receiveShadow = true;
       this.ring[idx] = mesh;
     }
-    const bounds = new Float64Array(18);
-    for (let m = 0; m < 3; m++) {
+    const nm = nb + nc;
+    const micro = new Float32Array(Math.max(1, nm) * 16), microCol = new Float32Array(Math.max(1, nm) * 3);
+    const bounds = new Float64Array(12);
+    for (let m = 0; m < 2; m++) {
       bounds[m * 6] = bounds[m * 6 + 1] = bounds[m * 6 + 2] = Infinity;
       bounds[m * 6 + 3] = bounds[m * 6 + 4] = bounds[m * 6 + 5] = -Infinity;
     }
-    this.ringFillState = { k, i: 0, w: new Int32Array(3), perm, bounds, dens };
+    this.ringFillState = { k, i: 0, w: new Int32Array(3), perm, bounds, dens, micro, microCol };
   }
 
   /**
-   * Write the current sector's instances (kind for the season, matrices, colours) straight into its meshes' instance
-   * arrays until `end`; once complete: upload ranges, counts, bounds, and the sector may be drawn. Returns true when
-   * complete.
+   * Write the current sector's instances (kind for the season, matrices, colours) straight into its near pair's
+   * instance arrays and its micro data until `end`; once complete: upload ranges, counts, bounds, the sector may be drawn
+   * and the merged far mesh is due for a rebuild. Returns true when complete.
    */
   private ringFillRows(end: number): boolean {
     const f = this.ringFillState!;
     const k = f.k;
     const buf = this.ringCand[k], n = buf ? this.ringCandN[k] : 0;
-    const meshes = [this.ring[k * 3]!, this.ring[k * 3 + 1]!, this.ring[k * 3 + 2]!];
+    const meshes = [this.ring[k * 2]!, this.ring[k * 2 + 1]!];
     const arr = meshes.map((m) => m.instanceMatrix.array as Float32Array);
     const col = meshes.map((m) => m.instanceColor!.array as Float32Array);
-    const imp = getImpostorGeometries(), mg = getMicroImpostorGeometries();
-    const geos = [imp.broad, imp.conifer, mg.broad];
+    const imp = getImpostorGeometries();
+    const geos = [imp.broad, imp.conifer];
     const gb: THREE.Box3[] = [];
     const gr: number[] = [];
     for (const g of geos) {
@@ -1806,15 +1921,18 @@ export class TreeRenderer {
       gb.push(b);
       gr.push(Math.max(Math.abs(b.min.x), Math.abs(b.max.x), Math.abs(b.min.z), Math.abs(b.max.z)));
     }
-    const bd = f.bounds, w = f.w, perm = f.perm;
-    // writes one instance into mesh m: horizontal scale hs (+ yaw c / sn), vertical scale vs, base height y
-    const put = (m: number, c: number, sn: number, hs: number, vs: number, x: number, y: number, z: number, r: number, gc: number, b: number) => {
-      const slot = perm[m][w[m]++];
-      const a = arr[m], o = slot * 16;
+    const bd = f.bounds, w = f.w, perm = f.perm, micro = f.micro, microCol = f.microCol;
+    // one instance matrix: horizontal scale hs (+ yaw c / sn), vertical scale vs, base height y
+    const mat = (a: Float32Array, o: number, c: number, sn: number, hs: number, vs: number, x: number, y: number, z: number) => {
       a[o] = c * hs; a[o + 1] = 0; a[o + 2] = -sn * hs; a[o + 3] = 0;
       a[o + 4] = 0; a[o + 5] = vs; a[o + 6] = 0; a[o + 7] = 0;
       a[o + 8] = sn * hs; a[o + 9] = 0; a[o + 10] = c * hs; a[o + 11] = 0;
       a[o + 12] = x; a[o + 13] = y; a[o + 14] = z; a[o + 15] = 1;
+    };
+    // writes one instance into near mesh m (its shuffled slot)
+    const put = (m: number, c: number, sn: number, hs: number, vs: number, x: number, y: number, z: number, r: number, gc: number, b: number) => {
+      const slot = perm[m][w[m]++];
+      mat(arr[m], slot * 16, c, sn, hs, vs, x, y, z);
       const cc = col[m], co = slot * 3;
       cc[co] = r; cc[co + 1] = gc; cc[co + 2] = b;
       const rr = gr[m] * hs, q = m * 6, ylo = y + gb[m].min.y * vs, yhi = y + gb[m].max.y * vs;
@@ -1825,6 +1943,14 @@ export class TreeRenderer {
       if (yhi > bd[q + 4]) bd[q + 4] = yhi;
       if (z + rr > bd[q + 5]) bd[q + 5] = z + rr;
     };
+    // the micro copy (merged far mesh): the double pyramid's top half shaped as the conifer pyramid for conifers
+    // (negative blue = evergreen), see-through bare crowns keep their negative red
+    const putMicro = (c: number, sn: number, hs: number, vs: number, x: number, y: number, z: number, r: number, gc: number, b: number) => {
+      const s = w[2]++;
+      mat(micro, s * 16, c, sn, hs, vs, x, y, z);
+      microCol[s * 3] = r; microCol[s * 3 + 1] = gc; microCol[s * 3 + 2] = b;
+    };
+    const winter = this.season.bare > 0.5;
     let i = f.i;
     while (i < n) {
       const stop = i + 256 < n ? i + 256 : n;
@@ -1835,19 +1961,20 @@ export class TreeRenderer {
         const kind = this.kinds[this.kindOf(buf![o + 3], Math.floor(px / CELL_SIZE), Math.floor(pz / CELL_SIZE))];
         const sp = this.species[kind.species];
         const s0 = sp.scale ? sp.scale[0] : 0.72, s1 = sp.scale ? sp.scale[1] : 1.18;
+        const wc = winter && kind.conifer;
         const s = (s0 + (s1 - s0) * buf![o + 4]) * 1.1;
         const c = Math.cos(buf![o + 5]), sn = Math.sin(buf![o + 5]);
-        const sxz = (kind.radius / 0.42) * s * 0.92 * kind.impR, sy = kind.height * s;
-        const cv = buf![o + 6];
-        const r = kind.color.r * cv, gc = kind.color.g * cv, b = kind.color.b * cv;
+        const sxz = (kind.radius / 0.42) * s * 0.92 * kind.impR * (wc ? WINTER_CONIFER_R : 1), sy = kind.height * s * (wc ? WINTER_CONIFER_H : 1);
+        const cv = buf![o + 6] * (wc ? WINTER_CONIFER_TINT : 1);
+        const r0 = kind.color.r * cv, gc = kind.color.g * cv, b = kind.color.b * cv;
+        const r = kind.bare ? -Math.max(r0, 1e-4) : r0;
         const y = h - 0.15;
         if (kind.conifer) {
           put(1, c, sn, sxz, sy, px, y, pz, r, gc, b);
-          // micro mesh: the double pyramid's top half shaped as the conifer pyramid; negative blue = evergreen
-          put(2, c, sn, sxz * RING_CON_R, sy * RING_CON_A, px, y + sy * RING_CON_B, pz, r, gc, -Math.max(b, 1e-4));
+          putMicro(c, sn, sxz * RING_CON_R, sy * RING_CON_A, px, y + sy * RING_CON_B, pz, r, gc, -Math.max(b, 1e-4));
         } else {
           put(0, c, sn, sxz, sy, px, y, pz, r, gc, b);
-          put(2, c, sn, sxz, sy, px, y, pz, r, gc, b);
+          putMicro(c, sn, sxz, sy, px, y, pz, r, gc, b);
         }
       }
       if (performance.now() >= end) break;
@@ -1855,10 +1982,8 @@ export class TreeRenderer {
     f.i = i;
     if (i < n) return false;
     // complete: upload, counts, bounds
-    let prev = 0;
-    for (let m = 0; m < 3; m++) {
+    for (let m = 0; m < 2; m++) {
       const mesh = meshes[m], cnt = w[m];
-      prev += m === 2 ? ((mesh.userData.ringCount as number | undefined) ?? 0) : 0;
       mesh.userData.ringCount = cnt;
       mesh.count = cnt;
       mesh.visible = false;
@@ -1875,16 +2000,63 @@ export class TreeRenderer {
         bb.getBoundingSphere(mesh.boundingSphere!);
       } else bb.makeEmpty();
     }
-    // sector bounds (for its per-frame distance): the near pair's union (the micro mesh's conifers reach underground)
+    // sector bounds (its per-frame distance, the merged mesh's per-sector culling): the near pair's union
     const RB = this.ringBox, ro = k * 6;
     for (let a = 0; a < 3; a++) {
       RB[ro + a] = Math.min(bd[a], bd[6 + a]);
       RB[ro + 3 + a] = Math.max(bd[3 + a], bd[9 + a]);
     }
-    this.ringInstances += w[2] - prev;
+    this.ringMicro[k] = micro;
+    this.ringMicroCol[k] = microCol;
+    this.ringMicroN[k] = w[2];
     this.ringReady[k] = w[2] > 0 ? 1 : 0;
+    this.ringFarDirty = true;
     this.ringFillState = null;
     return true;
+  }
+
+  /** the merged far ring: every ready sector's micro impostors in one mesh (rebuilt once the ring work is idle) */
+  private rebuildRingFar(): void {
+    this.ringFarDirty = false;
+    let n = 0, mask = 0;
+    for (let k = 0; k < RING_N; k++) if (this.ringReady[k] && this.ringMicro[k] && this.ringMicroN[k] > 0) { n += this.ringMicroN[k]; mask |= 1 << k; }
+    if (!n) {
+      if (this.ringFar) { this.ringFar.count = 0; this.ringFar.visible = false; this.ringFar.userData.ringCount = 0; }
+      this.ringFarSectors = 0;
+      this.ringInstances = 0;
+      return;
+    }
+    const mesh = this.ringFar = this.meshFor(this.ringFar, getMicroImpostorGeometries().broad, this.materialRing, n, true, false);
+    mesh.name = 'trees-ring';
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.ringBoxes = this.ringBox;
+    const ma = mesh.instanceMatrix.array as Float32Array, ca = mesh.instanceColor!.array as Float32Array;
+    const RB = this.ringBox, bb = mesh.boundingBox!;
+    bb.makeEmpty();
+    let o = 0;
+    for (let k = 0; k < RING_N; k++) {
+      if (!(mask & (1 << k))) continue;
+      const c = this.ringMicroN[k];
+      ma.set(this.ringMicro[k]!.subarray(0, c * 16), o * 16);
+      ca.set(this.ringMicroCol[k]!.subarray(0, c * 3), o * 3);
+      o += c;
+      const ro = k * 6;
+      _box.min.set(RB[ro], RB[ro + 1], RB[ro + 2]);
+      _box.max.set(RB[ro + 3], RB[ro + 4], RB[ro + 5]);
+      bb.union(_box);
+    }
+    bb.getBoundingSphere(mesh.boundingSphere!);
+    mesh.count = n;
+    mesh.userData.ringCount = n;
+    mesh.instanceMatrix.clearUpdateRanges();
+    mesh.instanceMatrix.addUpdateRange(0, n * 16);
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor!.clearUpdateRanges();
+    mesh.instanceColor!.addUpdateRange(0, n * 3);
+    mesh.instanceColor!.needsUpdate = true;
+    this.ringFarSectors = mask;
+    this.ringInstances = n;
   }
 
   private disposeChunk(c: TreeChunk) {
@@ -1904,11 +2076,11 @@ export class TreeRenderer {
     this.dropWarmup();
     for (const c of this.chunks) this.disposeChunk(c);
     this.chunks = [];
-    for (const m of this.ring) if (m) { this.group.remove(m); m.dispose(); }
-    this.ring.fill(null);
+    this.disposeRing();
     this.material.dispose();
     this.materialFar.dispose();
     this.materialMerged.dispose();
+    this.materialRing.dispose();
     this.depthNearPlain.dispose();
     this.depthFarPlain.dispose();
     this.matNearFade.dispose();
