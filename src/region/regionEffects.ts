@@ -5,13 +5,20 @@
  * Written into the city state on entry and refreshed every simulated month:
  *   state.systemData.regionJobs    number — total regional job slots our residents may commute to
  *   state.systemData.regionWorkers number — total regional workers that may commute in to fill our jobs
- *     (both read by sim-infra traffic; they REPLACE its defaults REGION_JOB_SHARE × workers + REGION_JOB_MIN and
- *      REGION_WORKER_SHARE × jobSlots + REGION_WORKER_MIN, so we keep those defaults and add the neighbour bonus)
- *   state.systemData.region        RegionContext — full regional picture for sim-core demand (not consumed yet)
+ *     (both read by sim-infra traffic and the employment ledger; they REPLACE its defaults REGION_JOB_SHARE × workers +
+ *      REGION_JOB_MIN and REGION_WORKER_SHARE × jobSlots + REGION_WORKER_MIN, so we keep those defaults and add the
+ *      neighbour bonus)
+ *   state.systemData.region        RegionContext — full regional picture for sim-core demand (demand.ts regionInputs)
+ * The neighbour bonus follows what the demand model reads (regionLink.ts): a neighbour adds jobs for our residents only
+ * from its job SURPLUS (jobs its own workers leave open) and workers for our jobs only from its worker surplus, each ×
+ * how well the shared edge is connected (EDGE_CONN: highway 1 … street .3, unconnected EDGE_NONE .1). A bedroom town
+ * next door therefore employs nobody here, and a job centre beyond an unconnected edge only a tenth of what a highway
+ * gives (SIM_DEPTH final fixes F1: any founded neighbour used to remove the city's unemployment).
  */
 import type { CityState } from '../sim/CityState';
 import { REGION_JOB_MIN, REGION_JOB_SHARE, REGION_WORKER_MIN, REGION_WORKER_SHARE } from '../sim/infra/params';
 import { WORKFORCE_RATIO } from '../sim/economy/tuning';
+import { bestConnection, connectedNeighbours, neighbourSurplus } from '../sim/economy/regionLink';
 import { REGION_UNIT_CELLS } from '../core/constants';
 import type { RegionModel } from './RegionModel';
 import type { RegionTile } from './types';
@@ -34,6 +41,14 @@ export interface RegionNeighbor {
   /** shared edge segment in THIS city's cells along the edge axis: [from, to) */
   from: number;
   to: number;
+  /**
+   * written by applyRegionEffects into systemData.region (the stored copy) on the tile's best-connected segment: its
+   * edge factor and the regional job slots / inbound workers this neighbour adds (ADJ_SHARE × surplus × edgeF) —
+   * so traffic can place the bonus on the connections of that segment
+   */
+  edgeF?: number;
+  jobSlots?: number;
+  workerSlots?: number;
 }
 
 export interface RegionContext {
@@ -49,12 +64,22 @@ export interface RegionContext {
   adjacentPopulation: number;
   adjacentJobs: number;
   adjacentWorkers: number;
-  /** regional job / worker bonus added on top of sim-infra's defaults (see applyRegionEffects) */
+  /**
+   * regional job / worker bonus added on top of sim-infra's defaults: regionContext gives the bonus at full connection
+   * (edge factor 1 everywhere — an upper bound); applyRegionEffects stores the bonus for the city's current neighbour
+   * connections in systemData.region (and ignores the field of the context it is given)
+   */
   jobBonus: number;
   workerBonus: number;
+  /** Σ over founded cities beyond the neighbours of max(0, jobs − workers) / max(0, workers − jobs) (absent: derived
+   *  from the totals) */
+  farJobSurplus?: number;
+  farWorkerSurplus?: number;
 }
 
-/** share of adjacent neighbours' jobs / workers available to this city; far cities count much less */
+/** share of an adjacent neighbour's job / worker SURPLUS available to this city (× the shared edge's connection factor;
+ *  = the demand model's RG_R / RG_CI: the residents regional demand brings for a neighbour's open jobs find them); far
+ *  cities count much less (× the city's best connection: their commuters pass a neighbour's tile) */
 export const ADJ_SHARE = 0.3;
 export const FAR_SHARE = 0.06;
 
@@ -96,18 +121,21 @@ export function regionContext(model: RegionModel, tile: RegionTile): RegionConte
     jobs += j;
     workers += w;
     if (!adjKeys.has(t.key)) {
-      farJobs += j;
-      farWorkers += w;
+      farJobs += Math.max(0, j - w);
+      farWorkers += Math.max(0, w - j);
     }
   }
   const seen = new Set<string>();
-  let adjacentPopulation = 0, adjacentJobs = 0, adjacentWorkers = 0;
+  let adjacentPopulation = 0, adjacentJobs = 0, adjacentWorkers = 0, adjJobSurplus = 0, adjWorkerSurplus = 0;
   for (const n of neighbors) {
     if (!n.founded || seen.has(n.tileKey)) continue;
     seen.add(n.tileKey);
     adjacentPopulation += n.population;
     adjacentJobs += n.jobs;
     adjacentWorkers += n.workers;
+    const sur = neighbourSurplus(n);
+    adjJobSurplus += sur.jobs;
+    adjWorkerSurplus += sur.workers;
   }
   return {
     regionId: model.data.id,
@@ -119,24 +147,55 @@ export function regionContext(model: RegionModel, tile: RegionTile): RegionConte
     adjacentPopulation,
     adjacentJobs,
     adjacentWorkers,
-    jobBonus: Math.round(ADJ_SHARE * adjacentJobs + FAR_SHARE * farJobs),
-    workerBonus: Math.round(ADJ_SHARE * adjacentWorkers + FAR_SHARE * farWorkers),
+    jobBonus: Math.round(ADJ_SHARE * adjJobSurplus + FAR_SHARE * farJobs),
+    workerBonus: Math.round(ADJ_SHARE * adjWorkerSurplus + FAR_SHARE * farWorkers),
+    farJobSurplus: Math.round(farJobs),
+    farWorkerSurplus: Math.round(farWorkers),
   };
 }
 
 /**
- * Write the regional numbers into the state (call on entry and monthly). The totals follow the city's own size
- * (sim-infra's default formulas) plus the neighbour bonus, so an isolated city behaves exactly as before.
+ * The regional job / worker bonus for the city's current neighbour connections: ADJ_SHARE × Σ over founded neighbours
+ * of the surplus × the shared edge's connection factor (each tile once, its best-connected segment: the inputs of the
+ * demand model's regional terms) + FAR_SHARE × the far cities' surplus × the city's best connection. Per neighbour
+ * entry of `stored` (the systemData copy) its edgeF / jobSlots / workerSlots are written.
+ */
+export function regionBonus(st: CityState, ctx: RegionContext, stored?: RegionNeighbor[]): { jobs: number; workers: number } {
+  let jobs = 0, workers = 0;
+  for (const { n, f } of connectedNeighbours(st, ctx.neighbors)) {
+    const sur = neighbourSurplus(n);
+    const j = ADJ_SHARE * sur.jobs * f, w = ADJ_SHARE * sur.workers * f;
+    jobs += j;
+    workers += w;
+    const k = stored ? ctx.neighbors.indexOf(n) : -1;
+    if (stored && k >= 0 && stored[k]) { stored[k].edgeF = f; stored[k].jobSlots = Math.round(j); stored[k].workerSlots = Math.round(w); }
+  }
+  const farJ = ctx.farJobSurplus ?? Math.max(0, (ctx.jobs - ctx.adjacentJobs) - (ctx.workers - ctx.adjacentWorkers));
+  const farW = ctx.farWorkerSurplus ?? Math.max(0, (ctx.workers - ctx.adjacentWorkers) - (ctx.jobs - ctx.adjacentJobs));
+  if (farJ > 0 || farW > 0) {
+    const f = bestConnection(st);
+    jobs += FAR_SHARE * Math.max(0, farJ) * f;
+    workers += FAR_SHARE * Math.max(0, farW) * f;
+  }
+  return { jobs: Math.round(jobs), workers: Math.round(workers) };
+}
+
+/**
+ * Write the regional numbers into the state (call on entry and monthly: neighbour connections change). The totals
+ * follow the city's own size (sim-infra's default formulas) plus the neighbour bonus for the current connections
+ * (regionBonus), so an isolated city — or one whose neighbours have no surplus to offer — behaves exactly as before.
  */
 export function applyRegionEffects(st: CityState, ctx: RegionContext): void {
   const sd = st.systemData;
   const workers = st.stats.workforce || st.stats.population * WORKFORCE_RATIO;
   let slots = 0;
   for (const v of st.stats.jobCapByDev ?? []) slots += v;
-  sd.region = { ...ctx, neighbors: ctx.neighbors.map((n) => ({ ...n })) };
-  if (ctx.jobBonus > 0 || ctx.workerBonus > 0) {
-    sd.regionJobs = Math.round(REGION_JOB_SHARE * workers + REGION_JOB_MIN + ctx.jobBonus);
-    sd.regionWorkers = Math.round(REGION_WORKER_SHARE * slots + REGION_WORKER_MIN + ctx.workerBonus);
+  const neighbors = ctx.neighbors.map((n) => ({ ...n }));
+  const bonus = regionBonus(st, ctx, neighbors);
+  sd.region = { ...ctx, neighbors, jobBonus: bonus.jobs, workerBonus: bonus.workers };
+  if (bonus.jobs > 0 || bonus.workers > 0) {
+    sd.regionJobs = Math.round(REGION_JOB_SHARE * workers + REGION_JOB_MIN + bonus.jobs);
+    sd.regionWorkers = Math.round(REGION_WORKER_SHARE * slots + REGION_WORKER_MIN + bonus.workers);
   } else {
     delete sd.regionJobs;
     delete sd.regionWorkers;

@@ -33,17 +33,18 @@ import {
   APPROVAL_R, BASE_CAP, CAP_BINDING, CAP_POP_FRAC, CAP_SOFTMIN_K, CAP_WEIGHT, CIVIC_WEALTH_MIX, CO3_FRAC_MAX, CO3_FRAC_MIN,
   CO_SHARE_MAX, CO_SHARE_MIN, CO_SHARE_POP_FULL, CO_SHARE_POP_START, CONN_BASE, CONN_CAP_RELIEF, CONN_MAX, CONN_WEIGHT,
   CS_BASE, CS_PER_RES, CS_SMALL_TOWN_BOOST, CS_SMALL_TOWN_POP, CUSTOMER_MIX, DEMAND_ABS_EMA, DEMAND_EMA, DEMAND_NORM_FRAC, DEMAND_NORM_MIN,
-  EDGE_CONN, EDGE_NONE, FREIGHT_BOOST, FREIGHT_BOOST_MAX, I_BASE, I_SHARE_MAX, I_SHARE_MIN, IA_BASE, IA_PER_RES, ID_EQ_START,
+  FREIGHT_BOOST, FREIGHT_BOOST_MAX, I_BASE, I_SHARE_MAX, I_SHARE_MIN, IA_BASE, IA_PER_RES, ID_EQ_START,
   ID_SHARE_AT_EQ0, ID_SHARE_EQ_SLOPE, ID_SHARE_MIN, IHT_EQ_START, IHT_SHARE_MAX, IHT_SHARE_PER_EQ, JOB_MIX_AVG, JOB_SLACK,
   JOB_WEALTH_MIX, LABOUR_MIN_HEAD, LABOUR_POP0, LABOUR_POP1, LABOUR_UNEMP0, LABOUR_VAC0, R_BASE, R_JOB_SLACK, REGION_WEALTH_MIX,
   RG_CAP, RG_CI, RG_CI_SPLIT, RG_CS, RG_CS_MAX, RG_MARKET, RG_MARKET_POP, RG_R, TAX_FACTOR_MAX, TAX_FACTOR_MIN, TAX_NEUTRAL, TAX_SENS, TOURISM_CS_PER_POINT, TOURISM_CS_SPLIT, UNEMP_CI_BOOST,
   UNEMP_NEUTRAL, UNEMP_R_PENALTY, WORKFORCE_RATIO,
 } from './tuning';
 import { type EconRuntime, type RegionTerms, econData, infraFlags } from './runtime';
+import { connectedNeighbours, neighbourSurplus } from './regionLink';
 import { ordinanceEffect } from './ordinances';
 import { venueIssue, venueOp } from './tourism';
 import { facilityUseFactor } from '../infra/facilities';
-import type { RegionContext, RegionNeighbor } from '../../region/regionEffects';
+import type { RegionContext } from '../../region/regionEffects';
 
 const DEV_ENUM = ['R1', 'R2', 'R3', 'CS1', 'CS2', 'CS3', 'CO2', 'CO3', 'IA', 'ID', 'IM', 'IHT'];
 
@@ -139,21 +140,9 @@ function softmin(t: number, cap: number): number {
 }
 
 // ------------------------------------------------------------------------------------------------ regional play
-/**
- * How well this city reaches neighbour `n`: the best EDGE_CONN of our neighbour connections on the shared edge segment
- * (the along-edge coordinate x for n / s, z for e / w inside [n.from, n.to)), EDGE_NONE without a connection.
- */
-export function edgeFactor(st: CityState, n: Pick<RegionNeighbor, 'edge' | 'from' | 'to'>): number {
-  let f = 0;
-  for (const c of st.neighborConnections) {
-    if (c.edge !== n.edge) continue;
-    const a = n.edge === 'n' || n.edge === 's' ? c.x : c.z;
-    if (a < n.from || a >= n.to) continue;
-    const e = EDGE_CONN[c.type] ?? 0;
-    if (e > f) f = e;
-  }
-  return f > 0 ? f : EDGE_NONE;
-}
+// (edgeFactor / connectedNeighbours / neighbourSurplus live in regionLink.ts: the region layer's commuter exchange
+// sizes regional jobs / workers from the same connected surpluses — re-exported here)
+export { connectedNeighbours, edgeFactor, neighbourSurplus } from './regionLink';
 
 /** regional inputs of the demand model (edge-weighted neighbour sums); null for an isolated city */
 export interface RegionInputs {
@@ -174,23 +163,17 @@ export interface RegionInputs {
 export function regionInputs(st: CityState): RegionInputs | null {
   const reg = st.systemData.region as RegionContext | undefined;
   if (!reg || !Array.isArray(reg.neighbors)) return null;
-  // one entry per shared edge segment; a tile is counted once with its best-connected segment
-  const best = new Map<string, { n: RegionNeighbor; f: number }>();
-  for (const n of reg.neighbors) {
-    if (!n.founded) continue;
-    const f = edgeFactor(st, n);
-    const cur = best.get(n.tileKey);
-    if (!cur || f > cur.f) best.set(n.tileKey, { n, f });
-  }
+  const best = connectedNeighbours(st, reg.neighbors);
   const market = 1 + RG_MARKET * Math.min(1, Math.max(0, reg.population ?? 0) / RG_MARKET_POP);
-  if (best.size === 0 && market === 1) return null;
+  if (best.length === 0 && market === 1) return null;
   let jobSurplus = 0, workerSurplus = 0, reachPop = 0;
   const customers: [number, number, number] = [0, 0, 0];
   const neighbors: RegionInputs['neighbors'] = [];
-  for (const { n, f } of best.values()) {
+  for (const { n, f } of best) {
     const jobs = Math.max(0, n.jobs || 0), workers = Math.max(0, n.workers || 0), p = Math.max(0, n.population || 0);
-    jobSurplus += Math.max(0, jobs - workers) * f;
-    workerSurplus += Math.max(0, workers - jobs) * f;
+    const sur = neighbourSurplus(n);
+    jobSurplus += sur.jobs * f;
+    workerSurplus += sur.workers * f;
     reachPop += p * f;
     for (let w = 0; w < 3; w++) {
       let c = 0;

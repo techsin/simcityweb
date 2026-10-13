@@ -122,21 +122,27 @@ describe('one employment ledger (WP1-1)', () => {
     expect(bonus.st.stats.unemployment).toBeLessThan(base.st.stats.unemployment - 0.02);
   });
 
-  it('without traffic: the analytic model uses systemData.regionJobs', () => {
-    const run = (regionJobs?: number) => {
+  it('without traffic: the analytic model uses systemData.regionJobs, within the share cap and the isolation factor', () => {
+    const run = (regionJobs: number | undefined, connected: boolean) => {
       const st: CityState = newState(32);
       for (let x = 0; x < 32; x++) st.network[10 * 32 + x] = Network.Road;
+      if (connected) st.neighborConnections = [{ edge: 'w', x: 0, z: 10, type: Network.Road }];
       for (let x = 2; x < 30; x++) place(st, 't_r2', x, 11, { pop: 50, capacity: 50, wealth: 2, rot: 2 });
-      for (let x = 2; x < 12; x++) place(st, 't_cs', x, 9, { jobs: 0, capacity: 20, rot: 0 });
+      // ~770 workers, 560 local jobs: the default regional volume (300 + 5 % of the workforce) is under the share cap
+      for (let x = 2; x < 30; x++) place(st, 't_cs', x, 9, { jobs: 0, capacity: 20, rot: 0 });
       for (let d = 0; d <= DevType.IHT; d++) st.desirability[d].fill(1);
       if (regionJobs !== undefined) st.systemData.regionJobs = regionJobs;
       const sim = new Simulation(st, [populationSystem(new EconRuntime())]);
       sim.runDays(40);
       return st.stats.unemployment;
     };
-    const a = run(), b = run(600);
-    console.log(`no traffic: unemployment ${(a * 100).toFixed(1)}% -> with region jobs ${(b * 100).toFixed(1)}%`);
-    expect(b).toBeLessThan(a - 0.05);
+    const a = run(undefined, true), small = run(60, true), big = run(5000, true), isoBig = run(5000, false);
+    console.log(`no traffic: unemployment ${(a * 100).toFixed(1)}% (default) · region jobs 60 ${(small * 100).toFixed(1)}% · 5000 ${(big * 100).toFixed(1)}% · 5000 unconnected ${(isoBig * 100).toFixed(1)}%`);
+    // fewer regional jobs than the default: more unemployed; more: fewer, up to the share cap (25 % of local jobs)
+    expect(small).toBeGreaterThan(a + 0.05);
+    expect(big).toBeLessThanOrEqual(a);
+    // (F1) a city without a neighbour connection reaches only REGION_COMMUTERS_ISOLATED of the regional jobs
+    expect(isoBig).toBeGreaterThan(big + 0.05);
     void getDef;
   });
 });

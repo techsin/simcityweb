@@ -9,10 +9,12 @@ import { describe, expect, it } from 'vitest';
 import { DevType, Network, Overlay } from '../../src/core/types';
 import { RESP_NONE } from '../../src/sim/CityState';
 import {
-  DEMO_KIDS, DEMO_WEALTH, DESIR_FAMILIES, DESIR_SENIORS, DESIR_STUDENTS, EMG_FIRE, EMG_FLOOR_T, EMG_NONE_T, EMG_NOROAD_T, OVERLAY_VARIANTS, attachOverlays, educationScale,
-  emergencyReachAt, encodeSlack, markOverlaysDirty, overlayDeps, overlayLayer, overlayReadout, overlayStale, overlayValue, overlayVariantCount,
-  resolveVariant, TAP_T0,
+  DEMO_KIDS, DEMO_WEALTH, DESIR_FAMILIES, DESIR_SENIORS, DESIR_STUDENTS, EMG_FIRE, EMG_FLOOR_T, EMG_MEDICAL, EMG_NEAR, EMG_NONE_T, EMG_NOROAD_T, EMG_POLICE,
+  FIRE_WINDOW_MIN, OVERLAY_VARIANTS, PER_BUILDING_DAYS, attachOverlays, decodeSlackFor, educationScale, emergencyReachAt, emgNearSlack, encodeSlack,
+  encodeSlackFor, markOverlaysDirty, overlayDeps, overlayLayer, overlayReadout, overlayStale, overlayValue, overlayVariantCount, resolveVariant, TAP_T0,
 } from '../../src/sim/infra/overlays';
+import { stationRange } from '../../src/sim/infra/emergency';
+import { getDef } from '../../src/sim/catalog';
 import { computeOverlayValues, overlayDef, overlayLegend } from '../../src/render/world/overlays';
 import { familyScoreAt, seniorScoreAt, studentScoreAt } from '../../src/sim/economy/demographics';
 import { responseText } from '../../src/ui/inspectorModel';
@@ -183,11 +185,72 @@ describe('overlays: every Overlay × variant', () => {
       return overlayReadout(st, Overlay.Emergency, 30, 30, EMG_FIRE)!.text;
     };
     expect(text(2.1)).toBe('Auto-dispatch · 2.1 min to spare');
-    expect(text(-1.8)).toBe('Just out of reach by 1.8 min');
+    // (fire: the "Just out of reach" band is the burn-down window, about 1.1 min — final fixes P2)
+    expect(text(-0.8)).toBe('Just out of reach by 0.8 min');
+    expect(text(-1.8)).toBe('Out of reach by 1.8 min');
     expect(text(-7)).toBe('Out of reach by 7.0 min');
     expect(text(RESP_NONE)).toBe('No fire station');
+    // police / medical calls wait 16–30 min: their band stays -EMG_NEAR..0
+    const keepP = st.respPolice[i];
+    st.respPolice[i] = -1.8;
+    markOverlaysDirty(st, 'emergency');
+    expect(overlayReadout(st, Overlay.Emergency, 30, 30, EMG_POLICE)!.text).toBe('Just out of reach by 1.8 min');
+    st.respPolice[i] = keepP;
     st.respFire[i] = keep;
     markOverlaysDirty(st, 'emergency');
+  });
+
+  it('final fixes P2: the Fire view paints amber only where a dispatched truck still beats the burn-down; P16 never "by 0.0 min"', () => {
+    // the fire window: FIRE_BURN_DAYS - 1 days after the first burn step; a fire station's auto range is 3.9 min
+    const lim = emgNearSlack(EMG_FIRE);
+    expect(lim).toBeCloseTo(-(FIRE_WINDOW_MIN - stationRange(getDef('civ_fire_station'), 'fire')), 6);
+    expect(lim).toBeGreaterThan(-1.5);
+    expect(lim).toBeLessThan(-0.5);
+    expect(emgNearSlack(EMG_POLICE)).toBe(-EMG_NEAR);
+    expect(emgNearSlack(EMG_MEDICAL)).toBe(-EMG_NEAR);
+    // the render ramp's amber / red boundary sits at encodeSlack(-EMG_NEAR): the fire window's limit is encoded there
+    const tNear = encodeSlack(-EMG_NEAR), tZero = encodeSlack(0);
+    expect(encodeSlackFor(lim, EMG_FIRE)).toBeCloseTo(tNear, 6);
+    expect(encodeSlackFor(lim / 2, EMG_FIRE)).toBeGreaterThan(tNear);
+    expect(encodeSlackFor(lim / 2, EMG_FIRE)).toBeLessThan(tZero);
+    expect(encodeSlackFor(lim - 0.3, EMG_FIRE)).toBeLessThan(tNear);
+    expect(encodeSlackFor(-12, EMG_FIRE)).toBeCloseTo(0.08, 6);
+    for (const s of [3, 0, -0.01, lim / 2, lim, lim - 0.01, -2.5, -7, -11.9]) expect(decodeSlackFor(encodeSlackFor(s, EMG_FIRE), EMG_FIRE)).toBeCloseTo(s, 4);
+    // police / medical keep the plain encoding
+    for (const s of [2, -1.8, -3, -7]) expect(encodeSlackFor(s, EMG_POLICE)).toBe(encodeSlack(s));
+    // the raster and the hover agree (a building cell: its slack; empty land: the fill's value decoded)
+    const { st: s2 } = town();
+    const N = s2.size, L = s2.respFire;
+    const b = [...s2.buildings.values()].find((x) => x.def === 't_r1' && x.z === 9)!;
+    const bi = b.z * N + b.x;
+    const ramp = (v: number) => overlayLayer(s2, Overlay.Emergency, EMG_FIRE)!.data[bi] - v;
+    L[bi] = -0.6;
+    markOverlaysDirty(s2, 'emergency');
+    expect(ramp(tNear)).toBeGreaterThan(0); // amber
+    let r = overlayReadout(s2, Overlay.Emergency, b.x, b.z, EMG_FIRE)!;
+    expect(r.text).toBe('Just out of reach by 0.6 min');
+    expect(r.sub).toMatch(/still makes it/);
+    L[bi] = -2.2; // the Scrapyard of the playtest: amber before, a fire there burns down before any truck arrives
+    markOverlaysDirty(s2, 'emergency');
+    expect(ramp(tNear)).toBeLessThan(0); // red
+    r = overlayReadout(s2, Overlay.Emergency, b.x, b.z, EMG_FIRE)!;
+    expect(r.text).toBe('Out of reach by 2.2 min');
+    expect(r.tone).toBe('bad');
+    expect(r.sub).toMatch(/^Too far — a fire here burns down before a truck can arrive \(an industrial accident ignites within 3 days\); build a fire station closer$/);
+    // P16: under 0.05 min reads "< 0.1 min", never "0.0 min"
+    L[bi] = -0.02;
+    markOverlaysDirty(s2, 'emergency');
+    expect(overlayReadout(s2, Overlay.Emergency, b.x, b.z, EMG_FIRE)!.text).toBe('Just out of reach by < 0.1 min');
+    L[bi] = 0.03;
+    markOverlaysDirty(s2, 'emergency');
+    expect(overlayReadout(s2, Overlay.Emergency, b.x, b.z, EMG_FIRE)!.text).toBe('Auto-dispatch · < 0.1 min to spare');
+    // empty land takes its nearest road / lot's value and decodes it back (fire remap)
+    for (let z = 8; z <= 16; z++) for (let x = 3; x <= 11; x++) { const k = z * N + x; L[k] = z >= 10 && z <= 14 && s2.building[k] < 0 && s2.network[k] === Network.None ? -12 : -0.7; }
+    markOverlaysDirty(s2, 'emergency');
+    const land = emergencyReachAt(s2, 12 * N + 7, EMG_FIRE)!;
+    expect(land.why).toBe('land');
+    expect(land.slack).toBeCloseTo(-0.7, 3);
+    expect(overlayReadout(s2, Overlay.Emergency, 7, 12, EMG_FIRE)!.text).toBe('Just out of reach by 0.7 min');
   });
 
   it('emergency: empty land beside no road shows its nearest road / lot (block interiors do not read "You must dispatch")', () => {
@@ -298,7 +361,7 @@ describe('overlays: review round 1 (emergency floor, back lots, stale rasters, m
     markOverlaysDirty(st, 'emergency');
   });
 
-  it('Demographics follows the buildings: a bulldozed home leaves the raster the next sim day (not 30 days later)', () => {
+  it('Demographics follows the buildings: a bulldozed home leaves the raster within PER_BUILDING_DAYS (not 30 days later)', () => {
     const st2 = newState(32);
     roadLine(st2, 2, 10, 30, 10);
     const b = place(st2, 't_r2', 5, 11, { pop: 40, kids: 0.2, teens: 0.07, yad: 0.1, srs: 0.1 });
@@ -310,12 +373,22 @@ describe('overlays: review round 1 (emergency floor, back lots, stale rasters, m
     st2.buildings.delete(b.id);
     st2.building[i] = -1;
     sim2.events.emit('buildingRemoved', b);
-    // same day: the raster stays (at most one rebuild a day); the next day it is stale and rebuilt without the home
+    // the raster stays for PER_BUILDING_DAYS sim days (final fixes A3: at most one rebuild a week, not one a day while
+    // the city grows); then it is stale and rebuilt without the home
+    expect(overlayStale(st2, Overlay.Demographics, DEMO_KIDS)).toBe(false);
+    st2.day += PER_BUILDING_DAYS - 1;
     expect(overlayStale(st2, Overlay.Demographics, DEMO_KIDS)).toBe(false);
     st2.day += 1;
     expect(overlayStale(st2, Overlay.Demographics, DEMO_KIDS)).toBe(true);
     expect(overlayLayer(st2, Overlay.Demographics, DEMO_KIDS)!.data[i]).toBe(0);
     expect(overlayStale(st2, Overlay.Demographics, DEMO_KIDS)).toBe(false);
+    // no building change: never stale from the buildings, however many days pass
+    st2.day += 3 * PER_BUILDING_DAYS;
+    expect(overlayStale(st2, Overlay.Demographics, DEMO_KIDS)).toBe(false);
+    // its own layer event rebuilds it at once
+    sim2.events.emit('buildingChanged', [...st2.buildings.values()][0] ?? b);
+    sim2.events.emit('layerUpdated', 'demographics');
+    expect(overlayStale(st2, Overlay.Demographics, DEMO_KIDS)).toBe(true);
     off();
   });
 

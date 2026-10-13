@@ -188,6 +188,9 @@ export interface DispatchResult {
   etaMin?: number;
   /** units sent */
   sent?: number;
+  /** dispatchBest: the responder of the reported dispatch, and the needed responders it could not send a unit for */
+  responder?: Responder;
+  missing?: Responder[];
 }
 export interface SpawnOptions {
   major?: boolean;
@@ -242,6 +245,23 @@ export const RESPONDER_UNIT: Readonly<Record<Responder, readonly [string, string
   fire: ['fire truck', 'fire trucks'], police: ['police car', 'police cars'], medical: ['ambulance', 'ambulances'],
 };
 export const RESPONDER_MODEL: Readonly<Record<Responder, EmergencyVehicleModel>> = { fire: 'fire_truck', police: 'car_police', medical: 'ambulance' };
+
+/**
+ * Sim time until which a dispatch of the incident's PRIMARY responder (INCIDENT_RESPONDERS[kind][0]) still changes its
+ * outcome: the window of the player's Dispatch prompt (manualPossible, LIVE mode, the banner's "min left"). An
+ * industrial accident ignites its plant at the first day tick EMERG_GRACE.industrial days after it started unless a
+ * fire truck is on its way — its ambulance does not count; a truck sent in time saves the plant and the accident then
+ * waits for it until its deadline — so its window ends at that tick. Every other incident runs until its deadline.
+ */
+export function dispatchWindowEnd(inc: Pick<Incident, 'kind' | 'start' | 'deadline'>): number {
+  if (inc.kind !== 'industrial') return inc.deadline;
+  const G = EMERG_GRACE.industrial;
+  // the first day tick d with d - start >= G (the ignition test in workStep)
+  let d = Math.ceil(inc.start + G);
+  if (d - 1 - inc.start >= G) d--;
+  else if (d - inc.start < G) d++;
+  return Math.min(inc.deadline, d);
+}
 const RESPONDER_SERVICE: Readonly<Record<Responder, ServiceKind>> = { fire: 'fire', police: 'police', medical: 'health' };
 const RESPONDER_STATION: Readonly<Record<Responder, string>> = { fire: 'fire station', police: 'police station', medical: 'clinic or hospital' };
 const RESPONDER_STATIONS: Readonly<Record<Responder, string>> = { fire: 'fire stations', police: 'police stations', medical: 'clinics and hospitals' };
@@ -630,6 +650,17 @@ interface Persist {
   /** news throttle: the day each news key ('uncovered:fire', 'failed:medical', ...) was last posted, so a loaded game
    *  words its news feed like the original (absent in older saves: nothing throttled yet) */
   news?: Record<string, number>;
+  /** content signature of the road graph the incidents' dispatch decisions were made on (graphSig): a loaded game
+   *  whose graph differs (a network edit the original's graph did not have yet when it was saved) retries them, as
+   *  the original does once its graph catches up */
+  gSig?: string;
+  /** the siren link times (per road node of the graph with signature `sig`) the dispatch searches use: a loaded game
+   *  decides with exactly these until its own traffic layer next updates (its warm-started traffic differs a little:
+   *  a fire 3.92 min from a 3.90-min station must not become "covered" by a reload). Absent while no link is
+   *  congested (the times are the free-flow ones then) */
+  siren?: { sig: string; t?: Float32Array };
+  /** the early-game plant grace is over: the city had a funded fire station, or EMERG_PLANT_GRACE_DAYS passed */
+  plantGraceOver?: boolean;
 }
 
 /** generated kinds (daily Poisson draw over monthly candidate weights) */
@@ -699,9 +730,11 @@ export class EmergencySystem implements SimSystem {
   private ownG = new RoadGraph();
   /** the network changed since ownG was built */
   private ownDirty = true;
-  /** graph version the node-indexed data were derived for, and the epoch (bumped on every graph / version change) */
+  /** graph version the node-indexed data were derived for, and the epoch (bumped whenever the graph's content changes) */
   private gVer = -1;
   private gEpoch = 0;
+  /** content signature (graphSig) of that graph: a rebuild of the very same network keeps every node-indexed datum */
+  private gSig = '';
   /** traffic's graph version at the last network edit: that graph misses the edit until traffic rebuilds it */
   private staleVer = -1;
   /** last day whose incidents were processed (a fire lit before today's processing burns a day sooner) */
@@ -776,7 +809,12 @@ export class EmergencySystem implements SimSystem {
       sim.events.on('networkChanged', () => this.markNet()),
       sim.events.on('terrainChanged', () => this.markNet()),
       sim.events.on('layerUpdated', (k) => {
-        if (k === 'traffic') this.tmDirty = true;
+        if (k !== 'traffic') return;
+        this.tmDirty = true;
+        // refresh the siren times (and their saved copy, Persist.siren) right away while the graph is still the one the
+        // node data belong to: a save made before the next search then holds the times that search will use (the same
+        // values: traffic writes its layer right before this event)
+        if (this.g.version === this.gVer && this.g.N === sim.state.size && this.g.n > 0) this.ensureTimes(sim.state);
       }),
       sim.events.on('buildingAdded', (b) => this.onBuildingEvent(b)),
       sim.events.on('buildingRemoved', (b) => this.onBuildingEvent(b)),
@@ -790,7 +828,9 @@ export class EmergencySystem implements SimSystem {
     ];
     this.load(st);
     this.ownDirty = true;
-    this.gVer = -1; // re-derive the node-indexed data even when the graph object is the same
+    // re-derive the node-indexed data even when the graph object (or its content) is the same
+    this.gVer = -1;
+    this.gSig = '';
     this.staleVer = -1;
     this.stDirty = true;
     this.tmDirty = true;
@@ -800,8 +840,22 @@ export class EmergencySystem implements SimSystem {
     this.optCache.clear();
     this.ensureGraph(st);
     this.refreshStations(sim);
-    // the stations of a loaded game are the ones its incidents already saw: continue the saved station version
+    // the stations of a loaded game are the ones its incidents already saw: continue the saved station version ...
     if (typeof this.p.stVer === 'number') this.stVer = this.p.stVer;
+    // ... unless the network changed after the original's road graph was built (an edit saved before traffic rebuilt
+    // its graph): this graph already has the edit, so the waiting incidents retry now (the original does once its
+    // graph catches up)
+    if (typeof this.p.gSig === 'string' && this.p.gSig !== this.gSig) this.stVer++;
+    // the siren times the original's searches use (Persist.siren), when they belong to this very graph: the loaded
+    // game decides exactly like the original until its own traffic layer updates
+    const sv = this.p.siren;
+    if (sv && sv.sig === this.gSig && (!sv.t || sv.t.length === this.g.n)) {
+      const n = this.g.n;
+      if (this.tm.length < n) this.tm = new Float32Array(n + (n >> 3) + 16);
+      this.tm.set(sv.t ?? this.g.t0.subarray(0, n));
+      this.tmDirty = false;
+      this.tmVer = this.gEpoch;
+    }
     if (!this.restoreWeights(st)) {
       this.p.genBuild = undefined;
       this.buildWeights(sim);
@@ -870,6 +924,10 @@ export class EmergencySystem implements SimSystem {
       const gb = raw.genBuild;
       // a pass saved with another slice count is dropped (the saved weights of the last complete pass stay in use)
       if (gb && typeof gb === 'object' && gb.n === GEN_SLICES && Array.isArray(gb.acc) && gb.acc.length === 4 && gb.acc.every((a) => Array.isArray(a))) p.genBuild = gb;
+      if (typeof raw.gSig === 'string') p.gSig = raw.gSig;
+      const sv = raw.siren;
+      if (sv && typeof sv === 'object' && typeof sv.sig === 'string' && (sv.t === undefined || sv.t instanceof Float32Array)) p.siren = sv.t ? { sig: sv.sig, t: sv.t } : { sig: sv.sig };
+      if (raw.plantGraceOver === true) p.plantGraceOver = true;
     }
     this.p = p;
     this.rng = new RNG(((st.config.seed ^ 0x3e41c) >>> 0) || 1);
@@ -924,6 +982,7 @@ export class EmergencySystem implements SimSystem {
   private persist(): void {
     this.p.rng = this.rng.state;
     this.p.stVer = this.stVer;
+    this.p.gSig = this.gSig;
     this.saveResp();
     const sd = this.sim?.state.systemData;
     if (sd && sd.emergency !== this.p) sd.emergency = this.p;
@@ -962,6 +1021,12 @@ export class EmergencySystem implements SimSystem {
     if (g === this.g && g.version === this.gVer) return false;
     this.g = g;
     this.gVer = g.version;
+    const sig = graphSig(g);
+    // rebuilt with the very same road network (traffic's rebuild after a load's 'reset', a subway or rail edit): node
+    // ids and every node-indexed datum stay valid — no retry wave, no layer refresh, so a loaded game keeps the
+    // original's dispatch decisions and scheduler work
+    if (sig === this.gSig) return false;
+    this.gSig = sig;
     this.gEpoch++;
     this.stVer++; // uncovered incidents retry on the new graph
     this.optCache.clear();
@@ -987,6 +1052,7 @@ export class EmergencySystem implements SimSystem {
     if (this.tm.length < n) this.tm = new Float32Array(n + (n >> 3) + 16);
     const traffic = st.traffic, cellOf = g.cellOf, cap = g.cap, t0 = g.t0, tm = this.tm;
     const A = BPR_ALPHA, MAXF = BPR_MAX_FACTOR, K = EMERG_SIREN_CONG;
+    let free = true;
     for (let v = 0; v < n; v++) {
       const c = cap[v];
       const r = c > 0 ? traffic[cellOf[v]] / c : 0;
@@ -994,7 +1060,10 @@ export class EmergencySystem implements SimSystem {
       let f = 1 + A * r2v * r2v;
       if (f > MAXF) f = MAXF;
       tm[v] = t0[v] * (1 + K * (f - 1));
+      if (free && tm[v] !== t0[v]) free = false;
     }
+    // the saved copy a loaded game decides with (Persist.siren; free-flow times need no copy)
+    this.p.siren = free ? { sig: this.gSig } : { sig: this.gSig, t: tm.slice(0, n) };
   }
 
   private refreshStations(sim: Simulation): void {
@@ -1213,7 +1282,9 @@ export class EmergencySystem implements SimSystem {
     return found >= 0 ? this.extractPath(found).cells : null;
   }
 
-  /** dispatch from the fastest station with a free unit ("Send nearest" / bot) */
+  /** dispatch from the fastest station with a free unit ("Send nearest" / bot), for every responder the incident still
+   *  misses (primary first). The result is the first dispatch (`responder`); `missing` lists the needed responders no
+   *  free unit could be sent for (an industrial accident's fire truck when only an ambulance can go) */
   dispatchBest(sim: Simulation, incidentId: number): DispatchResult {
     const inc = this.byId.get(incidentId);
     if (!inc) return { ok: false, reason: 'This emergency is already over' };
@@ -1222,23 +1293,29 @@ export class EmergencySystem implements SimSystem {
       return { ok: false, reason: this.onSceneAny(inc) ? 'Responders are already on scene' : 'Help is already on the way' };
     }
     const opts = this.dispatchOptions(sim, incidentId).filter((o) => o.free > 0 && Number.isFinite(o.etaMin));
-    if (!opts.length) return { ok: false, reason: `No free ${RESPONDER_UNIT[INCIDENT_RESPONDERS[inc.kind][0]][0]} can reach this place` };
-    let res: DispatchResult = { ok: false, reason: 'No free unit' };
-    let sentAny = false;
+    let res: DispatchResult | null = null;
+    const missingR: Responder[] = [];
     for (const r of INCIDENT_RESPONDERS[inc.kind]) {
       let missing = (inc.need[r] ?? 0) - this.assigned(inc, r);
+      if (missing <= 0) continue;
+      let sentR = false;
       for (const o of opts) {
         if (missing <= 0) break;
         if (o.responder !== r) continue;
         const d = this.dispatch(sim, incidentId, o.stationId, missing);
         if (d.ok) {
           missing -= d.sent ?? 1;
-          if (!sentAny) res = d;
-          sentAny = true;
+          res ??= { ...d, responder: r };
+          sentR = true;
         }
       }
+      if (!sentR) missingR.push(r);
     }
-    return res;
+    if (res) {
+      if (missingR.length) res.missing = missingR;
+      return res;
+    }
+    return { ok: false, reason: `No free ${RESPONDER_UNIT[missingR[0] ?? INCIDENT_RESPONDERS[inc.kind][0]][0]} can reach this place`, missing: missingR };
   }
 
   /** would an incident needing responder r at (x, z) be auto-dispatched now? (inspector / tests; no unit is sent) */
@@ -1528,6 +1605,9 @@ export class EmergencySystem implements SimSystem {
     this.vById.set(v.id, v);
     inc.units.push(v.id);
     this.out.set(s.id, (this.out.get(s.id) ?? 0) + 1);
+    // the incident counts as answered (auto / by the player), and its ETA is, by its primary responder: the ambulance of
+    // an industrial accident answers nothing while no fire truck is on its way
+    if (s.responder !== INCIDENT_RESPONDERS[inc.kind][0]) return v;
     const eta = r2(T + s.turnout / EMERG_DAYS_PER_MIN);
     if (inc.etaMin === undefined || inc.state === 'uncovered' || inc.state === 'queued' || eta < inc.etaMin) inc.etaMin = eta;
     if (inc.answered === 0) {
@@ -1543,7 +1623,16 @@ export class EmergencySystem implements SimSystem {
 
   private afterDispatch(sim: Simulation, inc: Incident): void {
     const wasWaiting = inc.state === 'uncovered' || inc.state === 'queued';
-    if (inc.state !== 'onScene') inc.state = this.onSceneAny(inc) ? 'onScene' : 'dispatched';
+    const primary = INCIDENT_RESPONDERS[inc.kind][0];
+    if (wasWaiting && this.assigned(inc, primary) === 0) {
+      // only a supporting responder was sent (the ambulance of an industrial accident or a collapse): the incident keeps
+      // waiting for its primary one — state, reason, note and the player's prompt (manualPossible / canSend) stay, so
+      // the banner and LIVE mode stay until a fire truck is on its way (the plant still ignites without one)
+      this.writeStats(sim.state);
+      return;
+    }
+    // the incident's state follows its primary responder: on scene once one of its units got there
+    if (inc.state !== 'onScene') inc.state = this.onSceneCount(inc, primary) > 0 ? 'onScene' : 'dispatched';
     inc.reason = undefined;
     inc.note = '';
     inc.manualPossible = false;
@@ -1715,8 +1804,9 @@ export class EmergencySystem implements SimSystem {
         continue;
       }
       if (!primary) continue;
-      // the player's call: LIVE mode only when a unit can still arrive before the deadline
-      const manualPossible = inTime;
+      // the player's call: LIVE mode only while a dispatch still changes the outcome — a free unit can arrive before the
+      // deadline, sent before the window closes (an industrial accident: before the plant ignites)
+      const manualPossible = inTime && now < dispatchWindowEnd(inc) - EPS;
       const canSend = !!freeAny;
       inc.bestEta = Number.isFinite(muEta) ? r2(muEta) : undefined;
       const unit = RESPONDER_UNIT[r];
@@ -1752,6 +1842,8 @@ export class EmergencySystem implements SimSystem {
         this.setUncovered(sim, inc, 'noStation', false, false, `No ${RESPONDER_STATION[r]} can reach this place by road`);
         inc.retry = day + 5;
       }
+      // an industrial accident nobody sent a fire truck to ignites its plant when its window closes: try again before
+      if (inc.kind === 'industrial') inc.retry = Math.min(inc.retry, Math.max(day + 1, dispatchWindowEnd(inc) - 1));
     }
     inc.stVer = this.stVer;
     if (sentAny) this.afterDispatch(sim, inc);
@@ -1843,7 +1935,7 @@ export class EmergencySystem implements SimSystem {
       // a player dispatch stops mattering (LIVE mode ends) once even the nearest free unit cannot make it any more
       for (const inc of this.list) {
         if (!inc.manualPossible || inc.bestEta === undefined || !(inc.state === 'uncovered' || inc.state === 'queued')) continue;
-        if (inc.bestEta > (inc.deadline - st.day) / EMERG_DAYS_PER_MIN + EPS) inc.manualPossible = false;
+        if (inc.bestEta > (inc.deadline - st.day) / EMERG_DAYS_PER_MIN + EPS || st.day >= dispatchWindowEnd(inc) - EPS) inc.manualPossible = false;
       }
       // expire effects
       if (this.p.effects.length) this.p.effects = this.p.effects.filter((e) => e.until > st.day);
@@ -2209,7 +2301,9 @@ export class EmergencySystem implements SimSystem {
       const lim = home ? Math.max(inc.grace, home.range * EMERG_DAYS_PER_MIN + home.turnout) : inc.grace;
       if (v.arrive > inc.start + lim + EPS) m.late++;
     }
-    if (inc.state !== 'resolved' && inc.state !== 'failed') inc.state = 'onScene';
+    // (a supporting unit on scene first — an industrial accident's ambulance — leaves the incident waiting for / expecting
+    // its primary responder)
+    if (r === primary && inc.state !== 'resolved' && inc.state !== 'failed') inc.state = 'onScene';
     if (first) this.emit(sim, inc, 'arrived');
     // medical: patient outcome at the first ambulance
     if (inc.kind === 'medical' && r === 'medical' && firstOfR) {
@@ -2924,6 +3018,28 @@ function savedEffects(st: CityState): { boosts: CrimeBoost[]; polls: EmergencyPo
   const raw = st.systemData.emergency as Partial<Persist> | undefined;
   if (!raw || typeof raw !== 'object' || raw.v !== 1) return { boosts: [], polls: [] };
   return effectsOf(Array.isArray(raw.incidents) ? raw.incidents : [], Array.isArray(raw.effects) ? raw.effects : [], st.day);
+}
+
+/**
+ * Content signature of a road graph: map size, node cells and types, every directed link. RoadGraph.build is a pure
+ * function of the network, so equal signatures mean the identical graph with the identical node ids (two independent
+ * 32-bit hashes; O(5 n), only when traffic rebuilt its graph).
+ */
+function graphSig(g: RoadGraph): string {
+  const n = g.n, cellOf = g.cellOf, type = g.type, fwd = g.fwd;
+  let h1 = 0x811c9dc5 | 0, h2 = 0x2545f491 | 0;
+  for (let v = 0; v < n; v++) {
+    const a = cellOf[v] * 16 + type[v];
+    h1 = Math.imul(h1 ^ a, 0x01000193);
+    h2 = Math.imul(h2 + a, 0x5bd1e995) ^ (h2 >>> 15);
+    const b = v * 4;
+    for (let k = 0; k < 4; k++) {
+      const e = fwd[b + k] + 2;
+      h1 = Math.imul(h1 ^ e, 0x01000193);
+      h2 = Math.imul(h2 + e, 0x5bd1e995) ^ (h2 >>> 15);
+    }
+  }
+  return `${g.N}:${n}:${(h1 >>> 0).toString(36)}:${(h2 >>> 0).toString(36)}`;
 }
 
 /** road nodes around a cell without a building: its own node (road cell) + 4-neighbour road nodes */

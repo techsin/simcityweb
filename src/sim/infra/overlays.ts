@@ -22,8 +22,8 @@ import { COHORT_BASE, COVERAGE_FALLBACK, TAP_SAFE, WORKFORCE_RATIO } from '../ec
 import { cohortShares, demographicsSim } from '../economy/demographics';
 import { truckVolumeOf } from './transportFacilities';
 import type { UtilitiesSystem } from './utilities';
-import { emergencyOf } from './emergency';
-import { EDU_LEGACY_W, EMERG_RMAX, EMERG_SLOW_MARGIN } from './params';
+import { emergencyOf, stationRange } from './emergency';
+import { EDU_LEGACY_W, EMERG_DAYS_PER_MIN, EMERG_GRACE, EMERG_RMAX, EMERG_SLOW_MARGIN, FIRE_BURN_DAYS } from './params';
 import { buildingList } from './common';
 
 export type OverlayPalette = 'bad' | 'good' | 'binary' | 'diverging';
@@ -74,8 +74,29 @@ export const EMG_FIRE = 0, EMG_POLICE = 1, EMG_MEDICAL = 2;
  *  reach, < -3 manual), RESP_NONE gets its own colour (encoded EMG_NONE_T) */
 export const EMG_SPAN = 12;
 export const EMG_NONE_T = 0.02;
-/** slack (minutes) below which a player dispatch is far off (the "Just out of reach" band is -EMG_NEAR..0) */
+/** slack (minutes) below which a player dispatch is far off (the "Just out of reach" band is -EMG_NEAR..0; the render
+ *  ramp draws its amber / red boundary at encodeSlack(-EMG_NEAR)) */
 export const EMG_NEAR = 3;
+/**
+ * FIRE (final fixes P2): a fire burns down FIRE_BURN_DAYS − 1 days after its first burn step (emergency.ts
+ * fireDeadline), so a truck dispatched by hand from beyond a station's auto range arrives in time only within
+ * FIRE_WINDOW_MIN minutes of the alarm — at most FIRE_WINDOW_MIN − 3.9 ≈ 1.1 minutes beyond a fire station's range
+ * (stationRange, powered: no extra turnout); an industrial accident nobody reaches ignites after EMERG_GRACE.industrial
+ * days. The Fire variant's "Just out of reach" band is that window (emgNearSlack): its raster maps the window onto the
+ * ramp's amber band (encodeSlackFor), everything farther onto red. Police / medical calls wait 16–30 min: −EMG_NEAR.
+ */
+export const FIRE_WINDOW_MIN = (FIRE_BURN_DAYS - 1) / EMERG_DAYS_PER_MIN;
+let fireNearSlack = NaN;
+/** the slack (minutes, < 0) at the amber / red boundary of an Emergency variant: below it a dispatch is far off
+ *  (fire: the truck cannot arrive before the building burns down) */
+export function emgNearSlack(variant = -1): number {
+  if (resolveVariant(Overlay.Emergency, variant) !== EMG_FIRE) return -EMG_NEAR;
+  if (fireNearSlack === fireNearSlack) return fireNearSlack;
+  const def = getDef('civ_fire_station');
+  const lim = Math.max(-EMG_NEAR, Math.min(-0.05, -(FIRE_WINDOW_MIN - stationRange(def, 'fire'))));
+  if (def) fireNearSlack = lim; // (catalog not loaded yet: not cached)
+  return lim;
+}
 /** tap-water quality raster: served cells encode 0.1 + 0.9 x quality (0 = no water service) */
 export const TAP_T0 = 0.1;
 /** demographics rasters: residential cells encode DEMO_T0 + (1 - DEMO_T0) x clamp01(share / (2 x reference share)) */
@@ -108,7 +129,7 @@ interface Entry {
   dirty: boolean;
   deps: readonly string[];
   /** painted per building (Demographics): buildings added / removed / changed since the build (Cache.bver) make it
-   *  stale on the next sim day — at most one rebuild a day, however fast the city grows */
+   *  stale PER_BUILDING_DAYS sim days after the build — at most one rebuild a week, however fast the city grows */
   perBuilding: boolean;
   bver: number;
 }
@@ -126,9 +147,16 @@ function cacheOf(st: CityState): Cache {
   if (!c) caches.set(st, (c = { subscribed: false, entries: new Map(), bver: 0 }));
   return c;
 }
+/**
+ * a per-building raster (Demographics) follows building changes at most every PER_BUILDING_DAYS sim days (final fixes
+ * A3: a growing city changes buildings every day, and the daily rebuild + texture refresh cost 27–44 ms of main-thread
+ * CPU per real second at ultra speed; at normal speed a new or bulldozed home shows within ~3.5 s). Its layer's own
+ * event ('demographics', every 30 days) still rebuilds it at once.
+ */
+export const PER_BUILDING_DAYS = 7;
 /** the cached raster must be rebuilt before it is read (see derived) */
 function entryStale(c: Cache, e: Entry, st: CityState): boolean {
-  return e.dirty || (!c.subscribed && e.day !== st.day) || (e.perBuilding && e.bver !== c.bver && e.day !== st.day);
+  return e.dirty || (!c.subscribed && e.day !== st.day) || (e.perBuilding && e.bver !== c.bver && (st.day - e.day >= PER_BUILDING_DAYS || st.day < e.day));
 }
 const keyOf = (o: Overlay, v: number) => o * 64 + v;
 
@@ -140,6 +168,8 @@ export function attachOverlays(sim: Simulation): () => void {
   const c = cacheOf(sim.state);
   c.sim = sim;
   c.subscribed = true;
+  // the Emergency view's scratch arrays up front (final fixes A3: the first open of the view allocated ~1.3 MB on 256²)
+  reserveEmergencyScratch(sim.state.cells);
   const off = sim.events.on('layerUpdated', (name) => markOverlaysDirty(sim.state, name));
   // per-building rasters (Demographics) follow the buildings, not only their 30-day 'demographics' event
   const bump = () => { const cc = caches.get(sim.state); if (cc) cc.bver++; };
@@ -149,6 +179,7 @@ export function attachOverlays(sim: Simulation): () => void {
     cc.sim = sim;
     cc.subscribed = true;
     cc.entries.clear();
+    reserveEmergencyScratch(sim.state.cells);
   });
   return () => {
     off();
@@ -305,6 +336,18 @@ export function encodeSlack(slack: number): number {
   const s = slack < -EMG_SPAN ? -EMG_SPAN : slack > EMG_SPAN ? EMG_SPAN : slack;
   return 0.08 + (0.92 * (s + EMG_SPAN)) / (2 * EMG_SPAN);
 }
+/** the Fire variant's slack remap: lim..0 (the manual window, emgNearSlack) -> -EMG_NEAR..0, -EMG_SPAN..lim ->
+ *  -EMG_SPAN..-EMG_NEAR (identity for slack >= 0) */
+function remapNear(s: number, lim: number): number {
+  if (s >= 0) return s;
+  return s >= lim ? s * (EMG_NEAR / -lim) : -EMG_NEAR + (s - lim) * ((EMG_SPAN - EMG_NEAR) / (EMG_SPAN + lim));
+}
+/** the Emergency raster value of a slack for a variant (Fire: its manual window fills the ramp's amber band) */
+export function encodeSlackFor(slack: number, variant = -1): number {
+  if (slack <= RESP_NONE + 0.5) return EMG_NONE_T;
+  const v = resolveVariant(Overlay.Emergency, variant);
+  return encodeSlack(v === EMG_FIRE ? remapNear(slack, emgNearSlack(v)) : slack);
+}
 
 function respLayer(st: CityState, variant: number): Float32Array {
   return variant === EMG_POLICE ? st.respPolice : variant === EMG_MEDICAL ? st.respMedical : st.respFire;
@@ -321,6 +364,14 @@ function respReady(st: CityState): boolean {
 /** slack of an encoded Emergency value (encodeSlack's inverse on -EMG_SPAN .. +EMG_SPAN) */
 export function decodeSlack(t: number): number {
   return ((t - 0.08) / 0.92) * 2 * EMG_SPAN - EMG_SPAN;
+}
+/** slack of a variant's raster value (encodeSlackFor's inverse) */
+export function decodeSlackFor(t: number, variant = -1): number {
+  const s = decodeSlack(t);
+  const v = resolveVariant(Overlay.Emergency, variant);
+  if (v !== EMG_FIRE || s >= 0) return s;
+  const lim = emgNearSlack(v);
+  return s >= -EMG_NEAR ? s * (-lim / EMG_NEAR) : lim + (s + EMG_NEAR) * ((EMG_SPAN + lim) / (EMG_SPAN - EMG_NEAR));
 }
 /** empty land, water and rail beside no road node read the emergency land fill's floor (-EMERG_RMAX): nothing there
  *  calls for help until a lot is built, and a lot faces its nearest road — such cells show the nearest road / lot's
@@ -400,7 +451,7 @@ export function emergencyReachAt(st: CityState, i: number, variant = -1): Emerge
   // land / water / rail beside no road node: the raster's fill from the nearest road / lot (buildEmergency)
   const raw = overlayLayer(st, Overlay.Emergency, v)!.data[i];
   if (raw < EMG_FLOOR_T - 2e-4) return { slack: -EMERG_RMAX, why: 'noRoad' };
-  const d = decodeSlack(raw);
+  const d = decodeSlackFor(raw, v);
   return d > floor ? { slack: d, why: 'land' } : { slack: -EMERG_RMAX, why: 'far' };
 }
 
@@ -450,21 +501,21 @@ function buildEmergency(st: CityState, variant: number, out: Float32Array): void
   if (!respReady(st)) { out.fill(0); return; }
   const L = respLayer(st, variant);
   const C = st.cells, N = st.size;
-  if (emgQueue.length < C) {
-    emgQueue = new Int32Array(C); emgQx = new Uint16Array(C); emgDepth = new Uint8Array(C);
-    emgOpen = new Int32Array(C); emgFloorB = new Int32Array(C);
-  }
+  reserveEmergencyScratch(C);
   const dep = emgDepth, open = emgOpen;
   dep.fill(0, 0, C);
   emgPass = (emgPass % 0xfffffff0) + 1;
   const floor = -EMERG_RMAX + 1e-3, none = RESP_NONE + 0.5;
-  emgEncode(L, out, st.building, st.network, dep, open, emgFloorB, C, floor, none, 0.92 / (2 * EMG_SPAN), encodeSlack(0), EMG_NONE_T, EMG_INERT);
+  // (Fire: the manual window lim..0 onto the amber band, encodeSlackFor; police / medical: no remap)
+  const fire = variant === EMG_FIRE, lim = fire ? emgNearSlack(EMG_FIRE) : -EMG_NEAR;
+  emgEncode(L, out, st.building, st.network, dep, open, emgFloorB, C, floor, none, 0.92 / (2 * EMG_SPAN), encodeSlack(0), EMG_NONE_T, EMG_INERT,
+    fire, lim, EMG_NEAR / -lim, (EMG_SPAN - EMG_NEAR) / (EMG_SPAN + lim));
   const nOpen = EMG_COUNT[0], nFloorB = EMG_COUNT[1];
   // building cells at the floor: the footprint's best cell (a source), else inert at the floor
   for (let k = 0; k < nFloorB; k++) {
     const i = emgFloorB[k];
     const s = buildingBest(st, L, st.building[i]);
-    if (s > floor) out[i] = encodeSlack(s);
+    if (s > floor) out[i] = encodeSlackFor(s, variant);
     else { out[i] = s <= none ? EMG_NONE_T : EMG_FLOOR_T; dep[i] = EMG_INERT; }
   }
   if (nOpen === 0) return;
@@ -476,14 +527,27 @@ function buildEmergency(st: CityState, variant: number, out: Float32Array): void
 /** emgEncode's counts: [targets, building cells at the floor] */
 const EMG_COUNT = new Int32Array(2);
 let emgFloorB = new Int32Array(0);
-/** (1) sources encoded (encodeSlack(s) = a + k s clamped to 0.08 .. 1, a = encodeSlack(0): doubles only in the loop),
+/** the Emergency raster's scratch arrays for maps of up to C cells (allocated once: attachOverlays / first build) */
+function reserveEmergencyScratch(C: number): void {
+  if (emgQueue.length >= C) return;
+  emgQueue = new Int32Array(C); emgQx = new Uint16Array(C); emgDepth = new Uint8Array(C);
+  emgOpen = new Int32Array(C); emgFloorB = new Int32Array(C);
+}
+/** (1) sources encoded (encodeSlack(s) = a + k s clamped to 0.08 .. 1, a = encodeSlack(0): doubles only in the loop;
+ *  `remap` (Fire): encodeSlackFor's remap of a negative slack, kn / kf its slopes inside / beyond lim),
  *  RESP_NONE cells inert, targets (out -1) and floor buildings listed */
 function emgEncode(L: Float32Array, out: Float32Array, bld: Int32Array, net: Uint8Array, dep: Uint8Array, open: Int32Array, floorB: Int32Array,
-  C: number, floor: number, none: number, k: number, a: number, noneT: number, inert: number): void {
+  C: number, floor: number, none: number, k: number, a: number, noneT: number, inert: number, remap: boolean, lim: number, kn: number, kf: number): void {
   let n = 0, m = 0;
+  const near = -EMG_NEAR;
   for (let i = 0; i < C; i++) {
     const s = L[i];
-    if (s > floor) { const v = a + k * s; out[i] = v > 1 ? 1 : v < 0.08 ? 0.08 : v; continue; }
+    if (s > floor) {
+      const u = remap && s < 0 ? (s >= lim ? s * kn : near + (s - lim) * kf) : s;
+      const v = a + k * u;
+      out[i] = v > 1 ? 1 : v < 0.08 ? 0.08 : v;
+      continue;
+    }
     if (s <= none) { out[i] = noneT; dep[i] = inert; continue; }
     if (bld[i] >= 0) { floorB[m++] = i; continue; }
     const c = net[i];
@@ -841,6 +905,8 @@ export interface OverlayReadout {
 }
 
 const pctS = (v: number) => `${Math.round(v * 100)}%`;
+/** minutes for the Emergency readout: one decimal, '< 0.1 min' below 0.05 (never "by 0.0 min") */
+const minText = (m: number) => (Math.abs(m) < 0.05 ? '< 0.1 min' : `${Math.abs(m).toFixed(1)} min`);
 const toneGood = (g: number): OverlayReadout['tone'] => (g >= 0.66 ? 'good' : g >= 0.33 ? 'warn' : 'bad');
 const RESPONDER_NOUN = ['fire station', 'police station', 'clinic or hospital'];
 
@@ -865,19 +931,28 @@ export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, 
           : { text: 'No road nearby', tone: 'bad', sub: noLots ? `${noLots}: no lots here` : 'Empty land: lots here need a road first' };
       }
       const s = r.slack;
+      // the "Just out of reach" band ends at emgNearSlack (fire: the burn-down window — beyond it no truck makes it)
+      const fire = v === EMG_FIRE, near = emgNearSlack(v);
+      const tooFar = fire
+        ? `Too far — a fire here burns down before a truck can arrive (an industrial accident ignites within ${EMERG_GRACE.industrial} days); build a fire station closer`
+        : '';
       if (noLots) {
         const sub = `${noLots}: no lots here — the nearest road's reach`;
-        if (s >= 0) return { text: `Auto-dispatch · ${s.toFixed(1)} min to spare`, tone: 'good', sub };
+        if (s >= 0) return { text: `Auto-dispatch · ${minText(s)} to spare`, tone: 'good', sub };
         if (r.why === 'far') return { text: `Out of reach by ${EMERG_SLOW_MARGIN}+ min`, tone: 'bad', sub };
-        return s >= -EMG_NEAR ? { text: `Just out of reach by ${(-s).toFixed(1)} min`, tone: 'warn', sub } : { text: `Out of reach by ${(-s).toFixed(1)} min`, tone: 'bad', sub };
+        return s >= near ? { text: `Just out of reach by ${minText(-s)}`, tone: 'warn', sub } : { text: `Out of reach by ${minText(-s)}`, tone: 'bad', sub };
       }
       // empty land beside no road: the drawn value is the nearest road / lot's reach (EMG_DILATE), say so
       const empty = r.why === 'land';
       const land = empty ? 'Empty land — a lot here: ' : '';
-      if (s >= 0) return { text: `Auto-dispatch · ${s.toFixed(1)} min to spare`, tone: 'good', sub: `${land}${empty ? 'incidents' : 'Incidents'} here become statistics` };
-      if (r.why === 'far') return { text: `Out of reach by ${EMERG_SLOW_MARGIN}+ min`, tone: 'bad', sub: 'Major emergencies here wait for you to dispatch — build a station closer' };
-      if (s >= -EMG_NEAR) return { text: `Just out of reach by ${(-s).toFixed(1)} min`, tone: 'warn', sub: `${land}${empty ? 'major' : 'Major'} emergencies wait for your dispatch; minor ones get a slower unit` };
-      return { text: `Out of reach by ${(-s).toFixed(1)} min`, tone: 'bad', sub: `${land}${empty ? 'you' : 'You'} dispatch — build a station closer` };
+      if (s >= 0) return { text: `Auto-dispatch · ${minText(s)} to spare`, tone: 'good', sub: `${land}${empty ? 'incidents' : 'Incidents'} here become statistics` };
+      if (r.why === 'far') return { text: `Out of reach by ${EMERG_SLOW_MARGIN}+ min`, tone: 'bad', sub: fire ? `${land}${tooFar}` : 'Major emergencies here wait for you to dispatch — build a station closer' };
+      if (s >= near) {
+        return fire
+          ? { text: `Just out of reach by ${minText(-s)}`, tone: 'warn', sub: `${land}${empty ? 'fires' : 'Fires'} wait for your dispatch — a truck sent at once still makes it` }
+          : { text: `Just out of reach by ${minText(-s)}`, tone: 'warn', sub: `${land}${empty ? 'major' : 'Major'} emergencies wait for your dispatch; minor ones get a slower unit` };
+      }
+      return { text: `Out of reach by ${minText(-s)}`, tone: 'bad', sub: fire ? `${land}${tooFar}` : `${land}${empty ? 'you' : 'You'} dispatch — build a station closer` };
     }
     case Overlay.Demographics: {
       const bid = st.building[i];

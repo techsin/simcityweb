@@ -414,10 +414,11 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     let jobCap = t.civicJobCap;
     for (let d = DevType.CS1; d <= DevType.IHT; d++) jobCap += t.jobCapBuilt[d];
     const connected = st.neighborConnections.length > 0;
-    // regional exchange: the region layer (src/region/regionEffects.ts) provides systemData.regionJobs
-    const regional = typeof sd.regionJobs === 'number'
-      ? Math.max(0, sd.regionJobs as number)
-      : Math.min(jobCap * REGION_COMMUTERS_MAX_SHARE, REGION_COMMUTERS_BASE + REGION_COMMUTERS_FRAC * W) * (connected ? 1 : REGION_COMMUTERS_ISOLATED);
+    // regional exchange: the region layer (src/region/regionEffects.ts) provides systemData.regionJobs (sized from the
+    // neighbours' connected job surplus); the share cap and the isolation factor apply to it as to the default volume
+    // (final fixes F1: the region number used to bypass both)
+    const regionVol = typeof sd.regionJobs === 'number' ? Math.max(0, sd.regionJobs as number) : REGION_COMMUTERS_BASE + REGION_COMMUTERS_FRAC * W;
+    const regional = Math.min(jobCap * REGION_COMMUTERS_MAX_SHARE, regionVol) * (connected ? 1 : REGION_COMMUTERS_ISOLATED);
     const fillable = Math.min(jobCap, W + regional);
     rt.jobFill = jobCap > 0 ? fillable / jobCap : 0;
     // analytic model: filled local jobs (civic + C/I, some held by regional commuters) + jobs in the region
