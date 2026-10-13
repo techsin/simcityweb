@@ -691,12 +691,12 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     albedo = mix(albedo, lum0 * vec3(0.21, 0.434, 0.077), blK);
     float lum = lum0 - lum0 * 0.6394 * blK;
     bool bare = pr < uSeason.y;
-    float h = fract(pr * 13.7) + (n - 0.5) * 0.3;
+    float h = fract(pr * 13.7) + (n - 0.5) * 0.12;
     // bare: a grey-brown tangle of lighter twig strands (a fine texture that fades to its average with distance), a
     // little darker than the kit trees' twig sprays (not a charcoal lump); autumn: orange -> red -> yellow per tree
     vec3 sc = bare ? vec3(1.15, 0.93, 0.78) * (0.62 + 0.9 * mix(0.42, clamp(nS * 2.86 - 1.14, 0.0, 1.0), twF))
       : mix(mix(vec3(2.55, 0.62, 0.08), vec3(3.3, 0.34, 0.12), clamp(h * 7.14 - 2.71, 0.0, 1.0)), vec3(2.5, 1.7, 0.1), clamp(h * 8.33 - 5.83, 0.0, 1.0));
-    float sK = bare || pr + (n - 0.5) * 0.12 < uSeason.y + uSeason.x ? seasK : 0.0;
+    float sK = bare || pr + (n - 0.5) * 0.05 < uSeason.y + uSeason.x ? seasK : 0.0;
     albedo = mix(albedo, lum * sc, sK);
     // green crown leaves (not recoloured above; blossom / autumn / twig colours, red >= green, are left alone): fresh
     // yellow-green in spring (deciduous); in winter evergreens turn a darker, cooler green and the deciduous leaves still

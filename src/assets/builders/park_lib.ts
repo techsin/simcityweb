@@ -677,8 +677,10 @@ function lobe(b: ModelBuilder, rng: RNG, c: V3, r: V3, nc: V3, color: ColorLike)
  * ~55% of the crown (radius rx / half-height ry around c: inside the leaf lobes, which hide them in leaf), each tip and
  * a leader fanning out 4 slender double-sided twig spikes (pattern 5, floor = the lobes' floor) to about the crown's
  * size. No rng draws (layouts unchanged): the shape is hashed from the tree position. ~32-50 tris.
+ * Other builders' lot trees can get the same winter crown: paint the crown blob(s) Foliage pattern 1 with floor =
+ * 1 + a per-tree random in [0, 1) and call twigCrown with that floor (else bare lot crowns only thin out, materials.ts).
  */
-function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3, rx: number, ry: number, floor: number, bark: ColorLike, rT: number, o: { limbs?: number; twig?: ColorLike; upright?: number; spikes?: number } = {}): void {
+export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3, rx: number, ry: number, floor: number, bark: ColorLike, rT: number, o: { limbs?: number; twig?: ColorLike; upright?: number; spikes?: number } = {}): void {
   const hr = (i: number) => treeRand(x * 1.13 + i * 7.31 + 0.5, z * 0.97 - i * 3.17 + 0.25);
   const up = o.upright ?? 0, nl = o.limbs ?? 3, ns = o.spikes ?? 4;
   b.paint(bark, Surf.Wood);
