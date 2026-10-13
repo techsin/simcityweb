@@ -663,6 +663,10 @@ interface Persist {
   plantGraceOver?: boolean;
 }
 
+/** early-game grace: no thermal-plant / incinerator accidents (EMERG_PLANT_P) before the first funded fire station,
+ *  for at most the city's first three years */
+export const EMERG_PLANT_GRACE_DAYS = 3 * 360;
+
 /** generated kinds (daily Poisson draw over monthly candidate weights) */
 const GEN_KINDS = ['medical', 'crime', 'industrial', 'spill'] as const;
 type GenKind = (typeof GEN_KINDS)[number];
@@ -2051,10 +2055,14 @@ export class EmergencySystem implements SimSystem {
     const st = sim.state;
     const nb = Math.ceil(st.size / GEN_B);
     const zero = () => new Array<number>(nb * nb).fill(0);
+    // early-game grace (lead decisions 4 / 8): no accident at a thermal plant or incinerator before the city's first
+    // funded fire station, for at most its first EMERG_PLANT_GRACE_DAYS — a new town must not lose its only power plant
+    // to an accident nobody could answer. Over for good once a funded fire station existed at a month start (saved)
+    if (!this.p.plantGraceOver && (st.day >= EMERG_PLANT_GRACE_DAYS || this.stations.some((s) => s.responder === 'fire' && s.units > 0))) this.p.plantGraceOver = true;
     this.p.genBuild = {
       slice: 0,
       n: GEN_SLICES,
-      plantF: Math.fround(EMERG_PLANT_P * (1.5 - Math.min(1.2, fundingFactor(st, 'utilities')))),
+      plantF: this.p.plantGraceOver ? Math.fround(EMERG_PLANT_P * (1.5 - Math.min(1.2, fundingFactor(st, 'utilities')))) : 0,
       acc: [zero(), zero(), zero(), zero()],
     };
   }
