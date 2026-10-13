@@ -281,24 +281,27 @@ vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float lit
   float occ = mix(hF < mix(0.3, 0.12, hotel) ? 0.1 : (hF < 0.72 ? 0.75 : mix(1.15, 1.4, hotel)), 0.8 + 0.4 * hF, home);
   float occM = mix(mix(0.667, 0.854, hotel), 1.0, home);
   float secP = clamp(litP * occ, 0.0, 0.97);
-  // a lit unit (household at home / office section in use / open shop) has ~70-75% of its windows lit (shops 92%), a
-  // dark one a stray lamp in ~8%
-  float pOn = mix(mix(0.75, 0.7, home), 0.92, shop), pOff = mix(mix(0.08, 0.09, home), 0.12, shop);
+  // a lit unit (household at home / office section in use / open shop) has ~70% of its windows lit (shops 92%), a dark
+  // one a stray lamp in ~8%
+  float pOn = mix(0.7, 0.92, shop), pOff = mix(mix(0.08, 0.09, home), 0.12, shop);
   float pWin = mix(pOff, pOn, step(hU, secP));
   float winOn = step(hP, pWin);
   // per window lamp / curtain brightness (0.3 - 1.35, mean 0.825) and per unit brightness (0.5 - 1.5, mean 1): a wide
   // spread of bright and dim windows reads as sparkle, a narrow one as a cream checkerboard; shops evenly lit
   float winB = 0.825 + mix(1.05, 0.25, shop) * (fract(hP * 7.31 + 0.17) - 0.5);
   float unitB = 1.0 + mix(1.0, 0.3, shop) * (fract(hU * 31.7 + 0.13) - 0.5);
-  // expected brightness of the coarser levels (x 0.703 = 0.825 window brightness x 0.852 ceiling-gradient mean)
-  float eF = (pOff + (pOn - pOff) * secP) * 0.703;
+  // ceiling lights: brighter toward the top of the floor (mean 0.852), kept while the floors are resolved (the unit and
+  // floor levels keep that vertical contrast), their mean further away
+  float ceilG = 0.55 + 0.6 * clamp(fy * 1.43 - 0.21, 0.0, 1.0);
+  float gF = mix(0.852, ceilG, fF) * 0.825;
+  // expected brightness of the coarser levels (x 0.825 mean window brightness x the ceiling gradient / its mean)
+  float eF = (pOff + (pOn - pOff) * secP) * gF;
   float eA = (pOff + (pOn - pOff) * min(litP * occM, 0.97)) * 0.703;
   // block level: a share qB of the blocks lit at ~0.6 (a lit cluster of rooms), the rest dark; same mean as the facade
   float qB = clamp(eA * 1.65, 0.05, 1.0);
   float eB = step(hB, qB) * (eA / qB) * (0.6 + 0.8 * fract(hB * 17.3));
-  float eU = pWin * 0.703 * unitB;
-  // resolved windows: ceiling lights, brighter toward the top of the floor (mean 0.852)
-  float eP = winOn * winB * unitB * (0.55 + 0.6 * clamp(fy * 1.43 - 0.21, 0.0, 1.0));
+  float eU = pWin * gF * unitB;
+  float eP = winOn * winB * unitB * ceilG;
   float e = mix(mix(mix(mix(eA, eB, fB), eF, fF), eU, fU), eP, fP);
   // colour temperature per household (homes: mostly warm) / tenant (offices: 3 units per tenant, warm white to cool
   // white; hotels warm) / shop (per building) / lit block; the floor and facade levels use the kind's MEAN colour
