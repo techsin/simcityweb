@@ -35,12 +35,13 @@
  * up (lodDistance >= RING_MIN_LOD); low quality has neither the ring nor the edge band:
  *   - candidates are a pure function of the noise texture, the outer terrain and the seed (the map's own cells only
  *     reach the edge band), generated (and filled) in ~1 ms slices once the first frames after a load have built the
- *     map's chunks, on calm frames (still / drifting camera: no slice lands on a zoom, cut or orbit frame, see
- *     RING_CALM_*), at full density (a per-tree threshold picks the quality's subset), then faded in; a quality /
+ *     map's chunks, on calm frames (still or slowly drifting camera: no slice lands on a zoom, a cut or a fast pan /
+ *     orbit, see RING_CALM_*), at full density (a per-tree threshold picks the quality's subset), then faded in; a quality /
  *     density, season or map-cell change only refills (same budget); only a terrain edit on the map border regenerates
  *     the sectors on that side;
- *   - every sector's trees beyond lodDistance are ONE merged micro impostor mesh (one draw for the whole far ring;
- *     conifers carry an evergreen flag): the vertex shader thins it with the distance (per tree), fades it with the
+ *   - every sector's trees beyond lodDistance are ONE merged micro impostor mesh (one draw for the whole far ring,
+ *     4 tris per tree: the micro broadleaf's upper half, seen from high cameras only; conifers stretch it onto their
+ *     pyramid and carry an evergreen flag): the vertex shader thins it with the distance (per tree), fades it with the
  *     camera height and drops the sectors drawn by their near pair; a sector within lodDistance (camera near the map
  *     edge) draws its broadleaf / conifer impostor pair instead; hidden from low (street-level) cameras, where the
  *     city and the edge band hide it anyway; no shadows.
@@ -92,10 +93,10 @@ const RING_DELAY_FRAMES = 30;
 /** frames over which a freshly generated outer ring fades in (its density ramps up: no pop) */
 const RING_APPEAR_FRAMES = 45;
 /** the ring's slices run on calm frames: the camera moved at most RING_CALM_MOVE x its height above the ground (summed
- *  axis deltas) in each of the last RING_CALM_FRAMES frames (still / drifting, not zooming, cutting or orbiting; the
- *  frames right after a cut, when the city's LODs catch up, are skipped too); after RING_MAX_WAIT frames of waiting
- *  it runs anyway */
-const RING_CALM_MOVE = 0.004;
+ *  axis deltas) in each of the last RING_CALM_FRAMES frames (still or slowly drifting: not zooming, cutting, panning or
+ *  orbiting fast; the frames right after a cut, when the city's LODs catch up, are skipped too); after RING_MAX_WAIT
+ *  frames of waiting it runs anyway */
+const RING_CALM_MOVE = 0.001;
 const RING_CALM_FRAMES = 8;
 const RING_MAX_WAIT = 240;
 /** a nature model whose crown is at least this see-through (natureStats.open) has a see-through impostor */
@@ -665,7 +666,7 @@ export class TreeRenderer {
   private season: SeasonMix = { autumn: 0, bare: 0, blossom: 0 };
   private maxVariants = 3;
   private species: SpeciesDef[];
-  /** species weights scratch (pickSpecies) */
+  /** species weights scratch (speciesWeights / pickFrom) */
   private weights: number[] = [];
   private chunks: TreeChunk[] = [];
   /** chunk boxes (min x y z, max x y z per chunk) for the per-frame LOD selection */
@@ -917,7 +918,7 @@ export class TreeRenderer {
     }
     pairs.push([getMicroImpostorGeometries().broad, this.materialMerged, this.depthFor(false, false, false), true]);
     // (the merged far ring casts no shadow)
-    pairs.push([getMicroImpostorGeometries().broad, this.materialRing, null, true]);
+    pairs.push([getMicroImpostorGeometries().top, this.materialRing, null, true]);
     for (const [geo, mat, depth, color] of pairs) {
       if (!geo) continue;
       const m = new THREE.InstancedMesh(geo, mat, 1);
@@ -1184,11 +1185,6 @@ export class TreeRenderer {
     this.snapshotRingEdge();
     this.markAll();
     this.ringRefill = 0;
-  }
-
-  /** species index for a tree in cell (x, z) at height h (clustered patches, elevation / coast / slope preferences) */
-  private pickSpecies(x: number, z: number, h: number, slope: number, r: number, weights: number[]): number {
-    return this.pickFrom(weights, this.speciesWeights(x, z, h, slope, weights), r);
   }
 
   /** species weights of cell (x, z) at height h into `weights`; returns their total (the same for every tree of a
@@ -1630,8 +1626,8 @@ export class TreeRenderer {
       if (key !== ch.stateKey) this.applyLod(ch, key);
     }
     // outer ring: candidates / refills in a small time budget once the first frames after a load have built the map's
-    // chunks, on calm frames only (camera still or drifting for RING_CALM_FRAMES: zooms, cuts and orbits keep their
-    // frame time, and so do the catch-up frames after a cut); a camera that keeps moving gets its slices after
+    // chunks, on calm frames only (camera still or drifting for RING_CALM_FRAMES: zooms, cuts and fast pans / orbits
+    // keep their frame time, and so do the catch-up frames after a cut); a camera that keeps moving gets its slices after
     // RING_MAX_WAIT frames anyway. The merged far mesh is rebuilt (one upload) on a calm frame once its sectors are
     // done, then faded in
     this.ringFrames++;
@@ -1911,8 +1907,9 @@ export class TreeRenderer {
   /**
    * Candidate generation of the current sector, block by block (resumable inside a block row) until `end` (ms,
    * performance.now): per 10 m grid cell at most one tree at a jittered spot, kept with the forest probability
-   * (interpolated from the block corners; forest-free blocks skipped), no water / beaches, no shrubs / rocks (too small
-   * out there). Each candidate stores its density threshold (the uniform random over the probability), so any lower
+   * (interpolated from the block corners; forest-free blocks skipped, cells whose random exceeds the block's largest
+   * corner skipped before their spot is computed; species weights once per block), no water / beaches, no shrubs /
+   * rocks (too small out there). Each candidate stores its density threshold (the uniform random over the probability), so any lower
    * density is a subset. Returns true once the sector is complete (its meshes are then refilled).
    */
   private ringGenRows(end: number): boolean {
@@ -1943,10 +1940,16 @@ export class TreeRenderer {
         }
         const p00 = top[bi], p10 = top[bi + 1], p01 = bot[bi], p11 = bot[bi + 1];
         // (bilinear: never above the largest corner)
-        if (p00 <= 0.01 && p10 <= 0.01 && p01 <= 0.01 && p11 <= 0.01) continue;
+        const pmax = Math.max(p00, p10, p01, p11);
+        if (pmax <= 0.01) continue;
         const bx = gx0 + bi * BK;
+        // species weights once per block (its first tree's spot: the species patches span ~350 m, a block 40 m)
+        let wTotal = -1;
         for (let gz = bz; gz < bz + BK && gz < gz1; gz++) {
           for (let gx = bx; gx < bx + BK && gx < gx1; gx++) {
+            // (the tree's random first: most cells fail it before their spot is computed)
+            const r = hash2(gx * 3 + 1, gz * 5 - 2, seed + 311);
+            if (r >= pmax) continue;
             const px = (gx + 0.1 + 0.8 * hash2(gx, gz, seed + 301)) * g, pz = (gz + 0.1 + 0.8 * hash2(gz, gx, seed + 307)) * g;
             if (px < x0 || px >= x1 || pz < z0 || pz >= z1) continue;
             const dx = px < 0 ? -px : px > W ? px - W : 0, dz = pz < 0 ? -pz : pz > W ? pz - W : 0;
@@ -1954,12 +1957,12 @@ export class TreeRenderer {
             if ((dx > dz ? dx : dz) < band || dx * dx + dz * dz > R * R) continue;
             const u = (px - bx * g) / (BK * g), v = (pz - bz * g) / (BK * g);
             const p = (p00 * (1 - u) + p10 * u) * (1 - v) + (p01 * (1 - u) + p11 * u) * v;
-            const r = hash2(gx * 3 + 1, gz * 5 - 2, seed + 311);
             if (p <= 0.01 || r >= p) continue;
             const h = this.terrain.worldHeight(px, pz);
             if (h < 1.6) continue;
             // species (season independent)
-            const sp = this.pickSpecies(Math.floor(px / CELL_SIZE), Math.floor(pz / CELL_SIZE), h, 0, hash2(gx * 5 + 3, gz * 3 - 1, seed + 313), weights);
+            if (wTotal < 0) wTotal = this.speciesWeights(Math.floor(px / CELL_SIZE), Math.floor(pz / CELL_SIZE), h, 0, weights);
+            const sp = this.pickFrom(weights, wTotal, hash2(gx * 5 + 3, gz * 3 - 1, seed + 313));
             const sid = this.species[sp].id;
             if (sid === 'bush' || sid === 'rock') continue;
             if ((n + 1) * RING_STRIDE > buf.length) {
@@ -2169,7 +2172,7 @@ export class TreeRenderer {
       this.ringInstances = 0;
       return;
     }
-    const mesh = this.ringFar = this.meshFor(this.ringFar, getMicroImpostorGeometries().broad, this.materialRing, n, true, false);
+    const mesh = this.ringFar = this.meshFor(this.ringFar, getMicroImpostorGeometries().top, this.materialRing, n, true, false);
     mesh.name = 'trees-ring';
     mesh.castShadow = false;
     mesh.receiveShadow = true;

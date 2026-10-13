@@ -518,6 +518,14 @@ describe('outer ring trees', () => {
     expect(a.slices).toBe(6);
     for (let f = 0; f < 4; f++) a.tr.update(cam);
     expect(a.slices).toBeGreaterThan(6);
+    // a slow far orbit (0.2% of the camera height per frame) is not calm either
+    const s0 = a.slices;
+    for (let f = 0; f < 60; f++) {
+      const ang = f * 0.002;
+      cam.position.set(W / 2 + Math.cos(ang) * 1500, 1500, W / 2 + Math.sin(ang) * 1500);
+      a.tr.update(cam);
+    }
+    expect(a.slices).toBe(s0);
     // a camera that never stops (a pan of 20 m per frame) still gets the slices after the load delay (30 frames) + the
     // long wait (240 frames)
     const b = counted();
