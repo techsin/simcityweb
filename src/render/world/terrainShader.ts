@@ -3,6 +3,9 @@
  * climate palettes, macro/micro noise, forest floor from the tree density texture, rock on slopes (triplanar),
  * beaches / wet sand / seabed, snow, zone tint, data overlay heatmap, grid, tool highlights, brush, map border (tool /
  * overlay views only), the muted landscape beyond the map (eased in over ~400 m) and the neighbour-connection ribbons.
+ * TERRAIN_PART selects the program: 1 = the map's chunks (city layer: zones, overlays, tools), 2 = the outer landscape
+ * ring (noise forests, farmland, connection ribbons), 0 = both (any mesh). Software renderers evaluate every branch of a
+ * shader for every fragment, so each part compiles only its own code (texel fetches are the costliest operations here).
  */
 
 export const TERRAIN_VERT_PARS = /* glsl */ `
@@ -16,6 +19,9 @@ vTN = normalize(mat3(modelMatrix) * objectNormal);
 `;
 
 export const TERRAIN_FRAG_PARS = /* glsl */ `
+#ifndef TERRAIN_PART
+#define TERRAIN_PART 0
+#endif
 varying vec3 vTW;
 varying vec3 vTN;
 uniform sampler2D uNoise;
@@ -76,9 +82,11 @@ float tLine(float x, float hw, float fw) {
   return (1.0 - smoothstep(hw - fw * 0.5, hw + fw * 0.5, abs(x))) * min(1.0, 2.0 * hw / max(fw, 1e-4));
 }
 
-int tZoneAt(ivec2 c) {
-  ivec2 cc = clamp(c, ivec2(0), ivec2(int(uN) - 1));
-  return int(texelFetch(uZoneTexU, cc, 0).r);
+// cheap arithmetic hash (Hoskins' hash12; no sin)
+float tHash(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
 }
 
 vec3 terrainShade(vec3 P, vec3 N) {
@@ -119,13 +127,16 @@ vec3 terrainShade(vec3 P, vec3 N) {
   // forest floor under trees (keeps forests readable from far away)
   vec2 tuv = xz / (uCell * uN);
   float trees = texture2D(uTreeTex, tuv).r;
+#if TERRAIN_PART != 1
   // outside the map: fade the (clamped) texture out and continue with noise forests
   vec2 tout = max(-tuv, tuv - 1.0);
   float outside = smoothstep(0.0, 0.03, max(tout.x, tout.y));
   trees = mix(trees, smoothstep(0.6, 0.74, nA.g * 0.6 + nB.r * 0.5) * 0.65, outside);
+#endif
   float forest = smoothstep(0.03, 0.55, trees);
   // forest floor: leaf litter browns under the woods in autumn / winter (bare 3D trees show the floor through)
   col = mix(col, uForestFloor * (0.85 + 0.3 * m3), forest * 0.82);
+#if TERRAIN_PART != 1
   if (outside > 0.001) {
     // landscape beyond the map has no tree instances: its noise forests get a canopy look (crown clumps with dark
     // gaps as fake AO) plus a fake sun shadow on the meadow beside them and a lit crown edge toward the sun, so from
@@ -155,6 +166,7 @@ vec3 terrainShade(vec3 P, vec3 N) {
       bump += (crowns * 2.2 - gaps * 1.2) * outside * forest;
     }
   }
+#endif
 
   // dirt patches, stronger on moderate slopes and in dry areas
   float dirtM = smoothstep(0.66, 0.86, nB.b * 0.45 + nC.g * 0.35 + slope * 1.8 + dry * 0.12 - forest * 0.3);
@@ -211,35 +223,47 @@ vec3 terrainShade(vec3 P, vec3 N) {
   // scattering random patches)
   float snowL = uSnowLine + (m2 - 0.5) * uSnowNoise + (m3 - 0.5) * uSnowNoise * 0.31;
   float snowM = smoothstep(snowL - 5.0, snowL + 5.0, h) * (1.0 - smoothstep(0.3, 0.55, slope));
-  if (snowM > 0.001 && uWinter < 0.999) {
+  vec2 gc = xz / uCell;
+#if TERRAIN_PART == 1
+  bool inside = true;
+#elif TERRAIN_PART == 2
+  bool inside = false;
+#else
+  bool inside = gc.x >= 0.0 && gc.y >= 0.0 && gc.x < uN && gc.y < uN;
+#endif
+#if TERRAIN_PART != 2
+  // zone texels (r zone, g developed) of this cell and its 4 neighbours, fetched once for the snow clearing and the
+  // zone paint
+  ivec2 hiC = ivec2(int(uN) - 1);
+  ivec2 zcell = clamp(ivec2(floor(gc)), ivec2(0), hiC);
+  uvec2 z0 = texelFetch(uZoneTexU, zcell, 0).rg;
+  uvec2 zL = texelFetch(uZoneTexU, max(zcell - ivec2(1, 0), ivec2(0)), 0).rg;
+  uvec2 zR = texelFetch(uZoneTexU, min(zcell + ivec2(1, 0), hiC), 0).rg;
+  uvec2 zT = texelFetch(uZoneTexU, max(zcell - ivec2(0, 1), ivec2(0)), 0).rg;
+  uvec2 zB = texelFetch(uZoneTexU, min(zcell + ivec2(0, 1), hiC), 0).rg;
+  if (snowM > 0.001 && uWinter < 0.999 && inside) {
     // the city (zoned / developed cells, fading out over a 1-cell ring around lots and roads) keeps no terrain snow
     // outside winter: lawns, yards and empty lots must not show white blotches in June
-    vec2 sg = xz / uCell;
-    if (sg.x >= 0.0 && sg.y >= 0.0 && sg.x < uN && sg.y < uN) {
-      ivec2 c0 = ivec2(sg);
-      vec2 fr = fract(sg);
-      uvec4 zc0 = texelFetch(uZoneTexU, c0, 0);
-      float cm = (zc0.r > 0u || zc0.g > 0u) ? 1.0 : 0.0;
-      ivec2 hiC = ivec2(int(uN) - 1);
-      if (cm < 0.5) {
-        // distance (cells) to each 4-neighbour: developed neighbours clear the snow toward their edge
-        if (texelFetch(uZoneTexU, clamp(c0 + ivec2(1, 0), ivec2(0), hiC), 0).g > 0u) cm = max(cm, smoothstep(0.1, 1.0, fr.x));
-        if (texelFetch(uZoneTexU, clamp(c0 + ivec2(-1, 0), ivec2(0), hiC), 0).g > 0u) cm = max(cm, smoothstep(0.1, 1.0, 1.0 - fr.x));
-        if (texelFetch(uZoneTexU, clamp(c0 + ivec2(0, 1), ivec2(0), hiC), 0).g > 0u) cm = max(cm, smoothstep(0.1, 1.0, fr.y));
-        if (texelFetch(uZoneTexU, clamp(c0 + ivec2(0, -1), ivec2(0), hiC), 0).g > 0u) cm = max(cm, smoothstep(0.1, 1.0, 1.0 - fr.y));
-      }
-      snowM *= 1.0 - cm * (1.0 - uWinter);
+    vec2 fr = fract(gc);
+    float cm = (z0.r > 0u || z0.g > 0u) ? 1.0 : 0.0;
+    if (cm < 0.5) {
+      // distance (cells) to each 4-neighbour: developed neighbours clear the snow toward their edge
+      if (zR.g > 0u) cm = max(cm, smoothstep(0.1, 1.0, fr.x));
+      if (zL.g > 0u) cm = max(cm, smoothstep(0.1, 1.0, 1.0 - fr.x));
+      if (zB.g > 0u) cm = max(cm, smoothstep(0.1, 1.0, fr.y));
+      if (zT.g > 0u) cm = max(cm, smoothstep(0.1, 1.0, 1.0 - fr.y));
     }
+    snowM *= 1.0 - cm * (1.0 - uWinter);
   }
+#endif
   col = mix(col, uPal[10] * (0.95 + 0.06 * m4), snowM);
   rough = mix(rough, 0.55, snowM);
 
   // --- city layer (zones, overlays, tools) -----------------------------------------------------
-  vec2 gc = xz / uCell;
   vec2 fwc = fwidth(gc);
   float fpx = max(fwc.x, fwc.y);
-  bool inside = gc.x >= 0.0 && gc.y >= 0.0 && gc.x < uN && gc.y < uN;
   if (!inside) {
+#if TERRAIN_PART != 1
     // (no border / dimming under water: it would show through the transparent sea as a seam)
     float landF = smoothstep(-1.5, 0.5, h);
     vec2 dd = max(-gc, gc - uN);
@@ -259,13 +283,13 @@ vec3 terrainShade(vec3 P, vec3 N) {
     if (peri > 0.002) {
       vec2 gq = gc + (vec2(nB.g, nC.r) - 0.5) * 0.6;
       vec2 bid = floor(gq / 18.0);
-      float bh = fract(sin(dot(bid, vec2(41.3, 289.1))) * 43758.5453);
+      float bh = tHash(bid + 17.3);
       vec2 fs = bh < 0.34 ? vec2(7.0, 4.5) : (bh < 0.67 ? vec2(4.5, 3.0) : vec2(10.0, 6.5));
       vec2 fqb = fract(bh * 7.13) < 0.5 ? gq : gq.yx;
       float frow = floor(fqb.y / fs.y);
       vec2 fq = vec2(fqb.x / fs.x + fract(frow * 0.618034 + bh), fqb.y / fs.y);
       vec2 fid = floor(fq);
-      float fh = fract(sin(dot(fid + bid * 37.0, vec2(12.9898, 78.233))) * 43758.5453);
+      float fh = tHash(fid + bid * 37.0);
       float fh2 = fract(fh * 31.7);
       float dorm = clamp(uDormant * 1.8, 0.0, 1.0);
       vec3 brown = uPal[4] * (0.88 + 0.16 * m4);
@@ -331,20 +355,21 @@ vec3 terrainShade(vec3 P, vec3 N) {
         }
       }
     }
+#endif
   } else {
-    ivec2 cell = ivec2(gc);
+#if TERRAIN_PART != 2
+    ivec2 cell = zcell;
     vec2 f = fract(gc);
     // zones
-    uvec4 zt = texelFetch(uZoneTexU, cell, 0);
-    int zid = int(zt.r);
-    bool dev = zt.g > 0u;
+    int zid = int(z0.r);
+    bool dev = z0.g > 0u;
     if (zid > 0 && (!dev || uZoneMode > 0.5)) {
       vec3 zc = uZoneCol[zid];
       float w = 0.05 + fpx * 1.5;
-      float eL = tZoneAt(cell + ivec2(-1, 0)) != zid ? 1.0 - smoothstep(0.0, w, f.x) : 0.0;
-      float eR = tZoneAt(cell + ivec2(1, 0)) != zid ? 1.0 - smoothstep(0.0, w, 1.0 - f.x) : 0.0;
-      float eT = tZoneAt(cell + ivec2(0, -1)) != zid ? 1.0 - smoothstep(0.0, w, f.y) : 0.0;
-      float eB = tZoneAt(cell + ivec2(0, 1)) != zid ? 1.0 - smoothstep(0.0, w, 1.0 - f.y) : 0.0;
+      float eL = int(zL.r) != zid ? 1.0 - smoothstep(0.0, w, f.x) : 0.0;
+      float eR = int(zR.r) != zid ? 1.0 - smoothstep(0.0, w, 1.0 - f.x) : 0.0;
+      float eT = int(zT.r) != zid ? 1.0 - smoothstep(0.0, w, f.y) : 0.0;
+      float eB = int(zB.r) != zid ? 1.0 - smoothstep(0.0, w, 1.0 - f.y) : 0.0;
       float outline = max(max(eL, eR), max(eT, eB));
       float dcell = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
       float inner = (1.0 - smoothstep(0.0, fpx * 1.5 + 0.01, dcell)) * (1.0 - smoothstep(0.08, 0.25, fpx));
@@ -397,7 +422,9 @@ vec3 terrainShade(vec3 P, vec3 N) {
       col = mix(col, uRectColor, 0.3 + 0.55 * border + 0.2 * cl);
       tEmis += uRectColor * (0.05 + 0.3 * border);
     }
+#endif
   }
+#if TERRAIN_PART != 2
   // grid
   if (uGrid > 0.001) {
     vec2 gd = abs(fract(gc - 0.5) - 0.5) / max(fwc, vec2(1e-5));
@@ -412,6 +439,7 @@ vec3 terrainShade(vec3 P, vec3 N) {
     col = mix(col, vec3(0.96, 0.97, 1.0), g * 0.55);
     tEmis += vec3(0.7, 0.8, 1.0) * g * (0.01 + uNightF * 0.05);
   }
+#endif
   // circular brush
   if (uBrush.w > 0.5) {
     float d = length(xz - uBrush.xy);

@@ -120,11 +120,20 @@ vec3 waterShade(vec3 P) {
     // get too small on screen: a pixel-sized pattern read as a glitter band of foam / wet sand.
     float lat = dot(P.xz, vec2(-vd.y, vd.x)) / 26.0;
     float along = dot(P.xz, vd) / 22.0;
+#if WATER_DETAIL > 0
     float latW = lat + (texture2D(uNoise, vec2(along * 0.09 + 0.31, lat * 0.07 + 0.63)).g - 0.5) * 0.16 + g.x * 0.02;
+#else
+    // (low detail: no meander and a single octave, two texture reads fewer)
+    float latW = lat + g.x * 0.02;
+#endif
     vec2 sq = vec2(latW * 0.97, latW * 0.231 + 0.37);
     // (one texel feeds the first octave, the streak brightness and its reach: independent noise channels)
     vec4 s1 = texture2D(uNoise, sq);
+#if WATER_DETAIL > 0
     float sn = s1.r * 0.62 + texture2D(uNoise, sq * 1.9 + vec2(0.43, 0.17)).g * 0.38;
+#else
+    float sn = s1.r;
+#endif
     float sfw = clamp(fwidth(lat) * 5.0, 0.0, 1.0);
     float streak = mix(smoothstep(0.54, 0.72, sn) * (0.55 + 0.45 * s1.b), 0.22, sfw);
     // per-streak reach 35-100% (brighter / higher lights throw longer streaks)

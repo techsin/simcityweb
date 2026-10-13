@@ -168,9 +168,10 @@ const _ta = new THREE.Vector3(), _tb = new THREE.Vector3(), _tc = new THREE.Vect
  * Average foliage color (linear) + bounding box of a nature geometry, for impostor tinting & scaling. Models without
  * foliage / stone (rocks, cacti: Surf.Plain) average every non-wood surface instead. See-through bare crowns (twig
  * sprays: little foliage area for their size, twig-coloured) report their open fraction (`open`, 0 = solid crown) and
- * blend toward SEE_THROUGH by it, so a solid impostor matches the darker average a leafless tree has from afar.
+ * blend `color` toward SEE_THROUGH by it, so a SOLID impostor matches the darker average a leafless tree has from afar;
+ * `raw` is the unblended foliage average (for see-through impostors: TreeRenderer lets the ground show instead).
  */
-export function natureStats(g: THREE.BufferGeometry): { color: THREE.Color; height: number; radius: number; open: number } {
+export function natureStats(g: THREE.BufferGeometry): { color: THREE.Color; raw: THREE.Color; height: number; radius: number; open: number } {
   const col = g.getAttribute('color') as THREE.BufferAttribute | undefined;
   const srf = g.getAttribute('surf') as THREE.BufferAttribute | undefined;
   const pos = g.getAttribute('position') as THREE.BufferAttribute | undefined;
@@ -204,6 +205,7 @@ export function natureStats(g: THREE.BufferGeometry): { color: THREE.Color; heig
   const cover = Math.min(1, area / (Math.PI * radius * radius * 2.2));
   const twig = area > 0 ? Math.min(1, Math.max(0, (c.r - c.g) / 0.02)) : 0;
   const open = twig * (1 - cover);
+  const raw = c.clone();
   if (open > 0) c.lerp(SEE_THROUGH, open * 0.6);
-  return { color: c, height, radius, open };
+  return { color: c, raw, height, radius, open };
 }

@@ -547,9 +547,10 @@ function stripMall(b: B, v: number, rng: RNG) {
 }
 
 // ============================================================================================ RESTAURANT (2x1)
-/** String of festoon lights between two poles: 3 sagging segments (mid -0.4 m), thin warm emissive beams. */
+/** String of festoon lights between two poles: 3 sagging segments (mid -0.4 m), thin warm emissive beams painted as a
+ *  light strand (floor = its 0.04 m thickness: dotted bulbs up close, no 1 px laser line from afar, materials.ts). */
 function stringLights(b: B, a: K.V3, c: K.V3, sag = 0.4) {
-  const p = K.emis(0xffc870, 3);
+  const p = P(0xffc870, Surf.Emissive, 3, 0.04);
   let prev = a;
   for (let i = 1; i <= 3; i++) {
     const t = i / 3;

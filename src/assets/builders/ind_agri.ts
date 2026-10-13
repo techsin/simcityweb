@@ -9,7 +9,7 @@ import { fence } from '../kit';
 import {
   bicone, dome, flat, gambrelRoof, ground, hCyl, lathe, strut, tank, tractor, tree, tube, wallQuad, wallRow, disc,
   smokestack, boxTruck, pallets, carLow, CAR_COLORS2, lattice, poplar,
-  floodLight, lightDot, pool, Y_OVER, dim,
+  floodLight, lightDot, pool, Y_OVER,
 } from './ind_kit';
 
 const DIRT = 0x8a6e4b;
@@ -462,11 +462,12 @@ const GROW_LED = 0x8a2870;
 const GROW_ROW = 14;
 const GROW_WALL = 3;
 /**
- * Lit film / whitewashed glass: Emissive-9 painted 0.7x the film colour -> plain film by day, a soft warm glow of the
- * crop lights diffused through the skin at night (`k` = intensity).
+ * Grow-house film / whitewashed glass (Emissive 15, materials.ts): plain film by day; at night the pale skin is dimmed
+ * (it read near-white under the night light) and, with the crop lights on (`k` = glow, 0 = unlit), glows a soft sodium
+ * amber through the skin.
  */
 function filmGlow(color: number, k = 0.3): Paint {
-  return { color: dim(color, 0.7), surf: Surf.Emissive, pattern: 9, floor: 3.3 * k };
+  return { color, surf: Surf.Emissive, pattern: 15, floor: 3.3 * k };
 }
 
 /**
@@ -572,8 +573,7 @@ function greenhouse(b: ModelBuilder, v: number, rng: RNG): void {
         const cx = -20 + i * 7.2;
         // every other tunnel (2-3 of 5) is lit: warm glow through the film + an HPS lamp row along the ridge
         const lit = (i + litOff) % 2 === 0;
-        if (lit) b.paint(filmGlow(0xeef1ee));
-        else b.paint(0xeef1ee, Surf.Plain);
+        b.paint(filmGlow(0xeef1ee, lit ? 0.3 : 0));
         polytunnel(b, cx, -14.5, 6.0, 25, 3.4, lit);
       }
       b.paint(DIRT, Surf.Pavement);
@@ -652,8 +652,7 @@ function polytunnel(b: ModelBuilder, cx: number, z0: number, w: number, L: numbe
     b.quad([cx - 0.2, h + 0.02, z1 - 0.3], [cx + 0.2, h + 0.02, z1 - 0.3], [cx + 0.2, h + 0.02, z0 + 0.3], [cx - 0.2, h + 0.02, z0 + 0.3]);
   }
   // end walls
-  if (lit) b.paint(filmGlow(0xd6dcd8));
-  else b.paint(0xd6dcd8, Surf.Plain);
+  b.paint(filmGlow(0xd6dcd8, lit ? 0.3 : 0));
   for (let i = 0; i < seg; i++) {
     const [xa, ya] = pts[i], [xb, yb] = pts[i + 1];
     b.tri([cx, 0, z1], [xb, yb, z1], [xa, ya, z1]);

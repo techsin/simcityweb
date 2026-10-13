@@ -369,7 +369,7 @@ function walkupTwin(b: ModelBuilder, v: number, rng: RNG): void {
     const tim = P(0x6b5238, Surf.Wood);
     for (const [px, pz] of [[-5.8, 0.5], [0.6, 0.5], [-5.8, 3.7], [0.6, 3.7]] as [number, number][]) b.paint(tim).box(px - 0.08, 0.12, pz - 0.08, px + 0.08, 2.4, pz + 0.08, { bottom: null, top: null });
     for (const pz of [0.5, 2.1, 3.7]) b.paint(tim).beam([-5.9, 2.4, pz], [0.7, 2.4, pz], 0.12);
-    for (const pz of [1.3, 2.9]) b.paint(0xffc870, Surf.Emissive, 10).beam([-5.8, 2.2, pz], [0.6, 2.2, pz], 0.04);
+    for (const pz of [1.3, 2.9]) b.paint(P(0xffc870, Surf.Emissive, 10, 0.04)).beam([-5.8, 2.2, pz], [0.6, 2.2, pz], 0.04);
     patioTable(b, -2.6, 2.1);
     b.pop();
     bulkhead(b, -4.4, -4.4, 2.4, 2.6, yR, 2.5, paintC);

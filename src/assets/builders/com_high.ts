@@ -334,7 +334,8 @@ function otSeagram(b: B, rng: RNG, tw = false) {
   K.storefront(b, -9.9, 9.9, 3, { y0: 0.05, y1: 7.2, frame: 0x6b5238, doors: [-1.4, 1.4], pitch: 3.3, transom: 3.5, surround: 0 });
   for (let x = x0 + 0.4; x <= x1; x += 5.8) box(b, x - 0.4, 0, z1 - 0.8, x + 0.4, base, z1, K.metal(0x5a4430), null);
   box(b, x0, base, z0, x1, top, z1, GC(tw ? 1 : 3, 3.8), ROOF, { bottom: K.metal(0x3a2c22) });
-  const bronze = K.metal(tw ? 0xaab2ba : 0x7a5a38), capC = K.metal(tw ? 0x55595f : 0x3a2c22);
+  // (crown band: patina bronze, mostly diffuse; a dark bare-metal bronze rendered pitch black even in sunlight)
+  const bronze = K.metal(tw ? 0xaab2ba : 0x7a5a38), capC = P(tw ? 0x6a6e74 : 0x6b5238, Surf.Metal, 3);
   finsZ(b, x0 + 1.5, x1 - 1.5, 1.5, base, top, z1, 0.4, bronze);
   finsX(b, z0 + 1.5, z1 - 1.5, 1.5, base, top, x1, 0.4, bronze);
   K.bandRect(b, x0, z0, x1, z1, top, top + 3.8, capC, 0.0);
@@ -357,16 +358,19 @@ function otOctSloped(b: B, rng: RNG, tw = false) {
   down(b, -12, -13.5, 12, 7.5, 5.7, K.plain(0x8e9398));
   const yTop = (_x: number, z: number) => 108.3 + ((7.5 - z) / 21) * 17;
   prismSloped(b, pts, 108.3, yTop, GC(tint, 3.8), K.metal(tw ? 0x5a5e64 : 0xc8ced4));
-  // lit edges of the sloped crown
-  const lit = K.emis(0xeaf6ff);
+  // lit edges of the sloped crown: a warm LED strand (floor = the beam thickness, so it thins to its share of a pixel far
+  // away: materials.ts) along the outline; the cross ribs on the slope are dark mullions (lit, the outline + hatch read
+  // as a white selection gizmo at night)
+  const lit = P(0xffe2b0, Surf.Emissive, 3, 0.35);
   for (let i = 0; i < pts.length; i++) {
     const j = (i + 1) % pts.length;
     b.paint(lit).beam([pts[i][0], yTop(pts[i][0], pts[i][1]), pts[i][1]], [pts[j][0], yTop(pts[j][0], pts[j][1]), pts[j][1]], 0.35);
   }
+  const rib = K.metal(tw ? 0x3a3d42 : 0x5a6068);
   for (let k = 1; k < 5; k++) {
     const z = 7.5 - (21 * k) / 5, y = yTop(0, z) + 0.2;
     const hw = 12 - (Math.abs(z + 3) > 6 ? Math.abs(Math.abs(z + 3) - 6) : 0);
-    b.paint(lit).beam([-hw, y, z], [hw, y, z], 0.25);
+    b.paint(rib).beam([-hw, y, z], [hw, y, z], 0.25);
   }
   K.beacon(b, 0, yTop(0, -13.5) + 0.2, -13.2, 0.5);
   K.canopy(b, -4, 4, 6.5, 4.4, 3.4, 0.3, K.metal(0xc3c8cd), K.emis(0xeaf4ff, K.CANOPY_K));

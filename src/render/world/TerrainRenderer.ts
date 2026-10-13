@@ -42,7 +42,9 @@ const _ff = new THREE.Color();
 
 export class TerrainRenderer {
   readonly group = new THREE.Group();
+  /** material of the map's chunks; the outer landscape ring has its own (outerMaterial), same uniforms */
   readonly material: THREE.MeshStandardMaterial;
+  readonly outerMaterial: THREE.MeshStandardMaterial;
   readonly heightTexture: THREE.DataTexture;
   readonly uniforms;
   private state: CityState;
@@ -178,6 +180,8 @@ export class TerrainRenderer {
 
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, metalness: 0 });
     this.material.name = 'terrain';
+    this.outerMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, metalness: 0 });
+    this.outerMaterial.name = 'terrain-outer';
     this.patchMaterial();
 
     // shared index for all chunks
@@ -198,24 +202,28 @@ export class TerrainRenderer {
     this.rebuildAll();
   }
 
+  /** the map's chunks (TERRAIN_PART 1: city layer) and the outer landscape ring (TERRAIN_PART 2: noise forests,
+   *  farmland, connection ribbons) compile only their own part of the terrain shader (terrainShader.ts) */
   private patchMaterial() {
     const u = this.uniforms;
     const detail = this.detail;
-    this.material.onBeforeCompile = (shader) => {
-      Object.assign(shader.uniforms, u);
-      shader.defines = { ...(shader.defines ?? {}), TERRAIN_DETAIL: detail };
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\n' + TERRAIN_VERT_PARS)
-        .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n' + TERRAIN_VERT_MAIN);
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\n' + TERRAIN_FRAG_PARS)
-        .replace('#include <color_fragment>', '#include <color_fragment>\n' + TERRAIN_FRAG_COLOR)
-        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = tRough;')
-        .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nnormal = normalize((viewMatrix * vec4(tNormalW, 0.0)).xyz);')
-        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += tEmis;');
-    };
-    this.material.customProgramCacheKey = () => `terrain-${detail}`;
-    this.material.needsUpdate = true;
+    for (const [m, part] of [[this.material, 1], [this.outerMaterial, 2]] as [THREE.MeshStandardMaterial, number][]) {
+      m.onBeforeCompile = (shader) => {
+        Object.assign(shader.uniforms, u);
+        shader.defines = { ...(shader.defines ?? {}), TERRAIN_DETAIL: detail, TERRAIN_PART: part };
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\n' + TERRAIN_VERT_PARS)
+          .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n' + TERRAIN_VERT_MAIN);
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>', '#include <common>\n' + TERRAIN_FRAG_PARS)
+          .replace('#include <color_fragment>', '#include <color_fragment>\n' + TERRAIN_FRAG_COLOR)
+          .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = tRough;')
+          .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nnormal = normalize((viewMatrix * vec4(tNormalW, 0.0)).xyz);')
+          .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += tEmis;');
+      };
+      m.customProgramCacheKey = () => `terrain-${detail}-p${part}`;
+      m.needsUpdate = true;
+    }
   }
 
   setQuality(detail: 0 | 1 | 2, castShadows: boolean) {
@@ -493,7 +501,7 @@ export class TerrainRenderer {
       this.outer.geometry.dispose();
       this.outer.geometry = geo;
     } else {
-      this.outer = new THREE.Mesh(geo, this.material);
+      this.outer = new THREE.Mesh(geo, this.outerMaterial);
       this.outer.name = 'terrain-outer';
       this.outer.receiveShadow = true;
       this.outer.castShadow = false;
@@ -743,6 +751,7 @@ export class TerrainRenderer {
     for (const c of this.chunks) c.mesh.geometry.dispose();
     this.outer?.geometry.dispose();
     this.material.dispose();
+    this.outerMaterial.dispose();
     this.heightTexture.dispose();
     this.zoneTex.dispose();
     this.treeTex.dispose();

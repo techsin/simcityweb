@@ -24,16 +24,25 @@
  * Seasons: deciduous species (nat_season.ts) show autumn / bare / blossom model variants for the month's fraction of
  * trees (per cell); conifers stay green, darker in winter (shared foliage shader), and every tree above the terrain's
  * seasonal snow line is snow-dusted (same line + noise as the terrain). Impostors get metric object coordinates in the
- * shader, so the shared foliage shading treats them like the model they stand for.
+ * shader, so the shared foliage shading treats them like the model they stand for. Impostors of bare (see-through
+ * twig) models are drawn see-through too: their crowns cover ~30-60% of their pixels (alpha-to-coverage with MSAA, a
+ * dither anchored to the tree without), evenly lit, so the forest floor shows between bare trees as it does between
+ * the twigs of the near models; in winter conifer impostors are a little taller and darker (BARE_* / SEASON_*).
+ * Chunk builds run nearest-first within buildBudgetMs per frame (at least one), so the view fills in first and the
+ * first frames after a load stay short.
  * Outer ring (far view): beyond the map edge (the terrain's landscape skirt) impostor-only trees stand on the terrain
- * shader's outside forests, out to ringWidth, in 8 sectors (see the RING_* constants and ringStep):
+ * shader's outside forests, out to ringWidth, in 8 sectors (see the RING_* constants and ringStep). Medium quality and
+ * up (lodDistance >= RING_MIN_LOD); low quality has neither the ring nor the edge band:
  *   - candidates are a pure function of the noise texture, the outer terrain and the seed (the map's own cells only
- *     reach the edge band), generated (and filled) once per map with the load, at full density (a per-tree threshold
- *     picks the quality's subset): a quality / density, season or map-cell change only refills, in a ~1 ms-per-frame
- *     budget; only a terrain edit on the map border regenerates the sectors on that side (same budget);
- *   - drawn as one mesh per sector (micro impostors, conifers carry an evergreen flag) beyond lodDistance, as the
- *     broadleaf / conifer impostor pair closer in; hidden from low (street-level) cameras, where the city and the edge
- *     band hide it anyway; thinned at low quality; no shadows.
+ *     reach the edge band), generated (and filled) in ~1 ms slices once the first frames after a load have built the
+ *     map's chunks, at full density (a per-tree threshold picks the quality's subset), then faded in; a quality /
+ *     density, season or map-cell change only refills (same budget); only a terrain edit on the map border regenerates
+ *     the sectors on that side;
+ *   - every sector's trees beyond lodDistance are ONE merged micro impostor mesh (one draw for the whole far ring;
+ *     conifers carry an evergreen flag): the vertex shader thins it with the distance (per tree), fades it with the
+ *     camera height and drops the sectors drawn by their near pair; a sector within lodDistance (camera near the map
+ *     edge) draws its broadleaf / conifer impostor pair instead; hidden from low (street-level) cameras, where the
+ *     city and the edge band hide it anyway; no shadows.
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
@@ -74,6 +83,19 @@ const RING_EDGE_CELLS = 10;
 const RING_CON_A = 0.9 / 0.37;
 const RING_CON_B = 1 - RING_CON_A;
 const RING_CON_R = 0.4 / 0.46;
+/** the outer ring and the edge band need a far tree LOD distance to pay off: lower qualities (low: 460 m) skip both */
+const RING_MIN_LOD = 560;
+/** frames after a load / reset before the outer ring's generation starts (the first frames build the map's chunks) */
+const RING_DELAY_FRAMES = 12;
+/** frames over which a freshly generated outer ring fades in (its density ramps up: no pop) */
+const RING_APPEAR_FRAMES = 45;
+/** a nature model whose crown is at least this see-through (natureStats.open) has a see-through impostor */
+const BARE_OPEN = 0.3;
+/** winter conifer impostors: taller (the needle tiers' tips) and darker than the summer tint (they are what reads of
+ *  an evergreen among the see-through bare crowns from afar) */
+const WINTER_CONIFER_H = 1.1;
+const WINTER_CONIFER_R = 1.04;
+const WINTER_CONIFER_TINT = 0.84;
 
 const _sstep = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -144,12 +166,27 @@ class TreeMesh extends THREE.InstancedMesh {
   owner: TreeRenderer | null = null;
   imp = false;
   shadowOnly = false;
+  /** merged outer-ring mesh: per-sector boxes (min x y z, max x y z) and the sectors it draws (bits): visible when one
+   *  of those boxes is (its own box spans the whole ring, i.e. the map square) */
+  ringBoxes: Float64Array | null = null;
+  ringMask = 0;
   private savedShadow = -1;
   private savedView = -1;
 
   override intersectsFrustum(f: THREE.Frustum): boolean {
     const b = this.boundingBox!;
     if (!f.intersectsBox(b)) return false;
+    const rb = this.ringBoxes;
+    if (rb) {
+      for (let k = 0, m = this.ringMask; m; k++, m >>= 1) {
+        if (!(m & 1)) continue;
+        const o = k * 6;
+        _rbox.min.set(rb[o], rb[o + 1], rb[o + 2]);
+        _rbox.max.set(rb[o + 3], rb[o + 4], rb[o + 5]);
+        if (f.intersectsBox(_rbox)) return true;
+      }
+      return false;
+    }
     const recv = (f as unknown as { recv?: ShadowReceiver }).recv;
     return !recv || sweepBox(recv, b);
   }
@@ -240,8 +277,10 @@ interface Kind {
   color: THREE.Color;
   height: number;
   radius: number;
-  /** impostor radius factor: see-through bare crowns get thinner impostors (the dark floor shows between them) */
+  /** impostor radius factor (see-through bare crowns: a little inside the twig tips) */
   impR: number;
+  /** see-through (bare twig) crown: drawn as a see-through impostor (BARE_*; negative instance red) */
+  bare: boolean;
 }
 
 interface TreeChunk {
@@ -302,6 +341,7 @@ interface RingFill {
 }
 
 const _box = new THREE.Box3();
+const _rbox = new THREE.Box3();
 
 // ---- LOD cross-fade shader snippets (near models fade out / impostors fade in over the band)
 const FADE_VERT_PARS = /* glsl */ `
@@ -363,9 +403,19 @@ uniform vec4 uTreeSnow;
 uniform sampler2D uTreeNoise;
 varying float vTreeSnow;
 `;
+/** far (impostor) programs: see-through bare crowns (BARE_*) and the merged outer ring's per-tree culling (RING_*) */
+const FAR_VERT_PARS = /* glsl */ `
+varying float vTreeBare;
+varying vec2 vBareNdc;
+#ifdef TREE_RING
+uniform mat3 uRingNear;
+uniform vec3 uRingP;
+#endif
+`;
 function seasonVertMain(far: boolean): string {
   return /* glsl */ `
 vTreeSnow = 0.0;
+${far ? 'vTreeBare = 0.0;\nvBareNdc = vec2(0.0);' : ''}
 #ifdef USE_INSTANCING
 {
   vec3 _sp = (modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xyz;
@@ -380,7 +430,7 @@ vTreeSnow = 0.0;
       vTreeSnow = uTreeSnow.z * smoothstep(_sl - 5.0, _sl + 5.0, _sp.y + 1.0);
     }
   }
-  ${far ? 'vObjPos *= vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));' : ''}
+  ${far ? FAR_VERT_MAIN : ''}
 }
 #endif
 #if defined(TREE_MERGED) && defined(USE_INSTANCING_COLOR)
@@ -395,8 +445,44 @@ vTreeSnow = 0.0;
 #endif
 `;
 }
+/** impostor part of seasonVertMain (inside its instancing block: _sp = the tree's world position) */
+const FAR_VERT_MAIN = /* glsl */ `
+vObjPos *= vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
+#ifdef USE_INSTANCING_COLOR
+  if (instanceColor.r < 0.0) {
+    // see-through bare crown (a twig model's impostor: negative instance red). Evenly lit like a twig haze: softly
+    // up-facing object normals (no dark underside, no flat / box classes in the foliage shading)
+    vTreeBare = 1.0;
+    vColor.r = -vColor.r;
+    vec2 _h = vObjNormal.xz;
+    float _hl = length(_h);
+    _h = _hl > 1e-3 ? _h / _hl : vec2(0.7071);
+    vObjNormal = vec3(_h.x * 0.4, 0.9165, _h.y * 0.4);
+    // the tree's screen position anchors its see-through dither (no crawl over the tree while the camera moves)
+    vec4 _bc = projectionMatrix * viewMatrix * vec4(_sp, 1.0);
+    vBareNdc = _bc.xy / max(abs(_bc.w), 1e-4);
+  }
+#endif
+#ifdef TREE_RING
+{
+  // merged outer ring: thinned with the distance per tree (a stable per-tree random against the keep fraction),
+  // faded with the camera height / its appearance (uRingP.y); the trees of a sector drawn by its near impostor pair are
+  // dropped (uRingNear: 3 x 3 sector grid around the map square [0, uRingP.z])
+  int _ci = _sp.x < 0.0 ? 0 : (_sp.x > uRingP.z ? 2 : 1);
+  int _ri = _sp.z < 0.0 ? 0 : (_sp.z > uRingP.z ? 2 : 1);
+  float _keep = clamp(1.25 - (distance(_sp, cameraPosition) - uRingP.x) / 7000.0, 0.3, 1.0) * uRingP.y;
+  float _r = fract(sin(dot(_sp.xz, vec2(12.9898, 78.233))) * 43758.5453);
+  if (uRingNear[_ci][_ri] > 0.5 || _r >= _keep) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+}
+#endif
+`;
 const SEASON_FRAG_PARS = /* glsl */ `
 varying float vTreeSnow;
+`;
+const FAR_FRAG_PARS = /* glsl */ `
+varying float vTreeBare;
+varying vec2 vBareNdc;
+uniform vec2 uBareRes;
 `;
 /** snow dusting on the up-facing tops of needle tiers / twigs / rocks (not on bark), in clumps, after the surface
  *  shading: the dark green stays visible between and under the snow */
@@ -407,6 +493,45 @@ if (vTreeSnow > 0.001) {
   float _n = smoothstep(0.3, 0.7, bnoise(vObjPos.xz * 1.1 + vObjPos.y * 0.9));
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.64, 0.68, 0.74), vTreeSnow * _up * _k * (0.4 + 0.6 * _n));
 }
+`;
+/**
+ * See-through bare crown (impostors of twig models): its crown covers ~60% of the pixels where the view crosses the
+ * crown's middle (more twigs along a long sight line) down to ~30% at its rim; the trunk stays solid. Alpha-to-coverage
+ * with MSAA (the coverage blends after the resolve), else a dither anchored to the tree's screen position, decorrelated
+ * from the LOD fade's (complementary near / far) dither. Before alphatest_fragment (after the LOD fade's alpha).
+ */
+const BARE_FRAG = /* glsl */ `
+if (vTreeBare > 0.5 && abs(vSurf.x - 8.0) < 0.5) {
+  float _cov = 0.3 + 0.3 * abs(normalize(vNormal).z);
+#ifdef TREE_A2C
+  diffuseColor.a *= _cov;
+#else
+  vec2 _bp = gl_FragCoord.xy - floor((vBareNdc * 0.5 + 0.5) * uBareRes);
+  float _bn = fract(52.9829189 * fract(dot(_bp, vec2(0.06711056, 0.00583715)) + 0.5));
+  if (_bn >= _cov) discard;
+#endif
+}
+`;
+/** bare crowns: lit evenly (a twig haze, not a lit ball with a dark side): the lighting normal leans to the world up */
+const BARE_NORMAL = /* glsl */ `
+if (vTreeBare > 0.5) normal = normalize(mix(normal, normalize(viewMatrix[1].xyz), 0.65));
+`;
+/** far depth (shadow) programs: bare crowns cast a stippled shadow (~40% of their texels) */
+const BARE_DEPTH_VERT_PARS = /* glsl */ `
+attribute vec3 surf;
+varying float vTreeBare;
+`;
+const BARE_DEPTH_VERT = /* glsl */ `
+vTreeBare = 0.0;
+#ifdef USE_INSTANCING_COLOR
+  if (instanceColor.r < 0.0 && abs(surf.x - 8.0) < 0.5) vTreeBare = 1.0;
+#endif
+`;
+const BARE_DEPTH_FRAG_PARS = /* glsl */ `
+varying float vTreeBare;
+`;
+const BARE_DEPTH_FRAG = /* glsl */ `
+if (vTreeBare > 0.5 && fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) >= 0.4) discard;
 `;
 
 export class TreeRenderer {
@@ -439,13 +564,15 @@ export class TreeRenderer {
   /** broadleaves + conifers in one micro impostor mesh (TREE_MERGED: conifers flagged evergreen; see microMerge):
    *  far chunks and the outer ring's sectors */
   private materialMerged: THREE.MeshStandardMaterial;
+  /** the merged far outer ring (micro impostors of every sector, thinned / culled per tree in the vertex shader) */
+  private materialRing: THREE.MeshStandardMaterial;
   private depthNearPlain = new THREE.MeshDepthMaterial();
-  private depthFarPlain = new THREE.MeshDepthMaterial();
+  private depthFarPlain: THREE.MeshDepthMaterial;
   /** depth materials of chunks drawn with an alpha-to-coverage fade material: three forces alphaTest 0.5 on the depth
    *  material of such objects, so they get their own instances (a shared one would flip alphaTest -> program per
    *  object) */
   private depthNearPlainA = new THREE.MeshDepthMaterial();
-  private depthFarPlainA = new THREE.MeshDepthMaterial();
+  private depthFarPlainA: THREE.MeshDepthMaterial;
   private depthNearA: THREE.MeshDepthMaterial;
   private depthFarA: THREE.MeshDepthMaterial;
   private lodDistance = 1300;
@@ -458,6 +585,9 @@ export class TreeRenderer {
   private fadeU = { uTreeCam: { value: new THREE.Vector3() }, uTreeFade: { value: new THREE.Vector4(600, 800, 60, 700) }, uTreeRes: { value: new THREE.Vector2(1920, 1080) } };
   /** snow on the forest: x terrain snow line (m), y its noise amplitude, z amount (0 = off) */
   private snowU = { uTreeSnow: { value: new THREE.Vector4(9999, 8, 0, 0) }, uTreeNoise: { value: getNoiseTexture() as THREE.Texture } };
+  /** merged far ring: sectors drawn by their near pair (3 x 3 grid flags, column-major [column][row]) and x lodDistance,
+   *  y visibility (camera height fade x appearance), z map size (m) */
+  private ringU = { uRingNear: { value: new THREE.Matrix3().set(0, 0, 0, 0, 0, 0, 0, 0, 0) }, uRingP: { value: new THREE.Vector3(850, 0, 2048) } };
   /** width of the near/impostor cross-fade band as a fraction of lodDistance (each side): alpha-to-coverage (MSAA)
    *  blends smoothly, the screen-door dither (no MSAA) is kept narrow */
   fadeBand = 0.1;
@@ -498,9 +628,16 @@ export class TreeRenderer {
   totalInstances = 0;
 
   // ---- outer ring (see the header and ringStep)
-  /** meshes per sector: 3k broadleaf impostors, 3k + 1 conifer impostors (both near: within lodDistance), 3k + 2 all
-   *  of the sector's trees as micro impostors (beyond lodDistance) */
-  private ring: (TreeMesh | null)[] = new Array(RING_N * 3).fill(null);
+  /** near impostor pair per sector (drawn while the sector is within lodDistance): 2k broadleaf, 2k + 1 conifer */
+  private ring: (TreeMesh | null)[] = new Array(RING_N * 2).fill(null);
+  /** every sector's trees as micro impostors (CPU copies: 16 matrix + 3 colour floats each; see rebuildRingFar) */
+  private ringMicro: (Float32Array | null)[] = new Array(RING_N).fill(null);
+  private ringMicroCol: (Float32Array | null)[] = new Array(RING_N).fill(null);
+  private ringMicroN = new Int32Array(RING_N);
+  /** the merged far ring: one mesh / draw for all sectors' micro impostors (TREE_RING) */
+  private ringFar: TreeMesh | null = null;
+  /** a sector's micro impostors changed: rebuild the merged far mesh once the ring work is idle */
+  private ringFarDirty = false;
   /** candidates per sector (RING_STRIDE floats each) and their counts */
   private ringCand: (Float32Array | null)[] = new Array(RING_N).fill(null);
   private ringCandN = new Int32Array(RING_N);
@@ -520,10 +657,18 @@ export class TreeRenderer {
   private ringEdgeH = new Float32Array(0);
   /** frames the ring waited for chunk rebuilds (it then gets a step anyway) */
   private ringWait = 0;
+  /** frames since the last load / reset (the ring's generation waits RING_DELAY_FRAMES) */
+  private ringFrames = 0;
+  /** fade-in of a freshly generated ring (0..1; see RING_APPEAR_FRAMES) */
+  private ringAppear = 1;
+  /** the ring (and the edge band) at the current quality: ringWidth > 0 and lodDistance >= RING_MIN_LOD */
+  private ringOn = true;
   /** width (m) of the landscape ring beyond the map edge that gets tree impostors (0 = none, also no edge band) */
   ringWidth = 2600;
   /** main-thread time (ms) per frame the outer ring's generation / refill may take */
   ringBudgetMs = 1;
+  /** main-thread time (ms) per frame for (re)building tree chunks, nearest first (always at least one chunk) */
+  buildBudgetMs = 3;
   /** camera heights above the ground (m) between which the ring's far sectors fade in: low cameras look through the
    *  city / edge band at the horizon, where they are hidden or a few specks in the haze (sectors within lodDistance,
    *  i.e. a camera near the map edge, stay at any height) */
@@ -548,6 +693,9 @@ export class TreeRenderer {
     this.material = this.makeTreeMaterial(false);
     this.materialFar = this.makeTreeMaterial(true);
     this.materialMerged = this.makeTreeMaterial(true, true);
+    this.materialRing = this.makeTreeMaterial(true, true, true);
+    this.depthFarPlain = this.makeDepthMaterial(false, false);
+    this.depthFarPlainA = this.makeDepthMaterial(false, false);
     this.matNearFade = this.makeFadeMaterial(true);
     this.matFarFade = this.makeFadeMaterial(false);
     this.depthNear = this.makeDepthMaterial(true);
@@ -592,6 +740,8 @@ export class TreeRenderer {
       pairs.push([isNear ? near : imp.broad, isNear ? (fade ? this.matNearFade : this.material) : (fade ? this.matFarFade : this.materialFar), this.depthFor(isNear, fade, cut), !isNear]);
     }
     pairs.push([getMicroImpostorGeometries().broad, this.materialMerged, this.depthFor(false, false, false), true]);
+    // (the merged far ring casts no shadow)
+    pairs.push([getMicroImpostorGeometries().broad, this.materialRing, null, true]);
     for (const [geo, mat, depth, color] of pairs) {
       if (!geo) continue;
       const m = new THREE.InstancedMesh(geo, mat, 1);
@@ -609,9 +759,10 @@ export class TreeRenderer {
     }
   }
 
-  /** depth material of a chunk mesh: near / far, drawn with the fade material, straddling the shadow cut */
+  /** depth material of a chunk mesh: near / far, drawn with the fade material, straddling the shadow cut (meshes drawn
+   *  with an alpha-to-coverage material - near models while fading, every impostor with MSAA - get the "A" instances) */
   private depthFor(near: boolean, fade: boolean, cut: boolean): THREE.MeshDepthMaterial {
-    const a = fade && this.a2c;
+    const a = this.a2c && (fade || !near);
     if (near) return cut ? (a ? this.depthNearA : this.depthNear) : (a ? this.depthNearPlainA : this.depthNearPlain);
     return cut ? (a ? this.depthFarA : this.depthFar) : (a ? this.depthFarPlainA : this.depthFarPlain);
   }
@@ -639,27 +790,42 @@ export class TreeRenderer {
     }
   }
 
-  /** snow + (impostors) metric object coordinates; see SEASON_* */
+  /** snow + (impostors) metric object coordinates, see-through bare crowns and the merged ring's per-tree culling; see
+   *  SEASON_* / FAR_* / BARE_* */
   private injectSeason(shader: THREE.WebGLProgramParametersWithUniforms, far: boolean) {
     shader.uniforms.uTreeSnow = this.snowU.uTreeSnow;
     shader.uniforms.uTreeNoise = this.snowU.uTreeNoise;
-    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n' + SEASON_VERT_PARS).replace(/}\s*$/, seasonVertMain(far) + '\n}');
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\n' + SEASON_FRAG_PARS)
+    let vp = SEASON_VERT_PARS, fp = SEASON_FRAG_PARS;
+    if (far) {
+      shader.uniforms.uBareRes = this.fadeU.uTreeRes;
+      shader.uniforms.uRingNear = this.ringU.uRingNear;
+      shader.uniforms.uRingP = this.ringU.uRingP;
+      vp += FAR_VERT_PARS;
+      fp += FAR_FRAG_PARS;
+    }
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n' + vp).replace(/}\s*$/, seasonVertMain(far) + '\n}');
+    let fs = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + fp)
       .replace('#include <normal_fragment_begin>', SEASON_FRAG + '\n#include <normal_fragment_begin>');
+    if (far) fs = fs.replace('#include <alphatest_fragment>', BARE_FRAG + '\n#include <alphatest_fragment>').replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n' + BARE_NORMAL);
+    shader.fragmentShader = fs;
   }
 
-  /** plain (no fade) tree material: near models or impostors (merged: broadleaf + conifer micro impostor meshes) */
-  private makeTreeMaterial(far: boolean, merged = false): THREE.MeshStandardMaterial {
+  /** plain (no fade) tree material: near models or impostors (merged: broadleaf + conifer micro impostor meshes; ring:
+   *  the merged outer ring). Impostor materials blend see-through bare crowns by alpha-to-coverage with MSAA. */
+  private makeTreeMaterial(far: boolean, merged = false, ring = false): THREE.MeshStandardMaterial {
     const m = patchSurfaceMaterial(getBuildingMaterial().clone(), 'building-uber-v1');
     const base = m.onBeforeCompile;
     m.onBeforeCompile = (shader, renderer) => {
       base.call(m, shader, renderer);
       this.injectSeason(shader, far);
     };
-    m.customProgramCacheKey = () => 'building-uber-v1|tree-' + (far ? 'far' : 'near') + (merged ? '-merged' : '') + '-v1';
-    if (merged) m.defines = { ...(m.defines ?? {}), TREE_MERGED: '' };
+    m.customProgramCacheKey = () => 'building-uber-v1|tree-' + (far ? 'far' : 'near') + (merged ? '-merged' : '') + (ring ? '-ring' : '') + '-v2';
+    m.defines = { ...(m.defines ?? {}) };
+    if (merged) m.defines.TREE_MERGED = '';
+    if (ring) m.defines.TREE_RING = '';
     m.shadowSide = THREE.DoubleSide;
+    if (far) this.applyFadeMode(m);
     return m;
   }
 
@@ -671,7 +837,7 @@ export class TreeRenderer {
       this.injectFade(shader, near, false);
       this.injectSeason(shader, !near);
     };
-    m.customProgramCacheKey = () => 'building-uber-v1|tree-fade-' + (near ? 'near' : 'far') + '-v3';
+    m.customProgramCacheKey = () => 'building-uber-v1|tree-fade-' + (near ? 'near' : 'far') + '-v4';
     m.shadowSide = THREE.DoubleSide;
     this.applyFadeMode(m);
     return m;
@@ -686,10 +852,17 @@ export class TreeRenderer {
     m.needsUpdate = true;
   }
 
-  private makeDepthMaterial(near: boolean): THREE.MeshDepthMaterial {
+  /** depth material of tree meshes: cut = straddling the shadow switch distance (per-instance cut); impostors cast
+   *  stippled shadows from see-through bare crowns (BARE_DEPTH_*) */
+  private makeDepthMaterial(near: boolean, cut = true): THREE.MeshDepthMaterial {
     const m = new THREE.MeshDepthMaterial();
-    m.onBeforeCompile = (shader) => this.injectFade(shader, near, true);
-    m.customProgramCacheKey = () => 'tree-depth-' + (near ? 'near' : 'far') + '-v2';
+    m.onBeforeCompile = (shader) => {
+      if (cut) this.injectFade(shader, near, true);
+      if (near) return;
+      shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n' + BARE_DEPTH_VERT_PARS).replace(/}\s*$/, BARE_DEPTH_VERT + '\n}');
+      shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\n' + BARE_DEPTH_FRAG_PARS).replace('void main() {', 'void main() {\n' + BARE_DEPTH_FRAG);
+    };
+    m.customProgramCacheKey = () => 'tree-depth-' + (near ? 'near' : 'far') + (cut ? '' : '-plain') + '-v3';
     return m;
   }
 
@@ -706,10 +879,8 @@ export class TreeRenderer {
         const map = new Map<number, number>();
         const add = (v: number) => {
           if (map.has(v)) return;
-          const geo = getNatureGeometry(sp.id, v);
-          const st = natureStats(geo);
           map.set(v, this.kinds.length);
-          this.kinds.push({ species: si, id: sp.id, variant: v, geo, conifer: !!sp.conifer, color: st.color, height: st.height, radius: st.radius, impR: 1 - 0.3 * st.open });
+          this.kinds.push(this.makeKind(si, sp, v));
         };
         const green = ss.green.slice(0, Math.max(1, this.maxVariants));
         for (const v of green) add(v);
@@ -724,13 +895,12 @@ export class TreeRenderer {
       const list: number[] = [];
       const autumn: number[] = [];
       for (let v = 0; v < nv; v++) {
-        const geo = getNatureGeometry(sp.id, v);
-        const st = natureStats(geo);
+        const kind = this.makeKind(si, sp, v);
         // autumn-colored variants (foliage more red than green) are only used in autumn
-        const isAutumn = st.color.r > st.color.g * 0.95 && sp.id !== 'rock' && sp.id !== 'tree_cactus';
+        const isAutumn = kind.color.r > kind.color.g * 0.95 && sp.id !== 'rock' && sp.id !== 'tree_cactus';
         if (isAutumn ? autumn.length >= 1 : list.length >= this.maxVariants) continue;
         (isAutumn ? autumn : list).push(this.kinds.length);
-        this.kinds.push({ species: si, id: sp.id, variant: v, geo, conifer: !!sp.conifer, color: st.color, height: st.height, radius: st.radius, impR: 1 - 0.3 * st.open });
+        this.kinds.push(kind);
       }
       if (!list.length && autumn.length) list.push(autumn[0]);
       this.kindsBySpecies.push(list);
@@ -738,6 +908,15 @@ export class TreeRenderer {
     });
     this.scratch = this.kinds.map(() => new Float32Array(16 * 1024));
     this.scratchCount = this.kinds.map(() => 0);
+  }
+
+  /** tree kind of model variant v of species si: impostor tint / bounds from the model (see-through bare crowns keep
+   *  their twig colour, the floor shows through their impostors instead of a darker tint) */
+  private makeKind(si: number, sp: SpeciesDef, v: number): Kind {
+    const geo = getNatureGeometry(sp.id, v);
+    const st = natureStats(geo);
+    const bare = st.open > BARE_OPEN;
+    return { species: si, id: sp.id, variant: v, geo, conifer: !!sp.conifer, color: bare ? st.raw : st.color, height: st.height, radius: st.radius, impR: bare ? 0.92 : 1, bare };
   }
 
   setQuality(opts: { lodDistance: number; density: number; castShadows: boolean; maxVariants?: number; msaa?: boolean }) {

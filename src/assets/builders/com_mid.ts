@@ -480,7 +480,8 @@ function hotelGlass(b: B, rng: RNG) {
   b.push().translate(0, top, 0);
   for (const [ux, uz] of [[5, -6.5], [9, -6.5], [5, -1.5], [9, -1.5]] as [number, number][]) K.umbrella(b, ux, uz, 1.1, 0xf2efe6, 2.3);
   b.pop();
-  b.paint(0xffd89a, Surf.Emissive).beam([2.6, top + 2.6, -8.8], [11, top + 2.4, 2.0], 0.07).beam([11, top + 2.6, -8.8], [2.6, top + 2.4, 2.0], 0.07);
+  // (light strands: floor = the 0.07 m thickness, see materials.ts: no 1 px laser X from afar)
+  b.paint(P(0xffd89a, Surf.Emissive, 0, 0.07)).beam([2.6, top + 2.6, -8.8], [11, top + 2.4, 2.0], 0.07).beam([11, top + 2.6, -8.8], [2.6, top + 2.4, 2.0], 0.07);
   // entrance canopy + name
   K.canopy(b, -4.5, 4.5, z1 + 0.4, 4.6, 3.6, 0.3, K.metal(0x7d5c3a), K.emis(0xffd88a));
   K.letters(b, rng, 0, 4.95, z1 + 3.8, 7, 0.75, 0xffe6b0, { mixed: true, words: 1 });
@@ -866,7 +867,8 @@ function mallLifestyle(b: B, rng: RNG) {
     K.tree(b, rng, tx, tz, 0.9);
   }
   K.umbrella(b, 15.5, -1.0, 1.4, 0xc8352b, 2.5);
-  const fest = K.emis(0xffc870, 3);
+  // festoon strand (floor = 0.04 m thickness: dotted bulbs up close, no 1 px laser line from afar, materials.ts)
+  const fest = P(0xffc870, Surf.Emissive, 3, 0.04);
   for (const [ax, bx] of [[-20, 20]] as [number, number][]) {
     let prev: K.V3 = [ax, 4.2, -8];
     for (let i = 1; i <= 3; i++) { const t = i / 3; const pt: K.V3 = [ax + (bx - ax) * t, 4.2 - 1.6 * t * (1 - t), -8]; b.paint(fest).beam(prev, pt, 0.04); prev = pt; }
