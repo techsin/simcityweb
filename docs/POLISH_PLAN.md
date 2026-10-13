@@ -1396,7 +1396,7 @@ P2 · M · SIM (GUIDE adds two UI lines) · round 2
 - High-tech pays (veteran #3: 0 I-HT jobs at 1M with EQ 130; the bot only zones IndHigh above demand 0.35): on 256×60 s7, high-tech is at least 25% of industrial jobs wherever the city's EQ is 110 or more, by 2040 at the latest.
 - The `balance.test.ts` check "no smokestack industry: air" (run mean, LD15a) still passes.
 
-**Depends on.** PB-REGION and PB-PARKING (so the industry baseline is final); LG-10.
+**Depends on.** PB-REGION and PB-PARKING (so the industry baseline is final); part-B triage's call on veteran #3 (the high-tech share formula, `demand.ts:249`); LG-10.
 
 **Risk.** The population gate moves up (allowed by LD3). Watch unemployment consistency. The ramp is deterministic.
 
@@ -1413,6 +1413,7 @@ P2 · M · SIM (GUIDE adds the Stats line) · round 2
 - **They are also more desirable**: +0.04 for R$$, CO$$ and CO$$$, shown as a "Near a station" term in Why?.
 - **The inspector's downtown note** adds: "Stage 5 max: not a tower site — a subway or train station within 6 tiles allows towers here".
 - **The Transit stats card** adds "Riders save N minutes compared with driving" (GUIDE, after PB-COMMUTE).
+- **Long commutes cost approval.** The commute term starts at 15 minutes instead of 30 (`APPROVAL.commute`, `tuning.ts:662`). Today it never fires in any run, and a 1M city without transit keeps the same 10.4-minute commute (veteran #4).
 
 **Files.** `src/sim/economy/growth.ts`, `desirability.ts`; `src/sim/infra/transit.ts` or `transportFacilities.ts` (station list per graph version); `src/ui/panels/StatsPanel.ts` (GUIDE).
 
@@ -1420,7 +1421,8 @@ P2 · M · SIM (GUIDE adds the Stats line) · round 2
 - `--skip transit` costs at least 4% of the people at 2040 and at least 10% at 2060;
 - base population at year 60 stays at or above 0.99× the §8.0 base (today's row is 1.547M);
 - ms/day rises by at most 3 (LD2);
-- the average stage within 6 tiles of a station is at least 1.5× the city average.
+- the average stage within 6 tiles of a station is at least 1.5× the city average;
+- in the `--skip transit` run the commute approval term is non-zero from 2030.
 
 **Depends on.** PB-COMMUTE; LG-10.
 
@@ -1432,7 +1434,8 @@ P2 · M · SIM (GUIDE adds the Stats line) · round 2
 P2 · M · SIM (GUIDE and META add UI) · round 3
 
 **Problem**
-- **Late approval buys nothing.** It moves the residential target by at most 6% (`APPROVAL_R` 0.06). Only the Statue asks for it (65%, `rewards.ts:77`).
+- **Late approval buys nothing.** It moves the residential target by at most 6% (`APPROVAL_R` 0.06). Only the Statue asks for it (65%, `rewards.ts:77`). Losing 8–12 points costs 0–3% of the population (veteran #2).
+- **The gates below would not bite today.** A flat 12% tax leaves approval at about 70 (71.8 at 128×15, 70.2 at 256 in 2030; veteran #1), above both the 55% and 65% gates, while it banks 3.4× the money. Until taxes cost growth (PB-TAXRESPONSE or NEW-05), council support never stops a rich, taxing mayor.
 - **The bot coasts at 80–84 from 2030**, carried by +7 civic, +4 tourism (capped) and +3 low taxes (`G_256x60_s7` `approvalTerms`).
 - **The human city spent years at 40–53% with no consequence** (`shots2/058` 40%, `121` 50%).
 
@@ -1452,7 +1455,7 @@ P2 · M · SIM (GUIDE and META add UI) · round 3
 - At 52% approval the Arcology button reads "Needs council support (approval 52 of 65)".
 - Bot gates are unchanged: the formula is untouched, and the bot's approval stays within 1 point of the §8.0 base from 2029 (today 79 or more).
 
-**Depends on.** LG-03, LG-09.
+**Depends on.** LG-03, LG-09; PB-TAXRESPONSE or NEW-05.
 
 **Risk.**
 - The forced tax cut is driven by a month counter, so it stays deterministic.
@@ -1598,7 +1601,7 @@ P2 · L · SIM, with CONTENT and GUIDE parts · round 2 (framework and Express M
 
   It has kept taxes at its 7% floor since 2035 (`G_256x60_s7`; `simbot.ts:851`).
 - **There is nothing big to buy.** The most expensive purchase is the Twin Spires at §200k (`catalog.ts:441`).
-- **Money levers do bite when something is at stake.** A flat 15% tax holds a 128 city at 24.7k people for 2009–14 (`veteran/tax15_128x15_s7.log`).
+- **Money levers bite only at the cliff.** A flat 15% tax holds a 128 city at 24.7k people for 2009–14 (`veteran/tax15_128x15_s7.log`), but up to 13% taxes are nearly free (veteran #1). At 128×15, 12% gives 183,871 people (−5.5%) and §1.35M in the bank, 7.6× the base (`veteran/tax12_128x15_s7.log`). From year 21 at 256, 12% costs 0.3% of the people and banks $12.0M instead of $3.57M by 2030. A sink only matters once raising taxes to fill it costs something, so this item depends on PB-TAXRESPONSE or NEW-05.
 
 **Change**
 - **Framework.**
@@ -1631,7 +1634,7 @@ Also:
 - Cancel refunds 50% of what was paid.
 - Save/load in mid-construction restores the progress exactly.
 
-**Depends on.** LG-10; the Worker command rows; render round 2 (construction look on large lots). LG-16 adds council gates later.
+**Depends on.** LG-10; PB-TAXRESPONSE or NEW-05 (taxes must cost growth, or the bot pays for projects with a free 12% tax); the Worker command rows; render round 2 (construction look on large lots). LG-16 adds council gates later.
 
 **Risk.**
 - The funds gate is protected because installments pause instead of overdrawing.
