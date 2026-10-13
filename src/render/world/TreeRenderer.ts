@@ -48,7 +48,7 @@ import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
 import { Noise2D, hash2 } from '../../core/rng';
 import type { CellRect } from '../../core/events';
-import type { Climate } from '../../core/types';
+import { Surf, type Climate } from '../../core/types';
 import { MANIFEST_BY_ID } from '../../assets/manifest';
 import { getBuildingMaterial, patchSurfaceMaterial } from '../../assets/materials';
 import { getNoiseTexture } from './textures';
@@ -545,6 +545,93 @@ const BARE_DEPTH_FRAG = /* glsl */ `
 if (vTreeBare > 0.5 && fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) >= 0.4) discard;
 `;
 
+/** value of a GLSL condition over `type` only (comparisons with literals, !, &&, ||, parentheses) at type = t; null
+ *  if it is anything else */
+function typeCond(cond: string, t: number): boolean | null {
+  const tok = cond.match(/\|\||&&|<=|>=|==|!=|[<>!()]|type|\d+\.?\d*|\.\d+|\S/g) ?? [];
+  let p = 0;
+  const num = (s: string | undefined) => (s !== undefined && /^(\d+\.?\d*|\.\d+)$/.test(s) ? Number(s) : null);
+  const cmp = (a: number, op: string, b: number): boolean | null =>
+    op === '<' ? a < b : op === '>' ? a > b : op === '<=' ? a <= b : op === '>=' ? a >= b : op === '==' ? a === b : op === '!=' ? a !== b : null;
+  const or = (): boolean | null => {
+    let v = and();
+    while (v !== null && tok[p] === '||') { p++; const w = and(); v = w === null ? null : v || w; }
+    return v;
+  };
+  const and = (): boolean | null => {
+    let v = unary();
+    while (v !== null && tok[p] === '&&') { p++; const w = unary(); v = w === null ? null : v && w; }
+    return v;
+  };
+  const unary = (): boolean | null => {
+    if (tok[p] === '!') { p++; const v = unary(); return v === null ? null : !v; }
+    if (tok[p] === '(') { p++; const v = or(); if (tok[p++] !== ')') return null; return v; }
+    const a = tok[p] === 'type' ? t : num(tok[p]), op = tok[p + 1], b = tok[p + 2] === 'type' ? t : num(tok[p + 2]);
+    if (a === null || b === null || (tok[p] !== 'type' && tok[p + 2] !== 'type')) return null;
+    p += 3;
+    return cmp(a, op, b);
+  };
+  const v = or();
+  return p === tok.length ? v : null;
+}
+
+/** surface types of the tree models and impostors (nature models: leaves, bark, rocks, plain paint) */
+const TREE_SURFS: readonly number[] = [Surf.Plain, Surf.Foliage, Surf.Wood, Surf.Stone];
+
+/**
+ * Tree programs shade only the surfaces trees have: the uber shader's surface chain (applySurface: `if (type ...) {}
+ * else if (type ...) {} ... else {}`) keeps the bodies of the blocks the kept surface types enter (each condition
+ * evaluated in chain order) and drops the others (windows and their night lights, glass, roofs, water, ...). Software
+ * GL runs every branch of a shader for every fragment, so each tree fragment otherwise paid for all of them. Exact for
+ * the kept types; a chain of any other shape (a condition on more than `type`, unexpected top-level lines) is left as
+ * it is.
+ */
+export function treeSurfaceChain(fs: string, keep: readonly number[] = TREE_SURFS): string {
+  const L = fs.split('\n');
+  const f = L.findIndex((l) => l.startsWith('void applySurface('));
+  if (f < 0) return fs;
+  for (let s = f + 1; s < L.length && L[s] !== '}'; s++) {
+    const m0 = /^ {2}if \((.*)\) \{$/.exec(L[s]);
+    if (!m0) continue;
+    // this top-level if and its `} else if (...) {` / `} else {` blocks, up to the closing `  }`
+    const segs: { cond: string | null; at: number }[] = [{ cond: m0[1], at: s }];
+    let end = -1;
+    for (let i = s + 1; i < L.length; i++) {
+      const l = L[i];
+      if (!/^ {2}\S/.test(l)) {
+        if (/^\S/.test(l)) return fs;
+        continue;
+      }
+      const m = /^ {2}\} else if \((.*)\) \{$/.exec(l);
+      if (m) segs.push({ cond: m[1], at: i });
+      else if (l === '  } else {') segs.push({ cond: null, at: i });
+      else if (l === '  }') { end = i; break; }
+      else return fs;
+    }
+    if (end < 0) return fs;
+    if (segs.length < 3) { s = end; continue; }
+    // the surface chain: pure `type` conditions only; the block each kept type enters
+    const used = new Set<number>();
+    for (const t of keep) {
+      let k = 0;
+      for (; k < segs.length; k++) {
+        const c = segs[k].cond;
+        const r = c === null ? true : typeCond(c, t);
+        if (r === null) return fs;
+        if (r) break;
+      }
+      if (k < segs.length) used.add(k);
+    }
+    const out = L.slice(0, s);
+    for (let k = 0; k < segs.length; k++) {
+      out.push(L[segs[k].at]);
+      if (used.has(k)) for (let i = segs[k].at + 1; i < (k + 1 < segs.length ? segs[k + 1].at : end); i++) out.push(L[i]);
+    }
+    return out.concat(L.slice(end)).join('\n');
+  }
+  return fs;
+}
+
 export class TreeRenderer {
   readonly group = new THREE.Group();
   private state: CityState;
@@ -874,7 +961,8 @@ export class TreeRenderer {
       .replace('#include <common>', '#include <common>\n' + fp)
       .replace('#include <normal_fragment_begin>', SEASON_FRAG + '\n#include <normal_fragment_begin>');
     if (far) fs = fs.replace('#include <alphatest_fragment>', BARE_FRAG + '\n#include <alphatest_fragment>').replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n' + BARE_NORMAL);
-    shader.fragmentShader = fs;
+    // (only the tree surfaces' shading: see treeSurfaceChain)
+    shader.fragmentShader = treeSurfaceChain(fs);
   }
 
   /** plain (no fade) tree material: near models or impostors (merged: broadleaf + conifer micro impostor meshes; ring:

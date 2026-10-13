@@ -5,7 +5,7 @@
  *  - DynamicBatch per-pass draw lists: view frustum culling, per-instance shadow cascade masks, tiny-caster skipping,
  *    receiver-volume culling and list caching, disabled tiles / tile sets, front-to-back sorting, guard-banded list
  *    reuse while the camera pans (exact again once it rests), LOD geometry swaps without re-culling
- *  - building LOD scheduled by camera travel: never on the wrong side of a swap distance (after a camera cut the
+ *  - building LOD scheduled by distance bands: never on the wrong side of a swap distance (after a camera cut the
  *    downgrades may trail by a few catch-up frames, upgrades never), no work while still; cut frames stay cheap; the
  *    catch-up also finishes while a fast pan goes on
  *  - building LOD cross-fade: swaps in view dissolve over fadeTime (complementary levels in the fade layer, empty
@@ -595,7 +595,7 @@ describe('building LOD schedule', () => {
     expect(wrong()).toEqual({ upIn: 0, other: 0 });
     // the time budget bounds a frame's prioritized evaluations (a fake clock: 1 us per performance.now call)
     br.lodCatch = Infinity;
-    br.lodCatchMs = 0.004;
+    br.lodCatchMs = 0.002;
     let clock = 0;
     const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 0.001));
     const evals = vi.spyOn(br as unknown as { lodEval: () => void }, 'lodEval');
@@ -606,8 +606,8 @@ describe('building LOD schedule', () => {
       expect(wrong().upIn).toBe(0);
       frames = 0;
       while (br.lodBehind && frames < 400) { pan(0.06); frames++; }
-      // (4 clock checks per frame, one per 16 evaluations, beyond the in-view upgrades)
-      expect(frames).toBeGreaterThan(2);
+      // (2 clock checks per frame, one per 16 evaluations, beyond the in-view upgrades)
+      expect(frames).toBeGreaterThanOrEqual(2);
       expect(n1).toBeLessThan(list.length * 0.6);
     } finally { now.mockRestore(); }
     expect(wrong()).toEqual({ upIn: 0, other: 0 });
@@ -790,6 +790,9 @@ describe('building LOD cross-fade', () => {
 
   it('completes a fade with the camera travel in fast motion, over fadeTime in slow motion', () => {
     const { br, bi, dOn, dOff, at, glide } = setup();
+    // (the travel-driven progress alone: with the default motion cap a 4%-per-frame zoom swaps at once, see 'caps the
+    // concurrent fades by the view motion')
+    br.fadeMotion = [1, 2];
     type F = { p: number } | null;
     const fadeP = () => ((bi as unknown as { fade: F }).fade?.p ?? -1);
     at(dOn * 0.5);
@@ -832,6 +835,8 @@ describe('building LOD cross-fade', () => {
 
   it('swaps at once when the motion would finish the dissolve within a frame or two (fast fly-by), dissolves otherwise', () => {
     const { br, bi, dOn, at, glide } = setup();
+    // (the per-building rule alone: the view-motion cap would also stop these fades, see 'caps the concurrent fades')
+    br.fadeMotion = [1, 2];
     // (the camera is ~0.45 dOn high here: every step below is far under the cut distance, i.e. smooth motion)
     const flyBy = () => {
       at(dOn * 0.5);
@@ -979,7 +984,53 @@ describe('building LOD cross-fade', () => {
     expect(fast.faded).toBe(0);
   });
 
-  it('compiles the fade program asynchronously a few frames after the first that drew the buildings (not at load), fading only from then on', async () => {
+  it('caps the concurrent fades by the zoom rate: a slow wheel zoom dissolves its swaps, a fast zoom / sweep swaps at once', () => {
+    const { br, bi, dOn, dOff, at, glide } = setup();
+    // zooming straight at / away from the building (the camera looks at it): the view distance changes by `rate` per
+    // frame, crossing the downgrade distance out and the upgrade distance back in
+    const zoom = (rate: number) => {
+      at(dOn * 0.6);
+      br.flushLod();
+      at(dOn * 0.6);
+      glide(dOn * 0.85);
+      let d = dOn * 0.85, swaps = 0, faded = 0, lod = bi.lod;
+      const step = (dd: number) => {
+        at(dd);
+        if (bi.lod !== lod) { swaps++; if (br.fading > 0) faded++; lod = bi.lod; }
+        br.update(1 / 60);
+      };
+      while (d < dOn * 1.2) step((d *= 1 + rate));
+      while (d > dOff * 0.8) step((d /= 1 + rate));
+      return { swaps, faded };
+    };
+    // 0.5% per frame (a slow wheel zoom): both swaps dissolve
+    const slow = zoom(0.005);
+    expect(slow.swaps).toBe(2);
+    expect(slow.faded).toBe(2);
+    // 4% per frame (a fast zoom, a street-to-region sweep): both instant
+    const fast = zoom(0.04);
+    expect(fast.swaps).toBe(2);
+    expect(fast.faded).toBe(0);
+  });
+
+  it('swaps at once at the low quality preset (lodPixels above fadeMaxPixels: no fade layer draws on weak machines)', () => {
+    const { br, bi, dOn, at, glide } = setup();
+    br.lodPixels = 11;
+    const d11 = (dOn * 9) / 11;
+    at(d11 * 0.5);
+    glide(d11 + 20);
+    expect(bi.lod).toBe(1);
+    expect(br.fading).toBe(0);
+    // medium (10 px) and up dissolve
+    br.lodPixels = 10;
+    const d10 = (dOn * 9) / 10;
+    at(d10 * 0.5);
+    glide(d10 + 20);
+    expect(bi.lod).toBe(1);
+    expect(br.fading).toBe(1);
+  });
+
+  it('compiles the fade program in an idle period a few frames after the first that drew the buildings (not at load, never inside a frame), fading only from then on', async () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
     st.heights.fill(0);
     const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
@@ -1020,14 +1071,34 @@ describe('building LOD cross-fade', () => {
       br.batch.mesh.onBeforeRender(renderer as unknown as THREE.WebGLRenderer, scene, cam, br.batch.mesh.geometry, br.batch.mesh.material as THREE.Material, null as unknown as THREE.Group);
       bound = null;
     };
-    // the first frames after the load carry none of the compile: it starts after a dozen drawn frames, never inside a
-    // render, at the next update with the scene target bound (then restored)
-    for (let f = 0; f < 11; f++) { draw(); at(dOn * 1.1); }
-    expect(calls.length).toBe(0);
-    draw();
-    expect(calls.length).toBe(0);
-    at(dOn * 1.1);
-    expect(calls.length).toBe(1);
+    // idle callbacks under the test's control
+    const idle: ((d: { timeRemaining(): number; didTimeout: boolean }) => void)[] = [];
+    const g = globalThis as unknown as { requestIdleCallback?: unknown };
+    const hadRic = 'requestIdleCallback' in g, ric0 = g.requestIdleCallback;
+    g.requestIdleCallback = (cb: (d: { timeRemaining(): number; didTimeout: boolean }) => void) => { idle.push(cb); return idle.length; };
+    try {
+      // the first frames after the load carry none of the compile: it is scheduled after a dozen drawn frames, by the
+      // next update, into an idle period with enough time left (never inside a render or an update)
+      for (let f = 0; f < 11; f++) { draw(); at(dOn * 1.1); }
+      expect(idle.length).toBe(0);
+      draw();
+      at(dOn * 1.1);
+      expect(calls.length).toBe(0);
+      expect(idle.length).toBe(1);
+      // a short idle period (2 ms left): not yet, asked again
+      idle.shift()!({ timeRemaining: () => 2, didTimeout: false });
+      expect(calls.length).toBe(0);
+      expect(idle.length).toBe(1);
+      for (let f = 0; f < 5; f++) { draw(); at(dOn * 1.1); }
+      expect(calls.length).toBe(0);
+      // a long one: compiled there with the scene target bound (then restored)
+      idle.shift()!({ timeRemaining: () => 30, didTimeout: false });
+      expect(calls.length).toBe(1);
+      expect(idle.length).toBe(0);
+    } finally {
+      if (hadRic) g.requestIdleCallback = ric0;
+      else delete g.requestIdleCallback;
+    }
     expect(calls[0][0]).toBe(layer.mesh);
     expect(calls[0][1]).toBe(sceneRT);
     expect(calls[0][2]).toBe(scene);

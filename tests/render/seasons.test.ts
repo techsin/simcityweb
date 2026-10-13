@@ -17,12 +17,12 @@ import { registerAllModels } from '../../src/assets/builders';
 import { getModelGeometry, registeredModelIds } from '../../src/assets/registry';
 import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { Surf } from '../../src/core/types';
-import { setFoliageSeason, sharedUniforms } from '../../src/assets/materials';
+import { getBuildingMaterial, setFoliageSeason, sharedUniforms } from '../../src/assets/materials';
 import { getImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
-import { TreeRenderer } from '../../src/render/world/TreeRenderer';
+import { TreeRenderer, treeSurfaceChain } from '../../src/render/world/TreeRenderer';
 import { CELL_SIZE } from '../../src/core/constants';
 import { ModelBuilder } from '../../src/assets/ModelBuilder';
 import { RNG } from '../../src/core/rng';
@@ -136,6 +136,29 @@ describe('seasonal foliage patterns', () => {
     expect(fs.w).toBe(1);
     expect(fs.y + fs.z).toBe(0);
     setFoliageSeason(5, 'temperate');
+  });
+});
+
+describe('tree programs', () => {
+  it('shade only the tree surfaces: the uber surface chain keeps the foliage / bark / rock / plain blocks', () => {
+    const sh = { vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader, uniforms: {} } as unknown as THREE.WebGLProgramParametersWithUniforms;
+    getBuildingMaterial().onBeforeCompile(sh, {} as THREE.WebGLRenderer);
+    const fs = sh.fragmentShader;
+    const out = treeSurfaceChain(fs);
+    expect(out.length).toBeLessThan(fs.length * 0.8);
+    // the chain keeps its structure and the blocks tree surfaces enter
+    const markers = (s: string) => s.split('\n').filter((l) => /^ {2}\} else( if \(.*\))? \{$/.test(l)).length;
+    expect(markers(out)).toBe(markers(fs));
+    for (const s of ['void applySurface(', 'float lowF =', '// wood planks', 'float stand =']) expect(out, s).toContain(s);
+    // facade-only work is gone (window night lights)
+    const calls = (s: string) => s.split('\n').filter((l) => l.includes('nightWindows(') && !/^\s*(vec[234]|float|void)\s+nightWindows\(/.test(l)).length;
+    expect(calls(fs)).toBeGreaterThan(0);
+    expect(calls(out)).toBe(0);
+    // anything unexpected is left as it is
+    expect(treeSurfaceChain('void main() {}')).toBe('void main() {}');
+    const odd = fs.replace(/^ {2}\} else if \(type < 3\.5\) \{$/m, '  } else if (type < 3.5 && vertical) {');
+    expect(odd).not.toBe(fs);
+    expect(treeSurfaceChain(odd)).toBe(odd);
   });
 });
 
