@@ -6,12 +6,13 @@
  *    receiver-volume culling and list caching, disabled tiles / tile sets, front-to-back sorting, guard-banded list
  *    reuse while the camera pans (exact again once it rests), LOD geometry swaps without re-culling
  *  - building LOD scheduled by distance bands: never on the wrong side of a swap distance (after a camera cut the
- *    downgrades may trail by a few catch-up frames, upgrades never), no work while still; cut frames stay cheap; the
- *    catch-up also finishes while a fast pan goes on
+ *    downgrades may trail by a few catch-up frames, upgrades in view never), one evaluation per swap in smooth motion,
+ *    no work while still; cut frames stay cheap and catch up by priority (heaviest downgrades first) within a time
+ *    budget, also while a fast pan goes on
  *  - building LOD cross-fade: swaps in view dissolve over fadeTime (complementary levels in the fade layer, empty
  *    stand-in in the batch), reverse mid-fade, instant on cuts / flushes / off-screen; with fadeOn 1 a zoom-out's
- *    dissolve is over by the instant-swap distance; fast pans / orbits swap at once (motion cap); the fade program
- *    compiles after the first frame, asynchronously
+ *    dissolve is over by the instant-swap distance; fast pans / orbits / zooms swap at once (motion cap), so does the
+ *    low quality preset; the fade program comes with the load-time precompile (an idle-time compile otherwise)
  *  - burnt multi-cell lots are composed from the rubble kit (one bed over the lot, following rising ground exactly;
  *    debris pieces off the cell grid with low-poly proxies); hill lots get real-size stone skirts, a plain box far away
  *  - shadow receivers only bump their version when the volume really changes
@@ -769,7 +770,7 @@ describe('building LOD cross-fade', () => {
     expect(layer.n).toBe(0);
     expect(bi.lod).toBe(0);
     expect(info[bi.main].geometryIndex).toBe(bi.geom);
-    // a cut far out: the cut frame downgrades a quarter slice, the rest trails over the next frames without fading
+    // a cut far out: the cut frame downgrades lodCatch of them, the rest trails over the next frames without fading
     at(dOn * 1.4);
     expect(br.lodBehind).toBe(true);
     const trailing = all.filter((x) => x.lod === 0).length;

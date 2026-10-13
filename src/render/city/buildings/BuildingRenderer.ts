@@ -160,6 +160,9 @@ interface Fade {
   p: number;
   sOld: number;
   sNew: number;
+  /** geometries of the old / new level (the one in sOld / sNew) */
+  gOld: number;
+  gNew: number;
   /** index in BuildingRenderer.fades */
   i: number;
   /** camera distance to the building at the last progress step (travel-driven progress, see fadeTravel) */
@@ -643,6 +646,8 @@ class LodFadeLayer {
   private mainInd!: THREE.DataTexture;
   private shInd!: THREE.DataTexture;
   private listDirty = true;
+  /** a slot's level started or stopped casting (a fade's half-way switch): the shadow map's content changed */
+  private castDirty = false;
   private matDirty = false;
   private colDirty = false;
 
@@ -752,7 +757,7 @@ class LodFadeLayer {
 
   setCasts(s: number, on: boolean): void {
     const v = on ? 1 : 0;
-    if (this.casts[s] !== v) { this.casts[s] = v; this.listDirty = true; }
+    if (this.casts[s] !== v) { this.casts[s] = v; this.listDirty = this.castDirty = true; }
   }
 
   setMatrix(s: number, m: THREE.Matrix4): void {
@@ -789,8 +794,10 @@ class LodFadeLayer {
       this.nMain = this.n;
       this.nShadow = k;
       this.shInd.needsUpdate = true;
-      // the layer's shadow casters changed: cached shadow maps re-render
-      shadowCasters.version++;
+      // cached shadow maps re-render only when a level started / stopped casting (a fade's half-way switch): a fade
+      // starting or ending moves the casting level between the building's instance and the layer, the map's content
+      // stays the same (see BuildingRenderer.startFade / finishFade)
+      if (this.castDirty) { this.castDirty = false; shadowCasters.version++; }
     }
     if (this.matDirty) { this.matDirty = false; m._matricesTexture.needsUpdate = true; }
     if (this.colDirty) { this.colDirty = false; m._colorsTexture.needsUpdate = true; }
@@ -1017,12 +1024,11 @@ export class BuildingRenderer {
   }
 
   /**
-   * Compile the fade layer's program off the load path: once FADE_COMPILE_FRAMES frames have drawn the buildings (the
-   * load-time precompile, PostFX.compileScene, does not see the layer: it joins the scene graph here), in an idle
-   * period (scheduleFadeCompile), with that scene pass's render target bound (the same output variant, as
-   * compileScene does) and asynchronously where KHR_parallel_shader_compile exists (three's compileAsync polls the
-   * program instead of blocking on it). Fades start once it is ready (fadeReady); a quality change recompiles the
-   * scene, the layer included, as before.
+   * Fallback compile of the fade layer's program, for a renderer whose load-time precompile did not build it (see
+   * fadeProbe): once FADE_COMPILE_FRAMES frames have drawn the buildings, in an idle period (scheduleFadeCompile), with
+   * that scene pass's render target bound (the same output variant, as compileScene does) and asynchronously where
+   * KHR_parallel_shader_compile exists (three's compileAsync polls the program instead of blocking on it). Fades start
+   * once it is ready (fadeReady); a quality change recompiles the scene, the layer included.
    */
   private compileFade(): void {
     const rc = this.fadeRc;
@@ -1772,7 +1778,7 @@ export class BuildingRenderer {
    * and backlogs evaluate by priority within lodCatchMs (see catchUp).
    */
   updateLod(camera: THREE.PerspectiveCamera, heightPx: number): void {
-    // the fade program, in an idle period once the first frames have drawn the buildings (see compileFade)
+    // the fade program, when no load-time precompile built it: in an idle period (see fadeProbe)
     if (this.fadeStage === 1) this.scheduleFadeCompile();
     const c = camera.position;
     // px = radius / dist * H / (2 tan(fov/2)): swap to the proxy beyond dist = radius * K / on, back within radius * K / off
@@ -1809,7 +1815,9 @@ export class BuildingRenderer {
     const [m0, m1] = this.fadeMotion;
     this.fadeCap = motion <= m0 ? this.fadeMax : motion >= m1 ? 0 : Math.floor((this.fadeMax * (m1 - motion)) / (m1 - m0));
     const behind = this.lodBehind;
-    const scan = hop > 0 || behind || this.lodScanAll;
+    // (a damped camera coming to rest creeps by fractions of a mm: no scan for that, the bands are absolute distances,
+    // so the next real motion's scan sees the whole drift)
+    const scan = hop > 1e-3 || behind || this.lodScanAll;
     if (!scan && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
     this.lodDeadline = performance.now() + this.lodBudgetMs;
     const full = this.lodFull;
@@ -2074,7 +2082,7 @@ export class BuildingRenderer {
 
   private startFade(bi: BInst, from: number, to: number): void {
     const L = this.fadeLayer;
-    const f: Fade = { bi, p: 0, sOld: -1, sNew: -1, i: this.fades.length, d: this.camDist(bi) };
+    const f: Fade = { bi, p: 0, sOld: -1, sNew: -1, gOld: from, gNew: to, i: this.fades.length, d: this.camDist(bi) };
     // (the old level keeps casting the shadow until half way, see fadeColors)
     f.sOld = L.alloc(f, from, true);
     f.sNew = L.alloc(f, to, false);
@@ -2084,13 +2092,20 @@ export class BuildingRenderer {
     L.setMatrix(f.sOld, this.m4);
     L.setMatrix(f.sNew, this.m4);
     this.fadeColors(f);
+    // the instance's swap to its empty stand-in moves the old level's shadow to the layer: the shadow map's content is
+    // the same, so it does not re-render for it (only the half-way switch changes the casting level)
+    const v = shadowCasters.version;
     this.batch.setGeometry(bi.main, this.emptyOf(bi.geom));
+    shadowCasters.version = v;
   }
 
   private reverseFade(f: Fade): void {
     const s = f.sOld;
     f.sOld = f.sNew;
     f.sNew = s;
+    const g = f.gOld;
+    f.gOld = f.gNew;
+    f.gNew = g;
     f.p = 1 - f.p;
     this.fadeColors(f);
   }
@@ -2118,8 +2133,16 @@ export class BuildingRenderer {
   /** the fade is done: the building's instance draws its (new) level again */
   private finishFade(f: Fade): void {
     const bi = f.bi;
+    // the level the layer cast the shadow with (see fadeColors)
+    const cast = f.p >= 0.5 ? f.gNew : f.gOld;
     this.dropFade(f);
-    if (bi.main >= 0) this.batch.setGeometry(bi.main, bi.lod ? bi.lodGeom : bi.geom);
+    if (bi.main >= 0) {
+      const g = bi.lod ? bi.lodGeom : bi.geom, v = shadowCasters.version;
+      this.batch.setGeometry(bi.main, g);
+      // the instance casts the level the layer cast: the shadow map's content is unchanged (a fade settled early on
+      // the other level, e.g. by a cut or a flush, does re-render it)
+      if (g === cast) shadowCasters.version = v;
+    }
   }
 
   update(dt: number): void {
