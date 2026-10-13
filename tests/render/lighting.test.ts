@@ -192,7 +192,9 @@ describe('night window levels of detail', () => {
   });
 
   it('weights the facade level by the mean floor occupancy', () => {
-    const occ = /hF < mix\(([\d.]+), ([\d.]+), hotel\) \? ([\d.]+) : \(hF < ([\d.]+) \? ([\d.]+) : mix\(([\d.]+), ([\d.]+), hotel\)\)/.exec(nw);
+    // (the class value hO is a golden-ratio sequence over the floors: uniform shares, so the thresholds are the shares)
+    expect(nw).toMatch(/float hO = fract\(ci\.y \* 0\.618034 \+ /);
+    const occ = /hO < mix\(([\d.]+), ([\d.]+), hotel\) \? ([\d.]+) : \(hO < ([\d.]+) \? ([\d.]+) : mix\(([\d.]+), ([\d.]+), hotel\)\)/.exec(nw);
     const occM = /float occM = mix\(mix\(([\d.]+), ([\d.]+), hotel\), 1\.0, home\);/.exec(nw);
     expect(occ).not.toBeNull();
     expect(occM).not.toBeNull();

@@ -300,8 +300,12 @@ vec3 nightWindows(vec2 ci, float fy, vec2 px, float unitN, float kind, float lit
   float hP = qh11(ci.x + hF * 613.0 + 0.71);
   float hB = qh11(floor(uid * 0.5 + 1e-3) * 1.618 + qh11(floor(ci.y / 3.0 + 1e-3) + vSeed * 517.0 + 0.53) * 397.0);
   // floor occupancy: offices have dark floors (~30%, hotels ~12%: a few late workers), half and fully lit open-plan
-  // floors (mean 0.667, hotels 0.854); homes / shops only vary a little per floor (mean 1)
-  float occ = mix(hF < mix(0.3, 0.12, hotel) ? 0.1 : (hF < 0.72 ? 0.75 : mix(1.15, 1.4, hotel)), 0.8 + 0.4 * hF, home);
+  // floors (mean 0.667, hotels 0.854); homes / shops only vary a little per floor (mean 1). The office class comes
+  // from a golden-ratio sequence over the floors (random start per building), not an independent draw per floor: every
+  // tower gets close to the mean mix over any few floors, so its floor level matches the block / facade levels (which
+  // use the mean) and a tower is not lit far above or below its share by the luck of ~20 draws
+  float hO = fract(ci.y * 0.618034 + qh11(vSeed * 1013.0 + 0.5));
+  float occ = mix(hO < mix(0.3, 0.12, hotel) ? 0.1 : (hO < 0.72 ? 0.75 : mix(1.15, 1.4, hotel)), 0.8 + 0.4 * hF, home);
   float occM = mix(mix(0.667, 0.854, hotel), 1.0, home);
   float secP = clamp(litP * occ, 0.0, 0.97);
   // a lit unit (household at home / office section in use) has ~70% of its windows lit, a dark one a stray lamp in ~8%;
