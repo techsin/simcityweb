@@ -42,8 +42,9 @@
  * fade (the level covering most pixels casts: the other level's shadow would streak the visible one, e.g. a proxy's
  * coarser roof shadowing the full model's roof in the first frames). The low quality preset (lodPixels above
  * `fadeMaxPixels`) swaps at once: weak machines skip the fade layer's draws and both levels' triangles. The fade
- * layer's program is not part of the load-time precompile: it is compiled in an idle period a few frames after the
- * first (compileFade: requestIdleCallback, so its source assembly never lands in a frame); swaps are instant until it
+ * layer's program is part of the load-time precompile (the empty layer sits in the scene graph, culled), so no frame
+ * of play compiles it; fades start once the driver reports it ready (fadeProbe). A renderer that did not precompile it
+ * compiles it in an idle period a few frames later (compileFade via requestIdleCallback); swaps are instant until it
  * is ready.
  * Burnt multi-cell lots are composed from a rubble kit (rubbleKit): one debris bed over the whole lot (exactly over
  * rising ground), heap clusters / big collapsed heaps / outer-wall stubs / a burnt car scattered at hashed offsets,
@@ -858,6 +859,8 @@ export class BuildingRenderer {
   private lodAsked = new Set<number>();
   private lodUrgent = new Set<number>();
   private lodWaiting = new Map<number, BInst[]>();
+  /** geometries whose background proxy request waits for the end of rebuildAll (null: ask at once) */
+  private prefetch: number[] | null = null;
   /** buildings whose proxy arrived while they waited on their full model (late downgrades): evaluated from lodWakeAt
    *  on, at most lodWakeSlice per frame and, while swaps may fade, only while fewer than fadeMax / 2 fades run (see
    *  wakeWaiting); cut frames leave them for the next frames */
@@ -919,11 +922,11 @@ export class BuildingRenderer {
   /** cross-fades run only while lodPixels <= this: the medium / high / ultra presets (10 / 9 / 7 px); the low preset
    *  (11 px, weak machines) swaps at once like the instant LOD, without the fade layer's draws */
   fadeMaxPixels = 10;
-  /** the fade layer's program is compiled: it is compiled in an idle period a few frames after the first one that drew
-   *  the buildings (not in the load-time precompile, see compileFade); until then every swap is instant */
+  /** the fade layer's program is compiled and ready (the load-time precompile builds it, see fadeProbe); until then
+   *  every swap is instant */
   fadeReady = false;
-  /** 0 waiting for FADE_COMPILE_FRAMES drawn frames, 1 schedule the compile at the next update, 4 waiting for an idle
-   *  period, 2 compiling, 3 ready */
+  /** 0 waiting for the precompiled program to be ready (or FADE_COMPILE_FRAMES drawn frames without one), 1 schedule
+   *  the fallback compile at the next update, 4 waiting for an idle period, 2 compiling, 3 ready */
   private fadeStage = 0;
   private fadeIdleSince = 0;
   private fadeFrames = 0;
@@ -958,22 +961,40 @@ export class BuildingRenderer {
     this.batch.enablePassCulling({ culler, minShadowTexels: 1.2 });
     // nearest buildings first: occluded facades / lots behind them fail the depth test before the (heavy) uber shader
     this.batch.sortFront = true;
-    // the fade layer joins the scene graph only when its program is compiled (compileFade): the load-time precompile
-    // (PostFX.compileScene) must not block the first frame on it
+    // the fade layer is in the scene graph from the start (an empty layer is culled: no draw), so the load-time
+    // precompile (PostFX.compileScene) builds its program with the rest of the scene and no frame of play pays for it;
+    // fades start once the program is ready (see fadeProbe)
     this.fadeLayer = new LodFadeLayer(this.batch.mesh, this.batch.mesh.customDepthMaterial);
+    this.batch.mesh.add(this.fadeLayer.mesh);
     const mesh = this.batch.mesh, before = mesh.onBeforeRender;
     mesh.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
-      // frames that drew the buildings: after FADE_COMPILE_FRAMES of them, compile the fade program at the next update
-      if (this.fadeStage === 0) {
-        const fr = renderer.info.render.frame;
-        if (fr !== this.fadeFrameNo) { this.fadeFrameNo = fr; this.fadeFrames++; }
-        if (this.fadeFrames >= FADE_COMPILE_FRAMES) {
-          this.fadeStage = 1;
-          this.fadeRc = { r: renderer, scene, cam: camera, rt: renderer.getRenderTarget() };
-        }
-      }
+      if (this.fadeStage === 0) this.fadeProbe(renderer, scene, camera);
       before.call(mesh, renderer, scene, camera, geometry, material, group);
     };
+  }
+
+  /**
+   * Frames that drew the buildings, until the fade program is usable: compiled by the load-time precompile, it is
+   * ready once the driver says so (KHR_parallel_shader_compile completion status, polled every 8 frames; without the
+   * extension three reports it ready at once, the compile having run with the load's first frame). A renderer that
+   * did not precompile it (the batch joined the scene after the precompile, a city switch) compiles it in an idle
+   * period after FADE_COMPILE_FRAMES frames (scheduleFadeCompile).
+   */
+  private fadeProbe(renderer: THREE.WebGLRenderer, scene: THREE.Object3D, camera: THREE.Camera): void {
+    const fr = renderer.info.render.frame;
+    if (fr === this.fadeFrameNo) return;
+    this.fadeFrameNo = fr;
+    this.fadeFrames++;
+    const props = renderer.properties?.get(this.fadeLayer.mesh.material) as { currentProgram?: { isReady(): boolean } } | undefined;
+    const prog = props?.currentProgram;
+    if (prog) {
+      if ((this.fadeFrames & 7) === 1 && prog.isReady()) { this.fadeStage = 3; this.fadeReady = true; }
+      return;
+    }
+    if (this.fadeFrames >= FADE_COMPILE_FRAMES) {
+      this.fadeStage = 1;
+      this.fadeRc = { r: renderer, scene, cam: camera, rt: renderer.getRenderTarget() };
+    }
   }
 
   /**
@@ -1009,7 +1030,7 @@ export class BuildingRenderer {
     if (!rc || this.disposed) return;
     this.fadeStage = 2;
     const mesh = this.fadeLayer.mesh;
-    this.batch.mesh.add(mesh);
+    if (mesh.parent !== this.batch.mesh) this.batch.mesh.add(mesh);
     const r = rc.r, prev = r.getRenderTarget();
     let done: Promise<unknown>;
     try {
@@ -1057,8 +1078,10 @@ export class BuildingRenderer {
     if (fresh) this.batch.padSphere(id, model === 'rubble' ? RUBBLE_PAD : PROXY_PAD);
     if (!this.lodMap.has(id) && !this.lodPending.has(id)) {
       this.lodPending.set(id, [model, v]);
-      // background prefetch: most proxies exist before any building needs them
-      this.askProxy(id, false);
+      // background prefetch: most proxies exist before any building needs them (a city load asks at its end, see
+      // rebuildAll)
+      if (this.prefetch) this.prefetch.push(id);
+      else this.askProxy(id, false);
     }
     return id;
   }
@@ -1112,6 +1135,13 @@ export class BuildingRenderer {
     if (!w) this.lodWaiting.set(geom, (w = []));
     w.push(bi);
     this.askProxy(geom, true);
+  }
+
+  /** proxy geometry id of a full geometry if known (itself when the model has none), -1 while it is pending (no
+   *  request) */
+  private knownProxy(geom: number): number {
+    const p = this.lodMap.get(geom);
+    return p !== undefined ? p : this.lodPending.has(geom) ? -1 : geom;
   }
 
   /** proxy geometry id of a full geometry (itself when the model has none); -1 = not built yet (worker: requested;
@@ -1452,7 +1482,23 @@ export class BuildingRenderer {
 
   rebuildAll(): void {
     this.clear();
-    for (const b of this.state.buildings.values()) this.add(b, false);
+    this.prefetch = [];
+    try {
+      for (const b of this.state.buildings.values()) this.add(b, false);
+    } finally {
+      const pre = this.prefetch;
+      this.prefetch = null;
+      // the background prefetch in order of the triangles each model's instances draw in this city (towers and the
+      // commonest houses first): the first zoom-out after a load finds the proxies that matter most built already
+      const score = new Map<number, number>();
+      for (const bi of this.list) {
+        if (bi.geom >= 0) score.set(bi.geom, (score.get(bi.geom) ?? 0) + 1);
+        if (bi.siteGeom >= 0) score.set(bi.siteGeom, (score.get(bi.siteGeom) ?? 0) + 1);
+      }
+      const w = (g: number) => (score.get(g) ?? 0) * this.batch.triangles(g);
+      pre.sort((a, b) => w(b) - w(a));
+      for (const g of pre) this.askProxy(g, false);
+    }
     // room for the proxies the worker is about to deliver and their 3-vertex cross-fade stand-ins, and for the rubble
     // kit's pieces (~12k vertices, built when the first big lot burns): growing the batch's vertex buffer later would
     // re-upload all of it in some frame (reserveVertices adds 25%)
@@ -1572,9 +1618,10 @@ export class BuildingRenderer {
       geom = burnt ? this.geomFor('rubble', b.id) : this.geomFor(model, b.variant);
       bi.geom = geom;
       // a building currently drawn as a proxy gets its new model's proxy right away if it exists (no detail pop; without
-      // a worker it is built now), else it shows the full model until the worker delivers; for the others the proxy is
-      // looked up by updateLod (-1 until then)
-      bi.lodGeom = this.proxyOf(geom, bi.lod === 1 && !this.proxies);
+      // a worker it is built now), else it shows the full model until the worker delivers (an urgent request); for the
+      // others the proxy is only looked up (-1 while it is being built: updateLod asks for it when the building needs
+      // it, so a city load does not turn every model's background request into an urgent one)
+      bi.lodGeom = bi.lod === 1 && !this.proxies ? this.proxyOf(geom, true) : this.knownProxy(geom);
       if (bi.lod === 1 && (bi.lodGeom < 0 || bi.lodGeom === geom)) {
         bi.lod = 0;
         this.lodCount--;

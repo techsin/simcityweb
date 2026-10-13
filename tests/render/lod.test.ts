@@ -1030,7 +1030,7 @@ describe('building LOD cross-fade', () => {
     expect(br.fading).toBe(1);
   });
 
-  it('compiles the fade program in an idle period a few frames after the first that drew the buildings (not at load, never inside a frame), fading only from then on', async () => {
+  it('fades once the load-time precompile\'s fade program is ready (polled, no compile of its own), never inside a frame of play', () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
     st.heights.fill(0);
     const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
@@ -1039,8 +1039,60 @@ describe('building LOD cross-fade', () => {
     type L = { lod: number; radius: number; cy: number; vis: { cx: number; cz: number } };
     const bi = (br as unknown as { list: L[] }).list[0];
     const layer = (br as unknown as { fadeLayer: { mesh: THREE.BatchedMesh } }).fadeLayer;
-    // not in the scene graph: the load-time precompile (PostFX.compileScene) does not compile it
-    expect(layer.mesh.parent).toBe(null);
+    // in the scene graph from the start (empty: culled), so PostFX.compileScene builds its program with the scene's
+    expect(layer.mesh.parent).toBe(br.batch.mesh);
+    expect(layer.mesh.visible).toBe(true);
+    const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 20000);
+    const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
+    const dOn = (bi.radius * K) / (br.lodPixels * br.fadeOn);
+    const target = new THREE.Vector3(bi.vis.cx, bi.cy, bi.vis.cz), dir = new THREE.Vector3(-1, 0.7, -1).normalize();
+    const at = (d: number) => { cam.position.copy(target).addScaledVector(dir, d); cam.lookAt(target); cam.updateMatrixWorld(); br.updateLod(cam, H); };
+    const glide = (from: number, to: number) => { for (let d = from; Math.abs(d - to) > 1e-6; d += Math.max(-5, Math.min(5, to - d))) at(d); at(to); };
+    // the precompiled program, still compiling in the driver (KHR_parallel_shader_compile)
+    let ready = false, polls = 0, compiles = 0;
+    const prog = { isReady: () => { polls++; return ready; } };
+    const renderer = {
+      info: { render: { frame: 1 } },
+      properties: { get: (m: unknown) => (m === layer.mesh.material ? { currentProgram: prog } : {}) },
+      getRenderTarget: () => null,
+      setRenderTarget: () => {},
+      compileAsync: () => { compiles++; return Promise.resolve(); },
+    };
+    const scene = new THREE.Scene();
+    scene.add(br.batch.mesh);
+    const draw = () => {
+      renderer.info.render.frame++;
+      br.batch.mesh.onBeforeRender(renderer as unknown as THREE.WebGLRenderer, scene, cam, br.batch.mesh.geometry, br.batch.mesh.material as THREE.Material, null as unknown as THREE.Group);
+    };
+    for (let f = 0; f < 40; f++) { draw(); at(dOn * 0.5); }
+    // polled every 8 frames, not compiled again; swaps are instant meanwhile
+    expect(polls).toBe(5);
+    expect(compiles).toBe(0);
+    expect(br.fadeReady).toBe(false);
+    glide(dOn * 0.5, dOn * 1.05);
+    expect(bi.lod).toBe(1);
+    expect(br.fading).toBe(0);
+    // the driver is done: the next poll makes fades available
+    ready = true;
+    for (let f = 0; f < 8; f++) draw();
+    expect(br.fadeReady).toBe(true);
+    glide(dOn * 1.05, dOn * 0.5);
+    glide(dOn * 0.5, dOn * 1.05);
+    expect(bi.lod).toBe(1);
+    expect(br.fading).toBe(1);
+    expect(compiles).toBe(0);
+  });
+
+  it('compiles the fade program in an idle period a few frames after the first that drew the buildings when no precompile built it, fading only from then on', async () => {
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
+    st.heights.fill(0);
+    const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
+    br.lodBudgetMs = 1e9;
+    br.add({ id: 1, def: 'res_apartment', x: 30, z: 30, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
+    type L = { lod: number; radius: number; cy: number; vis: { cx: number; cz: number } };
+    const bi = (br as unknown as { list: L[] }).list[0];
+    const layer = (br as unknown as { fadeLayer: { mesh: THREE.BatchedMesh } }).fadeLayer;
+    // (a renderer whose precompile did not build the fade program: no program on its material)
     expect(br.fadeReady).toBe(false);
     const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 20000);
     const H = 720, K = (H / Math.tan((45 * Math.PI) / 360)) / 2;
@@ -1059,6 +1111,7 @@ describe('building LOD cross-fade', () => {
     let release = () => {};
     const renderer = {
       info: { render: { frame: 1 } },
+      properties: { get: () => ({}) },
       getRenderTarget: () => bound,
       setRenderTarget: (t: THREE.WebGLRenderTarget | null) => { bound = t; },
       compileAsync: (obj: THREE.Object3D, _c: THREE.Camera, scene: THREE.Object3D) => { calls.push([obj, bound, scene]); return new Promise((r) => { release = () => r(obj); }); },
