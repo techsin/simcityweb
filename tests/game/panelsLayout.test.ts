@@ -7,7 +7,7 @@
  *  P10 — the budget sliders: stepSlider / stepButtons give exact −/+ steps (and the slider keeps the keyboard focus).
  */
 import { describe, expect, it } from 'vitest';
-import { PANEL_REBUILD_MS, Panel, anchoredPos } from '../../src/ui/Panel';
+import { PANEL_REBUILD_MS, Panel, anchoredPos, clearOfHud } from '../../src/ui/Panel';
 import { stepSlider } from '../../src/ui/dom';
 import type { GameContext } from '../../src/game/context';
 
@@ -29,6 +29,25 @@ describe('anchoredPos (final fixes P12): a resize keeps the docked edge', () => 
     expect(anchoredPos(-300, 10, 400, 300, 1600, 900, 1600, 900)).toEqual({ x: 4, y: 64 });
     // taller than the layer: the top stays under the top bar
     expect(anchoredPos(100, 300, 400, 2000, 1600, 900, 1600, 900).y).toBe(64);
+  });
+});
+
+describe('clearOfHud (routed from emergency r1): panels open right of the toasts', () => {
+  // the top-left HUD column (toasts, onboarding card) is 12 + 350 px wide: panels keep 12 px from it
+  const minLeft = 374;
+  it('a centred 920 px Budget in a 1600 px layer (1280×720) moves right of the column instead of under the toasts', () => {
+    expect(clearOfHud((1600 - 920) / 2, 920, 1600, minLeft)).toBe(minLeft);
+    // the panel beside Advisors & news would have been shifted to x = 60
+    expect(clearOfHud(60, 920, 1600, minLeft)).toBe(minLeft);
+  });
+  it('already clear, or no room for it (a narrow layer): x stays', () => {
+    expect(clearOfHud(500, 920, 1920, minLeft)).toBe(500);
+    expect(clearOfHud(180, 920, 1280, minLeft)).toBe(180);
+  });
+  it('a centre panel moved out of the column still re-centres after a resize', () => {
+    expect(anchoredPos(minLeft, 130, 920, 600, 1600, 900, 1920, 1080, true).x).toBe((1920 - 920) / 2);
+    // a non-centre panel that far off centre keeps its docked edge
+    expect(anchoredPos(minLeft, 130, 920, 600, 1600, 900, 1920, 1080).x).toBe(1920 - 920 - (1600 - minLeft - 920));
   });
 });
 

@@ -25,7 +25,8 @@ export interface SavedPos {
 export function anchoredPos(x: number, y: number, w: number, hgt: number, W0: number, H0: number, W: number, H: number, center = false): { x: number; y: number } {
   if (W0 > 0 && W0 !== W) {
     const left = x, right = W0 - (x + w);
-    if (Math.abs(left - right) <= 48) x = (W - w) / 2;
+    // (a centre panel may sit up to ~2 × 40 px off centre: clearOfHud moves it out of the HUD column)
+    if (Math.abs(left - right) <= (center ? 120 : 48)) x = (W - w) / 2;
     else if (right < left) x = W - w - right;
   }
   if (center && H0 > 0 && H0 !== H) {
@@ -35,6 +36,15 @@ export function anchoredPos(x: number, y: number, w: number, hgt: number, W0: nu
   x = Math.max(4, Math.min(W - w - 4, x));
   y = Math.max(64, Math.min(H - hgt - 8, y));
   return { x: Math.round(x), y: Math.round(y) };
+}
+
+/**
+ * x for a panel of width w in a layer W wide that keeps it right of `minLeft` — the top-left HUD column, whose toasts
+ * sit above the panels and would cover a panel's title and tabs (routed from emergency r1) — where the layer has room
+ * for that; else x itself
+ */
+export function clearOfHud(x: number, w: number, W: number, minLeft: number): number {
+  return x < minLeft && minLeft + w <= W - 14 ? minLeft : x;
 }
 
 export abstract class Panel {
@@ -262,11 +272,7 @@ export class PanelManager implements PanelsApi {
     this.ctx.ui.emit('panel', { id, open: true });
   }
 
-  /** the leftmost x (layer css px) that keeps a panel of width w out of the top-left HUD column — the toasts there
-   *  sit above the panels — where the layer is wide enough for that, else x itself */
-  private clearOfHud(x: number, w: number, W: number, minLeft = this.hudLeft()): number {
-    return x < minLeft && minLeft + w <= W - 14 ? minLeft : x;
-  }
+  /** the left limit (layer css px) for panels: right of the top-left HUD column (toasts, onboarding card) */
   private hudLeft(): number {
     return Math.max(12, Math.ceil(this.hudColumnRight()) + 12);
   }
@@ -285,7 +291,7 @@ export class PanelManager implements PanelsApi {
     if (p.center) y = Math.max(64, Math.round((H - h) / 2) - 20);
     y = Math.max(64, Math.min(y, H - h - 12));
     const minLeft = this.hudLeft();
-    x = this.clearOfHud(x, w, W, minLeft);
+    x = clearOfHud(x, w, W, minLeft);
     const x0 = x, y0 = y;
     const others = this.order.map((id) => this.panels.get(id)!).filter((o) => o && o !== p && o.isOpen);
     for (let guard = 0; guard < 8; guard++) {
@@ -382,7 +388,7 @@ export class PanelManager implements PanelsApi {
       if (!p?.isOpen) continue;
       const a = anchoredPos(p.el.offsetLeft, p.el.offsetTop, p.el.offsetWidth, p.el.offsetHeight, W0, H0, W, H, p.center);
       // (a centred panel re-centred in a narrower window must not slide under the toasts it was clear of)
-      if (p.el.offsetLeft >= minLeft) a.x = this.clearOfHud(a.x, p.el.offsetWidth, W, minLeft);
+      if (p.el.offsetLeft >= minLeft) a.x = clearOfHud(a.x, p.el.offsetWidth, W, minLeft);
       p.setPos(a.x, a.y);
       this.keepAboveToolbar(p);
       try {
