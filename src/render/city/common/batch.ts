@@ -133,8 +133,6 @@ interface PassSlot {
    *  invalidated by content changes right away only costs triangles) */
   uses: number;
   noBand: number;
-  /** _frames at the slot's previous pass (the far cascade, held while the view moves, passes every few frames) */
-  passAt: number;
   lx: number;
   ly: number;
   lz: number;
@@ -269,9 +267,6 @@ const ID_W = 512;
 /** a pass list's indirect texture shrinks only after this many builds in a row with it over twice the size it needs */
 const SHRINK_AFTER = 180;
 let _frame = 0;
-/** scene renders seen by the batches' passes (renderer.info.render.frame changes): one per view frame */
-let _frames = 0;
-let _framesFr = -1;
 
 /** unit axes (columns 0-2) of a world matrix -> out[9] */
 function orient(w: ArrayLike<number>, out: Float64Array): void {
@@ -514,8 +509,8 @@ export class DynamicBatch {
   private sidSeq = 0;
   /** guard band of the per-pass lists, as a fraction of the view distance: the widest isotropic band (slow motion) and
    *  prediction error, and the fastest travel per frame that is predicted (0 = exact lists, rebuilt on any camera
-   *  move). Main passes use the view camera's distance to the ground; shadow passes use shadowGuard x the receiver's.
-   *  (0.03: as cheap in CPU as twice that, which kept lists over a few more frames but drew up to a third more
+   *  move). Main passes use the view camera's distance to the ground; shadow passes use shadowGuard x the receiver's
+   *  (the far cascade none: see the band in beforePass). (0.03: as cheap in CPU as twice that, which kept lists over a few more frames but drew up to a third more
    *  triangles while orbiting / zooming.) */
   guard = 0.03;
   shadowGuard = 0.03;
@@ -1151,7 +1146,7 @@ export class DynamicBatch {
         // (NaN planes: no corner is inside them until a build sets them)
         bp: new Float64Array(24).fill(NaN), brp: new Float64Array(24).fill(NaN), reach0: -0, farMode: false, banded: false, stale: false,
         rform: -1, rver: -1,
-        still: 0, uses: 0, noBand: 0, passAt: 0, lx: NaN, ly: NaN, lz: NaN, lrot: new Float64Array(9), lrrot: new Float64Array(9), lrx: NaN, lry: NaN, lrz: NaN,
+        still: 0, uses: 0, noBand: 0, lx: NaN, ly: NaN, lz: NaN, lrot: new Float64Array(9), lrrot: new Float64Array(9), lrx: NaN, lry: NaN, lrz: NaN,
         mv: new Float64Array(3), mq: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]), rmv: new Float64Array(3), rmq: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
         pmv: new Float64Array(3), pmq: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]), rpmv: new Float64Array(3), rpmq: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]), pred: false,
       };
@@ -1174,7 +1169,6 @@ export class DynamicBatch {
     const m = this.mesh as any;
     // once per frame (the first pass that draws this batch): finalize partial / full texture uploads
     const fr = renderer.info.render.frame;
-    if (fr !== _framesFr) { _framesFr = fr; _frames++; }
     if (fr !== this.lastFrame) {
       this.lastFrame = fr;
       _frame++;
@@ -1215,9 +1209,6 @@ export class DynamicBatch {
       s.lrrot.set(recv.rot);
     }
     s.still = step > 1e-3 || turn > TURN_EPS || rstep > 1e-3 || rturn > TURN_EPS ? 0 : s.still + 1;
-    // frames since this slot's previous pass (1 but for the far cascade, which WorldView holds while the view moves)
-    const gap = s.passAt > 0 ? Math.max(1, _frames - s.passAt) : 1;
-    s.passAt = _frames;
     // view-culled main list (see viewCulled): every visible instance, rebuilt on content changes only
     if (this.vc && !shadow) {
       if (s.version !== this.cver) { s.version = this.cver; this.buildAll(renderer, s, geometry); }
@@ -1266,18 +1257,17 @@ export class DynamicBatch {
       const cap = (shadow ? this.shadowGuard : this.guard) * range;
       // (shadow passes: the band must also cover the receiver, which moves with the view, not the shadow camera)
       const move = Math.max(step, rstep);
-      const bandOk = cap > 0 && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0 && move < Infinity && turn < Infinity && rturn < Infinity;
-      // (the far cascade: its last motion spans the `gap` frames since its previous pass; its band covers about as many
-      // frames of travel as an every-frame pass's, i.e. fewer of its own passes, not BAND_FRAMES of its gaps: such a
-      // band would be up to 4x as wide and draw that much more in every redraw of the cascade)
-      const bf = cascade >= 1 && gap > 1 ? Math.max(1, Math.floor(BAND_FRAMES / gap)) : BAND_FRAMES;
-      s.iso = bandOk && move < cap * 0.75 ? Math.min(cap, bf * move) : 0;
+      // (none for the far cascade: WorldView redraws it only every few frames while the view moves (holdFar), so a band
+      // would rarely serve a second redraw, and its receiver-culled list is thin: a band around the split and the view's
+      // sides took in up to 4x the casters, drawn in every redraw, for a cheap list build saved)
+      const bandOk = cap > 0 && cascade < 1 && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0 && move < Infinity && turn < Infinity && rturn < Infinity;
+      s.iso = bandOk && move < cap * 0.75 ? Math.min(cap, 4 * move) : 0;
       // (fast travel is not predicted: a band covering frames of it would mostly add triangles)
       s.pred = bandOk && move < cap && (step > 1e-3 || turn > TURN_EPS || rstep > 1e-3 || rturn > TURN_EPS) && steady(s.mv, s.mq, s.pmv, s.pmq, 1e-3 * range) && (recv === null || steady(s.rmv, s.rmq, s.rpmv, s.rpmq, 1e-3 * range));
       // (a predicted band needs no isotropic one on top: the planes the view does not move across stay exact)
       if (s.pred) s.iso = 0;
       s.err = s.pred ? Math.min(cap, 0.5 * move) + 1e-3 * range : 0;
-      s.bk = s.pred ? bf : s.iso > 0 ? 1 : 0;
+      s.bk = s.pred ? BAND_FRAMES : s.iso > 0 ? 1 : 0;
       s.sweepCap = SWEEP_CAP * range;
       if (recv) {
         s.rform = recv.form;
