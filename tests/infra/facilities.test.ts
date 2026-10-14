@@ -361,11 +361,14 @@ describe('facilities: staffing (WP7-3, critic items 7 / 8)', () => {
     // 0.05 steps
     b.hire = 1; b.jobs = 13;
     expect(staffingOf(st, b)!.rel).toBe(0.65);
-    // no road beside the lot: nobody reaches it
+    // no road beside the lot: nobody reaches it — a staffed service without road access does not work (final fixes P8)
     const lone = place(st, 't_school', 20, 20);
     lone.hire = 1; lone.capacity = 20; lone.jobs = 20;
     expect(staffingOf(st, lone)!.road).toBe(false);
-    expect(facilityOpFactor(st, lone)).toBeCloseTo(0.6, 6);
+    expect(facilityOpFactor(st, lone)).toBe(0);
+    // a facility without posted jobs (a small park) has no staffing: unaffected
+    const park = place(st, 't_park', 22, 22);
+    expect(facilityOpFactor(st, park)).toBe(1);
   });
 });
 

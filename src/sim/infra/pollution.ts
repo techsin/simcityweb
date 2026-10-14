@@ -11,7 +11,8 @@
  *                       cells by use and size, garbage smell, soil leaching, treeCover (published) + park buffer
  *   5 air near          small / medium emitters (half resolution blur)
  *   6 air far + wind    large emitters (quarter resolution), prevailing-wind plume (wind.ts), saturation, tree absorption
- *   7 noise             blur, saturation, tree / park buffers
+ *   7 noise             blur, saturation, tree / park buffers and tree belts between the noise and a cell (F4: a
+ *                       belt two cells deep beside a busy road shields the homes behind it; noiseBuffer)
  *   8 water             (stageB) ground water blur, diffusion along water bodies, bank coupling (polluted rivers
  *                       contaminate their banks and the pumps drawing from them)
  *   9 flags + stats     soil stock update, BF.Polluted (R / C only), BF.Noisy (R), stats.avg*
@@ -213,6 +214,8 @@ export class PollutionSystem implements SimSystem {
    *  last noise step (trees + parks + tree belts, see stageNoise) */
   private treeNear = new Float32Array(0);
   private noiseBuf = new Float32Array(0);
+  /** share of the cells with a tree within reach (the noise step's belt walk: its cost estimate) */
+  private nearShare = 0;
   private soilSrc = new Float32Array(0);
   private waterCells = new Int32Array(0);
   private waterNb = new Int32Array(0);
@@ -273,6 +276,8 @@ export class PollutionSystem implements SimSystem {
   private parkDirty = true;
   private lastRangeNews = -1e9;
   private lastFillNews = -1e9;
+  /** the first garbage facility / landfill of this pass that no road touches (garbage news names it; final fixes P7) */
+  private roadless: { what: string; x: number; z: number } | null = null;
   private simRef: Simulation | null = null;
   /** DefInfo per building id (ids are never reused and defs never change in place; known defs only) */
   private infos: DefInfo[] = [];
@@ -346,7 +351,7 @@ export class PollutionSystem implements SimSystem {
       case S_SRC_CELLS: return 1.6 * cells;
       case S_AIR_NEAR: return 2.0 * cells;
       case S_AIR_FAR: return 0.9 * cells;
-      case S_NOISE: return 1.8 * cells;
+      case S_NOISE: return (1.8 + 0.8 * this.nearShare) * cells; // (+ the tree-belt walk near trees, F4)
       case S_WATER: return 2.2 * cells;
       default: return 1.0 * bld + 0.3 * cells;
     }
@@ -507,6 +512,7 @@ export class PollutionSystem implements SimSystem {
     this.nSeeds = 0;
     this.facIds.length = 0; this.facCap.length = 0; this.facKind.length = 0;
     let produced = 0, capRec = 0, capInc = 0, capOther = 0, treatCap = 0;
+    this.roadless = null;
     const util = Math.min(1, fundingFactor(st, 'utilities'));
     const list = buildingList(st);
     for (let bI = 0; bI < list.length; bI++) {
@@ -523,6 +529,7 @@ export class PollutionSystem implements SimSystem {
         this.seedPerimeter(st, b);
         // a facility needs a road on its perimeter (trucks) and power (x GARBAGE_UNPOWERED without)
         const cap = this.nSeeds > n0 ? inf.garbageCap * funding * ((b.flags & BF.Powered) !== 0 ? 1 : GARBAGE_UNPOWERED) : 0;
+        if (this.nSeeds === n0 && !this.roadless) this.roadless = { what: getDef(b.def)?.name ?? 'garbage facility', x: b.x + (b.w >> 1), z: b.z + (b.d >> 1) };
         const kind = inf.isRecycling ? FK_RECYCLE : inf.isIncinerator ? FK_INCIN : FK_OTHER;
         this.facIds.push(b.id); this.facCap.push(cap); this.facKind.push(kind);
         if (kind === FK_RECYCLE) capRec += cap;
@@ -582,7 +589,10 @@ export class PollutionSystem implements SimSystem {
       }
       let cap = 0;
       if (road) { for (let q = start; q < qt; q++) if (fill[order[q]] < 1) cap += lfCellCap; }
-      else this.nSeeds = seedMark;
+      else {
+        this.nSeeds = seedMark;
+        if (!this.roadless) this.roadless = { what: 'landfill', x: s % N, z: (s / N) | 0 };
+      }
       this.regStart.push(start); this.regCount.push(qt - start); this.regRoad.push(road); this.regCap.push(cap); this.regUsed.push(0);
       capLf += cap;
     }
@@ -777,11 +787,17 @@ export class PollutionSystem implements SimSystem {
     const sm = this.summary;
     if (outRangeN >= 10 && sm.outOfRangeT > 0.05 * sm.producedT && st.day - this.lastRangeNews >= GARBAGE_NEWS_DAYS) {
       this.lastRangeNews = st.day;
-      const why = this.capInc + this.capRec + this.capLf > 0
+      const any = this.capInc + this.capRec + this.capLf > 0;
+      const rl = this.roadless;
+      // (final fixes P7: a landfill / incinerator that exists but no road touches is named — the fix is a road, not one)
+      const why = any
         ? `are more than ${GARBAGE_TRUCK_RANGE} road tiles from a landfill, incinerator or recycling center (or not connected to one)`
-        : 'have no landfill, incinerator or recycling center to take their garbage';
+        : rl ? `can't take it anywhere: your ${rl.what} has no road access — connect it to a road`
+          : 'have no landfill, incinerator or recycling center to take their garbage';
+      const also = any && rl ? ` Your ${rl.what} has no road access — connect it to a road.` : '';
       const nr = sm.noRoadBuildings > 0 ? ` ${sm.noRoadBuildings.toLocaleString('en-US')} more have no road for the trucks at all.` : '';
-      sim.notify(`Garbage is piling up: trucks can't reach ${outRangeN.toLocaleString('en-US')} buildings — they ${why}.${nr}`, 'warning', x, z, 'utilities');
+      const at = !any && rl ? rl : { x, z };
+      sim.notify(`Garbage is piling up: trucks can't reach ${outRangeN.toLocaleString('en-US')} buildings — they ${why}.${also}${nr}`, 'warning', at.x, at.z, 'utilities');
     }
     if (sm.landfillCapT > 0 && sm.landfillFill >= LANDFILL_WARN_FILL && st.day - this.lastFillNews >= GARBAGE_NEWS_DAYS * 2) {
       this.lastFillNews = st.day;
@@ -1057,7 +1073,11 @@ export class PollutionSystem implements SimSystem {
     for (let i = 0; i < C; i++) t[i] = trees[i] * 0.25;
     boxAverage(t, st.treeCover, this.tmp2, st.size, TREE_COVER_RADIUS);
     if (this.treeNear.length !== C) this.treeNear = new Float32Array(C);
-    boxAverage(t, this.treeNear, this.tmp2, st.size, TREE_BELT_REACH);
+    const near = this.treeNear;
+    boxAverage(t, near, this.tmp2, st.size, TREE_BELT_REACH);
+    let n = 0;
+    for (let i = 0; i < C; i++) if (near[i] > 0) n++;
+    this.nearShare = C > 0 ? n / C : 0;
   }
 
   /**
@@ -1281,38 +1301,43 @@ export class PollutionSystem implements SimSystem {
   }
 }
 
-/** blurred noise field below which a cell is quiet anyway (layer ~5 %): no tree-belt walk there */
-const BELT_MIN_FIELD = 0.15;
+/** blurred noise field below which a cell is quiet enough for a belt not to matter (layer 1 - exp(-f / NOISE_K) < 0.2):
+ *  no tree-belt walk there (PERF: a wooded city has trees near most cells) */
+const BELT_MIN_FIELD = -NOISE_K * Math.log(1 - 0.2);
+/** tan(22.5°): a gradient component below this share of the other one does not step along its axis (8 directions) */
+const OCT = 0.4142;
 /**
  * the noise buffer per cell (after saturation the layer is x (1 - buf)): TREE_NOISE_ABSORB x treeCover + PARK_NOISE_ABSORB
  * x park buffer + TREE_BELT_ABSORB x belt. Belt (final fixes F4): the tree density on the cells up to TREE_BELT_REACH
- * steps toward the noise — up the gradient of the blurred field, stopping where it stops rising (past the source, so
- * trees on the far side of the road do not count) — as a share of a full belt of TREE_BELT_CELLS wooded cells. Only
- * cells with a tree within reach (treeNear > 0) and some noise are walked.
+ * steps toward the noise — up the gradient of the blurred field in one of 8 directions, stopping where the field stops
+ * rising (past the source, so trees on the far side of the road do not count) — as a share of a full belt of
+ * TREE_BELT_CELLS wooded cells. Only cells with a tree within reach (treeNear > 0) and some noise are walked.
  */
 function noiseBuffer(field: Float32Array, trees: Uint8Array, near: Float32Array, cover: Float32Array, park: Float32Array, out: Float32Array, N: number): void {
-  const R = TREE_BELT_REACH, inv = 0.25 / TREE_BELT_CELLS;
+  const R = TREE_BELT_REACH, inv = 0.25 / TREE_BELT_CELLS, kT = TREE_NOISE_ABSORB, kP = PARK_NOISE_ABSORB, kB = TREE_BELT_ABSORB;
   for (let z = 0, i = 0; z < N; z++) {
     for (let x = 0; x < N; x++, i++) {
-      let b = TREE_NOISE_ABSORB * cover[i] + PARK_NOISE_ABSORB * park[i];
+      let b = kT * cover[i] + kP * park[i];
       const f = field[i];
-      if (near[i] > 0 && f > BELT_MIN_FIELD) {
+      if (f > BELT_MIN_FIELD && near[i] > 0) {
         const gx = (x + 1 < N ? field[i + 1] : f) - (x > 0 ? field[i - 1] : f);
         const gz = (z + 1 < N ? field[i + N] : f) - (z > 0 ? field[i - N] : f);
-        const g2 = gx * gx + gz * gz;
-        if (g2 > 1e-12) {
-          const s = 1 / Math.sqrt(g2), dx = gx * s, dz = gz * s;
-          let sum = 0, prev = f;
-          for (let k = 1; k <= R; k++) {
-            const xx = Math.round(x + k * dx), zz = Math.round(z + k * dz);
+        const ax = gx < 0 ? -gx : gx, az = gz < 0 ? -gz : gz;
+        if (ax + az > 1e-6) {
+          const sx = ax > OCT * az ? (gx > 0 ? 1 : -1) : 0;
+          const sz = az > OCT * ax ? (gz > 0 ? 1 : -1) : 0;
+          const step = sz * N + sx;
+          let xx = x, zz = z, j = i, prev = f, sum = 0;
+          for (let k = 0; k < R; k++) {
+            xx += sx; zz += sz;
             if (xx < 0 || zz < 0 || xx >= N || zz >= N) break;
-            const j = zz * N + xx;
+            j += step;
             const fj = field[j];
             if (fj < prev) break;
             prev = fj;
             sum += trees[j];
           }
-          if (sum > 0) b += TREE_BELT_ABSORB * Math.min(1, sum * inv);
+          if (sum > 0) b += kB * (sum * inv < 1 ? sum * inv : 1);
         }
       }
       out[i] = b;

@@ -859,7 +859,8 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
   // ---------------- environment and utilities
   if (homes >= 20 && sc.noisy >= 0.1 * homes) {
     out.push({ id: 'noise', cooldown: 180, priority: 4, kind: 'warning', advisor: 'environment', where: home('noisy', st.noise),
-      text: `${pctS(Math.min(1, sc.noisy / homes))} of homes are too noisy to sleep. Plant trees along highways and busy roads, or keep homes away from industry and nightlife.` });
+      // (final fixes F4: what works first — distance and quieter roads; a tree belt between the road and the homes helps)
+      text: `${pctS(Math.min(1, sc.noisy / homes))} of homes are too noisy to sleep. Keep homes away from highways, industry and nightlife, or downgrade a highway next to homes; a belt of trees two tiles deep between a busy road and the homes shields the ones behind it (Noise data view).` });
   }
   if (pop > 20000 && inf.utilities && s.sewageTreated < 0.5) {
     out.push({ id: 'sewage', cooldown: 240, priority: 4, kind: 'warning', advisor: 'environment',

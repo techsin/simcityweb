@@ -108,6 +108,18 @@ export function rectFrom(a: Cell, b: Cell): CellRect {
 
 export type { Simulation };
 
+/**
+ * the placement warning of a lot no road touches: what the facility cannot do without one (final fixes P8 — a staffed
+ * service gets no staff and does not work at all until a road touches it; the plop tool shows it as a warning)
+ */
+export function noRoadWarning(def: { category: string; jobs?: number; coverage?: unknown }): string {
+  const base = 'Warning: no road access';
+  if (def.coverage && (def.jobs ?? 0) > 0) return `${base} — staff can't reach it, so it won't work until a road touches it`;
+  if (def.category === 'water') return `${base} — its water can't reach the pipes under the roads until a road touches it`;
+  if (def.category === 'garbage') return `${base} — garbage trucks can't reach it until a road touches it`;
+  return base;
+}
+
 // ======================================================================================================
 // implementation
 // ======================================================================================================
@@ -580,7 +592,7 @@ export class CityActions implements CityActionsApi {
     if (lotSlope(st, x, z, w, d) > PLOP_MAX_SLOPE) return fail('Too steep — level the ground first', def.cost ?? 0, cells);
     const cost = (def.cost ?? 0) + treeCells * TREE_CLEAR_COST;
     if (!this.affordable(cost)) return fail(`Not enough money (${money(cost)})`, cost, cells);
-    const warn = lotTouchesRoad(st, x, z, w, d) ? undefined : 'Warning: no road access';
+    const warn = lotTouchesRoad(st, x, z, w, d) ? undefined : noRoadWarning(def);
     if (preview) return { ok: true, cost, affected: 1, cells, reason: warn };
 
     // ---- apply: clear trees + zone, level, create
@@ -594,7 +606,8 @@ export class CityActions implements CityActionsApi {
     }
     const id = st.nextBuildingId++;
     const lv = levelLot(st, x, z, w, d, id, placement === 'shore');
-    // model variant: a position hash, stepped while a same-def neighbour within 6 cells shows it (no rng draw; WP6a)
+    // model variant: a position hash, stepped while a neighbour within 6 cells shows the same model + variant (no rng
+    // draw; WP6a — spreadVariant matches twins by model, then by def)
     const variants = MANIFEST_BY_ID[def.model]?.variants ?? 1;
     const b: Building = {
       id, def: def.id, x, z, w, d, rot, variant: spreadVariant(st, def.id, x, z, w, d, positionVariant(x, z, variants), variants),
