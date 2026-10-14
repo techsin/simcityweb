@@ -4,7 +4,8 @@
  * INCIDENTS  fires (fire.ts ignitions become cluster incidents), industrial accidents, hazardous spills, crime sprees,
  *            riots, medical emergencies, building collapses (earthquakes) and prison riots (WP7 justice). Generated
  *            deterministically from the city (own RNG, state saved in systemData.emergency): monthly cumulative weight
- *            arrays over candidate buildings, a daily Poisson draw per kind.
+ *            arrays over candidate buildings, a daily Poisson draw per kind. Early-game grace: no accident at a
+ *            thermal plant / incinerator before the first funded fire station, for at most EMERG_PLANT_GRACE_DAYS.
  * FLEETS     every fire / police / medical station has a fleet (FLEET; effective units scale with funding) and an auto
  *            range RANGE = coverage radius x ROAD_RADIUS_FACTOR x NET_TIME[Road] x EMERG_RANGE_K (minutes).
  * DISPATCH   a reverse road search from the incident (siren link times: t0 x (1 + 0.3 (bpr - 1))) settles stations in
@@ -12,8 +13,12 @@
  *            within its own range (a real road route, driven by a vehicle). Otherwise the incident is 'queued' (a unit
  *            of an in-range station comes back before the grace time) or 'uncovered' (reason busy / outOfRange /
  *            noStation) and the player can dispatch any station city-wide (dispatchOptions / dispatch);
- *            manualPossible = a free unit can still arrive before the deadline (LIVE mode), canSend = a free unit can
- *            be sent at all (banner without LIVE). Minor incidents that are not covered are sent the nearest free unit
+ *            manualPossible = a free unit can still arrive before the deadline, sent within the player's window
+ *            (dispatchWindowEnd: an industrial accident's plant ignites EMERG_GRACE.industrial days after the start)
+ *            (LIVE mode), canSend = a free unit can be sent at all (banner without LIVE). An incident's state follows
+ *            its PRIMARY responder (INCIDENT_RESPONDERS[kind][0]): the ambulance of an industrial accident or a
+ *            collapse, sent automatically, leaves it waiting for its fire truck (and answers nothing). Minor incidents
+ *            (and supporting responders) that are not covered are sent the nearest free unit
  *            that can arrive in time (slower, no alert). Daily search budget: the first EMERG_SEARCHES_PER_DAY
  *            searches, then up to EMERG_SEARCH_NODES_PER_DAY settled road nodes; the rest ('Dispatch pending') go the
  *            next day, fires first, then major incidents. Coverage promise: a building never burns down while the
@@ -23,7 +28,11 @@
  *            none for the map (no traffic system; or a new city's first day, before traffic's first build — a tiny
  *            network). Until traffic catches up with an edit a brand-new road is unknown: such sites are 'Dispatch
  *            pending', not "no road". Node-indexed data (station nodes, siren times, caches, layer sequence) follow the
- *            graph epoch.
+ *            graph epoch, which moves only when the graph's content changes (graphSig: traffic rebuilding the very same
+ *            network — a load's reset, a subway edit — is no retry wave).
+ * SAVE/LOAD  a loaded game keeps every dispatch decision: it decides with the original's siren times (Persist.siren)
+ *            until its own traffic layer updates, continues its station version (and retries once if the network
+ *            changed after the original's graph was built: Persist.gSig).
  * TIME       one game-minute of siren driving = EMERG_DAYS_PER_MIN sim days. Vehicles carry their route (corner cells)
  *            with cumulative minutes; position = interpolate(times, (simTime - legStart) / EMERG_DAYS_PER_MIN).
  * OUTCOMES   per kind (grace G / deadline): late (answered after G), failed (deadline passed), deaths / injured /

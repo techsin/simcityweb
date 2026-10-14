@@ -14,6 +14,7 @@ import { CELL_SIZE } from '../../core/constants';
 import type { GameContext } from '../context';
 import type { ToolSpec } from '../toolCatalog';
 import { INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, emergencyOf, type DispatchOption, type EmergencySystem, type Incident } from '../../sim/infra/emergency';
+import type { Responder } from '../../sim/CityState';
 import { getDef } from '../../sim/catalog';
 import { escapeHtml } from '../../ui/dom';
 import { Tool, type ToolPointer } from './Tool';
@@ -125,10 +126,15 @@ export class DispatchTool extends Tool {
     if (fit) this.fitCamera(inc);
   }
 
-  /** frame the incident and the (up to 2) fastest stations with a free unit, so they can be clicked */
+  /** frame the incident and the (up to 2) fastest stations with a free unit — of a responder it still misses (an
+   *  industrial accident whose ambulance is out: fire stations) — so they can be clicked */
   private fitCamera(inc: Incident): void {
     const st = this.ctx.state;
-    const ok = this.opts.filter((o) => o.free > 0 && Number.isFinite(o.etaMin));
+    const em = emergencyOf(this.ctx.sim);
+    const miss = em ? missingResponders(em, inc) : [];
+    const free = this.opts.filter((o) => o.free > 0 && Number.isFinite(o.etaMin));
+    const needed = free.filter((o) => miss.includes(o.responder));
+    const ok = needed.length ? needed : free;
     const use = (ok.length ? ok : this.opts.filter((o) => Number.isFinite(o.etaMin))).slice(0, 2);
     const site = inc.buildingId >= 0 ? st.buildings.get(inc.buildingId) : undefined;
     let x0 = site ? site.x : inc.x, z0 = site ? site.z : inc.z;
@@ -264,18 +270,20 @@ export class DispatchTool extends Tool {
       this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(o.name)}</b></div><div class="tip-sub emg-wrap">${title}</div>${body}`, ok ? 'ok' : 'bad');
       return;
     }
-    const free = this.opts.filter((q) => q.free > 0 && Number.isFinite(q.etaMin));
-    const best = free[0];
     const needs = need.map((r) => `${inc.need[r] ?? 0} ${RESPONDER_UNIT[r][(inc.need[r] ?? 0) === 1 ? 0 : 1]}`).join(' + ');
     const em = emergencyOf(this.ctx.sim);
-    const covered = !!em && !missingUnits(em, inc);
+    const miss = em ? missingResponders(em, inc) : [];
+    const covered = !!em && miss.length === 0;
+    // the fastest free unit of a kind it still misses (an industrial accident whose ambulance is out: a fire truck)
+    const best = this.opts.find((q) => q.free > 0 && Number.isFinite(q.etaMin) && miss.includes(q.responder));
+    const missing = miss.map((r) => `${/^[aeiou]/.test(RESPONDER_UNIT[r][0]) ? 'an' : 'a'} ${RESPONDER_UNIT[r][0]}`).join(' and ');
     this.ctx.tip.show(
       `<div class="tip-head"><b class="emg-wrap">${title}</b></div><div class="tip-sub emg-wrap">Needs ${needs}${inc.units.length ? ` · ${inc.units.length} assigned` : ''}</div>` +
         (covered
           ? '<div class="tip-sub emg-wrap">Help is on the way — click a station to send more</div>'
           : best
-            ? `<div class="tip-sub emg-wrap">Click a <span class="pos">green</span> station — fastest: ${escapeHtml(best.name)} (${fmtMin(best.etaMin)})</div>`
-            : '<div class="tip-reason">No station with a free unit can reach it</div>'),
+            ? `<div class="tip-sub emg-wrap">Still needs ${missing} — click a <span class="pos">green</span> station: fastest ${escapeHtml(best.name)} (${fmtMin(best.etaMin)})</div>`
+            : `<div class="tip-reason">No station with ${escapeHtml(missing ? missing.replace(/^an? /, 'a free ') : 'a free unit')} can reach it</div>`),
       covered || best ? 'info' : 'bad',
     );
   }
@@ -333,17 +341,23 @@ export class DispatchTool extends Tool {
   }
 }
 
-/** the incident still misses units of some responder (need > units driving there / on scene) */
-function missingUnits(em: EmergencySystem, inc: Incident): boolean {
+/** the responders an incident still misses units of (need > units driving there / on scene), primary first */
+function missingResponders(em: EmergencySystem, inc: Incident): Responder[] {
+  const out: Responder[] = [];
   for (const r of INCIDENT_RESPONDERS[inc.kind]) {
     let n = 0;
     for (const id of inc.units) {
       const v = em.vehicles().find((q) => q.id === id);
       if (v && v.responder === r && (v.state === 'outbound' || v.state === 'onScene')) n++;
     }
-    if ((inc.need[r] ?? 0) > n) return true;
+    if ((inc.need[r] ?? 0) > n) out.push(r);
   }
-  return false;
+  return out;
+}
+
+/** the incident still misses units of some responder */
+function missingUnits(em: EmergencySystem, inc: Incident): boolean {
+  return missingResponders(em, inc).length > 0;
 }
 
 /** corner cells -> every cell along the straight segments */

@@ -406,8 +406,8 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
       gross += v;
       if (a.kind === 'landmark' || a.kind === 'culture') culture += v;
     }
-    // historic districts + hotel rooms: the month's daily slices (tourismSlice) on a regular month tick, else one pass
-    // over the growables (final fixes V5)
+    // historic districts + hotel rooms: the month's daily slices (growablesSlice in daily()) on a regular month tick,
+    // else one pass over the growables (final fixes V5)
     let historicBase = 0, rooms = 0;
     const historicB: Building[] = [];
     const ta = st.systemData.tourismAcc as TourismAcc | undefined;

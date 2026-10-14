@@ -43,7 +43,8 @@
 .emg-banner:not(.handled) .emg-note { color: #ffb4a8; }
 /* supporting units already on their way while the primary one is missing ("Ambulance … on the way — no fire truck yet") */
 .emg-sub { font-size: 11.5px; color: var(--text-dim); line-height: 1.35; }
-/* beyond the first three banners (every alert a dispatch can still save gets one): title, time and buttons only */
+/* compact (title, time and buttons only): beyond the first three banners (every alert a dispatch can still save gets
+   one), or all of them while the stack must stay low to clear an open panel (EmergencyBanner.dock) */
 .emg-banner.compact { padding: 6px 30px 6px 8px; gap: 8px; align-items: center; }
 .emg-banner.compact .emg-ico { width: 28px; height: 28px; border-radius: 8px; }
 .emg-banner.compact .emg-place, .emg-banner.compact .emg-note, .emg-banner.compact .emg-sub, .emg-banner.compact .emg-choose { display: none !important; }
