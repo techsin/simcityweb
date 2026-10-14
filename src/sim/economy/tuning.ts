@@ -548,8 +548,11 @@ export const RENT_CONDITION_MIN = -0.1;
 export const GARBAGE_FADE_POP0 = 2000;
 export const GARBAGE_FADE_POP1 = 20000;
 /** WP6-2 PARKING terms (weights in DESIR_WEIGHTS.parking): multiplied by this switch — 1 once WP7b's parking pressure is
- *  calibrated (PART_B item 19: bot without garages ≤ 0.3 job-weighted, ≤ 15 % of C cells above 0.6), 0 = neutral */
-export const PARKING_TERMS = 0;
+ *  calibrated (PART_B item 19: bot without garages ≤ 0.3 job-weighted, ≤ 15 % of C cells above 0.6), 0 = neutral.
+ *  On since the final fixes (F3): WP7b shipped, and the parking advice promised that shoppers who find no parking cost
+ *  the shops customers — now a crowded downtown block's shops and offices lose up to 0.12–0.15 (CS) / 0.08 (CO) of
+ *  their desirability (inspector 'Parking pressure'), which a garage or transit wins back */
+export const PARKING_TERMS = 1;
 /** I desirability's freight term: traffic's per-building freight access where an industry stands
  *  (TrafficSystem.freightAccess ≥ 0), else the coarse freight BFS (computeFreightAccess, refreshed on road changes and
  *  every FREIGHT_REFRESH_DAYS: freight stations count only while rail-linked, WP7 use factor > 0) */

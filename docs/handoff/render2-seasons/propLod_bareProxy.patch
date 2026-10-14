@@ -1,0 +1,19 @@
+diff -ru a/src/render/city/props/propLod.ts b/src/render/city/props/propLod.ts
+--- a/src/render/city/props/propLod.ts	2026-10-13 21:53:16.565558726 +0000
++++ b/src/render/city/props/propLod.ts	2026-10-13 21:53:16.575624947 +0000
+@@ -9,11 +9,14 @@
+ import * as THREE from 'three';
+ import { ModelBuilder, type Paint } from '../../../assets/ModelBuilder';
+ import { Surf } from '../../../core/types';
+-import { getImpostorGeometries, natureStats } from '../../world/fallbackTrees';
++import { bareTreeProxy, getImpostorGeometries, natureStats } from '../../world/fallbackTrees';
+ 
+ const cache = new Map<string, THREE.BufferGeometry | null>();
+ 
+ function treeProxy(g: THREE.BufferGeometry): THREE.BufferGeometry {
++  // bare (see-through twig) variants: a slim opaque proxy (fallbackTrees.bareTreeProxy), not a crown-sized ball
++  const bare = bareTreeProxy(g);
++  if (bare) return bare;
+   const st = natureStats(g);
+   const imp = getImpostorGeometries().broad.clone();
+   const sxz = (st.radius / 0.42) * 0.92;

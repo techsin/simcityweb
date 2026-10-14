@@ -12,7 +12,7 @@ import { EconRuntime, econData } from '../../src/sim/economy/runtime';
 import { placeBuilding } from '../../src/sim/economy/buildings';
 import { conditionBreakdown, outageDays } from '../../src/sim/economy/population';
 import { approvalBreakdown, approvalSystem, residentSurvey } from '../../src/sim/economy/approval';
-import { attractivenessBreakdown } from '../../src/sim/economy/tourism';
+import { attractivenessBreakdown, tourismSystem } from '../../src/sim/economy/tourism';
 import { APPROVAL_TERMS, OUTAGE_EXIT_DAYS } from '../../src/sim/economy/tuning';
 import { deserializeCity, serializeCity } from '../../src/save/serialize';
 import { Simulation as Sim } from '../../src/sim/Simulation';
@@ -157,5 +157,43 @@ describe('final fixes V5: the monthly resident survey is gathered in daily slice
     runTo(sim2, 90);
     const a = econData(u.st).approvalTerms, b = econData(st2).approvalTerms;
     for (const k of ['noise', 'outages', 'garbage', 'crime', 'pollution']) expect(b[k] ?? 0).toBeCloseTo(a[k] ?? 0, 9);
+  });
+
+  it('tourism: the hotel rooms and historic sites gathered in daily slices equal one full pass', { timeout: 120000 }, () => {
+    // two copies of a steady city (only the tourism system runs); B loses its slices on day 59, so its day-60 month
+    // tick takes the full pass
+    const make = () => {
+      const t = town();
+      const hdef = getDef('com_hotel.cs1.5')!;
+      for (let k = 0; k < 6; k++) {
+        const b: Building = {
+          id: nextId++, def: hdef.id, x: 4 + k * 10, z: 60, w: hdef.footprint[0], d: hdef.footprint[1], rot: 0, variant: 0, pop: 0,
+          jobs: 150 + k, capacity: hdef.capacity ?? 200, wealth: 2, built: 1, age: 400, flags: BF.Powered | BF.Watered, baseY: 5,
+          health: 1, unhappy: 0,
+        };
+        t.st.nextBuildingId = Math.max(t.st.nextBuildingId, b.id + 1);
+        placeBuilding(t.sim, b);
+      }
+      for (const k of [7, 30, 61]) t.homes[k].flags |= BF.Historic;
+      const solo = new Sim(t.st, [tourismSystem(new EconRuntime())]);
+      return { ...t, solo };
+    };
+    const A = make(), B = make();
+    runTo(A.solo, 60);
+    runTo(B.solo, 59);
+    delete B.st.systemData.tourismAcc;
+    runTo(B.solo, 60);
+    expect(A.st.stats.hotelRooms).toBe(Math.round(1.5 * (150 + 151 + 152 + 153 + 154 + 155)));
+    expect(B.st.stats.hotelRooms).toBe(A.st.stats.hotelRooms);
+    const dA = econData(A.st), dB = econData(B.st);
+    expect(dA.touristsGross).toBeGreaterThan(0);
+    expect(dB.touristsGross).toBeCloseTo(dA.touristsGross ?? 0, 9);
+    expect(dB.tourists).toBeCloseTo(dA.tourists, 9);
+    // the visitor raster around a historic home matches too
+    const i = (A.homes[30].z + 1) * A.st.size + A.homes[30].x + 1;
+    expect(A.st.visitors[i]).toBeGreaterThan(0);
+    expect(B.st.visitors[i]).toBeCloseTo(A.st.visitors[i], 6);
+    // the slices start over after the tick
+    expect((A.st.systemData.tourismAcc as { done: number }).done).toBe(0);
   });
 });

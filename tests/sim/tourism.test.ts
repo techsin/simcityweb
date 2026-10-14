@@ -269,6 +269,31 @@ describe('tourism: venues and visits', () => {
     expect(econData(c.st).rawTarget[DevType.CS2]).toBeGreaterThan(econData(c.st).rawTarget[DevType.CS3] * 0.5);
   });
 
+  it('final fixes LD15b: a city that buys the zoo stays within ±30 % of the old formula (the zoo is a cap boost first)', () => {
+    // the zoo's tourism shop jobs at full size (draw x CS_JOBS_PER_VISITOR) against what the legacy formula counts for it
+    // (cap relief C x 0.05 per point): the acceptance variant that bought it ran 1.31-1.33x for two years with 3,000
+    const legacyZoo = (CAP_RELIEF.park_zoo?.C ?? 0) * 0.05;
+    const r = (ATTRACTIONS.park_zoo.draw * CS_JOBS_PER_VISITOR) / legacyZoo;
+    expect(r).toBeGreaterThan(0.7);
+    expect(r).toBeLessThan(1.3);
+    // in a city: the zoo with a convention center and a landmark (a mid-size city's venue set)
+    const c = city(160);
+    plop(c, 'civ_convention_center', 36, 34);
+    plop(c, 'lm_cathedral', 76, 34);
+    c.sim.runDays(1);
+    c.st.stats.population = 150000;
+    for (let k = 0; k < 3; k++) tourismMonth(c.sim);
+    const rt = economyRuntime(c.sim.systems)!;
+    const before = econData(c.st).tourism / demandContext(c.st, rt).tourism;
+    plop(c, 'park_zoo', 54, 42);
+    for (let k = 0; k < 3; k++) tourismMonth(c.sim);
+    const after = econData(c.st).tourism / demandContext(c.st, rt).tourism;
+    console.log(`zoo: tourism jobs / old formula ${before.toFixed(2)} -> ${after.toFixed(2)} with the zoo`);
+    expect(after).toBeGreaterThan(0.7);
+    expect(after).toBeLessThan(1.3);
+    expect(Math.abs(after - before)).toBeLessThan(0.15);
+  });
+
   it('beaches: clean, road-reachable, unbuilt shore of a big water body; polluted water closes them', () => {
     const c = makeCity({ size: 64 });
     // a gentle beach: land at +1 m, a lake at −1 m (rows 0..11), the shore row slopes by 2 m

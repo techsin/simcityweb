@@ -358,7 +358,7 @@ describe('dockBanners (P9)', () => {
     const d2 = dockBanners(W2, top, h, BANNER_W, [adv2])!;
     expect(d2.left + d2.width).toBeLessThanOrEqual(adv2.x - 12);
   });
-  it('narrower when the gap is tight; beside the headers only when no gap is wide enough', () => {
+  it('narrower when the gap is tight; compact banners when only a lower stack fits; beside the headers at worst', () => {
     // Advisors on the right + Budget centred, overlapping the stack's rows: the left gap is 358 px wide -> narrowed
     const adv = { x: W - 654, y: 72, w: 640, h: 600 };
     const bud = { x: 370, y: 150, w: 860, h: 420 };
@@ -366,6 +366,17 @@ describe('dockBanners (P9)', () => {
     expect(d.width).toBeGreaterThanOrEqual(BANNER_MIN_W);
     expect(d.width).toBeLessThan(BANNER_W);
     expect(d.left + d.width).toBeLessThanOrEqual(bud.x - 12);
+    expect(d.compact).toBeUndefined();
+    // the 1280x720 case: Advisors docked right, Budget pushed left under the stack (no gap beside both): a compact,
+    // lower stack clears the Budget and goes left of Advisors
+    const bud2 = { x: 80, y: 232, w: 847, h: 412 };
+    const c = dockBanners(W, top, 187, BANNER_W, [adv, bud2], 70)!;
+    expect(c.compact).toBe(true);
+    expect(c.width).toBe(BANNER_W);
+    expect(c.left + c.width).toBeLessThanOrEqual(adv.x - 12);
+    // without a compact height to try: at least beside both panels' title rows, or centred
+    const c2 = dockBanners(W, top, 187, BANNER_W, [adv, bud2]);
+    expect(c2 === null || c2.left + c2.width <= adv.x - 12).toBe(true);
     // a wide panel across the middle: the stack may cover its body, never its title row
     const wide = { x: 200, y: 160, w: 1200, h: 500 };
     const d2 = dockBanners(W, top, 230, BANNER_W, [adv, wide]);

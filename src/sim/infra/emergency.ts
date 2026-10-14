@@ -1815,12 +1815,17 @@ export class EmergencySystem implements SimSystem {
       inc.bestEta = Number.isFinite(muEta) ? r2(muEta) : undefined;
       const unit = RESPONDER_UNIT[r];
       if (res.inRangeBusy.length) {
-        // queued: a unit of an in-range station is back before the grace time ends
-        let best = Infinity;
-        for (const b of res.inRangeBusy) best = Math.min(best, this.nextFreeAt(b.s) + b.t * EMERG_DAYS_PER_MIN);
+        // queued: a unit of an in-range station is back before the grace time ends — an industrial accident's truck back
+        // home by the last dispatch pass before its plant ignites (one back later would only be sent after the fire)
+        let best = Infinity, back = Infinity;
+        for (const b of res.inRangeBusy) {
+          const fa = this.nextFreeAt(b.s);
+          back = Math.min(back, fa);
+          best = Math.min(best, fa + b.t * EMERG_DAYS_PER_MIN);
+        }
         const s0 = res.inRangeBusy[0].s;
         const busyNote = `All ${s0.units} ${unit[s0.units === 1 ? 0 : 1]} of ${s0.name} are busy`;
-        if (best <= inc.start + inc.grace) {
+        if (inc.kind === 'industrial' ? back <= dispatchWindowEnd(inc) - 1 + EPS : best <= inc.start + inc.grace) {
           const was = inc.state;
           inc.state = 'queued';
           inc.reason = 'busy';

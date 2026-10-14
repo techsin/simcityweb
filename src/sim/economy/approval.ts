@@ -98,13 +98,14 @@ export const SURVEY_DAYS = DAYS_PER_MONTH;
  *  unwatered, outage weight] x 4, then commute, police, fire, health, edu, transit, green */
 const S_POP = 0, S_CRIME = 4, S_AIR = 8, S_NOISE = 12, S_PARK = 16, S_PRESTIGE = 20, S_NOG = 24, S_UNP = 28, S_UNW = 32, S_OUTW = 36;
 const S_COMMUTE = 40, S_POL = 41, S_FIRE = 42, S_HEALTH = 43, S_EDU = 44, S_TRANSIT = 45, S_GREEN = 46, S_LEN = 47;
-/** systemData.survey: the month's slice sums so far and the slices done (bit k = slice k) */
-interface SurveyAcc { v: 1; done: number; sums: number[] }
+/** systemData.survey: the month's slice sums so far, the month they belong to (m = ⌈day / SURVEY_DAYS⌉: days 1–30 → 1)
+ *  and the slices done (bit k = slice k) */
+interface SurveyAcc { v: 1; m: number; done: number; sums: number[] }
 const SURVEY_ALL = SURVEY_DAYS >= 31 ? -1 : (2 ** SURVEY_DAYS) - 1;
 function surveyAcc(st: CityState): SurveyAcc {
   let a = st.systemData.survey as SurveyAcc | undefined;
   if (!a || a.v !== 1 || !Array.isArray(a.sums) || a.sums.length !== S_LEN) {
-    a = { v: 1, done: 0, sums: new Array<number>(S_LEN).fill(0) };
+    a = { v: 1, m: -1, done: 0, sums: new Array<number>(S_LEN).fill(0) };
     st.systemData.survey = a;
   }
   return a;
@@ -177,7 +178,11 @@ function surveyOf(st: CityState, acc: ArrayLike<number>): ResidentSurvey {
 /** today's slice of the monthly survey (approval.daily) */
 export function surveySlice(st: CityState, rt: EconRuntime, inf: InfraFlags = infraFlags(st)): void {
   const a = surveyAcc(st);
+  // (a month whose tick did not read the sums — a harness running dailies only — starts over: no slice counts twice)
+  const m = Math.ceil(st.day / SURVEY_DAYS);
+  if (a.m !== m) { a.m = m; a.done = 0; a.sums.fill(0); }
   const k = st.day % SURVEY_DAYS;
+  if (a.done & (1 << k)) return;
   surveyHomes(st, rt, inf, a.sums, k);
   a.done |= 1 << k;
 }
@@ -191,7 +196,8 @@ export function residentSurvey(st: CityState, rt: EconRuntime, inf: InfraFlags =
   if (c && c.day === st.day) return c;
   let sv: ResidentSurvey;
   const a = st.systemData.survey as SurveyAcc | undefined;
-  if (st.day % SURVEY_DAYS === 0 && a && a.v === 1 && a.done === SURVEY_ALL && Array.isArray(a.sums) && a.sums.length === S_LEN) {
+  if (st.day % SURVEY_DAYS === 0 && a && a.v === 1 && a.m === st.day / SURVEY_DAYS && a.done === SURVEY_ALL
+    && Array.isArray(a.sums) && a.sums.length === S_LEN) {
     sv = surveyOf(st, a.sums);
     a.done = 0;
     a.sums.fill(0);

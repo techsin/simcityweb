@@ -1,0 +1,117 @@
+diff -ru a/src/assets/builders/civ_kit.ts b/src/assets/builders/civ_kit.ts
+--- a/src/assets/builders/civ_kit.ts	2026-10-13 21:35:09.052706773 +0000
++++ b/src/assets/builders/civ_kit.ts	2026-10-13 21:35:09.209457801 +0000
+@@ -7,6 +7,7 @@
+ import { ModelBuilder, PALETTE, type ColorLike, type Paint } from '../ModelBuilder';
+ import { Surf } from '../../core/types';
+ import type { RNG } from '../../core/rng';
++import { bareCrown } from './park_lib';
+ 
+ export type V3 = [number, number, number];
+ export type Face = 'pz' | 'nz' | 'px' | 'nx';
+@@ -550,7 +551,9 @@
+   const k = s * rng.range(0.85, 1.15);
+   b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.4 * k, 0.22 * k, 0.15 * k, 5, { top: false });
+   const g = color ?? rng.pick([0x4f7a32, 0x5a8a3a, 0x486f30, 0x66903d]);
+-  b.paint(g, Surf.Foliage).blob(x, 3.9 * k, z, 2.3 * k, 2.0 * k, 2.3 * k, 0, 0.16, rng.next() * 10);
++  // (seasonal crown: bare twigs in winter, park_lib.bareCrown)
++  const fl = bareCrown(b, x, z, [x, 2.3 * k, z], [x, 3.9 * k, z], 2.3 * k, 2.0 * k, PALETTE.trunk, 0.15 * k);
++  b.paint(g, Surf.Foliage, 1, fl).blob(x, 3.9 * k, z, 2.3 * k, 2.0 * k, 2.3 * k, 0, 0.16, rng.next() * 10);
+ }
+ /** Columnar cypress ~16 tris */
+ export function cypress(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1) {
+diff -ru a/src/assets/builders/com_kit.ts b/src/assets/builders/com_kit.ts
+--- a/src/assets/builders/com_kit.ts	2026-10-13 21:35:09.039409662 +0000
++++ b/src/assets/builders/com_kit.ts	2026-10-13 21:35:09.209213420 +0000
+@@ -7,6 +7,7 @@
+ import { ModelBuilder, type BoxFaces, type ColorLike, type Paint } from '../ModelBuilder';
+ import { Surf } from '../../core/types';
+ import type { RNG } from '../../core/rng';
++import { bareCrown } from './park_lib';
+ 
+ export type V2 = [number, number];
+ export type V3 = [number, number, number];
+@@ -501,7 +502,9 @@
+ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, color?: ColorLike) {
+   const k = s * rng.range(0.85, 1.15);
+   box(b, x - 0.14 * k, 0, z - 0.14 * k, x + 0.14 * k, 2.3 * k, z + 0.14 * k, P(C.trunk, Surf.Wood), null);
+-  b.paint(color ?? rng.pick(TREE_GREENS), Surf.Foliage).blob(x, 3.5 * k, z, 1.9 * k, 1.75 * k, 1.9 * k, 0, 0.16, rng.next() * 10);
++  // (seasonal crown: bare twigs in winter, park_lib.bareCrown)
++  const fl = bareCrown(b, x, z, [x, 2.2 * k, z], [x, 3.5 * k, z], 1.9 * k, 1.75 * k, C.trunk, 0.13 * k);
++  b.paint(color ?? rng.pick(TREE_GREENS), Surf.Foliage, 1, fl).blob(x, 3.5 * k, z, 1.9 * k, 1.75 * k, 1.9 * k, 0, 0.16, rng.next() * 10);
+ }
+ /** Columnar / cypress-like tree (18 tris). */
+ export function coneTree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1) {
+diff -ru a/src/assets/builders/ind_kit.ts b/src/assets/builders/ind_kit.ts
+--- a/src/assets/builders/ind_kit.ts	2026-10-13 21:35:09.057133440 +0000
++++ b/src/assets/builders/ind_kit.ts	2026-10-13 21:35:09.209695273 +0000
+@@ -10,6 +10,7 @@
+ import { RNG, hashString } from '../../core/rng';
+ import type { ModelBuildFn } from '../registry';
+ import { MANIFEST_BY_ID } from '../manifest';
++import { bareCrown } from './park_lib';
+ 
+ export type V3 = [number, number, number];
+ export type Face = 'pz' | 'nz' | 'px' | 'nx';
+@@ -694,7 +695,9 @@
+   const hh = h * s, rr = r * s;
+   b.paint(PALETTE.trunk, Surf.Wood);
+   strut(b, [x, 0, z], [x, hh * 0.5, z], 0.32 * s);
+-  b.paint(color ?? rng.pick(TREE_GREENS), Surf.Foliage);
++  // (seasonal crown: bare twigs in winter, park_lib.bareCrown)
++  const fl = bareCrown(b, x, z, [x, hh * 0.48, z], [x, hh - rr * 0.95, z], rr, rr * 0.95, PALETTE.trunk, 0.14 * s);
++  b.paint(color ?? rng.pick(TREE_GREENS), Surf.Foliage, 1, fl);
+   b.blob(x, hh - rr * 0.95, z, rr, rr * 0.95, rr, 0, 0.16, rng.next() * 10);
+ }
+ 
+diff -ru a/src/assets/builders/res_util.ts b/src/assets/builders/res_util.ts
+--- a/src/assets/builders/res_util.ts	2026-10-13 21:35:08.969393296 +0000
++++ b/src/assets/builders/res_util.ts	2026-10-13 21:35:09.208845975 +0000
+@@ -11,6 +11,7 @@
+ import { Surf } from '../../core/types';
+ import { hashString, type RNG } from '../../core/rng';
+ import { CAR_COLORS, car } from '../kit';
++import { bareCrown } from './park_lib';
+ 
+ /**
+  * True when this build is the X-mirrored twin of `variant` (manifest `mirror` entries). The registry seeds `rng` with
+@@ -549,11 +550,14 @@
+   const g = color ?? rng.pick([0x4c7630, 0x557f35, 0x3f6a2d, 0x62883a, 0x4a6e2c]);
+   if (kind === 'round') {
+     b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.4 * k, 0.2 * k, 0.14 * k, 5, { top: false });
+-    b.paint(g, Surf.Foliage).blob(x, 3.9 * k, z, 2.2 * k, 2.0 * k, 2.2 * k, 0, 0.16, rng.next() * 10);
++    // (seasonal crown: bare twigs in winter, park_lib.bareCrown)
++    const fl = bareCrown(b, x, z, [x, 2.3 * k, z], [x, 3.9 * k, z], 2.2 * k, 2.0 * k, PALETTE.trunk, 0.14 * k);
++    b.paint(g, Surf.Foliage, 1, fl).blob(x, 3.9 * k, z, 2.2 * k, 2.0 * k, 2.2 * k, 0, 0.16, rng.next() * 10);
+   } else if (kind === 'wide') {
+     b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 3.0 * k, 0.28 * k, 0.18 * k, 5, { top: false });
+-    b.paint(g, Surf.Foliage).blob(x, 4.6 * k, z, 3.3 * k, 2.3 * k, 3.1 * k, 0, 0.2, rng.next() * 10);
+-    b.paint(g, Surf.Foliage).blob(x + 1.2 * k, 5.6 * k, z - 0.6 * k, 2.0 * k, 1.6 * k, 2.0 * k, 0, 0.2, rng.next() * 10);
++    const fl = bareCrown(b, x, z, [x, 2.9 * k, z], [x + 0.4 * k, 4.9 * k, z - 0.2 * k], 3.3 * k, 2.3 * k, PALETTE.trunk, 0.18 * k);
++    b.paint(g, Surf.Foliage, 1, fl).blob(x, 4.6 * k, z, 3.3 * k, 2.3 * k, 3.1 * k, 0, 0.2, rng.next() * 10);
++    b.paint(g, Surf.Foliage, 1, fl).blob(x + 1.2 * k, 5.6 * k, z - 0.6 * k, 2.0 * k, 1.6 * k, 2.0 * k, 0, 0.2, rng.next() * 10);
+   } else if (kind === 'column') {
+     b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 0.8 * k, 0.15 * k, 0.12 * k, 5, { top: false });
+     b.paint(color ?? 0x3a5e2c, Surf.Foliage).blob(x, 3.6 * k, z, 0.9 * k, 3.2 * k, 0.9 * k, 0, 0.1, rng.next() * 10);
+diff -ru a/src/assets/builders/tr_kit.ts b/src/assets/builders/tr_kit.ts
+--- a/src/assets/builders/tr_kit.ts	2026-10-13 21:35:09.070927844 +0000
++++ b/src/assets/builders/tr_kit.ts	2026-10-13 21:35:09.209926848 +0000
+@@ -8,6 +8,7 @@
+ import { ModelBuilder, type ColorLike, type Paint } from '../ModelBuilder';
+ import { Surf } from '../../core/types';
+ import type { RNG } from '../../core/rng';
++import { bareCrown } from './park_lib';
+ 
+ export type V3 = [number, number, number];
+ 
+@@ -244,7 +245,9 @@
+   const s = h / 7;
+   b.paint(0x5b4330, Surf.Wood).cylinder(x, z, 0, h * 0.45, 0.22 * s, 0.15 * s, 5, { top: false });
+   const g = color ?? rng.pick([0x4f7a32, 0x5a8a3a, 0x46702f, 0x628f3e]);
+-  b.paint(g, Surf.Foliage).blob(x, h * 0.62, z, h * 0.3, h * 0.33, h * 0.3, 0, 0.1, rng.next() * 10);
++  // (seasonal crown: bare twigs in winter, park_lib.bareCrown)
++  const fl = bareCrown(b, x, z, [x, h * 0.44, z], [x, h * 0.62, z], h * 0.3, h * 0.33, 0x5b4330, 0.15 * s);
++  b.paint(g, Surf.Foliage, 1, fl).blob(x, h * 0.62, z, h * 0.3, h * 0.33, h * 0.3, 0, 0.1, rng.next() * 10);
+ }
+ /** Low shrub clump (20 tris). */
+ export function shrub(b: ModelBuilder, rng: RNG, x: number, z: number, r = 1.1): void {

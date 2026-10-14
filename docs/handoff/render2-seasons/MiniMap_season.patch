@@ -1,0 +1,41 @@
+diff -ru a/src/ui/MiniMap.ts b/src/ui/MiniMap.ts
+--- a/src/ui/MiniMap.ts	2026-10-13 21:39:55.585416505 +0000
++++ b/src/ui/MiniMap.ts	2026-10-13 21:39:56.693761806 +0000
+@@ -4,6 +4,7 @@
+ import { Network, Overlay } from '../core/types';
+ import type { GameContext } from '../game/context';
+ import { h } from './dom';
++import { sharedUniforms } from '../assets/materials';
+ import { icon } from './icons';
+ 
+ const ZC: Record<number, [number, number, number]> = {
+@@ -76,7 +77,7 @@
+     this.canvas.addEventListener('pointerup', () => (this.dragging = false));
+     const ev = ctx.sim.events;
+     const mark = () => (this.dirty = true);
+-    this.offs.push(ev.on('zoneChanged', mark), ev.on('networkChanged', mark), ev.on('terrainChanged', mark), ev.on('buildingAdded', mark), ev.on('buildingRemoved', mark), ev.on('treesChanged', mark), ev.on('reset', mark));
++    this.offs.push(ev.on('zoneChanged', mark), ev.on('networkChanged', mark), ev.on('terrainChanged', mark), ev.on('buildingAdded', mark), ev.on('buildingRemoved', mark), ev.on('treesChanged', mark), ev.on('reset', mark), ev.on('month', mark));
+   }
+ 
+   private paintBase(): void {
+@@ -84,6 +85,9 @@
+     const N = st.size;
+     const d = this.img.data;
+     const ov = this.ctx.overlay;
++    // land follows the 3D world's climate / season look (materials.ts setFoliageSeason: dormant in winter, straw in the
++    // desert, lusher in the tropics), as the lot lawns do
++    const dry = sharedUniforms.uFoliageDry.value, tint = sharedUniforms.uFoliageTint.value;
+     for (let z = 0; z < N; z++)
+       for (let x = 0; x < N; x++) {
+         const i = z * N + x;
+@@ -98,6 +102,10 @@
+           r = 92 + t * 60; g = 128 + t * 20; b = 72 + t * 40;
+           if (hgt < 1.6) { r = 196; g = 186; b = 140; }
+           if (hgt > 170) { const s = Math.min(1, (hgt - 170) / 40); r += (235 - r) * s; g += (238 - g) * s; b += (240 - b) * s; }
++          if (hgt >= 1.6 && hgt <= 170) {
++            const lum = 0.3 * r + 0.59 * g + 0.11 * b;
++            r = (r + (lum * 1.18 - r) * dry) * tint.r; g = (g + (lum * 1.02 - g) * dry) * tint.g; b = (b + (lum * 0.68 - b) * dry) * tint.b;
++          }
+           const tr = st.trees[i];
+           if (tr) { const k = 1 - tr * 0.07; r *= k * 0.92; g *= k; b *= k * 0.9; }
+           // light shading from slope (east-west)

@@ -100,6 +100,25 @@ describe('desirability: the 33-term model and its breakdown', () => {
     expect(gain(lo) / gain(hi)).toBeGreaterThanOrEqual(1.5);
   });
 
+  it('final fixes F3: parking pressure costs shops and offices desirability (the parking advice\'s "they lose customers")', { timeout: 300000 }, () => {
+    const { st, rt } = town(10);
+    const i = 20 * st.size + 36; // a ComMed cell
+    expect(st.zone[i]).toBe(Zone.ComMed);
+    const at = (p: number, d: number) => { st.parking[i] = p; return desirabilityBreakdown(st, rt, d, i); };
+    for (const d of [DevType.CS1, DevType.CS2, DevType.CS3, DevType.CO2, DevType.CO3]) {
+      const w = DESIR_WEIGHTS[d].parking;
+      expect(w).toBeLessThan(0);
+      const free = at(0, d), jammed = at(0.8, d);
+      expect(free.raw - jammed.raw).toBeCloseTo(-w * 0.8, 6);
+      const t = jammed.terms.find((x) => x.id === 'parking')!;
+      expect(t.value).toBeCloseTo(w * 0.8, 6);
+      expect(t.detail).toBe('parking pressure 80%');
+    }
+    // homes and industry do not care
+    expect(at(0.8, DevType.R2).terms.find((x) => x.id === 'parking')).toBeUndefined();
+    expect(at(0.8, DevType.IM).terms.find((x) => x.id === 'parking')).toBeUndefined();
+  });
+
   it('RENT: R$ desirability at land value .9 is at least 0.3 below R$ at .5, all else equal', { timeout: 300000 }, () => {
     const { st, rt } = town(10);
     const i = 20 * st.size + 12;

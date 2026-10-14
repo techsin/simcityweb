@@ -684,11 +684,10 @@ function spike(b: ModelBuilder, a: V3, tip: V3, side: V3, w: number, dir: V3): v
 
 /**
  * Bare winter crown of a deciduous kit tree (see the seasons note above): `limbs` limbs from the trunk top `top` out to
- * ~55% of the crown (radius rx / half-height ry around c: inside the leaf lobes) and a leader, each a tapering
- * double-sided blade in the bark colour, each tip fanning out `spikes` (3) slender double-sided twig spikes to about
- * the crown's size; limbs and twigs are Foliage pattern 5 (floor = the lobes' floor): drawn only while the tree is bare
- * (no vertices to shade in leaf). No rng draws (layouts unchanged): the shape is hashed from the tree position.
- * (limbs + 1) x (spikes + 1) x 2 tris: 32 by default.
+ * ~55% of the crown (radius rx / half-height ry around c: inside the leaf lobes, which hide them in leaf) and a leader,
+ * each a tapering double-sided bark blade, each tip fanning out `spikes` (3) slender double-sided twig spikes (Foliage
+ * pattern 5, floor = the lobes' floor: drawn only while the tree is bare) to about the crown's size. No rng draws
+ * (layouts unchanged): the shape is hashed from the tree position. (limbs + 1) x (spikes + 1) x 2 tris: 32 by default.
  * Other builders' lot trees can get the same winter crown: paint the crown blob(s) Foliage pattern 1 with floor =
  * 1 + a per-tree random in [0, 1) and call twigCrown with that floor (else bare lot crowns only thin out, materials.ts).
  */
@@ -710,8 +709,8 @@ export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3,
     const side0 = vcross(d, [0, 1, 0]);
     const sa: V3 = vlen(side0) > 0.1 ? vnorm(side0) : [1, 0, 0];
     const sb = vnorm(vcross(sa, d));
-    // the limb (leader: a little thinner), darker than the bark paint: the twig shading lights it like the sprays
-    b.paint(shade(bark, 0.6), Surf.Foliage, FOL_TWIG, floor);
+    // the limb (leader: a little thinner): plain bark, a shade darker (a flat blade lit softly like the sprays)
+    b.paint(shade(bark, 0.75), Surf.Wood);
     spike(b, top, p, sa, rT * (ti < nl ? 0.7 : 0.55), d);
     const ph = hr(20 + ti) * TAU;
     for (let k = 0; k < ns; k++) {

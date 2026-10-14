@@ -185,28 +185,30 @@ export class AlertQueue {
   }
 }
 
-// ------------------------------------------------------------------------------------------------ shared UI helpers
 // ------------------------------------------------------------------------------------------------ docking (P9)
 /** banner stack width (css px, emergency.css) */
 export const BANNER_W = 440;
 /** the narrowest the stack may get to fit beside open panels */
 export const BANNER_MIN_W = 340;
+/** a panel's title bar + tab row (css px) */
+const PANEL_HEAD_H = 96;
 export interface DockRect { x: number; y: number; w: number; h: number }
+export interface DockPlace { left: number; width: number; compact?: boolean }
 
 /**
- * Horizontal place of the banner stack (layout px of the UI root, `top` / `h` its rows): centred unless that covers an
- * open panel; else the free gap nearest the centre beside the panels (left of a right-docked one, right of a left one)
- * at full width, else narrowed down to BANNER_MIN_W; else (no gap wide enough) the place covering the fewest panel
- * header rows (title and tabs). Null = the default centred place.
+ * Where the banner stack goes (layout px of the UI root; `top` its first row, `h` its height with full banners,
+ * `compactH` with compact ones): centred unless that covers an open panel; else the free gap nearest the centre beside
+ * the panels in its rows (left of a right-docked one, right of a left one) at full width, else narrowed down to
+ * BANNER_MIN_W; else with compact banners (a lower stack clears a panel below it, e.g. the Budget under the banners
+ * while Advisors is docked right); else (no room at all) beside the panels' header rows (title and tabs) at least.
+ * Null = the default centred place.
  */
-export function dockBanners(W: number, top: number, h: number, w: number, panels: readonly DockRect[], margin = 12): { left: number; width: number } | null {
+export function dockBanners(W: number, top: number, h: number, w: number, panels: readonly DockRect[], compactH = 0, margin = 12): DockPlace | null {
   if (!(W >= w + 2 * margin)) return null; // narrow screens: the CSS default (full width)
-  const rows = (p: DockRect, hh: number) => p.y < top + h && p.y + hh > top;
-  const band = panels.filter((p) => rows(p, p.h));
   const at = (ww: number) => (W - ww) / 2;
+  const inRows = (p: DockRect, hh: number, ph: number) => p.y < top + hh && p.y + ph > top;
   const hits = (l: number, ww: number, list: readonly DockRect[]) => list.some((p) => l < p.x + p.w + margin && l + ww > p.x - margin);
-  if (!hits(at(w), w, band)) return null;
-  // free intervals of [margin, W - margin] beside the panels in the stack's rows
+  // free intervals of [margin, W - margin] beside the given panels
   const gaps = (list: readonly DockRect[]): [number, number][] => {
     const iv = list.map((p) => [p.x - margin, p.x + p.w + margin] as [number, number]).sort((a, b) => a[0] - b[0]);
     const out: [number, number][] = [];
@@ -218,10 +220,14 @@ export function dockBanners(W: number, top: number, h: number, w: number, panels
     if (W - margin > x) out.push([x, W - margin]);
     return out;
   };
-  const place = (list: readonly DockRect[]): { left: number; width: number } | null => {
+  /** the place nearest the centre clear of `list` (full width, else as wide as the widest gap down to BANNER_MIN_W) */
+  const place = (list: readonly DockRect[]): DockPlace | null => {
+    if (!hits(at(w), w, list)) return { left: at(w), width: w };
     const g = gaps(list);
-    for (const ww of [w, Math.max(BANNER_MIN_W, Math.min(w, ...g.map(([a, b]) => b - a)))]) {
-      let best: { left: number; width: number } | null = null, bd = Infinity;
+    const widest = g.reduce((m, [a, b]) => Math.max(m, b - a), 0);
+    for (const ww of [w, Math.min(w, widest)]) {
+      if (ww < BANNER_MIN_W) break;
+      let best: DockPlace | null = null, bd = Infinity;
       for (const [a, b] of g) {
         if (b - a < ww - 1e-6) continue;
         const l = Math.max(a, Math.min(b - ww, at(ww)));
@@ -232,12 +238,18 @@ export function dockBanners(W: number, top: number, h: number, w: number, panels
     }
     return null;
   };
-  // the whole panels first, then only their header rows (title / tabs: the part that must stay readable)
-  return place(band) ?? place(panels.filter((p) => rows(p, Math.min(p.h, PANEL_HEAD_H)))) ?? null;
+  const centred = (d: DockPlace | null) => (d && Math.abs(d.left - at(w)) < 0.5 && d.width === w ? null : d);
+  const full = place(panels.filter((p) => inRows(p, h, p.h)));
+  if (full) return centred(full);
+  if (compactH > 0 && compactH < h) {
+    const c = place(panels.filter((p) => inRows(p, compactH, p.h)));
+    if (c) return { ...c, compact: true };
+  }
+  const heads = place(panels.filter((p) => inRows(p, h, Math.min(p.h, PANEL_HEAD_H))));
+  return heads ? centred(heads) : null;
 }
-/** a panel's title bar + tab row (css px) */
-const PANEL_HEAD_H = 96;
 
+// ------------------------------------------------------------------------------------------------ shared UI helpers
 /** a duration in sim days as emergency minutes ("4.0 min"; 1 game-minute of siren driving = EMERG_DAYS_PER_MIN days) */
 export function emgTime(days: number): string {
   if (!Number.isFinite(days)) return '—';
@@ -356,6 +368,9 @@ interface BannerEl {
   outcome?: string;
   /** a unit could make it in time at some point (the alert held the speed policy) */
   wasPossible?: boolean;
+  /** last measured height as a full / compact banner (dock: the stack's height either way) */
+  fullH?: number;
+  compH?: number;
 }
 
 export class EmergencyBanner {
@@ -372,8 +387,9 @@ export class EmergencyBanner {
   /** the incidents the emergency system already had were scanned (a loaded game: the banner is built before the sim
    *  systems load, so their 'uncovered' events were never seen) */
   private scanned = false;
-  /** last docking applied to the stack (dock) */
+  /** last docking applied to the stack (dock), and whether it needs every banner compact */
   private dockKey = '';
+  private dockCompact = false;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'emg-banners' });
@@ -631,9 +647,10 @@ export class EmergencyBanner {
     b.choose.style.display = 'none';
   }
 
-  /** at most MAX_BANNERS full banners: the alerts a dispatch can still save first (oldest first), the rest compact
-   *  (title, time and buttons); CSS order, so no banner is moved in the DOM (no restarted animations) */
-  private layout(): void {
+  /** at most MAX_BANNERS full banners (all compact while the stack must stay low, see dock): the alerts a dispatch can
+   *  still save first (oldest first), the rest compact (title, time and buttons); CSS order, so no banner is moved in
+   *  the DOM (no restarted animations) */
+  private layout(allCompact = this.dockCompact): void {
     const em = emergencyOf(this.ctx.sim);
     const prio = (b: BannerEl): number => {
       const inc = em?.incident(b.id);
@@ -641,7 +658,7 @@ export class EmergencyBanner {
     };
     const list = [...this.banners.values()].sort((a, b) => prio(a) - prio(b) || a.inc.start - b.inc.start || a.id - b.id);
     list.forEach((b, k) => {
-      toggleClass(b.el, 'compact', k >= MAX_BANNERS);
+      toggleClass(b.el, 'compact', allCompact || k >= MAX_BANNERS);
       const o = String(k);
       if (b.el.style.order !== o) b.el.style.order = o;
     });
@@ -649,7 +666,9 @@ export class EmergencyBanner {
 
   /**
    * Keep the banner stack off open panels (their titles and tabs: a right-docked Advisors panel read "…isors & news"
-   * with its tab hidden): beside them as near the centre as fits (dockBanners), else centred as before.
+   * with its tab hidden): beside them as near the centre as fits, else with compact banners, else beside their header
+   * rows (dockBanners); centred as before when nothing is in the way. Heights are the ones measured before this tick's
+   * changes (full and compact), so the choice does not flip-flop with the banners' own size.
    */
   private dock(): void {
     const root = this.ctx.root;
@@ -661,7 +680,27 @@ export class EmergencyBanner {
         panels.push({ x: p.offsetLeft, y: p.offsetTop, w: p.offsetWidth, h: p.offsetHeight });
       }
     }
-    const d = panels.length ? dockBanners(W, this.el.offsetTop, this.el.offsetHeight, BANNER_W, panels) : null;
+    let d: DockPlace | null = null;
+    if (panels.length) {
+      // the stack's height with full / compact banners (the current one for the kind each banner has now)
+      let full = 0, comp = 0;
+      for (const b of this.banners.values()) {
+        const hh = b.el.offsetHeight;
+        if (hh > 0) {
+          if (b.el.classList.contains('compact')) b.compH = hh;
+          else b.fullH = hh;
+        }
+        full += (b.fullH ?? 150) + 8;
+        comp += (b.compH ?? 64) + 8;
+      }
+      const more = this.more.style.display === 'none' ? 0 : this.more.offsetHeight + 8;
+      d = dockBanners(W, this.el.offsetTop, full + more - 8, BANNER_W, panels, comp + more - 8);
+    }
+    const compact = !!d?.compact;
+    if (compact !== this.dockCompact) {
+      this.dockCompact = compact;
+      this.layout();
+    }
     const key = d ? `${Math.round(d.left)}:${Math.round(d.width)}` : '';
     if (key === this.dockKey) return;
     this.dockKey = key;
@@ -714,8 +753,8 @@ export class EmergencyBanner {
     if (em) for (const inc of em.incidents()) if (inc.state === 'uncovered' && inc.manualPossible && inc.major && !this.banners.has(inc.id)) hidden++;
     this.more.style.display = hidden ? '' : 'none';
     if (hidden) this.more.innerHTML = `${icon('alert', 14)}<span>${hidden} more emergenc${hidden === 1 ? 'y needs' : 'ies need'} you — open Emergencies</span>`;
-    this.layout();
     this.dock();
+    this.layout();
     this.applyPolicy();
   }
 

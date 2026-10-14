@@ -25,6 +25,7 @@ import { BF, type Building, type CityState } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
 import type { FactorTerm } from '../explain';
 import { clamp, smoothstep } from '../../core/rng';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import { DevType, Network } from '../../core/types';
 import type { BuildingDef } from '../catalogTypes';
 import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
@@ -64,7 +65,10 @@ export const ATTRACTIONS: Readonly<Record<string, AttractionDef>> = {
   civ_museum: { kind: 'culture', draw: 900, capacity: 4000 },
   civ_convention_center: { kind: 'business', draw: 2500, capacity: 6000 },
   civ_city_hall: { kind: 'landmark', draw: 200, capacity: 1000 },
-  park_zoo: { kind: 'entertainment', draw: 3000, capacity: 10000 },
+  // (final fixes LD15b: was 3000 / 10000 — ~1,400 tourism shop jobs where the legacy formula counts 400 (cap relief C 8,000
+  //  × 0.05), so a city that bought the zoo ran its tourism jobs 30–40 % above the old formula; the zoo is a residential
+  //  cap boost first, its visitors are about a museum's)
+  park_zoo: { kind: 'entertainment', draw: 900, capacity: 4000 },
   park_stadium: { kind: 'sport', draw: 5000, capacity: 40000 },
   park_amusement: { kind: 'entertainment', draw: 4500, capacity: 15000 },
   park_golf: { kind: 'sport', draw: 400, capacity: 1200 },
@@ -326,6 +330,36 @@ function splat(acc: Float32Array, N: number, cx: number, cz: number, v: number):
   }
 }
 
+// ------------------------------------------------------------------------------------------------ monthly slices
+/**
+ * The hotel rooms and historic buildings of the month are gathered in daily slices (growables with id % TOURISM_SLICES
+ * === day % TOURISM_SLICES) into systemData.tourismAcc and read on the month tick (final fixes V5: one pass over every
+ * growable with its def lookup sat on the month tick); a month with slices missing (a new or loaded city, a direct call)
+ * takes one full pass.
+ */
+const TOURISM_SLICES = DAYS_PER_MONTH;
+const TOURISM_ALL = (2 ** TOURISM_SLICES) - 1;
+/** systemData.tourismAcc: the month's sums so far, their month (m = ⌈day / TOURISM_SLICES⌉) and the slices done */
+interface TourismAcc { v: 1; m: number; done: number; rooms: number; hist: number[] }
+/** add the hotel rooms (Σ hotel jobs × HOTEL_ROOMS_PER_JOB) and historic building ids of a slice (−1 = all) */
+function growablesSlice(rt: EconRuntime, slice: number, out: { rooms: number; hist: number[] }): void {
+  const growList = rt.growables;
+  for (let k = 0; k < growList.length; k++) {
+    const b = growList[k];
+    if (slice >= 0 && b.id % TOURISM_SLICES !== slice) continue;
+    const hist = (b.flags & BF.Historic) !== 0;
+    if (!hist && b.jobs <= 0) continue;
+    const def = rt.defOf(b);
+    if (!def || !isOpen(b)) continue;
+    if (hist) out.hist.push(b.id);
+    // (PERF, WP6a: only shops can be hotels — skip the model lookup for everything else)
+    const dv = def.devType;
+    if (dv === undefined || dv < DevType.CS1 || dv > DevType.CS3) continue;
+    const r = HOTEL_ROOMS_PER_JOB[def.model];
+    if (r !== undefined && b.jobs > 0) out.rooms += b.jobs * r;
+  }
+}
+
 // ------------------------------------------------------------------------------------------------ the system
 export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } {
   const update = (sim: Simulation) => {
@@ -372,22 +406,30 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
       gross += v;
       if (a.kind === 'landmark' || a.kind === 'culture') culture += v;
     }
-    // historic districts + hotel rooms (one pass over the growables)
+    // historic districts + hotel rooms: the month's daily slices (tourismSlice) on a regular month tick, else one pass
+    // over the growables (final fixes V5)
     let historicBase = 0, rooms = 0;
     const historicB: Building[] = [];
-    const growList = rt.growables;
-    for (let k = 0; k < growList.length; k++) {
-      const b = growList[k];
-      const hist = (b.flags & BF.Historic) !== 0;
-      if (!hist && b.jobs <= 0) continue;
-      const def = rt.defOf(b);
-      if (!def || !isOpen(b)) continue;
-      if (hist) { historicBase += TOURISM.historicPerStage * (def.stage ?? 1); historicB.push(b); }
-      // (PERF, WP6a: only shops can be hotels — skip the model lookup for everything else)
-      const dv = def.devType;
-      if (dv === undefined || dv < DevType.CS1 || dv > DevType.CS3) continue;
-      const r = HOTEL_ROOMS_PER_JOB[def.model];
-      if (r !== undefined && b.jobs > 0) rooms += b.jobs * r;
+    const ta = st.systemData.tourismAcc as TourismAcc | undefined;
+    if (st.day % TOURISM_SLICES === 0 && ta && ta.v === 1 && ta.m === st.day / TOURISM_SLICES && ta.done === TOURISM_ALL
+      && Array.isArray(ta.hist)) {
+      rooms = ta.rooms;
+      for (const id of ta.hist) {
+        const b = st.buildings.get(id);
+        if (!b || !(b.flags & BF.Historic) || !isOpen(b)) continue;
+        historicBase += TOURISM.historicPerStage * (rt.defOf(b)?.stage ?? 1);
+        historicB.push(b);
+      }
+      ta.done = 0; ta.rooms = 0; ta.hist = [];
+    } else {
+      const sums = { rooms: 0, hist: [] as number[] };
+      growablesSlice(rt, -1, sums);
+      rooms = sums.rooms;
+      for (const id of sums.hist) {
+        const b = st.buildings.get(id)!;
+        historicBase += TOURISM.historicPerStage * (rt.defOf(b)?.stage ?? 1);
+        historicB.push(b);
+      }
     }
     const historic = Math.min(TOURISM.historicMax, historicBase * aF * sizeF * drawMul);
     // beaches
@@ -515,6 +557,20 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
   return {
     name: 'economy.tourism',
     rt,
+    daily(sim) {
+      // the month's hotel rooms / historic buildings in daily slices (the month tick reads them)
+      const st = sim.state;
+      rt.ensureLists();
+      let a = st.systemData.tourismAcc as TourismAcc | undefined;
+      if (!a || a.v !== 1 || !Array.isArray(a.hist)) st.systemData.tourismAcc = a = { v: 1, m: -1, done: 0, rooms: 0, hist: [] };
+      // (a month whose tick did not read the sums starts over: no slice counts twice)
+      const m = Math.ceil(st.day / TOURISM_SLICES);
+      if (a.m !== m) { a.m = m; a.done = 0; a.rooms = 0; a.hist = []; }
+      const k = st.day % TOURISM_SLICES;
+      if (a.done & (1 << k)) return;
+      growablesSlice(rt, k, a);
+      a.done |= 1 << k;
+    },
     init(sim) {
       rt.attach(sim);
       if (subscribedTo !== sim) {

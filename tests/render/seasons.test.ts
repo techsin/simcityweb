@@ -157,11 +157,11 @@ describe('seasonal foliage patterns', () => {
       if (p === 1) blob++;
     }
     expect(blob).toBe(20);
-    // 3 tips x (a limb blade + 3 spikes), each double-sided; nothing else (no wood: the limbs are winter-only too)
-    expect(twig).toBe(24);
+    // 3 tips x 3 double-sided spikes; 3 double-sided bark blades (the limbs, inside the crown) + the 10-tri trunk
+    expect(twig).toBe(18);
     let wood = 0;
     for (let i = 0; i < srf.count; i += 3) if (Math.round(srf.getX(i)) === Surf.Wood) wood++;
-    expect(wood).toBe(10);
+    expect(wood).toBe(16);
     // the same tree position always gives the same crown (no rng draw)
     const b2 = new ModelBuilder();
     expect(bareCrown(b2, 4, -2, [4, 2.3, -2], [4, 3.9, -2], 2.2, 2.0, 0x5b4330, 0.14)).toBe(fl);

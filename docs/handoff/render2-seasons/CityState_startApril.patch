@@ -1,0 +1,14 @@
+diff -ru a/src/sim/CityState.ts b/src/sim/CityState.ts
+--- a/src/sim/CityState.ts	2026-10-13 21:39:56.050228055 +0000
++++ b/src/sim/CityState.ts	2026-10-13 21:39:56.693981218 +0000
+@@ -443,8 +443,8 @@
+   config: CityConfigData;
+ 
+   // calendar
+-  /** absolute days since city founded */
+-  day = 0;
++  /** absolute days since city founded (new cities open on 1 April: the first view is spring, not a winter landscape) */
++  day = 90;
+   get dayOfMonth() { return this.day % 30; }
+   get month() { return Math.floor(this.day / 30) % 12; }
+   get year() { return this.config.startYear + Math.floor(this.day / 360); }
