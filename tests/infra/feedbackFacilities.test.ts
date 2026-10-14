@@ -6,7 +6,8 @@
  *  - P8 / routed 11: a staffed service without road access does not work at all (op 0, quality factor "no road access",
  *    a placement warning that says so); the Staff line shows the posted jobs;
  *  - P13 / routed 9: an under-used hospital says why (its area's patients are seated by clinics first);
- *  - P3: the def facts quote what one more costs in this city now and the most it can cost.
+ *  - P3: the def facts quote what one typically costs in this city and the most it can cost (final fixes SF-3, lead
+ *    decision 20b: "typical in this city", not "now");
  */
 import { describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
@@ -124,7 +125,7 @@ describe('P13 / routed 9: an under-used hospital says why', () => {
   });
 });
 
-describe('P3: def facts quote this city\'s cost now and the full-use cost', () => {
+describe('P3 / SF-3: def facts quote this city\'s typical cost and the full-use cost', () => {
   it('city-aware estimate + "up to" at full use (the same numbers the build menu and plop tool show)', () => {
     const def = getDef('civ_elementary_school')!;
     expect(fullUseUpkeep(def)).toBeCloseTo(240 * 0.3 + 1500 * 0.6, 6);
@@ -134,7 +135,8 @@ describe('P3: def facts quote this city\'s cost now and the full-use cost', () =
     st.stats.needs.elementary = { need: 300, served: 100, capacity: 0, unreached: 200, overcrowded: 0 };
     const now = expectedUpkeep(st, def);
     const city = facilityDefFacts('civ_elementary_school', st).find((f) => f.key === 'upkeep')!;
-    expect(city.hint).toBe(`≈§${Math.round(now).toLocaleString('en-US')}/mo now · up to §972 at full use`);
+    // (final fixes SF-3, lead decision 20b: the city-wide figure says it is typical for the city, not "now")
+    expect(city.hint).toBe(`≈§${Math.round(now).toLocaleString('en-US')}/mo typical in this city · up to §972 at full use`);
     expect(now).toBeLessThan(fullUseUpkeep(def));
   });
 });

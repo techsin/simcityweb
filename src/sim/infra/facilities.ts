@@ -328,7 +328,8 @@ export function understaffed(st: CityState, b: Building): boolean {
  * why a tier facility is short of staff (undefined = it is not). Final fixes P5 / routed 10: a facility in its first
  * month is still hiring; with under STAFF_CITY_MIN of the city's jobs filled every employer is short (job matching
  * under-fills the big ones most), so that is the reason for all of them; the road is blamed only when its road reaches
- * no homes at all, or when it fills far below the city's employers of a similar size.
+ * no homes at all, or when it fills far below the city's employers of a similar size (final fixes SF-9a: with fewer than
+ * 3 of them — a hospital, a university — the city's fill is the comparison, and big employers fill last).
  */
 function staffHint(st: CityState, s: Staffing, b: Building): string | undefined {
   if (!s.road) return 'No road access — build a road beside it';
@@ -339,7 +340,10 @@ function staffHint(st: CityState, s: Staffing, b: Building): string | undefined 
   if (cf >= 0 && cf < STAFF_CITY_MIN) return `The city has too few workers (all employers ${pct(cf)} staffed) — zone more homes`;
   if (!roadReachesHomes(st, b)) return "Workers can't reach it — its road doesn't connect to any homes; link it to where people live";
   const peer = peerFill(st, s.slots);
-  if (peer < 0 || s.staff < 0.75 * peer) {
+  // final fixes SF-9a: no employers of its size to compare with (fewer than 3 — the usual case for a hospital or a
+  // university) and its road reaches homes: not a road problem — compare with the city's fill instead
+  if (peer < 0) return `Big employers fill last: the city's employers are ${pct(Math.max(0, cf))} staffed — more homes nearby help`;
+  if (s.staff < 0.75 * peer) {
     return s.rel < STAFF_FLAG ? 'Few workers reach it compared with other employers — a better road link to where people live helps'
       : 'Fewer workers reach it than other employers — a better road link to homes helps';
   }
@@ -348,11 +352,24 @@ function staffHint(st: CityState, s: Staffing, b: Building): string | undefined 
 /** a facility younger than this (days) is still hiring (routed 10) */
 const STAFF_SETTLE_DAYS = 30;
 
-/** a road from the lot reaches a home (BFS over road cells from its frontage; memoised per building and day) */
-const homesMemo = new Map<number, { day: number; ok: boolean }>();
+/**
+ * the report memos of a city (final fixes SF-1): keyed by the city itself (a WeakMap), so a city the player left is
+ * released with its simulation, and a second city with the same building ids and day never reads the first one's answer.
+ * The entries hold no CityState. A memo past `cap` entries starts over
+ */
+function cityMemo<K, V>(memos: WeakMap<CityState, Map<K, V>>, st: CityState, cap: number): Map<K, V> {
+  let m = memos.get(st);
+  if (!m) memos.set(st, (m = new Map()));
+  else if (m.size > cap) m.clear();
+  return m;
+}
+
+/** a road from the lot reaches a home (BFS over road cells from its frontage; memoised per city, building and day) */
+const homesMemo = new WeakMap<CityState, Map<number, { day: number; ok: boolean }>>();
 let roadQueue = new Int32Array(0), roadSeen = new Uint32Array(0), roadStamp = 0;
 function roadReachesHomes(st: CityState, b: Building): boolean {
-  const m = homesMemo.get(b.id);
+  const memo = cityMemo(homesMemo, st, 256);
+  const m = memo.get(b.id);
   if (m && m.day === st.day) return m.ok;
   const N = st.size, C = st.cells, net = st.network, bld = st.building, zone = st.zone;
   if (roadQueue.length !== C) { roadQueue = new Int32Array(C); roadSeen = new Uint32Array(C); roadStamp = 0; }
@@ -385,18 +402,18 @@ function roadReachesHomes(st: CityState, b: Building): boolean {
       if (isRd(j) && seen[j] !== stamp) { seen[j] = stamp; q[qt++] = j; }
     }
   }
-  if (homesMemo.size > 256) homesMemo.clear();
-  homesMemo.set(b.id, { day: st.day, ok });
+  memo.set(b.id, { day: st.day, ok });
   return ok;
 }
 
 /** job-weighted fill of the C / I employers with about as many posted jobs (½× .. 2×; -1 = fewer than 3 of them);
- *  memoised per day and size bucket */
-const peerMemo = new Map<string, { st: CityState; day: number; fill: number }>();
+ *  memoised per city, day and size bucket */
+const peerMemo = new WeakMap<CityState, Map<number, { day: number; fill: number }>>();
 function peerFill(st: CityState, slots: number): number {
-  const lo = slots / 2, hi = slots * 2, key = `${Math.round(Math.log2(Math.max(1, slots)) * 4)}`;
-  const m = peerMemo.get(key);
-  if (m && m.st === st && m.day === st.day) return m.fill;
+  const lo = slots / 2, hi = slots * 2, key = Math.round(Math.log2(Math.max(1, slots)) * 4);
+  const memo = cityMemo(peerMemo, st, 64);
+  const m = memo.get(key);
+  if (m && m.day === st.day) return m.fill;
   let filled = 0, posted = 0, n = 0;
   const list = buildingList(st);
   for (let k = 0; k < list.length; k++) {
@@ -409,8 +426,7 @@ function peerFill(st: CityState, slots: number): number {
     n++;
   }
   const fill = n >= 3 && posted > 0 ? Math.min(1, filled / posted) : -1;
-  if (peerMemo.size > 64) peerMemo.clear();
-  peerMemo.set(key, { st, day: st.day, fill });
+  memo.set(key, { day: st.day, fill });
   return fill;
 }
 
@@ -669,12 +685,6 @@ export function facilityRollMonth(sim: Simulation): void {
   d.resp = {};
 }
 
-/** the whole monthly bookkeeping at once (tests / tools): responses roll, city fill, use factors */
-export function facilityMonthly(sim: Simulation, scan: { plopped: Building[]; cityFill: number } = monthlyScan(sim.state)): void {
-  facilityRollMonth(sim);
-  facilityScan(sim, scan);
-}
-
 // ================================================================================================ live service quality
 /** service of a coverage kind (mirrors services.ts KIND_SERVICE) */
 const COV_SERVICE: Readonly<Record<string, ServiceKind>> = {
@@ -781,14 +791,16 @@ function stigmaWord(a: number): string {
   return a >= 0.5 ? 'severe' : a >= 0.4 ? 'strong' : a >= 0.2 ? 'moderate' : 'mild';
 }
 
-/** the reach (walk / drive / disk) of a tier facility — cached per building and day for the report's catchment sums */
-const reachMemo = new Map<number, { day: number; key: string; seniors: number; residents: number; need: number }>();
+/** the reach (walk / drive / disk) of a tier facility — cached per city, building and day for the report's catchment
+ *  sums (cityMemo) */
+const reachMemo = new WeakMap<CityState, Map<number, { day: number; key: string; seniors: number; residents: number; need: number }>>();
 let reachScratch: ReachScratch | null = null;
 /** people in a tier facility's reach: residents, seniors and its need tier's need (last services pass's raster) */
 function catchmentPeople(sim: Simulation, st: CityState, b: Building, need: NeedTier | null): { seniors: number; residents: number; need: number } {
   const inf = infoOf(st, b);
   const key = `${b.def}:${b.x}:${b.z}:${b.w}:${b.d}:${need}`;
-  const m = reachMemo.get(b.id);
+  const memo = cityMemo(reachMemo, st, 256);
+  const m = memo.get(b.id);
   if (m && m.day === st.day && m.key === key) return m;
   if (!reachScratch || reachScratch.idx.length < 1024) reachScratch = newReachScratch(4096);
   const metric = inf.metric === 0 ? 'walk' : inf.metric === 1 ? 'drive' : 'euclid';
@@ -810,8 +822,7 @@ function catchmentPeople(sim: Simulation, st: CityState, b: Building, need: Need
     seniors += per * cohortShares(r, sh)[4];
   }
   const out = { day: st.day, key, seniors, residents, need: nr ? needSum : residents };
-  if (reachMemo.size > 256) reachMemo.clear();
-  reachMemo.set(b.id, out);
+  memo.set(b.id, out);
   return out;
 }
 
@@ -828,10 +839,12 @@ function upkeepLine(c: Ctx, burnt = false): void {
     const many = OPEX_UNIT[ox.tier][1], one = OPEX_UNIT[ox.tier][0];
     const each = `§${ox.rate < 0.1 ? ox.rate.toFixed(3) : ox.rate.toFixed(2)}`;
     // (running costs are charged on the city's served count — stats.needs, the Statistics panel — and split by the
-    // coverage each facility delivers; its seat count above is measured per cell, so the two are not compared here)
+    // coverage each facility delivers; its seat count above is measured per cell, so the two are not compared here).
+    // Final fixes SF-3 (LD20b): the value is its SHARE of the city's running costs, not what bulldozing it would save —
+    // nearby facilities take over most of its users and their costs (a fire station's 519 against a real +126)
     const hint = ox.people >= 1
-      ? `Building ${money(ox.building)} + its share of the running costs ${money(ox.running)} (${each} a month for each of the city's ${fmt(ox.total)} ${many})`
-      : `Building ${money(ox.building)}; running costs of ${each} per ${one} a month start once it serves people`;
+      ? `Its share of the city's running costs: the building ${money(ox.building)} + ${money(ox.running)} for the people it serves (${each} a month for each of the city's ${fmt(ox.total)} ${many}); bulldozing it saves less when nearby facilities take over its users`
+      : `Its share of the city's running costs: the building ${money(ox.building)}; running costs of ${each} per ${one} a month start once it serves people`;
     add(c, 'upkeep', 'Upkeep', `${money(ox.building + ox.running)} / month${fNote}`, { hint });
     return;
   }
@@ -875,6 +888,15 @@ function qualityLine(c: Ctx): void {
 /** a facility using less than this share of its capacity says why (final fixes P13: "Beds 21 / 200" with 7,700
  *  residents in reach) */
 const UNDERUSED_UTIL = 0.15;
+/** what to build when a school / library of a tier is overcrowded (final fixes SF-9b) */
+const SCHOOL_KIND: Readonly<Record<string, string>> = {
+  elementary: 'another elementary school', high: 'another high school', college: 'another university', library: 'another library',
+};
+
+/** a tier facility working at op 0 — a staffed service without road access (final fixes P8): it serves nobody */
+function servesNobody(c: Ctx): boolean {
+  return c.inf.tier >= 0 && facilityOpFactor(c.st, c.b) === 0;
+}
 
 /** seats / patients / visitors of a shared tier facility, crowding, reach, city-wide unreached */
 function seatLines(c: Ctx): void {
@@ -889,16 +911,27 @@ function seatLines(c: Ctx): void {
   }
   const tier = L.tier;
   const unit = TIER_UNIT[tier] ?? ['Capacity', 'people'];
-  if (Number.isFinite(L.capacity)) {
+  if (servesNobody(c)) {
+    // final fixes SF-4: a staffed service without road access works at op 0 (P8) and serves nobody, whatever the last
+    // services pass put in its seats (the tier engine records its reach at op 0: "Patients 883 / 8,000" next to
+    // "Service quality 0%") — its load line says so and shows nobody seated
+    const hint = "Serves nobody — no road access (staff can't reach it)";
+    if (!Number.isFinite(L.capacity)) add(c, 'served', unit[0], `0 ${unit[1]}`, { status: 'bad', hint });
+    else if (tier === 'hospital') add(c, 'beds', 'Beds', `0 / ${fmt(L.capacity / PATIENTS_PER_BED)}`, { ratio: 0, status: 'bad', hint });
+    else add(c, tier === 'police' ? 'patrolLoad' : 'seats', unit[0], `0 / ${fmt(L.capacity)} (0%)`, { ratio: 0, status: 'bad', hint });
+  } else if (Number.isFinite(L.capacity)) {
     if (tier === 'hospital') {
       add(c, 'beds', 'Beds', `${fmt(L.seated / PATIENTS_PER_BED)} / ${fmt(L.capacity / PATIENTS_PER_BED)}`, {
         ratio: L.utilization, status: statusOfUtil(L.utilization),
         hint: L.utilization > OVERCROWDED_UTIL ? 'Overcrowded — everyone in its area gets less care; build another hospital or clinic nearby' : undefined,
       });
     } else {
+      // (final fixes SF-9b: the crowded facility's own kind — "another school" sent a University's players to build an
+      // elementary school, and a crowded library read "build another park")
       const crowdHint = tier === 'police' ? 'Overloaded — patrols thin out over its whole area; build another station nearby'
-        : tier === 'elementary' || tier === 'high' || tier === 'college' ? 'Overcrowded — every pupil in its area learns less; build another school nearby'
+        : tier === 'elementary' || tier === 'high' || tier === 'college' || tier === 'library' ? `Overcrowded — every ${tier === 'elementary' ? 'pupil' : tier === 'library' ? 'learner' : 'student'} in its area learns less; build ${SCHOOL_KIND[tier]} nearby`
         : tier === 'clinic' ? 'Overcrowded — everyone in its area gets less care; build another clinic nearby'
+        : tier === 'play' ? 'Crowded — kids and teens get less out of it; build another playground or sports field nearby'
         : 'Crowded — visitors get less out of it; build another park nearby';
       add(c, tier === 'police' ? 'patrolLoad' : 'seats', unit[0], `${fmt(tier === 'police' ? L.demand : L.seated)} / ${fmt(L.capacity)} (${pct(L.utilization)})`, {
         ratio: L.utilization, status: statusOfUtil(L.utilization), hint: L.utilization > 1 ? crowdHint : undefined,
@@ -1160,9 +1193,15 @@ function garbageLines(c: Ctx, p: PollutionSystem | undefined): void {
   const sm = p?.garbageSummary();
   if (sm && sm.producedT > 0) {
     const un = sm.outOfRangeT + sm.overCapacityT + sm.noRoadT;
+    // final fixes SF-9c: recycling takes at most RECYCLE_MAX_SHARE of the collected garbage — once the city's recycling
+    // centers reach that cap, another one does not help (a recycling center's own inspector told the player to build one)
+    const recCapped = sm.recycledT > 0 && sm.recycledT >= 0.99 * RECYCLE_MAX_SHARE * sm.collectedT;
+    const over = recCapped ? `Over capacity — zone more landfill or build an incinerator (recycling already takes the most it can: ${pct(RECYCLE_MAX_SHARE)} of the collected garbage)`
+      : sm.recycledT > 0 ? 'Over capacity — zone more landfill, or build an incinerator or another recycling center'
+        : 'Over capacity — zone more landfill or build a recycling center / incinerator';
     add(c, 'city', 'City garbage', `${fmt(sm.collectedT)} / ${fmt(sm.producedT)} t/month collected`, {
       ratio: sm.collectedT / sm.producedT, status: un > 0.05 * sm.producedT ? 'warn' : 'ok',
-      hint: sm.overCapacityT > 1 ? 'Over capacity — zone more landfill or build a recycling center / incinerator' : sm.outOfRangeT > 1 ? 'Some homes are beyond garbage-truck range' : undefined,
+      hint: sm.overCapacityT > 1 ? over : sm.outOfRangeT > 1 ? 'Some homes are beyond garbage-truck range' : undefined,
     });
   }
   if (!touchesRoad(st, b)) c.warnings.push('No road access — garbage trucks cannot reach it');
@@ -1180,7 +1219,8 @@ function policeLines(c: Ctx): void {
   const j = st.stats.justice;
   const L = c.load;
   const served = st.stats.needs?.police?.served ?? 0;
-  if (j && L && served > 0) add(c, 'arrests', 'Arrests', `≈ ${fmt(j.arrestsMonth * Math.min(1, L.served / served))} / month in its patrol area`);
+  // (a station that patrols nobody — no road access, final fixes SF-4 — makes no arrests)
+  if (j && L && served > 0 && !servesNobody(c)) add(c, 'arrests', 'Arrests', `≈ ${fmt(j.arrestsMonth * Math.min(1, L.served / served))} / month in its patrol area`);
   const h = byDef(HOLDING_CELLS, def.id);
   if (h) add(c, 'holding', 'Holding cells', `${fmt(h * fundingFactor(st, 'police'))}`, { hint: 'Hold sentenced offenders when there is no prison bed' });
   justiceCityLines(c);
@@ -1452,12 +1492,14 @@ export function facilityDefFacts(defId: string, st: CityState | null = null): Fa
   if ((def.jobs ?? 0) > 0) f('jobs', 'Jobs', fmt(def.jobs ?? 0));
   const orate = opexRateOf(def);
   if (orate && (def.upkeep ?? 0) > 0) {
-    // building + running costs per person served (economy/opex.ts). Final fixes P3: what one more of it costs in this
-    // city now (expectedUpkeep with the city's unserved need) and the most it can cost (every seat / its whole patrol
-    // capacity in use) — the build menu, plop tool and inspector use the same two numbers
+    // building + running costs per person served (economy/opex.ts). Final fixes P3: what one of it typically costs in
+    // this city (expectedUpkeep with the city's unserved need) and the most it can cost (every seat / its whole patrol
+    // capacity in use). Final fixes SF-3 (lead decision 20b, option i): "typical in this city", not "now" — the
+    // figure is the city-wide typical load, which can be 2-11x what one more changes in the budget at a given spot (the
+    // plop tool's "Upkeep here" answers that); the build menu and Rewards panel show these same words
     const each = `§${orate.rate < 0.1 ? orate.rate.toFixed(3) : orate.rate.toFixed(2)}`;
     const full = `up to ${money(fullUseUpkeep(def))} at full use`;
-    f('upkeep', 'Upkeep', `${money(buildingUpkeep(st, def))} / month + ${each} per ${orate.unit} served`, st ? `≈${money(expectedUpkeep(st, def))}/mo now · ${full}` : `${full} a month`);
+    f('upkeep', 'Upkeep', `${money(buildingUpkeep(st, def))} / month + ${each} per ${orate.unit} served`, st ? `≈${money(expectedUpkeep(st, def))}/mo typical in this city · ${full}` : `${full} a month`);
   } else if ((def.upkeep ?? 0) > 0) f('upkeep', 'Upkeep', `${money(def.upkeep ?? 0)} / month`);
   for (const t of TF.transportDefFacts(defId)) out.push(t);
   return out;

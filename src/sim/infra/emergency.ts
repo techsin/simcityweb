@@ -107,11 +107,15 @@ export interface Incident {
   /** a free unit of the needed type can be sent at all (by road), even if it only arrives after the deadline */
   canSend?: boolean;
   /** WP6b: the player was prompted (a major incident uncovered while a free unit could still make it in time): if it
-   *  fails with nobody answering, it counts as ignored (stats.emergency month.ignored; approval remembers) */
+   *  fails with nobody answering, it counts as ignored (stats.emergency month.ignored; approval remembers). Set only at
+   *  a settle point (the end of a day's dispatch work, EM-1), never the moment a dispatch decision makes it possible: a
+   *  disaster's next incident may take the very unit that decision counted on */
   prompted?: boolean;
   /** ETA (game minutes incl. turnout) of the nearest free unit the last dispatch attempt found beyond the stations'
    *  ranges (undefined = none within the time left): manualPossible lapses once the time left drops below it */
   bestEta?: number;
+  /** station id of that unit (EM-1: once it is taken elsewhere the prompt is re-validated) */
+  bestFrom?: number;
   /** expected arrival of the first unit (game minutes after dispatch) */
   etaMin?: number;
   // ---- WP8 details (all plain data, saved in systemData.emergency)
@@ -306,6 +310,7 @@ function smoothstep(e0: number, e1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 const r2 = (v: number) => Math.round(v * 100) / 100;
+const cap1 = (s: string) => s[0].toUpperCase() + s.slice(1);
 
 /** station fleet of a def: FLEET by def id, else by model (test / mod defs reusing a station model) */
 const fleetCache = new Map<string, { responder: Responder; units: number } | null>();
@@ -754,6 +759,14 @@ export class EmergencySystem implements SimSystem {
   private processedDay = -1;
   /** inside dailyWork's generation / processing: new incidents are dispatched by the day's prioritised pass */
   private batch = false;
+  /** EM-1: stations that just gave away their last free unit (sendUnit): the waiting incidents whose prompt counted on
+   *  a free unit of their responder are re-validated (revalidate) before the dispatch call returns, or after the day's
+   *  dispatch passes */
+  private drained: number[] = [];
+  /** inside the daily dispatch passes (re-validation runs once after them) */
+  private inPasses = false;
+  /** a re-validation left an incident to be re-decided by another dispatch pass today */
+  private redo = false;
   private tm: Float32Array<ArrayBuffer> = new Float32Array(0);
   /** siren link times are refreshed when the traffic layer updates (or the graph changes) */
   private tmDirty = true;
@@ -1265,6 +1278,8 @@ export class EmergencySystem implements SimSystem {
     const route = this.extractPath(found);
     for (let q = 0; q < n; q++) this.sendUnit(sim, inc, s, route, fd, now, true);
     this.afterDispatch(sim, inc);
+    // (the station's last free unit may have been the one another waiting incident's prompt counted on)
+    this.revalidate(sim);
     this.persist();
     return { ok: true, etaMin: r2(fd + s.turnout / EMERG_DAYS_PER_MIN), sent: n };
   }
@@ -1319,11 +1334,19 @@ export class EmergencySystem implements SimSystem {
       }
       if (!sentR) missingR.push(r);
     }
+    // EM-1: no free unit of the primary responder could be sent at all (all busy): the Dispatch prompt is over right
+    // away — the banner's "Send nearest" and LIVE mode / the urgent pause end, a failure no longer scores as ignored
+    const primary = INCIDENT_RESPONDERS[inc.kind][0];
+    if (missingR.includes(primary) && !opts.some((o) => o.responder === primary) && (inc.state === 'uncovered' || inc.state === 'queued') && (inc.manualPossible || inc.canSend)) {
+      this.noFreeUnit(sim, inc, primary, this.siteSeeds(sim.state, inc));
+      this.writeStats(sim.state);
+      this.persist();
+    }
     if (res) {
       if (missingR.length) res.missing = missingR;
       return res;
     }
-    return { ok: false, reason: `No free ${RESPONDER_UNIT[missingR[0] ?? INCIDENT_RESPONDERS[inc.kind][0]][0]} can reach this place`, missing: missingR };
+    return { ok: false, reason: `No free ${RESPONDER_UNIT[missingR[0] ?? primary][0]} can reach this place`, missing: missingR };
   }
 
   /** would an incident needing responder r at (x, z) be auto-dispatched now? (inspector / tests; no unit is sent) */
@@ -1613,6 +1636,7 @@ export class EmergencySystem implements SimSystem {
     this.vById.set(v.id, v);
     inc.units.push(v.id);
     this.out.set(s.id, (this.out.get(s.id) ?? 0) + 1);
+    if (this.freeOf(s) <= 0 && !this.drained.includes(s.id)) this.drained.push(s.id);
     // the incident counts as answered (auto / by the player), and its ETA is, by its primary responder: the ambulance of
     // an industrial accident answers nothing while no fire truck is on its way
     if (s.responder !== INCIDENT_RESPONDERS[inc.kind][0]) return v;
@@ -1817,6 +1841,7 @@ export class EmergencySystem implements SimSystem {
       const manualPossible = inTime && now < dispatchWindowEnd(inc) - EPS;
       const canSend = !!freeAny;
       inc.bestEta = Number.isFinite(muEta) ? r2(muEta) : undefined;
+      inc.bestFrom = mu ? mu.s.id : undefined;
       const unit = RESPONDER_UNIT[r];
       if (res.inRangeBusy.length) {
         // queued: a unit of an in-range station is back before the grace time ends — an industrial accident's truck back
@@ -1860,6 +1885,89 @@ export class EmergencySystem implements SimSystem {
     }
     inc.stVer = this.stVer;
     if (sentAny) this.afterDispatch(sim, inc);
+    // EM-1: the units just sent may be the ones an earlier decision counted on — a disaster spawns its incidents one
+    // after the other, each dispatched at once (the daily passes re-validate once, after all of them)
+    if (!this.inPasses) this.revalidate(sim);
+  }
+
+  /**
+   * EM-1: stations gave away their last free unit (an automatic or a player dispatch). The waiting incidents of those
+   * responders whose Dispatch prompt rested on a free unit (manualPossible / canSend, decided while it was still free)
+   * are checked again: with no free unit of their primary responder left on the site's road network the prompt ends at
+   * once (noFreeUnit: no "Send nearest" that fails, no LIVE mode or urgent pause for nothing, no ignored prompt); when the
+   * unit its decision found (bestFrom) is gone but another one is still free, it is decided again by the next dispatch
+   * pass — a second pass today inside the daily, else the next day's (no search here, within the day's search budget).
+   */
+  private revalidate(sim: Simulation): void {
+    const drained = this.drained;
+    if (!drained.length) return;
+    this.drained = [];
+    const st = sim.state;
+    let mask = 0;
+    for (const id of drained) {
+      const s = this.stById.get(id);
+      if (s) mask |= 1 << R_INDEX[s.responder];
+    }
+    let changed = false;
+    for (const inc of this.list) {
+      if (!(inc.state === 'uncovered' || inc.state === 'queued') || !(inc.manualPossible || inc.canSend)) continue;
+      const r = INCIDENT_RESPONDERS[inc.kind][0];
+      if (!(mask & (1 << R_INDEX[r])) || this.assigned(inc, r) > 0) continue;
+      const ns = this.siteSeeds(st, inc);
+      if (ns > 0 && this.freeReachable(r, ns)) {
+        // canSend holds (a free unit on its network); manualPossible holds while the unit it counted on is still free
+        if (!inc.manualPossible) continue;
+        const from = inc.bestFrom !== undefined ? this.stById.get(inc.bestFrom) : undefined;
+        if (from && this.freeOf(from) > 0) continue;
+        if (inc.retry > st.day) inc.retry = st.day;
+        this.redo = true;
+        continue;
+      }
+      this.noFreeUnit(sim, inc, r, ns);
+      changed = true;
+    }
+    if (changed) this.writeStats(st);
+  }
+
+  /**
+   * EM-1: no free unit of the incident's primary responder can be sent (every one that can reach it is busy): the
+   * Dispatch prompt is over (manualPossible / canSend off) and the note says what happens next. A unit coming back
+   * makes it retry (removeVehicle): an in-range one is then sent automatically, otherwise the player is prompted again.
+   */
+  private noFreeUnit(sim: Simulation, inc: Incident, r: Responder, ns: number): void {
+    inc.manualPossible = false;
+    inc.canSend = false;
+    inc.bestEta = undefined;
+    inc.bestFrom = undefined;
+    if (inc.state === 'queued') {
+      // an in-range unit is on its way back and goes to it then: its note ("… — one is on its way back") holds
+      this.emit(sim, inc, 'queued');
+      return;
+    }
+    inc.note = this.allBusyNote(inc, r, ns);
+    this.emit(sim, inc, 'uncovered');
+  }
+
+  /** "All 4 fire trucks are busy — one is sent as soon as one is back" (an in-range station: reason busy), or for a site
+   *  outside every station's reach "Outside fire coverage and all 4 fire trucks are busy — send one when one is back" */
+  private allBusyNote(inc: Incident, r: Responder, ns: number): string {
+    const unit = RESPONDER_UNIT[r];
+    const comp = this.g.comp;
+    let all = 0, reach = 0;
+    for (const s of this.stations) {
+      if (s.responder !== r || s.units <= 0) continue;
+      all += s.units;
+      if (!s.nodes.length) continue;
+      const c = comp[s.nodes[0]];
+      for (let q = 0; q < ns; q++) {
+        if (comp[this.seedBuf[q]] === c) { reach += s.units; break; }
+      }
+    }
+    if (reach === 0) return `No free ${unit[0]} can reach this place`;
+    const busy = reach === 1 ? `the only ${unit[0]}${reach < all ? ' that can reach it' : ''} is busy` : `all ${reach} ${unit[1]}${reach < all ? ' that can reach it' : ''} are busy`;
+    return inc.reason === 'outOfRange'
+      ? `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage and ${busy} — send one when one is back`
+      : `${cap1(busy)} — one is sent as soon as one is back`;
   }
 
   /** nearest (straight line) station of responder r with a free unit */
@@ -1881,7 +1989,7 @@ export class EmergencySystem implements SimSystem {
     inc.canSend = canSend;
     inc.note = note;
     inc.etaMin = undefined;
-    if (manualPossible && inc.major) inc.prompted = true;
+    // (inc.prompted is set at the day's settle point, dailyWork, while the prompt still holds then — EM-1)
     if (!changed) return;
     this.emit(sim, inc, 'uncovered');
     if (inc.major) {
@@ -1936,20 +2044,37 @@ export class EmergencySystem implements SimSystem {
       this.batch = false;
       this.processedDay = st.day;
       // automatic dispatch of incidents still missing units, within the daily search budget: fires first, then the
-      // other major incidents, then minor ones (oldest first in each class)
-      for (let pass = 0; pass < 3; pass++) {
-        for (let k = 0; k < this.list.length; k++) {
-          const inc = this.list[k];
-          if ((inc.kind === 'fire' ? 0 : inc.major ? 1 : 2) !== pass) continue;
-          if (inc.state === 'resolved' || inc.state === 'failed' || !this.missingAny(inc)) continue;
-          if (inc.retry <= st.day || (inc.state === 'uncovered' && inc.stVer !== this.stVer)) this.tryDispatch(sim, inc);
+      // other major incidents, then minor ones (oldest first in each class). EM-1: the prompts of incidents decided
+      // earlier in the passes may rest on a unit a later one took: re-validated after the passes, and an incident whose
+      // unit is gone while another one is still free is decided again in one more round today
+      this.inPasses = true;
+      try {
+        for (let round = 0; round < 2; round++) {
+          this.redo = false;
+          for (let pass = 0; pass < 3; pass++) {
+            for (let k = 0; k < this.list.length; k++) {
+              const inc = this.list[k];
+              if ((inc.kind === 'fire' ? 0 : inc.major ? 1 : 2) !== pass) continue;
+              if (inc.state === 'resolved' || inc.state === 'failed' || !this.missingAny(inc)) continue;
+              if (inc.retry <= st.day || (inc.state === 'uncovered' && inc.stVer !== this.stVer)) this.tryDispatch(sim, inc);
+            }
+          }
+          this.revalidate(sim);
+          if (!this.redo) break;
         }
+      } finally {
+        this.inPasses = false;
       }
+      this.redo = false;
       // a player dispatch stops mattering (LIVE mode ends) once even the nearest free unit cannot make it any more
       for (const inc of this.list) {
         if (!inc.manualPossible || inc.bestEta === undefined || !(inc.state === 'uncovered' || inc.state === 'queued')) continue;
         if (inc.bestEta > (inc.deadline - st.day) / EMERG_DAYS_PER_MIN + EPS || st.day >= dispatchWindowEnd(inc) - EPS) inc.manualPossible = false;
       }
+      // EM-1 settle point: a Dispatch prompt counts (as ignored when nobody answers and the incident fails: approval)
+      // once it still holds at the end of a day's dispatch work — not the moment a disaster's burst decided it, when the
+      // next incident of the same burst could take the unit it counted on before the player saw it
+      for (const inc of this.list) if (inc.state === 'uncovered' && inc.major && inc.manualPossible) inc.prompted = true;
       // expire effects
       if (this.p.effects.length) this.p.effects = this.p.effects.filter((e) => e.until > st.day);
       // the siren times after a traffic update, also when no search needed them today: a save holds the times the next

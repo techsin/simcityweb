@@ -75,6 +75,11 @@ import { shadowCasters } from '../../world/Shadows';
 import { lodProxyFor } from './lodProxy';
 import { lodProxyBuilder, type LodProxyBuilder } from './lodBuilder';
 
+// the LOD proxy workers start loading their own module graph (three.js and the proxy builder) as soon as the city
+// view's code is loaded, while the world view is still being built, so they are ready for the city's prefetch
+// (rebuildAll) and the proxies are mostly built during the load (no-op without workers: tests, Node)
+if (typeof window !== 'undefined') lodProxyBuilder();
+
 /** LOD proxies stay within their model's bounds + this (m; see tests/render/lod.test.ts) */
 const PROXY_PAD = 0.6;
 /** vertices reserved per model for its LOD proxy (non-indexed; over all 535 building variants: mean 237, median 222,
