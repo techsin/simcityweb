@@ -58,6 +58,7 @@
  * on screen; shallow skirts / rubble cast no shadow or only into the near cascade.
  */
 import * as THREE from 'three';
+import { patchFoliageDepthMaterial } from '../../../assets/materials';
 import { CELL_SIZE } from '../../../core/constants';
 import { BF, type Building, type CityState } from '../../../sim/CityState';
 import { getDef } from '../../../sim/catalog';
@@ -966,6 +967,9 @@ export class BuildingRenderer {
     const pb = lodProxyBuilder();
     this.proxies = pb.available ? pb : null;
     this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 18, 'buildings');
+    // shadows of bare winter crowns: the view's foliage swap (kit trees' twig crowns, thinned lot crowns) in the depth
+    // pass too, so a bare tree casts a twig shadow, not its summer crown's (materials.ts; winter-only uniform branch)
+    patchFoliageDepthMaterial(this.batch.mesh.customDepthMaterial as THREE.MeshDepthMaterial);
     this.batch.mesh.castShadow = true;
     this.batch.mesh.receiveShadow = true;
     // per-pass lists: the main view and each shadow cascade only draw the buildings inside their own frustum;
