@@ -345,8 +345,8 @@ export class InfoPanel extends Panel {
     }
     this.body.appendChild(this.chips(dedupeChips(chips, warnings)));
 
-    // ---- occupancy (a tier facility — school, clinic, station, park — shows its report's Staff line instead: it carries
-    // the staffing effect and its hint, and the Facility section no longer repeats it, final fixes A4)
+    // ---- occupancy (a facility shows its report's staffing line instead — a tier facility's Staff line with the staffing
+    // effect, else Jobs filled — with its hint; the Facility section no longer repeats it, final fixes A4)
     const split = rep ? splitFacilityRows(rep.rows) : null;
     if (split?.staff) {
       const sr = split.staff, ratio = sr.ratio ?? 0;

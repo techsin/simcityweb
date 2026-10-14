@@ -344,16 +344,16 @@ export function facilityView(rep: FacilityReport | null | undefined): FacilityVi
 }
 
 /**
- * The facility report's rows the inspector header shows (final fixes A4 / P3): a tier facility's Staff line (it carries
- * the staffing effect and its hint) in place of the header's "Jobs filled" bar, the actual Upkeep line (value + hint)
- * and the actual Income line (the catalog income of an airport is §3,000; its report says §960 at today's traffic).
- * `rest` is what the Facility section lists: everything else, without a plain "Jobs filled" line (the header's bar shows
- * it; a line with a hint or a status says more and stays).
+ * The facility report's rows the inspector header shows (final fixes A4 / P3): the staffing line — a tier facility's
+ * Staff line (it carries the staffing effect), else the Jobs filled line — with its hint in place of the header's own
+ * jobs bar, the actual Upkeep line (value + hint) and the actual Income line (the catalog income of an airport is
+ * §3,000; its report says §960 at today's traffic). `rest` is what the Facility section lists: everything else, so no
+ * line shows twice (an airport's "Jobs filled 170 / 250" with the city's staffing hint stood in both places).
  */
 export function splitFacilityRows(rows: readonly ModelRow[]): { staff: ModelRow | null; upkeep: ModelRow | null; income: ModelRow | null; rest: ModelRow[] } {
   const pick = (key: string) => rows.find((r) => r.key === key) ?? null;
-  const staff = pick('staff'), upkeep = pick('upkeep'), income = pick('income');
-  const rest = rows.filter((r) => r !== staff && r !== upkeep && r !== income && !(r.key === 'jobs' && !r.hint && (r.status ?? 'ok') === 'ok'));
+  const staff = pick('staff') ?? pick('jobs'), upkeep = pick('upkeep'), income = pick('income');
+  const rest = rows.filter((r) => r !== staff && r !== upkeep && r !== income);
   return { staff, upkeep, income, rest };
 }
 

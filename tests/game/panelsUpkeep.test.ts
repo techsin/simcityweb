@@ -84,17 +84,21 @@ describe('inspector header rows (final fixes A4 / P3)', () => {
     expect(s.income).toBeNull();
     expect(s.rest.map((r) => r.key)).toEqual(['seats', 'quality']);
   });
-  it('a venue: the actual income row (not the catalog income); a plain "Jobs filled" line stays out', () => {
+  it('a venue: the actual income row (not the catalog income); its Jobs filled line (with the staffing hint) heads the panel once', () => {
     const rows = [
-      row('jobs', 'Jobs filled', '250 / 250', { ratio: 1 }),
-      row('jobs2', 'Jobs filled', '12 / 250', { hint: 'All employers are 40% staffed — the city needs more workers' }),
+      row('passengers', 'Passengers', '5,950 / 3,000 a day'),
+      row('jobs', 'Jobs filled', '170 / 250', { ratio: 0.68, hint: 'All employers are 68% staffed — the city needs more workers' }),
       row('income', 'Income', '§960 / month'),
       row('upkeep', 'Upkeep', '§800 / month'),
     ];
     const s = splitFacilityRows(rows);
-    expect(s.staff).toBeNull();
+    // (the airport read "Jobs filled 170 / 250" in the header bar and again in the Facility section)
+    expect(s.staff?.key).toBe('jobs');
+    expect(s.staff?.hint).toContain('68% staffed');
     expect(s.income?.value).toBe('§960 / month');
-    expect(s.rest.map((r) => r.key)).toEqual(['jobs2']);
+    expect(s.rest.map((r) => r.key)).toEqual(['passengers']);
+    // a tier facility's Staff line wins over a Jobs filled line
+    expect(splitFacilityRows([row('jobs', 'Jobs filled', '1 / 2'), row('staff', 'Staff', '1 / 2')]).staff?.key).toBe('staff');
     expect(headerMoney(s.income!.value, true)).toBe('+§960/mo');
     expect(headerMoney(s.upkeep!.value)).toBe('§800/mo');
     expect(headerMoney('§1,021 / month (80% funding)')).toBe('§1,021/mo (80% funding)');
