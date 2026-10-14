@@ -3,6 +3,8 @@ import { Network } from '../../src/core/types';
 import { BF, type CityState } from '../../src/sim/CityState';
 import { RoadGraph } from '../../src/sim/infra/graph';
 import { getTraffic } from '../../src/sim/systems/infra';
+import { MAX_COMMUTE } from '../../src/sim/infra/params';
+import { commuteMinutes, commuteRamp } from '../../src/sim/economy/factors';
 import { newSim, newState, place, roadLine } from './cityGen';
 
 describe('road graph connectivity', () => {
@@ -248,20 +250,33 @@ describe('routed 43: a road cut off from the city network is no commute', () => 
     console.log(`cut-off: route ${JSON.stringify(r)} · commute layer ${avg(cut, (id) => st.commute[at(id)]).toFixed(1)} · access ${cutAcc.toFixed(1)} min`
       + ` | connected: ${avg(main, (id) => tr.commuteOf(id)).toFixed(1)} min · access ${mainAcc.toFixed(1)} · city average ${st.stats.avgCommute.toFixed(1)}`);
     // the cut-off homes: no route to work (the inspector's text), no short commute anywhere (traffic, the layer, the
-    // access field), no jobs flag
+    // access field), no jobs flag; desirability / land value read the longest commute — at or past the ramp's bad end
+    // (the commute term at its worst, not "+11" beside "No route to work")
+    const ramp = commuteRamp(st);
     for (const id of cut) {
       const ri = tr.routeInfo(id)!;
       expect(ri.cutOff).toBe(true);
       expect(ri.reachable).toBe(false);
       expect(ri.mode).toBe('none');
       expect(st.buildings.get(id)!.flags & BF.NoJobs).toBeTruthy();
-      expect(st.commute[at(id)]).toBeGreaterThan(tr.commuteOf(main[0]));
+      expect(st.commute[at(id)]).toBeGreaterThan(0.95 * MAX_COMMUTE);
+      expect(commuteMinutes(st, true, at(id), ramp.avg, ramp.unreached)).toBeGreaterThanOrEqual(ramp.bad);
     }
     expect(cutAcc).toBeGreaterThan(mainAcc);
+    expect(st.stats.avgCommute).toBeLessThan(0.5 * MAX_COMMUTE);
     // the connected homes keep their commute; the one job on the cut-off road still has its worker
     for (const id of main) { expect(tr.routeInfo(id)!.cutOff).toBeUndefined(); expect(tr.commuteOf(id)).toBeGreaterThan(0); }
     const shop = [...st.buildings.values()].find((b) => b.def === 't_cs')!;
     expect(tr.jobFill(shop.id)).toBeGreaterThan(0.5);
+    // a road on to the map edge: its homes commute to the region — not cut off, however few jobs the road has
+    roadLine(st, 61, 10, 63, 10, Network.Road);
+    sim.events.emit('networkChanged', { x0: 60, z0: 9, x1: 63, z1: 11 });
+    for (let k = 0; k < 4; k++) { tr.invalidate(); tr.runCycleSync(sim); }
+    for (const id of cut) {
+      expect(tr.routeInfo(id)?.cutOff).toBeUndefined();
+      expect(tr.commuteOf(id)).toBeLessThan(0.9 * MAX_COMMUTE);
+    }
+    expect(avg(cut, (id) => tr.workerAccess(id))).toBeGreaterThan(0.2);
     // connecting the road to the network makes it a commute again
     roadLine(st, 45, 11, 45, 31, Network.Road);
     sim.events.emit('networkChanged', { x0: 45, z0: 10, x1: 46, z1: 32 });

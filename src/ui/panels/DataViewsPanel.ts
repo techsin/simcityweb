@@ -188,15 +188,20 @@ export class DataViewsPanel extends Panel {
       }
     }
   }
-  /** the first section title not fully in sight below the visible part of the list (null: only buttons are cut) */
+  /** the title of the section holding the first button (or row) cut off below the visible part of the list */
   private hiddenSection(): HTMLElement | null {
     const sc = this.scroll;
     if (!sc) return null;
     const bottom = sc.scrollTop + sc.clientHeight;
-    for (const t of sc.querySelectorAll<HTMLElement>('.sec-title')) {
-      const top = t.offsetTop;
-      // a title whose section's first row is not visible yet
-      if (top + t.offsetHeight + 24 > bottom && top > sc.scrollTop) return t;
+    let title: HTMLElement | null = null;
+    for (const el of sc.querySelectorAll<HTMLElement>('.sec-title, .dv-btn, .dv-ug')) {
+      if (el.classList.contains('sec-title')) {
+        title = el;
+        continue;
+      }
+      // (.dv-scroll is positioned: offsets are in its content box; a button's offsetParent is the scroll)
+      const top = el.offsetParent === sc ? el.offsetTop : el.offsetTop + (el.parentElement?.offsetTop ?? 0);
+      if (top + el.offsetHeight > bottom + 2) return title;
     }
     return null;
   }

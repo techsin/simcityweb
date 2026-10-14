@@ -92,8 +92,8 @@ export class BudgetPanel extends Panel {
   readonly id = 'budget';
   readonly title = 'Budget';
   override icon = 'budget';
-  // (900: room for the − / + steppers beside each tax and funding slider, final fixes P10)
-  override width = 900;
+  // (920: room for the − / + steppers beside each tax and funding slider, final fixes P10)
+  override width = 920;
   override center = true;
   private tab: 'taxes' | 'services' | 'ledger' | 'loans' = 'taxes';
   private tabBtns: Record<string, HTMLButtonElement> = {};
