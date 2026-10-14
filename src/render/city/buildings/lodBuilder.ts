@@ -10,13 +10,19 @@
  * later synchronous lodProxyFor() (captures: flushLod) returns the same geometry.
  * Without module-worker support (Node tests) or if a worker fails to load, `available` is false and callers build
  * synchronously; requests still queued when the workers fail are built on the main thread, one per task.
+ * `opened` resolves once every worker has said hello (its script ran, so the page delivers what it posts at once; until
+ * then the page holds every message — a page that builds its city in one long task would hold the whole prefetch until
+ * that task ends), on a failure, or after OPEN_TIMEOUT_MS.
  */
 import * as THREE from 'three';
 import { cachedLodProxy, lodProxyExcluded, lodProxyFor, setCachedLodProxy } from './lodProxy';
 
 type Done = (g: THREE.BufferGeometry | null) => void;
 interface Job { key: string; geo: THREE.BufferGeometry; done: Done[]; urgent: boolean; worker: number }
-interface Reply { key: string; ok: boolean; position?: Float32Array; normal?: Float32Array; color?: Float32Array; surf?: Float32Array; failed?: boolean }
+interface Reply { key: string; ok: boolean; position?: Float32Array; normal?: Float32Array; color?: Float32Array; surf?: Float32Array; box?: number[]; failed?: boolean; hello?: boolean }
+
+/** longest wait for the workers' hello (a worker that never starts must not hold up a page) */
+const OPEN_TIMEOUT_MS = 1500;
 
 /** workers in the pool: two where the machine has four or more cores (the main thread, the GPU process and the
  *  compositor keep the others busy), else one */
@@ -40,9 +46,14 @@ export class LodProxyBuilder {
   perWorker = 128;
   /** proxies built by the workers (stats) */
   built = 0;
+  /** resolves once every worker runs (its hello), on a failure, or after OPEN_TIMEOUT_MS (see the header) */
+  readonly opened: Promise<void>;
+  private open: (() => void) | null = null;
+  private hellos = 0;
 
   constructor() {
-    if (typeof Worker === 'undefined' || typeof window === 'undefined') { this.failed = true; return; }
+    this.opened = new Promise<void>((res) => { this.open = res; });
+    if (typeof Worker === 'undefined' || typeof window === 'undefined') { this.failed = true; this.markOpen(); return; }
     try {
       for (let i = 0, n = poolSize(); i < n; i++) {
         const w = new Worker(new URL('./lodWorker.ts', import.meta.url), { type: 'module', name: `lod-proxies-${i}` });
@@ -51,11 +62,19 @@ export class LodProxyBuilder {
         this.workers.push(w);
         this.posted.push(0);
       }
+      setTimeout(() => this.markOpen(), OPEN_TIMEOUT_MS);
     } catch {
       for (const w of this.workers) w.terminate();
       this.workers.length = 0;
       this.failed = true;
+      this.markOpen();
     }
+  }
+
+  private markOpen(): void {
+    const o = this.open;
+    this.open = null;
+    o?.();
   }
 
   /** false: no worker (build synchronously) */
@@ -122,14 +141,17 @@ export class LodProxyBuilder {
 
   private onReply(w: number, r: Reply): void {
     if (r.failed) { this.fail(); return; }
+    if (r.hello) { if (++this.hellos >= this.workers.length) this.markOpen(); return; }
     if (w < this.posted.length) this.posted[w] = Math.max(0, this.posted[w] - 1);
     let g: THREE.BufferGeometry | null = null;
     if (r.ok && r.position && r.normal && r.color && r.surf) {
+      // (the transferred arrays as they are: no copy; the box the worker computed)
       g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(r.position, 3));
-      g.setAttribute('normal', new THREE.Float32BufferAttribute(r.normal, 3));
-      g.setAttribute('color', new THREE.Float32BufferAttribute(r.color, 3));
-      g.setAttribute('surf', new THREE.Float32BufferAttribute(r.surf, 3));
+      g.setAttribute('position', new THREE.BufferAttribute(r.position, 3));
+      g.setAttribute('normal', new THREE.BufferAttribute(r.normal, 3));
+      g.setAttribute('color', new THREE.BufferAttribute(r.color, 3));
+      g.setAttribute('surf', new THREE.BufferAttribute(r.surf, 3));
+      if (r.box && r.box.length === 6) g.boundingBox = new THREE.Box3(new THREE.Vector3(r.box[0], r.box[1], r.box[2]), new THREE.Vector3(r.box[3], r.box[4], r.box[5]));
       g.name = r.key + '#lod';
       this.built++;
     }
@@ -147,6 +169,7 @@ export class LodProxyBuilder {
   private fail(): void {
     if (this.failed) return;
     this.failed = true;
+    this.markOpen();
     for (const w of this.workers) w.terminate();
     this.workers.length = 0;
     this.posted.length = 0;

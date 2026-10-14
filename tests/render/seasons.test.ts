@@ -246,11 +246,14 @@ describe('seasonal foliage patterns', () => {
     expect(s.getAttribute('position').count / 3).toBe(30);
     expect(stripWinterTwigs(g)).toBe(s);
     const srf = s.getAttribute('surf') as THREE.BufferAttribute;
+    let wood = 0;
     for (let i = 0; i < srf.count; i++) {
       expect(Math.round(srf.getY(i)), 'no pattern-5 faces').not.toBe(5);
-      // the crown keeps its per-tree random but loses the swap marker: it stays a (twig-coloured) crown while bare
-      if (Math.round(srf.getX(i)) === Surf.Foliage) expect(srf.getZ(i)).toBeCloseTo(fl - 1, 5);
+      // the crown keeps its swap marker: it collapses while bare as at the other qualities, the trunk stays standing
+      if (Math.round(srf.getX(i)) === Surf.Foliage) expect(srf.getZ(i)).toBeCloseTo(fl, 5);
+      if (Math.round(srf.getX(i)) === Surf.Wood) wood++;
     }
+    expect(wood / 3).toBe(10);
     for (const name of ['position', 'normal', 'color', 'surf']) expect(s.getAttribute(name).count).toBe(90);
     // park trees and clumps: every winter-only face is pattern 5 (sprays) or Wood BARE_WOOD (limbs, inner trunks)
     const pb = new ModelBuilder();

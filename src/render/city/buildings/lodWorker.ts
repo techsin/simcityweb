@@ -2,7 +2,9 @@
  * LOD proxy worker (module worker, see lodBuilder.ts): builds building massing proxies off the main thread.
  * In:  { key, position, color, surf, urgent } — copies of the model's non-indexed attribute arrays (Float32Array,
  *      transferred); { promote: key } — a queued job is needed now (moves to the front)
- * Out: { key, ok, position?, normal?, color?, surf? } — the proxy's attributes (transferred); ok = false: no proxy
+ * Out: { key, ok, position?, normal?, color?, surf?, box? } — the proxy's attributes (transferred) and bounding box
+ *      [min xyz, max xyz]; ok = false: no proxy. { hello: true } first, as soon as the script runs (lodBuilder:
+ *      LodProxyBuilder.opened)
  * The top level has no static imports: the page holds the messages it posts to a worker until it learns that the
  * worker's script has run (a task on the page's main thread), and a city load keeps the main thread busy for seconds,
  * so the script must run before the load's long stretch starts, not after loading three.js. The proxy builder (three.js
@@ -51,6 +53,9 @@ ctx.onmessage = (e) => {
   kick();
 };
 
+// (the page waits for this before it builds a city: from then on what it posts reaches this worker at once)
+ctx.postMessage({ key: '', ok: false, hello: true });
+
 void Promise.all([import('three'), import('./lodProxy')]).then(([T, lp]) => {
   build = (req) => {
     const { key, position, color, surf } = req;
@@ -66,7 +71,11 @@ void Promise.all([import('three'), import('./lodProxy')]).then(([T, lp]) => {
     }
     if (!out) { ctx.postMessage({ key, ok: false }); return; }
     const a = (n: string) => (out!.getAttribute(n).array as Float32Array).slice();
-    const msg = { key, ok: true, position: a('position'), normal: a('normal'), color: a('color'), surf: a('surf') };
+    // (the bounding box too: the page's batch needs it, and computing it there is main-thread time)
+    out.computeBoundingBox();
+    const bb = out.boundingBox!;
+    const box = [bb.min.x, bb.min.y, bb.min.z, bb.max.x, bb.max.y, bb.max.z];
+    const msg = { key, ok: true, position: a('position'), normal: a('normal'), color: a('color'), surf: a('surf'), box };
     ctx.postMessage(msg, [msg.position.buffer, msg.normal.buffer, msg.color.buffer, msg.surf.buffer]);
   };
   kick();

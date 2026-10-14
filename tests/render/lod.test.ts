@@ -1557,6 +1557,7 @@ describe('LOD proxy worker pool', () => {
       postMessage(m: Record<string, unknown>): void { this.posted.push(m); }
       terminate(): void {}
       reply(key: string): void { this.onmessage?.({ data: { key, ok: false } }); }
+      hello(): void { this.onmessage?.({ data: { key: '', ok: false, hello: true } }); }
       jobs(): string[] { return this.posted.filter((m) => 'position' in m).map((m) => m.key as string); }
     }
     vi.stubGlobal('Worker', FakeWorker);
@@ -1581,6 +1582,18 @@ describe('LOD proxy worker pool', () => {
       expect(w0.jobs().length).toBe(3);
       expect(w1.jobs().length).toBe(3);
       expect(pb.pending).toBe(10);
+      // the workers' hello (their scripts run): `opened` resolves once every worker said it; a hello is no reply (it
+      // frees no place: nothing more is posted)
+      let open = false;
+      void pb.opened.then(() => { open = true; });
+      w0.hello();
+      await Promise.resolve();
+      expect(open).toBe(false);
+      w1.hello();
+      await Promise.resolve();
+      expect(open).toBe(true);
+      expect(w0.jobs().length).toBe(3);
+      expect(w1.jobs().length).toBe(3);
       // a new urgent job goes out at once (past the bound), flagged urgent for the worker's own queue
       ask('u0', true);
       const urgentPosts = [...w0.posted, ...w1.posted].filter((m) => m.key === 'pooltest_u0');

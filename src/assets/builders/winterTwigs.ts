@@ -4,9 +4,9 @@
  * inner trunks of tree clumps; their leaf lobes are painted with the swap marker, floor >= 1 on patterns 1-2) that the
  * vertex shader swaps in while the tree is bare (materials.ts, FOLIAGE_WINTER): all year these are submitted
  * triangles, hidden inside the leaf crowns. The low quality preset (weak machines) draws the lot models without them,
- * so its triangle counts match the models without winter crowns: no pattern-5 faces, and the crowns' swap marker
- * cleared, so a bare crown stays a whole crown in the twig colour (the Foliage shader's bare look) instead of
- * collapsing to a bare trunk.
+ * so its triangle counts match the models without winter crowns: no pattern-5 faces. The crowns keep their swap
+ * marker, so a bare crown still collapses as at the other qualities and leaves its trunk standing (a bare pole in
+ * winter, no grey lump of a crown; the limbs would cost ~1% of the low preset's triangles).
  *
  * The forest renderer publishes the quality (setLotTwigStrip, TreeRenderer: low quality = no outer ring / edge band
  * either); the building renderer registers lot model geometry through lotTwigGeometry / lotTwigKey and rebuilds its
@@ -32,8 +32,7 @@ const _stripped = new WeakMap<THREE.BufferGeometry, THREE.BufferGeometry | null>
 
 /**
  * `g` (a non-indexed lot model: position / normal / color / surf, see ModelBuilder.build) without its winter twig
- * crowns (pattern-5 Foliage and Wood faces) and with its crowns' swap marker cleared; null when it has neither (cached
- * per geometry).
+ * crowns (pattern-5 Foliage and Wood faces); null when it has none (cached per geometry).
  */
 export function stripWinterTwigs(g: THREE.BufferGeometry): THREE.BufferGeometry | null {
   const hit = _stripped.get(g);
@@ -43,16 +42,14 @@ export function stripWinterTwigs(g: THREE.BufferGeometry): THREE.BufferGeometry 
   if (srf && !g.index) {
     const S = srf.array as ArrayLike<number>, tris = srf.count / 3;
     const keep = new Uint8Array(tris);
-    let kept = 0, marked = false;
+    let kept = 0;
     for (let t = 0; t < tris; t++) {
-      const o = t * 9, type = S[o], p = S[o + 1];
-      const foliage = Math.abs(type - Surf.Foliage) < 0.5;
-      if (Math.abs(p - WINTER) < 0.5 && (foliage || Math.abs(type - Surf.Wood) < 0.5)) continue;
-      if (foliage && p > 0.5 && p < 2.5 && S[o + 2] >= 1) marked = true;
+      const o = t * 9, type = S[o];
+      if (Math.abs(S[o + 1] - WINTER) < 0.5 && (Math.abs(type - Surf.Foliage) < 0.5 || Math.abs(type - Surf.Wood) < 0.5)) continue;
       keep[t] = 1;
       kept++;
     }
-    if (kept < tris || marked) {
+    if (kept < tris) {
       out = new THREE.BufferGeometry();
       for (const [name, a] of Object.entries(g.attributes) as [string, THREE.BufferAttribute][]) {
         const n = a.itemSize, src = a.array as ArrayLike<number>, dst = new Float32Array(kept * 3 * n);
@@ -60,12 +57,6 @@ export function stripWinterTwigs(g: THREE.BufferGeometry): THREE.BufferGeometry 
         for (let t = 0; t < tris; t++) {
           if (!keep[t]) continue;
           for (let i = t * 3 * n, e = i + 3 * n; i < e; i++) dst[w++] = src[i];
-        }
-        if (name === 'surf') {
-          // (crowns that swapped to their twigs while bare stay crowns: floor 1 + r -> r, still a per-tree random)
-          for (let i = 0; i < dst.length; i += 3) {
-            if (Math.abs(dst[i] - Surf.Foliage) < 0.5 && dst[i + 1] > 0.5 && dst[i + 1] < 2.5 && dst[i + 2] >= 1) dst[i + 2] -= 1;
-          }
         }
         out.setAttribute(name, new THREE.BufferAttribute(dst, n, a.normalized));
       }
