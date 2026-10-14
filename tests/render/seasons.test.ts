@@ -36,7 +36,7 @@ import { RNG } from '../../src/core/rng';
 import { palm as comPalm } from '../../src/assets/builders/com_kit';
 import { palm as civPalm } from '../../src/assets/builders/civ_kit';
 import { BARE_WOOD, bareCrown, tree as parkTree, treeClump, type TreeKind } from '../../src/assets/builders/park_lib';
-import { lotTwigGeometry, lotTwigKey, lotTwigs, setLotTwigStrip, stripWinterTwigs } from '../../src/assets/builders/winterTwigs';
+import { lotTwigGeometry, lotTwigKey, lotTwigs, markLowPlants, setLotTwigStrip, stripWinterTwigs } from '../../src/assets/builders/winterTwigs';
 import { SEASONAL_TREES, seasonalVariant, setTreeSeason, treeSeason } from '../../src/assets/builders/nat_season';
 
 registerAllModels();
@@ -284,6 +284,45 @@ describe('seasonal foliage patterns', () => {
     expect(lotTwigGeometry(ng)).toBe(ng);
     expect(lotTwigKey('k', ng)).toBe('k');
     setLotTwigStrip(false);
+  });
+
+  it('small raised plants (roof / terrace planters) are marked LOW foliage; ground shrubs, crowns and dark evergreens not', () => {
+    const b = new ModelBuilder();
+    b.paint(0x777777, Surf.RoofFlat).box(-6, 0, -6, 6, 15, 6);
+    b.paint(0x4d7a36, Surf.Foliage).blob(2, 15.6, 2, 0.8, 0.6, 0.8, 0, 0.2, 1); // roof planter shrub
+    b.paint(0x2c4f2a, Surf.Foliage).blob(-2, 15.9, -2, 0.5, 0.9, 0.5, 0, 0.1, 2); // dark (evergreen) roof shrub
+    b.paint(0x4d7a36, Surf.Foliage).blob(9, 0.9, 0, 0.9, 0.7, 0.9, 0, 0.2, 3); // ground shrub (LOW by height)
+    b.paint(0x5a8a3a, Surf.Foliage).blob(-9, 4.0, 0, 2.2, 2.0, 2.2, 0, 0.16, 4); // a pattern-0 crown 2-6 m
+    const g = b.build(), m = markLowPlants(g);
+    expect(m).not.toBe(g);
+    expect(markLowPlants(g)).toBe(m);
+    expect(m.getAttribute('position')).toBe(g.getAttribute('position'));
+    const S = m.getAttribute('surf') as THREE.BufferAttribute, S0 = g.getAttribute('surf') as THREE.BufferAttribute;
+    const pos = g.getAttribute('position') as THREE.BufferAttribute;
+    let marked = 0;
+    for (let i = 0; i < S.count; i += 3) {
+      if (S.getZ(i) >= 0) { expect(S.getZ(i)).toBe(S0.getZ(i)); continue; }
+      marked++;
+      // only the light roof shrub: every corner of a marked face on the roof, a face's three corners alike
+      for (let k = 0; k < 3; k++) { expect(pos.getY(i + k)).toBeGreaterThan(14.9); expect(pos.getX(i + k)).toBeGreaterThan(1); expect(S.getZ(i + k)).toBe(-1); }
+    }
+    expect(marked).toBeGreaterThan(10);
+    // registered as marked at every quality (stripped too at low quality, here: nothing to strip)
+    setLotTwigStrip(false);
+    expect(lotTwigGeometry(g)).toBe(m);
+    setLotTwigStrip(true);
+    expect(lotTwigGeometry(g)).toBe(m);
+    expect(lotTwigKey('k', g)).toBe('k');
+    setLotTwigStrip(false);
+    // a model without small raised plants is registered as is
+    const nb = new ModelBuilder();
+    nb.paint(0x4d7a36, Surf.Foliage).blob(0, 0.9, 0, 0.9, 0.7, 0.9, 0, 0.2, 5);
+    const ng = nb.build();
+    expect(markLowPlants(ng)).toBe(ng);
+    // the shader treats a negative paint floor as LOW foliage
+    const vw = { vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader, uniforms: {} } as unknown as THREE.WebGLProgramParametersWithUniforms;
+    getBuildingMaterial().onBeforeCompile(vw, {} as THREE.WebGLRenderer);
+    expect(vw.fragmentShader).toContain('float lowF = vSurf.z < 0.0 ? 1.0 :');
   });
 
   it('lot palms (commercial / civic kits) are evergreen: their fronds never turn autumn-coloured or bare', () => {

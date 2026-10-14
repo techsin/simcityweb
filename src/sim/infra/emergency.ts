@@ -1876,7 +1876,8 @@ export class EmergencySystem implements SimSystem {
           if (was !== 'queued') this.emit(sim, inc, 'queued');
           continue;
         }
-        this.setUncovered(sim, inc, 'busy', manualPossible, canSend, busyNote + (canSend && !manualPossible ? ' — the nearest free one is too far to make it in time' : ''));
+        // (no free unit anywhere: one of that in-range station is sent as soon as it is back — removeVehicle retries)
+        this.setUncovered(sim, inc, 'busy', manualPossible, canSend, busyNote + (!canSend ? ' — one is sent as soon as one is back' : !manualPossible ? ' — the nearest free one is too far to make it in time' : ''));
         inc.retry = day + 2;
       } else if (freeAny) {
         const near = mu?.s ?? this.nearestFree(r, inc.x, inc.z) ?? freeAny;
@@ -1885,7 +1886,7 @@ export class EmergencySystem implements SimSystem {
         inc.retry = day + 5;
       } else if (this.stations.some((s) => s.responder === r && s.units > 0 && s.nodes.length && this.freeOf(s) <= 0)) {
         const s0 = res.busy ?? this.stations.find((s) => s.responder === r && s.units > 0 && this.freeOf(s) <= 0)!;
-        this.setUncovered(sim, inc, 'busy', false, false, `All ${unit[1]} are busy (${s0.name} and others)`);
+        this.setUncovered(sim, inc, 'busy', false, false, `All ${unit[1]} are busy (${s0.name} and others) — you can send one once one is back`);
         inc.retry = day + 2;
       } else {
         this.setUncovered(sim, inc, 'noStation', false, false, `No ${RESPONDER_STATION[r]} can reach this place by road`);
@@ -1960,7 +1961,8 @@ export class EmergencySystem implements SimSystem {
   }
 
   /** "All 4 fire trucks are busy — one is sent as soon as one is back" (an in-range station: reason busy), or for a site
-   *  outside every station's reach "Outside fire coverage and all 4 fire trucks are busy — send one when one is back" */
+   *  outside every station's reach "Outside fire coverage and all 4 fire trucks are busy — you can send one once one is
+   *  back" (a unit coming back prompts the player again) */
   private allBusyNote(inc: Incident, r: Responder, ns: number): string {
     const unit = RESPONDER_UNIT[r];
     const comp = this.g.comp;
@@ -1977,7 +1979,7 @@ export class EmergencySystem implements SimSystem {
     if (reach === 0) return `No free ${unit[0]} can reach this place`;
     const busy = reach === 1 ? `the only ${unit[0]}${reach < all ? ' that can reach it' : ''} is busy` : `all ${reach} ${unit[1]}${reach < all ? ' that can reach it' : ''} are busy`;
     return inc.reason === 'outOfRange'
-      ? `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage and ${busy} — send one when one is back`
+      ? `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage and ${busy} — you can send one once one is back`
       : `${cap1(busy)} — one is sent as soon as one is back`;
   }
 

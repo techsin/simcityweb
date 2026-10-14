@@ -6,7 +6,8 @@
  * police / fire stations, parks — economy/opex.ts), what one more of it costs in this city now (expectedUpkeep with
  * the city's unserved need) and the most it can cost: "up to §B at full use" (facilities.fullUseUpkeep: every seat /
  * its whole patrol capacity in use, so a full school is never above it). The wording matches the plop tool (lane
- * ui-tools) and the facility facts (facilities.ts facilityDefFacts: "≈§A/mo now · up to §B at full use").
+ * ui-tools) and the facility facts (facilities.ts facilityDefFacts: "≈§A/mo typical in this city · up to §B at full use" —
+ * lead decision 20b: the city-wide typical load, not what one more changes at a given spot).
  */
 import type { CityState } from '../sim/CityState';
 import type { BuildingDef } from '../sim/catalogTypes';
@@ -19,7 +20,7 @@ export interface UpkeepEstimate {
   now: number;
   /** the most it can cost: every seat / its whole capacity in use (§ / month) */
   full: number;
-  /** "≈§A/mo now · up to §B at full use" */
+  /** "≈§A/mo typical in this city · up to §B at full use" (lead decision 20b, option i) */
   title: string;
 }
 
@@ -29,5 +30,5 @@ export function upkeepEstimate(st: CityState | null, def: BuildingDef | undefine
   if (!def || !opexTierOf(def) || !((def.upkeep ?? 0) > 0) || (st && !opexActive(st))) return null;
   const now = expectedUpkeep(st, def);
   const full = Math.max(now, fullUseUpkeep(def));
-  return { now, full, title: `≈${money(now)}/mo now · up to ${money(full)} at full use` };
+  return { now, full, title: `≈${money(now)}/mo typical in this city · up to ${money(full)} at full use` };
 }

@@ -38,10 +38,10 @@ describe('upkeepEstimate (final fixes P3): one estimate in the build menu, its t
     expect(e.full).toBeGreaterThanOrEqual(buildingUpkeep(st, school) + (school.coverage!.capacity ?? 0) * r.rate - 1e-6);
     // a city with little unserved need: well below full use
     expect(e.now).toBeLessThan(e.full);
-    // the same wording as the facility facts' hint ("≈§A/mo now · up to §B at full use")
+    // the same wording as the facility facts' hint ("≈§A/mo typical in this city · up to §B at full use", lead decision 20b)
     const fact = facilityDefFacts(school.id, st).find((f) => f.key === 'upkeep')!;
     expect(fact.hint).toBe(e.title);
-    expect(e.title).toMatch(/^≈§[\d,]+\/mo now · up to §[\d,]+ at full use$/);
+    expect(e.title).toMatch(/^≈§[\d,]+\/mo typical in this city · up to §[\d,]+ at full use$/);
   });
   it('the estimate follows the city: a big unserved need costs more than a served one', () => {
     const st = city();

@@ -17,6 +17,8 @@
  *  - burnt multi-cell lots are composed from the rubble kit (one bed over the lot, following rising ground exactly;
  *    debris pieces off the cell grid with low-poly proxies); hill lots get real-size stone skirts, a plain box far away
  *  - shadow receivers only bump their version when the volume really changes
+ *  - the building batch's shadow depth pass runs the bare-winter crown swap (bare lot / plaza / kit trees cast twig
+ *    shadows, not their summer crown's)
  */
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
@@ -1462,6 +1464,20 @@ describe('shadow receiver versions', () => {
     cam.updateMatrixWorld();
     setReceiver(r, cam, 1, 600, sun, -10);
     expect(r.shape).toBe(s0 + 1);
+  });
+});
+
+describe('building batch shadows', () => {
+  it("the batch's depth material runs the bare-winter crown swap (bare lot / plaza / kit trees cast twig shadows)", () => {
+    const st = createCityState(defaultCityConfig({ size: 32, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
+    const br = new BuildingRenderer(st, new TileCuller(32, CELL_SIZE, 16));
+    const dm = br.batch.mesh.customDepthMaterial as THREE.MeshDepthMaterial;
+    expect(dm).toBeInstanceOf(THREE.MeshDepthMaterial);
+    expect(dm.customProgramCacheKey()).toContain('foliage-winter');
+    const sh = { vertexShader: THREE.ShaderLib.depth.vertexShader, fragmentShader: THREE.ShaderLib.depth.fragmentShader, uniforms: {} } as unknown as THREE.WebGLProgramParametersWithUniforms;
+    dm.onBeforeCompile(sh, {} as THREE.WebGLRenderer);
+    expect(sh.vertexShader).toContain('bool bareW');
+    expect(sh.vertexShader.indexOf('bool bareW')).toBeGreaterThan(sh.vertexShader.indexOf('#include <begin_vertex>'));
   });
 });
 

@@ -49,7 +49,8 @@
  * Corrugated (Surf.Corrugated): vertical ribs, painted sheet metal (rough 0.6, metal 0.25).
  * Foliage (Surf.Foliage): wind sway above 1.5 m; per-plant hue/value + stand-scale tint from the instance position.
  *   Two classes: LOW foliage = lawns, roof gardens, green roofs / walls, hedges, planters, beds, shrubs (faces that are
- *   flat up-facing or axis-aligned box sides at any height, or anything below ~2.5 m model height) and CROWNS.
+ *   flat up-facing or axis-aligned box sides at any height, anything below ~2.5 m model height, or painted with a
+ *   negative floor: small plants higher up, e.g. roof planters, marked by winterTwigs.markLowPlants) and CROWNS.
  *   Pattern 0 = automatic (lot models): low foliage goes dormant in winter; crowns are seasonal deciduous crowns (as
  *       pattern 1, turning per lot instance) unless painted dark (linear luminance < ~0.1: conifers, cypresses, yews),
  *       which are evergreen (pattern 4).
@@ -700,8 +701,9 @@ void applySurface(inout vec3 albedo, inout float rough, inout float metal, inout
     // the season logic reuses the leaf-clump noise and its one derivative
     float lum0 = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
     // LOW foliage: flat up-facing faces (lawns, roof gardens, hedge / planter tops) or axis-aligned box sides (hedges,
-    // planters, green walls) at any height, or anything within ~2.5 m of the model base (shrubs, beds)
-    float lowF = clamp(max(max((nObj.y - 0.985) * 77.0, (max(abs(nObj.x), abs(nObj.z)) - 0.994) * 200.0), (2.6 - P.y) * 0.4545), 0.0, 1.0);
+    // planters, green walls) at any height, anything within ~2.5 m of the model base (shrubs, beds), or a small plant
+    // higher up (roof / terrace planters: paint floor < 0, winterTwigs.markLowPlants)
+    float lowF = vSurf.z < 0.0 ? 1.0 : clamp(max(max((nObj.y - 0.985) * 77.0, (max(abs(nObj.x), abs(nObj.z)) - 0.994) * 200.0), (2.6 - P.y) * 0.4545), 0.0, 1.0);
     bool autoP = pattern < 0.5;
     // evergreen: pattern 4 (and 5, the kit trees' twig sprays: no season recolour), or a dark-painted lot crown
     // (conifers / cypresses ~0.06-0.09 linear luminance, broadleaf crowns >= ~0.115)

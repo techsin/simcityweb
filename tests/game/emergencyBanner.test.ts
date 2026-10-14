@@ -472,6 +472,60 @@ describe('EmergencyBanner: final-fix round 2', () => {
     expect([...more.childNodes]).toEqual(pill);
   });
 
+  it('EM-3: no layout read on a UI tick without a banner; with banners only after the layout changed', () => {
+    // count the layout reads dock() makes (root size, panel and banner boxes)
+    let reads = 0;
+    const count = (o: object, keys: string[]) => {
+      for (const k of keys) {
+        const v = (o as Record<string, number>)[k];
+        Object.defineProperty(o, k, { configurable: true, get: () => { reads++; return v; } });
+      }
+    };
+    // the browser's observers, driven by hand
+    const g2 = globalThis as unknown as { ResizeObserver?: unknown; MutationObserver?: unknown };
+    const had = [g2.ResizeObserver, g2.MutationObserver];
+    const fire: (() => void)[] = [];
+    class FakeObs {
+      constructor(cb: () => void) { fire.push(cb); }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    g2.ResizeObserver = FakeObs;
+    g2.MutationObserver = FakeObs;
+    try {
+      const { st, sim } = fireTown();
+      const home = place(st, 't_r2', 40, 21, { pop: 60 });
+      const h = harness(sim);
+      const em = emergencyOf(sim)!;
+      count(h.root, ['clientWidth', 'clientHeight']);
+      // a docked panel the stack has to clear (the Advisors panel, right)
+      const panel = new FakeEl('div');
+      panel.className = 'panel';
+      Object.assign(panel, { offsetLeft: 946, offsetTop: 72, offsetWidth: 640, offsetHeight: 578 });
+      count(panel, ['offsetLeft', 'offsetTop', 'offsetWidth', 'offsetHeight']);
+      h.root.querySelectorAll = () => [panel];
+      for (let k = 0; k < 5; k++) h.tick();
+      expect(reads).toBe(0); // no banner: nothing measured at all
+      triggerDisaster(sim, 'fire', home.x, home.z);
+      h.tick();
+      expect(em.incidents()[0].manualPossible).toBe(true);
+      expect(h.banner.bannerIds.length).toBe(1);
+      h.tick(); // (the first docking measures)
+      const after = reads;
+      expect(after).toBeGreaterThan(0);
+      expect(h.banner.el.style.left).toBe(`${Math.round(946 - 12 - BANNER_W)}px`); // left of the panel
+      for (let k = 0; k < 5; k++) h.tick();
+      expect(reads).toBe(after); // nothing changed: no layout read
+      for (const f of fire) f(); // a panel moved / resized
+      h.tick();
+      expect(reads).toBeGreaterThan(after);
+    } finally {
+      g2.ResizeObserver = had[0];
+      g2.MutationObserver = had[1];
+    }
+  });
+
   it('EM-5: "3.0 min left to send a truck" and never "too far?" for an industrial accident; how a failure ended', () => {
     // an industrial accident 12.3 min from the only fire station: a truck sent now still saves the plant
     {

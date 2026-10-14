@@ -59,7 +59,7 @@ describe('EM-1: a prompt never outlives the free unit it rests on', () => {
     // both prompts are over: nothing can be sent, the note says why and what happens next, the banner hears of it
     for (const f of fires) {
       expect([f.state, f.manualPossible, f.canSend, f.bestEta]).toEqual(['uncovered', false, false, undefined]);
-      expect(f.note).toBe('Outside fire coverage and all 2 fire trucks are busy — send one when one is back');
+      expect(f.note).toBe('Outside fire coverage and all 2 fire trucks are busy — you can send one once one is back');
       expect(ev.filter((e) => e.id === f.id && e.type === 'uncovered').at(-1)!.manualPossible).toBe(false);
       expect(em.dispatchBest(sim, f.id).ok).toBe(false);
     }
