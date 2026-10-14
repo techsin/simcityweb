@@ -493,20 +493,23 @@
 /* budget */
 .budget-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .tax-group { margin-bottom: 6px; }
-.tax-row, .fund-row { display: grid; grid-template-columns: 44px 1fr 76px 52px; align-items: center; gap: 6px; padding: 3px 0; font-size: 12.5px; }
+.tax-row, .fund-row { display: grid; grid-template-columns: 44px 1fr 84px 52px; align-items: center; gap: 6px; padding: 3px 0; font-size: 12.5px; }
 .tax-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 22px; }
 .tax-row .tr-l, .fund-row .tr-l { font-weight: 700; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.fund-row { grid-template-columns: 150px 1fr 80px 80px; }
+.fund-row { grid-template-columns: 150px 1fr 84px 80px; }
 /* final fixes P10: − value + beside the budget sliders (exact 0.5 % / 5 % steps; the slider keeps the keyboard focus) */
 .tr-step { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
-.tr-step .tr-v { min-width: 42px; white-space: nowrap; }
+/* (the value never shrinks under its text: "11.5%" ran into the + button) */
+.tr-step .tr-v { min-width: 48px; flex: none; white-space: nowrap; }
 .ui-stepbtn {
   width: 15px; height: 18px; padding: 0; border: 1px solid var(--hair); border-radius: 4px; background: rgba(255, 255, 255, 0.05);
   color: var(--text-dim); font: 700 12px/1 var(--font); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; flex: none;
 }
 .ui-stepbtn:hover { background: var(--hover); color: var(--text); }
-.ui-range:focus::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(63, 167, 255, 0.45), 0 1px 4px rgba(0, 0, 0, 0.5); }
-.ui-range:focus::-moz-range-thumb { box-shadow: 0 0 0 3px rgba(63, 167, 255, 0.45), 0 1px 4px rgba(0, 0, 0, 0.5); }
+/* a focused slider (it keeps the focus for the arrow keys) shows it on its thumb, not with the box outline */
+.ui-range:focus { outline: none; }
+.ui-range:focus::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(63, 167, 255, 0.6), 0 1px 4px rgba(0, 0, 0, 0.5); }
+.ui-range:focus::-moz-range-thumb { box-shadow: 0 0 0 4px rgba(63, 167, 255, 0.6), 0 1px 4px rgba(0, 0, 0, 0.5); }
 .fund-row .fr-badge .chip { margin-left: 4px; padding: 1px 5px; font-size: 9.5px; }
 .tax-row .tr-v, .fund-row .tr-v { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
 .tax-row .tr-m, .fund-row .tr-m { text-align: right; color: var(--text-dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }

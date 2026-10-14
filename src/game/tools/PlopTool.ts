@@ -70,7 +70,7 @@ export class PlopTool extends Tool {
   /** placement preview line (garage: stops in reach; ferry: partner terminals) and the key it was made for */
   private preview = '';
   private previewKey = '';
-  /** the upkeep line of the current spot ("Upkeep ≈§A/mo now · up to §B at full use"), made with res */
+  /** the upkeep line of the current spot ("Upkeep here ≈§A/mo now · up to §B at full use"), made with res */
   private upkeep = '';
   /** the current spot: a staffed service without a road (P8) / a shore building not facing water (P14) */
   private noRoad = false;
@@ -225,9 +225,10 @@ export class PlopTool extends Tool {
     const def = this.def, st = this.ctx.state;
     const est = safe(() => upkeepEstimate(st, def), null);
     if (est) {
+      // (the build menu's figure is city-wide; at the cursor it is this spot's: "Upkeep here")
       const here = safe(() => upkeepHere(this.ctx.sim, def, x, z, w, d), null);
       const now = here ?? est.now;
-      this.upkeep = `Upkeep ≈${money(now)}/mo now · up to ${money(Math.max(now, est.full))} at full use`;
+      this.upkeep = `Upkeep${here !== null ? ' here' : ''} ≈${money(now)}/mo now · up to ${money(Math.max(now, est.full))} at full use`;
     } else this.upkeep = def.upkeep ? `Upkeep ${money(def.upkeep)}/mo` : '';
     const res = this.res;
     this.noRoad = !!res?.ok && staffedService(def) && !safe(() => lotTouchesRoad(st, x, z, w, d), true);
