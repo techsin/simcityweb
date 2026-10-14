@@ -149,3 +149,113 @@ describe('NewYearCelebration', () => {
     expect(b.toasts.length).toBe(0);
   });
 });
+
+/**
+ * Final fixes P11: the calendar holds on January 1st during the time-lapse and the countdown (the date ran on to
+ * Jan 9 at 1x), the player raising the speed ends the celebration (night and the 25° skyline camera stayed for 7+ game
+ * months), and the celebration's timer follows real elapsed time (it advanced by min(dt, 0.1): a 90 s show took 15 real
+ * minutes at a low frame rate).
+ */
+describe('NewYearCelebration: final fixes P11', () => {
+  function setupSim() {
+    const base = setup();
+    const sim = base.ny['deps'].sim as unknown as { speed: number; maxDaysPerFrame: number };
+    sim.speed = 1;
+    sim.maxDaysPerFrame = 4;
+    return { ...base, sim };
+  }
+
+  it('holds the calendar during the time-lapse and the countdown, lets it run again at midnight', () => {
+    const { ny, fw, sim, step } = setupSim();
+    ny.frame(1 / 60);
+    ny.celebrate({ year: 2006 });
+    const midnight = fw.started!.delay!;
+    expect(sim.maxDaysPerFrame).toBe(0);
+    step(midnight - 0.3);
+    expect(sim.maxDaysPerFrame).toBe(0);
+    // the player's speed is left alone (the top bar and the emergency policy see it)
+    expect(sim.speed).toBe(1);
+    step(0.6);
+    expect(sim.maxDaysPerFrame).toBe(4);
+    step(40);
+    expect(ny.active).toBe(false);
+    expect(sim.maxDaysPerFrame).toBe(4);
+  });
+
+  it('a cancel (or leaving the city) never leaves the calendar held', () => {
+    const { ny, sim } = setupSim();
+    ny.frame(1 / 60);
+    ny.celebrate({ year: 2006 });
+    expect(sim.maxDaysPerFrame).toBe(0);
+    ny.cancel();
+    expect(sim.maxDaysPerFrame).toBe(4);
+    ny.celebrate({ year: 2007 });
+    ny.dispose();
+    expect(sim.maxDaysPerFrame).toBe(4);
+  });
+
+  it('the player raising the speed ends the celebration: no new launches, the clock and the calendar come back', () => {
+    const { ny, fw, sim, world, step } = setupSim();
+    ny.frame(1 / 60);
+    ny.celebrate({ year: 2006 });
+    const midnight = fw.started!.delay!;
+    step(midnight + 3);
+    expect(ny.ownsTime).toBe(true);
+    sim.speed = 3;
+    step(0.1);
+    // stopped launching (FakeFireworks.stop) and handing the clock back (restore time-lapse)
+    expect(fw.active).toBe(false);
+    step(4);
+    expect(ny.active).toBe(false);
+    expect(ny.ownsTime).toBe(false);
+    expect(world.timeScale).toBe(2);
+    expect(sim.maxDaysPerFrame).toBe(4);
+  });
+
+  it('raising the speed during the countdown ends it too (and frees the calendar at once)', () => {
+    const { ny, fw, sim, step } = setupSim();
+    ny.frame(1 / 60);
+    ny.celebrate({ year: 2006 });
+    step(1);
+    expect(sim.maxDaysPerFrame).toBe(0);
+    sim.speed = 2;
+    step(0.1);
+    expect(sim.maxDaysPerFrame).toBe(4);
+    expect(fw.active).toBe(false);
+    step(4);
+    expect(ny.active).toBe(false);
+  });
+
+  it('pausing and resuming at the same speed does not end it', () => {
+    const { ny, fw, sim, step } = setupSim();
+    ny.frame(1 / 60);
+    ny.celebrate({ year: 2006 });
+    step(fw.started!.delay! + 2);
+    sim.speed = 0;
+    step(1);
+    sim.speed = 1;
+    step(1);
+    expect(ny.ownsTime).toBe(true);
+    expect(fw.active).toBe(true);
+  });
+
+  it('the timer follows real time: at a low frame rate the show still ends in a bounded real time', () => {
+    const { ny, fw } = setupSim();
+    let now = 1000;
+    ny.frame(1 / 60, now);
+    ny.celebrate({ year: 2006 });
+    const midnight = fw.started!.delay!;
+    // 0.2 fps: every frame 5 s of real time apart, the loop's dt clamped to 0.1 s (fireworks of this stand-in never
+    // settle: only the 160 s cap ends the show)
+    fw.activeFor = 1e9;
+    let frames = 0;
+    while (ny.active && frames < 1000) {
+      now += 5000;
+      ny.frame(0.1, now);
+      frames++;
+    }
+    expect(ny.active).toBe(false);
+    // ~1 s per frame (REAL_STEP_MAX): midnight + 160 s + the restore lapse; min(dt, 0.1) needed ten times as many
+    expect(frames).toBeLessThan(midnight + 160 + 10);
+  });
+});

@@ -79,8 +79,8 @@
  *   state.commute (minutes on residential building cells), stats.avgCommute / avgTraffic / tripsCar / tripsTransit /
  *   tripsWalk, stats.commuteByMode (final fixes F6: each mode's mean commute, what transit saves its riders against
  *   driving), BF.NoJobs (residential: < 35 % of workers matched to a job), BF.Congested (entry road v/c > 1). Homes on a
- *   road component cut off from the city's jobs (routed 43, markCutOff) have no commute: the unreached minutes, left out
- *   of the city average, routeInfo().cutOff.
+ *   road component cut off from the city's jobs (routed 43, markCutOff) have no route to work: the longest commute
+ *   (MAX_COMMUTE), left out of the city average, routeInfo().cutOff.
  * API (TrafficSystem, get via getTraffic(sim)):
  *   getSampleRoutes(max), routeInfo(buildingId), workerAccess(id), jobFill(id), freightAccess(id), customers(id),
  *   commuteOf(id), findPath(fromCell, toCell), pushServiceRoute(cells, weight, days), accessById / jobFillById arrays;
@@ -115,7 +115,6 @@ import {
   PR_DOWNTOWN_SHARE, PR_DOWNTOWN_SMOOTH, PR_DOWNTOWN_TIE, PR_OPTIONS, PR_OPTION_MARGIN, PR_OPTION_TAPER, PR_RESERVE_MIN,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
-import { ACCESS_UNREACHED } from './params';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
 import { carlessShare, workerShare } from '../economy/demographics';
 import { Search, SearchK, Seeds, accumulate, roadSearch, transitSearch, type TransitNet } from './search';
@@ -152,8 +151,8 @@ export interface RouteInfo {
   carless?: number;
   /** residential: extra commute minutes of those car-less workers vs their car-owning neighbours (last assignments) */
   carlessMin?: number;
-  /** residential (routed 43): its road is cut off from the city's jobs (a road network without a meaningful job pool and
-   *  no transit option): no commute; reachable = false then (the inspector's "No route to work") */
+  /** residential (routed 43): its road is cut off from the city's jobs (a road network without a meaningful job pool, no
+   *  road to the map edge and no transit option): no commute; reachable = false then (the inspector's "No route to work") */
   cutOff?: boolean;
   reachable?: boolean;
 }
@@ -311,9 +310,9 @@ const OV_STEP_COST = 0.02;
 const OV_FLOW_COST = 0.15;
 const OV_CHUNK_STATES = Math.round(PR_CHUNK_STATES * (PR_OPTIONS + 1) / OV_K);
 const MAX_ENTRIES = 12;
-/** routed 43: a road component that is not the one with the most job slots and holds fewer job slots than this share of
- *  the workers living on it is cut off from the city's jobs — its homes' few matches (a wind turbine's job on their road)
- *  are no commute (markCutOff) */
+/** routed 43: a road component that is not the one with the most job slots, has no road to the map edge (the region)
+ *  and holds fewer job slots than this share of the workers living on it is cut off from the city's jobs — its homes'
+ *  few matches (a wind turbine's job on their road) are no commute (markCutOff) */
 const CUTOFF_JOB_SHARE = 0.2;
 /** job matching: a proportional round (round < MATCH_PROP_ROUNDS) that matched under this share of the waiting workers
  *  is starved and does not count toward MATCH_ROUNDS (at most MATCH_EXTRA_ROUNDS such rounds per assignment); starved
@@ -4036,13 +4035,11 @@ export class TrafficSystem implements SimSystem {
     this.tripsWalk = tripsW;
     this.commuteSum = cSum;
     this.commuteW = cW;
-    // routed 43: every cut-off home reads the minutes of a cell without a road route (services' convention:
-    // ACCESS_UNREACHED x the city average) — the commute layer, the access field it seeds and approval see a long
-    // commute, not the 5 minutes to the one job on their road
-    if (cW > 0) {
-      const un = Math.min(MAX_COMMUTE, ACCESS_UNREACHED * (cSum / cW));
-      for (let o = 0; o < this.oN; o++) if (cut[o] === 1) this.oTime[o] = un;
-    }
+    // routed 43: every cut-off home reads the longest commute (MAX_COMMUTE: no trip to work) — the commute layer, the
+    // access field it seeds, desirability's and land value's commute terms and approval see "no route to work", not the
+    // 5 minutes to the one job on their road (nor services' milder unreached-cell minutes, ACCESS_UNREACHED x the city
+    // average, which still scores as a fair commute next to the inspector's "No route to work")
+    for (let o = 0; o < this.oN; o++) if (cut[o] === 1) this.oTime[o] = MAX_COMMUTE;
     // F6: the mean commute of each mode's commuters (cut-off homes left out, like the city average) and what transit
     // saves its riders against driving the same trip (stats.commuteByMode)
     let mc = 0, mt = 0, mw = 0, ac = 0, at = 0, aw = 0, nC = 0, nT = 0, nW = 0;
@@ -4062,7 +4059,8 @@ export class TrafficSystem implements SimSystem {
    * routed 43: origins whose road is cut off from the city's jobs (oCut): every road component of their entries is
    * not the one with the most job slots (regional connections included) and holds fewer than CUTOFF_JOB_SHARE job slots
    * per worker living on it; an origin with a transit option (walk to a stop, park & ride) is never cut off (an island
-   * town with a ferry or a subway commutes for real)
+   * town with a ferry or a subway commutes for real), nor is a component with a road to the map edge (its residents
+   * commute to the region: a second town on a highway is not cut off however few jobs it has)
    */
   private markCutOff(): void {
     const g = this.road, comp = g.comp, nc = g.nComp, oN = this.oN;
@@ -4072,12 +4070,14 @@ export class TrafficSystem implements SimSystem {
     const slots = new Float64Array(nc), workers = new Float64Array(nc);
     for (let q = 0; q < this.qN; q++) { const v = this.qNode[q]; if (v >= 0 && v < g.n) slots[comp[v]] += this.qSlots[q]; }
     for (let o = 0; o < oN; o++) if (this.oEntC[o] > 0) workers[comp[this.ent[this.oEntS[o]]]] += this.oW[o];
+    const edge = new Uint8Array(nc);
+    for (let j = this.jB; j < this.jN; j++) if (this.jEntC[j] > 0) { const v = this.ent[this.jEntS[j]]; if (v >= 0 && v < g.n) edge[comp[v]] = 1; }
     let main = -1, best = -1;
     for (let c = 0; c < nc; c++) if (slots[c] > best) { best = slots[c]; main = c; }
     // (no job pool anywhere yet — a new town: nobody is "cut off" from it)
     if (!(best >= 1)) return;
     const cc = new Uint8Array(nc);
-    for (let c = 0; c < nc; c++) cc[c] = c !== main && workers[c] > 0 && slots[c] < CUTOFF_JOB_SHARE * workers[c] ? 1 : 0;
+    for (let c = 0; c < nc; c++) cc[c] = c !== main && edge[c] === 0 && workers[c] > 0 && slots[c] < CUTOFF_JOB_SHARE * workers[c] ? 1 : 0;
     for (let o = 0; o < oN; o++) {
       if (this.oEntC[o] === 0 || this.oTrT[o] < Infinity || this.oPrN[o] > 0) continue;
       let all = true;

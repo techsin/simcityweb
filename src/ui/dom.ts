@@ -103,6 +103,11 @@ export function slider(opts: { min: number; max: number; step?: number; value: n
     if (e.key === 'Escape') el.blur();
   });
   const outside = (e: Event) => {
+    // (a slider removed while focused — its panel closed — may never get its blur: drop the listener then)
+    if (!el.isConnected) {
+      document.removeEventListener('pointerdown', outside, true);
+      return;
+    }
     const t = e.target as (Element & { closest?: (s: string) => Element | null }) | null;
     if (t === el) return;
     // (this slider's own −/+ buttons keep it focused: stepButtons)
@@ -120,8 +125,10 @@ export function slider(opts: { min: number; max: number; step?: number; value: n
 export function stepSlider(el: HTMLInputElement, dir: number): boolean {
   const step = Number(el.step) || 1, min = Number(el.min), max = Number(el.max);
   const cur = Number(el.value);
-  // (snapped to the step grid: 11.25 + 0.5 → 11.5 / 11.0, not 11.75)
-  const next = clamp(Math.round((cur + dir * step - min) / step) * step + min, min, max);
+  // the next value on the step grid in that direction (11.25 + 0.5 → 11.5, − → 11.0; not 11.75 / 10.75)
+  const g = (cur - min) / step;
+  const k = dir > 0 ? Math.floor(g + 1e-9) + 1 : Math.ceil(g - 1e-9) - 1;
+  const next = clamp(Math.round(k * step * 1e6) / 1e6 + min, min, max);
   if (Math.abs(next - cur) < 1e-9) return false;
   el.value = String(next);
   el.dispatchEvent(new Event('input', { bubbles: true }));
