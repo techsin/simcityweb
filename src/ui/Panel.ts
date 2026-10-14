@@ -262,11 +262,21 @@ export class PanelManager implements PanelsApi {
     this.ctx.ui.emit('panel', { id, open: true });
   }
 
+  /** the leftmost x (layer css px) that keeps a panel of width w out of the top-left HUD column — the toasts there
+   *  sit above the panels — where the layer is wide enough for that, else x itself */
+  private clearOfHud(x: number, w: number, W: number, minLeft = this.hudLeft()): number {
+    return x < minLeft && minLeft + w <= W - 14 ? minLeft : x;
+  }
+  private hudLeft(): number {
+    return Math.max(12, Math.ceil(this.hudColumnRight()) + 12);
+  }
+
   /**
    * default position, shifted left (or down) so it doesn't cover already-open panels — never into the top-left HUD
    * column, where the toasts would cover its title and tabs (final fixes, routed from emergency r1: at 1280×720 the
-   * Budget panel opened beside Advisors & news slid under the toasts). A centred panel with no free spot keeps its
-   * default place on top of the others (it has the focus).
+   * Budget panel opened beside Advisors & news slid under the toasts; a centred 920 px Budget alone reaches 22 px into
+   * the column at a 1600 px wide layer). A centred panel with no free spot keeps its default place on top of the others
+   * (it has the focus).
    */
   private freeSpot(p: Panel): { x: number; y: number } {
     const W = this.layer.clientWidth, H = this.layer.clientHeight;
@@ -274,8 +284,9 @@ export class PanelManager implements PanelsApi {
     const w = p.width, h = Math.min(p.el.offsetHeight || 400, H - 180);
     if (p.center) y = Math.max(64, Math.round((H - h) / 2) - 20);
     y = Math.max(64, Math.min(y, H - h - 12));
+    const minLeft = this.hudLeft();
+    x = this.clearOfHud(x, w, W, minLeft);
     const x0 = x, y0 = y;
-    const minLeft = Math.max(12, Math.ceil(this.hudColumnRight()) + 12);
     const others = this.order.map((id) => this.panels.get(id)!).filter((o) => o && o !== p && o.isOpen);
     for (let guard = 0; guard < 8; guard++) {
       const hit = others.find((o) => {
@@ -365,10 +376,13 @@ export class PanelManager implements PanelsApi {
     const W0 = this.layerW || W, H0 = this.layerH || H;
     this.layerW = W;
     this.layerH = H;
+    const minLeft = this.hudLeft();
     for (const id of this.order) {
       const p = this.panels.get(id);
       if (!p?.isOpen) continue;
       const a = anchoredPos(p.el.offsetLeft, p.el.offsetTop, p.el.offsetWidth, p.el.offsetHeight, W0, H0, W, H, p.center);
+      // (a centred panel re-centred in a narrower window must not slide under the toasts it was clear of)
+      if (p.el.offsetLeft >= minLeft) a.x = this.clearOfHud(a.x, p.el.offsetWidth, W, minLeft);
       p.setPos(a.x, a.y);
       this.keepAboveToolbar(p);
       try {

@@ -135,20 +135,25 @@ export function utilityOutages(st: CityState, now: number = typeof performance !
 
 const plural = (n: number, one: string, many = one + 's') => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
 
-/** "2 buildings (83 residents, 12 jobs)" */
+/** "2 occupied buildings (83 residents, 12 jobs)" (the wording of the sim's gridGap / waterGap advice) */
 export function outageWho(g: OutageGroup): string {
   const parts = [g.residents > 0 ? plural(g.residents, 'resident') : '', g.jobs > 0 ? plural(g.jobs, 'job') : ''].filter(Boolean).join(', ');
-  return `${plural(g.buildings, 'building')}${parts ? ` (${parts})` : ''}`;
+  return `${plural(g.buildings, 'occupied building')}${parts ? ` (${parts})` : ''}`;
 }
 
-/** the Utilities advisor's outage line (null when every occupied building has power and the water it needs) */
-export function outageAssessment(o: UtilityOutages): { level: 'bad' | 'warn'; text: string; at: { x: number; z: number } | null; view: AdviceView } | null {
+/**
+ * the Utilities advisor's outage line (null when every occupied building has power and the water it needs), worded as
+ * the sim's gridGap / waterGap advice that takes over at the next monthly check. `kind` says which: a power outage
+ * outranks a water shortage on the card, a water outage does not (dry taps in a shortage are the shortage).
+ */
+export function outageAssessment(o: UtilityOutages): { level: 'bad'; kind: 'power' | 'water'; text: string; at: { x: number; z: number } | null; view: AdviceView } | null {
   if (o.power.buildings > 0) {
     const g = o.power, one = g.buildings === 1;
     const water = o.water.buildings > 0 ? ` (and ${plural(o.water.buildings, 'building')} no water)` : '';
     return {
       level: 'bad',
-      text: `${outageWho(g)} ${one ? 'has' : 'have'} no power${water} — reconnect ${one ? 'it' : 'them'} to the grid with a road or power line before people leave.`,
+      kind: 'power',
+      text: `${outageWho(g)} ${one ? 'has' : 'have'} no power${water}: ${one ? "it isn't" : "they aren't"} connected to the grid. Reconnect ${one ? 'it' : 'them'} with a road or power line — residents and businesses leave the longer it lasts (see the Power data view).`,
       at: g.at,
       view: V(Overlay.Power),
     };
@@ -156,8 +161,9 @@ export function outageAssessment(o: UtilityOutages): { level: 'bad' | 'warn'; te
   if (o.water.buildings > 0) {
     const g = o.water, one = g.buildings === 1;
     return {
-      level: 'warn',
-      text: `${outageWho(g)} ${one ? 'has' : 'have'} no water — pipes run under roads: connect ${one ? 'its road' : 'their roads'} to a pump or water tower.`,
+      level: 'bad',
+      kind: 'water',
+      text: `${outageWho(g)} ${one ? 'has' : 'have'} no water — residents and businesses leave the longer it lasts. Pipes run under roads: connect ${one ? 'its road' : 'their roads'} to a pump or water tower (see the Water data view).`,
       at: g.at,
       view: V(Overlay.Water, 0),
     };

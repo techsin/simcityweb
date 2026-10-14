@@ -74,10 +74,11 @@ describe('utilityOutages (final fixes N1, card part)', () => {
     const o = utilityOutages(st);
     expect(o.power).toMatchObject({ buildings: 2, residents: 83, jobs: 0, at: { x: 4, z: 2 } });
     expect(o.water).toMatchObject({ buildings: 1, residents: 50, at: { x: 14, z: 2 } });
-    expect(outageWho(o.power)).toBe('2 buildings (83 residents)');
+    expect(outageWho(o.power)).toBe('2 occupied buildings (83 residents)');
     const a = outageAssessment(o)!;
     expect(a.level).toBe('bad');
-    expect(a.text).toMatch(/^2 buildings \(83 residents\) have no power \(and 1 building no water\) — reconnect them/);
+    expect(a.text).toMatch(/^2 occupied buildings \(83 residents\) have no power \(and 1 building no water\): they aren't connected to the grid\. Reconnect them with a road or power line/);
+    expect(a.kind).toBe('power');
     expect(a.at).toEqual({ x: 4, z: 2 });
     expect(a.view.overlay).toBe(Overlay.Power);
   });
@@ -85,8 +86,9 @@ describe('utilityOutages (final fixes N1, card part)', () => {
     const st = town();
     place(st, 't_r2', 14, 2, { pop: 12, jobs: 0, flags: BF.Powered });
     const a = outageAssessment(utilityOutages(st))!;
-    expect(a.level).toBe('warn');
-    expect(a.text).toMatch(/^1 building \(12 residents\) has no water/);
+    expect(a.level).toBe('bad');
+    expect(a.kind).toBe('water');
+    expect(a.text).toMatch(/^1 occupied building \(12 residents\) has no water — .* connect its road to a pump or water tower/);
     expect(a.view).toEqual({ overlay: Overlay.Water, variant: 0 });
     const ok = town();
     place(ok, 't_r1', 2, 2, { pop: 9, flags: BF.Powered });

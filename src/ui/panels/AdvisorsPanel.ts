@@ -66,7 +66,7 @@ export const ADVISORS: Advisor[] = [
       // final fixes N1 (card part): occupied buildings cut off from the grid or the pipes, live from their flags — the
       // supply can keep up while a bulldozed road leaves a district dark
       const out = outageAssessment(utilityOutages(ctx.state));
-      if (out?.level === 'bad') return out;
+      if (out?.kind === 'power') return out;
       if (s.waterDemand > 0 && s.waterSupply < s.waterDemand) return { level: 'warn', text: 'Water supply cannot keep up with demand. Build pumps or water towers.', view: adviceView('waterShortage') };
       if (out) return out;
       if (s.garbageCapacity > 0 && s.garbageProduced > s.garbageCapacity) return { level: 'warn', text: 'Garbage is piling up. Zone a landfill or build a recycling center.', view: adviceView('garbage') };

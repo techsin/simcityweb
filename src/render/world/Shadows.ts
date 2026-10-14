@@ -261,9 +261,10 @@ export class CityCascadeShadow extends SunLightShadow {
   private fitLight: THREE.Light | null = null;
   /**
    * Far cascade hold (set by WorldView.updateShadowPolicy before the frame's fit): a shadow render then redraws the near
-   * cascade only. The far cascade keeps its map tile, lookup matrix and depth range from its last render (restored after
-   * every fit), its pass draws nothing (its frustum is emptied and flagged `hold`, which casters' frustum tests reject)
-   * and WorldView scissors the render to the near cascade's tile, so the clear keeps the far one.
+   * cascade only. The far cascade keeps its map tile and lookup matrix from its last render (restored after every fit;
+   * its depth range is the fit's, so it joins the near cascade seamlessly), its pass draws nothing (its frustum is
+   * emptied and flagged `hold`, which casters' frustum tests reject) and WorldView scissors the render to the near
+   * cascade's tile, so the clear keeps the far one.
    */
   holdFar = false;
   /** the far cascade's lookup matrix, depth range, camera position / orientation as last rendered (farOk: valid) */
@@ -279,10 +280,12 @@ export class CityCascadeShadow extends SunLightShadow {
   /** holdFar at the last fit (a change refits) */
   private fitHold = false;
 
-  /** can the held far cascade stand in for this frame's fit? Not once the depth range stepped (zoom), the light turned
-   *  or the cascade moved by more than a tenth of its size (a jump / camera cut: it would miss most of the new view) */
+  /** can the held far cascade stand in for this frame's fit? Not once its depth range changed by more than one split
+   *  step (1/6 octave) since it was drawn, the light turned or it moved by more than a tenth of its size (a jump /
+   *  camera cut: it would miss much of the new view) */
   get farHoldable(): boolean {
-    return this.farD.equals(this.fitFarD) && !this.fitFarTurn && this.fitFarShift < 0.1;
+    const a = this.farD, b = this.fitFarD;
+    return Math.abs(b.x - a.x) <= 0.13 * Math.abs(a.x) + 1 && Math.abs(b.y - a.y) <= 0.13 * a.y && !this.fitFarTurn && this.fitFarShift < 0.1;
   }
 
   /** is the far cascade held by the last fit (holdFar with valid old content)? */
@@ -430,7 +433,6 @@ export class CityCascadeShadow extends SunLightShadow {
     this.fitFarTurn = Math.abs(cams[F].quaternion.dot(this.farQ)) < 1 - 1e-9;
     if (this.holdFar && this.farOk) {
       mats[F].copy(this.farM);
-      cdata[F].copy(this.farD);
       for (const p of ff.planes) { p.normal.set(0, 0, 0); p.constant = -1e30; }
       ff.hold = true;
     } else {

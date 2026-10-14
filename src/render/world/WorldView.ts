@@ -125,7 +125,7 @@ export class WorldView implements WorldViewApi {
    * Cascades: while the view moves, the far cascade is redrawn at most every this many frames (1 = with every shadow
    * render). In between, shadow renders redraw the near cascade only; the far one keeps its map tile and lookup matrix
    * (CityCascadeShadow.holdFar), so its static shadows stay put and only its coverage edge and distant vehicles trail
-   * by a frame. Not while the depth split steps (zoom), when forced, or at rest: the first frame at rest redraws both.
+   * by a frame. Not after a jump or a light turn, when forced, or at rest: the first frame at rest redraws both.
    */
   shadowFarInterval = 2;
   /** moving vehicles re-render the map every frame (no throttle) while the camera is closer than this (m): beyond it
@@ -675,7 +675,7 @@ export class WorldView implements WorldViewApi {
     if (cs) cs.holdFar = this.shadowFarInterval > 1 && this.shForce === 0 && this.viewStill === 0 && !!sh.map && this.frameNo - this.shFarFrame < this.shadowFarInterval;
     (sh as unknown as { updateMatrices(l: THREE.Light, c: THREE.Camera): void }).updateMatrices(sun, this.camera);
     if (cs && cs.holdFar && !cs.farHoldable) {
-      // (the far cascade's depth range stepped, the light turned or the view jumped: redraw it now)
+      // (the far cascade's depth range stepped further, the light turned or the view jumped: redraw it now)
       cs.holdFar = false;
       (sh as unknown as { updateMatrices(l: THREE.Light, c: THREE.Camera): void }).updateMatrices(sun, this.camera);
     }
