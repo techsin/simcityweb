@@ -64,6 +64,28 @@ export interface SimSystem {
   frame?(sim: Simulation, dt: number): void;
 }
 
+/**
+ * The simulation's random stream (growth, budget strikes, advisor headlines, plop variants, ...) kept with the city:
+ * every draw writes its state to state.systemData.simRng, so a save holds the stream where the game left it and a
+ * loaded game continues it (final fixes, routed 42: the constructor re-seeded it from config.seed on every load, and
+ * a loaded game drew different numbers from the uninterrupted one). A city without the field (a new city, a save from
+ * before) starts from the seed as before.
+ */
+class CityRNG extends RNG {
+  private readonly sd: Record<string, unknown>;
+  constructor(state: CityState) {
+    super((state.config.seed ^ 0x9e3779b9) >>> 0);
+    this.sd = state.systemData;
+    const s = this.sd.simRng;
+    if (typeof s === 'number' && Number.isFinite(s) && s > 0) this.state = s;
+  }
+  override next(): number {
+    const v = super.next();
+    this.sd.simRng = this.state;
+    return v;
+  }
+}
+
 export class Simulation {
   state: CityState;
   readonly events = new Emitter<CityEvents>();
@@ -82,7 +104,7 @@ export class Simulation {
 
   constructor(state: CityState, systems: SimSystem[] = []) {
     this.state = state;
-    this.rng = new RNG((state.config.seed ^ 0x9e3779b9) >>> 0);
+    this.rng = new CityRNG(state);
     for (const s of systems) this.systems.push(s);
     for (const s of this.systems) s.init?.(this);
   }
@@ -162,6 +184,8 @@ export class Simulation {
   /** replace state (after load) and re-init systems */
   replaceState(state: CityState): void {
     this.state = state;
+    // (the new city's own random stream: where its save left it, else from its seed)
+    this.rng = new CityRNG(state);
     this.acc = 0;
     for (const s of this.systems) s.init?.(this);
     this.events.emit('reset', undefined);

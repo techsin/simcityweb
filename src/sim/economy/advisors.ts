@@ -20,7 +20,9 @@
  * same day). Final fixes N4: zoneR / zoneC / zoneI count demand only where the land can host it (R$$$ / CO$$$ / I-HT
  * need land value or education, not more land: the zone scan counts the usable tiles above growth's desirability floor
  * per DevType), 'zoneNoFit*' says why ready lots never grow, and 'growthStalled' also speaks when a family's ready lots
- * waited a year with demand while it did not grow at all (AdvisorData.stall), in a city with other buildings.
+ * waited a year with demand while it did not grow at all (AdvisorData.stall), in a city with other buildings. Ready lots
+ * no building fits (lotFit, growth's placement rules: odd tiles left between buildings and roads, or too steep) are not
+ * room: 'lotsSmall*' / 'lotsSteep*' say so when they are all a family has left.
  * openAdvice(sim): the advice that holds right now (Advisors panel: open issues per advisor, highest priority first).
  * advisorIssues(st): the full, unthrottled list of the last monthly pass grouped by advisor (ADVICE_PER_MONTH = 2 only
  * limits what is announced; everything else still shows in the Advisors panel).
@@ -59,10 +61,12 @@ import type { UtilitiesSystem } from '../infra/utilities';
 import type { ParkingSummary } from '../infra/parking';
 import { maxLoanAmount, loanRate } from './loans';
 import { RNG } from '../../core/rng';
-import { ZONE_DEVTYPES, getDef } from '../catalog';
+import { ZONE_DEVTYPES, getDef, growablesForZone } from '../catalog';
+import type { BuildingDef } from '../catalogTypes';
+import { lotSlope } from './buildings';
 import { formatMoney } from './format';
 import { buildingPowered, buildingWatered } from './population';
-import { GROW_MIN_DESIR, WATER_REQUIRED_STAGE } from './tuning';
+import { GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, WATER_REQUIRED_STAGE } from './tuning';
 import { REWARDS } from './rewards';
 
 const ADVICE_PER_MONTH = 2;
@@ -194,8 +198,11 @@ interface ZoneScan {
    * what the land can host (final fixes N4; optional: older saved scans lack them). Per picky DevType (R$$$, CO$$$,
    * I-HT): usable tiles of a zone that allows it (`host`), those where its desirability is above growth's floor
    * (GROW_MIN_DESIR) — `fit` — and the usable tile with its best desirability (`bestAt`, -1 = none); per DevType: the
-   * empty ready lots that fit it (`fitEmpty`). Per family (0 R, 1 C, 2 I): the
-   * empty ready lots (road, power, water where needed) and the first one
+   * empty ready lots a building can stand on (`lotOk`) that fit it (`fitEmpty`). Per family (0 R, 1 C, 2 I): the
+   * empty ready lots (road, power, water where needed) and the first one; of those, the ones where a lot of the zone's
+   * smallest building fits (`lotOk`), the tiles too small for one (`lotSmall`: odd tiles left between buildings, roads or
+   * the zone's edge) and the ones only too steep for one (`lotSteep`), with the first of each (lotFit: growth's own
+   * placement rules). Scans saved before lotOk: emptyReady counts as usable
    */
   host?: number[];
   fit?: number[];
@@ -203,6 +210,15 @@ interface ZoneScan {
   bestAt?: number[];
   emptyReady?: [number, number, number];
   emptyReadyAt?: [number, number, number];
+  lotOk?: [number, number, number];
+  lotOkAt?: [number, number, number];
+  lotSmall?: [number, number, number];
+  lotSmallAt?: [number, number, number];
+  /** lotSmall per zone (Zone index) and the first of each: the rule names the zone with the most */
+  lotSmallZ?: number[];
+  lotSmallZAt?: number[];
+  lotSteep?: [number, number, number];
+  lotSteepAt?: [number, number, number];
   /** usable tiles with everything a building needs (power, water where required), bitmask of their zones, first one */
   ready: number;
   readyZones: number;
@@ -273,6 +289,68 @@ function occupiedText(n: number, res: number, jobs: number): string {
 /** the picky DevType a zone allows (R$$$, CO$$$, I-HT: they grow only where land value / education suit them), -1 */
 const PICKY_OF_ZONE: readonly number[] = [-1, DevType.R3, DevType.R3, DevType.R3, -1, DevType.CO3, DevType.CO3, -1, -1, DevType.IHT, -1];
 
+/** the shortest footprint side of a zone's growables (memo per catalog list: growth's defsOf rebuilds the same way) */
+const lotSideMemo: { src: readonly BuildingDef[]; side: number }[] = [];
+function minLotSide(zone: number): number {
+  const src = growablesForZone(zone as Zone);
+  let m = lotSideMemo[zone];
+  if (!m || m.src !== src) {
+    let side = Infinity;
+    for (const d of src) side = Math.min(side, d.footprint[0], d.footprint[1]);
+    m = lotSideMemo[zone] = { src, side: Number.isFinite(side) ? side : 1 };
+  }
+  return m.side;
+}
+
+const LOT_DX = [0, 1, 0, -1], LOT_DZ = [1, 0, -1, 0];
+/**
+ * can a building of the zone's smallest size (an s × s lot) grow on empty road-facing tile (x, z)? Growth's own placement
+ * rules (growth.ts fitNew): the tile on the lot's front row, every lot cell free (same zone, no building, network, water
+ * or power line), the whole front edge on a road, slope ≤ GROW_MAX_SLOPE + GROW_MAX_SLOPE_PER_CELL × s. 0 = a lot fits,
+ * 1 = no lot fits (too small: an odd tile between buildings, roads or the zone's edge), 2 = lots fit only on too steep
+ * ground. Any bigger building needs such a lot too, so 1 / 2 mean no building can grow there. PERF: the first fitting
+ * placement returns (typical open land: one try)
+ */
+function lotFit(st: CityState, x: number, z: number, zn: number, s: number): 0 | 1 | 2 {
+  const N = st.size, net = st.network, zone = st.zone, bld = st.building, water = st.water, lines = st.powerLines;
+  const maxSlope = GROW_MAX_SLOPE + GROW_MAX_SLOPE_PER_CELL * s;
+  let steep = false;
+  for (let rot = 0; rot < 4; rot++) {
+    const nx = x + LOT_DX[rot], nz = z + LOT_DZ[rot];
+    if (nx < 0 || nz < 0 || nx >= N || nz >= N || !isRoadN(net[nz * N + nx])) continue;
+    for (let k = 0; k < s; k++) {
+      let x0: number, z0: number;
+      if (rot === 0) { z0 = z - s + 1; x0 = x - k; }
+      else if (rot === 2) { z0 = z; x0 = x - k; }
+      else if (rot === 1) { x0 = x - s + 1; z0 = z - k; }
+      else { x0 = x; z0 = z - k; }
+      if (x0 < 0 || z0 < 0 || x0 + s > N || z0 + s > N) continue;
+      let ok = true;
+      for (let zz = z0; zz < z0 + s && ok; zz++) {
+        for (let xx = x0; xx < x0 + s; xx++) {
+          const j = zz * N + xx;
+          if (zone[j] !== zn || bld[j] >= 0 || net[j] !== Network.None || water[j] || lines[j]) { ok = false; break; }
+        }
+      }
+      if (!ok) continue;
+      // the whole front edge on a road
+      if (rot === 0 || rot === 2) {
+        const fz = rot === 0 ? z0 + s : z0 - 1;
+        if (fz < 0 || fz >= N) continue;
+        for (let xx = x0; xx < x0 + s && ok; xx++) if (!isRoadN(net[fz * N + xx])) ok = false;
+      } else {
+        const fx = rot === 1 ? x0 + s : x0 - 1;
+        if (fx < 0 || fx >= N) continue;
+        for (let zz = z0; zz < z0 + s && ok; zz++) if (!isRoadN(net[zz * N + fx])) ok = false;
+      }
+      if (!ok) continue;
+      if (lotSlope(st, x0, z0, s, s) > maxSlope) { steep = true; continue; }
+      return 0;
+    }
+  }
+  return steep ? 2 : 1;
+}
+
 /** one pass over the zoned tiles (4-connected blocks flood-filled for road access) */
 function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int32Array): ZoneScan {
   const N = st.size, C = st.cells;
@@ -282,10 +360,14 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
     noAccessFam: [0, 0, 0], noAccessFamAt: [-1, -1, -1], unpoweredLots: 0, unwateredLots: 0,
     host: new Array(DEV_TYPE_COUNT).fill(0), fit: new Array(DEV_TYPE_COUNT).fill(0), fitEmpty: new Array(DEV_TYPE_COUNT).fill(0), bestAt: new Array(DEV_TYPE_COUNT).fill(-1),
     emptyReady: [0, 0, 0], emptyReadyAt: [-1, -1, -1],
+    lotOk: [0, 0, 0], lotOkAt: [-1, -1, -1], lotSmall: [0, 0, 0], lotSmallAt: [-1, -1, -1], lotSteep: [0, 0, 0], lotSteepAt: [-1, -1, -1],
+    lotSmallZ: new Array(Zone.IndHigh + 1).fill(0), lotSmallZAt: new Array(Zone.IndHigh + 1).fill(-1),
   };
   let lotsP = 0, lotsW = 0;
   const des = st.desirability;
   const host = r.host!, fit = r.fit!, fitEmpty = r.fitEmpty!, bestAt = r.bestAt!, emptyReady = r.emptyReady!, emptyReadyAt = r.emptyReadyAt!;
+  const lotOk = r.lotOk!, lotOkAt = r.lotOkAt!, lotSmall = r.lotSmall!, lotSmallAt = r.lotSmallAt!, lotSteep = r.lotSteep!, lotSteepAt = r.lotSteepAt!;
+  const lotSmallZ = r.lotSmallZ!, lotSmallZAt = r.lotSmallZAt!;
   const bestDes = new Float32Array(DEV_TYPE_COUNT).fill(-Infinity);
   const isZ = (i: number) => zone[i] >= Zone.ResLow && zone[i] <= Zone.IndHigh;
   // per block: tiles per family (0 R, 1 C, 2 I) and the first tile of each
@@ -319,14 +401,23 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
           if (!w) { r.unwatered++; if (r.unwateredAt < 0) r.unwateredAt = i; if (bld[i] < 0) lotsW++; }
         }
         if (p && w) { r.ready++; r.readyZones |= 1 << zn; if (r.readyAt < 0) r.readyAt = i; }
-        // what this tile can host (final fixes N4): an empty ready lot counts every DevType of its zone above growth's
-        // desirability floor; every usable tile counts the zone's picky type (R$$$ / CO$$$ / I-HT: the rules ask where
-        // it fits at all). PERF: one desirability read per built tile
+        // what this tile can host (final fixes N4): an empty ready lot where a building fits (lotFit) counts every
+        // DevType of its zone above growth's desirability floor; every usable tile counts the zone's picky type (R$$$ /
+        // CO$$$ / I-HT: the rules ask where it fits at all). PERF: one desirability read per built tile
         if (bld[i] < 0 && p && w) {
           emptyReady[f]++;
           if (emptyReadyAt[f] < 0) emptyReadyAt[f] = i;
-          const devs = ZONE_DEVTYPES[zn];
-          for (let k = 0; k < devs.length; k++) if (des[devs[k]][i] > GROW_MIN_DESIR) fitEmpty[devs[k]]++;
+          const lf = lotFit(st, x, (i / N) | 0, zn, minLotSide(zn));
+          if (lf === 0) {
+            lotOk[f]++;
+            if (lotOkAt[f] < 0) lotOkAt[f] = i;
+            const devs = ZONE_DEVTYPES[zn];
+            for (let k = 0; k < devs.length; k++) if (des[devs[k]][i] > GROW_MIN_DESIR) fitEmpty[devs[k]]++;
+          } else if (lf === 1) {
+            lotSmall[f]++; if (lotSmallAt[f] < 0) lotSmallAt[f] = i;
+            lotSmallZ[zn]++; if (lotSmallZAt[zn] < 0) lotSmallZAt[zn] = i;
+          }
+          else { lotSteep[f]++; if (lotSteepAt[f] < 0) lotSteepAt[f] = i; }
         }
         const pd = PICKY_OF_ZONE[zn];
         if (pd >= 0) {
@@ -1464,15 +1555,44 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       if (said) continue;
       out.push({ id: 'zoneDev' + dev, cooldown: 150, priority: 6, kind: 'info', advisor: 'planning', ...(pick ? best(dev) : {}), text: unfit ? pick.unfit : text });
     }
-    // empty ready lots wait, but none suits any type that wants in (final fixes N4: "Ready to grow" lots that never
-    // grow) — say why instead of asking for more zones
+    // empty ready lots wait, but nothing that wants in can grow there (final fixes N4: "Ready to grow" lots that never
+    // grow) — say why instead of asking for more zones: no building fits them (odd tiles between buildings, or too
+    // steep: lotFit, growth's placement rules), or none of the lots a building fits suits a type that wants in
     const famNoFit: boolean[] = [false, false, false];
+    /** family f's empty ready lots a building fits (scans saved before lotFit: all of them) */
+    const usable = (f: number) => (scan.lotOk ? scan.lotOk[f] : scan.emptyReady ? scan.emptyReady[f] : 0);
+    const FAM_ZONE0 = [Zone.ResLow, Zone.ComLow, Zone.IndAg];
+    const FAM: [number, number, number, string, string, string][] = [
+      [0, 2, 12, 'residential', 'Residents want', 'homes'], [3, 7, 8, 'commercial', 'Shops and offices want', 'shops'], [8, 11, 8, 'industrial', 'Industry wants', 'factories']];
+    if (scan.lotSmall && scan.lotSteep) {
+      for (let f = 0; f < 3; f++) {
+        const [a, b, minLots, what, who, noun] = FAM[f];
+        const small = scan.lotSmall[f], steep = scan.lotSteep[f], bad = small + steep, all = bad + usable(f);
+        if (!(famDemand(a, b) > 0.3) || bad < 12 || usable(f) >= minLots) continue;
+        famNoFit[f] = true;
+        const smallMost = small >= steep;
+        const k = smallMost ? small : steep;
+        const which = k === all ? `your ${count(k, `empty ${what} lot`)} ${k === 1 ? 'is' : 'are'}` : `${int(k)} of your ${int(all)} empty ${what} lots are`;
+        // (the zone with the most such tiles names the size, the buildings and the place)
+        let at = smallMost ? scan.lotSmallAt![f] : scan.lotSteepAt![f];
+        if (smallMost && scan.lotSmallZ && scan.lotSmallZAt) {
+          let zMax = -1;
+          for (let z = FAM_ZONE0[f]; z < FAM_ZONE0[f] + 3; z++) if (scan.lotSmallZ[z] > 0 && (zMax < 0 || scan.lotSmallZ[z] > scan.lotSmallZ[zMax])) zMax = z;
+          if (zMax >= 0) at = scan.lotSmallZAt[zMax];
+        }
+        const side = at >= 0 ? minLotSide(st.zone[at]) : 2;
+        const them = at >= 0 && st.zone[at] === Zone.IndAg ? 'farms' : noun;
+        out.push({ id: (smallMost ? 'lotsSmall' : 'lotsSteep') + 'RCI'[f], cooldown: 120, priority: 6, kind: 'warning', advisor: 'planning', confirm: true, ...cellAt(at),
+          text: smallMost
+            ? `${who} to move in, but ${which} odd tiles left between buildings and roads — too small for ${them}, which need at least ${side}×${side} tiles along a road. Zone new ${what} land along roads.`
+            : `${who} to move in, but ${which} too steep to build on. Level them with the terrain tool, or zone flatter ${what} land.` });
+      }
+    }
     if (scan.fitEmpty && scan.emptyReady) {
-      const FAM: [number, number, number, string, string][] = [[0, 2, 12, 'residential', 'Residents'], [3, 7, 8, 'commercial', 'Shops and offices'], [8, 11, 8, 'industrial', 'Industry']];
       for (let f = 0; f < 3; f++) {
         const [a, b, minLots, what, who] = FAM[f];
-        const n = scan.emptyReady[f];
-        if (!(famDemand(a, b) > 0.3) || n < minLots) continue;
+        const n = usable(f);
+        if (famNoFit[f] || !(famDemand(a, b) > 0.3) || n < minLots) continue;
         const wanted: number[] = [];
         for (let k = a; k <= b; k++) if (s.demand[k] > 0.1) wanted.push(k);
         if (!wanted.length || wanted.some((k) => scan.fitEmpty![k] > 0)) continue;
@@ -1485,7 +1605,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
             ? `Only corporate offices (CO$$$) want to open, and none of your ${lots} suit them — they need high land value and educated workers downtown (see the Desirability data view).`
             : picky === DevType.IHT
               ? `Only high-tech industry wants to move in, and none of your ${lots} suit it — it needs clean air and educated workers: schools and colleges nearby, away from smokestacks.`
-              : `${who} want to move in (${wanted.map((k) => DEV_TYPE_LABELS[k]).join(', ')}), but none of your ${lots} suit them: the land is too unattractive there (pollution, noise, crime or low land value). Fix what drags it down — see the Desirability data view.`;
+              : `${who} to move in (${wanted.map((k) => DEV_TYPE_LABELS[k]).join(', ')}), but none of your ${lots} suit them: the land is too unattractive there (pollution, noise, crime or low land value). Fix what drags it down — see the Desirability data view.`;
         out.push({ id: 'zoneNoFit' + 'RCI'[f], cooldown: 120, priority: 6, kind: 'warning', advisor: 'planning', confirm: true,
           ...cellAt(scan.emptyReadyAt?.[f] ?? -1), text });
       }
@@ -1547,7 +1667,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       let pick = -1, pickN = 0;
       for (let f = 0; f < 3; f++) {
         const key = 'RCI'[f];
-        const n = scan.emptyReady[f];
+        const n = usable(f);
         const on = n >= 12 && famDemand(DEM[f][0], DEM[f][1]) > 0.1 && !famNoFit[f];
         const cap = capOf[f];
         let w = stall?.[key];
@@ -1562,8 +1682,15 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         if (w && st.day - w.since >= STALL_DAYS && n > pickN) { pick = f; pickN = n; }
       }
       if (pick >= 0) {
-        out.push({ id: 'growthStalled', cooldown: 120, priority: 6, kind: 'warning', advisor: 'planning', ...cellAt(scan.emptyReadyAt?.[pick] ?? -1),
-          text: `No new ${NOUN[pick]} for a year although there is demand and ${count(pickN, `ready ${WHAT[pick]} lot`)} ${pickN === 1 ? 'waits' : 'wait'}. The land may be too steep, the lots too small or too unattractive (pollution, noise, a power plant next door) — check the Desirability data view and a lot's info.` });
+        // (the lots fit a building — lotFit — so: the land does not suit what wants in, or a lot's info says what else)
+        const wanted: number[] = [];
+        for (let k = DEM[pick][0]; k <= DEM[pick][1]; k++) if (s.demand[k] > 0.1) wanted.push(k);
+        const suits = !scan.fitEmpty || wanted.some((k) => scan.fitEmpty![k] > 0);
+        const lead = `No new ${NOUN[pick]} for a year although there is demand and ${count(pickN, `ready ${WHAT[pick]} lot`)} ${pickN === 1 ? 'waits' : 'wait'}`;
+        out.push({ id: 'growthStalled', cooldown: 120, priority: 6, kind: 'warning', advisor: 'planning', ...cellAt(scan.lotOkAt?.[pick] ?? scan.emptyReadyAt?.[pick] ?? -1),
+          text: suits
+            ? `${lead}. Click one: its info shows what holds growth back there (desirability, slope, the size of the city).`
+            : `${lead}: the land there is too unattractive for what wants in (${wanted.map((k) => DEV_TYPE_LABELS[k]).join(', ')}) — pollution, noise, crime or low land value. Fix what drags it down (see the Desirability data view).` });
       }
     }
     return out;

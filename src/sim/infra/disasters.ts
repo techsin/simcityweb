@@ -12,6 +12,9 @@
  * incidents (max EQ_COLLAPSE_MAX), tornado-destroyed homes / workplaces 'medical' calls along the path (max
  * TORNADO_MEDICAL_MAX), a meteor strike METEOR_MEDICAL 'medical' calls around the crater; fires started here are
  * fire incidents (fire.ts -> emergency.onFire).
+ * Persistent (systemData.infraDisasters, final fixes routed 45): the random stream and the disasters under way (a tornado
+ * on its path, a quake's / meteor's active days, a tornado's medical calls), so a loaded game rolls the same disasters
+ * and the same tornado path as the uninterrupted one (it used to re-seed from seed + day and drop them).
  */
 import { RNG } from '../../core/rng';
 import { BF, type Building } from '../CityState';
@@ -34,6 +37,17 @@ export interface ActiveDisaster {
   heading: number;
   /** earthquake magnitude / meteor radius */
   magnitude: number;
+  /** tornado: medical incidents spawned along its path so far (aftermath cap TORNADO_MEDICAL_MAX) */
+  calls?: number;
+}
+
+/** systemData.infraDisasters */
+interface DisastersSave {
+  v: number;
+  /** the random stream (RNG state) */
+  rng: number;
+  /** the disasters under way */
+  active: ActiveDisaster[];
 }
 
 const TORNADO_CELLS_PER_DAY = 10;
@@ -50,13 +64,36 @@ export class DisastersSystem implements SimSystem {
   private rng = new RNG(1);
   private lastFrameMs = -1e9;
   private lastEmitCell = new Map<ActiveDisaster, number>();
-  /** medical incidents spawned per tornado (aftermath cap) */
-  private tornadoCalls = new Map<ActiveDisaster, number>();
+  /** the persisted record (systemData.infraDisasters; its `active` is this.active) */
+  private save: DisastersSave = { v: 1, rng: 1, active: this.active };
 
   init(sim: Simulation): void {
-    sim.state.systemData.infraVersion = 1;
-    this.rng = new RNG((sim.state.config.seed ^ 0xd15a) + sim.state.day);
+    const st = sim.state;
+    st.systemData.infraVersion = 1;
+    this.rng = new RNG((st.config.seed ^ 0xd15a) + st.day);
     this.active.length = 0;
+    this.lastEmitCell.clear();
+    // a save's random stream and disasters under way (a save from before has none: the stream starts from seed + day)
+    const saved = st.systemData.infraDisasters as Partial<DisastersSave> | undefined;
+    if (saved && typeof saved === 'object') {
+      if (typeof saved.rng === 'number' && Number.isFinite(saved.rng) && saved.rng > 0) this.rng.state = saved.rng;
+      if (Array.isArray(saved.active)) {
+        for (const d of saved.active as Partial<ActiveDisaster>[]) {
+          if (!d || (d.kind !== 'tornado' && d.kind !== 'earthquake' && d.kind !== 'meteor')) continue;
+          const num = (v: unknown, f: number) => (typeof v === 'number' && Number.isFinite(v) ? v : f);
+          const a: ActiveDisaster = { kind: d.kind, x: num(d.x, 0), z: num(d.z, 0), daysLeft: num(d.daysLeft, 0), heading: num(d.heading, 0), magnitude: num(d.magnitude, 1) };
+          if (d.kind === 'tornado') a.calls = num(d.calls, 0);
+          if (a.daysLeft > 0 && st.inBounds(Math.floor(a.x), Math.floor(a.z))) this.active.push(a);
+        }
+      }
+    }
+    this.save = { v: 1, rng: this.rng.state, active: this.active };
+    st.systemData.infraDisasters = this.save;
+  }
+
+  /** the random stream into the persisted record (after every method that may draw from it) */
+  private persist(): void {
+    this.save.rng = this.rng.state;
   }
 
   monthly(sim: Simulation): void {
@@ -68,6 +105,7 @@ export class DisastersSystem implements SimSystem {
     if (r < 0.008) this.trigger(sim, 'tornado', x, z);
     else if (r < 0.012) this.trigger(sim, 'earthquake', x, z);
     else if (r < 0.0145) this.trigger(sim, 'meteor', x, z);
+    this.persist();
   }
 
   daily(sim: Simulation): void {
@@ -81,6 +119,7 @@ export class DisastersSystem implements SimSystem {
         if (d.daysLeft <= 0) this.end(sim, k);
       }
     }
+    this.persist();
   }
 
   frame(sim: Simulation, dt: number): void {
@@ -92,9 +131,16 @@ export class DisastersSystem implements SimSystem {
       const d = this.active[k];
       if (d.kind === 'tornado') this.advanceTornado(sim, d, days);
     }
+    this.persist();
   }
 
   trigger(sim: Simulation, kind: DisasterKind, x: number, z: number): boolean {
+    const ok = this.start(sim, kind, x, z);
+    this.persist();
+    return ok;
+  }
+
+  private start(sim: Simulation, kind: DisasterKind, x: number, z: number): boolean {
     const st = sim.state;
     if (!st.inBounds(Math.floor(x), Math.floor(z))) return false;
     x = Math.floor(x);
@@ -102,7 +148,7 @@ export class DisastersSystem implements SimSystem {
     switch (kind) {
       case 'fire': return this.startFire(sim, x, z);
       case 'tornado': {
-        const d: ActiveDisaster = { kind, x: x + 0.5, z: z + 0.5, daysLeft: TORNADO_DAYS, heading: this.rng.range(0, Math.PI * 2), magnitude: 1 };
+        const d: ActiveDisaster = { kind, x: x + 0.5, z: z + 0.5, daysLeft: TORNADO_DAYS, heading: this.rng.range(0, Math.PI * 2), magnitude: 1, calls: 0 };
         this.active.push(d);
         sim.notify('Tornado sighted! Take cover!', 'disaster', x, z, 'disaster');
         sim.events.emit('disaster', { kind, x, z, active: true });
@@ -179,8 +225,8 @@ export class DisastersSystem implements SimSystem {
           const occupied = b.pop + b.jobs > 0;
           this.destroy(sim, b);
           // WP8: people hurt in destroyed homes / workplaces call for ambulances along the path
-          const calls = this.tornadoCalls.get(d) ?? 0;
-          if (occupied && calls < TORNADO_MEDICAL_MAX && this.spawnIncident(sim, 'medical', b) >= 0) this.tornadoCalls.set(d, calls + 1);
+          const calls = d.calls ?? 0;
+          if (occupied && calls < TORNADO_MEDICAL_MAX && this.spawnIncident(sim, 'medical', b) >= 0) d.calls = calls + 1;
         }
         if (st.trees[z * N + x] > 0) st.trees[z * N + x] = Math.max(0, st.trees[z * N + x] - 2);
       }
@@ -202,7 +248,6 @@ export class DisastersSystem implements SimSystem {
     const d = this.active[k];
     this.active.splice(k, 1);
     this.lastEmitCell.delete(d);
-    this.tornadoCalls.delete(d);
     sim.events.emit('disaster', { kind: d.kind, x: d.x, z: d.z, active: false });
   }
 

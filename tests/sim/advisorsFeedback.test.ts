@@ -183,6 +183,60 @@ describe('N4: residential demand the empty land can host', () => {
     monthTick(sim, adv, 30 * 13);
     expect(issue(c.st, 'planning', 'growthStalled')).toBeUndefined();
   });
+
+  /** 20 empty, powered and watered farm tiles facing a road, `deep` rows deep (farms need 2 × 2 tiles: the test catalog
+   *  adds 1 × 1 factories to the other industrial zones, none to agriculture) */
+  function farmland(st: Simulation['state'], deep: number) {
+    roadLine(st, 2, 40, 62, 40, Network.Road);
+    for (let z = 41; z < 41 + deep; z++) for (let x = 10; x < 30; x++) {
+      const i = st.idx(x, z);
+      st.zone[i] = Zone.IndAg;
+      st.powered[i] = 1;
+      st.watered[i] = 1;
+      st.desirability[8][i] = 0.5;
+    }
+    st.stats.population = 20000;
+    st.stats.demand[8] = 0.35;
+  }
+
+  it('ready lots no building fits (odd single tiles) are not room: the advice says so, not "the land is unattractive"', () => {
+    // (the bot city of 2013: 80 "ready" industrial tiles, every one a single tile left between factories, no industrial
+    // growth for three years — growthStalled blamed desirability, which was +0.5)
+    const c = city();
+    farmland(c.st, 1);
+    const { sim, adv } = start(c);
+    c.rt.totals.growables = 50; c.rt.totals.abandoned = 0;
+    monthTick(sim, adv, 30);
+    expect(issue(c.st, 'planning', 'lotsSmallI'), 'after the confirm').toBeUndefined();
+    monthTick(sim, adv, 60);
+    const a = issue(c.st, 'planning', 'lotsSmallI');
+    expect(a?.text).toBe('Industry wants to move in, but your 20 empty industrial lots are odd tiles left between buildings and roads — too small for farms, which need at least 2×2 tiles along a road. Zone new industrial land along roads.');
+    expect(a?.z).toBe(41);
+    expect(issue(c.st, 'planning', 'zoneNoFitI')).toBeUndefined();
+    // a year on: still that advice, and no "the land may be too unattractive" stall
+    for (let m = 3; m <= 14; m++) monthTick(sim, adv, 30 * m);
+    expect(issue(c.st, 'planning', 'growthStalled')).toBeUndefined();
+    expect(issue(c.st, 'planning', 'lotsSmallI')).toBeDefined();
+  });
+
+  it('two rows deep a farm fits: no lot advice; on a steep slope: the steep-lot advice', () => {
+    const c = city();
+    farmland(c.st, 2);
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30);
+    monthTick(sim, adv, 60);
+    expect(issue(c.st, 'planning', 'lotsSmallI')).toBeUndefined();
+    expect(issue(c.st, 'planning', 'lotsSteepI')).toBeUndefined();
+    // 10 m steps between neighbouring corners (growth allows 5 + 1.5 × 2 = 8 m on a 2 × 2 lot)
+    const c2 = city();
+    farmland(c2.st, 2);
+    const N1 = c2.st.size + 1;
+    for (let z = 41; z <= 43; z++) for (let x = 8; x <= 32; x++) c2.st.heights[z * N1 + x] = (x + z) % 2 ? 10 : 0;
+    const s2 = start(c2);
+    monthTick(s2.sim, s2.adv, 30);
+    monthTick(s2.sim, s2.adv, 60);
+    expect(issue(c2.st, 'planning', 'lotsSteepI')?.text).toBe('Industry wants to move in, but your 20 empty industrial lots are too steep to build on. Level them with the terrain tool, or zone flatter industrial land.');
+  });
 });
 
 describe('F5 / F8 / F10 / N5 / N7: advice that names the real problem', () => {

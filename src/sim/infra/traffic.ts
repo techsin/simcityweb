@@ -119,6 +119,7 @@ import { computeFerryNet, ferryPartnersAt, type FerryLink, type FerryNet, type F
 import {
   addFootprint, addGarageSupply, baseSupply, garageRelief, garageShortage, parkingBox, parkingFromBoxes, parkingOver, type ParkingSummary,
 } from './parking';
+import type { RegionNeighbor } from '../../region/regionEffects';
 
 /** netFlags bit 5: rail level crossing on a road cell (see src/sim/actions.ts NET_CROSSING) */
 const NETFLAG_CROSSING = 1 << 5;
@@ -158,6 +159,20 @@ export interface TransitFleetStatsX {
   /** sum over the bus pools (each depot, the minibus pool) of max(0, buses needed - buses): a shortage a surplus
    *  elsewhere does not hide (the bot's depot rule, the busFleetShort advisor) */
   busesShort?: number;
+}
+
+/** TrafficSystem.connectionReport: one neighbour connection of the last completed assignment */
+export interface ConnectionReport {
+  /** connection cell, map edge, network type (road / rail) */
+  cell: number;
+  edge: 'n' | 's' | 'e' | 'w';
+  type: number;
+  /** regional job slots there for our residents, and the residents who took them */
+  jobs: number;
+  employed: number;
+  /** regional workers it may let in (road connections; 0 for rail), and those who came in the last full inbound pass */
+  workerCap: number;
+  inbound: number;
 }
 
 /** TrafficSystem.garageReach: the park & ride choices of the homes nearest to a garage (its idle hint) */
@@ -433,6 +448,10 @@ export class TrafficSystem implements SimSystem {
   private nsIdx: Int32Array<ArrayBuffer> = new Int32Array(64);
   private nsDist: Float32Array<ArrayBuffer> = new Float32Array(64);
   private jConnType: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  /** neighbour connection job sites (jB .. jN - 1): index of their connection in this.conns, and the regional workers
+   *  the connection lets in (road connections; placeRegional) */
+  private jConnK: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private jConnW: Float64Array<ArrayBuffer> = new Float64Array(0);
   private growth = 1;
   private trStartA: Int32Array<ArrayBuffer> = new Int32Array(0);
   private busTimeA: Float32Array<ArrayBuffer> = new Float32Array(0);
@@ -468,6 +487,10 @@ export class TrafficSystem implements SimSystem {
   private stationIds: number[] = [];
   private volInbound: Float32Array<ArrayBuffer> = new Float32Array(0);
   private inboundById: Float32Array<ArrayBuffer> = new Float32Array(1024);
+  /** regional workers that came in through each road connection (by cell) in the last full inbound pass, and the neighbour
+   *  connections of the last completed assignment (connectionReport) */
+  private connInbound = new Map<number, number>();
+  private connLast: ConnectionReport[] = [];
   private task: InfraTask | null = null;
 
   // ---- WP7b transport facilities ---------------------------------------------------------------------------------
@@ -861,6 +884,8 @@ export class TrafficSystem implements SimSystem {
     this.stopWalkers.clear();
     this.stopRide.clear();
     this.stopReach.clear();
+    this.connInbound.clear();
+    this.connLast = [];
     this.carlessById.fill(0);
     this.carlessMinById.fill(0);
     this.restoreTransport(sim.state);
@@ -1048,6 +1073,11 @@ export class TrafficSystem implements SimSystem {
   /** regional (neighbour-city) workers filling city jobs in the last assignment (WP1-1 employment ledger) */
   get inboundTotal(): number {
     return this.tripsInbound;
+  }
+  /** the neighbour connections of the last completed assignment and the regional exchange through each (final fixes
+   *  F1: a founded neighbour's jobs / workers come only through the connections facing it — placeRegional) */
+  connectionReport(): ConnectionReport[] {
+    return this.connLast.map((c) => ({ ...c }));
   }
 
   // ------------------------------------------------------------------------------------------ WP7b queries
@@ -1663,7 +1693,7 @@ export class TrafficSystem implements SimSystem {
     this.jPrice = growF32(this.jPrice, jcap); this.jQ = growI32(this.jQ, jcap);
     this.jBase = growF32(this.jBase, jcap); this.jEntS = growI32(this.jEntS, jcap); this.jEntC = growU8(this.jEntC, jcap);
     this.jCell = growI32(this.jCell, jcap); this.jHalf = growU8(this.jHalf, jcap); this.jRailNode = growI32(this.jRailNode, jcap);
-    this.jConnType = growU8(this.jConnType, jcap);
+    this.jConnType = growU8(this.jConnType, jcap); this.jConnK = growI32(this.jConnK, jcap);
     this.sBid = growI32(this.sBid, cap); this.sEntS = growI32(this.sEntS, cap); this.sEntC = growU8(this.sEntC, cap);
     this.fBid = growI32(this.fBid, cap); this.fTrucks = growF32(this.fTrucks, cap); this.fEntS = growI32(this.fEntS, cap);
     this.fEntC = growU8(this.fEntC, cap);
@@ -1763,7 +1793,8 @@ export class TrafficSystem implements SimSystem {
     this.sObj.length = sN;
     // neighbour connections: regional job sources + freight sinks
     const growth = (this.growth = 1 + Math.min(3, st.stats.population / 250000));
-    for (const c of conns) {
+    for (let ci = 0; ci < conns.length; ci++) {
+      const c = conns[ci];
       if (this.entN + 1 > this.ent.length) this.ent = growI32(this.ent, this.entN * 2 + 16);
       if (c.type === Network.Rail) {
         const rn = this.rail.nodeOfCell[c.cell];
@@ -1775,6 +1806,7 @@ export class TrafficSystem implements SimSystem {
         this.jHalf[jN] = 0;
         this.jRailNode[jN] = rn;
         this.jConnType[jN] = c.type;
+        this.jConnK[jN] = ci;
         this.jEntS[jN] = this.entN;
         this.jEntC[jN] = 0;
         jN++;
@@ -1790,6 +1822,7 @@ export class TrafficSystem implements SimSystem {
       this.jHalf[jN] = 0;
       this.jRailNode[jN] = -1;
       this.jConnType[jN] = c.type;
+      this.jConnK[jN] = ci;
       this.jEntS[jN] = this.entN;
       this.jEntC[jN] = 1;
       jN++;
@@ -1800,20 +1833,12 @@ export class TrafficSystem implements SimSystem {
       this.entN++;
     }
     this.oN = oN; this.jN = jN; this.sN = sN; this.fN = fN; this.kN = kN;
-    // global regional caps (scale connection slots)
-    let workers = 0, citySlots = 0, connSlots = 0;
+    // regional exchange on the connections (job slots for our residents, workers coming in)
+    let workers = 0, citySlots = 0;
     for (let o = 0; o < oN; o++) workers += this.oW[o];
     for (let j = 0; j < this.jB; j++) citySlots += this.jSlots[j];
-    for (let j = this.jB; j < jN; j++) { connSlots += this.jSlots[j]; this.jPark[j] = 0; }
-    // regional exchange sized like sim-core's employment model (params REGION_* = economy/tuning REGION_COMMUTERS_*),
-    // so workerAccess / jobFill agree with stats.unemployment; state.systemData.regionJobs / regionWorkers override
-    const sd = st.systemData;
-    const regionJobs = typeof sd.regionJobs === 'number' ? (sd.regionJobs as number) : (REGION_JOB_SHARE * workers + REGION_JOB_MIN) * REGION_JOBS_FOR_RESIDENTS;
-    if (connSlots > regionJobs && connSlots > 0) {
-      const f = regionJobs / connSlots;
-      for (let j = this.jB; j < jN; j++) this.jSlots[j] *= f;
-    }
-    this.regionWorkerCap = typeof sd.regionWorkers === 'number' ? (sd.regionWorkers as number) : REGION_WORKER_SHARE * citySlots + REGION_WORKER_MIN;
+    for (let j = this.jB; j < jN; j++) this.jPark[j] = 0;
+    this.placeRegional(st, workers, citySlots);
     // per-cycle result arrays
     this.oCarNode = growI32(this.oCarNode, oN); this.oBoard = growI32(this.oBoard, oN);
     this.oShC = growF32(this.oShC, oN); this.oShT = growF32(this.oShT, oN); this.oShW = growF32(this.oShW, oN);
@@ -1870,6 +1895,67 @@ export class TrafficSystem implements SimSystem {
     this.pendingRoutes = [];
     this.prRiders = 0;
     this.prStage = 0;
+  }
+
+  /**
+   * The regional exchange on the neighbour connections (job sites jB .. jN - 1): the regional job slots they offer our
+   * residents (jSlots; the scan set CONNECTION_JOBS x growth) and the regional workers each road connection lets in
+   * (jConnW, the inbound pass). Totals follow sim-core's employment model (params REGION_* = economy/tuning
+   * REGION_COMMUTERS_*), so workerAccess / jobFill agree with stats.unemployment; state.systemData.regionJobs /
+   * regionWorkers (the region layer) override them. The region at large (the default formulas; with the region layer
+   * its totals minus the founded neighbours' own shares) is spread over every connection by capacity (CONNECTION_JOBS /
+   * _WORKERS x growth), scaled down to its total, never up. Final fixes F1: a founded neighbour's own share
+   * (systemData.region.neighbors[k].jobSlots / workerSlots, which applyRegionEffects writes for the neighbour's
+   * best-connected shared edge segment) sits only at the connections on that segment, by capacity: residents reach a
+   * neighbour's jobs — and its workers ours — only by a road or rail line that leads there, and a neighbour beyond an
+   * edge without one adds nothing here. Without region data nothing changes.
+   */
+  private placeRegional(st: CityState, workers: number, citySlots: number): void {
+    const jB = this.jB, jN = this.jN, growth = this.growth, conns = this.conns, sd = st.systemData;
+    const hasJ = typeof sd.regionJobs === 'number', hasW = typeof sd.regionWorkers === 'number';
+    let poolJ = hasJ ? Math.max(0, sd.regionJobs as number) : (REGION_JOB_SHARE * workers + REGION_JOB_MIN) * REGION_JOBS_FOR_RESIDENTS;
+    let poolW = hasW ? Math.max(0, sd.regionWorkers as number) : REGION_WORKER_SHARE * citySlots + REGION_WORKER_MIN;
+    const nC = Math.max(0, jN - jB);
+    const nbJ = new Float64Array(nC), nbW = new Float64Array(nC);
+    // founded neighbours' own shares, at the connections on their shared edge segment
+    const reg = sd.region as { neighbors?: unknown } | undefined;
+    const list = (hasJ || hasW) && reg && Array.isArray(reg.neighbors) ? (reg.neighbors as Partial<RegionNeighbor>[]) : null;
+    if (list) for (const n of list) {
+      if (!n || !n.founded) continue;
+      const js = hasJ && typeof n.jobSlots === 'number' && n.jobSlots > 0 ? n.jobSlots : 0;
+      const ws = hasW && typeof n.workerSlots === 'number' && n.workerSlots > 0 ? n.workerSlots : 0;
+      if (!(js > 0) && !(ws > 0)) continue;
+      poolJ -= js;
+      poolW -= ws;
+      let sJ = 0, sW = 0;
+      for (let j = jB; j < jN; j++) {
+        if (!onSegment(conns[this.jConnK[j]], n)) continue;
+        sJ += CONNECTION_JOBS[this.jConnType[j]];
+        if (this.jEntC[j] > 0) sW += CONNECTION_WORKERS[this.jConnType[j]];
+      }
+      for (let j = jB; j < jN; j++) {
+        if ((sJ <= 0 && sW <= 0) || !onSegment(conns[this.jConnK[j]], n)) continue;
+        if (sJ > 0) nbJ[j - jB] += js * CONNECTION_JOBS[this.jConnType[j]] / sJ;
+        if (sW > 0 && this.jEntC[j] > 0) nbW[j - jB] += ws * CONNECTION_WORKERS[this.jConnType[j]] / sW;
+      }
+    }
+    if (poolJ < 0) poolJ = 0;
+    if (poolW < 0) poolW = 0;
+    this.regionWorkerCap = poolW;
+    // the region at large at every connection by capacity (scaled down to its total)
+    let capJ = 0, capW = 0;
+    for (let j = jB; j < jN; j++) {
+      capJ += this.jSlots[j];
+      if (this.jEntC[j] > 0) capW += CONNECTION_WORKERS[this.jConnType[j]] * growth;
+    }
+    const fJ = capJ > poolJ && capJ > 0 ? poolJ / capJ : 1;
+    const fW = capW > poolW ? poolW / capW : 1;
+    const cw = (this.jConnW = growF64(this.jConnW, jN));
+    for (let j = jB; j < jN; j++) {
+      if (fJ !== 1) this.jSlots[j] *= fJ;
+      if (nbJ[j - jB] > 0) this.jSlots[j] += nbJ[j - jB];
+      cw[j] = this.jEntC[j] > 0 ? CONNECTION_WORKERS[this.jConnType[j]] * growth * fW + nbW[j - jB] : 0;
+    }
   }
 
   private prepTransit(st: CityState): void {
@@ -3848,13 +3934,11 @@ export class TrafficSystem implements SimSystem {
       bestNode[j] = bn;
       connSum[src[bn]] += desire[j];
     }
+    // (the regional workers each connection lets in: placeRegional — the region at large at every connection, a founded
+    // neighbour's own workers at the connections facing it)
     const scale = new Float32Array(conns.length);
-    let capSum = 0;
-    for (let k = 0; k < conns.length; k++) capSum += CONNECTION_WORKERS[this.jConnType[conns[k]]] * this.growth;
-    const capMul = capSum > this.regionWorkerCap ? this.regionWorkerCap / capSum : 1;
     for (let k = 0; k < conns.length; k++) {
-      const j = conns[k];
-      const capW = CONNECTION_WORKERS[this.jConnType[j]] * this.growth * capMul;
+      const capW = this.jConnW[conns[k]];
       scale[k] = connSum[k] > capW ? capW / connSum[k] : 1;
     }
     const acc = this.acc;
@@ -3862,6 +3946,7 @@ export class TrafficSystem implements SimSystem {
     const carPcu = 1 / CAR_OCCUPANCY;
     let tot = 0;
     const cand: number[] = [];
+    const connIn = new Float64Array(conns.length);
     for (let j = 0; j < this.jB; j++) {
       const bn = bestNode[j];
       if (bn < 0) continue;
@@ -3871,11 +3956,14 @@ export class TrafficSystem implements SimSystem {
       this.jCar[j] += inflow; // regional commuters drive in (parking demand)
       acc[bn] += inflow * carPcu;
       tot += inflow;
+      connIn[src[bn]] += inflow;
       if (inflow > 0) cand.push(j);
     }
     accumulate(S, acc);
     this.commit(S, acc, this.volInbound, this.rampSF);
     this.tripsInbound = tot;
+    this.connInbound.clear();
+    for (let k = 0; k < conns.length; k++) this.connInbound.set(this.jCell[conns[k]], connIn[k]);
     // sample inbound routes (connection -> job)
     const K = Math.min(12, cand.length);
     for (let q = 0; q < K; q++) {
@@ -4492,6 +4580,17 @@ export class TrafficSystem implements SimSystem {
       if (setFlagQuiet(b, BF.Congested, cong > 1.1)) changed.push(b);
     }
     if (this.sfRecompute) for (let s = 0; s < this.sN; s++) this.customersById[this.sBid[s]] = this.sLoad[s];
+    // (the neighbour connections of this assignment: connectionReport)
+    const cr: ConnectionReport[] = [];
+    for (let j = this.jB; j < this.jN; j++) {
+      const c = this.conns[this.jConnK[j]];
+      if (!c) continue;
+      cr.push({
+        cell: c.cell, edge: c.edge, type: c.type, jobs: this.jSlots[j], employed: Math.min(this.jAsg[j], this.jSlots[j]),
+        workerCap: this.jEntC[j] > 0 ? this.jConnW[j] : 0, inbound: this.connInbound.get(c.cell) ?? 0,
+      });
+    }
+    this.connLast = cr;
     for (const b of changed) sim.events.emit('buildingChanged', b);
     // sample routes
     this.buildSampleRoutes(st);
@@ -4762,6 +4861,14 @@ export function rampTime(type: number, vol: number): number {
   const r = vol / RAMP_CAP;
   const f = 1 + RAMP_ALPHA * r * r * r * r;
   return base * (f < RAMP_MAX_FACTOR ? f : RAMP_MAX_FACTOR);
+}
+
+/** a neighbour connection lies on a region neighbour's shared edge segment (its edge; the along-edge coordinate — x on
+ *  the n / s edges, z on e / w — in [from, to), as regionLink's edgeFactor reads it) */
+function onSegment(c: NeighborConn | undefined, n: Partial<Pick<RegionNeighbor, 'edge' | 'from' | 'to'>>): boolean {
+  if (!c || c.edge !== n.edge || typeof n.from !== 'number' || typeof n.to !== 'number') return false;
+  const a = c.edge === 'n' || c.edge === 's' ? c.x : c.z;
+  return a >= n.from && a < n.to;
 }
 
 /** calls fn for every map cell 4-adjacent to a footprint (outside it) */
