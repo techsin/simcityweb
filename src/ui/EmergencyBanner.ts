@@ -6,9 +6,16 @@
  * busy"), the time since it started and the time left before it fails, and buttons: Jump · Send nearest (ETA) ·
  * Choose station… (DispatchTool) · dismiss. When even the nearest free unit cannot arrive before the deadline
  * (canSend without manualPossible) the banner still shows ("too far?") but the speed is left alone. At most
- * MAX_BANNERS banners; major incidents only unless
+ * MAX_BANNERS full banners; major incidents only unless
  * settings.emergencyAlerts = 'all'; KIND_COOLDOWN days between banners of the same kind (fires always alert); no
- * alerts below ALERT_MIN_POP residents except fires. Covered incidents never alert — they only become statistics.
+ * alerts below ALERT_MIN_POP residents except fires — but a MAJOR incident a dispatch can still save (manualPossible)
+ * always gets a banner (compact beyond MAX_BANNERS) and holds the speed policy: it scores as an ignored prompt when
+ * nobody answers. Covered incidents never alert — they only become statistics.
+ * The countdown is the player's window (emergency.ts dispatchWindowEnd: an industrial accident's plant ignites 3
+ * minutes after it started unless a fire truck is on its way); it stops once a building is lost or the incident is
+ * over (the outcome shows instead). A supporting unit already sent (an industrial accident's ambulance) gets its own
+ * line; the incident keeps waiting for its fire truck. A loaded game's waiting incidents get their banners (and the
+ * policy) back on the first tick the sim systems exist. The stack docks beside open panels (dockBanners).
  *
  * Speed policy (settings.emergencyUncovered, pure function speedPolicy() below):
  *   'live'   an alert drops the game to 1x (remembering fast / ultra) and slows 1x by settings.emergencyLiveSlowmo
