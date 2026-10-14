@@ -360,6 +360,16 @@ export const WIND_DRIFT_FAR = 6;
 export const TREE_NOISE_ABSORB = 0.25;
 export const PARK_NOISE_ABSORB = 0.15;
 export const TREE_AIR_ABSORB = 0.12;
+/**
+ * TREE BELTS (final fixes F4): trees between a cell and the noise reaching it absorb part of it — the cells up to
+ * TREE_BELT_REACH steps toward the source (up the noise gradient, stopping at its peak) count their tree density
+ * (trees / 4); TREE_BELT_CELLS fully wooded cells make a full belt, which takes TREE_BELT_ABSORB of the noise behind it.
+ * A 2-cell belt between a busy road and the homes clears a typical Noisy home (0.6-0.7 -> below NOISY_THRESHOLD);
+ * trees on the far side of the road do nothing for them.
+ */
+export const TREE_BELT_ABSORB = 0.35;
+export const TREE_BELT_CELLS = 2;
+export const TREE_BELT_REACH = 3;
 /** treeCover = box average of trees / 4 over (2 r + 1)^2 cells */
 export const TREE_COVER_RADIUS = 2;
 /** R buildings with noise above this get BF.Noisy */
@@ -434,6 +444,9 @@ export const SEA_PUMP_OUT = 0.6;
 export const DESAL_INLAND_OUT = 0.2;
 /** days between shortage news (power / water) */
 export const SHORTAGE_NEWS_DAYS = 30;
+/** final fixes N1: an edit that cuts occupied buildings off their grid / pipes (not a brownout) is news at once, at most
+ *  once per this many days */
+export const UTIL_CUT_NEWS_DAYS = 5;
 // §UTILITIES end
 
 // ---------------------------------------------------------------------------------------------- §CRIME (owner WP3)

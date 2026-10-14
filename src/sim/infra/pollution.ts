@@ -62,7 +62,8 @@ import {
   NOISE_NIGHTLIFE, NOISE_PER_JOB, NOISE_PER_TRIP, NOISE_PER_TRIP_NET, NOISY_THRESHOLD, NO_GARBAGE_THRESHOLD,
   PARK_NOISE_ABSORB, PLANT_IDLE_ACT, POLLUTED_THRESHOLD, POLL_PEAK_GAIN, POLL_RADII, POLL_SMOOTH, RECYCLE_MAX_SHARE,
   SEWAGE_PER_RES, SOIL_DECAY, SOIL_GROUNDWATER, SOIL_RATE, SOIL_SRC_IND, SOIL_SRC_LANDFILL, SOIL_SRC_PLOPPED,
-  TREATMENT_DEFAULT_CAP, TREATMENT_RES_PER_KL, TREE_AIR_ABSORB, TREE_COVER_RADIUS, TREE_NOISE_ABSORB, TUNNEL_AIR,
+  TREATMENT_DEFAULT_CAP, TREATMENT_RES_PER_KL, TREE_AIR_ABSORB, TREE_BELT_ABSORB, TREE_BELT_CELLS, TREE_BELT_REACH,
+  TREE_COVER_RADIUS, TREE_NOISE_ABSORB, TUNNEL_AIR,
   TUNNEL_NOISE, WATER_K, WATER_POLL_PER_JOB, WIND_DRIFT_FAR, WIND_DRIFT_PREVAIL,
 } from './params';
 
@@ -208,6 +209,10 @@ export class PollutionSystem implements SimSystem {
   /** park footprint mask and its blurred buffer; soil source per cell (this pass) */
   private parkMask = new Float32Array(0);
   private parkBuf = new Float32Array(0);
+  /** cells with a tree within TREE_BELT_REACH (box average of tree presence; > 0 = some) and the noise buffer of the
+   *  last noise step (trees + parks + tree belts, see stageNoise) */
+  private treeNear = new Float32Array(0);
+  private noiseBuf = new Float32Array(0);
   private soilSrc = new Float32Array(0);
   private waterCells = new Int32Array(0);
   private waterNb = new Int32Array(0);
@@ -1046,11 +1051,13 @@ export class PollutionSystem implements SimSystem {
     if (this.parkDirty || this.firstPass) { this.parkDirty = false; boxAverage(this.parkMask, this.parkBuf, this.tmp2, N, TREE_COVER_RADIUS); }
   }
 
-  /** treeCover = (2r+1)^2 box average of trees / 4 (published, derived: also computed in init) */
+  /** treeCover = (2r+1)^2 box average of trees / 4 (published, derived: also computed in init); treeNear (tree belts) */
   private updateTreeCover(st: CityState): void {
     const C = st.cells, trees = st.trees, t = this.tmp;
     for (let i = 0; i < C; i++) t[i] = trees[i] * 0.25;
     boxAverage(t, st.treeCover, this.tmp2, st.size, TREE_COVER_RADIUS);
+    if (this.treeNear.length !== C) this.treeNear = new Float32Array(C);
+    boxAverage(t, this.treeNear, this.tmp2, st.size, TREE_BELT_REACH);
   }
 
   /**
@@ -1113,12 +1120,15 @@ export class PollutionSystem implements SimSystem {
     if (this.usedCls[usedBase + 1]) blurDownAdd(src[1], out, N, 4, 2, POLL_PEAK_GAIN * 2 * Math.PI * 96, this.coarse, this.coarseTmp);
   }
 
-  /** step 7: noise layer (trees and parks buffer it) */
+  /** step 7: noise layer (trees, parks and tree belts between the noise and a cell buffer it) */
   private stageNoise(sim: Simulation, first: boolean): void {
     const st = sim.state;
     const N = st.size, C = st.cells;
+    if (this.treeNear.length !== C) this.updateTreeCover(st); // (uses tmp: before the blur below)
     this.blurPair(this.noiseS, 5, this.tmp, N);
-    saturate(this.tmp, st.noise, C, 1 / NOISE_K, first ? 1 : POLL_SMOOTH, null, st.treeCover, TREE_NOISE_ABSORB, this.parkBuf, PARK_NOISE_ABSORB);
+    if (this.noiseBuf.length !== C) this.noiseBuf = new Float32Array(C);
+    noiseBuffer(this.tmp, st.trees, this.treeNear, st.treeCover, this.parkBuf, this.noiseBuf, N);
+    saturate(this.tmp, st.noise, C, 1 / NOISE_K, first ? 1 : POLL_SMOOTH, null, this.noiseBuf, 1);
   }
 
   /** step 8 (stageB): water pollution (ground water + diffusion along water bodies + bank coupling) */
@@ -1268,6 +1278,45 @@ export class PollutionSystem implements SimSystem {
     }
     this.bankCells = Int32Array.from(bank);
     this.bankSrc = Int32Array.from(bankSrc);
+  }
+}
+
+/** blurred noise field below which a cell is quiet anyway (layer ~5 %): no tree-belt walk there */
+const BELT_MIN_FIELD = 0.15;
+/**
+ * the noise buffer per cell (after saturation the layer is x (1 - buf)): TREE_NOISE_ABSORB x treeCover + PARK_NOISE_ABSORB
+ * x park buffer + TREE_BELT_ABSORB x belt. Belt (final fixes F4): the tree density on the cells up to TREE_BELT_REACH
+ * steps toward the noise — up the gradient of the blurred field, stopping where it stops rising (past the source, so
+ * trees on the far side of the road do not count) — as a share of a full belt of TREE_BELT_CELLS wooded cells. Only
+ * cells with a tree within reach (treeNear > 0) and some noise are walked.
+ */
+function noiseBuffer(field: Float32Array, trees: Uint8Array, near: Float32Array, cover: Float32Array, park: Float32Array, out: Float32Array, N: number): void {
+  const R = TREE_BELT_REACH, inv = 0.25 / TREE_BELT_CELLS;
+  for (let z = 0, i = 0; z < N; z++) {
+    for (let x = 0; x < N; x++, i++) {
+      let b = TREE_NOISE_ABSORB * cover[i] + PARK_NOISE_ABSORB * park[i];
+      const f = field[i];
+      if (near[i] > 0 && f > BELT_MIN_FIELD) {
+        const gx = (x + 1 < N ? field[i + 1] : f) - (x > 0 ? field[i - 1] : f);
+        const gz = (z + 1 < N ? field[i + N] : f) - (z > 0 ? field[i - N] : f);
+        const g2 = gx * gx + gz * gz;
+        if (g2 > 1e-12) {
+          const s = 1 / Math.sqrt(g2), dx = gx * s, dz = gz * s;
+          let sum = 0, prev = f;
+          for (let k = 1; k <= R; k++) {
+            const xx = Math.round(x + k * dx), zz = Math.round(z + k * dz);
+            if (xx < 0 || zz < 0 || xx >= N || zz >= N) break;
+            const j = zz * N + xx;
+            const fj = field[j];
+            if (fj < prev) break;
+            prev = fj;
+            sum += trees[j];
+          }
+          if (sum > 0) b += TREE_BELT_ABSORB * Math.min(1, sum * inv);
+        }
+      }
+      out[i] = b;
+    }
   }
 }
 

@@ -33,10 +33,12 @@
  *  - soft pass (labels patched locally for growables added / removed, sums + brownout + flags): within
  *    UTIL_SOFT_DAYS of a growth change / zone change and every UTIL_REFRESH_DAYS days (demand drifts with pop).
  */
-import { Network, isRoad } from '../../core/types';
+import { Network, isRoad, zoneDensity } from '../../core/types';
 import type { Building, CityState } from '../CityState';
 import { BF } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
+import { getDef } from '../catalog';
+import { WATER_REQUIRED_STAGE } from '../economy/tuning';
 import {
   Fam, type DefInfo, activeJobs, detectJobsUnknown, ensureIdArray, ensureIdFloat, fundingFactor, infoOf,
   readEffects, setFlagQuiet, nowMs,
@@ -45,7 +47,7 @@ import {
 import {
   DESAL_INLAND_OUT, POWER_MIN_PLOPPED, POWER_PER_CIVIC_JOB, POWER_PER_JOB_C, POWER_PER_JOB_I, POWER_PER_RES,
   PUMP_POLL_LOSS, PUMP_TREATED_LOSS, PUMP_WATER_BONUS, PUMP_WATER_DIST, SEA_PUMP_OUT, SHORTAGE_NEWS_DAYS, SOLAR_CLIMATE,
-  SOLAR_SUMMER, SOLAR_WINTER, TAP_TREATMENT_CLEAN, THERMAL_UNWATERED, UTIL_BASE_SHARE, UTIL_FULL_DAYS, UTIL_REFRESH_DAYS,
+  SOLAR_SUMMER, SOLAR_WINTER, TAP_TREATMENT_CLEAN, THERMAL_UNWATERED, UTIL_BASE_SHARE, UTIL_CUT_NEWS_DAYS, UTIL_FULL_DAYS, UTIL_REFRESH_DAYS,
   UTIL_SOFT_DAYS, WATER_PER_CIVIC_JOB, WATER_PER_JOB_C, WATER_PER_JOB_I, WATER_PER_RES, WIND_TURBINE_BASE,
   WIND_TURBINE_GAIN, WIND_TURBINE_H0, WIND_TURBINE_H1, WIND_TURBINE_RADIUS,
 } from './params';
@@ -236,6 +238,9 @@ export class UtilitiesSystem implements SimSystem {
   private lastBlackoutNotify = -1e9;
   /** nuclear plants shut down by the nuclear-free-zone ordinance: announced once per enactment */
   private nuclearOffAnnounced = false;
+  /** last "Power cut" / "Water cut" news (final fixes N1); no such news for the init / load pass */
+  private lastCutNews = -1e9;
+  private cutQuiet = false;
   private simRef: Simulation | null = null;
   /** duration (ms) of the last step / last full synchronous compute */
   lastMs = 0;
@@ -268,12 +273,14 @@ export class UtilitiesSystem implements SimSystem {
     this.removed = [];
     this.stepIdx = -1;
     this.lastSupply = 0;
-    this.lastShortNotify = this.lastWaterNotify = this.lastBlackoutNotify = -1e9;
+    this.lastShortNotify = this.lastWaterNotify = this.lastBlackoutNotify = this.lastCutNews = -1e9;
     this.wasShort = this.wasWaterShort = false;
     this.loadById.fill(-1);
     this.producers.clear();
     this.rememberCoolingWater(sim.state);
-    this.compute(sim);
+    // (flags a loaded / new city's first pass flips are not news)
+    this.cutQuiet = true;
+    try { this.compute(sim); } finally { this.cutQuiet = false; }
     const self = this;
     schedulerOf(sim).register({
       name: 'utilities',
@@ -504,14 +511,24 @@ export class UtilitiesSystem implements SimSystem {
     const changed: Building[] = [];
     const bPow = this.bPow, bWat = this.bWat;
     const watSeen = this.watSeen;
+    const cut = this.cut;
+    cut.pN = cut.pRes = cut.pJobs = cut.wN = cut.wRes = cut.wJobs = 0;
+    cut.at = null;
+    cut.atPeople = 0;
+    cut.pPlant = false;
     for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
       const b = bL[bI];
+      const wasP = (b.flags & BF.Powered) !== 0, wasW = (b.flags & BF.Watered) !== 0;
       const f1 = setFlagQuiet(b, BF.Powered, bPow[b.id] === 1);
       const f2 = setFlagQuiet(b, BF.Watered, bWat[b.id] === 1);
       watSeen[b.id] = bWat[b.id] === 1 ? 1 : 2;
-      if (f1 || f2) changed.push(b);
+      if (f1 || f2) {
+        changed.push(b);
+        if ((wasP && f1) || (wasW && f2)) this.tallyCut(st, b, wasP && f1, wasW && f2);
+      }
     }
     for (const b of changed) sim.events.emit('buildingChanged', b);
+    this.cutNews(sim);
     const short = st.stats.powerDemand > st.stats.powerSupply * 1.0001 && st.stats.powerSupply > 0;
     if (short && !this.wasShort && st.day - this.lastShortNotify > SHORTAGE_NEWS_DAYS) {
       this.lastShortNotify = st.day;
@@ -531,6 +548,72 @@ export class UtilitiesSystem implements SimSystem {
     }
     this.wasWaterShort = wShort;
     sim.events.emit('layerUpdated', 'utilities');
+  }
+
+  /**
+   * occupied buildings this pass cut off because their grid / pipe network lost every producer (a bulldozed road,
+   * power line, plant or pump; not the brownout's deliberate farthest-first cut, whose grid still has supply):
+   * counts for the "Power cut" / "Water cut" news (final fixes N1)
+   */
+  private cut = { pN: 0, pRes: 0, pJobs: 0, wN: 0, wRes: 0, wJobs: 0, at: null as Building | null, atPeople: 0, pPlant: false };
+  private tallyCut(st: CityState, b: Building, lostPower: boolean, lostWater: boolean): void {
+    if (this.cutQuiet || !(b.pop > 0 || b.jobs > 0) || (b.flags & (BF.Abandoned | BF.Burnt)) !== 0) return;
+    const N = st.size, cut = this.cut;
+    let counted = false;
+    const s = st.stats;
+    if (lostPower && !(infoOf(st, b).powerOut > 0)) {
+      const c = this.pComp[b.z * N + b.x];
+      const none = c < 0 || c >= this.nPComp || !(this.cSupply[c] > 0);
+      // a grid split off with too little supply of its own while the city as a whole has enough: also an edit's cut
+      const split = !none && this.cDemand[c] > this.cSupply[c] && s.powerSupply >= s.powerDemand;
+      if (none || split) {
+        cut.pN++; cut.pRes += b.pop; cut.pJobs += b.jobs;
+        counted = true;
+        // a plant stands on the dark grid but produces nothing (ordinance, idle incinerator ...): say so, not "reconnect"
+        if (none && !cut.pPlant && c >= 0) for (let q = 0; q < this.nPlants; q++) {
+          const p = st.buildings.get(this.plantIds[q]);
+          if (p && this.pComp[p.z * N + p.x] === c) { cut.pPlant = true; break; }
+        }
+      }
+    }
+    if (lostWater && needsWater(st, b)) {
+      const c = this.bWComp[b.id] - 1;
+      const none = c < 0 || c >= this.nWComp || !(this.wSupply[c] > 0);
+      const split = !none && this.wDemand[c] > this.wSupply[c] && s.waterSupply >= s.waterDemand;
+      if (none || split) {
+        cut.wN++; cut.wRes += b.pop; cut.wJobs += b.jobs;
+        counted = true;
+      }
+    }
+    if (counted && b.pop + b.jobs > cut.atPeople) { cut.at = b; cut.atPeople = b.pop + b.jobs; }
+  }
+
+  /** "Power cut" / "Water cut" news right after the pass that cut occupied buildings off (location: the biggest one) */
+  private cutNews(sim: Simulation): void {
+    const st = sim.state, c = this.cut;
+    if ((c.pN === 0 && c.wN === 0) || !c.at || st.day - this.lastCutNews < UTIL_CUT_NEWS_DAYS) return;
+    // (a city-wide blackout has its own news)
+    if (c.pN > 0 && c.wN === 0 && st.stats.powerSupply <= 0) return;
+    this.lastCutNews = st.day;
+    const n = (v: number) => Math.round(v).toLocaleString('en-US');
+    const who = (k: number, res: number, jobs: number) => {
+      const p = [res > 0 ? `${n(res)} resident${Math.round(res) === 1 ? '' : 's'}` : '', jobs > 0 ? `${n(jobs)} job${Math.round(jobs) === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ');
+      return `${n(k)} building${k === 1 ? '' : 's'}${p ? ` (${p})` : ''}`;
+    };
+    const x = c.at.x + (c.at.w >> 1), z = c.at.z + (c.at.d >> 1);
+    let text: string;
+    if (c.pN > 0 && c.wN > 0) {
+      text = c.pN === c.wN
+        ? `Power and water cut: ${who(c.pN, c.pRes, c.pJobs)} lost power and water — reconnect ${c.pN === 1 ? 'it' : 'them'} to the grid and to the pipes under the roads (Power and Water data views).`
+        : `Power and water cut: ${who(c.pN, c.pRes, c.pJobs)} lost power and ${who(c.wN, c.wRes, c.wJobs)} lost water — reconnect them to the grid and to the pipes under the roads (Power and Water data views).`;
+    } else if (c.pN > 0) {
+      text = c.pPlant
+        ? `Power cut: ${who(c.pN, c.pRes, c.pJobs)} lost power — the plant on ${c.pN === 1 ? 'its' : 'their'} grid produces nothing (click it to see why; Power data view).`
+        : `Power cut: ${who(c.pN, c.pRes, c.pJobs)} lost power — reconnect ${c.pN === 1 ? 'it' : 'them'} to the grid with a road or power line (Power data view).`;
+    } else {
+      text = `Water cut: ${who(c.wN, c.wRes, c.wJobs)} lost water — connect ${c.wN === 1 ? 'its road' : 'their roads'} to a road with a working water pump; pipes run under roads (Water data view).`;
+    }
+    sim.notify(text, 'warning', x, z, 'utilities');
   }
 
   /** one pass over buildings: power use / plant output (bUse) and water use / producer output (bWUse) */
@@ -1095,6 +1178,15 @@ export class UtilitiesSystem implements SimSystem {
     }
     st.stats.tapWater = qW > 0 ? qSum / qW : 1;
   }
+}
+
+/** a building needs piped water: a growable from stage WATER_REQUIRED_STAGE or on a medium / high density zone (the
+ *  rule growth and population apply), a plopped one when its def uses water */
+function needsWater(st: CityState, b: Building): boolean {
+  const def = getDef(b.def);
+  if (!def) return false;
+  if (def.category !== 'growable') return (def.waterUse ?? 0) > 0;
+  return (def.stage ?? 1) >= WATER_REQUIRED_STAGE || zoneDensity(st.zone[b.z * st.size + b.x]) >= 2;
 }
 
 function adjacentComp(comp: Int32Array, N: number, b: Building): number {
