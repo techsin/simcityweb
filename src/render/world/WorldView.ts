@@ -112,6 +112,8 @@ export class WorldView implements WorldViewApi {
    * the frames after the view comes to rest re-render it for the final content.
    */
   shadowMoveCasterInterval = 8;
+  /** while the view moves, the shadow light direction follows the sun in this many times coarser steps (see update) */
+  shadowMoveSunStep = 3;
   /**
    * Single map: while the view turns or zooms in place (its target still), re-renders cull the casters only against the
    * map's own box, not the view's receiver, so the map need not be re-rendered whenever the receiver changes (see
@@ -481,11 +483,14 @@ export class WorldView implements WorldViewApi {
 
     // shadows: the light direction used for shadows (and sun shading) only follows the sky in steps so a slowly
     // moving sun does not force a shadow-map re-render every frame: ~0.08 deg while the light is high, finer toward
-    // the horizon (a shadow's length goes with 1 / tan(elevation): at dusk the same step would make long shadows jump)
+    // the horizon (a shadow's length goes with 1 / tan(elevation): at dusk the same step would make long shadows jump).
+    // While the view moves the steps are shadowMoveSunStep times coarser: every step re-renders the whole shadow map
+    // (a far cascade cannot be held across one), and a moving view hides a shadow direction a fraction of a degree late
     const vis = this.sun.visible;
     if (vis !== this.shSunVisible) { this.shSunVisible = vis; this.invalidateShadows(1); }
     const lowSun = THREE.MathUtils.clamp(L.lightDir.y / 0.5, 0.05, 1);
-    if (this.shadowDir.angleTo(L.lightDir) > 0.0014 * lowSun * lowSun || !this.shadowCache) this.shadowDir.copy(L.lightDir);
+    const sunStep = 0.0014 * lowSun * lowSun * (this.viewStill === 0 ? this.shadowMoveSunStep : 1);
+    if (this.shadowDir.angleTo(L.lightDir) > sunStep || !this.shadowCache) this.shadowDir.copy(L.lightDir);
     const fit = this.shadowFit;
     fit.target = this.cameraController.target;
     fit.distance = this.cameraController.distance;
