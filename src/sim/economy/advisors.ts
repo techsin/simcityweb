@@ -15,7 +15,12 @@
  * where nothing grows although zones are ready ('noDemand' / 'growthStalled'). Safety: fuel-burning plants (industrial
  * accidents, WP8) in a city without a fire station ('plantNoFire') or beyond every station's reach ('plantFireReach').
  * Rules marked `confirm` read utilities results (which lag an edit by a few days) and only speak when the condition
- * already held at the previous monthly check.
+ * already held at the previous monthly check — except when occupied buildings already lost power / water (final fixes
+ * N1: gridGap / waterGap then count those homes, residents and jobs and speak at once; utilities.ts posts the cut the
+ * same day). Final fixes N4: zoneR / zoneC / zoneI count demand only where the land can host it (R$$$ / CO$$$ / I-HT
+ * need land value or education, not more land: the zone scan counts the usable tiles above growth's desirability floor
+ * per DevType), 'zoneNoFit*' says why ready lots never grow, and 'growthStalled' also speaks when a family's ready lots
+ * waited a year with demand while it did not grow at all (AdvisorData.stall), in a city with other buildings.
  * openAdvice(sim): the advice that holds right now (Advisors panel: open issues per advisor, highest priority first).
  * advisorIssues(st): the full, unthrottled list of the last monthly pass grouped by advisor (ADVICE_PER_MONTH = 2 only
  * limits what is announced; everything else still shows in the Advisors panel).
@@ -48,16 +53,17 @@ import { residentCoverage, residentSurvey } from './approval';
 import { attractivenessBreakdown } from './tourism';
 import { facilityLoad, unservedClusters } from '../infra/catchments';
 import { emergencyOf, uncoveredHotspots } from '../infra/emergency';
-import { EMERG_RMAX, GARBAGE_TRUCK_RANGE } from '../infra/params';
+import { EMERG_RMAX, GARBAGE_TRUCK_RANGE, MINIBUS_FLEET } from '../infra/params';
 import type { PollutionSystem } from '../infra/pollution';
 import type { UtilitiesSystem } from '../infra/utilities';
 import type { ParkingSummary } from '../infra/parking';
 import { maxLoanAmount, loanRate } from './loans';
-import { RNG, hash2 } from '../../core/rng';
+import { RNG } from '../../core/rng';
 import { ZONE_DEVTYPES, getDef } from '../catalog';
 import { formatMoney } from './format';
 import { buildingPowered, buildingWatered } from './population';
 import { GROW_MIN_DESIR, WATER_REQUIRED_STAGE } from './tuning';
+import { REWARDS } from './rewards';
 
 const ADVICE_PER_MONTH = 2;
 /** no advice repeats sooner than this (days) */
@@ -134,11 +140,15 @@ export interface AdvisorData {
   posts?: { day: number; id: string; text: string }[];
   /** the month's map scans, taken on MONTH_SCAN_DAYS for the coming month tick (saved: a game loaded on day 28 gives
    *  the advice the uninterrupted game gives) */
-  scan?: { month: number; zone?: ZoneScan; fac?: FacScanData };
+  scan?: MonthScans & { month: number };
   /** final fixes N4: per family ('R' / 'C' / 'I') a window in which ready lots wait while the family has demand yet does
    *  not grow at all — its first day and the lowest family capacity seen since (growthStalled after STALL_DAYS) */
   stall?: Record<string, { since: number; low: number }>;
 }
+/** the month tick's map scans (AdvisorData.scan; each optional: a scan saved by an older version lacks the newer ones and
+ *  the month tick then takes it fresh) — zone blocks (day 28), facilities + the worst jam + the residents beyond fire
+ *  reach (day 29; resp null = the emergency layers were not ready) */
+interface MonthScans { zone?: ZoneScan; fac?: FacScanData; jam?: JamScan; resp?: { residents: number; fireOut: number } | null }
 /** a family whose ready lots wait this long (days) with demand and no growth at all: growthStalled */
 const STALL_DAYS = 330;
 /** advice posts kept in AdvisorData.posts (2 a month at most: two years) */
@@ -181,9 +191,10 @@ interface ZoneScan {
   unpoweredLots?: number;
   unwateredLots?: number;
   /**
-   * what the land can host (final fixes N4; optional: older saved scans lack them). Per DevType: usable tiles of a zone
-   * that allows it (`host`), those where its desirability is above growth's floor (GROW_MIN_DESIR) — `fit` — and the
-   * empty ready lots among them — `fitEmpty`; the usable tile with its best desirability (-1 = none). Per family (0 R, 1 C, 2 I): the
+   * what the land can host (final fixes N4; optional: older saved scans lack them). Per picky DevType (R$$$, CO$$$,
+   * I-HT): usable tiles of a zone that allows it (`host`), those where its desirability is above growth's floor
+   * (GROW_MIN_DESIR) — `fit` — and the usable tile with its best desirability (`bestAt`, -1 = none); per DevType: the
+   * empty ready lots that fit it (`fitEmpty`). Per family (0 R, 1 C, 2 I): the
    * empty ready lots (road, power, water where needed) and the first one
    */
   host?: number[];
@@ -215,12 +226,14 @@ interface ZoneScan {
   outWRes?: number;
   outWJobs?: number;
   outWAt?: number;
+  /** of outP: the homes (residential growables) */
+  outPHomes?: number;
 }
 
 /** occupied growables without power / water (ZoneScan.outP ... outWAt): one pass over the growables */
 function scanOutages(st: CityState, rt: EconRuntime, r: ZoneScan): void {
   const N = st.size;
-  let pN = 0, pRes = 0, pJobs = 0, pAt = -1, pBig = 0, wN = 0, wRes = 0, wJobs = 0, wAt = -1, wBig = 0;
+  let pN = 0, pRes = 0, pJobs = 0, pAt = -1, pBig = 0, wN = 0, wRes = 0, wJobs = 0, wAt = -1, wBig = 0, pHomes = 0;
   rt.ensureLists();
   const list = rt.growables;
   for (let k = 0; k < list.length; k++) {
@@ -238,6 +251,7 @@ function scanOutages(st: CityState, rt: EconRuntime, r: ZoneScan): void {
     const at = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
     if (!p) {
       pN++; pRes += b.pop; pJobs += b.jobs;
+      if (b.pop > 0) pHomes++;
       if (people > pBig) { pBig = people; pAt = at; }
     }
     if (!w) {
@@ -247,6 +261,7 @@ function scanOutages(st: CityState, rt: EconRuntime, r: ZoneScan): void {
   }
   r.outP = pN; r.outPRes = Math.round(pRes); r.outPJobs = Math.round(pJobs); r.outPAt = pAt;
   r.outW = wN; r.outWRes = Math.round(wRes); r.outWJobs = Math.round(wJobs); r.outWAt = wAt;
+  r.outPHomes = pHomes;
 }
 
 /** "2 occupied buildings (83 residents, 12 jobs)" */
@@ -254,6 +269,9 @@ function occupiedText(n: number, res: number, jobs: number): string {
   const p = [res > 0 ? count(res, 'resident') : '', jobs > 0 ? count(jobs, 'job') : ''].filter(Boolean).join(', ');
   return `${count(n, 'occupied building')}${p ? ` (${p})` : ''}`;
 }
+
+/** the picky DevType a zone allows (R$$$, CO$$$, I-HT: they grow only where land value / education suit them), -1 */
+const PICKY_OF_ZONE: readonly number[] = [-1, DevType.R3, DevType.R3, DevType.R3, -1, DevType.CO3, DevType.CO3, -1, -1, DevType.IHT, -1];
 
 /** one pass over the zoned tiles (4-connected blocks flood-filled for road access) */
 function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int32Array): ZoneScan {
@@ -301,15 +319,21 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
           if (!w) { r.unwatered++; if (r.unwateredAt < 0) r.unwateredAt = i; if (bld[i] < 0) lotsW++; }
         }
         if (p && w) { r.ready++; r.readyZones |= 1 << zn; if (r.readyAt < 0) r.readyAt = i; }
-        // what this tile can host: the zone's DevTypes above growth's desirability floor (final fixes N4)
-        const empty = bld[i] < 0 && p && w;
-        if (empty) { emptyReady[f]++; if (emptyReadyAt[f] < 0) emptyReadyAt[f] = i; }
-        const devs = ZONE_DEVTYPES[zn];
-        for (let k = 0; k < devs.length; k++) {
-          const d = devs[k], v = des[d][i];
-          host[d]++;
-          if (v > bestDes[d]) { bestDes[d] = v; bestAt[d] = i; }
-          if (v > GROW_MIN_DESIR) { fit[d]++; if (empty) fitEmpty[d]++; }
+        // what this tile can host (final fixes N4): an empty ready lot counts every DevType of its zone above growth's
+        // desirability floor; every usable tile counts the zone's picky type (R$$$ / CO$$$ / I-HT: the rules ask where
+        // it fits at all). PERF: one desirability read per built tile
+        if (bld[i] < 0 && p && w) {
+          emptyReady[f]++;
+          if (emptyReadyAt[f] < 0) emptyReadyAt[f] = i;
+          const devs = ZONE_DEVTYPES[zn];
+          for (let k = 0; k < devs.length; k++) if (des[devs[k]][i] > GROW_MIN_DESIR) fitEmpty[devs[k]]++;
+        }
+        const pd = PICKY_OF_ZONE[zn];
+        if (pd >= 0) {
+          const v = des[pd][i];
+          host[pd]++;
+          if (v > bestDes[pd]) { bestDes[pd] = v; bestAt[pd] = i; }
+          if (v > GROW_MIN_DESIR) fit[pd]++;
         }
       }
       if (x > 0 && !visited[i - 1] && isZ(i - 1)) { visited[i - 1] = 1; stack[sp++] = i - 1; }
@@ -531,6 +555,20 @@ function worstHomeCell(st: CityState, layer: ArrayLike<number>, test?: (i: numbe
     best = i;
   }
   return best;
+}
+
+/** the worst congested road cell (final fixes N7): its load, the road cells over capacity (one typed-array pass) */
+interface JamScan { at: number; worst: number; over: number }
+function scanJam(st: CityState): JamScan {
+  let worst = 0, at = -1, over = 0;
+  const cg = st.congestion, net = st.network, C = st.cells;
+  for (let i = 0; i < C; i++) {
+    const v = cg[i];
+    if (!(v > 1) || net[i] < Network.Street || net[i] > Network.Highway) continue;
+    over++;
+    if (v > worst) { worst = v; at = i; }
+  }
+  return { at, worst, over };
 }
 
 /** a def can be built: unlocked (or it needs no unlock), or sandbox */
@@ -774,6 +812,12 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
       out.push({ id: 'playgrounds', cooldown: 240, priority: 3, kind: 'info', advisor: 'health', where: () => cluster('play'),
         text: `${pctS(noPlay)} of our children have no playground or sports field nearby. Families want them — build playgrounds in residential blocks.` });
     }
+    // final fixes F8: green space (parks raise land value, approval and tourism; the need is in residents)
+    const gr = nd.green;
+    if (pop >= 5000 && gr && gr.need > 0 && unreachedShare(gr) > 0.15) {
+      out.push({ id: 'parks', cooldown: 240, priority: 3, kind: 'info', advisor: 'environment', where: () => cluster('green'),
+        text: `${int(gr.unreached)} residents have no park within a walk — build a park near here. Parks raise land value and approval, and draw tourists.` });
+    }
     // overcrowded facilities: the worst school / hospital (utilisation of its seats). PERF: only while the services
     // pass counted an overcrowded one (stats.needs[tier].overcrowded: utilisation > 1.15; the rules speak from 1.3)
     const crowded = (t: NeedTier) => (nd[t]?.overcrowded ?? 0) > 0;
@@ -876,8 +920,14 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
         if (pi && pi.kind === 'water' && pi.load > worst) { worst = pi.load; dirty = b; }
       }
     }
+    // final fixes N5: the treatment plant only once it is unlocked; the data view named as the Data views panel labels it
+    const view = 'Data views → Water → Tap water quality';
+    const treat = defAvailable(st, 'util_water_treatment');
+    const unlockAt = REWARDS.find((r) => r.id === 'water_treatment')?.conds.find((c) => c.label === 'Population')?.need;
     out.push({ id: 'tapWater', cooldown: 150, priority: 6, kind: 'warning', advisor: 'utilities', ...(dirty ? at(dirty) : {}),
-      text: `Tap water quality is only ${pctS(s.tapWater)} and residents are getting sick. ${dirty ? `Your ${nameOf(dirty)} draws polluted water — ` : ''}build a water treatment plant or move pumps away from pollution (Water data view → Tap water quality).` });
+      text: treat
+        ? `Tap water quality is only ${pctS(s.tapWater)} and residents are getting sick. ${dirty ? `Your ${nameOf(dirty)} draws polluted water — ` : ''}build a Water Treatment Plant, or move pumps away from pollution (${view}).`
+        : `Tap water quality is only ${pctS(s.tapWater)} and residents are getting sick. ${dirty ? `Your ${nameOf(dirty)} draws polluted water: move it` : 'Move your pumps'} upstream, away from industry, farms and landfills (${view})${unlockAt ? ` — the Water Treatment Plant unlocks at ${int(unlockAt)} residents` : ''}.` });
   }
   // landfills filling up (preventive; WP3's own fill news said the same: stay quiet in the feed while it is recent)
   if (s.landfillFill > 0.8 && pop > 300) {
@@ -945,10 +995,26 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
   const tf = s.transitFleet;
   if (tf && tf.busesNeeded >= 2 && tf.busesNeeded > 1.15 * tf.buses) {
     const dep = sc.fac.depots[0];
-    out.push({ id: 'busFleetShort', cooldown: 150, priority: 4, kind: 'warning', advisor: 'transport', ...(dep ? at(dep) : {}),
-      text: tf.buses <= 0 && !dep
-        ? `Your bus stops have no depot, so no buses run. Build a Bus Depot near the stops.`
-        : `Bus stops need ${int(tf.busesNeeded)} buses but the depots run ${int(tf.buses)} — riders wait and drive instead. Build another Bus Depot (or raise the transit budget).` });
+    // final fixes F10: stops no depot reaches share the city's MINIBUS_FLEET minibuses (traffic.ts minibusInfo) — say
+    // that instead of "the depots run 8" when there is no depot, or when the shortage is at stops beyond every depot
+    const mb = sim?.getSystem<SimSystem & { minibusInfo?: { stops: number; need: number } }>('traffic')?.minibusInfo;
+    const stopAt = () => loc('busStop', () => {
+      rt.ensureLists();
+      for (const b of rt.plopped) if (b.def === 'tr_bus_stop' || rt.defOf(b)?.model === 'tr_bus_stop') return at(b);
+      return undefined;
+    });
+    if (!dep) {
+      out.push({ id: 'busFleetShort', cooldown: 150, priority: 4, kind: 'warning', advisor: 'transport', where: stopAt,
+        text: tf.buses <= 0
+          ? 'Your bus stops have no depot, so no buses run. Build a Bus Depot near the stops.'
+          : `Only ${int(tf.buses)} city minibuses serve your bus stops, which need ${int(tf.busesNeeded)} buses — riders wait and drive instead. Build a Bus Depot near them.` });
+    } else if (mb && mb.stops > 0 && mb.need > 1.15 * MINIBUS_FLEET) {
+      out.push({ id: 'busFleetShort', cooldown: 150, priority: 4, kind: 'warning', advisor: 'transport',
+        text: `${count(mb.stops, 'bus stop')} ${mb.stops === 1 ? 'is' : 'are'} beyond every depot's reach: only ${MINIBUS_FLEET} city minibuses serve them (they need ${int(mb.need)}). Build a Bus Depot near them.` });
+    } else {
+      out.push({ id: 'busFleetShort', cooldown: 150, priority: 4, kind: 'warning', advisor: 'transport', ...at(dep),
+        text: `Bus stops need ${int(tf.busesNeeded)} buses but the depots run ${int(tf.buses)} — riders wait and drive instead. Build another Bus Depot (or raise the transit budget).` });
+    }
   }
   // parking: traffic's parking summary (share of shop / office cells over PARKING_FULL pressure)
   const ps = sim?.getSystem<{ parkingSummary?: ParkingSummary } & SimSystem>('traffic')?.parkingSummary;
@@ -1103,7 +1169,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
 
   /** every rule's advice holding now; 'month' = the month tick (saved scans, fresh places), 'open' = the Advisors
    *  panel (fresh scans, memoised places, reads the city only) */
-  const gather = (st: CityState, mode: 'month' | 'open', scans?: { zone?: ZoneScan; fac?: FacScanData }): Advice[] => {
+  const gather = (st: CityState, mode: 'month' | 'open', scans?: MonthScans): Advice[] => {
     const out: Advice[] = [];
     const s = st.stats;
     const d = econData(st);
@@ -1160,9 +1226,14 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         out.push({ id: 'noPower', cooldown: 45, priority: 10, kind: 'bad', advisor: 'utilities',
           text: 'Nothing will grow without power! Build a power plant and run power lines to your zones.' });
       }
-    } else if (!inf.utilities && s.powerDemand > s.powerSupply * 0.99 && s.powerDemand > 0) {
-      out.push({ id: 'powerShortage', cooldown: 60, priority: 9, kind: 'bad', advisor: 'utilities',
-        text: `Brownouts! Demand of ${s.powerDemand.toFixed(0)} MW exceeds our ${s.powerSupply.toFixed(0)} MW supply. Build a power plant.` });
+    } else if (s.powerDemand > 0 && (inf.utilities ? s.powerDemand > s.powerSupply * 1.0001 : s.powerDemand > s.powerSupply * 0.99)) {
+      // final fixes F5: with the utilities layer the grid is short now — the farthest buildings are dark — so say how many
+      const dark = inf.utilities ? scan.outP ?? 0 : 0, darkHomes = Math.min(dark, scan.outPHomes ?? 0), darkBiz = dark - darkHomes;
+      const who = [darkHomes > 0 ? count(darkHomes, 'home') : '', darkBiz > 0 ? `${int(darkBiz)} ${darkBiz === 1 ? 'business' : 'businesses'}` : ''].filter(Boolean).join(' and ');
+      out.push({ id: 'powerShortage', cooldown: 60, priority: 9, kind: 'bad', advisor: 'utilities', ...(dark ? cellAt(scan.outPAt ?? -1) : {}),
+        text: who
+          ? `Brownouts: ${who} have no power — demand of ${int(s.powerDemand)} MW exceeds our ${int(s.powerSupply)} MW supply, so the farthest buildings are cut. Build a power plant.`
+          : `Brownouts! Demand of ${s.powerDemand.toFixed(0)} MW exceeds our ${s.powerSupply.toFixed(0)} MW supply. Build a power plant.` });
     } else if (s.powerDemand > s.powerSupply * 0.85 && s.powerSupply > 0) {
       out.push({ id: 'powerTight', cooldown: 180, priority: 4, kind: 'warning', advisor: 'utilities',
         text: `The power grid is at ${Math.round((100 * s.powerDemand) / s.powerSupply)}% capacity. Plan a new plant soon.` });
@@ -1258,13 +1329,12 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         text: 'Connect to the region! A highway or road off the map edge boosts demand and brings commuters.' });
     }
     if (inf.traffic) {
-      let worst = 0, wi = -1;
-      const cg = st.congestion;
-      const step = Math.max(1, (st.cells / 4096) | 0);
-      for (let i = (hash2(st.day, 3) * step) | 0; i < st.cells; i += step) if (cg[i] > worst) { worst = cg[i]; wi = i; }
+      // final fixes N7: every road cell (scanJam, taken with the facility scan), so the open issue — and the Transport
+      // card — stays while the jam lasts instead of coming and going with a sampled 1 / 16 of the cells
+      const { worst, at: wi, over } = scans?.jam ?? scanJam(st);
       if (worst > 1.25 && wi >= 0) {
         out.push({ id: 'gridlock', cooldown: 90, priority: 6, kind: 'warning', advisor: 'transport', x: wi % st.size, z: (wi / st.size) | 0,
-          text: 'Traffic is gridlocked here! Upgrade to avenues, add alternate routes or build transit.' });
+          text: `Traffic is gridlocked here (${Math.round(worst * 100)}% of the road's capacity${over > 1 ? `; ${int(over)} road tiles are over capacity` : ''}). Upgrade to avenues, add alternate routes or build transit.` });
       }
     }
     if (s.avgCommute > 45 && pop > 3000) {
@@ -1312,7 +1382,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         text: 'Smog is choking our neighborhoods. Separate industry from homes, plant trees, or pass the Clean Air Act.' });
     }
     // ---------------- WP5: services, emergencies, justice, environment, tourism, region, transit (depthRules)
-    depthRules(st, rt, inf, { zone: scan, fac, noisy: noisyOf(st), resp: pop > 1500 ? respOut(st) : null, locate: loc }, out);
+    depthRules(st, rt, inf, { zone: scan, fac, noisy: noisyOf(st), resp: pop > 1500 ? (scans && scans.resp !== undefined ? scans.resp : respOut(st)) : null, locate: loc }, out);
     // one fire advisor (critic item 31): a city without any fire station hears it once — noFireResponse names the
     // plants' accident risk too
     if (out.some((a) => a.id === 'noFireResponse')) {
@@ -1363,8 +1433,9 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       const base = { id, cooldown: 90, priority: 6, kind: 'info' as const, advisor: 'planning' };
       const rl = roadless(f, what, lead);
       if (rl) { out.push({ ...base, ...rl }); return; }
-      // only the picky type wants in: more land helps only where it fits (near the best spot), else say what it needs
-      if (ordDemand(a, b, picky) <= 0.5 && zoneOf(picky)) {
+      // only the picky type wants in (the others' demand is weak): more land helps only where it fits (near the best
+      // spot), else say what it needs
+      if (ordDemand(a, b, picky) <= 0.25 && zoneOf(picky)) {
         const t = PICKY_TEXT[picky];
         out.push({ ...base, ...best(picky), text: fitAny(picky) ? t.room : t.unfit });
         return;
@@ -1536,7 +1607,12 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         const a0 = advisorData(st);
         if (!a0.scan || a0.scan.month !== st.monthIndex) a0.scan = { month: st.monthIndex };
         if (dom === MONTH_SCAN_DAYS[0] && !a0.scan.zone) a0.scan.zone = zoneScan(st, infraFlags(st).utilities);
-        else if (dom === MONTH_SCAN_DAYS[1] && !a0.scan.fac) a0.scan.fac = scanFacilities(st, rt);
+        else if (dom === MONTH_SCAN_DAYS[1] && !a0.scan.fac) {
+          a0.scan.fac = scanFacilities(st, rt);
+          // (final fixes V5: the two typed-array passes the rules need, off the month tick)
+          a0.scan.jam = scanJam(st);
+          a0.scan.resp = st.stats.population > 1500 ? respOut(st) : null;
+        }
       }
       // population milestones
       const pop = st.stats.population;

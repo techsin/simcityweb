@@ -184,3 +184,86 @@ describe('N4: residential demand the empty land can host', () => {
     expect(issue(c.st, 'planning', 'growthStalled')).toBeUndefined();
   });
 });
+
+describe('F5 / F8 / F10 / N5 / N7: advice that names the real problem', () => {
+  it('F5: an active brownout with the utilities layer is "Brownouts" with the dark homes and businesses, not "plan a plant soon"', () => {
+    const c = city();
+    grid(c.st, 3, BF.Watered);
+    for (let k = 0; k < 2; k++) place(c.st, 't_cs', 40 + k, 11, { jobs: 10, capacity: 20, flags: BF.Watered });
+    c.st.stats.powerSupply = 268;
+    c.st.stats.powerDemand = 423;
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30);
+    const u = advisorIssues(c.st).utilities ?? [];
+    const b = u.find((a) => a.id === 'powerShortage');
+    expect(b?.text).toMatch(/^Brownouts: 3 homes and 2 businesses have no power — demand of 423 MW exceeds our 268 MW supply/);
+    expect(b?.kind).toBe('bad');
+    expect(u.some((a) => a.id === 'powerTight')).toBe(false);
+    expect(u.some((a) => a.id === 'gridGap')).toBe(false); // a brownout is not a grid gap
+  });
+
+  it('F8: residents without a park within a walk get a parks advice at the biggest unserved cluster', () => {
+    const c = city({ clusters: { green: [{ x: 20, z: 30, people: 2000 }] } });
+    c.st.stats.population = 20000;
+    c.st.stats.needs.green = { need: 18000, served: 9000, capacity: 9000, unreached: 6000, overcrowded: 0 };
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30);
+    const p = issue(c.st, 'environment', 'parks');
+    expect(p?.text).toMatch(/^6,000 residents have no park within a walk — build a park near here/);
+    expect([p?.x, p?.z]).toEqual([20, 30]);
+    // well served: quiet
+    const c2 = city();
+    c2.st.stats.population = 20000;
+    c2.st.stats.needs.green = { need: 18000, served: 17000, capacity: 20000, unreached: 1000, overcrowded: 0 };
+    const s2 = start(c2);
+    monthTick(s2.sim, s2.adv, 30);
+    expect(issue(c2.st, 'environment', 'parks')).toBeUndefined();
+  });
+
+  it('F10: without a depot the 8 buses are the city minibuses', () => {
+    const c = city();
+    const stop = place(c.st, 'tr_bus_stop', 12, 12, { flags: BF.Plopped });
+    c.st.stats.population = 30000;
+    c.st.stats.transitFleet.buses = 8;
+    c.st.stats.transitFleet.busesNeeded = 37.2;
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30);
+    const f = issue(c.st, 'transport', 'busFleetShort');
+    expect(f?.text).toBe('Only 8 city minibuses serve your bus stops, which need 37 buses — riders wait and drive instead. Build a Bus Depot near them.');
+    expect([f?.x, f?.z]).toEqual([stop.x, stop.z]);
+  });
+
+  it('N5: before the Water Treatment Plant unlocks, tap-water advice moves the pump and says when it unlocks', () => {
+    const c = city();
+    c.st.stats.population = 5126;
+    c.st.stats.tapWater = 0.55;
+    c.st.stats.waterSupply = 1000;
+    c.st.stats.waterDemand = 500;
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30);
+    const t = issue(c.st, 'utilities', 'tapWater');
+    expect(t?.text).toMatch(/Move your pumps upstream, away from industry, farms and landfills \(Data views → Water → Tap water quality\) — the Water Treatment Plant unlocks at 6,000 residents\.$/);
+    expect(t?.text).not.toMatch(/build a Water Treatment Plant/);
+    // unlocked: build one
+    c.st.unlocked.add('water_treatment');
+    monthTick(sim, adv, 60);
+    expect(issue(c.st, 'utilities', 'tapWater')?.text).toMatch(/build a Water Treatment Plant, or move pumps away from pollution/);
+  });
+
+  it('N7: the worst jammed road cell is found every month (not a day-dependent 1 / 16 sample), with its load', () => {
+    const c = city();
+    roadLine(c.st, 2, 50, 60, 50, Network.Road);
+    c.st.stats.population = 9000;
+    for (let x = 2; x <= 60; x++) c.st.congestion[c.st.idx(x, 50)] = 0.9;
+    c.st.congestion[c.st.idx(23, 50)] = 2.32;
+    c.st.congestion[c.st.idx(24, 50)] = 1.6;
+    c.st.congestion[c.st.idx(25, 50)] = 1.1;
+    const { sim, adv } = start(c);
+    for (const d of [30, 60, 90, 120]) {
+      monthTick(sim, adv, d);
+      const g = issue(c.st, 'transport', 'gridlock');
+      expect(g?.text, `month ${d / 30}`).toBe("Traffic is gridlocked here (232% of the road's capacity; 3 road tiles are over capacity). Upgrade to avenues, add alternate routes or build transit.");
+      expect([g?.x, g?.z]).toEqual([23, 50]);
+    }
+  });
+});

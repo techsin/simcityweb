@@ -9,16 +9,20 @@
  *  - STAFFING (WP7-3, critic item 7): facilityOpFactor = 0.6 + 0.4 x staffRel, staffRel = min(1, staff / max(0.5, city
  *    fill)) in 0.05 steps, staff = b.jobs / (def jobs x b.hire) = the share of the posted jobs that workers reach (power /
  *    water shortages are already in hire and in the service's own power / water factors, so they never count as
- *    understaffing). A lot without a road has staffRel 0. Unknown staffing (b.hire never set: infra-only simulations,
- *    a facility the population system has not visited yet) and an unknown city fill (a young town before its first
- *    filled C / I job) count as full. Only the tier engine (schools, health, parks, police, fire coverage) uses it;
- *    BF.Understaffed (tier facilities only, below 0.6 or without road) is set / cleared at the end of every day, so the
- *    flag, the report and the live factor always agree.
+ *    understaffing). A lot without a road has staffRel 0 and a staffed service there does not work at all (op 0, final
+ *    fixes P8; facilities without posted jobs — small parks, plazas — have no staffing). Unknown staffing (b.hire never
+ *    set: infra-only simulations, a facility the population system has not visited yet) and an unknown city fill (a
+ *    young town before its first filled C / I job) count as full. Only the tier engine (schools, health, parks, police,
+ *    fire coverage) uses it; BF.Understaffed (tier facilities only, below 0.6 or without road) is set / cleared at the
+ *    end of every day, so the flag, the report and the live factor always agree. The staffing hint (staffHint) names
+ *    the real cause: still hiring, a labour-short city, a road that reaches no homes, or a fill far below employers of
+ *    its size.
  *  - USE (WP7-11): airports carry 0.012 pop^0.95 + overnight visitors passengers / day (shared by capacity: small 3,000,
  *    large 25,000), a seaport the trucks within reach / 3,000 (WP7b freightSinkTrucks; unknown -> full); use factor =
  *    0.6 + 0.4 smoothstep(0, 0.5, use) on cap relief, freight boost and income (demand.ts / budget.ts). Transit defs take
- *    WP7b's transportUseFactor hook (0 = not connected). Computed monthly (and when such a building is placed),
- *    persisted in systemData.justice.use; a building without an entry counts 1.
+ *    WP7b's transportUseFactor hook (0 = not connected). Computed once a month on FACILITY_SCAN_DAY (off the month tick,
+ *    final fixes V5; and when such a building is placed), persisted in systemData.justice.use; a building without an
+ *    entry counts 1.
  *  - REPORTS: facilityReport(sim, id) for every plopped building of a non-hidden ploppable def (title, one-line role,
  *    >= 1 line, warnings with a fix), rendered generically by the inspector (WP5); transit defs append WP7b's
  *    transportFacilityReport part. Every number is the live one the simulation uses (service quality with all of its
@@ -28,7 +32,6 @@
 import { BF, type Building, type CityState, type NeedTier } from '../CityState';
 import type { Simulation } from '../Simulation';
 import { Network, Zone } from '../../core/types';
-import { DAYS_PER_MONTH } from '../../core/constants';
 import { capReliefOf, getDef } from '../catalog';
 import type { BuildingCategory, BuildingDef, ServiceKind } from '../catalogTypes';
 import { COV_KINDS, Fam, SERVICE_TIERS, buildingList, centerCell, fundingFactor, infoOf, isFunctional, setFlag, type DefInfo } from './common';
@@ -190,10 +193,6 @@ export function justiceFactsOf(defId: string): { beds: number; holding: number; 
   return defFacts(defId);
 }
 const TRANSIT_USE_DEFS = new Set(['tr_bus_stop', 'civ_bus_depot', 'tr_subway_station', 'tr_train_station', 'tr_freight_station', 'tr_parking_garage', 'tr_ferry_terminal']);
-/** day of the month (0 .. DAYS_PER_MONTH-1) of a building's id hash (spreads per-building monthly work) */
-export function monthSlice(id: number): number {
-  return (Math.imul(id, 0x9e3779b1) >>> 0) % DAYS_PER_MONTH;
-}
 /** the prisons, police stations and courthouses standing now (justice.ts' daily refresh; compacts removed ones) */
 export function justiceSites(st: CityState): Building[] {
   const c = cacheOf(st);
@@ -652,13 +651,28 @@ export function facilityDaily(sim: Simulation): void {
   d.respVid = max;
 }
 
-/** JusticeSystem.monthly (after the justice model): responses roll, city fill, use factors (flags: end of day) */
-export function facilityMonthly(sim: Simulation, scan: { plopped: Building[]; cityFill: number } = monthlyScan(sim.state)): void {
+/** day of the month of the facility scan (city job fill, airport / seaport / transit use factors): off the month tick
+ *  (final fixes V5; the results persist in systemData.justice, so a loaded game takes the scan on the same day) */
+export const FACILITY_SCAN_DAY = 15;
+
+/** the month's facility scan (JusticeSystem.daily on FACILITY_SCAN_DAY): city job fill and use factors */
+export function facilityScan(sim: Simulation, scan: { plopped: Building[]; cityFill: number } = monthlyScan(sim.state)): void {
+  const d = justiceData(sim.state);
+  if (scan.cityFill > 0) d.cityFill = Math.round(scan.cityFill * 1e4) / 1e4;
+  updateUseFactors(sim, scan.plopped);
+}
+
+/** JusticeSystem.monthly: this month's emergency responses per station become last month's */
+export function facilityRollMonth(sim: Simulation): void {
   const d = justiceData(sim.state);
   d.respLast = d.resp;
   d.resp = {};
-  if (scan.cityFill > 0) d.cityFill = Math.round(scan.cityFill * 1e4) / 1e4;
-  updateUseFactors(sim, scan.plopped);
+}
+
+/** the whole monthly bookkeeping at once (tests / tools): responses roll, city fill, use factors */
+export function facilityMonthly(sim: Simulation, scan: { plopped: Building[]; cityFill: number } = monthlyScan(sim.state)): void {
+  facilityRollMonth(sim);
+  facilityScan(sim, scan);
 }
 
 // ================================================================================================ live service quality

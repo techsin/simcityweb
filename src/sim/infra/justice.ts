@@ -20,9 +20,10 @@
  * sentenced rate against today's places, power and funding), so a new prison counts at once and the report, the Stats
  * panel and the advisors agree; the stock itself moves (and is capped) monthly.
  * justiceFactors(st) is a pure read of the persisted stats.justice (services / crime see the saved factors right after a
- * load). JusticeSystem.monthly also runs WP7a's facility bookkeeping (facilities.ts): the city job fill and the airport /
- * seaport / transit use factors; daily it tallies emergency vehicles per station; at the end of each day it sets the
- * BF.Understaffed flags.
+ * load). JusticeSystem also runs WP7a's facility bookkeeping (facilities.ts): on day FACILITY_SCAN_DAY of each month
+ * (final fixes V5: off the month tick) the city job fill and the airport / seaport / transit use factors; monthly the
+ * responses roll; daily it tallies emergency vehicles per station; at the end of each day it sets the BF.Understaffed
+ * flags.
  * Persistent: systemData.justice (JusticeData, plain data); stats.justice (JusticeStats).
  */
 import { BF, type Building, type CityState, type JusticeStats } from '../CityState';
@@ -34,7 +35,8 @@ import {
 } from './params';
 import { getDef } from '../catalog';
 import { emergencyOf } from './emergency';
-import { facilityDaily, facilityInit, facilityMonthly, justiceFactsOf, justiceSites, monthlyScan } from './facilities';
+import { FACILITY_SCAN_DAY, facilityDaily, facilityInit, facilityRollMonth, facilityScan, justiceFactsOf, justiceSites, monthlyScan } from './facilities';
+import { DAYS_PER_MONTH } from '../../core/constants';
 
 export interface JusticeFactors {
   /** multiplier on police effectiveness */
@@ -250,12 +252,14 @@ export class JusticeSystem implements SimSystem {
 
   daily(sim: Simulation): void {
     facilityDaily(sim);
+    // final fixes V5: the month's building scan (city job fill, use factors) on its own day, off the month tick
+    if (sim.state.day % DAYS_PER_MONTH === FACILITY_SCAN_DAY) facilityScan(sim);
   }
 
   monthly(sim: Simulation): void {
-    const scan = monthlyScan(sim.state); // one building scan for the month (justice + city fill + use factors)
-    justiceMonthly(sim, scan.plopped);
-    facilityMonthly(sim, scan);
+    // (the prisons / stations / courthouses list, kept by building events: no building scan on the month tick)
+    justiceMonthly(sim, justiceSites(sim.state));
+    facilityRollMonth(sim);
   }
 }
 

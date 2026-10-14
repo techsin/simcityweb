@@ -13,7 +13,7 @@ async function bot(size: number) {
 }
 const ringOf = (b: SimBot, bx: number, bz: number) => Math.max(Math.abs(bx - b.cbx + 0.5), Math.abs(bz - b.cbz + 0.5));
 
-describe('bot fallback: a full commercial sector takes residential land near the core and the homes', () => {
+describe('bot fallback: a full commercial sector takes residential land beside the shops, among the homes', () => {
   it('every C block developed, homes out to ring 3.5: the new shop blocks sit on the frontier among the homes', { timeout: 300000 }, async () => {
     const b = await bot(160);
     // the commercial sector is full (its outermost blocks reach ring ~8, next to undeveloped land), the town's homes
@@ -37,8 +37,9 @@ describe('bot fallback: a full commercial sector takes residential land near the
       expect(p!.use).toBe('C');
       p!.developed = true;
     }
-    // (the old rule took the block nearest any commercial block: the land beside the outermost shop blocks, ring >= 5,
-    // with no homes around — and then the block beside that one)
+    // (both rules take a block next to a commercial block first; of those, the old rule took the first in map order: the
+    // land beside the outermost shop blocks along the north edge, ring 7.5, no homes around — and then the block beside
+    // that one; now the one with the most homes around, nearest the core)
     for (const p of picks) {
       expect(p.ring).toBeLessThanOrEqual(4.5);
       expect(p.homes).toBeGreaterThanOrEqual(2);

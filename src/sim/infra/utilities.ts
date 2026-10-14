@@ -23,7 +23,9 @@
  *    desalination output is clean): waterQualityAt(sim, cell); stats.tapWater = demand-weighted city mean.
  *  - Buildings 4-adjacent to a watered road get water; same brownout ordering by BFS from producers.
  *  - Writes state.watered, BF.Watered, stats.waterSupply / waterDemand / tapWater. Shortage / blackout news
- *    (30-day cooldown).
+ *    (30-day cooldown). Final fixes N1: a pass that cuts OCCUPIED buildings off because their grid / pipe network lost
+ *    its producer (a bulldozed road, line, plant or pump — not the brownout's deliberate farthest-first cut) posts
+ *    "Power cut" / "Water cut" news at once with the counts and the biggest building's place (UTIL_CUT_NEWS_DAYS).
  * SCHEDULING (InfraScheduler; every step <= ~2.3 measured ms on the 256² stress city, estimates in stepCost):
  *    uses (+ local label patch) -> [labels: full passes / a new building bridging two grids] -> power sums + loads
  *    (+ results when no grid is short) -> [brownout: critical-first + distance-ordered BFS, only when a grid is

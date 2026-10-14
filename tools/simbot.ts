@@ -435,29 +435,27 @@ export class SimBot {
       if (d < bd) { bd = d; best = b; }
     }
     if (best || (use !== 'I' && use !== 'C')) return best;
-    // sector full: repurpose an undeveloped residential block next to town — industry the one closest to the existing
-    // industry (the park, away from homes); commerce the one nearest the core with the most homes around it, its
-    // customers (PB-BOTFALLBACK: picking the block nearest any commercial block chained 12 shop blocks along the north
-    // map edge of 256 s11, whose CS$$$ shops abandoned in 2011-16)
-    if (use === 'C') {
-      for (const b of this.blocks) {
-        if (b.developed || b.use !== 'R' || !this.touchesDeveloped(b)) continue;
-        let homes = 0;
-        for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-          const o = this.byKey.get(b.bx + dx + ',' + (b.bz + dz));
-          if (o && o !== b && o.developed && o.use === 'R') homes++;
-        }
-        const d = b.ring - 0.5 * homes + 0.01 * Math.hypot(b.bx - this.cbx + 0.5, b.bz - this.cbz + 0.5);
-        if (d < bd) { bd = d; best = b; }
+    // sector full: repurpose the undeveloped residential block (next to town) closest to the existing blocks of that use
+    // — for commerce, of the equally close ones the one with the most homes around it (its customers), then the one
+    // nearest the core (PB-BOTFALLBACK: the first equally close block in map order chained 12 shop blocks along the north
+    // map edge of 256 s11, whose CS$$$ shops abandoned in 2011-16; ranking every candidate by ring and homes instead
+    // used up the residential land the late industrial fallback needs: 256x60 s7 stalled at 1.40M with 9-10 %
+    // unemployment from 2052)
+    const same = this.blocks.filter((o) => o.developed && o.use === use);
+    let bh = -1, bc = Infinity;
+    for (const b of this.blocks) {
+      if (b.developed || b.use !== 'R' || !this.touchesDeveloped(b)) continue;
+      let dmin = Infinity;
+      for (const o of same) dmin = Math.min(dmin, Math.abs(o.bx - b.bx) + Math.abs(o.bz - b.bz));
+      if (dmin > bd) continue;
+      if (use === 'I') { if (dmin < bd) { bd = dmin; best = b; } continue; }
+      let homes = 0;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const o = this.byKey.get(b.bx + dx + ',' + (b.bz + dz));
+        if (o && o !== b && o.developed && o.use === 'R') homes++;
       }
-    } else {
-      const same = this.blocks.filter((o) => o.developed && o.use === use);
-      for (const b of this.blocks) {
-        if (b.developed || b.use !== 'R' || !this.touchesDeveloped(b)) continue;
-        let dmin = Infinity;
-        for (const o of same) dmin = Math.min(dmin, Math.abs(o.bx - b.bx) + Math.abs(o.bz - b.bz));
-        if (dmin < bd) { bd = dmin; best = b; }
-      }
+      const c = Math.hypot(b.bx - this.cbx + 0.5, b.bz - this.cbz + 0.5);
+      if (dmin < bd || homes > bh || (homes === bh && c < bc)) { bd = dmin; bh = homes; bc = c; best = b; }
     }
     if (best) best.use = use;
     return best;
