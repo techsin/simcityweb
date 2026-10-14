@@ -37,9 +37,9 @@ import { onStrike } from '../economy/budget';
 import type { FacilityLine } from './facilities';
 import { Fam, Transit, centerCell, infoOf, isFunctional } from './common';
 import { TRAFFIC_OF_STATE } from './transit';
-import type { TrafficSystem } from './traffic';
+import type { StopLoad, TrafficSystem } from './traffic';
 import {
-  BUS_RHO_MAX, CAR_OCCUPANCY, DEPOT_BUSES, DEPOT_RANGE, FERRY_MAX_CELLS, FERRY_PARTNERS, FREIGHT_SINK_MIN, GARAGE_SPACES,
+  BUS_RHO_MAX, CAR_OCCUPANCY, DEPOT_BUSES, DEPOT_RANGE, FERRY_MAX_CELLS, FERRY_PARTNERS, FREIGHT_SINK_MIN, GARAGE_SPACES, MAX_COMMUTE,
   GARAGE_WALK_RADIUS, MINIBUS_FLEET, PR_CAR_LEG_MAX, PR_LIMIT, PR_OPTION_MARGIN, PR_RESERVE_MIN, PR_STOP_RADIUS, RAMP_BY_NET,
   RIDERS_PER_BUS, STOP_CAP_BUS, STOP_CAP_FERRY, STOP_CAP_SUBWAY, STOP_CAP_TRAIN, STOP_WALK_RADIUS, WAIT_BUS, WAIT_FERRY, WAIT_SUBWAY,
   WAIT_TRAIN,
@@ -125,6 +125,32 @@ function walkersHint(walkers: number, kind: 'stop' | 'station' | 'terminal', rea
 }
 
 /**
+ * why a stop / station / terminal carries nobody (P13: a train station on rail to the map edge read "Riders 0/day" with no
+ * reason): its residents walk to jobs beside it, or no job is reachable by transit from it (walkersHint); nobody lives
+ * within a walk of it; the workers whose best transit trip starts here find driving faster (their trip's minutes — a
+ * station whose line only reaches the map edge rides them to the region's jobs); they ride from a faster stop nearby;
+ * or no transit trip from here reaches a job in time
+ */
+function zeroRidersHint(load: StopLoad | null, kind: 'stop' | 'station' | 'terminal', line?: { stations: number; edge: boolean } | null): string | undefined {
+  const walkers = load?.walkers ?? 0, reach = load?.reach;
+  if (walkers >= 1 || reach === false || !load) return walkersHint(walkers, kind, reach);
+  const near = load.near ?? 0, board = load.boarders ?? 0, other = load.boardElsewhere ?? 0;
+  const edgeOnly = kind === 'station' && !!line && line.edge && line.stations <= 1;
+  if (board >= 1) {
+    const dest = edgeOnly ? ' to jobs in the region at the end of the line' : '';
+    const fix = kind === 'stop' ? 'put a stop near their jobs too' : kind === 'station' ? 'add a station near their jobs on the line'
+      : 'add jobs or stops near the other terminals';
+    return `${plural(board, 'worker', 'workers')} nearby could ride from here (${fmt(load.boardMin ?? 0)} min${dest}), but driving is faster for them — ${fix}`;
+  }
+  if (near < 1) {
+    const where = kind === 'stop' ? 'stops' : kind === 'station' ? 'stations' : 'terminals';
+    return `No homes within a ${STOP_WALK_RADIUS}-tile walk — riders board at ${where} near homes${edgeOnly ? ' (this line leads only to the region)' : ''}: zone homes around it, or build it nearer to them`;
+  }
+  if (other >= 1) return `The ${plural(near, 'worker', 'workers')} within a walk ride from a faster ${kind === 'terminal' ? 'stop' : kind} nearby`;
+  return `${plural(near, 'worker', 'workers')} live within a walk, but no transit trip from here reaches a job within ${MAX_COMMUTE} min`;
+}
+
+/**
  * why a depot runs fewer buses than it could: a transit strike (budget cuts), transit funding below 75 % (budget) or no
  * power; null = none (the stops' report names it instead of a generic "not enough buses")
  */
@@ -194,6 +220,8 @@ function garageUseHint(sim: Simulation, tr: TrafficSystem, b: Building, stopName
   if (transitMin !== undefined && transitMin >= PR_LIMIT) return `${lead}: transit from ${stopName} takes ${fmt(transitMin)} min to the jobs — too slow to beat driving; ${fix}`;
   const reach = tr.garageReach(b.id);
   if (!reach) return 'Not picked yet — next traffic update';
+  // (routed 53: after a road / tunnel edit the last update's choices still explain it, on today's roads — say so)
+  const tail = reach.stale ? ' (as of the last traffic update)' : '';
   if (reach.workers < 1) {
     return reach.homes > 0 ? `No commuters within a ${PR_CAR_LEG_MAX}-minute drive — the homes there are empty`
       : `No homes within a ${PR_CAR_LEG_MAX}-minute drive — build garages where commuters live`;
@@ -207,23 +235,23 @@ function garageUseHint(sim: Simulation, tr: TrafficSystem, b: Building, stopName
   if (reach.own >= 0.5) {
     // (one of their options: the faster ones with room take most of their riders, or driving wins)
     const vr = low && reach.full < 0.5 ? nearestOf(st, b, reach.optsRoom) : undefined;
-    if (vr) return `${lead}: commuters near here have faster garages with room, e.g. ${at(vr)}`;
-    return `${lead}: transit from ${stopName} is ${low ? 'barely faster than' : 'slower than'} driving — ${fix}`;
+    if (vr) return `${lead}: commuters near here have faster garages with room, e.g. ${at(vr)}` + tail;
+    return `${lead}: transit from ${stopName} is ${low ? 'barely faster than' : 'slower than'} driving — ${fix}` + tail;
   }
   const ex = nearestOf(st, b, reach.opts) ?? via;
-  if (!ex) return `${lead}: the drive here plus transit from ${stopName} takes longer than driving to work — ${fix}`;
+  if (!ex) return `${lead}: the drive here plus transit from ${stopName} takes longer than driving to work — ${fix}` + tail;
   if (reach.slower >= PR_OPTION_MARGIN - 0.25) {
     const full = isFull(ex);
-    return `Commuters near here use ${at(ex)}${full ? ' (full)' : ''}: park & ride from here would take them ${fmt(reach.slower)} min longer${full ? ', so when it is full they drive or ride from home instead' : ''} — ${fix}`;
+    return `Commuters near here use ${at(ex)}${full ? ' (full)' : ''}: park & ride from here would take them ${fmt(reach.slower)} min longer${full ? ', so when it is full they drive or ride from home instead' : ''} — ${fix}` + tail;
   }
   if (reach.full < 0.5) {
     const vr = nearestOf(st, b, reach.optsRoom) ?? (reach.viaRoom >= 0 ? st.buildings.get(reach.viaRoom) : undefined) ?? ex;
-    return `Commuters near here have ${faster} with room, e.g. ${at(vr)} — ${low ? 'few come this far' : 'this one is not needed here'}`;
+    return `Commuters near here have ${faster} with room, e.g. ${at(vr)} — ${low ? 'few come this far' : 'this one is not needed here'}` + tail;
   }
   // (their options are full: the overflow takes the garages with room, the fastest for them first)
   const ov = reach.ovTo >= 0 ? st.buildings.get(reach.ovTo) : undefined;
-  if (ov) return `Commuters near here fill their ${faster}, and their overflow parks at ${at(ov)}, which is faster for them${low ? '' : ' — this one is next in line'}`;
-  return `Commuters near here fill their ${faster}, e.g. ${at(ex)}; few of them overflow this far — park & ride from here takes them ${fmt(Math.max(0, reach.slower))} min longer`;
+  if (ov) return `Commuters near here fill their ${faster}, and their overflow parks at ${at(ov)}, which is faster for them${low ? '' : ' — this one is next in line'}` + tail;
+  return `Commuters near here fill their ${faster}, e.g. ${at(ex)}; few of them overflow this far — park & ride from here takes them ${fmt(Math.max(0, reach.slower))} min longer` + tail;
 }
 
 /** " (about N tiles DIR)" from building b to a map cell: homes centred there within `spread` tiles (rms) — none when
@@ -285,7 +313,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
         break;
       }
       lines.push({ key: 'riders', label: 'Riders', value: `${fmt(riders)}/day`, ratio: riders / STOP_CAP_BUS, status: crowdStatus(riders, STOP_CAP_BUS),
-        hint: riders > STOP_CAP_BUS ? 'Crowded — add stops nearby or a second route' : riders < 1 ? walkersHint(walkers, 'stop', reach) : undefined });
+        hint: riders > STOP_CAP_BUS ? 'Crowded — add stops nearby or a second route' : riders < 1 ? zeroRidersHint(load, 'stop') : undefined });
       const wait = load?.waitMin ?? WAIT_BUS;
       const depotId = load?.depotId ?? -1;
       const depot = depotId >= 0 ? st.buildings.get(depotId) : undefined;
@@ -339,7 +367,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
       }
       const cap = sub ? STOP_CAP_SUBWAY : STOP_CAP_TRAIN;
       lines.push({ key: 'riders', label: 'Riders', value: `${fmt(riders)}/day`, ratio: riders / cap, status: crowdStatus(riders, cap),
-        hint: riders > cap ? 'Crowded — add a parallel line or another station within walking distance' : riders < 1 ? walkersHint(walkers, 'station', reach) : undefined });
+        hint: riders > cap ? 'Crowded — add a parallel line or another station within walking distance' : riders < 1 ? zeroRidersHint(load, 'station', line) : undefined });
       lines.push({ key: 'wait', label: 'Wait', value: `${min1(load?.waitMin ?? (sub ? WAIT_SUBWAY : WAIT_TRAIN))} min` });
       if (line) lines.push({ key: 'line', label: 'Line', value: `${fmt(line.stations)} station${line.stations === 1 ? '' : 's'}${line.edge ? ' · to the region' : ''}` });
       break;
@@ -453,7 +481,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
       }).join(' · ') });
       const fr = tr.ferryRidersAt(b.id);
       lines.push({ key: 'riders', label: 'Riders', value: `${fmt(fr)}/day`, ratio: fr / STOP_CAP_FERRY, status: crowdStatus(fr, STOP_CAP_FERRY),
-        hint: fr > STOP_CAP_FERRY ? 'Crowded — add another terminal pair' : fr < 1 ? walkersHint(walkers, 'terminal', reach) : undefined });
+        hint: fr > STOP_CAP_FERRY ? 'Crowded — add another terminal pair' : fr < 1 ? zeroRidersHint(load, 'terminal') : undefined });
       lines.push({ key: 'wait', label: 'Wait', value: `${min1(load?.waitMin ?? WAIT_FERRY)} min` });
       break;
     }

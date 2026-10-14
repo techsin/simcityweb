@@ -303,6 +303,8 @@ function minLotSide(zone: number): number {
 }
 
 const LOT_DX = [0, 1, 0, -1], LOT_DZ = [1, 0, -1, 0];
+/** scanZones scratch: minLotSide per zone */
+const lotSide = new Int32Array(Zone.IndHigh + 1);
 /**
  * can a building of the zone's smallest size (an s × s lot) grow on empty road-facing tile (x, z)? Growth's own placement
  * rules (growth.ts fitNew): the tile on the lot's front row, every lot cell free (same zone, no building, network, water
@@ -352,7 +354,7 @@ function lotFit(st: CityState, x: number, z: number, zn: number, s: number): 0 |
 }
 
 /** one pass over the zoned tiles (4-connected blocks flood-filled for road access) */
-function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int32Array): ZoneScan {
+function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int32Array, lots: Int32Array): ZoneScan {
   const N = st.size, C = st.cells;
   const zone = st.zone, net = st.network, bld = st.building, powered = st.powered, watered = st.watered;
   const r: ZoneScan = {
@@ -363,7 +365,7 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
     lotOk: [0, 0, 0], lotOkAt: [-1, -1, -1], lotSmall: [0, 0, 0], lotSmallAt: [-1, -1, -1], lotSteep: [0, 0, 0], lotSteepAt: [-1, -1, -1],
     lotSmallZ: new Array(Zone.IndHigh + 1).fill(0), lotSmallZAt: new Array(Zone.IndHigh + 1).fill(-1),
   };
-  let lotsP = 0, lotsW = 0;
+  let lotsP = 0, lotsW = 0, nLots = 0;
   const des = st.desirability;
   const host = r.host!, fit = r.fit!, fitEmpty = r.fitEmpty!, bestAt = r.bestAt!, emptyReady = r.emptyReady!, emptyReadyAt = r.emptyReadyAt!;
   const lotOk = r.lotOk!, lotOkAt = r.lotOkAt!, lotSmall = r.lotSmall!, lotSmallAt = r.lotSmallAt!, lotSteep = r.lotSteep!, lotSteepAt = r.lotSteepAt!;
@@ -401,23 +403,13 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
           if (!w) { r.unwatered++; if (r.unwateredAt < 0) r.unwateredAt = i; if (bld[i] < 0) lotsW++; }
         }
         if (p && w) { r.ready++; r.readyZones |= 1 << zn; if (r.readyAt < 0) r.readyAt = i; }
-        // what this tile can host (final fixes N4): an empty ready lot where a building fits (lotFit) counts every
-        // DevType of its zone above growth's desirability floor; every usable tile counts the zone's picky type (R$$$ /
-        // CO$$$ / I-HT: the rules ask where it fits at all). PERF: one desirability read per built tile
+        // what this tile can host (final fixes N4): the empty ready lots are judged after the fill (below); every
+        // usable tile counts the zone's picky type (R$$$ / CO$$$ / I-HT: the rules ask where it fits at all). PERF: one
+        // desirability read per built tile
         if (bld[i] < 0 && p && w) {
           emptyReady[f]++;
           if (emptyReadyAt[f] < 0) emptyReadyAt[f] = i;
-          const lf = lotFit(st, x, (i / N) | 0, zn, minLotSide(zn));
-          if (lf === 0) {
-            lotOk[f]++;
-            if (lotOkAt[f] < 0) lotOkAt[f] = i;
-            const devs = ZONE_DEVTYPES[zn];
-            for (let k = 0; k < devs.length; k++) if (des[devs[k]][i] > GROW_MIN_DESIR) fitEmpty[devs[k]]++;
-          } else if (lf === 1) {
-            lotSmall[f]++; if (lotSmallAt[f] < 0) lotSmallAt[f] = i;
-            lotSmallZ[zn]++; if (lotSmallZAt[zn] < 0) lotSmallZAt[zn] = i;
-          }
-          else { lotSteep[f]++; if (lotSteepAt[f] < 0) lotSteepAt[f] = i; }
+          lots[nLots++] = i;
         }
         const pd = PICKY_OF_ZONE[zn];
         if (pd >= 0) {
@@ -441,6 +433,24 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
         if (r.noAccessFamAt[f] < 0) r.noAccessFamAt[f] = famAt[f];
       }
     }
+  }
+  // the empty ready lots, in the order found (PERF: kept out of the fill loop, which stays lean): can a building stand
+  // there (lotFit: growth's placement rules for the zone's smallest building), and which DevTypes of its zone clear
+  // growth's desirability floor there
+  for (let z = Zone.ResLow; z <= Zone.IndHigh; z++) lotSide[z] = minLotSide(z);
+  for (let k = 0; k < nLots; k++) {
+    const i = lots[k], zn = zone[i];
+    const f = (1 << zn) & R_ZONES ? 0 : (1 << zn) & C_ZONES ? 1 : 2;
+    const lf = lotFit(st, i % N, (i / N) | 0, zn, lotSide[zn]);
+    if (lf === 0) {
+      lotOk[f]++;
+      if (lotOkAt[f] < 0) lotOkAt[f] = i;
+      const devs = ZONE_DEVTYPES[zn];
+      for (let d = 0; d < devs.length; d++) if (des[devs[d]][i] > GROW_MIN_DESIR) fitEmpty[devs[d]]++;
+    } else if (lf === 1) {
+      lotSmall[f]++; if (lotSmallAt[f] < 0) lotSmallAt[f] = i;
+      lotSmallZ[zn]++; if (lotSmallZAt[zn] < 0) lotSmallZAt[zn] = i;
+    } else { lotSteep[f]++; if (lotSteepAt[f] < 0) lotSteepAt[f] = i; }
   }
   r.unpoweredLots = lotsP;
   r.unwateredLots = lotsW;
@@ -1197,10 +1207,10 @@ const LOCATE_TTL = 8;
 
 export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
   /** flood-fill scratch for the monthly zone scan (re-sized with the map) */
-  let scratch = { visited: new Uint8Array(0), stack: new Int32Array(0) };
+  let scratch = { visited: new Uint8Array(0), stack: new Int32Array(0), lots: new Int32Array(0) };
   const zoneScan = (st: CityState, util: boolean): ZoneScan => {
-    if (scratch.visited.length !== st.cells) scratch = { visited: new Uint8Array(st.cells), stack: new Int32Array(st.cells) };
-    const r = scanZones(st, util, scratch.visited, scratch.stack);
+    if (scratch.visited.length !== st.cells) scratch = { visited: new Uint8Array(st.cells), stack: new Int32Array(st.cells), lots: new Int32Array(st.cells) };
+    const r = scanZones(st, util, scratch.visited, scratch.stack, scratch.lots);
     if (util) scanOutages(st, rt, r);
     return r;
   };
@@ -1575,13 +1585,13 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         const which = k === all ? `your ${count(k, `empty ${what} lot`)} ${k === 1 ? 'is' : 'are'}` : `${int(k)} of your ${int(all)} empty ${what} lots are`;
         // (the zone with the most such tiles names the size, the buildings and the place)
         let at = smallMost ? scan.lotSmallAt![f] : scan.lotSteepAt![f];
+        let zMax = -1;
         if (smallMost && scan.lotSmallZ && scan.lotSmallZAt) {
-          let zMax = -1;
           for (let z = FAM_ZONE0[f]; z < FAM_ZONE0[f] + 3; z++) if (scan.lotSmallZ[z] > 0 && (zMax < 0 || scan.lotSmallZ[z] > scan.lotSmallZ[zMax])) zMax = z;
           if (zMax >= 0) at = scan.lotSmallZAt[zMax];
         }
-        const side = at >= 0 ? minLotSide(st.zone[at]) : 2;
-        const them = at >= 0 && st.zone[at] === Zone.IndAg ? 'farms' : noun;
+        const side = zMax >= 0 ? minLotSide(zMax) : 2;
+        const them = zMax === Zone.IndAg ? 'farms' : noun;
         out.push({ id: (smallMost ? 'lotsSmall' : 'lotsSteep') + 'RCI'[f], cooldown: 120, priority: 6, kind: 'warning', advisor: 'planning', confirm: true, ...cellAt(at),
           text: smallMost
             ? `${who} to move in, but ${which} odd tiles left between buildings and roads — too small for ${them}, which need at least ${side}×${side} tiles along a road. Zone new ${what} land along roads.`

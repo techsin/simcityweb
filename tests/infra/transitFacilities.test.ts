@@ -1210,3 +1210,33 @@ describe('WP7b perf (stress city + transport facilities)', () => {
     expect(tf.parkRideSpaces).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+describe('final fixes P13: a stop or station without riders says why', () => {
+  const ridersLine = (sim: Simulation, id: number) => transportFacilityReport(sim, sim.state.buildings.get(id)!)!.lines.find((l) => l.key === 'riders')!;
+  it('a train station on rail to the west map edge: no homes within a walk, or driving beats the ride to the region', { timeout: 300000 }, () => {
+    // (playtest shots2/i19_train.jpg: "Riders 0/day · Line 1 station · to the region" and no reason)
+    const st = transitBase();
+    roadLine(st, 18, 63, 40, 63, Network.Road);
+    const id = place(st, 'tr_train_station', 20, 61).id;
+    const sim = newSim(st);
+    const tr = cycles(sim, 4);
+    expect(tr.stationLine(id)).toEqual({ stations: 1, edge: true });
+    const a = ridersLine(sim, id);
+    console.log(`lone station: ${a.value} — ${a.hint}`);
+    expect(a.value).toBe('0/day');
+    expect(a.hint).toMatch(/No homes within a 5-tile walk/);
+    expect(a.hint).toMatch(/only to the region/);
+    // a few wealthy households beside it (R$$$ drive): the train to the region is their best transit trip, but slower
+    // than driving to the offices
+    for (const x of [24, 26]) place(st, 't_r3', x, 61, { pop: 6, capacity: 400, wealth: 3 });
+    const tr2 = cycles(sim, 4);
+    const load = tr2.stopLoad(id)!;
+    const b = ridersLine(sim, id);
+    console.log(`with homes: ${b.value} — ${b.hint} (near ${load.near?.toFixed(1)}, boarders ${load.boarders?.toFixed(1)}, ${load.boardMin?.toFixed(1)} min)`);
+    expect(load.near).toBeGreaterThan(1);
+    expect(load.boarders).toBeGreaterThan(1);
+    expect(b.value).toBe('0/day');
+    expect(b.hint).toMatch(/workers nearby could ride from here \(\d+ min to jobs in the region at the end of the line\), but driving is faster/);
+  });
+});

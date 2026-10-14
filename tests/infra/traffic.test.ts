@@ -218,3 +218,54 @@ describe('traffic assignment', () => {
     expect(tr.getSampleRoutes(100).some((r) => r.kind === 'truck')).toBe(true);
   });
 });
+
+describe('routed 43: a road cut off from the city network is no commute', () => {
+  it('homes on a separate road with one job beside them read "no route to work" and a long commute, not 5 minutes', { timeout: 300000 }, () => {
+    // (WP6a verify S5b: cut-off homes scored a 5-minute commute from the one wind-turbine job on their road, better than
+    // the connected homes' 26 minutes)
+    const st = newState(64);
+    roadLine(st, 0, 32, 63, 32, Network.Avenue); // main network: avenue to both map edges
+    roadLine(st, 20, 12, 20, 31, Network.Road);
+    roadLine(st, 10, 12, 30, 12, Network.Road);
+    const main: number[] = [];
+    for (let x = 10; x <= 19; x++) main.push(place(st, 't_r1', x, 13, { pop: 12, capacity: 12, wealth: 1 }).id);
+    for (let x = 22; x <= 30; x += 2) place(st, 't_co', x, 33, { jobs: 40, capacity: 60 });
+    // the cut-off road: homes along it and a single job on it
+    roadLine(st, 45, 10, 60, 10, Network.Road);
+    const cut: number[] = [];
+    for (let x = 45; x <= 57; x++) cut.push(place(st, 't_r1', x, 11, { pop: 12, capacity: 12, wealth: 1 }).id);
+    place(st, 't_cs', 59, 11, { jobs: 1, capacity: 1, wealth: 1 });
+    st.stats.population = (main.length + cut.length) * 12;
+    const sim = newSim(st);
+    const tr = getTraffic(sim)!;
+    for (let k = 0; k < 4; k++) { tr.invalidate(); tr.runCycleSync(sim); }
+    const svc = sim.getSystem('services') as unknown as { compute(s: unknown, first: boolean): void };
+    svc.compute(sim, false);
+    const at = (id: number) => { const b = st.buildings.get(id)!; return st.idx(b.x, b.z); };
+    const avg = (ids: number[], f: (id: number) => number) => ids.reduce((s, id) => s + f(id), 0) / ids.length;
+    const cutAcc = avg(cut, (id) => st.accessCommute[at(id)]), mainAcc = avg(main, (id) => st.accessCommute[at(id)]);
+    const r = tr.routeInfo(cut[0])!;
+    console.log(`cut-off: route ${JSON.stringify(r)} · commute layer ${avg(cut, (id) => st.commute[at(id)]).toFixed(1)} · access ${cutAcc.toFixed(1)} min`
+      + ` | connected: ${avg(main, (id) => tr.commuteOf(id)).toFixed(1)} min · access ${mainAcc.toFixed(1)} · city average ${st.stats.avgCommute.toFixed(1)}`);
+    // the cut-off homes: no route to work (the inspector's text), no short commute anywhere (traffic, the layer, the
+    // access field), no jobs flag
+    for (const id of cut) {
+      const ri = tr.routeInfo(id)!;
+      expect(ri.cutOff).toBe(true);
+      expect(ri.reachable).toBe(false);
+      expect(ri.mode).toBe('none');
+      expect(st.buildings.get(id)!.flags & BF.NoJobs).toBeTruthy();
+      expect(st.commute[at(id)]).toBeGreaterThan(tr.commuteOf(main[0]));
+    }
+    expect(cutAcc).toBeGreaterThan(mainAcc);
+    // the connected homes keep their commute; the one job on the cut-off road still has its worker
+    for (const id of main) { expect(tr.routeInfo(id)!.cutOff).toBeUndefined(); expect(tr.commuteOf(id)).toBeGreaterThan(0); }
+    const shop = [...st.buildings.values()].find((b) => b.def === 't_cs')!;
+    expect(tr.jobFill(shop.id)).toBeGreaterThan(0.5);
+    // connecting the road to the network makes it a commute again
+    roadLine(st, 45, 11, 45, 31, Network.Road);
+    sim.events.emit('networkChanged', { x0: 45, z0: 10, x1: 46, z1: 32 });
+    for (let k = 0; k < 4; k++) { tr.invalidate(); tr.runCycleSync(sim); }
+    for (const id of cut) expect(tr.routeInfo(id)?.cutOff).toBeUndefined();
+  });
+});

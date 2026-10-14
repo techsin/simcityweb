@@ -120,6 +120,37 @@ describe('WP7b r4 park & ride overflow (no option cap)', () => {
     expect(steps).toBeGreaterThan(10);
   });
 
+  it('routed 53: after a road edit the idle garage keeps its reason while the next update rebuilds the road graph', { timeout: 600000 }, () => {
+    const { st, ids } = lineTown(LINE5, 1);
+    const { sim, tr } = run(st, ids, 14);
+    const idle = 'Commuters near here have 4 faster park & ride garages with room, e.g. the Parking Garage 12 tiles W — this one is not needed here';
+    expect(line(sim, ids[4], 'switched').hint).toBe(idle);
+    // a road edit far from the garages: the next update starts with a graph rebuild (new node ids)
+    roadLine(st, 100, 120, 110, 120, Network.Road);
+    sim.events.emit('networkChanged', { x0: 100, z0: 120, x1: 111, z1: 121 });
+    const t = tr as unknown as { phase: number; lastCycleStart: number; reachCache: Map<number, unknown>; step(s: Simulation): void };
+    const v0 = tr.graphVersion;
+    tr.invalidate();
+    t.phase = 0;
+    t.lastCycleStart = st.day;
+    let steps = 0, staleSteps = 0;
+    while (t.phase >= 0) {
+      t.step(sim);
+      t.reachCache.delete(ids[4]);
+      const h = line(sim, ids[4], 'switched').hint;
+      // (before the fix: "Not picked yet — next traffic update" from the rebuild until the update completed)
+      expect(h, `step ${steps}`).not.toMatch(/Not picked yet/);
+      // (from the rebuild until this update's commuteEnd the snapshot is of the older graph: said so)
+      expect([idle, idle + ' (as of the last traffic update)'], `step ${steps}`).toContain(h);
+      if (h !== idle) staleSteps++;
+      steps++;
+    }
+    expect(tr.graphVersion).not.toBe(v0);
+    expect(staleSteps).toBeGreaterThan(5);
+    // the completed update's own snapshot: current again
+    expect(line(sim, ids[4], 'switched').hint).toBe(idle);
+  });
+
   it('homes without residents: "no commuters", not "no homes"', { timeout: 300000 }, () => {
     const { st, ids } = prTown([[48, 68]], 1);
     for (const b of st.buildings.values()) if (b.def === 't_r2') b.pop = 0;

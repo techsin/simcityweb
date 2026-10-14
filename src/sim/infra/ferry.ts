@@ -201,11 +201,3 @@ export function ferryPartnersAt(st: CityState, terminals: readonly FerryTerminal
   }
   return hits.map((h) => ({ id: terminals[h.t].id, minutes: Math.max(FERRY_TIME_PER_CELL, h.steps * FERRY_TIME_PER_CELL) }));
 }
-
-/** cheap key of the water layer (terraforming moves shores): checksum of the water cells */
-export function waterKey(st: CityState): number {
-  const w = st.water;
-  let h = 2166136261 >>> 0, n = 0;
-  for (let i = 0; i < w.length; i++) if (w[i]) { h = Math.imul(h ^ i, 16777619) >>> 0; n++; }
-  return (h ^ n) >>> 0;
-}

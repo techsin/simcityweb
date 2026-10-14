@@ -595,10 +595,3 @@ export class SearchK {
     if (++this.altTick >= 0x3fffffff) { this.altStamp.fill(0); this.altTick = 1; }
   }
 }
-
-/** a complete K-label search in one call (SearchK.start + run) */
-export function roadSearchK(g: RoadGraph, adj: Int32Array, time: Float32Array, S: SearchK, seeds: Seeds, groupOf: ArrayLike<number>,
-  limit: number, ramp: Float32Array | null, ffMax: number, margin: number): void {
-  S.start(g, adj, time, seeds, groupOf, limit, ramp, ffMax, margin);
-  S.run(Infinity);
-}

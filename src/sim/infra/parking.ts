@@ -211,19 +211,6 @@ export function parkingFromBoxes(N: number, D: Float32Array, S: Float32Array, bo
   return { demandWeighted: wSum > 0 ? pSum / wSum : 0, highShare: dCells > 0 ? high / dCells : 0, supply: sTot, demand: dTot };
 }
 
-/**
- * parking = smoothstep(r0, r1, box(D) / box(S)) into `out` (0 where there is no demand nearby); with `prev` (the
- * previous raster, not aliasing `out`) out = blend x prev + (1 - blend) x fresh. `tmpA` / `tmpB` are scratch rasters of
- * st.cells. D and S are left unchanged. The summary describes the (blended) result.
- */
-export function computeParking(N: number, D: Float32Array, S: Float32Array, out: Float32Array, tmpA: Float32Array, tmpB: Float32Array,
-  prev: Float32Array | null = null, blend = 0): ParkingSummary {
-  // (box(D) into out first: parkingFromBoxes reads boxD[i] before it writes out[i])
-  parkingBox(N, D, out, tmpA);
-  parkingBox(N, S, tmpB, tmpA);
-  return parkingFromBoxes(N, D, S, out, tmpB, out, prev, blend);
-}
-
 /** mean parking pressure over a footprint */
 export function parkingOver(st: CityState, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>): number {
   const N = st.size, p = st.parking;

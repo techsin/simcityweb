@@ -110,6 +110,7 @@ import {
   PR_DOWNTOWN_SHARE, PR_DOWNTOWN_SMOOTH, PR_DOWNTOWN_TIE, PR_OPTIONS, PR_OPTION_MARGIN, PR_OPTION_TAPER, PR_RESERVE_MIN,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
+import { ACCESS_UNREACHED } from './params';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
 import { carlessShare, workerShare } from '../economy/demographics';
 import { Search, SearchK, Seeds, accumulate, roadSearch, transitSearch, type TransitNet } from './search';
@@ -146,6 +147,10 @@ export interface RouteInfo {
   carless?: number;
   /** residential: extra commute minutes of those car-less workers vs their car-owning neighbours (last assignments) */
   carlessMin?: number;
+  /** residential (routed 43): its road is cut off from the city's jobs (a road network without a meaningful job pool and
+   *  no transit option): no commute; reachable = false then (the inspector's "No route to work") */
+  cutOff?: boolean;
+  reachable?: boolean;
 }
 
 /** stats.transitFleet with the optional WP7b field (CityState's TransitFleetStats plus busesShort) */
@@ -159,6 +164,28 @@ export interface TransitFleetStatsX {
   /** sum over the bus pools (each depot, the minibus pool) of max(0, buses needed - buses): a shortage a surplus
    *  elsewhere does not hide (the bot's depot rule, the busFleetShort advisor) */
   busesShort?: number;
+}
+
+/** TrafficSystem.stopLoad: a stop / station / terminal of the last completed assignment */
+export interface StopLoad {
+  /** riders (boardings + alightings / day, smoothed across assignments), current wait (min), depot (building id, -1 =
+   *  none / minibuses) */
+  riders: number;
+  waitMin: number;
+  depotId: number;
+  /** residents within walking distance whose nearest jobs are a walk from this stop (they don't ride) */
+  walkers?: number;
+  /** service ratio of its bus pool (buses / buses needed; bus stops only) */
+  rho?: number;
+  /** some job is reachable by transit from it (false: no stop / station near any job on its network) */
+  reach?: boolean;
+  /** P13 (why nobody rides): workers living within a walk of it; those whose best transit trip starts here and the mean
+   *  minutes of that trip (to the nearest jobs it reaches; undefined: none); those within a walk whose best trip starts at
+   *  another stop */
+  near?: number;
+  boarders?: number;
+  boardMin?: number;
+  boardElsewhere?: number;
 }
 
 /** TrafficSystem.connectionReport: one neighbour connection of the last completed assignment */
@@ -199,6 +226,9 @@ export interface GarageReach {
    *  those of them with room — the inspector names the one nearest to the garage */
   opts: number[];
   optsRoom: number[];
+  /** routed 53: the roads changed since the traffic update these choices come from (the reach is still shown: the drive
+   *  is searched on today's roads, the choices are the last update's) */
+  stale?: boolean;
 }
 
 const PH_PREP = 0, PH_PREP2 = 1, PH_TRANSIT = 2, PH_RSEARCH = 3, PH_RMATCH = 4, PH_COMMUTE = 5, PH_INBOUND = 6, PH_SHOP = 7,
@@ -269,6 +299,10 @@ const OV_STEP_COST = 0.02;
 const OV_FLOW_COST = 0.15;
 const OV_CHUNK_STATES = Math.round(PR_CHUNK_STATES * (PR_OPTIONS + 1) / OV_K);
 const MAX_ENTRIES = 12;
+/** routed 43: a road component that is not the one with the most job slots and holds fewer job slots than this share of
+ *  the workers living on it is cut off from the city's jobs — its homes' few matches (a wind turbine's job on their road)
+ *  are no commute (markCutOff) */
+const CUTOFF_JOB_SHARE = 0.2;
 /** job matching: a proportional round (round < MATCH_PROP_ROUNDS) that matched under this share of the waiting workers
  *  is starved and does not count toward MATCH_ROUNDS (at most MATCH_EXTRA_ROUNDS such rounds per assignment); starved
  *  full-capacity rounds count as before (the pooled match takes the rest) */
@@ -371,6 +405,10 @@ export class TrafficSystem implements SimSystem {
   private oTime: Float32Array<ArrayBuffer> = new Float32Array(0);
   private oEmp: Float32Array<ArrayBuffer> = new Float32Array(0);
   private oJobT: Int32Array<ArrayBuffer> = new Int32Array(0);
+  /** routed 43: 1 = the origin's road is cut off from the city's jobs this assignment (markCutOff) */
+  private oCut: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  /** residential building ids cut off in the last completed assignment (routeInfo) */
+  private cutIds = new Set<number>();
   // job sites (buildings then connections)
   private jN = 0;
   private jB = 0; // number of building job sites (connections follow)
@@ -744,14 +782,26 @@ export class TrafficSystem implements SimSystem {
   private rideMemo: Int8Array<ArrayBuffer> = new Int8Array(0);
   /** workers per stop (this cycle) whose best stop path rides nothing (jobs a walk away): no riders, report hint */
   private stWalk: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** per stop this cycle (P13: why a stop carries nobody): workers living within a walk of it, those whose best transit
+   *  trip starts there and their transit minutes, those within a walk whose best trip starts at another stop */
+  private stNearW: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private stBoardW: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private stBoardT: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private stElseW: Float32Array<ArrayBuffer> = new Float32Array(0);
   /** last completed assignment per stop building id: walkers (see stWalk), a path from the stop rides (stopsNear) */
   private stopWalkers = new Map<number, number>();
+  /** last completed assignment per stop building id: workers within a walk, workers whose best transit trip boards there
+   *  and their mean transit minutes, workers within a walk who board at another stop (stopLoad: a zero-riders reason) */
+  private stopNear = new Map<number, { near: number; board: number; boardMin: number; other: number }>();
   private stopRide = new Map<number, boolean>();
   /** stop building id -> the transit search reached it (a job is reachable by transit from it) in the last assignment */
   private stopReach = new Map<number, boolean>();
   /** mode-split result of the last split() call (shares car / walk to a stop / park & ride / walk, minutes, car-less
    *  extra minutes x share) */
   private mC = 0; private mTW = 0; private mTP = 0; private mW = 0; private mT = 0; private mX = 0;
+  /** F6 (stats.commuteByMode): mT by mode — car / transit / walk minutes x share (sum = mT) — and, for the transit share
+   *  that has a car alternative, its car minutes, its transit minutes and that share (what transit saves them) */
+  private mMc = 0; private mMt = 0; private mMw = 0; private mAc = 0; private mAt = 0; private mAw = 0;
   /** car-less share and extra minutes per residential building id (smoothed like the commute) */
   carlessById: Float32Array<ArrayBuffer> = new Float32Array(1024);
   carlessMinById: Float32Array<ArrayBuffer> = new Float32Array(1024);
@@ -882,10 +932,12 @@ export class TrafficSystem implements SimSystem {
     this.hasTruckData = false;
     this.garageLast.clear();
     this.stopWalkers.clear();
+    this.stopNear.clear();
     this.stopRide.clear();
     this.stopReach.clear();
     this.connInbound.clear();
     this.connLast = [];
+    this.cutIds.clear();
     this.carlessById.fill(0);
     this.carlessMinById.fill(0);
     this.restoreTransport(sim.state);
@@ -895,6 +947,7 @@ export class TrafficSystem implements SimSystem {
     this.iter = 0;
     this.cycles = 0;
     this.accessById.fill(-1);
+    this.commuteById.fill(0);
     this.priceById.fill(0);
     this.connPrice = new Float32Array(sim.state.cells);
     this.jobFillById.fill(-1);
@@ -1030,8 +1083,10 @@ export class TrafficSystem implements SimSystem {
   routeInfo(buildingId: number): RouteInfo | null {
     if (buildingId < 0 || buildingId >= this.modeById.length) return null;
     const m = this.modeById[buildingId];
-    if (m === 0 && this.reachedById[buildingId] === 0 && this.commuteById[buildingId] === 0) return null;
+    const cut = this.cutIds.has(buildingId);
+    if (m === 0 && this.reachedById[buildingId] === 0 && this.commuteById[buildingId] === 0 && !cut) return null;
     const r: RouteInfo = { commuteMin: this.commuteById[buildingId], mode: MODE_NAMES[m] ?? 'none', jobsReached: Math.round(this.reachedById[buildingId]) };
+    if (cut) { r.cutOff = true; r.reachable = false; r.mode = 'none'; r.commuteMin = 0; }
     const cl = buildingId < this.carlessById.length ? this.carlessById[buildingId] : 0;
     if (cl > 0) { r.carless = Math.round(cl * 1000) / 1000; r.carlessMin = Math.round(this.carlessMinById[buildingId] * 10) / 10; }
     return r;
@@ -1099,13 +1154,15 @@ export class TrafficSystem implements SimSystem {
    * stops only) and reach = some job is reachable by transit from it (false: no stop / station near any job on its
    * network); null = not a stop (or not seen by an assignment yet)
    */
-  stopLoad(id: number): { riders: number; waitMin: number; depotId: number; walkers?: number; rho?: number; reach?: boolean } | null {
+  stopLoad(id: number): StopLoad | null {
     const s = this.stIdxById.get(id);
     if (s === undefined || s >= this.stops.n || this.stops.bid[s] !== id) return null;
     const d = this.stDepot[s];
-    const out: { riders: number; waitMin: number; depotId: number; walkers?: number; rho?: number; reach?: boolean } = {
+    const nb = this.stopNear.get(id);
+    const out: StopLoad = {
       riders: this.stLoadPrev.get(id) ?? 0, waitMin: this.stWait[s], depotId: d >= 0 && d < this.depots.length ? this.depots[d].id : -1,
       walkers: this.stopWalkers.get(id) ?? 0, reach: this.stopReach.get(id),
+      near: nb?.near ?? 0, boarders: nb?.board ?? 0, boardMin: nb && nb.board > 0 ? nb.boardMin : undefined, boardElsewhere: nb?.other ?? 0,
     };
     if (this.stops.mode[s] === Transit.Bus && this.stRho[s] > 0) out.rho = this.stRho[s];
     return out;
@@ -1245,31 +1302,41 @@ export class TrafficSystem implements SimSystem {
    */
   garageReach(id: number): GarageReach | null {
     const c = this.reachCache.get(id);
+    const g = this.road;
+    const rs = this.rs;
     const copy = (c: GarageReach): GarageReach => ({
       workers: c.workers, homes: c.homes, ovTo: c.ovTo, ovShare: c.ovShare, via: c.via, viaRoom: c.viaRoom, slower: c.slower, options: c.options,
-      others: c.others, own: c.own, full: c.full, opts: c.opts.slice(), optsRoom: c.optsRoom.slice(),
+      others: c.others, own: c.own, full: c.full, opts: c.opts.slice(), optsRoom: c.optsRoom.slice(), stale: !!rs && g.version !== rs.ver,
     });
-    const rs = this.rs;
     if (!rs) return c ? copy(c) : null;
     if (c && c.cycle === rs.tick) return copy(c);
     let q = -1;
     for (let k = 0; k < rs.gN; k++) if (rs.gBid[k] === id) { q = k; break; }
-    const g = this.road;
-    // (a garage newer than the snapshot, or not park & ride then, or node ids of an older graph: what was known)
-    if (q < 0 || !(rs.gRank[q] < Infinity) || g.version !== rs.ver) return c ? copy(c) : null;
+    // (a garage newer than the snapshot, or not park & ride then: what was known). Routed 53: the snapshot keeps road
+    // cells, not node ids, so a road / tunnel edit since — a graph rebuild — still finds the drive on today's roads
+    // (it used to read "Not picked yet" until the next update completed)
+    if (q < 0 || !(rs.gRank[q] < Infinity)) return c ? copy(c) : null;
     let workers = 0, homes = 0, via = -1, slower = 0, options = 0, others = 0, own = 0, full = 0, viaRoom = -1, ovTo = -1, ovShare = 0;
     let opts: number[] = [], optsRoom: number[] = [];
-    if (rs.gEntC[q] > 0 && g.n > 0) {
-      const S = (this.SR ??= new Search()), seeds = new Seeds();
-      for (let e = rs.gEntS[q], e1 = e + rs.gEntC[q]; e < e1; e++) seeds.push(rs.gEnt[e], 0, 0);
+    const nodeOf = g.nodeOfCell, nCells = nodeOf.length;
+    let gSeeds = 0;
+    const seeds = new Seeds();
+    if (g.n > 0) {
+      for (let e = rs.gEntS[q], e1 = e + rs.gEntC[q]; e < e1; e++) {
+        const c0 = rs.gEnt[e], v = c0 >= 0 && c0 < nCells ? nodeOf[c0] : -1;
+        if (v >= 0) { seeds.push(v, 0, 0); gSeeds++; }
+      }
+    }
+    if (gSeeds > 0) {
+      const S = (this.SR ??= new Search());
       roadSearch(g, g.rev, g.t0, S, this.heap, seeds, PR_CAR_LEG_MAX, null);
       const ownG = rs.gGrp[q], K = PR_OPTIONS, mine = rs.gRank[q];
       const near: { d: number; o: number }[] = [];
       for (let o = 0; o < rs.n; o++) {
         let d = Infinity;
         for (let e: number = rs.entS[o], e1: number = e + rs.entC[o]; e < e1; e++) {
-          const v = rs.ent[e];
-          if (v < S.n && S.done[v] === 1 && S.dist[v] < d) d = S.dist[v];
+          const c0: number = rs.ent[e], v: number = c0 >= 0 && c0 < nCells ? nodeOf[c0] : -1;
+          if (v >= 0 && v < S.n && S.done[v] === 1 && S.dist[v] < d) d = S.dist[v];
         }
         if (!(d < Infinity)) continue;
         homes++;
@@ -1327,7 +1394,7 @@ export class TrafficSystem implements SimSystem {
       opts = top(byAll);
       optsRoom = top(byRoom);
     }
-    const out: GarageReach = { workers, homes, ovTo, ovShare, via, viaRoom, slower, options, others, own, full, opts, optsRoom };
+    const out: GarageReach = { workers, homes, ovTo, ovShare, via, viaRoom, slower, options, others, own, full, opts, optsRoom, stale: g.version !== rs.ver };
     this.reachCache.set(id, { ...out, cycle: rs.tick });
     if (this.reachCache.size > 4 * rs.gN + 64) for (const k of [...this.reachCache.keys()]) if (this.reachCache.get(k)!.cycle !== rs.tick) this.reachCache.delete(k);
     return copy(out);
@@ -1359,12 +1426,14 @@ export class TrafficSystem implements SimSystem {
     rs.entS = growI32(rs.entS, oN); rs.entC = growU8(rs.entC, oN); rs.ent = growI32(rs.ent, E);
     rs.w = growF32(rs.w, oN); rs.prN = growU8(rs.prN, oN); rs.f0 = growF32(rs.f0, oN); rs.ovG = growI32(rs.ovG, oN);
     rs.prG = growI32(rs.prG, oN * K); rs.prA = growF32(rs.prA, oN * K);
+    // (road cells, not node ids: the hint still finds them after a graph rebuild — routed 53)
+    const cellOf = this.road.cellOf;
     let e = 0;
     for (let o = 0; o < oN; o++) {
       const c = this.oEntC[o];
       rs.entS[o] = e;
       rs.entC[o] = c;
-      for (let x = this.oEntS[o], x1 = x + c; x < x1; x++) rs.ent[e++] = ent[x];
+      for (let x = this.oEntS[o], x1 = x + c; x < x1; x++) rs.ent[e++] = cellOf[ent[x]];
     }
     rs.w.set(this.oW.subarray(0, oN)); rs.prN.set(this.oPrN.subarray(0, oN)); rs.f0.set(this.oPrF0.subarray(0, oN));
     rs.ovG.set(this.oOvG.subarray(0, oN)); rs.prG.set(this.oPrG.subarray(0, oN * K)); rs.prA.set(this.oPrA.subarray(0, oN * K));
@@ -1381,7 +1450,7 @@ export class TrafficSystem implements SimSystem {
       rs.gRoom[q] = Math.max(0, this.gSpaces[q] - this.gRes[q]);
       rs.gEntS[q] = e;
       rs.gEntC[q] = c;
-      for (let x = this.gEntS[q], x1 = x + c; x < x1; x++) rs.gEnt[e++] = ent[x];
+      for (let x = this.gEntS[q], x1 = x + c; x < x1; x++) rs.gEnt[e++] = cellOf[ent[x]];
     }
     rs.n = oN;
     rs.gN = gN;
@@ -2324,6 +2393,10 @@ export class TrafficSystem implements SimSystem {
     this.rideMemo.fill(0, 0, total);
     this.stWalk = growF32(this.stWalk, this.stops.n + 1);
     this.stWalk.fill(0, 0, this.stops.n + 1);
+    const nS = this.stops.n + 1;
+    const nearW = (this.stNearW = growF32(this.stNearW, nS)), boardW = (this.stBoardW = growF32(this.stBoardW, nS));
+    const boardT = (this.stBoardT = growF32(this.stBoardT, nS)), elseW = (this.stElseW = growF32(this.stElseW, nS));
+    nearW.fill(0, 0, nS); boardW.fill(0, 0, nS); boardT.fill(0, 0, nS); elseW.fill(0, 0, nS);
     for (let o = 0; o < this.oN; o++) {
       this.oTrT[o] = Infinity;
       this.oBoard[o] = -1;
@@ -2338,6 +2411,7 @@ export class TrafficSystem implements SimSystem {
       let best = Infinity, board = -1, boardStop = -1, bestWalkOnly = Infinity, walkStop = -1;
       for (let q = 0; q < cnt; q++) {
         const s = this.nsIdx[q];
+        nearW[s] += this.oW[o];
         const walk = Math.max(0, this.nsDist[q] - half) * STOP_WALK_TIME_PER_CELL + this.stWait[s];
         for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) {
           const v = this.stAtt[a];
@@ -2357,6 +2431,9 @@ export class TrafficSystem implements SimSystem {
       this.oBoard[o] = board;
       this.oBoardStop[o] = boardStop;
       this.oJobT[o] = jT;
+      boardW[boardStop] += this.oW[o];
+      boardT[boardStop] += this.oW[o] * t;
+      for (let q = 0; q < cnt; q++) if (this.nsIdx[q] !== boardStop) elseW[this.nsIdx[q]] += this.oW[o];
     }
     this.acc.fill(0, 0, this.road.n);
     this.tAcc.fill(0, 0, this.tnet!.total);
@@ -3131,6 +3208,7 @@ export class TrafficSystem implements SimSystem {
    */
   private prRest(o: number, take: number, f: number): number {
     let aC = f * this.mC, aW = f * this.mTW, aP = f * this.mTP, aK = f * this.mW, aT = f * this.mT, aX = f * this.mX;
+    let bMc = f * this.mMc, bMt = f * this.mMt, bMw = f * this.mMw, bAc = f * this.mAc, bAt = f * this.mAt, bAw = f * this.mAw;
     let rest = 1 - f;
     // (the park & ride share of the split whose riders did not all fit: prAlloc's, then each level's)
     let lastTP = this.mTP;
@@ -3168,6 +3246,7 @@ export class TrafficSystem implements SimSystem {
       }
       const ww = rest * (want > 1e-12 ? Math.min(1, placed / want) : 1);
       aC += ww * this.mC; aW += ww * this.mTW; aP += ww * this.mTP; aK += ww * this.mW; aT += ww * this.mT; aX += ww * this.mX;
+      bMc += ww * this.mMc; bMt += ww * this.mMt; bMw += ww * this.mMw; bAc += ww * this.mAc; bAt += ww * this.mAt; bAw += ww * this.mAw;
       rest -= ww;
     }
     let matched = 1;
@@ -3178,6 +3257,7 @@ export class TrafficSystem implements SimSystem {
         if (this.prDefer) this.prPend = rest;
         else {
           aC += rest * this.mC; aW += rest * this.mTW; aK += rest * this.mW; aT += rest * this.mT; aX += rest * this.mX;
+          bMc += rest * this.mMc; bMt += rest * this.mMt; bMw += rest * this.mMw; bAc += rest * this.mAc; bAt += rest * this.mAt; bAw += rest * this.mAw;
           this.prUnplaced(o, take * rest * lastTP);
         }
       } else {
@@ -3187,8 +3267,13 @@ export class TrafficSystem implements SimSystem {
     }
     // (shares of the decided part of the piece)
     const dec = matched - this.prPend;
-    if (dec < 1 && dec > 1e-9) { const r = 1 / dec; aC *= r; aW *= r; aP *= r; aK *= r; aT *= r; aX *= r; }
+    if (dec < 1 && dec > 1e-9) {
+      const r = 1 / dec;
+      aC *= r; aW *= r; aP *= r; aK *= r; aT *= r; aX *= r;
+      bMc *= r; bMt *= r; bMw *= r; bAc *= r; bAt *= r; bAw *= r;
+    }
     this.mC = aC; this.mTW = aW; this.mTP = aP; this.mW = aK; this.mT = aT; this.mX = aX;
+    this.mMc = bMc; this.mMt = bMt; this.mMw = bMw; this.mAc = bAc; this.mAt = bAt; this.mAw = bAw;
     return matched;
   }
 
@@ -3613,6 +3698,9 @@ export class TrafficSystem implements SimSystem {
     const tot = ec + et + ew;
     let sc = ec / tot, stt = et / tot, sw = ew / tot;
     let time = sc * (sc > 0 ? carT : 0) + stt * (stt > 0 ? tOwn : 0) + sw * (sw > 0 ? walkT : 0);
+    // (F6: the minutes by mode; transit riders with a car alternative: its minutes)
+    let mc = sc > 0 ? sc * carT : 0, mt = stt > 0 ? stt * tOwn : 0, mw = sw > 0 ? sw * walkT : 0;
+    let ac = carOk && stt > 0 ? stt * carT : 0, at = carOk ? mt : 0, aw = carOk ? stt : 0;
     // walk-to-stop transit / park & ride shares
     let stW = usePr ? 0 : stt, stP = usePr ? stt : 0;
     let extra = 0;
@@ -3636,8 +3724,16 @@ export class TrafficSystem implements SimSystem {
       sw = co * sw + cl * swL;
       extra = cl * (timeL - time);
       time = co * time + cl * timeL;
+      const mtL = stL > 0 ? stL * tL : 0;
+      mc = co * mc + cl * (scL > 0 ? scL * (carT + CARLESS_EXTRA_MIN) : 0);
+      mt = co * mt + cl * mtL;
+      mw = co * mw + cl * (swL > 0 ? swL * walkT : 0);
+      ac = co * ac + cl * (carOk && stL > 0 ? stL * (carT + CARLESS_EXTRA_MIN) : 0);
+      at = co * at + cl * (carOk ? mtL : 0);
+      aw = co * aw + cl * (carOk ? stL : 0);
     }
     this.mC = sc; this.mTW = stW; this.mTP = stP; this.mW = sw; this.mT = time; this.mX = extra;
+    this.mMc = mc; this.mMt = mt; this.mMw = mw; this.mAc = ac; this.mAt = at; this.mAw = aw;
     return true;
   }
 
@@ -3657,6 +3753,7 @@ export class TrafficSystem implements SimSystem {
       if (usePr) stP = stO; else stW = stO;
     }
     time = (1 - stO) * carT + stO * (tOwn < Infinity ? tOwn : 0);
+    let mc = (1 - stO) * carT, mt = stO > 0 ? stO * tOwn : 0, ac = stO * carT, aw = stO;
     let extra = 0;
     if (cl > 0) {
       const prL = prT + prCost + CARLESS_EXTRA_MIN < trT;
@@ -3668,8 +3765,13 @@ export class TrafficSystem implements SimSystem {
       stP = co * stP + cl * (prL ? stL : 0);
       extra = cl * (timeL - time);
       time = co * time + cl * timeL;
+      mc = co * mc + cl * (1 - stL) * (carT + CARLESS_EXTRA_MIN);
+      mt = co * mt + cl * (stL > 0 ? stL * tL : 0);
+      ac = co * ac + cl * stL * (carT + CARLESS_EXTRA_MIN);
+      aw = co * aw + cl * stL;
     }
     this.mTW = stW; this.mTP = stP; this.mW = 0; this.mC = 1 - stW - stP; this.mT = time; this.mX = extra;
+    this.mMc = mc; this.mMt = mt; this.mMw = 0; this.mAc = ac; this.mAt = mt; this.mAw = aw;
   }
 
   /** memoised ridesFrom (per transit-forest node, reset every cycle in originTransit) */
@@ -3853,11 +3955,20 @@ export class TrafficSystem implements SimSystem {
     }
     this.ferryRiders = ferry;
     let tripsC = 0, tripsT = 0, tripsW = 0, cSum = 0, cW = 0;
+    this.markCutOff();
+    const cut = this.oCut;
     for (let o = 0; o < this.oN; o++) {
       const a = this.oAsg[o];
       const W = this.oW[o];
       this.oEmp[o] = W > 0 ? Math.min(1, a / W) : 0;
-      if (a > 0) {
+      // (routed 43: a cut-off home's few matches are no commute — not in the city average; its minutes are the unreached
+      // ones below; the share matched stays, BF.NoJobs follows it)
+      if (a > 0 && cut[o] === 1) {
+        this.oTime[o] = 0;
+        this.oShC[o] = this.oCarW[o] / a;
+        this.oShT[o] = this.oTrW[o] / a;
+        this.oShW[o] = this.oWalkW[o] / a;
+      } else if (a > 0) {
         this.oTime[o] = this.oTimeSum[o] / a;
         this.oShC[o] = this.oCarW[o] / a;
         this.oShT[o] = this.oTrW[o] / a;
@@ -3877,6 +3988,39 @@ export class TrafficSystem implements SimSystem {
     this.tripsWalk = tripsW;
     this.commuteSum = cSum;
     this.commuteW = cW;
+    // routed 43: every cut-off home reads the minutes of a cell without a road route (services' convention:
+    // ACCESS_UNREACHED x the city average) — the commute layer, the access field it seeds and approval see a long
+    // commute, not the 5 minutes to the one job on their road
+    if (cW > 0) {
+      const un = Math.min(MAX_COMMUTE, ACCESS_UNREACHED * (cSum / cW));
+      for (let o = 0; o < this.oN; o++) if (cut[o] === 1) this.oTime[o] = un;
+    }
+  }
+
+  /**
+   * routed 43: origins whose road is cut off from the city's jobs (oCut): every road component of their entries is
+   * not the one with the most job slots (regional connections included) and holds fewer than CUTOFF_JOB_SHARE job slots
+   * per worker living on it; an origin with a transit option (walk to a stop, park & ride) is never cut off (an island
+   * town with a ferry or a subway commutes for real)
+   */
+  private markCutOff(): void {
+    const g = this.road, comp = g.comp, nc = g.nComp, oN = this.oN;
+    const cut = (this.oCut = growU8(this.oCut, oN));
+    cut.fill(0, 0, oN);
+    if (nc <= 1 || oN === 0) return;
+    const slots = new Float64Array(nc), workers = new Float64Array(nc);
+    for (let q = 0; q < this.qN; q++) { const v = this.qNode[q]; if (v >= 0 && v < g.n) slots[comp[v]] += this.qSlots[q]; }
+    for (let o = 0; o < oN; o++) if (this.oEntC[o] > 0) workers[comp[this.ent[this.oEntS[o]]]] += this.oW[o];
+    let main = -1, best = -1;
+    for (let c = 0; c < nc; c++) if (slots[c] > best) { best = slots[c]; main = c; }
+    const cc = new Uint8Array(nc);
+    for (let c = 0; c < nc; c++) cc[c] = c !== main && workers[c] > 0 && slots[c] < CUTOFF_JOB_SHARE * workers[c] ? 1 : 0;
+    for (let o = 0; o < oN; o++) {
+      if (this.oEntC[o] === 0 || this.oTrT[o] < Infinity || this.oPrN[o] > 0) continue;
+      let all = true;
+      for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) if (cc[comp[this.ent[e]]] === 0) { all = false; break; }
+      if (all) cut[o] = 1;
+    }
   }
 
   // ------------------------------------------------------------------------------------------ INBOUND
@@ -4460,9 +4604,11 @@ export class TrafficSystem implements SimSystem {
       const old = this.stLoadPrev, oldPr = this.stPrPrev;
       const next = new Map<number, number>(), nextPr = new Map<number, number>();
       this.stopWalkers.clear();
+      this.stopNear.clear();
       this.stopRide.clear();
       this.stopReach.clear();
       const doneT = this.ST.done;
+      const sN = this.stops.n, hasN = this.stNearW.length > sN;
       for (let s = 0; s < this.stops.n; s++) {
         const bid = this.stops.bid[s];
         const key = bid >= 0 ? bid : -1 - this.stops.cell[s];
@@ -4472,6 +4618,10 @@ export class TrafficSystem implements SimSystem {
         if (np > 0.5) nextPr.set(key, np);
         if (bid < 0) continue;
         if (this.stWalk[s] > 0) this.stopWalkers.set(bid, this.stWalk[s]);
+        if (hasN && (this.stNearW[s] > 0 || this.stElseW[s] > 0)) {
+          const bw = this.stBoardW[s];
+          this.stopNear.set(bid, { near: this.stNearW[s], board: bw, boardMin: bw > 0 ? this.stBoardT[s] / bw : 0, other: this.stElseW[s] });
+        }
         let ride = false, reach = false;
         for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1 && !ride; a++) {
           const v = this.stAtt[a];
@@ -4525,6 +4675,7 @@ export class TrafficSystem implements SimSystem {
     const commute = st.commute;
     commute.fill(0);
     const changed: Building[] = [];
+    this.cutIds.clear();
     for (let o = 0; o < this.oN; o++) {
       const bid = this.oBid[o];
       const b = st.buildings.get(bid);
@@ -4547,6 +4698,8 @@ export class TrafficSystem implements SimSystem {
       }
       const sc = this.oShC[o], stt = this.oShT[o], sw = this.oShW[o];
       this.modeById[bid] = sc + stt + sw <= 0 ? 0 : sc >= stt && sc >= sw ? 1 : stt >= sw ? 2 : 3;
+      // (routed 43: no road to the city's jobs — no commute, routeInfo says so)
+      if (o < this.oCut.length && this.oCut[o] === 1) { this.cutIds.add(bid); this.modeById[bid] = 0; }
       for (let z: number = b.z; z < b.z + b.d; z++) for (let x: number = b.x; x < b.x + b.w; x++) {
         const i = z * st.size + x;
         if (st.building[i] === bid) commute[i] = t;
@@ -4787,7 +4940,8 @@ interface ReachSnap {
   /** snapshot count (the reach cache's key), road graph version of its node ids */
   tick: number;
   ver: number;
-  /** origins: road entries (CSR), workers, park & ride options (garage index, availability cost; PR_OPTIONS stride),
+  /** origins: road entries (CSR; road cells — routed 53: valid across graph rebuilds), workers, park & ride options
+   *  (garage index, availability cost; PR_OPTIONS stride),
    *  free-flow ranking minutes of the fastest option, the group root that took most of their overflow (-1 none) */
   n: number;
   entS: Int32Array<ArrayBuffer>;
@@ -4799,7 +4953,8 @@ interface ReachSnap {
   prA: Float32Array<ArrayBuffer>;
   f0: Float32Array<ArrayBuffer>;
   ovG: Int32Array<ArrayBuffer>;
-  /** garages: ids, group roots, ranking minutes (Infinity: no park & ride), room (spaces - reserve), road entries (CSR) */
+  /** garages: ids, group roots, ranking minutes (Infinity: no park & ride), room (spaces - reserve), road entries (CSR,
+   *  road cells) */
   gN: number;
   gBid: Int32Array<ArrayBuffer>;
   gGrp: Int32Array<ArrayBuffer>;
@@ -4848,11 +5003,6 @@ interface TransportSave {
   rng?: number;
   cycles?: number;
   iter?: number;
-}
-
-/** traffic system of a city state (transportUseFactor / truckVolumeOf only receive the state; registry in transit.ts) */
-export function trafficOfState(st: CityState): TrafficSystem | undefined {
-  return TRAFFIC_OF_STATE.get(st) as TrafficSystem | undefined;
 }
 
 /** interchange minutes of a non-highway cell next to a highway (class x congestion of its ramp flow) */
