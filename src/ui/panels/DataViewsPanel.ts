@@ -7,7 +7,7 @@ import { Overlay } from '../../core/types';
 import type { GameContext } from '../../game/context';
 import { resolveVariant } from '../../sim/infra/overlays';
 import { Panel } from '../Panel';
-import { clear, h, toggle, toggleClass } from '../dom';
+import { clear, escapeHtml, h, toggle, toggleClass } from '../dom';
 import { icon } from '../icons';
 import { DESIR_GROUPS, OVERLAYS, legendHtml, overlayInfo, overlayTitle, overlayVariants } from '../overlays';
 import { uiZoom } from '../zoom';
@@ -49,6 +49,19 @@ export function variantChips(ctx: GameContext, o: Overlay, compact = false): HTM
   return box;
 }
 
+/**
+ * The Data views list's "More" cue (final fixes P12) for the sections with views hidden below the visible part: the next
+ * two by name, so a player looking for Power sees "More: Environment · Utilities & traffic…" — the Underground "View"
+ * row named only when nothing else is hidden
+ */
+export function moreLabel(sections: readonly string[]): string {
+  const views = sections.filter((n) => n && n !== 'View');
+  const list = views.length ? views : sections.filter(Boolean);
+  const shown = list.slice(0, 2);
+  if (!shown.length) return 'More';
+  return `More: ${shown.join(' · ')}${list.length > shown.length ? '…' : ''}`;
+}
+
 export class DataViewsPanel extends Panel {
   readonly id = 'dataviews';
   readonly title = 'Data views';
@@ -83,8 +96,8 @@ export class DataViewsPanel extends Panel {
     }
     // layout (fits 1280×720): the overlay grid (and the Underground toggle under it) scrolls inside; variants + legend
     // stay pinned below (Desirability's 15 variants + a legend left the grid one row tall with the toggle pinned too).
-    // Final fixes P12: when buttons are hidden below, a "More" cue names the next section and scrolls to it (at 720p the
-    // Utilities & traffic row sat cut off under the fade, and a click on the clipped Power button hit the map)
+    // Final fixes P12: when buttons are hidden below, a "More" cue names the hidden sections and scrolls to the next one
+    // (at 720p the Utilities & traffic row sat cut off under the fade, and a click on the clipped Power button hit the map)
     const scroll = h('div', { class: 'dv-scroll' });
     this.scroll = scroll;
     scroll.addEventListener('scroll', () => this.cue(), { passive: true });
@@ -180,8 +193,8 @@ export class DataViewsPanel extends Panel {
     toggleClass(sc, 'more-below', below);
     toggleClass(sc, 'more-above', more && sc.scrollTop > 4);
     if (this.more) {
-      const sec = below ? this.hiddenSection() : null;
-      const label = `${icon('chevDown', 12)}<span>${sec ? `More: ${sec.textContent}` : 'More'}</span>`;
+      const secs = below ? this.hiddenSections() : [];
+      const label = `${icon('chevDown', 12)}<span>${escapeHtml(moreLabel(secs.map((t) => t.textContent ?? '')))}</span>`;
       if (this.more.dataset.h !== label) {
         this.more.dataset.h = label;
         this.more.innerHTML = label;
@@ -190,8 +203,13 @@ export class DataViewsPanel extends Panel {
   }
   /** the title of the section holding the first button (or row) cut off below the visible part of the list */
   private hiddenSection(): HTMLElement | null {
+    return this.hiddenSections()[0] ?? null;
+  }
+  /** the titles of the sections with a button (or row) cut off below the visible part of the list, in order */
+  private hiddenSections(): HTMLElement[] {
     const sc = this.scroll;
-    if (!sc) return null;
+    const out: HTMLElement[] = [];
+    if (!sc) return out;
     const bottom = sc.scrollTop + sc.clientHeight;
     let title: HTMLElement | null = null;
     for (const el of sc.querySelectorAll<HTMLElement>('.sec-title, .dv-btn, .dv-ug')) {
@@ -201,9 +219,9 @@ export class DataViewsPanel extends Panel {
       }
       // (.dv-scroll is positioned: offsets are in its content box; a button's offsetParent is the scroll)
       const top = el.offsetParent === sc ? el.offsetTop : el.offsetTop + (el.parentElement?.offsetTop ?? 0);
-      if (top + el.offsetHeight > bottom + 2) return title;
+      if (title && top + el.offsetHeight > bottom + 2 && out[out.length - 1] !== title) out.push(title);
     }
-    return null;
+    return out;
   }
   private scroll: HTMLElement | null = null;
   private more: HTMLButtonElement | null = null;

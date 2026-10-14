@@ -9,6 +9,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PANEL_REBUILD_MS, Panel, anchoredPos, clearOfHud } from '../../src/ui/Panel';
 import { slider, stepButtons, stepSlider } from '../../src/ui/dom';
+import { moreLabel } from '../../src/ui/panels/DataViewsPanel';
 import type { GameContext } from '../../src/game/context';
 
 describe('anchoredPos (final fixes P12): a resize keeps the docked edge', () => {
@@ -29,6 +30,16 @@ describe('anchoredPos (final fixes P12): a resize keeps the docked edge', () => 
     expect(anchoredPos(-300, 10, 400, 300, 1600, 900, 1600, 900)).toEqual({ x: 4, y: 64 });
     // taller than the layer: the top stays under the top bar
     expect(anchoredPos(100, 300, 400, 2000, 1600, 900, 1600, 900).y).toBe(64);
+  });
+});
+
+describe('Data views "More" cue (final fixes P12): names the sections hidden below', () => {
+  it('the next two by name (a player looking for Power sees Utilities & traffic), the View row only on its own', () => {
+    expect(moreLabel(['Utilities & traffic', 'View'])).toBe('More: Utilities & traffic');
+    expect(moreLabel(['Environment', 'Utilities & traffic', 'View'])).toBe('More: Environment · Utilities & traffic');
+    expect(moreLabel(['Services', 'Environment', 'Utilities & traffic', 'View'])).toBe('More: Services · Environment…');
+    expect(moreLabel(['View'])).toBe('More: View');
+    expect(moreLabel([])).toBe('More');
   });
 });
 
