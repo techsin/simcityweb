@@ -336,12 +336,13 @@ export const PENALTY_NO_WATER = 0.4;
 /**
  * OUTAGES (final fixes F7): residents of a home that loses its power (or the piped water it needs) do not leave at once
  * — they wait for the repair. The no-power / no-water health penalties and the occupancy cut (× 0.25 unpowered, × 0.5
- * dry) ramp in with the outage's age: × smoothstep(0, OUTAGE_EXIT_DAYS, days without) (10 days: 7 %, 30 days: half, 60
- * days: all). Only the exit is slowed — a home that is still filling up never fills above the cut — and the building is
- * still abandoned after ABANDON_DAYS of outage. Outage start days: systemData.outages (by building id; homes only).
- * (A 10-day blackout of all 8 plants of a 175k city used to empty 49 % of the homes in those 10 days.)
+ * dry) ramp in with the outage's age: × smoothstep(0, OUTAGE_EXIT_DAYS, days without) (10 days: a quarter, 15 days:
+ * half, 30 days: all). Only the exit is slowed — a home that is still filling up never fills above the cut — and the
+ * building is still abandoned after ABANDON_DAYS of outage. Outage start days: systemData.outages (by building id; homes
+ * only). (A 10-day blackout of all 8 plants of a 175k city used to empty 49 % of the homes in those 10 days; now it costs
+ * ~3 %, a 60-day one ~80 %: tests/sim/finalFixesEcon.test.ts.)
  */
-export const OUTAGE_EXIT_DAYS = 60;
+export const OUTAGE_EXIT_DAYS = 30;
 export const PENALTY_NO_ROAD = 0.6;
 export const PENALTY_NO_GARBAGE = 0.12;
 /** residential: health −= (JOB_ACCESS_MIN − share of workers reaching a job) × this (traffic workerAccess) */

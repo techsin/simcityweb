@@ -65,8 +65,9 @@ describe('final fixes F7: an outage empties homes over weeks, not days, and appr
     expect(outageDays(B.st, B.homes[5])).toBeGreaterThanOrEqual(5);
     const lossB = 1 - pop(B.homes) / pop(A.homes);
     console.log(`10-day blackout: ${p0} residents -> ${pop(B.homes)} vs ${pop(A.homes)} without it (−${(lossB * 100).toFixed(1)} %)`);
+    // (a few %: residents wait for the repair; it used to be half of them)
     expect(lossB).toBeLessThan(0.08);
-    expect(lossB).toBeGreaterThan(0);
+    expect(lossB).toBeGreaterThan(0.01);
     setPower(B.homes, true);
     // the month tick of day 60: the sliced survey saw a third of the homes dark — approval registers the blackout
     for (const t of [A, B]) runTo(t.sim, 61);
