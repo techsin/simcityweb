@@ -23,7 +23,7 @@ import {
   APPROVAL, APPROVAL_TERMS as AT, COMMUTE_FALLBACK, COVERAGE_FALLBACK, EQ_BASE, EQ_RATE, EQ_SPAN, HQ_BASE, HQ_RATE, HQ_SPAN,
   NEEDS_POP_FULL, NEEDS_POP_START, TAX_NEUTRAL,
 } from './tuning';
-import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
+import { type EconRuntime, type InfraFlags, GROWABLE_SLICES, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
 import { serviceEffectiveness } from './budget';
 import { waterRequired } from './demographics';
@@ -116,10 +116,12 @@ const SCRATCH = new Float64Array(S_LEN);
 function surveyHomes(st: CityState, rt: EconRuntime, inf: InfraFlags, acc: Float64Array | number[], slice: number): void {
   const N = st.size;
   const outPop = (st.systemData.outages as { pop?: Record<string, number> } | undefined)?.pop;
-  const list = rt.growables;
+  // (a slice: only its bucket, in list order — the same homes and sums as the filtered full list; final fixes SE-3)
+  const bucket = slice >= 0 && SURVEY_DAYS === GROWABLE_SLICES;
+  const list = bucket ? rt.growablesOfSlice(slice) : rt.growables;
   for (let k = 0; k < list.length; k++) {
     const b = list[k];
-    if (slice >= 0 && b.id % SURVEY_DAYS !== slice) continue;
+    if (slice >= 0 && !bucket && b.id % SURVEY_DAYS !== slice) continue;
     if (b.flags & BF.Abandoned) continue;
     // (a home in an outage counts with the residents it had when it went dark, even once they have left)
     const pre = outPop ? outPop[b.id] : undefined;

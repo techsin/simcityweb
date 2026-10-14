@@ -325,6 +325,21 @@ describe('seasonal foliage patterns', () => {
     expect(vw.fragmentShader).toContain('float lowF = vSurf.z < 0.0 ? 1.0 :');
   });
 
+  it('lamp light pools on lawns take the lawns\' climate / season tint (vertex shader), pools on paving keep theirs', () => {
+    const vw = { vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader, uniforms: {} } as unknown as THREE.WebGLProgramParametersWithUniforms;
+    getBuildingMaterial().onBeforeCompile(vw, {} as THREE.WebGLRenderer);
+    const vs = vw.vertexShader;
+    for (const u of ['uniform float uFoliageDry;', 'uniform vec3 uFoliageTint;']) expect(vs).toContain(u);
+    const i = vs.indexOf('abs(surf.y - 9.0) < 0.5');
+    expect(i).toBeGreaterThan(vs.indexOf('#include <begin_vertex>'));
+    const block = vs.slice(i, vs.indexOf('#endif', i));
+    // the green test on the pool paint (lawn pools only) and the lawns' dormant / dry mix + tint
+    expect(block).toContain('vColor.g - max(vColor.r, vColor.b)');
+    expect(block).toContain('uFoliageDry) * uFoliageTint');
+    expect((vw.uniforms as Record<string, unknown>).uFoliageDry).toBe(sharedUniforms.uFoliageDry);
+    expect((vw.uniforms as Record<string, unknown>).uFoliageTint).toBe(sharedUniforms.uFoliageTint);
+  });
+
   it('lot palms (commercial / civic kits) are evergreen: their fronds never turn autumn-coloured or bare', () => {
     for (const palm of [comPalm, civPalm]) {
       const b = new ModelBuilder();

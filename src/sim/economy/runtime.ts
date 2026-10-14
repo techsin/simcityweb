@@ -10,6 +10,7 @@
 import { BF, type Building, type CityState } from '../CityState';
 import type { Simulation } from '../Simulation';
 import { DEV_TYPE_COUNT } from '../../core/types';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import { getDef } from '../catalog';
 import type { BuildingDef } from '../catalogTypes';
 import { COARSE, WORKFORCE_RATIO } from './tuning';
@@ -197,6 +198,10 @@ function emptyTotals(): Totals {
   };
 }
 
+/** the daily slices of the monthly growable passes (resident survey, hotel rooms / historic sites, EQ / HQ): the
+ *  growables with id % GROWABLE_SLICES === k are read on the days ≡ k (EconRuntime.growablesOfSlice) */
+export const GROWABLE_SLICES = DAYS_PER_MONTH;
+
 export class EconRuntime {
   sim!: Simulation;
   private subscribedTo: Simulation | null = null;
@@ -205,6 +210,15 @@ export class EconRuntime {
 
   /** growable buildings (array for fast iteration); rebuilt lazily when dirty */
   growables: Building[] = [];
+  /**
+   * growables by id % GROWABLE_SLICES, each in `growables` order (final fixes SE-3: the daily slices read only today's
+   * bucket instead of scanning every growable three times a day; the same buildings in the same order, so the sliced
+   * sums stay bit-identical). Kept in step with the list: an added building is appended to its bucket; a swap-remove
+   * takes the building out of its bucket and moves the list's last building to its new place in its own; a rebuild of
+   * the list rebuilds them (slicesDirty: lazily, also if a bucket is ever found out of step).
+   */
+  private slices: Building[][] = Array.from({ length: GROWABLE_SLICES }, () => []);
+  private slicesDirty = true;
   /** plopped buildings */
   plopped: Building[] = [];
   /** def cache per building id (avoid map lookups in hot loops) */
@@ -350,6 +364,7 @@ export class EconRuntime {
     const pos = b.id < this.listIndex.length ? this.listIndex[b.id] : -1;
     if (pos < 0 || pos >= list.length || list[pos] !== b) { this.buildingsDirty = true; return; }
     const last = list[list.length - 1];
+    if (list === this.growables && !this.slicesDirty) this.sliceDrop(b, pos, last);
     list[pos] = last;
     this.listIndex[last.id] = pos;
     list.pop();
@@ -365,9 +380,47 @@ export class EconRuntime {
     } else {
       this.setIndex(b.id, this.growables.length);
       this.growables.push(b);
+      // (the list's last building: the last of its bucket)
+      if (!this.slicesDirty) this.slices[b.id % GROWABLE_SLICES].push(b);
       if (b.flags & BF.Constructing) this.constructing.push(b);
     }
     // growth re-validates candidate cells itself; the list is rebuilt on zone / network changes (and every 10 days)
+  }
+
+  /**
+   * the buckets' side of a swap-remove (before the list changes): `b` (list position `pos`) leaves its bucket, and the
+   * list's last building, which takes position `pos`, moves from the end of its bucket to its place by list position
+   * (a bucket is sorted by position: binary search on listIndex)
+   */
+  private sliceDrop(b: Building, pos: number, last: Building): void {
+    const idx = this.listIndex;
+    const sb = this.slices[b.id % GROWABLE_SLICES];
+    let lo = 0, hi = sb.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (idx[sb[mid].id] < pos) lo = mid + 1; else hi = mid; }
+    if (sb[lo] !== b) { this.slicesDirty = true; return; }
+    sb.splice(lo, 1);
+    if (last === b) return;
+    const sl = this.slices[last.id % GROWABLE_SLICES];
+    if (sl[sl.length - 1] !== last) { this.slicesDirty = true; return; }
+    sl.pop();
+    lo = 0; hi = sl.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (idx[sl[mid].id] < pos) lo = mid + 1; else hi = mid; }
+    sl.splice(lo, 0, last);
+  }
+
+  private rebuildSlices(): void {
+    const S = this.slices;
+    for (let k = 0; k < GROWABLE_SLICES; k++) S[k].length = 0;
+    const list = this.growables;
+    for (let k = 0; k < list.length; k++) S[list[k].id % GROWABLE_SLICES].push(list[k]);
+    this.slicesDirty = false;
+  }
+
+  /** the growables with id % GROWABLE_SLICES === k, in `growables` order (a live view of the current list — not
+   *  ensureLists()-ed, like `growables` itself; do not modify) */
+  growablesOfSlice(k: number): readonly Building[] {
+    if (this.slicesDirty) this.rebuildSlices();
+    return this.slices[k];
   }
 
   private onRemoved(b: Building): void {
@@ -404,6 +457,7 @@ export class EconRuntime {
       }
     }
     this.buildingsDirty = false;
+    this.slicesDirty = true;
   }
 
   /** def of a building, cached by building id (hot loops) */

@@ -28,7 +28,7 @@ import { clamp, smoothstep } from '../../core/rng';
 import { DAYS_PER_MONTH } from '../../core/constants';
 import { DevType, Network } from '../../core/types';
 import type { BuildingDef } from '../catalogTypes';
-import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
+import { type EconRuntime, type InfraFlags, GROWABLE_SLICES, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
 import { onStrike, serviceEffectiveness } from './budget';
 import { residentSurvey, toxicDumpOperating, type ResidentSurvey } from './approval';
@@ -343,10 +343,12 @@ const TOURISM_ALL = (2 ** TOURISM_SLICES) - 1;
 interface TourismAcc { v: 1; m: number; done: number; rooms: number; hist: number[] }
 /** add the hotel rooms (Σ hotel jobs × HOTEL_ROOMS_PER_JOB) and historic building ids of a slice (−1 = all) */
 function growablesSlice(rt: EconRuntime, slice: number, out: { rooms: number; hist: number[] }): void {
-  const growList = rt.growables;
+  // (a slice: only its bucket, in list order — the same buildings and sums as the filtered full list; final fixes SE-3)
+  const bucket = slice >= 0 && TOURISM_SLICES === GROWABLE_SLICES;
+  const growList = bucket ? rt.growablesOfSlice(slice) : rt.growables;
   for (let k = 0; k < growList.length; k++) {
     const b = growList[k];
-    if (slice >= 0 && b.id % TOURISM_SLICES !== slice) continue;
+    if (slice >= 0 && !bucket && b.id % TOURISM_SLICES !== slice) continue;
     const hist = (b.flags & BF.Historic) !== 0;
     if (!hist && b.jobs <= 0) continue;
     const def = rt.defOf(b);

@@ -194,6 +194,8 @@ flat varying float vWorldNX;
 uniform float uTime;
 uniform float uWind;
 uniform vec4 uSeason;
+uniform float uFoliageDry;
+uniform vec3 uFoliageTint;
 `;
 
 /**
@@ -236,6 +238,15 @@ if (abs(surf.x - 6.0) < 0.5 && abs(surf.y - 13.0) < 0.5) {
   wn = mat3(modelMatrix) * wn;
   vWorldNX = abs(wn.x) > abs(wn.z) ? 1.0 : 0.0;
 }
+#if defined(USE_COLOR) || defined(USE_COLOR_ALPHA)
+if (abs(surf.x - 6.0) < 0.5 && abs(surf.y - 9.0) < 0.5) {
+  // lamp light pools on lawns (Emissive 9, painted ~0.7x the ground) take the lawns' climate / season tint by day (LOW
+  // foliage, see Foliage: dormant in winter, straw in the desert), else a summer-green disc on a dormant / dry lawn.
+  // Per vertex: no fragment cost
+  float grP = smoothstep(0.02, 0.08, vColor.g - max(vColor.r, vColor.b));
+  vColor.rgb = mix(vColor.rgb, mix(vColor.rgb, vec3(dot(vColor.rgb, vec3(0.3, 0.59, 0.11))) * vec3(1.18, 1.02, 0.68), uFoliageDry) * uFoliageTint, grP);
+}
+#endif
 if (abs(surf.x - 8.0) < 0.5) {
   float hgt = max(position.y - 1.5, 0.0);
   float ph = uTime * 1.3 + instPos.x * 0.031 + instPos.z * 0.047;

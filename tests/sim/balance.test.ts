@@ -13,10 +13,11 @@
  *  - the wrong choices do clearly worse (critic item 41): a mayor who builds no services at all ends with under three
  *    quarters of the population, EQ < 60, approval below 45 and most incidents failed; one who builds no schools ends with EQ < 60 and
  *    lower approval — and neither ends with more than 5 % more people than the base (the chaos margin);
- *  - WP6b round 2: a mayor who never dispatches to uncovered emergencies (--neglect) has more of them fail, residents
- *    give him at least half a point less for emergencies on average (the approval term: they remember unanswered
- *    emergencies for a year, and each ignored Dispatch prompt at a fixed weight) and a lower approval in the years where
- *    that bit (WP6b round 3: was "a point lower over the run" — see the test); one who refuses smokestack industry
+ *  - WP6b round 2: a mayor who never dispatches to uncovered emergencies (--neglect) fails no fewer of them, residents
+ *    give him no more for emergencies on average (the approval term: they remember unanswered emergencies for a year,
+ *    and each ignored Dispatch prompt at a fixed weight; lead decision 17a: the >= 0.5 point cost is judged on the
+ *    256 x 60 gate runs) and a lower approval in the years where that bit (WP6b round 3: was "a point lower over the
+ *    run" — see the test); one who refuses smokestack industry
  *    (--skip dirty) breathes cleaner air but pays with unemployment (labour headroom: commerce alone no longer employs
  *    everyone) and a smaller city.
  * The yearly tables for seeds 7 and 11 (256 x 60) live in the partB set; tools/simbot.ts prints the same columns.
@@ -124,10 +125,14 @@ describe.skipIf(process.env.BALANCE !== '1' && process.env.BALANCE !== '256')('W
     // 62.66 over the run, while approval was 2.2 points lower in the 4 years where neglect bit. 256 x 60, where more
     // emergencies happen beyond reach: −2.7 / −3.6 approval over the run on seeds 7 / 11, emergencies term −4.5 / −4.4
     // against −1.0 / −1.1.)
+    // (Lead decision 17a, final fixes: since the early plant-accident grace and real coverage, the attentive 128 x 15 bot
+    // loses only ~2 incidents in 15 years, both in year 1 before its first fire station, so neglect has almost nothing to
+    // ignore here: covered emergencies are statistics by design. On 128 x 15 neglect's term must be no better and it must
+    // fail no fewer incidents; the >= 0.5 point emergencies cost is judged on the 256 x 60 seed 7 / 11 gate runs.)
     const mean = (v: Yearly[], f: (r: Yearly) => number) => v.reduce((s, r) => s + f(r), 0) / v.length;
     const ng = await play(128, 15, 7, { neglect: true });
-    expect(ng.reduce((s, r) => s + r.failed, 0), 'neglect: failed incidents').toBeGreaterThan(y.reduce((s, r) => s + r.failed, 0));
-    expect(mean(ng, (r) => r.emergencies), 'neglect: approval for emergencies').toBeLessThan(mean(y, (r) => r.emergencies) - 0.5);
+    expect(ng.reduce((s, r) => s + r.failed, 0), 'neglect: failed incidents').toBeGreaterThanOrEqual(y.reduce((s, r) => s + r.failed, 0));
+    expect(mean(ng, (r) => r.emergencies), 'neglect: approval for emergencies').toBeLessThanOrEqual(mean(y, (r) => r.emergencies));
     const bit = ng.flatMap((r, k) => (r.emergencies <= y[k].emergencies - 1 ? [r.approval - y[k].approval] : []));
     expect(bit.length, 'neglect: years where unanswered emergencies cost a point or more').toBeGreaterThan(0);
     expect(bit.reduce((s, d) => s + d, 0) / bit.length, 'neglect: approval in those years').toBeLessThan(0);

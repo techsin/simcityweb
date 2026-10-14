@@ -37,7 +37,7 @@ import {
   WORKFORCE_MAX, WORKFORCE_MIN, WORKFORCE_RATIO, COHORT_BASE, NEEDS_ABANDON_SHARE, NEEDS_PENALTY_MAX, NEEDS_UNMET_PEOPLE,
   EQ_FLOOR, EQ_SPAN_STOCK, OUTAGE_EXIT_DAYS, RENT_CONDITION_MIN,
 } from './tuning';
-import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
+import { type EconRuntime, type InfraFlags, GROWABLE_SLICES, infraFlags } from './runtime';
 import { frontHasRoad, removeBuilding } from './buildings';
 import { ordinanceEffect } from './ordinances';
 import { conditionDesirability, garbageFade, lotCell } from './factors';
@@ -45,7 +45,7 @@ import type { FactorTerm } from '../explain';
 import { getDef } from '../catalog';
 import {
   type DemographicsCtx, DemographicsCache, REC_NOISE, REC_RAW, REC_UNMET, bindDemographics, demographicsCtx,
-  demographicsData, demographicsSim, eqHqDaily, evaluateNeeds, needsOf, updateDemographics,
+  EQHQ_SLICES, demographicsData, demographicsSim, eqHqDaily, evaluateNeeds, needsOf, updateDemographics,
 } from './demographics';
 
 /** duck-typed view of sim-infra's TrafficSystem (optional methods; -1 = not assessed yet) */
@@ -301,6 +301,8 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
   let cursor = 0;
   const burntSince = new Map<number, number>();
   const defOf = (b: Building): BuildingDef | undefined => rt.defOf(b);
+  /** EQ / HQ's daily slice: the runtime's bucket (when the slicings agree, as they do: both DAYS_PER_MONTH) */
+  const sliceOf = EQHQ_SLICES === GROWABLE_SLICES ? (k: number) => rt.growablesOfSlice(k) : undefined;
   // home access records (demographics.ts): refilled after every services pass (monthly without the services system)
   let cache = new DemographicsCache();
   let unsubLayers: (() => void) | null = null;
@@ -726,7 +728,8 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       // keeps the legacy coverage lag in sim-core-only runs) — on day EQHQ_DAY of the month, not on the month tick,
       // which already carries every system's monthly work; the homes are read in daily slices (a loop over all homes
       // on one day: ~8 ms at 900k residents; final fixes V5)
-      if (infraFlags(sim.state).services) eqHqDaily(sim.state, rt.growables, EQHQ_DAY, DAYS_PER_MONTH, sim, defOf);
+      // (today's homes from the runtime's id % 30 bucket, in list order: final fixes SE-3)
+      if (infraFlags(sim.state).services) eqHqDaily(sim.state, rt.growables, EQHQ_DAY, DAYS_PER_MONTH, sim, defOf, sliceOf);
       rt.timing.population = performance.now() - t0;
     },
 

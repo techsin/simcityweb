@@ -16,3 +16,11 @@ Lead decision on the open gate. The seasons lane's twig crowns add about +1.5% t
 ## Lead decision, Oct 14 21:22 UTC (seasons revise r3)
 
 kit_bareCrown.patch may be landed by the seasons r3 lane together with a LOW twig strip (minimal hook in BuildingRenderer.ts, marked "// seasons r3: LOW twig strip"). Gate: no LOW still-view triangle regression vs 02464a3. Otherwise keep holding it. Full text: scratchpad render2/seasons/r3/COORD.md.
+
+## Seasons r3 status (Oct 14, revise r3)
+
+| Patch | Status |
+|---|---|
+| `kit_bareCrown.patch` | **Applied** by seasons r3 together with the LOW twig strip (`src/assets/builders/winterTwigs.ts`; four one-line hooks in `src/render/city/buildings/BuildingRenderer.ts`, each marked `// seasons r3: LOW twig strip`: the import, the `twigVer` field, the registration in `geomFor`, the rebuild in `update`). With the strip on, every lot model has its 02464a3 triangle count. The patch file was removed; git history keeps it. |
+| `lodProxy_bareDiamonds.patch` | **New**, for the buildings lane after its r3 closes (`src/render/city/buildings/lodProxy.ts`). The foliage diamonds of LOD proxies keep a bare crown's look at LOD range: the swap marker is cleared, so they do not vanish in winter, and the winter-only twig sprays (Foliage pattern 5) are no longer counted as part of a crown. |
+| others | Unchanged (owners and decisions as above). |

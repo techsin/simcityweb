@@ -788,10 +788,12 @@ const eqHqMonth = (day: number, stepDay: number): number => Math.ceil((day - ste
  * home on the step day cost ~8 ms at 900k residents): today's slice of the homes is added to the month's sums
  * (systemData.demographics.eqhq), and on the step day (day ≡ stepDay mod EQHQ_SLICES) the step over dtDays is taken
  * from the month's sums once every slice is in — else (a new or loaded city before its first full month) from one full
- * pass, as updateEqHq. Returns updateEqHq's result on the step day, null on the other days.
+ * pass, as updateEqHq. Returns updateEqHq's result on the step day, null on the other days. `slice` (final fixes SE-3,
+ * optional): the homes of `list` with id % EQHQ_SLICES === k in list order (EconRuntime.growablesOfSlice) — today's
+ * slice is read from it instead of scanning the whole list (the same homes in the same order: the same sums).
  */
 export function eqHqDaily(st: CityState, list: readonly Building[], stepDay: number, dtDays: number, sim?: Simulation,
-  defOf: (b: Building) => BuildingDef | undefined = defByName): boolean | null {
+  defOf: (b: Building) => BuildingDef | undefined = defByName, slice?: (k: number) => readonly Building[]): boolean | null {
   const d = demographicsData(st);
   const day = st.day;
   const m = eqHqMonth(day, stepDay);
@@ -801,7 +803,8 @@ export function eqHqDaily(st: CityState, list: readonly Building[], stepDay: num
   if (a.m !== m) { a.m = m; a.done = 0; a.s.fill(0); }
   const k = day % EQHQ_SLICES;
   if (!(a.done & (1 << k))) {
-    eqHqSums(st, list, k, sim, defOf, a.s);
+    if (slice) eqHqSums(st, slice(k), -1, sim, defOf, a.s);
+    else eqHqSums(st, list, k, sim, defOf, a.s);
     a.done |= 1 << k;
   }
   if (day % EQHQ_SLICES !== stepDay % EQHQ_SLICES) return null;
