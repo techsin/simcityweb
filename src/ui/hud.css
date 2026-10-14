@@ -506,8 +506,8 @@
   color: var(--text-dim); font: 700 12px/1 var(--font); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; flex: none;
 }
 .ui-stepbtn:hover { background: var(--hover); color: var(--text); }
-/* a focused slider (it keeps the focus for the arrow keys) shows it on its thumb, not with the box outline */
-.ui-range:focus { outline: none; }
+/* a focused slider (it keeps the focus for the arrow keys) shows it on its thumb ring, not with the inputs' box outline */
+.ui-range:focus, .mp-ui input.ui-range:focus-visible { outline: none; }
 .ui-range:focus::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(63, 167, 255, 0.6), 0 1px 4px rgba(0, 0, 0, 0.5); }
 .ui-range:focus::-moz-range-thumb { box-shadow: 0 0 0 4px rgba(63, 167, 255, 0.6), 0 1px 4px rgba(0, 0, 0, 0.5); }
 .fund-row .fr-badge .chip { margin-left: 4px; padding: 1px 5px; font-size: 9.5px; }

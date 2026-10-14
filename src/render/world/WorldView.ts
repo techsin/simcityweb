@@ -126,10 +126,13 @@ export class WorldView implements WorldViewApi {
   /**
    * Cascades: while the view moves, the far cascade is redrawn at most every this many frames (1 = with every shadow
    * render). In between, shadow renders redraw the near cascade only; the far one keeps its map tile and lookup matrix
-   * (CityCascadeShadow.holdFar), so its static shadows stay put and only its coverage edge and distant vehicles trail
-   * by a frame. Not after a jump or a light turn, when forced, or at rest: the first frame at rest redraws both.
+   * (CityCascadeShadow.holdFar), so its static shadows stay put and only its coverage edge, distant vehicles and
+   * distant LOD swaps trail by up to interval - 1 frames. The far cascade is redrawn sooner once it no longer fits the
+   * view (CityCascadeShadow.farHoldable: moved by a tenth of its size, its depth range changed by more than a split
+   * step, the light turned: a fast pan or zoom redraws it sooner), when forced, and at rest (the first frame at rest
+   * redraws both).
    */
-  shadowFarInterval = 2;
+  shadowFarInterval = 4;
   /** moving vehicles re-render the map every frame (no throttle) while the camera is closer than this (m): beyond it
    *  a one-frame shadow lag is under a pixel */
   dynamicShadowDistance = 600;
