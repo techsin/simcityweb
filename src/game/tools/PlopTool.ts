@@ -1,9 +1,13 @@
 /**
- * Place a ploppable building: ghost follows the cursor, auto-faces the nearest road (R rotates manually).
+ * Place a ploppable building: ghost follows the cursor, auto-faces the nearest road (R rotates manually); shore
+ * buildings auto-face the water, preferring a side whose lot also touches a road (final fixes P14).
  * The fitting data view switches on while placing (WP5): parks → Parks (play / green tier), schools → Education with the
  * school's tier, fire stations → Emergency (fire response), garbage → Garbage, air / noise emitters → Air / Noise,
  * transit → Transit, a parking garage → Parking, unwanted / prestigious buildings → Prestige. The cursor tip previews
- * what the spot gives: transit stops within reach of a garage (park & ride), partner terminals of a ferry.
+ * what the spot gives: transit stops within reach of a garage (park & ride), partner terminals of a ferry; what the
+ * building costs a month here — "≈§A/mo now · up to §B at full use", the wording of the build menu, Rewards panel and
+ * facility facts (final fixes P3: A from the unserved need in its reach, placement.ts upkeepHere); and, in red, that a
+ * staffed service without a road won't work (final fixes P8).
  */
 import { CELL_SIZE } from '../../core/constants';
 import { Overlay } from '../../core/types';
@@ -11,15 +15,20 @@ import type { ActionResult } from '../../sim/actions';
 import { getDef } from '../../sim/catalog';
 import type { BuildingDef } from '../../sim/catalogTypes';
 import { facilityDefFacts } from '../../sim/infra/facilities';
-import { expectedUpkeep, opexTierOf } from '../../sim/economy/opex';
+import { lotTouchesRoad } from '../../sim/economy/buildings';
 import { ferryPartnersFor, stopsNear } from '../../sim/infra/transportFacilities';
 import { EMG_FIRE } from '../../sim/infra/overlays';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
 import { money } from '../../ui/format';
+import { upkeepEstimate } from '../../ui/upkeepModel';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
+import { shoreFacesWater, shoreRotation, staffedService, upkeepHere, type Rot } from './placement';
 
-type Rot = 0 | 1 | 2 | 3;
+/** actions.ts plop's shore rule failure (the tip adds how to fix it) */
+const SHORE_FAIL = 'Must be placed on the shore with its front facing water';
+/** the red line of a staffed service no road touches (final fixes P8) */
+export const NO_ROAD_STAFFED = "No road access — staff can't reach it; it won't work until a road touches it";
 
 /** the data view (and its variant, -1 = the view's own) that helps placing a def; null = leave the view alone */
 export function autoOverlayOf(def: BuildingDef): { o: Overlay; v: number } | null {
@@ -61,6 +70,11 @@ export class PlopTool extends Tool {
   /** placement preview line (garage: stops in reach; ferry: partner terminals) and the key it was made for */
   private preview = '';
   private previewKey = '';
+  /** the upkeep line of the current spot ("Upkeep ≈§A/mo now · up to §B at full use"), made with res */
+  private upkeep = '';
+  /** the current spot: a staffed service without a road (P8) / a shore building not facing water (P14) */
+  private noRoad = false;
+  private shoreHint = '';
 
   constructor(ctx: GameContext, private def: BuildingDef, icon: string) {
     super(ctx);
@@ -132,8 +146,21 @@ export class PlopTool extends Tool {
     return n;
   }
 
+  /** the auto rotation faces the water (a shore building with water beside it) */
+  private facingWater = false;
+
   private choose(p: ToolPointer): { x: number; z: number; rot: Rot } {
+    this.facingWater = false;
     if (this.manual) return { ...this.origin(p, this.rot), rot: this.rot };
+    // shore buildings: the side facing the water (a road along the lot preferred), else the road as usual
+    if (this.def.placement === 'shore') {
+      const s = safe(() => shoreRotation(this.ctx.state, (r) => { const [w, d] = this.dims(r); return { ...this.origin(p, r), w, d }; }, this.rot), null);
+      if (s) {
+        this.rot = s.rot;
+        this.facingWater = true;
+        return s;
+      }
+    }
     let best = { ...this.origin(p, this.rot), rot: this.rot };
     let bestN = this.frontRoads(best.x, best.z, best.rot);
     for (let r = 0 as Rot; r < 4; r = (r + 1) as Rot) {
@@ -149,7 +176,11 @@ export class PlopTool extends Tool {
     return best;
   }
 
+  /** the pointer of the last refresh (origins of the other rotations for the shore hint) */
+  private lastPointer: ToolPointer | null = null;
+
   private refresh(p: ToolPointer | null, force = false): void {
+    this.lastPointer = p && p.hit ? p : null;
     if (!p || !p.hit) {
       this.ctx.objects.setGhost(null);
       this.ctx.world.setHighlight(null);
@@ -167,6 +198,7 @@ export class PlopTool extends Tool {
       const ok = this.res.ok;
       this.ctx.objects.setGhost(this.def.id, pl.x, pl.z, pl.rot, ok);
       const [w, d] = this.dims(pl.rot);
+      this.spotNotes(pl.x, pl.z, w, d, pl.rot);
       const cells = this.res.cells && this.res.cells.length ? [...this.res.cells] : [];
       if (!cells.length) for (let z = pl.z; z < pl.z + d; z++) for (let x = pl.x; x < pl.x + w; x++) cells.push({ x, z, ok });
       // the stops a garage would serve / the terminals a ferry would link to, lit up on the map
@@ -176,11 +208,51 @@ export class PlopTool extends Tool {
       }
       this.ctx.world.setHighlight(cells);
     }
-    // (schools, clinics, stations, parks: building + running costs per person served at a typical load, economy/opex.ts)
-    const up = !this.def.upkeep ? '' : opexTierOf(this.def) ? `Upkeep ≈${money(expectedUpkeep(null, this.def))}/mo` : `Upkeep ${money(this.def.upkeep)}/mo`;
-    const t = resultTip(this.def.name, this.res, [up, this.manual ? 'R rotate' : 'Auto-facing road · R rotate'].filter(Boolean).map(escapeHtml).join(' · '));
+    const facing = this.manual ? 'R rotate' : this.facingWater ? 'Auto-facing water · R rotate' : 'Auto-facing road · R rotate';
+    const t = resultTip(this.def.name, this.shown(), [this.upkeep, facing].filter(Boolean).map(escapeHtml).join(' · '));
     const pv = this.place ? this.placementPreview(this.place.x, this.place.z, this.place.rot) : '';
-    this.ctx.tip.show(t.html + (this.facts ? `<div class="tip-sub tip-facts">${this.facts}</div>` : '') + pv, t.kind);
+    // (a staffed service without a road is placeable but won't work: a red line and a red tip, P8)
+    const bad = this.noRoad ? `<div class="tip-reason">${escapeHtml(NO_ROAD_STAFFED)}</div>` : '';
+    this.ctx.tip.show(t.html + bad + (this.facts ? `<div class="tip-sub tip-facts">${this.facts}</div>` : '') + pv, bad ? 'bad' : t.kind);
+  }
+
+  /**
+   * what this spot means beyond the preview's result: the upkeep here (P3: schools, clinics, stations, parks pay
+   * running costs per person served — what one more costs here now, and the most it can cost), whether a staffed
+   * service gets no road (P8), how to fix a shore building that doesn't face water (P14)
+   */
+  private spotNotes(x: number, z: number, w: number, d: number, rot: Rot): void {
+    const def = this.def, st = this.ctx.state;
+    const est = safe(() => upkeepEstimate(st, def), null);
+    if (est) {
+      const here = safe(() => upkeepHere(this.ctx.sim, def, x, z, w, d), null);
+      const now = here ?? est.now;
+      this.upkeep = `Upkeep ≈${money(now)}/mo now · up to ${money(Math.max(now, est.full))} at full use`;
+    } else this.upkeep = def.upkeep ? `Upkeep ${money(def.upkeep)}/mo` : '';
+    const res = this.res;
+    this.noRoad = !!res?.ok && staffedService(def) && !safe(() => lotTouchesRoad(st, x, z, w, d), true);
+    this.shoreHint = '';
+    if (res && !res.ok && res.reason === SHORE_FAIL) {
+      // another side of this spot faces the water: press R; none does: the spot is wrong
+      let other = false;
+      for (let r = 0 as Rot; r < 4 && !other; r = (r + 1) as Rot) {
+        if (r === rot) continue;
+        const [rw, rd] = this.dims(r);
+        const o = this.place && this.lastPointer ? this.origin(this.lastPointer, r) : { x, z };
+        other = safe(() => shoreFacesWater(st, o.x, o.z, rw, rd, r), false);
+      }
+      this.shoreHint = other ? ' — press R to face the water' : ' — place it on the water\'s edge, its front facing the water';
+    }
+  }
+
+  /** the preview's result as the tip shows it: the staffed no-road warning goes in red (bad line), a shore failure
+   *  says how to fix it */
+  private shown(): ActionResult | null {
+    const r = this.res;
+    if (!r) return r;
+    if (this.noRoad) return { ...r, reason: undefined };
+    if (this.shoreHint && r.reason) return { ...r, reason: r.reason + this.shoreHint };
+    return r;
   }
 
   override activate(): void {
@@ -212,7 +284,7 @@ export class PlopTool extends Tool {
       }
     } else {
       this.ctx.sound('error');
-      if (r.reason) this.ctx.toast(r.reason, 'error');
+      if (r.reason) this.ctx.toast(r.reason === SHORE_FAIL && this.shoreHint ? r.reason + this.shoreHint : r.reason, 'error');
     }
     this.lastKey = '';
     this.refresh(p, true);

@@ -28,10 +28,24 @@ class FakeEl {
   style: Record<string, string> & { setProperty?: (k: string, v: string) => void } = {};
   dataset: Record<string, string> = {};
   private html = '';
-  /** layout stand-ins: the track is wide (it scrolls), the view 600 px */
-  scrollWidth = 2400;
-  clientWidth = 600;
+  /** layout stand-ins: the track is wide (it scrolls), the view 600 px; `reads` counts the layout reads */
+  private sw = 2400;
+  private cw = 600;
   reads = 0;
+  get scrollWidth(): number {
+    this.reads++;
+    return this.sw;
+  }
+  set scrollWidth(v: number) {
+    this.sw = v;
+  }
+  get clientWidth(): number {
+    this.reads++;
+    return this.cw;
+  }
+  set clientWidth(v: number) {
+    this.cw = v;
+  }
   constructor(readonly tagName: string) {
     this.style.setProperty = (k: string, v: string) => (this.style[k] = v);
   }
@@ -134,5 +148,64 @@ describe('news ticker (final fixes N2)', () => {
     t.frame(1 / 60);
     expect(track.textContent).toContain('Loaded city');
     expect(track.textContent).not.toContain('First city');
+  });
+});
+
+describe('news ticker layout reads (final fixes A1)', () => {
+  it('no layout read per frame; with a ResizeObserver none per rebuild either: the observer reports the widths', () => {
+    const g = globalThis as unknown as { ResizeObserver?: unknown };
+    const had = g.ResizeObserver;
+    const observers: { cb: () => void; targets: unknown[] }[] = [];
+    g.ResizeObserver = class {
+      targets: unknown[] = [];
+      constructor(public cb: () => void) {
+        observers.push(this);
+      }
+      observe(t: unknown) {
+        this.targets.push(t);
+      }
+      disconnect() {}
+    };
+    try {
+      const st = city();
+      st.notify('First', 'info');
+      const { t, track } = ticker(st);
+      const view = track.parentElement!;
+      expect(observers).toHaveLength(1);
+      expect(observers[0].targets).toEqual([view, track]);
+      // the observer's first report (after the first layout): the widths
+      observers[0].cb();
+      const reads = () => track.reads + view.reads;
+      const r0 = reads();
+      for (let k = 0; k < 30; k++) t.frame(1 / 60);
+      for (let k = 0; k < 5; k++) {
+        st.notify(`News ${k}`, 'info');
+        t.frame(1 / 60);
+      }
+      expect(track.textContent).toContain('News 4');
+      // 30 frames + 5 rebuilds: not one layout read
+      expect(reads()).toBe(r0);
+      // the track scrolls with the reported widths (2400 px track in a 600 px view)
+      expect(track.style.transform).toMatch(/^translateX\(-/);
+      // a resize report: measured again
+      view.clientWidth = 900;
+      observers[0].cb();
+      expect(reads()).toBe(r0 + 2);
+    } finally {
+      g.ResizeObserver = had;
+    }
+  });
+  it('without a ResizeObserver: one read per rebuild, none per frame', () => {
+    const st = city();
+    st.notify('First', 'info');
+    const { t, track } = ticker(st);
+    const view = track.parentElement!;
+    const reads = () => track.reads + view.reads;
+    const r0 = reads();
+    for (let k = 0; k < 30; k++) t.frame(1 / 60);
+    expect(reads()).toBe(r0);
+    st.notify('Second', 'info');
+    t.frame(1 / 60);
+    expect(reads()).toBe(r0 + 2);
   });
 });

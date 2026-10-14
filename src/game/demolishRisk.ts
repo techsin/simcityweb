@@ -95,6 +95,8 @@ let cap = 0;
 let dead = new Uint8Array(0);
 /** a drag adds network here: 1 = conducts power, 3 = also a pipe */
 let added = new Uint8Array(0);
+/** the full flood fills' view of the city after the demolition: 1 = conducts power, 2 = a pipe (bits) */
+let cond = new Uint8Array(0);
 let pReach = new Uint8Array(0);
 let wReach = new Uint8Array(0);
 let queue = new Int32Array(0);
@@ -106,6 +108,7 @@ function ensure(C: number): void {
   cap = C;
   dead = new Uint8Array(C);
   added = new Uint8Array(C);
+  cond = new Uint8Array(C);
   pReach = new Uint8Array(C);
   wReach = new Uint8Array(C);
   queue = new Int32Array(C);
@@ -281,28 +284,46 @@ export function utilityCut(st: CityState, rm: Removal, exhaustive = false): Util
     const goneP = anyAdded ? gone.filter((i) => added[i] === 0) : gone;
     powerSame = goneP.length === 0 || detoured(N, goneP, conducts, bx0, bz0, bx1, bz1) !== 0;
   }
-  if (!powerSame) {
-    pReach.fill(0);
-    let qh = 0, qt = 0;
-    for (const b of prod.power) {
-      if (removed.has(b.id) || !(b.flags & BF.Powered) || !live(b)) continue;
-      const i = b.z * N + b.x;
-      if (i < 0 || i >= C || pReach[i] || !conducts(i)) continue;
-      pReach[i] = 1;
-      queue[qt++] = i;
+  let condReady = false;
+  /** the city after the demolition as bits per cell (the full flood fills read it: no per-cell closures) */
+  const buildCond = () => {
+    if (condReady) return;
+    condReady = true;
+    for (let i = 0; i < C; i++) {
+      const n = net[i];
+      cond[i] = (n !== 0 || lines[i] !== 0 || bld[i] >= 0 ? 1 : 0) | (n >= 1 && n <= 5 ? 2 : 0);
     }
+    for (const i of gone) cond[i] = 0;
+    if (anyAdded && rm.add) for (const c of rm.add.cells) if (c.x >= 0 && c.z >= 0 && c.x < N && c.z < N) cond[c.z * N + c.x] = added[c.z * N + c.x];
+  };
+  /** flood `bit` cells from the queued seeds into `reach` */
+  const flood = (reach: Uint8Array, bit: number, qt: number) => {
+    let qh = 0;
     while (qh < qt) {
       const i = queue[qh++];
       const x = i % N;
       let j = i - 1;
-      if (x > 0 && !pReach[j] && conducts(j)) { pReach[j] = 1; queue[qt++] = j; }
+      if (x > 0 && reach[j] === 0 && (cond[j] & bit) !== 0) { reach[j] = 1; queue[qt++] = j; }
       j = i + 1;
-      if (x < N - 1 && !pReach[j] && conducts(j)) { pReach[j] = 1; queue[qt++] = j; }
+      if (x < N - 1 && reach[j] === 0 && (cond[j] & bit) !== 0) { reach[j] = 1; queue[qt++] = j; }
       j = i - N;
-      if (j >= 0 && !pReach[j] && conducts(j)) { pReach[j] = 1; queue[qt++] = j; }
+      if (j >= 0 && reach[j] === 0 && (cond[j] & bit) !== 0) { reach[j] = 1; queue[qt++] = j; }
       j = i + N;
-      if (j < C && !pReach[j] && conducts(j)) { pReach[j] = 1; queue[qt++] = j; }
+      if (j < C && reach[j] === 0 && (cond[j] & bit) !== 0) { reach[j] = 1; queue[qt++] = j; }
     }
+  };
+  if (!powerSame) {
+    buildCond();
+    pReach.fill(0);
+    let qt = 0;
+    for (const b of prod.power) {
+      if (removed.has(b.id) || !(b.flags & BF.Powered) || !live(b)) continue;
+      const i = b.z * N + b.x;
+      if (i < 0 || i >= C || pReach[i] || !(cond[i] & 1)) continue;
+      pReach[i] = 1;
+      queue[qt++] = i;
+    }
+    flood(pReach, 1, qt);
   }
   /** a water producer delivers now and still would (a pump needs power) */
   const pumping = (b: Building, d: BuildingDef | undefined): boolean => {
@@ -312,9 +333,10 @@ export function utilityCut(st: CityState, rm: Removal, exhaustive = false): Util
   };
 
   // ---- water: unchanged when no producer stops and the removed pipes have a local detour that also keeps every
-  // building beside them on its network; else flood the pipes from every producer
+  // building beside them on its network; else flood the pipes from every producer. (A road drag's new pipes can
+  // become a building's first pipe: always flooded — the preview runs once per path.)
   const deliversNow = (b: Building, d: BuildingDef | undefined) => live(b) && (!((d?.powerUse ?? 0) > 0) || (b.flags & BF.Powered) !== 0);
-  let waterSame = !exhaustive && prod.water.every((b) => { const d = getDef(b.def); return !deliversNow(b, d) || pumping(b, d); });
+  let waterSame = !exhaustive && !(anyAdded && rm.add?.pipes) && prod.water.every((b) => { const d = getDef(b.def); return !deliversNow(b, d) || pumping(b, d); });
   const goneW = gone.filter((i) => net[i] >= 1 && net[i] <= 5 && !(anyAdded && added[i] === 3));
   if (waterSame && goneW.length) {
     const sv = detoured(N, goneW, pipe, bx0, bz0, bx1, bz1);
@@ -341,28 +363,19 @@ export function utilityCut(st: CityState, rm: Removal, exhaustive = false): Util
     }
   }
   if (powerSame && waterSame) return null;
+  const pipeBit = (j: number) => (cond[j] & 2) !== 0;
   if (!waterSame) {
+    buildCond();
     wReach.fill(0);
-    let qh = 0, qt = 0;
+    let qt = 0;
     for (const b of prod.water) {
       if (!pumping(b, getDef(b.def))) continue;
-      const s = firstPipe(b, pipe);
+      const s = firstPipe(b, pipeBit);
       if (s < 0 || wReach[s]) continue;
       wReach[s] = 1;
       queue[qt++] = s;
     }
-    while (qh < qt) {
-      const i = queue[qh++];
-      const x = i % N;
-      let j = i - 1;
-      if (x > 0 && !wReach[j] && pipe(j)) { wReach[j] = 1; queue[qt++] = j; }
-      j = i + 1;
-      if (x < N - 1 && !wReach[j] && pipe(j)) { wReach[j] = 1; queue[qt++] = j; }
-      j = i - N;
-      if (j >= 0 && !wReach[j] && pipe(j)) { wReach[j] = 1; queue[qt++] = j; }
-      j = i + N;
-      if (j < C && !wReach[j] && pipe(j)) { wReach[j] = 1; queue[qt++] = j; }
-    }
+    flood(wReach, 2, qt);
   }
 
   // ---- the occupied buildings that have the utility now and would not
@@ -373,7 +386,7 @@ export function utilityCut(st: CityState, rm: Removal, exhaustive = false): Util
     if (!(f & (BF.Powered | BF.Watered)) || (f & (BF.Abandoned | BF.Burnt)) || !(b.pop > 0 || b.jobs > 0) || removed.has(b.id)) continue;
     const offP = !powerSame && (f & BF.Powered) !== 0 && !pReach[b.z * N + b.x];
     let offW = false;
-    if (!waterSame && (f & BF.Watered) !== 0) { const s = firstPipe(b, pipe); offW = s < 0 || !wReach[s]; }
+    if (!waterSame && (f & BF.Watered) !== 0) { const s = firstPipe(b, pipeBit); offW = s < 0 || !wReach[s]; }
     if (!offP && !offW) continue;
     const d = getDef(b.def);
     if (!d) continue;

@@ -170,10 +170,16 @@ export function noAccessText(none: number, total: number): string {
  * (services reach a lot through its front; a grown building takes its best cell's coverage)
  */
 export function frontCellOf(st: CityState, x: number, z: number): number {
+  return lotFront(st, x, z, false);
+}
+
+/** the lot cell beside the road in the direction of the cell's best road access (`always`), or only for back lots
+ *  (yard / behind: frontCellOf); the cell itself without access */
+function lotFront(st: CityState, x: number, z: number, always: boolean): number {
   const N = st.size, i = z * N + x;
   let best = 0, bk = -1;
   for (let k = 0; k < 4; k++) { const r = walkDir(st, x, z, k, null); if (r > best) { best = r; bk = k; } }
-  if (bk < 0 || best === RANK.front) return i;
+  if (bk < 0 || (best === RANK.front && !always)) return i;
   const [dx, dz] = DIRS[bk];
   for (let d = 1; d <= BACK_LOT_DEPTH; d++) {
     const xx = x + dx * d, zz = z + dz * d;
@@ -277,8 +283,9 @@ export function emptyZoneStatus(st: CityState, x: number, z: number): ZoneStatus
   if (devs.length) {
     const dem = st.stats.demand;
     // growth picks a type for a lot only where its desirability is above GROW_MIN_DESIR (growth.ts pickDev), at the
-    // road-front cell it fits the lot from (a back lot fills from its front: frontCellOf)
-    const fi = access === 'none' ? i : frontCellOf(st, x, z);
+    // lot cell beside the road it grows the lot from (tryGrow's candidate) — for a cell deeper in the lot, the one on
+    // the road in the direction of its best access
+    const fi = access === 'none' ? i : lotFront(st, x, z, true);
     let wanted = 0, hosted = false;
     const idle: number[] = [], unfit: number[] = [];
     for (const d of devs) {

@@ -37,6 +37,9 @@ export class NewsTicker {
   private width = 0;
   /** the view's width, measured on rebuilds and resizes only (A1: frame() read clientWidth every frame) */
   private viewW = 0;
+  /** reports the track's and the view's sizes after layout: a rebuild then reads no layout (it forced one, of whatever
+   *  the frame had changed so far, on every news item) */
+  private ro: ResizeObserver | null = null;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.track = h('div', { class: 'tk-track' });
@@ -54,10 +57,12 @@ export class NewsTicker {
       (ctx.panels as any).get?.('advisors')?.showTab?.('news');
     });
     parent.appendChild(this.el);
-    // the view's width changes with the window (and the UI zoom) only: measure it then, not every frame
+    // the view's width changes with the window (and the UI zoom) only, the track's with its items: measure them when
+    // they change (after layout), not every frame nor on every rebuild
     if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(() => (this.viewW = this.view.clientWidth));
+      const ro = (this.ro = new ResizeObserver(() => this.measure()));
       ro.observe(this.view);
+      ro.observe(this.track);
       ctx.signal?.addEventListener('abort', () => ro.disconnect(), { once: true });
     } else if (typeof window !== 'undefined') {
       const onResize = () => (this.viewW = this.view.clientWidth);
@@ -95,7 +100,12 @@ export class NewsTicker {
       }
       this.track.appendChild(el);
     }
-    // (one layout read per rebuild: the track's width and the view's)
+    // (without a ResizeObserver: one layout read per rebuild)
+    if (!this.ro) this.measure();
+  }
+
+  /** the track's and the view's widths (a ResizeObserver calls this after layout: no forced layout then) */
+  private measure(): void {
     this.width = this.track.scrollWidth;
     this.viewW = this.view.clientWidth;
   }

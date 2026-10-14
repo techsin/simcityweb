@@ -334,7 +334,8 @@ export class InfoPanel extends Panel {
     const usesPower = growable || (!!def && !isPlant && (def.category !== 'park' || (def.powerUse ?? 0) > 0));
     if (usesPower) chips.push({ text: icon('power', 11) + (powered ? 'Powered' : 'No power'), cls: powered ? 'good' : 'bad', topic: 'power' });
     const needW = safeCall(() => waterRequired(st, b), false);
-    if (watered) chips.push({ text: icon('water', 11) + 'Water', cls: 'good', topic: 'water' });
+    // (a facility that uses no water — a wind turbine, a plaza — shows no Water chip on a piped cell: routed 15)
+    if (watered && (growable || needW)) chips.push({ text: icon('water', 11) + 'Water', cls: 'good', topic: 'water' });
     else if (needW) chips.push({ text: icon('water', 11) + 'No water', cls: 'warn', topic: 'water', title: 'This building needs piped water' });
     if (b.built < 1 || b.flags & BF.Constructing) chips.push({ text: `Under construction ${Math.round(b.built * 100)}%`, cls: 'info' });
     for (const [bit, label, cls, topic] of FLAG_CHIPS) if (b.flags & bit) chips.push({ text: label, cls, topic });

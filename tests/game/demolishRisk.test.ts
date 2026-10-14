@@ -100,6 +100,33 @@ describe('demolition previews: utility cuts (final fixes N1)', () => {
     expect(cut.text).toBe('Cuts power and water to 5 buildings (100 residents)');
   });
 
+  it('a building between two pipe networks takes the next road beside it: losing the watered one dries it', () => {
+    const st = newState(32);
+    st.systemData.infraVersion = 1;
+    place(st, 't_coal', 2, 2, { flags: BF.Plopped | BF.Powered });
+    // network A (z = 10, x 3..12, with a loop round the home at z = 8) has the pump; network B (z = 12) is dry
+    roadLine(st, 3, 10, 12, 10, Network.Road);
+    roadLine(st, 4, 3, 4, 9, Network.Road); // links the plant to A
+    roadLine(st, 5, 8, 9, 8, Network.Road);
+    setRoad(st, 5, 9); setRoad(st, 9, 9);
+    roadLine(st, 3, 12, 12, 12, Network.Road);
+    st.powerLines[st.idx(3, 11)] = 1; // B is on the grid through a line (lines carry no water)
+    place(st, 't_pump', 11, 9, { flags: BF.Plopped | ON });
+    st.zone[st.idx(7, 11)] = Zone.ResMed;
+    const home = place(st, 't_r2', 7, 11, { pop: 25, flags: ON }); // A above it (its first pipe), B below
+    // the road cell above the home goes: A stays connected (the loop), but the home now draws on B
+    const cut = bulldozeCut(st, tile(7, 10))!;
+    expect(cut.power).toEqual([]); // (both roads conduct: power is fine)
+    expect(cut.water).toEqual([home.id]);
+    // the real system agrees
+    const sim = newSim(st);
+    expect(home.flags & BF.Watered).toBeTruthy();
+    expect(new CityActions(sim).bulldoze(tile(7, 10)).ok).toBe(true);
+    getUtilities(sim)!.compute(sim);
+    expect(home.flags & BF.Watered).toBe(0);
+    expect(home.flags & BF.Powered).toBeTruthy();
+  });
+
   it('rezoning a home that bridged the grid asks first (side demolitions), a road drag over it does not', () => {
     const st = newState(32);
     st.systemData.infraVersion = 1;

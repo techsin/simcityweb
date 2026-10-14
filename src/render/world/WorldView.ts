@@ -116,9 +116,10 @@ export class WorldView implements WorldViewApi {
    * Single map: while the view turns or zooms in place (its target still), re-renders cull the casters only against the
    * map's own box, not the view's receiver, so the map need not be re-rendered whenever the receiver changes (see
    * CitySun.dirReceiverCull): an orbit keeps it, a zoom re-renders it only when its radius steps. A map that moves
-   * anyway keeps culling against the receiver, which draws fewer casters: while the target moves (pans) or the radius
-   * steps at least shadowBoxCullZoom times per frame (fast zooms such as a street -> far sweep, which re-render it every
-   * shadowMoveInterval frames either way). false = always cull against the receiver.
+   * anyway keeps culling against the receiver, which draws fewer casters: while the target moves (pans) or the zoom
+   * steps the radius at least shadowBoxCullZoom times per frame (fast zooms such as a street -> far sweep, about every
+   * other frame: they re-render it every shadowMoveInterval frames either way; a wheel zoom steps it every 3-10 frames).
+   * false = always cull against the receiver.
    */
   shadowBoxCull = true;
   shadowBoxCullZoom = 0.4;
