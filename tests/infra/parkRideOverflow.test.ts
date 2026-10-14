@@ -69,7 +69,7 @@ describe('WP7b r4 park & ride overflow (no option cap)', () => {
       expect(line(sim, ids[4], 'parkRide').hint).toMatch(/^Full — it takes the overflow of the full garages nearby$/);
       // the four are full and commuters are still turned away: another garage helps by a stop near their homes (the
       // suburb north-west of the line)
-      for (const id of ids.slice(0, 4)) expect(line(sim, id, 'parkRide').hint).toMatch(/^Full — [\d,]+ cars wanted: build another garage by a stop near their homes \(about \d+ tiles NW\)$/);
+      for (const id of ids.slice(0, 4)) expect(line(sim, id, 'parkRide').hint).toMatch(/^Full — about [\d,]+ commuters would use it: build another garage by a stop near their homes \(about \d+ tiles NW\)$/);
     }
   });
 
@@ -118,6 +118,20 @@ describe('WP7b r4 park & ride overflow (no option cap)', () => {
       steps++;
     }
     expect(steps).toBeGreaterThan(10);
+  });
+
+  it('routed 54: 25 garages at 4-tile spacing (8x): the overflow reaches beyond the 16 nearest groups', { timeout: 900000 }, () => {
+    // (r4 re-check: 4 options + 3 passes x 4 labels reached 16 groups — g16-g24 stood at 0 while g0 turned away 5k-27k
+    // riders; the passes now go on while they place riders)
+    const xs = Array.from({ length: 25 }, (_, k) => 48 + 4 * k);
+    const { st, ids } = lineTown(xs, 8);
+    const { cars, city, tr } = run(st, ids, 30);
+    const fullAt = (k: number) => cars.filter((c) => c[k] >= 0.8 * GARAGE_SPACES).length;
+    const best = Math.max(...cars[0].map((_, k) => fullAt(k)));
+    const g0 = tr.garageInfo(ids[0])!;
+    console.log(`25 garages 8x (cycles 10-30): most garages full in one assignment ${best}, city P&R ${range(city)}, g0 turned away ${(g0.unplaced ?? 0).toFixed(0)}`);
+    expect(best).toBeGreaterThanOrEqual(20);
+    expect(g0.unplaced ?? 0).toBeLessThan(0.02 * GARAGE_SPACES * CAR_OCCUPANCY);
   });
 
   it('routed 53: after a road edit the idle garage keeps its reason while the next update rebuilds the road graph', { timeout: 600000 }, () => {

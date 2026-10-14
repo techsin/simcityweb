@@ -22,6 +22,8 @@
  *  COMMUTE  transit riders accumulated on the transit forest (bus PCU on roads, rail / subway riders); per-origin
  *           employment access, commute times, mode shares.
  *  INBOUND  forward Dijkstra from neighbour connections: regional workers fill still-vacant jobs (connection caps).
+ *  REGION   (placeRegional, final fixes F1) the region at large's jobs / workers sit at every connection by capacity; with
+ *           the region layer, a founded neighbour's own share only at the connections on the edge segment facing it.
  *  SHOP     reverse Dijkstra from commercial services; residents' shopping trips (off-peak weighted). \ every 2nd
  *  FREIGHT  reverse Dijkstra from freight sinks (road connections, rail-linked freight stations, seaports, airports); / cycle
  *           trucks (x TRUCK_LOCAL_FACTOR time off highways: trucks prefer highways).
@@ -75,13 +77,16 @@
  *
  * OUTPUTS: state.traffic (PCU trips/day per road cell; riders/day on rail cells), state.congestion (v/c),
  *   state.commute (minutes on residential building cells), stats.avgCommute / avgTraffic / tripsCar / tripsTransit /
- *   tripsWalk, BF.NoJobs (residential: < 35 % of workers matched to a job), BF.Congested (entry road v/c > 1).
+ *   tripsWalk, stats.commuteByMode (final fixes F6: each mode's mean commute, what transit saves its riders against
+ *   driving), BF.NoJobs (residential: < 35 % of workers matched to a job), BF.Congested (entry road v/c > 1). Homes on a
+ *   road component cut off from the city's jobs (routed 43, markCutOff) have no commute: the unreached minutes, left out
+ *   of the city average, routeInfo().cutOff.
  * API (TrafficSystem, get via getTraffic(sim)):
  *   getSampleRoutes(max), routeInfo(buildingId), workerAccess(id), jobFill(id), freightAccess(id), customers(id),
  *   commuteOf(id), findPath(fromCell, toCell), pushServiceRoute(cells, weight, days), accessById / jobFillById arrays;
  *   WP7b: stopAttached(id), stopLoad(id), freightRailCells(), freightLinked(id), sinkTrucks(id), truckVolume(),
  *   depotInfo(id), garageInfo(id), ferryLinks(), ferryPartnersFor(...), stopsNear(...), rampLoad(cell), cellBusRiders(cell),
- *   fleetStats, parkingSummary.
+ *   fleetStats, parkingSummary; connectionReport() (the regional exchange per neighbour connection).
  */
 import { Network } from '../../core/types';
 import type { Building, CityState } from '../CityState';
@@ -279,15 +284,22 @@ const PR_RANK_SMOOTH = 0.25;
  * and reused by any pass whose groups with room are among a forest's seeds (none of their ranking minutes moved more than
  * PR_SEED_DRIFT, younger than PR_SEARCH_EVERY assignments: its best label of a group with room is the best of those);
  * another pass, with a forest of fewer seeds, while a pass left at least OV_MIN_ROOM people whose node's labels were all
- * full (a group beyond them may have room), at most OV_PASSES per round and OV_SEARCHES fresh searches per assignment.
+ * full (a group beyond them may have room), at most OV_PASSES per round and OV_SEARCHES fresh searches per assignment —
+ * routed 54: beyond them, more passes (up to OV_PASSES_MAX per round, OV_SEARCHES_MAX searches per assignment) while the
+ * last pass still placed at least OV_MIN_ROOM riders: every pass reaches about OV_K more groups, so the 4 options + 3
+ * passes reached only the 16 nearest groups (25 garages at 4-tile spacing along one line: the last 9 stood empty while
+ * the first turned away 7,500 riders at 8x); the extra passes run only while they place riders (steps stay within
+ * their estimates — an assignment takes more of them).
  * (OV_K = 4 labels keep most commuters served by the forest of the round's first pass as the nearest groups fill: on
  * a 913k city with 24 garages, 0.6 fresh searches per assignment vs 3.7 with 2 labels, the same riders placed.)
  */
 const OV_K = 4;
 const OV_PASSES = 3;
+const OV_PASSES_MAX = 10;
 const OV_MIN_ROOM = 10;
 const OV_CACHE = 3;
 const OV_SEARCHES = 3;
+const OV_SEARCHES_MAX = 8;
 /** overflow records re-decided per scheduler step (each: a mode split per option tried); estimated ms per record, of a
  *  step and of the round's car flows (accumulate + commit over its forest: they move from roundMatch's step to the
  *  overflow's last one) on the reference city; states of an overflow search per step at PR_CHUNK_COST (the K-label
@@ -759,6 +771,8 @@ export class TrafficSystem implements SimSystem {
   private ovSlot = -1;
   private ovSearches = 0;
   private ovExh = 0;
+  /** riders the current overflow pass placed at a garage (routed 54: passes beyond OV_PASSES continue while they place) */
+  private ovPlaced = 0;
   /** use counter of the overflow forest cache (least recently used goes first); the cache slot of the first forest this
    *  assignment used (its seeds are a superset of every later pass's — room only shrinks within an assignment —, so an
    *  origin it leaves without an option in reach has none later: ovReachable; -1 none yet) */
@@ -3433,7 +3447,8 @@ export class TrafficSystem implements SimSystem {
       if (end < this.pnN) return PH_PROVER;
       // another pass while people are left that this pass's forest could not serve: a forest with fewer seeds
       this.ovPass++;
-      if (this.ovExh >= OV_MIN_ROOM && this.ovPass < OV_PASSES && this.ovLeft()) this.ovPlan(true);
+      const more = this.ovPass < OV_PASSES || (this.ovPass < OV_PASSES_MAX && this.ovPlaced >= OV_MIN_ROOM);
+      if (this.ovExh >= OV_MIN_ROOM && more && this.ovLeft()) this.ovPlan(true);
       else { this.ovStage = 4; this.ovCur = 0; }
       return PH_PROVER;
     }
@@ -3463,6 +3478,7 @@ export class TrafficSystem implements SimSystem {
     this.ovStage = 3;
     this.ovCur = 0;
     this.ovExh = 0;
+    this.ovPlaced = 0;
   }
 
   /** any overflow record with people left */
@@ -3539,7 +3555,7 @@ export class TrafficSystem implements SimSystem {
       return;
     }
     // (a fresh search of the same seeds as the forest that left them would find nothing new)
-    if (this.ovSearches >= OV_SEARCHES || nSeed >= below) { this.ovStage = 4; return; }
+    if (this.ovSearches >= (this.ovPass >= OV_PASSES ? OV_SEARCHES_MAX : OV_SEARCHES) || nSeed >= below) { this.ovStage = 4; return; }
     if (this.ov.length < OV_CACHE) {
       this.ov.push({ S: new SearchK(OV_K, true), key: '', seed: new Float32Array(0), inS: new Uint8Array(0), nSeed: 0, built: -1, alt: -1, used: 0, acc: new Float32Array(0), dirty: false });
       slot = this.ov.length - 1;
@@ -3622,6 +3638,7 @@ export class TrafficSystem implements SimSystem {
         this.gWantR[grp[q]] += want;
         this.pnTP[i] = this.mTP;
         this.ovCommit(i, p, fit, q, s, f);
+        this.ovPlaced += fit;
         y -= p;
       }
       this.pnY[i] = y;
@@ -4026,6 +4043,19 @@ export class TrafficSystem implements SimSystem {
       const un = Math.min(MAX_COMMUTE, ACCESS_UNREACHED * (cSum / cW));
       for (let o = 0; o < this.oN; o++) if (cut[o] === 1) this.oTime[o] = un;
     }
+    // F6: the mean commute of each mode's commuters (cut-off homes left out, like the city average) and what transit
+    // saves its riders against driving the same trip (stats.commuteByMode)
+    let mc = 0, mt = 0, mw = 0, ac = 0, at = 0, aw = 0, nC = 0, nT = 0, nW = 0;
+    for (let o = 0; o < this.oN; o++) {
+      if (cut[o] === 1 || !(this.oAsg[o] > 0)) continue;
+      mc += this.oMc[o]; mt += this.oMt[o]; mw += this.oMw[o]; ac += this.oAc[o]; at += this.oAt[o]; aw += this.oAw[o];
+      nC += this.oCarW[o]; nT += this.oTrW[o]; nW += this.oWalkW[o];
+    }
+    const bm = this.byMode;
+    bm.car = nC >= 0.5 ? mc / nC : 0;
+    bm.transit = nT >= 0.5 ? mt / nT : 0;
+    bm.walk = nW >= 0.5 ? mw / nW : 0;
+    bm.transitSaved = aw >= 0.5 ? (ac - at) / aw : 0;
   }
 
   /**
@@ -4044,6 +4074,8 @@ export class TrafficSystem implements SimSystem {
     for (let o = 0; o < oN; o++) if (this.oEntC[o] > 0) workers[comp[this.ent[this.oEntS[o]]]] += this.oW[o];
     let main = -1, best = -1;
     for (let c = 0; c < nc; c++) if (slots[c] > best) { best = slots[c]; main = c; }
+    // (no job pool anywhere yet — a new town: nobody is "cut off" from it)
+    if (!(best >= 1)) return;
     const cc = new Uint8Array(nc);
     for (let c = 0; c < nc; c++) cc[c] = c !== main && workers[c] > 0 && slots[c] < CUTOFF_JOB_SHARE * workers[c] ? 1 : 0;
     for (let o = 0; o < oN; o++) {
@@ -4672,6 +4704,10 @@ export class TrafficSystem implements SimSystem {
     stats.tripsTransit = Math.round(this.tripsTransit);
     stats.tripsWalk = Math.round(this.tripsWalk);
     stats.avgCommute = this.commuteW > 0 ? this.commuteSum / this.commuteW : 0;
+    {
+      const r1 = (v: number) => Math.round(v * 10) / 10, bm = this.byMode;
+      stats.commuteByMode = { car: r1(bm.car), transit: r1(bm.transit), walk: r1(bm.walk), transitSaved: r1(bm.transitSaved) };
+    }
     stats.avgTraffic = congN > 0 ? congSum / congN : 0;
     // WP7b fleet / park & ride / ferries: only fleets that serve stops count (a depot out of range of every stop runs
     // no route), and busesShort sums the shortfall per pool so one depot's spare buses do not hide another's stops

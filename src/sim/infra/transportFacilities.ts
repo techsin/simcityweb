@@ -268,9 +268,10 @@ function towards(st: CityState, b: Building, cell: number, spread: number): stri
  * hint of a full park & ride garage (r4, review r3: "build another garage" while a neighbouring option had room): the
  * block around it keeps spaces; it takes the overflow of full garages nearby; its commuters were turned away with nowhere
  * to go — another garage helps by a stop near their homes (the centre of those homes); its overflow parks at a garage
- * with room (named: no shortage)
+ * with room (named: no shortage); routed 55: full by its rationing price alone (nobody turned away — the price sends the
+ * rest of its commuters to their other garages), the nearest of those with room is named
  */
-function fullGarageHint(st: CityState, b: Building, g: NonNullable<ReturnType<TrafficSystem['garageInfo']>>, wanted: string, reserve: number, room: number): string {
+function fullGarageHint(st: CityState, tr: TrafficSystem, b: Building, g: NonNullable<ReturnType<TrafficSystem['garageInfo']>>, wanted: string, reserve: number, room: number): string {
   if (reserve >= 1) return `Full — ${wanted}; this block needs its own parking: for more park & ride, build garages by stops nearer homes`;
   const riders = g.riders ?? 0, ovIn = g.overflowIn ?? 0, unpl = g.unplaced ?? 0;
   const short = unpl >= Math.max(10, 0.02 * room * CAR_OCCUPANCY);
@@ -278,7 +279,18 @@ function fullGarageHint(st: CityState, b: Building, g: NonNullable<ReturnType<Tr
   const to = (g.overflowTo ?? -1) >= 0 ? st.buildings.get(g.overflowTo!) : undefined;
   if (to && to.id !== b.id && (g.overflowToRiders ?? 0) >= 1) return `Full — ${wanted}; the overflow parks at the ${nameOf(st, to.id)} ${dist(st, b, to)} tiles ${compass(st, b, to)}`;
   if (ovIn >= 0.5 * riders && ovIn >= 1) return `Full — it takes the overflow of the full garages nearby`;
+  const reach = tr.garageReach(b.id);
+  const alt = reach ? nearestOf(st, b, reach.optsRoom) : undefined;
+  if (alt && alt.id !== b.id) return `Full — ${wanted}; the rest park at the ${nameOf(st, alt.id)} ${dist(st, b, alt)} tiles ${compass(st, b, alt)}, which has room`;
   return `Full — ${wanted}: build another garage by a stop`;
+}
+
+/** routed 57: "about N commuters would use it" for a full garage's unrationed demand (riders, two significant digits —
+ *  the demand of a big city reads 26,000 on a 900-space garage, not as cars) */
+function wantedText(wantedRiders: number, room: number): string {
+  if (!(wantedRiders / CAR_OCCUPANCY > 1.1 * room)) return 'more commuters want its spaces than it has';
+  const p = Math.pow(10, Math.max(1, Math.floor(Math.log10(Math.max(1, wantedRiders))) - 1));
+  return `about ${fmt(Math.round(wantedRiders / p) * p)} commuters would use it`;
 }
 
 /** transport part of a facility's inspector report; null = not a transport facility */
@@ -303,8 +315,6 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
   }
   const load = tr.stopLoad(b.id);
   const riders = load?.riders ?? 0;
-  const walkers = load?.walkers ?? 0;
-  const reach = load?.reach;
   switch (kind) {
     case 'tr_bus_stop': {
       if (!tr.stopAttached(b.id)) {
@@ -428,12 +438,11 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
             hint: 'Their block is short of parking; for park & ride, build garages by stops in residential areas' });
         } else {
           const ridersG = g.riders ?? prCars * CAR_OCCUPANCY;
-          const wantedCars = (g.wanted ?? 0) / CAR_OCCUPANCY;
           // full: at its room and more commuters want it (demand beyond the room, or a price holding them off)
           const full = garageFull(g);
-          const wanted = wantedCars > 1.1 * room ? `${fmt(wantedCars)} cars wanted` : 'more commuters want its spaces than it has';
+          const wanted = wantedText(g.wanted ?? 0, room);
           lines.push({ key: 'parkRide', label: 'Park & ride', value: `${fmt(prCars)} / ${fmt(room)} cars${pooled > 0 ? ` (shared with ${plural(pooled, 'garage', 'garages')} at ${stopName})` : ''}`,
-            ratio: prCars / room, status: full ? 'warn' : 'ok', hint: full ? fullGarageHint(st, b, g, wanted, reserve, room) : undefined });
+            ratio: prCars / room, status: full ? 'warn' : 'ok', hint: full ? fullGarageHint(st, tr, b, g, wanted, reserve, room) : undefined });
           // (idle — or few riders: under PR_LOW_USE of its room — says why)
           const low = !full && ridersG < PR_LOW_USE * room * CAR_OCCUPANCY;
           lines.push({ key: 'switched', label: 'Commuters switched', value: `${fmt(ridersG)}/day to ${stopName}`, status: ridersG < 1 ? 'warn' : undefined,

@@ -403,7 +403,8 @@ describe('WP7-7 parking and WP7-8 park & ride', () => {
       expect(info.wanted!).toBeGreaterThan(2 * GARAGE_SPACES * CAR_OCCUPANCY);
       expect(info.price!).toBeGreaterThan(1);
       const rep = transportFacilityReport(sim, st.buildings.get(ids[0])!)!;
-      expect(rep.lines.find((l) => l.key === 'parkRide')!.hint).toMatch(/Full — [\d,]+ cars wanted/);
+      // (routed 57: the unrationed demand as commuters, two significant digits — not "26,428 cars wanted" on 900 spaces)
+      expect(rep.lines.find((l) => l.key === 'parkRide')!.hint).toMatch(/Full — about [\d,]+ commuters would use it/);
     }
     // two garages side by side at the suburban station: they pool their spaces (one would otherwise take the whole
     // catchment every other cycle while the other idles)
@@ -1238,5 +1239,71 @@ describe('final fixes P13: a stop or station without riders says why', () => {
     expect(load.boarders).toBeGreaterThan(1);
     expect(b.value).toBe('0/day');
     expect(b.hint).toMatch(/workers nearby could ride from here \(\d+ min to jobs in the region at the end of the line\), but driving is faster/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+describe('final fixes F6: stats.commuteByMode', () => {
+  it('the city average is the trip-weighted mean of the mode averages; transitSaved compares riders with their car trip', { timeout: 300000 }, () => {
+    const saved: Record<string, number> = {};
+    for (const mode of ['near', 'none'] as const) {
+      const { st } = busTown(mode);
+      const sim = newSim(st);
+      cycles(sim, 6);
+      const s = st.stats, m = s.commuteByMode;
+      const trips = s.tripsCar + s.tripsTransit + s.tripsWalk;
+      const mean = (m.car * s.tripsCar + m.transit * s.tripsTransit + m.walk * s.tripsWalk) / trips;
+      console.log(`bus town (${mode} depot): avg ${s.avgCommute.toFixed(2)} = car ${m.car} x ${s.tripsCar} · transit ${m.transit} x ${s.tripsTransit} · walk ${m.walk} x ${s.tripsWalk} → ${mean.toFixed(2)} · transit saves ${m.transitSaved} min`);
+      expect(m.car).toBeGreaterThan(0);
+      expect(m.transit).toBeGreaterThan(0);
+      expect(s.tripsTransit).toBeGreaterThan(1000);
+      expect(Math.abs(mean - s.avgCommute)).toBeLessThan(0.02 * s.avgCommute + 0.1);
+      // (each rider against driving the same trip — parking at the offices included: R$ riders accept a bus up to
+      // ~14.6 min slower than that, transit's bias)
+      expect(Number.isFinite(m.transitSaved)).toBe(true);
+      expect(Math.abs(m.transitSaved)).toBeLessThan(15);
+      saved[mode] = m.transitSaved;
+    }
+    // (8 minibuses for the whole town: long waits — the riders' trips are minutes slower than driving; a depot fixes it)
+    expect(saved.near).toBeGreaterThan(saved.none + 3);
+    // no transit at all: transit 0, the car average is the city average
+    const st = newState(64);
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    for (let x = 4; x <= 24; x++) place(st, 't_r1', x, 21, { pop: 40, capacity: 40, wealth: 1 });
+    for (let x = 40; x <= 56; x += 2) place(st, 't_co', x, 21, { jobs: 80, capacity: 120 });
+    st.stats.population = 21 * 40;
+    const sim = newSim(st);
+    cycles(sim, 3);
+    const m = st.stats.commuteByMode;
+    expect(m.transit).toBe(0);
+    expect(m.transitSaved).toBe(0);
+    expect(Math.abs(m.car - st.stats.avgCommute)).toBeLessThan(0.1 + 0.05 * st.stats.avgCommute);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+describe('routed 55 / 57: what a full garage says', () => {
+  it('full by its price alone: names the next garage with room, not "build another garage"; demand reads as commuters', { timeout: 300000 }, () => {
+    // (WP7b r4 re-check vT_three 1x: 899 / 900 vs 760 and 425 read "Full — … build another garage by a stop")
+    const { st } = prTown([], 1);
+    for (const x of [72, 96]) place(st, 'tr_subway_station', x - 2, 69);
+    const ids = [48, 72, 96].map((x) => place(st, 'tr_parking_garage', x, 68).id);
+    const sim = newSim(st);
+    const tr = cycles(sim, 14);
+    const seen: string[] = [];
+    for (let k = 0; k < 6; k++) {
+      cycles(sim, 1);
+      const rep = transportFacilityReport(sim, st.buildings.get(ids[0])!)!;
+      const l = rep.lines.find((x) => x.key === 'parkRide')!;
+      if (l.hint) seen.push(l.hint);
+    }
+    const g = ids.map((id) => tr.garageInfo(id)!);
+    console.log(`three stations 1x: cars ${g.map((x) => x.parkRide.toFixed(0)).join(' / ')}, price ${g.map((x) => (x.price ?? 0).toFixed(2)).join(' / ')}; g0: ${[...new Set(seen)].join(' | ')}`);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const h of seen) {
+      expect(h).not.toMatch(/: build another garage by a stop$/);
+      expect(h).toMatch(/^Full — /);
+    }
+    expect(seen.some((h) => /the (rest|overflow) parks? at the Parking Garage \d+ tiles E/.test(h))).toBe(true);
   });
 });
