@@ -363,6 +363,21 @@ export interface CityStats {
   justice: JusticeStats;
   /** bus fleet / park & ride / ferries (WP7) */
   transitFleet: TransitFleetStats;
+  /** commute by mode, last traffic update (final fixes F6) */
+  commuteByMode: CommuteByMode;
+}
+
+/**
+ * final fixes F6: the mean commute (minutes) of each mode's commuters in the last traffic update (0 = no such trips) —
+ * avgCommute averages the chosen trips of all modes, so transit can raise it while it serves its riders — and
+ * transitSaved: the minutes transit riders save against driving the same trip (their car alternative; negative = they
+ * accept a slower trip: transit's comfort / cost bias for lower incomes)
+ */
+export interface CommuteByMode {
+  car: number;
+  transit: number;
+  walk: number;
+  transitSaved: number;
 }
 
 function emptyNeedStat(): NeedStat {
@@ -419,6 +434,7 @@ export function defaultStats(): CityStats {
     emergency: { month: emptyEmergencyMonth(), lastMonth: emptyEmergencyMonth(), year: emptyEmergencyMonth(), active: 0, manualActive: 0, medScore: 1 },
     justice: { inmates: 0, beds: 0, holding: 0, arrestsMonth: 0, releasesMonth: 0, occupancy: 0, overflow: 0, policeMul: 1, crimeMul: 1 },
     transitFleet: { buses: 0, busesNeeded: 0, parkRide: 0, parkRideSpaces: 0, ferryRiders: 0, ferryLinks: 0 },
+    commuteByMode: { car: 0, transit: 0, walk: 0, transitSaved: 0 },
   };
 }
 

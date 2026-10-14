@@ -504,6 +504,16 @@ export class TrafficSystem implements SimSystem {
   private oWalkW: Float32Array<ArrayBuffer> = new Float32Array(0);
   private oTrT: Float32Array<ArrayBuffer> = new Float32Array(0);
   private oBoardStop: Int32Array<ArrayBuffer> = new Int32Array(0);
+  /** F6, per origin this assignment: commuter-minutes by car / transit / walk (their sum = oTimeSum), and of the transit
+   *  riders with a car alternative: its car minutes, their transit minutes, those riders (stats.commuteByMode) */
+  private oMc: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oMt: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oMw: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oAc: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oAt: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private oAw: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** F6: stats.commuteByMode of the assignment (commuteEnd; written with the other stats) */
+  private byMode = { car: 0, transit: 0, walk: 0, transitSaved: 0 };
   /** distance (pure minutes) to the nearest open job cluster in the last round the origin took part in */
   private oLastD: Float32Array<ArrayBuffer> = new Float32Array(0);
   private candKey: Float64Array<ArrayBuffer> = new Float64Array(0);
@@ -1916,6 +1926,9 @@ export class TrafficSystem implements SimSystem {
     this.oU = growF32(this.oU, oN); this.oAsg = growF32(this.oAsg, oN); this.oTimeSum = growF32(this.oTimeSum, oN);
     this.oCarW = growF32(this.oCarW, oN); this.oTrW = growF32(this.oTrW, oN); this.oWalkW = growF32(this.oWalkW, oN);
     this.oTrT = growF32(this.oTrT, oN); this.oBoardStop = growI32(this.oBoardStop, oN);
+    this.oMc = growF32(this.oMc, oN); this.oMt = growF32(this.oMt, oN); this.oMw = growF32(this.oMw, oN);
+    this.oAc = growF32(this.oAc, oN); this.oAt = growF32(this.oAt, oN); this.oAw = growF32(this.oAw, oN);
+    this.oMc.fill(0, 0, oN); this.oMt.fill(0, 0, oN); this.oMw.fill(0, 0, oN); this.oAc.fill(0, 0, oN); this.oAt.fill(0, 0, oN); this.oAw.fill(0, 0, oN);
     this.oLastD = growF32(this.oLastD, oN);
     this.oPrN = growU8(this.oPrN, oN);
     this.oPrT = growF32(this.oPrT, oN * PR_OPTIONS); this.oPrG = growI32(this.oPrG, oN * PR_OPTIONS); this.oPrNode = growI32(this.oPrNode, oN * PR_OPTIONS);
@@ -2901,6 +2914,7 @@ export class TrafficSystem implements SimSystem {
       this.oU[o] -= take;
       this.oAsg[o] += take;
       this.oTimeSum[o] += take * time;
+      this.byModeAdd(o, take, stP > 0 ? this.prDT : 0, carOk);
       this.oClX[o] += take * ext;
       this.oCarW[o] += take * sc;
       this.oTrW[o] += take * stt;
@@ -2937,6 +2951,20 @@ export class TrafficSystem implements SimSystem {
     }
     this.roundFlows(carRound, routeCand, routeW);
     return next;
+  }
+
+  /**
+   * F6: a committed piece of origin o (`take` people, split in m*; `prDT` = its park & ride riders' extra minutes at
+   * another option than the split's — transit minutes) into the per-origin minutes by mode and the transit riders' car
+   * alternative (`carOk`: the piece could drive)
+   */
+  private byModeAdd(o: number, take: number, prDT: number, carOk: boolean): void {
+    this.oMc[o] += take * this.mMc;
+    this.oMt[o] += take * this.mMt + prDT;
+    this.oMw[o] += take * this.mMw;
+    this.oAc[o] += take * this.mAc;
+    this.oAt[o] += take * this.mAt + (carOk ? prDT : 0);
+    this.oAw[o] += take * this.mAw;
   }
 
   /** the car flows of a matching round along its shortest-path forest (SA), and sample car routes of it */
@@ -3064,6 +3092,7 @@ export class TrafficSystem implements SimSystem {
       const st = stW + stP;
       const sc = 1 - st;
       this.oTimeSum[o] += takeD * time;
+      this.byModeAdd(o, takeD, stP > 0 ? this.prDT : 0, true);
       this.oClX[o] += takeD * ext;
       this.oCarW[o] += takeD * sc;
       carTk[c] += takeD * sc;
@@ -3143,6 +3172,7 @@ export class TrafficSystem implements SimSystem {
       this.oU[o] -= take;
       this.oAsg[o] += take;
       this.oTimeSum[o] += take * t;
+      this.oMt[o] += take * t; // (F6: transit only — no car alternative)
       this.oTrW[o] += take;
       this.qAsg[q] += take;
       this.qTimeSum[q] += take * t;
@@ -3630,6 +3660,7 @@ export class TrafficSystem implements SimSystem {
     const o = this.pnO[i], cq = this.pnQ[i], node = this.pnNode[i];
     const sc = this.mC, stW = this.mTW, time = this.mT;
     this.oTimeSum[o] += p * time;
+    this.byModeAdd(o, p, 0, true);
     this.oClX[o] += p * this.mX;
     this.oCarW[o] += p * sc;
     this.oTrW[o] += p * (stW + this.mTP);
