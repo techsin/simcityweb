@@ -67,3 +67,19 @@ export function axisLabels(ticks: readonly number[], step: number, prefix = ''):
     return (t < 0 ? '−' : '') + prefix + (unit === 1 ? grouped(a, dec) : a.toFixed(dec)) + suffix;
   });
 }
+
+/**
+ * Labels of a 0..1 share axis in percent with the decimals its step needs (routed 52: Bus load and Garbage load ticked
+ * 0, 0.5 %, 1 % … and pct() rounded each to "0% 1% 1% 2% 2%"): "0% 0.5% 1.0% 1.5%", "0% 25% 50%"; zero reads "0%".
+ */
+export function pctAxisLabels(ticks: readonly number[], step: number): string[] {
+  const s = Math.abs(step) * 100;
+  let dec = 0;
+  while (dec < 3 && Number.isFinite(s) && Math.abs(s * 10 ** dec - Math.round(s * 10 ** dec)) > 1e-6) dec++;
+  return ticks.map((t) => {
+    if (!Number.isFinite(t)) return '—';
+    const v = t * 100;
+    if (Math.round(Math.abs(v) * 10 ** dec) === 0) return '0%';
+    return (v < 0 ? '−' : '') + Math.abs(v).toFixed(dec) + '%';
+  });
+}

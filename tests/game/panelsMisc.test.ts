@@ -5,12 +5,14 @@
  *       (dispatchWindowEnd), not the deadline, and stops once a building is lost;
  *  F6   commute by mode in the Statistics panel (commuteModes, stats.commuteByMode read defensively);
  *  50   the park & ride garage defs come from the catalog (GARAGE_DEFS);
- *  51   which graphs label their y-axis as a whole (GraphDef.axis) is pinned.
+ *  51   which graphs label their y-axis as a whole (GraphDef.axis) is pinned;
+ *  52   auto-ranged percentage graphs label their ticks with the step's decimals (no "0% 1% 1% 2% 2%").
  */
 import { describe, expect, it } from 'vitest';
 import { ledgerGroup } from '../../src/ui/panels/BudgetPanel';
 import { activeTimeText } from '../../src/ui/panels/EmergenciesPanel';
 import { GRAPHS } from '../../src/ui/panels/GraphsPanel';
+import { axisTicks, niceAxis, pctAxisLabels } from '../../src/ui/graphAxis';
 import { GARAGE_DEFS, commuteModes } from '../../src/ui/statsModel';
 import { dispatchWindowEnd, type Incident } from '../../src/sim/infra/emergency';
 import { emgTime } from '../../src/ui/EmergencyBanner';
@@ -80,8 +82,27 @@ describe('statsModel garages (routed 50) and graph axes (routed 51)', () => {
     for (const id of GARAGE_DEFS) expect(getDef(id)).toMatchObject({ category: 'transport', service: 'roads' });
   });
   it('the count / money graphs label the whole y-axis in one notation (GraphDef.axis)', () => {
-    expect(GRAPHS.filter((g) => g.axis).map((g) => g.id).sort()).toEqual(['cash', 'demo', 'funds', 'parkRide', 'pop', 'tourism']);
-    // ... and they tick on whole numbers
-    for (const g of GRAPHS) if (g.axis) expect(g.int).toBe(true);
+    expect(GRAPHS.filter((g) => g.axis && g.int).map((g) => g.id).sort()).toEqual(['cash', 'demo', 'funds', 'parkRide', 'pop', 'tourism']);
+    // the auto-ranged share graphs label theirs in percent with the step's decimals (routed 52); the rest per tick
+    expect(GRAPHS.filter((g) => g.axis && !g.int).map((g) => g.id).sort()).toEqual(['busLoad', 'garbage', 'jobs']);
+    for (const g of GRAPHS) if (g.axis && !g.int) expect(g.range).toBeUndefined();
+  });
+});
+
+describe('percentage axes (routed 52): no duplicate tick labels below 2 %', () => {
+  it('a 0.5 % step keeps its decimal; whole steps have none; zero reads 0%', () => {
+    expect(pctAxisLabels([0, 0.005, 0.01, 0.015, 0.02], 0.005)).toEqual(['0%', '0.5%', '1.0%', '1.5%', '2.0%']);
+    expect(pctAxisLabels([0, 0.25, 0.5, 0.75, 1], 0.25)).toEqual(['0%', '25%', '50%', '75%', '100%']);
+    expect(pctAxisLabels([0, 0.0025, 0.005], 0.0025)).toEqual(['0%', '0.25%', '0.50%']);
+  });
+  it('the Bus load / Garbage load / Unemployment graphs on tiny values: every tick label distinct', () => {
+    for (const id of ['busLoad', 'garbage', 'jobs']) {
+      const g = GRAPHS.find((x) => x.id === id)!;
+      for (const hiData of [0.0015, 0.004, 0.018, 0.07, 0.6, 1.3]) {
+        const { lo, hi, step } = niceAxis(0, hiData, false, 4);
+        const labels = g.axis!(axisTicks(lo, hi, step), step);
+        expect(new Set(labels).size).toBe(labels.length);
+      }
+    }
   });
 });
