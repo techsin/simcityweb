@@ -120,8 +120,9 @@ export class WorldView implements WorldViewApi {
    * CitySun.dirReceiverCull): an orbit keeps it, a zoom re-renders it only when its radius steps. A map that moves
    * anyway keeps culling against the receiver, which draws fewer casters: while the target moves (pans) or the zoom
    * steps the radius at least shadowBoxCullZoom times per frame (fast zooms such as a street -> far sweep, about every
-   * other frame: they re-render it every shadowMoveInterval frames either way; a wheel zoom steps it every 3-10 frames).
-   * false = always cull against the receiver.
+   * other frame: they re-render it every shadowMoveInterval frames either way; a wheel zoom steps it every 3-10 frames);
+   * so do re-renders for moving vehicles near the camera (every frame either way) and of a view at rest. false = always
+   * cull against the receiver.
    */
   shadowBoxCull = true;
   shadowBoxCullZoom = 0.4;
@@ -752,10 +753,12 @@ export class WorldView implements WorldViewApi {
       this.shRecv = rv;
       if (!sun.cascaded) {
         // single map: casters culled against the view's receiver while the view's target moves or the map's radius steps
-        // about every other frame (pans and fast zooms re-render it anyway, as it follows), else only against the map's
-        // own box, so a view that turns or zooms within the map's radius step keeps it (instead of re-rendering whenever
-        // the receiver changes); a view at rest keeps the mode the map has
-        const cull = !this.shadowBoxCull || tMoved || this.shZoomRate >= this.shadowBoxCullZoom || (this.viewStill > 0 && this.shCull);
+        // about every other frame (pans and fast zooms re-render it anyway, as it follows), while moving vehicles near the
+        // camera re-render it every frame anyway (dyn) and at rest (the receiver does not change then), else only against
+        // the map's own box, so a view that turns or zooms within the map's radius step keeps it (instead of re-rendering
+        // whenever the receiver changes); the box draws the casters of the whole square, so it is used only where it
+        // saves re-renders
+        const cull = !this.shadowBoxCull || tMoved || this.shZoomRate >= this.shadowBoxCullZoom || dyn || this.viewStill > 0;
         if (sun.dirReceiverCull !== cull) sun.dirReceiverCull = cull;
         this.shCull = cull;
       }
