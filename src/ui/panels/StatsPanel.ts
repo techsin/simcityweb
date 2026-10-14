@@ -8,7 +8,7 @@ import { compact, num, pct } from '../format';
 import { type Building, INCIDENT_KINDS } from '../../sim/CityState';
 import type { SimSystem } from '../../sim/Simulation';
 import type { EconRuntime } from '../../sim/economy/runtime';
-import { type GarageCounts, type GarageStates, countGarages, parkRideLine } from '../statsModel';
+import { type GarageCounts, type GarageStates, commuteModes, countGarages, parkRideLine } from '../statsModel';
 
 function sum(a: number[] | undefined, i0: number, i1: number): number {
   let s = 0;
@@ -25,6 +25,9 @@ export class StatsPanel extends Panel {
   private meters: Record<string, { bar: HTMLElement; fill: HTMLElement; v: HTMLElement }> = {};
   private modes!: HTMLElement;
   private modesLegend!: HTMLElement;
+  /** final fixes F6: each mode's mean commute and what transit saves its riders (stats.commuteByMode) */
+  private modeTimes!: HTMLElement;
+  private modeNote!: HTMLElement;
   private wealth!: HTMLElement;
   private wealthLegend!: HTMLElement;
   /** parking garages by park & ride state, counted at most once a day (only while no park & ride room is open) */
@@ -66,6 +69,8 @@ export class StatsPanel extends Panel {
     };
     this.modes = h('div', { class: 'bar', style: 'height:10px;display:flex;gap:2px;background:transparent' });
     this.modesLegend = h('div', { class: 'graph-legend', style: 'margin-top:8px' });
+    this.modeTimes = h('div', { class: 'graph-legend', style: 'margin-top:6px' });
+    this.modeNote = h('div', { class: 'faint', style: 'font-size:11px;margin-top:4px;line-height:1.4' });
     this.wealth = h('div', { class: 'bar', style: 'height:10px;display:flex;gap:2px;background:transparent' });
     this.wealthLegend = h('div', { class: 'graph-legend', style: 'margin-top:8px' });
     this.body.append(
@@ -85,7 +90,7 @@ export class StatsPanel extends Panel {
       h('div', { class: 'stat-cards' }, card('tourists', 'Tourists', 'star'), card('attract', 'Attractiveness', 'smile')),
       h('div', { class: 'sec-title' }, 'Commute'),
       h('div', { class: 'stat-cards', style: 'margin-bottom:10px' }, card('commute', 'Avg. commute', 'clock'), card('trips', 'Trips / day', 'car')),
-      this.modes, this.modesLegend,
+      this.modes, this.modesLegend, this.modeTimes, this.modeNote,
     );
   }
 
@@ -98,6 +103,10 @@ export class StatsPanel extends Panel {
 
   private stack(el: HTMLElement, legend: HTMLElement, parts: { label: string; v: number; color: string }[]): void {
     const total = parts.reduce((s, p) => s + p.v, 0);
+    // (final fixes A1: rebuilt only when a share moves by a tenth of a percent — it was rebuilt on every UI tick)
+    const sig = total ? parts.map((p) => Math.round((p.v / total) * 1000)).join(',') : 'none';
+    if (el.dataset.sig === sig) return;
+    el.dataset.sig = sig;
     el.innerHTML = '';
     legend.innerHTML = '';
     if (!total) {
@@ -166,7 +175,12 @@ export class StatsPanel extends Panel {
     setText(c.attract.s, 'out of 100 · draws newcomers');
     this.setMeter('traffic', s.avgTraffic, pct(s.avgTraffic), s.avgTraffic > 0.7 ? 'bad' : s.avgTraffic > 0.4 ? 'warn' : 'good');
     setText(c.commute.v, s.avgCommute ? `${Math.round(s.avgCommute)} min` : '—');
-    setText(c.commute.s, s.avgCommute > 45 ? 'Too long' : s.avgCommute ? 'Acceptable' : 'No commuters yet');
+    setText(c.commute.s, s.avgCommute > 45 ? 'Too long' : s.avgCommute ? 'Acceptable · all modes' : 'No commuters yet');
+    const bm = commuteModes(s.commuteByMode);
+    setText(this.modeTimes, bm.times);
+    this.modeTimes.style.display = bm.times ? '' : 'none';
+    setText(this.modeNote, bm.note);
+    this.modeNote.style.display = bm.note ? '' : 'none';
     const trips = s.tripsCar + s.tripsTransit + s.tripsWalk;
     setText(c.trips.v, compact(trips));
     setText(c.trips.s, 'car · transit · walk');

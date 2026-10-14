@@ -99,6 +99,7 @@ export class GraphsPanel extends Panel {
   private listBtns = new Map<string, HTMLButtonElement>();
   private hoverX: number | null = null;
   private lastLen = -1;
+  private lastT: number | undefined = undefined;
   private geom: { x0: number; x1: number; y0: number; y1: number; n: number; start: number } | null = null;
 
   override defaultPos(w: number, hh: number): { x: number; y: number } {
@@ -148,14 +149,17 @@ export class GraphsPanel extends Panel {
   }
 
   override update(): void {
-    const n = this.ctx.state.history.t.length;
-    if (n !== this.lastLen) this.draw();
+    // a new month: the last sample's month index (the history keeps HISTORY_CAP months, so its length stops changing
+    // once it is full — the same freeze as the news ticker's, final fixes N2)
+    const t = this.ctx.state.history.t;
+    if (t.length !== this.lastLen || t[t.length - 1] !== this.lastT) this.draw();
   }
 
   draw(): void {
     const st = this.ctx.state;
     const H = st.history;
     this.lastLen = H.t.length;
+    this.lastT = H.t[H.t.length - 1];
     for (const [id, b] of this.listBtns) toggleClass(b, 'on', id === this.cur.id);
     this.titleH.textContent = this.cur.label;
     if (this.cur.series.length === 1 && H.t.length) {

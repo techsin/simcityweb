@@ -4,9 +4,10 @@
  * so it is 0 when every park & ride garage keeps all its spaces — the card read "no garages by a stop" then.
  */
 import { describe, expect, it } from 'vitest';
-import { GARAGE_DEF, countGarages, parkRideLine } from '../../src/ui/statsModel';
+import { GARAGE_DEFS, countGarages, parkRideLine } from '../../src/ui/statsModel';
 import { BF } from '../../src/sim/CityState';
 
+const GARAGE_DEF = [...GARAGE_DEFS][0];
 const garage = (id: number) => ({ id, def: GARAGE_DEF });
 type Info = { state: string; spaces?: number; reserve?: number };
 /** a stub of TrafficSystem.garageInfo: each garage's state / spaces / reserve in the last assignment (null: not seen) */

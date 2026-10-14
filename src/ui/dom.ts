@@ -79,7 +79,13 @@ export function isTyping(e?: Event): boolean {
   return false;
 }
 
-/** A range slider that releases focus after use so camera keys keep working. */
+/**
+ * A range slider. It keeps the keyboard focus after a click or a drag, so the arrow keys (Home / End, Page Up / Down)
+ * step it — final fixes P10: it blurred itself on pointerup, the arrows then panned the map and one 0.5 % tax step was
+ * ~1.8 px of track. The camera ignores keys while an input has focus (CameraController.isTypingTarget) and the scene's
+ * hotkeys treat range inputs as non-typing (isTyping); Esc or a pointer press anywhere else (the map, another control)
+ * releases the focus, and the camera keys work again.
+ */
 export function slider(opts: { min: number; max: number; step?: number; value: number; oninput: (v: number) => void; onchange?: (v: number) => void; class?: string }): HTMLInputElement {
   const el = h('input', { type: 'range', min: opts.min, max: opts.max, step: opts.step ?? 1, class: opts.class ?? 'ui-range' }) as HTMLInputElement;
   el.value = String(opts.value);
@@ -92,13 +98,55 @@ export function slider(opts: { min: number; max: number; step?: number; value: n
     paint();
     opts.oninput(Number(el.value));
   });
-  el.addEventListener('change', () => {
-    opts.onchange?.(Number(el.value));
-    el.blur();
+  el.addEventListener('change', () => opts.onchange?.(Number(el.value)));
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') el.blur();
   });
-  el.addEventListener('pointerup', () => setTimeout(() => el.blur(), 0));
+  const outside = (e: Event) => {
+    const t = e.target as (Element & { closest?: (s: string) => Element | null }) | null;
+    if (t === el) return;
+    // (this slider's own −/+ buttons keep it focused: stepButtons)
+    const step = t?.closest?.('.ui-stepbtn') as (Element & { __for?: HTMLInputElement }) | null | undefined;
+    if (step && step.__for === el) return;
+    el.blur();
+  };
+  el.addEventListener('focus', () => document.addEventListener('pointerdown', outside, true));
+  el.addEventListener('blur', () => document.removeEventListener('pointerdown', outside, true));
   (el as any).__paint = paint;
   return el;
+}
+
+/** move a slider made by slider() by `dir` steps, as the player would (fires its input handler); false at its end */
+export function stepSlider(el: HTMLInputElement, dir: number): boolean {
+  const step = Number(el.step) || 1, min = Number(el.min), max = Number(el.max);
+  const cur = Number(el.value);
+  // (snapped to the step grid: 11.25 + 0.5 → 11.5 / 11.0, not 11.75)
+  const next = clamp(Math.round((cur + dir * step - min) / step) * step + min, min, max);
+  if (Math.abs(next - cur) < 1e-9) return false;
+  el.value = String(next);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+/**
+ * − / + buttons beside a slider (one step each, the slider keeps the keyboard focus for the arrow keys): exact steps
+ * where the track is short (final fixes P10: the Budget panel's 72 px tax tracks). `label` names the setting for the
+ * buttons' tooltips ("R$ tax").
+ */
+export function stepButtons(el: HTMLInputElement, label: string, fmt: (step: number) => string = (s) => String(s)): [HTMLButtonElement, HTMLButtonElement] {
+  const mk = (dir: number) => {
+    const b = h('button', { type: 'button', class: 'ui-stepbtn', title: `${dir < 0 ? 'Lower' : 'Raise'} ${label} by ${fmt(Number(el.step) || 1)}`, 'aria-label': `${dir < 0 ? 'Lower' : 'Raise'} ${label}` }, dir < 0 ? '−' : '+') as HTMLButtonElement & { __for?: HTMLInputElement };
+    b.__for = el;
+    // (no focus change on press: the slider keeps it)
+    b.addEventListener('pointerdown', (e) => e.preventDefault());
+    b.addEventListener('click', () => {
+      stepSlider(el, dir);
+      el.focus({ preventScroll: true });
+    });
+    return b;
+  };
+  return [mk(-1), mk(1)];
 }
 
 /** update a slider made by slider() without firing input */

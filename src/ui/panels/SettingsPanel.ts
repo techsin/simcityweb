@@ -3,7 +3,7 @@ import type { QualityLevel } from '../../render/contracts';
 import type { GameContext } from '../../game/context';
 import type { EmergencyPolicy, GameSettings, NewYearMode } from '../../game/settings';
 import { Panel } from '../Panel';
-import { h, segmented, setSlider, setToggle, slider, toggle } from '../dom';
+import { h, segmented, setSlider, setText, setToggle, slider, toggle } from '../dom';
 import { asMusicAudio, MusicPlayer } from '../MusicPlayer';
 import { hourLabel } from '../format';
 
@@ -158,6 +158,6 @@ export class SettingsPanel extends Panel {
       }
     }
     setSlider(this.hourSlider, Math.round(hr * 4) / 4);
-    this.hourVal.textContent = hourLabel(hr);
+    setText(this.hourVal, hourLabel(hr));
   }
 }

@@ -476,6 +476,10 @@
 .kv { display: grid; grid-template-columns: 1fr auto; gap: 7px 14px; font-size: 12.5px; }
 .kv > :nth-child(odd) { color: var(--text-dim); display: flex; align-items: center; gap: 7px; }
 .kv > :nth-child(even) { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* a row's note (InfoPanel kv: the facility report's hint of a header row) across both columns; .kv-gap keeps the
+   odd / even pairs in step */
+.kv > .kv-note { grid-column: 1 / -1; display: block; margin: -4px 0 1px; font-size: 10.5px; line-height: 1.35; font-weight: 400; color: var(--text-faint); text-align: left; }
+.kv > .kv-gap { display: none; }
 .stat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
 .stat-card { padding: 10px 11px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--hair); }
 .stat-card .sc-l { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); display: flex; align-items: center; gap: 6px; }
@@ -489,10 +493,21 @@
 /* budget */
 .budget-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .tax-group { margin-bottom: 6px; }
-.tax-row, .fund-row { display: grid; grid-template-columns: 50px 1fr 38px 58px; align-items: center; gap: 8px; padding: 3px 0; font-size: 12.5px; }
+.tax-row, .fund-row { display: grid; grid-template-columns: 46px 1fr 66px 54px; align-items: center; gap: 6px; padding: 3px 0; font-size: 12.5px; }
 .tax-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 22px; }
 .tax-row .tr-l, .fund-row .tr-l { font-weight: 700; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.fund-row { grid-template-columns: 150px 1fr 44px 80px; }
+.fund-row { grid-template-columns: 150px 1fr 74px 80px; }
+/* final fixes P10: − value + beside the budget sliders (exact 0.5 % / 5 % steps; the slider keeps the keyboard focus) */
+.tr-step { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+.tr-step .tr-v { min-width: 36px; }
+.ui-stepbtn {
+  width: 15px; height: 18px; padding: 0; border: 1px solid var(--hair); border-radius: 4px; background: rgba(255, 255, 255, 0.05);
+  color: var(--text-dim); font: 700 12px/1 var(--font); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; flex: none;
+}
+.ui-stepbtn:hover { background: var(--hover); color: var(--text); }
+.ui-range:focus-visible { outline: none; }
+.ui-range:focus::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(63, 167, 255, 0.45), 0 1px 4px rgba(0, 0, 0, 0.5); }
+.ui-range:focus::-moz-range-thumb { box-shadow: 0 0 0 3px rgba(63, 167, 255, 0.45), 0 1px 4px rgba(0, 0, 0, 0.5); }
 .fund-row .fr-badge .chip { margin-left: 4px; padding: 1px 5px; font-size: 9.5px; }
 .tax-row .tr-v, .fund-row .tr-v { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
 .tax-row .tr-m, .fund-row .tr-m { text-align: right; color: var(--text-dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
@@ -613,7 +628,18 @@
 .dv-legend { margin-top: 0; }
 /* data views: grid scrolls inside, legend + Underground toggle pinned at the bottom (fits 1280×720, never under the minimap) */
 .panel-body.dv-body { display: flex; flex-direction: column; overflow: hidden; padding: 8px 12px 10px; }
-.dv-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
+.dv-scroll-wrap { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.dv-scroll { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
+/* final fixes P12: hidden data views below are named by a cue that scrolls to them */
+.dv-more {
+  position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%); z-index: 2; display: none; align-items: center; gap: 5px;
+  padding: 4px 11px 4px 8px; border-radius: 12px; border: 1px solid rgba(63, 214, 198, 0.55); background: rgba(14, 22, 31, 0.95);
+  color: #c9f5ef; font: 700 10.5px/1.2 var(--font); letter-spacing: 0.02em; white-space: nowrap; cursor: pointer; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+}
+.dv-more:hover { background: rgba(28, 44, 58, 0.98); color: #fff; }
+.dv-scroll.more-below + .dv-more { display: inline-flex; }
+.mp-ui.short .dv-body .dv-btn { padding: 5px 3px 4px; gap: 3px; }
+.mp-ui.short .dv-scroll .sec-title { margin: 6px 0 4px; }
 .dv-scroll .sec-title { margin: 9px 0 5px; }
 .dv-scroll .sec-title:first-child { margin-top: 2px; }
 .dv-body .dv-btn { padding: 7px 3px 6px; gap: 4px; font-size: 10.5px; }

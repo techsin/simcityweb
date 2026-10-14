@@ -82,10 +82,20 @@ export class DataViewsPanel extends Panel {
       g.appendChild(b);
     }
     // layout (fits 1280×720): the overlay grid (and the Underground toggle under it) scrolls inside; variants + legend
-    // stay pinned below (Desirability's 15 variants + a legend left the grid one row tall with the toggle pinned too)
+    // stay pinned below (Desirability's 15 variants + a legend left the grid one row tall with the toggle pinned too).
+    // Final fixes P12: when buttons are hidden below, a "More" cue names the next section and scrolls to it (at 720p the
+    // Utilities & traffic row sat cut off under the fade, and a click on the clipped Power button hit the map)
     const scroll = h('div', { class: 'dv-scroll' });
     this.scroll = scroll;
     scroll.addEventListener('scroll', () => this.cue(), { passive: true });
+    this.more = h('button', { class: 'dv-more', type: 'button', title: 'Scroll to the hidden data views', 'data-sfx': 'none' }) as HTMLButtonElement;
+    this.more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const target = this.hiddenSection();
+      const top = target ? Math.max(0, target.offsetTop - 4) : scroll.scrollTop + scroll.clientHeight * 0.75;
+      scroll.scrollTo({ top, behavior: 'smooth' });
+      this.ctx.sound('tab');
+    });
     let first = true;
     for (const [name, g] of groups) {
       scroll.appendChild(h('div', { class: 'sec-title' }, name));
@@ -96,7 +106,7 @@ export class DataViewsPanel extends Panel {
       scroll.appendChild(g);
     }
     this.body.classList.add('dv-body');
-    this.body.appendChild(scroll);
+    this.body.appendChild(h('div', { class: 'dv-scroll-wrap' }, scroll, this.more));
     this.vars = h('div', { class: 'dv-vars-wrap' });
     this.legend = h('div', { class: 'dv-legend' });
     const ug = toggle(false, (v) => {
@@ -113,7 +123,27 @@ export class DataViewsPanel extends Panel {
   }
 
   override onOpen(): void {
-    requestAnimationFrame(() => this.fit());
+    this.fitKey = '';
+    requestAnimationFrame(() => {
+      this.fit();
+      this.revealActive();
+    });
+  }
+
+  /** the window changed size or the panel was dragged: fit it again */
+  override onLayout(): void {
+    this.fitKey = '';
+    this.fit();
+  }
+
+  /** the active data view's button in sight (a view picked elsewhere — hotkey, "Show me" — may sit in a hidden row) */
+  private revealActive(): void {
+    const sc = this.scroll, b = this.btns.get(this.ctx.overlay);
+    if (!sc || !b || this.ctx.overlay === Overlay.None) return;
+    // (.dv-scroll is positioned: offsets are in its content box)
+    const top = b.offsetTop, bottom = top + b.offsetHeight;
+    if (top < sc.scrollTop || bottom > sc.scrollTop + sc.clientHeight) sc.scrollTop = Math.max(0, bottom - sc.clientHeight + 6);
+    this.cue();
   }
 
   /**
@@ -141,15 +171,39 @@ export class DataViewsPanel extends Panel {
     this.cue();
   }
 
-  /** fade the overlay list where more buttons are hidden (above / below) */
+  /** fade the overlay list where more buttons are hidden (above / below); the "More" cue names the hidden section */
   private cue(): void {
     const sc = this.scroll;
     if (!sc) return;
     const more = sc.scrollHeight - sc.clientHeight > 4;
-    toggleClass(sc, 'more-below', more && sc.scrollTop + sc.clientHeight < sc.scrollHeight - 4);
+    const below = more && sc.scrollTop + sc.clientHeight < sc.scrollHeight - 4;
+    toggleClass(sc, 'more-below', below);
     toggleClass(sc, 'more-above', more && sc.scrollTop > 4);
+    if (this.more) {
+      const sec = below ? this.hiddenSection() : null;
+      const label = `${icon('chevDown', 12)}<span>${sec ? `More: ${sec.textContent}` : 'More'}</span>`;
+      if (this.more.dataset.h !== label) {
+        this.more.dataset.h = label;
+        this.more.innerHTML = label;
+      }
+    }
+  }
+  /** the first section title not fully in sight below the visible part of the list (null: only buttons are cut) */
+  private hiddenSection(): HTMLElement | null {
+    const sc = this.scroll;
+    if (!sc) return null;
+    const bottom = sc.scrollTop + sc.clientHeight;
+    for (const t of sc.querySelectorAll<HTMLElement>('.sec-title')) {
+      const top = t.offsetTop;
+      // a title whose section's first row is not visible yet
+      if (top + t.offsetHeight + 24 > bottom && top > sc.scrollTop) return t;
+    }
+    return null;
   }
   private scroll: HTMLElement | null = null;
+  private more: HTMLButtonElement | null = null;
+  /** what the last fit() measured against (position, variants / legend): fit again only when it changed */
+  private fitKey = '';
 
   private pick(o: Overlay): void {
     if (o !== this.ctx.overlay) this.ctx.sound(o === Overlay.None ? 'overlayOff' : 'overlay');
@@ -161,7 +215,8 @@ export class DataViewsPanel extends Panel {
     for (const [o, b] of this.btns) toggleClass(b, 'on', o === ov);
     const info = overlayInfo(ov);
     const key = `${ov}:${resolveVariant(ov, this.ctx.overlayVariant)}`;
-    if (key !== this.varsKey) {
+    const picked = key !== this.varsKey;
+    if (picked) {
       this.varsKey = key;
       clear(this.vars);
       const chips = info ? variantChips(this.ctx, ov) : null;
@@ -174,7 +229,13 @@ export class DataViewsPanel extends Panel {
       this.legend.dataset.html = html;
       this.legend.innerHTML = html;
     }
-    this.fit();
+    // (final fixes A1: fit() reads the layout — once per change of position or content, not on every UI tick)
+    const fk = `${this.el.style.left},${this.el.style.top}|${key}|${html.length}`;
+    if (fk !== this.fitKey) {
+      this.fitKey = fk;
+      this.fit();
+    }
+    if (picked) this.revealActive();
   }
 
   override onClose(): void {

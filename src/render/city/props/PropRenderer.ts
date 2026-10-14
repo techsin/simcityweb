@@ -272,6 +272,10 @@ export class PropRenderer {
     this.pylons.mesh.castShadow = true;
     this.pylons.mesh.receiveShadow = true;
     this.pylons.enablePassCulling({ culler, shadowMask: 0b01, coarse: true });
+    // (white instance colours: the shader program of the buildings / vehicles batches, which share the city material,
+    // in the main pass and their depth program in the shadow pass; without them every frame switched programs twice
+    // for this one draw, see DynamicBatch.ensureColors)
+    this.pylons.ensureColors();
     this.batch.mesh.add(this.pylons.mesh);
     this.near = new Uint8Array(T).fill(1);
     this.lodN = new Int32Array(T);

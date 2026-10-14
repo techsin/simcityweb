@@ -105,6 +105,29 @@ export class WorldView implements WorldViewApi {
    * show up a frame late. 1 = every frame. Set from the quality preset (2 for the single map).
    */
   shadowMoveInterval = 1;
+  /**
+   * Single map: while the view moves, caster changes (mostly the LOD swaps of buildings, props and tree chunks that
+   * the motion itself causes, far from the camera) re-render the map at most every this many frames instead of every
+   * shadowInterval frames: an old silhouette's shadow showing a few frames longer is invisible at those distances, and
+   * the frames after the view comes to rest re-render it for the final content.
+   */
+  shadowMoveCasterInterval = 8;
+  /**
+   * Single map: while the view turns or zooms in place (its target still) and the map itself has stood still for
+   * shadowBoxCullAfter frames, re-renders cull the casters only against the map's own box, not the view's receiver, so
+   * the map need not be re-rendered whenever the receiver changes (see CitySun.dirReceiverCull): an orbit keeps it.
+   * A map that moves anyway (pans, zoom sweeps stepping its radius) keeps culling against the receiver, which draws
+   * fewer casters. false = always cull against the receiver.
+   */
+  shadowBoxCull = true;
+  shadowBoxCullAfter = 4;
+  /**
+   * Cascades: while the view moves, the far cascade is redrawn at most every this many frames (1 = with every shadow
+   * render). In between, shadow renders redraw the near cascade only; the far one keeps its map tile and lookup matrix
+   * (CityCascadeShadow.holdFar), so its static shadows stay put and only its coverage edge and distant vehicles trail
+   * by a frame. Not while the depth split steps (zoom), when forced, or at rest: the first frame at rest redraws both.
+   */
+  shadowFarInterval = 2;
   /** moving vehicles re-render the map every frame (no throttle) while the camera is closer than this (m): beyond it
    *  a one-frame shadow lag is under a pixel */
   dynamicShadowDistance = 600;
@@ -145,11 +168,22 @@ export class WorldView implements WorldViewApi {
   private shForce = 2;
   private shDynamic = -1;
   private shSunVisible = false;
+  /** the view camera's pose / projection and target at the previous render, and how many renders it has been unchanged */
+  private shView = new Float64Array(20);
+  private shTarget = new Float64Array(3);
+  private viewStill = 0;
+  /** the single map was last rendered with its casters culled against the view's receiver (see CitySun.dirReceiverCull) */
+  private shCull = true;
+  /** the single map's camera (matrixWorld, projection) at the previous render and the frame number it last changed */
+  private shFit = new Float64Array(32);
+  private shFitFrame = 0;
+  /** frame number of the last shadow render that redrew the far cascade */
+  private shFarFrame = 0;
   private shadowDir = new THREE.Vector3(0, 1, 0);
   /** this frame's shadow fit parameters (one object reused every frame) */
   private shadowFit: ShadowFit = { target: new THREE.Vector3(), distance: 1, rangeMul: 1, lightDir: this.shadowDir, maxHeight: 0, minHeight: 0, mapSize: 0 };
   /** frames the shadow map was actually re-rendered / skipped (stats) */
-  readonly shadowStats = { rendered: 0, skipped: 0, reason: '' };
+  readonly shadowStats = { rendered: 0, skipped: 0, farHeld: 0, reason: '' };
   // dynamic resolution state
   private drsLast = 0;
   /** start (rAF time) of the frame being rendered and main-thread busy time of the previous frame (ms) */
@@ -616,14 +650,50 @@ export class WorldView implements WorldViewApi {
     }
     // fit the shadow cameras now (three repeats this identically when it renders the map) and compare
     this.camera.updateMatrixWorld();
+    {
+      // view motion since the previous render (a damped camera settling by float ulps counts as still)
+      const e = this.camera.matrixWorld.elements, pe = this.camera.projectionMatrix.elements, v = this.shView;
+      let still = true;
+      for (let i = 0; i < 20; i++) {
+        const x = i < 16 ? e[i] : pe[i === 16 ? 0 : i === 17 ? 5 : i === 18 ? 8 : 9];
+        if (Math.abs(v[i] - x) > 1e-6 * Math.max(1, Math.abs(x))) still = false;
+        v[i] = x;
+      }
+      this.viewStill = still ? this.viewStill + 1 : 0;
+    }
+    // (the view target: a pan moves it, a turn / zoom in place does not)
+    const tg = this.shadowFit.target, tv = this.shTarget;
+    const tMoved = Math.abs(tg.x - tv[0]) > 1e-6 * Math.max(1, Math.abs(tg.x)) || Math.abs(tg.y - tv[1]) > 1e-6 * Math.max(1, Math.abs(tg.y)) || Math.abs(tg.z - tv[2]) > 1e-6 * Math.max(1, Math.abs(tg.z));
+    tv[0] = tg.x; tv[1] = tg.y; tv[2] = tg.z;
     sun.updateMatrixWorld();
     sun.target.updateMatrixWorld();
     const sh = sun.shadow;
     // (the single map's lookup matrix as rendered: restored when its re-render waits a frame)
     if (!sun.cascaded) _shM.copy(sh.matrix);
+    // cascades: hold the far one this frame? (see shadowFarInterval; set before the fit, which applies it)
+    const cs = sun.cascaded ? sun.cascadeShadow : null;
+    if (cs) cs.holdFar = this.shadowFarInterval > 1 && this.shForce === 0 && this.viewStill === 0 && !!sh.map && this.frameNo - this.shFarFrame < this.shadowFarInterval;
     (sh as unknown as { updateMatrices(l: THREE.Light, c: THREE.Camera): void }).updateMatrices(sun, this.camera);
+    if (cs && cs.holdFar && !cs.farHoldable) {
+      // (the far cascade's depth range stepped, the light turned or the view jumped: redraw it now)
+      cs.holdFar = false;
+      (sh as unknown as { updateMatrices(l: THREE.Light, c: THREE.Camera): void }).updateMatrices(sun, this.camera);
+    }
     const cams: THREE.Camera[] | null = sun.cascaded ? ((sun.cascadeShadow as any)._cameras as THREE.Camera[]) : null;
     const nc = cams ? cams.length : 1;
+    if (!cams) {
+      // (single map: the frame its fit last changed: target moves, radius steps, light steps)
+      const f = this.shFit;
+      let ch = false;
+      for (let k = 0, o = 0; k < 2; k++) {
+        const m = k === 0 ? sh.camera.matrixWorld.elements : sh.camera.projectionMatrix.elements;
+        for (let i = 0; i < 16; i++, o++) {
+          if (Math.abs(f[o] - m[i]) > 1e-6 * Math.max(1, Math.abs(m[i]))) ch = true;
+          f[o] = m[i];
+        }
+      }
+      if (ch) this.shFitFrame = this.frameNo;
+    }
     const key = this.shKey;
     let o = 0, moved = false;
     for (let c = 0; c < nc && !moved; c++) {
@@ -637,16 +707,18 @@ export class WorldView implements WorldViewApi {
       }
     }
     // casters are culled against the visible slice (receiver), which also changes when the view only rotates / zooms
-    // while the (texel-snapped, target-centred) single map stays put
+    // while the (texel-snapped, target-centred) single map stays put: unless that map was rendered without receiver
+    // culling (below), which does not depend on the view's receiver
     const recvs: ShadowReceiver[] | null = sun.cascaded ? sun.cascadeShadow.receivers : null;
     let rv = 0;
     if (recvs) for (let i = 0; i < recvs.length; i++) rv += recvs[i].version;
     else rv = sun.dirReceiver.version;
-    if (rv !== this.shRecv) moved = true;
+    if (rv !== this.shRecv && (recvs !== null || this.shCull)) moved = true;
     let need = moved || this.shForce > 0 || !sh.map || this.frameNo - this.shFrame >= this.shadowMaxAge;
     // moving vehicles near the camera: every frame (their shadows would trail them by a frame)
     const dyn = shadowCasters.dynamic !== this.shDynamic && this.cameraController.distance < this.dynamicShadowDistance;
-    if (!need && (dyn || (shadowCasters.version !== this.shVersion && this.frameNo - this.shFrame >= this.shadowInterval))) need = true;
+    const ci = !sun.cascaded && this.viewStill === 0 ? Math.max(this.shadowInterval, this.shadowMoveCasterInterval) : this.shadowInterval;
+    if (!need && (dyn || (shadowCasters.version !== this.shVersion && this.frameNo - this.shFrame >= ci))) need = true;
     // single map: a re-render asked for by the view's motion / throttled caster changes may wait (shadowMoveInterval);
     // the map keeps its own lookup matrix meanwhile. The comparison state above stays at the rendered map, so the frame
     // after the view comes to rest renders it for the final view.
@@ -654,17 +726,35 @@ export class WorldView implements WorldViewApi {
       sh.matrix.copy(_shM);
       need = false;
     }
+    const hold = cs !== null && need && cs.farHeld;
+    if (cs && sh.map) {
+      // a render holding the far cascade is scissored to the near cascade's atlas tile: its clear keeps the far tile
+      if (hold) sh.map.scissor.set(0, 0, sh.mapSize.x, sh.mapSize.y);
+      sh.map.scissorTest = hold;
+    }
     if (need) {
-      // the state the map is rendered for
+      // the state the map is rendered for (a held far cascade keeps its old state: the view at rest redraws it)
       o = 0;
       for (let c = 0; c < nc; c++) {
         const cam = cams ? cams[c] : sh.camera;
+        if (hold && c === nc - 1) { o += 32; continue; }
         for (let k = 0; k < 2; k++) {
           const m = k === 0 ? cam.matrixWorld.elements : cam.projectionMatrix.elements;
           for (let i = 0; i < 16; i++, o++) key[o] = m[i];
         }
       }
+      if (cs && !hold) this.shFarFrame = this.frameNo;
+      if (hold) this.shadowStats.farHeld++;
       this.shRecv = rv;
+      if (!sun.cascaded) {
+        // single map: casters culled against the view's receiver while the view's target moves or the map's fit keeps
+        // changing (pans and zoom sweeps re-render it anyway, as it follows), else only against the map's own box, so a
+        // view that turns or zooms within the map's radius step keeps it (instead of re-rendering whenever the receiver
+        // changes); a view at rest keeps the mode the map has
+        const cull = !this.shadowBoxCull || tMoved || this.frameNo - this.shFitFrame < this.shadowBoxCullAfter || (this.viewStill > 0 && this.shCull);
+        if (sun.dirReceiverCull !== cull) sun.dirReceiverCull = cull;
+        this.shCull = cull;
+      }
       this.shadowStats.reason = moved ? 'moved' : this.shForce > 0 ? 'forced' : !sh.map ? 'nomap' : dyn ? 'vehicles' : shadowCasters.version !== this.shVersion ? 'casters' : 'age';
       this.shVersion = shadowCasters.version;
       this.shDynamic = shadowCasters.dynamic;
@@ -860,6 +950,9 @@ export class WorldView implements WorldViewApi {
     this.post.setSize(width, height);
     this.renderer.info.reset();
     this.renderer.shadowMap.needsUpdate = true;
+    // (a full shadow render for this view: no held far cascade, no scissor left from the last frame's render)
+    this.sun.cascadeShadow.holdFar = false;
+    if (this.sun.shadow.map) this.sun.shadow.map.scissorTest = false;
     this.post.render(this.scene, cam, rt);
     this.invalidateShadows(1);
     const px = new Uint8Array(width * height * 4);
@@ -870,8 +963,7 @@ export class WorldView implements WorldViewApi {
     this.camera.aspect = this.width / this.height;
     this.camera.updateProjectionMatrix();
     for (let i = 0; i < 3; i++) this.sun.cascadeShadow.splits[i] = saveSplits[i];
-    this.sun.dirShadow.camera.userData.recv = this.sun.dirReceiver;
-    (this.sun.dirShadow as unknown as { _frustum: { recv?: unknown } })._frustum.recv = this.sun.dirReceiver;
+    this.sun.dirReceiverCull = this.sun.dirReceiverCull;
     // to canvas (flip Y)
     const c2 = document.createElement('canvas');
     c2.width = width;

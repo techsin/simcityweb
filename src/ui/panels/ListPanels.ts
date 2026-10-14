@@ -2,11 +2,13 @@
 import type { GameContext } from '../../game/context';
 import { allDefs, defIcon } from '../../game/toolCatalog';
 import type { OrdinanceInfo, RewardInfo } from '../../game/modules';
+import type { BuildingDef } from '../../sim/catalogTypes';
 import { Panel } from '../Panel';
 import { confirmDialog } from '../Modals';
 import { clear, escapeHtml, h, toggle } from '../dom';
 import { icon } from '../icons';
 import { money, titleCase } from '../format';
+import { upkeepEstimate } from '../upkeepModel';
 
 function ordIcon(o: OrdinanceInfo): string {
   const s = (o.id + ' ' + o.name + ' ' + (o.category ?? '')).toLowerCase();
@@ -206,12 +208,20 @@ export class RewardsPanel extends Panel {
           !r.unlocked
             ? h('div', { class: 'reward-prog' }, h('div', { class: 'bar warn' }, h('div', { class: 'fill', style: { width: `${Math.round(r.progress * 100)}%` } })), h('span', null, r.requirement || `${Math.round(r.progress * 100)}%`))
             : null,
-          def ? h('div', { class: 'li-e' }, h('span', { class: 'chip' }, def.cost ? money(def.cost) : 'Free'), def.upkeep ? h('span', { class: 'chip' }, `${money(def.upkeep)}/mo`) : null, def.income ? h('span', { class: 'chip good' }, `+${money(def.income)}/mo`) : null) : null,
+          def ? h('div', { class: 'li-e' }, h('span', { class: 'chip' }, def.cost ? money(def.cost) : 'Free'), this.upkeepChip(def), def.income ? h('span', { class: 'chip good' }, `+${money(def.income)}/mo`) : null) : null,
         ),
         h('div', { class: 'li-r' }, r.built ? h('span', { class: 'chip info', html: icon('check', 11) + 'Built' }) : r.unlocked ? h('span', { class: 'chip good', html: icon('check', 11) + 'Unlocked' }) : h('span', { class: 'chip warn', html: icon('lock', 11) + 'Locked' }), place),
       );
       this.listEl.appendChild(row);
     }
+  }
+
+  /** the upkeep chip: the build menu's estimate for running-cost facilities ("≈§A/mo", the full-use figure on hover —
+   *  final fixes P3: the panel showed the catalog upkeep, a third number), else the flat upkeep */
+  private upkeepChip(def: BuildingDef): HTMLElement | null {
+    if (!def.upkeep) return null;
+    const est = upkeepEstimate(this.ctx.state, def);
+    return est ? h('span', { class: 'chip', title: `Upkeep ${est.title}` }, `≈${money(est.now)}/mo`) : h('span', { class: 'chip', title: 'Upkeep' }, `${money(def.upkeep)}/mo`);
   }
 
   newUnlocks(): number {

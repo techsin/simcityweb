@@ -4,7 +4,7 @@ import type { ServiceKind } from '../../sim/catalogTypes';
 import { getDef } from '../../sim/catalog';
 import type { GameContext } from '../../game/context';
 import { Panel } from '../Panel';
-import { clear, h, setSlider, setText, slider, toggleClass } from '../dom';
+import { clear, h, setSlider, setText, slider, stepButtons, toggleClass } from '../dom';
 import { icon } from '../icons';
 import { money, moneySigned, signClass, titleCase } from '../format';
 import { isOneOff, sumOneOff, sumRecurring } from '../TopBar';
@@ -30,8 +30,46 @@ const GROUP_LABELS: Record<string, string> = {
   tax: 'Taxes', service: 'City services', transport: 'Transportation', ordinance: 'Ordinances', loan: 'Loan payments', loans: 'Loan payments',
   deal: 'Business deals', utilities: 'Utilities', neighbor: 'Neighbor deals', construction: 'Construction', zoning: 'Zoning', bulldoze: 'Demolition',
   income: 'Income', building: 'Buildings', upkeep: 'Upkeep', terraform: 'Terraforming', trees: 'Trees',
-  tourism: 'Tourist spending', recycling: 'Recycled materials',
+  tourism: 'Tourist spending', recycling: 'Recycled materials', facility: 'Facility income', transit: 'Transit', roads: 'Roads',
 };
+
+/**
+ * Final fixes P15: the expense ledger groups lines by the funding slider that scales them, so each group says which
+ * slider of the Services tab it answers to — the Utilities department's plants AND its power lines and landfill tiles
+ * under "Utilities", road buildings and every road tile under "Roads", transit buildings, rail and subway under
+ * "Transit" (the ledger showed "Utilities" under City services and again as a group "Utilities → Landfill", and
+ * "Roads" under Transportation). The budget keys themselves (economy/budget.ts) are unchanged.
+ */
+const SLIDER_GROUP: Record<string, [group: string, item: string]> = {
+  'service:transit': ['transit', 'buildings'], 'transport:rail': ['transit', 'rail'], 'transport:subway': ['transit', 'subway'],
+  'service:roads': ['roads', 'buildings'], 'transport:streets': ['roads', 'streets'], 'transport:roads': ['roads', 'roads'],
+  'transport:oneway': ['roads', 'oneway'], 'transport:avenues': ['roads', 'avenues'], 'transport:highways': ['roads', 'highways'],
+  'transport:bridges': ['roads', 'bridges'],
+  'service:utilities': ['utilities', 'buildings'], 'utilities:powerlines': ['utilities', 'powerlines'], 'utilities:landfill': ['utilities', 'landfill'],
+};
+/** item labels of the regrouped lines: the department's buildings vs the upkeep of its tiles */
+const ITEM_LABELS: Record<string, Record<string, string>> = {
+  service: { police: 'Police', fire: 'Fire', health: 'Health', education: 'Education', parks: 'Parks', civic: 'Civic buildings' },
+  transit: { buildings: 'Stations & depots', rail: 'Rail track upkeep', subway: 'Subway tunnel upkeep' },
+  roads: { buildings: 'Parking garages', streets: 'Street upkeep', roads: 'Road upkeep', oneway: 'One-way road upkeep', avenues: 'Avenue upkeep', highways: 'Highway upkeep', bridges: 'Bridge upkeep' },
+  utilities: { buildings: 'Plants & facilities', powerlines: 'Power line upkeep', landfill: 'Landfill upkeep' },
+};
+/** which Services-tab slider a ledger group answers to (the group row's tooltip) */
+const GROUP_HINTS: Record<string, string> = {
+  service: 'Each line follows its own funding slider (Services tab); civic buildings have none',
+  transit: 'All follow the Transit funding slider (Services tab)',
+  roads: 'All follow the Roads funding slider (Services tab)',
+  utilities: 'All follow the Utilities funding slider (Services tab)',
+};
+
+/** a ledger key's display group and item ('service:police' → service / police; 'utilities:landfill' → utilities /
+ *  landfill; 'tourism' → tourism / '') */
+export function ledgerGroup(key: string): [group: string, item: string] {
+  const sg = SLIDER_GROUP[key];
+  if (sg) return sg;
+  const i = key.indexOf(':');
+  return i >= 0 ? [key.slice(0, i), key.slice(i + 1)] : [key, ''];
+}
 
 /** 'oneoff:<item>' labels (paid / received immediately; not part of the monthly net) */
 const ONEOFF_LABELS: Record<string, string> = {
@@ -54,7 +92,8 @@ export class BudgetPanel extends Panel {
   readonly id = 'budget';
   readonly title = 'Budget';
   override icon = 'budget';
-  override width = 860;
+  // (900: room for the − / + steppers beside each tax and funding slider, final fixes P10)
+  override width = 900;
   override center = true;
   private tab: 'taxes' | 'services' | 'ledger' | 'loans' = 'taxes';
   private tabBtns: Record<string, HTMLButtonElement> = {};
@@ -136,18 +175,18 @@ export class BudgetPanel extends Panel {
     TAX_GROUPS.forEach((g) => {
       const box = h('div', { class: 'tax-group' });
       const avg = () => Math.round(g.devs.reduce((s, d) => s + b.taxRates[d], 0) / g.devs.length);
-      const mv = h('span', { class: 'tr-v' }, avg() + '%');
+      const mv = h('span', { class: 'tr-v' }, pctText(avg()));
       const master = slider({
         min: 0, max: 20, step: 0.5, value: avg(),
         oninput: (v) => {
           for (const d of g.devs) this.setTax(d, v);
-          mv.textContent = v + '%';
+          mv.textContent = pctText(v);
           this.update();
         },
       });
       box.append(
         h('div', { class: 'sec-title', html: `<span class="zdot" style="background:${g.color}"></span><span>${g.label}</span>` }),
-        h('div', { class: 'tax-row master' }, h('span', { class: 'tr-l' }, 'All'), master, mv, h('span', { class: 'tr-m' }, '')),
+        h('div', { class: 'tax-row master' }, h('span', { class: 'tr-l' }, 'All'), master, stepper(master, mv, `every ${g.label.toLowerCase()} tax`), h('span', { class: 'tr-m' }, '')),
       );
       for (const d of g.devs) {
         const v = h('span', { class: 'tr-v' });
@@ -160,11 +199,11 @@ export class BudgetPanel extends Panel {
           },
         });
         this.taxSliders.set(d, { s, v, m });
-        box.appendChild(h('div', { class: 'tax-row', title: `Last month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, v, m));
+        box.appendChild(h('div', { class: 'tax-row', title: `Last month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, stepper(s, v, `the ${DEV_TYPE_LABELS[d]} tax`), m));
       }
       cols.appendChild(box);
     });
-    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + '<span>Taxes above ~12% slow growth and hurt approval; below ~7% attract newcomers but strain the budget.</span>' });
+    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + '<span>Taxes above ~12% slow growth and hurt approval; below ~7% attract newcomers but strain the budget. Click a slider, then use the arrow keys (or − / +) for 0.5% steps.</span>' });
     this.content.append(cols, hint);
   }
 
@@ -189,7 +228,7 @@ export class BudgetPanel extends Panel {
       const badge = h('span', { class: 'fr-badge' });
       const label = h('span', { class: 'tr-l', html: icon(s.icon, 15) + `<span>${s.label}</span>` });
       label.appendChild(badge);
-      const row = h('div', { class: 'fund-row' }, label, sl, v, m);
+      const row = h('div', { class: 'fund-row' }, label, sl, stepper(sl, v, `${s.label.toLowerCase()} funding`), m);
       this.fundSliders.set(s.key, { s: sl, v, m, badge, row });
       grid.appendChild(row);
     }
@@ -197,12 +236,14 @@ export class BudgetPanel extends Panel {
   }
 
   private itemLabel(group: string, item: string): string {
+    const fixed = ITEM_LABELS[group]?.[item];
+    if (fixed) return fixed;
     if (group === 'tax') return DEV_TYPE_LABELS.includes(item) ? item : titleCase(item);
     if (group === 'ordinance') {
       const o = this.ctx.mods.listOrdinances?.(this.ctx.state).find((x) => x.id === item);
       if (o) return o.name;
     }
-    if (group === 'deal' || group === 'building') {
+    if (group === 'deal' || group === 'building' || group === 'facility') {
       const d = getDef(item);
       if (d) return d.name;
     }
@@ -214,9 +255,7 @@ export class BudgetPanel extends Panel {
     const groups = new Map<string, { total: number; items: [string, number][] }>();
     for (const [k, v] of Object.entries(rec)) {
       if (!v || isOneOff(k)) continue;
-      const i = k.indexOf(':');
-      const g = i >= 0 ? k.slice(0, i) : k;
-      const item = i >= 0 ? k.slice(i + 1) : '';
+      const [g, item] = ledgerGroup(k);
       const e = groups.get(g) ?? { total: 0, items: [] };
       e.total += v;
       if (item) e.items.push([item, v]);
@@ -226,8 +265,9 @@ export class BudgetPanel extends Panel {
     const sorted = [...groups.entries()].sort((a, b) => Math.abs(b[1].total) - Math.abs(a[1].total));
     if (!sorted.length) t.appendChild(h('tr', null, h('td', { class: 'dim', colspan: '2' }, 'No data yet')));
     for (const [g, e] of sorted) {
-      t.appendChild(h('tr', { class: 'grp' }, h('td', null, GROUP_LABELS[g] ?? titleCase(g)), h('td', { class: cls }, money(e.total))));
-      if (e.items.length > 1 || (e.items.length === 1 && e.items[0][0] !== g))
+      t.appendChild(h('tr', { class: 'grp', title: cls === 'neg' ? GROUP_HINTS[g] ?? '' : '' }, h('td', null, GROUP_LABELS[g] ?? titleCase(g)), h('td', { class: cls }, money(e.total))));
+      // (a group's only line is listed when its name says more than the group's: "Utilities → Plants & facilities")
+      if (e.items.length > 1 || (e.items.length === 1 && e.items[0][0] !== g) || (e.items.length === 1 && ITEM_LABELS[g]?.[e.items[0][0]]))
         for (const [it, v] of e.items.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))) t.appendChild(h('tr', { class: 'item' }, h('td', null, this.itemLabel(g, it)), h('td', null, money(v))));
     }
     t.appendChild(h('tr', { class: 'total' }, h('td', null, 'Total'), h('td', { class: cls }, money(sumRecurring(rec)))));
@@ -334,7 +374,7 @@ export class BudgetPanel extends Panel {
   }
 
   /** sim-core's forecast at current rates / funding (null when unavailable) */
-  private forecast(): { income: Record<string, number>; expense: Record<string, number>; totalIncome: number; totalExpense: number } | null {
+  private forecastNow(): Forecast | null {
     const f = this.ctx.mods.econ?.computeMonthlyBudget;
     if (!f) return null;
     try {
@@ -345,8 +385,25 @@ export class BudgetPanel extends Panel {
     }
   }
 
+  /**
+   * the forecast, reused while the rates, funding, ordinances and loans stay the same — recomputed on a new sim day at
+   * most every FORECAST_MS of real time (final fixes A1: computeMonthlyBudget walks every cell of the map, and ran on
+   * every UI tick); a slider move recomputes it at once
+   */
+  private fcCache: { key: string; day: number; at: number; st: unknown; v: Forecast | null } | null = null;
+  private forecast(): Forecast | null {
+    const st = this.ctx.state, b = st.budget;
+    const key = `${b.taxRates.join(',')}|${SERVICES.map((s) => b.funding[s.key] ?? 100).join(',')}|${b.ordinances.join(',')}|${b.loans.length}|${st.buildings.size}`;
+    const now = performance.now();
+    const c = this.fcCache;
+    if (c && c.st === st && c.key === key && (c.day === st.day || now - c.at < FORECAST_MS)) return c.v;
+    const v = this.forecastNow();
+    this.fcCache = { key, day: st.day, at: now, st, v };
+    return v;
+  }
+
   /** projected monthly income / expense: sim-core forecast, else last month scaled by tax & funding changes */
-  projection(): { inc: number; exp: number; hasData: boolean; forecast: ReturnType<BudgetPanel['forecast']> } {
+  projection(): { inc: number; exp: number; hasData: boolean; forecast: Forecast | null } {
     const fc = this.forecast();
     if (fc) return { inc: fc.totalIncome, exp: fc.totalExpense, hasData: true, forecast: fc };
     const b = this.ctx.state.budget;
@@ -452,4 +509,19 @@ function serviceCost(expense: Record<string, number>, s: ServiceKind): number {
     else if (s === 'utilities' && k.startsWith('utilities:')) sum += v;
   }
   return sum;
+}
+
+type Forecast = { income: Record<string, number>; expense: Record<string, number>; totalIncome: number; totalExpense: number };
+/** min real ms between two forecasts while only the sim day moves on */
+const FORECAST_MS = 500;
+
+/** "11%" / "11.5%" */
+function pctText(v: number): string {
+  return `${v % 1 ? v.toFixed(1) : v}%`;
+}
+
+/** − value + beside a slider (final fixes P10: exact steps on a short track; the slider keeps the keyboard focus) */
+function stepper(sl: HTMLInputElement, value: HTMLElement, label: string): HTMLElement {
+  const [dn, up] = stepButtons(sl, label, (s) => `${s}%`);
+  return h('span', { class: 'tr-step' }, dn, value, up);
 }

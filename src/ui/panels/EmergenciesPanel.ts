@@ -8,13 +8,13 @@
  */
 import type { GameContext } from '../../game/context';
 import { INCIDENT_KINDS, RESPONDERS, type EmergencyMonth, type Responder } from '../../sim/CityState';
-import { INCIDENT_COLOR, INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_LABEL, RESPONDER_UNIT, emergencyOf, type Incident } from '../../sim/infra/emergency';
+import { INCIDENT_COLOR, INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_LABEL, RESPONDER_UNIT, dispatchWindowEnd, emergencyOf, type Incident } from '../../sim/infra/emergency';
 import { openDispatch } from '../../game/tools/DispatchTool';
 import { Panel } from '../Panel';
 import { clear, h, setText } from '../dom';
 import { icon } from '../icons';
 import { money, num, pct } from '../format';
-import { emgTime, kindIcon, minText, placeText, stateText } from '../EmergencyBanner';
+import { emgTime, kindIcon, lossText, minText, placeText, stateText } from '../EmergencyBanner';
 
 type Tab = 'active' | 'fleet' | 'stats';
 const RESP_ICON: Record<Responder, string> = { fire: 'fire', police: 'police', medical: 'health' };
@@ -28,6 +28,10 @@ export class EmergenciesPanel extends Panel {
   private tabBtns: Partial<Record<Tab, HTMLButtonElement>> = {};
   private content!: HTMLDivElement;
   private sig = '';
+  /** Active tab: the summary values and each row's changing texts, updated in place while the incidents' structure
+   *  (ids, states, units) stays the same (final fixes A1: the countdown was part of the signature — a rebuild of the
+   *  whole list several times a second at ultra speed) */
+  private live: { sum: HTMLElement[]; rows: { inc: Incident; st: HTMLElement; time: HTMLElement }[] } | null = null;
 
   constructor(ctx: GameContext) {
     super(ctx);
@@ -49,6 +53,7 @@ export class EmergenciesPanel extends Panel {
   showTab(t: Tab): void {
     this.tab = t;
     this.sig = '';
+    this.live = null;
     this.update();
   }
 
@@ -58,6 +63,7 @@ export class EmergenciesPanel extends Panel {
     if (!em || !em.active) {
       if (this.sig !== 'none') {
         this.sig = 'none';
+        this.live = null;
         clear(this.content);
         this.content.appendChild(h('div', { class: 'faint', style: 'padding:14px' }, 'The emergency service is not running.'));
       }
@@ -74,24 +80,42 @@ export class EmergenciesPanel extends Panel {
     const em = emergencyOf(sim)!;
     const list = [...em.incidents()].sort((a, b) => rank(a) - rank(b) || a.start - b.start);
     const now = sim.simTime();
-    const sig = 'a' + list.map((i) => `${i.id}:${i.state}:${i.units.length}:${i.fires.length}:${Math.floor((i.deadline - now) * 4)}:${i.etaMin ?? ''}`).join('|');
-    if (sig === this.sig) return;
-    this.sig = sig;
-    clear(this.content);
     const s = this.ctx.state.stats.emergency;
-    this.content.appendChild(h('div', { class: 'emg-sum' },
-      chip('Active', num(list.length)), chip('Need you', num(s.manualActive), s.manualActive ? 'bad' : ''),
-      chip('This month', num(sumCount(s.month))), chip('Auto-dispatched', pct(autoShare(s.year))),
-    ));
+    const sig = 'a' + list.map((i) => `${i.id}:${i.state}:${i.units.length}:${i.fires.length}:${i.lost}:${i.major ? 1 : 0}`).join('|');
+    if (sig !== this.sig || !this.live) {
+      this.sig = sig;
+      this.buildActive(list);
+    }
+    const live = this.live!;
+    const sum = [num(list.length), num(s.manualActive), num(sumCount(s.month)), pct(autoShare(s.year))];
+    live.sum.forEach((el, k) => setText(el, sum[k]));
+    live.sum[1].className = 'sc-v ' + (s.manualActive ? 'neg' : '');
+    for (const r of live.rows) {
+      const inc = r.inc;
+      const waiting = inc.state === 'uncovered' || inc.state === 'queued';
+      setText(r.st, waiting && inc.note ? inc.note : stateText(inc, now, em));
+      setText(r.time, activeTimeText(inc, now));
+    }
+  }
+
+  /** the Active tab's rows (their changing texts are filled in by renderActive) */
+  private buildActive(list: Incident[]): void {
+    clear(this.content);
+    const sum: HTMLElement[] = [];
+    const card = (label: string) => {
+      const v = h('div', { class: 'sc-v' });
+      sum.push(v);
+      return h('div', { class: 'stat-card' }, h('div', { class: 'sc-l' }, label), v);
+    };
+    this.content.appendChild(h('div', { class: 'emg-sum' }, card('Active'), card('Need you'), card('This month'), card('Auto-dispatched')));
+    const rows: { inc: Incident; st: HTMLElement; time: HTMLElement }[] = [];
+    this.live = { sum, rows };
     if (!list.length) {
       this.content.appendChild(h('div', { class: 'emg-empty' }, h('span', { html: icon('check', 18) }), h('span', null, 'No emergencies right now. Covered incidents are answered automatically and show up in Statistics.')));
       return;
     }
     for (const inc of list) {
       const waiting = inc.state === 'uncovered' || inc.state === 'queued';
-      const left = inc.deadline - now;
-      const units = inc.units.length;
-      const need = INCIDENT_RESPONDERS[inc.kind].map((r) => `${inc.need[r] ?? 0} ${RESPONDER_UNIT[r][(inc.need[r] ?? 0) === 1 ? 0 : 1]}`).join(' + ');
       const jump = h('button', { class: 'btn sm', title: 'Show on the map', html: icon('target', 13) });
       jump.addEventListener('click', () => {
         this.ctx.focusCell(inc.x, inc.z, 420);
@@ -100,13 +124,15 @@ export class EmergenciesPanel extends Panel {
       });
       const disp = h('button', { class: 'btn sm' + (waiting ? ' primary' : ''), title: 'Dispatch a unit yourself' }, 'Dispatch');
       disp.addEventListener('click', () => openDispatch(this.ctx, inc.id));
-      const sev = inc.kind === 'fire' ? `${inc.fires.length} burning` : inc.kind === 'riot' ? `radius ${Math.round(inc.radius)}` : inc.injured > 0 ? `${inc.injured} hurt` : '';
+      const st = h('div', { class: 'emg-rs' + (waiting ? ' neg' : '') });
+      const time = h('div', { class: 'emg-rs faint' });
+      rows.push({ inc, st, time });
       this.content.appendChild(h('div', { class: 'emg-row' + (waiting ? ' waiting' : ''), style: { '--kc': INCIDENT_COLOR[inc.kind] } as Record<string, string> },
         h('div', { class: 'emg-ico sm', html: kindIcon(inc.kind, 16) }),
         h('div', { class: 'emg-rb' },
           h('div', { class: 'emg-rt' }, h('b', null, INCIDENT_LABEL[inc.kind]), inc.major ? h('span', { class: 'emg-tag' }, 'MAJOR') : null, h('span', { class: 'faint' }, ` · ${placeText(inc)}`)),
-          h('div', { class: 'emg-rs' + (waiting ? ' neg' : '') }, waiting && inc.note ? inc.note : stateText(inc, now, em)),
-          h('div', { class: 'emg-rs faint' }, `Needs ${need} · ${units} assigned${sev ? ' · ' + sev : ''} · ${emgTime(now - inc.start)} ago${waiting && left > 0 ? ` · ${emgTime(left)} left` : ''}`),
+          st,
+          time,
         ),
         h('div', { class: 'emg-rbtn' }, jump, disp),
       ));
@@ -121,6 +147,7 @@ export class EmergenciesPanel extends Panel {
     const sig = 'f' + stations.map((s) => `${s.id}:${s.free}:${s.units}:${s.powered}`).join('|') + JSON.stringify(f);
     if (sig === this.sig) return;
     this.sig = sig;
+    this.live = null;
     clear(this.content);
     for (const r of RESPONDERS) {
       const list = stations.filter((s) => s.responder === r);
@@ -156,6 +183,7 @@ export class EmergenciesPanel extends Panel {
     const sig = 's' + JSON.stringify(e.month) + JSON.stringify(e.year) + e.medScore.toFixed(3);
     if (sig === this.sig) return;
     this.sig = sig;
+    this.live = null;
     clear(this.content);
     const cols: [string, EmergencyMonth][] = [['This month', e.month], ['12 months', e.year]];
     const table = h('table', { class: 'emg-table' });
@@ -189,6 +217,22 @@ export class EmergenciesPanel extends Panel {
       h('div', { class: 'emg-rs faint', style: 'padding:8px 2px 0' }, 'Incidents within a station’s reach (Fleet tab: “auto-dispatch within … min” of driving) are answered automatically along real roads and only show up here. Anything farther needs you to dispatch a unit. Build stations near the gaps (Fire / Police / Health data views), keep their budgets funded, and add more when all units are often busy.'),
     );
   }
+}
+
+/**
+ * An Active row's time line: "Needs 2 fire trucks · 1 assigned · 3 burning · 1.2 min ago · 2.0 min left". The countdown
+ * is the player's dispatch window (emergency.ts dispatchWindowEnd: an industrial accident's plant ignites before its
+ * deadline) and stops once a building is lost — the loss shows instead (routed from emergency r1: the panel counted
+ * down to inc.deadline, also after the fire had burnt a building down).
+ */
+export function activeTimeText(inc: Incident, now: number): string {
+  const waiting = inc.state === 'uncovered' || inc.state === 'queued';
+  const left = dispatchWindowEnd(inc) - now;
+  const counting = waiting && left > 0 && inc.lost === 0;
+  const loss = lossText(inc);
+  const need = INCIDENT_RESPONDERS[inc.kind].map((r) => `${inc.need[r] ?? 0} ${RESPONDER_UNIT[r][(inc.need[r] ?? 0) === 1 ? 0 : 1]}`).join(' + ');
+  const sev = inc.kind === 'fire' ? `${inc.fires.length} burning` : inc.kind === 'riot' ? `radius ${Math.round(inc.radius)}` : inc.injured > 0 ? `${inc.injured} hurt` : '';
+  return `Needs ${need} · ${inc.units.length} assigned${sev ? ' · ' + sev : ''} · ${emgTime(now - inc.start)} ago${counting ? ` · ${emgTime(left)} left` : loss ? ` · ${loss}` : ''}`;
 }
 
 function rank(i: Incident): number {

@@ -76,7 +76,7 @@ export class DisastersSystem implements SimSystem {
     // a save's random stream and disasters under way (a save from before has none: the stream starts from seed + day)
     const saved = st.systemData.infraDisasters as Partial<DisastersSave> | undefined;
     if (saved && typeof saved === 'object') {
-      if (typeof saved.rng === 'number' && Number.isFinite(saved.rng) && saved.rng > 0) this.rng.state = saved.rng;
+      if (typeof saved.rng === 'number' && Number.isInteger(saved.rng) && saved.rng >= 0 && saved.rng < 4294967296) this.rng.state = saved.rng;
       if (Array.isArray(saved.active)) {
         for (const d of saved.active as Partial<ActiveDisaster>[]) {
           if (!d || (d.kind !== 'tornado' && d.kind !== 'earthquake' && d.kind !== 'meteor')) continue;

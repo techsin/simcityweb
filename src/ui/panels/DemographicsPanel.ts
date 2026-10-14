@@ -76,7 +76,6 @@ export class DemographicsPanel extends Panel {
   private tab: Tab = 'people';
   private tabBtns: Record<string, HTMLButtonElement> = {};
   private content!: HTMLDivElement;
-  private sig = '';
 
   override defaultPos(w: number, hh: number): { x: number; y: number } {
     return { x: Math.max(14, (w - this.width) / 2), y: Math.max(72, (hh - 560) / 2) };
@@ -90,7 +89,7 @@ export class DemographicsPanel extends Panel {
       const b = h('button', null, label) as HTMLButtonElement;
       b.addEventListener('click', () => {
         this.tab = id;
-        this.sig = '';
+        this.resetGate();
         this.update();
       });
       this.tabBtns[id] = b;
@@ -102,15 +101,16 @@ export class DemographicsPanel extends Panel {
   }
 
   override onOpen(): void {
-    this.sig = '';
+    this.resetGate();
   }
 
   override update(): void {
     const st = this.ctx.state;
     for (const [id, b] of Object.entries(this.tabBtns)) toggleClass(b, 'on', id === this.tab);
-    const sig = `${this.tab}:${st.monthIndex}:${Math.floor(st.day / 10)}:${Math.round(st.stats.population / 25)}`;
-    if (sig === this.sig) return;
-    this.sig = sig;
+    // (final fixes A1: the population part changes on every UI tick at ultra speed — a data-only change rebuilds at
+    // most once per real second; a tab switch at once)
+    const sig = `${st.monthIndex}:${Math.floor(st.day / 10)}:${Math.round(st.stats.population / 25)}`;
+    if (!this.gate(this.tab, sig)) return;
     clear(this.content);
     if (this.tab === 'people') this.people();
     else if (this.tab === 'services') this.services();

@@ -122,7 +122,8 @@ interface PassSlot {
   /** list was culled with any band, or kept while the view moved (re-culled exactly once the view rests) */
   banded: boolean;
   stale: boolean;
-  /** receiver (shadow passes): form counter and volume version at the build */
+  /** receiver (shadow passes): form counter and volume version at the build (rver -2: built without a receiver, as a
+   *  shadow camera whose receiver culling is switched off, WorldView's single map, or a view pass) */
   rform: number;
   rver: number;
   // ---- motion tracking
@@ -244,7 +245,7 @@ const REACH_SHRINK = 0.7;
 /** guard bands (see bandPersp): frames of the camera's last motion a band covers at most, the largest outward turn of
  *  one side plane (rad) and the largest outward shift of a plane (fraction of the view distance, <= 3000 m) */
 const BAND_FRAMES = 4;
-const TILT_CAP = (6 * Math.PI) / 180;
+const TILT_CAP = (4 * Math.PI) / 180;
 const SWEEP_CAP = 0.08;
 /** band scratch: predicted corner offsets (8 corners x BAND_FRAMES frames) and the banded planes being fitted */
 const _po = new Float64Array(24 * BAND_FRAMES);
@@ -508,8 +509,11 @@ export class DynamicBatch {
   private sidSeq = 0;
   /** guard band of the per-pass lists, as a fraction of the view distance: the widest isotropic band (slow motion) and
    *  prediction error, and the fastest travel per frame that is predicted (0 = exact lists, rebuilt on any camera
-   *  move). Main passes use the view camera's distance to the ground, shadow passes the receiver's. */
-  guard = 0.06;
+   *  move). Main passes use the view camera's distance to the ground; shadow passes use shadowGuard x the receiver's.
+   *  (0.03: as cheap in CPU as twice that, which kept lists over a few more frames but drew up to a third more
+   *  triangles while orbiting / zooming.) */
+  guard = 0.03;
+  shadowGuard = 0.03;
   /** views farther out than this (m to the ground along the view axis; shadow passes: their slice) cull per tile only
    *  and skip the front-to-back sort: at that range instances are small (LOD proxies), overdraw is low and the lists
    *  change every frame while zooming, so per-instance work costs more CPU than it saves GPU */
@@ -632,12 +636,14 @@ export class DynamicBatch {
   }
 
   /** can this pass draw anything? Not without instances (a dynamic batch: without a visible one), nor in a shadow
-   *  cascade outside the shadowMask (shadow frustums carry their cascade, see Shadows.ts). The view frustum is not
-   *  tested here: the pass list culls per tile / instance. */
+   *  cascade outside the shadowMask (shadow frustums carry their cascade, see Shadows.ts) or held this frame. The view
+   *  frustum is not tested here: the pass list culls per tile / instance. */
   private passable(f: THREE.Frustum): boolean {
     const pc = this.pc;
     if (pc === null) return this.live > 0;
     if (pc.dynamic ? this.untiledVis === 0 : this.live === 0) return false;
+    // (a held shadow cascade draws nothing this frame: CityCascadeShadow.holdFar)
+    if ((f as { hold?: boolean }).hold === true) return false;
     const c = (f as { cascade?: number }).cascade;
     return c === undefined || ((pc.shadowMask! >> c) & 1) === 1;
   }
@@ -1218,6 +1224,8 @@ export class DynamicBatch {
     let same = s.version === this.version && s.texel === texel && s.farMode === farMode && !(reach < s.reach0 * REACH_SHRINK);
     if (same && s.offAt !== this.offSeq && !this.tilesOk(s)) same = false;
     if (same && recv && recv.form !== s.rform) same = false;
+    // (a list culled against a receiver is not valid for a pass without one, and the other way round costs triangles)
+    if (same && (recv === null) !== (s.rver === -2)) same = false;
     if (same && !this.atBuild(s, w, P, recv)) {
       same = frustumCorners(camera, _cc) && cornersInside(_cc, s.bp) && (recv === null || cornersInside(recv.corners, s.brp));
       if (same) s.stale = true;
@@ -1239,25 +1247,27 @@ export class DynamicBatch {
       s.rot.set(_rot);
       s.px = w[12]; s.py = w[13]; s.pz = w[14];
       // band (see cullPlanes): ~4 frames of the camera's travel on every side for slow motion (at most `guard` x the view
-      // distance: far views are GPU-bound and their pans fast, a wide band would mostly add triangles), and steady
-      // motion of less than that per frame predicted for up to BAND_FRAMES frames (directional: the planes the view
-      // turns / moves across; plus half a frame of travel for the prediction's error). None for a resting view, for
-      // dynamic batches, after a jump or for fast travel, or while bands keep failing (noBand).
+      // distance: far views are GPU-bound and their pans fast, a wide band would mostly add triangles), or, for steady
+      // motion of less than that per frame, that motion predicted for up to BAND_FRAMES frames instead (directional:
+      // only the planes the view turns / moves across; plus half a frame of travel for the prediction's error). None for
+      // a resting view, for dynamic batches, after a jump or for fast travel, or while bands keep failing (noBand).
       const range = Math.min(reach, 3000);
-      const cap = this.guard * range;
+      const cap = (shadow ? this.shadowGuard : this.guard) * range;
       // (shadow passes: the band must also cover the receiver, which moves with the view, not the shadow camera)
       const move = Math.max(step, rstep);
       const bandOk = cap > 0 && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0 && move < Infinity && turn < Infinity && rturn < Infinity;
       s.iso = bandOk && move < cap * 0.75 ? Math.min(cap, 4 * move) : 0;
       // (fast travel is not predicted: a band covering frames of it would mostly add triangles)
       s.pred = bandOk && move < cap && (step > 1e-3 || turn > TURN_EPS || rstep > 1e-3 || rturn > TURN_EPS) && steady(s.mv, s.mq, s.pmv, s.pmq, 1e-3 * range) && (recv === null || steady(s.rmv, s.rmq, s.rpmv, s.rpmq, 1e-3 * range));
+      // (a predicted band needs no isotropic one on top: the planes the view does not move across stay exact)
+      if (s.pred) s.iso = 0;
       s.err = s.pred ? Math.min(cap, 0.5 * move) + 1e-3 * range : 0;
       s.bk = s.pred ? BAND_FRAMES : s.iso > 0 ? 1 : 0;
       s.sweepCap = SWEEP_CAP * range;
       if (recv) {
         s.rform = recv.form;
         s.rver = recv.version;
-      }
+      } else s.rver = -2;
       this.build(renderer, s, shadow ? ((camera.userData.cascade as number | undefined) ?? 0) : -1, texel, geometry, recv, farMode);
     } else {
       s.uses++;
@@ -1285,7 +1295,7 @@ export class DynamicBatch {
     const sh = s.shape;
     if (!close(P[0], sh[0]) || !close(P[5], sh[1]) || !close(P[8], sh[2]) || !close(P[9], sh[3]) || !close(P[10], sh[4]) || !close(P[12], sh[5]) || !close(P[13], sh[6]) || !close(P[14], sh[7])) return false;
     if (turnAngle(_rot, s.rot) > TURN_EPS) return false;
-    return recv === null || recv.version === s.rver;
+    return recv === null ? s.rver === -2 : recv.version === s.rver;
   }
 
   /** view-culled main list (see viewCulled): every visible instance of the dynamic batch (the front of `untiled`) */

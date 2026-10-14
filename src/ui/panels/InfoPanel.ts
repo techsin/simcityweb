@@ -43,13 +43,13 @@ import { facilityLoad } from '../../sim/infra/catchments';
 import { TAP_SAFE } from '../../sim/economy/tuning';
 import { facilityReport } from '../../sim/infra/facilities';
 import { roadCellReport } from '../../sim/infra/transportFacilities';
-import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, emergencyReachAt } from '../../sim/infra/overlays';
+import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, emergencyReachAt, emgNearSlack } from '../../sim/infra/overlays';
 import type { PollutionSystem } from '../../sim/infra/pollution';
 import type { CrimeSystem } from '../../sim/infra/crime';
 import { NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
 import {
-  type Bar, type Chip, type ModelRow, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView, growthRows, mainProblem,
-  landValueView, needRows, pyramid, responseText, signedPts,
+  type Bar, type Chip, type ModelRow, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView, growthRows, headerMoney, mainProblem,
+  landValueView, needRows, pyramid, responseText, signedPts, splitFacilityRows,
 } from '../inspectorModel';
 
 const FLAG_CHIPS: [number, string, Chip['cls'], Chip['topic']?][] = [
@@ -192,15 +192,19 @@ export class InfoPanel extends Panel {
     return h('div', { class: 'info-hero' }, box, h('div', null, h('div', { class: 'ih-t' }, title), h('div', { class: 'ih-s', html: sub })));
   }
 
-  private kv(): { el: HTMLElement; add: (l: string, ic: string, v: string | HTMLElement, title?: string) => void; count: () => number } {
+  /** a key / value grid; `note`: a small full-width line under the row (the facility report's hint of a header row) */
+  private kv(): { el: HTMLElement; add: (l: string, ic: string, v: string | HTMLElement, title?: string, note?: string) => void; count: () => number } {
     const el = h('div', { class: 'kv' });
     let n = 0;
     return {
       el,
-      add: (l, ic, v, title) => {
+      add: (l, ic, v, title, note) => {
         n++;
         el.appendChild(h('span', { html: icon(ic, 14) + `<span>${escapeHtml(l)}</span>`, title }));
         el.appendChild(typeof v === 'string' ? h('span', { html: v, title }) : v);
+        // (the grid styles its children by odd / even position: the note spans both columns, an empty cell keeps the
+        // pairs in step)
+        if (note) el.append(h('div', { class: 'kv-note' }, note), h('i', { class: 'kv-gap' }));
       },
       count: () => n,
     };
@@ -332,8 +336,17 @@ export class InfoPanel extends Panel {
     }
     this.body.appendChild(this.chips(dedupeChips(chips, warnings)));
 
-    // ---- occupancy
-    if (b.capacity > 0) {
+    // ---- occupancy (a tier facility — school, clinic, station, park — shows its report's Staff line instead: it carries
+    // the staffing effect and its hint, and the Facility section no longer repeats it, final fixes A4)
+    const split = rep ? splitFacilityRows(rep.rows) : null;
+    if (split?.staff) {
+      const sr = split.staff, ratio = sr.ratio ?? 0;
+      const cls = sr.status === 'bad' ? 'bad' : sr.status === 'warn' ? 'warn' : 'good';
+      this.body.appendChild(h('div', { class: 'cap-bar' },
+        h('div', { class: 'cb-l' }, h('span', { class: 'dim' }, sr.label), h('b', { class: sr.tone ?? '' }, sr.value)),
+        h('div', { class: 'bar ' + cls }, h('div', { class: 'fill', style: { width: `${Math.min(100, ratio * 100)}%` } })),
+        sr.hint ? h('div', { class: 'ins-hint', style: 'margin:5px 0 0' }, sr.hint) : null));
+    } else if (b.capacity > 0) {
       const cur = isRes ? b.pop : b.jobs;
       const frac = cur / b.capacity;
       this.body.appendChild(h('div', { class: 'cap-bar' },
@@ -384,21 +397,23 @@ export class InfoPanel extends Panel {
       const tgt = cond ? ` → ${pct(Math.max(0, Math.min(1, cond.target)))}` : '';
       kv.add('Condition', 'heart', `${pct(b.health ?? 1)}${tgt}`, cond ? 'Current condition → the level it is heading for' : undefined);
     } else if (def) {
-      // (a school, clinic, station or park also pays running costs per person served: the facility report's line has the
-      // actual monthly total, sim economy/opex.ts)
-      const upRow = rep?.rows.find((r) => r.label.toLowerCase() === 'upkeep');
-      if (def.upkeep) kv.add('Upkeep', 'budget', upRow ? upRow.value.replace(' / month', '/mo') : `${money(def.upkeep)}/mo`, upRow?.hint);
-      if (def.income) kv.add('Income', 'budget', `<span class="pos">+${money(def.income)}/mo</span>`);
+      // the facility report's actual monthly upkeep (a school, clinic, station or park also pays running costs per person
+      // served, sim economy/opex.ts) with its breakdown, and its actual income (an airport earns with its traffic, a
+      // venue with its visitors: the catalog's §3,000 read §960 in the report) — final fixes A4 / P3: the Facility
+      // section no longer repeats them
+      const up = split?.upkeep;
+      if (def.upkeep) kv.add('Upkeep', 'budget', up ? escapeHtml(headerMoney(up.value)) : `${money(def.upkeep)}/mo`, up?.hint, up?.hint);
+      const inc = split?.income;
+      if (inc) kv.add(inc.label, 'budget', `<span class="${inc.status === 'bad' ? 'neg' : 'pos'}">${escapeHtml(headerMoney(inc.value, true))}</span>`, inc.hint, inc.hint);
+      else if (def.income) kv.add('Income', 'budget', `<span class="pos">+${money(def.income)}/mo</span>`);
     }
     if (kv.count() < 6) kv.add('Age', 'calendar', b.age >= 360 ? `${Math.floor(b.age / 360)} yr ${Math.floor((b.age % 360) / 30)} mo` : `${Math.floor(b.age / 30)} months`);
     this.body.appendChild(kv.el);
 
     // ---- sections
-    if (rep) {
-      // the header above already shows the jobs bar and the upkeep: plain repeats of those lines are left out (a line
-      // with a warning or a hint says more and stays)
-      const header = new Set(['jobs filled', 'upkeep']);
-      const rows = rep.rows.filter((r) => !(header.has(r.label.toLowerCase()) && !r.hint && (r.status ?? 'ok') === 'ok'));
+    if (rep && split) {
+      // the header above shows the staff (or jobs) bar, the upkeep and the income: the section lists the rest
+      const rows = split.rest;
       this.body.appendChild(this.section('facility', 'Facility', 'info', rows.length ? `${rows.length} facts` : '', () => [
         rep.role ? h('div', { class: 'ins-role' }, rep.role) : null,
         warnings.length ? h('ul', { class: 'ins-warn' }, ...warnings.map((w) => h('li', { html: icon('alert', 12) + `<span>${escapeHtml(w)}</span>` }))) : null,
@@ -549,8 +564,14 @@ export class InfoPanel extends Panel {
     const resp: [string, number, string, string][] = [['Fire response', EMG_FIRE, 'fire', 'no fire station'], ['Police response', EMG_POLICE, 'police', 'no police station'], ['Ambulance', EMG_MEDICAL, 'health', 'no clinic or hospital']];
     for (const [label, v, ic, none] of resp) {
       const r = safeCall(() => emergencyReachAt(st, ci, v), null);
-      const t = responseText(r ? { slackMin: r.slack, covered: r.slack >= 0, hasRoad: r.why !== 'noRoad', land: !b } : null, none);
-      if (t) kv.add(label, ic, `<span class="${t.tone}">${escapeHtml(t.text)}</span>`, 'Auto-dispatch reach: covered incidents become statistics; beyond it major emergencies wait for your dispatch');
+      // (fire, final fixes P2: beyond the amber band a fire burns down before a truck can arrive — the Emergency · Fire
+      // view's hover says the same)
+      const fire = v === EMG_FIRE ? { near: safeCall(() => emgNearSlack(EMG_FIRE), -3) } : undefined;
+      const t = responseText(r ? { slackMin: r.slack, covered: r.slack >= 0, hasRoad: r.why !== 'noRoad', land: !b } : null, none, fire);
+      const hint = fire
+        ? 'Auto-dispatch reach: covered fires become statistics; just beyond it (amber in the Emergency · Fire view) a fire waits for your dispatch and a truck sent at once still makes it; farther away it burns down before a truck can arrive'
+        : 'Auto-dispatch reach: covered incidents become statistics; beyond it major emergencies wait for your dispatch';
+      if (t) kv.add(label, ic, `<span class="${t.tone}">${escapeHtml(t.text)}</span>`, hint);
     }
     const out: (HTMLElement | null)[] = [kv.el];
     // coverages
@@ -759,8 +780,3 @@ function safeCall<T>(f: () => T, fallback: T): T {
   }
 }
 
-/** (exported for tests / other panels) the state a building's inspector reads its cell from */
-export function centerCellOf(st: CityState, b: Building): number {
-  const N = st.size;
-  return Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
-}

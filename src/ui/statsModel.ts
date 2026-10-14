@@ -1,11 +1,17 @@
 /**
- * City statistics panel model (headless, no DOM): the Park & ride card's line. StatsPanel renders it; tests pin it.
+ * City statistics panel model (headless, no DOM): the Park & ride card's line and the commute by mode. StatsPanel
+ * renders them; tests pin them.
  */
 import { compact } from './format';
-import { BF } from '../sim/CityState';
+import { BF, type CommuteByMode } from '../sim/CityState';
+import { CATALOG } from '../sim/catalog';
 
-/** the parking garage def the traffic system runs park & ride from (traffic.ts GARAGE_DEFS) */
-export const GARAGE_DEF = 'tr_parking_garage';
+/**
+ * the parking garage defs the traffic system runs park & ride from (traffic.ts GARAGE_DEFS), derived from the catalog
+ * (routed 50: the transport buildings the roads service runs — parking garages; a hard-coded id duplicated traffic's
+ * private list)
+ */
+export const GARAGE_DEFS: ReadonlySet<string> = new Set(CATALOG.filter((d) => d.category === 'transport' && d.service === 'roads').map((d) => d.id));
 
 /** parking garages by their state in the last traffic assignment (TrafficSystem.garageInfo(id)) */
 export interface GarageCounts {
@@ -32,7 +38,7 @@ export interface GarageStates {
 export function countGarages(buildings: Iterable<{ id: number; def: string; flags?: number }>, traffic: GarageStates | null | undefined): GarageCounts {
   const out: GarageCounts = { total: 0, parkRide: 0, kept: 0, downtown: 0, noTransit: 0, pending: 0 };
   for (const b of buildings) {
-    if (b.def !== GARAGE_DEF) continue;
+    if (!GARAGE_DEFS.has(b.def)) continue;
     out.total++;
     const g = traffic?.garageInfo?.(b.id);
     if (!g) {
@@ -67,4 +73,29 @@ export function parkRideLine(tf: { parkRideSpaces: number } | null | undefined, 
   if (g.noTransit > 0) return 'transit from their stops reaches no jobs yet';
   if (g.downtown > 0) return 'garages by downtown stops: parking only';
   return 'no garages by a stop';
+}
+
+/**
+ * The Statistics panel's commute-by-mode lines (final fixes F6) from stats.commuteByMode, read defensively (a city
+ * without traffic, or an older save, lacks it; 0 = no trips of that mode): "Car 9.1 · Transit 14.2 · Walk 6.0 min",
+ * and a short line on why transit can raise the city average (the "Avg. commute" card, all modes, stays): transit
+ * riders accept longer trips than drivers — the minutes it saves them, or costs them, against driving the same trip
+ * (transitSaved).
+ */
+export function commuteModes(m: Partial<CommuteByMode> | null | undefined): { times: string; note: string } {
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+  if (!m) return { times: '', note: '' };
+  const car = num(m.car), transit = num(m.transit), walk = num(m.walk);
+  const parts = [car ? `Car ${car.toFixed(1)}` : '', transit ? `Transit ${transit.toFixed(1)}` : '', walk ? `Walk ${walk.toFixed(1)}` : ''].filter(Boolean);
+  if (!parts.length) return { times: '', note: '' };
+  const saved = typeof m.transitSaved === 'number' && Number.isFinite(m.transitSaved) ? m.transitSaved : 0;
+  let note = '';
+  if (transit > 0) {
+    const vsCar = saved >= 0.05 ? `it saves them ${saved.toFixed(1)} min against driving the same trip` : saved <= -0.05 ? `${(-saved).toFixed(1)} min more than driving the same trip` : 'about as long as driving the same trip';
+    note = car > 0 && transit > car + 0.5
+      ? `Transit riders accept longer trips than drivers — ${vsCar}.`
+      : saved >= 0.05 ? `Transit saves its riders ${saved.toFixed(1)} min against driving the same trip.`
+        : saved <= -0.05 ? `Transit riders accept trips ${(-saved).toFixed(1)} min longer than driving them.` : '';
+  }
+  return { times: `${parts.join(' · ')} min`, note };
 }

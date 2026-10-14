@@ -77,7 +77,7 @@ class CityRNG extends RNG {
     super((state.config.seed ^ 0x9e3779b9) >>> 0);
     this.sd = state.systemData;
     const s = this.sd.simRng;
-    if (typeof s === 'number' && Number.isFinite(s) && s > 0) this.state = s;
+    if (typeof s === 'number' && Number.isInteger(s) && s >= 0 && s < 4294967296) this.state = s;
   }
   override next(): number {
     const v = super.next();

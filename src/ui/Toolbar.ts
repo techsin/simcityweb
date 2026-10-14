@@ -4,7 +4,8 @@ import type { GameContext } from '../game/context';
 import { CATEGORIES, CATEGORY_COLORS, categoryOfTool, findToolSpec, type ToolCategory, type ToolSpec } from '../game/toolCatalog';
 import type { BuildingDef } from '../sim/catalogTypes';
 import { facilityDefFacts } from '../sim/infra/facilities';
-import { expectedUpkeep, opexTierOf } from '../sim/economy/opex';
+import { opexTierOf } from '../sim/economy/opex';
+import { upkeepEstimate } from './upkeepModel';
 import { BRIDGE_COST_MUL, NETWORK_INFO, POWERLINE_COST, SUBWAY_COST, networkCellCost, zoneCellCost } from '../sim/economy/tuning';
 import { clear, escapeHtml, h, toggleClass } from './dom';
 import { icon } from './icons';
@@ -178,11 +179,11 @@ export class Toolbar {
   private costLine(spec: ToolSpec): string {
     if (spec.def) {
       const cost = spec.cost ? money(spec.cost) : 'Free';
-      // (schools, clinics, stations, parks also pay running costs per person served: their cost at a typical load,
-      // sim economy/opex.ts — the tooltip splits it)
-      const oUp = opexTierOf(spec.def) ? expectedUpkeep(null, spec.def) : 0;
-      const up = oUp ? `≈${money(oUp)}/mo` : spec.upkeep ? `${money(spec.upkeep)}/mo` : spec.income ? `+${money(spec.income)}/mo` : '&nbsp;';
-      return `<span>${cost}</span><span class="up">${up}</span>`;
+      // (schools, clinics, stations, parks also pay running costs per person served: what one more costs in this city
+      // now — final fixes P3, the plop tool, inspector and Rewards panel use the same estimate; the tooltip splits it)
+      const est = upkeepEstimate(this.ctx.state, spec.def);
+      const up = est ? `<span class="up" title="${escapeHtml(est.title)}">≈${money(est.now)}/mo</span>` : `<span class="up">${spec.upkeep ? `${money(spec.upkeep)}/mo` : spec.income ? `+${money(spec.income)}/mo` : '&nbsp;'}</span>`;
+      return `<span>${cost}</span>${up}`;
     }
     if (spec.costUnit) {
       const c = this.perTileCost(spec);
@@ -357,28 +358,30 @@ export class Toolbar {
       cat = CAT_LABELS[d.category] ?? titleCase(d.category);
       catColor = CATEGORY_COLORS[d.category] ?? catColor;
       rows.push(['Cost', d.cost ? money(d.cost) : 'Free']);
-      // (schools, clinics, stations, parks: "§72 / month + §0.60 per pupil served", the facts' line — sim economy/opex.ts)
-      let opexUp: { value: string } | undefined;
-      try {
-        opexUp = opexTierOf(d) ? facilityDefFacts(d.id).find((f) => f.key === 'upkeep') : undefined;
-      } catch {
-        opexUp = undefined;
-      }
-      if (d.upkeep) rows.push(['Upkeep', opexUp ? escapeHtml(opexUp.value) : `${money(d.upkeep)} / month`]);
-      if (d.income) rows.push(['Income', `<span class="pos">+${money(d.income)} / month</span>`]);
-      rows.push(['Size', `${d.footprint[0]} × ${d.footprint[1]} tiles`]);
-      if (d.jobs) rows.push(['Jobs', num(d.jobs)]);
       // what it does, in the facility's own units (seats, beds, fleet, patrol capacity, output, spaces, buses ...)
       let facts: ReturnType<typeof facilityDefFacts> = [];
       try {
-        facts = facilityDefFacts(d.id);
+        facts = facilityDefFacts(d.id, this.ctx.state);
       } catch {
         facts = [];
       }
-      // (facts that repeat a row above — Jobs, Upkeep, Size — are left out)
+      // (schools, clinics, stations, parks: what one more costs in this city now and the most it can cost — the same
+      // two numbers as the plop tool, the inspector and the Rewards panel, final fixes P3; the formula "§72 / month +
+      // §0.60 per pupil served" (the facts' line) goes under the rows)
+      const est = upkeepEstimate(this.ctx.state, d);
+      if (est) {
+        rows.push(['Upkeep', `≈${money(est.now)} / month now`]);
+        rows.push(['At full use', `up to ${money(est.full)} / month`]);
+        const formula = opexTierOf(d) ? facts.find((f) => f.key === 'upkeep')?.value : undefined;
+        if (formula) hints.push(`Upkeep: ${formula}`);
+      } else if (d.upkeep) rows.push(['Upkeep', `${money(d.upkeep)} / month`]);
+      if (d.income) rows.push(['Income', `<span class="pos">+${money(d.income)} / month</span>`]);
+      rows.push(['Size', `${d.footprint[0]} × ${d.footprint[1]} tiles`]);
+      if (d.jobs) rows.push(['Jobs', num(d.jobs)]);
+      // (facts that repeat a row above — Jobs, Upkeep, Size — are left out, with the upkeep's hint)
       const seen = new Set(rows.map(([a]) => a.toLowerCase()));
       for (const f of facts) if (!seen.has(f.label.toLowerCase())) rows.push([escapeHtml(f.label), escapeHtml(f.value)]);
-      for (const f of facts) if (f.hint && hints.length < 3) hints.push(f.hint);
+      for (const f of facts) if (f.hint && f.key !== 'upkeep' && hints.length < 3) hints.push(f.hint);
       if (!facts.length) {
         if (d.capacity && d.category !== 'growable') rows.push(['Capacity', num(d.capacity)]);
         if (d.powerOut) rows.push(['Power output', `${num(d.powerOut)} MW`]);

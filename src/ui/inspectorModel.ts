@@ -22,6 +22,8 @@ export interface Bar {
 }
 
 export interface ModelRow {
+  /** the facility line's stable id ('staff', 'upkeep', 'income', ...; FacilityLine.key) when the row comes from one */
+  key?: string;
   label: string;
   value: string;
   tone?: Tone;
@@ -331,7 +333,7 @@ export function warningTopic(w: string): Chip['topic'] {
 export function facilityView(rep: FacilityReport | null | undefined): FacilityView | null {
   if (!rep) return null;
   const rows = rep.lines.map((l: FacilityLine) => {
-    const r: ModelRow = { label: l.label, value: l.value };
+    const r: ModelRow = { key: l.key, label: l.label, value: l.value };
     if (typeof l.ratio === 'number' && Number.isFinite(l.ratio)) r.ratio = Math.max(0, l.ratio);
     if (l.status) r.status = l.status;
     if (l.hint) r.hint = l.hint;
@@ -339,6 +341,27 @@ export function facilityView(rep: FacilityReport | null | undefined): FacilityVi
     return r;
   });
   return { role: rep.role, rows, warnings: [...new Set(rep.warnings)] };
+}
+
+/**
+ * The facility report's rows the inspector header shows (final fixes A4 / P3): a tier facility's Staff line (it carries
+ * the staffing effect and its hint) in place of the header's "Jobs filled" bar, the actual Upkeep line (value + hint)
+ * and the actual Income line (the catalog income of an airport is §3,000; its report says §960 at today's traffic).
+ * `rest` is what the Facility section lists: everything else, without a plain "Jobs filled" line (the header's bar shows
+ * it; a line with a hint or a status says more and stays).
+ */
+export function splitFacilityRows(rows: readonly ModelRow[]): { staff: ModelRow | null; upkeep: ModelRow | null; income: ModelRow | null; rest: ModelRow[] } {
+  const pick = (key: string) => rows.find((r) => r.key === key) ?? null;
+  const staff = pick('staff'), upkeep = pick('upkeep'), income = pick('income');
+  const rest = rows.filter((r) => r !== staff && r !== upkeep && r !== income && !(r.key === 'jobs' && !r.hint && (r.status ?? 'ok') === 'ok'));
+  return { staff, upkeep, income, rest };
+}
+
+/** a facility report value for the header's key rows: "§960 / month" → "+§960/mo" (income), "§925/mo" (upkeep);
+ *  anything else ("none while it is closed") as it is */
+export function headerMoney(value: string, income = false): string {
+  const m = /^(§[\d,.]+[kM]?) \/ month(.*)$/.exec(value.trim());
+  return m ? `${income ? '+' : ''}${m[1]}/mo${m[2]}` : value;
 }
 
 /** drop chips whose topic a facility warning already explains (the warning carries the fix) */
@@ -403,15 +426,20 @@ export function pyramid(shares: ArrayLike<number> | null | undefined, pop: numbe
  * EMERG_SLOW_MARGIN minutes beyond every station's reach (hasRoad true, the default). land: empty land that reads the
  * nearest road / lot's reach ("a lot here: auto, 1.6 min to spare", like the Emergency data view).
  */
-export function responseText(r: { slackMin: number; covered: boolean; hasRoad?: boolean; land?: boolean } | null | undefined, noStation = 'no station'): { text: string; tone: Tone } | null {
+export function responseText(r: { slackMin: number; covered: boolean; hasRoad?: boolean; land?: boolean } | null | undefined, noStation = 'no station', fire?: { near: number }): { text: string; tone: Tone } | null {
   if (!r || !Number.isFinite(r.slackMin)) return null;
   if (r.slackMin <= -98.5) return { text: noStation, tone: 'neg' };
-  if (r.slackMin <= -EMERG_RMAX + 1e-3) {
-    return r.hasRoad === false ? { text: r.land ? 'no road nearby' : 'unreachable — no road to it', tone: 'neg' } : { text: `manual only — ${EMERG_SLOW_MARGIN}+ min beyond every station`, tone: 'neg' };
-  }
   const lot = r.land ? 'a lot here: ' : '';
+  // fire (final fixes P2): beyond the manual window (overlays.emgNearSlack — the Emergency view's amber band) a fire
+  // burns down before a truck can arrive, however fast it is dispatched
+  const burns = !!fire && r.hasRoad !== false && !r.covered && r.slackMin < Math.min(0, fire.near);
+  if (r.slackMin <= -EMERG_RMAX + 1e-3) {
+    if (r.hasRoad === false) return { text: r.land ? 'no road nearby' : 'unreachable — no road to it', tone: 'neg' };
+    return { text: burns ? `${lot}too far — a fire burns down before a truck arrives` : `manual only — ${EMERG_SLOW_MARGIN}+ min beyond every station`, tone: 'neg' };
+  }
   if (r.covered || r.slackMin >= 0) return { text: `${lot}auto, ${Math.max(0, r.slackMin).toFixed(1)} min to spare`, tone: 'pos' };
-  return { text: `${lot}manual only (${(-r.slackMin).toFixed(1)} min out of reach)`, tone: r.slackMin >= -3 ? 'warn' : 'neg' };
+  if (burns) return { text: `${lot}too far — a fire burns down before a truck arrives (${(-r.slackMin).toFixed(1)} min out of reach)`, tone: 'neg' };
+  return { text: `${lot}manual only (${(-r.slackMin).toFixed(1)} min out of reach)`, tone: r.slackMin >= (fire ? fire.near : -3) ? 'warn' : 'neg' };
 }
 
 // ------------------------------------------------------------------------------------------------ crime

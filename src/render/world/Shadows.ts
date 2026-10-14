@@ -259,6 +259,36 @@ export class CityCascadeShadow extends SunLightShadow {
   private fitKey = new Float64Array(48);
   private fitCam: THREE.Camera | null = null;
   private fitLight: THREE.Light | null = null;
+  /**
+   * Far cascade hold (set by WorldView.updateShadowPolicy before the frame's fit): a shadow render then redraws the near
+   * cascade only. The far cascade keeps its map tile, lookup matrix and depth range from its last render (restored after
+   * every fit), its pass draws nothing (its frustum is emptied and flagged `hold`, which casters' frustum tests reject)
+   * and WorldView scissors the render to the near cascade's tile, so the clear keeps the far one.
+   */
+  holdFar = false;
+  /** the far cascade's lookup matrix, depth range, camera position / orientation as last rendered (farOk: valid) */
+  private farM = new THREE.Matrix4();
+  private farD = new THREE.Vector4();
+  private farP = new THREE.Vector3();
+  private farQ = new THREE.Quaternion();
+  private farOk = false;
+  /** the fit's far depth range and how far its far camera moved from the rendered one (fraction of its half size) */
+  private readonly fitFarD = new THREE.Vector4();
+  private fitFarShift = 0;
+  private fitFarTurn = false;
+  /** holdFar at the last fit (a change refits) */
+  private fitHold = false;
+
+  /** can the held far cascade stand in for this frame's fit? Not once the depth range stepped (zoom), the light turned
+   *  or the cascade moved by more than a tenth of its size (a jump / camera cut: it would miss most of the new view) */
+  get farHoldable(): boolean {
+    return this.farD.equals(this.fitFarD) && !this.fitFarTurn && this.fitFarShift < 0.1;
+  }
+
+  /** is the far cascade held by the last fit (holdFar with valid old content)? */
+  get farHeld(): boolean {
+    return ((this as any)._frustums[CASCADES - 1] as { hold?: boolean }).hold === true;
+  }
 
   constructor() {
     super();
@@ -291,7 +321,8 @@ export class CityCascadeShadow extends SunLightShadow {
 
   override updateMatrices(light: THREE.Light, viewCamera?: THREE.Camera): void {
     if (!viewCamera) return;
-    if (this.sameFit(light, viewCamera)) return;
+    if (this.sameFit(light, viewCamera) && this.fitHold === this.holdFar) return;
+    this.fitHold = this.holdFar;
     const self = this as any;
     const cams: THREE.OrthographicCamera[] = self._cameras;
     const mats: THREE.Matrix4[] = self._matrices;
@@ -392,6 +423,24 @@ export class CityCascadeShadow extends SunLightShadow {
     }
     this.lastTexel[0] = (2 * cams[0].right) / resX;
     this.lastTexel[1] = (2 * cams[1].right) / resX;
+    // far cascade hold (see holdFar): its rendered state, or the state it keeps
+    const F = CASCADES - 1, ff = frus[F] as THREE.Frustum & { hold?: boolean };
+    this.fitFarD.copy(cdata[F]);
+    this.fitFarShift = cams[F].position.distanceTo(this.farP) / Math.max(1e-6, cams[F].right);
+    this.fitFarTurn = Math.abs(cams[F].quaternion.dot(this.farQ)) < 1 - 1e-9;
+    if (this.holdFar && this.farOk) {
+      mats[F].copy(this.farM);
+      cdata[F].copy(this.farD);
+      for (const p of ff.planes) { p.normal.set(0, 0, 0); p.constant = -1e30; }
+      ff.hold = true;
+    } else {
+      this.farM.copy(mats[F]);
+      this.farD.copy(cdata[F]);
+      this.farP.copy(cams[F].position);
+      this.farQ.copy(cams[F].quaternion);
+      this.farOk = true;
+      ff.hold = false;
+    }
   }
   /** world size of a shadow texel per cascade (after last update) */
   lastTexel = [0.2, 1];
@@ -401,9 +450,10 @@ export class CityCascadeShadow extends SunLightShadow {
 export class CitySun extends THREE.DirectionalLight {
   readonly dirShadow: THREE.DirectionalLightShadow;
   readonly cascadeShadow: CityCascadeShadow;
-  /** receiver volume of the single (low quality) map */
+  /** receiver volume of the single (low quality) map (casters are culled against it while dirReceiverCull is on) */
   readonly dirReceiver = makeReceiver();
   private _cascaded = false;
+  private _dirCull = true;
 
   constructor(color: THREE.ColorRepresentation = 0xffffff, intensity = 3) {
     super(color, intensity);
@@ -411,10 +461,27 @@ export class CitySun extends THREE.DirectionalLight {
     this.dirShadow = this.shadow;
     this.dirShadow.camera.userData.cascade = 0;
     this.dirShadow.camera.userData.texel = 1;
-    this.dirShadow.camera.userData.recv = this.dirReceiver;
-    (this.dirShadow as any)._frustum.recv = this.dirReceiver;
     (this.dirShadow as any)._frustum.cascade = 0;
+    this.dirReceiverCull = true;
     this.cascadeShadow = new CityCascadeShadow();
+  }
+
+  /**
+   * Single map: cull its casters against the view's receiver volume (dirReceiver, fitted every frame by fitSunShadow)
+   * or only against the map's own box. The map is a texel-snapped square around the view target, so with box culling
+   * its content depends on the target and the zoom step only: a view that turns or orbits (or zooms within a radius
+   * step) can keep the cached map instead of re-rendering it whenever the receiver changes; it draws the casters of
+   * the whole square (also the part behind the view) when it does re-render. WorldView.updateShadowPolicy picks the
+   * mode per re-render.
+   */
+  get dirReceiverCull(): boolean {
+    return this._dirCull;
+  }
+
+  set dirReceiverCull(on: boolean) {
+    this._dirCull = on;
+    this.dirShadow.camera.userData.recv = on ? this.dirReceiver : undefined;
+    (this.dirShadow as any)._frustum.recv = on ? this.dirReceiver : undefined;
   }
 
   get cascaded(): boolean {

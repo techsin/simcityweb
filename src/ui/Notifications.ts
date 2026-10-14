@@ -4,6 +4,7 @@ import type { GameContext } from '../game/context';
 import { escapeHtml, h } from './dom';
 import { icon } from './icons';
 import { dayLabel } from './format';
+import { newsMark, tickerItems } from './newsLog';
 
 export const NEWS_META: Record<string, { color: string; icon: string; title: string }> = {
   info: { color: 'var(--accent)', icon: 'news', title: 'News' },
@@ -29,8 +30,13 @@ export class NewsTicker {
   private view: HTMLDivElement;
   private x = 0;
   private hover = false;
-  private shown = -1;
+  /** the news log the track shows: newsMark and length of state.news at the last rebuild (final fixes N2: the log is
+   *  capped at 200 items, so its length alone stops changing) */
+  private shownMark = -1;
+  private shownLen = -1;
   private width = 0;
+  /** the view's width, measured on rebuilds and resizes only (A1: frame() read clientWidth every frame) */
+  private viewW = 0;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.track = h('div', { class: 'tk-track' });
@@ -48,13 +54,30 @@ export class NewsTicker {
       (ctx.panels as any).get?.('advisors')?.showTab?.('news');
     });
     parent.appendChild(this.el);
+    // the view's width changes with the window (and the UI zoom) only: measure it then, not every frame
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => (this.viewW = this.view.clientWidth));
+      ro.observe(this.view);
+      ctx.signal?.addEventListener('abort', () => ro.disconnect(), { once: true });
+    } else if (typeof window !== 'undefined') {
+      const onResize = () => (this.viewW = this.view.clientWidth);
+      window.addEventListener('resize', onResize);
+      ctx.signal?.addEventListener('abort', () => window.removeEventListener('resize', onResize), { once: true });
+    }
     this.rebuild();
+  }
+
+  /** the track must be rebuilt: a news item was added (also to a full log), or the log was cleared / replaced */
+  private stale(): boolean {
+    const news = this.ctx.state.news;
+    return news.length !== this.shownLen || newsMark(news) !== this.shownMark;
   }
 
   private rebuild(): void {
     const st = this.ctx.state;
-    const items = st.news.slice(-8).reverse();
-    this.shown = st.news.length;
+    const items = tickerItems(st.news);
+    this.shownLen = st.news.length;
+    this.shownMark = newsMark(st.news);
     this.track.innerHTML = '';
     if (!items.length) {
       const welcome: NewsItem[] = [
@@ -72,12 +95,14 @@ export class NewsTicker {
       }
       this.track.appendChild(el);
     }
+    // (one layout read per rebuild: the track's width and the view's)
     this.width = this.track.scrollWidth;
+    this.viewW = this.view.clientWidth;
   }
 
   frame(dt: number): void {
-    if (this.ctx.state.news.length !== this.shown) this.rebuild();
-    const vw = this.view.clientWidth;
+    if (this.stale()) this.rebuild();
+    const vw = this.viewW;
     if (this.width <= vw - 20) {
       this.x = 0;
       this.track.style.transform = 'translateX(0)';

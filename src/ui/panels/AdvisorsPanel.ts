@@ -6,17 +6,32 @@
  * PERF: while the game runs the cards read advisorIssues (the month tick's full list — no scan of the city); a fresh
  * openAdvice scan (several ms on a big map) runs only while paused, or once after the player edited the map (zones,
  * roads, lines, plopped buildings: playerEditCounter — the city's own growth never counts), so a school placed while
- * paused shows at once.
+ * paused shows at once. The content is rebuilt only when what it shows changed (the cards' texts, the newest news
+ * item), at most once per real second (final fixes A1: the signature changed with every 50 residents, a full rebuild
+ * on every UI tick at ultra speed).
+ * "Show me" opens the data view of the advice (advisorModel.adviceView) together with the camera move (final fixes N8).
  */
 import type { NewsItem } from '../../sim/CityState';
 import { adviceIdOf, advisorIssues, advisorIssuesReady, openAdvice, type OpenAdvice } from '../../sim/economy/advisors';
 import type { GameContext } from '../../game/context';
+import { type AdviceView, adviceView, outageAssessment, utilityOutages } from '../advisorModel';
+import { newsMark } from '../newsLog';
+import { resolveVariant } from '../../sim/infra/overlays';
+import { overlayTitle } from '../overlays';
 import { Panel } from '../Panel';
 import { clear, escapeHtml, h, toggleClass } from '../dom';
 import { icon } from '../icons';
 import { dayLabel, money, pct } from '../format';
 import { lastNet } from '../TopBar';
 import { playerEditCounter, type EditCounter } from '../playerEdits';
+
+/** an advisor's own assessment; `at` / `view`: where "Show me" goes and the data view it opens */
+export interface Assessment {
+  level: 'good' | 'warn' | 'bad';
+  text: string;
+  at?: { x: number; z: number } | null;
+  view?: AdviceView | null;
+}
 
 interface Advisor {
   id: string;
@@ -26,7 +41,7 @@ interface Advisor {
   color: string;
   /** matches NewsItem.advisor */
   keys: RegExp;
-  assess: (ctx: GameContext) => { level: 'good' | 'warn' | 'bad'; text: string };
+  assess: (ctx: GameContext) => Assessment;
 }
 
 const S = (ctx: GameContext) => ctx.state.stats;
@@ -46,10 +61,15 @@ export const ADVISORS: Advisor[] = [
     id: 'utilities', name: 'Dana Volt', role: 'Utilities', icon: 'utilities', color: '#c9a21a', keys: /utilit|power|water|garbage|energy/i,
     assess: (ctx) => {
       const s = S(ctx);
-      if (s.powerDemand > 0 && s.powerSupply < s.powerDemand) return { level: 'bad', text: `Power shortage! Demand ${Math.round(s.powerDemand)} MW vs supply ${Math.round(s.powerSupply)} MW. Build a power plant.` };
-      if (s.waterDemand > 0 && s.waterSupply < s.waterDemand) return { level: 'warn', text: 'Water supply cannot keep up with demand. Build pumps or water towers.' };
-      if (s.garbageCapacity > 0 && s.garbageProduced > s.garbageCapacity) return { level: 'warn', text: 'Garbage is piling up. Zone a landfill or build a recycling center.' };
-      if (s.population > 0 && s.powerSupply === 0) return { level: 'bad', text: 'Our city has no power at all! Place a power plant and connect it with power lines.' };
+      if (s.powerDemand > 0 && s.powerSupply < s.powerDemand) return { level: 'bad', text: `Power shortage! Demand ${Math.round(s.powerDemand)} MW vs supply ${Math.round(s.powerSupply)} MW. Build a power plant.`, view: adviceView('powerShortage') };
+      if (s.population > 0 && s.powerSupply === 0) return { level: 'bad', text: 'Our city has no power at all! Place a power plant and connect it with power lines.', view: adviceView('noPower') };
+      // final fixes N1 (card part): occupied buildings cut off from the grid or the pipes, live from their flags — the
+      // supply can keep up while a bulldozed road leaves a district dark
+      const out = outageAssessment(utilityOutages(ctx.state));
+      if (out?.level === 'bad') return out;
+      if (s.waterDemand > 0 && s.waterSupply < s.waterDemand) return { level: 'warn', text: 'Water supply cannot keep up with demand. Build pumps or water towers.', view: adviceView('waterShortage') };
+      if (out) return out;
+      if (s.garbageCapacity > 0 && s.garbageProduced > s.garbageCapacity) return { level: 'warn', text: 'Garbage is piling up. Zone a landfill or build a recycling center.', view: adviceView('garbage') };
       return { level: 'good', text: 'Power, water and garbage services are keeping up.' };
     },
   },
@@ -111,8 +131,6 @@ export class AdvisorsPanel extends Panel {
   private tab: 'advisors' | 'news' = 'advisors';
   private tabBtns: Record<string, HTMLButtonElement> = {};
   private content!: HTMLDivElement;
-  private lastSig = '';
-  seenNews = 0;
   /** the player's map edits (a fresh scan after one; growth alone keeps the month tick's list) */
   private readonly edits: EditCounter;
 
@@ -140,7 +158,7 @@ export class AdvisorsPanel extends Panel {
 
   showTab(t: 'advisors' | 'news'): void {
     this.tab = t;
-    this.lastSig = '';
+    this.resetGate();
     if (t === 'advisors' && this.isOpen) this.refreshOpen(true);
     this.update();
   }
@@ -226,81 +244,105 @@ export class AdvisorsPanel extends Panel {
   }
 
   override onOpen(): void {
-    this.seenNews = this.ctx.state.news.length;
     // fresh open issues whenever the panel opens (the refresh while it stays open is throttled)
     this.openState = null;
+    this.resetGate();
+  }
+
+  /** what each advisor card shows: open issues first (they still hold, however old the message); else recent news of
+   *  other systems; else the advisor's own assessment — a bad one (an outage, a shortage) before a merely recent
+   *  message */
+  private cards(): Card[] {
+    const out: Card[] = [];
+    for (const a of ADVISORS) {
+      let res: Assessment;
+      try {
+        res = a.assess(this.ctx);
+      } catch {
+        res = { level: 'good', text: '…' };
+      }
+      const open = this.openFor(a);
+      const top = open[0];
+      const latest = top || res.level === 'bad' ? undefined : this.latestFor(a);
+      const level = worse(res.level, top ? LEVEL_OF[top.kind] : 'good');
+      const text = top ? top.text : latest ? latest.text : res.text;
+      const src = top ?? latest ?? null;
+      const at = src ? (src.x !== undefined && src.z !== undefined ? { x: src.x, z: src.z } : null) : res.at ?? null;
+      const view = top ? adviceView(top.id) : latest ? null : res.view ?? null;
+      out.push({ a, level, text, at, view, more: open.slice(1, 1 + MORE_MAX), extra: open.slice(1 + MORE_MAX) });
+    }
+    return out;
+  }
+
+  /** "Show me": the advice's data view (its variant) and the camera on the place */
+  private showMe(at: { x: number; z: number } | null, view: AdviceView | null): void {
+    const ctx = this.ctx;
+    if (view && (ctx.overlay !== view.overlay || (view.variant !== undefined && resolveVariant(view.overlay, ctx.overlayVariant) !== view.variant))) {
+      // (the camera move makes its own sound)
+      if (!at) ctx.sound('overlay');
+      ctx.setOverlay(view.overlay, view.variant);
+    }
+    if (at) ctx.focusCell(at.x, at.z, 420);
   }
 
   override update(): void {
     const st = this.ctx.state;
     for (const [id, b] of Object.entries(this.tabBtns)) toggleClass(b, 'on', id === this.tab);
-    this.seenNews = st.news.length;
-    let openSig = '';
     if (this.tab === 'advisors') {
       this.refreshOpen();
-      openSig = this.open.map((o) => `${o.id}|${o.text}`).join('\n');
-    }
-    const sig = `${this.tab}:${st.news.length}:${st.monthIndex}:${Math.round(st.stats.population / 50)}:${openSig}`;
-    if (sig === this.lastSig) return;
-    this.lastSig = sig;
-    clear(this.content);
-    if (this.tab === 'advisors') {
+      const cards = this.cards();
+      const sig = cards.map((c) => `${c.level}|${c.text}|${c.at ? c.at.x + ',' + c.at.z : ''}|${c.view ? c.view.overlay + ':' + (c.view.variant ?? '') : ''}|${c.more.map((o) => o.id + '|' + o.text).join('/')}|${c.extra.length}`).join('\n');
+      if (!this.gate('advisors', sig)) return;
+      clear(this.content);
       const grid = h('div', { class: 'adv-grid' });
-      for (const a of ADVISORS) {
-        let res: { level: 'good' | 'warn' | 'bad'; text: string };
-        try {
-          res = a.assess(this.ctx);
-        } catch {
-          res = { level: 'good', text: '…' };
-        }
-        // open issues first (they still hold, however old the message); else recent news of other systems; else the
-        // advisor's own assessment
-        const open = this.openFor(a);
-        const top = open[0];
-        const latest = top ? undefined : this.latestFor(a);
-        const recent = !!latest;
-        const level = worse(res.level, top ? LEVEL_OF[top.kind] : 'good');
-        const stColor = level === 'bad' ? 'var(--bad)' : level === 'warn' ? 'var(--warn)' : 'var(--good)';
-        const text = top ? top.text : recent ? latest!.text : res.text;
-        const src = top ?? (recent ? latest! : null);
-        const at = src && src.x !== undefined && src.z !== undefined ? { x: src.x, z: src.z } : null;
-        const more = open.slice(1, 1 + MORE_MAX);
+      for (const c of cards) {
+        const a = c.a;
+        const stColor = c.level === 'bad' ? 'var(--bad)' : c.level === 'warn' ? 'var(--warn)' : 'var(--good)';
+        // ("Show me" without a place opens the data view that shows where: a city-wide issue)
+        const go = c.at || c.view;
+        const tip = c.view ? `Opens the ${overlayTitle(c.view.overlay, c.view.variant ?? -1)} data view${c.at ? ' and shows the place' : ''}` : 'Shows the place on the map';
         const card = h('div', { class: 'adv' },
           h('div', { class: 'av', style: { background: `linear-gradient(145deg, ${a.color}, color-mix(in srgb, ${a.color} 55%, #000))`, '--st': stColor } as Record<string, string>, html: icon(a.icon, 19) }),
           h('div', { class: 'ab' },
             h('div', { style: 'display:flex;align-items:baseline;gap:8px' }, h('span', { class: 'an' }, a.name), h('span', { class: 'ar' }, a.role)),
-            h('div', { class: 'am' }, text),
-            at ? h('button', { class: 'btn sm ghost', style: 'margin-top:6px;padding-left:0', html: icon('target', 13) + '<span>Show me</span>', onclick: () => this.ctx.focusCell(at.x, at.z, 420) }) : null,
-            more.length ? h('ul', { class: 'am-more' }, ...more.map((o) => this.moreRow(o))) : null,
-            open.length > 1 + MORE_MAX ? h('div', { class: 'am-extra', title: open.slice(1 + MORE_MAX).map((o) => o.text).join('\n') }, `+ ${open.length - 1 - MORE_MAX} more`) : null,
+            h('div', { class: 'am' }, c.text),
+            go ? h('button', { class: 'btn sm ghost', style: 'margin-top:6px;padding-left:0', title: tip, html: icon(c.at ? 'target' : 'layers', 13) + '<span>Show me</span>', onclick: () => this.showMe(c.at, c.view) }) : null,
+            c.more.length ? h('ul', { class: 'am-more' }, ...c.more.map((o) => this.moreRow(o))) : null,
+            c.extra.length ? h('div', { class: 'am-extra', title: c.extra.map((o) => o.text).join('\n') }, `+ ${c.extra.length} more`) : null,
           ),
         );
         grid.appendChild(card);
       }
       this.content.appendChild(grid);
-    } else {
-      const list = h('div', { class: 'news-list' });
-      const items = st.news.slice().reverse();
-      if (!items.length) list.appendChild(h('div', { class: 'empty', html: icon('news', 28) + '<div>No news yet. Build your city and the headlines will follow.</div>' }));
-      for (const n of items.slice(0, 150)) {
-        const row = h('div', { class: `news-row ${n.kind}` }, h('span', { class: 'nd' }), h('span', { class: 'nt' }, dayLabel(n.day, st.config.startYear)), h('span', { html: escapeHtml(n.text) + (n.advisor ? ` <span class="faint">— ${escapeHtml(n.advisor)}</span>` : '') }));
-        if (n.x !== undefined && n.z !== undefined) {
-          const go = h('span', { class: 'go', title: 'Show on map', html: icon('target', 14) });
-          row.appendChild(go);
-          row.style.cursor = 'pointer';
-          row.addEventListener('click', () => this.ctx.focusCell(n.x!, n.z!, 420));
-        } else row.appendChild(h('span'));
-        list.appendChild(row);
-      }
-      this.content.appendChild(list);
+      return;
     }
+    // news feed: rebuilt when an item arrives — by the newest item's identity: the log keeps the last 200, so its
+    // length stops changing once it is full (final fixes N2)
+    if (!this.gate('news', `${newsMark(st.news)}:${st.news.length}:${st.config.startYear}`)) return;
+    clear(this.content);
+    const list = h('div', { class: 'news-list' });
+    const items = st.news.slice().reverse();
+    if (!items.length) list.appendChild(h('div', { class: 'empty', html: icon('news', 28) + '<div>No news yet. Build your city and the headlines will follow.</div>' }));
+    for (const n of items.slice(0, 150)) {
+      const row = h('div', { class: `news-row ${n.kind}` }, h('span', { class: 'nd' }), h('span', { class: 'nt' }, dayLabel(n.day, st.config.startYear)), h('span', { html: escapeHtml(n.text) + (n.advisor ? ` <span class="faint">— ${escapeHtml(n.advisor)}</span>` : '') }));
+      if (n.x !== undefined && n.z !== undefined) {
+        const go = h('span', { class: 'go', title: 'Show on map', html: icon('target', 14) });
+        row.appendChild(go);
+        row.style.cursor = 'pointer';
+        row.addEventListener('click', () => this.ctx.focusCell(n.x!, n.z!, 420));
+      } else row.appendChild(h('span'));
+      list.appendChild(row);
+    }
+    this.content.appendChild(list);
   }
 
-  /** a further open issue: one line (full text on hover), click shows it on the map */
+  /** a further open issue: one line (full text on hover), click shows it on the map (and its data view) */
   private moreRow(o: OpenAdvice): HTMLElement {
-    const go = o.x !== undefined && o.z !== undefined;
-    return h('li', { class: o.kind + (go ? ' go' : ''), title: o.text, onclick: go ? () => this.ctx.focusCell(o.x!, o.z!, 420) : undefined },
-      h('i', { class: 'md' }), h('span', { class: 'mt' }, o.text), go ? h('span', { class: 'mg', html: icon('target', 12) }) : null);
+    const at = o.x !== undefined && o.z !== undefined ? { x: o.x, z: o.z } : null;
+    const view = adviceView(o.id);
+    const go = !!(at || view);
+    return h('li', { class: o.kind + (go ? ' go' : ''), title: o.text, onclick: go ? () => this.showMe(at, view) : undefined },
+      h('i', { class: 'md' }), h('span', { class: 'mt' }, o.text), go ? h('span', { class: 'mg', html: icon(at ? 'target' : 'layers', 12) }) : null);
   }
 
   /** advisor warnings count for the top-bar badge (cheap: the assessments; no advisor scan while the panel is shut) */
@@ -315,6 +357,17 @@ export class AdvisorsPanel extends Panel {
     }
     return n;
   }
+}
+
+/** one advisor card's content (AdvisorsPanel.cards) */
+interface Card {
+  a: Advisor;
+  level: 'good' | 'warn' | 'bad';
+  text: string;
+  at: { x: number; z: number } | null;
+  view: AdviceView | null;
+  more: OpenAdvice[];
+  extra: OpenAdvice[];
 }
 
 /** further open issues listed under the top one */

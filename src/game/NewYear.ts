@@ -10,7 +10,13 @@
  *   - 'fireworks': countdown + show at whatever time it is (the clock and the camera are left alone);  'off': nothing
  * Fast game years (sim speed 2-3) get shows that end well before the next New Year; a year too short for the night
  * switch runs in 'fireworks' mode, and very short years skip the countdown. A New Year that arrives while a show is
- * still running only gets its toast: a show is never cut short.
+ * still running only gets its toast: a show is never cut short by the next year.
+ * Final fixes P11: the calendar holds on January 1st during the time-lapse and the countdown (the date ran on to Jan 9
+ * at 1x while the clock counted down to "midnight"; the toast's population then disagreed with the top bar's) and runs
+ * again at the player's speed from midnight; the player raising the speed during the celebration ends it (no new
+ * launches, the clock and the camera come back) instead of keeping night and the skyline camera for months of game
+ * time; and the celebration's timer follows real elapsed time (capped per frame) — it advanced by the frame time clamped
+ * to 0.1 s, so at a low frame rate a 90 s show lasted 15 real minutes.
  * Everything runs in real time (independent of the sim speed; keeps going while paused).
  * Batch-simulated years (headless runDays, loading) are skipped: only years reached while the game loop runs party.
  *
@@ -98,6 +104,8 @@ const CAM_IN = 2.5, CAM_OUT = 2.6;
 /** the show camera's tilt (deg; the controller's minimum at skyline distances) */
 const CAM_TILT = 25;
 const DAYS_PER_YEAR = DAYS_PER_MONTH * MONTHS_PER_YEAR;
+/** at most this much real time (s) advances the celebration in one frame (a hidden tab or a long stall skips nothing) */
+const REAL_STEP_MAX = 1;
 /** keys the camera controller acts on: pressing one hands the camera back to the player */
 const CAMERA_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'pageup', 'pagedown', 'home', '+', '=', '-', '_']);
 const DEG = 180 / Math.PI;
@@ -162,6 +170,12 @@ export class NewYearCelebration {
   /** a pointer button is held on the canvas (a tool drag): never start moving the camera then */
   private pointerHeld = false;
   private pointerOffs: (() => void)[] = [];
+  /** real time (performance.now ms) of the last frame (the celebration's timer follows real elapsed time) */
+  private lastNow = 0;
+  /** the calendar hold during the time-lapse and the countdown: the sim's days-per-frame cap it replaced */
+  private dateHold: { prevMax: number; at: number } | null = null;
+  /** the sim speed when the celebration began: the player raising it ends the celebration (dev shows: -1 = off) */
+  private speedAtStart = -1;
 
   constructor(deps: NewYearDeps) {
     this.deps = deps;
@@ -283,6 +297,9 @@ export class NewYearCelebration {
     if (fast) duration = Math.min(duration, Math.max(6, 0.6 * yearSec - delay));
     this.midnightAt = delay;
     this.phase = this.lapseDur > 0 ? 'lapse' : 'countdown';
+    // the calendar waits for midnight (a dev show keeps it running); the player raising the speed ends the party
+    this.speedAtStart = dev ? -1 : this.simSpeed();
+    if (!dev) this.holdDate();
     // fireworks
     this.fw = fw;
     if (fw) {
@@ -311,6 +328,7 @@ export class NewYearCelebration {
 
   /** end the celebration now and give the clock (and the camera) back; hard = clear the sky at once */
   cancel(hard = true): void {
+    this.releaseDate();
     if (this.phase === 'idle') {
       this.camStop(true);
       return;
@@ -340,19 +358,37 @@ export class NewYearCelebration {
   }
 
   // ------------------------------------------------------------------------------------------------ frame
-  frame(dt: number): void {
+  /** `now`: real time in ms (performance.now; tests pass their own clock or none: then `dt` alone advances it) */
+  frame(dt: number, now: number = typeof performance !== 'undefined' ? performance.now() : 0): void {
     this.frames++;
     this.lastFrameDay = this.deps.sim.state.day;
+    // real seconds since the last frame (the loop's dt is clamped to 0.1 s: at a low frame rate the show crawled)
+    const real = this.lastNow > 0 && now > this.lastNow ? (now - this.lastNow) / 1000 : 0;
+    this.lastNow = now;
+    // (a watchdog first: whatever happens below, the calendar never stays held past midnight + a margin of real time)
+    if (this.dateHold) {
+      if (this.dateHold.at < 0) this.dateHold.at = now;
+      else if (now - this.dateHold.at > (this.midnightAt + 10) * 1000) this.releaseDate();
+    }
     if (!this.pointerOffs.length && this.frames % 30 === 1) this.watchPointer();
-    if (this.phase === 'idle' && this.camPhase === 'off') return;
+    if (this.phase === 'idle' && this.camPhase === 'off') {
+      this.releaseDate();
+      return;
+    }
     const s = this.deps.settings();
     if (s.newYear === 'off' && this.phase !== 'idle') {
       // switched off mid-show: no new launches, the sparks in the air fade out
       this.cancel(false);
       return;
     }
+    // the player raised the speed: the city matters more than the party — no new launches, the clock and the camera
+    // come back (night and the skyline camera stayed for months of game time at ultra)
+    if (this.speedAtStart >= 0 && this.phase !== 'idle' && this.phase !== 'restore' && this.simSpeed() > this.speedAtStart) {
+      this.endEarly();
+      return;
+    }
     const frozen = !!this.fw && this.fw.timeScale === 0;
-    const step = frozen ? 0 : Math.max(0, Math.min(dt, 0.1));
+    const step = frozen ? 0 : Math.min(REAL_STEP_MAX, Math.max(0, Math.min(dt, 0.1), real));
     this.updateCamera(step);
     if (this.phase === 'idle') return;
     const world = this.deps.world() as TimeWorld;
@@ -373,7 +409,11 @@ export class NewYearCelebration {
     this.t += step;
     if (this.t < this.lapseDur) this.phase = 'lapse';
     else if (this.t < this.midnightAt) this.phase = 'countdown';
-    else this.phase = 'show';
+    else {
+      // midnight: the calendar runs again at the player's speed
+      this.phase = 'show';
+      this.releaseDate();
+    }
     if (this.timeControlled) this.driveTo(world, this.targetHour(this.t + step), step);
     this.updateOverlay();
     const fw = this.fw;
@@ -431,6 +471,7 @@ export class NewYearCelebration {
   }
 
   private finish(): void {
+    this.releaseDate();
     this.hideOverlay();
     this.camBack();
     if (!this.timeControlled) {
@@ -467,6 +508,46 @@ export class NewYearCelebration {
     this.restoreTo = cur + d;
     this.restoreT = 0;
     this.phase = 'restore';
+  }
+
+  /** end the celebration before its time (the player raised the speed): no new launches (the sparks in the air fade
+   *  out), the clock time-lapses back to the day and the camera to the player's view */
+  private endEarly(): void {
+    this.speedAtStart = -1;
+    try {
+      this.fw?.stop(false);
+    } catch {
+      /* ignore */
+    }
+    this.finish();
+  }
+
+  /** the sim speed (0 paused … 3 ultra), -1 when unknown */
+  private simSpeed(): number {
+    const sp = (this.deps.sim as { speed?: unknown }).speed;
+    return typeof sp === 'number' ? sp : -1;
+  }
+
+  /**
+   * hold the calendar (the countdown runs to midnight of January 1st, not into mid-January): no sim days advance while
+   * held — the player's speed setting stays as it is (the top bar, the emergency speed policy and a speed raise see it),
+   * the city's frame-rate systems keep running
+   */
+  private holdDate(): void {
+    const sim = this.deps.sim as { maxDaysPerFrame?: unknown };
+    if (this.dateHold || typeof sim.maxDaysPerFrame !== 'number') return;
+    // (`at`: the first frame's clock after the hold began — frame() measures the watchdog on its own clock)
+    this.dateHold = { prevMax: sim.maxDaysPerFrame, at: -1 };
+    sim.maxDaysPerFrame = 0;
+  }
+
+  /** let the calendar run again (midnight, the end of the celebration, a cancel, dispose) */
+  private releaseDate(): void {
+    const h = this.dateHold;
+    if (!h) return;
+    this.dateHold = null;
+    const sim = this.deps.sim as { maxDaysPerFrame?: unknown };
+    if (sim.maxDaysPerFrame === 0) sim.maxDaysPerFrame = h.prevMax > 0 ? h.prevMax : 4;
   }
 
   /** hand the clock back to the settings */
@@ -657,6 +738,8 @@ export class NewYearCelebration {
   }
 
   // ------------------------------------------------------------------------------------------------ toast text
+  /** the toast's line: the population the top bar shows (stats.population — the calendar holds while the toast is up
+   *  during the time-lapse and the countdown, so the two agree) */
   private statsLine(year: number): string {
     const st = this.deps.sim.state;
     const pop = st.stats.population;
