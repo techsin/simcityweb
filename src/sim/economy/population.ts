@@ -24,7 +24,7 @@
 import type { SimSystem, Simulation } from '../Simulation';
 import { BF, type Building, type CityState } from '../CityState';
 import type { BuildingDef } from '../catalogTypes';
-import { hash2 } from '../../core/rng';
+import { hash2, smoothstep } from '../../core/rng';
 import { DevType, zoneDensity } from '../../core/types';
 import { DAYS_PER_MONTH } from '../../core/constants';
 import {
@@ -35,7 +35,7 @@ import {
   RUBBLE_CLEAR_DAYS, TAP_PENALTY, TAP_SAFE, TRAFFIC_JOBFILL_WEIGHT, UNHAPPY_DEMAND, UNHAPPY_DEMAND_HEALTH,
   UNHAPPY_HEALTH, VACANCY_K, VACANCY_MIN, VACANCY_START, WATER_BONUS_LOW, WATER_REQUIRED_STAGE, WORKFORCE_EMA,
   WORKFORCE_MAX, WORKFORCE_MIN, WORKFORCE_RATIO, COHORT_BASE, NEEDS_ABANDON_SHARE, NEEDS_PENALTY_MAX, NEEDS_UNMET_PEOPLE,
-  EQ_FLOOR, EQ_SPAN_STOCK, RENT_CONDITION_MIN,
+  EQ_FLOOR, EQ_SPAN_STOCK, OUTAGE_EXIT_DAYS, RENT_CONDITION_MIN,
 } from './tuning';
 import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
 import { frontHasRoad, removeBuilding } from './buildings';
@@ -76,6 +76,35 @@ export function buildingWatered(st: CityState, b: Building, hasUtilities: boolea
   return st.watered[b.z * st.size + b.x] === 1 || st.watered[(b.z + b.d - 1) * st.size + b.x + b.w - 1] === 1;
 }
 
+// ------------------------------------------------------------------------------------------------ outages
+/**
+ * systemData.outages (final fixes F7; tuning OUTAGE_EXIT_DAYS): per home in an outage (no power, or no piped water it
+ * needs) the first day of the outage and its residents then — keyed by building id, dropped when the outage ends,
+ * pruned monthly when the building is gone. The outage penalties ramp in with its age (outageRamp), so residents wait
+ * for the repair instead of half of them leaving within ten days; approval weighs outages by the residents a home had
+ * when it went dark (approval.ts residentSurvey).
+ */
+export interface OutageData { v: 1; start: Record<string, number>; pop: Record<string, number> }
+export function outageData(st: CityState): OutageData {
+  let d = st.systemData.outages as OutageData | undefined;
+  if (!d || d.v !== 1 || !d.start || !d.pop) {
+    d = { v: 1, start: {}, pop: {} };
+    st.systemData.outages = d;
+  }
+  return d;
+}
+/** days a home has been in its current outage (-1 = none) */
+export function outageDays(st: CityState, b: Building): number {
+  const d = st.systemData.outages as OutageData | undefined;
+  const s = d?.start?.[b.id];
+  return s === undefined ? -1 : Math.max(0, st.day - s);
+}
+/** 0..1: how far a home's outage penalties have ramped in (smoothstep(0, OUTAGE_EXIT_DAYS, days); 0 = none yet) */
+export function outageRamp(st: CityState, b: Building): number {
+  const days = outageDays(st, b);
+  return days < 0 ? 0 : smoothstep(0, OUTAGE_EXIT_DAYS, days);
+}
+
 // ------------------------------------------------------------------------------------------------ condition
 interface CondCtx {
   st: CityState;
@@ -112,6 +141,8 @@ interface Cond {
   gFade: number;
   noPower: number;
   noWater: number;
+  /** homes: how far the outage penalties have ramped in (outageRamp; 1 for businesses and homes without an outage) */
+  ramp: number;
   /** + piped water for low-density homes */
   waterBonus: number;
   /** unsafe tap water (per-network quality tapQ) */
@@ -128,7 +159,7 @@ interface Cond {
 }
 const COND: Cond = {
   target: 0, powered: true, watered: true, needWater: false, road: true, needsUnmet: false, needsPenalty: 0, des: 0, desStored: 0, gFade: 0,
-  noPower: 0, noWater: 0, waterBonus: 0, tap: 0, tapQ: 1, noRoad: 0, noGarbage: 0, jobs: 0, jobAccess: -1, sleep: 0, noise: 0,
+  noPower: 0, noWater: 0, ramp: 1, waterBonus: 0, tap: 0, tapQ: 1, noRoad: 0, noGarbage: 0, jobs: 0, jobAccess: -1, sleep: 0, noise: 0,
 };
 
 /** health target of a growable at cell i (+ the flags and terms it depends on, see Cond) */
@@ -142,9 +173,11 @@ function condition(c: CondCtx, b: Building, def: BuildingDef, i: number): Cond {
   const road = frontHasRoad(st, b);
   const desStored = st.desirability[dev][i];
   const des = conditionDesirability(st, dev, i, desStored);
-  const noPower = powered ? 0 : PENALTY_NO_POWER;
+  // homes: an outage's penalties ramp in with its age (residents wait for the repair; final fixes F7)
+  const ramp = isR && (!powered || (needWater && !watered)) ? outageRamp(st, b) : 1;
+  const noPower = powered ? 0 : PENALTY_NO_POWER * ramp;
   let noWater = 0, waterBonus = 0, tap = 0, tapQ = 1;
-  if (needWater && !watered) noWater = PENALTY_NO_WATER;
+  if (needWater && !watered) noWater = PENALTY_NO_WATER * ramp;
   else if (isR && inf.utilities && watered) {
     if (!needWater) waterBonus = WATER_BONUS_LOW;
     // per-network tap-water quality (WP1-3; a small contaminated network is unsafe even when the city mean is fine)
@@ -187,7 +220,7 @@ function condition(c: CondCtx, b: Building, def: BuildingDef, i: number): Cond {
   K.target = target < 0 ? 0 : target > 1 ? 1 : target;
   K.powered = powered; K.watered = watered; K.needWater = needWater; K.road = road;
   K.needsUnmet = needsUnmet; K.needsPenalty = needsPen;
-  K.des = des; K.desStored = desStored; K.gFade = gFade; K.noPower = noPower; K.noWater = noWater; K.waterBonus = waterBonus; K.tap = tap; K.tapQ = tapQ;
+  K.des = des; K.desStored = desStored; K.gFade = gFade; K.noPower = noPower; K.noWater = noWater; K.ramp = ramp; K.waterBonus = waterBonus; K.tap = tap; K.tapQ = tapQ;
   K.noRoad = noRoad; K.noGarbage = noGarbage; K.jobs = jobs; K.jobAccess = jobAccess; K.sleep = sleep; K.noise = noise;
   return K;
 }
@@ -501,6 +534,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     const demand = st.stats.demand;
     const cleanup = ordinanceEffect(st, 'add.rubble.cleanup') > 0;
     const fillK = Math.min(1, FILL_RATE * OCC_PERIOD);
+    const outages = inf.utilities ? outageData(st) : null;
     const jobFill = rt.jobFill;
     const unemp = st.stats.unemployment;
     const traffic = inf.traffic ? (sim.getSystem('traffic') as unknown as TrafficApi | undefined) : undefined;
@@ -548,6 +582,13 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       if (!inf.utilities) b.flags |= BF.Powered | BF.Watered;
       const cd = condition(ctx, b, def, i);
       const powered = cd.powered, watered = cd.watered, needWater = cd.needWater, road = cd.road;
+      // homes: the current outage's start day (and residents then) — its penalties ramp in from the next visit on
+      if (isR && outages) {
+        const key = b.id;
+        if (!powered || (needWater && !watered)) {
+          if (outages.start[key] === undefined) { outages.start[key] = st.day; outages.pop[key] = b.pop; }
+        } else if (outages.start[key] !== undefined) { delete outages.start[key]; delete outages.pop[key]; }
+      }
       if (road) b.flags &= ~BF.NoRoad; else b.flags |= BF.NoRoad;
       if (isR) { if (cd.needsUnmet) b.flags |= BF.NeedsUnmet; else b.flags &= ~BF.NeedsUnmet; }
       b.health += (cd.target - b.health) * HEALTH_SMOOTH;
@@ -577,10 +618,14 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
         const demandFactor = Math.max(VACANCY_MIN, Math.min(1, 1 + VACANCY_K * Math.min(0, dmd - VACANCY_START)));
         // homes: unhappy buildings have vacancies; businesses run near capacity unless they are doing badly
         let occ = demandFactor * (isR ? 0.6 + 0.4 * b.health : 0.8 + 0.2 * b.health);
-        if (!powered) occ *= 0.25;
-        if (needWater && !watered) occ *= 0.5;
         if (isR) {
-          const goal = b.capacity * occ;
+          // an outage cuts occupancy (× 0.25 dark, × 0.5 dry): a home never fills above the cut, but its residents
+          // leave only as the outage ramps in (cd.ramp; OUTAGE_EXIT_DAYS) — identical to one goal without an outage
+          let up = occ, down = occ;
+          if (!powered) { up *= 0.25; down *= 1 - 0.75 * cd.ramp; }
+          if (needWater && !watered) { up *= 0.5; down *= 1 - 0.5 * cd.ramp; }
+          const gUp = b.capacity * up, gDown = b.capacity * down;
+          const goal = b.pop < gUp ? gUp : b.pop > gDown ? gDown : b.pop;
           b.pop = Math.round(b.pop + (goal - b.pop) * fillK);
           if (b.pop === 0 && goal > 0.5) b.pop = 1;
           // demographics every DEMO_UPDATE_DAYS (cohorts drift slowly); a new home is seeded on its first visit and then
@@ -596,6 +641,8 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
             cache.setNextDay(id, st.day + (last < 0 ? Math.floor(hash2(id, 211) * DEMO_UPDATE_DAYS) : DEMO_UPDATE_DAYS - 1));
           }
         } else {
+          if (!powered) occ *= 0.25;
+          if (needWater && !watered) occ *= 0.5;
           // job slots posted to traffic = capacity × hire (1/256 steps: the field is only rewritten when it changes);
           // filled by the workers who actually arrive
           const hire = cache.setHire(b, occ);
@@ -673,6 +720,8 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       aggregate(sim, false);
       demographicsData(sim.state).cursor = cursor;
       if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === 0) sim.events.emit('layerUpdated', 'demographics');
+      // (monthly, off the month tick) outage records of buildings that are gone
+      if (sim.state.day % DAYS_PER_MONTH === 7) pruneOutages(sim.state);
       // EQ / HQ from the residents' education stock and health access, once a month (with sim-infra services; approval
       // keeps the legacy coverage lag in sim-core-only runs) — on day EQHQ_DAY of the month, not on the month tick,
       // which already carries every system's monthly work (a loop over all homes: ~16 ms at 300k residents)
@@ -681,6 +730,17 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     },
 
   };
+}
+
+/** drop the outage records of buildings that no longer exist */
+function pruneOutages(st: CityState): void {
+  const d = st.systemData.outages as OutageData | undefined;
+  if (!d?.start) return;
+  for (const k in d.start) {
+    if (st.buildings.has(+k)) continue;
+    delete d.start[k];
+    delete d.pop[k];
+  }
 }
 
 /**
@@ -703,8 +763,11 @@ export function conditionBreakdown(st: CityState, b: Building): { terms: FactorT
     id: 'desirability', label: 'Desirability', value: 0.5 + 0.5 * cd.des,
     detail: rentCapped ? `desirability ${pts(cd.desStored)} (rent counts at most ${pts(RENT_CONDITION_MIN)} for tenants already here: ${pts(cd.des)})` : `desirability ${pts(cd.des)}`,
   }];
-  if (!cd.powered) terms.push({ id: 'power', label: 'No power', value: -cd.noPower });
-  if (cd.noWater) terms.push({ id: 'water', label: 'No water', value: -cd.noWater, detail: 'this building needs piped water' });
+  // (homes: an outage's penalty ramps in — residents wait for the repair before they leave; final fixes F7)
+  const od = outageDays(st, b);
+  const waitNote = cd.ramp < 1 && od >= 0 ? `out for ${od} day${od === 1 ? '' : 's'}: residents wait for the repair, then leave over ~${OUTAGE_EXIT_DAYS} days` : undefined;
+  if (!cd.powered) terms.push({ id: 'power', label: 'No power', value: -cd.noPower, detail: waitNote });
+  if (cd.needWater && !cd.watered) terms.push({ id: 'water', label: 'No water', value: -cd.noWater, detail: waitNote ? `this building needs piped water; ${waitNote}` : 'this building needs piped water' });
   if (cd.waterBonus) terms.push({ id: 'waterBonus', label: 'Piped water', value: cd.waterBonus });
   if (cd.tap) terms.push({ id: 'tapWater', label: 'Unsafe tap water', value: -cd.tap, detail: `water quality ${Math.round(cd.tapQ * 100)}%` });
   if (!cd.road) terms.push({ id: 'road', label: 'No road access', value: -cd.noRoad });

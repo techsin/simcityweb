@@ -197,6 +197,11 @@ export const CONN_CAP_RELIEF: Record<number, { R: number; C: number; I: number }
   [Network.Highway]: { R: 8000, C: 6000, I: 20000 },
   [Network.Rail]: { R: 3000, C: 2000, I: 12000 },
 };
+/** connection cap relief per map edge: the CONN_EDGE_FULL connections with the most relief count fully, each further one
+ *  on the same edge CONN_EDGE_DECAY × the one before (final fixes V6: spurs to the map edge stacked cap relief without
+ *  limit — at most (CONN_EDGE_FULL + 1) × the best per edge now; the connection factors are capped by CONN_MAX) */
+export const CONN_EDGE_FULL = 3;
+export const CONN_EDGE_DECAY = 0.5;
 /** caps also grow with the city itself (agglomeration): + CAP_POP_FRAC × population per family */
 export const CAP_POP_FRAC = { R: 0.35, C: 0.1, I: 0.06 };
 /** softmin exponent (higher = sharper cap) */
@@ -328,6 +333,15 @@ export const HEALTH_SMOOTH = 0.35;
 /** health penalties (subtracted from 0.5 + 0.5 × desirability) */
 export const PENALTY_NO_POWER = 0.55;
 export const PENALTY_NO_WATER = 0.4;
+/**
+ * OUTAGES (final fixes F7): residents of a home that loses its power (or the piped water it needs) do not leave at once
+ * — they wait for the repair. The no-power / no-water health penalties and the occupancy cut (× 0.25 unpowered, × 0.5
+ * dry) ramp in with the outage's age: × smoothstep(0, OUTAGE_EXIT_DAYS, days without) (10 days: 7 %, 30 days: half, 60
+ * days: all). Only the exit is slowed — a home that is still filling up never fills above the cut — and the building is
+ * still abandoned after ABANDON_DAYS of outage. Outage start days: systemData.outages (by building id; homes only).
+ * (A 10-day blackout of all 8 plants of a 175k city used to empty 49 % of the homes in those 10 days.)
+ */
+export const OUTAGE_EXIT_DAYS = 60;
 export const PENALTY_NO_ROAD = 0.6;
 export const PENALTY_NO_GARBAGE = 0.12;
 /** residential: health −= (JOB_ACCESS_MIN − share of workers reaching a job) × this (traffic workerAccess) */
@@ -719,6 +733,11 @@ export const APPROVAL_TERMS = {
   fireMax: 6,
   /** −3 × jail overflow share (WP7) */
   justice: -3,
+  /** final fixes V7: hosting a toxic waste dump costs approval city-wide while it operates (the deal is not free money
+   *  when it sits in an empty corner) — and the city's clean-air image (attractiveness 'clean' × (1 − dumpImage):
+   *  tourists and newcomers, tourism.ts) */
+  toxicDump: -3,
+  dumpImage: 0.25,
   /** a tornado / earthquake / meteor struck last month */
   disaster: -5,
   /** outage and poor-HQ terms fade in over needsPop0..needsPop1 residents (a hamlet waits for its first power plant /

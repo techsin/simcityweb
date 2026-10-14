@@ -35,9 +35,10 @@
  * over a few frames instead of drawing both levels of ~1000 buildings for fadeTime); a swap the motion would dissolve
  * within a frame or two anyway (`fadeFast`: fast fly-bys, zoom sweeps) is instant. Downgrades start dissolving at
  * `fadeOn` x lodPixels (default the instant swap's 0.88; up to 1.08 trades a narrower hysteresis band, i.e. more LOD
- * work in motion, for a zoom-out dissolve that is over where an instant swap happens). Fast pans, orbits and zooms
- * (the view shifting, turning or dollying by more than `fadeMotion` per frame) cap the concurrent fades down to none:
- * the view changes wholesale there, a dissolve is invisible and only costs the fade layer's draws. New / rebuilt
+ * work in motion, for a zoom-out dissolve that is over where an instant swap happens). Pans, orbits and zooms faster
+ * than `fadeMotion` per frame (the view shifting, turning or dollying; only slow motion and the slow tails of damped
+ * moves dissolve) cap the concurrent fades down to none: the view changes wholesale there, a dissolve is invisible
+ * and only costs the fade layer's draws. New / rebuilt
  * buildings, camera cuts, the catch-up frames after a cut (running fades are settled at the cut) and captures
  * (flushLod) swap at once; beyond the cap (`fadeMax`) swaps are instant too. The shadow switches half way through a
  * fade (the level covering most pixels casts: the other level's shadow would streak the visible one, e.g. a proxy's
@@ -929,10 +930,12 @@ export class BuildingRenderer {
   fadeOn = 0.88;
   /** view motion per frame (camera shift across the view and along it, both relative to the view distance, + turn,
    *  rad) from which the number of concurrent fades is cut down (fadeMax up to the first value, none from the second):
-   *  fast pans, orbits and zooms change the view wholesale, a dissolve there is invisible and only draws both levels.
-   *  A slow drag (3 m / frame at the default view: 0.004) dissolves everything; a 90 deg/s orbit (0.043), a fast wheel
-   *  zoom (> 3% of the view distance per frame) or a zoom sweep swap at once */
-  fadeMotion: [number, number] = [0.012, 0.03];
+   *  pans, orbits and zooms this fast change the view wholesale, a dissolve there is invisible and only draws both
+   *  levels (the fade layer's pass of the uber program: up to ~20% of a small town's frame in a moderate zoom / orbit).
+   *  A slow drag (3 m / frame at the default view: 0.004) and the slow tail of a damped wheel zoom (< 0.6% per frame)
+   *  dissolve everything; a 90 deg/s orbit (0.043), a wheel zoom faster than 1.5% of the view distance per frame (a
+   *  notch starts at ~2%) or a zoom sweep swap at once */
+  fadeMotion: [number, number] = [0.006, 0.015];
   /** fadeMax scaled down by this frame's view motion (see fadeMotion) */
   private fadeCap = 1024;
   /** cross-fades run only while lodPixels <= this: the medium / high / ultra presets (10 / 9 / 7 px); the low preset

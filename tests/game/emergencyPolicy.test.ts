@@ -176,6 +176,23 @@ describe('AlertQueue', () => {
     expect(q.offer({ id: 1, kind: 'crime', major: true }, 0, 400, 'major')).toBe(false);
     expect(q.offer({ id: 2, kind: 'fire', major: true }, 0, 400, 'major')).toBe(true);
   });
+
+  it('F2: a major incident a dispatch can still save always gets a banner — no cooldown, no limit, no small-town filter', () => {
+    const q = new AlertQueue();
+    const pop = 50000;
+    expect(q.offer({ id: 1, kind: 'medical', major: true, manualPossible: true }, 906, pop, 'major')).toBe(true);
+    // 7 days later, same kind: the cooldown holds back "too far" alerts only
+    expect(q.offer({ id: 2, kind: 'medical', major: true, manualPossible: false }, 913, pop, 'major')).toBe(false);
+    expect(q.offer({ id: 3, kind: 'medical', major: true, manualPossible: true }, 913, pop, 'major')).toBe(true);
+    expect(q.offer({ id: 4, kind: 'riot', major: true, manualPossible: true }, 913, pop, 'major')).toBe(true);
+    // beyond the 3-banner limit (shown compact by the banner)
+    expect(q.offer({ id: 5, kind: 'crime', major: true, manualPossible: true }, 913, pop, 'major')).toBe(true);
+    expect(q.offer({ id: 6, kind: 'spill', major: true }, 913, pop, 'major')).toBe(false);
+    expect(q.offer({ id: 7, kind: 'crime', major: true, manualPossible: true }, 0, 400, 'major')).toBe(true);
+    // minor ones keep the old rules
+    expect(q.offer({ id: 8, kind: 'medical', major: false, manualPossible: true }, 913, pop, 'major')).toBe(false);
+    expect(q.shown).toEqual([1, 3, 4, 5, 7]);
+  });
 });
 
 describe('LIVE follow of a player dispatch', () => {
@@ -189,6 +206,12 @@ describe('LIVE follow of a player dispatch', () => {
     expect(followingDispatch(inc({ answered: 1 }), 100)).toBe(false);
     expect(followingDispatch(inc({ etaMin: FOLLOW_MAX_MIN + 1 }), 100)).toBe(false);
     expect(followingDispatch(inc({ state: 'uncovered' }), 100)).toBe(false);
+  });
+  it('follows the primary responder: an industrial accident\'s ambulance on scene for days does not end the follow of the fire truck', () => {
+    const ind = (o: Partial<Incident>) => inc({ kind: 'industrial', arrived: 101, firstAt: { medical: 101 }, ...o });
+    expect(followingDispatch(ind({}), 104)).toBe(true);
+    expect(followingDispatch(ind({ state: 'onScene', firstAt: { medical: 101, fire: 104 } }), 104.5)).toBe(true);
+    expect(followingDispatch(ind({ state: 'onScene', firstAt: { medical: 101, fire: 104 } }), 104 + FOLLOW_GRACE + 0.01)).toBe(false);
   });
   it('emergency times read in minutes (1 game-minute of driving = 1 day)', () => {
     expect(emgTime(4)).toBe('4.0 min');

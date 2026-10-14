@@ -27,6 +27,7 @@ import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runti
 import { ordinanceEffect } from './ordinances';
 import { serviceEffectiveness } from './budget';
 import { waterRequired } from './demographics';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import type { FactorTerm } from '../explain';
 import type { CityState } from '../CityState';
 
@@ -84,54 +85,121 @@ function hasWater(st: CityState, b: Building, inf: InfraFlags): boolean {
   return st.watered[b.z * N + b.x] === 1 || st.watered[(b.z + b.d - 1) * N + b.x + b.w - 1] === 1;
 }
 
-/** the resident survey of today (computed at most once per day; monthly callers: tourism, approval) */
-export function residentSurvey(st: CityState, rt: EconRuntime, inf: InfraFlags = infraFlags(st)): ResidentSurvey {
-  const c = surveys.get(st);
-  if (c && c.day === st.day) return c;
+/**
+ * MONTHLY SURVEY IN DAILY SLICES (final fixes V5: one pass over every home on the month tick cost 2–19 ms at 1M): the
+ * homes of slice k (building id % SURVEY_DAYS === k) are surveyed on the days ≡ k (mod SURVEY_DAYS) into
+ * systemData.survey, and the month tick (every slice done since the last one) finishes the month's survey from the sums:
+ * every home is sampled once a month, on its own day. A month with slices missing (a new or loaded city before its
+ * first full month, a direct monthly call) takes one full pass instead. Outages are weighed by the residents a home had
+ * when it went dark (population.ts systemData.outages; final fixes F7): a blackout registers even as residents leave.
+ */
+export const SURVEY_DAYS = DAYS_PER_MONTH;
+/** sums per wealth k (k = 0..2 R$ / R$$ / R$$$, 3 all): [pop, crime, air, noise, park, prestige, noGarbage, unpowered,
+ *  unwatered, outage weight] x 4, then commute, police, fire, health, edu, transit, green */
+const S_POP = 0, S_CRIME = 4, S_AIR = 8, S_NOISE = 12, S_PARK = 16, S_PRESTIGE = 20, S_NOG = 24, S_UNP = 28, S_UNW = 32, S_OUTW = 36;
+const S_COMMUTE = 40, S_POL = 41, S_FIRE = 42, S_HEALTH = 43, S_EDU = 44, S_TRANSIT = 45, S_GREEN = 46, S_LEN = 47;
+/** systemData.survey: the month's slice sums so far and the slices done (bit k = slice k) */
+interface SurveyAcc { v: 1; done: number; sums: number[] }
+const SURVEY_ALL = SURVEY_DAYS >= 31 ? -1 : (2 ** SURVEY_DAYS) - 1;
+function surveyAcc(st: CityState): SurveyAcc {
+  let a = st.systemData.survey as SurveyAcc | undefined;
+  if (!a || a.v !== 1 || !Array.isArray(a.sums) || a.sums.length !== S_LEN) {
+    a = { v: 1, done: 0, sums: new Array<number>(S_LEN).fill(0) };
+    st.systemData.survey = a;
+  }
+  return a;
+}
+const SCRATCH = new Float64Array(S_LEN);
+
+/** add the homes of `slice` (−1 = every home) to the sums `acc` */
+function surveyHomes(st: CityState, rt: EconRuntime, inf: InfraFlags, acc: Float64Array | number[], slice: number): void {
   const N = st.size;
-  const z4 = () => [0, 0, 0, 0];
-  const pop = z4(), crime = z4(), air = z4(), noise = z4(), park = z4(), prestige = z4(), noG = z4(), unP = z4(), unW = z4();
-  let commute = 0, pol = 0, fire = 0, hlth = 0, edu = 0, transit = 0, green = 0;
-  for (const b of rt.growables) {
-    if (b.pop <= 0 || b.flags & BF.Abandoned) continue;
+  const outPop = (st.systemData.outages as { pop?: Record<string, number> } | undefined)?.pop;
+  const list = rt.growables;
+  for (let k = 0; k < list.length; k++) {
+    const b = list[k];
+    if (slice >= 0 && b.id % SURVEY_DAYS !== slice) continue;
+    if (b.flags & BF.Abandoned) continue;
+    // (a home in an outage counts with the residents it had when it went dark, even once they have left)
+    const pre = outPop ? outPop[b.id] : undefined;
+    if (b.pop <= 0 && !(pre !== undefined && pre > 0)) continue;
     const def = rt.defOf(b);
     if (!def || def.devType === undefined || def.devType > DevType.R3) continue;
     const i = (b.z + (b.d >> 1)) * N + b.x + (b.w >> 1);
     const p = b.pop;
     const w = def.devType;
-    pop[3] += p; pop[w] += p;
+    acc[S_POP + 3] += p; acc[S_POP + w] += p;
     const cr = st.crime[i] * p, ai = st.airPollution[i] * p, no = st.noise[i] * p, pk = st.parkCov[i] * p, pr = st.prestige[i] * p;
-    crime[3] += cr; crime[w] += cr;
-    air[3] += ai; air[w] += ai;
-    noise[3] += no; noise[w] += no;
-    park[3] += pk; park[w] += pk;
-    prestige[3] += pr; prestige[w] += pr;
-    if (b.flags & BF.NoGarbage) { noG[3] += p; noG[w] += p; }
-    if (!hasPower(st, b, inf)) { unP[3] += p; unP[w] += p; }
-    else if (!hasWater(st, b, inf) && waterRequired(st, b)) { unW[3] += p; unW[w] += p; }
-    commute += (inf.traffic && st.commute[i] > 0 ? st.commute[i] : COMMUTE_FALLBACK) * p;
+    acc[S_CRIME + 3] += cr; acc[S_CRIME + w] += cr;
+    acc[S_AIR + 3] += ai; acc[S_AIR + w] += ai;
+    acc[S_NOISE + 3] += no; acc[S_NOISE + w] += no;
+    acc[S_PARK + 3] += pk; acc[S_PARK + w] += pk;
+    acc[S_PRESTIGE + 3] += pr; acc[S_PRESTIGE + w] += pr;
+    if (b.flags & BF.NoGarbage) { acc[S_NOG + 3] += p; acc[S_NOG + w] += p; }
+    const wo = pre !== undefined && pre > p ? pre : p;
+    acc[S_OUTW + 3] += wo; acc[S_OUTW + w] += wo;
+    if (!hasPower(st, b, inf)) { acc[S_UNP + 3] += wo; acc[S_UNP + w] += wo; }
+    else if (!hasWater(st, b, inf) && waterRequired(st, b)) { acc[S_UNW + 3] += wo; acc[S_UNW + w] += wo; }
+    acc[S_COMMUTE] += (inf.traffic && st.commute[i] > 0 ? st.commute[i] : COMMUTE_FALLBACK) * p;
     if (inf.services) {
-      pol += st.policeCov[i] * p; fire += st.fireCov[i] * p; hlth += st.healthCov[i] * p; edu += st.eduCov[i] * p;
-      transit += st.transitCov[i] * p; green += st.greenCov[i] * p;
+      acc[S_POL] += st.policeCov[i] * p; acc[S_FIRE] += st.fireCov[i] * p; acc[S_HEALTH] += st.healthCov[i] * p; acc[S_EDU] += st.eduCov[i] * p;
+      acc[S_TRANSIT] += st.transitCov[i] * p; acc[S_GREEN] += st.greenCov[i] * p;
     }
   }
-  // sum / P (not × 1/P): the legacy approval loop summed in exactly this order, so resCrime / resPollution /
-  // resCommute / coverage stay bit-identical
+}
+
+/** the survey of the sums (averages: sum / P — the legacy approval loop's order, so a full pass stays bit-identical) */
+function surveyOf(st: CityState, acc: ArrayLike<number>): ResidentSurvey {
+  const z4 = (o: number) => [acc[o], acc[o + 1], acc[o + 2], acc[o + 3]];
+  const pop = z4(S_POP), crime = z4(S_CRIME), air = z4(S_AIR), noise = z4(S_NOISE), park = z4(S_PARK), prestige = z4(S_PRESTIGE);
+  const noG = z4(S_NOG), unP = z4(S_UNP), unW = z4(S_UNW), outW = z4(S_OUTW);
   for (let k = 0; k < 4; k++) {
     const P = pop[k];
-    if (P <= 0) { crime[k] = air[k] = noise[k] = park[k] = prestige[k] = noG[k] = unP[k] = unW[k] = 0; continue; }
-    crime[k] /= P; air[k] /= P; noise[k] /= P; park[k] /= P; prestige[k] /= P; noG[k] /= P; unP[k] /= P; unW[k] /= P;
+    if (P <= 0) { crime[k] = air[k] = noise[k] = park[k] = prestige[k] = noG[k] = 0; }
+    else { crime[k] /= P; air[k] /= P; noise[k] /= P; park[k] /= P; prestige[k] /= P; noG[k] /= P; }
+    const O = outW[k];
+    if (O <= 0) unP[k] = unW[k] = 0;
+    else { unP[k] /= O; unW[k] /= O; }
   }
   const W = pop[3];
-  const sv: ResidentSurvey = W > 0
+  return W > 0
     ? {
       day: st.day, pop, crime, air, noise, park, prestige, noGarbage: noG, unpowered: unP, unwatered: unW,
-      commute: commute / W, police: pol / W, fire: fire / W, health: hlth / W, edu: edu / W, transit: transit / W, green: green / W,
+      commute: acc[S_COMMUTE] / W, police: acc[S_POL] / W, fire: acc[S_FIRE] / W, health: acc[S_HEALTH] / W, edu: acc[S_EDU] / W,
+      transit: acc[S_TRANSIT] / W, green: acc[S_GREEN] / W,
     }
     : {
       day: st.day, pop, crime, air, noise, park, prestige, noGarbage: noG, unpowered: unP, unwatered: unW,
       commute: COMMUTE_FALLBACK, police: 0, fire: 0, health: 0, edu: 0, transit: 0, green: 0,
     };
+}
+
+/** today's slice of the monthly survey (approval.daily) */
+export function surveySlice(st: CityState, rt: EconRuntime, inf: InfraFlags = infraFlags(st)): void {
+  const a = surveyAcc(st);
+  const k = st.day % SURVEY_DAYS;
+  surveyHomes(st, rt, inf, a.sums, k);
+  a.done |= 1 << k;
+}
+
+/**
+ * The resident survey of today (computed at most once per day; monthly callers: tourism, approval): on a month tick
+ * whose slices are all done, the month's sampled survey (the slices start over); otherwise one full pass over the homes.
+ */
+export function residentSurvey(st: CityState, rt: EconRuntime, inf: InfraFlags = infraFlags(st)): ResidentSurvey {
+  const c = surveys.get(st);
+  if (c && c.day === st.day) return c;
+  let sv: ResidentSurvey;
+  const a = st.systemData.survey as SurveyAcc | undefined;
+  if (st.day % SURVEY_DAYS === 0 && a && a.v === 1 && a.done === SURVEY_ALL && Array.isArray(a.sums) && a.sums.length === S_LEN) {
+    sv = surveyOf(st, a.sums);
+    a.done = 0;
+    a.sums.fill(0);
+  } else {
+    SCRATCH.fill(0);
+    surveyHomes(st, rt, inf, SCRATCH, -1);
+    sv = surveyOf(st, SCRATCH);
+  }
   surveys.set(st, sv);
   return sv;
 }
@@ -160,6 +228,7 @@ export const APPROVAL_LABELS: Record<string, string> = {
   hq: 'Health (HQ)',
   emergencies: 'Emergencies last month',
   justice: 'Criminals released early',
+  toxicDump: 'Hosting a toxic waste dump',
   disaster: 'Disaster',
   clamp: 'Limit (0–100)',
 };
@@ -212,6 +281,13 @@ export function serviceGaps(
     garbage *= k; needs *= k; tap *= k;
   }
   return { garbage, needs, tapWater: tap, sum, limited };
+}
+
+/** the business-deal toxic waste dump stands and is paid for (not burnt: budget.ts pays its income then) */
+export const TOXIC_DUMP_DEF = 'rw_toxic_dump';
+export function toxicDumpOperating(rt: EconRuntime): boolean {
+  for (const b of rt.plopped) if (b.def === TOXIC_DUMP_DEF && !(b.flags & BF.Burnt)) return true;
+  return false;
 }
 
 /** duck-typed optional systems (emergency WP8 / disasters) — no hard imports of sim-infra */
@@ -310,6 +386,8 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
       T.emergencies = -Math.min(AT.fireMax, AT.firePer * firesMonth);
     }
     T.justice = AT.justice * clamp(s.justice?.overflow ?? 0, 0, 1);
+    // (final fixes V7) residents city-wide dislike hosting other cities' toxic waste — wherever the dump stands
+    T.toxicDump = toxicDumpOperating(rt) ? AT.toxicDump : 0;
     const dis = sim.getSystem<SimSystem & DisastersApi>('disasters');
     T.disaster = disasterMonth || (dis?.active?.length ?? 0) > 0 ? AT.disaster : 0;
     firesMonth = 0;
@@ -330,6 +408,10 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
   };
   return {
     name: 'economy.approval',
+    daily(sim) {
+      // the month's resident survey in daily slices (residentSurvey completes it on the month tick)
+      surveySlice(sim.state, rt);
+    },
     init(sim) {
       rt.attach(sim);
       if (subscribedTo !== sim) {
@@ -384,6 +466,7 @@ function approvalDetail(st: CityState, id: string, T: Record<string, number>): s
     case 'tourism': return `${n0(d?.tourists ?? 0)} tourists / day`;
     case 'unemployment': return `${pct(s.unemployment)} unemployed`;
     case 'justice': return `jail overflow ${pct(s.justice?.overflow ?? 0)}`;
+    case 'toxicDump': return "residents everywhere object to storing other cities' toxic waste here (it also costs the city's clean-air image)";
     case 'emergencies': {
       const e = s.emergency;
       if (!e) return undefined;

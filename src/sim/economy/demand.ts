@@ -31,7 +31,7 @@ import { DEV_TYPE_COUNT, DevType } from '../../core/types';
 import { CAP_RELIEF, devFamily } from '../catalog';
 import {
   APPROVAL_R, BASE_CAP, CAP_BINDING, CAP_POP_FRAC, CAP_SOFTMIN_K, CAP_WEIGHT, CIVIC_WEALTH_MIX, CO3_FRAC_MAX, CO3_FRAC_MIN,
-  CO_SHARE_MAX, CO_SHARE_MIN, CO_SHARE_POP_FULL, CO_SHARE_POP_START, CONN_BASE, CONN_CAP_RELIEF, CONN_MAX, CONN_WEIGHT,
+  CO_SHARE_MAX, CO_SHARE_MIN, CO_SHARE_POP_FULL, CO_SHARE_POP_START, CONN_BASE, CONN_CAP_RELIEF, CONN_EDGE_DECAY, CONN_EDGE_FULL, CONN_MAX, CONN_WEIGHT,
   CS_BASE, CS_PER_RES, CS_SMALL_TOWN_BOOST, CS_SMALL_TOWN_POP, CUSTOMER_MIX, DEMAND_ABS_EMA, DEMAND_EMA, DEMAND_NORM_FRAC, DEMAND_NORM_MIN,
   FREIGHT_BOOST, FREIGHT_BOOST_MAX, I_BASE, I_SHARE_MAX, I_SHARE_MIN, IA_BASE, IA_PER_RES, ID_EQ_START,
   ID_SHARE_AT_EQ0, ID_SHARE_EQ_SLOPE, ID_SHARE_MIN, IHT_EQ_START, IHT_SHARE_MAX, IHT_SHARE_PER_EQ, JOB_MIX_AVG, JOB_SLACK,
@@ -81,9 +81,8 @@ export function demandContext(st: CityState, rt: EconRuntime): DemandContext {
   for (const c of st.neighborConnections) {
     const w = CONN_WEIGHT[c.type];
     if (w) { cR += w.R; cC += w.C; cI += w.I; }
-    const r = CONN_CAP_RELIEF[c.type];
-    if (r) { relief.R += r.R; relief.C += r.C; relief.I += r.I; }
   }
+  connectionRelief(st, relief);
   const inf = infraFlags(st);
   let freight = 0, tourism = 0;
   for (const b of rt.plopped) {
@@ -126,6 +125,29 @@ export function demandContext(st: CityState, rt: EconRuntime): DemandContext {
   };
   contexts.set(st, ctx);
   return ctx;
+}
+
+/**
+ * cap relief of the neighbour connections (CONN_CAP_RELIEF) added to `relief`: per map edge the CONN_EDGE_FULL
+ * connections with the most relief count fully, each further one CONN_EDGE_DECAY × the one before (final fixes V6)
+ */
+export function connectionRelief(st: CityState, relief: { R: number; C: number; I: number }): void {
+  const conns = st.neighborConnections;
+  for (const edge of ['n', 's', 'w', 'e'] as const) {
+    const rs: { R: number; C: number; I: number }[] = [];
+    for (const c of conns) {
+      if (c.edge !== edge) continue;
+      const r = CONN_CAP_RELIEF[c.type];
+      if (r) rs.push(r);
+    }
+    if (rs.length > CONN_EDGE_FULL) rs.sort((a, b) => b.R + b.C + b.I - (a.R + a.C + a.I));
+    let k = 1;
+    for (let j = 0; j < rs.length; j++) {
+      if (j >= CONN_EDGE_FULL) k *= CONN_EDGE_DECAY;
+      const r = rs[j];
+      relief.R += r.R * k; relief.C += r.C * k; relief.I += r.I * k;
+    }
+  }
 }
 
 export function taxFactor(dev: number, rate: number): number {

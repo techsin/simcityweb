@@ -30,11 +30,11 @@ import type { BuildingDef } from '../catalogTypes';
 import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
 import { onStrike, serviceEffectiveness } from './budget';
-import { residentSurvey, type ResidentSurvey } from './approval';
+import { residentSurvey, toxicDumpOperating, type ResidentSurvey } from './approval';
 import { lotTouchesRoad } from './buildings';
 import { shoreCells } from '../infra/terrainMasks';
 import {
-  ATTRACT_CITY_WEIGHTS, ATTRACT_CONNECT, ATTRACT_SCALES, ATTRACT_WEIGHTS, COARSE, COVERAGE_FALLBACK, CS_JOBS_PER_VISITOR, MIG_GAIN,
+  APPROVAL_TERMS, ATTRACT_CITY_WEIGHTS, ATTRACT_CONNECT, ATTRACT_SCALES, ATTRACT_WEIGHTS, COARSE, COVERAGE_FALLBACK, CS_JOBS_PER_VISITOR, MIG_GAIN,
   MIG_BIG_POP, MIG_MAX, MIG_MIN, MIG_NEUTRAL, MIG_NEUTRAL_BIG, MIG_POP, MIG_SCHOOL, MIG_SPAN, MIG_UNEMP_SPAN, RETIREE_SPLIT, RETIREES,
   STUDENT_SPLIT, STUDENTS_PER_SEAT, TOURISM, UNEMP_NEUTRAL,
 } from './tuning';
@@ -118,6 +118,8 @@ interface TourismState {
   historic: number;
   culture: number;
   scores: number[][];
+  /** a toxic waste dump operated (clean-air image × (1 − APPROVAL_TERMS.dumpImage); final fixes V7) */
+  dump?: boolean;
 }
 const states = new WeakMap<CityState, TourismState>();
 
@@ -458,7 +460,8 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
     }
     rt.timing['tourism.splat'] = performance.now() - tp; tp = performance.now();
     // ---- attractiveness
-    const scores = attractScores(st, sv, inf, culture, { large: airportLarge, small: airportSmall, train, seaport });
+    const dump = toxicDumpOperating(rt);
+    const scores = attractScores(st, sv, inf, culture, { large: airportLarge, small: airportSmall, train, seaport }, dump ? 1 - APPROVAL_TERMS.dumpImage : 1);
     const aw: number[] = [0, 0, 0];
     for (let w = 0; w < 3; w++) {
       let a = 0;
@@ -487,7 +490,7 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
     const retirees = pop > 0 ? RETIREES * (0.5 + Math.min(1, st.stats.hq / 150)) * (0.5 + clamp(green, 0, 1)) : 0;
     const students = STUDENTS_PER_SEAT * collegeSeats;
     data.migrants = [0, 1, 2].map((w) => retirees * RETIREE_SPLIT[w] + students * STUDENT_SPLIT[w]);
-    states.set(st, { day: st.day, venues, beach: beach * kEff, beachCells: bch.cells, historic: historic * kEff, culture, scores });
+    states.set(st, { day: st.day, venues, beach: beach * kEff, beachCells: bch.cells, historic: historic * kEff, culture, scores, dump });
     rt.timing['tourism.attract'] = performance.now() - tp;
     sim.events.emit('layerUpdated', 'tourism');
   };
@@ -579,10 +582,11 @@ export function migrationFactor(attractiveness: number, population: number, unre
   return f;
 }
 
-/** scores 0..1 [culture, parks, safety, clean, quiet, services, jobs, connect] per wealth (0..2) and city-wide (3) */
+/** scores 0..1 [culture, parks, safety, clean, quiet, services, jobs, connect] per wealth (0..2) and city-wide (3);
+ *  `image` scales the clean-air score (a toxic waste dump: 1 − APPROVAL_TERMS.dumpImage) */
 function attractScores(
   st: CityState, sv: ResidentSurvey, inf: InfraFlags, culture: number,
-  conn: { large: number; small: number; train: number; seaport: number },
+  conn: { large: number; small: number; train: number; seaport: number }, image = 1,
 ): number[][] {
   const s = st.stats;
   const cult = 1 - Math.exp(-culture / TOURISM.cultureRef);
@@ -599,7 +603,7 @@ function attractScores(
     + C.trainStation * conn.train + C.seaport * conn.seaport);
   const res = (k: number) => {
     const safety = clamp(1 - ATTRACT_SCALES.crime * sv.crime[k], 0, 1);
-    const clean = clamp(1 - ATTRACT_SCALES.air * sv.air[k], 0, 1);
+    const clean = clamp(1 - ATTRACT_SCALES.air * sv.air[k], 0, 1) * image;
     const quiet = clamp(1 - ATTRACT_SCALES.noise * sv.noise[k], 0, 1);
     const parks = clamp(inf.services ? sv.park[k] : 0.3, 0, 1);
     return { parks, safety, clean, quiet };
@@ -643,6 +647,7 @@ export function attractivenessBreakdown(st: CityState): FactorTerm[] {
     if (T[id] === undefined) continue;
     let detail: string | undefined;
     if (id === 'culture' && ts) detail = `${Math.round(ts.culture).toLocaleString('en-US')} landmark & culture visits / day`;
+    if (id === 'clean' && ts?.dump) detail = `the toxic waste dump costs ${Math.round(APPROVAL_TERMS.dumpImage * 100)}% of the city's clean-air image`;
     out.push({ id, label: ATTRACT_LABELS[id], value: T[id], detail });
   }
   return out;

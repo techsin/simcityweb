@@ -951,7 +951,8 @@ describe('building LOD cross-fade', () => {
     const dOn = (s.dOn * 0.88) / br.fadeOn;
     // the instant swap's distance (0.88 x lodPixels): a zoom-out never draws the full model beyond it
     const dInstant = (dOn * br.fadeOn) / 0.88;
-    for (const rate of [1.002, 1.01, 1.03]) {
+    // (zoom rates that still dissolve: faster zooms swap at once, see 'caps the concurrent fades by the zoom rate')
+    for (const rate of [1.002, 1.006, 1.01]) {
       at(dOn * 0.5);
       br.update(1);
       glide(dOn * 0.97);

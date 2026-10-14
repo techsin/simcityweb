@@ -12,7 +12,7 @@ import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { Simulation } from '../../src/sim/Simulation';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import { DEV_WEALTH, ZONE_DEVTYPES, getDef } from '../../src/sim/catalog';
-import { conditionBreakdown } from '../../src/sim/economy/population';
+import { conditionBreakdown, outageData } from '../../src/sim/economy/population';
 import { sumTerms } from '../../src/sim/explain';
 import type { EconRuntime } from '../../src/sim/economy/runtime';
 import { DESIR_TERM_IDS, NT, T_ELEM, desirWeight, desirabilityBreakdown } from '../../src/sim/economy/desirability';
@@ -20,7 +20,8 @@ import { computeStaticLandValue, landValueBreakdown } from '../../src/sim/econom
 import { advanceCommuteAvg, commuteMinutes, commuteRamp, conditionDesirability, garbageFade, lotCell } from '../../src/sim/economy/factors';
 import { placeBuilding } from '../../src/sim/economy/buildings';
 import { updateNeighborConnections } from '../../src/sim/economy/connections';
-import { DESIR_WEIGHTS, LV_REFRESH_DAYS, LV_STATIC_MIN_DAYS, LV_STATIC_PHASE, LV_STATIC_SPREAD, PENALTY_NO_GARBAGE, RENT_CONDITION_MIN } from '../../src/sim/economy/tuning';
+import { connectionRelief } from '../../src/sim/economy/demand';
+import { CONN_CAP_RELIEF, CONN_EDGE_DECAY, CONN_EDGE_FULL, DESIR_WEIGHTS, LV_REFRESH_DAYS, OUTAGE_EXIT_DAYS, LV_STATIC_MIN_DAYS, LV_STATIC_PHASE, LV_STATIC_SPREAD, PENALTY_NO_GARBAGE, RENT_CONDITION_MIN } from '../../src/sim/economy/tuning';
 import { computeWater } from '../../src/sim/terrainGen';
 
 const rtOf = (sim: Simulation) => (sim.getSystem('economy.population') as unknown as { rt: EconRuntime }).rt;
@@ -197,6 +198,10 @@ describe('condition: the RENT cap and the garbage fade keep conditionBreakdown e
     // target); a perfect lot caps at 100 % the same way
     for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) st.desirability[DevType.R1][z * N + x] = -1;
     b.flags &= ~BF.Powered;
+    // (an outage's penalty ramps in over OUTAGE_EXIT_DAYS — final fixes F7: this one is that old)
+    const od = outageData(st);
+    od.start[b.id] = st.day - OUTAGE_EXIT_DAYS;
+    od.pop[b.id] = b.pop;
     st.stats.population = 40000;
     const low = conditionBreakdown(st, b);
     expect(low.target).toBe(0);
@@ -480,5 +485,39 @@ describe('neighbour connections', () => {
     // extending the stub into the network makes it count
     road(A, 45, 30, 30, 30);
     expect(st.neighborConnections.map((c) => c.edge).sort()).toEqual(['e', 'w']);
+  });
+
+  it('final fixes V6: dead-end highway stubs that touch nothing are not connections; spurs of the city network count, with less cap relief per extra spur on an edge', () => {
+    const { st, A } = makeCity({ size: 64 });
+    st.funds = 1e7;
+    // the city: an avenue from the west edge into a small grid (one network of ~140 cells)
+    road(A, 0, 32, 40, 32, Network.Avenue);
+    for (let x = 8; x <= 40; x += 8) road(A, x, 20, x, 44);
+    for (let z = 20; z <= 44; z += 8) road(A, 8, z, 40, z);
+    expect(st.neighborConnections.map((c) => `${c.edge}:${c.type}`)).toEqual([`w:${Network.Avenue}`]);
+    const before = { R: 0, C: 0, I: 0 };
+    connectionRelief(st, before);
+    // the veteran's exploit: six-cell highway stubs from the north / south / east edges, two free cells around each
+    for (const x of [10, 20, 30, 50]) { road(A, x, 0, x, 5, Network.Highway); road(A, x, 63, x, 58, Network.Highway); }
+    for (const z of [5, 12]) road(A, 63, z, 58, z, Network.Highway);
+    expect(st.neighborConnections.length).toBe(1);
+    const after = { R: 0, C: 0, I: 0 };
+    connectionRelief(st, after);
+    expect(after).toEqual(before);
+    // a stub joined to the city's network is a connection (and "New neighbor connection!" comes with it)
+    road(A, 10, 5, 10, 20, Network.Highway);
+    expect(st.neighborConnections.map((c) => c.edge)).toEqual(['n', 'w']);
+    // spurs of the city network: the CONN_EDGE_FULL best of an edge count fully, each further one half the one before
+    const conns = (n: number) => Array.from({ length: n }, (_, k) => ({ edge: 'n' as const, x: 4 + 6 * k, z: 0, type: Network.Highway }));
+    const rel = (n: number) => { st.neighborConnections = conns(n); const r = { R: 0, C: 0, I: 0 }; connectionRelief(st, r); return r.I; };
+    const one = CONN_CAP_RELIEF[Network.Highway].I;
+    expect(rel(CONN_EDGE_FULL)).toBe(CONN_EDGE_FULL * one);
+    expect(rel(CONN_EDGE_FULL + 1)).toBe((CONN_EDGE_FULL + CONN_EDGE_DECAY) * one);
+    expect(rel(12)).toBeLessThan((CONN_EDGE_FULL + 1) * one);
+    // one connection on each edge: full relief each (the bot's trunk: one avenue at the west and one at the east edge)
+    st.neighborConnections = (['n', 's', 'w', 'e'] as const).map((edge) => ({ edge, x: edge === 'e' ? 63 : 0, z: edge === 's' ? 63 : 0, type: Network.Highway }));
+    const r4 = { R: 0, C: 0, I: 0 };
+    connectionRelief(st, r4);
+    expect(r4.I).toBe(4 * one);
   });
 });

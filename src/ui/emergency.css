@@ -7,6 +7,8 @@
   position: absolute; top: 70px; left: 50%; transform: translateX(-50%); width: 440px; max-width: calc(100vw - 32px);
   display: flex; flex-direction: column; gap: 8px; pointer-events: none; z-index: 55;
 }
+/* (EmergencyBanner.dock sets left / width inline to keep the stack beside open panels; the "more" pill stays last) */
+.emg-banners .emg-more { order: 9999; }
 .emg-banner {
   --kc: #e8542c;
   pointer-events: auto; position: relative; display: flex; gap: 11px; align-items: flex-start; padding: 10px 34px 10px 10px;
@@ -39,6 +41,14 @@
 .emg-place { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .emg-note { font-size: 12px; color: var(--text); line-height: 1.35; }
 .emg-banner:not(.handled) .emg-note { color: #ffb4a8; }
+/* supporting units already on their way while the primary one is missing ("Ambulance … on the way — no fire truck yet") */
+.emg-sub { font-size: 11.5px; color: var(--text-dim); line-height: 1.35; }
+/* beyond the first three banners (every alert a dispatch can still save gets one): title, time and buttons only */
+.emg-banner.compact { padding: 6px 30px 6px 8px; gap: 8px; align-items: center; }
+.emg-banner.compact .emg-ico { width: 28px; height: 28px; border-radius: 8px; }
+.emg-banner.compact .emg-place, .emg-banner.compact .emg-note, .emg-banner.compact .emg-sub, .emg-banner.compact .emg-choose { display: none !important; }
+.emg-banner.compact .emg-btns { margin-top: 3px; }
+.emg-banner.compact .emg-x { top: 4px; }
 .emg-btns { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .emg-btns .btn .emg-eta { font-weight: 800; opacity: 0.9; margin-left: 2px; }
 .emg-x { position: absolute; top: 6px; right: 6px; width: 24px !important; height: 24px !important; }

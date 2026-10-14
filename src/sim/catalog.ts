@@ -450,7 +450,7 @@ const PLOPPABLES: BuildingDef[] = [
     description: 'Business deal: §2,500/month. Very noisy and bad for land value.' }),
   p({ id: 'rw_toxic_dump', name: 'Toxic Waste Dump', category: 'reward', cost: 0, upkeep: 0, income: 4000, jobs: 60, powerUse: 0.5,
     landValue: { amount: -0.5, radius: 20 }, pollution: { air: 0.5, water: 0.8, radius: 14 }, requires: 'toxic_dump', unique: true, stigma: { amount: 0.95, radius: 22 },
-    description: 'Business deal: §4,000/month to store other cities\' toxic waste. Terrible air and water pollution that poisons the soil and ground water nearby; the worst stigma in the game (within 22 tiles).' }),
+    description: 'Business deal: §4,000/month to store other cities\' toxic waste. Terrible air and water pollution that poisons the soil and ground water nearby; the worst stigma in the game (within 22 tiles). Wherever it stands, the whole city dislikes hosting it: approval −3 and a quarter of the city\'s clean-air image (fewer tourists and newcomers).' }),
   p({ id: 'rw_casino', name: 'Casino Resort', category: 'reward', cost: 25000, upkeep: 400, income: 3000, jobs: 500, powerUse: 3, waterUse: 100,
     landValue: { amount: -0.05, radius: 8 }, pollution: { noise: 0.3, radius: 6 }, requires: 'casino', unique: true, stigma: { amount: 0.15, radius: 6 },
     description: 'Reward (needs Legalized Gambling): §3,000/month and a tourist magnet, but crime rises within 8 tiles — police it.' }),

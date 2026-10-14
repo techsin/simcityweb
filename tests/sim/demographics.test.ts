@@ -11,13 +11,13 @@ import { createSystems } from '../../src/sim/systems/index';
 import { economyRuntime } from '../../src/sim/systems/economy';
 import {
   COHORT_LABELS, cohortShares, carlessShare, demographicsData, evaluateNeeds, householdForm, hqTarget, needsExpectation, needsOf,
-  needsPenalty, profileShares,
+  needsPenalty, profileShares, seniorScoreAt, targetShares,
   updateDemographics, updateEqHq, workerShare, workforceShare,
 } from '../../src/sim/economy/demographics';
 import { conditionBreakdown, populationSystem } from '../../src/sim/economy/population';
 import { EconRuntime } from '../../src/sim/economy/runtime';
 import {
-  COHORT_BASE, EDU_NEWCOMER, EQ_FLOOR, EQ_SPAN_STOCK, NEEDS_PENALTY_MAX, OCC_PERIOD, TAP_PENALTY, TAP_SAFE,
+  COHORT_BASE, EDU_NEWCOMER, EQ_FLOOR, EQ_SPAN_STOCK, NEEDS_PENALTY_MAX, OCC_PERIOD, QUIET_NOISE, QUIET_SPAN, SEN_NOISE, TAP_PENALTY, TAP_SAFE,
 } from '../../src/sim/economy/tuning';
 import { sumTerms } from '../../src/sim/explain';
 import { newState, place, roadLine } from '../infra/cityGen';
@@ -104,6 +104,27 @@ describe('demographics: profiles, cohorts and workforce', () => {
     expect(a.kids!).toBeGreaterThan(b.kids!); // pull persists
     // fields are Float32-exact (save / load)
     for (const v of [a.kids!, a.teens!, a.yad!, a.srs!, a.wf!, a.edu!]) expect(Math.fround(v)).toBe(v);
+  });
+
+  it('final fixes F9: seniors move toward quiet streets (a noisy highway home vs the same home after the road is quieted)', () => {
+    const st = svcState(32);
+    const home = place(st, 't_r1', 4, 4, { pop: 12, age: 360 * 25, wealth: 2 });
+    const i = cellOf(st, home);
+    setCov(st, i, { elem: 0.8, high: 0.8, play: 0.5, health: 0.9, green: 0.5, shop: 0.8 });
+    const at = (noise: number) => {
+      st.noise[i] = noise;
+      return { share: targetShares(st, home, getDef(home.def)!, i)[4], score: seniorScoreAt(st, i) };
+    };
+    // the verifier's highway homes: noise 0.51 next to a highway, 0.27 once it was downgraded (vf_highway2)
+    const noisy = at(0.514), quieted = at(0.269);
+    // the appeal score the Seniors view draws (and the pull it feeds) rises by SEN_NOISE x the quiet gap
+    expect(quieted.score - noisy.score).toBeCloseTo(SEN_NOISE * (Math.fround(0.514) - QUIET_NOISE) / QUIET_SPAN, 5);
+    console.log(`senior target share at noise 0.51 ${noisy.share.toFixed(4)} -> quieted 0.27 ${quieted.share.toFixed(4)} (+${((quieted.share / noisy.share - 1) * 100).toFixed(1)} %)`);
+    expect(quieted.share).toBeGreaterThan(noisy.share * 1.07);
+    // next to a busy highway (0.8) far fewer seniors want to live than on a quiet street
+    expect(at(0.8).share).toBeLessThan(at(0.2).share * 0.9);
+    // below QUIET_NOISE noise does not matter to them
+    expect(at(0.1).score).toBeCloseTo(at(0.3).score, 6);
   });
 
   it('car-less share is highest for poor young / old households', () => {
