@@ -335,6 +335,15 @@ export class SimBot {
   }
   /** money held back from zoning for a needed prison (ensureJustice sets it every month, before zoning runs) */
   jailHold = 0;
+  /** fire protection that cannot wait (ensureResponse, more than FIRE_URGENT beyond the trucks' reach): its price in the
+   *  bank above a small cushion — not the 1.5 months of expenses canSpend keeps back, which the needs rule's clinics
+   *  spend down to month after month (final fixes: 256x60 s11 kept 7–18 % of its residents and workers beyond reach
+   *  from 2003 to mid-2005 that way, and 8 fires failed in 2004-06) */
+  canSpendUrgent(cost: number): boolean {
+    let e = 0;
+    for (const k in this.st.budget.lastExpense) if (!k.startsWith('oneoff:')) e += this.st.budget.lastExpense[k];
+    return this.funds - cost > 1500 + e * 0.3;
+  }
   private jailSaving = false;
   /** a competent mayor only adds recurring costs the budget can carry (or when sitting on a big pile of cash) */
   canAfford(defId: string, people?: number, optional = false): boolean {
@@ -1511,7 +1520,7 @@ export class SimBot {
         const g = this.fireGap();
         share = g.share;
         if (share <= FIRE_GAP) continue;
-        if (!this.canAfford(def) && !(share > FIRE_URGENT && this.canSpend(getDef(def)?.cost ?? 0))) continue;
+        if (!this.canAfford(def) && !(share > FIRE_URGENT && this.canSpendUrgent(getDef(def)?.cost ?? 0))) continue;
         h = g.at ?? undefined;
         alts = g.alts;
       } else {

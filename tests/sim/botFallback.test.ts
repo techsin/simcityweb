@@ -4,7 +4,7 @@
  * garbage-range rule counts shops and offices beyond the trucks' reach whatever their tonnage, and the bot's --help.
  */
 import { describe, expect, it } from 'vitest';
-import { SimBot, USAGE, botSystems } from '../../tools/simbot';
+import { FIRE_GAP, FIRE_URGENT, SimBot, USAGE, botSystems } from '../../tools/simbot';
 import { DevType } from '../../src/core/types';
 import { getDef } from '../../src/sim/catalog';
 
@@ -100,6 +100,36 @@ describe('bot garbage rule: shops and offices beyond the trucks count, whatever 
     expect(calls.length).toBe(1);
     expect(calls[0].x).toBeLessThan(20);
     expect(calls[0].z).toBeLessThan(12);
+  });
+});
+
+describe('bot fire rule: an urgent fire gap is not starved by the other rules\' reserve', () => {
+  it('more than FIRE_URGENT beyond reach and the bank below the 1.5-month reserve: the station is still built', { timeout: 300000 }, async () => {
+    const b = await bot(96);
+    const st = b.st;
+    for (let d = 0; d < 3; d++) b.sim.advanceDay();
+    st.stats.population = 20000;
+    st.budget.lastIncome = { 'tax:R$': 9000 };
+    st.budget.lastExpense = { 'service:police': 10000 };
+    // below canSpend's reserve (4,000 + 1.5 months of expenses + the price), above the urgent cushion (1,500 + 0.3 months)
+    st.funds = 12000;
+    b.pendingUpkeep = 0;
+    expect(b.canSpend(1400)).toBe(false);
+    expect(b.canSpendUrgent(1400)).toBe(true);
+    const calls: string[] = [];
+    (b as unknown as { placeCivic: (d: string) => unknown }).placeCivic = (d: string) => { calls.push(d); return d === 'civ_fire_station' ? { ok: true, cost: 1400, affected: 1 } : null; };
+    const gap = (share: number) => {
+      (b as unknown as { fireGap: () => unknown }).fireGap = () => ({ share, at: { x: 20, z: 20 }, alts: [] });
+    };
+    gap((FIRE_GAP + FIRE_URGENT) / 2);
+    b.ensureResponse();
+    expect(calls.filter((c) => c === 'civ_fire_station')).toEqual([]);
+    gap(FIRE_URGENT + 0.03);
+    b.ensureResponse();
+    expect(calls.filter((c) => c === 'civ_fire_station')).toEqual(['civ_fire_station']);
+    // an empty till still waits (1,500 + 0.3 months of expenses stay)
+    st.funds = 5000;
+    expect(b.canSpendUrgent(1400)).toBe(false);
   });
 });
 
