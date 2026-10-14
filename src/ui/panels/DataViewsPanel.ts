@@ -104,8 +104,11 @@ export class DataViewsPanel extends Panel {
     this.more = h('button', { class: 'dv-more', type: 'button', title: 'Scroll to the hidden data views', 'data-sfx': 'none' }) as HTMLButtonElement;
     this.more.addEventListener('click', (e) => {
       e.stopPropagation();
+      // to the next hidden section's title — or a page down when that is no further down (a section taller than the
+      // visible part, its title already at the top: the cue must never stall)
       const target = this.hiddenSection();
-      const top = target ? Math.max(0, target.offsetTop - 4) : scroll.scrollTop + scroll.clientHeight * 0.75;
+      let top = target ? Math.max(0, target.offsetTop - 4) : -1;
+      if (top <= scroll.scrollTop + 4) top = scroll.scrollTop + scroll.clientHeight * 0.75;
       scroll.scrollTo({ top, behavior: 'smooth' });
       this.ctx.sound('tab');
     });
