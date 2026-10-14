@@ -10,7 +10,7 @@
  */
 import type { CityState } from '../sim/CityState';
 import type { BuildingDef } from '../sim/catalogTypes';
-import { expectedUpkeep, opexTierOf } from '../sim/economy/opex';
+import { expectedUpkeep, opexActive, opexTierOf } from '../sim/economy/opex';
 import { fullUseUpkeep } from '../sim/infra/facilities';
 import { money } from './format';
 
@@ -23,9 +23,10 @@ export interface UpkeepEstimate {
   title: string;
 }
 
-/** the estimate of a running-cost facility (null for a def with a flat upkeep: its upkeep is the catalog's) */
+/** the estimate of a running-cost facility (null for a def with a flat upkeep — also every def of a city that charges
+ *  no running costs, an economy-only simulation: its upkeep is the catalog's) */
 export function upkeepEstimate(st: CityState | null, def: BuildingDef | undefined): UpkeepEstimate | null {
-  if (!def || !opexTierOf(def) || !((def.upkeep ?? 0) > 0)) return null;
+  if (!def || !opexTierOf(def) || !((def.upkeep ?? 0) > 0) || (st && !opexActive(st))) return null;
   const now = expectedUpkeep(st, def);
   const full = Math.max(now, fullUseUpkeep(def));
   return { now, full, title: `≈${money(now)}/mo now · up to ${money(full)} at full use` };

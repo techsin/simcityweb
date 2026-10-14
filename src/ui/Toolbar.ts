@@ -375,7 +375,12 @@ export class Toolbar {
         const formula = opexTierOf(d) ? facts.find((f) => f.key === 'upkeep')?.value : undefined;
         if (formula) hints.push(`Upkeep: ${formula}`);
       } else if (d.upkeep) rows.push(['Upkeep', `${money(d.upkeep)} / month`]);
-      if (d.income) rows.push(['Income', `<span class="pos">+${money(d.income)} / month</span>`]);
+      if (d.income) {
+        rows.push(['Income', `<span class="pos">+${money(d.income)} / month</span>`]);
+        // (an airport earns with its traffic, a venue with its visitors: the catalog figure is a busy one — the inspector
+        // shows what it earns now, final fixes P3; a business deal pays its income as it is)
+        if (d.category !== 'reward') hints.push(`Income: ${money(d.income)} / month when busy — less while it is quiet (its inspector shows what it earns now)`);
+      }
       rows.push(['Size', `${d.footprint[0]} × ${d.footprint[1]} tiles`]);
       if (d.jobs) rows.push(['Jobs', num(d.jobs)]);
       // (facts that repeat a row above — Jobs, Upkeep, Size — are left out, with the upkeep's hint)

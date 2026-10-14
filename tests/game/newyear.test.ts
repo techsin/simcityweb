@@ -226,6 +226,25 @@ describe('NewYearCelebration: final fixes P11', () => {
     expect(ny.active).toBe(false);
   });
 
+  it('a short ultra-speed year (no countdown, no time-lapse) keeps the calendar running; at 2x the countdown holds it', () => {
+    const ultra = setupSim();
+    (ultra.sim as unknown as { secondsPerDay: () => number }).secondsPerDay = () => 0.05;
+    ultra.sim.speed = 3;
+    ultra.ny.frame(1 / 60);
+    ultra.ny.celebrate({ year: 2006 });
+    expect(ultra.fw.started).not.toBeNull();
+    // (an 18 s game year: a 2.8 s hold every year would slow ultra by a sixth for a show without a countdown)
+    expect(ultra.sim.maxDaysPerFrame).toBe(4);
+    const fast = setupSim();
+    (fast.sim as unknown as { secondsPerDay: () => number }).secondsPerDay = () => 0.2;
+    fast.sim.speed = 2;
+    fast.ny.frame(1 / 60);
+    fast.ny.celebrate({ year: 2006 });
+    expect(fast.sim.maxDaysPerFrame).toBe(0);
+    fast.step(fast.fw.started!.delay! + 0.2);
+    expect(fast.sim.maxDaysPerFrame).toBe(4);
+  });
+
   it('pausing and resuming at the same speed does not end it', () => {
     const { ny, fw, sim, step } = setupSim();
     ny.frame(1 / 60);

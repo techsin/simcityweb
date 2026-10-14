@@ -1,11 +1,16 @@
-/** Roads / rail / power lines / subway: drag an L-shaped path (Shift flips the L), live preview + cost. */
-import { Network, Overlay } from '../../core/types';
+/**
+ * Roads / rail / power lines / subway: drag an L-shaped path (Shift flips the L), live preview + cost. A route through
+ * developed lots that cuts occupied buildings off the grid / the pipes (final fixes N1) says so in the tip, tints those
+ * buildings red and asks first (demolishRisk.ts).
+ */
+import { Network, Overlay, isRoad } from '../../core/types';
 import type { ActionResult } from '../../sim/actions';
 import { lPath, type Cell } from '../geom';
 import type { GameContext } from '../context';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
-import { sideDemolishRisks, type DemolishRisk } from '../demolishRisk';
+import { buildingCells, sideDemolishRisks, utilityCut, type DemolishRisk, type Removal, type UtilityCut } from '../demolishRisk';
 import { confirmDialog } from '../../ui/Modals';
+import { escapeHtml } from '../../ui/dom';
 
 export type NetKind = Network | 'power' | 'subway';
 
@@ -27,6 +32,8 @@ export class NetworkTool extends Tool {
   private path: Cell[] | null = null;
   private res: ActionResult | null = null;
   private lastKey = '';
+  /** occupied buildings the drag's demolitions cut off the grid / the pipes (per path, with res) */
+  private cut: UtilityCut | null = null;
 
   constructor(ctx: GameContext, private kind: NetKind, id: string, icon: string) {
     super(ctx);
@@ -45,6 +52,12 @@ export class NetworkTool extends Tool {
   private clearPreview(): void {
     this.ctx.world.setHighlight(null);
     this.ctx.objects.setNetworkPreview(null);
+  }
+
+  /** what a drag along `path` adds in place of the lots it demolishes: road / rail cells conduct power, roads carry pipes */
+  private added(path: Cell[]): Removal['add'] {
+    const k = this.kind;
+    return typeof k === 'number' ? { cells: path, pipes: isRoad(k) } : null;
   }
 
   private refresh(p: ToolPointer, force = false): void {
@@ -69,13 +82,18 @@ export class NetworkTool extends Tool {
       this.path = path;
       this.res = this.run(path, true);
       const ok = this.res.ok;
-      this.ctx.world.setHighlight(this.res.cells && this.res.cells.length ? this.res.cells : path.map((q) => ({ ...q, ok })));
+      const dem = ok ? this.res.demolished : undefined;
+      this.cut = dem?.length ? safe(() => utilityCut(this.ctx.state, { buildings: dem, add: this.added(path) }), null) : null;
+      const hl = this.res.cells && this.res.cells.length ? [...this.res.cells] : path.map((q) => ({ ...q, ok }));
+      if (this.cut) for (const c of buildingCells(this.ctx.state, this.cut.ids)) hl.push(c);
+      this.ctx.world.setHighlight(hl);
       this.ctx.objects.setNetworkPreview(path, this.kind, ok);
     }
     const len = this.res?.ok && this.res.affected ? this.res.affected : path.length;
     const extra = this.start ? `${len} tile${len === 1 ? '' : 's'}${p.shift ? ' · flipped' : ''}` : 'Click and drag to build';
     const t = resultTip(this.label, this.res, extra);
-    this.ctx.tip.show(t.html, t.kind);
+    const cut = this.cut ? `<div class="tip-reason">${escapeHtml(this.cut.text)}</div>` : '';
+    this.ctx.tip.show(t.html + cut, cut ? 'bad' : t.kind);
   }
 
   override activate(): void {
@@ -102,7 +120,8 @@ export class NetworkTool extends Tool {
     const path = this.path;
     this.start = null;
     if (path && path.length) {
-      // a route through developed lots that demolishes a lot (> §20k of fees, or DISPLACE_CONFIRM residents + jobs) asks first
+      // a route through developed lots that demolishes a lot (> §20k of fees, DISPLACE_CONFIRM residents + jobs, or
+      // buildings cut off the grid / the pipes) asks first
       const risk = this.sideRisk(path);
       if (risk) {
         this.clearPreview();
@@ -125,7 +144,7 @@ export class NetworkTool extends Tool {
   private sideRisk(path: Cell[]): DemolishRisk | null {
     const pre = this.run(path, true);
     if (!pre.ok || !pre.demolished?.length) return null;
-    return safe(() => sideDemolishRisks(this.ctx.state, pre.demolished, pre.demolishFee ?? 0, { sandbox: this.ctx.sandbox() }), null);
+    return safe(() => sideDemolishRisks(this.ctx.state, pre.demolished, pre.demolishFee ?? 0, { sandbox: this.ctx.sandbox(), add: this.added(path) }), null);
   }
 
   private commit(path: Cell[]): void {

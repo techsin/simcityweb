@@ -41,6 +41,8 @@ describe('adviceView (final fixes N8): "Show me" opens the advice\'s data view',
     expect(name('noFireResponse')).toBe('Emergency · Fire');
     expect(name('slowAmbulances')).toBe('Emergency · Medical');
     expect(name('seniorsHealth')).toBe('Health');
+    expect(name('jailOvercrowded')).toBe('Crime');
+    expect(name('abandoned')).toBe('Desirability');
   });
   it('zone advice per building type; money and demand advice have no view', () => {
     expect(name('zoneDev2')).toBe('Desirability · R$$$');

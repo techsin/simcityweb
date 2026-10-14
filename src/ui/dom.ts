@@ -79,12 +79,15 @@ export function isTyping(e?: Event): boolean {
   return false;
 }
 
+/** keys a focused range slider keeps for itself (stepping it; Tab and lone modifiers do nothing to the map) */
+export const SLIDER_KEYS: ReadonlySet<string> = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Tab', 'Shift', 'Control', 'Alt', 'Meta']);
+
 /**
  * A range slider. It keeps the keyboard focus after a click or a drag, so the arrow keys (Home / End, Page Up / Down)
  * step it — final fixes P10: it blurred itself on pointerup, the arrows then panned the map and one 0.5 % tax step was
  * ~1.8 px of track. The camera ignores keys while an input has focus (CameraController.isTypingTarget) and the scene's
- * hotkeys treat range inputs as non-typing (isTyping); Esc or a pointer press anywhere else (the map, another control)
- * releases the focus, and the camera keys work again.
+ * hotkeys treat range inputs as non-typing (isTyping); any other key (Esc, W A S D, a hotkey) or a pointer press
+ * anywhere else (the map, another control) releases the focus, and the camera keys work again.
  */
 export function slider(opts: { min: number; max: number; step?: number; value: number; oninput: (v: number) => void; onchange?: (v: number) => void; class?: string }): HTMLInputElement {
   const el = h('input', { type: 'range', min: opts.min, max: opts.max, step: opts.step ?? 1, class: opts.class ?? 'ui-range' }) as HTMLInputElement;
@@ -99,9 +102,14 @@ export function slider(opts: { min: number; max: number; step?: number; value: n
     opts.oninput(Number(el.value));
   });
   el.addEventListener('change', () => opts.onchange?.(Number(el.value)));
-  el.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') el.blur();
-  });
+  // the keys a range input acts on keep the focus; any other key (Esc, a camera key, a hotkey) releases it first, so the
+  // camera sees that key — also the release of a key held from before the click (a W held while the slider had the
+  // focus would otherwise keep the camera moving: the camera ignores key-ups while an input has focus)
+  const onKey = (e: KeyboardEvent) => {
+    if (!SLIDER_KEYS.has(e.key)) el.blur();
+  };
+  el.addEventListener('keydown', onKey);
+  el.addEventListener('keyup', onKey);
   const outside = (e: Event) => {
     // (a slider removed while focused — its panel closed — may never get its blur: drop the listener then)
     if (!el.isConnected) {

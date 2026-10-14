@@ -41,11 +41,14 @@ const ADVICE_VIEWS: Readonly<Record<string, AdviceView>> = {
   slowAmbulances: V(Overlay.Emergency, EMG_MEDICAL),
   // public safety
   noPolice: V(Overlay.Police), policeOverloaded: V(Overlay.Police), crime: V(Overlay.Crime), riotRisk: V(Overlay.Crime),
+  // (a full prison releases inmates early: the crime they bring back)
+  jailOvercrowded: V(Overlay.Crime),
   noFire: V(Overlay.Fire), noFireResponse: V(Overlay.Emergency, EMG_FIRE), plantFireReach: V(Overlay.Emergency, EMG_FIRE),
   plantNoFire: V(Overlay.Emergency, EMG_FIRE),
   // planning
   noRoadAccess: V(Overlay.Zones), zoneR: V(Overlay.Zones), zoneC: V(Overlay.Zones), zoneI: V(Overlay.Zones),
-  growthStalled: V(Overlay.Desirability), lowAttractiveness: V(Overlay.Tourism), hotelsFull: V(Overlay.Tourism), tourismGood: V(Overlay.Tourism),
+  // (abandonment: power, water, road access, crime, pollution and demand — what Desirability sums up)
+  growthStalled: V(Overlay.Desirability), abandoned: V(Overlay.Desirability), lowAttractiveness: V(Overlay.Tourism), hotelsFull: V(Overlay.Tourism), tourismGood: V(Overlay.Tourism),
 };
 
 /** the data view for an advice id ('zoneDev<DevType>' → Desirability of that type, 'zoneNoFit<R|C|I>' → Desirability);

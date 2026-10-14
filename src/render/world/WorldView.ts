@@ -19,7 +19,7 @@ import type { CameraControllerApi, CellHit, QualityLevel, WorldViewApi } from '.
 import { CameraController } from './CameraController';
 import { PostFX } from './PostFX';
 import { QUALITY_PRESETS, type QualitySettings } from './quality';
-import { CitySun, fitSunShadow, shadowCasters, type ShadowFit, type ShadowReceiver } from './Shadows';
+import { CitySun, DIR_RADIUS_STEPS, dirShadowLogRadius, fitSunShadow, shadowCasters, type ShadowFit, type ShadowReceiver } from './Shadows';
 import { SkySystem } from './Sky';
 import { TerrainRenderer } from './TerrainRenderer';
 import { TreeRenderer } from './TreeRenderer';
@@ -113,14 +113,15 @@ export class WorldView implements WorldViewApi {
    */
   shadowMoveCasterInterval = 8;
   /**
-   * Single map: while the view turns or zooms in place (its target still) and the map itself has stood still for
-   * shadowBoxCullAfter frames, re-renders cull the casters only against the map's own box, not the view's receiver, so
-   * the map need not be re-rendered whenever the receiver changes (see CitySun.dirReceiverCull): an orbit keeps it.
-   * A map that moves anyway (pans, zoom sweeps stepping its radius) keeps culling against the receiver, which draws
-   * fewer casters. false = always cull against the receiver.
+   * Single map: while the view turns or zooms in place (its target still), re-renders cull the casters only against the
+   * map's own box, not the view's receiver, so the map need not be re-rendered whenever the receiver changes (see
+   * CitySun.dirReceiverCull): an orbit keeps it, a zoom re-renders it only when its radius steps. A map that moves
+   * anyway keeps culling against the receiver, which draws fewer casters: while the target moves (pans) or the radius
+   * steps at least shadowBoxCullZoom times per frame (fast zooms such as a street -> far sweep, which re-render it every
+   * shadowMoveInterval frames either way). false = always cull against the receiver.
    */
   shadowBoxCull = true;
-  shadowBoxCullAfter = 4;
+  shadowBoxCullZoom = 0.4;
   /**
    * Cascades: while the view moves, the far cascade is redrawn at most every this many frames (1 = with every shadow
    * render). In between, shadow renders redraw the near cascade only; the far one keeps its map tile and lookup matrix
@@ -174,9 +175,9 @@ export class WorldView implements WorldViewApi {
   private viewStill = 0;
   /** the single map was last rendered with its casters culled against the view's receiver (see CitySun.dirReceiverCull) */
   private shCull = true;
-  /** the single map's camera (matrixWorld, projection) at the previous render and the frame number it last changed */
-  private shFit = new Float64Array(32);
-  private shFitFrame = 0;
+  /** the single map's unquantized log2 radius at the previous render and its radius steps per frame since then */
+  private shLogR = NaN;
+  private shZoomRate = 0;
   /** frame number of the last shadow render that redrew the far cascade */
   private shFarFrame = 0;
   private shadowDir = new THREE.Vector3(0, 1, 0);
@@ -682,17 +683,11 @@ export class WorldView implements WorldViewApi {
     const cams: THREE.Camera[] | null = sun.cascaded ? ((sun.cascadeShadow as any)._cameras as THREE.Camera[]) : null;
     const nc = cams ? cams.length : 1;
     if (!cams) {
-      // (single map: the frame its fit last changed: target moves, radius steps, light steps)
-      const f = this.shFit;
-      let ch = false;
-      for (let k = 0, o = 0; k < 2; k++) {
-        const m = k === 0 ? sh.camera.matrixWorld.elements : sh.camera.projectionMatrix.elements;
-        for (let i = 0; i < 16; i++, o++) {
-          if (Math.abs(f[o] - m[i]) > 1e-6 * Math.max(1, Math.abs(m[i]))) ch = true;
-          f[o] = m[i];
-        }
-      }
-      if (ch) this.shFitFrame = this.frameNo;
+      // (single map: how fast its radius steps while the view zooms, in steps per frame; none on the first frame)
+      const lr = dirShadowLogRadius(this.shadowFit);
+      const rate = Math.abs(lr - this.shLogR) * DIR_RADIUS_STEPS;
+      this.shZoomRate = rate === rate ? rate : 0;
+      this.shLogR = lr;
     }
     const key = this.shKey;
     let o = 0, moved = false;
@@ -747,11 +742,11 @@ export class WorldView implements WorldViewApi {
       if (hold) this.shadowStats.farHeld++;
       this.shRecv = rv;
       if (!sun.cascaded) {
-        // single map: casters culled against the view's receiver while the view's target moves or the map's fit keeps
-        // changing (pans and zoom sweeps re-render it anyway, as it follows), else only against the map's own box, so a
-        // view that turns or zooms within the map's radius step keeps it (instead of re-rendering whenever the receiver
-        // changes); a view at rest keeps the mode the map has
-        const cull = !this.shadowBoxCull || tMoved || this.frameNo - this.shFitFrame < this.shadowBoxCullAfter || (this.viewStill > 0 && this.shCull);
+        // single map: casters culled against the view's receiver while the view's target moves or the map's radius steps
+        // about every other frame (pans and fast zooms re-render it anyway, as it follows), else only against the map's
+        // own box, so a view that turns or zooms within the map's radius step keeps it (instead of re-rendering whenever
+        // the receiver changes); a view at rest keeps the mode the map has
+        const cull = !this.shadowBoxCull || tMoved || this.shZoomRate >= this.shadowBoxCullZoom || (this.viewStill > 0 && this.shCull);
         if (sun.dirReceiverCull !== cull) sun.dirReceiverCull = cull;
         this.shCull = cull;
       }

@@ -1,12 +1,20 @@
-/** Zoning / de-zoning / bulldozing: drag a rectangle, live cost preview, apply on release. */
+/**
+ * Zoning / de-zoning / bulldozing: drag a rectangle, live cost preview, apply on release.
+ * Final fixes N1: the bulldozer (and a rezoning that tears buildings down) previews the occupied buildings it would cut
+ * off the grid / the pipes — a red tip line and those buildings tinted red — and asks first (demolishRisk.ts).
+ * Final fixes N3: the zone preview tints the tiles that will never get road access red and says how many (a warning,
+ * not a block: zoneStatus.ts zonePlanNoAccess).
+ */
 import type { CellRect } from '../../core/events';
 import { Zone } from '../../core/types';
 import type { ActionResult } from '../../sim/actions';
 import { rectFrom, type Cell } from '../geom';
 import type { GameContext } from '../context';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
-import { demolishRisks, sideDemolishRisks, type DemolishRisk } from '../demolishRisk';
+import { buildingCells, bulldozeCut, demolishRisks, sideDemolishRisks, utilityCut, type DemolishRisk, type UtilityCut } from '../demolishRisk';
 import { confirmDialog } from '../../ui/Modals';
+import { escapeHtml } from '../../ui/dom';
+import { noAccessText, zonePlanNoAccess } from '../../ui/zoneStatus';
 
 export const ZONE_LABELS: Record<number, string> = {
   [Zone.ResLow]: 'Residential · Low density',
@@ -38,6 +46,11 @@ export class RectTool extends Tool {
   private lastKey = '';
   private lastRect: CellRect | null = null;
   private lastRes: ActionResult | null = null;
+  /** the preview's warnings (made per rect with lastRes): buildings cut off the grid / pipes, tiles without road access */
+  private lastCut: UtilityCut | null = null;
+  private lastNoAccess = '';
+  /** cell highlights are on (the red tiles / buildings of the warnings above) */
+  private hlOn = false;
 
   constructor(ctx: GameContext, private mode: RectMode, id: string, label: string, icon: string) {
     super(ctx);
@@ -69,9 +82,45 @@ export class RectTool extends Tool {
     return { x0: c.x, z0: c.z, x1: c.x + 1, z1: c.z + 1 };
   }
 
+  /** the preview's warnings for `rect` (lastRes is its preview): utility cuts of the bulldozer / a rezoning's
+   *  demolitions, the tiles a zoning leaves without road access; their cells are tinted red */
+  private warnings(rect: CellRect): void {
+    const st = this.ctx.state, res = this.lastRes;
+    this.lastCut = null;
+    this.lastNoAccess = '';
+    const hl: { x: number; z: number; ok: boolean }[] = [];
+    if (res?.ok) {
+      const m = this.mode;
+      if (m.kind === 'bulldoze') this.lastCut = safe(() => bulldozeCut(st, rect), null);
+      else if (m.kind === 'zone') {
+        if (res.demolished?.length) this.lastCut = safe(() => utilityCut(st, { buildings: res.demolished! }), null);
+        const na = safe(() => zonePlanNoAccess(st, rect, m.zone, res.demolished), { none: [], total: 0 });
+        if (na.none.length) {
+          this.lastNoAccess = noAccessText(na.none.length, Math.max(na.total, res.affected ?? 0));
+          const N = st.size;
+          for (const i of na.none) hl.push({ x: i % N, z: (i / N) | 0, ok: false });
+        }
+      }
+      if (this.lastCut) for (const c of buildingCells(st, this.lastCut.ids)) hl.push(c);
+    }
+    this.highlight(hl);
+  }
+
+  private highlight(cells: { x: number; z: number; ok: boolean }[] | null): void {
+    const on = !!cells && cells.length > 0;
+    if (!on && !this.hlOn) return;
+    this.hlOn = on;
+    this.ctx.world.setHighlight(on ? cells : null);
+  }
+
+  private clearPreview(): void {
+    this.ctx.world.setHighlightRect(null, 0);
+    this.highlight(null);
+  }
+
   private refresh(p: ToolPointer): void {
     if (!p.hit) {
-      this.ctx.world.setHighlightRect(null, 0);
+      this.clearPreview();
       this.ctx.tip.hide();
       this.lastKey = '';
       return;
@@ -84,12 +133,16 @@ export class RectTool extends Tool {
       this.lastRect = rect;
       this.lastRes = this.run(rect, true);
       this.ctx.world.setHighlightRect(rect, this.color(this.lastRes.ok));
+      this.warnings(rect);
     }
     const w = rect.x1 - rect.x0, d = rect.z1 - rect.z0;
     const size = `${w}×${d}${this.lastRes?.affected !== undefined ? ` · ${this.lastRes.affected} ${this.mode.kind === 'bulldoze' ? 'items' : 'tiles'}` : ''}`;
     const title = this.mode.kind === 'bulldoze' ? 'Bulldoze' : this.mode.kind === 'dezone' ? 'De-zone' : this.label;
     const t = resultTip(title, this.lastRes, size);
-    this.ctx.tip.show(t.html, t.kind);
+    // (a cut is a red line and a red tip: the click asks first; tiles without road access are a warning)
+    const cut = this.lastCut ? `<div class="tip-reason">${escapeHtml(this.lastCut.text)}</div>` : '';
+    const na = this.lastNoAccess ? `<div class="tip-warn">${escapeHtml(this.lastNoAccess)}</div>` : '';
+    this.ctx.tip.show(t.html + cut + na, cut ? 'bad' : t.kind);
   }
 
   override activate(): void {
@@ -97,7 +150,7 @@ export class RectTool extends Tool {
   }
   override deactivate(): void {
     this.start = null;
-    this.ctx.world.setHighlightRect(null, 0);
+    this.clearPreview();
     this.ctx.tip.hide();
   }
   override move(p: ToolPointer): void {
@@ -121,12 +174,12 @@ export class RectTool extends Tool {
     }
     this.start = null;
     if (rect) {
-      // destructive bulldozing (last power plant / water source, landmarks, > §20k) and rezoning that demolishes a lot
-      // (> §20k of fees, or DISPLACE_CONFIRM residents + jobs) ask first
+      // destructive bulldozing (last power plant / water source, buildings cut off the grid / pipes, landmarks,
+      // > §20k) and rezoning that demolishes a lot (> §20k of fees, DISPLACE_CONFIRM residents + jobs, or a cut) ask first
       const bull = this.mode.kind === 'bulldoze';
       const risk = bull ? this.bulldozeRisk(rect) : this.mode.kind === 'zone' ? this.rezoneRisk(rect) : null;
       if (risk) {
-        this.ctx.world.setHighlightRect(null, 0);
+        this.clearPreview();
         this.ctx.tip.hide();
         this.lastKey = '';
         const msg = bull ? 'This demolition has consequences:' : 'Rezoning demolishes the buildings on these lots:';
@@ -171,13 +224,13 @@ export class RectTool extends Tool {
     if (!this.start) return false;
     this.start = null;
     this.lastKey = '';
-    this.ctx.world.setHighlightRect(null, 0);
+    this.clearPreview();
     this.ctx.tip.hide();
     return true;
   }
   override leave(): void {
     if (!this.start) {
-      this.ctx.world.setHighlightRect(null, 0);
+      this.clearPreview();
       this.lastKey = '';
     }
     this.ctx.tip.hide();

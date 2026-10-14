@@ -530,6 +530,14 @@ export interface ShadowFit {
 
 const _box = new THREE.Vector3();
 
+/** single map: its radius steps by 1 / DIR_RADIUS_STEPS octave while the view zooms (see fitSunShadow) */
+export const DIR_RADIUS_STEPS = 6;
+
+/** single map: log2 of the radius a fit asks for, before it is rounded up to the next step */
+export function dirShadowLogRadius(f: ShadowFit): number {
+  return Math.log2(Math.max(120, f.distance * f.rangeMul * 0.62));
+}
+
 /**
  * Position the light / fit the shadow frustum for this frame.
  * Cascaded: split depths from the ground footprint; single: ortho box around the target, texel snapped.
@@ -578,7 +586,7 @@ export function fitSunShadow(sun: CitySun, camera: THREE.PerspectiveCamera, f: S
   }
   // single map: square around the target (covers the visible neighbourhood), snapped to texels in light space
   const sh = sun.dirShadow;
-  const radius = Math.pow(2, Math.ceil(Math.log2(Math.max(120, d * f.rangeMul * 0.62)) * 6) / 6);
+  const radius = Math.pow(2, Math.ceil(dirShadowLogRadius(f) * DIR_RADIUS_STEPS) / DIR_RADIUS_STEPS);
   const size = sh.mapSize.x;
   const texel = (2 * radius) / size;
   const L = f.lightDir;

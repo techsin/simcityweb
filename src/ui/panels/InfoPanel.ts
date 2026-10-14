@@ -15,7 +15,7 @@
  */
 import '../insight.css';
 import { DEV_TYPE_LABELS, DevType, Network, Zone, isRoad, zoneDensity, zoneFamily } from '../../core/types';
-import { BF, type Building, type CityState } from '../../sim/CityState';
+import { BF, type Building } from '../../sim/CityState';
 import { getDef } from '../../sim/catalog';
 import type { GameContext, QueryTarget } from '../../game/context';
 import { CATEGORY_COLORS, defIcon } from '../../game/toolCatalog';
@@ -105,6 +105,9 @@ export class InfoPanel extends Panel {
   private target: QueryTarget | null = null;
   private sig = '';
   private builtAt = 0;
+  /** the body's scroll offset, kept by its scroll events (final fixes A1: reading scrollTop before each rebuild forced a
+   *  layout of everything the other panels had just changed in the same UI tick) */
+  private scrollY = 0;
   private open: Record<SectionId, boolean> = { ...SECTIONS };
 
   override defaultPos(w: number): { x: number; y: number } {
@@ -113,6 +116,7 @@ export class InfoPanel extends Panel {
 
   protected build(): void {
     for (const k of Object.keys(SECTIONS) as SectionId[]) this.open[k] = loadPref<boolean>('inspector.sec.' + k, SECTIONS[k]);
+    this.body.addEventListener('scroll', () => (this.scrollY = this.body.scrollTop), { passive: true });
   }
 
   show(t: QueryTarget): void {
@@ -155,7 +159,7 @@ export class InfoPanel extends Panel {
     if (sameTarget && now - this.builtAt < REBUILD_MS) return;
     this.sig = sig;
     this.builtAt = now;
-    const scroll = this.body.scrollTop;
+    const scroll = this.scrollY;
     clear(this.body);
     if (t.buildingId != null && !b) {
       this.titleEl.textContent = 'Inspector';
@@ -170,8 +174,12 @@ export class InfoPanel extends Panel {
       this.body.appendChild(h('div', { class: 'empty' }, 'Nothing to show here right now.'));
     }
     // same target: keep the reader's place; another building / cell starts at the top (no layout ran between the
-    // clear and the rebuild, so the old offset would otherwise carry over)
-    this.body.scrollTop = sameTarget ? scroll : 0;
+    // clear and the rebuild, so the old offset would otherwise carry over). Written only when the body was scrolled:
+    // a scrollTop write forces a layout too
+    if (scroll > 0) {
+      this.body.scrollTop = sameTarget ? scroll : 0;
+      if (!sameTarget) this.scrollY = 0;
+    }
   }
 
   // ------------------------------------------------------------------------------------------------ helpers

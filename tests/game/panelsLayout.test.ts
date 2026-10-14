@@ -6,9 +6,9 @@
  *        through at most once per real second (a change of what is shown — a tab — at once);
  *  P10 — the budget sliders: stepSlider / stepButtons give exact −/+ steps (and the slider keeps the keyboard focus).
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PANEL_REBUILD_MS, Panel, anchoredPos, clearOfHud } from '../../src/ui/Panel';
-import { stepSlider } from '../../src/ui/dom';
+import { slider, stepButtons, stepSlider } from '../../src/ui/dom';
 import type { GameContext } from '../../src/game/context';
 
 describe('anchoredPos (final fixes P12): a resize keeps the docked edge', () => {
@@ -103,5 +103,95 @@ describe('stepSlider (final fixes P10): exact steps like the arrow keys', () => 
     const d = fake(100, 0, 150, 5);
     stepSlider(d.el, -1);
     expect(d.el.value).toBe('95');
+  });
+});
+
+// ------------------------------------------------------------------------------------------------ slider focus (P10)
+/** a minimal element / document: listeners, focus and blur (what slider() and stepButtons() touch) */
+class FakeEl {
+  listeners = new Map<string, ((e: unknown) => void)[]>();
+  attrs: Record<string, string> = {};
+  style = { setProperty: (_k: string, _v: string) => {} } as unknown as CSSStyleDeclaration;
+  className = '';
+  value = '';
+  isConnected = true;
+  children: unknown[] = [];
+  constructor(readonly tagName: string, private doc: FakeDoc) {}
+  get min() { return this.attrs.min; }
+  get max() { return this.attrs.max; }
+  get step() { return this.attrs.step; }
+  setAttribute(k: string, v: string) { this.attrs[k] = v; }
+  appendChild(c: unknown) { this.children.push(c); return c; }
+  addEventListener(t: string, f: (e: unknown) => void) { this.listeners.set(t, [...(this.listeners.get(t) ?? []), f]); }
+  dispatchEvent(e: { type: string }) { this.fire(e.type, e); return true; }
+  fire(t: string, e: unknown = {}) { for (const f of this.listeners.get(t) ?? []) f(e); }
+  focus() { if (this.doc.activeElement !== this) { this.doc.activeElement = this; this.fire('focus'); } }
+  blur() { if (this.doc.activeElement === this) { this.doc.activeElement = null; this.fire('blur'); } }
+  closest() { return null; }
+}
+class FakeDoc {
+  activeElement: FakeEl | null = null;
+  docListeners = new Map<string, ((e: unknown) => void)[]>();
+  createElement(t: string) { return new FakeEl(t.toUpperCase(), this); }
+  createTextNode(s: string) { return { textContent: s }; }
+  addEventListener(t: string, f: (e: unknown) => void) { this.docListeners.set(t, [...(this.docListeners.get(t) ?? []), f]); }
+  removeEventListener(t: string, f: (e: unknown) => void) { this.docListeners.set(t, (this.docListeners.get(t) ?? []).filter((g) => g !== f)); }
+  firePointerDown(target: unknown) { for (const f of [...(this.docListeners.get('pointerdown') ?? [])]) f({ target }); }
+}
+
+describe('slider focus (final fixes P10): arrows step it, any other key or a press elsewhere releases it', () => {
+  const g = globalThis as unknown as { document?: unknown };
+  let had: unknown;
+  const doc = new FakeDoc();
+  beforeAll(() => {
+    had = g.document;
+    g.document = doc;
+  });
+  afterAll(() => {
+    g.document = had;
+  });
+  const make = () => {
+    const values: number[] = [];
+    const el = slider({ min: 0, max: 20, step: 0.5, value: 9, oninput: (v) => values.push(v) }) as unknown as FakeEl;
+    return { el, values };
+  };
+  it('keeps the focus for the keys a slider uses; W / Esc / a hotkey release it before the camera sees the key', () => {
+    const { el } = make();
+    el.focus();
+    for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End', 'PageUp', 'Shift']) {
+      el.fire('keydown', { key });
+      el.fire('keyup', { key });
+      expect(doc.activeElement).toBe(el);
+    }
+    el.fire('keydown', { key: 'w' });
+    expect(doc.activeElement).toBeNull();
+    el.focus();
+    el.fire('keydown', { key: 'Escape' });
+    expect(doc.activeElement).toBeNull();
+  });
+  it('a key held from before the click: its release frees the slider (the camera then sees the key-up)', () => {
+    const { el } = make();
+    el.focus();
+    el.fire('keyup', { key: 'w' });
+    expect(doc.activeElement).toBeNull();
+  });
+  it('a pointer press elsewhere releases it; on the slider itself or its own − / + buttons it keeps it', () => {
+    const { el, values } = make();
+    const [dn, up] = stepButtons(el as unknown as HTMLInputElement, 'R$ tax') as unknown as FakeEl[];
+    el.focus();
+    doc.firePointerDown(el);
+    expect(doc.activeElement).toBe(el);
+    const own = { closest: () => up };
+    doc.firePointerDown(own);
+    expect(doc.activeElement).toBe(el);
+    up.fire('click');
+    expect(values).toEqual([9.5]);
+    dn.fire('click');
+    expect(values).toEqual([9.5, 9]);
+    expect(doc.activeElement).toBe(el);
+    doc.firePointerDown({ closest: () => null });
+    expect(doc.activeElement).toBeNull();
+    // (no listener left behind once it lost the focus)
+    expect(doc.docListeners.get('pointerdown') ?? []).toHaveLength(0);
   });
 });

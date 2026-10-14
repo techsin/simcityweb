@@ -297,9 +297,10 @@ export class NewYearCelebration {
     if (fast) duration = Math.min(duration, Math.max(6, 0.6 * yearSec - delay));
     this.midnightAt = delay;
     this.phase = this.lapseDur > 0 ? 'lapse' : 'countdown';
-    // the calendar waits for midnight (a dev show keeps it running); the player raising the speed ends the party
+    // the calendar waits for midnight while a time-lapse or a countdown plays (a dev show, and a short ultra-speed year's
+    // show without either, keep it running); the player raising the speed ends the party
     this.speedAtStart = dev ? -1 : this.simSpeed();
-    if (!dev) this.holdDate();
+    if (!dev && (this.lapseDur > 0 || countdown)) this.holdDate();
     // fireworks
     this.fw = fw;
     if (fw) {

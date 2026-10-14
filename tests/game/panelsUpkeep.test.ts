@@ -61,6 +61,12 @@ describe('upkeepEstimate (final fixes P3): one estimate in the build menu, its t
     }
     expect(upkeepEstimate(st, undefined)).toBeNull();
   });
+  it('a city that charges no running costs (an economy-only simulation) pays the flat upkeep: no estimate', () => {
+    const st = newState(32);
+    expect(upkeepEstimate(st, getDef('civ_elementary_school'))).toBeNull();
+    // (without a city — a static listing — the estimate is the typical one)
+    expect(upkeepEstimate(null, getDef('civ_elementary_school'))).not.toBeNull();
+  });
 });
 
 describe('inspector header rows (final fixes A4 / P3)', () => {

@@ -144,7 +144,6 @@ export class RewardsPanel extends Panel {
   override icon = 'trophy';
   override width = 480;
   private listEl!: HTMLDivElement;
-  private sig = '';
 
   protected build(): void {
     this.listEl = h('div', { class: 'list' });
@@ -174,14 +173,15 @@ export class RewardsPanel extends Panel {
   }
 
   override onOpen(): void {
-    this.sig = '';
+    this.resetGate();
   }
 
   override update(): void {
     const items = this.list();
+    // (final fixes A1: the progress bars move with every percent of a growing city — a data-only change rebuilds the
+    // list at most once per real second, Panel.gate)
     const sig = items.map((r) => `${r.id}:${r.unlocked}:${r.built}:${Math.round(r.progress * 100)}:${r.requirement}`).join('|');
-    if (sig === this.sig) return;
-    this.sig = sig;
+    if (!this.gate('rewards', sig)) return;
     clear(this.listEl);
     if (!items.length) {
       this.listEl.appendChild(h('div', { class: 'empty', html: icon('trophy', 28) + '<div>Rewards unlock as your city reaches milestones.</div>' }));
@@ -208,7 +208,7 @@ export class RewardsPanel extends Panel {
           !r.unlocked
             ? h('div', { class: 'reward-prog' }, h('div', { class: 'bar warn' }, h('div', { class: 'fill', style: { width: `${Math.round(r.progress * 100)}%` } })), h('span', null, r.requirement || `${Math.round(r.progress * 100)}%`))
             : null,
-          def ? h('div', { class: 'li-e' }, h('span', { class: 'chip' }, def.cost ? money(def.cost) : 'Free'), this.upkeepChip(def), def.income ? h('span', { class: 'chip good' }, `+${money(def.income)}/mo`) : null) : null,
+          def ? h('div', { class: 'li-e' }, h('span', { class: 'chip' }, def.cost ? money(def.cost) : 'Free'), this.upkeepChip(def), def.income ? h('span', { class: 'chip good', title: def.category === 'reward' ? 'Deal income' : 'Income when busy — less while it is quiet (its inspector shows what it earns now)' }, `+${money(def.income)}/mo`) : null) : null,
         ),
         h('div', { class: 'li-r' }, r.built ? h('span', { class: 'chip info', html: icon('check', 11) + 'Built' }) : r.unlocked ? h('span', { class: 'chip good', html: icon('check', 11) + 'Unlocked' }) : h('span', { class: 'chip warn', html: icon('lock', 11) + 'Locked' }), place),
       );

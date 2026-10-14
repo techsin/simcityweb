@@ -4,20 +4,25 @@
  * a lot on the road may extend INFILL_MAX_EXTRA rows into the block, so back cells up to LOT_DEPTH + INFILL_MAX_EXTRA
  * deep fill as its yard, and cells behind a standing building fill when that lot is rebuilt), power (state.powered on
  * the lot or a served neighbouring conductor, see utilityReaches; a back cell is judged at its road front), water
- * (medium / high density zones), and RCI demand. Power / water are only required when the utilities layer runs
- * (infraFlags(st).utilities), like growth. Also used by the onboarding card (power / water steps) and the inspector's
- * lot chips.
+ * (medium / high density zones), and RCI demand — only for the DevTypes that can live there (final fixes N4: growth
+ * picks a type only where its desirability is above GROW_MIN_DESIR, judged at the lot's road front; demand for R$$$
+ * alone never builds on land R$$$ shuns). Power / water are only required when the utilities layer runs
+ * (infraFlags(st).utilities), like growth. Also used by the onboarding card (power / water steps), the inspector's
+ * lot chips and the zone tool's preview (zonePlanNoAccess, final fixes N3: tiles a new zone would leave without road
+ * access).
  */
+import type { CellRect } from '../core/events';
 import { DEV_TYPE_LABELS, Network, isRoad, zoneDensity, zoneFamily, type Zone } from '../core/types';
 import { BF, type CityState } from '../sim/CityState';
 import { ZONE_DEVTYPES } from '../sim/catalog';
 import { infraFlags } from '../sim/economy/runtime';
-import { INFILL_MAX_EXTRA, isGrowZone } from '../sim/economy/tuning';
+import { DESIR_WEIGHTS, GROW_MIN_DESIR, INFILL_MAX_EXTRA, isGrowZone } from '../sim/economy/tuning';
 
 export interface ZoneBlocker {
   /** 'behind': the lot sits behind the buildings on the road (a warning, not a hard blocker: it fills when the lot in
-   *  front is rebuilt) */
-  id: 'road' | 'behind' | 'power' | 'water' | 'demand';
+   *  front is rebuilt); 'fit': there is demand, but only for types that can't live here (a warning: it grows once a
+   *  type that fits wants in, or the land gets better) */
+  id: 'road' | 'behind' | 'power' | 'water' | 'demand' | 'fit';
   /** short line, e.g. "No power (nearest powered cell 7 tiles)" */
   text: string;
 }
@@ -43,12 +48,24 @@ export interface ZoneStatus {
   note?: string;
 }
 
+/**
+ * A zoning the zone tool previews (final fixes N3): the cells of `rect` read as zone `zone`, the growables in
+ * `demolished` (other families the rezoning tears down) as open lot.
+ */
+export interface ZonePlan {
+  rect: CellRect;
+  zone: number;
+  demolished?: ReadonlySet<number>;
+}
+
 /** growth builds lots up to this deep from their road front (the largest growables are 4×4) */
 const LOT_DEPTH = 4;
 /** deepest cell a lot on the road can take in (its footprint + the extra yard rows of growth's extendInward) */
 export const BACK_LOT_DEPTH = LOT_DEPTH + INFILL_MAX_EXTRA;
 /** nearest-powered-cell search radius (Chebyshev tiles) */
 const SEARCH_R = 40;
+/** demand at or below this counts as none (the RCI meter's dead band) */
+const DEMAND_MIN = 0.02;
 
 const FAMILY_NAME: Record<string, string> = { R: 'residential', C: 'commercial', I: 'industrial' };
 
@@ -63,14 +80,24 @@ export const ACCESS_TEXT = {
   none: 'No road access — lots must touch a road',
 } as const;
 
+/** zone of cell (x, z), as `plan` would leave it */
+function zoneOf(st: CityState, x: number, z: number, plan: ZonePlan | null): number {
+  if (plan) {
+    const r = plan.rect;
+    if (x >= r.x0 && x < r.x1 && z >= r.z0 && z < r.z1) return plan.zone;
+  }
+  return st.zone[z * st.size + x];
+}
+
 /**
  * Walk from zoned cell (x, z) straight toward a road in direction k, over cells one lot (or its yard, or the lot in
  * front) could cover: same zone, dry, no power line; open cells or growable buildings of the zone (the latter make the
  * cell 'behind'), up to BACK_LOT_DEPTH. Returns the access rank of that direction (RANK), and with `flag`: -1 when one
- * of the cells passed or the road front reached has the flag set (the lot would be served through it).
+ * of the cells passed or the road front reached has the flag set (the lot would be served through it). `plan`: judge
+ * the city as that zoning would leave it.
  */
-function walkDir(st: CityState, x: number, z: number, k: number, flag: Uint8Array | null): number {
-  const N = st.size, zn = st.zone[z * N + x];
+function walkDir(st: CityState, x: number, z: number, k: number, flag: Uint8Array | null, plan: ZonePlan | null = null): number {
+  const N = st.size, zn = plan ? zoneOf(st, x, z, plan) : st.zone[z * N + x];
   const [dx, dz] = DIRS[k];
   let blocked = false;
   for (let d = 1; d <= BACK_LOT_DEPTH; d++) {
@@ -82,9 +109,9 @@ function walkDir(st: CityState, x: number, z: number, k: number, flag: Uint8Arra
       if (flag) return flag[j] === 1 ? -1 : 0;
       return blocked ? RANK.behind : d <= LOT_DEPTH ? RANK.front : RANK.yard;
     }
-    if (n !== Network.None || st.zone[j] !== zn || st.water[j] || st.powerLines[j]) return 0;
+    if (n !== Network.None || (plan ? zoneOf(st, xx, zz, plan) : st.zone[j]) !== zn || st.water[j] || st.powerLines[j]) return 0;
     const bid = st.building[j];
-    if (bid >= 0) {
+    if (bid >= 0 && !plan?.demolished?.has(bid)) {
       const b = st.buildings.get(bid);
       if (!b || b.flags & BF.Plopped) return 0;
       blocked = true;
@@ -94,11 +121,47 @@ function walkDir(st: CityState, x: number, z: number, k: number, flag: Uint8Arra
   return 0;
 }
 
-/** road access class of zoned cell (x, z): the best over the four straight directions (see LotAccess) */
-export function lotAccess(st: CityState, x: number, z: number): LotAccess {
+/** road access class of zoned cell (x, z): the best over the four straight directions (see LotAccess); `plan`: as the
+ *  zone tool's previewed zoning would leave it */
+export function lotAccess(st: CityState, x: number, z: number, plan: ZonePlan | null = null): LotAccess {
   let best = 0;
-  for (let k = 0; k < 4 && best < RANK.front; k++) best = Math.max(best, walkDir(st, x, z, k, null));
+  for (let k = 0; k < 4 && best < RANK.front; k++) best = Math.max(best, walkDir(st, x, z, k, null, plan));
   return BY_RANK[best];
+}
+
+/**
+ * The zone tool's road-access check (final fixes N3): the cells of `rect` that zoning it `zone` would zone (dry, no
+ * network / power line / plopped building, not that zone already — actions.ts zone()) and the ones among them that
+ * will never develop: no road within BACK_LOT_DEPTH in a straight line through the new zone (lotAccess 'none', with the
+ * rectangle zoned and the growables of other families it demolishes — `demolished`, the preview's ids — gone). A
+ * warning, not a block. Rects above maxCells cells are not checked (total 0).
+ */
+export function zonePlanNoAccess(st: CityState, rect: CellRect, zone: number, demolished?: readonly number[], maxCells = 20000): { none: number[]; total: number } {
+  const N = st.size;
+  const x0 = Math.max(0, Math.min(rect.x0, rect.x1)), x1 = Math.min(N, Math.max(rect.x0, rect.x1));
+  const z0 = Math.max(0, Math.min(rect.z0, rect.z1)), z1 = Math.min(N, Math.max(rect.z0, rect.z1));
+  const out = { none: [] as number[], total: 0 };
+  if (!isGrowZone(zone) || x1 <= x0 || z1 <= z0 || (x1 - x0) * (z1 - z0) > maxCells) return out;
+  const plan: ZonePlan = { rect: { x0, z0, x1, z1 }, zone, demolished: demolished?.length ? new Set(demolished) : undefined };
+  for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) {
+    const i = z * N + x;
+    if (st.water[i] || st.network[i] !== Network.None || st.powerLines[i] || st.zone[i] === zone) continue;
+    const bid = st.building[i];
+    if (bid >= 0) {
+      const b = st.buildings.get(bid);
+      if (!b || b.flags & BF.Plopped) continue;
+    }
+    out.total++;
+    if (lotAccess(st, x, z, plan) === 'none') out.none.push(i);
+  }
+  return out;
+}
+
+/** the zone tool's warning line for `none` of `total` tiles without road access ('' when none) */
+export function noAccessText(none: number, total: number): string {
+  if (none <= 0) return '';
+  const lead = none >= total ? (total === 1 ? 'This tile has' : `All ${total} tiles have`) : `${none} of ${total} tiles have`;
+  return `${lead} no road access and will never develop — a road must run within ${BACK_LOT_DEPTH} tiles of a lot`;
 }
 
 /**
@@ -165,6 +228,32 @@ export function nearestSet(arr: Uint8Array, N: number, x: number, z: number, max
   return -1;
 }
 
+/** −1..1 in the inspector's points: "+18", "−30" (true minus), "0" under half a point (inspectorModel signedPts) */
+function pts(v: number): string {
+  const r = Math.round(Math.abs(v) * 100);
+  return r === 0 ? '0' : `${v > 0 ? '+' : '−'}${r}`;
+}
+
+/**
+ * the 'fit' blocker's line (final fixes N4): demand exists, but only for DevTypes whose desirability on this lot is at
+ * or below growth's floor. `idle`: types that could live here but have no demand; `unfit`: types with demand that can't
+ * — named with the land value when that is what keeps them away (every one of them weighs land value heavily and the
+ * lot is below their reference), else their best desirability. "Waiting for demand: no R$ demand; R$$$ can't live here
+ * (land value 0%)"
+ */
+function fitText(st: CityState, zn: number, fi: number, idle: readonly number[], unfit: readonly number[]): string {
+  const fam = zoneFamily(zn as Zone);
+  const verb = fam === 'R' ? "can't live here" : fam === 'C' ? "won't open here" : "won't move in here";
+  const names = (ds: readonly number[]) => ds.map((d) => DEV_TYPE_LABELS[d]).join(' / ');
+  const lv = st.landValue[fi] ?? 0;
+  const lvLow = unfit.every((d) => DESIR_WEIGHTS[d].lv >= 0.4 && lv < DESIR_WEIGHTS[d].lvRef);
+  let best = -1;
+  for (const d of unfit) best = Math.max(best, st.desirability[d]?.[fi] ?? -1);
+  const why = lvLow ? `land value ${Math.round(lv * 100)}%` : `desirability ${pts(best)}, growth needs above ${pts(GROW_MIN_DESIR)}`;
+  const tail = `${names(unfit)} ${verb} (${why})`;
+  return idle.length ? `Waiting for demand: no ${names(idle)} demand; ${tail}` : `Land too unattractive: ${tail}`;
+}
+
 /** status of an empty growable zoned cell; null for anything else (not zoned, built on, road, water...) */
 export function emptyZoneStatus(st: CityState, x: number, z: number): ZoneStatus | null {
   if (!st.inBounds(x, z)) return null;
@@ -185,27 +274,41 @@ export function emptyZoneStatus(st: CityState, x: number, z: number): ZoneStatus
     blockers.push({ id: 'water', text: 'No water (needed for medium / high density)' });
   }
   const devs = ZONE_DEVTYPES[zn] ?? [];
-  const dem = st.stats.demand;
-  let best = -1;
-  for (const d of devs) best = Math.max(best, dem?.[d] ?? 0);
-  if (devs.length && best <= 0.02) {
-    const fam = FAMILY_NAME[zoneFamily(zn as Zone) ?? ''] ?? '';
-    const names = devs.map((d) => DEV_TYPE_LABELS[d]).join(' / ');
-    blockers.push({ id: 'demand', text: `No ${fam ? fam + ' ' : ''}demand right now (${names})` });
+  if (devs.length) {
+    const dem = st.stats.demand;
+    // growth picks a type for a lot only where its desirability is above GROW_MIN_DESIR (growth.ts pickDev), at the
+    // road-front cell it fits the lot from (a back lot fills from its front: frontCellOf)
+    const fi = access === 'none' ? i : frontCellOf(st, x, z);
+    let wanted = 0, hosted = false;
+    const idle: number[] = [], unfit: number[] = [];
+    for (const d of devs) {
+      const want = (dem?.[d] ?? 0) > DEMAND_MIN;
+      const fits = (st.desirability[d]?.[fi] ?? 0) > GROW_MIN_DESIR;
+      if (want) wanted++;
+      if (want && fits) hosted = true;
+      else if (fits) idle.push(d);
+      else if (want) unfit.push(d);
+    }
+    if (!wanted) {
+      const fam = FAMILY_NAME[zoneFamily(zn as Zone) ?? ''] ?? '';
+      const names = devs.map((d) => DEV_TYPE_LABELS[d]).join(' / ');
+      blockers.push({ id: 'demand', text: `No ${fam ? fam + ' ' : ''}demand right now (${names})` });
+    } else if (!hosted) blockers.push({ id: 'fit', text: fitText(st, zn, fi, idle, unfit) });
   }
   return { ready: blockers.length === 0, blockers, access, note: access === 'yard' ? ACCESS_TEXT.yard : undefined };
 }
 
-/** the status only waits on the lot in front ('behind') — a warning, not a red blocker */
+/** the status only waits on the lot in front ('behind') or on demand that fits ('fit') — a warning, not a red blocker */
 export function zoneStatusTone(s: ZoneStatus): 'ok' | 'warn' | 'bad' {
   if (s.ready) return 'ok';
-  return s.blockers.every((b) => b.id === 'behind') ? 'warn' : 'bad';
+  return s.blockers.every((b) => b.id === 'behind' || b.id === 'fit') ? 'warn' : 'bad';
 }
 
-/** one-line summary: "Not growing: no power (nearest powered cell 7 tiles)" / "Ready to grow" / the 'behind' line */
+/** one-line summary: "Not growing: no power (nearest powered cell 7 tiles)" / "Ready to grow" / the 'behind' line /
+ *  the 'fit' line ("Waiting for demand: …") */
 export function zoneStatusLine(s: ZoneStatus): string {
   if (s.ready) return s.access === 'yard' ? `Ready — ${ACCESS_TEXT.yard.charAt(0).toLowerCase()}${ACCESS_TEXT.yard.slice(1)}` : 'Ready to grow — waiting for a builder';
   const first = s.blockers[0];
-  if (first.id === 'behind') return first.text;
+  if (first.id === 'behind' || first.id === 'fit') return first.text;
   return 'Not growing: ' + first.text.charAt(0).toLowerCase() + first.text.slice(1);
 }
