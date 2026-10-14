@@ -33,9 +33,11 @@ export class LodProxyBuilder {
   /** jobs not posted yet (urgent first) */
   private queue: Job[] = [];
   private jobs = new Map<string, Job>();
-  /** jobs posted to one worker at a time (its own queue: the worker keeps building while the main thread is busy; each
-   *  holds a copy of its model's attributes, ~20-500 KB) */
-  perWorker = 64;
+  /** jobs posted to one worker at a time (its own queue: the worker keeps building while the main thread is busy, which
+   *  holds the workers' replies, and with them the next posts, for seconds during a city load). Each holds a copy of its
+   *  model's attributes (mean ~106 KB over the 535 building variants, max ~640 KB): two workers x 128 hold a whole
+   *  town's prefetch (~250 models, ~27 MB in flight), a big city's first 256 models */
+  perWorker = 128;
   /** proxies built by the workers (stats) */
   built = 0;
 

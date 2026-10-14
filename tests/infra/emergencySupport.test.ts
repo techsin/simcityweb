@@ -40,7 +40,8 @@ describe('supporting responders never end the wait for the primary one (P1)', ()
     expect(inc.reason).toBe('outOfRange');
     expect(inc.manualPossible).toBe(true);
     expect(inc.canSend).toBe(true);
-    expect(inc.prompted).toBe(true);
+    // (counted as a prompt from the day's settle point on — EM-1 — see below)
+    expect(inc.prompted).toBeFalsy();
     expect(inc.note).toMatch(/Outside fire coverage/);
     expect(inc.bestEta).toBeCloseTo(4.6, 5);
     // the ambulance was sent automatically; it answers nothing: no fire truck is on its way
@@ -57,6 +58,7 @@ describe('supporting responders never end the wait for the primary one (P1)', ()
     expect(inc.firstAt.medical).toBeDefined();
     expect(inc.state).toBe('uncovered');
     expect(inc.manualPossible).toBe(true);
+    expect(inc.prompted).toBe(true);
     expect(st.stats.emergency.manualActive).toBe(1);
   });
 

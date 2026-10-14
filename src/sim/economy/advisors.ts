@@ -56,7 +56,7 @@ import { attractivenessBreakdown } from './tourism';
 import { facilityLoad, unservedClusters } from '../infra/catchments';
 import { buildingList } from '../infra/common';
 import { emergencyOf, uncoveredHotspots } from '../infra/emergency';
-import { EMERG_RMAX, GARBAGE_TRUCK_RANGE, MINIBUS_FLEET, PATIENTS_PER_BED } from '../infra/params';
+import { EMERG_RMAX, GARBAGE_TRUCK_RANGE, MINIBUS_FLEET, PATIENTS_PER_BED, RECYCLE_MAX_SHARE } from '../infra/params';
 import type { PollutionSystem } from '../infra/pollution';
 import type { UtilitiesSystem } from '../infra/utilities';
 import type { ParkingSummary } from '../infra/parking';
@@ -68,10 +68,8 @@ import { lotSlope } from './buildings';
 import { formatMoney } from './format';
 import { buildingPowered, buildingWatered } from './population';
 import { GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, WATER_REQUIRED_STAGE } from './tuning';
-import { REWARDS } from './rewards';
 import { buildingUpkeep } from './opex';
 import { getOrdinance, ordinanceAvailable, ordinanceEffect } from './ordinances';
-import { facilityListText } from '../infra/disasters';
 
 const ADVICE_PER_MONTH = 2;
 /** no advice repeats sooner than this (days) */
@@ -109,6 +107,12 @@ function placed<T extends { x?: number; z?: number }>(a: T, where: (() => { x?: 
 }
 /** see Advice.quietIf */
 const QUIET_DAYS = 90;
+/**
+ * the population the Water Treatment Plant unlocks at (the 'water_treatment' reward of economy/rewards.ts, pinned by
+ * tests/sim/advisorsTexts.test.ts). Final fixes SF-7: not read from REWARDS — a static import of rewards.ts pulled the
+ * lazily loaded rewards chunk into the eager bundle (src/game/modules.ts loads it on demand)
+ */
+export const WATER_TREATMENT_UNLOCK_POP = 6000;
 /** a news item matching `re` was posted within QUIET_DAYS */
 function recentNews(st: CityState, re: RegExp): boolean {
   const news = st.news;
@@ -392,6 +396,62 @@ function lotFit(st: CityState, x: number, z: number, zn: number, s: number): 0 |
   return steep ? 2 : 1;
 }
 
+/**
+ * lotFit, and when the tile is on no fitting lot's front row: every other s × s lot that includes it with a whole edge on
+ * a road (the tile as a back cell of a lot fronting another road — growth builds those from that road's candidate). The
+ * same 0 / 1 / 2 (final fixes SF-6: the lot inspector and the zone scan answer alike). PERF: lotFit first (open land
+ * fits there at once); the wider search only for the odd tiles
+ */
+function lotFitAny(st: CityState, x: number, z: number, zn: number, s: number): 0 | 1 | 2 {
+  const first = lotFit(st, x, z, zn, s);
+  if (first === 0 || s <= 1) return first;
+  const N = st.size, net = st.network, zone = st.zone, bld = st.building, water = st.water, lines = st.powerLines;
+  const maxSlope = GROW_MAX_SLOPE + GROW_MAX_SLOPE_PER_CELL * s;
+  const rd = (xx: number, zz: number) => xx >= 0 && zz >= 0 && xx < N && zz < N && isRoadN(net[zz * N + xx]);
+  let steep = first === 2;
+  for (let z0 = z - s + 1; z0 <= z; z0++) {
+    for (let x0 = x - s + 1; x0 <= x; x0++) {
+      if (x0 < 0 || z0 < 0 || x0 + s > N || z0 + s > N) continue;
+      let ok = true;
+      for (let zz = z0; zz < z0 + s && ok; zz++) {
+        for (let xx = x0; xx < x0 + s; xx++) {
+          const j = zz * N + xx;
+          if (zone[j] !== zn || bld[j] >= 0 || net[j] !== Network.None || water[j] || lines[j]) { ok = false; break; }
+        }
+      }
+      if (!ok) continue;
+      // a whole edge on a road: north, south, west or east (the lot's front)
+      let edge = false;
+      for (let side = 0; side < 4 && !edge; side++) {
+        let all = true;
+        for (let k = 0; k < s && all; k++) {
+          const ex = side === 2 ? x0 - 1 : side === 3 ? x0 + s : x0 + k;
+          const ez = side === 0 ? z0 - 1 : side === 1 ? z0 + s : z0 + k;
+          if (!rd(ex, ez)) all = false;
+        }
+        edge = all;
+      }
+      if (!edge) continue;
+      if (lotSlope(st, x0, z0, s, s) > maxSlope) { steep = true; continue; }
+      return 0;
+    }
+  }
+  return steep ? 2 : 1;
+}
+
+/**
+ * can a building grow on the empty zoned tile (x, z)? Final fixes SF-6 (the lot inspector, ui/zoneStatus.ts): lotFitAny
+ * with the zone's smallest building (minLotSide) — 0 = a lot fits, 1 = no building fits (an odd tile between buildings,
+ * roads or the zone's edge), 2 = lots fit only on too steep ground; -1 = not an empty tile of a growth zone. Meant for
+ * road-front tiles: deeper ones fill as part of a bigger lot
+ */
+export function lotFitAt(st: CityState, x: number, z: number): -1 | 0 | 1 | 2 {
+  if (!st.inBounds(x, z)) return -1;
+  const i = z * st.size + x, zn = st.zone[i];
+  if (zn < Zone.ResLow || zn > Zone.IndHigh || st.building[i] >= 0 || st.network[i] !== Network.None || st.water[i] || st.powerLines[i]) return -1;
+  return lotFitAny(st, x, z, zn, minLotSide(zn));
+}
+
 /** one pass over the zoned tiles (4-connected blocks flood-filled for road access) */
 function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int32Array, lots: Int32Array): ZoneScan {
   const N = st.size, C = st.cells;
@@ -480,7 +540,7 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
   for (let k = 0; k < nLots; k++) {
     const i = lots[k], zn = zone[i];
     const f = (1 << zn) & R_ZONES ? 0 : (1 << zn) & C_ZONES ? 1 : 2;
-    const lf = lotFit(st, i % N, (i / N) | 0, zn, lotSide[zn]);
+    const lf = lotFitAny(st, i % N, (i / N) | 0, zn, lotSide[zn]);
     if (lf === 0) {
       lotOk[f]++;
       if (lotOkAt[f] < 0) lotOkAt[f] = i;
@@ -640,6 +700,19 @@ const SUBTYPE_LEAD: Readonly<Partial<Record<number, string>>> = {
 /** "a", "a and b", "a, b and c" */
 function andList(parts: readonly string[]): string {
   return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0] ?? '';
+}
+/** "your Police Station and 2 Elementary Schools" (defs in order; the disasters' summaries word it the same way —
+ *  disasters.ts facilityListText; not imported: disasters.ts is a lazily loaded module, src/game/modules.ts) */
+function ruinListText(defIds: readonly string[]): string {
+  const n = new Map<string, number>();
+  for (const id of defIds) n.set(id, (n.get(id) ?? 0) + 1);
+  const parts: string[] = [];
+  for (const [id, k] of n) {
+    const name = getDef(id)?.name ?? 'city facility';
+    parts.push(k > 1 ? `${k} ${name.endsWith('s') ? name : name + 's'}` : name);
+  }
+  const more = parts.length > 3 ? parts.length - 3 : 0;
+  return `your ${andList(more ? [...parts.slice(0, 3), `${more} more`] : parts)}`;
 }
 
 /**
@@ -927,10 +1000,25 @@ const pctS = (v: number) => `${Math.round(v * 100)}%`;
 const EDGE_NAME: Record<string, string> = { n: 'north', s: 'south', e: 'east', w: 'west' };
 /** a need tier's unreached share (0 without need) */
 const unreachedShare = (n: NeedStat | undefined) => (n && n.need > 0 ? n.unreached / n.need : 0);
+/**
+ * the fix for full landfills (final fixes SF-9c): recycling takes at most RECYCLE_MAX_SHARE of the collected garbage —
+ * once the city's recycling centers recycle that much, another one does not help (the advice told a player whose
+ * Recycling Center sat at the 35% cap to build a recycling center)
+ */
+function garbageFix(gs: { recycledT: number; collectedT: number } | undefined | null): string {
+  if (gs && gs.recycledT > 0 && gs.recycledT >= 0.99 * RECYCLE_MAX_SHARE * gs.collectedT) {
+    return `Zone more landfill or build an incinerator — recycling already takes the most it can (${pctS(RECYCLE_MAX_SHARE)} of the collected garbage).`;
+  }
+  return gs && gs.recycledT > 0 ? 'Zone more landfill, or build an incinerator or another recycling center.' : 'Zone more landfill or build an incinerator / recycling center.';
+}
 /** the residents' tolerance for missing services shrinks as the city grows (approval fades garbage in over 2k .. 20k) */
 const GARBAGE_FADE = 'Uncollected garbage costs approval from 2,000 residents (full effect at 20,000).';
 /** a Prison younger than this (days) is not in the justice stats yet (its beds count from the next monthly pass) */
 const JAIL_SETTLE_DAYS = 45;
+/** an overcrowded school's tier → [who learns less, what to build] (final fixes SF-9b) */
+const SCHOOL_FIX: Readonly<Record<string, [string, string]>> = {
+  elementary: ['pupil', 'another elementary school'], high: ['student', 'another high school'], college: ['student', 'another university'],
+};
 
 /**
  * SIM_DEPTH_SPEC §F advisor table + WP5-4 + critic item 31 (one advisor per problem). Every rule names a place to act
@@ -1007,14 +1095,14 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
     const pn = nd.police;
     const policeRule = pop > 3000 && (unreachedShare(pn) >= 0.25 || cov.police < 0.2);
     if (sim && (crowded('elementary') || crowded('high') || crowded('college') || crowded('health') || (!policeRule && crowded('police')))) {
-      let schoolB: Building | null = null, schoolU = 0, clinicB: Building | null = null, clinicU = 0;
+      let schoolB: Building | null = null, schoolU = 0, schoolT = '', clinicB: Building | null = null, clinicU = 0;
       let policeB: Building | null = null, policeU = 0, policeN = 0;
       for (const b of sc.fac.tiered) {
         const L = facilityLoad(sim, b.id);
         if (!L || !(L.capacity > 0) || !Number.isFinite(L.capacity)) continue;
         const u = L.utilization;
         if (L.needTier === 'elementary' || L.needTier === 'high' || L.needTier === 'college') {
-          if (!schoolB || u > schoolU) { schoolB = b; schoolU = u; }
+          if (!schoolB || u > schoolU) { schoolB = b; schoolU = u; schoolT = L.tier; }
         } else if (L.needTier === 'health') {
           if (!clinicB || u > clinicU) { clinicB = b; clinicU = u; }
         } else if (L.needTier === 'police' && u > 1.15) {
@@ -1022,12 +1110,15 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
           if (!policeB || u > policeU) { policeB = b; policeU = u; }
         }
       }
-      const school = schoolB ? { b: schoolB, u: schoolU } : null;
+      const school = schoolB ? { b: schoolB, u: schoolU, tier: schoolT } : null;
       const clinic = clinicB ? { b: clinicB, u: clinicU } : null;
       overloadedPolice = policeB ? { b: policeB, u: policeU, n: policeN } : null;
       if (school && school.u >= 1.3) {
+        // (final fixes SF-9b: name the kind to build — "another school" sent a crowded University's player to build an
+        // elementary school)
+        const k = SCHOOL_FIX[school.tier] ?? SCHOOL_FIX.elementary;
         out.push({ id: 'schoolOvercrowded', cooldown: 150, priority: 4, kind: 'warning', advisor: 'health', ...at(school.b),
-          text: `${nameOf(school.b)} is at ${Math.round(school.u * 100)}% capacity — every pupil learns less. Build another school nearby.` });
+          text: `${nameOf(school.b)} is at ${Math.round(school.u * 100)}% capacity — every ${k[0]} learns less. Build ${k[1]} nearby.` });
       }
       if (clinic && clinic.u >= 1.3) {
         out.push({ id: 'hospitalOvercrowded', cooldown: 150, priority: 4, kind: 'warning', advisor: 'health', ...at(clinic.b),
@@ -1050,11 +1141,13 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
   const fireShare = R && R.residents > 0 ? R.fireOut / R.residents : 0;
   if (pop > 1500 && R && fireShare >= 0.15) {
     const noStation = sc.fac.fireStations === 0;
+    // (final fixes SF-2: the only station flattened by a tornado — "no fire station" read as if there never was one)
+    const ruinedStation = noStation && sc.fac.facBurnt.some((b) => rt.defOf(b)?.category === 'fire');
     // (no station at all: the plants' accident risk is part of this one fire advisor — plantNoFire stays quiet)
     const plants = sc.fac.plantsRisky.length;
     out.push({ id: 'noFireResponse', cooldown: 150, priority: 6, kind: 'warning', advisor: 'safety', where: () => hotspot('fire'),
       text: noStation
-        ? `The city has no fire station: every fire waits for you to act and can spread${plants ? `, and an industrial accident could burn down ${plants > 1 ? `one of your ${plants} power plants` : 'your power plant'}` : ''}. Build a Fire Station near here.`
+        ? `The city has no ${ruinedStation ? 'working ' : ''}fire station${ruinedStation ? ' (yours lies in ruins)' : ''}: every fire waits for you to act and can spread${plants ? `, and an industrial accident could burn down ${plants > 1 ? `one of your ${plants} power plants` : 'your power plant'}` : ''}. Build a Fire Station near here.`
         : `${pctS(fireShare)} of residents live beyond the reach of a fire station — fires there wait for you to dispatch a truck. Build a Fire Station near here${inf.services && cov.fire < 0.2 ? ' (it also lowers the fire risk)' : ''}.` });
   } else if (pop > 3000 && inf.services && cov.fire < 0.2) {
     out.push({ id: 'noFire', cooldown: 180, priority: 5, kind: 'warning', advisor: 'safety', text: 'Most homes are outside fire station coverage. One spark and we lose whole blocks!' });
@@ -1106,7 +1199,7 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
     // final fixes N5: the treatment plant only once it is unlocked; the data view named as the Data views panel labels it
     const view = 'Data views → Water → Tap water quality';
     const treat = defAvailable(st, 'util_water_treatment');
-    const unlockAt = REWARDS.find((r) => r.id === 'water_treatment')?.conds.find((c) => c.label === 'Population')?.need;
+    const unlockAt = WATER_TREATMENT_UNLOCK_POP;
     out.push({ id: 'tapWater', cooldown: 150, priority: 6, kind: 'warning', advisor: 'utilities', ...(dirty ? at(dirty) : {}),
       text: treat
         ? `Tap water quality is only ${pctS(s.tapWater)} and residents are getting sick. ${dirty ? `Your ${nameOf(dirty)} draws polluted water — ` : ''}build a Water Treatment Plant, or move pumps away from pollution (${view}).`
@@ -1122,7 +1215,7 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
       return cellAt(bi);
     };
     out.push({ id: 'landfillFull', cooldown: 180, priority: 5, kind: 'warning', advisor: 'utilities', where: fullest, quietIf: /^Landfills are/,
-      text: `Landfills are ${pctS(s.landfillFill)} full — once full they take no more garbage. Zone more landfill, or build an incinerator or recycling center.` });
+      text: `Landfills are ${pctS(s.landfillFill)} full — once full they take no more garbage. ${garbageFix(sim?.getSystem<PollutionSystem>('pollution')?.garbageSummary?.())}` });
   }
   // garbage: ONE rule (critic item 31) — residents without pickup (approval's monthly survey), with the reason and
   // where; from 300 residents (QA)
@@ -1146,7 +1239,7 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
         ? `Garbage trucks can't reach the homes of ${share} of residents — they are more than ${GARBAGE_TRUCK_RANGE} road tiles from a landfill, incinerator or recycling center. Build one closer (Garbage data view).${tail}`
         : reason === 'noRoad'
           ? `${gs ? int(gs.noRoadBuildings) : 'Many'} buildings have no road at the door, so garbage trucks can't stop there. Build roads to them.${tail}`
-          : `Garbage is piling up at the homes of ${share} of residents: landfills and incinerators are full (${int(s.garbageProduced)} t a month made, ${int(s.garbageCapacity)} t taken). Zone more landfill or build an incinerator / recycling center.${tail}`;
+          : `Garbage is piling up at the homes of ${share} of residents: landfills and incinerators are full (${int(s.garbageProduced)} t a month made, ${int(s.garbageCapacity)} t taken). ${garbageFix(gs)}${tail}`;
     out.push({ id: 'garbage', cooldown: 120, priority: garbageHomes >= 0.5 ? 7 : 6, kind: garbageHomes >= 0.5 ? 'bad' : 'warning', advisor: 'utilities',
       where: home('garbage', st.garbage), quietIf: /^Garbage is piling up/, text });
   }
@@ -1523,7 +1616,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         out.push({ id: 'facilityRuins', cooldown: 90, priority: r0 === 0 ? 8 : r0 <= 2 ? 7 : 5, kind: 'warning', advisor: r0 <= 1 ? 'safety' : r0 <= 3 ? 'health' : 'utilities', ...at(b),
           text: n === 1
             ? `Your ${def.name} lies in ruins — ${ruinLoss(def)}. Bulldoze the rubble and build a new one: its upkeep${cost} is still charged until you bulldoze it.`
-            : `${n} city facilities lie in ruins (${facilityListText(ruins.map((o) => o.def))}) — the ${def.name}: ${ruinLoss(def)}. Bulldoze the rubble and rebuild them: their upkeep${cost} is still charged until you bulldoze them.` });
+            : `${n} city facilities lie in ruins (${ruinListText(ruins.map((o) => o.def))}) — the ${def.name}: ${ruinLoss(def)}. Bulldoze the rubble and rebuild them: their upkeep${cost} is still charged until you bulldoze them.` });
       }
     }
     // ---------------- transport
@@ -1781,9 +1874,12 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       out.push({ id: 'workers', cooldown: 120, priority: 5, kind: 'info', advisor: 'planning',
         text: 'Shops and factories would expand, but every worker has a job. Zone residential land — new residents bring the workers.' });
     }
-    if (rt.totals.abandoned > 20) {
+    // (final fixes SF-2: the population totals count rubble as abandoned — after a tornado "29 buildings stand
+    // abandoned, check power, water, …" sent the player hunting for causes; the ruins have their own advice above)
+    const abandonedN = Math.max(0, rt.totals.abandoned - rubbleN);
+    if (abandonedN > 20) {
       out.push({ id: 'abandoned', cooldown: 180, priority: 4, kind: 'warning', advisor: 'planning',
-        text: `${rt.totals.abandoned} buildings stand abandoned. Check power, water, road access, crime, pollution and demand.` });
+        text: `${abandonedN} buildings stand abandoned. Check power, water, road access, crime, pollution and demand.` });
     }
     // ---------------- why nothing grows: road access, demand, land
     if (scan.noAccess >= NO_ACCESS_MIN_TILES) {

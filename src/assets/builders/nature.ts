@@ -103,7 +103,8 @@ function crown(b: ModelBuilder, rng: RNG, cx: number, cy: number, cz: number, rx
 /**
  * Bare winter deciduous tree: trunk with a central leader, 3 main limbs forking into branches, and fans of thin
  * double-sided "twig spray" blades at every branch tip (Surf.Foliage: they sway and give far impostors a grey-brown
- * winter tint). Reads as a see-through twiggy silhouette, not a crown. ~110-120 tris.
+ * winter tint). Reads as a see-through twiggy silhouette, not a crown. 102-108 tris: never more than the species' green
+ * variants (the trunk and main limbs are 3-sided smooth tubes), so a winter forest costs no more than a summer one.
  */
 interface BareOpts {
   H: number;
@@ -129,7 +130,7 @@ function bareTree(b: ModelBuilder, rng: RNG, o: BareOpts) {
   const lean: V3 = [rng.range(-0.3, 0.3), tTop, rng.range(-0.3, 0.3)];
   const leader: V3 = [lean[0] * 1.4 + rng.range(-0.2, 0.2), H * (0.74 + 0.12 * up), lean[2] * 1.4 + rng.range(-0.2, 0.2)];
   b.paint(bark, Surf.Wood);
-  limb(b, [[0, -0.4, 0], lean, leader], [rT, rT * 0.62, rT * 0.2], { seg: 4 });
+  limb(b, [[0, -0.4, 0], lean, leader], [rT, rT * 0.62, rT * 0.2], { seg: 3 });
   if (o.baseBand !== undefined) {
     b.paint(o.baseBand, Surf.Wood);
     limb(b, [[0, -0.4, 0], [lean[0] * 0.25, 0.9, lean[2] * 0.25]], [rT * 1.12, rT * 1.02], { seg: 3 });
@@ -145,7 +146,7 @@ function bareTree(b: ModelBuilder, rng: RNG, o: BareOpts) {
     const p0: V3 = [lean[0] + (leader[0] - lean[0]) * f * 0.4, tTop + (leader[1] - tTop) * f * 0.35, lean[2] + (leader[2] - lean[2]) * f * 0.4];
     const r1 = reach * rng.range(0.5, 0.62) * (1 - 0.35 * up);
     const p1: V3 = [p0[0] + Math.cos(a) * r1, p0[1] + (H - p0[1]) * (0.3 + 0.25 * up) * rng.range(0.85, 1.15), p0[2] + Math.sin(a) * r1];
-    limb(b, [p0, p1], [rT * 0.5, rT * 0.3], { seg: 4 });
+    limb(b, [p0, p1], [rT * 0.5, rT * 0.3], { seg: 3 });
     for (let k = 0; k < twigs[i]; k++) {
       const a2 = a + (k === 0 ? -0.6 : 0.6) + rng.range(-0.25, 0.25);
       const r2 = reach * rng.range(0.4, 0.52) * (1 - 0.3 * up);
@@ -227,7 +228,7 @@ function withFoliagePattern(defs: ModelBuilders): ModelBuilders {
 // ------------------------------------------------------------------ builders
 export const models: ModelBuilders = withFoliagePattern({
   // Broadleaf oak: stout trunk, forked branches, wide lumpy crown. 108 tris.
-  // v0 v1 v2 v4 green, v3 autumn orange, v5 autumn red, v6 bare winter, v7 spring blossom (<= 120 tris).
+  // v0 v1 v2 v4 green, v3 autumn orange, v5 autumn red, v6 bare winter, v7 spring blossom (<= 108 tris).
   // Layout: nat_season.ts.
   tree_oak(b, v, rng) {
     // crown shape per variant (the old v3 green shape moved to v4 so v3 can be TreeRenderer's autumn slot)
@@ -264,7 +265,7 @@ export const models: ModelBuilders = withFoliagePattern({
   },
 
   // Rounded maple: dense round crown; v0 v3 green, v1 autumn orange, v2 autumn red, v4 bare winter, v5 spring
-  // blossom. 106 tris (bare <= 120).
+  // blossom. 106 tris (bare 108).
   tree_maple(b, v, rng) {
     const H = [9.5, 10.5, 9, 11, 10, 9.5][v] * rng.range(0.95, 1.05);
     const tTop = H * (v === 3 ? 0.4 : 0.36);
@@ -288,7 +289,7 @@ export const models: ModelBuilders = withFoliagePattern({
   },
 
   // Slender birch: white trunk (wood lines read as bark marks), narrow airy light-green crown. v2 twin-stem,
-  // v3 autumn yellow, v4 bare winter. 90-100 tris (bare <= 120).
+  // v3 autumn yellow, v4 bare winter. 90-104 tris (bare 102).
   tree_birch(b, v, rng) {
     if (v === 4) {
       const H = 12 * rng.range(0.95, 1.05);

@@ -7,6 +7,7 @@
 import { ModelBuilder, type BoxFaces, type ColorLike, type Paint } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
+import { bareCrown } from './park_lib';
 
 export type V2 = [number, number];
 export type V3 = [number, number, number];
@@ -501,7 +502,9 @@ export const TREE_GREENS = [0x4f7a32, 0x5a8a3a, 0x3f6b2e, 0x6b8f3a, 0x4a7d3f];
 export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, color?: ColorLike) {
   const k = s * rng.range(0.85, 1.15);
   box(b, x - 0.14 * k, 0, z - 0.14 * k, x + 0.14 * k, 2.3 * k, z + 0.14 * k, P(C.trunk, Surf.Wood), null);
-  b.paint(color ?? rng.pick(TREE_GREENS), Surf.Foliage).blob(x, 3.5 * k, z, 1.9 * k, 1.75 * k, 1.9 * k, 0, 0.16, rng.next() * 10);
+  // (seasonal crown: bare twigs in winter, park_lib.bareCrown)
+  const fl = bareCrown(b, x, z, [x, 2.2 * k, z], [x, 3.5 * k, z], 1.9 * k, 1.75 * k, C.trunk, 0.13 * k);
+  b.paint(color ?? rng.pick(TREE_GREENS), Surf.Foliage, 1, fl).blob(x, 3.5 * k, z, 1.9 * k, 1.75 * k, 1.9 * k, 0, 0.16, rng.next() * 10);
 }
 /** Columnar / cypress-like tree (18 tris). */
 export function coneTree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1) {

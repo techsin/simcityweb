@@ -7,6 +7,7 @@
 import { ModelBuilder, PALETTE, type ColorLike, type Paint } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
+import { bareCrown } from './park_lib';
 
 export type V3 = [number, number, number];
 export type Face = 'pz' | 'nz' | 'px' | 'nx';
@@ -550,7 +551,9 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, col
   const k = s * rng.range(0.85, 1.15);
   b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.4 * k, 0.22 * k, 0.15 * k, 5, { top: false });
   const g = color ?? rng.pick([0x4f7a32, 0x5a8a3a, 0x486f30, 0x66903d]);
-  b.paint(g, Surf.Foliage).blob(x, 3.9 * k, z, 2.3 * k, 2.0 * k, 2.3 * k, 0, 0.16, rng.next() * 10);
+  // (seasonal crown: bare twigs in winter, park_lib.bareCrown)
+  const fl = bareCrown(b, x, z, [x, 2.3 * k, z], [x, 3.9 * k, z], 2.3 * k, 2.0 * k, PALETTE.trunk, 0.15 * k);
+  b.paint(g, Surf.Foliage, 1, fl).blob(x, 3.9 * k, z, 2.3 * k, 2.0 * k, 2.3 * k, 0, 0.16, rng.next() * 10);
 }
 /** Columnar cypress ~16 tris */
 export function cypress(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1) {

@@ -6,11 +6,15 @@
  *    deciduous kit trees mark their leaf lobes (floor >= 1) and carry a winter twig crown (pattern 5, same floor)
  *  - setFoliageSeason: winter / spring strengths only in seasonal climates, tropics flower all year
  *  - TreeRenderer: winter flags the bare broadleaf impostors see-through (negative instance red) and stretches the
- *    conifer impostors; the map's edge forests continue past the edge (edge band) and the outer ring gets impostors,
- *    deterministically, its far sectors in quarter blocks (each drawn as the prefix of its trees, ordered by the thinning
- *    random, that its nearest point keeps); a season / density / map-cell change refills the ring without
- *    regenerating it (only a terrain edit on the map border regenerates that side); the ring waits for the first frames
- *    after a load, generates in small slices and fades in; low quality (short tree LOD distance) has no ring / band
+ *    conifer impostors; a bare winter tree costs no more triangles than a green one; every January street tree is bare;
+ *    the map's edge forests continue past the edge (edge band: models up to shadowLodFrac x the LOD distances, then
+ *    their own impostors, which never cast) and the outer ring gets impostors, deterministically, its far sectors in
+ *    quarter blocks (each drawn as the prefix of its trees, ordered by the thinning random, that its nearest point
+ *    keeps) and its near pairs as the prefix of their trees (ordered by depth past the map edge) within reach of the
+ *    switch distance; a season / density / map-cell change refills the ring without regenerating it (only a terrain
+ *    edit on the map border regenerates that side); the load generates the ring at once, runtime work runs in bounded
+ *    slices on calm frames (or every few frames of a long motion); low quality (short tree LOD distance) has no ring /
+ *    band
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
@@ -30,7 +34,7 @@ import { RNG } from '../../src/core/rng';
 import { palm as comPalm } from '../../src/assets/builders/com_kit';
 import { palm as civPalm } from '../../src/assets/builders/civ_kit';
 import { bareCrown, tree as parkTree, type TreeKind } from '../../src/assets/builders/park_lib';
-import { SEASONAL_TREES } from '../../src/assets/builders/nat_season';
+import { SEASONAL_TREES, seasonalVariant, setTreeSeason, treeSeason } from '../../src/assets/builders/nat_season';
 
 registerAllModels();
 
@@ -63,6 +67,35 @@ describe('seasonal foliage patterns', () => {
     expectOnly('bush', 1, 4);
     expectOnly('bush', 2, 2);
     expectOnly('bush', 3, 2);
+  });
+
+  it('a bare winter tree costs no more triangles than its species\' green variants (winter forests: no extra load)', () => {
+    const tris = (id: string, v: number) => getModelGeometry(id, v).getAttribute('position').count / 3;
+    for (const [id, s] of Object.entries(SEASONAL_TREES)) {
+      const green = Math.min(...s.green.map((v) => tris(id, v)));
+      for (const v of s.bare) expect(tris(id, v), `${id}#${v}`).toBeLessThanOrEqual(green);
+    }
+  });
+
+  it('street trees: every deciduous one is bare in Dec-Feb (no marcescent brown crowns); the shader gets the raw share', () => {
+    for (const month of [11, 0, 1]) {
+      setTreeSeason(month, 'temperate');
+      expect(treeSeason.mix.bare).toBe(1);
+      // (materials.ts FOLIAGE_WINTER applies BARE_ALL itself)
+      expect(sharedUniforms.uSeason.value.y).toBeCloseTo(0.93, 5);
+      for (const [id, s] of Object.entries(SEASONAL_TREES)) {
+        for (let i = 0; i < 200; i++) {
+          const r = ((i * 0.6180339887) % 1 + 1) % 1;
+          expect(s.bare, `${id} r=${r.toFixed(3)} month ${month}`).toContain(seasonalVariant(id, i % 4, r, treeSeason.mix));
+        }
+      }
+    }
+    // spring / summer: no bare street trees; the tropics never
+    setTreeSeason(5, 'temperate');
+    expect(treeSeason.mix.bare).toBe(0);
+    setTreeSeason(0, 'tropical');
+    expect(treeSeason.mix.bare).toBe(0);
+    setTreeSeason(5, 'temperate');
   });
 
   it('bare crowns are see-through (darker, thinner impostors); leafy crowns are not', () => {
@@ -445,8 +478,9 @@ describe('outer ring trees', () => {
     const terr = (tr as unknown as { terrain: TerrainRenderer }).terrain;
     const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
     const chunks = (tr as unknown as { chunks: { near: (THREE.InstancedMesh | null)[]; isNear: boolean; mapN: Int32Array | null; nearN: Int32Array | null }[] }).chunks;
-    // the fade end + jitter (TreeRenderer.update): a near model past it is fully faded out
-    const lod = 850, w = lod * tr.fadeBandDither, reach = lod + w + w * 0.8 * 0.5;
+    // the band trees' fade end + jitter (TreeRenderer.update: shadowLodFrac x the map trees'): a band tree's near model
+    // past it is fully faded out
+    const lod = 850, w = lod * tr.fadeBandDither, reach = (lod + w + w * 0.8 * 0.5) * tr.shadowLodFrac;
     const a2c = (tr as unknown as { a2c: boolean }).a2c;
     expect(a2c).toBe(false);
     for (const [x, z] of [[W / 2, W / 2], [W * 0.3, W * 0.6], [120, W / 2]]) {
@@ -494,11 +528,14 @@ describe('outer ring trees', () => {
       total += n;
       // ordered by the thinning random
       for (let j = 1; j < n; j++) expect(ringRand(e[j * 16 + 12], e[j * 16 + 14])).toBeGreaterThanOrEqual(ringRand(e[(j - 1) * 16 + 12], e[(j - 1) * 16 + 14]));
-      // every tree past the prefix is one the shader drops at its own distance (keep fraction, as TREE_RING)
+      // every tree past the prefix is one the shader drops at its own distance (keep fraction at the tree's foot, as
+      // TREE_RING: a conifer's instance is shifted down by its stretch, negative instance blue)
+      const col = m.instanceColor!.array as Float32Array;
       for (let j = m.count; j < n; j++) {
-        const dist = Math.hypot(e[j * 16 + 12] - cam.position.x, e[j * 16 + 13] - cam.position.y, e[j * 16 + 14] - cam.position.z);
-        const keep = Math.min(1, Math.max(0.3, 1.25 - (dist - 850) / 7000));
-        expect(ringRand(e[j * 16 + 12], e[j * 16 + 14])).toBeGreaterThanOrEqual(keep);
+        const foot = e[j * 16 + 13] + (col[j * 3 + 2] < 0 ? (0.9 / 0.37 - 1) / (0.9 / 0.37) * e[j * 16 + 5] : 0);
+        const dist = Math.hypot(e[j * 16 + 12] - cam.position.x, foot - cam.position.y, e[j * 16 + 14] - cam.position.z);
+        const keep = Math.min(1, Math.max(0.3, 1.2 - (dist - 850) / 5500));
+        expect(ringRand(e[j * 16 + 12], e[j * 16 + 14])).toBeGreaterThanOrEqual(keep - 1e-4);
       }
       if (m.count < n) cut++;
       if (!m.visible) continue;
@@ -514,109 +551,175 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
-  it('the ring waits for the first frames after a load, then generates in small slices and fades in', () => {
+  it('the load generates the ring at once; runtime work (a border edit\'s regeneration) runs in bounded slices', () => {
     const st = createCityState(defaultCityConfig({ size: 128, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
     const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
-    const ring = tr as unknown as { ringStale: number; ringRefill: number; ringGen: unknown; ringFillState: unknown; ringAppear: number; dirty: Set<number> };
-    const busy = () => !!(ring.ringStale || ring.ringRefill || ring.ringGen || ring.ringFillState);
-    const W = st.size * CELL_SIZE;
-    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
-    cam.position.set(W / 2, 900, W / 2 + 700);
-    cam.lookAt(W / 2, 0, W / 2);
-    cam.updateMatrixWorld();
-    // the constructor (load) neither builds chunks nor generates the ring
-    expect(ring.dirty.size).toBe(16);
-    expect(ring.ringStale).toBe(0xff);
-    expect(tr.ringGenerations).toBe(0);
-    // the first frames build the map's chunks (nearest first); the ring waits RING_DELAY_FRAMES
-    tr.ringBudgetMs = 0;
-    for (let f = 0; f < 30; f++) tr.update(cam);
-    expect(tr.ringGenerations).toBe(0);
-    expect(ring.ringStale).toBe(0xff);
-    expect(ring.dirty.size).toBe(0);
-    // then one zero-budget slice per frame (a block of candidate rows / a refill batch)
-    let frames = 0;
-    while (busy() && frames < 100000) {
-      const before = tr.ringGenerations;
-      tr.update(cam);
-      frames++;
-      expect(tr.ringGenerations - before).toBeLessThanOrEqual(1);
-    }
+    const ring = tr as unknown as { ringStale: number; ringRefill: number; ringGen: unknown; ringFillState: unknown; ringFarDirty: number; dirty: Set<number> };
+    const busy = () => !!(ring.ringStale || ring.ringRefill || ring.ringGen || ring.ringFillState || ring.ringFarDirty);
+    // the constructor (load): every sector generated, filled and uploaded; only the map's chunks are left to the first
+    // frames (nearest first)
     expect(tr.ringGenerations).toBe(8);
-    // 128-cell map: a sector spans 52-66 block rows
-    expect(frames).toBeGreaterThan(8 * 40);
-    // the far sectors' blocks, faded in over the next frames
+    expect(busy()).toBe(false);
+    expect(tr.ringInstances).toBeGreaterThan(500);
+    expect(ring.dirty.size).toBe(16);
     const blocks = () => tr.group.children.filter((o) => o.name === 'trees-ring' && ((o as THREE.Mesh).geometry.name ?? '').startsWith('impostor-micro')) as THREE.InstancedMesh[];
-    for (let f = 0; f < 3 && !blocks().length; f++) tr.update(cam);
-    expect(blocks().length).toBeGreaterThan(0);
-    expect(ring.ringAppear).toBeLessThan(1);
-    for (let f = 0; f < 60; f++) tr.update(cam);
-    expect(ring.ringAppear).toBe(1);
     expect(blocks().reduce((a, m) => a + ((m.userData.ringCount as number) ?? 0), 0)).toBe(tr.ringInstances);
-    // a regeneration of every sector (as after border terrain edits) is time-sliced the same way; flush() completes it
+    // a regeneration of every sector (as after border terrain edits): zero-budget slices, one bounded unit each (a block
+    // row, a candidate batch, a sector's finish or its far blocks' upload), at most one sector completed per slice
     const n0 = tr.ringInstances;
     ring.ringStale = 0xff;
-    tr.ringStep(0);
-    expect(ring.ringStale).not.toBe(0);
-    tr.flush();
+    let slices = 0;
+    while (busy() && slices < 100000) {
+      const before = tr.ringGenerations;
+      tr.ringStep(0);
+      slices++;
+      expect(tr.ringGenerations - before).toBeLessThanOrEqual(1);
+    }
     expect(tr.ringGenerations).toBe(16);
     expect(tr.ringInstances).toBe(n0);
+    // 128-cell map: a sector spans 52-66 block rows
+    expect(slices).toBeGreaterThan(8 * 40);
+    // flush() completes pending work at once
+    ring.ringStale = 0xff;
+    tr.ringStep(0);
+    expect(busy()).toBe(true);
+    tr.flush();
+    expect(busy()).toBe(false);
+    expect(tr.ringGenerations).toBe(24);
     tr.dispose();
   }, 120_000);
 
-  it('ring slices run on calm frames: not while the camera zooms / cuts, after a few still frames, or after a long wait', () => {
+  it('runtime ring work runs on calm frames, and while the camera keeps moving one slice every few frames after a wait', () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
     const W = st.size * CELL_SIZE;
     const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
-    /** a renderer whose ring slices are counted (zero budget: one block row / refill batch per slice) */
+    /** a renderer with a season refill pending, whose ring slices are counted (zero budget: one unit per slice) */
     const counted = () => {
       const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
       tr.ringBudgetMs = 0;
+      // (the load generated the ring: no slice is due until a runtime change)
+      cam.position.set(W / 2, 600, W / 2 + 300);
+      for (let f = 0; f < 20; f++) tr.update(cam);
       const step = tr.ringStep.bind(tr);
       const c = { tr, slices: 0 };
       tr.ringStep = (b: number) => { c.slices++; step(b); };
+      for (let f = 0; f < 20; f++) tr.update(cam);
+      expect(c.slices).toBe(0);
+      tr.setMonth(st.month === 6 ? 0 : 6);
       return c;
     };
     const a = counted();
-    // a camera zooming out from the first frame on (2% of its height per frame): no slice for 200 frames
+    // a camera zooming out (2% of its height per frame): no slice for 200 frames
     let h = 200;
     for (let f = 0; f < 200; f++) {
       cam.position.set(W / 2, (h *= 1.02), W / 2 + 300);
       a.tr.update(cam);
     }
     expect(a.slices).toBe(0);
-    // the camera stops: slices start after a few still frames, one per frame
+    // the camera stops: slices start after a few still frames (and the season's chunk rebuilds), one per frame
     let still = 0;
-    while (!a.slices && still < 50) { a.tr.update(cam); still++; }
+    while (!a.slices && still < 100) { a.tr.update(cam); still++; }
     expect(still).toBeGreaterThanOrEqual(8);
-    expect(still).toBeLessThanOrEqual(10);
+    const s0 = a.slices;
     for (let f = 0; f < 5; f++) a.tr.update(cam);
-    expect(a.slices).toBe(6);
+    expect(a.slices).toBe(s0 + 5);
     // a cut (one big jump) pauses them for the catch-up frames after it, then they resume
     cam.position.set(W / 4, 900, W / 4);
+    const s1 = a.slices;
     for (let f = 0; f < 6; f++) a.tr.update(cam);
-    expect(a.slices).toBe(6);
+    expect(a.slices).toBe(s1);
     for (let f = 0; f < 4; f++) a.tr.update(cam);
-    expect(a.slices).toBeGreaterThan(6);
-    // a slow far orbit (0.2% of the camera height per frame) is not calm either
-    const s0 = a.slices;
-    for (let f = 0; f < 60; f++) {
-      const ang = f * 0.002;
-      cam.position.set(W / 2 + Math.cos(ang) * 1500, 1500, W / 2 + Math.sin(ang) * 1500);
-      a.tr.update(cam);
-    }
-    expect(a.slices).toBe(s0);
-    // a camera that never stops (a pan of 20 m per frame) still gets the slices after the load delay (30 frames) + the
-    // long wait (240 frames)
+    expect(a.slices).toBeGreaterThan(s1);
+    // a camera that never stops (a pan of 20 m per frame): after RING_MAX_WAIT (240) frames one slice every 8 frames
     const b = counted();
     let k = 0;
     for (; k < 400 && !b.slices; k++) {
       cam.position.set(W / 2 + k * 20, 600, W / 2);
       b.tr.update(cam);
     }
-    expect(k).toBe(30 + 240 + 1);
+    expect(k).toBeGreaterThan(240);
+    expect(k).toBeLessThanOrEqual(240 + 8);
+    const s2 = b.slices;
+    for (let f = 0; f < 80; f++) {
+      cam.position.set(W / 2 + (k + f) * 20, 600, W / 2);
+      b.tr.update(cam);
+    }
+    expect(b.slices - s2).toBeGreaterThanOrEqual(9);
+    expect(b.slices - s2).toBeLessThanOrEqual(11);
     a.tr.dispose();
     b.tr.dispose();
+  }, 120_000);
+
+  it('ring near pairs submit only the trees within reach of their switch distance (ordered by depth past the map edge)', () => {
+    const { st, tr } = make(128);
+    const W = st.size * CELL_SIZE;
+    const terr = (tr as unknown as { terrain: TerrainRenderer }).terrain;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    const lod = 850, reach = lod * 1.06;
+    const nears = () => tr.group.children.filter((o) => o.name === 'trees-ring' && !((o as THREE.Mesh).geometry.name ?? '').startsWith('impostor-micro')) as THREE.InstancedMesh[];
+    expect(nears().length).toBe(16);
+    for (const [x, h, z] of [[60, 30, W / 2], [W * 0.2, 400, W * 0.1], [W / 2, 30, W / 2], [W / 2, 3000, W / 2], [W - 30, 80, W - 30]]) {
+      cam.position.set(x, terr.meshHeightAt(x, z) + h, z);
+      tr.update(cam);
+      let submitted = 0, total = 0;
+      for (const m of nears()) {
+        const n = (m.userData.ringCount as number) ?? 0, e = m.instanceMatrix.array as Float32Array;
+        total += n;
+        submitted += m.visible ? m.count : 0;
+        // every tree left out is beyond any tree's switch distance (the shader draws a tree up to <= 1.06 x lod)
+        for (let i = m.visible ? m.count : 0; i < n; i++) {
+          expect(Math.hypot(e[i * 16 + 12] - cam.position.x, e[i * 16 + 13] - cam.position.y, e[i * 16 + 14] - cam.position.z)).toBeGreaterThan(reach);
+        }
+      }
+      expect(total).toBe(tr.ringInstances);
+      // from the middle of the map or high above it, none; next to the edge, the trees in reach only
+      if (x === W / 2) expect(submitted).toBe(0);
+      else expect(submitted).toBeLessThan(total * 0.5);
+      if (x === 60) expect(submitted).toBeGreaterThan(0);
+    }
+    tr.dispose();
+  }, 120_000);
+
+  it('edge band trees: models up to shadowLodFrac x the LOD distances, then their own impostors, which never cast', () => {
+    const { st, tr } = make(128);
+    const W = st.size * CELL_SIZE;
+    const terr = (tr as unknown as { terrain: TerrainRenderer }).terrain;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    type Ch = { near: (THREE.InstancedMesh | null)[]; bfar: (THREE.InstancedMesh | null)[]; bfarTotal: number[]; mapN: Int32Array | null; isNear: boolean; box: THREE.Box3 };
+    const chunks = (tr as unknown as { chunks: Ch[] }).chunks;
+    const edge = chunks.filter((c) => c.mapN);
+    expect(edge.length).toBe(12);
+    // every band tree has an impostor in its chunk's band meshes, which never cast shadows
+    let bandTrees = 0, bandImps = 0;
+    for (const c of edge) {
+      bandTrees += c.near.reduce((a, m, k) => a + (m ? ((m.userData.total as number) ?? 0) - c.mapN![k] : 0), 0);
+      bandImps += c.bfarTotal[0] + c.bfarTotal[1];
+      for (const m of c.bfar) if (m) expect(m.name).toBe('trees-far-band');
+    }
+    expect(bandTrees).toBeGreaterThan(100);
+    expect(bandImps).toBe(bandTrees);
+    // a street camera next to the west edge, then one in the middle of the map
+    for (const [x, z] of [[100, W / 2], [W / 2, W / 2]]) {
+      cam.position.set(x, terr.meshHeightAt(x, z) + 40, z);
+      tr.update(cam);
+      for (const c of edge) {
+        for (const m of c.bfar) if (m) expect(m.castShadow).toBe(false);
+        for (let k = 0; k < c.near.length; k++) {
+          const m = c.near[k];
+          if (!m || !c.isNear) continue;
+          // without band trees submitted, a near mesh is culled by its map trees' bounds alone
+          if (m.count <= c.mapN![k]) {
+            expect(m.boundingBox!.min.x).toBeGreaterThanOrEqual(c.box.min.x - 10);
+            expect(m.boundingBox!.max.x).toBeLessThanOrEqual(c.box.max.x + 10);
+            expect(m.boundingBox!.min.z).toBeGreaterThanOrEqual(c.box.min.z - 10);
+            expect(m.boundingBox!.max.z).toBeLessThanOrEqual(c.box.max.z + 10);
+          }
+        }
+      }
+      // next to the edge, the west band's far trees are drawn as impostors
+      if (x === 100) expect(edge.some((c) => c.bfar.some((m) => m?.visible && m.count > 0))).toBe(true);
+    }
+    tr.dispose();
   }, 120_000);
 
   it('low quality (tree LOD distance < 560 m): no outer ring and no edge band; a higher quality brings both back', () => {

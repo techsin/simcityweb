@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { ModelBuilder, type ColorLike, type Paint } from '../ModelBuilder';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
+import { bareCrown } from './park_lib';
 
 export type V3 = [number, number, number];
 
@@ -244,7 +245,9 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, h = 7, col
   const s = h / 7;
   b.paint(0x5b4330, Surf.Wood).cylinder(x, z, 0, h * 0.45, 0.22 * s, 0.15 * s, 5, { top: false });
   const g = color ?? rng.pick([0x4f7a32, 0x5a8a3a, 0x46702f, 0x628f3e]);
-  b.paint(g, Surf.Foliage).blob(x, h * 0.62, z, h * 0.3, h * 0.33, h * 0.3, 0, 0.1, rng.next() * 10);
+  // (seasonal crown: bare twigs in winter, park_lib.bareCrown)
+  const fl = bareCrown(b, x, z, [x, h * 0.44, z], [x, h * 0.62, z], h * 0.3, h * 0.33, 0x5b4330, 0.15 * s);
+  b.paint(g, Surf.Foliage, 1, fl).blob(x, h * 0.62, z, h * 0.3, h * 0.33, h * 0.3, 0, 0.1, rng.next() * 10);
 }
 /** Low shrub clump (20 tris). */
 export function shrub(b: ModelBuilder, rng: RNG, x: number, z: number, r = 1.1): void {

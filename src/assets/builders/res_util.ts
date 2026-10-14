@@ -11,6 +11,7 @@ import { ModelBuilder, PALETTE, type ColorLike, type Paint } from '../ModelBuild
 import { Surf } from '../../core/types';
 import { hashString, type RNG } from '../../core/rng';
 import { CAR_COLORS, car } from '../kit';
+import { bareCrown } from './park_lib';
 
 /**
  * True when this build is the X-mirrored twin of `variant` (manifest `mirror` entries). The registry seeds `rng` with
@@ -549,11 +550,14 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kin
   const g = color ?? rng.pick([0x4c7630, 0x557f35, 0x3f6a2d, 0x62883a, 0x4a6e2c]);
   if (kind === 'round') {
     b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 2.4 * k, 0.2 * k, 0.14 * k, 5, { top: false });
-    b.paint(g, Surf.Foliage).blob(x, 3.9 * k, z, 2.2 * k, 2.0 * k, 2.2 * k, 0, 0.16, rng.next() * 10);
+    // (seasonal crown: bare twigs in winter, park_lib.bareCrown)
+    const fl = bareCrown(b, x, z, [x, 2.3 * k, z], [x, 3.9 * k, z], 2.2 * k, 2.0 * k, PALETTE.trunk, 0.14 * k);
+    b.paint(g, Surf.Foliage, 1, fl).blob(x, 3.9 * k, z, 2.2 * k, 2.0 * k, 2.2 * k, 0, 0.16, rng.next() * 10);
   } else if (kind === 'wide') {
     b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 3.0 * k, 0.28 * k, 0.18 * k, 5, { top: false });
-    b.paint(g, Surf.Foliage).blob(x, 4.6 * k, z, 3.3 * k, 2.3 * k, 3.1 * k, 0, 0.2, rng.next() * 10);
-    b.paint(g, Surf.Foliage).blob(x + 1.2 * k, 5.6 * k, z - 0.6 * k, 2.0 * k, 1.6 * k, 2.0 * k, 0, 0.2, rng.next() * 10);
+    const fl = bareCrown(b, x, z, [x, 2.9 * k, z], [x + 0.4 * k, 4.9 * k, z - 0.2 * k], 3.3 * k, 2.3 * k, PALETTE.trunk, 0.18 * k);
+    b.paint(g, Surf.Foliage, 1, fl).blob(x, 4.6 * k, z, 3.3 * k, 2.3 * k, 3.1 * k, 0, 0.2, rng.next() * 10);
+    b.paint(g, Surf.Foliage, 1, fl).blob(x + 1.2 * k, 5.6 * k, z - 0.6 * k, 2.0 * k, 1.6 * k, 2.0 * k, 0, 0.2, rng.next() * 10);
   } else if (kind === 'column') {
     b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, 0.8 * k, 0.15 * k, 0.12 * k, 5, { top: false });
     b.paint(color ?? 0x3a5e2c, Surf.Foliage).blob(x, 3.6 * k, z, 0.9 * k, 3.2 * k, 0.9 * k, 0, 0.1, rng.next() * 10);

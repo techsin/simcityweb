@@ -10,7 +10,7 @@ import { DevType, Network, Overlay } from '../../src/core/types';
 import { RESP_NONE } from '../../src/sim/CityState';
 import {
   DEMO_KIDS, DEMO_WEALTH, DESIR_FAMILIES, DESIR_SENIORS, DESIR_STUDENTS, EMG_FIRE, EMG_FLOOR_T, EMG_MEDICAL, EMG_NEAR, EMG_NONE_T, EMG_NOROAD_T, EMG_POLICE,
-  FIRE_WINDOW_MIN, OVERLAY_VARIANTS, PER_BUILDING_DAYS, attachOverlays, decodeSlackFor, educationScale, emergencyReachAt, emgNearSlack, encodeSlack,
+  FIRE_TOO_FAR_TEXT, FIRE_WINDOW_MIN, OVERLAY_VARIANTS, PER_BUILDING_DAYS, attachOverlays, decodeSlackFor, educationScale, emergencyReachAt, emgNearSlack, encodeSlack,
   encodeSlackFor, markOverlaysDirty, overlayDeps, overlayLayer, overlayReadout, overlayStale, overlayValue, overlayVariantCount, resolveVariant, TAP_T0,
 } from '../../src/sim/infra/overlays';
 import { stationRange } from '../../src/sim/infra/emergency';
@@ -236,7 +236,10 @@ describe('overlays: every Overlay × variant', () => {
     r = overlayReadout(s2, Overlay.Emergency, b.x, b.z, EMG_FIRE)!;
     expect(r.text).toBe('Out of reach by 2.2 min');
     expect(r.tone).toBe('bad');
-    expect(r.sub).toMatch(/^Too far — a fire here burns down before a truck can arrive \(an industrial accident ignites within 3 days\); build a fire station closer$/);
+    // (final fixes SF-5: the red band no longer reads as hopeless for an industrial accident — a fire truck sent within its
+    // 3-day window saves the plant, however long the drive; the game pauses for one there)
+    expect(r.sub).toBe('Too far — a fire here burns down before a truck can arrive; an industrial accident here is still saved by a fire truck sent within 3 days, however long the drive — build a fire station closer');
+    expect(r.sub).toBe(FIRE_TOO_FAR_TEXT);
     // P16: under 0.05 min reads "< 0.1 min", never "0.0 min"
     L[bi] = -0.02;
     markOverlaysDirty(s2, 'emergency');

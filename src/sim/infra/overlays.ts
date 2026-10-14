@@ -907,6 +907,13 @@ export interface OverlayReadout {
 }
 
 const pctS = (v: number) => `${Math.round(v * 100)}%`;
+/**
+ * the Fire view's red band in words (final fixes SF-5): a fire there burns down before any truck arrives, but an
+ * industrial accident there still waits EMERG_GRACE.industrial days for a fire truck — the game pauses for one there and
+ * any truck sent in time saves the plant (emergency.ts ignites it only while no fire truck is assigned). The inspector,
+ * the emergency banner and the Fire legend use this same sentence
+ */
+export const FIRE_TOO_FAR_TEXT = `Too far — a fire here burns down before a truck can arrive; an industrial accident here is still saved by a fire truck sent within ${EMERG_GRACE.industrial} days, however long the drive — build a fire station closer`;
 /** minutes for the Emergency readout: one decimal, '< 0.1 min' below 0.05 (never "by 0.0 min") */
 const minText = (m: number) => (Math.abs(m) < 0.05 ? '< 0.1 min' : `${Math.abs(m).toFixed(1)} min`);
 const toneGood = (g: number): OverlayReadout['tone'] => (g >= 0.66 ? 'good' : g >= 0.33 ? 'warn' : 'bad');
@@ -935,9 +942,7 @@ export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, 
       const s = r.slack;
       // the "Just out of reach" band ends at emgNearSlack (fire: the burn-down window — beyond it no truck makes it)
       const fire = v === EMG_FIRE, near = emgNearSlack(v);
-      const tooFar = fire
-        ? `Too far — a fire here burns down before a truck can arrive (an industrial accident ignites within ${EMERG_GRACE.industrial} days); build a fire station closer`
-        : '';
+      const tooFar = fire ? FIRE_TOO_FAR_TEXT : '';
       if (noLots) {
         const sub = `${noLots}: no lots here — the nearest road's reach`;
         if (s >= 0) return { text: `Auto-dispatch · ${minText(s)} to spare`, tone: 'good', sub };

@@ -150,30 +150,30 @@ function indexedSmooth(g: THREE.BufferGeometry): THREE.BufferGeometry {
 let _micro: { broad: THREE.BufferGeometry; conifer: THREE.BufferGeometry; top: THREE.BufferGeometry } | null = null;
 /**
  * Micro impostors for trees that project to 1-2 px (far zoom): same unit bounds as getImpostorGeometries, foliage only
- * (white, tinted per instance). Broadleaf = 4-sided double pyramid (8 tris, 6 vertices), conifer = 4-sided pyramid
- * (4 tris, 5 vertices); indexed with smooth normals (TreeRenderer's instanced meshes only). `top` = the broadleaf's
- * upper half (4 tris, 5 vertices) for the outer ring, only ever seen from high cameras: its lower half hides under the
- * upper one from above (and a conifer's instance stretches the upper half onto the conifer pyramid anyway).
+ * (white, tinted per instance), 3-sided (at 1-2 px, with random per-tree yaws, as round as a 4-sided shape, a quarter
+ * fewer triangles). Broadleaf = double pyramid (6 tris, 5 vertices), conifer = pyramid (3 tris, 4 vertices); indexed
+ * with smooth normals (TreeRenderer's instanced meshes only). `top` = the broadleaf's upper half (3 tris, 4 vertices)
+ * for the outer ring's far blocks, only ever seen from high cameras: its lower half hides under the upper one from
+ * above (and a conifer's instance stretches the upper half onto the conifer pyramid anyway).
  */
 export function getMicroImpostorGeometries() {
   if (_micro) return _micro;
-  const q = Math.SQRT1_2;
-  const ring = (r: number, y: number): [number, number, number][] => [[r * q, y, r * q], [-r * q, y, r * q], [-r * q, y, -r * q], [r * q, y, -r * q]];
+  const ring = (r: number, y: number): [number, number, number][] => [0, 1, 2].map((i) => [r * Math.cos(i * 2.0944 + 0.5236), y, r * Math.sin(i * 2.0944 + 0.5236)]);
   const broad = new ModelBuilder();
   broad.paint(0xffffff, Surf.Foliage, FOL_DECID);
   const e = ring(0.46, 0.63);
-  for (let i = 0; i < 4; i++) {
-    const a = e[i], b = e[(i + 1) % 4];
+  for (let i = 0; i < 3; i++) {
+    const a = e[i], b = e[(i + 1) % 3];
     broad.tri(b, a, [0, 1.0, 0]);
     broad.tri(a, b, [0, 0.28, 0]);
   }
   const con = new ModelBuilder();
   con.paint(0xffffff, Surf.Foliage, FOL_EVER);
   const c = ring(0.4, 0.1);
-  for (let i = 0; i < 4; i++) con.tri(c[(i + 1) % 4], c[i], [0, 1.0, 0]);
+  for (let i = 0; i < 3; i++) con.tri(c[(i + 1) % 3], c[i], [0, 1.0, 0]);
   const top = new ModelBuilder();
   top.paint(0xffffff, Surf.Foliage, FOL_DECID);
-  for (let i = 0; i < 4; i++) top.tri(e[(i + 1) % 4], e[i], [0, 1.0, 0]);
+  for (let i = 0; i < 3; i++) top.tri(e[(i + 1) % 3], e[i], [0, 1.0, 0]);
   _micro = { broad: indexedSmooth(broad.build()), conifer: indexedSmooth(con.build()), top: indexedSmooth(top.build()) };
   _micro.broad.name = 'impostor-micro-broad';
   _micro.conifer.name = 'impostor-micro-conifer';

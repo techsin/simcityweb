@@ -7,12 +7,16 @@
  * enablePassCulling); instances are registered in map tiles.
  * LOD: buildings whose projected radius drops below `lodPixels` swap to an auto-generated massing proxy
  * (lodProxy.ts, 12-40 triangles, same material / windows / night lights) with hysteresis; see updateLod(). Proxies
- * are built off the main thread (lodBuilder.ts worker): every model is queued for its proxy when it first appears
- * (background prefetch, so the worker builds them while the player looks around after a load), a building that needs
- * a proxy not built yet stays on its full model and swaps when it arrives, so proxy generation never costs frame time
- * (flushLod() builds everything synchronously for captures). The buildings waiting for an arriving proxy (often
- * hundreds sharing one model) are woken a few per frame (`lodWakeSlice`, and in smooth motion only while fewer than
- * half the fade cap run), so each arrival dissolves them over a few frames instead of swapping them all in one frame.
+ * are built off the main thread (lodBuilder.ts: a small worker pool, started when this module loads): a city load
+ * posts every model's proxy job in bulk (background prefetch, heaviest models first), so the workers build them
+ * through the load's long main-thread tasks and the city's proxies are installed by the time the player first moves
+ * the camera (the first zoom-out then swaps like any later one, without proxy installs or woken-building bursts); a
+ * building that needs a proxy not built yet stays on its full model and swaps when it arrives, so proxy generation
+ * never costs frame time (flushLod() builds everything synchronously for captures). The buildings waiting for an
+ * arriving proxy (often hundreds sharing one model) are woken a few per frame (`lodWakeSlice`, and in smooth motion
+ * only while fewer than half the fade cap run), so each arrival dissolves them over a few frames instead of swapping
+ * them all in one frame. Also in winter the batch's shadow depth pass swaps bare trees' crowns for their twigs
+ * (patchFoliageDepthMaterial), so bare plaza / lot / kit trees cast twig shadows, not their summer crown's.
  * Without worker support (Node tests) proxies are built on demand within `lodBudgetMs` per frame.
  * Schedule: after each evaluation a building stores the band of camera distances its current levels stay right for
  * (squared, flat typed arrays: lo2 / hi2). A frame whose camera moved scans those arrays (a few ns per building, no
@@ -74,6 +78,7 @@ import { getCityMaterial, flagsToAlpha, IF_FIRE, IF_SELECTED, IF_WINDOWS_OFF } f
 import { shadowCasters } from '../../world/Shadows';
 import { lodProxyFor } from './lodProxy';
 import { lodProxyBuilder, type LodProxyBuilder } from './lodBuilder';
+import { lotTwigGeometry, lotTwigKey, lotTwigs } from '../../../assets/builders/winterTwigs'; // seasons r3: LOW twig strip
 
 // the LOD proxy workers start loading their own module graph (three.js and the proxy builder) as soon as the city
 // view's code is loaded, while the world view is still being built, so they are ready for the city's prefetch
@@ -185,6 +190,11 @@ interface Fade {
 const LOD_JUMP = 150;
 /** catch-up priority buckets (log2 of the triangles a building's proxy level saves) */
 const LOD_PRI = 16;
+/** the swap path's JIT warm-up (warmLod) runs only within this many LOD updates after a load, this many buildings per
+ *  resting frame */
+const LOD_WARM_FRAMES = 120;
+const LOD_WARM_CHUNK = 768;
+const _warmFar = new THREE.Vector3();
 /** a foundation skirt is drawn as its plain box (no cap band / step tier) while its exposed height projects under this
  *  many pixels (or the building is on its proxy) */
 const FOUND_PX = 2;
@@ -884,6 +894,7 @@ export class BuildingRenderer {
   private lodWaiting = new Map<number, BInst[]>();
   /** geometries whose background proxy request waits for the end of rebuildAll (null: ask at once) */
   private prefetch: number[] | null = null;
+  private twigVer = lotTwigs.version; // seasons r3: LOW twig strip
   /** buildings whose proxy arrived while they waited on their full model (late downgrades): evaluated from lodWakeAt
    *  on, at most lodWakeSlice per frame and, while swaps may fade, only while fewer than fadeMax / 2 fades run (see
    *  wakeWaiting); cut frames leave them for the next frames */
@@ -961,6 +972,12 @@ export class BuildingRenderer {
   private evalFresh = false;
   private lodCamera: THREE.PerspectiveCamera | null = null;
   private lodKNow = 1;
+  /** JIT warm-up of the swap path after a load (see warmLod): 0 not due yet, 1 due (every proxy is in), 2 done; the
+   *  list index it has reached; and the updateLod calls since the load (it only runs in its first frames, never later in
+   *  play) */
+  private lodWarm = 0;
+  private lodWarmAt = 0;
+  private lodFrames = 0;
   private fr = new THREE.Frustum();
   private frOk = false;
   /** rubble kit pieces: key -> [full, proxy] geometry ids (see kitPiece) */
@@ -1014,9 +1031,10 @@ export class BuildingRenderer {
     const e = MANIFEST_BY_ID[model];
     const nv = e?.variants ?? 1;
     const v = ((variant % nv) + nv) % nv;
-    const key = `${model}#${v}`;
+    // seasons r3: LOW twig strip (low quality: lot trees without their winter twig crowns, winterTwigs.ts)
+    const g0 = getModelGeometry(model, v), key = lotTwigKey(`${model}#${v}`, g0);
     const fresh = !this.batch.hasGeometry(key);
-    const id = this.batch.geometryId(key, () => getModelGeometry(model, v));
+    const id = this.batch.geometryId(key, () => lotTwigGeometry(g0));
     // culling sphere with room for the LOD proxy (built later, within the model bounds + 0.6 m): model and proxy then
     // share one sphere and LOD swaps never force a draw-list rebuild
     if (fresh) this.batch.padSphere(id, model === 'rubble' ? RUBBLE_PAD : PROXY_PAD);
@@ -1068,7 +1086,27 @@ export class BuildingRenderer {
         if (!bi.gone && bi.geom === geom) this.lodWake.push(bi);
       }
     }
+    // the last pending proxy is in (at a load: in the load's own frames): every building learns its proxy level now
+    if (this.lodPending.size === 0) this.resolveProxies();
     return id;
+  }
+
+  /**
+   * Buildings that never needed their proxy yet (lodGeom -1: it was being built when they were added) take its id and
+   * their catch-up priority now, once every proxy is in, instead of each looking it up in the evaluation that first
+   * downgrades it — the first zoom-out after a load would otherwise do ~all of these lookups, in still-cold code. A
+   * model without a useful proxy (the proxy is the model) leaves its buildings without levels: their next evaluation
+   * gives them an endless band.
+   */
+  private resolveProxies(): void {
+    if (this.lodWarm === 0) this.lodWarm = 1;
+    for (const bi of this.list) {
+      if (bi.lodGeom >= 0 || bi.geom < 0 || bi.kitM !== null) continue;
+      const p = this.lodMap.get(bi.geom);
+      if (p === undefined) continue;
+      bi.lodGeom = p;
+      this.prio(bi);
+    }
   }
 
   /** a building needs geom's proxy, which the worker is still building: evaluate it again once it arrives */
@@ -1426,6 +1464,10 @@ export class BuildingRenderer {
 
   rebuildAll(): void {
     this.clear();
+    // (a load: its first frames warm the swap path up once every proxy is in, see warmLod)
+    this.lodWarm = 0;
+    this.lodWarmAt = 0;
+    this.lodFrames = 0;
     this.prefetch = [];
     try {
       for (const b of this.state.buildings.values()) this.add(b, false);
@@ -1765,7 +1807,11 @@ export class BuildingRenderer {
     // (a damped camera coming to rest creeps by fractions of a mm: no scan for that, the bands are absolute distances,
     // so the next real motion's scan sees the whole drift)
     const scan = hop > 1e-3 || behind || this.lodScanAll;
-    if (!scan && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
+    // the swap path's JIT warm-up: once, in resting frames among the load's first frames (see warmLod)
+    this.lodFrames++;
+    if (this.lodWarm === 1 && this.lodFrames > LOD_WARM_FRAMES) this.lodWarm = 2;
+    const warm = this.lodWarm === 1 && hop <= 1e-3 && !behind && this.lodPixels > 0;
+    if (!scan && !warm && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
     this.lodDeadline = performance.now() + this.lodBudgetMs;
     const full = this.lodFull;
     this.lodFull = false;
@@ -1780,6 +1826,7 @@ export class BuildingRenderer {
     this.fadeNow = !full && !jump && !behind && fades;
     // a cut settles the running fades (their buildings mostly left the view, and the fade layer is not culled)
     if (jump) while (this.fades.length) this.finishFade(this.fades[this.fades.length - 1]);
+    if (warm) this.warmLod(c, K, on, off);
     let left = false;
     if (scan) {
       // (an evaluation may queue its building again for the next update: lodQueue)
@@ -1811,6 +1858,41 @@ export class BuildingRenderer {
       if (d2 < lo2[i] || d2 > hi2[i]) out[k++] = i;
     }
     return k;
+  }
+
+  /**
+   * JIT warm-up of the LOD hot path, once after a load, when every proxy is in and the camera rests (normally one of the
+   * load's own frames): every building is evaluated against a camera far above (it swaps to its far level: proxy,
+   * plain foundation box, rubble proxies) and at once against the real camera again (it swaps back), and the band scan
+   * runs with it — nothing is drawn in between, so the frame shows no change (swaps instant, every building back on
+   * exactly its levels, freshly built buildings stay fresh). LOD_WARM_CHUNK buildings per resting frame (a few ms, cold).
+   * A fresh page otherwise runs this code cold in its first zoom-out, ~2000-2500 swaps at ~5x their warm cost (V8 tiers
+   * it up only after a few thousand runs): ~10-25 ms of updateLod in a LOW town's first zoom-out instead of ~5-10 (Node,
+   * t_plains), ~3-4 ms more in the first zoom-in. Its cost lands in the load's frames, largely in place of the first
+   * frame's own full evaluation (which then finds every band set), plus one full draw-range refresh of the building
+   * batch's lists and one shadow re-render.
+   */
+  private warmLod(c: THREE.Vector3, K: number, on: number, off: number): void {
+    const fadeNow = this.fadeNow, far = _warmFar.set(c.x, c.y + 1e7, c.z);
+    this.fadeNow = false;
+    this.scan(far);
+    this.scan(c);
+    const list = this.list, i0 = this.lodWarmAt, i1 = Math.min(list.length, i0 + LOD_WARM_CHUNK);
+    this.lodWarmAt = i1;
+    if (i1 >= list.length) this.lodWarm = 2;
+    for (let i = i0; i < i1; i++) {
+      const bi = list[i];
+      if (bi.gone || bi.fade !== null || bi.waiting >= 0 || bi.lodGeom < 0) continue;
+      const fresh = bi.fresh, lod = bi.lod, flod = bi.flod;
+      this.lodEval(bi, far, K, on, off);
+      // back to exactly the levels it had (a building inside its hysteresis band would otherwise come back on the far
+      // side's level), then its band for the real camera
+      this.lodSet(bi, lod);
+      this.setFound(bi, flod);
+      this.lodEval(bi, c, K, on, off);
+      bi.fresh = fresh;
+    }
+    this.fadeNow = fadeNow;
   }
 
   /**
@@ -2094,6 +2176,7 @@ export class BuildingRenderer {
   }
 
   update(dt: number): void {
+    if (lotTwigs.version !== this.twigVer) { this.twigVer = lotTwigs.version; this.rebuildAll(); } // seasons r3: LOW twig strip
     if (this.animating.size) {
       for (const id of this.animating) {
         const bi = this.inst.get(id);

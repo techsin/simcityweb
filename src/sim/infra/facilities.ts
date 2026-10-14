@@ -893,6 +893,8 @@ const SCHOOL_KIND: Readonly<Record<string, string>> = {
   elementary: 'another elementary school', high: 'another high school', college: 'another university', library: 'another library',
 };
 
+/** the load line's hint of a facility that serves nobody (final fixes SF-4) */
+const SERVES_NOBODY = "Serves nobody — no road access (staff can't reach it)";
 /** a tier facility working at op 0 — a staffed service without road access (final fixes P8): it serves nobody */
 function servesNobody(c: Ctx): boolean {
   return c.inf.tier >= 0 && facilityOpFactor(c.st, c.b) === 0;
@@ -906,7 +908,12 @@ function seatLines(c: Ctx): void {
     const cv = def.coverage;
     const t = cv?.tier;
     const cap = t === 'police' ? policeCapacityOf(def.id) : t === 'hospital' ? (cv?.capacity ?? 0) / PATIENTS_PER_BED : cv?.capacity ?? 0;
-    if (t && cap > 0 && Number.isFinite(cap)) add(c, t === 'police' ? 'patrolLoad' : t === 'hospital' ? 'beds' : 'seats', TIER_UNIT[t]?.[0] ?? 'Capacity', `— / ${fmt(cap)} (not yet assessed)`);
+    if (t && cap > 0 && Number.isFinite(cap)) {
+      const key = t === 'police' ? 'patrolLoad' : t === 'hospital' ? 'beds' : 'seats', label = TIER_UNIT[t]?.[0] ?? 'Capacity';
+      // (a staffed service without road access serves nobody whether or not a services pass has assessed it: SF-4)
+      if (servesNobody(c)) add(c, key, label, `0 / ${fmt(cap)}${t === 'hospital' ? '' : ' (0%)'}`, { ratio: 0, status: 'bad', hint: SERVES_NOBODY });
+      else add(c, key, label, `— / ${fmt(cap)} (not yet assessed)`);
+    }
     return;
   }
   const tier = L.tier;
@@ -915,7 +922,7 @@ function seatLines(c: Ctx): void {
     // final fixes SF-4: a staffed service without road access works at op 0 (P8) and serves nobody, whatever the last
     // services pass put in its seats (the tier engine records its reach at op 0: "Patients 883 / 8,000" next to
     // "Service quality 0%") — its load line says so and shows nobody seated
-    const hint = "Serves nobody — no road access (staff can't reach it)";
+    const hint = SERVES_NOBODY;
     if (!Number.isFinite(L.capacity)) add(c, 'served', unit[0], `0 ${unit[1]}`, { status: 'bad', hint });
     else if (tier === 'hospital') add(c, 'beds', 'Beds', `0 / ${fmt(L.capacity / PATIENTS_PER_BED)}`, { ratio: 0, status: 'bad', hint });
     else add(c, tier === 'police' ? 'patrolLoad' : 'seats', unit[0], `0 / ${fmt(L.capacity)} (0%)`, { ratio: 0, status: 'bad', hint });

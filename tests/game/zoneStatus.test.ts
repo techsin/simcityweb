@@ -9,9 +9,10 @@ import { describe, expect, it } from 'vitest';
 import { DevType, Network, Zone } from '../../src/core/types';
 import { BF } from '../../src/sim/CityState';
 import {
-  BACK_LOT_DEPTH, emptyZoneStatus, frontCellOf, lotAccess, noAccessText, roadAccess, utilityReaches, zonePlanNoAccess, zoneStatusLine,
+  BACK_LOT_DEPTH, LOT_TEXT, emptyZoneStatus, frontCellOf, lotAccess, noAccessText, roadAccess, utilityReaches, zonePlanNoAccess, zoneStatusLine,
   zoneStatusTone,
 } from '../../src/ui/zoneStatus';
+import { lotFitAt } from '../../src/sim/economy/advisors';
 import { CityActions } from '../../src/sim/actions';
 import { newSim, newState, place, roadLine } from '../infra/cityGen';
 
@@ -114,7 +115,10 @@ describe('zone preview: tiles without road access (final fixes N3)', () => {
     const na = zonePlanNoAccess(st, rect, Zone.ComLow);
     expect(na.total).toBe(9);
     expect(na.none.length).toBe(9);
-    expect(noAccessText(na.none.length, na.total)).toBe(`All 9 tiles have no road access and will never develop — a road must run within ${BACK_LOT_DEPTH} tiles of a lot`);
+    // (final fixes SF-6: the real rule — lots reach a road only through tiles of their own zone; the unzoned column is named)
+    expect(noAccessText(na.none.length, na.total)).toBe(`All 9 tiles have no road access and will never develop — lots reach a road only through tiles of the same zone (up to ${BACK_LOT_DEPTH} deep): zone right up to the road (no gap) or run a road in`);
+    expect(na.gap).toBe(1);
+    expect(noAccessText(na.none.length, na.total, na.gap)).toBe(`All 9 tiles have no road access and will never develop — lots reach a road only through tiles of the same zone (up to ${BACK_LOT_DEPTH} deep): zone right up to the road (no gap — a 1-tile strip of other land lies between them and the road) or run a road in`);
     // the same rectangle against the road: all of it reaches the street
     expect(zonePlanNoAccess(st, { x0: 5, z0: 10, x1: 8, z1: 13 }, Zone.ComLow).none.length).toBe(0);
   });
@@ -125,7 +129,9 @@ describe('zone preview: tiles without road access (final fixes N3)', () => {
     const na = zonePlanNoAccess(st, { x0: 5, z0: 10, x1: 5 + w, z1: 12 }, Zone.ResLow);
     expect(na.total).toBe(2 * w);
     expect(na.none.length).toBe(2 * 3);
-    expect(noAccessText(na.none.length, na.total)).toMatch(/^6 of 18 tiles have no road access/);
+    expect(noAccessText(na.none.length, na.total)).toMatch(/^6 of 18 tiles have no road access and will never develop — lots reach a road only through tiles of the same zone/);
+    // (no strip of other land between them and a road: the road is simply too far)
+    expect(na.gap ?? 0).toBe(0);
     for (const i of na.none) expect(i % st.size).toBeGreaterThanOrEqual(5 + BACK_LOT_DEPTH);
   });
 
@@ -246,5 +252,77 @@ describe('lot status: demand only counts for types that can live there (final fi
     const s = emptyZoneStatus(st, 6, 12)!;
     expect(s.blockers.map((b) => b.id)).toEqual(['behind', 'fit']);
     expect(zoneStatusTone(s)).toBe('warn');
+  });
+});
+
+/**
+ * Final fixes round 2, SF-6 (b): an empty road-front tile where no building of its zone fits — an odd tile left between
+ * buildings, roads or the zone's edge, or too steep — read "Ready to grow — waiting for a builder" forever (73-80 such
+ * industrial tiles in the bot city). The lot status now says why (advisors.ts lotFitAt: growth's placement rules for the
+ * zone's smallest building, every lot that includes the tile with an edge on a road).
+ */
+describe('lot status: road-front tiles no building fits (final fixes SF-6)', () => {
+  /** a street along x = 4 (z 6..20), utilities everywhere, demand for everything; farmland's smallest farm is 2×2 */
+  function farmStreet() {
+    const st = newState(32);
+    st.systemData.infraVersion = 1;
+    st.stats.demand = st.stats.demand.map(() => 0.5);
+    st.powered.fill(1);
+    st.watered.fill(1);
+    roadLine(st, 4, 6, 4, 20, Network.Road);
+    return st;
+  }
+
+  it('an odd farm tile boxed in by homes: "No building fits here" (red), not "Ready to grow"', () => {
+    const st = farmStreet();
+    st.zone[st.idx(5, 12)] = Zone.IndAg;
+    for (const [x, z] of [[5, 11], [5, 13], [6, 12]]) { st.zone[st.idx(x, z)] = Zone.ResLow; place(st, 't_r1', x, z, { pop: 5 }); }
+    expect(lotFitAt(st, 5, 12)).toBe(1);
+    const s = emptyZoneStatus(st, 5, 12)!;
+    expect(s.access).toBe('front');
+    expect(s.blockers.map((b) => b.id)).toEqual(['lot']);
+    expect(s.ready).toBe(false);
+    expect(zoneStatusLine(s)).toBe(`Not growing: ${LOT_TEXT.small.charAt(0).toLowerCase()}${LOT_TEXT.small.slice(1)}`);
+    expect(LOT_TEXT.small).toBe('No building fits here — an odd tile between buildings and roads: rezone it or merge it into a bigger block');
+    expect(zoneStatusTone(s)).toBe('bad');
+    // a 2×2 farm fits once the tile beside it is farmland too: ready again
+    const st2 = farmStreet();
+    for (const [x, z] of [[5, 12], [6, 12], [5, 13], [6, 13]]) st2.zone[st2.idx(x, z)] = Zone.IndAg;
+    expect(lotFitAt(st2, 5, 12)).toBe(0);
+    expect(emptyZoneStatus(st2, 5, 12)!.ready).toBe(true);
+  });
+
+  it('too steep for any building: "Too steep" (red)', () => {
+    const st = farmStreet();
+    for (let z = 10; z < 14; z++) for (let x = 5; x < 7; x++) st.zone[st.idx(x, z)] = Zone.IndAg;
+    // a ridge across the farmland: every 2×2 lot on it climbs 20 m (growth allows 5 + 1.5 × 2)
+    const N1 = st.size + 1;
+    for (let z = 0; z <= st.size; z++) for (let x = 6; x <= st.size; x++) st.heights[z * N1 + x] = 25;
+    expect(lotFitAt(st, 5, 12)).toBe(2);
+    const s = emptyZoneStatus(st, 5, 12)!;
+    expect(s.blockers.map((b) => b.id)).toEqual(['lot']);
+    expect(s.blockers[0].text).toBe('Too steep for any building — flatten it (Terrain) or zone elsewhere');
+  });
+
+  it('a back cell of a lot fronting another road is no odd tile', () => {
+    const st = farmStreet();
+    st.network.fill(0);
+    roadLine(st, 4, 10, 20, 10, Network.Road); // road B along z = 10
+    roadLine(st, 4, 12, 4, 20, Network.Road); // road A along x = 4 from z = 12: beside the tile, not beside the block's top
+    for (const [x, z] of [[5, 11], [6, 11], [5, 12], [6, 12]]) st.zone[st.idx(x, z)] = Zone.IndAg;
+    // (5, 12) faces road A, but the only 2×2 lot holding it fronts road B
+    expect(lotFitAt(st, 5, 12)).toBe(0);
+    expect(emptyZoneStatus(st, 5, 12)!.blockers.some((b) => b.id === 'lot')).toBe(false);
+  });
+
+  it('deeper tiles are not judged (they fill as part of a bigger lot), and homes fit on one tile', () => {
+    const st = farmStreet();
+    for (let x = 5; x < 8; x++) st.zone[st.idx(x, 12)] = Zone.IndAg; // a 1-tile-deep farm strip: no 2×2 farm fits
+    expect(emptyZoneStatus(st, 5, 12)!.blockers.map((b) => b.id)).toEqual(['lot']);
+    expect(emptyZoneStatus(st, 6, 12)!.blockers.some((b) => b.id === 'lot')).toBe(false); // (not road-front)
+    const r = farmStreet();
+    r.zone[r.idx(5, 12)] = Zone.ResLow;
+    for (const [x, z] of [[5, 11], [5, 13], [6, 12]]) { r.zone[r.idx(x, z)] = Zone.ComLow; place(r, 't_cs', x, z, { jobs: 5 }); }
+    expect(lotFitAt(r, 5, 12)).toBe(0); // (a 1×1 home fits)
   });
 });

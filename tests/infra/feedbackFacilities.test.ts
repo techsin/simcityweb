@@ -8,6 +8,9 @@
  *  - P13 / routed 9: an under-used hospital says why (its area's patients are seated by clinics first);
  *  - P3: the def facts quote what one typically costs in this city and the most it can cost (final fixes SF-3, lead
  *    decision 20b: "typical in this city", not "now");
+ *  - round 2: SF-3 the inspector's upkeep is its share of the running costs (bulldozing it saves less); SF-4 a staffed
+ *    service without road access serves nobody, and its load line says so; SF-9a a big employer without peers of its
+ *    size is compared with the city's fill, not told to fix its road.
  */
 import { describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
@@ -178,6 +181,9 @@ describe('final fixes round 2 (SF-3 / SF-4 / SF-9): facility lines that send the
     st.stats.workforce = 2000;
     justiceData(st).cityFill = 0.9;
     expect(facilityOpFactor(st, clinic)).toBe(0);
+    // (before any services pass has assessed it, too: it serves nobody either way)
+    const before = facilityReport(sim, clinic.id)!.lines.find((l) => l.key === 'seats')!;
+    expect([before.value, before.hint]).toEqual(['0 / 8,000 (0%)', "Serves nobody — no road access (staff can't reach it)"]);
     sim.getSystem<ServicesSystem>('services')!.compute(sim, false);
     const L = facilityLoad(sim, clinic.id)!;
     console.log(`roadless clinic: services load seated ${L.seated.toFixed(0)} demand ${L.demand.toFixed(0)} operating ${L.operating}`);

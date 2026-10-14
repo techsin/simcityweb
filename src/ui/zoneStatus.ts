@@ -9,7 +9,10 @@
  * alone never builds on land R$$$ shuns). Power / water are only required when the utilities layer runs
  * (infraFlags(st).utilities), like growth. Also used by the onboarding card (power / water steps), the inspector's
  * lot chips and the zone tool's preview (zonePlanNoAccess, final fixes N3: tiles a new zone would leave without road
- * access).
+ * access). Final fixes SF-6: the no-access line says the real rule (lots reach a road only through tiles of their own
+ * zone — an unzoned strip between a zone and its road cuts it off), and a road-front tile no building of its zone fits
+ * (an odd tile between buildings, roads or the zone's edge, or too steep: advisors.ts lotFitAt) says so instead of
+ * "Ready to grow — waiting for a builder" forever.
  */
 import type { CellRect } from '../core/events';
 import { DEV_TYPE_LABELS, Network, isRoad, zoneDensity, zoneFamily, type Zone } from '../core/types';
@@ -17,12 +20,14 @@ import { BF, type CityState } from '../sim/CityState';
 import { ZONE_DEVTYPES } from '../sim/catalog';
 import { infraFlags } from '../sim/economy/runtime';
 import { DESIR_WEIGHTS, GROW_MIN_DESIR, INFILL_MAX_EXTRA, isGrowZone } from '../sim/economy/tuning';
+import { lotFitAt } from '../sim/economy/advisors';
 
 export interface ZoneBlocker {
   /** 'behind': the lot sits behind the buildings on the road (a warning, not a hard blocker: it fills when the lot in
    *  front is rebuilt); 'fit': there is demand, but only for types that can't live here (a warning: it grows once a
-   *  type that fits wants in, or the land gets better) */
-  id: 'road' | 'behind' | 'power' | 'water' | 'demand' | 'fit';
+   *  type that fits wants in, or the land gets better); 'lot': a road-front tile no building of its zone fits (an odd
+   *  tile, or too steep — final fixes SF-6) */
+  id: 'road' | 'behind' | 'power' | 'water' | 'demand' | 'fit' | 'lot';
   /** short line, e.g. "No power (nearest powered cell 7 tiles)" */
   text: string;
 }
@@ -72,6 +77,12 @@ const FAMILY_NAME: Record<string, string> = { R: 'residential', C: 'commercial',
 const DIRS: readonly (readonly [number, number])[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const RANK: Record<LotAccess, number> = { none: 0, behind: 1, yard: 2, front: 3 };
 const BY_RANK: readonly LotAccess[] = ['none', 'behind', 'yard', 'front'];
+
+/** player-facing lines of a road-front tile no building fits (final fixes SF-6; advisors.ts lotFitAt 1 / 2) */
+export const LOT_TEXT = {
+  small: 'No building fits here — an odd tile between buildings and roads: rezone it or merge it into a bigger block',
+  steep: 'Too steep for any building — flatten it (Terrain) or zone elsewhere',
+} as const;
 
 /** player-facing lines of the access classes */
 export const ACCESS_TEXT = {
@@ -134,13 +145,14 @@ export function lotAccess(st: CityState, x: number, z: number, plan: ZonePlan | 
  * network / power line / plopped building, not that zone already — actions.ts zone()) and the ones among them that
  * will never develop: no road within BACK_LOT_DEPTH in a straight line through the new zone (lotAccess 'none', with the
  * rectangle zoned and the growables of other families it demolishes — `demolished`, the preview's ids — gone). A
- * warning, not a block. Rects above maxCells cells are not checked (total 0).
+ * warning, not a block. Rects above maxCells cells are not checked (total 0). `gap`: the narrowest strip of other land
+ * between such a tile and a road within BACK_LOT_DEPTH (gapToRoad; 0 = none) — for noAccessText to name it.
  */
-export function zonePlanNoAccess(st: CityState, rect: CellRect, zone: number, demolished?: readonly number[], maxCells = 20000): { none: number[]; total: number } {
+export function zonePlanNoAccess(st: CityState, rect: CellRect, zone: number, demolished?: readonly number[], maxCells = 20000): { none: number[]; total: number; gap?: number } {
   const N = st.size;
   const x0 = Math.max(0, Math.min(rect.x0, rect.x1)), x1 = Math.min(N, Math.max(rect.x0, rect.x1));
   const z0 = Math.max(0, Math.min(rect.z0, rect.z1)), z1 = Math.min(N, Math.max(rect.z0, rect.z1));
-  const out = { none: [] as number[], total: 0 };
+  const out = { none: [] as number[], total: 0, gap: 0 };
   if (!isGrowZone(zone) || x1 <= x0 || z1 <= z0 || (x1 - x0) * (z1 - z0) > maxCells) return out;
   const plan: ZonePlan = { rect: { x0, z0, x1, z1 }, zone, demolished: demolished?.length ? new Set(demolished) : undefined };
   for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) {
@@ -152,16 +164,52 @@ export function zonePlanNoAccess(st: CityState, rect: CellRect, zone: number, de
       if (!b || b.flags & BF.Plopped) continue;
     }
     out.total++;
-    if (lotAccess(st, x, z, plan) === 'none') out.none.push(i);
+    if (lotAccess(st, x, z, plan) === 'none') {
+      out.none.push(i);
+      const g = gapToRoad(st, x, z, plan);
+      if (g > 0 && (!out.gap || g < out.gap)) out.gap = g;
+    }
   }
   return out;
 }
 
-/** the zone tool's warning line for `none` of `total` tiles without road access ('' when none) */
-export function noAccessText(none: number, total: number): string {
+/**
+ * the narrowest strip of other land (unzoned or another zone, nothing built on it) between zoned cell (x, z) and a road
+ * within BACK_LOT_DEPTH in a straight line, past the cells of its own zone (0 = none): the gap that cuts a new zone off
+ * (final fixes SF-6: "a road 1 tile away" read as having access)
+ */
+function gapToRoad(st: CityState, x: number, z: number, plan: ZonePlan): number {
+  const N = st.size, zn = plan.zone;
+  let best = 0;
+  for (let k = 0; k < 4; k++) {
+    const [dx, dz] = DIRS[k];
+    let gap = 0;
+    for (let d = 1; d <= BACK_LOT_DEPTH; d++) {
+      const xx = x + dx * d, zz = z + dz * d;
+      if (xx < 0 || zz < 0 || xx >= N || zz >= N) break;
+      const j = zz * N + xx;
+      const n = st.network[j];
+      if (isRoad(n)) { if (gap > 0 && (best === 0 || gap < best)) best = gap; break; }
+      if (n !== Network.None || st.water[j]) break;
+      const own = zoneOf(st, xx, zz, plan) === zn;
+      if (own && gap === 0) continue; // (still in its own zone)
+      if (own || st.building[j] >= 0) break; // (zone again past the strip, or something built on it)
+      gap++;
+    }
+  }
+  return best;
+}
+
+/**
+ * the zone tool's warning line for `none` of `total` tiles without road access ('' when none). Final fixes SF-6: the real
+ * rule — a lot reaches a road only through tiles of its own zone (zoneStatus walkDir), so a zone one unzoned column away
+ * from a road never develops; `gap` (zonePlanNoAccess) names such a strip
+ */
+export function noAccessText(none: number, total: number, gap = 0): string {
   if (none <= 0) return '';
   const lead = none >= total ? (total === 1 ? 'This tile has' : `All ${total} tiles have`) : `${none} of ${total} tiles have`;
-  return `${lead} no road access and will never develop — a road must run within ${BACK_LOT_DEPTH} tiles of a lot`;
+  const strip = gap > 0 ? ` — a ${gap}-tile strip of other land lies between ${none === 1 ? 'it' : 'them'} and the road` : '';
+  return `${lead} no road access and will never develop — lots reach a road only through tiles of the same zone (up to ${BACK_LOT_DEPTH} deep): zone right up to the road (no gap${strip}) or run a road in`;
 }
 
 /**
@@ -260,6 +308,12 @@ function fitText(st: CityState, zn: number, fi: number, idle: readonly number[],
   return idle.length ? `Waiting for demand: no ${names(idle)} demand; ${tail}` : `Land too unattractive: ${tail}`;
 }
 
+/** a road (street .. highway) on one of the cell's four sides */
+function roadBeside(st: CityState, x: number, z: number): boolean {
+  const N = st.size, i = z * N + x, net = st.network;
+  return (x > 0 && isRoad(net[i - 1])) || (x < N - 1 && isRoad(net[i + 1])) || (z > 0 && isRoad(net[i - N])) || (z < N - 1 && isRoad(net[i + N]));
+}
+
 /** status of an empty growable zoned cell; null for anything else (not zoned, built on, road, water...) */
 export function emptyZoneStatus(st: CityState, x: number, z: number): ZoneStatus | null {
   if (!st.inBounds(x, z)) return null;
@@ -271,6 +325,13 @@ export function emptyZoneStatus(st: CityState, x: number, z: number): ZoneStatus
   const access = lotAccess(st, x, z);
   if (access === 'none') blockers.push({ id: 'road', text: ACCESS_TEXT.none });
   else if (access === 'behind') blockers.push({ id: 'behind', text: ACCESS_TEXT.behind });
+  else if (access === 'front' && roadBeside(st, x, z)) {
+    // final fixes SF-6: a road-front tile where no building of its zone fits (growth's placement rules) never grows —
+    // it read "Ready to grow — waiting for a builder" forever (deeper tiles fill as part of a bigger lot: not judged)
+    const fit = lotFitAt(st, x, z);
+    if (fit === 1) blockers.push({ id: 'lot', text: LOT_TEXT.small });
+    else if (fit === 2) blockers.push({ id: 'lot', text: LOT_TEXT.steep });
+  }
   const util = infraFlags(st).utilities;
   if (util && !utilityReaches(st, st.powered, i, 'power')) {
     const d = nearestSet(st.powered, N, x, z);

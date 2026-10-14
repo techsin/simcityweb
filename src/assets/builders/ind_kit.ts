@@ -10,6 +10,7 @@ import { Surf } from '../../core/types';
 import { RNG, hashString } from '../../core/rng';
 import type { ModelBuildFn } from '../registry';
 import { MANIFEST_BY_ID } from '../manifest';
+import { bareCrown } from './park_lib';
 
 export type V3 = [number, number, number];
 export type Face = 'pz' | 'nz' | 'px' | 'nx';
@@ -694,7 +695,9 @@ export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, h = 7, r =
   const hh = h * s, rr = r * s;
   b.paint(PALETTE.trunk, Surf.Wood);
   strut(b, [x, 0, z], [x, hh * 0.5, z], 0.32 * s);
-  b.paint(color ?? rng.pick(TREE_GREENS), Surf.Foliage);
+  // (seasonal crown: bare twigs in winter, park_lib.bareCrown)
+  const fl = bareCrown(b, x, z, [x, hh * 0.48, z], [x, hh - rr * 0.95, z], rr, rr * 0.95, PALETTE.trunk, 0.14 * s);
+  b.paint(color ?? rng.pick(TREE_GREENS), Surf.Foliage, 1, fl);
   b.blob(x, hh - rr * 0.95, z, rr, rr * 0.95, rr, 0, 0.16, rng.next() * 10);
 }
 
