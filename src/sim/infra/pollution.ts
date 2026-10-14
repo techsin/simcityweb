@@ -790,14 +790,17 @@ export class PollutionSystem implements SimSystem {
       const any = this.capInc + this.capRec + this.capLf > 0;
       const rl = this.roadless;
       // (final fixes P7: a landfill / incinerator that exists but no road touches is named — the fix is a road, not one)
-      const why = any
-        ? `are more than ${GARBAGE_TRUCK_RANGE} road tiles from a landfill, incinerator or recycling center (or not connected to one)`
-        : rl ? `can't take it anywhere: your ${rl.what} has no road access — connect it to a road`
-          : 'have no landfill, incinerator or recycling center to take their garbage';
-      const also = any && rl ? ` Your ${rl.what} has no road access — connect it to a road.` : '';
+      const n = outRangeN.toLocaleString('en-US');
       const nr = sm.noRoadBuildings > 0 ? ` ${sm.noRoadBuildings.toLocaleString('en-US')} more have no road for the trucks at all.` : '';
-      const at = !any && rl ? rl : { x, z };
-      sim.notify(`Garbage is piling up: trucks can't reach ${outRangeN.toLocaleString('en-US')} buildings — they ${why}.${also}${nr}`, 'warning', at.x, at.z, 'utilities');
+      if (!any && rl) {
+        sim.notify(`Garbage is piling up at ${n} buildings: your ${rl.what} has no road access, so garbage trucks can't use it — connect it to a road.${nr}`, 'warning', rl.x, rl.z, 'utilities');
+      } else {
+        const why = any
+          ? `are more than ${GARBAGE_TRUCK_RANGE} road tiles from a landfill, incinerator or recycling center (or not connected to one)`
+          : 'have no landfill, incinerator or recycling center to take their garbage';
+        const also = any && rl ? ` Your ${rl.what} has no road access — connect it to a road.` : '';
+        sim.notify(`Garbage is piling up: trucks can't reach ${n} buildings — they ${why}.${also}${nr}`, 'warning', x, z, 'utilities');
+      }
     }
     if (sm.landfillCapT > 0 && sm.landfillFill >= LANDFILL_WARN_FILL && st.day - this.lastFillNews >= GARBAGE_NEWS_DAYS * 2) {
       this.lastFillNews = st.day;
