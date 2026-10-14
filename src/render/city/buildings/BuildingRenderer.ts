@@ -7,8 +7,9 @@
  * enablePassCulling); instances are registered in map tiles.
  * LOD: buildings whose projected radius drops below `lodPixels` swap to an auto-generated massing proxy
  * (lodProxy.ts, 12-40 triangles, same material / windows / night lights) with hysteresis; see updateLod(). Proxies
- * are built off the main thread (lodBuilder.ts: a small worker pool, started when this module loads): a city load
- * posts every model's proxy job in bulk (background prefetch, heaviest models first), so the workers build them
+ * are built off the main thread (lodBuilder.ts: a small worker pool, started when this module loads, which waits until
+ * the workers run): a city load posts every model's proxy job in bulk (background prefetch, heaviest models first),
+ * so the workers build them
  * through the load's long main-thread tasks and the city's proxies are installed by the time the player first moves
  * the camera (the first zoom-out then swaps like any later one, without proxy installs or woken-building bursts); a
  * building that needs a proxy not built yet stays on its full model and swaps when it arrives, so proxy generation

@@ -21,6 +21,7 @@ kit_bareCrown.patch may be landed by the seasons r3 lane together with a LOW twi
 
 | Patch | Status |
 |---|---|
-| `kit_bareCrown.patch` | **Applied** by seasons r3 together with the LOW twig strip (`src/assets/builders/winterTwigs.ts`; four one-line hooks in `src/render/city/buildings/BuildingRenderer.ts`, each marked `// seasons r3: LOW twig strip`: the import, the `twigVer` field, the registration in `geomFor`, the rebuild in `update`). With the strip on, every lot model has its 02464a3 triangle count. The patch file was removed; git history keeps it. |
+| `kit_bareCrown.patch` | **Applied** by seasons r3 together with the LOW twig strip (`src/assets/builders/winterTwigs.ts`; four small hooks in `src/render/city/buildings/BuildingRenderer.ts`, each marked `// seasons r3: LOW twig strip`: the import, the `twigVer` field, the registration in `geomFor`, the rebuild in `update`). With the strip on, every kit / park model has its 02464a3 triangle count; at low quality a bare kit crown collapses to its trunk (limbs would cost ~1% of the low preset's triangles). The patch file was removed; git history keeps it. |
 | `lodProxy_bareDiamonds.patch` | **New**, for the buildings lane after its r3 closes (`src/render/city/buildings/lodProxy.ts`). The foliage diamonds of LOD proxies keep a bare crown's look at LOD range: the swap marker is cleared, so they do not vanish in winter, and the winter-only twig sprays (Foliage pattern 5) are no longer counted as part of a crown. |
-| others | Unchanged (owners and decisions as above). |
+| `BuildingRenderer_foliageDepth.patch` | **Applied** by the buildings lane (BLD r3): it reverse-applies cleanly to the working tree; the file can go. |
+| others | Unchanged (owners and decisions as above); `CityState_startApril.patch`, `MiniMap_season.patch` and `propLod_bareProxy.patch` still apply cleanly (Oct 14, 23:30). |
