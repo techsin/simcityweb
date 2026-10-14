@@ -17,6 +17,9 @@ import { GARAGE_DEFS, commuteModes } from '../../src/ui/statsModel';
 import { dispatchWindowEnd, type Incident } from '../../src/sim/infra/emergency';
 import { emgTime } from '../../src/ui/EmergencyBanner';
 import { getDef } from '../../src/sim/catalog';
+import { responseText } from '../../src/ui/inspectorModel';
+import { EMG_FIRE, emgNearSlack } from '../../src/sim/infra/overlays';
+import { EMERG_RMAX } from '../../src/sim/infra/params';
 
 describe('Budget ledger groups (final fixes P15)', () => {
   it('each group answers to one funding slider: department buildings and their tiles together, named apart', () => {
@@ -104,5 +107,24 @@ describe('percentage axes (routed 52): no duplicate tick labels below 2 %', () =
         expect(new Set(labels).size).toBe(labels.length);
       }
     }
+  });
+});
+
+describe('inspector fire response (final fixes P2): beyond the amber band a fire burns down', () => {
+  const near = emgNearSlack(EMG_FIRE);
+  it('covered: auto; just out of reach (amber): manual, a truck sent at once still makes it; farther: it burns down', () => {
+    expect(near).toBeLessThan(0);
+    const fire = { near };
+    expect(responseText({ slackMin: 1.5, covered: true }, 'no fire station', fire)).toEqual({ text: 'auto, 1.5 min to spare', tone: 'pos' });
+    const amber = responseText({ slackMin: near / 2, covered: false }, 'no fire station', fire)!;
+    expect(amber.text).toMatch(/^manual only \(/);
+    expect(amber.tone).toBe('warn');
+    const far = responseText({ slackMin: near - 1, covered: false }, 'no fire station', fire)!;
+    expect(far.text).toMatch(/^too far — a fire burns down before a truck arrives \(\d+\.\d min out of reach\)$/);
+    expect(far.tone).toBe('neg');
+    expect(responseText({ slackMin: -EMERG_RMAX, covered: false }, 'no fire station', fire)!.text).toBe('too far — a fire burns down before a truck arrives');
+    // no road: unreachable whatever the responder; other responders keep the manual wording
+    expect(responseText({ slackMin: -EMERG_RMAX, covered: false, hasRoad: false }, 'no fire station', fire)!.text).toBe('unreachable — no road to it');
+    expect(responseText({ slackMin: near - 1, covered: false })!.text).toMatch(/^manual only \(/);
   });
 });
