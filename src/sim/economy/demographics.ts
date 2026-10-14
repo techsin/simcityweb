@@ -34,6 +34,7 @@ import type { BuildingDef } from '../catalogTypes';
 import type { Simulation } from '../Simulation';
 import { DevType, Zone, zoneDensity } from '../../core/types';
 import { hash2 } from '../../core/rng';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import { getDef } from '../catalog';
 import {
   CARLESS_EFF, COHORT_BASE, COHORT_VAR, COHORT_WEALTH_MUL, COLLEGE_WILL, COVERAGE_FALLBACK, EDU_BASE, EDU_NEWCOMER,
@@ -63,7 +64,11 @@ export interface DemographicsData {
   wfNow?: number;
   /** occupancy slice cursor: a loaded city continues the same visiting order (save / load continuity) */
   cursor?: number;
+  /** the month's EQ / HQ sums gathered in daily slices (eqHqDaily; final fixes V5) */
+  eqhq?: EqHqAcc;
 }
+/** EQ / HQ slice sums: m = the month they belong to (eqHqMonth), done = slices done (bit k = slice k), s = EQHQ_S sums */
+export interface EqHqAcc { m: number; done: number; s: number[] }
 export function demographicsData(st: CityState): DemographicsData {
   let d = st.systemData.demographics as DemographicsData | undefined;
   if (!d || d.v !== 1) {
@@ -713,14 +718,16 @@ export function hqTarget(h: HqInputs): number {
 
 const HQ_IN: HqInputs = { patientAccess: 0, air: 0, noise: 0, tapWater: 1, medScore: 1 };
 const defByName = (b: Building): BuildingDef | undefined => getDef(b.def);
+/** EQ / HQ sums: pop, Σ pop × edu, patients, patient-weighted access, Σ pop × air, Σ pop × noise, piped pop, Σ piped × tap */
+const EQHQ_S = 8;
+const EQHQ_SCRATCH = new Float64Array(EQHQ_S);
+/** the slices of the monthly EQ / HQ pass: homes with id % EQHQ_SLICES === k are read on the days ≡ k */
+export const EQHQ_SLICES = DAYS_PER_MONTH;
+const EQHQ_ALL = (2 ** EQHQ_SLICES) - 1;
 
-/**
- * EQ / HQ step over dtDays (population system, monthly; only with the services system): EQ follows the residents'
- * education stock, HQ the patient-weighted health coverage at homes × air / noise / tap water × emergency medicine.
- * Returns false (nothing written) while no resident carries b.edu yet (services' legacy fallback keeps EQ / HQ).
- * defOf: def lookup (the population system passes its per-id cache; default getDef).
- */
-export function updateEqHq(st: CityState, list: readonly Building[], dtDays: number, sim?: Simulation, defOf: (b: Building) => BuildingDef | undefined = defByName): boolean {
+/** add the homes of `slice` (−1 = every home) of `list` to the EQ / HQ sums `out` */
+function eqHqSums(st: CityState, list: readonly Building[], slice: number, sim: Simulation | undefined,
+  defOf: (b: Building) => BuildingDef | undefined, out: Float64Array | number[]): void {
   const N = st.size;
   let pop = 0, edu = 0, patients = 0, pAcc = 0, air = 0, noise = 0, tapW = 0, tap = 0;
   const hasUtil = st.systemData.infraVersion !== undefined && ((st.systemData.infraLayers as { utilities?: boolean } | undefined)?.utilities ?? true);
@@ -730,6 +737,7 @@ export function updateEqHq(st: CityState, list: readonly Building[], dtDays: num
   const wat = st.watered;
   for (let k = 0; k < list.length; k++) {
     const b = list[k];
+    if (slice >= 0 && b.id % EQHQ_SLICES !== slice) continue;
     if (b.pop <= 0 || b.edu === undefined || b.flags & (BF.Abandoned | BF.Burnt)) continue;
     const def = defOf(b);
     if (!def || def.devType === undefined || def.devType > DevType.R3) continue;
@@ -749,7 +757,14 @@ export function updateEqHq(st: CityState, list: readonly Building[], dtDays: num
       tapW += p;
     }
   }
+  out[0] += pop; out[1] += edu; out[2] += patients; out[3] += pAcc; out[4] += air; out[5] += noise; out[6] += tapW; out[7] += tap;
+}
+
+/** the EQ / HQ step over dtDays from the sums (false: no resident carries b.edu yet — nothing written) */
+function applyEqHq(st: CityState, sums: ArrayLike<number>, dtDays: number): boolean {
+  const pop = sums[0];
   if (pop <= 0) return false;
+  const edu = sums[1], patients = sums[2], pAcc = sums[3], air = sums[4], noise = sums[5], tapW = sums[6], tap = sums[7];
   const s = st.stats;
   HQ_IN.patientAccess = patients > 0 ? pAcc / patients : 0;
   HQ_IN.air = air / pop;
@@ -763,4 +778,47 @@ export function updateEqHq(st: CityState, list: readonly Building[], dtDays: num
     s.hq += (hqT - s.hq) * (1 - Math.exp(-dtDays / (360 * HQ_LAG_YEARS)));
   }
   return true;
+}
+
+/** the month of the EQ / HQ slices of `day`: the days after one step day up to (and with) the next one */
+const eqHqMonth = (day: number, stepDay: number): number => Math.ceil((day - stepDay) / EQHQ_SLICES);
+
+/**
+ * EQ / HQ in daily slices (population system, every day with sim-infra services; final fixes V5 — one pass over every
+ * home on the step day cost ~8 ms at 900k residents): today's slice of the homes is added to the month's sums
+ * (systemData.demographics.eqhq), and on the step day (day ≡ stepDay mod EQHQ_SLICES) the step over dtDays is taken
+ * from the month's sums once every slice is in — else (a new or loaded city before its first full month) from one full
+ * pass, as updateEqHq. Returns updateEqHq's result on the step day, null on the other days.
+ */
+export function eqHqDaily(st: CityState, list: readonly Building[], stepDay: number, dtDays: number, sim?: Simulation,
+  defOf: (b: Building) => BuildingDef | undefined = defByName): boolean | null {
+  const d = demographicsData(st);
+  const day = st.day;
+  const m = eqHqMonth(day, stepDay);
+  let a = d.eqhq;
+  if (!a || !Array.isArray(a.s) || a.s.length !== EQHQ_S) d.eqhq = a = { m, done: 0, s: new Array<number>(EQHQ_S).fill(0) };
+  // (a month whose step was skipped starts over: no slice counts twice)
+  if (a.m !== m) { a.m = m; a.done = 0; a.s.fill(0); }
+  const k = day % EQHQ_SLICES;
+  if (!(a.done & (1 << k))) {
+    eqHqSums(st, list, k, sim, defOf, a.s);
+    a.done |= 1 << k;
+  }
+  if (day % EQHQ_SLICES !== stepDay % EQHQ_SLICES) return null;
+  const r = a.done === EQHQ_ALL ? applyEqHq(st, a.s, dtDays) : updateEqHq(st, list, dtDays, sim, defOf);
+  // the next month's slices start with the day after the step
+  a.m = m + 1; a.done = 0; a.s.fill(0);
+  return r;
+}
+
+/**
+ * EQ / HQ step over dtDays (population system, monthly; only with the services system): EQ follows the residents'
+ * education stock, HQ the patient-weighted health coverage at homes × air / noise / tap water × emergency medicine.
+ * Returns false (nothing written) while no resident carries b.edu yet (services' legacy fallback keeps EQ / HQ).
+ * defOf: def lookup (the population system passes its per-id cache; default getDef).
+ */
+export function updateEqHq(st: CityState, list: readonly Building[], dtDays: number, sim?: Simulation, defOf: (b: Building) => BuildingDef | undefined = defByName): boolean {
+  EQHQ_SCRATCH.fill(0);
+  eqHqSums(st, list, -1, sim, defOf, EQHQ_SCRATCH);
+  return applyEqHq(st, EQHQ_SCRATCH, dtDays);
 }

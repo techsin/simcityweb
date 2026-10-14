@@ -813,12 +813,7 @@ export class EmergencySystem implements SimSystem {
       sim.events.on('networkChanged', () => this.markNet()),
       sim.events.on('terrainChanged', () => this.markNet()),
       sim.events.on('layerUpdated', (k) => {
-        if (k !== 'traffic') return;
-        this.tmDirty = true;
-        // refresh the siren times (and their saved copy, Persist.siren) right away while the graph is still the one the
-        // node data belong to: a save made before the next search then holds the times that search will use (the same
-        // values: traffic writes its layer right before this event)
-        if (this.g.version === this.gVer && this.g.N === sim.state.size && this.g.n > 0) this.ensureTimes(sim.state);
+        if (k === 'traffic') this.tmDirty = true;
       }),
       sim.events.on('buildingAdded', (b) => this.onBuildingEvent(b)),
       sim.events.on('buildingRemoved', (b) => this.onBuildingEvent(b)),
@@ -1948,6 +1943,10 @@ export class EmergencySystem implements SimSystem {
       }
       // expire effects
       if (this.p.effects.length) this.p.effects = this.p.effects.filter((e) => e.until > st.day);
+      // the siren times after a traffic update, also when no search needed them today: a save holds the times the next
+      // search uses (Persist.siren; the same values the lazy refresh computes — traffic writes its layer only with the
+      // update)
+      if (this.tmDirty && this.g.N === st.size && this.g.n > 0) this.ensureTimes(st);
       this.rebuildCaches(st);
       this.writeStats(st);
       this.persist();

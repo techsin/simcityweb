@@ -17,6 +17,7 @@ import { APPROVAL_TERMS, OUTAGE_EXIT_DAYS } from '../../src/sim/economy/tuning';
 import { deserializeCity, serializeCity } from '../../src/save/serialize';
 import { Simulation as Sim } from '../../src/sim/Simulation';
 import { economySystems } from '../../src/sim/systems/economy';
+import { demographicsData, eqHqDaily, updateEqHq } from '../../src/sim/economy/demographics';
 
 let nextId = 3_000_000;
 /** 92 apartment blocks (2x2, 130 residents each, ~12k residents) on both sides of an edge-to-edge avenue; the utilities
@@ -157,6 +158,42 @@ describe('final fixes V5: the monthly resident survey is gathered in daily slice
     runTo(sim2, 90);
     const a = econData(u.st).approvalTerms, b = econData(st2).approvalTerms;
     for (const k of ['noise', 'outages', 'garbage', 'crime', 'pollution']) expect(b[k] ?? 0).toBeCloseTo(a[k] ?? 0, 9);
+  });
+
+  it('EQ / HQ: the homes read in daily slices give the step of one full pass, across a save mid-month', { timeout: 120000 }, () => {
+    const make = () => {
+      const t = town();
+      t.homes.forEach((b, k) => { b.edu = 0.2 + 0.01 * (k % 50); });
+      for (let i = 0; i < t.st.cells; i++) { t.st.healthCov[i] = (i % 7) / 7; t.st.airPollution[i] = (i % 5) / 10; t.st.noise[i] = (i % 3) / 6; }
+      t.st.stats.eq = 50; t.st.stats.hq = 60;
+      return t;
+    };
+    // full pass on day 55 (the step day 25 + 30)
+    const F = make();
+    F.st.day = 55;
+    expect(updateEqHq(F.st, F.homes, 30)).toBe(true);
+    // daily slices from day 26: nothing moves until the step day, then the same step
+    const S = make();
+    let st = S.st;
+    for (let day = 26; day <= 55; day++) {
+      st.day = day;
+      if (day === 40) st = deserializeCity(serializeCity(st, { copy: true })); // a save mid-month continues the sums
+      const homes = S.homes.map((b) => st.buildings.get(b.id)!);
+      const r = eqHqDaily(st, homes, 25, 30);
+      if (day < 55) { expect(r).toBeNull(); expect(st.stats.eq).toBe(50); }
+      else expect(r).toBe(true);
+    }
+    expect(st.stats.eq).not.toBe(50);
+    // (a save stores b.edu in float32: the sums of the loaded half differ in the 8th digit)
+    expect(st.stats.eq).toBeCloseTo(F.st.stats.eq, 6);
+    expect(st.stats.hq).toBeCloseTo(F.st.stats.hq, 6);
+    expect(demographicsData(st).eqhq!.done).toBe(0);
+    // a city whose slices are incomplete on the step day (new / loaded) takes the full pass
+    const L = make();
+    L.st.day = 55;
+    expect(eqHqDaily(L.st, L.homes, 25, 30)).toBe(true);
+    expect(L.st.stats.eq).toBe(F.st.stats.eq);
+    expect(L.st.stats.hq).toBe(F.st.stats.hq);
   });
 
   it('tourism: the hotel rooms and historic sites gathered in daily slices equal one full pass', { timeout: 120000 }, () => {

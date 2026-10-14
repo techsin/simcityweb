@@ -45,7 +45,7 @@ import type { FactorTerm } from '../explain';
 import { getDef } from '../catalog';
 import {
   type DemographicsCtx, DemographicsCache, REC_NOISE, REC_RAW, REC_UNMET, bindDemographics, demographicsCtx,
-  demographicsData, demographicsSim, evaluateNeeds, needsOf, updateDemographics, updateEqHq,
+  demographicsData, demographicsSim, eqHqDaily, evaluateNeeds, needsOf, updateDemographics,
 } from './demographics';
 
 /** duck-typed view of sim-infra's TrafficSystem (optional methods; -1 = not assessed yet) */
@@ -724,8 +724,9 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       if (sim.state.day % DAYS_PER_MONTH === 7) pruneOutages(sim.state);
       // EQ / HQ from the residents' education stock and health access, once a month (with sim-infra services; approval
       // keeps the legacy coverage lag in sim-core-only runs) — on day EQHQ_DAY of the month, not on the month tick,
-      // which already carries every system's monthly work (a loop over all homes: ~16 ms at 300k residents)
-      if (sim.state.day % DAYS_PER_MONTH === EQHQ_DAY && infraFlags(sim.state).services) updateEqHq(sim.state, rt.growables, DAYS_PER_MONTH, sim, defOf);
+      // which already carries every system's monthly work; the homes are read in daily slices (a loop over all homes
+      // on one day: ~8 ms at 900k residents; final fixes V5)
+      if (infraFlags(sim.state).services) eqHqDaily(sim.state, rt.growables, EQHQ_DAY, DAYS_PER_MONTH, sim, defOf);
       rt.timing.population = performance.now() - t0;
     },
 

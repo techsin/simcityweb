@@ -124,6 +124,10 @@ const GRID = 9;
 export const JAIL_GAP = 12;
 /** a cluster of buildings beyond garbage-truck range producing this much (t / month) gets a facility (ensureGarbage) */
 const GARB_RANGE_MIN_T = 10;
+/** ... and so does a cluster holding this many shops / offices, whatever their tonnage (routed 4: a new shop beyond the
+ *  trucks' reach sinks on its own small pile within a year, while the tonnage test grows with the city — 0.3 % of a
+ *  1M city's garbage is ~90 t a month, a few new shop blocks at the edge make 5–20 t) */
+const GARB_RANGE_MIN_BIZ = 4;
 /** small parks a school or clinic may replace when a built-up district has no other lot (placeByClearing) */
 const POCKET_PARKS = new Set(['park_small', 'park_plaza', 'park_playground']);
 /** a placeByClearing site the facility cannot stand on is not tried again for this many days */
@@ -422,13 +426,29 @@ export class SimBot {
       if (d < bd) { bd = d; best = b; }
     }
     if (best || (use !== 'I' && use !== 'C')) return best;
-    // sector full: repurpose the undeveloped residential block closest to existing blocks of that use
-    const same = this.blocks.filter((o) => o.developed && o.use === use);
-    for (const b of this.blocks) {
-      if (b.developed || b.use !== 'R' || !this.touchesDeveloped(b)) continue;
-      let dmin = Infinity;
-      for (const o of same) dmin = Math.min(dmin, Math.abs(o.bx - b.bx) + Math.abs(o.bz - b.bz));
-      if (dmin < bd) { bd = dmin; best = b; }
+    // sector full: repurpose an undeveloped residential block next to town — industry the one closest to the existing
+    // industry (the park, away from homes); commerce the one nearest the core with the most homes around it, its
+    // customers (PB-BOTFALLBACK: picking the block nearest any commercial block chained 12 shop blocks along the north
+    // map edge of 256 s11, whose CS$$$ shops abandoned in 2011-16)
+    if (use === 'C') {
+      for (const b of this.blocks) {
+        if (b.developed || b.use !== 'R' || !this.touchesDeveloped(b)) continue;
+        let homes = 0;
+        for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+          const o = this.byKey.get(b.bx + dx + ',' + (b.bz + dz));
+          if (o && o !== b && o.developed && o.use === 'R') homes++;
+        }
+        const d = b.ring - 0.5 * homes + 0.01 * Math.hypot(b.bx - this.cbx + 0.5, b.bz - this.cbz + 0.5);
+        if (d < bd) { bd = d; best = b; }
+      }
+    } else {
+      const same = this.blocks.filter((o) => o.developed && o.use === use);
+      for (const b of this.blocks) {
+        if (b.developed || b.use !== 'R' || !this.touchesDeveloped(b)) continue;
+        let dmin = Infinity;
+        for (const o of same) dmin = Math.min(dmin, Math.abs(o.bx - b.bx) + Math.abs(o.bz - b.bz));
+        if (dmin < bd) { bd = dmin; best = b; }
+      }
     }
     if (best) best.use = use;
     return best;
@@ -1051,7 +1071,7 @@ export class SimBot {
       this.garbageRange = this.garbageRange.filter((p) => st.day - p.day < 120);
       const t = this.outOfRangeCenter(pol);
       if (t && !this.garbageRange.some((p) => Math.hypot(p.x - t.x, p.z - t.z) < 30) &&
-        (t.tons >= Math.max(GARB_RANGE_MIN_T, 0.003 * g.producedT) || g.outOfRangeT > 0.01 * g.producedT)) {
+        (t.tons >= Math.max(GARB_RANGE_MIN_T, 0.003 * g.producedT) || t.biz >= GARB_RANGE_MIN_BIZ || g.outOfRangeT > 0.01 * g.producedT)) {
         const ok = this.garbageFacilityNear(t.x, t.z, live < lfCap + 64);
         this.svcRetry.set('garbage:range', st.day + (ok ? 30 : 60));
         if (ok) { this.garbageRange.push({ x: t.x, z: t.z, day: st.day }); return; }
@@ -1130,18 +1150,26 @@ export class SimBot {
   }
 
   /**
-   * garbage-weighted centre of the LARGEST cluster of buildings beyond truck range and its garbage (t / month; null if
-   * none): districts beyond range usually ring the city, so their overall centroid would sit in the (served) middle
+   * garbage-weighted centre of the LARGEST cluster of buildings beyond truck range, its garbage (t / month) and the
+   * shops / offices in it (null if none): districts beyond range usually ring the city, so their overall centroid would
+   * sit in the (served) middle. Homes, shops, offices and industry all count; a shop or office counts at least
+   * GARB_RANGE_MIN_T / GARB_RANGE_MIN_BIZ tons (a new one makes little garbage yet sinks on it: routed 4).
    */
-  private outOfRangeCenter(pol: GarbageApi): { x: number; z: number; tons: number } | null {
+  private outOfRangeCenter(pol: GarbageApi): { x: number; z: number; tons: number; biz: number } | null {
     const B = 3 * GRID, nb = Math.ceil(this.N / B);
     const w = new Float64Array(nb * nb), wx = new Float64Array(nb * nb), wz = new Float64Array(nb * nb);
+    const t = new Float64Array(nb * nb), nBiz = new Float64Array(nb * nb);
+    const bizT = GARB_RANGE_MIN_T / GARB_RANGE_MIN_BIZ;
     for (const b of this.st.buildings.values()) {
       const gi = pol.garbageInfo(b.id);
       if (!gi || gi.collected || gi.reason !== 'range' || !(gi.producedT > 0)) continue;
+      const dv = b.flags & BF.Plopped ? -1 : getDef(b.def)?.devType ?? -1;
+      const biz = dv >= DevType.CS1 && dv <= DevType.CO3;
+      const wt = biz ? Math.max(bizT, gi.producedT) : gi.producedT;
       const x = b.x + b.w / 2, z = b.z + b.d / 2;
       const k = Math.min(nb - 1, Math.floor(z / B)) * nb + Math.min(nb - 1, Math.floor(x / B));
-      w[k] += gi.producedT; wx[k] += x * gi.producedT; wz[k] += z * gi.producedT;
+      w[k] += wt; wx[k] += x * wt; wz[k] += z * wt; t[k] += gi.producedT;
+      if (biz) nBiz[k]++;
     }
     let best = -1, bw = 0;
     for (let k = 0; k < nb * nb; k++) {
@@ -1156,14 +1184,14 @@ export class SimBot {
     }
     if (best < 0) return null;
     const kx = best % nb, kz = (best - kx) / nb;
-    let sx = 0, sz = 0, sw = 0;
+    let sx = 0, sz = 0, sw = 0, st = 0, sb = 0;
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
       const x = kx + dx, z = kz + dz;
       if (x < 0 || z < 0 || x >= nb || z >= nb) continue;
       const k = z * nb + x;
-      sx += wx[k]; sz += wz[k]; sw += w[k];
+      sx += wx[k]; sz += wz[k]; sw += w[k]; st += t[k]; sb += nBiz[k];
     }
-    return sw > 0 ? { x: sx / sw, z: sz / sw, tons: sw } : null;
+    return sw > 0 ? { x: sx / sw, z: sz / sw, tons: st, biz: sb } : null;
   }
 
   /** a garbage facility for the district around (x, z): recycling center, landfill block (if room), incinerator */
