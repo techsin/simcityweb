@@ -832,6 +832,15 @@ export const NEED_W: Readonly<Record<'elementary' | 'high' | 'college' | 'health
 };
 export const QUIET_NOISE = 0.35;
 export const QUIET_SPAN = 0.4;
+/**
+ * SENIOR PULL (demographics.ts senScore; the Seniors appeal view mirrors it): seniors move toward clinics / hospitals,
+ * gardens, shops and QUIET streets — 0.45 health + 0.2 green + 0.2 shops + SEN_QUIET − SEN_NOISE × the quiet-need gap
+ * (noise above QUIET_NOISE over QUIET_SPAN, as needsOf's 'Quiet streets'). (Final fixes F9: the old 0.15 × (1 − noise)
+ * moved the score by 0.04 when every highway near 160 homes was downgraded — noise 0.51 → 0.27 — and the senior share
+ * did not move; now 0.25, about half of what losing every clinic costs.)
+ */
+export const SEN_QUIET = 0.15;
+export const SEN_NOISE = 0.6;
 /** BF.NeedsUnmet: a kids (elementary) / teens (high school) / seniors (health) need with gap >= this, >= NEEDS_UNMET_PEOPLE people */
 export const NEEDS_UNMET_GAP = 0.5;
 export const NEEDS_UNMET_PEOPLE = 3;

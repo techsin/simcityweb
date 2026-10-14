@@ -18,7 +18,7 @@ import { DEV_TYPE_COUNT, DEV_TYPE_LABELS, DevType, Network, Overlay, Zone, isRoa
 import { RESP_NONE, type Building, type CityState } from '../CityState';
 import type { Simulation } from '../Simulation';
 import { getDef } from '../catalog';
-import { COHORT_BASE, COVERAGE_FALLBACK, TAP_SAFE, WORKFORCE_RATIO } from '../economy/tuning';
+import { COHORT_BASE, COVERAGE_FALLBACK, QUIET_NOISE, QUIET_SPAN, SEN_NOISE, SEN_QUIET, TAP_SAFE, WORKFORCE_RATIO } from '../economy/tuning';
 import { cohortShares, demographicsSim } from '../economy/demographics';
 import { truckVolumeOf } from './transportFacilities';
 import type { UtilitiesSystem } from './utilities';
@@ -596,7 +596,7 @@ function servicesOn(st: CityState): boolean {
  * loop — the same weights; tests/infra/overlays.test.ts pins it to the demographics functions cell by cell.
  */
 function buildAppeal(st: CityState, variant: number, out: Float32Array): void {
-  const C = st.cells, f = COVERAGE_FALLBACK;
+  const C = st.cells, f = COVERAGE_FALLBACK, qInv = 1 / QUIET_SPAN;
   const crime = st.crime, noise = st.noise, water = st.water;
   if (!servicesOn(st)) {
     // no services system: every coverage reads COVERAGE_FALLBACK (demographics.ts accessAt)
@@ -604,7 +604,7 @@ function buildAppeal(st: CityState, variant: number, out: Float32Array): void {
       if (water[i]) continue;
       let v: number;
       if (variant === DESIR_FAMILIES) { const nz = noise[i]; v = 0.85 * f + 0.15 * (1 - crime[i]) - 0.1 * (nz > 0.3 ? nz - 0.3 : 0); }
-      else if (variant === DESIR_SENIORS) v = 0.85 * f + 0.15 * (1 - noise[i]);
+      else if (variant === DESIR_SENIORS) { const g = (noise[i] - QUIET_NOISE) * qInv; v = 0.85 * f + SEN_QUIET - SEN_NOISE * (g < 0 ? 0 : g > 1 ? 1 : g); }
       else v = f;
       out[i] = v < 0 ? 0 : v > 1 ? 1 : v;
     }
@@ -622,7 +622,9 @@ function buildAppeal(st: CityState, variant: number, out: Float32Array): void {
     const Hc = st.healthCov, G = st.greenCov, S = st.shopAccess;
     for (let i = 0; i < C; i++) {
       if (water[i]) continue;
-      const v = 0.45 * Hc[i] + 0.2 * G[i] + 0.2 * S[i] + 0.15 * (1 - noise[i]);
+      // (quiet gap = demographics.ts quietGap: noise above QUIET_NOISE over QUIET_SPAN)
+      const g = (noise[i] - QUIET_NOISE) * qInv;
+      const v = 0.45 * Hc[i] + 0.2 * G[i] + 0.2 * S[i] + SEN_QUIET - SEN_NOISE * (g < 0 ? 0 : g > 1 ? 1 : g);
       out[i] = v < 0 ? 0 : v > 1 ? 1 : v;
     }
   } else {

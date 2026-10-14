@@ -7,7 +7,8 @@
  *   form     house / apartment / tower (def.household, else HOUSEHOLD_BY_MODEL, else by stage)
  *   LIFE     new suburbs are full of children, 30 years later they are full of seniors (damped for apartments / towers)
  *   PULL     families move where schools / playgrounds are (famScore), students near colleges and transit (studScore),
- *            seniors near clinics, gardens, shops and quiet streets (senScore; × city HQ). Floor PULL_MIN.
+ *            seniors near clinics, gardens, shops and quiet streets (senScore: noise above QUIET_NOISE pushes them away,
+ *            SEN_NOISE; × city HQ). Floor PULL_MIN.
  *   VAR      ±COHORT_VAR per building (deterministic hash of the id).
  *   A new building is seeded with t; afterwards shares move toward t with the turnover rate + the newcomer share.
  * WORKFORCE (b.wf) = adults × PART_ADULT[w] × (.94 + .06 min(1, HQ/100)) + young adults × (.7 working / .25 studying,
@@ -40,7 +41,7 @@ import {
   HQ_FLOOR, HQ_LAG_YEARS, HQ_NOISE, HQ_SPAN_ACCESS, HQ_TAP, LIFE_DAMP, NEEDS_PENALTY_MAX, NEEDS_POP_FULL, NEEDS_POP_START,
   NEEDS_UNMET_GAP,
   NEEDS_UNMET_PEOPLE, NEED_OK, NEED_W, PART_ADULT, PART_SENIOR, PART_TEEN, PART_YAD_STUDY, PART_YAD_WORK, PATIENT_W,
-  PULL_MIN, QUIET_NOISE, QUIET_SPAN, TAP_SAFE, TURNOVER_PER_YEAR, WATER_REQUIRED_STAGE, WORKFORCE_RATIO,
+  PULL_MIN, QUIET_NOISE, QUIET_SPAN, SEN_NOISE, SEN_QUIET, TAP_SAFE, TURNOVER_PER_YEAR, WATER_REQUIRED_STAGE, WORKFORCE_RATIO,
 } from './tuning';
 
 /** 0 kids 0-11, 1 teens 12-17, 2 young adults 18-24, 3 adults 25-64, 4 seniors 65+ */
@@ -202,14 +203,14 @@ function studScore(a: Access): number {
   return clamp01(0.6 * a.college + 0.2 * a.transit + 0.2 * a.shop);
 }
 function senScore(a: Access): number {
-  return clamp01(0.45 * a.health + 0.2 * a.green + 0.2 * a.shop + 0.15 * (1 - a.noise));
+  return clamp01(0.45 * a.health + 0.2 * a.green + 0.2 * a.shop + SEN_QUIET - SEN_NOISE * quietGap(a.noise));
 }
 
 /** appeal 0..1 of cell i for families (schools, playgrounds, safety, quiet) — WP5 overlay variant, WP6 */
 export function familyScoreAt(st: CityState, i: number): number {
   return famScore(accessAt(st, i, servicesOn(st)));
 }
-/** appeal 0..1 of cell i for seniors (clinics / hospitals, gardens, shops, quiet) */
+/** appeal 0..1 of cell i for seniors (clinics / hospitals, gardens, shops, quiet: SEN_QUIET − SEN_NOISE × quiet gap) */
 export function seniorScoreAt(st: CityState, i: number): number {
   return senScore(accessAt(st, i, servicesOn(st)));
 }
