@@ -15,7 +15,11 @@
  *            noStation) and the player can dispatch any station city-wide (dispatchOptions / dispatch);
  *            manualPossible = a free unit can still arrive before the deadline, sent within the player's window
  *            (dispatchWindowEnd: an industrial accident's plant ignites EMERG_GRACE.industrial days after the start)
- *            (LIVE mode), canSend = a free unit can be sent at all (banner without LIVE). An incident's state follows
+ *            (LIVE mode), canSend = a free unit can be sent at all (banner without LIVE). Both rest on units free at the
+ *            moment of the decision: a dispatch that takes a station's last free unit re-validates the waiting incidents
+ *            that counted on it (revalidate: a disaster's burst dispatches its incidents one after the other), and a
+ *            prompt counts as given (prompted; ignored when nobody answers) only at the day's settle point (EM-1).
+ *            An incident's state follows
  *            its PRIMARY responder (INCIDENT_RESPONDERS[kind][0]): the ambulance of an industrial accident or a
  *            collapse, sent automatically, leaves it waiting for its fire truck (and answers nothing). Minor incidents
  *            (and supporting responders) that are not covered are sent the nearest free unit
@@ -856,6 +860,9 @@ export class EmergencySystem implements SimSystem {
     this.stDirty = true;
     this.tmDirty = true;
     this.batch = false;
+    this.drained = [];
+    this.inPasses = false;
+    this.redo = false;
     // a loaded game sits between two days: today's incidents were already processed
     this.processedDay = st.day;
     this.optCache.clear();
@@ -2862,7 +2869,8 @@ export class EmergencySystem implements SimSystem {
         case 'spill': txt = `The hazardous spill at ${inc.place} was never contained and is polluting the area.`; break;
         case 'prisonRiot': txt = `Prison riot at ${inc.place}: inmates escaped!`; break;
         case 'industrial': txt = `The industrial accident at ${inc.place} was not answered in time and the plant caught fire.`; break;
-        default: txt = `${L} at ${inc.place}: help came too late${inc.deaths ? ` (${inc.deaths} dead)` : ''}.`;
+        // (a collapse: "help came too late" only when a unit of its primary responder was sent — EM-5)
+        default: txt = `${L} at ${inc.place}: ${inc.answered > 0 ? 'help came too late' : `no ${RESPONDER_UNIT[INCIDENT_RESPONDERS[inc.kind][0]][0]} reached it in time`}${inc.deaths ? ` (${inc.deaths} dead)` : ''}.`;
       }
       this.news(sim, 'failed:' + inc.kind, 3, txt, 'bad', inc.x, inc.z, adv);
     } else if (inc.major && inc.answered === 2) {

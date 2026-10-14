@@ -54,8 +54,9 @@ import { capHints, regionInputs } from './demand';
 import { residentCoverage, residentSurvey } from './approval';
 import { attractivenessBreakdown } from './tourism';
 import { facilityLoad, unservedClusters } from '../infra/catchments';
+import { buildingList } from '../infra/common';
 import { emergencyOf, uncoveredHotspots } from '../infra/emergency';
-import { EMERG_RMAX, GARBAGE_TRUCK_RANGE, MINIBUS_FLEET } from '../infra/params';
+import { EMERG_RMAX, GARBAGE_TRUCK_RANGE, MINIBUS_FLEET, PATIENTS_PER_BED } from '../infra/params';
 import type { PollutionSystem } from '../infra/pollution';
 import type { UtilitiesSystem } from '../infra/utilities';
 import type { ParkingSummary } from '../infra/parking';
@@ -68,6 +69,9 @@ import { formatMoney } from './format';
 import { buildingPowered, buildingWatered } from './population';
 import { GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, WATER_REQUIRED_STAGE } from './tuning';
 import { REWARDS } from './rewards';
+import { buildingUpkeep } from './opex';
+import { getOrdinance, ordinanceAvailable, ordinanceEffect } from './ordinances';
+import { facilityListText } from '../infra/disasters';
 
 const ADVICE_PER_MONTH = 2;
 /** no advice repeats sooner than this (days) */
@@ -244,6 +248,41 @@ interface ZoneScan {
   outWAt?: number;
   /** of outP: the homes (residential growables) */
   outPHomes?: number;
+  /**
+   * final fixes SF-2: growable lots in rubble (BF.Burnt: burnt down, or flattened by a disaster) per family (0 R, 1 C,
+   * 2 I, by the building's type), the centre cell of the first of each (-1 = none), and the rubble cells per zone (the
+   * room a family gets back once its rubble is cleared — growth never rebuilds on rubble). Optional: scans saved
+   * before lack them (= none)
+   */
+  rubbleLots?: [number, number, number];
+  rubbleAt?: [number, number, number];
+  rubbleZ?: number[];
+}
+
+/** growable lots in rubble (ZoneScan.rubbleLots / rubbleAt / rubbleZ): one pass over the buildings, a flag test each
+ *  (the infra building snapshot, not the runtime's lists: their rebuild timing stays the population system's) */
+function scanRubble(st: CityState, rt: EconRuntime, r: ZoneScan): void {
+  const N = st.size;
+  const lots: number[] = [0, 0, 0], at: number[] = [-1, -1, -1];
+  const perZone: number[] = new Array(Zone.IndHigh + 1).fill(0);
+  const list = buildingList(st);
+  for (let k = 0; k < list.length; k++) {
+    const b = list[k];
+    if (!(b.flags & BF.Burnt) || b.flags & BF.Plopped) continue;
+    const dev = rt.defOf(b)?.devType;
+    const f = dev === undefined ? -1 : dev <= DevType.R3 ? 0 : dev <= DevType.CO3 ? 1 : 2;
+    const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+    if (f >= 0) {
+      lots[f]++;
+      if (at[f] < 0) at[f] = i;
+    }
+    // (rubble on land still zoned for growth: room once cleared)
+    const zn = st.zone[i];
+    if (zn >= Zone.ResLow && zn <= Zone.IndHigh) perZone[zn] += b.w * b.d;
+  }
+  r.rubbleLots = [lots[0], lots[1], lots[2]];
+  r.rubbleAt = [at[0], at[1], at[2]];
+  r.rubbleZ = perZone;
 }
 
 /** occupied growables without power / water (ZoneScan.outP ... outWAt): one pass over the growables */
@@ -500,16 +539,22 @@ interface FacilityScan {
   /** standing bus depots and jails */
   depots: Building[];
   jails: Building[];
+  /** final fixes SF-2: service facilities in ruins (fire, police, health, education, garbage — RUIN_RANK; the power plants
+   *  and water facilities have their own lists) */
+  facBurnt: Building[];
 }
-type IdKeys = 'plants' | 'plantsBurnt' | 'plantsIsolated' | 'plantsDry' | 'waterOk' | 'waterBurnt' | 'waterNoRoad' | 'waterNoPower' | 'plantsRisky' | 'tiered' | 'depots' | 'jails';
-const ID_KEYS: readonly IdKeys[] = ['plants', 'plantsBurnt', 'plantsIsolated', 'plantsDry', 'waterOk', 'waterBurnt', 'waterNoRoad', 'waterNoPower', 'plantsRisky', 'tiered', 'depots', 'jails'];
+type IdKeys = 'plants' | 'plantsBurnt' | 'plantsIsolated' | 'plantsDry' | 'waterOk' | 'waterBurnt' | 'waterNoRoad' | 'waterNoPower' | 'plantsRisky' | 'tiered' | 'depots' | 'jails' | 'facBurnt';
+const ID_KEYS: readonly IdKeys[] = ['plants', 'plantsBurnt', 'plantsIsolated', 'plantsDry', 'waterOk', 'waterBurnt', 'waterNoRoad', 'waterNoPower', 'plantsRisky', 'tiered', 'depots', 'jails', 'facBurnt'];
+/** ruined service facilities by urgency (final fixes SF-2): fire first, then police and health — their loss leaves
+ *  emergencies unanswered */
+const RUIN_RANK: Readonly<Partial<Record<string, number>>> = { fire: 0, police: 1, health: 2, education: 3, garbage: 4 };
 /** FacilityScan as plain data (building ids): saved in AdvisorData.scan */
 type FacScanData = { [K in IdKeys]: number[] } & { burntMW: number; civicUnpowered: number; civicFirst: number; liveMW: number; fireStations: number };
 
 function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
   const f: FacScanData = {
     plants: [], plantsBurnt: [], plantsIsolated: [], burntMW: 0, plantsDry: [], waterOk: [], waterBurnt: [], waterNoRoad: [], waterNoPower: [],
-    civicUnpowered: 0, civicFirst: -1, liveMW: 0, plantsRisky: [], fireStations: 0, tiered: [], depots: [], jails: [],
+    civicUnpowered: 0, civicFirst: -1, liveMW: 0, plantsRisky: [], fireStations: 0, tiered: [], depots: [], jails: [], facBurnt: [],
   };
   rt.ensureLists();
   for (const b of rt.plopped) {
@@ -517,6 +562,7 @@ function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
     if (!def) continue;
     const burnt = (b.flags & BF.Burnt) !== 0;
     if (!burnt && def.category === 'fire') f.fireStations++;
+    if (burnt && RUIN_RANK[def.category] !== undefined && !((def.powerOut ?? 0) > 0) && !((def.waterOut ?? 0) > 0)) f.facBurnt.push(b.id);
     if (!burnt && b.built >= 1) {
       const tier = def.coverage?.tier;
       if (tier === 'elementary' || tier === 'high' || tier === 'college' || tier === 'clinic' || tier === 'hospital' || tier === 'police') f.tiered.push(b.id);
@@ -558,6 +604,42 @@ function resolveFac(st: CityState, d: FacScanData): FacilityScan {
     Object.defineProperty(f, k, { get: () => (v ??= get(d[k] ?? [])), enumerable: true });
   }
   return f;
+}
+
+/** what a ruined service facility's area lost (final fixes SF-2: the advisor names the coverage, not just the building) */
+function ruinLoss(def: BuildingDef): string {
+  const cv = def.coverage;
+  const n = (v: number) => Math.round(v).toLocaleString('en-US');
+  switch (def.category) {
+    case 'fire': return 'its area has lost its fire protection and its fire trucks';
+    case 'police': return cv ? 'its area has lost its police patrols and patrol cars' : 'its prison beds are gone';
+    case 'health': return cv?.tier === 'hospital' ? `its ${n((cv.capacity ?? 0) / PATIENTS_PER_BED)} hospital beds and its ambulances are gone` : 'its area has lost its clinic and its ambulance';
+    case 'education': {
+      const cap = cv?.capacity ?? 0;
+      return cv?.tier === 'elementary' ? `its ${n(cap)} pupils have lost their seats` : cv?.tier === 'high' ? `its ${n(cap)} students have lost their seats`
+        : cv?.tier === 'college' ? `its ${n(cap)} students have lost their places` : 'its learners have lost their places';
+    }
+    case 'garbage': return `its ${n(def.garbageCapacity ?? 0)} t a month of garbage capacity is gone`;
+    default: return 'its service is gone';
+  }
+}
+/** the monthly upkeep a ruin still costs until it is bulldozed (budget.ts charges the building part of a ruin) */
+function ruinUpkeep(st: CityState, def: BuildingDef): number {
+  const f = def.service ? (st.budget.funding[def.service] ?? 100) / 100 : 1;
+  return buildingUpkeep(st, def) * f;
+}
+/** rubble lots before the rubble advice speaks (final fixes SF-2; fewer are named by the zone rules when they block room) */
+const RUBBLE_MIN_LOTS = 8;
+/** what grows on a family's land (0 R, 1 C, 2 I) */
+const FAM_NOUN = ['homes', 'shops and offices', 'industry'];
+/** who wants in, per sub-type hint (SUBTYPE_HINT) */
+const SUBTYPE_LEAD: Readonly<Partial<Record<number, string>>> = {
+  [DevType.IHT]: 'High-tech industry wants to move in', [DevType.IA]: 'Farmers are looking for land',
+  [DevType.CO3]: 'Corporate offices (CO$$$) want to open', [DevType.R3]: 'Wealthy residents are looking for homes',
+};
+/** "a", "a and b", "a, b and c" */
+function andList(parts: readonly string[]): string {
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0] ?? '';
 }
 
 /**
@@ -1212,6 +1294,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     if (scratch.visited.length !== st.cells) scratch = { visited: new Uint8Array(st.cells), stack: new Int32Array(st.cells), lots: new Int32Array(st.cells) };
     const r = scanZones(st, util, scratch.visited, scratch.stack, scratch.lots);
     if (util) scanOutages(st, rt, r);
+    scanRubble(st, rt, r);
     return r;
   };
   /** the emergency response layers are computed (the fire / ambulance reach of homes is known) */
@@ -1311,13 +1394,16 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     const at = (b: Building) => ({ x: b.x + (b.w >> 1), z: b.z + (b.d >> 1) });
     const cellAt = (i: number): { x?: number; z?: number } => (i >= 0 ? { x: i % N, z: (i / N) | 0 } : {});
     const burntWhat = (list: Building[], many: string) => (list.length > 1 ? `${list.length} ${many}` : `The ${nameOf(list[0])}`);
+    // (final fixes SF-2: "in ruins", not "burned down" — a tornado or a quake flattens as well; a ruin's upkeep is still
+    // charged until it is bulldozed)
+    const lie = (list: Building[]) => (list.length > 1 ? 'lie' : 'lies');
     const needPower = zoned > 30 || rt.totals.growables > 0;
     // the grid is dark: no plant delivers, or none stands any more (a fire or the bulldozer took the last one after the
     // utilities' last pass, whose supply stat still counts it)
     const dark = s.powerSupply <= 0 || fac.plants.length === 0;
     if (dark && fac.plantsBurnt.length && (needPower || s.powerDemand > 0)) {
       out.push({ id: 'plantBurnt', cooldown: 60, priority: 10, kind: 'bad', advisor: 'utilities', ...at(fac.plantsBurnt[0]),
-        text: `${burntWhat(fac.plantsBurnt, 'power plants')} burned down — the city has no power! Bulldoze the rubble and build a new power plant.` });
+        text: `${burntWhat(fac.plantsBurnt, 'power plants')} ${lie(fac.plantsBurnt)} in ruins — the city has no power! Bulldoze the rubble and build a new power plant.` });
     } else if (dark && needPower) {
       if (util && fac.plants.length) {
         // plants stand but deliver nothing (ordinance shutdown, idle incinerator, …)
@@ -1343,7 +1429,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     // the back-off of this note must not hold back the "no power" alarm above once the last plant goes too
     if (!dark && fac.burntMW > 0 && fac.burntMW >= 0.1 * (fac.liveMW + fac.burntMW)) {
       out.push({ id: 'plantBurntPart', cooldown: 90, priority: 7, kind: 'warning', advisor: 'utilities', ...at(fac.plantsBurnt[0]),
-        text: `${burntWhat(fac.plantsBurnt, 'power plants')} burned down (−${int(fac.burntMW)} MW). Bulldoze the rubble and replace it before the grid runs short.` });
+        text: `${burntWhat(fac.plantsBurnt, 'power plants')} ${lie(fac.plantsBurnt)} in ruins (−${int(fac.burntMW)} MW). Bulldoze the rubble and replace ${fac.plantsBurnt.length > 1 ? 'them' : 'it'} before the grid runs short — ${fac.plantsBurnt.length > 1 ? 'their' : 'its'} upkeep is still charged until you do.` });
     }
     // thermal plants without cooling water run at reduced output — only worth a word once the capacity gets tight
     if (util && fac.plantsDry.length && s.powerSupply > 0 && s.powerDemand > s.powerSupply * 0.7) {
@@ -1393,7 +1479,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       const dry = s.waterSupply <= 0;
       if (fac.waterBurnt.length) {
         out.push({ id: 'waterBurnt', cooldown: 90, priority: dry ? 8 : 5, kind: 'warning', advisor: 'utilities', ...at(fac.waterBurnt[0]),
-          text: `${burntWhat(fac.waterBurnt, 'water facilities')} burned down${dry ? ' — the taps have run dry' : ''}. Bulldoze the rubble and build a new one.` });
+          text: `${burntWhat(fac.waterBurnt, 'water facilities')} ${lie(fac.waterBurnt)} in ruins${dry ? ' — the taps have run dry' : ''}. Bulldoze the rubble and build a new one — ${fac.waterBurnt.length > 1 ? 'their' : 'its'} upkeep is still charged until you do.` });
       }
       if (fac.waterNoRoad.length) {
         const b = fac.waterNoRoad[0];
@@ -1422,6 +1508,22 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
           out.push({ id: 'waterGap', cooldown: 90, priority: none ? 7 : 5, kind: 'warning', advisor: 'utilities', confirm: true, ...cellAt(scan.unwateredAt),
             text: `Water is flowing, but ${count(lotsW, 'medium/high-density tile')} ${lotsW === 1 ? 'has' : 'have'} none, so they can't grow. Pipes run under roads — connect those roads to ${to}.` });
         }
+      }
+    }
+    // ---------------- ruined city facilities (final fixes SF-2): a tornado flattened the Fire Station and nothing said so
+    // — say what is lost, that the ruin still costs its upkeep, and point at it (fire first, then police and health)
+    if (fac.facBurnt.length) {
+      const rank = (b: Building) => RUIN_RANK[rt.defOf(b)?.category ?? ''] ?? 9;
+      const ruins = [...fac.facBurnt].sort((a, c) => rank(a) - rank(c) || a.id - c.id);
+      const b = ruins[0], def = rt.defOf(b), r0 = rank(b), n = ruins.length;
+      if (def) {
+        let upkeep = 0;
+        for (const o of ruins) { const od = rt.defOf(o); if (od) upkeep += ruinUpkeep(st, od); }
+        const cost = upkeep >= 0.5 ? ` (${money(upkeep)}/mo)` : '';
+        out.push({ id: 'facilityRuins', cooldown: 90, priority: r0 === 0 ? 8 : r0 <= 2 ? 7 : 5, kind: 'warning', advisor: r0 <= 1 ? 'safety' : r0 <= 3 ? 'health' : 'utilities', ...at(b),
+          text: n === 1
+            ? `Your ${def.name} lies in ruins — ${ruinLoss(def)}. Bulldoze the rubble and build a new one: its upkeep${cost} is still charged until you bulldoze it.`
+            : `${n} city facilities lie in ruins (${facilityListText(ruins.map((o) => o.def))}) — the ${def.name}: ${ruinLoss(def)}. Bulldoze the rubble and rebuild them: their upkeep${cost} is still charged until you bulldoze them.` });
       }
     }
     // ---------------- transport
@@ -1499,6 +1601,29 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     }
     const famDemand = (a: number, b: number) => { let m = -1; for (let k = a; k <= b; k++) m = Math.max(m, s.demand[k]); return m; };
     const room = (zs: number[]) => zs.reduce((t, z) => t + rt.emptyFront[z], 0);
+    // ---------------- rubble (final fixes SF-2): growth never rebuilds on rubble (growth.ts) — it waits for the bulldozer or
+    // the Municipal Demolition Crews ordinance (cleared after RUBBLE_CLEAR_DAYS; quiet while enacted). 55 burnt lots sat
+    // for years while this planner asked for more residential land: rubble counts as room in the "no room" rules below,
+    // which name it first
+    const crewsOn = ordinanceEffect(st, 'add.rubble.cleanup') > 0;
+    const rubLots = scan.rubbleLots ?? [0, 0, 0];
+    const rubbleRoom = (zs: number[]) => (scan.rubbleZ ? zs.reduce((t, z) => t + (scan.rubbleZ![z] ?? 0), 0) : 0);
+    const crews = getOrdinance('rubble_cleanup');
+    /** the fix for rubble: the bulldozer, or the ordinance once it is available */
+    const clearIt = (them: string) => (crews && ordinanceAvailable(st, crews)
+      ? `bulldoze ${them} or enact ${crews.name} (Ordinances)`
+      : `bulldoze ${them}${crews ? ` (${crews.name}, who clear rubble automatically, come with ${int(crews.unlockPop)} residents)` : ''}`);
+    const rubbleN = rubLots[0] + rubLots[1] + rubLots[2];
+    const rubbleCard = !crewsOn && rubbleN >= RUBBLE_MIN_LOTS;
+    if (rubbleCard) {
+      const kinds = andList([rubLots[0] ? count(rubLots[0], 'home') : '', rubLots[1] ? `${int(rubLots[1])} ${rubLots[1] === 1 ? 'shop or office' : 'shops and offices'}` : '',
+        rubLots[2] ? count(rubLots[2], 'industrial building') : ''].filter(Boolean));
+      const fMax = rubLots[0] >= rubLots[1] && rubLots[0] >= rubLots[2] ? 0 : rubLots[1] >= rubLots[2] ? 1 : 2;
+      out.push({ id: 'rubble', cooldown: 120, priority: 5, kind: 'warning', advisor: 'planning', ...cellAt(scan.rubbleAt?.[fMax] ?? -1),
+        text: `${count(rubbleN, 'lot')} (${kinds}) lie in rubble — ${clearIt('them')} so they can rebuild.` });
+    }
+    /** a "no room" rule named the rubble (the sub-type hints then stay quiet) */
+    let rubbleSaid = false;
     // no room to grow although the family has zoned land that no road reaches: say that, not "zone more land"
     // ('noRoadAccess', a confirm rule, only speaks a month later)
     const roadless = (f: 0 | 1 | 2, what: string, lead: string) => {
@@ -1534,6 +1659,22 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       const base = { id, cooldown: 90, priority: 6, kind: 'info' as const, advisor: 'planning' };
       const rl = roadless(f, what, lead);
       if (rl) { out.push({ ...base, ...rl }); return; }
+      // (SF-2) rubble on the family's zones is room once cleared: name it before asking for more land. While the crews
+      // are enacted it is on its way (quiet when it is enough); the rubble advice above says it when it is enough
+      const rub = rubbleRoom(zs);
+      if (rub > 0) {
+        const enough = room(zs) + rub >= minRoom;
+        if (crewsOn) { if (enough) return; }
+        else {
+          rubbleSaid = true;
+          if (enough && rubbleCard) return;
+          const n = rubLots[f];
+          const lots = n > 0 ? `${count(n, `${what} lot`)} ${n === 1 ? 'lies' : 'lie'}` : `some ${what} lots lie`;
+          out.push({ ...base, ...cellAt(scan.rubbleAt?.[f] ?? -1),
+            text: `${lead}, but there is no room: ${lots} in rubble — ${clearIt(n === 1 ? 'it' : 'them')} so ${FAM_NOUN[f]} can rebuild there${enough ? '' : `, and zone more ${what} land along roads`}.` });
+          return;
+        }
+      }
       // only the picky type wants in (the others' demand is weak): more land helps only where it fits (near the best
       // spot), else say what it needs
       if (ordDemand(a, b, picky) <= 0.25 && zoneOf(picky)) {
@@ -1559,6 +1700,14 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     ];
     for (const [dev, zs, text] of SUBTYPE_HINT) {
       if (!(s.demand[dev] > 0.6) || room(zs) !== 0) continue;
+      // (SF-2) its zones hold rubble: room once cleared — the rubble advice or the family rule may have named it
+      const rub = rubbleRoom(zs);
+      if (rub > 0) {
+        if (crewsOn || rubbleCard || rubbleSaid) continue;
+        out.push({ id: 'zoneDev' + dev, cooldown: 150, priority: 6, kind: 'info', advisor: 'planning', ...cellAt(scan.rubbleAt?.[dev <= DevType.R3 ? 0 : dev <= DevType.CO3 ? 1 : 2] ?? -1),
+          text: `${SUBTYPE_LEAD[dev] ?? 'Businesses want to move in'}, but the only room is ${count(rub, 'tile')} of rubble — ${clearIt('it')} so they can build there.` });
+        continue;
+      }
       const pick = PICKY_TEXT[dev];
       const unfit = !!pick && !!scan.host && scan.host[dev] > 0 && !fitAny(dev);
       const said = out.some((o) => o.text === pick?.unfit || o.text === pick?.room);

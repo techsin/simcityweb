@@ -16,7 +16,7 @@ import { cachedLodProxy, lodProxyExcluded, lodProxyFor, setCachedLodProxy } from
 
 type Done = (g: THREE.BufferGeometry | null) => void;
 interface Job { key: string; geo: THREE.BufferGeometry; done: Done[]; urgent: boolean; worker: number }
-interface Reply { key: string; ok: boolean; position?: Float32Array; normal?: Float32Array; color?: Float32Array; surf?: Float32Array }
+interface Reply { key: string; ok: boolean; position?: Float32Array; normal?: Float32Array; color?: Float32Array; surf?: Float32Array; failed?: boolean }
 
 /** workers in the pool: two where the machine has four or more cores (the main thread, the GPU process and the
  *  compositor keep the others busy), else one */
@@ -119,6 +119,7 @@ export class LodProxyBuilder {
   }
 
   private onReply(w: number, r: Reply): void {
+    if (r.failed) { this.fail(); return; }
     if (w < this.posted.length) this.posted[w] = Math.max(0, this.posted[w] - 1);
     let g: THREE.BufferGeometry | null = null;
     if (r.ok && r.position && r.normal && r.color && r.surf) {

@@ -1528,3 +1528,73 @@ describe('street prop LOD', () => {
     expect(sawOff).toBeGreaterThan(50);
   }, 120_000);
 });
+
+describe('LOD proxy worker pool', () => {
+  it('posts a load prefetch in bulk to a small pool, bounded per worker, and lets urgent requests jump ahead', async () => {
+    // fake module workers: record what the builder posts, answer on demand
+    class FakeWorker {
+      static all: FakeWorker[] = [];
+      posted: Record<string, unknown>[] = [];
+      onmessage: ((e: { data: unknown }) => void) | null = null;
+      onerror: ((e: unknown) => void) | null = null;
+      constructor(public url: URL, public opts: unknown) { FakeWorker.all.push(this); }
+      postMessage(m: Record<string, unknown>): void { this.posted.push(m); }
+      terminate(): void {}
+      reply(key: string): void { this.onmessage?.({ data: { key, ok: false } }); }
+      jobs(): string[] { return this.posted.filter((m) => 'position' in m).map((m) => m.key as string); }
+    }
+    vi.stubGlobal('Worker', FakeWorker);
+    vi.stubGlobal('window', {});
+    vi.stubGlobal('navigator', { hardwareConcurrency: 8 });
+    try {
+      const { LodProxyBuilder } = await import('../../src/render/city/buildings/lodBuilder');
+      const pb = new LodProxyBuilder();
+      expect(pb.available).toBe(true);
+      expect(FakeWorker.all.length).toBe(2);
+      pb.perWorker = 3;
+      const geo = () => {
+        const g = new THREE.BufferGeometry();
+        for (const n of ['position', 'color', 'surf']) g.setAttribute(n, new THREE.Float32BufferAttribute(new Float32Array(9), 3));
+        return g;
+      };
+      const done: Record<string, number> = {};
+      const ask = (k: string, urgent = false) => pb.request(`pooltest_${k}`, geo(), () => { done[k] = (done[k] ?? 0) + 1; }, urgent);
+      // a city load's prefetch: 10 background jobs, 3 posted per worker, spread over the pool
+      for (let i = 0; i < 10; i++) ask(`m${i}`);
+      const [w0, w1] = FakeWorker.all;
+      expect(w0.jobs().length).toBe(3);
+      expect(w1.jobs().length).toBe(3);
+      expect(pb.pending).toBe(10);
+      // a new urgent job goes out at once (past the bound), flagged urgent for the worker's own queue
+      ask('u0', true);
+      const urgentPosts = [...w0.posted, ...w1.posted].filter((m) => m.key === 'pooltest_u0');
+      expect(urgentPosts.length).toBe(1);
+      expect(urgentPosts[0].urgent).toBe(true);
+      // an urgent request for a job still queued here is posted at once; for a job already posted, the worker is told to
+      // take it next (a promotion, no second copy)
+      ask('m9', true);
+      expect([...w0.jobs(), ...w1.jobs()].filter((k) => k === 'pooltest_m9').length).toBe(1);
+      ask('m0', true);
+      expect([...w0.jobs(), ...w1.jobs()].filter((k) => k === 'pooltest_m0').length).toBe(1);
+      expect([...w0.posted, ...w1.posted].some((m) => m.promote === 'pooltest_m0')).toBe(true);
+      // answers free places in their worker (urgent jobs count too), which then takes the next queued jobs, at most
+      // perWorker in flight
+      const owner = w0.jobs().includes('pooltest_m1') ? w0 : w1;
+      const sent = owner.jobs();
+      for (const k of sent) owner.reply(k);
+      expect(done.m1).toBe(1);
+      const fresh = owner.jobs().slice(sent.length);
+      expect(fresh.length).toBeGreaterThan(0);
+      expect(fresh.length).toBeLessThanOrEqual(3);
+      // every job is answered once, every callback called once (duplicate requests share the job)
+      for (let guard = 0; pb.pending > 0 && guard < 100; guard++) {
+        for (const w of FakeWorker.all) for (const k of w.jobs()) if (pb.pending > 0) w.reply(k);
+      }
+      expect(pb.pending).toBe(0);
+      for (let i = 0; i < 10; i++) expect(done[`m${i}`], `m${i}`).toBe(i === 0 || i === 9 ? 2 : 1);
+      expect(done.u0).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

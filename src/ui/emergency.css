@@ -7,8 +7,11 @@
   position: absolute; top: 70px; left: 50%; transform: translateX(-50%); width: 440px; max-width: calc(100vw - 32px);
   display: flex; flex-direction: column; gap: 8px; pointer-events: none; z-index: 55;
 }
-/* (EmergencyBanner.dock sets left / width inline to keep the stack beside open panels; the "more" pill stays last) */
+/* (EmergencyBanner.dock sets left / width inline to keep the stack beside open panels — and top, when no gap is free
+   beside them: then below their title and tab rows, with only the first banners shown; the "more" pill stays last) */
 .emg-banners .emg-more { order: 9999; }
+.emg-banners .emg-banner.capped { display: none !important; }
+.emg-more .emg-more-ico { display: inline-flex; }
 .emg-banner {
   --kc: #e8542c;
   pointer-events: auto; position: relative; display: flex; gap: 11px; align-items: flex-start; padding: 10px 34px 10px 10px;

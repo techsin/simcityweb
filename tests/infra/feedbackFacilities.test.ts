@@ -140,3 +140,74 @@ describe('P3 / SF-3: def facts quote this city\'s typical cost and the full-use 
     expect(now).toBeLessThan(fullUseUpkeep(def));
   });
 });
+
+describe('final fixes round 2 (SF-3 / SF-4 / SF-9): facility lines that send the player to the right fix', () => {
+  /** a dense grid of homes with two clinics placed first (they seat their area) — the P13 town */
+  function clinicGrid() {
+    const st = newState(64);
+    for (let z = 4; z < 60; z += 4) roadLine(st, 2, z, 61, z, Network.Road);
+    roadLine(st, 2, 4, 2, 56, Network.Road);
+    roadLine(st, 61, 4, 61, 56, Network.Road);
+    const clinics = [14, 44].map((x) => place(st, 'civ_clinic', x, 30, { flags: BF.Plopped | BF.Powered | BF.Watered, age: 400 }));
+    for (let z = 5; z < 57; z += 4) for (let x = 4; x < 60; x++) {
+      if (st.network[st.idx(x, z)] !== 0 || st.building[st.idx(x, z)] >= 0) continue;
+      st.zone[st.idx(x, z)] = Zone.ResMed;
+      place(st, 't_r2', x, z, { pop: 50, flags: BF.Powered | BF.Watered });
+    }
+    return { st, clinics };
+  }
+
+  it('SF-3: the inspector\'s upkeep is its share of the running costs, and says bulldozing it saves less', () => {
+    const { st, clinics } = clinicGrid();
+    const sim = newSim(st);
+    sim.getSystem<ServicesSystem>('services')!.compute(sim, false);
+    const up = facilityReport(sim, clinics[0].id)!.lines.find((l) => l.key === 'upkeep')!;
+    // (the value keeps the "§X / month" form: the inspector header parses it)
+    expect(up.value).toMatch(/^§[\d,]+ \/ month$/);
+    expect(up.hint).toMatch(/^Its share of the city's running costs: the building §[\d,]+ \+ §[\d,]+ for the people it serves \(§[\d.]+ a month for each of the city's [\d,]+ patients\); bulldozing it saves less when nearby facilities take over its users$/);
+  });
+
+  it('SF-4: a staffed clinic without road access serves nobody — its load line says so and shows 0 seated', () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    // a clinic one row behind the homes on the road: next to them, but no road touches it
+    const clinic = place(st, 'civ_clinic', 38, 22, { flags: BF.Plopped | BF.Powered | BF.Watered, age: 100 });
+    for (let x = 4; x < 60; x++) { st.zone[st.idx(x, 21)] = Zone.ResMed; place(st, 't_r2', x, 21, { pop: 50, flags: BF.Powered | BF.Watered }); }
+    const sim = newSim(st);
+    clinic.hire = 1; clinic.jobs = 0;
+    st.stats.workforce = 2000;
+    justiceData(st).cityFill = 0.9;
+    expect(facilityOpFactor(st, clinic)).toBe(0);
+    sim.getSystem<ServicesSystem>('services')!.compute(sim, false);
+    const L = facilityLoad(sim, clinic.id)!;
+    console.log(`roadless clinic: services load seated ${L.seated.toFixed(0)} demand ${L.demand.toFixed(0)} operating ${L.operating}`);
+    const rep = facilityReport(sim, clinic.id)!;
+    const seats = rep.lines.find((l) => l.key === 'seats')!;
+    expect(seats.label).toBe('Patients');
+    expect(seats.value).toBe('0 / 8,000 (0%)');
+    expect(seats.status).toBe('bad');
+    expect(seats.hint).toBe("Serves nobody — no road access (staff can't reach it)");
+    expect(rep.lines.some((l) => l.key === 'demand')).toBe(false);
+    expect(rep.warnings).toContain('No road access — build a road beside it');
+    // a clinic on the road works as before: its real load
+    const ok = place(st, 'civ_clinic', 20, 18, { flags: BF.Plopped | BF.Powered | BF.Watered, age: 100 });
+    ok.hire = 1; ok.jobs = 30;
+    sim.getSystem<ServicesSystem>('services')!.compute(sim, false);
+    expect(facilityReport(sim, ok.id)!.lines.find((l) => l.key === 'seats')!.hint ?? '').not.toMatch(/Serves nobody/);
+  });
+
+  it('SF-9a: a hospital with no employers of its size to compare with and a road to homes is not told to fix its road', () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    for (let x = 30; x < 50; x++) { st.zone[st.idx(x, 21)] = Zone.ResLow; place(st, 't_r1', x, 21, { pop: 10 }); }
+    const hospital = place(st, 'civ_hospital', 5, 21, { flags: BF.Plopped | BF.Powered | BF.Watered, age: 300 });
+    const sim = newSim(st);
+    hospital.hire = 1; hospital.capacity = 250; hospital.jobs = 102;
+    st.stats.workforce = 5000;
+    justiceData(st).cityFill = 0.5;
+    const line = facilityReport(sim, hospital.id)!.lines.find((l) => l.key === 'staff')!;
+    expect(line.value).toMatch(/^102 \/ 250/);
+    expect(line.hint).toBe("Big employers fill last: the city's employers are 50% staffed — more homes nearby help");
+    expect(line.hint).not.toMatch(/road/);
+  });
+});

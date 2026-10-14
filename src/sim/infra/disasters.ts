@@ -15,12 +15,17 @@
  * Persistent (systemData.infraDisasters, final fixes routed 45): the random stream and the disasters under way (a tornado
  * on its path, a quake's / meteor's active days, a tornado's medical calls), so a loaded game rolls the same disasters
  * and the same tornado path as the uninterrupted one (it used to re-seed from seed + day and drop them).
+ * Final fixes SF-2 (silent ruins): a tornado counts what it destroys (ActiveDisaster.destroyed / facilities / worst,
+ * persisted; no random draws) and posts ONE summary when it ends — how many buildings, the city facilities among them
+ * ("incl. your Fire Station and Elementary School") and the fix, at the worst spot; the earthquake and meteor summaries
+ * name the destroyed city facilities too.
  */
 import { RNG } from '../../core/rng';
 import { BF, type Building } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
 import { computeWater } from '../terrainGen';
 import { nowMs, removeBuilding } from './common';
+import { getDef } from '../catalog';
 import type { FireSystem } from './fire';
 import { emergencyOf } from './emergency';
 
@@ -39,6 +44,12 @@ export interface ActiveDisaster {
   magnitude: number;
   /** tornado: medical incidents spawned along its path so far (aftermath cap TORNADO_MEDICAL_MAX) */
   calls?: number;
+  /** tornado (final fixes SF-2, its summary at the end): buildings destroyed so far, the def ids of the city facilities
+   *  among them (FACILITY_RANK) and the worst spot — the most important facility, else the fullest building: [x, z,
+   *  weight] */
+  destroyed?: number;
+  facilities?: string[];
+  worst?: [number, number, number];
 }
 
 /** systemData.infraDisasters */
@@ -57,6 +68,28 @@ const TORNADO_RADIUS = 1.2;
 const EQ_COLLAPSE_MAX = 12;
 const TORNADO_MEDICAL_MAX = 6;
 const METEOR_MEDICAL = 3;
+
+/** city facilities a disaster summary names (final fixes SF-2), by category: the lower, the more urgent to rebuild (the
+ *  tornado summary points at the most urgent one) */
+const FACILITY_RANK: Readonly<Partial<Record<string, number>>> = { fire: 0, police: 1, health: 2, power: 3, water: 4, education: 5, garbage: 6 };
+/** the rank of a destroyed building in a disaster summary (-1: not a city facility it names) */
+function facilityRank(b: Building): number {
+  const def = getDef(b.def);
+  return def ? FACILITY_RANK[def.category] ?? -1 : -1;
+}
+/** "your Fire Station, Police Station and 2 Elementary Schools" (def ids in the order destroyed; at most 3 kinds named) */
+export function facilityListText(defIds: readonly string[]): string {
+  const n = new Map<string, number>();
+  for (const id of defIds) n.set(id, (n.get(id) ?? 0) + 1);
+  const parts: string[] = [];
+  for (const [id, k] of n) {
+    const name = getDef(id)?.name ?? 'city facility';
+    parts.push(k > 1 ? `${k} ${name.endsWith('s') ? name : name + 's'}` : name);
+  }
+  const more = parts.length > 3 ? parts.length - 3 : 0;
+  const shown = more ? [...parts.slice(0, 3), `${more} more`] : parts;
+  return `your ${shown.length > 1 ? `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}` : shown[0]}`;
+}
 
 export class DisastersSystem implements SimSystem {
   readonly name = 'disasters';
@@ -82,7 +115,14 @@ export class DisastersSystem implements SimSystem {
           if (!d || (d.kind !== 'tornado' && d.kind !== 'earthquake' && d.kind !== 'meteor')) continue;
           const num = (v: unknown, f: number) => (typeof v === 'number' && Number.isFinite(v) ? v : f);
           const a: ActiveDisaster = { kind: d.kind, x: num(d.x, 0), z: num(d.z, 0), daysLeft: num(d.daysLeft, 0), heading: num(d.heading, 0), magnitude: num(d.magnitude, 1) };
-          if (d.kind === 'tornado') a.calls = num(d.calls, 0);
+          if (d.kind === 'tornado') {
+            a.calls = num(d.calls, 0);
+            // (SF-2: a save from before the summary has no tally: it counts from the load)
+            a.destroyed = num(d.destroyed, 0);
+            a.facilities = Array.isArray(d.facilities) ? d.facilities.filter((f): f is string => typeof f === 'string') : [];
+            const w = d.worst;
+            if (Array.isArray(w) && w.length === 3 && w.every((v) => typeof v === 'number' && Number.isFinite(v))) a.worst = [w[0], w[1], w[2]];
+          }
           if (a.daysLeft > 0 && st.inBounds(Math.floor(a.x), Math.floor(a.z))) this.active.push(a);
         }
       }
@@ -148,7 +188,7 @@ export class DisastersSystem implements SimSystem {
     switch (kind) {
       case 'fire': return this.startFire(sim, x, z);
       case 'tornado': {
-        const d: ActiveDisaster = { kind, x: x + 0.5, z: z + 0.5, daysLeft: TORNADO_DAYS, heading: this.rng.range(0, Math.PI * 2), magnitude: 1, calls: 0 };
+        const d: ActiveDisaster = { kind, x: x + 0.5, z: z + 0.5, daysLeft: TORNADO_DAYS, heading: this.rng.range(0, Math.PI * 2), magnitude: 1, calls: 0, destroyed: 0, facilities: [] };
         this.active.push(d);
         sim.notify('Tornado sighted! Take cover!', 'disaster', x, z, 'disaster');
         sim.events.emit('disaster', { kind, x, z, active: true });
@@ -196,11 +236,22 @@ export class DisastersSystem implements SimSystem {
     return false;
   }
 
-  private destroy(sim: Simulation, b: Building): void {
-    if (b.flags & BF.Burnt) return;
+  /** turn a building into rubble; false when it already was */
+  private destroy(sim: Simulation, b: Building): boolean {
+    if (b.flags & BF.Burnt) return false;
     b.flags = (b.flags & ~BF.OnFire) | BF.Burnt;
     this.fireSys(sim)?.fires.delete(b.id);
     sim.events.emit('buildingChanged', b);
+    return true;
+  }
+
+  /** a tornado's tally of a building it destroys (SF-2; read before the flag flip, no random draws) */
+  private tally(d: ActiveDisaster, b: Building): void {
+    d.destroyed = (d.destroyed ?? 0) + 1;
+    const rank = facilityRank(b);
+    if (rank >= 0) (d.facilities ??= []).push(b.def);
+    const w = rank >= 0 ? 1e9 - rank : b.pop + b.jobs;
+    if (!d.worst || w > d.worst[2]) d.worst = [b.x + (b.w >> 1), b.z + (b.d >> 1), w];
   }
 
   private advanceTornado(sim: Simulation, d: ActiveDisaster, days: number): void {
@@ -223,6 +274,7 @@ export class DisastersSystem implements SimSystem {
         const b = st.buildingAt(x, z);
         if (b && !(b.flags & BF.Burnt) && this.rng.next() < 0.6) {
           const occupied = b.pop + b.jobs > 0;
+          this.tally(d, b);
           this.destroy(sim, b);
           // WP8: people hurt in destroyed homes / workplaces call for ambulances along the path
           const calls = d.calls ?? 0;
@@ -249,6 +301,22 @@ export class DisastersSystem implements SimSystem {
     this.active.splice(k, 1);
     this.lastEmitCell.delete(d);
     sim.events.emit('disaster', { kind: d.kind, x: d.x, z: d.z, active: false });
+    if (d.kind === 'tornado') this.tornadoSummary(sim, d);
+  }
+
+  /**
+   * the tornado's one summary when it ends (final fixes SF-2: it used to end in silence while the quake and the meteor
+   * post one): what it destroyed, the city facilities among them and the fix, at the worst spot (else where it ended)
+   */
+  private tornadoSummary(sim: Simulation, d: ActiveDisaster): void {
+    const st = sim.state;
+    const n = d.destroyed ?? 0;
+    const fx = Math.max(0, Math.min(st.size - 1, Math.floor(d.x))), fz = Math.max(0, Math.min(st.size - 1, Math.floor(d.z)));
+    if (n <= 0) { sim.notify('The tornado has passed — no buildings were destroyed.', 'disaster', fx, fz, 'disaster'); return; }
+    const fac = d.facilities ?? [];
+    const incl = fac.length ? `, incl. ${facilityListText(fac)}` : '';
+    const [x, z] = d.worst ?? [fx, fz];
+    sim.notify(`Tornado: ${n} building${n === 1 ? '' : 's'} destroyed${incl} — bulldoze the rubble and rebuild.`, 'disaster', x, z, 'disaster');
   }
 
   private earthquake(sim: Simulation, x: number, z: number, mag: number): void {
@@ -256,6 +324,7 @@ export class DisastersSystem implements SimSystem {
     const R = 10 + (mag - 5) * 16;
     const fire = this.fireSys(sim);
     let destroyed = 0, fires = 0, rescues = 0;
+    const facilities: string[] = [];
     sim.events.emit('disaster', { kind: 'earthquake', x, z, active: true });
     for (const b of Array.from(st.buildings.values())) {
       const d = Math.hypot(b.x + b.w / 2 - x, b.z + b.d / 2 - z);
@@ -267,13 +336,16 @@ export class DisastersSystem implements SimSystem {
         const occupied = b.pop + b.jobs > 0 && !(b.flags & BF.Burnt);
         // WP8: people trapped in collapsed occupied buildings -> rescue incident (fire + medical), before the flag flip
         if (occupied && rescues < EQ_COLLAPSE_MAX && this.spawnIncident(sim, 'collapse', b) >= 0) rescues++;
+        // (SF-2: the summary names the city facilities it destroyed)
+        if (!(b.flags & BF.Burnt) && facilityRank(b) >= 0) facilities.push(b.def);
         this.destroy(sim, b);
         destroyed++;
       }
       else if (r < 0.65 && fire) { if (fire.ignite(sim, b, true)) fires++; }
     }
     if (fire) fire.riskBoost = Math.max(fire.riskBoost, 3);
-    sim.notify(`Earthquake! Magnitude ${mag.toFixed(1)}: ${destroyed} buildings destroyed, ${fires} fires${rescues ? `, people trapped in ${rescues}` : ''}.`, 'disaster', x, z, 'disaster');
+    const incl = facilities.length ? ` (incl. ${facilityListText(facilities)})` : '';
+    sim.notify(`Earthquake! Magnitude ${mag.toFixed(1)}: ${destroyed} buildings destroyed${incl}, ${fires} fires${rescues ? `, people trapped in ${rescues}` : ''}.`, 'disaster', x, z, 'disaster');
   }
 
   private meteor(sim: Simulation, x: number, z: number): void {
@@ -305,9 +377,12 @@ export class DisastersSystem implements SimSystem {
     // buildings
     const fire = this.fireSys(sim);
     let destroyed = 0;
+    const facilities: string[] = [];
     const injured: { b: Building; d: number }[] = [];
     for (const b of Array.from(st.buildings.values())) {
       const d = Math.hypot(b.x + b.w / 2 - (x + 0.5), b.z + b.d / 2 - (z + 0.5)) - Math.max(b.w, b.d) / 2;
+      // (SF-2: the summary names the city facilities it destroyed — standing ones, not rubble it buries)
+      if (d <= destroyR && !(b.flags & BF.Burnt) && facilityRank(b) >= 0) facilities.push(b.def);
       if (d <= craterR) { removeBuilding(sim, b); destroyed++; }
       else if (d <= destroyR) { this.destroy(sim, b); destroyed++; }
       else if (d <= fireR && fire && this.rng.next() < 0.35) fire.ignite(sim, b, true);
@@ -320,7 +395,7 @@ export class DisastersSystem implements SimSystem {
     sim.events.emit('treesChanged', rect);
     if (netHit) sim.events.emit('networkChanged', rect);
     if (lineHit) sim.events.emit('powerLinesChanged', rect);
-    sim.notify(`Meteor strike! ${destroyed} buildings destroyed.`, 'disaster', x, z, 'disaster');
+    sim.notify(`Meteor strike! ${destroyed} buildings destroyed${facilities.length ? `, incl. ${facilityListText(facilities)}` : ''}.`, 'disaster', x, z, 'disaster');
   }
 }
 

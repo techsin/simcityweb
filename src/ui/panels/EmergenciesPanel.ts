@@ -14,7 +14,7 @@ import { Panel } from '../Panel';
 import { clear, h, setText } from '../dom';
 import { icon } from '../icons';
 import { money, num, pct } from '../format';
-import { emgTime, kindIcon, lossText, minText, placeText, stateText } from '../EmergencyBanner';
+import { emgTime, kindIcon, lossText, minText, placeText, stateText, windowText } from '../EmergencyBanner';
 
 type Tab = 'active' | 'fleet' | 'stats';
 const RESP_ICON: Record<Responder, string> = { fire: 'fire', police: 'police', medical: 'health' };
@@ -232,7 +232,7 @@ export function activeTimeText(inc: Incident, now: number): string {
   const loss = lossText(inc);
   const need = INCIDENT_RESPONDERS[inc.kind].map((r) => `${inc.need[r] ?? 0} ${RESPONDER_UNIT[r][(inc.need[r] ?? 0) === 1 ? 0 : 1]}`).join(' + ');
   const sev = inc.kind === 'fire' ? `${inc.fires.length} burning` : inc.kind === 'riot' ? `radius ${Math.round(inc.radius)}` : inc.injured > 0 ? `${inc.injured} hurt` : '';
-  return `Needs ${need} · ${inc.units.length} assigned${sev ? ' · ' + sev : ''} · ${emgTime(now - inc.start)} ago${counting ? ` · ${emgTime(left)} left` : loss ? ` · ${loss}` : ''}`;
+  return `Needs ${need} · ${inc.units.length} assigned${sev ? ' · ' + sev : ''} · ${emgTime(now - inc.start)} ago${counting ? ` · ${windowText(inc, left)}` : loss ? ` · ${loss}` : ''}`;
 }
 
 function rank(i: Incident): number {
