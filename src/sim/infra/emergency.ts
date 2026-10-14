@@ -679,6 +679,9 @@ interface Persist {
   siren?: { sig: string; t?: Float32Array };
   /** the early-game plant grace is over: the city had a funded fire station, or EMERG_PLANT_GRACE_DAYS passed */
   plantGraceOver?: boolean;
+  /** EM-1: incidents whose "uncovered" news is posted at the day's settle point, worded by their state then (a burst's
+   *  later incident may take the unit a "Send help with the Dispatch tool!" counted on) */
+  newsDue?: number[];
 }
 
 /** early-game grace: no thermal-plant / incinerator accidents (EMERG_PLANT_P) before the first funded fire station,
@@ -956,6 +959,7 @@ export class EmergencySystem implements SimSystem {
       const sv = raw.siren;
       if (sv && typeof sv === 'object' && typeof sv.sig === 'string' && (sv.t === undefined || sv.t instanceof Float32Array)) p.siren = sv.t ? { sig: sv.sig, t: sv.t } : { sig: sv.sig };
       if (raw.plantGraceOver === true) p.plantGraceOver = true;
+      if (Array.isArray(raw.newsDue)) p.newsDue = raw.newsDue.filter((id) => typeof id === 'number');
     }
     this.p = p;
     this.rng = new RNG(((st.config.seed ^ 0x3e41c) >>> 0) || 1);
@@ -1999,15 +2003,30 @@ export class EmergencySystem implements SimSystem {
     // (inc.prompted is set at the day's settle point, dailyWork, while the prompt still holds then — EM-1)
     if (!changed) return;
     this.emit(sim, inc, 'uncovered');
+    // the news goes out at the day's settle point, worded by the state the incident has then (EM-1, uncoveredNews)
     if (inc.major) {
-      const r = INCIDENT_RESPONDERS[inc.kind][0];
-      const adv = r === 'medical' ? 'health' : 'safety';
-      const txt = manualPossible
-        ? `${INCIDENT_LABEL[inc.kind]} at ${inc.place} — ${note}. Send help with the Dispatch tool!`
-        : `${INCIDENT_LABEL[inc.kind]} at ${inc.place} — ${note}.`;
-      this.news(sim, 'uncovered:' + inc.kind, 2, txt, 'disaster', inc.x, inc.z, adv);
+      const due = (this.p.newsDue ??= []);
+      if (!due.includes(inc.id)) due.push(inc.id);
     }
     this.writeStats(sim.state);
+  }
+
+  /** the "uncovered" news of the incidents decided since the last settle point, worded by their state now: "… Send help
+   *  with the Dispatch tool!" only while a dispatch can still go (EM-1: a quake's toast used to say so for prompts the
+   *  next incident of the same burst had already taken the unit of) */
+  private uncoveredNews(sim: Simulation): void {
+    const due = this.p.newsDue;
+    if (!due?.length) return;
+    this.p.newsDue = undefined;
+    for (const id of due) {
+      const inc = this.byId.get(id);
+      if (!inc || inc.state !== 'uncovered' || !inc.major) continue;
+      const adv = INCIDENT_RESPONDERS[inc.kind][0] === 'medical' ? 'health' : 'safety';
+      const txt = inc.manualPossible
+        ? `${INCIDENT_LABEL[inc.kind]} at ${inc.place} — ${inc.note}. Send help with the Dispatch tool!`
+        : `${INCIDENT_LABEL[inc.kind]} at ${inc.place} — ${inc.note}.`;
+      this.news(sim, 'uncovered:' + inc.kind, 2, txt, 'disaster', inc.x, inc.z, adv);
+    }
   }
 
   /** sim time the station's next unit is free (Infinity when none will be) */
@@ -2082,6 +2101,7 @@ export class EmergencySystem implements SimSystem {
       // once it still holds at the end of a day's dispatch work — not the moment a disaster's burst decided it, when the
       // next incident of the same burst could take the unit it counted on before the player saw it
       for (const inc of this.list) if (inc.state === 'uncovered' && inc.major && inc.manualPossible) inc.prompted = true;
+      this.uncoveredNews(sim);
       // expire effects
       if (this.p.effects.length) this.p.effects = this.p.effects.filter((e) => e.until > st.day);
       // the siren times after a traffic update, also when no search needed them today: a save holds the times the next

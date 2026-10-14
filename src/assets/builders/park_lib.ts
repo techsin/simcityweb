@@ -658,6 +658,9 @@ const FOL_BLOSSOM = 2;
 const FOL_EVERGREEN = 4;
 /** winter twig spray of a kit tree: drawn only while its tree is bare (same floor value as the tree's lobes) */
 const FOL_TWIG = 5;
+/** Wood pattern of the bare crowns' own wood (limbs, clump inner trunks; hidden in leaf): drawn all year (the Wood
+ *  shading ignores the pattern), left out with the twig sprays by the low-quality twig strip (winterTwigs.ts) */
+export const BARE_WOOD = 5;
 /** bare-winter twigs: warm grey-brown (as the forest's bare trees, nature.ts), purple-brown for birches */
 const TWIG = 0x8c7b6a;
 const TWIG_BIRCH = 0x806259;
@@ -673,11 +676,14 @@ function lobe(b: ModelBuilder, rng: RNG, c: V3, r: V3, nc: V3, color: ColorLike)
 }
 
 /** a slender double-sided spike / blade from base `a` (half-width w along `side`) to `tip`, both faces lit by one soft
- *  up / outward normal (a twig haze from every side): 2 tris */
-function spike(b: ModelBuilder, a: V3, tip: V3, side: V3, w: number, dir: V3): void {
+ *  up / outward normal (a twig haze from every side): 2 tris. `up`: only the face turned up (1 tri): the game camera
+ *  always looks down at the trees, so a twig spray seen from above needs only that face (it casts no shadow: shadow
+ *  maps draw back faces) */
+function spike(b: ModelBuilder, a: V3, tip: V3, side: V3, w: number, dir: V3, up = false): void {
   const q0 = vadd(a, vscale(side, w)), q1 = vadd(a, vscale(side, -w));
   const n = vnorm(vcross(vsub(q1, tip), vsub(q0, tip)));
   const nsh = vnorm(vadd(vscale(dir, 0.45), [0, 0.9, 0]));
+  if (up) { triOutN(b, tip, q1, q0, nsh, nsh, nsh, n[1] >= 0 ? n : vscale(n, -1)); return; }
   triOutN(b, tip, q1, q0, nsh, nsh, nsh, n);
   triOutN(b, tip, q0, q1, nsh, nsh, nsh, vscale(n, -1));
 }
@@ -685,11 +691,13 @@ function spike(b: ModelBuilder, a: V3, tip: V3, side: V3, w: number, dir: V3): v
 /**
  * Bare winter crown of a deciduous kit tree (see the seasons note above): `limbs` limbs from the trunk top `top` out to
  * ~55% of the crown (radius rx / half-height ry around c: inside the leaf lobes, which hide them in leaf) and a leader,
- * each a tapering double-sided bark blade, each tip fanning out `spikes` (3) slender double-sided twig spikes (Foliage
- * pattern 5, floor = the lobes' floor: drawn only while the tree is bare) to about the crown's size. No rng draws
- * (layouts unchanged): the shape is hashed from the tree position. (limbs + 1) x (spikes + 1) x 2 tris: 32 by default.
- * Other builders' lot trees can get the same winter crown: paint the crown blob(s) Foliage pattern 1 with floor =
- * 1 + a per-tree random in [0, 1) and call twigCrown with that floor (else bare lot crowns only thin out, materials.ts).
+ * each a tapering double-sided bark blade (the bare tree's shadow), each tip fanning out `spikes` (3) slender twig
+ * spikes (Foliage pattern 5, floor = the lobes' floor: drawn only while the tree is bare) to about the crown's size,
+ * single-sided, turned up (the camera looks down at them). No rng draws (layouts unchanged): the shape is hashed from
+ * the tree position. (limbs + 1) x (spikes + 2) tris: 20 by default.
+ * The limbs are Wood pattern BARE_WOOD (dropped with the sprays at low quality, winterTwigs.ts). Other builders' lot
+ * trees can get the same winter crown: paint the crown blob(s) Foliage pattern 1 with floor = 1 + a per-tree random in
+ * [0, 1) and call twigCrown with that floor (else a bare lot crown stays a whole crown in the twig colour, materials.ts).
  */
 export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3, rx: number, ry: number, floor: number, bark: ColorLike, rT: number, o: { limbs?: number; twig?: ColorLike; upright?: number; spikes?: number } = {}): void {
   const hr = (i: number) => treeRand(x * 1.13 + i * 7.31 + 0.5, z * 0.97 - i * 3.17 + 0.25);
@@ -710,7 +718,7 @@ export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3,
     const sa: V3 = vlen(side0) > 0.1 ? vnorm(side0) : [1, 0, 0];
     const sb = vnorm(vcross(sa, d));
     // the limb (leader: a little thinner): plain bark, a shade darker (a flat blade lit softly like the sprays)
-    b.paint(shade(bark, 0.75), Surf.Wood);
+    b.paint(shade(bark, 0.75), Surf.Wood, BARE_WOOD);
     spike(b, top, p, sa, rT * (ti < nl ? 0.7 : 0.55), d);
     const ph = hr(20 + ti) * TAU;
     for (let k = 0; k < ns; k++) {
@@ -720,7 +728,7 @@ export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3,
       const dir = vnorm(vadd(vadd(d, vadd(vscale(sa, Math.cos(an) * cone), vscale(sb, Math.sin(an) * cone))), [0, 0.25, 0]));
       const side = vnorm(vcross(dir, Math.abs(dir[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]));
       const len = L * (0.8 + 0.4 * hr(60 + ti * 7 + k));
-      spike(b, vadd(p, vscale(dir, -len * 0.1)), vadd(p, vscale(dir, len)), side, len * 0.09, dir);
+      spike(b, vadd(p, vscale(dir, -len * 0.1)), vadd(p, vscale(dir, len)), side, len * 0.09, dir, true);
     }
   });
 }
@@ -729,7 +737,7 @@ export function twigCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3,
  * Bare winter crown for the other builders' cheap lot trees (a trunk + one or two blob crowns): returns the floor `fl`
  * to paint the crown blob(s) with - `b.paint(color, Surf.Foliage, 1, fl)` - so they swap to these twigs while the
  * tree is bare (materials.ts, Foliage); `top` = trunk top, `c` / rx / ry = the crown's centre / radius / half-height.
- * A lighter twigCrown (2 limbs + a leader, 3 twig spikes each: 24 tris), no rng draws (lot layouts unchanged).
+ * A lighter twigCrown (2 limbs + a leader, 3 twig spikes each: 15 tris), no rng draws (lot layouts unchanged).
  */
 export function bareCrown(b: ModelBuilder, x: number, z: number, top: V3, c: V3, rx: number, ry: number, bark: ColorLike, rT: number): number {
   const fl = 1 + treeRand(x, z);
@@ -741,7 +749,7 @@ const DECIDUOUS: ReadonlySet<string> = new Set(['oak', 'round', 'maple', 'birch'
 /** park maples: summer greens + one ornamental dark red-leaf cultivar (the shader adds the autumn colours) */
 const MAPLE_LEAF = [0x5a7f35, 0x6b8a3a, 0x7a2f2a, 0x4f7a32];
 
-/** Richer low-poly park tree (~30-70 tris; the deciduous kinds + a 32-tri winter twig crown). s=1 => oak ~9.5 m. Returns
+/** Richer low-poly park tree (~30-70 tris; the deciduous kinds + a 20-tri winter twig crown). s=1 => oak ~9.5 m. Returns
  *  the top height. */
 export function tree(b: ModelBuilder, rng: RNG, x: number, z: number, s = 1, kind: TreeKind = 'oak'): number {
   let k = s * TREE_SCALE * rng.range(0.85, 1.15);
@@ -896,7 +904,7 @@ export function treeClump(b: ModelBuilder, rng: RNG, cx: number, cz: number, r: 
     // (inner trunks: thinner, they carry the bare winter crowns; the summer canopy hides them)
     const outer = Math.hypot(x - cx, z - cz) > r * 0.45;
     if (outer) b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, cy - cr * 0.4, 0.3, 0.2, 5, { top: false });
-    else b.paint(PALETTE.trunk, Surf.Wood).cylinder(x, z, 0, cy - cr * 0.4, 0.22, 0.15, 4, { top: false });
+    else b.paint(PALETTE.trunk, Surf.Wood, BARE_WOOD).cylinder(x, z, 0, cy - cr * 0.4, 0.22, 0.15, 4, { top: false });
     ymin = Math.min(ymin, cy - cr * 0.8);
     ymax = Math.max(ymax, cy + cr * 0.8);
   }

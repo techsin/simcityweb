@@ -485,7 +485,15 @@ describe('fire aftermath: BF.Incident, bulldozed fires, news throttles (routed i
     const s = row([10, 40]); // far apart: two incidents; no station: both uncovered
     const [h10, h40] = [s.b.get(10)!, s.b.get(40)!];
     s.fire.ignite(s.sim, h10);
+    // (EM-1: an "uncovered" alert goes out at the day's settle point, worded by the incident's state then — saved while
+    // it is due, so a game loaded before the day tick posts it like the original)
+    expect(s.st.news.length).toBe(0);
+    const due = make(deserializeCity(structuredClone(serializeCity(s.st, { copy: true })) as SerializedCity));
+    due.fire.riskBoost = 0;
+    s.sim.runDays(1);
+    due.sim.runDays(1);
     expect(s.st.news.length).toBe(1);
+    expect(due.st.news).toEqual(s.st.news);
     const save = structuredClone(serializeCity(s.st, { copy: true })) as SerializedCity;
     const l = make(deserializeCity(save));
     // an older save (no throttle saved) still loads: nothing is throttled yet, as before
@@ -497,6 +505,7 @@ describe('fire aftermath: BF.Incident, bulldozed fires, news throttles (routed i
     for (const g of [s, l, o]) {
       g.fire.riskBoost = 0;
       g.fire.ignite(g.sim, g.st.buildings.get(h40.id)!);
+      g.sim.runDays(1);
     }
     expect(s.st.news.length).toBe(1); // throttled
     expect(l.st.news).toEqual(s.st.news);

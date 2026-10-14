@@ -779,6 +779,10 @@ export class TreeRenderer {
   private autumn = 0;
   /** seasonal species (nat_season.ts: oak / maple / birch): model variant -> kind index, else null */
   private seasonKinds: (Map<number, number> | null)[] = [];
+  /** seasonal species: their bare variant's kinds, one per green slot (kindsBySpecies order), else null. A chunk then
+   *  holds its bare trees in the meshes its green trees use the rest of the year (one per green variant, the same
+   *  instances): no fewer, wider meshes in winter, whose bounds would let more trees pass the view / shadow culling */
+  private bareKinds: (number[] | null)[] = [];
   /** current autumn / bare / blossom fractions (seasonMix of month + climate) */
   private season: SeasonMix = { autumn: 0, bare: 0, blossom: 0 };
   private maxVariants = 3;
@@ -1190,6 +1194,7 @@ export class TreeRenderer {
     this.kindsBySpecies = [];
     this.autumnKinds = [];
     this.seasonKinds = [];
+    this.bareKinds = [];
     this.weights = new Array(this.species.length).fill(0);
     this.species.forEach((sp, si) => {
       const ss = SEASONAL_TREES[sp.id];
@@ -1203,13 +1208,18 @@ export class TreeRenderer {
         };
         const green = ss.green.slice(0, Math.max(1, this.maxVariants));
         for (const v of green) add(v);
-        for (const v of [...ss.autumn, ...ss.bare, ...ss.blossom]) add(v);
+        for (const v of [...ss.autumn, ...ss.blossom]) add(v);
+        // (one bare variant per species: a kind per green slot, see bareKinds)
+        const bare = ss.bare.length === 1 ? green.map(() => (this.kinds.push(this.makeKind(si, sp, ss.bare[0])), this.kinds.length - 1)) : null;
+        if (!bare) for (const v of ss.bare) add(v);
         this.kindsBySpecies.push(green.map((v) => map.get(v)!));
         this.autumnKinds.push([]);
         this.seasonKinds.push(map);
+        this.bareKinds.push(bare);
         return;
       }
       this.seasonKinds.push(null);
+      this.bareKinds.push(null);
       const nv = Math.min(4, MANIFEST_BY_ID[sp.id]?.variants ?? 1);
       const list: number[] = [];
       const autumn: number[] = [];
@@ -1374,8 +1384,10 @@ export class TreeRenderer {
     const sk = this.seasonKinds[s];
     if (sk) {
       // deciduous: autumn colours / bare branches / blossom for the month's fraction of trees (stable per cell)
-      const id = this.species[s].id;
-      const v = seasonalVariant(id, SEASONAL_TREES[id].green[gi], hash2(x * 3 - 7, z * 5 + 2, this.seed + 97), this.season);
+      const id = this.species[s].id, ss = SEASONAL_TREES[id];
+      const v = seasonalVariant(id, ss.green[gi], hash2(x * 3 - 7, z * 5 + 2, this.seed + 97), this.season);
+      const bk = this.bareKinds[s];
+      if (bk && v === ss.bare[0]) return bk[gi];
       return sk.get(v) ?? list[gi];
     }
     const au = this.autumnKinds[s];

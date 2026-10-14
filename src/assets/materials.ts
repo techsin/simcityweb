@@ -69,9 +69,9 @@
  *       only), a darker / cooler green in winter.
  *   Pattern 5 = winter twig spray of a kit tree (see floor >= 1 above): drawn only while its tree is bare, shaded as
  *       painted (twig colour).
- *   Bare pattern-0 crowns (lot blobs: not flat / box faces, not dark evergreens) also thin out in the vertex shader to
- *   a third of their faces (a per-face random of the flat face normal), so a bare lot tree is see-through, not a lump,
- *   and every bare crown (patterns 0-2) takes the twig colour, whatever its leaf paint.
+ *   Every bare crown (patterns 0-2) takes the twig colour, whatever its leaf paint. Pattern-0 foliage is never dropped
+ *   in winter (shrubs, hedges, roof planters and the few pattern-0 crowns stay whole: no shards or confetti); the lot
+ *   models' deciduous tree helpers carry their own twig crowns (park_lib twigCrown / bareCrown, patterns 1 + 5).
  *   All foliage follows the climate / season uniforms uFoliageDry / uFoliageSeason / uFoliageTint (setFoliageSeason):
  *   low foliage turns straw-dry in deserts / dormant in winter, crowns get a quarter of it; in winter evergreen crowns
  *   darken and deciduous leaves still on a tree (patterns 0-3, the non-bare remainder) turn dead brown.
@@ -149,15 +149,14 @@ export function setFoliageSeason(month: number, climate: string): void {
 
 /**
  * Shadow (depth) material of meshes drawn with the uber material: the same bare-winter crown swap as the view
- * (FOLIAGE_WINTER: kit trees' leaf lobes -> twig sprays, thinned lot crowns), so a bare tree casts its twigs' shadow,
- * not its summer crown's. Only while some trees are bare (a uniform branch: no cost from spring to autumn, when the
- * twig sprays, hidden inside their crowns, cast inside the crown's shadow anyway). Turns on vertexColors (the
- * evergreen test reads the paint colour). Patches `m` in place (composes with an existing onBeforeCompile).
+ * (FOLIAGE_WINTER: kit trees' leaf lobes -> twig sprays), so a bare tree casts its twigs' shadow, not its summer
+ * crown's. Only while some trees are bare (a uniform branch: no cost from spring to autumn, when the twig sprays,
+ * hidden inside their crowns, cast inside the crown's shadow anyway). Patches `m` in place (composes with an existing
+ * onBeforeCompile).
  */
 export function patchFoliageDepthMaterial<T extends THREE.MeshDepthMaterial>(m: T): T {
   const base = m.onBeforeCompile;
   const key = m.customProgramCacheKey;
-  m.vertexColors = true;
   m.onBeforeCompile = (shader, renderer) => {
     base.call(m, shader, renderer);
     shader.uniforms.uSeason = sharedUniforms.uSeason;
@@ -176,7 +175,7 @@ if (uSeason.y > 0.0 && abs(surf.x - 8.0) < 0.5) {
   ${FOLIAGE_WINTER}
 }`);
   };
-  m.customProgramCacheKey = () => key.call(m) + '|foliage-winter-v1';
+  m.customProgramCacheKey = () => key.call(m) + '|foliage-winter-v2';
   m.needsUpdate = true;
   return m;
 }
@@ -199,22 +198,15 @@ uniform vec4 uSeason;
 /**
  * Bare winter crowns (header, Foliage), per foliage vertex (sdW = the instance seed): while a tree is bare (the same
  * per-tree random as the fragment shader's), kit trees swap their leaf lobes (patterns 1-2, floor >= 1) for their twig
- * sprays (pattern 5), and other lot crowns (pattern 0: not flat, box-side or vertical faces, not dark-painted
- * evergreens: linear green < 0.125) thin out to a third of their faces (a per-face random of the flat face normal - all
- * three corners agree). Dropped faces collapse to the model origin (zero area: no fragments). The bare share is the
- * month's x 1.08 (BARE_ALL, as TreeRenderer's forests): every deciduous crown is bare in Dec-Feb. Shared by the view
- * (VERT_MAIN) and the lot models' shadow depth material (patchFoliageDepthMaterial).
+ * sprays (pattern 5). Only per-face values decide (paint channels + instance seed), so all three corners of a face
+ * agree: a face is dropped whole (collapsed to the model origin: zero area, no fragments), never stretched into a
+ * shard. Pattern-0 foliage is never dropped. The bare share is the month's x 1.08 (BARE_ALL, as TreeRenderer's
+ * forests): every deciduous crown is bare in Dec-Feb. Shared by the view (VERT_MAIN) and the lot models' shadow depth
+ * material (patchFoliageDepthMaterial).
  */
 const FOLIAGE_WINTER = /* glsl */ `
-  float gW = 0.2;
-  #if defined(USE_COLOR) || defined(USE_COLOR_ALPHA)
-    gW = color.g;
-  #endif
-  float nyW = abs(normal.y);
   bool bareW = fract(surf.z * 7.13 + sdW * 3.71) < uSeason.y * 1.08;
-  bool thinW = surf.y < 0.5 && nyW > 0.1 && nyW < 0.985 && max(abs(normal.x), abs(normal.z)) < 0.994 && gW >= 0.125 &&
-    fract(dot(normal, vec3(41.3, 29.7, 37.1)) + sdW * 7.13) >= 0.33;
-  if (surf.y > 4.5 ? !bareW : bareW && (thinW || (surf.y > 0.5 && surf.y < 2.5 && surf.z >= 1.0))) transformed = vec3(0.0);
+  if (surf.y > 4.5 ? !bareW : bareW && surf.y > 0.5 && surf.y < 2.5 && surf.z >= 1.0) transformed = vec3(0.0);
 `;
 
 const VERT_MAIN = /* glsl */ `

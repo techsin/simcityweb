@@ -190,11 +190,6 @@ interface Fade {
 const LOD_JUMP = 150;
 /** catch-up priority buckets (log2 of the triangles a building's proxy level saves) */
 const LOD_PRI = 16;
-/** the swap path's JIT warm-up (warmLod) runs only within this many LOD updates after a load, this many buildings per
- *  resting frame */
-const LOD_WARM_FRAMES = 120;
-const LOD_WARM_CHUNK = 768;
-const _warmFar = new THREE.Vector3();
 /** a foundation skirt is drawn as its plain box (no cap band / step tier) while its exposed height projects under this
  *  many pixels (or the building is on its proxy) */
 const FOUND_PX = 2;
@@ -972,12 +967,6 @@ export class BuildingRenderer {
   private evalFresh = false;
   private lodCamera: THREE.PerspectiveCamera | null = null;
   private lodKNow = 1;
-  /** JIT warm-up of the swap path after a load (see warmLod): 0 not due yet, 1 due (every proxy is in), 2 done; the
-   *  list index it has reached; and the updateLod calls since the load (it only runs in its first frames, never later in
-   *  play) */
-  private lodWarm = 0;
-  private lodWarmAt = 0;
-  private lodFrames = 0;
   private fr = new THREE.Frustum();
   private frOk = false;
   /** rubble kit pieces: key -> [full, proxy] geometry ids (see kitPiece) */
@@ -1099,7 +1088,6 @@ export class BuildingRenderer {
    * gives them an endless band.
    */
   private resolveProxies(): void {
-    if (this.lodWarm === 0) this.lodWarm = 1;
     for (const bi of this.list) {
       if (bi.lodGeom >= 0 || bi.geom < 0 || bi.kitM !== null) continue;
       const p = this.lodMap.get(bi.geom);
@@ -1464,10 +1452,6 @@ export class BuildingRenderer {
 
   rebuildAll(): void {
     this.clear();
-    // (a load: its first frames warm the swap path up once every proxy is in, see warmLod)
-    this.lodWarm = 0;
-    this.lodWarmAt = 0;
-    this.lodFrames = 0;
     this.prefetch = [];
     try {
       for (const b of this.state.buildings.values()) this.add(b, false);
@@ -1807,11 +1791,7 @@ export class BuildingRenderer {
     // (a damped camera coming to rest creeps by fractions of a mm: no scan for that, the bands are absolute distances,
     // so the next real motion's scan sees the whole drift)
     const scan = hop > 1e-3 || behind || this.lodScanAll;
-    // the swap path's JIT warm-up: once, in resting frames among the load's first frames (see warmLod)
-    this.lodFrames++;
-    if (this.lodWarm === 1 && this.lodFrames > LOD_WARM_FRAMES) this.lodWarm = 2;
-    const warm = this.lodWarm === 1 && hop <= 1e-3 && !behind && this.lodPixels > 0;
-    if (!scan && !warm && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
+    if (!scan && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
     this.lodDeadline = performance.now() + this.lodBudgetMs;
     const full = this.lodFull;
     this.lodFull = false;
@@ -1826,7 +1806,6 @@ export class BuildingRenderer {
     this.fadeNow = !full && !jump && !behind && fades;
     // a cut settles the running fades (their buildings mostly left the view, and the fade layer is not culled)
     if (jump) while (this.fades.length) this.finishFade(this.fades[this.fades.length - 1]);
-    if (warm) this.warmLod(c, K, on, off);
     let left = false;
     if (scan) {
       // (an evaluation may queue its building again for the next update: lodQueue)
@@ -1858,41 +1837,6 @@ export class BuildingRenderer {
       if (d2 < lo2[i] || d2 > hi2[i]) out[k++] = i;
     }
     return k;
-  }
-
-  /**
-   * JIT warm-up of the LOD hot path, once after a load, when every proxy is in and the camera rests (normally one of the
-   * load's own frames): every building is evaluated against a camera far above (it swaps to its far level: proxy,
-   * plain foundation box, rubble proxies) and at once against the real camera again (it swaps back), and the band scan
-   * runs with it — nothing is drawn in between, so the frame shows no change (swaps instant, every building back on
-   * exactly its levels, freshly built buildings stay fresh). LOD_WARM_CHUNK buildings per resting frame (a few ms, cold).
-   * A fresh page otherwise runs this code cold in its first zoom-out, ~2000-2500 swaps at ~5x their warm cost (V8 tiers
-   * it up only after a few thousand runs): ~10-25 ms of updateLod in a LOW town's first zoom-out instead of ~5-10 (Node,
-   * t_plains), ~3-4 ms more in the first zoom-in. Its cost lands in the load's frames, largely in place of the first
-   * frame's own full evaluation (which then finds every band set), plus one full draw-range refresh of the building
-   * batch's lists and one shadow re-render.
-   */
-  private warmLod(c: THREE.Vector3, K: number, on: number, off: number): void {
-    const fadeNow = this.fadeNow, far = _warmFar.set(c.x, c.y + 1e7, c.z);
-    this.fadeNow = false;
-    this.scan(far);
-    this.scan(c);
-    const list = this.list, i0 = this.lodWarmAt, i1 = Math.min(list.length, i0 + LOD_WARM_CHUNK);
-    this.lodWarmAt = i1;
-    if (i1 >= list.length) this.lodWarm = 2;
-    for (let i = i0; i < i1; i++) {
-      const bi = list[i];
-      if (bi.gone || bi.fade !== null || bi.waiting >= 0 || bi.lodGeom < 0) continue;
-      const fresh = bi.fresh, lod = bi.lod, flod = bi.flod;
-      this.lodEval(bi, far, K, on, off);
-      // back to exactly the levels it had (a building inside its hysteresis band would otherwise come back on the far
-      // side's level), then its band for the real camera
-      this.lodSet(bi, lod);
-      this.setFound(bi, flod);
-      this.lodEval(bi, c, K, on, off);
-      bi.fresh = fresh;
-    }
-    this.fadeNow = fadeNow;
   }
 
   /**
@@ -2176,7 +2120,7 @@ export class BuildingRenderer {
   }
 
   update(dt: number): void {
-    if (lotTwigs.version !== this.twigVer) { this.twigVer = lotTwigs.version; this.rebuildAll(); } // seasons r3: LOW twig strip
+    if (lotTwigs.version !== this.twigVer) { this.twigVer = lotTwigs.version; this.rebuildAll(); this.flushLod(); } // seasons r3: LOW twig strip (a quality switch: levels settled at once, proxies shared by key)
     if (this.animating.size) {
       for (const id of this.animating) {
         const bi = this.inst.get(id);

@@ -22,7 +22,10 @@
  * per DevType), 'zoneNoFit*' says why ready lots never grow, and 'growthStalled' also speaks when a family's ready lots
  * waited a year with demand while it did not grow at all (AdvisorData.stall), in a city with other buildings. Ready lots
  * no building fits (lotFit, growth's placement rules: odd tiles left between buildings and roads, or too steep) are not
- * room: 'lotsSmall*' / 'lotsSteep*' say so when they are all a family has left.
+ * room: 'lotsSmall*' / 'lotsSteep*' say so when they are all a family has left. Final fixes SF-2 (silent ruins): a ruined
+ * service facility ('facilityRuins': what its area lost, its upkeep still charged) and rubble ('rubble': bulldoze it or
+ * enact Municipal Demolition Crews) get their own advice; the "no room — zone more" rules count rubble as room and name it
+ * first, and the abandoned count leaves the ruins out.
  * openAdvice(sim): the advice that holds right now (Advisors panel: open issues per advisor, highest priority first).
  * advisorIssues(st): the full, unthrottled list of the last monthly pass grouped by advisor (ADVICE_PER_MONTH = 2 only
  * limits what is announced; everything else still shows in the Advisors panel).

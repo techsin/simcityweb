@@ -3,7 +3,9 @@
  *  - nature models carry their Foliage patterns (3 variant-seasonal deciduous, 4 evergreen, 1 / 2 shader-seasonal
  *    shrubs), never the automatic pattern 0; see-through bare crowns report an open fraction (darker, thinner impostors)
  *  - park trees: cherries blossom (2), broadleaves seasonal (1), conifers / palms evergreen (4), layouts unchanged; the
- *    deciduous kit trees mark their leaf lobes (floor >= 1) and carry a winter twig crown (pattern 5, same floor)
+ *    deciduous kit trees mark their leaf lobes (floor >= 1) and carry a winter twig crown (pattern 5, same floor); the
+ *    winter swap reads per-face values only and never drops pattern-0 foliage (no shards / confetti); low quality strips
+ *    the twig crowns (sprays + limbs + clump inner trunks) back to the plain models' triangles
  *  - setFoliageSeason: winter / spring strengths only in seasonal climates, tropics flower all year
  *  - TreeRenderer: winter flags the bare broadleaf impostors see-through (negative instance red) and stretches the
  *    conifer impostors; a bare winter tree costs no more triangles than a green one; every January street tree is bare;
@@ -33,7 +35,8 @@ import { ModelBuilder } from '../../src/assets/ModelBuilder';
 import { RNG } from '../../src/core/rng';
 import { palm as comPalm } from '../../src/assets/builders/com_kit';
 import { palm as civPalm } from '../../src/assets/builders/civ_kit';
-import { bareCrown, tree as parkTree, type TreeKind } from '../../src/assets/builders/park_lib';
+import { BARE_WOOD, bareCrown, tree as parkTree, treeClump, type TreeKind } from '../../src/assets/builders/park_lib';
+import { lotTwigGeometry, lotTwigKey, lotTwigs, setLotTwigStrip, stripWinterTwigs } from '../../src/assets/builders/winterTwigs';
 import { SEASONAL_TREES, seasonalVariant, setTreeSeason, treeSeason } from '../../src/assets/builders/nat_season';
 
 registerAllModels();
@@ -190,8 +193,15 @@ describe('seasonal foliage patterns', () => {
       if (p === 1) blob++;
     }
     expect(blob).toBe(20);
-    // 3 tips x 3 double-sided spikes; 3 double-sided bark blades (the limbs, inside the crown) + the 10-tri trunk
-    expect(twig).toBe(18);
+    // 3 tips x 3 single-sided spikes, turned up (the camera looks down at them); 3 double-sided bark blades (the limbs,
+    // inside the crown: they cast the bare tree's shadow) + the 10-tri trunk
+    expect(twig).toBe(9);
+    for (let i = 0; i < srf.count; i += 3) {
+      if (Math.round(srf.getX(i)) !== Surf.Foliage || Math.round(srf.getY(i)) !== 5) continue;
+      const pos = g.getAttribute('position') as THREE.BufferAttribute;
+      const a = new THREE.Vector3().fromBufferAttribute(pos, i), e1 = new THREE.Vector3().fromBufferAttribute(pos, i + 1).sub(a);
+      expect(e1.cross(new THREE.Vector3().fromBufferAttribute(pos, i + 2).sub(a)).y, 'twig faces up').toBeGreaterThanOrEqual(0);
+    }
     let wood = 0;
     for (let i = 0; i < srf.count; i += 3) if (Math.round(srf.getX(i)) === Surf.Wood) wood++;
     expect(wood).toBe(16);
@@ -202,7 +212,6 @@ describe('seasonal foliage patterns', () => {
 
   it('lot shadows: patchFoliageDepthMaterial runs the bare-winter crown swap in the depth pass, winter only', () => {
     const m = patchFoliageDepthMaterial(new THREE.MeshDepthMaterial());
-    expect(m.vertexColors).toBe(true);
     const sh = { vertexShader: THREE.ShaderLib.depth.vertexShader, fragmentShader: THREE.ShaderLib.depth.fragmentShader, uniforms: {} } as unknown as THREE.WebGLProgramParametersWithUniforms;
     m.onBeforeCompile(sh, {} as THREE.WebGLRenderer);
     const vs = sh.vertexShader;
@@ -216,9 +225,65 @@ describe('seasonal foliage patterns', () => {
     // the view's vertex shader runs the same swap
     const vw = { vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader, uniforms: {} } as unknown as THREE.WebGLProgramParametersWithUniforms;
     getBuildingMaterial().onBeforeCompile(vw, {} as THREE.WebGLRenderer);
-    const swap = vs.slice(vs.indexOf('float gW'), vs.indexOf('transformed = vec3(0.0)'));
-    expect(swap.length).toBeGreaterThan(200);
+    const swap = vs.slice(vs.indexOf('bool bareW'), vs.indexOf('transformed = vec3(0.0)'));
+    expect(swap.length).toBeGreaterThan(100);
     expect(vw.vertexShader).toContain(swap);
+    // per-face values only (paint channels + instance seed): all three corners of a face agree, so a face is dropped
+    // whole, never stretched into a shard; and pattern-0 foliage (shrubs, hedges, roof planters) is never dropped
+    for (const perVertex of ['normal', 'color', 'position']) expect(swap, perVertex).not.toContain(perVertex);
+    expect(swap).toContain('surf.y > 0.5 && surf.y < 2.5 && surf.z >= 1.0');
+  });
+
+  it('low quality twig strip: kit / park trees lose their winter twig crowns, back to the plain models\' triangles', () => {
+    // a kit tree (res_util round tree): 10-tri trunk + 20-tri crown blob + the 15-tri bare crown (9 spray, 6 limb tris)
+    const b = new ModelBuilder();
+    b.paint(0x5b4330, Surf.Wood).cylinder(4, -2, 0, 2.4, 0.2, 0.14, 5, { top: false });
+    const fl = bareCrown(b, 4, -2, [4, 2.3, -2], [4, 3.9, -2], 2.2, 2.0, 0x5b4330, 0.14);
+    b.paint(0x4c7630, Surf.Foliage, 1, fl).blob(4, 3.9, -2, 2.2, 2.0, 2.2, 0, 0.16, 1.5);
+    const g = b.build();
+    expect(g.getAttribute('position').count / 3).toBe(45);
+    const s = stripWinterTwigs(g)!;
+    expect(s.getAttribute('position').count / 3).toBe(30);
+    expect(stripWinterTwigs(g)).toBe(s);
+    const srf = s.getAttribute('surf') as THREE.BufferAttribute;
+    for (let i = 0; i < srf.count; i++) {
+      expect(Math.round(srf.getY(i)), 'no pattern-5 faces').not.toBe(5);
+      // the crown keeps its per-tree random but loses the swap marker: it stays a (twig-coloured) crown while bare
+      if (Math.round(srf.getX(i)) === Surf.Foliage) expect(srf.getZ(i)).toBeCloseTo(fl - 1, 5);
+    }
+    for (const name of ['position', 'normal', 'color', 'surf']) expect(s.getAttribute(name).count).toBe(90);
+    // park trees and clumps: every winter-only face is pattern 5 (sprays) or Wood BARE_WOOD (limbs, inner trunks)
+    const pb = new ModelBuilder();
+    parkTree(pb, new RNG(3), 0, 0, 1, 'oak');
+    treeClump(pb, new RNG(4), 20, 0, 6, 4);
+    const pg = pb.build(), ps = stripWinterTwigs(pg)!;
+    const psrf = pg.getAttribute('surf') as THREE.BufferAttribute;
+    let winter = 0, limbs = 0;
+    for (let i = 0; i < psrf.count; i += 3) {
+      if (Math.round(psrf.getY(i)) !== 5) continue;
+      winter++;
+      if (Math.round(psrf.getX(i)) === Surf.Wood) limbs++;
+    }
+    expect(BARE_WOOD).toBe(5);
+    expect(limbs).toBeGreaterThan(8);
+    expect(ps.getAttribute('position').count / 3).toBe(pg.getAttribute('position').count / 3 - winter);
+    // a model without twig crowns is registered as is
+    const nb = new ModelBuilder();
+    nb.paint(0x4c7630, Surf.Foliage).blob(0, 1, 0, 1, 0.8, 1, 0, 0.2, 2);
+    const ng = nb.build();
+    expect(stripWinterTwigs(ng)).toBeNull();
+    // the building renderer's registration: the stripped geometry under its own key while the strip is on
+    const v0 = lotTwigs.version;
+    setLotTwigStrip(false);
+    expect(lotTwigGeometry(g)).toBe(g);
+    expect(lotTwigKey('k', g)).toBe('k');
+    setLotTwigStrip(true);
+    expect(lotTwigs.version).toBeGreaterThan(v0);
+    expect(lotTwigGeometry(g)).toBe(s);
+    expect(lotTwigKey('k', g)).toBe('k#lt');
+    expect(lotTwigGeometry(ng)).toBe(ng);
+    expect(lotTwigKey('k', ng)).toBe('k');
+    setLotTwigStrip(false);
   });
 
   it('lot palms (commercial / civic kits) are evergreen: their fronds never turn autumn-coloured or bare', () => {
@@ -722,7 +787,7 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
-  it('low quality (tree LOD distance < 560 m): no outer ring and no edge band; a higher quality brings both back', () => {
+  it('low quality (tree LOD distance < 560 m): no outer ring, no edge band, lot twig strip on; a higher quality brings all back', () => {
     const st = createCityState(defaultCityConfig({ size: 64, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
     const q = (lodDistance: number) => ({ lodDistance, density: 1, castShadows: false, maxVariants: 3 });
     const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), q(460));
@@ -742,16 +807,21 @@ describe('outer ring trees', () => {
     expect(ringMeshes()).toBe(0);
     expect(tr.ringInstances).toBe(0);
     expect(beyond()).toBe(0);
+    // (the building renderer draws the lot models without their winter twig crowns: winterTwigs.ts)
+    expect(lotTwigs.strip).toBe(true);
     tr.setQuality(q(850));
     tr.flush();
     expect(tr.ringInstances).toBeGreaterThan(500);
     expect(ringMeshes()).toBeGreaterThan(0);
     expect(beyond()).toBeGreaterThan(0);
+    expect(lotTwigs.strip).toBe(false);
     tr.setQuality(q(460));
     tr.flush();
     expect(ringMeshes()).toBe(0);
     expect(tr.ringInstances).toBe(0);
     expect(beyond()).toBe(0);
+    expect(lotTwigs.strip).toBe(true);
     tr.dispose();
+    setLotTwigStrip(false);
   }, 120_000);
 });
