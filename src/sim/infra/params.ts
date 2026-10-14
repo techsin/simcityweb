@@ -367,7 +367,7 @@ export const TREE_AIR_ABSORB = 0.12;
  * A 2-cell belt between a busy road and the homes clears a typical Noisy home (0.6-0.7 -> below NOISY_THRESHOLD);
  * trees on the far side of the road do nothing for them.
  */
-export const TREE_BELT_ABSORB = 0.35;
+export const TREE_BELT_ABSORB = 0.3;
 export const TREE_BELT_CELLS = 2;
 export const TREE_BELT_REACH = 3;
 /** treeCover = box average of trees / 4 over (2 r + 1)^2 cells */
