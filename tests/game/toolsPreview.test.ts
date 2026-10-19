@@ -185,8 +185,11 @@ describe('plop tool tip (P3 / P8 / P14)', () => {
     tool.key({ type: 'keydown', key: 'r', ctrlKey: false, metaKey: false, shiftKey: false } as KeyboardEvent, at(19, 16, 19, 16));
     t = text(f.lastTip().html);
     expect(t).toContain('Must be placed on the shore with its front facing water — press R to face the water');
-    // inland nothing faces water: say where to put it
+    // inland nothing faces water: say where to put it, once (final fixes UI-4: the tip read "... front facing water —
+    // place it on the water's edge, its front facing the water")
     tool.move(at(6, 6, 6, 6));
-    expect(text(f.lastTip().html)).toContain("place it on the water's edge");
+    t = text(f.lastTip().html);
+    expect(t).toContain("Must be placed on the shore with its front facing water — move it onto the water's edge");
+    expect(t.match(/facing (the )?water/g)?.length).toBe(1);
   });
 });

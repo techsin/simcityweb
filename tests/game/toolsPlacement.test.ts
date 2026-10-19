@@ -4,16 +4,20 @@
  *    lot touches a road — the playtest's ferry terminal / marina with the road behind and water in front first read
  *    "Must be placed on the shore with its front facing water" because auto-facing picked the road;
  *  - P8: staffed service buildings (coverage + staff) are the ones a missing road stops;
- *  - P3: the upkeep at the cursor is the building share plus the running costs of the unserved need in reach (capped at
- *    a typical load), not the typical-load figure that ignored the city.
+ *  - P3: the upkeep at the cursor is the building share plus the running costs of the people it would newly serve
+ *    there, not the typical-load figure that ignored the city;
+ *  - UI-1: ...counted the way the services pass counts them (claims of the unseated share, deep lots served as a whole,
+ *    the facility's quality, its capacity): the cursor read 1.4-2.8x under the real budget change in a 312k city.
  */
 import { describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
-import { getDef } from '../../src/sim/catalog';
+import { BF, type NeedTier } from '../../src/sim/CityState';
+import { getDef, rotatedFootprint } from '../../src/sim/catalog';
 import { CityActions } from '../../src/sim/actions';
-import { expectedUpkeep } from '../../src/sim/economy/opex';
-import { OPEX_BUILDING_SHARE, OPEX_PER_SERVED, OPEX_TYPICAL_LOAD } from '../../src/sim/economy/tuning';
-import { shoreFacesWater, shoreRotation, staffedService, upkeepHere, type Rot } from '../../src/game/tools/placement';
+import { expectedUpkeep, opexTierOf } from '../../src/sim/economy/opex';
+import { OPEX_BUILDING_SHARE, OPEX_PER_SERVED } from '../../src/sim/economy/tuning';
+import type { Simulation } from '../../src/sim/Simulation';
+import { servedHere, shoreFacesWater, shoreRotation, staffedService, upkeepHere, type Rot } from '../../src/game/tools/placement';
 import { newSim, newState, place, roadLine } from '../infra/cityGen';
 
 /** water from x = 20 eastward, a road along x = 17 */
@@ -108,11 +112,88 @@ describe('upkeep at the cursor (final fixes P3)', () => {
     const roadless = upkeepHere(sim, def, 20, 20, 1, 1)!;
     expect(near).not.toBeNull();
     expect(near).toBeGreaterThan(building + 1);
-    expect(near).toBeLessThanOrEqual(building + (def.coverage!.capacity! * OPEX_TYPICAL_LOAD) * OPEX_PER_SERVED.elementary + 1e-6);
+    // (bounded by its own seats at its quality — 100 % here — not by the build card's typical load)
+    expect(near).toBeLessThanOrEqual(building + def.coverage!.capacity! * OPEX_PER_SERVED.elementary + 1e-6);
     expect(far).toBeLessThan(near);
     expect(roadless).toBeCloseTo(building, 6);
     // (the city-wide figure, the build menu's: at least a quarter of a typical load)
     expect(expectedUpkeep(st, def)).toBeGreaterThanOrEqual(building);
+  });
+
+  /**
+   * streets every 5 cells (x = 2, 7, 12, ...; a cross street at z = 1), 2×2 towers on both sides of each street: every
+   * tower's back column is two cells from its street, out of every reach (served with its front door, services'
+   * footprint max), and an elementary school at the west end already seats part of the town (claims of the unseated
+   * share)
+   */
+  function deepTown() {
+    const st = newState(64);
+    st.funds = 1e7;
+    roadLine(st, 2, 1, 62, 1, Network.Road);
+    for (let x = 2; x <= 62; x += 5) roadLine(st, x, 1, x, 62, Network.Road);
+    for (let x = 2; x + 5 <= 62; x += 5) for (let z = 3; z + 2 <= 60; z += 2) {
+      for (const bx of [x + 1, x + 3]) {
+        for (let k = 0; k < 4; k++) st.zone[st.idx(bx + (k & 1), z + (k >> 1))] = Zone.ResHigh;
+        place(st, 't_r3', bx, z, { pop: 320 });
+      }
+    }
+    return st;
+  }
+  /** the budget change of plopping `id` at (x, z): its building share + the running costs of its tier's Δ served */
+  function realChange(sim: Simulation, id: string, x: number, z: number): { here: number; real: number; served: number } {
+    const st = sim.state;
+    const def = getDef(id)!;
+    const tier = opexTierOf(def) as NeedTier;
+    const svc = sim.getSystem('services') as unknown as { compute(s: Simulation, first: boolean): void };
+    svc.compute(sim, false);
+    const before = st.stats.needs[tier].served;
+    const [w, d] = rotatedFootprint(def, 0);
+    const here = upkeepHere(sim, def, x, z, w, d)!;
+    const served = servedHere(sim, def, x, z, w, d)!;
+    const r = new CityActions(sim).plop(id, x, z, 0);
+    expect(r.ok, `${id} at ${x},${z}: ${r.reason}`).toBe(true);
+    const b = st.buildings.get(st.building[st.idx(x, z)])!;
+    b.flags |= BF.Powered | BF.Watered;
+    svc.compute(sim, false);
+    const real = (def.upkeep ?? 0) * OPEX_BUILDING_SHARE + OPEX_PER_SERVED[tier] * (st.stats.needs[tier].served - before);
+    return { here, real, served };
+  }
+
+  it('final fixes UI-1: the figure at the cursor is the budget change the facility then makes (deep lots, shared seats)', () => {
+    const st = deepTown();
+    const sim = newSim(st);
+    const A = new CityActions(sim);
+    // (each site's own lot: its towers make way first)
+    const clear = (id: string, x: number, z: number) => { const [w, d] = rotatedFootprint(getDef(id)!, 0); A.bulldoze({ x0: x, z0: z, x1: x + w, z1: z + d }); };
+    clear('civ_elementary_school', 3, 3);
+    expect(A.plop('civ_elementary_school', 3, 3, 0).ok).toBe(true); // seats the west end first
+    for (const [id, x, z] of [['civ_elementary_school', 28, 40], ['civ_elementary_school', 13, 9], ['civ_clinic', 33, 30], ['civ_police_station', 43, 21], ['civ_fire_station', 53, 46]] as const) {
+      clear(id, x, z);
+      const { here, real, served } = realChange(sim, id, x, z);
+      expect(served, id).toBeGreaterThan(50);
+      expect(here / real, `${id}: here §${here.toFixed(0)} vs real §${real.toFixed(0)}`).toBeGreaterThan(0.95);
+      expect(here / real, `${id}: here §${here.toFixed(0)} vs real §${real.toFixed(0)}`).toBeLessThan(1.05);
+    }
+  });
+
+  it('a deep lot is served as a whole: its back rows count with the reached front row', () => {
+    const st = newState(32);
+    roadLine(st, 2, 2, 2, 28, Network.Road);
+    // one 2×2 tower east of the street (x 3..4): only its front column (x = 3) is in any reach
+    for (let k = 0; k < 4; k++) st.zone[st.idx(3 + (k & 1), 14 + (k >> 1))] = Zone.ResHigh;
+    place(st, 't_r3', 3, 14, { pop: 400 });
+    const sim = newSim(st);
+    const def = getDef('civ_police_station')!;
+    // across the street 8 tiles up (out of its near field, in full reach): the police tier's need of the whole tower
+    // (residents x (0.5 + crime)) at the station's strength — not just the front column's half (the cursor's old count)
+    const s = def.coverage!.strength;
+    const p = servedHere(sim, def, 0, 22, 2, 2)!;
+    expect(p).toBeGreaterThan(0.97 * 400 * 0.5 * s);
+    expect(p).toBeLessThanOrEqual(400 * 0.5 * s * 1.0001);
+    // ...which the services pass then counts as served
+    const r = realChange(sim, 'civ_police_station', 0, 22);
+    expect(r.here / r.real).toBeGreaterThan(0.97);
+    expect(r.here / r.real).toBeLessThan(1.03);
   });
 
   it('a flat-upkeep def or an economy-only city: no estimate here (the tool shows the catalog upkeep)', () => {

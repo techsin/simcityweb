@@ -263,6 +263,32 @@ export function mainProblem(input: {
   return null;
 }
 
+/** the ordinance that clears rubble (economy/ordinances.ts 'rubble_cleanup') as the rubble line names it */
+export interface RubbleCrews {
+  name: string;
+  /** enacted: the population system clears a lot's rubble after `days` */
+  enacted: boolean;
+  /** the city may enact it (its unlock population reached, or a sandbox) */
+  available: boolean;
+  unlockPop: number;
+  days: number;
+}
+
+/**
+ * The main problem of a growable lot in rubble (BF.Burnt; final fixes UI-2): growth never rebuilds on rubble, so a burnt
+ * home or shop showed a Burnt down chip, a condition forecast and a Make historic button but no fix — 55 such lots sat
+ * for years. Its fix, like the planner's rubble advice: the bulldozer, or the Municipal Demolition Crews ordinance (rubble
+ * cleared after `days`); while it is enacted, that it is in hand. (A ruined facility's report says "Burnt down —
+ * bulldoze it and build it again".)
+ */
+export function rubbleProblem(crews: RubbleCrews | null | undefined): MainProblem {
+  if (crews?.enacted) return { text: 'Burnt down', hint: `${crews.name} are clearing it — the lot can rebuild once the rubble is gone (within about ${crews.days} days)`, tone: 'warn' };
+  const ord = !crews ? ''
+    : crews.available ? `, or enact ${crews.name} (Ordinances) to clear rubble automatically`
+    : ` (${crews.name}, who clear rubble automatically, come with ${crews.unlockPop.toLocaleString('en-US')} residents)`;
+  return { text: 'Burnt down', hint: `Bulldoze the rubble so the lot can rebuild${ord}`, tone: 'bad' };
+}
+
 // ------------------------------------------------------------------------------------------------ land value
 /** landValueBreakdown → bars (those that show at least a point); the clamp term ("Floored at 0%" / "Capped at 100%")
  *  becomes a note, not a bar */

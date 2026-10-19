@@ -179,8 +179,9 @@ export class Toolbar {
   private costLine(spec: ToolSpec): string {
     if (spec.def) {
       const cost = spec.cost ? money(spec.cost) : 'Free';
-      // (schools, clinics, stations, parks also pay running costs per person served: what one more costs in this city
-      // now — final fixes P3, the plop tool, inspector and Rewards panel use the same estimate; the tooltip splits it)
+      // (schools, clinics, stations, parks also pay running costs per person served: what one typically costs in this
+      // city — final fixes P3 / UI-1, the Rewards panel and the facility facts use the same estimate; the title says
+      // "typical in this city · up to §B at full use", the plop tool what it costs at the cursor)
       const est = upkeepEstimate(this.ctx.state, spec.def);
       const up = est ? `<span class="up" title="${escapeHtml(est.title)}">≈${money(est.now)}/mo</span>` : `<span class="up">${spec.upkeep ? `${money(spec.upkeep)}/mo` : spec.income ? `+${money(spec.income)}/mo` : '&nbsp;'}</span>`;
       return `<span>${cost}</span>${up}`;
@@ -365,13 +366,14 @@ export class Toolbar {
       } catch {
         facts = [];
       }
-      // (schools, clinics, stations, parks: what one more costs in this city now and the most it can cost — the same
-      // two numbers as the plop tool, the inspector and the Rewards panel, final fixes P3; the formula "§72 / month +
-      // §0.60 per pupil served" (the facts' line) goes under the rows)
+      // (schools, clinics, stations, parks: what one typically costs in this city and the most it can cost — the facility
+      // facts' and the Rewards panel's words, final fixes UI-1 / lead decision 20b: the city-wide typical load, not what
+      // one more changes at a given spot, which the plop tool's "Upkeep here" says; the formula "§72 / month + §0.60
+      // per pupil served" (the facts' line) goes under the rows)
       const est = upkeepEstimate(this.ctx.state, d);
       if (est) {
-        rows.push(['Upkeep', `≈${money(est.now)} / month now`]);
-        rows.push(['At full use', `up to ${money(est.full)} / month`]);
+        // (the title in two unbreakable halves: it wraps at the dot, not inside a figure)
+        rows.push(['Upkeep', est.title.split(' · ').map((p) => `<span style="white-space:nowrap">${escapeHtml(p)}</span>`).join(' · ')]);
         const formula = opexTierOf(d) ? facts.find((f) => f.key === 'upkeep')?.value : undefined;
         if (formula) hints.push(`Upkeep: ${formula}`);
       } else if (d.upkeep) rows.push(['Upkeep', `${money(d.upkeep)} / month`]);

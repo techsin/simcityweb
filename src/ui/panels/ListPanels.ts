@@ -216,12 +216,14 @@ export class RewardsPanel extends Panel {
     }
   }
 
-  /** the upkeep chip: the build menu's estimate for running-cost facilities ("≈§A/mo", the full-use figure on hover —
-   *  final fixes P3: the panel showed the catalog upkeep, a third number), else the flat upkeep */
+  /** the upkeep chip: the build menu's estimate for running-cost facilities ("≈§A/mo typical", the whole "typical in
+   *  this city · up to §B at full use" on hover — final fixes P3: the panel showed the catalog upkeep, a third number;
+   *  UI-1: the city-wide typical load, 2-11x what one more costs at a given spot in a big city, not a promise), else
+   *  the flat upkeep */
   private upkeepChip(def: BuildingDef): HTMLElement | null {
     if (!def.upkeep) return null;
     const est = upkeepEstimate(this.ctx.state, def);
-    return est ? h('span', { class: 'chip', title: `Upkeep ${est.title}` }, `≈${money(est.now)}/mo`) : h('span', { class: 'chip', title: 'Upkeep' }, `${money(def.upkeep)}/mo`);
+    return est ? h('span', { class: 'chip', title: `Upkeep ${est.title}` }, `≈${money(est.now)}/mo typical`) : h('span', { class: 'chip', title: 'Upkeep' }, `${money(def.upkeep)}/mo`);
   }
 
   newUnlocks(): number {

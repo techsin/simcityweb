@@ -457,14 +457,29 @@ interface RingFill {
    *  and the depths in slot order (ringNearT once the sector is complete) */
   perm: Int32Array[];
   tNear: Float32Array[];
-  /** all instances written: the next step finishes the sector (uploads, far blocks) */
+  /** all instances written: the next steps finish the sector (near pair upload + far block order, then its far blocks'
+   *  data one quarter per unit: q = the next quarter, -1 before the near pair's finish) */
   done: boolean;
+  q: number;
   /** instance bounds per near mesh: min x y z, max x y z */
   bounds: Float64Array;
   dens: number;
   /** the sector's micro impostors (matrices / colours) for its far blocks */
   micro: Float32Array;
   microCol: Float32Array;
+}
+
+/** a sector's season-independent tree order (its current candidates at one density): the near pair's slot of each
+ *  instance (its rank by depth beyond the map edge) with the depths in slot order, and each far block's trees (indices
+ *  into the sector's micro data) ordered by their thinning random, with the sorted randoms. A season refill reuses it
+ *  and only rewrites matrices / colours (no sort, no allocation); new candidates or a new density rebuild it */
+interface RingOrder {
+  dens: number;
+  perm: Int32Array[];
+  tNear: Float32Array[];
+  /** per far block (RING_SUB): null until the sector's first finish at this order */
+  blk: Int32Array[] | null;
+  rnd: Float32Array[] | null;
 }
 
 const _box = new THREE.Box3();
@@ -898,6 +913,10 @@ export class TreeRenderer {
   private ringRefill = 0;
   private ringGen: RingGen | null = null;
   private ringFillState: RingFill | null = null;
+  /** per sector: its tree order (RingOrder, for its current candidates) and its reusable micro data buffers */
+  private ringOrder: (RingOrder | null)[] = new Array(RING_N).fill(null);
+  private ringMicroAll: (Float32Array | null)[] = new Array(RING_N).fill(null);
+  private ringMicroAllCol: (Float32Array | null)[] = new Array(RING_N).fill(null);
   /** sector filled at least once since the last reset (its meshes may be drawn) */
   private ringReady = new Uint8Array(RING_N);
   /** instance bounds of each sector (min x y z, max x y z) */
@@ -1043,6 +1062,7 @@ export class TreeRenderer {
     this.ringMicroN.fill(0);
     this.ringNearT.fill(null);
     this.ringReady.fill(0);
+    this.ringOrder.fill(null);
     this.ringFarDirty = 0;
     this.ringInstances = 0;
   }
@@ -2236,8 +2256,8 @@ export class TreeRenderer {
       }
       const top = gen.top, bot = gen.bot;
       for (let bi = gen.bi; bi < top.length - 1; bi++) {
-        // (time check after every 8th block, so each call progresses: a block is at most 16 candidates)
-        if ((bi & 7) === 7 && bi > gen.bi && performance.now() >= end) {
+        // (time check after every 2nd block, so each call progresses: a block is at most 16 candidates)
+        if ((bi & 1) === 1 && bi > gen.bi && performance.now() >= end) {
           gen.bi = bi;
           out = true;
           break;
@@ -2299,15 +2319,49 @@ export class TreeRenderer {
     this.ringCandN[k] = n;
     this.ringGen = null;
     this.ringGenerations++;
+    // (new candidates: a new tree order)
+    this.ringOrder[k] = null;
     this.ringRefill |= 1 << k;
     return true;
   }
 
-  /** start (re)filling sector k's meshes from its candidates at the current density / season */
+  /** start (re)filling sector k's meshes from its candidates at the current density / season (a season refill reuses
+   *  the sector's tree order and micro buffers: no sort, no allocation) */
   private ringFillStart(k: number): void {
-    const buf = this.ringCand[k], n = buf ? this.ringCandN[k] : 0;
     const dens = this.ringDensity();
-    // instances of the near pair: broadleaf / conifer (all of them also go to the sector's micro data)
+    let ord = this.ringOrder[k];
+    if (!ord || ord.dens !== dens) ord = this.ringOrder[k] = this.ringOrderOf(k, dens);
+    const counts = [ord.perm[0].length, ord.perm[1].length];
+    const imp = getImpostorGeometries();
+    const geos = [imp.broad, imp.conifer];
+    for (let m = 0; m < 2; m++) {
+      const idx = k * 2 + m;
+      const mesh = this.meshFor(this.ring[idx], geos[m], this.materialRingNear, Math.max(1, counts[m]), true, false);
+      mesh.name = 'trees-ring';
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      this.ring[idx] = mesh;
+    }
+    const nm = Math.max(1, counts[0] + counts[1]);
+    let micro = this.ringMicroAll[k], microCol = this.ringMicroAllCol[k];
+    if (!micro || micro.length < nm * 16) micro = this.ringMicroAll[k] = new Float32Array(nm * 16);
+    if (!microCol || microCol.length < nm * 3) microCol = this.ringMicroAllCol[k] = new Float32Array(nm * 3);
+    const bounds = new Float64Array(12);
+    for (let m = 0; m < 2; m++) {
+      bounds[m * 6] = bounds[m * 6 + 1] = bounds[m * 6 + 2] = Infinity;
+      bounds[m * 6 + 3] = bounds[m * 6 + 4] = bounds[m * 6 + 5] = -Infinity;
+    }
+    this.ringFillState = { k, i: 0, w: new Int32Array(3), perm: ord.perm, tNear: ord.tNear, bounds, dens, micro, microCol, done: false, q: -1 };
+  }
+
+  /**
+   * Sector k's near pair order at density dens (see RingOrder; its far block order follows at the sector's first finish):
+   * the instances of each class (broadleaf / conifer, all of them also in the micro data) ordered by their depth beyond
+   * the sector's map edge(s), so a camera reaches a prefix (updateRingView): keys = depth (0.1 m steps) x 2^14 + the
+   * instance's index in its class (< RING_CAP), one numeric sort per class
+   */
+  private ringOrderOf(k: number, dens: number): RingOrder {
+    const buf = this.ringCand[k], n = buf ? this.ringCandN[k] : 0;
     let nb = 0, nc = 0;
     for (let i = 0; i < n; i++) {
       const o = i * RING_STRIDE;
@@ -2315,9 +2369,6 @@ export class TreeRenderer {
       if (this.species[buf![o + 3]].conifer) nc++;
       else nb++;
     }
-    const counts = [nb, nc];
-    // near pair slots: the instances ordered by their depth beyond the sector's map edge(s) (a camera reaches a prefix,
-    // see updateRingView): keys = depth (0.1 m steps) x 2^14 + the instance's index in its class (< RING_CAP)
     const keys = [new Float64Array(nb), new Float64Array(nc)], seen = [0, 0];
     for (let i = 0; i < n; i++) {
       const o = i * RING_STRIDE;
@@ -2336,24 +2387,7 @@ export class TreeRenderer {
       perm.push(p);
       tNear.push(t);
     }
-    const imp = getImpostorGeometries();
-    const geos = [imp.broad, imp.conifer];
-    for (let m = 0; m < 2; m++) {
-      const idx = k * 2 + m;
-      const mesh = this.meshFor(this.ring[idx], geos[m], this.materialRingNear, Math.max(1, counts[m]), true, false);
-      mesh.name = 'trees-ring';
-      mesh.castShadow = false;
-      mesh.receiveShadow = true;
-      this.ring[idx] = mesh;
-    }
-    const nm = nb + nc;
-    const micro = new Float32Array(Math.max(1, nm) * 16), microCol = new Float32Array(Math.max(1, nm) * 3);
-    const bounds = new Float64Array(12);
-    for (let m = 0; m < 2; m++) {
-      bounds[m * 6] = bounds[m * 6 + 1] = bounds[m * 6 + 2] = Infinity;
-      bounds[m * 6 + 3] = bounds[m * 6 + 4] = bounds[m * 6 + 5] = -Infinity;
-    }
-    this.ringFillState = { k, i: 0, w: new Int32Array(3), perm, tNear, bounds, dens, micro, microCol, done: false };
+    return { dens, perm, tNear, blk: null, rnd: null };
   }
 
   /** depth of a ring tree at (x, z) beyond sector k's map edge(s) (corner sectors: the larger of the two) */
@@ -2422,7 +2456,8 @@ export class TreeRenderer {
     const winter = this.season.bare > 0.5;
     let i = f.i;
     while (i < n) {
-      const stop = i + 256 < n ? i + 256 : n;
+      // (time check every 64 candidates: a batch stays well under the slice budget)
+      const stop = i + 64 < n ? i + 64 : n;
       for (; i < stop; i++) {
         const o = i * RING_STRIDE;
         if (buf![o + 7] >= f.dens) continue;
@@ -2455,7 +2490,26 @@ export class TreeRenderer {
       f.done = true;
       if (performance.now() >= end) return false;
     }
-    // complete: upload, counts (updateRingView draws the prefix the camera reaches), bounds
+    if (f.q < 0) {
+      this.ringFinishNear(f, meshes);
+      f.q = 0;
+      if (performance.now() >= end) return false;
+    }
+    // its far blocks' data, one quarter per unit (copies into reused buffers, in the order of RingOrder)
+    while (f.q < RING_SUB) {
+      this.ringBlockCopy(k, f.q++, micro, microCol);
+      if (f.q < RING_SUB && performance.now() >= end) return false;
+    }
+    this.ringReady[k] = w[2] > 0 ? 1 : 0;
+    this.ringFarDirty |= 1 << k;
+    this.ringFillState = null;
+    return true;
+  }
+
+  /** a filled sector's near pair upload (counts: updateRingView draws the prefix the camera reaches), bounds, and its far
+   *  blocks' tree order (RingOrder: computed once per order) */
+  private ringFinishNear(f: RingFill, meshes: TreeMesh[]): void {
+    const k = f.k, w = f.w, bd = f.bounds;
     for (let m = 0; m < 2; m++) {
       const mesh = meshes[m], cnt = w[m];
       mesh.userData.ringCount = cnt;
@@ -2481,57 +2535,80 @@ export class TreeRenderer {
       RB[ro + a] = Math.min(bd[a], bd[6 + a]);
       RB[ro + 3 + a] = Math.max(bd[3 + a], bd[9 + a]);
     }
-    this.ringBlocks(k, micro, microCol, w[2]);
-    this.ringReady[k] = w[2] > 0 ? 1 : 0;
-    this.ringFarDirty |= 1 << k;
-    this.ringFillState = null;
-    return true;
+    this.ringBlockOrder(k, f.micro, w[2]);
   }
 
-  /** sector k's n micro impostors (16 matrix + 3 colour floats each) into its RING_SUB blocks (the quarters of its
-   *  span), each ordered by the trees' thinning random (ringRand: a prefix is what a distance keeps), with its bounds */
-  private ringBlocks(k: number, micro: Float32Array, col: Float32Array, n: number): void {
+  /**
+   * The far blocks' tree order of sector k (its n micro impostors, 16 matrix + 3 colour floats each, into its RING_SUB
+   * blocks, the quarters of its span), each block ordered by the trees' thinning random (ringRand: a prefix is what a
+   * distance keeps). It depends on the trees' positions only: computed at the sector's first finish for its current
+   * order (RingOrder) and reused by every season refill, which only copies matrices / colours (ringBlockCopy).
+   */
+  private ringBlockOrder(k: number, micro: Float32Array, n: number): void {
+    let ord = this.ringOrder[k];
+    // (a fill always starts from its sector's order; a stand-in keeps a dropped one from breaking the finish)
+    if (!ord) ord = this.ringOrder[k] = { dens: -1, perm: [], tNear: [], blk: null, rnd: null };
+    if (ord.blk && ord.rnd) return;
     const [x0, x1, z0, z1] = this.ringSpan(k), xm = (x0 + x1) / 2, zm = (z0 + z1) / 2;
-    const rnd = new Float32Array(n), blk = new Uint8Array(n), cnt = new Int32Array(RING_SUB);
+    const r24 = new Float64Array(n), q8 = new Uint8Array(n), cnt = new Int32Array(RING_SUB);
     for (let i = 0; i < n; i++) {
       const x = micro[i * 16 + 12], z = micro[i * 16 + 14];
-      rnd[i] = ringRand(x, z);
+      // (ringRand is a 24-bit integer / 2^24: exact as an integer here)
+      r24[i] = ringRand(x, z) * 16777216;
       const q = (x >= xm ? 1 : 0) + (z >= zm ? 2 : 0);
-      blk[i] = q;
+      q8[i] = q;
       cnt[q]++;
     }
-    const B = this.ringMicroBox;
+    const blk: Int32Array[] = [], rnd: Float32Array[] = [];
     for (let q = 0; q < RING_SUB; q++) {
-      const id = k * RING_SUB + q, c = cnt[q], o = id * 6;
-      const idx = new Int32Array(c);
-      for (let i = 0, j = 0; i < n; i++) if (blk[i] === q) idx[j++] = i;
-      idx.sort((a, b) => rnd[a] - rnd[b]);
-      const m = new Float32Array(Math.max(1, c) * 16), cc = new Float32Array(Math.max(1, c) * 3), rr = new Float32Array(Math.max(1, c));
-      B[o] = B[o + 1] = B[o + 2] = Infinity;
-      B[o + 3] = B[o + 4] = B[o + 5] = -Infinity;
-      for (let j = 0; j < c; j++) {
-        const i = idx[j], s = i * 16;
-        m.set(micro.subarray(s, s + 16), j * 16);
-        cc[j * 3] = col[i * 3];
-        cc[j * 3 + 1] = col[i * 3 + 1];
-        cc[j * 3 + 2] = col[i * 3 + 2];
-        rr[j] = rnd[i];
-        // the micro top: the double pyramid's upper half (waist r 0.46 at y 0.63, apex 1) in the instance's frame
-        const hs = Math.hypot(micro[s], micro[s + 2]) * 0.5, vs = micro[s + 5];
-        const x = micro[s + 12], y = micro[s + 13], z = micro[s + 14];
-        if (x - hs < B[o]) B[o] = x - hs;
-        if (y + vs * 0.6 < B[o + 1]) B[o + 1] = y + vs * 0.6;
-        if (z - hs < B[o + 2]) B[o + 2] = z - hs;
-        if (x + hs > B[o + 3]) B[o + 3] = x + hs;
-        if (y + vs > B[o + 4]) B[o + 4] = y + vs;
-        if (z + hs > B[o + 5]) B[o + 5] = z + hs;
+      // keys = the random's integer x 2^14 + the tree's index (< RING_CAP): one numeric sort, no comparator
+      const keys = new Float64Array(cnt[q]);
+      for (let i = 0, j = 0; i < n; i++) if (q8[i] === q) keys[j++] = r24[i] * 16384 + i;
+      keys.sort();
+      const idx = new Int32Array(keys.length), rr = new Float32Array(Math.max(1, keys.length));
+      for (let j = 0; j < keys.length; j++) {
+        const key = keys[j], i = key % 16384;
+        idx[j] = i;
+        rr[j] = (key - i) / 16384 / 16777216;
       }
-      if (!c) B.fill(0, o, o + 6);
-      this.ringMicro[id] = m;
-      this.ringMicroCol[id] = cc;
-      this.ringMicroR[id] = rr;
-      this.ringMicroN[id] = c;
+      blk.push(idx);
+      rnd.push(rr);
     }
+    ord.blk = blk;
+    ord.rnd = rnd;
+  }
+
+  /** far block q of sector k: its trees' micro matrices / colours (micro / col: the sector's data) in the block's order
+   *  (ringBlockOrder), into the block's reused buffers, with its bounds */
+  private ringBlockCopy(k: number, q: number, micro: Float32Array, col: Float32Array): void {
+    const ord = this.ringOrder[k]!, idx = ord.blk![q], rr = ord.rnd![q];
+    const id = k * RING_SUB + q, c = idx.length, o = id * 6, B = this.ringMicroBox;
+    let m = this.ringMicro[id], cc = this.ringMicroCol[id];
+    if (!m || m.length < Math.max(1, c) * 16) m = new Float32Array(Math.max(1, c) * 16);
+    if (!cc || cc.length < Math.max(1, c) * 3) cc = new Float32Array(Math.max(1, c) * 3);
+    B[o] = B[o + 1] = B[o + 2] = Infinity;
+    B[o + 3] = B[o + 4] = B[o + 5] = -Infinity;
+    for (let j = 0; j < c; j++) {
+      const i = idx[j], s = i * 16, d = j * 16;
+      for (let e = 0; e < 16; e++) m[d + e] = micro[s + e];
+      cc[j * 3] = col[i * 3];
+      cc[j * 3 + 1] = col[i * 3 + 1];
+      cc[j * 3 + 2] = col[i * 3 + 2];
+      // the micro top: the double pyramid's upper half (waist r 0.46 at y 0.63, apex 1) in the instance's frame
+      const hs = Math.hypot(micro[s], micro[s + 2]) * 0.5, vs = micro[s + 5];
+      const x = micro[s + 12], y = micro[s + 13], z = micro[s + 14];
+      if (x - hs < B[o]) B[o] = x - hs;
+      if (y + vs * 0.6 < B[o + 1]) B[o + 1] = y + vs * 0.6;
+      if (z - hs < B[o + 2]) B[o + 2] = z - hs;
+      if (x + hs > B[o + 3]) B[o + 3] = x + hs;
+      if (y + vs > B[o + 4]) B[o + 4] = y + vs;
+      if (z + hs > B[o + 5]) B[o + 5] = z + hs;
+    }
+    if (!c) B.fill(0, o, o + 6);
+    this.ringMicro[id] = m;
+    this.ringMicroCol[id] = cc;
+    this.ringMicroR[id] = rr;
+    this.ringMicroN[id] = c;
   }
 
   /** upload sector k's far blocks (its trees changed: drawn as a prefix from the next view update on) */

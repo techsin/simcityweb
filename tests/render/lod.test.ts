@@ -1,7 +1,8 @@
 /**
  * Rendering LOD / culling invariants (pure JS, no WebGL context):
  *  - building massing proxies: generated for (nearly) every building model, much cheaper, inside the model's bounds,
- *    windowed models keep window surfaces (lit at night), deterministic
+ *    windowed models keep window surfaces (lit at night), deterministic; their tree diamonds keep bare winter crowns
+ *    (no twig-swap marker, twig sprays are no crowns)
  *  - DynamicBatch per-pass draw lists: view frustum culling, per-instance shadow cascade masks, tiny-caster skipping,
  *    receiver-volume culling and list caching, disabled tiles / tile sets, front-to-back sorting, guard-banded list
  *    reuse while the camera pans (exact again once it rests), LOD geometry swaps without re-culling
@@ -116,6 +117,44 @@ describe('building LOD proxies', () => {
     }
     // cherry (2), deciduous (1) and evergreen (4) crowns all survive in some proxy
     for (const pt of [1, 2, 4]) expect(seen.has(pt), `pattern ${pt}`).toBe(true);
+  }, 120_000);
+
+  it('keeps bare winter crowns at LOD range: no diamond carries the twig-swap marker, twig sprays are no crowns', () => {
+    // a lot tree with a twig crown (patterns 1-2, floor >= 1: its leaf lobes collapse while it is bare, its pattern-5
+    // twig sprays appear): the proxy has no twigs, so its diamond must not collapse (yards / plazas lost their trees at
+    // LOD range in winter), and the twig sprays must not shape or colour it (they show only while the tree is bare)
+    let twigModels = 0, diamonds = 0;
+    for (const id of buildingIds.filter((m) => m.startsWith('park_') || m.startsWith('res_') || m.startsWith('com_'))) {
+      const nv = MANIFEST_BY_ID[id].variants ?? 1;
+      for (let v = 0; v < nv; v++) {
+        const g = getModelGeometry(id, v);
+        const sg = g.getAttribute('surf') as THREE.BufferAttribute;
+        let twigs = false;
+        for (let i = 0; i < sg.count; i += 3) if (Math.round(sg.getX(i)) === Surf.Foliage && sg.getY(i) > 4.5) { twigs = true; break; }
+        const p = buildLodProxy(g);
+        if (!p) continue;
+        const s = p.getAttribute('surf') as THREE.BufferAttribute;
+        let fol = 0;
+        for (let i = 0; i < s.count; i += 3) {
+          if (Math.round(s.getX(i)) !== Surf.Foliage) continue;
+          fol++;
+          const pt = s.getY(i), fl = s.getZ(i);
+          expect(pt < 4.5, `${id}#${v}: proxy foliage of pattern ${pt}`).toBe(true);
+          expect(pt > 0.5 && pt < 2.5 && fl >= 1, `${id}#${v}: proxy crown with the twig-swap marker (floor ${fl})`).toBe(false);
+        }
+        if (twigs) { twigModels++; if (fol) diamonds++; }
+      }
+    }
+    // most lot models with twig crowns keep tree diamonds in their proxy (the sprays still count towards the foliage
+    // share; ~79%: the rest have a few small trees under the 6% share, as before the twig crowns came)
+    expect(twigModels).toBeGreaterThan(50);
+    expect(diamonds / twigModels).toBeGreaterThan(0.7);
+    // a model just over the foliage share with its sprays (crowns alone ~5.9%) keeps its diamonds
+    const condo = buildLodProxy(getModelGeometry('res_condo', 10))!;
+    const cs = condo.getAttribute('surf') as THREE.BufferAttribute;
+    let cf = 0;
+    for (let i = 0; i < cs.count; i += 3) if (Math.round(cs.getX(i)) === Surf.Foliage) cf++;
+    expect(cf).toBeGreaterThan(8);
   }, 120_000);
 
   it('is deterministic', () => {

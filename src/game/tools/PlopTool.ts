@@ -5,9 +5,10 @@
  * school's tier, fire stations → Emergency (fire response), garbage → Garbage, air / noise emitters → Air / Noise,
  * transit → Transit, a parking garage → Parking, unwanted / prestigious buildings → Prestige. The cursor tip previews
  * what the spot gives: transit stops within reach of a garage (park & ride), partner terminals of a ferry; what the
- * building costs a month here — "≈§A/mo now · up to §B at full use", the wording of the build menu, Rewards panel and
- * facility facts (final fixes P3: A from the unserved need in its reach, placement.ts upkeepHere); and, in red, that a
- * staffed service without a road won't work (final fixes P8).
+ * building costs a month here — "Upkeep here ≈§A/mo now · up to §B at full use" (final fixes P3 / UI-1: A = the budget
+ * change it makes at this spot, placement.ts upkeepHere; the build menu, Rewards panel and facility facts quote the
+ * city's typical figure, "≈§X/mo typical in this city"); and, in red, that a staffed service without a road won't work
+ * (final fixes P8).
  */
 import { CELL_SIZE } from '../../core/constants';
 import { Overlay } from '../../core/types';
@@ -217,7 +218,7 @@ export class PlopTool extends Tool {
   }
 
   /**
-   * what this spot means beyond the preview's result: the upkeep here (P3: schools, clinics, stations, parks pay
+   * what this spot means beyond the preview's result: the upkeep here (P3 / UI-1: schools, clinics, stations, parks pay
    * running costs per person served — what one more costs here now, and the most it can cost), whether a staffed
    * service gets no road (P8), how to fix a shore building that doesn't face water (P14)
    */
@@ -242,7 +243,8 @@ export class PlopTool extends Tool {
         const o = this.place && this.lastPointer ? this.origin(this.lastPointer, r) : { x, z };
         other = safe(() => shoreFacesWater(st, o.x, o.z, rw, rd, r), false);
       }
-      this.shoreHint = other ? ' — press R to face the water' : ' — place it on the water\'s edge, its front facing the water';
+      // (the reason already says "with its front facing water": the fix only names the move — final fixes UI-4)
+      this.shoreHint = other ? ' — press R to face the water' : ' — move it onto the water\'s edge';
     }
   }
 

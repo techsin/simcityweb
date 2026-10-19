@@ -540,6 +540,51 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
+  it('a season refill reuses each sector\'s tree order (no sort, no reallocation) and equals a fresh fill of that month', () => {
+    /** every ring mesh's instances (matrix + colour floats, in instance order) and its submitted count basis */
+    const ringData = (tr: TreeRenderer) => {
+      const out: string[] = [];
+      for (const m of tr.group.children as THREE.InstancedMesh[]) {
+        if (m.name !== 'trees-ring') continue;
+        const n = (m.userData.ringCount as number) ?? 0, e = m.instanceMatrix.array as Float32Array, c = m.instanceColor!.array as Float32Array;
+        const row: number[] = [];
+        for (let i = 0; i < n * 16; i++) row.push(e[i]);
+        for (let i = 0; i < n * 3; i++) row.push(c[i]);
+        out.push(`${m.geometry.name}:${n}:${row.join(',')}`);
+      }
+      return out.sort();
+    };
+    const mk = (month: number) => {
+      const st = createCityState(defaultCityConfig({ size: 64, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
+      st.day = month * 30 + 12;
+      const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
+      tr.flush();
+      return { st, tr };
+    };
+    const a = mk(0), b = mk(9);
+    const ord = a.tr as unknown as { ringOrder: ({ perm: Int32Array[]; tNear: Float32Array[]; blk: Int32Array[] | null } | null)[]; ringMicro: (Float32Array | null)[]; ringMicroR: (Float32Array | null)[] };
+    const perm0 = ord.ringOrder.map((o) => o!.perm[0]), blk0 = ord.ringOrder.map((o) => o!.blk![0]), micro0 = [...ord.ringMicro], r0 = [...ord.ringMicroR];
+    expect(ringData(a.tr)).not.toEqual(ringData(b.tr));
+    // January -> October at runtime: the same order objects and buffers, the instances of a renderer loaded in October
+    a.st.day = 9 * 30 + 12;
+    a.tr.setMonth(a.st.month);
+    a.tr.flush();
+    ord.ringOrder.forEach((o, k) => {
+      expect(o!.perm[0]).toBe(perm0[k]);
+      expect(o!.blk![0]).toBe(blk0[k]);
+    });
+    ord.ringMicro.forEach((m, id) => expect(m).toBe(micro0[id]));
+    ord.ringMicroR.forEach((r, id) => expect(r).toBe(r0[id]));
+    expect(ringData(a.tr)).toEqual(ringData(b.tr));
+    // a new density rebuilds the order (a subset of the trees)
+    a.tr.setQuality({ lodDistance: 850, density: 0.75, castShadows: false, maxVariants: 3 });
+    a.tr.flush();
+    expect(ord.ringOrder[0]!.perm[0]).not.toBe(perm0[0]);
+    expect(ord.ringOrder[0]!.perm[0].length).toBeLessThan(perm0[0].length);
+    a.tr.dispose();
+    b.tr.dispose();
+  }, 120_000);
+
   it('far (micro) chunks draw broadleaf + conifer impostors as one merged mesh; nearer chunks keep the pair', () => {
     const { st, tr } = make();
     const W = st.size * CELL_SIZE;
