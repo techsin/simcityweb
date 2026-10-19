@@ -561,16 +561,27 @@ export class EmergencyBanner {
   }
 
   /**
-   * EM-1: a player dispatch can save it right now — the sim's prompt (manualPossible, waiting) and a free unit of its
-   * primary responder among the dispatch options (live free counts, ETAs cached by emergency.ts: cheap). What counts for
-   * LIVE mode, the urgent pause, the pending alerts and the "more" pill: a prompt whose unit is gone (a disaster's next
-   * incident took it) never holds the game.
+   * EM-1: a player dispatch can save it right now — the sim's prompt (manualPossible, waiting, its window open) and a
+   * free unit of its primary responder among the dispatch options that still arrives by the deadline (live free counts,
+   * ETAs cached by emergency.ts: cheap; sim time runs on between the day ticks that decide the prompt again). The
+   * fastest such unit's drive (days, incl. turnout), else NaN. What counts for LIVE mode, the urgent pause, the pending
+   * alerts and the "more" pill: a prompt whose unit is gone (a disaster's next incident took it) never holds the game.
    */
-  private answerable(em: EmergencySystem, inc: Incident): boolean {
-    if (!inc.manualPossible || !(inc.state === 'uncovered' || inc.state === 'queued')) return false;
+  private sendDays(em: EmergencySystem, inc: Incident): number {
+    if (!inc.manualPossible || !(inc.state === 'uncovered' || inc.state === 'queued')) return NaN;
+    const now = this.ctx.sim.simTime();
+    if (now >= dispatchWindowEnd(inc) - 1e-6) return NaN;
     const r = INCIDENT_RESPONDERS[inc.kind][0];
-    for (const o of em.dispatchOptions(this.ctx.sim, inc.id)) if (o.responder === r && o.free > 0 && Number.isFinite(o.etaMin)) return true;
-    return false;
+    const left = inc.deadline - now + 1e-6;
+    let best = Infinity;
+    for (const o of em.dispatchOptions(this.ctx.sim, inc.id)) {
+      if (o.responder === r && o.free > 0 && o.etaDays <= left && o.etaDays < best) best = o.etaDays;
+    }
+    return best < Infinity ? best : NaN;
+  }
+
+  private answerable(em: EmergencySystem, inc: Incident): boolean {
+    return !Number.isNaN(this.sendDays(em, inc));
   }
 
   private onEvent(e: EmergencyEvent): void {
@@ -583,8 +594,10 @@ export class EmergencyBanner {
       }
       return;
     }
-    // the dispatch situation changed: the Send button and its note read the options again at once (EM-1)
-    if (b && (e.type === 'dispatched' || e.type === 'uncovered' || e.type === 'queued')) b.optsDay = -1;
+    // the dispatch situation changed: the Send button and its note read the options again at once (EM-1) — a dispatch
+    // to any incident may have taken the unit another banner's "Send nearest" counted on
+    if (e.type === 'dispatched') for (const o of this.banners.values()) o.optsDay = -1;
+    else if (b && (e.type === 'uncovered' || e.type === 'queued')) b.optsDay = -1;
     if (e.type !== 'uncovered' || this.dismissed.has(e.id)) return;
     // EM-1: taken up once the dispatch call that raised it is over — a disaster dispatches its incidents one after the
     // other, and a later one may take the unit this one counted on: no banner, LIVE mode or urgent pause for a prompt
@@ -666,7 +679,8 @@ export class EmergencyBanner {
    * real seconds at live speed the most urgent alerted incident still waiting for a dispatch leaves before even its
    * best unit would arrive too late — the player must send it before the window closes (an industrial accident: its
    * plant ignites) and early enough to arrive by the deadline: min(window left, time left − best ETA) × seconds per
-   * live day (Infinity = none waiting that a dispatch can still save)
+   * live day, the ETA of the fastest free unit "Send nearest" can send now (Infinity = none waiting that a dispatch can
+   * still save)
    */
   private urgentSeconds(slowmo: number): number {
     const em = emergencyOf(this.ctx.sim);
@@ -675,9 +689,11 @@ export class EmergencyBanner {
     const secPerDay = SECONDS_PER_DAY[1] * Math.max(1, slowmo || 1);
     let best = Infinity;
     for (const inc of em.incidents()) {
-      if (!this.banners.has(inc.id) && !this.unbanneredPrompt(em, inc)) continue;
-      if (!this.answerable(em, inc)) continue;
-      const windowDays = Math.min(dispatchWindowEnd(inc) - now, inc.deadline - now - (inc.bestEta ?? 0) * EMERG_DAYS_PER_MIN);
+      // (alerted: a banner, or a major prompt without one that was not dismissed — unbanneredPrompt)
+      if (!this.banners.has(inc.id) && (inc.state !== 'uncovered' || !inc.major || this.dismissed.has(inc.id))) continue;
+      const eta = this.sendDays(em, inc);
+      if (Number.isNaN(eta)) continue;
+      const windowDays = Math.min(dispatchWindowEnd(inc) - now, inc.deadline - now - eta);
       best = Math.min(best, Math.max(0, windowDays) * secPerDay);
     }
     return best;

@@ -438,6 +438,44 @@ describe('EmergencyBanner: final-fix round 2', () => {
     }
   });
 
+  it('EM-1: a prompt whose truck another call took holds LIVE only while a free truck can still make it; its Send button follows at once', () => {
+    // the near station (x = 4, 2 trucks) is 3.6 min from the home; the far one (x = 120) 8.0 min: too far for a 6-day burn
+    const { st, sim, station } = fireTown(128);
+    const far = place(st, 't_fire', 120, 19);
+    sim.events.emit('buildingAdded', far);
+    const home = place(st, 't_r2', 40, 21, { pop: 60 });
+    const spills = [8, 12].map((x) => place(st, 't_id', x, 21, { jobs: 40 }));
+    const h = harness(sim);
+    const em = emergencyOf(sim)!;
+    sim.speed = 3;
+    h.tick();
+    triggerDisaster(sim, 'fire', home.x, home.z);
+    const fire = em.incidents()[0];
+    h.tick();
+    expect([fire.reason, fire.manualPossible, fire.bestFrom]).toEqual(['outOfRange', true, station.id]);
+    expect(h.banner.bannerIds).toEqual([fire.id]);
+    expect(h.banner.liveActive).toBe(true);
+    expect(parts(h, fire.id).send.textContent).toMatch(/^Send nearest3\.\d min$/);
+    // two spills in the near station's reach take both its trucks (between two day ticks: the sim decides the fire
+    // again at the next dispatch pass, a free truck is still left far away)
+    for (const b of spills) expect(em.incident(em.spawn(sim, 'spill', b.x, b.z, { buildingId: b.id }))!.state).toBe('dispatched');
+    expect(em.stationFleet(station.id)!.free).toBe(0);
+    expect(fire.manualPossible).toBe(true);
+    h.tick();
+    // nothing can make it in time any more: no LIVE mode for it; the button names the truck that would go now
+    expect(h.banner.liveActive).toBe(false);
+    expect(sim.speed).toBe(3);
+    expect(h.toasts.at(-1)).toBe('Emergency over — back to ultra speed');
+    const p = parts(h, fire.id);
+    expect(p.send.disabled).toBe(false);
+    expect(p.send.textContent).toMatch(/^Send nearest8\.\d min · too far\?$/);
+    // the next day's pass decides it again: no prompt, nothing to count as ignored
+    sim.runDays(1);
+    h.tick();
+    expect([fire.state, fire.manualPossible, fire.canSend, fire.prompted]).toEqual(['uncovered', false, true, undefined]);
+    expect(h.banner.liveActive).toBe(false);
+  });
+
   it('EM-4: the Send button keeps its label / ETA spans and the pill its text span: a press and release across the update still clicks', () => {
     const { st, sim } = fireTown();
     const homes = [40, 48].map((x) => place(st, 't_r2', x, 21, { pop: 60 }));

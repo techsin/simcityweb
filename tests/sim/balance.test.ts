@@ -116,9 +116,9 @@ describe.skipIf(process.env.BALANCE !== '1' && process.env.BALANCE !== '256')('W
     expect(ns.eq, 'no schools: EQ').toBeLessThan(60);
     expect(ns.approval, 'no schools: approval').toBeLessThan(base.approval);
     expect(ns.pop, 'no schools: population').toBeLessThanOrEqual(1.05 * base.pop);
-    // neglect (never dispatching to uncovered emergencies): more of them fail, residents hold it against the mayor (the
-    // approval term for emergencies — a year-long memory of unanswered emergencies and ignored Dispatch prompts — at least
-    // half a point lower on average) and approval is lower in the years where that bit (its emergencies term a point or
+    // neglect (never dispatching to uncovered emergencies): no fewer of them fail, residents hold it against the mayor (the
+    // approval term for emergencies — a year-long memory of unanswered emergencies and ignored Dispatch prompts — no
+    // higher on average) and approval is lower in the years where that bit (its emergencies term a point or
     // more below the base's). (WP6b round 3: round 2 compared approval over the whole run. Two bot runs are two different
     // cities after a few years, and a well-covered 128 x 15 city leaves few emergencies to neglect, so the bot's
     // year-to-year chaos (±2-4 points) outweighs the emergencies term over the run: the final round-3 runs read 62.65 vs

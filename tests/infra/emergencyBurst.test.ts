@@ -163,6 +163,25 @@ describe('EM-1: a prompt never outlives the free unit it rests on', () => {
     expect(st.stats.emergency.manualActive).toBe(0);
   });
 
+  it('a prompt counts at the settle point only while the unit it rests on is free (taken after its decision: decided again first)', () => {
+    const { st, sim, em, station } = town();
+    const home = place(st, 't_r2', 40, 21, { pop: 60 });
+    triggerDisaster(sim, 'fire', home.x, home.z);
+    const fire = em.incidents()[0];
+    expect([fire.state, fire.reason, fire.manualPossible, fire.bestFrom]).toEqual(['uncovered', 'outOfRange', true, station.id]);
+    // both trucks out after the decision, with nothing to re-decide it before the day's settle point (as when the
+    // second round of a day's dispatch passes takes the unit, or tomorrow's search budget is gone)
+    const out = (em as unknown as { out: Map<number, number> }).out;
+    out.set(station.id, 2);
+    sim.runDays(1);
+    expect(fire.manualPossible).toBe(true);
+    expect(fire.prompted).toBeFalsy();
+    // the truck is free again: the prompt holds at the next settle point and counts
+    out.delete(station.id);
+    sim.runDays(1);
+    expect(fire.prompted).toBe(true);
+  });
+
   it('a prompt that is answerable at the day\'s settle point counts: ignored when nobody answers and it fails', () => {
     const { st, sim, em } = town();
     const home = place(st, 't_r2', 40, 21, { pop: 60 });

@@ -2101,8 +2101,14 @@ export class EmergencySystem implements SimSystem {
       }
       // EM-1 settle point: a Dispatch prompt counts (as ignored when nobody answers and the incident fails: approval)
       // once it still holds at the end of a day's dispatch work — not the moment a disaster's burst decided it, when the
-      // next incident of the same burst could take the unit it counted on before the player saw it
-      for (const inc of this.list) if (inc.state === 'uncovered' && inc.major && inc.manualPossible) inc.prompted = true;
+      // next incident of the same burst could take the unit it counted on before the player saw it. One whose unit a
+      // later dispatch of the second round took (bestFrom busy, revalidate: decided again) counts once tomorrow's pass
+      // has decided it again (a save from before EM-1 has no bestFrom: its prompts count as they did)
+      for (const inc of this.list) {
+        if (inc.state !== 'uncovered' || !inc.major || !inc.manualPossible) continue;
+        const from = inc.bestFrom !== undefined ? this.stById.get(inc.bestFrom) : undefined;
+        if (inc.bestFrom === undefined || (from !== undefined && this.freeOf(from) > 0)) inc.prompted = true;
+      }
       this.uncoveredNews(sim);
       // expire effects
       if (this.p.effects.length) this.p.effects = this.p.effects.filter((e) => e.until > st.day);
