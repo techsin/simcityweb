@@ -16,7 +16,10 @@
  * never costs frame time (flushLod() builds everything synchronously for captures). The buildings waiting for an
  * arriving proxy (often hundreds sharing one model) are woken a few per frame (`lodWakeSlice`, and in smooth motion
  * only while fewer than half the fade cap run), so each arrival dissolves them over a few frames instead of swapping
- * them all in one frame. Also in winter the batch's shadow depth pass swaps bare trees' crowns for their twigs
+ * them all in one frame; a bulk wake (`lodWakeBulk`: a load's whole prefetch arriving after the load's long task, with
+ * thousands of buildings evaluated in the load's frames waiting) swaps at once, 8 x lodWakeSlice per frame, instead
+ * of keeping the first seconds of play busy with dissolves. Also in winter the batch's shadow depth pass swaps bare
+ * trees' crowns for their twigs
  * (patchFoliageDepthMaterial), so bare plaza / lot / kit trees cast twig shadows, not their summer crown's.
  * Without worker support (Node tests) proxies are built on demand within `lodBudgetMs` per frame.
  * Schedule: after each evaluation a building stores the band of camera distances its current levels stay right for
@@ -901,6 +904,12 @@ export class BuildingRenderer {
   private lodWakeAt = 0;
   /** woken buildings evaluated per frame (x4 when swaps are instant: no fade to pace) */
   lodWakeSlice = 64;
+  /** a wake queue longer than this is a bulk one (a load's whole prefetch arriving at once: a city built in one long
+   *  task gets its workers' replies only after it, when thousands of buildings evaluated in the load's frames wait on
+   *  their full model): those swap at once, lodWakeSlice x 8 per frame, instead of each dissolving, 64 per frame, through
+   *  the first seconds of play (dense 256 x 256 city: ~55 dissolves started in every frame of the first 20+). They are
+   *  past their downgrade distance (small on screen) and have never shown their proxy: like a building's first level */
+  lodWakeBulk = 256;
   private disposed = false;
   /** dense list of instances for the per-frame LOD scan */
   private list: BInst[] = [];
@@ -1896,16 +1905,20 @@ export class BuildingRenderer {
 
   /** evaluate buildings woken by an arriving proxy (lodWake): a flush takes all; else lodWakeSlice per frame — while
    *  swaps may fade only as long as fewer than half the fade cap run (each wake dissolves; the rest waits for the
-   *  running fades), x4 when swaps are instant anyway. Those buildings are already past their downgrade distance on
-   *  their full model, so pacing them only delays a GPU saving, never shows the wrong detail up close */
+   *  running fades), x4 when swaps are instant anyway; a bulk wake (over lodWakeBulk waiting) x8, swapping at once.
+   *  Those buildings are already past their downgrade distance on their full model, so pacing them only delays a GPU
+   *  saving, never shows the wrong detail up close */
   private wakeWaiting(c: THREE.Vector3, K: number, on: number, off: number, all: boolean): void {
     const q = this.lodWake;
-    const fading = this.fadeNow && this.fadeReady && this.fadeCap > 0;
-    let n = all ? Infinity : fading ? Math.min(this.lodWakeSlice, (this.fadeCap >> 1) - this.fades.length) : this.lodWakeSlice * 4;
+    const bulk = !all && q.length - this.lodWakeAt > this.lodWakeBulk;
+    const fading = !bulk && this.fadeNow && this.fadeReady && this.fadeCap > 0;
+    let n = all ? Infinity : bulk ? this.lodWakeSlice * 8 : fading ? Math.min(this.lodWakeSlice, (this.fadeCap >> 1) - this.fades.length) : this.lodWakeSlice * 4;
     while (n > 0 && this.lodWakeAt < q.length) {
       const bi = q[this.lodWakeAt++];
       // removed, or waiting again (rebuilt with a new model)
       if (bi.gone || bi.waiting >= 0) continue;
+      // (a bulk wake applies the proxy level at once, as a building's first level: no dissolve)
+      if (bulk) bi.fresh = true;
       this.lodEval(bi, c, K, on, off);
       n--;
     }

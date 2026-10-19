@@ -2,9 +2,12 @@
  * Final fixes P3 / N6 (panels part) and A4, lane ui-panels:
  *  P3 — upkeep and income disagreed by up to 9x between the build menu (a typical-load figure that ignored the city),
  *       the Rewards panel (the catalog upkeep) and the inspector (the actual cost). upkeepEstimate gives the build menu,
- *       its tooltip and the Rewards panel one estimate — what one more costs in this city now, and "up to §B at full
- *       use" — worded like the facility facts (facilities.ts) and the plop tool; the inspector header shows the
- *       report's actual upkeep AND income rows.
+ *       its tooltip and the Rewards panel one estimate — what one typically costs in this city, and "up to §B at full
+ *       use" — worded like the facility facts (facilities.ts); the inspector header shows the report's actual upkeep
+ *       AND income rows.
+ *  UI-1 (lead decision 20b) — that figure is the city-wide typical load (2-11x what one more changes at a given spot in
+ *       a 312k city), so it says "typical in this city", never "now"; the plop tool's "Upkeep here" is the spot's
+ *       (tests/game/toolsPlacement.test.ts).
  *  A4 — the inspector showed a tier facility's staff twice (header "Jobs filled" bar + Facility "Staff" bar) and its
  *       upkeep twice: splitFacilityRows hands Staff / Upkeep / Income to the header and the rest to the section.
  */
@@ -26,8 +29,8 @@ function city() {
   return st;
 }
 
-describe('upkeepEstimate (final fixes P3): one estimate in the build menu, its tooltip and the Rewards panel', () => {
-  it('what one more costs in this city now, and the most it can cost at full use', () => {
+describe('upkeepEstimate (final fixes P3 / UI-1): one estimate in the build menu, its tooltip and the Rewards panel', () => {
+  it('what one typically costs in this city, and the most it can cost at full use', () => {
     const st = city();
     const school = getDef('civ_elementary_school')!;
     const e = upkeepEstimate(st, school)!;

@@ -40,16 +40,17 @@ import { conditionBreakdown } from '../../sim/economy/population';
 import { lotCell } from '../../sim/economy/factors';
 import { type NeedReport, cohortShares, needsExpectation, needsOf, tapWaterAt, waterRequired } from '../../sim/economy/demographics';
 import { facilityLoad } from '../../sim/infra/catchments';
-import { TAP_SAFE } from '../../sim/economy/tuning';
+import { RUBBLE_CLEAR_DAYS, TAP_SAFE } from '../../sim/economy/tuning';
+import { getOrdinance, ordinanceAvailable } from '../../sim/economy/ordinances';
 import { facilityReport } from '../../sim/infra/facilities';
 import { roadCellReport } from '../../sim/infra/transportFacilities';
 import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, emergencyReachAt, emgNearSlack } from '../../sim/infra/overlays';
 import type { PollutionSystem } from '../../sim/infra/pollution';
 import type { CrimeSystem } from '../../sim/infra/crime';
-import { NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
+import { EMERG_GRACE, NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
 import {
-  type Bar, type Chip, type ModelRow, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView, growthRows, headerMoney, mainProblem,
-  landValueView, needRows, pyramid, responseText, signedPts, splitFacilityRows,
+  type Bar, type Chip, type ModelRow, type RubbleCrews, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView, growthRows, headerMoney,
+  mainProblem, landValueView, needRows, pyramid, responseText, rubbleProblem, signedPts, splitFacilityRows,
 } from '../inspectorModel';
 
 const FLAG_CHIPS: [number, string, Chip['cls'], Chip['topic']?][] = [
@@ -151,7 +152,8 @@ export class InfoPanel extends Panel {
       }
     }
     const openSig = (Object.keys(this.open) as SectionId[]).map((k) => (this.open[k] ? 1 : 0)).join('');
-    const sig = b ? `b${b.id}:${b.pop}:${b.jobs}:${b.flags}:${Math.round(b.built * 20)}:${st.monthIndex}:${Math.floor(st.day / 5)}:${openSig}` : `c${t.x},${t.z}:${st.network[ci]}:${st.zone[ci]}:${st.building[ci]}:${st.powered[ci]}:${st.watered[ci]}:${Math.floor(st.day / 5)}:${zsig}:${openSig}`;
+    // (the enacted ordinances too: rubble's line says whether the Demolition Crews are on it, UI-2)
+    const sig = b ? `b${b.id}:${b.pop}:${b.jobs}:${b.flags}:${Math.round(b.built * 20)}:${st.monthIndex}:${Math.floor(st.day / 5)}:${st.budget.ordinances.length}:${openSig}` : `c${t.x},${t.z}:${st.network[ci]}:${st.zone[ci]}:${st.building[ci]}:${st.powered[ci]}:${st.watered[ci]}:${Math.floor(st.day / 5)}:${zsig}:${openSig}`;
     if (sig === this.sig) return;
     // same target, new data: at most one rebuild per real second (breakdowns / needs / report are not free)
     const now = performance.now();
@@ -185,6 +187,14 @@ export class InfoPanel extends Panel {
   // ------------------------------------------------------------------------------------------------ helpers
   private rt(): EconRuntime | null {
     return this.ctx.sim.getSystem<SimSystem & { rt?: EconRuntime }>('economy.population')?.rt ?? null;
+  }
+
+  /** the ordinance that clears rubble, as the rubble line names it (null without one) */
+  private rubbleCrews(): RubbleCrews | null {
+    const o = getOrdinance('rubble_cleanup');
+    if (!o) return null;
+    const st = this.ctx.state;
+    return { name: o.name, enacted: st.budget.ordinances.includes(o.id), available: ordinanceAvailable(st, o), unlockPop: o.unlockPop, days: RUBBLE_CLEAR_DAYS };
   }
 
   private hero(title: string, sub: string, ic: string, color: string, model?: string, fp?: [number, number]): HTMLElement {
@@ -363,15 +373,17 @@ export class InfoPanel extends Panel {
         h('div', { class: 'bar ' + (frac > 0.85 ? 'good' : frac > 0.4 ? '' : 'warn') }, h('div', { class: 'fill', style: { width: `${Math.min(100, frac * 100)}%` } }))));
     }
 
-    // ---- main problem (breakdowns are computed once and reused by the Why? section)
+    // ---- main problem (breakdowns are computed once and reused by the Why? section). A lot in rubble (final fixes UI-2):
+    // its fix — growth never rebuilds on rubble — and no condition forecast (nobody lives in it)
     const rt = this.rt();
-    const cond = growable ? conditionView(safeCall(() => conditionBreakdown(st, b), null)) : null;
+    const rubble = growable && !!(b.flags & BF.Burnt);
+    const cond = growable && !rubble ? conditionView(safeCall(() => conditionBreakdown(st, b), null)) : null;
     const des = growable && dev !== undefined ? desirabilityView(safeCall(() => desirabilityBreakdown(st, rt as EconRuntime, dev, ci), null)) : null;
     // desirability is what limits the building's stage (the Why? section's growth rows say the same)
     const gl = growable && dev !== undefined ? safeCall(() => growthLimits(st, ci, dev), null) : null;
     const stage = def?.stage ?? 1;
     const desLimited = !!gl && !gl.rejected && gl.desStage <= stage && gl.desStage < Math.min(gl.popStage, gl.zoneStage);
-    this.body.appendChild(this.problem(mainProblem({ warnings, condition: cond, desirability: des, abandoned: !!(b.flags & BF.Abandoned), desLimited })) ?? h('span'));
+    this.body.appendChild(this.problem(rubble ? rubbleProblem(this.rubbleCrews()) : mainProblem({ warnings, condition: cond, desirability: des, abandoned: !!(b.flags & BF.Abandoned), desLimited })) ?? h('span'));
 
     // ---- key rows (at most 6)
     const kv = this.kv();
@@ -403,8 +415,10 @@ export class InfoPanel extends Panel {
       } catch {
         /* ignore */
       }
-      const tgt = cond ? ` → ${pct(Math.max(0, Math.min(1, cond.target)))}` : '';
-      kv.add('Condition', 'heart', `${pct(b.health ?? 1)}${tgt}`, cond ? 'Current condition → the level it is heading for' : undefined);
+      if (!rubble) {
+        const tgt = cond ? ` → ${pct(Math.max(0, Math.min(1, cond.target)))}` : '';
+        kv.add('Condition', 'heart', `${pct(b.health ?? 1)}${tgt}`, cond ? 'Current condition → the level it is heading for' : undefined);
+      }
     } else if (def) {
       // the facility report's actual monthly upkeep (a school, clinic, station or park also pays running costs per person
       // served, sim economy/opex.ts) with its breakdown, and its actual income (an airport earns with its traffic, a
@@ -430,7 +444,9 @@ export class InfoPanel extends Panel {
       ]));
     }
     if (growable) {
-      this.body.appendChild(this.section('why', 'Why?', 'help', des ? 'desirability · condition · growth' : 'condition · growth', () => this.whyBuilding(b, dev, ci, des, cond, rt)));
+      // (rubble has no condition: the summary names what the section shows)
+      const whySum = [des ? 'desirability' : '', cond || !rubble ? 'condition' : '', 'growth'].filter(Boolean).join(' · ');
+      this.body.appendChild(this.section('why', 'Why?', 'help', whySum, () => this.whyBuilding(b, dev, ci, des, cond, rt)));
     }
     if (isRes && b.pop > 0) {
       const needs = safeCall(() => needsOf(st, b), []);
@@ -574,13 +590,14 @@ export class InfoPanel extends Panel {
     for (const [label, v, ic, none] of resp) {
       const r = safeCall(() => emergencyReachAt(st, ci, v), null);
       // (fire, final fixes P2: beyond the amber band a fire burns down before a truck can arrive — the Emergency · Fire
-      // view's hover says the same)
+      // view's hover says the same; UI-3: an industrial accident there is still saved by a truck sent in time, the row's
+      // note)
       const fire = v === EMG_FIRE ? { near: safeCall(() => emgNearSlack(EMG_FIRE), -3) } : undefined;
       const t = responseText(r ? { slackMin: r.slack, covered: r.slack >= 0, hasRoad: r.why !== 'noRoad', land: !b } : null, none, fire);
       const hint = fire
-        ? 'Auto-dispatch reach: covered fires become statistics; just beyond it (amber in the Emergency · Fire view) a fire waits for your dispatch and a truck sent at once still makes it; farther away it burns down before a truck can arrive'
+        ? `Auto-dispatch reach: covered fires become statistics; just beyond it (amber in the Emergency · Fire view) a fire waits for your dispatch and a truck sent at once still makes it; farther away it burns down before a truck can arrive, but an industrial accident there is still saved by a fire truck sent within ${EMERG_GRACE.industrial} days, however long the drive`
         : 'Auto-dispatch reach: covered incidents become statistics; beyond it major emergencies wait for your dispatch';
-      if (t) kv.add(label, ic, `<span class="${t.tone}">${escapeHtml(t.text)}</span>`, hint);
+      if (t) kv.add(label, ic, `<span class="${t.tone}">${escapeHtml(t.text)}</span>`, hint, t.note);
     }
     const out: (HTMLElement | null)[] = [kv.el];
     // coverages
@@ -625,7 +642,9 @@ export class InfoPanel extends Panel {
     // (focusCell plays the camera whoosh)
     focus.addEventListener('click', () => this.ctx.focusCell(b.x + b.w / 2 - 0.5, b.z + b.d / 2 - 0.5, 360));
     acts.appendChild(focus);
-    if (growable) {
+    // (rubble: nothing to keep historic — final fixes UI-2; its button clears the rubble)
+    const rubble = !!(b.flags & BF.Burnt);
+    if (growable && !rubble) {
       const hist = !!(b.flags & BF.Historic);
       const hb = h('button', { class: 'btn sm' + (hist ? ' primary' : ''), html: icon('historic', 13) + `<span>${hist ? 'Historic ✓' : 'Make historic'}</span>`, title: 'Historic buildings never redevelop' });
       hb.addEventListener('click', () => {
@@ -647,7 +666,7 @@ export class InfoPanel extends Panel {
     } catch {
       cost = 0;
     }
-    const demo = h('button', { class: 'btn sm danger', html: icon('bulldoze', 13) + `<span>Demolish${cost ? ` · ${cost < 0 ? '+' : ''}${money(Math.abs(cost))}` : ''}</span>` });
+    const demo = h('button', { class: 'btn sm danger', html: icon('bulldoze', 13) + `<span>${rubble ? 'Clear rubble' : 'Demolish'}${cost ? ` · ${cost < 0 ? '+' : ''}${money(Math.abs(cost))}` : ''}</span>` });
     demo.addEventListener('click', () => {
       const rect = { x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d };
       const doIt = () => {

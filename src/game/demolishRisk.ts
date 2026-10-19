@@ -212,10 +212,31 @@ function detoured(N: number, gone: readonly number[], ok: (j: number) => boolean
  * Occupied buildings (residents or jobs, not abandoned / burnt) that have power / water now and would lose it because
  * the demolition `rm` cuts them off every live plant / producer; null when none would (or the city does not simulate
  * utilities). Usually a local detour check around the removal settles it (a few hundred cells); otherwise one flood
- * fill per utility over the map (about a millisecond on the 256² stress city). `exhaustive` (tests): always flood.
+ * fill per utility over the map (about a millisecond on the 256² stress city, 1.5-37 ms for a rect that cuts occupied
+ * buildings in a 1M city). `exhaustive` (tests): always flood.
  */
 export function utilityCut(st: CityState, rm: Removal, exhaustive = false): UtilityCut | null {
+  const r = cutOf(st, rm, exhaustive ? 2 : 0);
+  return r === 'flood' ? null : r;
+}
+
+/**
+ * The per-move check of a preview (final fixes UI-5): utilityCut's local detour checks only — null when they settle it
+ * (nothing is cut off), 'flood' when only the map-wide fill can tell; the tool runs utilityCut once the rectangle rests,
+ * and the confirm (demolishRisks / sideDemolishRisks) always runs it before a click acts.
+ */
+export function utilityCutQuick(st: CityState, rm: Removal): 'flood' | null {
+  return cutOf(st, rm, 1) === 'flood' ? 'flood' : null;
+}
+
+/** map-wide flood fills run by utilityCut (tests and benches count them) */
+export const cutStats = { fills: 0 };
+
+/** utilityCut's body; mode 0 = local checks then the fill when needed, 1 = local checks only ('flood' = undecided),
+ *  2 = always the fill */
+function cutOf(st: CityState, rm: Removal, mode: 0 | 1 | 2): UtilityCut | null | 'flood' {
   if (!infraFlags(st).utilities) return null;
+  const exhaustive = mode === 2, quick = mode === 1;
   const N = st.size, C = st.cells;
   const net = st.network, lines = st.powerLines, bld = st.building;
   ensure(C);
@@ -284,6 +305,7 @@ export function utilityCut(st: CityState, rm: Removal, exhaustive = false): Util
     const goneP = anyAdded ? gone.filter((i) => added[i] === 0) : gone;
     powerSame = goneP.length === 0 || detoured(N, goneP, conducts, bx0, bz0, bx1, bz1) !== 0;
   }
+  if (quick && !powerSame) return 'flood';
   let condReady = false;
   /** the city after the demolition as bits per cell (the full flood fills read it: no per-cell closures) */
   const buildCond = () => {
@@ -362,7 +384,9 @@ export function utilityCut(st: CityState, rm: Removal, exhaustive = false): Util
       }
     }
   }
+  if (quick) return waterSame ? null : 'flood';
   if (powerSame && waterSame) return null;
+  cutStats.fills++;
   const pipeBit = (j: number) => (cond[j] & 2) !== 0;
   if (!waterSame) {
     buildCond();
@@ -400,9 +424,14 @@ export function utilityCut(st: CityState, rm: Removal, exhaustive = false): Util
   return { power, water, ids, res, jobs, text: cutText(st, power, water) };
 }
 
+/** what bulldozing `rect` removes: its buildings, and its roads / rail / power lines */
+export function bulldozeRemoval(st: CityState, rect: CellRect): Removal {
+  return { buildings: buildingsIn(st, rect).map((b) => b.id), clear: rect };
+}
+
 /** the cut of bulldozing `rect` (its buildings go, its roads / rail / power lines are cleared) */
 export function bulldozeCut(st: CityState, rect: CellRect): UtilityCut | null {
-  return utilityCut(st, { buildings: buildingsIn(st, rect).map((b) => b.id), clear: rect });
+  return utilityCut(st, bulldozeRemoval(st, rect));
 }
 
 /** footprint cells of buildings (preview highlight of the buildings a demolition cuts off) */

@@ -659,7 +659,8 @@ const FOL_EVERGREEN = 4;
 /** winter twig spray of a kit tree: drawn only while its tree is bare (same floor value as the tree's lobes) */
 const FOL_TWIG = 5;
 /** Wood pattern of the bare crowns' own wood (limbs, clump inner trunks; hidden in leaf): drawn all year (the Wood
- *  shading ignores the pattern), left out with the twig sprays by the low-quality twig strip (winterTwigs.ts) */
+ *  shading ignores the pattern); at low quality only the limbs of a crown on a plain trunk stay, its trunk a spire up
+ *  to the leader's tip (the low-quality twig strip, winterTwigs.ts) */
 export const BARE_WOOD = 5;
 /** bare-winter twigs: warm grey-brown (as the forest's bare trees, nature.ts), purple-brown for birches */
 const TWIG = 0x8c7b6a;
@@ -695,7 +696,8 @@ function spike(b: ModelBuilder, a: V3, tip: V3, side: V3, w: number, dir: V3, up
  * spikes (Foliage pattern 5, floor = the lobes' floor: drawn only while the tree is bare) to about the crown's size,
  * single-sided, turned up (the camera looks down at them). No rng draws (layouts unchanged): the shape is hashed from
  * the tree position. (limbs + 1) x (spikes + 2) tris: 20 by default.
- * The limbs are Wood pattern BARE_WOOD (dropped with the sprays at low quality, winterTwigs.ts). Other builders' lot
+ * The limbs are Wood pattern BARE_WOOD (at low quality the sprays and the leader go and the trunk becomes a spire up to
+ * the leader's tip, winterTwigs.ts: keep the trunk a capless frustum around the same axis as `top`). Other builders' lot
  * trees can get the same winter crown: paint the crown blob(s) Foliage pattern 1 with floor = 1 + a per-tree random in
  * [0, 1) and call twigCrown with that floor (else a bare lot crown stays a whole crown in the twig colour, materials.ts).
  */

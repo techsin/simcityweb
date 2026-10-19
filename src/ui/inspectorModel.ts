@@ -5,6 +5,7 @@
  * outputs (null / [] / -1) and with full outputs.
  */
 import { EMERG_RMAX, EMERG_SLOW_MARGIN } from '../sim/infra/params';
+import { FIRE_TOO_FAR_TEXT } from '../sim/infra/overlays';
 import type { FactorTerm } from '../sim/explain';
 import type { FacilityLine, FacilityReport } from '../sim/infra/facilities';
 import type { NeedReport } from '../sim/economy/demographics';
@@ -447,24 +448,39 @@ export function pyramid(shares: ArrayLike<number> | null | undefined, pop: numbe
 
 // ------------------------------------------------------------------------------------------------ emergency response
 /**
+ * the second half of the Fire view's red-band sentence (overlays.FIRE_TOO_FAR_TEXT, final fixes SF-5 / UI-3): beyond the
+ * burn-down window a fire is lost, but an industrial accident there still waits for a fire truck — "An industrial
+ * accident here is still saved by a fire truck sent within 3 days, however long the drive — build a fire station closer"
+ */
+export const FIRE_FAR_NOTE: string = (() => {
+  const i = FIRE_TOO_FAR_TEXT.indexOf('; ');
+  const t = i >= 0 ? FIRE_TOO_FAR_TEXT.slice(i + 2) : FIRE_TOO_FAR_TEXT;
+  return t.charAt(0).toUpperCase() + t.slice(1);
+})();
+
+/**
  * "auto, 2.1 min to spare" / "manual only (1.4 min out of reach)" / "no station"; null = unknown (no data yet).
  * The response layers' floor (-EMERG_RMAX) means either no road beside the building (hasRoad false) or more than
  * EMERG_SLOW_MARGIN minutes beyond every station's reach (hasRoad true, the default). land: empty land that reads the
- * nearest road / lot's reach ("a lot here: auto, 1.6 min to spare", like the Emergency data view).
+ * nearest road / lot's reach ("a lot here: auto, 1.6 min to spare", like the Emergency data view). A fire beyond the
+ * burn-down window carries a note (final fixes UI-3): an industrial accident there is still saved by a truck sent in time.
  */
-export function responseText(r: { slackMin: number; covered: boolean; hasRoad?: boolean; land?: boolean } | null | undefined, noStation = 'no station', fire?: { near: number }): { text: string; tone: Tone } | null {
+export function responseText(r: { slackMin: number; covered: boolean; hasRoad?: boolean; land?: boolean } | null | undefined, noStation = 'no station', fire?: { near: number }): { text: string; tone: Tone; note?: string } | null {
   if (!r || !Number.isFinite(r.slackMin)) return null;
   if (r.slackMin <= -98.5) return { text: noStation, tone: 'neg' };
   const lot = r.land ? 'a lot here: ' : '';
   // fire (final fixes P2): beyond the manual window (overlays.emgNearSlack — the Emergency view's amber band) a fire
-  // burns down before a truck can arrive, however fast it is dispatched
+  // burns down before a truck can arrive, however fast it is dispatched; an industrial accident there still waits for a
+  // truck (UI-3: the Fire view's hover says so, and so does the note)
   const burns = !!fire && r.hasRoad !== false && !r.covered && r.slackMin < Math.min(0, fire.near);
   if (r.slackMin <= -EMERG_RMAX + 1e-3) {
     if (r.hasRoad === false) return { text: r.land ? 'no road nearby' : 'unreachable — no road to it', tone: 'neg' };
-    return { text: burns ? `${lot}too far — a fire burns down before a truck arrives` : `manual only — ${EMERG_SLOW_MARGIN}+ min beyond every station`, tone: 'neg' };
+    return burns
+      ? { text: `${lot}too far — a fire burns down before a truck arrives`, tone: 'neg', note: FIRE_FAR_NOTE }
+      : { text: `manual only — ${EMERG_SLOW_MARGIN}+ min beyond every station`, tone: 'neg' };
   }
   if (r.covered || r.slackMin >= 0) return { text: `${lot}auto, ${Math.max(0, r.slackMin).toFixed(1)} min to spare`, tone: 'pos' };
-  if (burns) return { text: `${lot}too far — a fire burns down before a truck arrives (${(-r.slackMin).toFixed(1)} min out of reach)`, tone: 'neg' };
+  if (burns) return { text: `${lot}too far — a fire burns down before a truck arrives (${(-r.slackMin).toFixed(1)} min out of reach)`, tone: 'neg', note: FIRE_FAR_NOTE };
   return { text: `${lot}manual only (${(-r.slackMin).toFixed(1)} min out of reach)`, tone: r.slackMin >= (fire ? fire.near : -3) ? 'warn' : 'neg' };
 }
 

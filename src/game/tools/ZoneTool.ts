@@ -4,6 +4,10 @@
  * off the grid / the pipes — a red tip line and those buildings tinted red — and asks first (demolishRisk.ts).
  * Final fixes N3: the zone preview tints the tiles that will never get road access red and says how many (a warning,
  * not a block: zoneStatus.ts zonePlanNoAccess).
+ * Final fixes UI-5: per rectangle change only utilityCut's local detour check runs (utilityCutQuick, ~0.02 ms); the
+ * map-wide flood fill it sometimes needs (1.5-37 ms in a 1M city, once per cell step of a drag) waits until the
+ * rectangle has rested CUT_SETTLE_MS, and the release's confirm (demolishRisks / sideDemolishRisks) always runs it in
+ * full, so a real cut is never missed.
  */
 import type { CellRect } from '../../core/events';
 import { Zone } from '../../core/types';
@@ -11,7 +15,7 @@ import type { ActionResult } from '../../sim/actions';
 import { rectFrom, type Cell } from '../geom';
 import type { GameContext } from '../context';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
-import { buildingCells, bulldozeCut, demolishRisks, sideDemolishRisks, utilityCut, type DemolishRisk, type UtilityCut } from '../demolishRisk';
+import { buildingCells, bulldozeCut, bulldozeRemoval, demolishRisks, sideDemolishRisks, utilityCut, utilityCutQuick, type DemolishRisk, type Removal, type UtilityCut } from '../demolishRisk';
 import { confirmDialog } from '../../ui/Modals';
 import { escapeHtml } from '../../ui/dom';
 import { noAccessText, zonePlanNoAccess } from '../../ui/zoneStatus';
@@ -36,6 +40,8 @@ export const ZONE_HEX: Record<number, number> = {
 };
 
 const BAD = 0xff5d5d;
+/** ms a rectangle rests before the preview runs the full utility-cut fill (final fixes UI-5) */
+export const CUT_SETTLE_MS = 100;
 
 type RectMode = { kind: 'zone'; zone: Zone } | { kind: 'dezone' } | { kind: 'bulldoze' };
 
@@ -49,8 +55,12 @@ export class RectTool extends Tool {
   /** the preview's warnings (made per rect with lastRes): buildings cut off the grid / pipes, tiles without road access */
   private lastCut: UtilityCut | null = null;
   private lastNoAccess = '';
+  /** the red tiles of lastNoAccess */
+  private naCells: { x: number; z: number; ok: boolean }[] = [];
   /** cell highlights are on (the red tiles / buildings of the warnings above) */
   private hlOn = false;
+  /** the full utility-cut fill waiting for the rectangle to rest (UI-5) */
+  private cutTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(ctx: GameContext, private mode: RectMode, id: string, label: string, icon: string) {
     super(ctx);
@@ -82,27 +92,55 @@ export class RectTool extends Tool {
     return { x0: c.x, z0: c.z, x1: c.x + 1, z1: c.z + 1 };
   }
 
-  /** the preview's warnings for `rect` (lastRes is its preview): utility cuts of the bulldozer / a rezoning's
-   *  demolitions, the tiles a zoning leaves without road access; their cells are tinted red */
-  private warnings(rect: CellRect): void {
+  /** the preview's warnings for `rect` (lastRes is its preview, `key` its refresh key): utility cuts of the bulldozer /
+   *  a rezoning's demolitions, the tiles a zoning leaves without road access; their cells are tinted red. The cut: the
+   *  local detour check now, the full fill once the rectangle rests (settleCut) */
+  private warnings(rect: CellRect, key: string): void {
     const st = this.ctx.state, res = this.lastRes;
+    this.cancelCut();
     this.lastCut = null;
     this.lastNoAccess = '';
-    const hl: { x: number; z: number; ok: boolean }[] = [];
+    this.naCells = [];
+    let rm: Removal | null = null;
     if (res?.ok) {
       const m = this.mode;
-      if (m.kind === 'bulldoze') this.lastCut = safe(() => bulldozeCut(st, rect), null);
+      if (m.kind === 'bulldoze') rm = safe(() => bulldozeRemoval(st, rect), null);
       else if (m.kind === 'zone') {
-        if (res.demolished?.length) this.lastCut = safe(() => utilityCut(st, { buildings: res.demolished! }), null);
+        if (res.demolished?.length) rm = { buildings: res.demolished };
         const na = safe(() => zonePlanNoAccess(st, rect, m.zone, res.demolished), { none: [], total: 0 });
         if (na.none.length) {
           this.lastNoAccess = noAccessText(na.none.length, Math.max(na.total, res.affected ?? 0));
           const N = st.size;
-          for (const i of na.none) hl.push({ x: i % N, z: (i / N) | 0, ok: false });
+          for (const i of na.none) this.naCells.push({ x: i % N, z: (i / N) | 0, ok: false });
         }
       }
-      if (this.lastCut) for (const c of buildingCells(st, this.lastCut.ids)) hl.push(c);
     }
+    const removal = rm;
+    if (removal && safe(() => utilityCutQuick(st, removal), 'flood') === 'flood') this.cutTimer = setTimeout(() => this.settleCut(key, rect, removal), CUT_SETTLE_MS);
+    this.paint();
+  }
+
+  /** the rectangle rested: the full utility-cut fill, its red line and tint (nothing when the rectangle moved on) */
+  private settleCut(key: string, rect: CellRect, rm: Removal): void {
+    this.cutTimer = null;
+    if (key !== this.lastKey) return;
+    const st = this.ctx.state;
+    // (a bulldozed rect is read again: the city may have changed while it rested)
+    this.lastCut = safe(() => (this.mode.kind === 'bulldoze' ? bulldozeCut(st, rect) : utilityCut(st, rm)), null);
+    if (!this.lastCut) return;
+    this.paint();
+    this.showTip(rect);
+  }
+
+  private cancelCut(): void {
+    if (this.cutTimer !== null) clearTimeout(this.cutTimer);
+    this.cutTimer = null;
+  }
+
+  /** the red tint of the warnings: tiles without road access, buildings cut off */
+  private paint(): void {
+    const hl = [...this.naCells];
+    if (this.lastCut) for (const c of buildingCells(this.ctx.state, this.lastCut.ids)) hl.push(c);
     this.highlight(hl);
   }
 
@@ -114,6 +152,7 @@ export class RectTool extends Tool {
   }
 
   private clearPreview(): void {
+    this.cancelCut();
     this.ctx.world.setHighlightRect(null, 0);
     this.highlight(null);
   }
@@ -133,8 +172,13 @@ export class RectTool extends Tool {
       this.lastRect = rect;
       this.lastRes = this.run(rect, true);
       this.ctx.world.setHighlightRect(rect, this.color(this.lastRes.ok));
-      this.warnings(rect);
+      this.warnings(rect, key);
     }
+    this.showTip(rect);
+  }
+
+  /** the cursor tip of `rect`'s preview (lastRes, lastCut, lastNoAccess) */
+  private showTip(rect: CellRect): void {
     const w = rect.x1 - rect.x0, d = rect.z1 - rect.z0;
     const size = `${w}×${d}${this.lastRes?.affected !== undefined ? ` · ${this.lastRes.affected} ${this.mode.kind === 'bulldoze' ? 'items' : 'tiles'}` : ''}`;
     const title = this.mode.kind === 'bulldoze' ? 'Bulldoze' : this.mode.kind === 'dezone' ? 'De-zone' : this.label;
@@ -167,6 +211,8 @@ export class RectTool extends Tool {
   }
   override up(p: ToolPointer): void {
     if (!this.start) return;
+    // (the click acts now: its confirm runs the full cut check itself)
+    this.cancelCut();
     let rect = this.lastRect;
     if (p.hit) {
       const c = { x: p.hit.x, z: p.hit.z };
@@ -229,10 +275,10 @@ export class RectTool extends Tool {
     return true;
   }
   override leave(): void {
-    if (!this.start) {
-      this.clearPreview();
-      this.lastKey = '';
-    }
+    // (off the map no tip shows a deferred cut — back on it, the preview runs again; the release's confirm checks it)
+    this.cancelCut();
+    if (!this.start) this.clearPreview();
+    this.lastKey = '';
     this.ctx.tip.hide();
   }
   override hints(): string[] {

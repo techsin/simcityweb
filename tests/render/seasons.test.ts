@@ -33,8 +33,9 @@ import { TreeRenderer, ringRand, treeSurfaceChain } from '../../src/render/world
 import { CELL_SIZE } from '../../src/core/constants';
 import { ModelBuilder } from '../../src/assets/ModelBuilder';
 import { RNG } from '../../src/core/rng';
-import { palm as comPalm } from '../../src/assets/builders/com_kit';
+import { palm as comPalm, tree as comTree } from '../../src/assets/builders/com_kit';
 import { palm as civPalm } from '../../src/assets/builders/civ_kit';
+import { tree as indTree } from '../../src/assets/builders/ind_kit';
 import { BARE_WOOD, bareCrown, tree as parkTree, treeClump, type TreeKind } from '../../src/assets/builders/park_lib';
 import { lotTwigGeometry, lotTwigKey, lotTwigs, markLowPlants, setLotTwigStrip, stripWinterTwigs } from '../../src/assets/builders/winterTwigs';
 import { SEASONAL_TREES, seasonalVariant, setTreeSeason, treeSeason } from '../../src/assets/builders/nat_season';
@@ -234,42 +235,130 @@ describe('seasonal foliage patterns', () => {
     expect(swap).toContain('surf.y > 0.5 && surf.y < 2.5 && surf.z >= 1.0');
   });
 
-  it('low quality twig strip: kit / park trees lose their winter twig crowns, back to the plain models\' triangles', () => {
+  it('low quality twig strip: no twig sprays; a bare crown on a plain trunk is a Y (trunk spire + limbs) in the trunk\'s own triangles', () => {
+    /** faces of `g` by kind: Foliage (with its pattern / floor), limb blades (Wood pattern 5), other Wood / Plain */
+    const faces = (g: THREE.BufferGeometry) => {
+      const pos = g.getAttribute('position') as THREE.BufferAttribute, srf = g.getAttribute('surf') as THREE.BufferAttribute;
+      const out = { fol: [] as number[], limb: [] as number[], wood: [] as number[] };
+      for (let i = 0; i < pos.count; i += 3) {
+        const ty = Math.round(srf.getX(i)), pt = Math.round(srf.getY(i));
+        if (ty === Surf.Foliage) out.fol.push(i);
+        else if (ty === Surf.Wood && pt === 5) out.limb.push(i);
+        else if (ty === Surf.Wood || ty === Surf.Plain) out.wood.push(i);
+      }
+      return out;
+    };
+    const corner = (g: THREE.BufferGeometry, i: number) => new THREE.Vector3().fromBufferAttribute(g.getAttribute('position') as THREE.BufferAttribute, i);
+    /** the plain model's triangles (without the winter-only pattern-5 faces) */
+    const plain = (g: THREE.BufferGeometry) => {
+      const srf = g.getAttribute('surf') as THREE.BufferAttribute;
+      let n = 0;
+      for (let i = 0; i < srf.count; i += 3) {
+        const ty = Math.round(srf.getX(i));
+        if (!(Math.round(srf.getY(i)) === 5 && (ty === Surf.Foliage || ty === Surf.Wood))) n++;
+      }
+      return n;
+    };
+    const tris = (g: THREE.BufferGeometry) => g.getAttribute('position').count / 3;
+    /** every Wood / Plain face of the spire faces out (its winding's normal away from the trunk axis x, z) */
+    const facesOut = (g: THREE.BufferGeometry, list: number[], x: number, z: number) => {
+      for (const i of list) {
+        const a = corner(g, i), b = corner(g, i + 1), c = corner(g, i + 2);
+        const n = b.clone().sub(a).cross(c.clone().sub(a));
+        const m = a.clone().add(b).add(c).divideScalar(3);
+        expect(n.x * (m.x - x) + n.z * (m.z - z), 'spire face winding').toBeGreaterThan(0);
+      }
+    };
+
     // a kit tree (res_util round tree): 10-tri trunk + 20-tri crown blob + the 15-tri bare crown (9 spray, 6 limb tris)
     const b = new ModelBuilder();
     b.paint(0x5b4330, Surf.Wood).cylinder(4, -2, 0, 2.4, 0.2, 0.14, 5, { top: false });
     const fl = bareCrown(b, 4, -2, [4, 2.3, -2], [4, 3.9, -2], 2.2, 2.0, 0x5b4330, 0.14);
     b.paint(0x4c7630, Surf.Foliage, 1, fl).blob(4, 3.9, -2, 2.2, 2.0, 2.2, 0, 0.16, 1.5);
     const g = b.build();
-    expect(g.getAttribute('position').count / 3).toBe(45);
+    expect(tris(g)).toBe(45);
+    expect(plain(g)).toBe(30);
     const s = stripWinterTwigs(g)!;
-    expect(s.getAttribute('position').count / 3).toBe(30);
     expect(stripWinterTwigs(g)).toBe(s);
+    // 28 tris, 2 fewer than the plain model: the blob (20) + a 4-sided trunk spire (4) + the 2 limbs (2 x 2)
+    expect(tris(s)).toBe(28);
+    for (const name of ['position', 'normal', 'color', 'surf']) expect(s.getAttribute(name).count).toBe(84);
+    const fg = faces(g), fs = faces(s);
     const srf = s.getAttribute('surf') as THREE.BufferAttribute;
-    let wood = 0;
-    for (let i = 0; i < srf.count; i++) {
-      expect(Math.round(srf.getY(i)), 'no pattern-5 faces').not.toBe(5);
-      // the crown keeps its swap marker: it collapses while bare as at the other qualities, the trunk stays standing
-      if (Math.round(srf.getX(i)) === Surf.Foliage) expect(srf.getZ(i)).toBeCloseTo(fl, 5);
-      if (Math.round(srf.getX(i)) === Surf.Wood) wood++;
+    // no twig sprays; the blob keeps its swap marker: it collapses while bare as at the other qualities
+    expect(fs.fol.length).toBe(20);
+    for (const i of fs.fol) {
+      expect(Math.round(srf.getY(i))).toBe(1);
+      expect(srf.getZ(i)).toBeCloseTo(fl, 5);
     }
-    expect(wood / 3).toBe(10);
-    for (const name of ['position', 'normal', 'color', 'surf']) expect(s.getAttribute(name).count).toBe(90);
-    // park trees and clumps: every winter-only face is pattern 5 (sprays) or Wood BARE_WOOD (limbs, inner trunks)
-    const pb = new ModelBuilder();
-    parkTree(pb, new RNG(3), 0, 0, 1, 'oak');
-    treeClump(pb, new RNG(4), 20, 0, 6, 4);
-    const pg = pb.build(), ps = stripWinterTwigs(pg)!;
-    const psrf = pg.getAttribute('surf') as THREE.BufferAttribute;
-    let winter = 0, limbs = 0;
-    for (let i = 0; i < psrf.count; i += 3) {
-      if (Math.round(psrf.getY(i)) !== 5) continue;
-      winter++;
-      if (Math.round(psrf.getX(i)) === Surf.Wood) limbs++;
+    // the limbs: the two blades reaching furthest out (the leader, the least, goes: the spire takes its place)
+    const reach = (gg: THREE.BufferGeometry, i: number) => Math.max(...[0, 1, 2].map((k) => Math.hypot(corner(gg, i + k).x - 4, corner(gg, i + k).z + 2)));
+    expect(fg.limb.length).toBe(6);
+    const blades = [0, 2, 4].map((k) => fg.limb[k]).sort((p, q) => reach(g, q) - reach(g, p));
+    expect(fs.limb.length).toBe(4);
+    const kept = new Set(fs.limb.map((i) => reach(s, i).toFixed(5)));
+    expect([...kept].sort()).toEqual([reach(g, blades[0]).toFixed(5), reach(g, blades[1]).toFixed(5)].sort());
+    // the spire: the trunk's paint and colour, its foot on the ground at the 5-gon's mean width, its tip the leader's tip
+    expect(fs.wood.length).toBe(4);
+    const leadTip = [0, 1, 2].map((k) => corner(g, blades[2] + k)).sort((p, q) => q.y - p.y)[0];
+    const col = s.getAttribute('color') as THREE.BufferAttribute, gcol = g.getAttribute('color') as THREE.BufferAttribute;
+    const R = (0.2 * 5 * Math.sin(Math.PI / 5)) / (4 * Math.sin(Math.PI / 4));
+    let tips = 0;
+    for (const i of fs.wood) {
+      expect(Math.round(srf.getX(i))).toBe(Surf.Wood);
+      expect(Math.round(srf.getY(i))).toBe(0);
+      for (let k = 0; k < 3; k++) {
+        const p = corner(s, i + k);
+        expect(col.getX(i + k)).toBeCloseTo(gcol.getX(fg.wood[0]), 5);
+        if (p.distanceTo(leadTip) < 1e-5) { tips++; continue; }
+        expect(p.y).toBeCloseTo(0, 5);
+        expect(Math.hypot(p.x - 4, p.z + 2)).toBeCloseTo(R, 4);
+      }
     }
+    expect(tips).toBe(4);
+    facesOut(s, fs.wood, 4, -2);
+    // a mirrored twin (registry mirrorX: x negated, corners 1 and 2 swapped) gets the same Y, its faces still facing out
+    const gm = g.clone();
+    for (const a of Object.values(gm.attributes) as THREE.BufferAttribute[]) {
+      const arr = a.array as Float32Array, n = a.itemSize;
+      for (let t = 0; t < a.count; t += 3) for (let k = 0; k < n; k++) [arr[(t + 1) * n + k], arr[(t + 2) * n + k]] = [arr[(t + 2) * n + k], arr[(t + 1) * n + k]];
+    }
+    for (const name of ['position', 'normal']) { const a = gm.getAttribute(name) as THREE.BufferAttribute; for (let i = 0; i < a.count; i++) a.setX(i, -a.getX(i)); }
+    const sm = stripWinterTwigs(gm)!;
+    expect(tris(sm)).toBe(28);
+    facesOut(sm, faces(sm).wood, -4, -2);
+
+    // park trees (3 limbs + a leader on a 5-sided trunk: spire + 3 limbs = the trunk's 10 tris; birch bark is Plain),
+    // clumps (inner trunks are winter-only BARE_WOOD: those crowns keep nothing), the ind_kit strut (3-sided: 1 limb)
+    // and com_kit's box trunk: never more triangles than the plain model, every crown on a plain trunk keeps limbs
     expect(BARE_WOOD).toBe(5);
-    expect(limbs).toBeGreaterThan(8);
-    expect(ps.getAttribute('position').count / 3).toBe(pg.getAttribute('position').count / 3 - winter);
+    for (const kind of ['oak', 'round', 'maple', 'birch', 'poplar', 'willow', 'cherry'] as TreeKind[]) {
+      const pb = new ModelBuilder();
+      parkTree(pb, new RNG(3), 0, 0, 1, kind);
+      const pg = pb.build(), ps = stripWinterTwigs(pg)!;
+      expect(tris(ps), kind).toBe(plain(pg));
+      expect(faces(ps).limb.length, kind).toBe(6);
+      expect(faces(ps).wood.length, kind).toBe(4);
+    }
+    const cb = new ModelBuilder();
+    treeClump(cb, new RNG(4), 20, 0, 6, 4);
+    const cg = cb.build(), cs = stripWinterTwigs(cg)!;
+    const outer = faces(cg).wood.length / 10;
+    expect(outer).toBeGreaterThan(0);
+    expect(tris(cs)).toBe(plain(cg) - 2 * outer);
+    expect(faces(cs).limb.length).toBe(4 * outer);
+    const ib = new ModelBuilder();
+    indTree(ib, new RNG(5), 3, 3);
+    const ig = ib.build(), is = stripWinterTwigs(ig)!;
+    expect(faces(ig).wood.length).toBe(6);
+    expect(tris(is)).toBe(plain(ig));
+    expect(faces(is).limb.length).toBe(2);
+    const kb = new ModelBuilder();
+    comTree(kb, new RNG(6), -3, 2);
+    const kg = kb.build(), ks = stripWinterTwigs(kg)!;
+    expect(faces(kg).wood.length).toBe(8);
+    expect(tris(ks)).toBe(plain(kg));
+    expect(faces(ks).limb.length).toBe(4);
     // a model without twig crowns is registered as is
     const nb = new ModelBuilder();
     nb.paint(0x4c7630, Surf.Foliage).blob(0, 1, 0, 1, 0.8, 1, 0, 0.2, 2);
@@ -288,6 +377,53 @@ describe('seasonal foliage patterns', () => {
     expect(lotTwigKey('k', ng)).toBe('k');
     setLotTwigStrip(false);
   });
+
+  it('low quality twig strip on every lot model: at most the plain model\'s triangles, no twig sprays, crowns on plain trunks a Y', () => {
+    /** base points (1 cm) of the limb blades of `g` (two Wood pattern-5 faces on the same corners): its bare crowns */
+    const crownBases = (g: THREE.BufferGeometry) => {
+      const P = g.getAttribute('position').array as ArrayLike<number>, S = g.getAttribute('surf').array as ArrayLike<number>;
+      const out = new Set<string>();
+      const blade = (t: number) => Math.round(S[t * 9]) === Surf.Wood && Math.round(S[t * 9 + 1]) === 5;
+      for (let t = 0; t + 1 < P.length / 9; t++) {
+        if (!blade(t) || !blade(t + 1)) continue;
+        const c = [0, 1, 2].map((k) => [P[t * 9 + k * 3], P[t * 9 + k * 3 + 1], P[t * 9 + k * 3 + 2]]);
+        if (!c.every((p) => [0, 1, 2].some((k) => P[t * 9 + 9 + k * 3] === p[0] && P[t * 9 + 10 + k * 3] === p[1] && P[t * 9 + 11 + k * 3] === p[2]))) continue;
+        // the base: the two closest corners
+        const d = (i: number, j: number) => Math.hypot(c[i][0] - c[j][0], c[i][1] - c[j][1], c[i][2] - c[j][2]);
+        const [i, j] = d(1, 2) <= Math.min(d(0, 1), d(0, 2)) ? [1, 2] : d(0, 2) <= d(0, 1) ? [0, 2] : [0, 1];
+        out.add([0, 1, 2].map((k) => Math.round(((c[i][k] + c[j][k]) / 2) * 100)).join(','));
+        t++;
+      }
+      return out;
+    };
+    registerAllModels();
+    let crowns = 0, ys = 0;
+    for (const id of registeredModelIds()) {
+      // (each model's first variant and its first mirrored twin: building every variant takes seconds)
+      const e = MANIFEST_BY_ID[id], vs = e?.mirror && e.buildVariants ? [0, e.buildVariants] : [0];
+      for (const v of vs) {
+        const g = markLowPlants(getModelGeometry(id, v)), s = stripWinterTwigs(g);
+        const S = g.getAttribute('surf') as THREE.BufferAttribute;
+        let winter = 0;
+        for (let i = 0; i < S.count; i += 3) {
+          const ty = Math.round(S.getX(i));
+          if (Math.round(S.getY(i)) === 5 && (ty === Surf.Foliage || ty === Surf.Wood)) winter++;
+        }
+        if (!s) { expect(winter, `${id}#${v}`).toBe(0); continue; }
+        const T = s.getAttribute('surf') as THREE.BufferAttribute;
+        for (let i = 0; i < T.count; i += 3) expect(Math.round(T.getX(i)) === Surf.Foliage && Math.round(T.getY(i)) === 5, `${id}#${v} twig spray`).toBe(false);
+        expect(T.count / 3, `${id}#${v}`).toBeLessThanOrEqual(S.count / 3 - winter);
+        const before = crownBases(g), after = crownBases(s);
+        for (const k of after) expect(before.has(k), `${id}#${v}`).toBe(true);
+        crowns += before.size;
+        ys += after.size;
+      }
+    }
+    // (left without limbs: the inner crowns of tree clumps, on winter-only trunks, and a hidden 0.1 mm tree)
+    // (measured: 625 bare crowns, 594 with limbs)
+    expect(crowns).toBeGreaterThan(300);
+    expect(ys / crowns).toBeGreaterThan(0.9);
+  }, 120_000);
 
   it('small raised plants (roof / terrace planters) are marked LOW foliage; ground shrubs, crowns and dark evergreens not', () => {
     const b = new ModelBuilder();

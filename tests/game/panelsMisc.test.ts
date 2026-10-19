@@ -6,7 +6,9 @@
  *  F6   commute by mode in the Statistics panel (commuteModes, stats.commuteByMode read defensively);
  *  50   the park & ride garage defs come from the catalog (GARAGE_DEFS);
  *  51   which graphs label their y-axis as a whole (GraphDef.axis) is pinned;
- *  52   auto-ranged percentage graphs label their ticks with the step's decimals (no "0% 1% 1% 2% 2%").
+ *  52   auto-ranged percentage graphs label their ticks with the step's decimals (no "0% 1% 1% 2% 2%");
+ *  UI-3 (lane ui, final fixes r2) the inspector's fire row beyond the burn-down window adds what the Fire view says: an
+ *       industrial accident there is still saved by a fire truck sent within 3 days, however long the drive.
  */
 import { describe, expect, it } from 'vitest';
 import { ledgerGroup } from '../../src/ui/panels/BudgetPanel';
@@ -17,9 +19,9 @@ import { GARAGE_DEFS, commuteModes } from '../../src/ui/statsModel';
 import { dispatchWindowEnd, type Incident } from '../../src/sim/infra/emergency';
 import { emgTime } from '../../src/ui/EmergencyBanner';
 import { getDef } from '../../src/sim/catalog';
-import { responseText } from '../../src/ui/inspectorModel';
-import { EMG_FIRE, emgNearSlack } from '../../src/sim/infra/overlays';
-import { EMERG_RMAX } from '../../src/sim/infra/params';
+import { FIRE_FAR_NOTE, responseText } from '../../src/ui/inspectorModel';
+import { EMG_FIRE, FIRE_TOO_FAR_TEXT, emgNearSlack } from '../../src/sim/infra/overlays';
+import { EMERG_GRACE, EMERG_RMAX } from '../../src/sim/infra/params';
 
 describe('Budget ledger groups (final fixes P15)', () => {
   it('each group answers to one funding slider: department buildings and their tiles together, named apart', () => {
@@ -126,5 +128,26 @@ describe('inspector fire response (final fixes P2): beyond the amber band a fire
     // no road: unreachable whatever the responder; other responders keep the manual wording
     expect(responseText({ slackMin: -EMERG_RMAX, covered: false, hasRoad: false }, 'no fire station', fire)!.text).toBe('unreachable — no road to it');
     expect(responseText({ slackMin: near - 1, covered: false })!.text).toMatch(/^manual only \(/);
+  });
+
+  it('final fixes UI-3: beyond the burn-down window the row says an industrial accident is still saved by a truck sent in time', () => {
+    const fire = { near };
+    // the Fire view's sentence (overlays.FIRE_TOO_FAR_TEXT), its industrial half
+    expect(FIRE_FAR_NOTE).toBe(`An industrial accident here is still saved by a fire truck sent within ${EMERG_GRACE.industrial} days, however long the drive — build a fire station closer`);
+    expect(FIRE_TOO_FAR_TEXT.toLowerCase()).toContain(FIRE_FAR_NOTE.toLowerCase());
+    for (const r of [
+      responseText({ slackMin: near - 1, covered: false }, 'no fire station', fire)!,
+      responseText({ slackMin: -EMERG_RMAX, covered: false }, 'no fire station', fire)!,
+      responseText({ slackMin: near - 1, covered: false, land: true }, 'no fire station', fire)!,
+    ]) {
+      expect(r.text).toContain('a fire burns down before a truck arrives');
+      expect(r.note).toBe(FIRE_FAR_NOTE);
+    }
+    // covered, in the amber band, unreachable by road, no station, or another responder: no such note
+    expect(responseText({ slackMin: 1.5, covered: true }, 'no fire station', fire)!.note).toBeUndefined();
+    expect(responseText({ slackMin: near / 2, covered: false }, 'no fire station', fire)!.note).toBeUndefined();
+    expect(responseText({ slackMin: -EMERG_RMAX, covered: false, hasRoad: false }, 'no fire station', fire)!.note).toBeUndefined();
+    expect(responseText({ slackMin: -99, covered: false }, 'no fire station', fire)!.note).toBeUndefined();
+    expect(responseText({ slackMin: near - 1, covered: false }, 'no police station')!.note).toBeUndefined();
   });
 });

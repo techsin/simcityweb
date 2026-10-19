@@ -2,12 +2,13 @@
  * The tools' previews with a headless context (final fixes N1 / N3 / P3 / P8 / P14): what the cursor tip says and which
  * cells the preview tints, from the real actions on a small town.
  *  - N1: the bulldozer over the only road tile between a plant and the homes says it cuts their power (red tip, the
- *    homes tinted red); a redundant tile says nothing; a road drag through a lot that bridged the grid says it too.
+ *    homes tinted red) once the cursor rests (UI-5, tests/game/uiCutSettle.test.ts); a redundant tile says nothing; a
+ *    road drag through a lot that bridged the grid says it too.
  *  - N3: dragging a zone one unzoned column off the road tints all of it red and says it will never develop.
  *  - P3 / P8 / P14: the plop tip's upkeep at the cursor; a staffed service without a road is a red tip; a shore
  *    building auto-faces the water and a manual turn away from it says "press R".
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
 import { BF } from '../../src/sim/CityState';
 import { CityActions } from '../../src/sim/actions';
@@ -15,9 +16,12 @@ import { getDef } from '../../src/sim/catalog';
 import type { Simulation } from '../../src/sim/Simulation';
 import type { GameContext } from '../../src/game/context';
 import type { ToolPointer } from '../../src/game/tools/Tool';
-import { RectTool } from '../../src/game/tools/ZoneTool';
+import { CUT_SETTLE_MS, RectTool } from '../../src/game/tools/ZoneTool';
 import { NetworkTool } from '../../src/game/tools/NetworkTool';
 import { NO_ROAD_STAFFED, PlopTool } from '../../src/game/tools/PlopTool';
+import { upkeepHere } from '../../src/game/tools/placement';
+import { upkeepEstimate } from '../../src/ui/upkeepModel';
+import { money } from '../../src/ui/format';
 import { newSim, newState, place, roadLine, setRoad } from '../infra/cityGen';
 
 type Cells = { x: number; z: number; ok: boolean }[] | null;
@@ -65,13 +69,17 @@ function town() {
 }
 
 describe('bulldoze / rezone / road previews: utility cuts (N1)', () => {
+  afterEach(() => { vi.useRealTimers(); });
   it('the only road tile between the plant and the homes: a red tip line and the homes tinted red', () => {
+    vi.useFakeTimers();
     const { sim, homes, st } = town();
     for (const id of homes) expect(st.buildings.get(id)!.flags & BF.Powered).toBeTruthy();
     const f = fakeCtx(sim);
     const tool = new RectTool(f.ctx, { kind: 'bulldoze' }, 'bulldoze', 'Bulldoze', 'bulldoze');
     tool.activate();
     tool.move(at(4, 10));
+    // (final fixes UI-5: the map-wide fill runs once the cursor rests)
+    vi.advanceTimersByTime(CUT_SETTLE_MS);
     const t = f.lastTip();
     expect(text(t.html)).toContain('Cuts power to 5 buildings (100 residents)');
     expect(t.kind).toBe('bad');
@@ -90,6 +98,7 @@ describe('bulldoze / rezone / road previews: utility cuts (N1)', () => {
   });
 
   it('a road drag through a home that bridged the grid: the new road conducts in its place (no cut)', () => {
+    vi.useFakeTimers();
     const st = newState(32);
     place(st, 't_coal', 2, 10, { flags: BF.Plopped });
     st.zone[st.idx(4, 10)] = Zone.ResLow;
@@ -107,6 +116,7 @@ describe('bulldoze / rezone / road previews: utility cuts (N1)', () => {
     // rezoning it to commercial demolishes it without a road in its place: that cuts the street off
     const zone = new RectTool(f.ctx, { kind: 'zone', zone: Zone.ComLow }, 'zone:4', 'Commercial', 'zone');
     zone.move(at(4, 10));
+    vi.advanceTimersByTime(CUT_SETTLE_MS);
     expect(text(f.lastTip().html)).toContain('Cuts power to 3 buildings (24 residents)');
   });
 });
@@ -164,6 +174,33 @@ describe('plop tool tip (P3 / P8 / P14)', () => {
     const park = new PlopTool(f.ctx, getDef('park_small')!, 'park');
     park.move(at(20, 25));
     expect(text(f.lastTip().html)).not.toContain(NO_ROAD_STAFFED);
+  });
+
+  it('final fixes UI-1: the tip quotes upkeepHere; past the full-use figure (a fire station in a big unserved district) no "up to" the same number', () => {
+    // a dense town: streets every 5 tiles, full 2×2 towers (400) on both sides, no fire station anywhere
+    const st = newState(64);
+    st.funds = 1e7;
+    roadLine(st, 2, 1, 62, 1, Network.Road);
+    for (let x = 2; x <= 62; x += 5) roadLine(st, x, 1, x, 62, Network.Road);
+    for (let x = 2; x + 5 <= 62; x += 5) for (let z = 3; z + 2 <= 60; z += 2) for (const bx of [x + 1, x + 3]) {
+      for (let k = 0; k < 4; k++) st.zone[st.idx(bx + (k & 1), z + (k >> 1))] = Zone.ResHigh;
+      place(st, 't_r3', bx, z, { pop: 400 });
+    }
+    // (the station's own lot cleared)
+    for (const b of [...st.buildings.values()]) if (b.x >= 28 && b.x <= 29 && b.z >= 29 && b.z <= 32) { st.buildings.delete(b.id); for (let k = 0; k < 4; k++) st.building[st.idx(b.x + (k & 1), b.z + (k >> 1))] = -1; }
+    const sim = newSim(st);
+    const def = getDef('civ_fire_station')!;
+    const f = fakeCtx(sim);
+    const tool = new PlopTool(f.ctx, def, 'fire');
+    tool.activate();
+    // (the cursor at the lot's centre: origin (28, 30), beside the street x = 27)
+    tool.move(at(28, 30, 29, 31));
+    const t = text(f.lastTip().html);
+    const here = upkeepHere(sim, def, 28, 30, 2, 2)!;
+    const full = upkeepEstimate(st, def)!.full;
+    expect(here).toBeGreaterThan(full);
+    expect(t).toContain(`Upkeep here ≈${money(here)}/mo now`);
+    expect(t).not.toContain('at full use');
   });
 
   it('a ferry terminal on the shore auto-faces the water; turned away by hand it says how to fix it', () => {

@@ -921,7 +921,7 @@ describe('building LOD cross-fade', () => {
   });
 
   it('wakes the buildings waiting for an arriving proxy a few per frame, each dissolving (no swap spike), none in a cut frame', () => {
-    const run = (opts: { slice: number; fadeMax?: number; cut?: boolean }) => {
+    const run = (opts: { slice: number; fadeMax?: number; cut?: boolean; bulk?: number }) => {
       const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
       st.heights.fill(0);
       const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
@@ -931,6 +931,7 @@ describe('building LOD cross-fade', () => {
       (br as unknown as { proxies: unknown }).proxies = { available: true, request: (_k: string, geo: THREE.BufferGeometry, done: (g: THREE.BufferGeometry | null) => void) => asked.push({ geo, done }) };
       br.lodWakeSlice = opts.slice;
       if (opts.fadeMax) br.fadeMax = opts.fadeMax;
+      if (opts.bulk) br.lodWakeBulk = opts.bulk;
       // 150 buildings sharing one model
       let id = 1;
       for (let j = 0; j < 10; j++) for (let i = 0; i < 15; i++) br.add({ id: id++, def: 'res_apartment', x: 8 + i * 3, z: 12 + j * 3, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
@@ -949,7 +950,7 @@ describe('building LOD cross-fade', () => {
       expect(all.every((b) => b.lod === 0 && b.waiting >= 0)).toBe(true);
       expect(br.lodCount).toBe(0);
       for (const a of asked) a.done(buildLodProxy(a.geo));
-      let maxStep = 0, maxFades = 0, frames = 0, prev = br.lodCount;
+      let maxStep = 0, maxFades = 0, frames = 0, prev = br.lodCount, fadedFirst = -1;
       if (opts.cut) {
         // a camera cut (~2 km sideways, same distance) right after the arrival: the cut frame wakes nobody
         dir = new THREE.Vector3(-dir.z, dir.y, dir.x);
@@ -960,12 +961,13 @@ describe('building LOD cross-fade', () => {
         d += 1; // smooth creep
         at(d);
         frames++;
+        if (fadedFirst < 0) fadedFirst = br.fading;
         maxStep = Math.max(maxStep, br.lodCount - prev);
         maxFades = Math.max(maxFades, br.fading);
         prev = br.lodCount;
       }
       expect(br.lodCount).toBe(all.length);
-      return { maxStep, maxFades, frames };
+      return { maxStep, maxFades, frames, fadedFirst };
     };
     // paced by the slice, every wake dissolves
     const a = run({ slice: 16 });
@@ -981,6 +983,13 @@ describe('building LOD cross-fade', () => {
     const c = run({ slice: 16, cut: true });
     expect(c.maxStep).toBeLessThanOrEqual(16);
     expect(c.frames).toBeGreaterThanOrEqual(Math.ceil(150 / 16));
+    // a bulk wake (more waiting than lodWakeBulk: a load's whole prefetch arriving at once) swaps at once, 8 x the slice
+    // per frame, without dissolves, until what is left drops under the bulk size (the rest dissolves, paced as above)
+    const e = run({ slice: 4, bulk: 100 });
+    expect(e.maxStep).toBeLessThanOrEqual(32);
+    expect(e.maxStep).toBeGreaterThan(4);
+    expect(e.fadedFirst).toBe(0);
+    expect(e.frames).toBeLessThan(Math.ceil(150 / 4));
   });
 
   it('starts a downgrade dissolve at fadeOn x lodPixels and, with fadeOn 1, has it over by the instant-swap distance in a zoom-out', () => {

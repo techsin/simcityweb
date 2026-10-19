@@ -229,7 +229,10 @@ export class PlopTool extends Tool {
       // (the build menu's figure is city-wide; at the cursor it is this spot's: "Upkeep here")
       const here = safe(() => upkeepHere(this.ctx.sim, def, x, z, w, d), null);
       const now = here ?? est.now;
-      this.upkeep = `Upkeep${here !== null ? ' here' : ''} ≈${money(now)}/mo now · up to ${money(Math.max(now, est.full))} at full use`;
+      // (a fire station in a big unserved district can newly protect more than a typical station's "full use": the
+      // figure here is then the most it costs — no "up to" the same number, UI-1)
+      const full = money(Math.max(now, est.full));
+      this.upkeep = `Upkeep${here !== null ? ' here' : ''} ≈${money(now)}/mo now${full !== money(now) ? ` · up to ${full} at full use` : ''}`;
     } else this.upkeep = def.upkeep ? `Upkeep ${money(def.upkeep)}/mo` : '';
     const res = this.res;
     this.noRoad = !!res?.ok && staffedService(def) && !safe(() => lotTouchesRoad(st, x, z, w, d), true);

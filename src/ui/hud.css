@@ -118,6 +118,11 @@
 
 /* ------------------------------------------------------------------ top bar */
 .hud-top { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; align-items: stretch; gap: 8px; pointer-events: none; z-index: 40; }
+/* (final fixes UI-6: while one of its popovers is open — the approval card on hover, the RCI card — the top bar stacks
+   above the emergency banners (.emg-banners 55) and the toasts (.hud-tl 50), below the modal (60): the approval
+   breakdown ("Emergencies last month −8.0") was hidden under the banners exactly when it mattered. Only then, so the
+   idle bar stays under the loading veil (50)) */
+.hud-top:hover, .hud-top:has(.rci-pop.open) { z-index: 56; }
 .hud-top > .mp-glass { pointer-events: auto; display: flex; align-items: center; height: 50px; padding: 0 6px; }
 .hud-top .spacer { flex: 1; }
 .hud-seg { display: flex; align-items: center; gap: 8px; padding: 0 10px; height: 100%; position: relative; }
