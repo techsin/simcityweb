@@ -19,10 +19,9 @@
  *            moment of the decision: a dispatch that takes a station's last free unit re-validates the waiting incidents
  *            that counted on it (revalidate: a disaster's burst dispatches its incidents one after the other), and a
  *            prompt counts as given (prompted; ignored when nobody answers) only at the day's settle point (EM-1).
- *            An incident's state follows
- *            its PRIMARY responder (INCIDENT_RESPONDERS[kind][0]): the ambulance of an industrial accident or a
- *            collapse, sent automatically, leaves it waiting for its fire truck (and answers nothing). Minor incidents
- *            (and supporting responders) that are not covered are sent the nearest free unit
+ *            An incident's state follows its PRIMARY responder (INCIDENT_RESPONDERS[kind][0]): the ambulance of an
+ *            industrial accident or a collapse, sent automatically, leaves it waiting for its fire truck (and answers
+ *            nothing). Minor incidents (and supporting responders) that are not covered are sent the nearest free unit
  *            that can arrive in time (slower, no alert). Daily search budget: the first EMERG_SEARCHES_PER_DAY
  *            searches, then up to EMERG_SEARCH_NODES_PER_DAY settled road nodes; the rest ('Dispatch pending') go the
  *            next day, fires first, then major incidents. Coverage promise: a building never burns down while the

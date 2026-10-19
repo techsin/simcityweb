@@ -1557,7 +1557,7 @@ describe('LOD proxy worker pool', () => {
       postMessage(m: Record<string, unknown>): void { this.posted.push(m); }
       terminate(): void {}
       reply(key: string): void { this.onmessage?.({ data: { key, ok: false } }); }
-      hello(): void { this.onmessage?.({ data: { key: '', ok: false, hello: true } }); }
+      pong(): void { this.onmessage?.({ data: { key: '', ok: false, pong: true } }); }
       jobs(): string[] { return this.posted.filter((m) => 'position' in m).map((m) => m.key as string); }
     }
     vi.stubGlobal('Worker', FakeWorker);
@@ -1568,6 +1568,9 @@ describe('LOD proxy worker pool', () => {
       const pb = new LodProxyBuilder();
       expect(pb.available).toBe(true);
       expect(FakeWorker.all.length).toBe(2);
+      // each worker is pinged as it is created (the page holds the ping until it knows the worker's script ran, so the
+      // answer proves that what it posts from then on reaches the worker at once)
+      for (const w of FakeWorker.all) expect(w.posted.filter((m) => 'ping' in m).length).toBe(1);
       pb.perWorker = 3;
       const geo = () => {
         const g = new THREE.BufferGeometry();
@@ -1582,14 +1585,14 @@ describe('LOD proxy worker pool', () => {
       expect(w0.jobs().length).toBe(3);
       expect(w1.jobs().length).toBe(3);
       expect(pb.pending).toBe(10);
-      // the workers' hello (their scripts run): `opened` resolves once every worker said it; a hello is no reply (it
-      // frees no place: nothing more is posted)
+      // the workers' answers to their ping: `opened` resolves once every worker answered; an answer is no reply (it frees
+      // no place: nothing more is posted)
       let open = false;
       void pb.opened.then(() => { open = true; });
-      w0.hello();
+      w0.pong();
       await Promise.resolve();
       expect(open).toBe(false);
-      w1.hello();
+      w1.pong();
       await Promise.resolve();
       expect(open).toBe(true);
       expect(w0.jobs().length).toBe(3);

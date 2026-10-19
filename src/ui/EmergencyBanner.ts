@@ -12,7 +12,8 @@
  * always gets a banner (compact beyond MAX_BANNERS) and holds the speed policy: it scores as an ignored prompt when
  * nobody answers. Covered incidents never alert — they only become statistics.
  * A prompt counts (banner, LIVE mode, urgent pause, "N more" pill) only while a dispatch can really go (EM-1):
- * manualPossible and a free unit of its primary responder among the dispatch options; 'uncovered' events are taken up
+ * manualPossible and a free unit of its primary responder among the dispatch options that still arrives in time (the
+ * Send button re-reads them after any dispatch); 'uncovered' events are taken up
  * once the dispatch call that raised them is over (a microtask), so a disaster's burst — each incident dispatched at
  * once, a later one taking the unit an earlier one counted on — raises no alert for a prompt that is already gone.
  * The countdown is the player's window (emergency.ts dispatchWindowEnd: an industrial accident's plant ignites 3
@@ -344,8 +345,8 @@ export function windowText(inc: Pick<Incident, 'kind'>, leftDays: number): strin
  */
 export function failText(inc: Pick<Incident, 'kind' | 'answered' | 'prompted'>, couldMakeIt = false): string {
   if (inc.answered > 0) return 'Help came too late';
-  const u = cap1(RESPONDER_UNIT[INCIDENT_RESPONDERS[inc.kind][0]][0]);
-  return couldMakeIt || inc.prompted ? `No ${u.toLowerCase()} was sent in time` : `No ${u.toLowerCase()} could reach it in time`;
+  const u = RESPONDER_UNIT[INCIDENT_RESPONDERS[inc.kind][0]][0];
+  return couldMakeIt || inc.prompted ? `No ${u} was sent in time` : `No ${u} could reach it in time`;
 }
 /** the unit still driving to an incident that arrives first (of `responder`, else of any kind): its station, the time
  *  left (days) and its kind */
@@ -862,11 +863,13 @@ export class EmergencyBanner {
    *  restarted animations) */
   private layout(): void {
     const em = emergencyOf(this.ctx.sim);
-    const prio = (b: BannerEl): number => {
+    // (the alerts a dispatch can still save first: answerable, as for the speed policy — EM-1)
+    const prio = new Map<number, number>();
+    for (const b of this.banners.values()) {
       const inc = em?.incident(b.id);
-      return inc && (inc.state === 'uncovered' || inc.state === 'queued') && inc.manualPossible ? 0 : inc ? 1 : 2;
-    };
-    const list = [...this.banners.values()].sort((a, b) => prio(a) - prio(b) || a.inc.start - b.inc.start || a.id - b.id);
+      prio.set(b.id, inc && em && this.answerable(em, inc) ? 0 : inc ? 1 : 2);
+    }
+    const list = [...this.banners.values()].sort((a, b) => prio.get(a.id)! - prio.get(b.id)! || a.inc.start - b.inc.start || a.id - b.id);
     let capped = 0;
     list.forEach((b, k) => {
       toggleClass(b.el, 'compact', this.dockCompact || k >= MAX_BANNERS);

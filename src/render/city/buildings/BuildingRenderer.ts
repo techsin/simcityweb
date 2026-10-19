@@ -82,11 +82,11 @@ import { lodProxyBuilder, type LodProxyBuilder } from './lodBuilder';
 import { lotTwigGeometry, lotTwigKey, lotTwigs } from '../../../assets/builders/winterTwigs'; // seasons r3: LOW twig strip
 
 // The LOD proxy workers start as soon as the city view's code loads (they load three.js and the proxy builder while
-// the world view is still being built), and this module waits until they run (their hello: tens of ms, at most
-// lodBuilder's OPEN_TIMEOUT_MS): a page delivers nothing it posts to a worker before it has seen that the worker's
-// script ran (a task on its main thread), so a city built in one long task (demo-city.html) would hold the whole
-// prefetch until that task ends and get its proxies only during its first frames and its first zoom-out; this way the
-// workers build them while the city is being built. (No-op without workers: tests, Node.)
+// the world view is still being built), and this module waits until they run (each answers a ping: tens to hundreds of
+// ms, at most lodBuilder's OPEN_TIMEOUT_MS): a page delivers nothing it posts to a worker before it has seen that the
+// worker's script ran (a task on its main thread), so a city built in one long task (demo-city.html) would hold the
+// whole prefetch until that task ends and get its proxies only during its first frames and its first zoom-out; this
+// way the workers build them while the city is being built. (No-op without workers: tests, Node.)
 if (typeof window !== 'undefined') await lodProxyBuilder().opened;
 
 /** LOD proxies stay within their model's bounds + this (m; see tests/render/lod.test.ts) */

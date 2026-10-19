@@ -568,11 +568,17 @@ export function buildLodProxy(g: THREE.BufferGeometry): THREE.BufferGeometry | n
     if (up.length && kA < upA * 0.8) lotGrid(mb, up);
   }
   // ---- foliage clusters (trees, hedges): grid-cluster the foliage triangles, keep the biggest few as diamonds
-  let fArea = 0, tArea = 0;
-  for (const t of tris) { tArea += t.area; if (t.type === Surf.Foliage && t.maxY > 0.5) fArea += t.area; }
-  if (fArea > tArea * 0.06) {
+  // (winter twig sprays, Foliage pattern 5, are drawn only while their tree is bare: no part of the diamonds' crowns;
+  // they still count towards the share of foliage that earns a model its diamonds, so no model loses its trees)
+  const crown = (t: { type: number; pattern: number; maxY: number }) => t.type === Surf.Foliage && t.maxY > 0.5 && t.pattern < 4.5;
+  let fArea = 0, fAll = 0, tArea = 0;
+  for (const t of tris) {
+    tArea += t.area;
+    if (t.type === Surf.Foliage && t.maxY > 0.5) { fAll += t.area; if (t.pattern < 4.5) fArea += t.area; }
+  }
+  if (fAll > tArea * 0.06 && fArea > 0) {
     let fx0 = Infinity, fx1 = -Infinity, fz0 = Infinity, fz1 = -Infinity;
-    for (const t of tris) if (t.type === Surf.Foliage && t.maxY > 0.5) {
+    for (const t of tris) if (crown(t)) {
       fx0 = Math.min(fx0, t.ax, t.bx, t.cx); fx1 = Math.max(fx1, t.ax, t.bx, t.cx);
       fz0 = Math.min(fz0, t.az, t.bz, t.cz); fz1 = Math.max(fz1, t.az, t.bz, t.cz);
     }
@@ -581,7 +587,7 @@ export function buildLodProxy(g: THREE.BufferGeometry): THREE.BufferGeometry | n
     // pattern + that face's per-tree random, so blossom / seasonal / evergreen crowns keep their seasons at LOD range)
     const cells = new Map<number, { a: number; r: number; g: number; b: number; x0: number; x1: number; y0: number; y1: number; z0: number; z1: number; pa: number[]; pm: number[]; pf: number[] }>();
     for (const t of tris) {
-      if (t.type !== Surf.Foliage || t.maxY <= 0.5) continue;
+      if (!crown(t)) continue;
       const mx = (t.ax + t.bx + t.cx) / 3, mz = (t.az + t.bz + t.cz) / 3;
       const k = Math.floor((mx - fx0) / cs) * 64 + Math.floor((mz - fz0) / cs);
       let c = cells.get(k);
@@ -601,7 +607,10 @@ export function buildLodProxy(g: THREE.BufferGeometry): THREE.BufferGeometry | n
       const ym = c.y0 + (c.y1 - c.y0) * 0.45;
       let pt = 0;
       for (let i = 1; i < 5; i++) if (c.pa[i] > c.pa[pt]) pt = i;
-      mb.paint({ color: new THREE.Color(c.r / c.a, c.g / c.a, c.b / c.a), surf: Surf.Foliage, pattern: pt, floor: c.pf[pt] });
+      // (a crown that swaps to its twig crown while bare, patterns 1-2 with floor >= 1, keeps its per-tree random without
+      // the swap marker: the proxy has no twigs, so a bare crown stays a twig-coloured diamond instead of vanishing)
+      const pf = pt > 0 && pt < 3 && c.pf[pt] >= 1 ? c.pf[pt] - 1 : c.pf[pt];
+      mb.paint({ color: new THREE.Color(c.r / c.a, c.g / c.a, c.b / c.a), surf: Surf.Foliage, pattern: pt, floor: pf });
       const e: [number, number, number][] = [[cx + rx, ym, cz], [cx, ym, cz + rz], [cx - rx, ym, cz], [cx, ym, cz - rz]];
       for (let i = 0; i < 4; i++) {
         const a = e[i], b = e[(i + 1) % 4];

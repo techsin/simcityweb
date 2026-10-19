@@ -8,7 +8,9 @@
  *    that counted on it: no free unit left -> the prompt ends at once with an honest note; the named unit gone but
  *    another one free -> decided again by the next dispatch pass;
  *  - dispatchBest failing for lack of a free unit ends the prompt at once;
- *  - a prompt counts (prompted; ignored when nobody answers) only at a settle point: the end of a day's dispatch work.
+ *  - a prompt counts (prompted; ignored when nobody answers) only at a settle point: the end of a day's dispatch work,
+ *    while the unit it rests on is still free;
+ *  - a game saved right after a burst decides exactly like the original (lead decision 18a).
  * (The earthquake in a bot town and the normal-play prompt count: emergencyBot.test.ts.)
  */
 import { describe, expect, it } from 'vitest';
@@ -17,6 +19,7 @@ import type { CityState, Building } from '../../src/sim/CityState';
 import type { EmergencyEvent, Simulation } from '../../src/sim/Simulation';
 import { emergencyOf, type EmergencySystem } from '../../src/sim/infra/emergency';
 import { getFire, triggerDisaster } from '../../src/sim/systems/infra';
+import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import { newSim, newState, place, roadLine } from './cityGen';
 
 /** a street along z = 20 (x 2..size-3) with a fire station (2 trucks, 2.6-min reach) at x = 4 */
@@ -180,6 +183,30 @@ describe('EM-1: a prompt never outlives the free unit it rests on', () => {
     out.delete(station.id);
     sim.runDays(1);
     expect(spill.prompted).toBe(true);
+  });
+
+  it('a game saved right after a burst decides exactly like the original (re-validated prompts, notes, news, ignored)', () => {
+    const { st, sim, em } = town();
+    const f1 = place(st, 't_id', 8, 21, { jobs: 40 });
+    const f2 = place(st, 't_id', 12, 21, { jobs: 40 });
+    const homes = [40, 46].map((x) => place(st, 't_r2', x, 21, { pop: 60 }));
+    // the burst of the first test: a spill, two prompts beyond the station's reach, a spill that takes the last truck
+    em.spawn(sim, 'spill', f1.x, f1.z, { buildingId: f1.id });
+    for (const b of homes) triggerDisaster(sim, 'fire', b.x, b.z);
+    em.spawn(sim, 'spill', f2.x, f2.z, { buildingId: f2.id });
+    // saved between two day ticks: the prompts were ended, their news is still due at the next settle point
+    const copy = newSim(deserializeCity(structuredClone(serializeCity(st, { copy: true })) as SerializedCity));
+    getFire(copy)!.riskBoost = 0;
+    const view = (s: Simulation) => emergencyOf(s)!.incidents().map((i) => [i.id, i.kind, i.state, i.reason, i.manualPossible, !!i.canSend, i.bestEta, i.bestFrom, i.note, !!i.prompted, i.retry, i.lost]);
+    expect(view(copy)).toEqual(view(sim));
+    for (let d = 0; d < 12; d++) {
+      sim.runDays(1);
+      copy.runDays(1);
+      expect(view(copy), `day ${st.day}`).toEqual(view(sim));
+    }
+    expect(copy.state.stats.emergency.month).toEqual(st.stats.emergency.month);
+    expect(st.stats.emergency.month.ignored ?? 0).toBe(0);
+    expect(copy.state.news.map((n) => `${n.day} ${n.text}`)).toEqual(st.news.map((n) => `${n.day} ${n.text}`));
   });
 
   it('a prompt that is answerable at the day\'s settle point counts: ignored when nobody answers and it fails', () => {

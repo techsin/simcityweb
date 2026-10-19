@@ -1,14 +1,15 @@
 /**
  * LOD proxy worker (module worker, see lodBuilder.ts): builds building massing proxies off the main thread.
  * In:  { key, position, color, surf, urgent } — copies of the model's non-indexed attribute arrays (Float32Array,
- *      transferred); { promote: key } — a queued job is needed now (moves to the front)
+ *      transferred); { promote: key } — a queued job is needed now (moves to the front); { ping } — answered at once
+ *      with { pong: true } (lodBuilder: LodProxyBuilder.opened)
  * Out: { key, ok, position?, normal?, color?, surf?, box? } — the proxy's attributes (transferred) and bounding box
- *      [min xyz, max xyz]; ok = false: no proxy. { hello: true } first, as soon as the script runs (lodBuilder:
- *      LodProxyBuilder.opened)
+ *      [min xyz, max xyz]; ok = false: no proxy
  * The top level has no static imports: the page holds the messages it posts to a worker until it learns that the
  * worker's script has run (a task on the page's main thread), and a city load keeps the main thread busy for seconds,
- * so the script must run before the load's long stretch starts, not after loading three.js. The proxy builder (three.js
- * + lodProxy) is imported right after; jobs that arrive before it is in wait in the queue.
+ * so the script must run, and the page's ping be answered, before the load's long stretch starts, not after loading
+ * three.js. The proxy builder (three.js + lodProxy) is imported right after; jobs that arrive before it is in wait in
+ * the queue.
  * Jobs queue here (urgent ones first) and are built one per task: the main thread posts a city's prefetch in bulk (so
  * the worker keeps building while a long load task holds the main thread), and a promotion or an urgent job that
  * arrives meanwhile is taken next.
@@ -17,8 +18,9 @@ import type { BufferGeometry } from 'three';
 
 interface Req { key: string; position: Float32Array; color: Float32Array; surf: Float32Array; urgent?: boolean }
 interface Promote { promote: string }
+interface Ping { ping: number }
 
-const ctx = self as unknown as { onmessage: ((e: MessageEvent<Req | Promote>) => void) | null; postMessage(m: unknown, t?: Transferable[]): void };
+const ctx = self as unknown as { onmessage: ((e: MessageEvent<Req | Promote | Ping>) => void) | null; postMessage(m: unknown, t?: Transferable[]): void };
 
 const queue: Req[] = [];
 let build: ((req: Req) => void) | null = null;
@@ -43,6 +45,8 @@ function step(): void {
 
 ctx.onmessage = (e) => {
   const d = e.data;
+  // (the page waits for this answer before it builds a city: from then on what it posts reaches this worker at once)
+  if ('ping' in d) { ctx.postMessage({ key: '', ok: false, pong: true }); return; }
   if ('promote' in d) {
     const i = queue.findIndex((q) => q.key === d.promote);
     if (i > 0) queue.unshift(queue.splice(i, 1)[0]);
@@ -52,9 +56,6 @@ ctx.onmessage = (e) => {
   else queue.push(d);
   kick();
 };
-
-// (the page waits for this before it builds a city: from then on what it posts reaches this worker at once)
-ctx.postMessage({ key: '', ok: false, hello: true });
 
 void Promise.all([import('three'), import('./lodProxy')]).then(([T, lp]) => {
   build = (req) => {

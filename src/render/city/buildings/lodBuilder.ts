@@ -10,18 +10,22 @@
  * later synchronous lodProxyFor() (captures: flushLod) returns the same geometry.
  * Without module-worker support (Node tests) or if a worker fails to load, `available` is false and callers build
  * synchronously; requests still queued when the workers fail are built on the main thread, one per task.
- * `opened` resolves once every worker has said hello (its script ran, so the page delivers what it posts at once; until
- * then the page holds every message — a page that builds its city in one long task would hold the whole prefetch until
- * that task ends), on a failure, or after OPEN_TIMEOUT_MS.
+ * `opened` resolves once every worker has answered a ping posted when it was created, on a failure, or after
+ * OPEN_TIMEOUT_MS. A page holds every message it posts to a worker until its main thread has handled the notice that the
+ * worker's script ran, and a city built in one long main-thread task (demo-city.html; the game's load does long stretches
+ * too) would hold its whole prefetch until that task ends. A message the worker sends once its script runs does not
+ * settle it: it can be handled before that notice, which then waits behind the long task (measured: the prefetch of one
+ * of two workers, or of both in a production build, held until the load ended, its proxies arriving in the first seconds
+ * of play). The ping is held like any message, so its answer proves later posts go straight to the worker.
  */
 import * as THREE from 'three';
 import { cachedLodProxy, lodProxyExcluded, lodProxyFor, setCachedLodProxy } from './lodProxy';
 
 type Done = (g: THREE.BufferGeometry | null) => void;
 interface Job { key: string; geo: THREE.BufferGeometry; done: Done[]; urgent: boolean; worker: number }
-interface Reply { key: string; ok: boolean; position?: Float32Array; normal?: Float32Array; color?: Float32Array; surf?: Float32Array; box?: number[]; failed?: boolean; hello?: boolean }
+interface Reply { key: string; ok: boolean; position?: Float32Array; normal?: Float32Array; color?: Float32Array; surf?: Float32Array; box?: number[]; failed?: boolean; pong?: boolean }
 
-/** longest wait for the workers' hello (a worker that never starts must not hold up a page) */
+/** longest wait for the workers' answers to their ping (a worker that never starts must not hold up a page) */
 const OPEN_TIMEOUT_MS = 1500;
 
 /** workers in the pool: two where the machine has four or more cores (the main thread, the GPU process and the
@@ -46,10 +50,11 @@ export class LodProxyBuilder {
   perWorker = 128;
   /** proxies built by the workers (stats) */
   built = 0;
-  /** resolves once every worker runs (its hello), on a failure, or after OPEN_TIMEOUT_MS (see the header) */
+  /** resolves once every worker answered its ping (what the page posts now reaches the workers at once), on a failure, or
+   *  after OPEN_TIMEOUT_MS (see the header) */
   readonly opened: Promise<void>;
   private open: (() => void) | null = null;
-  private hellos = 0;
+  private pongs = 0;
 
   constructor() {
     this.opened = new Promise<void>((res) => { this.open = res; });
@@ -59,6 +64,8 @@ export class LodProxyBuilder {
         const w = new Worker(new URL('./lodWorker.ts', import.meta.url), { type: 'module', name: `lod-proxies-${i}` });
         w.onmessage = (e: MessageEvent<Reply>) => this.onReply(i, e.data);
         w.onerror = (e) => { e.preventDefault?.(); this.fail(); };
+        // (delivered once the page knows the worker's script ran; the answer opens the pool, see the header)
+        w.postMessage({ ping: i });
         this.workers.push(w);
         this.posted.push(0);
       }
@@ -141,7 +148,7 @@ export class LodProxyBuilder {
 
   private onReply(w: number, r: Reply): void {
     if (r.failed) { this.fail(); return; }
-    if (r.hello) { if (++this.hellos >= this.workers.length) this.markOpen(); return; }
+    if (r.pong) { if (++this.pongs >= this.workers.length) this.markOpen(); return; }
     if (w < this.posted.length) this.posted[w] = Math.max(0, this.posted[w] - 1);
     let g: THREE.BufferGeometry | null = null;
     if (r.ok && r.position && r.normal && r.color && r.surf) {
