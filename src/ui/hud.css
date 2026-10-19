@@ -120,8 +120,8 @@
 .hud-top { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; align-items: stretch; gap: 8px; pointer-events: none; z-index: 40; }
 /* (final fixes UI-6: while one of its popovers is open — the approval card on hover, the RCI card — the top bar stacks
    above the emergency banners (.emg-banners 55) and the toasts (.hud-tl 50), below the modal (60): the approval
-   breakdown ("Emergencies last month −8.0") was hidden under the banners exactly when it mattered. Only then, so the
-   idle bar stays under the loading veil (50)) */
+   breakdown ("Emergencies last month −8.0") was hidden under the banners exactly when it mattered. The loading veil
+   stays above it (58)) */
 .hud-top:hover, .hud-top:has(.rci-pop.open) { z-index: 56; }
 .hud-top > .mp-glass { pointer-events: auto; display: flex; align-items: center; height: 50px; padding: 0 6px; }
 .hud-top .spacer { flex: 1; }
@@ -734,7 +734,9 @@
 /* above the minimap AND the save indicator mounted on top of it (region/ui/meta.css .save-status: 8px gap + 24px) */
 .fps { position: absolute; right: 12px; bottom: 296px; z-index: 20; font: 500 10.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-dim); padding: 7px 10px; pointer-events: none; white-space: nowrap; border-radius: 9px; }
 .fps b { color: var(--text); font-weight: 700; }
-.loading-veil { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; background: #0b1016; color: var(--text-dim); font-size: 13px; z-index: 50; transition: opacity 0.5s; pointer-events: none; }
+/* (z 58: above every HUD layer a hover can raise — the top bar lifts to 56 while hovered, UI-6, and the veil lets the
+   pointer through — below the modal (60)) */
+.loading-veil { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; background: #0b1016; color: var(--text-dim); font-size: 13px; z-index: 58; transition: opacity 0.5s; pointer-events: none; }
 .loading-veil.gone { opacity: 0; }
 .loading-veil .spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid rgba(255,255,255,.12); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
 .dev-badge { position: absolute; left: 50%; transform: translateX(-50%); top: 66px; padding: 4px 8px; z-index: 45; font-size: 10.5px; font-weight: 700; color: var(--warn); pointer-events: auto; cursor: help; border-color: rgba(255,181,71,.35); }

@@ -961,17 +961,35 @@ describe('outer ring trees', () => {
     const lod = 850, reach = lod * 1.06;
     const nears = () => tr.group.children.filter((o) => o.name === 'trees-ring' && !((o as THREE.Mesh).geometry.name ?? '').startsWith('impostor-micro')) as THREE.InstancedMesh[];
     expect(nears().length).toBe(16);
-    for (const [x, h, z] of [[60, 30, W / 2], [W * 0.2, 400, W * 0.1], [W / 2, 30, W / 2], [W / 2, 3000, W / 2], [W - 30, 80, W - 30]]) {
+    const fr = new THREE.Frustum(), sp = new THREE.Sphere();
+    /** the view's frustum test of instance i of near mesh m (the sphere around its impostor's box: +-0.5 x its width,
+     *  0..1.05 x its height) */
+    const inView = (m: THREE.InstancedMesh, i: number) => {
+      const e = m.instanceMatrix.array as Float32Array, o = i * 16, h = Math.hypot(e[o + 4], e[o + 5], e[o + 6]);
+      sp.center.set(e[o + 12], e[o + 13] + h * 0.525, e[o + 14]);
+      sp.radius = Math.hypot(Math.hypot(e[o], e[o + 1], e[o + 2]) * 0.5, h * 0.525, Math.hypot(e[o + 8], e[o + 9], e[o + 10]) * 0.5);
+      return fr.intersectsSphere(sp);
+    };
+    const look = (x: number, h: number, z: number, tx: number, tz: number) => {
       cam.position.set(x, terr.meshHeightAt(x, z) + h, z);
+      cam.lookAt(tx, terr.meshHeightAt(x, z), tz);
+      cam.updateMatrixWorld();
+      fr.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
       tr.update(cam);
+    };
+    for (const [x, h, z] of [[60, 30, W / 2], [W * 0.2, 400, W * 0.1], [W / 2, 30, W / 2], [W / 2, 3000, W / 2], [W - 30, 80, W - 30]]) {
+      // (looking along -z, as the default camera)
+      look(x, h, z, x, z - 100);
       let submitted = 0, total = 0;
       for (const m of nears()) {
         const n = (m.userData.ringCount as number) ?? 0, e = m.instanceMatrix.array as Float32Array;
         total += n;
         submitted += m.visible ? m.count : 0;
-        // every tree left out is beyond any tree's switch distance (the shader draws a tree up to <= 1.06 x lod)
+        // every tree left out is beyond any tree's switch distance (the shader draws a tree up to <= 1.06 x lod) or out
+        // of the view
         for (let i = m.visible ? m.count : 0; i < n; i++) {
-          expect(Math.hypot(e[i * 16 + 12] - cam.position.x, e[i * 16 + 13] - cam.position.y, e[i * 16 + 14] - cam.position.z)).toBeGreaterThan(reach);
+          const far = Math.hypot(e[i * 16 + 12] - cam.position.x, e[i * 16 + 13] - cam.position.y, e[i * 16 + 14] - cam.position.z) > reach;
+          expect(far || !inView(m, i)).toBe(true);
         }
       }
       expect(total).toBe(tr.ringInstances);
@@ -980,6 +998,44 @@ describe('outer ring trees', () => {
       else expect(submitted).toBeLessThan(total * 0.5);
       if (x === 60) expect(submitted).toBeGreaterThan(0);
     }
+    // the view bound: a camera beyond the west edge looking back at the map submits a fraction of the trees in reach
+    // (those behind it are out of view); looking out over the ring, all of them
+    const sub = () => nears().reduce((a, m) => a + (m.visible ? m.count : 0), 0);
+    look(-300, 120, W / 2, W / 2, W / 2);
+    const back = sub();
+    look(-300, 120, W / 2, -3000, W / 2);
+    const out = sub();
+    const ring = tr as unknown as { updateRingView(px: number, py: number, pz: number, lod: number, camH: number): void };
+    ring.updateRingView(cam.position.x, cam.position.y, cam.position.z, lod, 120);
+    const reachOnly = sub();
+    expect(out).toBe(reachOnly);
+    expect(back).toBeGreaterThan(0);
+    expect(back).toBeLessThan(reachOnly * 0.6);
+    // ... and it never leaves out a tree in view and in reach (random poses inside, at and beyond the edges, looking up
+    // to the horizon or down, wide and narrow views)
+    const rnd = new RNG(17);
+    let checked = 0;
+    for (let q = 0; q < 140; q++) {
+      const x = rnd.range(-1100, W + 1100), z = rnd.range(-1100, W + 1100), h = [3, 8, 40, 150, 500, 1200, 2500][q % 7];
+      const a = rnd.range(0, Math.PI * 2), pitch = rnd.range(-0.3, 1.565);
+      cam.fov = rnd.range(30, 60);
+      cam.aspect = rnd.range(1, 2.4);
+      cam.updateProjectionMatrix();
+      cam.position.set(x, terr.meshHeightAt(x, z) + h, z);
+      cam.lookAt(x + Math.cos(a) * 100, cam.position.y - Math.tan(pitch) * 100, z + Math.sin(a) * 100);
+      cam.updateMatrixWorld();
+      fr.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+      tr.update(cam);
+      for (const m of nears()) {
+        const n = (m.userData.ringCount as number) ?? 0, e = m.instanceMatrix.array as Float32Array;
+        for (let i = m.visible ? m.count : 0; i < n; i++) {
+          if (Math.hypot(e[i * 16 + 12] - cam.position.x, e[i * 16 + 13] - cam.position.y, e[i * 16 + 14] - cam.position.z) > reach) continue;
+          checked++;
+          expect(inView(m, i), `pose ${q}`).toBe(false);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(5000);
     tr.dispose();
   }, 120_000);
 

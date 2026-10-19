@@ -25,3 +25,14 @@ kit_bareCrown.patch may be landed by the seasons r3 lane together with a LOW twi
 | `lodProxy_bareDiamonds.patch` | **New**, for the buildings lane after its r3 closes (`src/render/city/buildings/lodProxy.ts`). The foliage diamonds of LOD proxies keep a bare crown's look at LOD range: the swap marker is cleared, so they do not vanish in winter, and the winter-only twig sprays (Foliage pattern 5) are no longer counted as part of a crown. |
 | `BuildingRenderer_foliageDepth.patch` | **Applied** by the buildings lane (BLD r3): it reverse-applies cleanly to the working tree; the file can go. |
 | others | Unchanged (owners and decisions as above); `CityState_startApril.patch`, `MiniMap_season.patch` and `propLod_bareProxy.patch` still apply cleanly (Oct 14, 23:30). |
+
+## Seasons r3 resume status (Oct 19, revise r3 resumed after the weekly-limit stop)
+
+| Patch | Status |
+|---|---|
+| `res_high_podiumTrees.patch` | **New**, for the residential assets owner (`src/assets/builders/res_high.ts`, no round-3 lane owns it). The podium-garden trees of `res_twin_towers` and `res_luxury_tower` are the last lot trees whose light-green crowns carry no bare winter crown (a census over every lot model, variant 0): in winter they keep the full crown in the shader's winter fallback look, a grey camo lump on a stick (reviewer view `tp/jan12_horizon_w`). The patch gives them `park_lib.bareCrown` like the kit trees (no rng draws, layouts unchanged): +15 triangles per tree at high quality, 2 fewer than the plain model at low quality (the low strip draws them as a Y, see below). `git apply --check` passes on the working tree (Oct 19, 23:05). |
+| `lodProxy_bareDiamonds.patch` | **Applied** by the buildings lane (BLD r3, with a threshold change of its own, so the file no longer reverse-applies). Removed. |
+| `BuildingRenderer_foliageDepth.patch` | **Applied** by the buildings lane (it reverse-applies cleanly). Removed. |
+| `CityState_startApril.patch`, `MiniMap_season.patch`, `propLod_bareProxy.patch` | Unchanged: owners and decisions as above; all three still apply cleanly (Oct 19, 23:05). |
+
+Low-quality twig strip, r3 resume: a bare crown on a plain trunk is no longer a bare pole at low quality. `stripWinterTwigs` (`src/assets/builders/winterTwigs.ts`) draws the trunk as a 4-sided (3-sided) spire up to the tip of the crown's leader and keeps the crown's limbs, as many as fit in the trunk's own triangles, so every lot model has at most the triangles of its plain (twig-free) model: kit trees 8 for the trunk's 10, park trees 10 for 10, com_kit box trunks 8 for 8, the ind_kit strut 6 for 6 (one limb). The hooks in `BuildingRenderer.ts` are unchanged.

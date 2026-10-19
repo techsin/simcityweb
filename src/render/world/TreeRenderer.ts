@@ -126,6 +126,12 @@ const RING_SWITCH_SPAN = 0.12;
 const RING_KEEP_A = 1.2;
 const RING_KEEP_D = 5500;
 const RING_KEEP_MIN = 0.3;
+/** the near pairs' view bound (updateRingView): a ring tree farther past its sector's edge than the deepest point of the
+ *  view's ground footprint by more than this (m: crowns, and trees standing above the footprint's plane) is out of view */
+const RING_VIS_PAD = 40;
+/** ringViewDirs scratch: the view's 4 corner ray directions, the gap in their horizontal directions, their angles */
+const _rvd = new Float64Array(12), _rvr = new Float64Array(3), _rva = new Float64Array(4);
+const _rv3 = new THREE.Vector3();
 /** a nature model whose crown is at least this see-through (natureStats.open) has a see-through impostor */
 const BARE_OPEN = 0.3;
 /** winter conifer impostors: taller (the needle tiers' tips) and darker than the summer tint (they are what reads of
@@ -931,6 +937,9 @@ export class TreeRenderer {
   private ringCalm = 0;
   /** the ring (and the edge band) at the current quality: ringWidth > 0 and lodDistance >= RING_MIN_LOD */
   private ringOn = true;
+  /** 1: the next view update draws every ring mesh with trees (the hidden ones with no instances: their instance data
+   *  uploads then, not on their first sight), 2: the one after restores their frustum test */
+  private ringPreload = 0;
   /** width (m) of the landscape ring beyond the map edge that gets tree impostors (0 = none, also no edge band) */
   ringWidth = 2600;
   /** main-thread time (ms) of one slice of the outer ring's runtime work (refills / border regenerations) */
@@ -1957,7 +1966,88 @@ export class TreeRenderer {
         this.ringStep(this.ringBudgetMs);
       } else if (++this.ringWait > RING_MAX_WAIT && this.ringWait % RING_SLICE_EVERY === 0) this.ringStep(this.ringBudgetMs);
     } else this.ringWait = 0;
-    this.updateRingView(px, py, pz, lod, camH);
+    this.updateRingView(px, py, pz, lod, camH, camera);
+  }
+
+  /**
+   * The view's corner rays for the near pairs' view bound (updateRingView): their directions into _rvd, and the gap in
+   * their horizontal directions into _rvr ([1] = every direction is within the view's horizontal span: the corner rays
+   * surround the camera's own point, as for a camera looking down; else [0], with the widest gap between two corner
+   * directions from angle [1] counter-clockwise to [2]). Returns 0 (no bound: not a perspective camera), 1 (every corner
+   * ray descends) or 2 (some do not: a view up to the horizon).
+   */
+  private ringViewDirs(camera: THREE.Camera, px: number, py: number, pz: number): number {
+    if (!(camera as THREE.PerspectiveCamera).isPerspectiveCamera) return 0;
+    camera.updateMatrixWorld();
+    const D = _rvd, A = _rva;
+    let up = false, na = 0;
+    for (let i = 0; i < 4; i++) {
+      _rv3.set(i & 1 ? 1 : -1, i & 2 ? 1 : -1, 0.5).unproject(camera);
+      const dx = _rv3.x - px, dy = _rv3.y - py, dz = _rv3.z - pz, l = Math.hypot(dx, dy, dz) || 1;
+      D[i * 3] = dx / l;
+      D[i * 3 + 1] = dy / l;
+      D[i * 3 + 2] = dz / l;
+      if (D[i * 3 + 1] > -1e-4) up = true;
+      if (Math.hypot(dx, dz) > 1e-6 * l) A[na++] = (Math.atan2(dz, dx) + Math.PI * 2) % (Math.PI * 2);
+    }
+    const R = _rvr;
+    R[0] = 1;
+    if (na >= 2) {
+      const s = A.subarray(0, na).sort();
+      let g = s[0] + Math.PI * 2 - s[na - 1], g0 = s[na - 1], g1 = s[0];
+      for (let i = 1; i < na; i++) if (s[i] - s[i - 1] > g) { g = s[i] - s[i - 1]; g0 = s[i - 1]; g1 = s[i]; }
+      // (a gap of half a turn or more: the view spans the rest; less: the corner rays surround the camera's point)
+      if (g >= Math.PI) { R[0] = 0; R[1] = g0; R[2] = g1; }
+    }
+    return up ? 2 : 1;
+  }
+
+  /**
+   * The deepest point past sector k's edge(s) (ringDepth, convex) of the view's ground footprint within the horizontal
+   * reach hr. A visible point at or above the plane of the sector's lowest tree foot (y0), below the camera, lies on the
+   * way from the camera's own point to where its view ray meets that plane, inside the quad of the corner rays: the
+   * candidates are the camera's point and the corner rays' ends on that plane and, once the footprint reaches beyond hr
+   * (a corner ray meets the plane farther, or not at all), the reach circle within the view's horizontal span
+   * (ringViewDirs): its two ends and its point toward the sector's outward normal(s) if that direction lies within the
+   * span. The depth is linear along a side sector's normal (convex for a corner sector), so no visible tree foot is
+   * deeper than the deepest candidate (RING_VIS_PAD covers the crowns).
+   */
+  private ringViewDepth(k: number, view: number, px: number, py: number, pz: number, hr: number): number {
+    const D = _rvd, R = _rvr, y0 = this.ringBox[k * 6 + 1];
+    let t = this.ringDepth(k, px, pz), clipped = view === 2;
+    for (let i = 0; i < 4; i++) {
+      const dx = D[i * 3], dy = D[i * 3 + 1], dz = D[i * 3 + 2], hl = Math.hypot(dx, dz);
+      if (hl < 1e-6) continue;
+      let s = hr;
+      if (dy < -1e-4 && py > y0) {
+        const g = ((y0 - py) / dy) * hl;
+        if (g < hr) s = g;
+        else clipped = true;
+      } else clipped = true;
+      const d = this.ringDepth(k, px + (dx / hl) * s, pz + (dz / hl) * s);
+      if (d > t) t = d;
+    }
+    if (clipped) {
+      if (R[0] === 0) {
+        for (const th of [R[1], R[2]]) {
+          const d = this.ringDepth(k, px + Math.cos(th) * hr, pz + Math.sin(th) * hr);
+          if (d > t) t = d;
+        }
+      }
+      const ix = RING_SECTORS[k][0], iz = RING_SECTORS[k][1];
+      for (let a = 0; a < 2; a++) {
+        const side = a === 0 ? ix : iz;
+        if (side === 1) continue;
+        const nx = a === 0 ? (side === 0 ? -1 : 1) : 0, nz = a === 1 ? (side === 0 ? -1 : 1) : 0;
+        if (R[0] === 0) {
+          const th = (Math.atan2(nz, nx) + Math.PI * 2) % (Math.PI * 2), g0 = R[1], g1 = R[2];
+          if (g0 < g1 ? th > g0 && th < g1 : th > g0 || th < g1) continue;
+        }
+        const d = this.ringDepth(k, px + nx * hr, pz + nz * hr);
+        if (d > t) t = d;
+      }
+    }
+    return t;
   }
 
   /** outer ring work left (generation, refill, a sector's finish or far block upload) */
@@ -1990,9 +2080,11 @@ export class TreeRenderer {
    * camera e metres inside those edges is at least t + e from a tree at depth t (horizontally). Its far blocks show
    * while the camera is high enough (camera height fade), each submitting the prefix of its trees (ordered by their
    * thinning random) that its nearest point keeps; a block entirely within the switch distance draws nothing (its trees
-   * are the near pair's).
+   * are the near pair's). With the view's camera, a near pair's prefix also ends at the deepest point past the sector's
+   * edge(s) of the view's ground footprint (ringViewDirs; + RING_VIS_PAD): a camera beyond the edge looking back at the
+   * map does not submit the trees behind it.
    */
-  private updateRingView(px: number, py: number, pz: number, lod: number, camH: number): void {
+  private updateRingView(px: number, py: number, pz: number, lod: number, camH: number, camera?: THREE.Camera): void {
     if (!this.ringOn) return;
     const ring = this.ring, rf = this.ringFar, W = this.state.size * CELL_SIZE;
     // low cameras: the far blocks fade out with the camera height (seen from inside the city they are hidden or a few
@@ -2001,6 +2093,7 @@ export class TreeRenderer {
     this.ringU.uRingP.value.set(lod, fv, W);
     const reach = lod * (RING_SWITCH_LO + RING_SWITCH_SPAN), inner = lod * RING_SWITCH_LO;
     const RB = this.ringBox;
+    const view = camera ? this.ringViewDirs(camera, px, py, pz) : 0;
     for (let k = 0; k < RING_N; k++) {
       const ready = this.ringReady[k] !== 0;
       const ix = RING_SECTORS[k][0], iz = RING_SECTORS[k][1];
@@ -2012,7 +2105,8 @@ export class TreeRenderer {
       }
       // (a camera H above the sector's highest tree reaches horizontally only sqrt(reach^2 - H^2))
       const H = py - RB[k * 6 + 4], hr2 = reach * reach - (H > 0 ? H * H : 0);
-      const tMax = (hr2 > 0 ? Math.sqrt(hr2) : -1) - e;
+      let tMax = (hr2 > 0 ? Math.sqrt(hr2) : -1) - e;
+      if (view && ready && tMax >= 0) tMax = Math.min(tMax, this.ringViewDepth(k, view, px, py, pz, Math.sqrt(hr2)) + RING_VIS_PAD);
       for (let m = 0; m < 2; m++) {
         const mesh = ring[k * 2 + m], T = this.ringNearT[k * 2 + m];
         if (!mesh) continue;
@@ -2060,6 +2154,18 @@ export class TreeRenderer {
         m.visible = lo > 0;
       }
     }
+    // the frame after a flushRing (load, quality change, reset): every ring mesh with trees is drawn, a hidden one with no
+    // instances, which uploads its instance data now instead of on its first sight (the first far zoom-out: ~4 ms over its
+    // first frames, measured); the next frame restores the frustum test
+    if (this.ringPreload) {
+      const on = this.ringPreload === 1;
+      this.ringPreload = on ? 2 : 0;
+      for (const list of [ring, rf]) for (const m of list) {
+        if (!m) continue;
+        m.frustumCulled = !on;
+        if (on && !m.visible && m.userData.ringCount) { m.count = 0; m.visible = true; }
+      }
+    }
   }
 
   /** synchronous full rebuild (e.g. before a capture); ring: also finish the outer ring's pending work */
@@ -2069,10 +2175,12 @@ export class TreeRenderer {
     if (ring) this.flushRing();
   }
 
-  /** finish the outer ring's pending generation / refills / far block uploads now */
+  /** finish the outer ring's pending generation / refills / far block uploads now (and upload its instance data on the
+   *  next frame, see updateRingView) */
   private flushRing(): void {
     if (!this.ringOn) return;
     while (this.ringPending()) this.ringStep(Infinity);
+    this.ringPreload = 1;
   }
 
   /** tree density (0..1) of the map's tree texture, clamped to the map like the terrain shader samples it */
