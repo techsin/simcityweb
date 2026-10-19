@@ -757,21 +757,30 @@ describe('outer ring trees', () => {
     const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
     const ring = () => tr.group.children.filter((o) => o.name === 'trees-ring') as THREE.InstancedMesh[];
     const isMicro = (m: THREE.InstancedMesh) => (m.geometry.name ?? '').startsWith('impostor-micro');
+    /** a ring mesh that draws trees (the first view update after the load also shows the others, with none: their
+     *  instance data uploads then, updateRingView) */
+    const drawn = (m: THREE.InstancedMesh) => m.visible && m.count > 0;
     const at = (x: number, h: number, z: number) => {
       cam.position.set(x, terr.meshHeightAt(x, z) + h, z);
       tr.update(cam);
     };
     // street height in the middle of a 2 km map: the ring is hidden
     at(W / 2, 30, W / 2);
+    expect(ring().some(drawn)).toBe(false);
+    // (that first update after the load: every ring mesh with trees shown, the hidden ones with no instances, not
+    // culled; the next one restores the frustum test)
+    expect(ring().filter((m) => (m.userData.ringCount as number) > 0).every((m) => m.visible && !m.frustumCulled)).toBe(true);
+    at(W / 2, 30, W / 2);
     expect(ring().some((m) => m.visible)).toBe(false);
+    expect(ring().every((m) => m.frustumCulled)).toBe(true);
     // street height next to the west edge: the ring is the horizon there - that side's regular impostor pair
     at(60, 30, W / 2);
-    const shown = ring().filter((m) => m.visible);
+    const shown = ring().filter(drawn);
     expect(shown.length).toBeGreaterThan(0);
     expect(shown.some(isMicro)).toBe(false);
     // high above the map: the far sectors' micro impostors
     at(W / 2, 3000, W / 2);
-    expect(ring().some((m) => m.visible && isMicro(m))).toBe(true);
+    expect(ring().some((m) => drawn(m) && isMicro(m))).toBe(true);
     tr.dispose();
   }, 120_000);
 
