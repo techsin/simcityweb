@@ -40,7 +40,7 @@
  * high-water size, instead of three.js re-uploading (and, for lists that change length, re-allocating) whole textures.
  */
 import * as THREE from 'three';
-import { shadowCasters, viewReach, type ShadowReceiver } from '../../world/Shadows';
+import { makeReceiver, setReceiver, shadowCasters, viewReach, type ShadowReceiver } from '../../world/Shadows';
 
 export interface PassCullOptions {
   /** tile geometry (tile size, per-tile height range); instances are assigned to tiles with setTile() */
@@ -267,6 +267,73 @@ const ID_W = 512;
 /** a pass list's indirect texture shrinks only after this many builds in a row with it over twice the size it needs */
 const SHRINK_AFTER = 180;
 let _frame = 0;
+
+/**
+ * Fresh-page JIT warm-up (DynamicBatch.warmUp, VehicleRenderer.warmUp). V8 optimizes a function only once it ran a while,
+ * and the city's per-frame code has many paths that only camera motion takes: pass lists rebuilt against moving,
+ * banded and far frusta (pushGroups / testRange / the emitters, tile-level far lists, shadow lists against a moving
+ * receiver), the vehicles' pose / cull / thinning loop with tiles coming into view. On a freshly loaded page the first
+ * zoom-out ran all of it unoptimized and deoptimized it again as each branch first showed up: it cost ~1.4x a later,
+ * identical zoom-out (t_plains town at LOW; a page that had moved once paid no such cost). The warm-up runs that code at
+ * load, inside the load's frames, for a sweep of view poses around the view's ground target: a zoom-out from street
+ * level to the far view, a far orbit, a zoom-in to the default view, a pan, a short rest and a cut back to the street;
+ * the batch's owner runs its own per-frame work for each pose (warmHook: the buildings' LOD swaps, which the passes
+ * then patch into their lists). WARM_POSES: [distance m, tilt deg, yaw deg from the view's, target shift m along the
+ * view's right] per step.
+ * Measured (fresh pages, interleaved A/B, t_plains LOW): the first zoom-in ~9% and the first frames after the load ~6%
+ * cheaper than without it; the first zoom-out ~3% (up to ~15% while the machine is loaded, nothing on an idle one: the
+ * cost left there is V8's own first runs, which base pays too). It costs ~110-150 ms of the load's main thread (town,
+ * dense city), in the batch's second frame.
+ */
+const WARM_POSES: Float64Array = (() => {
+  const p: number[] = [];
+  for (let k = 0; k < 16; k++) { const t = k / 15; p.push(150 * Math.pow(4000 / 150, t), 14 + 71 * t, 0, 0); }
+  for (let k = 1; k <= 4; k++) p.push(4000, 85, 1.5 * k, 0);
+  for (let k = 0; k < 10; k++) { const t = k / 9; p.push(4000 * Math.pow(800 / 4000, t), 85 - 35 * t, 6 + 4 * t, 0); }
+  for (let k = 1; k <= 4; k++) p.push(800, 50, 10, 8 * k);
+  for (let k = 0; k < 9; k++) p.push(800, 50, 10, 32);
+  p.push(150, 14, 180, 0, 150, 14, 180, 0);
+  return Float64Array.from(p);
+})();
+/** steps of the warm-up sweep (WARM_POSES) */
+export const WARM_STEPS = WARM_POSES.length / 4;
+/** the batch's frame (counting from its first drawn one) whose first view pass runs its warm-up: the first frame's real
+ *  passes have run every path once (type feedback of the real objects: renderer, cameras, receivers) */
+const WARM_AFTER = 2;
+/** a batch first drawn after its renderer's first WARM_WINDOW frames (info.render.frame: render() calls; WorldView makes
+ *  a renderer per city) is past the load — empty and hidden through it, e.g. a new city's buildings until the first one
+ *  is placed: no warm-up then, it would be a hitch in play */
+const WARM_WINDOW = 240;
+const _wT = new THREE.Vector3();
+const _wG = new THREE.Vector3();
+const _wL = new THREE.Vector3();
+
+/** the view's ground target (where its axis meets the plane y = 0; 800 m ahead when it looks up) -> out; returns the
+ *  view's yaw (rad, CameraController's convention: the camera sits at target + (-sin yaw, ., cos yaw) x distance) */
+export function warmTarget(view: THREE.Camera, out: THREE.Vector3): number {
+  const e = view.matrixWorld.elements, fx = -e[8], fy = -e[9], fz = -e[10], l = Math.hypot(fx, fy, fz) || 1;
+  const t = fy < -0.05 * l ? Math.min(8000, Math.max(1, e[13]) / (-fy / l)) : 800;
+  out.set(e[12] + (fx / l) * t, 0, e[14] + (fz / l) * t);
+  return Math.atan2(fx / l, -fz / l);
+}
+
+/** pose the warm-up's view camera `cam` (a perspective camera like the view's) at sweep step k around ground target
+ *  (tx, ty, tz), yaw0 the view's yaw (rad): position, orientation, near / far as WorldView sets them; the step's own
+ *  target (a pan moves it) -> `at`; returns the step's view distance (m) */
+export function warmPose(cam: THREE.PerspectiveCamera, k: number, tx: number, ty: number, tz: number, yaw0: number, at: THREE.Vector3): number {
+  const o = k * 4, d = WARM_POSES[o], tilt = (WARM_POSES[o + 1] * Math.PI) / 180, yaw = yaw0 + (WARM_POSES[o + 2] * Math.PI) / 180;
+  const sh = WARM_POSES[o + 3], cy = Math.cos(yaw), sy = Math.sin(yaw), ch = Math.cos(tilt);
+  // (a pan shifts the target along the view's right: (cos yaw, 0, sin yaw))
+  const ox = tx + cy * sh, oz = tz + sy * sh;
+  at.set(ox, ty, oz);
+  cam.position.set(ox - sy * ch * d, ty + Math.sin(tilt) * d, oz + cy * ch * d);
+  cam.lookAt(ox, ty, oz);
+  cam.near = Math.min(60, Math.max(0.5, Math.min(d * 0.01, Math.sin(tilt) * d * 0.5)));
+  cam.far = d * 6 + 42000;
+  cam.updateProjectionMatrix();
+  cam.updateMatrixWorld();
+  return d;
+}
 
 /** unit axes (columns 0-2) of a world matrix -> out[9] */
 function orient(w: ArrayLike<number>, out: Float64Array): void {
@@ -596,6 +663,17 @@ export class DynamicBatch {
   private matDirect = false;
   private top = 0;
   private topDirty = false;
+  /** fresh page (browser only): frames this batch drew so far, until its warm-up ran (-1; see warmUp) */
+  private warmFrames = typeof window !== 'undefined' ? 0 : -1;
+  /** a shadow pass camera the batch drew for (the warm-up's shadow passes copy its shape) */
+  private warmShadow: THREE.Camera | null = null;
+  /** wall time of the warm-up (ms) and the renderer frame it ran in, or was dropped at (negative; stats) */
+  warmMs = 0;
+  warmAt = 0;
+  /** the owner's part of the warm-up (see warmUp): called with the sweep's view camera at each pose, before that pose's
+   *  passes (the owner's per-frame work for the pose, e.g. the buildings' LOD swaps, which the passes then take into
+   *  their lists), and with null after the last pose (the owner puts back what the poses changed) */
+  warmHook: ((view: THREE.PerspectiveCamera | null) => void) | null = null;
 
   constructor(material: THREE.Material, instances = 1024, vertices = 65536, name = 'batch') {
     this.mesh = new THREE.BatchedMesh(instances, vertices, vertices * 2, material);
@@ -1172,6 +1250,10 @@ export class DynamicBatch {
     if (fr !== this.lastFrame) {
       this.lastFrame = fr;
       _frame++;
+      if (this.warmFrames >= 0) {
+        if (this.warmFrames === 0 && fr > WARM_WINDOW) { this.warmFrames = -1; this.warmAt = -fr; }
+        else this.warmFrames++;
+      }
       if (this.matDirect) { this.matDirect = false; this.uploadMatrices(renderer); }
       if (this.matFull) { m._matricesTexture.clearUpdateRanges(); this.matFull = false; }
       if (this.colFull && m._colorsTexture) { m._colorsTexture.clearUpdateRanges(); this.colFull = false; }
@@ -1180,6 +1262,15 @@ export class DynamicBatch {
       // three's default: one list for all passes
       THREE.BatchedMesh.prototype.onBeforeRender.call(m, renderer, null as any, camera, geometry, material, null as any);
       return;
+    }
+    if (this.warmFrames >= 0) {
+      // the load's warm-up (see warmUp), in the view pass of the batch's WARM_AFTER-th frame
+      if (shadow) { if (this.warmShadow === null && (camera as THREE.OrthographicCamera).isOrthographicCamera) this.warmShadow = camera; }
+      else if (this.warmFrames >= WARM_AFTER && (camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
+        this.warmFrames = -1;
+        this.warmAt = renderer.info.render.frame;
+        this.warmUp(renderer, camera as THREE.PerspectiveCamera, geometry, material);
+      }
     }
     const s = this.slotFor(camera);
     const w = camera.matrixWorld.elements, P = camera.projectionMatrix.elements;
@@ -1280,6 +1371,72 @@ export class DynamicBatch {
       if (s.swapAt !== this.swapSeq) this.patchRanges(s, geometry);
     }
     this.useList(s);
+  }
+
+  /**
+   * Fresh-page JIT warm-up (see WARM_POSES), once, in the view pass of the batch's WARM_AFTER-th frame (inside the load):
+   * this pass code — the same beforePass a frame runs — for a copy of the view camera swept through WARM_POSES and, if
+   * the batch casts shadows, a copy of its shadow camera fitted around each pose like WorldView's single map, with a
+   * receiver fitted to the pose (Shadows.setReceiver): the list builds of every kind a pass takes in play (near sorted,
+   * banded and predicted while moving, kept, tile-level far lists, shadow lists against a moving receiver) run here
+   * first, with the real renderer and data. The sweep's slots are dropped after it (their indirect textures were never
+   * uploaded) and the mesh gets its own list back. Content is not touched: the real passes keep their lists.
+   */
+  private warmUp(renderer: THREE.WebGLRenderer, view: THREE.PerspectiveCamera, geometry: THREE.BufferGeometry, material: THREE.Material): void {
+    if (!this.pc || this.live === 0) return;
+    const t0 = performance.now();
+    const m = this.mesh as any;
+    const k0 = m._multiDrawStarts, k1 = m._multiDrawCounts, k2 = m._multiDrawCount, k3 = m._indirectTexture, k4 = m._visibilityChanged;
+    const vc = new THREE.PerspectiveCamera(view.fov, view.aspect, view.near, view.far);
+    // the shadow copy: an orthographic camera whose userData has the real one's fields in the real order (Shadows.ts:
+    // cascade, texel, recv), so the passes' property loads see the shape they see in play; light direction from the
+    // real camera's axis (it looks along -z, toward the ground)
+    const src = this.mesh.castShadow ? (this.warmShadow as THREE.OrthographicCamera | null) : null;
+    let sc: THREE.OrthographicCamera | null = null, rec: ShadowReceiver | null = null;
+    const L = _wL;
+    if (src) {
+      sc = new THREE.OrthographicCamera();
+      const ud = sc.userData, su = src.userData;
+      ud.cascade = typeof su.cascade === 'number' ? su.cascade : 0;
+      ud.texel = typeof su.texel === 'number' ? su.texel : 1;
+      if (su.recv) ud.recv = rec = makeReceiver();
+      const e = src.matrixWorld.elements;
+      L.set(e[8], e[9], e[10]);
+      if (!(L.lengthSq() > 1e-12) || L.y < 0.05) L.set(0.42, 0.78, 0.46);
+      L.normalize();
+    }
+    const T = _wT, yaw0 = warmTarget(view, T);
+    const depth = this.mesh.customDepthMaterial ?? material;
+    const hook = this.warmHook;
+    for (let k = 0; k < WARM_STEPS; k++) {
+      const G = _wG, d = warmPose(vc, k, T.x, T.y, T.z, yaw0, G);
+      if (hook) hook(vc);
+      this.beforePass(renderer, vc, geometry, material, false);
+      if (sc) {
+        // (the single map's fit: a square around the target whose radius steps by 1/6 octave, see fitSunShadow)
+        const radius = Math.pow(2, Math.ceil(Math.log2(Math.max(120, d * 0.62)) * 6) / 6), back = Math.max(600, radius * 2 + 200);
+        sc.left = -radius; sc.right = radius; sc.top = radius; sc.bottom = -radius;
+        sc.near = 1; sc.far = back + radius * 1.5 + 200;
+        sc.position.set(G.x + L.x * back, G.y + L.y * back, G.z + L.z * back);
+        sc.lookAt(G.x, G.y, G.z);
+        sc.updateProjectionMatrix();
+        sc.updateMatrixWorld();
+        sc.userData.texel = (2 * radius) / 2048;
+        if (rec) setReceiver(rec, vc, vc.near, Math.min(vc.far, radius * 4 + d * 2), L, -52);
+        this.beforePass(renderer, sc, geometry, depth, true);
+      }
+    }
+    // the owner puts back what the poses changed (its own passes patch that in, see setGeometry); the sweep's slots go
+    // (with their textures, never uploaded); the mesh's own list is restored
+    if (hook) hook(null);
+    for (let i = this.slots.length - 1; i >= 0; i--) {
+      const s = this.slots[i];
+      if (s.camera !== vc && s.camera !== sc) continue;
+      s.tex?.dispose();
+      this.slots.splice(i, 1);
+    }
+    m._multiDrawStarts = k0; m._multiDrawCounts = k1; m._multiDrawCount = k2; m._indirectTexture = k3; m._visibilityChanged = k4;
+    this.warmMs = performance.now() - t0;
   }
 
   /** hand a slot's list to three.js for this pass */

@@ -17,15 +17,18 @@
  * arriving proxy (often hundreds sharing one model) are woken a few per frame (`lodWakeSlice`, and in smooth motion
  * only while fewer than half the fade cap run), so each arrival dissolves them over a few frames instead of swapping
  * them all in one frame; a bulk wake (`lodWakeBulk`: a load's whole prefetch arriving after the load's long task, with
- * thousands of buildings evaluated in the load's frames waiting) swaps at once, 8 x lodWakeSlice per frame, instead
- * of keeping the first seconds of play busy with dissolves. Also in winter the batch's shadow depth pass swaps bare
- * trees' crowns for their twigs
- * (patchFoliageDepthMaterial), so bare plaza / lot / kit trees cast twig shadows, not their summer crown's.
+ * thousands of buildings evaluated in the load's frames waiting) swaps at once, `lodWakeBulkN` per frame (~1 ms; fewer
+ * if their evaluations outrun `lodWakeMs`), instead of keeping the first seconds of play busy with dissolves. Also in
+ * winter the batch's shadow depth pass swaps bare trees' crowns for their twigs (patchFoliageDepthMaterial), so bare
+ * plaza / lot / kit trees cast twig shadows, not their summer crown's.
  * Without worker support (Node tests) proxies are built on demand within `lodBudgetMs` per frame.
  * Schedule: after each evaluation a building stores the band of camera distances its current levels stay right for
  * (squared, flat typed arrays: lo2 / hi2). A frame whose camera moved scans those arrays (a few ns per building, no
  * object access) and evaluates only the buildings that left their band, i.e. about one evaluation per actual swap
- * whatever the motion (pan, orbit, zoom sweep); a still camera costs nothing.
+ * whatever the motion (pan, orbit, zoom sweep); a still camera costs nothing. In smooth motion the due buildings out
+ * of the view and of their shadows' reach into it wait (deferOut: most of a pan's swaps are behind the camera, nearly
+ * half of a zoom-in's leave the view at its sides) until they come into reach or the camera rests (`lodDefer`; not
+ * while the camera recedes along its view, a zoom-out, whose widening view takes them in within the motion).
  * Camera cuts (jumps), a new metric and any frame with more swaps due than `lodSlice`: the due buildings are
  * evaluated by priority — upgrades in view first and always all of them (no big building in view left on its proxy),
  * then downgrades heaviest model first, then upgrades out of view (shadows only) — at least `lodCatchMin` per frame
@@ -66,7 +69,7 @@
  * on screen; shallow skirts / rubble cast no shadow or only into the near cascade.
  */
 import * as THREE from 'three';
-import { patchFoliageDepthMaterial } from '../../../assets/materials';
+import { patchFoliageDepthMaterial, sharedUniforms } from '../../../assets/materials';
 import { CELL_SIZE } from '../../../core/constants';
 import { BF, type Building, type CityState } from '../../../sim/CityState';
 import { getDef } from '../../../sim/catalog';
@@ -197,6 +200,18 @@ interface Fade {
 const LOD_JUMP = 150;
 /** catch-up priority buckets (log2 of the triangles a building's proxy level saves) */
 const LOD_PRI = 16;
+/** smooth-motion deferral (see BuildingRenderer.deferOut): a building's sphere is grown by its shadow's reach — its
+ *  height above the lowest ground under it x the sun's cot(elevation), at most DEFER_REACH x (a sun under ~5.7 deg or
+ *  set) — and at least DEFER_MIN m */
+const DEFER_REACH = 10;
+const DEFER_MIN = 30;
+/** the length of a shadow per m of caster height for the current sun (cot of its elevation, at most DEFER_REACH) */
+export function deferReach(): number {
+  const L = sharedUniforms.uSunDir.value, l = Math.hypot(L.x, L.y, L.z) || 1, sy = L.y / l;
+  return sy <= 1 / Math.sqrt(1 + DEFER_REACH * DEFER_REACH) ? DEFER_REACH : Math.sqrt(1 - sy * sy) / sy;
+}
+/** deferOut's view planes (nx, ny, nz, constant x 6) */
+const _dfp = new Float64Array(24);
 /** a foundation skirt is drawn as its plain box (no cap band / step tier) while its exposed height projects under this
  *  many pixels (or the building is on its proxy) */
 const FOUND_PX = 2;
@@ -870,6 +885,18 @@ export class BuildingRenderer {
   lodCatch = Infinity;
   /** due evaluations were left over (after a jump or a heavy frame): the next frames scan and catch up by priority */
   lodBehind = false;
+  /** smooth motion (not a receding camera: a zoom-out) defers the evaluations of buildings out of the view and of its
+   *  shadows' reach (see deferOut) */
+  lodDefer = true;
+  /** some evaluations wait (deferOut): the camera's resting frames scan and evaluate them, as many per frame as fit in
+   *  lodDeferMs (see deferSlice) */
+  private lodDeferred = false;
+  /** a resting frame's waiting evaluations: at most lodDeferN (each swap costs several times its evaluation after it, in
+   *  the passes' list patches and shadow re-renders: ~1 ms of main thread), fewer once their evaluations outrun
+   *  lodDeferMs (at least lodWakeSlice; the clock is read every 16). Out of the view and of its shadows' reach they
+   *  cannot show, and a zoom-in over a dense city leaves thousands */
+  lodDeferN = 192;
+  lodDeferMs = 1;
   /** next update evaluates everything due without a budget (flushLod: captures / benchmarks want the settled state) */
   private lodFull = false;
   private animating = new Set<number>();
@@ -897,6 +924,10 @@ export class BuildingRenderer {
   /** geometries whose background proxy request waits for the end of rebuildAll (null: ask at once) */
   private prefetch: number[] | null = null;
   private twigVer = lotTwigs.version; // seasons r3: LOW twig strip
+  /** a quality switch's rebuild (the LOW twig strip, see update): the buildings that were on their proxy, so the full
+   *  evaluation after it continues each building's level (its hysteresis band) instead of starting all on their full
+   *  model — a street view after a far one then keeps the proxies it had (212 vs 20 in the t_plains town) */
+  private keepLod = new Set<number>();
   /** buildings whose proxy arrived while they waited on their full model (late downgrades): evaluated from lodWakeAt
    *  on, at most lodWakeSlice per frame and, while swaps may fade, only while fewer than fadeMax / 2 fades run (see
    *  wakeWaiting); cut frames leave them for the next frames */
@@ -906,10 +937,18 @@ export class BuildingRenderer {
   lodWakeSlice = 64;
   /** a wake queue longer than this is a bulk one (a load's whole prefetch arriving at once: a city built in one long
    *  task gets its workers' replies only after it, when thousands of buildings evaluated in the load's frames wait on
-   *  their full model): those swap at once, lodWakeSlice x 8 per frame, instead of each dissolving, 64 per frame, through
-   *  the first seconds of play (dense 256 x 256 city: ~55 dissolves started in every frame of the first 20+). They are
-   *  past their downgrade distance (small on screen) and have never shown their proxy: like a building's first level */
+   *  their full model): those swap at once, lodWakeBulkN per frame (fewer if their evaluations outrun lodWakeMs),
+   *  instead of each dissolving, 64 per frame, through the first seconds of play (dense 256 x 256 city: ~55 dissolves
+   *  started in every frame of the first 20+). They are past their downgrade distance (small on screen) and have never
+   *  shown their proxy: like a building's first level */
   lodWakeBulk = 256;
+  /** a bulk wake's swaps per frame: ~1 ms of main thread with what each swap costs after its evaluation (the passes'
+   *  list patches, the shadow maps' re-render): the dense city's 4139 load-time wakes in ~22 frames. A fixed 512 per
+   *  frame cost ~6 ms in each of its first 9 frames; a 1 ms budget on the evaluations alone let warm code swap up to
+   *  1300 in a frame */
+  lodWakeBulkN = 192;
+  /** ... and at most this much time for their evaluations per frame (ms; the clock is read every 16 evaluations) */
+  lodWakeMs = 1;
   private disposed = false;
   /** dense list of instances for the per-frame LOD scan */
   private list: BInst[] = [];
@@ -922,8 +961,14 @@ export class BuildingRenderer {
   private lo2 = new Float32Array(1024);
   private hi2 = new Float32Array(1024);
   private lpr = new Uint8Array(1024);
+  /** per list index: the building's radius and its height above the lowest ground under it (deferOut: the sphere that
+   *  must miss the view for an evaluation to wait in smooth motion is the radius + the reach of its shadow) */
+  private lsr = new Float32Array(1024);
+  private lht = new Float32Array(1024);
   /** scan output (list indices of the buildings out of their band) and the catch-up's ordering scratch */
   private scanOut = new Int32Array(1024);
+  /** deferOut's waiting evaluations of the frame (list indices) */
+  private scanDef = new Int32Array(1024);
   private catchOrd = new Int32Array(1024);
   private catchCnt = new Int32Array(LOD_PRI + 1);
   /** every building is due (flushLod) */
@@ -978,10 +1023,32 @@ export class BuildingRenderer {
   /** this updateLod may start cross-fades (not a jump / flush); the building being evaluated is fresh */
   private fadeNow = false;
   private evalFresh = false;
+  /** wakeWaiting's evaluations run: a woken building is evaluated in the band of the proxy level it asked for (lodEval) */
+  private evalWake = false;
   private lodCamera: THREE.PerspectiveCamera | null = null;
   private lodKNow = 1;
   private fr = new THREE.Frustum();
   private frOk = false;
+  /** the load's warm-up sweep (see warmLod): 0 none running, 1 running (the state before it saved below), 2 skipped */
+  private warmState = 0;
+  /** per list index before the sweep: level | foundation level << 1 | fresh << 2, and the squared distance band */
+  private warmLv = new Uint8Array(0);
+  private warmLo = new Float32Array(0);
+  private warmHi = new Float32Array(0);
+  /** ... and the LOD camera's state: position, previous position, view direction, flags (behind 1, deferred 2,
+   *  scan-all 4), camera, K, fade cap */
+  private warmPos = new THREE.Vector3();
+  private warmPrev = new THREE.Vector3();
+  private warmDir = new THREE.Vector3();
+  private warmBits = 0;
+  private warmCam: THREE.PerspectiveCamera | null = null;
+  private warmK = 1;
+  private warmCap = 0;
+  /** viewport height (px) of the last real updateLod (the sweep's metric) */
+  private lodHeightPx = 1080;
+  /** the LOD part of the load's warm-up: wall time (ms) and what happened (stats) */
+  warmLodMs = 0;
+  warmLodNote = '';
   /** rubble kit pieces: key -> [full, proxy] geometry ids (see kitPiece) */
   private kitIds = new Map<string, [number, number]>();
   selected: number | null = null;
@@ -1006,6 +1073,8 @@ export class BuildingRenderer {
     // LodFadeLayer.primed); fades start from then on
     this.fadeLayer = new LodFadeLayer(this.batch.mesh, this.batch.mesh.customDepthMaterial);
     this.batch.mesh.add(this.fadeLayer.mesh);
+    // the load's warm-up sweep of the batch (DynamicBatch.warmUp) runs the LOD for each of its poses (see warmLod)
+    this.batch.warmHook = (view) => this.warmLod(view);
   }
 
   setState(state: CityState): void {
@@ -1377,8 +1446,8 @@ export class BuildingRenderer {
       bi.cells.push(id);
       bi.kitGeo.push(pc.ids[0]);
       bi.kitLod.push(pc.ids[1]);
-      // small casters: the near cascade only
-      this.batch.setShadowCascades(id, 1);
+      // small casters: the near cascade only (none at the low preset, see kitCast)
+      this.batch.setShadowCascades(id, this.kitCast());
       top = Math.max(top, y + this.batch.bounds(pc.ids[0]).max.y * pc.s + (Math.abs(ax) + Math.abs(az)) * pc.r);
     }
     bi.kitM = M;
@@ -1517,7 +1586,10 @@ export class BuildingRenderer {
     const grow = (a: Float32Array) => { const b = new Float32Array(n); b.set(a); return b; };
     this.lx = grow(this.lx); this.ly = grow(this.ly); this.lz = grow(this.lz); this.lo2 = grow(this.lo2); this.hi2 = grow(this.hi2);
     const s = new Uint8Array(n); s.set(this.lpr); this.lpr = s;
+    this.lsr = grow(this.lsr);
+    this.lht = grow(this.lht);
     this.scanOut = new Int32Array(n);
+    this.scanDef = new Int32Array(n);
     this.catchOrd = new Int32Array(n);
   }
 
@@ -1551,6 +1623,7 @@ export class BuildingRenderer {
       last.li = i;
       this.lx[i] = this.lx[j]; this.ly[i] = this.ly[j]; this.lz[i] = this.lz[j];
       this.lo2[i] = this.lo2[j]; this.hi2[i] = this.hi2[j]; this.lpr[i] = this.lpr[j];
+      this.lsr[i] = this.lsr[j]; this.lht[i] = this.lht[j];
     }
     this.animating.delete(id);
     this.onVisual?.(null, id);
@@ -1660,6 +1733,8 @@ export class BuildingRenderer {
     bi.cy = kit ? b.baseY + RUB_TOP + 1 : b.baseY + sp.center.y + (bi.shear.length ? bi.shear[2] : 0);
     const li = bi.li;
     this.lx[li] = cx; this.ly[li] = bi.cy; this.lz[li] = cz;
+    this.lsr[li] = bi.radius;
+    this.lht[li] = Math.max(0, bi.vis.top - minH);
     this.prio(bi);
     this.applyColor(bi);
     this.place(bi);
@@ -1756,6 +1831,9 @@ export class BuildingRenderer {
    */
   updateLod(camera: THREE.PerspectiveCamera, heightPx: number): void {
     const c = camera.position;
+    // (a pose of the load's warm-up sweep runs with the real view's metric, see warmLod)
+    const warm = this.warmState === 1;
+    if (!warm) this.lodHeightPx = heightPx;
     // px = radius / dist * H / (2 tan(fov/2)): swap to the proxy beyond dist = radius * K / on, back within radius * K / off
     const K = (heightPx / Math.tan((camera.fov * Math.PI) / 360)) * 0.5;
     // cross-fades at medium quality and up (fadeMaxPixels). Downgrades at 0.88 x lodPixels, or while swaps may fade at
@@ -1767,8 +1845,14 @@ export class BuildingRenderer {
       // new metric (quality preset, FOV, resize) or a flush: every band is stale, every building due
       this.lodDirty = false;
       // a quality change: the frame it takes effect in recompiles every program, the fade layer's new variant included,
-      // so the layer is drawn (empty) once more there (its first use, see LodFadeLayer.primed)
-      if (this.lodPixels !== this.lastLodPixels) L.primed = false;
+      // so the layer is drawn (empty) once more there (its first use, see LodFadeLayer.primed); a switch at runtime
+      // evaluates every building in it at once (no sliced catch-up: its first frames would draw the old preset's
+      // levels, e.g. too few proxies after LOW -> HIGH)
+      if (this.lodPixels !== this.lastLodPixels) {
+        L.primed = false;
+        if (this.lastLodPixels >= 0) this.lodFull = true;
+        this.kitShadows();
+      }
       this.lastLodPixels = this.lodPixels;
       this.lastLodOn = on;
       this.lodK = K;
@@ -1789,10 +1873,11 @@ export class BuildingRenderer {
     // view motion this frame: the camera's shift across its view and along it (zoom), both relative to the distance
     // it looks at, plus its turn; fast pans / orbits / zooms get fewer (no) new fades (fadeMotion)
     const f = camera.getWorldDirection(_dir), q0 = this.lodDir;
-    let motion = 0;
+    let motion = 0, recede = false;
     if (q0.x === q0.x && hop > 0) {
       const hx = c.x - this.lodPrev.x, hy = c.y - this.lodPrev.y, hz = c.z - this.lodPrev.z;
       const along = hx * f.x + hy * f.y + hz * f.z;
+      recede = along < -0.5 * hop;
       const lat = Math.sqrt(Math.max(0, hop * hop - along * along));
       motion = (lat + Math.abs(along)) / (f.y < -0.05 ? Math.max(30, c.y / -f.y) : 3000);
     }
@@ -1803,7 +1888,8 @@ export class BuildingRenderer {
     const behind = this.lodBehind;
     // (a damped camera coming to rest creeps by fractions of a mm: no scan for that, the bands are absolute distances,
     // so the next real motion's scan sees the whole drift)
-    const scan = hop > 1e-3 || behind || this.lodScanAll;
+    // (deferred evaluations, see deferOut, run once the camera rests)
+    const scan = hop > 1e-3 || behind || this.lodScanAll || this.lodDeferred;
     if (!scan && this.lodWakeAt >= this.lodWake.length) { this.fadeLayer.sync(); return; }
     this.lodDeadline = performance.now() + this.lodBudgetMs;
     const full = this.lodFull;
@@ -1816,14 +1902,26 @@ export class BuildingRenderer {
     // cross-fades only in smooth motion: not in a flush, a cut frame or the catch-up frames after a cut (behind). The
     // view changed as a whole there, and the late downgrades (buildings already under lodPixels) swap at once instead
     // of drawing both levels of up to fadeMax buildings for fadeTime
-    this.fadeNow = !full && !jump && !behind && fades;
+    this.fadeNow = !full && !jump && !behind && fades && !warm;
     // a cut settles the running fades (their buildings mostly left the view, and the fade layer is not culled)
     if (jump) while (this.fades.length) this.finishFade(this.fades[this.fades.length - 1]);
     let left = false;
     if (scan) {
       // (an evaluation may queue its building again for the next update: lodQueue)
       this.lodScanAll = false;
-      const n = this.scan(c);
+      let n = this.scan(c);
+      // smooth motion: due buildings out of the view and out of reach of a shadow into it wait (deferOut), unless the
+      // camera recedes along its view (a zoom-out: the widening view takes in the buildings it leaves behind within the
+      // motion, waiting would only repeat their tests); once the camera rests, the waiting ones are evaluated a slice per
+      // frame (deferSlice); a cut / backlog / flush evaluates every due building
+      const moving = hop > 1e-3;
+      let nd = 0;
+      if ((moving ? !recede : this.lodDeferred) && !full && !jump && !behind && this.lodDefer) {
+        const m = this.deferOut(n);
+        nd = n - m;
+        n = m;
+      }
+      if (moving || nd === 0) this.lodDeferred = nd > 0;
       if (n > 0) {
         // smooth motion: everything due, in list order; else (a cut, a backlog, a new metric, a heavy frame) by priority
         if (full || (!jump && !behind && n <= this.lodSlice)) {
@@ -1831,11 +1929,144 @@ export class BuildingRenderer {
           for (let k = 0; k < n; k++) this.lodEval(list[out[k]], c, K, on, off);
         } else left = this.catchUp(n, c, K, on, off);
       }
+      if (!moving && nd > 0) this.deferSlice(nd, c, K, on, off);
     }
     // buildings whose proxy arrived (they waited on their full model): a few per frame, never in a cut frame
-    if (this.lodWakeAt < this.lodWake.length && !jump) this.wakeWaiting(c, K, on, off, full);
+    if (this.lodWakeAt < this.lodWake.length && !jump && !warm) this.wakeWaiting(c, K, on, off, full);
     this.lodBehind = left;
+    // (the quality switch's rebuild was evaluated: its kept levels are spent)
+    if (full) this.keepLod.clear();
     this.fadeLayer.sync();
+  }
+
+  /**
+   * The LOD part of the load's warm-up (DynamicBatch.warmUp calls it through warmHook): the batch's sweep of view poses
+   * runs this updateLod for each pose before that pose's passes — the swaps a zoom-out, a zoom-in, a pan and a cut make,
+   * and the passes patching them into their lists (setGeometry, packRanges, patchRanges), which the first motion after a
+   * load otherwise runs in cold code (t_plains at LOW: ~2300 swaps in the first zoom-out). null ends the sweep: every
+   * building gets back the levels, first-level flags and bands it had, the LOD camera state is put back (the real view
+   * did not move: the next update has nothing to do). Only over a settled load: a real update ran, every proxy is in
+   * (the sweep requests none and no building waits), nothing fades, no flush pending; else skipped. The poses never
+   * fade (fadeNow) or wake buildings (wakeWaiting: a load's bulk wake still running keeps its queue for the next frames).
+   */
+  private warmLod(view: THREE.PerspectiveCamera | null): void {
+    if (view === null) {
+      if (this.warmState === 1) this.warmRestore();
+      this.warmState = 0;
+      return;
+    }
+    if (this.warmState === 2) return;
+    if (this.warmState === 0) {
+      const why = this.lodCamera === null ? 'no update yet' : this.lodPixels <= 0 ? 'LOD off' : this.lodPending.size > 0 ? `${this.lodPending.size} proxies pending` : this.lodWaiting.size > 0 ? 'buildings waiting' : this.fades.length > 0 ? 'fading' : this.lodFull || this.lodDirty ? 'flush pending' : '';
+      if (why) { this.warmState = 2; this.warmLodNote = 'skipped: ' + why; return; }
+      this.warmLodMs = performance.now();
+      this.warmSave();
+      this.warmState = 1;
+    }
+    this.updateLod(view, this.lodHeightPx);
+  }
+
+  /** the LOD state before the warm-up sweep (see warmLod) */
+  private warmSave(): void {
+    const n = this.list.length, list = this.list;
+    if (this.warmLv.length < n) { this.warmLv = new Uint8Array(n); this.warmLo = new Float32Array(n); this.warmHi = new Float32Array(n); }
+    const lv = this.warmLv;
+    for (let i = 0; i < n; i++) { const bi = list[i]; lv[i] = (bi.lod & 1) | ((bi.flod & 1) << 1) | (bi.fresh ? 4 : 0); }
+    this.warmLo.set(this.lo2.subarray(0, n));
+    this.warmHi.set(this.hi2.subarray(0, n));
+    this.warmPos.copy(this.lodPos);
+    this.warmPrev.copy(this.lodPrev);
+    this.warmDir.copy(this.lodDir);
+    this.warmBits = (this.lodBehind ? 1 : 0) | (this.lodDeferred ? 2 : 0) | (this.lodScanAll ? 4 : 0);
+    this.warmCam = this.lodCamera;
+    this.warmK = this.lodKNow;
+    this.warmCap = this.fadeCap;
+  }
+
+  /** after the warm-up sweep: the levels, flags, bands and LOD camera state saved before it (instant swaps: the sweep's
+   *  poses never fade, and none ran before it) */
+  private warmRestore(): void {
+    const n = this.list.length, list = this.list, lv = this.warmLv;
+    this.fadeNow = false;
+    let swaps = 0;
+    for (let i = 0; i < n; i++) {
+      const bi = list[i], v = lv[i];
+      if (bi.lod !== (v & 1)) { this.lodSet(bi, v & 1); swaps++; }
+      if (bi.found >= 0 && bi.flod !== ((v >> 1) & 1)) this.setFound(bi, (v >> 1) & 1);
+      bi.fresh = (v & 4) !== 0;
+    }
+    this.lo2.set(this.warmLo.subarray(0, n));
+    this.hi2.set(this.warmHi.subarray(0, n));
+    this.lodPos.copy(this.warmPos);
+    this.lodPrev.copy(this.warmPrev);
+    this.lodDir.copy(this.warmDir);
+    const b = this.warmBits;
+    this.lodBehind = (b & 1) !== 0;
+    this.lodDeferred = (b & 2) !== 0;
+    this.lodScanAll = (b & 4) !== 0;
+    this.lodCamera = this.warmCam;
+    this.lodKNow = this.warmK;
+    this.fadeCap = this.warmCap;
+    this.frOk = false;
+    this.warmCam = null;
+    this.warmLodMs = performance.now() - this.warmLodMs;
+    this.warmLodNote = `ran: ${n} buildings, ${swaps} set back`;
+  }
+
+  /** shadow cascades of the rubble kit's debris pieces: the near cascade at the presets that fade (medium and up);
+   *  none at the low preset — its single shadow map's texels are too coarse for their shadows, and the ~20 pieces per
+   *  burnt lot were its only still view above 02464a3 in triangles (t_plains default view: +14k with 5 burnt lots) */
+  private kitCast(): number { return this.lodPixels <= this.fadeMaxPixels ? 1 : 0; }
+
+  /** the preset changed: the debris pieces' shadow cascades follow (kitCast) */
+  private kitShadows(): void {
+    const m = this.kitCast();
+    if (m === this.kitMask) return;
+    this.kitMask = m;
+    for (const bi of this.list) for (let k = 0; k < bi.cells.length; k++) this.batch.setShadowCascades(bi.cells[k], m);
+  }
+  private kitMask = -1;
+
+  /**
+   * Smooth motion: the due buildings of scanOut [0, n) whose sphere — at the LOD centre, the building's radius plus the
+   * reach of its shadow (deferReach) — misses the view frustum keep their levels for now (a zoom-in's buildings leaving the
+   * view at its sides would otherwise all upgrade, nearly half of its swaps, and a pan swaps mostly buildings behind the
+   * camera). They stay due: evaluated in the first frame that sphere touches the view (the building's own sphere is
+   * then still outside by about its shadow's reach, at least DEFER_MIN m, less one frame's motion: its swap is out of
+   * sight, and canFade still dissolves one already in the view), or once the camera rests (lodDeferred: the resting
+   * frames evaluate them, lodDeferMs each, see deferSlice; out of the view those swap at once, see canFade). Compacts
+   * scanOut to the others and returns their count; the waiting ones go to scanDef [0, n - count). (Not called while
+   * the camera recedes along its view, nor at rest unless evaluations wait, see updateLod.)
+   */
+  private deferOut(n: number): number {
+    const fr = this.viewFrustum();
+    if (!fr) return n;
+    const fp = _dfp, pl = fr.planes;
+    for (let q = 0; q < 6; q++) { const P = pl[q], N = P.normal, o = q * 4; fp[o] = N.x; fp[o + 1] = N.y; fp[o + 2] = N.z; fp[o + 3] = P.constant; }
+    const out = this.scanOut, def = this.scanDef, lx = this.lx, ly = this.ly, lz = this.lz, lsr = this.lsr, lht = this.lht;
+    const f = deferReach();
+    let m = 0, d = 0;
+    for (let k = 0; k < n; k++) {
+      const i = out[k], x = lx[i], y = ly[i], z = lz[i], r = -(lsr[i] + Math.max(DEFER_MIN, f * lht[i]));
+      let inside = true;
+      for (let o = 0; o < 24; o += 4) if (fp[o] * x + fp[o + 1] * y + fp[o + 2] * z + fp[o + 3] < r) { inside = false; break; }
+      if (inside) out[m++] = i;
+      else def[d++] = i;
+    }
+    return m;
+  }
+
+  /** a resting frame: the waiting evaluations of scanDef [0, nd) (deferOut; list order), lodDeferN, fewer once they outrun
+   *  lodDeferMs (at least lodWakeSlice); the rest wait for the next frame (lodDeferred) */
+  private deferSlice(nd: number, c: THREE.Vector3, K: number, on: number, off: number): void {
+    const def = this.scanDef, list = this.list, min = this.lodWakeSlice, end = performance.now() + this.lodDeferMs;
+    const stop = Math.min(nd, this.lodDeferN);
+    let k = 0;
+    for (; k < stop; k++) {
+      if (k >= min && (k & 15) === 0 && performance.now() > end) break;
+      this.lodEval(list[def[k]], c, K, on, off);
+    }
+    this.lodDeferred = k < nd;
   }
 
   /** list indices of the buildings whose camera distance left the band of their current levels (see lodPos) ->
@@ -1905,15 +2136,23 @@ export class BuildingRenderer {
 
   /** evaluate buildings woken by an arriving proxy (lodWake): a flush takes all; else lodWakeSlice per frame — while
    *  swaps may fade only as long as fewer than half the fade cap run (each wake dissolves; the rest waits for the
-   *  running fades), x4 when swaps are instant anyway; a bulk wake (over lodWakeBulk waiting) x8, swapping at once.
+   *  running fades), x4 when swaps are instant anyway; a bulk wake (over lodWakeBulk waiting) lodWakeBulkN, fewer if
+   *  their evaluations outrun lodWakeMs (at least lodWakeSlice), swapping at once.
    *  Those buildings are already past their downgrade distance on their full model, so pacing them only delays a GPU
-   *  saving, never shows the wrong detail up close */
+   *  saving, never shows the wrong detail up close. Each is evaluated in the band of the proxy it asked for (as if it
+   *  had had it since its request: it stays on it to the upgrade distance), so the levels do not depend on how long
+   *  its proxy took or how fast the wake ran (a view set while a load's bulk wake still runs settles like after it) */
   private wakeWaiting(c: THREE.Vector3, K: number, on: number, off: number, all: boolean): void {
     const q = this.lodWake;
     const bulk = !all && q.length - this.lodWakeAt > this.lodWakeBulk;
     const fading = !bulk && this.fadeNow && this.fadeReady && this.fadeCap > 0;
-    let n = all ? Infinity : bulk ? this.lodWakeSlice * 8 : fading ? Math.min(this.lodWakeSlice, (this.fadeCap >> 1) - this.fades.length) : this.lodWakeSlice * 4;
+    let n = all ? Infinity : bulk ? this.lodWakeBulkN : fading ? Math.min(this.lodWakeSlice, (this.fadeCap >> 1) - this.fades.length) : this.lodWakeSlice * 4;
+    const end = bulk ? performance.now() + this.lodWakeMs : 0;
+    let done = 0;
+    this.evalWake = true;
     while (n > 0 && this.lodWakeAt < q.length) {
+      if (bulk && done >= this.lodWakeSlice && (done & 15) === 0 && performance.now() > end) break;
+      done++;
       const bi = q[this.lodWakeAt++];
       // removed, or waiting again (rebuilt with a new model)
       if (bi.gone || bi.waiting >= 0) continue;
@@ -1922,6 +2161,7 @@ export class BuildingRenderer {
       this.lodEval(bi, c, K, on, off);
       n--;
     }
+    this.evalWake = false;
     if (this.lodWakeAt >= q.length) { q.length = 0; this.lodWakeAt = 0; }
   }
 
@@ -1951,7 +2191,10 @@ export class BuildingRenderer {
     const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
     const rk = bi.radius * K;
     const lim = this.lodPixels > 0 && bi.id !== this.selected;
-    const want = levels && lim && d * (bi.lod ? off : on) > rk ? 1 : 0;
+    // (the band of the level it is on; a building rebuilt by a quality switch: of the level it had, keepLod; one woken
+    // by its proxy's arrival: of the proxy it asked for, see wakeWaiting)
+    const cur = bi.lod || this.evalWake || (this.keepLod.size > 0 && this.keepLod.has(bi.id)) ? 1 : 0;
+    const want = levels && lim && d * (cur ? off : on) > rk ? 1 : 0;
     if (want && bi.lodGeom < 0) {
       // first time this model is needed as a proxy: the worker builds it (the building stays full and is evaluated
       // again when it arrives, see wakeWaiting); without a worker it is built within the frame budget, else retried
@@ -2137,7 +2380,16 @@ export class BuildingRenderer {
   }
 
   update(dt: number): void {
-    if (lotTwigs.version !== this.twigVer) { this.twigVer = lotTwigs.version; this.rebuildAll(); this.flushLod(); } // seasons r3: LOW twig strip (a quality switch: levels settled at once, proxies shared by key)
+    if (lotTwigs.version !== this.twigVer) {
+      // seasons r3: LOW twig strip (a quality switch: levels settled at once, proxies shared by key); the levels the
+      // buildings had carry over (keepLod)
+      this.twigVer = lotTwigs.version;
+      const keep = this.keepLod;
+      keep.clear();
+      for (const bi of this.list) if (bi.lod) keep.add(bi.id);
+      this.rebuildAll();
+      this.flushLod();
+    }
     if (this.animating.size) {
       for (const id of this.animating) {
         const bi = this.inst.get(id);

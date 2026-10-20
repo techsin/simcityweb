@@ -747,14 +747,25 @@ export class WorldView implements WorldViewApi {
       if (rv !== this.shRecv) moved = true;
     } else if (!moved && !receiverHolds(sun.dirCull, sun.dirReceiver)) moved = left = true;
     let need = moved || this.shForce > 0 || !sh.map || this.frameNo - this.shFrame >= this.shadowMaxAge;
+    // single map: a cut — since its last render the map moved by more than half its radius or its radius changed by more
+    // than 1.5x (a camera cut: minimap / "show me" jumps, far <-> street) — is re-rendered at once: the old map no longer
+    // covers the view (a far -> street cut right after a render showed the far map's coarse, partly missing shadows for a
+    // frame). Smooth motion moves it by a small fraction of its radius per frame and its radius one step (2^1/6) at a time.
+    let cut = false;
+    if (!cams && moved) {
+      const m = sh.camera.matrixWorld.elements, P = sh.camera.projectionMatrix.elements;
+      const dx = m[12] - key[12], dy = m[13] - key[13], dz = m[14] - key[14];
+      const r0 = 1 / Math.abs(key[16]), r1 = 1 / Math.abs(P[0]);
+      cut = !(Math.sqrt(dx * dx + dy * dy + dz * dz) <= 0.5 * Math.min(r0, r1) && r1 <= 1.5 * r0 && r0 <= 1.5 * r1);
+    }
     // moving vehicles near the camera: every frame (their shadows would trail them by a frame)
     const dyn = shadowCasters.dynamic !== this.shDynamic && this.cameraController.distance < this.dynamicShadowDistance;
     const ci = !sun.cascaded && this.viewStill === 0 ? Math.max(this.shadowInterval, this.shadowMoveCasterInterval) : this.shadowInterval;
     if (!need && (dyn || (shadowCasters.version !== this.shVersion && this.frameNo - this.shFrame >= ci))) need = true;
     // single map: a re-render asked for by the view's motion / throttled caster changes may wait (shadowMoveInterval);
     // the map keeps its own lookup matrix meanwhile. The comparison state above stays at the rendered map, so the frame
-    // after the view comes to rest renders it for the final view.
-    if (need && !sun.cascaded && this.shForce === 0 && sh.map && !dyn && this.frameNo - this.shFrame < this.shadowMoveInterval) {
+    // after the view comes to rest renders it for the final view. (Never a cut, see above.)
+    if (need && !cut && !sun.cascaded && this.shForce === 0 && sh.map && !dyn && this.frameNo - this.shFrame < this.shadowMoveInterval) {
       sh.matrix.copy(_shM);
       need = false;
     }
@@ -782,7 +793,7 @@ export class WorldView implements WorldViewApi {
         this.fitDirCull(dyn || tMoved);
         if (!sun.dirReceiverCull) sun.dirReceiverCull = true;
       }
-      this.shadowStats.reason = left ? 'view' : moved ? 'moved' : this.shForce > 0 ? 'forced' : !sh.map ? 'nomap' : dyn ? 'vehicles' : shadowCasters.version !== this.shVersion ? 'casters' : 'age';
+      this.shadowStats.reason = cut ? 'cut' : left ? 'view' : moved ? 'moved' : this.shForce > 0 ? 'forced' : !sh.map ? 'nomap' : dyn ? 'vehicles' : shadowCasters.version !== this.shVersion ? 'casters' : 'age';
       this.shVersion = shadowCasters.version;
       this.shDynamic = shadowCasters.dynamic;
       this.shFrame = this.frameNo;

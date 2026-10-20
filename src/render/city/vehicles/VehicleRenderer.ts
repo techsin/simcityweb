@@ -23,7 +23,7 @@ import { ModelBuilder } from '../../../assets/ModelBuilder';
 import { Surf } from '../../../core/types';
 import { car as kitCar, CAR_COLORS } from '../../../assets/kit';
 import { sharedUniforms } from '../../../assets/materials';
-import { DynamicBatch, type TileCuller } from '../common/batch';
+import { DynamicBatch, WARM_STEPS, warmPose, warmTarget, type TileCuller } from '../common/batch';
 import { getCityMaterial } from '../common/cityMaterial';
 import { DX, DZ, OPP, RX, RZ, LIFT, NF_TUNNEL, oneWayDir, type NetInfo } from '../common/netinfo';
 import type { RoadSurface } from '../common/surface';
@@ -71,6 +71,15 @@ const _vfr = new THREE.Frustum();
 const _vfm = new THREE.Matrix4();
 /** spanY's slot: 0-1 point (x, z), 2-3 heading (x, z), 4 height out; 5-7 terrainIO's point in and height out */
 const _s = new Float64Array(8);
+/** the warm-up sweep's ground target and step target (see warmUp) */
+const _wvT = new THREE.Vector3();
+const _wvG = new THREE.Vector3();
+/** simulated frame time of the warm-up's steps (s) */
+const WARM_DT = 1 / 30;
+/** updates without vehicles after which the warm-up is dropped (the load is over) */
+const WARM_WAIT = 30;
+/** the warm-up's vehicle steps (vehicles x frames): a 600-car town takes every pose, the dense city's 2500 cars 12 */
+const WARM_CAR_STEPS = 27000;
 
 /** RoadSurface.terrain (the rendered triangulation) at (io[o], io[o + 1]) -> io[o + 2] (no double crosses a call) */
 function terrainIO(hts: Float32Array, N: number, io: Float64Array, o: number): void {
@@ -1004,6 +1013,48 @@ export class VehicleRenderer {
    */
   update(dt: number, camera: THREE.Camera, heightPx = 1080): void {
     if (!this.enabled) return;
+    // the load's warm-up (see warmUp), in the first update with vehicles out (the frame after their first spawn); a
+    // town whose first vehicles come out later than the load's first frames (a new city) is past its load: none then
+    if (this.warmDue) {
+      if (this.n > 0) {
+        this.warmDue = false;
+        if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) this.warmMs = this.warmUp(camera as THREE.PerspectiveCamera, heightPx);
+      } else if (++this.warmWait > WARM_WAIT) this.warmDue = false;
+    }
+    this.step(dt, camera, heightPx);
+  }
+
+  /** fresh page (browser only): the frame loops' warm-up is still to run (see warmUp), and its wall time (ms; stats) */
+  private warmDue = typeof window !== 'undefined';
+  private warmWait = 0;
+  warmMs = 0;
+
+  /**
+   * Fresh-page JIT warm-up (see batch.ts WARM_POSES), once at load: the frame's own code (step) for up to WARM_STEPS
+   * frames of WARM_DT with a copy of the view camera swept through the warm-up poses (the culler's tiles follow it):
+   * cars drive ~1.5 s — cross cells, queue, stop at signals, respawn — and the pose / cull / thinning loop meets the
+   * street view, the thinning heights and the far view. A big fleet takes fewer, evenly spread poses (WARM_CAR_STEPS
+   * vehicle steps, at least 12 frames: its per-vehicle loops run as often, the load as long as a town's). Without it
+   * the first zoom-out after a load ran these loops unoptimized and deoptimized them as each branch first showed up.
+   * The culler is set back to the view's tiles; the frame's own step, right after, culls and poses for the view.
+   */
+  private warmUp(camera: THREE.PerspectiveCamera, heightPx: number): number {
+    const t0 = performance.now();
+    const vc = new THREE.PerspectiveCamera(camera.fov, camera.aspect, camera.near, camera.far);
+    const T = _wvT, yaw0 = warmTarget(camera, T);
+    const steps = Math.max(12, Math.min(WARM_STEPS, Math.round(WARM_CAR_STEPS / Math.max(1, this.n))));
+    for (let i = 0; i < steps; i++) {
+      const k = steps >= WARM_STEPS ? i : Math.round((i * (WARM_STEPS - 1)) / (steps - 1));
+      warmPose(vc, k, T.x, T.y, T.z, yaw0, _wvG);
+      this.culler.update(vc);
+      this.step(WARM_DT, vc, heightPx);
+    }
+    this.culler.update(camera);
+    return performance.now() - t0;
+  }
+
+  /** one frame: advance, follow, cull and pose the vehicles for `camera` (see update) */
+  private step(dt: number, camera: THREE.Camera, heightPx: number): void {
     dt = Math.min(dt, 0.1);
     this.time += dt;
     // the signal-lamp shader (materials.ts Emissive pattern 13) runs the same per-intersection cycle as the cars below

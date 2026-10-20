@@ -11,7 +11,8 @@
  *    no work while still; cut frames stay cheap and catch up by priority (heaviest downgrades first) within a time
  *    budget, also while a fast pan goes on
  *  - building LOD cross-fade: swaps in view dissolve over fadeTime (complementary levels in the fade layer, empty
- *    stand-in in the batch), reverse mid-fade, instant on cuts / flushes / off-screen; with fadeOn 1 a zoom-out's
+ *    stand-in in the batch), reverse mid-fade, instant on cuts / flushes / off-screen (deferred there to the camera's
+ *    rest, see freshLoad.test.ts); with fadeOn 1 a zoom-out's
  *    dissolve is over by the instant-swap distance; fast pans / orbits / zooms swap at once (motion cap), so does the
  *    low quality preset (fade layer hidden); the fade layer is drawn once, empty, in the first frame (its program's
  *    first use falls into the load) and again after a quality change; fades start only after that draw
@@ -782,9 +783,12 @@ describe('building LOD cross-fade', () => {
     expect(bi.lod).toBe(0);
     expect(br.fading).toBe(0);
     expect(info[bi.main].geometryIndex).toBe(bi.geom);
-    // looking away while crossing the swap distance: no fade
+    // looking away while crossing the swap distance: out of the view (and of its shadow's reach) the evaluation waits
+    // for the camera to rest (deferOut), then swaps at once, no fade
     glide(dOn * 0.9, true);
     glide(dOn + 20, true);
+    expect(bi.lod).toBe(0);
+    at(dOn + 20, true);
     expect(bi.lod).toBe(1);
     expect(br.fading).toBe(0);
     // fading while in view, then a capture flush: settled at once
@@ -921,7 +925,7 @@ describe('building LOD cross-fade', () => {
   });
 
   it('wakes the buildings waiting for an arriving proxy a few per frame, each dissolving (no swap spike), none in a cut frame', () => {
-    const run = (opts: { slice: number; fadeMax?: number; cut?: boolean; bulk?: number }) => {
+    const run = (opts: { slice: number; fadeMax?: number; cut?: boolean; bulk?: number; wakeMs?: number; bulkN?: number }) => {
       const st = createCityState(defaultCityConfig({ size: 64, seed: 3, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
       st.heights.fill(0);
       const br = new BuildingRenderer(st, new TileCuller(64, CELL_SIZE, 16));
@@ -932,6 +936,8 @@ describe('building LOD cross-fade', () => {
       br.lodWakeSlice = opts.slice;
       if (opts.fadeMax) br.fadeMax = opts.fadeMax;
       if (opts.bulk) br.lodWakeBulk = opts.bulk;
+      if (opts.wakeMs !== undefined) br.lodWakeMs = opts.wakeMs;
+      if (opts.bulkN !== undefined) br.lodWakeBulkN = opts.bulkN;
       // 150 buildings sharing one model
       let id = 1;
       for (let j = 0; j < 10; j++) for (let i = 0; i < 15; i++) br.add({ id: id++, def: 'res_apartment', x: 8 + i * 3, z: 12 + j * 3, w: 2, d: 2, rot: 0, variant: 0, built: 1, flags: 0, baseY: 0 } as unknown as Building, false);
@@ -983,13 +989,25 @@ describe('building LOD cross-fade', () => {
     const c = run({ slice: 16, cut: true });
     expect(c.maxStep).toBeLessThanOrEqual(16);
     expect(c.frames).toBeGreaterThanOrEqual(Math.ceil(150 / 16));
-    // a bulk wake (more waiting than lodWakeBulk: a load's whole prefetch arriving at once) swaps at once, 8 x the slice
-    // per frame, without dissolves, until what is left drops under the bulk size (the rest dissolves, paced as above)
-    const e = run({ slice: 4, bulk: 100 });
-    expect(e.maxStep).toBeLessThanOrEqual(32);
+    // a bulk wake (more waiting than lodWakeBulk: a load's whole prefetch arriving at once) swaps at once, without
+    // dissolves, lodWakeBulkN per frame, fewer when their evaluations outrun lodWakeMs (the clock read every 16, at
+    // least the slice), until what is left drops under the bulk size (the rest dissolves, paced as above): no time at
+    // all wakes 16 per frame ...
+    const e = run({ slice: 4, bulk: 100, wakeMs: 0 });
+    expect(e.maxStep).toBeLessThanOrEqual(16);
     expect(e.maxStep).toBeGreaterThan(4);
     expect(e.fadedFirst).toBe(0);
     expect(e.frames).toBeLessThan(Math.ceil(150 / 4));
+    // ... a budget and a count that fit them all wake the whole bulk in its first frame (the default count, 192) ...
+    const g = run({ slice: 4, bulk: 100, wakeMs: 1e6 });
+    expect(g.maxStep).toBe(150);
+    expect(g.frames).toBe(1);
+    expect(g.fadedFirst).toBe(0);
+    // ... and the count caps a frame however fast the evaluations are (what each swap costs after its evaluation)
+    const h = run({ slice: 4, bulk: 100, wakeMs: 1e6, bulkN: 40 });
+    expect(h.maxStep).toBe(40);
+    expect(h.fadedFirst).toBe(0);
+    expect(h.frames).toBeGreaterThan(2);
   });
 
   it('starts a downgrade dissolve at fadeOn x lodPixels and, with fadeOn 1, has it over by the instant-swap distance in a zoom-out', () => {
