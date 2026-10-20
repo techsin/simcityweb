@@ -11,6 +11,7 @@ import {
   flatRoof, setLot, band, bandRing, parking, chainFence, lounger, beacon, capPoly, poolRect, poolGlow, lightPool, parkedCar, type Face, isMirrorTwin,
 } from './res_util';
 import { ww } from './res_mid';
+import { bareCrown } from './park_lib';
 
 // ---------------------------------------------------------------------------------------------- helpers
 const ROOF = 0x6c6962;
@@ -425,7 +426,12 @@ function twinTowers(b: ModelBuilder, v: number, rng: RNG): void {
   podium(b, -22, -22, 22, 19, py, pod, 12, P(0x8a867e, Surf.RoofFlat), v === 2 ? Surf.Brick : Surf.Stone);
   // garden deck: lawns, trees, pool
   for (const [a, c, d, e] of L.lawns) b.paint(0x5f8a3a, Surf.Foliage).box(a, py, c, d, py + 0.3, e, { bottom: null });
-  for (const [x, z] of L.trees) { b.paint(0x5b4330, Surf.Wood).cylinder(x, z, py + 0.3, 1.6, 0.16, 0.12, 5, { top: false }); b.paint(0x4f7a34, Surf.Foliage).blob(x, py + 3.0, z, 2.0, 1.7, 2.0, 0, 0.2, x * z); }
+  // (seasonal crowns: bare twigs in winter, park_lib.bareCrown; at low quality a Y on the trunk, winterTwigs.ts)
+  for (const [x, z] of L.trees) {
+    b.paint(0x5b4330, Surf.Wood).cylinder(x, z, py + 0.3, 1.6, 0.16, 0.12, 5, { top: false });
+    const fl = bareCrown(b, x, z, [x, py + 1.8, z], [x, py + 3.0, z], 2.0, 1.7, 0x5b4330, 0.12);
+    b.paint(0x4f7a34, Surf.Foliage, 1, fl).blob(x, py + 3.0, z, 2.0, 1.7, 2.0, 0, 0.2, x * z);
+  }
   { const [a, c, d, e] = L.pool; poolRect(b, a, c, d, e, 0xe2dccd, 0.8, 0x3fb0d8, py); }
   b.paint(GLASS_RAIL, Surf.Metal).quad([-22, py, 19], [22, py, 19], [22, py + 1.1, 19], [-22, py + 1.1, 19]).quad([22, py, 19], [22, py, -22], [22, py + 1.1, -22], [22, py + 1.1, 19]);
   const A = L.A, B = L.B;
@@ -503,7 +509,12 @@ function luxuryTower(b: ModelBuilder, v: number, rng: RNG): void {
     if (alongX) lounger(b, pa + 1.5 + i * ((pd - pa - 3) / 4), pc > 0 ? pc - 1.6 : pe + 1.6, pc > 0 ? 0 : Math.PI, 0xf2f0ea, deckY + 0.14);
     else lounger(b, pa > 0 ? pa - 1.6 : pd + 1.6, pc + 1.5 + i * ((pe - pc - 3) / 4), pa > 0 ? Math.PI / 2 : -Math.PI / 2, 0xf2f0ea, deckY + 0.14);
   }
-  for (const [x, z] of PD.trees) { b.paint(0x5b4330, Surf.Wood).cylinder(x, z, py, 1.8, 0.15, 0.12, 5, { top: false }); b.paint(0x4f7a34, Surf.Foliage).blob(x, py + 3.0, z, 1.8, 1.6, 1.8, 0, 0.2, x + z); }
+  // (seasonal crowns: bare twigs in winter, park_lib.bareCrown; at low quality a Y on the trunk, winterTwigs.ts)
+  for (const [x, z] of PD.trees) {
+    b.paint(0x5b4330, Surf.Wood).cylinder(x, z, py, 1.8, 0.15, 0.12, 5, { top: false });
+    const fl = bareCrown(b, x, z, [x, py + 1.7, z], [x, py + 3.0, z], 1.8, 1.6, 0x5b4330, 0.12);
+    b.paint(0x4f7a34, Surf.Foliage, 1, fl).blob(x, py + 3.0, z, 1.8, 1.6, 1.8, 0, 0.2, x + z);
+  }
   b.paint(GLASS_RAIL, Surf.Metal).quad([-22, py, 18], [22, py, 18], [22, py + 1.1, 18], [-22, py + 1.1, 18]).quad([22, py, 18], [22, py, -22], [22, py + 1.1, -22], [22, py + 1.1, 18]);
   if (v === 0) {
     // chamfered square glass tower, sky gardens every 15 floors, tapered lit crown + spire

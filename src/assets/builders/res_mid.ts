@@ -15,6 +15,7 @@ import {
   fireEscape, bay, capPoly, spread, bandRing, parking, lounger, ironRail, stoopRails, lightPool, pickPal, mixHex, isMirrorTwin, LAWN,
   FLOWERS, type WinStyle, type Face,
 } from './res_util';
+import { bareCrown } from './park_lib';
 import * as K from './com_kit';
 import { faceZ } from './com_kit';
 
@@ -1154,7 +1155,12 @@ function condo(b: ModelBuilder, v: number, rng: RNG, tw = false): void {
       balcBand(b, 'nx', x0, z0, z1, y, 1.8, slabC, slabC, Surf.Plain, 0.5, green);
     }
     flatRoof(b, x0, z0, x1, z1, top, 0.9, 0.25, wallC, 0x5f8a3a);
-    for (const [x, z] of [[-8, -4], [0, -5], [8, -3], [-4, 0.5], [5, 0]] as [number, number][]) { b.paint(0x5b4330, Surf.Wood).cylinder(x, z, top, 1.8, 0.15, 0.12, 5, { top: false }); b.paint(0x4f7a34, Surf.Foliage).blob(x, top + 2.8, z, 1.7, 1.5, 1.7, 0, 0.2, x + z); }
+    // (seasonal crowns: bare twigs in winter, park_lib.bareCrown; at low quality a Y on the trunk, winterTwigs.ts)
+    for (const [x, z] of [[-8, -4], [0, -5], [8, -3], [-4, 0.5], [5, 0]] as [number, number][]) {
+      b.paint(0x5b4330, Surf.Wood).cylinder(x, z, top, 1.8, 0.15, 0.12, 5, { top: false });
+      const fl = bareCrown(b, x, z, [x, top + 1.7, z], [x, top + 2.8, z], 1.7, 1.5, 0x5b4330, 0.12);
+      b.paint(0x4f7a34, Surf.Foliage, 1, fl).blob(x, top + 2.8, z, 1.7, 1.5, 1.7, 0, 0.2, x + z);
+    }
     frontGarden(b, rng, z1 + 2.2);
   }
 }

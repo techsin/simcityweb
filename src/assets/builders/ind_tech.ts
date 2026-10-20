@@ -12,6 +12,7 @@ import {
   solarRow, lathe, boxTruck, emitSteam, CAR_COLORS2,
   lightDot, lights, securityLights, pool, Y_OVER, Y_POOL,
 } from './ind_kit';
+import { bareCrown } from './park_lib';
 
 const LAWN = 0x6f9a45;
 const LAWN2 = 0x7aa34d;
@@ -128,7 +129,9 @@ function techCampus(b: ModelBuilder, v: number, rng: RNG): void {
         const y = x < -8 ? 8.5 : x < 6 ? 12.9 : 17.5;
         b.paint(PALETTE.trunk, Surf.Wood);
         strut(b, [x, y, z], [x, y + 1.6, z], 0.25);
-        b.paint(0x5a8a3a, Surf.Foliage).blob(x, y + 2.6, z, 1.6, 1.4, 1.6, 0, 0.15, x);
+        // (seasonal crown: bare twigs in winter, park_lib.bareCrown; at low quality a Y on the trunk, winterTwigs.ts)
+        const fl = bareCrown(b, x, z, [x, y + 1.6, z], [x, y + 2.6, z], 1.6, 1.4, PALETTE.trunk, 0.12);
+        b.paint(0x5a8a3a, Surf.Foliage, 1, fl).blob(x, y + 2.6, z, 1.6, 1.4, 1.6, 0, 0.15, x);
       }
       path(b, -21.5, 13, 21.5, 16);
       path(b, 7, -5, 10, 13);
