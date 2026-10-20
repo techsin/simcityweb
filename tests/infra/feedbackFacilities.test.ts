@@ -246,7 +246,7 @@ describe('final fixes round 3: no "patrolled served"; a station without a road s
     expect(rep.lines.find((l) => l.key === 'fleet')).toMatchObject({ label: 'Ambulances', value: "1 — can't leave: no road beside it", status: 'bad' });
     expect(rep.lines.find((l) => l.key === 'fleet')!.hint).toBe("Build a road beside it: its ambulance can't drive out to a call");
     expect(rep.lines.some((l) => l.key === 'range')).toBe(false);
-    expect(rep.lines.find((l) => l.key === 'staff')!.hint).toBe('No road access — no worker can reach it: build a road beside it. It also needs power: without it, it hires only 8 of them');
+    expect(rep.lines.find((l) => l.key === 'staff')!.hint).toBe("No road access — its staff can't get to work: build a road beside it. It also needs power: without it, it hires only 8 of them");
     expect(rep.lines.find((l) => l.key === 'seats')!.hint).toBe("Serves nobody — no road access (staff can't reach it)");
     // a road beside it: the fleet line and the auto-dispatch range are back, the Staff line as before
     roadLine(st, 9, 39, 12, 39, Network.Road);

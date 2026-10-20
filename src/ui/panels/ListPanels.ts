@@ -3,12 +3,50 @@ import type { GameContext } from '../../game/context';
 import { allDefs, defIcon } from '../../game/toolCatalog';
 import type { OrdinanceInfo, RewardInfo } from '../../game/modules';
 import type { BuildingDef } from '../../sim/catalogTypes';
+import { BF, type Building } from '../../sim/CityState';
+import type { SimSystem } from '../../sim/Simulation';
+import type { EconRuntime } from '../../sim/economy/runtime';
 import { Panel } from '../Panel';
 import { confirmDialog } from '../Modals';
 import { clear, escapeHtml, h, toggle } from '../dom';
 import { icon } from '../icons';
 import { money, titleCase } from '../format';
 import { upkeepEstimate } from '../upkeepModel';
+
+/** the plopped buildings by def: the defs with a standing building, and one ruin (BF.Burnt) of every def that has one */
+export interface RuinState {
+  live: Set<string>;
+  ruin: Map<string, Building>;
+}
+
+/** RuinState of a list of buildings (the economy runtime's plopped list, or every building: only plopped ones count) */
+export function ruinState(list: Iterable<Building>): RuinState {
+  const live = new Set<string>(), ruin = new Map<string, Building>();
+  for (const b of list) {
+    if (!(b.flags & BF.Plopped)) continue;
+    if (b.flags & BF.Burnt) {
+      if (!ruin.has(b.def)) ruin.set(b.def, b);
+    } else live.add(b.def);
+  }
+  return { live, ruin };
+}
+
+/**
+ * The ruin a reward lies in (final fixes r3): one of its buildings is a ruin — burnt down, or flattened by a tornado, a
+ * quake or a meteor — and none of them stands. It read "Built" while its deal income and effects had stopped (and
+ * placing it again is refused while the ruin stands). null: not in ruins.
+ */
+export function rewardRuin(defIds: readonly string[], s: RuinState): Building | null {
+  if (defIds.some((d) => s.live.has(d))) return null;
+  for (const d of defIds) {
+    const b = s.ruin.get(d);
+    if (b) return b;
+  }
+  return null;
+}
+
+/** the Rewards panel's status chip of a reward in ruins */
+export const REWARD_RUIN_TEXT = 'In ruins — bulldoze to rebuild';
 
 function ordIcon(o: OrdinanceInfo): string {
   const s = (o.id + ' ' + o.name + ' ' + (o.category ?? '')).toLowerCase();
@@ -176,11 +214,37 @@ export class RewardsPanel extends Panel {
     this.resetGate();
   }
 
+  /** the city's plopped buildings as standing / in ruins: the economy runtime's plopped list (the StatsPanel pattern),
+   *  else every building — read on each update (a disaster can flatten a reward while the game is paused) */
+  private ruins(): RuinState {
+    const st = this.ctx.state;
+    let list: Iterable<Building> = st.buildings.values();
+    try {
+      const rt = this.ctx.sim.getSystem<SimSystem & { rt?: EconRuntime }>('economy.population')?.rt;
+      if (rt) {
+        rt.ensureLists();
+        list = rt.plopped;
+      }
+    } catch {
+      /* the whole city */
+    }
+    return ruinState(list);
+  }
+
+  /** open the inspector on a reward's ruin, where its Clear rubble button is (the camera goes there) */
+  private showRuin(b: Building): void {
+    this.ctx.focusCell(b.x + b.w / 2 - 0.5, b.z + b.d / 2 - 0.5, 360);
+    this.ctx.showQuery({ buildingId: b.id, x: b.x, z: b.z }, { silent: true });
+    this.ctx.panels.close(this.id);
+  }
+
   override update(): void {
     const items = this.list();
+    const rs = this.ruins();
+    const ruinOf = (r: RewardInfo) => (r.built ? rewardRuin(r.defIds, rs) : null);
     // (final fixes A1: the progress bars move with every percent of a growing city — a data-only change rebuilds the
-    // list at most once per real second, Panel.gate)
-    const sig = items.map((r) => `${r.id}:${r.unlocked}:${r.built}:${Math.round(r.progress * 100)}:${r.requirement}`).join('|');
+    // list at most once per real second, Panel.gate; a reward falling into ruins — or its ruin cleared — rebuilds it too)
+    const sig = items.map((r) => `${r.id}:${r.unlocked}:${r.built}:${ruinOf(r)?.id ?? ''}:${Math.round(r.progress * 100)}:${r.requirement}`).join('|');
     if (!this.gate('rewards', sig)) return;
     clear(this.listEl);
     if (!items.length) {
@@ -191,15 +255,27 @@ export class RewardsPanel extends Panel {
     for (const r of sorted) {
       const defs = r.defIds.map((id) => allDefs().find((d) => d.id === id)).filter((d): d is NonNullable<typeof d> => !!d);
       const def = defs[0];
+      const ruin = ruinOf(r);
       const place = def && r.unlocked ? h('div', { style: 'display:flex;flex-direction:column;gap:4px;align-items:flex-end' }) : null;
+      if (place && ruin) {
+        // (in ruins: the inspector of the ruin, whose button clears the rubble — a one-per-city building can only be
+        // placed again once the ruin is gone)
+        const b = h('button', { class: 'btn sm', title: 'Show the ruins on the map — bulldoze them there, then place it again', html: icon('target', 13) + '<span>Show ruins</span>' });
+        b.addEventListener('click', () => this.showRuin(ruin));
+        place.appendChild(b);
+      }
       if (place)
         for (const d of defs.slice(0, 3)) {
+          if (ruin && d.unique) continue;
           const b = h('button', { class: 'btn sm primary', title: `Place ${d.name}`, html: icon('plus', 13) + `<span>${defs.length > 1 ? escapeHtml(d.name) : 'Place'}</span>` });
           b.addEventListener('click', () => {
             if (this.ctx.tools.select('plop:' + d.id)) this.ctx.panels.close(this.id);
           });
           place.appendChild(b);
         }
+      const status = ruin
+        ? h('span', { class: 'chip bad', style: 'max-width:150px;white-space:normal;text-align:right;line-height:1.25', title: 'It lies in ruins: no income and no effects until you bulldoze the rubble and build it again', html: icon('alert', 11) + `<span>${escapeHtml(REWARD_RUIN_TEXT)}</span>` })
+        : r.built ? h('span', { class: 'chip info', html: icon('check', 11) + 'Built' }) : r.unlocked ? h('span', { class: 'chip good', html: icon('check', 11) + 'Unlocked' }) : h('span', { class: 'chip warn', html: icon('lock', 11) + 'Locked' });
       const row = h('div', { class: 'li' + (r.unlocked ? ' on' : ' locked') },
         h('div', { class: 'li-ico', html: icon(def ? defIcon(def) : 'trophy', 17) }),
         h('div', null,
@@ -210,7 +286,7 @@ export class RewardsPanel extends Panel {
             : null,
           def ? h('div', { class: 'li-e' }, h('span', { class: 'chip' }, def.cost ? money(def.cost) : 'Free'), this.upkeepChip(def), def.income ? h('span', { class: 'chip good', title: def.category === 'reward' ? 'Deal income' : 'Income when busy — less while it is quiet (its inspector shows what it earns now)' }, `+${money(def.income)}/mo`) : null) : null,
         ),
-        h('div', { class: 'li-r' }, r.built ? h('span', { class: 'chip info', html: icon('check', 11) + 'Built' }) : r.unlocked ? h('span', { class: 'chip good', html: icon('check', 11) + 'Unlocked' }) : h('span', { class: 'chip warn', html: icon('lock', 11) + 'Locked' }), place),
+        h('div', { class: 'li-r' }, status, place),
       );
       this.listEl.appendChild(row);
     }

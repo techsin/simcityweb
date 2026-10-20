@@ -1701,21 +1701,25 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       const ruins = [...fac.ruinsOther].sort((a, c) => (val.get(c) ?? 0) - (val.get(a) ?? 0) || a.id - c.id);
       const b = ruins[0], def = rt.defOf(b), n = ruins.length;
       if (def) {
-        let upkeep = 0, income = false, minor = true;
+        let upkeep = 0, income = false, minor = true, deals = 0;
         for (const o of ruins) {
           const od = rt.defOf(o);
           if (!od) continue;
           upkeep += ruinUpkeep(st, od);
           if ((od.income ?? 0) > 0) income = true;
+          // (budget.ts pays a deal its catalog income: exact, unlike a venue's, which follows its visitors)
+          if (od.category === 'reward') deals += od.income ?? 0;
           // (only parks without staff — small parks, playgrounds, plazas — and bus stops: a lower priority)
           if (!(od.category === 'park' && !((od.jobs ?? 0) > 0)) && od.id !== 'tr_bus_stop' && od.model !== 'tr_bus_stop') minor = false;
         }
         const charged = upkeep >= 0.5;
         const free = !charged && n === 1 && !((def.cost ?? 0) > 0);
+        // (more deals than the lead one lie in ruins: what they paid together)
+        const allDeals = deals > (def.category === 'reward' ? def.income ?? 0 : 0) + 0.5 ? ` (${money(deals)}/mo of deal income in all)` : '';
         out.push({ id: 'ruins', cooldown: 120, priority: income ? 6 : minor ? 3 : 5, kind: 'warning', advisor: income ? 'finance' : 'planning', ...at(b),
           text: n === 1
             ? `Your ${def.name} lies in ruins — ${lossText(def)}. Bulldoze the rubble and build it again${charged ? `: its upkeep (${money(upkeep)}/mo) is still charged until you bulldoze it` : free ? ' — it costs nothing' : ''}.`
-            : `${n} of your buildings lie in ruins (${ruinListText(ruins.map((o) => o.def))}) — the ${def.name}: ${lossText(def)}. Bulldoze the rubble and rebuild them${charged ? `: their upkeep (${money(upkeep)}/mo) is still charged until you bulldoze them` : ''}.` });
+            : `${n} of your buildings lie in ruins (${ruinListText(ruins.map((o) => o.def))}) — the ${def.name}: ${lossText(def)}${allDeals}. Bulldoze the rubble and rebuild them${charged ? `: their upkeep (${money(upkeep)}/mo) is still charged until you bulldoze them` : ''}.` });
       }
     }
     // ---------------- transport

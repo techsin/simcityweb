@@ -22,7 +22,8 @@
  * time" when nobody was ever sent, "Help came too late" when it came after the loss). A supporting unit already sent
  * (an industrial accident's ambulance) gets its own line; the incident keeps waiting for its fire truck. A loaded
  * game's waiting incidents get their banners (and the policy) back on the first tick the sim systems exist. The stack
- * docks beside open panels (dockBanners), and never covers a panel's title and tabs. The Send button's and the pill's
+ * docks beside open panels (dockBanners), and never covers a panel's title and tabs, nor the bottom toolbar (fitRows:
+ * the banners that do not fit, "No free unit" ones first, are counted by the "N more" pill). The Send button's and the pill's
  * texts change in place (stable spans: a click whose press and release span a rewrite would be lost, EM-4); the docking
  * re-measures the layout only after a change (EM-3: no forced layout per UI tick, none at all without a banner).
  *
@@ -213,15 +214,34 @@ export const STACK_TOP = 70;
 /** EM-2: banners shown (compact) below the panels' header rows when nothing fits beside the panels; the rest are
  *  listed by the "N more emergencies" pill */
 export const FALLBACK_ROWS = 2;
-/** room kept free above the layer's bottom edge for the fallback stack (the toolbar) */
+/** room kept free above the layer's bottom edge for the fallback stack (the toolbar), when the toolbar is not found */
 const BOTTOM_KEEP = 84;
+/** room kept free between the stack and the bottom toolbar block (final fixes r3) */
+export const TOOLBAR_GAP = 12;
 export interface DockRect { x: number; y: number; w: number; h: number }
 /** where the stack goes: left / width (css px), all banners compact, its top (default STACK_TOP) and the number of
  *  banners shown (0 = all) */
 export interface DockPlace { left: number; width: number; compact?: boolean; top?: number; rows?: number }
-/** the fallback stack's geometry: the layer's height, one compact banner and the "more" pill (each with its 8 px gap)
- *  and the number of banners */
-export interface DockFallback { H: number; rowH: number; moreH: number; n: number }
+/** the fallback stack's geometry: the layer's height, one compact banner and the "more" pill (each with its 8 px gap),
+ *  the number of banners and the lowest the stack may reach (default: BOTTOM_KEEP above the layer's bottom) */
+export interface DockFallback { H: number; rowH: number; moreH: number; n: number; bottom?: number }
+
+/**
+ * How many banners of a stack from `top` fit above `bottom` (layout px; final fixes r3: an M7 quake stacked 10 banners
+ * from y≈55 past the bottom of a 720p window, over the toolbar buttons the player needed to build the missing fire
+ * station): `heights` are the banners' heights in display order, 8 px apart; while they do not all fit — or `pill` (the
+ * "N more emergencies" pill shows anyway) — the pill below them takes `moreH` (its height and gap). 0: all of them fit;
+ * else the number that do, at least one.
+ */
+export function fitRows(top: number, bottom: number, heights: readonly number[], moreH: number, pill = false): number {
+  const n = heights.length;
+  let best = 0, y = top - 8;
+  for (let k = 1; k <= n; k++) {
+    y += heights[k - 1] + 8;
+    if (y + (k < n || pill ? moreH : 0) <= bottom) best = k;
+  }
+  return best >= n ? 0 : Math.max(1, best);
+}
 
 /**
  * Where the banner stack goes (layout px of the UI root; `top` its first row, `h` its height with full banners,
@@ -310,7 +330,7 @@ function belowHeads(W: number, top: number, w: number, panels: readonly DockRect
         ay = y;
         any = { left: l, width: w, compact: true, top: y, rows: 1 };
       }
-      if (y + hh > fb.H - BOTTOM_KEEP) continue;
+      if (y + hh > (fb.bottom ?? fb.H - BOTTOM_KEEP)) continue;
       if (y < by - 0.5 || (y <= by + 0.5 && (k > bk || (k === bk && d < bd)))) {
         by = y; bk = k; bd = d;
         best = { left: l, width: w, compact: true, top: y, rows: k };
@@ -497,6 +517,9 @@ export class EmergencyBanner {
   private dockRows = 0;
   /** banners hidden by the docking's row cap that still wait for help (the pill counts them) */
   private capped = 0;
+  /** alerts a dispatch can still save that have no banner (dismissed ones), at the last UI tick: the pill shows for them
+   *  whatever the cap */
+  private hiddenPrompts = 0;
   /** EM-3: the layout changed since the last docking (panels opened / closed / moved / resized, banners resized, the
    *  window resized): only then does dock() measure — never without a banner */
   private dockDirty = true;
@@ -857,19 +880,30 @@ export class EmergencyBanner {
     b.choose.style.display = 'none';
   }
 
-  /** at most MAX_BANNERS full banners (all compact while the stack must stay low, see dock; only the first dockRows
-   *  shown while the stack sits below panel headers — the pill lists the rest): the alerts a dispatch can still save
-   *  first (oldest first), the rest compact (title, time and buttons); CSS order, so no banner is moved in the DOM (no
-   *  restarted animations) */
-  private layout(): void {
+  /**
+   * The banners in display order: the alerts a dispatch can still save first (answerable, as for the speed policy —
+   * EM-1), then the other waiting or followed incidents, the ones already over (their outcome lingers), and last those
+   * no free unit can be sent to ("No free unit": nothing to do there) — the first ones a capped stack folds into the
+   * "N more" pill (final fixes r3); oldest first within each
+   */
+  private ordered(): BannerEl[] {
     const em = emergencyOf(this.ctx.sim);
-    // (the alerts a dispatch can still save first: answerable, as for the speed policy — EM-1)
     const prio = new Map<number, number>();
     for (const b of this.banners.values()) {
       const inc = em?.incident(b.id);
-      prio.set(b.id, inc && em && this.answerable(em, inc) ? 0 : inc ? 1 : 2);
+      const waiting = !!inc && (inc.state === 'uncovered' || inc.state === 'queued');
+      prio.set(b.id, !inc || !em ? 2 : this.answerable(em, inc) ? 0 : waiting && b.send.disabled ? 3 : 1);
     }
-    const list = [...this.banners.values()].sort((a, b) => prio.get(a.id)! - prio.get(b.id)! || a.inc.start - b.inc.start || a.id - b.id);
+    return [...this.banners.values()].sort((a, b) => prio.get(a.id)! - prio.get(b.id)! || a.inc.start - b.inc.start || a.id - b.id);
+  }
+
+  /** at most MAX_BANNERS full banners (all compact while the stack must stay low, see dock; only the first dockRows
+   *  shown while the stack would run into a panel's header rows or the toolbar — the pill lists the rest), in display
+   *  order (ordered), the rest compact (title, time and buttons); CSS order, so no banner is moved in the DOM (no
+   *  restarted animations) */
+  private layout(): void {
+    const em = emergencyOf(this.ctx.sim);
+    const list = this.ordered();
     let capped = 0;
     list.forEach((b, k) => {
       toggleClass(b.el, 'compact', this.dockCompact || k >= MAX_BANNERS);
@@ -897,15 +931,18 @@ export class EmergencyBanner {
    * Keep the banner stack off open panels (their titles and tabs: a right-docked Advisors panel read "…isors & news"
    * with its tab hidden): beside them as near the centre as fits, else with compact banners, else beside their header
    * rows, else below the header rows, compact and capped (dockBanners); centred as before when nothing is in the way.
+   * Final fixes r3: wherever it goes, the stack ends TOOLBAR_GAP above the bottom toolbar block (an M7 quake's ten
+   * banners covered the toolbar buttons at 1280x720): as many banners as fit (fitRows; all compact when not even the
+   * full ones do), the rest — "No free unit" ones first (ordered) — in the "N more emergencies" pill.
    * Heights are the ones measured before this tick's changes (full and compact), so the choice does not flip-flop with
    * the banners' own size. EM-3: no banner, no layout read at all (the TopBar and the panels wrote the DOM just
    * before: one read forced a style and layout pass every UI tick); with banners it measures only after the layout
-   * changed (ResizeObserver: banners, panels, the pill; MutationObserver: panels opened / closed / moved; a window
-   * resize).
+   * changed (ResizeObserver: banners, panels, the pill, the toolbar block; MutationObserver: panels opened / closed /
+   * moved; a window resize).
    */
   private dock(): void {
     if (!this.banners.size) {
-      if (this.dockKey || this.dockCompact || this.dockRows) this.applyDock(null);
+      if (this.dockKey || this.dockCompact || this.dockRows) this.applyDock(null, false, 0);
       this.dockDirty = true; // (the next banner measures afresh)
       return;
     }
@@ -929,31 +966,63 @@ export class EmergencyBanner {
         panels.push({ x: p.offsetLeft, y: p.offsetTop, w: p.offsetWidth, h: p.offsetHeight });
       }
     }
-    let d: DockPlace | null = null;
-    if (panels.length) {
-      // the stack's height with full / compact banners (the current one for the kind each banner has now)
-      let full = 0, comp = 0, compRow = 0, n = 0;
-      for (const b of this.banners.values()) {
-        const hh = b.el.offsetHeight;
-        if (hh > 0) {
-          if (b.el.classList.contains('compact')) b.compH = hh;
-          else b.fullH = hh;
-        }
-        full += (b.fullH ?? 150) + 8;
-        comp += (b.compH ?? 64) + 8;
-        compRow = Math.max(compRow, (b.compH ?? 64) + 8);
-        n++;
+    // the stack's height with full / compact banners (the current one for the kind each banner has now; a capped banner
+    // keeps the height it was last seen with)
+    let full = 0, comp = 0, compRow = 0, n = 0;
+    for (const b of this.banners.values()) {
+      const hh = b.el.offsetHeight;
+      if (hh > 0) {
+        if (b.el.classList.contains('compact')) b.compH = hh;
+        else b.fullH = hh;
       }
-      const mh = this.more.offsetHeight;
-      const moreH = (mh > 0 ? mh : 34) + 8;
-      const more = this.more.style.display === 'none' ? 0 : moreH;
-      d = dockBanners(W, STACK_TOP, full + more - 8, BANNER_W, panels, comp + more - 8, 12, { H: H > 0 ? H : Infinity, rowH: compRow, moreH, n });
+      full += (b.fullH ?? 150) + 8;
+      comp += (b.compH ?? 64) + 8;
+      compRow = Math.max(compRow, (b.compH ?? 64) + 8);
+      n++;
     }
-    this.applyDock(d);
+    const mh = this.more.offsetHeight;
+    const moreH = (mh > 0 ? mh : 34) + 8;
+    const more = this.more.style.display === 'none' ? 0 : moreH;
+    const bottom = this.stackBottom(root, H);
+    const d = panels.length ? dockBanners(W, STACK_TOP, full + more - 8, BANNER_W, panels, comp + more - 8, 12, { H: H > 0 ? H : Infinity, rowH: compRow, moreH, n, bottom }) : null;
+    // final fixes r3: no place but the EM-2 fallback (it caps its rows itself) knew the toolbar — the rows that fit above
+    // it, in display order (the first MAX_BANNERS full); all compact when that shows more than the full ones that fit
+    let compact = !!d?.compact, rows = d?.rows ?? 0;
+    if (!rows && Number.isFinite(bottom)) {
+      const list = this.ordered();
+      const heights = (allCompact: boolean) => list.map((b, k) => (allCompact || k >= MAX_BANNERS ? b.compH ?? 64 : b.fullH ?? 150));
+      const top = d?.top ?? STACK_TOP, pill = this.hiddenPrompts > 0;
+      rows = fitRows(top, bottom, heights(compact), moreH, pill);
+      if (rows > 0 && !compact && rows < Math.min(list.length, MAX_BANNERS)) {
+        const rc = fitRows(top, bottom, heights(true), moreH, pill);
+        if (rc === 0 || rc > rows) {
+          compact = true;
+          rows = rc;
+        }
+      }
+    }
+    this.applyDock(d, compact, rows);
   }
 
-  private applyDock(d: DockPlace | null): void {
-    const compact = !!d?.compact, rows = d?.rows ?? 0;
+  /** the lowest the stack may reach (layout px of the UI root): TOOLBAR_GAP above the bottom toolbar block (.hud-bottom:
+   *  the toolbar and the tool chip above it, watched for size changes), else BOTTOM_KEEP above the layer's bottom;
+   *  Infinity when neither is known */
+  private stackBottom(root: HTMLElement, H: number): number {
+    const hud = root.querySelector?.('.hud-bottom') as HTMLElement | null | undefined;
+    if (hud && hud.offsetHeight > 0) {
+      if (this.ro && !this.watched.has(hud)) {
+        this.watched.add(hud);
+        this.ro.observe(hud);
+      }
+      let y = 0, e: HTMLElement | null = hud;
+      for (; e && e !== root; e = e.offsetParent as HTMLElement | null) y += e.offsetTop;
+      if (e === root) return y - TOOLBAR_GAP;
+    }
+    return H > 0 ? H - BOTTOM_KEEP : Infinity;
+  }
+
+  /** apply a docking: the stack's place (null: the centred CSS default), all banners compact, banners shown (0 = all) */
+  private applyDock(d: DockPlace | null, compact: boolean, rows: number): void {
     if (compact !== this.dockCompact || rows !== this.dockRows) {
       this.dockCompact = compact;
       this.dockRows = rows;
@@ -1015,6 +1084,11 @@ export class EmergencyBanner {
       }
       needYou = hidden;
       if (this.capped) for (const b of this.banners.values()) if (b.el.classList.contains('capped')) { const inc = em.incident(b.id); if (inc && this.answerable(em, inc)) needYou++; }
+    }
+    // (the docking keeps room for the pill while these exist: final fixes r3)
+    if (hidden !== this.hiddenPrompts) {
+      this.hiddenPrompts = hidden;
+      this.dockDirty = true;
     }
     const total = hidden + this.capped;
     const md = total ? '' : 'none';

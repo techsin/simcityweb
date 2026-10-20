@@ -22,7 +22,10 @@ import { Simulation } from '../../src/sim/Simulation';
 import { emergencyOf } from '../../src/sim/infra/emergency';
 import { getFire, infraSystems, triggerDisaster } from '../../src/sim/systems/infra';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
-import { BANNER_MIN_W, BANNER_W, EmergencyBanner, KIND_COOLDOWN, PANEL_HEAD_H, dockBanners, stateText, supportText, type DockPlace } from '../../src/ui/EmergencyBanner';
+import {
+  BANNER_MIN_W, BANNER_W, EmergencyBanner, KIND_COOLDOWN, MAX_BANNERS, PANEL_HEAD_H, STACK_TOP, TOOLBAR_GAP, dockBanners, fitRows, stateText, supportText,
+  type DockPlace,
+} from '../../src/ui/EmergencyBanner';
 import type { GameContext } from '../../src/game/context';
 import { newSim, newState, place, roadLine } from '../infra/cityGen';
 
@@ -60,6 +63,7 @@ class FakeEl extends FakeNode {
   offsetWidth = 440;
   offsetHeight = 0;
   clientWidth = 1600;
+  clientHeight = 0;
   private html = '';
   private listeners = new Map<string, ((e: unknown) => void)[]>();
   constructor(readonly tagName: string) {
@@ -603,6 +607,132 @@ describe('EmergencyBanner: final-fix round 2', () => {
       h.tick();
       expect(parts(h, id).note).toBe(send ? 'Help came too late — 1 building lost' : 'No fire truck could reach it in time — 1 building lost');
     }
+  });
+});
+
+describe('EmergencyBanner: final-fix round 3 — the stack never runs into the toolbar', () => {
+  it('fitRows: the banners that fit above the bound, room kept for the "N more" pill while some are left out', () => {
+    // 3 full (150) + compact (64) banners from y 70, 8 px apart; the pill 34 + 8
+    const hs = [150, 150, 150, 64, 64, 64, 64, 64, 64, 64];
+    expect(fitRows(70, 2000, hs, 42)).toBe(0); // all fit
+    // 5 banners end at 680, with the pill 722; a sixth at 752 (+ pill 794)
+    expect(fitRows(70, 792, hs, 42)).toBe(5);
+    expect(fitRows(70, 794, hs, 42)).toBe(6);
+    // exactly all of them, no pill needed — unless it shows anyway
+    expect(fitRows(70, 70 + 3 * 158 + 7 * 72 - 8, hs, 42)).toBe(0);
+    expect(fitRows(70, 70 + 3 * 158 + 7 * 72 - 8, hs, 42, true)).toBe(9);
+    // never less than one row
+    expect(fitRows(70, 100, hs, 42)).toBe(1);
+    expect(fitRows(70, 100, [], 42)).toBe(0);
+  });
+
+  /**
+   * Two streets that do not connect: z = 20 (x 2..60, fire station A at x = 4) and z = 40 (x 66..125, station B at
+   * x = 123); five homes on each, 2.8-4.8 min from their station (beyond its 2.6-min reach, a truck sent at once still
+   * makes it). The 1280x720 window's layer: 1600 x 900 css px, the bottom toolbar block's top at y 804.
+   */
+  function quakeTown() {
+    const st = newState(128);
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    roadLine(st, 66, 40, 125, 40, Network.Road);
+    const a = place(st, 't_fire', 4, 19);
+    const b = place(st, 't_fire', 123, 39);
+    // (B's homes first: the oldest banners — the stack shows the oldest first unless they cannot be answered)
+    // (5 cells apart: each its own fire incident, FIRE_CLUSTER_R = 3)
+    const homesB = [95, 90, 85, 80, 75].map((x) => place(st, 't_r2', x, 41, { pop: 60 }));
+    const homesA = [32, 37, 42, 47, 52].map((x) => place(st, 't_r2', x, 21, { pop: 60 }));
+    const sim = newSim(st);
+    getFire(sim)!.riskBoost = 0;
+    st.stats.population = 5000;
+    const h = harness(sim);
+    h.root.clientHeight = 900;
+    const hud = new FakeEl('div');
+    Object.assign(hud, { offsetTop: 804, offsetHeight: 84, offsetParent: h.root });
+    (h.root as unknown as { querySelector: (s: string) => FakeEl | null }).querySelector = (s) => (s === '.hud-bottom' ? hud : null);
+    return { st, sim, h, a, b, homesA, homesB, bound: 804 - TOOLBAR_GAP };
+  }
+  /** the stack's bottom edge (the CSS stack from STACK_TOP: the shown banners in display order, 8 px apart, the pill) */
+  function stackBottom(h: Harness): { bottom: number; shown: number[]; capped: number[]; pill: boolean } {
+    const banners = [...(h.banner as unknown as { banners: Map<number, { el: FakeEl; fullH?: number; compH?: number }> }).banners.entries()]
+      .sort((x, y) => Number(x[1].el.style.order) - Number(y[1].el.style.order));
+    const shownB = banners.filter(([, b]) => !b.el.classList.contains('capped'));
+    const more = (h.banner as unknown as { more: FakeEl }).more;
+    const pill = more.style.display !== 'none';
+    let y = STACK_TOP - 8;
+    for (const [, b] of shownB) y += (b.el.classList.contains('compact') ? b.compH ?? 64 : b.fullH ?? 150) + 8;
+    return { bottom: y + (pill ? 34 + 8 : 0), shown: shownB.map(([id]) => id), capped: banners.filter(([, b]) => b.el.classList.contains('capped')).map(([id]) => id), pill };
+  }
+
+  it('ten prompts at 1280x720 with no panel open: the stack ends above the toolbar, the pill counts the rest', () => {
+    const { sim, h, homesA, homesB, bound } = quakeTown();
+    const em = emergencyOf(sim)!;
+    sim.speed = 1;
+    h.tick();
+    for (const b of [...homesB, ...homesA]) triggerDisaster(sim, 'fire', b.x, b.z);
+    h.tick();
+    h.tick();
+    const incs = em.incidents();
+    expect(incs.length).toBe(10);
+    expect(incs.every((i) => i.state === 'uncovered' && i.manualPossible)).toBe(true);
+    // every prompt a dispatch can still save has its banner (EM-1 / F2) ...
+    expect(h.banner.bannerIds.length).toBe(10);
+    // ... but only the rows that fit are shown: the old stack ran to 70 + 3 × 158 + 7 × 72 − 8 = 1040 px, past the
+    // 900-px layer and over the toolbar
+    const s = stackBottom(h);
+    expect(s.bottom).toBeLessThanOrEqual(bound);
+    expect(s.shown.length).toBeGreaterThanOrEqual(MAX_BANNERS);
+    expect(s.shown.length).toBeLessThan(10);
+    // (the most that fit: one more row would run into the toolbar)
+    expect(s.bottom + 64 + 8).toBeGreaterThan(bound);
+    expect(s.pill).toBe(true);
+    const more = (h.banner as unknown as { more: FakeEl }).more;
+    expect(more.textContent).toBe(`${10 - s.shown.length} more emergencies need you — open Emergencies`);
+    // the full banners stay the first three: the most urgent keep their place, note and buttons
+    const compact = s.shown.filter((id) => parts(h, id).el.classList.contains('compact'));
+    expect(compact.length).toBe(s.shown.length - MAX_BANNERS);
+    // stable for the next ticks (no flip-flop with the banners' own size)
+    for (let k = 0; k < 3; k++) h.tick();
+    expect(stackBottom(h).shown).toEqual(s.shown);
+  });
+
+  it('"No free unit" banners are the first folded into the pill; a docked panel keeps the cap', () => {
+    const { sim, h, b: stationB, homesA, homesB, bound } = quakeTown();
+    const em = emergencyOf(sim)!;
+    sim.speed = 1;
+    h.tick();
+    for (const b of [...homesB, ...homesA]) triggerDisaster(sim, 'fire', b.x, b.z);
+    h.tick();
+    const idsB = homesB.map((b) => em.incidents().find((i) => i.buildingId === b.id)!.id);
+    const idsA = homesA.map((b) => em.incidents().find((i) => i.buildingId === b.id)!.id);
+    // the oldest first while every prompt can be answered: street B's
+    let s = stackBottom(h);
+    expect(s.shown.slice(0, idsB.length)).toEqual(idsB.slice(0, s.shown.length));
+    // both of B's trucks out (behind the sim's back, as in the EM-1 test): street B's banners read "No free unit"
+    (em as unknown as { out: Map<number, number> }).out.set(stationB.id, 2);
+    for (const b of (h.banner as unknown as { banners: Map<number, { optsDay: number }> }).banners.values()) b.optsDay = -1;
+    h.tick();
+    h.tick();
+    for (const id of idsB) expect(parts(h, id).send.textContent).toBe('No free unit');
+    for (const id of idsA) expect(parts(h, id).send.textContent).toMatch(/^Send nearest\d+\.\d min$/);
+    s = stackBottom(h);
+    expect(s.bottom).toBeLessThanOrEqual(bound);
+    // street A's prompts (a dispatch can save them) are shown; the folded ones are all "No free unit" banners
+    for (const id of idsA) expect(s.shown).toContain(id);
+    expect(s.capped.length).toBe(10 - s.shown.length);
+    for (const id of s.capped) expect(idsB).toContain(id);
+    const more = (h.banner as unknown as { more: FakeEl }).more;
+    expect(more.textContent).toBe(`${s.capped.length} more emergenc${s.capped.length === 1 ? 'y' : 'ies'} — open Emergencies`);
+    // the Advisors panel docked right: the stack goes left of it, still above the toolbar
+    const panel = new FakeEl('div');
+    panel.className = 'panel';
+    Object.assign(panel, { offsetLeft: 946, offsetTop: 72, offsetWidth: 640, offsetHeight: 578 });
+    h.root.querySelectorAll = () => [panel];
+    h.tick();
+    h.tick();
+    expect(h.banner.el.style.left).toBe(`${Math.round(946 - 12 - BANNER_W)}px`);
+    const s2 = stackBottom(h);
+    expect(s2.bottom).toBeLessThanOrEqual(bound);
+    expect(s2.capped.length).toBeGreaterThan(0);
   });
 });
 

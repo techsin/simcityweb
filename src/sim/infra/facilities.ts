@@ -867,7 +867,7 @@ function staffLine(c: Ctx, tier: boolean): void {
     // (final fixes r3: without a road nobody comes to work, whatever its power — the road is the reason, a power / water
     // cut only the next step; the line used to read "No road access … · Without power it hires only 4 of them")
     const text = !s.road
-      ? `No road access — no worker can reach it: build a road beside it${hiring ? `. It also needs ${what}: without it, it hires only ${fmt(s.slots)} of them` : ''}`
+      ? `No road access — its staff can't get to work: build a road beside it${hiring ? `. It also needs ${what}: without it, it hires only ${fmt(s.slots)} of them` : ''}`
       : hint && hiring ? `${hint} · ${hiring}` : hint ?? hiring;
     add(c, 'staff', 'Staff', `${fmt(s.jobs)} / ${fmt(jobs)}${eff < 0.995 ? ` — staffing effect ${change(eff)}` : ''}`, {
       ratio: Math.min(1, s.jobs / jobs), status: low ? 'bad' : s.rel < 0.95 ? 'warn' : 'ok', hint: text,

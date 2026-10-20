@@ -3,12 +3,14 @@
  * "Condition 67% → 82%" and a Make historic button (verify-newplayer-r2 shot 125), and 55 such lots sat in rubble for
  * years, because growth never rebuilds on rubble. The rubble line names the fix: the bulldozer, or the Municipal
  * Demolition Crews ordinance (rubble cleared automatically); while the crews are enacted, that it is in hand.
+ * Final fixes r3: in cause-neutral words, "In ruins" (BF.Burnt records no cause: tornado, quake and meteor rubble read
+ * "Burnt down"), like a ruined facility's report.
  */
 import { describe, expect, it } from 'vitest';
 import { BF } from '../../src/sim/CityState';
 import { getOrdinance, ordinanceAvailable } from '../../src/sim/economy/ordinances';
 import { RUBBLE_CLEAR_DAYS } from '../../src/sim/economy/tuning';
-import { mainProblem, rubbleProblem, type RubbleCrews } from '../../src/ui/inspectorModel';
+import { RUINS_TEXT, mainProblem, rubbleProblem, type RubbleCrews } from '../../src/ui/inspectorModel';
 import { Simulation } from '../../src/sim/Simulation';
 import { createSystems } from '../../src/sim/systems/index';
 import { newState, place } from '../infra/cityGen';
@@ -18,14 +20,14 @@ const crews = (o: Partial<RubbleCrews> = {}): RubbleCrews => ({ name: 'Municipal
 describe('rubble line (final fixes UI-2)', () => {
   it('names the fix: bulldoze it, or enact the Demolition Crews (Ordinances)', () => {
     const p = rubbleProblem(crews());
-    expect(p.text).toBe('Burnt down');
+    expect(p.text).toBe('In ruins');
     expect(p.hint).toBe('Bulldoze the rubble so the lot can rebuild, or enact Municipal Demolition Crews (Ordinances) to clear rubble automatically');
     expect(p.tone).toBe('bad');
   });
 
   it('while the crews are enacted: they are clearing it (a warning, not a fix to make)', () => {
     const p = rubbleProblem(crews({ enacted: true }));
-    expect(p.text).toBe('Burnt down');
+    expect(p.text).toBe('In ruins');
     expect(p.hint).toMatch(/^Municipal Demolition Crews are clearing it — the lot can rebuild once the rubble is gone \(within about 30 days\)$/);
     expect(p.tone).toBe('warn');
   });
@@ -68,6 +70,6 @@ describe('rubble line (final fixes UI-2)', () => {
     // (InfoPanel passes rubbleProblem instead of mainProblem for a burnt growable and no condition view at all)
     const condition = { bars: [{ id: 'power', label: 'No power', value: -0.5, text: '−0.50' }], target: 0.2, abandon: 'Abandons in 3 days' };
     expect(mainProblem({ condition })?.text).toBe('No power');
-    expect(rubbleProblem(crews()).text).toBe('Burnt down');
+    expect(rubbleProblem(crews()).text).toBe(RUINS_TEXT);
   });
 });

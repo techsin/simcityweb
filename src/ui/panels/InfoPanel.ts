@@ -335,6 +335,10 @@ export class InfoPanel extends Panel {
     // ---- facility report (plopped): its warnings lead the main problem and replace duplicate chips
     const rep = !growable ? facilityView(safeCall(() => facilityReport(sim, b.id), null)) : null;
     const warnings = rep?.warnings ?? [];
+    // a building in ruins (BF.Burnt: burnt down, or flattened by a disaster) shows nothing that reads as a live building
+    // (final fixes r3: a ruined landmark read "Powered", "Jobs filled 0 / 40" and its catalog income in green)
+    const ruin = !!(b.flags & BF.Burnt);
+    const rubble = growable && ruin;
 
     // ---- chips
     const chips: Chip[] = [];
@@ -342,24 +346,28 @@ export class InfoPanel extends Panel {
     const watered = !!(b.flags & BF.Watered) || !!st.watered[i];
     // every building draws power except power plants and parks without an explicit use (lawns and benches)
     const isPlant = !!def && (def.powerOut ?? 0) > 0;
-    const usesPower = growable || (!!def && !isPlant && (def.category !== 'park' || (def.powerUse ?? 0) > 0));
+    const usesPower = !ruin && (growable || (!!def && !isPlant && (def.category !== 'park' || (def.powerUse ?? 0) > 0)));
     if (usesPower) chips.push({ text: icon('power', 11) + (powered ? 'Powered' : 'No power'), cls: powered ? 'good' : 'bad', topic: 'power' });
-    const needW = safeCall(() => waterRequired(st, b), false);
+    const needW = !ruin && safeCall(() => waterRequired(st, b), false);
     // (a facility that uses no water — a wind turbine, a plaza — shows no Water chip on a piped cell: routed 15)
-    if (watered && (growable || needW)) chips.push({ text: icon('water', 11) + 'Water', cls: 'good', topic: 'water' });
+    if (watered && !ruin && (growable || needW)) chips.push({ text: icon('water', 11) + 'Water', cls: 'good', topic: 'water' });
     else if (needW) chips.push({ text: icon('water', 11) + 'No water', cls: 'warn', topic: 'water', title: 'This building needs piped water' });
-    if (b.built < 1 || b.flags & BF.Constructing) chips.push({ text: `Under construction ${Math.round(b.built * 100)}%`, cls: 'info' });
-    for (const [bit, label, cls, topic] of FLAG_CHIPS) if (b.flags & bit) chips.push({ text: label, cls, topic });
-    if (b.flags & BF.NeedsUnmet) {
+    if (!ruin && (b.built < 1 || b.flags & BF.Constructing)) chips.push({ text: `Under construction ${Math.round(b.built * 100)}%`, cls: 'info' });
+    for (const [bit, label, cls, topic] of FLAG_CHIPS) if (b.flags & bit && (!ruin || bit & RUIN_CHIP_FLAGS)) chips.push({ text: label, cls, topic });
+    if (b.flags & BF.NeedsUnmet && !ruin) {
       const exp = safeCall(() => needsExpectation(st), 1);
       chips.push({ text: 'Needs unmet', cls: exp > 0.01 ? 'warn' : 'info', title: exp > 0.01 ? 'Some residents lack a school, clinic, playground… (see Residents)' : 'Residents of a small town do not mind yet — they will as the city grows' });
     }
-    this.body.appendChild(this.chips(dedupeChips(chips, warnings)));
+    // (rubble: the main problem below leads with "In ruins" and its fix, the chip would only repeat it)
+    this.body.appendChild(this.chips(dedupeChips(chips, rubble ? [...warnings, RUINS_TEXT] : warnings)));
 
     // ---- occupancy (a facility shows its report's staffing line instead — a tier facility's Staff line with the staffing
-    // effect, else Jobs filled — with its hint; the Facility section no longer repeats it, final fixes A4)
+    // effect, else Jobs filled — with its hint; the Facility section no longer repeats it, final fixes A4). A ruin has
+    // neither: nobody lives or works in it
     const split = rep ? splitFacilityRows(rep.rows) : null;
-    if (split?.staff) {
+    if (ruin) {
+      /* no occupancy */
+    } else if (split?.staff) {
       const sr = split.staff, ratio = sr.ratio ?? 0;
       const cls = sr.status === 'bad' ? 'bad' : sr.status === 'warn' ? 'warn' : 'good';
       this.body.appendChild(h('div', { class: 'cap-bar' },
@@ -377,7 +385,6 @@ export class InfoPanel extends Panel {
     // ---- main problem (breakdowns are computed once and reused by the Why? section). A lot in rubble (final fixes UI-2):
     // its fix — growth never rebuilds on rubble — and no condition forecast (nobody lives in it)
     const rt = this.rt();
-    const rubble = growable && !!(b.flags & BF.Burnt);
     const cond = growable && !rubble ? conditionView(safeCall(() => conditionBreakdown(st, b), null)) : null;
     const des = growable && dev !== undefined ? desirabilityView(safeCall(() => desirabilityBreakdown(st, rt as EconRuntime, dev, ci), null)) : null;
     // desirability is what limits the building's stage (the Why? section's growth rows say the same)
@@ -395,9 +402,11 @@ export class InfoPanel extends Panel {
         const dv = st.desirability[dev][ci];
         kv.add(`Desirability (${DEV_TYPE_LABELS[dev]})`, 'desire', h('span', { style: 'display:flex;align-items:center;gap:8px;justify-content:flex-end' }, desirBar(dv), h('span', null, signedPts(dv))));
       }
-      const commute = this.commuteText(b, traffic, ci);
+      // (rubble: no commute, job access or customers — nobody lives or works in it; the lot's land value and
+      // desirability above say how well it would rebuild)
+      const commute = rubble ? null : this.commuteText(b, traffic, ci);
       if (commute) kv.add('Commute', 'clock', commute);
-      try {
+      if (!rubble) try {
         if (fam === 'R') {
           const a = traffic?.workerAccess?.(b.id) ?? -1;
           if (a >= 0) kv.add('Job access', 'briefcase', this.lvl(a));
@@ -424,12 +433,11 @@ export class InfoPanel extends Panel {
       // the facility report's actual monthly upkeep (a school, clinic, station or park also pays running costs per person
       // served, sim economy/opex.ts) with its breakdown, and its actual income (an airport earns with its traffic, a
       // venue with its visitors: the catalog's §3,000 read §960 in the report) — final fixes A4 / P3: the Facility
-      // section no longer repeats them
+      // section no longer repeats them. A ruin earns nothing, whatever its catalog income (headerIncome, final fixes r3)
       const up = split?.upkeep;
       if (def.upkeep) kv.add('Upkeep', 'budget', up ? escapeHtml(headerMoney(up.value)) : `${money(def.upkeep)}/mo`, up?.hint, up?.hint);
-      const inc = split?.income;
-      if (inc) kv.add(inc.label, 'budget', `<span class="${inc.status === 'bad' ? 'neg' : 'pos'}">${escapeHtml(headerMoney(inc.value, true))}</span>`, inc.hint, inc.hint);
-      else if (def.income) kv.add('Income', 'budget', `<span class="pos">+${money(def.income)}/mo</span>`);
+      const inc = headerIncome(def, split?.income, ruin);
+      if (inc) kv.add(inc.label, 'budget', `<span class="${inc.tone}">${escapeHtml(inc.value)}</span>`, inc.hint, inc.hint);
     }
     if (kv.count() < 6) kv.add('Age', 'calendar', b.age >= 360 ? `${Math.floor(b.age / 360)} yr ${Math.floor((b.age % 360) / 30)} mo` : `${Math.floor(b.age / 30)} months`);
     this.body.appendChild(kv.el);
@@ -592,12 +600,10 @@ export class InfoPanel extends Panel {
       const r = safeCall(() => emergencyReachAt(st, ci, v), null);
       // (fire, final fixes P2: beyond the amber band a fire burns down before a truck can arrive — the Emergency · Fire
       // view's hover says the same; UI-3: an industrial accident there is still saved by a truck sent in time, the row's
-      // note)
+      // note. Its hint takes that clause from the hover's sentence too, number and unit included: fireResponseHint)
       const fire = v === EMG_FIRE ? { near: safeCall(() => emgNearSlack(EMG_FIRE), -3) } : undefined;
       const t = responseText(r ? { slackMin: r.slack, covered: r.slack >= 0, hasRoad: r.why !== 'noRoad', land: !b } : null, none, fire);
-      const hint = fire
-        ? `Auto-dispatch reach: covered fires become statistics; just beyond it (amber in the Emergency · Fire view) a fire waits for your dispatch and a truck sent at once still makes it; farther away it burns down before a truck can arrive, but an industrial accident there is still saved by a fire truck sent within ${EMERG_GRACE.industrial} days, however long the drive`
-        : 'Auto-dispatch reach: covered incidents become statistics; beyond it major emergencies wait for your dispatch';
+      const hint = fire ? fireResponseHint() : 'Auto-dispatch reach: covered incidents become statistics; beyond it major emergencies wait for your dispatch';
       if (t) kv.add(label, ic, `<span class="${t.tone}">${escapeHtml(t.text)}</span>`, hint, t.note);
     }
     const out: (HTMLElement | null)[] = [kv.el];

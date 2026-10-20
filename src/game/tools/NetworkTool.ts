@@ -2,15 +2,20 @@
  * Roads / rail / power lines / subway: drag an L-shaped path (Shift flips the L), live preview + cost. A route through
  * developed lots that cuts occupied buildings off the grid / the pipes (final fixes N1) says so in the tip, tints those
  * buildings red and asks first (demolishRisk.ts).
+ * Final fixes r3 (LD21c, the pattern UI-5 gave the bulldozer): per path change only utilityCut's local detour check
+ * runs (utilityCutQuick); the map-wide flood fill it may need (1.55 ms median, 46 ms max per change on a 1M save) waits
+ * until the path has rested CUT_SETTLE_MS, and the release's confirm (sideDemolishRisks) always runs it in full, so a
+ * real cut is never missed.
  */
 import { Network, Overlay, isRoad } from '../../core/types';
 import type { ActionResult } from '../../sim/actions';
 import { lPath, type Cell } from '../geom';
 import type { GameContext } from '../context';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
-import { buildingCells, sideDemolishRisks, utilityCut, type DemolishRisk, type Removal, type UtilityCut } from '../demolishRisk';
+import { buildingCells, sideDemolishRisks, utilityCut, utilityCutQuick, type DemolishRisk, type Removal, type UtilityCut } from '../demolishRisk';
 import { confirmDialog } from '../../ui/Modals';
 import { escapeHtml } from '../../ui/dom';
+import { CUT_SETTLE_MS } from './ZoneTool';
 
 export type NetKind = Network | 'power' | 'subway';
 
@@ -32,8 +37,13 @@ export class NetworkTool extends Tool {
   private path: Cell[] | null = null;
   private res: ActionResult | null = null;
   private lastKey = '';
-  /** occupied buildings the drag's demolitions cut off the grid / the pipes (per path, with res) */
+  /** occupied buildings the drag's demolitions cut off the grid / the pipes (per path, with res; the full fill's
+   *  answer once the path has rested) */
   private cut: UtilityCut | null = null;
+  /** the full utility-cut fill waiting for the path to rest (CUT_SETTLE_MS) */
+  private cutTimer: ReturnType<typeof setTimeout> | null = null;
+  /** the tip's second line for the current path ("12 tiles · flipped", "Click and drag to build") */
+  private extra = '';
 
   constructor(ctx: GameContext, private kind: NetKind, id: string, icon: string) {
     super(ctx);
@@ -50,8 +60,40 @@ export class NetworkTool extends Tool {
   }
 
   private clearPreview(): void {
+    this.cancelCut();
     this.ctx.world.setHighlight(null);
     this.ctx.objects.setNetworkPreview(null);
+  }
+
+  private cancelCut(): void {
+    if (this.cutTimer !== null) clearTimeout(this.cutTimer);
+    this.cutTimer = null;
+  }
+
+  /** the path rested: the full utility-cut fill, its red line and tint (nothing when the path changed meanwhile) */
+  private settleCut(key: string, rm: Removal): void {
+    this.cutTimer = null;
+    if (key !== this.lastKey) return;
+    this.cut = safe(() => utilityCut(this.ctx.state, rm), null);
+    if (!this.cut) return;
+    this.paint();
+    this.showTip();
+  }
+
+  /** the path's cells (green / red as the preview says) and the buildings it cuts off (red) */
+  private paint(): void {
+    const res = this.res, path = this.path ?? [];
+    const ok = !!res?.ok;
+    const hl = res?.cells && res.cells.length ? [...res.cells] : path.map((q) => ({ ...q, ok }));
+    if (this.cut) for (const c of buildingCells(this.ctx.state, this.cut.ids)) hl.push(c);
+    this.ctx.world.setHighlight(hl);
+  }
+
+  /** the cursor tip of the current path's preview (res, extra, cut) */
+  private showTip(): void {
+    const t = resultTip(this.label, this.res, this.extra);
+    const cut = this.cut ? `<div class="tip-reason">${escapeHtml(this.cut.text)}</div>` : '';
+    this.ctx.tip.show(t.html + cut, cut ? 'bad' : t.kind);
   }
 
   /** what a drag along `path` adds in place of the lots it demolishes: road / rail cells conduct power, roads carry pipes */
@@ -83,17 +125,19 @@ export class NetworkTool extends Tool {
       this.res = this.run(path, true);
       const ok = this.res.ok;
       const dem = ok ? this.res.demolished : undefined;
-      this.cut = dem?.length ? safe(() => utilityCut(this.ctx.state, { buildings: dem, add: this.added(path) }), null) : null;
-      const hl = this.res.cells && this.res.cells.length ? [...this.res.cells] : path.map((q) => ({ ...q, ok }));
-      if (this.cut) for (const c of buildingCells(this.ctx.state, this.cut.ids)) hl.push(c);
-      this.ctx.world.setHighlight(hl);
+      // the cut: the local detour check now; when only the map-wide fill can tell, that once the path rests (settleCut)
+      this.cancelCut();
+      this.cut = null;
+      if (dem?.length) {
+        const rm: Removal = { buildings: dem, add: this.added(path) };
+        if (safe(() => utilityCutQuick(this.ctx.state, rm), 'flood') === 'flood') this.cutTimer = setTimeout(() => this.settleCut(key, rm), CUT_SETTLE_MS);
+      }
+      this.paint();
       this.ctx.objects.setNetworkPreview(path, this.kind, ok);
     }
     const len = this.res?.ok && this.res.affected ? this.res.affected : path.length;
-    const extra = this.start ? `${len} tile${len === 1 ? '' : 's'}${p.shift ? ' · flipped' : ''}` : 'Click and drag to build';
-    const t = resultTip(this.label, this.res, extra);
-    const cut = this.cut ? `<div class="tip-reason">${escapeHtml(this.cut.text)}</div>` : '';
-    this.ctx.tip.show(t.html + cut, cut ? 'bad' : t.kind);
+    this.extra = this.start ? `${len} tile${len === 1 ? '' : 's'}${p.shift ? ' · flipped' : ''}` : 'Click and drag to build';
+    this.showTip();
   }
 
   override activate(): void {
@@ -117,6 +161,8 @@ export class NetworkTool extends Tool {
   override up(p: ToolPointer): void {
     if (!this.start) return;
     this.refresh(p);
+    // (the release acts now: its confirm runs the full cut check itself)
+    this.cancelCut();
     const path = this.path;
     this.start = null;
     if (path && path.length) {
@@ -170,10 +216,10 @@ export class NetworkTool extends Tool {
     return false;
   }
   override leave(): void {
-    if (!this.start) {
-      this.clearPreview();
-      this.lastKey = '';
-    }
+    // (off the map no tip shows a deferred cut — back on it, the preview runs again; the release's confirm checks it)
+    this.cancelCut();
+    if (!this.start) this.clearPreview();
+    this.lastKey = '';
     this.ctx.tip.hide();
   }
   override hints(): string[] {

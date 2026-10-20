@@ -263,6 +263,17 @@ describe('r3: every other ruin — deals, landmarks, civic buildings, transport,
     expect(issue(d, 'planning', 'ruins')?.text).toMatch(/^Your Bus Depot lies in ruins — its buses are gone\. Bulldoze the rubble and build it again: its upkeep \(§[\d,]+\/mo\) is still charged until you bulldoze it\.$/);
   });
 
+  it('two deals in ruins: the lead one\'s income and what they paid together', () => {
+    const c = city();
+    place(c.st, 'rw_military_base', 4, 4, { flags: BF.Plopped | BF.Burnt });
+    const range = place(c.st, 'rw_missile_range', 30, 30, { flags: BF.Plopped | BF.Burnt });
+    c.st.stats.population = 30000;
+    monthTick(c, 30);
+    const a = issue(c, 'finance', 'ruins')!;
+    expect(a.text).toBe('2 of your buildings lie in ruins (your Missile Test Range and Military Base) — the Missile Test Range: its §2,500/mo deal income is gone (§4,000/mo of deal income in all). Bulldoze the rubble and rebuild them.');
+    expect([a.x, a.z]).toEqual([range.x + 3, range.z + 3]);
+  });
+
   it('nothing left to charge (its budget at 0 %): no "still charged" clause', () => {
     const c = city();
     place(c.st, 'civ_fire_station', 40, 30, { flags: BF.Plopped | BF.Burnt });
