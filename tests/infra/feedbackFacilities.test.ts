@@ -11,6 +11,9 @@
  *  - round 2: SF-3 the inspector's upkeep is its share of the running costs (bulldozing it saves less); SF-4 a staffed
  *    service without road access serves nobody, and its load line says so; SF-9a a big employer without peers of its
  *    size is compared with the city's fill, not told to fix its road.
+ *  - round 3: the build-card upkeep fact says "per resident patrolled" (a unit with its own participle takes no
+ *    "served"); a station without a road beside it says its units can't leave (no auto-dispatch range) and its Staff
+ *    line names the road as the reason, power only as the next step.
  */
 import { describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
@@ -215,5 +218,52 @@ describe('final fixes round 2 (SF-3 / SF-4 / SF-9): facility lines that send the
     expect(line.value).toMatch(/^102 \/ 250/);
     expect(line.hint).toBe("Big employers fill last: the city's employers are 50% staffed — more homes nearby help");
     expect(line.hint).not.toMatch(/road/);
+  });
+});
+
+describe('final fixes round 3: no "patrolled served"; a station without a road says its units cannot leave', () => {
+  it('the upkeep fact: "per resident patrolled" / "per resident protected", "per pupil served"', () => {
+    const v = (id: string) => facilityDefFacts(id).find((f) => f.key === 'upkeep')!.value;
+    expect(v('civ_police_station')).toMatch(/^§[\d,]+ \/ month \+ §0\.\d+ per resident patrolled$/);
+    expect(v('civ_fire_station')).toMatch(/^§[\d,]+ \/ month \+ §0\.\d+ per resident protected$/);
+    expect(v('civ_elementary_school')).toMatch(/^§[\d,]+ \/ month \+ §0\.\d+ per pupil served$/);
+    expect(v('park_playground')).toMatch(/per young visitor served$/);
+    expect(v('civ_clinic')).toMatch(/per patient served$/);
+  });
+
+  it("a clinic without a road beside it: its ambulance can't leave, no auto-dispatch range, the Staff line blames the road", () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    for (let x = 30; x < 50; x++) place(st, 't_r1', x, 21, { pop: 10 });
+    const clinic = place(st, 'civ_clinic', 10, 40, { flags: BF.Plopped, age: 100 });
+    const sim = newSim(st);
+    sim.runDays(2);
+    // (no power either: the population system hires a quarter of its 30 jobs)
+    clinic.hire = 0.25; clinic.capacity = 30; clinic.jobs = 0;
+    st.stats.workforce = 500;
+    justiceData(st).cityFill = 0.9;
+    const rep = facilityReport(sim, clinic.id)!;
+    expect(rep.lines.find((l) => l.key === 'fleet')).toMatchObject({ label: 'Ambulances', value: "1 — can't leave: no road beside it", status: 'bad' });
+    expect(rep.lines.find((l) => l.key === 'fleet')!.hint).toBe("Build a road beside it: its ambulance can't drive out to a call");
+    expect(rep.lines.some((l) => l.key === 'range')).toBe(false);
+    expect(rep.lines.find((l) => l.key === 'staff')!.hint).toBe('No road access — no worker can reach it: build a road beside it. It also needs power: without it, it hires only 8 of them');
+    expect(rep.lines.find((l) => l.key === 'seats')!.hint).toBe("Serves nobody — no road access (staff can't reach it)");
+    // a road beside it: the fleet line and the auto-dispatch range are back, the Staff line as before
+    roadLine(st, 9, 39, 12, 39, Network.Road);
+    sim.events.emit('networkChanged', { x0: 9, z0: 39, x1: 13, z1: 40 });
+    const rep2 = facilityReport(sim, clinic.id)!;
+    expect(rep2.lines.find((l) => l.key === 'fleet')!.value).toBe('1 (0 out)');
+    expect(rep2.lines.find((l) => l.key === 'range')!.value).toMatch(/^\d+\.\d min by road$/);
+    expect(rep2.lines.find((l) => l.key === 'staff')!.hint ?? '').not.toMatch(/^No road access/);
+  });
+
+  it('a fire station without a road: "2 — can\'t leave" (its fire trucks)', () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    const fs = place(st, 'civ_fire_station', 10, 40, { flags: BF.Plopped | BF.Powered | BF.Watered, age: 100 });
+    const sim = newSim(st);
+    sim.runDays(2);
+    const fleet = facilityReport(sim, fs.id)!.lines.find((l) => l.key === 'fleet')!;
+    expect([fleet.label, fleet.value, fleet.status, fleet.hint]).toEqual(['Fire trucks', "2 — can't leave: no road beside it", 'bad', "Build a road beside it: its fire trucks can't drive out to a call"]);
   });
 });
