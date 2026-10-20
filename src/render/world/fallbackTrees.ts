@@ -7,7 +7,7 @@
  * stand for: never recoloured by the shader), conifer impostors 4 (evergreen), like the nature models (nature.ts).
  */
 import * as THREE from 'three';
-import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { ModelBuilder } from '../../assets/ModelBuilder';
 import { getModelGeometry, hasModel } from '../../assets/registry';
 import { RNG, hashString } from '../../core/rng';
@@ -147,14 +147,21 @@ function indexedSmooth(g: THREE.BufferGeometry): THREE.BufferGeometry {
   return out;
 }
 
-let _micro: { broad: THREE.BufferGeometry; conifer: THREE.BufferGeometry; top: THREE.BufferGeometry } | null = null;
+let _micro: { broad: THREE.BufferGeometry; conifer: THREE.BufferGeometry; top: THREE.BufferGeometry; ringLow: THREE.BufferGeometry } | null = null;
+/** y of the micro broadleaf's lower apex (its waist is at 0.63, its upper apex at 1) */
+export const MICRO_LOW_APEX = 0.28;
 /**
  * Micro impostors for trees that project to 1-2 px (far zoom): same unit bounds as getImpostorGeometries, foliage only
  * (white, tinted per instance), 3-sided (at 1-2 px, with random per-tree yaws, as round as a 4-sided shape, a quarter
  * fewer triangles). Broadleaf = double pyramid (6 tris, 5 vertices), conifer = pyramid (3 tris, 4 vertices); indexed
  * with smooth normals (TreeRenderer's instanced meshes only). `top` = the broadleaf's upper half (3 tris, 4 vertices)
- * for the outer ring's far blocks, only ever seen from high cameras: its lower half hides under the upper one from
- * above (and a conifer's instance stretches the upper half onto the conifer pyramid anyway).
+ * for the outer ring's far blocks seen from high cameras: its lower half hides under the upper one from above (and a
+ * conifer's instance stretches the upper half onto the conifer pyramid anyway). `ringLow` = `top` plus a lower half of
+ * its own (6 tris, 8 vertices: the upper half's vertices and normals are exactly `top`'s, the lower half's waist has its
+ * own, down-facing normals), for far blocks seen from low cameras at a grazing angle, where the upper half alone is a
+ * small pale cone floating at 63% of the tree's height: TreeRenderer's ring shader moves its lower apex from the waist
+ * (a flat, down-facing fan: what `top` shows) down to MICRO_LOW_APEX as the camera comes down, so the swap between the
+ * two is invisible.
  */
 export function getMicroImpostorGeometries() {
   if (_micro) return _micro;
@@ -165,7 +172,7 @@ export function getMicroImpostorGeometries() {
   for (let i = 0; i < 3; i++) {
     const a = e[i], b = e[(i + 1) % 3];
     broad.tri(b, a, [0, 1.0, 0]);
-    broad.tri(a, b, [0, 0.28, 0]);
+    broad.tri(a, b, [0, MICRO_LOW_APEX, 0]);
   }
   const con = new ModelBuilder();
   con.paint(0xffffff, Surf.Foliage, FOL_EVER);
@@ -174,10 +181,17 @@ export function getMicroImpostorGeometries() {
   const top = new ModelBuilder();
   top.paint(0xffffff, Surf.Foliage, FOL_DECID);
   for (let i = 0; i < 3; i++) top.tri(e[(i + 1) % 3], e[i], [0, 1.0, 0]);
-  _micro = { broad: indexedSmooth(broad.build()), conifer: indexedSmooth(con.build()), top: indexedSmooth(top.build()) };
+  const low = new ModelBuilder();
+  low.paint(0xffffff, Surf.Foliage, FOL_DECID);
+  for (let i = 0; i < 3; i++) low.tri(e[i], e[(i + 1) % 3], [0, MICRO_LOW_APEX, 0]);
+  const topG = indexedSmooth(top.build()), lowG = indexedSmooth(low.build());
+  const ringLow = mergeGeometries([topG, lowG])!;
+  lowG.dispose();
+  _micro = { broad: indexedSmooth(broad.build()), conifer: indexedSmooth(con.build()), top: topG, ringLow };
   _micro.broad.name = 'impostor-micro-broad';
   _micro.conifer.name = 'impostor-micro-conifer';
   _micro.top.name = 'impostor-micro-top';
+  _micro.ringLow.name = 'impostor-micro-ringlow';
   return _micro;
 }
 

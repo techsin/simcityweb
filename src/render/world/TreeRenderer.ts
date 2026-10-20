@@ -28,9 +28,11 @@
  * twig) models are drawn see-through too: their crowns cover ~30-60% of their pixels (alpha-to-coverage with MSAA, a
  * dither anchored to the tree without), evenly lit, so the forest floor shows between bare trees as it does between
  * the twigs of the near models; in winter conifer impostors are a little taller and darker (BARE_* / SEASON_*).
- * Chunk builds run nearest-first within buildBudgetMs per frame (at least one), so the view fills in first; the load's
- * own build (constructor, reset, quality change) builds at least update()'s chunk count per frame, so the map is
- * complete within the load's first frames instead of trickling into the first frames the player moves the camera in.
+ * Runtime chunk rebuilds (a season, edits) run nearest-first within buildBudgetMs per frame (at least one), so the view
+ * fills in first. A load (constructor, reset, quality change) builds every chunk at once, as part of the load (tens of
+ * ms cold on a dense 256 map), and the load's first LOAD_FRAMES frames still build every chunk dirtied after it (the
+ * load's own later work: a pre-run of the sim, a demo's edits) at once: nothing trickles into the first frames the
+ * player moves the camera in.
  * Edge band: the map's edge chunks continue their forests as full trees over RING_EDGE_CELLS virtual cells past the
  * edge, thinning toward the outer ring's density over its outer cells. Band trees are a cheaper LOD class than the
  * map's own (they stand outside the playable area): a band tree is a full model only up to shadowLodFrac x the LOD
@@ -55,11 +57,17 @@
  *     conifer impostors, TREE_RING_NEAR) holds a sector's trees ordered by their depth beyond the map edge, and a
  *     camera inside the map at e metres from the sector's edge(s) can only reach the trees up to depth (switch - e): it
  *     submits that prefix (none from the middle of a large map); the far blocks (TREE_RING: the micro broadleaf's upper
- *     half, 3 tris, seen from high cameras only; conifers stretch it onto their pyramid and carry an evergreen flag) are
+ *     half, 3 tris, as high cameras see it; conifers stretch it onto their pyramid and carry an evergreen flag) are
  *     RING_SUB block meshes per sector (its quarters), each frustum-culled by its own bounds and ordered by the per-tree
  *     thinning random (ringRand): their vertex shader thins the trees with their distance and fades them with the
- *     camera height, and each block only submits the prefix of its trees that its nearest point's distance can keep;
- *     hidden from low (street-level) cameras, where the city and the edge band hide them anyway; no shadows.
+ *     camera height (hidden from low cameras inside the city, where the city and the edge band hide them anyway), and
+ *     each block only submits the prefix of its trees that its nearest point's distance can keep; no shadows;
+ *   - next to a sector's map edge(s) (within RING_EDGE_NEAR x lodDistance) the ring is the horizon at any height: the
+ *     sector's far blocks skip the camera height fade, and a low camera (below ringFadeHeight) sees the sector at a
+ *     grazing angle, where the micro upper half reads as a small pale cone floating at 63% of the tree's height: its
+ *     trees stay regular impostors out to ringLowSwitch x lodDistance and the far blocks beyond show whole micro
+ *     crowns (ringLow, its lower half coming down with the low-camera weight) - per sector on the CPU, per tree in
+ *     the shaders, eased in with the camera height and the distance to the edge, so nothing pops.
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
@@ -70,7 +78,7 @@ import { MANIFEST_BY_ID } from '../../assets/manifest';
 import { getBuildingMaterial, patchSurfaceMaterial } from '../../assets/materials';
 import { getNoiseTexture } from './textures';
 import type { CityState } from '../../sim/CityState';
-import { getImpostorGeometries, getMicroImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
+import { MICRO_LOW_APEX, getImpostorGeometries, getMicroImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
 import { TerrainRenderer } from './TerrainRenderer';
 import { shadowCasters, type ShadowReceiver } from './Shadows';
 import { SEASONAL_TREES, drawnTreeMix, seasonalVariant, type SeasonMix } from '../../assets/builders/nat_season';
@@ -79,6 +87,11 @@ import { setLotTwigStrip } from '../../assets/builders/winterTwigs';
 const CHUNK = 32;
 /** instances per cell for density 0..4 */
 const DENSITY_COUNT = [0, 1.1, 2.3, 3.8, 5.6];
+/** update() calls after a load (constructor / reset) that still build every dirty chunk at once: the frames a page
+ *  renders while it comes up (the game's while its loading veil fades, a demo's before it is ready). The load builds
+ *  every chunk itself; these frames take what the load's own later work dirtied (a pre-run of the sim, a demo's
+ *  edits), so none of it is left to the first frames the player moves the camera in */
+const LOAD_FRAMES = 3;
 /**
  * Outer landscape ring (beyond the map edge, where the terrain continues to the horizon): tree impostors on the terrain
  * shader's outside "noise forests", in the 8 cells of a 3 x 3 grid around the map square (sector -> [column, row]).
@@ -122,6 +135,10 @@ const BAND_THIN = 0.4;
  *  (RING_SWITCH_LO + RING_SWITCH_SPAN x a per-tree random), the same in both programs (complementary per tree) */
 const RING_SWITCH_LO = 0.94;
 const RING_SWITCH_SPAN = 0.12;
+/** a camera within RING_EDGE_NEAR x lodDistance of a sector's map edge(s) (easing out by RING_SWITCH_LO x) sees that
+ *  sector as the horizon at any height: its far blocks skip the camera height fade, and a low camera (below
+ *  ringFadeHeight) gets the low-camera look there (ringLowSwitch, ringLowShape; see updateRingView) */
+const RING_EDGE_NEAR = 0.6;
 /** the far blocks' density with the distance d from the camera (the vertex shader per tree, the CPU per block at its
  *  nearest point): clamp(RING_KEEP_A - (d - lodDistance) / RING_KEEP_D, RING_KEEP_MIN, 1) of the trees, x the camera
  *  height fade */
@@ -562,6 +579,30 @@ varying float vTreeBare;
 varying vec2 vBareNdc;
 #if defined(TREE_RING) || defined(TREE_RING_NEAR)
 uniform vec3 uRingP;
+uniform vec2 uRingQ;
+// a ring tree at p: 1 while the camera is within ${RING_EDGE_NEAR} x lodDistance of the map edge(s) the tree lies beyond (its
+// sector's edges), easing to 0 at ${RING_SWITCH_LO} x (as the CPU's per-sector ringEdgeNear)
+float ringEdgeNear(vec3 p) {
+  float ex = p.x < 0.0 ? cameraPosition.x : (p.x > uRingP.z ? uRingP.z - cameraPosition.x : 1e9);
+  float ez = p.z < 0.0 ? cameraPosition.z : (p.z > uRingP.z ? uRingP.z - cameraPosition.z : 1e9);
+  return 1.0 - smoothstep(uRingP.x * ${RING_EDGE_NEAR.toFixed(3)}, uRingP.x * ${RING_SWITCH_LO.toFixed(3)}, min(ex, ez));
+}
+#endif
+`;
+/**
+ * Far ring blocks of low cameras (after begin_vertex): the ringLow micro shape's lower apex comes down from the waist (a
+ * flat, down-facing fan - what the plain upper half shows) to its full depth with the low-camera weight (see
+ * FAR_VERT_MAIN), so a broadleaf seen at a grazing angle is a whole crown instead of a cone floating at 63% of its
+ * height (a conifer's stretched upper half already is its whole pyramid: its lower half stays the flat fan, it would
+ * only reach into the ground)
+ */
+const RING_LOW_VERT = /* glsl */ `
+#if defined(TREE_RING) && defined(USE_INSTANCING) && defined(USE_INSTANCING_COLOR)
+if (uRingQ.y > 0.0 && transformed.y < 0.5) {
+  float _lw = 0.0;
+  if (instanceColor.b >= 0.0) _lw = (1.0 - uRingP.y) * ringEdgeNear((modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xyz);
+  transformed.y = mix(0.63, ${MICRO_LOW_APEX.toFixed(3)}, _lw);
+}
 #endif
 `;
 function seasonVertMain(far: boolean): string {
@@ -599,6 +640,9 @@ ${far ? 'vTreeBare = 0.0;\nvBareNdc = vec2(0.0);' : ''}
 }
 /** impostor part of seasonVertMain (inside its instancing block: _sp = the tree's world position) */
 const FAR_VERT_MAIN = /* glsl */ `
+#ifdef TREE_RING
+vObjPos = transformed;
+#endif
 vObjPos *= vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
 #ifdef USE_INSTANCING_COLOR
   if (instanceColor.r < 0.0) {
@@ -620,18 +664,22 @@ vObjPos *= vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), le
 ${RING_RAND}
   // the tree's switch between its regular impostor (near pair) and its micro impostor (far blocks): the distance from
   // the camera to the tree's foot (a far block conifer's instance is shifted by its stretch, RING_CON_*) against a
-  // per-tree switch distance - the same in both programs, so each tree is drawn by exactly one of them
+  // per-tree switch distance - the same in both programs, so each tree is drawn by exactly one of them. A low camera
+  // next to the tree's map edge (weight _lw: the camera height fade uRingP.y off, ringEdgeNear on) sees the ring at a
+  // grazing angle: its switch distance moves out to uRingQ.x (regular impostors deeper into the ring)
   vec3 _ft = _sp;
 #if defined(TREE_RING) && defined(USE_INSTANCING_COLOR)
   if (instanceColor.b < 0.0) _ft.y -= ${(RING_CON_B / RING_CON_A).toFixed(6)} * instanceMatrix[1][1];
 #endif
   float _rd = distance(_ft, cameraPosition);
-  float _sw = uRingP.x * (${RING_SWITCH_LO.toFixed(3)} + ${RING_SWITCH_SPAN.toFixed(3)} * fract(_r * 31.7));
+  float _ne = ringEdgeNear(_sp), _lw = (1.0 - uRingP.y) * _ne;
+  float _sw = mix(uRingP.x, uRingQ.x, _lw) * (${RING_SWITCH_LO.toFixed(3)} + ${RING_SWITCH_SPAN.toFixed(3)} * fract(_r * 31.7));
 #ifdef TREE_RING
   // far outer ring block: thinned with the distance per tree (its stable random, ringRand, against the keep
-  // fraction, RING_KEEP_*), faded with the camera height (uRingP.y); the CPU draws the prefix of the block's trees
-  // (ordered by that random) its nearest point keeps
-  float _keep = clamp(${RING_KEEP_A.toFixed(3)} - (_rd - uRingP.x) / ${RING_KEEP_D.toFixed(1)}, ${RING_KEEP_MIN.toFixed(3)}, 1.0) * uRingP.y;
+  // fraction, RING_KEEP_*), faded with the camera height (uRingP.y) except next to the tree's map edge, where the ring
+  // is the horizon at any height; the CPU draws the prefix of the block's trees (ordered by that random) its nearest
+  // point keeps
+  float _keep = clamp(${RING_KEEP_A.toFixed(3)} - (_rd - uRingP.x) / ${RING_KEEP_D.toFixed(1)}, ${RING_KEEP_MIN.toFixed(3)}, 1.0) * max(uRingP.y, _ne);
   if (_r >= _keep || _rd < _sw) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 #else
   if (_rd >= _sw) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -853,9 +901,10 @@ export class TreeRenderer {
   private fadeU = { uTreeCam: { value: new THREE.Vector3() }, uTreeFade: { value: new THREE.Vector4(600, 800, 60, 700) }, uTreeRes: { value: new THREE.Vector2(1920, 1080) }, uTreeBand: { value: new THREE.Vector2(0, 1) } };
   /** snow on the forest: x terrain snow line (m), y its noise amplitude, z amount (0 = off) */
   private snowU = { uTreeSnow: { value: new THREE.Vector4(9999, 8, 0, 0) }, uTreeNoise: { value: getNoiseTexture() as THREE.Texture } };
-  /** outer ring: x lodDistance (the near pair / far block switch), y the far blocks' visibility (camera height fade), z
-   *  map size (m) */
-  private ringU = { uRingP: { value: new THREE.Vector3(850, 0, 2048) } };
+  /** outer ring: uRingP x lodDistance (the near pair / far block switch), y the far blocks' visibility (camera height
+   *  fade), z map size (m); uRingQ x a low camera's switch distance next to the edge (ringLowSwitch x lodDistance), y 1
+   *  with the low-camera micro shape (ringLowShape) */
+  private ringU = { uRingP: { value: new THREE.Vector3(850, 0, 2048) }, uRingQ: { value: new THREE.Vector2(850, 1) } };
   /** width of the near/impostor cross-fade band as a fraction of lodDistance (each side): alpha-to-coverage (MSAA)
    *  blends smoothly, the screen-door dither (no MSAA) is kept narrow */
   fadeBand = 0.1;
@@ -946,19 +995,24 @@ export class TreeRenderer {
   ringWidth = 2600;
   /** main-thread time (ms) of one slice of the outer ring's runtime work (refills / border regenerations) */
   ringBudgetMs = 1;
-  /** main-thread time (ms) per frame for (re)building tree chunks, nearest first (always at least one chunk; while the
-   *  load's own build runs, at least update()'s `budget` chunks, see loadBuild) */
+  /** main-thread time (ms) per frame for runtime (re)builds of tree chunks (a season, edits), nearest first (always at
+   *  least one chunk); a load builds all of its chunks at once (buildAll, loadFrames) */
   buildBudgetMs = 3;
-  /** the load's chunk build is running (constructor, reset, quality change: until no chunk is dirty): its frames are
-   *  load frames and build at least update()'s `budget` chunks each (as many as a plain per-frame count would), so the
-   *  map is complete within the load's first frames; later rebuilds (a season, edits) keep to buildBudgetMs */
-  private loadBuild = true;
+  /** update() calls left that still build every dirty chunk at once (LOAD_FRAMES after a load) */
+  private loadFrames = LOAD_FRAMES;
   /** update() calls since the load (constructor / reset): the first one finishes ring work queued before it */
   private updates = 0;
   /** camera heights above the ground (m) between which the ring's far blocks fade in: low cameras look through the
    *  city / edge band at the horizon, where they are hidden or a few specks in the haze (the near pairs, a camera near
    *  the map edge, show at any height) */
   ringFadeHeight: [number, number] = [110, 240];
+  /** a low camera (below ringFadeHeight) next to a sector's map edge sees that sector's ring at a grazing angle, where
+   *  the far blocks' micro impostors read as small pale cones: its trees stay regular impostors (the near pair) out to
+   *  this multiple of lodDistance (their switch distance, eased in with the low-camera weight: see updateRingView) */
+  ringLowSwitch = 1;
+  /** ... and the far blocks beyond show the whole micro crown (ringLow: its lower half comes down with that weight)
+   *  instead of the upper half that high cameras see */
+  ringLowShape = true;
   /** outer ring instances currently placed (stats) */
   ringInstances = 0;
   /** completed candidate generations of ring sectors (stats / tests) */
@@ -1010,10 +1064,17 @@ export class TreeRenderer {
     this.snapshotRingEdge();
     this.setMonth(state.month);
     this.syncBandUniform();
-    // the outer ring is generated and filled right away (part of the load: tens of ms, never on the frames the player
-    // moves the camera in); the map's chunks are built by the first frames (update, nearest first)
+    // the outer ring is generated and filled right away, and so are the map's chunks (part of the load: tens of ms each,
+    // never on the frames the player moves the camera in)
     this.flushRing();
+    this.buildAll();
     this.makeWarmup();
+  }
+
+  /** build every dirty chunk now (a load's own build, the load's frames: see LOAD_FRAMES) */
+  private buildAll(): void {
+    for (const id of this.dirty) this.buildChunk(id);
+    this.dirty.clear();
   }
 
   /** the edge band's switch distance as a fraction of the map trees' (= the shadow switch, see the header) */
@@ -1158,10 +1219,13 @@ export class TreeRenderer {
     if (far) {
       shader.uniforms.uBareRes = this.fadeU.uTreeRes;
       shader.uniforms.uRingP = this.ringU.uRingP;
+      shader.uniforms.uRingQ = this.ringU.uRingQ;
       vp += FAR_VERT_PARS;
       fp += FAR_FRAG_PARS;
     }
     shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n' + vp).replace(/}\s*$/, seasonVertMain(far) + '\n}');
+    // (the far ring blocks' low-camera shape: before the uber shader's own begin_vertex part, see RING_LOW_VERT)
+    if (far) shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n' + RING_LOW_VERT);
     let fs = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n' + fp)
       .replace('#include <normal_fragment_begin>', SEASON_FRAG + '\n#include <normal_fragment_begin>');
@@ -1329,10 +1393,10 @@ export class TreeRenderer {
     this.applyRingOn();
     this.syncBandUniform();
     setLotTwigStrip(this.lodDistance < RING_MIN_LOD);
-    // (a quality change: its frame recompiles every program anyway, the ring's refill / generation is done at once, and
-    // the chunks it marked build as a load's: loadBuild)
+    // (a quality change: its frame recompiles every program anyway; the ring's refill / generation and the chunks it
+    // marked are done at once, as a load's)
     this.flushRing();
-    if (this.dirty.size) this.loadBuild = true;
+    this.buildAll();
   }
 
   /** rebuild every chunk and refill the outer ring (season, density, tree kinds) */
@@ -1383,8 +1447,9 @@ export class TreeRenderer {
     this.markAll();
     this.ringRefill = 0;
     this.flushRing();
-    // (its chunks build with the next frames as a load's: loadBuild)
-    this.loadBuild = true;
+    // (and its chunks, at once; the load's frames take what is dirtied after it)
+    this.buildAll();
+    this.loadFrames = LOAD_FRAMES;
     this.updates = 0;
   }
 
@@ -1924,8 +1989,12 @@ export class TreeRenderer {
     // ring work queued between the load and its first frame (a month change by a pre-run of the sim, settings applied
     // before the first frame) is part of the load: done now, like the load's own (flushRing), not in slices later
     if (this.updates++ === 0 && this.ringOn && this.ringPending()) this.flushRing();
-    if (this.dirty.size) this.buildDirty(camera.position, budget * 4, this.loadBuild ? budget : 1);
-    if (!this.dirty.size) this.loadBuild = false;
+    // the load's frames build what its later work dirtied at once (LOAD_FRAMES); runtime rebuilds keep to buildBudgetMs
+    if (this.dirty.size) {
+      if (this.loadFrames > 0) this.buildAll();
+      else this.buildDirty(camera.position, budget * 4);
+    }
+    if (this.loadFrames > 0) this.loadFrames--;
     if (this.warm.length && ((this.warmMain && (this.warmShadow || !this.castShadows)) || ++this.warmFrames > 600)) this.dropWarmup();
     // snow on the trees follows the terrain's (seasonal) snow line
     const tu = this.terrain.uniforms;
@@ -2096,11 +2165,15 @@ export class TreeRenderer {
    * per frame: which outer ring meshes are drawn and how many of their trees. A sector's near pair submits the prefix of
    * its trees (ordered by their depth t beyond the sector's map edge or edges) that can be within the switch distance: a
    * camera e metres inside those edges is at least t + e from a tree at depth t (horizontally). Its far blocks show
-   * while the camera is high enough (camera height fade), each submitting the prefix of its trees (ordered by their
+   * while the camera is high enough (camera height fade) or near the sector's edge(s) (within RING_EDGE_NEAR x
+   * lodDistance, where the ring is the horizon at any height), each submitting the prefix of its trees (ordered by their
    * thinning random) that its nearest point keeps; a block entirely within the switch distance draws nothing (its trees
-   * are the near pair's). With the view's camera, a near pair's prefix also ends at the deepest point past the sector's
-   * edge(s) of the view's ground footprint (ringViewDirs; + RING_VIS_PAD): a camera beyond the edge looking back at the
-   * map does not submit the trees behind it.
+   * are the near pair's). A low camera near the sector's edge(s) (weight lw: below the height fade, near the edge) sees
+   * the sector at a grazing angle: its switch distance moves out to ringLowSwitch x lodDistance and its far blocks show
+   * whole micro crowns (ringLowShape) - all per sector, exactly as the vertex shaders do it per tree (FAR_VERT_MAIN,
+   * RING_LOW_VERT). With the view's camera, a near pair's prefix also ends at the deepest point past the sector's edge(s)
+   * of the view's ground footprint (ringViewDirs; + RING_VIS_PAD): a camera beyond the edge looking back at the map does
+   * not submit the trees behind it.
    */
   private updateRingView(px: number, py: number, pz: number, lod: number, camH: number, camera?: THREE.Camera): void {
     if (!this.ringOn) return;
@@ -2108,8 +2181,10 @@ export class TreeRenderer {
     // low cameras: the far blocks fade out with the camera height (seen from inside the city they are hidden or a few
     // specks in the haze); the near pairs show at any height (a camera near the map edge, where the ring is the horizon)
     const fv = _sstep(this.ringFadeHeight[0], this.ringFadeHeight[1], camH);
+    const lowSw = lod * Math.max(1, this.ringLowSwitch), shape = this.ringLowShape;
     this.ringU.uRingP.value.set(lod, fv, W);
-    const reach = lod * (RING_SWITCH_LO + RING_SWITCH_SPAN), inner = lod * RING_SWITCH_LO;
+    this.ringU.uRingQ.value.set(lowSw, shape ? 1 : 0);
+    const mg = getMicroImpostorGeometries();
     const RB = this.ringBox;
     const view = camera ? this.ringViewDirs(camera, px, py, pz) : 0;
     for (let k = 0; k < RING_N; k++) {
@@ -2121,6 +2196,10 @@ export class TreeRenderer {
         const ez = iz === 0 ? pz : W - pz;
         if (ez < e) e = ez;
       }
+      // near the sector's edge(s): no camera height fade; a low camera there: the low-camera look (weight lw)
+      const ne = 1 - _sstep(lod * RING_EDGE_NEAR, lod * RING_SWITCH_LO, e), lw = (1 - fv) * ne;
+      const sw = lod + (lowSw - lod) * lw;
+      const reach = sw * (RING_SWITCH_LO + RING_SWITCH_SPAN), inner = sw * RING_SWITCH_LO, fvK = fv > ne ? fv : ne;
       // (a camera H above the sector's highest tree reaches horizontally only sqrt(reach^2 - H^2))
       const H = py - RB[k * 6 + 4], hr2 = reach * reach - (H > 0 ? H * H : 0);
       let tMax = (hr2 > 0 ? Math.sqrt(hr2) : -1) - e;
@@ -2140,10 +2219,13 @@ export class TreeRenderer {
         mesh.count = lo;
         mesh.visible = lo > 0;
       }
-      const far = ready && fv > 0.001;
+      const far = ready && fvK > 0.001;
+      // (the whole micro crown while the low-camera weight is on: its lower half is a flat fan at lw = 0, see ringLow)
+      const geo = shape && lw > 0 ? mg.ringLow : mg.top;
       for (let q = 0; q < RING_SUB; q++) {
         const id = k * RING_SUB + q, m = rf[id];
         if (!m) continue;
+        if (m.geometry !== geo) m.geometry = geo;
         const n = (m.userData.ringCount as number | undefined) ?? 0, r = this.ringMicroR[id];
         const B = this.ringMicroBox, o = id * 6;
         if (!far || !n || !r) {
@@ -2161,7 +2243,7 @@ export class TreeRenderer {
         // trees are ordered by their random): a prefix
         const d = boxDist(B, o, px, py, pz);
         let keep = RING_KEEP_A - (d - lod) / RING_KEEP_D;
-        keep = (keep < RING_KEEP_MIN ? RING_KEEP_MIN : keep > 1 ? 1 : keep) * fv + 1e-3;
+        keep = (keep < RING_KEEP_MIN ? RING_KEEP_MIN : keep > 1 ? 1 : keep) * fvK + 1e-3;
         let lo = 0, hi = n;
         while (lo < hi) {
           const mid = (lo + hi) >> 1;
@@ -2188,9 +2270,7 @@ export class TreeRenderer {
 
   /** synchronous full rebuild (e.g. before a capture); ring: also finish the outer ring's pending work */
   flush(ring = true) {
-    for (const id of this.dirty) this.buildChunk(id);
-    this.dirty.clear();
-    this.loadBuild = false;
+    this.buildAll();
     if (ring) this.flushRing();
   }
 
@@ -2721,11 +2801,12 @@ export class TreeRenderer {
       cc[j * 3] = col[i * 3];
       cc[j * 3 + 1] = col[i * 3 + 1];
       cc[j * 3 + 2] = col[i * 3 + 2];
-      // the micro top: the double pyramid's upper half (waist r 0.46 at y 0.63, apex 1) in the instance's frame
+      // the micro top: the double pyramid's upper half (waist r 0.46 at y 0.63, apex 1) in the instance's frame, down to
+      // the lower apex of the low cameras' whole crown (ringLow)
       const hs = Math.hypot(micro[s], micro[s + 2]) * 0.5, vs = micro[s + 5];
       const x = micro[s + 12], y = micro[s + 13], z = micro[s + 14];
       if (x - hs < B[o]) B[o] = x - hs;
-      if (y + vs * 0.6 < B[o + 1]) B[o + 1] = y + vs * 0.6;
+      if (y + vs * MICRO_LOW_APEX < B[o + 1]) B[o + 1] = y + vs * MICRO_LOW_APEX;
       if (z - hs < B[o + 2]) B[o + 2] = z - hs;
       if (x + hs > B[o + 3]) B[o + 3] = x + hs;
       if (y + vs > B[o + 4]) B[o + 4] = y + vs;

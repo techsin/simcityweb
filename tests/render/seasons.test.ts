@@ -26,6 +26,7 @@ import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { Surf } from '../../src/core/types';
 import { getBuildingMaterial, patchFoliageDepthMaterial, setFoliageSeason, sharedUniforms } from '../../src/assets/materials';
 import { bareTreeProxy, getImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
+import { propLodGeometry } from '../../src/render/city/props/propLod';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
@@ -138,6 +139,28 @@ describe('seasonal foliage patterns', () => {
         expect(col.getX(i)).toBeGreaterThan(col.getY(i));
       }
       expect(fol).toBe(8);
+    }
+  });
+
+  it('street-tree LOD proxies (propLod): a bare winter variant gets the slim bare proxy, a leafy one the crown impostor', () => {
+    const width = (g: THREE.BufferGeometry) => {
+      g.computeBoundingBox();
+      const b = g.boundingBox!;
+      return Math.max(b.max.x - b.min.x, b.max.z - b.min.z);
+    };
+    const impTris = getImpostorGeometries().broad.getAttribute('position').count / 3;
+    for (const [id, bare, green] of [['tree_oak', 6, 0], ['tree_maple', 4, 0], ['tree_birch', 4, 0]] as [string, number, number][]) {
+      const gb = getModelGeometry(id, bare);
+      const pb = propLodGeometry(`${id}#${bare}`, id, gb)!;
+      const pg = propLodGeometry(`${id}#${green}`, id, getModelGeometry(id, green))!;
+      expect(pb, id).toBeTruthy();
+      expect(pg, id).toBeTruthy();
+      expect(pb.getAttribute('position').count / 3).toBe(16);
+      expect(pg.getAttribute('position').count / 3).toBe(impTris);
+      // not a crown-sized ball in winter: the ground shows around a bare street tree. The impostor at the bare model's
+      // bounds (what bare variants got before) is ~1.93 x its radius wide: wider than the summer crown
+      expect(width(pb)).toBeLessThan(width(pg) * 0.75);
+      expect(width(pb)).toBeLessThan(natureStats(gb).radius * 1.93 * 0.5);
     }
   });
 
@@ -750,7 +773,7 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
-  it('low cameras: no ring from inside the city, the near sectors next to the map edge; high cameras: far sectors', () => {
+  it('low cameras: no ring from inside the city, the sectors next to the map edge (whole crowns); high cameras: far sectors', () => {
     const { st, tr } = make(128);
     const W = st.size * CELL_SIZE;
     const terr = (tr as unknown as { terrain: TerrainRenderer }).terrain;
@@ -773,14 +796,25 @@ describe('outer ring trees', () => {
     at(W / 2, 30, W / 2);
     expect(ring().some((m) => m.visible)).toBe(false);
     expect(ring().every((m) => m.frustumCulled)).toBe(true);
-    // street height next to the west edge: the ring is the horizon there - that side's regular impostor pair
+    // street height next to the west edge: the ring is the horizon there - that side's regular impostor pair, and past
+    // its switch distance its far blocks, as whole micro crowns (the low-camera shape: seen at a grazing angle, the
+    // plain upper half is a cone floating at 63% of the tree's height); nothing of the sectors whose edge is far
     at(60, 30, W / 2);
     const shown = ring().filter(drawn);
-    expect(shown.length).toBeGreaterThan(0);
-    expect(shown.some(isMicro)).toBe(false);
-    // high above the map: the far sectors' micro impostors
+    expect(shown.some((m) => !isMicro(m))).toBe(true);
+    const far = shown.filter(isMicro);
+    expect(far.length).toBeGreaterThan(0);
+    expect(far.every((m) => m.geometry.name === 'impostor-micro-ringlow')).toBe(true);
+    // (west-side sectors: their trees stand past x = 0, their crowns at most a few metres over it)
+    expect(shown.every((m) => m.boundingBox!.max.x < 20)).toBe(true);
+    // ... and from more than 0.94 x lodDistance inside it, only that sector's near trees, if any
+    at(850, 30, W / 2);
+    expect(ring().filter(drawn).some(isMicro)).toBe(false);
+    // high above the map: the far sectors' micro impostors, their upper halves only
     at(W / 2, 3000, W / 2);
-    expect(ring().some((m) => drawn(m) && isMicro(m))).toBe(true);
+    const high = ring().filter((m) => drawn(m) && isMicro(m));
+    expect(high.length).toBeGreaterThan(0);
+    expect(high.every((m) => m.geometry.name === 'impostor-micro-top')).toBe(true);
     tr.dispose();
   }, 120_000);
 
@@ -868,12 +902,12 @@ describe('outer ring trees', () => {
     const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
     const ring = tr as unknown as { ringStale: number; ringRefill: number; ringGen: unknown; ringFillState: unknown; ringFarDirty: number; dirty: Set<number> };
     const busy = () => !!(ring.ringStale || ring.ringRefill || ring.ringGen || ring.ringFillState || ring.ringFarDirty);
-    // the constructor (load): every sector generated, filled and uploaded; only the map's chunks are left to the first
-    // frames (nearest first)
+    // the constructor (load): every sector generated, filled and uploaded, and every map chunk built
     expect(tr.ringGenerations).toBe(8);
     expect(busy()).toBe(false);
     expect(tr.ringInstances).toBeGreaterThan(500);
-    expect(ring.dirty.size).toBe(16);
+    expect(ring.dirty.size).toBe(0);
+    expect(tr.totalInstances).toBeGreaterThan(0);
     const blocks = () => tr.group.children.filter((o) => o.name === 'trees-ring' && ((o as THREE.Mesh).geometry.name ?? '').startsWith('impostor-micro')) as THREE.InstancedMesh[];
     expect(blocks().reduce((a, m) => a + ((m.userData.ringCount as number) ?? 0), 0)).toBe(tr.ringInstances);
     // a regeneration of every sector (as after border terrain edits): zero-budget slices, one bounded unit each (a block
@@ -962,33 +996,43 @@ describe('outer ring trees', () => {
     b.tr.dispose();
   }, 120_000);
 
-  it('load work stays in the load: ring work queued before the first frame is done by it, the load build takes >= update()\'s count per frame', () => {
+  it('load work stays in the load: the load builds every chunk, its first frames build what its own later work dirtied, at once', () => {
     const st = createCityState(defaultCityConfig({ size: 128, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
     const W = st.size * CELL_SIZE;
     const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
     cam.position.set(W / 2, 600, W / 2 + 300);
+    const all = { x0: 0, z0: 0, x1: st.size - 1, z1: st.size - 1 };
     const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
     const ring = tr as unknown as { ringRefill: number; dirty: Set<number>; ringPending(): boolean };
     let slices = 0;
     const step = tr.ringStep.bind(tr);
     tr.ringStep = (b: number) => { slices++; step(b); };
-    // (a time budget used up by any chunk: only the load's floor builds more than one per frame)
+    // (a time budget used up by any chunk: a runtime rebuild builds one chunk per frame)
     tr.buildBudgetMs = 0;
-    // a pre-run of the sim (a demo's days) changes the month before the first frame: a season refill of every sector
+    // the load (constructor) built every chunk and the ring
+    expect(ring.dirty.size).toBe(0);
+    expect(ring.ringPending()).toBe(false);
+    const n0 = tr.totalInstances;
+    expect(n0).toBeGreaterThan(0);
+    // a pre-run of the sim (a demo's days) changes the month before the first frame: every chunk and a season refill of
+    // every sector
     const m0 = st.month, m1 = (m0 + 6) % 12;
     tr.setMonth(m1);
     expect(ring.ringRefill).toBe(255);
     expect(ring.dirty.size).toBe(16);
-    // the first frame finishes it (part of the load, like the load's own ring) and builds the update() count of chunks
+    // the first frame finishes both (part of the load, like the load's own build)
     tr.update(cam);
     expect(ring.ringPending()).toBe(false);
     expect(slices).toBeGreaterThan(0);
-    expect(ring.dirty.size).toBe(16 - 3);
-    tr.update(cam, 5);
-    expect(ring.dirty.size).toBe(16 - 3 - 5);
-    let frames = 2;
-    while (ring.dirty.size) { tr.update(cam); frames++; }
-    expect(frames).toBe(2 + Math.ceil((16 - 8) / 3));
+    expect(ring.dirty.size).toBe(0);
+    // so do the load's other frames (3 in all): edits between them (a demo's own edits) are built by the next one, at once
+    for (let f = 1; f < 3; f++) {
+      tr.onCellsChanged(all);
+      expect(ring.dirty.size).toBe(16);
+      tr.update(cam);
+      expect(ring.dirty.size).toBe(0);
+    }
+    expect(tr.totalInstances).toBe(n0);
     // the load is over: a runtime season change rebuilds within buildBudgetMs (one chunk here) and refills the ring in
     // slices on calm frames, never at once
     tr.setMonth(m0);
@@ -997,18 +1041,25 @@ describe('outer ring trees', () => {
     expect(ring.dirty.size).toBe(15);
     expect(ring.ringPending()).toBe(true);
     expect(slices).toBe(s0);
-    // a reset is a load again: its build takes the update() count per frame
+    // a reset is a load again: it builds every chunk at once, and its first frames build later edits at once
     tr.reset(st);
     expect(ring.ringPending()).toBe(false);
-    expect(ring.dirty.size).toBe(16);
-    tr.update(cam);
-    expect(ring.dirty.size).toBe(13);
-    // flush() ends a load build at once
-    tr.flush();
     expect(ring.dirty.size).toBe(0);
+    tr.onCellsChanged(all);
+    tr.update(cam);
+    expect(ring.dirty.size).toBe(0);
+    tr.update(cam);
+    tr.update(cam);
     tr.setMonth(m1);
     tr.update(cam);
     expect(ring.dirty.size).toBe(15);
+    // flush() builds every chunk at once
+    tr.flush();
+    expect(ring.dirty.size).toBe(0);
+    // a quality change builds the chunks it marks (a new density: all of them) at once
+    tr.setQuality({ lodDistance: 850, density: 0.9, castShadows: false, maxVariants: 3 });
+    expect(ring.dirty.size).toBe(0);
+    expect(ring.ringPending()).toBe(false);
     tr.dispose();
   }, 120_000);
 

@@ -1,7 +1,8 @@
 /**
  * Mid-distance LOD geometry for network props (cached per model / variant).
  *  - trees (median / street trees): the TreeRenderer impostor (28 tris) scaled to the model's bounds and tinted with
- *    its average foliage colour
+ *    its average foliage colour; bare (see-through twig) winter variants: fallbackTrees.bareTreeProxy (a trunk and a
+ *    slim twig spindle, 16 tris), so a winter avenue is not lined with opaque crown-sized balls
  *  - everything else (streetlights, traffic lights, crossing gates): "pole + crown" — a 3-sided prism for the mast
  *    and one box for whatever sits in the top part (lamp arm + head, signal heads), painted with the dominant surface
  *    of each part; a lamp head keeps an emissive underside so it still glows at night. ~16 triangles.
@@ -9,11 +10,14 @@
 import * as THREE from 'three';
 import { ModelBuilder, type Paint } from '../../../assets/ModelBuilder';
 import { Surf } from '../../../core/types';
-import { getImpostorGeometries, natureStats } from '../../world/fallbackTrees';
+import { bareTreeProxy, getImpostorGeometries, natureStats } from '../../world/fallbackTrees';
 
 const cache = new Map<string, THREE.BufferGeometry | null>();
 
 function treeProxy(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  // bare (see-through twig) variants: a slim opaque proxy (fallbackTrees.bareTreeProxy), not a crown-sized ball
+  const bare = bareTreeProxy(g);
+  if (bare) return bare;
   const st = natureStats(g);
   const imp = getImpostorGeometries().broad.clone();
   const sxz = (st.radius / 0.42) * 0.92;
