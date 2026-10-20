@@ -1945,7 +1945,7 @@ export class EmergencySystem implements SimSystem {
         if (from && this.freeOf(from) > 0) continue;
         if (inc.retry > st.day) inc.retry = st.day;
         // (the unit it counted on is gone: counted again once the next pass found another one in time)
-        inc.prompted = false;
+        if (inc.prompted) inc.prompted = false;
         this.redo = true;
         continue;
       }
@@ -1966,8 +1966,8 @@ export class EmergencySystem implements SimSystem {
     inc.bestEta = undefined;
     inc.bestFrom = undefined;
     // (a prompt the player can no longer answer is no ignored prompt — final fixes r3; counted again at a settle point
-    // once a unit is back and can still make it)
-    inc.prompted = false;
+    // once a unit is back and can still make it. One never counted keeps no flag)
+    if (inc.prompted) inc.prompted = false;
     if (inc.state === 'queued') {
       // an in-range unit is on its way back and goes to it then: its note ("… — one is on its way back") holds
       this.emit(sim, inc, 'queued');

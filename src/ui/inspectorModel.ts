@@ -6,9 +6,11 @@
  */
 import { EMERG_RMAX, EMERG_SLOW_MARGIN } from '../sim/infra/params';
 import { FIRE_TOO_FAR_TEXT } from '../sim/infra/overlays';
+import { BF } from '../sim/CityState';
 import type { FactorTerm } from '../sim/explain';
 import type { FacilityLine, FacilityReport } from '../sim/infra/facilities';
 import type { NeedReport } from '../sim/economy/demographics';
+import { money } from './format';
 
 export type Tone = 'pos' | 'warn' | 'neg' | '';
 
@@ -276,18 +278,30 @@ export interface RubbleCrews {
 }
 
 /**
+ * The inspector's word for a building in ruins (BF.Burnt; final fixes r3): cause-neutral, because BF.Burnt records no
+ * cause — a tornado, an earthquake or a meteor flattens a building as well as a fire, and their rubble read "Burnt down".
+ * The facility report says the same ("In ruins — bulldoze it and build it again").
+ */
+export const RUINS_TEXT = 'In ruins';
+
+/** the BF flags whose chips still hold on a ruin: the ruin itself and an emergency still on it (no Powered / Water chip
+ *  — a ruin draws nothing, though its cells may still be on the grid — and nothing its old life left: understaffed,
+ *  noisy, garbage piling up, needs unmet...) */
+export const RUIN_CHIP_FLAGS = BF.Burnt | BF.Incident;
+
+/**
  * The main problem of a growable lot in rubble (BF.Burnt; final fixes UI-2): growth never rebuilds on rubble, so a burnt
  * home or shop showed a Burnt down chip, a condition forecast and a Make historic button but no fix — 55 such lots sat
  * for years. Its fix, like the planner's rubble advice: the bulldozer, or the Municipal Demolition Crews ordinance (rubble
- * cleared after `days`); while it is enacted, that it is in hand. (A ruined facility's report says "Burnt down —
- * bulldoze it and build it again".)
+ * cleared after `days`); while it is enacted, that it is in hand. In cause-neutral words (RUINS_TEXT), like a ruined
+ * facility's report ("In ruins — bulldoze it and build it again").
  */
 export function rubbleProblem(crews: RubbleCrews | null | undefined): MainProblem {
-  if (crews?.enacted) return { text: 'Burnt down', hint: `${crews.name} are clearing it — the lot can rebuild once the rubble is gone (within about ${crews.days} days)`, tone: 'warn' };
+  if (crews?.enacted) return { text: RUINS_TEXT, hint: `${crews.name} are clearing it — the lot can rebuild once the rubble is gone (within about ${crews.days} days)`, tone: 'warn' };
   const ord = !crews ? ''
     : crews.available ? `, or enact ${crews.name} (Ordinances) to clear rubble automatically`
     : ` (${crews.name}, who clear rubble automatically, come with ${crews.unlockPop.toLocaleString('en-US')} residents)`;
-  return { text: 'Burnt down', hint: `Bulldoze the rubble so the lot can rebuild${ord}`, tone: 'bad' };
+  return { text: RUINS_TEXT, hint: `Bulldoze the rubble so the lot can rebuild${ord}`, tone: 'bad' };
 }
 
 // ------------------------------------------------------------------------------------------------ land value
@@ -352,7 +366,8 @@ export function warningTopic(w: string): Chip['topic'] {
   if (/^No water/i.test(w)) return 'water';
   if (/^No road/i.test(w)) return 'road';
   if (/^Understaffed/i.test(w)) return 'staff';
-  if (/^Burnt/i.test(w)) return 'burnt';
+  // (a ruin's warning: "In ruins — bulldoze it and build it again", older reports "Burnt down — …")
+  if (/^(Burnt|In ruins)/i.test(w)) return 'burnt';
   return 'other';
 }
 
@@ -389,6 +404,26 @@ export function splitFacilityRows(rows: readonly ModelRow[]): { staff: ModelRow 
 export function headerMoney(value: string, income = false): string {
   const m = /^(§[\d,.]+[kM]?) \/ month(.*)$/.exec(value.trim());
   return m ? `${income ? '+' : ''}${m[1]}/mo${m[2]}` : value;
+}
+
+/**
+ * The inspector header's income row of a plopped building: the facility report's actual Income line when it has one
+ * (an airport earns with its traffic, a venue with its visitors; a ruin's line reads "none — in ruins"), else the
+ * catalog income — but never for a ruin (final fixes r3): a ruined deal or landmark earns nothing (budget.ts books no
+ * income for it), whatever the catalog says. A ruined Giant Observation Wheel read "Income +§400/mo" in green under
+ * "Burnt down", the Missile Test Range "+§2,500/mo". null: no income row.
+ */
+export function headerIncome(def: { income?: number; category?: string }, row: ModelRow | null | undefined, ruin: boolean): { label: string; value: string; tone: 'pos' | 'neg'; hint?: string } | null {
+  const out = (label: string, value: string, tone: 'pos' | 'neg', hint?: string) => (hint ? { label, value, tone, hint } : { label, value, tone });
+  // a ruin: the report's own "none" line (status bad) as it is, anything else as none
+  if (ruin) {
+    if (!row && !((def.income ?? 0) > 0)) return null;
+    const label = row?.label ?? (def.category === 'reward' ? 'Deal income' : 'Income');
+    return out(label, row?.status === 'bad' ? row.value : 'none — in ruins', 'neg', row?.hint);
+  }
+  if (row) return out(row.label, headerMoney(row.value, true), row.status === 'bad' ? 'neg' : 'pos', row.hint);
+  const inc = def.income ?? 0;
+  return inc > 0 ? out('Income', `+${money(inc)}/mo`, 'pos') : null;
 }
 
 /** drop chips whose topic a facility warning already explains (the warning carries the fix) */
@@ -448,15 +483,38 @@ export function pyramid(shares: ArrayLike<number> | null | undefined, pop: numbe
 
 // ------------------------------------------------------------------------------------------------ emergency response
 /**
- * the second half of the Fire view's red-band sentence (overlays.FIRE_TOO_FAR_TEXT, final fixes SF-5 / UI-3): beyond the
- * burn-down window a fire is lost, but an industrial accident there still waits for a fire truck — "An industrial
- * accident here is still saved by a fire truck sent within 3 days, however long the drive — build a fire station closer"
+ * The second half of the Fire view's red-band sentence (overlays.FIRE_TOO_FAR_TEXT, final fixes SF-5 / UI-3), as a
+ * sentence of its own: beyond the burn-down window a fire is lost, but an industrial accident there is still saved by a
+ * fire truck sent within its dispatch window (EMERG_GRACE.industrial), however long the drive. Cut from the hover's
+ * sentence, so it carries the hover's number and unit, never its own: the inspector's fire row note, its hint
+ * (fireResponseHint) and the Fire view's hover change together.
  */
 export const FIRE_FAR_NOTE: string = (() => {
   const i = FIRE_TOO_FAR_TEXT.indexOf('; ');
   const t = i >= 0 ? FIRE_TOO_FAR_TEXT.slice(i + 2) : FIRE_TOO_FAR_TEXT;
   return t.charAt(0).toUpperCase() + t.slice(1);
 })();
+
+/**
+ * A FIRE_FAR_NOTE-like sentence as a clause about the far band (final fixes r3): its advice cut off (" — build a fire
+ * station closer"), lower-cased, "here" → "there" — "an industrial accident there is still saved by a fire truck sent
+ * within …, however long the drive", with the sentence's own number and unit.
+ */
+export function farClause(note: string): string {
+  const i = note.lastIndexOf(' — ');
+  const t = i > 0 ? note.slice(0, i) : note;
+  return (t.charAt(0).toLowerCase() + t.slice(1)).replace(/\bhere\b/, 'there');
+}
+
+/**
+ * The hint of the inspector's Fire response row: what the Emergency · Fire view's three bands mean (covered: statistics;
+ * amber: a truck sent at once still makes it; red: a fire burns down first), its industrial-accident clause cut from the
+ * hover's sentence (FIRE_FAR_NOTE → farClause): the window's number and unit are the hover's, so the hint never says
+ * "within 3 days" while the banner counts "3.0 min left to send a truck".
+ */
+export function fireResponseHint(note = FIRE_FAR_NOTE): string {
+  return `Auto-dispatch reach: covered fires become statistics; just beyond it (amber in the Emergency · Fire view) a fire waits for your dispatch and a truck sent at once still makes it; farther away it burns down before a truck can arrive, but ${farClause(note)}`;
+}
 
 /**
  * "auto, 2.1 min to spare" / "manual only (1.4 min out of reach)" / "no station"; null = unknown (no data yet).

@@ -47,16 +47,17 @@ import { roadCellReport } from '../../sim/infra/transportFacilities';
 import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, emergencyReachAt, emgNearSlack } from '../../sim/infra/overlays';
 import type { PollutionSystem } from '../../sim/infra/pollution';
 import type { CrimeSystem } from '../../sim/infra/crime';
-import { EMERG_GRACE, NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
+import { NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
 import {
-  type Bar, type Chip, type ModelRow, type RubbleCrews, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView, growthRows, headerMoney,
-  mainProblem, landValueView, needRows, pyramid, responseText, rubbleProblem, signedPts, splitFacilityRows,
+  type Bar, type Chip, type ModelRow, type RubbleCrews, RUIN_CHIP_FLAGS, RUINS_TEXT, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView,
+  fireResponseHint, growthRows, headerIncome, headerMoney, mainProblem, landValueView, needRows, pyramid, responseText, rubbleProblem, signedPts, splitFacilityRows,
 } from '../inspectorModel';
 
 const FLAG_CHIPS: [number, string, Chip['cls'], Chip['topic']?][] = [
   [BF.Abandoned, 'Abandoned', 'bad'],
   [BF.OnFire, 'On fire!', 'bad', 'fire'],
-  [BF.Burnt, 'Burnt down', 'bad', 'burnt'],
+  // (cause-neutral, final fixes r3: a tornado, a quake or a meteor leaves ruins too)
+  [BF.Burnt, RUINS_TEXT, 'bad', 'burnt'],
   [BF.Incident, 'Emergency here', 'bad'],
   [BF.NoRoad, 'No road access', 'bad', 'road'],
   [BF.Understaffed, 'Understaffed', 'warn', 'staff'],
