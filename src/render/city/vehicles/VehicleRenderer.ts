@@ -707,7 +707,10 @@ export class VehicleRenderer {
     const st = this.state, N = st.size, N1 = N + 1, hts = st.heights;
     const ix = ci % N, iz = (ci / N) | 0, j = iz * N1 + ix;
     const a = hts[j], b = hts[j + 1], c = hts[j + N1], d = hts[j + N1 + 1];
-    const lo = Math.min(a, b, c, d), hi = Math.max(a, b, c, d) + LIFT + (this.net.bAxis[ci] >= 0 || this.net.bCross[ci] ? 60 : 5);
+    // (pairwise compares, not Math.min / Math.max of four: called from code V8 runs in its mid tier, which boxes the
+    // four doubles and the result of such a call)
+    const l0 = a < b ? a : b, l1 = c < d ? c : d, h0 = a > b ? a : b, h1 = c > d ? c : d;
+    const lo = l0 < l1 ? l0 : l1, hi = (h0 > h1 ? h0 : h1) + LIFT + (this.net.bAxis[ci] >= 0 || this.net.bCross[ci] ? 60 : 5);
     const hy = (hi - lo) * 0.5, o = v * 4, sp = this.vsph;
     sp[o] = (ix + 0.5) * CELL_SIZE; sp[o + 1] = lo + hy; sp[o + 2] = (iz + 0.5) * CELL_SIZE;
     sp[o + 3] = Math.sqrt(CELL_SIZE * CELL_SIZE * 0.5 + hy * hy) + 12;
