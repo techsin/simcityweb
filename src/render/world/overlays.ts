@@ -2,12 +2,14 @@
  * Data-view overlays: per-cell values (0..1 packed into a Uint8 DataTexture, bilinear filtered on the terrain)
  * + a color ramp (RGBA, alpha = coverage) + UI legend, per overlay AND variant. Pure functions, no GPU state.
  * The values come from the simulation's overlayLayer(state, o, variant) (src/sim/infra/overlays.ts), the same layer the
- * query tool's hover readout reads, so what the player sees and what the tip says always agree.
+ * query tool's hover readout reads, so what the player sees and what the tip says always agree. (Road-only views —
+ * Traffic — also paint each road's value on the curb cells beside it, since the road meshes hide the road cells: see
+ * curbCells; the hover reads the road itself.)
  */
 import { Network, Overlay, Zone } from '../../core/types';
 import type { CityState } from '../../sim/CityState';
 import { EMG_NEAR, EMG_SPAN, OVERLAY_VARIANTS, TAP_T0, overlayDeps, overlayLayer, resolveVariant } from '../../sim/infra/overlays';
-import { NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
+import { EMERG_GRACE, NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
 import { TAP_SAFE } from '../../sim/economy/tuning';
 
 export interface RampStop {
@@ -35,7 +37,8 @@ export interface OverlayDef {
   wind?: boolean;
   /** per-building data / categories: the terrain draws whole cells (nearest texel) instead of blending into the roads
    *  between the homes (a pale halo on every street) — or, across a ramp of categories, through the categories between
-   *  two neighbours (Emergency: an amber "Just out of reach" ring around every red roadless building) */
+   *  two neighbours (Emergency: an amber "Just out of reach" ring around every red roadless building; Traffic: the
+   *  curb cells beside a jammed road fading through 'Heavy' and 'Busy' into the land beyond) */
   crisp?: boolean;
 }
 
@@ -170,7 +173,13 @@ const DEMO = (title: string, what: string): DefCore => ({
   crisp: true,
 });
 
-const EMERGENCY = (title: string, unit: string, station: string): DefCore => {
+/**
+ * Emergency response views. Fire differs from police / ambulance: its amber band is the burn-down window (emgNearSlack
+ * in src/sim/infra/overlays.ts) — a truck sent at once still saves the building — and beyond it (red) a fire burns down
+ * before any truck can arrive, while an industrial accident there still waits EMERG_GRACE.industrial days for one. The
+ * legend and notes say what the hover says there (FIRE_TOO_FAR_TEXT), not "You must dispatch".
+ */
+const EMERGENCY = (title: string, unit: string, station: string, fire = false): DefCore => {
   // slack s maps to t = 0.08 + 0.92 (s + SPAN) / (2 SPAN): s = -3 -> tNear, s = 0 -> tZero
   const t = (s: number) => 0.08 + (0.92 * (s + EMG_SPAN)) / (2 * EMG_SPAN);
   const tNear = t(-EMG_NEAR), tZero = t(0);
@@ -189,13 +198,15 @@ const EMERGENCY = (title: string, unit: string, station: string): DefCore => {
     legend: [
       { color: '#3fb45a', label: 'Auto-dispatch' },
       { color: '#f0a030', label: 'Just out of reach' },
-      { color: '#c8322a', label: 'You must dispatch' },
+      { color: '#c8322a', label: fire ? 'Too far — fires burn down first' : 'You must dispatch' },
       { color: '#6a4c93', label: `No ${station}` },
     ],
     swatches: true,
     notes: [
       `Green: ${unit} are sent automatically in time — incidents there become statistics.`,
-      'Amber / red: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.',
+      fire
+        ? `Amber: fires wait for your dispatch — a truck sent at once still makes it. Red: too far for fires; an industrial accident there is still saved by a fire truck sent within ${EMERG_GRACE.industrial} days.`
+        : 'Amber / red: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.',
       'Red on a single building: no road reaches it — build one beside it.',
     ],
     // whole cells: a bilinear blend from a red roadless building (t 0.08) to a green neighbour passes through amber —
@@ -257,6 +268,9 @@ const BASE: Record<Overlay, DefCore> = {
       { color: '#ef8a2a', label: 'Heavy' },
       { color: '#d42a2a', label: 'Jammed' },
     ],
+    // whole cells: the road meshes hide the road cells, so the colour shows on the curb cells beside them
+    // (computeOverlayValues, roadsOnly) — a bilinear blend into the bare land beyond read a jam as 'Busy' yellow at best
+    crisp: true,
   },
   [Overlay.AirPollution]: THRESHOLD('Air Pollution', POLLUTED_THRESHOLD, '#d6cf62', '#b87a34', '#5e2a22', ['Clean', `Polluted ≥ ${pctT(POLLUTED_THRESHOLD)}`, 'Heavy smog'],
     [`Homes and shops above ${pctT(POLLUTED_THRESHOLD)} get the "Polluted" chip: lower desirability, health and land value.`], true),
@@ -334,7 +348,7 @@ const BASE: Record<Overlay, DefCore> = {
   },
   [Overlay.Soil]: BAD('Soil Contamination', '#c8b070', '#8a6a30', '#4a3010', ['Clean', 'Contaminated', 'Toxic'],
     ['Left by industry, dumps and spills; it fades slowly once the source is gone.']),
-  [Overlay.Emergency]: EMERGENCY('Emergency · fire response', 'fire trucks', 'fire station'),
+  [Overlay.Emergency]: EMERGENCY('Emergency · fire response', 'fire trucks', 'fire station', true),
   [Overlay.Parking]: BAD('Parking Pressure', '#dbb05a', '#c2482e', '#6a1f5a', ['Easy', 'Tight', 'Full'],
     ['Above 60% shops lose customers. A parking garage next to a transit stop relieves the block.']),
 };
@@ -343,10 +357,11 @@ const BASE: Record<Overlay, DefCore> = {
 const VARIANTS: Partial<Record<Overlay, (Partial<DefCore> | undefined)[]>> = {
   [Overlay.Traffic]: [undefined, {
     title: 'Traffic · trucks',
+    // (clear up to just above the 0.05 floor every road cell gets: a road without trucks paints no curb band)
     ramp: [
       { t: 0, color: '#e8c88a', a: 0 },
-      { t: 0.03, color: '#e8c88a', a: 0 },
-      { t: 0.06, color: '#e8c88a', a: 0.35 },
+      { t: 0.056, color: '#e8c88a', a: 0 },
+      { t: 0.085, color: '#e8c88a', a: 0.35 },
       { t: 0.3, color: '#e0a040', a: 0.8 },
       { t: 0.65, color: '#c05a1a', a: 0.9 },
       { t: 1, color: '#6a2a10', a: 0.95 },
@@ -477,6 +492,29 @@ export function overlayLegend(o: Overlay, variant = -1): OverlayLegend {
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
+/**
+ * Road-only views (Traffic cars / trucks): the road meshes cover their whole cell (asphalt and sidewalks to the cell
+ * edge), so a road cell's own texel is never seen. Each land cell beside a road (not a road, rail or water cell) also
+ * takes the value of its busiest 4-neighbour road and the terrain draws it there in whole cells (crisp): the curbs of
+ * a jammed road read red. (Before, those cells held 0 and the bilinear blend of the road's texel with that 0 was all
+ * that showed: at most half the value, so a 175% jam read 'Busy' yellow.) Road cells keep their own value; reads only
+ * road texels written by the caller's first pass, so the result does not depend on the scan order.
+ */
+function curbCells(state: CityState, out: Uint8Array): void {
+  const net = state.network, water = state.water, N = state.size, R = Network.Rail;
+  for (let z = 0, i = 0; z < N; z++) {
+    for (let x = 0; x < N; x++, i++) {
+      if (net[i] !== 0 || water[i]) continue;
+      let m = 0, n: number;
+      if (x > 0 && (n = net[i - 1]) !== 0 && n !== R && out[i - 1] > m) m = out[i - 1];
+      if (x < N - 1 && (n = net[i + 1]) !== 0 && n !== R && out[i + 1] > m) m = out[i + 1];
+      if (z > 0 && (n = net[i - N]) !== 0 && n !== R && out[i - N] > m) m = out[i - N];
+      if (z < N - 1 && (n = net[i + N]) !== 0 && n !== R && out[i + N] > m) m = out[i + N];
+      out[i] = m;
+    }
+  }
+}
+
 /** Fill `out` (Uint8, N*N) with the overlay value per cell (0..255) of an overlay + variant. */
 export function computeOverlayValues(state: CityState, o: Overlay, out: Uint8Array, variant = -1): void {
   const C = state.cells;
@@ -507,6 +545,7 @@ export function computeOverlayValues(state: CityState, o: Overlay, out: Uint8Arr
       const v = d[i] * inv;
       out[i] = ((0.05 + 0.95 * (v > 0 ? (v < 1 ? v : 1) : 0)) * 255 + 0.5) | 0;
     }
+    curbCells(state, out);
     return;
   }
   if (L.palette === 'diverging') {

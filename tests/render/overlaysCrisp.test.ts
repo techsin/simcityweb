@@ -53,28 +53,31 @@ describe('Emergency data view: whole cells', () => {
     expect(new Set(edgeSamples(red, green, false).map(category)).has('near')).toBe(true);
   });
 
-  it('a genuine "Just out of reach" cell still reads amber, and the legend is unchanged', () => {
+  it('a genuine "Just out of reach" cell still reads amber, and the legend keeps its categories', () => {
     expect(category(encodeSlack(-1.5))).toBe('near');
+    // (render handoff RH-2: the Fire variant's red says what its hover says — overlaysTraffic.test.ts)
     const lg = overlayLegend(Overlay.Emergency, 0);
-    expect(lg.stops.map((s) => s.label)).toEqual(['Auto-dispatch', 'Just out of reach', 'You must dispatch', 'No fire station']);
+    expect(lg.stops.map((s) => s.label)).toEqual(['Auto-dispatch', 'Just out of reach', 'Too far — fires burn down first', 'No fire station']);
     expect(lg.swatches).toBe(true);
   });
 });
 
 describe('every other overlay keeps its filtering', () => {
-  it('crisp exactly where it was (Demographics, Tap water) plus Emergency', () => {
+  it('crisp exactly where it was (Demographics, Tap water) plus Emergency and Traffic', () => {
     const crisp: string[] = [];
     for (const o of OVERLAYS) for (const v of variantsOf(o)) if (overlayDef(o, v).crisp) crisp.push(`${Overlay[o]}:${v}`);
     expect(crisp.sort()).toEqual([
       'Demographics:0', 'Demographics:1', 'Demographics:2', 'Demographics:3', 'Demographics:4', 'Demographics:5',
       'Emergency:0', 'Emergency:1', 'Emergency:2',
+      // render handoff RH-1: the curb cells beside a road carry its value (overlaysTraffic.test.ts)
+      'Traffic:0', 'Traffic:1',
       'Water:1',
     ]);
   });
 
   it('their ramps, legends and refresh layers are untouched by the Emergency change', () => {
     // the fields that blend smoothly stay linear (a sample of each kind)
-    for (const o of [Overlay.AirPollution, Overlay.Noise, Overlay.LandValue, Overlay.Fire, Overlay.Police, Overlay.Health, Overlay.Desirability, Overlay.Traffic, Overlay.Parking]) {
+    for (const o of [Overlay.AirPollution, Overlay.Noise, Overlay.LandValue, Overlay.Fire, Overlay.Police, Overlay.Health, Overlay.Desirability, Overlay.Parking]) {
       expect(overlayDef(o).crisp, Overlay[o]).toBeFalsy();
     }
     expect(overlayDef(Overlay.Water, 0).crisp).toBeFalsy();

@@ -81,7 +81,9 @@ describe('overlays: every Overlay × variant', () => {
     }
     expect(overlayLegend(Overlay.AirPollution).wind).toBe(true);
     expect(overlayLegend(Overlay.AirPollution).stops.some((s) => /Polluted ≥/.test(s.label))).toBe(true);
-    expect(overlayLegend(Overlay.Emergency, EMG_FIRE).stops.map((s) => s.label)).toEqual(['Auto-dispatch', 'Just out of reach', 'You must dispatch', 'No fire station']);
+    // (render handoff RH-2: the Fire view's red is "a fire burns down before a truck arrives", as its hover says)
+    expect(overlayLegend(Overlay.Emergency, EMG_FIRE).stops.map((s) => s.label)).toEqual(['Auto-dispatch', 'Just out of reach', 'Too far — fires burn down first', 'No fire station']);
+    expect(overlayLegend(Overlay.Emergency, EMG_POLICE).stops.map((s) => s.label)).toEqual(['Auto-dispatch', 'Just out of reach', 'You must dispatch', 'No police station']);
     expect(overlayDef(Overlay.Desirability, DevType.CO3).title).toContain('CO$$$');
     expect(overlayDef(Overlay.Desirability, DESIR_FAMILIES).title).toContain('families');
     // appeal (0..1, unsigned): a sequential ramp — poor places nearly clear, not the diverging red of desirability
@@ -108,7 +110,20 @@ describe('overlays: every Overlay × variant', () => {
           const n = overlayValue(st, o, x, z, v);
           let want: number;
           if (L.palette === 'binary') want = n > 0.5 ? 255 : st.building[i] >= 0 || st.zone[i] !== 0 ? 128 : 0;
-          else if (L.roadsOnly) want = st.network[i] !== 0 && st.network[i] !== Network.Rail ? Math.round((0.05 + 0.95 * n) * 255) : 0;
+          else if (L.roadsOnly) {
+            // a road: its own value (0.05 floor); a land cell beside a road (render handoff RH-1): its busiest 4-neighbour
+            // road's — the road meshes hide the road cells, so that curb is where the player sees the road's colour
+            const road = (j: number) => st.network[j] !== 0 && st.network[j] !== Network.Rail;
+            const enc = (xx: number, zz: number) => Math.round((0.05 + 0.95 * overlayValue(st, o, xx, zz, v)) * 255);
+            want = 0;
+            if (road(i)) want = enc(x, z);
+            else if (st.network[i] === 0 && !st.water[i]) {
+              for (const [dx, dz] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+                const xx = x + dx, zz = z + dz;
+                if (xx >= 0 && zz >= 0 && xx < st.size && zz < st.size && road(zz * st.size + xx)) want = Math.max(want, enc(xx, zz));
+              }
+            }
+          }
           else if (L.palette === 'diverging') want = Math.round((0.5 + 0.5 * n) * 255);
           else want = Math.round(n * 255);
           expect(Math.abs(out[i] - want), `${Overlay[o]}/${v} at ${x},${z}`).toBeLessThanOrEqual(1);
