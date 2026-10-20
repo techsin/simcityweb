@@ -908,26 +908,38 @@ export interface OverlayReadout {
 
 const pctS = (v: number) => `${Math.round(v * 100)}%`;
 /**
- * the Fire view's red band in words (final fixes SF-5): a fire there burns down before any truck arrives, but an
- * industrial accident there still waits EMERG_GRACE.industrial days for a fire truck — the game pauses for one there and
- * any truck sent in time saves the plant (emergency.ts ignites it only while no fire truck is assigned). The inspector,
- * the emergency banner and the Fire legend use this same sentence
+ * The industrial-accident dispatch window in the Fire view's words (render handoff r3): "within 3.0 min". The window is
+ * EMERG_GRACE.industrial sim days (emergency.ts dispatchWindowEnd), written in emergency minutes the way the emergency
+ * banner counts it down ("3.0 min left to send a truck": EmergencyBanner emgTime, EMERG_DAYS_PER_MIN days a minute, one
+ * decimal under 10 min) — never "within 3 days" beside a banner that says minutes. FIRE_TOO_FAR_TEXT (the hover, and the
+ * inspector's note cut from it) and the Fire legend's note both use it.
  */
-export const FIRE_TOO_FAR_TEXT = `Too far — a fire here burns down before a truck can arrive; an industrial accident here is still saved by a fire truck sent within ${EMERG_GRACE.industrial} days, however long the drive — build a fire station closer`;
+export const INDUSTRIAL_WINDOW_TEXT = (() => {
+  const m = Math.max(0, EMERG_GRACE.industrial / EMERG_DAYS_PER_MIN);
+  return `within ${m < 10 ? m.toFixed(1) : Math.round(m)} min`;
+})();
+/**
+ * the Fire view's red band in words (final fixes SF-5): a fire there burns down before any truck arrives, but an
+ * industrial accident there still waits for a fire truck (INDUSTRIAL_WINDOW_TEXT) — the game pauses for one there and
+ * any truck sent in time saves the plant (emergency.ts ignites it only while no fire truck is assigned). The hover says
+ * it, the inspector's fire row note is cut from it (inspectorModel FIRE_FAR_NOTE), the Fire legend says the same
+ */
+export const FIRE_TOO_FAR_TEXT = `Too far — a fire here burns down before a truck can arrive; an industrial accident here is still saved by a fire truck sent ${INDUSTRIAL_WINDOW_TEXT}, however long the drive — build a fire station closer`;
 /** minutes for the Emergency readout: one decimal, '< 0.1 min' below 0.05 (never "by 0.0 min") */
 const minText = (m: number) => (Math.abs(m) < 0.05 ? '< 0.1 min' : `${Math.abs(m).toFixed(1)} min`);
 const toneGood = (g: number): OverlayReadout['tone'] => (g >= 0.66 ? 'good' : g >= 0.33 ? 'warn' : 'bad');
 const RESPONDER_NOUN = ['fire station', 'police station', 'clinic or hospital'];
 
-/** the neighbours a land cell takes its Traffic colour from (curbRoadOf): left, right, up, down */
-const CURB_DX = [-1, 1, 0, 0], CURB_DZ = [0, 0, -1, 1];
+/** the neighbours a land cell takes its Traffic colour from (curbRoadOf): left, right, up, down, then the 4 corners */
+const CURB_DX = [-1, 1, 0, 0, -1, 1, -1, 1], CURB_DZ = [0, 0, -1, 1, -1, -1, 1, 1];
 /**
  * The cell a Traffic hover reads at cell i (render handoff r3): i itself, unless i is land (no network, not water) —
- * then its busiest 4-neighbour road (rail is no road), or -1 with no road beside it (the land keeps its own 0). The
- * Traffic view paints that road's value on i (src/render/world/overlays.ts curbCells, the same rule): the road meshes
- * cover their whole cell, so a jam shows red on the land beside it, and a player pointing at the red points at land.
- * Busiest by the layer value (`data`: congestion, or the trucks raster), ties to the larger `vol` (trips or trucks per
- * day: the trucks raster saturates at 1); map edges do not wrap.
+ * then its busiest road among its 8 neighbours (rail is no road), or -1 with no road around it (the land keeps its own
+ * 0). The Traffic view paints that road's value on i (src/render/world/overlays.ts curbCells, the same rule): the road
+ * meshes cover their whole cell, so a jam shows red on the land beside it, and a player pointing at the red points at
+ * land. The corners count: a junction has roads on all four sides, so only its corner lots show its own jam. Busiest by
+ * the layer value (`data`: congestion, or the trucks raster), ties to the larger `vol` (trips or trucks per day: the
+ * trucks raster saturates at 1); map edges do not wrap.
  */
 export function curbRoadOf(st: CityState, data: ArrayLike<number>, i: number, vol?: ArrayLike<number>): number {
   const net = st.network, N = st.size;

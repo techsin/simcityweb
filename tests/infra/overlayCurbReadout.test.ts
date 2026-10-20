@@ -5,6 +5,8 @@
  * 312k save, '0% · Freight Rail Station' in green beside a 204% road on the 175k one. A land cell now reads the road the
  * view paints on it (curbRoadOf, the same rule as curbCells: its busiest neighbouring road, not rail), and says so:
  * '200%' · 'road beside it · 2,446 trips/day' (QueryTool appends the lot's name). Land beside no road keeps its 0.
+ * The corners count (render handoff r3, item 2): a junction has roads on all four sides, so only its corner lots can
+ * show a jam locked in it — the paint and the hover take the 8 neighbours.
  *
  * The last block checks hover against paint at every cell of a busy town, for both variants: a curb's painted byte is
  * the byte of the road its hover reads, and its hover is that road's own. They stay together if the rule changes.
@@ -142,6 +144,33 @@ describe('the Traffic hover on a curb reads the road the view paints there', () 
     expect(read(st, 13, 9, TRUCKS).text).toBe('5,000 trucks/day');
     expect(read(st, 13, 9, TRUCKS).tone).toBe('bad');
     expect(read(st, 14, 9, TRUCKS).text).toBe('774 trucks/day');
+  });
+});
+
+describe('the corners count (r3): a junction\'s jam shows on its corner lots, and they read it', () => {
+  it('a 193% junction between 90% approaches: its four corner lots read 193%; a road\'s end shows on its diagonals', () => {
+    const st = newState(N);
+    roadLine(st, 3, 12, 20, 12, Network.Road);
+    roadLine(st, 11, 3, 11, 20, Network.Avenue);
+    for (let k = 3; k <= 20; k++) { set(st, k, 12, 0.4, 500); set(st, 11, k, 0.4, 900); }
+    for (const [x, z] of [[10, 12], [12, 12], [11, 11], [11, 13]]) set(st, x, z, 0.9, 1400);
+    set(st, 11, 12, 1.93, 2100);
+    const home = place(st, 't_r1', 12, 13, { pop: 10 });
+    for (const [x, z] of [[10, 11], [12, 11], [10, 13], [12, 13]]) {
+      expect(read(st, x, z), `${x},${z}`).toEqual({ text: '193%', tone: 'bad', sub: 'road beside it · 2,100 trips/day' });
+      expect(curbRoadOf(st, st.congestion, z * N + x)).toBe(12 * N + 11);
+    }
+    expect(st.building[home.z * N + home.x]).toBe(home.id);
+    // (9, 11): beside the west arm (9, 12), diagonal to the west approach (10, 12): the approach
+    expect(read(st, 9, 11).text).toBe('90%');
+    // the road's ends: the cells diagonal to them (and nothing farther)
+    expect(read(st, 2, 11).text).toBe('40%');
+    expect(read(st, 21, 13).text).toBe('40%');
+    expect(read(st, 1, 11).text).toBe('0%');
+    // the jam of the town: the cells diagonal to its ends read it too
+    const t = town().st;
+    expect(read(t, 3, 7)).toEqual({ text: '200%', tone: 'bad', sub: 'road beside it · 2,446 trips/day' });
+    expect(read(t, 28, 9).text).toBe('200%');
   });
 });
 

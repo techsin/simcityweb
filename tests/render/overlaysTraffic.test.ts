@@ -7,8 +7,13 @@
  *  175% road read 'Busy' yellow. The land cells beside a road now carry the busiest neighbour road's value and Traffic
  *  draws whole cells (crisp), so a jam reads red along its curbs.
  *
+ *  Render handoff r3: the corners count too (8 neighbours). A junction has roads on all four sides, so no land cell was
+ *  4-adjacent to it: a jam locked in a junction (the worst jams of the 289k and 312k cities) never went red — its corner
+ *  lots showed the orange approaches. The hover reads the same road (sim overlays.ts curbRoadOf).
+ *
  *  RH-2: the Emergency view's Fire legend said "You must dispatch" for red, but red there means a fire burns down
- *  before any truck can arrive (FIRE_TOO_FAR_TEXT, the hover): the legend and notes now say what the hover says.
+ *  before any truck can arrive (FIRE_TOO_FAR_TEXT, the hover): the legend and notes now say what the hover says — and
+ *  (render handoff r3) give the industrial-accident window in the banner's unit: "within 3.0 min", not "within 3 days".
  *
  * The colours are read the way the terrain shader reads them: the overlay byte of the cell under a fragment (nearest
  * texel when crisp, else the bilinear blend) looked up in the ramp texture (makeRampTexture: 128 texels, sRGB lerp,
@@ -16,8 +21,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Network, Overlay } from '../../src/core/types';
-import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, FIRE_TOO_FAR_TEXT, markOverlaysDirty, overlayReadout } from '../../src/sim/infra/overlays';
-import { EMERG_GRACE } from '../../src/sim/infra/params';
+import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, FIRE_TOO_FAR_TEXT, INDUSTRIAL_WINDOW_TEXT, markOverlaysDirty, overlayReadout } from '../../src/sim/infra/overlays';
+import { EMERG_DAYS_PER_MIN, EMERG_GRACE } from '../../src/sim/infra/params';
 import { computeOverlayValues, overlayDef, overlayLegend, type OverlayDef, type RampStop } from '../../src/render/world/overlays';
 import { newState, place, roadLine } from '../infra/cityGen';
 
@@ -119,12 +124,48 @@ describe('RH-1: the Traffic view shows a jam along its curbs', () => {
     expect(at(4, 11)).toBe(enc(0.3));
     expect(at(6, 11)).toBe(enc(0.3));
     // two cells from any road, rail and water beside the jam, the land past the rail: nothing drawn
-    for (const [x, z] of [[10, 6], [10, 11], [10, 12], [15, 9], [17, 9], [15, 10], [0, 0]]) expect(at(x, z), `${x},${z}`).toBe(0);
-    // map edges do not wrap: the cell after the east-edge road's row end is the west edge of the next row
+    for (const [x, z] of [[10, 6], [10, 11], [10, 12], [15, 9], [17, 9], [15, 10], [0, 0], [0, 8], [23, 8]]) expect(at(x, z), `${x},${z}`).toBe(0);
+    // (r3) the corners count: the cells diagonal to the jam's ends show it, like the curbs beside it
+    for (const [x, z] of [[1, 7], [1, 9], [22, 7], [22, 9]]) expect(at(x, z), `${x},${z}`).toBe(enc(1.75));
+    // map edges do not wrap: the cell after the east-edge road's row end is the west edge of the next row (sides and
+    // corners: rows 1..5 of the west edge are diagonal or beside an east-edge road cell once wrapped)
     expect(at(N - 2, 3)).toBe(enc(1.75));
-    expect(at(0, 3)).toBe(0);
-    expect(at(0, 4)).toBe(0);
-    expect(at(0, 5)).toBe(0);
+    expect(at(N - 2, 1)).toBe(enc(1.75));
+    expect(at(N - 2, 5)).toBe(enc(1.75));
+    for (let z = 0; z <= 6; z++) expect(at(0, z), `0,${z}`).toBe(0);
+  });
+
+  it('(r3) a jam locked in a junction: its corner lots read Jammed (before: the orange approaches)', () => {
+    // a road crossing an avenue: the junction at 193%, its four approaches at 90%, the arms beyond them at 40%
+    const st = newState(N);
+    roadLine(st, 3, 12, 20, 12, Network.Road);
+    roadLine(st, 11, 3, 11, 20, Network.Avenue);
+    for (let k = 3; k <= 20; k++) { st.congestion[12 * N + k] = 0.4; st.congestion[k * N + 11] = 0.4; }
+    for (const [x, z] of [[10, 12], [12, 12], [11, 11], [11, 13]]) st.congestion[z * N + x] = 0.9;
+    st.congestion[12 * N + 11] = 1.93;
+    place(st, 't_r1', 12, 13, { pop: 10 }); // a home on one corner: painted under it, read by its hover
+    const out = new Uint8Array(st.cells);
+    computeOverlayValues(st, Overlay.Traffic, out, 0);
+    const cars = overlayDef(Overlay.Traffic, 0);
+    const corners = [[10, 11], [12, 11], [10, 13], [12, 13]];
+    for (const [x, z] of corners) {
+      const b = out[z * N + x];
+      expect(b, `${x},${z}`).toBe(enc(1.93));
+      expect(category(cars, b)).toBe('Jammed');
+      const r = overlayReadout(st, Overlay.Traffic, x, z, 0)!;
+      expect(r.text).toBe('193%');
+      expect(r.tone).toBe('bad');
+      expect(r.sub).toMatch(/^road beside it · /);
+    }
+    // what the 4-neighbour rule painted there: the busier approach, Heavy orange
+    expect(category(cars, enc(0.9))).toBe('Heavy');
+    // one cell further out: the busiest road around, the corners included — (9, 11) beside the west arm (9, 12) and
+    // diagonal to the west approach (10, 12); (10, 10) beside the north arm (11, 10), diagonal to the north approach
+    // (11, 11); (10, 9) beside and diagonal to the north arm only; (9, 10) two cells from both roads
+    expect(out[11 * N + 9]).toBe(enc(0.9));
+    expect(out[10 * N + 10]).toBe(enc(0.9));
+    expect(out[9 * N + 10]).toBe(enc(0.4));
+    expect(out[10 * N + 9]).toBe(0);
   });
 
   it('the hover still reads the road cell (its own congestion and trips)', () => {
@@ -161,9 +202,12 @@ describe('RH-2: the Emergency legend says what the hover says', () => {
     expect(labels(EMG_POLICE)).toEqual(['Auto-dispatch', 'Just out of reach', 'You must dispatch', 'No police station']);
     expect(labels(EMG_MEDICAL)).toEqual(['Auto-dispatch', 'Just out of reach', 'You must dispatch', 'No clinic or hospital']);
     const fire = overlayLegend(Overlay.Emergency, EMG_FIRE).notes;
+    // (r3) the industrial window in emergency minutes, the banner's unit ("3.0 min left to send a truck")
+    expect(INDUSTRIAL_WINDOW_TEXT).toBe(`within ${(EMERG_GRACE.industrial / EMERG_DAYS_PER_MIN).toFixed(1)} min`);
+    expect(INDUSTRIAL_WINDOW_TEXT).toBe('within 3.0 min');
     expect(fire).toEqual([
       'Green: fire trucks are sent automatically in time — incidents there become statistics.',
-      `Amber: fires wait for your dispatch — a truck sent at once still makes it. Red: too far for fires; an industrial accident there is still saved by a fire truck sent within ${EMERG_GRACE.industrial} days.`,
+      'Amber: fires wait for your dispatch — a truck sent at once still makes it. Red: too far for fires; an industrial accident there is still saved by a fire truck sent within 3.0 min.',
       'Red on a single building: no road reaches it — build one beside it.',
     ]);
     for (const v of [EMG_POLICE, EMG_MEDICAL]) {
@@ -189,14 +233,17 @@ describe('RH-2: the Emergency legend says what the hover says', () => {
     expect(r.swatch).toBe('Just out of reach');
     expect(r.hover.tone).toBe('warn');
     expect(notes).toContain(r.hover.sub!.toLowerCase()); // "fires wait for your dispatch — a truck sent at once still makes it"
-    // fire, 2.2 min beyond: it burns down before a truck arrives; an industrial accident still waits 3 days for one
+    // fire, 2.2 min beyond: it burns down before a truck arrives; an industrial accident still waits 3.0 min for one
     r = look(EMG_FIRE, st.respFire, -2.2);
     expect(r.swatch).toBe('Too far — fires burn down first');
     expect(r.hover.tone).toBe('bad');
     expect(r.hover.sub).toBe(FIRE_TOO_FAR_TEXT);
     expect(FIRE_TOO_FAR_TEXT).toMatch(/^Too far — a fire here burns down before a truck can arrive/);
-    expect(FIRE_TOO_FAR_TEXT).toContain(`sent within ${EMERG_GRACE.industrial} days`);
-    expect(notes).toContain(`sent within ${EMERG_GRACE.industrial} days`);
+    expect(FIRE_TOO_FAR_TEXT).toContain(`sent ${INDUSTRIAL_WINDOW_TEXT}`);
+    expect(notes).toContain(`sent ${INDUSTRIAL_WINDOW_TEXT}`);
+    // one unit everywhere: no "days" in the hover or the legend
+    expect(FIRE_TOO_FAR_TEXT).not.toMatch(/\bdays?\b/);
+    expect(notes).not.toMatch(/\bdays?\b/);
     expect(notes).not.toContain('wait for your dispatch (live speed');
     // police, 5 min beyond: the player dispatches — the legend's "You must dispatch"
     r = look(EMG_POLICE, st.respPolice, -5);

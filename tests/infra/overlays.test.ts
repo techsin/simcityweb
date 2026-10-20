@@ -111,14 +111,15 @@ describe('overlays: every Overlay × variant', () => {
           let want: number;
           if (L.palette === 'binary') want = n > 0.5 ? 255 : st.building[i] >= 0 || st.zone[i] !== 0 ? 128 : 0;
           else if (L.roadsOnly) {
-            // a road: its own value (0.05 floor); a land cell beside a road (render handoff RH-1): its busiest 4-neighbour
-            // road's — the road meshes hide the road cells, so that curb is where the player sees the road's colour
+            // a road: its own value (0.05 floor); a land cell beside a road (render handoff RH-1): its busiest road among
+            // its 8 neighbours (r3: the corners count, so a junction's corner lots show it) — the road meshes hide the
+            // road cells, so that curb is where the player sees the road's colour
             const road = (j: number) => st.network[j] !== 0 && st.network[j] !== Network.Rail;
             const enc = (xx: number, zz: number) => Math.round((0.05 + 0.95 * overlayValue(st, o, xx, zz, v)) * 255);
             want = 0;
             if (road(i)) want = enc(x, z);
             else if (st.network[i] === 0 && !st.water[i]) {
-              for (const [dx, dz] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+              for (const [dx, dz] of [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1], [1, 1]]) {
                 const xx = x + dx, zz = z + dz;
                 if (xx >= 0 && zz >= 0 && xx < st.size && zz < st.size && road(zz * st.size + xx)) want = Math.max(want, enc(xx, zz));
               }
@@ -252,8 +253,9 @@ describe('overlays: every Overlay × variant', () => {
     expect(r.text).toBe('Out of reach by 2.2 min');
     expect(r.tone).toBe('bad');
     // (final fixes SF-5: the red band no longer reads as hopeless for an industrial accident — a fire truck sent within its
-    // 3-day window saves the plant, however long the drive; the game pauses for one there)
-    expect(r.sub).toBe('Too far — a fire here burns down before a truck can arrive; an industrial accident here is still saved by a fire truck sent within 3 days, however long the drive — build a fire station closer');
+    // window saves the plant, however long the drive; the game pauses for one there. Render handoff r3: the window in
+    // emergency minutes, as the banner counts it — "3.0 min left to send a truck" — not "3 days")
+    expect(r.sub).toBe('Too far — a fire here burns down before a truck can arrive; an industrial accident here is still saved by a fire truck sent within 3.0 min, however long the drive — build a fire station closer');
     expect(r.sub).toBe(FIRE_TOO_FAR_TEXT);
     // P16: under 0.05 min reads "< 0.1 min", never "0.0 min"
     L[bi] = -0.02;

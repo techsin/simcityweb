@@ -3,13 +3,13 @@
  * + a color ramp (RGBA, alpha = coverage) + UI legend, per overlay AND variant. Pure functions, no GPU state.
  * The values come from the simulation's overlayLayer(state, o, variant) (src/sim/infra/overlays.ts), the same layer the
  * query tool's hover readout reads, so what the player sees and what the tip says always agree. (Road-only views —
- * Traffic — also paint each road's value on the curb cells beside it, since the road meshes hide the road cells: see
- * curbCells; the hover reads the road itself.)
+ * Traffic — also paint each road's value on the land cells around it, since the road meshes hide the road cells: see
+ * curbCells; the hover there reads that road too, by the same rule: src/sim/infra/overlays.ts curbRoadOf.)
  */
 import { Network, Overlay, Zone } from '../../core/types';
 import type { CityState } from '../../sim/CityState';
-import { EMG_NEAR, EMG_SPAN, OVERLAY_VARIANTS, TAP_T0, overlayDeps, overlayLayer, resolveVariant } from '../../sim/infra/overlays';
-import { EMERG_GRACE, NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
+import { EMG_NEAR, EMG_SPAN, INDUSTRIAL_WINDOW_TEXT, OVERLAY_VARIANTS, TAP_T0, overlayDeps, overlayLayer, resolveVariant } from '../../sim/infra/overlays';
+import { NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
 import { TAP_SAFE } from '../../sim/economy/tuning';
 
 export interface RampStop {
@@ -176,8 +176,9 @@ const DEMO = (title: string, what: string): DefCore => ({
 /**
  * Emergency response views. Fire differs from police / ambulance: its amber band is the burn-down window (emgNearSlack
  * in src/sim/infra/overlays.ts) — a truck sent at once still saves the building — and beyond it (red) a fire burns down
- * before any truck can arrive, while an industrial accident there still waits EMERG_GRACE.industrial days for one. The
- * legend and notes say what the hover says there (FIRE_TOO_FAR_TEXT), not "You must dispatch".
+ * before any truck can arrive, while an industrial accident there still waits for one: a truck sent within its dispatch
+ * window saves the plant. The legend and notes say what the hover says there (FIRE_TOO_FAR_TEXT), not "You must
+ * dispatch", and give the window in the hover's words and the banner's unit (INDUSTRIAL_WINDOW_TEXT: "within 3.0 min").
  */
 const EMERGENCY = (title: string, unit: string, station: string, fire = false): DefCore => {
   // slack s maps to t = 0.08 + 0.92 (s + SPAN) / (2 SPAN): s = -3 -> tNear, s = 0 -> tZero
@@ -205,7 +206,7 @@ const EMERGENCY = (title: string, unit: string, station: string, fire = false): 
     notes: [
       `Green: ${unit} are sent automatically in time — incidents there become statistics.`,
       fire
-        ? `Amber: fires wait for your dispatch — a truck sent at once still makes it. Red: too far for fires; an industrial accident there is still saved by a fire truck sent within ${EMERG_GRACE.industrial} days.`
+        ? `Amber: fires wait for your dispatch — a truck sent at once still makes it. Red: too far for fires; an industrial accident there is still saved by a fire truck sent ${INDUSTRIAL_WINDOW_TEXT}.`
         : 'Amber / red: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.',
       'Red on a single building: no road reaches it — build one beside it.',
     ],
@@ -492,24 +493,42 @@ export function overlayLegend(o: Overlay, variant = -1): OverlayLegend {
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
+/** curbCells' scratch: per cell, the largest first-pass byte of the cell and its two row neighbours */
+let curbRowMax = new Uint8Array(0);
 /**
  * Road-only views (Traffic cars / trucks): the road meshes cover their whole cell (asphalt and sidewalks to the cell
- * edge), so a road cell's own texel is never seen. Each land cell beside a road (not a road, rail or water cell) also
- * takes the value of its busiest 4-neighbour road and the terrain draws it there in whole cells (crisp): the curbs of
- * a jammed road read red. (Before, those cells held 0 and the bilinear blend of the road's texel with that 0 was all
- * that showed: at most half the value, so a 175% jam read 'Busy' yellow.) Road cells keep their own value; reads only
- * road texels written by the caller's first pass, so the result does not depend on the scan order.
+ * edge), so a road cell's own texel is never seen. Each land cell (not a road, rail or water cell) also takes the value
+ * of its busiest road among its 8 neighbours and the terrain draws it there in whole cells (crisp): the curbs of a
+ * jammed road read red. (Before RH-1, those cells held 0 and the bilinear blend of the road's texel with that 0 was all
+ * that showed: at most half the value, so a 175% jam read 'Busy' yellow.) The corners count (render handoff r3): a
+ * junction has roads on all four sides, so only its corner lots can show its own jam — with the 4 sides only, a jam
+ * locked in a junction never went red. Road cells keep their own value. The hover reads the same road
+ * (src/sim/infra/overlays.ts curbRoadOf, the same neighbours).
+ * PERF (only while a Traffic view is open, once per 'traffic' update): the caller's first pass leaves a byte on road
+ * cells only (land, rail and water hold 0), so a land cell's busiest neighbour road is the largest byte of the 3 x 3
+ * block around it — a separable max: row maxima of the first-pass bytes into a scratch, then the largest of the three
+ * rows' maxima. Reads only first-pass bytes (the result does not depend on the scan order); map edges do not wrap.
  */
 function curbCells(state: CityState, out: Uint8Array): void {
-  const net = state.network, water = state.water, N = state.size, R = Network.Rail;
+  const net = state.network, water = state.water, N = state.size, C = state.cells;
+  if (curbRowMax.length < C) curbRowMax = new Uint8Array(C);
+  const H = curbRowMax;
   for (let z = 0, i = 0; z < N; z++) {
+    let a = 0, b = out[i];
+    for (let x = 0; x < N; x++, i++) {
+      const c = x < N - 1 ? out[i + 1] : 0;
+      H[i] = a > b ? (a > c ? a : c) : b > c ? b : c;
+      a = b;
+      b = c;
+    }
+  }
+  for (let z = 0, i = 0; z < N; z++) {
+    const up = z > 0, down = z < N - 1;
     for (let x = 0; x < N; x++, i++) {
       if (net[i] !== 0 || water[i]) continue;
-      let m = 0, n: number;
-      if (x > 0 && (n = net[i - 1]) !== 0 && n !== R && out[i - 1] > m) m = out[i - 1];
-      if (x < N - 1 && (n = net[i + 1]) !== 0 && n !== R && out[i + 1] > m) m = out[i + 1];
-      if (z > 0 && (n = net[i - N]) !== 0 && n !== R && out[i - N] > m) m = out[i - N];
-      if (z < N - 1 && (n = net[i + N]) !== 0 && n !== R && out[i + N] > m) m = out[i + N];
+      let m = H[i];
+      if (up && H[i - N] > m) m = H[i - N];
+      if (down && H[i + N] > m) m = H[i + N];
       out[i] = m;
     }
   }

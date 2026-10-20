@@ -132,8 +132,9 @@ describe('inspector fire response (final fixes P2): beyond the amber band a fire
 
   it('final fixes UI-3: beyond the burn-down window the row says an industrial accident is still saved by a truck sent in time', () => {
     const fire = { near };
-    // the Fire view's sentence (overlays.FIRE_TOO_FAR_TEXT), its industrial half
-    expect(FIRE_FAR_NOTE).toBe(`An industrial accident here is still saved by a fire truck sent within ${EMERG_GRACE.industrial} days, however long the drive — build a fire station closer`);
+    // the Fire view's sentence (overlays.FIRE_TOO_FAR_TEXT), its industrial half — its window in the banner's own words
+    // (emgTime, as in "3.0 min left to send a truck"), not "within 3 days" (render handoff r3)
+    expect(FIRE_FAR_NOTE).toBe(`An industrial accident here is still saved by a fire truck sent within ${emgTime(EMERG_GRACE.industrial)}, however long the drive — build a fire station closer`);
     expect(FIRE_TOO_FAR_TEXT.toLowerCase()).toContain(FIRE_FAR_NOTE.toLowerCase());
     for (const r of [
       responseText({ slackMin: near - 1, covered: false }, 'no fire station', fire)!,
