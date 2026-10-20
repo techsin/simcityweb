@@ -111,7 +111,8 @@ describe('r4: two units are "both", the only one comes back as "it"', () => {
 });
 
 describe('r4: the "uncovered" news points at the alert, not at the Dispatch tool (not on the toolbar)', () => {
-  /** a fire at a home x cells along the street from a fire station at x = 4 (beyond its reach from 50) */
+  /** a fire at a home at x on the street of a fire station at x = 4: beyond its reach at 50 (its truck can still make
+   *  it in time), too far for that at 60 */
   function fireAt(x: number) {
     const t = town([{ def: 'civ_fire_station', x: 4 }]);
     const home = place(t.st, 't_r2', x, 21, { pop: 60 });
