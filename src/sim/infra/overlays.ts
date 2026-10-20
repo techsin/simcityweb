@@ -919,6 +919,32 @@ const minText = (m: number) => (Math.abs(m) < 0.05 ? '< 0.1 min' : `${Math.abs(m
 const toneGood = (g: number): OverlayReadout['tone'] => (g >= 0.66 ? 'good' : g >= 0.33 ? 'warn' : 'bad');
 const RESPONDER_NOUN = ['fire station', 'police station', 'clinic or hospital'];
 
+/** the neighbours a land cell takes its Traffic colour from (curbRoadOf): left, right, up, down */
+const CURB_DX = [-1, 1, 0, 0], CURB_DZ = [0, 0, -1, 1];
+/**
+ * The cell a Traffic hover reads at cell i (render handoff r3): i itself, unless i is land (no network, not water) —
+ * then its busiest 4-neighbour road (rail is no road), or -1 with no road beside it (the land keeps its own 0). The
+ * Traffic view paints that road's value on i (src/render/world/overlays.ts curbCells, the same rule): the road meshes
+ * cover their whole cell, so a jam shows red on the land beside it, and a player pointing at the red points at land.
+ * Busiest by the layer value (`data`: congestion, or the trucks raster), ties to the larger `vol` (trips or trucks per
+ * day: the trucks raster saturates at 1); map edges do not wrap.
+ */
+export function curbRoadOf(st: CityState, data: ArrayLike<number>, i: number, vol?: ArrayLike<number>): number {
+  const net = st.network, N = st.size;
+  if (net[i] !== Network.None || st.water[i]) return i;
+  const x = i % N, z = (i - x) / N;
+  let best = -1, bv = 0, bw = 0;
+  for (let k = 0; k < CURB_DX.length; k++) {
+    const xx = x + CURB_DX[k], zz = z + CURB_DZ[k];
+    if (xx < 0 || zz < 0 || xx >= N || zz >= N) continue;
+    const j = zz * N + xx;
+    if (!isRoad(net[j])) continue;
+    const a = +data[j] || 0, w = vol ? +vol[j] || 0 : 0;
+    if (best < 0 || a > bv || (a === bv && w > bw)) { best = j; bv = a; bw = w; }
+  }
+  return best;
+}
+
 /** player-facing readout of an overlay at a cell (the value the renderer draws there), null = nothing to say */
 export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, variant = -1): OverlayReadout | null {
   if (!st.inBounds(x, z)) return null;
@@ -981,15 +1007,21 @@ export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, 
     case Overlay.Power: return raw > 0.5 ? { text: 'Powered', tone: 'good' } : { text: 'No power', tone: 'bad' };
     case Overlay.Commute:
       return raw > 0 ? { text: `${Math.round(raw)} min`, tone: raw <= 20 ? 'good' : raw <= 40 ? 'warn' : 'bad', sub: 'to jobs' } : { text: 'No route', tone: '' };
-    case Overlay.Traffic:
+    case Overlay.Traffic: {
+      // a land cell reads the road the view paints on it (curbRoadOf): the red band beside a jam is land, not the road
+      const T = v === 1 ? truckVolumeOf(st) : null;
+      const vol = v === 1 ? (T && T.length === st.cells ? T : null) : st.traffic;
+      const c = curbRoadOf(st, Lr.data, i, vol ?? undefined);
+      const j = c < 0 ? i : c, by = c >= 0 && c !== i ? 'road beside it · ' : '';
+      const r = Lr.data[j];
       if (v === 1) {
         // (the raster is sqrt(volume / scale): read the volume itself)
-        const T = truckVolumeOf(st);
-        const n = T && T.length === st.cells ? T[i] : 0;
-        if (n < 0.5) return { text: 'No trucks', tone: '' };
-        return { text: `${Math.round(n).toLocaleString('en-US')} trucks/day`, tone: raw > 0.77 ? 'bad' : raw > 0.5 ? 'warn' : '', sub: `${pctS(raw * raw)} of a busy freight route` };
+        const n = vol ? vol[j] : 0;
+        if (n < 0.5) return by ? { text: 'No trucks', tone: '', sub: 'road beside it' } : { text: 'No trucks', tone: '' };
+        return { text: `${Math.round(n).toLocaleString('en-US')} trucks/day`, tone: r > 0.77 ? 'bad' : r > 0.5 ? 'warn' : '', sub: `${by}${pctS(r * r)} of a busy freight route` };
       }
-      return { text: pctS(raw), tone: raw > 1 ? 'bad' : raw > 0.7 ? 'warn' : 'good', sub: `${Math.round(st.traffic[i]).toLocaleString('en-US')} trips/day` };
+      return { text: pctS(r), tone: r > 1 ? 'bad' : r > 0.7 ? 'warn' : 'good', sub: `${by}${Math.round(st.traffic[j]).toLocaleString('en-US')} trips/day` };
+    }
     case Overlay.Nimby: {
       const p = st.prestige[i], s = st.stigma[i];
       if (Math.abs(raw) < 0.02) return { text: 'Neutral', tone: '' };
