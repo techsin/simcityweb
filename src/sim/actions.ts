@@ -556,7 +556,12 @@ export class CityActions implements CityActionsApi {
     if (def.requires && !this.sandbox && !st.unlocked.has(def.requires)) return fail(`${def.name} is not unlocked yet`);
     const blocked = blockedByOrdinance(st, def.id);
     if (blocked) return fail(`Banned by the ${blocked.name} ordinance`);
-    if (def.unique && (st.milestones[def.id] ?? 0) > 0) return fail(`Only one ${def.name} allowed`);
+    if (def.unique && (st.milestones[def.id] ?? 0) > 0) {
+      // (final fixes r3: the one there may be a ruin — the fix is the bulldozer, then build it again)
+      let ruin = false;
+      for (const o of st.buildings.values()) if (o.def === def.id && o.flags & BF.Plopped) { ruin = (o.flags & BF.Burnt) !== 0; break; }
+      return fail(ruin ? `Only one ${def.name} allowed — bulldoze its ruins first` : `Only one ${def.name} allowed`);
+    }
     const [w, d] = rotatedFootprint(def, rot);
     const cells: ActionResult['cells'] = [];
     let firstErr: string | undefined;

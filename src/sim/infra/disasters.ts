@@ -18,7 +18,9 @@
  * Final fixes SF-2 (silent ruins): a tornado counts what it destroys (ActiveDisaster.destroyed / facilities / worst,
  * persisted; no random draws) and posts ONE summary when it ends — how many buildings, the city facilities among them
  * ("incl. your Fire Station and Elementary School") and the fix, at the worst spot; the earthquake and meteor summaries
- * name the destroyed city facilities too.
+ * name the destroyed city facilities too. Final fixes r3: every plopped kind counts — after the services (FACILITY_RANK)
+ * the deals, landmarks, civic buildings, transport and parks by what they bring in (defRank; bus stops last), so the
+ * three kinds a summary names are the most urgent ones and the rest read "… and N more" (text only: no random draws).
  */
 import { RNG } from '../../core/rng';
 import { BF, type Building } from '../CityState';
@@ -26,6 +28,9 @@ import type { SimSystem, Simulation } from '../Simulation';
 import { computeWater } from '../terrainGen';
 import { nowMs, removeBuilding } from './common';
 import { getDef } from '../catalog';
+import type { BuildingDef } from '../catalogTypes';
+import { ATTRACTIONS } from '../economy/tourism';
+import { TOURISM_INCOME_PER_VISITOR } from '../economy/tuning';
 import type { FireSystem } from './fire';
 import { emergencyOf } from './emergency';
 
@@ -45,8 +50,8 @@ export interface ActiveDisaster {
   /** tornado: medical incidents spawned along its path so far (aftermath cap TORNADO_MEDICAL_MAX) */
   calls?: number;
   /** tornado (final fixes SF-2, its summary at the end): buildings destroyed so far, the def ids of the city facilities
-   *  among them (FACILITY_RANK) and the worst spot — the most important facility, else the fullest building: [x, z,
-   *  weight] */
+   *  among them (defRank: every plopped kind, final fixes r3) and the worst spot — the most important facility (a service
+   *  first), else the fullest building: [x, z, weight] */
   destroyed?: number;
   facilities?: string[];
   worst?: [number, number, number];
@@ -69,25 +74,53 @@ const EQ_COLLAPSE_MAX = 12;
 const TORNADO_MEDICAL_MAX = 6;
 const METEOR_MEDICAL = 3;
 
-/** city facilities a disaster summary names (final fixes SF-2), by category: the lower, the more urgent to rebuild (the
- *  tornado summary points at the most urgent one) */
+/** city services a disaster summary names first (final fixes SF-2), by category: the lower, the more urgent to rebuild —
+ *  their loss leaves fires and patients unanswered, homes dark or dry, pupils without seats */
 const FACILITY_RANK: Readonly<Partial<Record<string, number>>> = { fire: 0, police: 1, health: 2, power: 3, water: 4, education: 5, garbage: 6 };
+/** every other plopped kind a summary names after the services (final fixes r3: the Missile Test Range, landmarks, civic
+ *  buildings, venues, parks and a Bus Stop flattened by a quake went unnamed) */
+const OTHER_RANKED: ReadonlySet<string> = new Set(['reward', 'landmark', 'civic', 'transport', 'park']);
+/**
+ * what a plopped building brings in a month (§; final fixes r3, the order of the non-service ruins — the advisors' ruins
+ * card leads with the same one, economy/advisors.ts ruinValue): its income (deal / venue, catalog), its tourists'
+ * spending at the reference draw (TOURISM_INCOME_PER_VISITOR a visitor a day) and a hundredth of what it costs to build
+ */
+function facilityValue(def: BuildingDef): number {
+  const a = ATTRACTIONS[def.id] ?? ATTRACTIONS[def.model];
+  return (def.income ?? 0) + (a ? a.draw * TOURISM_INCOME_PER_VISITOR : 0) + (def.cost ?? 0) / 100;
+}
+/** the rank of a def in a disaster summary: the services 0-6 (FACILITY_RANK), then every other plopped kind by what it
+ *  brings in (7 + 1 / (1 + value): the most valuable first), bus stops last (8); -1: not a city facility it names */
+function defRank(def: BuildingDef | undefined): number {
+  if (!def || def.hidden) return -1;
+  const r = FACILITY_RANK[def.category];
+  if (r !== undefined) return r;
+  if (!OTHER_RANKED.has(def.category)) return -1;
+  if (def.id === 'tr_bus_stop' || def.model === 'tr_bus_stop') return 8;
+  return 7 + 1 / (1 + facilityValue(def));
+}
 /** the rank of a destroyed building in a disaster summary (-1: not a city facility it names) */
 function facilityRank(b: Building): number {
-  const def = getDef(b.def);
-  return def ? FACILITY_RANK[def.category] ?? -1 : -1;
+  return defRank(getDef(b.def));
 }
-/** "your Fire Station, Police Station and 2 Elementary Schools" (def ids in the order destroyed; at most 3 kinds named) */
+/** a summary's facility def ids, the most urgent first (services by FACILITY_RANK, then the most valuable; ties in the
+ *  order destroyed): facilityListText names the first 3 kinds */
+function byRank(defIds: readonly string[]): string[] {
+  return defIds.map((id, k) => ({ id, k, r: defRank(getDef(id)) })).sort((a, c) => a.r - c.r || a.k - c.k).map((o) => o.id);
+}
+/** "your Fire Station, Police Station and 2 Elementary Schools" (def ids in the given order; at most 3 kinds named, the
+ *  buildings of the rest counted: "… and 4 more") */
 export function facilityListText(defIds: readonly string[]): string {
   const n = new Map<string, number>();
   for (const id of defIds) n.set(id, (n.get(id) ?? 0) + 1);
   const parts: string[] = [];
+  let more = 0;
   for (const [id, k] of n) {
+    if (n.size > 3 && parts.length >= 3) { more += k; continue; }
     const name = getDef(id)?.name ?? 'city facility';
     parts.push(k > 1 ? `${k} ${name.endsWith('s') ? name : name + 's'}` : name);
   }
-  const more = parts.length > 3 ? parts.length - 3 : 0;
-  const shown = more ? [...parts.slice(0, 3), `${more} more`] : parts;
+  const shown = more ? [...parts, `${more} more`] : parts;
   return `your ${shown.length > 1 ? `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}` : shown[0]}`;
 }
 
@@ -314,7 +347,7 @@ export class DisastersSystem implements SimSystem {
     const fx = Math.max(0, Math.min(st.size - 1, Math.floor(d.x))), fz = Math.max(0, Math.min(st.size - 1, Math.floor(d.z)));
     if (n <= 0) { sim.notify('The tornado has passed — no buildings were destroyed.', 'disaster', fx, fz, 'disaster'); return; }
     const fac = d.facilities ?? [];
-    const incl = fac.length ? `, incl. ${facilityListText(fac)}` : '';
+    const incl = fac.length ? `, incl. ${facilityListText(byRank(fac))}` : '';
     const [x, z] = d.worst ?? [fx, fz];
     sim.notify(`Tornado: ${n} building${n === 1 ? '' : 's'} destroyed${incl} — bulldoze the rubble and rebuild.`, 'disaster', x, z, 'disaster');
   }
@@ -344,7 +377,7 @@ export class DisastersSystem implements SimSystem {
       else if (r < 0.65 && fire) { if (fire.ignite(sim, b, true)) fires++; }
     }
     if (fire) fire.riskBoost = Math.max(fire.riskBoost, 3);
-    const incl = facilities.length ? ` (incl. ${facilityListText(facilities)})` : '';
+    const incl = facilities.length ? ` (incl. ${facilityListText(byRank(facilities))})` : '';
     sim.notify(`Earthquake! Magnitude ${mag.toFixed(1)}: ${destroyed} buildings destroyed${incl}, ${fires} fires${rescues ? `, people trapped in ${rescues}` : ''}.`, 'disaster', x, z, 'disaster');
   }
 
@@ -395,7 +428,7 @@ export class DisastersSystem implements SimSystem {
     sim.events.emit('treesChanged', rect);
     if (netHit) sim.events.emit('networkChanged', rect);
     if (lineHit) sim.events.emit('powerLinesChanged', rect);
-    sim.notify(`Meteor strike! ${destroyed} buildings destroyed${facilities.length ? `, incl. ${facilityListText(facilities)}` : ''}.`, 'disaster', x, z, 'disaster');
+    sim.notify(`Meteor strike! ${destroyed} buildings destroyed${facilities.length ? `, incl. ${facilityListText(byRank(facilities))}` : ''}.`, 'disaster', x, z, 'disaster');
   }
 }
 

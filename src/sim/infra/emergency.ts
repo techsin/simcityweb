@@ -18,7 +18,8 @@
  *            (LIVE mode), canSend = a free unit can be sent at all (banner without LIVE). Both rest on units free at the
  *            moment of the decision: a dispatch that takes a station's last free unit re-validates the waiting incidents
  *            that counted on it (revalidate: a disaster's burst dispatches its incidents one after the other), and a
- *            prompt counts as given (prompted; ignored when nobody answers) only at the day's settle point (EM-1).
+ *            prompt counts as given (prompted; ignored when nobody answers) only at the day's settle point (EM-1), and
+ *            no longer once the unit it rests on is gone (final fixes r3).
  *            An incident's state follows its PRIMARY responder (INCIDENT_RESPONDERS[kind][0]): the ambulance of an
  *            industrial accident or a collapse, sent automatically, leaves it waiting for its fire truck (and answers
  *            nothing). Minor incidents (and supporting responders) that are not covered are sent the nearest free unit
@@ -112,7 +113,8 @@ export interface Incident {
   /** WP6b: the player was prompted (a major incident uncovered while a free unit could still make it in time): if it
    *  fails with nobody answering, it counts as ignored (stats.emergency month.ignored; approval remembers). Set only at
    *  a settle point (the end of a day's dispatch work, EM-1), never the moment a dispatch decision makes it possible: a
-   *  disaster's next incident may take the very unit that decision counted on */
+   *  disaster's next incident may take the very unit that decision counted on. Cleared again when that unit is gone
+   *  (revalidate / noFreeUnit, final fixes r3): only a prompt the player could still answer counts */
   prompted?: boolean;
   /** ETA (game minutes incl. turnout) of the nearest free unit the last dispatch attempt found beyond the stations'
    *  ranges (undefined = none within the time left): manualPossible lapses once the time left drops below it */
@@ -314,6 +316,12 @@ function smoothstep(e0: number, e1: number, x: number): number {
 }
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const cap1 = (s: string) => s[0].toUpperCase() + s.slice(1);
+/** "All 2 fire trucks of Fire Station #3 are busy", or with a single unit "The only ambulance of Medical Clinic #15 is
+ *  busy" (final fixes r3: "All 1 ambulance of … are busy"; allBusyNote's singular form) */
+function stationBusyText(s: { units: number; responder: Responder; name: string }): string {
+  const unit = RESPONDER_UNIT[s.responder];
+  return s.units === 1 ? `The only ${unit[0]} of ${s.name} is busy` : `All ${s.units} ${unit[1]} of ${s.name} are busy`;
+}
 
 /** station fleet of a def: FLEET by def id, else by model (test / mod defs reusing a station model) */
 const fleetCache = new Map<string, { responder: Responder; units: number } | null>();
@@ -1268,7 +1276,7 @@ export class EmergencySystem implements SimSystem {
     if (!INCIDENT_RESPONDERS[inc.kind].includes(s.responder)) return { ok: false, reason: `${s.name} can't help with a ${INCIDENT_LABEL[inc.kind].toLowerCase()}` };
     if (s.units <= 0) return { ok: false, reason: `${s.name} has no funded ${RESPONDER_UNIT[s.responder][1]} — raise the ${RESPONDER_SERVICE[s.responder]} budget` };
     const free = this.freeOf(s);
-    if (free <= 0) return { ok: false, reason: `All ${s.units} ${RESPONDER_UNIT[s.responder][s.units === 1 ? 0 : 1]} of ${s.name} are busy` };
+    if (free <= 0) return { ok: false, reason: stationBusyText(s) };
     const st = sim.state;
     const ns = this.siteSeeds(st, inc);
     if (ns === 0) return { ok: false, reason: 'No road leads to this place' };
@@ -1863,20 +1871,22 @@ export class EmergencySystem implements SimSystem {
           best = Math.min(best, fa + b.t * EMERG_DAYS_PER_MIN);
         }
         const s0 = res.inRangeBusy[0].s;
-        const busyNote = `All ${s0.units} ${unit[s0.units === 1 ? 0 : 1]} of ${s0.name} are busy`;
+        const busyNote = stationBusyText(s0);
+        // (the only unit in reach: "it is on its way back", not "one is")
+        const one = s0.units === 1 && res.inRangeBusy.length === 1 ? 'it' : 'one';
         if (inc.kind === 'industrial' ? back <= dispatchWindowEnd(inc) - 1 + EPS : best <= inc.start + inc.grace) {
           const was = inc.state;
           inc.state = 'queued';
           inc.reason = 'busy';
           inc.manualPossible = manualPossible;
           inc.canSend = canSend;
-          inc.note = `${busyNote} — one is on its way back`;
+          inc.note = `${busyNote} — ${one} is on its way back`;
           inc.retry = day + 1;
           if (was !== 'queued') this.emit(sim, inc, 'queued');
           continue;
         }
         // (no free unit anywhere: one of that in-range station is sent as soon as it is back — removeVehicle retries)
-        this.setUncovered(sim, inc, 'busy', manualPossible, canSend, busyNote + (!canSend ? ' — one is sent as soon as one is back' : !manualPossible ? ' — the nearest free one is too far to make it in time' : ''));
+        this.setUncovered(sim, inc, 'busy', manualPossible, canSend, busyNote + (!canSend ? ` — ${one} is sent as soon as ${one} is back` : !manualPossible ? ' — the nearest free one is too far to make it in time' : ''));
         inc.retry = day + 2;
       } else if (freeAny) {
         const near = mu?.s ?? this.nearestFree(r, inc.x, inc.z) ?? freeAny;
@@ -1884,8 +1894,7 @@ export class EmergencySystem implements SimSystem {
           `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage — nearest free ${unit[0]}: ${near.name}${manualPossible ? '' : ' (too far to make it in time)'}`);
         inc.retry = day + 5;
       } else if (this.stations.some((s) => s.responder === r && s.units > 0 && s.nodes.length && this.freeOf(s) <= 0)) {
-        const s0 = res.busy ?? this.stations.find((s) => s.responder === r && s.units > 0 && this.freeOf(s) <= 0)!;
-        this.setUncovered(sim, inc, 'busy', false, false, `All ${unit[1]} are busy (${s0.name} and others) — you can send one once one is back`);
+        this.setUncovered(sim, inc, 'busy', false, false, this.busyBeyondNote(r, res.busy, ns));
         inc.retry = day + 2;
       } else {
         this.setUncovered(sim, inc, 'noStation', false, false, `No ${RESPONDER_STATION[r]} can reach this place by road`);
@@ -1908,6 +1917,10 @@ export class EmergencySystem implements SimSystem {
    * once (noFreeUnit: no "Send nearest" that fails, no LIVE mode or urgent pause for nothing, no ignored prompt); when the
    * unit its decision found (bestFrom) is gone but another one is still free, it is decided again by the next dispatch
    * pass — a second pass today inside the daily, else the next day's (no search here, within the day's search budget).
+   * Final fixes r3 (EM-1 residual): either way the prompt it counted on is over, so it no longer counts as given
+   * (prompted off; it used to stay on from an earlier settle point: three fires, two free trucks, the player sends both
+   * and the third scored as an IGNORED prompt). The next settle point counts it again while a unit can still make it in
+   * time, so a prompt ignored while answerable still counts.
    */
   private revalidate(sim: Simulation): void {
     const drained = this.drained;
@@ -1931,6 +1944,8 @@ export class EmergencySystem implements SimSystem {
         const from = inc.bestFrom !== undefined ? this.stById.get(inc.bestFrom) : undefined;
         if (from && this.freeOf(from) > 0) continue;
         if (inc.retry > st.day) inc.retry = st.day;
+        // (the unit it counted on is gone: counted again once the next pass found another one in time)
+        inc.prompted = false;
         this.redo = true;
         continue;
       }
@@ -1950,6 +1965,9 @@ export class EmergencySystem implements SimSystem {
     inc.canSend = false;
     inc.bestEta = undefined;
     inc.bestFrom = undefined;
+    // (a prompt the player can no longer answer is no ignored prompt — final fixes r3; counted again at a settle point
+    // once a unit is back and can still make it)
+    inc.prompted = false;
     if (inc.state === 'queued') {
       // an in-range unit is on its way back and goes to it then: its note ("… — one is on its way back") holds
       this.emit(sim, inc, 'queued');
@@ -1980,6 +1998,34 @@ export class EmergencySystem implements SimSystem {
     return inc.reason === 'outOfRange'
       ? `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage and ${busy} — you can send one once one is back`
       : `${cap1(busy)} — one is sent as soon as one is back`;
+  }
+
+  /**
+   * the note of a site beyond every station's reach while every unit that can reach it is busy (site seeds in seedBuf):
+   * the stations of responder r on the site's road network by name — "All 2 fire trucks of Fire Station #1 are busy",
+   * "The only ambulance of Medical Clinic #1 is busy", "All 6 fire trucks are busy (Fire Station #1 and Fire Station #2)",
+   * "(… and 3 others)" — the nearest busy one (`near`, the search's) first. Final fixes r3: it read "All ambulances are
+   * busy (Medical Clinic #1 and others)" in a city with a single clinic
+   */
+  private busyBeyondNote(r: Responder, near: Station | null, ns: number): string {
+    const unit = RESPONDER_UNIT[r];
+    const comp = this.g.comp;
+    const on: Station[] = [];
+    let units = 0;
+    for (const s of this.stations) {
+      if (s.responder !== r || s.units <= 0 || !s.nodes.length) continue;
+      const c = comp[s.nodes[0]];
+      for (let q = 0; q < ns; q++) {
+        if (comp[this.seedBuf[q]] === c) { on.push(s); units += s.units; break; }
+      }
+    }
+    if (!on.length) return `No ${RESPONDER_STATION[r]} can reach this place by road`;
+    const k = near ? on.indexOf(near) : -1;
+    if (k > 0) on.unshift(...on.splice(k, 1));
+    const later = units === 1 ? 'you can send it once it is back' : 'you can send one once one is back';
+    if (on.length === 1) return `${stationBusyText(on[0])} — ${later}`;
+    const who = on.length === 2 ? `${on[0].name} and ${on[1].name}` : `${on[0].name} and ${on.length - 1} others`;
+    return `All ${units} ${unit[1]} are busy (${who}) — ${later}`;
   }
 
   /** nearest (straight line) station of responder r with a free unit */

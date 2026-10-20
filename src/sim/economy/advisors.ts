@@ -55,22 +55,22 @@ import { DEV_TYPE_COUNT, DEV_TYPE_LABELS, DevType, Network, Zone, zoneDensity } 
 import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
 import { capHints, regionInputs } from './demand';
 import { residentCoverage, residentSurvey } from './approval';
-import { attractivenessBreakdown } from './tourism';
+import { ATTRACTIONS, attractivenessBreakdown } from './tourism';
 import { facilityLoad, unservedClusters } from '../infra/catchments';
 import { buildingList } from '../infra/common';
 import { emergencyOf, uncoveredHotspots } from '../infra/emergency';
-import { EMERG_RMAX, GARBAGE_TRUCK_RANGE, MINIBUS_FLEET, PATIENTS_PER_BED, RECYCLE_MAX_SHARE } from '../infra/params';
+import { COURTHOUSE_POLICE_MUL, EMERG_RMAX, GARBAGE_TRUCK_RANGE, MINIBUS_FLEET, PATIENTS_PER_BED, RECYCLE_MAX_SHARE } from '../infra/params';
 import type { PollutionSystem } from '../infra/pollution';
 import type { UtilitiesSystem } from '../infra/utilities';
 import type { ParkingSummary } from '../infra/parking';
 import { maxLoanAmount, loanRate } from './loans';
 import { RNG } from '../../core/rng';
-import { ZONE_DEVTYPES, getDef, growablesForZone } from '../catalog';
+import { ZONE_DEVTYPES, capReliefOf, getDef, growablesForZone } from '../catalog';
 import type { BuildingDef } from '../catalogTypes';
 import { lotSlope } from './buildings';
 import { formatMoney } from './format';
 import { buildingPowered, buildingWatered } from './population';
-import { GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, WATER_REQUIRED_STAGE } from './tuning';
+import { GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, TOURISM_INCOME_PER_VISITOR, WATER_REQUIRED_STAGE } from './tuning';
 import { buildingUpkeep } from './opex';
 import { getOrdinance, ordinanceAvailable, ordinanceEffect } from './ordinances';
 
@@ -605,12 +605,18 @@ interface FacilityScan {
   /** final fixes SF-2: service facilities in ruins (fire, police, health, education, garbage — RUIN_RANK; the power plants
    *  and water facilities have their own lists) */
   facBurnt: Building[];
+  /** final fixes r3: every other plopped building in ruins — deals, landmarks, civic buildings, transport, parks (a scan
+   *  saved before r3 has none: they are found by the next month's scan) */
+  ruinsOther: Building[];
 }
-type IdKeys = 'plants' | 'plantsBurnt' | 'plantsIsolated' | 'plantsDry' | 'waterOk' | 'waterBurnt' | 'waterNoRoad' | 'waterNoPower' | 'plantsRisky' | 'tiered' | 'depots' | 'jails' | 'facBurnt';
-const ID_KEYS: readonly IdKeys[] = ['plants', 'plantsBurnt', 'plantsIsolated', 'plantsDry', 'waterOk', 'waterBurnt', 'waterNoRoad', 'waterNoPower', 'plantsRisky', 'tiered', 'depots', 'jails', 'facBurnt'];
+type IdKeys = 'plants' | 'plantsBurnt' | 'plantsIsolated' | 'plantsDry' | 'waterOk' | 'waterBurnt' | 'waterNoRoad' | 'waterNoPower' | 'plantsRisky' | 'tiered' | 'depots' | 'jails' | 'facBurnt' | 'ruinsOther';
+const ID_KEYS: readonly IdKeys[] = ['plants', 'plantsBurnt', 'plantsIsolated', 'plantsDry', 'waterOk', 'waterBurnt', 'waterNoRoad', 'waterNoPower', 'plantsRisky', 'tiered', 'depots', 'jails', 'facBurnt', 'ruinsOther'];
 /** ruined service facilities by urgency (final fixes SF-2): fire first, then police and health — their loss leaves
  *  emergencies unanswered */
 const RUIN_RANK: Readonly<Partial<Record<string, number>>> = { fire: 0, police: 1, health: 2, education: 3, garbage: 4 };
+/** the other plopped kinds whose ruins get their own advice (final fixes r3, 'ruinsOther': the Missile Test Range, a
+ *  §2,500/mo deal, lay in ruins for 55 years without a word) */
+const OTHER_RUINS: ReadonlySet<string> = new Set(['reward', 'landmark', 'civic', 'transport', 'park']);
 /** FacilityScan as plain data (building ids): saved in AdvisorData.scan */
 type FacScanData = { [K in IdKeys]: number[] } & { burntMW: number; civicUnpowered: number; civicFirst: number; liveMW: number; fireStations: number };
 
@@ -618,6 +624,7 @@ function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
   const f: FacScanData = {
     plants: [], plantsBurnt: [], plantsIsolated: [], burntMW: 0, plantsDry: [], waterOk: [], waterBurnt: [], waterNoRoad: [], waterNoPower: [],
     civicUnpowered: 0, civicFirst: -1, liveMW: 0, plantsRisky: [], fireStations: 0, tiered: [], depots: [], jails: [], facBurnt: [],
+    ruinsOther: [],
   };
   rt.ensureLists();
   for (const b of rt.plopped) {
@@ -625,7 +632,10 @@ function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
     if (!def) continue;
     const burnt = (b.flags & BF.Burnt) !== 0;
     if (!burnt && def.category === 'fire') f.fireStations++;
-    if (burnt && RUIN_RANK[def.category] !== undefined && !((def.powerOut ?? 0) > 0) && !((def.waterOut ?? 0) > 0)) f.facBurnt.push(b.id);
+    if (burnt && !((def.powerOut ?? 0) > 0) && !((def.waterOut ?? 0) > 0)) {
+      if (RUIN_RANK[def.category] !== undefined) f.facBurnt.push(b.id);
+      else if (OTHER_RUINS.has(def.category)) f.ruinsOther.push(b.id);
+    }
     if (!burnt && b.built >= 1) {
       const tier = def.coverage?.tier;
       if (tier === 'elementary' || tier === 'high' || tier === 'college' || tier === 'clinic' || tier === 'hospital' || tier === 'police') f.tiered.push(b.id);
@@ -691,6 +701,59 @@ function ruinUpkeep(st: CityState, def: BuildingDef): number {
   const f = def.service ? (st.budget.funding[def.service] ?? 100) / 100 : 1;
   return buildingUpkeep(st, def) * f;
 }
+/** what stops with a ruined transport facility (by def / model id; final fixes r3) and whether the words are plural */
+const TRANSPORT_LOSS: Readonly<Record<string, readonly [string, boolean]>> = {
+  tr_bus_stop: ['its bus service', false], civ_bus_depot: ['its buses', true], tr_subway_station: ['its subway service', false],
+  tr_train_station: ['its trains', true], tr_freight_station: ['its freight trains', true], tr_parking_garage: ['its parking spaces', true],
+  tr_ferry_terminal: ['its ferries', true], tr_airport_small: ['its flights and their tourists', true],
+  tr_airport_large: ['its flights and their tourists', true], tr_seaport: ['its freight ships', true],
+};
+/**
+ * what stopped with a ruined deal, landmark, civic building, transport facility or park (final fixes r3: the advisor names
+ * what the city lost, not just the building), most important first, at most 4: its income (a deal's exact §/mo — budget.ts
+ * pays a deal its catalog income), its tourists or visitors, what it served, its demand-cap boost, the land value and
+ * prestige around it. Each with whether it reads plural ("its buses are gone")
+ */
+function otherRuinLoss(def: BuildingDef): [string, boolean][] {
+  const out: [string, boolean][] = [];
+  const n = (v: number) => Math.round(v).toLocaleString('en-US');
+  const inc = def.income ?? 0;
+  if (inc > 0) out.push([def.category === 'reward' ? `its ${money(inc)}/mo deal income` : 'its income', false]);
+  const a = ATTRACTIONS[def.id] ?? ATTRACTIONS[def.model];
+  if (a && a.kind !== 'transport') out.push([a.kind === 'nature' ? 'its visitors' : 'its tourists', true]);
+  const t = TRANSPORT_LOSS[def.id] ?? TRANSPORT_LOSS[def.model];
+  if (t) out.push([t[0], t[1]]);
+  const cv = def.coverage;
+  if (cv?.tier === 'play') out.push([`play space for ${n(cv.capacity ?? 0)} kids and teens`, false]);
+  else if (cv?.tier === 'green') out.push([`green space for ${n(cv.capacity ?? 0)} residents`, false]);
+  else if (cv?.tier === 'college') out.push([`college places for ${n(cv.capacity ?? 0)}`, true]);
+  else if (cv?.tier === 'library') out.push([`college-level learning for ${n(cv.capacity ?? 0)}`, false]);
+  if (def.id === 'civ_courthouse' || def.model === 'civ_courthouse') out.push([`its quicker trials (police +${Math.round((COURTHOUSE_POLICE_MUL - 1) * 100)}% city-wide)`, true]);
+  const r = capReliefOf(def.id);
+  if (r) {
+    const fams = [r.R || r.R3 ? 'residential' : '', r.C || r.CO3 ? 'commercial' : '', r.I || r.IHT ? 'industrial' : ''].filter(Boolean);
+    if (fams.length) out.push([`its ${andList(fams)} demand-cap boost`, false]);
+  }
+  const lv = (def.landValue?.amount ?? 0) > 0, pr = (def.prestige?.amount ?? 0) > 0;
+  if (lv || pr) out.push([`the ${lv && pr ? 'land value and prestige' : lv ? 'land value' : 'prestige'} around it`, false]);
+  if ((def.campus?.amount ?? 0) > 0) out.push(['its campus draw for offices and high-tech', false]);
+  return out.length ? out.slice(0, 4) : [['its service', false]];
+}
+/** "its §2,500/mo deal income is gone" / "its income, its tourists and … are gone" */
+function lossText(def: BuildingDef): string {
+  const l = otherRuinLoss(def);
+  return `${andList(l.map((p) => p[0]))} ${l.length > 1 || l[0][1] ? 'are' : 'is'} gone`;
+}
+/**
+ * what a plopped building brings in a month (§; final fixes r3 — the ruins card leads with the most valuable ruin, the
+ * disasters' summaries name them in the same order: disasters.ts facilityValue, not imported — a lazily loaded module):
+ * its income (catalog), its tourists' spending at the reference draw (TOURISM_INCOME_PER_VISITOR a visitor a day) and a
+ * hundredth of what it costs to build
+ */
+function ruinValue(def: BuildingDef): number {
+  const a = ATTRACTIONS[def.id] ?? ATTRACTIONS[def.model];
+  return (def.income ?? 0) + (a ? a.draw * TOURISM_INCOME_PER_VISITOR : 0) + (def.cost ?? 0) / 100;
+}
 /** rubble lots before the rubble advice speaks (final fixes SF-2; fewer are named by the zone rules when they block room) */
 const RUBBLE_MIN_LOTS = 8;
 /** what grows on a family's land (0 R, 1 C, 2 I) */
@@ -704,18 +767,20 @@ const SUBTYPE_LEAD: Readonly<Partial<Record<number, string>>> = {
 function andList(parts: readonly string[]): string {
   return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0] ?? '';
 }
-/** "your Police Station and 2 Elementary Schools" (defs in order; the disasters' summaries word it the same way —
- *  disasters.ts facilityListText; not imported: disasters.ts is a lazily loaded module, src/game/modules.ts) */
+/** "your Police Station and 2 Elementary Schools" (defs in order; at most 3 kinds named, the buildings of the rest counted:
+ *  "… and 4 more"; the disasters' summaries word it the same way — disasters.ts facilityListText; not imported:
+ *  disasters.ts is a lazily loaded module, src/game/modules.ts) */
 function ruinListText(defIds: readonly string[]): string {
   const n = new Map<string, number>();
   for (const id of defIds) n.set(id, (n.get(id) ?? 0) + 1);
   const parts: string[] = [];
+  let more = 0;
   for (const [id, k] of n) {
+    if (n.size > 3 && parts.length >= 3) { more += k; continue; }
     const name = getDef(id)?.name ?? 'city facility';
     parts.push(k > 1 ? `${k} ${name.endsWith('s') ? name : name + 's'}` : name);
   }
-  const more = parts.length > 3 ? parts.length - 3 : 0;
-  return `your ${andList(more ? [...parts.slice(0, 3), `${more} more`] : parts)}`;
+  return `your ${andList(more ? [...parts, `${more} more`] : parts)}`;
 }
 
 /**
@@ -1616,10 +1681,39 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         let upkeep = 0;
         for (const o of ruins) { const od = rt.defOf(o); if (od) upkeep += ruinUpkeep(st, od); }
         const cost = upkeep >= 0.5 ? ` (${money(upkeep)}/mo)` : '';
+        // (no upkeep left to charge — its service's budget at 0 %: no "still charged" clause)
+        const charged = upkeep >= 0.5;
         out.push({ id: 'facilityRuins', cooldown: 90, priority: r0 === 0 ? 8 : r0 <= 2 ? 7 : 5, kind: 'warning', advisor: r0 <= 1 ? 'safety' : r0 <= 3 ? 'health' : 'utilities', ...at(b),
           text: n === 1
-            ? `Your ${def.name} lies in ruins — ${ruinLoss(def)}. Bulldoze the rubble and build a new one: its upkeep${cost} is still charged until you bulldoze it.`
-            : `${n} city facilities lie in ruins (${ruinListText(ruins.map((o) => o.def))}) — the ${def.name}: ${ruinLoss(def)}. Bulldoze the rubble and rebuild them: their upkeep${cost} is still charged until you bulldoze them.` });
+            ? `Your ${def.name} lies in ruins — ${ruinLoss(def)}. Bulldoze the rubble and build a new one${charged ? `: its upkeep${cost} is still charged until you bulldoze it` : ''}.`
+            : `${n} city facilities lie in ruins (${ruinListText(ruins.map((o) => o.def))}) — the ${def.name}: ${ruinLoss(def)}. Bulldoze the rubble and rebuild them${charged ? `: their upkeep${cost} is still charged until you bulldoze them` : ''}.` });
+      }
+    }
+    // ---------------- every other ruin (final fixes r3): the Missile Test Range (§2,500/mo) burned down and lay in ruins for
+    // 55 years without a word; a quake's ruined landmarks, civic buildings and venues cut the tourists by two thirds while
+    // their upkeep ran on. Say what stopped (deal income, tourists, the demand-cap boost, land value and prestige), that
+    // the upkeep is still charged, and point at the most valuable ruin (ruinValue: income, tourists, building cost)
+    if (fac.ruinsOther.length) {
+      const val = new Map<Building, number>();
+      for (const o of fac.ruinsOther) { const od = rt.defOf(o); val.set(o, od ? ruinValue(od) : 0); }
+      const ruins = [...fac.ruinsOther].sort((a, c) => (val.get(c) ?? 0) - (val.get(a) ?? 0) || a.id - c.id);
+      const b = ruins[0], def = rt.defOf(b), n = ruins.length;
+      if (def) {
+        let upkeep = 0, income = false, minor = true;
+        for (const o of ruins) {
+          const od = rt.defOf(o);
+          if (!od) continue;
+          upkeep += ruinUpkeep(st, od);
+          if ((od.income ?? 0) > 0) income = true;
+          // (only parks without staff — small parks, playgrounds, plazas — and bus stops: a lower priority)
+          if (!(od.category === 'park' && !((od.jobs ?? 0) > 0)) && od.id !== 'tr_bus_stop' && od.model !== 'tr_bus_stop') minor = false;
+        }
+        const charged = upkeep >= 0.5;
+        const free = !charged && n === 1 && !((def.cost ?? 0) > 0);
+        out.push({ id: 'ruins', cooldown: 120, priority: income ? 6 : minor ? 3 : 5, kind: 'warning', advisor: income ? 'finance' : 'planning', ...at(b),
+          text: n === 1
+            ? `Your ${def.name} lies in ruins — ${lossText(def)}. Bulldoze the rubble and build it again${charged ? `: its upkeep (${money(upkeep)}/mo) is still charged until you bulldoze it` : free ? ' — it costs nothing' : ''}.`
+            : `${n} of your buildings lie in ruins (${ruinListText(ruins.map((o) => o.def))}) — the ${def.name}: ${lossText(def)}. Bulldoze the rubble and rebuild them${charged ? `: their upkeep (${money(upkeep)}/mo) is still charged until you bulldoze them` : ''}.` });
       }
     }
     // ---------------- transport

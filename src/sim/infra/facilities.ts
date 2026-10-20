@@ -861,10 +861,16 @@ function staffLine(c: Ctx, tier: boolean): void {
     const eff = facilityOpFactor(st, b);
     const low = s.rel < STAFF_FLAG || !s.road;
     // routed 11: the posted jobs, not the slots hired while it lacks power / water (that cut is the power factor's)
-    const hiring = s.slots < jobs - 0.5 ? `Without ${(c.inf.usesPower && !(b.flags & BF.Powered)) ? 'power' : 'water'} it hires only ${fmt(s.slots)} of them` : undefined;
+    const what = (c.inf.usesPower && !(b.flags & BF.Powered)) ? 'power' : 'water';
+    const hiring = s.slots < jobs - 0.5 ? `Without ${what} it hires only ${fmt(s.slots)} of them` : undefined;
     const hint = staffHint(st, s, b);
+    // (final fixes r3: without a road nobody comes to work, whatever its power — the road is the reason, a power / water
+    // cut only the next step; the line used to read "No road access … · Without power it hires only 4 of them")
+    const text = !s.road
+      ? `No road access — no worker can reach it: build a road beside it${hiring ? `. It also needs ${what}: without it, it hires only ${fmt(s.slots)} of them` : ''}`
+      : hint && hiring ? `${hint} · ${hiring}` : hint ?? hiring;
     add(c, 'staff', 'Staff', `${fmt(s.jobs)} / ${fmt(jobs)}${eff < 0.995 ? ` — staffing effect ${change(eff)}` : ''}`, {
-      ratio: Math.min(1, s.jobs / jobs), status: low ? 'bad' : s.rel < 0.95 ? 'warn' : 'ok', hint: hint && hiring ? `${hint} · ${hiring}` : hint ?? hiring,
+      ratio: Math.min(1, s.jobs / jobs), status: low ? 'bad' : s.rel < 0.95 ? 'warn' : 'ok', hint: text,
     });
   } else {
     const fill = jobs > 0 ? Math.min(1, b.jobs / jobs) : 0;
@@ -1012,7 +1018,14 @@ function fleetLine(c: Ctx, noun: [string, string]): void {
   const d = justiceData(c.st);
   const now = d.resp[c.b.id] ?? 0, last = d.respLast[c.b.id] ?? 0;
   const label = noun[1][0].toUpperCase() + noun[1].slice(1);
-  if (f.total > 0) {
+  // final fixes r3: without a road beside it its units cannot drive out (the station has no road node: emergency.ts never
+  // sends them) — not "Ambulances 1 (0 out)" and an auto-dispatch range next to SF-4's "Serves nobody — no road access"
+  const road = touchesRoad(c.st, c.b);
+  if (f.total > 0 && !road) {
+    add(c, 'fleet', label, `${f.total} — can't leave: no road beside it`, {
+      status: 'bad', hint: `Build a road beside it: ${f.total === 1 ? `its ${noun[0]} can't` : `its ${noun[1]} can't`} drive out to a call`,
+    });
+  } else if (f.total > 0) {
     add(c, 'fleet', label, `${f.total} (${f.out} out)`, {
       ratio: f.out / f.total, status: f.free === 0 ? 'warn' : 'ok', hint: f.free === 0 ? 'Every unit is out — a nearby station would cover the next call' : undefined,
     });
@@ -1028,7 +1041,7 @@ function fleetLine(c: Ctx, noun: [string, string]): void {
     });
   }
   add(c, 'responses', 'Calls answered', `${now} this month · ${last} last month`);
-  const r = em?.stationList().find((s) => s.id === c.b.id);
+  const r = road ? em?.stationList().find((s) => s.id === c.b.id) : undefined;
   if (r) add(c, 'range', 'Auto-dispatch range', `${r.range.toFixed(1)} min by road`, { hint: 'Farther incidents need you to dispatch a unit (LIVE mode)' });
 }
 
@@ -1358,10 +1371,13 @@ export function facilityReport(sim: Simulation, buildingId: number): FacilityRep
   if (!def || def.category === 'growable' || def.hidden) return null;
   const inf = infoOf(st, b);
   const c: Ctx = { sim, st, b, def, inf, lines: [], warnings: [], load: null };
-  // a burnt building does nothing: one status line (and its upkeep, still charged), no live-looking service lines
+  // a ruin does nothing: one status line (and its upkeep, still charged), no live-looking service lines. Final fixes r3:
+  // cause-neutral words (BF.Burnt records no cause: a tornado or a quake flattens too), and a venue / deal says its income
+  // stopped (budget.ts books none for a ruin) — without the line the inspector header showed the catalog income
   if (b.flags & BF.Burnt) {
-    c.warnings.push('Burnt down — bulldoze it and build it again');
-    add(c, 'status', 'Status', 'burnt down — no service until rebuilt', { status: 'bad' });
+    c.warnings.push('In ruins — bulldoze it and build it again');
+    add(c, 'status', 'Status', 'in ruins — no service until rebuilt', { status: 'bad' });
+    if ((def.income ?? 0) > 0) add(c, 'income', def.category === 'reward' ? 'Deal income' : 'Income', 'none — in ruins', { status: 'bad' });
     upkeepLine(c, true);
     return { title: def.name, role: roleOf(c), lines: c.lines, warnings: c.warnings };
   }
@@ -1506,7 +1522,9 @@ export function facilityDefFacts(defId: string, st: CityState | null = null): Fa
     // plop tool's "Upkeep here" answers that); the build menu and Rewards panel show these same words
     const each = `§${orate.rate < 0.1 ? orate.rate.toFixed(3) : orate.rate.toFixed(2)}`;
     const full = `up to ${money(fullUseUpkeep(def))} at full use`;
-    f('upkeep', 'Upkeep', `${money(buildingUpkeep(st, def))} / month + ${each} per ${orate.unit} served`, st ? `≈${money(expectedUpkeep(st, def))}/mo typical in this city · ${full}` : `${full} a month`);
+    // (final fixes r3, LD21c: "per resident patrolled served" — a unit that carries its own participle takes no "served")
+    const per = /\s\w+ed$/.test(orate.unit) ? orate.unit : `${orate.unit} served`;
+    f('upkeep', 'Upkeep', `${money(buildingUpkeep(st, def))} / month + ${each} per ${per}`, st ? `≈${money(expectedUpkeep(st, def))}/mo typical in this city · ${full}` : `${full} a month`);
   } else if ((def.upkeep ?? 0) > 0) f('upkeep', 'Upkeep', `${money(def.upkeep ?? 0)} / month`);
   for (const t of TF.transportDefFacts(defId)) out.push(t);
   return out;
