@@ -69,6 +69,70 @@ const FOLLOW_STEP = 1 / 40;
 const _vf = new Float64Array(24);
 const _vfr = new THREE.Frustum();
 const _vfm = new THREE.Matrix4();
+/** spanY's slot: 0-1 point (x, z), 2-3 heading (x, z), 4 height out; 5-7 terrainIO's point in and height out */
+const _s = new Float64Array(8);
+
+/** RoadSurface.terrain (the rendered triangulation) at (io[o], io[o + 1]) -> io[o + 2] (no double crosses a call) */
+function terrainIO(hts: Float32Array, N: number, io: Float64Array, o: number): void {
+  let gx = io[o] / CELL_SIZE, gz = io[o + 1] / CELL_SIZE;
+  if (gx < 0) gx = 0; else if (gx > N - 1e-6) gx = N - 1e-6;
+  if (gz < 0) gz = 0; else if (gz > N - 1e-6) gz = N - 1e-6;
+  const ix = gx | 0, iz = gz | 0;
+  const tx = gx - ix, tz = gz - iz;
+  const N1 = N + 1, j = iz * N1 + ix;
+  const a = hts[j], b = hts[j + 1], c = hts[j + N1], d = hts[j + N1 + 1];
+  io[o + 2] = tx + tz <= 1 ? a + (b - a) * tx + (c - a) * tz : d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
+}
+
+/**
+ * RoadSurface.y(x, z[, fx, fz]) for a point on map cell i, a bridge / overpass span cell or a cell crossing under a deck
+ * (surfPair evaluates every other cell itself): point io[0..1], heading io[2..3] (road vehicles, `heading`; trains pass
+ * none), height + LIFT -> io[4]. The same formulas (RoadSurface.baseIn's deck profile, y's blend for traffic crossing
+ * under an overpass), with the doubles in a typed slot: a call to RoadSurface.y boxes its four double arguments and its
+ * result (a heap number each; ~20 KB per frame with highway traffic in view). tests/render/vehicleSurface.test.ts holds
+ * it equal to RoadSurface.y.
+ */
+export function spanY(surf: RoadSurface, i: number, heading: boolean, io: Float64Array): void {
+  const net = surf.net, st = surf.state, N = st.size, hts = st.heights;
+  const wx = io[0], wz = io[1];
+  // the cell's deck (or the ground where it has no span): RoadSurface.baseIn
+  const ax = net.bAxis[i];
+  let base: number;
+  if (ax < 0) {
+    io[5] = wx; io[6] = wz; terrainIO(hts, N, io, 5);
+    base = io[7];
+  } else {
+    const start = net.bStart[i], len = net.bLen[i];
+    const along = ax === 0 ? wx : wz;
+    let s = (along - start) / len;
+    if (s < 0) s = 0; else if (s > 1) s = 1;
+    if (ax === 0) { io[5] = start; io[6] = wz; } else { io[5] = wx; io[6] = start; }
+    terrainIO(hts, N, io, 5);
+    const h0 = io[7];
+    if (ax === 0) { io[5] = start + len; io[6] = wz; } else { io[5] = wx; io[6] = start + len; }
+    terrainIO(hts, N, io, 5);
+    const h1 = io[7];
+    const ramp = net.bRamp[i];
+    if (ramp > 0) {
+      // highway overpass: straight grade between the span ends + a plateau rise reached over the ramp length
+      let t = Math.min(along - start, start + len - along) / ramp;
+      if (t < 0) t = 0; else if (t > 1) t = 1;
+      const deck = h0 + (h1 - h0) * s + net.bRise[i] * t * t * (3 - 2 * t);
+      io[5] = wx; io[6] = wz; terrainIO(hts, N, io, 5);
+      const g = io[7];
+      base = deck > g ? deck : g;
+    } else base = h0 + (h1 - h0) * s + net.bRise[i] * Math.sin(Math.PI * s);
+  }
+  // traffic crossing under an overpass (heading across the deck axis) stays on the ground: RoadSurface.y
+  const fx = io[2], fz = io[3];
+  if (heading && (fx !== 0 || fz !== 0) && net.bCross[i]) {
+    const along = Math.abs(ax === 0 ? fx : fz) / (Math.hypot(fx, fz) || 1);
+    io[5] = wx; io[6] = wz; terrainIO(hts, N, io, 5);
+    const ground = io[7];
+    const k = along <= 0.35 ? 0 : along >= 0.85 ? 1 : (along - 0.35) / 0.5;
+    io[4] = ground + (base - ground) * k * k * (3 - 2 * k) + LIFT;
+  } else io[4] = base + LIFT;
+}
 
 /** classic zoom thinning step: a above h0, easing to b over w metres of camera height */
 function ease(h: number, h0: number, w: number, a: number, b: number): number {
@@ -1308,7 +1372,8 @@ export class VehicleRenderer {
    * Road-surface heights at the two points _p[0..1] +- _p[2..3] * _p[4] (front -> _p[6], back -> _p[7]). heading: as
    * RoadSurface.y(x, z, fx, fz) (road vehicles: traffic crossing under an overpass stays on the ground), else as
    * RoadSurface.y(x, z) (trains). Cells without a bridge / overpass span (nearly all) are evaluated here with
-   * RoadSurface.terrain's formula (the rendered triangulation) + LIFT; spans fall back to RoadSurface.
+   * RoadSurface.terrain's formula (the rendered triangulation) + LIFT, span cells with spanY (RoadSurface.y's formulas);
+   * points off the map (none on a road) go to RoadSurface.
    */
   private surfPair(heading: boolean): void {
     const net = this.net, surf = this.surf, st = surf.state;
@@ -1330,6 +1395,11 @@ export class VehicleRenderer {
         const j = iz * N1 + ix;
         const a = hts[j], b = hts[j + 1], c = hts[j + N1], d = hts[j + N1 + 1];
         y = (tx + tz <= 1 ? a + (b - a) * tx + (c - a) * tz : d + (c - d) * (1 - tx) + (b - d) * (1 - tz)) + LIFT;
+      } else if (cx >= 0 && cz >= 0 && cx < N && cz < N) {
+        const s = _s;
+        s[0] = wx; s[1] = wz; s[2] = fx; s[3] = fz;
+        spanY(surf, i, heading, s);
+        y = s[4];
       } else y = heading ? surf.y(wx, wz, fx, fz) : surf.y(wx, wz);
       _p[6 + k] = y;
     }
