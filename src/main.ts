@@ -292,8 +292,11 @@ class App {
       return 'recovered';
     } catch (e) {
       console.error('[main] recovery failed', e);
-      toast(`The snapshot could not be recovered: ${(e as Error).message}`, 'bad', 6000);
-      await discardRecoverySnapshot(p.marker);
+      // player-facing (the reason is in the console); the snapshot is deleted, so it is never offered again
+      const m = p.marker;
+      const last = m.baseDate ?? (m.baseDay !== undefined ? `day ${m.baseDay}` : '');
+      toast(`The snapshot of ${m.cityName} could not be restored. Your last save${last ? ` from ${last}` : ''} is kept.`, 'bad', 6000);
+      await discardRecoverySnapshot(m);
       return 'failed';
     }
   }
