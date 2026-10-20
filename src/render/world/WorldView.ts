@@ -19,7 +19,7 @@ import type { CameraControllerApi, CellHit, QualityLevel, WorldViewApi } from '.
 import { CameraController } from './CameraController';
 import { PostFX } from './PostFX';
 import { QUALITY_PRESETS, type QualitySettings } from './quality';
-import { CitySun, DIR_RADIUS_STEPS, dirShadowLogRadius, fitSunShadow, shadowCasters, type ShadowFit, type ShadowReceiver } from './Shadows';
+import { CitySun, copyReceiver, DIR_RADIUS_STEPS, dirShadowLogRadius, fitSunShadow, makeReceiver, receiverHolds, shadowCasters, WIDEN_MAX_FRAMES, widenReceiver, type ShadowFit, type ShadowReceiver } from './Shadows';
 import { SkySystem } from './Sky';
 import { TerrainRenderer } from './TerrainRenderer';
 import { TreeRenderer } from './TreeRenderer';
@@ -115,17 +115,19 @@ export class WorldView implements WorldViewApi {
   /** while the view moves, the shadow light direction follows the sun in this many times coarser steps (see update) */
   shadowMoveSunStep = 3;
   /**
-   * Single map: while the view turns or zooms in place (its target still), re-renders cull the casters only against the
-   * map's own box, not the view's receiver, so the map need not be re-rendered whenever the receiver changes (see
-   * CitySun.dirReceiverCull): an orbit keeps it, a zoom re-renders it only when its radius steps. A map that moves
-   * anyway keeps culling against the receiver, which draws fewer casters: while the target moves (pans) or the zoom
-   * steps the radius at least shadowBoxCullZoom times per frame (fast zooms such as a street -> far sweep, about every
-   * other frame: they re-render it every shadowMoveInterval frames either way; a wheel zoom steps it every 3-10 frames);
-   * so do re-renders for moving vehicles near the camera (every frame either way) and of a view at rest. false = always
-   * cull against the receiver.
+   * Single map: its casters are culled against the view's receiver volume (the part of the view it shades), so a view
+   * that turns or zooms needs the map re-rendered. While the view turns or zooms in place (its target still: orbits,
+   * tilts, wheel zooms), a re-render culls against the receiver widened for the view's motion predicted over the next
+   * frames instead (CitySun.dirCull, widenReceiver: steady motion extrapolated), and the map serves every frame whose
+   * receiver it holds: re-rendered once the view leaves it (or the map moves: a zoom stepping its radius). The
+   * prediction covers at most shadowWidenFrames frames and at most as many as widen the receiver's cross-section by
+   * shadowWidenBudget (relative: about the share of casters the re-render adds; a zoom-in adds none), at least the
+   * next frame while the map may not re-render before it (shadowMoveInterval) unless that alone exceeds the budget.
+   * None while the map follows the view anyway (pans: it moves with the target), for moving vehicles near the camera
+   * (re-rendered every frame) or at rest. 0 frames = cull against each frame's receiver.
    */
-  shadowBoxCull = true;
-  shadowBoxCullZoom = 0.4;
+  shadowWidenFrames = 7;
+  shadowWidenBudget = 0.1;
   /**
    * Cascades: while the view moves, the far cascade is redrawn at most every this many frames (1 = with every shadow
    * render). In between, shadow renders redraw the near cascade only; the far one keeps its map tile and lookup matrix
@@ -180,18 +182,26 @@ export class WorldView implements WorldViewApi {
   private shView = new Float64Array(20);
   private shTarget = new Float64Array(3);
   private viewStill = 0;
-  /** the single map was last rendered with its casters culled against the view's receiver (see CitySun.dirReceiverCull) */
-  private shCull = true;
-  /** the single map's unquantized log2 radius at the previous render and its radius steps per frame since then */
-  private shLogR = NaN;
-  private shZoomRate = 0;
+  /** the view's motion since the previous render as a rigid motion (rotation shMq, row-major, about its position, then
+   *  its travel shMv), the render before's (shPmv / shPmq), and how many renders in a row measured one (2: both) */
+  private shMv = new Float64Array(3);
+  private shMq = new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  private shPmv = new Float64Array(3);
+  private shPmq = new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  private shMoves = 0;
+  /** shView holds the previous render's view (renders without a shadow policy pass break the chain) */
+  private shViewOk = false;
+  /** single map: its unrounded log2 radius (dirShadowLogRadius) this render and its change since the previous one */
+  private shLr = NaN;
+  private shDlr = 0;
   /** frame number of the last shadow render that redrew the far cascade */
   private shFarFrame = 0;
   private shadowDir = new THREE.Vector3(0, 1, 0);
   /** this frame's shadow fit parameters (one object reused every frame) */
   private shadowFit: ShadowFit = { target: new THREE.Vector3(), distance: 1, rangeMul: 1, lightDir: this.shadowDir, maxHeight: 0, minHeight: 0, mapSize: 0 };
-  /** frames the shadow map was actually re-rendered / skipped (stats) */
-  readonly shadowStats = { rendered: 0, skipped: 0, farHeld: 0, reason: '' };
+  /** frames the shadow map was actually re-rendered / skipped, why the last one was, and how many frames ahead the single
+   *  map's last render predicted (stats) */
+  readonly shadowStats = { rendered: 0, skipped: 0, farHeld: 0, reason: '', widen: 0 };
   // dynamic resolution state
   private drsLast = 0;
   /** start (rAF time) of the frame being rendered and main-thread busy time of the previous frame (ms) */
@@ -648,22 +658,33 @@ export class WorldView implements WorldViewApi {
   /** decide whether this frame re-renders the shadow map (see shadowCache) */
   private updateShadowPolicy(): void {
     const sm = this.renderer.shadowMap;
+    const sun = this.sun;
     if (!this.shadowCache) {
       sm.autoUpdate = true;
+      // (every render culls the single map's casters against that frame's receiver)
+      if (!sun.cascaded) copyReceiver(sun.dirCull, sun.dirReceiver);
+      this.shViewOk = false;
       return;
     }
     sm.autoUpdate = false;
     this.frameNo++;
-    const sun = this.sun;
     if (!sun.visible || !sun.castShadow || !sm.enabled) {
       sm.needsUpdate = false;
+      this.shViewOk = false;
       return;
     }
     // fit the shadow cameras now (three repeats this identically when it renders the map) and compare
     this.camera.updateMatrixWorld();
     {
-      // view motion since the previous render (a damped camera settling by float ulps counts as still)
+      // view motion since the previous render (a damped camera settling by float ulps counts as still), also as a rigid
+      // motion for the single map's prediction (see shadowWidenFrames)
       const e = this.camera.matrixWorld.elements, pe = this.camera.projectionMatrix.elements, v = this.shView;
+      if (this.shViewOk) {
+        this.shPmv.set(this.shMv);
+        this.shPmq.set(this.shMq);
+        viewMotion(v, e, this.shMv, this.shMq);
+        this.shMoves++;
+      } else this.shMoves = 0;
       let still = true;
       for (let i = 0; i < 20; i++) {
         const x = i < 16 ? e[i] : pe[i === 16 ? 0 : i === 17 ? 5 : i === 18 ? 8 : 9];
@@ -671,6 +692,7 @@ export class WorldView implements WorldViewApi {
         v[i] = x;
       }
       this.viewStill = still ? this.viewStill + 1 : 0;
+      this.shViewOk = true;
     }
     // (the view target: a pan moves it, a turn / zoom in place does not)
     const tg = this.shadowFit.target, tv = this.shTarget;
@@ -693,11 +715,10 @@ export class WorldView implements WorldViewApi {
     const cams: THREE.Camera[] | null = sun.cascaded ? ((sun.cascadeShadow as any)._cameras as THREE.Camera[]) : null;
     const nc = cams ? cams.length : 1;
     if (!cams) {
-      // (single map: how fast its radius steps while the view zooms, in steps per frame; none on the first frame)
-      const lr = dirShadowLogRadius(this.shadowFit);
-      const rate = Math.abs(lr - this.shLogR) * DIR_RADIUS_STEPS;
-      this.shZoomRate = rate === rate ? rate : 0;
-      this.shLogR = lr;
+      // (single map: how fast a zoom moves its radius toward the next step, which moves the map)
+      const lr = dirShadowLogRadius(this.shadowFit), d = lr - this.shLr;
+      this.shDlr = d === d ? d : 0;
+      this.shLr = lr;
     }
     const key = this.shKey;
     let o = 0, moved = false;
@@ -712,13 +733,14 @@ export class WorldView implements WorldViewApi {
       }
     }
     // casters are culled against the visible slice (receiver), which also changes when the view only rotates / zooms
-    // while the (texel-snapped, target-centred) single map stays put: unless that map was rendered without receiver
-    // culling (below), which does not depend on the view's receiver
+    // while the shadow cameras stay put: cascades re-render when their receivers change, the single map once this
+    // frame's receiver left the volume its last render was culled against (widened for the motion predicted then)
     const recvs: ShadowReceiver[] | null = sun.cascaded ? sun.cascadeShadow.receivers : null;
-    let rv = 0;
-    if (recvs) for (let i = 0; i < recvs.length; i++) rv += recvs[i].version;
-    else rv = sun.dirReceiver.version;
-    if (rv !== this.shRecv && (recvs !== null || this.shCull)) moved = true;
+    let rv = 0, left = false;
+    if (recvs) {
+      for (let i = 0; i < recvs.length; i++) rv += recvs[i].version;
+      if (rv !== this.shRecv) moved = true;
+    } else if (!moved && !receiverHolds(sun.dirCull, sun.dirReceiver)) moved = left = true;
     let need = moved || this.shForce > 0 || !sh.map || this.frameNo - this.shFrame >= this.shadowMaxAge;
     // moving vehicles near the camera: every frame (their shadows would trail them by a frame)
     const dyn = shadowCasters.dynamic !== this.shDynamic && this.cameraController.distance < this.dynamicShadowDistance;
@@ -752,17 +774,10 @@ export class WorldView implements WorldViewApi {
       if (hold) this.shadowStats.farHeld++;
       this.shRecv = rv;
       if (!sun.cascaded) {
-        // single map: casters culled against the view's receiver while the view's target moves or the map's radius steps
-        // about every other frame (pans and fast zooms re-render it anyway, as it follows), while moving vehicles near the
-        // camera re-render it every frame anyway (dyn) and at rest (the receiver does not change then), else only against
-        // the map's own box, so a view that turns or zooms within the map's radius step keeps it (instead of re-rendering
-        // whenever the receiver changes); the box draws the casters of the whole square, so it is used only where it
-        // saves re-renders
-        const cull = !this.shadowBoxCull || tMoved || this.shZoomRate >= this.shadowBoxCullZoom || dyn || this.viewStill > 0;
-        if (sun.dirReceiverCull !== cull) sun.dirReceiverCull = cull;
-        this.shCull = cull;
+        this.fitDirCull(dyn || tMoved);
+        if (!sun.dirReceiverCull) sun.dirReceiverCull = true;
       }
-      this.shadowStats.reason = moved ? 'moved' : this.shForce > 0 ? 'forced' : !sh.map ? 'nomap' : dyn ? 'vehicles' : shadowCasters.version !== this.shVersion ? 'casters' : 'age';
+      this.shadowStats.reason = left ? 'view' : moved ? 'moved' : this.shForce > 0 ? 'forced' : !sh.map ? 'nomap' : dyn ? 'vehicles' : shadowCasters.version !== this.shVersion ? 'casters' : 'age';
       this.shVersion = shadowCasters.version;
       this.shDynamic = shadowCasters.dynamic;
       this.shFrame = this.frameNo;
@@ -770,6 +785,42 @@ export class WorldView implements WorldViewApi {
       this.shadowStats.rendered++;
     } else this.shadowStats.skipped++;
     sm.needsUpdate = need;
+  }
+
+  /**
+   * Single map, at a re-render: the volume its casters are culled against (CitySun.dirCull) — this frame's receiver,
+   * widened for the view's steady motion over the next frames (see shadowWidenFrames); `follow`: the map follows the
+   * view anyway (target moved, vehicles near the camera re-render it every frame) -> no prediction.
+   */
+  private fitDirCull(follow: boolean): void {
+    const sun = this.sun, rec = sun.dirReceiver, out = sun.dirCull, v = this.shMv, q = this.shMq;
+    let k = 0;
+    if (!follow && this.shMoves >= 2 && this.viewStill === 0 && this.shadowWidenFrames > 0 && this.shadowWidenBudget > 0) {
+      const step = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), turn = rotAngle(q);
+      if (step > 1e-3 || turn > 2e-6) {
+        // (the prediction's error: a quarter more where the motion widens it, and a millimetre per metre of view range)
+        const pad = 1e-3 * rec.reach, depth = this.cameraController.distance;
+        const g1 = widenReceiver(out, rec, v, q, 1, WIDEN_ERR, pad, depth, WIDEN_TURN);
+        if (g1 >= 0) {
+          k = Math.min(this.shadowWidenFrames, g1 > 1e-9 ? Math.floor(this.shadowWidenBudget / g1) : WIDEN_MAX_FRAMES);
+          // (a zoom moves the map when its radius steps: no prediction past that frame, it re-renders the map anyway)
+          const dl = this.shDlr;
+          if (k > 1 && Math.abs(dl) > 1e-9) {
+            const st = Math.ceil(this.shLr * DIR_RADIUS_STEPS - 1e-9) / DIR_RADIUS_STEPS;
+            const f = dl > 0 ? (st - this.shLr) / dl : (this.shLr - st + 1 / DIR_RADIUS_STEPS) / -dl;
+            k = Math.max(1, Math.min(k, Math.ceil(f) - 1));
+          }
+          // (a start, a stop or an erratic camera: only the next frame; nor more for a view mostly travelling, such as a
+          // zoom out: its receiver grows on every side, from near the camera on, where a turn's grows mostly far out)
+          if (k > 1 && !steadyMotion(v, q, this.shPmv, this.shPmq, 1e-3 * rec.reach)) k = 1;
+          if (k > 1 && widenReceiver(_wTurn, rec, _v0, q, 1, WIDEN_ERR, pad, depth, WIDEN_TURN) < 0.5 * g1) k = 1;
+          if (k > 1 && widenReceiver(out, rec, v, q, k, WIDEN_ERR, pad, depth, WIDEN_TURN) < 0) k = 1;
+        }
+      }
+    }
+    // (k 1: out holds the one-frame prediction)
+    if (k === 0) copyReceiver(out, rec);
+    this.shadowStats.widen = k;
   }
 
   /** adapt renderScale to the frame interval (see dynamicResolution) */
@@ -944,16 +995,15 @@ export class WorldView implements WorldViewApi {
       this.sun.cascadeShadow.splits[0] = 1;
       this.sun.cascadeShadow.splits[1] = this.maxHeight + 2000;
       this.sun.cascadeShadow.splits[2] = this.maxHeight + 3000;
-      if (!this.sun.cascaded) {
-        fitSunShadow(this.sun, this.camera, { target: _v.set(W / 2, 0, W / 2), distance: W, rangeMul: 1.2, lightDir: this.sky.lighting.lightDir, maxHeight: this.maxHeight });
-        // the whole map is in view: no caster culling against the (perspective) game view's receiver volume
-        this.sun.dirShadow.camera.userData.recv = undefined;
-        (this.sun.dirShadow as unknown as { _frustum: { recv?: unknown } })._frustum.recv = undefined;
-      }
+      if (!this.sun.cascaded) fitSunShadow(this.sun, this.camera, { target: _v.set(W / 2, 0, W / 2), distance: W, rangeMul: 1.2, lightDir: this.sky.lighting.lightDir, maxHeight: this.maxHeight });
     } else {
       this.camera.aspect = width / height;
       this.camera.updateProjectionMatrix();
     }
+    // (single map: no caster culling against the game view's receiver volume, which need not hold this view: the whole
+    // map from above, or another aspect)
+    const recvCull = this.sun.dirReceiverCull;
+    this.sun.dirReceiverCull = false;
     this.post.setSize(width, height);
     this.renderer.info.reset();
     this.renderer.shadowMap.needsUpdate = true;
@@ -970,7 +1020,7 @@ export class WorldView implements WorldViewApi {
     this.camera.aspect = this.width / this.height;
     this.camera.updateProjectionMatrix();
     for (let i = 0; i < 3; i++) this.sun.cascadeShadow.splits[i] = saveSplits[i];
-    this.sun.dirReceiverCull = this.sun.dirReceiverCull;
+    this.sun.dirReceiverCull = recvCull;
     // to canvas (flip Y)
     const c2 = document.createElement('canvas');
     c2.width = width;
@@ -1007,6 +1057,49 @@ const _bboxMax = new THREE.Vector3();
 const _rayInv = new THREE.Ray();
 /** the single shadow map's lookup matrix before this frame's fit (updateShadowPolicy) */
 const _shM = new THREE.Matrix4();
+/** single map: the most a predicted motion may turn a side of the receiver, and the prediction's relative error
+ *  (widenReceiver) */
+const WIDEN_TURN = (10 * Math.PI) / 180;
+const WIDEN_ERR = 0.25;
+/** no travel, and the receiver the turn alone would widen to (fitDirCull) */
+const _v0 = new Float64Array(3);
+const _wTurn = makeReceiver();
+
+/**
+ * Rigid motion of a camera from its previous world matrix `p` (elements 0-15) to `e`: rotation q (row-major 3x3, world
+ * axes: the previous orientation onto the current) about the previous position, then the travel v of the position.
+ */
+function viewMotion(p: ArrayLike<number>, e: ArrayLike<number>, v: Float64Array, q: Float64Array): void {
+  v[0] = e[12] - p[12]; v[1] = e[13] - p[13]; v[2] = e[14] - p[14];
+  // q = B A^T over the unit axes (columns of the matrices)
+  for (let i = 0; i < 9; i++) q[i] = 0;
+  for (let c = 0; c < 3; c++) {
+    const o = c * 4;
+    const la = Math.sqrt(p[o] * p[o] + p[o + 1] * p[o + 1] + p[o + 2] * p[o + 2]) || 1, lb = Math.sqrt(e[o] * e[o] + e[o + 1] * e[o + 1] + e[o + 2] * e[o + 2]) || 1;
+    for (let i = 0; i < 3; i++) {
+      const b = e[o + i] / lb;
+      for (let j = 0; j < 3; j++) q[i * 3 + j] += b * (p[o + j] / la);
+    }
+  }
+}
+
+/** rotation angle (rad) of a row-major rotation matrix */
+function rotAngle(q: Float64Array): number {
+  const c = (q[0] + q[4] + q[8] - 1) / 2;
+  return c >= 1 ? 0 : c <= -1 ? Math.PI : Math.acos(c);
+}
+
+/** did the per-frame motion (v, q) keep its pace since the previous frame's (pv, pq)? (as DynamicBatch's bands) */
+function steadyMotion(v: Float64Array, q: Float64Array, pv: Float64Array, pq: Float64Array, eps: number): boolean {
+  const dx = v[0] - pv[0], dy = v[1] - pv[1], dz = v[2] - pv[2];
+  const l2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+  if (dx * dx + dy * dy + dz * dz > 0.09 * l2 + eps * eps) return false;
+  // rotation between the two per-frame rotations (q pq^T) against the rotation itself
+  let t = 0;
+  for (let i = 0; i < 9; i++) t += q[i] * pq[i];
+  const a = Math.acos(Math.max(-1, Math.min(1, (t - 1) / 2)));
+  return a <= 0.3 * rotAngle(q) + 1e-5;
+}
 /** renders between re-collections of the scene's instanced meshes (WorldView.hideEmpty), and the walk's stack */
 const EMPTY_SCAN = 30;
 const _scan: THREE.Object3D[] = [];

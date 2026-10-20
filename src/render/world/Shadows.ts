@@ -89,14 +89,218 @@ export interface ShadowReceiver {
   /** the volume's 8 corners (x, y, z each): a caster list culled against a widened receiver stays valid while the
    *  current volume lies inside it (DynamicBatch) */
   corners: Float64Array;
+  /** already widened for the view's predicted motion (widenReceiver): caster lists culled against it take no guard
+   *  band of their own (DynamicBatch) */
+  banded: boolean;
 }
 
 export function makeReceiver(): ShadowReceiver {
   return {
     planes: Array.from({ length: 6 }, () => new THREE.Plane()), pl: new Float64Array(24), nl: new Float64Array(6), dir: new THREE.Vector3(0, 1, 0), ground: 0, version: 0, snap: new Float64Array(28), origin: new THREE.Vector3(), shape: 0, shapeSnap: new Float64Array(28), reach: 100,
     rot: new Float64Array(9), fwd: new THREE.Vector3(0, 0, -1), dn: 0, df: 0, phi: 0.6, form: 0, formSnap: new Float64Array(10),
-    corners: new Float64Array(24),
+    corners: new Float64Array(24), banded: false,
   };
+}
+
+/** out = rec (a new volume for the caster lists culled against out: its version is bumped), unwidened */
+export function copyReceiver(out: ShadowReceiver, rec: ShadowReceiver): void {
+  for (let i = 0; i < 6; i++) out.planes[i].copy(rec.planes[i]);
+  out.pl.set(rec.pl);
+  out.nl.set(rec.nl);
+  out.dir.copy(rec.dir);
+  out.ground = rec.ground;
+  out.origin.copy(rec.origin);
+  out.reach = rec.reach;
+  out.rot.set(rec.rot);
+  out.fwd.copy(rec.fwd);
+  out.dn = rec.dn;
+  out.df = rec.df;
+  out.phi = rec.phi;
+  out.form = rec.form;
+  out.formSnap.set(rec.formSnap);
+  out.corners.set(rec.corners);
+  out.banded = false;
+  out.version++;
+}
+
+/** does `outer` hold the volume of `inner` (same light / ground / projection as of their fits, inner's 8 corners inside
+ *  outer's planes, within float noise)? A NaN corner or plane: no. */
+export function receiverHolds(outer: ShadowReceiver, inner: ShadowReceiver): boolean {
+  const fo = outer.formSnap, fi = inner.formSnap;
+  for (let i = 0; i < fo.length; i++) if (fo[i] !== fi[i]) return false;
+  const pl = outer.pl, c = inner.corners;
+  for (let p = 0; p < 24; p += 4) {
+    const nx = pl[p], ny = pl[p + 1], nz = pl[p + 2], d = pl[p + 3];
+    for (let o = 0; o < 24; o += 3) {
+      const x = c[o], y = c[o + 1], z = c[o + 2];
+      if (!(nx * x + ny * y + nz * z + d >= -(1e-4 + 1e-7 * (Math.abs(x) + Math.abs(y) + Math.abs(z))))) return false;
+    }
+  }
+  return true;
+}
+
+/** widenReceiver: most frames predicted, and its scratch (per step: the view position's offset, then the 8 corners'
+ *  offsets from it: near / far per corner ray, as in ShadowReceiver.corners) */
+export const WIDEN_MAX_FRAMES = 16;
+const _wv = new Float64Array(27 * WIDEN_MAX_FRAMES);
+const _wp = new Float64Array(24);
+const _wc = new Float64Array(24);
+
+/**
+ * The receiver a single-map render culls its casters against when the map is to serve the next k frames too: the
+ * view's receiver `rec` (this frame) widened to hold its volumes predicted for frames 1..k of the view's last per-frame
+ * motion — rigid: rotation q (row-major 3x3, world axes) about the view position, then its travel v, repeated (the
+ * travel turns with the view, so an orbit is extrapolated as an orbit and a zoom as a zoom). As DynamicBatch's guard
+ * bands: each side plane (through the view position) turns outward about its hinge just enough to hold the predicted
+ * corner rays, then shifts out by the view position's predicted travel across it; both by `err` more (relative: the
+ * prediction's error, only where the motion widens) and by `pad` (m) more; the depth planes hold the predicted
+ * corners' depth range with slack (the far plane culls nothing the map's square takes in, and a zoom moves it with the
+ * view). Copies the light, ground, form and view pose of rec; out's corners are the widened volume's. Returns how much
+ * wider the volume's cross-section at view depth `depth` gets (relative growth of its width plus that of its height:
+ * about the share of casters it adds), or -1 (out untouched) when a side would turn by more than maxTurn or a
+ * predicted corner ray cannot be held (a jump).
+ */
+export function widenReceiver(out: ShadowReceiver, rec: ShadowReceiver, v: ArrayLike<number>, q: ArrayLike<number>, k: number, err: number, pad: number, depth: number, maxTurn: number): number {
+  k = Math.max(1, Math.min(WIDEN_MAX_FRAMES, k | 0));
+  const cr = rec.corners;
+  if (!(cr[0] === cr[0])) return -1;
+  const ax = rec.origin.x, ay = rec.origin.y, az = rec.origin.z;
+  const fx = rec.fwd.x, fy = rec.fwd.y, fz = rec.fwd.z;
+  const W = _wv;
+  // predicted view position offsets p_s = v + q v + ... + q^(s-1) v and corner offsets q^s (c - a), s = 1..k
+  let px = 0, py = 0, pz = 0, tx = v[0], ty = v[1], tz = v[2];
+  for (let s = 0; s < k; s++) {
+    const o = s * 27, b = s === 0 ? -1 : (s - 1) * 27;
+    px += tx; py += ty; pz += tz;
+    W[o] = px; W[o + 1] = py; W[o + 2] = pz;
+    const nx = q[0] * tx + q[1] * ty + q[2] * tz, ny = q[3] * tx + q[4] * ty + q[5] * tz, nz = q[6] * tx + q[7] * ty + q[8] * tz;
+    tx = nx; ty = ny; tz = nz;
+    for (let c = 0; c < 8; c++) {
+      const x = b < 0 ? cr[c * 3] - ax : W[b + 3 + c * 3], y = b < 0 ? cr[c * 3 + 1] - ay : W[b + 4 + c * 3], z = b < 0 ? cr[c * 3 + 2] - az : W[b + 5 + c * 3];
+      W[o + 3 + c * 3] = q[0] * x + q[1] * y + q[2] * z;
+      W[o + 4 + c * 3] = q[3] * x + q[4] * y + q[5] * z;
+      W[o + 5 + c * 3] = q[6] * x + q[7] * y + q[8] * z;
+    }
+  }
+  const pl = rec.pl, P = _wp;
+  // cross-section at `depth` before / after (distance of the view axis point to each side plane)
+  const qx = ax + fx * depth, qy = ay + fy * depth, qz = az + fz * depth;
+  let h0 = 0, h1 = 0, w0 = 0, w1 = 0;
+  for (let i = 0; i < 4; i++) {
+    const o = i * 4, nx = pl[o], ny = pl[o + 1], nz = pl[o + 2];
+    // hinge turn: the normal rotates toward the view direction (its component along the plane)
+    const fn = fx * nx + fy * ny + fz * nz;
+    let ux = fx - fn * nx, uy = fy - fn * ny, uz = fz - fn * nz;
+    const ul = Math.sqrt(ux * ux + uy * uy + uz * uz);
+    let A = 0;
+    if (ul > 1e-9) {
+      ux /= ul; uy /= ul; uz /= ul;
+      for (let s = 0; s < k; s++) {
+        // (far corners: the near ones lie on the same rays)
+        for (let c = 1; c < 8; c += 2) {
+          const p = s * 27 + 3 + c * 3, rx = W[p], ry = W[p + 1], rz = W[p + 2];
+          const a = nx * rx + ny * ry + nz * rz;
+          if (a >= 0) continue;
+          const b = ux * rx + uy * ry + uz * rz;
+          if (!(b > 0)) return -1;
+          const t = Math.atan2(-a, b);
+          if (t > A) A = t;
+        }
+      }
+      A *= 1 + err;
+      if (A > maxTurn) return -1;
+    } else ux = uy = uz = 0;
+    const cA = Math.cos(A), sA = Math.sin(A);
+    const mx = nx * cA + ux * sA, my = ny * cA + uy * sA, mz = nz * cA + uz * sA;
+    // the view position travels to p_s: shift the plane out by what crosses it
+    let tr = 0;
+    for (let s = 0; s < k; s++) {
+      const o = s * 27, mv = mx * W[o] + my * W[o + 1] + mz * W[o + 2];
+      if (-mv > tr) tr = -mv;
+    }
+    const d = -(mx * ax + my * ay + mz * az) + tr * (1 + err) + pad;
+    P[o] = mx; P[o + 1] = my; P[o + 2] = mz; P[o + 3] = d;
+    const h = nx * qx + ny * qy + nz * qz + pl[o + 3], hw = mx * qx + my * qy + mz * qz + d;
+    if (i < 2) { h0 += h; w0 += hw; } else { h1 += h; w1 += hw; }
+  }
+  // depth range: the current corners and the predicted ones (view position travel included), with slack
+  let nd = rec.dn, fd = rec.df;
+  for (let s = 0; s < k; s++) {
+    const o = s * 27, pd = fx * W[o] + fy * W[o + 1] + fz * W[o + 2];
+    for (let c = 0; c < 8; c++) {
+      const p = o + 3 + c * 3, dd = pd + fx * W[p] + fy * W[p + 1] + fz * W[p + 2];
+      if (dd < nd) nd = dd;
+      if (dd > fd) fd = dd;
+    }
+  }
+  nd = Math.min(rec.dn + (nd - rec.dn) * (1 + err), rec.dn * 0.5) - pad;
+  fd = (rec.df + (fd - rec.df) * (1 + err)) * 1.3 + pad;
+  const fa = fx * ax + fy * ay + fz * az;
+  P[16] = -fx; P[17] = -fy; P[18] = -fz; P[19] = fa + fd;
+  P[20] = fx; P[21] = fy; P[22] = fz; P[23] = -fa - nd;
+  // the widened volume's corners: side x (NDC +1: plane 0, -1: plane 1) x side y (+1: plane 3, -1: plane 2) x depth
+  // (near: plane 5, far: plane 4), as setReceiver orders them; each must lie inside the other planes
+  const C = _wc;
+  for (let c = 0; c < 4; c++) {
+    for (let e = 0; e < 2; e++) {
+      if (!corner3(P, c & 1 ? 0 : 1, c & 2 ? 3 : 2, e ? 4 : 5, C, (c * 2 + e) * 3)) return -1;
+    }
+  }
+  for (let p = 0; p < 24; p += 4) {
+    for (let o = 0; o < 24; o += 3) {
+      const x = C[o], y = C[o + 1], z = C[o + 2];
+      if (!(P[p] * x + P[p + 1] * y + P[p + 2] * z + P[p + 3] >= -(1e-3 + 1e-6 * (Math.abs(x) + Math.abs(y) + Math.abs(z))))) return -1;
+    }
+  }
+  // (the current volume too: its corners inside the widened planes)
+  for (let p = 0; p < 24; p += 4) {
+    for (let o = 0; o < 24; o += 3) {
+      const x = cr[o], y = cr[o + 1], z = cr[o + 2];
+      if (!(P[p] * x + P[p + 1] * y + P[p + 2] * z + P[p + 3] >= -(1e-4 + 1e-7 * (Math.abs(x) + Math.abs(y) + Math.abs(z))))) return -1;
+    }
+  }
+  const dx = rec.dir.x, dy = rec.dir.y, dz = rec.dir.z;
+  for (let i = 0; i < 6; i++) {
+    const o = i * 4;
+    out.planes[i].normal.set(P[o], P[o + 1], P[o + 2]);
+    out.planes[i].constant = P[o + 3];
+    out.nl[i] = P[o] * dx + P[o + 1] * dy + P[o + 2] * dz;
+  }
+  out.pl.set(P);
+  out.corners.set(C);
+  out.dir.copy(rec.dir);
+  out.ground = rec.ground;
+  out.origin.copy(rec.origin);
+  out.reach = rec.reach;
+  out.rot.set(rec.rot);
+  out.fwd.copy(rec.fwd);
+  out.dn = nd;
+  out.df = fd;
+  out.phi = rec.phi;
+  out.form = rec.form;
+  out.formSnap.set(rec.formSnap);
+  out.banded = true;
+  out.version++;
+  return (h0 > 1e-9 ? w0 / h0 - 1 : 0) + (h1 > 1e-9 ? w1 / h1 - 1 : 0);
+}
+
+/** intersection of planes a, b, c of P (nx, ny, nz, constant each) -> out[o..o+2]; false if they are (nearly) parallel */
+function corner3(P: Float64Array, a: number, b: number, c: number, out: Float64Array, o: number): boolean {
+  a *= 4; b *= 4; c *= 4;
+  const ax = P[a], ay = P[a + 1], az = P[a + 2], ad = P[a + 3];
+  const bx = P[b], by = P[b + 1], bz = P[b + 2], bd = P[b + 3];
+  const cx = P[c], cy = P[c + 1], cz = P[c + 2], cd = P[c + 3];
+  // b x c, c x a, a x b
+  const bcx = by * cz - bz * cy, bcy = bz * cx - bx * cz, bcz = bx * cy - by * cx;
+  const cax = cy * az - cz * ay, cay = cz * ax - cx * az, caz = cx * ay - cy * ax;
+  const abx = ay * bz - az * by, aby = az * bx - ax * bz, abz = ax * by - ay * bx;
+  const det = ax * bcx + ay * bcy + az * bcz;
+  if (!(Math.abs(det) > 1e-12)) return false;
+  const k = -1 / det;
+  out[o] = (ad * bcx + bd * cax + cd * abx) * k;
+  out[o + 1] = (ad * bcy + bd * cay + cd * aby) * k;
+  out[o + 2] = (ad * bcz + bd * caz + cd * abz) * k;
+  return true;
 }
 
 /** distance from a camera to the ground plane y = 0 along its view axis (clamped; grazing views count as far) */
@@ -452,8 +656,12 @@ export class CityCascadeShadow extends SunLightShadow {
 export class CitySun extends THREE.DirectionalLight {
   readonly dirShadow: THREE.DirectionalLightShadow;
   readonly cascadeShadow: CityCascadeShadow;
-  /** receiver volume of the single (low quality) map (casters are culled against it while dirReceiverCull is on) */
+  /** receiver volume of the single (low quality) map: the view's, fitted every frame by fitSunShadow */
   readonly dirReceiver = makeReceiver();
+  /** the volume the single map's casters are culled against while dirReceiverCull is on: dirReceiver as of the map's
+   *  last render, widened for the view's motion predicted until it may be needed again (WorldView.updateShadowPolicy,
+   *  widenReceiver); the map serves every frame whose receiver it holds */
+  readonly dirCull = makeReceiver();
   private _cascaded = false;
   private _dirCull = true;
 
@@ -469,12 +677,8 @@ export class CitySun extends THREE.DirectionalLight {
   }
 
   /**
-   * Single map: cull its casters against the view's receiver volume (dirReceiver, fitted every frame by fitSunShadow)
-   * or only against the map's own box. The map is a texel-snapped square around the view target, so with box culling
-   * its content depends on the target and the zoom step only: a view that turns or orbits (or zooms within a radius
-   * step) can keep the cached map instead of re-rendering it whenever the receiver changes; it draws the casters of
-   * the whole square (also the part behind the view) when it does re-render. WorldView.updateShadowPolicy picks the
-   * mode per re-render.
+   * Single map: cull its casters against the receiver volume (dirCull) or only against the map's own box, which draws
+   * the casters of the whole square, also those behind the view (WorldView.capture: views other than the game view's).
    */
   get dirReceiverCull(): boolean {
     return this._dirCull;
@@ -482,8 +686,8 @@ export class CitySun extends THREE.DirectionalLight {
 
   set dirReceiverCull(on: boolean) {
     this._dirCull = on;
-    this.dirShadow.camera.userData.recv = on ? this.dirReceiver : undefined;
-    (this.dirShadow as any)._frustum.recv = on ? this.dirReceiver : undefined;
+    this.dirShadow.camera.userData.recv = on ? this.dirCull : undefined;
+    (this.dirShadow as any)._frustum.recv = on ? this.dirCull : undefined;
   }
 
   get cascaded(): boolean {

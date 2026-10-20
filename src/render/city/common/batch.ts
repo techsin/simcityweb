@@ -1260,7 +1260,8 @@ export class DynamicBatch {
       // (none for the far cascade: WorldView redraws it only every few frames while the view moves (holdFar), so a band
       // would rarely serve a second redraw, and its receiver-culled list is thin: a band around the split and the view's
       // sides took in up to 4x the casters, drawn in every redraw, for a cheap list build saved)
-      const bandOk = cap > 0 && cascade < 1 && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0 && move < Infinity && turn < Infinity && rturn < Infinity;
+      // (nor for a receiver already widened for the view's predicted motion: WorldView's single map)
+      const bandOk = cap > 0 && cascade < 1 && s.still < SETTLE_FRAMES && !this.pc.dynamic && s.noBand === 0 && move < Infinity && turn < Infinity && rturn < Infinity && (recv === null || !recv.banded);
       s.iso = bandOk && move < cap * 0.75 ? Math.min(cap, 4 * move) : 0;
       // (fast travel is not predicted: a band covering frames of it would mostly add triangles)
       s.pred = bandOk && move < cap && (step > 1e-3 || turn > TURN_EPS || rstep > 1e-3 || rturn > TURN_EPS) && steady(s.mv, s.mq, s.pmv, s.pmq, 1e-3 * range) && (recv === null || steady(s.rmv, s.rmq, s.rpmv, s.rpmq, 1e-3 * range));
