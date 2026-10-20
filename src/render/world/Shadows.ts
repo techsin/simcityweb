@@ -7,7 +7,10 @@
  * to the visible ground (not the camera near plane) and quantized, with texel snapping (from SunLightShadow) so
  * panning / rotating never shimmers.
  *
- * Low quality uses a single DirectionalLightShadow fitted around the camera target with manual texel snapping.
+ * Low quality uses a single DirectionalLightShadow fitted around the camera target with manual texel snapping. Its
+ * casters are culled against a receiver volume (CitySun.dirCull) that a render can widen for the view's predicted
+ * motion (widenReceiver), so a turning / zooming view can reuse the map for the frames whose receivers it holds
+ * (receiverHolds; WorldView.updateShadowPolicy).
  *
  * Direction convention: `sun.position - sun.target.position` points TO the light in both modes.
  *

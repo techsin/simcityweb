@@ -120,9 +120,12 @@ export class WorldView implements WorldViewApi {
    * tilts, wheel zooms), a re-render culls against the receiver widened for the view's motion predicted over the next
    * frames instead (CitySun.dirCull, widenReceiver: steady motion extrapolated), and the map serves every frame whose
    * receiver it holds: re-rendered once the view leaves it (or the map moves: a zoom stepping its radius). The
-   * prediction covers at most shadowWidenFrames frames and at most as many as widen the receiver's cross-section by
-   * shadowWidenBudget (relative: about the share of casters the re-render adds; a zoom-in adds none), at least the
-   * next frame while the map may not re-render before it (shadowMoveInterval) unless that alone exceeds the budget.
+   * prediction covers at most shadowWidenFrames frames, at most as many as widen the receiver's cross-section by
+   * shadowWidenBudget (relative; the re-render draws about 0.9 x that more casters: an orbit at 90 deg/s widens it by
+   * ~7.5 % per frame, so it is predicted one frame ahead (the next frame, which may not re-render, see
+   * shadowMoveInterval) and re-rendered every other frame; slower turns are predicted further ahead, a zoom-in widens
+   * nothing) and none past the zoom's next radius step; one frame at most for a view mostly travelling (a zoom out
+   * widens every side of the receiver from near the camera on: dearer per frame than a turn) or moving unsteadily.
    * None while the map follows the view anyway (pans: it moves with the target), for moving vehicles near the camera
    * (re-rendered every frame) or at rest. 0 frames = cull against each frame's receiver.
    */
