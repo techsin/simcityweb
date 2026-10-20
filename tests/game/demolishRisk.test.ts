@@ -7,9 +7,11 @@
 import { describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
 import { BF, type CityState } from '../../src/sim/CityState';
-import { bulldozeCut, demolishRisks, sideDemolishRisks, utilityCut } from '../../src/game/demolishRisk';
+import { CONFIRM_COST, bulldozeCut, demolishRisks, sideDemolishRisks, utilityCut } from '../../src/game/demolishRisk';
 import { CityActions } from '../../src/sim/actions';
+import { demolishFee } from '../../src/sim/economy/buildings';
 import { getUtilities } from '../../src/sim/systems/infra';
+import { money } from '../../src/ui/format';
 import { newSim, newState, place, roadLine, setRoad } from '../infra/cityGen';
 
 const ON = BF.Powered | BF.Watered;
@@ -265,5 +267,33 @@ describe('utility cuts against the utilities system (random towns)', () => {
     }
     expect(trials).toBeGreaterThan(60);
     expect(cuts).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Final fixes r4 U2b (veteran r4 vetdemo_y21.log): clearing a ruined landmark / deal asked "Missile Test Range is a reward
+ * building — its bonuses will be lost" before a §180 rubble fee — a ruin has no bonuses left, and bulldozing it is how it
+ * gets rebuilt (the ruins texts: "bulldoze it and build it again"). Gated on the building standing, like the power /
+ * water lines; the standing ones still ask.
+ */
+describe('demolition confirm of a ruined landmark / reward (final fixes r4 U2b)', () => {
+  const rectOf = (b: { x: number; z: number; w: number; d: number }) => ({ x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d });
+  it('a lone ruin is cleared without a confirm; standing, the bonuses line as before', () => {
+    const st = newState(64);
+    const range = place(st, 'rw_missile_range', 10, 10, { flags: BF.Plopped | BF.Burnt });
+    const wheel = place(st, 'lm_ferris_wheel', 30, 10, { flags: BF.Plopped | BF.Burnt });
+    for (const b of [range, wheel]) {
+      const fee = demolishFee(b);
+      expect(fee).toBeGreaterThan(0); // (the rubble fee: RUBBLE_FEE_PER_CELL per cell)
+      expect(fee).toBeLessThan(CONFIRM_COST);
+      expect(demolishRisks(st, rectOf(b), fee)).toBeNull();
+    }
+    range.flags &= ~BF.Burnt;
+    wheel.flags &= ~BF.Burnt;
+    expect(demolishRisks(st, rectOf(range), 0)?.items).toContain('Missile Test Range is a reward building — its bonuses will be lost');
+    expect(demolishRisks(st, rectOf(wheel), 0)?.items).toContain('Giant Observation Wheel is a landmark — its tourism and land-value bonuses will be lost');
+    // a costly rubble field still says what the demolition costs
+    range.flags |= BF.Burnt;
+    expect(demolishRisks(st, rectOf(range), CONFIRM_COST + 1)?.items).toEqual([`Demolition costs ${money(CONFIRM_COST + 1)}`]);
   });
 });

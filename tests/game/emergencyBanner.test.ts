@@ -15,7 +15,7 @@
  *  EM-5 "3.0 min left to send a truck" (industrial, never "too far?"); "No fire truck could reach it in time" when
  *       nobody was ever sent.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Network } from '../../src/core/types';
 import type { CityState } from '../../src/sim/CityState';
 import { Simulation } from '../../src/sim/Simulation';
@@ -23,7 +23,8 @@ import { emergencyOf } from '../../src/sim/infra/emergency';
 import { getFire, infraSystems, triggerDisaster } from '../../src/sim/systems/infra';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import {
-  BANNER_MIN_W, BANNER_W, EmergencyBanner, KIND_COOLDOWN, MAX_BANNERS, PANEL_HEAD_H, STACK_TOP, TOOLBAR_GAP, dockBanners, fitRows, stateText, supportText,
+  BANNER_MIN_W, BANNER_W, EmergencyBanner, KIND_COOLDOWN, MAX_BANNERS, PANEL_HEAD_H, PRESS_HOLD_MS, STACK_TOP, TOOLBAR_GAP, dockBanners, fitRows, stateText,
+  supportText,
   type DockPlace,
 } from '../../src/ui/EmergencyBanner';
 import type { GameContext } from '../../src/game/context';
@@ -737,6 +738,166 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     const s2 = stackBottom(h);
     expect(s2.bottom).toBeLessThanOrEqual(bound);
     expect(s2.capped.length).toBeGreaterThan(0);
+  });
+
+  // ------------------------------------------------------------------------------------ final fixes r4 U1
+  /**
+   * An open toolbar flyout over the quake town's 1280x720 layer (playtest r4 p44: the Civic flyout at y 485-648, i.e.
+   * 606-810 of the 1600 x 900 layer): absolutely positioned in the toolbar (20 px below the bottom block's top), 10 px
+   * above it — no part of the block's box. Its top in the layer: 804 + 20 − 10 − height.
+   */
+  function withFlyout(h: Harness, height: number): { fly: FakeEl; top: number } {
+    const hud = (h.root as unknown as { querySelector: (s: string) => FakeEl | null }).querySelector('.hud-bottom')!;
+    const bar = new FakeEl('div');
+    Object.assign(bar, { offsetTop: 20, offsetParent: hud });
+    const fly = new FakeEl('div');
+    fly.className = 'flyout mp-glass open';
+    Object.assign(fly, { offsetTop: -10 - height, offsetHeight: height, offsetParent: bar });
+    (hud as unknown as { querySelector: (s: string) => FakeEl | null }).querySelector = (s) => (s === '.flyout' ? fly : null);
+    return { fly, top: 804 + 20 - 10 - height };
+  }
+  /** ten prompts (both streets on fire) */
+  function quake(t: ReturnType<typeof quakeTown>): void {
+    t.sim.speed = 1;
+    t.h.tick();
+    for (const b of [...t.homesB, ...t.homesA]) triggerDisaster(t.sim, 'fire', b.x, b.z);
+    t.h.tick();
+    t.h.tick();
+    expect(t.h.banner.bannerIds.length).toBe(10);
+  }
+
+  it('U1: with the Civic flyout open the stack ends above the flyout (the pill counts the rest); closed, it reaches the toolbar again', () => {
+    const t = quakeTown();
+    const { fly, top } = withFlyout(t.h, 204);
+    quake(t);
+    // (the old bound was the bottom block's top: banners down to y 792 over the flyout's tabs and cards from y 610)
+    let s = stackBottom(t.h);
+    expect(s.bottom).toBeLessThanOrEqual(top - TOOLBAR_GAP);
+    expect(s.bottom + 64 + 8).toBeGreaterThan(top - TOOLBAR_GAP); // (as many as fit)
+    expect(s.pill).toBe(true);
+    const open = s.shown.length;
+    expect(open).toBeGreaterThanOrEqual(1);
+    const more = (t.h.banner as unknown as { more: FakeEl }).more;
+    expect(more.textContent).toBe(`${10 - open} more emergencies need you — open Emergencies`);
+    // closed (the flyout stays laid out, hidden): the r3 bound, the bottom block, again
+    fly.className = 'flyout mp-glass';
+    t.h.tick();
+    s = stackBottom(t.h);
+    expect(s.bottom).toBeLessThanOrEqual(t.bound);
+    expect(s.bottom + 64 + 8).toBeGreaterThan(t.bound);
+    expect(s.shown.length).toBeGreaterThan(open);
+    // a flyout lower than the block's top (none is) never lowers the bound below the block
+    fly.className = 'flyout mp-glass open';
+    Object.assign(fly, { offsetTop: 0, offsetHeight: 10 });
+    t.h.tick();
+    expect(stackBottom(t.h).shown).toEqual(s.shown);
+  });
+
+  it('U1 / EM-3: the flyout is watched (opened / closed: its class; a tab switch: its size) — the stack re-docks after a change only', () => {
+    const g2 = globalThis as unknown as { ResizeObserver?: unknown; MutationObserver?: unknown };
+    const had = [g2.ResizeObserver, g2.MutationObserver];
+    const obs: { kind: string; cb: () => void; targets: [unknown, unknown][] }[] = [];
+    const fake = (kind: string) => class {
+      private o: { kind: string; cb: () => void; targets: [unknown, unknown][] };
+      constructor(cb: () => void) { this.o = { kind, cb, targets: [] }; obs.push(this.o); }
+      observe(t: unknown, opts?: unknown): void { this.o.targets.push([t, opts]); }
+      unobserve(): void {}
+      disconnect(): void {}
+    };
+    g2.ResizeObserver = fake('ro');
+    g2.MutationObserver = fake('mo');
+    try {
+      const t = quakeTown();
+      const { fly, top } = withFlyout(t.h, 204);
+      quake(t);
+      const ro = obs.find((o) => o.kind === 'ro')!, mo = obs.find((o) => o.kind === 'mo')!;
+      // the first docking measured the open flyout and watches it from then on
+      expect(ro.targets.some(([el]) => el === fly)).toBe(true);
+      expect(mo.targets.find(([el]) => el === fly)?.[1]).toEqual({ attributes: true, attributeFilter: ['class'] });
+      const s0 = stackBottom(t.h);
+      expect(s0.bottom).toBeLessThanOrEqual(top - TOOLBAR_GAP);
+      for (let k = 0; k < 3; k++) t.h.tick();
+      expect(stackBottom(t.h).shown).toEqual(s0.shown); // (stable: nothing changed)
+      // closed: the class change (its MutationObserver record) re-docks the stack on the next tick
+      fly.className = 'flyout mp-glass';
+      mo.cb();
+      t.h.tick();
+      const s1 = stackBottom(t.h);
+      expect(s1.bottom).toBeLessThanOrEqual(t.bound);
+      expect(s1.shown.length).toBeGreaterThan(s0.shown.length);
+      // opened on a taller tab (its ResizeObserver record): above it again
+      fly.className = 'flyout mp-glass open';
+      Object.assign(fly, { offsetTop: -10 - 300, offsetHeight: 300 });
+      ro.cb();
+      t.h.tick();
+      expect(stackBottom(t.h).bottom).toBeLessThanOrEqual(804 + 20 - 10 - 300 - TOOLBAR_GAP);
+    } finally {
+      g2.ResizeObserver = had[0];
+      g2.MutationObserver = had[1];
+    }
+  });
+
+  it('U1 / EM-4: a press on a banner whose pointerdown closes the flyout still clicks — no re-dock until it is released', () => {
+    // the window's pointer listeners (the release ends the hold)
+    const gw = globalThis as unknown as { window?: unknown };
+    const hadWin = gw.window;
+    const winL = new Map<string, ((e: unknown) => void)[]>();
+    gw.window = {
+      addEventListener: (k: string, f: (e: unknown) => void) => { winL.set(k, [...(winL.get(k) ?? []), f]); },
+      removeEventListener: () => undefined,
+    };
+    const now = vi.spyOn(performance, 'now');
+    try {
+      const t = quakeTown();
+      const em = emergencyOf(t.sim)!;
+      // a tall flyout (from y 454): only compact banners fit above it
+      const { fly, top } = withFlyout(t.h, 360);
+      quake(t);
+      // (the UI clock from here on: the hold is measured in real ms)
+      now.mockReturnValue(1e6);
+      t.h.tick();
+      const s0 = stackBottom(t.h);
+      expect(s0.bottom).toBeLessThanOrEqual(top - TOOLBAR_GAP);
+      const id = s0.shown[1];
+      const p = parts(t.h, id);
+      expect(p.el.classList.contains('compact')).toBe(true);
+      const [order, cls] = [p.el.style.order, p.el.className];
+      // the press on its Send button: pointerdown on the stack — the toolbar closes its flyout on any press outside it
+      (t.h.banner.el as unknown as FakeEl).fire('pointerdown');
+      fly.className = 'flyout mp-glass';
+      // UI ticks before the release (a click takes ~100 ms): the docking holds — no full banners, no new rows that would
+      // move the button away from under the pointer
+      now.mockReturnValue(1e6 + 80);
+      t.h.tick();
+      now.mockReturnValue(1e6 + 160);
+      t.h.tick();
+      const s1 = stackBottom(t.h);
+      expect(s1.shown).toEqual(s0.shown);
+      expect([p.el.style.order, p.el.className]).toEqual([order, cls]);
+      // released over the same button: it clicks
+      for (const f of winL.get('pointerup') ?? []) f({});
+      p.send.click();
+      expect(em.incident(id)!.state).toBe('dispatched');
+      // then the stack re-docks for the closed flyout: full banners first, down to the toolbar
+      now.mockReturnValue(1e6 + 240);
+      t.h.tick();
+      const s2 = stackBottom(t.h);
+      expect(s2.bottom).toBeLessThanOrEqual(t.bound);
+      expect(s2.shown.length).toBeGreaterThan(s0.shown.length);
+      expect(parts(t.h, s2.shown[0]).el.classList.contains('compact')).toBe(false);
+      // a press whose release the window never saw (let go outside it) holds the docking PRESS_HOLD_MS at most
+      fly.className = 'flyout mp-glass open';
+      (t.h.banner.el as unknown as FakeEl).fire('pointerdown');
+      now.mockReturnValue(1e6 + 300);
+      t.h.tick();
+      expect(stackBottom(t.h).shown).toEqual(s2.shown);
+      now.mockReturnValue(1e6 + 300 + PRESS_HOLD_MS + 1);
+      t.h.tick();
+      expect(stackBottom(t.h).bottom).toBeLessThanOrEqual(top - TOOLBAR_GAP);
+    } finally {
+      now.mockRestore();
+      gw.window = hadWin;
+    }
   });
 });
 

@@ -22,6 +22,12 @@ import type { GameContext } from '../../src/game/context';
 import { InfoPanel } from '../../src/ui/panels/InfoPanel';
 import { REWARD_RUIN_TEXT, RewardsPanel, rewardRuin, ruinState } from '../../src/ui/panels/ListPanels';
 import { RUINS_TEXT, dedupeChips, facilityView, headerIncome, splitFacilityRows, warningTopic, type Chip } from '../../src/ui/inspectorModel';
+import { CityActions } from '../../src/sim/actions';
+import { removeBuilding } from '../../src/sim/economy/buildings';
+import { UNIQUE_BUILT_TEXT, UNIQUE_RUINS_TEXT, findToolSpec } from '../../src/game/toolCatalog';
+import { ToolController } from '../../src/game/tools/ToolController';
+import { QueryTool } from '../../src/game/tools/QueryTool';
+import type { ToolPointer } from '../../src/game/tools/Tool';
 import { newState, place, roadLine } from '../infra/cityGen';
 import { type FEl, installFakeDom, textOf } from './fakeDom';
 
@@ -233,5 +239,142 @@ describe('Rewards panel: a reward whose building is a ruin reads "In ruins — b
     row = rowOf(panel, 'Missile Test Range');
     expect(textOf(row.querySelector('div.li-r')!)).toMatch(/^Built/);
     expect(textOf(row)).not.toContain(REWARD_RUIN_TEXT);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------ final fixes r4 U2
+/**
+ * Final fixes r4 U2 (lane ui; veteran r4 finding 3 + shots 013 / 014 / 021, playtest r4 polish 2 / 10): a ruined
+ * one-per-city deal or landmark — the UI contradicted the ruins texts ("bulldoze it and build it again").
+ *  (a) the build menu read "Already built (one per city)" (state.milestones counts the ruin until it is bulldozed)
+ *      while the sim refuses with "… bulldoze its ruins first";
+ *  (c) the Rewards panel offered Place next to "Built" for a standing one (only a toast "Already built"), and a ruined
+ *      row kept its green income chip next to the red "In ruins" one;
+ *  (d) the Query hover of a fresh ruin read its stale "40 / 40 jobs".
+ * ((b), the demolish confirm of a lone ruin: tests/game/demolishRisk.test.ts.)
+ */
+describe('final fixes r4 U2: a ruined one-per-city building reads the way the ruins texts say', () => {
+  const rowIn = (panel: RewardsPanel, name: string): FEl => {
+    const row = (panel.body as unknown as FEl).querySelectorAll('div.li').find((r) => textOf(r.querySelector('div.li-t')!) === name);
+    expect(row, `row ${name}`).toBeDefined();
+    return row!;
+  };
+  /** the row's income chip ("+§2,500/mo") */
+  const incomeChip = (row: FEl): FEl => {
+    const c = row.querySelectorAll('span.chip').find((e) => /^\+§/.test(textOf(e)));
+    expect(c, 'income chip').toBeDefined();
+    return c!;
+  };
+
+  it('(a) the build menu: "In ruins — bulldoze its ruins first", the sim\'s own refusal; bulldozed, it can be placed again', () => {
+    const { st, sim, range } = town();
+    st.unlocked.add('missile_range');
+    const { ctx, calls } = ctxOf(sim);
+    const spec = () => findToolSpec(ctx, 'plop:rw_missile_range')!;
+    expect(spec().disabled).toBe(UNIQUE_BUILT_TEXT);
+    expect(UNIQUE_BUILT_TEXT).toBe('Already built (one per city)');
+    // flattened (a fire, a tornado, a quake or a meteor): counted until bulldozed, and the menu says what to do
+    range.flags |= BF.Burnt;
+    expect(spec().disabled).toBe(UNIQUE_RUINS_TEXT);
+    expect(UNIQUE_RUINS_TEXT).toBe('In ruins — bulldoze its ruins first');
+    expect(new CityActions(sim).plop('rw_missile_range', 40, 40, 0, true).reason).toBe('Only one Missile Test Range allowed — bulldoze its ruins first');
+    // picked from the flyout anyway: refused with the toast that names it (ToolController.select)
+    const gw = globalThis as unknown as { window?: unknown };
+    const hadWin = gw.window;
+    gw.window = { addEventListener: () => undefined, removeEventListener: () => undefined };
+    try {
+      const canvas = document.createElement('canvas') as unknown as HTMLCanvasElement;
+      const tools = new ToolController(ctx, canvas);
+      expect(tools.select('plop:rw_missile_range')).toBe(false);
+      expect(calls.toasts.at(-1)).toBe('Missile Test Range: In ruins — bulldoze its ruins first');
+    } finally {
+      gw.window = hadWin;
+    }
+    // (a standing one next to a ruin of the same def — an older save: built)
+    const twin = place(st, 'rw_missile_range', 40, 30, { flags: BF.Plopped | BF.Powered });
+    sim.events.emit('buildingAdded', twin);
+    st.milestones.rw_missile_range = 2;
+    expect(spec().disabled).toBe(UNIQUE_BUILT_TEXT);
+    removeBuilding(sim, twin);
+    expect(spec().disabled).toBe(UNIQUE_RUINS_TEXT);
+    // the ruin bulldozed: nothing counted any more — placeable again (the sim agrees)
+    removeBuilding(sim, range);
+    expect(st.milestones.rw_missile_range).toBeUndefined();
+    expect(spec().disabled).toBeNull();
+    expect(new CityActions(sim).plop('rw_missile_range', 40, 40, 0, true).reason ?? '').not.toMatch(/Only one/);
+    // (no building scan for a one-per-city def nobody has placed: a city without one is not searched)
+    expect(findToolSpec(ctx, 'plop:rw_military_base')!.disabled).toBeNull();
+  });
+
+  it('(c) Rewards: no Place next to "Built" for a standing Military Base; a ruin\'s income chip is neutral and says why', () => {
+    const { st, sim, range } = town();
+    for (const r of ['missile_range', 'military_base', 'casino']) st.unlocked.add(r);
+    const base = place(st, 'rw_military_base', 46, 22, { flags: BF.Plopped | BF.Powered | BF.Watered });
+    st.milestones.rw_military_base = 1;
+    sim.events.emit('buildingAdded', base);
+    const { ctx } = ctxOf(sim);
+    const panel = new RewardsPanel(ctx);
+    panel.mount(() => undefined, () => undefined, () => undefined);
+    panel.onOpen();
+    panel.update();
+    // standing: "Built", nothing to place (Place only toasted "Already built"), the deal income in green
+    for (const name of ['Military Base', 'Missile Test Range']) {
+      const row = rowIn(panel, name);
+      expect(textOf(row.querySelector('div.li-r')!)).toMatch(/^Built/);
+      expect(row.querySelectorAll('button').map(textOf)).toEqual([]);
+      expect(incomeChip(row).className).toBe('chip good');
+      expect(incomeChip(row).title).toBe('Deal income');
+    }
+    // unlocked, not built yet: Place as before
+    expect(rowIn(panel, 'Casino Resort').querySelectorAll('button').map(textOf)).toEqual(['Place']);
+    // in ruins: the ruin chip, the way to the ruin, and the deal income neutral — none while it lies in ruins
+    range.flags |= BF.Burnt;
+    panel.onOpen();
+    panel.update();
+    const row = rowIn(panel, 'Missile Test Range');
+    expect(textOf(row.querySelector('div.li-r')!)).toContain(REWARD_RUIN_TEXT);
+    expect(row.querySelectorAll('button').map(textOf)).toEqual(['Show ruins']);
+    const chip = incomeChip(row);
+    expect(chip.className).toBe('chip');
+    expect(chip.title).toBe('Deal income once rebuilt — none while it lies in ruins');
+    expect(textOf(chip)).toBe('+§2,500/mo');
+    expect(row.querySelectorAll('span.chip.good').length).toBe(0);
+  });
+
+  it('(d) the Query hover of a ruin: "In ruins", not the stale jobs / residents of the building it was', () => {
+    const { sim, range, home } = town();
+    range.jobs = 40;
+    range.capacity = 40;
+    home.pop = 12;
+    const tips: string[] = [];
+    let under = range.id;
+    const ctx = {
+      get state() { return sim.state; },
+      sim,
+      overlay: 0,
+      overlayVariant: 0,
+      objects: { pickBuilding: () => under, setSelected: () => undefined },
+      tip: { show: (html: string) => tips.push(html), hide: () => undefined },
+    } as unknown as GameContext;
+    const tool = new QueryTool(ctx);
+    const at = (b: Building): ToolPointer => ({ clientX: 1, clientY: 1, hit: { x: b.x, z: b.z } as ToolPointer['hit'], shift: false, ctrl: false, alt: false, down: false });
+    tool.move(at(range));
+    expect(tips.at(-1)).toContain('40 / 40 jobs');
+    // a fresh ruin: its jobs are only cleared by the next population pass
+    range.flags |= BF.Burnt;
+    tool.leave();
+    tool.move(at(range));
+    expect(tips.at(-1)).toContain('Missile Test Range');
+    expect(tips.at(-1)).toContain(RUINS_TEXT);
+    expect(tips.at(-1)).not.toMatch(/jobs/);
+    // a home in rubble: no residents
+    under = home.id;
+    tool.move(at(home));
+    expect(tips.at(-1)).toContain('12 residents');
+    home.flags |= BF.Burnt;
+    tool.leave();
+    tool.move(at(home));
+    expect(tips.at(-1)).toContain(RUINS_TEXT);
+    expect(tips.at(-1)).not.toMatch(/residents/);
   });
 });

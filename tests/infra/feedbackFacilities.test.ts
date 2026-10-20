@@ -14,6 +14,9 @@
  *  - round 3: the build-card upkeep fact says "per resident patrolled" (a unit with its own participle takes no
  *    "served"); a station without a road beside it says its units can't leave (no auto-dispatch range) and its Staff
  *    line names the road as the reason, power only as the next step.
+ *  - round 4: a roadless, unpowered service leads with the missing road (the inspector's headline is the first warning:
+ *    it read a false "No power — works at 30%" for a clinic that serves nobody) and its power / water warnings quote no
+ *    share of its work ("No power either — …").
  */
 import { describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
@@ -25,6 +28,7 @@ import { facilityLoad } from '../../src/sim/infra/catchments';
 import { noRoadWarning } from '../../src/sim/actions';
 import { expectedUpkeep } from '../../src/sim/economy/opex';
 import { getDef } from '../../src/sim/catalog';
+import { mainProblem } from '../../src/ui/inspectorModel';
 import { newSim, newState, place, roadLine } from './cityGen';
 
 const staffHintOf = (sim: ReturnType<typeof newSim>, id: number) => facilityReport(sim, id)!.lines.find((l) => l.key === 'staff');
@@ -265,5 +269,39 @@ describe('final fixes round 3: no "patrolled served"; a station without a road s
     sim.runDays(2);
     const fleet = facilityReport(sim, fs.id)!.lines.find((l) => l.key === 'fleet')!;
     expect([fleet.label, fleet.value, fleet.status, fleet.hint]).toEqual(['Fire trucks', "2 — can't leave: no road beside it", 'bad', "Build a road beside it: its fire trucks can't drive out to a call"]);
+  });
+});
+
+describe('final fixes round 4: a roadless service leads with its road, not a false "works at 30%"', () => {
+  it('a roadless, unpowered, dry clinic: "No road access" first (the inspector headline), then power and water "either"', () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    for (let x = 30; x < 50; x++) { st.zone[st.idx(x, 21)] = Zone.ResMed; place(st, 't_r2', x, 21, { pop: 50, flags: BF.Powered | BF.Watered }); }
+    const clinic = place(st, 'civ_clinic', 10, 40, { flags: BF.Plopped, age: 100 });
+    const sim = newSim(st);
+    sim.runDays(2);
+    // (no power: the population system hires a quarter of its 30 jobs; nobody reaches it)
+    clinic.hire = 0.25; clinic.capacity = 30; clinic.jobs = 0;
+    st.stats.workforce = 500;
+    justiceData(st).cityFill = 0.9;
+    sim.getSystem<ServicesSystem>('services')!.compute(sim, false);
+    expect(facilityOpFactor(st, clinic)).toBe(0);
+    const rep = facilityReport(sim, clinic.id)!;
+    expect(rep.warnings).toEqual([
+      'No road access — build a road beside it',
+      'No power either — connect it to a power line or powered road',
+      'No water either — connect it to a water network',
+    ]);
+    expect(mainProblem({ warnings: rep.warnings })).toEqual({ text: 'No road access', hint: 'build a road beside it', tone: 'bad' });
+    expect(rep.lines.find((l) => l.key === 'seats')!.hint).toBe("Serves nobody — no road access (staff can't reach it)");
+    // a road beside it: it works again, at the unpowered share — the power warning quotes it and leads
+    roadLine(st, 9, 39, 12, 39, Network.Road);
+    sim.events.emit('networkChanged', { x0: 9, z0: 39, x1: 13, z1: 40 });
+    clinic.jobs = 7;
+    expect(facilityOpFactor(st, clinic)).toBeGreaterThan(0);
+    const rep2 = facilityReport(sim, clinic.id)!;
+    expect(rep2.warnings[0]).toBe('No power — works at 30%; connect it to a power line or powered road');
+    expect(rep2.warnings).not.toContain('No road access — build a road beside it');
+    expect(rep2.warnings.some((w) => /^No water — treatment at \d+%/.test(w))).toBe(true);
   });
 });
