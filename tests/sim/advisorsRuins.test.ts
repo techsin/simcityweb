@@ -263,6 +263,15 @@ describe('r3: every other ruin — deals, landmarks, civic buildings, transport,
     expect(issue(d, 'planning', 'ruins')?.text).toMatch(/^Your Bus Depot lies in ruins — its buses are gone\. Bulldoze the rubble and build it again: its upkeep \(§[\d,]+\/mo\) is still charged until you bulldoze it\.$/);
   });
 
+  it('nothing left to charge (its budget at 0 %): no "still charged" clause', () => {
+    const c = city();
+    place(c.st, 'civ_fire_station', 40, 30, { flags: BF.Plopped | BF.Burnt });
+    c.st.budget.funding.fire = 0;
+    c.st.stats.population = 3000;
+    monthTick(c, 30);
+    expect(issue(c, 'safety', 'facilityRuins')?.text).toBe('Your Fire Station lies in ruins — its area has lost its fire protection and its fire trucks. Bulldoze the rubble and build a new one.');
+  });
+
   it('service ruins keep their own card; the other ruins get theirs next to it', () => {
     const c = city();
     place(c.st, 'civ_police_station', 30, 10, { flags: BF.Plopped | BF.Burnt });
