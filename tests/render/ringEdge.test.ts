@@ -13,7 +13,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { registerAllModels } from '../../src/assets/builders';
-import { MICRO_LOW_APEX, getMicroImpostorGeometries } from '../../src/render/world/fallbackTrees';
+import { RING_LOW_APEX, getMicroImpostorGeometries } from '../../src/render/world/fallbackTrees';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
@@ -118,7 +118,8 @@ describe('outer ring next to the map edge', () => {
         // (drawn by the far blocks: kept by their thinning, past the switch distance)
         if (ringRand(x, z) >= S.keep(x, z, d) - 1e-4 || d < sw + M) continue;
         if (dn! < sw - M) both++;
-        if (!inView(e, o, MICRO_LOW_APEX, 1)) continue;
+        // (a low camera's whole micro crown reaches down to RING_LOW_APEX)
+        if (!inView(e, o, RING_LOW_APEX, 1)) continue;
         nFar++;
         if (!(m.visible && j < m.count)) cut++;
       }
@@ -203,7 +204,7 @@ describe('outer ring next to the map edge', () => {
     let apex = 0;
     for (let i = tp.count; i < lp.count; i++) {
       expect(ln.getY(i)).toBeLessThan(0);
-      if (Math.abs(lp.getY(i) - MICRO_LOW_APEX) < 1e-6) apex++;
+      if (Math.abs(lp.getY(i) - RING_LOW_APEX) < 1e-6) apex++;
       else expect(lp.getY(i)).toBeCloseTo(0.63, 6);
     }
     expect(apex).toBe(1);

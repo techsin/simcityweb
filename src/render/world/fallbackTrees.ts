@@ -150,6 +150,10 @@ function indexedSmooth(g: THREE.BufferGeometry): THREE.BufferGeometry {
 let _micro: { broad: THREE.BufferGeometry; conifer: THREE.BufferGeometry; top: THREE.BufferGeometry; ringLow: THREE.BufferGeometry } | null = null;
 /** y of the micro broadleaf's lower apex (its waist is at 0.63, its upper apex at 1) */
 export const MICRO_LOW_APEX = 0.28;
+/** y of the lower apex of the outer ring's low-camera whole crown (ringLow): near the tree's foot, so a crown seen from
+ *  the side at a grazing angle stands on the ground like a regular impostor's crown on its trunk (the micro broadleaf's
+ *  own lower apex, MICRO_LOW_APEX, leaves a gap under it that reads as a floating diamond at 6-20 px) */
+export const RING_LOW_APEX = 0.15;
 /**
  * Micro impostors for trees that project to 1-2 px (far zoom): same unit bounds as getImpostorGeometries, foliage only
  * (white, tinted per instance), 3-sided (at 1-2 px, with random per-tree yaws, as round as a 4-sided shape, a quarter
@@ -160,7 +164,7 @@ export const MICRO_LOW_APEX = 0.28;
  * its own (6 tris, 8 vertices: the upper half's vertices and normals are exactly `top`'s, the lower half's waist has its
  * own, down-facing normals), for far blocks seen from low cameras at a grazing angle, where the upper half alone is a
  * small pale cone floating at 63% of the tree's height: TreeRenderer's ring shader moves its lower apex from the waist
- * (a flat, down-facing fan: what `top` shows) down to MICRO_LOW_APEX as the camera comes down, so the swap between the
+ * (a flat, down-facing fan: what `top` shows) down to RING_LOW_APEX as the camera comes down, so the swap between the
  * two is invisible.
  */
 export function getMicroImpostorGeometries() {
@@ -183,7 +187,7 @@ export function getMicroImpostorGeometries() {
   for (let i = 0; i < 3; i++) top.tri(e[(i + 1) % 3], e[i], [0, 1.0, 0]);
   const low = new ModelBuilder();
   low.paint(0xffffff, Surf.Foliage, FOL_DECID);
-  for (let i = 0; i < 3; i++) low.tri(e[i], e[(i + 1) % 3], [0, MICRO_LOW_APEX, 0]);
+  for (let i = 0; i < 3; i++) low.tri(e[i], e[(i + 1) % 3], [0, RING_LOW_APEX, 0]);
   const topG = indexedSmooth(top.build()), lowG = indexedSmooth(low.build());
   const ringLow = mergeGeometries([topG, lowG])!;
   lowG.dispose();

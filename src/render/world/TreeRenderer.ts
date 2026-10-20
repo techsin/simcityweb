@@ -65,9 +65,9 @@
  *   - next to a sector's map edge(s) (within RING_EDGE_NEAR x lodDistance) the ring is the horizon at any height: the
  *     sector's far blocks skip the camera height fade, and a low camera (below ringFadeHeight) sees the sector at a
  *     grazing angle, where the micro upper half reads as a small pale cone floating at 63% of the tree's height: its
- *     trees stay regular impostors out to ringLowSwitch x lodDistance and the far blocks beyond show whole micro
- *     crowns (ringLow, its lower half coming down with the low-camera weight) - per sector on the CPU, per tree in
- *     the shaders, eased in with the camera height and the distance to the edge, so nothing pops.
+ *     trees stay regular impostors out to ringLowSwitch x lodDistance and the far blocks beyond show whole, darker
+ *     micro crowns (ringLow, its lower half coming down with the low-camera weight) - per sector on the CPU, per tree
+ *     in the shaders, eased in with the camera height and the distance to the edge, so nothing pops.
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
@@ -78,7 +78,7 @@ import { MANIFEST_BY_ID } from '../../assets/manifest';
 import { getBuildingMaterial, patchSurfaceMaterial } from '../../assets/materials';
 import { getNoiseTexture } from './textures';
 import type { CityState } from '../../sim/CityState';
-import { MICRO_LOW_APEX, getImpostorGeometries, getMicroImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
+import { RING_LOW_APEX, getImpostorGeometries, getMicroImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
 import { TerrainRenderer } from './TerrainRenderer';
 import { shadowCasters, type ShadowReceiver } from './Shadows';
 import { SEASONAL_TREES, drawnTreeMix, seasonalVariant, type SeasonMix } from '../../assets/builders/nat_season';
@@ -139,6 +139,11 @@ const RING_SWITCH_SPAN = 0.12;
  *  sector as the horizon at any height: its far blocks skip the camera height fade, and a low camera (below
  *  ringFadeHeight) gets the low-camera look there (ringLowSwitch, ringLowShape; see updateRingView) */
 const RING_EDGE_NEAR = 0.6;
+/** the low cameras' whole micro crown of a broadleaf (ringLow, RING_LOW_VERT; past the low-camera switch distance): its
+ *  leafy colour this much darker than the high cameras' upper half, so the ring past the switch reads as the same
+ *  forest as the regular impostors in front of it (the micro shape's up-facing upper faces catch the full sun and sky:
+ *  measured +6-9 luma over regular impostors of the same trees at 1-2.4 km from a 58 m camera, ~0 with this tint) */
+const RING_LOW_TINT = 0.72;
 /** the far blocks' density with the distance d from the camera (the vertex shader per tree, the CPU per block at its
  *  nearest point): clamp(RING_KEEP_A - (d - lodDistance) / RING_KEEP_D, RING_KEEP_MIN, 1) of the trees, x the camera
  *  height fade */
@@ -590,18 +595,21 @@ float ringEdgeNear(vec3 p) {
 #endif
 `;
 /**
- * Far ring blocks of low cameras (after begin_vertex): the ringLow micro shape's lower apex comes down from the waist (a
- * flat, down-facing fan - what the plain upper half shows) to its full depth with the low-camera weight (see
- * FAR_VERT_MAIN), so a broadleaf seen at a grazing angle is a whole crown instead of a cone floating at 63% of its
- * height (a conifer's stretched upper half already is its whole pyramid: its lower half stays the flat fan, it would
- * only reach into the ground)
+ * Far ring blocks of low cameras (after begin_vertex; color_vertex ran before it): the ringLow micro shape's lower apex
+ * comes down from the waist (a flat, down-facing fan - what the plain upper half shows) to RING_LOW_APEX with the
+ * low-camera weight (see FAR_VERT_MAIN), and its leafy colour darkens to RING_LOW_TINT with it, so a broadleaf seen at
+ * a grazing angle is a whole crown as dark as the regular impostors in front of it, instead of a pale cone floating at
+ * 63% of its height. A conifer's stretched upper half already is its whole pyramid: its lower half stays the flat fan
+ * (it would only reach into the ground). High cameras (uRingP.y = 1) skip it all.
  */
 const RING_LOW_VERT = /* glsl */ `
 #if defined(TREE_RING) && defined(USE_INSTANCING) && defined(USE_INSTANCING_COLOR)
-if (uRingQ.y > 0.0 && transformed.y < 0.5) {
+if (uRingQ.y > 0.0 && uRingP.y < 1.0) {
   float _lw = 0.0;
   if (instanceColor.b >= 0.0) _lw = (1.0 - uRingP.y) * ringEdgeNear((modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xyz);
-  transformed.y = mix(0.63, ${MICRO_LOW_APEX.toFixed(3)}, _lw);
+  if (transformed.y < 0.5) transformed.y = mix(0.63, ${RING_LOW_APEX.toFixed(3)}, _lw);
+  // (leafy crowns only: a bare crown's see-through twig haze keeps its own brightness)
+  if (instanceColor.r >= 0.0) vColor.rgb *= 1.0 - ${(1 - RING_LOW_TINT).toFixed(3)} * _lw;
 }
 #endif
 `;
@@ -1008,8 +1016,11 @@ export class TreeRenderer {
   ringFadeHeight: [number, number] = [110, 240];
   /** a low camera (below ringFadeHeight) next to a sector's map edge sees that sector's ring at a grazing angle, where
    *  the far blocks' micro impostors read as small pale cones: its trees stay regular impostors (the near pair) out to
-   *  this multiple of lodDistance (their switch distance, eased in with the low-camera weight: see updateRingView) */
-  ringLowSwitch = 1;
+   *  this multiple of lodDistance (their switch distance, eased in with the low-camera weight: see updateRingView).
+   *  1.6: the copses a low camera sees 10-20 px tall (to ~1.3 km at HIGH) are round crowns on trunks, as the near ring;
+   *  past it the trees are a few px, where the whole micro crowns read as the same forest. Each step further costs
+   *  main-pass triangles on low edge views and edge cuts for trees that small */
+  ringLowSwitch = 1.6;
   /** ... and the far blocks beyond show the whole micro crown (ringLow: its lower half comes down with that weight)
    *  instead of the upper half that high cameras see */
   ringLowShape = true;
@@ -2806,7 +2817,7 @@ export class TreeRenderer {
       const hs = Math.hypot(micro[s], micro[s + 2]) * 0.5, vs = micro[s + 5];
       const x = micro[s + 12], y = micro[s + 13], z = micro[s + 14];
       if (x - hs < B[o]) B[o] = x - hs;
-      if (y + vs * MICRO_LOW_APEX < B[o + 1]) B[o + 1] = y + vs * MICRO_LOW_APEX;
+      if (y + vs * RING_LOW_APEX < B[o + 1]) B[o + 1] = y + vs * RING_LOW_APEX;
       if (z - hs < B[o + 2]) B[o + 2] = z - hs;
       if (x + hs > B[o + 3]) B[o + 3] = x + hs;
       if (y + vs > B[o + 4]) B[o + 4] = y + vs;
