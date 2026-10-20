@@ -257,8 +257,11 @@ export class VehicleRenderer {
   private followDt = 0;
   private rngS = 1234567;
   private trains: Train[] = [];
-  /** fraction of vehicle slots the zoom thinning keeps (by camera height, see the file comment) */
-  private keep = 1;
+  /** [0]: fraction of vehicle slots the zoom thinning keeps (by camera height, see the file comment). A typed slot, not
+   *  a number field: such a field held the small integer 1 until the first zoom out past 1000 m eased it to a fraction,
+   *  and that change of the field's representation discarded the optimized code of every method of this object at once
+   *  (poseCars, follow, upkeep...: a few hundred milliseconds of unoptimized frames, 200-400 KB allocated per frame) */
+  private readonly keep = new Float64Array([1]);
   enabled = true;
   /** optional signal state: 1 = signalized intersection */
   signalized: Uint8Array | null = null;
@@ -941,7 +944,7 @@ export class VehicleRenderer {
     sharedUniforms.uMapN.value = this.net.N;
     // zoom-based thinning: kept fraction by camera height, eased after each classic threshold (never below it)
     const camH = camera.position.y;
-    this.keep = camH <= 1500 ? ease(camH, 1000, 200, 1, 0.5) : camH <= 2600 ? ease(camH, 1500, 200, 0.5, 1 / 3) : ease(camH, 2600, 300, 1 / 3, 0);
+    this.keep[0] = camH <= 1500 ? ease(camH, 1000, 200, 1, 0.5) : camH <= 2600 ? ease(camH, 1500, 200, 0.5, 1 / 3) : ease(camH, 2600, 300, 1 / 3, 0);
     this.upkeep(dt);
     this.refreshCells();
     // (see FOLLOW_STEP)
@@ -950,12 +953,12 @@ export class VehicleRenderer {
       this.follow(this.followDt);
       this.followDt = 0;
     }
-    const night = sharedUniforms.uNight.value > 0.2;
-    const written = this.poseCars(dt, camera, heightPx, night) + this.poseTrains(dt, camera, heightPx);
+    const written = this.poseCars(dt, camera, heightPx) + this.poseTrains(dt, camera, heightPx);
     // nothing visible moved -> no upload, no shadow-map invalidation
     if (written > 0) this.batch.markMatricesDirty();
-    // (poseCars copies headlights at night only: headCount is 0 by day; hidden without any, so the renderer does no
-    // per-object work for an empty mesh. Its program is still precompiled: WebGLRenderer.compile visits hidden meshes)
+    // (headlights at night only: headCount is 0 by day; hidden without any, so the renderer does no per-object work for
+    // an empty mesh. Its program is still precompiled: WebGLRenderer.compile visits hidden meshes)
+    this.headCount = this.copyHeadlights(sharedUniforms.uNight.value > 0.2);
     const hl = this.headlights, hc = this.headCount;
     hl.count = hc;
     hl.visible = hc > 0;
@@ -1127,28 +1130,26 @@ export class VehicleRenderer {
 
   /**
    * Move every road vehicle along its path (cell transitions, respawns), cull (tile visibility, tunnels, zoom thinning
-   * relaxed by projected size) and write the visible ones' matrices / headlights. Returns the number of matrices
-   * written. A vehicle in a hidden tile (or a tunnel) only advances: its pose is evaluated only where it can be drawn,
-   * and a car that did not move (queues, red lights: most cars of a congested city) keeps the matrix it has (posed).
+   * relaxed by projected size) and write the visible ones' matrices. Returns the number of matrices written. A vehicle in
+   * a hidden tile (or a tunnel) only advances: its pose is evaluated only where it can be drawn, and a car that did not
+   * move (queues, red lights: most cars of a congested city) keeps the matrix it has (posed).
    * Zoom thinning by camera height (classic rule), relaxed by projected size: a vehicle of length L at distance d spans
    * L * K / d px (K = H / (2 tan(fov / 2))); one the classic rule drops is still drawn while it spans >= thinPx (every
    * 2nd one >= hidePx).
+   * The loop runs the same code at every zoom, day or night: a branch first taken when the view crosses a threshold
+   * (e.g. a thinning test skipped while every vehicle was kept) reaches V8 without type feedback there, and V8 then
+   * discards the loop's optimized code in the middle of the zoom (and re-optimizes it later).
    */
-  private poseCars(dt: number, camera: THREE.Camera, heightPx: number, night: boolean): number {
+  private poseCars(dt: number, camera: THREE.Camera, heightPx: number): number {
     const data = this.batch.matrixData();
     const tileVis = this.culler.vis;
-    const hm = this.headlights.instanceMatrix.array as Float32Array;
-    const headCap = this.headlights.instanceMatrix.count;
-    let hc = 0;
     const cp = camera.position;
     const cpx = cp.x, cpz = cp.z, cpy2 = cp.y * cp.y;
     const fov = (camera as THREE.PerspectiveCamera).isPerspectiveCamera ? (camera as THREE.PerspectiveCamera).fov : 38;
     const K = heightPx / (2 * Math.tan((fov * Math.PI) / 360));
     const kh = K / Math.max(0.5, this.hidePx), kt = K / Math.max(0.5, this.thinPx);
     const D2 = this.maxDistance * this.maxDistance;
-    const keep = this.keep;
-    // (classic rule keeps every vehicle and no distance cap: no distance needed)
-    const all = keep >= 1 && D2 === Infinity;
+    const keep = this.keep[0];
     const life = this.life, tt = this.t, spd = this.spd, len = this.len, vlen = this.vlen, inst = this.inst, vis = this.vis, rank = this.rank;
     const vtile = this.vtile, posed = this.posed, vsph = this.vsph;
     // the view frustum (a vehicle in a visible tile but out of view, beyond any shadow it could cast into the view, is
@@ -1177,9 +1178,9 @@ export class VehicleRenderer {
       tt[v] = t;
       // moved (also while hidden): the matrix no longer holds its pose (a new path cleared it already)
       if (t !== t0) posed[v] = 0;
-      // the matrix holds this exact pose (a car that stood still since it was last posed): no evaluation needed unless
-      // the thinning needs its position
+      // the matrix holds this exact pose (a car that stood still since it was last posed): no evaluation needed
       const keepPose = posed[v] === 1;
+      const s = inst[v] * 16;
       // the culler tile of its cell (-1 in a tunnel)
       const tl = vtile[v];
       let show = 0;
@@ -1187,21 +1188,23 @@ export class VehicleRenderer {
         const o = v * 4, sx = vsph[o], sy = vsph[o + 1], sz = vsph[o + 2], sr = -vsph[o + 3];
         let inView = true;
         for (let k = 0; k < 24; k += 4) if (vf[k] * sx + vf[k + 1] * sy + vf[k + 2] * sz + vf[k + 3] < sr) { inView = false; break; }
-        if (!inView) show = 0;
-        else if (all) show = 1;
-        else {
-          _p[4] = t;
-          this.evalCached(v);
-          const ddx = _p[0] - cpx, ddz = _p[1] - cpz, d2 = ddx * ddx + ddz * ddz + cpy2;
+        if (inView) {
+          // its position: its matrix's while that holds this pose, else evaluated (the pose written below)
+          let px: number, pz: number;
+          if (keepPose) { px = data[s + 12]; pz = data[s + 14]; }
+          else { _p[4] = t; this.evalCached(v); px = _p[0]; pz = _p[1]; }
+          // zoom thinning, every term evaluated at every zoom (see above; the classic rule alone keeps rank < keep, all
+          // of them below 1000 m)
+          const ddx = px - cpx, ddz = pz - cpz, d2 = ddx * ddx + ddz * ddz + cpy2;
           const L = vlen[v], lh = L * kh, lt = L * kt;
-          show = d2 < D2 && (rank[v] < keep || (d2 < lh * lh && (d2 < lt * lt || (v & 1) === 0))) ? 1 : 0;
+          const near = d2 < D2, kept = rank[v] < keep, bigH = d2 < lh * lh, bigT = d2 < lt * lt, even = (v & 1) === 0;
+          show = near && (kept || (bigH && (bigT || even))) ? 1 : 0;
         }
       }
       if (show !== vis[v]) { vis[v] = show; this.batch.setVisible(inst[v], show === 1); }
       if (!show) continue;
-      const s = inst[v] * 16;
       if (!keepPose) {
-        if (all) { _p[4] = t; this.evalCached(v); }
+        // (_p holds the pose evaluated above)
         const x = _p[0], z = _p[1], fx = _p[2], fz = _p[3];
         const half = vlen[v] * 0.4;
         // (heading-aware: cars crossing under a highway overpass stay on the ground, highway traffic rides the deck)
@@ -1214,14 +1217,27 @@ export class VehicleRenderer {
         // posed at the stored arc length (t is a double, the store a float: next frame evaluates the stored one)
         posed[v] = tt[v] === t ? 1 : 0;
       }
-      if (night && hc < headCap) {
-        const o = hc * 16;
-        for (let k = 0; k < 16; k++) hm[o + k] = data[s + k];
-        hc++;
-      }
     }
-    this.headCount = hc;
     return written;
+  }
+
+  /**
+   * At night, the headlight decals of the road vehicles drawn this frame (their matrices, in slot order, up to the decal
+   * cap); returns how many (0 by day). Called every frame, its own loop: no branch of poseCars' loop is first taken at
+   * dusk (see poseCars).
+   */
+  private copyHeadlights(night: boolean): number {
+    if (!night) return 0;
+    const data = this.batch.matrixData(), vis = this.vis, inst = this.inst;
+    const hm = this.headlights.instanceMatrix.array as Float32Array, cap = this.headlights.instanceMatrix.count;
+    let hc = 0;
+    for (let v = 0; v < this.n && hc < cap; v++) {
+      if (vis[v] !== 1) continue;
+      const s = inst[v] * 16, o = hc * 16;
+      for (let k = 0; k < 16; k++) hm[o + k] = data[s + k];
+      hc++;
+    }
+    return hc;
   }
 
   /** advance, cull and pose the trains (loco + cars along the path history; culled like the cars, with the view
@@ -1266,7 +1282,7 @@ export class VehicleRenderer {
         const gx = Math.floor(Math.floor(x / cellSize) / tileCells), gz = Math.floor(Math.floor(z / cellSize) / tileCells);
         const tile = (gz < 0 ? 0 : gz > tmax ? tmax : gz) * tiles + (gx < 0 ? 0 : gx > tmax ? tmax : gx);
         const tdx = x - cpx, tdz = z - cpz, td2 = tdx * tdx + tdz * tdz + cpy2, tl = tr.lens[c] * kh;
-        let show = tileVis[tile] === 1 && !(st.netFlags[ci] & NF_TUNNEL) && td2 < D2 * 4 && (this.keep > 0 || td2 < tl * tl);
+        let show = tileVis[tile] === 1 && !(st.netFlags[ci] & NF_TUNNEL) && td2 < D2 * 4 && (this.keep[0] > 0 || td2 < tl * tl);
         const hh = half * 0.8;
         let yF = 0, yB = 0;
         if (show) {

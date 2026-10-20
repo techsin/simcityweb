@@ -194,9 +194,11 @@ export class WorldView implements WorldViewApi {
   private shMoves = 0;
   /** shView holds the previous render's view (renders without a shadow policy pass break the chain) */
   private shViewOk = false;
-  /** single map: its unrounded log2 radius (dirShadowLogRadius) this render and its change since the previous one */
+  /** single map: its unrounded log2 radius (dirShadowLogRadius) this render and its change since the previous one (NaN,
+   *  read as 0, until measured: a field first holding the small integer 0 changed representation at the first zoom, which
+   *  discarded the optimized code of this object's methods mid-zoom) */
   private shLr = NaN;
-  private shDlr = 0;
+  private shDlr = NaN;
   /** frame number of the last shadow render that redrew the far cascade */
   private shFarFrame = 0;
   private shadowDir = new THREE.Vector3(0, 1, 0);
