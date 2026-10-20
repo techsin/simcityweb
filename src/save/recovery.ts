@@ -101,16 +101,21 @@ function sampleHash(b: Uint8Array): number {
 /**
  * XOR `cur` with `base` (over their common prefix; bytes past the base are XOR'ed with 0) and run-length code the
  * zero runs. Units are 32-bit words when both views are 4-byte aligned, else bytes. Stream: repeated
- * (varint unchangedUnits, varint literalUnits, literal XOR bytes) until all units are covered, then the tail bytes.
- * The decoder starts from a copy of the base prefix and XORs the literals in.
+ * (varint unchangedUnits, varint literalUnits, literal XOR bytes) until all `floor(n / u)` whole units are covered,
+ * then the tail bytes (n % u, always literal). The decoder starts from a copy of the base prefix and XORs the
+ * literals in. (Exported for the codec tests.)
  */
-function encodeXor(cur: Uint8Array, base: Uint8Array | null): { u: 1 | 4; x: Uint8Array } {
+export function encodeXor(cur: Uint8Array, base: Uint8Array | null): { u: 1 | 4; x: Uint8Array } {
   const n = cur.length;
   const u: 1 | 4 = cur.byteOffset % 4 === 0 && (!base || base.byteOffset % 4 === 0) ? 4 : 1;
   const units = Math.floor(n / u);
   const covered = base ? Math.min(base.length, n) : 0; // bytes the decoder pre-fills from the base
   const mFull = Math.floor(covered / u); // units entirely inside the base prefix: compare with the base
-  const mZero = Math.ceil(covered / u); // units entirely past it: compare with 0 (a straddling unit is always literal)
+  // units from here on lie entirely past it: compare with 0. The unit straddling `covered` is always literal, unless it
+  // is the partial unit after the last whole one (n % u bytes: a Uint8 or odd-length Uint16 building column), which is
+  // the tail. Hence the clamp: without it a literal reaching the last whole unit ran one unit further, past `units`,
+  // and the decoder rejected the snapshot ('corrupt delta').
+  const mZero = Math.min(units, Math.ceil(covered / u));
   const c = u === 4 ? new Uint32Array(cur.buffer, cur.byteOffset, units) : cur;
   const b = base ? (u === 4 ? new Uint32Array(base.buffer, base.byteOffset, Math.floor(base.length / 4)) : base) : null;
   // unit i is unchanged when it equals the base (i < mFull) or 0 (i >= mZero); a straddling unit is always literal
@@ -152,22 +157,32 @@ function encodeXor(cur: Uint8Array, base: Uint8Array | null): { u: 1 | 4; x: Uin
   return { u, x: w.out() };
 }
 
-function decodeXor(out: Uint8Array, x: Uint8Array, u: 1 | 4): void {
+/** XOR an encodeXor stream into `out` (pre-filled with the base prefix, zeros past it). (Exported for the codec tests.) */
+export function decodeXor(out: Uint8Array, x: Uint8Array, u: 1 | 4): void {
   const n = out.length;
   const units = Math.floor(n / u);
+  const tail = n - units * u;
   const p = { i: 0 };
   let pos = 0; // in units
   while (pos < units) {
     pos += readVarint(x, p);
     const lit = readVarint(x, p);
-    if (pos + lit > units) throw new Error('recovery: corrupt delta');
-    const from = pos * u, len = lit * u;
+    const len = lit * u;
     if (p.i + len > x.length) throw new Error('recovery: truncated delta');
-    for (let k = 0; k < len; k++) out[from + k] ^= x[p.i + k];
+    let use = len;
+    if (pos + lit > units) {
+      // Snapshots written before the encoder fix (mZero above): the literal that reached the last whole unit could run
+      // one unit further, over the partial tail unit, whose bytes the tail repeats after it. Apply the whole units of
+      // that literal and skip the rest; the tail below then restores those bytes (the sampled hash still checks all).
+      if (pos >= units || pos + lit !== units + 1 || tail === 0) throw new Error('recovery: corrupt delta');
+      use = len - u;
+    }
+    const from = pos * u;
+    for (let k = 0; k < use; k++) out[from + k] ^= x[p.i + k];
     p.i += len;
     pos += lit;
   }
-  const tail = n - units * u;
+  if (p.i + tail > x.length) throw new Error('recovery: truncated delta');
   for (let k = 0; k < tail; k++) out[units * u + k] ^= x[p.i + k];
 }
 
