@@ -231,11 +231,12 @@ export class RewardsPanel extends Panel {
     return ruinState(list);
   }
 
-  /** open the inspector on a reward's ruin, where its Clear rubble button is (the camera goes there) */
+  /** open the inspector on a reward's ruin, where its Clear rubble button is (the camera goes there). This panel closes
+   *  first: the inspector then takes its usual place, not the free spot beside this panel over the ruin */
   private showRuin(b: Building): void {
+    this.ctx.panels.close(this.id);
     this.ctx.focusCell(b.x + b.w / 2 - 0.5, b.z + b.d / 2 - 0.5, 360);
     this.ctx.showQuery({ buildingId: b.id, x: b.x, z: b.z }, { silent: true });
-    this.ctx.panels.close(this.id);
   }
 
   override update(): void {

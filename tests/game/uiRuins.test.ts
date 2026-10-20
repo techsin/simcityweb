@@ -28,19 +28,19 @@ import { type FEl, installFakeDom, textOf } from './fakeDom';
 installFakeDom();
 
 // ------------------------------------------------------------------------------------------------ harness
-interface Calls { focus: [number, number][]; query: unknown[]; closed: string[]; selected: string[]; toasts: string[] }
+interface Calls { focus: [number, number][]; query: unknown[]; closed: string[]; selected: string[]; toasts: string[]; order: string[] }
 function ctxOf(sim: Simulation): { ctx: GameContext; calls: Calls } {
-  const calls: Calls = { focus: [], query: [], closed: [], selected: [], toasts: [] };
+  const calls: Calls = { focus: [], query: [], closed: [], selected: [], toasts: [], order: [] };
   const ctx = {
     get state() { return sim.state; },
     sim,
     mods: { listRewards: (s: CityState) => listRewards(s).map(normalizeReward) },
     actions: { bulldoze: () => ({ ok: true, cost: 30 }) },
     objects: { setSelected: () => undefined },
-    panels: { close: (id: string) => calls.closed.push(id), open: () => undefined },
+    panels: { close: (id: string) => { calls.closed.push(id); calls.order.push('close'); }, open: () => undefined },
     tools: { select: (id: string) => { calls.selected.push(id); return true; } },
-    focusCell: (x: number, z: number) => calls.focus.push([x, z]),
-    showQuery: (t: unknown) => calls.query.push(t),
+    focusCell: (x: number, z: number) => { calls.focus.push([x, z]); calls.order.push('focus'); },
+    showQuery: (t: unknown) => { calls.query.push(t); calls.order.push('query'); },
     sandbox: () => false,
     sound: () => undefined,
     toast: (t: string) => calls.toasts.push(t),
@@ -212,6 +212,8 @@ describe('Rewards panel: a reward whose building is a ruin reads "In ruins — b
     expect(calls.focus).toEqual([[range.x + range.w / 2 - 0.5, range.z + range.d / 2 - 0.5]]);
     expect(calls.query).toEqual([{ buildingId: range.id, x: range.x, z: range.z }]);
     expect(calls.closed).toEqual(['rewards']);
+    // (closed first: the inspector takes its usual place, not the free spot beside this panel, over the ruin)
+    expect(calls.order).toEqual(['close', 'focus', 'query']);
     // the standing wheel next to it is just "Built"
     st.unlocked.add('lm_ferris_wheel');
     panel.onOpen();
