@@ -123,6 +123,9 @@
    breakdown ("Emergencies last month −8.0") was hidden under the banners exactly when it mattered. The loading veil
    stays above it (58)) */
 .hud-top:hover, .hud-top:has(.rci-pop.open) { z-index: 56; }
+/* (...and they are dense numbers over whatever lies beneath — a banner's red text and blue buttons showed through the
+   glass: nearly opaque) */
+.hud-top .appr-pop.mp-glass, .hud-top .rci-pop.mp-glass { background: linear-gradient(180deg, rgba(38, 49, 64, 0.97), rgba(17, 23, 31, 0.97)); }
 .hud-top > .mp-glass { pointer-events: auto; display: flex; align-items: center; height: 50px; padding: 0 6px; }
 .hud-top .spacer { flex: 1; }
 .hud-seg { display: flex; align-items: center; gap: 8px; padding: 0 10px; height: 100%; position: relative; }
