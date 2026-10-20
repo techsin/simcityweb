@@ -160,8 +160,11 @@ describe('hover = paint at every cell (both variants)', () => {
       st.traffic[i] = Math.round(rnd() * 3000);
       T[i] = k < 0.5 ? 0 : Math.round(rnd() * 1500);
     }
-    // ponds beside some roads
+    // ponds beside some roads; a block with its roads removed (land two or more cells from any road)
     for (let i = 0; i < st.cells; i += 37) if (!st.network[i] && st.building[i] < 0) st.water[i] = 1;
+    for (let z = 40; z <= 52; z++) {
+      for (let x = 40; x <= 52; x++) { const i = z * st.size + x; st.network[i] = Network.None; st.congestion[i] = st.traffic[i] = T[i] = 0; }
+    }
     TRAFFIC_OF_STATE.set(st, { truckVolume: () => T });
     markOverlaysDirty(st, 'traffic');
     return { st, T };

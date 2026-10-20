@@ -23,7 +23,10 @@ installFakeDom();
 describe('the Fire row hint: its industrial-accident clause is the hover\'s', () => {
   it('cut from the hover\'s sentence: the same words, number and unit', () => {
     const clause = farClause(FIRE_FAR_NOTE);
-    expect(clause).toBe(`an industrial accident there is still saved by a fire truck sent within ${EMERG_GRACE.industrial} days, however long the drive`);
+    // (whatever unit the hover uses — days today, emergency minutes after the render-handoff patch)
+    expect(clause.startsWith('an industrial accident there is still saved by a fire truck sent within ')).toBe(true);
+    expect(clause).toContain(String(EMERG_GRACE.industrial));
+    expect(clause).not.toMatch(/build a fire station/);
     expect(FIRE_TOO_FAR_TEXT).toContain(clause.replace(' there ', ' here '));
     const hint = fireResponseHint();
     expect(hint.endsWith(`, but ${clause}`)).toBe(true);
