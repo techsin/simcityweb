@@ -962,6 +962,56 @@ describe('outer ring trees', () => {
     b.tr.dispose();
   }, 120_000);
 
+  it('load work stays in the load: ring work queued before the first frame is done by it, the load build takes >= update()\'s count per frame', () => {
+    const st = createCityState(defaultCityConfig({ size: 128, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
+    const W = st.size * CELL_SIZE;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    cam.position.set(W / 2, 600, W / 2 + 300);
+    const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
+    const ring = tr as unknown as { ringRefill: number; dirty: Set<number>; ringPending(): boolean };
+    let slices = 0;
+    const step = tr.ringStep.bind(tr);
+    tr.ringStep = (b: number) => { slices++; step(b); };
+    // (a time budget used up by any chunk: only the load's floor builds more than one per frame)
+    tr.buildBudgetMs = 0;
+    // a pre-run of the sim (a demo's days) changes the month before the first frame: a season refill of every sector
+    const m0 = st.month, m1 = (m0 + 6) % 12;
+    tr.setMonth(m1);
+    expect(ring.ringRefill).toBe(255);
+    expect(ring.dirty.size).toBe(16);
+    // the first frame finishes it (part of the load, like the load's own ring) and builds the update() count of chunks
+    tr.update(cam);
+    expect(ring.ringPending()).toBe(false);
+    expect(slices).toBeGreaterThan(0);
+    expect(ring.dirty.size).toBe(16 - 3);
+    tr.update(cam, 5);
+    expect(ring.dirty.size).toBe(16 - 3 - 5);
+    let frames = 2;
+    while (ring.dirty.size) { tr.update(cam); frames++; }
+    expect(frames).toBe(2 + Math.ceil((16 - 8) / 3));
+    // the load is over: a runtime season change rebuilds within buildBudgetMs (one chunk here) and refills the ring in
+    // slices on calm frames, never at once
+    tr.setMonth(m0);
+    const s0 = slices;
+    tr.update(cam);
+    expect(ring.dirty.size).toBe(15);
+    expect(ring.ringPending()).toBe(true);
+    expect(slices).toBe(s0);
+    // a reset is a load again: its build takes the update() count per frame
+    tr.reset(st);
+    expect(ring.ringPending()).toBe(false);
+    expect(ring.dirty.size).toBe(16);
+    tr.update(cam);
+    expect(ring.dirty.size).toBe(13);
+    // flush() ends a load build at once
+    tr.flush();
+    expect(ring.dirty.size).toBe(0);
+    tr.setMonth(m1);
+    tr.update(cam);
+    expect(ring.dirty.size).toBe(15);
+    tr.dispose();
+  }, 120_000);
+
   it('ring near pairs submit only the trees within reach of their switch distance (ordered by depth past the map edge)', () => {
     const { st, tr } = make(128);
     const W = st.size * CELL_SIZE;

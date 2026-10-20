@@ -28,8 +28,9 @@
  * twig) models are drawn see-through too: their crowns cover ~30-60% of their pixels (alpha-to-coverage with MSAA, a
  * dither anchored to the tree without), evenly lit, so the forest floor shows between bare trees as it does between
  * the twigs of the near models; in winter conifer impostors are a little taller and darker (BARE_* / SEASON_*).
- * Chunk builds run nearest-first within buildBudgetMs per frame (at least one), so the view fills in first and the
- * first frames after a load stay short.
+ * Chunk builds run nearest-first within buildBudgetMs per frame (at least one), so the view fills in first; the load's
+ * own build (constructor, reset, quality change) builds at least update()'s chunk count per frame, so the map is
+ * complete within the load's first frames instead of trickling into the first frames the player moves the camera in.
  * Edge band: the map's edge chunks continue their forests as full trees over RING_EDGE_CELLS virtual cells past the
  * edge, thinning toward the outer ring's density over its outer cells. Band trees are a cheaper LOD class than the
  * map's own (they stand outside the playable area): a band tree is a full model only up to shadowLodFrac x the LOD
@@ -44,8 +45,9 @@
  * up (lodDistance >= RING_MIN_LOD); low quality has neither the ring nor the edge band:
  *   - candidates are a pure function of the noise texture, the outer terrain and the seed (the map's own cells only
  *     reach the edge band), generated and filled during the load (constructor / reset / a quality that turns the ring
- *     on: flushRing, tens of ms), never on the frames a player moves the camera in; a season / density / map-cell
- *     change only refills, and only a terrain edit on the map border regenerates the sectors on that side - that
+ *     on: flushRing, tens of ms; work queued between the load and its first frame, as by a month change of a sim
+ *     pre-run, is finished by that first frame), never on the frames a player moves the camera in; a season / density /
+ *     map-cell change only refills, and only a terrain edit on the map border regenerates the sectors on that side - that
  *     runtime work runs in ~1 ms slices on calm frames (still or slowly drifting camera, see RING_CALM_*), or one slice
  *     every RING_SLICE_EVERY frames once a moving camera has waited RING_MAX_WAIT frames;
  *   - each tree is a regular impostor within ~lodDistance of the camera (its own switch distance, see RING_SWITCH_*)
@@ -944,8 +946,15 @@ export class TreeRenderer {
   ringWidth = 2600;
   /** main-thread time (ms) of one slice of the outer ring's runtime work (refills / border regenerations) */
   ringBudgetMs = 1;
-  /** main-thread time (ms) per frame for (re)building tree chunks, nearest first (always at least one chunk) */
+  /** main-thread time (ms) per frame for (re)building tree chunks, nearest first (always at least one chunk; while the
+   *  load's own build runs, at least update()'s `budget` chunks, see loadBuild) */
   buildBudgetMs = 3;
+  /** the load's chunk build is running (constructor, reset, quality change: until no chunk is dirty): its frames are
+   *  load frames and build at least update()'s `budget` chunks each (as many as a plain per-frame count would), so the
+   *  map is complete within the load's first frames; later rebuilds (a season, edits) keep to buildBudgetMs */
+  private loadBuild = true;
+  /** update() calls since the load (constructor / reset): the first one finishes ring work queued before it */
+  private updates = 0;
   /** camera heights above the ground (m) between which the ring's far blocks fade in: low cameras look through the
    *  city / edge band at the horizon, where they are hidden or a few specks in the haze (the near pairs, a camera near
    *  the map edge, show at any height) */
@@ -1320,8 +1329,10 @@ export class TreeRenderer {
     this.applyRingOn();
     this.syncBandUniform();
     setLotTwigStrip(this.lodDistance < RING_MIN_LOD);
-    // (a quality change: its frame recompiles every program anyway, the ring's refill / generation is done at once)
+    // (a quality change: its frame recompiles every program anyway, the ring's refill / generation is done at once, and
+    // the chunks it marked build as a load's: loadBuild)
     this.flushRing();
+    if (this.dirty.size) this.loadBuild = true;
   }
 
   /** rebuild every chunk and refill the outer ring (season, density, tree kinds) */
@@ -1372,6 +1383,9 @@ export class TreeRenderer {
     this.markAll();
     this.ringRefill = 0;
     this.flushRing();
+    // (its chunks build with the next frames as a load's: loadBuild)
+    this.loadBuild = true;
+    this.updates = 0;
   }
 
   /** species weights of cell (x, z) at height h into `weights`; returns their total (the same for every tree of a
@@ -1907,7 +1921,11 @@ export class TreeRenderer {
   /** per frame: incremental rebuilds + LOD selection. Chunk rebuilds: nearest to the camera first, within buildBudgetMs
    *  (at least one, at most 4 x budget chunks per frame) */
   update(camera: THREE.Camera, budget = 3) {
-    if (this.dirty.size) this.buildDirty(camera.position, budget * 4);
+    // ring work queued between the load and its first frame (a month change by a pre-run of the sim, settings applied
+    // before the first frame) is part of the load: done now, like the load's own (flushRing), not in slices later
+    if (this.updates++ === 0 && this.ringOn && this.ringPending()) this.flushRing();
+    if (this.dirty.size) this.buildDirty(camera.position, budget * 4, this.loadBuild ? budget : 1);
+    if (!this.dirty.size) this.loadBuild = false;
     if (this.warm.length && ((this.warmMain && (this.warmShadow || !this.castShadows)) || ++this.warmFrames > 600)) this.dropWarmup();
     // snow on the trees follows the terrain's (seasonal) snow line
     const tu = this.terrain.uniforms;
@@ -2055,11 +2073,11 @@ export class TreeRenderer {
     return !!(this.ringStale || this.ringRefill || this.ringGen || this.ringFillState || this.ringFarDirty);
   }
 
-  /** build dirty chunks, nearest to the camera first, until buildBudgetMs is used up (at least one, at most `max`) */
-  private buildDirty(cp: THREE.Vector3, max: number): void {
+  /** build dirty chunks, nearest to the camera first, until buildBudgetMs is used up (at least `min`, at most `max`) */
+  private buildDirty(cp: THREE.Vector3, max: number, min = 1): void {
     const end = performance.now() + this.buildBudgetMs;
     const B = this.chunkBox, px = cp.x, pz = cp.z;
-    for (let n = 0; n < max && this.dirty.size; n++) {
+    for (let n = 1; n <= max && this.dirty.size; n++) {
       let best = -1, bd = Infinity;
       for (const id of this.dirty) {
         const o = id * 6;
@@ -2070,7 +2088,7 @@ export class TreeRenderer {
       }
       this.dirty.delete(best);
       this.buildChunk(best);
-      if (performance.now() >= end) break;
+      if (n >= min && performance.now() >= end) break;
     }
   }
 
@@ -2172,6 +2190,7 @@ export class TreeRenderer {
   flush(ring = true) {
     for (const id of this.dirty) this.buildChunk(id);
     this.dirty.clear();
+    this.loadBuild = false;
     if (ring) this.flushRing();
   }
 
