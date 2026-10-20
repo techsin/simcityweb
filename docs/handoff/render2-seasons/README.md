@@ -37,3 +37,14 @@ kit_bareCrown.patch may be landed by the seasons r3 lane together with a LOW twi
 | `CityState_startApril.patch`, `MiniMap_season.patch`, `propLod_bareProxy.patch` | Unchanged: owners and decisions as above; all three still apply cleanly (Oct 20, 00:45). |
 
 Low-quality twig strip, r3 resume: a bare crown on a plain trunk is no longer a bare pole at low quality. `stripWinterTwigs` (`src/assets/builders/winterTwigs.ts`) draws the trunk as a 4-sided (3-sided) spire up to the tip of the crown's leader and keeps the crown's limbs, as many as fit in the trunk's own triangles, so every lot model has at most the triangles of its plain (twig-free) model: kit trees 8 for the trunk's 10, park trees 10 for 10, com_kit box trunks 8 for 8, the ind_kit strut 6 for 6 (one limb). The hooks in `BuildingRenderer.ts` are unchanged.
+
+## Lead decisions, Oct 20 01:45 UTC (after seasons revise r3)
+
+- `res_high_podiumTrees.patch` and `resmid_indtech_roofTrees.patch`: APPLIED (commit after 55cccb1).
+- Outer-ring draw cost at HIGH/ULTRA (about 0.15–0.3 ms CPU per frame while the ring is in view; HIGH town zoom-out 1.11× and far orbit 1.08× base): ACCEPTED as the cost of the accepted ring feature. Conditions:
+  - the pooled moving-camera sum per page stays at or below base;
+  - LOW pays nothing for the ring.
+- Main-pass triangles on the "fast" camera paths that fly past the map edge, and on town cut sequences, at HIGH up to about +7% and ULTRA up to about +12% vs 02464a3: ACCEPTED (ring near pairs, edge band, kit twig crowns). Conditions:
+  - still views and the per-page moving sums stay within +5%;
+  - GPU-process time stays within +5% on sequence sums.
+  - Anything beyond goes to the polish pass (ring density cap during fast motion).
