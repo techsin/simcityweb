@@ -22,10 +22,12 @@
  * time" when nobody was ever sent, "Help came too late" when it came after the loss). A supporting unit already sent
  * (an industrial accident's ambulance) gets its own line; the incident keeps waiting for its fire truck. A loaded
  * game's waiting incidents get their banners (and the policy) back on the first tick the sim systems exist. The stack
- * docks beside open panels (dockBanners), and never covers a panel's title and tabs, nor the bottom toolbar (fitRows:
- * the banners that do not fit, "No free unit" ones first, are counted by the "N more" pill). The Send button's and the pill's
- * texts change in place (stable spans: a click whose press and release span a rewrite would be lost, EM-4); the docking
- * re-measures the layout only after a change (EM-3: no forced layout per UI tick, none at all without a banner).
+ * docks beside open panels (dockBanners), and never covers a panel's title and tabs, nor the bottom toolbar or its open
+ * flyout (fitRows: the banners that do not fit, "No free unit" ones first, are counted by the "N more" pill; final fixes
+ * r4 U1: an open flyout also stacks above the banners, hud.css). The Send button's and the pill's texts change in place
+ * (stable spans: a click whose press and release span a rewrite would be lost, EM-4), and the stack does not re-dock
+ * while one of its banners is pressed (the press may close the flyout); the docking re-measures the layout only after a
+ * change (EM-3: no forced layout per UI tick, none at all without a banner).
  *
  * Speed policy (settings.emergencyUncovered, pure function speedPolicy() below):
  *   'live'   an alert drops the game to 1x (remembering fast / ultra) and slows 1x by settings.emergencyLiveSlowmo
@@ -218,6 +220,8 @@ export const FALLBACK_ROWS = 2;
 const BOTTOM_KEEP = 84;
 /** room kept free between the stack and the bottom toolbar block (final fixes r3) */
 export const TOOLBAR_GAP = 12;
+/** EM-4 / U1: the docking waits this long at most for a press on the stack to be released (real ms) */
+export const PRESS_HOLD_MS = 1500;
 export interface DockRect { x: number; y: number; w: number; h: number }
 /** where the stack goes: left / width (css px), all banners compact, its top (default STACK_TOP) and the number of
  *  banners shown (0 = all) */
@@ -521,12 +525,17 @@ export class EmergencyBanner {
    *  whatever the cap */
   private hiddenPrompts = 0;
   /** EM-3: the layout changed since the last docking (panels opened / closed / moved / resized, banners resized, the
-   *  window resized): only then does dock() measure — never without a banner */
+   *  toolbar flyout opened / closed / resized, the window resized): only then does dock() measure — never without a
+   *  banner */
   private dockDirty = true;
   private ro: ResizeObserver | null = null;
   private mo: MutationObserver | null = null;
   private watched = new WeakSet<Element>();
   private layerWatched = false;
+  /** EM-4 / U1: real ms of a press on the stack not released yet (0 = none): no re-docking until it is released — its
+   *  pointerdown may close the toolbar flyout, and a re-dock (more rows, full banners) before the pointerup moved the
+   *  button away from under the pointer: the click was lost */
+  private pressAt = 0;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'emg-banners' });
@@ -543,6 +552,15 @@ export class EmergencyBanner {
     if (typeof MutationObserver !== 'undefined') this.mo = new MutationObserver(dirty);
     const win = typeof window !== 'undefined' && typeof window.addEventListener === 'function' ? window : null;
     win?.addEventListener('resize', dirty);
+    // (a press anywhere on the stack holds the docking until it is released — the layout it measured then applies)
+    this.el.addEventListener('pointerdown', () => { this.pressAt = performance.now(); }, true);
+    const release = () => {
+      if (!this.pressAt) return;
+      this.pressAt = 0;
+      this.dockDirty = true;
+    };
+    win?.addEventListener('pointerup', release, true);
+    win?.addEventListener('pointercancel', release, true);
     const off = ctx.sim.events.on('emergency', (e) => this.onEvent(e));
     const offReset = ctx.sim.events.on('reset', () => this.reset());
     const offTick = ctx.ui.on('uiTick', () => this.tick());
@@ -551,6 +569,8 @@ export class EmergencyBanner {
       this.ro?.disconnect();
       this.mo?.disconnect();
       win?.removeEventListener('resize', dirty);
+      win?.removeEventListener('pointerup', release, true);
+      win?.removeEventListener('pointercancel', release, true);
     });
   }
 
@@ -937,8 +957,10 @@ export class EmergencyBanner {
    * Heights are the ones measured before this tick's changes (full and compact), so the choice does not flip-flop with
    * the banners' own size. EM-3: no banner, no layout read at all (the TopBar and the panels wrote the DOM just
    * before: one read forced a style and layout pass every UI tick); with banners it measures only after the layout
-   * changed (ResizeObserver: banners, panels, the pill, the toolbar block; MutationObserver: panels opened / closed /
-   * moved; a window resize).
+   * changed (ResizeObserver: banners, panels, the pill, the toolbar block and its flyout; MutationObserver: panels
+   * opened / closed / moved, the flyout opened / closed; a window resize). Final fixes r4 U1: an open toolbar flyout is
+   * the bottom bound (stackBottom), and nothing re-docks while a banner is pressed (pressAt): a press whose pointerdown
+   * closes the flyout still clicks (EM-4).
    */
   private dock(): void {
     if (!this.banners.size) {
@@ -948,6 +970,9 @@ export class EmergencyBanner {
     }
     const tracked = !!(this.ro && this.mo);
     if (tracked && !this.dockDirty) return;
+    // (held while pressed — dockDirty stays: the release docks; PRESS_HOLD_MS bounds a release the window never saw)
+    if (this.pressAt && performance.now() - this.pressAt < PRESS_HOLD_MS) return;
+    this.pressAt = 0;
     this.dockDirty = false;
     const root = this.ctx.root;
     if (tracked && !this.layerWatched) {
@@ -1005,8 +1030,8 @@ export class EmergencyBanner {
   }
 
   /** the lowest the stack may reach (layout px of the UI root): TOOLBAR_GAP above the bottom toolbar block (.hud-bottom:
-   *  the toolbar and the tool chip above it, watched for size changes), else BOTTOM_KEEP above the layer's bottom;
-   *  Infinity when neither is known */
+   *  the toolbar and the tool chip above it, watched for size changes) or above its open flyout, whichever is higher,
+   *  else BOTTOM_KEEP above the layer's bottom; Infinity when neither is known */
   private stackBottom(root: HTMLElement, H: number): number {
     const hud = root.querySelector?.('.hud-bottom') as HTMLElement | null | undefined;
     if (hud && hud.offsetHeight > 0) {
@@ -1016,9 +1041,29 @@ export class EmergencyBanner {
       }
       let y = 0, e: HTMLElement | null = hud;
       for (; e && e !== root; e = e.offsetParent as HTMLElement | null) y += e.offsetTop;
-      if (e === root) return y - TOOLBAR_GAP;
+      if (e === root) return y + Math.min(0, this.flyoutTop(hud)) - TOOLBAR_GAP;
     }
     return H > 0 ? H - BOTTOM_KEEP : Infinity;
+  }
+
+  /**
+   * Final fixes r4 U1: the top of the bottom block's open flyout, relative to the block (layout px, < 0: it rises above
+   * the block — absolutely positioned in the toolbar, it is no part of the block's box; 0 when none is open). The
+   * banners covered its tabs and cards (a click on Civic > Fire pressed a banner's Send nearest): the stack ends above it
+   * while it is open. Watched for opening / closing (class) and its size (a tab switch changes its height).
+   */
+  private flyoutTop(hud: HTMLElement): number {
+    const fly = hud.querySelector?.('.flyout') as HTMLElement | null | undefined;
+    if (!fly) return 0;
+    if (!this.watched.has(fly)) {
+      this.watched.add(fly);
+      this.ro?.observe(fly);
+      this.mo?.observe(fly, { attributes: true, attributeFilter: ['class'] });
+    }
+    if (!fly.classList.contains('open') || !(fly.offsetHeight > 0)) return 0;
+    let y = 0, e: HTMLElement | null = fly;
+    for (; e && e !== hud; e = e.offsetParent as HTMLElement | null) y += e.offsetTop;
+    return e === hud ? y : 0;
   }
 
   /** apply a docking: the stack's place (null: the centred CSS default), all banners compact, banners shown (0 = all) */

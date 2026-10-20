@@ -464,8 +464,10 @@ export function demolishRisks(st: CityState, rect: CellRect, cost: number, opts:
     const live = !(b.flags & BF.Burnt);
     if (live && d.powerOut && d.powerOut > 0) powerHit++;
     if (live && d.waterOut && d.waterOut > 0) waterHit++;
-    if (d.category === 'landmark') items.push(`${d.name} is a landmark — its tourism and land-value bonuses will be lost`);
-    else if (d.category === 'reward') items.push(`${d.name} is a reward building — its bonuses will be lost`);
+    // (a ruined landmark / reward has no bonuses left to lose — clearing it is how it gets rebuilt: final fixes r4, a lone
+    // ruin asked "its bonuses will be lost" before a §180 rubble fee)
+    if (live && d.category === 'landmark') items.push(`${d.name} is a landmark — its tourism and land-value bonuses will be lost`);
+    else if (live && d.category === 'reward') items.push(`${d.name} is a reward building — its bonuses will be lost`);
     if (d.category !== 'growable') {
       names.push(d.name);
       if (live && d.cost && d.cost > 0) {

@@ -214,6 +214,11 @@
 
 /* ------------------------------------------------------------------ toolbar */
 .hud-bottom { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; z-index: 45; }
+/* (final fixes r4 U1: while a flyout is open the bottom block stacks above the emergency banners (.emg-banners 55) —
+   the flyout sits inside .toolbar, so the banners drew over its tabs and cards and took their clicks: Civic > Fire
+   pressed a banner's Send nearest. Below the loading veil (58) and the modal (60), like the raised top bar (UI-6);
+   EmergencyBanner also ends its stack above an open flyout) */
+.hud-bottom:has(.flyout.open) { z-index: 56; }
 .toolbar { display: flex; align-items: stretch; gap: 2px; padding: 5px; pointer-events: auto; position: relative; }
 .toolbar .sep { width: 1px; margin: 8px 4px; background: var(--hair); }
 .tb-btn {

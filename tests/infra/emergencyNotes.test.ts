@@ -5,6 +5,11 @@
  * Now one unit is "the only ambulance … is busy" (allBusyNote's singular form), and "and others" needs other stations:
  * one station is named with its units, two by name, three or more as "… and N others". The plural texts the EM-1 tests
  * pin stay as they were.
+ * Final fixes r4 (playtest polish 9 + 11): two units are "both" — "Both fire trucks of Fire Station #1 are busy", "both
+ * fire trucks (that can reach it) are busy", "Both ambulances are busy (Medical Clinic #1 and Medical Clinic #2)" — not
+ * "All 2 …"; three or more stay "All N …". The only unit that can reach a site comes back as "it", not "one". The
+ * "uncovered" news no longer sends the player to the Dispatch tool, which is not on the toolbar: it points at the
+ * incident's alert ("Send nearest, or Choose station…").
  */
 import { describe, expect, it } from 'vitest';
 import { Network } from '../../src/core/types';
@@ -45,15 +50,15 @@ describe('r3: a single unit is "the only one"', () => {
     expect(r.reason).toBe('The only ambulance of Medical Clinic #1 is busy');
   });
 
-  it('a station with 2 trucks keeps the plural note', () => {
+  it('a station with 2 trucks: "Both fire trucks of Fire Station #1 are busy" (final fixes r4: "All 2 fire trucks")', () => {
     const t = town([{ def: 'civ_fire_station', x: 4 }]);
     spillAt(t, 8);
     spillAt(t, 12);
     const home = place(t.st, 't_r2', 16, 21, { pop: 60 });
     triggerDisaster(t.sim, 'fire', home.x, home.z);
     const fire = t.em.incidents().find((i) => i.kind === 'fire')!;
-    expect(fire.note).toBe('All 2 fire trucks of Fire Station #1 are busy — one is sent as soon as one is back');
-    expect(t.em.dispatch(t.sim, fire.id, t.at[0].id).reason).toBe('All 2 fire trucks of Fire Station #1 are busy');
+    expect(fire.note).toBe('Both fire trucks of Fire Station #1 are busy — one is sent as soon as one is back');
+    expect(t.em.dispatch(t.sim, fire.id, t.at[0].id).reason).toBe('Both fire trucks of Fire Station #1 are busy');
   });
 });
 
@@ -70,12 +75,62 @@ describe('r3: beyond every station\'s reach with every unit busy: "and others" o
     return fire.note;
   }
   it('one fire station: named with its trucks, no "and others"', () => {
-    expect(farFire(1, 80)).toBe('All 2 fire trucks of Fire Station #1 are busy — you can send one once one is back');
+    expect(farFire(1, 80)).toBe('Both fire trucks of Fire Station #1 are busy — you can send one once one is back');
   });
   it('two stations: both named', () => {
     expect(farFire(2, 130)).toBe('All 4 fire trucks are busy (Fire Station #1 and Fire Station #2) — you can send one once one is back');
   });
   it('three stations: "… and 2 others"', () => {
     expect(farFire(3, 150)).toBe('All 6 fire trucks are busy (Fire Station #1 and 2 others) — you can send one once one is back');
+  });
+});
+
+describe('r4: two units are "both", the only one comes back as "it"', () => {
+  /** a medical call at a home next to the road at x (major: it is announced; 3 injured) */
+  const call = (t: ReturnType<typeof town>, x: number) => {
+    const h = place(t.st, 't_r2', x, 21, { pop: 60 });
+    return t.em.incident(t.em.spawn(t.sim, 'medical', h.x, h.z, { buildingId: h.id, major: true, severity: 3 }))!;
+  };
+
+  it('two clinics with their one ambulance each out, a call beyond both: "Both ambulances are busy (… and …)"', () => {
+    const t = town([{ def: 'civ_clinic', x: 4 }, { def: 'civ_clinic', x: 44 }]);
+    expect([call(t, 8).state, call(t, 48).state]).toEqual(['dispatched', 'dispatched']);
+    const m = call(t, 140);
+    expect([m.state, m.reason, m.manualPossible, !!m.canSend]).toEqual(['uncovered', 'busy', false, false]);
+    expect(m.note).toBe('Both ambulances are busy (Medical Clinic #1 and Medical Clinic #2) — you can send one once one is back');
+  });
+
+  it('a prompt outside coverage whose only ambulance an in-range call takes: "the only ambulance is busy — you can send it once it is back"', () => {
+    const t = town([{ def: 'civ_clinic', x: 4 }]);
+    const far = call(t, 40);
+    expect([far.state, far.reason, far.manualPossible]).toEqual(['uncovered', 'outOfRange', true]);
+    expect(call(t, 8).state).toBe('dispatched');
+    expect([far.state, far.manualPossible, !!far.canSend]).toEqual(['uncovered', false, false]);
+    expect(far.note).toBe('Outside medical coverage and the only ambulance is busy — you can send it once it is back');
+  });
+});
+
+describe('r4: the "uncovered" news points at the alert, not at the Dispatch tool (not on the toolbar)', () => {
+  /** a fire at a home x cells along the street from a fire station at x = 4 (beyond its reach from 50) */
+  function fireAt(x: number) {
+    const t = town([{ def: 'civ_fire_station', x: 4 }]);
+    const home = place(t.st, 't_r2', x, 21, { pop: 60 });
+    triggerDisaster(t.sim, 'fire', home.x, home.z);
+    const fire = t.em.incidents().find((i) => i.kind === 'fire')!;
+    expect([fire.state, fire.reason, fire.major]).toEqual(['uncovered', 'outOfRange', true]);
+    t.sim.runDays(1); // the news goes out at the day's settle point
+    return { fire, news: t.st.news.filter((n) => n.text.startsWith('Fire at')) };
+  }
+
+  it('a free truck can still make it: "… Send help from its alert: Send nearest, or Choose station…"', () => {
+    const { fire, news } = fireAt(50);
+    expect(news.map((n) => n.text)).toEqual([`Fire at ${fire.place} — Outside fire coverage — nearest free fire truck: Fire Station #1. Send help from its alert: Send nearest, or Choose station…`]);
+    expect(news[0].text).not.toMatch(/Dispatch tool/);
+  });
+
+  it('nobody can make it in time any more: the news only says why (no call to send help)', () => {
+    const { fire, news } = fireAt(60);
+    expect(fire.manualPossible).toBe(false);
+    expect(news.map((n) => n.text)).toEqual([`Fire at ${fire.place} — Outside fire coverage — nearest free fire truck: Fire Station #1 (too far to make it in time).`]);
   });
 });

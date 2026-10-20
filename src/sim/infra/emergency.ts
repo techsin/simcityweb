@@ -316,11 +316,16 @@ function smoothstep(e0: number, e1: number, x: number): number {
 }
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const cap1 = (s: string) => s[0].toUpperCase() + s.slice(1);
-/** "All 2 fire trucks of Fire Station #3 are busy", or with a single unit "The only ambulance of Medical Clinic #15 is
- *  busy" (final fixes r3: "All 1 ambulance of … are busy"; allBusyNote's singular form) */
+/** n busy units: "the only fire truck<tail> is busy", "both fire trucks<tail> are busy" (final fixes r4: "all 2 fire
+ *  trucks"), "all 4 fire trucks<tail> are busy" — the busy notes' one wording (the Dispatch tool's says the same) */
+function unitsBusy(n: number, unit: readonly [string, string], tail = ''): string {
+  return n === 1 ? `the only ${unit[0]}${tail} is busy` : n === 2 ? `both ${unit[1]}${tail} are busy` : `all ${n} ${unit[1]}${tail} are busy`;
+}
+/** "All 3 fire trucks of Fire Station #3 are busy", "Both fire trucks of Fire Station #1 are busy", or with a single
+ *  unit "The only ambulance of Medical Clinic #15 is busy" (final fixes r3: "All 1 ambulance of … are busy"; r4: "All 2
+ *  fire trucks of …") */
 function stationBusyText(s: { units: number; responder: Responder; name: string }): string {
-  const unit = RESPONDER_UNIT[s.responder];
-  return s.units === 1 ? `The only ${unit[0]} of ${s.name} is busy` : `All ${s.units} ${unit[1]} of ${s.name} are busy`;
+  return cap1(unitsBusy(s.units, RESPONDER_UNIT[s.responder], ` of ${s.name}`));
 }
 
 /** station fleet of a def: FLEET by def id, else by model (test / mod defs reusing a station model) */
@@ -1994,18 +1999,20 @@ export class EmergencySystem implements SimSystem {
       }
     }
     if (reach === 0) return `No free ${unit[0]} can reach this place`;
-    const busy = reach === 1 ? `the only ${unit[0]}${reach < all ? ' that can reach it' : ''} is busy` : `all ${reach} ${unit[1]}${reach < all ? ' that can reach it' : ''} are busy`;
+    const busy = unitsBusy(reach, unit, reach < all ? ' that can reach it' : '');
+    const one = reach === 1 ? 'it' : 'one';
     return inc.reason === 'outOfRange'
-      ? `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage and ${busy} — you can send one once one is back`
-      : `${cap1(busy)} — one is sent as soon as one is back`;
+      ? `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage and ${busy} — you can send ${one} once ${one} is back`
+      : `${cap1(busy)} — ${one} is sent as soon as ${one} is back`;
   }
 
   /**
    * the note of a site beyond every station's reach while every unit that can reach it is busy (site seeds in seedBuf):
-   * the stations of responder r on the site's road network by name — "All 2 fire trucks of Fire Station #1 are busy",
+   * the stations of responder r on the site's road network by name — "Both fire trucks of Fire Station #1 are busy",
    * "The only ambulance of Medical Clinic #1 is busy", "All 6 fire trucks are busy (Fire Station #1 and Fire Station #2)",
-   * "(… and 3 others)" — the nearest busy one (`near`, the search's) first. Final fixes r3: it read "All ambulances are
-   * busy (Medical Clinic #1 and others)" in a city with a single clinic
+   * "Both ambulances are busy (Medical Clinic #1 and Medical Clinic #2)", "(… and 3 others)" — the nearest busy one
+   * (`near`, the search's) first. Final fixes r3: it read "All ambulances are busy (Medical Clinic #1 and others)" in a
+   * city with a single clinic
    */
   private busyBeyondNote(r: Responder, near: Station | null, ns: number): string {
     const unit = RESPONDER_UNIT[r];
@@ -2025,7 +2032,7 @@ export class EmergencySystem implements SimSystem {
     const later = units === 1 ? 'you can send it once it is back' : 'you can send one once one is back';
     if (on.length === 1) return `${stationBusyText(on[0])} — ${later}`;
     const who = on.length === 2 ? `${on[0].name} and ${on[1].name}` : `${on[0].name} and ${on.length - 1} others`;
-    return `All ${units} ${unit[1]} are busy (${who}) — ${later}`;
+    return `${cap1(unitsBusy(units, unit))} (${who}) — ${later}`;
   }
 
   /** nearest (straight line) station of responder r with a free unit */
@@ -2059,8 +2066,10 @@ export class EmergencySystem implements SimSystem {
   }
 
   /** the "uncovered" news of the incidents decided since the last settle point, worded by their state now: "… Send help
-   *  with the Dispatch tool!" only while a dispatch can still go (EM-1: a quake's toast used to say so for prompts the
-   *  next incident of the same burst had already taken the unit of) */
+   *  from its alert: Send nearest, or Choose station…" only while a dispatch can still go (EM-1: a quake's toast used to
+   *  say so for prompts the next incident of the same burst had already taken the unit of). Final fixes r4: it said
+   *  "Send help with the Dispatch tool!" — a tool that is not on the toolbar (the alert's "Choose station…" and the
+   *  Emergencies panel open it) */
   private uncoveredNews(sim: Simulation): void {
     const due = this.p.newsDue;
     if (!due?.length) return;
@@ -2070,7 +2079,7 @@ export class EmergencySystem implements SimSystem {
       if (!inc || inc.state !== 'uncovered' || !inc.major) continue;
       const adv = INCIDENT_RESPONDERS[inc.kind][0] === 'medical' ? 'health' : 'safety';
       const txt = inc.manualPossible
-        ? `${INCIDENT_LABEL[inc.kind]} at ${inc.place} — ${inc.note}. Send help with the Dispatch tool!`
+        ? `${INCIDENT_LABEL[inc.kind]} at ${inc.place} — ${inc.note}. Send help from its alert: Send nearest, or Choose station…`
         : `${INCIDENT_LABEL[inc.kind]} at ${inc.place} — ${inc.note}.`;
       this.news(sim, 'uncovered:' + inc.kind, 2, txt, 'disaster', inc.x, inc.z, adv);
     }

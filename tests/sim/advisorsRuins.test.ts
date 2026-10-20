@@ -11,6 +11,9 @@
  * ('ruins': a §2,500/mo Missile Test Range lay in ruins for 55 years without a word): what stopped (deal income,
  * tourists, the demand-cap boost, land value and prestige), the upkeep still charged, "Show me" at the most valuable
  * ruin, the finance advisor when income stopped (else planning).
+ * Final fixes r4: a ruined deal (no upkeep, nothing to pay for a new one) said "Bulldoze the rubble and build it again —
+ * it costs nothing", but clearing the ruin costs its rubble fee (demolishFee: §180 for the Missile Test Range): the card
+ * names the fee and says the new one is free.
  */
 import { describe, expect, it } from 'vitest';
 import { BF, type Building } from '../../src/sim/CityState';
@@ -22,6 +25,7 @@ import { infraSystems, triggerDisaster } from '../../src/sim/systems/infra';
 import { formatMoney } from '../../src/sim/economy/format';
 import { getDef } from '../../src/sim/catalog';
 import { buildingUpkeep } from '../../src/sim/economy/opex';
+import { demolishFee } from '../../src/sim/economy/buildings';
 import { newState, place, roadLine } from '../infra/cityGen';
 
 /** a city with only the advisors system (synthetic data, no simulation; the simulation starts at the first month tick,
@@ -209,13 +213,15 @@ describe('r3: every other ruin — deals, landmarks, civic buildings, transport,
     return t + buildingUpkeep(c.st, d) * (d.service ? (c.st.budget.funding[d.service] ?? 100) / 100 : 1);
   }, 0);
 
-  it('a ruined deal: its deal income named (finance), Show me at the ruin, it costs nothing to rebuild', () => {
+  it('a ruined deal: its deal income named (finance), Show me at the ruin, the rubble fee to clear it and a free new one', () => {
     const c = city();
     const b = place(c.st, 'rw_missile_range', 20, 20, { flags: BF.Plopped | BF.Burnt });
     c.st.stats.population = 30000;
     monthTick(c, 30);
     const a = issue(c, 'finance', 'ruins');
-    expect(a?.text).toBe('Your Missile Test Range lies in ruins — its §2,500/mo deal income is gone. Bulldoze the rubble and build it again — it costs nothing.');
+    expect(demolishFee(b)).toBe(180); // what the bulldozer charges for its rubble
+    expect(a?.text).toBe('Your Missile Test Range lies in ruins — its §2,500/mo deal income is gone. Bulldoze the rubble (§180) and build it again — the new one is free.');
+    expect(a?.text).not.toMatch(/costs nothing/);
     expect(a!.priority).toBe(6);
     expect([a!.x, a!.z]).toEqual([b.x + 3, b.z + 3]);
     expect(c.st.news.some((n) => n.text === a!.text)).toBe(true);
@@ -286,11 +292,12 @@ describe('r3: every other ruin — deals, landmarks, civic buildings, transport,
   it('service ruins keep their own card; the other ruins get theirs next to it', () => {
     const c = city();
     place(c.st, 'civ_police_station', 30, 10, { flags: BF.Plopped | BF.Burnt });
-    place(c.st, 'rw_military_base', 40, 40, { flags: BF.Plopped | BF.Burnt });
+    const base = place(c.st, 'rw_military_base', 40, 40, { flags: BF.Plopped | BF.Burnt });
     c.st.stats.population = 30000;
     monthTick(c, 30);
     expect(issue(c, 'safety', 'facilityRuins')?.text).toMatch(/^Your Police Station lies in ruins/);
-    expect(issue(c, 'finance', 'ruins')?.text).toBe('Your Military Base lies in ruins — its §1,500/mo deal income and its industrial demand-cap boost are gone. Bulldoze the rubble and build it again — it costs nothing.');
+    expect(demolishFee(base)).toBe(320);
+    expect(issue(c, 'finance', 'ruins')?.text).toBe('Your Military Base lies in ruins — its §1,500/mo deal income and its industrial demand-cap boost are gone. Bulldoze the rubble (§320) and build it again — the new one is free.');
   });
 
   it('end to end: a meteor ruins a deal → the summary names it, then the advice names its income', () => {

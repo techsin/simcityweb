@@ -103,6 +103,10 @@ class FakeEl extends FakeNode {
   click(): void {
     for (const f of this.listeners.get('click') ?? []) f({});
   }
+  /** an event of another type (its listeners, as click() does) */
+  fire(t: string): void {
+    for (const f of this.listeners.get(t) ?? []) f({});
+  }
   appendChild<T extends FakeNode>(c: T): T {
     c.remove();
     c.parentElement = this;

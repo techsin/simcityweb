@@ -429,6 +429,12 @@ export class PollutionSystem implements SimSystem {
     return this.summary;
   }
 
+  /** the first garbage facility / landfill of the last pass that no road touches (it takes no garbage), or null — the
+   *  garbage news and the advisors' garbage card name it (final fixes r4; derived each pass, not saved) */
+  roadlessGarbage(): Readonly<{ what: string; x: number; z: number }> | null {
+    return this.roadless;
+  }
+
   /** total air source strength of a building in the last pass (0 = none; for tests and the inspector) */
   emissionOf(id: number): number {
     return id >= 0 && id < this.airById.length ? this.airById[id] : 0;

@@ -4,6 +4,7 @@
  * card's "Emergencies last month −8.0" was hidden exactly when it mattered. While one is up the top bar stacks above
  * both and below the modal (60); the loading veil stays above the raised bar. The popovers are nearly opaque (a
  * banner's red text and blue buttons showed through the glass). Browser-checked at 1280x720; this pins the order.
+ * Final fixes r4 U1: the bottom block with an open toolbar flyout, likewise (below).
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -51,5 +52,33 @@ describe('top bar popovers above the emergency banners (final fixes UI-6)', () =
     const alphas = [...body.matchAll(/rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([\d.]+)\s*\)/g)].map((m) => Number(m[1]));
     expect(alphas.length).toBeGreaterThan(0);
     for (const a of alphas) expect(a).toBeGreaterThanOrEqual(0.95);
+  });
+});
+
+/**
+ * Final fixes r4 U1 (lane ui; playtest r4 p43 / p44 / p49, veteran r4 shots 028 / 029): the emergency banners drew over
+ * an open toolbar flyout and took its clicks — at 1280x720 the Civic tabs and the Police Station / HQ / Prison cards
+ * hit-tested to banners, a click on the Fire tab closed the flyout; at 1920x1080 it pressed a banner's Send nearest and
+ * dispatched a fire truck. The flyout is absolutely positioned inside .toolbar inside .hud-bottom (z 45), a sibling of
+ * .emg-banners (z 55) under the UI root, and .hud-bottom is transformed — a stacking context the flyout cannot leave
+ * with a z-index of its own. While a flyout is open the whole bottom block stacks above the banners (the UI-6
+ * precedent), below the loading veil and the modal. (EmergencyBanner also ends its stack above the open flyout:
+ * tests/game/emergencyBanner.test.ts.)
+ */
+describe('an open toolbar flyout above the emergency banners (final fixes r4 U1)', () => {
+  it('the bottom block with an open flyout stacks above the banners and the toasts, below the loading veil and the modal', () => {
+    const raised = zOf('.hud-bottom:has(.flyout.open)');
+    expect(raised).toBeGreaterThan(zOf('.emg-banners'));
+    expect(raised).toBeGreaterThan(zOf('.hud-tl'));
+    expect(raised).toBeLessThan(zOf('.loading-veil'));
+    expect(raised).toBeLessThan(zOf(':where(.mp-ui) .modal-back'));
+    // (closed, the block keeps its place under the banners)
+    expect(zOf('.hud-bottom')).toBeLessThan(zOf('.emg-banners'));
+  });
+  it('the flyout lives in the bottom block\'s stacking context: the raise has to be the block\'s', () => {
+    // .hud-bottom is transformed (a stacking context) and the flyout is positioned inside it, with no z-index of its own
+    expect(bodyOf('.hud-bottom')).toMatch(/(?:^|;)\s*transform\s*:\s*translateX\(-50%\)/);
+    expect(bodyOf('.flyout')).toMatch(/(?:^|;)\s*position\s*:\s*absolute/);
+    expect(bodyOf('.flyout')).not.toMatch(/z-index/);
   });
 });

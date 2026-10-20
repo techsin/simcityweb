@@ -3,9 +3,11 @@ import { Network, Overlay, isRoad } from '../../core/types';
 import { overlayInfo, overlayTitle } from '../../ui/overlays';
 import { overlayLayer, overlayReadout } from '../../sim/infra/overlays';
 import { getDef } from '../../sim/catalog';
+import { BF } from '../../sim/CityState';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
 import { num, pct } from '../../ui/format';
+import { RUINS_TEXT } from '../../ui/inspectorModel';
 import { emptyZoneStatus, zoneStatusLine, zoneStatusTone } from '../../ui/zoneStatus';
 import { NETWORK_LABELS } from './NetworkTool';
 import { safe, Tool, type ToolPointer } from './Tool';
@@ -66,8 +68,12 @@ export class QueryTool extends Tool {
       const b = st.buildings.get(id);
       const def = b ? getDef(b.def) : undefined;
       if (b) {
-        const pop = def?.category === 'growable' && def.devType !== undefined && def.devType <= 2 ? `${num(b.pop)} residents` : b.capacity ? `${num(b.jobs)} / ${num(b.capacity)} jobs` : '';
-        this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(def?.name ?? b.def)}</b></div>${pop ? `<div class="tip-sub">${pop}</div>` : ''}`, 'info');
+        // (a ruin houses and employs nobody: its residents / jobs are stale until the next population pass — final fixes
+        // r4: a fresh ruin read "40 / 40 jobs". The inspector's cause-neutral words instead)
+        const sub = b.flags & BF.Burnt
+          ? `<div class="tip-reason">${RUINS_TEXT}</div>`
+          : def?.category === 'growable' && def.devType !== undefined && def.devType <= 2 ? `<div class="tip-sub">${num(b.pop)} residents</div>` : b.capacity ? `<div class="tip-sub">${num(b.jobs)} / ${num(b.capacity)} jobs</div>` : '';
+        this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(def?.name ?? b.def)}</b></div>${sub}`, 'info');
         return;
       }
     }

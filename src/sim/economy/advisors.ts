@@ -69,7 +69,7 @@ import { maxLoanAmount, loanRate } from './loans';
 import { RNG } from '../../core/rng';
 import { ZONE_DEVTYPES, capReliefOf, getDef, growablesForZone } from '../catalog';
 import type { BuildingDef } from '../catalogTypes';
-import { lotSlope } from './buildings';
+import { demolishFee, lotSlope } from './buildings';
 import { formatMoney } from './format';
 import { buildingPowered, buildingWatered } from './population';
 import { GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, TOURISM_INCOME_PER_VISITOR, WATER_REQUIRED_STAGE } from './tuning';
@@ -1294,7 +1294,11 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
   const garbageHomes = survey && survey.pop[3] > 0 ? survey.noGarbage[3] : 0;
   const legacyShort = !inf.pollution && pop > 2000 && s.garbageProduced > s.garbageCapacity * 1.02;
   if ((pop >= 300 && survey !== null && survey.pop[3] >= 200 && garbageHomes >= 0.2) || legacyShort) {
-    const gs = sim?.getSystem<PollutionSystem>('pollution')?.garbageSummary?.();
+    const pol = sim?.getSystem<PollutionSystem>('pollution');
+    const gs = pol?.garbageSummary?.();
+    // a landfill / incinerator that no road touches takes nothing (the garbage pass gives it no capacity; its news names
+    // it): the fix is a road — final fixes r4: the card told a player whose landfill had no road to zone a landfill
+    const rl = pol?.roadlessGarbage?.() ?? null;
     let reason: 'capacity' | 'range' | 'noRoad' = 'capacity';
     if (gs) {
       const cap = gs.overCapacityT, rng = gs.outOfRangeT, nr = gs.noRoadT;
@@ -1303,15 +1307,20 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
     }
     const share = garbageHomes > 0 ? pctS(garbageHomes) : 'many';
     const tail = pop < 20000 ? ` ${GARBAGE_FADE}` : '';
-    const text = s.garbageCapacity <= 0 && (!gs || gs.landfillCapT <= 0)
-      ? `Garbage is piling up at the homes of ${share} of residents: the city has nowhere to take it. Zone a landfill (or build an incinerator) and connect it by road.${tail}`
+    const nowhere = s.garbageCapacity <= 0 && (!gs || gs.landfillCapT <= 0);
+    const alsoRoad = rl ? ` Your ${rl.what} has no road access, so garbage trucks can't use it — connect it to a road.` : '';
+    const text = nowhere
+      ? rl
+        ? `Garbage is piling up at the homes of ${share} of residents: your ${rl.what} has no road access, so garbage trucks can't use it — connect it to a road.${tail}`
+        : `Garbage is piling up at the homes of ${share} of residents: the city has nowhere to take it. Zone a landfill (or build an incinerator) and connect it by road.${tail}`
       : reason === 'range'
-        ? `Garbage trucks can't reach the homes of ${share} of residents — they are more than ${GARBAGE_TRUCK_RANGE} road tiles from a landfill, incinerator or recycling center. Build one closer (Garbage data view).${tail}`
+        ? `Garbage trucks can't reach the homes of ${share} of residents — they are more than ${GARBAGE_TRUCK_RANGE} road tiles from a landfill, incinerator or recycling center. Build one closer (Garbage data view).${alsoRoad}${tail}`
         : reason === 'noRoad'
-          ? `${gs ? int(gs.noRoadBuildings) : 'Many'} buildings have no road at the door, so garbage trucks can't stop there. Build roads to them.${tail}`
-          : `Garbage is piling up at the homes of ${share} of residents: landfills and incinerators are full (${int(s.garbageProduced)} t a month made, ${int(s.garbageCapacity)} t taken). ${garbageFix(gs)}${tail}`;
+          ? `${gs ? int(gs.noRoadBuildings) : 'Many'} buildings have no road at the door, so garbage trucks can't stop there. Build roads to them.${alsoRoad}${tail}`
+          : `Garbage is piling up at the homes of ${share} of residents: landfills and incinerators are full (${int(s.garbageProduced)} t a month made, ${int(s.garbageCapacity)} t taken). ${garbageFix(gs)}${alsoRoad}${tail}`;
     out.push({ id: 'garbage', cooldown: 120, priority: garbageHomes >= 0.5 ? 7 : 6, kind: garbageHomes >= 0.5 ? 'bad' : 'warning', advisor: 'utilities',
-      where: home('garbage', st.garbage), quietIf: /^Garbage is piling up/, text });
+      // (nothing takes the garbage but a roadless landfill: the place to act is that landfill, as in its news)
+      where: nowhere && rl ? () => ({ x: rl.x, z: rl.z }) : home('garbage', st.garbage), quietIf: /^Garbage is piling up/, text });
   }
 
   // ---------------- tourism, attractiveness, region
@@ -1713,12 +1722,16 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
           if (!(od.category === 'park' && !((od.jobs ?? 0) > 0)) && od.id !== 'tr_bus_stop' && od.model !== 'tr_bus_stop') minor = false;
         }
         const charged = upkeep >= 0.5;
+        // (no upkeep and nothing to pay for the new one — a deal: clearing the ruin still costs its rubble fee, so the card
+        // says both; final fixes r4: "— it costs nothing" read as if bulldozing the §180 rubble were free)
         const free = !charged && n === 1 && !((def.cost ?? 0) > 0);
         // (more deals than the lead one lie in ruins: what they paid together)
         const allDeals = deals > (def.category === 'reward' ? def.income ?? 0 : 0) + 0.5 ? ` (${money(deals)}/mo of deal income in all)` : '';
         out.push({ id: 'ruins', cooldown: 120, priority: income ? 6 : minor ? 3 : 5, kind: 'warning', advisor: income ? 'finance' : 'planning', ...at(b),
           text: n === 1
-            ? `Your ${def.name} lies in ruins — ${lossText(def)}. Bulldoze the rubble and build it again${charged ? `: its upkeep (${money(upkeep)}/mo) is still charged until you bulldoze it` : free ? ' — it costs nothing' : ''}.`
+            ? free
+              ? `Your ${def.name} lies in ruins — ${lossText(def)}. Bulldoze the rubble (${money(demolishFee(b))}) and build it again — the new one is free.`
+              : `Your ${def.name} lies in ruins — ${lossText(def)}. Bulldoze the rubble and build it again${charged ? `: its upkeep (${money(upkeep)}/mo) is still charged until you bulldoze it` : ''}.`
             : `${n} of your buildings lie in ruins (${ruinListText(ruins.map((o) => o.def))}) — the ${def.name}: ${lossText(def)}${allDeals}. Bulldoze the rubble and rebuild them${charged ? `: their upkeep (${money(upkeep)}/mo) is still charged until you bulldoze them` : ''}.` });
       }
     }

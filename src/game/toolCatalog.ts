@@ -5,6 +5,9 @@
 import { Network, Zone } from '../core/types';
 import * as catalogMod from '../sim/catalog';
 import type { BuildingCategory, BuildingDef } from '../sim/catalogTypes';
+import { BF, type Building } from '../sim/CityState';
+import type { SimSystem } from '../sim/Simulation';
+import type { EconRuntime } from '../sim/economy/runtime';
 import type { GameContext } from './context';
 import { RectTool, ZONE_LABELS } from './tools/ZoneTool';
 import { NetworkTool, type NetKind } from './tools/NetworkTool';
@@ -114,11 +117,41 @@ function lockOf(ctx: GameContext, d: BuildingDef): ToolSpec['locked'] {
   return { hint, progress };
 }
 
+/** why a one-per-city building cannot be placed: one stands ... */
+export const UNIQUE_BUILT_TEXT = 'Already built (one per city)';
+/** ... or its only one lies in ruins (the sim: "Only one X allowed — bulldoze its ruins first") */
+export const UNIQUE_RUINS_TEXT = 'In ruins — bulldoze its ruins first';
+
+/**
+ * A one-per-city building is disabled by the sim's own rule (actions.ts plop): one is counted in state.milestones (the
+ * plopped buildings, ruins included until they are bulldozed). Final fixes r4: a ruined one read "Already built (one
+ * per city)" while the ruins texts say "bulldoze it and build it again" — in ruins when every plopped building of the
+ * def is a ruin (BF.Burnt). Read from the economy runtime's plopped list (RewardsPanel.ruins), not a scan of every
+ * building of the city per def.
+ */
 function disabledOf(ctx: GameContext, d: BuildingDef): string | null {
-  if (!d.unique) return null;
-  if ((ctx.state.milestones[d.id] ?? 0) > 0) return 'Already built (one per city)';
-  for (const b of ctx.state.buildings.values()) if (b.def === d.id) return 'Already built (one per city)';
-  return null;
+  if (!d.unique || !((ctx.state.milestones[d.id] ?? 0) > 0)) return null;
+  let ruin = false;
+  for (const b of ploppedBuildings(ctx)) {
+    if (b.def !== d.id || !(b.flags & BF.Plopped)) continue;
+    if (!(b.flags & BF.Burnt)) return UNIQUE_BUILT_TEXT;
+    ruin = true;
+  }
+  return ruin ? UNIQUE_RUINS_TEXT : UNIQUE_BUILT_TEXT;
+}
+
+/** the city's player-placed buildings: the economy runtime's plopped list, else every building */
+function ploppedBuildings(ctx: GameContext): Iterable<Building> {
+  try {
+    const rt = ctx.sim.getSystem<SimSystem & { rt?: EconRuntime }>('economy.population')?.rt;
+    if (rt) {
+      rt.ensureLists();
+      return rt.plopped;
+    }
+  } catch {
+    /* the whole city */
+  }
+  return ctx.state.buildings.values();
 }
 
 export function plopSpec(ctx: GameContext, d: BuildingDef): ToolSpec {

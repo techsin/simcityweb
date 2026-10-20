@@ -321,3 +321,46 @@ describe('F5 / F8 / F10 / N5 / N7: advice that names the real problem', () => {
     }
   });
 });
+
+/**
+ * Final fixes r4 (playtest polish 6): a landfill / incinerator that no road touches takes no garbage (the pollution pass
+ * records it: roadlessGarbage) — the garbage card names it and asks for a road, as its news does, instead of "the city
+ * has nowhere to take it. Zone a landfill". When other capacity exists the card's own reason stays first and the road
+ * comes after it. (End to end with the real pollution pass: tests/infra/feedbackGarbage.test.ts.)
+ */
+describe('r4: the garbage card names a facility no road touches', () => {
+  /** 20 homes, 6 of them without pickup (30%), and a fake pollution system (garbage summary + the roadless one) */
+  function garbageCity(sum: Record<string, number>, roadless: { what: string; x: number; z: number } | null, capacity: number) {
+    const g = { producedT: 100, collectedT: 0, recycledT: 0, burnedT: 0, landfilledT: 0, outOfRangeT: 0, overCapacityT: 0, outOfRangeBuildings: 0, noRoadBuildings: 0, noRoadT: 0, landfillFill: 0, landfillCapT: 0, ...sum };
+    const c = city({ extra: [{ name: 'pollution', garbageSummary: () => g, roadlessGarbage: () => roadless } as unknown as SimSystem] });
+    roadLine(c.st, 2, 20, 60, 20, Network.Road);
+    for (let k = 0; k < 20; k++) {
+      c.st.zone[c.st.idx(3 + k, 21)] = Zone.ResMed;
+      place(c.st, 't_r2', 3 + k, 21, { pop: 20, flags: k < 6 ? BF.NoGarbage : 0 });
+    }
+    c.st.garbage[c.st.idx(6, 21)] = 0.7; // the worst pile
+    c.st.stats.population = 400;
+    c.st.stats.garbageProduced = 100;
+    c.st.stats.garbageCapacity = capacity;
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30);
+    return issue(c.st, 'utilities', 'garbage');
+  }
+
+  it('nothing else takes garbage: "your Incinerator has no road access … connect it to a road", at the incinerator', () => {
+    const g = garbageCity({ outOfRangeT: 100 }, { what: 'Incinerator', x: 40, z: 40 }, 0);
+    expect(g?.text).toBe("Garbage is piling up at the homes of 30% of residents: your Incinerator has no road access, so garbage trucks can't use it — connect it to a road. Uncollected garbage costs approval from 2,000 residents (full effect at 20,000).");
+    expect([g?.x, g?.z]).toEqual([40, 40]);
+  });
+
+  it('no roadless facility: still "the city has nowhere to take it"', () => {
+    expect(garbageCity({ outOfRangeT: 100 }, null, 0)?.text).toMatch(/^Garbage is piling up at the homes of 30% of residents: the city has nowhere to take it\. Zone a landfill \(or build an incinerator\) and connect it by road\./);
+  });
+
+  it('other capacity, homes out of range: the range advice first, then the roadless landfill', () => {
+    const g = garbageCity({ outOfRangeT: 60, collectedT: 40, landfilledT: 40, landfillCapT: 50 }, { what: 'landfill', x: 30, z: 40 }, 50);
+    expect(g?.text).toMatch(/^Garbage trucks can't reach the homes of 30% of residents — they are more than \d+ road tiles from a landfill, incinerator or recycling center\. Build one closer \(Garbage data view\)\. Your landfill has no road access, so garbage trucks can't use it — connect it to a road\. Uncollected garbage/);
+    // (the place stays the worst home: the card's first reason is theirs)
+    expect([g?.x, g?.z]).toEqual([6, 21]);
+  });
+});

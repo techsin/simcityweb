@@ -267,7 +267,9 @@ export class RewardsPanel extends Panel {
       }
       if (place)
         for (const d of defs.slice(0, 3)) {
-          if (ruin && d.unique) continue;
+          // (a one-per-city building that stands — or lies in ruins — cannot be placed again: no Place next to "Built"
+          // that only toasts "Already built", final fixes r4; the sim's own count, actions.ts plop)
+          if (d.unique && (this.ctx.state.milestones[d.id] ?? 0) > 0) continue;
           const b = h('button', { class: 'btn sm primary', title: `Place ${d.name}`, html: icon('plus', 13) + `<span>${defs.length > 1 ? escapeHtml(d.name) : 'Place'}</span>` });
           b.addEventListener('click', () => {
             if (this.ctx.tools.select('plop:' + d.id)) this.ctx.panels.close(this.id);
@@ -285,9 +287,9 @@ export class RewardsPanel extends Panel {
           !r.unlocked
             ? h('div', { class: 'reward-prog' }, h('div', { class: 'bar warn' }, h('div', { class: 'fill', style: { width: `${Math.round(r.progress * 100)}%` } })), h('span', null, r.requirement || `${Math.round(r.progress * 100)}%`))
             : null,
-          def ? h('div', { class: 'li-e' }, h('span', { class: 'chip' }, def.cost ? money(def.cost) : 'Free'), this.upkeepChip(def), def.income ? h('span', { class: 'chip good', title: def.category === 'reward' ? 'Deal income' : 'Income when busy — less while it is quiet (its inspector shows what it earns now)' }, `+${money(def.income)}/mo`) : null) : null,
+          def ? h('div', { class: 'li-e' }, h('span', { class: 'chip' }, def.cost ? money(def.cost) : 'Free'), this.upkeepChip(def), def.income ? this.incomeChip(def, !!ruin) : null) : null,
         ),
-        h('div', { class: 'li-r' }, status, place),
+        h('div', { class: 'li-r' }, status, place?.firstChild ? place : null),
       );
       this.listEl.appendChild(row);
     }
@@ -301,6 +303,14 @@ export class RewardsPanel extends Panel {
     if (!def.upkeep) return null;
     const est = upkeepEstimate(this.ctx.state, def);
     return est ? h('span', { class: 'chip', title: `Upkeep ${est.title}` }, `≈${money(est.now)}/mo typical`) : h('span', { class: 'chip', title: 'Upkeep' }, `${money(def.upkeep)}/mo`);
+  }
+
+  /** the income chip: green while it can earn; neutral for a reward in ruins, which earns nothing until it is rebuilt
+   *  (final fixes r4: a green "+§2,500/mo" sat next to the red "In ruins" chip) */
+  private incomeChip(def: BuildingDef, ruin: boolean): HTMLElement {
+    const what = def.category === 'reward' ? 'Deal income' : 'Income';
+    if (ruin) return h('span', { class: 'chip', title: `${what} once rebuilt — none while it lies in ruins` }, `+${money(def.income ?? 0)}/mo`);
+    return h('span', { class: 'chip good', title: def.category === 'reward' ? what : 'Income when busy — less while it is quiet (its inspector shows what it earns now)' }, `+${money(def.income ?? 0)}/mo`);
   }
 
   newUnlocks(): number {

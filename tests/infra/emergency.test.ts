@@ -128,7 +128,7 @@ describe('emergency dispatch: fires', () => {
     expect(third.state).toBe('uncovered');
     expect(third.reason).toBe('busy');
     expect(third.manualPossible).toBe(true);
-    expect(third.note).toMatch(/All 2 fire trucks of .* are busy/);
+    expect(third.note).toMatch(/^Both fire trucks of .* are busy/);
     expect(ev.some((e) => e.type === 'uncovered' && e.reason === 'busy' && e.manualPossible)).toBe(true);
     expect(st.stats.emergency.manualActive).toBe(1);
     // dispatch options: every fire station, the busy one without free units; ETA monotonic in road distance

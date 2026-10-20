@@ -47,6 +47,12 @@ function fmtMin(m: number): string {
   return Number.isFinite(m) ? `${m.toFixed(1)} min` : 'no road route';
 }
 
+/** a station whose whole fleet is out, in the sim's busy-note words (emergency.ts): "The only ambulance is busy", "Both
+ *  fire trucks are busy", "All 5 fire trucks are busy" (final fixes r4: it read "All 1 ambulance are busy") */
+export function allBusyText(total: number, unit: readonly [string, string]): string {
+  return total === 1 ? `The only ${unit[0]} is busy` : total === 2 ? `Both ${unit[1]} are busy` : `All ${total} ${unit[1]} are busy`;
+}
+
 export class DispatchTool extends Tool {
   readonly id = 'dispatch';
   readonly label = 'Dispatch';
@@ -261,7 +267,7 @@ export class DispatchTool extends Tool {
       const body = o.total <= 0
         ? `<div class="tip-reason">No funded ${unit[1]} — raise the budget</div>`
         : o.free <= 0
-          ? `<div class="tip-reason">All ${o.total} ${unit[o.total === 1 ? 0 : 1]} are busy</div>`
+          ? `<div class="tip-reason">${allBusyText(o.total, unit)}</div>`
           : !Number.isFinite(o.etaMin)
             ? '<div class="tip-reason">No road route to the emergency</div>'
             : `<div class="tip-sub">${o.free} of ${o.total} ${unit[1]} free · ETA <b>${fmtMin(o.etaMin)}</b></div>` +

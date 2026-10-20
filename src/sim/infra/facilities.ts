@@ -1283,6 +1283,10 @@ function courthouseLines(c: Ctx): void {
 function noPowerWarning(c: Ctx): string {
   const { def, inf } = c;
   const fix = 'connect it to a power line or powered road';
+  // a staffed service with no road at the door works at op 0 (P8), powered or not: the no-road warning before this one
+  // says why it serves nobody, so no share of its work to quote (final fixes r4: "No power — works at 30%" on a roadless
+  // clinic serving nobody)
+  if (servesNobody(c)) return `No power either — ${fix}`;
   if (inf.tier >= 0) return `No power — works at ${pct(UNPOWERED_SERVICE_EFF)}; ${fix}`;
   const jf = defFacts(def.id);
   if (jf.beds > 0) return `No power — holds only ${pct(UNPOWERED_SERVICE_EFF)} of its beds; ${fix}`;
@@ -1384,14 +1388,17 @@ export function facilityReport(sim: Simulation, buildingId: number): FacilityRep
   c.load = inf.tier >= 0 ? facilityLoad(sim, b.id) : null;
   // ---- status warnings (a fix in each)
   if (b.built < 1) c.warnings.push('Under construction');
+  // a service with no road at the door leads with it (the inspector's headline is the first warning): staffed, it works
+  // at op 0 and serves nobody (P8), so the power / water warnings after it quote no share of its work. Final fixes r4: a
+  // roadless, unpowered clinic's headline was a false "No power — works at 30%"
+  const road = touchesRoad(st, b);
+  if (inf.tier >= 0 && def.category !== 'power' && def.category !== 'water' && !road) c.warnings.push('No road access — build a road beside it');
   if ((def.powerUse ?? 0) > 0 && !(b.flags & BF.Powered) && def.category !== 'power') c.warnings.push(noPowerWarning(c));
   if (inf.tier >= 0 && c.load?.needTier === 'health' && (def.waterUse ?? 0) > 0 && !(b.flags & BF.Watered)) {
-    c.warnings.push(`No water — treatment at ${pct(UNWATERED_HEALTH_EFF)}; connect it to a water network`);
+    c.warnings.push(servesNobody(c) ? 'No water either — connect it to a water network' : `No water — treatment at ${pct(UNWATERED_HEALTH_EFF)}; connect it to a water network`);
   }
   const svc = def.service as ServiceKind | undefined;
   if (svc && onStrike(st, svc)) c.warnings.push('Staff on strike — raise the budget');
-  const road = touchesRoad(st, b);
-  if (inf.tier >= 0 && def.category !== 'power' && def.category !== 'water' && !road) c.warnings.push('No road access — build a road beside it');
   // (without a road the no-road warning above already says why nobody works there)
   if (road && understaffed(st, b)) {
     const s = staffingOf(st, b);
