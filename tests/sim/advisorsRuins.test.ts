@@ -7,6 +7,10 @@
  *  - rubble gets its own advice (bulldoze it or enact the crews; quiet while they are enacted), and the "no room — zone
  *    more" rules count rubble as room and name it first;
  *  - ruined plants / water facilities "lie in ruins" (a tornado flattens; it did not burn) and say their upkeep runs on.
+ * Final fixes r3: every other plopped ruin — deals, landmarks, civic buildings, transport, parks — gets its own advice
+ * ('ruins': a §2,500/mo Missile Test Range lay in ruins for 55 years without a word): what stopped (deal income,
+ * tourists, the demand-cap boost, land value and prestige), the upkeep still charged, "Show me" at the most valuable
+ * ruin, the finance advisor when income stopped (else planning).
  */
 import { describe, expect, it } from 'vitest';
 import { BF, type Building } from '../../src/sim/CityState';
@@ -15,6 +19,7 @@ import { Simulation, type SimSystem } from '../../src/sim/Simulation';
 import { EconRuntime } from '../../src/sim/economy/runtime';
 import { advisorIssues, advisorsSystem, type AdvisorsSystem } from '../../src/sim/economy/advisors';
 import { infraSystems, triggerDisaster } from '../../src/sim/systems/infra';
+import { formatMoney } from '../../src/sim/economy/format';
 import { getDef } from '../../src/sim/catalog';
 import { buildingUpkeep } from '../../src/sim/economy/opex';
 import { newState, place, roadLine } from '../infra/cityGen';
@@ -195,5 +200,91 @@ describe('SF-2: rubble is room once cleared — and the advisors say so', () => 
     c.st.stats.population = 600;
     monthTick(c, 30);
     expect(issue(c, 'planning', 'rubble')?.text).toBe('8 lots (8 homes) lie in rubble — bulldoze them (Municipal Demolition Crews, who clear rubble automatically, come with 1,000 residents) so they can rebuild.');
+  });
+});
+
+describe('r3: every other ruin — deals, landmarks, civic buildings, transport, parks — gets its own advice', () => {
+  const upkeepOf = (c: ReturnType<typeof city>, ids: string[]) => ids.reduce((t, id) => {
+    const d = getDef(id)!;
+    return t + buildingUpkeep(c.st, d) * (d.service ? (c.st.budget.funding[d.service] ?? 100) / 100 : 1);
+  }, 0);
+
+  it('a ruined deal: its deal income named (finance), Show me at the ruin, it costs nothing to rebuild', () => {
+    const c = city();
+    const b = place(c.st, 'rw_missile_range', 20, 20, { flags: BF.Plopped | BF.Burnt });
+    c.st.stats.population = 30000;
+    monthTick(c, 30);
+    const a = issue(c, 'finance', 'ruins');
+    expect(a?.text).toBe('Your Missile Test Range lies in ruins — its §2,500/mo deal income is gone. Bulldoze the rubble and build it again — it costs nothing.');
+    expect(a!.priority).toBe(6);
+    expect([a!.x, a!.z]).toEqual([b.x + 3, b.z + 3]);
+    expect(c.st.news.some((n) => n.text === a!.text)).toBe(true);
+  });
+
+  it('a ruined landmark: its tourists, demand-cap boost, land value and prestige (planning), its upkeep still charged', () => {
+    const c = city();
+    place(c.st, 'lm_clock_tower', 20, 20, { flags: BF.Plopped | BF.Burnt });
+    c.st.stats.population = 30000;
+    monthTick(c, 30);
+    const a = issue(c, 'planning', 'ruins');
+    expect(a?.text).toBe(`Your Clock Tower lies in ruins — its tourists, its residential and commercial demand-cap boost and the land value and prestige around it are gone. Bulldoze the rubble and build it again: its upkeep (${formatMoney(upkeepOf(c, ['lm_clock_tower']))}/mo) is still charged until you bulldoze it.`);
+    expect(a!.priority).toBe(5);
+  });
+
+  it('several ruins: the most valuable first and at Show me, every one named, their upkeep summed', () => {
+    const c = city();
+    place(c.st, 'park_playground', 4, 4, { flags: BF.Plopped | BF.Burnt });
+    place(c.st, 'lm_clock_tower', 10, 4, { flags: BF.Plopped | BF.Burnt });
+    const casino = place(c.st, 'rw_casino', 30, 30, { flags: BF.Plopped | BF.Burnt });
+    place(c.st, 'tr_bus_stop', 12, 4, { flags: BF.Plopped | BF.Burnt });
+    place(c.st, 'park_small', 14, 4, { flags: BF.Plopped | BF.Burnt });
+    c.st.stats.population = 30000;
+    monthTick(c, 30);
+    const a = issue(c, 'finance', 'ruins')!;
+    const up = upkeepOf(c, ['park_playground', 'lm_clock_tower', 'rw_casino', 'tr_bus_stop', 'park_small']);
+    expect(a.text).toBe(`5 of your buildings lie in ruins (your Casino Resort, Clock Tower, Playground and 2 more) — the Casino Resort: its §3,000/mo deal income, its tourists and its commercial demand-cap boost are gone. Bulldoze the rubble and rebuild them: their upkeep (${formatMoney(up)}/mo) is still charged until you bulldoze them.`);
+    expect([a.x, a.z]).toEqual([casino.x + 1, casino.z + 1]);
+    expect(a.priority).toBe(6);
+  });
+
+  it('only small parks and bus stops: a low-priority planning note; transport says what stopped', () => {
+    const c = city();
+    place(c.st, 'park_playground', 4, 4, { flags: BF.Plopped | BF.Burnt });
+    place(c.st, 'tr_bus_stop', 8, 4, { flags: BF.Plopped | BF.Burnt });
+    c.st.stats.population = 3000;
+    monthTick(c, 30);
+    const a = issue(c, 'planning', 'ruins')!;
+    expect(a.priority).toBe(3);
+    expect(a.text).toMatch(/^2 of your buildings lie in ruins \(your Playground and Bus Stop\) — the Playground: play space for 700 kids and teens, its residential demand-cap boost and the land value around it are gone\./);
+    const d = city();
+    place(d.st, 'civ_bus_depot', 4, 4, { flags: BF.Plopped | BF.Burnt });
+    d.st.stats.population = 3000;
+    monthTick(d, 30);
+    expect(issue(d, 'planning', 'ruins')?.text).toMatch(/^Your Bus Depot lies in ruins — its buses are gone\. Bulldoze the rubble and build it again: its upkeep \(§[\d,]+\/mo\) is still charged until you bulldoze it\.$/);
+  });
+
+  it('service ruins keep their own card; the other ruins get theirs next to it', () => {
+    const c = city();
+    place(c.st, 'civ_police_station', 30, 10, { flags: BF.Plopped | BF.Burnt });
+    place(c.st, 'rw_military_base', 40, 40, { flags: BF.Plopped | BF.Burnt });
+    c.st.stats.population = 30000;
+    monthTick(c, 30);
+    expect(issue(c, 'safety', 'facilityRuins')?.text).toMatch(/^Your Police Station lies in ruins/);
+    expect(issue(c, 'finance', 'ruins')?.text).toBe('Your Military Base lies in ruins — its §1,500/mo deal income and its industrial demand-cap boost are gone. Bulldoze the rubble and build it again — it costs nothing.');
+  });
+
+  it('end to end: a meteor ruins a deal → the summary names it, then the advice names its income', () => {
+    const st = newState(64, true);
+    for (let z = 5; z < 60; z += 6) roadLine(st, 2, z, 61, z, Network.Street);
+    const deal = place(st, 'rw_missile_range', 34, 25, { flags: BF.Plopped | BF.Powered | BF.Watered });
+    st.stats.population = 30000;
+    const rt = new EconRuntime();
+    const sim = new Simulation(st, [...infraSystems(), advisorsSystem(rt) as SimSystem]);
+    expect(triggerDisaster(sim, 'meteor', 31, 31)).toBe(true);
+    expect(deal.flags & BF.Burnt).toBeTruthy();
+    expect(st.news.find((n) => n.text.startsWith('Meteor strike!'))!.text).toMatch(/incl\. your Missile Test Range\.$/);
+    sim.runDays(30);
+    const a = (advisorIssues(st).finance ?? []).find((x) => x.id === 'ruins');
+    expect(a?.text).toMatch(/^Your Missile Test Range lies in ruins — its §2,500\/mo deal income is gone\./);
   });
 });

@@ -11,6 +11,10 @@
  *  - a prompt counts (prompted; ignored when nobody answers) only at a settle point: the end of a day's dispatch work,
  *    while the unit it rests on is still free;
  *  - a game saved right after a burst decides exactly like the original (lead decision 18a).
+ * Final fixes r3 (EM-1 residual): a prompt that counted at a settle point stops counting once the unit it rests on is
+ * gone (three uncovered fires, two free trucks: the player sends both and the third burned as an IGNORED prompt, approval
+ * −2.3): no free unit left, or decided again while another one is still free; a prompt ignored while a unit stays free
+ * still counts.
  * (The earthquake in a bot town and the normal-play prompt count: emergencyBot.test.ts.)
  */
 import { describe, expect, it } from 'vitest';
@@ -222,5 +226,81 @@ describe('EM-1: a prompt never outlives the free unit it rests on', () => {
     expect(em.incident(fire.id)).toBeUndefined();
     expect(st.stats.emergency.month.failed).toBe(1);
     expect(st.stats.emergency.month.ignored).toBe(1);
+  });
+
+  it('r3: two fires ignite in one fire.daily with one free truck — the player sends it to one, the other fails: not ignored', () => {
+    const { st, sim, em, station } = town();
+    const f1 = place(st, 't_id', 8, 21, { jobs: 40 });
+    const h1 = place(st, 't_r2', 40, 21, { pop: 60 });
+    const h2 = place(st, 't_r2', 46, 21, { pop: 60 });
+    const fire = getFire(sim)!;
+    // one truck busy with a spill in range (4 days of work)
+    em.spawn(sim, 'spill', f1.x, f1.z, { buildingId: f1.id });
+    expect(em.stationFleet(station.id)!.free).toBe(1);
+    // both homes ignite inside fire.daily, as random ignitions do, before emergency.daily decides them
+    const orig = fire.daily!.bind(fire);
+    let armed = true;
+    fire.daily = (s) => { if (armed) { armed = false; fire.ignite(s, h1); fire.ignite(s, h2); } return orig(s); };
+    sim.runDays(1);
+    fire.daily = orig;
+    const fires = em.incidents().filter((i) => i.kind === 'fire');
+    expect(fires.length).toBe(2);
+    // both prompts rest on the one free truck, and both counted at the day's settle point
+    for (const f of fires) expect([f.state, f.manualPossible, f.prompted, f.bestFrom]).toEqual(['uncovered', true, true, station.id]);
+    // the attentive player answers: the truck goes to the first; the second prompt can no longer be answered — it is over
+    expect(em.dispatchBest(sim, fires[0].id).ok).toBe(true);
+    expect(em.stationFleet(station.id)!.free).toBe(0);
+    expect([fires[1].manualPossible, !!fires[1].canSend, !!fires[1].prompted]).toEqual([false, false, false]);
+    expect(em.dispatchBest(sim, fires[1].id).ok).toBe(false);
+    for (let d = 0; d < 14 && fires.some((f) => em.incident(f.id)); d++) sim.runDays(1);
+    expect(fires[0].state).toBe('resolved');
+    expect(fires[1].state).toBe('failed');
+    const m = st.stats.emergency.month;
+    expect(m.failed).toBeGreaterThanOrEqual(1);
+    expect(m.ignored ?? 0).toBe(0);
+  });
+
+  it('r3: a prompt left unanswered while a unit stays free still counts as ignored', () => {
+    const { st, sim, em, station } = town();
+    const homes = [40, 46].map((x) => place(st, 't_r2', x, 21, { pop: 60 }));
+    for (const h of homes) triggerDisaster(sim, 'fire', h.x, h.z);
+    const fires = em.incidents().filter((i) => i.kind === 'fire');
+    sim.runDays(1);
+    for (const f of fires) expect([f.manualPossible, f.prompted]).toEqual([true, true]);
+    // the player sends one truck to the first fire; the second truck stays free and the second prompt holds
+    expect(em.dispatch(sim, fires[0].id, station.id, 1).ok).toBe(true);
+    expect(em.stationFleet(station.id)!.free).toBe(1);
+    expect([fires[1].manualPossible, fires[1].prompted]).toEqual([true, true]);
+    for (let d = 0; d < 14 && em.incident(fires[1].id); d++) sim.runDays(1);
+    expect(fires[1].state).toBe('failed');
+    expect(fires[1].answered).toBe(0);
+    expect(st.stats.emergency.month.ignored).toBe(1);
+  });
+
+  it('r3: a counted prompt whose unit is taken while another one is free but too far: decided again, not an ignored prompt', () => {
+    const { st, sim, em, station } = town();
+    // the station 30 cells left of the home (3.0 min, beyond its reach) is the prompt's unit; the one at x = 4 is too far
+    const mid = place(st, 't_fire', 34, 19);
+    sim.events.emit('buildingAdded', mid);
+    const home = place(st, 't_r2', 64, 21, { pop: 60 });
+    triggerDisaster(sim, 'fire', home.x, home.z);
+    const fire = em.incidents()[0];
+    expect([fire.state, fire.reason, fire.manualPossible, fire.bestFrom]).toEqual(['uncovered', 'outOfRange', true, mid.id]);
+    sim.runDays(1);
+    expect(fire.prompted).toBe(true);
+    // both of its trucks go elsewhere (two spills in its reach): the unit the prompt counted on is gone
+    for (const x of [30, 38]) {
+      const f = place(st, 't_id', x, 21, { jobs: 40 });
+      expect(em.incident(em.spawn(sim, 'spill', f.x, f.z, { buildingId: f.id }))!.state).toBe('dispatched');
+    }
+    expect(em.stationFleet(mid.id)!.free).toBe(0);
+    expect(fire.prompted).toBe(false);
+    sim.runDays(1);
+    // decided again: the trucks at x = 4 cannot make it in time — no prompt, nothing to ignore
+    expect([fire.manualPossible, !!fire.prompted]).toEqual([false, false]);
+    expect(em.dispatchOptions(sim, fire.id).find((o) => o.free > 0)?.stationId).toBe(station.id);
+    for (let d = 0; d < 12 && em.incident(fire.id); d++) sim.runDays(1);
+    expect(fire.state).toBe('failed');
+    expect(st.stats.emergency.month.ignored ?? 0).toBe(0);
   });
 });

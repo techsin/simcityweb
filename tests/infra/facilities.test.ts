@@ -539,13 +539,15 @@ describe('facilities: report texts say what the simulation does (review r1)', ()
     const hosp = st.buildingAt(SITE.x0, SITE.z0 + 4)!;
     const beds = facilityReport(sim, hosp.id)!.lines.find((l) => l.key === 'beds')!;
     expect(beds.value).toBe(`— / ${((getDef('civ_hospital')!.coverage!.capacity ?? 0) / 200).toLocaleString('en-US')} (not yet assessed)`);
-    // burnt: one status line + the upkeep still charged, one warning — no live-looking service lines
+    // a ruin: one status line + the upkeep still charged, one warning — no live-looking service lines (final fixes r3:
+    // cause-neutral words, BF.Burnt records no cause — a tornado or a quake flattens too)
     ps.flags |= BF.Burnt;
     sim.events.emit('buildingChanged', ps);
     const rep = facilityReport(sim, ps.id)!;
     expect(rep.lines.map((l) => l.key)).toEqual(['status', 'upkeep']);
+    expect(rep.lines[0].value).toBe('in ruins — no service until rebuilt');
     expect(rep.lines[1].hint).toMatch(/bulldoze/);
-    expect(rep.warnings).toEqual(['Burnt down — bulldoze it and build it again']);
+    expect(rep.warnings).toEqual(['In ruins — bulldoze it and build it again']);
   });
 
   it('live service quality names every factor (ordinances, funding, staffing); an unpowered airport claims no relief, income or benefit', { timeout: 300_000 }, () => {
