@@ -25,7 +25,9 @@
  * room: 'lotsSmall*' / 'lotsSteep*' say so when they are all a family has left. Final fixes SF-2 (silent ruins): a ruined
  * service facility ('facilityRuins': what its area lost, its upkeep still charged) and rubble ('rubble': bulldoze it or
  * enact Municipal Demolition Crews) get their own advice; the "no room — zone more" rules count rubble as room and name it
- * first, and the abandoned count leaves the ruins out.
+ * first, and the abandoned count leaves the ruins out. Final fixes r3: every other plopped ruin — deals, landmarks, civic
+ * buildings, transport, parks — gets its own advice too ('ruins': what stopped, its upkeep still charged, "Show me" at
+ * the most valuable one; the finance advisor when deal or venue income stopped, else planning).
  * openAdvice(sim): the advice that holds right now (Advisors panel: open issues per advisor, highest priority first).
  * advisorIssues(st): the full, unthrottled list of the last monthly pass grouped by advisor (ADVICE_PER_MONTH = 2 only
  * limits what is announced; everything else still shows in the Advisors panel).
