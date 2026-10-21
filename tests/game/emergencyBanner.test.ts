@@ -14,6 +14,9 @@
  *  EM-4 the Send button's and the pill's texts change in place (a click spanning the update is not lost);
  *  EM-5 "3.0 min left to send a truck" (industrial, never "too far?"); "No fire truck could reach it in time" when
  *       nobody was ever sent.
+ * Final-fix round 4:
+ *  U1   the stack ends above an open toolbar flyout (watched: class and size) and does not re-dock while one of its
+ *       banners is pressed (the press may close the flyout: the click must still land).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Network } from '../../src/core/types';
