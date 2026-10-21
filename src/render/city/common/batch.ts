@@ -40,7 +40,7 @@
  * high-water size, instead of three.js re-uploading (and, for lists that change length, re-allocating) whole textures.
  */
 import * as THREE from 'three';
-import { makeReceiver, setReceiver, shadowCasters, viewReach, type ShadowReceiver } from '../../world/Shadows';
+import { loadWarm, makeReceiver, setReceiver, shadowCasters, viewReach, type ShadowReceiver } from '../../world/Shadows';
 
 export interface PassCullOptions {
   /** tile geometry (tile size, per-tile height range); instances are assigned to tiles with setTile() */
@@ -275,15 +275,17 @@ let _frame = 0;
  * receiver), the vehicles' pose / cull / thinning loop with tiles coming into view. On a freshly loaded page the first
  * zoom-out ran all of it unoptimized and deoptimized it again as each branch first showed up: it cost ~1.4x a later,
  * identical zoom-out (t_plains town at LOW; a page that had moved once paid no such cost). The warm-up runs that code at
- * load, inside the load's frames, for a sweep of view poses around the view's ground target: a zoom-out from street
- * level to the far view, a far orbit, a zoom-in to the default view, a pan, a short rest and a cut back to the street;
- * the batch's owner runs its own per-frame work for each pose (warmHook: the buildings' LOD swaps, which the passes
- * then patch into their lists). WARM_POSES: [distance m, tilt deg, yaw deg from the view's, target shift m along the
- * view's right] per step.
- * Measured (fresh pages, interleaved A/B, t_plains LOW): the first zoom-in ~9% and the first frames after the load ~6%
- * cheaper than without it; the first zoom-out ~3% (up to ~15% while the machine is loaded, nothing on an idle one: the
- * cost left there is V8's own first runs, which base pays too). It costs ~110-150 ms of the load's main thread (town,
- * dense city), in the batch's second frame.
+ * load for a sweep of view poses around the view's ground target: a zoom-out from street level to the far view, a far
+ * orbit, a zoom-in to the default view, a pan, a short rest and a cut back to the street; the batch's owner runs its own
+ * per-frame work for each pose (warmHook: the buildings' LOD swaps, which the passes then patch into their lists).
+ * WARM_POSES: [distance m, tilt deg, yaw deg from the view's, target shift m along the view's right] per step.
+ * When: the batch's first view pass queues it (Shadows.ts loadWarm) and its WorldView runs the queue right after that
+ * frame's render. That is the load's own first frame (it compiles every program; the loading veil only starts to fade
+ * once it is done), so the warm-up makes that frame longer instead of adding a long frame of its own to the frames the
+ * player sees (it used to run in the batch's second frame: a ~110 ms frame two frames into the veil's fade-out); the
+ * frame's real passes have run every path once before it (type feedback of the real objects: renderer, cameras,
+ * receivers). A batch first drawn after that frame (empty through the load: a new city's buildings until the first one
+ * is placed) is past the load: no warm-up then, it would be a hitch in play.
  */
 const WARM_POSES: Float64Array = (() => {
   const p: number[] = [];
@@ -297,13 +299,6 @@ const WARM_POSES: Float64Array = (() => {
 })();
 /** steps of the warm-up sweep (WARM_POSES) */
 export const WARM_STEPS = WARM_POSES.length / 4;
-/** the batch's frame (counting from its first drawn one) whose first view pass runs its warm-up: the first frame's real
- *  passes have run every path once (type feedback of the real objects: renderer, cameras, receivers) */
-const WARM_AFTER = 2;
-/** a batch first drawn after its renderer's first WARM_WINDOW frames (info.render.frame: render() calls; WorldView makes
- *  a renderer per city) is past the load — empty and hidden through it, e.g. a new city's buildings until the first one
- *  is placed: no warm-up then, it would be a hitch in play */
-const WARM_WINDOW = 240;
 const _wT = new THREE.Vector3();
 const _wG = new THREE.Vector3();
 const _wL = new THREE.Vector3();
@@ -663,17 +658,19 @@ export class DynamicBatch {
   private matDirect = false;
   private top = 0;
   private topDirty = false;
-  /** fresh page (browser only): frames this batch drew so far, until its warm-up ran (-1; see warmUp) */
-  private warmFrames = typeof window !== 'undefined' ? 0 : -1;
+  /** fresh page (browser only): the warm-up is still to be queued by the batch's first view pass (see warmUp) */
+  private warmDue = typeof window !== 'undefined';
   /** a shadow pass camera the batch drew for (the warm-up's shadow passes copy its shape) */
   private warmShadow: THREE.Camera | null = null;
-  /** wall time of the warm-up (ms) and the renderer frame it ran in, or was dropped at (negative; stats) */
+  /** wall time of the warm-up (ms) and the renderer frame it was queued in, or dropped at (negative; stats) */
   warmMs = 0;
   warmAt = 0;
   /** the owner's part of the warm-up (see warmUp): called with the sweep's view camera at each pose, before that pose's
    *  passes (the owner's per-frame work for the pose, e.g. the buildings' LOD swaps, which the passes then take into
    *  their lists), and with null after the last pose (the owner puts back what the poses changed) */
   warmHook: ((view: THREE.PerspectiveCamera | null) => void) | null = null;
+  /** disposed (a queued warm-up of a city that was left before its first frame ended does not run) */
+  private disposed = false;
 
   constructor(material: THREE.Material, instances = 1024, vertices = 65536, name = 'batch') {
     this.mesh = new THREE.BatchedMesh(instances, vertices, vertices * 2, material);
@@ -1250,10 +1247,6 @@ export class DynamicBatch {
     if (fr !== this.lastFrame) {
       this.lastFrame = fr;
       _frame++;
-      if (this.warmFrames >= 0) {
-        if (this.warmFrames === 0 && fr > WARM_WINDOW) { this.warmFrames = -1; this.warmAt = -fr; }
-        else this.warmFrames++;
-      }
       if (this.matDirect) { this.matDirect = false; this.uploadMatrices(renderer); }
       if (this.matFull) { m._matricesTexture.clearUpdateRanges(); this.matFull = false; }
       if (this.colFull && m._colorsTexture) { m._colorsTexture.clearUpdateRanges(); this.colFull = false; }
@@ -1263,13 +1256,18 @@ export class DynamicBatch {
       THREE.BatchedMesh.prototype.onBeforeRender.call(m, renderer, null as any, camera, geometry, material, null as any);
       return;
     }
-    if (this.warmFrames >= 0) {
-      // the load's warm-up (see warmUp), in the view pass of the batch's WARM_AFTER-th frame
+    if (this.warmDue) {
+      // the load's warm-up (see warmUp): queued by the batch's first view pass, run by WorldView right after this frame's
+      // render (Shadows.ts loadWarm); its shadow sweep copies the shadow camera of a pass the batch drew before it
       if (shadow) { if (this.warmShadow === null && (camera as THREE.OrthographicCamera).isOrthographicCamera) this.warmShadow = camera; }
-      else if (this.warmFrames >= WARM_AFTER && (camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
-        this.warmFrames = -1;
-        this.warmAt = renderer.info.render.frame;
-        this.warmUp(renderer, camera as THREE.PerspectiveCamera, geometry, material);
+      else if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
+        this.warmDue = false;
+        const fr = renderer.info.render.frame;
+        if (loadWarm.open) {
+          this.warmAt = fr;
+          const view = camera as THREE.PerspectiveCamera;
+          loadWarm.queue.push(() => { if (!this.disposed) this.warmUp(renderer, view, geometry, material); });
+        } else this.warmAt = -fr;
       }
     }
     const s = this.slotFor(camera);
@@ -1374,13 +1372,14 @@ export class DynamicBatch {
   }
 
   /**
-   * Fresh-page JIT warm-up (see WARM_POSES), once, in the view pass of the batch's WARM_AFTER-th frame (inside the load):
-   * this pass code — the same beforePass a frame runs — for a copy of the view camera swept through WARM_POSES and, if
-   * the batch casts shadows, a copy of its shadow camera fitted around each pose like WorldView's single map, with a
-   * receiver fitted to the pose (Shadows.setReceiver): the list builds of every kind a pass takes in play (near sorted,
-   * banded and predicted while moving, kept, tile-level far lists, shadow lists against a moving receiver) run here
-   * first, with the real renderer and data. The sweep's slots are dropped after it (their indirect textures were never
-   * uploaded) and the mesh gets its own list back. Content is not touched: the real passes keep their lists.
+   * Fresh-page JIT warm-up (see WARM_POSES), once, right after the load's first frame (queued by the batch's first view
+   * pass, run by WorldView, see loadWarm): this pass code — the same beforePass a frame runs — for a copy of that pass's
+   * view camera swept through WARM_POSES and, if the batch casts shadows, a copy of its shadow camera fitted around
+   * each pose like WorldView's single map, with a receiver fitted to the pose (Shadows.setReceiver): the list builds of
+   * every kind a pass takes in play (near sorted, banded and predicted while moving, kept, tile-level far lists, shadow
+   * lists against a moving receiver) run here first, with the real renderer and data. The sweep's slots are dropped
+   * after it (their indirect textures were never uploaded) and the mesh gets its own list back. Content is not touched:
+   * the real passes keep their lists.
    */
   private warmUp(renderer: THREE.WebGLRenderer, view: THREE.PerspectiveCamera, geometry: THREE.BufferGeometry, material: THREE.Material): void {
     if (!this.pc || this.live === 0) return;
@@ -2233,6 +2232,7 @@ export class DynamicBatch {
   }
 
   dispose(): void {
+    this.disposed = true;
     // the mesh disposes whichever indirect texture it currently holds; dispose the others
     const cur = (this.mesh as any)._indirectTexture;
     for (const s of this.slots) if (s.tex && s.tex !== cur) s.tex.dispose();

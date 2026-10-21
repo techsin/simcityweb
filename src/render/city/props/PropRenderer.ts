@@ -277,6 +277,8 @@ export class PropRenderer {
     // for this one draw, see DynamicBatch.ensureColors)
     this.pylons.ensureColors();
     this.batch.mesh.add(this.pylons.mesh);
+    // the load's warm-up sweep of the batch (DynamicBatch.warmUp) runs the proxy switch for each of its poses (warmLod)
+    this.batch.warmHook = (view) => this.warmLod(view);
     this.near = new Uint8Array(T).fill(1);
     this.lodN = new Int32Array(T);
     this.lodBox = new Float32Array(T * 4);
@@ -446,6 +448,51 @@ export class PropRenderer {
     const s = m2 > 0 ? (m2 / (Math.sqrt(far2 + m2) + Math.sqrt(far2))) * 0.99 : 0;
     this.lodSlack[t] = s * s;
   }
+
+  /**
+   * The proxy switch's part of the load's warm-up (DynamicBatch.warmUp calls it through warmHook): the switch for each
+   * pose of the batch's sweep, before that pose's passes — the tiles a zoom-out disables and the props it swaps to their
+   * proxies, which the first motion after a load otherwise runs in cold code; null ends the sweep: every prop's state and
+   * geometry, every tile's enabled state, mode and scan bookkeeping and the camera uniform are put back (the real view
+   * did not move: the next update has nothing to do).
+   */
+  private warmLod(view: THREE.PerspectiveCamera | null): void {
+    if (view !== null) {
+      if (this.warm === null) this.warm = { ist: this.ist.slice(), near: this.near.slice(), mode: this.lodMode.slice(), scan: this.lodScan.slice(), slack: this.lodSlack.slice(), at: this.nearAt.slice(), cam: propFadeU.uPropCam.value.clone(), due: this.lodDue, t0: performance.now() };
+      this.updateLod(view.position);
+      return;
+    }
+    const w = this.warm;
+    if (w === null) return;
+    this.warm = null;
+    const ist = this.ist, igeo = this.igeo, batch = this.batch, T = this.T;
+    // (the sweep adds and removes no prop: a state of 0, no proxy, stays 0)
+    for (let id = 0, n = Math.min(w.ist.length, ist.length); id < n; id++) {
+      const s0 = w.ist[id];
+      if (ist[id] === s0) continue;
+      ist[id] = s0;
+      const t = this.itile[id];
+      if (t >= 0) this.lodSt[t][this.islot[id]] = s0;
+      batch.setGeometry(id, igeo[id * 2 + 2 - s0]);
+    }
+    for (let t = 0; t < T; t++) {
+      if (this.near[t] === w.near[t]) continue;
+      this.near[t] = w.near[t];
+      batch.setTileEnabled(t, w.near[t] > 0);
+      batch.setTileEnabled(t + T, w.near[t] > 0);
+    }
+    this.lodMode.set(w.mode);
+    this.lodScan.set(w.scan);
+    this.lodSlack.set(w.slack);
+    this.nearAt.set(w.at);
+    this.lodDue = w.due;
+    propFadeU.uPropCam.value.copy(w.cam);
+    this.warmLodMs = performance.now() - w.t0;
+  }
+  /** the proxy switch's state before the warm-up sweep (see warmLod) */
+  private warm: { ist: Uint8Array; near: Uint8Array; mode: Uint8Array; scan: Float64Array; slack: Float64Array; at: Float64Array; cam: THREE.Vector3; due: boolean; t0: number } | null = null;
+  /** wall time of the proxy switch's part of the warm-up (ms; stats) */
+  warmLodMs = 0;
 
   /** put a prop with a proxy into its LOD tile's lists: full model until its (now due) tile is evaluated */
   private lodAdd(id: number): void {

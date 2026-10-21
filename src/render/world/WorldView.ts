@@ -19,7 +19,7 @@ import type { CameraControllerApi, CellHit, QualityLevel, WorldViewApi } from '.
 import { CameraController } from './CameraController';
 import { PostFX } from './PostFX';
 import { QUALITY_PRESETS, type QualitySettings } from './quality';
-import { CitySun, copyReceiver, DIR_RADIUS_STEPS, dirShadowLogRadius, fitSunShadow, makeReceiver, receiverHolds, shadowCasters, WIDEN_MAX_FRAMES, widenReceiver, type ShadowFit, type ShadowReceiver } from './Shadows';
+import { CitySun, copyReceiver, DIR_RADIUS_STEPS, dirShadowLogRadius, fitSunShadow, loadWarm, makeReceiver, receiverHolds, shadowCasters, WIDEN_MAX_FRAMES, widenReceiver, type ShadowFit, type ShadowReceiver } from './Shadows';
 import { SkySystem } from './Sky';
 import { TerrainRenderer } from './TerrainRenderer';
 import { TreeRenderer } from './TreeRenderer';
@@ -228,9 +228,15 @@ export class WorldView implements WorldViewApi {
   private renders = 0;
   private hiddenEmpty: THREE.Mesh[] = [];
   private nHidden = 0;
+  /** the load's warm-up after this view's first frame (see loadWarmUp): main-thread ms of the queued city work and of
+   *  the hidden renders, and how many queued entries ran (stats) */
+  readonly warmStats = { queueMs: 0, viewMs: 0, queued: 0, views: 0 };
 
   constructor(canvas: HTMLCanvasElement, state: CityState, events: Emitter<CityEvents>, opts: WorldViewOptions = {}) {
     registerAllModels();
+    // a new load: the city's renderers queue their warm-ups in this view's first frame (Shadows.ts loadWarm)
+    loadWarm.queue.length = 0;
+    loadWarm.open = typeof window !== 'undefined';
     this.canvas = canvas;
     this.state = state;
     this.events = events;
@@ -605,8 +611,110 @@ export class WorldView implements WorldViewApi {
     } finally {
       this.showEmpty();
     }
+    // the load's first frame: the warm-up right after its render, still behind the loading veil (see loadWarmUp)
+    if (loadWarm.open) this.loadWarmUp();
     // main-thread busy time of this frame: from the frame's start (rAF time) to the end of the render submission
     if (this.drsStart === this.drsStart) this.drsBusy = performance.now() - this.drsStart;
+  }
+
+  /**
+   * Fresh-page warm-up, once, right after this view's first frame — the load's own frame: it compiles every program and
+   * uploads the city, and the loading veil only starts to fade once it is done (CityScene drops the veil's class with
+   * 'viewsReady', the fade begins at the next style update), so this adds no frame of its own to the frames the player
+   * sees, only makes that one longer. First the work the city's renderers queued during the frame (Shadows.ts
+   * loadWarm: their own per-frame code for a sweep of camera poses, each putting back what it changed), then hidden
+   * renders of the view zoomed out and turned (warmView). On a fresh page the first zoom-out after a load otherwise ran
+   * the per-frame code unoptimized and met objects three.js had never drawn — their buffers, vertex array setups,
+   * program switches and uniform uploads — which a later, identical zoom-out does not pay.
+   */
+  private loadWarmUp(): void {
+    loadWarm.open = false;
+    const q = loadWarm.queue.splice(0, loadWarm.queue.length);
+    const t0 = performance.now();
+    for (const f of q) {
+      try {
+        f();
+      } catch (e) {
+        console.warn('[world] load warm-up', e);
+      }
+    }
+    const t1 = performance.now();
+    this.warmStats.queued = q.length;
+    this.warmStats.queueMs = t1 - t0;
+    try {
+      this.warmView();
+    } catch (e) {
+      console.warn('[world] load warm-up render', e);
+    }
+    this.warmStats.viewMs = performance.now() - t1;
+  }
+
+  /**
+   * The hidden part of the load's warm-up (see loadWarmUp): the scene rendered from WARM_VIEWS — poses around the view's
+   * ground target from the default distance out to the far view and back in at a quarter turn, then the view itself —
+   * into a 4 x 4 target of the scene pass's format (same program variants, almost no fragment work), without a shadow
+   * map render (the map from the frame stays). The view camera itself is posed (its passes' cached lists in the city
+   * batches end on the last pose, the view's own: the next frame keeps them) and put back exactly; renderer stats are
+   * restored. Every object the zoomed-out view shows is drawn once here: three.js uploads its buffers, sets up its
+   * vertex arrays and runs its program / uniform code for it, and the per-object render code runs for the far view.
+   */
+  private warmView(): void {
+    const r = this.renderer, cam = this.camera, sm = r.shadowMap;
+    if (!r.getContext || typeof r.getContext !== 'function') return;
+    cam.updateMatrixWorld();
+    const P0 = _wvP.copy(cam.position), Q0 = _wvQ.copy(cam.quaternion), n0 = cam.near, f0 = cam.far;
+    // the view's ground target and yaw (CameraController: the camera sits at target + (-sin yaw, ., cos yaw) x distance)
+    const tg = this.cameraController.target, e = cam.matrixWorld.elements;
+    const fx = -e[8], fz = -e[10], yaw0 = Math.hypot(fx, fz) > 1e-6 ? Math.atan2(fx, -fz) : 0;
+    const info = r.info.render, calls = info.calls, tris = info.triangles, pts = info.points, lines = info.lines;
+    const au = sm.autoUpdate, nu = sm.needsUpdate;
+    const rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, depthBuffer: true, stencilBuffer: false, generateMipmaps: false });
+    const prev = r.getRenderTarget();
+    sm.autoUpdate = false;
+    sm.needsUpdate = false;
+    let n = 0;
+    this.hideEmpty();
+    try {
+      r.setRenderTarget(rt);
+      for (let k = 0; k <= WARM_VIEWS.length; k += 3) {
+        if (k < WARM_VIEWS.length) {
+          const d = WARM_VIEWS[k], tilt = (WARM_VIEWS[k + 1] * Math.PI) / 180, yaw = yaw0 + (WARM_VIEWS[k + 2] * Math.PI) / 180;
+          const ch = Math.cos(tilt), y = tg.y + Math.sin(tilt) * d;
+          cam.position.set(tg.x - Math.sin(yaw) * ch * d, y, tg.z + Math.cos(yaw) * ch * d);
+          cam.lookAt(tg.x, tg.y, tg.z);
+          // (near / far as updateCameraPlanes sets them for that distance)
+          cam.near = THREE.MathUtils.clamp(Math.min(d * 0.01, Math.max(1, y - Math.max(0, this.terrain.worldHeight(cam.position.x, cam.position.z))) * 0.5), 0.5, 60);
+          cam.far = d * 6 + 42000;
+        } else {
+          // the view itself last: the batches' cached view lists end on it (the next frame reuses them)
+          cam.position.copy(P0);
+          cam.quaternion.copy(Q0);
+          cam.near = n0;
+          cam.far = f0;
+        }
+        cam.updateProjectionMatrix();
+        cam.updateMatrixWorld();
+        r.render(this.scene, cam);
+        n++;
+      }
+    } finally {
+      this.showEmpty();
+      r.setRenderTarget(prev);
+      rt.dispose();
+      cam.position.copy(P0);
+      cam.quaternion.copy(Q0);
+      cam.near = n0;
+      cam.far = f0;
+      cam.updateProjectionMatrix();
+      cam.updateMatrixWorld();
+      sm.autoUpdate = au;
+      sm.needsUpdate = nu;
+      info.calls = calls;
+      info.triangles = tris;
+      info.points = pts;
+      info.lines = lines;
+    }
+    this.warmStats.views = n;
   }
 
   /**
@@ -1054,6 +1162,11 @@ export class WorldView implements WorldViewApi {
   dispose(): void {
     if (this._disposed) return;
     this._disposed = true;
+    // (a load left before its first frame: its queued warm-ups go with it)
+    if (loadWarm.open) {
+      loadWarm.open = false;
+      loadWarm.queue.length = 0;
+    }
     // three's DFG LUT (r186: one module-level texture for every renderer, bound to the physical materials' programs):
     // read from a material's program uniforms before the disposes below release them, disposed at the end
     const lut = (this.renderer.properties.get(this.terrain.material) as { uniforms?: { dfgLUT?: { value?: THREE.Texture | null } } } | undefined)?.uniforms?.dfgLUT?.value;
@@ -1132,6 +1245,11 @@ function steadyMotion(v: Float64Array, q: Float64Array, pv: Float64Array, pq: Fl
   const a = Math.acos(Math.max(-1, Math.min(1, (t - 1) / 2)));
   return a <= 0.3 * rotAngle(q) + 1e-5;
 }
+/** the load's hidden warm-up renders (WorldView.warmView): [distance m, tilt deg, yaw deg from the view's] per pose —
+ *  out to the far view, a quarter turn there, back in to the default distance (then the view itself) */
+const WARM_VIEWS = [1500, 60, 0, 4000, 85, 0, 4000, 85, 90, 800, 50, 90];
+const _wvP = new THREE.Vector3();
+const _wvQ = new THREE.Quaternion();
 /** renders between re-collections of the scene's instanced meshes (WorldView.hideEmpty), and the walk's stack */
 const EMPTY_SCAN = 30;
 const _scan: THREE.Object3D[] = [];

@@ -10,8 +10,13 @@
  *    keeps each building's level (its hysteresis band) instead of starting all of them on their full model
  *  - a building whose proxy arrives late (a load's bulk wake) takes the level it would have had with the proxy at once
  *  - the rubble kit's debris pieces cast no shadows at the low preset (near cascade at the presets that fade)
+ *  - the street props' part of the warm-up (PropRenderer.warmLod) switches along the sweep and puts every prop, tile and
+ *    the camera uniform back
+ *  - a batch queues its warm-up in its first view pass while the load's first frame is open (Shadows.ts loadWarm; run
+ *    after that frame's render), never later, and not once it is disposed; running it leaves the pass lists as they were
  *  - the load's warm-up sweep (its LOD part, BuildingRenderer.warmLod) swaps along its poses and puts every level, band
- *    and the LOD camera state back; it is skipped before a real update and while proxies are pending
+ *    and the LOD camera state back; it is skipped before a real update, and while proxies are still being built (the
+ *    load's first frame) it swaps to the models' empty stand-ins instead, requesting nothing
  */
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
@@ -19,7 +24,8 @@ import { registerAllModels } from '../../src/assets/builders';
 import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { lotTwigs, setLotTwigStrip } from '../../src/assets/builders/winterTwigs';
 import { buildLodProxy } from '../../src/render/city/buildings/lodProxy';
-import { TileCuller } from '../../src/render/city/common/batch';
+import { DynamicBatch, TileCuller } from '../../src/render/city/common/batch';
+import { loadWarm } from '../../src/render/world/Shadows';
 import { BuildingRenderer, deferReach } from '../../src/render/city/buildings/BuildingRenderer';
 import { sharedUniforms } from '../../src/assets/materials';
 import { createCityState } from '../../src/sim/terrainGen';
@@ -386,9 +392,10 @@ describe('load warm-up (LOD part)', () => {
     expect(evals).not.toHaveBeenCalled();
   });
 
-  it('is skipped (nothing changes) before a real update and while proxies are pending', () => {
+  it('is skipped before a real update; with proxies still being built it swaps to stand-ins, requests none and puts all back', () => {
     const br = town(6);
-    const f = br as unknown as W;
+    const f = br as unknown as W & { lodPending: Map<number, unknown>; lpr: Uint8Array };
+    const geo = (id: number) => (br.batch as unknown as { instGeo: Int32Array }).instGeo[id];
     const vc = new THREE.PerspectiveCamera(45, 16 / 9, 1, 8000);
     at(vc, 512, 3000, -800);
     const lod0 = f.list.map((b) => b.lod);
@@ -396,14 +403,178 @@ describe('load warm-up (LOD part)', () => {
     br.batch.warmHook!(null);
     expect(f.warmLodNote).toBe('skipped: no update yet');
     expect(f.list.map((b) => b.lod)).toEqual(lod0);
-    // a near view needs few proxies: the others are still pending (a sweep would request them all)
+    // a near view needs few proxies: the others are still pending (the load's first frame, before the workers' replies)
     const cam = new THREE.PerspectiveCamera(45, 16 / 9, 1, 8000);
     at(cam, 512, 40, 470);
     br.updateLod(cam, H);
-    const lod1 = f.list.map((b) => b.lod);
-    br.batch.warmHook!(vc);
+    const n = f.list.length;
+    const snap = () => ({
+      lod: f.list.map((b) => b.lod), lodGeom: f.list.map((b) => b.lodGeom), geo: f.list.map((b) => geo((b as unknown as { main: number }).main)),
+      lo2: Array.from(f.lo2.subarray(0, n)), hi2: Array.from(f.hi2.subarray(0, n)), pr: Array.from(f.lpr.subarray(0, n)), count: br.lodCount,
+      pending: [...f.lodPending.keys()].sort((a, b) => a - b),
+    });
+    const s0 = snap();
+    expect(s0.pending.length).toBeGreaterThan(0);
+    const built = vi.spyOn(br as unknown as { proxyOf: () => number }, 'proxyOf');
+    // a sweep out to the far view: buildings whose proxy is pending swap to their model's empty stand-in
+    let stood = 0;
+    for (let k = 0; k < 24; k++) {
+      const d = 80 * Math.pow(1.15, k);
+      at(vc, 512 - d * 0.5, d * 0.7, 512 - d * 0.5);
+      br.batch.warmHook!(vc);
+      stood = Math.max(stood, f.list.filter((b, j) => b.lod === 1 && s0.lod[j] === 0 && b.lodGeom >= 0 && s0.lodGeom[j] < 0).length);
+    }
     br.batch.warmHook!(null);
-    expect(f.warmLodNote).toMatch(/^skipped: \d+ proxies pending/);
-    expect(f.list.map((b) => b.lod)).toEqual(lod1);
+    expect(f.warmLodNote).toMatch(/^ran: \d+ buildings, \d+ set back, [1-9]\d* stand-in proxies/);
+    expect(stood).toBeGreaterThan(0);
+    // nothing was built or requested, and every level, stand-in, band and priority is back
+    expect(built).not.toHaveBeenCalled();
+    expect(snap()).toEqual(s0);
+  });
+});
+
+describe('load warm-up (street prop part)', () => {
+  it('switches proxies and tiles along the sweep and puts every prop, tile and the camera uniform back', async () => {
+    const { PropRenderer } = await import('../../src/render/city/props/PropRenderer');
+    const culler = new TileCuller(128, CELL_SIZE, 16);
+    const pr = new PropRenderer(culler);
+    pr.lodDistance = 900;
+    pr.lodFull = 360;
+    let seed = 5;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const models = ['streetlight', 'traffic_light', 'tree_oak', 'tree_maple'];
+    pr.setGroup('t', Array.from({ length: 1600 }, (_, i) => ({ model: models[i % 4], variant: i % 3, x: rnd() * 2040 + 4, y: 0, z: rnd() * 2040 + 4, yaw: rnd() * 6, scale: 1 })));
+    type P = { ist: Uint8Array; near: Uint8Array; lodMode: Uint8Array; lodScan: Float64Array; nearAt: Float64Array };
+    const pp = pr as unknown as P;
+    const b = pr.batch as unknown as { instGeo: Int32Array; tileOff: Uint8Array };
+    const cam = new THREE.Vector3(700, 90, 800);
+    pr.updateLod(cam);
+    pr.updateLod(cam);
+    const snap = () => ({ ist: Array.from(pp.ist), geo: Array.from(b.instGeo), off: Array.from(b.tileOff), near: Array.from(pp.near), mode: Array.from(pp.lodMode), scan: Array.from(pp.lodScan), at: Array.from(pp.nearAt) });
+    const s0 = snap();
+    const hook = pr.batch.warmHook!;
+    expect(hook).toBeTypeOf('function');
+    // a sweep like the batch's: out to the far view and back in
+    const vc = new THREE.PerspectiveCamera(45, 16 / 9, 1, 60000);
+    let swapped = 0, off = 0;
+    for (let k = 0; k < 30; k++) {
+      const d = k < 20 ? 150 * Math.pow(1.2, k) : 150 * Math.pow(1.2, 19) * Math.pow(0.8, k - 19);
+      vc.position.set(1024 - d * 0.4, d * 0.8, 1024 - d * 0.4);
+      vc.lookAt(1024, 0, 1024);
+      vc.updateMatrixWorld();
+      hook(vc);
+      swapped = Math.max(swapped, pp.ist.reduce((n, v, i) => n + (v !== s0.ist[i] ? 1 : 0), 0));
+      off = Math.max(off, pp.near.reduce((n, v, i) => n + (v !== s0.near[i] ? 1 : 0), 0));
+    }
+    hook(null);
+    expect(swapped).toBeGreaterThan(50);
+    expect(off).toBeGreaterThan(0);
+    expect(snap()).toEqual(s0);
+    // the real camera did not move: its next pass switches nothing
+    const set = vi.spyOn(pr.batch, 'setGeometry');
+    pr.updateLod(cam);
+    expect(set).not.toHaveBeenCalled();
+  }, 120_000);
+});
+
+describe('load warm-up queue (Shadows.ts loadWarm)', () => {
+  type Pass = { beforePass: (...a: unknown[]) => void };
+  type Mesh = { _multiDrawCount: number; _indirectTexture: THREE.DataTexture };
+  const box = (s: number) => { const g = new THREE.BoxGeometry(s, s, s).toNonIndexed(); g.translate(0, s / 2, 0); return g; };
+  /** a batch built as on a page (DynamicBatch warms up in a browser only) with a row of boxes */
+  const make = () => {
+    const w = globalThis as { window?: unknown };
+    const had = w.window !== undefined;
+    if (!had) w.window = globalThis;
+    try {
+      const culler = new TileCuller(128, CELL_SIZE, 16);
+      const b = new DynamicBatch(new THREE.MeshBasicMaterial(), 64, 1 << 14, 'warm');
+      b.mesh.castShadow = true;
+      b.enablePassCulling({ culler, minShadowTexels: 1.2 });
+      const g = b.geometryId('box', () => box(12));
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < 24; i++) {
+        const x = 60 + (i % 6) * 70, z = 60 + Math.floor(i / 6) * 70;
+        const id = b.add(g);
+        b.setMatrix(id, m.makeTranslation(x, 0, z));
+        b.setTile(id, culler.tileOfWorld(x, z));
+      }
+      return b;
+    } finally {
+      if (!had) delete w.window;
+    }
+  };
+  /** one pass of the batch (as three.js runs it) and the instance ids it draws */
+  const pass = (b: DynamicBatch, cam: THREE.Camera, frame: number, shadow = false) => {
+    cam.updateMatrixWorld();
+    const renderer = { info: { render: { frame } } } as unknown as THREE.WebGLRenderer;
+    (b as unknown as Pass).beforePass(renderer, cam, b.mesh.geometry, b.mesh.material, shadow);
+    const mm = b.mesh as unknown as Mesh;
+    return Array.from((mm._indirectTexture.image.data as unknown as Uint32Array).subarray(0, mm._multiDrawCount)).sort((x, y) => x - y);
+  };
+  const view = () => {
+    const c = new THREE.PerspectiveCamera(45, 16 / 9, 1, 6000);
+    c.position.set(-120, 260, -120);
+    c.lookAt(250, 0, 200);
+    return c;
+  };
+  const sun = () => {
+    const c = new THREE.OrthographicCamera(-600, 600, 600, -600, 1, 3000);
+    c.position.set(600, 1500, 400);
+    c.lookAt(250, 0, 200);
+    c.updateProjectionMatrix();
+    c.userData.cascade = 0;
+    c.userData.texel = 0.6;
+    return c;
+  };
+
+  it('queues once, in the first view pass of the load\'s frame; running it leaves the pass lists as they were', () => {
+    loadWarm.queue.length = 0;
+    loadWarm.open = true;
+    try {
+      const b = make(), cam = view(), sc = sun();
+      pass(b, sc, 1, true);
+      expect(loadWarm.queue.length).toBe(0);
+      const ids = pass(b, cam, 1);
+      expect(ids.length).toBeGreaterThan(0);
+      expect(loadWarm.queue.length).toBe(1);
+      expect(b.warmAt).toBe(1);
+      // (a second pass of the frame queues nothing more)
+      pass(b, cam, 1);
+      expect(loadWarm.queue.length).toBe(1);
+      const mm = b.mesh as unknown as Mesh;
+      const tex = mm._indirectTexture, count = mm._multiDrawCount;
+      loadWarm.queue[0]();
+      expect(b.warmMs).toBeGreaterThan(0);
+      // the mesh has its own list back, and the next frame's passes draw what they drew
+      expect(mm._indirectTexture).toBe(tex);
+      expect(mm._multiDrawCount).toBe(count);
+      expect(pass(b, cam, 2)).toEqual(ids);
+      expect(pass(b, sc, 2, true).length).toBeGreaterThan(0);
+    } finally {
+      loadWarm.open = false;
+      loadWarm.queue.length = 0;
+    }
+  });
+
+  it('queues nothing past the load (a batch first drawn later), and a disposed batch\'s entry does nothing', () => {
+    loadWarm.queue.length = 0;
+    loadWarm.open = false;
+    const late = make();
+    pass(late, view(), 40);
+    expect(loadWarm.queue.length).toBe(0);
+    expect(late.warmAt).toBe(-40);
+    loadWarm.open = true;
+    try {
+      const b = make();
+      pass(b, view(), 1);
+      expect(loadWarm.queue.length).toBe(1);
+      b.dispose();
+      loadWarm.queue[0]();
+      expect(b.warmMs).toBe(0);
+    } finally {
+      loadWarm.open = false;
+      loadWarm.queue.length = 0;
+    }
   });
 });

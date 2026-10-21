@@ -50,6 +50,20 @@ export const shadowCasters = {
 };
 
 /**
+ * The load's warm-up (fresh pages): work the city's renderers queue during the first frame their WorldView renders —
+ * their own per-frame code run once for a sweep of camera poses (DynamicBatch.warmUp with its owner's part: the
+ * buildings' LOD swaps; the vehicles' steps) — which WorldView runs right after that frame's render, before its own
+ * hidden renders of the zoomed-out view (WorldView.loadWarmUp). That frame is the load's own first frame: it compiles
+ * every program, and the loading veil only starts to fade after it, so the warm-up adds no frame of its own to the
+ * frames the player sees. `open` is set by each new WorldView and cleared when its first frame ran the queue: work
+ * queued later is not run (a batch first drawn after the load — a new city's first building — is past it).
+ */
+export const loadWarm = {
+  open: false,
+  queue: [] as (() => void)[],
+};
+
+/**
  * Receiver volume of a shadow pass: the part of the VIEW frustum a cascade shades (its depth slice). A caster only
  * matters if its shadow (the caster swept away from the light down to the ground) reaches that volume — much tighter
  * than the cascade's ortho box, which is a light-aligned square around the slice's bounding sphere. Attached to the

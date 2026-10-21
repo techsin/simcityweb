@@ -24,6 +24,7 @@ import { Surf } from '../../../core/types';
 import { car as kitCar, CAR_COLORS } from '../../../assets/kit';
 import { sharedUniforms } from '../../../assets/materials';
 import { DynamicBatch, WARM_STEPS, warmPose, warmTarget, type TileCuller } from '../common/batch';
+import { loadWarm } from '../../world/Shadows';
 import { getCityMaterial } from '../common/cityMaterial';
 import { DX, DZ, OPP, RX, RZ, LIFT, NF_TUNNEL, oneWayDir, type NetInfo } from '../common/netinfo';
 import type { RoadSurface } from '../common/surface';
@@ -76,8 +77,6 @@ const _wvT = new THREE.Vector3();
 const _wvG = new THREE.Vector3();
 /** simulated frame time of the warm-up's steps (s) */
 const WARM_DT = 1 / 30;
-/** updates without vehicles after which the warm-up is dropped (the load is over) */
-const WARM_WAIT = 30;
 /** the warm-up's vehicle steps (vehicles x frames): a 600-car town takes every pose, the dense city's 2500 cars 12 */
 const WARM_CAR_STEPS = 27000;
 
@@ -1013,21 +1012,24 @@ export class VehicleRenderer {
    */
   update(dt: number, camera: THREE.Camera, heightPx = 1080): void {
     if (!this.enabled) return;
-    // the load's warm-up (see warmUp), in the first update with vehicles out (the frame after their first spawn); a
-    // town whose first vehicles come out later than the load's first frames (a new city) is past its load: none then
-    if (this.warmDue) {
-      if (this.n > 0) {
-        this.warmDue = false;
-        if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) this.warmMs = this.warmUp(camera as THREE.PerspectiveCamera, heightPx);
-      } else if (++this.warmWait > WARM_WAIT) this.warmDue = false;
-    }
     this.step(dt, camera, heightPx);
+    // the load's warm-up (see warmUp): queued by the first update with vehicles out (the load's first frame spawns
+    // them), run right after that frame's render (Shadows.ts loadWarm); a town whose first vehicles come out after the
+    // load's first frame (a new city) is past its load: none then
+    if (this.warmDue && this.n > 0) {
+      this.warmDue = false;
+      if (loadWarm.open && (camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
+        const cam = camera as THREE.PerspectiveCamera;
+        loadWarm.queue.push(() => { if (!this.disposed) this.warmMs = this.warmUp(cam, heightPx); });
+      }
+    }
   }
 
-  /** fresh page (browser only): the frame loops' warm-up is still to run (see warmUp), and its wall time (ms; stats) */
+  /** fresh page (browser only): the frame loops' warm-up is still to be queued (see warmUp), and its wall time (ms;
+   *  stats) */
   private warmDue = typeof window !== 'undefined';
-  private warmWait = 0;
   warmMs = 0;
+  private disposed = false;
 
   /**
    * Fresh-page JIT warm-up (see batch.ts WARM_POSES), once at load: the frame's own code (step) for up to WARM_STEPS
@@ -1036,7 +1038,8 @@ export class VehicleRenderer {
    * street view, the thinning heights and the far view. A big fleet takes fewer, evenly spread poses (WARM_CAR_STEPS
    * vehicle steps, at least 12 frames: its per-vehicle loops run as often, the load as long as a town's). Without it
    * the first zoom-out after a load ran these loops unoptimized and deoptimized them as each branch first showed up.
-   * The culler is set back to the view's tiles; the frame's own step, right after, culls and poses for the view.
+   * It runs after the load's first frame, so the culler is set back to the view's tiles and the vehicles are posed for
+   * the view again (a step of no time: the next frame draws them as its own step would have).
    */
   private warmUp(camera: THREE.PerspectiveCamera, heightPx: number): number {
     const t0 = performance.now();
@@ -1050,6 +1053,7 @@ export class VehicleRenderer {
       this.step(WARM_DT, vc, heightPx);
     }
     this.culler.update(camera);
+    this.step(0, camera, heightPx);
     return performance.now() - t0;
   }
 
@@ -1484,6 +1488,7 @@ export class VehicleRenderer {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.batch.dispose();
     this.headlights.dispose();
   }

@@ -1035,6 +1035,9 @@ export class BuildingRenderer {
   private warmLv = new Uint8Array(0);
   private warmLo = new Float32Array(0);
   private warmHi = new Float32Array(0);
+  private warmPr = new Uint8Array(0);
+  /** buildings the sweep gave a stand-in proxy (their proxy was still being built, see warmProxy) */
+  private warmStand: BInst[] = [];
   /** ... and the LOD camera's state: position, previous position, view direction, flags (behind 1, deferred 2,
    *  scan-all 4), camera, K, fade cap */
   private warmPos = new THREE.Vector3();
@@ -1945,9 +1948,11 @@ export class BuildingRenderer {
    * and the passes patching them into their lists (setGeometry, packRanges, patchRanges), which the first motion after a
    * load otherwise runs in cold code (t_plains at LOW: ~2300 swaps in the first zoom-out). null ends the sweep: every
    * building gets back the levels, first-level flags and bands it had, the LOD camera state is put back (the real view
-   * did not move: the next update has nothing to do). Only over a settled load: a real update ran, every proxy is in
-   * (the sweep requests none and no building waits), nothing fades, no flush pending; else skipped. The poses never
-   * fade (fadeNow) or wake buildings (wakeWaiting: a load's bulk wake still running keeps its queue for the next frames).
+   * did not move: the next update has nothing to do). It runs after the load's first frame (see DynamicBatch.warmUp),
+   * when the workers have built hardly any proxy yet: a model whose proxy is still being built swaps to its empty
+   * stand-in instead (warmProxy; the sweep requests nothing and makes no building wait). Skipped before a real update,
+   * while something fades or a flush is pending. The poses never fade (fadeNow) or wake buildings (wakeWaiting: the
+   * load's wake keeps its queue for the next frames).
    */
   private warmLod(view: THREE.PerspectiveCamera | null): void {
     if (view === null) {
@@ -1957,7 +1962,7 @@ export class BuildingRenderer {
     }
     if (this.warmState === 2) return;
     if (this.warmState === 0) {
-      const why = this.lodCamera === null ? 'no update yet' : this.lodPixels <= 0 ? 'LOD off' : this.lodPending.size > 0 ? `${this.lodPending.size} proxies pending` : this.lodWaiting.size > 0 ? 'buildings waiting' : this.fades.length > 0 ? 'fading' : this.lodFull || this.lodDirty ? 'flush pending' : '';
+      const why = this.lodCamera === null ? 'no update yet' : this.lodPixels <= 0 ? 'LOD off' : this.fades.length > 0 ? 'fading' : this.lodFull || this.lodDirty ? 'flush pending' : '';
       if (why) { this.warmState = 2; this.warmLodNote = 'skipped: ' + why; return; }
       this.warmLodMs = performance.now();
       this.warmSave();
@@ -1974,6 +1979,9 @@ export class BuildingRenderer {
     for (let i = 0; i < n; i++) { const bi = list[i]; lv[i] = (bi.lod & 1) | ((bi.flod & 1) << 1) | (bi.fresh ? 4 : 0); }
     this.warmLo.set(this.lo2.subarray(0, n));
     this.warmHi.set(this.hi2.subarray(0, n));
+    if (this.warmPr.length < n) this.warmPr = new Uint8Array(this.warmLv.length);
+    this.warmPr.set(this.lpr.subarray(0, n));
+    this.warmStand.length = 0;
     this.warmPos.copy(this.lodPos);
     this.warmPrev.copy(this.lodPrev);
     this.warmDir.copy(this.lodDir);
@@ -1995,8 +2003,13 @@ export class BuildingRenderer {
       if (bi.found >= 0 && bi.flod !== ((v >> 1) & 1)) this.setFound(bi, (v >> 1) & 1);
       bi.fresh = (v & 4) !== 0;
     }
+    // (the stand-in proxies go: those buildings learn their proxy when it arrives, as without the sweep)
+    for (const bi of this.warmStand) bi.lodGeom = -1;
+    const stood = this.warmStand.length;
+    this.warmStand.length = 0;
     this.lo2.set(this.warmLo.subarray(0, n));
     this.hi2.set(this.warmHi.subarray(0, n));
+    this.lpr.set(this.warmPr.subarray(0, n));
     this.lodPos.copy(this.warmPos);
     this.lodPrev.copy(this.warmPrev);
     this.lodDir.copy(this.warmDir);
@@ -2010,7 +2023,18 @@ export class BuildingRenderer {
     this.frOk = false;
     this.warmCam = null;
     this.warmLodMs = performance.now() - this.warmLodMs;
-    this.warmLodNote = `ran: ${n} buildings, ${swaps} set back`;
+    this.warmLodNote = `ran: ${n} buildings, ${swaps} set back, ${stood} stand-in proxies`;
+  }
+
+  /** a sweep pose's proxy for a building that has none yet (lodGeom -1): its model's proxy if built, else (still being
+   *  built by the worker: a load's first frame has nearly none) the model's empty cross-fade stand-in, which shares the
+   *  model's culling sphere like the proxy — the sweep then swaps and patches the passes' lists as the first zoom-out
+   *  will; nothing is requested, and warmRestore takes the stand-ins back */
+  private warmProxy(bi: BInst): number {
+    const p = this.knownProxy(bi.geom);
+    if (p >= 0) return p;
+    this.warmStand.push(bi);
+    return this.emptyOf(bi.geom);
   }
 
   /** shadow cascades of the rubble kit's debris pieces: the near cascade at the presets that fade (medium and up);
@@ -2198,8 +2222,9 @@ export class BuildingRenderer {
     if (want && bi.lodGeom < 0) {
       // first time this model is needed as a proxy: the worker builds it (the building stays full and is evaluated
       // again when it arrives, see wakeWaiting); without a worker it is built within the frame budget, else retried
-      // at the next update
-      const pg = this.proxyOf(bi.geom);
+      // at the next update. (The load's warm-up sweep requests nothing: a proxy still being built is stood in for,
+      // see warmProxy)
+      const pg = this.warmState === 1 ? this.warmProxy(bi) : this.proxyOf(bi.geom);
       if (pg < 0) {
         if (this.proxies) this.waitFor(bi, bi.geom);
         else this.lodQueue(bi);
