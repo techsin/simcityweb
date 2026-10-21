@@ -55,19 +55,23 @@
  *   - each tree is a regular impostor within ~lodDistance of the camera (its own switch distance, see RING_SWITCH_*)
  *     and a micro impostor beyond, the two complementary per tree in the vertex shaders: the near pair (broadleaf /
  *     conifer impostors, TREE_RING_NEAR) holds a sector's trees ordered by their depth beyond the map edge, and a
- *     camera inside the map at e metres from the sector's edge(s) can only reach the trees up to depth (switch - e): it
- *     submits that prefix (none from the middle of a large map); the far blocks (TREE_RING: the micro broadleaf's upper
- *     half, 3 tris, as high cameras see it; conifers stretch it onto their pyramid and carry an evergreen flag) are
- *     RING_SUB block meshes per sector (its quarters), each frustum-culled by its own bounds and ordered by the per-tree
- *     thinning random (ringRand): their vertex shader thins the trees with their distance and fades them with the
- *     camera height (hidden from low cameras inside the city, where the city and the edge band hide them anyway), and
- *     each block only submits the prefix of its trees that its nearest point's distance can keep; no shadows;
+ *     camera inside the map at e metres from the sector's edge(s) can only reach the trees up to depth (switch - e)
+ *     (a corner sector: the nearer of its two arms), and the view's ground footprint bounds that depth too: it submits
+ *     that prefix (none from the middle of a large map), culled by the prefix's own bounds (ringNearBox), so a corner
+ *     sector beside a camera that looks along one of its edges draws nothing; the far blocks (TREE_RING: the micro
+ *     broadleaf's upper half, 3 tris, as high cameras see it; conifers stretch it onto their pyramid and carry an
+ *     evergreen flag) are RING_SUB block meshes per sector (its quarters), each frustum-culled by its own box and ordered
+ *     by the per-tree thinning random (ringRand): their vertex shader thins the trees with their distance and fades them
+ *     with the camera height (hidden from low cameras inside the city, where the city and the edge band hide them
+ *     anyway), and each block only submits the prefix of its trees that its nearest point's distance can keep; no
+ *     shadows. The per-frame pass (updateRingView) re-derives all of it only when the view or the ring's data changed;
  *   - next to a sector's map edge(s) (within RING_EDGE_NEAR x lodDistance) the ring is the horizon at any height: the
  *     sector's far blocks skip the camera height fade, and a low camera (below ringFadeHeight) sees the sector at a
  *     grazing angle, where the micro upper half reads as a small pale cone floating at 63% of the tree's height: its
- *     trees stay regular impostors out to ringLowSwitch x lodDistance and the far blocks beyond show whole, darker
- *     micro crowns (ringLow, its lower half coming down with the low-camera weight) - per sector on the CPU, per tree
- *     in the shaders, eased in with the camera height and the distance to the edge, so nothing pops.
+ *     trees stay regular impostors out to ringLowSwitch x lodDistance and the far blocks beyond show mini round crowns
+ *     on trunks, as dark as the impostors in front of them (ringLow, unfolding from the upper half with the low-camera
+ *     weight) - per sector on the CPU, per tree in the shaders, eased in with the camera height and the distance to the
+ *     edge, so nothing pops.
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
@@ -78,7 +82,7 @@ import { MANIFEST_BY_ID } from '../../assets/manifest';
 import { getBuildingMaterial, patchSurfaceMaterial } from '../../assets/materials';
 import { getNoiseTexture } from './textures';
 import type { CityState } from '../../sim/CityState';
-import { RING_LOW_APEX, getImpostorGeometries, getMicroImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
+import { MICRO_WAIST_R, MICRO_WAIST_Y, RING_LOW_APEX, RING_LOW_R, getImpostorGeometries, getMicroImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
 import { TerrainRenderer } from './TerrainRenderer';
 import { shadowCasters, type ShadowReceiver } from './Shadows';
 import { SEASONAL_TREES, drawnTreeMix, seasonalVariant, type SeasonMix } from '../../assets/builders/nat_season';
@@ -139,11 +143,15 @@ const RING_SWITCH_SPAN = 0.12;
  *  sector as the horizon at any height: its far blocks skip the camera height fade, and a low camera (below
  *  ringFadeHeight) gets the low-camera look there (ringLowSwitch, ringLowShape; see updateRingView) */
 const RING_EDGE_NEAR = 0.6;
-/** the low cameras' whole micro crown of a broadleaf (ringLow, RING_LOW_VERT; past the low-camera switch distance): its
- *  leafy colour this much darker than the high cameras' upper half, so the ring past the switch reads as the same
- *  forest as the regular impostors in front of it (the micro shape's up-facing upper faces catch the full sun and sky:
- *  measured +6-9 luma over regular impostors of the same trees at 1-2.4 km from a 58 m camera, ~0 with this tint) */
-const RING_LOW_TINT = 0.72;
+/** the low cameras' mini crown of a broadleaf (ringLow, RING_LOW_VERT; past the low-camera switch distance): its leafy
+ *  colour this much darker than the high cameras' upper half, so the ring past the switch reads as the same forest as
+ *  the regular impostors in front of it (its sun-facing upper faces catch the full sun and sky; in the low edge views
+ *  0.72 read darker than those impostors, 0.8 matches them) */
+const RING_LOW_TINT = 0.8;
+/** the low-camera weight at which the far blocks' mini crown is whole (RING_LOW_VERT eases its unfolding in over [0, this]) */
+const RING_LOW_FULL = 0.4;
+/** horizontal half-extent of a far block tree's shape (`top`, ringLow) in units of its instance's xz scale */
+const RING_BOX_R = Math.max(0.5, RING_LOW_R);
 /** the far blocks' density with the distance d from the camera (the vertex shader per tree, the CPU per block at its
  *  nearest point): clamp(RING_KEEP_A - (d - lodDistance) / RING_KEEP_D, RING_KEEP_MIN, 1) of the trees, x the camera
  *  height fade */
@@ -153,9 +161,14 @@ const RING_KEEP_MIN = 0.3;
 /** the near pairs' view bound (updateRingView): a ring tree farther past its sector's edge than the deepest point of the
  *  view's ground footprint by more than this (m: crowns, and trees standing above the footprint's plane) is out of view */
 const RING_VIS_PAD = 40;
-/** ringViewDirs scratch: the view's 4 corner ray directions, the gap in their horizontal directions, their angles */
+/** ringViewDirs scratch: the view's 4 corner ray directions, the gap in their horizontal directions, their angles; the
+ *  view's frustum (updateRingView) */
 const _rvd = new Float64Array(12), _rvr = new Float64Array(3), _rva = new Float64Array(4);
 const _rv3 = new THREE.Vector3();
+const _rvF = new THREE.Frustum(), _rvM = new THREE.Matrix4(), _rvB = new THREE.Box3(), _rvP = new THREE.Vector3(), _rvQ = new THREE.Vector3();
+/** a near pair keeps the bounds of its depth-ordered prefixes every this many slots (ringNearBox: the bounds of what it
+ *  draws, see updateRingView) */
+const RING_BOX_STEP = 32;
 /** a nature model whose crown is at least this see-through (natureStats.open) has a see-through impostor */
 const BARE_OPEN = 0.3;
 /** winter conifer impostors: taller (the needle tiers' tips) and darker than the summer tint (they are what reads of
@@ -595,21 +608,37 @@ float ringEdgeNear(vec3 p) {
 #endif
 `;
 /**
- * Far ring blocks of low cameras (after begin_vertex; color_vertex ran before it): the ringLow micro shape's lower apex
- * comes down from the waist (a flat, down-facing fan - what the plain upper half shows) to RING_LOW_APEX with the
- * low-camera weight (see FAR_VERT_MAIN), and its leafy colour darkens to RING_LOW_TINT with it, so a broadleaf seen at
- * a grazing angle is a whole crown as dark as the regular impostors in front of it, instead of a pale cone floating at
- * 63% of its height. A conifer's stretched upper half already is its whole pyramid: its lower half stays the flat fan
- * (it would only reach into the ground). High cameras (uRingP.y = 1) skip it all.
+ * Far ring blocks of low cameras (after begin_vertex and normal_vertex; color_vertex ran before it): with the low-camera
+ * weight lw (see FAR_VERT_MAIN) the ringLow mini crown unfolds from `top` (lw = 0: its rings at the micro waist, its
+ * lower apex and its trunk folded into the waist's centre, zero area) to the round crown on its trunk (RING_LOW_*), its
+ * crown's normals blend from the geometry's (`top`'s on the upper fan) into the round crown's (ringLowNormal; also the
+ * object normal of the foliage shading, _rlN: see FAR_VERT_MAIN) and its leafy colour darkens to RING_LOW_TINT, so a
+ * broadleaf seen at a grazing angle reads as the regular impostors in front of it - a round crown on a trunk, as dark -
+ * not as a lit cone floating at 63% of its height. A conifer (its stretched upper fan already is its whole pyramid)
+ * keeps lw = 0. High cameras (uRingP.y = 1) skip it all.
  */
 const RING_LOW_VERT = /* glsl */ `
 #if defined(TREE_RING) && defined(USE_INSTANCING) && defined(USE_INSTANCING_COLOR)
+vec3 _rlN = objectNormal;
 if (uRingQ.y > 0.0 && uRingP.y < 1.0) {
   float _lw = 0.0;
   if (instanceColor.b >= 0.0) _lw = (1.0 - uRingP.y) * ringEdgeNear((modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xyz);
-  if (transformed.y < 0.5) transformed.y = mix(0.63, ${RING_LOW_APEX.toFixed(3)}, _lw);
-  // (leafy crowns only: a bare crown's see-through twig haze keeps its own brightness)
-  if (instanceColor.r >= 0.0) vColor.rgb *= 1.0 - ${(1 - RING_LOW_TINT).toFixed(3)} * _lw;
+  // (whole by lw = ${RING_LOW_FULL}: next to the edge it unfolds while a camera descends from the top of the height fade,
+  // 240 m, to ~185 m above the ground)
+  _lw = smoothstep(0.0, ${RING_LOW_FULL.toFixed(3)}, _lw);
+  bool _tk = abs(surf.x - ${Surf.Wood.toFixed(1)}) < 0.5;
+  vec3 _f = _tk ? vec3(0.0, ${MICRO_WAIST_Y.toFixed(4)}, 0.0) : position.y > 0.999 ? position : vec3(position.x * ${(MICRO_WAIST_R / RING_LOW_R).toFixed(6)}, ${MICRO_WAIST_Y.toFixed(4)}, position.z * ${(MICRO_WAIST_R / RING_LOW_R).toFixed(6)});
+  transformed = mix(_f, position, _lw);
+  if (!_tk) {
+    vec3 _rn = vec3(position.x * ${(1 / (RING_LOW_R * RING_LOW_R)).toFixed(6)}, (position.y - ${((1 + RING_LOW_APEX) / 2).toFixed(6)}) * ${(4 / ((1 - RING_LOW_APEX) * (1 - RING_LOW_APEX))).toFixed(6)}, position.z * ${(1 / (RING_LOW_R * RING_LOW_R)).toFixed(6)});
+    _rlN = normalize(mix(objectNormal, normalize(_rn), _lw));
+    // (the lighting normal as defaultnormal_vertex / normal_vertex derive it)
+    vec3 _tn = _rlN / vec3(dot(instanceMatrix[0].xyz, instanceMatrix[0].xyz), dot(instanceMatrix[1].xyz, instanceMatrix[1].xyz), dot(instanceMatrix[2].xyz, instanceMatrix[2].xyz));
+    transformedNormal = normalMatrix * (mat3(instanceMatrix) * _tn);
+    vNormal = normalize(transformedNormal);
+    // (leafy crowns only: a bare crown's see-through twig haze keeps its own brightness)
+    if (instanceColor.r >= 0.0) vColor.rgb *= 1.0 - ${(1 - RING_LOW_TINT).toFixed(3)} * _lw;
+  }
 }
 #endif
 `;
@@ -650,6 +679,9 @@ ${far ? 'vTreeBare = 0.0;\nvBareNdc = vec2(0.0);' : ''}
 const FAR_VERT_MAIN = /* glsl */ `
 #ifdef TREE_RING
 vObjPos = transformed;
+#ifdef USE_INSTANCING_COLOR
+vObjNormal = _rlN;
+#endif
 #endif
 vObjPos *= vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
 #ifdef USE_INSTANCING_COLOR
@@ -958,6 +990,9 @@ export class TreeRenderer {
    *  conifer; instances ordered by their depth beyond the map edge (ringNearT, ascending: a camera reaches a prefix) */
   private ring: (TreeMesh | null)[] = new Array(RING_N * 2).fill(null);
   private ringNearT: (Float32Array | null)[] = new Array(RING_N * 2).fill(null);
+  /** per near mesh: the bounds (min x y z, max x y z) of its first (c + 1) x RING_BOX_STEP slots, c = 0, 1, ... (the
+   *  last entry: all of them) */
+  private ringNearBox: (Float64Array | null)[] = new Array(RING_N * 2).fill(null);
   /** every sector's trees as micro impostors, per block (sector k's RING_SUB quarters: ids k * RING_SUB + q), ordered by
    *  their thinning random: CPU copies (16 matrix + 3 colour floats each; see rebuildRingFar), the sorted randoms
    *  (ringRand) and the block bounds (min x y z, max x y z) */
@@ -999,6 +1034,11 @@ export class TreeRenderer {
   /** 1: the next view update draws every ring mesh with trees (the hidden ones with no instances: their instance data
    *  uploads then, not on their first sight), 2: the one after restores their frustum test */
   private ringPreload = 0;
+  /** version of the ring's mesh data (bumped by every ring step and teardown) and updateRingView's inputs at its last
+   *  pass (camera position, matrices, lod, camera height, low-camera settings, that version): an unchanged view with
+   *  unchanged ring data (a still camera) keeps the last pass's counts instead of re-deriving them */
+  private ringVer = 0;
+  private ringViewKey = new Float64Array(42).fill(NaN);
   /** width (m) of the landscape ring beyond the map edge that gets tree impostors (0 = none, also no edge band) */
   ringWidth = 2600;
   /** main-thread time (ms) of one slice of the outer ring's runtime work (refills / border regenerations) */
@@ -1017,12 +1057,13 @@ export class TreeRenderer {
   /** a low camera (below ringFadeHeight) next to a sector's map edge sees that sector's ring at a grazing angle, where
    *  the far blocks' micro impostors read as small pale cones: its trees stay regular impostors (the near pair) out to
    *  this multiple of lodDistance (their switch distance, eased in with the low-camera weight: see updateRingView).
-   *  1.6: the copses a low camera sees 10-20 px tall (to ~1.3 km at HIGH) are round crowns on trunks, as the near ring;
-   *  past it the trees are a few px, where the whole micro crowns read as the same forest. Each step further costs
-   *  main-pass triangles on low edge views and edge cuts for trees that small */
-  ringLowSwitch = 1.6;
-  /** ... and the far blocks beyond show the whole micro crown (ringLow: its lower half comes down with that weight)
-   *  instead of the upper half that high cameras see */
+   *  1.3: the copses a low camera sees largest (to ~1.1 km at HIGH, ~1.5 km at ULTRA) are the regular impostors; past
+   *  it the far blocks' mini crowns on trunks (ringLow) read as the same round crowns (1.6 submitted 1.2-2.5x the near
+   *  pairs' trees on the low edge views, for copses that look the same from 1.1 km on). Each step further costs vertex
+   *  work (84 per regular impostor, 12 per mini crown) on low edge views for trees that small */
+  ringLowSwitch = 1.3;
+  /** ... and the far blocks beyond show the low cameras' mini crown (ringLow: a round crown on a trunk, unfolding from
+   *  the upper half with that weight) instead of the upper half that high cameras see */
   ringLowShape = true;
   /** outer ring instances currently placed (stats) */
   ringInstances = 0;
@@ -1142,6 +1183,7 @@ export class TreeRenderer {
 
   /** drop every outer ring mesh / sector (not the candidates' buffers) */
   private disposeRing(): void {
+    this.ringVer++;
     for (const m of this.ring) if (m) { this.group.remove(m); m.dispose(); }
     this.ring.fill(null);
     for (const m of this.ringFar) if (m) { this.group.remove(m); m.dispose(); }
@@ -1151,6 +1193,7 @@ export class TreeRenderer {
     this.ringMicroR.fill(null);
     this.ringMicroN.fill(0);
     this.ringNearT.fill(null);
+    this.ringNearBox.fill(null);
     this.ringReady.fill(0);
     this.ringOrder.fill(null);
     this.ringFarDirty = 0;
@@ -2091,7 +2134,14 @@ export class TreeRenderer {
     const R = _rvr;
     R[0] = 1;
     if (na >= 2) {
-      const s = A.subarray(0, na).sort();
+      // (insertion sort of the <= 4 angles in place: no per-frame view allocation)
+      for (let i = 1; i < na; i++) {
+        const v = A[i];
+        let j = i - 1;
+        for (; j >= 0 && A[j] > v; j--) A[j + 1] = A[j];
+        A[j + 1] = v;
+      }
+      const s = A;
       let g = s[0] + Math.PI * 2 - s[na - 1], g0 = s[na - 1], g1 = s[0];
       for (let i = 1; i < na; i++) if (s[i] - s[i - 1] > g) { g = s[i] - s[i - 1]; g0 = s[i - 1]; g1 = s[i]; }
       // (a gap of half a turn or more: the view spans the rest; less: the corner rays surround the camera's point)
@@ -2172,22 +2222,47 @@ export class TreeRenderer {
     }
   }
 
+  /** updateRingView's inputs equal to its last pass's (and stored for the next frame's test) */
+  private ringViewSame(px: number, py: number, pz: number, lod: number, camH: number, camera?: THREE.Camera): boolean {
+    const K = this.ringViewKey, F = this.ringFadeHeight;
+    let same = K[0] === px && K[1] === py && K[2] === pz && K[3] === lod && K[4] === camH && K[5] === F[0] && K[6] === F[1] &&
+      K[7] === this.ringLowSwitch && K[8] === (this.ringLowShape ? 1 : 0) && K[9] === this.ringVer;
+    K[0] = px; K[1] = py; K[2] = pz; K[3] = lod; K[4] = camH; K[5] = F[0]; K[6] = F[1];
+    K[7] = this.ringLowSwitch; K[8] = this.ringLowShape ? 1 : 0; K[9] = this.ringVer;
+    if (camera) {
+      camera.updateMatrixWorld();
+      const a = camera.matrixWorld.elements, b = camera.projectionMatrix.elements;
+      for (let i = 0; i < 16; i++) {
+        if (K[10 + i] !== a[i]) { K[10 + i] = a[i]; same = false; }
+        if (K[26 + i] !== b[i]) { K[26 + i] = b[i]; same = false; }
+      }
+    } else if (K[10] === K[10]) {
+      K.fill(NaN, 10);
+      same = false;
+    }
+    return same;
+  }
+
   /**
    * per frame: which outer ring meshes are drawn and how many of their trees. A sector's near pair submits the prefix of
    * its trees (ordered by their depth t beyond the sector's map edge or edges) that can be within the switch distance: a
-   * camera e metres inside those edges is at least t + e from a tree at depth t (horizontally). Its far blocks show
+   * camera e metres inside those edges is at least t + e from a tree at depth t (horizontally; a corner sector's tree
+   * at depth t is t past one of its two edges, so the camera's distance inside the other one counts too). Its far blocks show
    * while the camera is high enough (camera height fade) or near the sector's edge(s) (within RING_EDGE_NEAR x
    * lodDistance, where the ring is the horizon at any height), each submitting the prefix of its trees (ordered by their
    * thinning random) that its nearest point keeps; a block entirely within the switch distance draws nothing (its trees
    * are the near pair's). A low camera near the sector's edge(s) (weight lw: below the height fade, near the edge) sees
    * the sector at a grazing angle: its switch distance moves out to ringLowSwitch x lodDistance and its far blocks show
-   * whole micro crowns (ringLowShape) - all per sector, exactly as the vertex shaders do it per tree (FAR_VERT_MAIN,
+   * mini crowns on trunks (ringLowShape) - all per sector, exactly as the vertex shaders do it per tree (FAR_VERT_MAIN,
    * RING_LOW_VERT). With the view's camera, a near pair's prefix also ends at the deepest point past the sector's edge(s)
    * of the view's ground footprint (ringViewDirs; + RING_VIS_PAD): a camera beyond the edge looking back at the map does
-   * not submit the trees behind it.
+   * not submit the trees behind it; and every mesh is culled by the box of what it submits against the view's frustum
+   * (a near pair: its prefix's, ringNearBox), tighter than three's bounding sphere test.
    */
   private updateRingView(px: number, py: number, pz: number, lod: number, camH: number, camera?: THREE.Camera): void {
     if (!this.ringOn) return;
+    // (the meshes keep the last pass's counts while nothing it depends on changed; a pending preload always runs)
+    if (this.ringViewSame(px, py, pz, lod, camH, camera) && !this.ringPreload) return;
     const ring = this.ring, rf = this.ringFar, W = this.state.size * CELL_SIZE;
     // low cameras: the far blocks fade out with the camera height (seen from inside the city they are hidden or a few
     // specks in the haze); the near pairs show at any height (a camera near the map edge, where the ring is the horizon)
@@ -2198,22 +2273,29 @@ export class TreeRenderer {
     const mg = getMicroImpostorGeometries();
     const RB = this.ringBox;
     const view = camera ? this.ringViewDirs(camera, px, py, pz) : 0;
+    if (view) _rvF.setFromProjectionMatrix(_rvM.multiplyMatrices(camera!.projectionMatrix, camera!.matrixWorldInverse));
     for (let k = 0; k < RING_N; k++) {
       const ready = this.ringReady[k] !== 0;
       const ix = RING_SECTORS[k][0], iz = RING_SECTORS[k][1];
-      let e = Infinity;
-      if (ix !== 1) e = ix === 0 ? px : W - px;
-      if (iz !== 1) {
-        const ez = iz === 0 ? pz : W - pz;
-        if (ez < e) e = ez;
-      }
+      // (the camera's distance inside the sector's edge(s): x, z, the nearer)
+      const ex = ix === 1 ? Infinity : ix === 0 ? px : W - px, ez = iz === 1 ? Infinity : iz === 0 ? pz : W - pz;
+      const e = ex < ez ? ex : ez;
       // near the sector's edge(s): no camera height fade; a low camera there: the low-camera look (weight lw)
       const ne = 1 - _sstep(lod * RING_EDGE_NEAR, lod * RING_SWITCH_LO, e), lw = (1 - fv) * ne;
       const sw = lod + (lowSw - lod) * lw;
       const reach = sw * (RING_SWITCH_LO + RING_SWITCH_SPAN), inner = sw * RING_SWITCH_LO, fvK = fv > ne ? fv : ne;
       // (a camera H above the sector's highest tree reaches horizontally only sqrt(reach^2 - H^2))
       const H = py - RB[k * 6 + 4], hr2 = reach * reach - (H > 0 ? H * H : 0);
-      let tMax = (hr2 > 0 ? Math.sqrt(hr2) : -1) - e;
+      // (a corner sector's tree at depth t is t past one of its edges and 0..t past the other: at least
+      // sqrt((ex + t)^2 + max(0, ez)^2) away, or the same with x and z swapped)
+      let tMax = -1;
+      if (hr2 > 0) {
+        if (ix === 1 || iz === 1) tMax = Math.sqrt(hr2) - e;
+        else {
+          const ax = hr2 - (ez > 0 ? ez * ez : 0), az = hr2 - (ex > 0 ? ex * ex : 0);
+          tMax = Math.max(ax > 0 ? Math.sqrt(ax) - ex : -1, az > 0 ? Math.sqrt(az) - ez : -1);
+        }
+      }
       if (view && ready && tMax >= 0) tMax = Math.min(tMax, this.ringViewDepth(k, view, px, py, pz, Math.sqrt(hr2)) + RING_VIS_PAD);
       for (let m = 0; m < 2; m++) {
         const mesh = ring[k * 2 + m], T = this.ringNearT[k * 2 + m];
@@ -2228,10 +2310,25 @@ export class TreeRenderer {
           }
         }
         mesh.count = lo;
-        mesh.visible = lo > 0;
+        // culled by the bounds of the prefix it draws (ringNearBox), with the view's camera also by the box itself here:
+        // a corner sector's prefix is a square at its corner, whose bounding sphere (three's test) reaches far into a
+        // view along either of its edges
+        let vis = lo > 0;
+        const P = this.ringNearBox[k * 2 + m];
+        if (vis && P) {
+          const c = Math.min(P.length / 6, Math.ceil(lo / RING_BOX_STEP)) - 1, o = c * 6, bb = mesh.boundingBox!;
+          if (mesh.userData.ringBoxC !== c) {
+            mesh.userData.ringBoxC = c;
+            bb.min.set(P[o], P[o + 1], P[o + 2]);
+            bb.max.set(P[o + 3], P[o + 4], P[o + 5]);
+            bb.getBoundingSphere(mesh.boundingSphere!);
+          }
+          if (view && !_rvF.intersectsBox(bb)) vis = false;
+        }
+        mesh.visible = vis;
       }
       const far = ready && fvK > 0.001;
-      // (the whole micro crown while the low-camera weight is on: its lower half is a flat fan at lw = 0, see ringLow)
+      // (the mini crown while the low-camera weight is on: folded at lw = 0 it is exactly `top`, see ringLow)
       const geo = shape && lw > 0 ? mg.ringLow : mg.top;
       for (let q = 0; q < RING_SUB; q++) {
         const id = k * RING_SUB + q, m = rf[id];
@@ -2262,7 +2359,8 @@ export class TreeRenderer {
           else hi = mid;
         }
         m.count = lo;
-        m.visible = lo > 0;
+        // (with the view's camera: culled by the block's box, tighter than three's bounding sphere)
+        m.visible = lo > 0 && (!view || _rvF.intersectsBox(_rvB.set(_rvP.set(B[o], B[o + 1], B[o + 2]), _rvQ.set(B[o + 3], B[o + 4], B[o + 5]))));
       }
     }
     // the frame after a flushRing (load, quality change, reset): every ring mesh with trees is drawn, a hidden one with no
@@ -2377,6 +2475,7 @@ export class TreeRenderer {
    * far blocks together).
    */
   ringStep(budgetMs: number): void {
+    this.ringVer++;
     if (!this.ringOn) {
       this.ringStale = this.ringRefill = this.ringFarDirty = 0;
       this.ringGen = null;
@@ -2746,6 +2845,7 @@ export class TreeRenderer {
         bb.max.set(bd[q + 3], bd[q + 4], bd[q + 5]);
         bb.getBoundingSphere(mesh.boundingSphere!);
       } else bb.makeEmpty();
+      this.ringPrefixBounds(k * 2 + m, mesh, cnt);
     }
     // sector bounds (its per-frame distance): the near pair's union
     const RB = this.ringBox, ro = k * 6;
@@ -2754,6 +2854,44 @@ export class TreeRenderer {
       RB[ro + 3 + a] = Math.max(bd[3 + a], bd[9 + a]);
     }
     this.ringBlockOrder(k, f.micro, w[2]);
+  }
+
+  /** near mesh i's prefix bounds (ringNearBox) from its cnt instances in slot (depth) order */
+  private ringPrefixBounds(i: number, mesh: TreeMesh, cnt: number): void {
+    mesh.userData.ringBoxC = -1;
+    const nb = Math.ceil(cnt / RING_BOX_STEP);
+    if (!nb) {
+      this.ringNearBox[i] = null;
+      return;
+    }
+    let P = this.ringNearBox[i];
+    if (!P || P.length !== nb * 6) P = this.ringNearBox[i] = new Float64Array(nb * 6);
+    const g = mesh.geometry;
+    if (!g.boundingBox) g.computeBoundingBox();
+    // (the shape's horizontal radius: any yaw)
+    let gr = g.userData.ringR as number | undefined;
+    if (gr === undefined) {
+      const pa = g.getAttribute('position');
+      gr = 0;
+      for (let j = 0; j < pa.count; j++) gr = Math.max(gr, Math.hypot(pa.getX(j), pa.getZ(j)));
+      g.userData.ringR = gr;
+    }
+    const gb = g.boundingBox!, a = mesh.instanceMatrix.array as Float32Array;
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (let r = 0; r < cnt; r++) {
+      const o = r * 16, rr = gr * Math.hypot(a[o], a[o + 2]), vs = a[o + 5], x = a[o + 12], y = a[o + 13], z = a[o + 14];
+      if (x - rr < x0) x0 = x - rr;
+      if (x + rr > x1) x1 = x + rr;
+      if (z - rr < z0) z0 = z - rr;
+      if (z + rr > z1) z1 = z + rr;
+      if (y + gb.min.y * vs < y0) y0 = y + gb.min.y * vs;
+      if (y + gb.max.y * vs > y1) y1 = y + gb.max.y * vs;
+      if ((r + 1) % RING_BOX_STEP === 0 || r === cnt - 1) {
+        const q = ((r / RING_BOX_STEP) | 0) * 6;
+        P[q] = x0; P[q + 1] = y0; P[q + 2] = z0;
+        P[q + 3] = x1; P[q + 4] = y1; P[q + 5] = z1;
+      }
+    }
   }
 
   /**
@@ -2812,12 +2950,12 @@ export class TreeRenderer {
       cc[j * 3] = col[i * 3];
       cc[j * 3 + 1] = col[i * 3 + 1];
       cc[j * 3 + 2] = col[i * 3 + 2];
-      // the micro top: the double pyramid's upper half (waist r 0.46 at y 0.63, apex 1) in the instance's frame, down to
-      // the lower apex of the low cameras' whole crown (ringLow)
-      const hs = Math.hypot(micro[s], micro[s + 2]) * 0.5, vs = micro[s + 5];
+      // the micro top (the double pyramid's upper half: waist r 0.46 at y 0.63, apex 1) and the low cameras' mini crown
+      // (ringLow: rings of r RING_LOW_R, its trunk from the instance's foot) in the instance's frame
+      const hs = Math.hypot(micro[s], micro[s + 2]) * RING_BOX_R, vs = micro[s + 5];
       const x = micro[s + 12], y = micro[s + 13], z = micro[s + 14];
       if (x - hs < B[o]) B[o] = x - hs;
-      if (y + vs * RING_LOW_APEX < B[o + 1]) B[o + 1] = y + vs * RING_LOW_APEX;
+      if (y < B[o + 1]) B[o + 1] = y;
       if (z - hs < B[o + 2]) B[o + 2] = z - hs;
       if (x + hs > B[o + 3]) B[o + 3] = x + hs;
       if (y + vs > B[o + 4]) B[o + 4] = y + vs;

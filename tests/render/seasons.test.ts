@@ -783,8 +783,10 @@ describe('outer ring trees', () => {
     /** a ring mesh that draws trees (the first view update after the load also shows the others, with none: their
      *  instance data uploads then, updateRingView) */
     const drawn = (m: THREE.InstancedMesh) => m.visible && m.count > 0;
-    const at = (x: number, h: number, z: number) => {
+    const at = (x: number, h: number, z: number, look?: [number, number]) => {
       cam.position.set(x, terr.meshHeightAt(x, z) + h, z);
+      // (looking along -z, as the default camera, or down at the given point)
+      if (look) cam.lookAt(look[0], 0, look[1]);
       tr.update(cam);
     };
     // street height in the middle of a 2 km map: the ring is hidden
@@ -810,8 +812,8 @@ describe('outer ring trees', () => {
     // ... and from more than 0.94 x lodDistance inside it, only that sector's near trees, if any
     at(850, 30, W / 2);
     expect(ring().filter(drawn).some(isMicro)).toBe(false);
-    // high above the map: the far sectors' micro impostors, their upper halves only
-    at(W / 2, 3000, W / 2);
+    // high above the map, looking down at its north edge: the far sectors' micro impostors, their upper halves only
+    at(W / 2, 3000, W / 2, [W / 2, -200]);
     const high = ring().filter((m) => drawn(m) && isMicro(m));
     expect(high.length).toBeGreaterThan(0);
     expect(high.every((m) => m.geometry.name === 'impostor-micro-top')).toBe(true);
@@ -864,6 +866,8 @@ describe('outer ring trees', () => {
     cam.position.set(W / 2 - Math.sin(y) * Math.cos(a) * d, Math.sin(a) * d, W / 2 + Math.cos(y) * Math.cos(a) * d);
     cam.lookAt(W / 2, 0, W / 2);
     cam.updateMatrixWorld();
+    // (past the load's preload pass, which draws every block with trees, the hidden ones with none)
+    tr.update(cam);
     tr.update(cam);
     const blocks = tr.group.children.filter((o) => o.name === 'trees-ring' && ((o as THREE.Mesh).geometry.name ?? '').startsWith('impostor-micro')) as THREE.InstancedMesh[];
     expect(blocks.length).toBeGreaterThan(8);
@@ -884,9 +888,12 @@ describe('outer ring trees', () => {
         expect(ringRand(e[j * 16 + 12], e[j * 16 + 14])).toBeGreaterThanOrEqual(keep - 1e-4);
       }
       if (m.count < n) cut++;
-      if (!m.visible) continue;
-      if (!m.intersectsFrustum(fr)) culled++;
-      else submitted += m.count;
+      // (off screen: hidden by updateRingView's own test of the block's box, or left to three's sphere test)
+      if (m.visible && m.intersectsFrustum(fr)) submitted += m.count;
+      else if (m.count > 0) {
+        culled++;
+        expect(fr.intersectsBox(m.boundingBox!)).toBe(false);
+      }
     }
     expect(total).toBe(tr.ringInstances);
     // seen from above (4 km), a third of the blocks are off screen and the rest thinned: ~half the trees are submitted
@@ -1109,16 +1116,26 @@ describe('outer ring trees', () => {
       if (x === 60) expect(submitted).toBeGreaterThan(0);
     }
     // the view bound: a camera beyond the west edge looking back at the map submits a fraction of the trees in reach
-    // (those behind it are out of view); looking out over the ring, all of them
+    // (those behind it are out of view, and so are those under its view next to it: 300 m out, none at all); looking
+    // out over the ring, all of them
     const sub = () => nears().reduce((a, m) => a + (m.visible ? m.count : 0), 0);
-    look(-300, 120, W / 2, W / 2, W / 2);
+    look(-600, 120, W / 2, W / 2, W / 2);
     const back = sub();
-    look(-300, 120, W / 2, -3000, W / 2);
-    const out = sub();
+    look(-600, 120, W / 2, -3000, W / 2);
+    const out = nears().map((m) => (m.visible ? m.count : 0)), prefixBox = nears().map((m) => m.boundingBox!.clone());
     const ring = tr as unknown as { updateRingView(px: number, py: number, pz: number, lod: number, camH: number): void };
-    ring.updateRingView(cam.position.x, cam.position.y, cam.position.z, lod, 120);
-    const reachOnly = sub();
-    expect(out).toBe(reachOnly);
+    ring.updateRingView(cam.position.x, cam.position.y, cam.position.z, lod, cam.position.y - terr.meshHeightAt(-600, W / 2));
+    const inReach = nears().map((m) => (m.visible ? m.count : 0)), reachOnly = sub();
+    // (looking out over the ring: every near pair it sees submits all of its trees in reach; one whose prefix's box is
+    // out of the view (beside or behind the camera) is culled)
+    let seen = 0;
+    out.forEach((c, i) => {
+      if (c) {
+        seen += c;
+        expect(c).toBe(inReach[i]);
+      } else if (inReach[i]) expect(fr.intersectsBox(prefixBox[i])).toBe(false);
+    });
+    expect(seen).toBeGreaterThan(back);
     expect(back).toBeGreaterThan(0);
     expect(back).toBeLessThan(reachOnly * 0.6);
     // ... and it never leaves out a tree in view and in reach (random poses inside, at and beyond the edges, looking up

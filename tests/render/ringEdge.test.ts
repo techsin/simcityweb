@@ -8,12 +8,18 @@
  *  - no tree is drawn by both meshes (the far blocks' conifer feet match the near pairs'),
  *  - a low camera next to the edge sees the ring past the switch distance (the r4 regression: the far blocks were
  *    faded out with the camera height, so the forest stopped ~0.85 km from a low camera),
- *  - the low-camera micro shape (ringLow) is the high cameras' upper half plus a lower half of its own.
+ *  - a near pair is culled by the bounds of the prefix it draws (the corner sectors beside a low camera at an edge reach
+ *    it, but none of their trees is in view: they drew ~1250 trees, 106k vertices, for nothing),
+ *  - the per-frame pass keeps its last result while nothing it depends on changed (a still view) and re-derives it when
+ *    the camera moves or turns, the low-camera switch distance changes or the ring's data does,
+ *  - the low cameras' mini crown (ringLow), folded as the ring shader folds it at low-camera weight 0, is exactly the high
+ *    cameras' upper half (`top`), and unfolded a round crown on a trunk.
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { registerAllModels } from '../../src/assets/builders';
-import { RING_LOW_APEX, getMicroImpostorGeometries } from '../../src/render/world/fallbackTrees';
+import { MICRO_WAIST_R, MICRO_WAIST_Y, RING_LOW_APEX, RING_LOW_R, getMicroImpostorGeometries, ringLowNormal } from '../../src/render/world/fallbackTrees';
+import { Surf } from '../../src/core/types';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
@@ -118,8 +124,8 @@ describe('outer ring next to the map edge', () => {
         // (drawn by the far blocks: kept by their thinning, past the switch distance)
         if (ringRand(x, z) >= S.keep(x, z, d) - 1e-4 || d < sw + M) continue;
         if (dn! < sw - M) both++;
-        // (a low camera's whole micro crown reaches down to RING_LOW_APEX)
-        if (!inView(e, o, RING_LOW_APEX, 1)) continue;
+        // (a low camera's mini crown stands on its trunk, from the tree's foot)
+        if (!inView(e, o, 0, 1)) continue;
         nFar++;
         if (!(m.visible && j < m.count)) cut++;
       }
@@ -188,25 +194,165 @@ describe('outer ring next to the map edge', () => {
     tr.dispose();
   }, 120_000);
 
-  it('ringLow: the upper half (positions + normals) is exactly `top`, the lower half has its own down-facing normals', () => {
+  it('a near pair is culled by the bounds of the prefix it draws: the corner sectors beside a low camera at an edge draw nothing', () => {
+    const { st, tr, R } = make();
+    const W = st.size * CELL_SIZE;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    // the art reviewer's edge_low again: at a low-camera switch distance of 1.6 x lodDistance the west edge's corner
+    // sectors (0: x < 0, z < 0; 6: x < 0, z > W) are within reach (~1.1 km away), ~70 degrees off the view's axis
+    tr.ringLowSwitch = 1.6;
+    pose(R, cam, 340, 58, W / 2, Math.PI, Math.tan((14 * Math.PI) / 180));
+    tr.update(cam);
+    tr.update(cam);
+    expect(audit(tr, R, cam).cut).toBe(0);
+    for (const k of [0, 6]) for (const m of [R.ring[k * 2], R.ring[k * 2 + 1]]) {
+      if (!m || !m.userData.ringCount) continue;
+      expect(m.count).toBeGreaterThan(0);
+      expect(m.visible).toBe(false);
+    }
+    // every near mesh drawn: its bounds (three's frustum test) hold every vertex of every tree of the prefix it draws
+    let drawn = 0, out = 0;
+    const p = new THREE.Vector3(), M = new THREE.Matrix4();
+    for (const m of R.ring) {
+      if (!m || !m.visible || !m.count) continue;
+      drawn++;
+      const e = m.instanceMatrix.array as Float32Array, b = m.boundingBox!.clone().expandByScalar(1e-3), pa = m.geometry.getAttribute('position');
+      for (let i = 0; i < m.count; i++) {
+        M.fromArray(e, i * 16);
+        for (let j = 0; j < pa.count; j++) if (!b.containsPoint(p.fromBufferAttribute(pa, j).applyMatrix4(M))) out++;
+      }
+      const S = m.boundingSphere!, bb = m.boundingBox!;
+      expect(Math.max(S.center.distanceTo(bb.min), S.center.distanceTo(bb.max))).toBeLessThanOrEqual(S.radius + 1e-6);
+    }
+    expect(out).toBe(0);
+    expect(drawn).toBeGreaterThan(0);
+    // ... and seen from beyond the corner, looking back at the map, the corner sector draws again
+    pose(R, cam, -300, 60, -300, Math.PI / 4, 0.1);
+    tr.update(cam);
+    expect(audit(tr, R, cam).cut).toBe(0);
+    expect([R.ring[0], R.ring[1]].some((m) => m && m.visible && m.count > 0)).toBe(true);
+    tr.dispose();
+  }, 120_000);
+
+  it("the per-frame pass: a still view re-derives nothing; a moved or turned camera, a new switch distance and new ring data do", () => {
+    const { st, tr, R } = make();
+    const W = st.size * CELL_SIZE;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    const T = tr as unknown as { ringViewDirs: (...a: unknown[]) => number };
+    const dirs = T.ringViewDirs;
+    let passes = 0;
+    T.ringViewDirs = function (this: unknown, ...a: unknown[]) {
+      passes++;
+      return dirs.apply(this, a);
+    };
+    const ls0 = tr.ringLowSwitch, tilt = Math.tan((14 * Math.PI) / 180);
+    const state = () => [...R.ring, ...R.ringFar].map((m) => (m ? `${m.visible ? 1 : 0}:${m.count}:${m.geometry.id}` : '-')).join(' ');
+    const at = (x: number, yaw: number) => {
+      pose(R, cam, x, 58, W / 2, yaw, tilt);
+      tr.update(cam);
+    };
+    // (the load's flush: its preload pass, then the one restoring the frustum test)
+    at(340, Math.PI);
+    at(340, Math.PI);
+    const n0 = passes, s0 = state();
+    for (let i = 0; i < 5; i++) tr.update(cam);
+    expect(passes).toBe(n0);
+    expect(state()).toBe(s0);
+    tr.ringLowSwitch = ls0 + 0.3;
+    tr.update(cam);
+    expect(passes).toBe(n0 + 1);
+    expect(audit(tr, R, cam).cut).toBe(0);
+    tr.update(cam);
+    expect(passes).toBe(n0 + 1);
+    tr.ringLowSwitch = ls0;
+    tr.update(cam);
+    expect(passes).toBe(n0 + 2);
+    at(340, Math.PI + 0.4);
+    expect(passes).toBe(n0 + 3);
+    expect(audit(tr, R, cam).cut).toBe(0);
+    at(420, Math.PI + 0.4);
+    expect(passes).toBe(n0 + 4);
+    expect(audit(tr, R, cam).cut).toBe(0);
+    // back where it was: the same result as there
+    at(340, Math.PI);
+    expect(state()).toBe(s0);
+    // new ring data (January's refill): the next frame re-derives it from the new data
+    tr.setMonth(0);
+    tr.flush();
+    const n1 = passes;
+    tr.update(cam);
+    expect(passes).toBe(n1 + 1);
+    expect(audit(tr, R, cam).cut).toBe(0);
+    tr.dispose();
+  }, 120_000);
+
+  it('ringLow: folded as the shader folds it at lw = 0 it is exactly `top` (+ a flat down-facing fan), unfolded a round crown on a trunk', () => {
     const { top, ringLow } = getMicroImpostorGeometries();
-    expect(top.index!.count).toBe(9);
-    expect(ringLow.index!.count).toBe(18);
-    const tp = top.getAttribute('position'), tn = top.getAttribute('normal');
-    const lp = ringLow.getAttribute('position'), ln = ringLow.getAttribute('normal');
-    expect(lp.count).toBe(tp.count + 4);
-    for (let i = 0; i < tp.count; i++) {
-      for (const k of [0, 1, 2]) {
-        expect(lp.getComponent(i, k)).toBeCloseTo(tp.getComponent(i, k), 6);
-        expect(ln.getComponent(i, k)).toBeCloseTo(tn.getComponent(i, k), 6);
+    const tp = top.getAttribute('position'), tn = top.getAttribute('normal'), ti = top.index!;
+    const lp = ringLow.getAttribute('position'), ln = ringLow.getAttribute('normal'), ls = ringLow.getAttribute('surf'), li = ringLow.index!;
+    expect(ti.count).toBe(9);
+    expect(li.count).toBe(45);
+    expect(lp.count).toBe(12);
+    // the ring shader's fold (RING_LOW_VERT) at lw (normals: the geometry's blended into the round crown's)
+    const pos = (i: number, lw: number) => {
+      const p = new THREE.Vector3().fromBufferAttribute(lp, i);
+      const trunk = Math.abs(ls.getX(i) - Surf.Wood) < 0.5;
+      const f = trunk ? new THREE.Vector3(0, MICRO_WAIST_Y, 0) : p.y > 0.999 ? p.clone() : new THREE.Vector3(p.x * (MICRO_WAIST_R / RING_LOW_R), MICRO_WAIST_Y, p.z * (MICRO_WAIST_R / RING_LOW_R));
+      return f.lerp(p, lw);
+    };
+    const nrm = (i: number, lw: number) => {
+      const n = new THREE.Vector3().fromBufferAttribute(ln, i);
+      if (Math.abs(ls.getX(i) - Surf.Wood) < 0.5) return n;
+      return n.lerp(new THREE.Vector3(...ringLowNormal(lp.getX(i), lp.getY(i), lp.getZ(i))), lw).normalize();
+    };
+    const key = (v: THREE.Vector3) => [v.x, v.y, v.z].map((c) => c.toFixed(4)).join(',');
+    const topTris = new Set<string>(), topN = new Map<string, THREE.Vector3>();
+    for (let t = 0; t < 3; t++) {
+      const vs = [0, 1, 2].map((k) => new THREE.Vector3().fromBufferAttribute(tp, ti.getX(t * 3 + k)));
+      topTris.add(vs.map(key).sort().join('|'));
+      for (let k = 0; k < 3; k++) topN.set(key(vs[k]), new THREE.Vector3().fromBufferAttribute(tn, ti.getX(t * 3 + k)));
+    }
+    // lw = 0: the upper fan is `top` (corners and normals), the lower fan lies flat at the waist facing down, the band and
+    // the trunk have no area
+    let up = 0, flat = 0;
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
+    for (let t = 0; t < 15; t++) {
+      const ids = [0, 1, 2].map((k) => li.getX(t * 3 + k));
+      a.copy(pos(ids[0], 0)); b.copy(pos(ids[1], 0)); c.copy(pos(ids[2], 0));
+      n.copy(b).sub(a).cross(c.clone().sub(a));
+      if (n.length() < 1e-6) continue;
+      if (n.y > 0) {
+        up++;
+        expect(topTris.has([a, b, c].map(key).sort().join('|'))).toBe(true);
+        for (const i of ids) expect(nrm(i, 0).distanceTo(topN.get(key(pos(i, 0)))!)).toBeLessThan(1e-5);
+      } else {
+        flat++;
+        for (const v of [a, b, c]) expect(v.y).toBeCloseTo(MICRO_WAIST_Y, 6);
       }
     }
-    let apex = 0;
-    for (let i = tp.count; i < lp.count; i++) {
-      expect(ln.getY(i)).toBeLessThan(0);
-      if (Math.abs(lp.getY(i) - RING_LOW_APEX) < 1e-6) apex++;
-      else expect(lp.getY(i)).toBeCloseTo(0.63, 6);
+    expect(up).toBe(3);
+    expect(flat).toBe(3);
+    // lw = 1: a crown from RING_LOW_APEX to 1 on a trunk from the foot, its faces and normals pointing outwards
+    let yMin = Infinity, cMin = Infinity, trunkV = 0;
+    for (let i = 0; i < lp.count; i++) {
+      const p = pos(i, 1);
+      yMin = Math.min(yMin, p.y);
+      if (Math.abs(ls.getX(i) - Surf.Wood) < 0.5) { trunkV++; continue; }
+      cMin = Math.min(cMin, p.y);
+      const r = nrm(i, 1), out = p.clone().sub(new THREE.Vector3(0, (1 + RING_LOW_APEX) / 2, 0));
+      expect(r.dot(out)).toBeGreaterThan(0);
     }
-    expect(apex).toBe(1);
+    expect(yMin).toBeCloseTo(0, 6);
+    expect(cMin).toBeCloseTo(RING_LOW_APEX, 6);
+    expect(trunkV).toBe(4);
+    for (let t = 0; t < 15; t++) {
+      const ids = [0, 1, 2].map((k) => li.getX(t * 3 + k));
+      a.copy(pos(ids[0], 1)); b.copy(pos(ids[1], 1)); c.copy(pos(ids[2], 1));
+      n.copy(b).sub(a).cross(c.clone().sub(a));
+      const m = a.clone().add(b).add(c).multiplyScalar(1 / 3);
+      const trunk = Math.abs(ls.getX(ids[0]) - Surf.Wood) < 0.5;
+      const ctr = trunk ? new THREE.Vector3(0, m.y, 0) : new THREE.Vector3(0, (1 + RING_LOW_APEX) / 2, 0);
+      expect(n.dot(m.sub(ctr))).toBeGreaterThan(0);
+    }
   });
 });
