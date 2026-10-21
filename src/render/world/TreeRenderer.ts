@@ -60,7 +60,8 @@
  *     that prefix (none from the middle of a large map), culled by the prefix's own bounds (ringNearBox), so a corner
  *     sector beside a camera that looks along one of its edges draws nothing; the far blocks (TREE_RING: the micro
  *     broadleaf's upper half, 3 tris, as high cameras see it; conifers stretch it onto their pyramid and carry an
- *     evergreen flag) are RING_SUB block meshes per sector (its quarters), each frustum-culled by its own box and ordered
+ *     evergreen flag) are RING_SUB block meshes per sector (its quarters), each frustum-culled by its own box (for a low
+ *     camera near the edge also by its trees' boxes per cell of a grid over it, ringCellBox) and ordered
  *     by the per-tree thinning random (ringRand): their vertex shader thins the trees with their distance and fades them
  *     with the camera height (hidden from low cameras inside the city, where the city and the edge band hide them
  *     anyway), and each block only submits the prefix of its trees that its nearest point's distance can keep; no
@@ -169,6 +170,12 @@ const _rvF = new THREE.Frustum(), _rvM = new THREE.Matrix4(), _rvB = new THREE.B
 /** a near pair keeps the bounds of its depth-ordered prefixes every this many slots (ringNearBox: the bounds of what it
  *  draws, see updateRingView) */
 const RING_BOX_STEP = 32;
+/** a far block (a sector quarter, ~1.3 km square, its copses scattered over it) also keeps the bounds of its trees in
+ *  each cell of a RING_CELLS x RING_CELLS grid over its box (ringCellBox): a low camera near the sector's edge(s) (the
+ *  low-camera weight on) draws it only if one of them is in the frustum (its view along the edge meets the corners of
+ *  the quarters beside it, where no tree stands: HIGH edge_t25 drew ~2.9k of its 3.7k far block trees with none of them
+ *  in view); higher cameras, which see the blocks from above, and cameras away from the edges skip the test */
+const RING_CELLS = 4;
 /** a nature model whose crown is at least this see-through (natureStats.open) has a see-through impostor */
 const BARE_OPEN = 0.3;
 /** winter conifer impostors: taller (the needle tiers' tips) and darker than the summer tint (they are what reads of
@@ -1006,6 +1013,10 @@ export class TreeRenderer {
   private ringMicroBox = new Float64Array(RING_N * RING_SUB * 6);
   /** ... and the lowest point of their high-camera shape (`top`: from the micro waist up), per block */
   private ringMicroTopY = new Float64Array(RING_N * RING_SUB);
+  /** ... and the same per cell of the block's RING_CELLS x RING_CELLS grid (block id x RING_CELLS^2 + cell; an empty
+   *  cell: min x > max x) */
+  private ringCellBox = new Float64Array(RING_N * RING_SUB * RING_CELLS * RING_CELLS * 6);
+  private ringCellTopY = new Float64Array(RING_N * RING_SUB * RING_CELLS * RING_CELLS);
   /** the far ring's block meshes (TREE_RING), one per block */
   private ringFar: (TreeMesh | null)[] = new Array(RING_N * RING_SUB).fill(null);
   /** sectors (bits) whose micro impostors changed: their block meshes are uploaded by the next ring steps */
@@ -2262,7 +2273,8 @@ export class TreeRenderer {
    * RING_LOW_VERT). With the view's camera, a near pair's prefix also ends at the deepest point past the sector's edge(s)
    * of the view's ground footprint (ringViewDirs; + RING_VIS_PAD): a camera beyond the edge looking back at the map does
    * not submit the trees behind it; and every mesh is culled by the box of what it submits against the view's frustum
-   * (a near pair: its prefix's, ringNearBox), tighter than three's bounding sphere test.
+   * (a near pair: its prefix's, ringNearBox; a far block seen by a low camera near its sector's edge(s): also its cells',
+   * ringCellBox), tighter than three's bounding sphere test.
    */
   private updateRingView(px: number, py: number, pz: number, lod: number, camH: number, camera?: THREE.Camera): void {
     if (!this.ringOn) return;
@@ -2364,10 +2376,11 @@ export class TreeRenderer {
           else hi = mid;
         }
         m.count = lo;
-        // (with the view's camera: culled by the block's box, tighter than three's bounding sphere; the high cameras'
-        // shape starts at the micro waist)
-        const y0 = geo === mg.top ? this.ringMicroTopY[id] : B[o + 1];
-        m.visible = lo > 0 && (!view || _rvF.intersectsBox(_rvB.set(_rvP.set(B[o], y0, B[o + 2]), _rvQ.set(B[o + 3], B[o + 4], B[o + 5]))));
+        // (with the view's camera: culled by the block's box, tighter than three's bounding sphere, and for a low camera
+        // near the sector's edge(s) - the low-camera weight on: its view meets the blocks at a grazing angle - by its
+        // cells' boxes (ringCellBox); the high cameras' shape starts at the micro waist)
+        const top = geo === mg.top, y0 = top ? this.ringMicroTopY[id] : B[o + 1];
+        m.visible = lo > 0 && (!view || (_rvF.intersectsBox(_rvB.set(_rvP.set(B[o], y0, B[o + 2]), _rvQ.set(B[o + 3], B[o + 4], B[o + 5]))) && (lw <= 0 || this.ringCellsInView(id, top))));
       }
     }
     // the frame after a flushRing (load, quality change, reset): every ring mesh with trees is drawn, a hidden one with no
@@ -2382,6 +2395,18 @@ export class TreeRenderer {
         if (on && !m.visible && m.userData.ringCount) { m.count = 0; m.visible = true; }
       }
     }
+  }
+
+  /** far block id: one of its cells' trees (ringCellBox; top: the high cameras' shape, from the micro waist up) is in the
+   *  view's frustum (_rvF) */
+  private ringCellsInView(id: number, top: boolean): boolean {
+    const NC = RING_CELLS * RING_CELLS, CB = this.ringCellBox, CT = this.ringCellTopY;
+    for (let i = id * NC; i < (id + 1) * NC; i++) {
+      const co = i * 6;
+      if (!(CB[co] <= CB[co + 3])) continue;
+      if (_rvF.intersectsBox(_rvB.set(_rvP.set(CB[co], top ? CT[i] : CB[co + 1], CB[co + 2]), _rvQ.set(CB[co + 3], CB[co + 4], CB[co + 5])))) return true;
+    }
+    return false;
   }
 
   /** synchronous full rebuild (e.g. before a capture); ring: also finish the outer ring's pending work */
@@ -2971,6 +2996,29 @@ export class TreeRenderer {
       if (y + vs * MICRO_WAIST_Y < ty) ty = y + vs * MICRO_WAIST_Y;
     }
     this.ringMicroTopY[id] = ty;
+    // the cells' bounds (by each tree's foot)
+    const NC = RING_CELLS * RING_CELLS, CB = this.ringCellBox, CT = this.ringCellTopY, c0 = id * NC;
+    for (let i = c0; i < c0 + NC; i++) {
+      const co = i * 6;
+      CB[co] = CB[co + 1] = CB[co + 2] = Infinity;
+      CB[co + 3] = CB[co + 4] = CB[co + 5] = -Infinity;
+      CT[i] = Infinity;
+    }
+    const sx = RING_CELLS / Math.max(1e-6, B[o + 3] - B[o]), sz = RING_CELLS / Math.max(1e-6, B[o + 5] - B[o + 2]);
+    for (let j = 0; j < c; j++) {
+      const s = idx[j] * 16;
+      const hs = Math.hypot(micro[s], micro[s + 2]) * RING_BOX_R, vs = micro[s + 5];
+      const x = micro[s + 12], y = micro[s + 13], z = micro[s + 14];
+      const gx = Math.min(RING_CELLS - 1, Math.max(0, ((x - B[o]) * sx) | 0)), gz = Math.min(RING_CELLS - 1, Math.max(0, ((z - B[o + 2]) * sz) | 0));
+      const ci = c0 + gz * RING_CELLS + gx, co = ci * 6;
+      if (x - hs < CB[co]) CB[co] = x - hs;
+      if (y < CB[co + 1]) CB[co + 1] = y;
+      if (z - hs < CB[co + 2]) CB[co + 2] = z - hs;
+      if (x + hs > CB[co + 3]) CB[co + 3] = x + hs;
+      if (y + vs > CB[co + 4]) CB[co + 4] = y + vs;
+      if (z + hs > CB[co + 5]) CB[co + 5] = z + hs;
+      if (y + vs * MICRO_WAIST_Y < CT[ci]) CT[ci] = y + vs * MICRO_WAIST_Y;
+    }
     if (!c) {
       B.fill(0, o, o + 6);
       this.ringMicroTopY[id] = 0;

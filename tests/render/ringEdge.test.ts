@@ -10,6 +10,8 @@
  *    faded out with the camera height, so the forest stopped ~0.85 km from a low camera),
  *  - a near pair is culled by the bounds of the prefix it draws (the corner sectors beside a low camera at an edge reach
  *    it, but none of their trees is in view: they drew ~1250 trees, 106k vertices, for nothing),
+ *  - a far block is culled by the bounds of its trees per cell (the quarters beside an edge view whose boxes meet the
+ *    view, but none of whose trees do: ~2.9k of the 3.7k far block trees of the HIGH edge_t25 view),
  *  - the per-frame pass keeps its last result while nothing it depends on changed (a still view) and re-derives it when
  *    the camera moves or turns, the low-camera switch distance changes or the ring's data does,
  *  - the low cameras' mini crown (ringLow), folded as the ring shader folds it at low-camera weight 0, is exactly the high
@@ -231,6 +233,51 @@ describe('outer ring next to the map edge', () => {
     tr.update(cam);
     expect(audit(tr, R, cam).cut).toBe(0);
     expect([R.ring[0], R.ring[1]].some((m) => m && m.visible && m.count > 0)).toBe(true);
+    tr.dispose();
+  }, 300_000);
+
+  it('a far block is culled by the bounds of its trees per cell: the quarters beside an edge view whose boxes meet it, but none of whose trees do, draw nothing', () => {
+    const { st, tr, R } = make();
+    const W = st.size * CELL_SIZE;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    const RB = tr as unknown as { ringMicroBox: Float64Array };
+    const { top } = getMicroImpostorGeometries();
+    const box = new THREE.Box3(), hr = Math.max(0.5, RING_LOW_R);
+    let culled = 0;
+    // the bench's edge_t25 (400 m from a target ~100 m inside the west edge, 25 degrees down, looking west) and views
+    // along the edge from beside it
+    const t = (25 * Math.PI) / 180;
+    for (const [x, h, z, yaw, pitch] of [[104 + 400 * Math.cos(t), 400 * Math.sin(t), W / 2, Math.PI, Math.tan(t)], [300, 120, W / 2, Math.PI * 0.75, 0.3], [300, 120, W / 2, Math.PI * 1.25, 0.3], [250, 60, 400, Math.PI * 1.1, 0.15]]) {
+      // (counts cleared first: a block the pass leaves hidden before its view test - out of reach, faded out - keeps none)
+      for (const m of R.ringFar) if (m) m.count = 0;
+      pose(R, cam, x, h, z, yaw, pitch);
+      tr.update(cam);
+      tr.update(cam);
+      expect(audit(tr, R, cam).cut).toBe(0);
+      for (let id = 0; id < R.ringFar.length; id++) {
+        const m = R.ringFar[id];
+        // (a block left with a prefix to draw but hidden: by the view's test)
+        if (!m || m.visible || !m.count) continue;
+        const e = m.instanceMatrix.array as Float32Array, n = m.userData.ringCount as number, isTop = m.geometry === top;
+        // (each tree's shape: its foot +- RING_BOX_R x its xz scale, from its foot - ringLow - or the micro waist - top - up)
+        const treeBox = (j: number) => {
+          const o = j * 16, hs = Math.hypot(e[o], e[o + 2]) * hr, y = e[o + 13], vs = e[o + 5];
+          box.min.set(e[o + 12] - hs, y + (isTop ? vs * MICRO_WAIST_Y : 0), e[o + 14] - hs);
+          box.max.set(e[o + 12] + hs, y + vs, e[o + 14] + hs);
+          return box;
+        };
+        let y0 = Infinity;
+        for (let j = 0; j < n; j++) y0 = Math.min(y0, treeBox(j).min.y);
+        const B = RB.ringMicroBox, o = id * 6;
+        box.min.set(B[o], y0, B[o + 2]);
+        box.max.set(B[o + 3], B[o + 4], B[o + 5]);
+        if (!fr.intersectsBox(box)) continue;
+        // its box meets the view: none of its trees does
+        culled++;
+        for (let j = 0; j < n; j++) expect(fr.intersectsBox(treeBox(j))).toBe(false);
+      }
+    }
+    expect(culled).toBeGreaterThan(0);
     tr.dispose();
   }, 300_000);
 

@@ -25,7 +25,7 @@ import { getModelGeometry, registeredModelIds } from '../../src/assets/registry'
 import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { Surf } from '../../src/core/types';
 import { getBuildingMaterial, patchFoliageDepthMaterial, setFoliageSeason, sharedUniforms } from '../../src/assets/materials';
-import { MICRO_WAIST_Y, bareTreeProxy, getImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
+import { MICRO_WAIST_Y, RING_LOW_R, bareTreeProxy, getImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
 import { propLodGeometry } from '../../src/render/city/props/propLod';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
@@ -888,15 +888,19 @@ describe('outer ring trees', () => {
         expect(ringRand(e[j * 16 + 12], e[j * 16 + 14])).toBeGreaterThanOrEqual(keep - 1e-4);
       }
       if (m.count < n) cut++;
-      // (off screen: hidden by updateRingView's own test of the block's box - for the high cameras' shape, from the
-      // micro waist up - or left to three's sphere test)
+      // (off screen: hidden by updateRingView's own test of the block's box - and for a low camera near the edge of its
+      // cells' - for the high cameras' shape from the micro waist up, or left to three's sphere test: none of its trees'
+      // shapes is in view)
       if (m.visible && m.intersectsFrustum(fr)) submitted += m.count;
       else if (m.count > 0) {
         culled++;
-        const box = m.boundingBox!.clone();
-        box.min.y = Infinity;
-        for (let j = 0; j < n; j++) box.min.y = Math.min(box.min.y, e[j * 16 + 13] + e[j * 16 + 5] * MICRO_WAIST_Y);
-        expect(fr.intersectsBox(box)).toBe(false);
+        const box = new THREE.Box3();
+        for (let j = 0; j < n; j++) {
+          const o = j * 16, hs = Math.hypot(e[o], e[o + 2]) * Math.max(0.5, RING_LOW_R), vs = e[o + 5];
+          box.min.set(e[o + 12] - hs, e[o + 13] + vs * MICRO_WAIST_Y, e[o + 14] - hs);
+          box.max.set(e[o + 12] + hs, e[o + 13] + vs, e[o + 14] + hs);
+          expect(fr.intersectsBox(box)).toBe(false);
+        }
       }
     }
     expect(total).toBe(tr.ringInstances);
