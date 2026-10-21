@@ -21,9 +21,9 @@ import { sharedUniforms } from '../../assets/materials';
 import { NetInfo } from './common/netinfo';
 import { RoadSurface } from './common/surface';
 import { TileCuller } from './common/batch';
-import { cityUniforms, syncCityMaterials } from './common/cityMaterial';
+import { cityUniforms, releaseCityMaterials, syncCityMaterials } from './common/cityMaterial';
 import { RoadRenderer } from './roads/RoadRenderer';
-import { roadUniforms } from './roads/roadMaterial';
+import { releaseRoadMaterial, roadUniforms } from './roads/roadMaterial';
 import { PropRenderer, propGeometry } from './props/PropRenderer';
 import { PowerLines } from './props/PowerLines';
 import { BuildingRenderer } from './buildings/BuildingRenderer';
@@ -439,5 +439,9 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.previews.dispose();
     this.underground.dispose();
     this.emergency.dispose();
+    // (the module-level materials shared by every city view: this renderer's dispose listeners on them kept it — and
+    // the exited city — reachable)
+    releaseCityMaterials();
+    releaseRoadMaterial();
   }
 }

@@ -460,3 +460,9 @@ export function getRoadMaterial(): THREE.MeshStandardMaterial {
   _mat = m;
   return m;
 }
+
+/** Teardown of a city view (CityObjectsView.dispose): as releaseCityMaterials (cityMaterial.ts) for the shared road
+ *  material — each renderer that drew with it drops its programs and the dispose listener that kept it reachable */
+export function releaseRoadMaterial(): void {
+  _mat?.dispose();
+}

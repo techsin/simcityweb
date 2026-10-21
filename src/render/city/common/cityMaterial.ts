@@ -123,6 +123,17 @@ export function getGhostMaterial(): THREE.MeshStandardMaterial {
   return (_ghost ??= derive('ghost-v1', true));
 }
 
+/**
+ * Teardown of a city view (CityObjectsView.dispose): every renderer that drew with the shared city / ghost material
+ * keeps a dispose listener on it, which keeps that renderer — its canvas and the city scene around it — reachable after
+ * the view is gone. dispose() makes each such renderer drop its programs and the listener; the materials stay cached
+ * and compile again on next use.
+ */
+export function releaseCityMaterials(): void {
+  _city?.dispose();
+  _ghost?.dispose();
+}
+
 /** keep simple scalar properties in sync with the shared uber material (render-world may tweak them) */
 export function syncCityMaterials(): void {
   const base = getBuildingMaterial();

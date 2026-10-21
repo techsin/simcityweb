@@ -2434,5 +2434,8 @@ export class BuildingRenderer {
     this.disposed = true;
     this.fadeLayer.dispose();
     this.batch.dispose();
+    // (the module-level fade material: the renderer's dispose listener on it kept that renderer and the exited city
+    // reachable; it stays cached and compiles again on next use)
+    _fadeMat?.dispose();
   }
 }

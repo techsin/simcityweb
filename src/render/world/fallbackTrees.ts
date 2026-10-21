@@ -200,6 +200,19 @@ export function getMicroImpostorGeometries() {
 }
 
 /**
+ * Teardown of a world view (WorldView.dispose): every renderer that drew a cached tree geometry (built-in fallbacks,
+ * impostors, micro impostors) keeps a dispose listener on it, which keeps that renderer — its canvas and the city scene
+ * around it — reachable after the view is gone. dispose() makes each such renderer drop its GPU buffers and the
+ * listener; the geometries stay cached and upload again on next use.
+ */
+export function releaseTreeGeometries(): void {
+  for (const g of fbCache.values()) g.dispose();
+  _impostors?.broad.dispose();
+  _impostors?.conifer.dispose();
+  if (_micro) for (const g of [_micro.broad, _micro.conifer, _micro.top, _micro.ringLow]) g.dispose();
+}
+
+/**
  * Opaque mid-distance proxy of a BARE (see-through twig) nature tree, for LODs that cannot draw see-through (props'
  * street trees, propLod): a trunk and a slim twig spindle (~55% of the crown's radius, from a third of the height up)
  * in the twig colour, so the ground shows around a bare tree as it does between its twigs - not a brown ball the size

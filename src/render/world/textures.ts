@@ -138,6 +138,16 @@ export function getWaveNormalTexture(size = 256): THREE.DataTexture {
   return _waveNormal;
 }
 
+/**
+ * Teardown of a world view (WorldView.dispose): every renderer that used a shared texture keeps a dispose listener on
+ * it, which keeps that renderer — its canvas and the city scene around it — reachable after the view is gone. dispose()
+ * makes each such renderer drop its GPU copy and the listener; the textures stay cached and upload again on next use.
+ */
+export function releaseSharedTextures(): void {
+  _noise?.dispose();
+  _waveNormal?.dispose();
+}
+
 /** Tiny 1D ramp texture (N x 1 RGBA8) from css color stops [{t, color, a}] */
 export function makeRampTexture(stops: { t: number; color: string | number; a?: number }[], width = 128, target?: THREE.DataTexture): THREE.DataTexture {
   const data = target ? (target.image.data as Uint8Array) : new Uint8Array(width * 4);

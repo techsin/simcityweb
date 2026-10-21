@@ -391,6 +391,10 @@ export class CityScene {
       console.warn(e);
     }
     this.uiEvents.clear();
+    // the WebGL canvas leaves the scene's DOM first: anything that still holds the disposed renderer (three.js keeps it
+    // in the dispose listeners of every material / geometry / texture it drew, some of them module-level) holds its
+    // canvas — attached, that pinned this detached tree, its listeners and so the whole exited city (close-out c1)
+    this.canvas.remove();
     this.root.remove();
   }
 

@@ -24,6 +24,8 @@ import { SkySystem } from './Sky';
 import { TerrainRenderer } from './TerrainRenderer';
 import { TreeRenderer } from './TreeRenderer';
 import { WaterRenderer } from './WaterRenderer';
+import { releaseSharedTextures } from './textures';
+import { releaseTreeGeometries } from './fallbackTrees';
 
 export { overlayLegend } from './overlays';
 export { QUALITY_PRESETS, detectQuality, type QualitySettings } from './quality';
@@ -1052,6 +1054,9 @@ export class WorldView implements WorldViewApi {
   dispose(): void {
     if (this._disposed) return;
     this._disposed = true;
+    // three's DFG LUT (r186: one module-level texture for every renderer, bound to the physical materials' programs):
+    // read from a material's program uniforms before the disposes below release them, disposed at the end
+    const lut = (this.renderer.properties.get(this.terrain.material) as { uniforms?: { dfgLUT?: { value?: THREE.Texture | null } } } | undefined)?.uniforms?.dfgLUT?.value;
     for (const u of this.unsub) u();
     this.unsub = [];
     this.cameraController.dispose();
@@ -1064,6 +1069,14 @@ export class WorldView implements WorldViewApi {
       sh.map?.depthTexture?.dispose();
       sh.map?.dispose();
     }
+    // module-level objects outlive this view and kept it — with its renderer, canvas and city — reachable after an
+    // exit to the region: hideEmpty's scan stack still held this scene's meshes (a TreeMesh -> the CityState), and every
+    // shared texture / tree geometry / the DFG LUT this renderer used holds its dispose listener. Clear the stack and
+    // dispose those (each renderer drops its GPU copy and its listener; they stay cached and upload again on next use)
+    _scan.length = 0;
+    releaseSharedTextures();
+    releaseTreeGeometries();
+    lut?.dispose();
     this.renderer.dispose();
   }
 }
