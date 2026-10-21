@@ -25,7 +25,7 @@ import { getModelGeometry, registeredModelIds } from '../../src/assets/registry'
 import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { Surf } from '../../src/core/types';
 import { getBuildingMaterial, patchFoliageDepthMaterial, setFoliageSeason, sharedUniforms } from '../../src/assets/materials';
-import { bareTreeProxy, getImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
+import { MICRO_WAIST_Y, bareTreeProxy, getImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
 import { propLodGeometry } from '../../src/render/city/props/propLod';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
@@ -888,11 +888,15 @@ describe('outer ring trees', () => {
         expect(ringRand(e[j * 16 + 12], e[j * 16 + 14])).toBeGreaterThanOrEqual(keep - 1e-4);
       }
       if (m.count < n) cut++;
-      // (off screen: hidden by updateRingView's own test of the block's box, or left to three's sphere test)
+      // (off screen: hidden by updateRingView's own test of the block's box - for the high cameras' shape, from the
+      // micro waist up - or left to three's sphere test)
       if (m.visible && m.intersectsFrustum(fr)) submitted += m.count;
       else if (m.count > 0) {
         culled++;
-        expect(fr.intersectsBox(m.boundingBox!)).toBe(false);
+        const box = m.boundingBox!.clone();
+        box.min.y = Infinity;
+        for (let j = 0; j < n; j++) box.min.y = Math.min(box.min.y, e[j * 16 + 13] + e[j * 16 + 5] * MICRO_WAIST_Y);
+        expect(fr.intersectsBox(box)).toBe(false);
       }
     }
     expect(total).toBe(tr.ringInstances);
