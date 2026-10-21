@@ -1148,8 +1148,15 @@ export class BuildingRenderer {
     this.batch.shareSphere(geom, id, PROXY_PAD);
     this.lodMap.set(geom, id);
     // the model's empty cross-fade stand-in comes with its proxy (3 vertices in the space reserved at load: creating it
-    // at the first fade could grow the batch's whole vertex buffer in the middle of a zoom)
-    if (id !== geom) this.emptyOf(geom);
+    // at the first fade could grow the batch's whole vertex buffer in the middle of a zoom). One made before the proxy
+    // (the load's warm-up sweep, see warmProxy) takes the model's culling sphere again: sharing it with a proxy that
+    // reaches out of the model's bounds widened the model's sphere, and a stand-in left on the old one would make every
+    // fade's swap to it and back a sphere rewrite and list rebuild instead of a draw-range patch
+    if (id !== geom) {
+      const e = this.emptyMap.get(geom);
+      if (e !== undefined) this.batch.shareSphere(geom, e, PROXY_PAD);
+      else this.emptyOf(geom);
+    }
     const w = this.lodWaiting.get(geom);
     if (w) {
       this.lodWaiting.delete(geom);

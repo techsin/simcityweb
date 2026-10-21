@@ -22,6 +22,7 @@ import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { registerAllModels } from '../../src/assets/builders';
 import { MANIFEST_BY_ID } from '../../src/assets/manifest';
+import { getModelGeometry } from '../../src/assets/registry';
 import { lotTwigs, setLotTwigStrip } from '../../src/assets/builders/winterTwigs';
 import { buildLodProxy } from '../../src/render/city/buildings/lodProxy';
 import { DynamicBatch, TileCuller } from '../../src/render/city/common/batch';
@@ -430,6 +431,31 @@ describe('load warm-up (LOD part)', () => {
     // nothing was built or requested, and every level, stand-in, band and priority is back
     expect(built).not.toHaveBeenCalled();
     expect(snap()).toEqual(s0);
+  });
+
+  it('a stand-in made before its proxy arrives shares the culling sphere the proxy leaves the model with', () => {
+    const br = town(6);
+    type B = { geoSid: Int32Array | number[]; geoSphere: THREE.Sphere[] };
+    const f = br as unknown as { lodPending: Map<number, unknown>; emptyOf(g: number): number; installProxy(g: number, p: THREE.BufferGeometry | null): number };
+    const b = br.batch as unknown as B;
+    const geom = [...f.lodPending.keys()][0];
+    expect(geom).toBeTypeOf('number');
+    // the warm-up sweep's stand-in, made while the proxy is still being built
+    const e = f.emptyOf(geom);
+    expect(b.geoSid[e]).toBe(b.geoSid[geom]);
+    // a proxy reaching out of the model's bounds: model and proxy share a wider sphere
+    const g0 = b.geoSphere[geom].clone();
+    const [model, variant] = f.lodPending.get(geom) as [string, number];
+    const big = getModelGeometry(model, variant).clone();
+    big.translate(g0.radius * 3, 0, 0);
+    const p = f.installProxy(geom, big);
+    expect(p).not.toBe(geom);
+    expect(b.geoSphere[geom].radius).toBeGreaterThan(g0.radius);
+    expect(b.geoSid[p]).toBe(b.geoSid[geom]);
+    // ... and so does the stand-in (a fade's swap to it and back only patches draw ranges)
+    expect(b.geoSid[e]).toBe(b.geoSid[geom]);
+    expect(b.geoSphere[e].radius).toBe(b.geoSphere[geom].radius);
+    expect(b.geoSphere[e].center.equals(b.geoSphere[geom].center)).toBe(true);
   });
 });
 

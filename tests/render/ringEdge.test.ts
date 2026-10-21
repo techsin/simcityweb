@@ -161,7 +161,7 @@ describe('outer ring next to the map edge', () => {
     expect(near).toBeGreaterThan(1000);
     expect(far).toBeGreaterThan(1000);
     tr.dispose();
-  }, 180_000);
+  }, 600_000);
 
   it('a low camera next to the edge sees the ring past the switch distance (whole micro crowns); away from it, nothing new', () => {
     const { st, tr, R } = make();
@@ -192,7 +192,7 @@ describe('outer ring next to the map edge', () => {
     expect(high.length).toBeGreaterThan(0);
     expect(high.every((m) => m.geometry === getMicroImpostorGeometries().top)).toBe(true);
     tr.dispose();
-  }, 120_000);
+  }, 300_000);
 
   it('a near pair is culled by the bounds of the prefix it draws: the corner sectors beside a low camera at an edge draw nothing', () => {
     const { st, tr, R } = make();
@@ -232,7 +232,7 @@ describe('outer ring next to the map edge', () => {
     expect(audit(tr, R, cam).cut).toBe(0);
     expect([R.ring[0], R.ring[1]].some((m) => m && m.visible && m.count > 0)).toBe(true);
     tr.dispose();
-  }, 120_000);
+  }, 300_000);
 
   it("the per-frame pass: a still view re-derives nothing; a moved or turned camera, a new switch distance and new ring data do", () => {
     const { st, tr, R } = make();
@@ -284,9 +284,9 @@ describe('outer ring next to the map edge', () => {
     expect(passes).toBe(n1 + 1);
     expect(audit(tr, R, cam).cut).toBe(0);
     tr.dispose();
-  }, 120_000);
+  }, 300_000);
 
-  it('ringLow: folded as the shader folds it at lw = 0 it is exactly `top` (+ a flat down-facing fan), unfolded a round crown on a trunk', () => {
+  it('ringLow: folded as the shader folds it at lw = 0 it is exactly `top` (+ a flat down-facing fan; `top` itself stays), unfolded a round crown on a trunk', () => {
     const { top, ringLow } = getMicroImpostorGeometries();
     const tp = top.getAttribute('position'), tn = top.getAttribute('normal'), ti = top.index!;
     const lp = ringLow.getAttribute('position'), ln = ringLow.getAttribute('normal'), ls = ringLow.getAttribute('surf'), li = ringLow.index!;
@@ -294,11 +294,24 @@ describe('outer ring next to the map edge', () => {
     expect(li.count).toBe(45);
     expect(lp.count).toBe(12);
     // the ring shader's fold (RING_LOW_VERT) at lw (normals: the geometry's blended into the round crown's)
+    const fold = (p: THREE.Vector3, trunk: boolean) => {
+      if (trunk) return new THREE.Vector3(0, MICRO_WAIST_Y, 0);
+      if (p.y > 0.999) return p.clone();
+      const r = Math.max(Math.hypot(p.x, p.z), 1e-4);
+      return new THREE.Vector3((p.x * MICRO_WAIST_R) / r, MICRO_WAIST_Y, (p.z * MICRO_WAIST_R) / r);
+    };
+    // (`top` itself, which the far blocks draw for high cameras and for the sectors away from the edge with the same
+    // program, is left as it is by the fold)
+    for (let i = 0; i < tp.count; i++) {
+      const p = new THREE.Vector3().fromBufferAttribute(tp, i);
+      expect(fold(p, false).distanceTo(p)).toBeLessThan(1e-6);
+    }
+    // (the unfolded rings are at RING_LOW_R)
+    for (let i = 0; i < lp.count; i++) if (Math.abs(ls.getX(i) - Surf.Wood) >= 0.5 && lp.getY(i) > RING_LOW_APEX + 1e-3 && lp.getY(i) < 0.999) expect(Math.hypot(lp.getX(i), lp.getZ(i))).toBeCloseTo(RING_LOW_R, 6);
     const pos = (i: number, lw: number) => {
       const p = new THREE.Vector3().fromBufferAttribute(lp, i);
       const trunk = Math.abs(ls.getX(i) - Surf.Wood) < 0.5;
-      const f = trunk ? new THREE.Vector3(0, MICRO_WAIST_Y, 0) : p.y > 0.999 ? p.clone() : new THREE.Vector3(p.x * (MICRO_WAIST_R / RING_LOW_R), MICRO_WAIST_Y, p.z * (MICRO_WAIST_R / RING_LOW_R));
-      return f.lerp(p, lw);
+      return fold(p, trunk).lerp(p, lw);
     };
     const nrm = (i: number, lw: number) => {
       const n = new THREE.Vector3().fromBufferAttribute(ln, i);

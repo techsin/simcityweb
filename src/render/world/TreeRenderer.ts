@@ -627,7 +627,10 @@ if (uRingQ.y > 0.0 && uRingP.y < 1.0) {
   // 240 m, to ~185 m above the ground)
   _lw = smoothstep(0.0, ${RING_LOW_FULL.toFixed(3)}, _lw);
   bool _tk = abs(surf.x - ${Surf.Wood.toFixed(1)}) < 0.5;
-  vec3 _f = _tk ? vec3(0.0, ${MICRO_WAIST_Y.toFixed(4)}, 0.0) : position.y > 0.999 ? position : vec3(position.x * ${(MICRO_WAIST_R / RING_LOW_R).toFixed(6)}, ${MICRO_WAIST_Y.toFixed(4)}, position.z * ${(MICRO_WAIST_R / RING_LOW_R).toFixed(6)});
+  // (folded: the apex stays, every other crown vertex goes to the micro waist circle in its own direction - so the
+  // upper half itself (top), which the far blocks of the sectors away from the edge draw, is left as it is)
+  vec3 _f = _tk ? vec3(0.0, ${MICRO_WAIST_Y.toFixed(4)}, 0.0) : position.y > 0.999 ? position
+    : vec3(position.x, 0.0, position.z) * (${MICRO_WAIST_R.toFixed(4)} / max(length(position.xz), 1e-4)) + vec3(0.0, ${MICRO_WAIST_Y.toFixed(4)}, 0.0);
   transformed = mix(_f, position, _lw);
   if (!_tk) {
     vec3 _rn = vec3(position.x * ${(1 / (RING_LOW_R * RING_LOW_R)).toFixed(6)}, (position.y - ${((1 + RING_LOW_APEX) / 2).toFixed(6)}) * ${(4 / ((1 - RING_LOW_APEX) * (1 - RING_LOW_APEX))).toFixed(6)}, position.z * ${(1 / (RING_LOW_R * RING_LOW_R)).toFixed(6)});
@@ -1001,6 +1004,8 @@ export class TreeRenderer {
   private ringMicroR: (Float32Array | null)[] = new Array(RING_N * RING_SUB).fill(null);
   private ringMicroN = new Int32Array(RING_N * RING_SUB);
   private ringMicroBox = new Float64Array(RING_N * RING_SUB * 6);
+  /** ... and the lowest point of their high-camera shape (`top`: from the micro waist up), per block */
+  private ringMicroTopY = new Float64Array(RING_N * RING_SUB);
   /** the far ring's block meshes (TREE_RING), one per block */
   private ringFar: (TreeMesh | null)[] = new Array(RING_N * RING_SUB).fill(null);
   /** sectors (bits) whose micro impostors changed: their block meshes are uploaded by the next ring steps */
@@ -2340,9 +2345,9 @@ export class TreeRenderer {
           m.visible = false;
           continue;
         }
-        // (the farthest a tree's foot can be: the block box's farthest corner, its trees' feet up to ~30 m below it)
+        // (the farthest a tree's foot can be: the block box's farthest corner, the box holding every tree from its foot)
         const fx = Math.max(Math.abs(px - B[o]), Math.abs(px - B[o + 3])), fz = Math.max(Math.abs(pz - B[o + 2]), Math.abs(pz - B[o + 5]));
-        const fy = Math.max(Math.abs(py - B[o + 1]), Math.abs(py - B[o + 4])) + 30;
+        const fy = Math.max(Math.abs(py - B[o + 1]), Math.abs(py - B[o + 4]));
         if (fx * fx + fy * fy + fz * fz < inner * inner) {
           m.visible = false;
           continue;
@@ -2359,8 +2364,10 @@ export class TreeRenderer {
           else hi = mid;
         }
         m.count = lo;
-        // (with the view's camera: culled by the block's box, tighter than three's bounding sphere)
-        m.visible = lo > 0 && (!view || _rvF.intersectsBox(_rvB.set(_rvP.set(B[o], B[o + 1], B[o + 2]), _rvQ.set(B[o + 3], B[o + 4], B[o + 5]))));
+        // (with the view's camera: culled by the block's box, tighter than three's bounding sphere; the high cameras'
+        // shape starts at the micro waist)
+        const y0 = geo === mg.top ? this.ringMicroTopY[id] : B[o + 1];
+        m.visible = lo > 0 && (!view || _rvF.intersectsBox(_rvB.set(_rvP.set(B[o], y0, B[o + 2]), _rvQ.set(B[o + 3], B[o + 4], B[o + 5]))));
       }
     }
     // the frame after a flushRing (load, quality change, reset): every ring mesh with trees is drawn, a hidden one with no
@@ -2944,6 +2951,7 @@ export class TreeRenderer {
     if (!cc || cc.length < Math.max(1, c) * 3) cc = new Float32Array(Math.max(1, c) * 3);
     B[o] = B[o + 1] = B[o + 2] = Infinity;
     B[o + 3] = B[o + 4] = B[o + 5] = -Infinity;
+    let ty = Infinity;
     for (let j = 0; j < c; j++) {
       const i = idx[j], s = i * 16, d = j * 16;
       for (let e = 0; e < 16; e++) m[d + e] = micro[s + e];
@@ -2960,8 +2968,13 @@ export class TreeRenderer {
       if (x + hs > B[o + 3]) B[o + 3] = x + hs;
       if (y + vs > B[o + 4]) B[o + 4] = y + vs;
       if (z + hs > B[o + 5]) B[o + 5] = z + hs;
+      if (y + vs * MICRO_WAIST_Y < ty) ty = y + vs * MICRO_WAIST_Y;
     }
-    if (!c) B.fill(0, o, o + 6);
+    this.ringMicroTopY[id] = ty;
+    if (!c) {
+      B.fill(0, o, o + 6);
+      this.ringMicroTopY[id] = 0;
+    }
     this.ringMicro[id] = m;
     this.ringMicroCol[id] = cc;
     this.ringMicroR[id] = rr;
