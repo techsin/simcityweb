@@ -202,6 +202,12 @@ export class Previews {
     for (const g of this.edgeCache.values()) g.dispose();
     this.ribbonMat.dispose();
     if (this.pylons) this.pylons.dispose();
+    // (close-out c1) the asset registry's shared, cached geometries drawn here directly — each plop ghost's model (one
+    // outline per model in edgeCache) and a power-line preview's pylon: each renderer that drew one keeps a dispose
+    // listener on it, which kept that renderer (its canvas and GL context) reachable after an exit to the region.
+    // dispose() makes each renderer drop its GPU copy and the listener; the registry keeps them cached
+    for (const model of this.edgeCache.keys()) getModelGeometry(model, 0).dispose();
+    propGeometry('util_power_pylon', 0).dispose();
   }
 }
 

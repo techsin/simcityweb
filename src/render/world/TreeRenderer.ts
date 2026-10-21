@@ -2903,5 +2903,10 @@ export class TreeRenderer {
     this.depthFarPlainA.dispose();
     this.depthNearA.dispose();
     this.depthFarA.dispose();
+    // (close-out c1) the kinds' model geometries are the asset registry's shared, cached ones (getNatureGeometry), drawn
+    // here directly: each renderer that drew one keeps a dispose listener on it, which kept that renderer — its canvas
+    // and GL context — reachable after an exit to the region, one more per visit. dispose() makes each renderer drop its
+    // GPU copy and the listener; the geometries stay cached and upload again for the next city
+    for (const k of this.kinds) k.geo.dispose();
   }
 }

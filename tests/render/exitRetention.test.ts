@@ -12,6 +12,11 @@
  * renderer drops its GPU copy and its listener; they stay cached and upload / compile again for the next city — and
  * clear the scan stack. Here a stand-in renderer "draws" them the way three.js does; after the teardown nothing may
  * keep it (or the scanned scene) reachable. The whole-game check is the exit / re-enter probe (CityScene count stays 1).
+ *
+ * With the city gone, the probe still counted one more WebGLRenderer, canvas and WebGL2 context per visit (a heap
+ * snapshot: each old renderer reachable only through the dispose listeners on the asset registry's tree / bush / rock
+ * geometries, which TreeRenderer draws directly). The tree renderer and the previews (plop ghosts, power-line pylons:
+ * registry geometries drawn directly too) now release theirs, and the world view drops its GL context at once.
  */
 import { describe, expect, it } from 'vitest';
 import v8 from 'node:v8';
@@ -24,8 +29,12 @@ import { CityObjectsView } from '../../src/render/city/CityObjectsView';
 import { getCityMaterial, getGhostMaterial } from '../../src/render/city/common/cityMaterial';
 import { getRoadMaterial } from '../../src/render/city/roads/roadMaterial';
 import { WorldView } from '../../src/render/world/WorldView';
+import { TreeRenderer } from '../../src/render/world/TreeRenderer';
+import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
 import { getNoiseTexture, getWaveNormalTexture } from '../../src/render/world/textures';
-import { getImpostorGeometries, getMicroImpostorGeometries } from '../../src/render/world/fallbackTrees';
+import { getImpostorGeometries, getMicroImpostorGeometries, getNatureGeometry } from '../../src/render/world/fallbackTrees';
+import { getModelGeometry } from '../../src/assets/registry';
+import { registerAllModels } from '../../src/assets/builders';
 
 v8.setFlagsFromString('--expose_gc');
 const gc = vm.runInNewContext('gc') as () => void;
@@ -80,6 +89,51 @@ describe('exit to region: nothing module-level keeps the disposed city view reac
     expect(getRoadMaterial()).toBe(shared[2]);
   });
 
+  it("a city view teardown releases the registry models its plop ghosts and power-line previews drew", async () => {
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 7, terrain: 'flat', treeDensity: 0, waterAmount: 0, disasters: false }));
+    const sim = new Simulation(st, []);
+    const view = new CityObjectsView(st, sim.events, {
+      scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(), renderer: {} as THREE.WebGLRenderer, canvas: {} as HTMLCanvasElement,
+    });
+    const pv = view.previews as unknown as { ghost: THREE.Mesh; pylons: THREE.InstancedMesh | null };
+    // a player previews two buildings and a power line, then puts the tools away (ghost hidden, pylons removed): the
+    // ghost and the pylons draw the asset registry's own geometries
+    view.setGhost('civ_fire_station', 20, 20);
+    const first = pv.ghost.geometry;
+    view.setGhost('civ_police_station', 26, 20);
+    const second = pv.ghost.geometry;
+    view.setNetworkPreview([{ x: 10, z: 10 }, { x: 11, z: 10 }, { x: 12, z: 10 }], 'power');
+    const pylon = pv.pylons!.geometry;
+    const drawn = [first, second, pylon];
+    for (const g of drawn) expect(getModelGeometry(g.name.replace(/#\d+$/, ''), 0), g.name).toBe(g);
+    const renderer = drawWith(drawn);
+    view.setGhost(null);
+    view.setNetworkPreview(null);
+    expect(pv.pylons).toBeNull();
+    view.dispose();
+    for (const g of drawn) expect(listeners(g), g.name).toBe(0);
+    expect(await collected(renderer)).toBe(true);
+    // (still the registry's cached objects for the next city)
+    for (const g of drawn) expect(getModelGeometry(g.name.replace(/#\d+$/, ''), 0)).toBe(g);
+  });
+
+  it('a tree renderer teardown releases the registry tree / bush / rock geometries it drew directly', async () => {
+    registerAllModels();
+    const st = createCityState(defaultCityConfig({ size: 64, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
+    const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
+    const kinds = (tr as unknown as { kinds: { id: string; variant: number; geo: THREE.BufferGeometry }[] }).kinds;
+    const geos = [...new Set(kinds.map((k) => k.geo))];
+    // (the kinds draw the registry's cached geometries — tree_oak#0, bush#1, rock#0, … in the probe's heap snapshot)
+    expect(geos.length).toBeGreaterThan(3);
+    for (const k of kinds) expect(k.geo.name, k.id).toBe(`${k.id}#${k.variant}`);
+    const renderer = drawWith(geos);
+    tr.dispose();
+    for (const g of geos) expect(listeners(g), g.name).toBe(0);
+    expect(await collected(renderer)).toBe(true);
+    // (still the cached objects for the next city)
+    for (const k of kinds) expect(getNatureGeometry(k.id, k.variant)).toBe(k.geo);
+  });
+
   /** the WorldView fields its hideEmpty() and dispose() use, with no WebGL behind them */
   function standInView(lut: THREE.Texture, city: object) {
     const scene = new THREE.Scene();
@@ -89,27 +143,36 @@ describe('exit to region: nothing module-level keeps the disposed city view reac
     scene.add(new THREE.Group().add(leaf));
     const terrainMaterial = new THREE.MeshStandardMaterial();
     const noop = { dispose: () => undefined };
+    const gl = { lost: 0 };
     return {
       scene, renders: 0, instancedAt: -1, instanced: [] as THREE.Mesh[], hiddenEmpty: [] as THREE.Mesh[], nHidden: 0,
       _disposed: false, unsub: [] as (() => void)[], cameraController: noop, water: noop, trees: noop, sky: noop, post: noop,
       terrain: { material: terrainMaterial, dispose: () => undefined },
       sun: { dirShadow: {}, cascadeShadow: {} },
+      gl,
       // (three binds its shared DFG LUT into the programs of the physical materials: properties.get(material).uniforms)
-      renderer: { properties: { get: (m: unknown) => (m === terrainMaterial ? { uniforms: { dfgLUT: { value: lut } } } : {}) }, dispose: () => undefined },
+      renderer: {
+        properties: { get: (m: unknown) => (m === terrainMaterial ? { uniforms: { dfgLUT: { value: lut } } } : {}) },
+        dispose: () => undefined,
+        forceContextLoss: () => { gl.lost++; },
+      },
     };
   }
 
   const proto = WorldView.prototype as unknown as { hideEmpty(this: object): void; dispose(this: object): void };
 
-  it("a world view teardown releases the shared textures, tree geometries and three's DFG LUT", async () => {
+  it("a world view teardown releases the shared textures, tree geometries and three's DFG LUT, and drops its GL context", async () => {
     const imp = getImpostorGeometries(), micro = getMicroImpostorGeometries();
     // (three's DFG LUT is module-private in three.js: a stand-in, found the way the teardown finds it)
     const lut = new THREE.DataTexture(new Uint8Array(4), 1, 1);
     const shared: object[] = [getNoiseTexture(), getWaveNormalTexture(), imp.broad, imp.conifer, micro.broad, micro.conifer, micro.top, micro.ringLow, lut];
     const renderer = drawWith(shared);
-    proto.dispose.call(standInView(lut, {}));
+    const view = standInView(lut, {});
+    proto.dispose.call(view);
     for (const o of shared) expect(listeners(o), (o as { name?: string }).name).toBe(0);
     expect(await collected(renderer)).toBe(true);
+    // (its context is lost at once: nothing that may still reach the disposed renderer holds GPU memory)
+    expect(view.gl.lost).toBe(1);
     // (still the cached objects for the next city)
     expect(getImpostorGeometries()).toBe(imp);
     expect(getNoiseTexture()).toBe(shared[0]);

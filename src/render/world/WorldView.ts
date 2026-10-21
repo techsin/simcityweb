@@ -1078,6 +1078,9 @@ export class WorldView implements WorldViewApi {
     releaseTreeGeometries();
     lut?.dispose();
     this.renderer.dispose();
+    // (close-out c1) and its GL context goes at once, as RegionView / MenuBackground do: whatever might still reach the
+    // disposed renderer holds no drawing buffer or GPU memory until it is collected
+    this.renderer.forceContextLoss();
   }
 }
 
