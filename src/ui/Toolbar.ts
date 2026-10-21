@@ -22,6 +22,15 @@ function hotkeyOf(spec: ToolSpec): string | undefined {
   return spec.hotkey;
 }
 
+/** the footer of a tool card's tooltip: its hotkey, or how to pick it — none for a locked or disabled card, which does
+ *  not select (the box above it says why; close-out c1: "Click to select · R rotates while placing" sat under "In ruins
+ *  — bulldoze its ruins first") */
+export function specTipFooter(s: Pick<ToolSpec, 'id' | 'hotkey' | 'def' | 'locked' | 'disabled'>): string {
+  if (s.locked || s.disabled) return '';
+  if (s.hotkey) return `<div class="rt-key">Hotkey <kbd>${s.hotkey}</kbd>${s.id.startsWith('plop:') ? '' : ' (press again to cycle)'}</div>`;
+  return s.def ? '<div class="rt-key">Click to select · <kbd>R</kbd> rotates while placing</div>' : '';
+}
+
 export class Toolbar {
   readonly el: HTMLDivElement;
   private bar: HTMLDivElement;
@@ -418,7 +427,7 @@ export class Toolbar {
     }
     const lock = s.locked ? `<div class="rt-lock">${icon('lock', 14)}<div><b>Locked</b><br>${escapeHtml(s.locked.hint)}${s.locked.progress !== undefined ? ` · ${Math.round(s.locked.progress * 100)}%` : ''}</div></div>` : '';
     const dis = s.disabled ? `<div class="rt-lock">${icon('alert', 14)}<div>${escapeHtml(s.disabled)}</div></div>` : '';
-    const key = s.hotkey ? `<div class="rt-key">Hotkey <kbd>${s.hotkey}</kbd>${s.id.startsWith('plop:') ? '' : ' (press again to cycle)'}</div>` : s.def ? `<div class="rt-key">Click to select · <kbd>R</kbd> rotates while placing</div>` : '';
+    const key = specTipFooter(s);
     this.tip.style.width = '270px';
     const notes = hints.length ? `<div class="rt-notes">${hints.map((t) => `<div>${escapeHtml(t)}</div>`).join('')}</div>` : '';
     this.tip.innerHTML = `<div class="rt-cat" style="color:${catColor}">${escapeHtml(cat)}</div><h4>${escapeHtml(s.label)}</h4>${s.desc ? `<p>${escapeHtml(s.desc)}</p>` : '<div style="height:6px"></div>'}<div class="rt-rows">${rows.map(([a, b]) => `<span>${a}</span><span>${b}</span>`).join('')}</div>${notes}${lock}${dis}${key}`;

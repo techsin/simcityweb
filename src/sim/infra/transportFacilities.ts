@@ -293,6 +293,18 @@ function wantedText(wantedRiders: number, room: number): string {
   return `about ${fmt(Math.round(wantedRiders / p) * p)} commuters would use it`;
 }
 
+/** a parking garage's warning without a road beside it: drivers can't reach it, so it serves nobody */
+const GARAGE_NO_ROAD = 'No road access — drivers can\'t reach it; build a road beside it';
+/**
+ * the no-road warning a transport facility's inspector warnings lead with, or null (close-out c1): a parking garage with
+ * no road beside it serves nobody, so facilities.ts puts this first and its power warning quotes no share of its work
+ * (it read "No power — its staff can't work (jobs cut)" ahead of the road). The part below repeats it; the report
+ * de-duplicates its warnings.
+ */
+export function transportNoRoadLead(st: CityState, b: Building): string | null {
+  return kindOf(b.def) === 'tr_parking_garage' && isFunctional(b) && !roadNext(st, b) ? GARAGE_NO_ROAD : null;
+}
+
 /** transport part of a facility's inspector report; null = not a transport facility */
 export function transportFacilityReport(sim: Simulation, b: Building): TransportFacilityPart | null {
   const kind = kindOf(b.def);
@@ -409,7 +421,7 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
         } else warnings.push(`No transit stop within ${PR_STOP_RADIUS} tiles and no businesses nearby — it serves nobody here`);
       };
       let prCars = 0;
-      if (!road) warnings.push('No road access — drivers can\'t reach it; build a road beside it');
+      if (!road) warnings.push(GARAGE_NO_ROAD);
       else if (!g || g.state === 'noRoad') {
         // placed since the last traffic update (or its road is newer than the road graph): what the preview promised
         const near = tr.stopsNear(st, b.x, b.z, b.w, b.d);

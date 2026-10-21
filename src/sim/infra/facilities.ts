@@ -872,6 +872,11 @@ function staffLine(c: Ctx, tier: boolean): void {
     add(c, 'staff', 'Staff', `${fmt(s.jobs)} / ${fmt(jobs)}${eff < 0.995 ? ` — staffing effect ${change(eff)}` : ''}`, {
       ratio: Math.min(1, s.jobs / jobs), status: low ? 'bad' : s.rel < 0.95 ? 'warn' : 'ok', hint: text,
     });
+  } else if (tier && roadlessBeforeStaffing(st, b)) {
+    // (close-out c1: before its first staffing pass, the line that pass gives it — nobody comes to work without a road)
+    add(c, 'staff', 'Staff', `${fmt(b.jobs)} / ${fmt(jobs)} — staffing effect ${change(0)}`, {
+      ratio: Math.min(1, b.jobs / jobs), status: 'bad', hint: "No road access — its staff can't get to work: build a road beside it",
+    });
   } else {
     const fill = jobs > 0 ? Math.min(1, b.jobs / jobs) : 0;
     const cf = cityFillOf(st);
@@ -885,6 +890,12 @@ function staffLine(c: Ctx, tier: boolean): void {
 function qualityLine(c: Ctx): void {
   if (c.inf.tier < 0) return;
   const q = facilityQuality(c.st, c.b);
+  // (close-out c1: before its first staffing pass a roadless staffed service shows the op 0 that pass gives it, as
+  // after it — not its full-staff quality next to "Serves nobody")
+  if (roadlessBeforeStaffing(c.st, c.b)) {
+    q.total = 0;
+    q.factors.push({ label: 'no road access', mul: 0 });
+  }
   const hint = q.factors.map((f) => (f.mul === 0 ? f.label : `${f.label} ${change(f.mul)}`)).join(' · ');
   add(c, 'quality', 'Service quality', pct(Math.min(q.total, 1.5)), {
     ratio: Math.min(1, q.total), status: q.total < 0.5 ? 'bad' : q.total < 0.9 ? 'warn' : 'ok', hint: hint || undefined,
@@ -901,9 +912,21 @@ const SCHOOL_KIND: Readonly<Record<string, string>> = {
 
 /** the load line's hint of a facility that serves nobody (final fixes SF-4) */
 const SERVES_NOBODY = "Serves nobody — no road access (staff can't reach it)";
-/** a tier facility working at op 0 — a staffed service without road access (final fixes P8): it serves nobody */
+/**
+ * a facility that posts jobs, whose staffing the population system has not set yet (b.hire unset: placed while paused,
+ * before its first day) and whose lot no road touches: its first staffing pass gives it op 0 (P8). facilityOpFactor
+ * counts unknown staffing as full, so without this a roadless clinic placed while paused read "No power — works at
+ * 30%" and "Service quality 21%" until a day passed (close-out c1). Report text only: the tier engine is unchanged.
+ */
+function roadlessBeforeStaffing(st: CityState, b: Building): boolean {
+  if (b.hire !== undefined) return false;
+  const jobs = b.capacity > 0 ? b.capacity : infoOf(st, b).civicJobs;
+  return jobs > 0 && !touchesRoad(st, b);
+}
+/** a tier facility working at op 0 — a staffed service without road access (final fixes P8): it serves nobody (also
+ *  before its first staffing pass: roadlessBeforeStaffing) */
 function servesNobody(c: Ctx): boolean {
-  return c.inf.tier >= 0 && facilityOpFactor(c.st, c.b) === 0;
+  return c.inf.tier >= 0 && (facilityOpFactor(c.st, c.b) === 0 || roadlessBeforeStaffing(c.st, c.b));
 }
 
 /** seats / patients / visitors of a shared tier facility, crowding, reach, city-wide unreached */
@@ -1186,6 +1209,9 @@ function waterLines(c: Ctx, u: UtilitiesSystem | undefined): void {
   if (!touchesRoad(st, b)) c.warnings.push('Not next to a road — its water cannot reach the pipes under the roads');
 }
 
+/** a garbage facility's warning without a road at the door (it takes no garbage: pollution.ts gives it no capacity) */
+const GARBAGE_NO_ROAD = 'No road access — garbage trucks cannot reach it';
+
 function garbageLines(c: Ctx, p: PollutionSystem | undefined): void {
   const { st, b, def, inf } = c;
   const cap = def.garbageCapacity ?? 0;
@@ -1224,7 +1250,7 @@ function garbageLines(c: Ctx, p: PollutionSystem | undefined): void {
       hint: sm.overCapacityT > 1 ? over : sm.outOfRangeT > 1 ? 'Some homes are beyond garbage-truck range' : undefined,
     });
   }
-  if (!touchesRoad(st, b)) c.warnings.push('No road access — garbage trucks cannot reach it');
+  // (its no-road warning, GARBAGE_NO_ROAD, leads the warnings: facilityReport)
 }
 
 /** power factor of a justice building's beds / trials (an unpowered prison holds UNPOWERED_SERVICE_EFF of its beds) */
@@ -1279,14 +1305,16 @@ function courthouseLines(c: Ctx): void {
   justiceCityLines(c);
 }
 
-/** the no-power warning of a building: what it stops doing, and the fix */
-function noPowerWarning(c: Ctx): string {
+/**
+ * the no-power warning of a building: what it stops doing, and the fix. idle: it does nothing anyway without a road at
+ * the door (the no-road warning before this one says why), so no share of its work to quote (final fixes r4: "No power —
+ * works at 30%" on a roadless clinic serving nobody; close-out c1: "handles only 30% of its garbage" on a roadless
+ * recycling center, which takes none)
+ */
+function noPowerWarning(c: Ctx, idle: boolean): string {
   const { def, inf } = c;
   const fix = 'connect it to a power line or powered road';
-  // a staffed service with no road at the door works at op 0 (P8), powered or not: the no-road warning before this one
-  // says why it serves nobody, so no share of its work to quote (final fixes r4: "No power — works at 30%" on a roadless
-  // clinic serving nobody)
-  if (servesNobody(c)) return `No power either — ${fix}`;
+  if (idle) return `No power either — ${fix}`;
   if (inf.tier >= 0) return `No power — works at ${pct(UNPOWERED_SERVICE_EFF)}; ${fix}`;
   const jf = defFacts(def.id);
   if (jf.beds > 0) return `No power — holds only ${pct(UNPOWERED_SERVICE_EFF)} of its beds; ${fix}`;
@@ -1388,13 +1416,21 @@ export function facilityReport(sim: Simulation, buildingId: number): FacilityRep
   c.load = inf.tier >= 0 ? facilityLoad(sim, b.id) : null;
   // ---- status warnings (a fix in each)
   if (b.built < 1) c.warnings.push('Under construction');
-  // a service with no road at the door leads with it (the inspector's headline is the first warning): staffed, it works
-  // at op 0 and serves nobody (P8), so the power / water warnings after it quote no share of its work. Final fixes r4: a
-  // roadless, unpowered clinic's headline was a false "No power — works at 30%"
+  // a facility that does nothing without a road at the door leads with it (the inspector's headline is the first
+  // warning): a staffed service works at op 0 and serves nobody (P8), garbage trucks cannot reach a garbage facility (it
+  // takes no garbage: pollution.ts), drivers cannot reach a parking garage — so the power / water warnings after it quote
+  // no share of its work. Final fixes r4: a roadless, unpowered clinic's headline was a false "No power — works at 30%";
+  // close-out c1: a recycling center's "No power — handles only 30%", a garage's power cut ahead of its road
   const road = touchesRoad(st, b);
-  if (inf.tier >= 0 && def.category !== 'power' && def.category !== 'water' && !road) c.warnings.push('No road access — build a road beside it');
-  if ((def.powerUse ?? 0) > 0 && !(b.flags & BF.Powered) && def.category !== 'power') c.warnings.push(noPowerWarning(c));
-  if (inf.tier >= 0 && c.load?.needTier === 'health' && (def.waterUse ?? 0) > 0 && !(b.flags & BF.Watered)) {
+  const noRoad = road ? null
+    : inf.tier >= 0 ? (def.category !== 'power' && def.category !== 'water' ? 'No road access — build a road beside it' : null)
+      : def.category === 'garbage' ? GARBAGE_NO_ROAD : TF.transportNoRoadLead(st, b);
+  if (noRoad) c.warnings.push(noRoad);
+  const idle = servesNobody(c) || (inf.tier < 0 && noRoad !== null);
+  if ((def.powerUse ?? 0) > 0 && !(b.flags & BF.Powered) && def.category !== 'power') c.warnings.push(noPowerWarning(c, idle));
+  // (the tier's need, as facilityQuality's "no water" factor: before its first services pass a clinic has no load yet —
+  // close-out c1: a dry clinic placed while paused showed "no water −40%" in its quality but no water warning)
+  if (inf.tier >= 0 && TIER_NEED[SERVICE_TIERS[inf.tier]] === 'health' && (def.waterUse ?? 0) > 0 && !(b.flags & BF.Watered)) {
     c.warnings.push(servesNobody(c) ? 'No water either — connect it to a water network' : `No water — treatment at ${pct(UNWATERED_HEALTH_EFF)}; connect it to a water network`);
   }
   const svc = def.service as ServiceKind | undefined;

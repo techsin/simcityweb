@@ -53,6 +53,14 @@ export function allBusyText(total: number, unit: readonly [string, string]): str
   return total === 1 ? `The only ${unit[0]} is busy` : total === 2 ? `Both ${unit[1]} are busy` : `All ${total} ${unit[1]} are busy`;
 }
 
+/** a station's free units and what a click sends: "Its only ambulance is free" / "Click: send it" for a one-unit
+ *  station, "1 of 2 fire trucks free" / "Click: send 1 · Shift-click: send 2" (close-out c1: a clinic read "1 of 1
+ *  ambulances free" and "Click: send 1 · Shift-click: send 1") */
+export function freeUnitsText(free: number, total: number, unit: readonly [string, string]): { free: string; click: string } {
+  if (total === 1) return { free: `Its only ${unit[0]} is free`, click: 'Click: send it' };
+  return { free: `${free} of ${total} ${unit[1]} free`, click: free > 1 ? `Click: send 1 · Shift-click: send ${free}` : 'Click: send 1' };
+}
+
 export class DispatchTool extends Tool {
   readonly id = 'dispatch';
   readonly label = 'Dispatch';
@@ -264,15 +272,16 @@ export class DispatchTool extends Tool {
     if (o) {
       const unit = RESPONDER_UNIT[o.responder];
       const ok = o.free > 0 && Number.isFinite(o.etaMin);
+      const ft = freeUnitsText(o.free, o.total, unit);
       const body = o.total <= 0
         ? `<div class="tip-reason">No funded ${unit[1]} — raise the budget</div>`
         : o.free <= 0
           ? `<div class="tip-reason">${allBusyText(o.total, unit)}</div>`
           : !Number.isFinite(o.etaMin)
             ? '<div class="tip-reason">No road route to the emergency</div>'
-            : `<div class="tip-sub">${o.free} of ${o.total} ${unit[1]} free · ETA <b>${fmtMin(o.etaMin)}</b></div>` +
+            : `<div class="tip-sub">${ft.free} · ETA <b>${fmtMin(o.etaMin)}</b></div>` +
               (o.inRange ? '' : '<div class="tip-sub emg-wrap faint">Outside its coverage: it would not answer on its own</div>') +
-              `<div class="tip-sub faint">Click: send 1 · Shift-click: send ${o.free}</div>`;
+              `<div class="tip-sub faint">${ft.click}</div>`;
       this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(o.name)}</b></div><div class="tip-sub emg-wrap">${title}</div>${body}`, ok ? 'ok' : 'bad');
       return;
     }

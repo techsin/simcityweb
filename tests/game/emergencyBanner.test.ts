@@ -17,6 +17,10 @@
  * Final-fix round 4:
  *  U1   the stack ends above an open toolbar flyout (watched: class and size) and does not re-dock while one of its
  *       banners is pressed (the press may close the flyout: the click must still land).
+ * Close-out c1:
+ *  a press that lands just after the stack moved under the pointer (opening a flyout re-docked it to compact rows) is
+ *  ignored instead of reaching the banner that moved there (SETTLE_MS from the move's first frame on screen); the
+ *  tallest tab seen since the flyout opened bounds the stack (no re-dock with every tab switch).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Network } from '../../src/core/types';
@@ -26,7 +30,7 @@ import { emergencyOf } from '../../src/sim/infra/emergency';
 import { getFire, infraSystems, triggerDisaster } from '../../src/sim/systems/infra';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import {
-  BANNER_MIN_W, BANNER_W, EmergencyBanner, KIND_COOLDOWN, MAX_BANNERS, PANEL_HEAD_H, PRESS_HOLD_MS, STACK_TOP, TOOLBAR_GAP, dockBanners, fitRows, stateText,
+  BANNER_MIN_W, BANNER_W, EmergencyBanner, KIND_COOLDOWN, MAX_BANNERS, PANEL_HEAD_H, PRESS_HOLD_MS, SETTLE_MS, STACK_TOP, TOOLBAR_GAP, dockBanners, fitRows, stateText,
   supportText,
   type DockPlace,
 } from '../../src/ui/EmergencyBanner';
@@ -137,6 +141,19 @@ class FakeEl extends FakeNode {
   }
   querySelectorAll(): FakeEl[] {
     return [];
+  }
+  /** "button, .emg-more" (tags / .classes, comma separated): the nearest match up the tree */
+  closest(sel: string): FakeEl | null {
+    const alts = sel.split(',').map((a) => a.trim());
+    for (let e: FakeEl | null = this; e; e = e.parentElement) {
+      const el = e;
+      if (alts.some((a) => (a.startsWith('.') ? el.classList.contains(a.slice(1)) : el.tagName.toLowerCase() === a))) return el;
+    }
+    return null;
+  }
+  contains(n: FakeNode | null): boolean {
+    for (let e: FakeNode | null = n; e; e = e.parentElement) if (e === this) return true;
+    return false;
   }
 }
 const g = globalThis as unknown as { document?: unknown };
@@ -900,6 +917,149 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     } finally {
       now.mockRestore();
       gw.window = hadWin;
+    }
+  });
+
+  // ------------------------------------------------------------------------------------ close-out c1
+  /** the window (its pointer / resize listeners) and the frame clock, faked for a test */
+  function fakeWindowAndFrames() {
+    const gw = globalThis as unknown as { window?: unknown; requestAnimationFrame?: unknown };
+    const had = [gw.window, gw.requestAnimationFrame];
+    const winL = new Map<string, ((e: unknown) => void)[]>();
+    gw.window = {
+      addEventListener: (k: string, f: (e: unknown) => void) => { winL.set(k, [...(winL.get(k) ?? []), f]); },
+      removeEventListener: () => undefined,
+    };
+    let frames: (() => void)[] = [];
+    gw.requestAnimationFrame = (cb: () => void) => { frames.push(cb); return frames.length; };
+    return {
+      winL,
+      /** one frame: the callbacks requested before it */
+      frame: () => { const f = frames; frames = []; for (const cb of f) cb(); },
+      restore: () => { gw.window = had[0]; gw.requestAnimationFrame = had[1]; },
+    };
+  }
+  /** a pointer press and release on a control of the stack as the browser delivers them: the stack's capture listeners
+   *  first (they may stop the event), the window's pointerup, then — unless stopped — the control's own click */
+  function press(t: ReturnType<typeof quakeTown>, winL: Map<string, ((e: unknown) => void)[]>, ctl: FakeEl): boolean {
+    const stack = t.h.banner.el as unknown as FakeEl;
+    const L = (el: FakeEl, k: string) => (el as unknown as { listeners: Map<string, ((e: unknown) => void)[]> }).listeners.get(k) ?? [];
+    let stopped = false;
+    const ev = () => ({ target: ctl, preventDefault() {}, stopPropagation() { stopped = true; } });
+    for (const f of L(stack, 'pointerdown')) f(ev());
+    const downStopped = stopped;
+    stopped = false;
+    for (const f of winL.get('pointerup') ?? []) f({});
+    for (const f of L(stack, 'click')) f(ev());
+    if (!stopped && !downStopped) ctl.click();
+    return !(downStopped || stopped);
+  }
+  /** a banner's control by its text (Jump / Send nearest) */
+  const button = (h: Harness, id: number, text: RegExp): FakeEl => {
+    const b = parts(h, id).el.all().find((e) => e.tagName === 'button' && text.test(e.textContent));
+    expect(b, `button ${text} of ${id}`).toBeDefined();
+    return b!;
+  };
+
+  it('c1: a press that lands just after a flyout re-docked the stack is ignored — not sent to the banner that moved under the pointer', () => {
+    const w = fakeWindowAndFrames();
+    const now = vi.spyOn(performance, 'now');
+    try {
+      const t = quakeTown();
+      const em = emergencyOf(t.sim)!;
+      const { fly, top } = withFlyout(t.h, 360);
+      fly.className = 'flyout mp-glass'; // closed for now
+      quake(t);
+      now.mockReturnValue(1e6);
+      t.h.tick();
+      w.frame(); w.frame();
+      // settled: a press clicks at once (stable stack, no move for a while)
+      now.mockReturnValue(1e6 + 2000);
+      t.h.tick();
+      const s0 = stackBottom(t.h);
+      expect(parts(t.h, s0.shown[0]).el.classList.contains('compact')).toBe(false);
+      // the player opens the Civic flyout: the stack re-docks to compact rows above it, and banner 1 moves up to where
+      // banner 0's row was (playtest c1 p15: a press aimed at banner 0's Jump jumped to banner 1's fire)
+      fly.className = 'flyout mp-glass open';
+      now.mockReturnValue(1e6 + 2100);
+      t.h.tick();
+      const s1 = stackBottom(t.h);
+      expect(s1.bottom).toBeLessThanOrEqual(top - TOOLBAR_GAP);
+      expect(parts(t.h, s1.shown[0]).el.classList.contains('compact')).toBe(true);
+      const victim = s1.shown[1];
+      const send = button(t.h, victim, /^Send nearest/);
+      // the press lands before the move is on screen, then within SETTLE_MS of its first frame: ignored, nothing sent
+      expect(press(t, w.winL, send)).toBe(false);
+      w.frame();
+      now.mockReturnValue(1e6 + 2200);
+      expect(press(t, w.winL, send)).toBe(false);
+      w.frame(); // (the second frame: the move has been on screen since the first one)
+      now.mockReturnValue(1e6 + 2200 + SETTLE_MS - 1);
+      expect(press(t, w.winL, send)).toBe(false);
+      expect(em.incident(victim)!.state).toBe('uncovered');
+      // an ignored press holds no docking (nothing waits for its release)
+      expect((t.h.banner as unknown as { pressAt: number }).pressAt).toBe(0);
+      // aimed again once the stack has settled: it sends
+      now.mockReturnValue(1e6 + 2200 + SETTLE_MS + 1);
+      expect(press(t, w.winL, send)).toBe(true);
+      expect(em.incident(victim)!.state).toBe('dispatched');
+      // (the pill too: a press on it just after a move opens nothing)
+      const opened: string[] = [];
+      (t.h.banner as unknown as { ctx: { panels: { open: (id: string) => void } } }).ctx.panels.open = (id) => opened.push(id);
+      fly.className = 'flyout mp-glass';
+      now.mockReturnValue(1e6 + 4000);
+      t.h.tick(); // (closed: the stack moves back down)
+      const more = (t.h.banner as unknown as { more: FakeEl }).more;
+      expect(press(t, w.winL, more)).toBe(false);
+      expect(opened).toEqual([]);
+      w.frame(); w.frame();
+      now.mockReturnValue(1e6 + 4000 + SETTLE_MS + 1);
+      expect(press(t, w.winL, more)).toBe(true);
+      expect(opened).toEqual(['emergencies']);
+    } finally {
+      now.mockRestore();
+      w.restore();
+    }
+  });
+
+  it('c1: the tallest flyout tab seen since it opened bounds the stack — a switch to a shorter tab (and back) does not re-dock it', () => {
+    const w = fakeWindowAndFrames();
+    try {
+      const t = quakeTown();
+      const { fly } = withFlyout(t.h, 300);
+      quake(t);
+      const tall = stackBottom(t.h);
+      expect(tall.bottom).toBeLessThanOrEqual(804 + 20 - 10 - 300 - TOOLBAR_GAP);
+      const tab = (height: number) => Object.assign(fly, { offsetTop: -10 - height, offsetHeight: height });
+      // a shorter tab, and back: the stack stays where the tallest put it
+      tab(204);
+      t.h.tick();
+      expect(stackBottom(t.h)).toEqual(tall);
+      tab(300);
+      t.h.tick();
+      expect(stackBottom(t.h)).toEqual(tall);
+      // closed: forgotten — the toolbar bound again; opened on the short tab: its own, lower bound
+      fly.className = 'flyout mp-glass';
+      t.h.tick();
+      expect(stackBottom(t.h).bottom).toBeLessThanOrEqual(t.bound);
+      fly.className = 'flyout mp-glass open';
+      tab(204);
+      t.h.tick();
+      const short = stackBottom(t.h);
+      expect(short.bottom).toBeLessThanOrEqual(804 + 20 - 10 - 204 - TOOLBAR_GAP);
+      // (the shorter tab leaves room for the three full banners: a different, lower-reaching stack)
+      expect(short.bottom).toBeGreaterThan(tall.bottom);
+      expect(short).not.toEqual(tall);
+      // a window resize measures afresh (the flyout re-wraps): the tallest so far is forgotten too
+      tab(300);
+      t.h.tick();
+      expect(stackBottom(t.h)).toEqual(tall);
+      tab(204);
+      for (const f of w.winL.get('resize') ?? []) f({});
+      t.h.tick();
+      expect(stackBottom(t.h)).toEqual(short);
+    } finally {
+      w.restore();
     }
   });
 });

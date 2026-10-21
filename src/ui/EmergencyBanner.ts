@@ -222,6 +222,14 @@ const BOTTOM_KEEP = 84;
 export const TOOLBAR_GAP = 12;
 /** EM-4 / U1: the docking waits this long at most for a press on the stack to be released (real ms) */
 export const PRESS_HOLD_MS = 1500;
+/**
+ * Close-out c1: a press on a banner's button or the pill is ignored while the stack has just moved under the pointer —
+ * from the change (re-docked: a toolbar flyout opened, a panel moved; banners re-ordered, added, removed or switched
+ * between full and compact) until this long (real ms) after it was first on screen: it was aimed at what sat there
+ * before (opening the Civic flyout re-docked the stack to compact rows, and a press meant for one banner's Jump landed
+ * on the next banner's — Send nearest is on the same row)
+ */
+export const SETTLE_MS = 350;
 export interface DockRect { x: number; y: number; w: number; h: number }
 /** where the stack goes: left / width (css px), all banners compact, its top (default STACK_TOP) and the number of
  *  banners shown (0 = all) */
@@ -536,6 +544,15 @@ export class EmergencyBanner {
    *  pointerdown may close the toolbar flyout, and a re-dock (more rows, full banners) before the pointerup moved the
    *  button away from under the pointer: the click was lost */
   private pressAt = 0;
+  /** close-out c1: real ms until which a press on the stack's buttons or pill is ignored — it just moved under the
+   *  pointer (Infinity while the move is not on screen yet; markMoved, SETTLE_MS) */
+  private settleUntil = 0;
+  private settleGen = 0;
+  /** the control a press was ignored on: its click is dropped too */
+  private ignored: Element | null = null;
+  /** close-out c1: the highest an open toolbar flyout's top reached since it opened (relative to the bottom block, <= 0;
+   *  flyoutTop): a switch to a shorter tab keeps the bound of the tallest — the stack does not re-dock with every tab */
+  private flyHigh = 0;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'emg-banners' });
@@ -551,10 +568,38 @@ export class EmergencyBanner {
     }
     if (typeof MutationObserver !== 'undefined') this.mo = new MutationObserver(dirty);
     const win = typeof window !== 'undefined' && typeof window.addEventListener === 'function' ? window : null;
-    win?.addEventListener('resize', dirty);
-    // (a press anywhere on the stack holds the docking until it is released — the layout it measured then applies)
-    this.el.addEventListener('pointerdown', () => { this.pressAt = performance.now(); }, true);
+    // (a resize measures everything afresh, the open flyout's tallest tab too)
+    const resized = () => { this.flyHigh = 0; this.dockDirty = true; };
+    win?.addEventListener('resize', resized);
+    // (a press anywhere on the stack holds the docking until it is released — the layout it measured then applies. A
+    // press on a button or the pill while the stack has just moved under the pointer is ignored, and its click: it was
+    // aimed at what sat there before — close-out c1, SETTLE_MS)
+    this.el.addEventListener('pointerdown', (e) => {
+      const now = performance.now();
+      this.ignored = null;
+      const t = (e as Event | undefined)?.target as Element | null | undefined;
+      const ctl = t && typeof t.closest === 'function' ? t.closest('button, .emg-more') : null;
+      if (ctl && now < this.settleUntil) {
+        this.ignored = ctl;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      this.pressAt = now;
+    }, true);
+    this.el.addEventListener('click', (e) => {
+      const ig = this.ignored;
+      if (!ig) return;
+      this.ignored = null;
+      const t = e.target as Node | null;
+      if (t && ig.contains(t)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
     const release = () => {
+      // (an ignored press's click follows its release in the same input task: forgotten after it)
+      if (this.ignored) setTimeout(() => { this.ignored = null; }, 0);
       if (!this.pressAt) return;
       this.pressAt = 0;
       this.dockDirty = true;
@@ -568,10 +613,28 @@ export class EmergencyBanner {
       off(); offReset(); offTick();
       this.ro?.disconnect();
       this.mo?.disconnect();
-      win?.removeEventListener('resize', dirty);
+      win?.removeEventListener('resize', resized);
       win?.removeEventListener('pointerup', release, true);
       win?.removeEventListener('pointercancel', release, true);
     });
+  }
+
+  /**
+   * close-out c1: the stack moved under the pointer (re-docked, or its banners re-ordered, added, removed or switched
+   * between full and compact): presses on its buttons are ignored until SETTLE_MS after the move is on screen — stamped
+   * at the start of the second frame from now (the first one paints it; a later move starts over). No layout read.
+   */
+  private markMoved(): void {
+    this.settleUntil = Infinity;
+    const gen = ++this.settleGen;
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
+    if (!raf) {
+      this.settleUntil = performance.now() + SETTLE_MS;
+      return;
+    }
+    raf(() => raf(() => {
+      if (gen === this.settleGen) this.settleUntil = performance.now() + SETTLE_MS;
+    }));
   }
 
   /** the LIVE badge: an alert is holding the game at (slowed) 1x */
@@ -843,7 +906,12 @@ export class EmergencyBanner {
     this.ro?.unobserve(b.el);
     this.dockDirty = true;
     b.el.classList.add('out');
-    setTimeout(() => b.el.remove(), 250);
+    setTimeout(() => {
+      // (gone: the banners below it move up — close-out c1, markMoved; a folded one moves nothing)
+      const shownB = b.el.parentElement === this.el && !b.el.classList.contains('capped');
+      b.el.remove();
+      if (shownB) this.markMoved();
+    }, 250);
   }
 
   private refresh(b: BannerEl, inc: Incident): void {
@@ -924,19 +992,23 @@ export class EmergencyBanner {
   private layout(): void {
     const em = emergencyOf(this.ctx.sim);
     const list = this.ordered();
-    let capped = 0;
+    let capped = 0, moved = false;
     list.forEach((b, k) => {
-      toggleClass(b.el, 'compact', this.dockCompact || k >= MAX_BANNERS);
+      const comp = this.dockCompact || k >= MAX_BANNERS;
       const cap = this.dockRows > 0 && k >= this.dockRows;
+      const o = String(k);
+      // (a banner re-ordered, added, shown / folded or switched between full and compact moves the ones below it)
+      if (b.el.classList.contains('compact') !== comp || b.el.classList.contains('capped') !== cap || b.el.style.order !== o) moved = true;
+      toggleClass(b.el, 'compact', comp);
       toggleClass(b.el, 'capped', cap);
       if (cap) {
         const inc = em?.incident(b.id);
         if (inc && (inc.state === 'uncovered' || inc.state === 'queued')) capped++;
       }
-      const o = String(k);
       if (b.el.style.order !== o) b.el.style.order = o;
     });
     this.capped = capped;
+    if (moved) this.markMoved();
   }
 
   /** observe a panel (its size, position and closing class) for the docking (EM-3) */
@@ -960,7 +1032,9 @@ export class EmergencyBanner {
    * changed (ResizeObserver: banners, panels, the pill, the toolbar block and its flyout; MutationObserver: panels
    * opened / closed / moved, the flyout opened / closed; a window resize). Final fixes r4 U1: an open toolbar flyout is
    * the bottom bound (stackBottom), and nothing re-docks while a banner is pressed (pressAt): a press whose pointerdown
-   * closes the flyout still clicks (EM-4).
+   * closes the flyout still clicks (EM-4). Close-out c1: a press that lands just after the stack moved is ignored, not
+   * sent to the banner that moved under the pointer (markMoved, SETTLE_MS), and the tallest tab seen since the flyout
+   * opened bounds the stack (flyoutTop: no re-dock with every tab).
    */
   private dock(): void {
     if (!this.banners.size) {
@@ -1051,19 +1125,23 @@ export class EmergencyBanner {
    * the block — absolutely positioned in the toolbar, it is no part of the block's box; 0 when none is open). The
    * banners covered its tabs and cards (a click on Civic > Fire pressed a banner's Send nearest): the stack ends above it
    * while it is open. Watched for opening / closing (class) and its size (a tab switch changes its height).
+   * Close-out c1: the highest it reached since it opened (flyHigh) — a switch to a shorter tab, or back, keeps the
+   * stack where it is instead of re-docking it with every tab; closed (or a window resize), it is forgotten.
    */
   private flyoutTop(hud: HTMLElement): number {
     const fly = hud.querySelector?.('.flyout') as HTMLElement | null | undefined;
-    if (!fly) return 0;
+    if (!fly) return (this.flyHigh = 0);
     if (!this.watched.has(fly)) {
       this.watched.add(fly);
       this.ro?.observe(fly);
       this.mo?.observe(fly, { attributes: true, attributeFilter: ['class'] });
     }
-    if (!fly.classList.contains('open') || !(fly.offsetHeight > 0)) return 0;
+    if (!fly.classList.contains('open') || !(fly.offsetHeight > 0)) return (this.flyHigh = 0);
     let y = 0, e: HTMLElement | null = fly;
     for (; e && e !== hud; e = e.offsetParent as HTMLElement | null) y += e.offsetTop;
-    return e === hud ? y : 0;
+    if (e !== hud) return 0;
+    this.flyHigh = Math.min(this.flyHigh, y);
+    return this.flyHigh;
   }
 
   /** apply a docking: the stack's place (null: the centred CSS default), all banners compact, banners shown (0 = all) */
@@ -1076,6 +1154,8 @@ export class EmergencyBanner {
     const key = d ? `${Math.round(d.left)}:${Math.round(d.width)}:${d.top === undefined ? '' : Math.round(d.top)}` : '';
     if (key === this.dockKey) return;
     this.dockKey = key;
+    // (the stack itself moved or changed width: close-out c1)
+    this.markMoved();
     const s = this.el.style;
     if (!d) {
       s.left = s.transform = s.width = s.top = '';

@@ -17,15 +17,20 @@
  *  - round 4: a roadless, unpowered service leads with the missing road (the inspector's headline is the first warning:
  *    it read a false "No power — works at 30%" for a clinic that serves nobody) and its power / water warnings quote no
  *    share of its work ("No power either — …").
+ *  - close-out c1: the same before the first staffing pass (a clinic placed while paused: b.hire unset, staffing unknown,
+ *    read "No power — works at 30%" and "Service quality 21%" until a day passed), and for the other facilities that do
+ *    nothing without a road: a recycling center (it read "No power — handles only 30%" first) and a parking garage.
  */
 import { describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
-import { BF } from '../../src/sim/CityState';
+import { BF, type Building } from '../../src/sim/CityState';
+import { Simulation } from '../../src/sim/Simulation';
+import { createSystems } from '../../src/sim/systems/index';
 import type { ServicesSystem } from '../../src/sim/systems/infra';
 import { facilityDefFacts, facilityOpFactor, facilityQuality, facilityReport, fullUseUpkeep } from '../../src/sim/infra/facilities';
 import { justiceData } from '../../src/sim/infra/justice';
 import { facilityLoad } from '../../src/sim/infra/catchments';
-import { noRoadWarning } from '../../src/sim/actions';
+import { CityActions, noRoadWarning } from '../../src/sim/actions';
 import { expectedUpkeep } from '../../src/sim/economy/opex';
 import { getDef } from '../../src/sim/catalog';
 import { mainProblem } from '../../src/ui/inspectorModel';
@@ -303,5 +308,106 @@ describe('final fixes round 4: a roadless service leads with its road, not a fal
     expect(rep2.warnings[0]).toBe('No power — works at 30%; connect it to a power line or powered road');
     expect(rep2.warnings).not.toContain('No road access — build a road beside it');
     expect(rep2.warnings.some((w) => /^No water — treatment at \d+%/.test(w))).toBe(true);
+  });
+});
+
+describe('close-out c1: before its first staffing pass, and for the other facilities a missing road idles', () => {
+  /** the report rows a player reads first: warnings, and the Patients / Staff / Service quality lines */
+  const view = (sim: Simulation, b: Building) => {
+    const rep = facilityReport(sim, b.id)!;
+    const line = (key: string) => { const l = rep.lines.find((x) => x.key === key); return l ? { value: l.value, hint: l.hint ?? '', status: l.status } : null; };
+    return { warnings: rep.warnings, seats: line('seats'), staff: line('staff'), quality: line('quality') };
+  };
+  /** a road row (z 20) with homes along it, the full system list (population staffs facilities at the end of a day) */
+  const town = () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    for (let x = 30; x < 50; x++) { st.zone[st.idx(x, 21)] = Zone.ResMed; place(st, 't_r2', x, 21, { pop: 50, flags: BF.Powered | BF.Watered }); }
+    return { st, sim: new Simulation(st, createSystems()) };
+  };
+  /** the player's plop (funds to spare): the building it placed */
+  const plopNow = (sim: Simulation, defId: string, x: number, z: number): Building => {
+    sim.state.funds = 1e7;
+    const r = new CityActions(sim).plop(defId, x, z, 0);
+    expect(r.ok, r.reason).toBe(true);
+    return sim.state.buildings.get(sim.state.building[sim.state.idx(x, z)])!;
+  };
+  /** a road along the lot's north edge */
+  const roadBeside = (sim: Simulation, b: Building) => {
+    roadLine(sim.state, b.x, b.z - 1, b.x + b.w - 1, b.z - 1, Network.Road);
+    sim.events.emit('networkChanged', { x0: b.x, z0: b.z - 1, x1: b.x + b.w, z1: b.z });
+  };
+
+  it('a roadless, unpowered, dry clinic placed while paused (staffing unknown) reads as it will after its first day', () => {
+    const { st, sim } = town();
+    // placed with the plop action while paused — no day has passed, so the population system has not staffed it: b.hire
+    // unset and the tier engine counts its staffing as full (unchanged)
+    const clinic = plopNow(sim, 'civ_clinic', 10, 40);
+    expect(clinic.hire).toBeUndefined();
+    expect(facilityOpFactor(st, clinic)).toBe(1);
+    const before = view(sim, clinic);
+    expect(before.warnings).toEqual([
+      'No road access — build a road beside it',
+      'No power either — connect it to a power line or powered road',
+      'No water either — connect it to a water network',
+    ]);
+    expect(before.warnings.join(' ')).not.toMatch(/works at|treatment at/);
+    expect(mainProblem({ warnings: before.warnings })).toEqual({ text: 'No road access', hint: 'build a road beside it', tone: 'bad' });
+    expect(before.seats).toEqual({ value: '0 / 8,000 (0%)', hint: "Serves nobody — no road access (staff can't reach it)", status: 'bad' });
+    expect(before.quality!.value).toBe('0%');
+    expect(before.quality!.hint).toMatch(/· no road access$/);
+    expect(before.staff).toEqual({ value: '0 / 30 — staffing effect −100%', hint: "No road access — its staff can't get to work: build a road beside it", status: 'bad' });
+    // one day later the population system has staffed it (op 0 without a road, P8): the same story
+    sim.advanceDay();
+    expect(clinic.hire).toBeGreaterThan(0);
+    expect(facilityOpFactor(st, clinic)).toBe(0);
+    const after = view(sim, clinic);
+    expect(after.warnings).toEqual(before.warnings);
+    expect(after.seats).toEqual(before.seats);
+    expect(after.quality).toEqual(before.quality);
+    expect(after.staff!.value).toBe(before.staff!.value);
+    expect(after.staff!.hint.startsWith(before.staff!.hint)).toBe(true);
+  });
+
+  it('a clinic placed while paused next to a road keeps its real numbers (works at 30% without power)', () => {
+    const { sim } = town();
+    const clinic = plopNow(sim, 'civ_clinic', 10, 21);
+    const v = view(sim, clinic);
+    expect(v.warnings[0]).toBe('No power — works at 30%; connect it to a power line or powered road');
+    expect(v.warnings).not.toContain('No road access — build a road beside it');
+    expect(v.seats!.value).toBe('— / 8,000 (not yet assessed)');
+    expect(v.quality!.value).not.toBe('0%');
+    expect(v.staff).toBeNull(); // ("Jobs filled" until its first staffing pass, as before)
+  });
+
+  it('a roadless, unpowered recycling center leads with its road (it takes no garbage), its power cut "either"', () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    const rc = place(st, 'util_recycling_center', 10, 40, { flags: BF.Plopped });
+    const sim = newSim(st);
+    const rep = facilityReport(sim, rc.id)!;
+    expect(rep.warnings).toEqual(['No road access — garbage trucks cannot reach it', 'No power either — connect it to a power line or powered road']);
+    expect(mainProblem({ warnings: rep.warnings })).toEqual({ text: 'No road access', hint: 'garbage trucks cannot reach it', tone: 'bad' });
+    // a road beside it: it works at the unpowered share, which leads again
+    roadBeside(sim, rc);
+    const rep2 = facilityReport(sim, rc.id)!;
+    expect(rep2.warnings[0]).toBe('No power — handles only 30% of its garbage; connect it to a power line or powered road');
+    expect(rep2.warnings).not.toContain('No road access — garbage trucks cannot reach it');
+  });
+
+  it('a roadless, unpowered parking garage leads with its road (drivers can\'t reach it), once, then its power cut "either"', () => {
+    const st = newState(64);
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    const g = place(st, 'tr_parking_garage', 10, 40, { flags: BF.Plopped });
+    const sim = newSim(st);
+    sim.runDays(1);
+    const rep = facilityReport(sim, g.id)!;
+    expect(rep.warnings[0]).toBe("No road access — drivers can't reach it; build a road beside it");
+    expect(rep.warnings[1]).toBe('No power either — connect it to a power line or powered road');
+    expect(rep.warnings.filter((w) => /^No road access/.test(w))).toHaveLength(1);
+    roadBeside(sim, g);
+    const rep2 = facilityReport(sim, g.id)!;
+    expect(rep2.warnings[0]).toBe("No power — its staff can't work (jobs cut); connect it to a power line or powered road");
+    expect(rep2.warnings.some((w) => /^No road access/.test(w))).toBe(false);
   });
 });
