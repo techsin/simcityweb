@@ -2,16 +2,15 @@
  * Emergency "unsaved progress" snapshots (src/save/recovery.ts): delta codec, string packing, and the
  * write -> find -> restore cycle against a persistent in-memory KV + a localStorage stub.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { Network, Zone } from '../../src/core/types';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
-import { decodeBundle, encodeBundle } from '../../src/save/bundle';
+import { decodeBundle, encodeBundle } from '../../src/save/bundleCodec';
 import {
   LS_BUDGET_BYTES,
-  MemoryKV,
   RECOMPUTED_LAYERS,
   applyCityDelta,
   clearRecoveryAfterSave,
@@ -31,28 +30,7 @@ import {
   writeRecoverySnapshot,
   type CityDelta,
 } from '../../src/save/index';
-import { createRegionData } from '../../src/region/RegionModel';
-
-class PersistentMemoryKV extends MemoryKV {
-  override readonly persistent = true as unknown as false;
-}
-
-class MemStorage {
-  m = new Map<string, string>();
-  quota = Infinity;
-  getItem(k: string) {
-    return this.m.has(k) ? this.m.get(k)! : null;
-  }
-  setItem(k: string, v: string) {
-    let used = 0;
-    for (const [kk, vv] of this.m) if (kk !== k) used += kk.length + vv.length;
-    if (used + k.length + v.length > this.quota) throw new Error('QuotaExceededError');
-    this.m.set(k, String(v));
-  }
-  removeItem(k: string) {
-    this.m.delete(k);
-  }
-}
+import { MemStorage, PersistentMemoryKV, regionData } from './fixtures';
 
 function bld(id: number, x: number, z: number, extra: Partial<Building> = {}): Building {
   return { id, def: 'res_cottage', x, z, w: 1, d: 1, rot: 0, variant: 0, pop: 5, jobs: 0, capacity: 6, wealth: 1, built: 1, age: 10, flags: BF.Powered, baseY: 0, health: 1, unhappy: 0, ...extra };
@@ -224,22 +202,26 @@ describe('city delta', () => {
   });
 });
 
-// (generous: on a loaded machine one of these took 140 s, and a timed-out test keeps running into the next one)
-describe('write -> find -> restore', { timeout: 300_000 }, () => {
+describe('write -> find -> restore', () => {
   let ls: MemStorage;
-  beforeEach(async () => {
+  let now: number;
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); clearRecoveryBase(); });
+  beforeEach(() => {
+    now = 1000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
     ls = new MemStorage();
-    (globalThis as unknown as { localStorage: MemStorage }).localStorage = ls;
+    vi.stubGlobal('localStorage', ls);
     setKV(new PersistentMemoryKV());
     clearRecoveryBase();
   });
 
   async function setup() {
-    const { data } = createRegionData({ seed: 5, preset: 'greenvale', id: 'rtest', name: 'Test Region' });
+    const data = regionData();
     await saveRegion(data);
     const tileKey = data.tiles[0].key;
     const st = city();
     await saveCity('rtest', tileKey, st);
+    now += 10; // explicitly newer than the base, independent of encoding time or machine load
     return { tileKey, st };
   }
 
@@ -274,6 +256,7 @@ describe('write -> find -> restore', { timeout: 300_000 }, () => {
     expect(r.idb).toBe(true);
     let p = await findRecoverySnapshot();
     expect(p?.marker.day).toBe(st.day);
+    now += 10;
     // localStorage only: IndexedDB record gone
     ls.quota = Infinity;
     st.day += 1;
@@ -293,10 +276,21 @@ describe('write -> find -> restore', { timeout: 300_000 }, () => {
     const { tileKey, st } = await setup();
     st.day += 10;
     writeRecoverySnapshot('rtest', tileKey, st, { cityName: 'x', population: 0, funds: 0 });
-    await new Promise((r) => setTimeout(r, 5));
+    now += 10;
     await saveCity('rtest', tileKey, st);
     expect(await findRecoverySnapshot()).toBeNull();
     expect(peekRecoveryMarker()).toBeNull();
+  });
+
+  it('a snapshot at the base timestamp is stale; explicit clock advancement makes it restorable', async () => {
+    const { tileKey, st } = await setup();
+    st.day++;
+    now -= 10; // the old tests could accidentally reuse the full save's millisecond
+    writeRecoverySnapshot('rtest', tileKey, st, { cityName: 'x', population: 0, funds: 0 });
+    expect(await findRecoverySnapshot()).toBeNull();
+    now += 10;
+    writeRecoverySnapshot('rtest', tileKey, st, { cityName: 'x', population: 0, funds: 0 });
+    expect((await findRecoverySnapshot())?.marker.day).toBe(st.day);
   });
 
   it('discard clears both copies', async () => {
@@ -310,14 +304,14 @@ describe('write -> find -> restore', { timeout: 300_000 }, () => {
 
   /** a second city of the same region (tile 1), saved */
   async function secondCity() {
-    const { data } = createRegionData({ seed: 5, preset: 'greenvale', id: 'rtest', name: 'Test Region' });
+    const data = regionData();
     const tileKey = data.tiles[1].key;
     const st = city();
     st.config.name = 'Second';
     await saveCity('rtest', tileKey, st);
+    now += 10; // explicitly newer than the base, independent of encoding time or machine load
     return { tileKey, st };
   }
-  const tick = () => new Promise((r) => setTimeout(r, 0));
 
   it('keeps one snapshot per city: a later snapshot of another city does not overwrite a pending one', async () => {
     const a = await setup();
@@ -329,7 +323,7 @@ describe('write -> find -> restore', { timeout: 300_000 }, () => {
     // ... then plays another city, whose snapshot takes the localStorage slot
     const b = await secondCity();
     b.st.day += 5;
-    await new Promise((r) => setTimeout(r, 5));
+    now += 10;
     writeRecoverySnapshot('rtest', b.tileKey, b.st, { cityName: 'Second', population: 0, funds: 0 });
     expect(peekRecoveryMarker()?.tileKey).toBe(b.tileKey);
     expect(await hasRecoverySnapshot({ regionId: 'rtest', tileKey: a.tileKey })).toBe(true);
@@ -357,14 +351,12 @@ describe('write -> find -> restore', { timeout: 300_000 }, () => {
     writeRecoverySnapshot('rtest', b.tileKey, b.st, { cityName: 'Second', population: 0, funds: 0 });
     const m = peekRecoveryMarker()!;
     // a save of B that started before B's snapshot (savedAt older): the snapshot is newer -> reported
-    expect(clearRecoveryAfterSave('rtest', b.tileKey, m.at - 1)).toBe(true);
-    await tick();
+    expect(await clearRecoveryAfterSave('rtest', b.tileKey, m.at - 1)).toBe(true);
     expect(peekRecoveryMarker()).toBeNull();
     expect(await hasRecoverySnapshot({ regionId: 'rtest', tileKey: b.tileKey })).toBe(false);
     // A is untouched; a save of A newer than its snapshot is not reported, but still drops it
     expect(await hasRecoverySnapshot({ regionId: 'rtest', tileKey: a.tileKey })).toBe(true);
-    expect(clearRecoveryAfterSave('rtest', a.tileKey, Date.now() + 1)).toBe(false);
-    await tick();
+    expect(await clearRecoveryAfterSave('rtest', a.tileKey, Date.now() + 1)).toBe(false);
     expect(await findRecoverySnapshot()).toBeNull();
   });
 
