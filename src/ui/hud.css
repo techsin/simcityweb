@@ -455,8 +455,11 @@
 @keyframes timer { from { width: 100%; } to { width: 0%; } }
 
 /* ------------------------------------------------------------------ panels */
+/* (the docked panels end above the minimap block: the minimap and the save indicator mounted above it — 8 px gap +
+   24 px, region/ui/meta.css .save-status. Close-out c2: with 330 px the chip showed through the glass bottom of the
+   inspector and Advisors at 1280x720, over their last rows) */
 .panel {
-  position: absolute; display: flex; flex-direction: column; pointer-events: auto; max-height: calc(100% - 330px); min-height: 0; min-width: 280px;
+  position: absolute; display: flex; flex-direction: column; pointer-events: auto; max-height: calc(100% - 362px); min-height: 0; min-width: 280px;
   animation: panelIn 0.2s var(--ease);
 }
 .panel-layer { position: absolute; inset: 0; pointer-events: none; z-index: 30; }

@@ -14,10 +14,27 @@ import { Panel } from '../Panel';
 import { clear, h, setText } from '../dom';
 import { icon } from '../icons';
 import { money, num, pct } from '../format';
-import { emgTime, kindIcon, lossText, minText, placeText, stateText, windowText } from '../EmergencyBanner';
+import { emgTime, kindIcon, lossText, minText, missingResponders, placeText, stateText, windowText } from '../EmergencyBanner';
+import type { Simulation } from '../../sim/Simulation';
 
 type Tab = 'active' | 'fleet' | 'stats';
 const RESP_ICON: Record<Responder, string> = { fire: 'fire', police: 'police', medical: 'health' };
+/** an Active row's changing parts (filled in by renderActive) */
+interface ActiveRow { inc: Incident; st: HTMLElement; time: HTMLElement; disp: HTMLButtonElement }
+
+/**
+ * Why the player cannot dispatch to a waiting incident right now (null: a free unit of a responder it still misses can
+ * go): every station that could help is busy — the sim's own note ("Both fire trucks of Fire Station #3 are busy"),
+ * else a generic line. Incidents no longer waiting keep their Dispatch button (close-out c2 polish).
+ */
+export function dispatchBlocked(sim: Simulation, inc: Incident): string | null {
+  if (!(inc.state === 'uncovered' || inc.state === 'queued')) return null;
+  const em = emergencyOf(sim);
+  if (!em) return null;
+  const miss = missingResponders(em, inc);
+  const can = em.dispatchOptions(sim, inc.id).some((o) => o.free > 0 && Number.isFinite(o.etaMin) && (!miss.length || miss.includes(o.responder)));
+  return can ? null : inc.note || 'Every station that could help is busy or cannot reach it';
+}
 
 export class EmergenciesPanel extends Panel {
   readonly id = 'emergencies';
@@ -31,7 +48,7 @@ export class EmergenciesPanel extends Panel {
   /** Active tab: the summary values and each row's changing texts, updated in place while the incidents' structure
    *  (ids, states, units) stays the same (final fixes A1: the countdown was part of the signature — a rebuild of the
    *  whole list several times a second at ultra speed) */
-  private live: { sum: HTMLElement[]; rows: { inc: Incident; st: HTMLElement; time: HTMLElement }[] } | null = null;
+  private live: { sum: HTMLElement[]; rows: ActiveRow[] } | null = null;
 
   constructor(ctx: GameContext) {
     super(ctx);
@@ -95,6 +112,12 @@ export class EmergenciesPanel extends Panel {
       const waiting = inc.state === 'uncovered' || inc.state === 'queued';
       setText(r.st, waiting && inc.note ? inc.note : stateText(inc, now, em));
       setText(r.time, activeTimeText(inc, now));
+      // (close-out c2 polish: a waiting incident no free unit can be sent to — every truck busy — gets no live Dispatch
+      // button; its title says why)
+      const t = dispatchBlocked(sim, inc);
+      if (r.disp.disabled !== !!t) r.disp.disabled = !!t;
+      const title = t ?? 'Dispatch a unit yourself';
+      if (r.disp.title !== title) r.disp.title = title;
     }
   }
 
@@ -108,7 +131,7 @@ export class EmergenciesPanel extends Panel {
       return h('div', { class: 'stat-card' }, h('div', { class: 'sc-l' }, label), v);
     };
     this.content.appendChild(h('div', { class: 'emg-sum' }, card('Active'), card('Need you'), card('This month'), card('Auto-dispatched')));
-    const rows: { inc: Incident; st: HTMLElement; time: HTMLElement }[] = [];
+    const rows: ActiveRow[] = [];
     this.live = { sum, rows };
     if (!list.length) {
       this.content.appendChild(h('div', { class: 'emg-empty' }, h('span', { html: icon('check', 18) }), h('span', null, 'No emergencies right now. Covered incidents are answered automatically and show up in Statistics.')));
@@ -122,11 +145,11 @@ export class EmergenciesPanel extends Panel {
         // the camera whoosh is the sound (silent inspector)
         this.ctx.showQuery({ buildingId: inc.buildingId >= 0 ? inc.buildingId : null, x: inc.x, z: inc.z }, { silent: true });
       });
-      const disp = h('button', { class: 'btn sm' + (waiting ? ' primary' : ''), title: 'Dispatch a unit yourself' }, 'Dispatch');
+      const disp = h('button', { class: 'btn sm' + (waiting ? ' primary' : ''), title: 'Dispatch a unit yourself' }, 'Dispatch') as HTMLButtonElement;
       disp.addEventListener('click', () => openDispatch(this.ctx, inc.id));
       const st = h('div', { class: 'emg-rs' + (waiting ? ' neg' : '') });
       const time = h('div', { class: 'emg-rs faint' });
-      rows.push({ inc, st, time });
+      rows.push({ inc, st, time, disp });
       this.content.appendChild(h('div', { class: 'emg-row' + (waiting ? ' waiting' : ''), style: { '--kc': INCIDENT_COLOR[inc.kind] } as Record<string, string> },
         h('div', { class: 'emg-ico sm', html: kindIcon(inc.kind, 16) }),
         h('div', { class: 'emg-rb' },

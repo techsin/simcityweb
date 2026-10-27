@@ -19,14 +19,18 @@
  *             19,484 buildings, 36,003 road cells).
  *   bot256    bot256_s7_y60.metropolis: sim-profile/fixtures/botgrow.ts on snap, the 24f8609 SimBot, 256 map, seed 7,
  *             60 years (the profiler's pre-WP6a bot city).
+ *   captures  the 1M-population captures tests/wasm/{populationAggregateProbe,desirabilityLandValueBands,fieldPasses}
+ *             .test.ts read from node_modules/.cache/sim-bench/{populationAggregateProbe,econ,fieldPasses}: written from
+ *             dense1m and bot256 on snap by the benches' own capture runs (populationAggregateProbe.bench.mjs capture;
+ *             desirabilityLandValueBands.bench.mjs node --sweeps none; fieldPasses.bench.mjs node --cases soil --reps 1).
  * Shared test cities (target cities, only with --cities DIR): tools/simbot.ts --save-years on THIS tree; each pair
  * <name>.city.metropolis + <name>.region.metropolis is followed by <name>.READY (vet_s7_y21's before the run goes on):
  *   small_s7_y10               128 map, seed 7, 10 years
  *   vet_s7_y21, vet_s7_y43     256 map, seed 7, one 43-year run
  *
  * options:
- *   --only a,b     targets snap, dense1m, stress1m, bot256, cities (default: the first four, + cities with --cities);
- *                  a target whose output exists is kept unless --force
+ *   --only a,b     targets snap, dense1m, stress1m, bot256, captures, cities (default: all but cities, + cities with
+ *                  --cities); a target whose outputs exist is kept unless --force
  *   --cities DIR   also build the shared test cities into DIR
  *   --force        rebuild existing outputs
  * Each rebuilt fixture is counted and compared with the original's numbers; a mismatch is reported (exit code 3) and the
@@ -45,7 +49,7 @@ const SNAP = resolve(process.env.SIM_SNAP ?? join(ROOT, 'tools', 'bench', '.fixt
 const FIX = resolve(process.env.SIM_FIXTURES ?? join(ROOT, 'tools', 'bench', '.fixtures', 'fixtures'));
 const CACHE = join(ROOT, 'node_modules', '.cache', 'sim-fixtures');
 const GENERATORS = ['dense1m', 'stress', 'botgrow'];
-const TARGETS = ['snap', 'dense1m', 'stress1m', 'bot256', 'cities'];
+const TARGETS = ['snap', 'dense1m', 'stress1m', 'bot256', 'captures', 'cities'];
 
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -56,7 +60,7 @@ if (args.includes('--help') || args.includes('-h')) {
 }
 const force = args.includes('--force');
 const citiesDir = opt('--cities') ? resolve(opt('--cities')) : null;
-const only = new Set((opt('--only') ?? [...TARGETS.slice(0, 4), ...(citiesDir ? ['cities'] : [])].join(',')).split(','));
+const only = new Set((opt('--only') ?? [...TARGETS.slice(0, 5), ...(citiesDir ? ['cities'] : [])].join(',')).split(','));
 for (const t of only) if (!TARGETS.includes(t)) fail(`unknown target ${t} (${TARGETS.join(', ')})`);
 if (only.has('cities') && !citiesDir) fail('target cities needs --cities DIR');
 // (shared containers: the kernel's OOM killer picks this process and its children before the agent session)
@@ -71,10 +75,10 @@ const git = (...a) => spawnSync('git', a, { cwd: ROOT, encoding: 'utf8' });
 const show = (p) => (relative(ROOT, p).startsWith('..') ? p : relative(ROOT, p));
 
 /** run a node program, its output prefixed with `label`; resolves with the wall seconds */
-function run(label, file, argv, cwd) {
+function run(label, file, argv, cwd, env = {}) {
   return new Promise((res, rej) => {
     const t0 = performance.now();
-    const p = spawn(process.execPath, [file, ...argv], { cwd, stdio: ['ignore', 'pipe', 'inherit'] });
+    const p = spawn(process.execPath, [file, ...argv], { cwd, stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, ...env } });
     let part = '';
     p.stdout.on('data', (d) => {
       const lines = (part + d).split('\n');
@@ -205,6 +209,41 @@ async function fixture(target, name, gen, argv, expect) {
   results.push({ target, file, ...info, wall });
 }
 
+// ------------------------------------------------------------------------------------------------ captures
+/** the captures three more WASM tests read (node_modules/.cache/sim-bench/…), written by the benches' own capture runs */
+async function captures() {
+  const sb = join(ROOT, 'node_modules', '.cache', 'sim-bench');
+  const bench = (f) => join(ROOT, 'tools', 'bench', f);
+  const need = ['dense1m_s7.metropolis', 'bot256_s7_y60.metropolis'].map((f) => join(FIX, f));
+  for (const f of need) if (!existsSync(f)) fail(`captures need ${f} (targets dense1m and bot256)`);
+  if (!existsSync(join(SNAP, '.commit'))) fail(`captures need the snap target (${SNAP})`);
+  const jobs = [
+    { name: 'populationAggregateProbe', dir: join(sb, 'populationAggregateProbe'), files: ['dense1m_s7.w8.pagc', 'bot256_s7_y60.w8.pagc'],
+      argv: [bench('populationAggregateProbe.bench.mjs'), 'capture', '--tree', SNAP, '--fixtures', FIX] },
+    { name: 'econ', dir: join(sb, 'econ'), files: ['dense1m_s7.w20.cap', 'bot256_s7_y60.w20.cap'],
+      argv: [bench('desirabilityLandValueBands.bench.mjs'), 'node', '--fixture', need[0], '--fixture', need[1], '--tree', SNAP, '--sweeps', 'none'] },
+    { name: 'fieldPasses', dir: join(sb, 'fieldPasses'), files: ['dense1m.w20.cap', 'bot256.w20.cap', 'bot256w.w20.cap'],
+      argv: [bench('fieldPasses.bench.mjs'), 'node', '--tree', SNAP, '--cases', 'soil', '--reps', '1'] },
+  ];
+  for (const j of jobs) {
+    const kept = !force && j.files.every((f) => existsSync(join(j.dir, f)));
+    let wall;
+    if (kept) log(`captures: ${show(j.dir)} kept`);
+    else {
+      // (the benches reuse a capture they find: remove the old ones first)
+      for (const f of j.files) rmSync(join(j.dir, f), { force: true });
+      wall = await run(`captures ${j.name}`, j.argv[0], j.argv.slice(1), ROOT, { SIM_FIXTURES: FIX, SIM_SNAP: SNAP });
+    }
+    const missing = j.files.filter((f) => !existsSync(join(j.dir, f)));
+    if (missing.length) {
+      mismatches++;
+      log(`captures: WARNING ${j.name} wrote no ${missing.join(', ')}`);
+    }
+    const bytes = j.files.reduce((n, f) => n + (existsSync(join(j.dir, f)) ? statSync(join(j.dir, f)).size : 0), 0);
+    results.push({ target: 'captures', file: j.dir, captures: j.files, bytes, wall, kept });
+  }
+}
+
 // ------------------------------------------------------------------------------------------------ cities
 async function cities() {
   mkdirSync(citiesDir, { recursive: true });
@@ -241,16 +280,21 @@ if (only.has('stress1m')) {
 }
 // (the original's documented numbers: 653k residents, 13,909 road + rail cells; these are the exact ones of its rebuild)
 if (only.has('bot256')) await fixture('bot256', 'bot256_s7_y60.metropolis', 'botgrow', (d) => ['60', '7', '60', d], { residents: 652568, buildings: 11276, roadCells: 13828 });
+if (only.has('captures')) await captures();
 if (only.has('cities')) await cities();
 
 log(`done in ${((performance.now() - t0) / 1000).toFixed(0)} s`);
 const n = (v) => (v ?? 0).toLocaleString('en-US');
 for (const r of results) {
+  if (r.captures) {
+    log(`  captures ${show(r.file)}: ${r.captures.join(', ')}, ${(r.bytes / 1e6).toFixed(1)} MB${r.kept ? ', kept' : `, built in ${r.wall?.toFixed(0)} s`}`);
+    continue;
+  }
   log(`  ${r.target.padEnd(8)} ${show(r.file)}: ${n(r.residents)} residents, ${n(r.buildings)} buildings${r.roadCells ? `, ${n(r.roadCells)} road cells` : ''}, `
     + `${(r.bytes / 1e6).toFixed(2)} MB${r.region ? ` (+ region file ${(r.region / 1e6).toFixed(2)} MB)` : ''}`
     + `${r.kept ? ', kept' : `, built in ${r.wall?.toFixed(0)} s`}${r.digest ? `, content sha256 ${r.digest.slice(0, 16)}` : ''}`);
 }
 if (mismatches) {
-  log(`${mismatches} fixture(s) differ from the originals (warnings above)`);
+  log(`${mismatches} output(s) differ from what was expected (warnings above)`);
   process.exit(3);
 }

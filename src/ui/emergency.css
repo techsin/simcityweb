@@ -61,6 +61,15 @@
   color: var(--warn); font-weight: 600;
 }
 .emg-more:hover { color: var(--text); }
+/* close-out c2: a press ignored because its banner (or the pill) had just moved under the pointer — a brief ring, on a
+   pseudo-element so the banner's own entry / urgency animations are left alone (EmergencyBanner SETTLE_FLASH_MS) */
+.emg-more { position: relative; }
+.emg-banner.settling::after, .emg-more.settling::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--kc, #ffb020) 75%, white), 0 0 14px color-mix(in srgb, var(--kc, #ffb020) 45%, transparent);
+  animation: emg-settle 0.26s ease-out forwards;
+}
+@keyframes emg-settle { from { opacity: 1; } to { opacity: 0; } }
 
 /* LIVE badge in the speed group (TopBar), shown while an emergency holds the game at slowed 1x */
 .hud-top .live-pill {

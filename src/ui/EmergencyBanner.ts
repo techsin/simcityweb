@@ -572,6 +572,8 @@ export class EmergencyBanner {
   private moreSettleUntil = 0;
   private moreSettleGen = 0;
   private moreSlot = '';
+  /** the pill is shown (set with its display in tick) */
+  private moreShown = false;
   /** the control a press was ignored on: its click is dropped too */
   private ignored: Element | null = null;
   /** close-out c1: the highest an open toolbar flyout's top reached since it opened (relative to the bottom block, <= 0;
@@ -1121,16 +1123,18 @@ export class EmergencyBanner {
    * opened bounds the stack (flyoutTop: no re-dock with every tab).
    */
   private dock(): void {
-    if (!this.banners.size) {
+    // close-out c2: with every banner dismissed the "N more emergencies" pill alone docks like the stack (it sat at the
+    // centred default over a centred panel's title row)
+    const pillOnly = !this.banners.size && this.moreShown;
+    if (!this.banners.size && !pillOnly) {
       if (this.dockKey || this.dockCompact || this.dockRows) this.applyDock(null, false, 0);
       this.dockDirty = true; // (the next banner measures afresh)
       return;
     }
     const tracked = !!(this.ro && this.mo);
     if (tracked && !this.dockDirty) return;
-    // (held while pressed — dockDirty stays: the release docks; PRESS_HOLD_MS bounds a release the window never saw)
-    if (this.pressAt && performance.now() - this.pressAt < PRESS_HOLD_MS) return;
-    this.pressAt = 0;
+    // (held while pressed — dockDirty stays: the release docks; close-out c2: however long the press)
+    if (this.pressAt) return;
     this.dockDirty = false;
     const root = this.ctx.root;
     if (tracked && !this.layerWatched) {
@@ -1149,31 +1153,57 @@ export class EmergencyBanner {
         panels.push({ x: p.offsetLeft, y: p.offsetTop, w: p.offsetWidth, h: p.offsetHeight });
       }
     }
-    // the stack's height with full / compact banners (the current one for the kind each banner has now; a capped banner
-    // keeps the height it was last seen with)
-    let full = 0, comp = 0, compRow = 0, n = 0;
-    for (const b of this.banners.values()) {
-      const hh = b.el.offsetHeight;
-      if (hh > 0) {
-        if (b.el.classList.contains('compact')) b.compH = hh;
-        else b.fullH = hh;
-      }
-      full += (b.fullH ?? 150) + 8;
-      comp += (b.compH ?? 64) + 8;
-      compRow = Math.max(compRow, (b.compH ?? 64) + 8);
-      n++;
-    }
     const mh = this.more.offsetHeight;
     const moreH = (mh > 0 ? mh : 34) + 8;
-    const more = this.more.style.display === 'none' ? 0 : moreH;
+    const fbH = H > 0 ? H : Infinity;
     const bottom = this.stackBottom(root, H);
-    const d = panels.length ? dockBanners(W, STACK_TOP, full + more - 8, BANNER_W, panels, comp + more - 8, 12, { H: H > 0 ? H : Infinity, rowH: compRow, moreH, n, bottom }) : null;
+    if (pillOnly) {
+      // (the pill as the stack's one row: beside the panels, else below their header rows — never over a title or tab)
+      const d = panels.length ? dockBanners(W, STACK_TOP, moreH - 8, BANNER_W, panels, 0, 12, { H: fbH, rowH: moreH, moreH: 0, n: 1, bottom }) : null;
+      this.applyDock(d && { left: d.left, width: d.width, top: d.top }, false, 0);
+      return;
+    }
+    // the banners' heights as full / compact ones — per stack width (close-out c2): measured at the width the stack has
+    // now (a capped banner keeps the ones it was last seen with), read for the width a place gives it
+    const sw = Math.round(this.el.offsetWidth) || BANNER_W;
+    for (const b of this.banners.values()) {
+      const hh = b.el.offsetHeight;
+      if (!(hh > 0)) continue;
+      const m = (b.hts ??= new Map());
+      let e = m.get(sw);
+      if (!e) {
+        m.set(sw, (e = {}));
+        if (m.size > 4) m.delete(m.keys().next().value!);
+      }
+      if (b.el.classList.contains('compact')) e.comp = hh;
+      else e.full = hh;
+    }
+    const n = this.banners.size;
+    const more = this.more.style.display === 'none' ? 0 : moreH;
+    /** the place for the stack with its banners' heights at width w (null: the centred default) */
+    const placeAt = (w: number): DockPlace | null => {
+      if (!panels.length) return null;
+      let full = 0, comp = 0, compRow = 0;
+      for (const b of this.banners.values()) {
+        full += fullAt(b, w) + 8;
+        const c = compAt(b, w) + 8;
+        comp += c;
+        compRow = Math.max(compRow, c);
+      }
+      return dockBanners(W, STACK_TOP, full + more - 8, BANNER_W, panels, comp + more - 8, 12, { H: fbH, rowH: compRow, moreH, n, bottom });
+    };
+    // (the default width; narrow screens: the CSS default, the stack's own)
+    const defW = W >= BANNER_W + 24 ? BANNER_W : sw;
+    let d = placeAt(defW);
+    // a narrower place: decided again with the (taller) heights at that width
+    if (d && Math.round(d.width) !== defW) d = placeAt(d.width) ?? d;
+    const tw = d ? d.width : defW;
     // final fixes r3: no place but the EM-2 fallback (it caps its rows itself) knew the toolbar — the rows that fit above
     // it, in display order (the first MAX_BANNERS full); all compact when that shows more than the full ones that fit
     let compact = !!d?.compact, rows = d?.rows ?? 0;
     if (!rows && Number.isFinite(bottom)) {
       const list = this.ordered();
-      const heights = (allCompact: boolean) => list.map((b, k) => (allCompact || k >= MAX_BANNERS ? b.compH ?? 64 : b.fullH ?? 150));
+      const heights = (allCompact: boolean) => list.map((b, k) => (allCompact || k >= MAX_BANNERS ? compAt(b, tw) : fullAt(b, tw)));
       const top = d?.top ?? STACK_TOP, pill = this.hiddenPrompts > 0;
       rows = fitRows(top, bottom, heights(compact), moreH, pill);
       if (rows > 0 && !compact && rows < Math.min(list.length, MAX_BANNERS)) {
@@ -1238,8 +1268,8 @@ export class EmergencyBanner {
     const key = d ? `${Math.round(d.left)}:${Math.round(d.width)}:${d.top === undefined ? '' : Math.round(d.top)}` : '';
     if (key === this.dockKey) return;
     this.dockKey = key;
-    // (the stack itself moved or changed width: close-out c1)
-    this.markMoved();
+    // (the stack itself moved or changed width: every banner and the pill — close-out c1)
+    this.markMoved(this.banners.values(), true);
     const s = this.el.style;
     if (!d) {
       s.left = s.transform = s.width = s.top = '';
@@ -1305,7 +1335,10 @@ export class EmergencyBanner {
       this.more.style.display = md;
       this.dockDirty = true;
     }
-    if (total) setText(this.moreText, `${total} more emergenc${total === 1 ? 'y' : 'ies'}${needYou === total ? (total === 1 ? ' needs you' : ' need you') : ''} — open Emergencies`);
+    this.moreShown = total > 0;
+    // (close-out c2 polish: no "open Emergencies" while that panel is open)
+    const listed = !!this.ctx.panels.isOpen?.('emergencies');
+    if (total) setText(this.moreText, `${total} more emergenc${total === 1 ? 'y' : 'ies'}${needYou === total ? (total === 1 ? ' needs you' : ' need you') : ''} — ${listed ? 'see the Emergencies panel' : 'open Emergencies'}`);
     this.applyPolicy();
   }
 

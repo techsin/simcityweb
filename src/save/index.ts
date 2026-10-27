@@ -171,6 +171,18 @@ export async function importRegion(src: Blob | ArrayBuffer | Uint8Array, opts: {
     const rec: CityRecord = { key: cityKey(region.id, tileKey), regionId: region.id, tileKey, savedAt: Date.now(), city: c };
     await kv.put('cities', rec, rec.key);
   }
+  // a file made outside the game (a tool's export) may carry no overview image: draw it now, so the Load Region list
+  // shows it before the region is first opened (close-out c2 polish; headless: drawn when it is opened)
+  if (!region.preview && typeof document !== 'undefined') {
+    try {
+      const [{ RegionModel }, { regionPreviewDataUrl, regionPreviewKey }] = await Promise.all([import('../region/RegionModel'), import('../region/mapPreview')]);
+      const model = new RegionModel(region);
+      region.preview = regionPreviewDataUrl(model);
+      region.previewKey = regionPreviewKey(model);
+    } catch (e) {
+      console.warn('[save] region preview', e);
+    }
+  }
   await kv.put('regions', region);
   return region;
 }

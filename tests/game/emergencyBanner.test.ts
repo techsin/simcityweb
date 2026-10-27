@@ -30,7 +30,7 @@ import { emergencyOf } from '../../src/sim/infra/emergency';
 import { getFire, infraSystems, triggerDisaster } from '../../src/sim/systems/infra';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import {
-  BANNER_MIN_W, BANNER_W, EmergencyBanner, KIND_COOLDOWN, MAX_BANNERS, PANEL_HEAD_H, PRESS_HOLD_MS, SETTLE_MS, STACK_TOP, TOOLBAR_GAP, dockBanners, fitRows, stateText,
+  BANNER_MIN_W, BANNER_W, EmergencyBanner, KIND_COOLDOWN, MAX_BANNERS, PANEL_HEAD_H, SETTLE_MS, STACK_TOP, TOOLBAR_GAP, dockBanners, fitRows, stateText,
   supportText,
   type DockPlace,
 } from '../../src/ui/EmergencyBanner';
@@ -905,13 +905,18 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
       expect(s2.bottom).toBeLessThanOrEqual(t.bound);
       expect(s2.shown.length).toBeGreaterThan(s0.shown.length);
       expect(parts(t.h, s2.shown[0]).el.classList.contains('compact')).toBe(false);
-      // a press whose release the window never saw (let go outside it) holds the docking PRESS_HOLD_MS at most
+      // close-out c2: a long press holds the docking until it is released, however long — a 1.5 s cap re-docked under
+      // a 2.5 s press at 1366x650 and the release clicked nothing — then a release the window never saw as a pointerup
+      // (the window lost focus with the button held) lets it re-dock
       fly.className = 'flyout mp-glass open';
       (t.h.banner.el as unknown as FakeEl).fire('pointerdown');
-      now.mockReturnValue(1e6 + 300);
-      t.h.tick();
-      expect(stackBottom(t.h).shown).toEqual(s2.shown);
-      now.mockReturnValue(1e6 + 300 + PRESS_HOLD_MS + 1);
+      for (const ms of [300, 1800, 2500, 10000]) {
+        now.mockReturnValue(1e6 + ms);
+        t.h.tick();
+        expect(stackBottom(t.h).shown).toEqual(s2.shown);
+      }
+      for (const f of winL.get('blur') ?? []) f({});
+      now.mockReturnValue(1e6 + 10100);
       t.h.tick();
       expect(stackBottom(t.h).bottom).toBeLessThanOrEqual(top - TOOLBAR_GAP);
     } finally {
@@ -1061,6 +1066,151 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     } finally {
       w.restore();
     }
+  });
+
+  // ------------------------------------------------------------------------------------ close-out c2
+  /** the stack's width follows its inline width (docked) or the CSS default; a banner is 150 px tall as a full one in
+   *  the 440-px stack and 260 px in a narrower one (its text wraps), 64 px compact, 0 folded */
+  function sizedBanners(t: ReturnType<typeof quakeTown>): void {
+    const stack = t.h.banner.el as unknown as FakeEl;
+    Object.defineProperty(stack, 'offsetWidth', { configurable: true, get: () => parseInt(String(stack.style.width ?? '')) || BANNER_W });
+    for (const id of t.h.banner.bannerIds) {
+      const el = parts(t.h, id).el;
+      Object.defineProperty(el, 'offsetHeight', {
+        configurable: true,
+        get: () => (el.classList.contains('capped') ? 0 : el.classList.contains('compact') ? 64 : stack.offsetWidth < 420 ? 260 : 150),
+      });
+    }
+  }
+  const fullShown = (t: ReturnType<typeof quakeTown>) => stackBottom(t.h).shown.filter((id) => !parts(t.h, id).el.classList.contains('compact'));
+
+  it('c2 (playtest c2 #1): heights are kept per stack width — a centre panel docks the stack narrow and compact; closed again, the centred stack gets its full banners back', () => {
+    const t = quakeTown();
+    quake(t);
+    sizedBanners(t);
+    const stack = t.h.banner.el as unknown as FakeEl;
+    for (let k = 0; k < 3; k++) t.h.tick();
+    const base = stackBottom(t.h);
+    expect(fullShown(t).length).toBe(MAX_BANNERS);
+    expect(base.pill).toBe(true);
+    // a centre panel 788 px wide: the gaps beside it are 382 px — the stack docks narrow, where its banners are taller
+    const panel = new FakeEl('div');
+    panel.className = 'panel';
+    Object.assign(panel, { offsetLeft: 406, offsetTop: 72, offsetWidth: 788, offsetHeight: 600 });
+    t.h.root.querySelectorAll = () => [panel];
+    for (let k = 0; k < 4; k++) t.h.tick();
+    expect(parseInt(String(stack.style.width))).toBeLessThan(420);
+    expect(fullShown(t).length).toBe(0);
+    // closed: centred again with three full banners, the compact rows and the pill — not all compact for good (the
+    // full heights measured in the narrow column were read for the centred stack)
+    t.h.root.querySelectorAll = () => [];
+    for (let k = 0; k < 4; k++) t.h.tick();
+    expect(stack.style.width).toBe('');
+    expect(fullShown(t).length).toBe(MAX_BANNERS);
+    expect(stackBottom(t.h)).toEqual(base);
+  });
+
+  it('c2 (audit c2 #2): the settle guard holds only the banners that moved — a press above the change clicks at once; an ignored press flashes and sounds denied', () => {
+    const w = fakeWindowAndFrames();
+    const now = vi.spyOn(performance, 'now');
+    try {
+      const t = quakeTown();
+      const em = emergencyOf(t.sim)!;
+      const sounds: string[] = [];
+      (t.h.banner as unknown as { ctx: { sound: (n: string) => void } }).ctx.sound = (n) => sounds.push(n);
+      quake(t);
+      now.mockReturnValue(1e6);
+      t.h.tick();
+      w.frame(); w.frame();
+      now.mockReturnValue(1e6 + 2000);
+      t.h.tick();
+      const s0 = stackBottom(t.h).shown;
+      // the third banner is dismissed (settled: its X clicks): the banners below it move up, the two above stay
+      const x = parts(t.h, s0[2]).el.all().find((e) => e.className.includes('emg-x'))!;
+      expect(press(t, w.winL, x)).toBe(true);
+      now.mockReturnValue(1e6 + 2100);
+      t.h.tick();
+      const s1 = stackBottom(t.h).shown;
+      expect(s1.slice(0, 2)).toEqual(s0.slice(0, 2));
+      expect(s1[2]).toBe(s0[3]);
+      // a press on the banner that moved up into the dismissed one's row: ignored — it flashes, its click sounds denied
+      sounds.length = 0;
+      const movedUp = button(t.h, s0[3], /^Send nearest/);
+      expect(press(t, w.winL, movedUp)).toBe(false);
+      expect(parts(t.h, s0[3]).el.classList.contains('settling')).toBe(true);
+      expect(sounds).toEqual(['error']);
+      expect(em.incident(s0[3])!.state).toBe('uncovered');
+      // a press on a banner above the change (it never moved): sent at once (c1's guard dropped it)
+      expect(press(t, w.winL, button(t.h, s0[1], /^Send nearest/))).toBe(true);
+      expect(em.incident(s0[1])!.state).toBe('dispatched');
+      // the moved banner, once settled: sent
+      w.frame(); w.frame();
+      now.mockReturnValue(1e6 + 2100 + SETTLE_MS + 1);
+      expect(press(t, w.winL, movedUp)).toBe(true);
+      expect(em.incident(s0[3])!.state).toBe('dispatched');
+    } finally {
+      now.mockRestore();
+      w.restore();
+    }
+  });
+
+  it('c2 (playtest c2 #2): the pressed control captures the pointer, and the hold ends on lostpointercapture', () => {
+    const w = fakeWindowAndFrames();
+    const now = vi.spyOn(performance, 'now');
+    try {
+      const t = quakeTown();
+      quake(t);
+      now.mockReturnValue(1e6);
+      t.h.tick();
+      w.frame(); w.frame();
+      now.mockReturnValue(1e6 + 2000);
+      const id = stackBottom(t.h).shown[0];
+      const send = button(t.h, id, /^Send nearest/);
+      const captured: number[] = [];
+      (send as unknown as { setPointerCapture: (p: number) => void }).setPointerCapture = (p) => captured.push(p);
+      const stack = t.h.banner.el as unknown as FakeEl;
+      const L = (k: string) => (stack as unknown as { listeners: Map<string, ((e: unknown) => void)[]> }).listeners.get(k) ?? [];
+      for (const f of L('pointerdown')) f({ target: send, pointerId: 7, preventDefault() {}, stopPropagation() {} });
+      expect(captured).toEqual([7]);
+      expect((t.h.banner as unknown as { pressAt: number }).pressAt).toBeGreaterThan(0);
+      stack.fire('lostpointercapture');
+      expect((t.h.banner as unknown as { pressAt: number }).pressAt).toBe(0);
+    } finally {
+      now.mockRestore();
+      w.restore();
+    }
+  });
+
+  it('c2 (audit c2 #3): with every banner dismissed the pill alone docks clear of a centred panel\'s title row; it does not say "open Emergencies" while that panel is open', () => {
+    const t = quakeTown();
+    quake(t);
+    for (const id of [...t.h.banner.bannerIds]) parts(t.h, id).el.all().find((e) => e.className.includes('emg-x'))!.click();
+    t.h.tick();
+    t.h.tick();
+    expect(t.h.banner.bannerIds.length).toBe(0);
+    const more = (t.h.banner as unknown as { more: FakeEl }).more;
+    expect(shown(more)).toBe(true);
+    expect(more.textContent).toBe('10 more emergencies need you — open Emergencies');
+    const s = t.h.banner.el.style;
+    expect(s.left ?? '').toBe(''); // (nothing in the way: the centred default)
+    // a centred panel (the Rewards panel; its title and tabs at y 60 .. 60 + PANEL_HEAD_H)
+    const panel = new FakeEl('div');
+    panel.className = 'panel';
+    Object.assign(panel, { offsetLeft: 480, offsetTop: 60, offsetWidth: 640, offsetHeight: 600 });
+    t.h.root.querySelectorAll = () => [panel];
+    t.h.tick();
+    const left = parseInt(String(s.left)), top = s.top ? parseInt(String(s.top)) : STACK_TOP;
+    expect(Number.isFinite(left)).toBe(true);
+    const besideIt = left + BANNER_W <= 480 - 12 || left >= 480 + 640 + 12;
+    expect(besideIt || top >= 60 + PANEL_HEAD_H).toBe(true);
+    // the Emergencies panel open: the pill no longer tells the player to open it
+    (t.h.banner as unknown as { ctx: { panels: { isOpen?: (id: string) => boolean } } }).ctx.panels.isOpen = (id) => id === 'emergencies';
+    t.h.tick();
+    expect(more.textContent).toBe('10 more emergencies need you — see the Emergencies panel');
+    // closed: the centred default again
+    t.h.root.querySelectorAll = () => [];
+    t.h.tick();
+    expect(s.left).toBe('');
   });
 });
 

@@ -174,7 +174,8 @@ export class DataViewsPanel extends Panel {
     const lr = layer.getBoundingClientRect();
     let bottom = layer.clientHeight - 12;
     const left = el.offsetLeft, right = left + el.offsetWidth;
-    for (const sel of ['.minimap', '.hud-bottom .toolbar']) {
+    // (and the save indicator mounted above the minimap: no part of its box — close-out c2)
+    for (const sel of ['.minimap', '.minimap .save-status', '.hud-bottom .toolbar']) {
       const o = this.ctx.root.querySelector(sel) as HTMLElement | null;
       if (!o || o.offsetParent === null) continue;
       const r = o.getBoundingClientRect();

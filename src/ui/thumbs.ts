@@ -50,7 +50,7 @@ function viewOf(src: THREE.BufferGeometry): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry();
   g.setIndex(src.index);
   for (const k of Object.keys(src.attributes)) g.setAttribute(k, src.attributes[k]);
-  for (const k of Object.keys(src.morphAttributes)) g.morphAttributes[k] = src.morphAttributes[k];
+  for (const k of Object.keys(src.morphAttributes) as (keyof THREE.BufferGeometry['morphAttributes'])[]) g.morphAttributes[k] = src.morphAttributes[k];
   g.morphTargetsRelative = src.morphTargetsRelative;
   for (const gr of src.groups) g.addGroup(gr.start, gr.count, gr.materialIndex);
   g.setDrawRange(src.drawRange.start, src.drawRange.count);
