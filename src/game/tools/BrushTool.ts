@@ -128,8 +128,8 @@ export class BrushTool extends Tool {
   override options(): HTMLElement {
     const rv = h('span', { class: 'opt-val' }, String(brush.radius));
     const sv = h('span', { class: 'opt-val' }, Math.round(brush.strength * 100) + '%');
-    const r = slider({ min: 1, max: 10, value: brush.radius, oninput: (v) => { brush.radius = v; rv.textContent = String(v); this.lastKey = ''; } });
-    const s = slider({ min: 0.1, max: 1, step: 0.05, value: brush.strength, oninput: (v) => { brush.strength = v; sv.textContent = Math.round(v * 100) + '%'; this.lastKey = ''; } });
+    const r = slider({ signal: this.ctx.signal, min: 1, max: 10, value: brush.radius, oninput: (v) => { brush.radius = v; rv.textContent = String(v); this.lastKey = ''; } });
+    const s = slider({ signal: this.ctx.signal, min: 0.1, max: 1, step: 0.05, value: brush.strength, oninput: (v) => { brush.strength = v; sv.textContent = Math.round(v * 100) + '%'; this.lastKey = ''; } });
     this.opts = { r, s, rv, sv };
     const row = h('div', { class: 'tool-opts' },
       h('label', null, 'Size', r, rv),

@@ -67,7 +67,7 @@ export interface GameContext {
   settings: GameSettings;
   mods: GameModules;
   readonly ui: Emitter<UIEvents>;
-  /** aborted when the scene is disposed (use for window/document listeners) */
+  /** aborted when the scene is disposed (use for all city-lifetime DOM listeners) */
   readonly signal: AbortSignal;
   tools: ToolController;
   panels: PanelsApi;

@@ -91,7 +91,7 @@ export class DemographicsPanel extends Panel {
         this.tab = id;
         this.resetGate();
         this.update();
-      });
+      }, { signal: this.ctx.signal });
       this.tabBtns[id] = b;
       tabs.appendChild(b);
     }
@@ -231,7 +231,7 @@ export class DemographicsPanel extends Panel {
       const c = unservedClusters(this.ctx.sim, t.tier, 1)[0];
       if (c) this.ctx.focusCell(Math.round(c.x), Math.round(c.z), 480);
       else this.ctx.toast('No unserved cluster found right now', 'info');
-    });
+    }, { signal: this.ctx.signal });
     const tone = need <= 0 ? '' : share >= 0.85 ? 'pos' : share >= 0.6 ? 'warn' : 'neg';
     return h('div', { class: 'dtier' },
       h('div', { class: 'dtier-h' },
@@ -285,7 +285,7 @@ export class DemographicsPanel extends Panel {
         h('span', { class: 'bar ' + (u > 0.95 ? 'warn' : 'good') }, h('span', { class: 'fill', style: { width: `${Math.min(100, u * 100)}%` } })),
         h('span', { class: 'dvv', title: 'Visitors a day / what the venue can take' }, `${compact(v.visits)} / ${compact(v.capacity)} a day`),
       );
-      if (b) row.addEventListener('click', () => this.ctx.focusCell(b.x + (b.w >> 1), b.z + (b.d >> 1), 420));
+      if (b) row.addEventListener('click', () => this.ctx.focusCell(b.x + (b.w >> 1), b.z + (b.d >> 1), 420), { signal: this.ctx.signal });
       list.appendChild(row);
     }
     this.content.appendChild(list);

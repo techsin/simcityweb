@@ -32,7 +32,7 @@ export class SettingsPanel extends Panel {
   private range(key: keyof GameSettings, min: number, max: number, step: number, fmt: (v: number) => string): HTMLElement {
     const s = this.ctx.settings;
     const val = h('span', { class: 'opt-val' }, fmt(s[key] as number));
-    const sl = slider({ min, max, step, value: s[key] as number, oninput: (v) => {
+    const sl = slider({ signal: this.ctx.signal, min, max, step, value: s[key] as number, oninput: (v) => {
       val.textContent = fmt(v);
       this.ctx.applySettings({ [key]: v } as Partial<GameSettings>);
     } });
@@ -40,26 +40,26 @@ export class SettingsPanel extends Panel {
   }
 
   private sw(key: keyof GameSettings): HTMLElement {
-    return toggle(!!this.ctx.settings[key], (v) => this.ctx.applySettings({ [key]: v } as Partial<GameSettings>));
+    return toggle(!!this.ctx.settings[key], (v) => this.ctx.applySettings({ [key]: v } as Partial<GameSettings>), false, this.ctx.signal);
   }
 
   protected build(): void {
     const s = this.ctx.settings;
     const pctf = (v: number) => Math.round(v * 100) + '%';
-    const quality = segmented<QualityLevel>([{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'ultra', label: 'Ultra' }], s.quality, (q) => this.ctx.applySettings({ quality: q }));
+    const quality = segmented<QualityLevel>([{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'ultra', label: 'Ultra' }], s.quality, (q) => this.ctx.applySettings({ quality: q }), this.ctx.signal);
     this.autoSw = toggle(s.autoTime, (v) => {
       this.ctx.applySettings({ autoTime: v });
       this.update();
-    });
+    }, false, this.ctx.signal);
     this.hourVal = h('span', { class: 'opt-val' }, hourLabel(s.fixedHour));
-    this.hourSlider = slider({ min: 0, max: 24, step: 0.25, value: s.fixedHour, oninput: (v) => {
+    this.hourSlider = slider({ signal: this.ctx.signal, min: 0, max: 24, step: 0.25, value: s.fixedHour, oninput: (v) => {
       this.hourVal.textContent = hourLabel(v);
       this.ctx.applySettings({ fixedHour: v, autoTime: false });
       setToggle(this.autoSw, false);
     } });
     this.hourRow = this.row('Fixed time', 'Drag to set the hour (turns off the day cycle)', h('div', { class: 'sr-c' }, this.hourSlider, this.hourVal));
-    const newYear = segmented<NewYearMode>([{ value: 'cinematic', label: 'Cinematic' }, { value: 'fireworks', label: 'Fireworks' }, { value: 'off', label: 'Off' }], s.newYear ?? 'cinematic', (v) => this.ctx.applySettings({ newYear: v }));
-    const autosave = segmented<number>([{ value: 0, label: 'Off' }, { value: 3, label: '3 mo' }, { value: 6, label: '6 mo' }, { value: 12, label: '1 yr' }], s.autosaveMonths, (v) => this.ctx.applySettings({ autosaveMonths: v }));
+    const newYear = segmented<NewYearMode>([{ value: 'cinematic', label: 'Cinematic' }, { value: 'fireworks', label: 'Fireworks' }, { value: 'off', label: 'Off' }], s.newYear ?? 'cinematic', (v) => this.ctx.applySettings({ newYear: v }), this.ctx.signal);
+    const autosave = segmented<number>([{ value: 0, label: 'Off' }, { value: 3, label: '3 mo' }, { value: 6, label: '6 mo' }, { value: 12, label: '1 yr' }], s.autosaveMonths, (v) => this.ctx.applySettings({ autosaveMonths: v }), this.ctx.signal);
     // sections (Gameplay — autosave / New Year — sits right under Graphics so it is reachable without scrolling far;
     // the long music player stays last). A sticky nav jumps to each section (the body scrolls at 720p).
     const sec = (id: string, title: string) => h('div', { class: 'sec-title', dataset: { sec: id } }, title);
@@ -70,7 +70,7 @@ export class SettingsPanel extends Panel {
         this.showSection(id);
         this.ctx.sound('tab');
         b.blur();
-      });
+      }, { signal: this.ctx.signal });
       nav.appendChild(b);
     }
     this.body.classList.add('settings-body');
@@ -86,8 +86,8 @@ export class SettingsPanel extends Panel {
       this.row('New Year show camera', 'Cinematic: frame the show from the skyline, then return (any camera move takes over)', this.sw('newYearCamera')),
       this.row('Pause when hidden', 'Pause the simulation when the tab is in the background', this.sw('pauseWhenHidden')),
       // WP8 emergency dispatch
-      this.row('Uncovered emergencies', 'When no station can answer an emergency: slow down to live speed, pause, or keep going', segmented<EmergencyPolicy>([{ value: 'live', label: 'Live speed' }, { value: 'pause', label: 'Pause' }, { value: 'ignore', label: 'Keep going' }], s.emergencyUncovered ?? 'live', (v) => this.ctx.applySettings({ emergencyUncovered: v }))),
-      this.row('Emergency alerts', 'Banners for major incidents only, or for every incident that needs you', segmented<'major' | 'all'>([{ value: 'major', label: 'Major' }, { value: 'all', label: 'All' }], s.emergencyAlerts ?? 'major', (v) => this.ctx.applySettings({ emergencyAlerts: v }))),
+      this.row('Uncovered emergencies', 'When no station can answer an emergency: slow down to live speed, pause, or keep going', segmented<EmergencyPolicy>([{ value: 'live', label: 'Live speed' }, { value: 'pause', label: 'Pause' }, { value: 'ignore', label: 'Keep going' }], s.emergencyUncovered ?? 'live', (v) => this.ctx.applySettings({ emergencyUncovered: v }), this.ctx.signal)),
+      this.row('Emergency alerts', 'Banners for major incidents only, or for every incident that needs you', segmented<'major' | 'all'>([{ value: 'major', label: 'Major' }, { value: 'all', label: 'All' }], s.emergencyAlerts ?? 'major', (v) => this.ctx.applySettings({ emergencyAlerts: v }), this.ctx.signal)),
       this.row('Live speed', 'How much 1x slows down while you handle an emergency', this.range('emergencyLiveSlowmo', 1, 5, 0.5, (v) => (v <= 1 ? 'Normal 1x' : `${v}x slower`))),
       sec('controls', 'Camera & controls'),
       this.row('Edge scrolling', 'Move the camera when the mouse touches the screen edge', this.sw('edgeScroll')),
@@ -126,15 +126,15 @@ export class SettingsPanel extends Panel {
     } | undefined;
     const ma = asMusicAudio(a);
     if (!a || !ma) return;
-    const sw = (on: boolean | undefined, set: ((v: boolean) => void) | undefined) => toggle(on !== false, (v) => set?.call(a, v), !set);
-    this.player = new MusicPlayer(ma, { variant: 'card', tracks: true });
+    const sw = (on: boolean | undefined, set: ((v: boolean) => void) | undefined) => toggle(on !== false, (v) => set?.call(a, v), !set, this.ctx.signal);
+    this.player = new MusicPlayer(ma, { variant: 'card', tracks: true, signal: this.ctx.signal });
     // the audio engine outlives the city: release the player's change listener + refresh timer with the scene
     this.ctx.signal.addEventListener('abort', () => this.player?.dispose(), { once: true });
     // switching interface sounds off still confirms with one last (explicit) switch sound before going quiet
     const uiSw = toggle(a.uiSounds !== false, (v) => {
       if (!v) this.ctx.sound('toggleOff');
       a.setUiSounds?.call(a, v);
-    }, !a.setUiSounds);
+    }, !a.setUiSounds, this.ctx.signal);
     this.musicHost.append(
       this.row('Interface sounds', 'Clicks, panels, sliders and tool feedback', uiSw),
       this.row('Hover sounds', 'Soft ticks when pointing at menus and the toolbar', sw(a.hoverSounds, a.setHoverSounds)),

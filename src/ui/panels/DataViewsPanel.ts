@@ -31,7 +31,7 @@ export function variantChips(ctx: GameContext, o: Overlay, compact = false): HTM
     b.addEventListener('click', (e) => {
       e.stopPropagation();
       pick(v);
-    });
+    }, { signal: ctx.signal });
     return b;
   };
   if (o === Overlay.Desirability) {
@@ -81,7 +81,7 @@ export class DataViewsPanel extends Panel {
   protected build(): void {
     const groups = new Map<string, HTMLElement>();
     const none = h('button', { class: 'dv-btn', html: icon('none', 20) + '<span>None</span>' }) as HTMLButtonElement;
-    none.addEventListener('click', () => this.pick(Overlay.None));
+    none.addEventListener('click', () => this.pick(Overlay.None), { signal: this.ctx.signal });
     this.btns.set(Overlay.None, none);
     for (const o of OVERLAYS) {
       let g = groups.get(o.group);
@@ -90,7 +90,7 @@ export class DataViewsPanel extends Panel {
         groups.set(o.group, g);
       }
       const b = h('button', { class: 'dv-btn', title: o.hint ?? o.label, html: icon(o.icon, 20) + `<span>${o.label}</span>` }) as HTMLButtonElement;
-      b.addEventListener('click', () => this.pick(this.ctx.overlay === o.o ? Overlay.None : o.o));
+      b.addEventListener('click', () => this.pick(this.ctx.overlay === o.o ? Overlay.None : o.o), { signal: this.ctx.signal });
       this.btns.set(o.o, b);
       g.appendChild(b);
     }
@@ -100,7 +100,7 @@ export class DataViewsPanel extends Panel {
     // (at 720p the Utilities & traffic row sat cut off under the fade, and a click on the clipped Power button hit the map)
     const scroll = h('div', { class: 'dv-scroll' });
     this.scroll = scroll;
-    scroll.addEventListener('scroll', () => this.cue(), { passive: true });
+    scroll.addEventListener('scroll', () => this.cue(), { passive: true, signal: this.ctx.signal });
     this.more = h('button', { class: 'dv-more', type: 'button', title: 'Scroll to the hidden data views', 'data-sfx': 'none' }) as HTMLButtonElement;
     this.more.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -111,7 +111,7 @@ export class DataViewsPanel extends Panel {
       if (top <= scroll.scrollTop + 4) top = scroll.scrollTop + scroll.clientHeight * 0.75;
       scroll.scrollTo({ top, behavior: 'smooth' });
       this.ctx.sound('tab');
-    });
+    }, { signal: this.ctx.signal });
     let first = true;
     for (const [name, g] of groups) {
       scroll.appendChild(h('div', { class: 'sec-title' }, name));
@@ -132,7 +132,7 @@ export class DataViewsPanel extends Panel {
       } catch {
         /* ignore */
       }
-    });
+    }, false, this.ctx.signal);
     scroll.append(h('div', { class: 'sec-title' }, 'View'), h('div', { class: 'set-row dv-ug' }, h('div', null, h('div', { class: 'sr-l' }, 'Underground view'), h('div', { class: 'sr-d' }, 'Show subway tunnels')), ug));
     this.body.append(h('div', { class: 'dv-foot' }, this.vars, this.legend));
     this.ctx.ui.on('overlay', () => this.update());
@@ -318,7 +318,7 @@ export class LegendChip {
     close.addEventListener('click', () => {
       this.ctx.sound('overlayOff');
       this.ctx.setOverlay(Overlay.None);
-    });
+    }, { signal: this.ctx.signal });
     const head = h('div', { class: 'lg-head' }, h('span', { class: 'ico-wrap', style: 'color:#3fd6c6', html: icon(info.icon, 16) }), h('b', null, overlayTitle(o, this.ctx.overlayVariant)), close);
     this.body = h('div', { class: 'lg-body' });
     const chips = variantChips(this.ctx, o, true);

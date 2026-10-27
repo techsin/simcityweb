@@ -6,6 +6,8 @@ export type Attrs = Record<string, unknown> & {
   style?: string | Partial<CSSStyleDeclaration> | Record<string, string>;
   html?: string;
   dataset?: Record<string, string>;
+  /** Lifetime of on* listeners; not a DOM attribute. */
+  signal?: AbortSignal;
 };
 
 /** Create an element: h('div', { class: 'x', onclick: fn }, 'text', child) */
@@ -13,7 +15,7 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs?: Attrs |
   const el = document.createElement(tag);
   if (attrs) {
     for (const [k, v] of Object.entries(attrs)) {
-      if (v === undefined || v === null || v === false) continue;
+      if (k === 'signal' || v === undefined || v === null || v === false) continue;
       if (k === 'class') el.className = String(v);
       else if (k === 'style') {
         if (typeof v === 'string') el.style.cssText = v;
@@ -25,7 +27,7 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs?: Attrs |
           }
       } else if (k === 'html') el.innerHTML = String(v);
       else if (k === 'dataset') Object.assign(el.dataset, v as Record<string, string>);
-      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v as EventListener);
+      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v as EventListener, { signal: attrs.signal });
       else if (v === true) el.setAttribute(k, '');
       else el.setAttribute(k, String(v));
     }
@@ -89,7 +91,7 @@ export const SLIDER_KEYS: ReadonlySet<string> = new Set(['ArrowLeft', 'ArrowRigh
  * hotkeys treat range inputs as non-typing (isTyping); any other key (Esc, W A S D, a hotkey) or a pointer press
  * anywhere else (the map, another control) releases the focus, and the camera keys work again.
  */
-export function slider(opts: { min: number; max: number; step?: number; value: number; oninput: (v: number) => void; onchange?: (v: number) => void; class?: string }): HTMLInputElement {
+export function slider(opts: { min: number; max: number; step?: number; value: number; oninput: (v: number) => void; onchange?: (v: number) => void; class?: string; signal?: AbortSignal }): HTMLInputElement {
   const el = h('input', { type: 'range', min: opts.min, max: opts.max, step: opts.step ?? 1, class: opts.class ?? 'ui-range' }) as HTMLInputElement;
   el.value = String(opts.value);
   const paint = () => {
@@ -100,16 +102,16 @@ export function slider(opts: { min: number; max: number; step?: number; value: n
   el.addEventListener('input', () => {
     paint();
     opts.oninput(Number(el.value));
-  });
-  el.addEventListener('change', () => opts.onchange?.(Number(el.value)));
+  }, { signal: opts.signal });
+  el.addEventListener('change', () => opts.onchange?.(Number(el.value)), { signal: opts.signal });
   // the keys a range input acts on keep the focus; any other key (Esc, a camera key, a hotkey) releases it first, so the
   // camera sees that key — also the release of a key held from before the click (a W held while the slider had the
   // focus would otherwise keep the camera moving: the camera ignores key-ups while an input has focus)
   const onKey = (e: KeyboardEvent) => {
     if (!SLIDER_KEYS.has(e.key)) el.blur();
   };
-  el.addEventListener('keydown', onKey);
-  el.addEventListener('keyup', onKey);
+  el.addEventListener('keydown', onKey, { signal: opts.signal });
+  el.addEventListener('keyup', onKey, { signal: opts.signal });
   const outside = (e: Event) => {
     // (a slider removed while focused — its panel closed — may never get its blur: drop the listener then)
     if (!el.isConnected) {
@@ -123,9 +125,13 @@ export function slider(opts: { min: number; max: number; step?: number; value: n
     if (step && step.__for === el) return;
     el.blur();
   };
-  el.addEventListener('focus', () => document.addEventListener('pointerdown', outside, true));
-  el.addEventListener('blur', () => document.removeEventListener('pointerdown', outside, true));
-  (el as any).__paint = paint;
+  el.addEventListener('focus', () => document.addEventListener('pointerdown', outside, { capture: true, signal: opts.signal }), { signal: opts.signal });
+  el.addEventListener('blur', () => document.removeEventListener('pointerdown', outside, true), { signal: opts.signal });
+  // The paint closure shares opts with the callbacks into the city.
+  if (!opts.signal?.aborted) {
+    (el as any).__paint = paint;
+    opts.signal?.addEventListener('abort', () => { delete (el as any).__paint; }, { once: true });
+  }
   return el;
 }
 
@@ -149,16 +155,16 @@ export function stepSlider(el: HTMLInputElement, dir: number): boolean {
  * where the track is short (final fixes P10: the Budget panel's 72 px tax tracks). `label` names the setting for the
  * buttons' tooltips ("R$ tax").
  */
-export function stepButtons(el: HTMLInputElement, label: string, fmt: (step: number) => string = (s) => String(s)): [HTMLButtonElement, HTMLButtonElement] {
+export function stepButtons(el: HTMLInputElement, label: string, fmt: (step: number) => string = (s) => String(s), signal?: AbortSignal): [HTMLButtonElement, HTMLButtonElement] {
   const mk = (dir: number) => {
     const b = h('button', { type: 'button', class: 'ui-stepbtn', title: `${dir < 0 ? 'Lower' : 'Raise'} ${label} by ${fmt(Number(el.step) || 1)}`, 'aria-label': `${dir < 0 ? 'Lower' : 'Raise'} ${label}` }, dir < 0 ? '−' : '+') as HTMLButtonElement & { __for?: HTMLInputElement };
     b.__for = el;
     // (no focus change on press: the slider keeps it)
-    b.addEventListener('pointerdown', (e) => e.preventDefault());
+    b.addEventListener('pointerdown', (e) => e.preventDefault(), { signal });
     b.addEventListener('click', () => {
       stepSlider(el, dir);
       el.focus({ preventScroll: true });
-    });
+    }, { signal });
     return b;
   };
   return [mk(-1), mk(1)];
@@ -174,7 +180,7 @@ export function setSlider(el: HTMLInputElement, v: number): void {
 }
 
 /** Toggle switch */
-export function toggle(on: boolean, onchange: (v: boolean) => void, disabled = false): HTMLButtonElement {
+export function toggle(on: boolean, onchange: (v: boolean) => void, disabled = false, signal?: AbortSignal): HTMLButtonElement {
   const el = h('button', { class: 'ui-switch' + (on ? ' on' : ''), type: 'button', role: 'switch', 'aria-checked': String(on), disabled }) as HTMLButtonElement;
   el.appendChild(h('span', { class: 'knob' }));
   el.addEventListener('click', () => {
@@ -183,7 +189,7 @@ export function toggle(on: boolean, onchange: (v: boolean) => void, disabled = f
     el.setAttribute('aria-checked', String(v));
     onchange(v);
     el.blur();
-  });
+  }, { signal });
   return el;
 }
 
@@ -192,7 +198,7 @@ export function setToggle(el: HTMLElement, on: boolean): void {
 }
 
 /** Segmented control */
-export function segmented<T extends string | number>(options: { value: T; label: string; title?: string }[], value: T, onchange: (v: T) => void): HTMLDivElement {
+export function segmented<T extends string | number>(options: { value: T; label: string; title?: string }[], value: T, onchange: (v: T) => void, signal?: AbortSignal): HTMLDivElement {
   const el = h('div', { class: 'ui-seg' });
   for (const o of options) {
     const b = h('button', { type: 'button', class: o.value === value ? 'on' : '', title: o.title }, o.label);
@@ -201,7 +207,7 @@ export function segmented<T extends string | number>(options: { value: T; label:
       b.classList.add('on');
       onchange(o.value);
       b.blur();
-    });
+    }, { signal });
     el.appendChild(b);
   }
   return el;

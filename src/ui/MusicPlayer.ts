@@ -75,6 +75,8 @@ function btn(cls: string, title: string, ico: string, size = 16): HTMLButtonElem
 
 export interface MusicPlayerOptions {
   variant: 'card' | 'pill';
+  /** In-game Settings passes the city lifetime; title / region players own their lifetime. */
+  signal?: AbortSignal;
   /** card: show the track list below */
   tracks?: boolean;
   /** pill: which way the track-list popover opens */
@@ -120,14 +122,14 @@ export class MusicPlayer {
     this.playBtn = btn('play', 'Play', 'playFill', pill ? 14 : 18);
     this.shuffleBtn = btn('shuffle', 'Shuffle', 'shuffle', pill ? 14 : 15);
     this.shuffleBtn.setAttribute('role', 'switch');
-    prev.addEventListener('click', () => this.skip(-1));
-    next.addEventListener('click', () => this.skip(1));
-    this.playBtn.addEventListener('click', () => this.togglePlay());
+    prev.addEventListener('click', () => this.skip(-1), { signal: this.o.signal });
+    next.addEventListener('click', () => this.skip(1), { signal: this.o.signal });
+    this.playBtn.addEventListener('click', () => this.togglePlay(), { signal: this.o.signal });
     this.shuffleBtn.addEventListener('click', () => {
       const on = !this.audio.music.shuffle;
       this.audio.music.setShuffle(on);
       this.sound(on ? 'toggleOn' : 'toggleOff');
-    });
+    }, { signal: this.o.signal });
 
     if (pill) {
       const meta = el('button', 'mpl-meta');
@@ -144,13 +146,13 @@ export class MusicPlayer {
         // inside the list instead of walking through the pill buttons first
         const pop = this.pop;
         if (pop && e.detail === 0) (pop.querySelector<HTMLElement>('.mpl-row.on .mpl-pick') ?? pop.querySelector<HTMLElement>('.mpl-pick'))?.focus({ preventScroll: true });
-      });
+      }, { signal: this.o.signal });
       this.el.append(this.art, meta, el('span', 'mpl-sep'), prev, this.playBtn, next, this.shuffleBtn);
       this.el.classList.add(o.popover === 'down' ? 'pop-down' : 'pop-up');
       const outside = (e: PointerEvent) => {
         if (this.pop && !this.el.contains(e.target as Node)) this.togglePopover(false);
       };
-      document.addEventListener('pointerdown', outside, true);
+      document.addEventListener('pointerdown', outside, { capture: true, signal: this.o.signal });
       this.offs.push(() => document.removeEventListener('pointerdown', outside, true));
     } else {
       const head = el('div', 'mpl-head');
@@ -249,7 +251,7 @@ export class MusicPlayer {
       return;
     }
     if (this.pop) return;
-    document.addEventListener('keydown', this.popKey, true);
+    document.addEventListener('keydown', this.popKey, { capture: true, signal: this.o.signal });
     this.metaBtn?.setAttribute('aria-expanded', 'true');
     this.pop = el('div', 'mpl-pop');
     this.pop.appendChild(el('div', 'mpl-pop-h', icon('music', 13) + '<span>Soundtrack</span><span class="mpl-pop-k">In playlist</span>'));
@@ -286,7 +288,7 @@ export class MusicPlayer {
         this.ensureStarted();
         this.sound('tab');
         m.select(t.id);
-      });
+      }, { signal: this.o.signal });
       const sw = el('button', 'mpl-switch' + (t.enabled ? ' on' : ''), '<span></span>');
       sw.type = 'button';
       sw.setAttribute('role', 'switch');
@@ -299,7 +301,7 @@ export class MusicPlayer {
         // explicit: the list re-renders on change, so the delegated handler would read the stale switch state
         this.sound(t.enabled ? 'toggleOff' : 'toggleOn');
         m.setEnabled(t.id, !t.enabled);
-      });
+      }, { signal: this.o.signal });
       row.append(pick, sw);
       list.appendChild(row);
     }
