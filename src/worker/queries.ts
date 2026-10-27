@@ -2,6 +2,8 @@
 import type { CellRect } from '../core/events';
 import type { NeedTier, CityState } from '../sim/CityState';
 import type { Simulation } from '../sim/Simulation';
+import { getDef } from '../sim/catalog';
+import { opexTierOf } from '../sim/economy/opex';
 import { advisorIssues, advisorIssuesReady, openAdvice, type OpenAdvice } from '../sim/economy/advisors';
 import { computeMonthlyBudget } from '../sim/economy/budget';
 import { capHints } from '../sim/economy/demand';
@@ -9,8 +11,10 @@ import { attractivenessBreakdown, tourismSummary } from '../sim/economy/tourism'
 import { unservedClusters } from '../sim/infra/catchments';
 import type { EmergencySystem } from '../sim/infra/emergency';
 import type { TrafficSystem } from '../sim/infra/traffic';
+import type { ServicesSystem } from '../sim/infra/services';
 import { ferryPartnersFor, stopsNear } from '../sim/infra/transportFacilities';
 import { demolishRisks, sideDemolishRisks, type Removal } from '../game/demolishRisk';
+import { upkeepHere } from '../game/tools/placement';
 import { countGarages } from '../ui/statsModel';
 import { inspectBuilding, inspectCell, inspectSignature, type InspectBuildingArgs, type InspectCellArgs } from './inspect';
 import { EXACT_FIELDS, PLAIN_KEYS, PRIMARY_LAYERS, SYSTEM_KEYS, type QueryName as WireQueryName, type WatchPolicy } from './protocol';
@@ -23,7 +27,16 @@ function advice(rows: OpenAdvice[]): OpenAdvice[] {
   return rows.map(({ id, advisor, text, kind, priority, x, z }) => ({ id, advisor, text, kind, priority, x, z }));
 }
 
+/** W0.3b: keep the need raster on the sim side; only the existing marginal price crosses the query seam. */
+function upkeepContext(sim: Simulation, { defId, x, z, w, d }: PlacementArgs & { defId: string }): { here: number | null } {
+  const def = getDef(defId), tier = opexTierOf(def);
+  const svc = sim.getSystem<ServicesSystem>('services');
+  const need = tier && typeof svc?.needRaster === 'function' ? svc.needRaster(tier) : null;
+  return { here: def ? upkeepHere(sim.state, def, x, z, w, d, need) : null };
+}
+
 export const QUERY_HANDLERS = {
+  upkeepContext,
   inspectBuilding,
   inspectCell,
   dispatchOptions: (sim: Simulation, { incidentId }: { incidentId: number }) => sim.getSystem<EmergencySystem>('emergency')?.dispatchOptions(sim, incidentId) ?? [],
@@ -68,6 +81,12 @@ export function queryKey(value: unknown): string {
 export function watchSignature<K extends QueryName>(sim: Simulation, name: K, args: QueryArgs<K>, when: WatchPolicy, commands: number): string {
   if (name === 'inspectBuilding' || name === 'inspectCell') return inspectSignature(sim, args as InspectBuildingArgs | InspectCellArgs);
   const st = sim.state;
+  // W0.3b: a dispatch/return can change availability while paused, before the next daily refresh.
+  if (name === 'dispatchOptions') {
+    const em = sim.getSystem<EmergencySystem>('emergency');
+    const inc = em?.incident((args as QueryArgs<'dispatchOptions'>).incidentId);
+    return `${st.day}:${commands}:${inc?.state}:${inc?.units.join(',')}:${queryKey(em?.stationList())}`;
+  }
   if (name === 'computeMonthlyBudget') {
     const b = st.budget;
     return `${st.day}:${st.buildings.size}:${queryKey(b.taxRates)}:${queryKey(b.funding)}:${queryKey(b.ordinances)}:${queryKey(b.loans)}`;

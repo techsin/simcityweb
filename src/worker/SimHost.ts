@@ -64,6 +64,27 @@ export function watchFor<K extends QueryName>(host: SimHost, name: K, args: Quer
   return w;
 }
 
+/** W0.3b: banner/panel options stay keyed by incident and live only while their display needs them. */
+export class DispatchOptionsWatches {
+  private watches = new Map<number, WatchHandle<QueryResult<'dispatchOptions'>>>();
+  constructor(private host: SimHost, private signal: AbortSignal) {}
+
+  get(id: number): WatchHandle<QueryResult<'dispatchOptions'>> {
+    let w = this.watches.get(id);
+    if (!w) {
+      w = watchFor(this.host, 'dispatchOptions', { incidentId: id }, 'daily', this.signal);
+      this.watches.set(id, w);
+    }
+    return w;
+  }
+
+  retain(ids: ReadonlySet<number>): void {
+    for (const [id, w] of this.watches) if (!ids.has(id)) { w.dispose(); this.watches.delete(id); }
+  }
+
+  dispose(): void { this.retain(new Set()); }
+}
+
 function cloneResult<T>(value: T): T {
   return import.meta.env?.DEV || import.meta.env?.MODE === 'test' || IN_NODE ? structuredClone(value) : value;
 }
