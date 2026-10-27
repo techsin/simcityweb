@@ -1,0 +1,498 @@
+{
+ "sha": "614609f",
+ "date": "2026-10-27",
+ "env": {
+  "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+  "threads": 16,
+  "memGB": 62,
+  "os": "win32 10.0.19045",
+  "node": "v22.12.0",
+  "browser": "141.0.7390.37",
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "clocks": "node headline: process.cpuUsage (ticks 15.6 ms on Windows; chunks >= 1.17 s); profile.js: threadCpuUsage shimmed to hrtime (tools/bench/baselines/threadCpuShim.mjs); browser: performance.now",
+  "quiet": "nothing else heavy running during the node headline runs (Codex lanes idle); load average n/a on Windows"
+ },
+ "fixtures": {
+  "liveDense": {
+   "file": "tools/bench/.fixtures/live/dense1m_s7.metropolis",
+   "built": "dense1m.ts on this tree: target 1,150,000, 120 warm days, seed 7",
+   "residents": 1149841
+  },
+  "liveBot": {
+   "file": "tools/bench/.fixtures/live/bot256_s7_y60.metropolis",
+   "built": "botgrow.ts on this tree: 256 map, seed 7, 60 years",
+   "residents": 1368806
+  },
+  "snapDense": {
+   "file": "tools/bench/.fixtures/fixtures/dense1m_s7.metropolis",
+   "built": "npm run fixtures (24f8609 snap), the plan §2 city",
+   "residents": 1118755
+  },
+  "stress": {
+   "file": "tools/bench/.fixtures/fixtures/stress1m_testdefs_s7.metropolis",
+   "built": "npm run fixtures (24f8609 snap), test defs",
+   "residents": 1034100
+  }
+ },
+ "nodeHeadline": {
+  "liveBot": {
+   "design": {
+    "msPerDay": 14.667,
+    "ci95": [
+     14.239,
+     14.672
+    ],
+    "chunkDays": 90,
+    "reps": 32,
+    "timedDays": "21..110 after load, every round",
+    "tickErrorPct": 2.367,
+    "aa": {
+     "ratioBoverA": 0.988,
+     "ci95": [
+      0.966,
+      1.012
+     ],
+     "min": 0.877,
+     "max": 1.088
+    },
+    "deterministic": true,
+    "protectorIntact": {
+     "ready": [
+      true,
+      true
+     ],
+     "end": [
+      true,
+      true
+     ]
+    },
+    "wallOverCpu": 0.96,
+    "population": 1368806
+   },
+   "headless": {
+    "msPerDay": 3.662,
+    "ci95": [
+     3.589,
+     3.761
+    ],
+    "chunkDays": 320,
+    "reps": 32,
+    "timedDays": "21..340 after load, every round",
+    "tickErrorPct": 2.666,
+    "aa": {
+     "ratioBoverA": 1.014,
+     "ci95": [
+      0.986,
+      1.028
+     ],
+     "min": 0.935,
+     "max": 1.166
+    },
+    "deterministic": true,
+    "protectorIntact": {
+     "ready": [
+      true,
+      true
+     ],
+     "end": [
+      true,
+      true
+     ]
+    },
+    "wallOverCpu": 0.95,
+    "population": 1368806
+   }
+  },
+  "liveDense": {
+   "design": {
+    "msPerDay": 19.783,
+    "ci95": [
+     19.542,
+     20.058
+    ],
+    "chunkDays": 60,
+    "reps": 32,
+    "timedDays": "21..80 after load, every round",
+    "tickErrorPct": 2.633,
+    "aa": {
+     "ratioBoverA": 0.98,
+     "ci95": [
+      0.962,
+      0.993
+     ],
+     "min": 0.872,
+     "max": 1.123
+    },
+    "deterministic": true,
+    "protectorIntact": {
+     "ready": [
+      true,
+      true
+     ],
+     "end": [
+      true,
+      true
+     ]
+    },
+    "wallOverCpu": 0.97,
+    "population": 1149841
+   },
+   "headless": {
+    "msPerDay": 3.906,
+    "ci95": [
+     3.834,
+     4.064
+    ],
+    "chunkDays": 320,
+    "reps": 32,
+    "timedDays": "21..340 after load, every round",
+    "tickErrorPct": 2.5,
+    "aa": {
+     "ratioBoverA": 0.975,
+     "ci95": [
+      0.946,
+      1.011
+     ],
+     "min": 0.877,
+     "max": 1.166
+    },
+    "deterministic": true,
+    "protectorIntact": {
+     "ready": [
+      true,
+      true
+     ],
+     "end": [
+      true,
+      true
+     ]
+    },
+    "wallOverCpu": 0.93,
+    "population": 1149841
+   }
+  },
+  "snapDense": {
+   "design": {
+    "msPerDay": 19.729,
+    "ci95": [
+     19.658,
+     20.313
+    ],
+    "chunkDays": 60,
+    "reps": 32,
+    "timedDays": "21..80 after load, every round",
+    "tickErrorPct": 2.64,
+    "aa": {
+     "ratioBoverA": 1,
+     "ci95": [
+      0.987,
+      1.013
+     ],
+     "min": 0.868,
+     "max": 1.064
+    },
+    "deterministic": true,
+    "protectorIntact": {
+     "ready": [
+      true,
+      true
+     ],
+     "end": [
+      true,
+      true
+     ]
+    },
+    "wallOverCpu": 0.97,
+    "population": 1118755
+   },
+   "headless": {
+    "msPerDay": 3.883,
+    "ci95": [
+     3.809,
+     3.969
+    ],
+    "chunkDays": 320,
+    "reps": 32,
+    "timedDays": "21..340 after load, every round",
+    "tickErrorPct": 2.515,
+    "aa": {
+     "ratioBoverA": 1.012,
+     "ci95": [
+      0.983,
+      1.04
+     ],
+     "min": 0.871,
+     "max": 1.189
+    },
+    "deterministic": true,
+    "protectorIntact": {
+     "ready": [
+      true,
+      true
+     ],
+     "end": [
+      true,
+      true
+     ]
+    },
+    "wallOverCpu": 0.94,
+    "population": 1118755
+   }
+  },
+  "stress": {
+   "design": {
+    "msPerDay": 9.573,
+    "ci95": [
+     9.532,
+     9.669
+    ],
+    "chunkDays": 200,
+    "reps": 32,
+    "timedDays": "21..220 after load, every round",
+    "tickErrorPct": 1.632,
+    "aa": {
+     "ratioBoverA": 0.996,
+     "ci95": [
+      0.976,
+      1.001
+     ],
+     "min": 0.924,
+     "max": 1.062
+    },
+    "deterministic": true,
+    "protectorIntact": {
+     "ready": [
+      true,
+      true
+     ],
+     "end": [
+      true,
+      true
+     ]
+    },
+    "wallOverCpu": 0.97,
+    "population": 1034100
+   }
+  }
+ },
+ "nodeProfile": {
+  "liveDense": {
+   "clock": "wall (threadCpuUsage shim), main thread, idle machine",
+   "ultraFrames": {
+    "runs": 4,
+    "simMsPerDay": [
+     10.34,
+     10.06,
+     10.14,
+     10.49
+    ],
+    "systemsMsPerDay": 3.93,
+    "schedulerMsPerDay": 6.28,
+    "frameP50": 2.48,
+    "frameP99": 17.08,
+    "frameMax": 20.69,
+    "emulatedDaysPerS": 16.33,
+    "trafficCyclesPer90Days": 5,
+    "monthFrameMax": 17.52
+   },
+   "headlessMsPerDay": 7.89,
+   "designCadenceMsPerDay": 25.91,
+   "passesMedianMs": {
+    "traffic.cycle": 21.4,
+    "utilities.fullPass": 2.2,
+    "pollution.pass": 5.9,
+    "services.pass": 14.3,
+    "crime.pass": 2.3,
+    "emergency.respRefresh": 4
+   },
+   "gc": {
+    "n": 29,
+    "msPerDay": 0.16,
+    "maxPause": 0.63,
+    "p99": 0.63,
+    "byKind": {
+     "minor": {
+      "n": 29,
+      "ms": 9.341300010681152,
+      "max": 0.6319003105163574
+     }
+    }
+   }
+  },
+  "liveBot": {
+   "clock": "wall (threadCpuUsage shim), main thread, idle machine",
+   "ultraFrames": {
+    "runs": 4,
+    "simMsPerDay": [
+     8.4,
+     8.87,
+     8.52,
+     9.1
+    ],
+    "systemsMsPerDay": 3.54,
+    "schedulerMsPerDay": 4.72,
+    "frameP50": 2.23,
+    "frameP99": 14.89,
+    "frameMax": 18.72,
+    "emulatedDaysPerS": 16.34,
+    "trafficCyclesPer90Days": 5,
+    "monthFrameMax": 16.29
+   },
+   "headlessMsPerDay": 7.04,
+   "designCadenceMsPerDay": 19.84,
+   "passesMedianMs": {
+    "traffic.cycle": 16.5,
+    "utilities.fullPass": 2.8,
+    "pollution.pass": 6.5,
+    "services.pass": 12.1,
+    "crime.pass": 2,
+    "emergency.respRefresh": 2.6
+   },
+   "gc": {
+    "n": 27,
+    "msPerDay": 0.13,
+    "maxPause": 0.44,
+    "p99": 0.44,
+    "byKind": {
+     "minor": {
+      "n": 27,
+      "ms": 7.602499485015869,
+      "max": 0.43759965896606445
+     }
+    }
+   }
+  }
+ },
+ "browser": {
+  "liveDense": {
+   "clock": "performance.now in the page, headless, real GPU",
+   "emergencyUncovered": "ignore",
+   "runs": 5,
+   "days": 90,
+   "median": {
+    "daysPerS": 20.37,
+    "busyP50": 5.4,
+    "busyP99": 27.3,
+    "busyMax": 41.8,
+    "busyMsPerSimDay": 22.26,
+    "longTasks": 1,
+    "longTaskMax": 61,
+    "pausedP99": 2.6
+   },
+   "perRun": [
+    {
+     "daysPerS": 20.92,
+     "busyP50": 5.3,
+     "busyP99": 29,
+     "busyMax": 61.1,
+     "longTasks": 2,
+     "longTaskMax": 61
+    },
+    {
+     "daysPerS": 19.98,
+     "busyP50": 5.4,
+     "busyP99": 25.3,
+     "busyMax": 35.5,
+     "longTasks": 1,
+     "longTaskMax": 57
+    },
+    {
+     "daysPerS": 20.36,
+     "busyP50": 5.3,
+     "busyP99": 27.2,
+     "busyMax": 39.3,
+     "longTasks": 1,
+     "longTaskMax": 61
+    },
+    {
+     "daysPerS": 20.37,
+     "busyP50": 7.6,
+     "busyP99": 36.2,
+     "busyMax": 41.8,
+     "longTasks": 1,
+     "longTaskMax": 73
+    },
+    {
+     "daysPerS": 20.43,
+     "busyP50": 5.9,
+     "busyP99": 27.3,
+     "busyMax": 53.1,
+     "longTasks": 2,
+     "longTaskMax": 62
+    }
+   ],
+   "defaultPolicyDaysPerS": [
+    0.05,
+    19.99,
+    20.39,
+    0.12,
+    0.05
+   ]
+  },
+  "liveBot": {
+   "clock": "performance.now in the page, headless, real GPU",
+   "emergencyUncovered": "ignore",
+   "runs": 5,
+   "days": 90,
+   "median": {
+    "daysPerS": 20.55,
+    "busyP50": 5.7,
+    "busyP99": 37,
+    "busyMax": 80.8,
+    "busyMsPerSimDay": 23.17,
+    "longTasks": 3,
+    "longTaskMax": 81,
+    "pausedP99": 2.8
+   },
+   "perRun": [
+    {
+     "daysPerS": 20.92,
+     "busyP50": 6.2,
+     "busyP99": 32.4,
+     "busyMax": 100.9,
+     "longTasks": 3,
+     "longTaskMax": 103
+    },
+    {
+     "daysPerS": 20.56,
+     "busyP50": 5.7,
+     "busyP99": 39.8,
+     "busyMax": 80.9,
+     "longTasks": 2,
+     "longTaskMax": 81
+    },
+    {
+     "daysPerS": 20.41,
+     "busyP50": 6,
+     "busyP99": 36.2,
+     "busyMax": 80.8,
+     "longTasks": 2,
+     "longTaskMax": 81
+    },
+    {
+     "daysPerS": 20.55,
+     "busyP50": 5.6,
+     "busyP99": 37,
+     "busyMax": 79.8,
+     "longTasks": 3,
+     "longTaskMax": 80
+    },
+    {
+     "daysPerS": 20.29,
+     "busyP50": 5.5,
+     "busyP99": 51.7,
+     "busyMax": 75,
+     "longTasks": 4,
+     "longTaskMax": 75
+    }
+   ],
+   "defaultPolicyDaysPerS": [
+    1.96,
+    1.95,
+    0.13,
+    0.12,
+    1.97
+   ]
+  }
+ }
+}
