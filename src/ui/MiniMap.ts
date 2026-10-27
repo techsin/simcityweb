@@ -45,11 +45,11 @@ export class MiniMap {
       this.ctx.sound(this.collapsed ? 'flyoutClose' : 'flyout');
       this.el.classList.toggle('collapsed', this.collapsed);
       collapse.innerHTML = icon(this.collapsed ? 'chevUp' : 'chevDown', 14);
-    });
+    }, { signal: this.ctx.signal });
     const rotL = h('button', { class: 'icon-btn', title: 'Rotate view (Q)', html: icon('rotate', 13), style: 'transform:scaleX(-1)' });
-    rotL.addEventListener('click', () => ctx.world.controls.rotateStep(-1));
+    rotL.addEventListener('click', () => ctx.world.controls.rotateStep(-1), { signal: this.ctx.signal });
     const rotR = h('button', { class: 'icon-btn', title: 'Rotate view (E)', html: icon('rotate', 13) });
-    rotR.addEventListener('click', () => ctx.world.controls.rotateStep(1));
+    rotR.addEventListener('click', () => ctx.world.controls.rotateStep(1), { signal: this.ctx.signal });
     this.el = h('div', { class: 'minimap mp-glass i' },
       h('div', { class: 'mm-head' }, h('span', { class: 'hud-label', html: icon('map', 13) + '<span>Map</span>' }), h('div', { class: 'mm-btns' }, rotL, rotR, collapse)),
       this.canvas,
@@ -71,9 +71,9 @@ export class MiniMap {
       this.canvas.setPointerCapture(e.pointerId);
       this.ctx.sound('tap');
       go(e);
-    });
-    this.canvas.addEventListener('pointermove', (e) => this.dragging && go(e));
-    this.canvas.addEventListener('pointerup', () => (this.dragging = false));
+    }, { signal: this.ctx.signal });
+    this.canvas.addEventListener('pointermove', (e) => this.dragging && go(e), { signal: this.ctx.signal });
+    this.canvas.addEventListener('pointerup', () => (this.dragging = false), { signal: this.ctx.signal });
     const ev = ctx.sim.events;
     const mark = () => (this.dirty = true);
     this.offs.push(ev.on('zoneChanged', mark), ev.on('networkChanged', mark), ev.on('terrainChanged', mark), ev.on('buildingAdded', mark), ev.on('buildingRemoved', mark), ev.on('treesChanged', mark), ev.on('reset', mark));

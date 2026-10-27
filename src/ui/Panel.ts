@@ -69,11 +69,11 @@ export abstract class Panel {
     close.addEventListener('click', (e) => {
       e.stopPropagation();
       onClose();
-    });
+    }, { signal: this.ctx.signal });
     const head = h('div', { class: 'panel-head' }, h('span', { class: 'ph-ico ico-wrap', html: icon(this.icon, 18) }), this.titleEl, this.headExtra, close);
     this.body = h('div', { class: 'panel-body' });
     this.el = h('div', { class: 'panel mp-glass i' + (this.center ? ' center' : ''), style: { width: this.width + 'px' } }, head, this.body);
-    this.el.addEventListener('pointerdown', onFocus);
+    this.el.addEventListener('pointerdown', onFocus, { signal: this.ctx.signal });
     // drag
     head.addEventListener('pointerdown', (e) => {
       if (e.button !== 0 || (e.target as HTMLElement).closest('button, input, select, .ui-seg')) return;
@@ -97,9 +97,9 @@ export abstract class Panel {
         if (dragged) this.ctx.sound('drop');
         onDragEnd();
       };
-      head.addEventListener('pointermove', mv);
-      head.addEventListener('pointerup', up);
-    });
+      head.addEventListener('pointermove', mv, { signal: this.ctx.signal });
+      head.addEventListener('pointerup', up, { signal: this.ctx.signal });
+    }, { signal: this.ctx.signal });
     this.build();
   }
 

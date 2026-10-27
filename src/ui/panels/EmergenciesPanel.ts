@@ -58,7 +58,7 @@ export class EmergenciesPanel extends Panel {
     const tabs = h('div', { class: 'tabs' });
     for (const [id, label] of [['active', 'Active'], ['fleet', 'Fleet'], ['stats', 'Statistics']] as const) {
       const b = h('button', null, label) as HTMLButtonElement;
-      b.addEventListener('click', () => this.showTab(id));
+      b.addEventListener('click', () => this.showTab(id), { signal: this.ctx.signal });
       this.tabBtns[id] = b;
       tabs.appendChild(b);
     }
@@ -144,9 +144,9 @@ export class EmergenciesPanel extends Panel {
         this.ctx.focusCell(inc.x, inc.z, 420);
         // the camera whoosh is the sound (silent inspector)
         this.ctx.showQuery({ buildingId: inc.buildingId >= 0 ? inc.buildingId : null, x: inc.x, z: inc.z }, { silent: true });
-      });
+      }, { signal: this.ctx.signal });
       const disp = h('button', { class: 'btn sm' + (waiting ? ' primary' : ''), title: 'Dispatch a unit yourself' }, 'Dispatch') as HTMLButtonElement;
-      disp.addEventListener('click', () => openDispatch(this.ctx, inc.id));
+      disp.addEventListener('click', () => openDispatch(this.ctx, inc.id), { signal: this.ctx.signal });
       const st = h('div', { class: 'emg-rs' + (waiting ? ' neg' : '') });
       const time = h('div', { class: 'emg-rs faint' });
       rows.push({ inc, st, time, disp });
@@ -186,7 +186,7 @@ export class EmergenciesPanel extends Panel {
         const bar = h('div', { class: 'emg-units' });
         for (let k = 0; k < Math.max(s.units, s.base); k++) bar.appendChild(h('i', { class: k < s.free ? 'free' : k < s.units ? 'out' : 'off', title: k < s.free ? 'free' : k < s.units ? 'on a call' : 'not funded' }));
         const jump = h('button', { class: 'btn sm', title: 'Show on the map', html: icon('target', 13) });
-        jump.addEventListener('click', () => this.ctx.focusCell(s.x, s.z, 420));
+        jump.addEventListener('click', () => this.ctx.focusCell(s.x, s.z, 420), { signal: this.ctx.signal });
         this.content.appendChild(h('div', { class: 'emg-row' },
           h('div', { class: 'emg-ico sm', style: { '--kc': r === 'fire' ? '#e8542c' : r === 'police' ? '#3d6fd8' : '#e8e8e8' } as Record<string, string>, html: icon(RESP_ICON[r], 16) }),
           h('div', { class: 'emg-rb' },

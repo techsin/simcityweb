@@ -59,6 +59,12 @@ export class FEl extends FNode {
   get children(): FEl[] {
     return this.childNodes.filter((c): c is FEl => c instanceof FEl);
   }
+  get firstElementChild(): FEl | null {
+    return this.children[0] ?? null;
+  }
+  get lastElementChild(): FEl | null {
+    return this.children.at(-1) ?? null;
+  }
   get classList() {
     const get = () => new Set(this.className.split(/\s+/).filter(Boolean));
     const put = (s: Set<string>) => { this.className = [...s].join(' '); };
@@ -92,14 +98,31 @@ export class FEl extends FNode {
   getAttribute(k: string): string | null {
     return this.attrs.get(k) ?? null;
   }
-  addEventListener(t: string, f: Listener): void {
+  /** options: `signal` removes the listener when it aborts (an aborted one adds nothing), as the DOM does */
+  addEventListener(t: string, f: Listener, opts?: boolean | { signal?: AbortSignal }): void {
+    const signal = typeof opts === 'object' ? opts.signal : undefined;
+    if (signal?.aborted) return;
     this.listeners.set(t, [...(this.listeners.get(t) ?? []), f]);
+    signal?.addEventListener('abort', () => this.removeEventListener(t, f), { once: true });
   }
   removeEventListener(t: string, f: Listener): void {
     this.listeners.set(t, (this.listeners.get(t) ?? []).filter((g) => g !== f));
   }
   click(): void {
-    for (const f of this.listeners.get('click') ?? []) f({ stopPropagation() {}, preventDefault() {} });
+    this.fire('click');
+  }
+  focus(): void {}
+  blur(): void {}
+  /** run the listeners of event type `t` (a minimal event: stopPropagation / preventDefault, target = this) */
+  fire(t: string, e: Record<string, unknown> = {}): void {
+    for (const f of this.listeners.get(t) ?? []) f({ stopPropagation() {}, preventDefault() {}, target: this, ...e });
+  }
+  /** listeners registered for type `t` (tests: what a detached element still holds) */
+  listenerCount(t?: string): number {
+    if (t) return this.listeners.get(t)?.length ?? 0;
+    let n = 0;
+    for (const l of this.listeners.values()) n += l.length;
+    return n;
   }
   appendChild<T extends FNode>(c: T): T {
     c.remove();
@@ -109,6 +132,9 @@ export class FEl extends FNode {
   }
   append(...cs: (FNode | string)[]): void {
     for (const c of cs) this.appendChild(typeof c === 'string' ? textNode(c) : c);
+  }
+  prepend(...cs: (FNode | string)[]): void {
+    for (const c of cs.reverse()) this.insertBefore(typeof c === 'string' ? textNode(c) : c, this.childNodes[0] ?? null);
   }
   insertBefore<T extends FNode>(c: T, ref: FNode | null): T {
     c.remove();

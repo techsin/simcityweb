@@ -22,7 +22,7 @@ export class PauseMenu {
     ctx.sim.speed = 0;
     const item = (ic: string, label: string, fn: () => void, key?: string, cls = '') => {
       const b = h('button', { class: `btn block ${cls}`, html: icon(ic, 17) + `<span>${label}</span>` + (key ? `<span class="kbd" style="margin-left:auto">${key}</span>` : '') });
-      b.addEventListener('click', fn);
+      b.addEventListener('click', fn, { signal: ctx.signal });
       return b;
     };
     const menu = h('div', { class: 'modal mp-glass pause-menu' },
@@ -52,7 +52,7 @@ export class PauseMenu {
     this.back = h('div', { class: 'modal-back' }, menu);
     this.back.addEventListener('pointerdown', (e) => {
       if (e.target === this.back) this.close();
-    });
+    }, { signal: ctx.signal });
     this.parent.appendChild(this.back);
     ctx.sound('dialogOpen');
     (menu.querySelector('.btn.primary') as HTMLElement | null)?.focus();
@@ -131,13 +131,13 @@ export function confirmDialog(ctx: GameContext, opts: ConfirmOptions): Promise<b
       e.preventDefault();
       e.stopImmediatePropagation();
     };
-    window.addEventListener('keydown', onKey, true);
-    window.addEventListener('keyup', onKey, true);
-    ok.addEventListener('click', () => finish(true));
-    no.addEventListener('click', () => finish(false));
+    window.addEventListener('keydown', onKey, { capture: true, signal: ctx.signal });
+    window.addEventListener('keyup', onKey, { capture: true, signal: ctx.signal });
+    ok.addEventListener('click', () => finish(true), { signal: ctx.signal });
+    no.addEventListener('click', () => finish(false), { signal: ctx.signal });
     back.addEventListener('pointerdown', (e) => {
       if (e.target === back) finish(false);
-    });
+    }, { signal: ctx.signal });
     ctx.signal.addEventListener('abort', () => finish(false), { once: true });
     // modal: no tool tooltip floats over it (the cursor tip sits above modals)
     ctx.tip?.hide();
@@ -243,7 +243,7 @@ export class HelpPanel extends Panel {
     guide.addEventListener('click', () => {
       this.ctx.showOnboarding?.();
       this.ctx.panels.close(this.id);
-    });
+    }, { signal: this.ctx.signal });
     this.body.append(h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:12px' }, h('div', { class: 'dim', style: 'font-size:12.5px' }, 'Build the city of your dreams. Shortcuts and camera keys work even while panels are open; when you type in a text box (such as a city name), your keys go to that box instead.'), guide), cols, tips);
   }
 }
@@ -251,7 +251,7 @@ export class HelpPanel extends Panel {
 export class ErrorOverlay {
   readonly el: HTMLDivElement;
   private seen = new Map<string, HTMLElement>();
-  constructor(parent: HTMLElement, private hooks: { pause: () => void }) {
+  constructor(parent: HTMLElement, private hooks: { pause: () => void; signal?: AbortSignal }) {
     this.el = h('div', { class: 'err-stack' });
     parent.appendChild(this.el);
   }
@@ -269,17 +269,17 @@ export class ErrorOverlay {
     }
     const pre = h('pre', { style: 'display:none' }, `${msg}\n\n${stack}`);
     const details = h('button', { class: 'btn sm ghost' }, 'Details');
-    details.addEventListener('click', () => (pre.style.display = pre.style.display === 'none' ? 'block' : 'none'));
+    details.addEventListener('click', () => (pre.style.display = pre.style.display === 'none' ? 'block' : 'none'), { signal: this.hooks.signal });
     const dismiss = h('button', { class: 'btn sm' }, 'Dismiss');
     const card = h('div', { class: 'err-card mp-glass' },
       h('div', { class: 'ec-h', html: icon('alert', 16) + `<span>${escapeHtml(title)}</span><span class="spacer"></span><span class="chip bad cnt">1×</span>` }),
       h('div', { class: 'ec-m' }, msg || 'Unknown error'),
       pre,
-      h('div', { class: 'ec-a' }, details, opts.sim ? h('button', { class: 'btn sm', onclick: () => this.hooks.pause() }, 'Pause simulation') : null, opts.fatal ? h('button', { class: 'btn sm primary', onclick: () => location.reload() }, 'Reload') : null, dismiss),
+      h('div', { class: 'ec-a' }, details, opts.sim ? h('button', { class: 'btn sm', signal: this.hooks.signal, onclick: () => this.hooks.pause() }, 'Pause simulation') : null, opts.fatal ? h('button', { class: 'btn sm primary', signal: this.hooks.signal, onclick: () => location.reload() }, 'Reload') : null, dismiss),
     );
     dismiss.addEventListener('click', () => {
       card.remove();
-    });
+    }, { signal: this.hooks.signal });
     this.seen.set(key, card);
     this.el.appendChild(card);
     while (this.el.children.length > 3) this.el.firstElementChild!.remove();

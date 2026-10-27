@@ -130,7 +130,7 @@ export class InfoPanel extends Panel {
 
   protected build(): void {
     for (const k of Object.keys(SECTIONS) as SectionId[]) this.open[k] = loadPref<boolean>('inspector.sec.' + k, SECTIONS[k]);
-    this.body.addEventListener('scroll', () => (this.scrollY = this.body.scrollTop), { passive: true });
+    this.body.addEventListener('scroll', () => (this.scrollY = this.body.scrollTop), { passive: true, signal: this.ctx.signal });
   }
 
   show(t: QueryTarget): void {
@@ -255,7 +255,7 @@ export class InfoPanel extends Panel {
       this.sig = '';
       this.builtAt = 0;
       this.update();
-    });
+    }, { signal: this.ctx.signal });
     const box = h('div', { class: 'ins-sec' + (open ? ' open' : '') }, head);
     if (open) {
       const body = h('div', { class: 'ins-sec-b' });
@@ -657,7 +657,7 @@ export class InfoPanel extends Panel {
     const acts = h('div', { class: 'info-actions' });
     const focus = h('button', { class: 'btn sm', html: icon('target', 13) + '<span>Focus</span>' });
     // (focusCell plays the camera whoosh)
-    focus.addEventListener('click', () => this.ctx.focusCell(b.x + b.w / 2 - 0.5, b.z + b.d / 2 - 0.5, 360));
+    focus.addEventListener('click', () => this.ctx.focusCell(b.x + b.w / 2 - 0.5, b.z + b.d / 2 - 0.5, 360), { signal: this.ctx.signal });
     acts.appendChild(focus);
     // (rubble: nothing to keep historic — final fixes UI-2; its button clears the rubble)
     const rubble = !!(b.flags & BF.Burnt);
@@ -674,7 +674,7 @@ export class InfoPanel extends Panel {
         this.sig = '';
         this.builtAt = 0;
         this.update();
-      });
+      }, { signal: this.ctx.signal });
       acts.appendChild(hb);
     }
     let cost = 0;
@@ -712,7 +712,7 @@ export class InfoPanel extends Panel {
       void confirmDialog(this.ctx, { title: risk.title, message: 'This demolition has consequences:', items: risk.items, confirm: 'Demolish', danger: true }).then((yes) => {
         if (yes && this.ctx.state.buildings.has(b.id)) doIt();
       });
-    });
+    }, { signal: this.ctx.signal });
     acts.appendChild(demo);
     this.body.appendChild(acts);
   }

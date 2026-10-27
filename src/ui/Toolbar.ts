@@ -68,10 +68,10 @@ export class Toolbar {
       b.addEventListener('click', () => {
         this.onCategory(c);
         b.blur();
-      });
+      }, { signal: this.ctx.signal });
       // hover blip: delegated (src/ui/uiSounds.ts, .tb-btn)
-      b.addEventListener('pointerenter', () => this.showCatTip(c, b));
-      b.addEventListener('pointerleave', () => this.hideTip());
+      b.addEventListener('pointerenter', () => this.showCatTip(c, b), { signal: this.ctx.signal });
+      b.addEventListener('pointerleave', () => this.hideTip(), { signal: this.ctx.signal });
       this.btns.set(c.id, b);
       this.bar.appendChild(b);
       void i;
@@ -244,7 +244,7 @@ export class Toolbar {
           this.renderFlyout(c);
           this.positionFlyout();
           this.ctx.sound('tab');
-        });
+        }, { signal: this.ctx.signal });
         tabs.appendChild(b);
       });
       head.appendChild(tabs);
@@ -296,9 +296,9 @@ export class Toolbar {
       }
       // ToolController.select plays the (category-pitched) tool sound
       if (this.ctx.tools.select(s.id)) this.closeFlyout();
-    });
-    el.addEventListener('pointerenter', () => this.showSpecTip(s, el));
-    el.addEventListener('pointerleave', () => this.hideTip());
+    }, { signal: this.ctx.signal });
+    el.addEventListener('pointerenter', () => this.showSpecTip(s, el), { signal: this.ctx.signal });
+    el.addEventListener('pointerleave', () => this.hideTip(), { signal: this.ctx.signal });
     return el;
   }
 
@@ -473,7 +473,7 @@ export class Toolbar {
       hints.appendChild(span);
     }
     const close = h('button', { class: 'icon-btn', title: 'Done (Esc)', html: icon('close', 15), style: 'width:28px;height:28px' });
-    close.addEventListener('click', () => this.ctx.tools.select(null));
+    close.addEventListener('click', () => this.ctx.tools.select(null), { signal: this.ctx.signal });
     const opts = tool.options();
     this.chip.append(h('div', { class: 'tc-ico', html: icon(tool.icon, 16) }), h('span', { class: 'tc-name' }, spec?.label ?? tool.label), hints);
     if (opts) this.chip.appendChild(opts);

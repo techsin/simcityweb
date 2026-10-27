@@ -4,6 +4,7 @@
  * Falls back silently (returns null) when the asset modules are missing or WebGL is unavailable.
  */
 import * as THREE from 'three';
+import { viewOf } from '../game/geometryView';
 
 type Assets = {
   getModelGeometry: (id: string, variant?: number) => THREE.BufferGeometry;
@@ -38,25 +39,6 @@ interface Job {
   w: number;
   h: number;
   resolve: (url: string | null) => void;
-}
-
-/**
- * a geometry object of its own over the registry geometry's attribute buffers (no copy): three.js hangs a dispose
- * listener — a closure over the renderer and its canvas — on every geometry and material a renderer draws, so the
- * thumbnails must not draw the shared ones (close-out c2: each idle-disposed thumbnail renderer stayed reachable through
- * the listeners on the registry geometries and the shared building material; 7 after one UI session)
- */
-function viewOf(src: THREE.BufferGeometry): THREE.BufferGeometry {
-  const g = new THREE.BufferGeometry();
-  g.setIndex(src.index);
-  for (const k of Object.keys(src.attributes)) g.setAttribute(k, src.attributes[k]);
-  for (const k of Object.keys(src.morphAttributes) as (keyof THREE.BufferGeometry['morphAttributes'])[]) g.morphAttributes[k] = src.morphAttributes[k];
-  g.morphTargetsRelative = src.morphTargetsRelative;
-  for (const gr of src.groups) g.addGroup(gr.start, gr.count, gr.materialIndex);
-  g.setDrawRange(src.drawRange.start, src.drawRange.count);
-  g.boundingBox = src.boundingBox;
-  g.boundingSphere = src.boundingSphere;
-  return g;
 }
 
 class ThumbRenderer {
@@ -149,11 +131,19 @@ class ThumbRenderer {
     clearTimeout(this.idleTimer);
     this.idleTimer = window.setTimeout(() => {
       if (this.queue.length || !this.renderer) return;
+      // close-out c4: three's DFG LUT (r186: one module-level texture for every renderer, bound to the physical
+      // materials' programs) keeps this renderer's dispose listener, so every idle dispose left its renderer and canvas
+      // behind: read it from the material's program uniforms before the disposes below release them, dispose it after
+      // (as WorldView.dispose does: each renderer drops its GPU copy and listener; it uploads again on next use)
+      const lut = this.mat
+        ? (this.renderer.properties.get(this.mat) as { uniforms?: { dfgLUT?: { value?: THREE.Texture | null } } } | undefined)?.uniforms?.dfgLUT?.value
+        : null;
       // (its own material copy goes first: nothing this renderer drew may keep it reachable — viewOf)
       this.mat?.dispose();
       this.mat = null;
       this.renderer.dispose();
       this.renderer.forceContextLoss();
+      lut?.dispose();
       this.renderer = null;
       this.scene = new THREE.Scene();
     }, 15000);

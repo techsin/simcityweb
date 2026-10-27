@@ -113,6 +113,9 @@ class SimpleCamera implements CameraControllerApi {
 
   dispose(): void {
     for (const f of this.cleanup) f();
+    this.cleanup.length = 0;
+    this.keys.clear();
+    this.drag = null;
   }
 }
 
@@ -184,6 +187,7 @@ export class FallbackWorldView implements WorldViewApi {
   private raycaster = new THREE.Raycaster();
   private overlayDirty = false;
   private overlayTimer = 0;
+  private disposed = false;
 
   constructor(private canvas: HTMLCanvasElement, private state: CityState, events: Emitter<CityEvents>, opts: { quality: QualityLevel }) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
@@ -301,6 +305,8 @@ export class FallbackWorldView implements WorldViewApi {
     if (this.trees) {
       this.scene.remove(this.trees);
       this.trees.dispose();
+      this.trees.geometry.dispose();
+      (this.trees.material as THREE.Material).dispose();
     }
     let count = 0;
     for (let i = 0; i < st.cells; i++) if (st.trees[i] && st.building[i] < 0 && !st.network[i]) count++;
@@ -521,8 +527,14 @@ export class FallbackWorldView implements WorldViewApi {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    // Read three's shared DFG LUT before material disposal removes the program uniforms.
+    const lut = (this.renderer.properties.get(this.terrain.material) as { uniforms?: { dfgLUT?: { value?: THREE.Texture | null } } } | undefined)?.uniforms?.dfgLUT?.value;
     for (const f of this.offs) f();
+    this.offs.length = 0;
     this.controls.dispose();
+    this.trees?.dispose();
     this.scene.traverse((o) => {
       const m = o as THREE.Mesh;
       m.geometry?.dispose?.();
@@ -530,6 +542,12 @@ export class FallbackWorldView implements WorldViewApi {
       if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
       else mat?.dispose?.();
     });
+    this.overlayLayer.tex.dispose();
+    this.hiLayer.tex.dispose();
+    this.trees = null;
+    this.scene.clear();
     this.renderer.dispose();
+    lut?.dispose();
+    this.renderer.forceContextLoss();
   }
 }

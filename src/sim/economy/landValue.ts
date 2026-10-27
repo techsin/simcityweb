@@ -559,8 +559,8 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
 // ------------------------------------------------------------------------------------------------ breakdown
 const BL = new Float64Array(NLV);
 const BR = new Float64Array(1);
-/** the breakdown's reusable context, per runtime and weakly held (a module-level one kept the exited city alive) */
-const bctxOf = new WeakMap<EconRuntime, LvCtx>();
+// (the breakdown builds its context per call and drops it on return: a cached one — module-level, then per runtime —
+// held the inspected city; close-out c2 / c4)
 
 /**
  * Land value terms at cell i (WP5 inspector): every non-zero term of the formula, then 'clamp' (clamp(raw, 0, 1) − raw)
@@ -571,8 +571,7 @@ export function landValueBreakdown(st: CityState, rt: EconRuntime | null, i: num
   if (!rt || !rt.lvStatic || rt.lvStatic.length !== st.cells || i < 0 || i >= st.cells) return [];
   if (st.water[i]) return [{ id: 'water', label: 'Water', value: st.landValue[i] }];
   const N = st.size, x = i % N, z = (i / N) | 0;
-  const c = lvCtx(st, rt, bctxOf.get(rt));
-  bctxOf.set(rt, c);
+  const c = lvCtx(st, rt);
   if (c.ex.histDirty) rebuildHistoric(st, c.ex);
   lvRow(c, z, x, x + 1, BR, BL);
   const raw = BR[0];

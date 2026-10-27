@@ -552,10 +552,12 @@ export class EmergencyBanner {
    *  them is over (flush: a microtask, or the next UI tick) */
   private incoming = new Set<number>();
   private flushQueued = false;
-  /** last docking applied to the stack (dock): its key, all banners compact, banners shown (0 = all) */
+  /** last docking applied to the stack (dock): its key, all banners compact, banners shown (0 = all, -1 = pill only) */
   private dockKey = '';
   private dockCompact = false;
   private dockRows = 0;
+  /** close-out c4: last measured stack width; layout reads cached heights here, never the DOM (EM-3) */
+  private dockWidth = BANNER_W;
   /** banners hidden by the docking's row cap that still wait for help (the pill counts them) */
   private capped = 0;
   /** alerts a dispatch can still save that have no banner (dismissed ones), at the last UI tick: the pill shows for them
@@ -596,7 +598,8 @@ export class EmergencyBanner {
     this.el = h('div', { class: 'emg-banners' });
     this.moreText = h('span');
     this.more = h('div', { class: 'emg-more mp-glass', style: 'display:none' }, h('span', { class: 'emg-more-ico', html: icon('alert', 14) }), this.moreText);
-    this.more.addEventListener('click', () => this.ctx.panels.open('emergencies'));
+    // close-out c4: a retained node after exit to region must not keep the city's element listeners alive
+    this.more.addEventListener('click', () => this.ctx.panels.open('emergencies'), { signal: ctx.signal });
     this.el.appendChild(this.more);
     parent.appendChild(this.el);
     const dirty = () => { this.dockDirty = true; };
@@ -638,7 +641,7 @@ export class EmergencyBanner {
           /* (no active pointer: a synthetic event) */
         }
       }
-    }, true);
+    }, { capture: true, signal: ctx.signal });
     this.el.addEventListener('click', (e) => {
       const pr = this.pressed;
       this.pressed = null;
@@ -659,7 +662,7 @@ export class EmergencyBanner {
         e.preventDefault();
         e.stopPropagation();
       }
-    }, true);
+    }, { capture: true, signal: ctx.signal });
     const release = () => {
       // (an ignored press's click follows its release in the same input task: forgotten after it)
       if (this.ignored) setTimeout(() => { this.ignored = null; }, 0);
@@ -671,7 +674,7 @@ export class EmergencyBanner {
     win?.addEventListener('pointercancel', release, true);
     // (a release the window never sees: the pointer capture ends, or the window loses focus with the button held)
     win?.addEventListener('blur', release);
-    this.el.addEventListener('lostpointercapture', release, true);
+    this.el.addEventListener('lostpointercapture', release, { capture: true, signal: ctx.signal });
     const off = ctx.sim.events.on('emergency', (e) => this.onEvent(e));
     const offReset = ctx.sim.events.on('reset', () => this.reset());
     const offTick = ctx.ui.on('uiTick', () => this.tick());
@@ -941,10 +944,10 @@ export class EmergencyBanner {
       h('div', { class: 'emg-body' }, h('div', { class: 'emg-head' }, title, time), place, note, sub, h('div', { class: 'emg-btns' }, jump, send, choose)),
       close,
     );
-    jump.addEventListener('click', () => this.jump(inc.id));
-    send.addEventListener('click', () => this.sendNearest(inc.id));
-    choose.addEventListener('click', () => openDispatch(this.ctx, inc.id));
-    close.addEventListener('click', () => this.dismiss(inc.id));
+    jump.addEventListener('click', () => this.jump(inc.id), { signal: this.ctx.signal });
+    send.addEventListener('click', () => this.sendNearest(inc.id), { signal: this.ctx.signal });
+    choose.addEventListener('click', () => openDispatch(this.ctx, inc.id), { signal: this.ctx.signal });
+    close.addEventListener('click', () => this.dismiss(inc.id), { signal: this.ctx.signal });
     this.el.insertBefore(el, this.more);
     const b: BannerEl = { id: inc.id, inc, el, title, place, note, sub, time, send, sendLbl, sendEta, choose, closeAt: 0, optsDay: -1, settleUntil: 0, settleGen: 0 };
     this.banners.set(inc.id, b);
@@ -1094,12 +1097,13 @@ export class EmergencyBanner {
     let capped = 0;
     // (a banner's slot: the shown banners above it, full or compact, and its own state — a banner re-ordered, added,
     // shown / folded or switched between full and compact moves itself and the ones below it, never those above:
-    // close-out c2, only the banners that moved ignore presses)
+    // close-out c2, only the banners that moved ignore presses; c4: their measured heights too — a note wrapping
+    // moves the banners below it even without a full / compact switch, using dock's cache, never a layout read)
     const moved: BannerEl[] = [];
     let above = '';
     list.forEach((b, k) => {
       const comp = this.dockCompact || k >= MAX_BANNERS;
-      const cap = this.dockRows > 0 && k >= this.dockRows;
+      const cap = this.dockRows < 0 || (this.dockRows > 0 && k >= this.dockRows);
       const o = String(k);
       toggleClass(b.el, 'compact', comp);
       toggleClass(b.el, 'capped', cap);
@@ -1113,7 +1117,7 @@ export class EmergencyBanner {
         b.slot = slot;
         if (!cap) moved.push(b);
       }
-      if (!cap) above += `${b.id}${comp ? 'c' : 'f'},`;
+      if (!cap) above += `${b.id}${comp ? 'c' : 'f'}:${comp ? compAt(b, this.dockWidth) : fullAt(b, this.dockWidth)},`;
     });
     this.capped = capped;
     const pill = above !== this.moreSlot;
@@ -1169,27 +1173,33 @@ export class EmergencyBanner {
       }
     }
     const W = root.clientWidth, H = root.clientHeight;
-    const panels: DockRect[] = [];
+    const panels: DockRect[] = [], centres: DockRect[] = [];
     if (W > 0) {
       for (const p of root.querySelectorAll<HTMLElement>('.panel-layer > .panel')) {
         if (tracked) this.watch(p);
         if (p.classList.contains('closing') || !p.offsetWidth) continue;
-        panels.push({ x: p.offsetLeft, y: p.offsetTop, w: p.offsetWidth, h: p.offsetHeight });
+        const rect = { x: p.offsetLeft, y: p.offsetTop, w: p.offsetWidth, h: p.offsetHeight };
+        panels.push(rect);
+        if (p.classList.contains('center')) centres.push(rect);
       }
     }
     const mh = this.more.offsetHeight;
     const moreH = (mh > 0 ? mh : 34) + 8;
     const fbH = H > 0 ? H : Infinity;
     const bottom = this.stackBottom(root, H);
+    // (one row: beside the panels, else below their header rows — never over a title or tab)
+    const singlePlace = (height: number): DockPlace | null => {
+      const d = panels.length ? dockBanners(W, STACK_TOP, height, BANNER_W, panels, 0, 12, { H: fbH, rowH: height + 8, moreH: 0, n: 1, bottom }) : null;
+      return d && { left: d.left, width: d.width, top: d.top };
+    };
     if (pillOnly) {
-      // (the pill as the stack's one row: beside the panels, else below their header rows — never over a title or tab)
-      const d = panels.length ? dockBanners(W, STACK_TOP, moreH - 8, BANNER_W, panels, 0, 12, { H: fbH, rowH: moreH, moreH: 0, n: 1, bottom }) : null;
-      this.applyDock(d && { left: d.left, width: d.width, top: d.top }, false, 0);
+      this.applyDock(singlePlace(moreH - 8), false, 0);
       return;
     }
     // the banners' heights as full / compact ones — per stack width (close-out c2): measured at the width the stack has
     // now (a capped banner keeps the ones it was last seen with), read for the width a place gives it
     const sw = Math.round(this.el.offsetWidth) || BANNER_W;
+    this.dockWidth = sw;
     for (const b of this.banners.values()) {
       const hh = b.el.offsetHeight;
       if (!(hh > 0)) continue;
@@ -1222,6 +1232,17 @@ export class EmergencyBanner {
     // a narrower place: decided again with the (taller) heights at that width
     if (d && Math.round(d.width) !== defW) d = placeAt(d.width) ?? d;
     const tw = d ? d.width : defW;
+    // close-out c4: at 1024x600 even one compact row (and the pill) has no room beside / above Budget; the old
+    // below-headers fallback covered its tiles and sliders. Fold every banner, keeping the pill clear of titles.
+    if (centres.length) {
+      const hh = compAt(this.ordered()[0], tw) + (n > 1 || this.hiddenPrompts > 0 ? moreH : 0);
+      const one = singlePlace(hh);
+      const left = one?.left ?? (W - defW) / 2, width = one?.width ?? defW, top = one?.top ?? STACK_TOP;
+      if (centres.some((p) => left < p.x + p.w && left + width > p.x && top < p.y + p.h && top + hh > p.y)) {
+        this.applyDock(singlePlace(moreH - 8), true, -1);
+        return;
+      }
+    }
     // final fixes r3: no place but the EM-2 fallback (it caps its rows itself) knew the toolbar — the rows that fit above
     // it, in display order (the first MAX_BANNERS full); all compact when that shows more than the full ones that fit
     let compact = !!d?.compact, rows = d?.rows ?? 0;
@@ -1282,7 +1303,7 @@ export class EmergencyBanner {
     return this.flyHigh;
   }
 
-  /** apply a docking: the stack's place (null: the centred CSS default), all banners compact, banners shown (0 = all) */
+  /** apply a docking: the stack's place (null: the centred CSS default), all banners compact, shown (0 = all, -1 = pill) */
   private applyDock(d: DockPlace | null, compact: boolean, rows: number): void {
     if (compact !== this.dockCompact || rows !== this.dockRows) {
       this.dockCompact = compact;

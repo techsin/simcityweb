@@ -1174,7 +1174,7 @@ export class BuildingRenderer {
     this.lodAsked.add(geom);
     if (urgent) this.lodUrgent.add(geom);
     const key = `${pend[0]}#${pend[1]}`;
-    pb.request(key, getModelGeometry(pend[0], pend[1]), (g) => { if (!this.disposed) this.installProxy(geom, g); }, urgent);
+    pb.request(key, getModelGeometry(pend[0], pend[1]), (g) => { if (!this.disposed) this.installProxy(geom, g); }, urgent, this);
   }
 
   /** register a built proxy (null = none) for a full geometry; wakes the buildings waiting for it */
@@ -2534,6 +2534,7 @@ export class BuildingRenderer {
 
   dispose(): void {
     this.disposed = true;
+    this.proxies?.cancel(this); // (close-out c4: its waiting callbacks held this renderer and the city until answered)
     this.fadeLayer.dispose();
     this.batch.dispose();
     // (the module-level fade material: the renderer's dispose listener on it kept that renderer and the exited city

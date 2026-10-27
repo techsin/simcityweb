@@ -202,13 +202,13 @@ export class Onboarding {
 
   private build(): void {
     const close = h('button', { class: 'icon-btn', title: 'Dismiss', html: icon('close', 14) });
-    close.addEventListener('click', () => this.hide(true));
+    close.addEventListener('click', () => this.hide(true), { signal: this.ctx.signal });
     const min = h('button', { class: 'icon-btn ob-min', title: 'Minimise', html: icon('minus', 14) });
     min.addEventListener('click', (e) => {
       e.stopPropagation();
       this.setMinimised(true);
       this.ctx.sound('close');
-    });
+    }, { signal: this.ctx.signal });
     // minimised: a small pill with the progress + current step; click to expand
     this.pillText = h('span', { class: 'obp-t' });
     this.pill = h('button', { class: 'ob-pill', title: 'Show the getting-started guide' }, h('span', { class: 'ob-badge', html: icon('star', 13) }), this.pillText, h('span', { class: 'ico-wrap', html: icon('chevDown', 13) }));
@@ -216,7 +216,7 @@ export class Onboarding {
       e.stopPropagation();
       this.setMinimised(false);
       this.ctx.sound('open');
-    });
+    }, { signal: this.ctx.signal });
     this.progress = h('span', { class: 'ob-prog' });
     const list = h('div', { class: 'ob-steps' });
     STEPS.forEach((step, i) => {
@@ -226,14 +226,14 @@ export class Onboarding {
         e.stopPropagation();
         // the step's own action sounds (tool select, flyout...); otherwise the delegated generic click plays
         step.run(this.ctx);
-      });
+      }, { signal: this.ctx.signal });
       const sub = h('div', { class: 'ob-s' }, step.sub);
       const el = h('div', { class: 'ob-step' }, num, h('div', { class: 'ob-txt' }, h('div', { class: 'ob-t' }, step.title), sub), btn);
       this.rows.push({ step, el, num, sub });
       list.appendChild(el);
     });
     const later = h('button', { class: 'ob-link', 'data-sfx': 'close' }, "Don't show again");
-    later.addEventListener('click', () => this.hide(true));
+    later.addEventListener('click', () => this.hide(true), { signal: this.ctx.signal });
     this.el.append(
       this.pill,
       h('div', { class: 'ob-head' }, h('span', { class: 'ob-badge', html: icon('star', 15) }), h('div', null, h('div', { class: 'ob-title' }, 'Getting started'), h('div', { class: 'ob-sub' }, 'Five steps to a living city')), this.progress, min, close),

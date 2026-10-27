@@ -24,7 +24,8 @@ describe('CityScene.dispose (close-out c1)', () => {
       // (the fields dispose() touches; its views and UI parts as stand-ins)
       const scene = {
         disposed: false, raf: 0, resolveReady: () => undefined, abort: new AbortController(), offs: [] as (() => void)[], resizeObs: null, mods: {},
-        newYear: part, sirens: part, emgBanner: part, gameSounds: part, offUiSounds: () => undefined, tools: part, minimap: part, objects: part, world: part,
+        newYear: part, sirens: part, emgBanner: part, gameSounds: part, offUiSounds: () => undefined, tools: part, minimap: part,
+        objects: part as object, world: part as object, guard: { errors: {} as object | null },
         uiEvents: { clear: () => undefined }, canvas, root,
       };
       (CityScene.prototype.dispose as (this: unknown) => void).call(scene);
@@ -33,6 +34,12 @@ describe('CityScene.dispose (close-out c1)', () => {
       expect(root.parentNode).toBeNull();
       expect(ui.parentNode).toBe(root);
       expect(scene.disposed).toBe(true);
+      // close-out c4: the signal aborts with a plain reason (no DOMException whose stack holds the scene), the guarded
+      // systems' wrappers lose their way to the scene, and the scene keeps neither real view
+      expect(scene.abort.signal.reason).toBe('dispose');
+      expect(scene.guard.errors).toBeNull();
+      expect((scene.world as { isNull?: boolean }).isNull).toBe(true);
+      expect(scene.objects).not.toBe(part);
     } finally {
       g.cancelAnimationFrame = had;
     }

@@ -45,8 +45,8 @@ export class NewsTicker {
     this.track = h('div', { class: 'tk-track' });
     this.view = h('div', { class: 'tk-view' }, this.track);
     this.el = h('div', { class: 'ticker mp-glass', title: 'City news — click for all news' }, h('div', { class: 'tk-badge', html: icon('news', 14) + '<span>News</span>' }), this.view);
-    this.el.addEventListener('pointerenter', () => (this.hover = true));
-    this.el.addEventListener('pointerleave', () => (this.hover = false));
+    this.el.addEventListener('pointerenter', () => (this.hover = true), { signal: this.ctx.signal });
+    this.el.addEventListener('pointerleave', () => (this.hover = false), { signal: this.ctx.signal });
     this.el.addEventListener('click', (e) => {
       const it = (e.target as HTMLElement).closest('.tk-item') as HTMLElement | null;
       if (it && it.dataset.x) {
@@ -55,7 +55,7 @@ export class NewsTicker {
       }
       ctx.panels.open('advisors');
       (ctx.panels as any).get?.('advisors')?.showTab?.('news');
-    });
+    }, { signal: this.ctx.signal });
     parent.appendChild(this.el);
     // the view's width changes with the window (and the UI zoom) only, the track's with its items: measure them when
     // they change (after layout), not every frame nor on every rebuild
@@ -66,7 +66,7 @@ export class NewsTicker {
       ctx.signal?.addEventListener('abort', () => ro.disconnect(), { once: true });
     } else if (typeof window !== 'undefined') {
       const onResize = () => (this.viewW = this.view.clientWidth);
-      window.addEventListener('resize', onResize);
+      window.addEventListener('resize', onResize, { signal: this.ctx.signal });
       ctx.signal?.addEventListener('abort', () => window.removeEventListener('resize', onResize), { once: true });
     }
     this.rebuild();
@@ -140,9 +140,17 @@ export class Toasts {
   /** performance.now() a message signature last sounded */
   private sounded = new Map<string, number>();
   private live = new Map<string, { el: HTMLElement; count: number; at: number; badge: HTMLElement; cell?: { x: number; z: number }; restart: (ms: number) => void }>();
+  /** close-out c4: the toasts' pending timers, cleared with the city: an expiry timer's callback holds this component and
+   *  through ctx the scene, so an exit with a toast up (a dispatch's) kept the whole city alive until it fired (1-3 s) */
+  private timers = new Set<number>();
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'toasts' });
     parent.appendChild(this.el);
+    ctx.signal?.addEventListener('abort', () => {
+      for (const t of this.timers) clearTimeout(t);
+      this.timers.clear();
+      this.live.clear();
+    }, { once: true });
     ctx.sim.events.on('news', (n) => {
       if (!ctx.settings.toasts) return;
       if (n.kind === 'info') return;
@@ -201,11 +209,21 @@ export class Toasts {
       timerBar,
     );
     let timer = 0;
+    // (every timer is kept in this.timers until it fires: the city's abort clears the pending ones)
+    const arm = (f: () => void, ms: number): number => {
+      const id = window.setTimeout(() => {
+        this.timers.delete(id);
+        f();
+      }, ms);
+      this.timers.add(id);
+      return id;
+    };
     const entry = {
       el: t, count: 1, at: now, badge, cell,
       restart: (ms: number) => {
         clearTimeout(timer);
-        timer = window.setTimeout(kill, ms);
+        this.timers.delete(timer);
+        timer = arm(kill, ms);
         timerBar.style.animation = 'none';
         void timerBar.offsetWidth;
         timerBar.style.animation = '';
@@ -214,20 +232,21 @@ export class Toasts {
     };
     const kill = () => {
       clearTimeout(timer);
+      this.timers.delete(timer);
       if (this.live.get(key) === entry) this.live.delete(key);
       t.classList.add('out');
-      setTimeout(() => t.remove(), 300);
+      arm(() => t.remove(), 300);
     };
     x.addEventListener('click', (e) => {
       e.stopPropagation();
       kill();
-    });
+    }, { signal: this.ctx.signal });
     t.addEventListener('click', () => {
       if (opts.action) opts.action.run();
       else if (entry.cell) this.ctx.focusCell(entry.cell.x, entry.cell.z, 420);
       kill();
-    });
-    timer = window.setTimeout(kill, ttl);
+    }, { signal: this.ctx.signal });
+    timer = arm(kill, ttl);
     this.live.set(key, entry);
     this.el.prepend(t);
     // at most 4 visible (3 on short screens, e.g. 1280×720: CityScene sets .short on the UI root)

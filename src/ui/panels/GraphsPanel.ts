@@ -121,7 +121,7 @@ export class GraphsPanel extends Panel {
         this.cur = g;
         this.draw();
         b.blur();
-      });
+      }, { signal: this.ctx.signal });
       this.listBtns.set(g.id, b);
       list.appendChild(b);
     }
@@ -129,7 +129,7 @@ export class GraphsPanel extends Panel {
     const seg = segmented<number>([{ value: 12, label: '1Y' }, { value: 60, label: '5Y' }, { value: 120, label: '10Y' }, { value: 0, label: 'All' }], this.range, (v) => {
       this.range = v;
       this.draw();
-    });
+    }, this.ctx.signal);
     this.legend = h('div', { class: 'graph-legend' });
     this.canvas = h('canvas');
     this.hover = h('div', { class: 'graph-hover mp-glass' });
@@ -138,11 +138,11 @@ export class GraphsPanel extends Panel {
       const r = this.canvas.getBoundingClientRect();
       this.hoverX = ((e.clientX - r.left) / r.width) * this.canvas.clientWidth;
       this.draw();
-    });
+    }, { signal: this.ctx.signal });
     this.canvas.addEventListener('pointerleave', () => {
       this.hoverX = null;
       this.draw();
-    });
+    }, { signal: this.ctx.signal });
     this.body.appendChild(h('div', { class: 'graph-wrap' }, list, h('div', null, h('div', { class: 'graph-top' }, this.titleH, seg), this.legend, cw)));
   }
 
