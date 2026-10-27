@@ -36,3 +36,18 @@ They feed the polish & fun pass (docs/POLISH_PLAN.md). Items that a later round 
 - [ui minor] EmergencyBanner settle guard is global and silent: presses on banners that did not move are dropped (rapid triage every 300 ms loses every other click). Fix: guard only banners whose own slot changed (layout() knows positions); feedback (denied sound / settling flash) when a press is ignored.
 - [ui minor, pre-existing] with every banner dismissed, the "N more emergencies need you" pill is never docked (dock() returns early when banners.size===0) and covers a centred panel's title row. Fix: dock the pill-only case too; add a uiStacking test.
 - [sim note] roadless jail/courthouse/bus depot/train station/airport get no road warning because the sim runs them without a road (operating factor 1.00) — review in polish (should they need road access?).
+## From the local worker's real-GPU smoke test T003 (Oct 27, RTX 5070 Ti, ANGLE/D3D11) — no blockers, no GPU-only defects
+Report: docs/dev/reports/local-T003-gpu-smoke.md. 60 Hz held everywhere (0 frames > 18 ms in 60 runs, incl. the 304k city at ULTRA 4K).
+- [render perf, MINOR-1 — schedule after render round 2 closes] Far zoom on a big city at 4K draws 3–4× the triangles of 1080p, mostly in
+  the shadow pass (304k city ULTRA far: 8.4M tris main / 20.9M on shadow frames at 4K vs 2.55M / 5.5M at 1080p; 13–15 ms per render at
+  4K HIGH/ULTRA far). Shadow casters seem to reuse the main view's screen-resolution-dependent LOD; ULTRA has dynamicResolution off.
+  Fix: pick shadow-caster LOD from the shadow camera (texel size) or force coarse LOD / skip small casters beyond a distance; re-measure
+  with the T003 harness (lodprobe, burst). Matters for mid-range GPUs at 1440p/4K.
+- [render, MINOR-2] WaterRenderer.ts:53 waterGround(): early return inside an if that samples uHeightTex, then uOuterTex outside it →
+  D3D FXC warning X4000 in every GPU run, and implicit-derivative sampling in non-uniform control flow can pick wrong mips at the map
+  edge on some drivers. Fix: sample both unconditionally (or texture2DLod(...,0.0)) and select with mix/step; one return.
+- [render, MINOR-3, optional] three.js FXAAShader (LOW only) trips X3595/X4000; harmless (no mips on its input). Copy the shader with
+  textureLod in the edge-search loop only if touching PostFX anyway.
+- [art] At far zoom the 304k city reads as a bright white grid of lot and road outlines over the green (same on SwiftShader):
+  pair_game300k_ultra.png top right. Review the far-zoom lot-outline / road-edge brightness in the art polish round.
+- [tooling] Seed or freeze window lights and traffic for exact GPU-vs-reference diffs (night shots differ by lit-window pattern).
