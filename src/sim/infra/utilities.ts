@@ -230,6 +230,8 @@ export class UtilitiesSystem implements SimSystem {
   private watSeen = new Uint8Array(1024);
   /** per producer id: output breakdown of the last pass; intake pollution per water producer id */
   private producers = new Map<number, ProducerInfo>();
+  /** treatment-scan prefix, overwritten on every prepareUses call (list order, never building ids) */
+  private useInfo: DefInfo[] = [];
   private intakeById = new Float32Array(1024);
   private wasShort = false;
   private lastShortNotify = -1e9;
@@ -279,6 +281,7 @@ export class UtilitiesSystem implements SimSystem {
     this.wasShort = this.wasWaterShort = false;
     this.loadById.fill(-1);
     this.producers.clear();
+    this.useInfo.length = 0;
     this.rememberCoolingWater(sim.state);
     // (flags a loaded / new city's first pass flips are not news)
     this.cutQuiet = true;
@@ -623,12 +626,16 @@ export class UtilitiesSystem implements SimSystem {
     const eff = plantEfficiency(st);
     const bUse = this.bUse, bWUse = this.bWUse;
     const list = buildingList(st);
+    const infos = this.useInfo;
+    let nInfo = 0;
     let hasTreatment = false;
     for (let bI = 0; bI < list.length; bI++) {
       const b = list[bI];
       const inf = infoOf(st, b);
+      infos[nInfo++] = inf;
       if (inf.isTreatment && b.built >= 1 && (b.flags & BF.Burnt) === 0) { hasTreatment = true; break; }
     }
+    infos.length = nInfo;
     const producers = this.producers;
     producers.clear();
     const nuclearMul = Math.max(0, ordinanceEffect(st, 'power.nuclear'));
@@ -640,7 +647,7 @@ export class UtilitiesSystem implements SimSystem {
     let nPlants = 0, nCrit = 0;
     for (let bI = 0; bI < list.length; bI++) {
       const b = list[bI];
-      const inf = infoOf(st, b);
+      const inf = bI < nInfo ? infos[bI] : infoOf(st, b);
       const ok = b.built >= 1 && (b.flags & (BF.Burnt | BF.Abandoned)) === 0;
       if (inf.powerOut <= 0 && isCritical(inf)) this.critIds = pushId(this.critIds, nCrit++, b.id);
       if (inf.powerOut > 0) {
