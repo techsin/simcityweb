@@ -756,15 +756,20 @@ export class CityActions implements CityActionsApi {
 
   setFunding(service: ServiceKind, percent: number): void {
     if (!(service in this.st.budget.funding)) return;
-    this.st.budget.funding[service] = Math.max(0, Math.min(150, Math.round(percent)));
+    const funding = Math.max(0, Math.min(150, Math.round(percent)));
+    if (funding === this.st.budget.funding[service]) return;
+    this.st.budget.funding[service] = funding;
+    this.sim.getSystem<import('./infra/services').ServicesSystem>('services')?.invalidate();
   }
 
   setOrdinance(id: string, enabled: boolean, opts: { confirm?: boolean } = {}): ActionResult & { needsConfirm?: boolean } {
     const st = this.st;
     const o = getOrdinance(id);
     if (!o) return fail(`Unknown ordinance "${id}"`);
+    const changed = st.budget.ordinances.includes(id) !== enabled;
     const res = setOrdinanceEnabled(st, id, enabled, { confirm: opts.confirm });
     if (!res.ok) return res.needsConfirm ? { ...fail(res.reason ?? 'Refused', res.monthly), needsConfirm: true } : fail(res.reason ?? 'Refused', res.monthly);
+    if (changed) this.sim.getSystem<import('./infra/services').ServicesSystem>('services')?.invalidate();
     return { ok: true, cost: res.monthly, affected: 1, reason: enabled ? `${o.name} enacted` : `${o.name} repealed` };
   }
 
