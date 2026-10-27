@@ -1,0 +1,12 @@
+== WCv_city_low: new vs v1 (one warm row; frame sums)
+street      mt 1.000 | mc 1.000 | tris 1.000 | calls 1.000 | st 1.000 | sc 1.000   (mt 30.99M vs 30.99M, mc 1840 vs 1840)
+zoomout     mt 1.000 | mc 1.000 | tris 1.000 | calls 1.000 | st 1.000 | sc 1.000   (mt 120.62M vs 120.62M, mc 7824 vs 7824)
+farorbit    mt 1.000 | mc 1.000 | tris 1.000 | calls 1.000 | st 1.000 | sc 1.000   (mt 115.25M vs 115.25M, mc 10772 vs 10772)
+default     mt 1.000 | mc 1.000 | tris 0.965 | calls 0.972 | st 0.501 | sc 0.500   (mt 16.15M vs 16.15M, mc 880 vs 880)
+zoomin      mt 1.000 | mc 1.000 | tris 1.000 | calls 1.000 | st 1.000 | sc 1.000   (mt 66.92M vs 66.92M, mc 4238 vs 4238)
+streetpan   mt 1.000 | mc 1.000 | tris 1.000 | calls 1.000 | st 1.000 | sc 1.000   (mt 116.67M vs 116.67M, mc 7608 vs 7608)
+streetfast  mt 1.000 | mc 1.000 | tris 1.000 | calls 1.000 | st 1.000 | sc 1.000   (mt 58.51M vs 58.51M, mc 3768 vs 3768)
+pan         mt 1.000 | mc 1.000 | tris 1.000 | calls 1.000 | st 1.000 | sc 1.000   (mt 52.56M vs 52.56M, mc 2865 vs 2865)
+fastpan     mt 1.000 | mc 1.000 | tris 1.000 | calls 1.000 | st 1.000 | sc 1.000   (mt 28.34M vs 28.34M, mc 1467 vs 1467)
+cuts        mt 1.021 | mc 1.000 | tris 1.064 | calls 1.026 | st 1.633 | sc 1.400   (mt 30.88M vs 30.24M, mc 2480 vs 2480)
+MOVING sums: mt 1.001 | mc 1.000 | tris 1.003 | calls 1.001 | st 1.014 | sc 1.012

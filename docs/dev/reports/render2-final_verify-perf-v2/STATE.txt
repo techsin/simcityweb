@@ -1,0 +1,148 @@
+perfrev-v2 STATE (render round 2 final, verify v2, PERF reviewer)
+Sides (sides/): new = live HEAD f065b1f (render == fa13c85, clean snapshot via tar), base = a284b80 (to calibrate),
+  c024 = 02464a3, v1 = c30fca4, n = 4b3d074. node_modules symlinked to the live tree.
+Town save: data/town_y8_jun.metropolis = base SimBot (a284b80) 128 plains seed 7, 8 years, 2953 buildings, day 3042
+  (June 13), region 'bench', tile 4_2 (installed as sides/*/bench/town.metropolis).
+Servers: tools/servers.mjs (one node process, vite per side, ports in servers.json 9741..), cacheDir vitecache/<side>.
+Pages: bench.html (tools/benchsrc/bench.ts: WorldView + CityObjectsView, fixed dt, dyn-res off, nodraw=1 skips GL draws),
+  seed.html (imports the town into IndexedDB as last session), index.html (real game) with tools/gameinit.js hooks.
+Drivers: fresh.mjs (fresh bench page), game.mjs (real load path), warm.mjs (warm pages / gpu mode), chain.mjs (reps x labels).
+Poller: tools/poll (C) samples schedstat every 400 us for per-frame CPU.
+Notes: zygote children have argv rewritten (type parse fixed in lib.mjs). SwiftShader drawn frames ~1-8 s each under load
+  15-20 (5 GPU processes from other agents) -> CPU runs use nodraw=1; GPU stand-in uses drawn frames.
+00:40 notes:
+- spare renderer: pickRenderer() = renderer with most main-thread CPU (fixed after WT_cal_aborted had v12 on a spare).
+- vite servers must NOT be restarted while pages are open (vite client reloads pages). New bench code -> new file name
+  (bench2.ts/bench2.html: adds draw=scissor = all GL calls incl. draws, 1x1 scissor -> GPU does vertex work only).
+- seed fix: setLastRegionId before setLastSession (else Continue opens the region view).
+- Running: chain FGL (game LOW nodraw, labels base,c024,new,base2,new2, 8 reps); WT_cal (town LOW nodraw base A/B vs v1 A/B).
+00:50: draw-call encoding cost (tools/drawcost.mjs, 5 reps): drawArrays 0.05 us, drawElements 0.04 us, instanced 0.08 us,
+  multiDraw(64 sub) 0.78 us per call beyond the uniform update -> nodraw omits < 10 us/frame: negligible. Scissor mode (all
+  draws through, 1x1 scissor) doubled main-thread CPU (contention with the SwiftShader GPU process): nodraw is the mode.
+  V1 nodraw probe zoomout 158 ms/90f ~ v1's reported 163 ms -> v1 likely nodraw as well.
+01:00 CALIBRATION a284b80 (warm town, nodraw): V1/base pooled moving LOW 0.895 [0.879-0.931] (6 rows, A/A v1 1.006, base 0.965),
+  HIGH 0.986 [0.966-1.052] (4 rows); warm HIGH zoomout/farorbit V1/base 1.09/1.17 (v1 reported 0/51 rows above its base) ->
+  a284b80 does NOT reproduce v1's 0.740. Fresh probes: b53 (535655d) / b48 (be48061) first zoomout 288/305 ms vs a284b80 155
+  -> testing b48 as base (queueK: WK_town_low, WK_city_low, WK_town_high: b48 A/B, base, v1 A/B).
+01:10: WK_town_low row 0: V1/b48 pooled 0.675, a284b80/b48 0.739 -> b48 (be48061) looks like the lost base. Queues:
+  queueK (WK_town_low, WK_city_low, WK_town_high) -> queueG (GT gpu c024 vs new) -> queueM (WM warm matrix vs b48, WA alloc)
+  chain FGL (game LOW, a284b80 base) -> queueF2 (FTL, FUH, FCL, FCH, FGH, FGLb with b48).
+  Gate-3 lead: long frames (130-240 ms) at frame 2/3 on the real load path in new (3/4 loads) and c024 (1/2); outside the
+  scene's frame callback (lp ~5-9 ms); gameinit now times worker message handlers (wm) to attribute (LOD proxy replies?).
+01:12 CALIBRATION b48 town LOW (4 rows): V1/b48 pooled 0.676 [0.662-0.697], 0/44 rows>1, A/A v1 1.034 b48 0.955;
+  a284b80/b48 0.748; V1/a284b80 0.905. (target town 0.740 +-0.05: LOW alone slightly below; HIGH pending.)
+  Traces (new LOW, real load path): frame 2 burst = backlog behind the ~300 ms load frame: audio director timers
+  (director.ts:262, 20-28 ms), LOD worker replies (247 msgs, 23 ms), GC (incremental marking 18-24 ms + MajorGC
+  ReduceMemory 24 ms), ~5600 tiny tasks (12 ms). Not inside the scene's frame callback.
+01:14 CALIBRATION b48 city LOW (3 rows): V1/b48 pooled 0.554 [0.530-0.562] (target 0.675) -> b48 too slow; a284b80 too
+  fast (town V1/base 0.905 LOW, 0.986 HIGH). Built sides/hyb = a284b80 + be48061 src/assets (server 9748); queueK2 runs
+  WK2_town_low (hyb A/B, v1 A/B, b48) and WK2_city_low (hyb A/B, v1 A/B) after WK_town_high. queueG/queueM wait for it.
+  c024 trace 2: frame 2 = 299 ms (LOD worker replies 83 ms, timers 73 (director 29), GC incr 51 + MajorGC 27) -> the
+  frame-2 backlog burst exists in c024 too. FGLna (no WebAudio) running for attribution.
+01:25 Absolute fresh LOW town (nodraw probes) match v1's numbers with a284b80 as base: v1 zoomout new 163 / base 176 ms,
+  zoomin 79 / 85; mine new 158 / a284b80 155 / b48 305 (zoomout), zoomin 81 / 84 / 151. -> old base ~ a284b80 render code;
+  the warm gap (V1/a284b80 0.905 vs v1's 0.740) may come from v1's warm harness (drawn?). queueK3: WS_town_low drawn
+  (scissor) base A/B, v1 A/B, hyb -> does drawn mode give ~0.74 with a284b80?
+01:40 CAL town HIGH (WK_town_high, 2 rows): V1/b48 0.816 [0.799-0.833], V1/a284b80 1.099 (V1 above a284b80 at HIGH!),
+  a284b80/b48 0.744. LOW+HIGH mean V1/b48 ~0.746 ~ v1's 0.740 (if v1 pooled qualities); a284b80 fails (0.905/1.099).
+  But v1's FRESH absolute LOW zoomout/zoomin base numbers (163/79 ms) match a284b80 (155/84), not b48 (305/151).
+  -> evaluate fresh specs vs BOTH (queueF3: FTL/FUH/FCL/FCH with base+base2+b48(+b482)); WS drawn test pending (K3).
+  TODO: revise queueM (WM) to include a284b80 too before it starts (after queueG).
+01:45 hyb (a284b80 + be48061 assets) town LOW: V1/hyb 0.925 [0.892-0.942] -> like a284b80, rejected (assets don't explain
+  the gap). WK2_city_low cancelled. WK2_town_low v12/b48 rows invalid (pid wraparound picked an older browser; launch()
+  fixed to diff the browser set). WS (drawn, scissor) running: base A/B, v1 A/B, hyb.
+02:07 4 cores, load 64-70. WS (drawn scissor) killed: warm-up pass alone > 25 min (1.3 s/frame) and drawn mode adds a
+  shared cost (ratios move toward 1), so it cannot turn a284b80's 0.905 into 0.740. FGLna stopped at 12(+1) loads (attribution
+  only). hyb server killed. queueF3 replaced by queueF4a (FTL 6 labels, FCH 5 labels), queueF4b (FCL 6 labels, FUH 5 labels),
+  queueF4c (FGH 4 reps after FGL); pass 1 only, 8 reps. queueW2 started 02:05 (WK_city_high first).
+  FGL (5 reps): frame 2 new 72/105 ms, c024 67, base 18-20; frames 2-30 >16.7: new 15+7 /10 loads vs c024 17/5;
+  >33.3 new 4+6 /10 vs c024 7/5 -> no extra long frames vs c024. Frame 1 new 318-377 vs c024 190, base 120.
+02:32 CAL city HIGH (WK_city_high, 2 rows): V1/b48 0.608 [0.582-0.635] -> b48 city (LOW 0.554, HIGH 0.608) not within
+  0.675 +-0.05. v1 used the t_plains town save (lost in the reset; not on disk) -> my town (SimBot 128 plains y8, 2953 b)
+  differs: scene dependence is a plausible cause of the calibration gap. WK3 (b53 = 535655d warm town/city, a284b80 city)
+  queued. New driver warm4.mjs (bench3 page with step()): still views + drawn samples along cuts/edgefast/edgeturn/fastpan
+  (SwiftShader JIT: first drawn frames of a pipeline cost 5-12 s GPU CPU -> drawn warm-up pass first). queueW2d replaces W2c.
+03:07 real-path first zoom-out attribution (tracezoom.mjs, 1 load each, LOW): scene frame callback g new 319 vs base 303 ms
+  (+5%); timers new 152 vs 49 (audio director.ts 87 vs 20, ambience.ts 23 vs 12), microtasks 93 vs 20, top-level tasks 13.7k
+  vs 3.5k, MajorGC 40 vs 0 -> the FGL zoomout excess vs a284b80 (+8.7%) is mostly outside the render code (audio/UI).
+  game.mjs now records per-segment phase CPU (ph: wu/ou/wr/wm/su); anaph.mjs. F4c: FGH 4 reps then FGL r8-r9 (phase split).
+03:09 FGL (8 reps, 38 loads, with audio): whole main thread zoomout new/base 1.074 [1.024-1.124] (11/15), vmeans 1.062
+  [1.020-1.091], A/A 1.046/0.954 -> meets the MAJOR rule numerically; scene frame callback (lcpu) 1.033 [0.972-1.162].
+  Trace: WebAudio RequestToDeleteHandlersOnMainThread (2604 tasks) + audio_scheduled_source_handler Finish (1680) +
+  director.ts:262 timer 87 ms + ambience.ts 23 ms in the zoom-out window (new), base 20+12 ms: wall-time-driven audio work
+  (zoom-out = 30-67 s wall at load 60) -> confound. queueNB: FGLnb (NOAUDIO, base/new A/B, 8 reps) started 03:08.
+03:35 GPU stand-in NOT measurable at load 55-75: GT_low A/A |log| 0.4-3.2 (median or min); gputhreads.mjs: light drawn
+  LOW frames ~8-12 ms almost all on the GPU main thread, but runs of frames cost ~8 s each with all 4 SwiftShader workers
+  busy (spinning: wall 25-90 s per frame) -> GT2/GQ dropped; W2f: stills.mjs (nodraw still-view counts c024 vs new,
+  LOW/HIGH/ULTRA) + WC moving counts. FTL done (8 reps): first zoomout 0.961 [0.835-1.008], zoomin 0.851 [0.777-0.886].
+03:45 FGL final (8 reps, 40 loads): f2 new 83/68 vs c024 82, base 19/20; frames>16.7 in 2-30: new 37/16 loads, c024 37/8,
+  base 33/16; >33.3 new 15/16, c024 16/8 -> gate 3 OK vs c024. zoomout pairs 1.065 [1.013-1.111] vmeans 1.062 [1.020-1.104]
+  A/A 1.046/0.954 (minor by the rule: lower bound not > 1.02), lcpu 1.048 [0.975-1.138]; zoomin 1.046 [1.012-1.112] /
+  1.057 [1.038-1.109], A/A new 0.871 -> inconclusive. FCL final: pooled 0.918 [0.808-0.961], all segs <= base; vs V1 pooled
+  0.994, cuts 1.128 [0.963-1.280]; tris/calls identical to V1 except default seg shadow +33% (1 extra shadow render).
+04:05 CAL city LOW (WK3, 2 rows): V1/a284b80 0.825 [0.809-0.842], V1/b53 0.591, a284b80/b53 0.718. Town LOW (WM, 4 rows):
+  V1/a284b80 0.954, V1/b48 0.726 (in range), new/a284b80 0.942 [0.929-0.955], new/b48 0.711, new/V1 0.974.
+  -> no commit reproduces both (a284b80 too fast, 535655d/be48061 too slow); v1's numbers lie between.
+  ST (stills, nodraw): LOW street/default/far 0.996-1.003 vs c024; LOW edge views +5.1-6.5% main tris = buildings
+  (edgelow 15.1k vs 7.0k, edget25 42.3k vs 32.3k) + vehicles; identical in V1 (tridiag) -> pre-existing, not this round.
+  HIGH/ULTRA still +2.3-3.1% (street/default/far), edge views +22-54% (ring; accepted art).
+04:24 WM_town_high (4 rows; base, b48 A/B, new A/B): new/a284b80 pooled ~1.10 (zoomout 1.18, farorbit 1.25, edgepan 1.14,
+  edgeturn 1.40), new/b48 0.785. V1/a284b80 at HIGH: WK 1.096 (zoomout 1.16, farorbit 1.30, edgeturn 1.22), WT 0.986 ->
+  pre-existing vs a284b80; ring code exists only in V1/new (not a284b80, b48, c024). Queue W2g (V1 added): WR_town_high
+  (base, new A/B, V1 A/B) running, WM_town_ultra with V1. ST v1: LOW stills new == V1 exactly; HIGH edge new/V1 0.90-1.02
+  (edget25 +2.3%), ULTRA edge 0.84-0.92; non-edge 1.000.
+04:45 WR_town_high (2 rows; base, new A/B, V1 A/B): new/V1 pooled 0.980 [0.963-0.996] (edgefast 0.805, edgeturn 0.898,
+  edgepan 1.037, fastpan 1.110, street 1.131); new/a284b80 1.011 (zoomout 1.24, farorbit 1.30, edgepan 1.10); V1/a284b80
+  1.031 (zoomout 1.17, farorbit 1.32, edgefast 1.32). -> warm HIGH far-view excess vs a284b80 is pre-existing (V1 same),
+  ring segments improved vs V1. No frame > 16.7 ms on any warm HIGH segment.
+  FCH (7 reps): street-settle 0.741 [0.691-0.871]; streetpan 1.187 [1.066-1.201] vmeans 1.179 [0.991-1.259] A/A new 1.085
+  (inconclusive); pooled 1.008.
+04:55 FGLnb (no audio, 5 reps): zoomout total 1.068 [1.014-1.101] (minor), render (wu+ou+wr+wm) 0.980 [0.865-1.108],
+  loopRest 0.784, outside 1.157 [1.006-1.234]. No-audio traces (1 load each): scene callback g new 306 vs base 309 ms;
+  Blink UpdateLifecycle 124 vs 84 (paint 71 vs 51, layerize 53 vs 36), timers 28 vs 7 -> the real-path excess is UI DOM
+  paint/composite + timers (other lane), not render. FCH final: street-settle 0.762 [0.718-0.893]; streetpan 1.177
+  [1.023-1.197] vmeans 1.114 [1.028-1.198], A/A new 1.085 -> inconclusive (closest to a major); pooled 1.031/0.985.
+  Queues now: W2h (WC*, WM_town_ultra+V1, WM_city_high/ultra, ST_city), W3 (WM_ui_high/low/ultra, WA low/high).
+05:15 RO_town_high (bench4 ring=0; 2 rows): new vs new-without-ring pooled 1.113: farorbit +15% (0.30 ms/f), edgepan
+  +20% (0.38 ms/f), edgeturn +25% (0.53 ms/f), cuts +8%, zoomin +9%, zoomout +3%. ring-off vs a284b80 pooled 1.042,
+  zoomout 1.240 (non-ring HIGH zoom-out excess, V1 has it too), edge segs 1.01-1.02. new vs a284b80 pooled 1.160 (this run).
+  Dense city HIGH streetpan V8 profile: (program)/native dominates, inconclusive.
+05:37 WM_town_ultra (3 rows; base, b48, new A/B, V1): new/a284b80 1.153 [1.091-1.166] (zoomout 1.24, farorbit 1.46,
+  edgepan 1.18, edgeturn 1.31); new/b48 0.854; new/V1 1.020 [0.981-1.032], farorbit 1.121 [1.097-1.313] (3/3);
+  V1/a284b80 1.144, V1/b48 0.867. RO2 (ULTRA ring on/off for new and V1) started.
+  WC city LOW cuts: new total tris +5.0-6.7% vs c024 (shadow tris +55-69%, shadow calls 245-251 vs c024 255, V1 175):
+  warm V1 renders fewer shadow passes in cuts (175) than new (245); fresh FCL V1 = new (251). cutprobe running.
+05:42 FGLnb final (8 reps, no audio, vs a284b80): zoomout 1.068 [1.010-1.108] / 1.069 [1.016-1.122] (minor), zoomin 1.039 /
+  1.043 [1.011-1.080] (minor), pan 1.109 [1.076-1.162] / 1.099 [1.048-1.151], A/A 0.992/1.021 -> meets the major rule
+  (whole main thread); pan outside-callback 1.140 [1.103-1.199] (UI), render 1.182 [1.040-1.328] A/A new 1.077 (inconcl.);
+  bench FTL pan 0.932. cutprobe: the dense-city LOW cut sequence's extra shadow render (frame 2 or 17) and 1.43M-tri
+  first-cut pass occur in both V1 and new (run-dependent) -> pre-existing. FGLnb2 (vs b48, no audio, 6 reps) started.
+06:01 FUH final (8 reps, ui HIGH fresh vs a284b80): zoomout 1.136 [1.056-1.225] / 1.137 [1.096-1.176], farorbit 1.129
+  [1.028-1.206] / 1.097 [1.042-1.164], zoomin 1.092 [1.040-1.186] / 1.095 [1.043-1.135], A/A within 5% -> meet the major
+  rule vs a284b80; vs N 0.89-0.96 (better than round 4). Split: render +21-27% (zoomout/farorbit; A/A new 0.88 ->
+  inconclusive), outside (UI) +10-14%. Warm: city LOW 0.853 / HIGH 0.946 vs a284b80, 0.58/0.60 vs b48; ui HIGH 1.030 vs
+  a284b80, 0.922 vs b48. Allocations: new 21/31 KB/frame (LOW/HIGH) vs base 76/162, c024 96/139, b48 80/285.
+  FUHb (ui HIGH fresh vs b48, 8 reps) started.
+06:20 RO2 (ULTRA ring on/off, new and V1; 2 rows): ring cost new: farorbit +15.6% (+0.38 ms/f), edgepan +12.5% (+0.28),
+  edgeturn +6.9% (+0.20), zoomout +2.9%; V1: farorbit -0.5% (~0), edgeturn +21.7% (+0.55), cuts +13%, default +17%.
+  new vs V1 with ring: pooled 1.022 [1.003-1.041], farorbit 1.026 (WM: 1.121); without ring: farorbit 0.888.
+  -> this round moved ring CPU from edge turns to high-camera far views (far orbit) at ULTRA; draw work unchanged
+  (farorbit main tris new/V1 1.000). WC HIGH/ULTRA vs c024: per-page moving main tris 0.964/0.973, edge flights +12..58%
+  (ring), vs V1 edge flights 0.88-1.01. V8 profiles under this load: (program)/(idle) dominate -> not informative.
+06:25 Long frames: warm pages 0-3 frames > 16.7 in 1350-3000 per browser for every side (new max 24 ms); fresh bench
+  veil frames new 9 >33 in 16 loads vs c024 6 in 8 (town), city HIGH new 2 vs c024 3; isolated bursts: FCL r6 new zoomout
+  f82-88 (30-193 ms), FTL r1 new pan f44 113 ms, FCH r6 new2 zoomout f79 218 ms; c024 many more on FCH (street f0 30-40
+  every load, cuts, zoomout). FTLv (fresh calibration V1 vs a284b80, 6 reps) started; FUHb/FGLnb2 slow (load 68-70).
+06:45 OOM: the memcg killed 2 chrome renderers (oom_score_adj 800) at ~04:27/04:47 (not mine: no run of mine errored);
+  my parallelism reduced. Poller read race found (stop() waited max 3 s while the poller wrote a 47 MB buffer): WM_ui_low
+  row 1 came back with zero CPU -> lib.mjs waits for the poller's exit now; WM_ui_ultra (old lib) killed, rerun as
+  WM_ui_ultra2 + WM_ui_low2 (queueW3c). Other specs checked: no zero/truncated segments. NOTE: pgrep -f patterns that
+  occur in my own command line kill my shell (exit 144) -> use [x] patterns.
+  Warm city ULTRA: new/a284b80 1.015 [0.991-1.040] (farorbit 1.27), new/b48 0.714. WC city HIGH vs c024: moving main
+  tris 0.936, total 0.765, cuts main 1.045 / total 1.067. ST city: LOW 0.968-0.999, HIGH 0.991-1.017.
+  FTLv (2 reps): V1/a284b80 fresh LOW town zoomout 1.096 [1.032-1.213] / 1.120 -> a284b80 reproduces v1's fresh 1.059.
+  FUHb (1 rep): ui HIGH fresh new/b48 zoomout 0.948, farorbit 1.053, zoomin 0.938, pooled 0.940.
+08:20 DONE. Final: FGLnb2 (5 reps, real path no audio vs be48061): every segment <= base (zoomout 0.809, zoomin 0.885,
+  pan 0.781). ui warm LOW2 1.029 vs a284b80 / 0.967 vs b48; ui ULTRA2 1.018 / 0.900. FTLv final (6 reps): V1/a284b80
+  fresh zoomout 1.039 [0.971-1.150] / 1.022, zoomin 0.841. Cleanup: all my chains/drivers/browsers/servers stopped,
+  vitecache and out/poll/*.bin removed; tables in tables/ (report2.sh). No source or git changes.

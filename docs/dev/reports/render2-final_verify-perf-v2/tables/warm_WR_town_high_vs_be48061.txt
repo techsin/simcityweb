@@ -1,0 +1,15 @@
+== WM.jsonl q=high field=cpu rows=2 num=new,new2 den=b48
+street      new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+zoomout     new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+farorbit    new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+default     new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+zoomin      new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+streetpan   new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+streetfast  new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+pan         new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+fastpan     new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+cuts        new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+edgepan     new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+edgefast    new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+edgeturn    new     NaN  b48     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN b48 NaN
+POOLED moving nan [nan-nan] (0/0 rows)  A/A new nan [nan-nan]  b48 nan [nan-nan]  | (row,seg) ratios above 1: 0/0  load 52.9

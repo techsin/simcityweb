@@ -1,0 +1,8 @@
+== GT.jsonl q=low rows=3 stat=min  new,new2 vs c024,c0242
+street   gpu 0.708 [0.452-0.718] (0/3)  A/A |log| 0.381  new 14 ms  c024 18 ms | main tris 0.872M vs 0.871M (1.000), total 0.992M vs 0.993M (1.000), calls 42 vs 42, shadow tris 0.121M vs 0.121M
+default  gpu 2.336 [0.859-2.403] (2/3)  A/A |log| 0.787  new 13 ms  c024 7 ms | main tris 0.882M vs 0.881M (1.002), total 1.598M vs 1.603M (0.997), calls 45 vs 45, shadow tris 0.716M vs 0.722M
+far      gpu 0.624 [0.434-1.410] (1/3)  A/A |log| 0.549  new 13 ms  c024 14 ms | main tris 0.629M vs 0.631M (0.996), total 0.957M vs 0.978M (0.979), calls 70 vs 92, shadow tris 0.328M vs 0.347M
+edgelow  gpu 0.906 [0.693-3.202] (1/3)  A/A |log| 0.547  new 19 ms  c024 16 ms | main tris 0.150M vs 0.141M (1.066), total 0.195M vs 0.186M (1.048), calls 42 vs 42, shadow tris 0.045M vs 0.045M
+edget18  gpu 0.813 [0.306-1.206] (1/3)  A/A |log| 1.019  new 7 ms  c024 7 ms | main tris 0.196M vs 0.186M (1.055), total 0.272M vs 0.262M (1.038), calls 45 vs 45, shadow tris 0.076M vs 0.077M
+edget25  gpu 1.062 [0.175-1.822] (2/3)  A/A |log| 0.726  new 8 ms  c024 9 ms | main tris 0.218M vs 0.208M (1.052), total 0.305M vs 0.294M (1.036), calls 46 vs 46, shadow tris 0.086M vs 0.087M
+POOLED gpu 0.817 [0.711-1.118]  A/A new 0.854 c024 1.469  load 65.6

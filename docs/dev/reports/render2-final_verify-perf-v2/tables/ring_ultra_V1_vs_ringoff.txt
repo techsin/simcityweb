@@ -1,0 +1,8 @@
+== RO.jsonl q=ultra field=cpu rows=2 num=v1 den=v1nor
+zoomout     v1   294.2  v1nor   294.5  ratio 1.002 [0.966-1.037] (1/2)  A/A v1 NaN v1nor NaN
+farorbit    v1   172.9  v1nor   173.5  ratio 0.995 [0.975-1.016] (1/2)  A/A v1 NaN v1nor NaN
+default     v1    50.2  v1nor    42.7  ratio 1.173 [1.087-1.260] (2/2)  A/A v1 NaN v1nor NaN
+cuts        v1    52.1  v1nor    46.1  ratio 1.128 [1.069-1.186] (2/2)  A/A v1 NaN v1nor NaN
+edgepan     v1   153.9  v1nor   146.0  ratio 1.060 [0.991-1.128] (1/2)  A/A v1 NaN v1nor NaN
+edgeturn    v1   188.5  v1nor   155.7  ratio 1.217 [1.105-1.329] (2/2)  A/A v1 NaN v1nor NaN
+POOLED moving 1.056 [1.050-1.063] (2/2 rows)  A/A v1 1.000 [1.000-1.000]  v1nor 1.000 [1.000-1.000]  | (row,seg) ratios above 1: 7/10  load 65.4

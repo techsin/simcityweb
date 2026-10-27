@@ -1,0 +1,11 @@
+== RO.jsonl q=high field=cpu rows=2 num=nor,nor2 den=base
+street      nor    43.8  base    45.5  ratio 0.962 [0.927-0.998] (0/2)  A/A nor 1.190 base NaN
+zoomout     nor   246.5  base   199.1  ratio 1.240 [1.185-1.296] (2/2)  A/A nor 0.961 base NaN
+farorbit    nor   118.1  base   122.7  ratio 0.963 [0.927-1.000] (0/2)  A/A nor 1.017 base NaN
+default     nor    40.4  base    55.8  ratio 0.749 [0.586-0.912] (0/2)  A/A nor 0.816 base NaN
+zoomin      nor   137.8  base   151.2  ratio 0.909 [0.874-0.944] (0/2)  A/A nor 1.079 base NaN
+cuts        nor    42.2  base    41.7  ratio 1.020 [0.892-1.148] (1/2)  A/A nor 0.866 base NaN
+edgepan     nor   117.0  base   115.1  ratio 1.018 [0.961-1.075] (1/2)  A/A nor 1.105 base NaN
+edgefast    nor    54.7  base    53.9  ratio 1.016 [1.009-1.022] (2/2)  A/A nor 1.079 base NaN
+edgeturn    nor   126.0  base   124.3  ratio 1.014 [0.991-1.038] (1/2)  A/A nor 0.852 base NaN
+POOLED moving 1.042 [1.025-1.060] (2/2 rows)  A/A nor 0.988 [0.953-1.022]  base 1.000 [1.000-1.000]  | (row,seg) ratios above 1: 7/14  load 62.1

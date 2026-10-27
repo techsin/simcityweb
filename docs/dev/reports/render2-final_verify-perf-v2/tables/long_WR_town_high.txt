@@ -1,0 +1,14 @@
+WM.WR_town_high.perframe.jsonl: rows 2
+street      base 0/0 max 7 med 2.6 | new 0/0 max 6 med 2.1 | new2 0/0 max 6 med 1.9 | v1 0/0 max 5 med 1.7 | v12 0/0 max 7 med 1.6
+zoomout     base 0/0 max 5 med 2.3 | new 0/0 max 12 med 2.5 | new2 0/0 max 7 med 2.8 | v1 0/0 max 6 med 2.7 | v12 0/0 max 6 med 2.5
+farorbit    base 0/0 max 4 med 1.7 | new 0/0 max 5 med 2.1 | new2 0/0 max 7 med 2.2 | v1 0/0 max 8 med 2.2 | v12 0/0 max 6 med 2.0
+default     base 0/0 max 6 med 2.0 | new 0/0 max 6 med 2.0 | new2 0/0 max 6 med 1.9 | v1 0/0 max 4 med 1.7 | v12 0/0 max 5 med 2.0
+zoomin      base 0/0 max 7 med 2.7 | new 1/0 max 24 med 2.5 | new2 0/0 max 6 med 1.8 | v1 0/0 max 10 med 2.3 | v12 0/0 max 7 med 2.1
+streetpan   base 0/0 max 6 med 2.4 | new 0/0 max 6 med 2.4 | new2 0/0 max 15 med 2.1 | v1 0/0 max 6 med 2.4 | v12 0/0 max 7 med 2.3
+streetfast  base 0/0 max 8 med 2.8 | new 0/0 max 4 med 1.9 | new2 0/0 max 7 med 2.1 | v1 0/0 max 12 med 2.0 | v12 0/0 max 5 med 2.6
+pan         base 0/0 max 5 med 2.4 | new 0/0 max 9 med 2.1 | new2 0/0 max 6 med 2.1 | v1 0/0 max 9 med 2.3 | v12 0/0 max 6 med 2.2
+fastpan     base 0/0 max 7 med 2.9 | new 0/0 max 5 med 2.5 | new2 0/0 max 6 med 2.5 | v1 0/0 max 5 med 2.3 | v12 0/0 max 5 med 2.1
+cuts        base 0/0 max 6 med 2.3 | new 0/0 max 6 med 1.9 | new2 0/0 max 6 med 1.7 | v1 0/0 max 5 med 1.9 | v12 0/0 max 5 med 2.0
+edgepan     base 0/0 max 5 med 2.1 | new 0/0 max 6 med 2.3 | new2 0/0 max 6 med 2.2 | v1 0/0 max 6 med 2.2 | v12 0/0 max 5 med 2.2
+edgefast    base 0/0 max 4 med 1.9 | new 0/0 max 5 med 2.0 | new2 0/0 max 4 med 1.9 | v1 0/0 max 4 med 2.5 | v12 0/0 max 6 med 2.6
+edgeturn    base 0/0 max 5 med 2.5 | new 0/0 max 5 med 2.4 | new2 0/0 max 9 med 2.3 | v1 0/0 max 8 med 2.5 | v12 0/0 max 7 med 2.3

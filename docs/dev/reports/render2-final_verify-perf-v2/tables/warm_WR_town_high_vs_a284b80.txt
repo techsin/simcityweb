@@ -1,0 +1,15 @@
+== WM.jsonl q=high field=cpu rows=2 num=new,new2 den=base
+street      new    47.6  base    64.3  ratio 0.759 [0.644-0.874] (0/2)  A/A new 0.979 base NaN
+zoomout     new   266.5  base   216.0  ratio 1.240 [1.120-1.360] (2/2)  A/A new 1.063 base NaN
+farorbit    new   145.1  base   111.8  ratio 1.299 [1.267-1.330] (2/2)  A/A new 1.088 base NaN
+default     new    45.0  base    47.4  ratio 0.953 [0.869-1.037] (1/2)  A/A new 0.915 base NaN
+zoomin      new   144.4  base   169.8  ratio 0.848 [0.749-0.947] (0/2)  A/A new 0.799 base NaN
+streetpan   new   154.5  base   154.5  ratio 1.012 [0.909-1.115] (1/2)  A/A new 0.970 base NaN
+streetfast  new    66.7  base    90.0  ratio 0.747 [0.701-0.794] (0/2)  A/A new 1.188 base NaN
+pan         new   150.2  base   156.2  ratio 0.958 [0.793-1.122] (1/2)  A/A new 0.965 base NaN
+fastpan     new    80.1  base    95.4  ratio 0.845 [0.768-0.922] (0/2)  A/A new 0.989 base NaN
+cuts        new    45.4  base    53.1  ratio 0.857 [0.832-0.881] (0/2)  A/A new 0.943 base NaN
+edgepan     new   148.8  base   134.9  ratio 1.103 [1.060-1.145] (2/2)  A/A new 0.949 base NaN
+edgefast    new    64.6  base    61.3  ratio 1.070 [0.940-1.200] (1/2)  A/A new 0.943 base NaN
+edgeturn    new   159.0  base   166.5  ratio 0.955 [0.840-1.070] (1/2)  A/A new 1.000 base NaN
+POOLED moving 1.011 [0.988-1.033] (1/2 rows)  A/A new 0.984 [0.942-1.026]  base 1.000 [1.000-1.000]  | (row,seg) ratios above 1: 10/22  load 52.9

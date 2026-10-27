@@ -1,0 +1,10 @@
+== WMU.jsonl q=high field=cpu rows=4 num=new,new2 den=base
+street      new    83.0  base   101.4  ratio 0.881 [0.750-0.907] (0/4)  A/A new 0.981 base NaN
+zoomout     new   396.2  base   373.0  ratio 1.097 [0.986-1.190] (3/4)  A/A new 0.916 base NaN
+farorbit    new   240.7  base   217.8  ratio 1.102 [0.996-1.138] (3/4)  A/A new 1.013 base NaN
+default     new    82.0  base    85.2  ratio 0.919 [0.782-1.104] (1/4)  A/A new 0.899 base NaN
+zoomin      new   293.1  base   280.5  ratio 1.027 [0.980-1.103] (3/4)  A/A new 1.062 base NaN
+pan         new   266.3  base   267.9  ratio 1.022 [0.755-1.053] (3/4)  A/A new 0.947 base NaN
+fastpan     new   133.8  base   124.7  ratio 1.024 [0.994-1.084] (3/4)  A/A new 0.928 base NaN
+cuts        new    76.5  base    83.8  ratio 0.912 [0.856-0.997] (1/4)  A/A new 1.117 base NaN
+POOLED moving 1.030 [0.983-1.076] (2/4 rows)  A/A new 0.988 [0.965-1.003]  base 1.000 [1.000-1.000]  | (row,seg) ratios above 1: 16/24  load 61.8

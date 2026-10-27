@@ -1,0 +1,11 @@
+== RO.jsonl q=high field=cpu rows=2 num=new,new2 den=nor,nor2
+street      new    43.7  nor    43.8  ratio 0.998 [0.989-1.007] (1/2)  A/A new 0.961 nor 1.190
+zoomout     new   253.9  nor   246.5  ratio 1.030 [1.011-1.049] (2/2)  A/A new 0.906 nor 0.961
+farorbit    new   135.8  nor   118.1  ratio 1.152 [1.069-1.235] (2/2)  A/A new 1.006 nor 1.017
+default     new    37.9  nor    40.4  ratio 0.938 [0.911-0.964] (0/2)  A/A new 1.081 nor 0.816
+zoomin      new   148.3  nor   137.8  ratio 1.089 [0.976-1.203] (1/2)  A/A new 0.940 nor 1.079
+cuts        new    45.5  nor    42.2  ratio 1.078 [1.073-1.084] (2/2)  A/A new 0.928 nor 0.866
+edgepan     new   139.9  nor   117.0  ratio 1.198 [1.153-1.243] (2/2)  A/A new 0.943 nor 1.105
+edgefast    new    56.1  nor    54.7  ratio 1.029 [0.980-1.078] (1/2)  A/A new 1.115 nor 1.079
+edgeturn    new   157.6  nor   126.0  ratio 1.251 [1.240-1.262] (2/2)  A/A new 0.955 nor 0.852
+POOLED moving 1.113 [1.088-1.138] (2/2 rows)  A/A new 0.950 [0.893-1.006]  nor 0.988 [0.953-1.022]  | (row,seg) ratios above 1: 12/14  load 62.1

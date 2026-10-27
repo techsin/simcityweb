@@ -1,0 +1,60 @@
+== FGH: 16 loads, labels base c024 new new2, reps 4, load 58.2-58.9
+per-frame main-thread CPU (ms), median [90% CI] over loads; K=40
+base   n=4 f1 143.950 [141.305-169.200]  f2 42.530 [39.555-47.880]  f3 12.445 [12.410-14.050]  f4 15.680 [13.335-31.425]  f5 17.515 [14.465-18.370]  f6 14.985 [8.590-20.220]  f8 12.045 [11.250-13.480]  f10 7.595 [5.780-8.955]
+       frames>16.7 in 1-30 per load: 2,4,6,4 (median 4); >33.3: 2,2,3,2; >16.7 in 3-30: 0,2,4,2; sum 1-30 481 ms; sum 3-30 269 ms; veilFrame 0
+       frame 2 in-page: world.update 255.6 objects.update 166.2 world.render 2825.9 sim 0.15
+       frame 1 in-page: world.update 264.9 objects.update 944.7 world.render 53200.1; load CPU 2489 ms; click->frames 110374 ms; heap 198.1 MB
+c024   n=4 f1 217.620 [210.830-229.330]  f2 65.790 [44.925-74.820]  f3 32.790 [22.020-38.610]  f4 17.580 [13.930-23.935]  f5 17.365 [14.865-23.530]  f6 14.535 [11.015-15.960]  f8 12.315 [6.680-21.545]  f10 15.095 [9.800-18.590]
+       frames>16.7 in 1-30 per load: 11,7,10,8 (median 9); >33.3: 5,3,3,5; >16.7 in 3-30: 9,5,8,6; sum 1-30 742 ms; sum 3-30 463 ms; veilFrame 0
+       frame 2 in-page: world.update 117.5 objects.update 45.3 world.render 42.9 sim 0.15
+       frame 1 in-page: world.update 231.6 objects.update 454.3 world.render 70002.4; load CPU 3220 ms; click->frames 189730 ms; heap 230.4 MB
+new    n=4 f1 387.195 [365.500-406.575]  f2 43.250 [16.580-107.615]  f3 17.715 [13.895-157.870]  f4 9.405 [6.855-11.850]  f5 9.965 [8.540-13.040]  f6 9.435 [6.185-11.385]  f8 6.640 [5.345-8.490]  f10 8.875 [5.990-11.245]
+       frames>16.7 in 1-30 per load: 5,3,3,4 (median 3.5); >33.3: 2,2,3,2; >16.7 in 3-30: 3,2,1,2; sum 1-30 720 ms; sum 3-30 255 ms; veilFrame 0
+       frame 2 in-page: world.update 27.9 objects.update 31.1 world.render 119.8 sim 0.50
+       frame 1 in-page: world.update 329.6 objects.update 1725.8 world.render 35502.9; load CPU 3155 ms; click->frames 146680 ms; heap 250.8 MB
+new2   n=4 f1 412.430 [382.110-421.185]  f2 105.165 [20.665-210.575]  f3 16.480 [14.435-21.090]  f4 8.625 [5.755-21.160]  f5 8.295 [6.475-11.870]  f6 6.555 [4.180-10.150]  f8 5.440 [5.050-6.070]  f10 4.730 [3.670-6.160]
+       frames>16.7 in 1-30 per load: 3,3,4,4 (median 3.5); >33.3: 1,2,1,2; >16.7 in 3-30: 1,1,2,2; sum 1-30 719 ms; sum 3-30 214 ms; veilFrame 0
+       frame 2 in-page: world.update 55.5 objects.update 29.7 world.render 228.3 sim 0.15
+       frame 1 in-page: world.update 564.5 objects.update 1148.0 world.render 34450.9; load CPU 3177 ms; click->frames 170303 ms; heap 246.7 MB
+frames 2-30 over 16.7 / 33.3 ms per load, and their parts (lp / wm / other, ms):
+base   >16.7: 1,3,5,3 (sum 12/4 loads)  >33.3: 1,1,2,1 (sum 5)  max f2-30 median 45 ms
+       r0: f2 51 (28/0/23) | r1: f2 45 (29/0/16) f4 17 (8/0/8) f5 18 (5/0/13) | r2: f2 40 (29/0/11) f4 46 (11/0/35) f5 18 (15/0/3) f6 24 (15/0/9) f14 19 (6/0/12) | r3: f2 39 (30/0/8) f5 17 (15/0/2) f30 19 (4/0/15)
+c024   >16.7: 10,6,9,7 (sum 32/4 loads)  >33.3: 4,2,2,4 (sum 12)  max f2-30 median 96 ms
+       r0: f2 72 (21/0/51) f3 44 (38/0/6) f4 21 (10/0/11) f5 27 (15/0/13) f7 19 (13/1/5) f8 28 (7/7/14) f9 58 (8/9/41) f10 21 (3/2/17) f11 85 (6/29/50) f27 17 (4/0/13) | r1: f2 60 (24/0/36) f3 22 (10/0/12) f5 20 (11/0/8) f18 17 (6/4/6) f19 25 (7/6/12) f22 105 (7/26/72) | r2: f2 30 (18/0/12) f3 34 (15/0/19) f4 27 (10/0/17) f16 20 (7/3/10) f20 23 (13/2/8) f22 19 (4/3/13) f23 88 (7/17/64) f24 22 (7/1/14) f27 17 (7/0/10) | r3: f2 78 (20/3/55) f3 32 (28/1/4) f9 39 (13/0/26) f12 111 (6/31/74) f13 60 (12/11/38) f20 19 (15/0/4) f30 23 (7/0/16)
+new    >16.7: 4,2,2,3 (sum 11/4 loads)  >33.3: 1,1,2,1 (sum 5)  max f2-30 median 103 ms
+       r0: f2 168 (13/20/135) f16 18 (3/0/16) f28 17 (8/0/10) f30 21 (5/0/16) | r1: f3 158 (12/17/128) f19 18 (5/0/13) | r2: f2 39 (9/2/28) f26 46 (2/0/43) | r3: f2 48 (6/12/30) f3 20 (7/0/12) f14 26 (6/0/20)
+new2   >16.7: 2,2,3,3 (sum 10/4 loads)  >33.3: 0,1,0,1 (sum 2)  max f2-30 median 109 ms
+       r0: f2 17 (12/0/5) f23 17 (0/0/17) | r1: f2 186 (11/14/161) f3 17 (14/0/3) | r2: f2 25 (12/6/6) f4 32 (3/5/24) f22 18 (3/0/15) | r3: f2 235 (9/23/204) f3 25 (13/0/13) f22 22 (2/0/20)
+first motions after the load (main-thread CPU per segment):
+street                 pairs 1.030 [0.820-1.050] (3/4)  vmeans 1.028 [0.850-1.138] (2/4)  A/A base nan [nan-nan]  new 1.088 [0.979-1.167]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+   vs c024: pairs 0.819 [0.719-0.859]
+   render-only street                 pairs 1.210 [0.615-1.350] (3/4)  vmeans 1.053 [0.721-1.156] (3/4)  A/A base nan [nan-nan]  new 0.912 [0.691-1.342]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+   frames>16.7 per load: base 0,0,0,0 | c024 1,0,1,0 | new 0,0,0,0 | new2 0,0,2,0
+zoomout                pairs 1.015 [1.000-1.137] (3/4)  vmeans 1.050 [1.017-1.217] (4/4)  A/A base nan [nan-nan]  new 1.098 [0.982-1.159]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+   vs c024: pairs 0.661 [0.574-0.734]
+   render-only zoomout                pairs 1.056 [0.912-1.253] (3/4)  vmeans 1.068 [0.915-1.308] (3/4)  A/A base nan [nan-nan]  new 1.024 [1.006-1.083]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+   frames>16.7 per load: base 0,0,2,0 | c024 9,9,5,4 | new 0,0,2,2 | new2 2,0,2,4
+farorbit               pairs 1.167 [1.047-1.489] (3/4)  vmeans 1.171 [1.122-1.303] (4/4)  A/A base nan [nan-nan]  new 1.008 [0.751-1.154]  -> MAJOR (excess shown)
+   vs c024: pairs 0.841 [0.725-0.930]
+   render-only farorbit               pairs 1.170 [0.964-1.391] (3/4)  vmeans 1.142 [1.000-1.327] (3/4)  A/A base nan [nan-nan]  new 0.980 [0.887-1.077]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+   frames>16.7 per load: base 0,0,0,1 | c024 0,2,1,8 | new 0,3,0,0 | new2 2,0,0,1
+default                pairs 0.991 [0.849-1.026] (1/4)  vmeans 1.043 [0.874-1.083] (3/4)  A/A base nan [nan-nan]  new 1.068 [1.055-1.111]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+   vs c024: pairs 0.856 [0.743-0.927]
+   render-only default                pairs 0.899 [0.675-1.070] (2/4)  vmeans 0.951 [0.761-1.064] (1/4)  A/A base nan [nan-nan]  new 1.071 [0.984-1.378]  -> ok (<= base)
+   frames>16.7 per load: base 0,0,0,0 | c024 0,1,0,0 | new 0,0,0,0 | new2 0,0,0,0
+zoomin                 pairs 1.026 [0.981-1.152] (3/4)  vmeans 1.044 [0.992-1.170] (3/4)  A/A base nan [nan-nan]  new 1.029 [1.021-1.044]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+   vs c024: pairs 0.861 [0.838-0.993]
+   render-only zoomin                 pairs 0.868 [0.842-0.900] (0/4)  vmeans 0.915 [0.850-1.047] (1/4)  A/A base nan [nan-nan]  new 1.127 [1.000-1.328]  -> ok (<= base)
+   frames>16.7 per load: base 0,0,1,0 | c024 0,0,0,1 | new 0,0,2,0 | new2 0,0,3,0
+pan                    pairs 0.954 [0.856-1.120] (2/4)  vmeans 0.935 [0.856-1.613] (1/4)  A/A base nan [nan-nan]  new 0.999 [0.949-1.846]  -> ok (<= base)
+   vs c024: pairs 1.010 [0.796-1.058]
+   render-only pan                    pairs 0.818 [0.748-0.977] (0/4)  vmeans 0.909 [0.781-1.049] (1/4)  A/A base nan [nan-nan]  new 1.087 [1.025-1.357]  -> ok (<= base)
+   frames>16.7 per load: base 2,0,2,0 | c024 0,0,0,1 | new 0,0,0,2 | new2 0,0,0,11
+fastpan                pairs 1.090 [0.929-1.196] (3/4)  vmeans 1.050 [0.904-1.086] (3/4)  A/A base nan [nan-nan]  new 0.939 [0.821-0.953]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+   vs c024: pairs 0.793 [0.713-0.952]
+   render-only fastpan                pairs 0.946 [0.913-1.064] (1/4)  vmeans 0.865 [0.829-1.020] (1/4)  A/A base nan [nan-nan]  new 0.896 [0.708-0.958]  -> ok (<= base)
+   frames>16.7 per load: base 0,0,1,0 | c024 0,1,1,1 | new 1,0,1,0 | new2 0,1,0,0
+cuts                   pairs 1.057 [0.953-1.124] (3/4)  vmeans 1.046 [0.964-1.137] (2/4)  A/A base nan [nan-nan]  new 1.012 [0.822-1.284]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+   vs c024: pairs 0.894 [0.722-1.079]
+   render-only cuts                   pairs 0.747 [0.666-1.124] (1/4)  vmeans 0.950 [0.735-1.094] (2/4)  A/A base nan [nan-nan]  new 1.354 [0.885-1.598]  -> ok (<= base)
+   frames>16.7 per load: base 0,0,0,0 | c024 0,0,0,0 | new 0,0,0,0 | new2 1,0,0,0

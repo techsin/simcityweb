@@ -38,6 +38,39 @@ runs should be headless. Round trip lead → worker → lead measured at 51 s. T
 
 ## Design decisions
 
+- **Render round 2 after verify perf v2 (Oct 27, lead).** Report: `docs/dev/reports/render2-final_verify-perf-v2.md`.
+  1. **Gate-1 bases.**
+     - Warm pages are gated on `be48061`, which reproduces v1's warm calibration (V1/base 0.676–0.726 town LOW, 0.554
+       dense LOW); `a284b80` is shown as a cross-check.
+     - Fresh pages and the real load path are gated on `a284b80`, which reproduces v1's fresh base costs (163 / 79 ms
+       against 155 / 84).
+     - Every report shows both bases where measured.
+  2. **Gate 1 for the render round is the render lanes' own work:** the scene's frame callback on every page, plus the
+     render-only bench pages. Both pass. The two v2 majors are the UI's per-frame cost outside the scene callback: DOM
+     style, layout and paint during camera moves, timers, WebAudio node-finish tasks, and the music director. They are
+     not in the render lanes' files, so they become a separate required item:
+     - **What it is:** UI per-frame cost during camera moves, owned by the sim/UI side.
+     - **When:** after the sim close-out (the UI files are in flux), and before the final verification (#28).
+     - **Planned fixes:**
+       - throttle HUD, minimap and label updates while the camera moves (≤ 10 Hz);
+       - no layout reads in per-frame handlers;
+       - animated HUD parts on their own compositor layers;
+       - pool / reuse WebAudio one-shot nodes;
+       - start the music director after the veil fade.
+     - **Its gate** is the original whole-main-thread fresh-page gate against `a284b80`: ui page HIGH first zoom-in,
+       zoom-out and far orbit; real path LOW first pan, zoom-out and zoom-in. It is measured on the desktop worker
+       (quiet CPU).
+  3. **Revise v2.**
+     - **fresh-load:** the two UI majors are for the record only (describe the fix, no `src/ui` edits). It fixes the
+       cut-sequence shadow passes (deterministic refit, caster culling on the first cut) and the LOW edge-view building
+       triangles. The HIGH far-view zoom-out render share (inconclusive on fresh pages, passes on warm pages against
+       `be48061`), the frame-2 backlog and load warm-up slicing only if cheap.
+     - **seasons-final:** the ring far-view CPU (target ≈ 0.15 ms at the ULTRA far orbit).
+  4. **Gate 2, GPU part:** the GPU stand-in cannot be measured in the cloud at load 55–75. The desktop worker measures
+     it on the real GPU on the tree after revise v2 (queue task when revise v2 lands): LOW vs `c024`, plus the
+     HIGH/ULTRA GPU-process sums. Verify v3 covers the rest.
+  5. **Not gated, accepted:** the load frame is 337–412 ms (the warm-up moved into it, behind the opaque veil). The
+     fresh dense-city HIGH street pan (inconclusive, A/A 8.5 %) is rerun at a lower load in v3 or on the desktop.
 - **Uncovered emergencies in big cities (Oct 27, approved by the owner).** The owner's rule, plus the cooldown and details proposed by the lead. It comes after the sim
   close-out; the coverage part comes after the J3 merge, which touches the same `services.ts` / `catchments.ts`.
   The change alters the sim, so the bot reference table gets re-recorded once.

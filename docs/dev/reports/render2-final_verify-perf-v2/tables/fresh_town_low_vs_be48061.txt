@@ -1,0 +1,28 @@
+== FTL (town low): 48 runs, labels b48 base base2 c024 new new2, reps 8, load 62.8 (start) 62.8 (end); field cpu
+street                 pairs 0.678 [0.615-0.724] (0/8)  vmeans 0.712 [0.566-0.755] (0/8)  A/A b48 nan [nan-nan]  new 0.971 [0.873-1.157]  -> ok (<= base)
+   medians: b48 54.1 base 49.1 base2 50.8 c024 52.6 new 37.4 new2 35.5 | frames>16.7 total: b48 2 base 0 base2 0 c024 0 new 0 new2 0 | >33.3: b48 0 base 0 base2 0 c024 0 new 0 new2 0
+zoomout                pairs 0.693 [0.631-0.755] (0/8)  vmeans 0.674 [0.640-0.715] (0/8)  A/A b48 nan [nan-nan]  new 0.944 [0.864-1.026]  -> ok (<= base)
+   medians: b48 293.0 base 193.0 base2 210.5 c024 309.4 new 198.8 new2 203.9 | frames>16.7 total: b48 1 base 0 base2 1 c024 0 new 1 new2 0 | >33.3: b48 0 base 0 base2 0 c024 0 new 0 new2 0
+farorbit               pairs 0.790 [0.675-0.850] (1/8)  vmeans 0.773 [0.666-0.844] (0/8)  A/A b48 nan [nan-nan]  new 0.992 [0.863-1.050]  -> ok (<= base)
+   medians: b48 149.4 base 116.1 base2 120.6 c024 153.0 new 107.3 new2 109.5 | frames>16.7 total: b48 0 base 0 base2 0 c024 0 new 0 new2 0 | >33.3: b48 0 base 0 base2 0 c024 0 new 0 new2 0
+default                pairs 0.905 [0.693-1.032] (2/8)  vmeans 0.876 [0.775-0.991] (2/8)  A/A b48 nan [nan-nan]  new 0.989 [0.864-1.090]  -> ok (<= base)
+   medians: b48 34.4 base 41.3 base2 39.9 c024 44.4 new 30.7 new2 29.1 | frames>16.7 total: b48 0 base 0 base2 0 c024 0 new 0 new2 0 | >33.3: b48 0 base 0 base2 0 c024 0 new 0 new2 0
+zoomin                 pairs 0.594 [0.547-0.696] (1/8)  vmeans 0.618 [0.524-0.678] (1/8)  A/A b48 nan [nan-nan]  new 1.030 [0.697-1.154]  -> ok (<= base)
+   medians: b48 174.7 base 112.6 base2 130.2 c024 150.4 new 109.4 new2 108.1 | frames>16.7 total: b48 0 base 0 base2 0 c024 0 new 0 new2 0 | >33.3: b48 0 base 0 base2 0 c024 0 new 0 new2 0
+streetpan              pairs 0.664 [0.562-0.769] (0/8)  vmeans 0.610 [0.554-0.851] (1/8)  A/A b48 nan [nan-nan]  new 1.075 [0.898-1.213]  -> ok (<= base)
+   medians: b48 174.7 base 116.8 base2 102.5 c024 134.4 new 101.1 new2 109.2 | frames>16.7 total: b48 0 base 0 base2 0 c024 0 new 0 new2 0 | >33.3: b48 0 base 0 base2 0 c024 0 new 0 new2 0
+streetfast             pairs 0.734 [0.676-0.870] (1/8)  vmeans 0.700 [0.645-0.831] (1/8)  A/A b48 nan [nan-nan]  new 0.950 [0.798-1.077]  -> ok (<= base)
+   medians: b48 76.5 base 60.2 base2 59.8 c024 71.1 new 59.9 new2 51.7 | frames>16.7 total: b48 0 base 0 base2 0 c024 0 new 0 new2 0 | >33.3: b48 0 base 0 base2 0 c024 0 new 0 new2 0
+pan                    pairs 0.574 [0.464-0.610] (1/8)  vmeans 0.528 [0.455-0.659] (1/8)  A/A b48 nan [nan-nan]  new 0.953 [0.843-1.126]  -> ok (<= base)
+   medians: b48 182.4 base 102.4 base2 98.3 c024 137.1 new 89.8 new2 87.7 | frames>16.7 total: b48 0 base 0 base2 0 c024 0 new 3 new2 0 | >33.3: b48 0 base 0 base2 0 c024 0 new 1 new2 0
+fastpan                pairs 0.623 [0.519-0.823] (0/8)  vmeans 0.608 [0.529-0.762] (0/8)  A/A b48 nan [nan-nan]  new 0.939 [0.832-1.094]  -> ok (<= base)
+   medians: b48 80.1 base 51.1 base2 53.2 c024 71.6 new 52.0 new2 47.2 | frames>16.7 total: b48 0 base 0 base2 0 c024 0 new 0 new2 0 | >33.3: b48 0 base 0 base2 0 c024 0 new 0 new2 0
+cuts                   pairs 0.908 [0.836-1.127] (3/8)  vmeans 0.927 [0.835-1.040] (3/8)  A/A b48 nan [nan-nan]  new 0.885 [0.777-1.220]  -> ok (<= base)
+   medians: b48 35.9 base 38.0 base2 33.2 c024 48.4 new 34.0 new2 31.9 | frames>16.7 total: b48 0 base 0 base2 0 c024 0 new 0 new2 0 | >33.3: b48 0 base 0 base2 0 c024 0 new 0 new2 0
+POOLED moving p1       pairs 0.662 [0.611-0.677] (1/8)  vmeans 0.642 [0.602-0.696] (0/8)  A/A b48 nan [nan-nan]  new 0.983 [0.853-1.053]
+b48    ready 34.43 s, load main CPU 1.68 s, first frame CPU 140 ms (js 3794), veil frames>16.7 0,0,1,0,0,0,0,2 >33.3 0,0,0,0,0,0,0,0, veil f2 11.375 [10.715-15.800], heap after GC 215.1 MB, programs 26
+base   ready 24.37 s, load main CPU 1.28 s, first frame CPU 119 ms (js 2218), veil frames>16.7 0,0,1,0,0,0,0,0 >33.3 0,0,0,0,0,0,0,0, veil f2 9.075 [8.275-10.445], heap after GC 187.0 MB, programs 24
+base2  ready 27.49 s, load main CPU 1.33 s, first frame CPU 123 ms (js 2633), veil frames>16.7 0,0,2,0,0,0,0,1 >33.3 0,0,0,0,0,0,0,0, veil f2 9.345 [9.165-9.870], heap after GC 185.2 MB, programs 24
+c024   ready 62.42 s, load main CPU 1.64 s, first frame CPU 182 ms (js 7509), veil frames>16.7 1,1,2,1,1,2,1,2 >33.3 1,1,1,1,0,1,0,1, veil f2 168.530 [34.270-197.245], heap after GC 229.2 MB, programs 46
+new    ready 68.77 s, load main CPU 1.92 s, first frame CPU 416 ms (js 20771), veil frames>16.7 0,1,0,1,0,0,1,0 >33.3 0,1,0,1,0,0,1,0, veil f2 11.535 [9.650-147.525], heap after GC 264.9 MB, programs 50
+new2   ready 73.63 s, load main CPU 1.92 s, first frame CPU 449 ms (js 15585), veil frames>16.7 0,0,0,1,0,0,0,5 >33.3 0,0,0,1,0,0,0,5, veil f2 12.085 [9.600-39.845], heap after GC 263.4 MB, programs 50

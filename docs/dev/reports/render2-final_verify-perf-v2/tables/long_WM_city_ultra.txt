@@ -1,0 +1,11 @@
+WM.WM_city_ultra.perframe.jsonl: rows 2
+street      b48 0/0 max 14 med 3.7 | base 1/0 max 22 med 4.3 | new 0/0 max 13 med 3.6 | new2 0/0 max 10 med 3.9
+zoomout     b48 5/0 max 29 med 6.2 | base 0/0 max 10 med 4.9 | new 0/0 max 14 med 5.6 | new2 0/0 max 12 med 5.7
+farorbit    b48 3/0 max 30 med 9.0 | base 0/0 max 11 med 4.4 | new 0/0 max 12 med 5.6 | new2 0/0 max 16 med 5.5
+default     b48 0/0 max 16 med 3.5 | base 0/0 max 12 med 4.2 | new 0/0 max 14 med 2.8 | new2 0/0 max 13 med 2.7
+zoomin      b48 0/0 max 12 med 5.8 | base 1/0 max 23 med 3.9 | new 0/0 max 10 med 4.6 | new2 1/0 max 19 med 4.3
+streetpan   b48 0/0 max 12 med 6.2 | base 1/0 max 21 med 4.2 | new 0/0 max 15 med 4.9 | new2 0/0 max 11 med 5.4
+streetfast  b48 1/0 max 17 med 8.1 | base 0/0 max 13 med 5.8 | new 0/0 max 13 med 4.7 | new2 0/0 max 12 med 3.7
+pan         b48 0/0 max 14 med 6.4 | base 0/0 max 12 med 4.8 | new 0/0 max 12 med 4.8 | new2 0/0 max 9 med 3.6
+fastpan     b48 0/0 max 15 med 6.9 | base 0/0 max 15 med 5.3 | new 0/0 max 8 med 3.8 | new2 0/0 max 10 med 5.9
+cuts        b48 3/0 max 19 med 3.5 | base 0/0 max 9 med 3.8 | new 0/0 max 11 med 4.4 | new2 0/0 max 12 med 4.8

@@ -1,0 +1,12 @@
+== FTL: new vs c024 (medians over 16 / 8 runs); main tris (mt), main calls (mc), all tris, all calls, shadow tris (st), shadow calls (sc)
+street      mt 16.64M/16.64M 1.000 | mc 760/760 1.000 | tris 16.76M/16.76M 1.000 | calls 802/802 1.000 | st 0.12M/0.12M 0.993 | sc 2/2 1.000 base mt 27.09M
+zoomout     mt 82.11M/100.46M 0.817 | mc 3987/4004 0.996 | tris 108.73M/156.93M 0.693 | calls 4712/5295 0.890 | st 26.62M/56.47M 0.471 | sc 545/1111 0.491 base mt 171.56M
+farorbit    mt 37.71M/37.86M 0.996 | mc 3180/3840 0.828 | tris 47.56M/58.65M 0.811 | calls 3750/5520 0.679 | st 9.85M/20.79M 0.474 | sc 450/1560 0.288 base mt 155.52M
+default     mt 17.54M/17.51M 1.001 | mc 780/780 1.000 | tris 18.22M/18.20M 1.001 | calls 830/830 1.000 | st 0.68M/0.69M 0.991 | sc 10/10 1.000 base mt 36.44M
+zoomin      mt 43.78M/49.86M 0.878 | mc 2204/2204 1.000 | tris 49.48M/72.28M 0.685 | calls 2434/2747 0.886 | st 5.70M/22.42M 0.254 | sc 110/423 0.260 base mt 86.54M
+streetpan   mt 45.37M/45.73M 0.992 | mc 2546/2546 1.000 | tris 48.96M/52.90M 0.926 | calls 2848/3029 0.940 | st 3.60M/7.17M 0.502 | sc 182/363 0.501 base mt 80.84M
+streetfast  mt 23.49M/23.49M 1.000 | mc 1221/1221 1.000 | tris 25.36M/27.26M 0.930 | calls 1329/1371 0.969 | st 1.87M/3.77M 0.496 | sc 48/90 0.533 base mt 40.32M
+pan         mt 57.41M/60.44M 0.950 | mc 2366/2366 1.000 | tris 82.98M/111.58M 0.744 | calls 2839/3192 0.889 | st 25.56M/51.14M 0.500 | sc 353/706 0.500 base mt 105.36M
+fastpan     mt 23.28M/23.27M 1.001 | mc 1030/1030 1.000 | tris 32.48M/41.60M 0.781 | calls 1269/1449 0.876 | st 9.20M/18.34M 0.502 | sc 179/359 0.499 base mt 43.59M
+cuts        mt 14.89M/14.89M 0.999 | mc 890/1000 0.890 | tris 16.38M/16.44M 0.997 | calls 971/1103 0.880 | st 1.50M/1.54M 0.971 | sc 41/63 0.651 base mt 41.67M
+MOVING sums mt 0.921 | mc 0.957 | tris 0.766 | calls 0.850 | st 0.462 | sc 0.408

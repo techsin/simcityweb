@@ -1,0 +1,15 @@
+== WM.jsonl q=low field=cpu rows=4 num=new,new2 den=v1,v12
+street      new    28.2  v1    25.3  ratio 1.121 [0.952-1.226] (3/4)  A/A new 0.992 v1 NaN
+zoomout     new   140.5  v1   161.8  ratio 0.868 [0.850-0.890] (0/4)  A/A new 0.958 v1 NaN
+farorbit    new    80.8  v1    80.0  ratio 1.039 [0.979-1.074] (3/4)  A/A new 0.938 v1 NaN
+default     new    26.2  v1    26.5  ratio 0.964 [0.928-0.993] (1/4)  A/A new 1.008 v1 NaN
+zoomin      new    89.5  v1    83.3  ratio 1.033 [0.954-1.169] (2/4)  A/A new 1.072 v1 NaN
+streetpan   new    89.7  v1    87.2  ratio 1.006 [0.879-1.031] (2/4)  A/A new 1.071 v1 NaN
+streetfast  new    48.7  v1    47.9  ratio 1.070 [0.928-1.163] (2/4)  A/A new 0.940 v1 NaN
+pan         new    84.9  v1    82.3  ratio 1.032 [0.971-1.074] (3/4)  A/A new 1.008 v1 NaN
+fastpan     new    44.7  v1    50.9  ratio 0.908 [0.770-1.037] (1/4)  A/A new 0.968 v1 NaN
+cuts        new    31.1  v1    31.3  ratio 0.994 [0.972-1.061] (1/4)  A/A new 0.978 v1 NaN
+edgepan     new    84.2  v1    87.3  ratio 0.965 [0.943-0.993] (1/4)  A/A new 1.031 v1 NaN
+edgefast    new    47.4  v1    43.2  ratio 1.097 [0.970-1.366] (3/4)  A/A new 1.083 v1 NaN
+edgeturn    new    89.3  v1    91.1  ratio 0.954 [0.846-1.052] (1/4)  A/A new 1.095 v1 NaN
+POOLED moving nan [nan-nan] (0/0 rows)  A/A new nan [nan-nan]  v1 nan [nan-nan]  | (row,seg) ratios above 1: 19/44  load 58.1

@@ -1,0 +1,22 @@
+== FUHb (high): 5 loads, labels b48 b482 new new2, reps 2, load 67.2-67.9
+street                 pairs 0.899 [0.623-1.174] (1/2)  vmeans 0.885 [0.885-0.885] (0/1)  A/A b48 0.908 [0.908-0.908]  new 1.711 [1.711-1.711]  -> ok (<= base)
+   medians: b48 175 b482 159 new 141 new2 187 | >16.7: b48 0 b482 1 new 1 new2 1 | >33.3: b48 0 b482 0 new 0 new2 0
+zoomout                pairs 0.948 [0.947-0.950] (0/2)  vmeans 0.948 [0.948-0.948] (0/1)  A/A b48 1.086 [1.086-1.086]  new 1.089 [1.089-1.089]  -> ok (<= base)
+   medians: b48 636 b482 691 new 604 new2 656 | >16.7: b48 0 b482 2 new 2 new2 0 | >33.3: b48 0 b482 0 new 0 new2 0
+farorbit               pairs 1.053 [0.954-1.152] (1/2)  vmeans 1.042 [1.042-1.042] (1/1)  A/A b48 1.251 [1.251-1.251]  new 1.037 [1.037-1.037]  -> inconclusive (A/A > 5 %)
+   medians: b48 277 b482 347 new 333 new2 331 | >16.7: b48 0 b482 0 new 0 new2 0 | >33.3: b48 0 b482 0 new 0 new2 0
+default                pairs 1.042 [0.938-1.145] (1/2)  vmeans 1.042 [1.042-1.042] (1/1)  A/A b48 1.000 [1.000-1.000]  new 1.220 [1.220-1.220]  -> inconclusive (A/A > 5 %)
+   medians: b48 112 b482 112 new 109 new2 128 | >16.7: b48 0 b482 0 new 0 new2 2 | >33.3: b48 0 b482 0 new 0 new2 0
+zoomin                 pairs 0.938 [0.860-1.015] (1/2)  vmeans 0.931 [0.931-0.931] (0/1)  A/A b48 0.831 [0.831-0.831]  new 0.981 [0.981-0.981]  -> ok (<= base)
+   medians: b48 426 b482 355 new 378 new2 360 | >16.7: b48 1 b482 0 new 0 new2 0 | >33.3: b48 1 b482 0 new 0 new2 0
+pan                    pairs 0.873 [0.838-0.908] (0/2)  vmeans 0.871 [0.871-0.871] (0/1)  A/A b48 1.143 [1.143-1.143]  new 1.055 [1.055-1.055]  -> ok (<= base)
+   medians: b48 373 b482 427 new 357 new2 358 | >16.7: b48 0 b482 0 new 0 new2 0 | >33.3: b48 0 b482 0 new 0 new2 0
+fastpan                pairs 0.984 [0.930-1.038] (1/2)  vmeans 0.978 [0.978-0.978] (0/1)  A/A b48 1.222 [1.222-1.222]  new 1.095 [1.095-1.095]  -> ok (<= base)
+   medians: b48 154 b482 189 new 167 new2 175 | >16.7: b48 0 b482 0 new 0 new2 0 | >33.3: b48 0 b482 0 new 0 new2 0
+cuts                   pairs 0.814 [0.792-0.837] (0/2)  vmeans 0.816 [0.816-0.816] (0/1)  A/A b48 1.144 [1.144-1.144]  new 1.209 [1.209-1.209]  -> ok (<= base)
+   medians: b48 100 b482 114 new 96 new2 96 | >16.7: b48 0 b482 0 new 0 new2 0 | >33.3: b48 0 b482 0 new 0 new2 0
+POOLED moving          pairs 0.940 [0.931-0.949] (0/2)  vmeans 0.940 [0.940-0.940] (0/1)  A/A b48 1.079 [1.079-1.079]  new 1.058 [1.058-1.058]
+b48    ready 112.3 s, load main CPU NaN s
+b482   ready 116.4 s, load main CPU NaN s
+new    ready 154.0 s, load main CPU NaN s
+new2   ready 208.4 s, load main CPU NaN s

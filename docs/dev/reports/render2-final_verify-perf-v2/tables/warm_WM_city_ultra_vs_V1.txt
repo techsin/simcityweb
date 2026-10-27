@@ -1,0 +1,12 @@
+== WM.jsonl q=ultra field=cpu rows=2 num=new,new2 den=v1,v12
+street      new     NaN  v1     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN v1 NaN
+zoomout     new     NaN  v1     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN v1 NaN
+farorbit    new     NaN  v1     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN v1 NaN
+default     new     NaN  v1     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN v1 NaN
+zoomin      new     NaN  v1     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN v1 NaN
+streetpan   new     NaN  v1     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN v1 NaN
+streetfast  new     NaN  v1     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN v1 NaN
+pan         new     NaN  v1     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN v1 NaN
+fastpan     new     NaN  v1     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN v1 NaN
+cuts        new     NaN  v1     NaN  ratio nan [nan-nan] (0/0)  A/A new NaN v1 NaN
+POOLED moving nan [nan-nan] (0/0 rows)  A/A new nan [nan-nan]  v1 nan [nan-nan]  | (row,seg) ratios above 1: 0/0  load 67.4

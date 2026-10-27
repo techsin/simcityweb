@@ -1,0 +1,46 @@
+== FGLna: 13 loads, labels b48 c024 c0242 new new2, reps 3, load 58.3-59.7
+per-frame main-thread CPU (ms), median [90% CI] over loads; K=40
+b48    n=3 f1 126.790 [120.740-136.820]  f2 28.320 [28.050-57.760]  f3 17.340 [11.060-28.940]  f4 7.120 [7.100-9.330]  f5 10.780 [9.890-18.310]  f6 10.480 [7.410-10.510]  f8 6.240 [5.000-7.470]  f10 6.310 [5.540-8.700]
+       frames>16.7 in 1-30 per load: 2,4,3 (median 3); >33.3: 1,2,1; >16.7 in 3-30: 0,2,1; sum 1-30 372 ms; sum 3-30 215 ms; veilFrame 0
+       frame 2 in-page: world.update 111.7 objects.update 15.8 world.render 20770.0 sim 0.10
+       frame 1 in-page: world.update 9040.0 objects.update 161.0 world.render 28440.8; load CPU 2844 ms; click->frames 124907 ms; heap 209.8 MB
+c024   n=2 f1 172.225 [136.550-207.900]  f2 142.245 [48.810-235.680]  f3 27.920 [22.250-33.590]  f4 10.415 [8.770-12.060]  f5 14.085 [12.460-15.710]  f6 14.865 [9.750-19.980]  f8 10.170 [6.740-13.600]  f10 8.815 [8.030-9.600]
+       frames>16.7 in 1-30 per load: 3,8 (median 5.5); >33.3: 2,4; >16.7 in 3-30: 1,6; sum 1-30 624 ms; sum 3-30 310 ms; veilFrame 0
+       frame 2 in-page: world.update 52.0 objects.update 53.8 world.render 478.1 sim 0.05
+       frame 1 in-page: world.update 312.3 objects.update 94.2 world.render 52438.3; load CPU 2674 ms; click->frames 138807 ms; heap 220.2 MB
+c0242  n=3 f1 229.040 [211.950-247.980]  f2 33.080 [19.280-35.980]  f3 14.720 [12.740-55.510]  f4 12.350 [9.150-20.890]  f5 26.630 [13.790-29.770]  f6 18.280 [3.550-19.450]  f8 7.750 [7.240-11.540]  f10 7.130 [6.490-11.800]
+       frames>16.7 in 1-30 per load: 9,6,6 (median 6); >33.3: 3,2,3; >16.7 in 3-30: 7,4,4; sum 1-30 597 ms; sum 3-30 349 ms; veilFrame 0
+       frame 2 in-page: world.update 39.1 objects.update 62.7 world.render 192.7 sim 0.10
+       frame 1 in-page: world.update 333.3 objects.update 718.5 world.render 95354.6; load CPU 2781 ms; click->frames 195187 ms; heap 213.3 MB
+new    n=2 f1 341.425 [334.350-348.500]  f2 51.255 [8.700-93.810]  f3 7.380 [3.730-11.030]  f4 7.870 [4.650-11.090]  f5 6.150 [5.750-6.550]  f6 7.940 [6.420-9.460]  f8 7.865 [5.670-10.060]  f10 6.915 [5.450-8.380]
+       frames>16.7 in 1-30 per load: 2,1 (median 1.5); >33.3: 2,1; >16.7 in 3-30: 0,0; sum 1-30 535 ms; sum 3-30 143 ms; veilFrame 0
+       frame 2 in-page: world.update 10.2 objects.update 3.8 world.render 30.4 sim 0.10
+       frame 1 in-page: world.update 566.0 objects.update 973.8 world.render 32354.5; load CPU 2894 ms; click->frames 82277 ms; heap 252.9 MB
+new2   n=3 f1 335.860 [320.340-339.760]  f2 27.290 [13.210-31.040]  f3 7.700 [6.970-11.760]  f4 11.120 [7.530-11.440]  f5 7.110 [4.150-12.950]  f6 10.920 [2.140-10.930]  f8 7.740 [1.380-61.000]  f10 7.310 [0.800-12.130]
+       frames>16.7 in 1-30 per load: 2,3,2 (median 2); >33.3: 1,1,2; >16.7 in 3-30: 0,1,1; sum 1-30 588 ms; sum 3-30 236 ms; veilFrame 0
+       frame 2 in-page: world.update 61.4 objects.update 128.2 world.render 1174.1 sim 0.10
+       frame 1 in-page: world.update 1253.9 objects.update 1058.5 world.render 69086.3; load CPU 2752 ms; click->frames 131397 ms; heap 252.7 MB
+frames 2-30 over 16.7 / 33.3 ms per load, and their parts (lp / wm / other, ms):
+b48    >16.7: 1,3,2 (sum 6/3 loads)  >33.3: 0,1,0 (sum 1)  max f2-30 median 29 ms
+       r0: f2 28 (23/0/6) | r1: f2 58 (19/0/39) f3 17 (13/0/5) f5 18 (17/0/1) | r2: f2 28 (18/0/10) f3 29 (19/0/10)
+c024   >16.7: 2,7 (sum 9/2 loads)  >33.3: 1,3 (sum 4)  max f2-30 median 142 ms
+       r0: f2 236 (13/38/184) f3 22 (20/0/2) | r1: f2 49 (27/0/22) f3 34 (12/0/22) f6 20 (13/3/4) f13 18 (2/5/11) f16 37 (3/10/24) f20 27 (6/9/12) f25 26 (5/2/19)
+c0242  >16.7: 8,5,5 (sum 18/3 loads)  >33.3: 2,1,2 (sum 5)  max f2-30 median 59 ms
+       r0: f2 33 (22/0/11) f3 56 (21/0/34) f5 30 (26/2/2) f6 19 (15/1/4) f14 58 (1/16/40) f17 22 (2/7/13) f18 21 (4/7/10) f19 17 (7/3/7) | r1: f2 19 (15/0/4) f5 27 (21/2/4) f6 18 (13/2/3) f22 59 (5/25/29) f23 30 (1/8/21) | r2: f2 36 (15/0/21) f4 21 (18/0/2) f21 18 (12/2/4) f24 25 (4/6/15) f25 76 (0/24/52)
+new    >16.7: 1,0 (sum 1/2 loads)  >33.3: 1,0 (sum 1)  max f2-30 median 53 ms
+       r0: f2 94 (10/4/79) | r1: -
+new2   >16.7: 1,2,1 (sum 4/3 loads)  >33.3: 0,0,1 (sum 1)  max f2-30 median 31 ms
+       r0: f2 27 (9/0/18) | r1: f2 31 (10/13/8) f30 23 (3/0/21) | r2: f8 61 (5/2/54)
+first motions after the load (main-thread CPU per segment):
+street                 pairs 0.738 [0.681-0.886] (0/5)  vmeans 0.774 [0.738-0.788] (0/3)  A/A c024 1.126 [1.065-1.188]  new 1.073 [0.913-1.234]  -> ok (<= base)
+   vs b48: pairs 0.766 [0.746-0.786]
+   render-only street                 pairs 0.556 [0.221-0.688] (0/5)  vmeans 0.421 [0.421-0.688] (0/3)  A/A c024 1.181 [1.067-1.295]  new 1.833 [0.736-2.931]  -> ok (<= base)
+   frames>16.7 per load: b48 1,1,2 | c024 0,0 | c0242 1,1,0 | new 0,0 | new2 0,0,0
+zoomout                pairs 0.741 [0.424-0.852] (0/5)  vmeans 0.722 [0.578-0.763] (0/3)  A/A c024 0.836 [0.564-1.109]  new 1.090 [1.045-1.134]  -> ok (<= base)
+   vs b48: pairs 0.770 [0.711-0.829]
+   render-only zoomout                pairs 0.630 [0.339-0.758] (0/5)  vmeans 0.591 [0.507-0.632] (0/3)  A/A c024 0.856 [0.668-1.045]  new 1.343 [1.195-1.491]  -> ok (<= base)
+   frames>16.7 per load: b48 1,1,1 | c024 0,4 | c0242 1,1,2 | new 0,0 | new2 0,0,0
+zoomin                 pairs 0.858 [0.789-0.889] (0/5)  vmeans 0.827 [0.821-0.880] (0/3)  A/A c024 1.054 [0.932-1.176]  new 0.996 [0.913-1.080]  -> ok (<= base)
+   vs b48: pairs 0.902 [0.797-1.008]
+   render-only zoomin                 pairs 0.613 [0.469-0.947] (0/5)  vmeans 0.740 [0.524-0.767] (0/3)  A/A c024 1.070 [0.851-1.289]  new 1.166 [1.017-1.316]  -> ok (<= base)
+   frames>16.7 per load: b48 0,0,0 | c024 0,0 | c0242 0,1,0 | new 0,1 | new2 1,0,0

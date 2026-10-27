@@ -1,0 +1,12 @@
+== WK.jsonl q=low field=cpu rows=2 num=v1 den=base
+street      v1    32.6  base    43.7  ratio 0.745 [0.731-0.760] (0/2)  A/A v1 NaN base NaN
+zoomout     v1   234.2  base   264.0  ratio 0.896 [0.816-0.976] (0/2)  A/A v1 NaN base NaN
+farorbit    v1   158.9  base   210.4  ratio 0.759 [0.714-0.803] (0/2)  A/A v1 NaN base NaN
+default     v1    38.0  base    36.4  ratio 1.046 [1.038-1.054] (2/2)  A/A v1 NaN base NaN
+zoomin      v1   121.6  base   153.1  ratio 0.795 [0.786-0.804] (0/2)  A/A v1 NaN base NaN
+streetpan   v1   142.0  base   140.1  ratio 1.004 [0.818-1.191] (1/2)  A/A v1 NaN base NaN
+streetfast  v1    82.1  base    90.6  ratio 0.910 [0.831-0.988] (0/2)  A/A v1 NaN base NaN
+pan         v1   106.8  base   151.9  ratio 0.717 [0.599-0.835] (0/2)  A/A v1 NaN base NaN
+fastpan     v1    72.2  base    88.8  ratio 0.825 [0.724-0.927] (0/2)  A/A v1 NaN base NaN
+cuts        v1    43.8  base    67.8  ratio 0.646 [0.619-0.673] (0/2)  A/A v1 NaN base NaN
+POOLED moving 0.825 [0.809-0.842] (0/2 rows)  A/A v1 1.000 [1.000-1.000]  base 1.000 [1.000-1.000]  | (row,seg) ratios above 1: 1/16  load 63.0
