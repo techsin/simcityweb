@@ -29,7 +29,7 @@ Git is the shared state; messages are only nudges. Anything a machine needs to k
    wake the worker by hand; the lead cannot.
 
 **Verified Oct 27 (T002):** the lead pushed a ping at 01:55:43Z; the worker's 30 s watcher saw it at 01:56:14Z (31 s) and
-its PONG reached the cloud session about a minute later. Worker → lead messages (`claude -p … --cloud`) arrive as a new
+its PONG reached the cloud session at 01:56:34Z: 51 s for the whole round trip. Worker → lead messages (`claude -p … --cloud`) arrive as a new
 turn in the lead's session within seconds of being sent.
 
 ## Task file format
