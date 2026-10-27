@@ -5,7 +5,7 @@
  * CityScene.guardSystem does) must be collectable. Before the fix the module-level breakdown contexts kept the last
  * inspected city — and through its TrafficSystem the scene — alive after exit to region (tests/sim/breakdownRetention).
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import v8 from 'node:v8';
 import vm from 'node:vm';
 import { Network, Zone } from '../../src/core/types';
@@ -16,12 +16,26 @@ import { listRewards } from '../../src/sim/economy/rewards';
 import { normalizeReward } from '../../src/game/modules';
 import type { GameContext } from '../../src/game/context';
 import { InfoPanel } from '../../src/ui/panels/InfoPanel';
+import { thumbs } from '../../src/ui/thumbs';
 import { newState, place, roadLine } from '../infra/cityGen';
 import { type FEl, installFakeDom, textOf } from './fakeDom';
 
 installFakeDom();
 v8.setFlagsFromString('--expose_gc');
 const gc = vm.runInNewContext('gc') as () => void;
+
+// (frames run, as in the browser: the inspector's building thumbnail request (src/ui/thumbs.ts) is answered — here with
+// null, there is no WebGL — instead of pending forever with its callback into the panel's DOM)
+const gw = globalThis as unknown as Record<string, unknown>;
+const hadG: Record<string, unknown> = {};
+beforeAll(() => {
+  for (const k of ['requestAnimationFrame', 'window']) hadG[k] = gw[k];
+  gw.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(performance.now()), 0);
+  gw.window ??= globalThis;
+});
+afterAll(() => {
+  for (const k of Object.keys(hadG)) gw[k] = hadG[k];
+});
 
 function guardLike(systems: SimSystem[], scene: object): void {
   for (const s of systems) {
@@ -116,6 +130,11 @@ describe('the inspector keeps no exited city alive (close-out c2 major)', () => 
     const { refs, shown } = inspectThenDrop();
     expect(shown.length).toBe(6);
     expect(shown[5]).toBe('why: land value shown');
+    // (the inspector's building thumbnails are answered first: a request still running holds its callback into the
+    // panel's DOM for the moment it takes — in the browser a few frames — which is no leak)
+    const pending = (thumbs as unknown as { pending: Map<string, Promise<unknown>> }).pending;
+    for (let k = 0; k < 600 && pending.size; k++) await Promise.race([Promise.all([...pending.values()]), new Promise((r) => setTimeout(r, 100))]);
+    expect(pending.size).toBe(0);
     expect(await collected(refs)).toEqual({ scene: true, st: true, rt: true, sim: true, panel: true });
   });
 });

@@ -81,7 +81,7 @@ diff <(norm plain.out) <(norm saving.out)
 | `fixtures/dense1m_s7.metropolis` | `sim-profile/fixtures/dense1m.ts` on snap: target 1,150,000, 120 warm days, seed 7 | 1,118,755 residents, 17,154 buildings, 23,141 road cells, 30,084 transit nodes (23,141 road + 6,943 subway) | 3.53 MB | 13 s |
 | `fixtures/stress1m_testdefs_s7.metropolis` | `sim-profile/fixtures/stress.ts` on snap: `stressCity(256, 7, { popScale: 1.55, jobsPerWorker: 1.05 })`, test defs | 1,034,100 residents, 19,484 buildings, 36,003 road cells | 0.19 MB | < 1 s |
 | `fixtures/bot256_s7_y60.metropolis` | `sim-profile/fixtures/botgrow.ts` on snap: the 24f8609 SimBot, 256 map, seed 7, 60 years | 652,568 residents, 11,276 buildings, 13,828 road + 81 rail cells | 4.35 MB | 4–5 min (190 s CPU) |
-| `node_modules/.cache/sim-bench/` `populationAggregateProbe/`, `econ/`, `fieldPasses/` | captures of dense1m and bot256 (fieldPasses also bot256 with a synthetic coast), written on snap by the benches' own capture runs | 2 + 2 + 3 files | 47 MB | 5 min at load 45 |
+| `node_modules/.cache/sim-bench/` `populationAggregateProbe/`, `econ/`, `fieldPasses/` | captures of dense1m and bot256 (fieldPasses also bot256 with a synthetic coast), written on snap by the benches' own capture runs | 2 + 2 + 3 files, byte-identical on a rebuild | 45 MB | 6 min at load 45 (50 s CPU) |
 
 The content sha256 that the script prints (content minus `savedAt`) was `d8e217f3…` for dense1m, `3ba552f9…` for
 stress1m and `5cfc7236…` for bot256 on every rebuild so far.
@@ -111,7 +111,8 @@ If the clone is shallow and 24f8609 is missing, the script runs `git fetch --uns
 - Built on the live tree instead, dense1m changes (1,150,423 residents, 17,121 buildings). stress1m stays identical
   apart from 4 stats fields that newer code adds.
 - The bot cities are no substitute for dense1m. `vet_s7_y43` runs in the 24f8609 tree, but it has 991,493 residents,
-  below the `> 1,000,000` that trafficCore's dense1m test asserts, and it has no subway or transit grid.
+  below the `> 1,000,000` that trafficCore's dense1m test asserts, and it has no subway (dense1m has 6,943 subway
+  cells and 3,086 stops).
 - Two rebuilds give the same content: the counts, the digest and an every-field comparison.
 
 **Tests that use them.** Every one skips when its input is absent.
@@ -120,7 +121,7 @@ If the clone is shallow and 24f8609 is missing, the script runs `git fetch --uns
 |---|---|---|
 | `tests/wasm/trafficCore.test.ts` | snap; C dense1m also `dense1m_s7` | B, C (8, 2 of them on dense1m) and D: 10 |
 | `tests/wasm/roadTransitSearch.test.ts` | `dense1m_s7`, `stress1m_testdefs_s7` | 2 |
-| `tests/wasm/servicesTierEngine.test.ts` | `dense1m_s7`, `bot256_s7_y60` | 2 per file: 4 |
+| `tests/wasm/servicesTierEngine.test.ts` | `dense1m_s7`, `bot256_s7_y60` | 2 per fixture: 4 |
 | `tests/wasm/populationAggregateProbe.test.ts` | the `populationAggregateProbe` captures | 1 |
 | `tests/wasm/desirabilityLandValueBands.test.ts` | the `econ` captures | 1 |
 | `tests/wasm/fieldPasses.test.ts` | the `fieldPasses` captures | 1 |
