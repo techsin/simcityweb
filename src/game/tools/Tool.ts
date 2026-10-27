@@ -3,6 +3,7 @@ import type { CellHit } from '../../render/contracts';
 import type { Overlay } from '../../core/types';
 import type { ActionResult } from '../../sim/actions';
 import type { GameContext } from '../context';
+import type { CommandArgs, CommandOp, CommandResult, Gesture, Ticket } from '../../worker/SimHost';
 import { escapeHtml } from '../../ui/dom';
 import { money } from '../../ui/format';
 
@@ -26,7 +27,19 @@ export abstract class Tool {
   wantsGrid = true;
   /** data view to show automatically while this tool is active (e.g. coverage for police stations) */
   autoOverlay: Overlay | null = null;
+  protected gesture: Gesture | null = null;
   constructor(protected ctx: GameContext) {}
+  beginGesture(): void {
+    this.endGesture();
+    this.gesture = this.ctx.host.beginGesture(this);
+  }
+  endGesture(): void {
+    this.gesture?.end();
+    this.gesture = null;
+  }
+  protected commit<K extends ActionOp>(op: K, args: CommandArgs<K>, feedback: CommitFeedback): Ticket<CommandResult<K>> {
+    return commitAction(this.ctx, this, op, args, feedback, this.gesture ?? undefined);
+  }
   activate(): void {}
   deactivate(): void {}
   down(_p: ToolPointer): void {}
@@ -52,6 +65,49 @@ export abstract class Tool {
   options(): HTMLElement | null {
     return null;
   }
+}
+
+type ActionOp = { [K in CommandOp]: CommandResult<K> extends ActionResult ? K : never }[CommandOp];
+export interface CommitFeedback {
+  ok(r: ActionResult): void;
+  fail?(r: ActionResult): void;
+  /** Brush totals and panel closure use the authoritative result, even after exact feedback. */
+  ack?(r: ActionResult): void;
+}
+
+/** Shared with the inspector's one-commit demolition gesture. */
+export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object, op: K, args: CommandArgs<K>, feedback: CommitFeedback, gesture?: Gesture): Ticket<CommandResult<K>> {
+  const g = gesture ?? ctx.host.beginGesture(owner);
+  const fail = (r: ActionResult) => {
+    if (ctx.signal.aborted) return;
+    if (feedback.fail) feedback.fail(r);
+    else {
+      ctx.sound('error');
+      if (r.reason) ctx.toast(r.reason, 'error');
+    }
+  };
+  const ticket = safe(() => ctx.host.act(op, args, { gesture: g }), {
+    seq: 0, predicted: FAIL, exact: true, done: Promise.resolve(FAIL),
+  } as Ticket<CommandResult<K>>);
+  const predicted = ticket.predicted as ActionResult | undefined;
+  if (!ctx.signal.aborted && ticket.exact && predicted) {
+    if (predicted.ok) feedback.ok(predicted);
+    else fail(predicted);
+  }
+  void ticket.done.then((r: ActionResult) => {
+    if (ctx.signal.aborted) return;
+    if (!ticket.exact || !predicted) {
+      if (r.ok) feedback.ok(r);
+      else g.fail(() => fail(r));
+    } else if (predicted.ok && !r.ok) g.fail(() => fail(r));
+    feedback.ack?.(r);
+  }, () => {
+    if (ctx.signal.aborted) return;
+    g.fail(() => fail(FAIL));
+    feedback.ack?.(FAIL);
+  });
+  if (!gesture) g.end();
+  return ticket;
 }
 
 /** Tooltip html for an action preview. */

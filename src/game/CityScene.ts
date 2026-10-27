@@ -166,7 +166,7 @@ export class CityScene {
     this.veil = h('div', { class: 'loading-veil' }, h('div', { class: 'spin' }), h('div', null, 'Loading city…'));
     this.root.append(this.canvas, this.uiRoot, this.veil);
     opts.container.appendChild(this.root);
-    this.errors = new ErrorOverlay(this.uiRoot, { pause: () => (this.sim.speed = 0), signal: this.abort.signal });
+    this.errors = new ErrorOverlay(this.uiRoot, { pause: () => this.host.setSpeed(0, 'error'), signal: this.abort.signal });
 
     // ---- simulation: the local host attaches guarded systems and actions once their modules load
     // a brand-new city starts PAUSED (build first, then press play); saved cities keep running at normal speed. (Not
@@ -516,7 +516,7 @@ export class CityScene {
    */
   private storeCamera(): void {
     try {
-      this.camMemory.store(this.sim.state, this.world.controls, !!(this.world as NullWorldView).isNull);
+      this.camMemory.store(this.host, this.world.controls, !!(this.world as NullWorldView).isNull);
     } catch {
       /* ignore */
     }
@@ -788,14 +788,14 @@ export class CityScene {
     if (k === ' ') {
       e.preventDefault();
       if (document.activeElement instanceof HTMLButtonElement) document.activeElement.blur();
-      this.sim.speed = this.sim.speed === 0 ? this.lastSpeed || 1 : 0;
+      this.host.setSpeed(this.host.speed === 0 ? this.lastSpeed || 1 : 0, 'keyboard');
       if (this.sim.speed) this.lastSpeed = this.sim.speed;
       this.sound(this.sim.speed === 0 ? 'pause' : 'speed' + this.sim.speed);
       return;
     }
     if (k === '1' || k === '2' || k === '3') {
       if (this.sim.speed !== Number(k)) this.sound('speed' + k);
-      this.sim.speed = Number(k);
+      this.host.setSpeed(Number(k), 'keyboard');
       this.lastSpeed = this.sim.speed;
       return;
     }
@@ -834,10 +834,10 @@ export class CityScene {
     if (document.hidden) {
       if (this.sim.speed > 0) {
         this.hiddenPausedFrom = this.sim.speed;
-        this.sim.speed = 0;
+        this.host.setSpeed(0, 'visibility');
       }
     } else if (this.hiddenPausedFrom !== null) {
-      this.sim.speed = this.hiddenPausedFrom;
+      this.host.setSpeed(this.hiddenPausedFrom, 'visibility');
       this.hiddenPausedFrom = null;
       this.last = performance.now();
     }
@@ -872,7 +872,7 @@ export class CityScene {
   }
 
   async exitToRegion(): Promise<void> {
-    this.sim.speed = 0;
+    this.host.setSpeed(0, 'exit');
     this.tools.select(null, { silent: true });
     this.panels.closeAll();
     await this.save(false);

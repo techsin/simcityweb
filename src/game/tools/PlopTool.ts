@@ -287,18 +287,19 @@ export class PlopTool extends Tool {
     if (!this.previewHolds(p)) this.refresh(p, true);
     const pl = this.place;
     if (!pl) return;
-    const r = safe(() => this.ctx.actions.plop(this.def.id, pl.x, pl.z, pl.rot, false), FAIL);
-    if (r.ok) {
-      this.ctx.sound('plop');
-      const def = getDef(this.def.id) ?? this.def;
-      if (def.unique) {
-        this.ctx.tools.select(null, { silent: true });
-        return;
-      }
-    } else {
-      this.ctx.sound('error');
-      if (r.reason) this.ctx.toast(r.reason === SHORE_FAIL && this.shoreHint ? r.reason + this.shoreHint : r.reason, 'error');
-    }
+    const unique = (getDef(this.def.id) ?? this.def).unique;
+    const shoreHint = this.shoreHint;
+    const ticket = this.commit('plop', [this.def.id, pl.x, pl.z, pl.rot], {
+      ok: () => {
+        this.ctx.sound('plop');
+        if (unique && this.ctx.tools.active === this) this.ctx.tools.select(null, { silent: true });
+      },
+      fail: (r) => {
+        this.ctx.sound('error');
+        if (r.reason) this.ctx.toast(r.reason === SHORE_FAIL && shoreHint ? r.reason + shoreHint : r.reason, 'error');
+      },
+    });
+    if (unique && ticket.exact && ticket.predicted?.ok) return;
     this.lastKey = '';
     this.refresh(p, true);
   }

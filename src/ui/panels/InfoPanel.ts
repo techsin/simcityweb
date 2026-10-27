@@ -21,6 +21,7 @@ import type { GameContext, QueryTarget } from '../../game/context';
 import { CATEGORY_COLORS, defIcon } from '../../game/toolCatalog';
 import { NETWORK_LABELS } from '../../game/tools/NetworkTool';
 import { ZONE_LABELS } from '../../game/tools/ZoneTool';
+import { commitAction } from '../../game/tools/Tool';
 import { Panel } from '../Panel';
 import { clear, escapeHtml, h } from '../dom';
 import { icon } from '../icons';
@@ -665,11 +666,7 @@ export class InfoPanel extends Panel {
       const hist = !!(b.flags & BF.Historic);
       const hb = h('button', { class: 'btn sm' + (hist ? ' primary' : ''), html: icon('historic', 13) + `<span>${hist ? 'Historic ✓' : 'Make historic'}</span>`, title: 'Historic buildings never redevelop' });
       hb.addEventListener('click', () => {
-        try {
-          this.ctx.actions.toggleHistoric(b.id);
-        } catch {
-          b.flags ^= BF.Historic;
-        }
+        this.ctx.host.act('setHistoric', [b.id, !hist]);
         this.ctx.sound(hist ? 'toggleOff' : 'toggleOn');
         this.sig = '';
         this.builtAt = 0;
@@ -687,19 +684,18 @@ export class InfoPanel extends Panel {
     demo.addEventListener('click', () => {
       const rect = { x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d };
       const doIt = () => {
-        try {
-          const r = this.ctx.actions.bulldoze(rect, false);
-          if (!r.ok) {
+        if (this.ctx.signal.aborted) return;
+        commitAction(this.ctx, this, 'bulldoze', [rect], {
+          ok: () => this.ctx.sound('bulldoze'),
+          fail: (r) => {
             this.ctx.sound('error');
             this.ctx.toast(r.reason ?? 'Cannot demolish', 'error');
-            return;
-          }
-          // the demolition rumble is the sound: the inspector closes silently
-          this.ctx.sound('bulldoze');
-          this.ctx.panels.close(this.id, { silent: true });
-        } catch (e) {
-          console.warn(e);
-        }
+          },
+          ack: (r) => {
+            // the demolition rumble is the sound: the inspector closes silently, after the edit
+            if (r.ok && this.target?.buildingId === b.id) this.ctx.panels.close(this.id, { silent: true });
+          },
+        });
       };
       // last power plant / water source, landmark / reward, or > §20k: confirm first
       let risk = null;

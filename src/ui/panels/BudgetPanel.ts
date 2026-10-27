@@ -162,7 +162,7 @@ export class BudgetPanel extends Panel {
 
   private setTax(d: DevType, v: number): void {
     try {
-      this.ctx.actions.setTax(d, v);
+      this.ctx.host.act('setTax', [d, v]);
     } catch (e) {
       console.warn(e);
       this.ctx.state.budget.taxRates[d] = v;
@@ -221,7 +221,7 @@ export class BudgetPanel extends Panel {
         min: 0, max: 150, step: 5, value: b.funding[s.key] ?? 100,
         oninput: (val) => {
           try {
-            this.ctx.actions.setFunding(s.key, val);
+            this.ctx.host.act('setFunding', [s.key, val]);
           } catch {
             b.funding[s.key] = val;
           }
@@ -315,9 +315,12 @@ export class BudgetPanel extends Panel {
     this.content.appendChild(h('div', { class: 'sec-title' }, 'Outstanding loans'));
     if (!b.loans.length) this.content.appendChild(h('div', { class: 'dim', style: 'font-size:12.5px;padding:4px 0 8px' }, 'No outstanding loans.'));
     b.loans.forEach((l, i) => {
+      const guard = { principal: l.principal, monthsLeft: l.monthsLeft };
       const repay = h('button', { class: 'btn sm' }, `Repay ${money(l.remaining)}`);
-      repay.addEventListener('click', () => {
-        const r = this.safeAct(() => this.ctx.actions.repayLoan(i));
+      repay.addEventListener('click', async () => {
+        repay.disabled = true;
+        const r = await this.safeAct(() => this.ctx.host.act('repayLoan', [i, guard]).done);
+        if (this.ctx.signal.aborted) return;
         // (null: the action threw and safeAct already showed its error - no cash register on top of the buzz)
         if (r?.ok) this.ctx.sound('money');
         else if (r) this.ctx.toast(r.reason ?? 'Cannot repay', 'error');
@@ -355,8 +358,10 @@ export class BudgetPanel extends Panel {
       const o = offer(amt);
       const bt = h('button', { class: 'btn', title: o ? `${money(o.monthlyPayment)}/mo for ${o.termMonths} months` : '', html: icon('plus', 14) + `<span>${money(amt)}</span>` + (o ? `<span class="dim" style="font-weight:500">· ${money(o.monthlyPayment)}/mo</span>` : '') });
       if (o && !o.ok) bt.setAttribute('disabled', '');
-      bt.addEventListener('click', () => {
-        const r = this.safeAct(() => this.ctx.actions.takeLoan(amt));
+      bt.addEventListener('click', async () => {
+        bt.disabled = true;
+        const r = await this.safeAct(() => this.ctx.host.act('takeLoan', [amt]).done);
+        if (this.ctx.signal.aborted) return;
         if (r?.ok) this.ctx.sound('money');
         else if (r) this.ctx.toast(r.reason ?? 'The bank declined the loan', 'error');
         this.renderTab();
@@ -366,12 +371,12 @@ export class BudgetPanel extends Panel {
     this.content.append(acts, h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px' }, 'Loans are repaid in monthly installments with interest.'));
   }
 
-  private safeAct<T>(f: () => T): T | null {
+  private async safeAct<T>(f: () => Promise<T>): Promise<T | null> {
     try {
-      return f();
+      return await f();
     } catch (e) {
       console.warn(e);
-      this.ctx.toast('Action unavailable', 'error');
+      if (!this.ctx.signal.aborted) this.ctx.toast('Action unavailable', 'error');
       return null;
     }
   }

@@ -124,7 +124,7 @@ const STEPS: Step[] = [
     run: (c) => {
       // same resume blip as the top-bar play button (already at 1x: the generic click plays)
       if (c.sim.speed !== 1) c.sound('speed1');
-      c.sim.speed = 1;
+      c.host.setSpeed(1, 'onboarding');
     },
     // the city ran for a day since the card appeared (steps latch once done: pausing again doesn't undo it)
     done: (c, o) => c.state.day > o.startDay,

@@ -38,6 +38,7 @@ function fakeCtx(sim: Simulation) {
     objects: { setGhost: () => {}, setNetworkPreview: () => {}, setUnderground: () => {} },
     tip: { show: (html: string, kind?: string) => calls.tip.push({ html, kind }), hide: () => {}, move: () => {} },
     sandbox: () => false,
+    signal: new AbortController().signal,
     sound: () => {},
     toast: () => {},
     tools: { active: null, refresh: () => {}, select: () => true },

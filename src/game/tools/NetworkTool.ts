@@ -53,10 +53,10 @@ export class NetworkTool extends Tool {
     if (kind === 'power') this.autoOverlay = Overlay.Power;
   }
 
-  private run(path: Cell[], preview: boolean): ActionResult {
+  private run(path: Cell[]): ActionResult {
     const a = this.ctx.actions;
     const k = this.kind;
-    return safe(() => (k === 'power' ? a.buildPowerLine(path, preview) : k === 'subway' ? a.buildSubway(path, preview) : a.buildNetwork(path, k, preview)), FAIL);
+    return safe(() => (k === 'power' ? a.buildPowerLine(path, true) : k === 'subway' ? a.buildSubway(path, true) : a.buildNetwork(path, k, true)), FAIL);
   }
 
   private clearPreview(): void {
@@ -122,7 +122,7 @@ export class NetworkTool extends Tool {
     if (key !== this.lastKey || force) {
       this.lastKey = key;
       this.path = path;
-      this.res = this.run(path, true);
+      this.res = this.run(path);
       const ok = this.res.ok;
       const dem = ok ? this.res.demolished : undefined;
       // the cut: the local detour check now; when only the map-wide fill can tell, that once the path rests (settleCut)
@@ -174,32 +174,31 @@ export class NetworkTool extends Tool {
         this.ctx.tip.hide();
         this.lastKey = '';
         void confirmDialog(this.ctx, { title: risk.title, message: 'This route runs through developed lots:', items: risk.items, confirm: 'Build & demolish', danger: true }).then((yes) => {
-          if (yes && this.ctx.tools.active === this) this.commit(path);
+          if (this.ctx.signal.aborted) return;
+          if (yes && this.ctx.tools.active === this) this.commitPath(path);
           this.lastKey = '';
           this.ctx.tools.refresh();
         });
         // the dialog is modal: no preview / tip underneath it (the next frame after it closes refreshes them)
         return;
       }
-      this.commit(path);
+      this.commitPath(path);
     }
     this.lastKey = '';
     this.refresh(p, true);
   }
 
   private sideRisk(path: Cell[]): DemolishRisk | null {
-    const pre = this.run(path, true);
+    const pre = this.run(path);
     if (!pre.ok || !pre.demolished?.length) return null;
     return safe(() => sideDemolishRisks(this.ctx.state, pre.demolished, pre.demolishFee ?? 0, { sandbox: this.ctx.sandbox(), add: this.added(path) }), null);
   }
 
-  private commit(path: Cell[]): void {
-    const r = this.run(path, false);
-    if (r.ok) this.ctx.sound(this.kind === 'power' ? 'powerline' : this.kind === 'subway' || this.kind === Network.Rail ? 'rail' : 'build', { intensity: Math.min(1, path.length / 40) });
-    else {
-      this.ctx.sound('error');
-      if (r.reason) this.ctx.toast(r.reason, 'error');
-    }
+  private commitPath(path: Cell[]): void {
+    const feedback = { ok: () => this.ctx.sound(this.kind === 'power' ? 'powerline' : this.kind === 'subway' || this.kind === Network.Rail ? 'rail' : 'build', { intensity: Math.min(1, path.length / 40) }) };
+    if (this.kind === 'power') this.commit('buildPowerLine', [path], feedback);
+    else if (this.kind === 'subway') this.commit('buildSubway', [path], feedback);
+    else this.commit('buildNetwork', [path, this.kind], feedback);
   }
   override cancel(): boolean {
     if (!this.start) return false;

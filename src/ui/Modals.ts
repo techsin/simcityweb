@@ -7,7 +7,6 @@ import { dayLabel, num } from './format';
 
 export class PauseMenu {
   private back: HTMLDivElement | null = null;
-  private prevSpeed = 1;
   constructor(private ctx: GameContext, private parent: HTMLElement, private hooks: { onSettings: () => void; onHelp: () => void }) {}
 
   get isOpen(): boolean {
@@ -18,8 +17,7 @@ export class PauseMenu {
     if (this.back) return;
     const ctx = this.ctx;
     const st = ctx.state;
-    this.prevSpeed = ctx.sim.speed;
-    ctx.sim.speed = 0;
+    ctx.host.setSpeed(0, 'pause');
     const item = (ic: string, label: string, fn: () => void, key?: string, cls = '') => {
       const b = h('button', { class: `btn block ${cls}`, html: icon(ic, 17) + `<span>${label}</span>` + (key ? `<span class="kbd" style="margin-left:auto">${key}</span>` : '') });
       b.addEventListener('click', fn, { signal: ctx.signal });
@@ -64,7 +62,7 @@ export class PauseMenu {
     this.back = null;
     b.classList.add('closing');
     setTimeout(() => b.remove(), 150);
-    if (resume) this.ctx.sim.speed = this.prevSpeed;
+    if (resume) this.ctx.host.resume('pause');
     if (!silent) this.ctx.sound('dialogClose');
   }
 }
