@@ -5,6 +5,7 @@
  *                           [--water 0.2] [--quiet] [--no-infra] [--tax 12] [--spendy] [--neglect]
  *                           [--skip schools,garbage,jail,transit,police,services] [--save-years 21,43 --save-prefix PATH]
  *                           [--profile default|newcomer]
+ *                           [--subway] [--late-ordinances] [--venues] [--tax=N]
  *   env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1
  *
  * Plays through CityActions only (like the UI): lays out a 9-cell road grid (avenues every 4th line) with a
@@ -30,12 +31,14 @@
  * failures and retries monthly while the warning persists. No fire station or other proactive mayor rules.
  * Its table counts years from founding: population, approval, the three largest non-baseline approval terms,
  * funds and incidents failed during that year. The default profile still founds on day 0 and keeps its old output.
+ * LG-10 (base 8182828): opt-in subway to the three densest residential blocks from 150k, useful late ordinances,
+ * and a zoo / passenger train station when affordable. Fixed taxes apply from setup. --expand lands with LG-19.
  */
 import { createCityState } from '../src/sim/terrainGen';
 import { defaultCityConfig, type CityConfigData } from '../src/sim/config';
 import { Simulation, type SimSystem } from '../src/sim/Simulation';
 import { economySystems, economyRuntime } from '../src/sim/systems/economy';
-import { CityActions, lPath, type ActionResult } from '../src/sim/actions';
+import { CityActions, lPath, type ActionResult, type Cell } from '../src/sim/actions';
 import { DevType, Network, Zone, type Difficulty, type TerrainPreset } from '../src/core/types';
 import { CAP_RELIEF, getDef, rotatedFootprint } from '../src/sim/catalog';
 import { econData, type EconRuntime } from '../src/sim/economy/runtime';
@@ -47,12 +50,13 @@ import { facilityLoad, tierLayer, unservedClusters } from '../src/sim/infra/catc
 import { emergencyOf, uncoveredHotspots } from '../src/sim/infra/emergency';
 import { expectedUpkeep } from '../src/sim/economy/opex';
 import { ATTRACTIONS, venueVisits } from '../src/sim/economy/tourism';
-import { COARSE, NETWORK_UPKEEP, TOURISM, TOURISM_INCOME_PER_VISITOR, VENUE_INCOME, TAX_NEUTRAL } from '../src/sim/economy/tuning';
+import { BRIDGE_UPKEEP_MUL, COARSE, NETWORK_UPKEEP, SUBWAY_UPKEEP, TOURISM, TOURISM_INCOME_PER_VISITOR, VENUE_INCOME, TAX_NEUTRAL } from '../src/sim/economy/tuning';
 import type { BuildingDef } from '../src/sim/catalogTypes';
 import { smoothstep } from '../src/core/rng';
 import { adviceIdOf, openAdvice } from '../src/sim/economy/advisors';
 import { approvalBreakdown } from '../src/sim/economy/approval';
 import type { FactorTerm } from '../src/sim/explain';
+import { getOrdinance, ordinanceMonthly } from '../src/sim/economy/ordinances';
 
 export interface BotOptions {
   size: number;
@@ -68,6 +72,10 @@ export interface BotOptions {
   noInfra: boolean;
   /** fixed tax rate for every DevType (disables the bot's tax management) */
   tax?: number;
+  /** LG-10: a subway from 150k, useful ordinances the base bot never enacts, and the missing zoo / train venue */
+  subway?: boolean;
+  lateOrdinances?: boolean;
+  venues?: boolean;
   /** careless mayor: 150% funding everywhere and builds services / parks without checking the budget */
   spendy?: boolean;
   /** inattentive mayor: never dispatches to uncovered emergencies (measures failure outcomes) */
@@ -778,6 +786,7 @@ export class SimBot {
   // ------------------------------------------------------------------------------------------ setup
   setup(): void {
     if (this.opts.profile === 'newcomer') { this.setupNewcomer(); return; }
+    if (this.opts.tax !== undefined) for (let d = 0; d < 12; d++) this.A.setTax(d as DevType, this.opts.tax);
     const N = this.N;
     if (this.opts.spendy) for (const k of Object.keys(this.st.budget.funding) as (keyof typeof this.st.budget.funding)[]) this.A.setFunding(k, 150);
     // trunk: avenue edge to edge through the center (highway later)
@@ -889,16 +898,19 @@ export class SimBot {
       this.ensureResponse();
     }
     if (!this.skips('transit')) this.ensureTransit();
+    if (this.opts.subway) this.ensureSubway();
     this.treeBuffers();
     if (!this.highway && pop > HIGHWAY_POP) {
       const gap = this.freightGap();
       if (gap > HIGHWAY_FREIGHT_GAP) this.upgradeTrunk(gap);
     }
     this.caps();
+    if (this.opts.venues) this.ensureLateVenues();
     this.venues();
     this.rewards();
     this.density();
     this.ordinances();
+    if (this.opts.lateOrdinances) this.lateOrdinances();
   }
 
   /** share of the industrial jobs with no highway, rail or edge connection within freight reach (the coarse freight access
@@ -1013,6 +1025,10 @@ export class SimBot {
   ensurePower(): void {
     const s = this.st.stats;
     const need = Math.max(s.powerDemand, 1);
+    if (this.opts.lateOrdinances && need > 900 && this.st.unlocked.has('nuclear_power') && this.st.budget.ordinances.includes('nuclear_free_zone')) {
+      this.A.setOrdinance('nuclear_free_zone', false);
+      this.say('late ordinance: repealed Nuclear Free Zone before buying nuclear power');
+    }
     if (s.powerSupply > 0 && need < s.powerSupply * 0.75) return;
     const cx = this.line(this.cbx) + 3 * GRID, cz = this.trunkZ;
     let def = 'util_wind_turbine';
@@ -1880,6 +1896,101 @@ export class SimBot {
     }
   }
 
+  /** LG-10: the three densest developed 8 x 8 residential blocks; each home counted once, ties in map order. */
+  subwayDistricts(): Block[] {
+    if (!this.opts.subway) return [];
+    const people = new Map<Block, number>();
+    for (const b of this.st.buildings.values()) {
+      const dv = getDef(b.def)?.devType ?? -1;
+      if (b.pop <= 0 || dv < DevType.R1 || dv > DevType.R3 || b.flags & (BF.Plopped | BF.Burnt)) continue;
+      const bx = Math.floor((b.x - this.off) / GRID), bz = Math.floor((b.z - this.off) / GRID);
+      const block = this.byKey.get(bx + ',' + bz);
+      if (block?.developed && block.use === 'R') people.set(block, (people.get(block) ?? 0) + b.pop);
+    }
+    return [...people].sort((a, b) => b[1] - a[1] || a[0].bz - b[0].bz || a[0].bx - b[0].bx).slice(0, 3).map(([b]) => b);
+  }
+
+  /** The first 150k plan stays put; missing entrances retry without laying a new line to a different set of homes. */
+  private subwayLine?: { paths: Cell[][]; stops: (Cell & { at?: Cell })[] };
+  ensureSubway(): void {
+    if (!this.opts.subway || this.opts.profile === 'newcomer' || this.skips('transit')) return;
+    const st = this.st;
+    if (st.stats.population < 150000 || (this.svcRetry.get('subway') ?? -1) > st.day) return;
+    if (!this.subwayLine) {
+      const districts = this.subwayDistricts();
+      if (districts.length < 3) return;
+      let from = { x: this.line(this.cbx) + 1, z: this.trunkZ + 1 }, distance = 0;
+      const paths: Cell[][] = [], stops: (Cell & { at?: Cell })[] = [from];
+      const add = (c: Cell) => { if (!stops.some((s) => s.x === c.x && s.z === c.z)) stops.push(c); };
+      while (districts.length) {
+        districts.sort((a, b) => Math.abs(a.x0 - from.x) + Math.abs(a.z0 - from.z) - Math.abs(b.x0 - from.x) - Math.abs(b.z0 - from.z) || a.bz - b.bz || a.bx - b.bx);
+        const b = districts.shift()!, to = { x: b.x0, z: b.z0 }, path = lPath(from, to);
+        paths.push(path);
+        for (const c of path.slice(1)) if (++distance % 8 === 0) add(c);
+        add(to);
+        from = to;
+      }
+      this.subwayLine = { paths, stops };
+      this.say('subway: planned core line to the three densest residential blocks (entrances every 8 tiles)');
+    }
+    const { paths, stops } = this.subwayLine;
+    const missing = stops.filter((s) => {
+      const b = s.at ? st.buildingAt(s.at.x, s.at.z) : undefined;
+      return !b || b.def !== 'tr_subway_station' || !!(b.flags & (BF.Burnt | BF.Abandoned));
+    });
+    const previews = paths.map((p) => this.A.buildSubway(p, true));
+    if (previews.some((p) => !p.ok)) return;
+    const cells = previews.reduce((n, p) => n + (p.affected ?? 0), 0);
+    if (!cells && !missing.length) return;
+    const def = getDef('tr_subway_station')!, funding = st.budget.funding.transit / 100;
+    // Entrances use the nearest walkable lot within 4 tiles, with a tunnel spur; allow for clearing a small lot.
+    const cost = previews.reduce((n, p) => n + p.cost, 0) + missing.length * ((def.cost ?? 0) + 1000);
+    const up = (cells + 5 * missing.length) * SUBWAY_UPKEEP * funding + missing.length * expectedUpkeep(st, def) * funding;
+    if (!this.canSpendOpt(cost + this.jailHold) || !(this.monthlyNet() + this.pendingUpkeep > up || this.funds > 60 * up + 50000)) return;
+    for (const path of paths) {
+      const r = this.A.buildSubway(path);
+      if (!r.ok) return;
+      this.pendingUpkeep -= (r.affected ?? 0) * SUBWAY_UPKEEP * funding;
+    }
+    const used = new Set(stops.filter((s) => s.at && !missing.includes(s)).map((s) => s.at!.z * this.N + s.at!.x));
+    let placed = 0;
+    for (const stop of missing) {
+      const at = this.subwayEntrance(stop, used);
+      if (!at) continue;
+      const r = this.A.buildSubway(lPath(stop, at));
+      if (!r.ok) continue;
+      this.pendingUpkeep -= (r.affected ?? 0) * SUBWAY_UPKEEP * funding;
+      stop.at = at;
+      used.add(at.z * this.N + at.x);
+      placed++;
+    }
+    this.svcRetry.set('subway', st.day + 90);
+    this.say(`subway: ${placed} entrances connected, ${missing.length - placed} still need a walkable lot`);
+  }
+
+  private subwayEntrance(at: Cell, used: Set<number>): Cell | null {
+    if (!this.opts.subway) return null;
+    const st = this.st, def = getDef('tr_subway_station')!;
+    const accept = (x: number, z: number, w: number, d: number) => Math.abs(x - at.x) + Math.abs(z - at.z) <= 4 && !used.has(z * this.N + x) && this.walkableLot(x, z, w, d);
+    for (let dist = 0; dist <= 4; dist++) for (let z = at.z - dist; z <= at.z + dist; z++) for (let x = at.x - dist; x <= at.x + dist; x++) {
+      if (!st.inBounds(x, z) || Math.abs(x - at.x) + Math.abs(z - at.z) !== dist || !accept(x, z, 1, 1)) continue;
+      const old = st.buildingAt(x, z);
+      if (old?.def === def.id && !(old.flags & (BF.Burnt | BF.Abandoned))) return { x, z };
+      const p = this.A.plop(def.id, x, z, 0, true);
+      if (!p.ok || p.reason) continue;
+      if (this.A.plop(def.id, x, z, 0).ok) {
+        this.pendingUpkeep -= expectedUpkeep(st, def) * st.budget.funding.transit / 100;
+        this.services.push({ def: def.id, x, z });
+        return { x, z };
+      }
+    }
+    if (this.placeByClearing(def.id, at.x, at.z, 4, ['P', 'R', 'C'], accept, 3, true, true)) {
+      this.pendingUpkeep -= expectedUpkeep(st, def) * (st.budget.funding.transit / 100 - 1);
+      return { ...this.lastCleared };
+    }
+    return null;
+  }
+
   // ------------------------------------------------------------------------------------------ noise buffers
   /** tree buffers along the highway while more than 5 % of homes are Noisy: free cells within 2 of highway cells */
   treeBuffers(): void {
@@ -2207,6 +2318,73 @@ export class SimBot {
   }
 
   // ------------------------------------------------------------------------------------------ tourism venues (VENUE_*)
+  /** LG-10: buy the zoo even when the residential cap never asks; add one passenger station with rail to the edge. */
+  ensureLateVenues(): void {
+    if (!this.opts.venues || this.opts.profile === 'newcomer' || this.st.stats.population < VENUE_POP) return;
+    const st = this.st;
+    if (!this.skips('services') && st.unlocked.has('zoo') && !this.count('park_zoo') && (this.svcRetry.get('venue:zoo') ?? -1) <= st.day &&
+      this.canSpendOpt((getDef('park_zoo')!.cost ?? 0) + 2000 + this.jailHold) && this.canAfford('park_zoo')) {
+      const ok = this.placeVenue('park_zoo');
+      this.svcRetry.set('venue:zoo', st.day + (ok ? 30 : 180));
+      this.say(`late venue: ${ok ? 'built Zoo' : 'no site for Zoo'}`);
+    }
+    if (!this.skips('transit') && !this.count('tr_train_station') && (this.svcRetry.get('venue:train') ?? -1) <= st.day && this.canAfford('tr_train_station', undefined, true)) {
+      const ok = this.passengerRail();
+      this.svcRetry.set('venue:train', st.day + (ok ? 30 : 180));
+      this.say(`late venue: ${ok ? 'built Passenger Train Station with rail to the map edge' : 'no affordable connected site for Passenger Train Station'}`);
+    }
+  }
+
+  private passengerRail(): boolean {
+    if (!this.opts.venues || this.skips('transit')) return false;
+    const st = this.st, N = this.N, def = getDef('tr_train_station')!;
+    const [w, d] = def.footprint;
+    const blocks = this.blocks.filter((b) => ['P', 'I', 'R', 'C'].includes(b.use) && (b.developed || this.touchesDeveloped(b)))
+      .sort((a, b) => a.ring - b.ring || a.bz - b.bz || a.bx - b.bx);
+    for (const b of blocks) {
+      const xa = this.line(b.bx), xb = this.line(b.bx + 1), za = this.line(b.bz), zb = this.line(b.bz + 1);
+      const roads = b.developed ? [] : [
+        { path: lPath({ x: xa, z: za }, { x: xb, z: za }), type: this.lineType(b.bz, false) },
+        { path: lPath({ x: xa, z: zb }, { x: xb, z: zb }), type: this.lineType(b.bz + 1, false) },
+        { path: lPath({ x: xa, z: za }, { x: xa, z: zb }), type: this.lineType(b.bx, true) },
+        { path: lPath({ x: xb, z: za }, { x: xb, z: zb }), type: this.lineType(b.bx + 1, true) },
+      ];
+      const rp = roads.map((r) => this.A.buildNetwork(r.path, r.type, true));
+      if (rp.some((r) => !r.ok || r.demolished?.length)) continue;
+      const roadCost = rp.reduce((n, r) => n + r.cost, 0);
+      const roadUp = roads.reduce((n, r) => n + r.path.reduce((s, c) => s + Math.max(0, NETWORK_UPKEEP[r.type] - (NETWORK_UPKEEP[st.network[c.z * N + c.x]] ?? 0)), 0), 0) * st.budget.funding.roads / 100;
+      for (const [z, rot] of [[b.z0, 2], [b.z1 - d, 0]] as const) for (let x = b.x0; x + w <= b.x1; x++) {
+        const p = this.A.plop(def.id, x, z, rot, true);
+        if (!p.ok || (b.developed && p.reason)) continue;
+        const rz = rot === 2 ? z + d : z - 1, rx = x + (w >> 1);
+        const edges = [0, N - 1].sort((a, b) => Math.abs(a - rx) - Math.abs(b - rx));
+        for (const edge of edges) {
+          const path = lPath({ x: rx, z: rz }, { x: edge, z: rz });
+          const rail = this.A.buildNetwork(path, Network.Rail, true);
+          if (!rail.ok || rail.demolished?.length) continue;
+          const railUp = path.reduce((n, c) => {
+            const i = c.z * N + c.x;
+            if (st.network[i] === Network.Rail || st.netFlags[i] & 0x20) return n;
+            return n + NETWORK_UPKEEP[Network.Rail] * (st.water[i] ? BRIDGE_UPKEEP_MUL * st.budget.funding.roads : st.budget.funding.transit) / 100;
+          }, 0);
+          const up = roadUp + railUp + expectedUpkeep(st, def) * st.budget.funding.transit / 100;
+          if (!this.canSpendOpt(roadCost + rail.cost + p.cost + this.jailHold) || !(this.monthlyNet() + this.pendingUpkeep > up || this.funds > 60 * up + 50000)) continue;
+          if (!b.developed) { this.buildBlockRoads(b); b.developed = true; this.pendingUpkeep -= roadUp; }
+          const check = this.A.plop(def.id, x, z, rot, true);
+          if (!check.ok || check.reason) continue;
+          const r = this.A.buildNetwork(path, Network.Rail);
+          if (!r.ok) continue;
+          this.pendingUpkeep -= railUp;
+          if (!this.A.plop(def.id, x, z, rot).ok) continue;
+          this.pendingUpkeep -= expectedUpkeep(st, def) * st.budget.funding.transit / 100;
+          this.services.push({ def: def.id, x: x + (w >> 1), z: z + (d >> 1) });
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   /** venue defs whose next one waits for a free lot until the day stored */
   private venueNoSite = new Map<string, number>();
 
@@ -2403,6 +2581,51 @@ export class SimBot {
     for (const id of want) if (!st.budget.ordinances.includes(id)) this.A.setOrdinance(id, true);
   }
 
+  /** LG-10: the fourteen unused policies, when their benefit is needed and their whole monthly bill fits. */
+  lateOrdinances(): void {
+    if (!this.opts.lateOrdinances || this.opts.profile === 'newcomer') return;
+    const st = this.st, s = st.stats;
+    let net = this.monthlyNet() + this.pendingUpkeep, smokeUpkeep = 0;
+    // Include base ordinances enacted this month (and the growth in existing per-resident bills).
+    for (const id of st.budget.ordinances) {
+      const o = getOrdinance(id);
+      if (o) net -= ordinanceMonthly(o, s.population) - (o.income ? -(st.budget.lastIncome['ordinance:' + id] ?? 0) : st.budget.lastExpense['ordinance:' + id] ?? 0);
+    }
+    for (const b of st.buildings.values()) {
+      const d = getDef(b.def);
+      if (!(b.flags & BF.Burnt) && d?.category === 'power' && (d.pollution?.air ?? 0) > 0) smokeUpkeep += expectedUpkeep(st, d) * (st.budget.funding[d.service ?? 'utilities'] ?? 100) / 100;
+    }
+    const industry = s.jobsByDev[DevType.ID] + s.jobsByDev[DevType.IM] + s.jobsByDev[DevType.IHT];
+    const polluted = s.avgAir > 0.1 || s.avgWaterPollution > 0.1;
+    const want: [string, boolean, number?][] = [
+      ['water_conservation', s.waterDemand > 0 && s.waterDemand > 0.6 * s.waterSupply],
+      ['power_conservation', s.powerDemand > 0 && s.powerDemand > 0.6 * s.powerSupply],
+      ['sewage_mandate', s.waterDemand > 0 && s.sewageTreated < 0.9],
+      ['quiet_zones', s.avgNoise > 0.1],
+      ['clean_power_act', smokeUpkeep > 0, smokeUpkeep * 0.15],
+      ['pollution_controls', industry > 0 && polluted && s.unemployment < 0.08],
+      ['clean_air_act', s.jobsByDev[DevType.ID] + s.jobsByDev[DevType.IM] > 0 && s.avgAir > 0.15 && s.unemployment < 0.08],
+      ['tire_recycling', !this.skips('garbage') && s.garbageProduced > 0 && (polluted || s.landfillFill > 0.4 || s.garbageProduced > 0.8 * s.garbageCapacity)],
+      ['brownfield_cleanup', st.soil.some((v) => v > 0.1)],
+      ['tourism_promotion', s.tourists > 0],
+      ['youth_curfew', !this.skips('services') && !this.skips('police') && s.avgCrime > 0.4 && s.cohorts[1] > 0 && s.approval >= 55],
+      ['parking_fines', !this.skips('transit') && s.tripsCar > 0 && (s.avgCommute > 30 || net < 0) && s.approval >= 55],
+      ['legalized_gambling', net < 0 && s.avgCrime < 0.3 && s.approval >= 60],
+      ['nuclear_free_zone', !this.count('util_nuclear_plant') && s.powerDemand > 0 && s.powerDemand <= 900 && s.powerSupply > 1.5 * s.powerDemand],
+    ];
+    for (const [id, useful, extra = 0] of want) {
+      if (!useful || st.budget.ordinances.includes(id)) continue;
+      const o = getOrdinance(id)!;
+      if (s.population < o.unlockPop) continue;
+      const up = ordinanceMonthly(o, s.population) + extra;
+      if (up > 0 && (net <= up || !this.canSpendOpt(3 * up + this.jailHold))) continue;
+      if (!this.A.setOrdinance(id, true).ok) continue;
+      net -= up;
+      this.pendingUpkeep -= up;
+      this.say(`late ordinance: ${o.name} ($${Math.round(up)}/month including extra upkeep)`);
+    }
+  }
+
   // ------------------------------------------------------------------------------------------ run
   run(years: number, onYear?: (row: YearRow) => void): YearRow[] {
     this.setup();
@@ -2499,7 +2722,7 @@ export function formatRow(r: YearRow): string {
 export const HEADER = 'year      pop    funds  income expense   dR     dC     dI    EQ  com   bldg    jobs unem appr stg   acc kids%  sen% enrE% enrH%  tourist attr econms totalms';
 export const NEWCOMER_HEADER = 'year      pop  approval      funds failed top three approval terms (points; baseline excluded)';
 
-function parseArgs(argv: string[]): BotOptions {
+export function parseArgs(argv: string[]): BotOptions {
   const o: BotOptions = { size: 256, years: 60, seed: 7, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: false, noInfra: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i], v = argv[i + 1];
@@ -2517,7 +2740,23 @@ function parseArgs(argv: string[]): BotOptions {
       }
       o.profile = v; i++;
     } else if (a === '--no-infra') o.noInfra = true;
-    else if (a === '--tax') { o.tax = +v; i++; }
+    else if (a === '--tax' || a.startsWith('--tax=')) {
+      const rate = a === '--tax' ? v : a.slice(6);
+      if (!rate?.trim() || !Number.isFinite(+rate) || +rate < 0 || +rate > 20) {
+        console.error('simbot: --tax must be a finite rate from 0 to 20 percent');
+        process.exit(2);
+      }
+      o.tax = +rate;
+      if (a === '--tax') i++;
+    }
+    else if (a === '--subway') o.subway = true;
+    else if (a === '--late-ordinances') o.lateOrdinances = true;
+    else if (a === '--venues') o.venues = true;
+    else if (a === '--expand' || a === '--megaprojects' || a === '--arcology' || a === '--charter' || a.startsWith('--charter=')) {
+      const item = a === '--expand' ? 'LG-19' : a === '--megaprojects' ? 'LG-03' : a === '--arcology' ? 'LG-04' : 'LG-17';
+      console.error(`simbot: ${a.split('=')[0]} lands with ${item}; its simulation content is not available`);
+      process.exit(2);
+    }
     else if (a === '--spendy') o.spendy = true;
     else if (a === '--neglect') o.neglect = true;
     else if (a === '--skip') { o.skip = v.split(','); i++; }
@@ -2527,8 +2766,8 @@ function parseArgs(argv: string[]): BotOptions {
   if (o.profile === 'newcomer') {
     if (!argv.includes('--size')) o.size = 128;
     if (!argv.includes('--years')) o.years = 10;
-    if (o.tax !== undefined || o.spendy || o.skip?.length) {
-      console.error('simbot: --profile newcomer has its own tax, funding and service rules; omit --tax, --spendy and --skip');
+    if (o.tax !== undefined || o.spendy || o.skip?.length || o.subway || o.lateOrdinances || o.venues) {
+      console.error('simbot: --profile newcomer has its own tax, funding and service rules; omit --tax, --spendy, --skip, --subway, --late-ordinances and --venues');
       process.exit(2);
     }
   }
@@ -2551,7 +2790,15 @@ usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/
   --seed N          terrain / sim seed (7)         --difficulty D   easy | medium | hard | sandbox (medium)
   --terrain T       terrain preset (plains)        --water F        water amount 0..1 (0.2)
   --quiet           no per-action log              --no-infra       economy systems only (no sim-infra)
-  --tax N           fixed tax rate for every type  --spendy         150 % funding, builds without budget checks
+  --tax=N           fixed tax rate for every type from setup (0..20 %, also --tax N; NEW-05 sweep)
+  --spendy          150 % funding, builds without budget checks
+  --subway          from 150k: core to the three densest residential 8 x 8 blocks, entrances every 8 tiles
+                    (nearest walkable lot within 4 tiles, with tunnel spurs); honors --skip transit
+  --late-ordinances enact the fourteen unused ordinances when useful, unlocked and affordable, including upkeep
+  --venues          buy a zoo once unlocked and a passenger train station with rail to the edge from 25k;
+                    keep the reserve / venue fund and cover upkeep; --skip services omits the zoo, transit the train
+                    LG-10 rules are off by default. --expand lands with LG-19; --megaprojects with LG-03;
+                    --arcology with LG-04; --charter=X with LG-17 (unavailable flags are rejected).
   --neglect         never dispatches to uncovered emergencies
   --profile P       default | newcomer (default). Newcomer defaults to --size 128 --years 10, founds on day 90:
                     coal beside small zones, pump beside industry; expands only on FH-03 zone-more warnings,
@@ -2559,7 +2806,7 @@ usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/
                     no manual dispatch for the first incident. NOTE-009: 30 days after a no-power warning,
                     rebuilds coal at the first fitting site beside the zones, once per lost plant; logs failures
                     and retries monthly while the warning persists. No fire station or other proactive rules.
-                    Cannot combine with --tax, --spendy or --skip. Years count from founding; prints population,
+                    Cannot combine with --tax, --spendy, --skip or LG-10 rules. Years count from founding; prints population,
                     approval and its three largest non-baseline terms, funds and failed incidents during each year.
   --skip a,b,...    leave rules out (the wrong choices): schools, garbage, jail, transit, police, services, dirty
   --save-years a,b  save the city at the end of these years (1 = after the first year) as game saves named by
@@ -2581,6 +2828,9 @@ if (process.argv[1]?.includes('simbot') && (process.argv.includes('--help') || p
     process.exit(2);
   }
   console.log(`SIMBOT size=${opts.size} years=${opts.years} seed=${opts.seed} ${opts.difficulty} ${opts.terrain}${opts.noInfra ? ' (no infra)' : ''}${opts.profile === 'newcomer' ? ' profile=newcomer (founded day 90)' : ''}`);
+  if (opts.subway || opts.lateOrdinances || opts.venues || opts.tax !== undefined) {
+    console.log('LG-10 rules:', [opts.subway && '--subway', opts.lateOrdinances && '--late-ordinances', opts.venues && '--venues', opts.tax !== undefined && `--tax=${opts.tax}`].filter(Boolean).join(' '));
+  }
   const systems = opts.noInfra ? economySystems() : (await import("../src/sim/systems/index")).createSystems();
   const bot = new SimBot(opts, systems);
   const save = opts.saveYears ? await yearSaver(opts) : null;
@@ -2614,6 +2864,7 @@ async function yearSaver(o: BotOptions): Promise<(bot: SimBot, r: YearRow) => vo
     size: o.size, years: o.years, seed: o.seed, difficulty: o.difficulty, terrain: o.terrain, water: o.water, noInfra: o.noInfra,
     ...(o.tax !== undefined ? { tax: o.tax } : {}), ...(o.spendy ? { spendy: true } : {}), ...(o.neglect ? { neglect: true } : {}),
     ...(o.skip ? { skip: o.skip } : {}),
+    ...(o.subway ? { subway: true } : {}), ...(o.lateOrdinances ? { lateOrdinances: true } : {}), ...(o.venues ? { venues: true } : {}),
   };
   console.error(`simbot: saving the end of year ${[...years].join(', ')} as ${prefix}y<N>.city.metropolis / .region.metropolis / .READY`);
   return (b, r) => {
