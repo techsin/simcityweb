@@ -1,4 +1,4 @@
-/** The main-thread seam. Queries, views and persistence join it in W0.3–W0.6. */
+/** The main-thread seam. Full views and persistence join it in W0.5–W0.6. */
 import type { CellRect, Emitter } from '../core/events';
 import type { DevType, Network, Zone } from '../core/types';
 import { ActionsProxy } from '../game/ActionsProxy';
@@ -8,10 +8,112 @@ import type { RegionContext } from '../region/regionEffects';
 import type { ActionResult, Cell, CityActionsApi, TerraformKind } from '../sim/actions';
 import { BF, type CityState } from '../sim/CityState';
 import type { ServiceKind } from '../sim/catalogTypes';
-import type { DispatchResult } from '../sim/infra/emergency';
+import type { DispatchResult, EmergencySystem } from '../sim/infra/emergency';
 import type { CityEvents, Simulation } from '../sim/Simulation';
 import { simWasmFlagSelects } from '../wasm/simWasm';
 import { SimCore, type SimErrors, type SimFlags, type SimModules } from './SimCore';
+import { queryKey, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
+
+export type { QueryName, QueryArgs, QueryResult, WatchPolicy } from './queries';
+
+/** W0.3's dispatch reads; W0.5 completes the stream views. No system or mutation method escapes. */
+export type DispatchView = Pick<EmergencySystem, 'incident' | 'incidents' | 'vehicles' | 'stationFleet' | 'stationName'>;
+
+// W0.3: query/watch contracts and local transport checks.
+export interface WatchHandle<R, A = unknown> {
+  readonly value: R | undefined;
+  readonly error: unknown;
+  readonly version: number;
+  setArgs(args: A): void;
+  subscribe(listener: () => void, signal: AbortSignal): () => void;
+  dispose(): void;
+}
+
+/** Bind the watch itself to the city's lifetime, removing the abort listener on an earlier close. */
+export function watchFor<K extends QueryName>(host: SimHost, name: K, args: QueryArgs<K>, when: WatchPolicy, signal: AbortSignal): WatchHandle<QueryResult<K>, QueryArgs<K>> {
+  const w = host.watch(name, args, when);
+  const dispose = w.dispose.bind(w);
+  const close = () => { signal.removeEventListener('abort', close); dispose(); };
+  w.dispose = close;
+  if (signal.aborted) close();
+  else signal.addEventListener('abort', close, { once: true });
+  return w;
+}
+
+function cloneResult<T>(value: T): T {
+  return import.meta.env?.DEV || import.meta.env?.MODE === 'test' || IN_NODE ? structuredClone(value) : value;
+}
+
+class LocalWatch<K extends QueryName> implements WatchHandle<QueryResult<K>, QueryArgs<K>> {
+  private cache = new Map<string, { value: QueryResult<K>; signature: string; at: number }>();
+  private listeners = new Map<() => void, () => void>();
+  private key: string;
+  private at = -Infinity;
+  private failed = '';
+  error: unknown;
+  version = 0;
+
+  constructor(private args: QueryArgs<K>, private source: {
+    now(): number;
+    signature(args: QueryArgs<K>): string;
+    run(args: QueryArgs<K>): QueryResult<K>;
+    report(e: unknown): void;
+    remove(): void;
+    interval: number;
+  } | null) { this.args = structuredClone(args); this.key = queryKey(args); }
+
+  get value(): QueryResult<K> | undefined { this.refresh(); return this.cache.get(this.key)?.value; }
+
+  setArgs(args: QueryArgs<K>): void {
+    const key = queryKey(args);
+    if (key === this.key) return;
+    this.args = structuredClone(args);
+    this.key = key;
+    this.error = undefined;
+    this.version++;
+    this.refresh();
+  }
+
+  refresh(): void {
+    const s = this.source;
+    if (!s) return;
+    const now = s.now(), cached = this.cache.get(this.key);
+    // The global cap includes argument changes; the inspector's 1 Hz gate is per argument key.
+    if (now - this.at < 200 || (cached && now - cached.at < s.interval)) return;
+    const signature = s.signature(this.args), failureKey = this.key + ':' + signature;
+    if (cached?.signature === signature || this.failed === failureKey) return;
+    this.at = now;
+    try {
+      const value = s.run(this.args);
+      this.cache.delete(this.key);
+      this.cache.set(this.key, { value, signature, at: now });
+      if (this.cache.size > 64) this.cache.delete(this.cache.keys().next().value!);
+      this.failed = '';
+      this.error = undefined;
+      this.version++;
+    } catch (e) {
+      this.error = e;
+      this.failed = failureKey;
+      this.version++;
+      s.report(e);
+    }
+    for (const listener of this.listeners.keys()) listener();
+  }
+
+  subscribe(listener: () => void, signal: AbortSignal): () => void {
+    this.listeners.get(listener)?.();
+    const off = () => { this.listeners.delete(listener); signal.removeEventListener('abort', off); };
+    if (!signal.aborted && this.source) { this.listeners.set(listener, off); signal.addEventListener('abort', off, { once: true }); }
+    return off;
+  }
+
+  dispose(): void {
+    this.source?.remove();
+    this.source = null;
+    for (const off of this.listeners.values()) off();
+    this.cache.clear();
+  }
+}
 
 export type SpeedSource = 'initial' | 'keyboard' | 'topbar' | 'pause' | 'error' | 'visibility' | 'exit' | 'onboarding' | 'emergency' | 'facade';
 export interface LoanGuard { principal: number; monthsLeft: number }
@@ -100,6 +202,9 @@ export interface SimHost {
   act<K extends CommandOp>(op: K, args: CommandArgs<K>, opts?: ActOptions): Ticket<CommandResult<K>>;
   readonly cause: Cause | null;
   beginGesture(owner: GestureOwner): Gesture;
+  query<K extends QueryName>(name: K, args: QueryArgs<K>): Promise<QueryResult<K>>;
+  watch<K extends QueryName>(name: K, args: QueryArgs<K>, when: WatchPolicy): WatchHandle<QueryResult<K>, QueryArgs<K>>;
+  readonly emergency: DispatchView;
   simTime(): number;
   secondsPerDay(): number;
   frame(dt: number): void;
@@ -111,6 +216,8 @@ export interface LocalSimHostOptions {
   initialSpeed?: number;
   errors?: SimErrors;
   flags?: SimFlags;
+  /** Monotonic real time, injectable for watch cadence tests. */
+  now?: () => number;
 }
 
 /** Broken lazy imports must not take down the city screen: the local host keeps its stand-ins. */
@@ -128,6 +235,17 @@ export class LocalSimHost implements SimHost {
   private seq = 0;
   private emitting: Cause | null = null;
   private gesture: Gesture | null = null;
+  // W0.3: watches and in-flight reads are separate from command/policy ownership.
+  private watches = new Set<LocalWatch<QueryName>>();
+  private queries = new Map<string, Promise<unknown>>();
+  private queryClock: () => number;
+  readonly emergency: DispatchView = {
+    incident: (id) => this.sim.getSystem<EmergencySystem>('emergency')?.incident(id),
+    incidents: () => this.sim.getSystem<EmergencySystem>('emergency')?.incidents() ?? [],
+    vehicles: () => this.sim.getSystem<EmergencySystem>('emergency')?.vehicles() ?? [],
+    stationFleet: (id) => this.sim.getSystem<EmergencySystem>('emergency')?.stationFleet(id) ?? null,
+    stationName: (id) => this.sim.getSystem<EmergencySystem>('emergency')?.stationName(id) ?? 'Station',
+  };
   private resolveReady!: () => void;
   private rejectReady!: (e: unknown) => void;
   readonly ready = new Promise<void>((resolve, reject) => {
@@ -138,6 +256,7 @@ export class LocalSimHost implements SimHost {
   constructor(state: CityState, opts: LocalSimHostOptions = {}) {
     this.core = new SimCore(state, opts.errors, opts.flags);
     this.rctx = opts.rctx ?? null;
+    this.queryClock = opts.now ?? (() => performance.now());
     const fallback = new FallbackActions(this.sim);
     this.actions = new LocalActions(fallback, this);
     this.preview = new LocalActions(fallback, this, true);
@@ -164,7 +283,7 @@ export class LocalSimHost implements SimHost {
     const before = this.emitting;
     this.emitting = { seq, tag: opts.tag ?? null };
     try {
-      const predicted = this.core.applyCommand({ op, args } as Command, this.actions.target) as CommandResult<K>;
+      const predicted = cloneResult(this.core.applyCommand({ op, args } as Command, this.actions.target)) as CommandResult<K>;
       const done = Promise.resolve(predicted);
       gesture?.track(done);
       return { seq, predicted, exact: true, done };
@@ -178,6 +297,42 @@ export class LocalSimHost implements SimHost {
     const gesture = new Gesture(owner, () => { if (this.gesture === gesture) this.gesture = null; });
     this.gesture = gesture;
     return gesture;
+  }
+
+  // W0.3: run now, publish only after the command's synchronous effects have completed.
+  query<K extends QueryName>(name: K, args: QueryArgs<K>): Promise<QueryResult<K>> {
+    if (this.core.isDisposed) return Promise.reject(new Error('Simulation host is disposed'));
+    // A later command starts a new read epoch: it must not reuse a result from before that command (R3).
+    const key = `${this.seq}:${this.state.day}:${name}:${queryKey(args)}`;
+    const pending = this.queries.get(key);
+    if (pending) return pending as Promise<QueryResult<K>>;
+    let result: Promise<QueryResult<K>>;
+    try { result = Promise.resolve(cloneResult(this.core.runQuery(name, args))); }
+    catch (e) { this.queryError(name, e); result = Promise.reject(e); }
+    this.queries.set(key, result);
+    const clear = () => { if (this.queries.get(key) === result) this.queries.delete(key); };
+    void result.then(clear, clear);
+    return result;
+  }
+
+  watch<K extends QueryName>(name: K, args: QueryArgs<K>, when: WatchPolicy): WatchHandle<QueryResult<K>, QueryArgs<K>> {
+    if (this.core.isDisposed) throw new Error('Simulation host is disposed');
+    const w = new LocalWatch<K>(args, {
+      now: this.queryClock,
+      signature: (a) => this.core.querySignature(name, a, when, this.seq),
+      run: (a) => cloneResult(this.core.runQuery(name, a)),
+      report: (e) => this.queryError(name, e),
+      remove: () => this.watches.delete(w as LocalWatch<QueryName>),
+      interval: name === 'inspectBuilding' || name === 'inspectCell' ? 1000 : 200,
+    });
+    this.watches.add(w as LocalWatch<QueryName>);
+    w.refresh();
+    return w;
+  }
+
+  private queryError(name: QueryName, e: unknown): void {
+    this.core.report(`Query “${name}” failed`, e, { key: `query:${name}` });
+    if (import.meta.env?.DEV) console.error(`[query] ${name} failed`, e);
   }
 
   /** Attach the lazy systems and real CityActions, in the same order as CityScene.loadSim. */
@@ -218,10 +373,15 @@ export class LocalSimHost implements SimHost {
     }
   }
 
-  frame(dt: number): void { this.core.frame(dt); }
+  frame(dt: number): void {
+    this.core.frame(dt);
+    for (const w of this.watches) w.refresh();
+  }
 
   dispose(): Promise<void> {
     this.gesture?.end();
+    for (const w of this.watches) w.dispose();
+    this.queries.clear();
     this.core.dispose();
     this.rctx = null;
     this.resolveReady(); // an exit while imports are pending must not leave awaiters hanging

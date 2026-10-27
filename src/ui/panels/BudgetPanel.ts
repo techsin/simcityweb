@@ -8,6 +8,7 @@ import { clear, h, setSlider, setText, slider, stepButtons, toggleClass } from '
 import { icon } from '../icons';
 import { money, moneySigned, signClass, titleCase } from '../format';
 import { isOneOff, sumOneOff, sumRecurring } from '../TopBar';
+import { watchFor, type WatchHandle } from '../../worker/SimHost';
 
 const TAX_GROUPS: { label: string; color: string; devs: DevType[] }[] = [
   { label: 'Residential', color: 'var(--res)', devs: [DevType.R1, DevType.R2, DevType.R3] },
@@ -146,6 +147,11 @@ export class BudgetPanel extends Panel {
 
   override onOpen(): void {
     this.renderTab();
+  }
+
+  override onClose(): void {
+    this.forecastWatch?.dispose();
+    this.forecastWatch = null;
   }
 
   private renderTab(): void {
@@ -381,33 +387,11 @@ export class BudgetPanel extends Panel {
     }
   }
 
-  /** sim-core's forecast at current rates / funding (null when unavailable) */
-  private forecastNow(): Forecast | null {
-    const f = this.ctx.mods.econ?.computeMonthlyBudget;
-    if (!f) return null;
-    try {
-      return f(this.ctx.state, null);
-    } catch (e) {
-      console.warn('[ui] computeMonthlyBudget failed', e);
-      return null;
-    }
-  }
-
-  /**
-   * the forecast, reused while the rates, funding, ordinances and loans stay the same — recomputed on a new sim day at
-   * most every FORECAST_MS of real time (final fixes A1: computeMonthlyBudget walks every cell of the map, and ran on
-   * every UI tick); a slider move recomputes it at once
-   */
-  private fcCache: { key: string; day: number; at: number; st: unknown; v: Forecast | null } | null = null;
+  /** The host refreshes after budget changes, subject to the real-time watch cap. */
+  private forecastWatch: WatchHandle<Forecast> | null = null;
   private forecast(): Forecast | null {
-    const st = this.ctx.state, b = st.budget;
-    const key = `${b.taxRates.join(',')}|${SERVICES.map((s) => b.funding[s.key] ?? 100).join(',')}|${b.ordinances.join(',')}|${b.loans.length}|${st.buildings.size}`;
-    const now = performance.now();
-    const c = this.fcCache;
-    if (c && c.st === st && c.key === key && (c.day === st.day || now - c.at < FORECAST_MS)) return c.v;
-    const v = this.forecastNow();
-    this.fcCache = { key, day: st.day, at: now, st, v };
-    return v;
+    this.forecastWatch ??= watchFor(this.ctx.host, 'computeMonthlyBudget', {}, 'daily', this.ctx.signal);
+    return this.forecastWatch.value ?? null;
   }
 
   /** projected monthly income / expense: sim-core forecast, else last month scaled by tax & funding changes */
@@ -520,8 +504,6 @@ function serviceCost(expense: Record<string, number>, s: ServiceKind): number {
 }
 
 type Forecast = { income: Record<string, number>; expense: Record<string, number>; totalIncome: number; totalExpense: number };
-/** min real ms between two forecasts while only the sim day moves on */
-const FORECAST_MS = 500;
 
 /** "11%" / "11.5%" */
 function pctText(v: number): string {

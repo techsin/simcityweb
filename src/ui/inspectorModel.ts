@@ -10,7 +10,22 @@ import { BF } from '../sim/CityState';
 import type { FactorTerm } from '../sim/explain';
 import type { FacilityLine, FacilityReport } from '../sim/infra/facilities';
 import type { NeedReport } from '../sim/economy/demographics';
-import { money } from './format';
+import { money, pct, titleCase } from './format';
+import type { InspectBuilding } from '../worker/inspect';
+
+/** Display models consume one argument-keyed watch result; no simulation internals are consulted here. */
+export function buildingReportView(report: InspectBuilding) {
+  return {
+    facility: facilityView(report.facility), condition: conditionView(report.condition), desirability: desirabilityView(report.desirability),
+    needs: needRows(report.needs, (n) => {
+      const p = report.providers[report.needs.indexOf(n)];
+      if (!p) return undefined;
+      const name = p.name ?? titleCase(p.def);
+      return p.utilization === null ? name : `${name} · ${pct(p.utilization)} full`;
+    }),
+    pyramid: pyramid(report.cohorts, report.building.pop),
+  };
+}
 
 export type Tone = 'pos' | 'warn' | 'neg' | '';
 
@@ -340,7 +355,7 @@ export function growthRows(gl: GrowthLimitsLike | null | undefined, stage?: numb
   // optional fields added by WP6a (e.g. downtown weight): show numbers / short strings generically (a negative number
   // with a true minus, like every other sign in the inspector)
   for (const [k, v] of Object.entries(gl)) {
-    if (['desStage', 'popStage', 'zoneStage', 'rejected', 'reason'].includes(k)) continue;
+    if (['desStage', 'popStage', 'zoneStage', 'rejected', 'reason', 'downtownStage'].includes(k)) continue;
     if (typeof v === 'number' && Number.isFinite(v)) {
       const t = Math.abs(v) < 10 ? Math.abs(v).toFixed(2) : String(Math.round(Math.abs(v)));
       rows.push({ label: labelOf(k), value: v < 0 && Number(t) !== 0 ? '−' + t : t });

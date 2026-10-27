@@ -1,5 +1,6 @@
 /** Top HUD bar: city, date & speed, funds, population, RCI demand, approval, panel buttons. */
 import { DEV_TYPE_LABELS, DevType } from '../core/types';
+import { watchFor, type WatchHandle, type QueryResult } from '../worker/SimHost';
 import type { GameContext } from '../game/context';
 import { clear, h, setText, toggleClass } from './dom';
 import { icon } from './icons';
@@ -121,6 +122,7 @@ export class TopBar {
   private rciSeg!: HTMLElement;
   private capHintsEl!: HTMLElement;
   private capSig = '';
+  private hintsWatch: WatchHandle<QueryResult<'capHints'>> | null = null;
   /** RCI popover: what the neighbour cities add to demand (econData.regionTerms, WP4-1) */
   private regionEl!: HTMLElement;
   private regionSig = '';
@@ -233,14 +235,8 @@ export class TopBar {
   }
 
   private capHints(): { family: 'R' | 'C' | 'I'; devs: number[]; hint: string }[] {
-    const f = this.ctx.mods.econ?.capHints;
-    if (f) {
-      try {
-        return f(this.ctx.state);
-      } catch {
-        /* ignore */
-      }
-    }
+    const hints = this.hintsWatch?.value;
+    if (hints) return hints;
     const capped = this.cappedDevs();
     const fallback: Record<string, string> = {
       R: 'Build parks, plazas or landmarks to raise the residential cap.',
@@ -315,8 +311,11 @@ export class TopBar {
       const last = this.announced.get(f) ?? -1e9;
       if (st.day - last < 180) continue;
       this.announced.set(f, st.day);
-      const hint = this.capHints().find((x) => x.family === f)?.hint ?? '';
-      this.ctx.toast(`${FAMILY_NAMES[f]} growth is capped. ${hint}`, 'warning', undefined, 'Demand cap');
+      void this.ctx.host.query('capHints', {}).then((hints) => {
+        if (this.ctx.signal.aborted) return;
+        const hint = hints.find((x) => x.family === f)?.hint ?? '';
+        this.ctx.toast(`${FAMILY_NAMES[f]} growth is capped. ${hint}`, 'warning', undefined, 'Demand cap');
+      }).catch(() => {});
     }
   }
 
@@ -330,6 +329,8 @@ export class TopBar {
   private setRci(open: boolean): void {
     if (open !== this.rciOpen) this.ctx.sound(open ? 'flyout' : 'flyoutClose');
     this.rciOpen = open;
+    if (open) this.hintsWatch ??= watchFor(this.ctx.host, 'capHints', {}, 'daily', this.ctx.signal);
+    else { this.hintsWatch?.dispose(); this.hintsWatch = null; }
     toggleClass(this.rciPop, 'open', open);
     if (open) this.update();
   }

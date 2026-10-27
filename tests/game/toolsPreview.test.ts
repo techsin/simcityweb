@@ -15,6 +15,7 @@ import { CityActions } from '../../src/sim/actions';
 import { getDef } from '../../src/sim/catalog';
 import type { Simulation } from '../../src/sim/Simulation';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import type { ToolPointer } from '../../src/game/tools/Tool';
 import { CUT_SETTLE_MS, RectTool } from '../../src/game/tools/ZoneTool';
 import { NetworkTool } from '../../src/game/tools/NetworkTool';
@@ -31,6 +32,8 @@ function fakeCtx(sim: Simulation) {
   const ctx = {
     state: sim.state,
     sim,
+    host: queryHost(sim),
+    signal: new AbortController().signal,
     actions: new CityActions(sim),
     world: { setHighlight: (c: Cells) => calls.hl.push(c), setHighlightRect: () => {} },
     objects: { setGhost: () => {}, setNetworkPreview: () => {} },
