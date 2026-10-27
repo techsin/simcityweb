@@ -1,4 +1,4 @@
-﻿# local-T007-jfixes: the exact JS fixes of the million-population plan (WASM_PLAN PI-4), by Codex â€” summary
+# local-T007-jfixes: the exact JS fixes of the million-population plan (WASM_PLAN PI-4), by Codex â€” summary
 
 T007 on the Windows worker. All fixes branch from `614609f`, the commit T005 measured. Codex wrote each fix at max
 reasoning effort in its own worktree; I briefed, reviewed every diff and ran every gate. One report per fix
