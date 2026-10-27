@@ -8,6 +8,8 @@ export const help = `Metropolis production soak (run between timing runs)
   --cycle-minutes N         Action cycle interval (default 5)
   --sample-seconds N        Telemetry interval (default 15)
   --heap-mib-per-hour N     Strict post-exit heap growth limit (default 16)
+  --late-heap-mib-per-hour N  Heap growth limit over the run's second half (default 8; runs of 1 hour or more)
+  --min-days-per-sec N      Simulation rate floor in the city (default 0, off; NOTE-026: 15 for dense1m at ULTRA)
   --fixture PATH            City/region file; required for vet, optional for dense1m
   --port N                  Vite preview loopback port (default 5199, strict)
   --exit-settle-seconds N   Region settle before three GCs (default 20; minimum 16)
@@ -19,7 +21,7 @@ The duration excludes build/setup and includes cycles; the final exit adds settl
 `;
 
 export function parseOptions(argv, root, env = process.env) {
-  const allowed = new Set(['city', 'hours', 'minutes', 'cycle-minutes', 'sample-seconds', 'heap-mib-per-hour', 'fixture', 'port', 'exit-settle-seconds']);
+  const allowed = new Set(['city', 'hours', 'minutes', 'cycle-minutes', 'sample-seconds', 'heap-mib-per-hour', 'late-heap-mib-per-hour', 'min-days-per-sec', 'fixture', 'port', 'exit-settle-seconds']);
   const values = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--help' && argv.length === 1) return { help: true };
@@ -49,6 +51,8 @@ export function parseOptions(argv, root, env = process.env) {
   return {
     city, durationMs, cycleMs, sampleMs, port,
     heapMiBPerHour: number('heap-mib-per-hour', 16, 0),
+    lateHeapMiBPerHour: number('late-heap-mib-per-hour', 8, 0),
+    minDaysPerSec: number('min-days-per-sec', 0, 0),
     exitSettleMs: number('exit-settle-seconds', 20, 16) * 1000,
     fixture: city === 'small' ? null : resolve(root, values.fixture ?? resolve(env.SIM_FIXTURES ?? resolve(root, 'tools/bench/.fixtures/fixtures'), 'dense1m_s7.metropolis')),
   };
