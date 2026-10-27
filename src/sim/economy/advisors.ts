@@ -268,36 +268,47 @@ interface ZoneScan {
   rubbleZ?: number[];
 }
 
+// (PERF, B3 A0: the month's map scans are small top-level kernels, with their rare branches in functions of their own and
+//  no per-call closures. A scan runs once a month: V8 optimized the big scan functions on their first runs, then threw
+//  the code away on the rare paths it had no feedback for — "insufficient type feedback", and "wrong call target" for a
+//  closure that is a new function object on every scan — so the day-28 scan cost 2–25 ms for the same city. Same
+//  operations in the same order, integer counts and cell indices only: bit-identical results.)
+
 /** growable lots in rubble (ZoneScan.rubbleLots / rubbleAt / rubbleZ): one pass over the buildings, a flag test each
  *  (the infra building snapshot, not the runtime's lists: their rebuild timing stays the population system's) */
 function scanRubble(st: CityState, rt: EconRuntime, r: ZoneScan): void {
-  const N = st.size;
   const lots: number[] = [0, 0, 0], at: number[] = [-1, -1, -1];
   const perZone: number[] = new Array(Zone.IndHigh + 1).fill(0);
   const list = buildingList(st);
   for (let k = 0; k < list.length; k++) {
     const b = list[k];
     if (!(b.flags & BF.Burnt) || b.flags & BF.Plopped) continue;
-    const dev = rt.defOf(b)?.devType;
-    const f = dev === undefined ? -1 : dev <= DevType.R3 ? 0 : dev <= DevType.CO3 ? 1 : 2;
-    const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
-    if (f >= 0) {
-      lots[f]++;
-      if (at[f] < 0) at[f] = i;
-    }
-    // (rubble on land still zoned for growth: room once cleared)
-    const zn = st.zone[i];
-    if (zn >= Zone.ResLow && zn <= Zone.IndHigh) perZone[zn] += b.w * b.d;
+    addRubble(st, rt, b, lots, at, perZone);
   }
   r.rubbleLots = [lots[0], lots[1], lots[2]];
   r.rubbleAt = [at[0], at[1], at[2]];
   r.rubbleZ = perZone;
 }
+/** scanRubble's rare branch: one growable in rubble */
+function addRubble(st: CityState, rt: EconRuntime, b: Building, lots: number[], at: number[], perZone: number[]): void {
+  const N = st.size;
+  const dev = rt.defOf(b)?.devType;
+  const f = dev === undefined ? -1 : dev <= DevType.R3 ? 0 : dev <= DevType.CO3 ? 1 : 2;
+  const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+  if (f >= 0) {
+    lots[f]++;
+    if (at[f] < 0) at[f] = i;
+  }
+  // (rubble on land still zoned for growth: room once cleared)
+  const zn = st.zone[i];
+  if (zn >= Zone.ResLow && zn <= Zone.IndHigh) perZone[zn] += b.w * b.d;
+}
 
+/** scanOutages' running counts (one per scan) */
+interface OutageCounts { pN: number; pRes: number; pJobs: number; pAt: number; pBig: number; wN: number; wRes: number; wJobs: number; wAt: number; wBig: number; pHomes: number }
 /** occupied growables without power / water (ZoneScan.outP ... outWAt): one pass over the growables */
 function scanOutages(st: CityState, rt: EconRuntime, r: ZoneScan): void {
-  const N = st.size;
-  let pN = 0, pRes = 0, pJobs = 0, pAt = -1, pBig = 0, wN = 0, wRes = 0, wJobs = 0, wAt = -1, wBig = 0, pHomes = 0;
+  const o: OutageCounts = { pN: 0, pRes: 0, pJobs: 0, pAt: -1, pBig: 0, wN: 0, wRes: 0, wJobs: 0, wAt: -1, wBig: 0, pHomes: 0 };
   rt.ensureLists();
   const list = rt.growables;
   for (let k = 0; k < list.length; k++) {
@@ -305,27 +316,33 @@ function scanOutages(st: CityState, rt: EconRuntime, r: ZoneScan): void {
     const people = b.pop + b.jobs;
     if (!(people > 0) || b.flags & (BF.Abandoned | BF.Burnt)) continue;
     const p = buildingPowered(st, b, true);
-    let w = true;
-    if (!(b.flags & BF.Watered)) {
-      const def = rt.defOf(b);
-      const needWater = (def?.stage ?? 1) >= WATER_REQUIRED_STAGE || zoneDensity(st.zone[b.z * N + b.x]) >= 2;
-      w = !needWater || buildingWatered(st, b, true);
-    }
+    const w = (b.flags & BF.Watered) !== 0 || waterNeedMet(st, rt, b);
     if (p && w) continue;
-    const at = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
-    if (!p) {
-      pN++; pRes += b.pop; pJobs += b.jobs;
-      if (b.pop > 0) pHomes++;
-      if (people > pBig) { pBig = people; pAt = at; }
-    }
-    if (!w) {
-      wN++; wRes += b.pop; wJobs += b.jobs;
-      if (people > wBig) { wBig = people; wAt = at; }
-    }
+    addOutage(st, b, people, p, w, o);
   }
-  r.outP = pN; r.outPRes = Math.round(pRes); r.outPJobs = Math.round(pJobs); r.outPAt = pAt;
-  r.outW = wN; r.outWRes = Math.round(wRes); r.outWJobs = Math.round(wJobs); r.outWAt = wAt;
-  r.outPHomes = pHomes;
+  r.outP = o.pN; r.outPRes = Math.round(o.pRes); r.outPJobs = Math.round(o.pJobs); r.outPAt = o.pAt;
+  r.outW = o.wN; r.outWRes = Math.round(o.wRes); r.outWJobs = Math.round(o.wJobs); r.outWAt = o.wAt;
+  r.outPHomes = o.pHomes;
+}
+/** scanOutages: a building without BF.Watered has the water it needs (it needs none, or the network reaches it) */
+function waterNeedMet(st: CityState, rt: EconRuntime, b: Building): boolean {
+  const def = rt.defOf(b);
+  const needWater = (def?.stage ?? 1) >= WATER_REQUIRED_STAGE || zoneDensity(st.zone[b.z * st.size + b.x]) >= 2;
+  return !needWater || buildingWatered(st, b, true);
+}
+/** scanOutages' rare branch: an occupied building without power (`p` false) and / or water (`w` false) */
+function addOutage(st: CityState, b: Building, people: number, p: boolean, w: boolean, o: OutageCounts): void {
+  const N = st.size;
+  const at = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+  if (!p) {
+    o.pN++; o.pRes += b.pop; o.pJobs += b.jobs;
+    if (b.pop > 0) o.pHomes++;
+    if (people > o.pBig) { o.pBig = people; o.pAt = at; }
+  }
+  if (!w) {
+    o.wN++; o.wRes += b.pop; o.wJobs += b.jobs;
+    if (people > o.wBig) { o.wBig = people; o.wAt = at; }
+  }
 }
 
 /** "2 occupied buildings (83 residents, 12 jobs)" */
@@ -410,10 +427,18 @@ function lotFit(st: CityState, x: number, z: number, zn: number, s: number): 0 |
 function lotFitAny(st: CityState, x: number, z: number, zn: number, s: number): 0 | 1 | 2 {
   const first = lotFit(st, x, z, zn, s);
   if (first === 0 || s <= 1) return first;
+  return lotFitWide(st, x, z, zn, s, first === 2);
+}
+/** a road on cell (x, z), false outside the map */
+function roadAtXZ(net: Uint8Array, N: number, x: number, z: number): boolean {
+  return x >= 0 && z >= 0 && x < N && z < N && isRoadN(net[z * N + x]);
+}
+/** lotFitAny's wide search (its own kernel: the odd tiles reach it, open land does not); `steep0`: lotFit found only
+ *  too steep lots */
+function lotFitWide(st: CityState, x: number, z: number, zn: number, s: number, steep0: boolean): 0 | 1 | 2 {
   const N = st.size, net = st.network, zone = st.zone, bld = st.building, water = st.water, lines = st.powerLines;
   const maxSlope = GROW_MAX_SLOPE + GROW_MAX_SLOPE_PER_CELL * s;
-  const rd = (xx: number, zz: number) => xx >= 0 && zz >= 0 && xx < N && zz < N && isRoadN(net[zz * N + xx]);
-  let steep = first === 2;
+  let steep = steep0;
   for (let z0 = z - s + 1; z0 <= z; z0++) {
     for (let x0 = x - s + 1; x0 <= x; x0++) {
       if (x0 < 0 || z0 < 0 || x0 + s > N || z0 + s > N) continue;
@@ -432,7 +457,7 @@ function lotFitAny(st: CityState, x: number, z: number, zn: number, s: number): 
         for (let k = 0; k < s && all; k++) {
           const ex = side === 2 ? x0 - 1 : side === 3 ? x0 + s : x0 + k;
           const ez = side === 0 ? z0 - 1 : side === 1 ? z0 + s : z0 + k;
-          if (!rd(ex, ez)) all = false;
+          if (!roadAtXZ(net, N, ex, ez)) all = false;
         }
         edge = all;
       }
@@ -457,10 +482,13 @@ export function lotFitAt(st: CityState, x: number, z: number): -1 | 0 | 1 | 2 {
   return lotFitAny(st, x, z, zn, minLotSide(zn));
 }
 
+/** a growth zone (R / C / I), by zone value */
+function isGrowZone(z: number): boolean {
+  return z >= Zone.ResLow && z <= Zone.IndHigh;
+}
+
 /** one pass over the zoned tiles (4-connected blocks flood-filled for road access) */
 function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int32Array, lots: Int32Array): ZoneScan {
-  const N = st.size, C = st.cells;
-  const zone = st.zone, net = st.network, bld = st.building, powered = st.powered, watered = st.watered;
   const r: ZoneScan = {
     zoned: 0, front: 0, unpowered: 0, unpoweredAt: -1, needWater: 0, unwatered: 0, unwateredAt: -1, ready: 0, readyZones: 0, readyAt: -1, noAccess: 0, noAccessAt: -1,
     noAccessFam: [0, 0, 0], noAccessFamAt: [-1, -1, -1], unpoweredLots: 0, unwateredLots: 0,
@@ -469,18 +497,27 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
     lotOk: [0, 0, 0], lotOkAt: [-1, -1, -1], lotSmall: [0, 0, 0], lotSmallAt: [-1, -1, -1], lotSteep: [0, 0, 0], lotSteepAt: [-1, -1, -1],
     lotSmallZ: new Array(Zone.IndHigh + 1).fill(0), lotSmallZAt: new Array(Zone.IndHigh + 1).fill(-1),
   };
+  const nLots = fillZoneBlocks(st, util, visited, stack, lots, r);
+  classifyLots(st, lots, nLots, r);
+  return r;
+}
+
+/**
+ * scanZones' flood fill: every 4-connected block of zoned tiles — road access, the usable tiles and their utilities,
+ * what they can host — into `r`; the empty ready lots go to `lots` in the order found (returns their count)
+ */
+function fillZoneBlocks(st: CityState, util: boolean, visited: Uint8Array, stack: Int32Array, lots: Int32Array, r: ZoneScan): number {
+  const N = st.size, C = st.cells;
+  const zone = st.zone, net = st.network, bld = st.building, powered = st.powered, watered = st.watered;
   let lotsP = 0, lotsW = 0, nLots = 0;
   const des = st.desirability;
-  const host = r.host!, fit = r.fit!, fitEmpty = r.fitEmpty!, bestAt = r.bestAt!, emptyReady = r.emptyReady!, emptyReadyAt = r.emptyReadyAt!;
-  const lotOk = r.lotOk!, lotOkAt = r.lotOkAt!, lotSmall = r.lotSmall!, lotSmallAt = r.lotSmallAt!, lotSteep = r.lotSteep!, lotSteepAt = r.lotSteepAt!;
-  const lotSmallZ = r.lotSmallZ!, lotSmallZAt = r.lotSmallZAt!;
+  const host = r.host!, fit = r.fit!, bestAt = r.bestAt!, emptyReady = r.emptyReady!, emptyReadyAt = r.emptyReadyAt!;
   const bestDes = new Float32Array(DEV_TYPE_COUNT).fill(-Infinity);
-  const isZ = (i: number) => zone[i] >= Zone.ResLow && zone[i] <= Zone.IndHigh;
   // per block: tiles per family (0 R, 1 C, 2 I) and the first tile of each
   const fam = [0, 0, 0], famAt = [-1, -1, -1];
   visited.fill(0);
   for (let s = 0; s < C; s++) {
-    if (visited[s] || !isZ(s)) continue;
+    if (visited[s] || !isGrowZone(zone[s])) continue;
     let sp = 0, cells = 0, access = false;
     fam[0] = fam[1] = fam[2] = 0;
     famAt[0] = famAt[1] = famAt[2] = -1;
@@ -523,10 +560,10 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
           if (v > GROW_MIN_DESIR) fit[pd]++;
         }
       }
-      if (x > 0 && !visited[i - 1] && isZ(i - 1)) { visited[i - 1] = 1; stack[sp++] = i - 1; }
-      if (x < N - 1 && !visited[i + 1] && isZ(i + 1)) { visited[i + 1] = 1; stack[sp++] = i + 1; }
-      if (i >= N && !visited[i - N] && isZ(i - N)) { visited[i - N] = 1; stack[sp++] = i - N; }
-      if (i + N < C && !visited[i + N] && isZ(i + N)) { visited[i + N] = 1; stack[sp++] = i + N; }
+      if (x > 0 && !visited[i - 1] && isGrowZone(zone[i - 1])) { visited[i - 1] = 1; stack[sp++] = i - 1; }
+      if (x < N - 1 && !visited[i + 1] && isGrowZone(zone[i + 1])) { visited[i + 1] = 1; stack[sp++] = i + 1; }
+      if (i >= N && !visited[i - N] && isGrowZone(zone[i - N])) { visited[i - N] = 1; stack[sp++] = i - N; }
+      if (i + N < C && !visited[i + N] && isGrowZone(zone[i + N])) { visited[i + N] = 1; stack[sp++] = i + N; }
     }
     r.zoned += cells;
     if (!access) {
@@ -538,9 +575,21 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
       }
     }
   }
-  // the empty ready lots, in the order found (PERF: kept out of the fill loop, which stays lean): can a building stand
-  // there (lotFit: growth's placement rules for the zone's smallest building), and which DevTypes of its zone clear
-  // growth's desirability floor there
+  r.unpoweredLots = lotsP;
+  r.unwateredLots = lotsW;
+  return nLots;
+}
+
+/**
+ * scanZones' empty ready lots, in the order found (PERF: kept out of the fill loop, which stays lean): can a building
+ * stand there (lotFit: growth's placement rules for the zone's smallest building), and which DevTypes of its zone clear
+ * growth's desirability floor there
+ */
+function classifyLots(st: CityState, lots: Int32Array, nLots: number, r: ZoneScan): void {
+  const N = st.size, zone = st.zone, des = st.desirability;
+  const fitEmpty = r.fitEmpty!;
+  const lotOk = r.lotOk!, lotOkAt = r.lotOkAt!, lotSmall = r.lotSmall!, lotSmallAt = r.lotSmallAt!, lotSteep = r.lotSteep!, lotSteepAt = r.lotSteepAt!;
+  const lotSmallZ = r.lotSmallZ!, lotSmallZAt = r.lotSmallZAt!;
   for (let z = Zone.ResLow; z <= Zone.IndHigh; z++) lotSide[z] = minLotSide(z);
   for (let k = 0; k < nLots; k++) {
     const i = lots[k], zn = zone[i];
@@ -556,9 +605,6 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
       lotSmallZ[zn]++; if (lotSmallZAt[zn] < 0) lotSmallZAt[zn] = i;
     } else { lotSteep[f]++; if (lotSteepAt[f] < 0) lotSteepAt[f] = i; }
   }
-  r.unpoweredLots = lotsP;
-  r.unwateredLots = lotsW;
-  return r;
 }
 
 /** any 4-neighbour tile around the footprint (no corners) passes `test` */
