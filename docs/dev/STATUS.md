@@ -18,7 +18,7 @@ now deleted scratch directory).
 
 ## Running now (Oct 27 evening)
 
-On the cloud: **B3** (`wf_96cfa1e8-a78`, copy `docs/dev/workflows/b3-month-spread.js`; worktrees `<scratch>/b3`, base `<scratch>/b3base` = test merge `a59f08f`; baseline balance runs in `<scratch>/balance/base/`, which reproduce the recorded part B rows exactly) and **the independent J-fix check** (`wf_2d846103-df1`, copy `docs/dev/workflows/jfix-verify.js`, two read-mostly reviewers on the test merge `<scratch>/premerge`). A test merge with B1 is in `<scratch>/premerge-b1`. The graphics workflow `wf_08a5eb98-993` (`docs/dev/workflows/render2-final-v2r.js`)
+On the cloud: **B3** (`wf_96cfa1e8-a78`, copy `docs/dev/workflows/b3-month-spread.js`; worktrees `<scratch>/b3`, base `<scratch>/b3base` = test merge `a59f08f`; baseline balance runs in `<scratch>/balance/base/`, which reproduce the recorded part B rows exactly) **B2** (Worker S3, the step split: `wf_13b4de49-6de`, copy `docs/dev/workflows/b2-step-split.js`; worktrees `<scratch>/b2` and base `<scratch>/b2base` = the B1 test merge `41ae570`; timing runs take the lock `<scratch>/timing.lock`), and **the independent J-fix check** (`wf_2d846103-df1`, copy `docs/dev/workflows/jfix-verify.js`, two read-mostly reviewers on the test merge `<scratch>/premerge`). A test merge with B1 is in `<scratch>/premerge-b1`. The graphics workflow `wf_08a5eb98-993` (`docs/dev/workflows/render2-final-v2r.js`)
 completed after revise v2 (Oct 27 ~16:05); final review 3 runs on the desktop (T014). On the desktop: T017 (check 4,
 first), T014 (art next to T017; speed on a quiet machine afterwards), T020 (W0), T015 (B1 timing, paused during
 browser runs), T018, T019.
