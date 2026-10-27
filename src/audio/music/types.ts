@@ -56,6 +56,8 @@ export interface TrackPlayer {
   scheduleUntil(t: number): void;
   /** absolute ctx time the song is over (final note + ring-out tail), valid after start() */
   readonly endTime: number;
+  /** Next unscheduled event (absolute ctx seconds), or Infinity when fully scheduled. Optional for custom players. */
+  readonly nextScheduleTime?: number;
   /** stop producing notes after t + fadeSec (the director fades the bus itself) */
   stop(t: number, fadeSec: number): void;
   /** section start times (for the lab's markers / debugging) */

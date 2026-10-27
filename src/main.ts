@@ -535,7 +535,7 @@ class App {
     // the state was just loaded / founded + saved: clean
     const now = Date.now();
     this.city = { scene: null, tile, state: st, lastSave: now, changes: 0, cleanChanges: 0, snapChanges: 0, cleanFp: cityFingerprint(st), snapFp: '', lastSnap: now, saving: 0, saveFailed: false };
-    audio.startAmbience();
+    audio.startAmbienceAfterLoading(this.root);
     audio.setAmbience({ population: st.stats.population, zoom: 0.5, night: false });
     audio.setMusicContext({ screen: 'city', night: false, population: st.stats.population, activity: 0.5 });
     if (Ctor) {

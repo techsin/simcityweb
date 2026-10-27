@@ -1,7 +1,7 @@
 /**
  * MusicDirector - plays the soundtrack as an endless, context-aware playlist of finite generative songs.
  *
- *  - one lookahead scheduler (250 ms timer, 1.5 s lookahead; 4 s while the tab is hidden). A tab that was throttled
+ *  - one deadline timer (next bar / crossfade / cleanup, 1.5 s lookahead), asleep while paused or hidden. A tab that was throttled
  *    or a stalled main thread skips ahead (song.ts skips past bars, Instruments drop past notes) instead of bursting.
  *  - shuffle (weighted by context, never the last 1-2 tracks again) or sequential order; enabled set + shuffle persist
  *  - ~5 s crossfade into the next song before the current one ends; 2.5 s on manual next/prev/select
@@ -78,13 +78,18 @@ export function instantiateTrack(
   send.connect(reverbDest);
   const inst = new Instruments(ctx, bus, send, noise, { bpm: track.bpm, live: o.live, seed, skipBefore: o.skipBefore, stats: o.stats });
   const env: MusicEnv = { ctx, out: bus, reverb: send, noise, rng: new RNG(seed), inst, live: o.live };
-  const player = track.create(env);
-  return { env, inst, player, bus, send };
+  try {
+    const player = track.create(env);
+    return { env, inst, player, bus, send };
+  } catch (e) {
+    inst.dispose();
+    bus.disconnect();
+    send.disconnect();
+    throw e;
+  }
 }
 
-const TICK_MS = 250;
 const LOOKAHEAD = 1.5;
-const HIDDEN_LOOKAHEAD = 4;
 const XF_AUTO = 5;
 const XF_MANUAL = 2.5;
 const START_FADE = 1.2;
@@ -136,6 +141,7 @@ interface Play extends TrackInstance {
   fade: Fade;
   fadingOut: boolean;
   killAt: number;
+  scheduledUntil: number;
 }
 
 export class MusicDirector {
@@ -151,7 +157,14 @@ export class MusicDirector {
   private history: string[] = [];
   private queued: string | null = null;
   private running = false;
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private deferred = false;
+  private wake = () => this.tick();
+  private cleanupSource: ConstantSourceNode | null = null;
+  private finishStop = () => {
+    this.clearCleanup();
+    this.cleanup(this.ctx!.currentTime);
+  };
   private context: MusicContext = { screen: 'menu', night: false, population: 0, activity: 0.5 };
   private listeners = new Set<() => void>();
   private failed = new Set<string>();
@@ -167,19 +180,23 @@ export class MusicDirector {
       /* ignore */
     }
     this.prefs = { shuffle: loaded.shuffle ?? true, disabled: Array.isArray(loaded.disabled) ? loaded.disabled.filter((x) => typeof x === 'string') : [] };
-    if (typeof document !== 'undefined')
-      document.addEventListener('visibilitychange', () => {
-        if (this.timer) this.tick();
-      });
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.wake);
   }
 
   /** connect to the live audio graph (called by AudioEngine.init) */
   attach(ctx: AudioContext, out: AudioNode, reverb: AudioNode, noise: AudioBuffer): void {
+    this.ctx?.removeEventListener('statechange', this.wake);
+    this.clearTimer();
+    if (this.ctx && this.ctx !== ctx) {
+      this.clearCleanup();
+      this.cleanup(Infinity);
+    }
     this.ctx = ctx;
     this.out = out;
     this.reverb = reverb;
     this.noise = noise;
-    if (this.running) this.ensureTimer();
+    ctx.addEventListener('statechange', this.wake);
+    if (this.running) this.tick();
   }
 
   get playing(): boolean {
@@ -190,17 +207,34 @@ export class MusicDirector {
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.ensureTimer();
+    if (this.awake()) this.clearCleanup();
     this.tick();
   }
 
   /** fade everything out and stop */
   stop(fade = 2): void {
     this.running = false;
+    this.clearTimer();
     const ctx = this.ctx;
     if (ctx) for (const p of this.plays) this.fadeOut(p, ctx.currentTime, fade);
     this.cur = null;
+    this.clearCleanup();
+    if (ctx && ctx.state !== 'closed' && this.plays.length) {
+      // One audio-clock completion for the whole fade, with one shared handler. No polling while stopped.
+      const source = this.cleanupSource = ctx.createConstantSource();
+      source.offset.value = 0;
+      source.connect(this.out!);
+      source.onended = this.finishStop;
+      source.start();
+      source.stop(Math.max(...this.plays.map((p) => p.killAt)) + 0.01);
+    }
     this.emit();
+  }
+
+  /** Loading keeps the current play and its clock, but does no scheduling behind the veil. */
+  defer(on: boolean): void {
+    this.deferred = on;
+    this.tick();
   }
 
   setContext(c: Partial<MusicContext>): void {
@@ -297,15 +331,45 @@ export class MusicDirector {
     }
   }
 
-  private ensureTimer(): void {
-    if (this.timer || typeof setInterval === 'undefined') return;
-    this.timer = setInterval(() => this.tick(), TICK_MS);
+  private clearTimer(): void {
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  private clearCleanup(): void {
+    const source = this.cleanupSource;
+    if (!source) return;
+    source.onended = null;
+    try { source.stop(); } catch { /* context closed */ }
+    source.disconnect();
+    this.cleanupSource = null;
+  }
+
+  private awake(): boolean {
+    return this.running && !this.deferred && this.ctx?.state === 'running'
+      && (typeof document === 'undefined' || !document.hidden);
+  }
+
+  private scheduleTimer(): void {
+    if (!this.awake()) return;
+    const now = this.ctx!.currentTime;
+    let at = Infinity;
+    for (const p of this.plays) {
+      at = Math.min(at, p.killAt);
+      if (!p.fadingOut || now < p.killAt - 0.5) {
+        // Older custom TrackPlayers may not expose their next event. Built-in songs always do.
+        const next = p.player.nextScheduleTime ?? p.scheduledUntil;
+        at = Math.min(at, next - (p.player.nextScheduleTime === undefined ? LOOKAHEAD / 2 : LOOKAHEAD));
+      }
+    }
+    if (this.cur && !this.cur.fadingOut) at = Math.min(at, this.cur.player.endTime - XF_AUTO - LOOKAHEAD);
+    if (Number.isFinite(at)) this.timer = setTimeout(this.wake, Math.max(1, Math.ceil((at - now) * 1000) + 1));
   }
 
   private candidates(): MusicTrack[] {
     const ok = this.tracks.filter((t) => !this.failed.has(t.id));
     const en = ok.filter((t) => this.isEnabled(t.id));
-    return en.length ? en : ok.length ? ok : this.tracks;
+    return en.length ? en : ok;
   }
 
   /** context weight of a track */
@@ -329,7 +393,7 @@ export class MusicDirector {
 
   private pick(): string {
     const cands = this.candidates();
-    if (!cands.length) return this.tracks[0]?.id ?? '';
+    if (!cands.length) return '';
     const last = this.history[this.history.length - 1];
     if (!this.prefs.shuffle) {
       const order = this.tracks.filter((t) => cands.includes(t));
@@ -345,7 +409,7 @@ export class MusicDirector {
   private switchTo(id: string, xf: number): void {
     if (!id) return;
     const ctx = this.ctx;
-    if (!this.running || !ctx || ctx.state !== 'running' || !this.out) {
+    if (!this.awake() || !ctx || !this.out) {
       this.queued = id;
       this.emit();
       return;
@@ -353,6 +417,7 @@ export class MusicDirector {
     const now = ctx.currentTime;
     if (this.cur) this.fadeOut(this.cur, now, xf);
     this.begin(id, now + 0.06, xf * 0.8);
+    this.tick();
   }
 
   private fadeOut(p: Play, at: number, dur: number): void {
@@ -363,6 +428,7 @@ export class MusicDirector {
     p.fadingOut = true;
     p.fade.to(0, start, dur, now, 'out');
     p.killAt = start + dur + 0.5;
+    p.inst.endAt(p.killAt);
     try {
       p.player.stop(start, dur);
     } catch {
@@ -375,13 +441,14 @@ export class MusicDirector {
   private begin(id: string, at: number, fadeIn: number, attempt = 0): void {
     const ctx = this.ctx!;
     const track = this.tracks.find((t) => t.id === id) ?? this.tracks[0];
-    if (!track) return;
+    if (!id || !track || this.failed.has(track.id)) return;
     const seed = (this.rng.next() * 0x7fffffff) | 0;
     let inst: TrackInstance | null = null;
     try {
       inst = instantiateTrack(track, ctx, this.out!, this.reverb!, this.noise!, seed, { live: true });
       inst.player.start(at);
       if (!(inst.player.endTime > at)) throw new Error('endTime not set after start()');
+      inst.inst.endAt(inst.player.endTime + 1);
     } catch (e) {
       console.warn(`[music] track "${track.id}" failed to start`, e);
       this.failed.add(track.id);
@@ -396,7 +463,7 @@ export class MusicDirector {
     const trim = track.gain ?? 1;
     const fade = new Fade([inst.bus.gain, inst.send.gain], 0, ctx.currentTime);
     fade.to(trim, at, Math.max(0.05, fadeIn), ctx.currentTime, 'in');
-    const play: Play = { ...inst, track, seed, startAt: at, fade, fadingOut: false, killAt: inst.player.endTime + 1 };
+    const play: Play = { ...inst, track, seed, startAt: at, fade, fadingOut: false, killAt: inst.player.endTime + 1, scheduledUntil: at + LOOKAHEAD };
     this.plays.push(play);
     this.cur = play;
     this.queued = null;
@@ -404,7 +471,7 @@ export class MusicDirector {
     if (this.history.length > 50) this.history.splice(0, this.history.length - 50);
     this.emit();
     try {
-      play.player.scheduleUntil(at + this.lookahead());
+      play.player.scheduleUntil(play.scheduledUntil);
     } catch (e) {
       this.fail(play, e);
     }
@@ -418,21 +485,32 @@ export class MusicDirector {
     if (wasCur && this.running) this.begin(this.pick(), this.ctx!.currentTime + 0.1, START_FADE);
   }
 
-  private lookahead(): number {
-    return typeof document !== 'undefined' && document.hidden ? HIDDEN_LOOKAHEAD : LOOKAHEAD;
-  }
-
   private tick(): void {
+    this.clearTimer();
     const ctx = this.ctx;
     if (!ctx || !this.out) return;
-    if (ctx.state !== 'running') return;
+    if (ctx.state === 'closed') {
+      this.clearCleanup();
+      this.cleanup(Infinity);
+      return;
+    }
+    if (!this.awake()) return;
     const now = ctx.currentTime;
-    const la = this.lookahead();
+    const la = LOOKAHEAD;
+    this.cleanup(now);
+    if (this.queued) {
+      if (this.cur) this.fadeOut(this.cur, now, XF_MANUAL);
+      this.begin(this.queued, now + 0.06, XF_MANUAL * 0.8);
+      this.queued = null;
+    }
     if (this.running && !this.cur) this.begin(this.queued ?? this.pick(), now + 0.08, START_FADE);
     for (const p of [...this.plays]) {
       if (p.fadingOut && now > p.killAt - 0.5) continue;
+      const next = p.player.nextScheduleTime;
+      if (next === undefined ? p.scheduledUntil > now + la / 2 : next >= now + la) continue;
       try {
         p.player.scheduleUntil(now + la);
+        p.scheduledUntil = now + la;
       } catch (e) {
         this.fail(p, e);
       }
@@ -444,10 +522,13 @@ export class MusicDirector {
       this.fadeOut(c, at, XF_AUTO);
       this.begin(this.pick(), at, XF_MANUAL);
     }
-    // cleanup finished plays
+    this.scheduleTimer();
+  }
+
+  private cleanup(now: number): void {
     for (let i = this.plays.length - 1; i >= 0; i--) {
       const p = this.plays[i];
-      if (now > p.killAt) {
+      if (now >= p.killAt) {
         p.inst.dispose();
         try {
           p.bus.disconnect();
@@ -458,10 +539,6 @@ export class MusicDirector {
         this.plays.splice(i, 1);
         if (this.cur === p) this.cur = null;
       }
-    }
-    if (!this.running && !this.plays.length && this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
     }
   }
 }

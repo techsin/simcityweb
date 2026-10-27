@@ -3,6 +3,7 @@
  * camera zoom), birds by day / crickets at night, wind when zoomed out, surf near water, construction ticks.
  */
 import { playVoice, type SfxEnv } from './sfx';
+import { oneShots, type OneShot } from './oneShot';
 
 export interface AmbienceParams {
   /** city population (0 .. 1M+) */
@@ -228,24 +229,31 @@ export class Ambience {
     // construction ticks
     if (this.p.construction > 0.01 && this.p.activity > 0 && now > this.nextTick) {
       this.nextTick = now + (0.6 + Math.random() * 2.5) / this.p.construction;
-      const pan = this.env.ctx.createStereoPanner();
+      const nodes = oneShots(ctx).begin();
+      const pan = nodes.panner();
       pan.pan.value = Math.random() * 1.6 - 0.8;
-      const g = this.env.ctx.createGain();
+      const g = nodes.gain();
       g.gain.value = 0.25 + close * 0.4;
       g.connect(pan).connect(this.out);
       const n = 1 + Math.floor(Math.random() * 3);
-      for (let k = 0; k < n; k++) setTimeout(() => this.running && playVoice(this.env, 'construct', g, { volume: 1 }), k * (110 + Math.random() * 60));
+      let pending = n;
+      for (let k = 0; k < n; k++) setTimeout(() => {
+        if (this.running) {
+          playVoice(this.env, 'construct', g, { volume: 1 });
+          nodes.hold(ctx.currentTime + 0.1); // construct's last source stops at now + 0.095
+        }
+        if (--pending === 0) nodes.finish();
+      }, k * (110 + Math.random() * 60));
     }
   }
 
-  private panned(gain: number): GainNode {
-    const ctx = this.env.ctx;
-    const pan = ctx.createStereoPanner();
+  private panned(gain: number, nodes: OneShot): GainNode {
+    const pan = nodes.panner();
     pan.pan.value = Math.random() * 1.8 - 0.9;
-    const g = ctx.createGain();
+    const g = nodes.gain();
     g.gain.value = gain;
     g.connect(pan).connect(this.out);
-    const wet = ctx.createGain();
+    const wet = nodes.gain();
     wet.gain.value = 0.35;
     g.connect(wet).connect(this.env.wet);
     return g;
@@ -254,7 +262,8 @@ export class Ambience {
   /** a short song-bird phrase: FM chirps */
   private bird(t: number, gain: number): void {
     const ctx = this.env.ctx;
-    const dest = this.panned(gain);
+    const nodes = oneShots(ctx).begin();
+    const dest = this.panned(gain, nodes);
     const base = 2400 + Math.random() * 2200;
     const notes = 2 + Math.floor(Math.random() * 6);
     const style = Math.random();
@@ -272,10 +281,10 @@ export class Ambience {
       }
       const tr = ctx.createOscillator();
       tr.frequency.value = 35 + Math.random() * 40;
-      const trg = ctx.createGain();
+      const trg = nodes.gain();
       trg.gain.value = f * 0.04;
       tr.connect(trg).connect(o.frequency);
-      const g = ctx.createGain();
+      const g = nodes.gain();
       g.gain.setValueAtTime(0.0001, tt);
       g.gain.linearRampToValueAtTime(1, tt + 0.01);
       g.gain.exponentialRampToValueAtTime(0.0001, tt + dur);
@@ -283,20 +292,24 @@ export class Ambience {
       o.start(tt);
       tr.start(tt);
       o.stop(tt + dur + 0.02);
+      nodes.source(o, tt + dur + 0.02);
       tr.stop(tt + dur + 0.02);
+      nodes.source(tr, tt + dur + 0.02);
       tt += dur + 0.02 + Math.random() * 0.08;
     }
+    nodes.finish();
   }
 
   /** cricket chirp group: amplitude-pulsed high sine */
   private cricket(t: number, gain: number): void {
     const ctx = this.env.ctx;
-    const dest = this.panned(gain);
+    const nodes = oneShots(ctx).begin();
+    const dest = this.panned(gain, nodes);
     const f = 4200 + Math.random() * 900;
     const pulses = 3 + Math.floor(Math.random() * 4);
     const o = ctx.createOscillator();
     o.frequency.value = f;
-    const g = ctx.createGain();
+    const g = nodes.gain();
     g.gain.value = 0;
     o.connect(g).connect(dest);
     for (let k = 0; k < pulses; k++) {
@@ -307,13 +320,16 @@ export class Ambience {
     }
     o.start(t);
     o.stop(t + pulses * 0.045 + 0.05);
+    nodes.source(o, t + pulses * 0.045 + 0.05);
+    nodes.finish();
   }
 
   /** distant car horn (two-tone, heavily filtered) */
   private horn(t: number, gain: number): void {
     const ctx = this.env.ctx;
-    const dest = this.panned(gain);
-    const lp = ctx.createBiquadFilter();
+    const nodes = oneShots(ctx).begin();
+    const dest = this.panned(gain, nodes);
+    const lp = nodes.filter();
     lp.type = 'lowpass';
     lp.frequency.value = 1200;
     lp.connect(dest);
@@ -326,7 +342,7 @@ export class Ambience {
         const o = ctx.createOscillator();
         o.type = 'square';
         o.frequency.value = ff;
-        const g = ctx.createGain();
+        const g = nodes.gain();
         g.gain.setValueAtTime(0.0001, s);
         g.gain.linearRampToValueAtTime(0.5, s + 0.02);
         g.gain.setValueAtTime(0.5, s + dur);
@@ -334,7 +350,9 @@ export class Ambience {
         o.connect(g).connect(lp);
         o.start(s);
         o.stop(s + dur + 0.1);
+        nodes.source(o, s + dur + 0.1);
       }
     }
+    nodes.finish();
   }
 }

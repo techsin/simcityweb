@@ -25,6 +25,7 @@ import { Ambience, type AmbienceParams } from './ambience';
 import { MusicDirector, type MusicContext, type NowPlaying, type TrackInfo } from './music/director';
 import { ALL_TRACKS } from './music/tracks';
 import { makeNoiseBuffer, makeReverb } from './music/fx';
+import { afterAudioReveal } from './loading';
 
 export type VolumeKind = 'master' | 'music' | 'sfx' | 'ambience';
 export type { MusicContext, NowPlaying, TrackInfo };
@@ -102,6 +103,8 @@ export class AudioEngine {
   private wantAmbience = false;
   private pendingAmbience: AmbienceParams = {};
   private wantMusic = false;
+  private loading = false;
+  private cancelReveal: (() => void) | null = null;
   private lastHover = 0;
   private lastPlay = new Map<string, number>();
   /** recent play times per sound (repeat attenuation: machine-gunned sounds get gently quieter) */
@@ -309,10 +312,25 @@ export class AudioEngine {
   // ------------------------------------------------------------------ ambience
   startAmbience(): void {
     this.wantAmbience = true;
-    if (!this.ctx) return;
+    if (!this.ctx || this.loading) return;
     if (!this.ambience) this.ambience = new Ambience(this.env, this.buses.ambience);
     this.ambience.set(this.pendingAmbience);
     this.ambience.start();
+  }
+
+  /** City entry: keep scheduler work behind both loading fades, including late AudioContext init. */
+  startAmbienceAfterLoading(root: ParentNode): void {
+    this.cancelReveal?.();
+    this.wantAmbience = true;
+    this.loading = true;
+    this.director.defer(true);
+    this.cancelReveal = afterAudioReveal(root, () => {
+      this.cancelReveal = null;
+      this.loading = false;
+      this.director.defer(false);
+      if (this.wantMusic) this.startMusic();
+      if (this.wantAmbience) this.startAmbience();
+    });
   }
 
   stopAmbience(): void {
@@ -333,7 +351,7 @@ export class AudioEngine {
   /** request music playback for the current screen (starts once the context exists and music is enabled) */
   startMusic(): void {
     this.wantMusic = true;
-    if (!this.ctx || !this.prefs.musicOn) return;
+    if (!this.ctx || !this.prefs.musicOn || this.loading) return;
     this.director.start();
   }
 
@@ -355,6 +373,12 @@ export class AudioEngine {
   /** tell the soundtrack where the player is (menu / region / city by day or night, city size, liveliness) */
   setMusicContext(c: Partial<MusicContext>): void {
     this.director.setContext(c);
+    if (c.screen && c.screen !== 'city' && this.loading) {
+      this.cancelReveal?.();
+      this.cancelReveal = null;
+      this.loading = false;
+      this.director.defer(false);
+    }
   }
 
   toggleMusic(): boolean {
