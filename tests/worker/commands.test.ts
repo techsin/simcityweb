@@ -39,7 +39,7 @@ describe('LocalSimHost commands', () => {
       const ticket = host.act(cmd.op, cmd.args);
       expect(ticket.exact, cmd.op).toBe(true);
       expect(ticket.predicted, cmd.op).toEqual(direct);
-      expect(serializeCity(host.state, { copy: true }), cmd.op).toEqual(serializeCity(sim.state, { copy: true }));
+      expect(serializeCity(host.sim.state, { copy: true }), cmd.op).toEqual(serializeCity(sim.state, { copy: true }));
       expect(host.sim.rng.state, cmd.op).toBe(sim.rng.state);
       await expect(ticket.done).resolves.toEqual(direct);
     }
@@ -50,14 +50,14 @@ describe('LocalSimHost commands', () => {
     vi.spyOn(Date, 'now').mockReturnValue(0);
     const host = new LocalSimHost(newState(32));
     await host.start();
-    const before = serializeCity(host.state, { copy: true }), rng = host.sim.rng.state;
+    const before = serializeCity(host.sim.state, { copy: true }), rng = host.sim.rng.state;
     const rect = { x0: 2, z0: 2, x1: 5, z1: 5 };
     const act = vi.spyOn(host, 'act');
     host.preview.zone(rect, Zone.ResLow);
     host.preview.plantTrees(rect);
     host.actions.terraform('raise', 8, 8, 2, 0.5, true);
     expect(act).not.toHaveBeenCalled();
-    expect(serializeCity(host.state, { copy: true })).toEqual(before);
+    expect(serializeCity(host.sim.state, { copy: true })).toEqual(before);
     expect(host.sim.rng.state).toBe(rng);
     host.actions.zone(rect, Zone.ResLow);
     expect(act).toHaveBeenCalledWith('zone', [rect, Zone.ResLow]);

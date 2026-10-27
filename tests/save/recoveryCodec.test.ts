@@ -5,16 +5,15 @@
  * the middle, the last whole word and the tail; a city with 41-45 buildings after one bulldoze + one growth (codec and
  * the write -> find -> restore cycle); and snapshots written by the pre-fix encoder, which must still restore.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { Network, Zone } from '../../src/core/types';
 import { deserializeCity, isTypedArray, serializeCity, type AnyTypedArray, type SerializedCity } from '../../src/save/serialize';
-import { decodeBundle, encodeBundle } from '../../src/save/bundle';
+import { decodeBundle, encodeBundle } from '../../src/save/bundleCodec';
 import {
   LS_BUDGET_BYTES,
-  MemoryKV,
   RECOMPUTED_LAYERS,
   applyCityDelta,
   clearRecoveryBase,
@@ -30,7 +29,7 @@ import {
   writeRecoverySnapshot,
   type CityDelta,
 } from '../../src/save/index';
-import { createRegionData } from '../../src/region/RegionModel';
+import { MemStorage, PersistentMemoryKV, regionData } from './fixtures';
 
 // ------------------------------------------------------------------------------------------------ helpers
 /** deterministic PRNG (mulberry32) */
@@ -460,38 +459,25 @@ describe('recovery: a city whose building count is not a multiple of 4', { timeo
 });
 
 // ------------------------------------------------------------------------------------------------ write -> find -> restore
-class PersistentMemoryKV extends MemoryKV {
-  override readonly persistent = true as unknown as false;
-}
-
-class MemStorage {
-  m = new Map<string, string>();
-  getItem(k: string) {
-    return this.m.has(k) ? this.m.get(k)! : null;
-  }
-  setItem(k: string, v: string) {
-    this.m.set(k, String(v));
-  }
-  removeItem(k: string) {
-    this.m.delete(k);
-  }
-}
-
-describe('recovery: periodic snapshot after a bulldoze, then the tab is killed', { timeout: 600_000 }, () => {
+describe('recovery: periodic snapshot after a bulldoze, then the tab is killed', () => {
+  let now: number;
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); clearRecoveryBase(); });
   beforeEach(() => {
-    (globalThis as unknown as { localStorage: MemStorage }).localStorage = new MemStorage();
+    now = 1000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    vi.stubGlobal('localStorage', new MemStorage());
     setKV(new PersistentMemoryKV());
     clearRecoveryBase();
   });
 
   it('Recover restores the bulldozed state for 41, 42 and 43 buildings', async () => {
-    const { data } = createRegionData({ seed: 5, preset: 'greenvale', id: 'rcodec', name: 'Codec Region' });
+    const data = regionData('rcodec', 'Codec Region');
     await saveRegion(data);
     for (const [i, n] of [41, 42, 43].entries()) {
       const tileKey = data.tiles[i].key;
       const st = cityWith(n);
       await saveCity('rcodec', tileKey, st); // the last full save (the snapshot's base)
-      await new Promise((r) => setTimeout(r, 5)); // (a snapshot is only offered when it is newer than the save)
+      now += 10; // (a snapshot is only offered when it is newer than the save)
       const newId = bulldozeAndGrow(st);
       const w = writeRecoverySnapshot('rcodec', tileKey, st, { cityName: 'Evergreen', population: 100, funds: st.funds, why: 'periodic', lean: true });
       expect(w.ok).toBe(true);

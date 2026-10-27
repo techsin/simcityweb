@@ -1,4 +1,4 @@
-/** The main-thread seam. Full views and persistence join it in W0.5–W0.6. */
+/** The main-thread simulation seam, including commands, queries, views and persistence. */
 import type { CellRect, Emitter } from '../core/events';
 import type { DevType, Network, Zone } from '../core/types';
 import { ActionsProxy } from '../game/ActionsProxy';
@@ -16,6 +16,27 @@ import { simWasmFlagSelects } from '../wasm/simWasm';
 import { SimCore, type SimErrors, type SimFlags, type SimModules } from './SimCore';
 import { queryKey, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
 import type { PolicyState, SimSettings, ViewState } from './protocol';
+// W0.6: local persistence composition; SimCore imports only the codec / IDB side.
+import type { RegionCitySummary } from '../region/types';
+import type { HostState } from '../save/state';
+import { CHANGE_EVENTS, cityFingerprint } from '../save/fingerprint';
+import { writeRecoverySnapshot, type RecoverySnapshot, type WriteResult } from '../save/recovery';
+import { clearRecoveryAfterSave as clearRecoveryLs } from '../save/recoveryLs';
+
+export type { HostState } from '../save/state';
+export type { SaveReason } from './protocol';
+import type { SaveReason } from './protocol';
+export type SnapshotWhy = import('./protocol').SnapshotWhy | 'beforeunload' | 'pagehide' | 'exit';
+export interface SaveAck {
+  savedAt: number; cmd: number; pktSeq: number; fp: string; summary: RegionCitySummary;
+  /** Local has no packets: this counter is captured with the copy, before the IDB await. */
+  changes: number;
+  recoveryDropped: boolean;
+}
+export interface SnapshotAck extends WriteResult, RecoverySnapshot { cmd: number; fp: string; changes: number }
+export interface CityPersistence { regionId: string; tileKey: string; regionName?: string }
+/** The local host writes snapshots synchronously; later hosts supply their unload mirror here. */
+export interface RecoveryMirror { writeNow(why: SnapshotWhy): void }
 
 export type { QueryName, QueryArgs, QueryResult, WatchPolicy } from './queries';
 
@@ -219,7 +240,7 @@ export class Gesture {
 export interface SimHost {
   readonly kind: 'local' | 'loopback' | 'worker';
   readonly ready: Promise<void>;
-  readonly state: CityState;
+  readonly state: HostState;
   readonly events: Emitter<CityEvents>;
   /** Simulation compatibility during W0; narrowed as commands, queries and views migrate. */
   readonly sim: Simulation;
@@ -249,6 +270,13 @@ export interface SimHost {
 export interface SimHost {
   readonly policy: PolicyView;
 }
+/** W0.6 persistence; independent of queries, policy and views. */
+export interface SimHost {
+  readonly changes: number;
+  readonly recovery: RecoveryMirror | null;
+  save(reason: SaveReason): Promise<SaveAck>;
+  snapshot(why: SnapshotWhy): Promise<SnapshotAck | null>;
+}
 
 export interface LocalSimHostOptions {
   rctx?: RegionContext | null;
@@ -258,6 +286,7 @@ export interface LocalSimHostOptions {
   /** Monotonic real time, injectable for watch cadence tests. */
   now?: () => number;
   signal?: AbortSignal;
+  persistence?: CityPersistence;
 }
 
 /** Broken lazy imports must not take down the city screen: the local host keeps its stand-ins. */
@@ -281,6 +310,11 @@ export class LocalSimHost implements SimHost {
   private queryClock: () => number;
   private views: ReturnType<typeof localViews>;
   private news: ReturnType<typeof newsSequence>;
+  // W0.6: the queue owns copies, never a page-provided state or callback.
+  private persistence: CityPersistence | null;
+  private saveChain: Promise<unknown> = Promise.resolve();
+  private saveChanges = { count: 0, dispose: () => {} };
+  readonly recovery = null;
   private resolveReady!: () => void;
   private rejectReady!: (e: unknown) => void;
   readonly ready = new Promise<void>((resolve, reject) => {
@@ -294,6 +328,8 @@ export class LocalSimHost implements SimHost {
     this.queryClock = opts.now ?? (() => performance.now());
     this.views = localViews(this.sim);
     this.news = newsSequence(this.events, state.news.length, opts.signal);
+    this.persistence = opts.persistence ?? null;
+    this.saveChanges = changeSequence(this.events, opts.signal);
     const fallback = new FallbackActions(this.sim);
     this.actions = new LocalActions(fallback, this);
     this.preview = new LocalActions(fallback, this, true);
@@ -301,7 +337,7 @@ export class LocalSimHost implements SimHost {
   }
 
   get sim(): Simulation { return this.core.sim; }
-  get state(): CityState { return this.sim.state; }
+  get state(): HostState { return this.sim.state; }
   get events(): Emitter<CityEvents> { return this.sim.events; }
   get speed(): number { return this.sim.speed; }
   get liveSlowdown(): number { return this.sim.liveSlowdown; }
@@ -318,6 +354,39 @@ export class LocalSimHost implements SimHost {
   get newsSeq(): number { return this.news.seq; }
   /** All local layers are already available; replica hosts subscribe through this seam. */
   setView(_view: ViewState): void {}
+
+  // W0.6: save acknowledgements describe the copy, not the city after a slow write.
+  get changes(): number { return this.saveChanges.count; }
+
+  save(_reason: SaveReason): Promise<SaveAck> {
+    const run = this.saveChain.then(async () => {
+      if (this.core.isDisposed) throw new Error('Simulation host is disposed');
+      const p = this.persistence;
+      if (!p) throw new Error('City persistence is not configured');
+      const copy = this.core.copySave(p.regionId, p.tileKey);
+      const cmd = this.seq, changes = this.changes;
+      const droppedIdb = await this.core.putSave(copy);
+      const droppedLs = clearRecoveryLs(p.regionId, p.tileKey, copy.record.savedAt);
+      return { savedAt: copy.record.savedAt, cmd, pktSeq: 0, fp: copy.fp, summary: copy.summary, changes, recoveryDropped: droppedIdb || droppedLs };
+    });
+    this.saveChain = run.catch(() => undefined);
+    return run;
+  }
+
+  snapshot(why: SnapshotWhy): Promise<SnapshotAck | null> {
+    try {
+      if (this.core.isDisposed) throw new Error('Simulation host is disposed');
+      const p = this.persistence;
+      if (!p) return Promise.resolve(null);
+      const st = this.core.sim.state;
+      // No await here: beforeunload / pagehide must finish the localStorage write in this task.
+      const result = writeRecoverySnapshot(p.regionId, p.tileKey, st, {
+        cityName: st.config.name, regionName: p.regionName, population: st.stats?.population ?? 0,
+        funds: st.funds, why, lean: why === 'periodic',
+      });
+      return Promise.resolve({ ...result, cmd: this.seq, fp: cityFingerprint(st), changes: this.changes });
+    } catch (e) { return Promise.reject(e); }
+  }
 
   setSpeed(v: number, source: SpeedSource): void { this.act('setSpeed', [v, source]); }
   resume(source: SpeedSource): void { this.act('resume', [source]); }
@@ -382,11 +451,11 @@ export class LocalSimHost implements SimHost {
   }
 
   /** Attach the lazy systems and real CityActions, in the same order as CityScene.loadSim. */
-  async start(): Promise<void> {
+  async start(modules?: SimModules): Promise<void> {
     if (this.started || this.core.isDisposed) return this.ready;
     this.started = true;
     try {
-      const [sysMod, actMod] = await Promise.all([
+      const [sysMod, actMod] = modules ? [modules, modules] : await Promise.all([
         SIM_MODULES['../sim/systems/index.ts']?.().catch((e: unknown) => {
           this.core.report('Simulation systems failed to load — the city will not grow', e, { sim: true });
           return null;
@@ -429,11 +498,24 @@ export class LocalSimHost implements SimHost {
     for (const w of this.watches) w.dispose();
     this.queries.clear();
     this.news.dispose();
+    this.saveChanges.dispose();
+    this.persistence = null;
     this.core.dispose();
     this.rctx = null;
     this.resolveReady(); // an exit while imports are pending must not leave awaiters hanging
     return Promise.resolve();
   }
+}
+
+/** W0.6: the same dirty events as App, bound to the city lifetime and released on host disposal. */
+function changeSequence(events: Emitter<CityEvents>, signal?: AbortSignal): { count: number; dispose(): void } {
+  const counter = { count: 0, dispose: () => {} };
+  if (signal?.aborted) return counter;
+  const offs = CHANGE_EVENTS.map((type) => events.on(type, () => { counter.count++; }));
+  const dispose = () => { for (const off of offs) off(); signal?.removeEventListener('abort', dispose); };
+  counter.dispose = dispose;
+  signal?.addEventListener('abort', dispose, { once: true });
+  return counter;
 }
 
 /** W0.5 local views: no commands or system internals escape through these readers. */
