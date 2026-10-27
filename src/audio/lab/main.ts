@@ -8,6 +8,8 @@
  *   ?director=<seconds>[&real=1&stall=T&next=T&select=id@T]   live MusicDirector test (see directorTest.ts)
  *   ?duck=milestone[&db=14&hold=6&stem=music]     matched stems: music / ambience duck and recovery (mixTest.ts)
  *   ?background=1[&muteInBackground=0]           live master fade / suspend / resume (simulated visibility)
+ *   ?ambience=60&month=1&climate=temperate&night=0&water=0.444444&distance=300&size=64&seed=1
+ *                                                month 1..12; layer gains and actual bird/cricket/gull counts
  *   no params                                    index of everything available
  *
  * Results: window.__result (JSON), console line "LAB_RESULT {...}", canvas #lab (spectrogram 20 Hz-16 kHz,
@@ -22,6 +24,10 @@ import { playVoice, SOUND_META, SOUND_NAMES, type SfxEnv, type SoundName } from 
 import { levels, loudness, onsets, spectrum, round, type SpectrumStats, type LoudnessResult } from './analysis';
 import { runDirectorTest } from './directorTest';
 import { renderDuck, runBackgroundTest } from './mixTest';
+import { Ambience, type AmbienceEvent } from '../ambience';
+import { ambienceZoom } from '../ambienceSample';
+import { RNG } from '../../core/rng';
+import type { Climate } from '../../core/types';
 
 declare global {
   interface Window {
@@ -214,6 +220,51 @@ async function renderIdle(seconds: number) {
   const { ctx } = offline(seconds);
   const buf = await timed(ctx);
   return { buf, from: 0, to: buf.duration, markers: [] as Marker[], title: `idle ${seconds}s`, extra: { mode: 'idle' } };
+}
+
+async function renderAmbience(seconds: number) {
+  if (!(seconds > 0) || !Number.isFinite(seconds)) throw new Error('ambience must be a duration in seconds');
+  const month = Number(q.get('month') ?? '7');
+  const climate = (q.get('climate') ?? 'temperate') as Climate;
+  if (!Number.isInteger(month) || month < 1 || month > 12) throw new Error('month must be 1..12');
+  if (!['temperate', 'desert', 'tropical', 'alpine'].includes(climate)) throw new Error('unknown climate');
+  const seed = parseInt(q.get('seed') ?? '1', 10) | 0;
+  const rng = new RNG(seed);
+  const distance = Number(q.get('distance') ?? '300'), size = Number(q.get('size') ?? '64');
+  const params = {
+    month: month - 1, climate, night: q.get('night') === '1', water: Number(q.get('water') ?? '0'),
+    zoom: ambienceZoom(distance, size), population: Number(q.get('pop') ?? '0'), activity: 0, construction: 0,
+  };
+  const { ctx, reverbIn, noise } = offline(seconds);
+  const env: SfxEnv = { ctx: ctx as unknown as AudioContext, out: ctx.destination, wet: reverbIn, noise };
+  const counts = { bird: 0, cricket: 0, gull: 0 };
+  const events: { kind: AmbienceEvent; t: number }[] = [];
+  const amb = new Ambience(env, ctx.destination, {
+    live: false, random: () => rng.next(),
+    onEvent: (kind, t) => { if (t < seconds) { counts[kind]++; events.push({ kind, t: round(t, 3) }); } },
+  });
+  amb.set(params);
+  amb.start();
+  let surfGain = 0, windGain = 0;
+  for (let i = 1; i * 0.2 < seconds - 0.01; i++) {
+    void ctx.suspend(i * 0.2).then(() => {
+      amb.tick();
+      surfGain = amb.surfLevel;
+      windGain = amb.windLevel;
+      void ctx.resume();
+    });
+  }
+  const tB = performance.now();
+  try {
+    const buf = await timed(ctx);
+    return {
+      buf, from: 0, to: buf.duration, markers: events.map((e) => ({ t: e.t, name: e.kind })),
+      title: `ambience: month ${month}, ${climate}, ${params.night ? 'night' : 'day'}, water ${params.water}`,
+      extra: { mode: 'ambience', month, climate, night: params.night, water: params.water, distance, size, seed, surfGain, windGain, counts, events, renderMs: Math.round(performance.now() - tB) },
+    };
+  } finally {
+    amb.stop();
+  }
 }
 
 async function renderSfx(which: string) {
@@ -509,7 +560,7 @@ function exposeWav(buf: AudioBuffer, a: number, b: number): void {
 
 // ------------------------------------------------------------------ main
 async function main() {
-  const track = q.get('track'), sfx = q.get('sfx'), instQ = q.get('inst'), idle = q.get('idle'), duck = q.get('duck');
+  const track = q.get('track'), sfx = q.get('sfx'), instQ = q.get('inst'), idle = q.get('idle'), duck = q.get('duck'), ambience = q.get('ambience');
   if (q.get('director') || q.has('background')) {
     const background = q.has('background');
     const res = (background ? await runBackgroundTest(q, log) : await runDirectorTest(q, log)) as { levels: number[]; events: { t: number; id: string | null }[]; seconds: number };
@@ -547,7 +598,7 @@ async function main() {
     window.__ready = true;
     return;
   }
-  if (!track && !sfx && !instQ && !idle && !duck) {
+  if (!track && !sfx && !instQ && !idle && !duck && !ambience) {
     const add = (label: string, href: string) => {
       const a = document.createElement('a');
       a.href = href;
@@ -570,12 +621,18 @@ async function main() {
     add('Menu crossfades', '?director=50&screen=menu');
     add('Background mute', '?background=1');
     add('Background mute off', '?background=1&muteInBackground=0');
+    log('Ambience (60 s):');
+    add('beach at 300 m', '?ambience=60&water=0.444444&distance=300&size=64');
+    add('January birds', '?ambience=60&month=1');
+    add('July birds', '?ambience=60&month=7');
+    add('January night', '?ambience=60&month=1&night=1');
+    add('desert night', '?ambience=60&month=1&climate=desert&night=1');
     window.__result = { tracks: ALL_TRACKS.map((t) => t.id), sfx: SOUND_NAMES, instruments: Object.keys(DEMOS) };
     window.__ready = true;
     return;
   }
   log('rendering...');
-  const r = duck ? await renderDuck(q, timed) : track ? await renderTrack(track) : sfx ? await renderSfx(sfx) : idle ? await renderIdle(parseFloat(idle)) : await renderInst(instQ!);
+  const r = duck ? await renderDuck(q, timed) : track ? await renderTrack(track) : sfx ? await renderSfx(sfx) : idle ? await renderIdle(parseFloat(idle)) : ambience ? await renderAmbience(Number(ambience)) : await renderInst(instQ!);
   const tA = performance.now();
   const buf = r.buf;
   const L = buf.getChannelData(0), R = buf.getChannelData(1);
