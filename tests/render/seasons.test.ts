@@ -25,12 +25,13 @@ import { getModelGeometry, registeredModelIds } from '../../src/assets/registry'
 import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { Surf } from '../../src/core/types';
 import { getBuildingMaterial, patchFoliageDepthMaterial, setFoliageSeason, sharedUniforms } from '../../src/assets/materials';
-import { MICRO_WAIST_Y, RING_LOW_R, bareTreeProxy, getImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
+import { MICRO_WAIST_Y, RING_LOW_R, bareTreeProxy, getImpostorGeometries, getMicroImpostorGeometries, natureStats } from '../../src/render/world/fallbackTrees';
 import { propLodGeometry } from '../../src/render/city/props/propLod';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
 import { TreeRenderer, ringRand, treeSurfaceChain } from '../../src/render/world/TreeRenderer';
+import { loadWarm } from '../../src/render/world/Shadows';
 import { CELL_SIZE } from '../../src/core/constants';
 import { ModelBuilder } from '../../src/assets/ModelBuilder';
 import { RNG } from '../../src/core/rng';
@@ -778,11 +779,13 @@ describe('outer ring trees', () => {
     const W = st.size * CELL_SIZE;
     const terr = (tr as unknown as { terrain: TerrainRenderer }).terrain;
     const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
-    const ring = () => tr.group.children.filter((o) => o.name === 'trees-ring') as THREE.InstancedMesh[];
+    // (the far blocks, the near pairs and the far ring's all-in-one mesh)
+    const ring = () => tr.group.children.filter((o) => o.name === 'trees-ring' || o.name === 'trees-ring-all') as THREE.InstancedMesh[];
     const isMicro = (m: THREE.InstancedMesh) => (m.geometry.name ?? '').startsWith('impostor-micro');
-    /** a ring mesh that draws trees (the first view update after the load also shows the others, with none: their
-     *  instance data uploads then, updateRingView) */
-    const drawn = (m: THREE.InstancedMesh) => m.visible && m.count > 0;
+    /** a ring mesh that draws trees (the first view update after the load also draws every other one with trees once,
+     *  with one instance: their instance data uploads then, updateRingView / warmDraw) */
+    type Warm = THREE.InstancedMesh & { warmOnce: boolean; warmVis: boolean; warmCount: number };
+    const drawn = (m: THREE.InstancedMesh) => ((m as Warm).warmOnce ? (m as Warm).warmVis && (m as Warm).warmCount > 0 : m.visible && m.count > 0);
     const at = (x: number, h: number, z: number, look?: [number, number]) => {
       cam.position.set(x, terr.meshHeightAt(x, z) + h, z);
       // (looking along -z, as the default camera, or down at the given point)
@@ -792,12 +795,14 @@ describe('outer ring trees', () => {
     // street height in the middle of a 2 km map: the ring is hidden
     at(W / 2, 30, W / 2);
     expect(ring().some(drawn)).toBe(false);
-    // (that first update after the load: every ring mesh with trees shown, the hidden ones with no instances, not
-    // culled; the next one restores the frustum test)
-    expect(ring().filter((m) => (m.userData.ringCount as number) > 0).every((m) => m.visible && !m.frustumCulled)).toBe(true);
+    // (that first update after the load: every ring mesh with trees - all hidden by this view - is drawn once with one
+    // instance, not culled, and is back to its own state, hidden, after that draw or by the next update)
+    const withTrees = ring().filter((m) => (m.userData.ringCount as number) > 0);
+    expect(withTrees.length).toBeGreaterThan(8);
+    expect(withTrees.every((m) => (m as Warm).warmOnce && m.visible && m.count === 1 && !m.frustumCulled)).toBe(true);
     at(W / 2, 30, W / 2);
     expect(ring().some((m) => m.visible)).toBe(false);
-    expect(ring().every((m) => m.frustumCulled)).toBe(true);
+    expect(ring().every((m) => m.frustumCulled && !(m as Warm).warmOnce)).toBe(true);
     // street height next to the west edge: the ring is the horizon there - that side's regular impostor pair, and past
     // its switch distance its far blocks, as whole micro crowns (the low-camera shape: seen at a grazing angle, the
     // plain upper half is a cone floating at 63% of the tree's height); nothing of the sectors whose edge is far
@@ -857,7 +862,7 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
-  it('far ring blocks: culled by their own bounds, each submits the prefix of its trees (ordered by ringRand) the shader can keep', () => {
+  it('far ring blocks: culled by their own bounds, each submits the prefix of its trees (ordered by ringRand) the shader can keep; the far view draws them as one mesh', () => {
     const { st, tr } = make(128);
     const W = st.size * CELL_SIZE;
     const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
@@ -866,13 +871,15 @@ describe('outer ring trees', () => {
     cam.position.set(W / 2 - Math.sin(y) * Math.cos(a) * d, Math.sin(a) * d, W / 2 + Math.cos(y) * Math.cos(a) * d);
     cam.lookAt(W / 2, 0, W / 2);
     cam.updateMatrixWorld();
-    // (past the load's preload pass, which draws every block with trees, the hidden ones with none)
+    // (past the load's preload pass, which draws every ring mesh with trees once, with one instance)
     tr.update(cam);
     tr.update(cam);
     const blocks = tr.group.children.filter((o) => o.name === 'trees-ring' && ((o as THREE.Mesh).geometry.name ?? '').startsWith('impostor-micro')) as THREE.InstancedMesh[];
     expect(blocks.length).toBeGreaterThan(8);
+    const T = tr as unknown as { ringMicroBox: Float64Array; ringFar: (THREE.InstancedMesh | null)[]; ringMicroTopY: Float64Array };
     const fr = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
-    let total = 0, submitted = 0, culled = 0, cut = 0;
+    let total = 0, inView = 0, submitted = 0, culled = 0, cut = 0;
+    const inViewSet = new Set<string>();
     for (const m of blocks) {
       const n = (m.userData.ringCount as number) ?? 0, e = m.instanceMatrix.array as Float32Array;
       total += n;
@@ -888,27 +895,56 @@ describe('outer ring trees', () => {
         expect(ringRand(e[j * 16 + 12], e[j * 16 + 14])).toBeGreaterThanOrEqual(keep - 1e-4);
       }
       if (m.count < n) cut++;
-      // (off screen: hidden by updateRingView's own test of the block's box - and for a low camera near the edge of its
-      // cells' - for the high cameras' shape from the micro waist up, or left to three's sphere test: none of its trees'
-      // shapes is in view)
-      if (m.visible && m.intersectsFrustum(fr)) submitted += m.count;
-      else if (m.count > 0) {
+      // the block's box for the high cameras' shape (from the micro waist up) in view: the pass would draw its prefix;
+      // else none of its trees' shapes is in view
+      const id = T.ringFar.indexOf(m), o = id * 6, B = T.ringMicroBox;
+      const bb = new THREE.Box3(new THREE.Vector3(B[o], T.ringMicroTopY[id], B[o + 2]), new THREE.Vector3(B[o + 3], B[o + 4], B[o + 5]));
+      if (m.count > 0 && fr.intersectsBox(bb)) {
+        inView++;
+        submitted += m.count;
+        for (let j = 0; j < m.count; j++) inViewSet.add(`${e[j * 16 + 12]},${e[j * 16 + 14]}`);
+      } else if (m.count > 0) {
         culled++;
         const box = new THREE.Box3();
         for (let j = 0; j < n; j++) {
-          const o = j * 16, hs = Math.hypot(e[o], e[o + 2]) * Math.max(0.5, RING_LOW_R), vs = e[o + 5];
-          box.min.set(e[o + 12] - hs, e[o + 13] + vs * MICRO_WAIST_Y, e[o + 14] - hs);
-          box.max.set(e[o + 12] + hs, e[o + 13] + vs, e[o + 14] + hs);
+          const q = j * 16, hs = Math.hypot(e[q], e[q + 2]) * Math.max(0.5, RING_LOW_R), vs = e[q + 5];
+          box.min.set(e[q + 12] - hs, e[q + 13] + vs * MICRO_WAIST_Y, e[q + 14] - hs);
+          box.max.set(e[q + 12] + hs, e[q + 13] + vs, e[q + 14] + hs);
           expect(fr.intersectsBox(box)).toBe(false);
         }
       }
     }
     expect(total).toBe(tr.ringInstances);
-    // seen from above (4 km), a third of the blocks are off screen and the rest thinned: ~half the trees are submitted
+    // seen from above (4 km), a third of the blocks are off screen and the rest thinned: ~half the trees are in the
+    // prefixes of the blocks in view
     expect(culled).toBeGreaterThan(5);
     expect(cut).toBeGreaterThan(10);
     expect(submitted).toBeGreaterThan(0);
     expect(submitted).toBeLessThan(total * 0.6);
+    // ... and those blocks are drawn as ONE mesh (the far ring's all-in-one mesh, RING_ALL_K): every ring tree ordered by
+    // its random, the same instances as the blocks', with a prefix holding every in-view block's, at most 200 more trees
+    // per draw call saved; the blocks themselves are not drawn
+    const A = tr.group.children.find((o) => o.name === 'trees-ring-all') as THREE.InstancedMesh;
+    expect(A).toBeDefined();
+    expect(A.geometry).toBe(getMicroImpostorGeometries().top);
+    expect(A.visible).toBe(true);
+    expect(blocks.some((m) => m.visible)).toBe(false);
+    expect(A.userData.ringCount).toBe(total);
+    const ea = A.instanceMatrix.array as Float32Array, ca = A.instanceColor!.array as Float32Array;
+    const byPos = new Map<string, number[]>();
+    for (const m of blocks) {
+      const e = m.instanceMatrix.array as Float32Array, c = m.instanceColor!.array as Float32Array;
+      for (let j = 0; j < ((m.userData.ringCount as number) ?? 0); j++) byPos.set(`${e[j * 16 + 12]},${e[j * 16 + 14]}`, [...e.subarray(j * 16, j * 16 + 16), ...c.subarray(j * 3, j * 3 + 3)]);
+    }
+    const prefix = new Set<string>();
+    for (let i = 0; i < total; i++) {
+      const k = `${ea[i * 16 + 12]},${ea[i * 16 + 14]}`;
+      expect([...ea.subarray(i * 16, i * 16 + 16), ...ca.subarray(i * 3, i * 3 + 3)]).toEqual(byPos.get(k));
+      if (i > 0) expect(ringRand(ea[i * 16 + 12], ea[i * 16 + 14])).toBeGreaterThanOrEqual(ringRand(ea[(i - 1) * 16 + 12], ea[(i - 1) * 16 + 14]));
+      if (i < A.count) prefix.add(k);
+    }
+    for (const k of inViewSet) expect(prefix.has(k)).toBe(true);
+    expect(A.count - submitted).toBeLessThanOrEqual(200 * (inView - 1));
     tr.dispose();
   }, 120_000);
 
@@ -1171,6 +1207,62 @@ describe('outer ring trees', () => {
       }
     }
     expect(checked).toBeGreaterThan(5000);
+    tr.dispose();
+  }, 120_000);
+
+  it('the load\'s warm-up draws every ring and edge band mesh the load frame leaves hidden once, with one instance (its instance data uploads with the load)', () => {
+    const st = createCityState(defaultCityConfig({ size: 128, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
+    const W = st.size * CELL_SIZE;
+    const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
+    const terr = (tr as unknown as { terrain: TerrainRenderer }).terrain;
+    type M = THREE.InstancedMesh & { warmOnce: boolean; warmVis: boolean; warmCount: number; warmCull: boolean; onAfterRender: () => void };
+    const chunks = (tr as unknown as { chunks: { bfar: (M | null)[] }[] }).chunks;
+    const R = tr as unknown as { ring: (M | null)[]; ringFar: (M | null)[]; ringAll: M | null };
+    const band = () => chunks.flatMap((c) => c.bfar).filter((m): m is M => !!m && ((m.userData.total as number) ?? 0) > 0);
+    const rings = () => [...R.ring, ...R.ringFar, R.ringAll].filter((m): m is M => !!m && ((m.userData.ringCount as number) ?? 0) > 0);
+    expect(band().length).toBeGreaterThan(8);
+    // the load frame (a street camera in the middle of the map: the ring is hidden, the band's impostors too, or partly)
+    // in a view with a load warm-up (WorldView: loadWarm open during its first frame); the warm-up queue runs after that
+    // frame's render, before its hidden renders
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    cam.position.set(W / 2, terr.meshHeightAt(W / 2, W / 2) + 30, W / 2);
+    cam.lookAt(W / 2 + 100, 0, W / 2);
+    loadWarm.queue.length = 0;
+    loadWarm.open = true;
+    try {
+      tr.update(cam);
+      // (the load frame itself draws no extra instance: that is left to the warm-up renders)
+      for (const m of [...band(), ...rings()]) expect(m.warmOnce).toBe(false);
+      expect(loadWarm.queue.length).toBe(1);
+    } finally {
+      loadWarm.open = false;
+    }
+    for (const f of loadWarm.queue.splice(0)) f();
+    let warm = 0;
+    for (const m of [...band(), ...rings()]) {
+      // drawn this frame: by the view, or once with one instance (not culled); its own state kept for after that draw
+      expect(m.visible).toBe(true);
+      if (m.warmOnce) {
+        warm++;
+        expect(m.count).toBe(1);
+        expect(m.frustumCulled).toBe(false);
+        expect(m.warmVis && m.warmCount > 0).toBe(false);
+      } else expect(m.count).toBeGreaterThan(0);
+    }
+    expect(warm).toBeGreaterThan(20);
+    // a render's draw puts a mesh back right after it (TreeMesh.onAfterRender); the next update the rest
+    const one = [...band(), ...rings()].find((m) => m.warmOnce)!;
+    const own = [one.warmVis, one.warmCount, one.warmCull];
+    one.onAfterRender();
+    expect([one.visible, one.count, one.frustumCulled]).toEqual(own);
+    expect(one.warmOnce).toBe(false);
+    tr.update(cam);
+    for (const m of [...band(), ...rings()]) expect(m.warmOnce).toBe(false);
+    expect(rings().some((m) => m.visible)).toBe(false);
+    // ... and only that once: later frames draw nothing extra
+    cam.position.x += 40;
+    tr.update(cam);
+    for (const m of [...band(), ...rings()]) expect(m.warmOnce).toBe(false);
     tr.dispose();
   }, 120_000);
 

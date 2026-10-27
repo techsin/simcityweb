@@ -15,7 +15,11 @@
  *  - the per-frame pass keeps its last result while nothing it depends on changed (a still view) and re-derives it when
  *    the camera moves or turns, the low-camera switch distance changes or the ring's data does,
  *  - the low cameras' mini crown (ringLow), folded as the ring shader folds it at low-camera weight 0, is exactly the high
- *    cameras' upper half (`top`), and unfolded a round crown on a trunk.
+ *    cameras' upper half (`top`), and unfolded a round crown on a trunk,
+ *  - far views draw the far ring as one mesh (every block's trees in one order by their random) instead of their ~18
+ *    visible blocks, holding every tree those blocks would draw; views that see a few blocks keep the blocks; a runtime
+ *    refill rebuilds that mesh in bounded units (the blocks stand in meanwhile), equal to a fresh build,
+ *  - the per-frame prefix searches that start from the last frame's answer give a binary search's answer.
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
@@ -25,7 +29,7 @@ import { Surf } from '../../src/core/types';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
-import { TreeRenderer, ringRand } from '../../src/render/world/TreeRenderer';
+import { TreeRenderer, prefixFrom, ringRand } from '../../src/render/world/TreeRenderer';
 import { CELL_SIZE } from '../../src/core/constants';
 import { RNG } from '../../src/core/rng';
 
@@ -34,6 +38,7 @@ registerAllModels();
 type Ring = {
   ring: (THREE.InstancedMesh | null)[];
   ringFar: (THREE.InstancedMesh | null)[];
+  ringAll: THREE.InstancedMesh | null;
   ringMicroR: (Float32Array | null)[];
   ringU: { uRingP: { value: THREE.Vector3 }; uRingQ: { value: THREE.Vector2 } };
   terrain: TerrainRenderer;
@@ -44,6 +49,11 @@ const sstep = (a: number, b: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 const fract = (x: number) => x - Math.floor(x);
+/** a ring mesh's own visibility / count: a mesh drawn once by the load's preload (TreeRenderer.warmDraw: one instance,
+ *  for its instance data's upload) is back to these right after that draw */
+type Warm = THREE.InstancedMesh & { warmOnce?: boolean; warmVis?: boolean; warmCount?: number };
+const vis = (m: THREE.InstancedMesh) => ((m as Warm).warmOnce ? !!(m as Warm).warmVis : m.visible);
+const cnt = (m: THREE.InstancedMesh) => ((m as Warm).warmOnce ? (m as Warm).warmCount ?? 0 : m.count);
 /** the conifer stretch of the far blocks (TreeRenderer RING_CON_*): their instance stands at foot + sy * B */
 const CON_A = 0.9 / 0.37, CON_B = 1 - CON_A;
 
@@ -89,12 +99,19 @@ describe('outer ring next to the map edge', () => {
     fr.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
   };
 
-  /** every ring tree the shaders draw at this frame and the view shows: [drawn by the near pairs, by the far blocks,
-   *  left out by the CPU (must be 0), drawn by both (must be 0)] */
+  /** every ring tree the shaders draw at this frame and the view shows: [drawn by the near pairs, by the far blocks (or
+   *  the all-in-one mesh standing for them), left out by the CPU (must be 0), drawn by both (must be 0)] */
   const audit = (tr: TreeRenderer, R: Ring, cam: THREE.PerspectiveCamera) => {
     const S = shaders(R, cam.position);
     const near = new Map<string, number>();
     let nNear = 0, nFar = 0, cut = 0, both = 0;
+    // (the all-in-one mesh's submitted trees, by position)
+    const allSub = new Set<string>();
+    const A = R.ringAll;
+    if (A && vis(A)) {
+      const e = A.instanceMatrix.array as Float32Array;
+      for (let i = 0; i < cnt(A); i++) allSub.add(`${e[i * 16 + 12]},${e[i * 16 + 14]}`);
+    }
     // (trees within half a metre of their switch distance: either program, float precision)
     const M = 0.5;
     for (const m of R.ring) {
@@ -106,7 +123,7 @@ describe('outer ring next to the map edge', () => {
         near.set(`${x},${z}`, d);
         if (d >= S.sw(x, z) - M || !inView(e, o, 0, 1.05)) continue;
         nNear++;
-        if (!(m.visible && i < m.count)) cut++;
+        if (!(vis(m) && i < cnt(m))) cut++;
       }
     }
     for (let id = 0; id < R.ringFar.length; id++) {
@@ -129,7 +146,9 @@ describe('outer ring next to the map edge', () => {
         // (a low camera's mini crown stands on its trunk, from the tree's foot)
         if (!inView(e, o, 0, 1)) continue;
         nFar++;
-        if (!(m.visible && j < m.count)) cut++;
+        if (!(vis(m) && j < cnt(m)) && !allSub.has(`${x},${z}`)) cut++;
+        // (the all-in-one mesh stands for the blocks: never both)
+        if (vis(m) && allSub.size) both++;
       }
     }
     return { nNear, nFar, cut, both };
@@ -177,7 +196,7 @@ describe('outer ring next to the map edge', () => {
     expect(a.nNear).toBeGreaterThan(10);
     // past the switch distance (r4: none - the forest stopped ~0.85 km from the camera)
     expect(a.nFar).toBeGreaterThan(300);
-    const blocks = R.ringFar.filter((m) => m && m.visible && m.count > 0) as THREE.InstancedMesh[];
+    const blocks = R.ringFar.filter((m) => m && vis(m) && cnt(m) > 0) as THREE.InstancedMesh[];
     expect(blocks.length).toBeGreaterThan(0);
     expect(blocks.every((m) => m.geometry === getMicroImpostorGeometries().ringLow)).toBe(true);
     // ... from the middle of the map at the same height: no ring (the city and the edge band hide it)
@@ -185,12 +204,13 @@ describe('outer ring next to the map edge', () => {
     tr.update(cam);
     const b = audit(tr, R, cam);
     expect(b.nNear + b.nFar).toBe(0);
-    expect(R.ringFar.some((m) => m && m.visible && m.count > 0)).toBe(false);
+    expect(R.ringFar.some((m) => m && vis(m) && cnt(m) > 0)).toBe(false);
     // ... and from high above the edge: the far blocks' upper halves (the high cameras' shape) with the height fade on
+    // (or the all-in-one mesh standing for them, in the same shape)
     pose(R, cam, 340, 900, W / 2, Math.PI, 0.9);
     tr.update(cam);
     expect(audit(tr, R, cam).cut).toBe(0);
-    const high = R.ringFar.filter((m) => m && m.visible && m.count > 0) as THREE.InstancedMesh[];
+    const high = [...R.ringFar, R.ringAll].filter((m) => m && vis(m) && cnt(m) > 0) as THREE.InstancedMesh[];
     expect(high.length).toBeGreaterThan(0);
     expect(high.every((m) => m.geometry === getMicroImpostorGeometries().top)).toBe(true);
     tr.dispose();
@@ -298,7 +318,7 @@ describe('outer ring next to the map edge', () => {
       pose(R, cam, x, 58, W / 2, yaw, tilt);
       tr.update(cam);
     };
-    // (the load's flush: its preload pass, then the one restoring the frustum test)
+    // (the load's flush: its preload pass, whose one-instance warm draws the next update puts back)
     at(340, Math.PI);
     at(340, Math.PI);
     const n0 = passes, s0 = state();
@@ -415,4 +435,119 @@ describe('outer ring next to the map edge', () => {
       expect(n.dot(m.sub(ctr))).toBeGreaterThan(0);
     }
   });
+  it('prefix searches from a hint (the last frame\'s answer) give the binary search\'s answer', () => {
+    const rnd = new RNG(5);
+    for (let t = 0; t < 400; t++) {
+      const n = Math.floor(rnd.range(0, 70));
+      const a = new Float32Array(n);
+      // (sorted, with runs of equal values)
+      for (let i = 0; i < n; i++) a[i] = Math.floor(rnd.range(0, 30)) / 30;
+      a.sort();
+      for (let q = 0; q < 20; q++) {
+        const v = Math.floor(rnd.range(-2, 33)) / 30, hint = Math.floor(rnd.range(-3, n + 4)), atMost = q % 2 === 0;
+        let lo = 0, hi = n;
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (atMost ? a[mid] <= v : a[mid] < v) lo = mid + 1; else hi = mid; }
+        expect(prefixFrom(a, n, v, atMost, hint)).toBe(lo);
+      }
+    }
+  });
+
+  it('far views draw the far ring as one mesh, holding every tree its visible blocks would; a runtime refill rebuilds it in bounded units', () => {
+    const { st, tr, R } = make();
+    const W = st.size * CELL_SIZE;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    const T = tr as unknown as { ringAllAt: number; ringAllN: number; ringPending(): boolean; ringStep(b: number): void };
+    /** the bench's camera: target (x, z) on the ground, distance, tilt, yaw (CameraController) */
+    const view = (x: number, z: number, d: number, tilt: number, yaw: number) => {
+      const t = (tilt * Math.PI) / 180, yw = (yaw * Math.PI) / 180, gy = R.terrain.meshHeightAt(x, z);
+      cam.position.set(x - Math.sin(yw) * Math.cos(t) * d, gy + Math.sin(t) * d, z + Math.cos(yw) * Math.cos(t) * d);
+      cam.lookAt(x, gy, z);
+      cam.updateMatrixWorld();
+      fr.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+      tr.update(cam);
+      tr.update(cam);
+    };
+    const blocksDrawn = () => R.ringFar.filter((m) => m && vis(m) && cnt(m) > 0).length;
+    const A = () => R.ringAll!;
+    // the far orbit (4 km, 75 degrees down, a quarter turn): one draw for the far ring, nothing left out, nothing twice
+    let far = 0;
+    for (let i = 0; i < 12; i++) {
+      view(W / 2, W / 2, 4000, 75, 45 + i * 7.5);
+      const a = audit(tr, R, cam);
+      expect(a.cut, `orbit ${i}`).toBe(0);
+      expect(a.both, `orbit ${i}`).toBe(0);
+      expect(a.nFar).toBeGreaterThan(500);
+      expect(vis(A())).toBe(true);
+      expect(blocksDrawn()).toBe(0);
+      far += a.nFar;
+    }
+    expect(far).toBeGreaterThan(6000);
+    // default zoom, a zoom's middle and edge views at 220-380 m: a few blocks each, drawn as blocks
+    for (const [x, z, d, tilt, yaw] of [[W / 2, W / 2, 800, 50, 135], [W / 2, W / 2, 500, 37, 45], [W - 100, W / 2, 583, 31, 90], [W - 100, W / 2, 628, 37.2, 90], [W - 100, W / 2, 546, 23.7, 90]]) {
+      view(x, z, d, tilt, yaw);
+      expect(audit(tr, R, cam).cut).toBe(0);
+      expect(vis(A())).toBe(false);
+    }
+    // a runtime refill (half a year on): the blocks stand in while the one mesh is rebuilt, in units of ringAllUnit trees
+    // (here 600), each drawn once (one instance: its range uploads on that frame); then it holds the same instances as a
+    // fresh build's
+    const n0 = A().userData.ringCount as number;
+    expect(n0).toBe(tr.ringInstances);
+    expect(n0).toBeGreaterThan(1800);
+    tr.ringBudgetMs = 0;
+    tr.ringAllUnit = 600;
+    const day = ((st.month + 6) % 12) * 30 + 12;
+    st.day = day;
+    tr.setMonth(st.month);
+    const Tf = tr as unknown as { ringFarDirty: number; ringRefill: number; ringFillState: unknown };
+    while (Tf.ringRefill || Tf.ringFillState || Tf.ringFarDirty) T.ringStep(0);
+    expect(T.ringAllAt).toBe(0);
+    // (one frame of a far orbit that keeps moving: its updates run no ring step of their own)
+    let f = 0;
+    const orbitFrame = () => {
+      const t = (75 * Math.PI) / 180, yw = ((45 + 0.5 * f++) * Math.PI) / 180, gy = R.terrain.meshHeightAt(W / 2, W / 2);
+      cam.position.set(W / 2 - Math.sin(yw) * Math.cos(t) * 4000, gy + Math.sin(t) * 4000, W / 2 + Math.cos(yw) * Math.cos(t) * 4000);
+      cam.lookAt(W / 2, gy, W / 2);
+      cam.updateMatrixWorld();
+      fr.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+      tr.update(cam);
+    };
+    orbitFrame();
+    let units = 0;
+    while (T.ringAllAt >= 0) {
+      const at = T.ringAllAt;
+      T.ringStep(0);
+      units++;
+      if (T.ringAllAt >= 0) expect(T.ringAllAt - at).toBe(600);
+      orbitFrame();
+      // (the unit's range: drawn by this frame once, one instance - back to its own state, hidden, right after; once
+      // complete the far view draws it for real)
+      const a = A() as Warm;
+      if (T.ringAllAt >= 0) expect(a.warmOnce && a.visible && a.count === 1 && !a.warmVis).toBe(true);
+      else expect(!a.warmOnce && a.visible && a.count > 1).toBe(true);
+      // (until it is complete the far view draws the blocks)
+      if (T.ringAllAt >= 0) {
+        expect(blocksDrawn()).toBeGreaterThan(8);
+        expect(audit(tr, R, cam).cut).toBe(0);
+      }
+      orbitFrame();
+      expect(a.warmOnce).toBe(false);
+    }
+    expect(units).toBe(Math.ceil(n0 / 600));
+    view(W / 2, W / 2, 4000, 75, 45);
+    expect(vis(A())).toBe(true);
+    expect(audit(tr, R, cam).cut).toBe(0);
+    const data = (t: TreeRenderer) => {
+      const m = (t as unknown as Ring).ringAll!, e = m.instanceMatrix.array as Float32Array, c = m.instanceColor!.array as Float32Array, out: string[] = [];
+      for (let i = 0; i < (m.userData.ringCount as number); i++) out.push([...e.subarray(i * 16, i * 16 + 16), ...c.subarray(i * 3, i * 3 + 3)].join(','));
+      return out;
+    };
+    const fresh = make();
+    fresh.st.day = day;
+    fresh.tr.setMonth(fresh.st.month);
+    fresh.tr.flush();
+    expect(data(tr)).toEqual(data(fresh.tr));
+    fresh.tr.dispose();
+    tr.dispose();
+  }, 600_000);
 });

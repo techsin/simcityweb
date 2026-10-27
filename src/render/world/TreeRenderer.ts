@@ -65,7 +65,11 @@
  *     by the per-tree thinning random (ringRand): their vertex shader thins the trees with their distance and fades them
  *     with the camera height (hidden from low cameras inside the city, where the city and the edge band hide them
  *     anyway), and each block only submits the prefix of its trees that its nearest point's distance can keep; no
- *     shadows. The per-frame pass (updateRingView) re-derives all of it only when the view or the ring's data changed;
+ *     shadows. A high camera that draws many far blocks (the far views) draws them as one mesh instead (ringAll: every
+ *     block's trees in one order by that random, the prefix of the largest keep, RING_ALL_K). The per-frame pass
+ *     (updateRingView) re-derives all of it only when the view or the ring's data changed, its prefix searches starting
+ *     from the last frame's; the load's warm-up draws every ring and edge band mesh the load frame leaves hidden once,
+ *     with one instance (warmMeshes), so none uploads its instance data on its first sight;
  *   - next to a sector's map edge(s) (within RING_EDGE_NEAR x lodDistance) the ring is the horizon at any height: the
  *     sector's far blocks skip the camera height fade, and a low camera (below ringFadeHeight) sees the sector at a
  *     grazing angle, where the micro upper half reads as a small pale cone floating at 63% of the tree's height: its
@@ -85,7 +89,7 @@ import { getNoiseTexture } from './textures';
 import type { CityState } from '../../sim/CityState';
 import { MICRO_WAIST_R, MICRO_WAIST_Y, RING_LOW_APEX, RING_LOW_R, getImpostorGeometries, getMicroImpostorGeometries, getNatureGeometry, natureStats } from './fallbackTrees';
 import { TerrainRenderer } from './TerrainRenderer';
-import { shadowCasters, type ShadowReceiver } from './Shadows';
+import { loadWarm, shadowCasters, type ShadowReceiver } from './Shadows';
 import { SEASONAL_TREES, drawnTreeMix, seasonalVariant, type SeasonMix } from '../../assets/builders/nat_season';
 import { setLotTwigStrip } from '../../assets/builders/winterTwigs';
 
@@ -176,6 +180,12 @@ const RING_BOX_STEP = 32;
  *  the quarters beside it, where no tree stands: HIGH edge_t25 drew ~2.9k of its 3.7k far block trees with none of them
  *  in view); higher cameras, which see the blocks from above, and cameras away from the edges skip the test */
 const RING_CELLS = 4;
+/** the far ring's all-in-one mesh (ringAll, see updateRingView): a high camera draws it instead of its visible far blocks
+ *  when that costs at most this many more submitted trees per draw call saved (trees past their own keep that its looser
+ *  prefix submits, which the vertex shader drops: ~4 vertices each, against a draw call's main-thread setup). The far
+ *  views (the bench's far orbit: ~18 blocks, 5.6k trees -> 1 draw, 8.4k trees) take it; default, zoom and edge views,
+ *  which see a few blocks, keep the blocks */
+const RING_ALL_K = 200;
 /** a nature model whose crown is at least this see-through (natureStats.open) has a see-through impostor */
 const BARE_OPEN = 0.3;
 /** winter conifer impostors: taller (the needle tiers' tips) and darker than the summer tint (they are what reads of
@@ -194,6 +204,37 @@ const _sstep = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
+
+/**
+ * The number of entries of the ascending a[0, n) below v (atMost: at most v), searched from `hint` (the last frame's
+ * answer): a moving camera's prefixes move by a few entries per frame, so the search reads the cache line or two around
+ * the hint (galloping out from it) instead of a binary search's log2(n) scattered ones. The same answer as a binary search.
+ */
+export function prefixFrom(a: Float32Array, n: number, v: number, atMost: boolean, hint: number): number {
+  let h = hint < 0 ? 0 : hint > n ? n : hint;
+  let lo: number, hi: number;
+  if (h < n && (atMost ? a[h] <= v : a[h] < v)) {
+    // the answer is past h: double the step until an entry fails
+    lo = h + 1;
+    let s = 1;
+    hi = lo;
+    while (hi < n && (atMost ? a[hi] <= v : a[hi] < v)) { lo = hi + 1; hi = lo + s; s *= 2; }
+    if (hi > n) hi = n;
+  } else if (h > 0 && !(atMost ? a[h - 1] <= v : a[h - 1] < v)) {
+    // the answer is before h: double the step back until an entry passes
+    hi = h - 1;
+    let s = 1;
+    lo = hi - 1;
+    while (lo >= 0 && !(atMost ? a[lo] <= v : a[lo] < v)) { hi = lo; lo = hi - s; s *= 2; }
+    lo = lo < 0 ? 0 : lo + 1;
+  } else return h;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (atMost ? a[mid] <= v : a[mid] < v) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
 
 /** distance from (px, py, pz) to the box at offset o of b (min x y z, max x y z) */
 function boxDist(b: Float64Array, o: number, px: number, py: number, pz: number): number {
@@ -334,6 +375,12 @@ class TreeMesh extends THREE.InstancedMesh {
   owner: TreeRenderer | null = null;
   imp = false;
   shadowOnly = false;
+  /** drawn once (one instance, so its instance data uploads now: see TreeRenderer.warmDraw), then back to its own state
+   *  (visible / count / frustum test: warmVis / warmCount / warmCull) after that draw */
+  warmOnce = false;
+  warmVis = false;
+  warmCount = 0;
+  warmCull = true;
   private savedShadow = -1;
   private savedView = -1;
 
@@ -372,6 +419,15 @@ class TreeMesh extends THREE.InstancedMesh {
       this.count = this.savedView;
       this.savedView = -1;
     }
+    if (this.warmOnce) this.warmDone();
+  }
+
+  /** a pending warm draw (warmOnce) is over: the mesh's own state back */
+  warmDone(): void {
+    this.warmOnce = false;
+    this.visible = this.warmVis;
+    this.count = this.warmCount;
+    this.frustumCulled = this.warmCull;
   }
 }
 
@@ -1017,6 +1073,18 @@ export class TreeRenderer {
    *  cell: min x > max x) */
   private ringCellBox = new Float64Array(RING_N * RING_SUB * RING_CELLS * RING_CELLS * 6);
   private ringCellTopY = new Float64Array(RING_N * RING_SUB * RING_CELLS * RING_CELLS);
+  /** the far ring in one mesh (TREE_RING, the high cameras' shape): every block's trees in one order by their thinning
+   *  random (ringAllR: the sorted randoms; the merge of the blocks' own orders), for high cameras that see much of the
+   *  ring (RING_ALL_K, updateRingView); ringAllN its trees once built, ringAllAt the next tree a rebuild merges (-1:
+   *  none in progress - the mesh is current and may be drawn) */
+  private ringAll: TreeMesh | null = null;
+  private ringAllR: Float32Array | null = null;
+  private ringAllN = 0;
+  private ringAllAt = -1;
+  /** the last prefix of each far block / near mesh / the all-in-one mesh (prefixFrom hints) */
+  private ringFarHint = new Int32Array(RING_N * RING_SUB);
+  private ringNearHint = new Int32Array(RING_N * 2);
+  private ringAllHint = 0;
   /** the far ring's block meshes (TREE_RING), one per block */
   private ringFar: (TreeMesh | null)[] = new Array(RING_N * RING_SUB).fill(null);
   /** sectors (bits) whose micro impostors changed: their block meshes are uploaded by the next ring steps */
@@ -1047,9 +1115,21 @@ export class TreeRenderer {
   private ringCalm = 0;
   /** the ring (and the edge band) at the current quality: ringWidth > 0 and lodDistance >= RING_MIN_LOD */
   private ringOn = true;
-  /** 1: the next view update draws every ring mesh with trees (the hidden ones with no instances: their instance data
-   *  uploads then, not on their first sight), 2: the one after restores their frustum test */
+  /** 1: the next view update draws every ring mesh with trees once (the hidden ones with one instance, warmDraw: their
+   *  instance data uploads then, not on their first sight) */
   private ringPreload = 0;
+  /** meshes drawn once by warmDraw that are not back to their own state yet (warmFlush) */
+  private warmPending: TreeMesh[] = [];
+  /** disposed (a queued load warm-up then does nothing) */
+  private disposed = false;
+  /** a runtime rebuild unit of the all-in-one mesh left an instance range to upload (updateRingView draws it once) */
+  private ringAllUp = false;
+  /** the all-in-one mesh's rebuild in progress: its total, the merge's cursor per block and its heap of block ids (the
+   *  blocks' next trees by their random, smallest first) */
+  private ringAllTotal = 0;
+  private ringAllCur = new Int32Array(RING_N * RING_SUB);
+  private ringAllHeap = new Int32Array(RING_N * RING_SUB);
+  private ringAllHeapN = 0;
   /** version of the ring's mesh data (bumped by every ring step and teardown) and updateRingView's inputs at its last
    *  pass (camera position, matrices, lod, camera height, low-camera settings, that version): an unchanged view with
    *  unchanged ring data (a still camera) keeps the last pass's counts instead of re-deriving them */
@@ -1059,6 +1139,9 @@ export class TreeRenderer {
   ringWidth = 2600;
   /** main-thread time (ms) of one slice of the outer ring's runtime work (refills / border regenerations) */
   ringBudgetMs = 1;
+  /** the far ring's all-in-one mesh's runtime rebuild (after a refill; a load builds it at once, see ringAllStep): this
+   *  many trees per ring step unit (~0.6 MB of instance data, each unit's range drawn - uploaded - once right after it) */
+  ringAllUnit = 8192;
   /** main-thread time (ms) per frame for runtime (re)builds of tree chunks (a season, edits), nearest first (always at
    *  least one chunk); a load builds all of its chunks at once (buildAll, loadFrames) */
   buildBudgetMs = 3;
@@ -1214,6 +1297,15 @@ export class TreeRenderer {
     this.ringOrder.fill(null);
     this.ringFarDirty = 0;
     this.ringInstances = 0;
+    if (this.ringAll) { this.group.remove(this.ringAll); this.ringAll.dispose(); }
+    this.ringAll = null;
+    this.ringAllN = 0;
+    this.ringAllAt = -1;
+    this.ringAllUp = false;
+    this.ringFarHint.fill(0);
+    this.ringNearHint.fill(0);
+    this.ringAllHint = 0;
+    this.warmFlush();
   }
 
   /** one hidden, degenerate instance per material pairing (near / far x plain / fade, each with its depth variant,
@@ -2056,9 +2148,20 @@ export class TreeRenderer {
   /** per frame: incremental rebuilds + LOD selection. Chunk rebuilds: nearest to the camera first, within buildBudgetMs
    *  (at least one, at most 4 x budget chunks per frame) */
   update(camera: THREE.Camera, budget = 3) {
+    // (warm draws of the previous frame that no render drew: back to their own state)
+    this.warmFlush();
     // ring work queued between the load and its first frame (a month change by a pre-run of the sim, settings applied
     // before the first frame) is part of the load: done now, like the load's own (flushRing), not in slices later
-    if (this.updates++ === 0 && this.ringOn && this.ringPending()) this.flushRing();
+    const first = this.updates++ === 0;
+    if (first && this.ringOn && this.ringPending()) this.flushRing();
+    // the load's first frame in a view with a load warm-up (WorldView: its hidden renders right after this frame's,
+    // behind the loading veil): those renders draw every ring and edge band mesh this view leaves hidden once (warmMeshes,
+    // queued: Shadows.ts loadWarm), so their instance data uploads with the load, not on their first sight in the first
+    // zoom-out / zoom-in; the ring's own preload (ringPreload: in this frame) is then not needed
+    if (first && loadWarm.open) {
+      this.ringPreload = 0;
+      loadWarm.queue.push(() => { if (!this.disposed) this.warmMeshes(); });
+    }
     // the load's frames build what its later work dirtied at once (LOAD_FRAMES); runtime rebuilds keep to buildBudgetMs
     if (this.dirty.size) {
       if (this.loadFrames > 0) this.buildAll();
@@ -2216,7 +2319,7 @@ export class TreeRenderer {
 
   /** outer ring work left (generation, refill, a sector's finish or far block upload) */
   private ringPending(): boolean {
-    return !!(this.ringStale || this.ringRefill || this.ringGen || this.ringFillState || this.ringFarDirty);
+    return !!(this.ringStale || this.ringRefill || this.ringGen || this.ringFillState || this.ringFarDirty) || this.ringAllAt >= 0;
   }
 
   /** build dirty chunks, nearest to the camera first, until buildBudgetMs is used up (at least `min`, at most `max`) */
@@ -2291,6 +2394,8 @@ export class TreeRenderer {
     const RB = this.ringBox;
     const view = camera ? this.ringViewDirs(camera, px, py, pz) : 0;
     if (view) _rvF.setFromProjectionMatrix(_rvM.multiplyMatrices(camera!.projectionMatrix, camera!.matrixWorldInverse));
+    // (the far blocks drawn: their number, trees and largest keep, for the all-in-one mesh's choice below)
+    let nVis = 0, sumVis = 0, keepMax = 0;
     for (let k = 0; k < RING_N; k++) {
       const ready = this.ringReady[k] !== 0;
       const ix = RING_SECTORS[k][0], iz = RING_SECTORS[k][1];
@@ -2318,14 +2423,7 @@ export class TreeRenderer {
         const mesh = ring[k * 2 + m], T = this.ringNearT[k * 2 + m];
         if (!mesh) continue;
         let lo = 0;
-        if (ready && T && tMax >= 0) {
-          let hi = T.length;
-          while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (T[mid] <= tMax) lo = mid + 1;
-            else hi = mid;
-          }
-        }
+        if (ready && T && tMax >= 0) lo = this.ringNearHint[k * 2 + m] = prefixFrom(T, T.length, tMax, true, this.ringNearHint[k * 2 + m]);
         mesh.count = lo;
         // culled by the bounds of the prefix it draws (ringNearBox), with the view's camera also by the box itself here:
         // a corner sector's prefix is a square at its corner, whose bounding sphere (three's test) reaches far into a
@@ -2369,32 +2467,86 @@ export class TreeRenderer {
         const d = boxDist(B, o, px, py, pz);
         let keep = RING_KEEP_A - (d - lod) / RING_KEEP_D;
         keep = (keep < RING_KEEP_MIN ? RING_KEEP_MIN : keep > 1 ? 1 : keep) * fvK + 1e-3;
-        let lo = 0, hi = n;
-        while (lo < hi) {
-          const mid = (lo + hi) >> 1;
-          if (r[mid] < keep) lo = mid + 1;
-          else hi = mid;
-        }
+        const lo = this.ringFarHint[id] = prefixFrom(r, n, keep, false, this.ringFarHint[id]);
         m.count = lo;
         // (with the view's camera: culled by the block's box, tighter than three's bounding sphere, and for a low camera
         // near the sector's edge(s) - the low-camera weight on: its view meets the blocks at a grazing angle - by its
         // cells' boxes (ringCellBox); the high cameras' shape starts at the micro waist)
         const top = geo === mg.top, y0 = top ? this.ringMicroTopY[id] : B[o + 1];
         m.visible = lo > 0 && (!view || (_rvF.intersectsBox(_rvB.set(_rvP.set(B[o], y0, B[o + 2]), _rvQ.set(B[o + 3], B[o + 4], B[o + 5]))) && (lw <= 0 || this.ringCellsInView(id, top))));
+        if (m.visible) {
+          nVis++;
+          sumVis += lo;
+          if (keep > keepMax) keepMax = keep;
+        }
       }
     }
-    // the frame after a flushRing (load, quality change, reset): every ring mesh with trees is drawn, a hidden one with no
-    // instances, which uploads its instance data now instead of on its first sight (the first far zoom-out: ~4 ms over its
-    // first frames, measured); the next frame restores the frustum test
+    // the far ring in one mesh (ringAll): a high camera (above the camera height fade: every sector's far blocks in the
+    // high cameras' shape, none faded) that draws several far blocks draws it instead, when its looser prefix - the trees
+    // below the largest keep of those blocks, all over the ring (the vertex shader drops each tree past its own keep, and
+    // the clipper the trees out of view) - costs at most RING_ALL_K more trees per draw call saved: the far views. It
+    // draws every tree those blocks would (their prefixes are within its own), with the same program; it waits while a
+    // runtime rebuild of it runs (ringAllStep)
+    const A = this.ringAll;
+    if (A) {
+      let all = false;
+      if (fv >= 1 && nVis >= 2 && this.ringAllAt < 0 && this.ringAllN > 0) {
+        const c = prefixFrom(this.ringAllR!, this.ringAllN, keepMax, false, this.ringAllHint);
+        if (c - sumVis <= RING_ALL_K * (nVis - 1)) {
+          all = true;
+          this.ringAllHint = c;
+          A.count = c;
+          for (let id = 0; id < RING_N * RING_SUB; id++) if (rf[id]) rf[id]!.visible = false;
+        }
+      }
+      A.visible = all;
+      if (!all) A.count = 0;
+      // (a rebuild unit's instance range: drawn once now, one instance, so it uploads with this frame)
+      if (this.ringAllUp) {
+        this.ringAllUp = false;
+        this.warmDraw(A);
+      }
+    }
+    // the frame after a flushRing (load, quality change, reset): every ring mesh with trees that this frame leaves hidden
+    // is drawn once with one instance (warmDraw), so its instance data uploads now instead of on its first sight (the first
+    // far zoom-out: ~4 ms over its first frames, measured)
     if (this.ringPreload) {
-      const on = this.ringPreload === 1;
-      this.ringPreload = on ? 2 : 0;
-      for (const list of [ring, rf]) for (const m of list) {
-        if (!m) continue;
-        m.frustumCulled = !on;
-        if (on && !m.visible && m.userData.ringCount) { m.count = 0; m.visible = true; }
-      }
+      this.ringPreload = 0;
+      for (const list of [ring, rf]) for (const m of list) if (m && m.userData.ringCount) this.warmDraw(m);
+      if (A && this.ringAllN) this.warmDraw(A);
     }
+  }
+
+  /** draw tree mesh m (hidden this frame, with instances) once with one instance, not culled: its instance data uploads with
+   *  that draw (an upload on its first sight would land on a frame the camera moves in); right after that draw, or at the
+   *  next update if no render drew it, it is back to its own state (TreeMesh.warmDone) */
+  private warmDraw(m: TreeMesh): void {
+    if (m.warmOnce || (m.visible && m.count > 0)) return;
+    m.warmVis = m.visible;
+    m.warmCount = m.count;
+    m.warmCull = m.frustumCulled;
+    m.visible = true;
+    m.count = 1;
+    m.frustumCulled = false;
+    m.warmOnce = true;
+    this.warmPending.push(m);
+  }
+
+  /** the load's warm-up (queued by the first update, run by WorldView right after the load frame's render, before its
+   *  hidden warm-up renders): every ring mesh with trees and every edge band impostor mesh with instances that the view
+   *  leaves hidden is drawn once, with one instance, by the next render (warmDraw) */
+  private warmMeshes(): void {
+    for (const list of [this.ring, this.ringFar]) for (const m of list) if (m && m.userData.ringCount) this.warmDraw(m);
+    if (this.ringAll && this.ringAllN) this.warmDraw(this.ringAll);
+    for (const ch of this.chunks) for (const m of ch.bfar) if (m && ((m.userData.total as number | undefined) ?? 0) > 0) this.warmDraw(m);
+  }
+
+  /** warm draws (warmDraw) no render drew: back to their own state */
+  private warmFlush(): void {
+    const w = this.warmPending;
+    if (!w.length) return;
+    for (const m of w) if (m.warmOnce) m.warmDone();
+    w.length = 0;
   }
 
   /** far block id: one of its cells' trees (ringCellBox; top: the high cameras' shape, from the micro waist up) is in the
@@ -2512,6 +2664,7 @@ export class TreeRenderer {
       this.ringStale = this.ringRefill = this.ringFarDirty = 0;
       this.ringGen = null;
       this.ringFillState = null;
+      this.ringAllAt = -1;
       return;
     }
     const end = performance.now() + budgetMs;
@@ -2532,6 +2685,8 @@ export class TreeRenderer {
           this.ringGenStart(k);
         } else if (this.ringFarDirty) {
           this.rebuildRingFar(31 - Math.clz32(this.ringFarDirty & -this.ringFarDirty));
+        } else if (this.ringAllAt >= 0) {
+          this.ringAllStep(budgetMs === Infinity);
         } else return;
       }
       if (performance.now() >= end) return;
@@ -3032,6 +3187,8 @@ export class TreeRenderer {
   /** upload sector k's far blocks (its trees changed: drawn as a prefix from the next view update on) */
   private rebuildRingFar(k: number): void {
     this.ringFarDirty &= ~(1 << k);
+    // (the all-in-one mesh holds these blocks' trees too: rebuilt once every block upload is done)
+    this.ringAllAt = 0;
     for (let q = 0; q < RING_SUB; q++) {
       const id = k * RING_SUB + q, n = this.ringReady[k] && this.ringMicro[id] ? this.ringMicroN[id] : 0;
       let mesh = this.ringFar[id];
@@ -3064,6 +3221,102 @@ export class TreeRenderer {
     this.ringInstances = total;
   }
 
+  /**
+   * One unit of the all-in-one mesh's (re)build (ringAll, see updateRingView), once every far block upload is done: the
+   * next ringAllUnit trees (a flush - load, quality change: all of them) of the merge of the blocks' own orders (each
+   * block's trees are sorted by their random: a heap of the blocks by their next tree's random, ties by block id) copied
+   * into place in its instance data. The first unit sizes the mesh and starts the merge; a runtime unit's instance range
+   * is drawn once right after it (ringAllUp: it uploads on that frame, not all at once on the first far view); the mesh
+   * is drawn again only once complete.
+   */
+  private ringAllStep(flush: boolean): void {
+    const NB = RING_N * RING_SUB, cur = this.ringAllCur, heap = this.ringAllHeap, MR = this.ringMicroR;
+    if (this.ringAllAt === 0) {
+      let n = 0;
+      this.ringAllHeapN = 0;
+      const B = this.ringMicroBox;
+      let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+      for (let id = 0; id < NB; id++) {
+        cur[id] = 0;
+        const c = this.ringReady[(id / RING_SUB) | 0] && this.ringMicro[id] && MR[id] ? this.ringMicroN[id] : 0;
+        if (c <= 0) continue;
+        n += c;
+        heap[this.ringAllHeapN++] = id;
+        const o = id * 6;
+        if (B[o] < x0) x0 = B[o];
+        if (this.ringMicroTopY[id] < y0) y0 = this.ringMicroTopY[id];
+        if (B[o + 2] < z0) z0 = B[o + 2];
+        if (B[o + 3] > x1) x1 = B[o + 3];
+        if (B[o + 4] > y1) y1 = B[o + 4];
+        if (B[o + 5] > z1) z1 = B[o + 5];
+      }
+      this.ringAllTotal = n;
+      this.ringAllN = 0;
+      if (!n) {
+        if (this.ringAll) { this.ringAll.count = 0; this.ringAll.visible = false; this.ringAll.userData.ringCount = 0; }
+        this.ringAllAt = -1;
+        return;
+      }
+      for (let i = (this.ringAllHeapN >> 1) - 1; i >= 0; i--) this.ringAllSift(i);
+      const mesh = this.ringAll = this.meshFor(this.ringAll, getMicroImpostorGeometries().top, this.materialRing, n, true, false);
+      mesh.name = 'trees-ring-all';
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      mesh.count = 0;
+      mesh.visible = false;
+      mesh.userData.ringCount = 0;
+      mesh.boundingBox!.min.set(x0, y0, z0);
+      mesh.boundingBox!.max.set(x1, y1, z1);
+      mesh.boundingBox!.getBoundingSphere(mesh.boundingSphere!);
+      mesh.instanceMatrix.clearUpdateRanges();
+      mesh.instanceColor!.clearUpdateRanges();
+      if (!this.ringAllR || this.ringAllR.length < n) this.ringAllR = new Float32Array(n);
+    }
+    const mesh = this.ringAll!, arr = mesh.instanceMatrix.array as Float32Array, col = mesh.instanceColor!.array as Float32Array, R = this.ringAllR!;
+    const s0 = this.ringAllAt, s1 = flush ? this.ringAllTotal : Math.min(this.ringAllTotal, s0 + Math.max(1, this.ringAllUnit));
+    for (let s = s0; s < s1; s++) {
+      const id = heap[0], j = cur[id]++;
+      const src = this.ringMicro[id]!, sc = this.ringMicroCol[id]!, o = j * 16, d = s * 16;
+      for (let e = 0; e < 16; e++) arr[d + e] = src[o + e];
+      col[s * 3] = sc[j * 3];
+      col[s * 3 + 1] = sc[j * 3 + 1];
+      col[s * 3 + 2] = sc[j * 3 + 2];
+      R[s] = MR[id]![j];
+      if (cur[id] >= this.ringMicroN[id]) heap[0] = heap[--this.ringAllHeapN];
+      if (this.ringAllHeapN > 1) this.ringAllSift(0);
+    }
+    mesh.instanceMatrix.addUpdateRange(s0 * 16, (s1 - s0) * 16);
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor!.addUpdateRange(s0 * 3, (s1 - s0) * 3);
+    mesh.instanceColor!.needsUpdate = true;
+    if (s1 >= this.ringAllTotal) {
+      this.ringAllAt = -1;
+      this.ringAllN = this.ringAllTotal;
+      mesh.userData.ringCount = this.ringAllN;
+    } else this.ringAllAt = s1;
+    if (!flush) this.ringAllUp = true;
+  }
+
+  /** the all-in-one merge's heap (ringAllStep): sift the block at position i down (its next tree's random, then its id) */
+  private ringAllSift(i: number): void {
+    const heap = this.ringAllHeap, cur = this.ringAllCur, MR = this.ringMicroR, n = this.ringAllHeapN;
+    const id = heap[i], r = MR[id]![cur[id]];
+    for (;;) {
+      let c = 2 * i + 1;
+      if (c >= n) break;
+      let cid = heap[c], cr = MR[cid]![cur[cid]];
+      if (c + 1 < n) {
+        const did = heap[c + 1], dr = MR[did]![cur[did]];
+        if (dr < cr || (dr === cr && did < cid)) { c++; cid = did; cr = dr; }
+      }
+      if (cr < r || (cr === r && cid < id)) {
+        heap[i] = cid;
+        i = c;
+      } else break;
+    }
+    heap[i] = id;
+  }
+
   private disposeChunk(c: TreeChunk) {
     for (const m of c.near) {
       if (!m) continue;
@@ -3083,6 +3336,7 @@ export class TreeRenderer {
   }
 
   dispose() {
+    this.disposed = true;
     this.dropWarmup();
     for (const c of this.chunks) this.disposeChunk(c);
     this.chunks = [];
