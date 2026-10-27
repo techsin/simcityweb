@@ -1,5 +1,5 @@
 /** W0.5: LocalSimHost's view surface keeps the existing system values and clock. */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Network, Overlay } from '../../src/core/types';
 import { serializeCity } from '../../src/save/serialize';
 import type { EmergencySystem } from '../../src/sim/infra/emergency';
@@ -66,6 +66,8 @@ describe('W0.5 LocalSimHost views', () => {
 
   it('view reads and subscriptions leave the authoritative save and RNG unchanged', async () => {
     const host = new LocalSimHost(newState(32));
+    // the save's savedAt is Date.now(): pinned, so two saves taken a millisecond apart still compare
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
     try {
       await host.start();
       host.sim.runDays(2);
@@ -82,6 +84,7 @@ describe('W0.5 LocalSimHost views', () => {
       expect(host.emergency.incidents()).toEqual([]);
       expect(host.utilities.waterQualityAt(host.sim, 0)).toBe(next.stats.tapWater ?? 1);
     } finally {
+      now.mockRestore();
       await host.dispose();
     }
   });
