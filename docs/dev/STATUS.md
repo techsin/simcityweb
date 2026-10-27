@@ -28,6 +28,14 @@ disk, `python3 <scratch>/refresh_cache.py <script> <runId>` fills `__C` with eve
 `__R` with the labels that were in flight (they get a RESUMING note), then relaunch with `Workflow({scriptPath})`.
 If the container was reset (journal gone), rebuild `__C` from `docs/dev/reports/` by hand or re-run the round.
 
+## Local GPU worker (since Oct 27)
+
+The owner's desktop runs a Claude Code worker under Remote Control (protocol: `docs/dev/COORDINATION.md`): Windows 10,
+Ryzen 7 9800X3D (8c/16t), 61.6 GB RAM, RTX 5070 Ti 16 GB (Chromium uses it through ANGLE/D3D11, also headless), 4K monitor,
+Codex CLI logged in. AC sleep is disabled, so multi-day runs are fine; the display still sleeps after 10 min, so timing
+runs should be headless. Round trip lead → worker → lead measured at 51 s. Tasks: `docs/dev/queue/`; reports:
+`docs/dev/reports/local-*.md` on `local/*` branches.
+
 ## Reference commits
 
 | Name | Commit | Use |
