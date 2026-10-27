@@ -1,0 +1,511 @@
+<title>Metropolis Completion Schedule</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: answer first (dates), then a step-by-step calendar Gantt grouped by piece of work with the weekly pauses drawn in, then the remaining work as checklists, what is done, assumptions and a table. */
+:root {
+  --page: #f6f6f3;
+  --surface: #fcfcfb;
+  --band: #f0efea;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #7b7a74;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --ring: rgba(11, 11, 11, 0.10);
+  --pause: rgba(11, 11, 11, 0.055);
+  --pause-line: rgba(11, 11, 11, 0.16);
+  --now: #0b0b0b;
+  --ok: #1f7a3a;
+  --s-sim: #2a78d6;
+  --s-render: #eb6834;
+  --s-perf: #1baf7a;
+  --s-polish: #eda100;
+  --s-release: #8a63d2;
+  --pill-run-bg: #e3efe0; --pill-run-fg: #1f5a1f;
+  --pill-queue-bg: #ecebe6; --pill-queue-fg: #52514e;
+  --pill-done-bg: #e6eef8; --pill-done-fg: #1d4f8f;
+  --tip-bg: #0b0b0b; --tip-fg: #ffffff; --tip-2: #c3c2b7;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #0d0d0d; --surface: #1a1a19; --band: #141413; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #8f8d86;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255, 255, 255, 0.10); --now: #ffffff;
+    --pause: rgba(255, 255, 255, 0.05); --pause-line: rgba(255, 255, 255, 0.16); --ok: #7fd48f;
+    --s-sim: #3987e5; --s-render: #d95926; --s-perf: #199e70; --s-polish: #c98500; --s-release: #9b7be0;
+    --pill-run-bg: #16301a; --pill-run-fg: #8fd48f; --pill-queue-bg: #2a2a28; --pill-queue-fg: #c3c2b7;
+    --pill-done-bg: #15263c; --pill-done-fg: #9cc3f2;
+    --tip-bg: #ffffff; --tip-fg: #0b0b0b; --tip-2: #52514e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page: #0d0d0d; --surface: #1a1a19; --band: #141413; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #8f8d86;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255, 255, 255, 0.10); --now: #ffffff;
+  --pause: rgba(255, 255, 255, 0.05); --pause-line: rgba(255, 255, 255, 0.16); --ok: #7fd48f;
+  --s-sim: #3987e5; --s-render: #d95926; --s-perf: #199e70; --s-polish: #c98500; --s-release: #9b7be0;
+  --pill-run-bg: #16301a; --pill-run-fg: #8fd48f; --pill-queue-bg: #2a2a28; --pill-queue-fg: #c3c2b7;
+  --pill-done-bg: #15263c; --pill-done-fg: #9cc3f2;
+  --tip-bg: #ffffff; --tip-fg: #0b0b0b; --tip-2: #52514e;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--page); color: var(--ink); font-family: var(--font); line-height: 1.45; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-block: 28px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; }
+.wrap > * { min-width: 0; }
+.eyebrow { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+h1 { font-size: clamp(24px, 3.4vw, 32px); line-height: 1.15; margin: 0; text-wrap: balance; font-weight: 650; }
+.lead { margin: 8px 0 0; color: var(--ink-2); max-width: 72ch; font-size: 15px; }
+.card { background: var(--surface); border-radius: 10px; box-shadow: 0 0 0 1px var(--ring); }
+h2 { font-size: 16px; margin: 0 0 10px; font-weight: 650; text-wrap: balance; }
+
+/* answer strip */
+.answer { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--ring); overflow: hidden; }
+.answer > div { background: var(--surface); padding: 16px 18px; min-width: 0; }
+.k { font-size: 12.5px; color: var(--ink-2); margin: 0 0 4px; }
+.v { font-size: 24px; font-weight: 650; margin: 0; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.big .v { font-size: 30px; }
+.sub { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
+@media (max-width: 860px) { .answer { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+
+/* progress + now */
+.duo { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 860px) { .duo { grid-template-columns: minmax(0, 1fr); } }
+.duo > .card { padding: 16px 18px; min-width: 0; }
+.meter { height: 12px; border-radius: 999px; background: var(--grid); overflow: hidden; margin: 6px 0 8px; }
+.meter > span { display: block; height: 100%; background: var(--ok); border-radius: 999px; }
+.meter-note { font-size: 13px; color: var(--ink-2); margin: 0; }
+.nowlist { margin: 0; padding: 0; list-style: none; display: grid; gap: 7px; font-size: 13.5px; color: var(--ink-2); }
+.nowlist li { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 9px; align-items: baseline; }
+.nowlist .dot { width: 9px; height: 9px; border-radius: 50%; transform: translateY(1px); }
+.nowlist strong { color: var(--ink); font-weight: 600; }
+
+/* gantt */
+.chart { padding: 14px 0 8px; }
+.chart h2, .chart .hint { padding: 0 18px; }
+.chart .hint { margin: -4px 0 10px; font-size: 13px; color: var(--ink-2); max-width: 90ch; }
+.scroller { overflow-x: auto; }
+.gantt { min-width: 900px; display: grid; grid-template-columns: 300px minmax(0, 1fr); padding: 0 18px 0 0; }
+.axis-row, .row { display: contents; }
+.lab { padding: 5px 12px 5px 18px; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; font-size: 13px; }
+.track { position: relative; border-top: 1px solid var(--grid); }
+.row.group .lab, .row.group .track { min-height: 52px; background: var(--band); }
+.row.group .track { border-top: 1px solid var(--axis); }
+.row.group .lab { border-top: 1px solid var(--axis); }
+.row.step .lab, .row.step .track { min-height: 34px; }
+.row.step .lab { padding-left: 38px; }
+.lab .name { font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row.step .lab .name { font-weight: 500; color: var(--ink); }
+.row.step.done .lab .name { color: var(--ink-2); }
+.lab .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.lab .when { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.lab .where { font-size: 11.5px; color: var(--muted); }
+.axis-row .track { min-height: 60px; border-top: none; border-bottom: 1px solid var(--axis); }
+.axis-row .lab { min-height: 60px; justify-content: flex-end; padding-bottom: 6px; font-size: 12px; color: var(--muted); }
+.pause { position: absolute; top: 0; bottom: 0; background: var(--pause); border-left: 1px dashed var(--pause-line); border-right: 1px dashed var(--pause-line); }
+.pause-lab { position: absolute; top: 21px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; text-align: center; }
+.dayline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+.dayline.mon { background: var(--axis); }
+.daylab { position: absolute; bottom: 5px; transform: translateX(-50%); font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.daylab.mon { color: var(--ink-2); font-weight: 600; }
+.nowline { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--now); }
+.nowlab { position: absolute; top: 3px; font-size: 11px; font-weight: 650; color: var(--ink); background: var(--surface); padding: 0 4px; border-radius: 3px; }
+.seg { position: absolute; top: 50%; height: 14px; transform: translateY(-50%); border-radius: 4px; cursor: default; outline: none; }
+.row.group .seg { height: 6px; border-radius: 3px; opacity: 0.85; }
+.seg.queued { opacity: 0.5; }
+.seg:focus-visible { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink); }
+.worst { position: absolute; top: 50%; width: 9px; height: 9px; transform: translate(-50%, -50%) rotate(45deg); border: 1.5px solid var(--ink-2); background: var(--surface); }
+.endlab { position: absolute; top: 50%; transform: translateY(-50%); font-size: 11.5px; color: var(--ink-2); white-space: nowrap; padding-left: 6px; font-variant-numeric: tabular-nums; }
+.donelab { position: absolute; top: 50%; transform: translate(calc(-100% - 6px), -50%); font-size: 11.5px; color: var(--ok); white-space: nowrap; font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12.5px; color: var(--ink-2); padding: 10px 18px 2px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 16px; height: 10px; border-radius: 3px; display: inline-block; background: var(--ink-2); }
+.sw.q { opacity: 0.5; }
+.sw.p { background: var(--pause); box-shadow: inset 0 0 0 1px var(--pause-line); }
+.sw.w { width: 9px; height: 9px; transform: rotate(45deg); border: 1.5px solid var(--ink-2); background: var(--surface); border-radius: 0; }
+.sw.n { width: 2px; height: 14px; border-radius: 0; background: var(--now); }
+
+.pill { font-size: 11px; line-height: 1; padding: 4px 7px; border-radius: 999px; white-space: nowrap; font-weight: 600; }
+.pill.running { background: var(--pill-run-bg); color: var(--pill-run-fg); }
+.pill.queued { background: var(--pill-queue-bg); color: var(--pill-queue-fg); }
+.pill.done { background: var(--pill-done-bg); color: var(--pill-done-fg); }
+
+.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--tip-bg); color: var(--tip-fg); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; max-width: 340px; box-shadow: 0 6px 24px rgba(0,0,0,0.18); }
+.tip b { display: block; font-size: 13.5px; margin-bottom: 3px; }
+.tip span { display: block; color: var(--tip-2); }
+.tip span + span { margin-top: 3px; }
+
+/* phase checklists */
+.phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.phase { padding: 14px 16px 16px; border-top: 4px solid var(--ink-2); min-width: 0; }
+.phase h3 { font-size: 15px; margin: 0 0 3px; font-weight: 650; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.phase .date { font-size: 12.5px; color: var(--ink-2); margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+.phase .why { font-size: 13px; color: var(--ink-2); margin: 0 0 10px; }
+.steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 7px; font-size: 13px; }
+.steps li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; }
+.steps .ic { text-align: center; font-weight: 700; color: var(--muted); }
+.steps .ic.done { color: var(--ok); }
+.steps .ic.running { color: var(--s-sim); }
+.steps .t { color: var(--ink); min-width: 0; }
+.steps .t small { display: block; color: var(--ink-2); font-size: 12px; margin-top: 1px; }
+.steps .h { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 760px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+.cols .card { padding: 16px 18px; min-width: 0; }
+.list { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 13.5px; color: var(--ink-2); }
+.list li { display: flex; gap: 8px; }
+.list .ic { flex: none; width: 18px; text-align: center; font-weight: 700; color: var(--ok); }
+.list .ic.warn { color: var(--s-render); }
+.list strong { color: var(--ink); font-weight: 600; }
+.cols p { margin: 0 0 8px; font-size: 13.5px; color: var(--ink-2); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-top: 1px solid var(--grid); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; border-top: none; }
+td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tablecard { padding: 16px 0 6px; }
+.tablecard h2 { padding: 0 18px; }
+.tscroll { overflow-x: auto; }
+#table { min-width: 760px; }
+#table td:first-child, #table th:first-child { padding-left: 18px; }
+#table tr.grp td { background: var(--band); font-weight: 650; color: var(--ink); }
+.foot { font-size: 12.5px; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { .seg { transition: filter 0.12s; } .seg:hover { filter: brightness(1.08); } }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow" id="asof">Updated Tue 27 Oct, 03:15 UTC</p>
+    <h1>What's left before Metropolis is done</h1>
+    <p class="lead">Every remaining step, on a real calendar. Work runs around the clock until the weekly usage limit is reached, then pauses until the next Monday 15:00 UTC; those pauses are the grey bands. Two cloud workflows and your desktop's worker run side by side, so steps in different groups overlap.</p>
+  </header>
+
+  <section class="card answer" aria-label="Answer">
+    <div class="big">
+      <p class="k">Likely finished</p>
+      <p class="v" id="likelyDate">—</p>
+      <p class="sub">polished, playable build with README</p>
+    </div>
+    <div>
+      <p class="k">Worst case</p>
+      <p class="v" id="worstDate">—</p>
+      <p class="sub">if every check finds more to fix</p>
+    </div>
+    <div>
+      <p class="k">Work left</p>
+      <p class="v" id="hoursLeft">—</p>
+      <p class="sub" id="hoursSub">hours of agents actually working</p>
+    </div>
+    <div>
+      <p class="k">Next pause</p>
+      <p class="v" id="pauseDate">—</p>
+      <p class="sub" id="pauseSub">weekly usage limit; work resumes Mon 2 Nov 15:00 UTC</p>
+    </div>
+  </section>
+
+  <div class="duo">
+    <section class="card" aria-label="Progress">
+      <h2>Progress</h2>
+      <div class="meter" role="img" aria-label="About 80 percent of the planned work is done"><span style="width: 80%"></span></div>
+      <p class="meter-note"><strong>Roughly 80% done</strong> (a judgement by planned work, not a measurement; also 80% on 21 Oct). The two close-outs moved forward, but the 26 Oct container reset took back two speed-up branches that had not been pushed, so they are being redone. The game, art, music and every simulation system are built. What is left: the two close-outs, speed for million-person cities, and the polish and fun pass.</p>
+    </section>
+    <section class="card" aria-label="Running right now">
+      <h2>Running right now</h2>
+      <ul class="nowlist">
+        <li><span class="dot" style="background: var(--s-sim)"></span><span><strong>Simulation close-out:</strong> fixing the last leak (one building inspection kept the old city in memory) plus eight small fixes; then a new playtester and an auditor check again. Test cities and fixtures were rebuilt after the reset.</span></li>
+        <li><span class="dot" style="background: var(--s-render)"></span><span><strong>Graphics re-check:</strong> independent art and speed reviewers check the last revision; their tools were rebuilt after the reset.</span></li>
+        <li><span class="dot" style="background: var(--s-perf)"></span><span><strong>Your desktop (RTX 5070 Ti):</strong> a real-GPU smoke test is finishing; next the million-person baseline, then Codex writes the exact speed fixes.</span></li>
+        <li><span class="dot" style="background: var(--muted)"></span><span><strong>Waiting on you:</strong> nothing.</span></li>
+      </ul>
+    </section>
+  </div>
+
+  <section class="card chart" aria-label="Step-by-step calendar">
+    <h2>Step-by-step calendar</h2>
+    <p class="hint">Each group is one piece of work and its rows are the steps, in order. Bars show when a step is worked on; faded bars are planned. A diamond marks the worst-case finish of the group. Hover or tab to a bar for details.</p>
+    <div class="scroller"><div class="gantt" id="gantt"></div></div>
+    <div class="legend">
+      <span><i class="sw"></i>working now</span>
+      <span><i class="sw q"></i>planned</span>
+      <span><i class="sw p"></i>paused: weekly usage limit</span>
+      <span><i class="sw w"></i>worst-case finish</span>
+      <span><i class="sw n"></i>now</span>
+    </div>
+  </section>
+
+  <section aria-label="Checklists">
+    <h2>Every step left, by piece of work</h2>
+    <div class="phases" id="phases"></div>
+  </section>
+
+  <div class="cols">
+    <section class="card">
+      <h2>Since 21 Oct</h2>
+      <ul class="list">
+        <li><span class="ic">✓</span><span><strong>Simulation close-out fix 1:</strong> leaving a city for the region map no longer keeps it in memory (the region screen stays at about 40 MB per visit instead of growing 35 MB each time); six small UI and wording fixes.</span></li>
+        <li><span class="ic">✓</span><span><strong>Simulation close-out check 2:</strong> the playtester found nothing serious; the auditor found one more leak path (inspecting a building), now being fixed.</span></li>
+        <li><span class="ic">✓</span><span><strong>Graphics final review and revision:</strong> art passed; the loading-fade stall went from 127 to 11 ms, the first zoom-out after loading from 1.17× to 1.05× the old build, and far forests at the map edge are round crowns on trunks.</span></li>
+        <li><span class="ic">✓</span><span><strong>Recovered from the 26 Oct reset:</strong> notes, reports and workflow scripts now live in the repo; test cities and test fixtures rebuild with one command; skipped tests went from 18 to 3.</span></li>
+        <li><span class="ic">✓</span><span><strong>Your desktop joined as a worker:</strong> Ryzen 7 9800X3D, 62 GB, RTX 5070 Ti with Codex; two-way messages verified (51 s round trip).</span></li>
+        <li><span class="ic warn">!</span><span><strong>Lost in the reset:</strong> the two checked speed-up branches (never pushed). Their design is in the repo docs, so the work is being redone rather than reinvented.</span></li>
+      </ul>
+    </section>
+    <section class="card">
+      <h2>How to read the dates</h2>
+      <p>Dates assume about 38 hours of agent work per weekly window. The last window gave about 42 hours with four cloud agents; your desktop's Claude worker draws on the same weekly pool, while Codex does not. This window opened Mon 26 Oct 15:00 and work resumed at 23:37 after the reset; about 4 hours have run, so the limit is expected around <span id="pauseInline">Wed 28 Oct</span>.</p>
+      <p>Why the likely date moved from Tue 3 Nov: the second simulation check found one more leak, the graphics speed review needed a revision and another check, and the reset cost the two speed-up branches and the reviewers' tools.</p>
+      <table id="sens" aria-label="Finish date by weekly allowance"><thead><tr><th>Work per week</th><th>Likely</th><th>Worst case</th></tr></thead><tbody></tbody></table>
+    </section>
+  </div>
+
+  <section class="card tablecard" aria-label="Table view">
+    <h2>Table view</h2>
+    <div class="tscroll"><table id="table"><thead><tr><th>Step</th><th>Status</th><th>Hours left</th><th>Likely finish</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <p class="foot">Estimates, not commitments. Hours are hours of agents working, not wall-clock time. Drive-through city mode is postponed and not included.</p>
+</div>
+
+<div class="tip" id="tip" hidden></div>
+
+<script>
+(function () {
+  // ---- inputs (hours = hours of agents actually working, counted from NOW)
+  var NOW = Date.UTC(2026, 9, 27, 3, 15);        // Tue 27 Oct 2026, 03:15 UTC
+  var USED_NOW = 4;                               // hours used in this weekly window (work since Mon 26 Oct 23:37)
+  var NEXT_RESET = Date.UTC(2026, 10, 2, 15, 0);  // Mon 2 Nov 15:00 UTC, then weekly
+  var CAP = 38;                                   // hours of work per weekly window
+  var SLACK = 1.08;                               // wall hours per work hour inside a window (restarts)
+  var VIEW_FROM = Date.UTC(2026, 9, 26, 0, 0);
+  var VIEW_DAYS = 23;
+
+  // status: done | running | queued; s/e = hours from now (done steps have none); w = where it runs
+  var PHASES = [
+    { key: 'sim', color: '--s-sim', name: 'Simulation: close-out', worst: 13,
+      why: 'Four check-and-fix rounds are done. The close-out checks found two ways a city stayed in memory after leaving it: the first is fixed, the second (one building inspection) is being fixed now with eight small fixes; then a third independent check.',
+      steps: [
+        { n: 'Check and fix rounds 1–4', st: 'done', note: 'five testers per round; every serious find fixed and re-checked' },
+        { n: 'Close-out check 1 and fix', st: 'done', note: 'leaving a city kept it in memory (+35 MB per visit): fixed; six small UI fixes' },
+        { n: 'Close-out check 2', st: 'done', note: 'playtest: nothing serious; audit: one more leak path (a building inspection)' },
+        { n: 'Fix round 2 + test cities rebuilt', st: 'running', s: 0, e: 1, w: 'cloud', note: 'the inspection leak + eight small fixes; test cities and fixtures rebuilt after the reset (done)' },
+        { n: 'Close-out check 3', st: 'queued', s: 1, e: 6, w: 'cloud', note: 'new real-input playtester + adversarial auditor' },
+        { n: 'Fix and re-check (only if needed)', st: 'queued', s: 6, e: 13, w: 'cloud', note: 'skipped if nothing serious turns up' }
+      ] },
+    { key: 'render', color: '--s-render', name: 'Graphics round 2: final review', worst: 24,
+      why: 'Art passed the final review. The speed review found three slowdowns right after loading; the revision fixed the loading-fade stall and cut the first zoom-out to 1.05× the old build. A re-check is running; the known open item is the first zoom-in at high quality (about 1.2×).',
+      steps: [
+        { n: 'Fix rounds 1–3, review round 4, final fix round', st: 'done', note: 'winter trees, LOD swaps, shadows, the far forest at the map edge' },
+        { n: 'Final review 1', st: 'done', note: 'art passed; speed: three slowdowns in the first seconds after loading' },
+        { n: 'Revision 1 (both lanes)', st: 'done', note: 'loading-fade stall 127 → 11 ms; first zoom-out 1.05×; round far-forest crowns' },
+        { n: 'Independent art + speed re-check 2', st: 'running', s: 0, e: 5, w: 'cloud', note: 'tools and the old-build baseline rebuilt after the reset' },
+        { n: 'Revise and re-check 3 (only if needed)', st: 'queued', s: 5, e: 16, w: 'cloud', note: 'expected for the high-quality first zoom-in' }
+      ] },
+    { key: 'perf', color: '--s-perf', name: 'Speed for 1M+ cities', worst: 72,
+      why: 'Million-person cities should run without stutter. The design is in the repo (docs/WASM_PLAN.md, docs/WORKER_DESIGN.md). The two speed-up branches were lost in the reset, so they are being redone: the exact fixes by Codex on your desktop, each checked bit for bit; the rest in the cloud.',
+      steps: [
+        { n: 'Baseline at 1M (your desktop)', st: 'queued', s: 1, e: 5, w: 'desktop', note: 'where the time goes at 1.1M and 1.4M residents, before any change' },
+        { n: 'Exact speed fixes (Codex on your desktop)', st: 'queued', s: 5, e: 17, w: 'desktop + Codex', note: 'eight fixes from the plan; each must give bit-identical cities and not be slower' },
+        { n: 'Services update trigger', st: 'queued', s: 6, e: 12, w: 'cloud', note: 'the largest single gain; goes through the balance checks' },
+        { n: 'Fix the money-counter stall', st: 'queued', s: 12, e: 14, w: 'cloud', note: 'a JavaScript slow path in the funds counter' },
+        { n: 'Exact save/load continuation', st: 'queued', s: 14, e: 20, w: 'cloud', note: 'a loaded city continues exactly like the original' },
+        { n: 'Merge and check the speed fixes', st: 'queued', s: 17, e: 23, w: 'cloud', note: 'independent check of everything Codex wrote' },
+        { n: 'Split oversized simulation steps', st: 'queued', s: 23, e: 27, w: 'cloud', note: 'the long steps behind the ultra-speed stutter at 1M' },
+        { n: 'Simulation on a background thread', st: 'queued', s: 27, e: 45, w: 'cloud', note: 'Web Worker, so the screen never waits for the simulation' },
+        { n: 'Independent check and fixes', st: 'queued', s: 45, e: 51, w: 'cloud + desktop', note: 'including real-GPU runs on your desktop' }
+      ] },
+    { key: 'polish', color: '--s-polish', name: 'Polish & fun', worst: 112,
+      why: '88 planned items in four rounds, plus the smaller ideas the testers logged. Each round ends with playtests until nothing new turns up; Codex can take well-specified items and your desktop runs the visual checks.',
+      steps: [
+        { n: 'Round 1: tutorial, first goals, settings', st: 'queued', s: 16, e: 32, w: 'cloud + desktop', note: '25 items: a guided first city, first-year goals, city ranks, spring start, settings' },
+        { n: 'Round 2: first-hour depth', st: 'queued', s: 32, e: 50, w: 'cloud + desktop', note: '30 items: taxes that matter, transit, industry, difficulty, feedback you can see and hear' },
+        { n: 'Round 3: the long game', st: 'queued', s: 50, e: 59, w: 'cloud + desktop', note: '12 items: late-game money, disasters, region, scenarios, colour-blind mode' },
+        { n: 'Round 4: delight', st: 'queued', s: 59, e: 71, w: 'cloud + desktop', note: '21 items: pedestrians, weather, photo mode, camera moments; all six player types playtest' }
+      ] },
+    { key: 'release', color: '--s-release', name: 'Final check & release', worst: 120,
+      why: 'Everything checked together once more, then a build you can open and play.',
+      steps: [
+        { n: 'Final verification', st: 'queued', s: 71, e: 75, w: 'cloud + desktop', note: 'type check, every test suite, production build, a multi-hour soak on your desktop' },
+        { n: 'README and playable build', st: 'queued', s: 75, e: 77, w: 'cloud', note: 'how to run, controls, features' }
+      ] }
+  ];
+
+  var HOUR = 3600e3, DAY = 24 * HOUR, WEEK = 7 * DAY;
+  var DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  function windows(cap) {
+    var out = [], h = cap - USED_NOW;
+    out.push({ start: NOW, from: 0, to: h });
+    for (var i = 0; i < 12; i++) { out.push({ start: NEXT_RESET + i * WEEK, from: h, to: h + cap }); h += cap; }
+    return out.map(function (w) { w.end = w.start + (w.to - w.from) * SLACK * HOUR; return w; });
+  }
+  function at(h, cap) {
+    var ws = windows(cap);
+    for (var i = 0; i < ws.length; i++) if (h <= ws[i].to || i === ws.length - 1) return ws[i].start + (h - ws[i].from) * SLACK * HOUR;
+  }
+  function spans(s, e) {
+    var out = [];
+    windows(CAP).forEach(function (w) { var a = Math.max(s, w.from), b = Math.min(e, w.to); if (a < b) out.push([w.start + (a - w.from) * SLACK * HOUR, w.start + (b - w.from) * SLACK * HOUR]); });
+    return out;
+  }
+  function dayName(ms) { var d = new Date(ms); return DAYS[d.getUTCDay()] + ' ' + d.getUTCDate() + ' ' + MON[d.getUTCMonth()]; }
+  function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+  var SPAN = VIEW_DAYS * DAY;
+  function pct(ms) { return ((ms - VIEW_FROM) / SPAN * 100) + '%'; }
+  function wpct(a, b) { return ((b - a) / SPAN * 100) + '%'; }
+  function lastEnd(p) { return Math.max.apply(null, p.steps.map(function (s) { return s.st === 'done' ? 0 : s.e; })); }
+  function firstStart(p) { return Math.min.apply(null, p.steps.filter(function (s) { return s.st !== 'done'; }).map(function (s) { return s.s; })); }
+  function hoursLeft(p) {
+    // union of the remaining step intervals (parallel steps in one group overlap)
+    var iv = p.steps.filter(function (s) { return s.st !== 'done'; }).map(function (s) { return [s.s, s.e]; }).sort(function (a, b) { return a[0] - b[0]; });
+    var tot = 0, cs = -1, ce = -1;
+    iv.forEach(function (x) { if (x[0] > ce) { if (ce > cs) tot += ce - cs; cs = x[0]; ce = x[1]; } else ce = Math.max(ce, x[1]); });
+    if (ce > cs) tot += ce - cs; return tot;
+  }
+  var ST = { done: 'Done', running: 'Working now', queued: 'Planned' };
+  function groupStatus(p) { return p.steps.some(function (s) { return s.st === 'running'; }) ? 'running' : 'queued'; }
+
+  var likelyH = Math.max.apply(null, PHASES.map(lastEnd));
+  var worstH = Math.max.apply(null, PHASES.map(function (p) { return p.worst; }));
+  var WS = windows(CAP);
+  document.getElementById('likelyDate').textContent = dayName(at(likelyH, CAP));
+  document.getElementById('worstDate').textContent = dayName(at(worstH, CAP));
+  document.getElementById('hoursLeft').textContent = '~' + likelyH + ' h';
+  document.getElementById('hoursSub').textContent = 'up to ~' + worstH + ' h · hours of agents actually working';
+  document.getElementById('pauseDate').textContent = dayName(WS[0].end);
+  document.getElementById('pauseInline').textContent = dayName(WS[0].end);
+
+  var pauses = [];
+  for (var i = 0; i + 1 < WS.length; i++) pauses.push([WS[i].end, WS[i + 1].start]);
+  // the pause that just ended: from the limit on Wed 21 Oct 15:00 to the reset on Mon 26 Oct 15:00 (shown, already over)
+  pauses.unshift([Date.UTC(2026, 9, 21, 15, 0), Date.UTC(2026, 9, 26, 23, 37)]);
+
+  function addBackground(track, withLabels) {
+    for (var d = 0; d <= VIEW_DAYS; d++) {
+      var t = VIEW_FROM + d * DAY, isMon = new Date(t).getUTCDay() === 1;
+      var v = el('div', 'dayline' + (isMon ? ' mon' : '')); v.style.left = pct(t); track.appendChild(v);
+    }
+    pauses.forEach(function (p) {
+      var a = Math.max(p[0], VIEW_FROM), b = Math.min(p[1], VIEW_FROM + SPAN); if (a >= b) return;
+      var band = el('div', 'pause'); band.style.left = pct(a); band.style.width = wpct(a, b); track.appendChild(band);
+      if (withLabels) { var l = el('div', 'pause-lab', 'paused'); l.style.left = pct(a); l.style.width = wpct(a, b); track.appendChild(l); }
+    });
+    var n = el('div', 'nowline'); n.style.left = pct(NOW); track.appendChild(n);
+  }
+
+  var gantt = document.getElementById('gantt');
+  var aTrack = el('div', 'track'); addBackground(aTrack, true);
+  for (var d = 0; d < VIEW_DAYS; d++) {
+    var t = VIEW_FROM + d * DAY + DAY / 2, dt = new Date(t), wd = dt.getUTCDay(), isMon = wd === 1;
+    if (!(isMon || wd === 4 || d === 0)) continue;
+    var lab = el('div', 'daylab' + (isMon ? ' mon' : ''), DAYS[wd] + ' ' + dt.getUTCDate() + (d === 0 || dt.getUTCDate() <= 3 ? ' ' + MON[dt.getUTCMonth()] : ''));
+    lab.style.left = pct(t); aTrack.appendChild(lab);
+  }
+  var nl = el('div', 'nowlab', 'now'); nl.style.left = 'calc(' + pct(NOW) + ' + 4px)'; aTrack.appendChild(nl);
+  var axis = el('div', 'axis-row'); axis.appendChild(el('div', 'lab', 'UTC dates')); axis.appendChild(aTrack); gantt.appendChild(axis);
+
+  var tip = document.getElementById('tip');
+  function showTip(lines, x, y) {
+    tip.textContent = '';
+    tip.appendChild(el('b', null, lines[0]));
+    for (var i = 1; i < lines.length; i++) if (lines[i]) tip.appendChild(el('span', null, lines[i]));
+    tip.hidden = false;
+    var r = tip.getBoundingClientRect();
+    tip.style.left = Math.max(8, Math.min(x + 14, window.innerWidth - r.width - 12)) + 'px';
+    tip.style.top = Math.max(8, (y + 16 + r.height > window.innerHeight - 8) ? y - r.height - 12 : y + 16) + 'px';
+  }
+  function hideTip() { tip.hidden = true; }
+  function bindTip(node, lines) {
+    node.addEventListener('pointermove', function (ev) { showTip(lines, ev.clientX, ev.clientY); });
+    node.addEventListener('pointerleave', hideTip);
+    node.addEventListener('focus', function () { var r = node.getBoundingClientRect(); showTip(lines, r.left, r.bottom); });
+    node.addEventListener('blur', hideTip);
+  }
+  function drawBars(track, s, e, color, running, lines) {
+    spans(s, e).forEach(function (sp) {
+      var a = Math.max(sp[0], VIEW_FROM), b = Math.min(sp[1], VIEW_FROM + SPAN); if (a >= b) return;
+      var bar = el('div', 'seg' + (running ? '' : ' queued')); bar.tabIndex = 0;
+      bar.style.left = pct(a); bar.style.width = 'max(3px, ' + wpct(a, b) + ')'; bar.style.background = 'var(' + color + ')';
+      bar.setAttribute('role', 'img'); bar.setAttribute('aria-label', lines.filter(Boolean).join('. '));
+      bindTip(bar, lines); track.appendChild(bar);
+    });
+  }
+
+  PHASES.forEach(function (p) {
+    var gs = groupStatus(p), endMs = at(lastEnd(p), CAP), wMs = at(p.worst, CAP);
+    // group row
+    var lab = el('div', 'lab'), nm = el('div', 'name'), dot = el('span', 'dot');
+    dot.style.background = 'var(' + p.color + ')'; nm.appendChild(dot); nm.appendChild(document.createTextNode(p.name));
+    nm.appendChild(el('span', 'pill ' + gs, ST[gs])); lab.appendChild(nm);
+    lab.appendChild(el('div', 'when', 'likely ' + dayName(endMs) + ' · worst ' + dayName(wMs)));
+    var track = el('div', 'track'); addBackground(track, false);
+    drawBars(track, firstStart(p), lastEnd(p), p.color, gs === 'running', [p.name, 'Likely done: ' + dayName(endMs), 'Worst case: ' + dayName(wMs), p.why]);
+    var dl = el('div', 'endlab', '→ ' + dayName(endMs)); dl.style.left = pct(endMs); track.appendChild(dl);
+    if (wMs < VIEW_FROM + SPAN) { var w = el('div', 'worst'); w.style.left = pct(wMs); w.title = 'worst case ' + dayName(wMs); track.appendChild(w); }
+    var row = el('div', 'row group'); row.appendChild(lab); row.appendChild(track); gantt.appendChild(row);
+    // step rows
+    p.steps.forEach(function (s) {
+      var sl = el('div', 'lab'), sn = el('div', 'name', s.n); sl.appendChild(sn);
+      if (s.w) sl.appendChild(el('div', 'where', s.w));
+      var stTrack = el('div', 'track'); addBackground(stTrack, false);
+      if (s.st === 'done') {
+        var dn = el('div', 'donelab', '✓ done'); dn.style.left = pct(NOW); stTrack.appendChild(dn);
+      } else {
+        var sEnd = at(s.e, CAP);
+        drawBars(stTrack, s.s, s.e, p.color, s.st === 'running', [s.n, ST[s.st] + ' · about ' + (s.e - s.s) + ' h of work' + (s.w ? ' · ' + s.w : ''), 'Likely done: ' + dayName(sEnd), s.note]);
+      }
+      var r2 = el('div', 'row step' + (s.st === 'done' ? ' done' : '')); r2.appendChild(sl); r2.appendChild(stTrack); gantt.appendChild(r2);
+    });
+  });
+
+  // checklists
+  var pc = document.getElementById('phases');
+  PHASES.forEach(function (p) {
+    var gs = groupStatus(p);
+    var c = el('div', 'card phase'); c.style.borderTopColor = 'var(' + p.color + ')';
+    var h = el('h3', null, p.name); h.appendChild(el('span', 'pill ' + gs, ST[gs])); c.appendChild(h);
+    c.appendChild(el('p', 'date', 'likely done ' + dayName(at(lastEnd(p), CAP)) + ' · worst ' + dayName(at(p.worst, CAP)) + ' · ~' + hoursLeft(p) + ' h left'));
+    c.appendChild(el('p', 'why', p.why));
+    var ul = el('ul', 'steps');
+    p.steps.forEach(function (s) {
+      var li = el('li');
+      li.appendChild(el('span', 'ic ' + s.st, s.st === 'done' ? '✓' : s.st === 'running' ? '◐' : '○'));
+      var t = el('span', 't', s.n); if (s.note || s.w) t.appendChild(el('small', null, (s.w ? s.w + ' · ' : '') + (s.note || ''))); li.appendChild(t);
+      li.appendChild(el('span', 'h', s.st === 'done' ? 'done' : '~' + (s.e - s.s) + ' h'));
+      ul.appendChild(li);
+    });
+    c.appendChild(ul); pc.appendChild(c);
+  });
+
+  // sensitivity
+  var sb = document.querySelector('#sens tbody');
+  [28, 38, 48].forEach(function (cap) {
+    var tr = document.createElement('tr');
+    tr.appendChild(el('td', 'num', cap + ' h' + (cap === CAP ? ' (central estimate)' : '')));
+    tr.appendChild(el('td', 'num', dayName(at(likelyH, cap))));
+    tr.appendChild(el('td', 'num', dayName(at(worstH, cap))));
+    if (cap === CAP) tr.style.fontWeight = '600';
+    sb.appendChild(tr);
+  });
+
+  // table
+  var tb = document.querySelector('#table tbody');
+  PHASES.forEach(function (p) {
+    var gs = groupStatus(p);
+    var g = document.createElement('tr'); g.className = 'grp';
+    g.appendChild(el('td', null, p.name));
+    var gst = el('td'); gst.appendChild(el('span', 'pill ' + gs, ST[gs])); g.appendChild(gst);
+    g.appendChild(el('td', 'num', '~' + hoursLeft(p) + ' h'));
+    g.appendChild(el('td', 'num', dayName(at(lastEnd(p), CAP)) + ' (worst ' + dayName(at(p.worst, CAP)) + ')'));
+    tb.appendChild(g);
+    p.steps.forEach(function (s) {
+      var tr = document.createElement('tr');
+      tr.appendChild(el('td', null, s.n + (s.w ? ' · ' + s.w : '')));
+      var st = el('td'); st.appendChild(el('span', 'pill ' + s.st, ST[s.st])); tr.appendChild(st);
+      tr.appendChild(el('td', 'num', s.st === 'done' ? '—' : '~' + (s.e - s.s) + ' h'));
+      tr.appendChild(el('td', 'num', s.st === 'done' ? 'done' : dayName(at(s.e, CAP))));
+      tb.appendChild(tr);
+    });
+  });
+})();
+</script>
