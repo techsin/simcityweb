@@ -59,7 +59,8 @@ import {
   type PendingRecovery,
   type WriteResult,
 } from './save';
-import { regionContext, applyRegionEffects, trackRegionEffects } from './region/regionEffects';
+import { regionContext, applyRegionEffects, type RegionContext } from './region/regionEffects';
+import type { SimHost } from './worker/SimHost';
 import { NeighborLabels } from './region/NeighborLabels';
 import type { Camera } from 'three';
 
@@ -67,6 +68,7 @@ import type { Camera } from 'three';
 // CityScene contract (owned by ui-game; loaded lazily so the app works before it exists)
 // ---------------------------------------------------------------------------------------------------------------
 interface CitySceneLike {
+  readonly host?: SimHost;
   start?(): unknown;
   dispose(): void;
   /** save now (shows CityScene's SavePill); resolves when done */
@@ -81,6 +83,7 @@ interface CitySceneLike {
 interface CitySceneOptions {
   container: HTMLElement;
   state: CityState;
+  rctx?: RegionContext;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
   onSave: (state: CityState) => Promise<void>;
   /** app-level settings; CityScene treats these keys as overrides of its stored in-game prefs */
@@ -165,7 +168,6 @@ class App {
     state: CityState;
     placeholder?: HTMLElement;
     lastSave: number;
-    offRegion?: () => void;
     labels?: NeighborLabels;
     /** change events seen (counter) / at the last successful save / at the last recovery snapshot */
     changes: number;
@@ -529,9 +531,9 @@ class App {
     const container = h('div', { class: 'meta-layer city-host' });
     this.root.prepend(container);
     setLastSession({ regionId: model.data.id, tileKey: tile.key });
-    // regional play: neighbours' jobs / workers + summary for sim systems (refreshed monthly below)
+    // the host owns regional effects; the placeholder has no simulation host
     const rctx = regionContext(model, tile);
-    applyRegionEffects(st, rctx);
+    if (!Ctor) applyRegionEffects(st, rctx);
     // the state was just loaded / founded + saved: clean
     const now = Date.now();
     this.city = { scene: null, tile, state: st, lastSave: now, changes: 0, cleanChanges: 0, snapChanges: 0, cleanFp: cityFingerprint(st), snapFp: '', lastSnap: now, saving: 0, saveFailed: false };
@@ -542,6 +544,7 @@ class App {
       const scene = new Ctor({
         container,
         state: st,
+        rctx,
         settings: { quality: this.settings.quality, edgeScroll: this.settings.edgeScroll, showFps: this.settings.showFps, autosaveMonths: this.settings.autosaveMonths },
         onExitToRegion: (thumb) => void this.exitCity(thumb),
         onSave: (s) => this.saveCityState(s),
@@ -555,7 +558,6 @@ class App {
         },
       });
       this.city.scene = scene;
-      if (scene.sim?.events) this.city.offRegion = trackRegionEffects(scene.sim as Parameters<typeof trackRegionEffects>[0], rctx);
       // edits that don't move the fingerprint (e.g. zoning while paused) still count as unsaved changes
       const ev = scene.sim?.events as unknown as { on(type: string, fn: () => void): () => void } | undefined;
       if (ev) {
@@ -715,7 +717,6 @@ class App {
     }
     // the save failed: keep the progress as a recovery snapshot (offered when the city is opened again)
     if (this.isDirty()) this.snapshotNow('exit');
-    c.offRegion?.();
     c.offChanges?.();
     clearInterval(c.ticker);
     c.status?.dispose();
