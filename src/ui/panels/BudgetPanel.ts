@@ -9,6 +9,8 @@ import { icon } from '../icons';
 import { money, moneySigned, signClass, titleCase } from '../format';
 import { isOneOff, sumOneOff, sumRecurring } from '../TopBar';
 import { watchFor, type WatchHandle } from '../../worker/SimHost';
+import { taxFactor } from '../../sim/economy/demand';
+import { APPROVAL, TAX_NEUTRAL } from '../../sim/economy/tuning';
 
 const TAX_GROUPS: { label: string; color: string; devs: DevType[] }[] = [
   { label: 'Residential', color: 'var(--res)', devs: [DevType.R1, DevType.R2, DevType.R3] },
@@ -99,7 +101,8 @@ export class BudgetPanel extends Panel {
   private tab: 'taxes' | 'services' | 'ledger' | 'loans' = 'taxes';
   private tabBtns: Record<string, HTMLButtonElement> = {};
   private content!: HTMLDivElement;
-  private taxSliders = new Map<DevType, { s: HTMLInputElement; v: HTMLElement; m: HTMLElement }>();
+  private taxSliders = new Map<DevType, { s: HTMLInputElement; v: HTMLElement; m: HTMLElement; effect: HTMLElement }>();
+  private taxMasters: { devs: DevType[]; s: HTMLInputElement; v: HTMLElement }[] = [];
   private fundSliders = new Map<ServiceKind, { s: HTMLInputElement; v: HTMLElement; m: HTMLElement; badge: HTMLElement; row: HTMLElement }>();
   private netEls!: { inc: HTMLElement; exp: HTMLElement; net: HTMLElement; note: HTMLElement; funds: HTMLElement };
   /** rates / funding in effect when last month's report was produced (for projections) */
@@ -158,6 +161,7 @@ export class BudgetPanel extends Panel {
     for (const [id, b] of Object.entries(this.tabBtns)) toggleClass(b, 'on', id === this.tab);
     clear(this.content);
     this.taxSliders.clear();
+    this.taxMasters = [];
     this.fundSliders.clear();
     if (this.tab === 'taxes') this.renderTaxes();
     else if (this.tab === 'services') this.renderServices();
@@ -180,7 +184,7 @@ export class BudgetPanel extends Panel {
     const cols = h('div', { class: 'tax-cols' });
     TAX_GROUPS.forEach((g) => {
       const box = h('div', { class: 'tax-group' });
-      const avg = () => Math.round(g.devs.reduce((s, d) => s + b.taxRates[d], 0) / g.devs.length);
+      const avg = () => g.devs.reduce((s, d) => s + b.taxRates[d], 0) / g.devs.length;
       const mv = h('span', { class: 'tr-v' }, pctText(avg()));
       const master = slider({
         signal: this.ctx.signal,
@@ -191,6 +195,7 @@ export class BudgetPanel extends Panel {
           this.update();
         },
       });
+      this.taxMasters.push({ devs: g.devs, s: master, v: mv });
       box.append(
         h('div', { class: 'sec-title', html: `<span class="zdot" style="background:${g.color}"></span><span>${g.label}</span>` }),
         h('div', { class: 'tax-row master' }, h('span', { class: 'tr-l' }, 'All'), master, stepper(master, mv, `every ${g.label.toLowerCase()} tax`, this.ctx.signal), h('span', { class: 'tr-m' }, '')),
@@ -198,6 +203,7 @@ export class BudgetPanel extends Panel {
       for (const d of g.devs) {
         const v = h('span', { class: 'tr-v' });
         const m = h('span', { class: 'tr-m' });
+        const effect = h('div', { class: 'dim tax-effect', style: 'grid-column:1 / -1;font-size:11.5px;line-height:1.4;margin-bottom:4px' });
         const s = slider({
           signal: this.ctx.signal,
           min: 0, max: 20, step: 0.5, value: b.taxRates[d],
@@ -206,12 +212,13 @@ export class BudgetPanel extends Panel {
             this.update();
           },
         });
-        this.taxSliders.set(d, { s, v, m });
-        box.appendChild(h('div', { class: 'tax-row', title: `Last month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, stepper(s, v, `the ${DEV_TYPE_LABELS[d]} tax`, this.ctx.signal), m));
+        this.taxSliders.set(d, { s, v, m, effect });
+        box.appendChild(h('div', { class: 'tax-row', title: `Last month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, stepper(s, v, `the ${DEV_TYPE_LABELS[d]} tax`, this.ctx.signal), m, effect));
       }
+      if (g.devs[0] === DevType.R1) box.appendChild(h('div', { class: 'dim', style: 'font-size:11.5px;line-height:1.4;margin-top:4px' }, `Residential rows share the citywide tax effect vs ${TAX_NEUTRAL}%, weighted by residents. Other approval factors still apply.`));
       cols.appendChild(box);
     });
-    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + '<span>Taxes above ~12% slow growth and hurt approval; below ~7% attract newcomers but strain the budget. Click a slider, then use the arrow keys (or − / +) for 0.5% steps.</span>' });
+    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + `<span>${TAX_NEUTRAL}% is neutral. Each residential point above costs approval (−${-APPROVAL.taxPerPoint} a point); above 13% demand collapses. Each point below wins approval (+${APPROVAL.taxLowPerPoint}) but less income. Click a slider, then use the arrow keys (or − / +) for 0.5% steps.</span>` });
     this.content.append(cols, hint);
   }
 
@@ -443,12 +450,20 @@ export class BudgetPanel extends Panel {
     // recurring only: loan proceeds, construction and other one-offs are listed separately in the ledger
     const lastNet = sumRecurring(b.lastIncome) - sumRecurring(b.lastExpense);
     setText(this.netEls.note, hasLast ? `Last month ${moneySigned(lastNet)}` : fc ? 'Forecast at current rates' : 'Awaiting first report');
+    for (const r of this.taxMasters) {
+      const rates = r.devs.map((d) => b.taxRates[d]);
+      const rate = rates.reduce((sum, v) => sum + v, 0) / rates.length;
+      setSlider(r.s, rate);
+      setText(r.v, rates.every((v) => v === rates[0]) ? pctText(rate) : 'Mixed');
+      taxColor(r.s, rate);
+    }
+    const residential = residentialTaxEffect(b.taxRates, st.stats.residents, st.stats.population);
     for (const [d, r] of this.taxSliders) {
       const rate = b.taxRates[d];
       setSlider(r.s, rate);
       setText(r.v, `${rate % 1 ? rate.toFixed(1) : rate}%`);
-      toggleClass(r.s, 'warn', rate > 12 && rate <= 15);
-      toggleClass(r.s, 'bad', rate > 15);
+      taxColor(r.s, rate);
+      setText(r.effect, d <= DevType.R3 ? residential : `demand ×${Number(taxFactor(d, rate).toFixed(2))}`);
       let proj: number;
       if (fc) proj = lookup(fc.income, taxKeys(d));
       else {
@@ -504,6 +519,22 @@ function serviceCost(expense: Record<string, number>, s: ServiceKind): number {
 }
 
 type Forecast = { income: Record<string, number>; expense: Record<string, number>; totalIncome: number; totalExpense: number };
+
+function taxColor(sl: HTMLInputElement, rate: number): void {
+  toggleClass(sl, 'warn', rate > 9.5 && rate < 13.5);
+  toggleClass(sl, 'bad', rate >= 13.5);
+}
+
+/** The sim applies the tax slope to the resident-weighted average, not separately to each wealth tier. */
+function residentialTaxEffect(rates: readonly number[], residents: readonly number[], population: number): string {
+  if (population <= 0) return 'Approval starts with your first residents';
+  const rate = (residents[0] * rates[0] + residents[1] * rates[1] + residents[2] * rates[2]) / population;
+  const effect = rate > TAX_NEUTRAL ? APPROVAL.taxPerPoint * (rate - TAX_NEUTRAL) : APPROVAL.taxLowPerPoint * (TAX_NEUTRAL - rate);
+  if (Math.abs(effect) < 1e-9) return `Citywide approval: neutral at ${TAX_NEUTRAL}%`;
+  const points = Math.abs(effect) < 0.01 ? '<0.01' : String(Number(Math.abs(effect).toFixed(2)));
+  const reached = Math.round((1 - (1 - APPROVAL.ema) ** 6) * 100);
+  return `Citywide: approval heads ${points} ${effect < 0 ? 'lower' : 'higher'} (${reached}% reached over 6 months)`;
+}
 
 /** "11%" / "11.5%" */
 function pctText(v: number): string {
