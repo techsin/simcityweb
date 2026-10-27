@@ -1,16 +1,17 @@
 /**
  * Emergency alert banners (WP8), rendered from host.policy. SimCore owns selection, dismissals and LIVE speed.
  *
- * An incident no station can auto-answer ('uncovered' with a free unit the player can send) raises a banner at the top
- * of the screen: kind colour + icon, title, place, why nobody is coming ("All 2 fire trucks of Fire Station #3 are
- * busy"), the time since it started and the time left before it fails, and buttons: Jump · Send nearest (ETA) ·
+ * An incident outside station range ('uncovered' with a free unit the player can send) raises a banner at the top
+ * of the screen: kind colour + icon, title, place, why nobody is coming, the time since it started and the time left
+ * before it fails, and buttons: Jump · Send nearest (ETA) ·
  * Choose station… (DispatchTool) · dismiss. When even the nearest free unit cannot arrive before the deadline
  * (canSend without manualPossible) the banner still shows ("too far?") but the speed is left alone. At most
  * MAX_BANNERS full banners; major incidents only unless
  * settings.emergencyAlerts = 'all'; KIND_COOLDOWN days between banners of the same kind (fires always alert); no
  * alerts below ALERT_MIN_POP residents except fires — but a MAJOR incident a dispatch can still save (manualPossible)
- * always gets a banner (compact beyond MAX_BANNERS) and holds the speed policy: it scores as an ignored prompt when
- * nobody answers. Covered incidents never alert — they only become statistics.
+ * always gets a banner (compact beyond MAX_BANNERS). Busy incidents never alert or hold the speed policy; they stay
+ * in the Emergencies panel for manual dispatch. Between speed-policy episodes, alerts only get banners for
+ * LIVE_COOLDOWN_MS of unpaused real time.
  * A prompt counts (banner, LIVE mode, urgent pause, "N more" pill) only while a dispatch can really go (EM-1):
  * manualPossible and a free unit of its primary responder among the dispatch options that still arrives in time (the
  * Send button re-reads them after any dispatch); 'uncovered' events are taken up
@@ -294,6 +295,7 @@ const cap1 = (s: string) => s[0].toUpperCase() + s.slice(1);
 /** what is happening to an incident, in words (with `em`: a live countdown to the first arrival). Every vehicle is named
  *  by its own kind: an industrial accident's ambulance is no "fire truck" */
 export function stateText(inc: Incident, now: number, em?: EmergencySystem): string {
+  if (inc.state === 'uncovered' && inc.reason === 'busy') return 'Waiting for a unit';
   const primary = INCIDENT_RESPONDERS[inc.kind][0];
   switch (inc.state) {
     case 'queued': return inc.reason === 'busy' ? 'Waiting for a unit to come back' : 'Dispatch pending';
@@ -649,7 +651,7 @@ export class EmergencyBanner {
 
   /** Layout and the count pill use the same current free-unit check as the policy. */
   private answerable(em: EmergencySystem, inc: Incident): boolean {
-    return !Number.isNaN(sendDays(inc, this.ctx.host.simTime(), () => em.dispatchOptions(this.ctx.sim, inc.id)));
+    return inc.reason !== 'busy' && !Number.isNaN(sendDays(inc, this.ctx.host.simTime(), () => em.dispatchOptions(this.ctx.sim, inc.id)));
   }
 
   private onEvent(e: EmergencyEvent): void {

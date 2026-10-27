@@ -10,7 +10,7 @@ import type { Command, CommandOp, CommandResult } from './SimHost';
 import { runQuery, watchSignature, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
 // W0.4: headless policy and its read-only host view.
 import { Emitter } from '../core/events';
-import { AlertQueue, LIVE_IDLE, followingDispatch, pendingCount, sendDays, speedPolicy, unbanneredPrompt, urgentSeconds, type LiveState, type PolicyAlert } from '../game/emergencyPolicy';
+import { AlertQueue, LIVE_COOLDOWN_MS, LIVE_IDLE, followingDispatch, pendingCount, sendDays, speedPolicy, unbanneredPrompt, urgentSeconds, type LiveState, type PolicyAlert } from '../game/emergencyPolicy';
 import type { EmergencyEvent } from '../sim/Simulation';
 import type { Incident } from '../sim/infra/emergency';
 import type { PolicySnapshot, PolicyView, SimSettings } from './SimHost';
@@ -216,6 +216,9 @@ export class LivePolicy {
   private scanned = false;
   private attached = false;
   private flushQueued = false;
+  private cooldownLeft = 0;
+  private cooldownAt = 0;
+  private cooldownRunning = false;
 
   constructor(private sim: Simulation, private signal: AbortSignal) {
     const self = this;
@@ -240,8 +243,9 @@ export class LivePolicy {
     this.attached = true;
     const off = this.sim.events.on('emergency', (e) => this.onEvent(e));
     const offReset = this.sim.events.on('reset', () => this.boot());
+    const offSpeed = this.sim.events.on('speedChanged', () => this.updateCooldown());
     this.signal.addEventListener('abort', () => {
-      off(); offReset();
+      off(); offReset(); offSpeed();
       this.changes.clear();
       this.alerts.clear();
       this.incoming.clear();
@@ -260,6 +264,9 @@ export class LivePolicy {
     this.dismissed.clear();
     this.incoming.clear();
     this.live = { ...LIVE_IDLE };
+    this.cooldownLeft = 0;
+    this.cooldownAt = performance.now();
+    this.cooldownRunning = this.sim.speed > 0;
     this.sim.liveSlowdown = 1;
     this.trigger = this.episodeBad = this.scanned = false;
     this.publish();
@@ -319,6 +326,10 @@ export class LivePolicy {
     let raised = false, added = false;
     for (const id of ids) {
       const inc = em.incident(id);
+      if (inc?.reason === 'busy') {
+        if (this.alerts.delete(id)) { this.queue.remove(id); raised = true; }
+        continue;
+      }
       if (!inc || inc.state !== 'uncovered' || this.dismissed.has(id) || !(inc.manualPossible || inc.canSend)) continue;
       const possible = !Number.isNaN(this.send(em, inc));
       const shown = this.alerts.get(id);
@@ -327,7 +338,7 @@ export class LivePolicy {
         continue;
       }
       const st = this.sim.state;
-      if (!this.queue.offer({ id, kind: inc.kind, major: inc.major, manualPossible: possible }, st.day, st.stats.population, this.settings.emergencyAlerts)) continue;
+      if (!this.queue.offer({ id, kind: inc.kind, major: inc.major, manualPossible: possible, reason: inc.reason }, st.day, st.stats.population, this.settings.emergencyAlerts)) continue;
       this.alerts.set(id, { id, inc, wasPossible: possible, closeAt: 0 });
       added = raised = true;
       if (possible) this.trigger = true;
@@ -347,6 +358,7 @@ export class LivePolicy {
     const now = this.sim.simTime(), nowMs = performance.now();
     for (const [id, alert] of this.alerts) {
       const inc = em?.incident(id);
+      if (inc?.reason === 'busy') { this.alerts.delete(id); this.queue.remove(id); continue; }
       const waiting = inc && (inc.state === 'uncovered' || inc.state === 'queued');
       if (!inc || (!waiting && !(this.settings.emergencyUncovered === 'live' && followingDispatch(inc, now)))) {
         if (!alert.closeAt) alert.closeAt = nowMs + (inc ? 4000 : 2500);
@@ -356,9 +368,18 @@ export class LivePolicy {
     this.apply();
   }
 
+  /** Account for real time at every speed boundary, even when no host tick runs during a pause. */
+  private updateCooldown(): void {
+    const now = performance.now();
+    if (this.cooldownRunning) this.cooldownLeft = Math.max(0, this.cooldownLeft - Math.max(0, now - this.cooldownAt));
+    this.cooldownAt = now;
+    this.cooldownRunning = this.sim.speed > 0;
+  }
+
   /** Dispatch and settings commands re-evaluate the current episode without flushing a half-finished burst. */
   apply(warn = false): void {
     if (!this.attached || this.signal.aborted) return;
+    this.updateCooldown();
     const sim = this.sim, em = sim.getSystem<EmergencySystem>('emergency');
     const incidents = em?.incidents() ?? [], now = sim.simTime();
     const send = (inc: Incident) => em ? this.send(em, inc) : NaN;
@@ -366,12 +387,13 @@ export class LivePolicy {
     const pending = pendingCount(policy, this.alerts, incidents, this.dismissed, now, send);
     this.episodeBad ||= pending.bad;
     const was = this.live.active;
-    const step = speedPolicy(policy, this.live, sim.speed, this.trigger, pending.count, slowmo, this.episodeBad, policy === 'live' ? urgentSeconds(this.alerts, incidents, this.dismissed, now, slowmo, send) : Infinity);
+    const step = speedPolicy(policy, this.live, sim.speed, this.trigger && this.cooldownLeft === 0, pending.count, slowmo, this.episodeBad, policy === 'live' ? urgentSeconds(this.alerts, incidents, this.dismissed, now, slowmo, send) : Infinity);
     this.trigger = false;
     this.live = step.state;
     if (was !== this.live.active || step.toast) this.episodeBad = false;
     if (step.speed !== undefined && step.speed !== sim.speed) sim.speed = step.speed;
     if (sim.liveSlowdown !== step.liveSlowdown) sim.liveSlowdown = step.liveSlowdown;
+    if (was && !this.live.active) { this.cooldownLeft = LIVE_COOLDOWN_MS; this.cooldownAt = performance.now(); }
     this.publish(step.toast, warn);
   }
 

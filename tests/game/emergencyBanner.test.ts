@@ -25,7 +25,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Network } from '../../src/core/types';
 import { Emitter } from '../../src/core/events';
-import { pendingCount, sendDays } from '../../src/game/emergencyPolicy';
+import { LIVE_COOLDOWN_MS, pendingCount, sendDays } from '../../src/game/emergencyPolicy';
 import { LivePolicy } from '../../src/worker/SimCore';
 import type { Command } from '../../src/worker/SimHost';
 import type { CityState } from '../../src/sim/CityState';
@@ -176,7 +176,7 @@ afterAll(() => {
 // ------------------------------------------------------------------------------------------------ harness
 interface Harness { banner: EmergencyBanner; policy: LivePolicy; sim: Simulation; root: FakeEl; toasts: string[]; abort: AbortController; tick(): void }
 const lifetimes: AbortController[] = [];
-afterEach(() => { for (const ac of lifetimes.splice(0)) ac.abort('dispose'); });
+afterEach(() => { for (const ac of lifetimes.splice(0)) ac.abort('dispose'); vi.restoreAllMocks(); });
 function harness(sim: Simulation): Harness {
   const root = new FakeEl('div');
   const toasts: string[] = [];
@@ -270,6 +270,8 @@ describe('EmergencyBanner on a live simulation', () => {
   });
 
   it('F2: a second uncovered major call of the same kind 7 days later still gets a banner and LIVE mode', () => {
+    let now = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
     const { st, sim } = medTown();
     const h = harness(sim);
     const em = emergencyOf(sim)!;
@@ -289,6 +291,7 @@ describe('EmergencyBanner on a live simulation', () => {
     expect(h.banner.liveActive).toBe(false);
     expect(sim.speed).toBe(3);
     expect(h.toasts.some((t) => /back to ultra speed/.test(t))).toBe(true);
+    now += LIVE_COOLDOWN_MS; // T029: the real-time speed cooldown has ended; the per-kind game-day limit has not.
     // 7 days after the first (inside the 15-day cooldown per kind): a second uncovered major medical call
     expect(7).toBeLessThan(KIND_COOLDOWN);
     const b = em.spawn(sim, 'medical', 52, 21, { buildingId: st.buildingAt(52, 21)!.id, major: true, severity: 4 });

@@ -214,7 +214,7 @@ export const guideCopy = {
     // §4.6 E1b · FH-08: unreachable incident.
     E1b: () => `No station can reach this in time. Build your ${building('civ_fire_station').name} within about ${num(building('civ_fire_station').coverage!.radius)} road tiles; the Emergency view shows automatic coverage.`,
     // §4.6 E2 · FH-08: plain description before the LIVE code.
-    E2: () => 'Your game slowed to follow the truck (LIVE). Your speed returns when help arrives; change this in Settings.',
+    E2: () => 'Emergencies inside a station’s range never slow your game. Outside every range, they slow it down so you can send help (LIVE).',
     // §4.6 E3 · FH-08: actual incident travel time and deadline, in emergency minutes.
     E3: (travelMinutes: number, deadlineMinutes: number) => `Your nearest truck needed ${decimal(travelMinutes)} min; this fire burned out in ${decimal(deadlineMinutes)} min. A station within about ${num(building('civ_fire_station').coverage!.radius)} road tiles answers automatically.`,
     // §4.6 E4 · FH-13: FH-05 supplies the monthly budget and proposed tax delta.
@@ -269,7 +269,7 @@ export const guideCopy = {
     // §4.7 · FH-18: veteran briefing, real regional-connection requirements.
     Region: () => `Connect your town to the region with ${num(CONN_MIN_CELLS)} road tiles reaching ${num(CONN_MIN_DEPTH)} tiles in from the map edge.`,
     // §4.7 · FH-18: veteran briefing, uncovered incidents.
-    Emergencies: () => 'Uncovered emergencies slow your game to follow dispatch (LIVE); send help.',
+    Emergencies: () => 'Emergencies inside a station’s range never slow your game. Outside every range, they slow it down so you can send help (LIVE).',
     // §4.7 · FH-18: veteran briefing, inspector.
     Inspector: () => 'Inspect your buildings with Why? to understand them.',
     // §4.7 · FH-18: veteran briefing, neutral tax rate and approval effect.

@@ -1,6 +1,7 @@
 /** W0.4: the headless core owns LIVE, including EM-1's settled-burst timing. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Network } from '../../src/core/types';
+import { LIVE_COOLDOWN_MS } from '../../src/game/emergencyPolicy';
 import { CityActions } from '../../src/sim/actions';
 import type { EmergencyEvent, Simulation, SimSystem } from '../../src/sim/Simulation';
 import type { DispatchOption, EmergencySystem, Incident } from '../../src/sim/infra/emergency';
@@ -22,13 +23,13 @@ afterEach(async () => {
 function incident(id = 1, patch: Partial<Incident> = {}): Incident {
   return {
     id, kind: 'fire', x: 10, z: 10, buildingId: -1, major: true, state: 'uncovered', start: 0, deadline: 30,
-    severity: 1, need: { fire: 1 }, units: [], manualPossible: true, canSend: true, place: 'Test fire', note: '',
+    severity: 1, need: { fire: 1 }, units: [], reason: 'outOfRange', manualPossible: true, canSend: true, place: 'Test fire', note: '',
     grace: 1, arrived: -1, firstAt: {}, answered: 0, work: 1, injured: 0, deaths: 0, radius: 0, fires: [],
     lost: 0, saved: 0, retry: 0, stVer: 0, ...patch,
   };
 }
 const event = (inc: Incident, type: EmergencyEvent['type'] = 'uncovered'): EmergencyEvent => ({
-  type, id: inc.id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible,
+  type, id: inc.id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible, reason: inc.reason,
 });
 
 function fixture(initial: Incident[] = [], daily?: (sim: Simulation) => void) {
@@ -45,6 +46,138 @@ function fixture(initial: Incident[] = [], daily?: (sim: Simulation) => void) {
 }
 
 describe('LivePolicy in SimCore', () => {
+  it.each([
+    { policy: 'live', deadline: 30 }, { policy: 'live', deadline: 4 }, { policy: 'pause', deadline: 4 },
+  ] as const)('a busy major at ultra never banners, slows or pauses ($policy, deadline $deadline)', async ({ policy, deadline }) => {
+    const f = fixture();
+    f.core.applyCommand({ op: 'setSettings', args: [{ ...settings, emergencyUncovered: policy }] }, f.core.actions!);
+    const inc = f.raise(incident(1, { reason: 'busy', deadline }));
+    await Promise.resolve();
+    f.core.frame(0); // the fallback scan must not revive it
+    expect(f.view.alerts).toEqual([]);
+    expect(f.view.live).toBe(false);
+    expect(f.sim.speed).toBe(3);
+    expect(f.sim.liveSlowdown).toBe(1);
+    expect(f.list).toContain(inc);
+    expect(inc.manualPossible).toBe(true);
+    expect(inc.canSend).toBe(true);
+  });
+
+  it('saved busy incidents stay quiet on boot and reset', async () => {
+    const f = fixture([incident(1, { reason: 'busy', deadline: 4 })]);
+    await Promise.resolve();
+    f.core.frame(0);
+    expect(f.view.alerts).toEqual([]);
+    expect(f.sim.speed).toBe(3);
+    f.sim.replaceState(newState(32));
+    await Promise.resolve();
+    f.core.frame(0);
+    expect(f.view.alerts).toEqual([]);
+    expect(f.view.live).toBe(false);
+    expect(f.sim.speed).toBe(3);
+    expect(f.sim.liveSlowdown).toBe(1);
+  });
+
+  it('a busy urgent incident cannot pause an out-of-range LIVE episode; gaining coverage retires its alert', async () => {
+    const f = fixture();
+    const gap = f.raise();
+    await Promise.resolve();
+    f.raise(incident(2, { reason: 'busy', deadline: 4 }));
+    await Promise.resolve();
+    expect(f.view.alerts).toEqual([{ id: gap.id, wasPossible: true }]);
+    expect(f.sim.speed).toBe(1);
+    expect(f.sim.liveSlowdown).toBe(3);
+    gap.reason = 'busy';
+    f.sim.events.emit('emergency', event(gap));
+    await Promise.resolve();
+    expect(f.view.alerts).toEqual([]);
+    expect(f.view.live).toBe(false);
+    expect(f.sim.speed).toBe(3);
+    expect(f.sim.liveSlowdown).toBe(1);
+  });
+
+  it.each([
+    { policy: 'live', deadline: 30 }, { policy: 'live', deadline: 4 }, { policy: 'pause', deadline: 30 },
+  ] as const)('cooldown starts when the episode ends, suppresses urgent alerts for 30 s, then permits the next ($policy, deadline $deadline)', async ({ policy, deadline }) => {
+    let now = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const f = fixture();
+    f.core.applyCommand({ op: 'setSettings', args: [{ ...settings, emergencyUncovered: policy }] }, f.core.actions!);
+    const first = f.raise(incident(1, { deadline }));
+    await Promise.resolve();
+    expect(f.sim.speed).toBe(policy === 'pause' || deadline === 4 ? 0 : 1);
+    now += 60_000;
+    f.core.applyCommand({ op: 'dismissAlert', args: [first.id] }, f.core.actions!);
+    expect(f.sim.speed).toBe(3);
+    expect(f.sim.liveSlowdown).toBe(1);
+    expect(LIVE_COOLDOWN_MS).toBe(30_000);
+    now += LIVE_COOLDOWN_MS - 1;
+    const second = f.raise(incident(2, { deadline: 4 }));
+    await Promise.resolve();
+    expect(f.view.alerts).toEqual([{ id: second.id, wasPossible: true }]);
+    expect(f.view.live).toBe(false);
+    expect(f.sim.speed).toBe(3);
+    expect(f.sim.liveSlowdown).toBe(1);
+    // Dismissing a banner-only alert must not restart the cooldown.
+    f.core.applyCommand({ op: 'dismissAlert', args: [second.id] }, f.core.actions!);
+    now++;
+    f.raise(incident(3));
+    await Promise.resolve();
+    expect(f.sim.speed).toBe(policy === 'pause' ? 0 : 1);
+    expect(f.sim.liveSlowdown).toBe(policy === 'pause' ? 1 : 3);
+    expect(f.view.live).toBe(policy === 'live');
+  });
+
+  it('a banner-only alert does not start a delayed slowdown when the cooldown expires', async () => {
+    let now = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const f = fixture();
+    f.raise();
+    await Promise.resolve();
+    f.list.length = 0;
+    f.core.frame(0); // normal completion starts the same cooldown as dismissal
+    expect(f.sim.speed).toBe(3);
+    now += 10_000;
+    f.raise(incident(2));
+    await Promise.resolve();
+    now += LIVE_COOLDOWN_MS;
+    f.core.frame(0);
+    expect(f.view.alerts).toEqual([{ id: 2, wasPossible: true }]);
+    expect(f.view.live).toBe(false);
+    expect(f.sim.speed).toBe(3);
+    expect(f.sim.liveSlowdown).toBe(1);
+    f.raise(incident(3));
+    await Promise.resolve();
+    expect(f.sim.speed).toBe(1);
+    expect(f.sim.liveSlowdown).toBe(3);
+  });
+
+  it.each([false, true])('cooldown excludes paused wall time (paused host ticks: %s)', async (tickPaused) => {
+    let now = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const f = fixture();
+    f.raise();
+    await Promise.resolve();
+    f.core.applyCommand({ op: 'dismissAlert', args: [1] }, f.core.actions!);
+    now += 10_000;
+    f.core.applyCommand({ op: 'setSpeed', args: [0, 'pause'] }, f.core.actions!);
+    now += 60_000;
+    if (tickPaused) f.core.frame(0);
+    f.core.applyCommand({ op: 'resume', args: ['pause'] }, f.core.actions!);
+    now += LIVE_COOLDOWN_MS - 10_000 - 1;
+    f.raise(incident(2));
+    await Promise.resolve();
+    expect(f.sim.speed).toBe(3);
+    expect(f.sim.liveSlowdown).toBe(1);
+    expect(f.view.live).toBe(false);
+    expect(f.view.alerts).toEqual([{ id: 2, wasPossible: true }]);
+    now++;
+    f.raise(incident(3));
+    await Promise.resolve();
+    expect(f.sim.speed).toBe(1);
+    expect(f.sim.liveSlowdown).toBe(3);
+  });
+
   it('same-day: an uncovered major fire at ultra enters LIVE after the burst, before the next advanceDay', async () => {
     const seen: number[] = [];
     let f: ReturnType<typeof fixture>;
