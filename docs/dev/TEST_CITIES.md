@@ -9,8 +9,8 @@ npm run fixtures -- --cities /tmp/claude-0/-home-user-simcityweb/<session>/scrat
 
 On this machine (4 cores) that takes about 10 minutes when it is quiet and up to 25 minutes while other agents run
 browsers. Leave out `--cities DIR` to build only the WASM fixtures and captures, or use `--only cities --cities DIR`
-to build only the cities. `npm run fixtures -- --help` lists the
-options. An output that already exists is kept unless you pass `--force`.
+to build only the cities. `npm run fixtures -- --help` lists the options. An output that already exists is kept
+unless you pass `--force`.
 
 The script is `tools/makeFixtures.mjs`. It needs no tsx and no network: each generator is bundled with rolldown (a
 vite dependency) into `node_modules/.cache/sim-fixtures/` and run with plain node. Its processes set
@@ -28,7 +28,8 @@ These are bot cities (`tools/simbot.ts`, seed 7, medium difficulty, plains terra
 | `vet_s7_y43` | same run | 991,493 | 11,495 | 4.56 MB | 4.57 MB | 200–205 s |
 
 - **Times:** wall clock on Oct 27 at load 10–12. The whole 43-year run used 167 s of CPU (164 s user, 2.6 s sys).
-  Each save adds about 1 s of CPU.
+  Each save adds about 1 s of CPU. At load 35, `npm run fixtures -- --only cities` took 84 s and 733 s for the same
+  two runs (200 s CPU in all).
 - **Determinism:** two runs give identical cities; the content of every layer, building and data field matched (only
   `savedAt` differs). The `vet` cities have the populations of the lost `Vet y21` (304k) and `r3_y43` (991k) saves.
 - **Each name has three files:**
