@@ -55,14 +55,16 @@ describe('EM-1: an earthquake in a bot town with an attentive player (verify-fac
 });
 
 describe('EM-1: normal play keeps its prompts', () => {
-  it('a bot town over 4 years (no disasters, nobody answers): the prompts counted at settle points are the prompts raised', { timeout: 900000 }, async () => {
-    const bot = new SimBot({ size: 128, years: 4, seed: 7, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false, neglect: true }, await botSystems(false));
+  it('a bot town over 6 years (no disasters, nobody answers): the prompts counted at settle points are the prompts raised', { timeout: 900000 }, async () => {
+    // (seed 3 over 6 years: a bot town raises few prompts, and which town raises how many is chaotic — seed 7's 4 years
+    // raised 3 before B3 spread the month work over the month and none after it, B3_DESIGN.md §7; this one raises 2–5)
+    const bot = new SimBot({ size: 128, years: 6, seed: 3, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false, neglect: true }, await botSystems(false));
     const sim = bot.sim;
     // raised: an 'uncovered' event of a major incident with manualPossible (the old rule set prompted right then)
     const raised = new Set<number>(), counted = new Set<number>();
     sim.events.on('emergency', (e) => { if (e.type === 'uncovered' && e.major && e.manualPossible) raised.add(e.id); });
     sim.events.on('day', () => { for (const i of emergencyOf(sim)!.incidents()) if (i.prompted) counted.add(i.id); });
-    bot.run(4);
+    bot.run(6);
     const y = bot.st.stats.emergency.year;
     console.log(`EM-1 normal play: ${raised.size} prompts raised, ${counted.size} counted, ignored (12 months) ${y.ignored ?? 0}`);
     expect(raised.size).toBeGreaterThanOrEqual(2);
