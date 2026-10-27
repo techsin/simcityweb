@@ -179,6 +179,13 @@ function harness(sim: Simulation): Harness {
   const ctx = {
     get state() { return sim.state; },
     sim,
+    host: {
+      setSpeed: (speed: number) => { sim.speed = speed; },
+      act: (_op: 'dispatchBest', [id]: [number]) => {
+        const predicted = emergencyOf(sim)!.dispatchBest(sim, id);
+        return { seq: 1, exact: true, predicted, done: Promise.resolve(predicted) };
+      },
+    },
     root,
     settings: { emergencyUncovered: 'live', emergencyAlerts: 'major', emergencyLiveSlowmo: 3 },
     ui: { on: (_k: string, f: () => void) => { handlers.push(f); return () => undefined; } },
@@ -250,7 +257,7 @@ describe('EmergencyBanner on a live simulation', () => {
     expect(inc.prompted).toBe(true);
   });
 
-  it('P1: an industrial accident whose ambulance went automatically keeps its banner and LIVE until a fire truck is sent', () => {
+  it('P1: an industrial accident whose ambulance went automatically keeps its banner and LIVE until a fire truck is sent', async () => {
     const st = newState(64);
     roadLine(st, 2, 20, 62, 20, Network.Road);
     place(st, 't_fire', 4, 19);
@@ -287,6 +294,7 @@ describe('EmergencyBanner on a live simulation', () => {
     expect(h.toasts.filter((t) => /Emergenc/.test(t))).toEqual([]);
     // "Send nearest" sends the fire truck and names it
     p.send.click();
+    await Promise.resolve(); // dispatch feedback follows the command acknowledgement
     expect(h.toasts.at(-1)).toMatch(/^Fire truck dispatched — ETA 4\.6 min$/);
     const inc = em.incident(id)!;
     expect(inc.state).toBe('dispatched');

@@ -77,10 +77,10 @@ export class RectTool extends Tool {
     return 0xff6a4d;
   }
 
-  private run(rect: CellRect, preview: boolean): ActionResult {
+  private run(rect: CellRect): ActionResult {
     const a = this.ctx.actions;
     const m = this.mode;
-    return safe(() => (m.kind === 'zone' ? a.zone(rect, m.zone, preview) : m.kind === 'dezone' ? a.dezone(rect, preview) : a.bulldoze(rect, preview)), FAIL);
+    return safe(() => (m.kind === 'zone' ? a.zone(rect, m.zone, true) : m.kind === 'dezone' ? a.dezone(rect, true) : a.bulldoze(rect, true)), FAIL);
   }
 
   /** rect for hovering (no drag): bulldoze snaps to the building under the cursor */
@@ -170,7 +170,7 @@ export class RectTool extends Tool {
     if (key !== this.lastKey) {
       this.lastKey = key;
       this.lastRect = rect;
-      this.lastRes = this.run(rect, true);
+      this.lastRes = this.run(rect);
       this.ctx.world.setHighlightRect(rect, this.color(this.lastRes.ok));
       this.warnings(rect, key);
     }
@@ -230,41 +230,39 @@ export class RectTool extends Tool {
         this.lastKey = '';
         const msg = bull ? 'This demolition has consequences:' : 'Rezoning demolishes the buildings on these lots:';
         void confirmDialog(this.ctx, { title: risk.title, message: msg, items: risk.items, confirm: bull ? 'Demolish' : 'Rezone & demolish', danger: true }).then((yes) => {
-          if (yes && this.ctx.tools.active === this) this.commit(rect);
+          if (this.ctx.signal.aborted) return;
+          if (yes && this.ctx.tools.active === this) this.commitRect(rect);
           this.lastKey = '';
           this.ctx.tools.refresh();
         });
         // the dialog is modal: no hover preview / tip underneath it (the next frame after it closes refreshes them)
         return;
       }
-      this.commit(rect);
+      this.commitRect(rect);
     }
     this.lastKey = '';
     this.refresh(p);
   }
 
   private bulldozeRisk(rect: CellRect): DemolishRisk | null {
-    const pre = this.run(rect, true);
+    const pre = this.run(rect);
     if (!pre.ok) return null;
     return safe(() => demolishRisks(this.ctx.state, rect, pre.cost ?? 0, { sandbox: this.ctx.sandbox() }), null);
   }
 
   /** zoning over growables of another family demolishes them (ActionResult.demolished) */
   private rezoneRisk(rect: CellRect): DemolishRisk | null {
-    const pre = this.run(rect, true);
+    const pre = this.run(rect);
     if (!pre.ok || !pre.demolished?.length) return null;
     return safe(() => sideDemolishRisks(this.ctx.state, pre.demolished, pre.demolishFee ?? 0, { sandbox: this.ctx.sandbox() }), null);
   }
 
-  private commit(rect: CellRect): void {
-    const r = this.run(rect, false);
+  private commitRect(rect: CellRect): void {
     // bigger rectangles sound bigger (intensity 0..1 from the area)
     const area = Math.max(1, (rect.x1 - rect.x0) * (rect.z1 - rect.z0));
-    if (r.ok) this.ctx.sound(this.mode.kind === 'bulldoze' ? 'bulldoze' : this.mode.kind === 'dezone' ? 'dezone' : 'zone', { intensity: Math.min(1, Math.log2(area) / 8) });
-    else {
-      this.ctx.sound('error');
-      if (r.reason) this.ctx.toast(r.reason, 'error');
-    }
+    const feedback = { ok: () => this.ctx.sound(this.mode.kind, { intensity: Math.min(1, Math.log2(area) / 8) }) };
+    if (this.mode.kind === 'zone') this.commit('zone', [rect, this.mode.zone], feedback);
+    else this.commit(this.mode.kind, [rect], feedback);
   }
   override cancel(): boolean {
     if (!this.start) return false;

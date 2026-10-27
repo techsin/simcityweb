@@ -66,11 +66,18 @@ async function expectCleanGraph(entry: string): Promise<void> {
   expect(graph.filter((p) => ['src/save/bundle.ts', 'src/save/index.ts', 'src/save/recoveryLs.ts'].includes(p))).toEqual([]);
 }
 
+/** `.speed` writes that are not the simulation's: a vehicle's own speed in the traffic renderer */
+const NOT_SIM_SPEED = [{ file: 'src/render/city/vehicles/VehicleRenderer.ts', code: /^tr\.speed \+= / }];
+
 describe('worker migration hygiene gates', () => {
-  it.skip('W0.2: speed writers live only in src/worker or src/sim', () => {
-    expect(scanFiles(outsideCore(), 'speed')).toEqual([]);
+  it('W0.2: speed writers live only in src/worker or src/sim', () => {
+    const found = scanFiles(outsideCore(), 'speed');
+    const exempt = found.filter((v) => NOT_SIM_SPEED.some((e) => e.file === v.file && e.code.test(v.code)));
+    expect(exempt).toHaveLength(NOT_SIM_SPEED.length); // each exemption still matches exactly one write
+    expect(found.filter((v) => !exempt.includes(v))).toEqual([]);
   });
-  it.skip('W0.2: liveSlowdown writers live only in src/worker or src/sim', () => {
+  // NOTE-019: EmergencyBanner's two liveSlowdown writes belong to LivePolicy, which moves into SimCore in W0.4
+  it.skip('W0.4: liveSlowdown writers live only in src/worker or src/sim', () => {
     expect(scanFiles(outsideCore(), 'liveSlowdown')).toEqual([]);
   });
   it.skip('W0.3: src/ui and src/game no longer call emergencyOf or getSystem', () => {

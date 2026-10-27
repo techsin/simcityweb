@@ -158,9 +158,8 @@ export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, sp
     s = { ...LIVE_IDLE };
   }
   const out: PolicyStep = { liveSlowdown: s.active && s.policy === 'live' && cur === 1 ? Math.max(1, slowmo || 1) : 1, state: s };
-  if (cur !== speed) out.speed = cur;
   if (toast) out.toast = toast;
-  return out;
+  return cur !== speed ? { ...out, speed: cur } : out;
 }
 
 /**
@@ -916,7 +915,7 @@ export class EmergencyBanner {
     this.live = step.state;
     // outcomes count per episode: from the alert that starts it to the restore toast that ends it
     if (was !== this.live.active || step.toast) this.episodeBad = false;
-    if (step.speed !== undefined && step.speed !== sim.speed) sim.speed = step.speed;
+    if (step.speed !== undefined && step.speed !== sim.speed) this.ctx.host.setSpeed(step.speed, 'emergency');
     if (sim.liveSlowdown !== step.liveSlowdown) sim.liveSlowdown = step.liveSlowdown;
     if (step.toast) this.ctx.toast(step.toast, step.toast.startsWith('Emergencies handled') ? 'good' : 'info', undefined, 'Emergency');
     if (this.live.active !== this.lastState) {
@@ -965,10 +964,17 @@ export class EmergencyBanner {
     this.ctx.showQuery({ buildingId: inc.buildingId >= 0 ? inc.buildingId : null, x: inc.x, z: inc.z }, { silent: true });
   }
 
-  private sendNearest(id: number): void {
+  private async sendNearest(id: number): Promise<void> {
     const em = emergencyOf(this.ctx.sim);
     if (!em) return;
-    const r = em.dispatchBest(this.ctx.sim, id);
+    let r;
+    try {
+      r = await this.ctx.host.act('dispatchBest', [id]).done;
+    } catch (e) {
+      console.warn('[dispatch] failed', e);
+      r = { ok: false, reason: 'No unit available' };
+    }
+    if (this.ctx.signal.aborted) return;
     if (r.ok) {
       this.ctx.sound('confirm');
       // named by its own kind; a unit that could not go is said too ("Ambulance dispatched … · no free fire truck can

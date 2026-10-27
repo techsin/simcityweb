@@ -152,7 +152,7 @@ export class TopBar {
       b.addEventListener('click', () => {
         // distinct sounds: pause (tape-stop), normal / fast / ultra (1-3 rising blips); re-clicking the active speed ticks
         this.ctx.sound(this.ctx.sim.speed === s ? 'tap' : s === 0 ? 'pause' : 'speed' + s);
-        this.ctx.sim.speed = s;
+        this.ctx.host.setSpeed(s, 'topbar');
         b.blur();
       }, { signal: this.ctx.signal });
       this.speedBtns.push(b);

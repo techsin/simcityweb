@@ -73,8 +73,6 @@ export class DispatchTool extends Tool {
   private hoverStation: number | null = null;
   private routeCells: { x: number; z: number; ok: boolean }[] = [];
   private offs: (() => void)[] = [];
-  /** inside our own dispatch call (its 'dispatched' event is handled by down()) */
-  private sending = false;
 
   override activate(): void {
     const id = pendingIncident ?? this.oldestWaiting();
@@ -83,9 +81,10 @@ export class DispatchTool extends Tool {
     // the incident may end, or get its help elsewhere (banner, auto-dispatch), while the tool is open
     this.offs.push(
       this.ctx.sim.events.on('emergency', (e) => {
+        if (e.type === 'dispatched' && this.ctx.host.cause?.tag === this) return;
         if (e.id !== this.inc) return;
         if (e.type === 'resolved' || e.type === 'failed') this.ended();
-        else if (e.type === 'dispatched' && !this.sending) {
+        else if (e.type === 'dispatched') {
           const inc = this.incident();
           const em = emergencyOf(this.ctx.sim);
           if (inc && em && !missingUnits(em, inc)) this.ended();
@@ -303,7 +302,7 @@ export class DispatchTool extends Tool {
     );
   }
 
-  override down(p: ToolPointer): void {
+  override async down(p: ToolPointer): Promise<void> {
     const em = emergencyOf(this.ctx.sim);
     if (!em || !p.hit) return;
     const o = this.optionAt(p);
@@ -326,13 +325,14 @@ export class DispatchTool extends Tool {
     }
     if (!inc) return;
     const n = p.shift ? Math.max(1, o.free) : 1;
-    this.sending = true;
     let r;
     try {
-      r = em.dispatch(this.ctx.sim, inc.id, o.stationId, n);
-    } finally {
-      this.sending = false;
+      r = await this.ctx.host.act('dispatch', [inc.id, o.stationId, n], { tag: this }).done;
+    } catch (e) {
+      console.warn('[dispatch] failed', e);
+      r = { ok: false, reason: 'Could not dispatch' };
     }
+    if (this.ctx.signal.aborted) return;
     if (!r.ok) {
       this.ctx.sound('error');
       this.ctx.toast(r.reason ?? 'Could not dispatch', 'warning');
@@ -341,6 +341,7 @@ export class DispatchTool extends Tool {
     this.ctx.sound('confirm');
     const unit = RESPONDER_UNIT[o.responder][(r.sent ?? 1) === 1 ? 0 : 1];
     this.ctx.toast(`${r.sent ?? 1} ${unit} from ${o.name} — ETA ${fmtMin(r.etaMin ?? NaN)}`, 'good', { x: inc.x, z: inc.z }, 'Dispatched');
+    if (this.ctx.tools.active !== this || this.inc !== inc.id) return;
     this.optsKey = '';
     this.refreshOptions(true);
     this.hoverStation = null;

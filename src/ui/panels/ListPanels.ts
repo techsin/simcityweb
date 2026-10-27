@@ -79,6 +79,7 @@ export class OrdinancesPanel extends Panel {
   override width = 480;
   private listEl!: HTMLDivElement;
   private sig = '';
+  private pending = new Map<string, boolean>();
 
   protected build(): void {
     this.listEl = h('div', { class: 'list' });
@@ -102,7 +103,7 @@ export class OrdinancesPanel extends Panel {
 
   override update(): void {
     const items = this.list();
-    const sig = items ? items.map((o) => `${o.id}:${o.enabled}:${o.available}:${o.monthlyCost}`).join('|') + this.ctx.state.budget.ordinances.join(',') : 'none';
+    const sig = items ? items.map((o) => `${o.id}:${o.enabled}:${o.available}:${o.monthlyCost}:${this.pending.get(o.id)}`).join('|') + this.ctx.state.budget.ordinances.join(',') : 'none';
     if (sig === this.sig) return;
     this.sig = sig;
     clear(this.listEl);
@@ -113,50 +114,46 @@ export class OrdinancesPanel extends Panel {
     const enabledIds = new Set(this.ctx.state.budget.ordinances);
     let total = 0;
     for (const o of items) {
-      const on = o.enabled || enabledIds.has(o.id);
+      const on = this.pending.get(o.id) ?? (o.enabled || enabledIds.has(o.id));
       if (on) total += o.monthlyCost;
-      const sw = toggle(on, (v) => {
-        let r: { ok: boolean; reason?: string; needsConfirm?: boolean } | null = null;
+      const sw = toggle(on, async (v) => {
+        if (this.pending.has(o.id)) return;
+        this.pending.set(o.id, v);
+        this.update();
         try {
-          r = this.ctx.actions.setOrdinance(o.id, v);
+          let r = await this.ctx.host.act('setOrdinance', [o.id, v]).done;
+          if (this.ctx.signal.aborted) return;
+          if (!r.ok && r.needsConfirm) {
+            // WP5-6: it would shut existing buildings down (nuclear-free zone) — ask first, then enact with confirm
+            const yes = await confirmDialog(this.ctx, {
+              title: `Enact ${o.name}?`,
+              message: 'This ordinance takes effect immediately:',
+              items: [(r.reason ?? 'It shuts existing buildings down').replace(/^Demolish (.*) first: this ordinance would shut (it|them) down/, 'It shuts down $1'), 'The lost power must come from other plants — check the grid first'],
+              confirm: 'Enact anyway',
+              danger: true,
+            });
+            if (!yes || this.ctx.signal.aborted) return;
+            r = await this.ctx.host.act('setOrdinance', [o.id, true, { confirm: true }]).done;
+            if (this.ctx.signal.aborted) return;
+          }
+          if (!r.ok) {
+            this.ctx.toast(r.reason ?? 'The council rejected this ordinance', 'error');
+            this.ctx.sound('error');
+          } else this.ctx.sound(v ? 'toggleOn' : 'toggleOff');
         } catch (e) {
           console.warn(e);
-        }
-        if (r && !r.ok && r.needsConfirm) {
-          // WP5-6: it would shut existing buildings down (nuclear-free zone) — ask first, then enact with confirm
-          void confirmDialog(this.ctx, {
-            title: `Enact ${o.name}?`,
-            message: 'This ordinance takes effect immediately:',
-            items: [(r.reason ?? 'It shuts existing buildings down').replace(/^Demolish (.*) first: this ordinance would shut (it|them) down/, 'It shuts down $1'), 'The lost power must come from other plants — check the grid first'],
-            confirm: 'Enact anyway',
-            danger: true,
-          }).then((yes) => {
-            if (yes) {
-              let r2: { ok: boolean; reason?: string } | null = null;
-              try {
-                r2 = this.ctx.actions.setOrdinance(o.id, true, { confirm: true });
-              } catch (e) {
-                console.warn(e);
-              }
-              if (r2 && !r2.ok) {
-                this.ctx.toast(r2.reason ?? 'The council rejected this ordinance', 'error');
-                this.ctx.sound('error');
-              } else this.ctx.sound('toggleOn');
-            }
+          if (!this.ctx.signal.aborted) {
+            this.ctx.toast('Action unavailable', 'error');
+            this.ctx.sound('error');
+          }
+        } finally {
+          this.pending.delete(o.id);
+          if (!this.ctx.signal.aborted) {
             this.sig = '';
             this.update();
-          });
-          this.sig = '';
-          this.update();
-          return;
+          }
         }
-        if (r && !r.ok) {
-          this.ctx.toast(r.reason ?? 'The council rejected this ordinance', 'error');
-          this.ctx.sound('error');
-        } else this.ctx.sound(v ? 'toggleOn' : 'toggleOff');
-        this.sig = '';
-        this.update();
-      }, !o.available, this.ctx.signal);
+      }, !o.available || this.pending.has(o.id), this.ctx.signal);
       const cost = o.monthlyCost;
       const effects = h('div', { class: 'li-e' });
       for (const e of o.effects.slice(0, 5)) effects.appendChild(h('span', { class: 'chip ' + effectTone(e) }, e));
