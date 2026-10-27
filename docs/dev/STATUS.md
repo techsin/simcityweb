@@ -76,5 +76,7 @@ town first zoom-out 1.059, first zoom-in 1.057 (A/A within ±3 %).
   ```
   Launch with `--use-angle=swiftshader --enable-unsafe-swiftshader` (WebGL2 via SwiftShader).
 - The clone is shallow; run `git fetch --unshallow origin <branch>` before using old reference commits.
-- On a quiet machine `npx vitest run` takes about 95 s (Oct 26: 114 files passed, 18 tests skipped because the
-  1M-population WASM fixtures were gone).
+- On a quiet machine `npx vitest run` takes about 95 s.
+- Test cities and WASM fixtures: see `docs/dev/TEST_CITIES.md`. After a reset run `npm run fixtures` (about 6 min for the
+  fixtures, 6 more for the bench captures) and `npx tsx tools/simbot.ts --size 256 --years 43 --seed 7 --save-years 21,43
+  --save-prefix <dir>/vet_s7_` for the shared cities. With everything rebuilt only the 3 `BALANCE`-gated tests skip.
