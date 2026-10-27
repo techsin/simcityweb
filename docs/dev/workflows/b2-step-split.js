@@ -17,7 +17,7 @@ const WORK = S + '/b2work'
 const LOCK = S + '/timing.lock'
 
 const __C = {}
-const __R = []
+const __R = ["map:other", "design"]
 const __NOTE = 'RESUMING: an earlier run of this exact task was interrupted (usage limit, restart or crash). Your scratch dir under ' + WORK + ' may hold partial work from it: read it first, keep what is sound, check git -C ' + W + ' log and status for commits or edits it already made, and continue rather than redo. Every process of yours from before the restart was stopped: restart what you need. If ' + LOCK + ' exists and no timing process runs (pgrep), remove it.'
 async function __A(prompt, opts) {
   const lab = opts && opts.label
@@ -147,7 +147,9 @@ const maps = (await parallel([
 ])).filter(Boolean)
 
 phase('Design')
+if (maps.length < 3) throw new Error('a map agent returned nothing (' + maps.length + ' of 3); resume after checking its transcript')
 const design = await __A(CTX + '\n\n' + designPrompt(maps), { label: 'design', phase: 'Design', schema: DESIGN })
+if (!design) throw new Error('the design agent returned nothing; resume after checking its transcript')
 const dreviews = (await parallel([
   () => __A(CTX + '\n\n' + DR('whole-pass exactness, determinism and save/load: cursors that survive a city reload, a load mid-pass, a pass that restarts when its inputs change mid-pass, and work-unit budgets that differ between headless and live', design), { label: 'design-review:exactness', phase: 'Design', schema: DREVIEW }),
   () => __A(CTX + '\n\n' + DR('the targets and the cost model: will every step really be at most 3 ms p99 and 5 ms max at dense1m, including rare big steps (the first pass after load, a network edit, disasters); is the cost model fitted to real data; what happens to the headless day budget and the frames budget; is it the simplest design', design), { label: 'design-review:targets', phase: 'Design', schema: DREVIEW }),

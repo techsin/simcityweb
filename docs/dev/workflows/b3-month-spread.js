@@ -16,7 +16,7 @@ const B = S + '/b3base'
 const WORK = S + '/b3work'
 
 const __C = {}
-const __R = []
+const __R = ["map:month", "design"]
 const __NOTE = 'RESUMING: an earlier run of this exact task was interrupted (usage limit, restart or crash). Your scratch dir under ' + WORK + ' may hold partial work from it: read it first, keep what is sound, check git -C ' + W + ' log and status for commits or edits it already made, and continue rather than redo. Every process of yours from before the restart was stopped: restart what you need.'
 async function __A(prompt, opts) {
   const lab = opts && opts.label
@@ -277,7 +277,9 @@ const maps = (await parallel([
 log('maps: ' + maps.map((m) => m.system + ' → ' + m.recommendation.slice(0, 120)).join(' || '))
 
 phase('Design')
+if (maps.length < 3) throw new Error('a map agent returned nothing (' + maps.length + ' of 3); resume after checking its transcript')
 const design = await __A(CTX + '\n\n' + designPrompt(maps), { label: 'design', phase: 'Design', schema: DESIGN })
+if (!design) throw new Error('the design agent returned nothing; resume after checking its transcript')
 const dreviews = (await parallel([
   () => __A(CTX + '\n\n' + DR_A(design), { label: 'design-review:determinism', phase: 'Design', schema: DREVIEW }),
   () => __A(CTX + '\n\n' + DR_B(design), { label: 'design-review:gameplay', phase: 'Design', schema: DREVIEW }),
