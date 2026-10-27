@@ -1,5 +1,60 @@
 # local-W0.6-saves — saves through the host (T020, NOTE-031)
 
+## Review and gates (the local worker)
+
+The lane is `8dafb4c`. My review round adds `fa2eda0`, `0488050` and `7ade858`. It is merged with W0.3b into
+`local/W0-complete`, where the gates ran. An independent reviewer read the whole diff, including the moves, which it
+diffed against the old files. Its findings and what happened to each:
+
+1. **Blocker: the switched-on replica-write rule failed.** Its alias tracking was file-wide and by name. Loop
+   counters and sums named like an alias in another function were flagged, and so were render-only `.flags`
+   (BuildingRenderer, Fireworks), a copied news list being reversed, and the two demo pages that fill their own
+   state: 30 sites, none of them a replica write. The lane never ran vitest.
+   - The fix (`fa2eda0`): the scan resolves every name in its own scope, so a parameter shadows an outer alias.
+   - Only member writes count, and copies (`slice`, `map`, ...) are not the replica.
+   - A bare `.flags` write counts when its object is undeclared or the value uses the `BF` building flags.
+   - The demo pages are exempt by name, with a check that the exemption still names a file.
+   - New self-tests cover each case, and every earlier positive still trips.
+2. **Major: NOTE-031 was not shown fixed, and the lane had tightened the timeouts.** It removed the 300 s and 600 s
+   describe timeouts, so CPU-bound cases ran under vitest's 5 s default. Its fixture change (`regionData()` instead
+   of generating the whole region terrain per case) does remove the main CPU amplifier. `0488050` restores both
+   timeouts and gives 'city delta' 300 s too. The evidence is the five-suites-under-load gate below.
+3. **Minor: a save could hang.** The save acknowledgement now awaits the recovery cleanup, and `IdbKV.delete` had no
+   `onabort`. A transaction aborted after its request succeeded never settled, which stalled the save chain and
+   `exitCity`. `0488050` adds the handler. `putSave` already maps a failed cleanup to "recovery not dropped", so the
+   save is still acknowledged.
+4. **Minor: the brand's layering.** `save/state.ts` imported the brand from `worker/replica.ts`, which imports
+   `save/serialize`: a cycle, with save below worker. Per NOTE-036 (`7ade858`):
+   - the brand is declared in `save/state.ts`, and replica.ts imports and re-exports it;
+   - a hygiene line keeps src/save free of runtime imports from src/worker (type-only imports are erased).
+5. **Nits:**
+   - The checklist named a storage fault harness the repo does not have; it now gives manual steps.
+   - Left as they are:
+     - two orders of the recovery cleanup (the composed one is used only by tests; both are safe);
+     - a title-screen restore holding the recovery base until the next load;
+     - the placeholder host without a signal (its listeners go with `host.dispose()`);
+     - the exit snapshot not recorded in `lastSnapshot` (debug only).
+   - Corrections to the report below: `recoveryCodec`'s `buildRecoverySnapshot` is new logic, not unchanged; it is
+     described under each file. There were three 5 ms sleeps, not two.
+
+The reviewer also confirmed, for old saves:
+- the CityRecord shape, `cityKey`, the serializer, the v1 bundle bytes, the delta format and the storage keys are
+  unchanged;
+- the three refusals assert before any write;
+- the save ordering (copy, fingerprint, summary, cmd and changes captured in one synchronous block; the base
+  advanced only after the put);
+- the App paths of §4.5.
+
+| Gate (on `local/W0-complete`) | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| The full vitest, five times back to back at full parallelism (NOTE-031) | five consecutive runs, each **171 files passed, 1 skipped; 1,653 tests passed, 7 skipped** (36 s each). The recovery tests passed in all ten runs I made today. |
+| The 128 × 15 seed-7 bot, with the action log | identical to `93069fa`, line for line (**196,101** in 2015) |
+| Old saves (two 10-year cities, a 21- and a 43-year veteran, the old-format region and city) | identical to `93069fa`: every file loads, continues 45 days and reloads identically (6 of 6) |
+| The Appendix A / W0.6 browser checklist | a focused session (11 items and the leakprobe teardown check) runs next; its results follow in a note |
+
+The lane's report follows.
+
 Implementation complete on `local/W0.6-saves`, based on `93069fa`. Changes are uncommitted. TypeScript and
 `git diff --check` pass. Runtime gates remain pending: Vitest cannot start in this sandbox (`spawn EPERM`),
 so this report does **not** claim the suite, bot, browser checks, or five consecutive runs under load passed.
