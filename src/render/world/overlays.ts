@@ -173,48 +173,63 @@ const DEMO = (title: string, what: string): DefCore => ({
   crisp: true,
 });
 
+export type EmergencyColourVision = 'standard' | 'red-green' | 'blue-yellow';
+/** T036's AppSettings.colourVision has not landed: keep today's palette until the setting is wired here. */
+const EMERGENCY_COLOUR_VISION: EmergencyColourVision = 'standard';
+const EMERGENCY_SAFE_COLOURS = { auto: '#2a7de1', near: '#f5a623', far: '#9b1d6a', none: '#c8ccd2' };
+
 /**
- * Emergency response views. Fire differs from police / ambulance: its amber band is the burn-down window (emgNearSlack
- * in src/sim/infra/overlays.ts) — a truck sent at once still saves the building — and beyond it (red) a fire burns down
+ * Emergency response views. Fire differs from police / ambulance: its near band is the burn-down window (emgNearSlack
+ * in src/sim/infra/overlays.ts) — a truck sent at once still saves the building — and beyond it a fire burns down
  * before any truck can arrive, while an industrial accident there still waits for one: a truck sent within its dispatch
  * window saves the plant. The legend and notes say what the hover says there (FIRE_TOO_FAR_TEXT), not "You must
  * dispatch", and give the window in the hover's words and the banner's unit (INDUSTRIAL_WINDOW_TEXT: "within 3.0 min").
  */
-const EMERGENCY = (title: string, unit: string, station: string, fire = false): DefCore => {
+const EMERGENCY = (title: string, unit: string, station: string, fire = false, safe = false): DefCore => {
   // slack s maps to t = 0.08 + 0.92 (s + SPAN) / (2 SPAN): s = -3 -> tNear, s = 0 -> tZero
   const t = (s: number) => 0.08 + (0.92 * (s + EMG_SPAN)) / (2 * EMG_SPAN);
   const tNear = t(-EMG_NEAR), tZero = t(0);
+  const c = safe ? EMERGENCY_SAFE_COLOURS : undefined;
+  const auto = safe ? 'Auto-dispatch' : 'Green', near = safe ? 'Just out of reach' : 'Amber';
+  const far = safe ? 'Too far: fires burn down before a truck arrives' : 'Red: too far for fires';
   return {
     title,
     ramp: [
-      { t: 0, color: '#6a4c93', a: 0.78 },
-      { t: 0.045, color: '#6a4c93', a: 0.78 },
-      { t: 0.08, color: '#b8262a', a: 0.8 },
-      { t: tNear - 0.006, color: '#d8402a', a: 0.74 },
-      { t: tNear + 0.006, color: '#f0a030', a: 0.74 },
-      { t: tZero - 0.006, color: '#f0c040', a: 0.7 },
-      { t: tZero + 0.006, color: '#6ccf6a', a: 0.55 },
-      { t: 1, color: '#1f9a4a', a: 0.7 },
+      { t: 0, color: c?.none ?? '#6a4c93', a: 0.78 },
+      { t: 0.045, color: c?.none ?? '#6a4c93', a: 0.78 },
+      { t: 0.08, color: c?.far ?? '#b8262a', a: 0.8 },
+      { t: tNear - 0.006, color: c?.far ?? '#d8402a', a: 0.74 },
+      { t: tNear + 0.006, color: c?.near ?? '#f0a030', a: 0.74 },
+      { t: tZero - 0.006, color: c?.near ?? '#f0c040', a: 0.7 },
+      { t: tZero + 0.006, color: c?.auto ?? '#6ccf6a', a: 0.55 },
+      { t: 1, color: c?.auto ?? '#1f9a4a', a: 0.7 },
     ],
     legend: [
-      { color: '#3fb45a', label: 'Auto-dispatch' },
-      { color: '#f0a030', label: 'Just out of reach' },
-      { color: '#c8322a', label: fire ? 'Too far — fires burn down first' : 'You must dispatch' },
-      { color: '#6a4c93', label: `No ${station}` },
+      { color: c?.auto ?? '#3fb45a', label: 'Auto-dispatch' },
+      { color: c?.near ?? '#f0a030', label: 'Just out of reach' },
+      { color: c?.far ?? '#c8322a', label: fire ? 'Too far — fires burn down first' : 'You must dispatch' },
+      { color: c?.none ?? '#6a4c93', label: `No ${station}` },
     ],
     swatches: true,
     notes: [
-      `Green: ${unit} are sent automatically in time — incidents there become statistics.`,
+      `${auto}: ${unit} are sent automatically in time — incidents there become statistics.`,
       fire
-        ? `Amber: fires wait for your dispatch — a truck sent at once still makes it. Red: too far for fires; an industrial accident there is still saved by a fire truck sent ${INDUSTRIAL_WINDOW_TEXT}.`
-        : 'Amber / red: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.',
-      'Red on a single building: no road reaches it — build one beside it.',
+        ? `${near}: fires wait for your dispatch — a truck sent at once still makes it. ${far}; an industrial accident there is still saved by a fire truck sent ${INDUSTRIAL_WINDOW_TEXT}.`
+        : `${safe ? 'Just out of reach / You must dispatch' : 'Amber / red'}: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.`,
+      `${safe ? 'Out of reach' : 'Red'} on a single building: no road reaches it — build one beside it.`,
     ],
-    // whole cells: a bilinear blend from a red roadless building (t 0.08) to a green neighbour passes through amber —
+    // whole cells: a bilinear blend from a roadless building (t 0.08) to an auto-dispatch neighbour passes through near —
     // a half-cell "Just out of reach" ring that hovers as "Auto-dispatch" (the cells are categories, not a field)
     crisp: true,
   };
 };
+
+const emergencyVariants = (safe: boolean): DefCore[] => [
+  EMERGENCY('Emergency · fire response', 'fire trucks', 'fire station', true, safe),
+  EMERGENCY('Emergency · police response', 'police cars', 'police station', false, safe),
+  EMERGENCY('Emergency · ambulance response', 'ambulances', 'clinic or hospital', false, safe),
+];
+const EMERGENCY_STANDARD = emergencyVariants(false), EMERGENCY_SAFE = emergencyVariants(true);
 
 const BINARY = (title: string, on: string, onLabel: string, offLabel: string): DefCore => ({
   title,
@@ -349,7 +364,7 @@ const BASE: Record<Overlay, DefCore> = {
   },
   [Overlay.Soil]: BAD('Soil Contamination', '#c8b070', '#8a6a30', '#4a3010', ['Clean', 'Contaminated', 'Toxic'],
     ['Left by industry, dumps and spills; it fades slowly once the source is gone.']),
-  [Overlay.Emergency]: EMERGENCY('Emergency · fire response', 'fire trucks', 'fire station', true),
+  [Overlay.Emergency]: EMERGENCY_STANDARD[0],
   [Overlay.Parking]: BAD('Parking Pressure', '#dbb05a', '#c2482e', '#6a1f5a', ['Easy', 'Tight', 'Full'],
     ['Above 60% shops lose customers. A parking garage next to a transit stop relieves the block.']),
 };
@@ -444,7 +459,6 @@ const VARIANTS: Partial<Record<Overlay, (Partial<DefCore> | undefined)[]>> = {
       notes: ['Wealthy residents want high land value, parks, safety and prestige nearby.'],
     },
   ],
-  [Overlay.Emergency]: [undefined, EMERGENCY('Emergency · police response', 'police cars', 'police station'), EMERGENCY('Emergency · ambulance response', 'ambulances', 'clinic or hospital')],
 };
 
 /** desirability variant titles / notes: the 12 DevTypes, then the appeal views */
@@ -459,11 +473,12 @@ function desirabilityDef(v: number): DefCore {
 }
 
 /** the definition (ramp, legend, refresh layers) of an overlay + variant */
-export function overlayDef(o: Overlay, variant = -1): OverlayDef {
+export function overlayDef(o: Overlay, variant = -1, colourVision: EmergencyColourVision = EMERGENCY_COLOUR_VISION): OverlayDef {
   const base = BASE[o] ?? NONE;
   const v = resolveVariant(o, variant);
   let core: DefCore = base;
   if (o === Overlay.Desirability) core = desirabilityDef(v);
+  else if (o === Overlay.Emergency) core = (colourVision === 'standard' ? EMERGENCY_STANDARD : EMERGENCY_SAFE)[v];
   else {
     const ov = VARIANTS[o]?.[v];
     if (ov) core = { ...base, ...ov };
@@ -486,8 +501,8 @@ export interface OverlayLegend {
 }
 
 /** Legend for the UI (title + color stops + notes) of an overlay + variant. */
-export function overlayLegend(o: Overlay, variant = -1): OverlayLegend {
-  const d = overlayDef(o, variant);
+export function overlayLegend(o: Overlay, variant = -1, colourVision: EmergencyColourVision = EMERGENCY_COLOUR_VISION): OverlayLegend {
+  const d = overlayDef(o, variant, colourVision);
   return { title: d.title, stops: d.legend.map((s) => ({ ...s })), swatches: !!d.swatches, notes: [...(d.notes ?? [])], wind: !!d.wind };
 }
 
