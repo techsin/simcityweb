@@ -40,6 +40,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
@@ -71,7 +72,11 @@ function fail(msg) {
   process.exit(2);
 }
 const log = (msg) => console.log(`[fixtures] ${msg}`);
-const git = (...a) => spawnSync('git', a, { cwd: ROOT, encoding: 'utf8' });
+const git = (...a) => {
+  const r = spawnSync('git', a, { cwd: ROOT, encoding: 'utf8' });
+  if (r.error) fail(`git ${a[0]}: ${r.error.message}`);
+  return r;
+};
 const show = (p) => (relative(ROOT, p).startsWith('..') ? p : relative(ROOT, p));
 
 /** run a node program, its output prefixed with `label`; resolves with the wall seconds */
@@ -151,7 +156,7 @@ function ensureCommit() {
   fail(`commit ${SNAP_COMMIT} is not available (git fetch --unshallow origin <branch>, then run this again)`);
 }
 
-function buildSnap() {
+async function buildSnap() {
   const marker = join(SNAP, '.commit');
   const ours = existsSync(marker) && readFileSync(marker, 'utf8').trim() === SNAP_COMMIT;
   if (ours && !force) log(`snap: ${show(SNAP)} exists (${SNAP_COMMIT.slice(0, 7)})`);
@@ -164,12 +169,24 @@ function buildSnap() {
     clearStale(dirname(SNAP), `${basename(SNAP)}.tmp`);
     rmSync(tmp, { recursive: true, force: true });
     mkdirSync(tmp, { recursive: true });
-    const archive = spawnSync('git', ['archive', '--format=tar', SNAP_COMMIT], { cwd: ROOT, maxBuffer: 1 << 30 });
-    if (archive.status !== 0) fail(`git archive failed: ${archive.stderr}`);
-    const tar = spawnSync('tar', ['-x', '-C', tmp, '--exclude=*.test.*', '--exclude=*.spec.*'], { input: archive.stdout, maxBuffer: 1 << 30 });
-    if (tar.status !== 0) fail(`tar failed: ${tar.stderr}`);
+    // the frozen commit predates .gitattributes: use this tree's LF rules when archiving on Windows
+    const archive = spawn('git', ['archive', '--worktree-attributes', '--format=tar', SNAP_COMMIT], { cwd: ROOT, stdio: ['ignore', 'pipe', 'inherit'] });
+    const tar = spawn('tar', ['-x', '-f', '-', '-C', basename(tmp), '--exclude=*.test.*', '--exclude=*.spec.*'],
+      { cwd: dirname(tmp), stdio: ['pipe', 'ignore', 'inherit'] });
+    const done = (p, name) => new Promise((res, rej) => {
+      p.on('error', rej);
+      p.on('close', (code) => code === 0 ? res() : rej(new Error(`${name} exited with ${code}`)));
+    });
+    try {
+      await Promise.all([done(archive, 'git archive'), done(tar, 'tar'), pipeline(archive.stdout, tar.stdin)]);
+    } catch (e) {
+      archive.kill(); tar.kill();
+      fail(`snapshot extraction failed: ${e.message}`);
+    }
     // bare imports of the frozen tree (vitest, three, rolldown, ...) resolve to this repo's packages
-    symlinkSync(relative(tmp, join(ROOT, 'node_modules')), join(tmp, 'node_modules'));
+    const modules = join(ROOT, 'node_modules');
+    if (process.platform === 'win32') symlinkSync(modules, join(tmp, 'node_modules'), 'junction');
+    else symlinkSync(relative(tmp, modules), join(tmp, 'node_modules'));
     writeFileSync(join(tmp, '.commit'), SNAP_COMMIT + '\n');
     rmSync(SNAP, { recursive: true, force: true });
     mkdirSync(dirname(SNAP), { recursive: true });
@@ -270,7 +287,7 @@ async function cities() {
 
 // ------------------------------------------------------------------------------------------------ main
 const t0 = performance.now();
-if (only.has('snap')) buildSnap();
+if (only.has('snap')) await buildSnap();
 mkdirSync(FIX, { recursive: true });
 if (only.has('dense1m')) {
   await fixture('dense1m', 'dense1m_s7.metropolis', 'dense1m', (d) => [d, '1150000', '120', '7'], { residents: 1118755, buildings: 17154, roadCells: 23141 });

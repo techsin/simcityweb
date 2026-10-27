@@ -122,7 +122,7 @@ benchMain(async ({ args, log }) => {
       arm.days.push(arm.cur);
     };
     arms.push(arm);
-    log(`# ${LABEL[name]}: ${fixture.split('/').pop()} day ${st.day}, population ${st.stats.population}${adoptedRt ? ', layers resident in wasm memory' : ''}`);
+    log(`# ${LABEL[name]}: ${fixture.split(/[\\/]/).pop()} day ${st.day}, population ${st.stats.population}${adoptedRt ? ', layers resident in wasm memory' : ''}`);
   }
 
   // ---------------------------------------------------------------------------------------------- warm-up (headless)

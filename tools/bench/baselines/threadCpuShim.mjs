@@ -1,8 +1,7 @@
-// Preload for tools/bench/sim-profile/profile.js on node builds without process.threadCpuUsage (node < 23.9, e.g. the
-// Windows box's 22.12): `node --import ./tools/bench/baselines/threadCpuShim.mjs profile.js ...`. It maps
-// threadCpuUsage to the high-resolution wall clock, so every "cpu" figure profile.js reports becomes main-thread WALL
-// time. Use it only on an otherwise idle machine with spare cores, and say so next to the numbers; check it against a
-// long-window process.cpuUsage() total (process.cpuUsage ticks at ~15.6 ms on Windows, too coarse per frame).
+// Legacy preload for node builds without process.threadCpuUsage (e.g. Windows node 22.12). profile.js no longer needs
+// it: the profiler uses hrtime for short timings and long-window process.cpuUsage totals, with clocks labelled in JSON.
+// Kept for old bundles: `node --import ./tools/bench/baselines/threadCpuShim.mjs profile.js ...`. It maps threadCpuUsage
+// to wall time; label old bundles' "cpu" figures accordingly and compare with the process CPU total printed at exit.
 if (typeof process.threadCpuUsage !== 'function') {
   const t0 = process.hrtime.bigint();
   process.threadCpuUsage = () => ({ user: Number((process.hrtime.bigint() - t0) / 1000n), system: 0 });

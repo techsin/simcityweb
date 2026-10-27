@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /** Allocation sites from a sampling heap profile (includes collected objects): node src/heapanalyze.mjs F.heapprofile --days N [--top 40] */
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
-const here = dirname(new URL(import.meta.url).pathname);
-const mapFile = opt('map', resolve(here, '../../../node_modules/.cache/sim-profile/profile.js.map'));
+const here = dirname(fileURLToPath(import.meta.url));
+const mapFile = opt('map', join(here, '../../../node_modules/.cache/sim-profile/profile.js.map'));
 const TOP = +opt('top', 40), DAYS = +opt('days', 1);
 const prof = JSON.parse(readFileSync(args[0], 'utf8'));
 // ------------------------------------------------------------------ source map (VLQ)
@@ -49,7 +50,7 @@ function orig(line, col) {
 
 const self = new Map(), total = new Map();
 let all = 0;
-function key(n) { const cf = n.callFrame; const name = cf.functionName || '(anon)'; if (!cf.url || !cf.url.includes('profile.js')) return `${name} [${cf.url ? cf.url.split('/').pop() : 'native'}]`; const o = orig(cf.lineNumber, cf.columnNumber); return o ? `${name} ${o.src}:${o.line}` : name; }
+function key(n) { const cf = n.callFrame; const name = cf.functionName || '(anon)'; if (!cf.url || !cf.url.includes('profile.js')) return `${name} [${cf.url ? cf.url.split(/[\\/]/).pop() : 'native'}]`; const o = orig(cf.lineNumber, cf.columnNumber); return o ? `${name} ${o.src}:${o.line}` : name; }
 function walk(n, stack) {
   const k = key(n);
   const s = n.selfSize;

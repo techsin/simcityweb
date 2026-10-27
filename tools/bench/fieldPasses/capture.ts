@@ -165,7 +165,7 @@ export async function captureFixture(file: string, warm: number, water = ''): Pr
   const [air, noise] = sats;
   arrays['air.field'] = air.field; arrays['air.L'] = air.L; arrays['air.buf1'] = air.buf1!;
   arrays['noise.field'] = noise.field; arrays['noise.L'] = noise.L; arrays['noise.buf1'] = noise.buf1!; arrays['noise.buf2'] = noise.buf2!;
-  const name = file.split('/').pop()!.replace(/\.metropolis$/, '') + (water ? `+${water}` : '');
+  const name = file.split(/[\\/]/).pop()!.replace(/\.metropolis$/, '') + (water ? `+${water}` : '');
   const meta: CaptureMeta = {
     name, N, day: st.day, population: st.stats.population, variant: water ? `${water} (${added} cells)` : '',
     nimby: {

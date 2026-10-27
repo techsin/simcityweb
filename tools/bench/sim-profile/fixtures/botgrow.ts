@@ -27,7 +27,8 @@ bot.run(years, (r) => {
   if (saveYears.has(y)) {
     const ser = serializeCity(bot.st, { copy: true });
     const file = `${outDir}/bot256_s${seed}_y${y}.metropolis`;
-    pending.push(packFile(ser, true).then((bytes) => { writeFileSync(file, bytes); console.log(`saved ${file} ${(bytes.length / 1e6).toFixed(2)} MB pop ${bot.st.stats.population} buildings ${bot.st.buildings.size}`); }));
+    const population = bot.st.stats.population, buildings = bot.st.buildings.size;
+    pending.push(packFile(ser, true).then((bytes) => { writeFileSync(file, bytes); console.log(`saved ${file} ${(bytes.length / 1e6).toFixed(2)} MB pop ${population} buildings ${buildings}`); }));
   }
 });
 await Promise.all(pending);

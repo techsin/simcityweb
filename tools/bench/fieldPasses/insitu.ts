@@ -113,7 +113,7 @@ benchMain(async ({ args, log }) => {
     const sStep = svc.step.bind(svc);
     svc.step = (s) => { const t0 = cpuMs(); try { sStep(s); } finally { arm.cur.services += cpuMs() - t0; } };
     arms.push(arm);
-    log(`# ${LABEL[name]}: ${fixture.split('/').pop()}${water ? ` + ${water} water (${added} cells)` : ''}, day ${st.day}, population ${st.stats.population}` +
+    log(`# ${LABEL[name]}: ${fixture.split(/[\\/]/).pop()}${water ? ` + ${water} water (${added} cells)` : ''}, day ${st.day}, population ${st.stats.population}` +
       `${name === 'wasmRes' ? ', CityState layers + pollution field arrays resident in wasm memory' : ''}`);
   }
   const day = (a: Arm) => {

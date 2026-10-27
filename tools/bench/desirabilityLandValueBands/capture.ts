@@ -26,6 +26,6 @@ export async function captureFixture(file: string, warm: number): Promise<EconCa
   const st = await loadFixture(file);
   const sim = new Simulation(st, createSystems());
   for (let d = 0; d < warm; d++) sim.advanceDay();
-  const name = file.split('/').pop()!.replace(/\.metropolis$/, '');
+  const name = file.split(/[\\/]/).pop()!.replace(/\.metropolis$/, '');
   return captureFrom(name, sim.state, econRuntimeOf(sim));
 }

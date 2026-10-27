@@ -7,13 +7,14 @@
  * source file:line (via the bundle's source map).
  */
 import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve, relative } from 'node:path';
+import { dirname, join, resolve, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const file = args[0];
-const here = dirname(new URL(import.meta.url).pathname);
-const mapFile = opt('map', resolve(here, '../../../node_modules/.cache/sim-profile/profile.js.map'));
+const here = dirname(fileURLToPath(import.meta.url));
+const mapFile = opt('map', join(here, '../../../node_modules/.cache/sim-profile/profile.js.map'));
 const TOP = +opt('top', 40);
 const CPU = opt('cpu') ? +opt('cpu') : null;
 const prof = JSON.parse(readFileSync(file, 'utf8'));
@@ -66,7 +67,7 @@ function keyOf(n) {
   if (k) return k;
   const cf = n.callFrame;
   const name = cf.functionName || '(anon)';
-  if (!cf.url || !cf.url.includes('profile.js')) k = `${name} [${cf.url ? cf.url.split('/').pop() : 'native'}]`;
+  if (!cf.url || !cf.url.includes('profile.js')) k = `${name} [${cf.url ? cf.url.split(/[\\/]/).pop() : 'native'}]`;
   else { const o = orig(cf.lineNumber, cf.columnNumber); k = o ? `${name} ${o.src}:${o.line}` : `${name} profile.js:${cf.lineNumber + 1}`; }
   keyCache.set(n.id, k);
   return k;
@@ -74,15 +75,17 @@ function keyOf(n) {
 // ------------------------------------------------------------------ CPU-time weights per sample (--regions)
 // Sample counts from a wall-clock sampler are biased by machine-load fluctuations; with the harness region log
 // (start/end hrtime + main-thread CPU per system hook / scheduler step) each sample gets weight = exclusive CPU of the
-// innermost region containing it / samples in that region, so function costs are in CPU ms.
+// innermost region containing it / samples in that region, so function costs use the region clock (CPU or wall ms).
 const n = prof.samples.length;
 const ts = new Float64Array(n);
 { let t = prof.startTime; for (let i = 0; i < n; i++) { t += prof.timeDeltas[i]; ts[i] = t; } }
 const weight = new Float64Array(n).fill(1);
 const regionOf = new Int32Array(n).fill(-1);
 let R = null;
+let regionClock = 'threadCpu';
 if (opt('regions')) {
   R = JSON.parse(readFileSync(opt('regions'), 'utf8'));
+  regionClock = R.clocks?.samples ?? 'threadCpu';
   const fl = R.regions, nr = fl.length / 4;
   const idx = [...Array(nr).keys()].sort((a, b) => fl[a * 4] - fl[b * 4] || fl[b * 4 + 1] - fl[a * 4 + 1]);
   const excl = new Float64Array(nr), parentR = new Int32Array(nr).fill(-1);
@@ -113,7 +116,7 @@ if (opt('regions')) {
   const lostByLabel = new Map();
   let exclSum = 0;
   for (let r = 0; r < nr; r++) { exclSum += Math.max(0, excl[r]); if (cnt[r] === 0 && excl[r] > 0) lostByLabel.set(R.labels[fl[r * 4 + 3]], (lostByLabel.get(R.labels[fl[r * 4 + 3]]) ?? 0) + excl[r]); }
-  const gapCpu = Math.max(0, R.totalCpuMs - exclSum);
+  const gapCpu = Math.max(0, (regionClock === 'hrtime' ? R.totalWallMs : R.totalCpuMs) - exclSum);
   for (let i = 0; i < n; i++) {
     if (ts[i] < R.windowUs[0] || ts[i] > R.windowUs[1]) { weight[i] = 0; continue; }
     const r = regionOf[i];
@@ -121,7 +124,7 @@ if (opt('regions')) {
   }
   globalThis.__lost = lostByLabel;
   globalThis.__regionLabel = (i) => (regionOf[i] < 0 ? '(gap)' : R.labels[fl[regionOf[i] * 4 + 3]]);
-  console.log(`regions ${nr}, samples in window ${inWin}, gap samples ${cnt[nr]} (gap cpu ${gapCpu.toFixed(1)} ms), unsampled region cpu ${[...lostByLabel.values()].reduce((a, b) => a + b, 0).toFixed(1)} ms`);
+  console.log(`regions ${nr}, samples in window ${inWin}, gap samples ${cnt[nr]} (gap ${regionClock} ${gapCpu.toFixed(1)} ms), unsampled region ${regionClock} ${[...lostByLabel.values()].reduce((a, b) => a + b, 0).toFixed(1)} ms`);
 }
 const self = new Map(), total = new Map(), byRegionFn = new Map();
 let tot = 0, idle = 0, gcS = 0, prog = 0, totW = 0;
@@ -146,7 +149,7 @@ if (R) for (const [l, c] of globalThis.__lost) { const k = `(unsampled) ${l}`; s
 const unit = R ? 'ms' : 'samples';
 const ms = (c) => (R ? c.toFixed(1) + 'ms' : CPU ? ((c / totW) * CPU).toFixed(1) + 'ms' : String(Math.round(c)));
 const pct = (c) => ((c / totW) * 100).toFixed(1).padStart(5) + '%';
-console.log(`samples ${prof.samples.length}: counted ${tot} (idle ${idle}, program ${prog}); total ${R ? totW.toFixed(1) + ' cpu ms' : totW + ' samples'}; GC ${pct(gcS)}; interval ~${((prof.endTime - prof.startTime) / prof.samples.length).toFixed(0)}us wall`);
+console.log(`samples ${prof.samples.length}: counted ${tot} (idle ${idle}, program ${prog}); total ${R ? totW.toFixed(1) + ' ' + regionClock + ' ms' : totW + ' samples'}; GC ${pct(gcS)}; interval ~${((prof.endTime - prof.startTime) / prof.samples.length).toFixed(0)}us wall`);
 console.log(`\n== top ${TOP} by SELF (${unit})`);
 const selfTop = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, TOP);
 for (const [k, v] of selfTop) console.log(`${pct(v)} ${ms(v).padStart(9)}  ${k}`);
@@ -160,4 +163,4 @@ if (R && opt('byregion')) {
     console.log(`${pct(t)} ${ms(t).padStart(9)}  ${l}: ` + [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k.replace(/ src\/sim\//, ' ')} ${(v / t * 100).toFixed(0)}%`).join(' | '));
   }
 }
-if (opt('json')) writeFileSync(opt('json'), JSON.stringify({ totW, gc: gcS, self: Object.fromEntries(self), total: Object.fromEntries(total), byRegion: Object.fromEntries([...byRegionFn.entries()].map(([l, m]) => [l, Object.fromEntries(m)])) }));
+if (opt('json')) writeFileSync(opt('json'), JSON.stringify({ clock: R ? regionClock : 'samples', totW, gc: gcS, self: Object.fromEntries(self), total: Object.fromEntries(total), byRegion: Object.fromEntries([...byRegionFn.entries()].map(([l, m]) => [l, Object.fromEntries(m)])) }));
