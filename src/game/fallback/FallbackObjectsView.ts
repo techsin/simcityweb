@@ -56,6 +56,20 @@ function rgb(hex: number): [number, number, number] {
   return [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
 }
 
+/** Own the geometry object (and three's renderer dispose listener), sharing only the registry's attribute buffers. */
+function viewOf(src: THREE.BufferGeometry): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  g.setIndex(src.index);
+  for (const k of Object.keys(src.attributes)) g.setAttribute(k, src.attributes[k]);
+  for (const k of Object.keys(src.morphAttributes) as (keyof THREE.BufferGeometry['morphAttributes'])[]) g.morphAttributes[k] = src.morphAttributes[k];
+  g.morphTargetsRelative = src.morphTargetsRelative;
+  for (const gr of src.groups) g.addGroup(gr.start, gr.count, gr.materialIndex);
+  g.setDrawRange(src.drawRange.start, src.drawRange.count);
+  g.boundingBox = src.boundingBox;
+  g.boundingSphere = src.boundingSphere;
+  return g;
+}
+
 class CellLayer {
   readonly data: Uint8Array;
   readonly tex: THREE.DataTexture;
@@ -83,7 +97,8 @@ export class FallbackObjectsView implements CityObjectsViewApi {
   private group = new THREE.Group();
   private meshes = new Map<number, THREE.Mesh>();
   private boxGeo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
-  private boxMat = new THREE.MeshLambertMaterial({ vertexColors: false });
+  private geometryViews = new Map<string, THREE.BufferGeometry>();
+  private buildingMat: THREE.Material | null = null;
   private assets: AssetApi | null = null;
   private ghost: THREE.Mesh | null = null;
   private ghostKey = '';
@@ -95,6 +110,7 @@ export class FallbackObjectsView implements CityObjectsViewApi {
   private offs: (() => void)[] = [];
   private underground = false;
   private raycaster = new THREE.Raycaster();
+  private disposed = false;
 
   constructor(private state: CityState, events: Emitter<CityEvents>, opts: { scene: THREE.Scene; camera: THREE.PerspectiveCamera; renderer: THREE.WebGLRenderer; canvas: HTMLCanvasElement }) {
     this.scene = opts.scene;
@@ -105,7 +121,7 @@ export class FallbackObjectsView implements CityObjectsViewApi {
     this.ground = new CellLayer(this.geo, N, 0, 1);
     this.preview = new CellLayer(this.geo, N, 3, 0.9);
     this.scene.add(this.ground.mesh, this.preview.mesh, this.group);
-    const eg = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0));
+    const eg = new THREE.EdgesGeometry(this.boxGeo);
     this.selBox = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: 0x7cd4ff, depthTest: false, transparent: true }));
     this.selBox.renderOrder = 60;
     this.selBox.visible = false;
@@ -127,6 +143,7 @@ export class FallbackObjectsView implements CityObjectsViewApi {
     );
     for (const id of state.buildings.keys()) this.buildDirty.add(id);
     loadAssets().then((a) => {
+      if (this.disposed) return;
       this.assets = a;
       if (a) this.rebuildAll();
     });
@@ -192,10 +209,39 @@ export class FallbackObjectsView implements CityObjectsViewApi {
   }
 
   private rebuildAll(): void {
-    for (const m of this.meshes.values()) this.group.remove(m);
-    this.meshes.clear();
+    for (const id of this.meshes.keys()) this.removeBuilding(id);
     for (const id of this.state.buildings.keys()) this.buildDirty.add(id);
     this.groundDirty = true;
+  }
+
+  private geometry(a: AssetApi, model: string, variant = 0): THREE.BufferGeometry {
+    const key = `${model}#${variant}`;
+    let g = this.geometryViews.get(key);
+    if (!g) {
+      g = viewOf(a.getModelGeometry(model, variant));
+      this.geometryViews.set(key, g);
+    }
+    return g;
+  }
+
+  /** clone() keeps neither the shader patch nor its program key. */
+  private material(a: AssetApi): THREE.Material {
+    if (!this.buildingMat) {
+      const src = a.getBuildingMaterial();
+      const m = src.clone();
+      m.onBeforeCompile = src.onBeforeCompile;
+      m.customProgramCacheKey = src.customProgramCacheKey;
+      this.buildingMat = m;
+    }
+    return this.buildingMat;
+  }
+
+  private removeBuilding(id: number): void {
+    const mesh = this.meshes.get(id);
+    if (!mesh) return;
+    this.group.remove(mesh);
+    if (mesh.material !== this.buildingMat) (mesh.material as THREE.Material).dispose();
+    this.meshes.delete(id);
   }
 
   private buildingHeight(b: Building): number {
@@ -217,12 +263,7 @@ export class FallbackObjectsView implements CityObjectsViewApi {
   }
 
   private syncBuilding(id: number): void {
-    const old = this.meshes.get(id);
-    if (old) {
-      this.group.remove(old);
-      if ((old.material as THREE.Material) !== this.boxMat && !(old.userData.sharedMat)) (old.material as THREE.Material).dispose();
-      this.meshes.delete(id);
-    }
+    this.removeBuilding(id);
     const b = this.state.buildings.get(id);
     if (!b) return;
     const def = getDef(b.def);
@@ -230,8 +271,7 @@ export class FallbackObjectsView implements CityObjectsViewApi {
     const a = this.assets;
     const built = b.built ?? 1;
     if (a && def && a.hasModel(def.model) && !(b.flags & BF.Burnt)) {
-      mesh = new THREE.Mesh(a.getModelGeometry(def.model, b.variant), a.getBuildingMaterial());
-      mesh.userData.sharedMat = true;
+      mesh = new THREE.Mesh(this.geometry(a, def.model, b.variant), this.material(a));
       mesh.scale.y = Math.max(0.08, built);
     } else {
       const h = this.buildingHeight(b) * Math.max(0.1, built);
@@ -252,6 +292,7 @@ export class FallbackObjectsView implements CityObjectsViewApi {
   }
 
   update(_dt: number): void {
+    if (this.disposed) return;
     if (this.groundDirty) {
       this.groundDirty = false;
       this.paintGround();
@@ -268,6 +309,7 @@ export class FallbackObjectsView implements CityObjectsViewApi {
   }
 
   setGhost(defId: string | null, x = 0, z = 0, rot: 0 | 1 | 2 | 3 = 0, ok = true): void {
+    if (this.disposed) return;
     if (!defId) {
       if (this.ghost) this.ghost.visible = false;
       return;
@@ -279,7 +321,7 @@ export class FallbackObjectsView implements CityObjectsViewApi {
     if (!this.ghost || this.ghostKey !== key) {
       if (this.ghost) this.scene.remove(this.ghost);
       const a = this.assets;
-      if (a && def && a.hasModel(def.model)) this.ghost = new THREE.Mesh(a.getModelGeometry(def.model, 0), this.ghostMat);
+      if (a && def && a.hasModel(def.model)) this.ghost = new THREE.Mesh(this.geometry(a, def.model, 0), this.ghostMat);
       else {
         this.ghost = new THREE.Mesh(this.boxGeo, this.ghostMat);
         const me = def ? MANIFEST_BY_ID[def.model] : undefined;
@@ -348,11 +390,28 @@ export class FallbackObjectsView implements CityObjectsViewApi {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     for (const f of this.offs) f();
+    this.offs.length = 0;
     this.scene.remove(this.ground.mesh, this.preview.mesh, this.group, this.selBox);
     if (this.ghost) this.scene.remove(this.ghost);
+    this.ghost = null;
+    for (const id of this.meshes.keys()) this.removeBuilding(id);
+    this.buildDirty.clear();
+    for (const g of this.geometryViews.values()) g.dispose();
+    this.geometryViews.clear();
+    this.buildingMat?.dispose();
+    this.buildingMat = null;
+    this.assets = null;
+    this.boxGeo.dispose();
+    this.ghostMat.dispose();
+    this.selBox.geometry.dispose();
+    (this.selBox.material as THREE.Material).dispose();
     this.geo.dispose();
     this.ground.tex.dispose();
     this.preview.tex.dispose();
+    (this.ground.mesh.material as THREE.Material).dispose();
+    (this.preview.mesh.material as THREE.Material).dispose();
   }
 }
