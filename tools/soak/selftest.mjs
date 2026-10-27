@@ -7,7 +7,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { parseOptions } from './options.mjs';
 import { Probe, hardwareRenderer, installTelemetry } from './telemetry.mjs';
-import { assess, heapTrend, markdown } from './report.mjs';
+import { assess, heapTrend, lateHeapTrend, markdown } from './report.mjs';
 import { CYCLE_STEPS } from './driver.mjs';
 import { run } from './run.mjs';
 
@@ -19,9 +19,12 @@ test('CLI units, fixture selection and unsafe/ambiguous arguments', () => {
   assert.equal(o.durationMs, 1_200_000);
   assert.equal(o.cycleMs, 300_000);
   assert.equal(o.fixture, null);
+  assert.equal(o.lateHeapMiBPerHour, 8);
+  assert.equal(o.minDaysPerSec, 0);
+  assert.equal(parseOptions(['--city', 'dense1m', '--min-days-per-sec', '15'], root, {}).minDaysPerSec, 15);
   assert.equal(parseOptions(['--city', 'dense1m'], root, {}).fixture, resolve(root, 'tools/bench/.fixtures/fixtures/dense1m_s7.metropolis'));
   assert.equal(parseOptions(['--city', 'dense1m'], root, { SIM_FIXTURES: here }).fixture, join(here, 'dense1m_s7.metropolis'));
-  for (const args of [[], ['--city', 'vet'], ['--city', 'small', '--minutes', 'NaN'], ['--city', 'small', '--hours', '-1'], ['--city', 'small', '--port', '65536'], ['--city', 'small', '--minutes', '20', '--hours', '1'], ['--city', 'small', '--city', 'small'], ['--city', 'small', '--fixture', 'foo'], ['--city', 'small', '--exit-settle-seconds', '1'], ['--city', 'small', '--typo', '1']]) assert.throws(() => parseOptions(args, root, {}));
+  for (const args of [[], ['--city', 'vet'], ['--city', 'small', '--minutes', 'NaN'], ['--city', 'small', '--hours', '-1'], ['--city', 'small', '--port', '65536'], ['--city', 'small', '--minutes', '20', '--hours', '1'], ['--city', 'small', '--city', 'small'], ['--city', 'small', '--fixture', 'foo'], ['--city', 'small', '--exit-settle-seconds', '1'], ['--city', 'small', '--typo', '1'], ['--city', 'small', '--min-days-per-sec', '-1'], ['--city', 'small', '--late-heap-mib-per-hour', 'x']]) assert.throws(() => parseOptions(args, root, {}));
 });
 
 test('heap regression uses hours/MiB and rejects insufficient or zero-span data', () => {
@@ -71,6 +74,38 @@ test('summary fails missing actions, retained cities, missing counts, crashes, e
   log.samples[0].losses.push({ intentional: true });
   assert.equal(assess(log).pass, true);
   assert.match(markdown(log, assess(log)), /\*\*PASS\*\* 0 cities left/);
+});
+
+test('NOTE-026: the second-half slope catches a late leak the whole-run slope passes; short runs are n/a; the days/s floor', () => {
+  // 4 hours, an exit every 5 minutes: flat for 2 hours, then +10 MiB/hour (whole-run fit 5 MiB/hour, second half 10)
+  const longLog = (heapAt) => {
+    const log = passingLog();
+    log.options = parseOptions(['--city', 'small', '--hours', '4'], root, {});
+    log.observedMs = 4 * 3_600_000;
+    log.cycles = Array.from({ length: 48 }, () => ({ completed: true, steps: CYCLE_STEPS.map(name => ({ name, ok: true })) }));
+    log.exits = Array.from({ length: 49 }, (_, i) => ({ label: 'test', elapsedMs: i * 300_000, heap: { usedSize: heapAt(i / 12) * MiB }, counts: { CityScene: 0, CityState: 0, WebGLRenderer: 1 } }));
+    return log;
+  };
+  const gate = (log) => assess(log).gates.find(g => g.name === 'Second-half heap growth below threshold');
+  const late = longLog(h => 40 + 10 * Math.max(0, h - 2));
+  assert.ok(heapTrend(late.exits.slice(1)).slopeMiBPerHour < late.options.heapMiBPerHour);
+  assert.ok(Math.abs(lateHeapTrend(late.exits.slice(1)).slopeMiBPerHour - 10) < 1e-9);
+  assert.equal(gate(late).pass, false);
+  assert.equal(assess(late).pass, false);
+  assert.equal(assess(longLog(() => 40)).pass, true);
+  const sparse = longLog(() => 40);
+  sparse.exits = sparse.exits.filter((_, i) => i % 24 === 0); // 3 exits: 1 warm-up, then 2 samples
+  assert.equal(gate(sparse).pass, false);
+  assert.match(gate(sparse).detail, /insufficient data/);
+  assert.equal(gate(passingLog()).pass, true); // the 20-minute smoke
+  assert.match(gate(passingLog()).detail, /n\/a/);
+  // the floor is off by default; on, it reads the city's sim days per city second
+  assert.equal(assess(passingLog()).gates.some(g => g.name === 'Simulation rate at the floor'), false);
+  const slow = passingLog();
+  slow.options.minDaysPerSec = 15;
+  assert.equal(assess(slow).pass, false);
+  for (const s of slow.samples) s.sim.days = 240;
+  assert.equal(assess(slow).pass, true);
 });
 
 test('hardware gate rejects software and unknown renderers', () => {

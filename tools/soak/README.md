@@ -34,11 +34,11 @@ The duration starts **after** build, loading and small-city establishment. The a
 For the final multi-hour verification, after both smokes pass on the intended merged revision:
 
 ```powershell
-node tools/soak/run.mjs --city dense1m --hours 4 --cycle-minutes 5
+node tools/soak/run.mjs --city dense1m --hours 4 --cycle-minutes 5 --min-days-per-sec 15
 node tools/soak/run.mjs --city small --hours 4 --cycle-minutes 5
 ```
 
-`--hours` defaults to 4. Use the duration agreed for #28. `--minutes` and `--hours` are mutually exclusive. `node tools/soak/run.mjs --help` lists all options. No install, fixture generation, commit, push, or queue-marker action happens automatically.
+These are NOTE-026's parameters for #28: 4 hours each, one at a time, on the production build of the final merged revision. Heap growth must be ≤ 16 MiB/hour over the run and ≤ 8 MiB/hour over its second half; the second-half line is n/a for a run under 1 hour. The dense city must also hold 15 days/s at ULTRA. `--hours` defaults to 4. `--minutes` and `--hours` are mutually exclusive. `node tools/soak/run.mjs --help` lists all options. No install, fixture generation, commit, push, or queue-marker action happens automatically.
 
 ## What a run does
 
@@ -77,6 +77,8 @@ The summary requires:
 - The full requested duration, all scheduled cycles with every required step, and a final region exit.
 - Successful production build, a verified hardware GPU, telemetry availability and advancing simulation.
 - Post-exit JS heap growth **strictly below 16 MiB/hour**, adjustable with `--heap-mib-per-hour`. This is a provisional harness policy, not a project-approved memory budget. It fits ordinary least squares to elapsed hours versus used heap in MiB after forced GC. The first exit is warm-up and excluded from the slope (it precedes the first quality-switch cycle); at least three later exit samples are required. Live-city heaps are logged but not mixed into this regression because population and geometry can grow legitimately. Twenty minutes at five-minute cadence yields four cycles plus the final exit, leaving four slope points. Very short diagnostic runs may correctly fail for insufficient data.
+- Second-half heap growth **at most 8 MiB/hour** (NOTE-026), adjustable with `--late-heap-mib-per-hour`. It is the same fit over the post-warm-up exits from the midpoint of their span on, and it catches a slow, steady leak that the warm-up would hide. From 1 hour on it needs at least three such samples; a run under 1 hour reports it as n/a.
+- With `--min-days-per-sec N` (off by default; 15 for dense1m at ULTRA in the final check): the city's sim days per city second, pauses included, at least N.
 - **Zero CityScenes and zero CityStates after every exit**, including the warm-up exit. Renderer counts and deltas are reported; a region has its own renderer, so zero total WebGLRenderers is not a valid expectation.
 - Zero console/page/harness errors, page crashes, unexpected browser disconnects or unexpected WebGL context losses. Expected disposal losses are visible but do not fail this gate. Error examples in the checkpoint are capped at 200; totals and the JSONL stream are not capped. Missing measurements never become zero/pass.
 
