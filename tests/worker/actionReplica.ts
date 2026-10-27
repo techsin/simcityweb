@@ -7,7 +7,7 @@ import { LocalSimHost, type ActOptions, type Command, type CommandArgs, type Com
 export async function actionReplica(state: CityState) {
   const local = new LocalSimHost(state);
   await local.start();
-  const copy = () => deserializeCity(serializeCity(local.state, { copy: true }));
+  const copy = () => deserializeCity(serializeCity(state, { copy: true }));
   let replica = copy(), seq = 0;
   const queued: { seq: number; cmd: Command; opts: ActOptions; resolve(r: unknown): void; reject(e: Error): void }[] = [];
   const transport: ActionTransport = {

@@ -1,10 +1,11 @@
 # local-W1.1b-host: main-thread predictions (T031)
 
-Branch `local/W1.1b-host`, base `93069fa`. Changes are **uncommitted**. No push or `.done` marker.
+Branch `local/W1.1b-host`, rebased onto `local/W0-complete` at `0fe14c2` (including W0.6 and W0.3b).
+The first pass is committed as `d58ebd7`; the cache-key follow-up, test fixes and report update are **uncommitted**.
+No push or `.done` marker.
 
-**Not DONE:** the owned implementation and tests typecheck, but stationary hover refresh needs a small scope
-extension (below). Vitest cannot start in this sandbox. T032's command transport and the integration gates are
-still outstanding.
+The owned implementation and the four approved cache-key hunks are implemented and typecheck. Vitest cannot
+start in this sandbox. T032's command transport and the integration gates remain outstanding.
 
 ## Changes by file
 
@@ -17,6 +18,12 @@ still outstanding.
 | `src/game/tools/Tool.ts` | Commit/gesture hunks only: issuing tags, gesture feedback accounting and settlement, one failure allowance per gesture, pending ghosts until acknowledgement/rejection, and abort cleanup. Captures the issuing world so a late ack cannot clear a replacement view. `resultTip` is untouched. |
 | `src/game/tools/ToolController.ts` | Signal-bound pending subscription requests hover refresh when reservations change, including the last ack. |
 | `src/render/world/WorldView.ts` | Separate neutral footprint/path/brush meshes keyed by command sequence. Hover clearing does not remove committed ghosts. Ack cleanup and city teardown dispose geometry/materials. Large rectangles have bounded geometry. |
+| `src/game/tools/ZoneTool.ts` | Approved key-only hunk in `RectTool.refresh`: append the pending revision to the rectangle/drag key. |
+| `src/game/tools/NetworkTool.ts` | Approved key-only hunk in `NetworkTool.refresh`: append the pending revision to the path/drag key. |
+| `src/game/tools/PlopTool.ts` | Approved key-only hunk in `PlopTool.refresh`: append the pending revision to the placement/action-preview key. W0.3b's upkeep watch and placement-detail queries are unchanged. |
+| `src/game/tools/BrushTool.ts` | Approved key-only hunk in `BrushTool.move`: append the pending revision to the cell/radius/strength key. Acknowledgement totals and release behavior are unchanged. |
+| `tests/worker/actionReplica.ts`, `tests/worker/hostActions.test.ts` | After W0.6, snapshot the fixtures' retained authoritative `CityState`, rather than `host.state` (which may be a branded replica). The save guard is unchanged; there are no brand casts. |
+| `tests/game/pendingHover.test.ts` | Four stationary-pointer cases exercise the real tools and HostActions with the held-command replica stub: cached repeats, pending overlap, last-ack refresh, clearing the pending reason, and commands that settle between frames with no net pending-count change. |
 
 No simulation, save, protocol, recorder, replica, null-view, scene wiring or guard-holder implementation changed.
 BrushTool's existing W0.2 acknowledgement totals and settled release sound are retained. There was already no
@@ -40,15 +47,15 @@ BrushTool's existing W0.2 acknowledgement totals and settled release sound are r
 `tests/worker/actionReplica.ts` is a held-command stub for this boundary, backed by a real `LocalSimHost` and
 replaceable state copies. It does not implement or claim packet/lag coverage.
 
-## Plan/code differences and remaining scope issue
+## Plan/code differences
 
-- **Stationary hover caches are outside the owns.** `tools.refresh()` only marks a move dirty. `ZoneTool.ts`
-  (`RectTool`), `NetworkTool.ts`, `PlopTool.ts` and `BrushTool.ts` cache previews by pointer geometry/settings.
-  Repeating `move()` after an ack does not recompute a stationary preview. Their cache keys need
-  `host.pending.revision` (including the plop preview used for click validation). A narrow scope extension was
-  requested; these four files are untouched. Until it lands, the last-ack refresh callback runs but a cached
-  pending reason/cost/ghost colour can persist until the pointer or tool settings change. No forced tool
-  deactivate/reactivate or private-field workaround was added.
+- **Stationary hover caches needed four extra owned hunks.** `tools.refresh()` only marks a move dirty, while
+  the tools cache action previews by geometry/settings. The lead approved the four one-line key additions named
+  above. Every pending revision now invalidates those previews, including the final ack at the same pointer.
+  T026's bulldoze day key, T027's brush changes and T037's placement tips remain for their respective branches.
+- **W0.6 widened `host.state` to include replicas.** The first post-rebase TypeScript run caught four test
+  snapshot calls that no longer satisfied the save brand. The fixtures now serialize their authoritative state
+  references; no production save code or types changed.
 - **The rendering contract has no pending method.** The optional `PendingPreviewView` capability lives in the
   owned helper. The shared commit helper uses it when available; null/loading views remain valid.
 - **There was no `PreviewActions` implementation or ordinance preview flag.** Map previews use the existing
@@ -71,14 +78,16 @@ replaceable state copies. It does not implement or claim packet/lag coverage.
 | `tests/worker/hostActions.test.ts` | Written/typechecked: exact refusal; provisional dependent commands; blocked hover; non-preview exclusions; gesture/tag handling; rejection/adopt; LocalSimHost map, ordinance and loan parity. Attempted single-file run: startup **spawn EPERM**, no tests ran. |
 | `tests/worker/pendingEdits.test.ts` | Written/typechecked: funds/loans, nested/throwing overlay restoration, unique defs, reflected-command watermark, sandbox/monthly costs, exact paths/rotations/terrain corners/demolished footprints, subscriptions and listener isolation. Not executed. |
 | `tests/game/pendingTools.test.ts` | Written/typechecked: ghost lifetime/read-after-write against the stub; successful/mixed/failed brush acknowledgements; abort/replacement-view cleanup; no local/refusal ghost; controller subscription lifetime. Not executed. |
+| `tests/game/pendingHover.test.ts` | Four cases, one each for zone, network, plop and brush. Written/typechecked. Post-rebase single-file run attempted: startup **spawn EPERM**, no tests ran. |
 | `tests/render/pendingPreviews.test.ts` | Written/typechecked without a GPU: independent hover/commit geometry; sequence ownership; clipping/path copying; resource disposal. Not executed. |
 | `tests/game/toolCommands.test.ts` | Existing W0.2 cases retained; added issuing-tool routing, settled gesture mismatch and exact-refusal deduplication. Attempted single-file run: startup **spawn EPERM**, no tests ran. |
 | `tests/game/queryReads.test.ts` | Updated the existing deferred-demolition assertion for its issuing tag and gesture. Not executed. |
-| T032 lag properties touching HostActions | **Pending T032**, including real packet hooks and the scope fix above |
+| T032 lag properties touching HostActions | **Pending T032**, including real packet hooks, exact/provisional predictions under lag, once-per-gesture corrections and ghost continuity |
 | Full vitest, existing teardown/preview/query suites | **Lead environment required** |
 | 128 × 15 seed-7 bot | **Not run**; required reference remains **196,101 in 2015** (B1) |
 | Browser/GPU ghost continuity, playability and teardown | **Not run**; lead's real-GPU checks required |
 
-Both Vitest attempts fail while Vite loads `vite.config.ts`: `externalize-deps` reaches
+The first-pass `hostActions` / `toolCommands` attempts and the post-rebase `pendingHover` attempt all fail while
+Vite loads `vite.config.ts`: `externalize-deps` reaches
 `windowsSafeRealPathSync`/`optimizeSafeRealPathSync`, which cannot spawn a child process (`EPERM`). No sandbox
 workaround, full-suite run, bot run or browser check was attempted.

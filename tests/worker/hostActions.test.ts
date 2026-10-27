@@ -36,7 +36,7 @@ describe('HostActions predictions', () => {
   });
 
   it('posts zone then dezone in order even though the second prediction fails on the replica', async () => {
-    const f = await actionReplica(newState(32));
+    const state = newState(32), f = await actionReplica(state);
     const first = f.transport.act('zone', [rect, Zone.ResLow]);
     const second = f.transport.act('dezone', [rect]);
     expect(first).toMatchObject({ exact: true, predicted: { ok: true } });
@@ -50,7 +50,7 @@ describe('HostActions predictions', () => {
     await expect(second.done).resolves.toMatchObject({ ok: true });
     expect(f.actions.pending.count).toBe(0);
     expect(f.state.zone[f.state.idx(4, 4)]).toBe(Zone.None);
-    expect(serializeCity(f.state, { copy: true })).toEqual(serializeCity(f.local.state, { copy: true }));
+    expect(serializeCity(f.state, { copy: true })).toEqual(serializeCity(state, { copy: true }));
     await f.dispose();
   });
 
@@ -138,9 +138,9 @@ describe('HostActions predictions', () => {
 
 describe('PreviewActions', () => {
   it('matches the LocalSimHost map previews without writes, events, systems or RNG', async () => {
-    const host = new LocalSimHost(newState(32));
+    const live = newState(32), host = new LocalSimHost(live);
     await host.start();
-    const state = deserializeCity(serializeCity(host.state, { copy: true }));
+    const state = deserializeCity(serializeCity(live, { copy: true }));
     const preview = new PreviewActions(() => state);
     const commands: Command[] = [
       { op: 'zone', args: [rect, Zone.ResLow] }, { op: 'dezone', args: [rect] }, { op: 'bulldoze', args: [rect] },
@@ -180,7 +180,7 @@ describe('PreviewActions', () => {
       const r = f.actions.preview.predict(cmd);
       expect(serializeCity(f.state, { copy: true })).toEqual(before);
       expect(r, cmd.op).toEqual(f.local.act(cmd.op, cmd.args).predicted);
-      f.replace(deserializeCity(serializeCity(f.local.state, { copy: true })));
+      f.replace(deserializeCity(serializeCity(state, { copy: true })));
     }
     const loan = f.state.budget.loans[0];
     for (const guard of [{ principal: loan.principal, monthsLeft: loan.monthsLeft - 1 }, { principal: loan.principal, monthsLeft: loan.monthsLeft }]) {
