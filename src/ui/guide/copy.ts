@@ -81,11 +81,11 @@ export const guideCopy = {
     // §4.3 A3 · FH-11, FH-18: veteran toggle.
     A3Veteran: () => 'Skip to your veteran briefing',
     // §4.3 A3 · FH-11: Easy difficulty; future grace rules must come from FH-04.
-    A3Easy: () => `Easy — you start with ${money(DIFFICULTY_FUNDS.easy)} and earn ${incomeBonus(tuning.DIFFICULTY_INCOME.easy)} extra taxes. Recommended for your first city.`,
+    A3Easy: () => `Easy — you start with ${money(DIFFICULTY_FUNDS.easy)} and earn ${incomeBonus(tuning.difficultyRules('easy').income)} extra taxes. Recommended for your first city.`,
     // §4.3 A3 · FH-11: Medium difficulty.
     A3Medium: () => `Medium — you start with ${money(DIFFICULTY_FUNDS.medium)} at the intended balance.`,
     // §4.3 A3 · FH-11: Hard difficulty.
-    A3Hard: () => `Hard — you start with ${money(DIFFICULTY_FUNDS.hard)} and earn ${incomeBonus(tuning.DIFFICULTY_INCOME.hard)} less tax. Keep your budget tight from the start.`,
+    A3Hard: () => `Hard — you start with ${money(DIFFICULTY_FUNDS.hard)} and earn ${incomeBonus(tuning.difficultyRules('hard').income)} less tax. Keep your budget tight from the start.`,
     // §4.3 A3 · FH-11: Sandbox difficulty.
     A3Sandbox: () => 'Sandbox — you have unlimited money and everything unlocked.',
     // §4.3 A3 · FH-11: disasters.ts currently has no exported population threshold.

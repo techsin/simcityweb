@@ -493,6 +493,8 @@ export class TrafficSystem implements SimSystem {
   private stopBins: Int32Array<ArrayBuffer> = new Int32Array(0);
   private stopBinStart: Int32Array<ArrayBuffer> = new Int32Array(0);
   private stopBinFill: Int32Array<ArrayBuffer> = new Int32Array(0);
+  /** stop x / z, parallel to this.stops as of the last stop-bin build (prepTransit); only nearStops and the transfer
+   *  pass read them, and every cycle rebuilds the bins before either runs */
   private stX: Float64Array<ArrayBuffer> = new Float64Array(0);
   private stZ: Float64Array<ArrayBuffer> = new Float64Array(0);
   private binN = 0;
@@ -2837,10 +2839,12 @@ export class TrafficSystem implements SimSystem {
     roadSearch(this.road, this.road.rev, this.nodeTime, this.SA, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME + 2 * MATCH_PRICE_MAX, this.rampT);
   }
 
-  /** Stable 11-bit LSD radix sort of the packed (cost, origin) keys; keep the native order outside safe integers. */
+  /** Stable 11-bit LSD radix sort of the packed (cost, origin) keys; keep the native order outside safe integers.
+   *  Below 1024 keys the native sort is faster: the radix path pays up to 5 × 2048 histogram clears and prefix sums
+   *  per call (measured crossover 700-1024 keys); both paths give the same bytes. */
   private sortCandidates(nc: number): Float64Array {
     const key = this.candKey, sorted = key.subarray(0, nc);
-    if (nc < 64) return sorted.sort();
+    if (nc < 1024) return sorted.sort();
     let max = 0;
     for (let k = 0; k < nc; k++) {
       const v = key[k];
