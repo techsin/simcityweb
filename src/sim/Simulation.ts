@@ -122,10 +122,10 @@ export class Simulation {
 
   /** call every frame with real elapsed seconds */
   update(dt: number): void {
-    for (const s of this.systems) s.frame?.(this, dt);
+    this.frameHooks(dt);
     if (this._speed === 0) return;
     const spd = this.secondsPerDay();
-    this.acc += Math.min(dt, 0.25);
+    this.accumulate(dt);
     let n = 0;
     while (this.acc >= spd && n < this.maxDaysPerFrame) {
       this.acc -= spd;
@@ -134,6 +134,18 @@ export class Simulation {
     }
     if (n >= this.maxDaysPerFrame) this.acc = Math.min(this.acc, spd);
   }
+
+  // W1.2: the worker yields between hooks, infrastructure steps and individual days.
+  frameHooks(dt: number): void { for (const s of this.systems) s.frame?.(this, dt); }
+  accumulate(dt: number): void { if (this._speed !== 0) this.acc += Math.min(dt, 0.25); }
+  stepDay(): boolean {
+    const spd = this.secondsPerDay(); // policy / commands may have changed speed since the previous task
+    if (!Number.isFinite(spd) || this.acc < spd) return false;
+    this.acc -= spd;
+    this.advanceDay();
+    return true;
+  }
+  capFrame(): void { this.acc = Math.min(this.acc, this.secondsPerDay()); }
 
   /** real seconds per sim day at the current speed (Infinity when paused) */
   secondsPerDay(): number {

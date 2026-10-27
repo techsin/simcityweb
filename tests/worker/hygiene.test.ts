@@ -8,6 +8,7 @@ import { importGraph, scan, scanFiles, sourceFiles } from './hygieneScan';
 describe('S1 isolate hygiene', () => {
   it('sim, city persistence and node harnesses contain no detaching APIs', () => {
     const files = [...sourceFiles('src/sim'), ...sourceFiles('src/save').filter((p) => !['src/save/index.ts', 'src/save/bundle.ts'].includes(p)),
+      ...sourceFiles('src/worker'), ...sourceFiles('tools/bench/worker').filter((p) => !p.includes('/.tmp/')),
       ...sourceFiles('tests/perf'), ...sourceFiles('tests/worker')];
     const violations = scanFiles(files);
     // Exactly these two operations are intentional. Do not exclude the control file or a whole directory:
@@ -92,7 +93,7 @@ describe('worker migration hygiene gates', () => {
   it('W0.6: SimCore import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
     await expectCleanGraph('src/worker/SimCore.ts');
   });
-  it.skip('W1.2: simWorker import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
+  it('W1.2: simWorker import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
     await expectCleanGraph('src/worker/simWorker.ts');
   });
 });

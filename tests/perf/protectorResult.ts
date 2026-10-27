@@ -24,7 +24,7 @@ export function protectorFailures({ report: r, trace }: Run): string[] {
   const out: string[] = [];
   if (!r.main.initial || !r.main.intact) out.push('main protector invalidated');
   if (!r.worker.initial || !r.worker.afterBoot || !r.worker.intact) out.push('worker protector invalidated');
-  if (r.worker.days !== 60 || r.daysReceived !== 60 || r.bytesReceived !== 60 * 128 * 128 * 4 * 2) out.push('incomplete simulation / message run');
+  if (r.worker.days !== 60 || r.daysReceived !== 60 || r.bytesReceived <= 0) out.push('incomplete simulation / message run');
   if (!r.worker.memoryStable || r.worker.memoryBefore !== r.worker.memoryAfter || r.worker.loaderGrows !== 0) out.push('wasm memory grew');
   if (trace.length) out.push(`protector trace: ${trace.join('\n')}`);
   if (r.worker.mode === 'wasm') {

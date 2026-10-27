@@ -159,6 +159,8 @@ export class ChangeRecorder {
     this.viewDirty = this.viewDirty || changed;
     this.rasterDirty = this.rasterDirty || changed;
   }
+  /** W1.2 transport seam: append a unit-boundary entry without exposing the recorder's buffers. */
+  append(entry: Entry): void { this.log.push(entry); }
   private capture<K extends EventName>(name: K, value: CityEvents[K]): void {
     const st = this.state;
     let arg: Entry[2] = value as Entry[2];
