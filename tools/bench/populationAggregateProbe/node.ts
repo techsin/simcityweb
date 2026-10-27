@@ -27,7 +27,7 @@ import { PAIRS, logSummary, runPairs, weightedSpeedups, worldOfSim } from './pai
 import * as jsBCopy from 'popagg:js-b';
 
 async function loadWorld(file: string, warm: number, log: (s: string) => void): Promise<ProbeWorld> {
-  const name = file.split('/').pop()!.replace(/\.metropolis$/, '');
+  const name = file.split(/[\\/]/).pop()!.replace(/\.metropolis$/, '');
   const c0 = cpuMs();
   const st = deserializeCity((await unpackFile(new Uint8Array(readFileSync(file)))) as SerializedCity);
   const sim = new Simulation(st, createSystems());

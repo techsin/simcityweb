@@ -29,7 +29,7 @@ for (const fi of which) {
     const nd = byId.get(P.samples[i]);
     // report leaf + 3 ancestors
     const chain = []; let id = P.samples[i];
-    while (id !== undefined && chain.length < 4) { const x = byId.get(id); chain.push(`${x.callFrame.functionName || '(anon)'}@${x.callFrame.url.split('/').pop().split('?')[0]}:${x.callFrame.lineNumber + 1}`); id = parent.get(id); }
+    while (id !== undefined && chain.length < 4) { const x = byId.get(id); chain.push(`${x.callFrame.functionName || '(anon)'}@${x.callFrame.url.split(/[\\/]/).pop().split('?')[0]}:${x.callFrame.lineNumber + 1}`); id = parent.get(id); }
     const k = chain.join(' < ');
     const m = inR ? cntR : cnt;
     m.set(k, (m.get(k) ?? 0) + 1); inR ? nR++ : n++;

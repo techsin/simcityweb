@@ -67,7 +67,7 @@ function keyOf(n) {
   if (k) return k;
   const cf = n.callFrame;
   const name = cf.functionName || '(anon)';
-  if (!cf.url || !cf.url.includes('profile.js')) k = `${name} [${cf.url ? cf.url.split('/').pop() : 'native'}]`;
+  if (!cf.url || !cf.url.includes('profile.js')) k = `${name} [${cf.url ? cf.url.split(/[\\/]/).pop() : 'native'}]`;
   else { const o = orig(cf.lineNumber, cf.columnNumber); k = o ? `${name} ${o.src}:${o.line}` : `${name} profile.js:${cf.lineNumber + 1}`; }
   keyCache.set(n.id, k);
   return k;

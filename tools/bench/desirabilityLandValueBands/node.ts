@@ -54,7 +54,7 @@ benchMain(async ({ args, log }) => {
   log(`# wasm SIMD ${simdFile}${scalarFile ? `, scalar ${scalarFile}` : ''}; ${reps} interleaved pairs per case; load ${loadAvg().join(' ')}`);
 
   for (const fixture of fixtures) {
-    const name = fixture.split('/').pop()!.replace(/\.metropolis$/, '');
+    const name = fixture.split(/[\\/]/).pop()!.replace(/\.metropolis$/, '');
     const capFile = join(capDir, `${name}.w${warm}.cap`);
     let cap: EconCapture;
     if (existsSync(capFile)) cap = decodeCapture(new Uint8Array(readFileSync(capFile)));

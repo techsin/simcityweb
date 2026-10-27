@@ -74,7 +74,7 @@ function scalarBinary() {
   return existsSync(file) ? file : null;
 }
 
-const capName = (f) => `${f.split('/').pop().replace(/\.metropolis$/, '')}.w${warm}.cap`;
+const capName = (f) => `${f.split(/[\\/]/).pop().replace(/\.metropolis$/, '')}.w${warm}.cap`;
 
 async function runNode(scalar, captureOnly = false) {
   const file = await bundle(join(ROOT, 'tools', 'bench', 'desirabilityLandValueBands', 'node.ts'), join(OUT, 'desirabilityLandValueBands.node.mjs'), 'node');

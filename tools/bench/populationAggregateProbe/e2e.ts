@@ -368,7 +368,7 @@ async function coordinatorMain(args: string[]): Promise<void> {
   for (const n of armNames) if (!(n in LABEL)) throw new Error(`unknown e2e arm ${n} (${Object.keys(LABEL).join(', ')})`);
   const log = (s: string) => console.log(s);
   log(`# node ${process.version} (V8 ${process.versions.v8}), ${cpus().length} cpus (${cpus()[0]?.model}); load average ${loadAvg().join(' ')}`);
-  log(`# e2e ${fixture.split('/').pop()}: ${armNames.length} arms, one process each, round-robin in chunks of ${chunk} days (order rotated)`);
+  log(`# e2e ${fixture.split(/[\\/]/).pop()}: ${armNames.length} arms, one process each, round-robin in chunks of ${chunk} days (order rotated)`);
   const self = process.argv[1];
   const kids: Kid[] = [];
   try {

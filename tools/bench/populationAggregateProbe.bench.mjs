@@ -58,7 +58,7 @@ if (fixtures.length === 0) fixtures = ['dense1m_s7.metropolis', 'bot256_s7_y60.m
 for (const f of fixtures) if (!existsSync(f)) { console.error(`fixture ${f} not found (--fixture F / --fixtures DIR / SIM_FIXTURES)`); process.exit(2); }
 const warm = opt('--warm', '8');
 const jsonOut = opt('--json');
-console.log(`# tree ${tree}${tree === ROOT ? ' (live)' : ''}; fixtures ${fixtures.map((f) => f.split('/').pop()).join(', ')}; load ${loadavg().map((v) => v.toFixed(1)).join(' ')}`);
+console.log(`# tree ${tree}${tree === ROOT ? ' (live)' : ''}; fixtures ${fixtures.map((f) => f.split(/[\\/]/).pop()).join(', ')}; load ${loadavg().map((v) => v.toFixed(1)).join(' ')}`);
 
 async function bundle(entry, out, platform = 'node', shell = false) {
   const { rolldown } = await import('rolldown');
@@ -112,7 +112,7 @@ async function e2e() {
   const list = rest.flatMap((v, i) => (v === '--e2e-fixture' ? [resolve(rest[i + 1])] : []));
   for (const f of list.length ? list : [fixtures[0]]) {
     // (--warm / --days / --chunk only when given: e2e.ts defaults 12 / 128 / 3)
-    out.push(runNode(file, ['--fixture', f, ...pass(['--warm', '--days', '--chunk', '--e2e-arms'])], `e2e.${f.split('/').pop().replace(/\.metropolis$/, '')}`, 4096));
+    out.push(runNode(file, ['--fixture', f, ...pass(['--warm', '--days', '--chunk', '--e2e-arms'])], `e2e.${f.split(/[\\/]/).pop().replace(/\.metropolis$/, '')}`, 4096));
   }
   return out;
 }
@@ -126,7 +126,7 @@ async function browser() {
       'w.onmessage = (e) => { if (e.data.log !== undefined) console.log(e.data.log); if (e.data.done) window.__res = e.data; };' +
       'w.onerror = (e) => { window.__res = { done: true, error: String(e.message || e) }; };' +
       `w.postMessage(${JSON.stringify({
-        fixtures: fixtures.map((f, i) => ({ url: `/fixture/${i}`, name: f.split('/').pop().replace(/\.metropolis$/, '') })),
+        fixtures: fixtures.map((f, i) => ({ url: `/fixture/${i}`, name: f.split(/[\\/]/).pop().replace(/\.metropolis$/, '') })),
         simd: '/simd.wasm', scalar: scalar ? '/scalar.wasm' : null, warm: Number(warm), reps: Number(opt('--reps', 31)),
         kinds: opt('--kinds', 'plain,sample,demo').split(','), pairs: opt('--pairs', null),
       })});` +

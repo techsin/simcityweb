@@ -50,7 +50,7 @@ function orig(line, col) {
 
 const self = new Map(), total = new Map();
 let all = 0;
-function key(n) { const cf = n.callFrame; const name = cf.functionName || '(anon)'; if (!cf.url || !cf.url.includes('profile.js')) return `${name} [${cf.url ? cf.url.split('/').pop() : 'native'}]`; const o = orig(cf.lineNumber, cf.columnNumber); return o ? `${name} ${o.src}:${o.line}` : name; }
+function key(n) { const cf = n.callFrame; const name = cf.functionName || '(anon)'; if (!cf.url || !cf.url.includes('profile.js')) return `${name} [${cf.url ? cf.url.split(/[\\/]/).pop() : 'native'}]`; const o = orig(cf.lineNumber, cf.columnNumber); return o ? `${name} ${o.src}:${o.line}` : name; }
 function walk(n, stack) {
   const k = key(n);
   const s = n.selfSize;
