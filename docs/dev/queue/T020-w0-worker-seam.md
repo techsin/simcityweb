@@ -1,5 +1,5 @@
 # T020-w0-worker-seam: Worker plan W0.1-W0.6 (the SimHost seam on the main thread), one branch per step
-base: the dev-branch commit the lead names when T016 (fix round 4) is merged; record it. W0.1 branches from it, and
+base: d8256fc (fix round 4 merged; NOTE-012). W0.1 branches from it, and
   each later step from the merged previous one (the lead merges each step after review and says so)
 after: T016 merged (W0 rewrites CityScene, the UI's sim access and the save paths, which the close-out is still fixing)
 owns: per step, exactly the files its row in docs/WORKER_DESIGN.md §6 (around lines 962-967) lists, plus its tests
