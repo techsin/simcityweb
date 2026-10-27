@@ -43,27 +43,6 @@ export function watchFor<K extends QueryName>(host: SimHost, name: K, args: Quer
   return w;
 }
 
-/** W0.3b: banner/panel options stay keyed by incident and live only while their display needs them. */
-export class DispatchOptionsWatches {
-  private watches = new Map<number, WatchHandle<QueryResult<'dispatchOptions'>>>();
-  constructor(private host: SimHost, private signal: AbortSignal) {}
-
-  get(id: number): WatchHandle<QueryResult<'dispatchOptions'>> {
-    let w = this.watches.get(id);
-    if (!w) {
-      w = watchFor(this.host, 'dispatchOptions', { incidentId: id }, 'daily', this.signal);
-      this.watches.set(id, w);
-    }
-    return w;
-  }
-
-  retain(ids: ReadonlySet<number>): void {
-    for (const [id, w] of this.watches) if (!ids.has(id)) { w.dispose(); this.watches.delete(id); }
-  }
-
-  dispose(): void { this.retain(new Set()); }
-}
-
 function cloneResult<T>(value: T): T {
   return import.meta.env?.DEV || import.meta.env?.MODE === 'test' || IN_NODE ? structuredClone(value) : value;
 }
@@ -73,6 +52,7 @@ class LocalWatch<K extends QueryName> implements WatchHandle<QueryResult<K>, Que
   private listeners = new Map<() => void, () => void>();
   private key: string;
   private at = -Infinity;
+  private commandEpoch: number | undefined;
   private failed = '';
   error: unknown;
   version = 0;
@@ -84,6 +64,8 @@ class LocalWatch<K extends QueryName> implements WatchHandle<QueryResult<K>, Que
     report(e: unknown): void;
     remove(): void;
     interval: number;
+    /** Dispatch controls reflect an acknowledged command immediately, even inside the normal cap. */
+    commandEpoch?: () => number;
   } | null) { this.args = structuredClone(args); this.key = queryKey(args); }
 
   get value(): QueryResult<K> | undefined { this.refresh(); return this.cache.get(this.key)?.value; }
@@ -101,12 +83,13 @@ class LocalWatch<K extends QueryName> implements WatchHandle<QueryResult<K>, Que
   refresh(): void {
     const s = this.source;
     if (!s) return;
-    const now = s.now(), cached = this.cache.get(this.key);
-    // The global cap includes argument changes; the inspector's 1 Hz gate is per argument key.
-    if (now - this.at < 200 || (cached && now - cached.at < s.interval)) return;
+    const now = s.now(), cached = this.cache.get(this.key), commandEpoch = s.commandEpoch?.();
+    // Argument changes share the cap; dispatch command epochs bypass it. Inspector's 1 Hz gate is per key.
+    if (commandEpoch === this.commandEpoch && (now - this.at < 200 || (cached && now - cached.at < s.interval))) return;
     const signature = s.signature(this.args), failureKey = this.key + ':' + signature;
     if (cached?.signature === signature || this.failed === failureKey) return;
     this.at = now;
+    this.commandEpoch = commandEpoch;
     try {
       const value = s.run(this.args);
       this.cache.delete(this.key);
@@ -252,6 +235,8 @@ export interface SimHost {
   resume(source: SpeedSource): void;
   act<K extends CommandOp>(op: K, args: CommandArgs<K>, opts?: ActOptions): Ticket<CommandResult<K>>;
   readonly cause: Cause | null;
+  /** Read epoch for UI memos; counts issued commands, including same-day edits. */
+  readonly commandCount: number;
   beginGesture(owner: GestureOwner): Gesture;
   query<K extends QueryName>(name: K, args: QueryArgs<K>): Promise<QueryResult<K>>;
   watch<K extends QueryName>(name: K, args: QueryArgs<K>, when: WatchPolicy): WatchHandle<QueryResult<K>, QueryArgs<K>>;
@@ -337,6 +322,7 @@ export class LocalSimHost implements SimHost {
   get traffic(): TrafficView { return this.views.traffic; }
   get utilities(): UtilitiesView { return this.views.utilities; }
   get newsSeq(): number { return this.news.seq; }
+  get commandCount(): number { return this.seq; }
   /** All local layers are already available; replica hosts subscribe through this seam. */
   setView(_view: ViewState): void {}
 
@@ -391,6 +377,7 @@ export class LocalSimHost implements SimHost {
       report: (e) => this.queryError(name, e),
       remove: () => this.watches.delete(w as LocalWatch<QueryName>),
       interval: name === 'inspectBuilding' || name === 'inspectCell' ? 1000 : 200,
+      commandEpoch: name === 'dispatchOptions' ? () => this.seq : undefined,
     });
     this.watches.add(w as LocalWatch<QueryName>);
     w.refresh();

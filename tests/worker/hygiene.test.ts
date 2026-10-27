@@ -48,6 +48,30 @@ describe('S1 isolate hygiene', () => {
     `)).toEqual([]);
   });
 
+  it('finds system imports with aliases and method/array references on sim chains', () => {
+    for (const source of [
+      'import { emergencyOf as em } from "../sim/infra/emergency";',
+      'import { getSystem as lookup } from "./systems";',
+      'import { emergencyOf } from "../sim/infra/emergency";',
+      'import emergencyOf from "./systems";',
+      'const lookup = ctx.sim.getSystem;', 'const lookup = host["sim"]?.["getSystem"];',
+      'const list = (sim as Simulation).systems;', 'const list = this.ctx.sim["systems"];',
+      'ctx.sim.facade().systems;', 'ctx.sim.getSystem("crime");',
+    ]) expect(scan('src/ui/sample.ts', source, 'systems'), source).toHaveLength(1);
+  });
+
+  it('allows host views, sim events and unrelated systems properties', () => {
+    expect(scan('src/game/sample.ts', `
+      import type { EmergencySystem } from '../sim/infra/emergency';
+      const events = ctx.sim.events;
+      const state = ctx.sim.state;
+      const options = host.query('dispatchOptions', { incidentId: 1 });
+      const list = catalog.systems;
+      // const forbidden = sim.systems;
+      const note = 'emergencyOf(sim)';
+    `, 'systems')).toEqual([]);
+  });
+
   it('the later writer, reach-in and replica checks already detect their prohibited operations', () => {
     expect(scan('sample.ts', 'ctx.sim.speed = 3;', 'speed')).toHaveLength(1);
     expect(scan('sample.ts', 'sim["liveSlowdown"]++;', 'liveSlowdown')).toHaveLength(1);

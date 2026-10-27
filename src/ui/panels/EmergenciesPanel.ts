@@ -15,7 +15,8 @@ import { clear, h, setText } from '../dom';
 import { icon } from '../icons';
 import { money, num, pct } from '../format';
 import { emgTime, kindIcon, lossText, minText, missingResponders, placeText, stateText, windowText } from '../EmergencyBanner';
-import { DispatchOptionsWatches, type EmergencyView } from '../../worker/SimHost';
+import type { EmergencyView } from '../../worker/SimHost';
+import { DispatchOptionsWatches } from '../dispatchOptions';
 
 type Tab = 'active' | 'fleet' | 'stats';
 const RESP_ICON: Record<Responder, string> = { fire: 'fire', police: 'police', medical: 'health' };
