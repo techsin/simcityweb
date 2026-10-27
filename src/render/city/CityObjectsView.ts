@@ -29,7 +29,7 @@ import { PowerLines } from './props/PowerLines';
 import { BuildingRenderer } from './buildings/BuildingRenderer';
 import { Effects } from './effects/Effects';
 import { Disasters } from './effects/Disasters';
-import { Fireworks, collectLaunchSites, type LaunchSite } from './effects/Fireworks';
+import { Fireworks, LaunchSiteIndex, type LaunchSite, type SiteSource } from './effects/Fireworks';
 import { getDef } from '../../sim/catalog';
 import { VehicleRenderer, type TrafficRoute } from './vehicles/VehicleRenderer';
 import { Previews } from './previews/Previews';
@@ -106,6 +106,7 @@ export class CityObjectsView implements CityObjectsViewApi {
   private ndc = new THREE.Vector2();
   private syncTimer = 0;
   private quality: QualityLevel;
+  private launchSiteIndex: LaunchSiteIndex | null = null;
 
   constructor(state: CityState, events: Emitter<CityEvents>, ctx: CityObjectsViewContext) {
     registerAllModels();
@@ -140,6 +141,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.buildings.onVisual = (v, id) => {
       this.effects.onBuilding(v, id);
       if (id === this.buildings.selected) this.previews.setSelection(v);
+      this.launchSiteIndex?.visualChanged(id, v, CELL_SIZE);
     };
     this.vehicles = new VehicleRenderer(state, this.net, this.surf, this.culler, this.quality);
     this.vehicles.signalized = this.roads.signalized;
@@ -184,12 +186,19 @@ export class CityObjectsView implements CityObjectsViewApi {
       }),
       ev.on('powerLinesChanged', () => { this.powerDirty = true; }),
       ev.on('subwayChanged', () => { this.subwayDirty = true; }),
-      ev.on('buildingAdded', (b) => this.buildings.add(b, true)),
+      ev.on('buildingAdded', (b) => {
+        this.buildings.add(b, true);
+        this.launchSiteIndex?.update(b, this.launchSiteSource());
+      }),
       ev.on('buildingRemoved', (b) => {
+        this.launchSiteIndex?.remove(b.id);
         this.buildings.remove(b.id);
         if (this.buildings.selected === b.id) this.setSelected(null);
       }),
-      ev.on('buildingChanged', (b) => this.buildings.changed(b)),
+      ev.on('buildingChanged', (b) => {
+        this.buildings.changed(b);
+        this.launchSiteIndex?.update(b, this.launchSiteSource());
+      }),
       ev.on('disaster', (e) => this.disasters.onEvent(e)),
       ev.on('layerUpdated', (l) => { if (l === 'traffic') this.vehicles.invalidate(); }),
       ev.on('reset', () => {
@@ -232,7 +241,9 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.powerDirty = true;
     this.subwayDirty = true;
     this.flushPower();
+    this.launchSiteIndex = null;
     this.buildings.rebuildAll();
+    this.launchSiteIndex = new LaunchSiteIndex(this.launchSiteSource());
     this.effects.update();
     this.vehicles.clear();
     this.vehicles.refreshSpawn();
@@ -263,8 +274,12 @@ export class CityObjectsView implements CityObjectsViewApi {
 
   /** fireworks launch sites: parks / plazas, landmarks, stadium, waterfront, tallest roofs, city centre */
   private launchSites(): LaunchSite[] {
+    return this.launchSiteIndex!.collect(this.launchSiteSource());
+  }
+
+  private launchSiteSource(): SiteSource {
     const st = this.state;
-    return collectLaunchSites({
+    return {
       buildings: st.buildings.values(),
       defOf: (id) => getDef(id),
       visualOf: (id) => this.buildings.getVisual(id),
@@ -274,7 +289,7 @@ export class CityObjectsView implements CityObjectsViewApi {
       groundAt: (x, z) => this.surf.terrain(x, z),
       network: st.network,
       building: st.building,
-    });
+    };
   }
 
   // ------------------------------------------------------------------ frame
@@ -427,6 +442,8 @@ export class CityObjectsView implements CityObjectsViewApi {
   dispose(): void {
     for (const u of this.unsub) u();
     this.unsub.length = 0;
+    this.launchSiteIndex?.clear();
+    this.launchSiteIndex = null;
     this.ctx.scene.remove(this.root);
     this.roads.dispose();
     this.props.dispose();
