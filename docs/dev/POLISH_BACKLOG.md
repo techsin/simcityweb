@@ -57,3 +57,8 @@ Report: docs/dev/reports/local-T003-gpu-smoke.md. 60 Hz held everywhere (0 frame
 - [tooling] `tools/bench/sim-profile/profile.ts` needs `process.threadCpuUsage` (missing in Node 22.12, present in 22.22), and on
   Windows `process.cpuUsage` ticks at 15.6 ms. Add a portable fallback (long-window CPU chunks; `hrtime` per frame,
   labelled wall-clock) instead of the worker's preloaded shim.
+- [tooling] Windows worker (T005): `botgrow.ts` logs the population of every save after the run ends, so all saves print
+  the last one (the files are right: 281,718 / 884,197 / 1,368,806 at years 20 / 40 / 60); `analyze.mjs` and
+  `heapanalyze.mjs` build a wrong default source-map path on Windows (`C:\C:\…`; `--map` works around it); the
+  `captures` target fails under `core.autocrlf=true` ("anchor … not found" in `populationAggregateProbe.bench.mjs`): add a
+  `.gitattributes` with `* text=auto eol=lf` or normalise CRLF in the bench's anchor search.
