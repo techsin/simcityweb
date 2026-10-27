@@ -4,6 +4,7 @@
  *   npx tsx tools/simbot.ts [--size 256] [--years 60] [--seed 7] [--difficulty medium] [--terrain plains]
  *                           [--water 0.2] [--quiet] [--no-infra] [--tax 12] [--spendy] [--neglect]
  *                           [--skip schools,garbage,jail,transit,police,services] [--save-years 21,43 --save-prefix PATH]
+ *                           [--profile default|newcomer]
  *   env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1
  *
  * Plays through CityActions only (like the UI): lays out a 9-cell road grid (avenues every 4th line) with a
@@ -21,6 +22,12 @@
  * cannot reach, a prison when the jail overflows, bus stops / depots / garages, tree buffers along noisy highways, and
  * places every service and utility on a lot that touches a road.
  * Prints a yearly table (population, funds, income/expense, demand, EQ, commute, cohorts, enrolment, tourism, timings).
+ * FH-10 --profile newcomer (defaults: 128 cells, 10 years): founds on day 90; builds coal beside the first small
+ * zones and a pump beside industry before Play. Expands only on posted zone-more warnings (FH-03; today's info
+ * messages do not count), builds police after a crime warning, never borrows, raises taxes from 9 % to 11 % after
+ * the first monthly deficit, and never manually dispatches to the first incident. No other proactive mayor rules.
+ * Its table counts years from founding: population, approval, the three largest non-baseline approval terms,
+ * funds and incidents failed during that year. The default profile still founds on day 0 and keeps its old output.
  */
 import { createCityState } from '../src/sim/terrainGen';
 import { defaultCityConfig, type CityConfigData } from '../src/sim/config';
@@ -41,6 +48,9 @@ import { ATTRACTIONS, venueVisits } from '../src/sim/economy/tourism';
 import { COARSE, NETWORK_UPKEEP, TOURISM, TOURISM_INCOME_PER_VISITOR, VENUE_INCOME, TAX_NEUTRAL } from '../src/sim/economy/tuning';
 import type { BuildingDef } from '../src/sim/catalogTypes';
 import { smoothstep } from '../src/core/rng';
+import { adviceIdOf } from '../src/sim/economy/advisors';
+import { approvalBreakdown } from '../src/sim/economy/approval';
+import type { FactorTerm } from '../src/sim/explain';
 
 export interface BotOptions {
   size: number;
@@ -50,6 +60,8 @@ export interface BotOptions {
   terrain: TerrainPreset;
   water: number;
   quiet: boolean;
+  /** FH-10: a first-time mayor; omitted / default keeps the competent mayor */
+  profile?: 'default' | 'newcomer';
   /** run without sim-infra systems (economy only) */
   noInfra: boolean;
   /** fixed tax rate for every DevType (disables the bot's tax management) */
@@ -99,6 +111,9 @@ export interface YearRow {
   enrolH: number;
   tourists: number;
   attr: number;
+  /** newcomer only: the largest non-baseline terms and failures in this year from founding */
+  approvalTerms?: FactorTerm[];
+  failedIncidents?: number;
 }
 
 /** block use: ... 'X' planned landfill block, 'L' landfill zoned by ensureGarbage (utilities never go there) */
@@ -225,6 +240,11 @@ export class SimBot {
   private quiet: boolean;
   rt: EconRuntime | undefined;
   opts: BotOptions;
+  private newcomerDeficit = false;
+  private newcomerPolice = false;
+  private newcomerNewsDay = 90;
+  private newcomerFirstIncident: number | undefined;
+  private newcomerFailed = 0;
 
   constructor(opts: BotOptions, systems: SimSystem[] = economySystems()) {
     const cfg: CityConfigData = defaultCityConfig({
@@ -234,9 +254,20 @@ export class SimBot {
     this.quiet = opts.quiet;
     this.opts = opts;
     this.st = createCityState(cfg);
+    if (opts.profile === 'newcomer') {
+      this.st.day = 90;
+      this.st.systemData.foundedDay = 90;
+    }
     void opts.noInfra;
     this.wrapTimers(systems);
     this.sim = new Simulation(this.st, systems);
+    if (opts.profile === 'newcomer') this.sim.events.on('emergency', (e) => {
+      if (e.type === 'new' && this.newcomerFirstIncident === undefined) {
+        this.newcomerFirstIncident = e.id;
+        this.say(`first incident (${e.kind} #${e.id}): no manual dispatch`);
+      }
+      if (e.type === 'failed') this.newcomerFailed++;
+    });
     this.A = new CityActions(this.sim);
     this.rt = economyRuntime(systems);
     this.N = this.st.size;
@@ -378,6 +409,7 @@ export class SimBot {
   }
 
   lineType(k: number, vertical: boolean): Network {
+    if (this.opts.profile === 'newcomer') return Network.Road;
     if (!vertical && this.line(k) === this.trunkZ) return this.highway ? Network.Highway : Network.Avenue;
     return k % 4 === 0 ? Network.Avenue : Network.Road;
   }
@@ -739,6 +771,7 @@ export class SimBot {
 
   // ------------------------------------------------------------------------------------------ setup
   setup(): void {
+    if (this.opts.profile === 'newcomer') { this.setupNewcomer(); return; }
     const N = this.N;
     if (this.opts.spendy) for (const k of Object.keys(this.st.budget.funding) as (keyof typeof this.st.budget.funding)[]) this.A.setFunding(k, 150);
     // trunk: avenue edge to edge through the center (highway later)
@@ -751,8 +784,60 @@ export class SimBot {
     this.ensureWater();
   }
 
+  /** FH-10: two small home blocks, shops, industry, and coal immediately beside them (day 0 of the player's city). */
+  private setupNewcomer(): void {
+    for (let d = 0; d < 12; d++) this.A.setTax(d as DevType, 9);
+    for (const [dx, dz, use] of [[-1, -1, 'R'], [0, -1, 'R'], [-1, -2, 'C'], [0, 0, 'I']] as const) {
+      const b = this.byKey.get((this.cbx + dx) + ',' + (this.cbz + dz));
+      if (!b || !this.zoneNewcomer(use, b)) throw new Error('newcomer: no room for the starting zones');
+    }
+    const coal = this.byKey.get((this.cbx - 1) + ',' + this.cbz)!;
+    coal.use = 'U';
+    this.buildBlockRoads(coal);
+    coal.developed = true;
+    if (!this.placeNear('util_coal_plant', coal.x0, coal.z0, ['U'], false, GRID, true)) {
+      throw new Error('newcomer: no coal plant site beside the starting zones');
+    }
+    const industry = this.byKey.get(this.cbx + ',' + this.cbz)!;
+    if (!this.placeNear('util_water_pump', industry.x0, industry.z0, ['I'], false, GRID, true)) {
+      throw new Error('newcomer: no pump site beside industry');
+    }
+  }
+
+  /** One 4 × 4 patch per cue, on a connected road; no density upgrades or demand-based expansion. */
+  private zoneNewcomer(use: 'R' | 'C' | 'I', block?: Block): boolean {
+    const b = block ?? this.blocks.filter((o) => !o.developed && ['R', 'C', 'I'].includes(o.use) && this.touchesDeveloped(o))
+      .sort((a, b) => a.ring - b.ring)[0];
+    if (!b) return false;
+    const zone = use === 'R' ? Zone.ResLow : use === 'C' ? Zone.ComLow : Zone.IndMed;
+    this.buildBlockRoads(b);
+    const r = this.A.zone({ x0: b.x0, z0: b.z0, x1: b.x0 + 4, z1: b.z0 + 4 }, zone);
+    if (!r.ok || !r.affected) return false;
+    b.use = use; b.zone = zone; b.developed = true;
+    this.say(`newcomer zoned ${use} 4x4 at ${b.x0},${b.z0}`);
+    return true;
+  }
+
+  private monthlyNewcomer(): void {
+    this.finance();
+    const st = this.st;
+    for (const n of st.news) {
+      if (n.day <= this.newcomerNewsDay || (n.kind !== 'warning' && n.kind !== 'bad')) continue;
+      // FH-03 adds ref.advice; until then the advisor's posted rule IDs identify news without matching its copy.
+      const id = (n as typeof n & { ref?: { advice?: string } }).ref?.advice ?? adviceIdOf(st, n);
+      if (id === 'zoneR' || id === 'zoneC' || id === 'zoneI') this.zoneNewcomer(id[4] as 'R' | 'C' | 'I');
+      if (id === 'crime') this.newcomerPolice = true;
+    }
+    this.newcomerNewsDay = st.day;
+    if (this.newcomerPolice && !this.count('civ_police_station') && this.funds >= (getDef('civ_police_station')!.cost ?? 0)) {
+      const home = this.blocks.find((b) => b.developed && b.use === 'R');
+      if (home) this.placeNear('civ_police_station', home.x0, home.z0, ['R', 'C', 'I', 'U'], false, 2 * GRID, true);
+    }
+  }
+
   // ------------------------------------------------------------------------------------------ monthly brain
   monthly(): void {
+    if (this.opts.profile === 'newcomer') { this.monthlyNewcomer(); return; }
     this.pendingUpkeep = 0;
     const st = this.st, s = st.stats;
     const pop = s.population;
@@ -836,6 +921,7 @@ export class SimBot {
     const list = em.incidents();
     for (let k = 0; k < list.length; k++) {
       const inc = list[k];
+      if (this.opts.profile === 'newcomer' && inc.id === this.newcomerFirstIncident) continue;
       // only while a unit can still make it in time (what the prompt says): a truck sent across the city to arrive after
       // the deadline saves nothing and leaves its own district uncovered (WP6b: 256x60 s11 failed 7-14 incidents a
       // year that way from 2025 on, 0-5 with this rule)
@@ -850,6 +936,14 @@ export class SimBot {
   finance(): void {
     const st = this.st;
     const net = this.monthlyNet();
+    if (this.opts.profile === 'newcomer') {
+      if (net < 0 && !this.newcomerDeficit) {
+        this.newcomerDeficit = true;
+        this.say('first monthly deficit: taxes raised from 9 % to 11 %');
+      }
+      for (let d = 0; d < 12; d++) this.A.setTax(d as DevType, this.newcomerDeficit ? 11 : 9);
+      return;
+    }
     // early loans to invest (competent mayors borrow while the town is small and the budget is tight)
     let income = 0;
     for (const k in st.budget.lastIncome) if (!k.startsWith('oneoff:')) income += st.budget.lastIncome[k];
@@ -2307,6 +2401,12 @@ export class SimBot {
         kidsPct: cohTot > 0 ? coh[0] / cohTot : 0, senPct: cohTot > 0 ? coh[4] / cohTot : 0,
         enrolE: share('elementary'), enrolH: share('high'), tourists: s.tourists ?? 0, attr: s.attractiveness ?? 0,
       };
+      if (this.opts.profile === 'newcomer') {
+        row.year = Math.floor((st.day - (st.systemData.foundedDay as number)) / 360);
+        row.approvalTerms = approvalBreakdown(st).filter((t) => t.id !== 'base').slice(0, 3);
+        row.failedIncidents = this.newcomerFailed;
+        this.newcomerFailed = 0;
+      }
       e0 = this.econTime; t0 = this.totalTime; d0 = this.days;
       this.rows.push(row);
       onYear?.(row);
@@ -2348,6 +2448,11 @@ function avg(a: number[], i0: number, i1: number): number {
 }
 
 export function formatRow(r: YearRow): string {
+  if (r.approvalTerms) {
+    const terms = r.approvalTerms.map((t) => `${t.label} ${t.value >= 0 ? '+' : ''}${t.value.toFixed(1)}`).join('; ');
+    return [String(r.year).padEnd(5), String(r.pop).padStart(7), (r.approval.toFixed(1) + '%').padStart(9),
+      ('$' + r.funds).padStart(10), String(r.failedIncidents).padStart(6), terms].join(' ');
+  }
   const k = (v: number) => (Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : Math.abs(v) >= 1e4 ? (v / 1e3).toFixed(0) + 'k' : String(Math.round(v)));
   return [
     String(r.year).padEnd(5), k(r.pop).padStart(7), ('$' + k(r.funds)).padStart(8), ('+' + k(r.income)).padStart(7), ('-' + k(r.expense)).padStart(7),
@@ -2360,6 +2465,7 @@ export function formatRow(r: YearRow): string {
   ].join(' ');
 }
 export const HEADER = 'year      pop    funds  income expense   dR     dC     dI    EQ  com   bldg    jobs unem appr stg   acc kids%  sen% enrE% enrH%  tourist attr econms totalms';
+export const NEWCOMER_HEADER = 'year      pop  approval      funds failed top three approval terms (points; baseline excluded)';
 
 function parseArgs(argv: string[]): BotOptions {
   const o: BotOptions = { size: 256, years: 60, seed: 7, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: false, noInfra: false };
@@ -2372,13 +2478,27 @@ function parseArgs(argv: string[]): BotOptions {
     else if (a === '--terrain') { o.terrain = v as TerrainPreset; i++; }
     else if (a === '--water') { o.water = +v; i++; }
     else if (a === '--quiet') o.quiet = true;
-    else if (a === '--no-infra') o.noInfra = true;
+    else if (a === '--profile') {
+      if (v !== 'default' && v !== 'newcomer') {
+        console.error('simbot: --profile must be default or newcomer');
+        process.exit(2);
+      }
+      o.profile = v; i++;
+    } else if (a === '--no-infra') o.noInfra = true;
     else if (a === '--tax') { o.tax = +v; i++; }
     else if (a === '--spendy') o.spendy = true;
     else if (a === '--neglect') o.neglect = true;
     else if (a === '--skip') { o.skip = v.split(','); i++; }
     else if (a === '--save-years') { o.saveYears = (v ?? '').split(',').filter((s) => s.trim() !== '').map(Number); i++; }
     else if (a === '--save-prefix') { o.savePrefix = v; i++; }
+  }
+  if (o.profile === 'newcomer') {
+    if (!argv.includes('--size')) o.size = 128;
+    if (!argv.includes('--years')) o.years = 10;
+    if (o.tax !== undefined || o.spendy || o.skip?.length) {
+      console.error('simbot: --profile newcomer has its own tax, funding and service rules; omit --tax, --spendy and --skip');
+      process.exit(2);
+    }
   }
   return o;
 }
@@ -2401,6 +2521,12 @@ usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/
   --quiet           no per-action log              --no-infra       economy systems only (no sim-infra)
   --tax N           fixed tax rate for every type  --spendy         150 % funding, builds without budget checks
   --neglect         never dispatches to uncovered emergencies
+  --profile P       default | newcomer (default). Newcomer defaults to --size 128 --years 10, founds on day 90:
+                    coal beside small zones, pump beside industry; expands only on FH-03 zone-more warnings,
+                    police after a crime warning; no loans; taxes 9 % until a monthly deficit, then 11 %;
+                    no manual dispatch for the first incident, no other proactive rules. Cannot combine with
+                    --tax, --spendy or --skip. Years count from founding; prints population, approval and its
+                    three largest non-baseline terms, funds and failed incidents during each year.
   --skip a,b,...    leave rules out (the wrong choices): schools, garbage, jail, transit, police, services, dirty
   --save-years a,b  save the city at the end of these years (1 = after the first year) as game saves named by
   --save-prefix P   the path prefix P: Py<N>.city.metropolis (the city alone; in node: deserializeCity(await
@@ -2420,11 +2546,11 @@ if (process.argv[1]?.includes('simbot') && (process.argv.includes('--help') || p
     console.error(`simbot: ${saveErr}`);
     process.exit(2);
   }
-  console.log(`SIMBOT size=${opts.size} years=${opts.years} seed=${opts.seed} ${opts.difficulty} ${opts.terrain}${opts.noInfra ? ' (no infra)' : ''}`);
+  console.log(`SIMBOT size=${opts.size} years=${opts.years} seed=${opts.seed} ${opts.difficulty} ${opts.terrain}${opts.noInfra ? ' (no infra)' : ''}${opts.profile === 'newcomer' ? ' profile=newcomer (founded day 90)' : ''}`);
   const systems = opts.noInfra ? economySystems() : (await import("../src/sim/systems/index")).createSystems();
   const bot = new SimBot(opts, systems);
   const save = opts.saveYears ? await yearSaver(opts) : null;
-  console.log(HEADER);
+  console.log(opts.profile === 'newcomer' ? NEWCOMER_HEADER : HEADER);
   const t0 = performance.now();
   bot.run(opts.years, (r) => {
     console.log(formatRow(r));
