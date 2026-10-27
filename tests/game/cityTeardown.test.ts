@@ -67,10 +67,9 @@ describe('dom.ts helpers bind their listeners to a signal (close-out c4)', () =>
     expect(hit).toHaveBeenCalledTimes(2);
     const all = [btn, sl, sw, seg, ...steps];
     expect(all.reduce((n, e) => n + listenersIn(e), 0)).toBeGreaterThan(10);
-    expect((sl as unknown as { __paint?: unknown }).__paint).toBeTypeOf('function');
+    expect((sl as unknown as { __paint?: unknown }).__paint).toBeUndefined();
     ac.abort('dispose');
     expect(all.reduce((n, e) => n + listenersIn(e), 0)).toBe(0);
-    // (the slider's paint expando closes over the callbacks into the city too)
     expect((sl as unknown as { __paint?: unknown }).__paint).toBeUndefined();
     btn.click();
     sw.click();
