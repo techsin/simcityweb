@@ -10,8 +10,9 @@
  *     road-edit pass (A, unseated share, coverage, each facility's pool segment = the touched order, sig / seated / D /
  *     dem, facility loads, layers, stats.needs, the scheduler state), then whole-city identity over 120 days (after a
  *     JS-vs-JS baseline), a mid-run switch to the JS kernels and the migration to JS memory when the heap is full;
- *  3. the real profiler fixtures (dense1m_s7 1.12M pop, bot256_s7_y60 0.65M pop; skipped when absent — set
- *     SIM_FIXTURES=<dir>): every reach against catchments.reachRaw, per-phase equivalence, identity at design cadence.
+ *  3. the real profiler fixtures (dense1m_s7 1.12M pop, bot256_s7_y60 0.65M pop; skipped when absent — built into
+ *     tools/bench/.fixtures/fixtures by `npm run fixtures`, or set SIM_FIXTURES=<dir>): every reach against
+ *     catchments.reachRaw, per-phase equivalence, identity at design cadence.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -825,7 +826,7 @@ describe('revision fixes: staged network, dispose, fault hand-over, pre-sized me
 });
 
 // ------------------------------------------------------------------------------------------------ 3. fixtures
-const FIXTURE_DIR = process.env.SIM_FIXTURES ?? '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/fixtures';
+const FIXTURE_DIR = process.env.SIM_FIXTURES ?? join(__dirname, '..', '..', 'tools', 'bench', '.fixtures', 'fixtures');
 const FIXTURES = ['dense1m_s7.metropolis', 'bot256_s7_y60.metropolis'].map((f) => join(FIXTURE_DIR, f)).filter((f) => existsSync(f));
 
 describe.skipIf(FIXTURES.length === 0)('real profiler fixtures', () => {

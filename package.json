@@ -15,7 +15,8 @@
     "bench:search": "node tools/bench/roadTransitSearch.bench.mjs",
     "bench:econ": "node tools/bench/desirabilityLandValueBands.bench.mjs",
     "bench:traffic": "node tools/bench/trafficCore.bench.mjs",
-    "bench:fields": "node tools/bench/fieldPasses.bench.mjs"
+    "bench:fields": "node tools/bench/fieldPasses.bench.mjs",
+    "fixtures": "node tools/makeFixtures.mjs"
   },
   "dependencies": {
     "three": "^0.186.0"

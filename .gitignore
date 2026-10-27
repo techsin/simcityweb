@@ -5,3 +5,5 @@ dist
 /shots
 /tmp
 wasm/**/target
+# rebuilt by `npm run fixtures` (tools/makeFixtures.mjs): WASM test / benchmark fixtures and the frozen 24f8609 tree
+/tools/bench/.fixtures/

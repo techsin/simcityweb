@@ -22,7 +22,8 @@
  *     driver (P5: exact recovery, or a cycle restart equal to an original whose cycle restarts at the same step).
  *  D  the kernels' exp / log against Math.exp / Math.log bit for bit: specials, 2M random arguments and every
  *     argument the cities' cycles produce.
- * B and C need the frozen tree (SIM_SNAP or the profiler's snapshot); they are skipped when it is absent.
+ * B and C need the frozen tree (SIM_SNAP or tools/bench/.fixtures/snap; the 1M fixture: SIM_FIXTURES or
+ * tools/bench/.fixtures/fixtures; `npm run fixtures` builds both); they are skipped when it is absent.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -395,8 +396,8 @@ describe('trafficCore robustness: graph shrink (P1), engine math imports (P4), t
 });
 
 // ================================================================================================ frozen tree
-const SNAP = process.env.SIM_SNAP ?? '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/snap';
-const FIXTURES = process.env.SIM_FIXTURES ?? '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/fixtures';
+const SNAP = process.env.SIM_SNAP ?? join(__dirname, '..', '..', 'tools', 'bench', '.fixtures', 'snap');
+const FIXTURES = process.env.SIM_FIXTURES ?? join(__dirname, '..', '..', 'tools', 'bench', '.fixtures', 'fixtures');
 const haveSnap = existsSync(join(SNAP, 'src', 'sim', 'infra', 'traffic.ts'));
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

@@ -23,8 +23,9 @@
  *   capture  write the fixtures' inputs to node_modules/.cache/sim-bench/populationAggregateProbe/ (the test reads them)
  *   all      capture + node + browser + e2e
  *
- * options: --fixture F (repeatable; default dense1m_s7 + bot256_s7_y60 from --fixtures DIR / $SIM_FIXTURES / the
- *   profiler's scratch dir), --tree live|snap|DIR (default snap = the frozen 24f8609 snapshot, $SIM_SNAP), --warm N (8),
+ * options: --fixture F (repeatable; default dense1m_s7 + bot256_s7_y60 from --fixtures DIR / $SIM_FIXTURES /
+ *   tools/bench/.fixtures/fixtures, built by `npm run fixtures`), --tree live|snap|DIR (default snap = the frozen 24f8609
+ *   snapshot, $SIM_SNAP / tools/bench/.fixtures/snap), --warm N (8),
  *   --reps N (31), --kinds plain,sample,demo, --pairs A:B,C:D, --days N (e2e, 128), --chunk N (e2e, 3),
  *   --e2e-arms asis,shellOrig,B0,Aobj,B,CE,DE,DEs (e2e; --warm defaults to 12 there), --json out.json
  * The scalar binary (same Rust without +simd128) is built on demand into node_modules/.cache/sim-bench/ (skipped
@@ -41,7 +42,7 @@ import { DEFAULT_SNAP, probePlugins } from './populationAggregateProbe/plugins.m
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HERE = join(ROOT, 'tools', 'bench', 'populationAggregateProbe');
 const CACHE = join(ROOT, 'node_modules', '.cache', 'sim-bench', 'populationAggregateProbe');
-const DEFAULT_FIXTURES = '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/fixtures';
+const DEFAULT_FIXTURES = join(ROOT, 'tools', 'bench', '.fixtures', 'fixtures');
 mkdirSync(CACHE, { recursive: true });
 
 const argv = process.argv.slice(2);

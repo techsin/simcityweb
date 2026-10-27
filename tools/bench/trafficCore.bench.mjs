@@ -13,7 +13,7 @@
  *   (more suites: see the usage printed without arguments)
  *
  * --tree: the simulation sources the benchmark runs on: `snap` (default) = the frozen tree of commit 24f8609 ($SIM_SNAP,
- * default the profiler's snapshot; the version traffic.rs was ported from and the 1M fixtures were saved with), `live`
+ * default tools/bench/.fixtures/snap, built by `npm run fixtures`; the version traffic.rs was ported from and the 1M fixtures were saved with), `live`
  * = this repo (only meaningful once src/sim/infra/traffic.ts is back at the 24f8609 phase structure), or a directory.
  * Bundles go to node_modules/.cache/sim-bench/trafficCore/. Protocol: tools/bench/ab.ts (warm-up, >= 31 interleaved
  * order-alternated pairs, CPU time from an idle worker thread, median / min, 95% bootstrap CI, load average).
@@ -34,7 +34,7 @@ import { searchPlugins } from './roadTransitSearch/plugins.mjs';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HERE = join(ROOT, 'tools', 'bench', 'trafficCore');
 const CACHE = join(ROOT, 'node_modules', '.cache', 'sim-bench', 'trafficCore');
-export const DEFAULT_SNAP = '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/snap';
+export const DEFAULT_SNAP = join(ROOT, 'tools', 'bench', '.fixtures', 'snap');
 mkdirSync(CACHE, { recursive: true });
 
 const argv = process.argv.slice(2);
@@ -76,7 +76,7 @@ export function runNode(file, args, label, env = {}) {
  */
 async function browser() {
   const fixture = opt('--fixture', 'dense1m');
-  const dir = opt('--fixtures', process.env.SIM_FIXTURES ?? '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/fixtures');
+  const dir = opt('--fixtures', process.env.SIM_FIXTURES ?? join(ROOT, 'tools', 'bench', '.fixtures', 'fixtures'));
   const fx = { dense1m: 'dense1m_s7.metropolis', bot256: 'bot256_s7_y60.metropolis', stress1m: 'stress1m_testdefs_s7.metropolis' }[fixture] ?? fixture;
   const fixtureFile = fx.includes('/') ? fx : join(dir, fx);
   const shared = rest.includes('--shared');

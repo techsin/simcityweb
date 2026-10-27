@@ -43,9 +43,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const OUT = join(ROOT, 'node_modules', '.cache', 'sim-bench');
 const CAP_DIR = join(OUT, 'fieldPasses');
 mkdirSync(CAP_DIR, { recursive: true });
-const SCRATCH = '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile';
-const FIX = process.env.SIM_FIXTURES ?? join(SCRATCH, 'fixtures');
-const SNAP = process.env.SIM_SNAP ?? join(SCRATCH, 'snap');
+// fixtures + the frozen 24f8609 tree: `npm run fixtures` builds both (tools/makeFixtures.mjs)
+const FIXTURES_ROOT = join(ROOT, 'tools', 'bench', '.fixtures');
+const FIX = process.env.SIM_FIXTURES ?? join(FIXTURES_ROOT, 'fixtures');
+const SNAP = process.env.SIM_SNAP ?? join(FIXTURES_ROOT, 'snap');
 
 const argv = process.argv.slice(2);
 const mode = ['node', 'browser', 'browser-cpu', 'insitu', 'all'].includes(argv[0]) ? argv.shift() : 'node';

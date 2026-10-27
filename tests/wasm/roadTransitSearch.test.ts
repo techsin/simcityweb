@@ -9,7 +9,8 @@
  * subnormal, huge, NaN, +-Infinity), seeds (out of range, duplicates, NaN / +-Infinity / negative / -0 labels),
  * limits (default, NaN, > 2000, 0, -0, negative, -Infinity), ramp minutes, random transit nets (rail, subway,
  * ferry nodes, transfers), edge cases (empty map, single node, disconnected graph, map edges), the stress city's real
- * graph, and the profiler's 1M-population fixtures when present (SIM_FIXTURES or the scratch profile dir).
+ * graph, and the profiler's 1M-population fixtures when present (SIM_FIXTURES or tools/bench/.fixtures/fixtures, built
+ * by `npm run fixtures`).
  * Both output modes are covered: resident WasmSearch (arrays in wasm memory) and plain JS Search (copy mode).
  */
 import { existsSync, readFileSync } from 'node:fs';
@@ -559,7 +560,7 @@ describe('real graphs', () => {
     expect(fails).toEqual([]);
   });
 
-  const FIX_DIR = process.env.SIM_FIXTURES ?? '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/fixtures';
+  const FIX_DIR = process.env.SIM_FIXTURES ?? join(__dirname, '..', '..', 'tools', 'bench', '.fixtures', 'fixtures');
   for (const [file, testDefs] of [['dense1m_s7.metropolis', false], ['stress1m_testdefs_s7.metropolis', true]] as const) {
     const path = join(FIX_DIR, file);
     it.skipIf(!existsSync(path))(`profiler fixture ${file} (1M population)`, { timeout: 900000 }, async () => {

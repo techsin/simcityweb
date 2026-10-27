@@ -3,7 +3,7 @@
  *
  *   npx tsx tools/simbot.ts [--size 256] [--years 60] [--seed 7] [--difficulty medium] [--terrain plains]
  *                           [--water 0.2] [--quiet] [--no-infra] [--tax 12] [--spendy] [--neglect]
- *                           [--skip schools,garbage,jail,transit,police,services]
+ *                           [--skip schools,garbage,jail,transit,police,services] [--save-years 21,43 --save-prefix PATH]
  *   env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1
  *
  * Plays through CityActions only (like the UI): lays out a 9-cell road grid (avenues every 4th line) with a
@@ -66,6 +66,10 @@ export interface BotOptions {
    * manufacturing and high-tech, no smokestack industry — WP6b's pollution-versus-jobs check)
    */
   skip?: string[];
+  /** command line only (SimBot ignores both): save the city at the end of these years (1 = after the first year) as
+   *  `${savePrefix}y<N>.city.metropolis` + `.region.metropolis`, then `${savePrefix}y<N>.READY` (tools/citySaves.ts) */
+  saveYears?: number[];
+  savePrefix?: string;
 }
 
 export interface YearRow {
@@ -2373,8 +2377,19 @@ function parseArgs(argv: string[]): BotOptions {
     else if (a === '--spendy') o.spendy = true;
     else if (a === '--neglect') o.neglect = true;
     else if (a === '--skip') { o.skip = v.split(','); i++; }
+    else if (a === '--save-years') { o.saveYears = (v ?? '').split(',').filter((s) => s.trim() !== '').map(Number); i++; }
+    else if (a === '--save-prefix') { o.savePrefix = v; i++; }
   }
   return o;
+}
+
+/** the --save-years / --save-prefix pair: a message when it is not usable, else null */
+function saveArgsError(o: BotOptions): string | null {
+  if (!o.saveYears && o.savePrefix === undefined) return null;
+  if (!o.saveYears?.length) return '--save-prefix needs --save-years y1,y2,...';
+  if (!o.savePrefix) return '--save-years needs --save-prefix PATH (files: PATHy<N>.city.metropolis, PATHy<N>.region.metropolis)';
+  const bad = o.saveYears.filter((y) => !Number.isInteger(y) || y < 1 || y > o.years);
+  return bad.length ? `--save-years: ${bad.join(', ')} is not a year of this run (1..${o.years})` : null;
 }
 
 /** the flags of the command line (--help) */
@@ -2387,6 +2402,11 @@ usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/
   --tax N           fixed tax rate for every type  --spendy         150 % funding, builds without budget checks
   --neglect         never dispatches to uncovered emergencies
   --skip a,b,...    leave rules out (the wrong choices): schools, garbage, jail, transit, police, services, dirty
+  --save-years a,b  save the city at the end of these years (1 = after the first year) as game saves, with
+  --save-prefix P   PATH prefix P: Py<N>.city.metropolis (the city: deserializeCity(await unpackFile(bytes)) in node),
+                    Py<N>.region.metropolis (a one-city region: in the game Load Region > Import > Play), then the
+                    marker Py<N>.READY (JSON summary) once both are complete. The run itself is unchanged (save notes
+                    go to stderr). Example: --years 43 --save-years 21,43 --save-prefix cities/vet_s7_
   --help, -h        this text
 env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1 · SIMBOT_PROFILE=1`;
 
@@ -2394,12 +2414,21 @@ if (process.argv[1]?.includes('simbot') && (process.argv.includes('--help') || p
   console.log(USAGE);
 } else if (process.argv[1]?.includes('simbot')) {
   const opts = parseArgs(process.argv.slice(2));
+  const saveErr = saveArgsError(opts);
+  if (saveErr) {
+    console.error(`simbot: ${saveErr}`);
+    process.exit(2);
+  }
   console.log(`SIMBOT size=${opts.size} years=${opts.years} seed=${opts.seed} ${opts.difficulty} ${opts.terrain}${opts.noInfra ? ' (no infra)' : ''}`);
   const systems = opts.noInfra ? economySystems() : (await import("../src/sim/systems/index")).createSystems();
   const bot = new SimBot(opts, systems);
+  const save = opts.saveYears ? await yearSaver(opts) : null;
   console.log(HEADER);
   const t0 = performance.now();
-  bot.run(opts.years, (r) => console.log(formatRow(r)));
+  bot.run(opts.years, (r) => {
+    console.log(formatRow(r));
+    save?.(bot, r);
+  });
   const st = bot.st;
   console.log(`done in ${((performance.now() - t0) / 1000).toFixed(1)}s; loans ${st.budget.loans.length}; unlocked ${st.unlocked.size}; approval ${st.stats.approval.toFixed(0)}`);
   console.log('ms/day by system (whole run):', Object.entries(bot.bySystem).map(([k, v]) => `${k} ${(v / bot.days).toFixed(3)}`).join(' | '));
@@ -2410,6 +2439,30 @@ if (process.argv[1]?.includes('simbot') && (process.argv.includes('--help') || p
   if (process.env.SIMBOT_LOG) console.log(bot.log.join('\n'));
   else console.log(bot.log.slice(-25).join('\n'));
   console.log('news:', st.news.slice(-12).map((n) => n.text).join('\n  '));
+}
+
+/**
+ * --save-years: after the table row of each listed year, write that year's game saves (tools/citySaves.ts, imported only
+ * then). The notes go to stderr, so stdout is the plain run's output; saving only reads the city, so the run is the same.
+ */
+async function yearSaver(o: BotOptions): Promise<(bot: SimBot, r: YearRow) => void> {
+  const { writeCitySaves } = await import('./citySaves');
+  const years = new Set(o.saveYears);
+  const prefix = o.savePrefix!;
+  const bot = {
+    size: o.size, years: o.years, seed: o.seed, difficulty: o.difficulty, terrain: o.terrain, water: o.water, noInfra: o.noInfra,
+    ...(o.tax !== undefined ? { tax: o.tax } : {}), ...(o.spendy ? { spendy: true } : {}), ...(o.neglect ? { neglect: true } : {}),
+    ...(o.skip ? { skip: o.skip } : {}),
+  };
+  console.error(`simbot: saving the end of year ${[...years].join(', ')} as ${prefix}y<N>.city.metropolis / .region.metropolis / .READY`);
+  return (b, r) => {
+    const n = b.rows.length;
+    if (!years.has(n)) return;
+    const s = writeCitySaves(b.st, `${prefix}y${n}`, { botYear: n, bot, command: `npx tsx tools/simbot.ts ${process.argv.slice(2).join(' ')}` });
+    const mb = (x: number) => (x / 1e6).toFixed(2);
+    console.error(`simbot: saved year ${n} (${r.year}): ${s.population} residents, ${s.buildings} buildings -> ${s.city.path} (${mb(s.city.bytes)} MB), `
+      + `${s.region.path} (${mb(s.region.bytes)} MB), ${s.ready}; ${(s.cpuMs / 1000).toFixed(1)} s CPU`);
+  };
 }
 
 /** systems for a bot run: full (infra + economy) or economy only; infra is imported lazily */

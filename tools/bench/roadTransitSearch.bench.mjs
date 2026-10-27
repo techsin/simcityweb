@@ -22,7 +22,7 @@
  *   all      capture + replay + insitu + secondary + e2e + browser
  *
  * --tree: the simulation sources the benchmark runs on. `live` = this repo; `snap` = a frozen tree ($SIM_SNAP; default
- * the profiler's snapshot of commit 24f8609, the version the kernels were ported from and the 1M fixtures were saved
+ * tools/bench/.fixtures/snap, built by `npm run fixtures`: the snapshot of commit 24f8609, the version the kernels were ported from and the 1M fixtures were saved
  * with), so concurrent edits of the live sim cannot disturb a measurement. The wasm bindings always come from this repo.
  * Bundles and captures go to node_modules/.cache/sim-bench/roadTransitSearch/. Measurement protocol: tools/bench/ab.ts
  * (warm-up >= 600 ms per side, >= 31 interleaved order-alternated pairs, CPU time from an idle worker thread,
@@ -39,7 +39,7 @@ import { searchPlugins } from './roadTransitSearch/plugins.mjs';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HERE = join(ROOT, 'tools', 'bench', 'roadTransitSearch');
 const CACHE = join(ROOT, 'node_modules', '.cache', 'sim-bench', 'roadTransitSearch');
-const DEFAULT_SNAP = '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/snap';
+const DEFAULT_SNAP = join(ROOT, 'tools', 'bench', '.fixtures', 'snap');
 mkdirSync(CACHE, { recursive: true });
 
 const argv = process.argv.slice(2);

@@ -2,8 +2,8 @@
  * rolldown plugins of the population aggregate probe benchmarks (tools/bench/populationAggregateProbe.bench.mjs).
  *
  *  - treeRedirect(tree): imports that resolve into this repository's src/** (except src/wasm/**) or tests/** (except
- *    tests/wasm/**) are redirected to the same path inside `tree` — by default the profiler's frozen snapshot of commit
- *    24f8609 (the version the probe was ported from and the 1M fixtures were saved with), so a concurrent rewrite of the
+ *    tests/wasm/**) are redirected to the same path inside `tree` — by default the frozen snapshot of commit 24f8609
+ *    (tools/bench/.fixtures/snap) (the version the probe was ported from and the 1M fixtures were saved with), so a concurrent rewrite of the
  *    live sim cannot disturb a measurement. (Same rule as tools/bench/desirabilityLandValueBands/plugins.mjs.)
  *  - exposeCache(): a bundle-time copy edit of <tree>/src/sim/economy/population.ts that adds one getter to the system
  *    object — `get __probeCache() { return cache; }` — so arm A can read the population system's own DemographicsCache
@@ -23,7 +23,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-export const DEFAULT_SNAP = '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/snap';
+export const DEFAULT_SNAP = join(REPO, 'tools', 'bench', '.fixtures', 'snap'); // `npm run fixtures` builds it
 
 export function treeRedirect(tree) {
   const T = resolve(tree);

@@ -4,7 +4,7 @@
  *   stress1m  profiler fixture stress1m_testdefs_s7.metropolis (~1.03M residents, 36k road nodes; TEST defs)
  *   stress256 tests/infra/cityGen.ts stressCity(256) (no file needed)
  *   <path>    any .metropolis file
- * Fixture directory: --fixtures DIR, env SIM_FIXTURES, or the profiler's scratch directory.
+ * Fixture directory: --fixtures DIR, env SIM_FIXTURES, or tools/bench/.fixtures/fixtures (`npm run fixtures`).
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,8 +12,9 @@ import { deserializeCity } from '../../../src/save/serialize';
 import { unpackFile } from '../../../src/save/bundle';
 import { registerTestDefs, stressCity } from '../../../tests/infra/cityGen';
 import type { CityState } from '../../../src/sim/CityState';
+import { DEFAULT_FIXTURES } from '../fixturePaths';
 
-export const DEFAULT_FIXTURES = '/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/wasm/profile/fixtures';
+export { DEFAULT_FIXTURES };
 
 export function fixtureDir(args: string[]): string {
   const i = args.indexOf('--fixtures');
