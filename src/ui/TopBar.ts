@@ -141,7 +141,7 @@ export class TopBar {
     this.cityName = h('div', { class: 'city-name' });
     this.citySub = h('div', { class: 'hud-sub dim' });
     const city = h('div', { class: 'hud-seg click', title: 'City menu (Esc)' }, h('div', { class: 'city-badge', html: icon('resHigh', 18) }), h('div', { class: 'hud-stack' }, this.cityName, this.citySub));
-    city.addEventListener('click', () => this.ctx.openPauseMenu());
+    city.addEventListener('click', () => this.ctx.openPauseMenu(), { signal: this.ctx.signal });
     this.dateEl = h('div', { class: 'hud-value' });
     this.todEl = h('div', { class: 'tod hide-sm' });
     const date = h('div', { class: 'hud-seg' }, h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Date', h('span', { class: 'paused-pill' }, 'PAUSED'), h('span', { class: 'live-pill', title: 'An emergency needs you: the game runs at live speed until the help you send arrives (Settings → Gameplay)' }, 'LIVE')), this.dateEl));
@@ -154,7 +154,7 @@ export class TopBar {
         this.ctx.sound(this.ctx.sim.speed === s ? 'tap' : s === 0 ? 'pause' : 'speed' + s);
         this.ctx.sim.speed = s;
         b.blur();
-      });
+      }, { signal: this.ctx.signal });
       this.speedBtns.push(b);
       sp.appendChild(b);
     }
@@ -167,11 +167,11 @@ export class TopBar {
     this.fundsEl = h('div', { class: 'hud-value' });
     this.netEl = h('div', { class: 'hud-sub' });
     const funds = h('div', { class: 'hud-seg click', title: 'Budget (M)' }, h('span', { class: 'ico-wrap', style: 'color:#7ee2a0', html: icon('money', 20) }), h('div', { class: 'hud-stack' }, this.fundsEl, this.netEl));
-    funds.addEventListener('click', () => this.ctx.panels.toggle('budget'));
+    funds.addEventListener('click', () => this.ctx.panels.toggle('budget'), { signal: this.ctx.signal });
     this.popEl = h('div', { class: 'hud-value' });
     this.trendEl = h('div', { class: 'hud-sub' });
     const pop = h('div', { class: 'hud-seg click', title: 'City statistics (J)' }, h('span', { class: 'ico-wrap', style: 'color:#8fc8ff', html: icon('people', 20) }), h('div', { class: 'hud-stack' }, this.popEl, this.trendEl));
-    pop.addEventListener('click', () => this.ctx.panels.toggle('stats'));
+    pop.addEventListener('click', () => this.ctx.panels.toggle('stats'), { signal: this.ctx.signal });
 
     const rci = h('div', { class: 'rci' });
     for (const d of RCI_DEFS) {
@@ -185,13 +185,13 @@ export class TopBar {
     rciSeg.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('.rci-pop')) return;
       this.setRci(!this.rciOpen);
-    });
+    }, { signal: this.ctx.signal });
 
     this.apprEl = h('div', { class: 'hud-value' });
     // hover card: why approval is where it is (approvalBreakdown, rebuilt monthly); the plain title is the fallback
     this.apprPop = h('div', { class: 'appr-pop mp-glass' });
     this.apprSeg = h('div', { class: 'hud-seg click approval', title: 'Mayor approval — advisors (N)' }, h('span', { class: 'ico-wrap', html: icon('smile', 20) }), h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Approval'), this.apprEl), this.apprPop);
-    this.apprSeg.addEventListener('click', () => this.ctx.panels.toggle('advisors'));
+    this.apprSeg.addEventListener('click', () => this.ctx.panels.toggle('advisors'), { signal: this.ctx.signal });
     return h('div', { class: 'mp-glass' }, funds, pop, rciSeg, this.apprSeg);
   }
 
@@ -288,7 +288,7 @@ export class TopBar {
         e.stopPropagation();
         this.setRci(false);
         this.ctx.openFlyout?.(CAP_TARGET[hnt.family].category);
-      });
+      }, { signal: this.ctx.signal });
       this.capHintsEl.appendChild(h('div', { class: 'cap-hint', style: { '--fc': fam.color } as Record<string, string> },
         h('span', { class: 'ch-ico', html: icon('alert', 14) }),
         h('div', { class: 'ch-body' },
@@ -351,16 +351,16 @@ export class TopBar {
       b.addEventListener('click', () => {
         f();
         b.blur();
-      });
+      }, { signal: this.ctx.signal });
       g.appendChild(b);
     }
     g.appendChild(h('div', { style: 'width:1px;height:24px;background:var(--hair);margin:0 4px' }));
     const help = h('button', { class: 'icon-btn', title: 'Help & shortcuts (F1)', html: icon('help', 19) });
-    help.addEventListener('click', () => this.ctx.panels.toggle('help'));
+    help.addEventListener('click', () => this.ctx.panels.toggle('help'), { signal: this.ctx.signal });
     const set = h('button', { class: 'icon-btn', title: 'Settings', html: icon('settings', 19), dataset: { panel: 'settings' } });
-    set.addEventListener('click', () => this.ctx.panels.toggle('settings'));
+    set.addEventListener('click', () => this.ctx.panels.toggle('settings'), { signal: this.ctx.signal });
     const menu = h('button', { class: 'icon-btn', title: 'Menu (Esc)', html: icon('menu', 19) });
-    menu.addEventListener('click', () => this.ctx.openPauseMenu());
+    menu.addEventListener('click', () => this.ctx.openPauseMenu(), { signal: this.ctx.signal });
     g.append(help, set, menu);
     this.ctx.ui.on('panel', ({ id, open }) => {
       const b = g.querySelector(`[data-panel="${id}"]`);

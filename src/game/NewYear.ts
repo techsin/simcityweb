@@ -32,6 +32,8 @@ import type { GameSettings, NewYearMode } from './settings';
 
 export interface NewYearDeps {
   sim: Simulation;
+  /** Aborted when the owning city is disposed. */
+  signal?: AbortSignal;
   world: () => WorldViewApi;
   objects: () => CityObjectsViewApi;
   settings: () => GameSettings;
@@ -696,7 +698,7 @@ export class NewYearCelebration {
     const el = this.canvas();
     if (el) {
       for (const ev of ['pointerdown', 'wheel', 'touchstart'] as const) {
-        el.addEventListener(ev, user, { capture: true, passive: true });
+        el.addEventListener(ev, user, { capture: true, passive: true, signal: this.deps.signal });
         this.camOffs.push(() => el.removeEventListener(ev, user, { capture: true }));
       }
     }
@@ -704,7 +706,7 @@ export class NewYearCelebration {
       const kd = (e: KeyboardEvent) => {
         if (CAMERA_KEYS.has(e.key.toLowerCase())) this.camUser = true;
       };
-      window.addEventListener('keydown', kd, true);
+      window.addEventListener('keydown', kd, { capture: true, signal: this.deps.signal });
       this.camOffs.push(() => window.removeEventListener('keydown', kd, true));
     }
   }
@@ -728,9 +730,9 @@ export class NewYearCelebration {
     const up = () => {
       this.pointerHeld = false;
     };
-    el.addEventListener('pointerdown', down, { capture: true, passive: true });
-    window.addEventListener('pointerup', up, true);
-    window.addEventListener('pointercancel', up, true);
+    el.addEventListener('pointerdown', down, { capture: true, passive: true, signal: this.deps.signal });
+    window.addEventListener('pointerup', up, { capture: true, signal: this.deps.signal });
+    window.addEventListener('pointercancel', up, { capture: true, signal: this.deps.signal });
     this.pointerOffs.push(
       () => el.removeEventListener('pointerdown', down, { capture: true }),
       () => window.removeEventListener('pointerup', up, true),

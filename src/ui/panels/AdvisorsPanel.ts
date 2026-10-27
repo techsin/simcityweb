@@ -147,7 +147,7 @@ export class AdvisorsPanel extends Panel {
     const tabs = h('div', { class: 'tabs' });
     for (const [id, label] of [['advisors', 'Advisors'], ['news', 'News feed']] as const) {
       const b = h('button', null, label) as HTMLButtonElement;
-      b.addEventListener('click', () => this.showTab(id));
+      b.addEventListener('click', () => this.showTab(id), { signal: this.ctx.signal });
       this.tabBtns[id] = b;
       tabs.appendChild(b);
     }
@@ -306,7 +306,7 @@ export class AdvisorsPanel extends Panel {
           h('div', { class: 'ab' },
             h('div', { style: 'display:flex;align-items:baseline;gap:8px' }, h('span', { class: 'an' }, a.name), h('span', { class: 'ar' }, a.role)),
             h('div', { class: 'am' }, c.text),
-            go ? h('button', { class: 'btn sm ghost', style: 'margin-top:6px;padding-left:0', title: tip, html: icon(c.at ? 'target' : 'layers', 13) + '<span>Show me</span>', onclick: () => this.showMe(c.at, c.view) }) : null,
+            go ? h('button', { class: 'btn sm ghost', style: 'margin-top:6px;padding-left:0', title: tip, html: icon(c.at ? 'target' : 'layers', 13) + '<span>Show me</span>', signal: this.ctx.signal, onclick: () => this.showMe(c.at, c.view) }) : null,
             c.more.length ? h('ul', { class: 'am-more' }, ...c.more.map((o) => this.moreRow(o))) : null,
             c.extra.length ? h('div', { class: 'am-extra', title: c.extra.map((o) => o.text).join('\n') }, `+ ${c.extra.length} more`) : null,
           ),
@@ -329,7 +329,7 @@ export class AdvisorsPanel extends Panel {
         const go = h('span', { class: 'go', title: 'Show on map', html: icon('target', 14) });
         row.appendChild(go);
         row.style.cursor = 'pointer';
-        row.addEventListener('click', () => this.ctx.focusCell(n.x!, n.z!, 420));
+        row.addEventListener('click', () => this.ctx.focusCell(n.x!, n.z!, 420), { signal: this.ctx.signal });
       } else row.appendChild(h('span'));
       list.appendChild(row);
     }
@@ -341,7 +341,7 @@ export class AdvisorsPanel extends Panel {
     const at = o.x !== undefined && o.z !== undefined ? { x: o.x, z: o.z } : null;
     const view = adviceView(o.id);
     const go = !!(at || view);
-    return h('li', { class: o.kind + (go ? ' go' : ''), title: o.text, onclick: go ? () => this.showMe(at, view) : undefined },
+    return h('li', { class: o.kind + (go ? ' go' : ''), title: o.text, signal: this.ctx.signal, onclick: go ? () => this.showMe(at, view) : undefined },
       h('i', { class: 'md' }), h('span', { class: 'mt' }, o.text), go ? h('span', { class: 'mg', html: icon(at ? 'target' : 'layers', 12) }) : null);
   }
 

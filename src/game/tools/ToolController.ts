@@ -39,7 +39,7 @@ export class ToolController {
     this.offs = [];
     this.canvas = canvas;
     const on = <K extends keyof HTMLElementEventMap>(t: HTMLElement | Window, k: K, f: (e: HTMLElementEventMap[K]) => void) => {
-      t.addEventListener(k, f as EventListener);
+      t.addEventListener(k, f as EventListener, { signal: this.ctx.signal });
       this.offs.push(() => t.removeEventListener(k, f as EventListener));
     };
     on(canvas, 'pointerdown', (e) => {

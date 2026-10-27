@@ -128,7 +128,7 @@ export class BudgetPanel extends Panel {
         this.tab = id;
         this.renderTab();
         b.blur();
-      });
+      }, { signal: this.ctx.signal });
       this.tabBtns[id] = b;
       tabs.appendChild(b);
     }
@@ -177,6 +177,7 @@ export class BudgetPanel extends Panel {
       const avg = () => Math.round(g.devs.reduce((s, d) => s + b.taxRates[d], 0) / g.devs.length);
       const mv = h('span', { class: 'tr-v' }, pctText(avg()));
       const master = slider({
+        signal: this.ctx.signal,
         min: 0, max: 20, step: 0.5, value: avg(),
         oninput: (v) => {
           for (const d of g.devs) this.setTax(d, v);
@@ -186,12 +187,13 @@ export class BudgetPanel extends Panel {
       });
       box.append(
         h('div', { class: 'sec-title', html: `<span class="zdot" style="background:${g.color}"></span><span>${g.label}</span>` }),
-        h('div', { class: 'tax-row master' }, h('span', { class: 'tr-l' }, 'All'), master, stepper(master, mv, `every ${g.label.toLowerCase()} tax`), h('span', { class: 'tr-m' }, '')),
+        h('div', { class: 'tax-row master' }, h('span', { class: 'tr-l' }, 'All'), master, stepper(master, mv, `every ${g.label.toLowerCase()} tax`, this.ctx.signal), h('span', { class: 'tr-m' }, '')),
       );
       for (const d of g.devs) {
         const v = h('span', { class: 'tr-v' });
         const m = h('span', { class: 'tr-m' });
         const s = slider({
+          signal: this.ctx.signal,
           min: 0, max: 20, step: 0.5, value: b.taxRates[d],
           oninput: (val) => {
             this.setTax(d, val);
@@ -199,7 +201,7 @@ export class BudgetPanel extends Panel {
           },
         });
         this.taxSliders.set(d, { s, v, m });
-        box.appendChild(h('div', { class: 'tax-row', title: `Last month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, stepper(s, v, `the ${DEV_TYPE_LABELS[d]} tax`), m));
+        box.appendChild(h('div', { class: 'tax-row', title: `Last month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, stepper(s, v, `the ${DEV_TYPE_LABELS[d]} tax`, this.ctx.signal), m));
       }
       cols.appendChild(box);
     });
@@ -215,6 +217,7 @@ export class BudgetPanel extends Panel {
       const v = h('span', { class: 'tr-v' });
       const m = h('span', { class: 'tr-m' });
       const sl = slider({
+        signal: this.ctx.signal,
         min: 0, max: 150, step: 5, value: b.funding[s.key] ?? 100,
         oninput: (val) => {
           try {
@@ -228,7 +231,7 @@ export class BudgetPanel extends Panel {
       const badge = h('span', { class: 'fr-badge' });
       const label = h('span', { class: 'tr-l', html: icon(s.icon, 15) + `<span>${s.label}</span>` });
       label.appendChild(badge);
-      const row = h('div', { class: 'fund-row' }, label, sl, stepper(sl, v, `${s.label.toLowerCase()} funding`), m);
+      const row = h('div', { class: 'fund-row' }, label, sl, stepper(sl, v, `${s.label.toLowerCase()} funding`, this.ctx.signal), m);
       this.fundSliders.set(s.key, { s: sl, v, m, badge, row });
       grid.appendChild(row);
     }
@@ -319,7 +322,7 @@ export class BudgetPanel extends Panel {
         if (r?.ok) this.ctx.sound('money');
         else if (r) this.ctx.toast(r.reason ?? 'Cannot repay', 'error');
         this.renderTab();
-      });
+      }, { signal: this.ctx.signal });
       this.content.appendChild(h('div', { class: 'loan-row' },
         h('div', null, h('div', { style: 'font-weight:700' }, `${money(l.principal)} at ${(l.rate * 100).toFixed(1)}%`), h('div', { class: 'dim' }, `${money(l.monthlyPayment)}/mo · ${l.monthsLeft} months left · ${money(l.remaining)} remaining`)),
         repay));
@@ -357,7 +360,7 @@ export class BudgetPanel extends Panel {
         if (r?.ok) this.ctx.sound('money');
         else if (r) this.ctx.toast(r.reason ?? 'The bank declined the loan', 'error');
         this.renderTab();
-      });
+      }, { signal: this.ctx.signal });
       acts.appendChild(bt);
     }
     this.content.append(acts, h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px' }, 'Loans are repaid in monthly installments with interest.'));
@@ -521,7 +524,7 @@ function pctText(v: number): string {
 }
 
 /** − value + beside a slider (final fixes P10: exact steps on a short track; the slider keeps the keyboard focus) */
-function stepper(sl: HTMLInputElement, value: HTMLElement, label: string): HTMLElement {
-  const [dn, up] = stepButtons(sl, label, (s) => `${s}%`);
+function stepper(sl: HTMLInputElement, value: HTMLElement, label: string, signal: AbortSignal): HTMLElement {
+  const [dn, up] = stepButtons(sl, label, (s) => `${s}%`, signal);
   return h('span', { class: 'tr-step' }, dn, value, up);
 }

@@ -156,7 +156,7 @@ export class OrdinancesPanel extends Panel {
         } else this.ctx.sound(v ? 'toggleOn' : 'toggleOff');
         this.sig = '';
         this.update();
-      }, !o.available);
+      }, !o.available, this.ctx.signal);
       const cost = o.monthlyCost;
       const effects = h('div', { class: 'li-e' });
       for (const e of o.effects.slice(0, 5)) effects.appendChild(h('span', { class: 'chip ' + effectTone(e) }, e));
@@ -262,7 +262,7 @@ export class RewardsPanel extends Panel {
         // (in ruins: the inspector of the ruin, whose button clears the rubble — a one-per-city building can only be
         // placed again once the ruin is gone)
         const b = h('button', { class: 'btn sm', title: 'Show the ruins on the map — bulldoze them there, then place it again', html: icon('target', 13) + '<span>Show ruins</span>' });
-        b.addEventListener('click', () => this.showRuin(ruin));
+        b.addEventListener('click', () => this.showRuin(ruin), { signal: this.ctx.signal });
         place.appendChild(b);
       }
       if (place)
@@ -273,7 +273,7 @@ export class RewardsPanel extends Panel {
           const b = h('button', { class: 'btn sm primary', title: `Place ${d.name}`, html: icon('plus', 13) + `<span>${defs.length > 1 ? escapeHtml(d.name) : 'Place'}</span>` });
           b.addEventListener('click', () => {
             if (this.ctx.tools.select('plop:' + d.id)) this.ctx.panels.close(this.id);
-          });
+          }, { signal: this.ctx.signal });
           place.appendChild(b);
         }
       const status = ruin

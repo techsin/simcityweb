@@ -45,8 +45,8 @@ export class NewsTicker {
     this.track = h('div', { class: 'tk-track' });
     this.view = h('div', { class: 'tk-view' }, this.track);
     this.el = h('div', { class: 'ticker mp-glass', title: 'City news — click for all news' }, h('div', { class: 'tk-badge', html: icon('news', 14) + '<span>News</span>' }), this.view);
-    this.el.addEventListener('pointerenter', () => (this.hover = true));
-    this.el.addEventListener('pointerleave', () => (this.hover = false));
+    this.el.addEventListener('pointerenter', () => (this.hover = true), { signal: this.ctx.signal });
+    this.el.addEventListener('pointerleave', () => (this.hover = false), { signal: this.ctx.signal });
     this.el.addEventListener('click', (e) => {
       const it = (e.target as HTMLElement).closest('.tk-item') as HTMLElement | null;
       if (it && it.dataset.x) {
@@ -55,7 +55,7 @@ export class NewsTicker {
       }
       ctx.panels.open('advisors');
       (ctx.panels as any).get?.('advisors')?.showTab?.('news');
-    });
+    }, { signal: this.ctx.signal });
     parent.appendChild(this.el);
     // the view's width changes with the window (and the UI zoom) only, the track's with its items: measure them when
     // they change (after layout), not every frame nor on every rebuild
@@ -66,7 +66,7 @@ export class NewsTicker {
       ctx.signal?.addEventListener('abort', () => ro.disconnect(), { once: true });
     } else if (typeof window !== 'undefined') {
       const onResize = () => (this.viewW = this.view.clientWidth);
-      window.addEventListener('resize', onResize);
+      window.addEventListener('resize', onResize, { signal: this.ctx.signal });
       ctx.signal?.addEventListener('abort', () => window.removeEventListener('resize', onResize), { once: true });
     }
     this.rebuild();
@@ -221,12 +221,12 @@ export class Toasts {
     x.addEventListener('click', (e) => {
       e.stopPropagation();
       kill();
-    });
+    }, { signal: this.ctx.signal });
     t.addEventListener('click', () => {
       if (opts.action) opts.action.run();
       else if (entry.cell) this.ctx.focusCell(entry.cell.x, entry.cell.z, 420);
       kill();
-    });
+    }, { signal: this.ctx.signal });
     timer = window.setTimeout(kill, ttl);
     this.live.set(key, entry);
     this.el.prepend(t);
