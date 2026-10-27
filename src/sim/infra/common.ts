@@ -321,8 +321,10 @@ export function buildingList(st: CityState): Building[] {
   if (c && c.size === st.buildings.size && c.nextId === st.nextBuildingId && c.day === st.day) return c.arr;
   if (!c) listCache.set(st, (c = { arr: [], size: 0, nextId: 0, day: 0 }));
   const arr = c.arr;
-  arr.length = 0;
-  for (const b of st.buildings.values()) arr.push(b);
+  // Keep the backing store across refreshes; size / nextId alone cannot detect replacement or reinsertion.
+  let n = 0;
+  for (const b of st.buildings.values()) arr[n++] = b;
+  if (arr.length > n) arr.length = n;
   c.size = st.buildings.size;
   c.nextId = st.nextBuildingId;
   c.day = st.day;
