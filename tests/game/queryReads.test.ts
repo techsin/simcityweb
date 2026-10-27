@@ -1,5 +1,7 @@
 /** W0.3: headers are immediate; late reports cannot paint another target or commit an abandoned edit. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Emitter } from '../../src/core/events';
+import { Network } from '../../src/core/types';
 import type { GameContext } from '../../src/game/context';
 import { RectTool } from '../../src/game/tools/ZoneTool';
 import { PlopTool } from '../../src/game/tools/PlopTool';
@@ -7,11 +9,12 @@ import { DispatchTool } from '../../src/game/tools/DispatchTool';
 import type { Tool, ToolPointer } from '../../src/game/tools/Tool';
 import { getDef } from '../../src/sim/catalog';
 import type { Incident } from '../../src/sim/infra/emergency';
+import type { SimSystem } from '../../src/sim/Simulation';
 import { InfoPanel } from '../../src/ui/panels/InfoPanel';
 import { LocalSimHost } from '../../src/worker/SimHost';
 import type { QueryResult } from '../../src/worker/queries';
 import { QUERY_HANDLERS } from '../../src/worker/queries';
-import { newState, place } from '../infra/cityGen';
+import { newState, place, roadLine } from '../infra/cityGen';
 import { FEl, installFakeDom, textOf } from './fakeDom';
 
 vi.mock('../../src/ui/Modals', () => ({ confirmDialog: vi.fn(() => Promise.resolve(false)) }));
@@ -32,6 +35,7 @@ function fixture() {
     world: { setHighlight: vi.fn(), setHighlightRect: vi.fn() },
     tip: { show: vi.fn(), hide: vi.fn(), move: vi.fn() }, panels: { close: vi.fn() },
     sound: vi.fn(), toast: vi.fn(), sandbox: () => false, tools, preferOverlayVariant: vi.fn(),
+    ui: new Emitter(), focusCell: vi.fn(),
   } as unknown as GameContext;
   return { host, ctx, tools, a, b, abort, time: (v: number) => { now = v; } };
 }
@@ -129,35 +133,52 @@ describe('query consumers', () => {
     tool.deactivate(); f.abort.abort('dispose'); await f.host.dispose();
   });
 
-  it('keeps upkeep per footprint and repaints the current spot after a paused funding command', async () => {
+  it('shows spot upkeep on every lot reached within 200 ms using LocalSimHost', async () => {
     const f = fixture();
     f.ctx.state.systemData.infraVersion = 1;
-    const read = vi.spyOn(QUERY_HANDLERS, 'upkeepContext').mockReturnValueOnce({ here: 132 }).mockReturnValueOnce({ here: 72 }).mockReturnValue({ here: 84 });
+    roadLine(f.ctx.state, 2, 10, 29, 10, Network.Road);
+    const need = new Float32Array(f.ctx.state.cells);
+    need[f.ctx.state.idx(10, 11)] = 100;
+    f.host.sim.systems.push({ name: 'services', needRaster: () => need } as unknown as SimSystem);
+    const read = vi.spyOn(QUERY_HANDLERS, 'upkeepContext'), watch = vi.spyOn(f.host, 'watch');
     const tool = new PlopTool(f.ctx, getDef('civ_elementary_school')!, 'school');
     f.tools.active = tool;
     const tip = () => vi.mocked(f.ctx.tip.show).mock.calls.at(-1)?.[0] ?? '';
     try {
-      tool.activate(); tool.move(at(20, 20)); tool.move(at(20, 20));
+      tool.activate(); tool.move(at(10, 11)); tool.move(at(10, 11)); await flush();
       expect(tip()).toContain('Upkeep here ≈§132/mo now');
       expect(read).toHaveBeenCalledTimes(1);
-      tool.move(at(24, 20));
-      expect(tip()).not.toContain('Upkeep here'); // the new key never inherits the previous spot's price
-      f.time(200); f.host.frame(0);
-      expect(tip()).toContain('Upkeep here ≈§72/mo now');
-      f.time(400); tool.move(at(20, 20));
-      expect(tip()).toContain('Upkeep here ≈§132/mo now');
-      expect(read).toHaveBeenCalledTimes(2);
+      for (const [time, x, z, price] of [[20, 24, 20, 72], [40, 11, 11, 132], [60, 25, 25, 72]]) {
+        f.time(time); tool.move(at(x, z)); await flush();
+        expect(tip()).toContain(`Upkeep here ≈§${price}/mo now`);
+      }
+      // A services pass between days must be seen when returning to a lot, not an old per-lot cache.
+      need[f.ctx.state.idx(10, 11)] = 200;
+      f.time(80); tool.move(at(10, 11)); await flush();
+      expect(tip()).toContain('Upkeep here ≈§192/mo now');
+      expect(read).toHaveBeenCalledTimes(5);
       f.host.act('setFunding', ['education', 50]);
-      f.time(600); f.host.frame(0);
-      expect(tip()).toContain('Upkeep here ≈§84/mo now');
+      tool.move(at(10, 11)); await flush();
+      expect(tip()).toContain('Upkeep here ≈§146/mo now');
       expect(f.ctx.state.day).toBe(0);
+      f.ctx.state.day++; need[f.ctx.state.idx(10, 11)] = 100;
+      tool.move(at(10, 11)); await flush();
+      expect(tip()).toContain('Upkeep here ≈§109/mo now');
+      expect(read).toHaveBeenCalledTimes(7);
+      vi.mocked(f.ctx.tip.show).mockClear();
+      f.host.act('setCamera', [{ x: 0, z: 0, distance: 500 }]);
+      f.time(2000); f.host.frame(0); await flush();
+      expect(f.ctx.tip.show).not.toHaveBeenCalled();
+      expect(read).toHaveBeenCalledTimes(7);
+      expect(watch).not.toHaveBeenCalled();
     } finally { tool.deactivate(); f.abort.abort('dispose'); await f.host.dispose(); }
   });
 
-  it.each(['leave', 'deactivate', 'abort'] as const)('disposes upkeep reads and stops repainting on %s', async (exit) => {
+  it.each(['leave', 'deactivate', 'abort'] as const)('ignores a pending upkeep reply after %s', async (exit) => {
     const f = fixture();
     f.ctx.state.systemData.infraVersion = 1;
-    const read = vi.spyOn(QUERY_HANDLERS, 'upkeepContext').mockReturnValue({ here: 132 });
+    let reply!: (r: QueryResult<'upkeepContext'>) => void;
+    const read = vi.spyOn(f.host, 'query').mockReturnValue(new Promise((r) => { reply = r; }) as never);
     const tool = new PlopTool(f.ctx, getDef('civ_elementary_school')!, 'school');
     f.tools.active = tool;
     try {
@@ -165,15 +186,56 @@ describe('query consumers', () => {
       if (exit === 'abort') f.abort.abort('dispose');
       else tool[exit]();
       vi.mocked(f.ctx.tip.show).mockClear();
-      f.ctx.state.day++;
-      f.time(200); f.host.frame(0);
+      reply({ here: 132 }); await flush();
       expect(read).toHaveBeenCalledTimes(1);
       expect(f.ctx.tip.show).not.toHaveBeenCalled();
       if (exit !== 'abort') {
-        tool.activate(); tool.move(at(20, 20));
+        read.mockResolvedValue({ here: 132 } as never);
+        tool.activate(); tool.move(at(20, 20)); await flush();
         expect(read).toHaveBeenCalledTimes(2);
         expect(vi.mocked(f.ctx.tip.show).mock.calls.at(-1)?.[0]).toContain('Upkeep here ≈§132/mo now');
       }
+    } finally { tool.deactivate(); f.abort.abort('dispose'); await f.host.dispose(); }
+  });
+
+  it('ignores an upkeep reply for an earlier lot, including a later revisit to that key', async () => {
+    const f = fixture(), pending: ((r: QueryResult<'upkeepContext'>) => void)[] = [];
+    f.ctx.state.systemData.infraVersion = 1;
+    vi.spyOn(f.host, 'query').mockImplementation(() => new Promise((r) => { pending.push(r); }) as never);
+    const tool = new PlopTool(f.ctx, getDef('civ_elementary_school')!, 'school');
+    f.tools.active = tool;
+    try {
+      tool.move(at(20, 20)); tool.move(at(24, 20)); tool.move(at(20, 20));
+      vi.mocked(f.ctx.tip.show).mockClear();
+      pending[0]({ here: 111 }); pending[1]({ here: 222 }); await flush();
+      expect(f.ctx.tip.show).not.toHaveBeenCalled();
+      pending[2]({ here: 333 }); await flush();
+      expect(vi.mocked(f.ctx.tip.show).mock.calls.at(-1)?.[0]).toContain('Upkeep here ≈§333/mo now');
+    } finally { tool.deactivate(); f.abort.abort('dispose'); await f.host.dispose(); }
+  });
+
+  it('repaints DispatchTool stations on same-day fleet changes', async () => {
+    const f = fixture(), tool = new DispatchTool(f.ctx);
+    const inc = { id: 1, kind: 'medical', buildingId: f.b.id, x: f.b.x, z: f.b.z, fires: [], units: [], need: { medical: 1 }, state: 'uncovered' } as unknown as Incident;
+    const fleet = [{ id: 1 }];
+    const em = { name: 'emergency', incident: () => inc, vehicles: () => fleet };
+    f.host.sim.systems.push(em as unknown as SimSystem);
+    vi.spyOn(f.host.emergency, 'incidents').mockReturnValue([inc]);
+    vi.spyOn(QUERY_HANDLERS, 'dispatchOptions').mockImplementation(() => [
+      { stationId: f.a.id, name: 'Clinic', responder: 'medical', free: fleet.length ? 0 : 1, total: 1, etaMin: 1, etaDays: 0.1, inRange: true },
+    ]);
+    f.tools.active = tool;
+    const station = () => vi.mocked(f.ctx.world.setHighlight).mock.calls.at(-1)?.[0]?.find((c) => c.x === f.a.x && c.z === f.a.z);
+    try {
+      tool.activate();
+      expect(station()?.ok).toBe(false);
+      // Simulate a delivered return inside the same day; the watch's real 200 ms cap still applies.
+      fleet.pop(); f.time(200); f.host.frame(0); f.ctx.ui.emit('uiTick', undefined);
+      expect(f.ctx.state.day).toBe(0);
+      expect(station()?.ok).toBe(true);
+      tool.deactivate(); vi.mocked(f.ctx.world.setHighlight).mockClear();
+      fleet.push({ id: 2 }); f.time(400); f.host.frame(0); f.ctx.ui.emit('uiTick', undefined);
+      expect(f.ctx.world.setHighlight).not.toHaveBeenCalled();
     } finally { tool.deactivate(); f.abort.abort('dispose'); await f.host.dispose(); }
   });
 

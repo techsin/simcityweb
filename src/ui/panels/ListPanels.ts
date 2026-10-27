@@ -3,31 +3,15 @@ import type { GameContext } from '../../game/context';
 import { allDefs, defIcon } from '../../game/toolCatalog';
 import type { OrdinanceInfo, RewardInfo } from '../../game/modules';
 import type { BuildingDef } from '../../sim/catalogTypes';
-import { BF, type Building } from '../../sim/CityState';
+import type { Building } from '../../sim/CityState';
 import { Panel } from '../Panel';
 import { confirmDialog } from '../Modals';
 import { clear, escapeHtml, h, toggle } from '../dom';
 import { icon } from '../icons';
 import { money, titleCase } from '../format';
 import { upkeepEstimate } from '../upkeepModel';
-
-/** the plopped buildings by def: the defs with a standing building, and one ruin (BF.Burnt) of every def that has one */
-export interface RuinState {
-  live: Set<string>;
-  ruin: Map<string, Building>;
-}
-
-/** RuinState of mirrored buildings: only plopped ones count. */
-export function ruinState(list: Iterable<Building>): RuinState {
-  const live = new Set<string>(), ruin = new Map<string, Building>();
-  for (const b of list) {
-    if (!(b.flags & BF.Plopped)) continue;
-    if (b.flags & BF.Burnt) {
-      if (!ruin.has(b.def)) ruin.set(b.def, b);
-    } else live.add(b.def);
-  }
-  return { live, ruin };
-}
+import { ruinsFor, type RuinState } from '../ruinState';
+export { ruinState, type RuinState } from '../ruinState';
 
 /**
  * The ruin a reward lies in (final fixes r3): one of its buildings is a ruin — burnt down, or flattened by a tornado, a
@@ -209,9 +193,9 @@ export class RewardsPanel extends Panel {
     this.resetGate();
   }
 
-  /** Read exact mirrored flags on each update: a disaster can flatten a reward while the game is paused. */
+  /** Share the catalog's mirrored index, including same-day flag changes. */
   private ruins(): RuinState {
-    return ruinState(this.ctx.state.buildings.values());
+    return ruinsFor(this.ctx);
   }
 
   /** open the inspector on a reward's ruin, where its Clear rubble button is (the camera goes there). This panel closes

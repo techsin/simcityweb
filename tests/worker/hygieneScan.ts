@@ -58,6 +58,14 @@ function member(value: unknown): Node | undefined {
   return n?.type === 'MemberExpression' ? n : undefined;
 }
 
+function simChain(value: unknown): boolean {
+  const n = unwrap(value);
+  if (!n) return false;
+  if (n.type === 'Identifier') return name(n) === 'sim';
+  if (n.type === 'MemberExpression') return name(n) === 'sim' || simChain(n.object);
+  return n.type === 'CallExpression' && simChain(n.callee);
+}
+
 export type ScanRule = 'isolate' | 'speed' | 'liveSlowdown' | 'systems' | 'replica';
 
 export function scan(file: string, source: string, rule: ScanRule = 'isolate'): Violation[] {
@@ -92,7 +100,13 @@ export function scan(file: string, source: string, rule: ScanRule = 'isolate'): 
       if (call && method && called === 'grow' && file !== 'src/wasm/heap.ts') report(n, 'memory.grow');
       if (call && method && called === 'reserve' && /heap/i.test(name(method.object) ?? '') && file !== 'src/wasm/simWasm.ts') report(n, 'wasm heap reserve');
     }
-    if (rule === 'systems' && call && ['emergencyOf', 'getSystem'].includes(called ?? '')) report(n, 'system reach-in');
+    if (rule === 'systems') {
+      if (n.type === 'ImportSpecifier' && ['emergencyOf', 'getSystem'].includes(name(n.imported) ?? '')) report(n, 'system import');
+      if (n.type === 'ImportDefaultSpecifier' && ['emergencyOf', 'getSystem'].includes(name(n.local) ?? '')) report(n, 'system import');
+      if (n.type === 'MemberExpression' && ['getSystem', 'systems'].includes(name(n) ?? '') && simChain(n.object)) report(n, 'system reach-in');
+      // A direct sim.getSystem call is already reported by its member access.
+      if (call && ['emergencyOf', 'getSystem'].includes(called ?? '') && !(called === 'getSystem' && simChain(method?.object))) report(n, 'system reach-in');
+    }
 
     const target = n.type === 'AssignmentExpression' ? n.left : n.type === 'UpdateExpression' ? n.argument : undefined;
     if ((rule === 'speed' || rule === 'liveSlowdown') && member(target) && name(target) === rule) report(n, `${rule} writer`);

@@ -1,17 +1,17 @@
 /** Headless query handlers and their watch invalidation policies (WORKER_DESIGN §2.8). */
 import type { CellRect } from '../core/events';
 import type { NeedTier, CityState } from '../sim/CityState';
-import type { Simulation } from '../sim/Simulation';
 import { getDef } from '../sim/catalog';
-import { opexTierOf } from '../sim/economy/opex';
+import type { Simulation } from '../sim/Simulation';
 import { advisorIssues, advisorIssuesReady, openAdvice, type OpenAdvice } from '../sim/economy/advisors';
 import { computeMonthlyBudget } from '../sim/economy/budget';
 import { capHints } from '../sim/economy/demand';
+import { opexTierOf } from '../sim/economy/opex';
 import { attractivenessBreakdown, tourismSummary } from '../sim/economy/tourism';
 import { unservedClusters } from '../sim/infra/catchments';
 import type { EmergencySystem } from '../sim/infra/emergency';
-import type { TrafficSystem } from '../sim/infra/traffic';
 import type { ServicesSystem } from '../sim/infra/services';
+import type { TrafficSystem } from '../sim/infra/traffic';
 import { ferryPartnersFor, stopsNear } from '../sim/infra/transportFacilities';
 import { demolishRisks, sideDemolishRisks, type Removal } from '../game/demolishRisk';
 import { upkeepHere } from '../game/tools/placement';
@@ -81,17 +81,21 @@ export function queryKey(value: unknown): string {
 export function watchSignature<K extends QueryName>(sim: Simulation, name: K, args: QueryArgs<K>, when: WatchPolicy, commands: number): string {
   if (name === 'inspectBuilding' || name === 'inspectCell') return inspectSignature(sim, args as InspectBuildingArgs | InspectCellArgs);
   const st = sim.state;
-  // W0.3b: a dispatch/return can change availability while paused, before the next daily refresh.
+  const policy = String(when === 'monthly' ? st.monthIndex : when === 'daily' ? st.day : `${st.day}:${commands}`);
+  // W0.3b: constant-time inputs; returns while advancing and paused commands both change availability.
   if (name === 'dispatchOptions') {
     const em = sim.getSystem<EmergencySystem>('emergency');
     const inc = em?.incident((args as QueryArgs<'dispatchOptions'>).incidentId);
-    return `${st.day}:${commands}:${inc?.state}:${inc?.units.join(',')}:${queryKey(em?.stationList())}`;
+    // These system-local counters stay inside the worker; no station array is built for a signature.
+    const revision = em as unknown as { readonly stVer: number; readonly gEpoch: number } | undefined;
+    const vehicles = em?.vehicles(), units = inc?.units;
+    return `${policy}:${commands}:${revision?.stVer}:${revision?.gEpoch}:${vehicles?.length}:${vehicles?.at(-1)?.id}:${inc?.state}:${units?.length}:${units?.at(-1)}`;
   }
   if (name === 'computeMonthlyBudget') {
     const b = st.budget;
     return `${st.day}:${st.buildings.size}:${queryKey(b.taxRates)}:${queryKey(b.funding)}:${queryKey(b.ordinances)}:${queryKey(b.loans)}`;
   }
-  return String(when === 'monthly' ? st.monthIndex : when === 'daily' ? st.day : `${st.day}:${commands}`);
+  return policy;
 }
 
 /** Exact mirrored state only; this works on a replica too, without serializing or touching sim caches. */
