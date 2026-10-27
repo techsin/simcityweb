@@ -1,6 +1,7 @@
 /** Budget and ordinance controls consume acknowledgements, and late replies cannot revive an exited city. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import type { ActionResult } from '../../src/sim/actions';
 import { Simulation } from '../../src/sim/Simulation';
 import { BudgetPanel } from '../../src/ui/panels/BudgetPanel';
@@ -14,12 +15,14 @@ const flush = async () => { await Promise.resolve(); await Promise.resolve(); aw
 
 function fixture() {
   const state = newState(32), abort = new AbortController();
+  const sim = new Simulation(state, []);
   const sound = vi.fn(), toast = vi.fn();
   const calls: { op: string; args: unknown[]; resolve(r: ActionResult): void; reject(e: Error): void }[] = [];
   const ctx = {
-    state, sim: new Simulation(state, []), signal: abort.signal, sound, toast,
+    state, sim, signal: abort.signal, sound, toast,
     mods: { listOrdinances: () => [{ id: 'smoke_detectors', name: 'Smoke detectors', enabled: false, available: true, monthlyCost: 25, effects: [] }] },
     host: {
+      ...queryHost(sim),
       act: (op: string, args: unknown[]) => {
         const done = new Promise<ActionResult>((resolve, reject) => { calls.push({ op, args, resolve, reject }); });
         return { seq: calls.length, exact: false, predicted: { ok: true, cost: 0 }, done };

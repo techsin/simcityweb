@@ -19,6 +19,7 @@ import { facilityReport } from '../../src/sim/infra/facilities';
 import { listRewards } from '../../src/sim/economy/rewards';
 import { normalizeReward } from '../../src/game/modules';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import { InfoPanel } from '../../src/ui/panels/InfoPanel';
 import { REWARD_RUIN_TEXT, RewardsPanel, rewardRuin, ruinState } from '../../src/ui/panels/ListPanels';
 import { RUINS_TEXT, dedupeChips, facilityView, headerIncome, splitFacilityRows, warningTopic, type Chip } from '../../src/ui/inspectorModel';
@@ -40,6 +41,8 @@ function ctxOf(sim: Simulation): { ctx: GameContext; calls: Calls } {
   const ctx = {
     get state() { return sim.state; },
     sim,
+    host: queryHost(sim),
+    signal: new AbortController().signal,
     mods: { listRewards: (s: CityState) => listRewards(s).map(normalizeReward) },
     actions: { bulldoze: () => ({ ok: true, cost: 30 }) },
     objects: { setSelected: () => undefined },

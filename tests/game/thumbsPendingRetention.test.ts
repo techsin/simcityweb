@@ -19,6 +19,7 @@ import { createSystems } from '../../src/sim/systems/index';
 import { listRewards } from '../../src/sim/economy/rewards';
 import { normalizeReward } from '../../src/game/modules';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import { Toolbar } from '../../src/ui/Toolbar';
 import { InfoPanel } from '../../src/ui/panels/InfoPanel';
 import { thumbs } from '../../src/ui/thumbs';
@@ -101,6 +102,7 @@ describe('a thumbnail request still queued keeps no exited city alive (close-out
       const scene = { kind: 'CityScene stand-in', hud: new Float64Array(1 << 15) };
       const { sim, home, clinic } = town();
       const ctx = {
+        host: queryHost(sim), signal: new AbortController().signal,
         get state() { return sim.state; },
         sim,
         scene,

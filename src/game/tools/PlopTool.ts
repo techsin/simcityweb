@@ -17,7 +17,6 @@ import { getDef } from '../../sim/catalog';
 import type { BuildingDef } from '../../sim/catalogTypes';
 import { facilityDefFacts } from '../../sim/infra/facilities';
 import { lotTouchesRoad } from '../../sim/economy/buildings';
-import { ferryPartnersFor, stopsNear } from '../../sim/infra/transportFacilities';
 import { EMG_FIRE } from '../../sim/infra/overlays';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
@@ -73,6 +72,8 @@ export class PlopTool extends Tool {
   /** placement preview line (garage: stops in reach; ferry: partner terminals) and the key it was made for */
   private preview = '';
   private previewKey = '';
+  private placementReads = new Map<string, Promise<{ html: string; targets: number[] }>>();
+  private placementRequest = 0;
   /** the upkeep line of the current spot ("Upkeep here ≈§A/mo now · up to §B at full use"), made with res */
   private upkeep = '';
   /** the current spot: a staffed service without a road (P8) / a shore building not facing water (P14) */
@@ -106,24 +107,36 @@ export class PlopTool extends Tool {
     if (key === this.previewKey) return this.preview;
     this.previewKey = key;
     const [w, dd] = this.dims(rot);
-    let html = '';
+    this.preview = '';
     this.targets = [];
     const is = (id: string) => d.id === id || d.model === id;
-    if (is('tr_parking_garage')) {
-      const stops = safe(() => stopsNear(this.ctx.sim, x, z, w, dd), []);
-      this.targets = stops.map((s) => s.id);
-      html = stops.length
+    let read = this.placementReads.get(key);
+    if (!read && is('tr_parking_garage')) {
+      read = this.ctx.host.query('stopsNear', { x, z, w, d: dd }).then((stops) => ({
+        targets: stops.map((s) => s.id),
+        html: stops.length
         ? `<div class="tip-ok tip-facts">Park &amp; ride: ${stops.length} stop${stops.length > 1 ? 's' : ''} in reach — ${stops.slice(0, 3).map((s) => `${escapeHtml(s.name)} (${s.dist} tiles)`).join(', ')}</div>`
-        : '<div class="tip-warn tip-facts">No transit stop within 5 tiles: drivers park but can\'t switch to transit here</div>';
-    } else if (is('tr_ferry_terminal')) {
-      const ps = safe(() => ferryPartnersFor(this.ctx.sim, x, z, w, dd, rot), []);
-      this.targets = ps.map((p) => p.id);
-      html = ps.length
+        : '<div class="tip-warn tip-facts">No transit stop within 5 tiles: drivers park but can\'t switch to transit here</div>',
+      }));
+    } else if (!read && is('tr_ferry_terminal')) {
+      read = this.ctx.host.query('ferryPartnersFor', { x, z, w, d: dd, rot }).then((ps) => ({
+        targets: ps.map((p) => p.id),
+        html: ps.length
         ? `<div class="tip-ok tip-facts">Ferry links: ${ps.slice(0, 3).map((p) => `${escapeHtml(p.name)} (${p.minutes} min)`).join(', ')}</div>`
-        : '<div class="tip-warn tip-facts">No partner terminal on this water yet — a ferry needs a second terminal to link to</div>';
+        : '<div class="tip-warn tip-facts">No partner terminal on this water yet — a ferry needs a second terminal to link to</div>',
+      }));
     }
-    this.preview = html;
-    return html;
+    if (read) {
+      this.placementReads.set(key, read);
+      const request = this.placementRequest;
+      void read.then(({ html, targets }) => {
+        if (this.ctx.signal.aborted || this.ctx.tools.active !== this || request !== this.placementRequest || key !== this.previewKey) return;
+        this.preview = html;
+        this.targets = targets;
+        if (this.lastPointer) this.refresh(this.lastPointer, true);
+      }).catch(() => { if (request === this.placementRequest) this.placementReads.delete(key); });
+    }
+    return this.preview;
   }
 
   private dims(rot: Rot): [number, number] {
@@ -264,6 +277,8 @@ export class PlopTool extends Tool {
   }
 
   override activate(): void {
+    this.placementRequest++;
+    this.placementReads.clear();
     this.lastKey = '';
     this.previewKey = '';
     this.manual = false;
@@ -271,6 +286,8 @@ export class PlopTool extends Tool {
     if (this.autoOverlay !== null && this.autoVariant >= 0) this.ctx.preferOverlayVariant?.(this.autoOverlay, this.autoVariant);
   }
   override deactivate(): void {
+    this.placementRequest++;
+    this.placementReads.clear();
     this.ctx.objects.setGhost(null);
     this.ctx.world.setHighlight(null);
     this.ctx.tip.hide();

@@ -13,6 +13,7 @@ import { createSystems } from '../../src/sim/systems/index';
 import { FIRE_TOO_FAR_TEXT } from '../../src/sim/infra/overlays';
 import { EMERG_GRACE } from '../../src/sim/infra/params';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import { InfoPanel } from '../../src/ui/panels/InfoPanel';
 import { FIRE_FAR_NOTE, farClause, fireResponseHint } from '../../src/ui/inspectorModel';
 import { newState, place, roadLine } from '../infra/cityGen';
@@ -47,6 +48,7 @@ describe('the Fire row hint: its industrial-accident clause is the hover\'s', ()
     const home = place(st, 't_r2', 30, 21, { pop: 20, flags: BF.Powered });
     const sim = new Simulation(st, createSystems());
     const ctx = {
+      host: queryHost(sim), signal: new AbortController().signal,
       get state() { return sim.state; }, sim, mods: {}, actions: { bulldoze: () => ({ ok: true, cost: 0 }) }, objects: { setSelected: () => undefined },
       panels: { close: () => undefined }, sandbox: () => false, sound: () => undefined, toast: () => undefined,
     } as unknown as GameContext;

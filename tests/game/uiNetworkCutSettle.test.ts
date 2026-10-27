@@ -20,6 +20,7 @@ import { BF } from '../../src/sim/CityState';
 import { CityActions } from '../../src/sim/actions';
 import type { Simulation } from '../../src/sim/Simulation';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import type { ToolPointer } from '../../src/game/tools/Tool';
 import { CUT_SETTLE_MS } from '../../src/game/tools/ZoneTool';
 import { NetworkTool } from '../../src/game/tools/NetworkTool';
@@ -33,6 +34,7 @@ function fakeCtx(sim: Simulation) {
   const ctx = {
     state: sim.state,
     sim,
+    host: queryHost(sim),
     actions: new CityActions(sim),
     world: { setHighlight: (c: Cells) => calls.hl.push(c), setHighlightRect: () => {} },
     objects: { setGhost: () => {}, setNetworkPreview: () => {}, setUnderground: () => {} },
@@ -122,7 +124,9 @@ describe('road drag preview: the full utility-cut fill waits for the path to res
     const road = new NetworkTool(f.ctx, Network.Road, 'net:2', 'road');
     road.down(at(5, 10, true));
     road.move(at(5, 8, true));
+    (f.ctx.tools as unknown as { active: NetworkTool }).active = road;
     road.up(at(5, 8));
+    await Promise.resolve();
     expect(confirms.length).toBe(1);
     expect(confirms[0].items?.some((s) => s.includes('Cuts power to 5 buildings (100 residents)'))).toBe(true);
     await Promise.resolve();

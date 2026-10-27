@@ -7,6 +7,7 @@ import type { EmergencySystem } from '../sim/infra/emergency';
 import { Simulation, type SimSystem } from '../sim/Simulation';
 import { applySimWasmFlag } from '../wasm/simWasm';
 import type { Command, CommandOp, CommandResult } from './SimHost';
+import { runQuery, watchSignature, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
 
 /** The page's flags, passed at init (WORKER_DESIGN §1). */
 export interface SimFlags {
@@ -73,6 +74,16 @@ export class SimCore {
 
   frame(dt: number): void {
     if (this.booted && !this.disposed) this.sim.update(dt);
+  }
+
+  // W0.3: headless reads; no command, stepping or policy state changes here.
+  runQuery<K extends QueryName>(name: K, args: QueryArgs<K>): QueryResult<K> {
+    if (this.disposed) throw new Error('Simulation core is disposed');
+    return runQuery(this.sim, name, args);
+  }
+
+  querySignature<K extends QueryName>(name: K, args: QueryArgs<K>, when: WatchPolicy, commands: number): string {
+    return `${this.booted}:${watchSignature(this.sim, name, args, when, commands)}`;
   }
 
   /** Commands run synchronously between local ticks, through the same authoritative actions as before. */

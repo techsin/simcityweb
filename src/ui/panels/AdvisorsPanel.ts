@@ -12,7 +12,8 @@
  * "Show me" opens the data view of the advice (advisorModel.adviceView) together with the camera move (final fixes N8).
  */
 import type { NewsItem } from '../../sim/CityState';
-import { adviceIdOf, advisorIssues, advisorIssuesReady, openAdvice, type OpenAdvice } from '../../sim/economy/advisors';
+import { adviceIdOf, type OpenAdvice } from '../../sim/economy/advisors';
+import { watchFor, type WatchHandle } from '../../worker/SimHost';
 import type { GameContext } from '../../game/context';
 import { type AdviceView, adviceView, outageAssessment, utilityOutages } from '../advisorModel';
 import { newsMark } from '../newsLog';
@@ -158,6 +159,7 @@ export class AdvisorsPanel extends Panel {
 
   showTab(t: 'advisors' | 'news'): void {
     this.tab = t;
+    if (t !== 'advisors') this.closeQueries();
     this.resetGate();
     if (t === 'advisors' && this.isOpen) this.refreshOpen(true);
     this.update();
@@ -190,6 +192,9 @@ export class AdvisorsPanel extends Panel {
   private openEdits = -1;
   private openMonth = -1;
   private openState: unknown = null;
+  private issuesWatch: WatchHandle<OpenAdvice[]> | null = null;
+  private issuesVersion = -1;
+  private adviceRequest = 0;
   private refreshOpen(force = false): void {
     const st = this.ctx.state, now = performance.now();
     const paused = this.ctx.sim.speed === 0;
@@ -202,7 +207,8 @@ export class AdvisorsPanel extends Panel {
         return;
       }
       // running: the month tick's list, re-read once a month
-      if (st.monthIndex !== this.openMonth) this.readIssues(st, now);
+      const issues = this.issuesWatch?.value;
+      if (st.monthIndex !== this.openMonth || (issues && this.issuesWatch!.version !== this.issuesVersion)) this.readIssues(st, now);
       return;
     }
     if (paused) this.scanFresh(st, now);
@@ -217,25 +223,31 @@ export class AdvisorsPanel extends Panel {
   }
   private scanFresh(st: typeof this.ctx.state, now: number): void {
     this.mark(st, now);
-    try {
-      this.open = openAdvice(this.ctx.sim);
-    } catch {
-      this.open = [];
-    }
+    const request = ++this.adviceRequest;
+    void this.ctx.host.query('openAdvice', {}).then((rows) => {
+      if (this.ctx.signal.aborted || request !== this.adviceRequest || !this.isOpen || this.tab !== 'advisors') return;
+      this.open = rows;
+      this.resetGate();
+      this.update();
+    }).catch(() => {});
   }
   /** the month tick's full issue list (places looked up on the first read), highest priority first; before the first
    *  month tick of this session (e.g. right after loading) one fresh scan */
   private readIssues(st: typeof this.ctx.state, now: number): void {
-    if (!advisorIssuesReady(st)) {
-      this.scanFresh(st, now);
-      return;
-    }
     this.mark(st, now);
-    try {
-      this.open = Object.values(advisorIssues(st)).flat().sort((a, b) => b.priority - a.priority);
-    } catch {
-      this.open = [];
-    }
+    this.adviceRequest++;
+    this.issuesWatch ??= watchFor(this.ctx.host, 'advisorIssues', {}, 'monthly', this.ctx.signal);
+    this.open = this.issuesWatch.value ?? [];
+    this.issuesVersion = this.issuesWatch.version;
+  }
+
+  override onClose(): void { this.closeQueries(); }
+
+  private closeQueries(): void {
+    this.adviceRequest++;
+    this.issuesWatch?.dispose();
+    this.issuesWatch = null;
+    this.issuesVersion = -1;
   }
 
   /** this advisor's open issues, highest priority first */
