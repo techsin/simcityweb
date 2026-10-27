@@ -77,6 +77,18 @@ const NEED_TIERS: Record<string, string[]> = {
   elementary: ['elementary'], high: ['high'], college: ['college', 'library'], health: ['clinic', 'hospital'], play: ['play'], green: ['green'],
 };
 
+/**
+ * The hero's thumbnail callback: it holds the icon box weakly and nothing of the panel. A request still queued after exit
+ * to region (src/ui/thumbs.ts renders one per frame) must not keep the inspector's DOM — and through its listeners the
+ * scene — alive until the queue drains (close-out c2). A module-level function, so no method context comes along.
+ */
+function thumbInto(box: WeakRef<HTMLElement>): (u: string | null) => void {
+  return (u) => {
+    const b = box.deref();
+    if (u && b) b.innerHTML = `<img src="${u}" alt="">`;
+  };
+}
+
 function devsForZone(z: Zone): DevType[] {
   const f = zoneFamily(z);
   if (f === 'R') return [DevType.R1, DevType.R2, DevType.R3];
@@ -202,9 +214,7 @@ export class InfoPanel extends Panel {
     const box = h('div', { class: 'ih-ico', style: { '--c': color } as Record<string, string>, html: icon(ic, 24) });
     if (model && fp) {
       const c = thumbs.cached(model, 120, 120);
-      const put = (u: string | null) => {
-        if (u) box.innerHTML = `<img src="${u}" alt="">`;
-      };
+      const put = thumbInto(new WeakRef(box));
       if (c) put(c);
       else if (c === undefined) thumbs.get(model, fp, 120, 120).then(put);
     }

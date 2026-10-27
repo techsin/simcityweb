@@ -18,6 +18,21 @@ const CAT_LABELS: Record<string, string> = {
   park: 'Parks & recreation', civic: 'Civic', landmark: 'Landmark', reward: 'Reward', transport: 'Transport',
 };
 
+/**
+ * A flyout card's thumbnail callback: it holds the card weakly and nothing of the toolbar. A request still queued when
+ * the city is left (src/ui/thumbs.ts renders one per frame) must not keep the card — and through its tree the HUD, its
+ * listeners and so the scene — alive until the queue drains (close-out c2). A module-level function: a closure made in
+ * Toolbar.item would keep the method's whole context (the toolbar, the card's element) through its scope chain.
+ */
+function thumbInto(card: WeakRef<HTMLElement>): (url: string | null) => void {
+  return (url) => {
+    const t = card.deref();
+    if (!url || !t) return;
+    for (const ch of [...t.children]) if (!ch.classList.contains('prog')) ch.remove();
+    t.prepend(h('img', { src: url, alt: '' }));
+  };
+}
+
 function hotkeyOf(spec: ToolSpec): string | undefined {
   return spec.hotkey;
 }
@@ -258,11 +273,7 @@ export class Toolbar {
     if (s.def) {
       const def = s.def;
       const cached = thumbs.cached(def.model);
-      const put = (url: string | null) => {
-        if (!url) return;
-        for (const ch of [...thumb.children]) if (!ch.classList.contains('prog')) ch.remove();
-        thumb.prepend(h('img', { src: url, alt: '' }));
-      };
+      const put = thumbInto(new WeakRef(thumb));
       if (cached) put(cached);
       else if (cached === undefined) thumbs.get(def.model, def.footprint).then(put);
     }
