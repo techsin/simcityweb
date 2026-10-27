@@ -3,7 +3,8 @@ import type { CellHit } from '../../render/contracts';
 import type { Overlay } from '../../core/types';
 import type { ActionResult } from '../../sim/actions';
 import type { GameContext } from '../context';
-import type { CommandArgs, CommandOp, CommandResult, Gesture, Ticket } from '../../worker/SimHost';
+import type { Command, CommandArgs, CommandOp, CommandResult, Gesture, Ticket } from '../../worker/SimHost';
+import { commandPreview, type PendingPreviewView } from '../../worker/PendingEdits';
 import { escapeHtml } from '../../ui/dom';
 import { money } from '../../ui/format';
 
@@ -77,6 +78,7 @@ export interface CommitFeedback {
 
 /** Shared with the inspector's one-commit demolition gesture. */
 export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object, op: K, args: CommandArgs<K>, feedback: CommitFeedback, gesture?: Gesture): Ticket<CommandResult<K>> {
+  if (ctx.signal.aborted) return { seq: 0, predicted: FAIL, exact: true, done: Promise.resolve(FAIL) } as Ticket<CommandResult<K>>;
   const g = gesture ?? ctx.host.beginGesture(owner);
   const fail = (r: ActionResult) => {
     if (ctx.signal.aborted) return;
@@ -86,26 +88,46 @@ export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object
       if (r.reason) ctx.toast(r.reason, 'error');
     }
   };
-  const ticket = safe(() => ctx.host.act(op, args, { gesture: g }), {
+  const ticket = safe(() => ctx.host.act(op, args, { tag: owner, gesture: g }), {
     seq: 0, predicted: FAIL, exact: true, done: Promise.resolve(FAIL),
   } as Ticket<CommandResult<K>>);
   const predicted = ticket.predicted as ActionResult | undefined;
-  if (!ctx.signal.aborted && ticket.exact && predicted) {
-    if (predicted.ok) feedback.ok(predicted);
-    else fail(predicted);
+  const world = ctx.world as GameContext['world'] & PendingPreviewView;
+  let clearPreview = () => {};
+  if (!ctx.signal.aborted && ctx.host.kind !== 'local' && ticket.seq > 0 && (!ticket.exact || predicted?.ok) && world.setPendingPreview) {
+    const geometry = commandPreview({ op, args } as Command);
+    if (geometry) {
+      safe(() => world.setPendingPreview!(ticket.seq, geometry), undefined);
+      let cleared = false;
+      clearPreview = () => {
+        if (cleared) return;
+        cleared = true;
+        ctx.signal.removeEventListener('abort', clearPreview);
+        safe(() => world.setPendingPreview?.(ticket.seq, null), undefined);
+      };
+      ctx.signal.addEventListener('abort', clearPreview, { once: true });
+    }
   }
-  void ticket.done.then((r: ActionResult) => {
+  if (!ctx.signal.aborted && ticket.exact && predicted) {
+    if (predicted.ok) { g.recordFeedback(); feedback.ok(predicted); }
+    else g.fail(() => fail(predicted));
+  }
+  const delivered = ticket.done.then((r: ActionResult) => {
+    clearPreview();
     if (ctx.signal.aborted) return;
+    g.recordAck(r.ok);
     if (!ticket.exact || !predicted) {
       if (r.ok) feedback.ok(r);
       else g.fail(() => fail(r));
     } else if (predicted.ok && !r.ok) g.fail(() => fail(r));
     feedback.ack?.(r);
   }, () => {
+    clearPreview();
     if (ctx.signal.aborted) return;
     g.fail(() => fail(FAIL));
     feedback.ack?.(FAIL);
   });
+  g.track(delivered);
   if (!gesture) g.end();
   return ticket;
 }

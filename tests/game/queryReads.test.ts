@@ -93,7 +93,7 @@ describe('query consumers', () => {
     expect(settled).not.toHaveBeenCalled();
     expect(act).not.toHaveBeenCalled();
     resolve(null); await gesture.settled; await flush();
-    expect(act).toHaveBeenCalledWith('bulldoze', [expect.any(Object)], { gesture });
+    expect(act).toHaveBeenCalledWith('bulldoze', [expect.any(Object)], { tag: tool, gesture });
     expect(begin).toHaveBeenCalledTimes(1);
     expect(f.host.state.buildings.has(f.a.id)).toBe(false);
     tool.deactivate(); f.abort.abort('dispose'); await f.host.dispose();

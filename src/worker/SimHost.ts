@@ -16,6 +16,7 @@ import { simWasmFlagSelects } from '../wasm/simWasm';
 import { SimCore, type SimErrors, type SimFlags, type SimModules } from './SimCore';
 import { queryKey, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
 import type { PolicyState, SimSettings, ViewState } from './protocol';
+import { NO_PENDING, type PendingView } from './PendingEdits';
 // W0.6: local persistence composition; SimCore imports only the codec / IDB side.
 import type { RegionCitySummary } from '../region/types';
 import type { HostState } from '../save/state';
@@ -231,6 +232,13 @@ export class Gesture {
   private resolve!: () => void;
   readonly settled = new Promise<void>((resolve) => { this.resolve = resolve; });
 
+  // W1.1b: a mixed-success stroke is not a prediction mismatch (R4).
+  private exactFeedback = false;
+  private accepted = false;
+  recordFeedback(): void { this.exactFeedback = true; }
+  recordAck(ok: boolean): void { this.accepted ||= ok; }
+  get mismatch(): boolean { return this.ended && !this.pending && this.exactFeedback && !this.accepted; }
+
   constructor(readonly owner: GestureOwner, private onEnd: () => void = () => {}) {}
 
   track(done: Promise<unknown>): void {
@@ -299,6 +307,11 @@ export interface SimHost {
   snapshot(why: SnapshotWhy): Promise<SnapshotAck | null>;
 }
 
+/** W1.1b: local commands apply synchronously; replica hosts expose their preview reservations. */
+export interface SimHost {
+  readonly pending: PendingView;
+}
+
 export interface LocalSimHostOptions {
   rctx?: RegionContext | null;
   initialSpeed?: number;
@@ -317,6 +330,8 @@ const IN_NODE = typeof (globalThis as { process?: { versions?: { node?: string }
 
 export class LocalSimHost implements SimHost {
   readonly kind = 'local';
+  // W1.1b: no local edit remains in flight after act returns.
+  readonly pending = NO_PENDING;
   readonly actions: ActionsProxy;
   readonly preview: ActionsProxy;
   private core: SimCore;
