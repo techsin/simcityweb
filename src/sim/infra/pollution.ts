@@ -43,7 +43,7 @@ import { DevType, Network, Zone, isRoad } from '../../core/types';
 import type { Building, CityState } from '../CityState';
 import { BF } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
-import { blurDown, blurDownAdd, blurSigma2, boxAverage, upsampleAdd } from './blur';
+import { blurDown, blurDownAdd, blurSigma2, boxAverage, upsampleAdd } from '../../wasm/kernels/blur';
 import {
   DX, DZ, Fam, activeJobs, detectJobsUnknown, ensureIdArray, ensureIdFloat, fundingFactor, infoOf, isFunctional, nowMs,
   readEffects, setFlagQuiet, activity, type DefInfo, type OrdEffects, buildingList, wealthOf,

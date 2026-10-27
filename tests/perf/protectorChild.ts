@@ -76,16 +76,17 @@ if (isMainThread) {
   const port = parentPort!;
   port.once('message', async (m) => {
     if (m.t !== 'run' || m.bytes?.[2] !== 3) throw new Error('bad clone-only start message');
-    const { Simulation } = await import('../../src/sim/Simulation');
+    const { SimCore } = await import('../../src/worker/SimCore');
     const { createSystems } = await import('../../src/sim/systems/index');
+    const { CityActions } = await import('../../src/sim/actions');
     const { stressCity } = await import('../infra/cityGen');
-    const { blur3 } = await import('../../src/wasm/kernels/blur');
     const memoryBefore = wasm?.memory.buffer.byteLength ?? null;
     let memoryStable = true;
-    // W0.1: replace Simulation + createSystems with SimCore.boot.
     const { st } = stressCity(128);
-    const sim = new Simulation(st, createSystems());
-    const blurTmp = new Float32Array(st.size * st.size);
+    // The host's flag picks the kernels: in wasm mode the simulation's own blur calls run the wasm drop-in.
+    const core = new SimCore(st, undefined, { simwasm: mode });
+    core.boot(null, { createSystems, CityActions });
+    const sim = core.sim;
     const afterBoot = probe();
     const { transferOnce, growOnce } = await import('../worker/protectorFaults');
     const fault = (process.env.S1_PROTECTOR_FAULT ?? 'none') as Fault;
@@ -96,8 +97,6 @@ if (isMainThread) {
     } else if (fault !== 'none') throw new Error(`unknown negative control: ${fault}`);
     for (let day = 0; day < 60; day++) {
       sim.advanceDay();
-      // W0.1: replace this direct drop-in call with SimCore + the simwasm init flag.
-      if (mode === 'wasm') blur3(st.crime.slice(), blurTmp, st.size, 1); // radius from src/sim/infra/crime.ts
       // W1.1: replace these result snapshots with recorder packets (owned buffers, no transfer list).
       port.postMessage({ t: 'day', day: st.day, stats: st.stats, traffic: st.traffic.slice(), crime: st.crime.slice() });
       memoryStable = memoryStable && (wasm?.memory.buffer.byteLength ?? null) === memoryBefore;

@@ -6,9 +6,14 @@
  * whole detached scene DOM, its listeners and through them the CityScene with its CityState. The canvas now leaves the
  * scene's DOM first (the render side releases those listeners too: tests/render/exitRetention.test.ts).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CityScene } from '../../src/game/CityScene';
-import { FEl } from './fakeDom';
+import { ErrorOverlay } from '../../src/ui/Modals';
+import { SimCore } from '../../src/worker/SimCore';
+import { newState } from '../infra/cityGen';
+import { FEl, installFakeDom, textOf } from './fakeDom';
+
+installFakeDom();
 
 describe('CityScene.dispose (close-out c1)', () => {
   it('takes the WebGL canvas out of the scene DOM before taking the scene root out of the page', () => {
@@ -21,11 +26,12 @@ describe('CityScene.dispose (close-out c1)', () => {
       root.appendChild(canvas);
       root.appendChild(ui);
       const part = { dispose: () => undefined };
+      const host = { dispose: vi.fn(() => Promise.resolve()) };
       // (the fields dispose() touches; its views and UI parts as stand-ins)
       const scene = {
         disposed: false, raf: 0, resolveReady: () => undefined, abort: new AbortController(), offs: [] as (() => void)[], resizeObs: null, mods: {},
         newYear: part, sirens: part, emgBanner: part, gameSounds: part, offUiSounds: () => undefined, tools: part, minimap: part,
-        objects: part as object, world: part as object, guard: { errors: {} as object | null },
+        objects: part as object, world: part as object, host,
         uiEvents: { clear: () => undefined }, canvas, root,
       };
       (CityScene.prototype.dispose as (this: unknown) => void).call(scene);
@@ -35,13 +41,51 @@ describe('CityScene.dispose (close-out c1)', () => {
       expect(ui.parentNode).toBe(root);
       expect(scene.disposed).toBe(true);
       // close-out c4: the signal aborts with a plain reason (no DOMException whose stack holds the scene), the guarded
-      // systems' wrappers lose their way to the scene, and the scene keeps neither real view
+      // systems are disposed through the host, and the scene keeps neither real view
       expect(scene.abort.signal.reason).toBe('dispose');
-      expect(scene.guard.errors).toBeNull();
+      expect(host.dispose).toHaveBeenCalledTimes(1);
       expect((scene.world as { isNull?: boolean }).isNull).toBe(true);
       expect(scene.objects).not.toBe(part);
+      (CityScene.prototype.dispose as (this: unknown) => void).call(scene);
+      expect(host.dispose).toHaveBeenCalledTimes(1);
     } finally {
       g.cancelAnimationFrame = had;
+    }
+  });
+});
+
+describe('guarded systems report through ErrorOverlay after the W0.1 move', () => {
+  it('reports the existing cutoff, keeps the pause control, and drops the overlay at dispose', () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const abort = new AbortController();
+    const parent = new FEl('div');
+    let core: SimCore;
+    const overlay = new ErrorOverlay(parent as unknown as HTMLElement, { pause: () => { core.sim.speed = 0; }, signal: abort.signal });
+    const report = vi.spyOn(overlay, 'report');
+    core = new SimCore(newState(32), overlay);
+    const daily = vi.fn(() => { throw new Error('daily failed'); });
+    const system = { name: 'broken', daily };
+    try {
+      core.boot(null, { createSystems: () => [system] });
+      core.sim.runDays(25);
+      expect(daily).toHaveBeenCalledTimes(21); // the base uses >20, not >=20
+      expect(report).toHaveBeenCalledTimes(21);
+      expect(report.mock.calls[20][0]).toContain('disabled');
+      expect(parent.querySelectorAll('.err-card')).toHaveLength(1);
+      expect(textOf(parent)).toContain('daily failed');
+      const pause = parent.all().find((e) => e.tagName === 'button' && textOf(e) === 'Pause simulation');
+      expect(pause).toBeTruthy();
+      pause!.click();
+      expect(core.sim.speed).toBe(0);
+      core.dispose();
+      abort.abort('dispose');
+      expect(parent.all().reduce((n, e) => n + e.listenerCount(), 0)).toBe(0);
+      expect((core as unknown as { guard: { errors: unknown } }).guard.errors).toBeNull();
+    } finally {
+      core.dispose();
+      abort.abort('dispose');
+      report.mockRestore();
+      log.mockRestore();
     }
   });
 });

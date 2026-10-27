@@ -19,7 +19,7 @@
  */
 import { Network, Zone, zoneDensity, zoneFamily } from '../../core/types';
 import type { Building, CityState } from '../CityState';
-import { boxH, boxV } from './blur';
+import { boxH, boxV } from '../../wasm/kernels/blur';
 import {
   GARAGE_WALK_RADIUS, PARKING_BOX_R, PARKING_RATIO, PARKING_SUPPLY_CIVIC, PARKING_SUPPLY_R, PARKING_SUPPLY_ROAD,
   PARKING_SUPPLY_ZONE,
