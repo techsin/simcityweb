@@ -1,0 +1,37 @@
+* text=auto eol=lf
+
+*.wasm -text
+*.bin -text
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.gif -text
+*.webp -text
+*.avif -text
+*.ico -text
+*.bmp -text
+*.tif -text
+*.tiff -text
+*.ogg -text
+*.mp3 -text
+*.wav -text
+*.flac -text
+*.mp4 -text
+*.webm -text
+*.glb -text
+*.metropolis -text
+*.cap -text
+*.pagc -text
+*.gz -text
+*.br -text
+*.tar -text
+*.bz2 -text
+*.xz -text
+*.zst -text
+*.zip -text
+*.7z -text
+*.pdf -text
+*.ttf -text
+*.otf -text
+*.woff -text
+*.woff2 -text
