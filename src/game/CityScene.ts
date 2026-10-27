@@ -714,12 +714,15 @@ export class CityScene {
 
   /**
    * Earthquake camera shake: render-world auto-shakes for ~3 s when an earthquake starts; for longer quakes keep
-   * the camera moving from render-city's disaster intensity (objects.disasters.shake, 0..1).
+   * the camera moving from render-city's disaster intensity (objects.disasters.shake, 0..1). Paused (or the pause menu
+   * open), no new shake starts and the current one fades out: a paused quake stays active in the sim, and the camera
+   * shook forever — a plop preview and its click picked different cells ("Blocked by a road or rail", close-out c2).
    */
   private feedShake(_dt: number): void {
     const w = this.world as { shake?: (intensity: number, seconds: number) => void };
     const k = (this.objects as { disasters?: { shake?: number } }).disasters?.shake ?? 0;
     if (typeof w.shake !== 'function' || !(k > 0.05)) return;
+    if (this.sim.speed === 0 || this.pause?.isOpen) return;
     const now = performance.now();
     if (now < this.shakeNext) return;
     // render-world shakes for ~3 s on its own when the earthquake starts

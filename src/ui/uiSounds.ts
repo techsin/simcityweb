@@ -165,8 +165,10 @@ function onClick(e: MouseEvent): void {
 
 // ------------------------------------------------------------------ sliders
 const sliderState = new WeakMap<HTMLInputElement, { last: number; v: number; drag: boolean; down: number; moved: boolean }>();
-/** the range input currently held with the pointer (released by the window pointerup, wherever it happens) */
-let held: HTMLInputElement | null = null;
+/** the range input currently held with the pointer (released by the window pointerup, wherever it happens). Weak, like
+ *  `hovered`: a module-level element of the city HUD would keep the exited scene's DOM, and through its listeners the
+ *  whole scene, alive (close-out c2) */
+let held: WeakRef<HTMLInputElement> | null = null;
 
 function rangeOf(t: EventTarget | null): HTMLInputElement | null {
   return t instanceof HTMLInputElement && t.type === 'range' && !optedOut(t) ? t : null;
@@ -188,7 +190,7 @@ function onPointerDown(e: PointerEvent): void {
   s.drag = true;
   s.down = Number(el.value);
   s.moved = false;
-  held = el;
+  held = new WeakRef(el);
 }
 
 /**
@@ -196,7 +198,7 @@ function onPointerDown(e: PointerEvent): void {
  * pointerup rather than 'change' - 'change' is skipped when a handler re-renders / blurs the input mid-drag.
  */
 function onPointerUp(): void {
-  const el = held;
+  const el = held?.deref();
   held = null;
   if (!el) return;
   const s = stateOf(el);
@@ -242,14 +244,16 @@ function onChange(e: Event): void {
 }
 
 // ------------------------------------------------------------------ hover
-let hovered: Element | null = null;
+/** the hover-sound control under the pointer — weak: the city HUD's last hovered toolbar / top-bar button kept the
+ *  exited scene's DOM tree, its listeners and so the whole CityScene alive until the next hover (close-out c2) */
+let hovered: WeakRef<Element> | null = null;
 
 function onPointerOver(e: PointerEvent): void {
   if (e.pointerType === 'touch') return;
   const t = e.target instanceof Element ? e.target : null;
   const el = t?.closest(HOVER) ?? null;
-  if (el === hovered) return;
-  hovered = el;
+  if (el === (hovered?.deref() ?? null)) return;
+  hovered = el ? new WeakRef(el) : null;
   if (!el || el.getAttribute('data-sfx-hover') === 'none' || isDisabled(el) || optedOut(el)) return;
   getAudio()?.hover();
 }

@@ -22,8 +22,9 @@
  *   all      capture + replay + insitu + secondary + e2e + browser
  *
  * --tree: the simulation sources the benchmark runs on. `live` = this repo; `snap` = a frozen tree ($SIM_SNAP; default
- * tools/bench/.fixtures/snap, built by `npm run fixtures`: the snapshot of commit 24f8609, the version the kernels were ported from and the 1M fixtures were saved
- * with), so concurrent edits of the live sim cannot disturb a measurement. The wasm bindings always come from this repo.
+ * tools/bench/.fixtures/snap, built by `npm run fixtures`: the snapshot of commit 24f8609, the version the kernels were
+ * ported from and the 1M fixtures were saved with), so concurrent edits of the live sim cannot disturb a measurement.
+ * The wasm bindings always come from this repo.
  * Bundles and captures go to node_modules/.cache/sim-bench/roadTransitSearch/. Measurement protocol: tools/bench/ab.ts
  * (warm-up >= 600 ms per side, >= 31 interleaved order-alternated pairs, CPU time from an idle worker thread,
  * median / min, 95% bootstrap CI of the paired ratio, load average reported).

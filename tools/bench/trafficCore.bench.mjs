@@ -13,8 +13,9 @@
  *   (more suites: see the usage printed without arguments)
  *
  * --tree: the simulation sources the benchmark runs on: `snap` (default) = the frozen tree of commit 24f8609 ($SIM_SNAP,
- * default tools/bench/.fixtures/snap, built by `npm run fixtures`; the version traffic.rs was ported from and the 1M fixtures were saved with), `live`
- * = this repo (only meaningful once src/sim/infra/traffic.ts is back at the 24f8609 phase structure), or a directory.
+ * default tools/bench/.fixtures/snap, built by `npm run fixtures`; the version traffic.rs was ported from and the 1M
+ * fixtures were saved with), `live` = this repo (only meaningful once src/sim/infra/traffic.ts is back at the 24f8609
+ * phase structure), or a directory.
  * Bundles go to node_modules/.cache/sim-bench/trafficCore/. Protocol: tools/bench/ab.ts (warm-up, >= 31 interleaved
  * order-alternated pairs, CPU time from an idle worker thread, median / min, 95% bootstrap CI, load average).
  * Fairness: one V8 isolate per arm; V8's ArrayBuffer-detaching protector intact in every arm unless it is '-inv'

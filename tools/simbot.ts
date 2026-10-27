@@ -2402,11 +2402,12 @@ usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/
   --tax N           fixed tax rate for every type  --spendy         150 % funding, builds without budget checks
   --neglect         never dispatches to uncovered emergencies
   --skip a,b,...    leave rules out (the wrong choices): schools, garbage, jail, transit, police, services, dirty
-  --save-years a,b  save the city at the end of these years (1 = after the first year) as game saves, with
-  --save-prefix P   PATH prefix P: Py<N>.city.metropolis (the city: deserializeCity(await unpackFile(bytes)) in node),
-                    Py<N>.region.metropolis (a one-city region: in the game Load Region > Import > Play), then the
-                    marker Py<N>.READY (JSON summary) once both are complete. The run itself is unchanged (save notes
-                    go to stderr). Example: --years 43 --save-years 21,43 --save-prefix cities/vet_s7_
+  --save-years a,b  save the city at the end of these years (1 = after the first year) as game saves named by
+  --save-prefix P   the path prefix P: Py<N>.city.metropolis (the city alone; in node: deserializeCity(await
+                    unpackFile(bytes))), Py<N>.region.metropolis (a one-city region; in the game: Load Region >
+                    Import file > Open > the city > Play), then Py<N>.READY (a JSON summary) once both are complete.
+                    Saving does not change the run (its notes go to stderr). Example: --years 43 --save-years 21,43
+                    --save-prefix cities/vet_s7_ (docs/dev/TEST_CITIES.md)
   --help, -h        this text
 env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1 · SIMBOT_PROFILE=1`;
 

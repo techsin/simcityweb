@@ -30,6 +30,8 @@ import { shoreFacesWater, shoreRotation, staffedService, upkeepHere, type Rot } 
 const SHORE_FAIL = 'Must be placed on the shore with its front facing water';
 /** the red line of a staffed service no road touches (final fixes P8) */
 export const NO_ROAD_STAFFED = "No road access — staff can't reach it; it won't work until a road touches it";
+/** cells the ground point under a resting pointer may drift (camera shake) while a click still places the preview */
+export const PREVIEW_JITTER = 2;
 
 /** the data view (and its variant, -1 = the view's own) that helps placing a def; null = leave the view alone */
 export function autoOverlayOf(def: BuildingDef): { o: Overlay; v: number } | null {
@@ -276,8 +278,13 @@ export class PlopTool extends Tool {
   override move(p: ToolPointer): void {
     this.refresh(p);
   }
+  /**
+   * The click places what the preview shows when the pointer has not moved since it was made and the ground point under
+   * it moved at most PREVIEW_JITTER cells (the camera shook; a pan re-picks the spot): re-picking at the click moved the
+   * building — under an earthquake's camera shake an ok preview became "Blocked by a road or rail" (close-out c2).
+   */
   override down(p: ToolPointer): void {
-    this.refresh(p, true);
+    if (!this.previewHolds(p)) this.refresh(p, true);
     const pl = this.place;
     if (!pl) return;
     const r = safe(() => this.ctx.actions.plop(this.def.id, pl.x, pl.z, pl.rot, false), FAIL);
@@ -294,6 +301,13 @@ export class PlopTool extends Tool {
     }
     this.lastKey = '';
     this.refresh(p, true);
+  }
+  /** the last preview still stands for pointer p (down) */
+  private previewHolds(p: ToolPointer): boolean {
+    const lp = this.lastPointer;
+    if (!this.place || !lp?.hit || !p.hit || lp.clientX !== p.clientX || lp.clientY !== p.clientY) return false;
+    const tol = PREVIEW_JITTER * CELL_SIZE;
+    return Math.abs(p.hit.point.x - lp.hit.point.x) <= tol && Math.abs(p.hit.point.z - lp.hit.point.z) <= tol;
   }
   override key(e: KeyboardEvent, p: ToolPointer | null): boolean {
     if (e.type === 'keydown' && (e.key === 'r' || e.key === 'R') && !e.ctrlKey && !e.metaKey) {

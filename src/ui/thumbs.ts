@@ -40,8 +40,29 @@ interface Job {
   resolve: (url: string | null) => void;
 }
 
+/**
+ * a geometry object of its own over the registry geometry's attribute buffers (no copy): three.js hangs a dispose
+ * listener — a closure over the renderer and its canvas — on every geometry and material a renderer draws, so the
+ * thumbnails must not draw the shared ones (close-out c2: each idle-disposed thumbnail renderer stayed reachable through
+ * the listeners on the registry geometries and the shared building material; 7 after one UI session)
+ */
+function viewOf(src: THREE.BufferGeometry): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  g.setIndex(src.index);
+  for (const k of Object.keys(src.attributes)) g.setAttribute(k, src.attributes[k]);
+  for (const k of Object.keys(src.morphAttributes)) g.morphAttributes[k] = src.morphAttributes[k];
+  g.morphTargetsRelative = src.morphTargetsRelative;
+  for (const gr of src.groups) g.addGroup(gr.start, gr.count, gr.materialIndex);
+  g.setDrawRange(src.drawRange.start, src.drawRange.count);
+  g.boundingBox = src.boundingBox;
+  g.boundingSphere = src.boundingSphere;
+  return g;
+}
+
 class ThumbRenderer {
   private renderer: THREE.WebGLRenderer | null = null;
+  /** this renderer's own copy of the shared building material (disposed with the renderer: see viewOf) */
+  private mat: THREE.Material | null = null;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(30, 1, 0.5, 8000);
   private cache = new Map<string, string | null>();
@@ -128,11 +149,26 @@ class ThumbRenderer {
     clearTimeout(this.idleTimer);
     this.idleTimer = window.setTimeout(() => {
       if (this.queue.length || !this.renderer) return;
+      // (its own material copy goes first: nothing this renderer drew may keep it reachable — viewOf)
+      this.mat?.dispose();
+      this.mat = null;
       this.renderer.dispose();
       this.renderer.forceContextLoss();
       this.renderer = null;
       this.scene = new THREE.Scene();
     }, 15000);
+  }
+
+  /** this renderer's copy of the shared building material: the same shader patch and program key (clone() keeps neither) */
+  private material(a: Assets): THREE.Material {
+    if (!this.mat) {
+      const src = a.getBuildingMaterial();
+      const m = src.clone();
+      m.onBeforeCompile = src.onBeforeCompile;
+      m.customProgramCacheKey = src.customProgramCacheKey;
+      this.mat = m;
+    }
+    return this.mat;
   }
 
   private async render(job: Job): Promise<string | null> {
@@ -141,12 +177,14 @@ class ThumbRenderer {
     if (!this.init()) return null;
     const r = this.renderer!;
     const geo = a.getModelGeometry(job.model, 0);
-    const mesh = new THREE.Mesh(geo, a.getBuildingMaterial());
+    geo.computeBoundingBox();
+    // (a view of the registry geometry, disposed right after: see viewOf)
+    const view = viewOf(geo);
+    const mesh = new THREE.Mesh(view, this.material(a));
     this.scene.add(mesh);
     const night = a.sharedUniforms?.uNight;
     const prevNight = night?.value ?? 0;
     if (night) night.value = 0;
-    geo.computeBoundingBox();
     const bb = geo.boundingBox!.clone();
     const fw = job.footprint[0] * 16, fd = job.footprint[1] * 16;
     bb.union(new THREE.Box3(new THREE.Vector3(-fw / 2, 0, -fd / 2), new THREE.Vector3(fw / 2, 0, fd / 2)));
@@ -161,11 +199,16 @@ class ThumbRenderer {
     this.camera.near = Math.max(0.1, dist - sphere.radius * 3);
     this.camera.far = dist + sphere.radius * 4;
     this.camera.updateProjectionMatrix();
-    r.setSize(job.w, job.h, false);
-    r.render(this.scene, this.camera);
-    const url = r.domElement.toDataURL('image/png');
-    this.scene.remove(mesh);
-    if (night) night.value = prevNight;
+    let url: string;
+    try {
+      r.setSize(job.w, job.h, false);
+      r.render(this.scene, this.camera);
+      url = r.domElement.toDataURL('image/png');
+    } finally {
+      this.scene.remove(mesh);
+      view.dispose();
+      if (night) night.value = prevNight;
+    }
     return url;
   }
 }

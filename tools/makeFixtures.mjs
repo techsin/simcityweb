@@ -34,8 +34,8 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
@@ -88,6 +88,16 @@ function run(label, file, argv, cwd) {
       else res((performance.now() - t0) / 1000);
     });
   });
+}
+
+/** remove what an interrupted run of this script left in `dir`: its temp entries `<prefix><pid>` whose process is gone */
+function clearStale(dir, prefix) {
+  if (!existsSync(dir)) return;
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+  for (const f of readdirSync(dir)) {
+    const pid = f.startsWith(prefix) ? Number(f.slice(prefix.length)) : NaN;
+    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && !alive(pid)) rmSync(join(dir, f), { recursive: true, force: true });
+  }
 }
 
 /** bundle `entry` (TypeScript; its imports resolve where it lies) into CACHE/<name>/<name>.mjs */
@@ -147,6 +157,7 @@ function buildSnap() {
     ensureCommit();
     const t0 = performance.now();
     const tmp = `${SNAP}.tmp${process.pid}`;
+    clearStale(dirname(SNAP), `${basename(SNAP)}.tmp`);
     rmSync(tmp, { recursive: true, force: true });
     mkdirSync(tmp, { recursive: true });
     const archive = spawnSync('git', ['archive', '--format=tar', SNAP_COMMIT], { cwd: ROOT, maxBuffer: 1 << 30 });
@@ -178,6 +189,7 @@ async function fixture(target, name, gen, argv, expect) {
   }
   if (!existsSync(join(SNAP, 'tools', 'bench', 'sim-profile', 'fixtures', `${gen}.ts`))) fail(`${target} needs the snap target (${SNAP})`);
   const tmp = join(FIX, `.tmp-${target}-${process.pid}`);
+  clearStale(FIX, `.tmp-${target}-`);
   rmSync(tmp, { recursive: true, force: true });
   mkdirSync(tmp, { recursive: true });
   const prog = await bundle(join(SNAP, 'tools', 'bench', 'sim-profile', 'fixtures', `${gen}.ts`), `${gen}.snap`);
@@ -188,7 +200,7 @@ async function fixture(target, name, gen, argv, expect) {
   const bad = Object.entries(expect).filter(([k, v]) => info[k] !== v);
   if (bad.length) {
     mismatches++;
-    log(`${target}: WARNING ${name} differs from the original: ${bad.map(([k, v]) => `${k} ${info[k]} (original ${v})`).join(', ')}`);
+    log(`${target}: WARNING ${name} differs from the original: ${bad.map(([k, v]) => `${k} ${info[k]} (expected ${v})`).join(', ')}`);
   }
   results.push({ target, file, ...info, wall });
 }
@@ -227,7 +239,8 @@ if (only.has('dense1m')) {
 if (only.has('stress1m')) {
   await fixture('stress1m', 'stress1m_testdefs_s7.metropolis', 'stress', (d) => [join(d, 'stress1m_testdefs_s7.metropolis')], { residents: 1034100, buildings: 19484, roadCells: 36003 });
 }
-if (only.has('bot256')) await fixture('bot256', 'bot256_s7_y60.metropolis', 'botgrow', (d) => ['60', '7', '60', d], {});
+// (the original's documented numbers: 653k residents, 13,909 road + rail cells; these are the exact ones of its rebuild)
+if (only.has('bot256')) await fixture('bot256', 'bot256_s7_y60.metropolis', 'botgrow', (d) => ['60', '7', '60', d], { residents: 652568, buildings: 11276, roadCells: 13828 });
 if (only.has('cities')) await cities();
 
 log(`done in ${((performance.now() - t0) / 1000).toFixed(0)} s`);

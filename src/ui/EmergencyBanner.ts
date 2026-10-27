@@ -220,16 +220,20 @@ export const FALLBACK_ROWS = 2;
 const BOTTOM_KEEP = 84;
 /** room kept free between the stack and the bottom toolbar block (final fixes r3) */
 export const TOOLBAR_GAP = 12;
-/** EM-4 / U1: the docking waits this long at most for a press on the stack to be released (real ms) */
-export const PRESS_HOLD_MS = 1500;
 /**
- * Close-out c1: a press on a banner's button or the pill is ignored while the stack has just moved under the pointer —
- * from the change (re-docked: a toolbar flyout opened, a panel moved; banners re-ordered, added, removed or switched
- * between full and compact) until this long (real ms) after it was first on screen: it was aimed at what sat there
- * before (opening the Civic flyout re-docked the stack to compact rows, and a press meant for one banner's Jump landed
- * on the next banner's — Send nearest is on the same row)
+ * Close-out c1: a press on a banner's button or the pill is ignored while that banner (or the pill) has just moved under
+ * the pointer — from the change (re-docked: a toolbar flyout opened, a panel moved; banners above it re-ordered, added,
+ * removed or switched between full and compact; it was itself added or switched) until this long (real ms) after it was
+ * first on screen: it was aimed at what sat there before (opening the Civic flyout re-docked the stack to compact rows,
+ * and a press meant for one banner's Jump landed on the next banner's — Send nearest is on the same row). Close-out c2:
+ * only the banners that moved (a press on one above the change, or on one that stayed, clicks at once), and an ignored
+ * press says so: the banner flashes (SETTLE_FLASH_MS) and its click plays the denied sound.
  */
 export const SETTLE_MS = 350;
+/** close-out c2: how long a banner (or the pill) flashes when a press on it was ignored (real ms) */
+export const SETTLE_FLASH_MS = 260;
+/** a banner's height as a full / compact one when it was never measured at the stack's width (layout px) */
+const FULL_H = 150, COMP_H = 64;
 export interface DockRect { x: number; y: number; w: number; h: number }
 /** where the stack goes: left / width (css px), all banners compact, its top (default STACK_TOP) and the number of
  *  banners shown (0 = all) */
@@ -498,9 +502,26 @@ interface BannerEl {
   outcome?: string;
   /** a unit could make it in time at some point (the alert held the speed policy) */
   wasPossible?: boolean;
-  /** last measured height as a full / compact banner (dock: the stack's height either way) */
-  fullH?: number;
-  compH?: number;
+  /**
+   * its heights as last measured as a full / compact banner, per stack width (layout px, rounded; dock: the stack's
+   * height either way). The same banner is taller in a narrower stack — close-out c2: heights measured in the narrow
+   * column beside a centre panel were read for the centred stack once the panel closed, and kept it all compact for
+   * good; a width it was never measured at counts as a default-sized banner (fullAt / compAt)
+   */
+  hts?: Map<number, { full?: number; comp?: number }>;
+  /** close-out c2: its slot at the last layout (the shown banners above it, its own full / compact and shown / folded
+   *  state); once it moved, presses on it are ignored until settleUntil (real ms; markMoved) */
+  slot?: string;
+  settleUntil: number;
+  settleGen: number;
+}
+
+/** a banner's height as a full / compact one in a stack `w` layout px wide: as measured there, else the default */
+function fullAt(b: BannerEl, w: number): number {
+  return b.hts?.get(Math.round(w))?.full ?? FULL_H;
+}
+function compAt(b: BannerEl, w: number): number {
+  return b.hts?.get(Math.round(w))?.comp ?? COMP_H;
 }
 
 export class EmergencyBanner {
@@ -542,12 +563,15 @@ export class EmergencyBanner {
   private layerWatched = false;
   /** EM-4 / U1: real ms of a press on the stack not released yet (0 = none): no re-docking until it is released — its
    *  pointerdown may close the toolbar flyout, and a re-dock (more rows, full banners) before the pointerup moved the
-   *  button away from under the pointer: the click was lost */
+   *  button away from under the pointer: the click was lost. Close-out c2: held until the release (pointerup /
+   *  pointercancel / lostpointercapture, or the window's blur) however long the press — a 1.5 s cap re-docked under a
+   *  long press and lost its click — and the pressed control captures the pointer, so its release still clicks it */
   private pressAt = 0;
-  /** close-out c1: real ms until which a press on the stack's buttons or pill is ignored — it just moved under the
-   *  pointer (Infinity while the move is not on screen yet; markMoved, SETTLE_MS) */
-  private settleUntil = 0;
-  private settleGen = 0;
+  /** close-out c1 / c2: real ms until which a press on the pill is ignored — it just moved under the pointer (Infinity
+   *  while the move is not on screen yet; markMoved, SETTLE_MS); its slot at the last layout (the shown banners) */
+  private moreSettleUntil = 0;
+  private moreSettleGen = 0;
+  private moreSlot = '';
   /** the control a press was ignored on: its click is dropped too */
   private ignored: Element | null = null;
   /** close-out c1: the highest an open toolbar flyout's top reached since it opened (relative to the bottom block, <= 0;
@@ -571,21 +595,32 @@ export class EmergencyBanner {
     // (a resize measures everything afresh, the open flyout's tallest tab too)
     const resized = () => { this.flyHigh = 0; this.dockDirty = true; };
     win?.addEventListener('resize', resized);
-    // (a press anywhere on the stack holds the docking until it is released — the layout it measured then applies. A
-    // press on a button or the pill while the stack has just moved under the pointer is ignored, and its click: it was
-    // aimed at what sat there before — close-out c1, SETTLE_MS)
+    // (a press anywhere on the stack holds the docking until it is released — the layout it measured then applies; the
+    // pressed control captures the pointer, so its release clicks it whatever moved meanwhile — close-out c2. A press on
+    // a button or the pill of a banner that has just moved under the pointer is ignored, and its click: it was aimed at
+    // what sat there before — close-out c1, SETTLE_MS; c2: it flashes, and the click plays the denied sound)
     this.el.addEventListener('pointerdown', (e) => {
       const now = performance.now();
       this.ignored = null;
       const t = (e as Event | undefined)?.target as Element | null | undefined;
       const ctl = t && typeof t.closest === 'function' ? t.closest('button, .emg-more') : null;
-      if (ctl && now < this.settleUntil) {
+      if (ctl && this.unsettled(ctl, now)) {
         this.ignored = ctl;
+        this.flashSettling(ctl);
         e.preventDefault();
         e.stopPropagation();
         return;
       }
       this.pressAt = now;
+      const pid = (e as Partial<PointerEvent>).pointerId;
+      const cap = ctl as (Element & { setPointerCapture?: (id: number) => void }) | null;
+      if (cap && pid !== undefined && typeof cap.setPointerCapture === 'function') {
+        try {
+          cap.setPointerCapture(pid);
+        } catch {
+          /* (no active pointer: a synthetic event) */
+        }
+      }
     }, true);
     this.el.addEventListener('click', (e) => {
       const ig = this.ignored;
@@ -595,6 +630,8 @@ export class EmergencyBanner {
       if (t && ig.contains(t)) {
         e.preventDefault();
         e.stopPropagation();
+        // (within the click: the UI's generic click sound is left out — uiSounds)
+        this.ctx.sound('error');
       }
     }, true);
     const release = () => {
@@ -606,6 +643,9 @@ export class EmergencyBanner {
     };
     win?.addEventListener('pointerup', release, true);
     win?.addEventListener('pointercancel', release, true);
+    // (a release the window never sees: the pointer capture ends, or the window loses focus with the button held)
+    win?.addEventListener('blur', release);
+    this.el.addEventListener('lostpointercapture', release, true);
     const off = ctx.sim.events.on('emergency', (e) => this.onEvent(e));
     const offReset = ctx.sim.events.on('reset', () => this.reset());
     const offTick = ctx.ui.on('uiTick', () => this.tick());
@@ -616,25 +656,56 @@ export class EmergencyBanner {
       win?.removeEventListener('resize', resized);
       win?.removeEventListener('pointerup', release, true);
       win?.removeEventListener('pointercancel', release, true);
+      win?.removeEventListener('blur', release);
     });
   }
 
   /**
-   * close-out c1: the stack moved under the pointer (re-docked, or its banners re-ordered, added, removed or switched
-   * between full and compact): presses on its buttons are ignored until SETTLE_MS after the move is on screen — stamped
-   * at the start of the second frame from now (the first one paints it; a later move starts over). No layout read.
+   * close-out c1 / c2: these banners (and the pill) moved under the pointer — the stack re-docked, they were added,
+   * switched between full and compact or folded, or a banner above them went, moved or changed its size: presses on them
+   * are ignored until SETTLE_MS after the move is on screen — stamped at the start of the second frame from now (the
+   * first one paints it; a later move starts over). The banners that did not move take presses at once. No layout read.
    */
-  private markMoved(): void {
-    this.settleUntil = Infinity;
-    const gen = ++this.settleGen;
+  private markMoved(list: Iterable<BannerEl>, pill: boolean): void {
+    const stamps: (() => void)[] = [];
+    for (const b of list) {
+      b.settleUntil = Infinity;
+      const gen = ++b.settleGen;
+      stamps.push(() => {
+        if (gen === b.settleGen) b.settleUntil = performance.now() + SETTLE_MS;
+      });
+    }
+    if (pill) {
+      this.moreSettleUntil = Infinity;
+      const gen = ++this.moreSettleGen;
+      stamps.push(() => {
+        if (gen === this.moreSettleGen) this.moreSettleUntil = performance.now() + SETTLE_MS;
+      });
+    }
+    if (!stamps.length) return;
     const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
     if (!raf) {
-      this.settleUntil = performance.now() + SETTLE_MS;
+      for (const f of stamps) f();
       return;
     }
     raf(() => raf(() => {
-      if (gen === this.settleGen) this.settleUntil = performance.now() + SETTLE_MS;
+      for (const f of stamps) f();
     }));
+  }
+
+  /** a press on control `ctl` lands on a banner (or the pill) that has just moved under the pointer */
+  private unsettled(ctl: Element, now: number): boolean {
+    if (this.more.contains(ctl)) return now < this.moreSettleUntil;
+    for (const b of this.banners.values()) if (b.el.contains(ctl)) return now < b.settleUntil;
+    return false;
+  }
+
+  /** close-out c2: an ignored press shows — the banner (or the pill) it landed on flashes for SETTLE_FLASH_MS */
+  private flashSettling(ctl: Element): void {
+    const el = this.more.contains(ctl) ? this.more : [...this.banners.values()].find((b) => b.el.contains(ctl))?.el;
+    if (!el) return;
+    toggleClass(el, 'settling', true);
+    setTimeout(() => toggleClass(el, 'settling', false), SETTLE_FLASH_MS);
   }
 
   /** the LIVE badge: an alert is holding the game at (slowed) 1x */
