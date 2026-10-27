@@ -51,3 +51,9 @@ Report: docs/dev/reports/local-T003-gpu-smoke.md. 60 Hz held everywhere (0 frame
 - [art] At far zoom the 304k city reads as a bright white grid of lot and road outlines over the green (same on SwiftShader):
   pair_game300k_ultra.png top right. Review the far-zoom lot-outline / road-edge brightness in the art polish round.
 - [tooling] Seed or freeze window lights and traffic for exact GPU-vs-reference diffs (night shots differ by lit-window pattern).
+- [tooling] `tools/makeFixtures.mjs` snap step fails on Windows (local worker, T005): GNU tar cannot take `C:\` paths,
+  bsdtar needs `-f -`, and `symlinkSync` needs developer mode. Fix: stream `git archive` into tar through stdin with
+  forward-slash relative paths, and link `node_modules` with a `'junction'` symlink on win32.
+- [tooling] `tools/bench/sim-profile/profile.ts` needs `process.threadCpuUsage` (missing in Node 22.12, present in 22.22), and on
+  Windows `process.cpuUsage` ticks at 15.6 ms. Add a portable fallback (long-window CPU chunks; `hrtime` per frame,
+  labelled wall-clock) instead of the worker's preloaded shim.
