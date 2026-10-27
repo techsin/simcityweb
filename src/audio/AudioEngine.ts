@@ -17,6 +17,8 @@
  *   audio.music                          soundtrack player: nowPlaying, list(), next(), prev(), select(id),
  *                                        shuffle (get/set), setShuffle, isEnabled / setEnabled(id, on), onChange(cb)
  *   audio.setMuted(on) / muted
+ *   audio.duck(db, hold, release)        music reduction in dB; hold / release in seconds (60 ms attack)
+ *   audio.setMusicPauses(on) / setMuteInBackground(on)   game settings, default on
  * Volumes, music toggle, shuffle, the enabled-track set and the UI / hover / now-playing toggles persist in
  * localStorage ('metropolis.audio').
  */
@@ -26,6 +28,9 @@ import { MusicDirector, type MusicContext, type NowPlaying, type TrackInfo } fro
 import { ALL_TRACKS } from './music/tracks';
 import { makeNoiseBuffer, makeReverb } from './music/fx';
 import { afterAudioReveal } from './loading';
+import { AudioDucking } from './ducking';
+import { BackgroundMute } from './background';
+import { loadSettings } from '../game/settings';
 
 export type VolumeKind = 'master' | 'music' | 'sfx' | 'ambience';
 export type { MusicContext, NowPlaying, TrackInfo };
@@ -86,6 +91,10 @@ export class AudioEngine {
   ctx: AudioContext | null = null;
   private prefs: Prefs = loadPrefs();
   private master!: GainNode;
+  private ducking: AudioDucking | null = null;
+  private background: BackgroundMute | null = null;
+  private muteInBackground = true;
+  private onVisibility = () => this.background?.setHidden(document.hidden);
   private buses = {} as Record<Exclude<VolumeKind, 'master'>, GainNode>;
   private reverbIn!: GainNode;
   private env!: SfxEnv;
@@ -114,6 +123,12 @@ export class AudioEngine {
   private lastAnyPlay = -1e9;
   private listeners = new Set<Listener>();
   private autoInitAttached = false;
+
+  constructor() {
+    const settings = loadSettings();
+    this.setMusicPauses(settings.musicPauses !== false);
+    this.setMuteInBackground(settings.muteInBackground !== false);
+  }
 
   /** soundtrack player (see MusicControls) */
   readonly music: MusicControls = (() => {
@@ -160,7 +175,7 @@ export class AudioEngine {
   init(): boolean {
     if (typeof window === 'undefined') return false;
     if (this.ctx) {
-      if (this.ctx.state === 'suspended') void this.ctx.resume();
+      if (this.ctx.state === 'suspended') this.resume();
       return true;
     }
     const AC = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -173,6 +188,9 @@ export class AudioEngine {
     }
     this.ctx = ctx;
     this.master = ctx.createGain();
+    this.background = new BackgroundMute(ctx, this.master.gain);
+    this.background.setEnabled(this.muteInBackground);
+    this.ducking = new AudioDucking(ctx);
     // gentle glue compressor on the master
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -14;
@@ -183,7 +201,8 @@ export class AudioEngine {
     this.master.connect(comp).connect(ctx.destination);
     for (const k of ['music', 'sfx', 'ambience'] as const) {
       const g = ctx.createGain();
-      g.connect(this.master);
+      if (k === 'sfx') g.connect(this.master);
+      else g.connect(this.ducking[k]).connect(this.master);
       this.buses[k] = g;
     }
     // shared hall reverb + noise (src/audio/music/fx.ts - the audio lab renders through the same ones)
@@ -196,10 +215,14 @@ export class AudioEngine {
     const musicRev = ctx.createGain();
     musicRev.gain.value = 1;
     this.musicReverb = musicRev;
-    musicRev.connect(this.reverbIn);
+    musicRev.connect(this.ducking.reverb).connect(this.reverbIn);
     this.director.attach(ctx, this.buses.music, musicRev, noise);
     this.applyVolumes(true);
-    if (ctx.state === 'suspended') void ctx.resume();
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisibility);
+      this.onVisibility();
+    }
+    if (ctx.state === 'suspended') this.resume();
     if (this.wantMusic && this.prefs.musicOn) this.startMusic();
     if (this.wantAmbience) this.startAmbience();
     this.emit();
@@ -235,7 +258,7 @@ export class AudioEngine {
     const soft = name === 'hover' || name === 'tick';
     if (name !== 'hover') this.serial++;
     const ctx = this.ctx;
-    if (!ctx || ctx.state !== 'running' || this.prefs.muted) return;
+    if (!ctx || ctx.state !== 'running' || this.prefs.muted || this.background?.muted) return;
     if (meta.cat === 'ui' && this.prefs.uiSounds === false) return;
     if (name === 'hover' && this.prefs.hoverSounds === false) return;
     const now = performance.now();
@@ -255,6 +278,7 @@ export class AudioEngine {
       if (rec.length > 3) vol *= Math.max(0.62, 1 - 0.06 * (rec.length - 3));
     }
     playVoice(this.env, name, this.buses.sfx, { ...opts, volume: vol });
+    if (vol > 0 && this.prefs.sfx > 0 && this.prefs.master > 0) this.ducking?.sound(meta.dur);
   }
 
   /** number of play() requests so far (the delegated UI sound handler compares it to skip generic feedback) */
@@ -344,6 +368,22 @@ export class AudioEngine {
   }
 
   // ------------------------------------------------------------------ music
+  /** Duck only music (dry + reverb send). Explicit long ducks are not subject to the SFX cooldown. */
+  duck(db: number, hold: number, release = 0.6): void {
+    this.ducking?.duck(db, hold, release);
+  }
+
+  /** The Settings panel persists these two flags in GameSettings. */
+  setMusicPauses(on: boolean): void {
+    this.director.setMusicPauses(on);
+  }
+
+  setMuteInBackground(on: boolean): void {
+    this.muteInBackground = on;
+    this.director.setMuteInBackground(on);
+    this.background?.setEnabled(on);
+  }
+
   get musicEnabled(): boolean {
     return this.prefs.musicOn;
   }
@@ -420,13 +460,13 @@ export class AudioEngine {
   }
 
   resume(): void {
-    void this.ctx?.resume();
+    if (!this.background?.muted) void this.ctx?.resume().catch(() => {});
   }
 
   // ------------------------------------------------------------------ fireworks (src/audio/fireworks.ts)
   /** raw SFX output for procedural one-shots (New Year fireworks); null before init, while suspended or muted */
   getSfxOutput(): { ctx: AudioContext; dest: AudioNode; wet: AudioNode; noise: AudioBuffer } | null {
-    if (!this.ctx || this.ctx.state !== 'running' || this.prefs.muted || !this.env) return null;
+    if (!this.ctx || this.ctx.state !== 'running' || this.prefs.muted || this.background?.muted || !this.env) return null;
     return { ctx: this.ctx, dest: this.buses.sfx, wet: this.reverbIn, noise: this.env.noise };
   }
 
@@ -436,7 +476,7 @@ export class AudioEngine {
     const set = (p: AudioParam, v: number) => (immediate ? p.setValueAtTime(v, t) : p.setTargetAtTime(v, t, 0.05));
     // perceptual curve
     const curve = (v: number) => v * v;
-    set(this.master.gain, this.prefs.muted ? 0 : curve(this.prefs.master));
+    this.background?.setVolume(this.prefs.muted ? 0 : curve(this.prefs.master), immediate);
     set(this.buses.music.gain, curve(this.prefs.music) * 0.9);
     if (this.musicReverb) set(this.musicReverb.gain, curve(this.prefs.music) * 0.9);
     set(this.buses.sfx.gain, curve(this.prefs.sfx));

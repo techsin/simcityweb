@@ -1,10 +1,10 @@
 /**
  * MusicDirector - plays the soundtrack as an endless, context-aware playlist of finite generative songs.
  *
- *  - one deadline timer (next bar / crossfade / cleanup, 1.5 s lookahead), asleep while paused or hidden. A tab that was throttled
+ *  - one deadline timer (next bar / crossfade / rest / cleanup, 1.5 s lookahead), asleep while paused or background-muted. A tab that was throttled
  *    or a stalled main thread skips ahead (song.ts skips past bars, Instruments drop past notes) instead of bursting.
  *  - shuffle (weighted by context, never the last 1-2 tracks again) or sequential order; enabled set + shuffle persist
- *  - ~5 s crossfade into the next song before the current one ends; 2.5 s on manual next/prev/select
+ *  - 15-40 s rests in cities (optional); ~5 s crossfades in menus; 2.5 s on manual next/prev/select
  *  - a track that throws (create / start / schedule) is logged, faded out and skipped for the session
  */
 import { RNG, clamp, smoothstep } from '../../core/rng';
@@ -93,6 +93,8 @@ const LOOKAHEAD = 1.5;
 const XF_AUTO = 5;
 const XF_MANUAL = 2.5;
 const START_FADE = 1.2;
+const REST_MIN = 15;
+const REST_MAX = 40;
 
 /** piecewise-linear gain schedule on one or more params that can be retargeted at any time without clicks */
 class Fade {
@@ -159,6 +161,9 @@ export class MusicDirector {
   private running = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private deferred = false;
+  private musicPauses = true;
+  private muteInBackground = true;
+  private restUntil: number | null = null;
   private wake = () => this.tick();
   private cleanupSource: ConstantSourceNode | null = null;
   private finishStop = () => {
@@ -190,6 +195,7 @@ export class MusicDirector {
     if (this.ctx && this.ctx !== ctx) {
       this.clearCleanup();
       this.cleanup(Infinity);
+      this.restUntil = null;
     }
     this.ctx = ctx;
     this.out = out;
@@ -214,6 +220,7 @@ export class MusicDirector {
   /** fade everything out and stop */
   stop(fade = 2): void {
     this.running = false;
+    this.restUntil = null;
     this.clearTimer();
     const ctx = this.ctx;
     if (ctx) for (const p of this.plays) this.fadeOut(p, ctx.currentTime, fade);
@@ -238,7 +245,33 @@ export class MusicDirector {
   }
 
   setContext(c: Partial<MusicContext>): void {
+    const pauses = this.pauses();
     Object.assign(this.context, c);
+    if (pauses !== this.pauses()) this.updatePauses();
+  }
+
+  setMusicPauses(on: boolean): void {
+    if (this.musicPauses === on) return;
+    this.musicPauses = on;
+    this.updatePauses();
+  }
+
+  setMuteInBackground(on: boolean): void {
+    if (this.muteInBackground === on) return;
+    this.muteInBackground = on;
+    this.tick();
+  }
+
+  private pauses(): boolean {
+    return this.musicPauses && this.context.screen === 'city';
+  }
+
+  private updatePauses(): void {
+    if (!this.pauses() && this.restUntil !== null) {
+      this.restUntil = null;
+      if (this.cur?.fadingOut) this.cur = null;
+    }
+    this.tick();
   }
 
   getContext(): Readonly<MusicContext> {
@@ -268,7 +301,7 @@ export class MusicDirector {
       h.pop();
       const id = h.pop()!;
       this.switchTo(id, XF_MANUAL);
-    } else if (this.cur) this.switchTo(this.cur.track.id, XF_MANUAL);
+    } else if (h.length) this.switchTo(h[h.length - 1], XF_MANUAL);
   }
 
   select(id: string): void {
@@ -347,7 +380,7 @@ export class MusicDirector {
 
   private awake(): boolean {
     return this.running && !this.deferred && this.ctx?.state === 'running'
-      && (typeof document === 'undefined' || !document.hidden);
+      && (!this.muteInBackground || typeof document === 'undefined' || !document.hidden);
   }
 
   private scheduleTimer(): void {
@@ -363,6 +396,10 @@ export class MusicDirector {
       }
     }
     if (this.cur && !this.cur.fadingOut) at = Math.min(at, this.cur.player.endTime - XF_AUTO - LOOKAHEAD);
+    if (this.restUntil !== null) {
+      at = Math.min(at, this.restUntil - LOOKAHEAD);
+      if (this.cur) at = Math.min(at, this.cur.player.endTime);
+    }
     if (Number.isFinite(at)) this.timer = setTimeout(this.wake, Math.max(1, Math.ceil((at - now) * 1000) + 1));
   }
 
@@ -408,6 +445,7 @@ export class MusicDirector {
 
   private switchTo(id: string, xf: number): void {
     if (!id) return;
+    this.restUntil = null;
     const ctx = this.ctx;
     if (!this.awake() || !ctx || !this.out) {
       this.queued = id;
@@ -481,6 +519,7 @@ export class MusicDirector {
     console.warn(`[music] track "${p.track.id}" failed while playing`, e);
     this.failed.add(p.track.id);
     const wasCur = this.cur === p;
+    if (wasCur) this.restUntil = null;
     this.fadeOut(p, this.ctx!.currentTime, 0.4);
     if (wasCur && this.running) this.begin(this.pick(), this.ctx!.currentTime + 0.1, START_FADE);
   }
@@ -492,6 +531,7 @@ export class MusicDirector {
     if (ctx.state === 'closed') {
       this.clearCleanup();
       this.cleanup(Infinity);
+      this.restUntil = null;
       return;
     }
     if (!this.awake()) return;
@@ -499,11 +539,23 @@ export class MusicDirector {
     const la = LOOKAHEAD;
     this.cleanup(now);
     if (this.queued) {
+      this.restUntil = null;
       if (this.cur) this.fadeOut(this.cur, now, XF_MANUAL);
       this.begin(this.queued, now + 0.06, XF_MANUAL * 0.8);
       this.queued = null;
     }
-    if (this.running && !this.cur) this.begin(this.queued ?? this.pick(), now + 0.08, START_FADE);
+    if (this.restUntil !== null) {
+      if (this.cur && now >= this.cur.player.endTime) {
+        this.cur = null;
+        this.emit();
+      }
+      if (now + la >= this.restUntil) {
+        const at = Math.max(now + 0.05, this.restUntil);
+        this.restUntil = null;
+        this.begin(this.pick(), at, START_FADE);
+      }
+    }
+    if (this.running && !this.cur && this.restUntil === null) this.begin(this.pick(), now + 0.08, START_FADE);
     for (const p of [...this.plays]) {
       if (p.fadingOut && now > p.killAt - 0.5) continue;
       const next = p.player.nextScheduleTime;
@@ -515,12 +567,18 @@ export class MusicDirector {
         this.fail(p, e);
       }
     }
-    // crossfade into the next song before the current one ends
+    // Fade through the tail; city rests start at endTime (which includes the ring-out).
     const c = this.cur;
     if (this.running && c && !c.fadingOut && now + la >= c.player.endTime - XF_AUTO) {
       const at = Math.max(now + 0.05, c.player.endTime - XF_AUTO);
-      this.fadeOut(c, at, XF_AUTO);
-      this.begin(this.pick(), at, XF_MANUAL);
+      if (this.pauses()) {
+        this.fadeOut(c, at, Math.max(0.01, c.player.endTime - at));
+        this.cur = c;
+        this.restUntil = c.player.endTime + this.rng.range(REST_MIN, REST_MAX);
+      } else {
+        this.fadeOut(c, at, XF_AUTO);
+        this.begin(this.pick(), at, XF_MANUAL);
+      }
     }
     this.scheduleTimer();
   }

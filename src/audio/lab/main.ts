@@ -6,6 +6,8 @@
  *   ?sfx=<name>[,<name>...]|all                  render UI / game one-shots (one slot each) with per-sound stats
  *   ?inst=<name>|all                             instrument demo phrases (vel 0.7 then 0.35) with per-instrument stats
  *   ?director=<seconds>[&real=1&stall=T&next=T&select=id@T]   live MusicDirector test (see directorTest.ts)
+ *   ?duck=milestone[&db=14&hold=6&stem=music]     matched stems: music / ambience duck and recovery (mixTest.ts)
+ *   ?background=1[&muteInBackground=0]           live master fade / suspend / resume (simulated visibility)
  *   no params                                    index of everything available
  *
  * Results: window.__result (JSON), console line "LAB_RESULT {...}", canvas #lab (spectrogram 20 Hz-16 kHz,
@@ -19,6 +21,7 @@ import { Instruments, type InstrumentName } from '../music/synth';
 import { playVoice, SOUND_META, SOUND_NAMES, type SfxEnv, type SoundName } from '../sfx';
 import { levels, loudness, onsets, spectrum, round, type SpectrumStats, type LoudnessResult } from './analysis';
 import { runDirectorTest } from './directorTest';
+import { renderDuck, runBackgroundTest } from './mixTest';
 
 declare global {
   interface Window {
@@ -506,9 +509,10 @@ function exposeWav(buf: AudioBuffer, a: number, b: number): void {
 
 // ------------------------------------------------------------------ main
 async function main() {
-  const track = q.get('track'), sfx = q.get('sfx'), instQ = q.get('inst'), idle = q.get('idle');
-  if (q.get('director')) {
-    const res = (await runDirectorTest(q, log)) as { levels: number[]; events: { t: number; id: string | null }[]; seconds: number };
+  const track = q.get('track'), sfx = q.get('sfx'), instQ = q.get('inst'), idle = q.get('idle'), duck = q.get('duck');
+  if (q.get('director') || q.has('background')) {
+    const background = q.has('background');
+    const res = (background ? await runBackgroundTest(q, log) : await runDirectorTest(q, log)) as { levels: number[]; events: { t: number; id: string | null }[]; seconds: number };
     const cv = document.createElement('canvas');
     cv.id = 'lab';
     cv.width = W;
@@ -530,7 +534,7 @@ async function main() {
       g.fillText(e.id ?? '(none)', x + 3, 34);
     }
     g.fillStyle = '#9aa6bb';
-    g.fillText('director test: RMS dB every 100 ms (cyan), nowPlaying changes (white)', 8, 14);
+    g.fillText(background ? 'background test: RMS dB every 50 ms (cyan), visibility / context state (white)' : 'director test: RMS dB every 100 ms (cyan), nowPlaying changes (white)', 8, 14);
     app.replaceChildren(cv);
     const { levels: _l, ...rest } = res as Record<string, unknown>;
     void _l;
@@ -543,7 +547,7 @@ async function main() {
     window.__ready = true;
     return;
   }
-  if (!track && !sfx && !instQ && !idle) {
+  if (!track && !sfx && !instQ && !idle && !duck) {
     const add = (label: string, href: string) => {
       const a = document.createElement('a');
       a.href = href;
@@ -559,12 +563,19 @@ async function main() {
     log('Instruments:');
     add('all', '?inst=all');
     Object.keys(DEMOS).forEach((s) => add(s, `?inst=${s}`));
+    log('FEEL-11:');
+    add('Fanfare duck', '?duck=milestone');
+    add('14 dB duck API', '?duck=milestone&db=14&hold=6');
+    add('City rests', '?director=150&screen=city');
+    add('Menu crossfades', '?director=50&screen=menu');
+    add('Background mute', '?background=1');
+    add('Background mute off', '?background=1&muteInBackground=0');
     window.__result = { tracks: ALL_TRACKS.map((t) => t.id), sfx: SOUND_NAMES, instruments: Object.keys(DEMOS) };
     window.__ready = true;
     return;
   }
   log('rendering...');
-  const r = track ? await renderTrack(track) : sfx ? await renderSfx(sfx) : idle ? await renderIdle(parseFloat(idle)) : await renderInst(instQ!);
+  const r = duck ? await renderDuck(q, timed) : track ? await renderTrack(track) : sfx ? await renderSfx(sfx) : idle ? await renderIdle(parseFloat(idle)) : await renderInst(instQ!);
   const tA = performance.now();
   const buf = r.buf;
   const L = buf.getChannelData(0), R = buf.getChannelData(1);

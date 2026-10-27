@@ -4,6 +4,7 @@ import { song } from '../../src/audio/music/song';
 import type { MusicTrack } from '../../src/audio/music/types';
 import { afterAudioReveal } from '../../src/audio/loading';
 import { audioSetup } from './mockAudio';
+import { RNG } from '../../src/core/rng';
 
 class Visibility extends EventTarget {
   hidden = false;
@@ -205,5 +206,105 @@ describe('music deadlines', () => {
     await Promise.resolve();
     expect(ready).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([15, 40])('schedules an exact %s s city rest, with one deadline while silent', (rest) => {
+    vi.spyOn(RNG.prototype, 'range').mockReturnValue(rest);
+    const { director, started } = setup();
+    const timeout = vi.spyOn(globalThis, 'setTimeout');
+    director.setContext({ screen: 'city' });
+    director.start();
+    vi.advanceTimersByTime(25000);
+    expect(director.nowPlaying).toBeNull();
+    expect(started).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    const calls = timeout.mock.calls.length;
+    vi.advanceTimersByTime(5000);
+    expect(timeout).toHaveBeenCalledTimes(calls);
+    vi.advanceTimersByTime(180000);
+    const plays = started.mock.calls.map(([at, p]) => ({ at: at as number, end: p.endTime as number }));
+    expect(plays.length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < plays.length; i++) expect(plays[i].at - plays[i - 1].end).toBeCloseTo(rest, 6);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('draws city rest lengths in [15, 40] seconds', () => {
+    const { director, started } = setup();
+    director.setContext({ screen: 'city' });
+    director.start();
+    vi.advanceTimersByTime(300000);
+    const plays = started.mock.calls.map(([at, p]) => ({ at: at as number, end: p.endTime as number }));
+    expect(plays.length).toBeGreaterThan(4);
+    const gaps = plays.slice(1).map((p, i) => p.at - plays[i].end);
+    for (const gap of gaps) {
+      expect(gap).toBeGreaterThanOrEqual(15);
+      expect(gap).toBeLessThanOrEqual(40);
+    }
+    expect(new Set(gaps).size).toBeGreaterThan(1);
+  });
+
+  it('discards a failed song\'s pending rest when starting its replacement', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(RNG.prototype, 'range').mockReturnValue(15);
+    const replacement = vi.fn();
+    const tracks = ['bad', 'good'].map((id): MusicTrack => ({
+      id, title: id, mood: '', tags: [], bpm: 60,
+      create: (env) => song(env, {
+        bpm: 60, sections: [{ name: 'A', bars: id === 'bad' ? 4 : 8 }], tail: id === 'bad' ? 0 : 8,
+        setup: id === 'good' ? replacement : undefined,
+        bar: (b) => { if (id === 'bad' && b.bar === 3) throw new Error('last bar failed'); },
+      }),
+    }));
+    const { director } = setup(tracks);
+    director.setContext({ screen: 'city' });
+    director.start();
+    vi.advanceTimersByTime(35000);
+    expect(replacement).toHaveBeenCalledTimes(1);
+    expect(director.nowPlaying?.id).toBe('good');
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it.each(['menu', 'region', 'city'] as const)('keeps continuous crossfades in %s with pauses off', (screen) => {
+    const { director, started } = setup();
+    director.setContext({ screen });
+    if (screen === 'city') director.setMusicPauses(false);
+    director.start();
+    vi.advanceTimersByTime(90000);
+    const plays = started.mock.calls.map(([at, p]) => ({ at: at as number, end: p.endTime as number }));
+    expect(plays.length).toBeGreaterThan(3);
+    for (let i = 1; i < plays.length; i++) expect(plays[i].at - plays[i - 1].end).toBeCloseTo(-5);
+  });
+
+  it.each(['next', 'prev', 'select', 'menu', 'setting', 'restart'])('%s cancels a pending city rest', (action) => {
+    const { director, started } = setup();
+    director.setContext({ screen: 'city' });
+    director.start();
+    vi.advanceTimersByTime(25000);
+    expect(started).toHaveBeenCalledTimes(1);
+    if (action === 'next') director.next();
+    else if (action === 'prev') director.prev();
+    else if (action === 'select') director.select('test');
+    else if (action === 'menu') director.setContext({ screen: 'menu' });
+    else if (action === 'setting') director.setMusicPauses(false);
+    else { director.stop(); director.start(); }
+    expect(started).toHaveBeenCalledTimes(2);
+    expect(started.mock.calls[1][0]).toBeLessThan(25.1);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('keeps scheduling while hidden when background mute is off', () => {
+    const { director, bars, started } = setup();
+    director.setMuteInBackground(false);
+    doc.show(true);
+    director.start();
+    vi.advanceTimersByTime(12000);
+    expect(bars).toEqual([0, 1, 2, 3]);
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(10000);
+    expect(started).toHaveBeenCalledTimes(2);
+    director.setMuteInBackground(true);
+    expect(vi.getTimerCount()).toBe(0);
+    director.setMuteInBackground(false);
+    expect(vi.getTimerCount()).toBe(1);
   });
 });

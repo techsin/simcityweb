@@ -3,6 +3,28 @@ export class MockParam {
   automationRate = 'a-rate';
   events: [string, ...number[]][] = [];
   constructor(value: number) { this.value = value; }
+  valueAt(t: number): number {
+    let value = this.value, at = 0;
+    let target: { value: number; tau: number } | null = null;
+    const held = (time: number) => target ? target.value + (value - target.value) * Math.exp(-(time - at) / target.tau) : value;
+    for (const [kind, v, time, tau] of this.events) {
+      if (t < time) {
+        const f = (t - at) / (time - at);
+        if (kind === 'linear') return value + (v - value) * f;
+        if (kind === 'exp') return value * (v / value) ** f;
+        return held(t);
+      }
+      value = kind === 'target' ? held(time) : v;
+      target = kind === 'target' ? { value: v, tau } : null;
+      at = time;
+    }
+    return held(t);
+  }
+  cancelAndHoldAtTime(t: number): this {
+    const value = this.valueAt(t);
+    this.cancelScheduledValues(t);
+    return this.linearRampToValueAtTime(value, t);
+  }
   cancelScheduledValues(t: number): this {
     this.events = this.events.filter((e) => e[2] < t);
     return this;
