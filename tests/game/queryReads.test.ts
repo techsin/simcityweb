@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GameContext } from '../../src/game/context';
 import { RectTool } from '../../src/game/tools/ZoneTool';
+import { NetworkTool } from '../../src/game/tools/NetworkTool';
+import { Network, Zone } from '../../src/core/types';
 import { PlopTool } from '../../src/game/tools/PlopTool';
 import { DispatchTool } from '../../src/game/tools/DispatchTool';
 import type { Tool, ToolPointer } from '../../src/game/tools/Tool';
@@ -37,6 +39,49 @@ function fixture() {
 }
 
 describe('query consumers', () => {
+  it.each(['inspector', 'bulldoze'] as const)('%s passes the preview refund and note into its risk query', async (consumer) => {
+    const f = fixture();
+    await f.host.start();
+    f.host.act('plop', ['util_coal_plant', 20, 20, 0]);
+    const b = f.host.state.buildingAt(20, 20)!;
+    const query = vi.spyOn(f.host, 'query');
+    let panel: InfoPanel | undefined, tool: RectTool | undefined;
+    if (consumer === 'inspector') {
+      panel = new InfoPanel(f.ctx);
+      panel.mount(() => {}, () => {}, () => {});
+      panel.show({ buildingId: b.id, x: b.x, z: b.z });
+      (panel.body as unknown as FEl).all().find((e) => e.tagName === 'button' && textOf(e).startsWith('Demolish'))!.click();
+    } else {
+      tool = new RectTool(f.ctx, { kind: 'bulldoze' }, 'bulldoze', 'Bulldoze', 'bulldoze');
+      f.tools.active = tool;
+      tool.down(at(b.x, b.z)); tool.up(at(b.x, b.z));
+    }
+    await flush();
+    expect(query).toHaveBeenCalledWith('demolishRisks', {
+      rect: { x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d },
+      cost: -25000, refund: 25000, refundNote: 'built today', sandbox: false,
+    });
+    expect(f.host.state.buildings.has(b.id)).toBe(true); // the existing last-plant confirmation declined
+    panel?.onClose(); tool?.deactivate(); f.abort.abort('dispose'); await f.host.dispose();
+  });
+
+  it.each(['rezone', 'road'] as const)('%s forwards plain refund data with its side-demolition preview', async (consumer) => {
+    const f = fixture();
+    const pre = { ok: true, cost: 30000, demolished: [f.a.id], demolishFee: 30000, refund: 100, refundNote: 'built today' as const };
+    const tool = consumer === 'rezone'
+      ? new RectTool(f.ctx, { kind: 'zone', zone: Zone.ComLow }, 'zone:4', 'Commercial', 'zone')
+      : new NetworkTool(f.ctx, Network.Road, 'net:2', 'road');
+    vi.spyOn(f.ctx.actions, consumer === 'rezone' ? 'zone' : 'buildNetwork').mockReturnValue(pre);
+    const query = vi.spyOn(f.host, 'query');
+    f.tools.active = tool;
+    tool.down(at(f.a.x, f.a.z)); tool.up(at(f.a.x, f.a.z));
+    await flush();
+    expect(query).toHaveBeenCalledWith('sideDemolishRisks', expect.objectContaining({
+      ids: [f.a.id], fee: 30000, refund: 100, refundNote: 'built today', sandbox: false,
+    }));
+    tool.deactivate(); f.abort.abort('dispose'); await f.host.dispose();
+  });
+
   it('shows a new inspector header immediately and never shows the old target report while throttled', async () => {
     const f = fixture(), panel = new InfoPanel(f.ctx);
     panel.mount(() => {}, () => {}, () => {});

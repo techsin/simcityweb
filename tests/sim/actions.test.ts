@@ -243,6 +243,8 @@ describe('CityActions: fresh refunds (FH-07a)', () => {
     const budget = structuredClone(st.budget), rng = sim.rng.state;
     const pre = A.bulldoze(rect, true);
     expect(pre).toMatchObject({ ok: true, cost: refund ? -refund : 0 });
+    expect(pre.refund).toBe(refund);
+    expect(pre.refundNote).toBe(days === 0 ? 'built today' : days < 30 ? 'under 30 days old' : undefined);
     expect(st.funds).toBe(funds);
     expect(st.budget).toEqual(budget);
     expect(sim.rng.state).toBe(rng);
@@ -276,6 +278,7 @@ describe('CityActions: fresh refunds (FH-07a)', () => {
       const rect = { x0: 2, z0: 5, x1: 20, z1: 20 };
       const pre = host.preview.bulldoze(rect);
       expect(pre.cost).toBe(-25075);
+      expect(pre.refundNote).toBe('built today');
       const ticket = host.act('bulldoze', [rect], { tag, gesture });
       expect(ticket.predicted).toEqual(pre);
       await expect(ticket.done).resolves.toEqual(pre);
@@ -406,6 +409,8 @@ describe('CityActions: fresh refunds (FH-07a)', () => {
     const fee = demolishFee(coal);
     const refund = A.bulldoze({ x0: 10, z0: 10, x1: 11, z1: 11 });
     expect(refund.cost).toBe(fee - 25000);
+    expect(refund.refund).toBe(25000); // gross credit, not the amount left after the rubble fee
+    expect(refund.refundNote).toBe('built today');
     expect(st.budget.curExpense['oneoff:demolition']).toBe(demolishFee(b) + fee);
     const subway = A.buildSubway([{ x: 20, z: 20 }]);
     expect(A.bulldozeSubway({ x0: 20, z0: 20, x1: 21, z1: 21 }).cost).toBe(-subway.cost * 0.25);

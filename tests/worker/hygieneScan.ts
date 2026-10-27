@@ -1,6 +1,6 @@
 /** S1's source checks. Parse code so comments, strings and multiline calls cannot fool the scan. */
-import { readdirSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, relative } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rolldown } from 'rolldown';
 import { parseSync } from 'rolldown/utils';
@@ -120,6 +120,32 @@ export function scan(file: string, source: string, rule: ScanRule = 'isolate'): 
 
 export function scanFiles(files: string[], rule: ScanRule = 'isolate'): Violation[] {
   return files.flatMap((file) => scan(file, readFileSync(join(ROOT, file), 'utf8'), rule));
+}
+
+/** Runtime imports / re-exports only: type edges and lazy imports must not pull actions into the city screen. */
+export function staticImportGraph(entry: string): string[] {
+  const found = new Set<string>(), pending = [entry];
+  while (pending.length) {
+    const file = pending.pop()!;
+    if (found.has(file)) continue;
+    found.add(file);
+    const parsed = parseSync(file, readFileSync(join(ROOT, file), 'utf8'), { sourceType: 'module' });
+    if (parsed.errors.length) throw new Error(`${file}: ${JSON.stringify(parsed.errors)}`);
+    for (const n of (parsed.program as unknown as Node).body as Node[]) {
+      if (!['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(n.type)) continue;
+      if (n.importKind === 'type' || n.exportKind === 'type') continue;
+      const specs = n.specifiers as Node[] | undefined;
+      if (specs?.length && specs.every((s) => s.importKind === 'type' || s.exportKind === 'type')) continue;
+      const spec = name(n.source);
+      if (!spec?.startsWith('.')) continue;
+      const base = resolve(ROOT, dirname(file), spec);
+      const target = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, join(base, 'index.ts')]
+        .find((p) => /\.[cm]?[jt]sx?$/.test(p) && existsSync(p));
+      if (target) pending.push(local(target));
+      else if (!/\.[^/]+$/.test(spec)) throw new Error(`Unresolved import: ${file} → ${spec}`);
+    }
+  }
+  return [...found].sort();
 }
 
 /** Rolldown's module graph before tree shaking, so an unused forbidden import also fails. No bundle is written. */

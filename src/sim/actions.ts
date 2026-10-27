@@ -17,7 +17,7 @@
  * plops under 30 days old, otherwise 25% of networks and nothing for plops. Growable / rubble demolition fees still apply.
  * Sandbox skips money and unlock checks.
  * One-off spending is recorded in budget.curExpense under 'oneoff:construction' | 'oneoff:zoning' |
- * 'oneoff:demolition' | 'oneoff:terraform', refunds in budget.curIncome['oneoff:refund'].
+ * 'oneoff:demolition' | 'oneoff:terraform' | 'oneoff:loanRepay', refunds in budget.curIncome['oneoff:refund'].
  *
  * netFlags bits written here: bit0 bridge, bits2-3 one-way direction (0:+x 1:+z 2:-x 3:-z), bit5 (0x20) rail/road
  * level crossing (cell keeps its road type; rail passes through).
@@ -49,6 +49,9 @@ export interface ActionResult {
   ok: boolean;
   /** total cost (negative = refund) */
   cost: number;
+  /** gross bulldoze refund before demolition / tree fees; the note applies only to a single refund rule */
+  refund?: number;
+  refundNote?: 'built today' | 'under 30 days old';
   /** human readable reason when !ok (or warnings when ok) */
   reason?: string;
   /** number of cells / items affected */
@@ -158,7 +161,7 @@ function dirCode(dx: number, dz: number): number {
 }
 
 /** FH-07a: refund the plop price, apart from the unchanged demolition / tree-clearing fees. */
-export function buildingRefund(b: Building): number {
+function buildingRefund(b: Building): number {
   if (!(b.flags & BF.Plopped)) return 0;
   const price = getDef(b.def)?.cost ?? 0;
   return b.age === 0 ? price : b.age < 30 ? price * 0.5 : 0;
@@ -533,6 +536,7 @@ export class CityActions implements CityActionsApi {
     const seen = new Set<number>();
     const fresh = this.freshToday;
     let fee = 0, refund = 0, treeCost = 0, count = 0;
+    let todayRefund = 0, youngRefund = 0;
     let anyNet = false, anyPower = false, anyTree = false;
     for (let z: number = r.z0; z < r.z1; z++) {
       for (let x: number = r.x0; x < r.x1; x++) {
@@ -546,7 +550,10 @@ export class CityActions implements CityActionsApi {
             const b = st.buildings.get(bid)!;
             blds.push(b);
             fee += demolishFee(b);
-            refund += buildingRefund(b);
+            const credit = buildingRefund(b);
+            refund += credit;
+            if (b.age === 0) todayRefund += credit;
+            else youngRefund += credit;
           }
         }
         const net = st.network[i];
@@ -556,11 +563,16 @@ export class CityActions implements CityActionsApi {
           const c = info.cost * (st.netFlags[i] & NET_BRIDGE ? BRIDGE_COST_MUL : 1);
           const builtToday = fresh && (net === Network.Rail ? this.freshRails : this.freshRoads).has(i);
           refund += c * (builtToday ? 1 : NETWORK_REFUND);
-          if (st.netFlags[i] & NET_CROSSING) refund += NETWORK_INFO[Network.Rail].cost * (fresh && this.freshRails.has(i) ? 1 : NETWORK_REFUND);
+          if (builtToday) todayRefund += c;
+          if (st.netFlags[i] & NET_CROSSING) {
+            refund += NETWORK_INFO[Network.Rail].cost * (fresh && this.freshRails.has(i) ? 1 : NETWORK_REFUND);
+            if (fresh && this.freshRails.has(i)) todayRefund += NETWORK_INFO[Network.Rail].cost;
+          }
         }
         if (st.powerLines[i]) {
           ok = true; anyPower = true;
           refund += POWERLINE_COST * (fresh && this.freshPowerLines.has(i) ? 1 : NETWORK_REFUND) * (st.water[i] ? POWERLINE_WATER_MUL : 1);
+          if (fresh && this.freshPowerLines.has(i)) todayRefund += POWERLINE_COST * (st.water[i] ? POWERLINE_WATER_MUL : 1);
         }
         if (st.trees[i] && bid < 0) { ok = true; anyTree = true; treeCost += TREE_CLEAR_COST; }
         if (ok) count++;
@@ -569,10 +581,13 @@ export class CityActions implements CityActionsApi {
     }
     if (count === 0) return fail('Nothing to bulldoze', 0, cells);
     const total = fee + treeCost - refund;
-    if (!this.affordable(total)) return fail(`Not enough money (${money(total)})`, total, cells);
+    const refundNote: ActionResult['refundNote'] = refund > 0 && refund === todayRefund ? 'built today'
+      : refund > 0 && refund === youngRefund ? 'under 30 days old' : undefined;
+    const credit = { refund, refundNote };
+    if (!this.affordable(total)) return { ...fail(`Not enough money (${money(total)})`, total, cells), ...credit };
     const unique = blds.find((b) => getDef(b.def)?.unique);
     const warn = unique ? `Demolishes ${getDef(unique.def)?.name}` : undefined;
-    if (preview) return { ok: true, cost: total, affected: count, cells, reason: warn };
+    if (preview) return { ok: true, cost: total, affected: count, cells, reason: warn, ...credit };
     this.prepareFreshCells();
     for (const b of blds) removeBuilding(this.sim, b);
     for (let z: number = r.z0; z < r.z1; z++) {
@@ -592,7 +607,7 @@ export class CityActions implements CityActionsApi {
     if (anyNet) { this.sim.events.emit('networkChanged', r); this.afterNetworkChange(); }
     if (anyPower) this.sim.events.emit('powerLinesChanged', r);
     if (anyTree) this.sim.events.emit('treesChanged', r);
-    return { ok: true, cost: total, affected: count, cells, reason: warn };
+    return { ok: true, cost: total, affected: count, cells, reason: warn, ...credit };
   }
 
   // ---------------------------------------------------------------------------------------------- plop
