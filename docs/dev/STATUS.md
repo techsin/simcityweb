@@ -87,6 +87,15 @@ runs should be headless. Round trip lead → worker → lead measured at 51 s. T
   - findings come back as reports on `local/*` branches and go to the cloud fix engineer as before.
 
   Codex cannot run browsers there (its sandbox cannot start processes: `spawn EPERM`), so it only writes code.
+- **Sequencing after the close-out (Oct 27, lead).** The Worker plan's W0.1-W0.6 (the SimHost seam:
+  docs/WORKER_DESIGN.md §6) runs right after fix round 4 merges, on the desktop with Codex (T020; W0.3, W0.4 and W0.5 as
+  three lanes at once). Polish D1 starts the GUIDE and META items (most of rounds 1-2) only after W0.6, so W0 is now the
+  longest chain. Dependent items:
+  - the big-city emergency change builds on W0.4 (LivePolicy moves into SimCore);
+  - the UI frame-cost change builds on W0.5 (views and seams, MiniMap);
+  - polish SIM, CONTENT, art and audio items fill the gap before W0.6.
+
+  Also queued for the desktop: S1, the protector and hygiene tests (T018), and the soak harness for #28 (T019).
 - **Uncovered emergencies in big cities (Oct 27, approved by the owner).** The owner's rule, plus the cooldown and details proposed by the lead. It comes after the sim
   close-out; the coverage part comes after the J3 merge, which touches the same `services.ts` / `catchments.ts`.
   The change alters the sim, so the bot reference table gets re-recorded once.
