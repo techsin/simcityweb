@@ -607,11 +607,9 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
 // ------------------------------------------------------------------------------------------------ breakdown
 const BT = new Float64Array(NTX);
 const B_NEED: readonly (Uint8Array | null)[] = [NEED_FULL];
-/**
- * the breakdown's reusable term context, per runtime and weakly held: a module-level one kept the last inspected city
- * alive after exit to region (its st, rt and TrafficSystem, whose guarded methods close over the CityScene; close-out c2)
- */
-const bctxOf = new WeakMap<EconRuntime, TermCtx>();
+// (the breakdown builds its term context per call and drops it on return: a cached one — module-level, then per
+// runtime — held the inspected city's st, rt and TrafficSystem, whose guarded methods close over the CityScene;
+// close-out c2 / c4)
 
 /** shoppers of each CS tier (T_POP detail) */
 const CS_SHOPPERS = ['mostly $ and $$ residents', 'mostly $$ residents', 'mostly $$$ residents'];
@@ -683,8 +681,7 @@ export function desirabilityBreakdown(st: CityState, rt: EconRuntime | null, dev
     return { terms: [{ id: 'unbuildable', label: st.water[i] ? 'Water' : 'Road / rail', value: -1 }], raw: -1, value: v };
   }
   const N = st.size, x = i % N, z = (i / N) | 0;
-  const c = termCtx(st, rt, bctxOf.get(rt));
-  bctxOf.set(rt, c);
+  const c = termCtx(st, rt);
   fillRow(c, z, x, x + 1, BT, B_NEED);
   const slot = slotOf(st.zone[i]);
   const o = (slot * DEV_TYPE_COUNT + dev) * NT;

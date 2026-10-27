@@ -150,6 +150,9 @@ export class CityScene {
   /** fps readout, measured with the real (unclamped) frame delta from performance.now() — the sim dt is clamped */
   private fps = { frames: 0, t: 0, value: 0, last: 0 };
   private renderFailures = 0;
+  /** what the guarded systems' wrappers report to (guardSystem): cleared at dispose, so a system that outlives the scene
+   *  reaches neither the scene nor its HUD (close-out c4) */
+  private guard: { errors: ErrorOverlay | null } = { errors: null };
   private degraded = { world: false, objects: false, actions: false };
   private resizeObs: ResizeObserver | null = null;
   private actionsProxy: ActionsProxy;
@@ -173,6 +176,7 @@ export class CityScene {
     this.root.append(this.canvas, this.uiRoot, this.veil);
     opts.container.appendChild(this.root);
     this.errors = new ErrorOverlay(this.uiRoot, { pause: () => (this.sim.speed = 0) });
+    this.guard.errors = this.errors;
 
     // ---- simulation: systems are attached in loadSim() (guarded so one broken system can't take the game down)
     this.sim = new Simulation(state, []);
@@ -321,7 +325,7 @@ export class CityScene {
       this.mouse.y = e.clientY;
       this.mouse.inside = true;
     });
-    this.root.addEventListener('pointerleave', () => (this.mouse.inside = false));
+    this.root.addEventListener('pointerleave', () => (this.mouse.inside = false), { signal: this.abort.signal });
     this.offs.push(
       this.sim.events.on('month', () => this.onMonth()),
       // smoke / steam plumes drift with the simulation's wind (the pollution plume and the Air legend's arrow agree)
@@ -365,7 +369,10 @@ export class CityScene {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     this.resolveReady(); // never leave awaiters hanging
-    this.abort.abort();
+    // (close-out c4) every listener the scene and its HUD registered goes with the signal. A plain reason: abort() alone
+    // makes a DOMException whose captured stack holds this frame's receiver, the scene, for as long as the signal lives
+    this.abort.abort('dispose');
+    this.guard.errors = null;
     for (const f of this.offs) f();
     this.resizeObs?.disconnect();
     try {
@@ -390,6 +397,9 @@ export class CityScene {
     } catch (e) {
       console.warn(e);
     }
+    // (close-out c4) and the scene keeps neither view: whatever might still reach it holds no renderer graph
+    this.world = new NullWorldView();
+    this.objects = new NullObjectsView();
     this.uiEvents.clear();
     // the WebGL canvas leaves the scene's DOM first: anything that still holds the disposed renderer (three.js keeps it
     // in the dispose listeners of every material / geometry / texture it drew, some of them module-level) holds its
@@ -580,19 +590,22 @@ export class CityScene {
     const parts = [this.degraded.world && 'world view', this.degraded.objects && 'city objects', this.degraded.actions && 'actions'].filter(Boolean);
     if (!parts.length) return;
     const b = h('div', { class: 'dev-badge mp-glass', title: `Stand-ins active for: ${parts.join(', ')}. ${this.mods.errors.join(' | ')}` }, 'DEV · stand-in ' + parts.join(', '));
-    b.addEventListener('click', () => b.remove());
+    b.addEventListener('click', () => b.remove(), { signal: this.abort.signal });
     this.uiRoot.appendChild(b);
   }
 
   private guardSystem(s: SimSystem): void {
     const methods = ['init', 'daily', 'monthly', 'yearly', 'frame'] as const;
+    // (close-out c4) the wrappers hold `guard`, not the scene: a system kept by anything after exit (it was the
+    // inspector's breakdown context, c2) no longer reaches the scene, its HUD and its renderer
+    const guard = this.guard;
     for (const m of methods) {
       const f = s[m] as ((...a: unknown[]) => void) | undefined;
       if (typeof f !== 'function') continue;
       let errors = 0;
       const report = (e: unknown) => {
         errors++;
-        this.errors?.report(`Simulation system “${s.name}” failed (${m})${errors > 20 ? ' — disabled' : ''}`, e, { key: `sys:${s.name}:${m}`, sim: true });
+        guard.errors?.report(`Simulation system “${s.name}” failed (${m})${errors > 20 ? ' — disabled' : ''}`, e, { key: `sys:${s.name}:${m}`, sim: true });
       };
       (s as unknown as Record<string, unknown>)[m] = function (this: unknown, ...args: unknown[]) {
         if (errors > 20) return;

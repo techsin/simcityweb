@@ -22,7 +22,9 @@ import * as THREE from 'three';
 import { cachedLodProxy, lodProxyExcluded, lodProxyFor, setCachedLodProxy } from './lodProxy';
 
 type Done = (g: THREE.BufferGeometry | null) => void;
-interface Job { key: string; geo: THREE.BufferGeometry; done: Done[]; urgent: boolean; worker: number }
+/** a waiting callback and who asked (cancel(owner) drops it: close-out c4) */
+interface Waiter { fn: Done; owner: object | null }
+interface Job { key: string; geo: THREE.BufferGeometry; done: Waiter[]; urgent: boolean; worker: number }
 interface Reply { key: string; ok: boolean; position?: Float32Array; normal?: Float32Array; color?: Float32Array; surf?: Float32Array; box?: number[]; failed?: boolean; pong?: boolean }
 
 /** longest wait for the workers' answers to their ping (a worker that never starts must not hold up a page) */
@@ -94,13 +96,14 @@ export class LodProxyBuilder {
     return this.jobs.size;
   }
 
-  /** build the proxy of model geometry `geo` (cache key `key`) off the main thread and call done(proxy | null) */
-  request(key: string, geo: THREE.BufferGeometry, done: Done, urgent = false): void {
+  /** build the proxy of model geometry `geo` (cache key `key`) off the main thread and call done(proxy | null);
+   *  `owner`: who asked, so cancel(owner) can drop the callback */
+  request(key: string, geo: THREE.BufferGeometry, done: Done, urgent = false, owner: object | null = null): void {
     const c = cachedLodProxy(key);
     if (c !== undefined || lodProxyExcluded(key)) { done(c ?? null); return; }
     let job = this.jobs.get(key);
     if (job) {
-      job.done.push(done);
+      job.done.push({ fn: done, owner });
       if (urgent && !job.urgent) {
         job.urgent = true;
         if (job.worker >= 0) this.workers[job.worker]?.postMessage({ promote: key });
@@ -112,7 +115,7 @@ export class LodProxyBuilder {
       }
       return;
     }
-    job = { key, geo, done: [done], urgent, worker: -1 };
+    job = { key, geo, done: [{ fn: done, owner }], urgent, worker: -1 };
     this.jobs.set(key, job);
     // (an urgent job goes out at once, past the per-worker bound: it is taken next by the worker's queue)
     if (urgent && !this.failed) this.post(job);
@@ -170,7 +173,22 @@ export class LodProxyBuilder {
     const job = this.jobs.get(key);
     if (!job) return;
     this.jobs.delete(key);
-    for (const d of job.done) d(g);
+    for (const d of job.done) d.fn(g);
+  }
+
+  /**
+   * close-out c4: drop every callback `owner` is waiting for (a disposed BuildingRenderer: its callbacks closed over it,
+   * and through it the exited city, until the workers answered). A job nobody waits for any more leaves the queue if it
+   * was not posted yet; a posted one still fills the proxy cache when its answer comes.
+   */
+  cancel(owner: object): void {
+    for (const [key, job] of this.jobs) {
+      job.done = job.done.filter((d) => d.owner !== owner);
+      if (job.done.length || job.worker >= 0) continue;
+      this.jobs.delete(key);
+      const i = this.queue.indexOf(job);
+      if (i >= 0) this.queue.splice(i, 1);
+    }
   }
 
   private fail(): void {

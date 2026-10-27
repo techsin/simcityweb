@@ -149,11 +149,19 @@ class ThumbRenderer {
     clearTimeout(this.idleTimer);
     this.idleTimer = window.setTimeout(() => {
       if (this.queue.length || !this.renderer) return;
+      // close-out c4: three's DFG LUT (r186: one module-level texture for every renderer, bound to the physical
+      // materials' programs) keeps this renderer's dispose listener, so every idle dispose left its renderer and canvas
+      // behind: read it from the material's program uniforms before the disposes below release them, dispose it after
+      // (as WorldView.dispose does: each renderer drops its GPU copy and listener; it uploads again on next use)
+      const lut = this.mat
+        ? (this.renderer.properties.get(this.mat) as { uniforms?: { dfgLUT?: { value?: THREE.Texture | null } } } | undefined)?.uniforms?.dfgLUT?.value
+        : null;
       // (its own material copy goes first: nothing this renderer drew may keep it reachable — viewOf)
       this.mat?.dispose();
       this.mat = null;
       this.renderer.dispose();
       this.renderer.forceContextLoss();
+      lut?.dispose();
       this.renderer = null;
       this.scene = new THREE.Scene();
     }, 15000);
