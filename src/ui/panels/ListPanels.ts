@@ -4,8 +4,6 @@ import { allDefs, defIcon } from '../../game/toolCatalog';
 import type { OrdinanceInfo, RewardInfo } from '../../game/modules';
 import type { BuildingDef } from '../../sim/catalogTypes';
 import { BF, type Building } from '../../sim/CityState';
-import type { SimSystem } from '../../sim/Simulation';
-import type { EconRuntime } from '../../sim/economy/runtime';
 import { Panel } from '../Panel';
 import { confirmDialog } from '../Modals';
 import { clear, escapeHtml, h, toggle } from '../dom';
@@ -19,7 +17,7 @@ export interface RuinState {
   ruin: Map<string, Building>;
 }
 
-/** RuinState of a list of buildings (the economy runtime's plopped list, or every building: only plopped ones count) */
+/** RuinState of mirrored buildings: only plopped ones count. */
 export function ruinState(list: Iterable<Building>): RuinState {
   const live = new Set<string>(), ruin = new Map<string, Building>();
   for (const b of list) {
@@ -211,21 +209,9 @@ export class RewardsPanel extends Panel {
     this.resetGate();
   }
 
-  /** the city's plopped buildings as standing / in ruins: the economy runtime's plopped list (the StatsPanel pattern),
-   *  else every building — read on each update (a disaster can flatten a reward while the game is paused) */
+  /** Read exact mirrored flags on each update: a disaster can flatten a reward while the game is paused. */
   private ruins(): RuinState {
-    const st = this.ctx.state;
-    let list: Iterable<Building> = st.buildings.values();
-    try {
-      const rt = this.ctx.sim.getSystem<SimSystem & { rt?: EconRuntime }>('economy.population')?.rt;
-      if (rt) {
-        rt.ensureLists();
-        list = rt.plopped;
-      }
-    } catch {
-      /* the whole city */
-    }
-    return ruinState(list);
+    return ruinState(this.ctx.state.buildings.values());
   }
 
   /** open the inspector on a reward's ruin, where its Clear rubble button is (the camera goes there). This panel closes

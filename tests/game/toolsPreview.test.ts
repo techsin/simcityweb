@@ -20,7 +20,7 @@ import type { ToolPointer } from '../../src/game/tools/Tool';
 import { CUT_SETTLE_MS, RectTool } from '../../src/game/tools/ZoneTool';
 import { NetworkTool } from '../../src/game/tools/NetworkTool';
 import { NO_ROAD_STAFFED, PlopTool } from '../../src/game/tools/PlopTool';
-import { upkeepHere } from '../../src/game/tools/placement';
+import { runQuery } from '../../src/worker/queries';
 import { upkeepEstimate } from '../../src/ui/upkeepModel';
 import { money } from '../../src/ui/format';
 import { newSim, newState, place, roadLine, setRoad } from '../infra/cityGen';
@@ -199,7 +199,7 @@ describe('plop tool tip (P3 / P8 / P14)', () => {
     // (the cursor at the lot's centre: origin (28, 30), beside the street x = 27)
     tool.move(at(28, 30, 29, 31));
     const t = text(f.lastTip().html);
-    const here = upkeepHere(sim, def, 28, 30, 2, 2)!;
+    const here = runQuery(sim, 'upkeepContext', { defId: def.id, x: 28, z: 30, w: 2, d: 2 }).here!;
     const full = upkeepEstimate(st, def)!.full;
     expect(here).toBeGreaterThan(full);
     expect(t).toContain(`Upkeep here ≈${money(here)}/mo now`);

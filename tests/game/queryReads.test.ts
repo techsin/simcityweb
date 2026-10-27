@@ -129,6 +129,54 @@ describe('query consumers', () => {
     tool.deactivate(); f.abort.abort('dispose'); await f.host.dispose();
   });
 
+  it('keeps upkeep per footprint and repaints the current spot after a paused funding command', async () => {
+    const f = fixture();
+    f.ctx.state.systemData.infraVersion = 1;
+    const read = vi.spyOn(QUERY_HANDLERS, 'upkeepContext').mockReturnValueOnce({ here: 132 }).mockReturnValueOnce({ here: 72 }).mockReturnValue({ here: 84 });
+    const tool = new PlopTool(f.ctx, getDef('civ_elementary_school')!, 'school');
+    f.tools.active = tool;
+    const tip = () => vi.mocked(f.ctx.tip.show).mock.calls.at(-1)?.[0] ?? '';
+    try {
+      tool.activate(); tool.move(at(20, 20)); tool.move(at(20, 20));
+      expect(tip()).toContain('Upkeep here ≈§132/mo now');
+      expect(read).toHaveBeenCalledTimes(1);
+      tool.move(at(24, 20));
+      expect(tip()).not.toContain('Upkeep here'); // the new key never inherits the previous spot's price
+      f.time(200); f.host.frame(0);
+      expect(tip()).toContain('Upkeep here ≈§72/mo now');
+      f.time(400); tool.move(at(20, 20));
+      expect(tip()).toContain('Upkeep here ≈§132/mo now');
+      expect(read).toHaveBeenCalledTimes(2);
+      f.host.act('setFunding', ['education', 50]);
+      f.time(600); f.host.frame(0);
+      expect(tip()).toContain('Upkeep here ≈§84/mo now');
+      expect(f.ctx.state.day).toBe(0);
+    } finally { tool.deactivate(); f.abort.abort('dispose'); await f.host.dispose(); }
+  });
+
+  it.each(['leave', 'deactivate', 'abort'] as const)('disposes upkeep reads and stops repainting on %s', async (exit) => {
+    const f = fixture();
+    f.ctx.state.systemData.infraVersion = 1;
+    const read = vi.spyOn(QUERY_HANDLERS, 'upkeepContext').mockReturnValue({ here: 132 });
+    const tool = new PlopTool(f.ctx, getDef('civ_elementary_school')!, 'school');
+    f.tools.active = tool;
+    try {
+      tool.activate(); tool.move(at(20, 20));
+      if (exit === 'abort') f.abort.abort('dispose');
+      else tool[exit]();
+      vi.mocked(f.ctx.tip.show).mockClear();
+      f.ctx.state.day++;
+      f.time(200); f.host.frame(0);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(f.ctx.tip.show).not.toHaveBeenCalled();
+      if (exit !== 'abort') {
+        tool.activate(); tool.move(at(20, 20));
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(f.ctx.tip.show).mock.calls.at(-1)?.[0]).toContain('Upkeep here ≈§132/mo now');
+      }
+    } finally { tool.deactivate(); f.abort.abort('dispose'); await f.host.dispose(); }
+  });
+
   it('ignores routes and clicked incident reports after DispatchTool changes target', async () => {
     const f = fixture(), tool = new DispatchTool(f.ctx);
     f.tools.active = tool;

@@ -8,14 +8,14 @@
  */
 import type { GameContext } from '../../game/context';
 import { INCIDENT_KINDS, RESPONDERS, type EmergencyMonth, type Responder } from '../../sim/CityState';
-import { INCIDENT_COLOR, INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_LABEL, RESPONDER_UNIT, dispatchWindowEnd, emergencyOf, type Incident } from '../../sim/infra/emergency';
+import { INCIDENT_COLOR, INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_LABEL, RESPONDER_UNIT, dispatchWindowEnd, type DispatchOption, type Incident } from '../../sim/infra/emergency';
 import { openDispatch } from '../../game/tools/DispatchTool';
 import { Panel } from '../Panel';
 import { clear, h, setText } from '../dom';
 import { icon } from '../icons';
 import { money, num, pct } from '../format';
 import { emgTime, kindIcon, lossText, minText, missingResponders, placeText, stateText, windowText } from '../EmergencyBanner';
-import type { Simulation } from '../../sim/Simulation';
+import { DispatchOptionsWatches, type EmergencyView } from '../../worker/SimHost';
 
 type Tab = 'active' | 'fleet' | 'stats';
 const RESP_ICON: Record<Responder, string> = { fire: 'fire', police: 'police', medical: 'health' };
@@ -27,12 +27,11 @@ interface ActiveRow { inc: Incident; st: HTMLElement; time: HTMLElement; disp: H
  * go): every station that could help is busy — the sim's own note ("Both fire trucks of Fire Station #3 are busy"),
  * else a generic line. Incidents no longer waiting keep their Dispatch button (close-out c2 polish).
  */
-export function dispatchBlocked(sim: Simulation, inc: Incident): string | null {
+export function dispatchBlocked(em: EmergencyView, inc: Incident, options: readonly DispatchOption[] | undefined): string | null {
   if (!(inc.state === 'uncovered' || inc.state === 'queued')) return null;
-  const em = emergencyOf(sim);
-  if (!em) return null;
+  if (!options) return 'Loading dispatch options…';
   const miss = missingResponders(em, inc);
-  const can = em.dispatchOptions(sim, inc.id).some((o) => o.free > 0 && Number.isFinite(o.etaMin) && (!miss.length || miss.includes(o.responder)));
+  const can = options.some((o) => o.free > 0 && Number.isFinite(o.etaMin) && (!miss.length || miss.includes(o.responder)));
   return can ? null : inc.note || 'Every station that could help is busy or cannot reach it';
 }
 
@@ -45,6 +44,7 @@ export class EmergenciesPanel extends Panel {
   private tabBtns: Partial<Record<Tab, HTMLButtonElement>> = {};
   private content!: HTMLDivElement;
   private sig = '';
+  private options: DispatchOptionsWatches;
   /** Active tab: the summary values and each row's changing texts, updated in place while the incidents' structure
    *  (ids, states, units) stays the same (final fixes A1: the countdown was part of the signature — a rebuild of the
    *  whole list several times a second at ultra speed) */
@@ -52,6 +52,7 @@ export class EmergenciesPanel extends Panel {
 
   constructor(ctx: GameContext) {
     super(ctx);
+    this.options = new DispatchOptionsWatches(ctx.host, ctx.signal);
   }
 
   protected build(): void {
@@ -68,16 +69,20 @@ export class EmergenciesPanel extends Panel {
   }
 
   showTab(t: Tab): void {
+    this.options.dispose();
     this.tab = t;
     this.sig = '';
     this.live = null;
     this.update();
   }
 
+  override onClose(): void { this.options.dispose(); }
+
   override update(): void {
     for (const [k, b] of Object.entries(this.tabBtns)) b?.classList.toggle('on', k === this.tab);
-    const em = emergencyOf(this.ctx.sim);
-    if (!em || !em.active) {
+    const em = this.ctx.host.emergency;
+    if (!em.active) {
+      this.options.dispose();
       if (this.sig !== 'none') {
         this.sig = 'none';
         this.live = null;
@@ -93,10 +98,9 @@ export class EmergenciesPanel extends Panel {
 
   // ---------------------------------------------------------------------------------------------- active
   private renderActive(): void {
-    const sim = this.ctx.sim;
-    const em = emergencyOf(sim)!;
+    const em = this.ctx.host.emergency;
     const list = [...em.incidents()].sort((a, b) => rank(a) - rank(b) || a.start - b.start);
-    const now = sim.simTime();
+    const now = this.ctx.host.simTime();
     const s = this.ctx.state.stats.emergency;
     const sig = 'a' + list.map((i) => `${i.id}:${i.state}:${i.units.length}:${i.fires.length}:${i.lost}:${i.major ? 1 : 0}`).join('|');
     if (sig !== this.sig || !this.live) {
@@ -104,17 +108,19 @@ export class EmergenciesPanel extends Panel {
       this.buildActive(list);
     }
     const live = this.live!;
+    this.options.retain(new Set(list.filter((i) => i.state === 'uncovered' || i.state === 'queued').map((i) => i.id)));
     const sum = [num(list.length), num(s.manualActive), num(sumCount(s.month)), pct(autoShare(s.year))];
     live.sum.forEach((el, k) => setText(el, sum[k]));
     live.sum[1].className = 'sc-v ' + (s.manualActive ? 'neg' : '');
     for (const r of live.rows) {
-      const inc = r.inc;
+      const inc = em.incident(r.inc.id) ?? r.inc;
+      r.inc = inc;
       const waiting = inc.state === 'uncovered' || inc.state === 'queued';
       setText(r.st, waiting && inc.note ? inc.note : stateText(inc, now, em));
       setText(r.time, activeTimeText(inc, now));
       // (close-out c2 polish: a waiting incident no free unit can be sent to — every truck busy — gets no live Dispatch
       // button; its title says why)
-      const t = dispatchBlocked(sim, inc);
+      const t = dispatchBlocked(em, inc, waiting ? this.options.get(inc.id).value : undefined);
       if (r.disp.disabled !== !!t) r.disp.disabled = !!t;
       const title = t ?? 'Dispatch a unit yourself';
       if (r.disp.title !== title) r.disp.title = title;
@@ -164,7 +170,7 @@ export class EmergenciesPanel extends Panel {
 
   // ---------------------------------------------------------------------------------------------- fleet
   private renderFleet(): void {
-    const em = emergencyOf(this.ctx.sim)!;
+    const em = this.ctx.host.emergency;
     const stations = em.stationList();
     const f = this.ctx.state.budget?.funding ?? {};
     const sig = 'f' + stations.map((s) => `${s.id}:${s.free}:${s.units}:${s.powered}`).join('|') + JSON.stringify(f);

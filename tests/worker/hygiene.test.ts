@@ -79,8 +79,7 @@ describe('worker migration hygiene gates', () => {
   it('W0.4: liveSlowdown writers live only in src/worker or src/sim', () => {
     expect(scanFiles(outsideCore(), 'liveSlowdown')).toEqual([]);
   });
-  // NOTE-028: after W0.3-W0.5, 14 reads in 5 files remain; W0.3b converts them and switches this rule on
-  it.skip('W0.3b: src/ui and src/game no longer call emergencyOf or getSystem', () => {
+  it('W0.3b: src/ui and src/game no longer call emergencyOf or getSystem', () => {
     expect(scanFiles(uiAndGame(), 'systems')).toEqual([]);
   });
   it('W0.5: CityScene reads system views through the host', () => {
