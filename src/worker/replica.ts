@@ -7,6 +7,7 @@ import type { Incident, StationFleet } from '../sim/infra/emergency';
 import type { SampleRoute } from '../sim/infra/traffic';
 import { TRAFFIC_OF_STATE } from '../sim/infra/transit';
 import { deserializeCity } from '../save/serialize';
+import { REPLICA } from '../save/state';
 import {
   EntryType, EVENT_NAMES, EVENT_TYPES, PLAIN_KEYS, REC, SYSTEM_KEYS, applyCell, applyLayer, applySparse, argRect,
   copyOwned, decodeIncident, mergePlain, readBuilding,
@@ -14,8 +15,8 @@ import {
   type PolicyState, type RasterPatch, type Ready, type Reply, type StationRow, type Streams,
 } from './protocol';
 
-/** W0.6 must share this brand with its save guards before a replica can be exposed through SimHost. */
-export const REPLICA = Symbol('Metropolis replica');
+/** W0.6's save guards refuse this brand; it is declared in the save layer (save/state.ts), below this module. */
+export { REPLICA };
 export type ReplicaState = CityState & { readonly [REPLICA]: true };
 export interface ReplicaCause { seq: number; tag: object | null }
 export interface EmergencyReplicaView {

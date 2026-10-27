@@ -2,8 +2,10 @@
  * WORKER_DESIGN §1.5 / S1 / R10: keep detaching APIs out of sim isolates and their node harnesses.
  * Later migration gates have real scans, but stay explicitly skipped until the named step lands.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { importGraph, scan, scanFiles, sourceFiles } from './hygieneScan';
+import { ROOT, importGraph, scan, scanFiles, sourceFiles } from './hygieneScan';
 
 describe('S1 isolate hygiene', () => {
   it('sim, city persistence and node harnesses contain no detaching APIs', () => {
@@ -111,6 +113,12 @@ describe('worker migration hygiene gates', () => {
     // each exemption still names an existing file
     expect(DEMO_STATES.filter((p) => !sourceFiles(p.slice(0, p.lastIndexOf('/'))).includes(p))).toEqual([]);
     expect(scanFiles(files, 'replica')).toEqual([]);
+  });
+  it('W0.6: the save layer sits below src/worker: no runtime import from it (NOTE-036)', () => {
+    // type-only imports (the recovery journal's shape) are erased and allowed
+    const up = sourceFiles('src/save').filter((p) => readFileSync(join(ROOT, p), 'utf8').split('\n')
+      .some((l) => /['"]\.\.\/worker\//.test(l) && !/^\s*(import|export) type /.test(l)));
+    expect(up).toEqual([]);
   });
   it('W0.6: SimCore import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
     await expectCleanGraph('src/worker/SimCore.ts');
