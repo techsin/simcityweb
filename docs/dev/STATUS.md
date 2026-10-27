@@ -94,6 +94,14 @@ runs should be headless. Round trip lead → worker → lead measured at 51 s. T
     So without the cooldown, the rule alone would not keep ultra usable in a city with gaps (one slow-down per ~6 s
     of ultra).
 
+## Progress chart
+
+The current chart is **Metropolis Build Timeline**: https://claude.ai/artifact/L4hk5JnzUK3qPkQiSzpMsm, a work-time Gantt
+with the weekly pauses folded and the status in detail. Its source is `docs/dev/timeline.html`; edit the inputs at the top
+of its script (`AS_OF`, `GROUPS`, `RUNNING`, `CHANGES`) and republish the same file. The older chart "Metropolis
+Completion Schedule" (https://claude.ai/artifact/D7HegAurxkGe32L7Bh6Yzb, source `docs/dev/schedule.html`) stays at
+version 17.
+
 ## Reference commits
 
 | Name | Commit | Use |

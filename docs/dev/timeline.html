@@ -1,0 +1,720 @@
+<title>Metropolis Build Timeline</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: the answer first (finish dates), then what is running, then a work-time Gantt whose weekly pauses are folded
+   into marked breaks, then the status of every workstream in detail, what changed, the full table and the assumptions. */
+:root {
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --hair: rgba(11, 11, 11, 0.10);
+  --pause: #eeede8;
+  --hover: rgba(11, 11, 11, 0.04);
+  --tip-bg: #0b0b0b;
+  --tip-fg: #f0efec;
+  --tip-2: #c3c2b7;
+  /* workstreams, categorical slots 1-7 in fixed order (validated: adjacent CVD ΔE ≥ 9.1, normal ≥ 19.6) */
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6;
+  /* status (reserved; always with an icon and a word) */
+  --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+  --good-ink: #006300; --warn-ink: #855a00;
+  --f-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --labw: 17.5rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --hair: rgba(255, 255, 255, 0.10); --pause: #232321; --hover: rgba(255, 255, 255, 0.05);
+    --tip-bg: #f0efec; --tip-fg: #0b0b0b; --tip-2: #52514e;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9;
+    --good-ink: #0ca30c; --warn-ink: #fab219;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --hair: rgba(255, 255, 255, 0.10); --pause: #232321; --hover: rgba(255, 255, 255, 0.05);
+  --tip-bg: #f0efec; --tip-fg: #0b0b0b; --tip-2: #52514e;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9;
+  --good-ink: #0ca30c; --warn-ink: #fab219;
+  color-scheme: dark;
+}
+body { background: var(--page); color: var(--ink); font-family: var(--f-sans); font-size: 14px; line-height: 1.45; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--page); }
+.wrap { max-width: 1240px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 56px; display: flex; flex-direction: column; gap: 36px; }
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+h2 { font-size: 17px; font-weight: 600; }
+h3 { font-size: 14px; font-weight: 600; }
+p { margin: 0; }
+.mono { font-family: var(--f-mono); font-size: 12px; }
+.muted { color: var(--muted); }
+.ink2 { color: var(--ink-2); }
+.eyebrow { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+
+/* header */
+.top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; }
+.top .asof { margin-top: 4px; color: var(--ink-2); }
+.seg { display: inline-flex; border: 1px solid var(--hair); border-radius: 8px; padding: 2px; background: var(--surface); }
+.seg button { font: inherit; font-size: 12.5px; color: var(--ink-2); background: transparent; border: 0; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--page); }
+.seg button:focus-visible, .bar:focus-visible, summary:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+
+/* answer */
+.answer { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 2fr); gap: 20px 40px; align-items: end; padding-bottom: 28px; border-bottom: 1px solid var(--grid); }
+.hero .v { font-size: 52px; font-weight: 600; line-height: 1.05; letter-spacing: -0.02em; margin-top: 6px; }
+.hero .sub { margin-top: 8px; color: var(--ink-2); max-width: 30rem; }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; margin: 0; }
+.tiles > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-left: 14px; border-left: 1px solid var(--grid); }
+.tiles dt { font-size: 12.5px; color: var(--ink-2); }
+.tiles dd { margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+.tiles p { font-size: 12.5px; color: var(--muted); }
+@media (max-width: 900px) { .answer { grid-template-columns: 1fr; } .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* running now */
+.now-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.now-list li { min-width: 0; background: var(--surface); border: 1px solid var(--hair); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.now-list .who { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.now-list .what { font-weight: 600; }
+.now-list .how { color: var(--ink-2); font-size: 13px; }
+.now-list .since { font-size: 12px; color: var(--muted); }
+@media (max-width: 900px) { .now-list { grid-template-columns: 1fr; } }
+.key { flex: none; width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.pulse { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 0 var(--ink); animation: pulse 2s ease-out infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(127, 127, 127, 0.55); } 70% { box-shadow: 0 0 0 7px rgba(127, 127, 127, 0); } 100% { box-shadow: 0 0 0 0 rgba(127, 127, 127, 0); } }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+
+/* section heads */
+.sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 20px; }
+.sec-head p { color: var(--ink-2); max-width: 46rem; }
+
+/* legend */
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 14px; font-size: 12.5px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.lg { display: inline-block; width: 26px; height: 10px; border-radius: 4px; }
+.lg.done { background: var(--ink-2); }
+.lg.run { background: linear-gradient(90deg, var(--ink-2) 0 55%, color-mix(in srgb, var(--ink-2) 32%, transparent) 55% 100%); }
+.lg.plan { background: color-mix(in srgb, var(--ink-2) 32%, transparent); }
+.lg.ifn { border: 1.5px dashed var(--ink-2); height: 10px; }
+.lg.reach { height: 2px; border-radius: 1px; background: var(--ink-2); position: relative; }
+.lg.reach::after { content: ""; position: absolute; right: 0; top: -4px; width: 2px; height: 10px; background: var(--ink-2); border-radius: 1px; }
+.lg.nowl { width: 2px; height: 14px; border-radius: 1px; background: var(--ink); }
+.lg.pz { width: 14px; height: 14px; border-radius: 3px; background: var(--pause); box-shadow: inset 0 0 0 1px var(--hair); }
+
+/* gantt */
+.gantt { margin-top: 18px; background: var(--surface); border: 1px solid var(--hair); border-radius: 12px; padding: 6px 14px 12px; }
+.row { display: grid; grid-template-columns: var(--labw) minmax(0, 1fr); column-gap: 14px; align-items: center; }
+.row .lab { min-width: 0; padding: 7px 0; }
+.track { position: relative; height: 34px; }
+.axis { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 4; background: var(--surface); border-bottom: 1px solid var(--axis); }
+.axis .track { height: 76px; }
+.axis .lab { align-self: end; padding-bottom: 8px; font-size: 12px; color: var(--muted); }
+.ghead { border-top: 1px solid var(--grid); margin-top: 4px; }
+.ghead.first { border-top: 0; margin-top: 0; }
+.tick.l, .flag.l { transform: none; }
+.tick.r, .flag.r { transform: translateX(-100%); }
+.ghead .lab { display: flex; flex-direction: column; gap: 2px; padding-top: 12px; }
+.ghead .gname { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.ghead .gmeta { font-size: 12px; color: var(--ink-2); padding-left: 18px; }
+.ghead .track { height: 44px; }
+.srow .sname { font-size: 13px; line-height: 1.3; }
+.srow .smeta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin-top: 2px; font-size: 11.5px; color: var(--muted); }
+.st { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-2); font-weight: 500; }
+.st i { font-style: normal; width: 12px; text-align: center; }
+.bg { position: absolute; inset: 0; pointer-events: none; }
+.bg .pz { position: absolute; top: 0; bottom: 0; background: var(--pause); }
+.bg .dl { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+.bg .nowl { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--ink); z-index: 2; }
+.bg .fin { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink-2); z-index: 2; }
+.bg .fin.worst { background: var(--muted); }
+.bar { position: absolute; top: 50%; height: 12px; margin-top: -6px; border-radius: 4px; min-width: 3px; z-index: 1; cursor: default; outline: none; }
+.bar::before { content: ""; position: absolute; left: -3px; right: -3px; top: -10px; bottom: -10px; }
+.bar.done { background: var(--c); }
+.bar.run { background: var(--c); }
+.bar.wash { background: color-mix(in srgb, var(--c) 32%, transparent); }
+.bar.ifn { background: transparent; border: 1.5px dashed var(--c); }
+.bar.sum { height: 6px; margin-top: -3px; border-radius: 3px; background: var(--c); }
+.bar.reach { height: 2px; margin-top: -1px; border-radius: 1px; background: color-mix(in srgb, var(--c) 70%, transparent); }
+.bar.reach.endcap::after { content: ""; position: absolute; right: -1px; top: -4px; width: 2px; height: 10px; border-radius: 1px; background: var(--c); }
+.bar.cut-l { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.bar.cut-r { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.bar.hot { filter: brightness(1.08) saturate(1.1); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--c); }
+.srow:hover, .ghead:hover { background: var(--hover); }
+/* axis captions */
+.cap { position: absolute; top: 4px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.cap small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
+.tick { position: absolute; bottom: 3px; font-size: 11px; color: var(--muted); white-space: nowrap; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
+.flag { position: absolute; top: 38px; font-size: 11px; font-weight: 600; white-space: nowrap; transform: translateX(-50%); padding: 1px 5px; border-radius: 4px; background: var(--ink); color: var(--page); }
+.flag.fin { background: var(--surface); color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--axis); font-weight: 500; }
+.pzcap { position: absolute; top: 8px; bottom: 6px; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: var(--muted); writing-mode: vertical-rl; transform: rotate(180deg); letter-spacing: 0.04em; overflow: hidden; }
+@media (max-width: 760px) {
+  .row { grid-template-columns: minmax(0, 1fr); }
+  .row .lab { padding: 8px 0 0; }
+  .axis .lab { display: none; }
+  .srow .track { height: 24px; }
+  .ghead .track { height: 28px; }
+  .gantt { padding-inline: 10px; }
+}
+
+/* detail */
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 48px; margin-top: 6px; }
+.ws { min-width: 0; padding: 20px 0; border-top: 1px solid var(--grid); display: flex; flex-direction: column; gap: 12px; }
+.ws-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.ws-head h3 { display: flex; align-items: center; gap: 8px; font-size: 15px; }
+.tone { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; padding: 2px 8px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--hair); color: var(--ink-2); }
+.tone b { font-weight: 700; }
+.tone.ok b { color: var(--good-ink); }
+.tone.warn b { color: var(--warn-ink); }
+.ws dl { margin: 0; display: grid; grid-template-columns: 4.6rem minmax(0, 1fr); gap: 8px 12px; }
+.ws dt { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding-top: 2px; }
+.ws dd { margin: 0; min-width: 0; color: var(--ink); }
+.ws dd ul { margin: 0; padding-left: 1.05em; display: flex; flex-direction: column; gap: 4px; }
+.ws dd li::marker { color: var(--muted); }
+.ws .dates { font-size: 12.5px; color: var(--ink-2); }
+@media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+
+/* changes */
+.changes ul { margin: 12px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 40px; }
+.changes li { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 10px; }
+.changes li > span:first-child { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding-top: 2px; }
+@media (max-width: 900px) { .changes ul { grid-template-columns: 1fr; } }
+
+/* table + assumptions */
+details.tbl { border-top: 1px solid var(--grid); padding-top: 14px; }
+details.tbl summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+.tscroll { overflow-x: auto; margin-top: 12px; }
+table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.assume { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 20px 48px; border-top: 1px solid var(--grid); padding-top: 20px; }
+.assume p + p { margin-top: 10px; }
+.assume p { color: var(--ink-2); max-width: 44rem; }
+.sens { width: 100%; min-width: 0; }
+.sens td, .sens th { padding: 6px 8px; }
+@media (max-width: 900px) { .assume { grid-template-columns: 1fr; } }
+
+/* tooltip */
+.tip { position: fixed; z-index: 20; max-width: 320px; padding: 10px 12px; border-radius: 8px; background: var(--tip-bg); color: var(--tip-fg); font-size: 12.5px; line-height: 1.4; pointer-events: none; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18); }
+.tip strong { display: block; font-size: 13px; margin-bottom: 2px; }
+.tip .t2 { color: var(--tip-2); }
+.tip .when { font-weight: 600; margin-top: 4px; }
+.tip .note { margin-top: 4px; color: var(--tip-2); }
+</style>
+
+<main class="wrap">
+  <header class="top">
+    <div>
+      <p class="eyebrow">Metropolis · city builder</p>
+      <h1>Build timeline</h1>
+      <p class="asof">Status as of <span id="asof">—</span>. Seven workstreams, run by the cloud team and your desktop.</p>
+    </div>
+    <div class="seg" role="group" aria-label="Time zone for every date on this page">
+      <button type="button" id="tzUtc" aria-pressed="true">UTC</button>
+      <button type="button" id="tzLocal" aria-pressed="false">My time zone</button>
+    </div>
+  </header>
+
+  <section class="answer" aria-label="Finish dates">
+    <div class="hero">
+      <p class="eyebrow">Likely finish</p>
+      <p class="v" id="likely">—</p>
+      <p class="sub" id="likelySub">—</p>
+    </div>
+    <dl class="tiles">
+      <div><dt>Worst case</dt><dd id="worst">—</dd><p id="worstSub">—</p></div>
+      <div><dt>Work left</dt><dd id="left">—</dd><p id="leftSub">—</p></div>
+      <div><dt>Next pause</dt><dd id="pause">—</dd><p id="pauseSub">—</p></div>
+      <div><dt>Built so far</dt><dd>about 80%</dd><p>a judgement by planned work, not a measurement</p></div>
+    </dl>
+  </section>
+
+  <section aria-labelledby="nowH">
+    <div class="sec-head"><h2 id="nowH">Running now</h2><p class="muted" id="nowNote">—</p></div>
+    <ul class="now-list" id="nowList"></ul>
+  </section>
+
+  <section aria-labelledby="tlH">
+    <div class="sec-head">
+      <h2 id="tlH">Timeline</h2>
+      <p>Each grey column is a weekly usage pause: work stops when the weekly limit is used up and resumes the next Monday at 15:00 UTC. The pauses are folded to a narrow column so the working days get the space.</p>
+    </div>
+    <div class="legend" aria-label="How to read the bars">
+      <span><i class="lg done"></i>Done</span>
+      <span><i class="lg run"></i>Running (solid up to now)</span>
+      <span><i class="lg plan"></i>Next / planned</span>
+      <span><i class="lg ifn"></i>Only if needed</span>
+      <span><i class="lg reach"></i>Worst-case reach</span>
+      <span><i class="lg nowl"></i>Now</span>
+      <span><i class="lg pz"></i>Paused (weekly limit)</span>
+    </div>
+    <div class="gantt" id="gantt" role="figure" aria-label="Gantt chart of every remaining step; the same data is in the table view below"></div>
+  </section>
+
+  <section aria-labelledby="detH">
+    <div class="sec-head"><h2 id="detH">Status in detail</h2><p>What each workstream has finished, what it is doing now, what comes next and what to watch.</p></div>
+    <div class="detail-grid" id="detail"></div>
+  </section>
+
+  <section class="changes" aria-labelledby="chH">
+    <div class="sec-head"><h2 id="chH">Since the last chart</h2><p class="muted" id="chSub">—</p></div>
+    <ul id="changes"></ul>
+  </section>
+
+  <details class="tbl">
+    <summary>Table view: every step with its dates</summary>
+    <div class="tscroll"><table id="tbl"><thead><tr><th>Workstream</th><th>Step</th><th>Status</th><th>Where</th><th>From</th><th>To</th><th>Note</th></tr></thead><tbody></tbody></table></div>
+  </details>
+
+  <section class="assume" aria-labelledby="asH">
+    <div>
+      <h2 id="asH">How the dates are worked out</h2>
+      <p style="margin-top:10px">Every step has an estimate in hours of team work (cloud agents and your desktop together), based on how long similar steps took. Steps in different workstreams run side by side, so the finish date is set by the longest chain: polish, then the final check.</p>
+      <p>Work runs around the clock until the weekly usage limit is reached. A weekly window gives about <b id="capTxt">38</b> hours of work; the last full one gave about 42 with four cloud agents. Your desktop's Claude worker draws on the same weekly pool; Codex has its own. Restarts and waits add about 8 % to the wall time.</p>
+      <p>Estimates for steps that only run if a check finds something serious count toward the worst case, not the likely date. Dates marked ≈ are estimates; everything without ≈ already happened.</p>
+    </div>
+    <div>
+      <h3>If a weekly window gives more or fewer hours</h3>
+      <div class="tscroll"><table class="sens" id="sens"><thead><tr><th>Hours per window</th><th>Likely finish</th><th>Worst case</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+</main>
+<div class="tip" id="tip" role="tooltip" hidden></div>
+
+<script>
+(function () {
+  'use strict';
+  var HOUR = 3600e3, DAY = 24 * HOUR, WEEK = 7 * DAY;
+
+  // ---------------------------------------------------------------- inputs (edit these to update the chart)
+  var AS_OF = Date.UTC(2026, 9, 27, 8, 45);          // Tue 27 Oct 2026, 08:45 UTC
+  var WINDOW_START = Date.UTC(2026, 9, 26, 23, 37);  // work resumed in this weekly window (after the container reset)
+  var NEXT_RESET = Date.UTC(2026, 10, 2, 15, 0);     // Mon 2 Nov 15:00 UTC, then weekly
+  var CAP = 38;                                      // hours of work per weekly window
+  var SLACK = 1.08;                                  // wall hours per work hour inside a window
+  var LIKELY_H = 78, WORST_H = 124;                  // work hours from AS_OF to the end of the release workstream
+  var PREV = { when: Date.UTC(2026, 9, 27, 3, 15), likely: Date.UTC(2026, 10, 9, 12, 0), worst: Date.UTC(2026, 10, 17, 12, 0) };
+  function T(d, h, m) { return Date.UTC(2026, 9, d, h, m || 0); } // a time in October 2026 (UTC)
+
+  // status: done | running | next | planned | ifneeded. Done steps carry from/to; running ones from + e; the rest s/e
+  // (work hours from AS_OF). where: who runs it.
+  var GROUPS = [
+    { name: 'Simulation close-out', slot: 1, worst: 15, tone: 'ok', toneText: 'On track',
+      steps: [
+        { n: 'Test cities and 1M fixtures rebuilt', st: 'done', w: 'cloud', from: T(26, 23, 50), to: T(27, 1, 34), note: 'Rebuilt after the reset; one command now recreates them.' },
+        { n: 'Fix round 2: inspection leak and 8 small fixes', st: 'running', w: 'cloud', from: T(26, 23, 50), e: 1.5, note: 'Fixed in code with new tests. Last gates running: type check, every test, the bot test, browser checks at three screen sizes.' },
+        { n: 'Close-out check 3: playtest and audit', st: 'next', w: 'cloud', s: 1.5, e: 7.5, note: 'A new playtester using real input, and an adversarial auditor.' },
+        { n: 'Fix and re-check 4', st: 'ifneeded', w: 'cloud', s: 7.5, e: 15, note: 'Only if check 3 finds something serious.' }
+      ],
+      done: ['Four check-and-fix rounds; every serious finding fixed and re-checked.', 'Close-out check 1 and its fix: leaving a city kept it in memory (+35 MB per visit). Six small UI fixes.', 'Close-out check 2: the playtest found nothing serious; the audit found one more leak (clicking a building after leaving a city).'],
+      now: 'Fix round 2. The leak and eight small fixes are in the code with new tests; the last gates are running.',
+      next: ['Close-out check 3 by a new playtester and an auditor.', 'A fix round only if they find something serious.'],
+      watch: 'The cloud machine is overloaded (4 cores at load 40–60), so this round has taken about 6 hours longer than planned.' },
+    { name: 'Graphics round 2', slot: 2, worst: 24, tone: 'warn', toneText: 'Needs revision 2',
+      steps: [
+        { n: 'Real-GPU smoke test', st: 'done', w: 'desktop', from: T(27, 1, 57), to: T(27, 4, 45), note: 'RTX 5070 Ti: 60 fps everywhere, no GPU-only defects; 3 small items to the backlog.' },
+        { n: 'Speed re-check 2', st: 'done', w: 'cloud', from: T(26, 23, 51), to: T(27, 8, 17), note: 'Render code passes. Two UI costs moved to their own task; render minors go to revision 2.' },
+        { n: 'Art re-check 2', st: 'running', w: 'cloud', from: T(26, 23, 51), e: 1.5, note: 'Seasons, climates, the far forest at the map edge, the first frames after loading.' },
+        { n: 'Revision 2, both render lanes', st: 'next', w: 'cloud', s: 1.5, e: 7, note: 'Forest-ring CPU on far views, extra shadow passes on camera cuts, extra building triangles at the map edge on LOW.' },
+        { n: 'GPU timing on your desktop', st: 'planned', w: 'desktop', s: 7, e: 9, note: 'The GPU check the overloaded cloud machine cannot measure: LOW against c024, HIGH and ULTRA GPU totals.' },
+        { n: 'Final review 3: art and speed', st: 'planned', w: 'cloud', s: 7, e: 15, note: 'New independent reviewers.' },
+        { n: 'Extra fix round', st: 'ifneeded', w: 'cloud', s: 15, e: 24, note: 'Only if review 3 finds something serious.' }
+      ],
+      done: ['Rounds 1–4 and a final fix round: winter trees, LOD swaps, shadows, the far forest at the map edge.', 'Final review 1, then revision 1: the loading-fade stall went from 127 to 11 ms, and the first zoom-out after loading is at or below the old build.', 'Real-GPU smoke test on your desktop: 60 fps everywhere.', 'Speed re-check 2: the render code passes, and it allocates 3.6–5× less memory per frame than any earlier version.'],
+      now: 'Art re-check 2 is comparing seasons, climates and the first frames after loading.',
+      next: ['Revision 2: forest-ring CPU on far views, shadow passes on camera cuts in the dense city, building triangles at the map edge on LOW.', 'GPU timing on your desktop.', 'Final review 3 by new reviewers.'],
+      watch: 'The two UI costs the speed check found (the first camera moves after loading) moved to their own workstream below.' },
+    { name: 'Million-person speed', slot: 3, worst: 76, tone: 'ok', toneText: 'On track',
+      steps: [
+        { n: 'Baseline at 1M residents', st: 'done', w: 'desktop', from: T(27, 4, 50), to: T(27, 7, 7), note: '1.15M city: 19.8 ms of CPU per simulated day; ultra holds 20.4 days/s; frame spikes of 42–101 ms are still too high.' },
+        { n: 'Exact speed fixes, written by Codex', st: 'running', w: 'desktop + Codex', from: T(27, 5, 50), e: 8, note: 'J2 traffic done (traffic 17 % faster, whole day 7 % on the 1.15M city), J4 pollution, J8 blur and part of J7 fire done; J3 services in its checks; J6 dropped; J10 and J11 next.' },
+        { n: 'Merge and check every fix', st: 'planned', w: 'cloud', s: 8, e: 14, note: 'After the sim close-out; each fix re-verified bit for bit.' },
+        { n: 'Services update trigger', st: 'planned', w: 'cloud', s: 14, e: 20, note: 'The largest single gain; goes through the balance checks.' },
+        { n: 'Remaining exact fixes J5, J9, J0', st: 'planned', w: 'desktop + Codex', s: 15, e: 23, note: 'J5 and J9 after the sim close-out merges, J0 after graphics round 2 closes.' },
+        { n: 'Money-counter stall', st: 'planned', w: 'cloud', s: 20, e: 22, note: 'A slow path in the funds counter.' },
+        { n: 'Exact save and load', st: 'planned', w: 'cloud', s: 22, e: 28, note: 'A loaded city continues exactly like the original.' },
+        { n: 'Split oversized steps', st: 'planned', w: 'cloud', s: 28, e: 32, note: 'The long steps behind the stutter at ultra speed.' },
+        { n: 'Simulation on a background thread', st: 'planned', w: 'cloud', s: 32, e: 50, note: 'A Web Worker, so the screen never waits for the simulation.' },
+        { n: 'Acceptance checks', st: 'planned', w: 'cloud + desktop', s: 50, e: 56, note: 'The plan’s eight acceptance criteria, with real-GPU runs on your desktop.' }
+      ],
+      done: ['The plan for 1M+ cities is in the repo (docs/WASM_PLAN.md, docs/WORKER_DESIGN.md).', 'Baseline on your desktop: a 1.15M city costs 19.8 ms of CPU per simulated day; ultra holds 20.4 days/s in the browser.'],
+      now: 'Codex writes the exact speed fixes on your desktop, each checked bit for bit against the old code. J2 traffic is done: traffic 17 % faster, the whole simulated day 7 % faster on the 1.15M city and 3 % on the 1.37M one. J4 pollution (13 % faster), J8 blur and part of J7 fire are done too; J3 services is in its checks; J6 was dropped because the current code already caches what it would add.',
+      next: ['Merge and check every fix independently, after the sim close-out.', 'Services update trigger, money-counter stall, exact save and load, the remaining exact fixes.', 'Split oversized steps, then move the simulation to a background thread.', 'Acceptance checks, including real-GPU runs on your desktop.'],
+      watch: 'The background thread is the largest single step, about 18 hours of work. Frame spikes of 42–101 ms at 1M are what it has to remove.' },
+    { name: 'Big-city emergencies', slot: 4, worst: 26, tone: 'wait', toneText: 'Agreed, waiting',
+      steps: [
+        { n: 'In range never slows; cooldown', st: 'planned', w: 'cloud', s: 8, e: 13, note: 'Busy stations get help from the nearest free unit; out-of-range slow-downs at most every ~30 seconds.' },
+        { n: 'Station load and its effects', st: 'planned', w: 'cloud', s: 14, e: 19, note: 'Advisor warning, info panel and coverage view; coverage counts for less when a station is overstretched (after the J3 merge).' },
+        { n: 'Bot reference and playtest', st: 'planned', w: 'cloud', s: 19, e: 21, note: 'The change alters the simulation on purpose, so the reference numbers are recorded again.' }
+      ],
+      done: ['Design agreed with you on 27 Oct.', 'Counted on the test cities over 240 game days: 2 of 110 major incidents were uncovered in the 1.15M city and 3 of 94 in the 660k city, all fires out of range.'],
+      now: 'Waiting for the sim close-out, which edits the same files.',
+      next: ['Inside a station’s range the game never slows down; busy stations get help from elsewhere.', 'Overstretched stations show it in the advisor, the info panel and the coverage view, and their coverage counts for less.', 'Outside every range: a slow-down as today, at most once every ~30 seconds.'],
+      watch: '' },
+    { name: 'UI frame cost', slot: 5, worst: 20, tone: 'wait', toneText: 'Waiting',
+      steps: [
+        { n: 'Lighter UI while the camera moves', st: 'planned', w: 'desktop + Codex', s: 8, e: 13, note: 'HUD, minimap and labels update at most 10 times a second; reused sound nodes; music starts after the loading veil.' },
+        { n: 'Fresh-page check against the old build', st: 'planned', w: 'desktop', s: 13, e: 15, note: 'The whole main thread at or below a284b80 on the first camera moves after loading.' }
+      ],
+      done: ['Found by speed re-check 2: on freshly loaded pages the first camera moves cost 9–14 % more main-thread time than the old build, in UI repaints, timers and sound objects.'],
+      now: 'Waiting for the sim close-out, which edits the same UI files.',
+      next: ['Throttle the HUD, minimap and labels while the camera moves; reuse sound nodes; start the music after the loading veil.', 'Measure on your desktop against the old build.'],
+      watch: 'Must pass before the final verification.' },
+    { name: 'Polish & fun', slot: 6, worst: 116, tone: 'wait', toneText: 'Planned',
+      steps: [
+        { n: 'Round 1: tutorial, first goals, settings', st: 'planned', w: 'cloud + desktop', s: 16, e: 33, note: '25 items: a guided first city, first-year goals, city ranks, spring start, settings.' },
+        { n: 'Round 2: first-hour depth', st: 'planned', w: 'cloud + desktop', s: 33, e: 51, note: '30 items: taxes that matter, transit, industry, difficulty, feedback you can see and hear.' },
+        { n: 'Round 3: the long game', st: 'planned', w: 'cloud + desktop', s: 51, e: 60, note: '12 items: late-game money, disasters, region, scenarios, colour-blind mode.' },
+        { n: 'Round 4: delight', st: 'planned', w: 'cloud + desktop', s: 60, e: 72, note: '21 items: pedestrians, weather, photo mode, camera moments; all six player types playtest.' }
+      ],
+      done: ['88 items planned in four rounds (docs/POLISH_PLAN.md); the testers’ smaller ideas are collected in docs/dev/POLISH_BACKLOG.md.'],
+      now: 'Starts when the sim and graphics close-outs are done.',
+      next: ['Round 1: tutorial, first goals, settings.', 'Round 2: first-hour depth.', 'Round 3: the long game.', 'Round 4: delight, with playtests by all six player types.'],
+      watch: 'Codex takes the well-specified items; your desktop runs the visual checks.' },
+    { name: 'Final check & release', slot: 7, worst: 124, tone: 'wait', toneText: 'Planned',
+      steps: [
+        { n: 'Final verification and soak', st: 'planned', w: 'cloud + desktop', s: 72, e: 76, note: 'Type check, every test suite, production build, a multi-hour soak on your desktop.' },
+        { n: 'README and playable build', st: 'planned', w: 'cloud', s: 76, e: 78, note: 'How to run it, the controls, the features.' }
+      ],
+      done: [],
+      now: 'Starts after polish round 4.',
+      next: ['Final verification: type check, every test suite, a production build and a multi-hour soak on your desktop.', 'README and a playable build.'],
+      watch: '' }
+  ];
+  var RUNNING = [
+    { who: 'Cloud', slot: 1, what: 'Sim fix round 2', how: 'Last gates: type check, every test, the bot test, browser checks at three sizes.', since: T(26, 23, 50) },
+    { who: 'Cloud', slot: 2, what: 'Art re-check 2', how: 'Comparing seasons, climates and the first frames after loading.', since: T(26, 23, 51) },
+    { who: 'Your desktop', slot: 3, what: 'Exact speed fixes', how: 'J2 traffic done (whole day 7 % faster); J3 services in its checks, J10 next; three Codex lanes.', since: T(27, 5, 50) }
+  ];
+  var CHANGES = [
+    ['Dates', 'Likely finish moved by about a day; the worst case is the same.'],
+    ['Done', 'Real-GPU smoke test, the million-person baseline, four exact speed fixes (traffic, pollution, blur, part of fire), the graphics speed re-check.'],
+    ['Slower', 'Sim fix round 2 and the graphics checks, on the overloaded cloud machine.'],
+    ['New', 'Big-city emergency design (agreed with you), the UI frame-cost task, GPU timing on your desktop.']
+  ];
+  var STATUS = { done: ['✓', 'Done'], running: ['●', 'Running'], next: ['›', 'Next'], planned: ['○', 'Planned'], ifneeded: ['◌', 'If needed'] };
+
+  // ---------------------------------------------------------------- time model
+  var USED = (AS_OF - WINDOW_START) / HOUR;
+  function windows(cap) {
+    var ws = [{ start: WINDOW_START, end: AS_OF + Math.max(0, cap - USED) * SLACK * HOUR, h0: -USED, h1: Math.max(0, cap - USED) }];
+    var h = ws[0].h1;
+    for (var i = 0; i < 20; i++) { var st = NEXT_RESET + i * WEEK; ws.push({ start: st, end: st + cap * SLACK * HOUR, h0: h, h1: h + cap }); h += cap; }
+    return ws;
+  }
+  function wallAt(h, ws, isStart) {
+    var inside = function (w) { return isStart ? h < w.h1 : h <= w.h1; };
+    if (inside(ws[0])) return AS_OF + Math.max(0, h) * SLACK * HOUR;
+    for (var i = 1; i < ws.length; i++) if (inside(ws[i]) || i === ws.length - 1) return ws[i].start + (h - ws[i].h0) * SLACK * HOUR;
+  }
+  var WS = windows(CAP);
+  function spanOf(s) {
+    var a = s.from != null ? s.from : wallAt(s.s, WS, true);
+    var b = s.to != null ? s.to : wallAt(s.e, WS, false);
+    return [a, b];
+  }
+  function groupSpan(g) {
+    var a = Infinity, b = -Infinity;
+    g.steps.forEach(function (s) { var sp = spanOf(s); a = Math.min(a, sp[0]); if (s.st !== 'ifneeded') b = Math.max(b, sp[1]); });
+    return [a, b, wallAt(g.worst, WS, false)];
+  }
+  var LIKELY = wallAt(LIKELY_H, WS, false), WORST = wallAt(WORST_H, WS, false);
+
+  // ---------------------------------------------------------------- formatting
+  var tzLocal = false;
+  try { tzLocal = localStorage.getItem('mtl-tz') === 'local'; } catch (e) { /* storage blocked: UTC */ }
+  var DN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function P(ms) {
+    var d = new Date(ms);
+    return tzLocal ? { mo: d.getMonth(), d: d.getDate(), wd: d.getDay(), h: d.getHours(), mi: d.getMinutes() }
+                   : { mo: d.getUTCMonth(), d: d.getUTCDate(), wd: d.getUTCDay(), h: d.getUTCHours(), mi: d.getUTCMinutes() };
+  }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function fDay(ms) { var p = P(ms); return DN[p.wd] + ' ' + p.d + ' ' + MN[p.mo]; }
+  function fShort(ms) { var p = P(ms); return DN[p.wd] + ' ' + p.d; }
+  function fTime(ms) { var p = P(ms); return pad(p.h) + ':' + pad(p.mi); }
+  function roundH(ms) { return Math.round(ms / HOUR) * HOUR; }
+  function fDT(ms, est) { var m = est ? roundH(ms) : ms; return (est ? '≈ ' : '') + fDay(m) + ', ' + fTime(m); }
+  function tzLabel() { if (!tzLocal) return 'UTC'; try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time'; } catch (e) { return 'local time'; } }
+  function hoursTxt(h) { return h < 10 ? h.toFixed(1).replace(/\.0$/, '') + ' h' : Math.round(h) + ' h'; }
+  function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+  function slotVar(n) { return 'var(--s' + n + ')'; }
+
+  // ---------------------------------------------------------------- axis (weekly pauses folded)
+  var segs = [], BREAK = 0.03;
+  function buildSegs() {
+    segs = [];
+    for (var i = 0; i < WS.length; i++) {
+      var w = WS[i];
+      if (w.start > WORST) break;
+      segs.push({ start: w.start, end: Math.min(w.end, WORST + 3 * HOUR), i: i });
+    }
+    var total = segs.reduce(function (t, s) { return t + (s.end - s.start); }, 0), x = 0, avail = 1 - BREAK * (segs.length - 1);
+    segs.forEach(function (s) { s.x = x; s.w = avail * (s.end - s.start) / total; x += s.w + BREAK; });
+  }
+  function pos(ms) {
+    for (var i = 0; i < segs.length; i++) {
+      var s = segs[i];
+      if (ms < s.start) return s.x;
+      if (ms <= s.end) return s.x + s.w * (ms - s.start) / (s.end - s.start);
+    }
+    var l = segs[segs.length - 1]; return l.x + l.w;
+  }
+  function pieces(a, b) {
+    var out = [];
+    segs.forEach(function (s) { var lo = Math.max(a, s.start), hi = Math.min(b, s.end); if (hi > lo) out.push([lo, hi, lo > a, hi < b]); });
+    return out;
+  }
+  function pc(f) { return (f * 100).toFixed(3) + '%'; }
+  function bgHTML() {
+    var h = '';
+    for (var i = 0; i + 1 < segs.length; i++) { var l = segs[i].x + segs[i].w; h += '<i class="pz" style="left:' + pc(l) + ';width:' + pc(BREAK) + '"></i>'; }
+    dayTicks().forEach(function (t) { if (t.major) h += '<i class="dl" style="left:' + pc(pos(t.ms)) + '"></i>'; });
+    h += '<i class="fin" style="left:' + pc(pos(LIKELY)) + '"></i><i class="fin worst" style="left:' + pc(pos(WORST)) + '"></i>';
+    h += '<i class="nowl" style="left:' + pc(pos(AS_OF)) + '"></i>';
+    return '<div class="bg" aria-hidden="true">' + h + '</div>';
+  }
+  function dayTicks() {
+    var out = [];
+    segs.forEach(function (s) {
+      for (var t = Math.ceil(s.start / HOUR) * HOUR; t <= s.end; t += HOUR) {
+        var p = P(t);
+        if (p.mi !== 0) continue;
+        if (p.h === 0) out.push({ ms: t, major: true });
+        else if (p.h === 12) out.push({ ms: t, major: false });
+      }
+    });
+    return out;
+  }
+
+  // ---------------------------------------------------------------- tooltip
+  var tip = document.getElementById('tip');
+  function tipLines(s, g, sp) {
+    var est = s.st !== 'done';
+    var from = s.st === 'done' || s.st === 'running' ? fDT(sp[0], false) : fDT(sp[0], true);
+    var to = s.st === 'done' ? fDT(sp[1], false) : fDT(sp[1], true);
+    var cross = pieces(sp[0], sp[1]).length > 1 ? ' (with a weekly pause in between)' : '';
+    var len = s.st === 'done' ? hoursTxt((sp[1] - sp[0]) / HOUR) + ' wall time' : s.st === 'running' ? 'about ' + hoursTxt(s.e) + ' left' : 'about ' + hoursTxt(s.e - s.s) + ' of work';
+    return { title: s.n, meta: g.name + ' · ' + STATUS[s.st][1] + ' · ' + s.w, when: from + ' → ' + to + cross, len: len, note: s.note, est: est };
+  }
+  function showTip(L, x, y) {
+    tip.textContent = '';
+    tip.appendChild(el('strong', null, L.title));
+    tip.appendChild(el('div', 't2', L.meta));
+    tip.appendChild(el('div', 'when', L.when));
+    tip.appendChild(el('div', 't2', L.len + ' · ' + tzLabel()));
+    if (L.note) tip.appendChild(el('div', 'note', L.note));
+    tip.hidden = false;
+    var r = tip.getBoundingClientRect(), vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+    var left = Math.min(Math.max(8, x + 14), vw - r.width - 8), top = y + 16;
+    if (top + r.height > vh - 8) top = Math.max(8, y - r.height - 12);
+    tip.style.left = left + 'px'; tip.style.top = top + 'px';
+  }
+  function hideTip() { tip.hidden = true; }
+
+  // ---------------------------------------------------------------- render
+  function renderAnswer() {
+    document.getElementById('asof').textContent = fDay(AS_OF) + ', ' + fTime(AS_OF) + ' ' + tzLabel();
+    document.getElementById('likely').textContent = fDay(roundH(LIKELY));
+    document.getElementById('likelySub').textContent = 'About ' + LIKELY_H + ' hours of team work left, spread over three weekly windows. The last chart said ' + fDay(PREV.likely) + '.';
+    document.getElementById('worst').textContent = fDay(roundH(WORST));
+    document.getElementById('worstSub').textContent = 'if every check needs one more round';
+    document.getElementById('left').textContent = '≈ ' + LIKELY_H + ' h';
+    document.getElementById('leftSub').textContent = WORST_H + ' h in the worst case';
+    document.getElementById('pause').textContent = fDay(roundH(WS[0].end));
+    document.getElementById('pauseSub').textContent = '≈ ' + fTime(roundH(WS[0].end)) + ' ' + tzLabel() + '; work resumes ' + fDay(WS[1].start) + ', ' + fTime(WS[1].start);
+    document.getElementById('capTxt').textContent = CAP;
+  }
+  function renderNow() {
+    var ul = document.getElementById('nowList'); ul.textContent = '';
+    RUNNING.forEach(function (r) {
+      var li = el('li');
+      var who = el('div', 'who'); who.appendChild(el('span', 'pulse')); who.appendChild(el('span', null, r.who));
+      var k = el('span', 'key'); k.style.background = slotVar(r.slot); k.style.marginLeft = 'auto'; who.appendChild(k);
+      who.appendChild(el('span', null, GROUPS[r.slot - 1].name));
+      li.appendChild(who);
+      li.appendChild(el('div', 'what', r.what));
+      li.appendChild(el('div', 'how', r.how));
+      li.appendChild(el('div', 'since', 'since ' + fDay(r.since) + ', ' + fTime(r.since) + ' · ' + hoursTxt((AS_OF - r.since) / HOUR) + ' so far'));
+      ul.appendChild(li);
+    });
+    document.getElementById('nowNote').textContent = 'Three jobs in parallel; the lead coordinates and merges.';
+  }
+  function addBar(track, cls, a, b, color, L, focusable) {
+    pieces(a, b).forEach(function (p, i) {
+      var n = el('span', 'bar ' + cls + (p[2] ? ' cut-l' : '') + (p[3] ? ' cut-r' : ''));
+      n.style.left = pc(pos(p[0])); n.style.width = pc(Math.max(0, pos(p[1]) - pos(p[0])));
+      n.style.setProperty('--c', color);
+      if (L) {
+        var on = function (ev) { n.classList.add('hot'); showTip(L, ev.clientX, ev.clientY); };
+        n.addEventListener('pointermove', on);
+        n.addEventListener('pointerleave', function () { n.classList.remove('hot'); hideTip(); });
+        if (focusable && i === 0) {
+          n.tabIndex = 0;
+          n.setAttribute('role', 'img');
+          n.setAttribute('aria-label', L.title + '. ' + L.meta + '. ' + L.when + '. ' + L.len + '. ' + (L.note || ''));
+          n.addEventListener('focus', function () { var r = n.getBoundingClientRect(); n.classList.add('hot'); showTip(L, r.left, r.bottom); });
+          n.addEventListener('blur', function () { n.classList.remove('hot'); hideTip(); });
+        } else n.setAttribute('aria-hidden', 'true');
+      } else n.setAttribute('aria-hidden', 'true');
+      track.appendChild(n);
+    });
+  }
+  function renderGantt() {
+    buildSegs();
+    var root = document.getElementById('gantt'); root.textContent = '';
+    var bg = bgHTML();
+    // axis
+    var ax = el('div', 'row axis');
+    ax.appendChild(el('div', 'lab', 'Week · day (' + tzLabel() + ')'));
+    var at = el('div', 'track'); at.innerHTML = bg; ax.appendChild(at);
+    root.appendChild(ax);
+    var trackW = Math.max(1, at.clientWidth);
+    segs.forEach(function (s, k) {
+      var px = s.w * trackW;
+      var label = px >= 150 ? (k === 0 ? 'This week' : 'Week ' + (k + 1) + (WS[s.i].start > LIKELY ? ' · worst case' : ''))
+        : px >= 76 ? (k === 0 ? 'This week' : 'Week ' + (k + 1)) : 'W' + (k + 1);
+      var c = el('div', 'cap', label); c.style.left = pc(s.x); c.style.maxWidth = (px - 4) + 'px';
+      if (px > 150) c.appendChild(el('small', null, k === 0 ? 'until ≈ ' + fShort(roundH(s.end)) + ' ' + fTime(roundH(s.end)) : 'from ' + fShort(s.start) + ' ' + fTime(s.start)));
+      at.appendChild(c);
+    });
+    var narrow = trackW < 560;
+    if (BREAK * trackW >= 14) for (var i = 0; i + 1 < segs.length; i++) {
+      var pz = el('div', 'pzcap', 'paused'); pz.style.left = pc(segs[i].x + segs[i].w); pz.style.width = pc(BREAK); at.appendChild(pz);
+    }
+    var lastX = -1e9;
+    dayTicks().forEach(function (t) {
+      if (!t.major) return;
+      var x = pos(t.ms) * trackW; if (x - lastX < (narrow ? 26 : 50)) return; lastX = x;
+      var tk = el('div', 'tick' + (x < 22 ? ' l' : x > trackW - 22 ? ' r' : ''), narrow ? String(P(t.ms).d) : fShort(t.ms)); tk.style.left = pc(pos(t.ms)); at.appendChild(tk);
+    });
+    function flag(cls, text, ms) {
+      var x = pos(ms) * trackW, f = el('div', 'flag' + cls + (x < 24 ? ' l' : x > trackW - 24 ? ' r' : ''), text);
+      f.style.left = pc(pos(ms)); at.appendChild(f);
+    }
+    flag('', 'now', AS_OF);
+    flag(' fin', 'likely', LIKELY);
+    if ((pos(WORST) - pos(LIKELY)) * trackW > 46) flag(' fin', 'worst', WORST);
+    // groups
+    GROUPS.forEach(function (g) {
+      var color = slotVar(g.slot), gs = groupSpan(g);
+      var hr = el('div', 'row ghead' + (g === GROUPS[0] ? ' first' : ''));
+      var hl = el('div', 'lab');
+      var nm = el('div', 'gname'); var k = el('span', 'key'); k.style.background = color; nm.appendChild(k); nm.appendChild(el('span', null, g.name));
+      hl.appendChild(nm);
+      hl.appendChild(el('div', 'gmeta', 'likely done ' + fDay(roundH(gs[1])) + ' · worst ' + fDay(roundH(gs[2]))));
+      hr.appendChild(hl);
+      var ht = el('div', 'track'); ht.innerHTML = bg;
+      var GL = { title: g.name, meta: g.toneText, when: 'Likely done ' + fDT(gs[1], true) + '; worst case ' + fDT(gs[2], true), len: g.steps.length + ' steps', note: '' };
+      addBar(ht, 'sum', gs[0], gs[1], color, GL, false);
+      if (gs[2] > gs[1]) {
+        addBar(ht, 'reach', gs[1], gs[2], color, GL, false);
+        var caps = ht.querySelectorAll('.bar.reach'); if (caps.length) caps[caps.length - 1].classList.add('endcap');
+      }
+      hr.appendChild(ht);
+      root.appendChild(hr);
+      g.steps.forEach(function (s) {
+        var sp = spanOf(s), L = tipLines(s, g, sp);
+        var r = el('div', 'row srow');
+        var lab = el('div', 'lab');
+        lab.appendChild(el('div', 'sname', s.n));
+        var meta = el('div', 'smeta');
+        var st = el('span', 'st'); st.appendChild(el('i', null, STATUS[s.st][0])); st.appendChild(el('span', null, STATUS[s.st][1])); meta.appendChild(st);
+        meta.appendChild(el('span', null, '· ' + s.w));
+        var when = s.st === 'done' ? fShort(sp[1]) + ' ' + fTime(sp[1]) : s.st === 'running' ? 'until ≈ ' + fShort(roundH(sp[1])) + ' ' + fTime(roundH(sp[1])) : '≈ ' + fShort(roundH(sp[0])) + ' → ' + fShort(roundH(sp[1]));
+        meta.appendChild(el('span', null, '· ' + when));
+        lab.appendChild(meta);
+        r.appendChild(lab);
+        var tr = el('div', 'track'); tr.innerHTML = bg;
+        if (s.st === 'done') addBar(tr, 'done', sp[0], sp[1], color, L, true);
+        else if (s.st === 'running') { addBar(tr, 'run', sp[0], Math.min(AS_OF, sp[1]), color, L, true); if (sp[1] > AS_OF) addBar(tr, 'wash', AS_OF, sp[1], color, L, false); }
+        else if (s.st === 'ifneeded') addBar(tr, 'ifn', sp[0], sp[1], color, L, true);
+        else addBar(tr, 'wash', sp[0], sp[1], color, L, true);
+        r.appendChild(tr);
+        root.appendChild(r);
+      });
+    });
+  }
+  function renderDetail() {
+    var d = document.getElementById('detail'); d.textContent = '';
+    GROUPS.forEach(function (g) {
+      var gs = groupSpan(g), w = el('article', 'ws');
+      var head = el('div', 'ws-head');
+      var h = el('h3'); var k = el('span', 'key'); k.style.background = slotVar(g.slot); h.appendChild(k); h.appendChild(el('span', null, g.name));
+      head.appendChild(h);
+      var tone = el('span', 'tone ' + g.tone); tone.appendChild(el('b', null, g.tone === 'ok' ? '✓' : g.tone === 'warn' ? '▲' : '◷')); tone.appendChild(el('span', null, g.toneText));
+      head.appendChild(tone);
+      w.appendChild(head);
+      w.appendChild(el('p', 'dates', 'Likely done ' + fDT(gs[1], true) + ' · worst case ' + fDay(roundH(gs[2]))));
+      var dl = el('dl');
+      function item(label, v) {
+        if (!v || (Array.isArray(v) && !v.length)) return;
+        dl.appendChild(el('dt', null, label));
+        var dd = el('dd');
+        if (Array.isArray(v)) { var ul = el('ul'); v.forEach(function (t) { ul.appendChild(el('li', null, t)); }); dd.appendChild(ul); } else dd.textContent = v;
+        dl.appendChild(dd);
+      }
+      item('Done', g.done); item('Now', g.now); item('Next', g.next); item('Watch', g.watch);
+      w.appendChild(dl);
+      d.appendChild(w);
+    });
+  }
+  function renderChanges() {
+    document.getElementById('chSub').textContent = 'Compared with the chart of ' + fDay(PREV.when) + ', ' + fTime(PREV.when) + ' ' + tzLabel() + ': likely ' + fDay(PREV.likely) + ' → ' + fDay(roundH(LIKELY)) + '; worst ' + fDay(PREV.worst) + ' → ' + fDay(roundH(WORST)) + '.';
+    var ul = document.getElementById('changes'); ul.textContent = '';
+    CHANGES.forEach(function (c) { var li = el('li'); li.appendChild(el('span', null, c[0])); li.appendChild(el('span', null, c[1])); ul.appendChild(li); });
+  }
+  function renderTable() {
+    var tb = document.querySelector('#tbl tbody'); tb.textContent = '';
+    GROUPS.forEach(function (g) {
+      g.steps.forEach(function (s) {
+        var sp = spanOf(s), tr = el('tr');
+        tr.appendChild(el('td', null, g.name));
+        tr.appendChild(el('td', null, s.n));
+        tr.appendChild(el('td', null, STATUS[s.st][1]));
+        tr.appendChild(el('td', null, s.w));
+        tr.appendChild(el('td', 'num', s.st === 'done' || s.st === 'running' ? fDT(sp[0], false) : fDT(sp[0], true)));
+        tr.appendChild(el('td', 'num', s.st === 'done' ? fDT(sp[1], false) : fDT(sp[1], true)));
+        tr.appendChild(el('td', null, s.note));
+        tb.appendChild(tr);
+      });
+    });
+  }
+  function renderSens() {
+    var tb = document.querySelector('#sens tbody'); tb.textContent = '';
+    [28, 38, 48].forEach(function (cap) {
+      var ws = windows(cap), tr = el('tr');
+      var c0 = el('td', 'num', cap + ' h' + (cap === CAP ? ' (used here)' : '')); if (cap === CAP) c0.style.fontWeight = '600';
+      tr.appendChild(c0);
+      tr.appendChild(el('td', 'num', fDay(roundH(wallAt(LIKELY_H, ws, false)))));
+      tr.appendChild(el('td', 'num', fDay(roundH(wallAt(WORST_H, ws, false)))));
+      tb.appendChild(tr);
+    });
+  }
+  function renderAll() { renderAnswer(); renderNow(); renderGantt(); renderDetail(); renderChanges(); renderTable(); renderSens(); }
+
+  // ---------------------------------------------------------------- controls
+  var bU = document.getElementById('tzUtc'), bL = document.getElementById('tzLocal');
+  function setTz(local) {
+    tzLocal = local;
+    bU.setAttribute('aria-pressed', String(!local)); bL.setAttribute('aria-pressed', String(local));
+    try { localStorage.setItem('mtl-tz', local ? 'local' : 'utc'); } catch (e) { /* not stored */ }
+    renderAll();
+  }
+  bU.addEventListener('click', function () { setTz(false); });
+  bL.addEventListener('click', function () { setTz(true); });
+  bU.setAttribute('aria-pressed', String(!tzLocal)); bL.setAttribute('aria-pressed', String(tzLocal));
+  renderAll();
+  var lastW = document.getElementById('gantt').clientWidth;
+  if (window.ResizeObserver) new ResizeObserver(function () { var w = document.getElementById('gantt').clientWidth; if (Math.abs(w - lastW) > 4) { lastW = w; hideTip(); renderGantt(); } }).observe(document.getElementById('gantt'));
+  window.addEventListener('scroll', hideTip, { passive: true });
+})();
+</script>
