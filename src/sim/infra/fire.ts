@@ -133,7 +133,8 @@ export class FireSystem implements SimSystem {
       return;
     }
     const toSpread: Building[] = [];
-    for (const [id, f] of this.fires) {
+    for (const id of this.fires.keys()) {
+      const f = this.fires.get(id)!;
       const b = st.buildings.get(id);
       if (!b) { this.fires.delete(id); continue; }
       f.days++;
@@ -167,7 +168,8 @@ export class FireSystem implements SimSystem {
     if (this.fires.size === 0) return;
     const em = emergencyOf(sim);
     if (!em) return;
-    for (const [id, f] of this.fires) {
+    for (const id of this.fires.keys()) {
+      const f = this.fires.get(id)!;
       if (f.incidentId >= 0 && em.incident(f.incidentId)) continue;
       const b = sim.state.buildings.get(id);
       if (!b || !(b.flags & BF.OnFire)) { this.fires.delete(id); continue; }
@@ -255,7 +257,10 @@ export class FireSystem implements SimSystem {
    *  change days / heat after fire.daily ran, so a save always holds the current burn clock) */
   persist(sim: Simulation): void {
     const arr: number[][] = [];
-    for (const [id, f] of this.fires) arr.push([id, f.days, f.putOut, f.incidentId, Math.round(f.heat * 1e6) / 1e6]);
+    for (const id of this.fires.keys()) {
+      const f = this.fires.get(id)!;
+      arr.push([id, f.days, f.putOut, f.incidentId, Math.round(f.heat * 1e6) / 1e6]);
+    }
     const sd = sim.state.systemData;
     sd.infraFires = arr;
     sd.infraFireRng = this.rng.state;
