@@ -171,7 +171,8 @@
 .rci-col { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .rci-bar { width: 12px; height: 28px; border-radius: 3px; background: rgba(0, 0, 0, 0.3); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); position: relative; overflow: hidden; }
 .rci-bar::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: rgba(255, 255, 255, 0.25); }
-.rci-bar > i { position: absolute; left: 0; right: 0; border-radius: 2px; transition: height 0.5s var(--ease), top 0.5s var(--ease); }
+.rci-bar > i { position: absolute; left: 0; right: 0; top: 50%; height: 50%; border-radius: 2px; transform: scaleY(0); transform-origin: top; transition: transform 0.5s var(--ease); will-change: transform; }
+.hud-top .paused-pill, .hud-top .live-pill, .hud-top .rci-capdot { will-change: opacity; }
 .rci-l { font-size: 9.5px; font-weight: 800; line-height: 1; }
 .rci-cap { position: absolute; left: 0; right: 0; top: 0; height: 3px; background: #ffd46b; box-shadow: 0 0 6px rgba(255, 212, 107, 0.9); display: none; z-index: 1; }
 .rci-bar.capped .rci-cap { display: block; }
@@ -424,7 +425,7 @@
   animation: coach 1.4s ease-out infinite;
 }
 .speed button { position: relative; }
-.speed button.coach::before { border-radius: 8px; }
+.speed button.coach::before { border-radius: 8px; will-change: transform, opacity; }
 .tb-btn.coach { border-color: rgba(124, 212, 255, 0.65); background: rgba(63, 167, 255, 0.14); color: var(--text); }
 .tb-btn.coach .ico-wrap { color: #7cd4ff; }
 .tb-btn.coach::after { content: ''; position: absolute; top: 5px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: #7cd4ff; box-shadow: 0 0 0 2px rgba(18, 24, 32, 0.9); }
