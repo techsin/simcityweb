@@ -9,7 +9,7 @@ import { clearInfoCache } from '../../src/sim/infra/common';
 import { facilityOpFactor } from '../../src/sim/infra/facilities';
 import { JusticeSystem, justiceData, justiceFactors } from '../../src/sim/infra/justice';
 import { schedulerOf } from '../../src/sim/infra/scheduler';
-import { SERVICES_DIRTY_DAYS, SERVICES_MIN_PASS_MS, SERVICES_PERIOD, SERVICES_STAFF_DELTA, ServicesSystem } from '../../src/sim/infra/services';
+import { SERVICES_DIRTY_DAYS, SERVICES_MIN_CYCLE_MS, SERVICES_PERIOD, SERVICES_STAFF_DELTA, ServicesSystem } from '../../src/sim/infra/services';
 import { createSystems } from '../../src/sim/systems';
 import { deserializeCity, serializeCity } from '../../src/save/serialize';
 import { newState, place, roadLine } from '../infra/cityGen';
@@ -291,7 +291,7 @@ describe('services: urgent coverage latency', () => {
 });
 
 describe('services: live cap and determinism', () => {
-  it('caps live pass starts, including urgent work, without blocking an ongoing pass', () => {
+  it('caps live starts of dirty passes only: periodic and urgent passes start at once, a running pass keeps going', () => {
     const c = city();
     let now = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
@@ -300,19 +300,28 @@ describe('services: live cap and determinism', () => {
     c.st.day = SERVICES_PERIOD;
     c.services.frame(c.sim, 0);
     expect(passes).toBe(1);
-    c.A.setFunding('education', 25);
+    c.A.setFunding('education', 25); // urgent, at the same instant as the last pass start
     expect(c.task.urgent(c.sim)).toBe(true);
+    expect(c.task.due(c.sim)).toBe(true);
+    c.scheduler.flush(c.sim);
+    expect(passes).toBe(2);
+    c.school.flags ^= BF.Powered; // dirty, not urgent
+    c.sim.events.emit('buildingChanged', c.school);
+    c.st.day += SERVICES_DIRTY_DAYS;
+    expect(c.task.urgent(c.sim)).toBe(false);
     expect(c.task.due(c.sim)).toBe(false);
-    now = SERVICES_MIN_PASS_MS - 1;
+    now = SERVICES_MIN_CYCLE_MS - 1;
     c.services.frame(c.sim, 0);
     expect(c.task.due(c.sim)).toBe(false);
-    expect(passes).toBe(1);
+    expect(passes).toBe(2);
     now++;
     expect(c.task.due(c.sim)).toBe(true);
     c.task.step(c.sim);
     expect(c.task.due(c.sim)).toBe(true);
     c.scheduler.flush(c.sim);
-    expect(passes).toBe(2);
+    expect(passes).toBe(3);
+    c.st.day += SERVICES_PERIOD; // periodic, at the same instant as the last pass start
+    expect(c.task.due(c.sim)).toBe(true);
   });
 
   it('does not consult the cap clock in headless due checks', () => {

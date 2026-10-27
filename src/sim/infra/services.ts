@@ -49,7 +49,8 @@
  *
  * SCHEDULING (InfraScheduler): a pass every SERVICES_PERIOD days (within SERVICES_DIRTY_DAYS after a service /
  * NIMBY building change, power flip or road change). Funding, ordinances, strikes, health water, staffing and justice
- * changes are urgent; live mode starts at most one pass per SERVICES_MIN_PASS_MS (ongoing passes keep running):
+ * changes are urgent. In live mode a dirty pass starts at most once per SERVICES_MIN_CYCLE_MS; periodic and urgent
+ * passes are never held, and a running pass keeps going:
  *   prep (need rasters, facility lists, op factors) -> tiers police .. green + transit (bounded steps of
  *   WORK_PER_STEP work units: reach (cached / searched), seat allocation in seat order, crowded-facility demand,
  *   finalize) -> transit stops -> NIMBY (every 2nd pass unless a NIMBY source building or a highway / rail cell
@@ -91,8 +92,8 @@ import type { TrafficSystem } from './traffic';
 export const SERVICES_PERIOD = 15;
 /** a new / removed service building or road change is reflected within this many days */
 export const SERVICES_DIRTY_DAYS = 2;
-/** live mode only: minimum real ms between pass starts, like traffic's cycle cap */
-export const SERVICES_MIN_PASS_MS = 1000;
+/** live mode only: minimum real ms from a pass start to the next dirty pass (periodic and urgent ones skip it) */
+export const SERVICES_MIN_CYCLE_MS = 2000;
 /** absolute change in facilityOpFactor since the last captured value; smaller drift waits for the periodic pass */
 export const SERVICES_STAFF_DELTA = 0.05;
 /** work units processed per tier step (bounds step cost: ~2.1 ms measured on the 256² stress city) */
@@ -394,8 +395,10 @@ export class ServicesSystem implements SimSystem {
     if (this.stepIdx >= 0) return true;
     const d = sim.state.day - this.lastRun;
     if (!this.dirtyUrgent && d < SERVICES_PERIOD && !(this.dirty && d >= SERVICES_DIRTY_DAYS)) return false;
-    // No cap clock on a headless advanceDay path; framesActive also handles a renderer that stopped ticking.
-    if (this.framed && schedulerOf(sim).framesActive && nowMs() - this.lastPassMs < SERVICES_MIN_PASS_MS) return false;
+    // The live cap holds dirty passes only. No cap clock on a headless advanceDay path; framesActive also handles a
+    // renderer that stopped ticking.
+    if (!this.dirtyUrgent && d < SERVICES_PERIOD && this.framed && schedulerOf(sim).framesActive
+      && nowMs() - this.lastPassMs < SERVICES_MIN_CYCLE_MS) return false;
     return true;
   }
 
