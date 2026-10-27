@@ -1,5 +1,40 @@
 # local-W0.3b-reads — remaining display reads and fix round A–H
 
+## Review and gates (the local worker)
+
+The lane's first pass is `7969951`; its fix round is `4e18f53`. It is merged with W0.6 into `local/W0-complete`,
+where the gates ran. An independent reviewer read the first pass in full. It found what was read correct, but not
+when or how often:
+
+- **Major: the cursor upkeep tip.** A capped watch had replaced the per-lot computation, so most lots showed the
+  city-wide figure while the mouse moved. Now there is one guarded `host.query` per placement, memoized only for the
+  current lot (command count and day). Every lot shows its spot price before paint, as before W0.3b. This was fix
+  round B.
+- **Major (perf): the dispatchOptions signature.** It rebuilt the station list every frame for every live watch, and
+  now uses constant-time inputs (fix round C). It reads EmergencySystem's private `stVer` and `gEpoch` through a
+  cast. A public revision accessor in src/sim would be cleaner, later.
+- **Major (perf): disabledOf.** It scanned every building per built one-per-city def, on every tool selection. Now
+  one memoized standing/ruin index serves the catalog and the Rewards panel (fix round D).
+- **Minor:**
+  - dispatch options were up to 200 ms stale after a dispatch; a dispatch command now bypasses the cap (E);
+  - `upkeepFunding` threw without budget data (F);
+  - the "systems" hygiene scan missed imported aliases and sim-chain reach-ins (G);
+  - the report and checklist missed the player-visible changes (H).
+- **The runtime failure I found:** `upkeepReads.test.ts` pinned a reward that shows no upkeep chip (A).
+- **One more, found by my gates after the fix round:** `uiCardTip.test.ts` set `BF.Burnt` in place, with no event
+  and no host. The shared ruin index refreshes on `buildingChanged`, which `fire.ts` and `disasters.ts` emit when a
+  building burns, so the test now emits it too (`77c299d`). In the game the index refreshes at once.
+
+| Gate (on `local/W0-complete`) | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| The full vitest, five times back to back at full parallelism | five consecutive runs, each **171 files passed, 1 skipped; 1,653 tests passed, 7 skipped** (36 s each). The recovery tests passed in all ten runs I made today. |
+| The 128 × 15 seed-7 bot, with the action log | identical to `93069fa`, line for line (**196,101** in 2015) |
+| Old saves | identical to `93069fa`: every file loads, continues 45 days and reloads identically (6 of 6) |
+| The W0.3b browser checklist (docs/dev/qa-W0.3b-reads.md) | a focused session (11 items and the leakprobe teardown check) runs next; its results follow in a note |
+
+The lane's report follows.
+
 Branch `local/W0.3b-reads`. Original integration base: `93069fa`; this fix round starts from **7969951**.
 **Implementation complete; fix-round changes are uncommitted.** TypeScript and whitespace checks pass.
 Vitest cannot collect tests here: Vite's Windows path resolver fails with `spawn EPERM`. Runtime acceptance,
