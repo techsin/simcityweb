@@ -105,8 +105,11 @@ class FakeEl extends FakeNode {
   setAttribute(k: string, v: string): void {
     (this as unknown as Record<string, string>)[k] = v;
   }
-  addEventListener(t: string, f: (e: unknown) => void): void {
+  addEventListener(t: string, f: (e: unknown) => void, opts?: boolean | AddEventListenerOptions): void {
+    const signal = typeof opts === 'object' ? opts.signal : undefined;
+    if (signal?.aborted) return;
     this.listeners.set(t, [...(this.listeners.get(t) ?? []), f]);
+    signal?.addEventListener('abort', () => this.listeners.set(t, (this.listeners.get(t) ?? []).filter((fn) => fn !== f)), { once: true });
   }
   click(): void {
     for (const f of this.listeners.get('click') ?? []) f({});
@@ -167,18 +170,19 @@ afterAll(() => {
 });
 
 // ------------------------------------------------------------------------------------------------ harness
-interface Harness { banner: EmergencyBanner; sim: Simulation; root: FakeEl; toasts: string[]; tick(): void }
+interface Harness { banner: EmergencyBanner; sim: Simulation; root: FakeEl; toasts: string[]; abort: AbortController; tick(): void }
 function harness(sim: Simulation): Harness {
   const root = new FakeEl('div');
   const toasts: string[] = [];
   const handlers: (() => void)[] = [];
+  const abort = new AbortController();
   const ctx = {
     get state() { return sim.state; },
     sim,
     root,
     settings: { emergencyUncovered: 'live', emergencyAlerts: 'major', emergencyLiveSlowmo: 3 },
     ui: { on: (_k: string, f: () => void) => { handlers.push(f); return () => undefined; } },
-    signal: new AbortController().signal,
+    signal: abort.signal,
     panels: { open: () => undefined },
     sound: () => undefined,
     toast: (t: string) => { toasts.push(t); },
@@ -186,7 +190,7 @@ function harness(sim: Simulation): Harness {
     showQuery: () => undefined,
   } as unknown as GameContext;
   const banner = new EmergencyBanner(ctx, root as unknown as HTMLElement);
-  return { banner, sim, root, toasts, tick: () => { for (const f of handlers) f(); } };
+  return { banner, sim, root, toasts, abort, tick: () => { for (const f of handlers) f(); } };
 }
 /** the banner elements of an incident (title, time, note, sub, buttons) */
 function parts(h: Harness, id: number): { el: FakeEl; title: string; time: string; note: string; sub: FakeEl; send: FakeEl; choose: FakeEl } {
@@ -566,6 +570,8 @@ describe('EmergencyBanner: final-fix round 2', () => {
       const h = harness(sim);
       const em = emergencyOf(sim)!;
       count(h.root, ['clientWidth', 'clientHeight']);
+      count(h.banner.el, ['offsetWidth']);
+      count((h.banner as unknown as { more: FakeEl }).more, ['offsetHeight']);
       // a docked panel the stack has to clear (the Advisors panel, right)
       const panel = new FakeEl('div');
       panel.className = 'panel';
@@ -578,6 +584,7 @@ describe('EmergencyBanner: final-fix round 2', () => {
       h.tick();
       expect(em.incidents()[0].manualPossible).toBe(true);
       expect(h.banner.bannerIds.length).toBe(1);
+      count(parts(h, h.banner.bannerIds[0]).el, ['offsetHeight']);
       h.tick(); // (the first docking measures)
       const after = reads;
       expect(after).toBeGreaterThan(0);
@@ -1083,6 +1090,172 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     }
   }
   const fullShown = (t: ReturnType<typeof quakeTown>) => stackBottom(t.h).shown.filter((id) => !parts(t.h, id).el.classList.contains('compact'));
+
+  // ------------------------------------------------------------------------------------ close-out c3 (T016 lane E)
+  it('c3: exit to region removes every element listener, even while the detached stack is retained', () => {
+    const t = quakeTown();
+    quake(t);
+    const ctx = (t.h.banner as unknown as { ctx: GameContext }).ctx;
+    const open = vi.fn(), focus = vi.fn(), query = vi.fn(), select = vi.fn(() => false);
+    ctx.panels.open = open;
+    ctx.focusCell = focus;
+    ctx.showQuery = query;
+    ctx.tools = { active: null, select } as unknown as GameContext['tools'];
+    const [id, dismissed] = t.h.banner.bannerIds;
+    const p = parts(t.h, id), more = (t.h.banner as unknown as { more: FakeEl }).more;
+    button(t.h, id, /^Jump$/).click();
+    p.choose.click();
+    more.click();
+    p.send.click();
+    parts(t.h, dismissed).el.all().find((e) => e.classList.contains('emg-x'))!.click();
+    expect([open.mock.calls.length, focus.mock.calls.length, query.mock.calls.length, select.mock.calls.length]).toEqual([1, 1, 1, 1]);
+    expect(emergencyOf(t.sim)!.incident(id)!.state).toBe('dispatched');
+    expect(t.h.banner.bannerIds).not.toContain(dismissed);
+    const stack = t.h.banner.el as unknown as FakeEl;
+    const retained = [stack, ...stack.all()];
+    const ids = t.h.banner.bannerIds, states = emergencyOf(t.sim)!.incidents().map((i) => i.state), toasts = [...t.h.toasts];
+    stack.remove();
+    t.h.abort.abort();
+    for (const el of retained) if (el.tagName === 'button' || el === more) el.click();
+    stack.fire('pointerdown');
+    stack.fire('lostpointercapture');
+    expect([open.mock.calls.length, focus.mock.calls.length, query.mock.calls.length, select.mock.calls.length]).toEqual([1, 1, 1, 1]);
+    expect(t.h.banner.bannerIds).toEqual(ids);
+    expect(emergencyOf(t.sim)!.incidents().map((i) => i.state)).toEqual(states);
+    expect(t.h.toasts).toEqual(toasts);
+    expect((t.h.banner as unknown as { pressAt: number }).pressAt).toBe(0);
+    // Capture listeners must be unregistered too, not merely leave their controls inert.
+    for (const el of retained) expect([...(el as unknown as { listeners: Map<string, unknown[]> }).listeners.values()].flat()).toEqual([]);
+  });
+
+  it.each([190, 110])('c3 / EM-3: an upper banner resizing from 150 to %i guards only the banners below it, using the observed height', (height) => {
+    const w = fakeWindowAndFrames();
+    const now = vi.spyOn(performance, 'now');
+    const g2 = globalThis as unknown as { ResizeObserver?: unknown; MutationObserver?: unknown };
+    const had = [g2.ResizeObserver, g2.MutationObserver];
+    const changed: (() => void)[] = [];
+    class FakeObs {
+      constructor(cb: () => void) { changed.push(cb); }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    g2.ResizeObserver = g2.MutationObserver = FakeObs;
+    try {
+      const t = quakeTown();
+      t.h.tick();
+      for (const home of t.homesB.slice(0, 3)) triggerDisaster(t.sim, 'fire', home.x, home.z);
+      t.h.tick();
+      sizedBanners(t);
+      const [above, upper, lower] = t.h.banner.bannerIds;
+      let measured = 150, reads = 0;
+      Object.defineProperty(parts(t.h, upper).el, 'offsetHeight', { configurable: true, get: () => { reads++; return measured; } });
+      now.mockReturnValue(1e6);
+      changed[0](); // ResizeObserver: the three full banners have been measured
+      t.h.tick();
+      w.frame(); w.frame();
+      now.mockReturnValue(1e6 + 2000);
+      const before = reads;
+      for (let k = 0; k < 3; k++) t.h.tick();
+      expect(reads).toBe(before);
+      const banners = (t.h.banner as unknown as { banners: Map<number, { settleGen: number }> }).banners;
+      const gens = [above, upper, lower].map((id) => banners.get(id)!.settleGen);
+      measured = height;
+      changed[0](); // a note / ETA wraps or shrinks; no full / compact switch or reordering
+      t.h.tick();
+      expect(reads).toBe(before + 1);
+      expect([above, upper].map((id) => banners.get(id)!.settleGen)).toEqual(gens.slice(0, 2));
+      expect(banners.get(lower)!.settleGen).toBeGreaterThan(gens[2]);
+      expect(fullShown(t)).toEqual([above, upper, lower]);
+      expect(press(t, w.winL, button(t.h, lower, /^Jump$/))).toBe(false);
+      expect(press(t, w.winL, button(t.h, upper, /^Jump$/))).toBe(true);
+      w.frame(); w.frame();
+      now.mockReturnValue(1e6 + 2000 + SETTLE_MS + 1);
+      expect(press(t, w.winL, button(t.h, lower, /^Jump$/))).toBe(true);
+    } finally {
+      now.mockRestore();
+      w.restore();
+      g2.ResizeObserver = had[0];
+      g2.MutationObserver = had[1];
+    }
+  });
+
+  it('c3: at 1024x600 a centred Budget folds the stack into the counted pill, clear of the panel title', () => {
+    const t = quakeTown();
+    quake(t);
+    sizedBanners(t);
+    // UI zoom 0.8: the playtest's Budget [259,110,995,458] and 1024x600 viewport, in layout px.
+    t.h.root.clientWidth = 1024 / 0.8;
+    t.h.root.clientHeight = 600 / 0.8;
+    const hud = (t.h.root as unknown as { querySelector: (s: string) => FakeEl }).querySelector('.hud-bottom');
+    hud.offsetTop = t.h.root.clientHeight - 96;
+    const panel = new FakeEl('div');
+    panel.className = 'panel center';
+    Object.assign(panel, { offsetLeft: 259 / 0.8, offsetTop: 110 / 0.8, offsetWidth: 736 / 0.8, offsetHeight: 348 / 0.8 });
+    t.h.root.querySelectorAll = () => [panel];
+    const more = (t.h.banner as unknown as { more: FakeEl }).more;
+    const s = t.h.banner.el.style;
+    for (let k = 0; k < 4; k++) t.h.tick();
+    expect(stackBottom(t.h).shown).toEqual([]);
+    expect(stackBottom(t.h).capped).toHaveLength(10);
+    expect(shown(more)).toBe(true);
+    expect(more.textContent).toBe('10 more emergencies need you — open Emergencies');
+    const width = parseFloat(String(s.width)) || BANNER_W;
+    const left = parseFloat(String(s.left)) || (t.h.root.clientWidth - width) / 2;
+    let y = parseFloat(String(s.top)) || STACK_TOP;
+    const intersects = (top: number, height: number, py: number, ph: number) => left < panel.offsetLeft + panel.offsetWidth && left + width > panel.offsetLeft && top < py + ph && top + height > py;
+    for (const id of stackBottom(t.h).shown) {
+      const height = parts(t.h, id).el.offsetHeight;
+      expect(intersects(y, height, panel.offsetTop + PANEL_HEAD_H, panel.offsetHeight - PANEL_HEAD_H)).toBe(false);
+      y += height + 8;
+    }
+    expect(intersects(y, 34, panel.offsetTop, PANEL_HEAD_H)).toBe(false);
+    expect(y + 34).toBeLessThanOrEqual(hud.offsetTop - TOOLBAR_GAP);
+    // No room above even for the pill: the same pill-only docking clears the title / tabs below them.
+    panel.offsetTop = 60;
+    t.h.tick();
+    expect(parseFloat(String(s.top))).toBeGreaterThanOrEqual(panel.offsetTop + PANEL_HEAD_H);
+    expect(more.textContent).toBe('10 more emergencies need you — open Emergencies');
+    // A dismissed prompt is still counted alongside the folded banners.
+    parts(t.h, t.h.banner.bannerIds[0]).el.all().find((e) => e.classList.contains('emg-x'))!.click();
+    t.h.tick();
+    expect(more.textContent).toBe('10 more emergencies need you — open Emergencies');
+    // Closing Budget recovers the ordinary stack; folding did not dismiss its incidents.
+    t.h.root.querySelectorAll = () => [];
+    for (let k = 0; k < 3; k++) t.h.tick();
+    expect(stackBottom(t.h).shown.length).toBeGreaterThan(0);
+    expect(t.h.banner.bannerIds).toHaveLength(9);
+  });
+
+  it.each([
+    { width: 1280, height: 720, zoom: 0.8, beside: false },
+    { width: 1366, height: 650, zoom: 0.8, beside: true },
+    { width: 1920, height: 1080, zoom: 1.09, beside: true },
+  ])('c3: the existing Budget docking at $width x $height stays unchanged', ({ width, height, zoom, beside }) => {
+    const t = quakeTown();
+    quake(t);
+    sizedBanners(t);
+    t.h.root.clientWidth = width / zoom;
+    t.h.root.clientHeight = height / zoom;
+    const hud = (t.h.root as unknown as { querySelector: (s: string) => FakeEl }).querySelector('.hud-bottom');
+    hud.offsetTop = t.h.root.clientHeight - 96;
+    const panel = new FakeEl('div');
+    panel.className = 'panel';
+    Object.assign(panel, { offsetLeft: (t.h.root.clientWidth - 920) / 2, offsetTop: Math.round((t.h.root.clientHeight - 435) / 2) - 20, offsetWidth: 920, offsetHeight: 435 });
+    t.h.root.querySelectorAll = () => [panel];
+    const s = t.h.banner.el.style;
+    const snapshot = () => ({ left: s.left, width: s.width, top: s.top, ...stackBottom(t.h), full: fullShown(t), more: (t.h.banner as unknown as { more: FakeEl }).more.textContent });
+    for (let k = 0; k < 4; k++) t.h.tick();
+    const before = snapshot(); // the original docking, without the centred-panel fallback
+    panel.classList.add('center');
+    for (let k = 0; k < 4; k++) t.h.tick();
+    expect(snapshot()).toEqual(before);
+    expect(before.shown.length).toBeGreaterThan(0);
+    if (beside) {
+      const left = parseFloat(String(s.left)), w = parseFloat(String(s.width));
+      expect(left + w <= panel.offsetLeft + 1 || left >= panel.offsetLeft + panel.offsetWidth - 1).toBe(true);
+    } else expect(before.bottom).toBeLessThanOrEqual(panel.offsetTop);
+  });
 
   it('c2 (playtest c2 #1): heights are kept per stack width — a centre panel docks the stack narrow and compact; closed again, the centred stack gets its full banners back', () => {
     const t = quakeTown();
