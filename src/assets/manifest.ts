@@ -191,6 +191,14 @@ export const MANIFEST: ManifestEntry[] = [
   E('lm_pyramid', 'landmark', [3, 3], 1, [30, 50], 'Glass pyramid pavilion with plaza and fountains.'),
   E('lm_castle', 'landmark', [4, 4], 1, [25, 50], 'Medieval castle with keep, towers, crenellated walls.'),
   E('lm_lighthouse', 'landmark', [1, 1], 1, [25, 40], 'Lighthouse with red/white stripes and lantern room (emissive light).'),
+  // late-game rewards (POLISH_PLAN LG-02)
+  E('lm_central_library', 'landmark', [3, 3], 2, [35, 38], 'Central Library: columned entrance, reading gardens and stack wings; copper dome or octagonal glazed lantern.'),
+  E('lm_grand_central', 'landmark', [4, 3], 2, [31, 42], 'Grand Central Station: arched stone concourse, platforms, bus shelter and metro entrance; single train vault with clock pediment or twin vaults with clock tower.'),
+  E('lm_stock_exchange', 'landmark', [3, 3], 2, [74, 87], 'Stock Exchange: columned trading hall, market frieze and bronze bull; stepped limestone office tower or taller bronze-glass tower.'),
+  E('lm_botanical_dome', 'landmark', [4, 4], 2, [26, 32], 'Botanical Dome: triangulated glass conservatories, vent lanterns, glazed entrance, lily pools and planted gardens.'),
+  E('lm_world_trade_center', 'landmark', [4, 4], 2, [390, 415], 'World Trade Center: ribbed silver twins or stepped teal office towers, broadcast mast, conference podium and globe plaza.'),
+  E('lm_millennium_tower', 'landmark', [4, 4], 2, [530, 590], 'Millennium Tower: stepped glass skyscraper with panoramic sky decks, silver needle and reflecting-pool plaza.'),
+  E('lm_metropolis_crown', 'landmark', [4, 4], 2, [600, 650], 'Metropolis Crown: fluted civic skyscraper with an open bronze coronet, sky hall and formal garden plaza.'),
 
   // ------------------------------------------------------------------ REWARDS / BUSINESS DEALS
   E('rw_military_base', 'reward', [8, 8], 1, [5, 25], 'Military base: runway strip, hangars, barracks, radar dish, fences.'),
