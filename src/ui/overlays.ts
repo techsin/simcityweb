@@ -4,7 +4,7 @@
  */
 import { Overlay } from '../core/types';
 import type { CityState } from '../sim/CityState';
-import { OVERLAY_VARIANTS, commuteScale, overlayVariantLabel, resolveVariant } from '../sim/infra/overlays';
+import { OVERLAY_VARIANTS, commuteScale, overlayReady, overlayVariantLabel, resolveVariant } from '../sim/infra/overlays';
 import { windFromLabel, windVector } from '../sim/infra/wind';
 import { escapeHtml } from './dom';
 
@@ -111,6 +111,7 @@ function windHtml(st: CityState): string {
 
 /** Build legend HTML of a data view + variant from render-world's overlayLegend (or the fallback). */
 export function legendHtml(o: Overlay, fromRenderer?: (o: Overlay, variant?: number) => unknown, variant = -1, st?: CityState): string {
+  if (st && !overlayReady(st, o, variant)) return '<div class="lg-note" role="status">Loading…</div>';
   const info = overlayInfo(o);
   const v = resolveVariant(o, variant);
   let body = '';

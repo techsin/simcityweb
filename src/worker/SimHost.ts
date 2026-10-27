@@ -9,11 +9,13 @@ import type { ActionResult, Cell, CityActionsApi, TerraformKind } from '../sim/a
 import { BF, type CityState } from '../sim/CityState';
 import type { ServiceKind } from '../sim/catalogTypes';
 import type { DispatchResult, EmergencySystem } from '../sim/infra/emergency';
+import type { SampleRoute, TrafficSystem } from '../sim/infra/traffic';
+import type { UtilitiesSystem } from '../sim/infra/utilities';
 import type { CityEvents, Simulation } from '../sim/Simulation';
 import { simWasmFlagSelects } from '../wasm/simWasm';
 import { SimCore, type SimErrors, type SimFlags, type SimModules } from './SimCore';
 import { queryKey, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
-import type { PolicyState, SimSettings } from './protocol';
+import type { PolicyState, SimSettings, ViewState } from './protocol';
 
 export type { QueryName, QueryArgs, QueryResult, WatchPolicy } from './queries';
 
@@ -169,6 +171,16 @@ export interface ActOptions { tag?: object; gesture?: Gesture }
 export interface Cause { seq: number; tag: object | null }
 export type GestureOwner = object;
 
+/** W0.5: read-only system data, shared by local readers and the replica's streams. */
+export type EmergencyView = Pick<EmergencySystem, 'active' | 'layersReady' | 'incidents' | 'incident' | 'vehicles' | 'stationList' | 'stationFleet' | 'stationName'>;
+export interface TrafficView {
+  sampleRoutes(max: number): SampleRoute[];
+  truckVolume(): Float32Array | null;
+}
+export interface UtilitiesView {
+  waterQualityAt(sim: Pick<Simulation, 'state'>, cell: number): number;
+}
+
 /** A pointer stroke (or one off-pointer commit), including acknowledgements arriving after release. */
 export class Gesture {
   private pending = 0;
@@ -222,10 +234,15 @@ export interface SimHost {
   beginGesture(owner: GestureOwner): Gesture;
   query<K extends QueryName>(name: K, args: QueryArgs<K>): Promise<QueryResult<K>>;
   watch<K extends QueryName>(name: K, args: QueryArgs<K>, when: WatchPolicy): WatchHandle<QueryResult<K>, QueryArgs<K>>;
-  readonly emergency: DispatchView;
   simTime(): number;
   secondsPerDay(): number;
   frame(dt: number): void;
+  /** W0.5 views and news revision (the retained news array is capped at 200). */
+  readonly emergency: EmergencyView;
+  readonly traffic: TrafficView;
+  readonly utilities: UtilitiesView;
+  readonly newsSeq: number;
+  setView(view: ViewState): void;
   dispose(): Promise<void>;
 }
 /** W0.4 policy view; independent of the query and stream seams. */
@@ -240,6 +257,7 @@ export interface LocalSimHostOptions {
   flags?: SimFlags;
   /** Monotonic real time, injectable for watch cadence tests. */
   now?: () => number;
+  signal?: AbortSignal;
 }
 
 /** Broken lazy imports must not take down the city screen: the local host keeps its stand-ins. */
@@ -261,13 +279,8 @@ export class LocalSimHost implements SimHost {
   private watches = new Set<LocalWatch<QueryName>>();
   private queries = new Map<string, Promise<unknown>>();
   private queryClock: () => number;
-  readonly emergency: DispatchView = {
-    incident: (id) => this.sim.getSystem<EmergencySystem>('emergency')?.incident(id),
-    incidents: () => this.sim.getSystem<EmergencySystem>('emergency')?.incidents() ?? [],
-    vehicles: () => this.sim.getSystem<EmergencySystem>('emergency')?.vehicles() ?? [],
-    stationFleet: (id) => this.sim.getSystem<EmergencySystem>('emergency')?.stationFleet(id) ?? null,
-    stationName: (id) => this.sim.getSystem<EmergencySystem>('emergency')?.stationName(id) ?? 'Station',
-  };
+  private views: ReturnType<typeof localViews>;
+  private news: ReturnType<typeof newsSequence>;
   private resolveReady!: () => void;
   private rejectReady!: (e: unknown) => void;
   readonly ready = new Promise<void>((resolve, reject) => {
@@ -279,6 +292,8 @@ export class LocalSimHost implements SimHost {
     this.core = new SimCore(state, opts.errors, opts.flags);
     this.rctx = opts.rctx ?? null;
     this.queryClock = opts.now ?? (() => performance.now());
+    this.views = localViews(this.sim);
+    this.news = newsSequence(this.events, state.news.length, opts.signal);
     const fallback = new FallbackActions(this.sim);
     this.actions = new LocalActions(fallback, this);
     this.preview = new LocalActions(fallback, this, true);
@@ -295,6 +310,14 @@ export class LocalSimHost implements SimHost {
   get policy(): PolicyView { return this.core.livePolicy.view; }
   simTime(): number { return this.sim.simTime(); }
   secondsPerDay(): number { return this.sim.secondsPerDay(); }
+
+  // W0.5: stable readers follow lazy system boot and state replacement.
+  get emergency(): EmergencyView { return this.views.emergency; }
+  get traffic(): TrafficView { return this.views.traffic; }
+  get utilities(): UtilitiesView { return this.views.utilities; }
+  get newsSeq(): number { return this.news.seq; }
+  /** All local layers are already available; replica hosts subscribe through this seam. */
+  setView(_view: ViewState): void {}
 
   setSpeed(v: number, source: SpeedSource): void { this.act('setSpeed', [v, source]); }
   resume(source: SpeedSource): void { this.act('resume', [source]); }
@@ -405,11 +428,52 @@ export class LocalSimHost implements SimHost {
     this.gesture?.end();
     for (const w of this.watches) w.dispose();
     this.queries.clear();
+    this.news.dispose();
     this.core.dispose();
     this.rctx = null;
     this.resolveReady(); // an exit while imports are pending must not leave awaiters hanging
     return Promise.resolve();
   }
+}
+
+/** W0.5 local views: no commands or system internals escape through these readers. */
+function localViews(sim: Simulation): { emergency: EmergencyView; traffic: TrafficView; utilities: UtilitiesView } {
+  const em = () => sim.getSystem<EmergencySystem>('emergency');
+  const tr = () => sim.getSystem<TrafficSystem>('traffic');
+  return {
+    emergency: {
+      get active() { return em()?.active ?? false; },
+      get layersReady() { return em()?.layersReady ?? false; },
+      incidents: () => em()?.incidents() ?? [],
+      incident: (id) => em()?.incident(id),
+      vehicles: () => em()?.vehicles() ?? [],
+      stationList: () => em()?.stationList() ?? [],
+      stationFleet: (id) => em()?.stationFleet(id) ?? null,
+      stationName: (id) => em()?.stationName(id) ?? 'Station',
+    },
+    traffic: {
+      sampleRoutes: (max) => tr()?.getSampleRoutes(max) ?? [],
+      truckVolume: () => tr()?.truckVolume() ?? null,
+    },
+    utilities: {
+      waterQualityAt: (_source, cell) => sim.getSystem<UtilitiesSystem>('utilities')?.waterQualityAt(sim, cell) ?? sim.state.stats.tapWater ?? 1,
+    },
+  };
+}
+
+/** Count every news event before the HUD sees it; reset invalidates a loaded log even at the same length. */
+function newsSequence(events: Emitter<CityEvents>, initial: number, signal?: AbortSignal): { seq: number; dispose(): void } {
+  const counter = { seq: initial, dispose: () => {} };
+  if (signal?.aborted) return counter;
+  const bump = () => { counter.seq++; };
+  const offs = [events.on('news', bump), events.on('reset', bump)];
+  const dispose = () => {
+    for (const off of offs) off();
+    signal?.removeEventListener('abort', dispose);
+  };
+  counter.dispose = dispose;
+  signal?.addEventListener('abort', dispose, { once: true });
+  return counter;
 }
 
 /** The compatibility actions also use the command seam; hover calls only reach the preview path. */

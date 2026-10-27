@@ -83,6 +83,9 @@ describe('worker migration hygiene gates', () => {
   it.skip('W0.3b: src/ui and src/game no longer call emergencyOf or getSystem', () => {
     expect(scanFiles(uiAndGame(), 'systems')).toEqual([]);
   });
+  it('W0.5: CityScene reads system views through the host', () => {
+    expect(scanFiles(['src/game/CityScene.ts'], 'systems')).toEqual([]);
+  });
   it.skip('W0.6: UI, game and render never write into the replica outside src/worker', () => {
     const files = [...uiAndGame(), ...sourceFiles('src/render')].filter((p) => !p.startsWith('src/game/fallback/'));
     expect(scanFiles(files, 'replica')).toEqual([]);

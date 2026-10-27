@@ -24,7 +24,10 @@ export function queryHost(sim: Simulation): Pick<SimHost, 'query' | 'watch' | 'e
       return w;
     },
     emergency: {
+      get active() { return sim.getSystem<EmergencySystem>('emergency')?.active ?? false; },
+      get layersReady() { return sim.getSystem<EmergencySystem>('emergency')?.layersReady ?? false; },
       incident: (id) => sim.getSystem<EmergencySystem>('emergency')?.incident(id),
+      stationList: () => sim.getSystem<EmergencySystem>('emergency')?.stationList() ?? [],
       incidents: () => sim.getSystem<EmergencySystem>('emergency')?.incidents() ?? [],
       vehicles: () => sim.getSystem<EmergencySystem>('emergency')?.vehicles() ?? [],
       stationFleet: (id) => sim.getSystem<EmergencySystem>('emergency')?.stationFleet(id) ?? null,
