@@ -1,5 +1,5 @@
 /**
- * Emergency alert banners (WP8) + the LIVE speed policy.
+ * Emergency alert banners (WP8), rendered from host.policy. SimCore owns selection, dismissals and LIVE speed.
  *
  * An incident no station can auto-answer ('uncovered' with a free unit the player can send) raises a banner at the top
  * of the screen: kind colour + icon, title, place, why nobody is coming ("All 2 fire trucks of Fire Station #3 are
@@ -29,7 +29,7 @@
  * while one of its banners is pressed (the press may close the flyout); the docking re-measures the layout only after a
  * change (EM-3: no forced layout per UI tick, none at all without a banner).
  *
- * Speed policy (settings.emergencyUncovered, pure function speedPolicy() below):
+ * Speed policy (settings.emergencyUncovered, src/game/emergencyPolicy.ts, run by SimCore's LivePolicy):
  *   'live'   an alert drops the game to 1x (remembering fast / ultra) and slows 1x by settings.emergencyLiveSlowmo
  *            (sim.liveSlowdown), so the player can follow the trucks: the game stays live while an alerted incident
  *            waits for a dispatch AND while the unit the player sent is still driving (until it has been on scene
@@ -41,7 +41,7 @@
  *            who resumes the game himself is not paused again in the same episode.
  *   'pause'  an alert pauses the game; the previous speed comes back as soon as help is dispatched.
  *   'ignore' no speed change.
- * The setting is re-read every tick: changing it during an alert ends the current slow-down / pause (the speed it set
+ * Settings changes go through setSettings: changing it during an alert ends the current slow-down / pause (the speed it set
  * goes back) and the new setting applies to the incidents still waiting. The restore toast is neutral ("Emergency
  * over") when an alerted incident failed, lost buildings / lives or was dismissed.
  *
@@ -50,7 +50,8 @@
  */
 import './emergency.css';
 import type { GameContext } from '../game/context';
-import type { EmergencyPolicy } from '../game/settings';
+import { MAX_BANNERS, sendDays } from '../game/emergencyPolicy';
+import type { PolicySnapshot } from '../worker/SimHost';
 import type { IncidentKind, Responder } from '../sim/CityState';
 import type { EmergencyEvent } from '../sim/Simulation';
 import {
@@ -58,150 +59,12 @@ import {
   type EmergencySystem, type EmergencyVehicle, type Incident,
 } from '../sim/infra/emergency';
 import { EMERG_DAYS_PER_MIN } from '../sim/infra/params';
-import { SECONDS_PER_DAY } from '../core/constants';
 import { openDispatch } from '../game/tools/DispatchTool';
 import { clear, h, setText, toggleClass } from './dom';
 import { icon } from './icons';
 
-export const MAX_BANNERS = 3;
-export const KIND_COOLDOWN = 15;
-export const ALERT_MIN_POP = 1000;
-/** 'live': after a player dispatch the game stays live until the first unit has been on scene this long (days) ... */
-export const FOLLOW_GRACE = 0.75;
-/** ... unless its drive is longer than this (game minutes): then the previous speed comes back right away */
-export const FOLLOW_MAX_MIN = 15;
-/** 'live': less real time than this (seconds at live speed) to dispatch the most urgent alert pauses the game */
-export const LIVE_PAUSE_SEC = 8;
-
-// ------------------------------------------------------------------------------------------------ pure policy
-/** LIVE-mode bookkeeping between UI ticks */
-export interface LiveState {
-  active: boolean;
-  policy: EmergencyPolicy | null;
-  /** speed to restore when every alerted incident is handled (null = leave it) */
-  prevSpeed: number | null;
-  /** the speed the policy set (the player changed it if the current speed differs) */
-  setSpeed: number | null;
-  /** 'live': paused because an alert left too little time to react (resumes live once dispatched) */
-  urgentPause?: boolean;
-  /** 'live': the urgent pause was used in this episode (the player resumed it himself: never twice) */
-  urgentUsed?: boolean;
-}
-export const LIVE_IDLE: Readonly<LiveState> = { active: false, policy: null, prevSpeed: null, setSpeed: null };
-
-export interface PolicyStep {
-  /** new sim speed (undefined = unchanged) */
-  speed?: number;
-  /** sim.liveSlowdown to apply */
-  liveSlowdown: number;
-  state: LiveState;
-  /** toast to show (restored speed) */
-  toast?: string;
-}
-
-const SPEED_NAME = ['paused', 'normal', 'fast', 'ultra'];
-
-/**
- * One UI tick of the emergency speed policy.
- * @param policy the current setting (re-read every tick)
- * @param trigger a new alert was raised since the last tick
- * @param pending alerted incidents that still need a player dispatch
- * @param neutral the episode did not end well (a failure, losses, a dismissed alert): neutral restore toast
- * @param urgentSec real seconds at live speed the most urgent alert still waiting for a dispatch leaves before even the
- *   best unit arrives too late (Infinity = none waiting); under LIVE_PAUSE_SEC 'live' pauses until dispatched
- */
-export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, speed: number, trigger: boolean, pending: number, slowmo: number, neutral = false, urgentSec = Infinity): PolicyStep {
-  let s: LiveState = { ...st };
-  let cur = speed;
-  let toast: string | undefined;
-  // the setting changed during an episode: end it (the speed it set goes back) and let the new setting take over
-  if (s.active && s.policy !== policy) {
-    if (s.prevSpeed !== null && cur === s.setSpeed) cur = s.prevSpeed;
-    s = { ...LIVE_IDLE };
-    if (pending > 0) trigger = true;
-  }
-  if (trigger && pending > 0 && !s.active && policy !== 'ignore') {
-    if (policy === 'live') {
-      const ns = cur > 1 ? 1 : cur;
-      s = { active: true, policy, prevSpeed: cur > 1 ? cur : null, setSpeed: ns };
-      cur = ns;
-    } else {
-      s = { active: true, policy, prevSpeed: cur > 0 ? cur : null, setSpeed: 0 };
-      cur = 0;
-    }
-  }
-  if (s.active && s.policy === 'live' && pending > 0) {
-    const urgent = urgentSec < LIVE_PAUSE_SEC;
-    if (s.urgentPause) {
-      if (cur !== 0) s = { ...s, urgentPause: false }; // the player resumed it himself
-      else if (!urgent) {
-        // dispatched (or the window closed): continue live
-        cur = 1;
-        s = { ...s, urgentPause: false, setSpeed: 1 };
-      }
-    } else if (urgent && !s.urgentUsed && cur > 0) {
-      cur = 0;
-      s = { ...s, urgentPause: true, urgentUsed: true, setSpeed: 0 };
-    }
-  }
-  if (s.active && pending <= 0) {
-    // every alerted emergency is handled: restore the speed the player had, unless they changed it meanwhile
-    const head = neutral ? 'Emergency over' : 'Emergencies handled';
-    if (s.prevSpeed !== null && cur === s.setSpeed) {
-      cur = s.prevSpeed;
-      toast = `${head} — back to ${SPEED_NAME[s.prevSpeed] ?? 'normal'} speed`;
-    } else if (s.urgentPause && cur === 0) {
-      // paused for an urgent alert that ended without a dispatch (it failed / was dismissed / nothing can go): play on
-      cur = 1;
-      toast = head;
-    } else toast = head;
-    s = { ...LIVE_IDLE };
-  }
-  const out: PolicyStep = { liveSlowdown: s.active && s.policy === 'live' && cur === 1 ? Math.max(1, slowmo || 1) : 1, state: s };
-  if (toast) out.toast = toast;
-  return cur !== speed ? { ...out, speed: cur } : out;
-}
-
-/**
- * Which incidents get a banner: queue limit, major-only mode, per-kind cooldown, small-town filter — except a major
- * incident a player dispatch can still save (manualPossible): that one always gets one (shown compact beyond
- * MAX_BANNERS). It holds the LIVE / pause policy and scores as an ignored Dispatch prompt when nobody answers (WP6b),
- * so the player must see it: a second uncovered medical call 7 days after the first used to get no banner and no
- * slow-down, and still cost approval as "ignored".
- */
-export class AlertQueue {
-  readonly shown: number[] = [];
-  private lastByKind = new Map<IncidentKind, number>();
-  constructor(public max = MAX_BANNERS, public cooldown = KIND_COOLDOWN, public minPop = ALERT_MIN_POP) {}
-
-  /** would / does this incident get a banner now (and records it) */
-  offer(e: { id: number; kind: IncidentKind; major: boolean; manualPossible?: boolean }, day: number, population: number, mode: 'major' | 'all'): boolean {
-    if (this.shown.includes(e.id)) return false;
-    if (!(e.major && e.manualPossible === true)) {
-      if (mode === 'major' && !e.major) return false;
-      if (population < this.minPop && e.kind !== 'fire') return false;
-      if (e.kind !== 'fire' && day - (this.lastByKind.get(e.kind) ?? -1e9) < this.cooldown) return false;
-      if (this.shown.length >= this.max) return false;
-    }
-    this.shown.push(e.id);
-    this.lastByKind.set(e.kind, day);
-    return true;
-  }
-
-  remove(id: number): void {
-    const i = this.shown.indexOf(id);
-    if (i >= 0) this.shown.splice(i, 1);
-  }
-
-  has(id: number): boolean {
-    return this.shown.includes(id);
-  }
-
-  clear(): void {
-    this.shown.length = 0;
-    this.lastByKind.clear();
-  }
-}
+// Kept here for the existing policy consumers and tests.
+export { AlertQueue, ALERT_MIN_POP, FOLLOW_GRACE, FOLLOW_MAX_MIN, KIND_COOLDOWN, LIVE_IDLE, LIVE_PAUSE_SEC, MAX_BANNERS, followingDispatch, speedPolicy, type LiveState, type PolicyStep } from '../game/emergencyPolicy';
 
 // ------------------------------------------------------------------------------------------------ docking (P9)
 /** banner stack width (css px, emergency.css) */
@@ -355,6 +218,40 @@ function belowHeads(W: number, top: number, w: number, panels: readonly DockRect
   return best ?? any!;
 }
 
+/** A pill must clear whole panels, including their bodies. Search free strips, highest and nearest centre first. */
+export function dockPill(W: number, height: number, panels: readonly DockRect[], bottom: number, measuredWidth = BANNER_W): DockPlace | null {
+  const width = Math.min(BANNER_W, W - 24);
+  // Unlike a banner's controls, the pill can wrap into a narrow free strip. Reserve for that extra height before
+  // applying the width; ResizeObserver will supply its measured height at the next dirty docking.
+  for (const w of [width, BANNER_MIN_W, 200, 160]) for (const gap of [12, 0]) {
+    if (w > width) continue;
+    const hh = Math.ceil(height * Math.max(1, (measuredWidth - 48) / (w - 48)));
+    const tops = [STACK_TOP, Math.floor(bottom - hh), ...panels.flatMap((p) => [Math.floor(p.y - hh - gap), Math.ceil(p.y + p.h + gap)])].sort((a, b) => a - b);
+    for (const top of tops) {
+      if (top < STACK_TOP || top + hh > bottom || !Number.isFinite(top)) continue;
+      const rows = panels.filter((p) => p.y < top + hh + gap && p.y + p.h + gap > top);
+      const edges = rows.map((p) => [p.x - gap, p.x + p.w + gap]).sort((a, b) => a[0] - b[0]);
+      const gaps: [number, number][] = [];
+      let x = 12;
+      for (const [a, b] of edges) {
+        if (a > x) gaps.push([x, Math.min(W - 12, a)]);
+        x = Math.max(x, b);
+      }
+      if (x < W - 12) gaps.push([x, W - 12]);
+      let best: DockPlace | null = null, distance = Infinity;
+      for (const [a0, b0] of gaps) {
+        const a = Math.ceil(a0), b = Math.floor(b0);
+        if (b - a < w) continue;
+        const left = Math.max(a, Math.min(b - w, (W - w) / 2));
+        const d = Math.abs(left - (W - w) / 2);
+        if (d < distance) { best = { left, width: w, top }; distance = d; }
+      }
+      if (best) return best;
+    }
+  }
+  return null;
+}
+
 // ------------------------------------------------------------------------------------------------ shared UI helpers
 /** a duration in sim days as emergency minutes ("4.0 min"; 1 game-minute of siren driving = EMERG_DAYS_PER_MIN days) */
 export function emgTime(days: number): string {
@@ -466,16 +363,6 @@ export function missingResponders(em: EmergencySystem, inc: Incident): Responder
 export function placeText(inc: Incident, sep = ' '): string {
   return /\(\d+, \d+\)$/.test(inc.place) ? inc.place : `${inc.place}${sep}(${inc.x}, ${inc.z})`;
 }
-/** 'live' follow: the player sent help and it is still on its way (or just arrived) — the primary responder's unit
- *  (an industrial accident's fire truck, not the ambulance that may have been on scene for a while) */
-export function followingDispatch(inc: Incident, now: number): boolean {
-  if (inc.answered !== 2) return false;
-  const arrived = inc.firstAt ? (inc.firstAt[INCIDENT_RESPONDERS[inc.kind][0]] ?? -1) : inc.arrived;
-  if (inc.state === 'dispatched') return arrived < 0 && (inc.etaMin ?? Infinity) <= FOLLOW_MAX_MIN;
-  if (inc.state === 'onScene') return arrived >= 0 && now - arrived < FOLLOW_GRACE && (inc.etaMin ?? Infinity) <= FOLLOW_MAX_MIN;
-  return false;
-}
-
 // ------------------------------------------------------------------------------------------------ banners
 interface BannerEl {
   id: number;
@@ -493,8 +380,6 @@ interface BannerEl {
   sendLbl: HTMLElement;
   sendEta: HTMLElement;
   choose: HTMLButtonElement;
-  /** real ms when the banner should go (after resolved / dispatched) */
-  closeAt: number;
   /** the sim day the Send button last read the dispatch options (-1: read them at the next refresh) */
   optsDay: number;
   /** outcome line once the incident is over */
@@ -533,24 +418,10 @@ function inBox(e: MouseEvent, r: DOMRect | null): boolean {
 
 export class EmergencyBanner {
   readonly el: HTMLDivElement;
-  private queue = new AlertQueue();
   private banners = new Map<number, BannerEl>();
   /** the "N more emergencies" pill and its text (built once: EM-4) */
   private more: HTMLDivElement;
   private moreText: HTMLElement;
-  private live: LiveState = { ...LIVE_IDLE };
-  private trigger = false;
-  private dismissed = new Set<number>();
-  private lastState: unknown = null;
-  /** an alerted incident of the current LIVE / pause episode failed, lost buildings or lives, or was dismissed */
-  private episodeBad = false;
-  /** the incidents the emergency system already had were scanned (a loaded game: the banner is built before the sim
-   *  systems load, so their 'uncovered' events were never seen) */
-  private scanned = false;
-  /** EM-1: incidents whose 'uncovered' event came since the last flush, taken up once the dispatch call that raised
-   *  them is over (flush: a microtask, or the next UI tick) */
-  private incoming = new Set<number>();
-  private flushQueued = false;
   /** last docking applied to the stack (dock): its key, all banners compact, banners shown (0 = all, -1 = pill only) */
   private dockKey = '';
   private dockCompact = false;
@@ -677,8 +548,12 @@ export class EmergencyBanner {
     const off = ctx.sim.events.on('emergency', (e) => this.onEvent(e));
     const offReset = ctx.sim.events.on('reset', () => this.reset());
     const offTick = ctx.ui.on('uiTick', () => this.tick());
+    const offPolicy = ctx.host.policy.subscribe((policy) => this.renderPolicy(policy, true), ctx.signal);
+    const offSettings = ctx.ui.on('settings', () => this.sendSettings());
+    this.sendSettings();
+    this.renderPolicy(ctx.host.policy);
     ctx.signal.addEventListener('abort', () => {
-      off(); offReset(); offTick();
+      off(); offReset(); offTick(); offPolicy(); offSettings();
       this.ro?.disconnect();
       this.mo?.disconnect();
       win?.removeEventListener('resize', resized);
@@ -736,58 +611,45 @@ export class EmergencyBanner {
     setTimeout(() => toggleClass(el, 'settling', false), SETTLE_FLASH_MS);
   }
 
-  /** the LIVE badge: an alert is holding the game at (slowed) 1x */
-  get liveActive(): boolean {
-    return this.live.active && this.live.policy === 'live';
-  }
+  /** The LIVE badge follows the authoritative policy, even while the sim is paused. */
+  get liveActive(): boolean { return this.ctx.host.policy.live; }
 
   private reset(): void {
     for (const b of this.banners.values()) b.el.remove();
     this.banners.clear();
-    this.queue.clear();
-    this.dismissed.clear();
-    this.incoming.clear();
-    this.live = { ...LIVE_IDLE };
-    this.ctx.sim.liveSlowdown = 1;
-    this.episodeBad = false;
-    this.scanned = false;
     this.dockDirty = true;
-    this.rescan();
   }
 
-  /** a loaded game: incidents that were already waiting for the player get their banners back — and with them the
-   *  LIVE / urgent-pause policy (the save's own speed is not kept: a saved city resumes at normal speed) */
-  private rescan(): void {
+  /** Policy snapshots contain no incident objects; the emergency view supplies their display data. */
+  private renderPolicy(policy: PolicySnapshot, feedback = false): void {
     const em = emergencyOf(this.ctx.sim);
-    if (!em || this.scanned) return;
-    this.scanned = true;
-    for (const inc of em.incidents()) {
-      if (inc.state === 'uncovered' && (inc.manualPossible || inc.canSend)) this.onEvent({ type: 'uncovered', id: inc.id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible });
+    const ids = new Set(policy.alerts.map((a) => a.id));
+    for (const id of this.banners.keys()) if (!ids.has(id)) this.removeBanner(id);
+    for (const alert of policy.alerts) {
+      if (!this.banners.has(alert.id)) {
+        const inc = em?.incident(alert.id);
+        if (inc) this.addBanner(inc);
+      }
+      const b = this.banners.get(alert.id);
+      if (b) b.wasPossible = alert.wasPossible;
     }
+    toggleClass(this.ctx.root, 'emg-live', policy.live);
+    if (feedback && policy.warn) this.ctx.sound('warning');
+    if (feedback && policy.toast) this.ctx.toast(policy.toast.text, policy.toast.kind, undefined, 'Emergency');
   }
 
-  /**
-   * EM-1: a player dispatch can save it right now — the sim's prompt (manualPossible, waiting, its window open) and a
-   * free unit of its primary responder among the dispatch options that still arrives by the deadline (live free counts,
-   * ETAs cached by emergency.ts: cheap; sim time runs on between the day ticks that decide the prompt again). The
-   * fastest such unit's drive (days, incl. turnout), else NaN. What counts for LIVE mode, the urgent pause, the pending
-   * alerts and the "more" pill: a prompt whose unit is gone (a disaster's next incident took it) never holds the game.
-   */
-  private sendDays(em: EmergencySystem, inc: Incident): number {
-    if (!inc.manualPossible || !(inc.state === 'uncovered' || inc.state === 'queued')) return NaN;
-    const now = this.ctx.sim.simTime();
-    if (now >= dispatchWindowEnd(inc) - 1e-6) return NaN;
-    const r = INCIDENT_RESPONDERS[inc.kind][0];
-    const left = inc.deadline - now + 1e-6;
-    let best = Infinity;
-    for (const o of em.dispatchOptions(this.ctx.sim, inc.id)) {
-      if (o.responder === r && o.free > 0 && o.etaDays <= left && o.etaDays < best) best = o.etaDays;
-    }
-    return best < Infinity ? best : NaN;
+  /** Only the three simulation settings cross the host seam. */
+  private sendSettings(): void {
+    const s = this.ctx.settings;
+    this.ctx.host.act('setSettings', [{
+      emergencyUncovered: s.emergencyUncovered ?? 'live', emergencyLiveSlowmo: s.emergencyLiveSlowmo ?? 3,
+      emergencyAlerts: s.emergencyAlerts ?? 'major',
+    }], { tag: this });
   }
 
+  /** Layout and the count pill use the same current free-unit check as the policy. */
   private answerable(em: EmergencySystem, inc: Incident): boolean {
-    return !Number.isNaN(this.sendDays(em, inc));
+    return !Number.isNaN(sendDays(inc, this.ctx.host.simTime(), () => em.dispatchOptions(this.ctx.sim, inc.id)));
   }
 
   private onEvent(e: EmergencyEvent): void {
@@ -796,132 +658,12 @@ export class EmergencyBanner {
       if (b) {
         const losses = lossText(b.inc);
         b.outcome = (e.type === 'failed' ? failText(b.inc, !!b.wasPossible) : `${INCIDENT_LABEL[e.kind]} under control`) + (losses ? ` — ${losses}` : '');
-        if (e.type === 'failed' || losses) this.episodeBad = true;
       }
       return;
     }
-    // the dispatch situation changed: the Send button and its note read the options again at once (EM-1) — a dispatch
-    // to any incident may have taken the unit another banner's "Send nearest" counted on
+    // Any dispatch can take the unit another banner's Send nearest button counted on (EM-1).
     if (e.type === 'dispatched') for (const o of this.banners.values()) o.optsDay = -1;
     else if (b && (e.type === 'uncovered' || e.type === 'queued')) b.optsDay = -1;
-    if (e.type !== 'uncovered' || this.dismissed.has(e.id)) return;
-    // EM-1: taken up once the dispatch call that raised it is over — a disaster dispatches its incidents one after the
-    // other, and a later one may take the unit this one counted on: no banner, LIVE mode or urgent pause for a prompt
-    // that is gone before the player could see it. (The speed only changes for the next frame either way: the sim's
-    // update loop keeps its seconds-per-day for the days of the current frame.)
-    this.incoming.add(e.id);
-    if (!this.flushQueued) {
-      this.flushQueued = true;
-      queueMicrotask(() => this.flush());
-    }
-  }
-
-  /** the 'uncovered' incidents since the last flush: a banner when the player can send a unit, LIVE / pause only when it
-   *  can still arrive in time (answerable) */
-  private flush(): void {
-    this.flushQueued = false;
-    if (!this.incoming.size) return;
-    const ids = [...this.incoming];
-    this.incoming.clear();
-    const em = emergencyOf(this.ctx.sim);
-    if (!em) return;
-    let raised = false, added = false;
-    for (const id of ids) {
-      const inc = em.incident(id);
-      if (!inc || inc.state !== 'uncovered' || this.dismissed.has(id) || !(inc.manualPossible || inc.canSend)) continue;
-      const possible = this.answerable(em, inc);
-      const shown = this.banners.get(id);
-      if (shown) {
-        // already on screen (e.g. first as "too far"): the speed policy starts once a unit can make it in time
-        if (possible) {
-          shown.wasPossible = true;
-          this.trigger = true;
-          raised = true;
-        }
-        continue;
-      }
-      const st = this.ctx.state;
-      const mode = this.ctx.settings.emergencyAlerts ?? 'major';
-      if (!this.queue.offer({ id: inc.id, kind: inc.kind, major: inc.major, manualPossible: possible }, st.day, st.stats.population, mode)) continue;
-      this.addBanner(inc);
-      added = raised = true;
-      if (possible) {
-        this.trigger = true;
-        this.banners.get(inc.id)!.wasPossible = true;
-      }
-    }
-    if (added) this.ctx.sound('warning');
-    // apply the speed policy right away: at ultra speed a UI tick (~0.16 s) would already be 3 game days
-    if (raised) this.applyPolicy();
-  }
-
-  /** a major incident a dispatch can still save that has no banner (and was not dismissed): it counts for the speed
-   *  policy all the same — the per-kind cooldown and the banner limit never hide one (tick() gives it a banner) */
-  private unbanneredPrompt(em: EmergencySystem, inc: Incident): boolean {
-    return inc.state === 'uncovered' && inc.major && inc.manualPossible && !this.banners.has(inc.id) && !this.dismissed.has(inc.id) && this.answerable(em, inc);
-  }
-
-  /** alerted incidents that still need the player: waiting for a dispatch that can still go, or ('live') the unit they
-   *  sent is still on its way / just arrived */
-  private pendingCount(policy: EmergencyPolicy): number {
-    const em = emergencyOf(this.ctx.sim);
-    if (!em) return 0;
-    const now = this.ctx.sim.simTime();
-    let n = 0;
-    for (const [id, b] of this.banners) {
-      const inc = em.incident(id);
-      if (!inc) continue;
-      const waiting = inc.state === 'uncovered' || inc.state === 'queued';
-      if (waiting && this.answerable(em, inc)) n++;
-      else if (policy === 'live' && followingDispatch(inc, now)) n++;
-      // nobody was sent while a unit could still make it: whatever ends this episode, it did not end well
-      else if (waiting && b.wasPossible) this.episodeBad = true;
-    }
-    for (const inc of em.incidents()) if (this.unbanneredPrompt(em, inc)) n++;
-    return n;
-  }
-
-  /**
-   * real seconds at live speed the most urgent alerted incident still waiting for a dispatch leaves before even its
-   * best unit would arrive too late — the player must send it before the window closes (an industrial accident: its
-   * plant ignites) and early enough to arrive by the deadline: min(window left, time left − best ETA) × seconds per
-   * live day, the ETA of the fastest free unit "Send nearest" can send now (Infinity = none waiting that a dispatch can
-   * still save)
-   */
-  private urgentSeconds(slowmo: number): number {
-    const em = emergencyOf(this.ctx.sim);
-    if (!em) return Infinity;
-    const now = this.ctx.sim.simTime();
-    const secPerDay = SECONDS_PER_DAY[1] * Math.max(1, slowmo || 1);
-    let best = Infinity;
-    for (const inc of em.incidents()) {
-      // (alerted: a banner, or a major prompt without one that was not dismissed — unbanneredPrompt)
-      if (!this.banners.has(inc.id) && (inc.state !== 'uncovered' || !inc.major || this.dismissed.has(inc.id))) continue;
-      const eta = this.sendDays(em, inc);
-      if (Number.isNaN(eta)) continue;
-      const windowDays = Math.min(dispatchWindowEnd(inc) - now, inc.deadline - now - eta);
-      best = Math.min(best, Math.max(0, windowDays) * secPerDay);
-    }
-    return best;
-  }
-
-  private applyPolicy(): void {
-    const sim = this.ctx.sim;
-    const policy = this.ctx.settings.emergencyUncovered ?? 'live';
-    const was = this.live.active;
-    const slowmo = this.ctx.settings.emergencyLiveSlowmo ?? 3;
-    const step = speedPolicy(policy, this.live, sim.speed, this.trigger, this.pendingCount(policy), slowmo, this.episodeBad, policy === 'live' ? this.urgentSeconds(slowmo) : Infinity);
-    this.trigger = false;
-    this.live = step.state;
-    // outcomes count per episode: from the alert that starts it to the restore toast that ends it
-    if (was !== this.live.active || step.toast) this.episodeBad = false;
-    if (step.speed !== undefined && step.speed !== sim.speed) this.ctx.host.setSpeed(step.speed, 'emergency');
-    if (sim.liveSlowdown !== step.liveSlowdown) sim.liveSlowdown = step.liveSlowdown;
-    if (step.toast) this.ctx.toast(step.toast, step.toast.startsWith('Emergencies handled') ? 'good' : 'info', undefined, 'Emergency');
-    if (this.live.active !== this.lastState) {
-      this.lastState = this.live.active;
-      toggleClass(this.ctx.root, 'emg-live', this.liveActive);
-    }
   }
 
   private addBanner(inc: Incident): void {
@@ -946,9 +688,9 @@ export class EmergencyBanner {
     jump.addEventListener('click', () => this.jump(inc.id), { signal: this.ctx.signal });
     send.addEventListener('click', () => this.sendNearest(inc.id), { signal: this.ctx.signal });
     choose.addEventListener('click', () => openDispatch(this.ctx, inc.id), { signal: this.ctx.signal });
-    close.addEventListener('click', () => this.dismiss(inc.id), { signal: this.ctx.signal });
+    close.addEventListener('click', () => this.ctx.host.act('dismissAlert', [inc.id], { tag: this }), { signal: this.ctx.signal });
     this.el.insertBefore(el, this.more);
-    const b: BannerEl = { id: inc.id, inc, el, title, place, note, sub, time, send, sendLbl, sendEta, choose, closeAt: 0, optsDay: -1, settleUntil: 0, settleGen: 0 };
+    const b: BannerEl = { id: inc.id, inc, el, title, place, note, sub, time, send, sendLbl, sendEta, choose, optsDay: -1, settleUntil: 0, settleGen: 0 };
     this.banners.set(inc.id, b);
     this.ro?.observe(el);
     this.dockDirty = true;
@@ -986,27 +728,17 @@ export class EmergencyBanner {
       this.ctx.sound('error');
       this.ctx.toast(r.reason ?? 'No unit available', 'warning');
     }
-    // EM-1: the button and the note show the new situation at once (a failed send ended the prompt in the sim when
-    // nothing can go), and the speed policy follows it (no urgent pause held for a prompt nobody can answer)
+    // EM-1: the button and note show the new situation at once; the policy owner already re-evaluated the dispatch.
     const b = this.banners.get(id);
     const inc = em.incident(id);
     if (b && inc) {
       b.optsDay = -1;
       this.refresh(b, inc);
     }
-    this.applyPolicy();
-  }
-
-  private dismiss(id: number): void {
-    this.dismissed.add(id);
-    const inc = emergencyOf(this.ctx.sim)?.incident(id);
-    if (inc && (inc.state === 'uncovered' || inc.state === 'queued')) this.episodeBad = true; // left unanswered
-    this.removeBanner(id);
   }
 
   private removeBanner(id: number): void {
     const b = this.banners.get(id);
-    this.queue.remove(id);
     if (!b) return;
     this.banners.delete(id);
     this.ro?.unobserve(b.el);
@@ -1024,7 +756,7 @@ export class EmergencyBanner {
 
   private refresh(b: BannerEl, inc: Incident): void {
     const sim = this.ctx.sim;
-    const now = sim.simTime();
+    const now = this.ctx.host.simTime();
     setText(b.title, INCIDENT_LABEL[inc.kind] + (inc.kind === 'fire' && inc.fires.length > 1 ? ` · ${inc.fires.length} buildings` : inc.kind === 'riot' ? ` · radius ${Math.round(inc.radius)}` : ''));
     setText(b.place, placeText(inc, ' · '));
     const waiting = inc.state === 'uncovered' || inc.state === 'queued';
@@ -1193,13 +925,33 @@ export class EmergencyBanner {
     const moreH = (mh > 0 ? mh : 34) + 8;
     const fbH = H > 0 ? H : Infinity;
     const bottom = this.stackBottom(root, H);
+    this.more.style.visibility = '';
+    // NOTE-023: the pill-only and folded-stack paths share full-panel clearance. If the tool chip leaves too little
+    // room, use a free strip beside it, still clear of the toolbar and flyout. These reads stay inside dirty docking.
+    const placePill = (): DockPlace | null => {
+      const measuredWidth = this.el.offsetWidth || BANNER_W;
+      let d = dockPill(W, moreH - 8, panels, bottom, measuredWidth);
+      if (!d && H > 0 && typeof root.getBoundingClientRect === 'function') {
+        const rr = root.getBoundingClientRect(), scale = rr.width / W;
+        const obstacles = [...panels];
+        for (const el of root.querySelectorAll<HTMLElement>('.hud-bottom .toolbar, .hud-bottom .tool-chip, .hud-bottom .flyout.open')) {
+          if (tracked) this.watch(el);
+          const r = el.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0 && scale > 0) obstacles.push({ x: (r.left - rr.left) / scale, y: (r.top - rr.top) / scale, w: r.width / scale, h: r.height / scale });
+        }
+        if (obstacles.length > panels.length) d = dockPill(W, moreH - 8, obstacles, H - 12, measuredWidth);
+      }
+      // User-dragged panels can fill every free strip; never make their content unclickable in that case.
+      this.more.style.visibility = d ? '' : 'hidden';
+      return d && d.top === STACK_TOP && d.width === BANNER_W && d.left === (W - BANNER_W) / 2 ? null : d;
+    };
     // (one row: beside the panels, else below their header rows — never over a title or tab)
     const singlePlace = (height: number): DockPlace | null => {
       const d = panels.length ? dockBanners(W, STACK_TOP, height, BANNER_W, panels, 0, 12, { H: fbH, rowH: height + 8, moreH: 0, n: 1, bottom }) : null;
       return d && { left: d.left, width: d.width, top: d.top };
     };
     if (pillOnly) {
-      this.applyDock(singlePlace(moreH - 8), false, 0);
+      this.applyDock(placePill(), false, 0);
       return;
     }
     // the banners' heights as full / compact ones — per stack width (close-out c2): measured at the width the stack has
@@ -1245,7 +997,7 @@ export class EmergencyBanner {
       const one = singlePlace(hh);
       const left = one?.left ?? (W - defW) / 2, width = one?.width ?? defW, top = one?.top ?? STACK_TOP;
       if (centres.some((p) => left < p.x + p.w && left + width > p.x && top < p.y + p.h && top + hh > p.y)) {
-        this.applyDock(singlePlace(moreH - 8), true, -1);
+        this.applyDock(placePill(), true, -1);
         return;
       }
     }
@@ -1263,6 +1015,15 @@ export class EmergencyBanner {
           compact = true;
           rows = rc;
         }
+      }
+    }
+    const list = this.ordered(), shown = rows > 0 ? Math.min(rows, list.length) : list.length;
+    if (this.hiddenPrompts > 0 || shown < list.length) {
+      const left = d?.left ?? (W - defW) / 2;
+      const top = (d?.top ?? STACK_TOP) + list.slice(0, shown).reduce((h, b, k) => h + (compact || k >= MAX_BANNERS ? compAt(b, tw) : fullAt(b, tw)) + 8, 0);
+      if (panels.some((p) => left < p.x + p.w && left + tw > p.x && top < p.y + p.h && top + moreH - 8 > p.y)) {
+        this.applyDock(placePill(), true, -1);
+        return;
       }
     }
     this.applyDock(d, compact, rows);
@@ -1335,62 +1096,45 @@ export class EmergencyBanner {
   private tick(): void {
     const sim = this.ctx.sim;
     const em = emergencyOf(sim);
-    const nowMs = performance.now();
-    const now = sim.simTime();
-    const live = (this.ctx.settings.emergencyUncovered ?? 'live') === 'live';
-    // a loaded game: the incidents that were waiting for the player when it was saved (the systems load after this
-    // banner is built, so their 'uncovered' events were never seen here)
-    if (!this.scanned) this.rescan();
-    // every major incident a dispatch can still save has a banner (one whose 'uncovered' event came while it could not
-    // be shown, or before this banner existed)
-    if (em) for (const inc of em.incidents()) if (this.unbanneredPrompt(em, inc)) this.incoming.add(inc.id);
-    this.flush();
-    for (const b of [...this.banners.values()]) {
+    const now = this.ctx.host.simTime();
+    this.renderPolicy(this.ctx.host.policy);
+    for (const b of this.banners.values()) {
       const inc = em?.incident(b.id);
-      if (!inc) {
-        // resolved / failed: the banner lingers briefly with the outcome
-        if (!b.closeAt) {
-          b.closeAt = nowMs + 2500;
-          this.ended(b, now);
-        } else if (nowMs > b.closeAt) this.removeBanner(b.id);
-        continue;
-      }
-      // the banner stays while the incident waits for the player and ('live') while the unit they sent drives there
-      const waiting = inc.state === 'uncovered' || inc.state === 'queued';
-      if (!waiting && !(live && followingDispatch(inc, now))) {
-        if (!b.closeAt) b.closeAt = nowMs + 4000;
-        else if (nowMs > b.closeAt) { this.removeBanner(b.id); continue; }
-      } else b.closeAt = 0;
-      this.refresh(b, inc);
+      if (inc) this.refresh(b, inc);
+      else this.ended(b, now);
     }
     this.dock();
     this.layout();
     // the "N more" pill: alerts a dispatch can still save without a banner (dismissed ones), and the banners the docking
     // keeps out of sight below a panel's header rows (EM-2); its text changes in place (EM-4)
-    let hidden = 0, needYou = 0;
+    let hidden = 0;
     if (em) {
       for (const inc of em.incidents()) {
         if (inc.state === 'uncovered' && inc.major && !this.banners.has(inc.id) && this.answerable(em, inc)) hidden++;
       }
-      needYou = hidden;
-      if (this.capped) for (const b of this.banners.values()) if (b.el.classList.contains('capped')) { const inc = em.incident(b.id); if (inc && this.answerable(em, inc)) needYou++; }
     }
     // (the docking keeps room for the pill while these exist: final fixes r3)
     if (hidden !== this.hiddenPrompts) {
       this.hiddenPrompts = hidden;
       this.dockDirty = true;
     }
-    const total = hidden + this.capped;
-    const md = total ? '' : 'none';
-    if (this.more.style.display !== md) {
-      this.more.style.display = md;
-      this.dockDirty = true;
-    }
-    this.moreShown = total > 0;
-    // (close-out c2 polish: no "open Emergencies" while that panel is open)
-    const listed = !!this.ctx.panels.isOpen?.('emergencies');
-    if (total) setText(this.moreText, `${total} more emergenc${total === 1 ? 'y' : 'ies'}${needYou === total ? (total === 1 ? ' needs you' : ' need you') : ''} — ${listed ? 'see the Emergencies panel' : 'open Emergencies'}`);
-    this.applyPolicy();
+    const showMore = () => {
+      let needYou = hidden;
+      if (em && this.capped) for (const b of this.banners.values()) if (b.el.classList.contains('capped')) { const inc = em.incident(b.id); if (inc && this.answerable(em, inc)) needYou++; }
+      const total = hidden + this.capped;
+      const md = total ? '' : 'none';
+      if (this.more.style.display !== md) {
+        this.more.style.display = md;
+        this.dockDirty = true;
+      }
+      this.moreShown = total > 0;
+      // (close-out c2 polish: no "open Emergencies" while that panel is open)
+      const listed = !!this.ctx.panels.isOpen?.('emergencies');
+      if (total) setText(this.moreText, `${total} more emergenc${total === 1 ? 'y' : 'ies'}${needYou === total ? (total === 1 ? ' needs you' : ' need you') : ''} — ${listed ? 'see the Emergencies panel' : 'open Emergencies'}`);
+    };
+    showMore();
+    // A newly shown pill gets its safe place in this tick, before it can paint over the panel for one UI interval.
+    if (this.moreShown && this.dockDirty) { this.dock(); showMore(); }
   }
 
   /** tests / dev: current banners (incident ids) */

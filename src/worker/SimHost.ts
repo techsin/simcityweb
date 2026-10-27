@@ -13,6 +13,7 @@ import type { CityEvents, Simulation } from '../sim/Simulation';
 import { simWasmFlagSelects } from '../wasm/simWasm';
 import { SimCore, type SimErrors, type SimFlags, type SimModules } from './SimCore';
 import { queryKey, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
+import type { PolicyState, SimSettings } from './protocol';
 
 export type { QueryName, QueryArgs, QueryResult, WatchPolicy } from './queries';
 
@@ -115,10 +116,22 @@ class LocalWatch<K extends QueryName> implements WatchHandle<QueryResult<K>, Que
   }
 }
 
+// W0.4: the policy owns alerts and speed; subscribers only render its plain snapshots.
+export type { SimSettings } from './protocol';
+export interface PolicySnapshot {
+  readonly alerts: readonly Readonly<PolicyState['alerts'][number]>[];
+  readonly live: boolean;
+  readonly toast?: Readonly<NonNullable<PolicyState['toast']>>;
+  readonly warn?: true;
+}
+export interface PolicyView extends PolicySnapshot {
+  subscribe(listener: (policy: PolicySnapshot) => void, signal: AbortSignal): () => void;
+}
+
 export type SpeedSource = 'initial' | 'keyboard' | 'topbar' | 'pause' | 'error' | 'visibility' | 'exit' | 'onboarding' | 'emergency' | 'facade';
 export interface LoanGuard { principal: number; monthsLeft: number }
 
-/** W0.2 commands; policy/settings, debug and persistence join in their own steps. */
+/** W0.2 commands; debug and persistence join in their own steps. */
 interface Commands {
   zone(rect: CellRect, zone: Zone): ActionResult;
   dezone(rect: CellRect): ActionResult;
@@ -141,6 +154,11 @@ interface Commands {
   dispatchBest(incidentId: number): DispatchResult;
   triggerDisaster(kind: string, x: number, z: number): boolean;
   setCamera(camera: SavedCamera): void;
+}
+/** W0.4 policy commands. */
+interface Commands {
+  dismissAlert(incidentId: number): void;
+  setSettings(settings: SimSettings): void;
 }
 export type CommandOp = keyof Commands;
 export type CommandArgs<K extends CommandOp> = Parameters<Commands[K]>;
@@ -210,6 +228,10 @@ export interface SimHost {
   frame(dt: number): void;
   dispose(): Promise<void>;
 }
+/** W0.4 policy view; independent of the query and stream seams. */
+export interface SimHost {
+  readonly policy: PolicyView;
+}
 
 export interface LocalSimHostOptions {
   rctx?: RegionContext | null;
@@ -270,6 +292,7 @@ export class LocalSimHost implements SimHost {
   get liveSlowdown(): number { return this.sim.liveSlowdown; }
   get cause(): Cause | null { return this.emitting; }
   get degradedActions(): boolean { return this.core.actions === null; }
+  get policy(): PolicyView { return this.core.livePolicy.view; }
   simTime(): number { return this.sim.simTime(); }
   secondsPerDay(): number { return this.sim.secondsPerDay(); }
 
