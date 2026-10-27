@@ -48,7 +48,8 @@
  *   EQ -> 25 + 125 x (1 - (1-elem)(1-high)(1-college)) at homes (EQ_TAU_YEARS), HQ -> (30 + 120 health)(1 - .35 air).
  *
  * SCHEDULING (InfraScheduler): a pass every SERVICES_PERIOD days (within SERVICES_DIRTY_DAYS after a service /
- * NIMBY building change, power flip or road change):
+ * NIMBY building change, power flip or road change). Funding, ordinances, strikes, health water, staffing and justice
+ * changes are urgent; live mode starts at most one pass per SERVICES_MIN_PASS_MS (ongoing passes keep running):
  *   prep (need rasters, facility lists, op factors) -> tiers police .. green + transit (bounded steps of
  *   WORK_PER_STEP work units: reach (cached / searched), seat allocation in seat order, crowded-facility demand,
  *   finalize) -> transit stops -> NIMBY (every 2nd pass unless a NIMBY source building or a highway / rail cell
@@ -90,6 +91,10 @@ import type { TrafficSystem } from './traffic';
 export const SERVICES_PERIOD = 15;
 /** a new / removed service building or road change is reflected within this many days */
 export const SERVICES_DIRTY_DAYS = 2;
+/** live mode only: minimum real ms between pass starts, like traffic's cycle cap */
+export const SERVICES_MIN_PASS_MS = 1000;
+/** absolute change in facilityOpFactor since the last captured value; smaller drift waits for the periodic pass */
+export const SERVICES_STAFF_DELTA = 0.05;
 /** work units processed per tier step (bounds step cost: ~2.1 ms measured on the 256² stress city) */
 const WORK_PER_STEP = 120000;
 /** work units: per cell reached by a fresh search, per cached reach entry copied, per entry allocated / splatted */
@@ -126,6 +131,18 @@ export interface UnservedCluster { x: number; z: number; people: number }
 /** a cached reach of one facility: pool range + bounding box of the reached cells */
 interface CacheEnt { key: number; start: number; end: number; x0: number; z0: number; x1: number; z1: number; road: boolean; valid: boolean }
 interface SlotCache { idx: Int32Array<ArrayBuffer>; w: Float32Array<ArrayBuffer>; ent: Map<number, CacheEnt> }
+interface ServiceInput { def: string; flags: number; built: boolean; staff: number }
+
+function relevantDef(id: string): boolean {
+  const d = getDef(id);
+  return !!d && (!!d.coverage || d.category === 'park' || d.category === 'transport' || !!d.stigma || !!d.prestige || !!d.campus);
+}
+function nimbyDef(id: string): boolean {
+  const d = getDef(id);
+  return !!d && (!!d.stigma || !!d.prestige || !!d.campus);
+}
+/** service kinds whose fundingFactor a pass may read; it is 0 during a strike, which the monthly budget starts and ends */
+const FUNDED_KINDS: readonly ServiceKind[] = ['police', 'fire', 'health', 'education', 'transit', 'parks', 'utilities', 'roads'];
 
 const defNums = new Map<string, number>();
 function defNum(id: string): number {
@@ -154,6 +171,8 @@ export class ServicesSystem implements SimSystem {
   /** estimated work units left in this pass's tier steps (for step cost estimates) */
   private workLeft = 0;
   private lastRun = -1e9;
+  private lastPassMs = -1e9;
+  private framed = false;
   private lastEqDay = 0;
   private lastAccess = -1e9;
   private accessDirty = true;
@@ -164,6 +183,12 @@ export class ServicesSystem implements SimSystem {
   private corridorH = 0;
   private doNimby = true;
   private dirty = false;
+  private dirtyUrgent = false;
+  private passUrgent = false;
+  private justiceMul = 1;
+  /** fundingFactor of each FUNDED_KINDS entry as last seen (NaN = not seen yet: the first sighting only records it) */
+  private funded = new Float64Array(FUNDED_KINDS.length).fill(NaN);
+  private inputs = new Map<number, ServiceInput>();
   private unsub: (() => void)[] = [];
 
   // pass inputs
@@ -240,24 +265,26 @@ export class ServicesSystem implements SimSystem {
 
   init(sim: Simulation): void {
     for (const u of this.unsub) u();
-    // a new / removed service / NIMBY building, a power flip or a road change shows within SERVICES_DIRTY_DAYS
-    const relevant = (b: { def: string }) => {
-      const d = getDef(b.def);
-      return !!d && (!!d.coverage || d.category === 'park' || d.category === 'transport' || !!d.stigma || !!d.prestige || !!d.campus);
-    };
-    const nimbySrc = (b: { def: string }) => { const d = getDef(b.def); return !!d && (!!d.stigma || !!d.prestige || !!d.campus); };
-    const markB = (b: { def: string }) => {
-      if (relevant(b)) this.dirty = true;
-      if (nimbySrc(b)) this.nimbyDirty = true;
-    };
-    const markC = (b: { def: string; flags: number }) => {
-      if (relevant(b)) this.dirty = true;
-      if (nimbySrc(b)) this.nimbyDirty = true;
-    };
+    this.inputs.clear();
+    this.funded.fill(NaN);
+    this.dirty = this.dirtyUrgent = this.passUrgent = false;
+    this.framed = false;
+    this.lastPassMs = -1e9;
     this.unsub = [
-      sim.events.on('buildingAdded', markB),
-      sim.events.on('buildingRemoved', markB),
-      sim.events.on('buildingChanged', markC),
+      sim.events.on('buildingAdded', (b) => this.observeBuilding(sim.state, b)),
+      sim.events.on('buildingRemoved', (b) => this.forgetBuilding(b)),
+      sim.events.on('buildingChanged', (b) => this.observeBuilding(sim.state, b)),
+      // population writes jobs / hire without buildingChanged; visit only the tracked service / NIMBY buildings
+      sim.events.on('day', () => {
+        for (const [id, prev] of this.inputs) {
+          const b = sim.state.buildings.get(id);
+          if (b) this.observeBuilding(sim.state, b);
+          else this.forgetBuilding({ id, def: prev.def });
+        }
+        this.checkPolicy(sim.state);
+      }),
+      // after JusticeSystem.monthly and the budget's strike update (services.monthly would run before them)
+      sim.events.on('month', () => this.checkPolicy(sim.state)),
       // NIMBY only depends on highway / rail cells of the network: prep compares their hash (corridorHash)
       sim.events.on('networkChanged', (r) => {
         this.dirty = true; this.accessDirty = true;
@@ -281,7 +308,7 @@ export class ServicesSystem implements SimSystem {
     schedulerOf(sim).register({
       name: 'services',
       due: (s) => self.due(s),
-      urgent: () => false,
+      urgent: () => self.dirtyUrgent || self.passUrgent,
       cost: (s) => self.stepCost(s),
       step: (s) => self.step(s),
     });
@@ -292,13 +319,84 @@ export class ServicesSystem implements SimSystem {
   }
 
   frame(sim: Simulation, _dt: number): void {
+    this.framed = true;
     schedulerOf(sim).tickFrame(sim, this);
   }
 
+  /** policy / operating-factor change: prioritize the next pass, including its remaining steps */
+  invalidate(): void {
+    this.dirty = true;
+    this.dirtyUrgent = true;
+  }
+
+  private observeBuilding(st: CityState, b: Building, reset = false): void {
+    const prev = this.inputs.get(b.id);
+    if (!relevantDef(b.def)) {
+      if (prev) this.forgetBuilding(b);
+      return;
+    }
+    const inf = infoOf(st, b);
+    const water = inf.tier >= 0 && SLOT_OF_TIER[inf.tier] === SLOT_HEALTH && inf.usesWater;
+    const flags = b.flags & (BF.Powered | BF.Burnt | BF.Abandoned | (water ? BF.Watered : 0));
+    const built = b.built >= 1;
+    const staff = facilityOpFactor(st, b);
+    const changed = !prev || prev.def !== b.def || prev.flags !== flags || prev.built !== built;
+    const staffChanged = !!prev && Math.abs(staff - prev.staff) >= SERVICES_STAFF_DELTA;
+    if (!reset && (changed || staffChanged)) {
+      this.dirty = true;
+      if (staffChanged || (prev && ((prev.flags ^ flags) & BF.Watered))) this.dirtyUrgent = true;
+      if (nimbyDef(b.def) || (prev && nimbyDef(prev.def))) this.nimbyDirty = true;
+    }
+    if (!prev) this.inputs.set(b.id, { def: b.def, flags, built, staff });
+    else {
+      prev.def = b.def; prev.flags = flags; prev.built = built;
+      // retain small staffing changes so successive small moves can cross the threshold
+      if (reset || changed || staffChanged) prev.staff = staff;
+    }
+  }
+
+  private forgetBuilding(b: { id: number; def: string }): void {
+    const prev = this.inputs.get(b.id);
+    if (prev || relevantDef(b.def)) this.dirty = true;
+    if (nimbyDef(b.def) || (prev && nimbyDef(prev.def))) this.nimbyDirty = true;
+    this.inputs.delete(b.id);
+  }
+
+  private checkJustice(st: CityState): void {
+    const mul = justiceFactors(st).policeMul;
+    if (mul === this.justiceMul) return;
+    this.justiceMul = mul;
+    this.invalidate();
+  }
+
+  /** justice, plus the funding factors: a strike starts and ends with the monthly budget, without a funding action */
+  private checkPolicy(st: CityState): void {
+    this.checkJustice(st);
+    if (this.recordFunding(st)) this.invalidate();
+  }
+
+  /** records the funding factors; true when one changed since the last record (a first sighting only records it) */
+  private recordFunding(st: CityState): boolean {
+    const seen = this.funded;
+    let changed = false;
+    for (let k = 0; k < FUNDED_KINDS.length; k++) {
+      const f = fundingFactor(st, FUNDED_KINDS[k]);
+      if (f === seen[k]) continue;
+      if (!Number.isNaN(seen[k])) changed = true;
+      seen[k] = f;
+    }
+    return changed;
+  }
+
   private due(sim: Simulation): boolean {
+    // justice also refreshes after day listeners / building edits, without a dedicated event
+    this.checkJustice(sim.state);
     if (this.stepIdx >= 0) return true;
     const d = sim.state.day - this.lastRun;
-    return d >= SERVICES_PERIOD || (this.dirty && d >= SERVICES_DIRTY_DAYS);
+    if (!this.dirtyUrgent && d < SERVICES_PERIOD && !(this.dirty && d >= SERVICES_DIRTY_DAYS)) return false;
+    // No cap clock on a headless advanceDay path; framesActive also handles a renderer that stopped ticking.
+    if (this.framed && schedulerOf(sim).framesActive && nowMs() - this.lastPassMs < SERVICES_MIN_PASS_MS) return false;
+    return true;
   }
 
   /** estimated ms of the next step (deterministic: from problem sizes; calibrated on the 256² stress city) */
@@ -394,6 +492,7 @@ export class ServicesSystem implements SimSystem {
         this.finish(sim, this.firstPass);
         this.stepIdx = -1;
         this.firstPass = false;
+        this.passUrgent = false;
     }
     this.lastMs = nowMs() - t0;
   }
@@ -443,6 +542,9 @@ export class ServicesSystem implements SimSystem {
     const N = st.size, C = st.cells;
     if (this.lastState !== st) { this.lastState = st; this.cache = new Array(NT + 1).fill(null); this.hadFac = new Array(NT + 1).fill(true); }
     this.lastRun = st.day;
+    if (this.framed && schedulerOf(sim).framesActive) this.lastPassMs = nowMs();
+    this.passUrgent = this.dirtyUrgent;
+    this.dirtyUrgent = false;
     this.dirty = false;
     this.doAccess = this.firstPass || this.accessDirty || st.day - this.lastAccess >= ACCESS_PERIOD;
     if (this.doAccess) { this.lastAccess = st.day; this.accessDirty = false; }
@@ -465,6 +567,8 @@ export class ServicesSystem implements SimSystem {
     this.fx = readEffects(st);
     const policeMul = justiceFactors(st).policeMul;
     this.policeMul = policeMul;
+    this.justiceMul = policeMul;
+    this.recordFunding(st);
     this.policeFx = this.fx.policeEffect;
     const sh = this.shares;
     let nCs = 0;
@@ -481,6 +585,7 @@ export class ServicesSystem implements SimSystem {
     this.passNo = (this.passNo % 1e6) + 1;
     for (let bI = 0; bI < bL.length; bI++) {
       const b = bL[bI];
+      this.observeBuilding(st, b, true);
       if (b.w * b.d > 1) { this.multi.push(b); this.multiCells += b.w * b.d; }
       const inf = infoOf(st, b);
       if (inf.fam === Fam.R) {
