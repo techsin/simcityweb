@@ -6,6 +6,8 @@
  *
  * Events: 'disaster' {kind, x, z, active} — tornado re-emits while moving (x,z = current funnel cell, fractional
  * position via DisastersSystem.active[]), earthquake / meteor emit active:true then active:false after a few days.
+ * Each tornado step that lowers trees emits 'treesDamaged' with their bounds (W1.1a's replica; the sim never listens),
+ * and its end emits 'treesChanged' over the whole path.
  * News via sim.notify(..., 'disaster', x, z). Destroyed buildings get BF.Burnt (rubble; sim-core decides regrowth)
  * + buildingChanged; buildings inside a meteor crater are removed (buildingRemoved).
  * Emergency aftermath (WP8, emergency.ts): earthquake-destroyed buildings with occupants become 'collapse' rescue
@@ -292,6 +294,8 @@ export class DisastersSystem implements SimSystem {
     const N = st.size;
     let dist = days * TORNADO_CELLS_PER_DAY;
     d.daysLeft -= days;
+    // the bounds of the trees this step lowers, for 'treesDamaged'
+    let x0 = N, z0 = N, x1 = 0, z1 = 0;
     while (dist > 0) {
       const step = Math.min(0.5, dist);
       dist -= step;
@@ -313,7 +317,10 @@ export class DisastersSystem implements SimSystem {
           const calls = d.calls ?? 0;
           if (occupied && calls < TORNADO_MEDICAL_MAX && this.spawnIncident(sim, 'medical', b) >= 0) d.calls = calls + 1;
         }
-        if (st.trees[z * N + x] > 0) st.trees[z * N + x] = Math.max(0, st.trees[z * N + x] - 2);
+        if (st.trees[z * N + x] > 0) {
+          st.trees[z * N + x] = Math.max(0, st.trees[z * N + x] - 2);
+          x0 = Math.min(x0, x); z0 = Math.min(z0, z); x1 = Math.max(x1, x + 1); z1 = Math.max(z1, z + 1);
+        }
       }
       const cell = Math.floor(d.z) * N + Math.floor(d.x);
       if (this.lastEmitCell.get(d) !== cell) {
@@ -321,6 +328,7 @@ export class DisastersSystem implements SimSystem {
         sim.events.emit('disaster', { kind: 'tornado', x: d.x, z: d.z, active: true });
       }
     }
+    if (x1 > 0) sim.events.emit('treesDamaged', { x0, z0, x1, z1 });
     if (d.daysLeft <= 0) {
       const k = this.active.indexOf(d);
       if (k >= 0) this.end(sim, k);
