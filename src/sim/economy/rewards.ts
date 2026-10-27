@@ -11,13 +11,40 @@ import type { EconRuntime } from './runtime';
 
 export type RewardKind = 'unlock' | 'reward' | 'landmark' | 'deal';
 
-interface Cond {
+export interface CityRank {
+  id: string;
+  name: string;
+  population: number;
+}
+
+export const CITY_RANKS: readonly CityRank[] = [
+  { id: 'settlement', name: 'Settlement', population: 0 },
+  { id: 'village', name: 'Village', population: 1000 },
+  { id: 'town', name: 'Town', population: 5000 },
+  { id: 'small_city', name: 'Small City', population: 10000 },
+  { id: 'city', name: 'City', population: 25000 },
+  { id: 'large_city', name: 'Large City', population: 50000 },
+  { id: 'metropolis', name: 'Metropolis', population: 100000 },
+  { id: 'major_metropolis', name: 'Major Metropolis', population: 250000 },
+  { id: 'global_city', name: 'Global City', population: 500000 },
+  { id: 'world_city', name: 'World City', population: 750000 },
+  { id: 'megacity', name: 'Megacity', population: 1000000 },
+  { id: 'megalopolis', name: 'Megalopolis', population: 1500000 },
+];
+
+type MilestoneState = Pick<CityState, 'stats' | 'unlocked' | 'milestones'>;
+
+interface CondInfo {
   label: string;
-  value: (st: CityState) => number;
   need: number;
   /** display format */
   fmt?: 'int' | 'bool';
 }
+
+type Cond = CondInfo & (
+  | { value: (st: MilestoneState) => number; fullState?: false }
+  | { value: (st: CityState) => number; fullState: true }
+);
 
 export interface RewardDef {
   id: string;
@@ -80,14 +107,14 @@ export const REWARDS: RewardDef[] = [
   { id: 'city_hall', name: 'City Hall', kind: 'reward', defIds: ['civ_city_hall'], conds: [pop(20000)], description: 'A seat of government worthy of the city.' },
   { id: 'country_club', name: 'Country Club', kind: 'reward', defIds: ['park_golf'], conds: [{ label: 'R$$$ residents', value: (s) => s.stats.residents[2], need: 4000 }],
     description: 'The rich want to golf.' },
-  { id: 'casino', name: 'Casino Resort', kind: 'reward', defIds: ['rw_casino'], conds: [pop(15000), { label: 'Legalized Gambling', value: (s) => (s.budget.ordinances.includes('legalized_gambling') ? 1 : 0), need: 1, fmt: 'bool' }],
+  { id: 'casino', name: 'Casino Resort', kind: 'reward', defIds: ['rw_casino'], conds: [pop(15000), { label: 'Legalized Gambling', value: (s) => (s.budget.ordinances.includes('legalized_gambling') ? 1 : 0), need: 1, fmt: 'bool', fullState: true }],
     description: 'Requires the Legalized Gambling ordinance.' },
   { id: 'research_center', name: 'Advanced Research Center', kind: 'reward', defIds: ['rw_research_center'], conds: [pop(40000), eq(110)], description: 'Awarded for a highly educated city.' },
   { id: 'medical_center', name: 'Medical Research Center', kind: 'reward', defIds: ['civ_medical_center'], conds: [pop(40000), hq(100)], description: 'Awarded for a very healthy city.' },
   { id: 'stadium', name: 'Major League Stadium', kind: 'reward', defIds: ['park_stadium'], conds: [pop(50000)], description: 'The league wants a team here!' },
   { id: 'convention_center', name: 'Convention Center', kind: 'reward', defIds: ['civ_convention_center'], conds: [pop(60000), comJobs(15000)], description: 'Business visitors raise the commercial cap.' },
   { id: 'amusement_park', name: 'Amusement Park', kind: 'reward', defIds: ['park_amusement'], conds: [pop(80000)], description: 'Rides and tourists.' },
-  { id: 'seaport', name: 'Container Seaport', kind: 'reward', defIds: ['tr_seaport'], conds: [indJobs(6000), { label: 'Coastline', value: (s) => (hasWater(s) ? 1 : 0), need: 1, fmt: 'bool' }],
+  { id: 'seaport', name: 'Container Seaport', kind: 'reward', defIds: ['tr_seaport'], conds: [indJobs(6000), { label: 'Coastline', value: (s) => (hasWater(s) ? 1 : 0), need: 1, fmt: 'bool', fullState: true }],
     description: 'Industry wants to ship by sea: massive industrial cap boost.' },
   { id: 'airport_large', name: 'International Airport', kind: 'reward', defIds: ['tr_airport_large'], conds: [pop(120000), has('tr_airport_small', 'Municipal airport built')],
     description: 'A global hub for a global city.' },
@@ -131,6 +158,44 @@ export interface RewardInfo {
   progressText: string;
 }
 
+export interface MilestoneInfo {
+  currentRank: CityRank;
+  nextRank: CityRank | null;
+  nextUnlocks: Pick<RewardInfo, 'id' | 'name' | 'kind' | 'progress'>[];
+}
+
+/** Current population rank and the three closest unlocks; ties keep REWARDS order.
+ * Conditions needing budget or terrain (Casino, Seaport) are omitted from this query. */
+export function listMilestones(st: MilestoneState): MilestoneInfo {
+  let rank = 0;
+  while (rank + 1 < CITY_RANKS.length && st.stats.population >= CITY_RANKS[rank + 1].population) rank++;
+
+  const rewards: RewardDef[] = [];
+  const scores: number[] = [];
+  for (const r of REWARDS) {
+    if (st.unlocked.has(r.id)) continue;
+    let progress = 1;
+    for (const c of r.conds) {
+      if (c.fullState) { progress = -1; break; }
+      progress = Math.min(progress, Math.max(0, Math.min(1, c.value(st) / c.need)));
+    }
+    if (progress < 0) continue;
+    let pos = 0;
+    while (pos < scores.length && scores[pos] >= progress) pos++;
+    if (pos >= 3) continue;
+    for (let i = Math.min(scores.length, 2); i > pos; i--) {
+      rewards[i] = rewards[i - 1];
+      scores[i] = scores[i - 1];
+    }
+    rewards[pos] = r;
+    scores[pos] = progress;
+  }
+  return {
+    currentRank: CITY_RANKS[rank], nextRank: CITY_RANKS[rank + 1] ?? null,
+    nextUnlocks: rewards.map((r, i) => ({ id: r.id, name: r.name, kind: r.kind, progress: scores[i] })),
+  };
+}
+
 function fmt(c: Cond, v: number): string {
   if (c.fmt === 'bool') return `${c.label}: ${v >= c.need ? 'yes' : 'no'}`;
   return `${c.label} ${Math.floor(v).toLocaleString('en-US')} / ${c.need.toLocaleString('en-US')}`;
@@ -164,6 +229,12 @@ export function rewardConditionsMet(state: CityState, r: RewardDef): boolean {
 export function rewardsSystem(rt: EconRuntime): SimSystem {
   const check = (sim: Simulation, silent: boolean) => {
     const st = sim.state;
+    // Reached ranks survive population drops; init fills this optional key silently for old saves.
+    const ranks = (st.systemData.cityRanks ??= {}) as Record<string, boolean>;
+    for (const r of CITY_RANKS) {
+      if (st.stats.population < r.population) break;
+      if (!ranks[r.id]) ranks[r.id] = true;
+    }
     for (const r of REWARDS) {
       if (st.unlocked.has(r.id)) continue;
       if (!st.config.sandbox && !rewardConditionsMet(st, r)) continue;
