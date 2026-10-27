@@ -16,17 +16,20 @@ every scratch file was lost), so anything the next round needs lives here or in 
 Reports of the latest rounds: `docs/dev/reports/*.md` (verbatim agent reports; paths inside them point at the old,
 now deleted scratch directory).
 
-## Running now (relaunched Oct 26 after the weekly limit and the container reset)
+## Running now (relaunched Oct 27 ~12:40 after a session restart)
 
 | Run | Script (copy) | What |
 |---|---|---|
-| `wf_81eaafdc-a73` | `docs/dev/workflows/simB-close2.js` | Fix c2 (inspector-click leak + 8 minors) ‖ tooling (simbot `--save-years`, shared test cities, WASM fixtures) → verify c3 (real-input playtest ‖ adversarial audit) → fix/verify c4 if needed. |
-| `wf_e99805b4-834` | `docs/dev/workflows/render2-final-v2.js` | Verify v2 (art ‖ perf, tooling rebuilt) → revise both lanes if needed → verify v3. |
+| `wf_08a5eb98-993` | `docs/dev/workflows/render2-final-v2r.js` | Graphics revise v2 (both lanes, resumed with the RESUMING note; verify v2 results cached). It ends after revise v2: final review 3 runs on the desktop (T014). |
+
+The sim close-out workflow `wf_81eaafdc-a73` was stopped on purpose after fix c2; its check 3 runs on the desktop (T013).
 
 Relaunch after an interruption: the scripts start with `const __C = {}` / `const __R = []`. With the journal still on
 disk, `python3 <scratch>/refresh_cache.py <script> <runId>` fills `__C` with every finished agent's result by label and
 `__R` with the labels that were in flight (they get a RESUMING note), then relaunch with `Workflow({scriptPath})`.
 If the container was reset (journal gone), rebuild `__C` from `docs/dev/reports/` by hand or re-run the round.
+Before relaunching, stop the dead agents' leftover browsers, vite servers and chains (`ps -eo pid,args | grep -E
+"chrome-headless|serve1|servers.mjs|chain.mjs"`).
 
 ## Local GPU worker (since Oct 27)
 
