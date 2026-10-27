@@ -20,7 +20,7 @@ import { BF, type Building } from '../CityState';
 import { clamp, smoothstep } from '../../core/rng';
 import { DevType } from '../../core/types';
 import {
-  APPROVAL, APPROVAL_TERMS as AT, COMMUTE_FALLBACK, COVERAGE_FALLBACK, EQ_BASE, EQ_RATE, EQ_SPAN, HQ_BASE, HQ_RATE, HQ_SPAN,
+  APPROVAL, APPROVAL_TERMS as AT, COMMUTE_FALLBACK, COVERAGE_FALLBACK, difficultyRules, EQ_BASE, EQ_RATE, EQ_SPAN, HQ_BASE, HQ_RATE, HQ_SPAN,
   NEEDS_POP_FULL, NEEDS_POP_START, TAX_NEUTRAL,
 } from './tuning';
 import { type EconRuntime, type InfraFlags, GROWABLE_SLICES, econData, infraFlags } from './runtime';
@@ -310,6 +310,7 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
 
   const update = (sim: Simulation, first: boolean) => {
     const st = sim.state;
+    const rules = difficultyRules(st.config.difficulty);
     const data = econData(st);
     // init of a loaded city (terms from an earlier month): keep the saved, smoothed approval instead of snapping it
     // to this month's raw value (save / load continuity)
@@ -370,6 +371,7 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     // the first power plant and clinic without the mayor being blamed); garbage fades in more slowly and unmet needs
     // follow WP1's expectation curve (tuning APPROVAL_TERMS / NEEDS_POP_*).
     const fadeIn = w > 0 ? smoothstep(AT.needsPop0, AT.needsPop1, w) : 0;
+    if (rules.fadeCrime) T.crime *= fadeIn;
     T.noise = w > 0 ? AT.noise * sv.noise[3] : 0;
     T.outages = fadeIn * (AT.unpowered * sv.unpowered[3] + AT.unwatered * sv.unwatered[3]);
     const g = serviceGaps(w, sv.noGarbage[3], w > 0 && inf.utilities ? s.tapWater ?? 1 : 1, s.needs);
@@ -389,7 +391,11 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
       // + every prompt the mayor ignored (a unit could still have made it in time and nobody was sent): a fixed weight,
       // not diluted by the city's size (APPROVAL_TERMS.emIgnored)
       const remembered = fadeIn * (AT.emFailRate * (yr.failed ?? 0) / (yCount + AT.emFailN0) + AT.emIgnored * (yr.ignored ?? 0));
-      T.emergencies = -Math.min(AT.emergencyMax, AT.emFailed * lm.failed + AT.emLate * lm.late + AT.emDeaths * lm.deaths + AT.emRiotDays * lm.riotDays + remembered);
+      if (rules.fadeMonthlyEmergencies) {
+        T.emergencies = -Math.min(AT.emergencyMax, fadeIn * (AT.emFailed * lm.failed + AT.emLate * lm.late + AT.emDeaths * lm.deaths) + AT.emRiotDays * lm.riotDays + remembered);
+      } else {
+        T.emergencies = -Math.min(AT.emergencyMax, AT.emFailed * lm.failed + AT.emLate * lm.late + AT.emDeaths * lm.deaths + AT.emRiotDays * lm.riotDays + remembered);
+      }
     } else {
       T.emergencies = -Math.min(AT.fireMax, AT.firePer * firesMonth);
     }
@@ -443,17 +449,19 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
 
 /**
  * Approval terms of the last monthly update (sum = econData.approvalRaw within rounding; WP5 TopBar tooltip).
- * Ordered by |value|, the baseline first; zero terms are left out.
+ * Ordered by |value|, the baseline first; zero terms are left out except crime during Easy's new-town grace.
  */
 export function approvalBreakdown(st: CityState): FactorTerm[] {
   const d = st.systemData.economy as { approvalTerms?: Record<string, number> } | undefined;
   const T = d?.approvalTerms;
   if (!T) return [];
+  const crimeGrace = difficultyRules(st.config.difficulty).fadeCrime
+    && (surveys.get(st)?.pop[3] ?? st.stats.population) < AT.needsPop1;
   const out: FactorTerm[] = [];
   for (const id in T) {
     const v = T[id];
-    if (!v && id !== 'base') continue;
-    out.push({ id, label: APPROVAL_LABELS[id] ?? id, value: v, detail: approvalDetail(st, id, T) });
+    if (!v && id !== 'base' && !(id === 'crime' && crimeGrace)) continue;
+    out.push({ id, label: APPROVAL_LABELS[id] ?? id, value: v, detail: id === 'crime' && crimeGrace ? 'new-town grace' : approvalDetail(st, id, T) });
   }
   out.sort((a, b) => (a.id === 'base' ? -1 : b.id === 'base' ? 1 : Math.abs(b.value) - Math.abs(a.value)));
   return out;

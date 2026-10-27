@@ -29,7 +29,7 @@ import { DEV_TYPE_LABELS, Network, Zone } from '../../core/types';
 import type { ServiceKind } from '../catalogTypes';
 import { getDef } from '../catalog';
 import {
-  BANKRUPT_MONTHS, BANKRUPT_WARN_MONTHS, BRIDGE_UPKEEP_MUL, DIFFICULTY_INCOME, LANDFILL_UPKEEP, NETWORK_UPKEEP, OPEX_BUILDING_SHARE,
+  BANKRUPT_MONTHS, BANKRUPT_WARN_MONTHS, BRIDGE_UPKEEP_MUL, difficultyRules, LANDFILL_UPKEEP, NETWORK_UPKEEP, OPEX_BUILDING_SHARE,
   POWERLINE_UPKEEP, RECYCLING_INCOME_PER_T, STRIKE_FUNDING, SUBWAY_UPKEEP, TAX_NEUTRAL, TAX_PER_JOB, TAX_PER_RES, TOURISM,
   TOURISM_INCOME_PER_VISITOR, UTIL_FIXED, VENUE_INCOME,
 } from './tuning';
@@ -128,7 +128,7 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
   const expense: Record<string, number> = {};
   const add = (o: Record<string, number>, k: string, v: number) => { if (v) o[k] = (o[k] ?? 0) + v; };
   const rates = st.budget.taxRates;
-  const mul = DIFFICULTY_INCOME[st.config.difficulty] ?? 1;
+  const mul = difficultyRules(st.config.difficulty).income;
   const s = st.stats;
   // ---- taxes
   for (let w = 0; w < 3; w++) add(income, 'tax:' + DEV_TYPE_LABELS[w], s.residents[w] * TAX_PER_RES[w] * rates[w] * mul);
