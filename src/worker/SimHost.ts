@@ -35,8 +35,9 @@ export interface SaveAck {
 }
 export interface SnapshotAck extends WriteResult, RecoverySnapshot { cmd: number; fp: string; changes: number }
 export interface CityPersistence { regionId: string; tileKey: string; regionName?: string }
-/** The local host writes snapshots synchronously; later hosts supply their unload mirror here. */
-export interface RecoveryMirror { writeNow(why: SnapshotWhy): void }
+// W1.1b: the local host keeps recovery=null; T032 attaches the mirror to its packet/command paths.
+export type { RecoveryMirror } from './recoveryMirror';
+import type { RecoveryMirror } from './recoveryMirror';
 
 export type { QueryName, QueryArgs, QueryResult, WatchPolicy } from './queries';
 

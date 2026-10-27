@@ -4,11 +4,46 @@ import { decodeBundle, encodeBundle } from './bundleCodec';
 import { MONTH_NAMES } from '../sim/CityState';
 import type { SavableCityState } from './state';
 import type { CityRecord } from './cities';
+import type { Journal, JournalOp } from '../worker/protocol';
 
 export const DELTA_KIND = 'metropolis-city-delta';
 export const DELTA_VERSION = 1;
 /** max payload kept in localStorage (packed 15 bits / char → ~1.15 M chars ≈ 2.3 MB of UTF-16, well inside every browser's quota) */
 export const LS_BUDGET_BYTES = 2_150_000;
+// W1.1b: shared by the authoritative snapshot builder and the page's journal slot.
+export const JOURNAL_RESERVE_BYTES = 128 * 1024;
+
+export const JOURNAL_OPS: Readonly<Record<JournalOp, true>> = {
+  zone: true, dezone: true, bulldoze: true, buildNetwork: true, buildPowerLine: true, buildSubway: true,
+  plop: true, terraform: true, plantTrees: true, setTax: true, setFunding: true, setHistoric: true,
+  setOrdinance: true, takeLoan: true, repayLoan: true,
+};
+export function isJournalOp(op: string): op is JournalOp { return Object.hasOwn(JOURNAL_OPS, op); }
+
+/** This base predates FH-07a's refund fields: keep the bulldoze ack's signed net charge. */
+export interface RecoveryJournal extends Journal {
+  ops: (Journal['ops'][number] & { cost?: number })[];
+}
+
+/** Metadata only; the page never needs the serialized city to bind its journal. */
+export interface JournalBase extends RecoveryCity { savedAt: number; snapshot?: RecoveryMarker }
+
+export function journalMatches(journal: RecoveryJournal, base: JournalBase): boolean {
+  if (!journal || journal.v !== 1 || journal.regionId !== base.regionId || journal.tileKey !== base.tileKey
+    || !Number.isFinite(journal.at) || !Number.isSafeInteger(journal.fromCmd) || !Array.isArray(journal.ops)) return false;
+  const b = journal.base, m = base.snapshot;
+  if (m) {
+    if (m.regionId !== base.regionId || m.tileKey !== base.tileKey || m.baseSavedAt !== base.savedAt || m.at <= base.savedAt
+      || b?.kind !== 'snapshot' || b.at !== m.at || b.baseSavedAt !== base.savedAt || journal.at < m.at) return false;
+  } else if (b?.kind !== 'save' || b.savedAt !== base.savedAt || journal.at < base.savedAt) return false;
+  let seq = journal.fromCmd;
+  for (const entry of journal.ops) {
+    if (!entry || !Number.isSafeInteger(entry.seq) || entry.seq <= seq || !isJournalOp(entry.op) || !Array.isArray(entry.args)
+      || (entry.cost !== undefined && (entry.op !== 'bulldoze' || !Number.isFinite(entry.cost)))) return false;
+    seq = entry.seq;
+  }
+  return true;
+}
 
 /**
  * Layers the simulation recomputes from the primary data (traffic, pollution, coverage, land value, desirability,

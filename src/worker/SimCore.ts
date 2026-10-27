@@ -21,6 +21,12 @@ import { cityFingerprint } from '../save/fingerprint';
 import { clearRecoveryAfterSave } from '../save/recoveryIdb';
 import { summarizeCity } from '../region/citySummary';
 import type { RegionCitySummary } from '../region/types';
+// W1.1b: authoritative recovery only. The page-side mirror and localStorage stay out of this graph.
+import { getRecoveryBase } from '../save/cities';
+import {
+  buildRecoverySnapshot, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, journalMatches,
+  type JournalBase, type RecoveryJournal, type RecoverySnapshot, type SnapshotInfo,
+} from '../save/recoveryCodec';
 
 export interface CitySaveCopy { record: CityRecord; fp: string; summary: RegionCitySummary }
 
@@ -120,6 +126,36 @@ export class SimCore {
     const kv = await openKV(), rec = copy.record;
     await putCityRecord(kv, rec);
     return clearRecoveryAfterSave(kv, rec.regionId, rec.tileKey, rec.savedAt).catch(() => false);
+  }
+
+  // W1.1b: the loopback/worker owner cuts the bytes and command watermark in one synchronous unit.
+  copyRecoverySnapshot(regionId: string, tileKey: string, info: SnapshotInfo, at = Date.now()): RecoverySnapshot {
+    if (this.disposed) throw new Error('Simulation core is disposed');
+    return buildRecoverySnapshot(regionId, tileKey, this.sim.state, getRecoveryBase(regionId, tileKey),
+      { ...info, at }, LS_BUDGET_BYTES - JOURNAL_RESERVE_BYTES);
+  }
+
+  /** After boot/init, before ticking. The caller supplies the identity of the save/snapshot it actually loaded. */
+  replayRecoveryJournal(journal: RecoveryJournal, base: JournalBase): { applied: number[]; failed: number[] } | null {
+    if (this.disposed) throw new Error('Simulation core is disposed');
+    if (!journalMatches(journal, base)) return null;
+    if (!this.booted || !this.actions) throw new Error('Recovery replay requires initialized CityActions');
+    const applied: number[] = [], failed: number[] = [];
+    for (const entry of journal.ops) {
+      try {
+        const result = this.applyCommand({ op: entry.op, args: structuredClone(entry.args) } as Command, this.actions);
+        if (result === false || (result && typeof result === 'object' && !result.ok)) { failed.push(entry.seq); continue; }
+        if (entry.op === 'bulldoze' && entry.cost !== undefined && result && typeof result === 'object' && 'cost' in result) {
+          // FH-07a is not in this base. Preserve its signed net charge, never a fresh wall-clock refund decision.
+          const adjustment = result.cost - entry.cost, st = this.sim.state;
+          if (!st.config.sandbox && st.config.difficulty !== 'sandbox') st.funds += adjustment;
+          if (adjustment > 0) st.budget.curIncome['oneoff:refund'] = (st.budget.curIncome['oneoff:refund'] ?? 0) + adjustment;
+          else if (adjustment < 0) st.budget.curExpense['oneoff:demolition'] = (st.budget.curExpense['oneoff:demolition'] ?? 0) - adjustment;
+        }
+        applied.push(entry.seq);
+      } catch { failed.push(entry.seq); }
+    }
+    return { applied, failed };
   }
 
   /** Commands run synchronously between local ticks, through the same authoritative actions as before. */

@@ -1,11 +1,11 @@
 /** The page's synchronous recovery slot. Never imported by SimCore. */
-import { LS_BUDGET_BYTES, packBytes, unpackBytes, type RecoveryCity, type RecoveryMarker } from './recoveryCodec';
+import { JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, packBytes, unpackBytes, type RecoveryCity, type RecoveryMarker, type RecoveryJournal } from './recoveryCodec';
 import type { Journal } from '../worker/protocol';
 
 const LS_MARKER = 'metropolis.recovery';
 const LS_DATA = 'metropolis.recovery.data';
 const LS_JOURNAL = 'metropolis.recovery.journal';
-export const JOURNAL_RESERVE_BYTES = 128 * 1024;
+export { JOURNAL_RESERVE_BYTES } from './recoveryCodec';
 const sameCity = (a: RecoveryCity, b: RecoveryCity) => a.regionId === b.regionId && a.tileKey === b.tileKey;
 
 function removeLs(key: string): void {
@@ -59,6 +59,12 @@ export function readLsSnapshot(): { marker: RecoveryMarker; payload: Uint8Array 
     } catch { /* corrupt or unavailable payload */ }
   }
   return { marker, payload };
+}
+
+// W1.1b: parsing is separate from the authoritative base check (journalMatches).
+export function readLsJournal(): RecoveryJournal | null {
+  try { return JSON.parse(localStorage.getItem(LS_JOURNAL) ?? 'null') as RecoveryJournal | null; }
+  catch { return null; }
 }
 
 export function discardRecoverySnapshot(city?: RecoveryCity): void {
