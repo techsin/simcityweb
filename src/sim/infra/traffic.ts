@@ -492,6 +492,9 @@ export class TrafficSystem implements SimSystem {
   private stLoadPrev = new Map<number, number>();
   private stopBins: Int32Array<ArrayBuffer> = new Int32Array(0);
   private stopBinStart: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private stopBinFill: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private stX: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private stZ: Float64Array<ArrayBuffer> = new Float64Array(0);
   private binN = 0;
   private nodeStop: Int32Array<ArrayBuffer> = new Int32Array(0);
   private nsIdx: Int32Array<ArrayBuffer> = new Int32Array(64);
@@ -529,6 +532,11 @@ export class TrafficSystem implements SimSystem {
   private oLastD: Float32Array<ArrayBuffer> = new Float32Array(0);
   private candKey: Float64Array<ArrayBuffer> = new Float64Array(0);
   private candNode: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private candSort: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private candHist = new Uint32Array(5 * 2048);
+  private routeCand: number[] = [];
+  private routeW: number[] = [];
+  private routeCum: Float64Array<ArrayBuffer> = new Float64Array(0);
   private round = 0;
   /** starved matching rounds this cycle (each allows one round beyond MATCH_ROUNDS, at most MATCH_EXTRA_ROUNDS) */
   private extraRounds = 0;
@@ -546,6 +554,11 @@ export class TrafficSystem implements SimSystem {
   private stationIds: number[] = [];
   private volInbound: Float32Array<ArrayBuffer> = new Float32Array(0);
   private inboundById: Float32Array<ArrayBuffer> = new Float32Array(1024);
+  private inDesire: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private inBestNode: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private inConnSum: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private inScale: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private inConn: Float64Array<ArrayBuffer> = new Float64Array(0);
   /** regional workers that came in through each road connection (by cell) in the last full inbound pass, and the neighbour
    *  connections of the last completed assignment (connectionReport) */
   private connInbound = new Map<number, number>();
@@ -791,6 +804,8 @@ export class TrafficSystem implements SimSystem {
    *  car flows on the last round's forest to commit */
   private poolTk: Float64Array<ArrayBuffer> = new Float64Array(0);
   private poolCarTk: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private poolU: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private poolO: Float64Array<ArrayBuffer> = new Float64Array(0);
   private poolQ: number[] = [];
   private poolFlows = false;
   /** prRest: records allowed for this piece (roundMatch), and its results: the undecided share of the piece (a record),
@@ -2168,14 +2183,18 @@ export class TrafficSystem implements SimSystem {
     this.stopBinStart = growI32(this.stopBinStart, nb * nb + 1);
     this.stopBinStart.fill(0, 0, nb * nb + 1);
     this.stopBins = growI32(this.stopBins, stops.n + 1);
+    this.stX = growF64(this.stX, stops.n);
+    this.stZ = growF64(this.stZ, stops.n);
     for (let s = 0; s < stops.n; s++) {
       const c = stops.cell[s], x = c % N, z = (c - x) / N;
+      this.stX[s] = x; this.stZ[s] = z;
       this.stopBinStart[((z / BS) | 0) * nb + ((x / BS) | 0) + 1]++;
     }
     for (let i = 0; i < nb * nb; i++) this.stopBinStart[i + 1] += this.stopBinStart[i];
-    const fillp = new Int32Array(nb * nb);
+    this.stopBinFill = growI32(this.stopBinFill, nb * nb);
+    const fillp = this.stopBinFill.subarray(0, nb * nb).fill(0);
     for (let s = 0; s < stops.n; s++) {
-      const c = stops.cell[s], x = c % N, z = (c - x) / N;
+      const x = this.stX[s], z = this.stZ[s];
       const bi = ((z / BS) | 0) * nb + ((x / BS) | 0);
       this.stopBins[this.stopBinStart[bi] + fillp[bi]++] = s;
     }
@@ -2183,7 +2202,7 @@ export class TrafficSystem implements SimSystem {
     const trFrom: number[] = [], trTo: number[] = [], trCost: number[] = [];
     for (let s = 0; s < stops.n; s++) {
       if (this.stAttC[s] === 0) continue;
-      const c = stops.cell[s], x = c % N, z = (c - x) / N;
+      const x = this.stX[s], z = this.stZ[s];
       const cnt = this.nearStops(N, x, z, STOP_WALK_RADIUS);
       for (let q = 0; q < cnt; q++) {
         const s2 = this.nsIdx[q], d = this.nsDist[q];
@@ -2334,18 +2353,17 @@ export class TrafficSystem implements SimSystem {
   }
 
   /** stops within radius R of (x,z) -> this.nsIdx / this.nsDist (returns count; no allocation) */
-  private nearStops(N: number, x: number, z: number, R: number): number {
+  private nearStops(_N: number, x: number, z: number, R: number): number {
     const BS = 8, nb = this.binN;
     const bx0 = Math.max(0, ((x - R) / BS) | 0), bx1 = Math.min(nb - 1, ((x + R) / BS) | 0);
     const bz0 = Math.max(0, ((z - R) / BS) | 0), bz1 = Math.min(nb - 1, ((z + R) / BS) | 0);
-    const stops = this.stops;
     const R2 = R * R;
     let c = 0;
     for (let bz = bz0; bz <= bz1; bz++) for (let bx = bx0; bx <= bx1; bx++) {
       const bi = bz * nb + bx;
       for (let p = this.stopBinStart[bi], p1 = this.stopBinStart[bi + 1]; p < p1; p++) {
         const s = this.stopBins[p];
-        const cell = stops.cell[s], sx = cell % N, sz = (cell - sx) / N;
+        const sx = this.stX[s], sz = this.stZ[s];
         const dx = sx - x, dz = sz - z;
         const d2 = dx * dx + dz * dz;
         if (d2 > R2) continue;
@@ -2819,6 +2837,45 @@ export class TrafficSystem implements SimSystem {
     roadSearch(this.road, this.road.rev, this.nodeTime, this.SA, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME + 2 * MATCH_PRICE_MAX, this.rampT);
   }
 
+  /** Stable 11-bit LSD radix sort of the packed (cost, origin) keys; keep the native order outside safe integers. */
+  private sortCandidates(nc: number): Float64Array {
+    const key = this.candKey, sorted = key.subarray(0, nc);
+    if (nc < 64) return sorted.sort();
+    let max = 0;
+    for (let k = 0; k < nc; k++) {
+      const v = key[k];
+      if (!Number.isSafeInteger(v) || v < 0 || Object.is(v, -0)) return sorted.sort();
+      if (v > max) max = v;
+    }
+    const hi = Math.floor(max / 4294967296);
+    const bits = hi > 0 ? 64 - Math.clz32(hi) : 32 - Math.clz32(max >>> 0);
+    const passes = Math.ceil(bits / 11), hist = this.candHist;
+    hist.fill(0, 0, passes * 2048);
+    for (let k = 0; k < nc; k++) {
+      const v = key[k], l = v >>> 0, h = Math.floor(v / 4294967296);
+      hist[l & 2047]++;
+      if (passes > 1) hist[2048 + ((l >>> 11) & 2047)]++;
+      if (passes > 2) hist[4096 + (((l >>> 22) | (h << 10)) & 2047)]++;
+      if (passes > 3) hist[6144 + ((h >>> 1) & 2047)]++;
+      if (passes > 4) hist[8192 + ((h >>> 12) & 2047)]++;
+    }
+    this.candSort = growF64(this.candSort, nc);
+    let from = key, to = this.candSort;
+    for (let p = 0; p < passes; p++) {
+      const row = p * 2048, div = 2 ** (11 * p);
+      if (hist[row + (((from[0] / div) >>> 0) & 2047)] === nc) continue;
+      let sum = 0;
+      for (let b = 0; b < 2048; b++) { const n = hist[row + b]; hist[row + b] = sum; sum += n; }
+      for (let k = 0; k < nc; k++) {
+        const v = from[k];
+        to[hist[row + (((v / div) >>> 0) & 2047)]++] = v;
+      }
+      const tmp = from; from = to; to = tmp;
+    }
+    if (from !== key) sorted.set(from.subarray(0, nc));
+    return sorted;
+  }
+
   /** match unassigned workers to their nearest open site (nearest first, up to capacity); returns the next phase */
   private roundMatch(): number {
     const SA = this.SA;
@@ -2859,7 +2916,7 @@ export class TrafficSystem implements SimSystem {
       }
       key[k] = Math.floor(Math.max(0, g) * q) * M + o;
     }
-    const sorted = key.subarray(0, nc).sort();
+    const sorted = this.sortCandidates(nc);
     // accept nearest first
     const fx = this.fx;
     const carPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
@@ -2877,8 +2934,11 @@ export class TrafficSystem implements SimSystem {
       }
     }
     let accepted = 0, carRound = 0;
-    const routeCand: number[] = [];
-    const routeW: number[] = [];
+    // An interrupted cycle can still hold the previous round's arrays in the overflow records.
+    if (this.routeCand === this.ovRouteCand) this.routeCand = [];
+    if (this.routeW === this.ovRouteW) this.routeW = [];
+    const routeCand = this.routeCand, routeW = this.routeW;
+    routeCand.length = 0; routeW.length = 0;
     for (let k = 0; k < nc; k++) {
       const o = sorted[k] % M;
       const node = cnode[o];
@@ -2989,7 +3049,8 @@ export class TrafficSystem implements SimSystem {
     // sample car routes of this round (weighted by car trips)
     const K = Math.min(10, routeCand.length);
     if (K > 0) {
-      const cum = new Float64Array(routeCand.length);
+      this.routeCum = growF64(this.routeCum, routeCand.length);
+      const cum = this.routeCum.subarray(0, routeCand.length);
       let sw = 0;
       for (let q = 0; q < routeCand.length; q++) { sw += routeW[q]; cum[q] = sw; }
       const g = this.road;
@@ -3036,7 +3097,8 @@ export class TrafficSystem implements SimSystem {
     this.poolFlows = false;
     this.poolQ.length = 0;
     if (nc === 0) return;
-    const U = new Float64Array(nc), O = new Float64Array(nc);
+    this.poolU = growF64(this.poolU, nc); this.poolO = growF64(this.poolO, nc);
+    const U = this.poolU.subarray(0, nc).fill(0), O = this.poolO.subarray(0, nc).fill(0);
     let any = false;
     for (let o = 0; o < this.oN; o++) {
       if (this.oU[o] < 0.01 || this.oLastD[o] < 0) continue;
@@ -3061,7 +3123,9 @@ export class TrafficSystem implements SimSystem {
     let flows = false;
     // pooled car commuters per component (parking demand of the sites that take them; the overflow records' drivers
     // are added when PH_PROVER decides them: poolCars)
-    const tk = (this.poolTk = new Float64Array(nc)), carTk = (this.poolCarTk = new Float64Array(nc));
+    if (this.poolTk.length !== nc) this.poolTk = new Float64Array(nc);
+    if (this.poolCarTk.length !== nc) this.poolCarTk = new Float64Array(nc);
+    const tk = this.poolTk.fill(0), carTk = this.poolCarTk.fill(0);
     for (let o = 0; o < this.oN; o++) {
       const u = this.oU[o];
       if (u < 0.01 || this.oLastD[o] < 0) continue;
@@ -4124,9 +4188,11 @@ export class TrafficSystem implements SimSystem {
     if (seeds.n === 0) return;
     roadSearch(g, g.fwd, this.nodeTime, S, this.heap, seeds, REGIONAL_TIME + 90, this.rampT);
     const dist = S.dist, src = S.src, done = S.done;
-    const desire = new Float32Array(this.jB);
-    const bestNode = new Int32Array(this.jB).fill(-1);
-    const connSum = new Float64Array(conns.length);
+    this.inDesire = growF32(this.inDesire, this.jB); this.inBestNode = growI32(this.inBestNode, this.jB);
+    this.inConnSum = growF64(this.inConnSum, conns.length);
+    const desire = this.inDesire.subarray(0, this.jB).fill(0);
+    const bestNode = this.inBestNode.subarray(0, this.jB).fill(-1);
+    const connSum = this.inConnSum.subarray(0, conns.length).fill(0);
     for (let j = 0; j < this.jB; j++) {
       const spare = this.jSlots[j] - Math.min(this.jSlots[j], this.jAsg[j]);
       if (spare <= 0) continue;
@@ -4143,7 +4209,8 @@ export class TrafficSystem implements SimSystem {
     }
     // (the regional workers each connection lets in: placeRegional — the region at large at every connection, a founded
     // neighbour's own workers at the connections facing it)
-    const scale = new Float32Array(conns.length);
+    this.inScale = growF32(this.inScale, conns.length);
+    const scale = this.inScale.subarray(0, conns.length);
     for (let k = 0; k < conns.length; k++) {
       const capW = this.jConnW[conns[k]];
       scale[k] = connSum[k] > capW ? capW / connSum[k] : 1;
@@ -4153,7 +4220,8 @@ export class TrafficSystem implements SimSystem {
     const carPcu = 1 / CAR_OCCUPANCY;
     let tot = 0;
     const cand: number[] = [];
-    const connIn = new Float64Array(conns.length);
+    this.inConn = growF64(this.inConn, conns.length);
+    const connIn = this.inConn.subarray(0, conns.length).fill(0);
     for (let j = 0; j < this.jB; j++) {
       const bn = bestNode[j];
       if (bn < 0) continue;
