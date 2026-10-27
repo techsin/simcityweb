@@ -8,6 +8,9 @@
  *  - no tree is drawn by both meshes (the far blocks' conifer feet match the near pairs'),
  *  - a low camera next to the edge sees the ring past the switch distance (the r4 regression: the far blocks were
  *    faded out with the camera height, so the forest stopped ~0.85 km from a low camera),
+ *  - next to the edge the far blocks show the mini crown over its own, higher camera height band (to ~350 m: the
+ *    revise v2 pale-cone copses at 200-340 m), every tree the shaders open drawn with its geometry, the upper half above
+ *    the band; the switch distance keeps the height fade's band,
  *  - a near pair is culled by the bounds of the prefix it draws (the corner sectors beside a low camera at an edge reach
  *    it, but none of their trees is in view: they drew ~1250 trees, 106k vertices, for nothing),
  *  - a far block is culled by the bounds of its trees per cell (the quarters beside an edge view whose boxes meet the
@@ -68,11 +71,14 @@ describe('outer ring next to the map edge', () => {
   const shaders = (R: Ring, cam: THREE.Vector3) => {
     const P = R.ringU.uRingP.value, Q = R.ringU.uRingQ.value;
     const lod = P.x, fv = P.y, W = P.z, lowSw = Q.x;
-    const edgeNear = (x: number, z: number) => {
+    const edgeDist = (x: number, z: number) => {
       const ex = x < 0 ? cam.x : x > W ? W - cam.x : 1e9;
       const ez = z < 0 ? cam.z : z > W ? W - cam.z : 1e9;
-      return 1 - sstep(lod * 0.6, lod * 0.94, Math.min(ex, ez));
+      return Math.min(ex, ez);
     };
+    const edgeNear = (x: number, z: number) => 1 - sstep(lod * 0.6, lod * 0.94, edgeDist(x, z));
+    /** the far blocks' mini crown's reach from the edge (RING_LOW_VERT: whole within 0.94 x lodDistance, out by 1.2 x) */
+    const crownNear = (x: number, z: number) => 1 - sstep(lod * 0.94, lod * 1.2, edgeDist(x, z));
     /** switch distance of the tree at (x, z) (its random from its float32 position, as RING_RAND) */
     const sw = (x: number, z: number) => {
       const lw = (1 - fv) * edgeNear(x, z);
@@ -80,7 +86,7 @@ describe('outer ring next to the map edge', () => {
     };
     /** far block keep fraction at distance d of the tree at (x, z) */
     const keep = (x: number, z: number, d: number) => Math.min(1, Math.max(0.3, 1.2 - (d - lod) / 5500)) * Math.max(fv, edgeNear(x, z));
-    return { lod, fv, sw, keep, edgeNear };
+    return { lod, fv, sw, keep, edgeNear, crownNear };
   };
 
   const fr = new THREE.Frustum(), sp = new THREE.Sphere();
@@ -216,6 +222,56 @@ describe('outer ring next to the map edge', () => {
     tr.dispose();
   }, 300_000);
 
+  it('next to the edge the far blocks show the mini crown up to ~350 m (its own height band) and the upper half above it; the switch keeps the height fade\'s band', () => {
+    const { st, tr, R } = make();
+    const W = st.size * CELL_SIZE;
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    const { top, ringLow } = getMicroImpostorGeometries();
+    const H0 = tr.ringFadeHeight[0], H1 = Math.max(tr.ringFadeHeight[1], tr.ringShapeHeight);
+    const rnd = new RNG(31);
+    let crowns = 0, highDrawn = 0;
+    // the art reviewer's e5 bracket: ~600 m inside the west / north edge or ~700 m inside the north-west corner (and
+    // ~900 m, where the crown's reach from the edge eases out), looking out over the ring, 170-500 m up
+    for (const h of [170, 220, 260, 300, 340, 380, 420, 500]) {
+      for (const [x, z, yaw] of [[600, W / 2, Math.PI], [W / 2, 600, -Math.PI / 2], [700, 700, Math.PI * 1.25], [900, 900, Math.PI * 1.25]]) {
+        pose(R, cam, x + rnd.range(-30, 30), h, z + rnd.range(-30, 30), yaw + rnd.range(-0.2, 0.2), h / 900);
+        tr.update(cam);
+        const a = audit(tr, R, cam);
+        expect(a.cut, `h ${h}`).toBe(0);
+        expect(a.both, `h ${h}`).toBe(0);
+        // the shaders' crown weight, camera part: 1 - the crown's own height fade (the switch keeps uRingP.y's)
+        const camH = cam.position.y - R.terrain.meshHeightAt(cam.position.x, cam.position.z);
+        expect(R.ringU.uRingQ.value.y).toBeCloseTo(1 - sstep(H0, H1, camH), 6);
+        expect(R.ringU.uRingP.value.y).toBeCloseTo(sstep(H0, tr.ringFadeHeight[1], camH), 6);
+        // every far tree the shaders draw with an opened crown (weight > 0) is drawn with the mini crown's geometry
+        const S = shaders(R, cam.position), Q = R.ringU.uRingQ.value.y;
+        for (let id = 0; id < R.ringFar.length; id++) {
+          const m = R.ringFar[id];
+          if (!m || !vis(m) || !cnt(m)) continue;
+          const e = m.instanceMatrix.array as Float32Array, col = m.instanceColor!.array as Float32Array;
+          for (let j = 0; j < cnt(m); j++) {
+            const o = j * 16, xx = e[o + 12], zz = e[o + 14];
+            if (col[j * 3 + 2] < 0 || Q * S.crownNear(xx, zz) <= 0) continue;
+            crowns++;
+            expect(m.geometry, `h ${h} block ${id}`).toBe(ringLow);
+          }
+        }
+        // above the band: the upper half only (the blocks, or the all-in-one mesh standing for them)
+        if (camH >= H1) {
+          const drawn = [...R.ringFar, R.ringAll].filter((m) => m && vis(m) && cnt(m) > 0) as THREE.InstancedMesh[];
+          highDrawn += drawn.length;
+          expect(drawn.every((m) => m.geometry === top)).toBe(true);
+        }
+      }
+    }
+    expect(crowns).toBeGreaterThan(1000);
+    expect(highDrawn).toBeGreaterThan(0);
+    // (300 m next to the west edge: whole crowns; 500 m: none)
+    expect(1 - sstep(H0, H1, 300)).toBeGreaterThan(0.38);
+    expect(1 - sstep(H0, H1, 500)).toBe(0);
+    tr.dispose();
+  }, 300_000);
+
   it('a near pair is culled by the bounds of the prefix it draws: the corner sectors beside a low camera at an edge draw nothing', () => {
     const { st, tr, R } = make();
     const W = st.size * CELL_SIZE;
@@ -267,7 +323,8 @@ describe('outer ring next to the map edge', () => {
     // the bench's edge_t25 (400 m from a target ~100 m inside the west edge, 25 degrees down, looking west) and views
     // along the edge from beside it
     const t = (25 * Math.PI) / 180;
-    for (const [x, h, z, yaw, pitch] of [[104 + 400 * Math.cos(t), 400 * Math.sin(t), W / 2, Math.PI, Math.tan(t)], [300, 120, W / 2, Math.PI * 0.75, 0.3], [300, 120, W / 2, Math.PI * 1.25, 0.3], [250, 60, 400, Math.PI * 1.1, 0.15]]) {
+    // (and a 300 m camera next to the edge: the mini crown's own height band, see ringShapeHeight)
+    for (const [x, h, z, yaw, pitch] of [[104 + 400 * Math.cos(t), 400 * Math.sin(t), W / 2, Math.PI, Math.tan(t)], [300, 120, W / 2, Math.PI * 0.75, 0.3], [300, 120, W / 2, Math.PI * 1.25, 0.3], [250, 60, 400, Math.PI * 1.1, 0.15], [600, 300, W / 2, Math.PI * 0.8, 0.33]]) {
       // (counts cleared first: a block the pass leaves hidden before its view test - out of reach, faded out - keeps none)
       for (const m of R.ringFar) if (m) m.count = 0;
       pose(R, cam, x, h, z, yaw, pitch);
