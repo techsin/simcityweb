@@ -38,7 +38,7 @@ runs should be headless. Round trip lead → worker → lead measured at 51 s. T
 
 ## Design decisions
 
-- **Uncovered emergencies in big cities (Oct 27).** The owner's rule, with the cooldown and the details proposed by the lead. It comes after the sim
+- **Uncovered emergencies in big cities (Oct 27, approved by the owner).** The owner's rule, plus the cooldown and details proposed by the lead. It comes after the sim
   close-out; the coverage part comes after the J3 merge, which touches the same `services.ts` / `catchments.ts`.
   The change alters the sim, so the bot reference table gets re-recorded once.
   - **A site inside a station's range never slows the game**, even when every unit there is out.
