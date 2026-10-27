@@ -80,7 +80,7 @@ p { margin: 0; }
 @media (max-width: 900px) { .answer { grid-template-columns: 1fr; } .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* running now */
-.now-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.now-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .now-list li { min-width: 0; background: var(--surface); border: 1px solid var(--hair); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
 .now-list .who { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); }
 .now-list .what { font-weight: 600; }
@@ -295,12 +295,12 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
   var HOUR = 3600e3, DAY = 24 * HOUR, WEEK = 7 * DAY;
 
   // ---------------------------------------------------------------- inputs (edit these to update the chart)
-  var AS_OF = Date.UTC(2026, 9, 27, 8, 45);          // Tue 27 Oct 2026, 08:45 UTC
+  var AS_OF = Date.UTC(2026, 9, 27, 9, 15);          // Tue 27 Oct 2026, 09:15 UTC
   var WINDOW_START = Date.UTC(2026, 9, 26, 23, 37);  // work resumed in this weekly window (after the container reset)
   var NEXT_RESET = Date.UTC(2026, 10, 2, 15, 0);     // Mon 2 Nov 15:00 UTC, then weekly
   var CAP = 38;                                      // hours of work per weekly window
   var SLACK = 1.08;                                  // wall hours per work hour inside a window
-  var LIKELY_H = 78, WORST_H = 124;                  // work hours from AS_OF to the end of the release workstream
+  var LIKELY_H = 76, WORST_H = 122;                  // work hours from AS_OF to the end of the release workstream
   var PREV = { when: Date.UTC(2026, 9, 27, 3, 15), likely: Date.UTC(2026, 10, 9, 12, 0), worst: Date.UTC(2026, 10, 17, 12, 0) };
   function T(d, h, m) { return Date.UTC(2026, 9, d, h, m || 0); } // a time in October 2026 (UTC)
 
@@ -335,7 +335,7 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
     { name: 'Million-person speed', slot: 3, worst: 76, tone: 'ok', toneText: 'On track',
       steps: [
         { n: 'Baseline at 1M residents', st: 'done', w: 'desktop', from: T(27, 4, 50), to: T(27, 7, 7), note: '1.15M city: 19.8 ms of CPU per simulated day; ultra holds 20.4 days/s; frame spikes of 42–101 ms are still too high.' },
-        { n: 'Exact speed fixes, written by Codex', st: 'running', w: 'desktop + Codex', from: T(27, 5, 50), e: 8, note: 'J2 traffic done (traffic 17 % faster, whole day 7 % on the 1.15M city), J4 pollution, J8 blur and part of J7 fire done; J3 services in its checks; J6 dropped; J10 and J11 next.' },
+        { n: 'Exact speed fixes, written by Codex', st: 'running', w: 'desktop + Codex', from: T(27, 5, 50), e: 8, note: 'J2 traffic done (traffic 17 % faster, whole day 7 % on the 1.15M city), J4 pollution, J8 blur and part of J7 fire done; J3 services (second round) and J10 running; J6 dropped; J11 after J10.' },
         { n: 'Merge and check every fix', st: 'planned', w: 'cloud', s: 8, e: 14, note: 'After the sim close-out; each fix re-verified bit for bit.' },
         { n: 'Services update trigger', st: 'planned', w: 'cloud', s: 14, e: 20, note: 'The largest single gain; goes through the balance checks.' },
         { n: 'Remaining exact fixes J5, J9, J0', st: 'planned', w: 'desktop + Codex', s: 15, e: 23, note: 'J5 and J9 after the sim close-out merges, J0 after graphics round 2 closes.' },
@@ -361,28 +361,30 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
       watch: '' },
     { name: 'UI frame cost', slot: 5, worst: 20, tone: 'wait', toneText: 'Waiting',
       steps: [
-        { n: 'Lighter UI while the camera moves', st: 'planned', w: 'desktop + Codex', s: 8, e: 13, note: 'HUD, minimap and labels update at most 10 times a second; reused sound nodes; music starts after the loading veil.' },
+        { n: 'Lighter UI while the camera moves', st: 'planned', w: 'desktop + Codex', s: 8, e: 13, note: 'HUD, minimap and labels update at most 10 times a second while the camera moves. The audio half (reused sound nodes, music after the loading veil) already runs on your desktop in the audio lane.' },
         { n: 'Fresh-page check against the old build', st: 'planned', w: 'desktop', s: 13, e: 15, note: 'The whole main thread at or below a284b80 on the first camera moves after loading.' }
       ],
       done: ['Found by speed re-check 2: on freshly loaded pages the first camera moves cost 9–14 % more main-thread time than the old build, in UI repaints, timers and sound objects.'],
       now: 'Waiting for the sim close-out, which edits the same UI files.',
       next: ['Throttle the HUD, minimap and labels while the camera moves; reuse sound nodes; start the music after the loading veil.', 'Measure on your desktop against the old build.'],
       watch: 'Must pass before the final verification.' },
-    { name: 'Polish & fun', slot: 6, worst: 116, tone: 'wait', toneText: 'Planned',
+    { name: 'Polish & fun', slot: 6, worst: 114, tone: 'ok', toneText: 'Head start on your desktop',
       steps: [
-        { n: 'Round 1: tutorial, first goals, settings', st: 'planned', w: 'cloud + desktop', s: 16, e: 33, note: '25 items: a guided first city, first-year goals, city ranks, spring start, settings.' },
-        { n: 'Round 2: first-hour depth', st: 'planned', w: 'cloud + desktop', s: 33, e: 51, note: '30 items: taxes that matter, transit, industry, difficulty, feedback you can see and hear.' },
-        { n: 'Round 3: the long game', st: 'planned', w: 'cloud + desktop', s: 51, e: 60, note: '12 items: late-game money, disasters, region, scenarios, colour-blind mode.' },
-        { n: 'Round 4: delight', st: 'planned', w: 'cloud + desktop', s: 60, e: 72, note: '21 items: pedestrians, weather, photo mode, camera moments; all six player types playtest.' }
+        { n: 'Head start: audio mix and ambience', st: 'running', w: 'desktop + Codex', from: T(27, 9, 5), e: 6, note: 'FEEL-11 and FEEL-12: music ducking, rests between songs, mute in the background, surf, seasons and climate; plus reused sound nodes and music after the loading veil.' },
+        { n: 'Head start: city ranks and newcomer bot', st: 'running', w: 'desktop + Codex', from: T(27, 9, 5), e: 6, note: 'LG-01 core: 12 ranks from Settlement to Megalopolis with a next milestone. FH-10: a bot that plays like a first-time player, for the round-1 checks.' },
+        { n: 'Round 1: tutorial, first goals, settings', st: 'planned', w: 'cloud + desktop', s: 16, e: 31, note: 'The other round-1 items: a guided first city, first-year goals, the rank line in the HUD, spring start, settings; then playtests.' },
+        { n: 'Round 2: first-hour depth', st: 'planned', w: 'cloud + desktop', s: 31, e: 49, note: '30 items: taxes that matter, transit, industry, difficulty, feedback you can see and hear.' },
+        { n: 'Round 3: the long game', st: 'planned', w: 'cloud + desktop', s: 49, e: 58, note: '12 items: late-game money, disasters, region, scenarios, colour-blind mode.' },
+        { n: 'Round 4: delight', st: 'planned', w: 'cloud + desktop', s: 58, e: 70, note: '21 items: pedestrians, weather, photo mode, camera moments; all six player types playtest.' }
       ],
       done: ['88 items planned in four rounds (docs/POLISH_PLAN.md); the testers’ smaller ideas are collected in docs/dev/POLISH_BACKLOG.md.'],
-      now: 'Starts when the sim and graphics close-outs are done.',
+      now: 'Four round-1 items started early on your desktop: the audio mix, the ambience, city ranks and the newcomer bot. The rest starts after the sim and graphics close-outs.',
       next: ['Round 1: tutorial, first goals, settings.', 'Round 2: first-hour depth.', 'Round 3: the long game.', 'Round 4: delight, with playtests by all six player types.'],
       watch: 'Codex takes the well-specified items; your desktop runs the visual checks.' },
-    { name: 'Final check & release', slot: 7, worst: 124, tone: 'wait', toneText: 'Planned',
+    { name: 'Final check & release', slot: 7, worst: 122, tone: 'wait', toneText: 'Planned',
       steps: [
-        { n: 'Final verification and soak', st: 'planned', w: 'cloud + desktop', s: 72, e: 76, note: 'Type check, every test suite, production build, a multi-hour soak on your desktop.' },
-        { n: 'README and playable build', st: 'planned', w: 'cloud', s: 76, e: 78, note: 'How to run it, the controls, the features.' }
+        { n: 'Final verification and soak', st: 'planned', w: 'cloud + desktop', s: 70, e: 74, note: 'Type check, every test suite, production build, a multi-hour soak on your desktop.' },
+        { n: 'README and playable build', st: 'planned', w: 'cloud', s: 74, e: 76, note: 'How to run it, the controls, the features.' }
       ],
       done: [],
       now: 'Starts after polish round 4.',
@@ -392,13 +394,14 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
   var RUNNING = [
     { who: 'Cloud', slot: 1, what: 'Sim fix round 2', how: 'Last gates: type check, every test, the bot test, browser checks at three sizes.', since: T(26, 23, 50) },
     { who: 'Cloud', slot: 2, what: 'Art re-check 2', how: 'Comparing seasons, climates and the first frames after loading.', since: T(26, 23, 51) },
-    { who: 'Your desktop', slot: 3, what: 'Exact speed fixes', how: 'J2 traffic done (whole day 7 % faster); J3 services in its checks, J10 next; three Codex lanes.', since: T(27, 5, 50) }
+    { who: 'Your desktop', slot: 3, what: 'Exact speed fixes', how: 'J2 traffic done (whole day 7 % faster); J3 services (second round) and J10 running.', since: T(27, 5, 50) },
+    { who: 'Your desktop', slot: 6, what: 'Polish head start', how: 'Audio mix and frame cost, city ranks, the newcomer bot; Codex writes, the worker reviews.', since: T(27, 9, 5) }
   ];
   var CHANGES = [
     ['Dates', 'Likely finish moved by about a day; the worst case is the same.'],
     ['Done', 'Real-GPU smoke test, the million-person baseline, four exact speed fixes (traffic, pollution, blur, part of fire), the graphics speed re-check.'],
     ['Slower', 'Sim fix round 2 and the graphics checks, on the overloaded cloud machine.'],
-    ['New', 'Big-city emergency design (agreed with you), the UI frame-cost task, GPU timing on your desktop.']
+    ['New', 'Big-city emergency design (agreed with you), the UI frame-cost task, GPU timing on your desktop, and a head start on four polish items on your desktop.']
   ];
   var STATUS = { done: ['✓', 'Done'], running: ['●', 'Running'], next: ['›', 'Next'], planned: ['○', 'Planned'], ifneeded: ['◌', 'If needed'] };
 
@@ -546,7 +549,7 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
       li.appendChild(el('div', 'since', 'since ' + fDay(r.since) + ', ' + fTime(r.since) + ' · ' + hoursTxt((AS_OF - r.since) / HOUR) + ' so far'));
       ul.appendChild(li);
     });
-    document.getElementById('nowNote').textContent = 'Three jobs in parallel; the lead coordinates and merges.';
+    document.getElementById('nowNote').textContent = 'Four jobs in parallel; the lead coordinates and merges.';
   }
   function addBar(track, cls, a, b, color, L, focusable) {
     pieces(a, b).forEach(function (p, i) {
