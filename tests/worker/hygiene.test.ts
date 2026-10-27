@@ -55,6 +55,22 @@ describe('S1 isolate hygiene', () => {
     expect(scan('sample.ts', 'const st = ctx.state; const b = st.budget; b.taxRates[0] = 8;', 'replica')).toHaveLength(1);
     expect(scan('sample.ts', 'host.state.trees.fill(0); delete ctx.state.systemData.camera; b.flags ^= 1;', 'replica')).toHaveLength(3);
     expect(scan('sample.ts', 'const speed = ctx.sim.speed; const b = ctx.state.budget; show(b.funds);', 'replica')).toEqual([]);
+    expect(scan('sample.ts', 'const st = ctx.state; for (const b of st.buildings.values()) b.flags = 0;', 'replica')).toHaveLength(1);
+    expect(scan('sample.ts', 'function mark(b) { b.flags |= BF.Plopped; }', 'replica')).toHaveLength(1);
+  });
+
+  it('the replica check resolves aliases through scopes and ignores copies and local flags', () => {
+    // the alias `z` of one function is not the loop counter `z` of another; a parameter shadows an outer alias
+    expect(scan('sample.ts', `
+      function a(ctx) { const z = ctx.state.size; return z; }
+      function b() { for (let z = 0; z < 3; z++) use(z); }
+      function d() { const z = {}; z.x = 1; }
+      const st = ctx.state;
+      function c(st) { st.day = 1; }
+    `, 'replica')).toEqual([]);
+    expect(scan('sample.ts', 'const st = ctx.state; show(st.news.slice().reverse()); let n = 0; n++;', 'replica')).toEqual([]);
+    expect(scan('sample.ts', 'function place(bi, flags) { bi.flags = flags; }', 'replica')).toEqual([]);
+    expect(scan('sample.ts', 'const st = ctx.state; function c() { st.day = 1; }', 'replica')).toHaveLength(1);
   });
 });
 
@@ -65,6 +81,9 @@ async function expectCleanGraph(entry: string): Promise<void> {
   expect(graph).toContain(entry); // missing entry / empty graphs must never pass when this gate is enabled
   expect(graph.filter((p) => ['src/save/bundle.ts', 'src/save/index.ts', 'src/save/recoveryLs.ts'].includes(p))).toEqual([]);
 }
+
+/** the UI and render demo pages build and fill their own city state; they never see the game's replica */
+const DEMO_STATES = ['src/ui/demo.ts', 'src/render/city/demoCity.ts'];
 
 /** `.speed` writes that are not the simulation's: a vehicle's own speed in the traffic renderer */
 const NOT_SIM_SPEED = [{ file: 'src/render/city/vehicles/VehicleRenderer.ts', code: /^tr\.speed \+= / }];
@@ -87,7 +106,10 @@ describe('worker migration hygiene gates', () => {
     expect(scanFiles(['src/game/CityScene.ts'], 'systems')).toEqual([]);
   });
   it('W0.6: UI, game and render never write into the replica outside src/worker', () => {
-    const files = [...uiAndGame(), ...sourceFiles('src/render')].filter((p) => !p.startsWith('src/game/fallback/'));
+    const files = [...uiAndGame(), ...sourceFiles('src/render')]
+      .filter((p) => !p.startsWith('src/game/fallback/') && !DEMO_STATES.includes(p));
+    // each exemption still names an existing file
+    expect(DEMO_STATES.filter((p) => !sourceFiles(p.slice(0, p.lastIndexOf('/'))).includes(p))).toEqual([]);
     expect(scanFiles(files, 'replica')).toEqual([]);
   });
   it('W0.6: SimCore import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
