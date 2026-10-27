@@ -15,6 +15,13 @@ import {
   ATTRACTIONS, TOURISM_DAY, TOURISM_SLICES, attractivenessBreakdown, tourismSummary, tourismSystem, venueVisits,
 } from '../../src/sim/economy/tourism';
 import { budgetSystem, venueIncomeFactor } from '../../src/sim/economy/budget';
+import {
+  DEMO_AGG_DAYS, DEMO_PHASE, DEMOGRAPHICS_EVENT_PHASE, EQHQ_DAY, OCC_PHASE, OUTAGE_PRUNE_DAY,
+} from '../../src/sim/economy/population';
+import { demographicsData } from '../../src/sim/economy/demographics';
+import { MONTH_SCAN_DAYS } from '../../src/sim/economy/advisors';
+import { FACILITY_SCAN_DAY } from '../../src/sim/infra/facilities';
+import { DEMOGRAPHICS_EVENT_DAYS, FREIGHT_REFRESH_DAYS, OCC_PERIOD } from '../../src/sim/economy/tuning';
 import { approvalSystem } from '../../src/sim/economy/approval';
 import { CityActions, lPath } from '../../src/sim/actions';
 import { DAYS_PER_MONTH } from '../../src/core/constants';
@@ -454,3 +461,54 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
   });
 });
 
+describe('B3: the population samples off the month tick (P3), and the month calendar', () => {
+  it('P3: no month tick is an employment or a demographics sample day; the samples recur every 4 and 32 days; the demographics event on dom 1', { timeout: 120000 }, () => {
+    for (let day = 1; day <= 960; day++) {
+      if (day % DAYS_PER_MONTH !== 0) continue;
+      expect(day % OCC_PERIOD, `tick ${day}`).not.toBe(OCC_PHASE);
+      expect(day % DEMO_AGG_DAYS, `tick ${day}`).not.toBe(DEMO_PHASE);
+    }
+    // every demographics day is an employment day (the demographics sample reads the employment sample's records)
+    expect(DEMO_PHASE % OCC_PERIOD).toBe(OCC_PHASE);
+    expect(DEMO_AGG_DAYS % OCC_PERIOD).toBe(0);
+    // in a running town (every economy system): the employment sample writes wfNow, the demographics sample the saved
+    // grids — only on their days
+    const t = town('economy');
+    const events: number[] = [];
+    t.sim.events.on('layerUpdated', (name) => { if (name === 'demographics') events.push(t.st.day); });
+    let wf = demographicsData(t.st).wfNow, grids = sha(t.st.systemData.popGrids);
+    const wfDays: number[] = [], gridDays: number[] = [];
+    for (let day = 1; day <= 200; day++) {
+      t.sim.advanceDay();
+      const w = demographicsData(t.st).wfNow, g = sha(t.st.systemData.popGrids);
+      if (!Object.is(w, wf)) wfDays.push(day);
+      if (g !== grids) gridDays.push(day);
+      wf = w;
+      grids = g;
+    }
+    expect(wfDays.length).toBeGreaterThan(10);
+    for (const d of wfDays) expect(d % OCC_PERIOD, `wfNow on day ${d}`).toBe(OCC_PHASE);
+    expect(gridDays.length).toBeGreaterThanOrEqual(3);
+    for (const d of gridDays) expect(d % DEMO_AGG_DAYS, `grids on day ${d}`).toBe(DEMO_PHASE);
+    expect(events).toEqual([1, 31, 61, 91, 121, 151, 181]);
+    expect(DEMOGRAPHICS_EVENT_DAYS).toBe(DAYS_PER_MONTH);
+  });
+
+  it('the calendar: the month work never falls on the tick (dom 0); the heavy steps on distinct days; the samples never on 0, 26 or 28', () => {
+    const CORE_DAY = 20; // growth.ts (the commercial core; not exported)
+    const offsets: Record<string, number> = {
+      EQHQ_DAY, TOURISM_DAY, zoneScan: MONTH_SCAN_DAYS[0], facScan: MONTH_SCAN_DAYS[1], CORE_DAY, FACILITY_SCAN_DAY,
+      freight: FREIGHT_REFRESH_DAYS >> 1, prune: OUTAGE_PRUNE_DAY, demographicsEvent: DEMOGRAPHICS_EVENT_PHASE,
+    };
+    for (const [k, d] of Object.entries(offsets)) expect(d > 0 && d < DAYS_PER_MONTH, `${k} = ${d}`).toBe(true);
+    const heavy = [EQHQ_DAY, TOURISM_DAY, MONTH_SCAN_DAYS[0], MONTH_SCAN_DAYS[1], CORE_DAY, FACILITY_SCAN_DAY];
+    expect(new Set(heavy).size).toBe(heavy.length);
+    // the samples (odd days) in 64 months: never on the tick, the venue pass or the zone scan
+    for (let day = 1; day <= 64 * DAYS_PER_MONTH; day++) {
+      const dom = day % DAYS_PER_MONTH;
+      if (dom !== 0 && dom !== TOURISM_DAY && dom !== MONTH_SCAN_DAYS[0]) continue;
+      expect(day % OCC_PERIOD === OCC_PHASE, `employment sample on day ${day}`).toBe(false);
+      expect(day % DEMO_AGG_DAYS === DEMO_PHASE, `demographics sample on day ${day}`).toBe(false);
+    }
+  });
+});
