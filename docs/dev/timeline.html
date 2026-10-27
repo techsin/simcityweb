@@ -233,7 +233,7 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
       <div><dt>Worst case</dt><dd id="worst">—</dd><p id="worstSub">—</p></div>
       <div><dt>Work left</dt><dd id="left">—</dd><p id="leftSub">—</p></div>
       <div><dt>Next pause</dt><dd id="pause">—</dd><p id="pauseSub">—</p></div>
-      <div><dt>Built so far</dt><dd>about 80%</dd><p>a judgement by planned work, not a measurement</p></div>
+      <div><dt>Built so far</dt><dd>about 84%</dd><p>a judgement by planned work, not a measurement</p></div>
     </dl>
   </section>
 
@@ -295,117 +295,122 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
   var HOUR = 3600e3, DAY = 24 * HOUR, WEEK = 7 * DAY;
 
   // ---------------------------------------------------------------- inputs (edit these to update the chart)
-  var AS_OF = Date.UTC(2026, 9, 27, 15, 30);         // Tue 27 Oct 2026, 15:30 UTC
+  var AS_OF = Date.UTC(2026, 9, 27, 20, 20);         // Tue 27 Oct 2026, 20:20 UTC
   var WINDOW_START = Date.UTC(2026, 9, 26, 23, 37);  // work resumed in this weekly window (after the container reset)
   var NEXT_RESET = Date.UTC(2026, 10, 2, 15, 0);     // Mon 2 Nov 15:00 UTC, then weekly
   var CAP = 38;                                      // hours of work per weekly window
   var SLACK = 1.08;                                  // wall hours per work hour inside a window
-  var LIKELY_H = 77, WORST_H = 124;                  // work hours from AS_OF to the end of the release workstream
-  var PREV = { when: Date.UTC(2026, 9, 27, 13, 15), likely: Date.UTC(2026, 10, 9, 17, 50), worst: Date.UTC(2026, 10, 17, 0, 20) };
+  var LIKELY_H = 63, WORST_H = 105;                  // work hours from AS_OF to the end of the release workstream
+  var PREV = { when: Date.UTC(2026, 9, 27, 15, 30), likely: Date.UTC(2026, 10, 10, 9, 14), worst: Date.UTC(2026, 10, 17, 18, 57) };
   function T(d, h, m) { return Date.UTC(2026, 9, d, h, m || 0); } // a time in October 2026 (UTC)
 
   // status: done | running | next | planned | ifneeded. Done steps carry from/to; running ones from + e; the rest s/e
   // (work hours from AS_OF). where: who runs it.
   var GROUPS = [
-    { name: 'Simulation close-out', slot: 1, worst: 14, tone: 'warn', toneText: 'Fix round 4 needed',
+    { name: 'Simulation close-out', slot: 1, worst: 0, tone: 'ok', toneText: 'Closed',
       steps: [
         { n: 'Fix round 2: inspection leak and 8 small fixes', st: 'done', w: 'cloud', from: T(26, 23, 50), to: T(27, 12, 4), note: 'The leak and two more ways to keep an old city in memory fixed, every small item and the polish items.' },
-        { n: 'Close-out check 3: playtest and audit', st: 'done', w: 'desktop', from: T(27, 12, 12), to: T(27, 14, 10), note: 'Audit: 0 major, 3 minor. Playtest: 1 major (after one growable inspection, leaving a city keeps the old one in memory, in a long-running browser) and 2 minor.' },
-        { n: 'Fix round 4: the exit leak and 5 minors', st: 'running', w: 'desktop', from: T(27, 14, 30), e: 4, note: 'Made where the leak reproduces. Per-call inspection data, a teardown that cuts every link to the old city, string abort reasons, and a browser leak gate in both setups; plus the five minors.' },
-        { n: 'Check 4: fresh playtester and auditor', st: 'planned', w: 'desktop', s: 4, e: 8, note: 'New reviewers as sub-agents on the real GPU.' },
-        { n: 'Fix round 5 and check 5', st: 'ifneeded', w: 'desktop', s: 8, e: 14, note: 'Only if check 4 finds a blocker or major.' }
+        { n: 'Close-out check 3: playtest and audit', st: 'done', w: 'desktop', from: T(27, 12, 12), to: T(27, 14, 10), note: 'Audit: 0 major, 3 minor. Playtest: 1 major (after one growable inspection, leaving a city kept the old one in memory, in a long-running browser) and 2 minor.' },
+        { n: 'Fix round 4: the exit leak and 5 minors', st: 'done', w: 'desktop', from: T(27, 14, 30), to: T(27, 15, 20), note: 'Per-call inspection data, a teardown that cuts every link to the old city, string abort reasons, and a browser leak gate in four modes; plus the five minors.' },
+        { n: 'Check 4: fresh playtester and auditor', st: 'done', w: 'desktop', from: T(27, 15, 40), to: T(27, 19, 50), note: '0 blocker and 0 major from both. The exit leak is fixed: no old city is left 2 s or 20 s after any exit. Four minors, routed to later steps.' },
+        { n: 'Merge every waiting branch', st: 'done', w: 'cloud', from: T(27, 19, 55), to: T(27, 20, 8), note: 'The speed fixes, B1, Easy mode, ranks and tutorial texts. 1,431 tests pass, and the 60-year balance run matches B1’s recorded rows exactly.' }
       ],
-      done: ['Four check-and-fix rounds; every serious finding fixed and re-checked.', 'Close-out checks 1 and 2 and their fixes; fix round 2 (27 Oct 12:04).', 'Check 3 on your desktop (14:10): the auditor confirmed all eight fixes of round 2; the playtester found one leak that only shows in a long-running browser.'],
-      now: 'Fix round 4 on your desktop, where the leak reproduces: the leak plus the five minor items.',
-      next: ['Check 4 by fresh reviewers on your desktop.', 'Then the speed fixes and the polish head start merge.'],
-      watch: 'The cloud never reproduced this leak; the fix includes a browser test that does, so it cannot come back unnoticed.' },
-    { name: 'Graphics round 2', slot: 2, worst: 18, tone: 'ok', toneText: 'Revision 2 finishing',
+      done: ['Five check-and-fix rounds; check 4 (19:50) found nothing serious.', 'Every waiting branch merged and checked (20:08).'],
+      now: 'Closed.',
+      next: ['Two small leak follow-ups after W0.2: sliders kept alive while Budget is open, and a positive control for the leak probe.'],
+      watch: '' },
+    { name: 'Graphics round 2', slot: 2, worst: 10, tone: 'ok', toneText: 'Final review',
       steps: [
         { n: 'Real-GPU smoke test', st: 'done', w: 'desktop', from: T(27, 1, 57), to: T(27, 4, 45), note: 'RTX 5070 Ti: 60 fps everywhere, no GPU-only defects.' },
         { n: 'Speed re-check 2', st: 'done', w: 'cloud', from: T(26, 23, 51), to: T(27, 8, 17), note: 'Render code passes. Two UI costs moved to their own task.' },
         { n: 'Art re-check 2', st: 'done', w: 'cloud', from: T(26, 23, 51), to: T(27, 10, 52), note: 'Passed: nothing serious; one old minor (pale far copses near the map edge).' },
-        { n: 'Revision 2, both render lanes', st: 'running', w: 'cloud', from: T(27, 10, 52), e: 1, note: 'Forest-ring CPU on far views, shadow passes on camera cuts, edge triangles on LOW, the pale far copses. In its final tests.' },
-        { n: 'Final review 3 and GPU timing', st: 'planned', w: 'desktop', s: 1, e: 10, note: 'Art and speed reviewers as sub-agents on the real GPU. The art half runs next to fix round 4; the speed half needs a quiet machine, so it follows check 4.' },
-        { n: 'Extra fix round and re-check', st: 'ifneeded', w: 'cloud + desktop', s: 10, e: 18, note: 'Only if review 3 finds something serious.' }
+        { n: 'Revision 2, both render lanes', st: 'done', w: 'cloud', from: T(27, 10, 52), to: T(27, 16, 5), note: 'Forest-ring CPU on far views, shadow passes on camera cuts, edge triangles on LOW, the pale far copses: all fixed.' },
+        { n: 'Final review 3: art', st: 'done', w: 'desktop', from: T(27, 16, 40), to: T(27, 17, 25), note: 'Passed: nothing serious; one minor (edge copses seen from above about 340 m still draw the old pale shapes).' },
+        { n: 'Final review 3: speed and GPU timing', st: 'next', w: 'desktop', s: 0, e: 4, note: 'On the quiet machine now that check 4 is done: the first GPU timing on real hardware.' },
+        { n: 'Extra fix round and re-check', st: 'ifneeded', w: 'cloud + desktop', s: 4, e: 10, note: 'Only if the speed half finds something serious.' }
       ],
-      done: ['Rounds 1–4, a final fix round, review 1 and revision 1.', 'Real-GPU smoke test: 60 fps everywhere.', 'Speed re-check 2 (render passes) and art re-check 2 (passed).'],
-      now: 'Revision 2 is in its final tests in both render lanes.',
-      next: ['Final review 3 on your desktop: art, speed and the GPU timing.', 'Then the render speed items J0, R1 and R2 of the worker plan.'],
+      done: ['Rounds 1–4, a final fix round, reviews 1–2 and revisions 1–2.', 'Final review 3, art half: passed.'],
+      now: 'The speed half of final review 3 starts on your desktop’s quiet machine.',
+      next: ['Close round 2.', 'Then the render speed items J0 and R2, and the high-camera copse minor.'],
       watch: '' },
-    { name: 'Million-person speed', slot: 3, worst: 84, tone: 'ok', toneText: 'On track',
+    { name: 'Million-person speed', slot: 3, worst: 64, tone: 'ok', toneText: 'Ahead of plan',
       steps: [
-        { n: 'Baseline and five exact speed fixes', st: 'done', w: 'desktop + Codex', from: T(27, 4, 50), to: T(27, 12, 5), note: 'Baseline at 1.15M: 19.8 ms per simulated day. Traffic fix: whole day 7 % faster. J3, J6 and J11 dropped (not faster on the current code).' },
-        { n: 'Services update trigger (B1)', st: 'running', w: 'desktop + Codex', from: T(27, 12, 5), e: 8, note: 'The plan’s largest single gain (1.27–1.56×). Code written; its timing and balance runs wait for a quiet machine.' },
-        { n: 'Worker tests: protector and hygiene (S1)', st: 'next', w: 'desktop + Codex', s: 0, e: 2, note: 'The test suites every later worker step extends.' },
-        { n: 'Merge and check the exact fixes', st: 'planned', w: 'cloud', s: 8, e: 12, note: 'After the sim close-out; every fix re-verified bit for bit.' },
-        { n: 'Render speed: J0, R1, R2', st: 'planned', w: 'desktop + Codex', s: 10, e: 16, note: 'Keep the speed protector on the main thread, partial terrain updates, and budgeted building and minimap work.' },
-        { n: 'W0.1–W0.2: host seam and commands', st: 'planned', w: 'desktop + Codex', s: 8, e: 15, note: 'Every action the UI takes goes through one host interface; the game stays on the main thread.' },
-        { n: 'W0.3–W0.5: queries, live policy, views', st: 'planned', w: 'desktop + Codex', s: 15, e: 21, note: 'Three Codex lanes at once.' },
-        { n: 'W0.6 and an independent audit', st: 'planned', w: 'desktop + Codex', s: 21, e: 27, note: 'Saves through the host; then fresh reviewers check W0.1–W0.6 together.' },
-        { n: 'Split and spread the long steps (B2, B3)', st: 'planned', w: 'cloud', s: 12, e: 20, note: 'The long steps behind the stutter at ultra speed; through the balance checks.' },
-        { n: 'W1.1–W1.3: the simulation in a worker', st: 'planned', w: 'desktop + Codex', s: 27, e: 47, note: 'The protocol and replica, the real worker, persistence in the worker.' },
-        { n: 'W1.4, S5 and the acceptance checks', st: 'planned', w: 'desktop', s: 47, e: 55, note: 'Default on, the adaptive frame budget, and the plan’s acceptance criteria at 1M on the real GPU.' }
+        { n: 'Baseline and five exact speed fixes', st: 'done', w: 'desktop + Codex', from: T(27, 4, 50), to: T(27, 12, 5), note: 'Baseline at 1.15M: 19.8 ms per simulated day. All five checked bit for bit by two independent cloud reviewers, then merged.' },
+        { n: 'Services update trigger (B1)', st: 'done', w: 'desktop + Codex', from: T(27, 12, 5), to: T(27, 19, 55), note: 'Merged: a 1M day runs 1.31× faster; the balance checks pass. Its repeat speed runs follow on a quiet machine.' },
+        { n: 'Worker tests: protector and hygiene (S1)', st: 'done', w: 'desktop + Codex', from: T(27, 15, 40), to: T(27, 16, 14), note: 'The test suites every later worker step extends.' },
+        { n: 'W0.1: the host seam', st: 'done', w: 'desktop + Codex', from: T(27, 15, 45), to: T(27, 17, 3), note: 'SimCore, SimHost and the local host. The optional WebAssembly blur stays off unless a flag asks for it.' },
+        { n: 'W0.2: commands', st: 'done', w: 'desktop + Codex', from: T(27, 17, 10), to: T(27, 20, 15), note: 'Every UI action goes through the host. All tests and the browser check of every action pass; merging now.' },
+        { n: 'W0.3–W0.5: queries, live policy, views', st: 'next', w: 'desktop + Codex', s: 0, e: 7, note: 'Three Codex lanes at once.' },
+        { n: 'W0.6 and an independent audit', st: 'planned', w: 'desktop + Codex', s: 7, e: 13, note: 'Saves through the host; then fresh reviewers check W0.1–W0.6 together.' },
+        { n: 'Render speed: R1 now, J0 and R2 later', st: 'running', w: 'desktop + Codex', from: T(27, 16, 15), e: 6, note: 'R1 (partial terrain updates) is coded and exact over 60 simulated years; its timing waits for the quiet machine.' },
+        { n: 'B3: spread the month-end work', st: 'running', w: 'cloud', from: T(27, 16, 20), e: 5, note: 'Part B already did most of it; tourism’s venue pass and the advisors are left.' },
+        { n: 'B2: split the long steps', st: 'running', w: 'cloud', from: T(27, 16, 31), e: 10, note: 'Steps of up to 29 ms today, cut to at most 3 ms, then the balance checks.' },
+        { n: 'W1.1a: protocol, recorder, replica', st: 'done', w: 'desktop + Codex', from: T(27, 17, 15), to: T(27, 20, 5), note: 'The worker-side core, built next to W0 instead of after it. Its speed bench follows.' },
+        { n: 'W1.1b–W1.3: main side, the real worker, persistence', st: 'planned', w: 'desktop + Codex', s: 13, e: 29, note: 'Predictions and corrections on the main thread, the simulation in its own thread, saves inside the worker.' },
+        { n: 'W1.4, S5 and the acceptance checks', st: 'planned', w: 'desktop', s: 29, e: 37, note: 'Default on, the adaptive frame budget, and the plan’s acceptance criteria at 1M on the real GPU.' }
       ],
-      done: ['The plan for 1M+ cities (docs/WASM_PLAN.md, docs/WORKER_DESIGN.md).', 'Baseline on your desktop and five exact speed fixes.', 'The dev tools work on Windows.'],
-      now: 'B1 on your desktop; the worker test suites (S1) start next.',
-      next: ['W0.1–W0.6 on your desktop with Codex, right after the sim close-out: most polish items wait for them.', 'Then W1.1–W1.4, the simulation in a background thread, and the acceptance checks at 1M.'],
-      watch: 'The worker plan is the largest piece of work left. Its preparation steps (W0) now come first, because the polish rounds build on them.' },
-    { name: 'Big-city emergencies', slot: 4, worst: 40, tone: 'wait', toneText: 'Agreed, waiting',
+      done: ['The plan for 1M+ cities (docs/WASM_PLAN.md, docs/WORKER_DESIGN.md).', 'Baseline, five exact speed fixes and B1, all merged.', 'W0.1, W0.2, the worker tests and W1.1’s worker side, done.'],
+      now: 'W0.2 is done and merging; W0.3–W0.5 start as three lanes. R1, B2 and B3 run in parallel.',
+      next: ['W0.3–W0.5 as three lanes, then W0.6 and an audit.', 'W1.1b–W1.4, then the acceptance checks at 1M.'],
+      watch: 'The worker plan is still the largest piece left, but it is ahead: W1.1’s worker side is already built.' },
+    { name: 'Big-city emergencies', slot: 4, worst: 28, tone: 'wait', toneText: 'Agreed, waiting',
       steps: [
-        { n: 'In range never slows; cooldown', st: 'planned', w: 'cloud', s: 21, e: 26, note: 'Built on W0.4, which moves the speed policy into the simulation core.' },
-        { n: 'Station load and its effects', st: 'planned', w: 'cloud', s: 26, e: 31, note: 'Advisor warning, info panel and coverage view; coverage counts for less when a station is overstretched.' },
-        { n: 'Bot reference and playtest', st: 'planned', w: 'cloud', s: 31, e: 33, note: 'The change alters the simulation on purpose, so the reference numbers are recorded again.' }
+        { n: 'In range never slows; cooldown', st: 'planned', w: 'cloud', s: 7, e: 12, note: 'Built on W0.4, which moves the speed policy into the simulation core.' },
+        { n: 'Station load and its effects', st: 'planned', w: 'cloud', s: 12, e: 17, note: 'Advisor warning, info panel and coverage view; coverage counts for less when a station is overstretched.' },
+        { n: 'Bot reference and playtest', st: 'planned', w: 'cloud', s: 17, e: 19, note: 'The change alters the simulation on purpose, so the reference numbers are recorded again.' }
       ],
-      done: ['Design agreed with you on 27 Oct.'],
+      done: ['Design agreed with you on 27 Oct.', 'B1, which the coverage part builds on, is merged.'],
       now: 'Waiting for W0.4.',
       next: ['In range never slows; out-of-range slow-downs at most every ~30 s.', 'Station load in the advisor, the info panel and the coverage view.', 'The two emergency tutorial texts get reworded.'],
       watch: '' },
-    { name: 'UI frame cost', slot: 5, worst: 34, tone: 'wait', toneText: 'Waiting',
+    { name: 'UI frame cost', slot: 5, worst: 22, tone: 'wait', toneText: 'Waiting',
       steps: [
-        { n: 'Lighter UI while the camera moves', st: 'planned', w: 'desktop + Codex', s: 21, e: 26, note: 'HUD, minimap and labels at most 10 times a second while the camera moves; built on W0.5. The audio half is in the audio lane.' },
-        { n: 'Fresh-page check against the old build', st: 'planned', w: 'desktop', s: 26, e: 28, note: 'The whole main thread at or below a284b80 on the first camera moves after loading.' }
+        { n: 'Lighter UI while the camera moves', st: 'planned', w: 'desktop + Codex', s: 7, e: 12, note: 'HUD, minimap and labels at most 10 times a second while the camera moves; built on W0.5. The audio half is in the audio lane.' },
+        { n: 'Fresh-page check against the old build', st: 'planned', w: 'desktop', s: 12, e: 14, note: 'The whole main thread at or below a284b80 on the first camera moves after loading.' }
       ],
       done: ['Found by speed re-check 2: 9–14 % more main-thread time than the old build on the first camera moves after loading.'],
       now: 'Waiting for W0.5.',
       next: ['Throttle the HUD, minimap and labels while the camera moves.', 'Measure on your desktop against the old build.'],
       watch: 'Must pass before the final verification.' },
-    { name: 'Polish & fun', slot: 6, worst: 118, tone: 'ok', toneText: 'Head start on your desktop',
+    { name: 'Polish & fun', slot: 6, worst: 101, tone: 'ok', toneText: 'Head start done',
       steps: [
-        { n: 'Head start: ranks, tutorial text, newcomer bot', st: 'done', w: 'desktop + Codex', from: T(27, 9, 5), to: T(27, 12, 30), note: 'City ranks (12, Settlement to Megalopolis), 126 tutorial texts, and a bot that plays like a first-time player.' },
+        { n: 'Head start: ranks, tutorial text, newcomer bot', st: 'done', w: 'desktop + Codex', from: T(27, 9, 5), to: T(27, 12, 30), note: 'City ranks (12, Settlement to Megalopolis), 126 tutorial texts, and a bot that plays like a first-time player. Merged.' },
         { n: 'Head start: audio mix and ambience', st: 'running', w: 'desktop + Codex', from: T(27, 9, 5), e: 2, note: 'Music ducking, rests between songs, mute in the background, surf, seasons and climate; reused sound nodes.' },
         { n: 'Head start: late-game landmark art', st: 'running', w: 'desktop + Codex', from: T(27, 10, 25), e: 3, note: 'Seven landmarks, checked on the real GPU by day, night and in winter.' },
-        { n: 'Round 1 head: simulation and world items', st: 'planned', w: 'cloud + desktop', s: 12, e: 20, note: 'The items that do not wait for W0.6: fresh-mistake refunds, a real Easy mode, bot strategies, camera keys and flights.' },
-        { n: 'Round 1: tutorial, first goals, money, settings', st: 'planned', w: 'cloud + desktop', s: 27, e: 37, note: 'The guide and meta items, which the plan starts after W0.6; then playtests.' },
-        { n: 'Round 2: first-hour depth', st: 'planned', w: 'cloud + desktop', s: 37, e: 53, note: '30 items: taxes that matter, transit, industry, difficulty, feedback you can see and hear.' },
-        { n: 'Round 3: the long game', st: 'planned', w: 'cloud + desktop', s: 53, e: 61, note: '12 items: late-game money, disasters, region, scenarios, colour-blind mode.' },
-        { n: 'Round 4: delight', st: 'planned', w: 'cloud + desktop', s: 61, e: 71, note: '21 items: pedestrians, weather, photo mode, camera moments; all six player types playtest.' }
+        { n: 'Easy mode and bot strategies', st: 'done', w: 'desktop + Codex', from: T(27, 16, 5), to: T(27, 19, 45), note: 'Easy fades crime and emergency blame in while the town is small; Medium and Hard stay identical. Four new bot rules measure the long-game systems. Merged.' },
+        { n: 'Round 1 head: refunds, camera keys and flights', st: 'planned', w: 'cloud + desktop', s: 0, e: 6, note: 'Fresh-mistake refunds after W0.2; the camera items after graphics round 2.' },
+        { n: 'Round 1: tutorial, first goals, money, settings', st: 'planned', w: 'cloud + desktop', s: 13, e: 23, note: 'The guide and meta items, which the plan starts after W0.6; then playtests.' },
+        { n: 'Round 2: first-hour depth', st: 'planned', w: 'cloud + desktop', s: 23, e: 39, note: '30 items: taxes that matter, transit, industry, difficulty, feedback you can see and hear.' },
+        { n: 'Round 3: the long game', st: 'planned', w: 'cloud + desktop', s: 39, e: 47, note: '12 items: late-game money, disasters, region, scenarios, colour-blind mode.' },
+        { n: 'Round 4: delight', st: 'planned', w: 'cloud + desktop', s: 47, e: 57, note: '21 items: pedestrians, weather, photo mode, camera moments; all six player types playtest.' }
       ],
-      done: ['88 items planned in four rounds (docs/POLISH_PLAN.md).', 'Done early on your desktop: city ranks, every tutorial text and the newcomer bot.'],
-      now: 'Head start on your desktop: the audio work and the landmark art.',
-      next: ['Round 1’s simulation and world items after the close-outs.', 'Its guide and meta items after W0.6.', 'Rounds 2–4.'],
-      watch: 'Most of rounds 1 and 2 waits for the worker preparation steps (W0); the plan made that choice so the UI is not rewritten twice.' },
-    { name: 'Final check & release', slot: 7, worst: 124, tone: 'wait', toneText: 'Planned',
+      done: ['88 items planned in four rounds (docs/POLISH_PLAN.md).', 'Done early and merged: city ranks, every tutorial text, the newcomer bot, a real Easy mode and four bot strategies.'],
+      now: 'Audio and the landmark art on your desktop.',
+      next: ['Round 1’s refunds and camera items.', 'Its guide and meta items after W0.6.', 'Rounds 2–4.'],
+      watch: 'The Easy newcomer test waits for the “zone more” prompt (FH-03): until then the newcomer bot never grows past its first four blocks on any difficulty.' },
+    { name: 'Final check & release', slot: 7, worst: 105, tone: 'wait', toneText: 'Planned',
       steps: [
-        { n: 'Soak harness for the final check', st: 'next', w: 'desktop + Codex', s: 0, e: 3, note: 'A multi-hour play-and-measure run on your desktop, built now so the final check is quicker.' },
-        { n: 'Final verification and soak', st: 'planned', w: 'cloud + desktop', s: 71, e: 75, note: 'Type check, every test suite, production build, the multi-hour soak on your desktop.' },
-        { n: 'README and playable build', st: 'planned', w: 'cloud', s: 75, e: 77, note: 'How to run it, the controls, the features.' }
+        { n: 'Soak harness for the final check', st: 'running', w: 'desktop + Codex', from: T(27, 16, 0), e: 2, note: 'The 1M-city smoke run passes every gate; the small-city run is redone with a fire station.' },
+        { n: 'Final verification and soak', st: 'planned', w: 'cloud + desktop', s: 57, e: 61, note: 'Type check, every test suite, production build, the multi-hour soak on your desktop.' },
+        { n: 'README and playable build', st: 'planned', w: 'cloud', s: 61, e: 63, note: 'How to run it, the controls, the features.' }
       ],
       done: [],
-      now: 'The soak harness starts next on your desktop.',
+      now: 'The soak harness: its small-city smoke run.',
       next: ['Final verification with the soak.', 'README and a playable build.'],
-      watch: '' }
+      watch: 'The work left is about 8 hours more than next week’s window holds. Saving those 8 hours would bring the finish to Wed 4 Nov.' }
   ];
   var RUNNING = [
-    { who: 'Your desktop', slot: 1, what: 'Sim fix round 4', how: 'The exit leak that only a long-running browser shows, plus five minors.', since: T(27, 14, 45) },
-    { who: 'Cloud', slot: 2, what: 'Graphics revision 2', how: 'Both render lanes in their final tests.', since: T(27, 10, 52) },
-    { who: 'Your desktop', slot: 3, what: 'B1 services trigger', how: 'Code written; its timing runs wait for a quiet machine. The worker tests (S1) start next.', since: T(27, 12, 5) },
-    { who: 'Your desktop', slot: 6, what: 'Polish head start', how: 'Audio and the landmark art.', since: T(27, 9, 5) }
+    { who: 'Your desktop', slot: 2, what: 'Final review 3, speed half', how: 'Starts on the quiet machine: the first real-GPU timing.', since: T(27, 20, 15) },
+    { who: 'Your desktop', slot: 3, what: 'W0.3–W0.5', how: 'Three Codex lanes start once W0.2 is merged; R1 and W1.1a wait for their timing slot.', since: T(27, 20, 15) },
+    { who: 'Cloud', slot: 3, what: 'B3 and B2', how: 'Month-end spreading and the long-step split, resumed after the session limit.', since: T(27, 19, 32) },
+    { who: 'Your desktop', slot: 6, what: 'Polish head start', how: 'Audio and the landmark art.', since: T(27, 9, 5) },
+    { who: 'Your desktop', slot: 7, what: 'Soak harness', how: 'The small-city smoke run, now with a fire station.', since: T(27, 16, 0) }
   ];
   var CHANGES = [
-    ['Dates', 'Likely moved to Tue 10 Nov: the polish plan starts most of rounds 1–2 only after the worker preparation steps (W0), which now run right after the close-out.'],
-    ['Found', 'Check 3 found one more leak (a long-running browser keeps the old city after one building inspection), so the sim close-out needs fix round 4.'],
-    ['Added', 'Desktop Codex lanes for the worker tests (S1), the soak harness, and W0.1–W0.6 after fix round 4.'],
-    ['Merged', 'The check 3 reports; the newcomer bot and the Windows tools earlier.']
+    ['Closed', 'The sim close-out: check 4 found nothing serious, and the exit leak is fixed.'],
+    ['Merged', 'The five exact speed fixes (checked independently), B1, W0.1, the worker tests, W1.1’s worker side, Easy mode, the bot strategies, ranks and tutorial texts; W0.2 is next. 1,431 tests pass.'],
+    ['Dates', 'Likely 10 hours earlier: W0.1 and W0.2 finished well ahead, W1.1’s worker side is built next to W0, and R1, B2 and B3 moved forward.'],
+    ['Paused', 'The session limit stopped everything from 18:40 to 19:30 UTC; every run was resumed.']
   ];
   var STATUS = { done: ['✓', 'Done'], running: ['●', 'Running'], next: ['›', 'Next'], planned: ['○', 'Planned'], ifneeded: ['◌', 'If needed'] };
 
@@ -553,7 +558,7 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
       li.appendChild(el('div', 'since', 'since ' + fDay(r.since) + ', ' + fTime(r.since) + ' · ' + hoursTxt((AS_OF - r.since) / HOUR) + ' so far'));
       ul.appendChild(li);
     });
-    document.getElementById('nowNote').textContent = 'Four jobs in parallel; the lead coordinates and merges.';
+    document.getElementById('nowNote').textContent = (['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight'][RUNNING.length] || RUNNING.length) + ' jobs in parallel; the lead coordinates and merges.';
   }
   function addBar(track, cls, a, b, color, L, focusable) {
     pieces(a, b).forEach(function (p, i) {
