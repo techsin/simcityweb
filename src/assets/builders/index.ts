@@ -12,10 +12,12 @@ import { models as transport } from './transport';
 import { models as nature } from './nature';
 import { models as vehicle } from './vehicle';
 import { models as prop } from './prop';
+import { models as polishStubs } from './polish_stubs';
 
 let done = false;
 export function registerAllModels(): void {
   if (done) return;
   done = true;
   for (const m of [residential, commercial, industrial, utility, civic, park, landmark, reward, transport, nature, vehicle, prop]) registerModels(m);
+  registerModels(polishStubs);
 }
