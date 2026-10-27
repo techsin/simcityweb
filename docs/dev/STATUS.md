@@ -71,6 +71,19 @@ runs should be headless. Round trip lead → worker → lead measured at 51 s. T
      HIGH/ULTRA GPU-process sums. Verify v3 covers the rest.
   5. **Not gated, accepted:** the load frame is 337–412 ms (the warm-up moved into it, behind the opaque veil). The
      fresh dense-city HIGH street pan (inconclusive, A/A 8.5 %) is rerun at a lower load in v3 or on the desktop.
+- **Browser-heavy checks run on the desktop (Oct 27, the owner's choice).** The cloud draws 3D in software at load
+  40–60 (one camera orbit took 18 minutes), so the remaining independent checks move to the desktop worker, whose real
+  GPU runs them in a fraction of the time:
+  - the sim close-out check 3 (playtest and audit), T013;
+  - graphics final review 3 (art and speed, with the GPU timing), T014.
+
+  The cloud keeps the fix rounds, the revisions and the merging. Mechanics:
+  - each cloud workflow runs to the end of its current coding stage (fix c2; revise v2), and the lead stops it as soon
+    as it starts the next check;
+  - the worker runs each reviewer as its own sub-agent with a fresh context and the cloud brief, adapted for Windows;
+  - findings come back as reports on `local/*` branches and go to the cloud fix engineer as before.
+
+  Codex cannot run browsers there (its sandbox cannot start processes: `spawn EPERM`), so it only writes code.
 - **Uncovered emergencies in big cities (Oct 27, approved by the owner).** The owner's rule, plus the cooldown and details proposed by the lead. It comes after the sim
   close-out; the coverage part comes after the J3 merge, which touches the same `services.ts` / `catchments.ts`.
   The change alters the sim, so the bot reference table gets re-recorded once.
