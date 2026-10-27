@@ -19,6 +19,8 @@ import type { CityState } from '../sim/CityState';
 import type { Simulation } from '../sim/Simulation';
 import type { RegionContext } from '../region/regionEffects';
 import { LocalSimHost, type CityPersistence, type HostState, type SaveReason } from '../worker/SimHost';
+// W1.1b: explicit opt-in; the local host remains the default.
+import { LoopbackSimHost } from '../worker/LoopbackSimHost';
 import type { ViewState } from '../worker/protocol';
 import { pageSimWasmFlag } from '../wasm/simWasm';
 import type { GameContext, QueryTarget, SoundOpts, UIEvents } from './context';
@@ -91,7 +93,7 @@ const SOUND_MAP: Record<string, string> = {
 const SPATIAL = new Set(['road', 'rail', 'power', 'pipe', 'zone', 'dezone', 'bulldoze', 'plop', 'terraform', 'tree', 'construct', 'error', 'rotate', 'query']);
 
 export class CityScene {
-  readonly host: LocalSimHost;
+  readonly host: LocalSimHost | LoopbackSimHost;
   get sim(): Simulation { return this.host.sim; }
   get actions(): CityActionsApi { return this.host.actions; }
   readonly ctx: GameContext;
@@ -173,7 +175,8 @@ export class CityScene {
     // a brand-new city starts PAUSED (build first, then press play); saved cities keep running at normal speed. (Not
     // keyed on day 0: the calendar may open later in the year.)
     this.newCity = !validCamera(state.systemData.camera, state) && state.buildings.size === 0;
-    this.host = new LocalSimHost(state, {
+    const Host = new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get('simworker') === 'loopback' ? LoopbackSimHost : LocalSimHost;
+    this.host = new Host(state, {
       rctx: opts.rctx, initialSpeed: opts.initialSpeed ?? (this.newCity ? 0 : undefined), errors: this.errors,
       flags: { simwasm: pageSimWasmFlag() },
       signal: this.abort.signal,
