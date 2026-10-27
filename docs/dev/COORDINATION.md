@@ -13,17 +13,20 @@ Git is the shared state; messages are only nudges. Anything a machine needs to k
 
 ## Channels
 
-1. **Task queue (lead → worker):** the lead commits one file per task to `docs/dev/queue/<task-id>.md` on the dev
-   branch. The worker checks for new task files about every 10 minutes:
-   `git fetch origin && git ls-tree --name-only origin/claude/beautiful-johnson-u2jqoz docs/dev/queue/`.
-   A task is open while `docs/dev/queue/<task-id>.done` does not exist on either branch.
+1. **Task queue (lead → worker):** the lead commits one file per task (and any note for the worker) to
+   `docs/dev/queue/` on the dev branch. The worker waits on `docs/dev/queue-watch.sh 30` in the background: it fetches
+   every 30 s and exits, waking the worker, only when the queue folder changes (it prints the new files). The worker then
+   re-reads every task file without a matching `docs/dev/queue/<task-id>.done`, works the open ones, and restarts the watcher.
+   This is the only lead → worker channel: a cloud session may not message a Remote Control session or fire a scheduled
+   task bound to it (only that session itself or a person can), by design.
 2. **Reports (worker → lead):** the worker pushes its branch with the report at `docs/dev/reports/local-<task-id>.md`, then
-   notifies the lead by queueing a message into the cloud session:
+   tells the lead at once by queueing a message into the cloud session:
    `claude -p "DONE <task-id> local/<task-id>@<sha> report: docs/dev/reports/local-<task-id>.md" --cloud session_01KT9tXthEhyzExdUuGEecAJ`
-   Use `BLOCKED <task-id> <reason>` or `PROGRESS <task-id> <one line>` the same way.
-3. **Direct messages (optional):** if the worker runs under Remote Control and the owner allows this session to reach their
-   other sessions, the lead can also message the worker directly, and the worker can message the lead as `simcityweb-63`.
-   Treat these as nudges; the task file and the report stay the record.
+   Use `ACK <task-id>`, `BLOCKED <task-id> <reason>` or `PROGRESS <task-id> <one line>` the same way. The lead also watches
+   `local/*` branches on GitHub every 2 minutes, so a lost message costs at most that.
+3. **Owner nudges (optional):** the worker created a poke-only scheduled task bound to itself
+   (`trig_01Hpn2papFZYkWa2ifKYw7D7`, "Metropolis lead → local GPU worker"). The owner can run it from the Claude app to
+   wake the worker by hand; the lead cannot.
 
 ## Task file format
 
