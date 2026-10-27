@@ -523,6 +523,14 @@ function fullAt(b: BannerEl, w: number): number {
 function compAt(b: BannerEl, w: number): number {
   return b.hts?.get(Math.round(w))?.comp ?? COMP_H;
 }
+/** an element's box on screen (null: no layout to read) */
+function boxOf(e: Element): DOMRect | null {
+  return typeof e.getBoundingClientRect === 'function' ? e.getBoundingClientRect() : null;
+}
+/** the pointer of mouse event e lies in box r */
+function inBox(e: MouseEvent, r: DOMRect | null): boolean {
+  return !!r && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+}
 
 export class EmergencyBanner {
   readonly el: HTMLDivElement;
@@ -576,6 +584,10 @@ export class EmergencyBanner {
   private moreShown = false;
   /** the control a press was ignored on: its click is dropped too */
   private ignored: Element | null = null;
+  /** close-out c2: the control the current press captured, and its box then. The capture sends the release's click to
+   *  it wherever the pointer is: a release off it — off where it was pressed and off where it is now — is a cancelled
+   *  press, as without the capture, and its click is dropped */
+  private pressed: { ctl: Element; box: DOMRect | null } | null = null;
   /** close-out c1: the highest an open toolbar flyout's top reached since it opened (relative to the bottom block, <= 0;
    *  flyoutTop): a switch to a shorter tab keeps the bound of the tallest — the stack does not re-dock with every tab */
   private flyHigh = 0;
@@ -598,12 +610,14 @@ export class EmergencyBanner {
     const resized = () => { this.flyHigh = 0; this.dockDirty = true; };
     win?.addEventListener('resize', resized);
     // (a press anywhere on the stack holds the docking until it is released — the layout it measured then applies; the
-    // pressed control captures the pointer, so its release clicks it whatever moved meanwhile — close-out c2. A press on
-    // a button or the pill of a banner that has just moved under the pointer is ignored, and its click: it was aimed at
-    // what sat there before — close-out c1, SETTLE_MS; c2: it flashes, and the click plays the denied sound)
+    // pressed control captures the pointer, so its release clicks it whatever moved meanwhile, and a release off it
+    // still cancels — close-out c2. A press on a button or the pill of a banner that has just moved under the pointer is
+    // ignored, and its click: it was aimed at what sat there before — close-out c1, SETTLE_MS; c2: it flashes, and the
+    // click plays the denied sound)
     this.el.addEventListener('pointerdown', (e) => {
       const now = performance.now();
       this.ignored = null;
+      this.pressed = null;
       const t = (e as Event | undefined)?.target as Element | null | undefined;
       const ctl = t && typeof t.closest === 'function' ? t.closest('button, .emg-more') : null;
       if (ctl && this.unsettled(ctl, now)) {
@@ -614,6 +628,7 @@ export class EmergencyBanner {
         return;
       }
       this.pressAt = now;
+      this.pressed = ctl ? { ctl, box: boxOf(ctl) } : null;
       const pid = (e as Partial<PointerEvent>).pointerId;
       const cap = ctl as (Element & { setPointerCapture?: (id: number) => void }) | null;
       if (cap && pid !== undefined && typeof cap.setPointerCapture === 'function') {
@@ -625,15 +640,24 @@ export class EmergencyBanner {
       }
     }, true);
     this.el.addEventListener('click', (e) => {
-      const ig = this.ignored;
-      if (!ig) return;
-      this.ignored = null;
+      const pr = this.pressed;
+      this.pressed = null;
       const t = e.target as Node | null;
-      if (t && ig.contains(t)) {
+      const ig = this.ignored;
+      if (ig) {
+        this.ignored = null;
+        if (t && ig.contains(t)) {
+          e.preventDefault();
+          e.stopPropagation();
+          // (within the click: the UI's generic click sound is left out — uiSounds)
+          this.ctx.sound('error');
+          return;
+        }
+      }
+      // (a pointer's click — not the keyboard's — released off the captured control: a cancelled press)
+      if (pr?.box && t && pr.ctl.contains(t) && e.detail > 0 && !inBox(e, pr.box) && !inBox(e, boxOf(pr.ctl))) {
         e.preventDefault();
         e.stopPropagation();
-        // (within the click: the UI's generic click sound is left out — uiSounds)
-        this.ctx.sound('error');
       }
     }, true);
     const release = () => {

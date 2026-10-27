@@ -1181,6 +1181,58 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     }
   });
 
+  it('c2: with the capture a drag off the pressed control still cancels it; a control that moved away from under a still pointer still clicks', () => {
+    const w = fakeWindowAndFrames();
+    const now = vi.spyOn(performance, 'now');
+    try {
+      const t = quakeTown();
+      const em = emergencyOf(t.sim)!;
+      quake(t);
+      now.mockReturnValue(1e6);
+      t.h.tick();
+      w.frame(); w.frame();
+      now.mockReturnValue(1e6 + 2000);
+      t.h.tick();
+      const [a, b] = stackBottom(t.h).shown;
+      const stack = t.h.banner.el as unknown as FakeEl;
+      const L = (k: string) => (stack as unknown as { listeners: Map<string, ((e: unknown) => void)[]> }).listeners.get(k) ?? [];
+      type Box = { left: number; right: number; top: number; bottom: number };
+      let box: Box = { left: 100, right: 220, top: 100, bottom: 128 };
+      const boxed = (el: FakeEl): FakeEl => Object.assign(el, { getBoundingClientRect: () => ({ ...box }) });
+      /** a mouse press at (x0, y0) released at (x1, y1) — the control moved to `moved` meanwhile: did its click run? */
+      const drag = (ctl: FakeEl, x0: number, y0: number, x1: number, y1: number, moved?: Box): boolean => {
+        let stopped = false;
+        const ev = (x: number, y: number) => ({ target: ctl, pointerId: 1, detail: 1, clientX: x, clientY: y, preventDefault() {}, stopPropagation() { stopped = true; } });
+        for (const f of L('pointerdown')) f(ev(x0, y0));
+        if (stopped) return false;
+        if (moved) box = moved;
+        for (const f of w.winL.get('pointerup') ?? []) f({});
+        for (const f of L('click')) f(ev(x1, y1));
+        if (stopped) return false;
+        ctl.click();
+        return true;
+      };
+      // dragged 200 px off Send nearest and released there: nothing sent (the capture would have clicked it)
+      const sendA = boxed(button(t.h, a, /^Send nearest/));
+      expect(drag(sendA, 150, 114, 150, 314)).toBe(false);
+      expect(em.incident(a)!.state).toBe('uncovered');
+      // released on it: sent
+      expect(drag(sendA, 150, 114, 160, 120)).toBe(true);
+      expect(em.incident(a)!.state).toBe('dispatched');
+      t.h.tick();
+      w.frame(); w.frame();
+      now.mockReturnValue(1e6 + 2000 + SETTLE_MS + 1000);
+      // the next banner's button moved up a row during the press, the pointer stayed: sent
+      box = { left: 100, right: 220, top: 100, bottom: 128 };
+      const sendB = boxed(button(t.h, b, /^Send nearest/));
+      expect(drag(sendB, 150, 114, 150, 114, { left: 100, right: 220, top: 40, bottom: 68 })).toBe(true);
+      expect(em.incident(b)!.state).toBe('dispatched');
+    } finally {
+      now.mockRestore();
+      w.restore();
+    }
+  });
+
   it('c2 (audit c2 #3): with every banner dismissed the pill alone docks clear of a centred panel\'s title row; it does not say "open Emergencies" while that panel is open', () => {
     const t = quakeTown();
     quake(t);
