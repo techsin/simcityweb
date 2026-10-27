@@ -7,8 +7,9 @@ live in the gitignored `tools/bench/.fixtures/`. A container reset deletes both.
 npm run fixtures -- --cities /tmp/claude-0/-home-user-simcityweb/<session>/scratchpad/cities
 ```
 
-On this machine (4 cores, other agents running) that takes about 10 minutes. Leave out `--cities DIR` to build only
-the WASM fixtures, or use `--only cities --cities DIR` to build only the cities. `npm run fixtures -- --help` lists the
+On this machine (4 cores) that takes about 10 minutes when it is quiet and up to 25 minutes while other agents run
+browsers. Leave out `--cities DIR` to build only the WASM fixtures and captures, or use `--only cities --cities DIR`
+to build only the cities. `npm run fixtures -- --help` lists the
 options. An output that already exists is kept unless you pass `--force`.
 
 The script is `tools/makeFixtures.mjs`. It needs no tsx and no network: each generator is bundled with rolldown (a
@@ -79,13 +80,21 @@ diff <(norm plain.out) <(norm saving.out)
 | `snap/` | `git archive 24f8609` | 292 files, 6.2 MB | | 1 s |
 | `fixtures/dense1m_s7.metropolis` | `sim-profile/fixtures/dense1m.ts` on snap: target 1,150,000, 120 warm days, seed 7 | 1,118,755 residents, 17,154 buildings, 23,141 road cells, 30,084 transit nodes (23,141 road + 6,943 subway) | 3.53 MB | 13 s |
 | `fixtures/stress1m_testdefs_s7.metropolis` | `sim-profile/fixtures/stress.ts` on snap: `stressCity(256, 7, { popScale: 1.55, jobsPerWorker: 1.05 })`, test defs | 1,034,100 residents, 19,484 buildings, 36,003 road cells | 0.19 MB | < 1 s |
-| `fixtures/bot256_s7_y60.metropolis` | `sim-profile/fixtures/botgrow.ts` on snap: the 24f8609 SimBot, 256 map, seed 7, 60 years | 652,568 residents, 11,276 buildings, 13,828 road + 81 rail cells | 4.35 MB | 5 min (190 s CPU) |
+| `fixtures/bot256_s7_y60.metropolis` | `sim-profile/fixtures/botgrow.ts` on snap: the 24f8609 SimBot, 256 map, seed 7, 60 years | 652,568 residents, 11,276 buildings, 13,828 road + 81 rail cells | 4.35 MB | 4–5 min (190 s CPU) |
+| `node_modules/.cache/sim-bench/` `populationAggregateProbe/`, `econ/`, `fieldPasses/` | captures of dense1m and bot256 (fieldPasses also bot256 with a synthetic coast), written on snap by the benches' own capture runs | 2 + 2 + 3 files | 47 MB | 5 min at load 45 |
+
+The content sha256 that the script prints (content minus `savedAt`) was `d8e217f3…` for dense1m, `3ba552f9…` for
+stress1m and `5cfc7236…` for bot256 on every rebuild so far.
 
 **`snap/`** contains:
-- the frozen tree that `tests/wasm/trafficCore.test.ts` B/C/D and the benches' `--tree snap` run on. The snapshot leaves
-  out the `*.test.*` and `*.spec.*` files, because vitest collects test files anywhere under the repo, including
-  dot directories. `tsc` and vite's dependency scan skip dot directories.
-- a `node_modules` link to the repository's.
+- the frozen tree that `tests/wasm/trafficCore.test.ts` B/C/D and the benches' `--tree snap` run on. trafficCore
+  imports 14 modules from it: `src/sim/infra/{traffic,params,common,graph,transit}.ts`,
+  `src/sim/{Simulation,CityState}.ts`, `src/sim/systems/index.ts`, `src/sim/economy/{demographics,tuning}.ts`,
+  `src/core/types.ts`, `src/save/{serialize,bundle}.ts` and `tests/infra/cityGen.ts`.
+- no `*.test.*` or `*.spec.*` files. Vitest collects test files anywhere under the repo, dot directories included,
+  so the snapshot leaves them out. `tsc` and vite's dependency scan skip dot directories.
+- a `node_modules` link to the repository's, for tools run inside the snapshot (the 24f8609 sources themselves import
+  only `node:` built-ins).
 - copies of the three `tools/bench/sim-profile/fixtures` generators, which were added after 24f8609. They are refreshed
   from the live tree on every run so they build against the frozen `src`.
 - a `.commit` marker.
@@ -101,15 +110,33 @@ If the clone is shallow and 24f8609 is missing, the script runs `git fetch --uns
 - `dense1m` needs a target of 1,150,000. The generator's default of 1,000,000 gives 985,989 residents.
 - Built on the live tree instead, dense1m changes (1,150,423 residents, 17,121 buildings). stress1m stays identical
   apart from 4 stats fields that newer code adds.
-- Two rebuilds give the same content: the counts, the sha256 of the content minus `savedAt` (printed by the script),
-  and an every-field comparison.
+- The bot cities are no substitute for dense1m. `vet_s7_y43` runs in the 24f8609 tree, but it has 991,493 residents,
+  below the `> 1,000,000` that trafficCore's dense1m test asserts, and it has no subway or transit grid.
+- Two rebuilds give the same content: the counts, the digest and an every-field comparison.
 
-**Tests that use them** (all skip when their file is absent):
-- `tests/wasm/trafficCore.test.ts` B/C/D: snap; C dense1m also uses `dense1m_s7`.
-- `tests/wasm/roadTransitSearch.test.ts`: `dense1m_s7` and `stress1m_testdefs_s7`.
-- `tests/wasm/servicesTierEngine.test.ts`: `dense1m_s7` and `bot256_s7_y60`, two tests each.
+**Tests that use them.** Every one skips when its input is absent.
 
-Three more WASM tests read captures from `node_modules/.cache/sim-bench/{econ,fieldPasses,populationAggregateProbe}`.
-They are `desirabilityLandValueBands`, `fieldPasses` and `populationAggregateProbe`. The benches write these captures
-from the fixtures above (the `capture` suite of `npm run bench:econ`, `bench:fields` and
-`node tools/bench/populationAggregateProbe.bench.mjs capture`). `npm run fixtures` does not build them.
+| Test file | Input | Tests that run with the fixtures |
+|---|---|---|
+| `tests/wasm/trafficCore.test.ts` | snap; C dense1m also `dense1m_s7` | B, C (8, 2 of them on dense1m) and D: 10 |
+| `tests/wasm/roadTransitSearch.test.ts` | `dense1m_s7`, `stress1m_testdefs_s7` | 2 |
+| `tests/wasm/servicesTierEngine.test.ts` | `dense1m_s7`, `bot256_s7_y60` | 2 per file: 4 |
+| `tests/wasm/populationAggregateProbe.test.ts` | the `populationAggregateProbe` captures | 1 |
+| `tests/wasm/desirabilityLandValueBands.test.ts` | the `econ` captures | 1 |
+| `tests/wasm/fieldPasses.test.ts` | the `fieldPasses` captures | 1 |
+
+## Test results with the rebuilt fixtures (Oct 27)
+
+| Run | Result | Time (load) |
+|---|---|---|
+| The three fixture files (trafficCore, roadTransitSearch, servicesTierEngine) | 3 files, 60 tests passed, 0 skipped. dense1m trafficCore C: 92 s | 445 s (25–35) |
+| The three capture files | 3 files, 61 tests passed, 0 skipped | 194 s (45) |
+| Full `npx vitest run --testTimeout=900000`, before the captures existed | 113 files passed, 2 failed, 1 skipped; 1,079 tests passed, 2 failed, 6 skipped | 1,968 s (40–60) |
+
+- **The 2 failures are wall-clock limits.** `tests/infra/perf.test.ts` measured 107.8 ms against 100.
+  `tests/save/terrain.test.ts` measured 3,686 ms against 3,000. Both passed when run alone (2/2 and 6/6).
+- **Skipped tests:** 6, down from 18 before the rebuild. The 12 that now run are trafficCore's 10 and
+  roadTransitSearch's 2. servicesTierEngine's 4 fixture tests are only registered when their files exist, so they are
+  new rather than formerly skipped.
+- **With the captures**, the only skipped tests left are the 3 gated by `BALANCE`: `tests/sim/balance.test.ts` (2) and
+  `tests/sim/botRules.test.ts` (1).
