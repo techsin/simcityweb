@@ -1,0 +1,332 @@
+[
+ {
+  "scene": "city",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 1.83,
+   "far": 2.39,
+   "street": 0.81
+  }
+ },
+ {
+  "scene": "city",
+  "q": "high",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 4.13,
+   "far": 5.08,
+   "street": 2.27
+  }
+ },
+ {
+  "scene": "city",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 1.04,
+   "far": 1.51,
+   "street": 0.66
+  }
+ },
+ {
+  "scene": "city",
+  "q": "low",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 2.22,
+   "far": 3.19,
+   "street": 1.82
+  }
+ },
+ {
+  "scene": "city",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 1.92,
+   "far": 3.03,
+   "street": 0.98
+  }
+ },
+ {
+  "scene": "city",
+  "q": "ultra",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 4.52,
+   "far": 5.84,
+   "street": 3.73
+  }
+ },
+ {
+  "scene": "game300k",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 4.22,
+   "far": 5.53,
+   "street": 0.73
+  }
+ },
+ {
+  "scene": "game300k",
+  "q": "high",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 6.64,
+   "far": 13.08,
+   "street": 2.21
+  }
+ },
+ {
+  "scene": "game300k",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 3.1,
+   "far": 5.49,
+   "street": 0.67
+  }
+ },
+ {
+  "scene": "game300k",
+  "q": "low",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 4.08,
+   "far": 7.09,
+   "street": 1.81
+  }
+ },
+ {
+  "scene": "game300k",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 4.68,
+   "far": 5.92,
+   "street": 1.02
+  }
+ },
+ {
+  "scene": "game300k",
+  "q": "ultra",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 7.04,
+   "far": 15.19,
+   "street": 3.66
+  }
+ },
+ {
+  "scene": "gamefresh",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 2.22,
+   "far": 0.97,
+   "street": 1.77
+  }
+ },
+ {
+  "scene": "gamefresh",
+  "q": "high",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 4.3,
+   "far": 2.28,
+   "street": 2.81
+  }
+ },
+ {
+  "scene": "gamefresh",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 1.16,
+   "far": 0.61,
+   "street": 1.24
+  }
+ },
+ {
+  "scene": "gamefresh",
+  "q": "low",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 1.96,
+   "far": 1.36,
+   "street": 2
+  }
+ },
+ {
+  "scene": "gamefresh",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 2.07,
+   "far": 1.09,
+   "street": 1.71
+  }
+ },
+ {
+  "scene": "gamefresh",
+  "q": "ultra",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 4.43,
+   "far": 2.89,
+   "street": 4.07
+  }
+ },
+ {
+  "scene": "ui",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 1.6,
+   "far": 1.41,
+   "street": 0.89
+  }
+ },
+ {
+  "scene": "ui",
+  "q": "high",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 3.5,
+   "far": 2.6,
+   "street": 1.73
+  }
+ },
+ {
+  "scene": "ui",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 0.8,
+   "far": 0.89,
+   "street": 0.66
+  }
+ },
+ {
+  "scene": "ui",
+  "q": "low",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 1.49,
+   "far": 1.63,
+   "street": 1.23
+  }
+ },
+ {
+  "scene": "ui",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 2.24,
+   "far": 1.61,
+   "street": 0.84
+  }
+ },
+ {
+  "scene": "ui",
+  "q": "ultra",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 4.24,
+   "far": 3.01,
+   "street": 2.8
+  }
+ },
+ {
+  "scene": "world",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 2.56,
+   "far": 1.71,
+   "street": 0.82
+  }
+ },
+ {
+  "scene": "world",
+  "q": "high",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 4.46,
+   "far": 2.9,
+   "street": 1.61
+  }
+ },
+ {
+  "scene": "world",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 1.07,
+   "far": 0.96,
+   "street": 0.66
+  }
+ },
+ {
+  "scene": "world",
+  "q": "low",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 1.79,
+   "far": 1.78,
+   "street": 1.04
+  }
+ },
+ {
+  "scene": "world",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "burst": {
+   "default": 3.59,
+   "far": 2.07,
+   "street": 0.87
+  }
+ },
+ {
+  "scene": "world",
+  "q": "ultra",
+  "w": 3840,
+  "h": 2160,
+  "burst": {
+   "default": 5.74,
+   "far": 3.54,
+   "street": 2.63
+  }
+ }
+]
