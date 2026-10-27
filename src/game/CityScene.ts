@@ -19,6 +19,7 @@ import type { CityState } from '../sim/CityState';
 import type { Simulation, SimSystem } from '../sim/Simulation';
 import type { RegionContext } from '../region/regionEffects';
 import { LocalSimHost } from '../worker/SimHost';
+import { pageSimWasmFlag } from '../wasm/simWasm';
 import type { GameContext, QueryTarget, SoundOpts, UIEvents } from './context';
 import { FallbackObjectsView } from './fallback/FallbackObjectsView';
 import { FallbackWorldView } from './fallback/FallbackWorldView';
@@ -171,7 +172,10 @@ export class CityScene {
     // a brand-new city starts PAUSED (build first, then press play); saved cities keep running at normal speed. (Not
     // keyed on day 0: the calendar may open later in the year.)
     this.newCity = !validCamera(state.systemData.camera, state) && state.buildings.size === 0;
-    this.host = new LocalSimHost(state, { rctx: opts.rctx, initialSpeed: opts.initialSpeed ?? (this.newCity ? 0 : undefined), errors: this.errors });
+    this.host = new LocalSimHost(state, {
+      rctx: opts.rctx, initialSpeed: opts.initialSpeed ?? (this.newCity ? 0 : undefined), errors: this.errors,
+      flags: { simwasm: pageSimWasmFlag() },
+    });
     this.degraded.actions = true;
 
     // ---- context

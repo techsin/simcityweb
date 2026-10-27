@@ -6,7 +6,8 @@ import type { RegionContext } from '../region/regionEffects';
 import type { CityActionsApi } from '../sim/actions';
 import type { CityState } from '../sim/CityState';
 import type { CityEvents, Simulation } from '../sim/Simulation';
-import { SimCore, type SimErrors, type SimModules } from './SimCore';
+import { simWasmFlagSelects } from '../wasm/simWasm';
+import { SimCore, type SimErrors, type SimFlags, type SimModules } from './SimCore';
 
 export interface SimHost {
   readonly kind: 'local' | 'loopback' | 'worker';
@@ -28,10 +29,13 @@ export interface LocalSimHostOptions {
   rctx?: RegionContext | null;
   initialSpeed?: number;
   errors?: SimErrors;
+  flags?: SimFlags;
 }
 
 /** Broken lazy imports must not take down the city screen: the local host keeps its stand-ins. */
 const SIM_MODULES = import.meta.glob(['../sim/systems/index.ts', '../sim/actions.ts']);
+/** node instantiates the kernels on their first call; a page must fetch and compile them before boot */
+const IN_NODE = typeof (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node === 'string';
 
 export class LocalSimHost implements SimHost {
   readonly kind = 'local';
@@ -47,7 +51,7 @@ export class LocalSimHost implements SimHost {
   });
 
   constructor(state: CityState, opts: LocalSimHostOptions = {}) {
-    this.core = new SimCore(state, opts.errors);
+    this.core = new SimCore(state, opts.errors, opts.flags);
     this.rctx = opts.rctx ?? null;
     if (opts.initialSpeed !== undefined) this.sim.speed = opts.initialSpeed;
     this.actions = new ActionsProxy(new FallbackActions(this.sim));
@@ -76,7 +80,8 @@ export class LocalSimHost implements SimHost {
           this.core.report('City actions failed to load — using stand-in actions', e);
           return null;
         }),
-      ]) as [Pick<SimModules, 'createSystems'> | null | undefined, Pick<SimModules, 'CityActions'> | null | undefined];
+        this.initWasm(),
+      ]) as [Pick<SimModules, 'createSystems'> | null | undefined, Pick<SimModules, 'CityActions'> | null | undefined, void];
       if (this.core.isDisposed) return;
       this.core.boot(this.rctx, { createSystems: sysMod?.createSystems, CityActions: actMod?.CityActions });
       if (this.core.actions) this.actions.target = this.core.actions;
@@ -85,6 +90,18 @@ export class LocalSimHost implements SimHost {
       this.rejectReady(e);
     }
     return this.ready;
+  }
+
+  /** WASM blur is opt-in (WASM_PLAN PI-6): unless the flag selects it, nothing wasm is fetched or instantiated. */
+  private async initWasm(): Promise<void> {
+    const flag = this.core.flags.simwasm;
+    if (IN_NODE || flag == null || !simWasmFlagSelects(flag, 'blur')) return;
+    try {
+      const { initSimWasmBrowser } = await import('../wasm/browser');
+      await initSimWasmBrowser({ flag });
+    } catch (e) {
+      this.core.report('WASM kernels failed to load', e);
+    }
   }
 
   frame(dt: number): void { this.core.frame(dt); }

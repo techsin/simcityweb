@@ -3,6 +3,13 @@ import { trackRegionEffects, type RegionContext } from '../region/regionEffects'
 import type { CityActionsApi } from '../sim/actions';
 import type { CityState } from '../sim/CityState';
 import { Simulation, type SimSystem } from '../sim/Simulation';
+import { applySimWasmFlag } from '../wasm/simWasm';
+
+/** The page's flags, passed at init (WORKER_DESIGN §1). */
+export interface SimFlags {
+  /** ?simwasm=…; null keeps the blur kernel on JS (WASM_PLAN PI-6) */
+  simwasm: string | null;
+}
 
 export interface SimErrors {
   report(title: string, err: unknown, opts?: { key?: string; sim?: boolean }): void;
@@ -15,6 +22,7 @@ export interface SimModules {
 
 export class SimCore {
   readonly sim: Simulation;
+  readonly flags: SimFlags;
   actions: CityActionsApi | null = null;
   private booted = false;
   private disposed = false;
@@ -22,9 +30,10 @@ export class SimCore {
   /** Cleared at dispose: a retained system must not reach the scene or its HUD (close-out c4). */
   private guard: { errors: SimErrors | null };
 
-  constructor(state: CityState, errors?: SimErrors) {
+  constructor(state: CityState, errors?: SimErrors, flags: SimFlags = { simwasm: null }) {
     this.sim = new Simulation(state, []);
     this.guard = { errors: errors ?? null };
+    this.flags = flags;
   }
 
   get isDisposed(): boolean { return this.disposed; }
@@ -32,6 +41,8 @@ export class SimCore {
   /** The empty sim is available to the HUD before the lazy system / action modules finish loading. */
   boot(rctx: RegionContext | null, mods: SimModules): void {
     if (this.booted || this.disposed) return;
+    // The flag picks the kernels before any system runs; without one the kernel defaults hold.
+    if (this.flags.simwasm != null) applySimWasmFlag(this.flags.simwasm);
     // trackRegionEffects applies the entry values before subscribing to 'month', ahead of system init.
     if (rctx) this.offRegion = trackRegionEffects(this.sim, rctx);
     let systems: SimSystem[] = [];
