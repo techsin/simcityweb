@@ -56,6 +56,17 @@ given size, years, seed and difficulty.
 - Base (`b60b2d3`) and branch run in separate processes, and their yearly hashes are compared.
 - It reproduces the known numbers: 194,432 in 2015, and FH-10's newcomer table year for year.
 
+## Not met: the newcomer gate moves to after FH-03 (NOTE-018)
+
+The lead accepted FH-04 as is and moved the FH-10 newcomer gate (Easy approval ≥ 50 from year 2, and ≥ 2× the Medium
+newcomer's population in year 6) to after FH-03. **FH-03's task inherits it:**
+- **Re-run the gate when FH-03 lands** its "zone more" warning. Today the newcomer never grows past its four starting
+  blocks on any difficulty, so the gate measures the missing prompt, not Easy.
+- **Only if it is still missed then** do LG-09's extra Easy rules come in (POLISH_PLAN decision D3: "Easy only gets
+  FH-04's grace … LG-09's extra Easy rules only if the newcomer targets are missed").
+- **The candidates** are the terms that keep the Easy newcomer under 50 in the run below: residential taxes −7.0,
+  air pollution −6.6, city services at homes −5.4.
+
 ## The newcomer gate, and why FH-04 cannot meet it alone
 
 | year | Medium pop / approval | **Easy pop / approval** | Easy's top terms (points) |
