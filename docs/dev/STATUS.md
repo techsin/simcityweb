@@ -9,7 +9,7 @@ every scratch file was lost), so anything the next round needs lives here or in 
 |---|---|---|
 | Sim-depth part B close-out | Rounds 1–4 fixed and verified. Close-out c1 fixed the exit-to-region scene leak and six minors. Verify c2: playtest found no blocker/major (4 minors); audit found 1 MAJOR (an inspector click keeps the previous city alive: module-level `bctx` / `LvCtx` caches in `src/sim/economy/desirability.ts` and `landValue.ts`) + 2 minors. | Fix c2 (the major + all minors), then verify c3. |
 | Render round 2 (final) | Revise v1 done in both lanes (fresh-load: veil-fade warm-up frame 127 → 11 ms, LOW first zoom-out 1.17 → 1.05× base; seasons: round far-ring crowns on trunks, `ringLowSwitch` 1.3, ring work 2–3× lower). Art v1 passed; perf v1 had 3 fresh-load majors that revise v1 addressed. | Independent verify v2 (art + perf), revise if needed, verify v3. |
-| Million-population performance (#35) | The two prepared branches were lost in the reset; their content is specified in `docs/WASM_PLAN.md` §6–7 and `docs/WORKER_DESIGN.md`. **PI-1 baseline done (T005, merged 73a37e9):** `tools/bench/baselines/pi1-614609f.json`, report `docs/dev/reports/local-T005-pi1-baseline.md`. Windows worker, CPU time over ≥ 1 s chunks, A/A within ±3 %. Design-cadence whole day (AC5's reference): live dense1m 19.8 ms, live bot256 (1.37M) 14.7 ms, so AC5 needs ≤ 14.8 / 11.0 ms. In the browser at ultra: 20.4–20.6 days/s (AC3 met); main-thread p99 27–37 ms, max 42–101 ms, long tasks every run (smoothness not met before W1). Open design item: with the default `emergencyUncovered: 'live'`, 1M+ cities never hold ultra (`EmergencyBanner.applyPolicy` keeps dropping to live speed or pausing); the benches use `'ignore'`. Now on the worker: T007 = exact fixes J2–J4, J6–J8, J10, J11 implemented by Codex (one `local/J<n>-*` branch each from `614609f`, gated by bit-identical 120-day hashes + CPU A/B). | Merge the J-fix branches after the sim close-out and verify them independently; then J5/J9/J0, B1–B5 (balance procedure), the worker host W1, acceptance §7.9; the emergency-policy fix for big cities after the sim close-out. |
+| Million-population performance (#35) | The two prepared branches were lost in the reset; their content is specified in `docs/WASM_PLAN.md` §6–7 and `docs/WORKER_DESIGN.md`. **PI-1 baseline done (T005, merged 73a37e9):** `tools/bench/baselines/pi1-614609f.json`, report `docs/dev/reports/local-T005-pi1-baseline.md`. Windows worker, CPU time over ≥ 1 s chunks, A/A within ±3 %. Design-cadence whole day (AC5's reference): live dense1m 19.8 ms, live bot256 (1.37M) 14.7 ms, so AC5 needs ≤ 14.8 / 11.0 ms. In the browser at ultra: 20.4–20.6 days/s (AC3 met); main-thread p99 27–37 ms, max 42–101 ms, long tasks every run (smoothness not met before W1). Open design item: with the default `emergencyUncovered: 'live'`, 1M+ cities never hold ultra (`EmergencyBanner.applyPolicy` keeps dropping to live speed or pausing); the benches use `'ignore'`. Now on the worker: T007 = exact fixes J2–J4, J6–J8, J10, J11 implemented by Codex (one `local/J<n>-*` branch each from `614609f`, gated by bit-identical 120-day hashes + CPU A/B). | Merge the J-fix branches after the sim close-out and verify them independently; then J5/J9/J0, B1–B5 (balance procedure), the worker host W1, acceptance §7.9; the emergency-policy change for big cities (see Design decisions) after the sim close-out. |
 | Polish & fun pass (#32) | Plan in `docs/POLISH_PLAN.md` (88 items, 4 rounds). Backlog in `docs/dev/POLISH_BACKLOG.md`. | After the above. |
 | Final verification (#28), README + build (#29) | Not started. | Last. |
 
@@ -35,6 +35,31 @@ Ryzen 7 9800X3D (8c/16t), 61.6 GB RAM, RTX 5070 Ti 16 GB (Chromium uses it throu
 Codex CLI logged in. AC sleep is disabled, so multi-day runs are fine; the display still sleeps after 10 min, so timing
 runs should be headless. Round trip lead → worker → lead measured at 51 s. Tasks: `docs/dev/queue/`; reports:
 `docs/dev/reports/local-*.md` on `local/*` branches.
+
+## Design decisions
+
+- **Uncovered emergencies in big cities (Oct 27).** The owner's rule, with the cooldown and the details proposed by the lead. It comes after the sim
+  close-out; the coverage part comes after the J3 merge, which touches the same `services.ts` / `catchments.ts`.
+  The change alters the sim, so the bot reference table gets re-recorded once.
+  - **A site inside a station's range never slows the game**, even when every unit there is out.
+    - Such a call gets the nearest free unit of another station that can still make it in time (mutual aid, as
+      minor calls already do), or waits for the first unit back.
+    - It stays in the Emergencies panel, where the player can still send a unit by hand.
+    - The service deteriorates instead. Late, failed and fatal calls already cost approval, and medical response
+      feeds health quality. New: each station tracks its load (the share of recent calls that found no free unit or
+      needed mutual aid). The load is shown in the inspector and the coverage data view, an advisor names
+      overstretched stations, and an overstretched station's fire / police / health coverage counts for less (those
+      coverages already feed desirability and crime).
+  - **A site outside every station's range** keeps today's behaviour: a banner, live speed when a unit can still
+    make it in time, and a pause when time is very short. This is a coverage gap the player can fix.
+  - **Cooldown:** after a slow-down ends, the game stays at the player's speed for about 30 real seconds before the
+    next one; alerts in that window get a banner only.
+  - **Data behind it** (`frames` loop at ultra, 240 game days = 12 s each):
+    - 1.15M dense1m: 516 incidents, 110 major, 2 uncovered, both fires out of range;
+    - 660k bot256: 309 incidents, 94 major, 3 uncovered, all fires out of range;
+    - no busy case in either city.
+    So without the cooldown, the rule alone would not keep ultra usable in a city with gaps (one slow-down per ~6 s
+    of ultra).
 
 ## Reference commits
 
