@@ -4,6 +4,7 @@
  * Falls back silently (returns null) when the asset modules are missing or WebGL is unavailable.
  */
 import * as THREE from 'three';
+import { viewOf } from '../game/geometryView';
 
 type Assets = {
   getModelGeometry: (id: string, variant?: number) => THREE.BufferGeometry;
@@ -38,25 +39,6 @@ interface Job {
   w: number;
   h: number;
   resolve: (url: string | null) => void;
-}
-
-/**
- * a geometry object of its own over the registry geometry's attribute buffers (no copy): three.js hangs a dispose
- * listener — a closure over the renderer and its canvas — on every geometry and material a renderer draws, so the
- * thumbnails must not draw the shared ones (close-out c2: each idle-disposed thumbnail renderer stayed reachable through
- * the listeners on the registry geometries and the shared building material; 7 after one UI session)
- */
-function viewOf(src: THREE.BufferGeometry): THREE.BufferGeometry {
-  const g = new THREE.BufferGeometry();
-  g.setIndex(src.index);
-  for (const k of Object.keys(src.attributes)) g.setAttribute(k, src.attributes[k]);
-  for (const k of Object.keys(src.morphAttributes) as (keyof THREE.BufferGeometry['morphAttributes'])[]) g.morphAttributes[k] = src.morphAttributes[k];
-  g.morphTargetsRelative = src.morphTargetsRelative;
-  for (const gr of src.groups) g.addGroup(gr.start, gr.count, gr.materialIndex);
-  g.setDrawRange(src.drawRange.start, src.drawRange.count);
-  g.boundingBox = src.boundingBox;
-  g.boundingSphere = src.boundingSphere;
-  return g;
 }
 
 class ThumbRenderer {

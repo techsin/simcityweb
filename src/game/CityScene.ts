@@ -175,7 +175,7 @@ export class CityScene {
     this.veil = h('div', { class: 'loading-veil' }, h('div', { class: 'spin' }), h('div', null, 'Loading city…'));
     this.root.append(this.canvas, this.uiRoot, this.veil);
     opts.container.appendChild(this.root);
-    this.errors = new ErrorOverlay(this.uiRoot, { pause: () => (this.sim.speed = 0) });
+    this.errors = new ErrorOverlay(this.uiRoot, { pause: () => (this.sim.speed = 0), signal: this.abort.signal });
     this.guard.errors = this.errors;
 
     // ---- simulation: systems are attached in loadSim() (guarded so one broken system can't take the game down)
@@ -289,6 +289,7 @@ export class CityScene {
       sound: (n) => this.sound(n),
       audio: () => this.mods.audio,
       overlayRoot: this.uiRoot,
+      signal: this.abort.signal,
     });
     // event-driven sounds (news, disasters, rewards, budget ticks, construction) + generic control feedback
     this.gameSounds = new GameSounds({ sim: this.sim, sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox() });

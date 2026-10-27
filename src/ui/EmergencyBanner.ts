@@ -556,7 +556,7 @@ export class EmergencyBanner {
   private dockKey = '';
   private dockCompact = false;
   private dockRows = 0;
-  /** close-out c3: last measured stack width; layout reads cached heights here, never the DOM (EM-3) */
+  /** close-out c4: last measured stack width; layout reads cached heights here, never the DOM (EM-3) */
   private dockWidth = BANNER_W;
   /** banners hidden by the docking's row cap that still wait for help (the pill counts them) */
   private capped = 0;
@@ -598,7 +598,7 @@ export class EmergencyBanner {
     this.el = h('div', { class: 'emg-banners' });
     this.moreText = h('span');
     this.more = h('div', { class: 'emg-more mp-glass', style: 'display:none' }, h('span', { class: 'emg-more-ico', html: icon('alert', 14) }), this.moreText);
-    // close-out c3: a retained node after exit to region must not keep the city's element listeners alive
+    // close-out c4: a retained node after exit to region must not keep the city's element listeners alive
     this.more.addEventListener('click', () => this.ctx.panels.open('emergencies'), { signal: ctx.signal });
     this.el.appendChild(this.more);
     parent.appendChild(this.el);
@@ -1097,7 +1097,7 @@ export class EmergencyBanner {
     let capped = 0;
     // (a banner's slot: the shown banners above it, full or compact, and its own state — a banner re-ordered, added,
     // shown / folded or switched between full and compact moves itself and the ones below it, never those above:
-    // close-out c2, only the banners that moved ignore presses; c3: their measured heights too — a note wrapping
+    // close-out c2, only the banners that moved ignore presses; c4: their measured heights too — a note wrapping
     // moves the banners below it even without a full / compact switch, using dock's cache, never a layout read)
     const moved: BannerEl[] = [];
     let above = '';
@@ -1232,7 +1232,7 @@ export class EmergencyBanner {
     // a narrower place: decided again with the (taller) heights at that width
     if (d && Math.round(d.width) !== defW) d = placeAt(d.width) ?? d;
     const tw = d ? d.width : defW;
-    // close-out c3: at 1024x600 even one compact row (and the pill) has no room beside / above Budget; the old
+    // close-out c4: at 1024x600 even one compact row (and the pill) has no room beside / above Budget; the old
     // below-headers fallback covered its tiles and sliders. Fold every banner, keeping the pill clear of titles.
     if (centres.length) {
       const hh = compAt(this.ordered()[0], tw) + (n > 1 || this.hiddenPrompts > 0 ? moreH : 0);

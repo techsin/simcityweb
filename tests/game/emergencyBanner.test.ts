@@ -1091,8 +1091,8 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
   }
   const fullShown = (t: ReturnType<typeof quakeTown>) => stackBottom(t.h).shown.filter((id) => !parts(t.h, id).el.classList.contains('compact'));
 
-  // ------------------------------------------------------------------------------------ close-out c3 (T016 lane E)
-  it('c3: exit to region removes every element listener, even while the detached stack is retained', () => {
+  // ------------------------------------------------------------------------------------ close-out c4 (T016 lane E)
+  it('c4: exit to region removes every element listener, even while the detached stack is retained', () => {
     const t = quakeTown();
     quake(t);
     const ctx = (t.h.banner as unknown as { ctx: GameContext }).ctx;
@@ -1128,7 +1128,7 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     for (const el of retained) expect([...(el as unknown as { listeners: Map<string, unknown[]> }).listeners.values()].flat()).toEqual([]);
   });
 
-  it.each([190, 110])('c3 / EM-3: an upper banner resizing from 150 to %i guards only the banners below it, using the observed height', (height) => {
+  it.each([190, 110])('c4 / EM-3: an upper banner resizing from 150 to %i guards only the banners below it, using the observed height', (height) => {
     const w = fakeWindowAndFrames();
     const now = vi.spyOn(performance, 'now');
     const g2 = globalThis as unknown as { ResizeObserver?: unknown; MutationObserver?: unknown };
@@ -1180,7 +1180,7 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     }
   });
 
-  it('c3: at 1024x600 a centred Budget folds the stack into the counted pill, clear of the panel title', () => {
+  it('c4: at 1024x600 a centred Budget folds the stack into the counted pill, clear of the panel title', () => {
     const t = quakeTown();
     quake(t);
     sizedBanners(t);
@@ -1231,7 +1231,7 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     { width: 1280, height: 720, zoom: 0.8, beside: false },
     { width: 1366, height: 650, zoom: 0.8, beside: true },
     { width: 1920, height: 1080, zoom: 1.09, beside: true },
-  ])('c3: the existing Budget docking at $width x $height stays unchanged', ({ width, height, zoom, beside }) => {
+  ])('c4: the existing Budget docking at $width x $height stays unchanged', ({ width, height, zoom, beside }) => {
     const t = quakeTown();
     quake(t);
     sizedBanners(t);

@@ -13,6 +13,7 @@ import type { CityEvents } from '../../sim/Simulation';
 import type { CityObjectsViewApi } from '../../render/contracts';
 import { getDef } from '../../sim/catalog';
 import { MANIFEST_BY_ID } from '../../assets/manifest';
+import { viewOf } from '../geometryView';
 
 type AssetApi = {
   getModelGeometry: (id: string, variant?: number) => THREE.BufferGeometry;
@@ -54,20 +55,6 @@ const CAT_COLORS: Record<string, number> = {
 
 function rgb(hex: number): [number, number, number] {
   return [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
-}
-
-/** Own the geometry object (and three's renderer dispose listener), sharing only the registry's attribute buffers. */
-function viewOf(src: THREE.BufferGeometry): THREE.BufferGeometry {
-  const g = new THREE.BufferGeometry();
-  g.setIndex(src.index);
-  for (const k of Object.keys(src.attributes)) g.setAttribute(k, src.attributes[k]);
-  for (const k of Object.keys(src.morphAttributes) as (keyof THREE.BufferGeometry['morphAttributes'])[]) g.morphAttributes[k] = src.morphAttributes[k];
-  g.morphTargetsRelative = src.morphTargetsRelative;
-  for (const gr of src.groups) g.addGroup(gr.start, gr.count, gr.materialIndex);
-  g.setDrawRange(src.drawRange.start, src.drawRange.count);
-  g.boundingBox = src.boundingBox;
-  g.boundingSphere = src.boundingSphere;
-  return g;
 }
 
 class CellLayer {

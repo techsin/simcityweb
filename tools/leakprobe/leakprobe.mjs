@@ -10,8 +10,9 @@
  * --mode fresh       one browser launched by Playwright for the run (a fresh profile)
  * --mode persistent  one Chromium started with a remote-debugging port and its own user-data dir, kept for the whole
  *                    run; every step connects over CDP and disconnects again (the T013 playtester's setup)
- * --hostile          also run Playwright locator calls on the inspector's Why? header before the exit (what the T013
- *                    playtester's harness did): a harness that holds a node of the city's DOM must not keep the city
+ * --hostile          run each cycle the way the T013 playtester's harness did (Playwright locator calls on the inspector's
+ *                    WHY? header and the pause menu, a getByText exit): that harness keeps a node of the exited city's
+ *                    DOM alive, and the city must still be freed (it was not before close-out c4)
  * --census           list the event listeners left on every detached DOM tree after each exit
  *
  * Input is real mouse / keyboard at coordinates (page.mouse / page.keyboard). page.evaluate only reads positions and
@@ -47,9 +48,13 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 // ---------------------------------------------------------------- dev server (its own, killed at the end)
 async function startVite() {
-  const p = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['vite', '--port', String(PORT), '--strictPort', '--host', '127.0.0.1'],
-    { cwd: ROOT, stdio: 'ignore', shell: process.platform === 'win32' });
+  // (a server already on the port would be another tree's code: refuse it rather than measure the wrong build)
+  try { await fetch(URL); throw new Error(`port ${PORT} is already in use: stop that server or pass --port`); } catch (e) { if (String(e.message).startsWith('port ')) throw e; }
+  // (node runs vite directly: no shell or npx in between, so killing this pid stops the server)
+  const p = spawn(process.execPath, [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', String(PORT), '--strictPort', '--host', '127.0.0.1'],
+    { cwd: ROOT, stdio: 'ignore' });
   for (let i = 0; i < 120; i++) {
+    if (p.exitCode !== null) throw new Error(`vite exited with ${p.exitCode}`);
     try { if ((await fetch(URL)).ok) return p; } catch { /* not up yet */ }
     await sleep(500);
   }
@@ -101,7 +106,7 @@ async function pageSocket() {
 async function counts(page) {
   // fresh mode: a Playwright CDP session (objectGroup on every call, released); persistent: a raw socket
   let cdp = await pageSocket(), session = null;
-  if (!cdp) { session = await page.context().newCDPSession(page); cdp = { send: (m, p) => session.send(m, p), close: () => session.detach() }; }
+  if (!cdp) { session = await page.context().newCDPSession(page); cdp = { send: (m, p) => session.send(m, p), close: () => session.detach().catch(() => {}) }; }
   const G = 'leakprobe';
   try {
     await cdp.send('Runtime.enable');
@@ -204,16 +209,63 @@ async function queryGrowable(page) {
   if (!t) throw new Error('no growable building on screen');
   await clickAt(page, [t.x, t.y]);
   await sleep(900);
-  if (HOSTILE) {
-    // what the T013 playtester's harness did: Playwright locator calls on a node of the city's inspector
-    const why = page.locator('.ins-sec-h', { hasText: 'Why?' }).filter({ visible: true }).first();
-    if (await why.count()) {
-      if ((await why.getAttribute('aria-expanded')) !== 'true') { const b = await why.boundingBox(); if (b) await clickAt(page, [b.x + b.width / 2, b.y + b.height / 2]); }
-      await sleep(400);
-    }
-  }
   await page.keyboard.press('Escape');
   await sleep(300);
+  return t.name;
+}
+/**
+ * --hostile: the T013 playtester's cycle (s02_cycle.js, ACT=q, one growable) step for step, on one connection: the game
+ * paused for the session, Playwright locator calls on the inspector (its section count, the WHY? header: count,
+ * getAttribute, boundingBox), a screenshot, locator-checked Escapes, then unpause and a getByText exit. A harness like
+ * this keeps a node of the city's DOM alive; the city must still be freed.
+ */
+async function hostileCycle(page) {
+  await page.mouse.move(W / 2, H / 2);
+  await page.keyboard.press(' ');
+  await sleep(500);
+  await page.keyboard.press('v');
+  await sleep(300);
+  // (its target: the middle one of the first residential growable group seen on screen, as that script chose)
+  const t = await page.evaluate(async ([W, H]) => {
+    const cat = await import('/src/sim/catalog.ts');
+    const sc = window.__metropolis.city.scene, S = sc.sim.state;
+    const found = {};
+    for (let y = 90; y < H - 120; y += 23) for (let x = 40; x < W - 220; x += 23) {
+      let id = null; try { id = sc.objects.pickBuilding(x, y); } catch { /* none */ }
+      const b = id == null ? null : S.buildings.get(id);
+      const d = b && b.built >= 1 ? cat.getDef(b.def) : null;
+      if (!d || d.category !== 'growable') continue;
+      (found['growable:' + (d.zones ? d.zones[0] : '')] ??= []).push({ x, y, name: d.name });
+    }
+    const k = Object.keys(found).find((key) => /^growable:[123]$/.test(key)) ?? Object.keys(found)[0];
+    return k ? found[k][Math.floor(found[k].length / 2)] : null;
+  }, [W, H]);
+  if (!t) throw new Error('no growable building on screen');
+  await clickAt(page, [t.x, t.y]);
+  await sleep(900);
+  await page.locator('.panel .ins-sec-h').count();
+  const why = page.locator('.ins-sec-h', { hasText: 'Why?' }).filter({ visible: true }).first();
+  if (await why.count()) {
+    if ((await why.getAttribute('aria-expanded')) !== 'true') { const b = await why.boundingBox(); await clickAt(page, [b.x + b.width / 2, b.y + b.height / 2]); await sleep(500); }
+  }
+  await page.screenshot();
+  for (let i = 0; i < 2; i++) {
+    if (await page.locator('text=Save & exit to region').isVisible().catch(() => false)) { await page.keyboard.press('Escape'); break; }
+    await page.keyboard.press('Escape');
+    await sleep(150);
+  }
+  await page.keyboard.press(' ');
+  await sleep(1500);
+  await page.mouse.move(W / 2, H / 2);
+  await page.keyboard.press('Escape');
+  await sleep(600);
+  if (!(await page.locator('text=Save & exit to region').isVisible())) { await page.keyboard.press('Escape'); await sleep(600); }
+  const ib = await page.getByText('Save & exit to region', { exact: true }).first().boundingBox();
+  await clickAt(page, [ib.x + ib.width / 2, ib.y + ib.height / 2]);
+  await page.waitForFunction(() => !window.__metropolis.city, null, { timeout: 120000 });
+  await page.locator('.rc-item').first().waitFor({ timeout: 60000 });
+  await sleep(2500);
+  await page.screenshot();
   return t.name;
 }
 async function saveAndExit(page) {
@@ -242,9 +294,13 @@ try {
   for (let c = 1; c <= CYCLES; c++) {
     if (c > 1) { if (MODE === 'persistent') { await step.done(); step = await connectStep(); } await play(step.page); }
     if (MODE === 'persistent') { await step.done(); step = await connectStep(); }
-    const queried = await queryGrowable(step.page);
-    if (MODE === 'persistent') { await step.done(); step = await connectStep(); }
-    await saveAndExit(step.page);
+    let queried;
+    if (HOSTILE) queried = await hostileCycle(step.page);
+    else {
+      queried = await queryGrowable(step.page);
+      if (MODE === 'persistent') { await step.done(); step = await connectStep(); }
+      await saveAndExit(step.page);
+    }
     if (MODE === 'persistent') await step.done();
     await sleep(3000);
     const at3 = await counts(step.page);
