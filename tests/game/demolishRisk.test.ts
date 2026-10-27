@@ -297,3 +297,53 @@ describe('demolition confirm of a ruined landmark / reward (final fixes r4 U2b)'
     expect(demolishRisks(st, rectOf(range), CONFIRM_COST + 1)?.items).toEqual([`Demolition costs ${money(CONFIRM_COST + 1)}`]);
   });
 });
+
+describe('demolition refund text (FH-07a)', () => {
+  it.each([
+    [0, 'Refund §25,000 (built today)'],
+    [20, 'Refund §12,500 (under 30 days old)'],
+    [30, null],
+    [31, null],
+  ] as const)('shows the coal plant refund at age %i without changing its risks', (age, text) => {
+    const st = newState(64), A = new CityActions(newSim(st));
+    expect(A.plop('util_coal_plant', 10, 10, 0).ok).toBe(true);
+    st.buildingAt(10, 10)!.age = age;
+    const rect = tile(10, 10), pre = A.bulldoze(rect, true);
+    const funds = st.funds;
+    const risk = demolishRisks(st, rect, pre.cost)!;
+    expect(risk.title).toBe('Demolish Coal Power Plant?');
+    expect(risk.items[0]).toMatch(/^Your only power plant/);
+    expect(risk.items).toContain('Coal Power Plant cost §25,000 to build');
+    expect(risk.items.filter((line) => line.startsWith('Refund'))).toEqual(text ? [text] : []);
+    expect(st.funds).toBe(funds);
+    expect(st.buildings.size).toBe(1);
+  });
+
+  it('keeps same-day and young-building refund amounts separate in a mixed demolition', () => {
+    const st = newState(64), A = new CityActions(newSim(st));
+    A.plop('util_coal_plant', 10, 10, 0);
+    st.buildingAt(10, 10)!.age = 20;
+    A.plop('util_coal_plant', 20, 10, 0);
+    const rect = { x0: 10, z0: 10, x1: 30, z1: 20 };
+    const pre = A.bulldoze(rect, true);
+    expect(pre.cost).toBe(-37500);
+    const refunds = demolishRisks(st, rect, pre.cost)!.items.filter((line) => line.startsWith('Refund'));
+    expect(refunds).toEqual(['Refund §25,000 (built today)', 'Refund §12,500 (under 30 days old)']);
+  });
+
+  it('refunds do not add a confirmation or promise funds in sandbox', () => {
+    const st = newState(64), A = new CityActions(newSim(st));
+    A.plop('park_small', 5, 5, 0);
+    const park = tile(5, 5);
+    expect(demolishRisks(st, park, A.bulldoze(park, true).cost)).toBeNull();
+    st.config.sandbox = true;
+    const funds = st.funds;
+    A.plop('util_coal_plant', 10, 10, 0);
+    const coal = tile(10, 10), pre = A.bulldoze(coal, true);
+    const risk = demolishRisks(st, coal, pre.cost, { sandbox: true })!;
+    expect(risk.items[0]).toMatch(/^Your only power plant/);
+    expect(risk.items.some((line) => line.startsWith('Refund'))).toBe(false);
+    A.bulldoze(coal);
+    expect(st.funds).toBe(funds);
+  });
+});

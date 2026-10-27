@@ -13,8 +13,9 @@
  * Slopes: max rise per tile NETWORK_INFO.maxSlope (street 7 m … rail 3 m); bridge approaches (land within
  * BRIDGE_APPROACH steps of the bridge's water) allow at least the road limit, so rail bridges work where road bridges do.
  * Wind turbines must keep ≥ 2 empty cells from other turbines (Chebyshev distance ≥ 3).
- * Upgrades (road→avenue) cost the difference. Bulldozing refunds 25% of networks; growables cost a small demolition
- * fee; civic buildings are removed for free (no refund). Sandbox skips money and unlock checks.
+ * Upgrades (road→avenue) cost the difference. Bulldozing refunds 100% of same-day plops / surface networks, 50% of
+ * plops under 30 days old, otherwise 25% of networks and nothing for plops. Growable / rubble demolition fees still apply.
+ * Sandbox skips money and unlock checks.
  * One-off spending is recorded in budget.curExpense under 'oneoff:construction' | 'oneoff:zoning' |
  * 'oneoff:demolition' | 'oneoff:terraform', refunds in budget.curIncome['oneoff:refund'].
  *
@@ -156,8 +157,21 @@ function dirCode(dx: number, dz: number): number {
   return dx > 0 ? 0 : dz > 0 ? 1 : dx < 0 ? 2 : 3;
 }
 
+/** FH-07a: refund the plop price, apart from the unchanged demolition / tree-clearing fees. */
+export function buildingRefund(b: Building): number {
+  if (!(b.flags & BF.Plopped)) return 0;
+  const price = getDef(b.def)?.cost ?? 0;
+  return b.age === 0 ? price : b.age < 30 ? price * 0.5 : 0;
+}
+
 export class CityActions implements CityActionsApi {
   readonly sim: Simulation;
+  /** FH-07a: transient construction cells, separate for road / rail crossings and power-line overlaps. Never saved. */
+  private freshState?: Simulation['state'];
+  private freshDay = -1;
+  private readonly freshRoads = new Set<number>();
+  private readonly freshRails = new Set<number>();
+  private readonly freshPowerLines = new Set<number>();
   constructor(sim: Simulation) {
     this.sim = sim;
   }
@@ -177,6 +191,19 @@ export class CityActions implements CityActionsApi {
     if (cost > 0) b.curExpense[key] = (b.curExpense[key] ?? 0) + cost;
     else if (cost < 0) b.curIncome['oneoff:refund'] = (b.curIncome['oneoff:refund'] ?? 0) - cost;
     if (!this.sandbox) this.st.funds -= cost;
+  }
+
+  private get freshToday(): boolean {
+    return this.freshState === this.st && this.freshDay === this.st.day;
+  }
+  /** Reset lazily on commits; previews only read freshness, and paused planning never advances the day. */
+  private prepareFreshCells(): void {
+    if (this.freshToday) return;
+    this.freshState = this.st;
+    this.freshDay = this.st.day;
+    this.freshRoads.clear();
+    this.freshRails.clear();
+    this.freshPowerLines.clear();
   }
 
   // ---------------------------------------------------------------------------------------------- zoning
@@ -368,6 +395,7 @@ export class CityActions implements CityActionsApi {
     if (preview) return { ok: true, cost: total, affected: count, cells, reason: warn, ...side };
 
     // ---- apply
+    this.prepareFreshCells();
     for (const b of demolish) removeBuilding(this.sim, b);
     let zoneCleared = false, treesCleared = false;
     for (let k = 0; k < n; k++) {
@@ -383,9 +411,12 @@ export class CityActions implements CityActionsApi {
       }
       if (cur !== Network.None && (cur === Network.Rail) !== isRail) {
         // level crossing: keep / make the road type, flag the crossing
+        if (!(st.netFlags[i] & NET_CROSSING)) (isRail ? this.freshRails : this.freshRoads).add(i);
         if (isRail) st.netFlags[i] |= NET_CROSSING;
         else { st.network[i] = type; st.netFlags[i] = (st.netFlags[i] & NET_BUS_STOP) | NET_CROSSING; }
       } else {
+        // An upgrade / downgrade does not make an old road fresh.
+        if (cur === Network.None) (isRail ? this.freshRails : this.freshRoads).add(i);
         const keep = st.netFlags[i] & NET_BUS_STOP;
         st.network[i] = type;
         let f = keep | (wet ? NET_BRIDGE : 0);
@@ -436,9 +467,11 @@ export class CityActions implements CityActionsApi {
     if (count === 0) return { ok: true, cost: 0, affected: 0, cells, reason: 'Already built' };
     if (!this.affordable(cost)) return fail(`Not enough money (${money(cost)})`, cost, cells);
     if (preview) return { ok: true, cost, affected: count, cells };
+    this.prepareFreshCells();
     let zoneCleared = false, treesCleared = false;
     for (const { x, z } of path) {
       const i = z * N + x;
+      if (!st.powerLines[i]) this.freshPowerLines.add(i);
       st.powerLines[i] = 1;
       if (st.zone[i] !== Zone.None && st.network[i] === Network.None) { st.zone[i] = Zone.None; zoneCleared = true; }
       if (st.trees[i]) { st.trees[i] = 0; treesCleared = true; }
@@ -498,6 +531,7 @@ export class CityActions implements CityActionsApi {
     const cells: ActionResult['cells'] = area <= MAX_PREVIEW_CELLS ? [] : undefined;
     const blds: Building[] = [];
     const seen = new Set<number>();
+    const fresh = this.freshToday;
     let fee = 0, refund = 0, treeCost = 0, count = 0;
     let anyNet = false, anyPower = false, anyTree = false;
     for (let z: number = r.z0; z < r.z1; z++) {
@@ -507,17 +541,27 @@ export class CityActions implements CityActionsApi {
         const bid = st.building[i];
         if (bid >= 0) {
           ok = true;
-          if (!seen.has(bid)) { seen.add(bid); const b = st.buildings.get(bid)!; blds.push(b); fee += demolishFee(b); }
+          if (!seen.has(bid)) {
+            seen.add(bid);
+            const b = st.buildings.get(bid)!;
+            blds.push(b);
+            fee += demolishFee(b);
+            refund += buildingRefund(b);
+          }
         }
         const net = st.network[i];
         if (net !== Network.None) {
           ok = true; anyNet = true;
           const info = NETWORK_INFO[net];
-          let c = info.cost * (st.netFlags[i] & NET_BRIDGE ? BRIDGE_COST_MUL : 1);
-          if (st.netFlags[i] & NET_CROSSING) c += NETWORK_INFO[Network.Rail].cost;
-          refund += c * NETWORK_REFUND;
+          const c = info.cost * (st.netFlags[i] & NET_BRIDGE ? BRIDGE_COST_MUL : 1);
+          const builtToday = fresh && (net === Network.Rail ? this.freshRails : this.freshRoads).has(i);
+          refund += c * (builtToday ? 1 : NETWORK_REFUND);
+          if (st.netFlags[i] & NET_CROSSING) refund += NETWORK_INFO[Network.Rail].cost * (fresh && this.freshRails.has(i) ? 1 : NETWORK_REFUND);
         }
-        if (st.powerLines[i]) { ok = true; anyPower = true; refund += POWERLINE_COST * NETWORK_REFUND * (st.water[i] ? POWERLINE_WATER_MUL : 1); }
+        if (st.powerLines[i]) {
+          ok = true; anyPower = true;
+          refund += POWERLINE_COST * (fresh && this.freshPowerLines.has(i) ? 1 : NETWORK_REFUND) * (st.water[i] ? POWERLINE_WATER_MUL : 1);
+        }
         if (st.trees[i] && bid < 0) { ok = true; anyTree = true; treeCost += TREE_CLEAR_COST; }
         if (ok) count++;
         cells?.push({ x, z, ok });
@@ -529,6 +573,7 @@ export class CityActions implements CityActionsApi {
     const unique = blds.find((b) => getDef(b.def)?.unique);
     const warn = unique ? `Demolishes ${getDef(unique.def)?.name}` : undefined;
     if (preview) return { ok: true, cost: total, affected: count, cells, reason: warn };
+    this.prepareFreshCells();
     for (const b of blds) removeBuilding(this.sim, b);
     for (let z: number = r.z0; z < r.z1; z++) {
       for (let x: number = r.x0; x < r.x1; x++) {
@@ -537,6 +582,9 @@ export class CityActions implements CityActionsApi {
         st.netFlags[i] = 0;
         st.powerLines[i] = 0;
         st.trees[i] = 0;
+        this.freshRoads.delete(i);
+        this.freshRails.delete(i);
+        this.freshPowerLines.delete(i);
       }
     }
     if (fee + treeCost) this.spend(fee + treeCost, 'oneoff:demolition');

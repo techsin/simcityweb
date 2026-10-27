@@ -1,7 +1,7 @@
 /**
  * Consequences of a demolition that deserve a confirmation (QA #11): removing the LAST power plant / water source,
  * a landmark or reward building, or anything costing more than CONFIRM_COST — player-placed buildings worth more than
- * that (they are removed for free but nothing is refunded) or a demolition fee above it. Pure state reads.
+ * that (with the fresh-building refund shown) or a demolition fee above it. Pure state reads.
  * Final fixes N1: cutting OCCUPIED buildings off the grid or the pipes (the only road between a plant and the homes, a
  * pump that bridged the grid) — utilityCut replays utilities.ts's connectivity without what the demolition removes:
  * power runs through network cells, power lines and building cells (4-connected, labelPower's rule) from the live
@@ -15,6 +15,7 @@
 import type { CellRect } from '../core/events';
 import { zoneDensity } from '../core/types';
 import { BF, type Building, type CityState } from '../sim/CityState';
+import { buildingRefund } from '../sim/actions';
 import { getDef } from '../sim/catalog';
 import type { BuildingDef } from '../sim/catalogTypes';
 import { infraFlags } from '../sim/economy/runtime';
@@ -454,13 +455,17 @@ export function demolishRisks(st: CityState, rect: CellRect, cost: number, opts:
   const items: string[] = [];
   const names: string[] = [];
   let powerHit = 0, waterHit = 0;
-  // build value of the player-placed buildings in the area (demolishing them is free but refunds nothing)
+  // build value of the player-placed buildings in the area (fresh plops refund their price, below)
   let value = 0;
+  let todayRefund = 0, youngRefund = 0;
   const valued: string[] = [];
   for (const b of hit) {
     const d = getDef(b.def);
     if (!d) continue;
-    // rubble (burnt out) produces nothing and is worth nothing
+    const refund = buildingRefund(b);
+    if (b.age === 0) todayRefund += refund;
+    else youngRefund += refund;
+    // rubble (burnt out) has no utility or bonuses left to lose
     const live = !(b.flags & BF.Burnt);
     if (live && d.powerOut && d.powerOut > 0) powerHit++;
     if (live && d.waterOut && d.waterOut > 0) waterHit++;
@@ -504,6 +509,10 @@ export function demolishRisks(st: CityState, rect: CellRect, cost: number, opts:
   if (cost > CONFIRM_COST && !opts.sandbox) items.push(`Demolition costs ${money(cost)}`);
   items.unshift(...lead);
   if (!items.length) return null;
+  if (!opts.sandbox) {
+    if (todayRefund) items.push(`Refund ${money(todayRefund)} (built today)`);
+    if (youngRefund) items.push(`Refund ${money(youngRefund)} (under 30 days old)`);
+  }
   const title = names.length === 1 ? `Demolish ${names[0]}?` : names.length > 1 ? `Demolish ${names.length} buildings?` : 'Demolish this area?';
   return { title, items };
 }
