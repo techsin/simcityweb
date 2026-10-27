@@ -920,7 +920,7 @@ export class EmergencyBanner {
     choose.addEventListener('click', () => openDispatch(this.ctx, inc.id));
     close.addEventListener('click', () => this.dismiss(inc.id));
     this.el.insertBefore(el, this.more);
-    const b: BannerEl = { id: inc.id, inc, el, title, place, note, sub, time, send, sendLbl, sendEta, choose, closeAt: 0, optsDay: -1 };
+    const b: BannerEl = { id: inc.id, inc, el, title, place, note, sub, time, send, sendLbl, sendEta, choose, closeAt: 0, optsDay: -1, settleUntil: 0, settleGen: 0 };
     this.banners.set(inc.id, b);
     this.ro?.observe(el);
     this.dockDirty = true;
@@ -978,10 +978,12 @@ export class EmergencyBanner {
     this.dockDirty = true;
     b.el.classList.add('out');
     setTimeout(() => {
-      // (gone: the banners below it move up — close-out c1, markMoved; a folded one moves nothing)
+      // (gone: the banners below it and the pill move up — close-out c1 / c2, markMoved; a folded one moves nothing. Its
+      // style order is the one it had: the banners below it have taken orders from it on since)
       const shownB = b.el.parentElement === this.el && !b.el.classList.contains('capped');
+      const at = Number(b.el.style.order);
       b.el.remove();
-      if (shownB) this.markMoved();
+      if (shownB) this.markMoved([...this.banners.values()].filter((o) => !(Number(o.el.style.order) < at)), true);
     }, 250);
   }
 
@@ -1063,13 +1065,16 @@ export class EmergencyBanner {
   private layout(): void {
     const em = emergencyOf(this.ctx.sim);
     const list = this.ordered();
-    let capped = 0, moved = false;
+    let capped = 0;
+    // (a banner's slot: the shown banners above it, full or compact, and its own state — a banner re-ordered, added,
+    // shown / folded or switched between full and compact moves itself and the ones below it, never those above:
+    // close-out c2, only the banners that moved ignore presses)
+    const moved: BannerEl[] = [];
+    let above = '';
     list.forEach((b, k) => {
       const comp = this.dockCompact || k >= MAX_BANNERS;
       const cap = this.dockRows > 0 && k >= this.dockRows;
       const o = String(k);
-      // (a banner re-ordered, added, shown / folded or switched between full and compact moves the ones below it)
-      if (b.el.classList.contains('compact') !== comp || b.el.classList.contains('capped') !== cap || b.el.style.order !== o) moved = true;
       toggleClass(b.el, 'compact', comp);
       toggleClass(b.el, 'capped', cap);
       if (cap) {
@@ -1077,9 +1082,17 @@ export class EmergencyBanner {
         if (inc && (inc.state === 'uncovered' || inc.state === 'queued')) capped++;
       }
       if (b.el.style.order !== o) b.el.style.order = o;
+      const slot = `${above}|${comp ? 'c' : 'f'}${cap ? 'x' : ''}`;
+      if (slot !== b.slot) {
+        b.slot = slot;
+        if (!cap) moved.push(b);
+      }
+      if (!cap) above += `${b.id}${comp ? 'c' : 'f'},`;
     });
     this.capped = capped;
-    if (moved) this.markMoved();
+    const pill = above !== this.moreSlot;
+    this.moreSlot = above;
+    if (moved.length || pill) this.markMoved(moved, pill);
   }
 
   /** observe a panel (its size, position and closing class) for the docking (EM-3) */
