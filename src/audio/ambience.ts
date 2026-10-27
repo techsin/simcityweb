@@ -1,8 +1,9 @@
 /**
  * Procedural city ambience: filtered noise bed + low traffic hum + distant horns (scale with population and
- * camera zoom), birds by day / crickets at night, wind when zoomed out, surf near water, construction ticks.
+ * camera zoom), seasonal birds / crickets, winter and alpine wind, surf and gulls near water, construction ticks.
  */
 import { playVoice, type SfxEnv } from './sfx';
+import type { Climate } from '../core/types';
 
 export interface AmbienceParams {
   /** city population (0 .. 1M+) */
@@ -17,6 +18,19 @@ export interface AmbienceParams {
   water?: number;
   /** 0..1 simulation speed factor (0 = paused: city bed quieter, no horns) */
   activity?: number;
+  /** simulation month: 0 = January .. 11 = December */
+  month?: number;
+  climate?: Climate;
+}
+
+export type AmbienceEvent = 'bird' | 'cricket' | 'gull';
+
+export interface AmbienceOptions {
+  /** false: the offline lab drives tick() on the audio clock instead of a wall-clock timer */
+  live?: boolean;
+  /** audio-only random stream for repeatable lab renders */
+  random?: () => number;
+  onEvent?: (kind: AmbienceEvent, time: number) => void;
 }
 
 export class Ambience {
@@ -30,20 +44,27 @@ export class Ambience {
   private windGain!: GainNode;
   private windFilter!: BiquadFilterNode;
   private surfGain!: GainNode;
-  private p: Required<AmbienceParams> = { population: 0, zoom: 0.5, night: false, construction: 0, water: 0, activity: 1 };
+  private p: Required<AmbienceParams> = { population: 0, zoom: 0.5, night: false, construction: 0, water: 0, activity: 1, month: 0, climate: 'temperate' };
+  private random: () => number;
   private timer: ReturnType<typeof setInterval> | null = null;
   private nextBird = 0;
   private nextHorn = 0;
   private nextCricket = 0;
+  private nextGull = 0;
   private nextTick = 0;
   running = false;
 
-  constructor(env: SfxEnv, dest: AudioNode) {
+  constructor(env: SfxEnv, dest: AudioNode, private options: AmbienceOptions = {}) {
     this.env = env;
+    this.random = options.random ?? Math.random;
     this.out = env.ctx.createGain();
     this.out.gain.value = 0;
     this.out.connect(dest);
   }
+
+  /** Current automated layer gains, exposed for the audio lab. */
+  get surfLevel(): number { return this.surfGain?.gain.value ?? 0; }
+  get windLevel(): number { return this.windGain?.gain.value ?? 0; }
 
   private loopNoise(color: 'white' | 'pink' | 'brown'): AudioBufferSourceNode {
     const ctx = this.env.ctx;
@@ -53,7 +74,7 @@ export class Ambience {
       const d = buf.getChannelData(ch);
       let b0 = 0, b1 = 0, b2 = 0, last = 0;
       for (let i = 0; i < len; i++) {
-        const w = Math.random() * 2 - 1;
+        const w = this.random() * 2 - 1;
         if (color === 'white') d[i] = w * 0.5;
         else if (color === 'pink') {
           b0 = 0.99765 * b0 + w * 0.099046;
@@ -159,7 +180,8 @@ export class Ambience {
     this.out.gain.setValueAtTime(this.out.gain.value, t);
     this.out.gain.linearRampToValueAtTime(1, t + 2.5);
     this.apply();
-    this.timer = setInterval(() => this.tick(), 200);
+    this.nextBird = this.nextCricket = this.nextGull = this.nextHorn = this.nextTick = t;
+    if (this.options.live !== false) this.timer = setInterval(() => this.tick(), 200);
   }
 
   stop(): void {
@@ -179,7 +201,14 @@ export class Ambience {
   }
 
   set(p: AmbienceParams): void {
-    Object.assign(this.p, Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)));
+    if (p.population !== undefined) this.p.population = p.population;
+    if (p.zoom !== undefined) this.p.zoom = p.zoom;
+    if (p.night !== undefined) this.p.night = p.night;
+    if (p.construction !== undefined) this.p.construction = p.construction;
+    if (p.water !== undefined) this.p.water = p.water;
+    if (p.activity !== undefined) this.p.activity = p.activity;
+    if (p.month !== undefined) this.p.month = p.month;
+    if (p.climate !== undefined) this.p.climate = p.climate;
     if (this.running) this.apply();
   }
 
@@ -196,52 +225,59 @@ export class Ambience {
     const close = 1 - z;
     const night = this.p.night ? 0.6 : 1;
     const act = 0.45 + 0.55 * Math.min(1, this.p.activity);
-    const ramp = (param: AudioParam, v: number) => param.setTargetAtTime(v, t, 0.6);
-    ramp(this.bedGain.gain, 0.02 + lvl * (0.22 + 0.25 * close) * night * act);
-    ramp(this.bedFilter.frequency, 380 + close * 900 * lvl);
-    ramp(this.humGain.gain, lvl * (0.1 + 0.3 * close) * night * act);
-    ramp(this.windGain.gain, 0.015 + z * z * 0.14 + (1 - lvl) * 0.03);
-    ramp(this.surfGain.gain, Math.min(1, this.p.water) * (0.05 + 0.18 * close));
+    const windy = this.p.month === 11 || this.p.month <= 1 || this.p.climate === 'alpine';
+    this.bedGain.gain.setTargetAtTime(0.02 + lvl * (0.22 + 0.25 * close) * night * act, t, 0.6);
+    this.bedFilter.frequency.setTargetAtTime(380 + close * 900 * lvl, t, 0.6);
+    this.humGain.gain.setTargetAtTime(lvl * (0.1 + 0.3 * close) * night * act, t, 0.6);
+    this.windGain.gain.setTargetAtTime((0.015 + z * z * 0.14 + (1 - lvl) * 0.03) * (windy ? 1.4 : 1), t, 0.6);
+    this.surfGain.gain.setTargetAtTime(Math.max(0, Math.min(1, this.p.water)) * (0.08 + 0.28 * close), t, 0.6);
   }
 
-  private tick(): void {
+  /** Shared by the live timer and offline lab (200 ms of audio time per tick). */
+  tick(): void {
     const ctx = this.env.ctx;
-    if (ctx.state !== 'running') return;
+    if (!this.running || (this.options.live !== false && ctx.state !== 'running')) return;
     const now = ctx.currentTime;
     const lvl = this.cityLevel();
     const close = 1 - Math.min(1, Math.max(0, this.p.zoom));
-    // birds by day: more in small towns and when close to the ground
+    // birds by day: seasonal phrase rate, more in small towns and close to the ground
     if (!this.p.night && now > this.nextBird) {
-      this.nextBird = now + (1.2 + Math.random() * 4) / (0.35 + (1 - lvl) * 0.8 + close * 0.4);
-      if (Math.random() < 0.8) this.bird(now + Math.random() * 0.2, 0.05 + 0.08 * (1 - lvl * 0.7) * (0.4 + close * 0.6));
+      const m = this.p.month;
+      const season = m >= 3 && m <= 7 ? 1 : m === 2 || m === 8 || m === 9 ? 0.5 : 0.15;
+      this.nextBird = now + (1.2 + this.random() * 4) / ((0.35 + (1 - lvl) * 0.8 + close * 0.4) * season);
+      if (this.random() < 0.8) this.bird(now + this.random() * 0.2, 0.05 + 0.08 * (1 - lvl * 0.7) * (0.4 + close * 0.6));
     }
-    // crickets at night
-    if (this.p.night && now > this.nextCricket) {
-      this.nextCricket = now + 0.35 + Math.random() * 0.9;
-      this.cricket(now + Math.random() * 0.1, 0.02 + 0.03 * (1 - lvl * 0.5));
+    // May-September nights; desert crickets stay active all year
+    if (this.p.night && (this.p.climate === 'desert' || (this.p.month >= 4 && this.p.month <= 8)) && now > this.nextCricket) {
+      this.nextCricket = now + 0.35 + this.random() * 0.9;
+      this.cricket(now + this.random() * 0.1, 0.02 + 0.03 * (1 - lvl * 0.5));
+    }
+    if (this.p.water > 0.3 && now > this.nextGull) {
+      this.nextGull = now + 8 + this.random() * 12;
+      this.gull(now, 0.025 + 0.045 * close);
     }
     // distant horns in big cities
     if (lvl > 0.35 && this.p.activity > 0 && now > this.nextHorn) {
-      this.nextHorn = now + (6 + Math.random() * 14) / (lvl * (this.p.night ? 0.4 : 1));
+      this.nextHorn = now + (6 + this.random() * 14) / (lvl * (this.p.night ? 0.4 : 1));
       if (this.nextHorn - now < 40) this.horn(now, 0.03 + 0.05 * close * lvl);
     }
     // construction ticks
     if (this.p.construction > 0.01 && this.p.activity > 0 && now > this.nextTick) {
-      this.nextTick = now + (0.6 + Math.random() * 2.5) / this.p.construction;
+      this.nextTick = now + (0.6 + this.random() * 2.5) / this.p.construction;
       const pan = this.env.ctx.createStereoPanner();
-      pan.pan.value = Math.random() * 1.6 - 0.8;
+      pan.pan.value = this.random() * 1.6 - 0.8;
       const g = this.env.ctx.createGain();
       g.gain.value = 0.25 + close * 0.4;
       g.connect(pan).connect(this.out);
-      const n = 1 + Math.floor(Math.random() * 3);
-      for (let k = 0; k < n; k++) setTimeout(() => this.running && playVoice(this.env, 'construct', g, { volume: 1 }), k * (110 + Math.random() * 60));
+      const n = 1 + Math.floor(this.random() * 3);
+      for (let k = 0; k < n; k++) setTimeout(() => this.running && playVoice(this.env, 'construct', g, { volume: 1 }), k * (110 + this.random() * 60));
     }
   }
 
   private panned(gain: number): GainNode {
     const ctx = this.env.ctx;
     const pan = ctx.createStereoPanner();
-    pan.pan.value = Math.random() * 1.8 - 0.9;
+    pan.pan.value = this.random() * 1.8 - 0.9;
     const g = ctx.createGain();
     g.gain.value = gain;
     g.connect(pan).connect(this.out);
@@ -253,25 +289,26 @@ export class Ambience {
 
   /** a short song-bird phrase: FM chirps */
   private bird(t: number, gain: number): void {
+    this.options.onEvent?.('bird', t);
     const ctx = this.env.ctx;
     const dest = this.panned(gain);
-    const base = 2400 + Math.random() * 2200;
-    const notes = 2 + Math.floor(Math.random() * 6);
-    const style = Math.random();
+    const base = 2400 + this.random() * 2200;
+    const notes = 2 + Math.floor(this.random() * 6);
+    const style = this.random();
     let tt = t;
     for (let k = 0; k < notes; k++) {
       const o = ctx.createOscillator();
       o.type = 'sine';
-      const f = base * (1 + (Math.random() - 0.5) * 0.35);
-      const dur = style < 0.5 ? 0.05 + Math.random() * 0.05 : 0.09 + Math.random() * 0.08;
+      const f = base * (1 + (this.random() - 0.5) * 0.35);
+      const dur = style < 0.5 ? 0.05 + this.random() * 0.05 : 0.09 + this.random() * 0.08;
       o.frequency.setValueAtTime(f, tt);
-      if (style < 0.5) o.frequency.exponentialRampToValueAtTime(f * (0.7 + Math.random() * 0.8), tt + dur);
+      if (style < 0.5) o.frequency.exponentialRampToValueAtTime(f * (0.7 + this.random() * 0.8), tt + dur);
       else {
         o.frequency.linearRampToValueAtTime(f * 1.3, tt + dur * 0.4);
         o.frequency.linearRampToValueAtTime(f * 0.85, tt + dur);
       }
       const tr = ctx.createOscillator();
-      tr.frequency.value = 35 + Math.random() * 40;
+      tr.frequency.value = 35 + this.random() * 40;
       const trg = ctx.createGain();
       trg.gain.value = f * 0.04;
       tr.connect(trg).connect(o.frequency);
@@ -284,16 +321,17 @@ export class Ambience {
       tr.start(tt);
       o.stop(tt + dur + 0.02);
       tr.stop(tt + dur + 0.02);
-      tt += dur + 0.02 + Math.random() * 0.08;
+      tt += dur + 0.02 + this.random() * 0.08;
     }
   }
 
   /** cricket chirp group: amplitude-pulsed high sine */
   private cricket(t: number, gain: number): void {
+    this.options.onEvent?.('cricket', t);
     const ctx = this.env.ctx;
     const dest = this.panned(gain);
-    const f = 4200 + Math.random() * 900;
-    const pulses = 3 + Math.floor(Math.random() * 4);
+    const f = 4200 + this.random() * 900;
+    const pulses = 3 + Math.floor(this.random() * 4);
     const o = ctx.createOscillator();
     o.frequency.value = f;
     const g = ctx.createGain();
@@ -309,6 +347,26 @@ export class Ambience {
     o.stop(t + pulses * 0.045 + 0.05);
   }
 
+  /** a gull's falling cry, lower and longer than the song-bird chirps */
+  private gull(t: number, gain: number): void {
+    this.options.onEvent?.('gull', t);
+    const ctx = this.env.ctx;
+    const dest = this.panned(gain);
+    const o = ctx.createOscillator();
+    o.type = 'triangle';
+    const f = 850 + this.random() * 350;
+    o.frequency.setValueAtTime(f, t);
+    o.frequency.linearRampToValueAtTime(f * 1.5, t + 0.12);
+    o.frequency.exponentialRampToValueAtTime(f * 0.65, t + 0.7);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(1, t + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.75);
+    o.connect(g).connect(dest);
+    o.start(t);
+    o.stop(t + 0.8);
+  }
+
   /** distant car horn (two-tone, heavily filtered) */
   private horn(t: number, gain: number): void {
     const ctx = this.env.ctx;
@@ -317,11 +375,11 @@ export class Ambience {
     lp.type = 'lowpass';
     lp.frequency.value = 1200;
     lp.connect(dest);
-    const f = 380 + Math.random() * 120;
-    const beeps = Math.random() < 0.3 ? 2 : 1;
+    const f = 380 + this.random() * 120;
+    const beeps = this.random() < 0.3 ? 2 : 1;
     for (let b = 0; b < beeps; b++) {
       const s = t + b * 0.28;
-      const dur = 0.16 + Math.random() * 0.25;
+      const dur = 0.16 + this.random() * 0.25;
       for (const ff of [f, f * 1.26]) {
         const o = ctx.createOscillator();
         o.type = 'square';

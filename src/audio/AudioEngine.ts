@@ -9,7 +9,8 @@
  *   audio.playCount                      play() request counter, hover blips aside (delegated UI sounds de-dup,
  *                                        src/ui/uiSounds.ts); audio.sinceLastPlay() ms since a sound played
  *   audio.startAmbience() / stopAmbience()
- *   audio.setAmbience({ population, zoom, night, construction, water, activity })
+ *   audio.setAmbience({ population, zoom, night, construction, water, activity, month, climate })
+ *   audio.setCityAmbience(state, targetX, targetZ, distance, night, construction, activity)   ~2 Hz, reads only
  *   audio.setVolume(kind, v) / getVolume(kind)   kind: 'master' | 'music' | 'sfx' | 'ambience', v in 0..1
  *   audio.setMusicEnabled(on) / musicEnabled / toggleMusic()
  *   audio.startMusic() / stopMusic()     request / release music for the current screen
@@ -22,6 +23,7 @@
  */
 import { playVoice, SOUND_META, type PlayOptions, type SfxEnv, type SoundName } from './sfx';
 import { Ambience, type AmbienceParams } from './ambience';
+import { ambienceZoom, sampleAmbienceWater, type AmbienceCity } from './ambienceSample';
 import { MusicDirector, type MusicContext, type NowPlaying, type TrackInfo } from './music/director';
 import { ALL_TRACKS } from './music/tracks';
 import { makeNoiseBuffer, makeReverb } from './music/fx';
@@ -100,7 +102,7 @@ export class AudioEngine {
   /** music's reverb send (follows the music volume) */
   private musicReverb: GainNode | null = null;
   private wantAmbience = false;
-  private pendingAmbience: AmbienceParams = {};
+  private pendingAmbience: AmbienceParams = { population: 0, zoom: 0.5, night: false, construction: 0, water: 0, activity: 1, month: 0, climate: 'temperate' };
   private wantMusic = false;
   private lastHover = 0;
   private lastPlay = new Map<string, number>();
@@ -322,6 +324,20 @@ export class AudioEngine {
 
   setAmbience(p: AmbienceParams): void {
     Object.assign(this.pendingAmbience, p);
+    this.ambience?.set(p);
+  }
+
+  /** Sample the camera's surroundings without allocating a grid or a parameter object each time. */
+  setCityAmbience(st: AmbienceCity, x: number, z: number, distance: number, night: boolean, construction: number, activity: number): void {
+    const p = this.pendingAmbience;
+    p.population = st.stats.population;
+    p.zoom = ambienceZoom(distance, st.size);
+    p.night = night;
+    p.construction = construction;
+    p.activity = activity;
+    p.water = sampleAmbienceWater(st.water, st.size, x, z);
+    p.month = st.month;
+    p.climate = st.config.climate;
     this.ambience?.set(p);
   }
 

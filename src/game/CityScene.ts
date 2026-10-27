@@ -657,9 +657,8 @@ export class CityScene {
       }
     }
     this.slowAcc += dt;
-    this.ambAcc += dt;
-    if (this.ambAcc > 0.5) {
-      this.ambAcc = 0;
+    if (now - this.ambAcc >= 500) {
+      this.ambAcc = now;
       this.updateAmbience();
     }
     if (this.slowAcc > 2) {
@@ -1022,8 +1021,8 @@ export class CityScene {
   /** feed the audio engine's city ambience (~2 Hz) */
   private updateAmbience(): void {
     this.feedSirens();
-    const a = this.mods.audio as (GameModules['audio'] & { setAmbience?: (p: Record<string, unknown>) => void }) | undefined;
-    if (!a?.setAmbience) return;
+    const a = this.mods.audio as (GameModules['audio'] & { setCityAmbience?: import('../audio/AudioEngine').AudioEngine['setCityAmbience'] }) | undefined;
+    if (!a?.setCityAmbience) return;
     try {
       const st = this.sim.state;
       const dist = this.world.controls.distance || 800;
@@ -1037,7 +1036,8 @@ export class CityScene {
         }
         constructing = Math.min(1, k / Math.max(1, n) * 5);
       }
-      a.setAmbience({ population: st.stats.population, zoom: Math.max(0, Math.min(1, (dist - 60) / (st.size * CELL_SIZE))), night: hour < 6 || hour > 19.5, construction: constructing, activity: this.sim.speed / 3 });
+      const target = this.world.controls.target;
+      a.setCityAmbience(st, target.x, target.z, dist, hour < 6 || hour > 19.5, constructing, this.sim.speed / 3);
       // soundtrack context: night, city size, liveliness (sim speed + recent growth + construction)
       const m = this.musicPop;
       const now = performance.now();
