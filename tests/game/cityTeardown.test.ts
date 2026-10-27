@@ -27,12 +27,25 @@ import { FEl, installFakeDom, textOf } from './fakeDom';
 installFakeDom();
 const gw = globalThis as unknown as Record<string, unknown>;
 const hadG: Record<string, unknown> = {};
+let rafPending = 0;
 beforeAll(() => {
   for (const k of ['requestAnimationFrame', 'window']) hadG[k] = gw[k];
-  gw.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(performance.now()), 0);
+  gw.requestAnimationFrame = (cb: (t: number) => void) => {
+    rafPending++;
+    return setTimeout(() => {
+      rafPending--;
+      cb(performance.now());
+    }, 0);
+  };
   gw.window ??= globalThis;
 });
-afterAll(() => {
+afterAll(async () => {
+  // the shared thumbnail renderer's pump, started by the InfoPanel test, runs on these stubs: let it go quiet before
+  // they go back, or its last step finds no window (an unhandled rejection under full-suite load)
+  for (let quiet = 0, i = 0; quiet < 3 && i < 300; i++) {
+    await new Promise((r) => setTimeout(r, 10));
+    quiet = rafPending ? 0 : quiet + 1;
+  }
   for (const k of Object.keys(hadG)) gw[k] = hadG[k];
 });
 
