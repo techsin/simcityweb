@@ -25,7 +25,9 @@
  * FH-10 --profile newcomer (defaults: 128 cells, 10 years): founds on day 90; builds coal beside the first small
  * zones and a pump beside industry before Play. Expands only on posted zone-more warnings (FH-03; today's info
  * messages do not count), builds police after a crime warning, never borrows, raises taxes from 9 % to 11 % after
- * the first monthly deficit, and never manually dispatches to the first incident. No other proactive mayor rules.
+ * the first monthly deficit, and never manually dispatches to the first incident. NOTE-009: 30 days after a posted
+ * no-power warning, rebuilds coal at the first fitting site beside the zones, once per lost plant; logs placement
+ * failures and retries monthly while the warning persists. No fire station or other proactive mayor rules.
  * Its table counts years from founding: population, approval, the three largest non-baseline approval terms,
  * funds and incidents failed during that year. The default profile still founds on day 0 and keeps its old output.
  */
@@ -48,7 +50,7 @@ import { ATTRACTIONS, venueVisits } from '../src/sim/economy/tourism';
 import { COARSE, NETWORK_UPKEEP, TOURISM, TOURISM_INCOME_PER_VISITOR, VENUE_INCOME, TAX_NEUTRAL } from '../src/sim/economy/tuning';
 import type { BuildingDef } from '../src/sim/catalogTypes';
 import { smoothstep } from '../src/core/rng';
-import { adviceIdOf } from '../src/sim/economy/advisors';
+import { adviceIdOf, openAdvice } from '../src/sim/economy/advisors';
 import { approvalBreakdown } from '../src/sim/economy/approval';
 import type { FactorTerm } from '../src/sim/explain';
 
@@ -245,6 +247,7 @@ export class SimBot {
   private newcomerNewsDay = 90;
   private newcomerFirstIncident: number | undefined;
   private newcomerFailed = 0;
+  private newcomerPlants = new Map<number, { warnedDay?: number; rebuilt?: boolean }>();
 
   constructor(opts: BotOptions, systems: SimSystem[] = economySystems()) {
     const cfg: CityConfigData = defaultCityConfig({
@@ -267,6 +270,9 @@ export class SimBot {
         this.say(`first incident (${e.kind} #${e.id}): no manual dispatch`);
       }
       if (e.type === 'failed') this.newcomerFailed++;
+    });
+    if (opts.profile === 'newcomer') this.sim.events.on('buildingAdded', (b) => {
+      if (b.def === 'util_coal_plant') this.newcomerPlants.set(b.id, {});
     });
     this.A = new CityActions(this.sim);
     this.rt = economyRuntime(systems);
@@ -827,11 +833,37 @@ export class SimBot {
       const id = (n as typeof n & { ref?: { advice?: string } }).ref?.advice ?? adviceIdOf(st, n);
       if (id === 'zoneR' || id === 'zoneC' || id === 'zoneI') this.zoneNewcomer(id[4] as 'R' | 'C' | 'I');
       if (id === 'crime') this.newcomerPolice = true;
+      if (id === 'plantBurnt' || id === 'noPower') {
+        for (const [plantId, loss] of this.newcomerPlants) {
+          const b = st.buildings.get(plantId);
+          if (!loss.rebuilt && (!b || (b.flags & BF.Burnt))) loss.warnedDay ??= n.day;
+        }
+      }
     }
     this.newcomerNewsDay = st.day;
     if (this.newcomerPolice && !this.count('civ_police_station') && this.funds >= (getDef('civ_police_station')!.cost ?? 0)) {
       const home = this.blocks.find((b) => b.developed && b.use === 'R');
       if (home) this.placeNear('civ_police_station', home.x0, home.z0, ['R', 'C', 'I', 'U'], false, 2 * GRID, true);
+    }
+    this.rebuildNewcomerPower();
+  }
+
+  /** NOTE-009: read the no-power news, wait a month, then replace each lost plant at most once. */
+  private rebuildNewcomerPower(): void {
+    const st = this.st;
+    const due = [...this.newcomerPlants].filter(([id, loss]) => {
+      const b = st.buildings.get(id);
+      return !loss.rebuilt && loss.warnedDay !== undefined && st.day - loss.warnedDay >= 30 && (!b || (b.flags & BF.Burnt));
+    });
+    if (!due.length || !openAdvice(this.sim).some((a) => a.id === 'plantBurnt' || a.id === 'noPower')) return;
+    const coal = this.byKey.get((this.cbx - 1) + ',' + this.cbz)!;
+    for (const [id, loss] of due) {
+      if (this.placeNear('util_coal_plant', coal.x0, coal.z0, ['U'], false, GRID, true)) {
+        loss.rebuilt = true;
+        this.say(`newcomer rebuilt coal for lost plant #${id}`);
+      } else {
+        this.say(`newcomer coal rebuild for lost plant #${id}: no site or no money; retry next month`);
+      }
     }
   }
 
@@ -2524,9 +2556,11 @@ usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/
   --profile P       default | newcomer (default). Newcomer defaults to --size 128 --years 10, founds on day 90:
                     coal beside small zones, pump beside industry; expands only on FH-03 zone-more warnings,
                     police after a crime warning; no loans; taxes 9 % until a monthly deficit, then 11 %;
-                    no manual dispatch for the first incident, no other proactive rules. Cannot combine with
-                    --tax, --spendy or --skip. Years count from founding; prints population, approval and its
-                    three largest non-baseline terms, funds and failed incidents during each year.
+                    no manual dispatch for the first incident. NOTE-009: 30 days after a no-power warning,
+                    rebuilds coal at the first fitting site beside the zones, once per lost plant; logs failures
+                    and retries monthly while the warning persists. No fire station or other proactive rules.
+                    Cannot combine with --tax, --spendy or --skip. Years count from founding; prints population,
+                    approval and its three largest non-baseline terms, funds and failed incidents during each year.
   --skip a,b,...    leave rules out (the wrong choices): schools, garbage, jail, transit, police, services, dirty
   --save-years a,b  save the city at the end of these years (1 = after the first year) as game saves named by
   --save-prefix P   the path prefix P: Py<N>.city.metropolis (the city alone; in node: deserializeCity(await

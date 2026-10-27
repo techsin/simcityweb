@@ -55,3 +55,47 @@ approval in Feb 2006).
 - **Codex** (max effort): the profile.
 - **Me (Claude):** the brief, the review against the plan's list (each rule checked, default paths guarded) and the
   gates.
+
+## Round 2 (NOTE-009): the rebuild-power rule
+
+**The rule.** After a no-power warning (the advisor's rule ids `plantBurnt` / `noPower`, read like the zone-more ids,
+never the text), the profile waits 30 days, then rebuilds a coal plant at the first site next to the zones, with the
+same placement as day 0. At most one rebuild per lost plant id. A failed placement is logged with `say()` and retried
+monthly while the warning lasts. No fire station, no other new rules. The header and `--help` are updated.
+
+**What happened in the 128×10 s7 run** (`SIMBOT_LOG=1`):
+
+| When | Event |
+|---|---|
+| Apr 2000 | coal plant built |
+| May 2000 | first deficit: taxes 9 % → 11 % |
+| Mar 2001 | first incident: no dispatch |
+| mid-2006 | the plant burns down |
+| Jul 2006 | rebuilt ("rebuilt coal for lost plant #1") |
+| 2009 | the second plant burns |
+| Aug 2009 | rebuilt again |
+
+| Year | Round 1 pop / approval | **Round 2 pop / approval** | Human newcomer (FH-10) |
+|---:|---|---|---|
+| 1 | 97 / 26.6 % | 97 / 26.6 % | |
+| 2 | 100 / 25.5 % | 100 / 25.5 % | |
+| 3 | 100 / 24.5 % | 100 / 24.5 % | |
+| 4 | 100 / 25.4 % | **100 / 25.4 %** | |
+| 5 | 100 / 25.4 % | 100 / 25.4 % | |
+| 6 | 100 / 25.4 % | 100 / 25.4 % | 863 / 43 % (Feb 2006) |
+| 7 | **0** / 43.8 % | **111** / 23.7 % | |
+| 8 | 0 / 47.5 % | 111 / 23.7 % | |
+| 9 | 0 / 47.6 % | 111 / 23.6 % | |
+| 10 | 0 / 47.4 % | **112** / 26.1 % (funds §50, 2 failed incidents) | |
+
+**Acceptance still holds:** in year 4, 100 residents (< 5,000) and 25.4 % approval (< 48), headless in seconds. Nothing
+was tuned toward it. The default bot is unchanged: the 128×15 s7 table and its full action log are identical (1,203
+lines); `tsc` is clean.
+
+**Correction to my round-1 note.** The rule does what it should: the town survives, at 112 instead of 0. But the stall
+at about 100 residents is not caused by the power loss; it starts in year 1.
+- The profile expands only on zone-more *warnings* (FH-03's cue). Today the advisor posts "Residential demand is strong
+  but there is no room" as an info message, which the profile ignores as the plan says.
+- So the town never grows past its four starting 4×4 blocks.
+- The human shape (863 / 43 %) needs FH-03's warning, or an interim rule that also reads that info message. That is the
+  lead's call; the plan says "without FH-03", so I added neither.
