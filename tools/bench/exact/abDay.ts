@@ -5,7 +5,7 @@
  *   node tools/bench/sim-profile/bundle.mjs ../baselines/pi1Day          (-> node_modules/.cache/sim-profile/pi1Day.js)
  *   node --allow-natives-syntax node_modules/.cache/sim-profile/pi1Day.js --fixture F.metropolis
  *        [--mode design|headless] [--chunk 12] [--reps 32] [--warm 20] [--out result.json] [--testdefs]
- *        [--armB other/pi1Day.js] [--kernel nimby|blur|fire|traffic|services|sys:<system name>]
+ *        [--armB other/pi1Day.js] [--kernel nimby|blur|fire|traffic|services|utilities|sys:<system name>]
  * --armB: arm B is this harness bundled in another tree (copy this file there, bundle with that tree's bundle.mjs):
  *   the paired ratio is then B/A of two code versions, and `deterministic` says whether both ended bit-identical.
  * --kernel: each round times --chunk calls of one containing function on the warmed city (rebuildNimby, blur3 on a
@@ -89,6 +89,8 @@ if (!isMainThread) {
     kernelCall = () => { const tr = sim.getSystem('traffic'); tr.invalidate(); tr.runCycleSync(sim); };
   } else if (kernel === 'services') {
     kernelCall = () => sim.getSystem('services').compute(sim, false);
+  } else if (kernel === 'utilities') {
+    kernelCall = () => sim.getSystem('utilities').compute(sim);
   } else if (kernel?.startsWith('sys:')) {
     // any system's daily step, with the day advanced (e.g. sys:economy.population)
     const name = kernel.slice(4);
