@@ -35,6 +35,9 @@ export interface CityEvents extends Record<string, unknown> {
   powerLinesChanged: CellRect;
   subwayChanged: CellRect;
   treesChanged: CellRect;
+  /** the bounds of the trees a tornado step lowered (W1.1a's replica). Not treesChanged, which pollution.ts reacts to:
+   *  nothing in the sim listens to it, so the bot is unchanged */
+  treesDamaged: CellRect;
   day: number;
   month: number;
   year: number;
