@@ -62,3 +62,5 @@ Report: docs/dev/reports/local-T003-gpu-smoke.md. 60 Hz held everywhere (0 frame
   `heapanalyze.mjs` build a wrong default source-map path on Windows (`C:\C:\…`; `--map` works around it); the
   `captures` target fails under `core.autocrlf=true` ("anchor … not found" in `populationAggregateProbe.bench.mjs`): add a
   `.gitattributes` with `* text=auto eol=lf` or normalise CRLF in the bench's anchor search.
+
+- **Tornado tree damage shows live (WORLD, render-only; from R1's writer audit, Oct 27).** Today the tornado lowers trees every step, but the renderer hears about it only at the tornado's end (one `treesChanged` over its whole path), so the 3D trees and the forest tint vanish in one block afterwards. A render-side hook on the `disaster` tornado events (they carry x, z and `active`) can mark the funnel's disc dirty for `TerrainRenderer.markCells` and `TreeRenderer.onCellsChanged` on every frame while a tornado is active. No sim change: `pollution.ts` listens to `treesChanged`, so a per-step sim event would move the bot.
