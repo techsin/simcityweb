@@ -77,6 +77,10 @@ export class MiniMap {
     const ev = ctx.sim.events;
     const mark = () => (this.dirty = true);
     this.offs.push(ev.on('zoneChanged', mark), ev.on('networkChanged', mark), ev.on('terrainChanged', mark), ev.on('buildingAdded', mark), ev.on('buildingRemoved', mark), ev.on('treesChanged', mark), ev.on('reset', mark));
+    const offUtilities = ev.on('layerUpdated', (name) => { if (name === 'utilities') mark(); });
+    this.offs.push(offUtilities);
+    if (ctx.signal.aborted) offUtilities();
+    else ctx.signal.addEventListener('abort', offUtilities, { once: true });
   }
 
   private paintBase(): void {

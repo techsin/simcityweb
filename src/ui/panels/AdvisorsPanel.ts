@@ -316,9 +316,8 @@ export class AdvisorsPanel extends Panel {
       this.content.appendChild(grid);
       return;
     }
-    // news feed: rebuilt when an item arrives — by the newest item's identity: the log keeps the last 200, so its
-    // length stops changing once it is full (final fixes N2)
-    if (!this.gate('news', `${newsMark(st.news)}:${st.news.length}:${st.config.startYear}`)) return;
+    // news feed: the host sequence keeps advancing past the 200-item cap; newsMark also detects a replaced log
+    if (!this.gate('news', `${newsMark(st.news)}:${this.ctx.host.newsSeq}:${st.config.startYear}`)) return;
     clear(this.content);
     const list = h('div', { class: 'news-list' });
     const items = st.news.slice().reverse();
