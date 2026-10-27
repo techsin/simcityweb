@@ -76,11 +76,11 @@ describe('worker migration hygiene gates', () => {
     expect(exempt).toHaveLength(NOT_SIM_SPEED.length); // each exemption still matches exactly one write
     expect(found.filter((v) => !exempt.includes(v))).toEqual([]);
   });
-  // NOTE-019: EmergencyBanner's two liveSlowdown writes belong to LivePolicy, which moves into SimCore in W0.4
-  it.skip('W0.4: liveSlowdown writers live only in src/worker or src/sim', () => {
+  it('W0.4: liveSlowdown writers live only in src/worker or src/sim', () => {
     expect(scanFiles(outsideCore(), 'liveSlowdown')).toEqual([]);
   });
-  it.skip('W0.3: src/ui and src/game no longer call emergencyOf or getSystem', () => {
+  // NOTE-028: after W0.3-W0.5, 14 reads in 5 files remain; W0.3b converts them and switches this rule on
+  it.skip('W0.3b: src/ui and src/game no longer call emergencyOf or getSystem', () => {
     expect(scanFiles(uiAndGame(), 'systems')).toEqual([]);
   });
   it.skip('W0.6: UI, game and render never write into the replica outside src/worker', () => {
