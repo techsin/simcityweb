@@ -1,0 +1,812 @@
+[
+ {
+  "shot": "city_low_street_day_jun",
+  "mean": 4.11,
+  "maxBlock": 17.4,
+  "at": [
+   6,
+   7
+  ]
+ },
+ {
+  "shot": "city_low_default_day_jun",
+  "mean": 1.65,
+  "maxBlock": 3.9,
+  "at": [
+   2,
+   3
+  ]
+ },
+ {
+  "shot": "city_low_far_day_jun",
+  "mean": 0.42,
+  "maxBlock": 1.8,
+  "at": [
+   10,
+   6
+  ]
+ },
+ {
+  "shot": "city_low_default_night_jun",
+  "mean": 12.85,
+  "maxBlock": 60.9,
+  "at": [
+   11,
+   0
+  ]
+ },
+ {
+  "shot": "city_low_default_day_jan",
+  "mean": 1.65,
+  "maxBlock": 3.7,
+  "at": [
+   14,
+   4
+  ]
+ },
+ {
+  "shot": "city_low_street_night_jan",
+  "mean": 20.77,
+  "maxBlock": 116.7,
+  "at": [
+   5,
+   4
+  ]
+ },
+ {
+  "shot": "city_high_street_day_jun",
+  "mean": 4.58,
+  "maxBlock": 16.8,
+  "at": [
+   6,
+   7
+  ]
+ },
+ {
+  "shot": "city_high_default_day_jun",
+  "mean": 2.82,
+  "maxBlock": 10.9,
+  "at": [
+   6,
+   6
+  ]
+ },
+ {
+  "shot": "city_high_far_day_jun",
+  "mean": 1.45,
+  "maxBlock": 4.6,
+  "at": [
+   8,
+   4
+  ]
+ },
+ {
+  "shot": "city_high_default_night_jun",
+  "mean": 13.68,
+  "maxBlock": 61.8,
+  "at": [
+   11,
+   0
+  ]
+ },
+ {
+  "shot": "city_high_default_day_jan",
+  "mean": 2.84,
+  "maxBlock": 9.6,
+  "at": [
+   6,
+   6
+  ]
+ },
+ {
+  "shot": "city_high_street_night_jan",
+  "mean": 23.03,
+  "maxBlock": 119.1,
+  "at": [
+   5,
+   4
+  ]
+ },
+ {
+  "shot": "city_ultra_street_day_jun",
+  "mean": 4.69,
+  "maxBlock": 20.6,
+  "at": [
+   0,
+   8
+  ]
+ },
+ {
+  "shot": "city_ultra_default_day_jun",
+  "mean": 3.03,
+  "maxBlock": 10,
+  "at": [
+   6,
+   6
+  ]
+ },
+ {
+  "shot": "city_ultra_far_day_jun",
+  "mean": 4.04,
+  "maxBlock": 7.6,
+  "at": [
+   13,
+   8
+  ]
+ },
+ {
+  "shot": "city_ultra_default_night_jun",
+  "mean": 13.84,
+  "maxBlock": 61.7,
+  "at": [
+   11,
+   0
+  ]
+ },
+ {
+  "shot": "city_ultra_default_day_jan",
+  "mean": 3.08,
+  "maxBlock": 11.8,
+  "at": [
+   13,
+   7
+  ]
+ },
+ {
+  "shot": "city_ultra_street_night_jan",
+  "mean": 24.26,
+  "maxBlock": 117.1,
+  "at": [
+   5,
+   4
+  ]
+ },
+ {
+  "shot": "ui_low_street_day_jun",
+  "mean": 3.4,
+  "maxBlock": 20.8,
+  "at": [
+   4,
+   4
+  ]
+ },
+ {
+  "shot": "ui_low_default_day_jun",
+  "mean": 2.75,
+  "maxBlock": 11.7,
+  "at": [
+   0,
+   6
+  ]
+ },
+ {
+  "shot": "ui_low_far_day_jun",
+  "mean": 0.42,
+  "maxBlock": 4.3,
+  "at": [
+   2,
+   8
+  ]
+ },
+ {
+  "shot": "ui_low_default_night_jun",
+  "mean": 1.97,
+  "maxBlock": 9.1,
+  "at": [
+   1,
+   8
+  ]
+ },
+ {
+  "shot": "ui_low_default_day_jan",
+  "mean": 2.59,
+  "maxBlock": 10.9,
+  "at": [
+   0,
+   6
+  ]
+ },
+ {
+  "shot": "ui_low_street_night_jan",
+  "mean": 2.27,
+  "maxBlock": 23.5,
+  "at": [
+   11,
+   1
+  ]
+ },
+ {
+  "shot": "ui_high_street_day_jun",
+  "mean": 7.74,
+  "maxBlock": 29.1,
+  "at": [
+   4,
+   4
+  ]
+ },
+ {
+  "shot": "ui_high_default_day_jun",
+  "mean": 4.66,
+  "maxBlock": 16.8,
+  "at": [
+   0,
+   6
+  ]
+ },
+ {
+  "shot": "ui_high_far_day_jun",
+  "mean": 0.98,
+  "maxBlock": 4.8,
+  "at": [
+   2,
+   8
+  ]
+ },
+ {
+  "shot": "ui_high_default_night_jun",
+  "mean": 3.25,
+  "maxBlock": 12.1,
+  "at": [
+   4,
+   6
+  ]
+ },
+ {
+  "shot": "ui_high_default_day_jan",
+  "mean": 4.63,
+  "maxBlock": 15.6,
+  "at": [
+   0,
+   6
+  ]
+ },
+ {
+  "shot": "ui_high_street_night_jan",
+  "mean": 3.99,
+  "maxBlock": 22.3,
+  "at": [
+   13,
+   1
+  ]
+ },
+ {
+  "shot": "ui_ultra_street_day_jun",
+  "mean": 8.44,
+  "maxBlock": 29.2,
+  "at": [
+   4,
+   4
+  ]
+ },
+ {
+  "shot": "ui_ultra_default_day_jun",
+  "mean": 5.28,
+  "maxBlock": 19,
+  "at": [
+   0,
+   6
+  ]
+ },
+ {
+  "shot": "ui_ultra_far_day_jun",
+  "mean": 3.17,
+  "maxBlock": 7.5,
+  "at": [
+   2,
+   8
+  ]
+ },
+ {
+  "shot": "ui_ultra_default_night_jun",
+  "mean": 3.73,
+  "maxBlock": 14.1,
+  "at": [
+   4,
+   6
+  ]
+ },
+ {
+  "shot": "ui_ultra_default_day_jan",
+  "mean": 5.05,
+  "maxBlock": 17.2,
+  "at": [
+   0,
+   6
+  ]
+ },
+ {
+  "shot": "ui_ultra_street_night_jan",
+  "mean": 4.42,
+  "maxBlock": 29.3,
+  "at": [
+   8,
+   3
+  ]
+ },
+ {
+  "shot": "world_low_street_day_jun",
+  "mean": 0.1,
+  "maxBlock": 0.1,
+  "at": [
+   12,
+   6
+  ]
+ },
+ {
+  "shot": "world_low_default_day_jun",
+  "mean": 0.61,
+  "maxBlock": 2,
+  "at": [
+   9,
+   8
+  ]
+ },
+ {
+  "shot": "world_low_far_day_jun",
+  "mean": 0.25,
+  "maxBlock": 1.2,
+  "at": [
+   11,
+   8
+  ]
+ },
+ {
+  "shot": "world_low_default_night_jun",
+  "mean": 0.08,
+  "maxBlock": 0.2,
+  "at": [
+   1,
+   2
+  ]
+ },
+ {
+  "shot": "world_low_default_day_jan",
+  "mean": 0.62,
+  "maxBlock": 1.9,
+  "at": [
+   11,
+   8
+  ]
+ },
+ {
+  "shot": "world_low_street_night_jan",
+  "mean": 0.04,
+  "maxBlock": 0.1,
+  "at": [
+   13,
+   7
+  ]
+ },
+ {
+  "shot": "world_high_street_day_jun",
+  "mean": 0.23,
+  "maxBlock": 0.4,
+  "at": [
+   0,
+   3
+  ]
+ },
+ {
+  "shot": "world_high_default_day_jun",
+  "mean": 0.79,
+  "maxBlock": 2.4,
+  "at": [
+   9,
+   8
+  ]
+ },
+ {
+  "shot": "world_high_far_day_jun",
+  "mean": 1.02,
+  "maxBlock": 3,
+  "at": [
+   8,
+   6
+  ]
+ },
+ {
+  "shot": "world_high_default_night_jun",
+  "mean": 0.09,
+  "maxBlock": 0.2,
+  "at": [
+   0,
+   4
+  ]
+ },
+ {
+  "shot": "world_high_default_day_jan",
+  "mean": 2.13,
+  "maxBlock": 6.6,
+  "at": [
+   11,
+   7
+  ]
+ },
+ {
+  "shot": "world_high_street_night_jan",
+  "mean": 0.08,
+  "maxBlock": 0.1,
+  "at": [
+   15,
+   3
+  ]
+ },
+ {
+  "shot": "world_ultra_street_day_jun",
+  "mean": 0.67,
+  "maxBlock": 6.7,
+  "at": [
+   5,
+   1
+  ]
+ },
+ {
+  "shot": "world_ultra_default_day_jun",
+  "mean": 0.96,
+  "maxBlock": 3.1,
+  "at": [
+   9,
+   8
+  ]
+ },
+ {
+  "shot": "world_ultra_far_day_jun",
+  "mean": 3.53,
+  "maxBlock": 6.7,
+  "at": [
+   12,
+   8
+  ]
+ },
+ {
+  "shot": "world_ultra_default_night_jun",
+  "mean": 0.1,
+  "maxBlock": 0.3,
+  "at": [
+   9,
+   8
+  ]
+ },
+ {
+  "shot": "world_ultra_default_day_jan",
+  "mean": 1.77,
+  "maxBlock": 6,
+  "at": [
+   15,
+   7
+  ]
+ },
+ {
+  "shot": "world_ultra_street_night_jan",
+  "mean": 0.15,
+  "maxBlock": 1.3,
+  "at": [
+   5,
+   1
+  ]
+ },
+ {
+  "shot": "gamefresh_low_street_day_jun",
+  "mean": 2.73,
+  "maxBlock": 13.7,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_low_default_day_jun",
+  "mean": 1.53,
+  "maxBlock": 12.4,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_low_far_day_jun",
+  "mean": 0.86,
+  "maxBlock": 10.9,
+  "at": [
+   5,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_low_default_night_jun",
+  "mean": 0.72,
+  "maxBlock": 12.2,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_low_default_day_jan",
+  "mean": 1.72,
+  "maxBlock": 12.1,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_low_street_night_jan",
+  "mean": 0.76,
+  "maxBlock": 12.5,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_high_street_day_jun",
+  "mean": 3.32,
+  "maxBlock": 18.3,
+  "at": [
+   13,
+   4
+  ]
+ },
+ {
+  "shot": "gamefresh_high_default_day_jun",
+  "mean": 1.63,
+  "maxBlock": 6.1,
+  "at": [
+   3,
+   8
+  ]
+ },
+ {
+  "shot": "gamefresh_high_far_day_jun",
+  "mean": 0.6,
+  "maxBlock": 4.8,
+  "at": [
+   2,
+   8
+  ]
+ },
+ {
+  "shot": "gamefresh_high_default_night_jun",
+  "mean": 0.38,
+  "maxBlock": 4.1,
+  "at": [
+   1,
+   8
+  ]
+ },
+ {
+  "shot": "gamefresh_high_default_day_jan",
+  "mean": 1.34,
+  "maxBlock": 5,
+  "at": [
+   1,
+   8
+  ]
+ },
+ {
+  "shot": "gamefresh_high_street_night_jan",
+  "mean": 0.45,
+  "maxBlock": 4.5,
+  "at": [
+   3,
+   8
+  ]
+ },
+ {
+  "shot": "gamefresh_ultra_street_day_jun",
+  "mean": 3.78,
+  "maxBlock": 19.1,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_ultra_default_day_jun",
+  "mean": 2.07,
+  "maxBlock": 17.7,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_ultra_far_day_jun",
+  "mean": 1.86,
+  "maxBlock": 16,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_ultra_default_night_jun",
+  "mean": 0.82,
+  "maxBlock": 17.5,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_ultra_default_day_jan",
+  "mean": 1.58,
+  "maxBlock": 17.2,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "gamefresh_ultra_street_night_jan",
+  "mean": 0.91,
+  "maxBlock": 17.7,
+  "at": [
+   3,
+   0
+  ]
+ },
+ {
+  "shot": "game300k_low_street_day_jun",
+  "mean": 2.06,
+  "maxBlock": 7.4,
+  "at": [
+   6,
+   7
+  ]
+ },
+ {
+  "shot": "game300k_low_default_day_jun",
+  "mean": 1.45,
+  "maxBlock": 5.7,
+  "at": [
+   1,
+   8
+  ]
+ },
+ {
+  "shot": "game300k_low_far_day_jun",
+  "mean": 0.82,
+  "maxBlock": 3.8,
+  "at": [
+   1,
+   8
+  ]
+ },
+ {
+  "shot": "game300k_low_default_night_jun",
+  "mean": 2.6,
+  "maxBlock": 6.8,
+  "at": [
+   9,
+   7
+  ]
+ },
+ {
+  "shot": "game300k_low_default_day_jan",
+  "mean": 1.53,
+  "maxBlock": 5.6,
+  "at": [
+   11,
+   6
+  ]
+ },
+ {
+  "shot": "game300k_low_street_night_jan",
+  "mean": 11.49,
+  "maxBlock": 98,
+  "at": [
+   6,
+   2
+  ]
+ },
+ {
+  "shot": "game300k_high_street_day_jun",
+  "mean": 2.13,
+  "maxBlock": 7.3,
+  "at": [
+   6,
+   7
+  ]
+ },
+ {
+  "shot": "game300k_high_default_day_jun",
+  "mean": 1.97,
+  "maxBlock": 5.1,
+  "at": [
+   1,
+   8
+  ]
+ },
+ {
+  "shot": "game300k_high_far_day_jun",
+  "mean": 1.55,
+  "maxBlock": 4.3,
+  "at": [
+   1,
+   8
+  ]
+ },
+ {
+  "shot": "game300k_high_default_night_jun",
+  "mean": 2.93,
+  "maxBlock": 6.7,
+  "at": [
+   5,
+   1
+  ]
+ },
+ {
+  "shot": "game300k_high_default_day_jan",
+  "mean": 2.05,
+  "maxBlock": 4.9,
+  "at": [
+   1,
+   8
+  ]
+ },
+ {
+  "shot": "game300k_high_street_night_jan",
+  "mean": 11.88,
+  "maxBlock": 100.6,
+  "at": [
+   6,
+   2
+  ]
+ },
+ {
+  "shot": "game300k_ultra_street_day_jun",
+  "mean": 2.27,
+  "maxBlock": 7.4,
+  "at": [
+   6,
+   7
+  ]
+ },
+ {
+  "shot": "game300k_ultra_default_day_jun",
+  "mean": 2.27,
+  "maxBlock": 5.6,
+  "at": [
+   1,
+   8
+  ]
+ },
+ {
+  "shot": "game300k_ultra_far_day_jun",
+  "mean": 4.45,
+  "maxBlock": 7.9,
+  "at": [
+   6,
+   6
+  ]
+ },
+ {
+  "shot": "game300k_ultra_default_night_jun",
+  "mean": 3,
+  "maxBlock": 6.8,
+  "at": [
+   5,
+   1
+  ]
+ },
+ {
+  "shot": "game300k_ultra_default_day_jan",
+  "mean": 2.35,
+  "maxBlock": 5.1,
+  "at": [
+   1,
+   8
+  ]
+ },
+ {
+  "shot": "game300k_ultra_street_night_jan",
+  "mean": 12,
+  "maxBlock": 100.5,
+  "at": [
+   6,
+   2
+  ]
+ }
+]

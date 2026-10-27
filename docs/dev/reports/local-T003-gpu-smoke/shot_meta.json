@@ -1,0 +1,2162 @@
+[
+ {
+  "scene": "city",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 2394,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "city_high_1920_gpu_street_day_jun.png",
+    "calls": 114,
+    "triangles": 611857,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_1920_gpu_default_day_jun.png",
+    "calls": 177,
+    "triangles": 1680886,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_1920_gpu_far_day_jun.png",
+    "calls": 136,
+    "triangles": 1181402,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_1920_gpu_default_night_jun.png",
+    "calls": 180,
+    "triangles": 1647409,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_1920_gpu_default_day_jan.png",
+    "calls": 178,
+    "triangles": 1631096,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_1920_gpu_street_night_jan.png",
+    "calls": 124,
+    "triangles": 638063,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "city",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 1292,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "city_high_1920_ss_street_day_jun.png",
+    "calls": 114,
+    "triangles": 611675,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_1920_ss_default_day_jun.png",
+    "calls": 177,
+    "triangles": 1677138,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_1920_ss_far_day_jun.png",
+    "calls": 225,
+    "triangles": 2626516,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_1920_ss_default_night_jun.png",
+    "calls": 180,
+    "triangles": 1645903,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_1920_ss_default_day_jan.png",
+    "calls": 178,
+    "triangles": 1631042,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_1920_ss_street_night_jan.png",
+    "calls": 124,
+    "triangles": 638529,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "city",
+  "q": "high",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 2500,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "city_high_3840_gpu_street_day_jun.png",
+    "calls": 114,
+    "triangles": 611711,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_3840_gpu_default_day_jun.png",
+    "calls": 177,
+    "triangles": 1681162,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_3840_gpu_far_day_jun.png",
+    "calls": 136,
+    "triangles": 2114439,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_3840_gpu_default_night_jun.png",
+    "calls": 180,
+    "triangles": 1649007,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_3840_gpu_default_day_jan.png",
+    "calls": 178,
+    "triangles": 1636462,
+    "renderScale": 1
+   },
+   {
+    "name": "city_high_3840_gpu_street_night_jan.png",
+    "calls": 124,
+    "triangles": 639869,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "city",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 2145,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "city_low_1920_gpu_street_day_jun.png",
+    "calls": 39,
+    "triangles": 256310,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_1920_gpu_default_day_jun.png",
+    "calls": 56,
+    "triangles": 552366,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_1920_gpu_far_day_jun.png",
+    "calls": 79,
+    "triangles": 807317,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_1920_gpu_default_night_jun.png",
+    "calls": 59,
+    "triangles": 553280,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_1920_gpu_default_day_jan.png",
+    "calls": 56,
+    "triangles": 529364,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_1920_gpu_street_night_jan.png",
+    "calls": 42,
+    "triangles": 264166,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "city",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 1321,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "city_low_1920_ss_street_day_jun.png",
+    "calls": 39,
+    "triangles": 256152,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_1920_ss_default_day_jun.png",
+    "calls": 56,
+    "triangles": 552026,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_1920_ss_far_day_jun.png",
+    "calls": 79,
+    "triangles": 807443,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_1920_ss_default_night_jun.png",
+    "calls": 59,
+    "triangles": 553734,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_1920_ss_default_day_jan.png",
+    "calls": 56,
+    "triangles": 530584,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_1920_ss_street_night_jan.png",
+    "calls": 42,
+    "triangles": 264078,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "city",
+  "q": "low",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 2239,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "city_low_3840_gpu_street_day_jun.png",
+    "calls": 39,
+    "triangles": 255882,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_3840_gpu_default_day_jun.png",
+    "calls": 56,
+    "triangles": 552794,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_3840_gpu_far_day_jun.png",
+    "calls": 79,
+    "triangles": 1499269,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_3840_gpu_default_night_jun.png",
+    "calls": 59,
+    "triangles": 552762,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_3840_gpu_default_day_jan.png",
+    "calls": 56,
+    "triangles": 529502,
+    "renderScale": 1
+   },
+   {
+    "name": "city_low_3840_gpu_street_night_jan.png",
+    "calls": 42,
+    "triangles": 264694,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "city",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 2443,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "city_ultra_1920_gpu_street_day_jun.png",
+    "calls": 118,
+    "triangles": 616027,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_1920_gpu_default_day_jun.png",
+    "calls": 196,
+    "triangles": 1802064,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_1920_gpu_far_day_jun.png",
+    "calls": 230,
+    "triangles": 3574934,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_1920_gpu_default_night_jun.png",
+    "calls": 199,
+    "triangles": 1764933,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_1920_gpu_default_day_jan.png",
+    "calls": 200,
+    "triangles": 1750370,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_1920_gpu_street_night_jan.png",
+    "calls": 131,
+    "triangles": 638355,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "city",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 1310,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "city_ultra_1920_ss_street_day_jun.png",
+    "calls": 118,
+    "triangles": 615865,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_1920_ss_default_day_jun.png",
+    "calls": 196,
+    "triangles": 1800256,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_1920_ss_far_day_jun.png",
+    "calls": 230,
+    "triangles": 3573234,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_1920_ss_default_night_jun.png",
+    "calls": 199,
+    "triangles": 1764189,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_1920_ss_default_day_jan.png",
+    "calls": 200,
+    "triangles": 1752100,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_1920_ss_street_night_jan.png",
+    "calls": 131,
+    "triangles": 639353,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "city",
+  "q": "ultra",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 2420,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "city_ultra_3840_gpu_street_day_jun.png",
+    "calls": 118,
+    "triangles": 617043,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_3840_gpu_default_day_jun.png",
+    "calls": 196,
+    "triangles": 1802868,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_3840_gpu_far_day_jun.png",
+    "calls": 230,
+    "triangles": 5320148,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_3840_gpu_default_night_jun.png",
+    "calls": 199,
+    "triangles": 1768895,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_3840_gpu_default_day_jan.png",
+    "calls": 200,
+    "triangles": 1756322,
+    "renderScale": 1
+   },
+   {
+    "name": "city_ultra_3840_gpu_street_night_jan.png",
+    "calls": 131,
+    "triangles": 639601,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "game300k",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 8514,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "game300k_high_1920_gpu_street_day_jun.png",
+    "calls": 124,
+    "triangles": 686418,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_1920_gpu_default_day_jun.png",
+    "calls": 178,
+    "triangles": 5596574,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_1920_gpu_far_day_jun.png",
+    "calls": 259,
+    "triangles": 1978295,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_1920_gpu_default_night_jun.png",
+    "calls": 99,
+    "triangles": 2515711,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_1920_gpu_default_day_jan.png",
+    "calls": 177,
+    "triangles": 5355920,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_1920_gpu_street_night_jan.png",
+    "calls": 132,
+    "triangles": 723994,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "game300k",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 11429,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "game300k_high_1920_ss_street_day_jun.png",
+    "calls": 120,
+    "triangles": 685476,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_1920_ss_default_day_jun.png",
+    "calls": 174,
+    "triangles": 5572662,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_1920_ss_far_day_jun.png",
+    "calls": 403,
+    "triangles": 3914143,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_1920_ss_default_night_jun.png",
+    "calls": 176,
+    "triangles": 5409097,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_1920_ss_default_day_jan.png",
+    "calls": 173,
+    "triangles": 5316526,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_1920_ss_street_night_jan.png",
+    "calls": 128,
+    "triangles": 722104,
+    "renderScale": 1
+   }
+  ],
+  "logs": 1
+ },
+ {
+  "scene": "game300k",
+  "q": "high",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 5449,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "game300k_high_3840_gpu_street_day_jun.png",
+    "calls": 124,
+    "triangles": 686610,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_3840_gpu_default_day_jun.png",
+    "calls": 178,
+    "triangles": 5605299,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_3840_gpu_far_day_jun.png",
+    "calls": 488,
+    "triangles": 17737843,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_3840_gpu_default_night_jun.png",
+    "calls": 99,
+    "triangles": 2592911,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_3840_gpu_default_day_jan.png",
+    "calls": 96,
+    "triangles": 2514527,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_high_3840_gpu_street_night_jan.png",
+    "calls": 132,
+    "triangles": 727612,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "game300k",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 4885,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "game300k_low_1920_gpu_street_day_jun.png",
+    "calls": 49,
+    "triangles": 357569,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_1920_gpu_default_day_jun.png",
+    "calls": 110,
+    "triangles": 3930724,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_1920_gpu_far_day_jun.png",
+    "calls": 206,
+    "triangles": 1690345,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_1920_gpu_default_night_jun.png",
+    "calls": 86,
+    "triangles": 2015885,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_1920_gpu_default_day_jan.png",
+    "calls": 110,
+    "triangles": 3547848,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_1920_gpu_street_night_jan.png",
+    "calls": 68,
+    "triangles": 475982,
+    "renderScale": 1
+   }
+  ],
+  "logs": 4
+ },
+ {
+  "scene": "game300k",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 9252,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "game300k_low_1920_ss_street_day_jun.png",
+    "calls": 63,
+    "triangles": 448478,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_1920_ss_default_day_jun.png",
+    "calls": 106,
+    "triangles": 3928584,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_1920_ss_far_day_jun.png",
+    "calls": 202,
+    "triangles": 1682035,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_1920_ss_default_night_jun.png",
+    "calls": 109,
+    "triangles": 3584932,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_1920_ss_default_day_jan.png",
+    "calls": 106,
+    "triangles": 3543720,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_1920_ss_street_night_jan.png",
+    "calls": 48,
+    "triangles": 396001,
+    "renderScale": 1
+   }
+  ],
+  "logs": 1
+ },
+ {
+  "scene": "game300k",
+  "q": "low",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 5062,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "game300k_low_3840_gpu_street_day_jun.png",
+    "calls": 49,
+    "triangles": 357761,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_3840_gpu_default_day_jun.png",
+    "calls": 83,
+    "triangles": 2210868,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_3840_gpu_far_day_jun.png",
+    "calls": 244,
+    "triangles": 3154271,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_3840_gpu_default_night_jun.png",
+    "calls": 113,
+    "triangles": 4056651,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_3840_gpu_default_day_jan.png",
+    "calls": 110,
+    "triangles": 4008476,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_low_3840_gpu_street_night_jan.png",
+    "calls": 52,
+    "triangles": 397079,
+    "renderScale": 1
+   }
+  ],
+  "logs": 4
+ },
+ {
+  "scene": "game300k",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 5351,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "game300k_ultra_1920_gpu_street_day_jun.png",
+    "calls": 124,
+    "triangles": 691312,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_1920_gpu_default_day_jun.png",
+    "calls": 197,
+    "triangles": 5848682,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_1920_gpu_far_day_jun.png",
+    "calls": 261,
+    "triangles": 2544153,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_1920_gpu_default_night_jun.png",
+    "calls": 118,
+    "triangles": 2692804,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_1920_gpu_default_day_jan.png",
+    "calls": 197,
+    "triangles": 5761723,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_1920_gpu_street_night_jan.png",
+    "calls": 132,
+    "triangles": 726380,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "game300k",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 11717,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "game300k_ultra_1920_ss_street_day_jun.png",
+    "calls": 120,
+    "triangles": 689444,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_1920_ss_default_day_jun.png",
+    "calls": 193,
+    "triangles": 5836592,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_1920_ss_far_day_jun.png",
+    "calls": 257,
+    "triangles": 2536407,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_1920_ss_default_night_jun.png",
+    "calls": 195,
+    "triangles": 5833686,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_1920_ss_default_day_jan.png",
+    "calls": 193,
+    "triangles": 5738687,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_1920_ss_street_night_jan.png",
+    "calls": 128,
+    "triangles": 723714,
+    "renderScale": 1
+   }
+  ],
+  "logs": 1
+ },
+ {
+  "scene": "game300k",
+  "q": "ultra",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 5400,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "game300k_ultra_3840_gpu_street_day_jun.png",
+    "calls": 124,
+    "triangles": 691722,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_3840_gpu_default_day_jun.png",
+    "calls": 115,
+    "triangles": 2665302,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_3840_gpu_far_day_jun.png",
+    "calls": 578,
+    "triangles": 20855236,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_3840_gpu_default_night_jun.png",
+    "calls": 118,
+    "triangles": 2699408,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_3840_gpu_default_day_jan.png",
+    "calls": 116,
+    "triangles": 2620085,
+    "renderScale": 1
+   },
+   {
+    "name": "game300k_ultra_3840_gpu_street_night_jan.png",
+    "calls": 132,
+    "triangles": 726938,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "gamefresh",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 2994,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "gamefresh_high_1920_gpu_street_day_jun.png",
+    "calls": 82,
+    "triangles": 1336002,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_1920_gpu_default_day_jun.png",
+    "calls": 112,
+    "triangles": 1610455,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_1920_gpu_far_day_jun.png",
+    "calls": 51,
+    "triangles": 424796,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_1920_gpu_default_night_jun.png",
+    "calls": 112,
+    "triangles": 1610455,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_1920_gpu_default_day_jan.png",
+    "calls": 112,
+    "triangles": 1577453,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_1920_gpu_street_night_jan.png",
+    "calls": 82,
+    "triangles": 1304094,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "gamefresh",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 6563,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "gamefresh_high_1920_ss_street_day_jun.png",
+    "calls": 82,
+    "triangles": 1336002,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_1920_ss_default_day_jun.png",
+    "calls": 112,
+    "triangles": 1610455,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_1920_ss_far_day_jun.png",
+    "calls": 51,
+    "triangles": 424796,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_1920_ss_default_night_jun.png",
+    "calls": 112,
+    "triangles": 1610455,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_1920_ss_default_day_jan.png",
+    "calls": 112,
+    "triangles": 1577453,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_1920_ss_street_night_jan.png",
+    "calls": 82,
+    "triangles": 1304094,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "gamefresh",
+  "q": "high",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 3321,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "gamefresh_high_3840_gpu_street_day_jun.png",
+    "calls": 82,
+    "triangles": 1336002,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_3840_gpu_default_day_jun.png",
+    "calls": 112,
+    "triangles": 1610455,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_3840_gpu_far_day_jun.png",
+    "calls": 51,
+    "triangles": 424796,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_3840_gpu_default_night_jun.png",
+    "calls": 112,
+    "triangles": 1610455,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_3840_gpu_default_day_jan.png",
+    "calls": 112,
+    "triangles": 1577453,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_high_3840_gpu_street_night_jan.png",
+    "calls": 82,
+    "triangles": 1304094,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "gamefresh",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 2727,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "gamefresh_low_1920_gpu_street_day_jun.png",
+    "calls": 51,
+    "triangles": 1064171,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_1920_gpu_default_day_jun.png",
+    "calls": 45,
+    "triangles": 928431,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_1920_gpu_far_day_jun.png",
+    "calls": 18,
+    "triangles": 314221,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_1920_gpu_default_night_jun.png",
+    "calls": 45,
+    "triangles": 928431,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_1920_gpu_default_day_jan.png",
+    "calls": 45,
+    "triangles": 912155,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_1920_gpu_street_night_jan.png",
+    "calls": 52,
+    "triangles": 1048565,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "gamefresh",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 4151,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "gamefresh_low_1920_ss_street_day_jun.png",
+    "calls": 51,
+    "triangles": 1064171,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_1920_ss_default_day_jun.png",
+    "calls": 45,
+    "triangles": 928431,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_1920_ss_far_day_jun.png",
+    "calls": 18,
+    "triangles": 314221,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_1920_ss_default_night_jun.png",
+    "calls": 45,
+    "triangles": 928431,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_1920_ss_default_day_jan.png",
+    "calls": 45,
+    "triangles": 912155,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_1920_ss_street_night_jan.png",
+    "calls": 52,
+    "triangles": 1048565,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "gamefresh",
+  "q": "low",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 2701,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "gamefresh_low_3840_gpu_street_day_jun.png",
+    "calls": 51,
+    "triangles": 1064171,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_3840_gpu_default_day_jun.png",
+    "calls": 45,
+    "triangles": 928431,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_3840_gpu_far_day_jun.png",
+    "calls": 18,
+    "triangles": 314221,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_3840_gpu_default_night_jun.png",
+    "calls": 45,
+    "triangles": 928431,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_3840_gpu_default_day_jan.png",
+    "calls": 45,
+    "triangles": 912155,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_low_3840_gpu_street_night_jan.png",
+    "calls": 52,
+    "triangles": 1048565,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "gamefresh",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 3159,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "gamefresh_ultra_1920_gpu_street_day_jun.png",
+    "calls": 83,
+    "triangles": 1229852,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_1920_gpu_default_day_jun.png",
+    "calls": 117,
+    "triangles": 1448593,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_1920_gpu_far_day_jun.png",
+    "calls": 53,
+    "triangles": 429733,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_1920_gpu_default_night_jun.png",
+    "calls": 117,
+    "triangles": 1448593,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_1920_gpu_default_day_jan.png",
+    "calls": 121,
+    "triangles": 1415179,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_1920_gpu_street_night_jan.png",
+    "calls": 87,
+    "triangles": 1197586,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "gamefresh",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 6843,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "gamefresh_ultra_1920_ss_street_day_jun.png",
+    "calls": 83,
+    "triangles": 1229852,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_1920_ss_default_day_jun.png",
+    "calls": 117,
+    "triangles": 1448593,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_1920_ss_far_day_jun.png",
+    "calls": 53,
+    "triangles": 429733,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_1920_ss_default_night_jun.png",
+    "calls": 117,
+    "triangles": 1448593,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_1920_ss_default_day_jan.png",
+    "calls": 121,
+    "triangles": 1415179,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_1920_ss_street_night_jan.png",
+    "calls": 87,
+    "triangles": 1197586,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "gamefresh",
+  "q": "ultra",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 3291,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "gamefresh_ultra_3840_gpu_street_day_jun.png",
+    "calls": 83,
+    "triangles": 1229852,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_3840_gpu_default_day_jun.png",
+    "calls": 117,
+    "triangles": 1448593,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_3840_gpu_far_day_jun.png",
+    "calls": 53,
+    "triangles": 429733,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_3840_gpu_default_night_jun.png",
+    "calls": 117,
+    "triangles": 1448593,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_3840_gpu_default_day_jan.png",
+    "calls": 121,
+    "triangles": 1415179,
+    "renderScale": 1
+   },
+   {
+    "name": "gamefresh_ultra_3840_gpu_street_night_jan.png",
+    "calls": 87,
+    "triangles": 1197586,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "ui",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 2582,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "ui_high_1920_gpu_street_day_jun.png",
+    "calls": 73,
+    "triangles": 849704,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_1920_gpu_default_day_jun.png",
+    "calls": 119,
+    "triangles": 1057121,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_1920_gpu_far_day_jun.png",
+    "calls": 198,
+    "triangles": 1527697,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_1920_gpu_default_night_jun.png",
+    "calls": 187,
+    "triangles": 1749638,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_1920_gpu_default_day_jan.png",
+    "calls": 120,
+    "triangles": 1032753,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_1920_gpu_street_night_jan.png",
+    "calls": 79,
+    "triangles": 887306,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "ui",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 7428,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "ui_high_1920_ss_street_day_jun.png",
+    "calls": 73,
+    "triangles": 850638,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_1920_ss_default_day_jun.png",
+    "calls": 184,
+    "triangles": 1760354,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_1920_ss_far_day_jun.png",
+    "calls": 119,
+    "triangles": 678501,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_1920_ss_default_night_jun.png",
+    "calls": 186,
+    "triangles": 1723428,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_1920_ss_default_day_jan.png",
+    "calls": 119,
+    "triangles": 1028507,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_1920_ss_street_night_jan.png",
+    "calls": 78,
+    "triangles": 885712,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "ui",
+  "q": "high",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 2721,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "ui_high_3840_gpu_street_day_jun.png",
+    "calls": 73,
+    "triangles": 850094,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_3840_gpu_default_day_jun.png",
+    "calls": 185,
+    "triangles": 1788566,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_3840_gpu_far_day_jun.png",
+    "calls": 198,
+    "triangles": 1566359,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_3840_gpu_default_night_jun.png",
+    "calls": 187,
+    "triangles": 1749276,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_3840_gpu_default_day_jan.png",
+    "calls": 186,
+    "triangles": 1733886,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_high_3840_gpu_street_night_jan.png",
+    "calls": 79,
+    "triangles": 886848,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "ui",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 2389,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "ui_low_1920_gpu_street_day_jun.png",
+    "calls": 27,
+    "triangles": 333233,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_1920_gpu_default_day_jun.png",
+    "calls": 41,
+    "triangles": 407792,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_1920_gpu_far_day_jun.png",
+    "calls": 63,
+    "triangles": 478501,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_1920_gpu_default_night_jun.png",
+    "calls": 44,
+    "triangles": 408826,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_1920_gpu_default_day_jan.png",
+    "calls": 41,
+    "triangles": 401018,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_1920_gpu_street_night_jan.png",
+    "calls": 30,
+    "triangles": 332835,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "ui",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 4994,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "ui_low_1920_ss_street_day_jun.png",
+    "calls": 38,
+    "triangles": 567932,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_1920_ss_default_day_jun.png",
+    "calls": 41,
+    "triangles": 408106,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_1920_ss_far_day_jun.png",
+    "calls": 63,
+    "triangles": 478501,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_1920_ss_default_night_jun.png",
+    "calls": 44,
+    "triangles": 409660,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_1920_ss_default_day_jan.png",
+    "calls": 41,
+    "triangles": 401834,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_1920_ss_street_night_jan.png",
+    "calls": 31,
+    "triangles": 348019,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "ui",
+  "q": "low",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 2353,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "ui_low_3840_gpu_street_day_jun.png",
+    "calls": 27,
+    "triangles": 333185,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_3840_gpu_default_day_jun.png",
+    "calls": 41,
+    "triangles": 404120,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_3840_gpu_far_day_jun.png",
+    "calls": 63,
+    "triangles": 493680,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_3840_gpu_default_night_jun.png",
+    "calls": 44,
+    "triangles": 405144,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_3840_gpu_default_day_jan.png",
+    "calls": 41,
+    "triangles": 397630,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_low_3840_gpu_street_night_jan.png",
+    "calls": 30,
+    "triangles": 333355,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "ui",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 2595,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "ui_ultra_1920_gpu_street_day_jun.png",
+    "calls": 71,
+    "triangles": 655430,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_1920_gpu_default_day_jun.png",
+    "calls": 172,
+    "triangles": 1589347,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_1920_gpu_far_day_jun.png",
+    "calls": 121,
+    "triangles": 706461,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_1920_gpu_default_night_jun.png",
+    "calls": 175,
+    "triangles": 1585173,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_1920_gpu_default_day_jan.png",
+    "calls": 178,
+    "triangles": 1525527,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_1920_gpu_street_night_jan.png",
+    "calls": 77,
+    "triangles": 688296,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "ui",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 9279,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "ui_ultra_1920_ss_street_day_jun.png",
+    "calls": 71,
+    "triangles": 656156,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_1920_ss_default_day_jun.png",
+    "calls": 167,
+    "triangles": 1495903,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_1920_ss_far_day_jun.png",
+    "calls": 200,
+    "triangles": 1612240,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_1920_ss_default_night_jun.png",
+    "calls": 289,
+    "triangles": 2392418,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_1920_ss_default_day_jan.png",
+    "calls": 308,
+    "triangles": 2510020,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_1920_ss_street_night_jan.png",
+    "calls": 77,
+    "triangles": 686984,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "ui",
+  "q": "ultra",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 2601,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "ui_ultra_3840_gpu_street_day_jun.png",
+    "calls": 71,
+    "triangles": 655612,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_3840_gpu_default_day_jun.png",
+    "calls": 298,
+    "triangles": 2622282,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_3840_gpu_far_day_jun.png",
+    "calls": 121,
+    "triangles": 723185,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_3840_gpu_default_night_jun.png",
+    "calls": 174,
+    "triangles": 1574053,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_3840_gpu_default_day_jan.png",
+    "calls": 178,
+    "triangles": 1526211,
+    "renderScale": 1
+   },
+   {
+    "name": "ui_ultra_3840_gpu_street_night_jan.png",
+    "calls": 77,
+    "triangles": 687596,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "world",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 1452,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "world_high_1920_gpu_street_day_jun.png",
+    "calls": 37,
+    "triangles": 416976,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_1920_gpu_default_day_jun.png",
+    "calls": 131,
+    "triangles": 1742366,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_1920_gpu_far_day_jun.png",
+    "calls": 106,
+    "triangles": 862844,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_1920_gpu_default_night_jun.png",
+    "calls": 131,
+    "triangles": 1742366,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_1920_gpu_default_day_jan.png",
+    "calls": 131,
+    "triangles": 1721799,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_1920_gpu_street_night_jan.png",
+    "calls": 39,
+    "triangles": 441094,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "world",
+  "q": "high",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 898,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "world_high_1920_ss_street_day_jun.png",
+    "calls": 37,
+    "triangles": 416976,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_1920_ss_default_day_jun.png",
+    "calls": 131,
+    "triangles": 1742366,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_1920_ss_far_day_jun.png",
+    "calls": 106,
+    "triangles": 862844,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_1920_ss_default_night_jun.png",
+    "calls": 131,
+    "triangles": 1742366,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_1920_ss_default_day_jan.png",
+    "calls": 131,
+    "triangles": 1721799,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_1920_ss_street_night_jan.png",
+    "calls": 39,
+    "triangles": 441094,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "world",
+  "q": "high",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 1709,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "world_high_3840_gpu_street_day_jun.png",
+    "calls": 37,
+    "triangles": 416976,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_3840_gpu_default_day_jun.png",
+    "calls": 131,
+    "triangles": 1742366,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_3840_gpu_far_day_jun.png",
+    "calls": 106,
+    "triangles": 862844,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_3840_gpu_default_night_jun.png",
+    "calls": 131,
+    "triangles": 1742366,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_3840_gpu_default_day_jan.png",
+    "calls": 131,
+    "triangles": 1721799,
+    "renderScale": 1
+   },
+   {
+    "name": "world_high_3840_gpu_street_night_jan.png",
+    "calls": 39,
+    "triangles": 441094,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "world",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 1503,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "world_low_1920_gpu_street_day_jun.png",
+    "calls": 28,
+    "triangles": 465663,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_1920_gpu_default_day_jun.png",
+    "calls": 80,
+    "triangles": 1391343,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_1920_gpu_far_day_jun.png",
+    "calls": 53,
+    "triangles": 603543,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_1920_gpu_default_night_jun.png",
+    "calls": 50,
+    "triangles": 745173,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_1920_gpu_default_day_jan.png",
+    "calls": 50,
+    "triangles": 745173,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_1920_gpu_street_night_jan.png",
+    "calls": 28,
+    "triangles": 459119,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "world",
+  "q": "low",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 850,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "world_low_1920_ss_street_day_jun.png",
+    "calls": 47,
+    "triangles": 833885,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_1920_ss_default_day_jun.png",
+    "calls": 50,
+    "triangles": 745173,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_1920_ss_far_day_jun.png",
+    "calls": 53,
+    "triangles": 603543,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_1920_ss_default_night_jun.png",
+    "calls": 50,
+    "triangles": 745173,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_1920_ss_default_day_jan.png",
+    "calls": 80,
+    "triangles": 1391343,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_1920_ss_street_night_jan.png",
+    "calls": 28,
+    "triangles": 459119,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "world",
+  "q": "low",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 1265,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "world_low_3840_gpu_street_day_jun.png",
+    "calls": 28,
+    "triangles": 465663,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_3840_gpu_default_day_jun.png",
+    "calls": 50,
+    "triangles": 745173,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_3840_gpu_far_day_jun.png",
+    "calls": 53,
+    "triangles": 603543,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_3840_gpu_default_night_jun.png",
+    "calls": 50,
+    "triangles": 745173,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_3840_gpu_default_day_jan.png",
+    "calls": 50,
+    "triangles": 745173,
+    "renderScale": 1
+   },
+   {
+    "name": "world_low_3840_gpu_street_night_jan.png",
+    "calls": 28,
+    "triangles": 459119,
+    "renderScale": 1
+   }
+  ],
+  "logs": 3
+ },
+ {
+  "scene": "world",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "mode": "gpu",
+  "loadMs": 1429,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "world_ultra_1920_gpu_street_day_jun.png",
+    "calls": 39,
+    "triangles": 396542,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_1920_gpu_default_day_jun.png",
+    "calls": 246,
+    "triangles": 2580133,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_1920_gpu_far_day_jun.png",
+    "calls": 186,
+    "triangles": 2189444,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_1920_gpu_default_night_jun.png",
+    "calls": 246,
+    "triangles": 2580133,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_1920_gpu_default_day_jan.png",
+    "calls": 254,
+    "triangles": 2539883,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_1920_gpu_street_night_jan.png",
+    "calls": 41,
+    "triangles": 387812,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ },
+ {
+  "scene": "world",
+  "q": "ultra",
+  "w": 1920,
+  "h": 1080,
+  "mode": "ss",
+  "loadMs": 666,
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "shots": [
+   {
+    "name": "world_ultra_1920_ss_street_day_jun.png",
+    "calls": 39,
+    "triangles": 396542,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_1920_ss_default_day_jun.png",
+    "calls": 246,
+    "triangles": 2580133,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_1920_ss_far_day_jun.png",
+    "calls": 108,
+    "triangles": 905716,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_1920_ss_default_night_jun.png",
+    "calls": 246,
+    "triangles": 2580133,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_1920_ss_default_day_jan.png",
+    "calls": 254,
+    "triangles": 2539883,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_1920_ss_street_night_jan.png",
+    "calls": 41,
+    "triangles": 387812,
+    "renderScale": 1
+   }
+  ],
+  "logs": 0
+ },
+ {
+  "scene": "world",
+  "q": "ultra",
+  "w": 3840,
+  "h": 2160,
+  "mode": "gpu",
+  "loadMs": 1537,
+  "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "shots": [
+   {
+    "name": "world_ultra_3840_gpu_street_day_jun.png",
+    "calls": 39,
+    "triangles": 396542,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_3840_gpu_default_day_jun.png",
+    "calls": 246,
+    "triangles": 2580133,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_3840_gpu_far_day_jun.png",
+    "calls": 108,
+    "triangles": 905716,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_3840_gpu_default_night_jun.png",
+    "calls": 246,
+    "triangles": 2580133,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_3840_gpu_default_day_jan.png",
+    "calls": 254,
+    "triangles": 2539883,
+    "renderScale": 1
+   },
+   {
+    "name": "world_ultra_3840_gpu_street_night_jan.png",
+    "calls": 41,
+    "triangles": 387812,
+    "renderScale": 1
+   }
+  ],
+  "logs": 2
+ }
+]
