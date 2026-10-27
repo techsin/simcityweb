@@ -19,9 +19,10 @@ import { normalizeReward } from '../../src/game/modules';
 import type { GameContext } from '../../src/game/context';
 import { InfoPanel } from '../../src/ui/panels/InfoPanel';
 import { h, segmented, slider, stepButtons, toggle } from '../../src/ui/dom';
+import { Toasts } from '../../src/ui/Notifications';
 import { LodProxyBuilder } from '../../src/render/city/buildings/lodBuilder';
 import { newState, place, roadLine } from '../infra/cityGen';
-import { type FEl, installFakeDom, textOf } from './fakeDom';
+import { FEl, installFakeDom, textOf } from './fakeDom';
 
 installFakeDom();
 const gw = globalThis as unknown as Record<string, unknown>;
@@ -107,6 +108,28 @@ describe('a detached inspector holds no listener into the exited city (close-out
     expect(listenersIn(el)).toBeGreaterThan(3);
     ac.abort('dispose');
     expect(listenersIn(el)).toBe(0);
+  });
+});
+
+describe('a toast up at exit keeps no timer into the exited city (close-out c4 minor 1)', () => {
+  it('the city\'s abort clears every pending toast timer (a dispatch\'s toast held the city 1-3 s; a disaster\'s 12 s)', () => {
+    vi.useFakeTimers();
+    try {
+      const ac = new AbortController();
+      const root = new FEl('div');
+      const ctx = {
+        sim: { events: { on: () => () => undefined } }, settings: { toasts: true }, mods: {}, signal: ac.signal, root,
+        sound: () => undefined, focusCell: () => undefined,
+      } as unknown as GameContext;
+      const toasts = new Toasts(ctx, root as unknown as HTMLElement);
+      toasts.show('Fire truck dispatched', 'info');
+      toasts.show('Earthquake!', 'disaster', { x: 1, z: 2 });
+      expect(vi.getTimerCount()).toBe(2);
+      ac.abort('dispose');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

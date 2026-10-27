@@ -59,6 +59,12 @@ export class FEl extends FNode {
   get children(): FEl[] {
     return this.childNodes.filter((c): c is FEl => c instanceof FEl);
   }
+  get firstElementChild(): FEl | null {
+    return this.children[0] ?? null;
+  }
+  get lastElementChild(): FEl | null {
+    return this.children.at(-1) ?? null;
+  }
   get classList() {
     const get = () => new Set(this.className.split(/\s+/).filter(Boolean));
     const put = (s: Set<string>) => { this.className = [...s].join(' '); };
@@ -126,6 +132,9 @@ export class FEl extends FNode {
   }
   append(...cs: (FNode | string)[]): void {
     for (const c of cs) this.appendChild(typeof c === 'string' ? textNode(c) : c);
+  }
+  prepend(...cs: (FNode | string)[]): void {
+    for (const c of cs.reverse()) this.insertBefore(typeof c === 'string' ? textNode(c) : c, this.childNodes[0] ?? null);
   }
   insertBefore<T extends FNode>(c: T, ref: FNode | null): T {
     c.remove();
