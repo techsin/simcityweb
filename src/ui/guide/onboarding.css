@@ -1,0 +1,18 @@
+/* The founding list reuses hud.css; first-year goals keep both actions readable. */
+.onboard .ob-steps { max-height: min(52vh, 440px); overflow-y: auto; }
+.onboard .ob-step { grid-template-columns: 24px minmax(0, 1fr); }
+.onboard .ob-step > .btn { grid-column: 2; justify-self: start; max-width: 100%; white-space: normal; text-align: left; }
+.onboard .ob-step:focus-within .btn { opacity: 1; pointer-events: auto; }
+.onboard .ob-goal .ob-s { display: block; }
+.onboard .ob-step[data-guide-id='play'] .ob-s { display: block; }
+.onboard .ob-goal .btn { opacity: 1; pointer-events: auto; }
+.onboard .ob-s p { margin: 3px 0; }
+.onboard .ob-s, .onboard .ob-tip { white-space: pre-line; }
+.onboard .ob-tip { padding: 8px; border: 1px solid var(--warn); border-radius: 9px; margin-top: 6px; font-size: 11px; }
+.onboard .ob-tip p { margin: 0 0 5px; line-height: 1.35; }
+.onboard .ob-tip-actions, .onboard .ob-dismiss { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.onboard .ob-dismiss { margin-top: 8px; font-size: 11px; }
+.onboard .ob-dismiss p { flex-basis: 100%; margin: 0; }
+.onboard .ob-foot { flex-wrap: wrap; gap: 6px; }
+.onboard .ob-step[hidden], .onboard .ob-tip[hidden], .onboard .ob-dismiss[hidden] { display: none; }
+.onboard .ob-tip-actions > [hidden] { display: none; }
