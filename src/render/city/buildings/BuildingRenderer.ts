@@ -136,6 +136,8 @@ interface BInst {
   kitGeo: number[];
   kitLod: number[];
   kitM: Float32Array | null;
+  /** ... built from the low preset's lighter pieces (kitLean) */
+  kitLw: boolean;
   /** burnt one-cell lots: [rise per m along world x, along world z, lift m] of the rubble tile (rubbleSlopes) */
   shear: number[];
   tile: number;
@@ -331,7 +333,7 @@ const RUB_BED_COL = 0x55493f;
  * the piece's base): where the spills of neighbouring piles overlap, each point shows the spill it lies deeper inside
  * of, so their tones meet without an edge (and never z-fight). 5 n triangles.
  */
-function rubSpill(mb: ModelBuilder, rng: RNG, r: number, n: number, ash: number, tint: number): void {
+function rubSpill(mb: ModelBuilder, rng: RNG, r: number, n: number, ash: number, tint: number, lean = false): void {
   // core: ash a third of the way to the bed (a black disc under every pile reads as a hole); mid ring between core and
   // bed warmed by the dust tint (a lighter ring would ring every pile like a target)
   const core = mixHex(ash, RUB_BED_COL, 0.3), dust = mixHex(mixHex(ash, RUB_BED_COL, 0.62), tint, 0.35);
@@ -350,9 +352,14 @@ function rubSpill(mb: ModelBuilder, rng: RNG, r: number, n: number, ash: number,
   mb.paint(core, Surf.Plain);
   for (let k = 0; k < n; k++) {
     const k1 = (k + 1) % n;
-    upTri(mb, c, core, r0[k], core, r0[k1], core);
-    upTri(mb, r0[k], core, r1[k], dust, r1[k1], dust);
-    upTri(mb, r0[k], core, r1[k1], dust, r0[k1], core);
+    if (lean) {
+      // (LOW kit: the core ring under the pile left out, the core fanning straight into the dust ring: 3 n triangles)
+      upTri(mb, c, core, r1[k], dust, r1[k1], dust);
+    } else {
+      upTri(mb, c, core, r0[k], core, r0[k1], core);
+      upTri(mb, r0[k], core, r1[k], dust, r1[k1], dust);
+      upTri(mb, r0[k], core, r1[k1], dust, r0[k1], core);
+    }
     upTri(mb, r1[k], dust, r2[k], RUB_BED_COL, r2[k1], RUB_BED_COL);
     upTri(mb, r1[k], dust, r2[k1], RUB_BED_COL, r1[k1], dust);
   }
@@ -458,12 +465,12 @@ function rubBeams(mb: ModelBuilder, rng: RNG, fam: number, at: readonly (readonl
 }
 
 /** heap-cluster piece k (RUB_HEAPS) of debris family fam, and its proxy (one pyramid per heap) */
-function rubbleCluster(fam: number, k: number): [THREE.BufferGeometry, THREE.BufferGeometry] {
+function rubbleCluster(fam: number, k: number, lean = false): [THREE.BufferGeometry, THREE.BufferGeometry] {
   const rng = new RNG(0x3c11 + fam * 1013 + k * 97);
   const mb = new ModelBuilder(), px = new ModelBuilder();
   const cols = RUB_HEAP_COLS[fam], heaps = RUB_HEAPS[k];
   // ash / dust spill under the pile, fading into the bed
-  rubSpill(mb, rng, k === 3 ? 5.2 : 5.8, 9, fam ? 0x35312e : 0x2c2826, jitterHex(rng, fam ? 0x6e675f : 0x7a5a48, 0.05));
+  rubSpill(mb, rng, k === 3 ? 5.2 : 5.8, 9, fam ? 0x35312e : 0x2c2826, jitterHex(rng, fam ? 0x6e675f : 0x7a5a48, 0.05), lean);
   if (k === 3) {
     // the low debris field keeps a standing sooty wall stub
     mb.push().translate(-2.6, 0, 0.8).rotateY(rng.range(-0.5, 0.5));
@@ -482,12 +489,12 @@ function rubbleCluster(fam: number, k: number): [THREE.BufferGeometry, THREE.Buf
   tintSince(mb, m2, (p) => { const t = 0.72 + 0.28 * Math.min(1, Math.max(0, p[1]) / 1.4); return [t, t, t]; });
   rubBlocks(mb, rng, fam, k === 3 ? 7 : 4, 4.2, k === 3);
   rubBeams(mb, rng, fam, heaps, k === 0 ? 2 : 1, 1.5);
-  return [mb.build(), px.build()];
+  return [lean ? dropUnderside(mb.build()) : mb.build(), px.build()];
 }
 
 /** scattered debris between the piles (layout k): chunks, a couple of beams / rebar and one or two low drifts; its
  *  proxy keeps the drifts */
-function rubbleScatter(fam: number, k: number): [THREE.BufferGeometry, THREE.BufferGeometry] {
+function rubbleScatter(fam: number, k: number, lean = false): [THREE.BufferGeometry, THREE.BufferGeometry] {
   const rng = new RNG(0x6a07 + fam * 211 + k * 41);
   const mb = new ModelBuilder(), px = new ModelBuilder();
   const cols = RUB_HEAP_COLS[fam], at: number[][] = [];
@@ -502,16 +509,16 @@ function rubbleScatter(fam: number, k: number): [THREE.BufferGeometry, THREE.Buf
   }
   rubBlocks(mb, rng, fam, 6 + k * 2, 5.2, false);
   rubBeams(mb, rng, fam, at, k, 2.2);
-  return [mb.build(), px.build()];
+  return [lean ? dropUnderside(mb.build()) : mb.build(), px.build()];
 }
 
 /** big collapsed heap over a 2 x 2 block of cells (layout k of family fam: a detail-1 core ringed by four smaller heaps,
  *  pancaked floor slabs on the concrete core, a burnt-out car at the edge of layout 1), and its proxy */
-function rubbleBigHeap(fam: number, k: number): [THREE.BufferGeometry, THREE.BufferGeometry] {
+function rubbleBigHeap(fam: number, k: number, lean = false): [THREE.BufferGeometry, THREE.BufferGeometry] {
   const rng = new RNG(0x8b21 + fam * 733 + k * 59);
   const mb = new ModelBuilder(), px = new ModelBuilder();
   const cols = RUB_HEAP_COLS[fam];
-  rubSpill(mb, rng, 11.5, 12, fam ? 0x35312e : 0x2c2826, jitterHex(rng, fam ? 0x6e675f : 0x7a5a48, 0.05));
+  rubSpill(mb, rng, 11.5, 12, fam ? 0x35312e : 0x2c2826, jitterHex(rng, fam ? 0x6e675f : 0x7a5a48, 0.05), lean);
   const m2 = mark(mb);
   const heap = (x: number, z: number, r: V3, detail: number) => {
     const c = rng.pick(cols);
@@ -546,7 +553,7 @@ function rubbleBigHeap(fam: number, k: number): [THREE.BufferGeometry, THREE.Buf
     mb.paint(0x2b2320, Surf.Metal).box(-0.8, 0.85, -1.0, 0.8, 1.25, 0.9, { bottom: null });
     mb.pop();
   }
-  return [mb.build(), px.build()];
+  return [lean ? dropUnderside(mb.build()) : mb.build(), px.build()];
 }
 
 /** outer-wall stub of the burnt building's shell (height class hc, layout k): straight (12 m along local z) or a corner
@@ -570,6 +577,40 @@ function rubbleWallPiece(fam: number, corner: boolean, hc: number, k: number): [
     arm(3.75 - hw, 0, Math.PI / 2, 7.5, h * rng.range(0.65, 1));
   }
   return [mb.build(), px.build()];
+}
+
+/** LOW kit (see BuildingRenderer.kitLean): below this local height (m under the debris bed's top) a down-facing triangle
+ *  is one of a heap's flattened undersides */
+const UNDER_Y = -0.05;
+
+/**
+ * A LOW kit piece without its triangles that lie wholly under the debris bed's top and face down — the heaps' undersides,
+ * flattened just under the bed (leafBlob floorY): back faces under an opaque bed, never in view from above it. At the
+ * other presets they stay: the pieces cast into the near cascade there, and the depth pass draws the back faces.
+ */
+function dropUnderside(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  const P = g.attributes.position.array as Float32Array, n = P.length / 9;
+  const keep: number[] = [];
+  for (let t = 0; t < n; t++) {
+    const o = t * 9, y0 = P[o + 1], y1 = P[o + 4], y2 = P[o + 7];
+    if (y0 < UNDER_Y && y1 < UNDER_Y && y2 < UNDER_Y) {
+      // (counter-clockwise front: the face normal is (b - a) x (c - a))
+      const bx = P[o + 3] - P[o], by = y1 - y0, bz = P[o + 5] - P[o + 2], cx = P[o + 6] - P[o], cy = y2 - y0, cz = P[o + 8] - P[o + 2];
+      const ny = bz * cx - bx * cz, l = Math.hypot(by * cz - bz * cy, ny, bx * cy - by * cx);
+      if (ny < -0.3 * l) continue;
+    }
+    keep.push(t);
+  }
+  if (keep.length === n) return g;
+  const out = new THREE.BufferGeometry();
+  for (const name of Object.keys(g.attributes)) {
+    const at = g.attributes[name], a = at.array as Float32Array, s = at.itemSize * 3, dst = new Float32Array(keep.length * s);
+    for (let i = 0; i < keep.length; i++) dst.set(a.subarray(keep[i] * s, keep[i] * s + s), i * s);
+    out.setAttribute(name, new THREE.BufferAttribute(dst, at.itemSize));
+  }
+  out.computeBoundingBox();
+  out.computeBoundingSphere();
+  return out;
 }
 
 /** a burnt-out car shell (prop.ts's rubble v2 car); its own proxy */
@@ -874,11 +915,13 @@ export class BuildingRenderer {
   lodSlice = 1500;
   /** prioritized evaluations per frame (cut frames and the frames catching up after them, a new metric): upgrades in
    *  view are always all done; of the rest (downgrades heaviest first, then upgrades out of view) at least this many
-   *  (a few ms of main thread at ~1-2 us each), so a loaded machine, whose wall-clock budget shrinks to a few hundred
+   *  (a few ms of main thread at ~1 us each), so a loaded machine, whose wall-clock budget shrinks to a few hundred
    *  evaluations, catches up as fast as an idle one: a street -> far cut over a dense 256 x 256 city leaves ~5.5k
-   *  downgrades, spread over thousands of mid-size buildings (the heaviest 3000 hold ~70% of the excess triangles),
-   *  done within two frames */
-  lodCatchMin = 3000;
+   *  downgrades (a default -> far cut ~4.5k swaps), done in the cut frame. (3000 left such a cut a frame behind on a
+   *  loaded machine: 300-1600 of its swaps waited, so the cut frame's main and shadow passes drew those buildings on
+   *  their full models — the shadow pass up to 1.6 M triangles instead of 0.76 M — and the far view popped to its
+   *  proxies over the next two frames; the two frames took as much main-thread time as one frame doing all of it) */
+  lodCatchMin = 6000;
   /** ... then more while the frame's catch-up has run under this long (ms; a fast machine finishes a cut in its frame) */
   lodCatchMs = 2.5;
   /** ... and at most this many per frame (tests) */
@@ -1330,6 +1373,10 @@ export class BuildingRenderer {
     const w = b.w, d = b.d, hx = (w * C) / 2, hz = (d * C) / 2;
     const lotH = cellHash(b.x, b.z, b.id ^ 0x2c1b3c6d);
     const rng = new RNG(lotH || 1);
+    // the low preset's lighter heap pieces (kitLean: same layout, '#lw' geometries; the wall stubs and the car are the
+    // same at every preset)
+    const lean = this.kitLean(), lw = lean ? '#lw' : '';
+    bi.kitLw = lean;
     // bed corners: max(ground, base) + RUB_TOP; level unless the ground rises (nearly) through the level bed somewhere
     const tops = new Float32Array((w + 1) * (d + 1));
     let sloped = false;
@@ -1364,7 +1411,7 @@ export class BuildingRenderer {
       for (const c of also) used[c] = 2;
       const k = rng.int(0, 1), s = rng.range(0.88, 1.06), R = RUB_BIG_R * s;
       const x = (i0 + sw / 2) * C - hx + rng.range(-1.5, 1.5), z = (j0 + sd / 2) * C - hz + rng.range(-1.5, 1.5);
-      pieces.push({ ids: this.kitPiece(`big${fam}.${k}`, () => rubbleBigHeap(fam, k)), x: clampIn(x, hx - R - 0.5), z: clampIn(z, hz - R - 0.5), yaw: rng.range(0, Math.PI * 2), s, r: R });
+      pieces.push({ ids: this.kitPiece(`big${fam}.${k}${lw}`, () => rubbleBigHeap(fam, k, lean)), x: clampIn(x, hx - R - 0.5), z: clampIn(z, hz - R - 0.5), yaw: rng.range(0, Math.PI * 2), s, r: R });
     };
     if (w >= 4 && d >= 4) {
       // 2 x 2 blocks of interior cells (either parity where the interior is odd)
@@ -1378,14 +1425,14 @@ export class BuildingRenderer {
     const cluster = (cx: number, cz: number, s: number, jit: number) => {
       const k = rng.int(0, 3), R = RUB_CLUSTER_R * s;
       const x = cx + rng.range(-jit, jit), z = cz + rng.range(-jit, jit);
-      pieces.push({ ids: this.kitPiece(`cl${fam}.${k}`, () => rubbleCluster(fam, k)), x: clampIn(x, hx - R - 0.6), z: clampIn(z, hz - R - 0.6), yaw: rng.range(0, Math.PI * 2), s, r: R });
+      pieces.push({ ids: this.kitPiece(`cl${fam}.${k}${lw}`, () => rubbleCluster(fam, k, lean)), x: clampIn(x, hx - R - 0.6), z: clampIn(z, hz - R - 0.6), yaw: rng.range(0, Math.PI * 2), s, r: R });
     };
     for (let j = 0; j < d; j++) for (let i = 0; i < w; i++) {
       const cx = (i + 0.5) * C - hx, cz = (j + 0.5) * C - hz;
       // scattered chunks / beams between the piles on most cells
       if (rng.chance(0.65)) {
         const k = rng.int(0, 1);
-        pieces.push({ ids: this.kitPiece(`sc${fam}.${k}`, () => rubbleScatter(fam, k)), x: clampIn(cx + rng.range(-5, 5), hx - 6), z: clampIn(cz + rng.range(-5, 5), hz - 6), yaw: rng.range(0, Math.PI * 2), s: rng.range(0.9, 1.2), r: 5.5 });
+        pieces.push({ ids: this.kitPiece(`sc${fam}.${k}${lw}`, () => rubbleScatter(fam, k, lean)), x: clampIn(cx + rng.range(-5, 5), hx - 6), z: clampIn(cz + rng.range(-5, 5), hz - 6), yaw: rng.range(0, Math.PI * 2), s: rng.range(0.9, 1.2), r: 5.5 });
       }
       if (used[j * w + i]) {
         // the cells a big heap spills into: a smaller pile pushed toward the lot edge
@@ -1608,7 +1655,7 @@ export class BuildingRenderer {
     // (rubble does not pop in)
     if (b.flags & BF.Burnt) animate = false;
     const bi: BInst = {
-      b, main: -1, site: -1, found: -1, cells: [], kitGeo: [], kitLod: [], kitM: null, shear: [], tile: 0, key: '', flags: 0, cr: 1, cg: 1, cb: 1, anim: animate ? POP_TIME : 0, geom: -1,
+      b, main: -1, site: -1, found: -1, cells: [], kitGeo: [], kitLod: [], kitM: null, kitLw: false, shear: [], tile: 0, key: '', flags: 0, cr: 1, cg: 1, cb: 1, anim: animate ? POP_TIME : 0, geom: -1,
       vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, minH: 0, foundGeom: -1, foundLod: -1, fh: 0, flod: 0,
       id: b.id, li: this.list.length, gone: false, waiting: -1, fresh: true, fade: null,
     };
@@ -2049,12 +2096,25 @@ export class BuildingRenderer {
    *  burnt lot were its only still view above 02464a3 in triangles (t_plains default view: +14k with 5 burnt lots) */
   private kitCast(): number { return this.lodPixels <= this.fadeMaxPixels ? 1 : 0; }
 
-  /** the preset changed: the debris pieces' shadow cascades follow (kitCast) */
+  /** the low preset's lighter debris pieces (rubbleKit, '#lw' geometries): the same layout, each heap without its
+   *  flattened underside (dropUnderside: hidden under the bed, and nothing casts there, see kitCast), each pile's ash
+   *  spill without its core ring (rubSpill) */
+  private kitLean(): boolean { return this.kitCast() === 0; }
+
+  /** the preset changed: the debris pieces' shadow cascades follow (kitCast), and burnt lots built from the other
+   *  preset's pieces are rebuilt (kitLean) */
   private kitShadows(): void {
     const m = this.kitCast();
     if (m === this.kitMask) return;
     this.kitMask = m;
-    for (const bi of this.list) for (let k = 0; k < bi.cells.length; k++) this.batch.setShadowCascades(bi.cells[k], m);
+    const lean = this.kitLean();
+    for (const bi of this.list) {
+      if (bi.kitM !== null && bi.kitLw !== lean) {
+        this.freeInstances(bi);
+        this.build(bi);
+      }
+      for (let k = 0; k < bi.cells.length; k++) this.batch.setShadowCascades(bi.cells[k], m);
+    }
   }
   private kitMask = -1;
 
@@ -2242,12 +2302,22 @@ export class BuildingRenderer {
       if (pg === bi.geom && bi.siteLod === bi.siteGeom && bi.found < 0) { this.lodSet(bi, 0); return; }
       if (pg === bi.geom && bi.siteLod === bi.siteGeom) { this.lodEval(bi, c, K, on, off); return; }
     }
+    // (a downgrade leaves the shadow maps as they are, see below)
+    const sv = shadowCasters.version, l0 = bi.lod, f0 = bi.flod;
     this.lodSet(bi, want);
     // foundation skirt: its plain box with the proxy, or while its exposed height projects under FOUND_PX (distance fk;
     // +-12% hysteresis like the buildings)
     const fk = (bi.fh * K) / FOUND_PX;
     const fw = bi.found >= 0 && (want || (lim && d * (bi.flod ? 1.12 : 0.88) > fk)) ? 1 : 0;
     this.setFound(bi, fw);
+    // a downgrade (the building, its site / rubble pieces or its skirt onto their far level, nothing back to full detail)
+    // does not re-render the shadow maps: it happens where the building is under lodPixels on screen, so its far level's
+    // shadow differs from its full model's only in detail smaller than that, and the maps take it in at their next
+    // render for any other reason (the view moving, other casters, an upgrade, at the latest shadowMaxAge frames later).
+    // A cut's catch-up (a far cut's thousands of downgrades, sometimes over two frames) otherwise re-rendered the map
+    // two frames after the cut frame's own render: a second full shadow pass per cut (WorldView.updateShadowPolicy,
+    // 'casters'), and a re-render every other frame while a resting view settled its deferred downgrades.
+    if (want >= l0 && (bi.found < 0 || fw >= f0)) shadowCasters.version = sv;
     // LOD off / selected: stays full until the metric or the selection changes (both re-queue)
     if (!lim) return;
     // the band: below it the upgrade distance of what is drawn below full detail, above it the downgrade distance of
