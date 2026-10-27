@@ -69,7 +69,8 @@
  *     block's trees in one order by that random, the prefix of the largest keep, RING_ALL_K). The per-frame pass
  *     (updateRingView) re-derives all of it only when the view or the ring's data changed, its prefix searches starting
  *     from the last frame's; the load's warm-up draws every ring and edge band mesh the load frame leaves hidden once,
- *     with one instance (warmMeshes), so none uploads its instance data on its first sight;
+ *     with one instance (warmMeshes), so none uploads its instance data on its first sight, and runs the pass over views
+ *     all over the map (warmRingPass), so the first camera moves do not run it cold;
  *   - next to a sector's map edge(s) (within RING_EDGE_NEAR x lodDistance) the ring is the horizon at any height: the
  *     sector's far blocks skip the camera height fade, and a low camera (below ringFadeHeight) sees the sector at a
  *     grazing angle, where the micro upper half reads as a small pale cone floating at 63% of the tree's height: its
@@ -176,6 +177,15 @@ const RING_VIS_PAD = 40;
 const _rvd = new Float64Array(12), _rvr = new Float64Array(3), _rva = new Float64Array(4);
 const _rv3 = new THREE.Vector3();
 const _rvF = new THREE.Frustum(), _rvM = new THREE.Matrix4(), _rvB = new THREE.Box3(), _rvP = new THREE.Vector3(), _rvQ = new THREE.Vector3();
+/** the load's warm-up of the ring pass (warmRingPass): its camera, and its views - target x, z in map widths, distance
+ *  (m), tilt (degrees): far views over the middle, the default and zoom views, low and mid cameras near each edge and
+ *  corner, street cameras (each pass turned a further 37 degrees) */
+const _rwCam = new THREE.PerspectiveCamera();
+const RING_WARM_VIEWS = [
+  0.5, 0.5, 4000, 75, 0.5, 0.5, 800, 50, 0.5, 0.5, 500, 37, 0.5, 0.5, 150, 16,
+  0.97, 0.5, 400, 25, 0.03, 0.5, 300, 18, 0.5, 0.97, 200, 10, 0.5, 0.03, 600, 30,
+  0.97, 0.97, 350, 22, 0.03, 0.03, 1200, 55, 0.95, 0.5, 2000, 70, 0.5, 0.95, 250, 12,
+];
 /** a near pair keeps the bounds of its depth-ordered prefixes every this many slots (ringNearBox: the bounds of what it
  *  draws, see updateRingView) */
 const RING_BOX_STEP = 32;
@@ -1153,6 +1163,10 @@ export class TreeRenderer {
   /** the far ring's all-in-one mesh's runtime rebuild (after a refill; a load builds it at once, see ringAllStep): this
    *  many trees per ring step unit (~0.6 MB of instance data, each unit's range drawn - uploaded - once right after it) */
   ringAllUnit = 8192;
+  /** the load's warm-up of the per-frame ring pass (warmRingPass): this many forced passes over views all over the map */
+  ringWarmPasses = 300;
+  /** main-thread ms of the last load's ring pass warm-up (stats) */
+  ringWarmMs = 0;
   /** main-thread time (ms) per frame for runtime (re)builds of tree chunks (a season, edits), nearest first (always at
    *  least one chunk); a load builds all of its chunks at once (buildAll, loadFrames) */
   buildBudgetMs = 3;
@@ -2174,12 +2188,17 @@ export class TreeRenderer {
     const first = this.updates++ === 0;
     if (first && this.ringOn && this.ringPending()) this.flushRing();
     // the load's first frame in a view with a load warm-up (WorldView: its hidden renders right after this frame's,
-    // behind the loading veil): those renders draw every ring and edge band mesh this view leaves hidden once (warmMeshes,
-    // queued: Shadows.ts loadWarm), so their instance data uploads with the load, not on their first sight in the first
-    // zoom-out / zoom-in; the ring's own preload (ringPreload: in this frame) is then not needed
+    // behind the loading veil): the ring pass is warmed up over views all over the map (warmRingPass), and those renders
+    // draw every ring and edge band mesh this view leaves hidden once (warmMeshes; both queued: Shadows.ts loadWarm), so
+    // the first zoom-out / zoom-in neither runs the pass cold nor uploads their instance data on their first sight; the
+    // ring's own preload (ringPreload: in this frame) is then not needed
     if (first && loadWarm.open) {
       this.ringPreload = 0;
-      loadWarm.queue.push(() => { if (!this.disposed) this.warmMeshes(); });
+      loadWarm.queue.push(() => {
+        if (this.disposed) return;
+        this.warmRingPass(camera);
+        this.warmMeshes();
+      });
     }
     // the load's frames build what its later work dirtied at once (LOAD_FRAMES); runtime rebuilds keep to buildBudgetMs
     if (this.dirty.size) {
@@ -2565,6 +2584,35 @@ export class TreeRenderer {
     for (const list of [this.ring, this.ringFar]) for (const m of list) if (m && m.userData.ringCount) this.warmDraw(m);
     if (this.ringAll && this.ringAllN) this.warmDraw(this.ringAll);
     for (const ch of this.chunks) for (const m of ch.bfar) if (m && ((m.userData.total as number | undefined) ?? 0) > 0) this.warmDraw(m);
+  }
+
+  /**
+   * The load's warm-up of the per-frame ring pass (queued with warmMeshes by the first update): ringWarmPasses forced
+   * passes (updateRingView) over views all over the map (RING_WARM_VIEWS), so the engine has compiled the pass for every
+   * kind of view before the first camera move (a fresh page's first zoom-out and far orbit ran it cold, at ~1.5-2x a
+   * warmed page's ring pass CPU, measured), then the load view's own pass again: its counts, visibility, shapes, uniforms
+   * and key are those of a plain pass at that view.
+   */
+  private warmRingPass(camera: THREE.Camera): void {
+    const n = this.ringWarmPasses;
+    if (!this.ringOn || n <= 0 || !(camera as THREE.PerspectiveCamera).isPerspectiveCamera) return;
+    const t0 = performance.now();
+    const real = camera as THREE.PerspectiveCamera, cam = _rwCam.copy(real, false);
+    const W = this.state.size * CELL_SIZE, lod = this.lodDistance, K = this.ringViewKey, T = this.terrain, V = RING_WARM_VIEWS;
+    for (let i = 0; i < n; i++) {
+      const v = (i % (V.length / 4)) * 4, x = V[v] * W, z = V[v + 1] * W, d = V[v + 2], t = (V[v + 3] * Math.PI) / 180;
+      const yaw = i * 0.6458, gy = T.meshHeightAt(x, z);
+      cam.position.set(x - Math.sin(yaw) * Math.cos(t) * d, gy + Math.sin(t) * d, z + Math.cos(yaw) * Math.cos(t) * d);
+      cam.lookAt(x, gy, z);
+      cam.updateMatrixWorld();
+      const p = cam.position;
+      K[0] = NaN;
+      this.updateRingView(p.x, p.y, p.z, lod, p.y - T.meshHeightAt(p.x, p.z), cam);
+    }
+    const p = real.position;
+    K[0] = NaN;
+    this.updateRingView(p.x, p.y, p.z, lod, p.y - T.meshHeightAt(p.x, p.z), real);
+    this.ringWarmMs = performance.now() - t0;
   }
 
   /** warm draws (warmDraw) no render drew: back to their own state */

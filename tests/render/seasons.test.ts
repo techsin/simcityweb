@@ -1266,6 +1266,62 @@ describe('outer ring trees', () => {
     tr.dispose();
   }, 120_000);
 
+  it('the load\'s warm-up of the ring pass (forced passes over views all over the map) leaves the ring as a plain pass at the load view does', () => {
+    const st = createCityState(defaultCityConfig({ size: 128, seed: 11, terrain: 'hills', climate: 'temperate', treeDensity: 0.6 }));
+    const W = st.size * CELL_SIZE;
+    type R = { ring: (THREE.InstancedMesh | null)[]; ringFar: (THREE.InstancedMesh | null)[]; ringAll: THREE.InstancedMesh | null; ringU: { uRingP: { value: THREE.Vector3 }; uRingQ: { value: THREE.Vector2 } }; terrain: TerrainRenderer };
+    const mk = (passes: number) => {
+      const tr = new TreeRenderer(st, new TerrainRenderer(st, 1, false), { lodDistance: 850, density: 1, castShadows: false, maxVariants: 3 });
+      tr.ringWarmPasses = passes;
+      return tr;
+    };
+    const a = mk(300), b = mk(0);
+    // (what a frame draws: every ring mesh's own visibility - a mesh drawn once by the load's warm draws, warmOnce, is
+    // back to its own state right after that draw -, its count and box while drawn, its shape; the ring uniforms)
+    type Wm = THREE.InstancedMesh & { warmOnce?: boolean; warmVis?: boolean; warmCount?: number };
+    const state = (tr: TreeRenderer) => {
+      const r = tr as unknown as R;
+      const ms = [...r.ring, ...r.ringFar, r.ringAll].map((m0) => {
+        if (!m0) return '-';
+        const m = m0 as Wm, vis = m.warmOnce ? m.warmVis : m.visible, n = m.warmOnce ? m.warmCount : m.count, bb = m.boundingBox!;
+        return vis ? `1:${n}:${m.geometry.name}:${bb.min.toArray().join(',')}:${bb.max.toArray().join(',')}` : `0:${m.geometry.name}:${m.warmOnce ? 'w' : ''}`;
+      });
+      return [...ms, r.ringU.uRingP.value.toArray().join(','), r.ringU.uRingQ.value.toArray().join(',')].join(' ');
+    };
+    const cam = new THREE.PerspectiveCamera(38, 16 / 9, 1, 90000);
+    const terr = (a as unknown as R).terrain;
+    const view = (x: number, z: number, d: number, tilt: number, yaw: number) => {
+      const t = (tilt * Math.PI) / 180, y = (yaw * Math.PI) / 180, gy = terr.meshHeightAt(x, z);
+      cam.position.set(x - Math.sin(y) * Math.cos(t) * d, gy + Math.sin(t) * d, z + Math.cos(y) * Math.cos(t) * d);
+      cam.lookAt(x, gy, z);
+      cam.updateMatrixWorld();
+    };
+    // the load frame (default view over the map's middle) in a view with a load warm-up, its queue run right after it
+    view(W / 2, W / 2, 800, 50, 45);
+    for (const tr of [a, b]) {
+      loadWarm.queue.length = 0;
+      loadWarm.open = true;
+      try {
+        tr.update(cam);
+      } finally {
+        loadWarm.open = false;
+      }
+      for (const f of loadWarm.queue.splice(0)) f();
+    }
+    expect(a.ringWarmMs).toBeGreaterThan(0);
+    expect(b.ringWarmMs).toBe(0);
+    expect(state(a)).toBe(state(b));
+    // ... and every frame after it: a far orbit, an edge view, a low corner view, a zoom's middle
+    for (const [x, z, d, tilt, yaw] of [[W / 2, W / 2, 4000, 75, 60], [W - 100, W / 2, 400, 25, 90], [200, 200, 300, 12, -45], [W / 2, W / 2, 500, 37, 135], [W / 2, W / 2, 800, 50, 45]]) {
+      view(x, z, d, tilt, yaw);
+      a.update(cam);
+      b.update(cam);
+      expect(state(a)).toBe(state(b));
+    }
+    a.dispose();
+    b.dispose();
+  }, 120_000);
+
   it('edge band trees: models up to shadowLodFrac x the LOD distances, then their own impostors, which never cast', () => {
     const { st, tr } = make(128);
     const W = st.size * CELL_SIZE;
