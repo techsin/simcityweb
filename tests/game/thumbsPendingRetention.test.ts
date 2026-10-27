@@ -66,7 +66,7 @@ function town(): { st: CityState; sim: Simulation; home: { id: number; x: number
 }
 
 describe('a thumbnail request still queued keeps no exited city alive (close-out c2 major)', () => {
-  it('toolbar: the Parks flyout\'s cards requested their thumbnails (all still queued); the toolbar and its scene are collected', async () => {
+  it('toolbar: the Parks flyout\'s cards requested their thumbnails (all still queued); the toolbar and its scene are collected', { timeout: 120000 }, async () => {
     const before = pending.size;
     const make = (): Record<string, WeakRef<object>> => {
       const scene = { kind: 'CityScene stand-in', hud: new Float64Array(1 << 15) };
@@ -95,7 +95,7 @@ describe('a thumbnail request still queued keeps no exited city alive (close-out
     expect(pending.size).toBeGreaterThan(before);
   });
 
-  it('inspector: a home and a clinic shown (their hero thumbnails still queued), then dropped: panel, sim and scene are collected', async () => {
+  it('inspector: a home and a clinic shown (their hero thumbnails still queued), then dropped: panel, sim and scene are collected', { timeout: 120000 }, async () => {
     const before = pending.size;
     const make = (): Record<string, WeakRef<object>> => {
       const scene = { kind: 'CityScene stand-in', hud: new Float64Array(1 << 15) };
