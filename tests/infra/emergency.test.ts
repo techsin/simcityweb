@@ -14,7 +14,7 @@ import {
 } from '../../src/sim/infra/emergency';
 import { CATALOG, getDef, rebuildCatalogIndex } from '../../src/sim/catalog';
 import type { BuildingDef } from '../../src/sim/catalogTypes';
-import { RoadGraph } from '../../src/sim/infra/graph';
+import { GraphBuildRun, GridGraph, RoadGraph } from '../../src/sim/infra/graph';
 import { MinHeap } from '../../src/sim/infra/heap';
 import { Search, Seeds, roadSearch } from '../../src/sim/infra/search';
 import { getFire, getTraffic, triggerDisaster } from '../../src/sim/systems/infra';
@@ -599,13 +599,18 @@ describe('emergency dispatch: coverage promise, search budget, road graph, persi
     getFire(sim)!.riskBoost = 0;
     const em = emergencyOf(sim)!;
     const tr = getTraffic(sim)!;
-    // every RoadGraph build from here on: whose graph, and inside the emergency system's daily work / a UI call?
+    // every RoadGraph build from here on: whose graph, and inside the emergency system's daily work / a UI call? (B2:
+    // traffic's own rebuild runs in pieces and publishes into its graph: GraphBuildRun.publish counts as its build)
     const builds: { traffic: boolean; inEm: boolean }[] = [];
     let inEm = false;
-    const ob = RoadGraph.prototype.build;
+    const ob = RoadGraph.prototype.build, op = GraphBuildRun.prototype.publish;
     RoadGraph.prototype.build = function (this: RoadGraph, s: CityState): void {
       builds.push({ traffic: this === tr.road, inEm });
       ob.call(this, s);
+    };
+    GraphBuildRun.prototype.publish = function (this: GraphBuildRun, road: RoadGraph, rail: GridGraph, subway: GridGraph): void {
+      builds.push({ traffic: road === tr.road, inEm });
+      op.call(this, road, rail, subway);
     };
     const od = em.dailyWork.bind(em);
     em.dailyWork = (s: Simulation) => { inEm = true; try { od(s); } finally { inEm = false; } };
@@ -639,6 +644,7 @@ describe('emergency dispatch: coverage promise, search budget, road graph, persi
       expect(builds.every((q) => q.traffic && !q.inEm), JSON.stringify(builds)).toBe(true);
     } finally {
       RoadGraph.prototype.build = ob;
+      GraphBuildRun.prototype.publish = op;
     }
   });
 
@@ -839,11 +845,17 @@ describe('emergency perf', () => {
     wrap('monthly');
     // road edits (a player / the bot laying roads) every 20 days: traffic rebuilds its graph in its own scheduled
     // step; the emergency system must never build one in its daily work (a 256² build is ~10 ms)
-    const ob = RoadGraph.prototype.build;
+    const ob = RoadGraph.prototype.build, op = GraphBuildRun.prototype.publish;
     RoadGraph.prototype.build = function (this: RoadGraph, s2: CityState): void {
       builds++;
       if (inEm) emBuilds++;
       ob.call(this, s2);
+    };
+    // (B2: traffic's piecewise rebuild publishes into its graphs)
+    GraphBuildRun.prototype.publish = function (this: GraphBuildRun, road: RoadGraph, rail: GridGraph, subway: GridGraph): void {
+      builds++;
+      if (inEm) emBuilds++;
+      op.call(this, road, rail, subway);
     };
     let edit = -1;
     for (let i = st.size * 2; i < st.cells && edit < 0; i++) if (st.network[i] === 0 && st.building[i] < 0 && st.network[i - 1] !== 0) edit = i;
@@ -862,6 +874,7 @@ describe('emergency perf', () => {
       }
     } finally {
       RoadGraph.prototype.build = ob;
+      GraphBuildRun.prototype.publish = op;
     }
     expect(builds).toBeGreaterThan(10); // traffic did rebuild after the edits
     expect(emBuilds).toBe(0);

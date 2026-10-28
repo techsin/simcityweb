@@ -56,7 +56,9 @@ describe('EM-1: an earthquake in a bot town with an attentive player (verify-fac
 
 describe('EM-1: normal play keeps its prompts', () => {
   it('a bot town over 4 years (no disasters, nobody answers): the prompts counted at settle points are the prompts raised', { timeout: 900000 }, async () => {
-    const bot = new SimBot({ size: 128, years: 4, seed: 7, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false, neglect: true }, await botSystems(false));
+    // (seed 2: the scenario needs a few uncovered major incidents; B2's honest step estimates moved the bot's schedule,
+    // and seed 7's town now raises none in 4 years — seeds 1, 2, 4, 5, 6, 7 give 0, 4, 2, 2, 1, 0 prompts)
+    const bot = new SimBot({ size: 128, years: 4, seed: 2, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false, neglect: true }, await botSystems(false));
     const sim = bot.sim;
     // raised: an 'uncovered' event of a major incident with manualPossible (the old rule set prompted right then)
     const raised = new Set<number>(), counted = new Set<number>();
