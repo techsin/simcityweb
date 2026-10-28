@@ -388,4 +388,4 @@ run ended:
 - I deleted only files I had created: the throwaway guard-check test copies and two superseded crops/sheets of mine.
 - Side effect: the full vitest run rewrote vitest's shared results cache, which every worktree reaches through the
   node_modules symlink (`node_modules/.vite/vitest/da39a3ee…/results.json`: test durations by relative path, 201
-  entries). Every vitest run in any worktree does this. The file existed before and is left in place.
+  entries). Any vitest run without `--no-cache` does this. The file existed before and is left in place.

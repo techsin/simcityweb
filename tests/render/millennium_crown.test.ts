@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type * as THREE from 'three';
 import { ModelBuilder } from '../../src/assets/ModelBuilder';
-import type { ManifestEntry } from '../../src/assets/manifest';
+import { MANIFEST_BY_ID, type ManifestEntry } from '../../src/assets/manifest';
 import type { ModelBuildFn } from '../../src/assets/registry';
 import { models as millennium } from '../../src/assets/builders/lm_millennium_tower';
 import { models as crown } from '../../src/assets/builders/lm_metropolis_crown';
@@ -11,17 +11,8 @@ import { RNG } from '../../src/core/rng';
 import { Surf } from '../../src/core/types';
 import { makeLodProxy } from '../../src/render/city/buildings/lodProxy';
 
-// Pending manifest entries: registration is deliberately left to the integration hunk.
-const entries: ManifestEntry[] = [
-  {
-    id: 'lm_millennium_tower', group: 'landmark', footprint: [4, 4], variants: 2, height: [530, 590],
-    desc: 'Millennium Tower: stepped glass skyscraper with panoramic sky decks, silver needle and reflecting-pool plaza.',
-  },
-  {
-    id: 'lm_metropolis_crown', group: 'landmark', footprint: [4, 4], variants: 2, height: [600, 650],
-    desc: 'Metropolis Crown: fluted civic skyscraper with an open bronze coronet, sky hall and formal garden plaza.',
-  },
-];
+// The registered entries (catalog defs pending, LG-02), so the footprints and height ranges checked here are the manifest's.
+const entries: ManifestEntry[] = ['lm_millennium_tower', 'lm_metropolis_crown'].map((id) => MANIFEST_BY_ID[id]);
 const models: Record<string, ModelBuildFn> = { ...millennium, ...crown };
 
 function build(entry: ManifestEntry, variant: number, seed: number): [THREE.BufferGeometry, THREE.BufferGeometry] {

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { ModelBuilder } from '../../src/assets/ModelBuilder';
-import type { ManifestEntry } from '../../src/assets/manifest';
+import { MANIFEST_BY_ID, type ManifestEntry } from '../../src/assets/manifest';
 import type { ModelBuilders } from '../../src/assets/registry';
 import { models as library } from '../../src/assets/builders/lm_central_library';
 import { models as station } from '../../src/assets/builders/lm_grand_central';
@@ -12,12 +12,8 @@ import { RNG, hashString } from '../../src/core/rng';
 import { Surf } from '../../src/core/types';
 import { makeLodProxy } from '../../src/render/city/buildings/lodProxy';
 
-// Local entries exercise unregistered builders without changing the production manifest or registry.
-const entries: ManifestEntry[] = [
-  { id: 'lm_central_library', group: 'landmark', footprint: [3, 3], variants: 2, height: [35, 38], desc: 'Central Library' },
-  { id: 'lm_grand_central', group: 'landmark', footprint: [4, 3], variants: 2, height: [31, 42], desc: 'Grand Central Station' },
-  { id: 'lm_stock_exchange', group: 'landmark', footprint: [3, 3], variants: 2, height: [74, 87], desc: 'Stock Exchange' },
-];
+// The registered entries (catalog defs pending, LG-02), so the footprints and height ranges checked here are the manifest's.
+const entries: ManifestEntry[] = ['lm_central_library', 'lm_grand_central', 'lm_stock_exchange'].map((id) => MANIFEST_BY_ID[id]);
 const models: ModelBuilders = { ...library, ...station, ...exchange };
 const tris = (g: THREE.BufferGeometry) => (g.index?.count ?? g.getAttribute('position').count) / 3;
 

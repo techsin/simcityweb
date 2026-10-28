@@ -1,9 +1,9 @@
-/** New LG-02 art, tested directly until its manifest / registration merge. No renderer or WebGL context needed. */
+/** LG-02 art: the conservatory and the twin towers, built from their manifest entries. No renderer or WebGL context needed. */
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { BufferGeometry } from 'three';
 import { ModelBuilder } from '../../src/assets/ModelBuilder';
-import type { ManifestEntry } from '../../src/assets/manifest';
+import { MANIFEST_BY_ID, type ManifestEntry } from '../../src/assets/manifest';
 import { models as botanical } from '../../src/assets/builders/lm_botanical_dome';
 import { models as trade } from '../../src/assets/builders/lm_world_trade_center';
 import { hashString, RNG } from '../../src/core/rng';
@@ -11,10 +11,8 @@ import { Surf } from '../../src/core/types';
 import { makeLodProxy } from '../../src/render/city/buildings/lodProxy';
 
 const builders = { ...botanical, ...trade };
-const entries: ManifestEntry[] = [
-  { id: 'lm_botanical_dome', group: 'landmark', footprint: [4, 4], variants: 2, height: [26, 32], desc: 'Botanical Dome: triangulated glass conservatories, vent lanterns, glazed entrance, lily pools and planted gardens.' },
-  { id: 'lm_world_trade_center', group: 'landmark', footprint: [4, 4], variants: 2, height: [390, 415], desc: 'World Trade Center: ribbed silver twins or stepped teal office towers, broadcast mast, conference podium and globe plaza.' },
-];
+// The registered entries (catalog defs pending, LG-02), so the footprints and height ranges checked here are the manifest's.
+const entries: ManifestEntry[] = ['lm_botanical_dome', 'lm_world_trade_center'].map((id) => MANIFEST_BY_ID[id]);
 
 function build(entry: ManifestEntry, variant: number, seed: number): [BufferGeometry, BufferGeometry] {
   const b = new ModelBuilder();
