@@ -2,8 +2,9 @@
 
 ## The rebuild on T032's code (the local worker)
 
-Branch `local/W1.2-worker`, committed locally, not pushed, no `.done`. The Codex first pass (`784fe59`, below) and the
-final W0-complete were already in. Merged in, in this order:
+Branch `local/W1.2-worker`, committed locally, no `.done`. I pushed nothing; a usage-limit snapshot (`bddba48`, not
+mine) committed the work in progress and pushed the branch at 03:22, and I continued on top of it. The Codex first
+pass (`784fe59`, below) and the final W0-complete were already in. Merged in, in this order:
 - dev `fc52893` (`45d7fe1`). The brief named `4953806`; dev had since gained T010's landmarks and two docs commits.
   Clean merge.
 - `local/W1.1b-loopback` `aa60c0a` (`346f69d`). One conflict, hygiene.test: both gates kept, T032's worker-safe
@@ -19,7 +20,7 @@ suites test, and hosts.test tests the transport.
 
 | File | Now |
 |---|---|
-| `src/worker/WorkerSimHost.ts` (532 → 310 lines) | `WorkerSimHost extends PacketSimHost`: a real Ready (`initialIsReady = true`), `connect()` to the port, the worker's messages to `receive()`. **Deleted:** its own R1 path (the action facade, `predict()`, the optimistic writes), `RemoteWatch`, the request and reply bookkeeping, the per-packet epochs, the `settled` acks in Ready. **Kept and rebuilt (T034's own):** `bootWorkerSimHost` (init, hello and `PROTOCOL_VERSION`, boot phases to `onBoot`, 20 s of visible time between them), a `WorkerLink` (the port, the R11 watchdog, the page lifecycle resets, ping once per visible second, 10 s without a packet is a crash), fail-fast on `onerror` / `messageerror` / `fatal` (`HostCrashed`, `onCrash(error, duringBoot)`), persistence 'main', `loadWorkerSimHost` (reads the record, never deserializes it), the pre-spawned `browserSimWorker`, `runDays` for deterministic mode. HostActions and the optimistic CityActions load lazily while the worker boots, as T031's loopback loads them in `start()`. |
+| `src/worker/WorkerSimHost.ts` (532 → 314 lines) | `WorkerSimHost extends PacketSimHost`: a real Ready (`initialIsReady = true`), `connect()` to the port, the worker's messages to `receive()`. **Deleted:** its own R1 path (the action facade, `predict()`, the optimistic writes), `RemoteWatch`, the request and reply bookkeeping, the per-packet epochs, the `settled` acks in Ready. **Kept and rebuilt (T034's own):** `bootWorkerSimHost` (init, hello and `PROTOCOL_VERSION`, boot phases to `onBoot`, 20 s of visible time between them), a `WorkerLink` (the port, the R11 watchdog, the page lifecycle resets, ping once per visible second, 10 s without a packet is a crash), fail-fast on `onerror` / `messageerror` / `fatal` (`HostCrashed`, `onCrash(error, duringBoot)`), persistence 'main', `loadWorkerSimHost` (reads the record, never deserializes it), the pre-spawned `browserSimWorker`, `runDays` for deterministic mode. HostActions and the optimistic CityActions load lazily while the worker boots, as T031's loopback loads them in `start()`; a host that closed meanwhile is not handed over. |
 | `src/worker/simWorker.ts` (308 → 291) | Hosts SimCore, the ChangeRecorder and ProtocolInbox. **Deleted:** its own inbox, watch cache, error throttle, command and Ack bookkeeping, the persistence barrier, the `run` / `ran` messages. **Kept:** the loop (one frame-hook pass, one scheduler step or one day per task, a MessageChannel post to self between, FIFO commands at those boundaries, the speed re-read before every day), the O7 live flag, `installSimWorker` for the node adapter, the browser entry. **New:** `MainStore` (the `InboxStore` for persistence 'main'), explicit acks with an epoch, `Ready.lost`, `debug.runDays`, `maxDaysPerFrame` honoured per frame. |
 | `src/worker/workerProtocol.ts` (95 → 74) | Only what M2W / W2M lack: init's W1.2 fields (`city: serialized`, `persistence: 'main'`, `regionName`, `deterministic`), `{t:'ack', ack, epoch}`, `{t:'stored', savedAt, ok}`, the port types, the timeouts and `WorkerLiveness`. Boot, hello, ready, packets, replies and ping are protocol.ts's. |
 | `src/worker/LoopbackSimHost.ts` (T032's) | One seam: the save / snapshot branch of `reply()` became `protected settle(reply, wait)`, and `Settle` is exported. The loopback behaves as before. |
@@ -73,16 +74,17 @@ as a FIFO barrier behind the frame in progress, and acks with the day reached.
 
 ### WorldView's resync wiring (NOTE-041 item 2)
 
-A resync swaps in a fresh `CityState`, then emits `'reset'`, which WorldView already handled with `setState(this.state)`,
-its own stale state. WorldView takes an optional `getState` (CityObjectsView's accessor, §2.10's `ctx.state`) and
-rebuilds through `setState` as a load does; the camera is untouched. CityScene passes `() => this.sim.state`. I used
-this rather than `onResync`: the `'reset'` already arrives at the right moment for every replica host, and `onResync`
-stays free for T033's mirror. worldResync.test checks it through the loopback host with `host.harness.resync()`.
+A resync swaps in a fresh `CityState`, then emits `'reset'`, which WorldView already handled with
+`setState(this.state)`, its own stale state. WorldView takes an optional `getState` (CityObjectsView's accessor,
+§2.10's `ctx.state`) and rebuilds through `setState` as a load does; the camera is untouched. CityScene passes
+`() => this.sim.state`. I used this rather than `onResync`: the `'reset'` already arrives at the right moment for
+every replica host, and `onResync` stays free for T033's mirror. worldResync.test checks it through the loopback host
+with `host.harness.resync()`.
 
 ### The hunks outside T034's files, and why
 
-- `Simulation.ts`: `frameHooks`, `accumulate`, `stepDay`, `capFrame`. The worker runs a frame as separate tasks; `update()`
-  calls the first two itself, so LocalSimHost and the bot run the same code.
+- `Simulation.ts`: `frameHooks`, `accumulate`, `stepDay`, `capFrame`. The worker runs a frame as separate tasks;
+  `update()` calls the first two itself, so LocalSimHost and the bot run the same code.
 - `scheduler.ts`: O7's `live` field (one line in `framesActive`), and host-driven mode: `run()` became a generator that
   yields after each step, so `beginFrame` / `stepOnce` / `endFrame` give the worker one step per task without copying
   the urgent-first and least-served selection or the credit renormalisation; `run()` consumes it in one go, so
@@ -119,7 +121,17 @@ stays free for T033's mirror. worldResync.test checks it through the loopback ho
 - hygiene.test: `W1.2: simWorker import graph excludes bundle.ts, save/index.ts and recoveryLs.ts`, now also no
   replica, loopback core, LoopbackSimHost, WorkerSimHost or SimHost in the worker.
 
-GATES_PLACEHOLDER
+### Gates I ran
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| hosts.test, workerTransport.test, worldResync.test (the W1.2 gates) | 4, 14 and 1 passed |
+| The worker suites with the fixtures (`tests/worker`: T032's lag, replicaSafe, querySideEffects, loopbackHost; T031's hostActions, pendingEdits, holdCalendar; hygiene with the W1.2 gate on) | **25 files, 200 passed, none skipped** (T031's HostActions oracle now runs), 188 s; then the seven W1.2-touching files again on the final HEAD, 64 passed |
+| S1 protector (`tests/perf/protector.test.ts`), the production loop under worker_threads | 4 passed: both kernel modes intact through 60 days, both negative controls invalidate the worker only; before and after the T031 merge |
+| The render and game files that reach WorldView or CityScene (exitRetention, pendingPreviews, seasons, shadows, cutShadows; cameraStart, cityDisposeCanvas, citySaves, cameraControls, the retention suites, newyear, leakprobe, quakeShakePlop, emergencyBanner, toolCommands, pendingTools; ambience, breakdownRetention) | 22 files, 230 passed |
+| The bot, `SIMBOT_LOG=1 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7` | **196,101 in 2015** (59,288 + 95,301 + 41,512); the whole output, action log included, is identical to dev `e0d7f32`'s run apart from the timing columns |
+| Each new gate against its behaviour removed | all fail: no acks outside ticks (the hidden-tab save hangs); tick acks trusted across a resync (the worker refuses ack 4 of the old numbering); the live flag left on in deterministic runs (hash mismatch on day 30); `maxDaysPerFrame` ignored (both hold cases: 8 and 20 days pass); no `Ready.lost` (the dropped read hangs); a refused put ignored by the worker (its next snapshot is refused) |
 
 ### Plan-vs-code differences
 
@@ -165,7 +177,7 @@ The worker side and a standalone `SimHost` adapter are implemented. The plain-no
 integration, region-screen prefetch and automatic local fallback still need the lead's integration with T031/T032.
 The game continues to construct its existing local host.
 
-## Implementation and file ownership
+### Implementation and file ownership
 
 | File | Change |
 |---|---|
@@ -196,7 +208,7 @@ behavior when applying the scheduler iterator extraction; the urgent limit, leas
 credit renormalization and headless carry calculation here retain the base algorithm.
 There are no edits to SimHost.ts, SimCore.ts, protocol.ts, main.ts, CityScene or Vite configuration.
 
-## Ordering, recovery and lifetime
+### Ordering, recovery and lifetime
 
 Commands are applied FIFO between units. Their Ack entries follow their effects; query, watch, error and persistence
 results are delivered after packet replay. Backpressure stops recorder flushes at `seq - ack > 4`, retaining the
@@ -221,7 +233,7 @@ listeners are tied to the host controller and the supplied city signal. Disposal
 outstanding work, releases registrations, leaves retained views empty and awaits worker termination. Main's new
 simulation compatibility object cannot advance or replace the replica.
 
-## Tests and checked gates
+### Tests and checked gates
 
 Vitest was attempted with `npx vitest run tests/worker/hygiene.test.ts --maxWorkers=1`. It failed **before collection**:
 Vite's `externalize-deps` Windows `optimizeSafeRealPathSync` probe calls `spawn` and receives `EPERM`. No Vitest pass
@@ -264,7 +276,7 @@ the expected ArrayBufferDetaching trace; main remained intact. These controls ex
 
 `npx tsc --noEmit` and `git diff --check`: **pass**.
 
-## Design differences and integration work
+### Design differences and integration work
 
 1. **T031/T032 are absent from this base.** WorkerSimHost contains a compact temporary action/prediction facade,
    keyed watch cache and optimistic-rebase hooks. Fold these into HostActions and the loopback main-side code when
@@ -289,7 +301,7 @@ the expected ArrayBufferDetaching trace; main remained intact. These controls ex
 7. **Test bundles use the existing ignored tools/bench/worker/.tmp directory.** The checkout's node_modules is a
    junction outside this writable worktree, so the design's proposed node_modules/.cache output was not used.
 
-## Gates left for the lead / not verified here
+### Gates left for the lead / not verified here
 
 - The actual Vitest invocations (hosts, transport, protector, hygiene), the existing suites and full Vitest run.
 - The **128 × 15, seed-7 bot = 196,101 in 2015**. The default algorithm and inference path were preserved, but the bot
