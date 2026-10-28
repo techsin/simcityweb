@@ -513,8 +513,8 @@ class App {
     // the state was just loaded / founded + saved: clean
     const now = Date.now();
     this.city = { scene: null, tile, host: null, lastSave: now, cleanChanges: 0, snapChanges: 0, cleanFp: cityFingerprint(st), snapFp: '', lastSnap: now, saving: 0, saveFailed: false };
-    audio.startAmbience();
-    audio.setAmbience({ population: st.stats.population, zoom: 0.5, night: false });
+    audio.setAmbience({ population: st.stats.population, zoom: 0.5, night: false, water: 0, month: st.month, climate: st.config.climate, construction: 0, activity: 1 });
+    audio.startAmbienceAfterLoading(this.root);
     audio.setMusicContext({ screen: 'city', night: false, population: st.stats.population, activity: 0.5 });
     if (Ctor) {
       const scene = new Ctor({

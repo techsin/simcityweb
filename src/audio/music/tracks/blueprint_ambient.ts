@@ -292,43 +292,46 @@ const meanDeg = (ph: readonly MN[]): number => ph.reduce((s, n) => s + n[1], 0) 
  * and the lab's mute / solo as 'sub').
  */
 function subVoice(env: MusicEnv, keep: Held[], t0: number, m: number, amp: number, lv0: number, attack: number, pts: readonly (readonly [number, number])[], tEnd: number, release: number): void {
-  const { ctx, inst } = env;
-  if (!isFinite(t0) || t0 >= inst.cutoff) return;
-  if (inst.mute.has('sub') || (inst.solo.size && !inst.solo.has('sub') && !inst.solo.has('pad:sub'))) return;
-  let t = t0, att = attack;
-  const now = env.live ? ctx.currentTime + 0.03 : -Infinity;
-  if (t < now) {
-    if (tEnd + release * 0.5 < now + 1) return;
-    t = now;
-    att = Math.min(attack, 1);
-  }
-  const f = 440 * Math.pow(2, (m - 69) / 12);
-  const peak = 0.048 * Math.pow(Math.max(0, Math.min(1, amp)), 1.5);
-  const g = inst.node.gain(0);
-  g.gain.setValueAtTime(0, t);
-  let last = t + att, lv = lv0;
-  g.gain.linearRampToValueAtTime(peak * lv, last);
-  for (const [pt, pl] of pts)
-    if (pt > last + 0.25 && pt < tEnd - 0.25) {
-      g.gain.linearRampToValueAtTime(peak * pl, pt);
-      (last = pt), (lv = pl);
+  return env.inst.oneShot((nodes) => {
+    const { ctx, inst } = env;
+    if (!isFinite(t0) || t0 >= inst.cutoff) return;
+    if (inst.mute.has('sub') || (inst.solo.size && !inst.solo.has('sub') && !inst.solo.has('pad:sub'))) return;
+    let t = t0, att = attack;
+    const now = env.live ? ctx.currentTime + 0.03 : -Infinity;
+    if (t < now) {
+      if (tEnd + release * 0.5 < now + 1) return;
+      t = now;
+      att = Math.min(attack, 1);
     }
-  const tR = Math.max(last, tEnd), end = tR + release;
-  g.gain.linearRampToValueAtTime(peak * lv, tR);
-  g.gain.linearRampToValueAtTime(0, end);
-  const o1 = ctx.createOscillator();
-  o1.frequency.value = f;
-  const o2 = ctx.createOscillator();
-  o2.frequency.value = f * 2;
-  const g2 = inst.node.gain(0.22);
-  o1.connect(g);
-  o2.connect(g2).connect(g);
-  g.connect(inst.channel('pad:sub').input);
-  for (const o of [o1, o2]) {
-    o.start(t);
-    o.stop(end + 0.05);
-    keep.push({ src: o, end: end + 0.05 });
-  }
+    const f = 440 * Math.pow(2, (m - 69) / 12);
+    const peak = 0.048 * Math.pow(Math.max(0, Math.min(1, amp)), 1.5);
+    const g = inst.node.gain(0);
+    g.gain.setValueAtTime(0, t);
+    let last = t + att, lv = lv0;
+    g.gain.linearRampToValueAtTime(peak * lv, last);
+    for (const [pt, pl] of pts)
+      if (pt > last + 0.25 && pt < tEnd - 0.25) {
+        g.gain.linearRampToValueAtTime(peak * pl, pt);
+        (last = pt), (lv = pl);
+      }
+    const tR = Math.max(last, tEnd), end = tR + release;
+    g.gain.linearRampToValueAtTime(peak * lv, tR);
+    g.gain.linearRampToValueAtTime(0, end);
+    const o1 = ctx.createOscillator();
+    o1.frequency.value = f;
+    const o2 = ctx.createOscillator();
+    o2.frequency.value = f * 2;
+    const g2 = inst.node.gain(0.22);
+    o1.connect(g);
+    o2.connect(g2).connect(g);
+    g.connect(inst.channel('pad:sub').input);
+    for (const o of [o1, o2]) {
+      o.start(t);
+      o.stop(end + 0.05);
+      nodes.source(o, end + 0.05);
+      keep.push({ src: o, end: end + 0.05 });
+    }
+  });
 }
 
 /**
@@ -336,25 +339,28 @@ function subVoice(env: MusicEnv, keep: Held[], t0: number, m: number, amp: numbe
  * high pad (routed into 'pad:hi'). Very quiet: it only adds the top-octave shimmer the dark piano / pads lack.
  */
 function airSwell(env: MusicEnv, keep: Held[], t: number, attack: number, hold: number, release: number, level: number, offset: number): void {
-  const { ctx, inst } = env;
-  if (!isFinite(t) || t >= inst.cutoff || (env.live && t < ctx.currentTime)) return;
-  if (inst.mute.has('air') || (inst.solo.size && !inst.solo.has('air'))) return;
-  const tA = t + attack, tR = tA + hold, end = tR + release;
-  const src = ctx.createBufferSource();
-  src.buffer = env.noise;
-  src.loop = true;
-  const hp = inst.node.filter('highpass', 4500, 0.5);
-  const lp = inst.node.filter('lowpass', 10000, 0.5);
-  const g = inst.node.gain(0);
-  g.gain.setValueAtTime(0, t);
-  g.gain.linearRampToValueAtTime(level, tA);
-  g.gain.setValueAtTime(level, tR);
-  g.gain.exponentialRampToValueAtTime(level * 1e-3, end);
-  g.gain.linearRampToValueAtTime(0, end + 0.02);
-  src.connect(hp).connect(lp).connect(g).connect(inst.channel('pad:hi').input);
-  src.start(t, Math.min(offset, Math.max(0, env.noise.duration - 0.1)));
-  src.stop(end + 0.05);
-  keep.push({ src, end: end + 0.05 });
+  return env.inst.oneShot((nodes) => {
+    const { ctx, inst } = env;
+    if (!isFinite(t) || t >= inst.cutoff || (env.live && t < ctx.currentTime)) return;
+    if (inst.mute.has('air') || (inst.solo.size && !inst.solo.has('air'))) return;
+    const tA = t + attack, tR = tA + hold, end = tR + release;
+    const src = ctx.createBufferSource();
+    src.buffer = env.noise;
+    src.loop = true;
+    const hp = inst.node.filter('highpass', 4500, 0.5);
+    const lp = inst.node.filter('lowpass', 10000, 0.5);
+    const g = inst.node.gain(0);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(level, tA);
+    g.gain.setValueAtTime(level, tR);
+    g.gain.exponentialRampToValueAtTime(level * 1e-3, end);
+    g.gain.linearRampToValueAtTime(0, end + 0.02);
+    src.connect(hp).connect(lp).connect(g).connect(inst.channel('pad:hi').input);
+    src.start(t, Math.min(offset, Math.max(0, env.noise.duration - 0.1)));
+    src.stop(end + 0.05);
+    nodes.source(src, end + 0.05);
+    keep.push({ src, end: end + 0.05 });
+  });
 }
 
 export const track: MusicTrack = {
