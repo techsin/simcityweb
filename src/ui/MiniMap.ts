@@ -24,10 +24,20 @@ export class MiniMap {
   private img: ImageData;
   private dirty = true;
   private painted = false;
+  private paintRow = 0;
+  private paintState: GameContext['state'] | null = null;
+  private paintOverlay = Overlay.None;
   private acc = 0;
   private frAcc = 0;
+  private viewDirty = true;
+  private drawn = false;
+  private camera: THREE.Camera | null = null;
+  private cameraView = new THREE.Matrix4();
+  private cameraProjection = new THREE.Matrix4();
+  private moving = false;
   private dragging = false;
   private collapsed = false;
+  private disposed = false;
   private offs: (() => void)[] = [];
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
@@ -45,6 +55,7 @@ export class MiniMap {
       this.ctx.sound(this.collapsed ? 'flyoutClose' : 'flyout');
       this.el.classList.toggle('collapsed', this.collapsed);
       collapse.innerHTML = icon(this.collapsed ? 'chevUp' : 'chevDown', 14);
+      this.viewDirty = true;
     }, { signal: this.ctx.signal });
     const rotL = h('button', { class: 'icon-btn', title: 'Rotate view (Q)', html: icon('rotate', 13), style: 'transform:scaleX(-1)' });
     rotL.addEventListener('click', () => ctx.world.controls.rotateStep(-1), { signal: this.ctx.signal });
@@ -92,12 +103,20 @@ export class MiniMap {
     else ctx.signal.addEventListener('abort', offUtilities, { once: true });
   }
 
-  private paintBase(): void {
+  private paintBase(): boolean {
     const st = this.ctx.state;
     const N = st.size;
+    if (this.paintState !== st || this.paintOverlay !== this.ctx.overlay) {
+      this.paintRow = 0;
+      this.paintState = st;
+      this.paintOverlay = this.ctx.overlay;
+      if (this.img.data.length !== N * N * 4) this.img = this.bg.createImageData(N, N);
+    }
     const d = this.img.data;
-    const ov = this.ctx.overlay;
-    for (let z = 0; z < N; z++)
+    const ov = this.paintOverlay;
+    const start = performance.now(), firstRow = this.paintRow;
+    // Keep the previous complete map visible; stop between rows at 2 ms or 4096 cells per frame.
+    for (let z = this.paintRow; z < N; z++) {
       for (let x = 0; x < N; x++) {
         const i = z * N + x;
         const o = i * 4;
@@ -137,7 +156,14 @@ export class MiniMap {
         }
         d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
       }
+      this.paintRow = z + 1;
+      if (this.paintRow < N && ((this.paintRow - firstRow) * N >= 4096 || performance.now() - start >= 2)) return false;
+    }
+    if (this.base.width !== N) this.base.width = this.base.height = N;
     this.bg.putImageData(this.img, 0, 0);
+    this.paintState = null;
+    this.paintRow = 0;
+    return true;
   }
 
   /** ground intersection of the camera ray through NDC (x,y) */
@@ -195,23 +221,47 @@ export class MiniMap {
     this.dirty = true;
   }
 
-  frame(dt: number): void {
-    if (this.collapsed) return;
+  /** Returns the camera's moving -> resting transition for the HUD's immediate settled update. */
+  frame(dt: number): boolean {
+    if (this.disposed || this.ctx.signal.aborted) return false;
+    let cam: THREE.Camera | null = null;
+    try { cam = this.ctx.world.camera ?? null; } catch { /* stand-in view */ }
+    const moving = cam !== this.camera || !!cam && (!this.cameraView.equals(cam.matrixWorld) || !this.cameraProjection.equals(cam.projectionMatrix));
+    const stopped = this.moving && !moving;
+    this.moving = moving;
+    this.camera = cam;
+    if (cam) {
+      this.cameraView.copy(cam.matrixWorld);
+      this.cameraProjection.copy(cam.projectionMatrix);
+    }
+    if (this.collapsed) return stopped;
     this.acc += dt;
     this.frAcc += dt;
-    if (this.dirty && (this.acc > 0.8 || !this.painted)) {
-      this.painted = true;
-      this.acc = 0;
-      this.dirty = false;
-      this.paintBase();
-      this.draw();
-    } else if (this.frAcc > 0.1) {
+    if (this.paintState || this.dirty && (this.acc > 0.8 || !this.painted)) {
+      if (!this.paintState) {
+        this.acc = 0;
+        this.dirty = false;
+      }
+      if (this.paintBase()) {
+        this.painted = true;
+        this.viewDirty = true;
+      }
+    }
+    const drawDue = this.frAcc >= 0.1 || stopped || !this.drawn || (!moving && this.viewDirty);
+    if (this.painted && drawDue && (moving || stopped || this.viewDirty)) {
       this.frAcc = 0;
+      this.drawn = true;
+      this.viewDirty = false;
       this.draw();
     }
+    return stopped;
   }
 
   dispose(): void {
+    this.disposed = true;
     for (const f of this.offs) f();
+    this.offs.length = 0;
+    this.paintState = null;
+    this.camera = null;
   }
 }

@@ -595,17 +595,20 @@ export class CityScene {
       this.readyPending = false;
       this.resolveReady();
     }
-    this.minimap.frame(dt);
+    const cameraStopped = this.minimap.frame(dt);
     this.ticker.frame(dt);
     this.onboarding.frame(dt);
     // UI ticks (~6 Hz)
     this.uiAcc += dt;
-    if (this.uiAcc > 0.16) {
-      this.uiAcc = 0;
+    if (this.uiAcc > 0.16 || cameraStopped) {
+      const tick = this.uiAcc > 0.16;
+      if (tick) this.uiAcc = 0;
       try {
         this.topBar.update();
-        this.panels.tick();
-        this.uiEvents.emit('uiTick', undefined);
+        if (tick) {
+          this.panels.tick();
+          this.uiEvents.emit('uiTick', undefined);
+        }
       } catch (e) {
         this.errors.report('Interface error', e, { key: 'ui' });
       }
