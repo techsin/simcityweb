@@ -31,11 +31,57 @@ that dispose stops the frame loop and the observer.
 | Gate | Result |
 |---|---|
 | Targeted tests (labelFrame, miniMapFrame, topBarFrame, views) | 4 files, 28 tests passed |
-| `npx tsc --noEmit` | clean |
-| `npx vitest run` (full, with the fixtures) | **161 files passed, 1 skipped; 1,594 tests passed, 10 skipped** |
-| The fresh-page gate against `a284b80`: the ui page at HIGH and the real path at LOW (whole-main-thread CPU, interleaved, 8 reps, A/A, 90 % CIs) | queued on the quiet machine (the T014 timing tools). The sides are `a284b80`, `93069fa` (T030's parent, for attribution) and `827e5da`. |
-| HUD and minimap at rest, screenshot diffs against `93069fa` | queued with the timing runs |
+| `npx tsc --noEmit` (with dev `7826490` merged) | clean |
+| `npx vitest run` (full, with the fixtures; dev merged) | **183 files passed, 1 skipped; 1,858 tests passed, 7 skipped** (at `1533902`) |
+| The fresh-page gate against `a284b80` (below) | **pass** on every gate segment |
+| HUD and minimap at rest, against T030's parent | the same values; the minimap is bit-identical (below) |
 | The bot | not affected: T030 changes no file under src/sim or src/worker |
+
+## The timing gate (the desktop, Oct 28)
+
+The T014 harness (perf-v3) ran on the RTX 5070 Ti desktop with fresh pages: HeadlessChrome 141 at 1280 × 720, vsync,
+whole-main-thread CPU from the trace, and "outside" = the main thread minus the scene's frame callback. Each chain
+had 8 reps, interleaved, with A/A copies and 90 % bootstrap CIs.
+- The sides were `a284b80` (base), dev `7826490` (T30P, T030's parent) and T030 with dev merged (`9243438`).
+- Machine load per run: medians 5.6-6.3 %.
+
+**First run: the gate passes, but T030 added outside-callback work.**
+- Every gate segment passes the lead's rule (no lower bound of T030/base is above 1.02):
+  - ui page at HIGH: first zoom-in 0.69, zoom-out 0.97, far orbit 1.07 [1.014-1.099];
+  - real path at LOW: first pan 1.01, zoom-out 0.86, zoom-in 1.02 [1.011-1.033].
+- The ui far-orbit excess is the parent's (T030/T30P 1.006).
+- Outside the frame callback, though, T030 was about **7-10 % above its parent** on both pages, and the whole thread
+  about 2-4 % above. It was a fixed cost per frame: it showed in still segments too. So T030 did not cut T014's
+  finding 4.
+
+**The cause was T030's three `will-change` rules.** These were the RCI fills, the paused and live pills with the cap
+dot, and the coach pulse. The fills include the 12 in the hidden demand popover, which stays laid out. A second run
+timed T030 against the same tree with only those three rules removed (T30b):
+
+| pooled over the 8 segments | T30b / T030 | T30b / parent | T030 / parent |
+|---|---|---|---|
+| ui HIGH, outside the callback | **0.902** [0.893-0.908] (0/16 above 1) | **0.987** [0.982-0.994] | 1.096 |
+| ui HIGH, whole thread | 0.961 [0.956-0.966] | 0.989 [0.975-0.997] | 1.032 |
+| real path LOW, outside the callback | **0.900** [0.887-0.909] (0/16) | **0.984** [0.979-0.996] | 1.095 |
+| real path LOW, whole thread | 0.966 [0.941-0.970] | 0.997 [0.991-1.009] | 1.040 |
+
+The A/A copies are within ±1.2 %. Without the rules, T030 is at or below its parent everywhere. `1533902` removes them.
+The fills still animate `transform`, and the throttling (10 Hz while moving, at once on stop) is unchanged. T30b is
+below T030 in every segment, so it also passes the gate against `a284b80`.
+
+**At rest** (the same city and pose after a camera move, 150 frames, on both pages, against the parent):
+- the HUD text is identical;
+- the minimap canvas is bit-identical, and the camera is identical;
+- the three RCI fills cover the same boxes within 0.01 px.
+
+The HUD pixel diff was 0.27-0.30 % of the HUD box, all in two places: the fills' edge rows (`scaleY` rasterises
+edges differently from a laid-out height) and, before `1533902`, the PAUSED pill's glyphs on its own layer.
+
+**The lead's trace** (T014 finding 1: the dense city's extra tasks outside the callback on its first HIGH far orbit)
+is the post-load major GC: V8 incremental-marking steps plus Oilpan sweep. There are no worker messages, timers or
+LOD proxy replies. The GC lands in zoom-out or in the far orbit from run to run, which is T014's bimodal far orbit.
+On the dev builds the cycle is larger, with 317 marking steps against 232. The detail is in the harness's
+T030/trace_attribution_quiet.txt.
 
 ## The lane's summary (Codex)
 
