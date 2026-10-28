@@ -1,8 +1,8 @@
 From 616a7607d1f790bc05d288918056ccd4a834681a Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 21:36:00 +0000
-Subject: [PATCH 1/4] advisors: the month's map scans in small kernels (B3 A0,
- bit-identical)
+Subject: [PATCH 01/13] advisors: the month's map scans in small kernels (B3
+ A0, bit-identical)
 
 The day-28 zone scan cost 2-25 ms for the same city: V8 optimized the
 big scan functions on their first runs and threw the code away on rare

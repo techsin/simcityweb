@@ -1,0 +1,1700 @@
+From 78b49f6992a284c6099fa4660d1e2e34a765a0d2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 03:09:00 +0000
+Subject: [PATCH 01/11] perf(sim): B2 G1 core: piece budgets, urgent budget,
+ resumable kernels
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The shared pieces of B2 (docs/dev/B2_DESIGN.md §3.1, §4, §10, §11) that the
+split infra tasks build on. Nothing calls them yet; results are unchanged.
+
+- scheduler: pieceUnits(usPerUnit, min, budgetMs) / pieceBudgetUs() derive
+  chunk sizes from deterministic constants (no clock); setPieceScale /
+  withPieceScale are the test hook (1e9 = one piece per stage, 1e-9 = one
+  unit per piece). STEP_GUARD 64 -> 256. Urgent steps re-scan for the first
+  urgent and due task under one cap per run: INFRA_URGENT_BUDGET (24 est.
+  ms) headless, INFRA_URGENT_FRAME_MS (6 real ms) live; the first one always
+  runs (pre-B2: 8 steps, no time check). flush() reports whether it drained.
+- params: INFRA_PIECE_MS 0.3 (searches, inbound / shop / freight),
+  INFRA_PIECE_COLD_MS 0.13 (Building loops and once-per-pass stages; design
+  review 2 item 1), the urgent caps; CREDIT_FLOOR moves here unchanged.
+- common: BuildingSnapshot (pass-start building list, greedy chunk plan by
+  a + b * footprint).
+- search: RoadSearchRun / TransitSearchRun (Dial searches resumable at any
+  settle count, private bucket queues, budget checked before an entry is
+  taken), accumulateRange (backward settle-order ranges), SearchK
+  refreshAltBegin / refreshAltRange. The whole-call functions are unchanged.
+- graph: GraphBuildRun (road + rail + subway graphs in stages into private
+  buffers; publish() reproduces RoadGraph.build / GridGraph.build into the
+  live graphs: growth policy, tails, versions).
+- transit: StopCollector (collectStops in building / cell chunks),
+  copyStopList (StopList.push growth).
+- blur / parking: boxHRows, BoxVRun, baseSupplyRange,
+  parkingFromBoxesRange, parkingSummaryOf.
+- tests: b2Harness (city / field digests, NaN-canonical) and b2Pieces core
+  tests: each kernel in random chunks equals its whole-call original.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ src/sim/infra/blur.ts        |  93 +++++++++
+ src/sim/infra/common.ts      |  61 ++++++
+ src/sim/infra/graph.ts       | 370 +++++++++++++++++++++++++++++++++++
+ src/sim/infra/params.ts      |  20 ++
+ src/sim/infra/parking.ts     |  45 +++++
+ src/sim/infra/scheduler.ts   |  74 +++++--
+ src/sim/infra/search.ts      | 276 ++++++++++++++++++++++++++
+ src/sim/infra/transit.ts     |  90 +++++++++
+ tests/infra/b2Harness.ts     | 120 ++++++++++++
+ tests/infra/b2Pieces.test.ts | 325 ++++++++++++++++++++++++++++++
+ 10 files changed, 1461 insertions(+), 13 deletions(-)
+ create mode 100644 tests/infra/b2Harness.ts
+ create mode 100644 tests/infra/b2Pieces.test.ts
+
+diff --git a/src/sim/infra/blur.ts b/src/sim/infra/blur.ts
+index 13c0c3e..092c35b 100644
+--- a/src/sim/infra/blur.ts
++++ b/src/sim/infra/blur.ts
+@@ -129,6 +129,99 @@ export function boxV(src: Float32Array, dst: Float32Array, N: number, r: number)
+   }
+ }
+ 
++/** B2: boxH over the rows [z0, z1) only — the same per-row operations as boxH (rows are independent), so ranges that
++ *  cover every row once give boxH's result exactly */
++export function boxHRows(src: Float32Array, dst: Float32Array, N: number, r: number, z0: number, z1: number): void {
++  const inv = 1 / (2 * r + 1);
++  if (canRestructure(src, dst, N, r)) {
++    let z = z0;
++    for (; z + 4 <= z1; z += 4) boxHRows4(src, dst, z * N, N, r, inv);
++    for (; z < z1; z++) boxHRow(src, dst, z * N, N, r, inv);
++    return;
++  }
++  for (let z = z0; z < z1; z++) {
++    const row = z * N;
++    let s = 0;
++    for (let x = 0; x < r && x < N; x++) s += src[row + x];
++    for (let x = 0; x < N; x++) {
++      if (x + r < N) s += src[row + x + r];
++      dst[row + x] = s * inv;
++      if (x - r >= 0) s -= src[row + x - r];
++    }
++  }
++}
++
++/**
++ * B2: boxV in row pieces — begin() is boxV's prologue (column sums of the first r rows), run(rows) continues the row
++ * loop with the same per-row operations; the running column sums live in the run (not in boxV's module scratch, which
++ * other code may use between two pieces). Rows in order give boxV's result exactly. src / dst must not change between
++ * the pieces (except dst rows already written).
++ */
++export class BoxVRun {
++  private cs: Float64Array<ArrayBuffer> = new Float64Array(0);
++  private src: Float32Array = new Float32Array(0);
++  private dst: Float32Array = new Float32Array(0);
++  private N = 0;
++  private r = 0;
++  private inv = 1;
++  private restructure = false;
++  /** next row */
++  z = 0;
++
++  begin(src: Float32Array, dst: Float32Array, N: number, r: number): void {
++    this.inv = 1 / (2 * r + 1);
++    if (this.cs.length < N) this.cs = new Float64Array(N);
++    const cs = this.cs;
++    cs.fill(0, 0, N);
++    for (let z = 0; z < r && z < N; z++) {
++      const row = z * N;
++      for (let x = 0; x < N; x++) cs[x] += src[row + x];
++    }
++    this.src = src; this.dst = dst; this.N = N; this.r = r;
++    this.restructure = canRestructure(src, dst, N, r);
++    this.z = 0;
++  }
++
++  /** the next `rows` rows; true when the last row is done */
++  run(rows: number): boolean {
++    const src = this.src, dst = this.dst, N = this.N, r = this.r, inv = this.inv, cs = this.cs;
++    const z0 = this.z, z1 = Math.min(N, z0 + rows);
++    if (this.restructure) {
++      for (let z = z0; z < z1; z++) {
++        const row = z * N;
++        const add = z + r < N, sub = z >= r;
++        if (add && sub) {
++          const ra = (z + r) * N, rs = (z - r) * N;
++          for (let x = 0; x < N; x++) { const c = cs[x] + src[ra + x]; dst[row + x] = c * inv; cs[x] = c - src[rs + x]; }
++        } else if (add) {
++          const ra = (z + r) * N;
++          for (let x = 0; x < N; x++) { const c = cs[x] + src[ra + x]; dst[row + x] = c * inv; cs[x] = c; }
++        } else if (sub) {
++          const rs = (z - r) * N;
++          for (let x = 0; x < N; x++) { const c = cs[x]; dst[row + x] = c * inv; cs[x] = c - src[rs + x]; }
++        } else {
++          for (let x = 0; x < N; x++) dst[row + x] = cs[x] * inv;
++        }
++      }
++    } else {
++      for (let z = z0; z < z1; z++) {
++        const row = z * N;
++        if (z + r < N) {
++          const add = (z + r) * N;
++          for (let x = 0; x < N; x++) cs[x] += src[add + x];
++        }
++        for (let x = 0; x < N; x++) dst[row + x] = cs[x] * inv;
++        if (z - r >= 0) {
++          const sub = (z - r) * N;
++          for (let x = 0; x < N; x++) cs[x] -= src[sub + x];
++        }
++      }
++    }
++    this.z = z1;
++    return z1 >= N;
++  }
++}
++
+ /** in-place ~Gaussian blur of `a` (3 box passes of radius r), tmp = scratch of same size */
+ export function blur3(a: Float32Array, tmp: Float32Array, N: number, r: number): void {
+   if (r <= 0) return;
+diff --git a/src/sim/infra/common.ts b/src/sim/infra/common.ts
+index a325a39..8dc4e7d 100644
+--- a/src/sim/infra/common.ts
++++ b/src/sim/infra/common.ts
+@@ -331,6 +331,67 @@ export function buildingList(st: CityState): Building[] {
+   return arr;
+ }
+ 
++/**
++ * B2 (docs/dev/B2_DESIGN.md R4): the building list a split pass walks — one copy of buildingList(st) taken at the pass's
++ * first building stage, walked by every building stage of that pass with a cursor, released at the pass end. In an
++ * uninterrupted pass (flush, compute, init) no building is added or removed and the day does not change, so the copy is
++ * exactly the sequence buildingList returns at every one of the pre-B2 steps. Interrupted (by design): a building removed
++ * mid-pass still counts for that pass, one added mid-pass waits for the next.
++ * plan() cuts it into chunks of at most `budgetUs` estimated µs of aUs x buildings + bUs x footprint cells (w x d), so a
++ * stage's chunk boundaries are deterministic constants of the list; cost() reads a chunk's B / F in O(1).
++ */
++export class BuildingSnapshot {
++  /** the pass's buildings (do not mutate) */
++  readonly list: Building[] = [];
++  n = 0;
++  /** chunk k = list[bounds[k], bounds[k + 1]); its footprint cells fpOf(k) */
++  bounds: Int32Array<ArrayBuffer> = new Int32Array(2);
++  chunks = 0;
++  private fp: Float64Array<ArrayBuffer> = new Float64Array(2);
++  /** take a copy of buildingList(st) (reuses the backing array) */
++  take(st: CityState): void {
++    const src = buildingList(st), L = this.list, n = src.length;
++    L.length = n;
++    for (let i = 0; i < n; i++) L[i] = src[i];
++    this.n = n;
++    this.chunks = 0;
++  }
++  /** cut the list into chunks of at most budgetUs of aUs per building + bUs per footprint cell; returns the chunk count */
++  plan(aUs: number, bUs: number, budgetUs: number): number {
++    const L = this.list, n = this.n;
++    if (this.bounds.length < n + 2) this.bounds = new Int32Array(n + (n >> 3) + 16);
++    if (this.fp.length < n + 2) this.fp = new Float64Array(n + (n >> 3) + 16);
++    const bounds = this.bounds, fp = this.fp;
++    let k = 0, acc = 0, cells = 0;
++    bounds[0] = 0;
++    fp[0] = 0;
++    for (let i = 0; i < n; i++) {
++      const b = L[i], f = b.w * b.d, c = aUs + bUs * f;
++      if (acc > 0 && acc + c > budgetUs) { k++; bounds[k] = i; fp[k] = cells; acc = 0; }
++      acc += c;
++      cells += f;
++    }
++    if (n > 0) k++;
++    bounds[k] = n;
++    fp[k] = cells;
++    this.chunks = k;
++    return k;
++  }
++  /** buildings / footprint cells of chunk k (0 past the end) */
++  countOf(k: number): number {
++    return k >= 0 && k < this.chunks ? this.bounds[k + 1] - this.bounds[k] : 0;
++  }
++  cellsOf(k: number): number {
++    return k >= 0 && k < this.chunks ? this.fp[k + 1] - this.fp[k] : 0;
++  }
++  /** drop the references (pass end) */
++  release(): void {
++    this.list.length = 0;
++    this.n = 0;
++    this.chunks = 0;
++  }
++}
++
+ // ------------------------------------------------------------------------------------------ occupancy
+ /** building exists as a functioning structure (complete, not rubble). Abandoned buildings are inactive. */
+ export function isFunctional(b: Building): boolean {
+diff --git a/src/sim/infra/graph.ts b/src/sim/infra/graph.ts
+index f8bccd3..e08a36f 100644
+--- a/src/sim/infra/graph.ts
++++ b/src/sim/infra/graph.ts
+@@ -223,6 +223,376 @@ export function perimeterNodes(nodeOfCell: Int32Array, N: number, b: Building, o
+   return c;
+ }
+ 
++// ---------------------------------------------------------------------------------------------- B2 piecewise builds
++/** netFlags bit 5: rail level crossing on a road cell (the rail graph's cells: Rail or a crossing; traffic.ts) */
++const NETFLAG_CROSSING_G = 1 << 5;
++/**
++ * estimated warm µs per unit of the piecewise build stages (GraphBuildRun; dense1m, B2 G1 fit): road numbering per cell,
++ * road attributes / edges / components per node, rail and subway numbering per cell (typed masks) and edges /
++ * components per node, the publish copies per cell and per node
++ */
++export const GRAPH_BUILD_US = {
++  roadCell: 0.0045, roadAttr: 0.006, roadEdge: 0.034, roadComp: 0.022,
++  gridCell: 0.0025, gridEdge: 0.012, gridComp: 0.012,
++  pubCell: 0.0012, pubNode: 0.006,
++} as const;
++
++/** a grid graph under construction (GraphBuildRun's rail / subway part) */
++class GridBuild {
++  nodeOf: Int32Array<ArrayBuffer> = new Int32Array(0);
++  cellOf: Int32Array<ArrayBuffer> = new Int32Array(0);
++  adj: Int32Array<ArrayBuffer> = new Int32Array(0);
++  comp: Int32Array<ArrayBuffer> = new Int32Array(0);
++  stack: Int32Array<ArrayBuffer> = new Int32Array(0);
++  n = 0;
++  nComp = 0;
++}
++
++const growInt = (a: Int32Array<ArrayBuffer>, n: number): Int32Array<ArrayBuffer> => {
++  if (a.length >= n) return a;
++  const b = new Int32Array(Math.max(n, 2 * a.length, 64));
++  b.set(a);
++  return b;
++};
++
++/**
++ * B2 (docs/dev/B2_DESIGN.md §2.5 / §3 rebuild): traffic's road, rail and subway graphs built in pieces from a private
++ * copy of the network / netFlags / subway grids taken at begin(), into private scratch graphs, then written into the live
++ * RoadGraph / GridGraph objects by publish() exactly as RoadGraph.build() / GridGraph.build() write them (same array
++ * allocations and tails, version + 1 each; the objects are kept: emergency holds the RoadGraph and checks its version).
++ * The graphs are a pure function of the grids, so the result is byte-identical to build() on the grids of begin(); a
++ * component DFS resumed from its saved stack visits nodes in the same order, so component ids are identical too. The
++ * rail and subway node masks are typed (Rail or a level crossing; subway != 0), not per-cell closures.
++ * run(budgetUs) does at least one unit of work and at most ~budgetUs estimated µs (GRAPH_BUILD_US); true when done.
++ */
++export class GraphBuildRun {
++  N = 0;
++  C = 0;
++  /** 0 road numbering, 1 road attributes, 2 road edges, 3 road components, 4-6 rail (numbering, edges, components),
++   *  7-9 subway, 10 done; -1 idle */
++  stage = -1;
++  private cur = 0;
++  private sp = 0;
++  private nc = 0;
++  private net: Uint8Array<ArrayBuffer> = new Uint8Array(0);
++  private flags: Uint8Array<ArrayBuffer> = new Uint8Array(0);
++  private sub: Uint8Array<ArrayBuffer> = new Uint8Array(0);
++  // road scratch graph
++  private rNodeOf: Int32Array<ArrayBuffer> = new Int32Array(0);
++  private rCellOf: Int32Array<ArrayBuffer> = new Int32Array(0);
++  private rType: Uint8Array<ArrayBuffer> = new Uint8Array(0);
++  private rT0: Float32Array<ArrayBuffer> = new Float32Array(0);
++  private rCap: Float32Array<ArrayBuffer> = new Float32Array(0);
++  private rFwd: Int32Array<ArrayBuffer> = new Int32Array(0);
++  private rRev: Int32Array<ArrayBuffer> = new Int32Array(0);
++  private rComp: Int32Array<ArrayBuffer> = new Int32Array(0);
++  private rStack: Int32Array<ArrayBuffer> = new Int32Array(0);
++  private rN = 0;
++  private rNComp = 0;
++  private readonly rail = new GridBuild();
++  private readonly subway = new GridBuild();
++
++  /** copy the grids and reset the cursors (the first piece of a rebuild) */
++  begin(state: CityState): void {
++    const N = state.size, C = N * N;
++    this.N = N;
++    this.C = C;
++    if (this.net.length !== C) { this.net = new Uint8Array(C); this.flags = new Uint8Array(C); this.sub = new Uint8Array(C); }
++    this.net.set(state.network.subarray(0, C));
++    this.flags.set(state.netFlags.subarray(0, C));
++    this.sub.set(state.subway.subarray(0, C));
++    if (this.rNodeOf.length !== C) this.rNodeOf = new Int32Array(C);
++    for (const g of [this.rail, this.subway]) if (g.nodeOf.length !== C) g.nodeOf = new Int32Array(C);
++    this.stage = 0;
++    this.cur = 0;
++    this.sp = 0;
++    this.nc = 0;
++    this.rN = 0;
++  }
++
++  /** a build is in progress (begin() ran, publish() not yet) */
++  get active(): boolean {
++    return this.stage >= 0;
++  }
++
++  /** forget an unfinished build (its scratch is reused by the next begin) */
++  cancel(): void {
++    this.stage = -1;
++  }
++
++  /** estimated µs left (all stages; the numbering stages assume the previous build's node counts) */
++  remainingUs(): number {
++    const U = GRAPH_BUILD_US, C = this.C, st = this.stage;
++    if (st < 0 || st >= 10) return 0;
++    const nR = st >= 1 ? this.rN : Math.max(this.rN, C >> 2), nRail = this.rail.n, nSub = this.subway.n;
++    let us = 0;
++    if (st <= 0) us += (C - this.cur) * U.roadCell;
++    if (st <= 1) us += nR * U.roadAttr;
++    if (st <= 2) us += nR * U.roadEdge;
++    if (st <= 3) us += nR * U.roadComp;
++    us += (st <= 4 ? C : 0) * U.gridCell + (st <= 7 ? C : 0) * U.gridCell;
++    us += (st <= 6 ? nRail * (U.gridEdge + U.gridComp) : 0) + (st <= 9 ? nSub * (U.gridEdge + U.gridComp) : 0);
++    return us;
++  }
++
++  /** run at most about budgetUs estimated µs of the build (at least one unit); true when every graph is built */
++  run(budgetUs: number): boolean {
++    let left = budgetUs;
++    let first = true;
++    while (this.stage >= 0 && this.stage < 10) {
++      const U = GRAPH_BUILD_US;
++      const st = this.stage;
++      const coef = st === 0 ? U.roadCell : st === 1 ? U.roadAttr : st === 2 ? U.roadEdge : st === 3 ? U.roadComp
++        : st === 4 || st === 7 ? U.gridCell : st === 5 || st === 8 ? U.gridEdge : U.gridComp;
++      let units = Math.floor(left / coef);
++      if (units < 1) { if (!first) return false; units = 1; }
++      first = false;
++      const used = this.stageRun(units);
++      left -= used * coef;
++      if (left <= 0 && this.stage === st) return false;
++    }
++    return this.stage >= 10;
++  }
++
++  /** at most `units` units of the current stage; returns the units used (the stage advances when complete) */
++  private stageRun(units: number): number {
++    switch (this.stage) {
++      case 0: return this.roadNumber(units);
++      case 1: return this.roadAttr(units);
++      case 2: return this.roadEdges(units);
++      case 3: return this.roadComps(units);
++      case 4: return this.gridNumber(this.rail, units, true);
++      case 5: return this.gridEdges(this.rail, units);
++      case 6: return this.gridComps(this.rail, units);
++      case 7: return this.gridNumber(this.subway, units, false);
++      case 8: return this.gridEdges(this.subway, units);
++      default: return this.gridComps(this.subway, units);
++    }
++  }
++
++  private next(): void {
++    this.stage++;
++    this.cur = 0;
++    this.sp = 0;
++    this.nc = 0;
++  }
++
++  private roadNumber(units: number): number {
++    const C = this.C, net = this.net, nodeOf = this.rNodeOf;
++    const i0 = this.cur, i1 = Math.min(C, i0 + units);
++    let n = this.rN;
++    if (this.rCellOf.length < n + (i1 - i0)) this.rCellOf = growInt(this.rCellOf, n + (i1 - i0));
++    const cellOf = this.rCellOf;
++    for (let i = i0; i < i1; i++) {
++      if (isRoad(net[i] as Network)) { cellOf[n] = i; nodeOf[i] = n++; } else nodeOf[i] = -1;
++    }
++    this.rN = n;
++    this.cur = i1;
++    if (i1 >= C) {
++      const cap = n + (n >> 3) + 16;
++      if (this.rType.length < n) {
++        this.rType = new Uint8Array(cap); this.rT0 = new Float32Array(cap); this.rCap = new Float32Array(cap);
++        this.rFwd = new Int32Array(cap * 4); this.rRev = new Int32Array(cap * 4); this.rComp = new Int32Array(cap); this.rStack = new Int32Array(cap);
++      }
++      this.next();
++    }
++    return i1 - i0;
++  }
++
++  private roadAttr(units: number): number {
++    const n = this.rN, net = this.net, cellOf = this.rCellOf, type = this.rType, t0 = this.rT0, capA = this.rCap;
++    const k0 = this.cur, k1 = Math.min(n, k0 + units);
++    for (let k = k0; k < k1; k++) {
++      const t = net[cellOf[k]];
++      type[k] = t;
++      t0[k] = NET_TIME[t];
++      capA[k] = NET_CAPACITY[t];
++    }
++    this.cur = k1;
++    if (k1 >= n) { this.next(); this.rFwd.fill(-1, 0, n * 4); this.rRev.fill(-1, 0, n * 4); }
++    return Math.max(1, k1 - k0);
++  }
++
++  private roadEdges(units: number): number {
++    const n = this.rN, N = this.N, flags = this.flags, nodeOfCell = this.rNodeOf, cellOf = this.rCellOf, type = this.rType;
++    const fwd = this.rFwd, rev = this.rRev;
++    const a0 = this.cur, a1 = Math.min(n, a0 + units);
++    for (let a = a0; a < a1; a++) {
++      const ci = cellOf[a];
++      const x = ci % N;
++      const z = (ci - x) / N;
++      const ta = type[a];
++      const dirA = (flags[ci] >> 2) & 3;
++      for (let k = 0; k < 4; k++) {
++        const nx = x + DX[k], nz = z + DZ[k];
++        if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
++        const cj = nz * N + nx;
++        const b = nodeOfCell[cj];
++        if (b < 0) continue;
++        const tb = type[b];
++        if (!roadsConnect(ta, tb)) continue;
++        const opp = (k + 2) & 3;
++        if (ta === Network.OneWay && k === ((dirA + 2) & 3)) continue;
++        if (tb === Network.OneWay && k === ((((flags[cj] >> 2) & 3) + 2) & 3)) continue;
++        fwd[a * 4 + k] = b;
++        rev[b * 4 + opp] = a;
++      }
++    }
++    this.cur = a1;
++    if (a1 >= n) { this.next(); this.rComp.fill(-1, 0, n); }
++    return Math.max(1, a1 - a0);
++  }
++
++  private roadComps(units: number): number {
++    const n = this.rN, comp = this.rComp, stack = this.rStack, fwd = this.rFwd, rev = this.rRev;
++    let s = this.cur, sp = this.sp, nc = this.nc, used = 0;
++    while (used < units) {
++      if (sp === 0) {
++        while (s < n && comp[s] >= 0) s++;
++        if (s >= n) break;
++        stack[sp++] = s;
++        comp[s] = nc;
++      }
++      const a = stack[--sp];
++      for (let k = 0; k < 4; k++) {
++        let b = fwd[a * 4 + k];
++        if (b >= 0 && comp[b] < 0) { comp[b] = nc; stack[sp++] = b; }
++        b = rev[a * 4 + k];
++        if (b >= 0 && comp[b] < 0) { comp[b] = nc; stack[sp++] = b; }
++      }
++      used++;
++      if (sp === 0) nc++;
++    }
++    this.cur = s; this.sp = sp; this.nc = nc;
++    if (sp === 0 && s >= n) { this.rNComp = nc; this.next(); }
++    return Math.max(1, used);
++  }
++
++  private gridNumber(g: GridBuild, units: number, rail: boolean): number {
++    const C = this.C, net = this.net, flags = this.flags, sub = this.sub, nodeOf = g.nodeOf;
++    const i0 = this.cur, i1 = Math.min(C, i0 + units);
++    if (i0 === 0) g.n = 0;
++    let n = g.n;
++    if (g.cellOf.length < n + (i1 - i0)) g.cellOf = growInt(g.cellOf, n + (i1 - i0));
++    const cellOf = g.cellOf, RAIL = Network.Rail;
++    if (rail) {
++      for (let i = i0; i < i1; i++) {
++        if (net[i] === RAIL || (flags[i] & NETFLAG_CROSSING_G) !== 0) { cellOf[n] = i; nodeOf[i] = n++; } else nodeOf[i] = -1;
++      }
++    } else {
++      for (let i = i0; i < i1; i++) {
++        if (sub[i] !== 0) { cellOf[n] = i; nodeOf[i] = n++; } else nodeOf[i] = -1;
++      }
++    }
++    g.n = n;
++    this.cur = i1;
++    if (i1 >= C) {
++      if (g.adj.length < n * 4) { const cap = n + (n >> 3) + 16; g.adj = new Int32Array(cap * 4); g.comp = new Int32Array(cap); g.stack = new Int32Array(cap); }
++      g.adj.fill(-1, 0, n * 4);
++      this.next();
++    }
++    return i1 - i0;
++  }
++
++  private gridEdges(g: GridBuild, units: number): number {
++    const n = g.n, N = this.N, nodeOf = g.nodeOf, cellOf = g.cellOf, adj = g.adj;
++    const a0 = this.cur, a1 = Math.min(n, a0 + units);
++    for (let a = a0; a < a1; a++) {
++      const ci = cellOf[a];
++      const x = ci % N, z = (ci - x) / N;
++      for (let k = 0; k < 4; k++) {
++        const nx = x + DX[k], nz = z + DZ[k];
++        if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
++        const b = nodeOf[nz * N + nx];
++        if (b >= 0) adj[a * 4 + k] = b;
++      }
++    }
++    this.cur = a1;
++    if (a1 >= n) { this.next(); g.comp.fill(-1, 0, n); }
++    return Math.max(1, a1 - a0);
++  }
++
++  private gridComps(g: GridBuild, units: number): number {
++    const n = g.n, comp = g.comp, stack = g.stack, adj = g.adj;
++    let s = this.cur, sp = this.sp, nc = this.nc, used = 0;
++    while (used < units) {
++      if (sp === 0) {
++        while (s < n && comp[s] >= 0) s++;
++        if (s >= n) break;
++        stack[sp++] = s;
++        comp[s] = nc;
++      }
++      const a = stack[--sp];
++      for (let k = 0; k < 4; k++) {
++        const b = adj[a * 4 + k];
++        if (b >= 0 && comp[b] < 0) { comp[b] = nc; stack[sp++] = b; }
++      }
++      used++;
++      if (sp === 0) nc++;
++    }
++    this.cur = s; this.sp = sp; this.nc = nc;
++    if (sp === 0 && s >= n) { g.nComp = nc; this.next(); }
++    return Math.max(1, used);
++  }
++
++  /** estimated µs of publish() */
++  publishUs(): number {
++    const U = GRAPH_BUILD_US;
++    return 3 * this.C * U.pubCell + (this.rN + this.rail.n + this.subway.n) * U.pubNode;
++  }
++
++  /** write the built graphs into the live ones exactly as RoadGraph.build / GridGraph.build would (version + 1 each) */
++  publish(road: RoadGraph, rail: GridGraph, subway: GridGraph): void {
++    const N = this.N, C = this.C, n = this.rN;
++    if (road.nodeOfCell.length !== C) road.nodeOfCell = new Int32Array(C);
++    road.N = N;
++    road.C = C;
++    road.nodeOfCell.set(this.rNodeOf.subarray(0, C));
++    road.n = n;
++    if (road.cellOf.length < n) {
++      const cap = Math.max(n, 16) + (n >> 3);
++      road.cellOf = new Int32Array(cap);
++      road.type = new Uint8Array(cap);
++      road.fwd = new Int32Array(cap * 4);
++      road.rev = new Int32Array(cap * 4);
++      road.t0 = new Float32Array(cap);
++      road.cap = new Float32Array(cap);
++      road.comp = new Int32Array(cap);
++    }
++    road.cellOf.set(this.rCellOf.subarray(0, n));
++    road.type.set(this.rType.subarray(0, n));
++    road.t0.set(this.rT0.subarray(0, n));
++    road.cap.set(this.rCap.subarray(0, n));
++    road.fwd.set(this.rFwd.subarray(0, n * 4));
++    road.rev.set(this.rRev.subarray(0, n * 4));
++    road.comp.set(this.rComp.subarray(0, n));
++    road.nComp = this.rNComp;
++    road.version++;
++    this.publishGrid(this.rail, rail);
++    this.publishGrid(this.subway, subway);
++    this.stage = -1;
++  }
++
++  private publishGrid(b: GridBuild, g: GridGraph): void {
++    const N = this.N, C = this.C, n = b.n;
++    if (g.nodeOfCell.length !== C) g.nodeOfCell = new Int32Array(C);
++    g.N = N;
++    g.nodeOfCell.set(b.nodeOf.subarray(0, C));
++    g.n = n;
++    if (g.cellOf.length < n) {
++      const cap = Math.max(n, 16) + (n >> 3);
++      g.cellOf = new Int32Array(cap);
++      g.adj = new Int32Array(cap * 4);
++      g.comp = new Int32Array(cap);
++    }
++    g.cellOf.set(b.cellOf.subarray(0, n));
++    g.adj.set(b.adj.subarray(0, n * 4));
++    g.comp.set(b.comp.subarray(0, n));
++    g.nComp = b.nComp;
++    g.version++;
++  }
++}
++
+ let scratch = new Int32Array(1024);
+ /** shared scratch Int32Array of at least n entries (single-threaded use only) */
+ export function scratchInt(n: number): Int32Array<ArrayBuffer> {
+diff --git a/src/sim/infra/params.ts b/src/sim/infra/params.ts
+index 71f8828..3c6fff3 100644
+--- a/src/sim/infra/params.ts
++++ b/src/sim/infra/params.ts
+@@ -139,8 +139,28 @@ export const INFRA_DAY_BUDGET = 2.6 + 0.15 /* WP3 share (P0-15) */ + 0.25 /* WP2
+   + 0 /* WP7a share (PART B, max 0.1) */ + 0.05 /* WP7b share (PART B, max 0.2): parking raster, P&R, sinks, fleet (traffic +0.035 est. ms / day vs pre-WP7b on the stress city, r1) */;
+ /** headless: unused budget (next step did not fit) carried to the next day, at most this much */
+ export const INFRA_DAY_CARRY = 0.6;
++/** max priority (estimated ms) an idle task can bank in the scheduler's fairness credit (moved from scheduler.ts) */
++export const CREDIT_FLOOR = 4;
+ /** with a live renderer: real ms of infra steps per frame (at least one step when due) */
+ export const INFRA_FRAME_BUDGET_MS = 3;
++/**
++ * B2: estimated warm wall ms of one scheduler step ("piece") of a split infra task — the budget every chunk size is
++ * derived from (scheduler.ts pieceUnits(): units per piece = this / ms per unit; deterministic constants, no clock).
++ * Used for loops whose cold cost (first executions after a load, deopt waves) was measured at <= 10 x their warm cost:
++ * road / transit searches and the inbound / shop / freight passes (design review 2, item 1).
++ */
++export const INFRA_PIECE_MS = 0.3;
++/**
++ * B2: the piece budget of the loops that run cold most of the time — every Building loop and every stage that runs once
++ * per pass or less often (traffic prep, prepTransit, transit options, park & ride, commute end, parking, final, final2,
++ * the matching's per-round loops, graph rebuilds). Design review 2 measured split Building-loop pieces at p99 ~20 x and
++ * up to 37 x their warm cost in the first 200 days after a load, so 0.13 warm ms keeps them under ~3-5 ms cold.
++ */
++export const INFRA_PIECE_COLD_MS = 0.13;
++/** B2: headless, estimated ms of urgent steps (player-edit feedback) per scheduler run (replaces the pre-B2 8 steps) */
++export const INFRA_URGENT_BUDGET = 24;
++/** B2: live (frames active), real ms of urgent steps per frame (2 x INFRA_FRAME_BUDGET_MS; pre-B2: no time check) */
++export const INFRA_URGENT_FRAME_MS = 6;
+ /** commute above this (min) counts as unreachable for employment purposes */
+ export const MAX_COMMUTE = 110;
+ 
+diff --git a/src/sim/infra/parking.ts b/src/sim/infra/parking.ts
+index 63d472d..b3a4ea9 100644
+--- a/src/sim/infra/parking.ts
++++ b/src/sim/infra/parking.ts
+@@ -161,6 +161,18 @@ export function baseSupply(st: CityState, out: Float32Array): void {
+   }
+ }
+ 
++/** B2: baseSupply over the cells [i0, i1) only (per-cell, so ranges covering every cell give baseSupply exactly) */
++export function baseSupplyRange(st: CityState, out: Float32Array, i0: number, i1: number): void {
++  const zone = st.zone, net = st.network, bld = st.building;
++  const ZS = ZONE_SUPPLY, RS = ROAD_SUPPLY, civic = PARKING_SUPPLY_CIVIC;
++  for (let i = i0; i < i1; i++) {
++    const t = net[i];
++    if (t !== Network.None) { out[i] = RS[t]; continue; }
++    const z = zone[i];
++    out[i] = z !== 0 ? ZS[z] : bld[i] >= 0 ? civic : 0;
++  }
++}
++
+ /** smoothstep */
+ function sstep(a: number, b: number, x: number): number {
+   const t = x <= a ? 0 : x >= b ? 1 : (x - a) / (b - a);
+@@ -211,6 +223,39 @@ export function parkingFromBoxes(N: number, D: Float32Array, S: Float32Array, bo
+   return { demandWeighted: wSum > 0 ? pSum / wSum : 0, highShare: dCells > 0 ? high / dCells : 0, supply: sTot, demand: dTot };
+ }
+ 
++/** B2: the running sums of parkingFromBoxes (parkingFromBoxesRange; same doubles / counts in cell order) */
++export interface ParkingSums { wSum: number; pSum: number; dCells: number; high: number; sTot: number; dTot: number }
++
++/** B2: parkingFromBoxes over the cells [i0, i1) into `out`, adding to `acc` (ranges in cell order covering every cell, then
++ *  parkingSummaryOf(acc), give parkingFromBoxes exactly) */
++export function parkingFromBoxesRange(N: number, D: Float32Array, S: Float32Array, boxD: Float32Array, boxS: Float32Array, out: Float32Array,
++  prev: Float32Array | null, blend: number, i0: number, i1: number, acc: ParkingSums): void {
++  const C = N * N;
++  const r0 = PARKING_RATIO[0], r1 = PARKING_RATIO[1];
++  const bl = prev && prev.length === C ? Math.max(0, Math.min(1, blend)) : 0;
++  let wSum = acc.wSum, pSum = acc.pSum, dCells = acc.dCells, high = acc.high, sTot = acc.sTot, dTot = acc.dTot;
++  for (let i = i0; i < i1; i++) {
++    const d = boxD[i];
++    sTot += S[i];
++    const di = D[i];
++    dTot += di;
++    const s = boxS[i];
++    let p = !(d > 1e-6) ? 0 : s > 1e-6 ? sstep(r0, r1, d / s) : 1;
++    if (bl > 0) p = bl * prev![i] + (1 - bl) * p;
++    out[i] = p;
++    if (di > 0) {
++      wSum += di; pSum += di * p; dCells++;
++      if (p > 0.6) high++;
++    }
++  }
++  acc.wSum = wSum; acc.pSum = pSum; acc.dCells = dCells; acc.high = high; acc.sTot = sTot; acc.dTot = dTot;
++}
++
++/** the summary of parkingFromBoxes from its running sums */
++export function parkingSummaryOf(a: ParkingSums): ParkingSummary {
++  return { demandWeighted: a.wSum > 0 ? a.pSum / a.wSum : 0, highShare: a.dCells > 0 ? a.high / a.dCells : 0, supply: a.sTot, demand: a.dTot };
++}
++
+ /** mean parking pressure over a footprint */
+ export function parkingOver(st: CityState, b: Pick<Building, 'x' | 'z' | 'w' | 'd'>): number {
+   const N = st.size, p = st.parking;
+diff --git a/src/sim/infra/scheduler.ts b/src/sim/infra/scheduler.ts
+index 6b5269b..f29a1f8 100644
+--- a/src/sim/infra/scheduler.ts
++++ b/src/sim/infra/scheduler.ts
+@@ -1,7 +1,8 @@
+ /**
+  * InfraScheduler — one shared, deterministic work scheduler for the heavy infrastructure work (traffic assignment
+- * steps, utilities, pollution, services, crime). Each system registers a task that exposes small STEPS
+- * (~0.5–3 ms each on a 256² city); the scheduler decides which steps run when:
++ * steps, utilities, pollution, services, crime). Each system registers a task that exposes small STEPS (B2: "pieces" of
++ * about INFRA_PIECE_MS / INFRA_PIECE_COLD_MS estimated warm ms; chunk sizes from pieceUnits()); the scheduler decides
++ * which steps run when:
+  *
+  *  - headless (no frame() calls in the last 750 ms, e.g. tests / balance bots): once per sim day, steps of due tasks
+  *    until the day's cost budget (INFRA_DAY_BUDGET, in estimated ms) is used — at least one step per day.
+@@ -11,13 +12,17 @@
+  *  - fairness by cost: the due task with the least recently used (estimated) time runs next, so a task with many
+  *    small steps (traffic) gets the same share as one with few large steps; an idle task banks at most
+  *    CREDIT_FLOOR ms of priority for when it becomes due.
+- *  - urgent tasks (player edits: roads, power lines, plopped buildings) run first.
++ *  - urgent tasks (player edits: roads, power lines, plopped buildings) run first: each step re-scans for the first
++ *    urgent and due task (registration order) under one shared cap per run — INFRA_URGENT_BUDGET estimated ms headless,
++ *    INFRA_URGENT_FRAME_MS of real time live (B2; pre-B2: 8 steps, no time check); the first urgent step always runs.
+  *
+  * Tasks keep their own "due" logic (periods in sim days, dirty flags, pass progress).
+  */
+ import type { Simulation } from '../Simulation';
+ import { nowMs } from './common';
+-import { INFRA_DAY_BUDGET, INFRA_DAY_CARRY, INFRA_FRAME_BUDGET_MS } from './params';
++import {
++  CREDIT_FLOOR, INFRA_DAY_BUDGET, INFRA_DAY_CARRY, INFRA_FRAME_BUDGET_MS, INFRA_PIECE_MS, INFRA_URGENT_BUDGET, INFRA_URGENT_FRAME_MS,
++} from './params';
+ 
+ export interface InfraTask {
+   /** unique name ('utilities', 'traffic', ...) */
+@@ -26,14 +31,50 @@ export interface InfraTask {
+   due(sim: Simulation): boolean;
+   /** true when the task should run before everything else (player edit feedback) */
+   urgent(sim: Simulation): boolean;
+-  /** estimated cost (ms on a reference machine) of the next step */
++  /** estimated warm wall ms of the next step on the B2 calibration box (headless, in schedule); side-effect free */
+   cost(sim: Simulation): number;
+   /** run exactly one step */
+   step(sim: Simulation): void;
+ }
+ 
+-/** max priority (estimated ms) an idle task can bank */
+-const CREDIT_FLOOR = 4;
++/** steps per scheduler run at most (urgent loop and normal loop each; B2: 64 -> 256, the pieces are ~10 x finer) */
++export const STEP_GUARD = 256;
++
++/** test hook (setPieceScale): chunk sizes are multiplied by this; 1e9 = one piece per stage, 1e-9 = one unit per piece */
++let pieceScale = 1;
++/**
++ * B2: work units per piece for a loop costing `usPerUnit` estimated warm µs per unit: floor(budget x scale / cost), at
++ * least `min`. `budgetMs` = INFRA_PIECE_MS (default) or INFRA_PIECE_COLD_MS. A pure function of constants and the test
++ * scale (no clock), so chunk sizes and step boundaries are deterministic.
++ */
++export function pieceUnits(usPerUnit: number, min = 1, budgetMs = INFRA_PIECE_MS): number {
++  const u = Math.floor((budgetMs * 1000 * pieceScale) / usPerUnit);
++  return u >= min ? (u < 0x3fffffff ? u : 0x3fffffff) : min;
++}
++/** B2: a piece budget in estimated µs (budgetMs x 1000 x the test scale): weighted chunk plans (BuildingSnapshot.plan) */
++export function pieceBudgetUs(budgetMs = INFRA_PIECE_MS): number {
++  const u = budgetMs * 1000 * pieceScale;
++  return u < 1e15 ? u : 1e15;
++}
++/** test-only: scale every chunk size (returns the previous scale; module state — reset it, see withPieceScale) */
++export function setPieceScale(s: number): number {
++  const prev = pieceScale;
++  pieceScale = s > 0 && Number.isFinite(s) ? s : 1;
++  return prev;
++}
++/** test-only: run fn with chunk sizes scaled by s (the previous scale is restored even when fn throws) */
++export function withPieceScale<T>(s: number, fn: () => T): T {
++  const prev = setPieceScale(s);
++  try {
++    return fn();
++  } finally {
++    setPieceScale(prev);
++  }
++}
++/** the current test scale of the chunk sizes (1 in production) */
++export function currentPieceScale(): number {
++  return pieceScale;
++}
+ 
+ export class InfraScheduler {
+   readonly tasks: InfraTask[] = [];
+@@ -90,13 +131,14 @@ export class InfraScheduler {
+     this.run(sim, INFRA_FRAME_BUDGET_MS, true);
+   }
+ 
+-  /** run every pending step now (tests / load) */
+-  flush(sim: Simulation, maxSteps = 10000): void {
++  /** run every pending step now (tests / load); returns false when maxSteps ran out before every task was idle */
++  flush(sim: Simulation, maxSteps = 10000): boolean {
+     for (let k = 0; k < maxSteps; k++) {
+       const t = this.tasks.find((x) => x.due(sim));
+-      if (!t) return;
++      if (!t) return true;
+       this.exec(sim, t);
+     }
++    return !this.tasks.some((x) => x.due(sim));
+   }
+ 
+   private exec(sim: Simulation, t: InfraTask): void {
+@@ -116,12 +158,18 @@ export class InfraScheduler {
+     const t0 = nowMs();
+     let spent = 0;
+     let ran = 0;
+-    // urgent first (player edits: finish their passes now), bounded
+-    for (let rep = 0; rep < 8; rep++) {
++    // urgent first (player edits: finish their passes now): each step re-scans for the first urgent and due task, under
++    // one cap per run (estimated ms headless, real ms live); the first one always runs
++    const ucap = realTime ? INFRA_URGENT_FRAME_MS : INFRA_URGENT_BUDGET;
++    let uSpent = 0;
++    for (let rep = 0; rep < STEP_GUARD; rep++) {
+       let k = 0;
+       while (k < n && !(tasks[k].urgent(sim) && tasks[k].due(sim))) k++;
+       if (k === n) break;
+       const c = tasks[k].cost(sim);
++      const used = realTime ? nowMs() - t0 : uSpent;
++      if (rep > 0 && used + c > ucap) break;
++      uSpent += c;
+       this.exec(sim, tasks[k]);
+       this.estMs.set(tasks[k].name, (this.estMs.get(tasks[k].name) ?? 0) + c);
+       credit[k] += c;
+@@ -129,7 +177,7 @@ export class InfraScheduler {
+       ran++;
+     }
+     // least-served due task next, until the budget is used
+-    for (let guard = 0; guard < 64; guard++) {
++    for (let guard = 0; guard < STEP_GUARD; guard++) {
+       let i = -1;
+       for (let k = 0; k < n; k++) if ((i < 0 || credit[k] < credit[i]) && tasks[k].due(sim)) i = k;
+       if (i < 0) break;
+diff --git a/src/sim/infra/search.ts b/src/sim/infra/search.ts
+index 4f7f8b2..69d68f3 100644
+--- a/src/sim/infra/search.ts
++++ b/src/sim/infra/search.ts
+@@ -280,6 +280,252 @@ export function transitSearch(T: TransitNet, S: Search, _heap: MinHeap, seeds: S
+   S.settled = cnt;
+ }
+ 
++// ---------------------------------------------------------------------------------------------- B2 resumable runs
++/**
++ * B2 (docs/dev/B2_DESIGN.md §2.4): roadSearch as a resumable run — start() is roadSearch's prologue (reset, graph
++ * version, seeding), run(maxSettled) its Dial bucket loop, resumed from the saved (bucket, entry, settled count); the
++ * budget is checked before an entry is taken (like SearchK.run) and S.settled is set when the search completes. Exact:
++ * the bucket width is at most the minimum edge cost and every push from bucket b lands in a later bucket, so bucket b's
++ * list is fixed while it drains and resuming at (b, the next entry) replays the identical pop sequence (dist, src, next,
++ * hops, order, done and settled come out identical to roadSearch()). Each run has its own bucket queue: other code
++ * (garageReach, emergency's dispatch) may run roadSearch() between two pieces. The Search's arrays are re-read on every
++ * run() (a WasmSearch re-points them when wasm memory grows), never cached across calls. Nothing the search reads (graph,
++ * times, ramp minutes) may change between start() and the last run().
++ * (A separate implementation of the same loop: roadSearch() itself is unchanged, so the frozen-original traffic test
++ * cross-checks the runs against it.)
++ */
++export class RoadSearchRun {
++  private readonly q = new BucketQueue();
++  private g: RoadGraph | null = null;
++  private adj: Int32Array = new Int32Array(0);
++  private time: Float32Array = new Float32Array(0);
++  private ramp: Float32Array | null = null;
++  private S: Search | null = null;
++  private limit = 0;
++  private nb = 0;
++  private b = 0;
++  /** entry to continue with in bucket b (-2 = bucket not opened yet) */
++  private e = -2;
++  private cnt = 0;
++  /** a started search has buckets left */
++  running = false;
++
++  /** roadSearch's prologue (same arguments, minus the unused heap) */
++  start(g: RoadGraph, adj: Int32Array, time: Float32Array, S: Search, seeds: Seeds, limit = 400, ramp: Float32Array | null = null): void {
++    const n = g.n;
++    S.reset(n);
++    S.graphVersion = g.version;
++    const dist = S.dist, src = S.src, next = S.next, hops = S.hops;
++    if (!(limit < 2000)) limit = 2000;
++    const invQ = 1 / Q;
++    const nb = Math.ceil(limit * invQ) + 2;
++    const bq = this.q;
++    bq.reset(nb, n * 2 + seeds.n + 16);
++    for (let s = 0; s < seeds.n; s++) {
++      const v = seeds.node[s];
++      const l = seeds.label[s];
++      if (v < 0 || v >= n || !(l <= limit)) continue;
++      if (l < dist[v]) {
++        dist[v] = l;
++        src[v] = seeds.id[s];
++        next[v] = -1;
++        hops[v] = 0;
++        bq.push((l * invQ) | 0, v);
++      }
++    }
++    this.g = g; this.adj = adj; this.time = time; this.ramp = ramp; this.S = S; this.limit = limit; this.nb = nb;
++    this.b = 0; this.e = -2; this.cnt = 0;
++    this.running = true;
++  }
++
++  /** nodes settled so far */
++  get settled(): number {
++    return this.cnt;
++  }
++
++  /** settle at most maxSettled more nodes; true = the search is complete (S.settled set) */
++  run(maxSettled: number): boolean {
++    if (!this.running) return true;
++    const S = this.S!, g = this.g!;
++    const dist = S.dist, src = S.src, next = S.next, hops = S.hops, order = S.order, done = S.done;
++    const adj = this.adj, time = this.time, ramp = this.ramp, limit = this.limit, nb = this.nb;
++    const type = g.type;
++    const HW = Network.Highway;
++    const invQ = 1 / Q;
++    const bq = this.q, head = bq.head;
++    let cnt = this.cnt, b = this.b, e = this.e;
++    const stop = cnt + maxSettled;
++    for (; b < nb; b++, e = -2) {
++      if (e === -2) e = head[b];
++      while (e >= 0) {
++        if (cnt >= stop) { this.b = b; this.e = e; this.cnt = cnt; return false; }
++        const u = bq.enode[e];
++        e = bq.enext[e];
++        if (done[u] === 1) continue;
++        done[u] = 1;
++        order[cnt++] = u;
++        const key = dist[u];
++        const tu = time[u];
++        const hu = type[u] === HW;
++        const su = src[u];
++        const hp = hops[u] + 1;
++        const base = u * 4;
++        for (let k = 0; k < 4; k++) {
++          const v = adj[base + k];
++          if (v < 0 || done[v] === 1) continue;
++          let c = 0.5 * (tu + time[v]);
++          if (hu !== (type[v] === HW)) c += ramp === null ? RAMP_PENALTY : ramp[hu ? v : u];
++          const nd = key + c;
++          if (nd < dist[v] && nd <= limit) {
++            dist[v] = nd;
++            src[v] = su;
++            next[v] = u;
++            hops[v] = hp > 65535 ? 65535 : hp;
++            const bi = (nd * invQ) | 0;
++            bq.push(bi > b ? bi : b + 1, v);
++          }
++        }
++      }
++      head[b] = -1;
++    }
++    this.b = nb; this.e = -2; this.cnt = cnt;
++    S.settled = cnt;
++    this.running = false;
++    return true;
++  }
++}
++
++/** B2: transitSearch as a resumable run (see RoadSearchRun; transitSearch() itself is unchanged) */
++export class TransitSearchRun {
++  private readonly q = new BucketQueue();
++  private T: TransitNet | null = null;
++  private S: Search | null = null;
++  private limit = 0;
++  private nb = 0;
++  private b = 0;
++  private e = -2;
++  private cnt = 0;
++  running = false;
++
++  /** transitSearch's prologue (same arguments, minus the unused heap) */
++  start(T: TransitNet, S: Search, seeds: Seeds, limit = 400): void {
++    const n = T.total;
++    S.reset(n);
++    const dist = S.dist, src = S.src, next = S.next, hops = S.hops;
++    if (!(limit < 2000)) limit = 2000;
++    const invQ = 1 / QT;
++    const nb = Math.ceil(limit * invQ) + 2;
++    const bq = this.q;
++    bq.reset(nb, n * 2 + seeds.n + 16);
++    for (let s = 0; s < seeds.n; s++) {
++      const v = seeds.node[s];
++      const l = seeds.label[s];
++      if (v < 0 || v >= n || !(l <= limit)) continue;
++      if (l < dist[v]) {
++        dist[v] = l;
++        src[v] = seeds.id[s];
++        next[v] = -1;
++        hops[v] = 0;
++        bq.push((l * invQ) | 0, v);
++      }
++    }
++    this.T = T; this.S = S; this.limit = limit; this.nb = nb;
++    this.b = 0; this.e = -2; this.cnt = 0;
++    this.running = true;
++  }
++
++  get settled(): number {
++    return this.cnt;
++  }
++
++  run(maxSettled: number): boolean {
++    if (!this.running) return true;
++    const T = this.T!, S = this.S!;
++    const dist = S.dist, src = S.src, next = S.next, hops = S.hops, order = S.order, done = S.done;
++    const limit = this.limit, nb = this.nb, invQ = 1 / QT;
++    const nR = T.nR, nRR = T.nR + T.nRail, nGrid = nRR + T.nSub;
++    const roadAdj = T.roadAdj, busTime = T.busTime, railAdj = T.railAdj, subAdj = T.subAdj;
++    const trStart = T.trStart, trTo = T.trTo, trCost = T.trCost;
++    const railTime = T.railTime, subTime = T.subTime;
++    const bq = this.q, head = bq.head;
++    let cnt = this.cnt, b = this.b, e = this.e;
++    const stop = cnt + maxSettled;
++    for (; b < nb; b++, e = -2) {
++      if (e === -2) e = head[b];
++      while (e >= 0) {
++        if (cnt >= stop) { this.b = b; this.e = e; this.cnt = cnt; return false; }
++        const u = bq.enode[e];
++        e = bq.enext[e];
++        if (done[u] === 1) continue;
++        done[u] = 1;
++        order[cnt++] = u;
++        const key = dist[u];
++        const su = src[u];
++        const hp = Math.min(65535, hops[u] + 1);
++        for (let k = u < nGrid ? 0 : 4; k < 4; k++) {
++          let v: number, c: number;
++          if (u < nR) {
++            v = roadAdj[u * 4 + k];
++            if (v < 0) continue;
++            c = 0.5 * (busTime[u] + busTime[v]);
++          } else if (u < nRR) {
++            const a = railAdj[(u - nR) * 4 + k];
++            if (a < 0) continue;
++            v = a + nR;
++            c = railTime;
++          } else {
++            const a = subAdj[(u - nRR) * 4 + k];
++            if (a < 0) continue;
++            v = a + nRR;
++            c = subTime;
++          }
++          if (done[v] === 1) continue;
++          const nd = key + c;
++          if (nd < dist[v] && nd <= limit) {
++            dist[v] = nd; src[v] = su; next[v] = u; hops[v] = hp;
++            const bi = (nd * invQ) | 0;
++            bq.push(bi > b ? bi : b + 1, v);
++          }
++        }
++        for (let t = trStart[u], t1 = trStart[u + 1]; t < t1; t++) {
++          const v = trTo[t];
++          if (done[v] === 1) continue;
++          const nd = key + trCost[t];
++          if (nd < dist[v] && nd <= limit) {
++            dist[v] = nd; src[v] = su; next[v] = u; hops[v] = hp;
++            const bi = (nd * invQ) | 0;
++            bq.push(bi > b ? bi : b + 1, v);
++          }
++        }
++      }
++      head[b] = -1;
++    }
++    this.b = nb; this.e = -2; this.cnt = cnt;
++    S.settled = cnt;
++    this.running = false;
++    return true;
++  }
++}
++
++/**
++ * B2: accumulate() over the settle-order range [k0, k1) only, walked backwards (k1 - 1 down to k0). Walking the
++ * ranges from the end of `order` to its start — [k1, settled) before [k0, k1) — reproduces accumulate(S, acc, onSink)
++ * exactly: a node's flow moves to its parent, which settled earlier (a smaller k), and the sink calls come in the same
++ * order.
++ */
++export function accumulateRange(S: Search, acc: Float32Array | Float64Array, k0: number, k1: number,
++  onSink?: (seedId: number, flow: number, node: number) => void): void {
++  const order = S.order, next = S.next, src = S.src;
++  for (let k = k1 - 1; k >= k0; k--) {
++    const v = order[k];
++    const f = acc[v];
++    if (f === 0) continue;
++    const nx = next[v];
++    if (nx >= 0) acc[nx] += f;
++    else if (onSink) onSink(src[v], f, v);
++  }
++}
++
+ /**
+  * Accumulate flows injected in `acc` (per node) along the search forest toward the seeds.
+  * After the call acc[v] = total flow through v. `onSink(seedId, flow)` receives flow reaching a seed.
+@@ -546,6 +792,36 @@ export class SearchK {
+     }
+   }
+ 
++  /** B2: refreshAlt in pieces — begin (new time2 / ramp2, stamps), then refreshAltRange over [0, settled) in order */
++  refreshAltBegin(time2: Float32Array, ramp2: Float32Array | null): boolean {
++    const g = this.g;
++    if (!g || this.running) return false;
++    const order = this.order;
++    this.time2 = time2; this.ramp2 = ramp2;
++    this.nextAltTick();
++    const altStamp = this.altStamp, tick = this.altTick;
++    if (altStamp.length > 0) for (let k = 0, n = this.settled; k < n; k++) altStamp[order[k]] = tick;
++    return true;
++  }
++
++  /** B2: refreshAlt's pass over the states of settle order [k0, k1) (call in increasing order after refreshAltBegin:
++   *  parents settle before their children, so ranges in order give refreshAlt's sums exactly) */
++  refreshAltRange(k0: number, k1: number): void {
++    const g = this.g, time2 = this.time2, ramp2 = this.ramp2;
++    if (!g || time2 === null) return;
++    const order = this.order, next = this.next, alt = this.alt, snode = this.node, type = g.type, HW = Network.Highway;
++    const end = Math.min(k1, this.settled);
++    for (let k = k0; k < end; k++) {
++      const s = order[k], p = next[s];
++      if (p < 0) { alt[s] = 0; continue; }
++      const v = snode[s], u = snode[p];
++      let c = alt[p] + 0.5 * (time2[u] + time2[v]);
++      const tu = type[u], tv = type[v];
++      if ((tu === HW) !== (tv === HW)) { const r = tu === HW ? v : u; c += ramp2 === null ? (RAMP_BY_NET[type[r]] ?? RAMP_PENALTY) : ramp2[r]; }
++      alt[s] = c;
++    }
++  }
++
+   /** a complete search kept for its result only (a cache of forests): drop the queue and the tentative labels (about
+    *  half its memory); start() allocates them again */
+   releaseScratch(): void {
+diff --git a/src/sim/infra/transit.ts b/src/sim/infra/transit.ts
+index b7ab2ee..5760150 100644
+--- a/src/sim/infra/transit.ts
++++ b/src/sim/infra/transit.ts
+@@ -67,6 +67,96 @@ export function collectStops(state: CityState, out?: StopList): StopList {
+   return res;
+ }
+ 
++/**
++ * B2 (docs/dev/B2_DESIGN.md §2.6): collectStops in pieces — begin(out), building chunks over a pass's building list
++ * (pushes in list order), then cell ranges (the road-cell bus-stop flag, pushes in index order), then end() sets out.n.
++ * Same pushes in the same order as collectStops(state, out) over the same list, so the stop list is identical.
++ */
++export class StopCollector {
++  private out: StopList | null = null;
++  private n = 0;
++  /** next building index / cell index */
++  bi = 0;
++  ci = 0;
++
++  begin(out: StopList): void {
++    this.out = out;
++    this.n = 0;
++    this.bi = 0;
++    this.ci = 0;
++  }
++
++  private push(bid: number, mode: number, cell: number): void {
++    const res = this.out!;
++    const n = this.n;
++    if (n >= res.bid.length) {
++      const cap = res.bid.length * 2;
++      const b = new Int32Array(cap); b.set(res.bid); res.bid = b;
++      const m = new Uint8Array(cap); m.set(res.mode); res.mode = m;
++      const c = new Int32Array(cap); c.set(res.cell); res.cell = c;
++    }
++    res.bid[n] = bid;
++    res.mode[n] = mode;
++    res.cell[n] = cell;
++    this.n = n + 1;
++  }
++
++  /** buildings list[bi .. bi + count) (collectStops' building loop); true when the list is done */
++  buildings(state: CityState, list: readonly Building[], count: number): boolean {
++    const end = Math.min(list.length, this.bi + count);
++    for (let bI = this.bi; bI < end; bI++) {
++      const b = list[bI];
++      const inf = infoOf(state, b);
++      if (!isStopMode(inf.transit)) continue;
++      if (!isFunctional(b)) continue;
++      this.push(b.id, inf.transit, centerCell(state, b));
++    }
++    this.bi = end;
++    return end >= list.length;
++  }
++
++  /** cells ci .. ci + count (collectStops' road-cell bus stops); true when every cell is done */
++  cells(state: CityState, count: number): boolean {
++    const flags = state.netFlags, net = state.network, C = state.cells;
++    const end = Math.min(C, this.ci + count);
++    for (let i = this.ci; i < end; i++) {
++      if ((flags[i] & NETFLAG_BUS_STOP) !== 0 && net[i] >= 1 && net[i] <= 5) this.push(-1, Transit.Bus, i);
++    }
++    this.ci = end;
++    return end >= C;
++  }
++
++  /** stops collected so far */
++  get count(): number {
++    return this.n;
++  }
++
++  end(): StopList {
++    const res = this.out!;
++    res.n = this.n;
++    this.out = null;
++    return res;
++  }
++}
++
++/**
++ * B2: copy src's stops into dst as collectStops(state, dst) would have pushed them: dst grows by doubling (old contents
++ * copied), [0, n) is overwritten and the tail beyond n keeps what dst held (identical arrays, tails included)
++ */
++export function copyStopList(dst: StopList, src: StopList): void {
++  const n = src.n;
++  while (n > dst.bid.length) {
++    const cap = dst.bid.length > 0 ? dst.bid.length * 2 : 64;
++    const b = new Int32Array(cap); b.set(dst.bid); dst.bid = b;
++    const m = new Uint8Array(cap); m.set(dst.mode); dst.mode = m;
++    const c = new Int32Array(cap); c.set(dst.cell); dst.cell = c;
++  }
++  dst.bid.set(src.bid.subarray(0, n));
++  dst.mode.set(src.mode.subarray(0, n));
++  dst.cell.set(src.cell.subarray(0, n));
++  dst.n = n;
++}
++
+ interface AttachApi { stopAttached?: (id: number) => boolean }
+ 
+ /** traffic's attachment verdict for a stop building (true while traffic is not installed: legacy behaviour) */
+diff --git a/tests/infra/b2Harness.ts b/tests/infra/b2Harness.ts
+new file mode 100644
+index 0000000..ad9d269
+--- /dev/null
++++ b/tests/infra/b2Harness.ts
+@@ -0,0 +1,120 @@
++/**
++ * B2 exactness harness (docs/dev/B2_DESIGN.md §11), shared by the groups' tests: digests of a city and of a system's
++ * fields, a pass / cycle driver that runs one task's steps with nothing in between ("atomic"), and the piece-scale helper.
++ *  - digest(v): sha256 of any value — typed arrays (bytes; a NaN matches any NaN: NaN bits are no JS semantics), JS
++ *    arrays, plain objects (keys sorted), Maps and Sets (insertion order: it is part of the result), Buildings by id.
++ *  - stateDigest(st): every CityState typed array, the stats, every building (all fields), systemData.
++ *  - fieldsDigest(sys, exclude): every own field of a system (reflection), minus the excluded names.
++ */
++import { createHash, type Hash } from 'node:crypto';
++import type { CityState } from '../../src/sim/CityState';
++import type { Simulation } from '../../src/sim/Simulation';
++import { schedulerOf, withPieceScale, type InfraTask } from '../../src/sim/infra/scheduler';
++
++export { withPieceScale };
++
++const NAN64 = new Uint8Array(new Float64Array([NaN]).buffer);
++const NAN32 = new Uint8Array(new Float32Array([NaN]).buffer);
++
++function feedView(h: Hash, v: ArrayBufferView): void {
++  if (v instanceof Float32Array || v instanceof Float64Array) {
++    // (canonical NaN: the bits of a NaN depend on the V8 tier that made it)
++    const nan = v instanceof Float32Array ? NAN32 : NAN64, bytes = v.BYTES_PER_ELEMENT;
++    let start = 0;
++    const raw = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
++    for (let i = 0; i < v.length; i++) {
++      if (v[i] === v[i]) continue;
++      if (i > start) h.update(raw.subarray(start * bytes, i * bytes));
++      h.update(nan);
++      start = i + 1;
++    }
++    if (start < v.length) h.update(raw.subarray(start * bytes));
++    return;
++  }
++  h.update(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
++}
++
++/** feed v into the hash (cycles: an object seen before feeds its first-seen index) */
++export function feed(h: Hash, v: unknown, seen = new Map<object, number>(), skip: ReadonlySet<string> = new Set()): void {
++  if (v === null || v === undefined) { h.update(String(v)); return; }
++  const t = typeof v;
++  if (t === 'function') return;
++  if (t !== 'object') { h.update(t[0] + (Object.is(v, -0) ? '-0' : Number.isNaN(v) ? 'NaN' : String(v))); return; }
++  const o = v as object;
++  const at = seen.get(o);
++  if (at !== undefined) { h.update(`@${at}`); return; }
++  seen.set(o, seen.size);
++  if (ArrayBuffer.isView(o)) { h.update(`V${o.constructor.name}:${o.byteLength}`); feedView(h, o); return; }
++  if (o instanceof Map) { h.update(`M${o.size}`); for (const [k, x] of o) { feed(h, k, seen); feed(h, x, seen); } return; }
++  if (o instanceof Set) { h.update(`S${o.size}`); for (const x of o) feed(h, x, seen); return; }
++  if (Array.isArray(o)) { h.update(`A${o.length}`); for (const x of o) feed(h, x, seen); return; }
++  // (a Building: its id — the city digest covers its fields)
++  const rec = o as Record<string, unknown>;
++  if (typeof rec.id === 'number' && typeof rec.def === 'string' && typeof rec.x === 'number' && typeof rec.flags === 'number') { h.update(`B${rec.id}`); return; }
++  const keys = Object.keys(rec).sort();
++  h.update(`O${keys.length}`);
++  for (const k of keys) { if (skip.has(k)) continue; h.update(k); feed(h, rec[k], seen); }
++}
++
++export function digest(v: unknown): string {
++  const h = createHash('sha256');
++  feed(h, v);
++  return h.digest('hex').slice(0, 20);
++}
++
++/** per part: every typed-array field of the state, stats, buildings (every field), systemData, the scalars */
++export function stateDigest(st: CityState): Record<string, string> {
++  const out: Record<string, string> = {};
++  const rec = st as unknown as Record<string, unknown>;
++  for (const k of Object.keys(rec).sort()) {
++    const v = rec[k];
++    if (ArrayBuffer.isView(v)) out[k] = digest(v);
++  }
++  out.stats = digest(st.stats);
++  const bs: unknown[] = [];
++  for (const b of st.buildings.values()) bs.push({ ...b });
++  out.buildings = digest(bs);
++  out.systemData = digest(st.systemData);
++  out.scalars = digest({ day: st.day, funds: st.funds, nextBuildingId: st.nextBuildingId });
++  return out;
++}
++
++/** every own field of a system (reflection; typed arrays, Maps, Sets, arrays, objects), minus `exclude` */
++export function fieldsDigest(sys: object, exclude: readonly string[] = []): Record<string, string> {
++  const out: Record<string, string> = {};
++  const skip = new Set(exclude);
++  const rec = sys as Record<string, unknown>;
++  for (const k of Object.keys(rec)) {
++    if (skip.has(k) || typeof rec[k] === 'function') continue;
++    out[k] = digest(rec[k]);
++  }
++  return out;
++}
++
++/** the names of the parts two digests disagree on */
++export function diffDigests(a: Record<string, string>, b: Record<string, string>): string[] {
++  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
++  return [...keys].filter((k) => a[k] !== b[k]).sort();
++}
++
++/** a task of the shared scheduler by name */
++export function taskOf(sim: Simulation, name: string): InfraTask {
++  const t = schedulerOf(sim).tasks.find((x) => x.name === name);
++  if (!t) throw new Error(`no task ${name}`);
++  return t;
++}
++
++/** one traffic cycle driven piece by piece with nothing in between (atomic); onPiece after every piece */
++export function trafficCycle(sim: Simulation, onPiece?: (k: number) => void, maxPieces = 5_000_000): number {
++  const tr = sim.getSystem('traffic') as unknown as { phase: number; lastCycleStart: number; step(s: Simulation): void };
++  tr.phase = 0;
++  tr.lastCycleStart = sim.state.day;
++  let k = 0;
++  while (tr.phase >= 0) {
++    tr.step(sim);
++    k++;
++    onPiece?.(k);
++    if (k > maxPieces) throw new Error('traffic cycle did not finish');
++  }
++  return k;
++}
+diff --git a/tests/infra/b2Pieces.test.ts b/tests/infra/b2Pieces.test.ts
+new file mode 100644
+index 0000000..e20be0f
+--- /dev/null
++++ b/tests/infra/b2Pieces.test.ts
+@@ -0,0 +1,325 @@
++/**
++ * B2 (docs/dev/B2_DESIGN.md §11): whole-pass exactness of the split infra steps — one go against many small steps.
++ *  core      the resumable kernels against their whole-call originals (road / transit searches, accumulate, the graph
++ *            builds, the stop collector, the box filters, the parking passes, SearchK's car-leg refresh), the pass
++ *            snapshot's chunk plan, pieceUnits, the scheduler's urgent budget
++ *  traffic   (G1) cycles run in one go (scale 1e9), at the production piece size and in tiny / random pieces give
++ *            identical cities and traffic fields at every cycle end, across network and building edits; cross-system
++ *            queries between every two pieces change nothing (R8); every external output changes at most once per
++ *            cycle (R7 / R4); a save taken mid-cycle holds no cycle state and loads idle (R9); two cities stepped
++ *            interleaved equal their solo runs (module scratch); every piece's estimate stays within its budget.
++ * The frozen-original comparison (traffic vs the pre-J2 class, phase by phase, three piece scales) is
++ * tests/sim/exact/traffic.test.ts.
++ */
++import { describe, expect, it } from 'vitest';
++import { Network } from '../../src/core/types';
++import { RNG } from '../../src/core/rng';
++import type { CityState } from '../../src/sim/CityState';
++import type { Simulation } from '../../src/sim/Simulation';
++import { boxH, boxHRows, boxV, BoxVRun } from '../../src/sim/infra/blur';
++import { BuildingSnapshot } from '../../src/sim/infra/common';
++import { GraphBuildRun, GridGraph, RoadGraph } from '../../src/sim/infra/graph';
++import { INFRA_PIECE_COLD_MS, INFRA_PIECE_MS, INFRA_URGENT_BUDGET } from '../../src/sim/infra/params';
++import { baseSupply, baseSupplyRange, parkingFromBoxes, parkingFromBoxesRange, parkingSummaryOf } from '../../src/sim/infra/parking';
++import { InfraScheduler, pieceBudgetUs, pieceUnits, withPieceScale, type InfraTask } from '../../src/sim/infra/scheduler';
++import {
++  RoadSearchRun, Search, SearchK, Seeds, TransitSearchRun, accumulate, accumulateRange, roadSearch, transitSearch, type TransitNet,
++} from '../../src/sim/infra/search';
++import { MinHeap } from '../../src/sim/infra/heap';
++import { StopCollector, collectStops, copyStopList, type StopList } from '../../src/sim/infra/transit';
++import { newState, place, stressCity } from './cityGen';
++import { digest } from './b2Harness';
++
++// ------------------------------------------------------------------------------------------------ helpers
++function randomRoads(rng: RNG, N: number, density = 0.55): CityState {
++  const st = newState(N);
++  const types = [Network.Street, Network.Road, Network.Avenue, Network.OneWay, Network.Highway];
++  for (let i = 0; i < st.cells; i++) {
++    const r = rng.next();
++    if (r < density) st.network[i] = rng.pick(types);
++    else if (r < density + 0.05) st.network[i] = Network.Rail;
++    if (st.network[i] === Network.OneWay) st.netFlags[i] = (rng.int(0, 3) << 2);
++    if (rng.chance(0.03)) st.netFlags[i] |= 1 << 5; // level crossing
++    if (rng.chance(0.2)) st.subway[i] = 1;
++  }
++  return st;
++}
++
++function sameSearch(a: Search, b: Search, n: number, at: string): void {
++  expect(b.settled, `${at} settled`).toBe(a.settled);
++  expect(b.graphVersion, `${at} version`).toBe(a.graphVersion);
++  for (let v = 0; v < n; v++) {
++    if (!Object.is(a.dist[v], b.dist[v]) || a.src[v] !== b.src[v] || a.next[v] !== b.next[v] || a.done[v] !== b.done[v]) throw new Error(`${at}: node ${v}`);
++    if (a.dist[v] < Infinity && a.hops[v] !== b.hops[v]) throw new Error(`${at}: hops ${v}`);
++  }
++  for (let k = 0; k < a.settled; k++) if (a.order[k] !== b.order[k]) throw new Error(`${at}: order ${k}`);
++}
++
++function randomSeeds(rng: RNG, n: number, count: number, maxLabel: number): Seeds {
++  const s = new Seeds();
++  for (let k = 0; k < count; k++) s.push(rng.int(-1, n), rng.chance(0.1) ? rng.pick([0, maxLabel * 3, Infinity]) : rng.range(0, maxLabel), rng.int(0, 50));
++  return s;
++}
++
++function sameGraph(a: object, b: object, at: string): void {
++  const ra = a as Record<string, unknown>, rb = b as Record<string, unknown>;
++  expect(Object.keys(rb), `${at} keys`).toEqual(Object.keys(ra));
++  for (const k of Object.keys(ra)) {
++    const x = ra[k], y = rb[k];
++    if (ArrayBuffer.isView(x)) expect(digest(y), `${at}.${k}`).toBe(digest(x));
++    else expect(y, `${at}.${k}`).toEqual(x);
++  }
++}
++
++// ------------------------------------------------------------------------------------------------ core
++describe('B2 core: resumable kernels equal their whole-call originals', () => {
++  it('pieceUnits / pieceBudgetUs / withPieceScale', () => {
++    expect(pieceUnits(0.1, 1, 0.3)).toBe(3000);
++    expect(pieceUnits(1e9, 1, 0.3)).toBe(1);
++    expect(pieceUnits(1e9, 5, 0.3)).toBe(5);
++    expect(pieceBudgetUs(0.3)).toBeCloseTo(300);
++    withPieceScale(1e9, () => { expect(pieceUnits(0.1)).toBe(0x3fffffff); expect(pieceBudgetUs()).toBeGreaterThan(1e10); });
++    withPieceScale(1e-9, () => expect(pieceUnits(0.1)).toBe(1));
++    expect(pieceUnits(0.1, 1, INFRA_PIECE_MS)).toBe(Math.floor(INFRA_PIECE_MS * 1000 / 0.1));
++    expect(() => withPieceScale(1e-9, () => { throw new Error('x'); })).toThrow();
++    expect(pieceUnits(0.1, 1, INFRA_PIECE_COLD_MS)).toBe(Math.floor(INFRA_PIECE_COLD_MS * 1000 / 0.1)); // restored
++  });
++
++  it('RoadSearchRun in random chunks = roadSearch(), with other searches between the chunks', () => {
++    const rng = new RNG(0xb2a1), heap = new MinHeap();
++    for (let c = 0; c < 60; c++) {
++      const st = randomRoads(rng, rng.pick([1, 2, 7, 16, 33, 48]), rng.range(0.2, 0.9));
++      const g = new RoadGraph();
++      g.build(st);
++      const n = g.n;
++      const time = new Float32Array(n), ramp = new Float32Array(n);
++      for (let v = 0; v < n; v++) { time[v] = g.t0[v] * rng.range(1, 4); ramp[v] = rng.range(0.05, 2); }
++      const seeds = randomSeeds(rng, n, rng.int(0, 12), 30);
++      const limit = rng.pick([5, 30, 400, 3000]);
++      const adj = rng.chance(0.5) ? g.fwd : g.rev;
++      const rp = rng.chance(0.5) ? ramp : null;
++      const A = new Search(), B = new Search(), other = new Search();
++      roadSearch(g, adj, time, A, heap, seeds, limit, rp);
++      const run = new RoadSearchRun();
++      run.start(g, adj, time, B, seeds, limit, rp);
++      let guard = 0;
++      while (!run.run(rng.pick([1, 2, 3, 17, 100, 1e9]))) {
++        // (garageReach / emergency between two pieces: the module search must not disturb the run)
++        roadSearch(g, g.rev, g.t0, other, heap, randomSeeds(rng, n, 3, 20), 50, null);
++        if (++guard > 1e6) throw new Error('run did not end');
++      }
++      sameSearch(A, B, n, `road ${c}`);
++      expect(run.run(5), 'a finished run stays finished').toBe(true);
++    }
++  });
++
++  it('TransitSearchRun in random chunks = transitSearch()', () => {
++    const rng = new RNG(0xb2a2), heap = new MinHeap();
++    for (let c = 0; c < 40; c++) {
++      const st = randomRoads(rng, rng.pick([4, 12, 24, 40]), 0.6);
++      const g = new RoadGraph(), rail = new GridGraph(), sub = new GridGraph();
++      g.build(st);
++      rail.build(st.size, (i) => st.network[i] === Network.Rail);
++      sub.build(st.size, (i) => st.subway[i] !== 0);
++      const nR = g.n, nRail = rail.n, nSub = sub.n, nFerry = rng.int(0, 3), total = nR + nRail + nSub + nFerry;
++      const busTime = new Float32Array(nR);
++      for (let v = 0; v < nR; v++) busTime[v] = g.t0[v] * 1.25 * rng.range(1, 3);
++      const E = rng.int(0, 60), from: number[] = [], to: number[] = [], cost: number[] = [];
++      for (let e = 0; e < E && total > 0; e++) { from.push(rng.int(0, total - 1)); to.push(rng.int(0, total - 1)); cost.push(rng.range(0.5, 8)); }
++      const trStart = new Int32Array(total + 1);
++      for (const f of from) trStart[f + 1]++;
++      for (let i = 0; i < total; i++) trStart[i + 1] += trStart[i];
++      const fill = trStart.slice(0, total), trTo = new Int32Array(E), trCost = new Float32Array(E);
++      for (let e = 0; e < from.length; e++) { const p = fill[from[e]]++; trTo[p] = to[e]; trCost[p] = cost[e]; }
++      const T: TransitNet = { nR, nRail, nSub, nFerry, total, roadAdj: g.rev, busTime, railAdj: rail.adj, subAdj: sub.adj, railTime: 0.06, subTime: 0.03, trStart, trTo, trCost };
++      const seeds = randomSeeds(rng, total, rng.int(0, 10), 40);
++      const limit = rng.pick([10, 126, 3000]);
++      const A = new Search(), B = new Search();
++      transitSearch(T, A, heap, seeds, limit);
++      const run = new TransitSearchRun();
++      run.start(T, B, seeds, limit);
++      while (!run.run(rng.pick([1, 5, 64, 1e9]))) { /* chunks */ }
++      sameSearch(A, B, total, `transit ${c}`);
++    }
++  });
++
++  it('accumulateRange from the end of the forest to its start = accumulate (flows and sink order)', () => {
++    const rng = new RNG(0xb2a3), heap = new MinHeap();
++    for (let c = 0; c < 40; c++) {
++      const st = randomRoads(rng, rng.pick([8, 20, 40]), 0.7);
++      const g = new RoadGraph();
++      g.build(st);
++      const S = new Search();
++      roadSearch(g, g.rev, g.t0, S, heap, randomSeeds(rng, g.n, 6, 10), 400, null);
++      const a = new Float32Array(g.n);
++      for (let v = 0; v < g.n; v++) a[v] = rng.chance(0.3) ? rng.range(0, 100) : 0;
++      const b = a.slice(), sa: number[] = [], sb: number[] = [];
++      accumulate(S, a, (id, f, v) => sa.push(id, f, v));
++      let k1 = S.settled;
++      while (k1 > 0) { const k0 = Math.max(0, k1 - rng.int(1, 50)); accumulateRange(S, b, k0, k1, (id, f, v) => sb.push(id, f, v)); k1 = k0; }
++      expect(digest(b)).toBe(digest(a));
++      expect(sb).toEqual(sa);
++    }
++  });
++
++  it('GraphBuildRun in random pieces = RoadGraph.build + GridGraph.build (published into used graphs: tails, versions)', () => {
++    const rng = new RNG(0xb2a4);
++    // graphs that already hold earlier (bigger / smaller) builds: allocation and tails must follow build()
++    const refRoad = new RoadGraph(), refRail = new GridGraph(), refSub = new GridGraph();
++    const road = new RoadGraph(), rail = new GridGraph(), sub = new GridGraph();
++    const run = new GraphBuildRun();
++    for (let c = 0; c < 40; c++) {
++      const st = randomRoads(rng, rng.pick([1, 3, 16, 31, 64]), rng.range(0, 0.95));
++      refRoad.build(st);
++      refRail.build(st.size, (i) => st.network[i] === Network.Rail || (st.netFlags[i] & (1 << 5)) !== 0);
++      refSub.build(st.size, (i) => st.subway[i] !== 0);
++      run.begin(st);
++      // (the grids may change after begin(): the build reads its copy)
++      const keep = st.network.slice();
++      st.network.fill(0);
++      const budget = rng.pick([0.001, 0.05, 1, 50, 1e9]);
++      let guard = 0;
++      while (!run.run(budget)) if (++guard > 1e7) throw new Error('build did not end');
++      st.network.set(keep);
++      run.publish(road, rail, sub);
++      sameGraph(refRoad, road, `road ${c}`);
++      sameGraph(refRail, rail, `rail ${c}`);
++      sameGraph(refSub, sub, `subway ${c}`);
++      expect(run.active).toBe(false);
++    }
++  });
++
++  it('StopCollector + copyStopList = collectStops into a used list (tails, growth)', () => {
++    const rng = new RNG(0xb2a5);
++    const ref: StopList = { n: 0, bid: new Int32Array(64), mode: new Uint8Array(64), cell: new Int32Array(64) };
++    const dst: StopList = { n: 0, bid: new Int32Array(64), mode: new Uint8Array(64), cell: new Int32Array(64) };
++    const back: StopList = { n: 0, bid: new Int32Array(64), mode: new Uint8Array(64), cell: new Int32Array(64) };
++    for (let c = 0; c < 12; c++) {
++      const N = rng.pick([8, 24, 40]);
++      const st = newState(N);
++      for (let i = 0; i < st.cells; i++) { st.network[i] = rng.chance(0.6) ? Network.Road : 0; if (rng.chance(0.15)) st.netFlags[i] = 16; }
++      for (let k = 0; k < rng.int(0, 40); k++) {
++        const x = rng.int(0, N - 2), z = rng.int(0, N - 2);
++        if (st.building[z * N + x] >= 0) continue;
++        place(st, rng.pick(['tr_bus_stop', 't_subway', 't_r1', 'tr_ferry_terminal']), x, z);
++      }
++      collectStops(st, ref);
++      const col = new StopCollector(), list = [...st.buildings.values()];
++      col.begin(back);
++      while (!col.buildings(st, list, rng.int(1, 7))) { /* chunks */ }
++      while (!col.cells(st, rng.int(1, 200))) { /* chunks */ }
++      col.end();
++      copyStopList(dst, back);
++      expect(dst.n).toBe(ref.n);
++      expect(digest([dst.bid, dst.mode, dst.cell])).toBe(digest([ref.bid, ref.mode, ref.cell]));
++    }
++  });
++
++  it('boxHRows + BoxVRun by row ranges = boxH + boxV; baseSupplyRange / parkingFromBoxesRange = their originals', () => {
++    const rng = new RNG(0xb2a6);
++    for (let c = 0; c < 30; c++) {
++      const N = rng.pick([1, 2, 5, 17, 64]), r = rng.pick([0, 1, 2, 3, 9]), C = N * N;
++      const src = Float32Array.from({ length: C }, () => (rng.chance(0.2) ? 0 : rng.range(-5, 50)));
++      const t1 = new Float32Array(C), d1 = new Float32Array(C), t2 = new Float32Array(C), d2 = new Float32Array(C);
++      boxH(src, t1, N, r);
++      boxV(t1, d1, N, r);
++      for (let z = 0; z < N;) { const z1 = Math.min(N, z + rng.int(1, 9)); boxHRows(src, t2, N, r, z, z1); z = z1; }
++      const run = new BoxVRun();
++      run.begin(t2, d2, N, r);
++      while (!run.run(rng.int(1, 6))) { /* rows */ }
++      expect(digest(t2)).toBe(digest(t1));
++      expect(digest(d2)).toBe(digest(d1));
++    }
++    const st = stressCity(48, 5).st;
++    const a = new Float32Array(st.cells), b = new Float32Array(st.cells);
++    baseSupply(st, a);
++    for (let i = 0; i < st.cells; i += 97) baseSupplyRange(st, b, i, Math.min(st.cells, i + 97));
++    expect(digest(b)).toBe(digest(a));
++    const N = st.size, D = Float32Array.from({ length: st.cells }, () => (rng.chance(0.5) ? 0 : rng.range(0, 30)));
++    const bd = Float32Array.from(D, (x) => x * 0.7), bs = Float32Array.from(a, (x) => x * 1.1), prev = Float32Array.from({ length: st.cells }, () => rng.next());
++    for (const p of [null, prev]) {
++      const o1 = new Float32Array(st.cells), o2 = new Float32Array(st.cells);
++      const s1 = parkingFromBoxes(N, D, a, bd, bs, o1, p, 0.4);
++      const acc = { wSum: 0, pSum: 0, dCells: 0, high: 0, sTot: 0, dTot: 0 };
++      for (let i = 0; i < st.cells; i += 61) parkingFromBoxesRange(N, D, a, bd, bs, o2, p, 0.4, i, Math.min(st.cells, i + 61), acc);
++      expect(digest(o2)).toBe(digest(o1));
++      expect(parkingSummaryOf(acc)).toEqual(s1);
++    }
++  });
++
++  it('SearchK car legs refreshed by settle-order ranges = refreshAlt', () => {
++    const rng = new RNG(0xb2a7);
++    for (let c = 0; c < 20; c++) {
++      const st = randomRoads(rng, rng.pick([12, 30]), 0.7);
++      const g = new RoadGraph();
++      g.build(st);
++      const t2 = Float32Array.from({ length: g.n }, (_, v) => g.t0[v] * rng.range(1, 3)), r2 = Float32Array.from({ length: g.n }, () => rng.range(0, 2));
++      const seeds = randomSeeds(rng, g.n, 5, 5), groups = Array.from({ length: 60 }, (_, i) => i % 4);
++      const mk = () => {
++        const K = new SearchK(3);
++        K.start(g, g.rev, g.t0, seeds, groups, 200, null, 30, 8, t2, r2);
++        while (!K.run(1e9)) { /* run */ }
++        return K;
++      };
++      const A = mk();
++      const B = mk();
++      const t3 = Float32Array.from(t2, (x) => x * rng.range(0.5, 2)), r3 = rng.chance(0.5) ? null : r2;
++      A.refreshAlt(t3, r3);
++      expect(B.refreshAltBegin(t3, r3)).toBe(true);
++      for (let k = 0; k < B.settled;) { const k1 = Math.min(B.settled, k + rng.int(1, 40)); B.refreshAltRange(k, k1); k = k1; }
++      expect(digest(B.alt)).toBe(digest(A.alt));
++    }
++  });
++
++  it('BuildingSnapshot: chunks cover the list in order, each within the budget unless one building exceeds it', () => {
++    const st = stressCity(64, 3).st;
++    const snap = new BuildingSnapshot();
++    snap.take(st);
++    expect(snap.n).toBe(st.buildings.size);
++    for (const budget of [1, 7, 50, 1e9]) {
++      const k = snap.plan(0.5, 0.25, budget);
++      expect(snap.bounds[0]).toBe(0);
++      expect(snap.bounds[k]).toBe(snap.n);
++      let cells = 0;
++      for (let c = 0; c < k; c++) {
++        expect(snap.countOf(c)).toBeGreaterThan(0);
++        let us = 0, f = 0;
++        for (let i = snap.bounds[c]; i < snap.bounds[c + 1]; i++) { const b = snap.list[i]; us += 0.5 + 0.25 * b.w * b.d; f += b.w * b.d; }
++        expect(snap.cellsOf(c)).toBe(f);
++        cells += f;
++        if (snap.countOf(c) > 1) expect(us).toBeLessThanOrEqual(budget + 1e-9);
++      }
++      expect(cells).toBe([...st.buildings.values()].reduce((s, b) => s + b.w * b.d, 0));
++    }
++    snap.release();
++    expect(snap.list.length).toBe(0);
++  });
++
++  it('scheduler: urgent steps re-scan for the first urgent task, under one estimated budget headless; the first always runs', () => {
++    const mk = (name: string, cost: number, n: number, log: string[]): InfraTask & { left: number } => {
++      const t = {
++        name, left: n,
++        due: () => t.left > 0, urgent: () => t.left > 0, cost: () => cost,
++        step: () => { t.left--; log.push(name); },
++      };
++      return t;
++    };
++    const log: string[] = [];
++    const sch = new InfraScheduler();
++    const a = mk('a', 5, 3, log), b = mk('b', 4, 100, log);
++    sch.register(a); sch.register(b);
++    const sim = { state: { day: 1 } } as unknown as Simulation;
++    sch.tickDay(sim);
++    // a: 3 x 5 = 15, then b while 15 + 4k <= 24: 2 steps (23); then the normal loop's budget is used up
++    expect(log.slice(0, 5)).toEqual(['a', 'a', 'a', 'b', 'b']);
++    expect(log.length).toBe(5);
++    expect(INFRA_URGENT_BUDGET).toBe(24);
++    // an oversized first urgent step still runs
++    const log2: string[] = [];
++    const sch2 = new InfraScheduler();
++    sch2.register(mk('big', 100, 2, log2));
++    sch2.tickDay(sim);
++    expect(log2).toEqual(['big']);
++  });
++});
++
+-- 
+2.43.0
+

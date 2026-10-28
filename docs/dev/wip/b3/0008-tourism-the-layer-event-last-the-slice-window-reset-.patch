@@ -1,0 +1,197 @@
+From b5f5d94e51c3525dbfd9727611059bd80028bcdd Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 04:42:51 +0000
+Subject: [PATCH 08/13] tourism: the layer event last, the slice window reset
+ before the pass, window 0 not -0 (B3 fix round)
+
+verify-a minors 2 and 3. venuePass emits nothing; the daily (after the window reset), the tick (after a
+fallback pass's attract step), refresh and init emit layerUpdated 'tourism' as their last statement, so a
+listener that throws leaves the saved pass and the slice record complete. Before, the saved pass stayed last
+month's while the records and raster in memory were new, and a save on dom 26-29 restored the old ones.
+tourismWindow adds 0: the days before a city's first TOURISM_DAY gave -0, which a save stores as 0.
+Bit-identical otherwise: no sim system listens to the 'tourism' layer event.
+
+Tests: a listener that throws on the pass day (saves on days 56-59 continue field by field and by digest);
+a save in the city's first month, loaded through the bundle codec and through a structured clone.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ src/sim/economy/tourism.ts    | 25 +++++++++-----
+ tests/sim/monthSpread.test.ts | 65 +++++++++++++++++++++++++++++++++--
+ 2 files changed, 80 insertions(+), 10 deletions(-)
+
+diff --git a/src/sim/economy/tourism.ts b/src/sim/economy/tourism.ts
+index b777432..4fa0420 100644
+--- a/src/sim/economy/tourism.ts
++++ b/src/sim/economy/tourism.ts
+@@ -497,8 +497,9 @@ const TOURISM_ALL = (2 ** TOURISM_SLICES) - 1;
+ /** systemData.tourismAcc v2 (B3; v1's window ended on the month tick): the window's sums so far, its window
+  *  m = tourismWindow(day) and the slices done (bit k = slice k) */
+ interface TourismAcc { v: 2; m: number; done: number; rooms: number; hist: number[] }
+-/** the window of `day`: the days after one TOURISM_DAY up to and with the next (as demographics.ts' eqHqMonth) */
+-const tourismWindow = (day: number): number => Math.ceil((day - TOURISM_DAY) / TOURISM_SLICES);
++/** the window of `day`: the days after one TOURISM_DAY up to and with the next (as demographics.ts' eqHqMonth). (+ 0:
++ *  the days before a city's first TOURISM_DAY would give −0, which a save stores as 0) */
++const tourismWindow = (day: number): number => Math.ceil((day - TOURISM_DAY) / TOURISM_SLICES) + 0;
+ /** add the hotel rooms (Σ hotel jobs × HOTEL_ROOMS_PER_JOB) and historic building ids of a slice (−1 = all) */
+ function growablesSlice(rt: EconRuntime, slice: number, out: { rooms: number; hist: number[] }): void {
+   // (a slice: only its bucket, in list order — the same buildings and sums as the filtered full list; final fixes SE-3)
+@@ -524,11 +525,13 @@ function growablesSlice(rt: EconRuntime, slice: number, out: { rooms: number; hi
+ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; refresh(sim: Simulation): void } {
+   /**
+    * The VENUE PASS (1–3 of the header): venues, historic sites, hotel rooms, beaches, hotels, the totals, the venue
+-   * records and the visitor raster, in ascending building id. `acc`: the window's slices (the daily on TOURISM_DAY, every
++   * records and the visitor raster, in ascending building id. `acc`: the window's sums (the daily on TOURISM_DAY, every
+    * slice in); null: one full growables pass. systemData.tourismPass is written last: a throw on the way leaves the old
+-   * pass, whose stale m sends the tick to its fallback instead of a half-written pass.
++   * pass, whose stale m sends the tick to its fallback instead of a half-written pass. It emits nothing: every caller
++   * emits layerUpdated 'tourism' as its own last statement (as the base's update did), so a listener that throws cannot
++   * leave the saved pass, the slice window or the attract step behind the state in memory.
+    */
+-  const venuePass = (sim: Simulation, acc: TourismAcc | null): TourismPass => {
++  const venuePass = (sim: Simulation, acc: { rooms: number; hist: readonly number[] } | null): TourismPass => {
+     const st = sim.state;
+     rt.ensureLists();
+     const t0 = performance.now();
+@@ -625,7 +628,6 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
+     rasterize(st, rt, p.spl);
+     rt.timing['tourism.splat'] = performance.now() - tp;
+     states.set(st, { venues, pass: p });
+-    sim.events.emit('layerUpdated', 'tourism');
+     st.systemData.tourismPass = p;
+     rt.timing['tourism.pass'] = performance.now() - t0;
+     return p;
+@@ -731,6 +733,7 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
+     /** the whole update now — a venue pass with one full growables pass, then the attract step (tests, tools) */
+     refresh(sim) {
+       attract(sim, venuePass(sim, null));
++      sim.events.emit('layerUpdated', 'tourism');
+     },
+     daily(sim) {
+       // the window's hotel rooms / historic buildings in daily slices; the venue pass on TOURISM_DAY (after that day's
+@@ -750,9 +753,12 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
+         a.done |= 1 << k;
+       }
+       if (k !== TOURISM_DAY) return;
+-      venuePass(sim, a.done === TOURISM_ALL ? a : null);
+-      // the next window starts with the day after the pass
++      // the window's sums go to the pass and the next window starts with the day after it, before the pass runs; its
++      // layer event goes out last (a listener that throws leaves the record and the saved pass complete)
++      const win = a.done === TOURISM_ALL ? { rooms: a.rooms, hist: a.hist } : null;
+       a.m = m + 1; a.done = 0; a.rooms = 0; a.hist = [];
++      venuePass(sim, win);
++      sim.events.emit('layerUpdated', 'tourism');
+     },
+     init(sim) {
+       rt.attach(sim);
+@@ -779,6 +785,7 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
+       const keep = st.day > 0 && Object.keys(d.attractTerms).length > 0 ? savedOutputs(st) : null;
+       attract(sim, venuePass(sim, null));
+       if (keep) restoreOutputs(st, keep, st.day % DAYS_PER_MONTH < TOURISM_DAY);
++      sim.events.emit('layerUpdated', 'tourism');
+     },
+     monthly(sim) {
+       const t0 = performance.now();
+@@ -789,6 +796,8 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
+       const fresh = p !== null && p.m === Math.ceil(st.day / DAYS_PER_MONTH) && states.get(st)?.pass === p;
+       attract(sim, fresh ? p : venuePass(sim, null));
+       rt.timing.tourism = performance.now() - t0;
++      // (a pass of its own: the layer event after the attract step)
++      if (!fresh) sim.events.emit('layerUpdated', 'tourism');
+     },
+   };
+ }
+diff --git a/tests/sim/monthSpread.test.ts b/tests/sim/monthSpread.test.ts
+index 7028cf7..04e0ed6 100644
+--- a/tests/sim/monthSpread.test.ts
++++ b/tests/sim/monthSpread.test.ts
+@@ -30,6 +30,7 @@ import { BF, type Building, type CityState } from '../../src/sim/CityState';
+ import { getDef } from '../../src/sim/catalog';
+ import { placeBuilding } from '../../src/sim/economy/buildings';
+ import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
++import { decodeBundle, encodeBundle } from '../../src/save/bundle';
+ 
+ // ------------------------------------------------------------------------------------------------ the town
+ const SIZE = 160;
+@@ -195,8 +196,9 @@ function sha(v: unknown): string {
+   feed(v);
+   return h.digest('hex');
+ }
+-/** the window of the hotel-room / historic slices that `day` belongs to (the days after one TOURISM_DAY up to the next) */
+-const windowOf = (day: number) => Math.ceil((day - TOURISM_DAY) / TOURISM_SLICES);
++/** the window of the hotel-room / historic slices that `day` belongs to (the days after one TOURISM_DAY up to the next;
++ *  0, not −0, before the first one) */
++const windowOf = (day: number) => Math.ceil((day - TOURISM_DAY) / TOURISM_SLICES) + 0;
+ 
+ // ------------------------------------------------------------------------------------------------ tests
+ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick', () => {
+@@ -281,6 +283,65 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
+     }
+   });
+ 
++  it('a save in the city\'s first month continues exactly: the slice window is 0, never −0 (the bundle codec stores 0)', { timeout: 120000 }, () => {
++    const ref = town();
++    const saves = new Map<number, SerializedCity>();
++    while (ref.st.day < 91) {
++      ref.sim.advanceDay();
++      if (ref.st.day === 3 || ref.st.day === 25) {
++        expect(Object.is((ref.st.systemData.tourismAcc as { m: number }).m, 0), `day ${ref.st.day}: window 0`).toBe(true);
++        saves.set(ref.st.day, serializeCity(ref.st, { copy: true }));
++      }
++    }
++    const end = serializeCity(ref.st, { copy: true });
++    for (const [s, ser] of saves) {
++      // the game's save files (the bundle codec) and a structured clone load the same city, and both continue the game
++      const viaBundle = deserializeCity(decodeBundle(encodeBundle(ser)) as SerializedCity);
++      const viaClone = deserializeCity(structuredClone(ser));
++      expect(diffPath(viaClone.systemData, viaBundle.systemData), `save on day ${s}: bundle / clone`).toBe('');
++      for (const st of [viaBundle, viaClone]) {
++        const sim = new Simulation(st, systemsOf('tourism'));
++        runTo(sim, 91);
++        const e = serializeCity(st, { copy: true });
++        expect(diffPath({ ...end, savedAt: 0 }, { ...e, savedAt: 0 }), `save on day ${s}: the whole city on day 91`).toBe('');
++      }
++    }
++  });
++
++  it('a layer listener that throws on the pass day leaves the pass saved and the next window started: saves on days 56–59 continue', { timeout: 120000 }, () => {
++    const g = town();
++    let thrown = 0;
++    g.sim.events.on('layerUpdated', (n) => { if (n === 'tourism' && g.st.day === 56 && thrown++ === 0) throw new Error('overlay'); });
++    // (the browser's guard: the scene catches what a day throws and runs the next day)
++    const step = () => { try { g.sim.advanceDay(); } catch (e) { expect((e as Error).message).toBe('overlay'); } };
++    while (g.st.day < 56) step();
++    expect(thrown).toBe(1);
++    // the pass of day 56 is the saved one (fresh for the tick of day 60), and the slice record is the next window's
++    expect(passOf(g.st).m).toBe(2);
++    const acc = g.st.systemData.tourismAcc as { m: number; done: number; rooms: number; hist: number[] };
++    expect([acc.m, acc.done, acc.rooms, acc.hist.length]).toEqual([windowOf(57), 0, 0, 0]);
++    const all = Object.values(g.ids);
++    const saves = new Map<number, SerializedCity>(), views = new Map<number, ReturnType<typeof tourismView>>();
++    for (;;) {
++      if (g.st.day <= 59) {
++        saves.set(g.st.day, serializeCity(g.st, { copy: true }));
++        views.set(g.st.day, tourismView(g.st, all));
++      }
++      if (g.st.day >= 91) break;
++      step();
++    }
++    const end = serializeCity(g.st, { copy: true });
++    for (const [s, ser] of saves) {
++      const h = load(ser);
++      expect(passOf(h.st).m, `save on day ${s}`).toBe(2);
++      expect(diffPath(views.get(s), tourismView(h.st, all)), `save on day ${s}: right after the load`).toBe('');
++      runTo(h.sim, 91);
++      const e = serializeCity(h.st, { copy: true });
++      expect(diffPath({ ...end, savedAt: 0 }, { ...e, savedAt: 0 }), `save on day ${s}: the whole city on day 91`).toBe('');
++      expect(sha(e), `save on day ${s}: the city digest on day 91`).toBe(sha(end));
++    }
++  });
++
+   it('fallbacks: a missing or invalid pass, a v1 slice record (saves from before B3)', { timeout: 120000 }, () => {
+     const ref = town();
+     runTo(ref.sim, 40);
+-- 
+2.43.0
+

@@ -1,0 +1,194 @@
+From 6d6fc5ca3ac53b75f860dcc155466077034c9630 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 04:42:51 +0000
+Subject: [PATCH 09/13] advisors: the month scans in ascending building id (B3
+ fix round)
+
+verify-a minor 4 (pre-existing). rt.plopped and rt.growables are in the running game's order (its
+swap-removes reorder them) and in Map order after a load, so the facility scan's lists and civicFirst,
+the outage scan's place among equally occupied buildings, and the bus-stop place could differ between a
+game and its loaded copy. A1 predicts the tick's "Show me" places from these scans. scanFacilities now
+sorts its id lists and takes the lowest unpowered civic id; scanOutages and the bus-stop lookup take the
+lowest id among equals. Only an advice's place changes, only among equals or after a removal, and no sim
+system reads it.
+
+Test: tests/sim/advisorsScanOrder.test.ts (a game after swap-removes and its loaded copy scan the same).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ src/sim/economy/advisors.ts         | 31 ++++++++---
+ tests/sim/advisorsScanOrder.test.ts | 85 +++++++++++++++++++++++++++++
+ 2 files changed, 107 insertions(+), 9 deletions(-)
+ create mode 100644 tests/sim/advisorsScanOrder.test.ts
+
+diff --git a/src/sim/economy/advisors.ts b/src/sim/economy/advisors.ts
+index caa6e85..0ec56b3 100644
+--- a/src/sim/economy/advisors.ts
++++ b/src/sim/economy/advisors.ts
+@@ -343,11 +343,16 @@ function addRubble(st: CityState, rt: EconRuntime, b: Building, lots: number[],
+   if (zn >= Zone.ResLow && zn <= Zone.IndHigh) perZone[zn] += b.w * b.d;
+ }
+ 
+-/** scanOutages' running counts (one per scan) */
+-interface OutageCounts { pN: number; pRes: number; pJobs: number; pAt: number; pBig: number; wN: number; wRes: number; wJobs: number; wAt: number; wBig: number; pHomes: number }
+-/** occupied growables without power / water (ZoneScan.outP ... outWAt): one pass over the growables */
++/** scanOutages' running counts (one per scan); pId / wId: the building at pAt / wAt */
++interface OutageCounts {
++  pN: number; pRes: number; pJobs: number; pAt: number; pBig: number; pId: number;
++  wN: number; wRes: number; wJobs: number; wAt: number; wBig: number; wId: number; pHomes: number;
++}
++/** occupied growables without power / water (ZoneScan.outP ... outWAt): one pass over the growables. outPAt / outWAt:
++ *  the centre of the most occupied one, of equals the lowest building id (B3: the same building in a loaded game, whose
++ *  rt.growables is in Map order, as in the running game, whose swap-removes reorder it) */
+ function scanOutages(st: CityState, rt: EconRuntime, r: ZoneScan): void {
+-  const o: OutageCounts = { pN: 0, pRes: 0, pJobs: 0, pAt: -1, pBig: 0, wN: 0, wRes: 0, wJobs: 0, wAt: -1, wBig: 0, pHomes: 0 };
++  const o: OutageCounts = { pN: 0, pRes: 0, pJobs: 0, pAt: -1, pBig: 0, pId: -1, wN: 0, wRes: 0, wJobs: 0, wAt: -1, wBig: 0, wId: -1, pHomes: 0 };
+   rt.ensureLists();
+   const list = rt.growables;
+   for (let k = 0; k < list.length; k++) {
+@@ -376,11 +381,11 @@ function addOutage(st: CityState, b: Building, people: number, p: boolean, w: bo
+   if (!p) {
+     o.pN++; o.pRes += b.pop; o.pJobs += b.jobs;
+     if (b.pop > 0) o.pHomes++;
+-    if (people > o.pBig) { o.pBig = people; o.pAt = at; }
++    if (people > o.pBig || (people === o.pBig && b.id < o.pId)) { o.pBig = people; o.pAt = at; o.pId = b.id; }
+   }
+   if (!w) {
+     o.wN++; o.wRes += b.pop; o.wJobs += b.jobs;
+-    if (people > o.wBig) { o.wBig = people; o.wAt = at; }
++    if (people > o.wBig || (people === o.wBig && b.id < o.wId)) { o.wBig = people; o.wAt = at; o.wId = b.id; }
+   }
+ }
+ 
+@@ -707,6 +712,7 @@ const OTHER_RUINS: ReadonlySet<string> = new Set(['reward', 'landmark', 'civic',
+ /** FacilityScan as plain data (building ids): saved in AdvisorData.scan */
+ type FacScanData = { [K in IdKeys]: number[] } & { burntMW: number; civicUnpowered: number; civicFirst: number; liveMW: number; fireStations: number };
+ 
++const idAsc = (a: number, b: number): number => a - b;
+ function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
+   const f: FacScanData = {
+     plants: [], plantsBurnt: [], plantsIsolated: [], burntMW: 0, plantsDry: [], waterOk: [], waterBurnt: [], waterNoRoad: [], waterNoPower: [],
+@@ -744,9 +750,14 @@ function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
+       else f.waterOk.push(b.id);
+     } else if (!burnt && (def.powerUse ?? 0) > 0 && !(b.flags & BF.Powered)) {
+       f.civicUnpowered++;
+-      if (f.civicFirst < 0) f.civicFirst = b.id;
++      if (f.civicFirst < 0 || b.id < f.civicFirst) f.civicFirst = b.id;
+     }
+   }
++  // (B3) the lists in ascending building id, and civicFirst the lowest: rt.plopped is in the running game's order (its
++  // swap-removes reorder it) while a loaded game rebuilds it in Map order, ascending id. The advice takes the first of a
++  // list as its "Show me" place (and A1 predicts it from this scan), so a game loaded before the scan finds the same
++  // buildings first. The counts and the MW sums (the catalog's integer MW) are the same in any order
++  for (const k of ID_KEYS) if (f[k].length > 1) f[k].sort(idAsc);
+   return f;
+ }
+ 
+@@ -1443,8 +1454,10 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans,
+     const mb = sim?.getSystem<SimSystem & { minibusInfo?: { stops: number; need: number } }>('traffic')?.minibusInfo;
+     const stopAt = () => loc('busStop', () => {
+       rt.ensureLists();
+-      for (const b of rt.plopped) if (b.def === 'tr_bus_stop' || rt.defOf(b)?.model === 'tr_bus_stop') return at(b);
+-      return undefined;
++      // (the lowest id: the same stop in a loaded game, whose rt.plopped is in Map order — see scanFacilities)
++      let stop: Building | null = null;
++      for (const b of rt.plopped) if ((!stop || b.id < stop.id) && (b.def === 'tr_bus_stop' || rt.defOf(b)?.model === 'tr_bus_stop')) stop = b;
++      return stop ? at(stop) : undefined;
+     });
+     if (!dep) {
+       out.push({ id: 'busFleetShort', cooldown: 150, priority: 4, kind: 'warning', advisor: 'transport', where: stopAt,
+diff --git a/tests/sim/advisorsScanOrder.test.ts b/tests/sim/advisorsScanOrder.test.ts
+new file mode 100644
+index 0000000..cff45f2
+--- /dev/null
++++ b/tests/sim/advisorsScanOrder.test.ts
+@@ -0,0 +1,85 @@
++/**
++ * B3 (A1's save / load claim, docs/dev/B3_DESIGN.md §4): the advisors' month scans do not depend on the order of the
++ * runtime's building lists. A running game swap-removes from rt.plopped / rt.growables, a loaded game rebuilds them in
++ * Map order (ascending id): the facility scan lists its buildings in ascending id (civicFirst the lowest), the outage
++ * scan takes the lowest id of equally occupied buildings, the bus-stop place the lowest id — so a game loaded before
++ * the scans finds the same "Show me" places as the game it continues.
++ */
++import { describe, expect, it } from 'vitest';
++import { BF, type Building, type CityState } from '../../src/sim/CityState';
++import { Simulation } from '../../src/sim/Simulation';
++import { EconRuntime } from '../../src/sim/economy/runtime';
++import { removeBuilding } from '../../src/sim/economy/buildings';
++import { MONTH_SCAN_DAYS, advisorData, advisorsSystem } from '../../src/sim/economy/advisors';
++import { deserializeCity, serializeCity } from '../../src/save/serialize';
++import { newState, place } from '../infra/cityGen';
++
++/** a town of plopped facilities (plants, pumps, schools, bus stops, unpowered police stations) and equally occupied homes
++ *  without power, every list in ascending id */
++function town(): { st: CityState; ids: Record<string, number[]> } {
++  const st = newState(64);
++  st.systemData.infraVersion = 1;
++  st.systemData.infraLayers = { utilities: true, traffic: false, pollution: false, services: false };
++  st.stats.population = 20000;
++  const ids: Record<string, number[]> = { first: [], plants: [], pumps: [], schools: [], police: [], stops: [], homes: [], firstHome: [] };
++  const pl = (k: string, def: string, x: number, z: number, flags = BF.Plopped | BF.Powered | BF.Watered) => ids[k].push(place(st, def, x, z, { flags }).id);
++  pl('first', 'civ_police_station', 2, 2);
++  for (let k = 0; k < 3; k++) pl('plants', 'util_coal_plant', 4 + 6 * k, 6);
++  for (let k = 0; k < 3; k++) pl('pumps', 'util_water_pump', 4 + 6 * k, 14);
++  for (let k = 0; k < 3; k++) pl('schools', 'civ_elementary_school', 4 + 6 * k, 20);
++  for (let k = 0; k < 3; k++) pl('stops', 'tr_bus_stop', 4 + 6 * k, 36);
++  // (last: the swap-remove of the first plopped building moves the last of these to the front)
++  for (let k = 0; k < 4; k++) pl('police', 'civ_police_station', 4 + 6 * k, 28, BF.Plopped | BF.Watered); // (no power)
++  ids.firstHome.push(place(st, 't_r1', 2, 44, { pop: 50, flags: BF.Powered | BF.Watered }).id);
++  for (let k = 0; k < 4; k++) ids.homes.push(place(st, 't_r1', 4 + 4 * k, 48, { pop: 50, flags: BF.Watered }).id); // (dark, equal)
++  return { st, ids };
++}
++/** the month scans of days 28 and 29 (zone + outages, facilities, predicted places) */
++function scan(st: CityState) {
++  const rt = new EconRuntime();
++  const adv = advisorsSystem(rt);
++  const sim = new Simulation(st, [adv]);
++  return {
++    sim, rt,
++    run() {
++      st.day = 30 + MONTH_SCAN_DAYS[0];
++      adv.daily!(sim);
++      st.day = 30 + MONTH_SCAN_DAYS[1];
++      adv.daily!(sim);
++      return structuredClone(advisorData(st).scan!);
++    },
++  };
++}
++const centre = (st: CityState, b: Building) => Math.min(st.size - 1, b.z + (b.d >> 1)) * st.size + Math.min(st.size - 1, b.x + (b.w >> 1));
++
++describe('B3: the advisors\' month scans do not depend on the order of the runtime\'s lists', () => {
++  it('a running game after swap-removes and its loaded copy scan the same facilities, outages and places', () => {
++    const { st, ids } = town();
++    const g = scan(st);
++    g.rt.ensureLists();
++    // bulldoze the first plopped building and the first home: the runtime moves the last of each list into the gap
++    removeBuilding(g.sim, st.buildings.get(ids.first[0])!);
++    removeBuilding(g.sim, st.buildings.get(ids.firstHome[0])!);
++    g.rt.ensureLists();
++    const asc = (list: readonly Building[]) => list.every((b, k) => k === 0 || b.id > list[k - 1].id);
++    expect(asc(g.rt.plopped)).toBe(false);
++    expect(asc(g.rt.growables)).toBe(false);
++    expect(g.rt.plopped[0].id).toBe(ids.police[3]);
++    expect(g.rt.growables[0].id).toBe(ids.homes[3]);
++    const live = g.run();
++    // the loaded copy: lists in Map order
++    const copy = deserializeCity(structuredClone(serializeCity(st, { copy: true })));
++    const h = scan(copy);
++    h.rt.ensureLists();
++    expect(asc(h.rt.plopped) && asc(h.rt.growables)).toBe(true);
++    expect(h.run()).toStrictEqual(live);
++    // the lists in ascending id, the lowest unpowered civic building, the lowest id of the equally occupied dark homes
++    const fac = live.fac!;
++    expect(fac.plants).toEqual(ids.plants);
++    expect(fac.tiered).toEqual([...ids.schools, ...ids.police]);
++    expect(fac.civicUnpowered).toBe(4);
++    expect(fac.civicFirst).toBe(ids.police[0]);
++    expect(live.zone!.outP).toBe(4);
++    expect(live.zone!.outPAt).toBe(centre(st, st.buildings.get(ids.homes[0])!));
++  });
++});
+-- 
+2.43.0
+

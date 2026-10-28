@@ -1,0 +1,923 @@
+From 11e2267598be5ab59b84a1fe1334be02894c6132 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 05:42:58 +0000
+Subject: [PATCH 06/11] perf(sim): B2 G2 kernels: resumable access searches,
+ NIMBY run, police need run
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The shared pieces the split services pass builds on (docs/dev/B2_DESIGN.md §4).
+Whole-call functions keep their code and semantics; results are unchanged.
+
+- catchments: RoadTimeRun (roadTimeMulti: the seed scan by cell ranges, the
+  drain with the budget checked before an entry is taken) and RoadDistRun
+  (roadDistMulti, 8 circular buckets), each on a private queue (other code
+  calls reachRaw / roadDistMulti on the module engine between pieces); the
+  bucket being drained is detached first, so a resumed drain pops the whole
+  call's sequence. TierProvider.needRun / TierNeedRun: a provider's need
+  raster as a resumable run.
+- transit: transitCoverageRange (the disks of a stop range, not cleared);
+  computeTransitCoverage = fill + one range.
+- nimby: NimbyRun replaces the module scratch (one run per owner; pre-B2 two
+  cities in one process shared it): fills, building chunks (splatAdd sums in
+  list order), landfill row pairs, corridor ranges on multiples of 4 (the
+  word skip runs as in the whole rebuild), the final pass by rows into
+  private rasters, a publish piece (.set + the cost estimate).
+  rebuildNimby / nimbyCost keep their semantics (the J4 frozen-original test
+  passes: rebuildNimby = the run with nothing in between).
+- facilities: the police need as a run (review 2 item 5b): the monthly scan
+  in chunks over the pass list (installed with the list's nextBuildingId),
+  the job sites in chunks (same compaction), the cell pass by ranges.
+  monthlyScan = the same parts in one go.
+- traffic: attachRefreshMs(st), the estimate of a pending lazy attachment
+  refresh, so other tasks can run it in a piece of their own (review 2
+  item 5e).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ src/sim/infra/catchments.ts | 265 +++++++++++++++++++++++++++++
+ src/sim/infra/facilities.ts | 144 +++++++++++++++-
+ src/sim/infra/nimby.ts      | 326 ++++++++++++++++++++++++++----------
+ src/sim/infra/traffic.ts    |  10 ++
+ src/sim/infra/transit.ts    |  12 +-
+ 5 files changed, 663 insertions(+), 94 deletions(-)
+
+diff --git a/src/sim/infra/catchments.ts b/src/sim/infra/catchments.ts
+index 109a46f..44c9e1e 100644
+--- a/src/sim/infra/catchments.ts
++++ b/src/sim/infra/catchments.ts
+@@ -101,11 +101,27 @@ export function unservedClusters(sim: Simulation, tier: NeedTier, max = 5): { x:
+ export interface TierProvider {
+   /** fill `out` (cells) with the tier's need; `res` = residents per cell */
+   needOf?(st: CityState, res: Float32Array, out: Float32Array): void;
++  /**
++   * B2 (docs/dev/B2_DESIGN.md §4 S_PREP): needOf as a resumable run, so services' prep can spread it over pieces. `list` is
++   * the services pass's building list (its snapshot) and `listNextId` the state's nextBuildingId when it was taken. Run to
++   * completion with nothing in between, it writes exactly what needOf(st, res, out) writes (`out` arrives zeroed).
++   * Optional: services runs needOf in one piece when a provider has no run.
++   */
++  needRun?(st: CityState, res: Float32Array, out: Float32Array, list: readonly Building[], listNextId: number): TierNeedRun;
+   /** capacity of a facility in tier units (Infinity = capacity-free) */
+   capacityOf?(st: CityState, b: Building): number;
+   /** true: share capacity across the catchment like schools (conserving); false: legacy union of coverages */
+   shared?: boolean;
+ }
++/** B2: a provider's need raster in pieces (TierProvider.needRun) */
++export interface TierNeedRun {
++  /** run one piece of at most about `budgetUs` estimated warm µs; true when the raster is complete */
++  step(budgetUs: number): boolean;
++  /** estimated warm µs of the next piece at `budgetUs` (pure: reads the cursors only) */
++  pieceUs(budgetUs: number): number;
++  /** the next piece's label (step tools) */
++  readonly label: string;
++}
+ const providers = new Map<NeedTier, TierProvider>();
+ export function registerTierProvider(tier: NeedTier, p: TierProvider | null): void {
+   if (p) providers.set(tier, p);
+@@ -430,8 +446,257 @@ export function roadDistMulti(st: CityState, metric: number, seeds: Int32Array,
+   return settled;
+ }
+ 
++/**
++ * B2 (docs/dev/B2_DESIGN.md §4 S_SHOP_A): roadDistMulti in pieces, on a private 8-bucket circular queue (other code calls
++ * reachRaw / roadDistMulti / roadTimeMulti on the module engine between the pieces). start() is the whole call's
++ * prologue (out.fill(-1) + the seeds), run(maxPops) its drain with the budget checked before an entry is taken. The bucket
++ * being drained is detached before it drains (pushes go to the queue heads), so resuming at the saved entry pops exactly
++ * the whole call's sequence: `out` and `settled` are identical for any cut.
++ */
++export class RoadDistRun {
++  private head = new Int32Array(8);
++  private enode = new Int32Array(4096);
++  private enext = new Int32Array(4096);
++  private en = 0;
++  private pending = 0;
++  private cur = 0;
++  private e = -1;
++  private open = false;
++  private st: CityState | null = null;
++  private out: Int32Array = new Int32Array(0);
++  private metric = 0;
++  private maxQ = 0;
++  settled = 0;
++
++  start(st: CityState, metric: number, seeds: Int32Array, nSeeds: number, maxQ: number, out: Int32Array): void {
++    this.st = st; this.out = out; this.metric = metric; this.maxQ = maxQ;
++    const net = st.network;
++    const cost = metric === 0 ? WALK_COST : DRIVE_COST;
++    out.fill(-1);
++    const head = this.head;
++    head.fill(-1);
++    this.en = 0;
++    this.pending = 0;
++    this.cur = 0; this.e = -1; this.open = false; this.settled = 0;
++    for (let s = 0; s < nSeeds; s++) {
++      const i = seeds[s];
++      if (out[i] === 0 || cost[net[i]] === 0) continue;
++      out[i] = 0;
++      this.push(0, i);
++      this.pending++;
++    }
++  }
++
++  private push(slot: number, v: number): void {
++    const e = this.en++;
++    if (e >= this.enode.length) {
++      const c = this.enode.length * 2;
++      const a = new Int32Array(c); a.set(this.enode); this.enode = a;
++      const b = new Int32Array(c); b.set(this.enext); this.enext = b;
++    }
++    this.enode[e] = v;
++    this.enext[e] = this.head[slot];
++    this.head[slot] = e;
++  }
++
++  /** drain at most maxPops queue entries; true when the search is complete */
++  run(maxPops: number): boolean {
++    const st = this.st;
++    if (!st) return true;
++    const N = st.size, net = st.network, out = this.out, head = this.head, maxQ = this.maxQ;
++    const cost = this.metric === 0 ? WALK_COST : DRIVE_COST;
++    const drive = this.metric === 1;
++    let pops = 0;
++    while (this.pending > 0) {
++      const cur = this.cur;
++      const slot = cur & 7;
++      let e: number;
++      if (this.open) e = this.e;
++      else { e = head[slot]; head[slot] = -1; this.open = true; }
++      while (e >= 0) {
++        if (pops >= maxPops) { this.e = e; return false; }
++        pops++;
++        const u = this.enode[e];
++        e = this.enext[e];
++        this.pending--;
++        if (out[u] !== cur) continue;
++        this.settled++;
++        const x = u % N, z = (u - x) / N;
++        const tu = net[u];
++        const hu = tu === HW;
++        for (let k = 0; k < 4; k++) {
++          let j: number;
++          if (k === 0) { if (x === 0) continue; j = u - 1; }
++          else if (k === 1) { if (x === N - 1) continue; j = u + 1; }
++          else if (k === 2) { if (z === 0) continue; j = u - N; }
++          else { if (z === N - 1) continue; j = u + N; }
++          const tj = net[j];
++          let c = cost[tj];
++          if (c === 0) continue;
++          if (drive && hu !== (tj === HW)) {
++            if (tu === STREET || tj === STREET) continue;
++            c += RAMP_COST;
++          }
++          const nd = cur + c;
++          if (nd > maxQ) continue;
++          const oj = out[j];
++          if (oj < 0 || nd < oj) {
++            out[j] = nd;
++            this.push(nd & 7, j);
++            this.pending++;
++          }
++        }
++      }
++      this.open = false;
++      this.cur = cur + 1;
++    }
++    return true;
++  }
++
++  /** entries still queued (cost estimates) */
++  get queued(): number {
++    return this.pending;
++  }
++
++  /** drop the state / output references (pass end; the resume entry too, so a finished run's state is canonical) */
++  release(): void {
++    this.st = null;
++    this.out = new Int32Array(0);
++    this.e = -1;
++    this.open = false;
++  }
++}
++
+ /** quantum (minutes) of roadTimeMulti labels */
+ export const TIME_Q = 0.005;
++/**
++ * B2 (docs/dev/B2_DESIGN.md §4 S_ACC_SEARCH): roadTimeMulti in pieces, on a private linear bucket queue. begin() is the
++ * whole call's prologue up to the seed scan, seed(count) the seed scan by cell ranges (index order, as the whole call
++ * pushes them), run(maxPops) the drain with the budget checked before an entry is taken. Edge costs are integers >= 1
++ * and the bucket being drained is detached first, so its list is fixed while it drains: resuming at the saved entry
++ * pops exactly the whole call's sequence (the labels in `out` and `settled` are identical for any cut).
++ */
++export class RoadTimeRun {
++  private head = new Int32Array(0);
++  private enode = new Int32Array(4096);
++  private enext = new Int32Array(4096);
++  private en = 0;
++  private pending = 0;
++  private cur = 0;
++  private e = -1;
++  private open = false;
++  private nb = 0;
++  private st: CityState | null = null;
++  private out: Int32Array = new Int32Array(0);
++  private limitQ = 0;
++  private netTimeQ: readonly number[] = [];
++  private rampQ = 0;
++  /** next cell of the seed scan */
++  seedAt = 0;
++  settled = 0;
++
++  begin(st: CityState, out: Int32Array, limitQ: number, netTimeQ: readonly number[], rampQ: number): void {
++    this.st = st; this.out = out; this.limitQ = limitQ; this.netTimeQ = netTimeQ; this.rampQ = rampQ;
++    const nb = (this.nb = limitQ + 1);
++    if (this.head.length < nb) this.head = new Int32Array(nb + 1024);
++    this.head.fill(-1, 0, nb);
++    this.en = 0;
++    this.pending = 0;
++    this.cur = 0; this.e = -1; this.open = false; this.seedAt = 0; this.settled = 0;
++  }
++
++  private grow(): void {
++    const c = this.enode.length * 2;
++    const a = new Int32Array(c); a.set(this.enode); this.enode = a;
++    const b = new Int32Array(c); b.set(this.enext); this.enext = b;
++  }
++
++  /** the seed scan over cells [seedAt, seedAt + count); true when every cell is scanned */
++  seed(count: number): boolean {
++    const st = this.st;
++    if (!st) return true;
++    const C = st.cells, net = st.network, out = this.out, head = this.head, limitQ = this.limitQ, netTimeQ = this.netTimeQ;
++    const i1 = Math.min(C, this.seedAt + count);
++    for (let i = this.seedAt; i < i1; i++) {
++      const l = out[i];
++      if (l < 0) continue;
++      if (l > limitQ || netTimeQ[net[i]] === 0) { out[i] = -1; continue; }
++      const e = this.en++;
++      if (e >= this.enode.length) this.grow();
++      this.enode[e] = i; this.enext[e] = head[l]; head[l] = e;
++      this.pending++;
++    }
++    this.seedAt = i1;
++    return i1 >= C;
++  }
++
++  /** drain at most maxPops queue entries; true when the search is complete */
++  run(maxPops: number): boolean {
++    const st = this.st;
++    if (!st) return true;
++    const N = st.size, net = st.network, out = this.out, head = this.head, nb = this.nb, limitQ = this.limitQ;
++    const netTimeQ = this.netTimeQ, rampQ = this.rampQ;
++    let pops = 0;
++    while (this.cur < nb && this.pending > 0) {
++      const cur = this.cur;
++      let e: number;
++      if (this.open) e = this.e;
++      else { e = head[cur]; head[cur] = -1; this.open = true; }
++      while (e >= 0) {
++        if (pops >= maxPops) { this.e = e; return false; }
++        pops++;
++        const u = this.enode[e];
++        e = this.enext[e];
++        this.pending--;
++        if (out[u] !== cur) continue;
++        this.settled++;
++        const x = u % N, z = (u - x) / N;
++        const tu = net[u];
++        const hu = tu === HW;
++        for (let k = 0; k < 4; k++) {
++          let j: number;
++          if (k === 0) { if (x === 0) continue; j = u - 1; }
++          else if (k === 1) { if (x === N - 1) continue; j = u + 1; }
++          else if (k === 2) { if (z === 0) continue; j = u - N; }
++          else { if (z === N - 1) continue; j = u + N; }
++          const tj = net[j];
++          let c = netTimeQ[tj];
++          if (c === 0) continue;
++          if (hu !== (tj === HW)) {
++            if (tu === STREET || tj === STREET) continue;
++            c += rampQ;
++          }
++          const nd = cur + c;
++          if (nd > limitQ) continue;
++          const oj = out[j];
++          if (oj < 0 || nd < oj) {
++            out[j] = nd;
++            const en = this.en++;
++            if (en >= this.enode.length) this.grow();
++            this.enode[en] = j; this.enext[en] = head[nd]; head[nd] = en;
++            this.pending++;
++          }
++        }
++      }
++      this.open = false;
++      this.cur = cur + 1;
++    }
++    return true;
++  }
++
++  /** entries still queued (cost estimates) */
++  get queued(): number {
++    return this.pending;
++  }
++
++  /** drop the state / output references (pass end; the resume entry too, so a finished run's state is canonical) */
++  release(): void {
++    this.st = null;
++    this.out = new Int32Array(0);
++    this.e = -1;
++    this.open = false;
++  }
++}
+ let lhead = new Int32Array(0);
+ /**
+  * INTERNAL (services accessCommute): multi-source free-flow travel time over road cells (Street .. Highway; NET_TIME
+diff --git a/src/sim/infra/facilities.ts b/src/sim/infra/facilities.ts
+index 179fd50..01812f4 100644
+--- a/src/sim/infra/facilities.ts
++++ b/src/sim/infra/facilities.ts
+@@ -37,6 +37,7 @@ import type { BuildingCategory, BuildingDef, ServiceKind } from '../catalogTypes
+ import { COV_KINDS, Fam, SERVICE_TIERS, buildingList, centerCell, fundingFactor, infoOf, isFunctional, setFlag, type DefInfo } from './common';
+ import {
+   TIER_NEED, facilityLoad, newReachScratch, reachCells, registerTierProvider, tierProvider, type FacilityLoad, type ReachScratch,
++  type TierNeedRun,
+ } from './catchments';
+ import {
+   AIRPORT_CAP, AIRPORT_PAX_EXP, AIRPORT_PAX_K, COURTHOUSE_POLICE_MUL, CRIME_SPILL, GARBAGE_UNPOWERED, HOLDING_CELLS, JAIL_BEDS,
+@@ -240,9 +241,113 @@ function policeNeed(st: CityState, res: Float32Array, out: Float32Array): void {
+   for (let i = 0; i < C; i++) out[i] = (res[i] + out[i]) * (POLICE_CRIME_BASE + crime[i]);
+ }
+ 
++/** B2: estimated warm µs per unit of the police need run's pieces (services' prep budget; G2 fit, dense1m) */
++const PN_US = { scan: 0.03, jobs: 0.02, jobCell: 0.004, cell: 0.004, piece: 2 } as const;
++/**
++ * B2 (docs/dev/B2_DESIGN.md §4 S_PREP, review 2 item 5b): policeNeed in pieces over services' pass list (the catchments
++ * TierNeedRun) — the monthly scan when stale, by building chunks of `list` (installed at its end, jobNext = the list's
++ * nextBuildingId: buildings placed after the list was taken make the next reader rescan), the job sites in chunks (the
++ * same compaction), the cell pass by ranges. With nothing in between it writes exactly what policeNeed(st, res, out)
++ * writes, and leaves the same per-state lists.
++ */
++class PoliceNeedRun implements TierNeedRun {
++  /** 0 the stale check, 1 the scan chunks, 2 the job sites, 3 the cell pass, 4 done */
++  private stage = 0;
++  private cur = 0;
++  private n = 0;
++  private jobs: Building[] = [];
++  private readonly scan: MonthlyScanParts = newScanParts();
++  constructor(private readonly st: CityState, private readonly res: Float32Array, private readonly out: Float32Array,
++    private readonly list: readonly Building[], private readonly listNextId: number) {}
++
++  get label(): string {
++    return ['check', 'scan', 'jobs', 'cells', 'done'][this.stage];
++  }
++
++  pieceUs(budgetUs: number): number {
++    const c = (us: number, left: number) => Math.max(0, Math.min(Math.max(1, Math.floor(budgetUs / us)), left)) * us + PN_US.piece;
++    switch (this.stage) {
++      case 0: {
++        // (the stale check falls through into the scan or the job sites; side-effect free: no cache is created here)
++        const sc = stateCache.get(this.st);
++        return !sc || sc.jobNext !== this.st.nextBuildingId ? c(PN_US.scan, this.list.length) : c(PN_US.jobs, sc.jobs.length);
++      }
++      case 1: return c(PN_US.scan, this.list.length - this.cur);
++      case 2: return c(PN_US.jobs, this.jobs.length - this.cur);
++      case 3: return c(PN_US.cell, this.st.cells - this.cur);
++      default: return 0;
++    }
++  }
++
++  step(budgetUs: number): boolean {
++    const st = this.st;
++    if (this.stage === 0) {
++      // policeNeed's first line: the monthly scan when the job-site list is stale
++      if (cacheOf(st).jobNext !== st.nextBuildingId) { scanBegin(this.scan); this.stage = 1; this.cur = 0; }
++      else this.startJobs();
++    }
++    switch (this.stage) {
++      case 1: {
++        const end = Math.min(this.list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.scan)));
++        scanRange(st, cacheOf(st), this.list, this.cur, end, this.scan);
++        this.cur = end;
++        if (end < this.list.length) return false;
++        scanInstall(cacheOf(st), this.scan, this.listNextId);
++        this.startJobs();
++        return false;
++      }
++      case 2: {
++        const N = st.size, grid = st.building, out = this.out, list = this.jobs;
++        const k1 = Math.min(list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.jobs)));
++        let n = this.n;
++        for (let k = this.cur; k < k1; k++) {
++          const b = list[k];
++          const x = b.x, z = b.z;
++          if (grid[z * N + x] !== b.id) continue; // removed (building ids are never reused)
++          list[n++] = b;
++          const j = b.jobs;
++          if (!(j > 0) || b.pop > 0) continue;
++          const w = b.w, d = b.d;
++          if (w === 1 && d === 1) { out[z * N + x] += POLICE_JOB_W * j; continue; }
++          const v = (POLICE_JOB_W * j) / (w * d);
++          const x1 = Math.min(N, x + w), z1 = Math.min(N, z + d);
++          for (let zz = z; zz < z1; zz++) for (let xx = x; xx < x1; xx++) out[zz * N + xx] += v;
++        }
++        this.n = n;
++        this.cur = k1;
++        if (k1 < list.length) return false;
++        list.length = n;
++        this.stage = 3;
++        this.cur = 0;
++        return false;
++      }
++      case 3: {
++        const C = st.cells, res = this.res, out = this.out, crime = st.crime;
++        const i1 = Math.min(C, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.cell)));
++        // people >= 0: (res + jobs) x (base + crime) is exactly 0 where nobody is (branchless)
++        for (let i = this.cur; i < i1; i++) out[i] = (res[i] + out[i]) * (POLICE_CRIME_BASE + crime[i]);
++        this.cur = i1;
++        if (i1 < C) return false;
++        this.stage = 4;
++        return true;
++      }
++      default: return true;
++    }
++  }
++
++  private startJobs(): void {
++    this.jobs = cacheOf(this.st).jobs;
++    this.n = 0;
++    this.cur = 0;
++    this.stage = 2;
++  }
++}
++
+ const POLICE_PROVIDER = {
+   shared: true,
+   needOf: policeNeed,
++  needRun: (st: CityState, res: Float32Array, out: Float32Array, list: readonly Building[], listNextId: number): TierNeedRun =>
++    new PoliceNeedRun(st, res, out, list, listNextId),
+   capacityOf: (_st: CityState, b: Building) => policeCapacityOf(b.def),
+ };
+ /** register the police tier provider (module load; again on first use when an import cycle made catchments unready) */
+@@ -536,11 +641,28 @@ export function pluggedList(st: CityState): Building[] {
+  * buildings and the job-weighted fill of the C / I job sites (-1 without job sites); refreshes the per-state lists
+  */
+ export function monthlyScan(st: CityState): { plopped: Building[]; tier: Building[]; cityFill: number } {
+-  const plopped: Building[] = [], tier: Building[] = [], jobs: Building[] = [], justice: Building[] = [];
+-  let filled = 0, slots = 0;
++  const p = newScanParts();
+   const c = cacheOf(st);
+   const list = buildingList(st);
+-  for (let k = 0; k < list.length; k++) {
++  scanRange(st, c, list, 0, list.length, p);
++  scanInstall(c, p, st.nextBuildingId);
++  return { plopped: p.plopped, tier: p.tier, cityFill: p.slots > 0 ? Math.min(1, p.filled / p.slots) : -1 };
++}
++
++/** the lists of one monthly scan while it is built (B2: the police need run builds them in chunks) */
++interface MonthlyScanParts { plopped: Building[]; tier: Building[]; jobs: Building[]; justice: Building[]; filled: number; slots: number }
++function newScanParts(): MonthlyScanParts {
++  return { plopped: [], tier: [], jobs: [], justice: [], filled: 0, slots: 0 };
++}
++function scanBegin(p: MonthlyScanParts): void {
++  p.plopped = []; p.tier = []; p.jobs = []; p.justice = [];
++  p.filled = 0; p.slots = 0;
++}
++/** monthlyScan's loop over list[k0, k1) (in list order; the fill sums are doubles in `p`) */
++function scanRange(st: CityState, c: StateCache, list: readonly Building[], k0: number, k1: number, p: MonthlyScanParts): void {
++  const { plopped, tier, jobs, justice } = p;
++  let filled = p.filled, slots = p.slots;
++  for (let k = k0; k < k1; k++) {
+     const b = list[k];
+     const cls = classOf(st, c, b);
+     const fam = (cls & 15) - 1;
+@@ -556,12 +678,16 @@ export function monthlyScan(st: CityState): { plopped: Building[]; tier: Buildin
+     filled += b.jobs;
+     slots += b.capacity * (b.hire ?? 1);
+   }
+-  c.plopped = plopped;
+-  c.tier = tier;
+-  c.jobs = jobs;
+-  c.justice = justice;
+-  c.jobNext = st.nextBuildingId;
+-  return { plopped, tier, cityFill: slots > 0 ? Math.min(1, filled / slots) : -1 };
++  p.filled = filled;
++  p.slots = slots;
++}
++/** the scanned lists become the state's lists; `nextId` = st.nextBuildingId of the scanned list */
++function scanInstall(c: StateCache, p: MonthlyScanParts, nextId: number): void {
++  c.plopped = p.plopped;
++  c.tier = p.tier;
++  c.jobs = p.jobs;
++  c.justice = p.justice;
++  c.jobNext = nextId;
+ }
+ 
+ /** set / clear BF.Understaffed of a tier facility (buildingChanged on a flip) */
+diff --git a/src/sim/infra/nimby.ts b/src/sim/infra/nimby.ts
+index e78ff06..bcdcefc 100644
+--- a/src/sim/infra/nimby.ts
++++ b/src/sim/infra/nimby.ts
+@@ -13,7 +13,7 @@
+  * Power plants are scaled by (NIMBY_PLANT_IDLE + (1 - IDLE) x plantLoad) when the utilities system reports plantLoad.
+  */
+ import { DevType, Network, Zone } from '../../core/types';
+-import type { CityState } from '../CityState';
++import type { Building, CityState } from '../CityState';
+ import type { Simulation } from '../Simulation';
+ import { getDef } from '../catalog';
+ import { Fam, buildingList, infoOf, isFunctional } from './common';
+@@ -69,8 +69,6 @@ function splatMax(out: Float32Array, N: number, x0: number, z0: number, amount:
+   return k.n;
+ }
+ 
+-interface Scratch { C: number; stig: Float32Array; line: Float32Array; pres: Float32Array; camp: Float32Array }
+-let scratch: Scratch = { C: 0, stig: new Float32Array(0), line: new Float32Array(0), pres: new Float32Array(0), camp: new Float32Array(0) };
+ /** estimated cost (ms) of the next rebuild per state (deterministic: from source counts of the last rebuild) */
+ const costEst = new WeakMap<CityState, number>();
+ 
+@@ -80,94 +78,254 @@ function plantLoadFn(sim: Simulation): PlantLoadFn | null {
+   return u && typeof u.plantLoad === 'function' ? u.plantLoad.bind(u) : null;
+ }
+ 
+-/** rebuild st.stigma / st.prestige / st.campus (one services step, <= 3 ms) */
+-export function rebuildNimby(sim: Simulation): void {
+-  const st = sim.state;
+-  const N = st.size, C = st.cells;
+-  if (scratch.C !== C) scratch = { C, stig: new Float32Array(C), line: new Float32Array(C), pres: new Float32Array(C), camp: new Float32Array(C) };
+-  const { stig, line, pres, camp } = scratch;
+-  stig.fill(0); line.fill(0); pres.fill(0); camp.fill(0);
+-  const plantLoad = plantLoadFn(sim);
+-  let touches = 0;
+-  const bL = buildingList(st);
+-  for (let bI = 0; bI < bL.length; bI++) {
+-    const b = bL[bI];
+-    if (!isFunctional(b)) continue;
+-    const inf = infoOf(st, b);
+-    let sA = inf.stigmaAmt, sR = inf.stigmaR;
+-    let pA = inf.prestigeAmt, pR = inf.prestigeR;
+-    if (inf.fam === Fam.I) {
+-      if (inf.dev === DevType.ID) { sA = NIMBY_ID.amount; sR = NIMBY_ID.radius; }
+-      else if (inf.dev === DevType.IM) { sA = NIMBY_IM.amount; sR = NIMBY_IM.radius; }
+-    } else if (inf.fam === Fam.C && pA === 0 && (inf.dev === DevType.CS3 || inf.dev === DevType.CO3)) {
+-      const stage = getDef(b.def)?.stage ?? 0;
+-      if (stage >= PRESTIGE_HIGH_C_STAGE) { pA = PRESTIGE_HIGH_C.amount; pR = PRESTIGE_HIGH_C.radius; }
+-    }
+-    if (sA > 0 && inf.powerOut > 0 && plantLoad) {
+-      const load = plantLoad(b.id);
+-      if (load >= 0) sA *= NIMBY_PLANT_IDLE + (1 - NIMBY_PLANT_IDLE) * Math.min(1, load);
++/** B2: estimated warm µs per unit of the NIMBY pieces (per building, per kernel touch, per cell; G2 fit, dense1m) */
++const NIMBY_US = { piece: 3, fill: 0.0004, bld: 0.08, touch: 0.006, lfRow: 0.004, corridorCell: 0.0015, final: 0.012, publish: 0.0008 } as const;
++
++/**
++ * B2 (docs/dev/B2_DESIGN.md §4 S_NIMBY): the NIMBY rebuild in pieces. begin(sim, list) takes the pass's building list (the
++ * services pass snapshot) and the plantLoad function; step(budgetUs) runs one piece — the four scratch fills, building
++ * chunks (splatAdd sums in list order; a chunk ends once its building and kernel-touch estimate reaches the budget),
++ * landfill row pairs (z / lfNext cursors), corridor cells by index ranges that start and end on multiples of 4 (so the
++ * word skip runs exactly as in the whole rebuild), the 1 - exp(-x) pass by rows into private rasters, then the publish
++ * piece (stigma / prestige / campus .set() + the cost estimate). Run with nothing in between, it writes exactly what the
++ * pre-B2 rebuildNimby wrote. Each run owns its scratch (pre-B2: module scratch, shared by every city in the process).
++ */
++export class NimbyRun {
++  private C = -1;
++  private stig = new Float32Array(0);
++  private line = new Float32Array(0);
++  private pres = new Float32Array(0);
++  private camp = new Float32Array(0);
++  private sNext = new Float32Array(0);
++  private pNext = new Float32Array(0);
++  private kNext = new Float32Array(0);
++  /** -1 idle, 0 fills, 1 buildings, 2 landfill, 3 corridors, 4 final pass, 5 publish */
++  stage = -1;
++  private st: CityState | null = null;
++  private list: readonly Building[] = [];
++  private plantLoad: PlantLoadFn | null = null;
++  private touches = 0;
++  private cur = 0;
++  // landfill: the row pair cursor, the next landfill cell, the landfill def's stigma
++  private lfZ = 0;
++  private lfNext = -1;
++  private lfA = 0;
++  private lfR = 0;
++  // corridors: the word view of the network and its end
++  private words: Uint32Array | null = null;
++  private wordEnd = 0;
++
++  get active(): boolean {
++    return this.stage >= 0;
++  }
++
++  get label(): string {
++    return ['fills', 'buildings', 'landfill', 'corridors', 'final', 'publish'][this.stage] ?? 'idle';
++  }
++
++  begin(sim: Simulation, list: readonly Building[]): void {
++    const st = sim.state, C = st.cells;
++    if (this.C !== C) {
++      this.C = C;
++      this.stig = new Float32Array(C); this.line = new Float32Array(C); this.pres = new Float32Array(C); this.camp = new Float32Array(C);
++      this.sNext = new Float32Array(C); this.pNext = new Float32Array(C); this.kNext = new Float32Array(C);
+     }
+-    if (sA > 0) touches += splatAdd(stig, N, b.x, b.z, b.w, b.d, sA, sR);
+-    if (pA > 0) touches += splatAdd(pres, N, b.x, b.z, b.w, b.d, pA, pR);
+-    if (inf.campusAmt > 0) touches += splatAdd(camp, N, b.x, b.z, b.w, b.d, inf.campusAmt, inf.campusR);
++    this.st = st;
++    this.list = list;
++    this.plantLoad = plantLoadFn(sim);
++    this.touches = 0;
++    this.cur = 0;
++    this.stage = 0;
+   }
+-  // landfill zones: per 2x2 block, scaled by how full the block's own landfill cells are (WP3's landfillFill stock:
+-  // an empty landfill is only mildly stigmatised, a mountain of garbage fully — incinerators / recycling elsewhere
+-  // in the city do not count)
+-  const lfDef = getDef('util_landfill_tile');
+-  const lfA = lfDef?.stigma?.amount ?? 0.35, lfR = lfDef?.stigma?.radius ?? 6;
+-  const zone = st.zone, net = st.network, flags = st.netFlags, lfFill = st.landfillFill;
+-  let lfNext = zone.indexOf(Zone.Landfill);
+-  for (let z = 0; z < N && lfNext >= 0; z += 2) {
+-    const rowEnd = Math.min(z + 2, N) * N;
+-    if (lfNext >= rowEnd) continue; // neither row contains landfill
+-    for (let x = 0; x < N; x += 2) {
+-      let cnt = 0, fill = 0;
+-      for (let dz = 0; dz < 2 && z + dz < N; dz++) for (let dx = 0; dx < 2 && x + dx < N; dx++) {
+-        const i = (z + dz) * N + x + dx;
+-        if (zone[i] !== Zone.Landfill) continue;
+-        cnt++;
+-        const f = lfFill ? lfFill[i] : 0;
+-        fill += f > 0 ? (f < 1 ? f : 1) : 0;
+-      }
+-      if (cnt > 0) touches += splatAdd(stig, N, x, z, 2, 2, lfA * (NIMBY_LANDFILL_IDLE + (1 - NIMBY_LANDFILL_IDLE) * (fill / cnt)) * cnt / 4, lfR);
++
++  /** drop the references (pass end, aborted pass) */
++  release(): void {
++    this.stage = -1;
++    this.st = null;
++    this.list = [];
++    this.plantLoad = null;
++    this.words = null;
++  }
++
++  /** estimated warm µs of the next piece at `budgetUs` (pure) */
++  pieceUs(budgetUs: number): number {
++    const st = this.st;
++    if (!st) return 0;
++    const C = st.cells, N = st.size;
++    const c = (us: number, left: number) => Math.max(0, Math.min(Math.max(1, Math.floor(budgetUs / us)), left)) * us;
++    switch (this.stage) {
++      case 0: return NIMBY_US.piece + 4 * C * NIMBY_US.fill;
++      case 1: return NIMBY_US.piece + Math.min(budgetUs, (this.list.length - this.cur) * NIMBY_US.bld);
++      case 2: return NIMBY_US.piece + Math.min(budgetUs, Math.max(0, (N - this.lfZ) >> 1) * N * NIMBY_US.lfRow);
++      case 3: return NIMBY_US.piece + Math.min(budgetUs, (C - this.cur) * NIMBY_US.corridorCell);
++      case 4: return NIMBY_US.piece + c(NIMBY_US.final * N, N - this.cur);
++      case 5: return NIMBY_US.piece + 3 * C * NIMBY_US.publish;
++      default: return 0;
+     }
+-    lfNext = zone.indexOf(Zone.Landfill, rowEnd);
+   }
+-  // network corridors (max-combined)
+-  const wordEnd = (net.byteOffset & 3) === 0 ? Math.floor(Math.min(C, net.length) / 4) * 4 : 0;
+-  const words = wordEnd > 0 ? new Uint32Array(net.buffer, net.byteOffset, wordEnd / 4) : null;
+-  const highway = Network.Highway * 0x01010101, rail = Network.Rail * 0x01010101;
+-  for (let i = 0; i < C; i++) {
+-    if (words && i < wordEnd && (i & 3) === 0) {
+-      const word = words[i >>> 2], h = word ^ highway, r = word ^ rail;
+-      // XOR each byte, then test for a zero byte: correct on little-endian targets (and byte-order independent).
+-      // Only skip whole empty words; matching cells, tails and unaligned views keep the original index order.
+-      if (((h - 0x01010101) & ~h & 0x80808080) === 0 && ((r - 0x01010101) & ~r & 0x80808080) === 0) {
+-        i += 3;
+-        continue;
++
++  /** one piece of at most about `budgetUs` estimated µs; true when the rasters are published (the run is idle again) */
++  step(budgetUs: number): boolean {
++    const st = this.st;
++    if (!st) return true;
++    const N = st.size, C = st.cells;
++    switch (this.stage) {
++      case 0: {
++        this.stig.fill(0); this.line.fill(0); this.pres.fill(0); this.camp.fill(0);
++        this.stage = 1;
++        this.cur = 0;
++        return false;
+       }
++      case 1: {
++        const { stig, pres, camp } = this;
++        const plantLoad = this.plantLoad;
++        const bL = this.list;
++        let touches = this.touches, us = 0, bI = this.cur;
++        // (at least one building per piece; skipped buildings count their test)
++        for (; bI < bL.length && (us === 0 || us < budgetUs); bI++) {
++          const b = bL[bI];
++          us += NIMBY_US.bld;
++          if (!isFunctional(b)) continue;
++          const inf = infoOf(st, b);
++          let sA = inf.stigmaAmt, sR = inf.stigmaR;
++          let pA = inf.prestigeAmt, pR = inf.prestigeR;
++          if (inf.fam === Fam.I) {
++            if (inf.dev === DevType.ID) { sA = NIMBY_ID.amount; sR = NIMBY_ID.radius; }
++            else if (inf.dev === DevType.IM) { sA = NIMBY_IM.amount; sR = NIMBY_IM.radius; }
++          } else if (inf.fam === Fam.C && pA === 0 && (inf.dev === DevType.CS3 || inf.dev === DevType.CO3)) {
++            const stage = getDef(b.def)?.stage ?? 0;
++            if (stage >= PRESTIGE_HIGH_C_STAGE) { pA = PRESTIGE_HIGH_C.amount; pR = PRESTIGE_HIGH_C.radius; }
++          }
++          if (sA > 0 && inf.powerOut > 0 && plantLoad) {
++            const load = plantLoad(b.id);
++            if (load >= 0) sA *= NIMBY_PLANT_IDLE + (1 - NIMBY_PLANT_IDLE) * Math.min(1, load);
++          }
++          const t0 = touches;
++          if (sA > 0) touches += splatAdd(stig, N, b.x, b.z, b.w, b.d, sA, sR);
++          if (pA > 0) touches += splatAdd(pres, N, b.x, b.z, b.w, b.d, pA, pR);
++          if (inf.campusAmt > 0) touches += splatAdd(camp, N, b.x, b.z, b.w, b.d, inf.campusAmt, inf.campusR);
++          us += (touches - t0) * NIMBY_US.touch;
++        }
++        this.touches = touches;
++        this.cur = bI;
++        if (bI < bL.length) return false;
++        // landfill zones: per 2x2 block, scaled by how full the block's own landfill cells are (WP3's landfillFill stock:
++        // an empty landfill is only mildly stigmatised, a mountain of garbage fully — incinerators / recycling elsewhere
++        // in the city do not count)
++        const lfDef = getDef('util_landfill_tile');
++        this.lfA = lfDef?.stigma?.amount ?? 0.35;
++        this.lfR = lfDef?.stigma?.radius ?? 6;
++        this.lfNext = st.zone.indexOf(Zone.Landfill);
++        this.lfZ = 0;
++        this.stage = 2;
++        return false;
++      }
++      case 2: {
++        const stig = this.stig, zone = st.zone, lfFill = st.landfillFill, lfA = this.lfA, lfR = this.lfR;
++        let touches = this.touches, lfNext = this.lfNext, z = this.lfZ, us = 0;
++        // (at least one row pair with landfill per piece; row pairs without landfill are skipped for free)
++        for (; z < N && lfNext >= 0 && (us === 0 || us < budgetUs); z += 2) {
++          const rowEnd = Math.min(z + 2, N) * N;
++          if (lfNext >= rowEnd) continue; // neither row contains landfill
++          us += N * NIMBY_US.lfRow;
++          for (let x = 0; x < N; x += 2) {
++            let cnt = 0, fill = 0;
++            for (let dz = 0; dz < 2 && z + dz < N; dz++) for (let dx = 0; dx < 2 && x + dx < N; dx++) {
++              const i = (z + dz) * N + x + dx;
++              if (zone[i] !== Zone.Landfill) continue;
++              cnt++;
++              const f = lfFill ? lfFill[i] : 0;
++              fill += f > 0 ? (f < 1 ? f : 1) : 0;
++            }
++            if (cnt > 0) touches += splatAdd(stig, N, x, z, 2, 2, lfA * (NIMBY_LANDFILL_IDLE + (1 - NIMBY_LANDFILL_IDLE) * (fill / cnt)) * cnt / 4, lfR);
++          }
++          lfNext = zone.indexOf(Zone.Landfill, rowEnd);
++        }
++        this.touches = touches;
++        this.lfNext = lfNext;
++        this.lfZ = z;
++        if (z < N && lfNext >= 0) return false;
++        // network corridors (max-combined)
++        const net = st.network;
++        this.wordEnd = (net.byteOffset & 3) === 0 ? Math.floor(Math.min(C, net.length) / 4) * 4 : 0;
++        this.words = this.wordEnd > 0 ? new Uint32Array(net.buffer, net.byteOffset, this.wordEnd / 4) : null;
++        this.cur = 0;
++        this.stage = 3;
++        return false;
++      }
++      case 3: {
++        const line = this.line, net = st.network, flags = st.netFlags, words = this.words, wordEnd = this.wordEnd;
++        const highway = Network.Highway * 0x01010101, rail = Network.Rail * 0x01010101;
++        // (a range starts at a multiple of 4 and ends at one or at C, so a skipped word never straddles two pieces)
++        const chunk = Math.max(4, Math.floor(budgetUs / NIMBY_US.corridorCell));
++        const i1 = chunk >= C - this.cur ? C : Math.min(C, (this.cur + chunk) - ((this.cur + chunk) % 4));
++        let touches = this.touches;
++        for (let i = this.cur; i < i1; i++) {
++          if (words && i < wordEnd && (i & 3) === 0) {
++            const word = words[i >>> 2], h = word ^ highway, r = word ^ rail;
++            // XOR each byte, then test for a zero byte: correct on little-endian targets (and byte-order independent).
++            // Only skip whole empty words; matching cells, tails and unaligned views keep the original index order.
++            if (((h - 0x01010101) & ~h & 0x80808080) === 0 && ((r - 0x01010101) & ~r & 0x80808080) === 0) {
++              i += 3;
++              continue;
++            }
++          }
++          const t = net[i];
++          if (t === Network.Highway) {
++            const f = flags[i];
++            if (f & 2) continue; // tunnel
++            touches += splatMax(line, N, i % N, (i / N) | 0, f & 1 ? NIMBY_HIGHWAY_BRIDGE : NIMBY_HIGHWAY.amount, NIMBY_HIGHWAY.radius);
++          } else if (t === Network.Rail) {
++            touches += splatMax(line, N, i % N, (i / N) | 0, NIMBY_RAIL.amount, NIMBY_RAIL.radius);
++          }
++        }
++        this.touches = touches;
++        this.cur = i1;
++        if (i1 < C) return false;
++        this.words = null;
++        this.cur = 0;
++        this.stage = 4;
++        return false;
++      }
++      case 4: {
++        const { stig, line, pres, camp, sNext: S, pNext: P, kNext: K } = this;
++        const z1 = Math.min(N, this.cur + Math.max(1, Math.floor(budgetUs / (NIMBY_US.final * Math.max(1, N)))));
++        for (let i = this.cur * N, e = z1 * N; i < e; i++) {
++          const a = stig[i] + line[i];
++          S[i] = a > 0 ? 1 - Math.exp(-a) : 0;
++          const p = pres[i];
++          P[i] = p > 0 ? 1 - Math.exp(-p) : 0;
++          const c = camp[i];
++          K[i] = c > 0 ? 1 - Math.exp(-c) : 0;
++        }
++        this.cur = z1;
++        if (z1 < N) return false;
++        this.stage = 5;
++        return false;
++      }
++      case 5: {
++        st.stigma.set(this.sNext.subarray(0, st.stigma.length));
++        st.prestige.set(this.pNext.subarray(0, st.prestige.length));
++        st.campus.set(this.kNext.subarray(0, st.campus.length));
++        // cost model (calibrated on the 256² stress city): per-cell passes + splat touches + building loop
++        costEst.set(st, 0.3 + 0.9 * (C / 65536) + 0.45 * (this.list.length / 20000) + this.touches * 6e-6);
++        this.release();
++        return true;
++      }
++      default: return true;
+     }
+-    const t = net[i];
+-    if (t === Network.Highway) {
+-      const f = flags[i];
+-      if (f & 2) continue; // tunnel
+-      touches += splatMax(line, N, i % N, (i / N) | 0, f & 1 ? NIMBY_HIGHWAY_BRIDGE : NIMBY_HIGHWAY.amount, NIMBY_HIGHWAY.radius);
+-    } else if (t === Network.Rail) {
+-      touches += splatMax(line, N, i % N, (i / N) | 0, NIMBY_RAIL.amount, NIMBY_RAIL.radius);
+-    }
+-  }
+-  const S = st.stigma, P = st.prestige, K = st.campus;
+-  for (let i = 0; i < C; i++) {
+-    const a = stig[i] + line[i];
+-    S[i] = a > 0 ? 1 - Math.exp(-a) : 0;
+-    const p = pres[i];
+-    P[i] = p > 0 ? 1 - Math.exp(-p) : 0;
+-    const c = camp[i];
+-    K[i] = c > 0 ? 1 - Math.exp(-c) : 0;
+   }
+-  // cost model (calibrated on the 256² stress city): per-cell passes + splat touches + building loop
+-  costEst.set(st, 0.3 + 0.9 * (C / 65536) + 0.45 * (bL.length / 20000) + touches * 6e-6);
++}
++
++/** rebuildNimby's runs, per state (a services pass's own run is not touched) */
++const wholeRuns = new WeakMap<CityState, NimbyRun>();
++/** rebuild st.stigma / st.prestige / st.campus in one go (B2: the NimbyRun pieces with nothing in between) */
++export function rebuildNimby(sim: Simulation): void {
++  const st = sim.state;
++  let run = wholeRuns.get(st);
++  if (!run) wholeRuns.set(st, (run = new NimbyRun()));
++  run.begin(sim, buildingList(st));
++  while (!run.step(Infinity)) { /* pieces */ }
+ }
+ 
+ /** estimated cost (ms) of rebuildNimby for the scheduler (from the previous rebuild's source counts) */
+diff --git a/src/sim/infra/traffic.ts b/src/sim/infra/traffic.ts
+index d3dd50f..e370a72 100644
+--- a/src/sim/infra/traffic.ts
++++ b/src/sim/infra/traffic.ts
+@@ -1631,6 +1631,16 @@ export class TrafficSystem implements SimSystem {
+     if (st) this.refreshAttach(st);
+     return (this.attach.get(id) ?? 0) === 1;
+   }
++  /**
++   * B2 (G2, design review 2 item 5e): estimated warm ms of the lazy attachment refresh the next stopAttached /
++   * freightRailCells call would run (0 when it is current). Other tasks run it in a piece of their own while it is
++   * pending (stopAttached(-1)), so it never lands inside one of their loop pieces. Pure.
++   */
++  attachRefreshMs(st: CityState): number {
++    const cur = this.lastState;
++    if (!cur) return 0;
++    return this.attachDirty || this.attachFor !== cur ? (TR_EST * (TC.piece + TC.attach * st.cells)) / 1000 : 0;
++  }
+   /**
+    * riders (boardings + alightings / day, smoothed across assignments), current wait (min), the depot (building id, -1 =
+    * none / minibuses) of a stop building, walkers = residents within walking distance whose nearest jobs are a walk from
+diff --git a/src/sim/infra/transit.ts b/src/sim/infra/transit.ts
+index 5760150..44d5f21 100644
+--- a/src/sim/infra/transit.ts
++++ b/src/sim/infra/transit.ts
+@@ -184,8 +184,18 @@ export function transitCoverageActive(sim: Simulation, b: Building, inf: DefInfo
+ export function computeTransitCoverage(state: CityState, stops: StopList, out: Float32Array, funding: number, skipWithCoverage = true,
+   active?: (s: number) => boolean): void {
+   out.fill(0);
++  transitCoverageRange(state, stops, out, funding, skipWithCoverage, active, 0, stops.n);
++}
++
++/**
++ * B2 (docs/dev/B2_DESIGN.md §4 S_STOPS): computeTransitCoverage's disks for the stops [s0, s1) into `out`, which is NOT
++ * cleared (the caller zero-fills it once before the first range). The same skips and the same in-place accumulation in
++ * stop order, so consecutive ranges from 0 to stops.n give exactly the whole call's raster.
++ */
++export function transitCoverageRange(state: CityState, stops: StopList, out: Float32Array, funding: number, skipWithCoverage: boolean,
++  active: ((s: number) => boolean) | undefined, s0: number, s1: number): void {
+   const N = state.size;
+-  for (let s = 0; s < stops.n; s++) {
++  for (let s = s0; s < s1; s++) {
+     if (skipWithCoverage && stops.bid[s] >= 0) {
+       const b = state.buildings.get(stops.bid[s]);
+       if (b && infoOf(state, b).cov >= 0) continue;
+-- 
+2.43.0
+
