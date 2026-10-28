@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Network } from '../../src/core/types';
 import { fundingFactor } from '../../src/sim/infra/common';
 import type { SimSystem } from '../../src/sim/Simulation';
-import { LocalSimHost, watchFor } from '../../src/worker/SimHost';
+import { LocalSimHost } from '../../src/worker/SimHost';
 import { QUERY_HANDLERS } from '../../src/worker/queries';
 import { newState, roadLine } from '../infra/cityGen';
 
@@ -11,15 +11,14 @@ afterEach(() => vi.restoreAllMocks());
 
 const args = { defId: 'civ_elementary_school', x: 10, z: 11, w: 1, d: 1 };
 function fixture() {
-  let now = 0;
   const st = newState(32);
   st.systemData.infraVersion = 1;
   roadLine(st, 2, 10, 29, 10, Network.Road);
   const need = new Float32Array(st.cells);
   need[st.idx(10, 11)] = 100;
-  const host = new LocalSimHost(st, { initialSpeed: 0, now: () => now });
+  const host = new LocalSimHost(st, { initialSpeed: 0, now: () => 0 });
   host.sim.systems.push({ name: 'services', needRaster: () => need } as unknown as SimSystem);
-  return { host, st, need, time: (v: number) => { now = v; } };
+  return { host, st, need };
 }
 
 describe('upkeepContext', () => {
@@ -47,33 +46,28 @@ describe('upkeepContext', () => {
     } finally { await f.host.dispose(); }
   });
 
-  it('caches each footprint, refreshes after paused commands and days, and disposes with the city', async () => {
-    const f = fixture(), abort = new AbortController(), read = vi.spyOn(QUERY_HANDLERS, 'upkeepContext');
+  it('queries the latest services and funding values without waiting for the watch cap or a new day', async () => {
+    const f = fixture();
     try {
-      const w = watchFor(f.host, 'upkeepContext', args, 'change', abort.signal);
-      expect(w.value?.here).toBe(132);
-      w.setArgs({ ...args, x: 25, z: 25 });
-      expect(w.value).toBeUndefined();
-      f.time(200);
-      expect(w.value?.here).toBe(72);
-      w.setArgs(args);
-      expect(w.value?.here).toBe(132);
-      expect(read).toHaveBeenCalledTimes(2);
+      expect((await f.host.query('upkeepContext', args)).here).toBe(132);
+      expect((await f.host.query('upkeepContext', { ...args, x: 25, z: 25 })).here).toBe(72);
       f.host.act('setFunding', ['education', 50]);
-      f.time(399); f.host.frame(0);
-      expect(w.value?.here).toBe(132);
-      f.time(400); f.host.frame(0);
-      expect(w.value?.here).toBeCloseTo(108.93433240034749, 8);
-      expect(f.st.day).toBe(0);
+      expect((await f.host.query('upkeepContext', args)).here).toBeCloseTo(108.93433240034749, 8);
       f.need[f.st.idx(10, 11)] = 200;
-      f.st.day++;
-      f.time(600); f.host.frame(0);
-      expect(w.value?.here).toBeCloseTo(145.86866480069498, 8);
-      abort.abort('dispose');
-      f.time(800); f.st.day++; f.host.frame(0);
-      expect(w.value).toBeUndefined();
-      expect(read).toHaveBeenCalledTimes(4);
-    } finally { abort.abort('dispose'); await f.host.dispose(); }
+      expect((await f.host.query('upkeepContext', args)).here).toBeCloseTo(145.86866480069498, 8);
+      expect(f.st.day).toBe(0);
+    } finally { await f.host.dispose(); }
+  });
+
+  it.each(['budget', 'funding'] as const)('defaults to full funding when %s is missing without repairing the state', async (missing) => {
+    const f = fixture();
+    try {
+      if (missing === 'budget') f.st.budget = undefined as never;
+      else f.st.budget.funding = undefined as never;
+      const before = structuredClone(f.st);
+      expect((await f.host.query('upkeepContext', args)).here).toBe(132);
+      expect(structuredClone(f.st)).toEqual(before);
+    } finally { await f.host.dispose(); }
   });
 
   it.each([

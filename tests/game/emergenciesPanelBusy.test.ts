@@ -49,6 +49,7 @@ describe('Emergencies panel: Dispatch while every unit is busy (close-out c2 pol
     expect(disp().title).toBe('Dispatch a unit yourself');
     // both trucks out on other calls (behind the sim's back, as the banner tests do)
     (em as unknown as { out: Map<number, number> }).out.set(station.id, 2);
+    (em as unknown as { stVer: number }).stVer++; // publish the fixture's synthetic fleet change
     const why = dispatchBlocked(em, inc, em.dispatchOptions(sim, inc.id));
     expect(why).toBeTruthy();
     panel.update();
@@ -56,6 +57,7 @@ describe('Emergencies panel: Dispatch while every unit is busy (close-out c2 pol
     expect(disp().title).toBe(why);
     // one is back: the button comes back
     (em as unknown as { out: Map<number, number> }).out.set(station.id, 1);
+    (em as unknown as { stVer: number }).stVer++;
     panel.update();
     expect(disp().disabled).toBe(false);
     expect(disp().title).toBe('Dispatch a unit yourself');
