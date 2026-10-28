@@ -30,7 +30,7 @@ import { openNewCityDialog, terrainOptionsFor } from './region/NewCityDialog';
 import { summarizeCity } from './region/citySummary';
 import { cityThumbnail, drawCityMap, normalizeThumbnail, regionPreviewDataUrl, regionPreviewKey } from './region/mapPreview';
 import { randomCityName, randomMayorName } from './region/names';
-import { loadSettings, saveSettings, type AppSettings } from './region/settings';
+import { cityOverrides, loadSettings, saveSettings, takeCityChanges, type AppSettings } from './region/settings';
 import { TitleScreen } from './region/ui/TitleScreen';
 import { LoadingScreen } from './region/ui/LoadingScreen';
 import { openCredits, openLoadRegion, openNewRegion, openRecoverDialog, openSettings } from './region/ui/dialogs';
@@ -522,15 +522,12 @@ class App {
         state: st,
         rctx,
         persistence: { regionId: model.data.id, tileKey: tile.key, regionName: model.data.name },
-        settings: { quality: this.settings.quality, edgeScroll: this.settings.edgeScroll, showFps: this.settings.showFps, autosaveMonths: this.settings.autosaveMonths },
+        settings: cityOverrides(this.settings),
         onExitToRegion: (thumb) => void this.exitCity(thumb),
         onSave: (_state, reason = 'manual') => this.saveCityState(reason),
         onSettingsChange: (gs) => {
-          // keep the app-level defaults in sync with changes made in the in-game settings panel
-          if (gs.quality) this.settings.quality = gs.quality;
-          if (typeof gs.edgeScroll === 'boolean') this.settings.edgeScroll = gs.edgeScroll;
-          if (typeof gs.showFps === 'boolean') this.settings.showFps = gs.showFps;
-          if (typeof gs.autosaveMonths === 'number') this.settings.autosaveMonths = gs.autosaveMonths;
+          // keep the app-level settings (the shared keys) in sync with changes made in the in-game settings panel
+          takeCityChanges(this.settings, gs);
           saveSettings(this.settings);
         },
       });
